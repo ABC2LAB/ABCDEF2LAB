@@ -1,3 +1,7 @@
+// T1.2(임시): 템플릿 잔재 "Documents" 사이드바 그룹. 삭제 대신 본문 전체를 주석 처리한다 — 결정 후 복원/제거.
+// 복원: 아래 블록 주석(/* ... */)을 풀고 이 export {} 줄을 지운다. app-sidebar.tsx 의 사용 주석도 함께 해제.
+export {};
+/*
 "use client";
 
 import { Ellipsis, Folder, Forward, type LucideIcon, Trash2 } from "lucide-react";
@@ -81,3 +85,4 @@ export function NavDocuments({
     </SidebarGroup>
   );
 }
+*/

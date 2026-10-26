@@ -1,3 +1,7 @@
+// T1.2(임시): 템플릿 잔재 외부 링크 서포트 카드. 삭제 대신 본문 전체를 주석 처리한다 — 결정 후 복원/제거.
+// 복원: 아래 블록 주석(/* ... */)을 풀고 이 export {} 줄을 지운다. app-sidebar.tsx 의 import 주석도 함께 해제.
+export {};
+/*
 import Link from "next/link";
 
 import { siX } from "simple-icons";
@@ -27,3 +31,4 @@ export function SidebarSupportCard() {
     </Card>
   );
 }
+*/
