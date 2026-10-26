@@ -3316,9 +3316,12 @@ function CreateTaskSheet({
               <FieldDescription>{t("create.categoryHint")}</FieldDescription>
             </Field>
             <div className="grid gap-2">
-              <Label htmlFor="description">{t("create.descLabel")}</Label>
+              <Label htmlFor="description">
+                {t("create.descLabel")} <span className="text-destructive">*</span>
+              </Label>
               <Textarea
                 id="description"
+                aria-required
                 className="min-h-32"
                 placeholder={t("create.descPlaceholder")}
                 value={description}
@@ -3349,9 +3352,12 @@ function CreateTaskSheet({
               </div>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="goal">{t("create.goalLabel")}</Label>
+              <Label htmlFor="goal">
+                {t("create.goalLabel")} <span className="text-destructive">*</span>
+              </Label>
               <Textarea
                 id="goal"
+                aria-required
                 className="min-h-32"
                 placeholder={t("create.goalPlaceholder")}
                 value={goal}
@@ -3460,7 +3466,7 @@ function CreateTaskSheet({
           <SheetClose asChild>
             <Button variant="outline">{t("create.cancel")}</Button>
           </SheetClose>
-          <Button onClick={createTask} disabled={creating || uploading}>
+          <Button onClick={createTask} disabled={creating || uploading || !description.trim() || !goal.trim()}>
             {creating && <Spinner data-icon="inline-start" />}
             {creating ? t("create.creating") : t("create.create")}
           </Button>
