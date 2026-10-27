@@ -1,5 +1,7 @@
 "use client";
 
+import type * as React from "react";
+
 import Link from "next/link";
 
 import { useShallow } from "zustand/react/shallow";
@@ -20,7 +22,8 @@ import { usePreferencesStore } from "@/stores/preferences/preferences-provider";
 
 import { NavMain } from "./nav-main";
 import { NavUser } from "./nav-user";
-import { SidebarSupportCard } from "./sidebar-support-card";
+// T1.2(임시): 템플릿 잔재 외부 링크 서포트 카드. 미사용이라 숨김 — 삭제 대신 주석. 결정 후 제거/복원.
+// import { SidebarSupportCard } from "./sidebar-support-card";
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const currentUser = useCurrentUser();

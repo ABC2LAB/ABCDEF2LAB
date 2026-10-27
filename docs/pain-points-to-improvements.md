@@ -186,6 +186,30 @@
 - **성공기준**: 운영자가 역할×엔드포인트×기대권한을 쉽게 입력.
 - **상태**: 재현(편집기 존재), 개선 대상(인가 입력).
 
+### P18. 대화창 작업별 분류 안 됨
+- **문제·가설**: 채팅(대화) 목록을 작업(task)별로 묶어볼 수 없다. 현재는 에이전트별 필터만 제공.
+- **출처**: `[사용]` 이경준 관찰. `[코드]` `Conversation` 타입에 `task_id` 없음(web/src/lib/types.ts:738 — agent_key·title·pinned만). 채팅 활동은 `task_id=0`=대화세션으로 task와 분리(types.ts:1213).
+- **우리 재현·증거**: 코드로 대화↔작업 미연결 확인(재현).
+- **개선안**: 대화↔작업 연결을 DB/서버 모델에 추가(백엔드 영역=이동찬·최민준) 후 UI에서 작업별 그룹/필터. ※순수 UI로는 불가 — 경계 안건.
+- **성공기준**: 대화 목록을 작업별로 묶어 보고 전환 가능.
+- **상태**: 재현(미연결 확인), 개선 대상. ※경계=백엔드.
+
+### P19. 새 작업 설명·목표가 필수처럼 안 보임
+- **문제·가설**: 새 작업 생성 시 설명·목표가 필수 입력처럼 보이지 않는다.
+- **출처**: `[사용]` 이경준 관찰. `[코드]` 제출 검증은 **존재**(web/src/app/(main)/function/tasks/page.tsx:3208 `if(!description.trim()||!goal.trim())` 토스트)하나, 필드에 필수 표시가 없고 생성 버튼이 `disabled={creating||uploading}`뿐(page.tsx:3463)이라 빈 값에도 눌림. 템플릿 폼은 `if(!name||!description||!goal)` 선검증(task-template-controls.tsx:155).
+- **우리 재현·증거**: 코드로 어포던스 공백 확인(재현).
+- **개선안**: 설명·목표 라벨에 필수 표시(*) + `aria-required` + 두 칸 비면 생성 버튼 비활성.
+- **성공기준**: 빈 설명·목표로는 버튼이 비활성이고, 필수임이 시각적으로 드러남.
+- **상태**: 재현 → 개선후검증(수정 적용 중).
+
+### P20. 취약점 합계가 작업별로 분리 안 됨(findings 페이지 상단 카드)
+- **문제·가설**: `/function/findings` 상단 합계 카드(총계+심각도별)가 작업별로 분리되지 않는다. task 필터를 걸어도 리스트만 바뀌고 카드는 전역 유지.
+- **출처**: `[사용]` 이경준 관찰(`/function/findings` → web/src/app/(main)/function/findings/page.tsx). `[코드]` 상단 stat 카드는 `api.findingStats()`→`GET /exploration/findings/stats`에서 옴(page.tsx:757·573)인데 **task 인자 없음**. 서버도 무인자 whole-table 집계(server/server.go:2159 `findingStats`→`pg.FindingStats()`). 대시보드도 동일 전역(dashboard/page.tsx:545). 단 per-task 데이터는 이미 존재: 작업 목록 행(tasks/page.tsx:1245 `task.findings`), findings 그룹뷰 그룹별 심각도(findings/page.tsx:1069).
+- **우리 재현·증거**: 코드로 stats 전역 집계 확인(재현).
+- **개선안**: `/exploration/findings/stats`에 task 필터 파라미터 추가(`server`+`db`=백엔드 영역) 후 프론트에서 선택 task 전달. ※프론트만으로는 '총계' 카드만 `stats.tasks`의 per-task count로 치환 가능(심각도 분해는 불가).
+- **성공기준**: task 선택 시 상단 카드가 그 작업 기준으로 집계.
+- **상태**: 재현(전역 확인). ※경계=백엔드(제대로 하려면).
+
 ---
 
 ## 다음 할 일

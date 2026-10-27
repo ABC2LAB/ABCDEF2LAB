@@ -11,6 +11,7 @@ import {
   ClockIcon,
   DownloadIcon,
   InfoIcon,
+  type LucideIcon,
   SearchIcon,
   ShieldAlertIcon,
   TriangleAlertIcon,
@@ -753,8 +754,26 @@ export default function FindingsPage() {
     }
   }
 
-  const statCards = [
-    { label: t("stat.total"), value: stats.total, icon: BugIcon },
+  // P20(프론트 절충): task 필터가 특정 작업이면 '총계' 카드만 그 작업 기준으로 바꾼다.
+  // 심각도별 카드는 stats 엔드포인트가 task를 안 받아 전역 유지 — 진짜 per-task는 백엔드 안건.
+  const selectedTaskOption = task === "all" ? null : ((stats.tasks ?? []).find((o) => String(o.id) === task) ?? null);
+  const selectedTaskName = selectedTaskOption
+    ? selectedTaskOption.name?.trim() || selectedTaskOption.description || `#${selectedTaskOption.id}`
+    : undefined;
+
+  const statCards: {
+    label: string;
+    value: number;
+    tone?: string;
+    icon: LucideIcon;
+    sub?: string;
+  }[] = [
+    {
+      label: t("stat.total"),
+      value: selectedTaskOption ? selectedTaskOption.count : stats.total,
+      icon: BugIcon,
+      sub: selectedTaskName,
+    },
     { label: t("stat.pending"), value: stats.pending, tone: "text-amber-500", icon: ClockIcon },
     { label: t("severity.critical"), value: stats.critical, tone: "text-rose-600", icon: ShieldAlertIcon },
     { label: t("severity.high"), value: stats.high, tone: "text-red-500", icon: TriangleAlertIcon },
@@ -843,6 +862,11 @@ export default function FindingsPage() {
                     <StatIcon className="size-5" aria-hidden="true" />
                     {stat.value}
                   </CardTitle>
+                  {stat.sub && (
+                    <CardDescription className="truncate text-xs" title={stat.sub}>
+                      {stat.sub}
+                    </CardDescription>
+                  )}
                 </CardHeader>
               </Card>
             );
