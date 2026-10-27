@@ -78,7 +78,7 @@ Juice Shop **v15.0.0** (첫 과녁). 실행·계정·포트·모델 태그는 �
 - upstream(ARTEX `jiwoochris/artex-global`)은 reference용 remote로만. 정기 머지 X, 핫픽스 cherry-pick만.
 - 커밋: `태그: 요약` — 50자 이내, 한글 OK, 마침표 X. 태그 feat/fix/refactor/docs/test/style/chore. 커밋 하나 = 변경 하나.
 - PR: feature → dev. 리뷰어 1명 이상(본인 제외). 본문 3줄(뭘 바꿈 / 왜 / 어떻게 확인). Merge commit, squash 금지.
-- 루트 설정 파일(`.gitignore`·`go.mod`·CI·compose)·라이선스 표기는 GitHub 관리자만 수정.
+- 루트 설정 파일(`go.mod`·CI·compose)·라이선스 표기는 GitHub 관리자만 수정. `.gitignore`는 **로컬 툴·에디터 파일 제외 추가는 누구나 OK**, 구조적 변경(빌드·의존성·결과물 경로)·그 외 항목은 관리자.
 - **커밋 메시지·PR 본문에 Claude 관련 문구(Co-Authored-By, Generated with, 세션 링크 등)를 넣지 않는다.**
 
 ## 코드
