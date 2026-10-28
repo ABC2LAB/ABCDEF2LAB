@@ -15,7 +15,7 @@ import urllib.request
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from aggregate import RepeatResult, ScanVerdict  # noqa: F401 (RepeatResult는 반환 타입)
+from aggregate import ScanVerdict
 
 # 랩 전용 허용 호스트. 대상 origin은 .env로 고정하고, 그 호스트가 이 집합에 들 때만
 # 요청한다(CLAUDE.md 절대규칙 1: 설정의 대상 origin만, localhost 랩). 외부 대상 없음.
