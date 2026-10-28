@@ -130,4 +130,4 @@ oracle.py는 "소유자 객체의 **비자명 실데이터**"가 교차응답에
 2. **정책버전 ↔ 유효창 / 정본(canonical) reader** 매핑. (이동찬 ↔ 이경준)
 3. **KG의 sharing/delegation 해소 상태·기대권한 계약** — "조회 안 함"을 "없음"으로 주지 말 것. (이경준)
 4. **ComparisonFacts 비교기 스펙** — 비자명 canary 일치·반사/템플릿 배제 로직은 오라클 밖(실제 난이도). (이동찬 E² capture + 최민준 compare 규칙)
-5. **구조화 판정 레코드 테이블명·마이그레이션** — `findings`/`finding_retests`와 분리. (최민준 ↔ 이동찬)
+5. **구조화 판정 레코드 테이블명·마이그레이션** — `findings`/`finding_retests`와 분리. (최민준 ↔ 이동찬) → 논리 스키마·마스킹·평가 읽기 계약 초안: [verdict-record.md](./verdict-record.md). 테이블명·마이그레이션은 그 §5 Open.
