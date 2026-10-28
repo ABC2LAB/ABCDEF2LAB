@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "target": "OWASP Juice Shop v15.0.0",
+  "source": "docs/evaluation/evaluation-protocol.md §3 코어 GT 9종 (ground_truth.core_gt)",
+  "todo": "types 비어 있음 — 판정 레코드 resource_ref=type:id의 type 명명(E², 이동찬) 확정 후 채운다. 짐작으로 채우지 않는다.",
+  "rules": [
+    {"challenge": "basketAccessChallenge", "axis": "horizontal", "vuln_class": null, "types": []},
+    {"challenge": "basketManipulateChallenge", "axis": "horizontal", "vuln_class": null, "types": []},
+    {"challenge": "forgedFeedbackChallenge", "axis": "horizontal", "vuln_class": null, "types": []},
+    {"challenge": "forgedReviewChallenge", "axis": "horizontal", "vuln_class": null, "types": []},
+    {"challenge": "dataExportChallenge", "axis": "horizontal", "vuln_class": null, "types": []},
+    {"challenge": "adminSectionChallenge", "axis": "vertical", "vuln_class": null, "types": []},
+    {"challenge": "feedbackChallenge", "axis": "vertical", "vuln_class": null, "types": []},
+    {"challenge": "changeProductChallenge", "axis": "vertical", "vuln_class": null, "types": []},
+    {"challenge": "registerAdminChallenge", "axis": "vertical", "vuln_class": null, "types": []}
+  ]
+}
