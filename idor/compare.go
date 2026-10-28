@@ -50,14 +50,21 @@ type ResponseView struct {
 // CrossAccessCapture is one owner/cross pair for one resource under one reset
 // generation. Owner = A accessing A's own resource (setup-success baseline); Cross =
 // B accessing A's resource (the access under test). RequesterInputs are B's
-// request-supplied values, used to exclude reflection; RequesterInputsKnown=false
-// means capture did not record them, so reflection cannot be excluded.
+// request-supplied values, used to exclude reflection.
+//
+// RequesterInputsComplete is a soundness gate, not a "did we record anything" flag:
+// it is true ONLY when capture collected EVERY attacker-manipulable echo source
+// (path, query, body, headers — anywhere B can plant a value the response might
+// mirror back). Partial capture must set it false, so reflection cannot be ruled out
+// and reflectionExcluded stays Unknown (fail-closed, 절대규칙 5). Collecting only
+// path/query but reporting Complete=true would let a body/header reflection slip
+// through as a confirmed leak. Completeness is 이동찬 capture's responsibility (§8-④).
 type CrossAccessCapture struct {
-	Canaries             []Marker
-	Owner                ResponseView
-	Cross                ResponseView
-	RequesterInputs      []string
-	RequesterInputsKnown bool
+	Canaries                []Marker
+	Owner                   ResponseView
+	Cross                   ResponseView
+	RequesterInputs         []string
+	RequesterInputsComplete bool
 }
 
 // Compare produces the six (c) data signals. Each is fail-closed: anything we
@@ -69,7 +76,7 @@ func Compare(c CrossAccessCapture) oracle.ComparisonFacts {
 		OwnerNormalData:     ownerNormalData(c.Owner, c.Canaries),
 		CrossNormalData:     crossNormalData(c.Cross),
 		NontrivialDataMatch: nontrivialDataMatch(c.Cross, c.Canaries),
-		ReflectionExcluded:  reflectionExcluded(c.Canaries, c.RequesterInputs, c.RequesterInputsKnown),
+		ReflectionExcluded:  reflectionExcluded(c.Canaries, c.RequesterInputs, c.RequesterInputsComplete),
 		TemplateExcluded:    templateExcluded(c.Cross),
 	}
 }
@@ -138,10 +145,11 @@ func nontrivialDataMatch(cross ResponseView, canaries []Marker) oracle.CheckStat
 }
 
 // reflectionExcluded — the canary must not be mere reflection of B's own request
-// input. Inputs not recorded → Unknown (cannot exclude). A nontrivial canary value
-// echoed in B's inputs → No (reflection possible). Otherwise Yes.
-func reflectionExcluded(canaries []Marker, inputs []string, inputsKnown bool) oracle.CheckState {
-	if !inputsKnown {
+// input. Echo sources not completely captured → Unknown (cannot exclude a reflection
+// via an unrecorded source). A nontrivial canary value echoed in B's inputs → No
+// (reflection possible). Otherwise Yes.
+func reflectionExcluded(canaries []Marker, inputs []string, inputsComplete bool) oracle.CheckState {
+	if !inputsComplete {
 		return oracle.StateUnknown
 	}
 	for _, m := range nontrivialCanaries(canaries) {

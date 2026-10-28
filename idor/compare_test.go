@@ -25,8 +25,8 @@ func baseCapture() CrossAccessCapture {
 			ResourceRef: "basket/42", Normal: true, TemplateClassified: true,
 			Body: `{"id":42,"email":"` + canary + `"}`,
 		},
-		RequesterInputs:      []string{"basket", "42"}, // id only; canary not among B's inputs
-		RequesterInputsKnown: true,
+		RequesterInputs:         []string{"basket", "42"}, // id only; canary not among B's inputs
+		RequesterInputsComplete: true,                     // all echo sources captured
 	}
 }
 
@@ -107,8 +107,8 @@ func TestCompareSignals(t *testing.T) {
 			oracle.StateNo,
 		},
 		{
-			"요청입력 미기록 → ReflectionExcluded Unknown",
-			func(c *CrossAccessCapture) { c.RequesterInputsKnown = false },
+			"echo 소스 불완전 포착 → ReflectionExcluded Unknown",
+			func(c *CrossAccessCapture) { c.RequesterInputsComplete = false },
 			func(f oracle.ComparisonFacts) oracle.CheckState { return f.ReflectionExcluded },
 			oracle.StateUnknown,
 		},
