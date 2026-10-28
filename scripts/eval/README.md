@@ -22,8 +22,18 @@ python3 -I -m unittest discover -s tests   # 순수부 테스트
 - `ARTEX_LLM_BASE_URL` — Ollama 엔드포인트.
 - `EVAL_MODEL_TAG` — baseline·개선 후 **동일**해야 하는 정확한 모델 태그(§6).
 
+## `parse_scan_output` — 판정 레코드 → 챌린지별 판정
+입력은 [판정 레코드 계약](../../docs/contracts/verdict-record.md)의 **논리적 레코드**만 받는다.
+- 물리적 출처는 얇은 어댑터 뒤 — 지금은 JSON 파일(`[...]` 또는 `{"records": [...]}`) 하나.
+- `correlate(record) -> 챌린지 키 | None`를 **호출자가 주입**한다. 레코드엔 GT 키가 없고(절대규칙 7),
+  (vuln_class·resource_ref)→챌린지 상관은 평가가 쥔다. None이면 out-of-list.
+- 깨진 레코드·계약 밖 verdict/필드·민감값 누출은 전부 모아 `ScanOutputError`(fail-closed).
+  undecidable→판단불가, allowed→NONE(미탐 측) — 오탐·취약점없음으로 바뀌지 않는다.
+- 한 챌린지에 레코드가 여럿이면 tie-break `confirmed > suspected > undecidable > allowed/none`.
+  위반_후보(confirmed·suspected)와 allowed가 섞인 챌린지는 `conflicts`로 따로 남긴다(판정은 안 바뀜).
+
 ## 아직 막힌 경계 (TODO)
-- `parse_scan_output` — finding/E③ 판정 레코드 포맷 확정 후 구현.
-  - TODO(이동찬): 개선 후(우리 포크) finding·판정 레코드 포맷.
-  - TODO(윤재상): baseline(원본 ARTEX) 스캔 출력 포맷.
-- E③ 판정 레코드 테이블명·스키마는 e3-oracle 스펙 §8-⑤ 정렬 후.
+- 판정 레코드 **물리 형식**(DB 쿼리 vs JSON 덤프) — 이동찬 어댑터와 정렬. 어댑터만 바꾸면 됨.
+- `correlate` 실 매핑 테이블(vuln_class·엔드포인트→챌린지) — 평가 전용 GT로 따로 둔다.
+- TODO(윤재상): baseline(원본 ARTEX) 출력은 판정 레코드를 안 냄 — 별도 어댑터로 같은 레코드를 만들지 정렬.
+- 판정 레코드 테이블명·마이그레이션은 verdict-record.md §5 Open.
