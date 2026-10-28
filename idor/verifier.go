@@ -7,15 +7,17 @@
 // Separation of duties (CLAUDE.md 절대규칙 3, "판정·허용을 같은 손이 쥐지 않게"): this
 // package proposes requests, it does NOT decide execution. Every request goes through
 // the Transmitter seam, which E² (이동찬) owns and permits; the verifier never sends on
-// its own. Policy and schema knowledge come through the PolicyResolver seam, which KG
-// (이경준) owns. This file ships only fake seams (in the test); the real ones are the
-// respective owners' to implement. The seams below ARE the boundary contract the
-// verifier requires of E² and KG — review target for both.
+// its own. Policy, and the canary markers to plant, come through the PolicyResolver
+// seam, which KG (이경준) owns and registers (kg-policy §3.1: KG registers+classifies,
+// the verifier plants and the comparator consumes — neither reclassifies). This file
+// ships only fake seams (in the test); the real ones are the respective owners' to
+// implement. The two interfaces below ARE the boundary contract the verifier requires
+// of E² and KG — review target for both.
 //
 // Read-only (CLAUDE.md 얇은 IDOR = 초기 조회 한정, 절대규칙 6): the only state-changing
-// request is setup (A planting its own canary), marked StateChanging so E² gates it
-// behind the approval + reset environment. Cross access is GET. destructive-last is
-// not executed here — that is a later, separately gated increment.
+// request is setup (planting A's own registered canary), marked StateChanging so E²
+// gates it behind the approval + reset environment. Cross access is GET. destructive-
+// last is not executed here — that is a later, separately gated increment.
 package idor
 
 import (
@@ -67,37 +69,30 @@ type Transmitter interface {
 	Send(req AccessRequest) (Capture, bool)
 }
 
-// PolicyResolver is the KG seam (TODO(이경준): real impl is KG's). It supplies the two
+// PolicyResolver is the KG seam (TODO(이경준): real impl is KG's). It supplies the
 // things the verifier cannot know itself: the registered expected-access policy the
-// oracle judges against, and whether a canary field is a pure identifier (schema
-// knowledge — PR #13 ①). The verifier reads KG; it does not author policy.
+// oracle judges against, and the canary markers KG registered for a resource (field,
+// non-sensitive value, and Trivial classification — kg-policy §3.1). The verifier
+// reads KG; it does not author policy nor classify canaries.
 type PolicyResolver interface {
 	// ResolvePolicy returns the expected-access policy for evaluated accessing the
 	// resource owned by owner. A failed or absent lookup must return ok=false so the
 	// verifier leaves policy unresolved (→ UNDECIDABLE), never a silent allow (절대규칙 5).
 	ResolvePolicy(resourceRef string, owner, evaluated AccountRef) (oracle.PolicyAssertion, bool)
-	// IsTrivial reports whether a canary field is a pure identifier (excluded from the
-	// nontrivial-data match). known=false means KG could not answer; the verifier then
-	// treats the field as trivial (excludes it) — the conservative direction, since
-	// admitting an identifier as data would risk a false CONFIRMED.
-	IsTrivial(resourceRef, field string) (trivial bool, known bool)
-}
-
-// CanarySpec is a canary the verifier plants in the owner's resource during setup: a
-// field and a freshly chosen NON-SENSITIVE value (절대규칙 8 / DLP — never a real
-// secret). Whether the field is trivial is resolved from KG, not guessed here.
-type CanarySpec struct {
-	Field string
-	Value string
+	// Canaries returns the markers KG registered for the resource. An empty slice or
+	// ok=false means no canary is available to prove data access, so setup-success
+	// cannot be shown and the case degrades to UNDECIDABLE (fail-closed). Trivial is
+	// KG's call (unknown → true, i.e. excluded — kg-policy §3.1); the verifier does
+	// not reclassify.
+	Canaries(resourceRef string, owner AccountRef) ([]Marker, bool)
 }
 
 // Candidate is one horizontal-IDOR check: evaluated subject B reading owner A's
-// resource, with a canary to plant so cross access can be proven by data, not status.
+// resource. The canary to prove access by data is supplied by KG, not named here.
 type Candidate struct {
 	Owner       AccountRef
 	Evaluated   AccountRef
 	ResourceRef string
-	Canary      CanarySpec
 }
 
 // Result is the verifier's output for one candidate: the oracle verdict plus the facts
@@ -121,12 +116,15 @@ func Verify(c Candidate, tx Transmitter, kg PolicyResolver) Result {
 		policy = oracle.PolicyAssertion{}
 	}
 
-	// setup: A plants its own canary. State-changing, so E² gates execution behind the
-	// approval + reset environment; the result is intentionally not inspected — setup
-	// success is proven below by the owner read, not by this response.
+	// KG-registered canaries (empty/failed → setup-success unprovable → UNDECIDABLE).
+	canaries, _ := kg.Canaries(c.ResourceRef, c.Owner)
+
+	// setup: plant the registered canaries in A's own resource. State-changing, so E²
+	// gates execution behind the approval + reset environment; the result is
+	// intentionally not inspected — setup success is proven below by the owner read.
 	_, _ = tx.Send(AccessRequest{
 		As: c.Owner, Method: "POST", ResourceRef: c.ResourceRef,
-		StateChanging: true, Inputs: []string{c.Canary.Value},
+		StateChanging: true, Inputs: canaryValues(canaries),
 	})
 
 	ownerCap, ownerOK := tx.Send(AccessRequest{As: c.Owner, Method: "GET", ResourceRef: c.ResourceRef})
@@ -140,7 +138,7 @@ func Verify(c Candidate, tx Transmitter, kg PolicyResolver) Result {
 	}
 	crossCap, crossOK := tx.Send(crossReq)
 
-	capture := CrossAccessCapture{Canaries: []Marker{markerFor(c.Canary, kg, c.ResourceRef)}}
+	capture := CrossAccessCapture{Canaries: canaries}
 	if ownerOK {
 		capture.Owner = ownerCap.View
 	}
@@ -163,14 +161,15 @@ func Verify(c Candidate, tx Transmitter, kg PolicyResolver) Result {
 	return Result{Verdict: verdict, Facts: facts}
 }
 
-// markerFor builds the canary marker, taking Trivial from KG. Unknown → trivial (the
-// field is excluded from the data match) rather than admitted as data.
-func markerFor(spec CanarySpec, kg PolicyResolver, resourceRef string) Marker {
-	trivial, known := kg.IsTrivial(resourceRef, spec.Field)
-	if !known {
-		trivial = true
+// canaryValues is the non-sensitive values to plant during setup, skipping empties.
+func canaryValues(markers []Marker) []string {
+	out := make([]string, 0, len(markers))
+	for _, m := range markers {
+		if m.Value != "" {
+			out = append(out, m.Value)
+		}
 	}
-	return Marker{Field: spec.Field, Value: spec.Value, Trivial: trivial}
+	return out
 }
 
 // subjectsOf maps the two accounts to the oracle's subject context. A missing Handle

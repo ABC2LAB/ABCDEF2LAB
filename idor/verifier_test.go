@@ -31,16 +31,16 @@ func (f *fakeTx) Send(r AccessRequest) (Capture, bool) {
 type fakeKG struct {
 	policy   oracle.PolicyAssertion
 	policyOK bool
-	trivial  map[string]bool
-	known    map[string]bool
+	canaries []Marker
+	canOK    bool
 }
 
 func (f fakeKG) ResolvePolicy(string, AccountRef, AccountRef) (oracle.PolicyAssertion, bool) {
 	return f.policy, f.policyOK
 }
 
-func (f fakeKG) IsTrivial(_, field string) (bool, bool) {
-	return f.trivial[field], f.known[field]
+func (f fakeKG) Canaries(string, AccountRef) ([]Marker, bool) {
+	return f.canaries, f.canOK
 }
 
 const (
@@ -61,7 +61,6 @@ func cleanScenario(now time.Time) (Candidate, *fakeTx, fakeKG) {
 		Owner:       AccountRef{Label: "owner", Handle: "h-a"},
 		Evaluated:   AccountRef{Label: "evaluated", Handle: "h-b"},
 		ResourceRef: testResource,
-		Canary:      CanarySpec{Field: "email", Value: testCanary},
 	}
 	tx := &fakeTx{byKey: map[string]struct {
 		cap Capture
@@ -78,8 +77,8 @@ func cleanScenario(now time.Time) (Candidate, *fakeTx, fakeKG) {
 			HintMatchesCanonical: true,
 		},
 		policyOK: true,
-		trivial:  map[string]bool{"email": false},
-		known:    map[string]bool{"email": true},
+		canaries: []Marker{{Field: "email", Value: testCanary, Trivial: false}},
+		canOK:    true,
 	}
 	return cand, tx, kg
 }
@@ -133,9 +132,16 @@ func TestVerifyFailClosed(t *testing.T) {
 			func(c *Candidate, tx *fakeTx, kg *fakeKG, now time.Time) { c.Evaluated.Handle = "" },
 		},
 		{
-			"canary trivial 여부 불명 → 보수적 배제로 데이터매치 unknown",
+			"canary 미등록(KG) → 데이터 매치 입증 불가",
 			func(c *Candidate, tx *fakeTx, kg *fakeKG, now time.Time) {
-				kg.known = map[string]bool{"email": false}
+				kg.canaries = nil
+				kg.canOK = false
+			},
+		},
+		{
+			"canary 전부 trivial(식별자) → 비자명 매치 unknown",
+			func(c *Candidate, tx *fakeTx, kg *fakeKG, now time.Time) {
+				kg.canaries = []Marker{{Field: "id", Value: "42", Trivial: true}}
 			},
 		},
 	}
@@ -158,11 +164,9 @@ func TestVerifyFailClosed(t *testing.T) {
 func TestVerifyReflectionWired(t *testing.T) {
 	now := time.Now()
 	cand, tx, kg := cleanScenario(now)
-	// Canary value == the ref B supplies; owner and cross bodies echo it. The field
-	// must be a known nontrivial one, or the reflection check is skipped (excluded).
-	cand.Canary = CanarySpec{Field: "ref", Value: testResource}
-	kg.trivial = map[string]bool{"ref": false}
-	kg.known = map[string]bool{"ref": true}
+	// KG-registered canary whose value is the ref B supplies; owner and cross bodies
+	// echo it. The marker is nontrivial, so the reflection check actually runs.
+	kg.canaries = []Marker{{Field: "ref", Value: testResource, Trivial: false}}
 	body := `{"ref":"` + testResource + `"}`
 	echo := Capture{View: ResponseView{ResourceRef: testResource, Normal: true, TemplateClassified: true, Body: body}, ObservedAt: now}
 	tx.byKey["owner|GET|"+testResource] = struct {
