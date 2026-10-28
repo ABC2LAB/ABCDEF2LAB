@@ -58,8 +58,8 @@ func cleanScenario(now time.Time) (Candidate, *fakeTx, fakeKG) {
 	capt := Capture{View: view, ObservedAt: now}
 
 	cand := Candidate{
-		Owner:       AccountRef{Label: "owner", Handle: "h-a"},
-		Evaluated:   AccountRef{Label: "evaluated", Handle: "h-b"},
+		Owner:       AccountRef{Label: "owner", Handle: "h-a", Status: oracle.SubjectVerified},
+		Evaluated:   AccountRef{Label: "evaluated", Handle: "h-b", Status: oracle.SubjectVerified},
 		ResourceRef: testResource,
 	}
 	tx := &fakeTx{byKey: map[string]struct {
@@ -128,8 +128,12 @@ func TestVerifyFailClosed(t *testing.T) {
 			},
 		},
 		{
-			"평가 주체 미검증(handle 없음) → 신원 체크 실패",
-			func(c *Candidate, tx *fakeTx, kg *fakeKG, now time.Time) { c.Evaluated.Handle = "" },
+			"평가 주체 세션 만료(handle은 있음) → 신원 체크 실패",
+			func(c *Candidate, tx *fakeTx, kg *fakeKG, now time.Time) { c.Evaluated.Status = oracle.SubjectExpired },
+		},
+		{
+			"주체 status 미설정(E² 미기재) → 신원 체크 실패(fail-closed)",
+			func(c *Candidate, tx *fakeTx, kg *fakeKG, now time.Time) { c.Evaluated.Status = "" },
 		},
 		{
 			"canary 미등록(KG) → 데이터 매치 입증 불가",

@@ -29,11 +29,17 @@ import (
 // AccountRef names an actor the verifier sends requests as. Label is a non-sensitive
 // name that also serves as the subject ref the oracle sees (절대규칙 2: names only, no
 // token/password values). Handle is E²'s opaque reference to the authenticated
-// session — not the credential itself; empty Handle means not authenticated, so the
-// verifier treats the subject as unverified (fail-closed).
+// session — not the credential itself — used only to transmit as this actor.
+//
+// Status is the identity verification result E² supplies (kg-policy §3: "지금 검증됨"은
+// 신원/E²가 채운다). The verifier does NOT infer it from Handle presence — an expired
+// or mismatched session carries a Handle but is not verified, and only E² can tell
+// which. Unset (zero) reads as unverified (fail-closed). Binding this status to the
+// ref is kg-policy Open #5 (신원 status↔ref) — align with 이동찬 at E² wiring.
 type AccountRef struct {
 	Label  string
 	Handle string
+	Status oracle.SubjectStatus
 }
 
 // AccessRequest is one request the verifier asks E² to transmit. The verifier only
@@ -184,10 +190,10 @@ func subjectsOf(owner, evaluated AccountRef) oracle.SubjectContext {
 }
 
 func subjectStatus(a AccountRef) oracle.SubjectStatus {
-	if a.Handle == "" {
+	if a.Status == "" {
 		return oracle.SubjectUnknown
 	}
-	return oracle.SubjectVerified
+	return a.Status
 }
 
 // observationTime is when the evidence under judgment was observed: the cross read
