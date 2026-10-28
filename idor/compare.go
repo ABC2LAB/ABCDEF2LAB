@@ -33,9 +33,11 @@ type Marker struct {
 
 // ResponseView is one captured response, distilled for comparison. Body is text to
 // scan for canary values (non-sensitive in the lab; E² scopes it otherwise).
-// Normal = a 2xx data payload (not empty/redirect). TemplateClassified says whether
-// capture ran template/error classification at all — if not, template exclusion is
-// Unknown rather than silently assumed clean (fail-closed, 절대규칙 5).
+// Normal = a real data payload, NOT inferred from the status code: the lab's Juice
+// Shop returns HTTP 200 even for not-found/error (body {status,data:{}}), so capture
+// must classify Normal/ErrorTemplate by body shape, not by 2xx. TemplateClassified
+// says whether capture ran that classification at all — if not, template exclusion
+// is Unknown rather than silently assumed clean (fail-closed, 절대규칙 5).
 type ResponseView struct {
 	ResourceRef        string
 	Normal             bool
@@ -117,6 +119,13 @@ func crossNormalData(cross ResponseView) oracle.CheckState {
 // nontrivialDataMatch — does a nontrivial canary value appear in the cross body.
 // Raw presence only; reflection and template exclusion are separate signals that
 // the oracle also requires. No nontrivial canary to test → Unknown.
+//
+// Applicability (lab finding): this substring match fits endpoints that leak A-owned
+// free text (dataExport → A's email, forged review/feedback text). For structural-
+// collection leaks (basketAccess returns A's owner-associated items whose fields are
+// shared-catalog, not A-unique), a plain substring is not A-distinguishing — there
+// capture must compute NontrivialDataMatch itself (owner-associated collection
+// present in cross, absent in B's own). That split is the open §8-④ boundary.
 func nontrivialDataMatch(cross ResponseView, canaries []Marker) oracle.CheckState {
 	nontrivial := nontrivialCanaries(canaries)
 	if len(nontrivial) == 0 {
