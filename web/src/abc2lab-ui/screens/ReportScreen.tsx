@@ -270,6 +270,12 @@ export default function ReportScreen() {
 
           {/* 발견 목록 */}
           <div className="rpanel" hidden={panel !== "list"}>
+            {findings.length > 0 && (
+              <p className="hint" style={{ marginTop: 0 }}>
+                이름·엔드포인트·심각도는 실데이터예요. 증거 상세와 확정·의심·판단 불가 <Strong>판정</Strong>은 E③
+                오라클 연동 후 표시돼요.
+              </p>
+            )}
             {findRes.loading ? (
               <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>불러오는 중…</div>
             ) : findings.length === 0 ? (
@@ -278,15 +284,14 @@ export default function ReportScreen() {
               </div>
             ) : (
               findings.map((f) => (
-                // biome-ignore lint/a11y/useKeyWithClickEvents: 원본 시안 .frow 클릭 이동 유지
-                <div key={f.id} className="frow" onClick={() => go("finding")}>
+                <div key={f.id} className="frow" style={{ cursor: "default" }}>
                   <Sev level={toSeverity(f.severity)} />
                   <div style={{ minWidth: 0 }}>
                     <div className="nm">{findingName(f)}</div>
                     <div className="ep">{findingEndpoint(f)}</div>
                   </div>
                   <div className="rt">
-                    <Pill tone="muted">상세</Pill>
+                    <Pill tone="muted">판정 준비 중</Pill>
                   </div>
                 </div>
               ))

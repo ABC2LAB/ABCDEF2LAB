@@ -26,6 +26,21 @@ export default function FindingScreen() {
             <a onClick={() => go('report')}>blog.example.com</a> › <span>발견</span>
           </div>
           <div
+            style={{
+              fontSize: 12.5,
+              color: 'var(--warn)',
+              background: 'var(--warn-weak)',
+              border: '1px solid var(--warn-border)',
+              borderRadius: 8,
+              padding: '10px 12px',
+              marginBottom: 14,
+            }}
+          >
+            <Strong>시안(목업)</Strong> — 디자인 예시 화면이에요. 아래 "확정" 배지·요청/응답·엔드포인트는{' '}
+            <Strong>실데이터가 아니며</Strong>, 실제 발견의 증거 상세와 확정·의심·판단 불가 판정은{' '}
+            <Strong>E③ 오라클 연동 후</Strong> 채워져요.
+          </div>
+          <div
             className="row"
             style={{ alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}
           >
