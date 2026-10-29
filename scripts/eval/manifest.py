@@ -2,8 +2,8 @@
 
 회차 1개 = 조건 1개 × 반복 1회(스캔 1회 = Juice Shop 리셋 1회, 프로토콜 §2·§4-5).
 판정 레코드·스코어보드 정규화 스냅샷의 경로와 통제변수(model_tag·reset_generation)를
-싣는다. 확정까지 시간·총 요청 수는 러너가 측정해 줄 때만 싣고, 없으면 None — 표에는
-"—"로 나가고 값을 지어내지 않는다.
+싣는다. 확정까지 시간·총 요청 수·차단 시도 수는 러너가 측정해 줄 때만 싣고, 없으면
+None — 표에는 "—"로 나가고 값을 지어내지 않는다.
 
 파일은 JSON: `{"runs": [회차, ...]}` 또는 회차 배열. 경로가 상대경로면 manifest 파일
 위치 기준으로 푼다. 계약 밖 필드·타입 오류는 전부 모아 ManifestError(fail-closed).
@@ -44,11 +44,14 @@ class RunManifest:
     records_path: str  # 판정 레코드 JSON (verdict-record)
     snapshot_path: str  # 스코어보드 정규화 스냅샷 (§2)
     elapsed_seconds: float | None = None  # 확정까지 시간 — 미측정이면 None
-    total_requests: int | None = None  # 실제 전송 HTTP 요청 수(§5) — 미측정이면 None
+    # 총 요청 수 = 실제로 대상에 전송된 HTTP만(traffic 기록분). E² 차단 시도·LLM 호출 제외(§5).
+    total_requests: int | None = None
+    blocked_attempts: int | None = None  # E²가 막은 전송 시도 수 — 별도 지표, 총 요청 수에 섞지 않음(§5)
 
 
 _REQUIRED_STR = ("condition", "model_tag", "reset_generation", "records_path", "snapshot_path")
-_FIELDS = frozenset(_REQUIRED_STR + ("engine", "repeat_index", "elapsed_seconds", "total_requests"))
+_COUNTS = ("total_requests", "blocked_attempts")
+_FIELDS = frozenset(_REQUIRED_STR + _COUNTS + ("engine", "repeat_index", "elapsed_seconds"))
 
 
 def load_manifests(path: str) -> list[RunManifest]:
@@ -101,9 +104,10 @@ def _parse_run(index: int, raw: object, base: str) -> tuple[RunManifest | None, 
     if elapsed is not None and (not _is_finite_number(elapsed) or elapsed < 0):
         errors.append(f"[{index}] elapsed_seconds는 null 또는 0 이상 유한수: {elapsed!r}")
 
-    requests = raw.get("total_requests")
-    if requests is not None and (not _is_int(requests) or requests < 0):
-        errors.append(f"[{index}] total_requests는 null 또는 0 이상 정수: {requests!r}")
+    for name in _COUNTS:
+        count = raw.get(name)
+        if count is not None and (not _is_int(count) or count < 0):
+            errors.append(f"[{index}] {name}는 null 또는 0 이상 정수: {count!r}")
 
     if errors:
         return None, errors
@@ -116,7 +120,8 @@ def _parse_run(index: int, raw: object, base: str) -> tuple[RunManifest | None, 
         records_path=os.path.normpath(os.path.join(base, raw["records_path"])),
         snapshot_path=os.path.normpath(os.path.join(base, raw["snapshot_path"])),
         elapsed_seconds=None if elapsed is None else float(elapsed),
-        total_requests=requests,
+        total_requests=raw.get("total_requests"),
+        blocked_attempts=raw.get("blocked_attempts"),
     ), []
 
 

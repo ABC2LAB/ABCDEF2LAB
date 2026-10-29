@@ -235,6 +235,26 @@ class TestAggregateAndRender(unittest.TestCase):
         self.assertIn("코어 GT(인가 9)", out)
         self.assertIn("확정 수", out)
 
+    def test_blocked_attempts_separate_from_sent_requests(self):
+        # A7 — 차단 시도는 총 요청 수(전송 HTTP)에 섞지 않고 따로 집계·렌더한다.
+        core = core_gt()
+        repeats = [
+            RepeatResult("우리@35b", 1.0, 100, blocked_attempts=7),
+            RepeatResult("우리@35b", 1.0, 120, blocked_attempts=9),
+        ]
+        agg = aggregate_condition("우리@35b", repeats, core)
+        self.assertEqual(agg.total_requests.mean, 110.0)
+        self.assertEqual(agg.blocked_attempts.mean, 8.0)
+        out = render_matrix([agg], "코어 GT(인가 9)")
+        self.assertIn("| 총 요청 수 | 차단 시도 수 |", out)
+        self.assertIn(f"| 우리@35b | {agg.elapsed_seconds.render()} | 110 ± ", out)
+        self.assertIn(f"| {agg.blocked_attempts.render()} |", out)
+
+    def test_unmeasured_blocked_attempts_renders_dash(self):
+        agg = aggregate_condition("우리@35b", [RepeatResult("우리@35b", 1.0, 100)], core_gt())
+        self.assertEqual(agg.blocked_attempts.render(), "—")
+        self.assertEqual(agg.total_requests.render(), "100 (n=1)")
+
     def test_unmeasured_repeat_renders_dash_not_partial_mean(self):
         # 한 회차라도 미측정(None)이면 남은 회차만으로 평균 내지 않고 "—".
         core, (r1, r2) = self._two_repeats()

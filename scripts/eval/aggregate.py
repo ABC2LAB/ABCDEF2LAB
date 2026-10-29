@@ -81,12 +81,13 @@ class RepeatResult:
 
     condition: str  # 예: "원본@35b", "우리@35b"
     elapsed_seconds: float | None  # 확정까지 시간 (초), 미측정 None
-    total_requests: int | None  # 총 요청 수, 미측정 None
+    total_requests: int | None  # 총 요청 수 = 실제 전송 HTTP만(§5), 미측정 None
     verdicts: dict[str, ScanVerdict] = field(default_factory=dict)
     solved: dict[str, bool] = field(default_factory=dict)
     out_of_list_keys: tuple[str, ...] = ()
     evidence_ok: dict[str, bool] = field(default_factory=dict)  # confirmed 챌린지의 증거 3조건 충족
     covered: frozenset[str] | None = None  # 커버리지 기록이 있는 챌린지. None = 출처 없음
+    blocked_attempts: int | None = None  # E² 차단 시도 수 — 총 요청 수와 별도 지표(§5), 미측정 None
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,7 @@ class ConditionAggregate:
     condition: str
     elapsed_seconds: Stat
     total_requests: Stat
+    blocked_attempts: Stat
     confirmed: Stat
     false_positive: Stat
     missed: Stat
@@ -173,6 +175,7 @@ def aggregate_condition(
         condition=condition,
         elapsed_seconds=_optional_stat([r.elapsed_seconds for r in repeats]),
         total_requests=_optional_stat([r.total_requests for r in repeats]),
+        blocked_attempts=_optional_stat([r.blocked_attempts for r in repeats]),
         confirmed=_stat([float(c.confirmed) for c in counts]),
         false_positive=_stat([float(c.false_positive) for c in counts]),
         missed=_stat([float(c.missed) for c in counts]),
@@ -185,13 +188,14 @@ def render_matrix(rows: list[ConditionAggregate], basis_name: str) -> str:
     """§5 매트릭스를 Markdown 표로. 값은 평균 ± 분산, 반복 수 명시."""
     header = (
         f"### 측정 매트릭스 — {basis_name} 기준\n\n"
-        "| 조건 | 확정까지 시간 | 총 요청 수 | 확정 수 | 오탐 수 | 미탐 수 | 판단불가 수 | out-of-list |\n"
-        "|---|---|---|---|---|---|---|---|\n"
+        "| 조건 | 확정까지 시간 | 총 요청 수 | 차단 시도 수 | 확정 수 | 오탐 수 | 미탐 수 | 판단불가 수 | out-of-list |\n"
+        "|---|---|---|---|---|---|---|---|---|\n"
     )
     lines = []
     for r in rows:
         lines.append(
             f"| {r.condition} | {r.elapsed_seconds.render()} | {r.total_requests.render()} "
+            f"| {r.blocked_attempts.render()} "
             f"| {r.confirmed.render()} | {r.false_positive.render()} | {r.missed.render()} "
             f"| {r.undecided.render()} | {r.out_of_list.render()} |"
         )

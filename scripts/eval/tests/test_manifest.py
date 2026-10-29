@@ -60,17 +60,18 @@ class TestLoad(_ManifestDir):
         run = load_manifests(self.write([_run(snapshot_path=absolute)]))[0]
         self.assertEqual(run.snapshot_path, absolute)
 
-    def test_unmeasured_elapsed_and_requests_are_none(self) -> None:
+    def test_unmeasured_values_are_none(self) -> None:
         # 러너가 못 준 측정값은 None — 표에 "—"로 나가고 0으로 지어내지 않는다.
-        for run in (_run(), _run(elapsed_seconds=None, total_requests=None)):
+        for run in (_run(), _run(elapsed_seconds=None, total_requests=None, blocked_attempts=None)):
             loaded = load_manifests(self.write([run]))[0]
             self.assertIsNone(loaded.elapsed_seconds)
             self.assertIsNone(loaded.total_requests)
+            self.assertIsNone(loaded.blocked_attempts)
 
-    def test_measured_values_kept(self) -> None:
-        loaded = load_manifests(self.write([_run(elapsed_seconds=120, total_requests=345)]))[0]
+    def test_measured_values_kept_separately(self) -> None:
+        loaded = load_manifests(self.write([_run(elapsed_seconds=120, total_requests=345, blocked_attempts=12)]))[0]
         self.assertEqual(loaded.elapsed_seconds, 120.0)
-        self.assertEqual(loaded.total_requests, 345)
+        self.assertEqual((loaded.total_requests, loaded.blocked_attempts), (345, 12))
 
 
 class TestReject(_ManifestDir):
@@ -102,6 +103,8 @@ class TestReject(_ManifestDir):
         self.assertRejected([_run(elapsed_seconds=-1)], "elapsed_seconds")
         self.assertRejected([_run(elapsed_seconds=True)], "elapsed_seconds")
         self.assertRejected([_run(total_requests=1.5)], "total_requests")
+        self.assertRejected([_run(blocked_attempts=-1)], "blocked_attempts")
+        self.assertRejected([_run(blocked_attempts=True)], "blocked_attempts")
 
     def test_nan_elapsed_rejected(self) -> None:
         path = os.path.join(self._tmp.name, "manifest.json")

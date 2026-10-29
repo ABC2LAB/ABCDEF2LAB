@@ -176,7 +176,7 @@ class TestEvidenceAndCoverage(_RunDir):
         self.assertEqual((c.confirmed, c.false_positive), (0, 0))
         code, out, _ = self.run_main([run])
         self.assertEqual(code, 0)
-        self.assertIn("| 우리@test | — | — | 0 (n=1) | 0 (n=1) | 0 (n=1) | 9 (n=1) |", out)
+        self.assertIn("| 우리@test | — | — | — | 0 (n=1) | 0 (n=1) | 0 (n=1) | 9 (n=1) |", out)
 
     def test_confirmed_only_with_traffic_index_fixture(self) -> None:
         # 확정 칸은 traffic 인덱스가 붙어야(지금은 fixture에서만) 나온다.
@@ -277,7 +277,9 @@ class TestReport(_RunDir):
         return [
             self.make_run("r0", [_record("suspected", "rest:feedback:3")]),
             self.make_run("r1", [_record("confirmed", "rest:basket:1")], repeat_index=1),
-            self.make_run("r2", [], condition="우리@measured", elapsed_seconds=60, total_requests=10),
+            self.make_run(
+                "r2", [], condition="우리@measured", elapsed_seconds=60, total_requests=10, blocked_attempts=3
+            ),
         ]
 
     def test_byte_identical_output(self) -> None:
@@ -288,8 +290,9 @@ class TestReport(_RunDir):
 
     def test_unmeasured_renders_dash_and_rows_keep_manifest_order(self) -> None:
         _, out, _ = self.run_main(self._runs())
-        self.assertIn("| 우리@test | — | — |", out)
-        self.assertIn("| 우리@measured | 60 (n=1) | 10 (n=1) |", out)
+        self.assertIn("| 우리@test | — | — | — |", out)
+        # 총 요청 수(전송 HTTP)와 차단 시도 수는 다른 열 — 합쳐지지 않는다(A7).
+        self.assertIn("| 우리@measured | 60 (n=1) | 10 (n=1) | 3 (n=1) |", out)
         self.assertLess(out.index("우리@test"), out.index("우리@measured"))
         self.assertIn("코어 GT(인가 9) 기준", out)
         self.assertIn("BAC category(10) 기준", out)

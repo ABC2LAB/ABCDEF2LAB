@@ -84,6 +84,7 @@ def assemble_repeat(
         condition=manifest.condition,
         elapsed_seconds=manifest.elapsed_seconds,
         total_requests=manifest.total_requests,
+        blocked_attempts=manifest.blocked_attempts,
         verdicts=dict(parsed.verdicts),
         solved=dict(solved),
         out_of_list_keys=parsed.out_of_list,
