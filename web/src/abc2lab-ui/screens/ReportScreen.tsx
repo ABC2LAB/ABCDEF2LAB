@@ -4,12 +4,12 @@ import { Tabs } from "../components/Tabs";
 import { TopBar } from "../components/TopBar";
 import { Pill, Sev, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
-import { type EngineFinding, getTask, listTaskFindings } from "../lib/engine";
+import { type EngineCoverage, type EngineFinding, getCoverage, getTask, listTaskFindings } from "../lib/engine";
 import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
 import { type Severity } from "../types";
 
-type PanelKey = "sum" | "list" | "map" | "ev";
+type PanelKey = "sum" | "list" | "cov" | "map" | "ev";
 
 const SEV_ORDER: Severity[] = ["critical", "high", "medium", "low"];
 const SEV_SET = new Set<string>(SEV_ORDER);
@@ -17,6 +17,15 @@ const SEV_SET = new Set<string>(SEV_ORDER);
 function toSeverity(raw: string): Severity {
   return SEV_SET.has(raw) ? (raw as Severity) : "low";
 }
+
+const SEV_LABEL: Record<Severity, string> = { critical: "심각", high: "높음", medium: "중간", low: "낮음" };
+const SEV_COLOR: Record<Severity, string> = {
+  critical: "var(--crit)",
+  high: "var(--hi)",
+  medium: "var(--mid)",
+  low: "var(--lo)",
+};
+const SEV_SUB: Record<Severity, string> = { critical: "즉시 확인", high: "우선 확인", medium: "참고", low: "참고" };
 
 const STATUS_LABEL: Record<string, string> = {
   created: "대기",
@@ -49,6 +58,61 @@ function whenLabel(iso: string): string {
 const btnSm = { padding: "9px 14px", fontSize: 13 } as const;
 const bodyText = { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
 
+const TYPE_LABEL: Record<string, string> = {
+  endpoint: "엔드포인트",
+  service: "서비스",
+  host: "호스트",
+  page: "페이지",
+  domain: "도메인",
+  root_domain: "루트 도메인",
+  subdomain: "서브도메인",
+  app: "앱",
+  ip: "IP",
+};
+
+/** 커버리지 한 줄 바(분자/분모 + %) */
+function CoverageBar({
+  label,
+  tested,
+  total,
+  strong,
+}: {
+  label: string;
+  tested: number;
+  total: number;
+  strong?: boolean;
+}) {
+  const pct = total > 0 ? Math.round((tested / total) * 100) : 0;
+  return (
+    <div style={{ margin: strong ? "8px 0 16px" : "0 0 10px" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          fontSize: strong ? 13.5 : 12.5,
+          marginBottom: 4,
+        }}
+      >
+        <span style={{ fontWeight: strong ? 700 : 600, color: strong ? "var(--fg)" : "var(--muted)" }}>{label}</span>
+        <span style={{ color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
+          {tested}/{total} · {pct}%
+        </span>
+      </div>
+      <div
+        style={{
+          height: strong ? 10 : 7,
+          background: "var(--surface-2)",
+          border: "1px solid var(--line)",
+          borderRadius: 999,
+          overflow: "hidden",
+        }}
+      >
+        <div style={{ width: `${pct}%`, height: "100%", background: "var(--teal)", borderRadius: 999 }} />
+      </div>
+    </div>
+  );
+}
+
 /** ===== 보고서 ===== */
 export default function ReportScreen() {
   const go = useGo();
@@ -57,9 +121,11 @@ export default function ReportScreen() {
 
   const taskRes = useApiResource(() => (taskId ? getTask(taskId) : Promise.resolve(null)), [taskId]);
   const findRes = useApiResource(() => listTaskFindings(taskId ?? ""), [taskId]);
+  const covRes = useApiResource<EngineCoverage | null>(() => getCoverage(taskId ?? ""), [taskId]);
 
   const task = taskRes.data;
   const findings = useMemo(() => findRes.data ?? [], [findRes.data]);
+  const cov = covRes.data;
 
   // 심각도별 집계(실데이터). 판정(확정/의심/판단불가)은 E③ 연동 전이라 집계하지 않는다.
   const sevCounts = useMemo(() => {
@@ -149,21 +215,15 @@ export default function ReportScreen() {
                       .join(" · ")}
               </div>
             </div>
-            <div className="tile">
-              <div className="k">심각 · 높음</div>
-              <div
-                className="v"
-                style={{ color: sevCounts.critical + sevCounts.high > 0 ? "var(--danger)" : undefined }}
-              >
-                {sevCounts.critical + sevCounts.high}
+            {SEV_ORDER.map((s) => (
+              <div className="tile" key={s}>
+                <div className="k">{SEV_LABEL[s]}</div>
+                <div className="v" style={{ color: sevCounts[s] > 0 ? SEV_COLOR[s] : undefined }}>
+                  {sevCounts[s]}
+                </div>
+                <div className="sub">{SEV_SUB[s]}</div>
               </div>
-              <div className="sub">우선 확인</div>
-            </div>
-            <div className="tile">
-              <div className="k">중간 · 낮음</div>
-              <div className="v">{sevCounts.medium + sevCounts.low}</div>
-              <div className="sub">참고</div>
-            </div>
+            ))}
             <div className="tile">
               <div className="k">판정</div>
               <div className="v" style={{ fontSize: 15, color: "var(--muted)", fontWeight: 600 }}>
@@ -179,6 +239,7 @@ export default function ReportScreen() {
             items={[
               { key: "sum", label: "요약" },
               { key: "list", label: "발견 목록", count: findings.length },
+              { key: "cov", label: "커버리지" },
               { key: "map", label: "접근통제 지도" },
               { key: "ev", label: "증거 · 감사" },
             ]}
@@ -230,6 +291,40 @@ export default function ReportScreen() {
                 </div>
               ))
             )}
+          </div>
+
+          {/* 커버리지 */}
+          <div className="rpanel" hidden={panel !== "cov"}>
+            <div className="card">
+              <h3>
+                검사 커버리지 <Sub>· 범위 내 자산 대비 실제 탐색</Sub>
+              </h3>
+              {covRes.loading ? (
+                <p style={bodyText}>불러오는 중…</p>
+              ) : covRes.error ? (
+                <p style={bodyText}>커버리지를 불러오지 못했어요.</p>
+              ) : !cov || !cov.enabled ? (
+                <p style={bodyText}>이 점검은 커버리지 집계가 꺼져 있어요.</p>
+              ) : cov.denominator === 0 ? (
+                <p style={bodyText}>아직 범위(scope) 안에 집계된 자산이 없어요.</p>
+              ) : (
+                <>
+                  <CoverageBar label="전체" tested={cov.tested} total={cov.denominator} strong />
+                  {cov.byType.map((t) => (
+                    <CoverageBar
+                      key={t.type}
+                      label={TYPE_LABEL[t.type] ?? t.type}
+                      tested={t.tested}
+                      total={t.total}
+                    />
+                  ))}
+                  <p className="hint" style={{ marginTop: 14 }}>
+                    분모 = 범위(scope) 내 자산 수, 분자 = 실제로 요청·탐색한 수. 미검사(분모−분자)는{" "}
+                    <Strong>“취약 없음”이 아니라 “아직 안 본 것”</Strong>이에요.
+                  </p>
+                </>
+              )}
+            </div>
           </div>
 
           {/* 접근통제 지도 — 전용 페이지로 */}

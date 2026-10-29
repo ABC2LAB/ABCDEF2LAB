@@ -205,6 +205,50 @@ export async function getActivity(taskId: string, limit = 300): Promise<EngineAc
   }));
 }
 
+/** GET /api/tasks/{id}/coverage — 검사 커버리지(범위 내 자산 대비 실제 탐색 비율). */
+export type EngineCoverageType = { type: string; total: number; tested: number };
+export type EngineCoverage = {
+  enabled: boolean;
+  scopeRows: number;
+  /** 분모: 범위 내 자산(엔드포인트·서비스 등) 수 */
+  denominator: number;
+  /** 분자: 실제 탐색한 수 */
+  tested: number;
+  /** 0..1 */
+  pct: number;
+  byType: EngineCoverageType[];
+};
+
+export async function getCoverage(taskId: string): Promise<EngineCoverage | null> {
+  if (!taskId) return null;
+  const r = await apiFetch<{
+    enabled?: boolean;
+    scope_rows?: number;
+    denominator?: number;
+    tested?: number;
+    pct?: number;
+    by_type?: EngineCoverageType[];
+  }>(`/api/tasks/${encodeURIComponent(taskId)}/coverage`);
+  return {
+    enabled: !!r.enabled,
+    scopeRows: r.scope_rows ?? 0,
+    denominator: r.denominator ?? 0,
+    tested: r.tested ?? 0,
+    pct: r.pct ?? 0,
+    byType: r.by_type ?? [],
+  };
+}
+
+/** GET /api/exploration/tokens?task={id} — 이 점검의 토큰 사용 합계. */
+export type EngineTokens = { input: number; output: number };
+export async function getTokens(taskId: string): Promise<EngineTokens> {
+  if (!taskId) return { input: 0, output: 0 };
+  const r = await apiFetch<{ total?: { input_tokens?: number; output_tokens?: number } }>(
+    `/api/exploration/tokens?task=${encodeURIComponent(taskId)}`,
+  );
+  return { input: r.total?.input_tokens ?? 0, output: r.total?.output_tokens ?? 0 };
+}
+
 /**
  * GET /api/llm 응답 — 현재 LLM 설정(전역, task 무관).
  * ※ key_set 은 "키가 설정됐는지" 불리언일 뿐 키 값이 아니다(값은 서버가 안 준다).
