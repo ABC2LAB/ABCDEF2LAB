@@ -4,11 +4,12 @@
 (평균 ± 표본 표준편차(SD))로 집계한다. 네트워크·파일·시계 접근 없음 — collect.py가 I/O로
 RepeatResult를 만들어 여기로 넘긴다. 순수하게 둬서 테이블 테스트가 가능하다.
 
-분류 입력은 네 가지다(프로토콜 §4 판정표):
+분류 입력은 다섯 가지다(프로토콜 §4 판정표):
   1) 엔진이 그 챌린지에 내린 판정(ScanVerdict)          — 엔진의 주장
   2) Juice Shop에서 실제로 해결됐는지(solved)           — `/api/Challenges`의 독립 정답
   3) confirmed 주장의 증거 3조건 충족(evidence_ok)       — evidence.py가 계산(§4-2)
   4) 커버리지 기록(covered)                              — 판정 레코드와 별개 출처(§4-4)
+  5) 상관 가능 여부(correlatable)                        — GT 상관 type 유무, '판정 없음'의 의미 게이트
 
 제목 매핑만으로 성공 처리하지 않는다(§4.1). confirmed 주장이라도 실제 해결이
 뒷받침되지 않으면 오탐이다(§4.2). 목록에 없는 finding은 즉시 오탐이 아니라
@@ -48,7 +49,9 @@ class Bucket(Enum):
     UNDECIDED = "판단불가"
 
 
-def classify(verdict: ScanVerdict, solved: bool, *, evidence_ok: bool, covered: bool) -> Bucket:
+def classify(
+    verdict: ScanVerdict, solved: bool, *, evidence_ok: bool, covered: bool, correlatable: bool
+) -> Bucket:
     """한 GT 챌린지 → 매트릭스 칸. 프로토콜 §4 판정표 그대로.
 
     - confirmed + 해결 + 증거 충족   → 확정
@@ -56,9 +59,10 @@ def classify(verdict: ScanVerdict, solved: bool, *, evidence_ok: bool, covered: 
     - confirmed + 미해결            → 오탐 (증거 유무와 무관 — 증거 부족이 오탐 회피 수단이 되지 않게)
     - suspected/undecidable        → 판단불가 (confirmed 주장이 아님, 해결 여부와 무관)
     - allowed                      → 판단불가 (GT에 ALLOWED = KG·정책 오류 신호, §4-6)
-    - 판정 없음 + 해결              → 미탐 (solve 자체가 커버리지 증거 — 해결시키고 보고 안 함)
-    - 판정 없음 + 미해결 + 커버리지  → 미탐
-    - 판정 없음 + 미해결 + 커버리지 없음 → 판단불가 (미해결을 자동 미탐 처리하지 않음, §4-4)
+    - 판정 없음 + 해결 + 상관 가능            → 미탐 (solve 자체가 커버리지 증거 — 해결시키고 보고 안 함)
+    - 판정 없음 + 미해결 + 커버리지 + 상관 가능 → 미탐
+    - 판정 없음 + 미해결 + 커버리지 없음       → 판단불가 (미해결을 자동 미탐 처리하지 않음, §4-4)
+    - 판정 없음 + 상관 불가                   → 판단불가 (type이 없어 레코드가 붙을 길이 없음 = '판정 없음'을 모름)
     """
     if verdict is ScanVerdict.CONFIRMED:
         if not solved:
@@ -66,7 +70,10 @@ def classify(verdict: ScanVerdict, solved: bool, *, evidence_ok: bool, covered: 
         return Bucket.CONFIRMED if evidence_ok else Bucket.UNDECIDED
     if verdict in (ScanVerdict.SUSPECTED, ScanVerdict.UNDECIDABLE, ScanVerdict.ALLOWED):
         return Bucket.UNDECIDED
-    return Bucket.MISSED if solved or covered else Bucket.UNDECIDED
+    # 판정 없음의 미탐 두 행은 각각 상관 가능할 때만 — 상관 불가면 '판정 없음' 자체를 모른다.
+    if solved:
+        return Bucket.MISSED if correlatable else Bucket.UNDECIDED
+    return Bucket.MISSED if covered and correlatable else Bucket.UNDECIDED
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,7 @@ class RepeatResult:
     out_of_list_keys: tuple[str, ...] = ()
     evidence_ok: dict[str, bool] = field(default_factory=dict)  # confirmed 챌린지의 증거 3조건 충족
     covered: frozenset[str] | None = None  # 커버리지 기록이 있는 챌린지. None = 출처 없음
+    correlatable: frozenset[str] | None = None  # GT 상관 type이 있는 챌린지. None = 정보 없음(상관 불가로 봄)
     blocked_attempts: int | None = None  # E² 차단 시도 수 — 총 요청 수와 별도 지표(§5), 미측정 None
 
 
@@ -110,6 +118,7 @@ def count_basis(repeat: RepeatResult, basis: tuple[Challenge, ...]) -> Counts:
             repeat.solved.get(ch.key, False),
             evidence_ok=repeat.evidence_ok.get(ch.key, False),
             covered=repeat.covered is not None and ch.key in repeat.covered,
+            correlatable=repeat.correlatable is not None and ch.key in repeat.correlatable,
         )
         tally[bucket] += 1
     return Counts(

@@ -60,18 +60,20 @@ class _RunDir(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.correlation_path = self._write_correlation()
-        self.correlate = load_correlation(self.correlation_path).correlate
+        table = load_correlation(self.correlation_path)
+        self.correlate = table.correlate
+        self.correlatable = table.operative  # 합성 상관: basket·feedback만 type 있음
 
     def _path(self, *parts: str) -> str:
         return os.path.join(self._tmp.name, *parts)
 
-    def _write_correlation(self) -> str:
+    def _write_correlation(self, types: dict[str, list[str]] = _TYPES, name: str = "gt_correlation_test.json") -> str:
         axis = {Axis.HORIZONTAL: "horizontal", Axis.VERTICAL: "vertical"}
         rules = [
-            {"challenge": c.key, "axis": axis[c.axis], "vuln_class": None, "types": _TYPES.get(c.key, [])}
+            {"challenge": c.key, "axis": axis[c.axis], "vuln_class": None, "types": types.get(c.key, [])}
             for c in core_gt()
         ]
-        path = self._path("gt_correlation_test.json")
+        path = self._path(name)
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"version": 1, "rules": rules}, f)
         return path
@@ -114,10 +116,10 @@ class _RunDir(unittest.TestCase):
     def load(self, runs: list[dict]) -> list:
         return load_manifests(self.write_manifest(runs))
 
-    def run_main(self, runs: list[dict]) -> tuple[int, str, str]:
+    def run_main(self, runs: list[dict], correlation_path: str | None = None) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main([self.write_manifest(runs), "--correlation", self.correlation_path])
+            code = main([self.write_manifest(runs), "--correlation", correlation_path or self.correlation_path])
         return code, out.getvalue(), err.getvalue()
 
 
@@ -168,6 +170,7 @@ class TestEvidenceAndCoverage(_RunDir):
     _TRAFFIC = {"t-cross": "rest:basket:1"}
 
     def _core(self, run: dict, **kwargs: object):
+        kwargs.setdefault("correlatable", self.correlatable)
         return count_basis(score_repeat(self.load([run])[0], self.correlate, **kwargs), core_gt())
 
     def test_t4_cli_path_confirmed_solved_is_undecided(self) -> None:
@@ -198,12 +201,41 @@ class TestEvidenceAndCoverage(_RunDir):
         self.assertEqual((c.missed, c.undecided), (0, 9))
 
     def test_solve_without_finding_is_missed(self) -> None:
-        c = self._core(self.make_run("r0", [], solved={"forgedReviewChallenge": True}))
+        # basket은 합성 상관에 type이 있다(상관 가능) → 해결됐는데 판정 없음 = 귀속 가능한 미탐.
+        c = self._core(self.make_run("r0", [], solved={"basketAccessChallenge": True}))
         self.assertEqual((c.missed, c.undecided), (1, 8))
 
+    def test_solve_on_uncorrelatable_challenge_is_undecided(self) -> None:
+        # forgedReview는 type이 없다 → 레코드가 붙을 길이 없어 '판정 없음'을 모른다 → 판단불가.
+        c = self._core(self.make_run("r0", [], solved={"forgedReviewChallenge": True}))
+        self.assertEqual((c.missed, c.undecided), (0, 9))
+
+    def test_cli_passes_correlatable_from_table(self) -> None:
+        # CLI가 GT 상관 표의 type 있는 챌린지를 게이트로 넘기는지 — 안 넘기면 이 미탐이 판단불가로 사라진다.
+        code, out, _ = self.run_main([self.make_run("r0", [], solved={"basketAccessChallenge": True})])
+        self.assertEqual(code, 0)
+        self.assertIn("| 우리@test | — | — | — | 0 (n=1) | 0 (n=1) | 1 (n=1) | 8 (n=1) | 0 (n=1) |", out)
+
+    def test_found_but_uncorrelated_solve_is_not_counted_as_miss(self) -> None:
+        # 지금 레포 상태 재현: types 전부 비어 있음 → basket을 찾은 레코드가 out-of-list로 빠지고
+        # 챌린지는 해결됨. 예전엔 '판정 없음 + 해결'로 미탐 1이 샜다 — 이제 판단불가.
+        empty = self._write_correlation(types={}, name="gt_correlation_empty.json")
+        run = self.make_run("r0", self._SOLID, solved={"basketAccessChallenge": True})
+        code, out, _ = self.run_main([run], correlation_path=empty)
+        self.assertEqual(code, 0)
+        self.assertIn("| 우리@test | — | — | — | 0 (n=1) | 0 (n=1) | 0 (n=1) | 9 (n=1) | 1 (n=1) |", out)
+
     def test_coverage_fixture_turns_unsolved_no_finding_into_missed(self) -> None:
-        c = self._core(self.make_run("r0", []), covered=frozenset({"adminSectionChallenge", "feedbackChallenge"}))
+        # basket·forgedFeedback은 합성 상관에 type이 있다(상관 가능).
+        covered = frozenset({"basketAccessChallenge", "forgedFeedbackChallenge"})
+        c = self._core(self.make_run("r0", []), covered=covered)
         self.assertEqual((c.missed, c.undecided), (2, 7))
+
+    def test_coverage_on_uncorrelatable_challenges_stays_undecided(self) -> None:
+        # admin·feedback(별점)은 type이 없다 → 커버리지가 있어도 '판정 없음'을 모른다 → 판단불가.
+        covered = frozenset({"adminSectionChallenge", "feedbackChallenge"})
+        c = self._core(self.make_run("r0", []), covered=covered)
+        self.assertEqual((c.missed, c.undecided), (0, 9))
 
 
 class TestWarnings(_RunDir):
@@ -268,7 +300,8 @@ class TestSameScript(_RunDir):
         self.assertIs(base.engine, Engine.BASELINE)
         parsed = ScanParseResult(verdicts={}, out_of_list=("rest:x:1",), conflicts=())
         solved = {k: False for k in _SCORED_KEYS}
-        args = (parsed, solved, {"basketAccessChallenge": True}, frozenset({"feedbackChallenge"}))
+        args = (parsed, solved, {"basketAccessChallenge": True}, frozenset({"feedbackChallenge"}),
+                frozenset({"basketAccessChallenge"}))
         self.assertEqual(assemble_repeat(ours, *args), assemble_repeat(base, *args))
 
     def test_baseline_is_error_not_zero(self) -> None:

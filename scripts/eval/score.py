@@ -93,8 +93,9 @@ def assemble_repeat(
     solved: dict[str, bool],
     evidence_ok: dict[str, bool],
     covered: frozenset[str] | None,
+    correlatable: frozenset[str] | None,
 ) -> RepeatResult:
-    """정규화된 판정·해결상태·증거·커버리지 → RepeatResult. 엔진을 보지 않는다."""
+    """정규화된 판정·해결상태·증거·커버리지·상관 가능 여부 → RepeatResult. 엔진을 보지 않는다."""
     return RepeatResult(
         condition=manifest.condition,
         elapsed_seconds=manifest.elapsed_seconds,
@@ -105,6 +106,7 @@ def assemble_repeat(
         out_of_list_keys=parsed.out_of_list,
         evidence_ok=dict(evidence_ok),
         covered=covered,
+        correlatable=correlatable,
     )
 
 
@@ -148,18 +150,21 @@ def score_run(
     *,
     traffic: TrafficIndex | None = None,
     covered: frozenset[str] | None = None,
+    correlatable: frozenset[str] | None = None,
 ) -> ScoredRepeat:
     """회차 1개를 채점 입력 + 경고로. 스냅샷에 채점 분모(코어 ∪ BAC)의 key가 빠지면 에러(§2).
 
     traffic 인덱스·커버리지는 아직 로더가 없어 CLI는 None으로 부른다(TODO(이동찬) traffic
     export·type 명명, TODO(이경준) 커버리지 지도). None이면 증거 (b)(c)를 확인할 수 없어
     confirmed+해결은 판단불가, 판정 없음+미해결도 판단불가다 — 설계상 정직한 결과.
+    correlatable은 GT 상관 표의 type 있는 챌린지(CLI는 표에서 넘긴다). None이면 어느 챌린지도
+    상관 가능으로 보지 않아 '판정 없음 + 해결'도 판단불가다.
     """
     parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate)
     solved = parse_scoreboard_snapshot(manifest.snapshot_path)
     require_basis_keys(solved, core_gt() + bac_category())
     evidence_ok = confirmed_evidence(parsed, traffic, correlate)
-    result = assemble_repeat(manifest, parsed, solved, evidence_ok, covered)
+    result = assemble_repeat(manifest, parsed, solved, evidence_ok, covered, correlatable)
     return ScoredRepeat(result, repeat_warnings(manifest, parsed, traffic))
 
 
@@ -169,9 +174,10 @@ def score_repeat(
     *,
     traffic: TrafficIndex | None = None,
     covered: frozenset[str] | None = None,
+    correlatable: frozenset[str] | None = None,
 ) -> RepeatResult:
     """score_run에서 채점 입력만. 경고가 필요 없는 호출용."""
-    return score_run(manifest, correlate, traffic=traffic, covered=covered).result
+    return score_run(manifest, correlate, traffic=traffic, covered=covered, correlatable=correlatable).result
 
 
 def check_comparable(manifests: list[RunManifest]) -> None:
@@ -203,13 +209,15 @@ def check_comparable(manifests: list[RunManifest]) -> None:
         raise ComparabilityError(f"비교 불가 {len(errors)}건:\n  " + "\n  ".join(errors))
 
 
-def build_report(manifests: list[RunManifest], correlate: Correlate) -> Report:
+def build_report(
+    manifests: list[RunManifest], correlate: Correlate, correlatable: frozenset[str]
+) -> Report:
     """전 회차를 채점해 코어 GT·BAC 두 표와 경고를 만든다. 행·경고 순서는 manifest 순서."""
     check_comparable(manifests)
     by_condition: dict[str, list[RepeatResult]] = {}
     warnings: list[str] = []
     for m in manifests:
-        scored = score_run(m, correlate)
+        scored = score_run(m, correlate, correlatable=correlatable)
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 
@@ -239,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         table = load_correlation(args.correlation)
-        report = build_report(load_manifests(args.manifest), table.correlate)
+        report = build_report(load_manifests(args.manifest), table.correlate, table.operative)
     except _STOP_ERRORS as e:
         print(f"채점 중단: {e}", file=sys.stderr)
         return 2
