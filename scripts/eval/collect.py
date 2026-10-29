@@ -18,6 +18,7 @@ from typing import NamedTuple
 from urllib.parse import urlparse
 
 from aggregate import ScanVerdict
+from scoreboard import normalize_challenges
 
 # 랩 전용 허용 호스트. 대상 origin은 .env로 고정하고, 그 호스트가 이 집합에 들 때만
 # 요청한다(CLAUDE.md 절대규칙 1: 설정의 대상 origin만, localhost 랩). 외부 대상 없음.
@@ -66,7 +67,8 @@ def read_solved_state(config: EvalConfig, timeout_seconds: float = 10.0) -> dict
     """Juice Shop `/api/Challenges`에서 챌린지별 실제 해결 여부를 읽는다.
 
     집계의 독립 정답(solved)이다. 엔진 출력과 분리된 경로로, 엔진 주장의 검증에만 쓴다.
-    challenges.yml/`/api/Challenges`의 각 항목은 key와 solved(bool)를 가진다.
+    행 파싱은 저장 스냅샷 정규화와 같은 규칙(scoreboard.normalize_challenges)을 쓴다 —
+    key 없는 행·불리언 아닌 solved는 건너뛰지 않고 SnapshotError.
     """
     _reject_non_lab_origin(config.target_origin)
     url = f"{config.target_origin}/api/Challenges"
@@ -77,13 +79,7 @@ def read_solved_state(config: EvalConfig, timeout_seconds: float = 10.0) -> dict
         if final_host not in _ALLOWED_HOSTS:
             raise RuntimeError(f"응답 최종 호스트가 랩 밖: {final_host!r}")
         payload = json.load(resp)
-    rows = payload.get("data", payload) if isinstance(payload, dict) else payload
-    solved: dict[str, bool] = {}
-    for row in rows:
-        key = row.get("key")
-        if key:
-            solved[key] = bool(row.get("solved", False))
-    return solved
+    return normalize_challenges(payload)
 
 
 # 판정 레코드 계약(docs/contracts/verdict-record.md §2)이 정의한 필드 전체. 이 집합 밖
