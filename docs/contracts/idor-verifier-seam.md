@@ -69,3 +69,16 @@ oracle.Evaluate(oracle.CaseInput{ Policy, Subjects, Facts }, observedAt) → ora
 - **상태변경 허가 정책** — setup(POST)·destructive-last의 승인+리셋 게이트 정책은 E²(동찬). 검증기는 `StateChanging` 플래그만 올린다.
 - **`type` 명명** — resource_ref의 type을 E²가 어떻게 뽑을지 확정되면 평가 쪽 GT 상관 데이터(`scripts/eval/`)의 `types`와 레코드가 채워진다(지금은 전부 비어 out-of-list).
 - **신원 status↔ref 결합** — kg-policy Open #5, E² 배선에서 정렬.
+
+## 6. 엔진 배선 계약 (제안 · 동찬 구현용 — 금요일 복귀 후)
+**현재 상태:** 오라클 순수부 파이프라인(`oracle.Evaluate` + `idor.Compare` + `idor.Verifier`)은 완성·테스트됨(PR #8·#9·#13·#15). 하지만 **ARTEX 재검증 경로에 아직 안 붙었다** — `oracle`·`idor`를 import하는 non-test 파일은 `idor/` 내부 둘뿐이고, 엔진(`server`·`db`)은 오라클을 전혀 호출하지 않는다.
+
+**배선 지점:** `db/finding_retests.go:RecordFindingRetestResult(ctx, convID, verdict, summary, evidence string)` — 지금은 LLM이 준 **문자열** verdict(`reproduced`/`fixed`/`inconclusive`) + 설명·증거 문자열을 그대로 저장한다(호출: `server/finding_retests.go:198`). 이게 E③가 대체할 바로 그 자리다(CLAUDE.md E③, finding_retests.go:192).
+
+**제안 계약(구현은 E²/엔진 = 동찬 소유):**
+- 재검증이 IDOR 건이면, LLM 문자열 verdict를 신뢰하지 말고 `idor.Verifier`(→ `idor.Compare` → `oracle.Evaluate`) 파이프라인을 **엔진이 호출**해 구조화 `oracle.OracleVerdict`(값 + 3축 CheckState + reason_codes)를 산출·저장한다.
+- 입력: 이 패키지의 seam(§2 `Transmitter`=E² 실전송, `PolicyResolver`=KG) 실구현이 공급. 즉 배선은 §5 핸드오프(실 Transmitter·PolicyResolver)가 선행.
+- 출력 저장: `OracleVerdict` → 판정 레코드(verdict-record §2) 물리 형식으로. ARTEX 문자열 verdict(`reproduced`/`fixed`/`inconclusive`)와 오라클 값(`CONFIRMED`/`SUSPECTED`/`UNDECIDABLE`/`ALLOWED`)의 **매핑은 미정 — 짐작 금지**(동찬·verdict-record에서 확정. UNDECIDABLE을 억지로 reproduced/fixed로 접지 않기 = 절대규칙 5).
+- fail-closed: 파이프라인이 `ok=false`(전송 거부·판단불가)면 그 단계는 검증불가로 저장, 성공/오탐으로 기록 금지(절대규칙 3·5).
+
+**이 절은 계약(제안)일 뿐 — `db/finding_retests.go`·`evidence`·`traffic` 등 엔진 코드는 이 패키지에서 건드리지 않는다.**
