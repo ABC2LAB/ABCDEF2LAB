@@ -3,7 +3,7 @@ import { Choice, ChoiceGroup } from '../components/Choice';
 import { Screen } from '../components/Screen';
 import { Stepper } from '../components/Stepper';
 import { CancelLink, TopBar } from '../components/TopBar';
-import { Strong } from '../components/ui';
+import { MockBanner, Strong } from '../components/ui';
 import { isInternalUrl } from '../lib/net';
 import { useGo } from '../nav';
 import type { Target } from '../types';
@@ -27,7 +27,7 @@ export default function TargetScreen({ target }: { target: Target }) {
   const [llm, setLlm] = useState<LlmMode | null>(null);
   const [endpoint, setEndpoint] = useState('http://ollama:11434/v1');
   const [endpointBadge, setEndpointBadge] = useState<EndpointBadge>(DEFAULT_BADGE);
-  const [localModel, setLocalModel] = useState('qwen2.5:32b');
+  const [localModel, setLocalModel] = useState('');
 
   const testEndpoint = () => {
     const ok = isInternalUrl(endpoint.trim());
@@ -62,13 +62,16 @@ export default function TargetScreen({ target }: { target: Target }) {
     ) : (
       '—'
     );
-  const summaryModel = llm === 'local' ? localModel : llm === 'external' ? 'gpt-4o' : '—';
+  const summaryModel = llm === 'local' ? localModel || '(모델 미지정)' : llm === 'external' ? '(외부 모델)' : '—';
 
   return (
     <Screen id="target">
       <div className="frame">
         <TopBar right={<CancelLink />} />
         <Stepper current={2} />
+        <div style={{ padding: '0 24px' }}>
+          <MockBanner>대상·모델 설정 흐름은 시안이에요. 모델 목록·연결은 엔진 연동 후, 평가 태그는 코드에 박지 않아요.</MockBanner>
+        </div>
         <div className="wrap">
           <div className="col">
             <h1 className="big">어떻게 점검할까요?</h1>
@@ -209,9 +212,7 @@ export default function TargetScreen({ target }: { target: Target }) {
                   value={localModel}
                   onChange={(e) => setLocalModel(e.target.value)}
                 >
-                  <option>qwen2.5:32b</option>
-                  <option>llama3.1:70b</option>
-                  <option>qwen2.5:7b</option>
+                  <option value="">(연동 후 설치된 모델 목록)</option>
                 </select>
                 <button
                   className="btn"
@@ -223,8 +224,7 @@ export default function TargetScreen({ target }: { target: Target }) {
                 </button>
               </div>
               <div className="hint">
-                함께 설치된 LLM의 <code>/v1/models</code> 에서 불러왔어요 · 선택:{' '}
-                <span className="pill">sha256 a1b2c3…</span>
+                엔진의 <code>/v1/models</code> 연동 후 설치된 모델이 떠요(평가 모델 태그는 코드에 박지 않아요).
               </div>
               <details className="adv">
                 <summary>
@@ -322,7 +322,7 @@ export default function TargetScreen({ target }: { target: Target }) {
               <label className="fl" htmlFor="e-model">
                 모델
               </label>
-              <input className="inp" id="e-model" defaultValue="gpt-4o" />
+              <input className="inp" id="e-model" placeholder="모델 id(연동 후)" />
               <details className="adv w">
                 <summary>
                   <span className="chev">▸</span> 고급 설정 (Base URL · 속도 제한 · 컨텍스트 ·
