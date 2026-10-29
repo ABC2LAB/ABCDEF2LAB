@@ -19,13 +19,17 @@ createRoot(document.getElementById('root')!).render(
 );
 ```
 
-3. `index.html` 의 `<head>` 에 폰트 추가 (원본과 같은 Noto Sans KR)
+3. 폰트(Noto Sans KR) — 폐쇄망에서 외부 요청 없이 쓰도록 self-host 를 권장한다.
+   이 레포(Next)는 `web/src/app/layout.tsx` 에서 fontsource 를 import 해 빌드타임에 번들한다(외부 요청 0).
 
-```html
-<title>ABC2LAB 점검 흐름</title>
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap">
+```bash
+npm i @fontsource-variable/noto-sans-kr
 ```
+```ts
+// 진입점(layout.tsx / main.tsx)에서 — "Noto Sans KR Variable" 패밀리 등록
+import "@fontsource-variable/noto-sans-kr/index.css";
+```
+   (외부 반입이 가능한 환경이면 대신 Google Fonts `<link>` 로 붙여도 된다.)
 
 4. Vite 템플릿 기본 CSS(`src/index.css`, `src/App.css`)는 빼세요. `#root` 너비 · 가운데 정렬이 레이아웃을 깨요.
 

@@ -1,8 +1,8 @@
 /*
  * ABC2LAB UI 스타일 — ABC2LAB_UI_1.html 의 <style> 두 블록을 그대로 옮김.
- * 폰트(Noto Sans KR)는 index.html <head> 에서 불러온다:
- *   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
- *   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap">
+ * 폰트(Noto Sans KR)는 폐쇄망에서 외부 요청 없이 쓰도록 self-host 한다:
+ *   web/src/app/layout.tsx 가 @fontsource-variable/noto-sans-kr 를 import →
+ *   "Noto Sans KR Variable" (@font-face, unicode-range 로 필요한 글자 청크만 로드).
  */
 
 /* ---- 기본(리셋) 블록 ---- */
@@ -24,7 +24,7 @@ img{max-width:100%}
   --danger:#C0392B; --danger-weak:#FBECEA; --danger-border:#EDC3BD;
   --brand:#6e1b1b;
   --r:14px; --r-sm:10px;
-  --font:"Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --font:"Noto Sans KR Variable","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
   --mono:ui-monospace,"SF Mono",Menlo,monospace;
 }
 @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
