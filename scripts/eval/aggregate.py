@@ -70,7 +70,7 @@ class RepeatResult:
     판정 NONE·미해결로 간주한다(= 미탐). out_of_list_keys는 GT 목록에 없는 finding.
     """
 
-    condition: str  # 예: "원본@32b", "우리@7B"
+    condition: str  # 예: "원본@35b", "우리@35b"
     elapsed_seconds: float  # 확정까지 시간 (초)
     total_requests: int  # 총 요청 수
     verdicts: dict[str, ScanVerdict] = field(default_factory=dict)
