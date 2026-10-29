@@ -84,6 +84,11 @@ class TestClassify(unittest.TestCase):
             for solved in (True, False):
                 self.assertIs(classify(v, solved), Bucket.UNDECIDED)
 
+    def test_allowed_is_undecided_not_missed(self):
+        # GT 챌린지에 ALLOWED = KG·정책 오류 신호 → 판단불가, 해결 여부와 무관(§4-6).
+        for solved in (True, False):
+            self.assertIs(classify(ScanVerdict.ALLOWED, solved), Bucket.UNDECIDED)
+
     def test_none_is_missed(self):
         for solved in (True, False):
             self.assertIs(classify(ScanVerdict.NONE, solved), Bucket.MISSED)

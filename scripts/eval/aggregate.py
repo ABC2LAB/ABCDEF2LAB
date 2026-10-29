@@ -25,13 +25,15 @@ from ground_truth import Challenge
 class ScanVerdict(Enum):
     """엔진이 한 챌린지에 대해 내놓은 판정. E③ 오라클 출력에서 매핑된다.
 
-    NONE = 그 챌린지에 대한 finding이 아예 없음(보고 누락 포함). allowed(위반 미관찰)도
-    '취약점 확정'이 아니므로 집계에서는 NONE과 같게 다룬다(확정 아님).
+    NONE = 그 챌린지에 대한 finding이 아예 없음(보고 누락 포함).
+    ALLOWED = 위반 미관찰(검증된 정책상 허용). NONE과 섞지 않는다 — 코어 GT는 전부 실제
+    취약이라 GT 챌린지에 ALLOWED는 KG·정책 오류 신호다(프로토콜 §4-6).
     """
 
     CONFIRMED = "confirmed"
     SUSPECTED = "suspected"
     UNDECIDABLE = "undecidable"
+    ALLOWED = "allowed"
     NONE = "none"
 
 
@@ -50,6 +52,7 @@ def classify(verdict: ScanVerdict, solved: bool) -> Bucket:
     - confirmed + 해결  → 확정 (증거로 뒷받침된 참)
     - confirmed + 미해결 → 오탐 (실제 해결 없는 confirmed 주장, §4.2)
     - suspected/undecidable → 판단불가 (confirmed 주장이 아니므로 해결 여부와 무관, 보수적)
+    - allowed → 판단불가 (GT에 ALLOWED = KG·정책 오류 신호, 미탐·취약점없음 아님, §4-6)
     - 그 외(NONE) → 미탐 (코어/BAC 챌린지는 전부 실제 취약점이므로 무탐지=미탐)
 
     solved는 미탐/확정을 가르는 독립 정답이다. 엔진이 해결은 시켰는데(solved) 보고를
@@ -57,7 +60,7 @@ def classify(verdict: ScanVerdict, solved: bool) -> Bucket:
     """
     if verdict is ScanVerdict.CONFIRMED:
         return Bucket.CONFIRMED if solved else Bucket.FALSE_POSITIVE
-    if verdict in (ScanVerdict.SUSPECTED, ScanVerdict.UNDECIDABLE):
+    if verdict in (ScanVerdict.SUSPECTED, ScanVerdict.UNDECIDABLE, ScanVerdict.ALLOWED):
         return Bucket.UNDECIDED
     return Bucket.MISSED
 

@@ -105,12 +105,12 @@ _KNOWN_FIELDS = frozenset({
 })
 
 # 계약 §2(b) oracle_value → 집계용 ScanVerdict. 값 목록은 계약에 정의된 그대로다.
-# allowed(위반 미관찰)는 확정이 아니므로 NONE(aggregate.ScanVerdict 주석, 계약 §4).
+# allowed(위반 미관찰)는 NONE(판정 없음)과 섞지 않는다 — 집계에서 판단불가(프로토콜 §4-6).
 _ORACLE_VALUE_TO_SCAN = {
     "confirmed": ScanVerdict.CONFIRMED,
     "suspected": ScanVerdict.SUSPECTED,
     "undecidable": ScanVerdict.UNDECIDABLE,
-    "allowed": ScanVerdict.NONE,
+    "allowed": ScanVerdict.ALLOWED,
 }
 
 # tie-break 순위: confirmed > suspected > undecidable > allowed/none. 엔진이 한 번이라도
@@ -119,6 +119,7 @@ _PRECEDENCE = {
     ScanVerdict.CONFIRMED: 3,
     ScanVerdict.SUSPECTED: 2,
     ScanVerdict.UNDECIDABLE: 1,
+    ScanVerdict.ALLOWED: 0,
     ScanVerdict.NONE: 0,
 }
 
@@ -245,7 +246,7 @@ def parse_scan_output(
 
     fail-closed(절대규칙 5): 깨진 레코드·부정 verdict·계약 밖 필드·민감값 누출은 조용히
     버리지 않고 전부 모아 ScanOutputError로 올린다 — 일부만 빠진 매트릭스를 정상처럼
-    내지 않는다. undecidable은 UNDECIDABLE, allowed는 NONE으로만 가고 '오탐'이나
+    내지 않는다. undecidable은 UNDECIDABLE, allowed는 ALLOWED로만 가고 '오탐'이나
     '취약점 없음'으로 바뀌지 않는다(분류는 aggregate.classify가 solved와 함께).
 
     TODO(윤재상): baseline(원본 ARTEX) 출력은 이 레코드를 내지 않는다 — 별도 어댑터로

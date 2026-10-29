@@ -71,7 +71,7 @@ class _FixtureDir(unittest.TestCase):
 
 class TestNormal(_FixtureDir):
     def test_all_contract_verdicts_map(self) -> None:
-        """계약의 oracle_value 4종이 전부 매핑된다 — allowed는 NONE."""
+        """계약의 oracle_value 4종이 전부 매핑된다 — allowed는 NONE(판정 없음)과 구분된 ALLOWED."""
         path = self.write([
             _record("confirmed", "basket/1"),
             _record("suspected", "basket/2"),
@@ -83,7 +83,7 @@ class TestNormal(_FixtureDir):
             "basketAccessChallenge": ScanVerdict.CONFIRMED,
             "basketManipulateChallenge": ScanVerdict.SUSPECTED,
             "forgedFeedbackChallenge": ScanVerdict.UNDECIDABLE,
-            "forgedReviewChallenge": ScanVerdict.NONE,
+            "forgedReviewChallenge": ScanVerdict.ALLOWED,
         })
         self.assertEqual(out_of_list, ())
 
@@ -153,9 +153,9 @@ class TestConflicts(_FixtureDir):
 
 class TestNoSilentReclassification(_FixtureDir):
     def test_undecidable_and_allowed_not_turned_into_fp_or_clean(self) -> None:
-        """판단불가는 판단불가로, allowed는 미탐으로 — 오탐/확정으로 바뀌지 않는다.
+        """판단불가·allowed는 판단불가로 — 오탐/확정/미탐으로 바뀌지 않는다(§4-6).
 
-        solved=True여도 undecidable은 UNDECIDED, allowed(NONE)는 MISSED(확정 크레딧 없음).
+        solved=True여도 undecidable·allowed는 UNDECIDED(확정 크레딧도, 미탐 처리도 없음).
         """
         path = self.write([
             _record("undecidable", "basket/1"),
@@ -171,11 +171,11 @@ class TestNoSilentReclassification(_FixtureDir):
             out_of_list_keys=out_of_list,
         )
         counts = count_basis(repeat, core_gt())
-        self.assertEqual(counts.undecided, 1)
+        self.assertEqual(counts.undecided, 2)
         self.assertEqual(counts.false_positive, 0)
         self.assertEqual(counts.confirmed, 0)
-        # 코어 9개 중 판단불가 1 외 나머지 8개(allowed 포함)는 미탐.
-        self.assertEqual(counts.missed, len(core_gt()) - 1)
+        # 레코드 없는 나머지 코어 7개만 미탐 측(이 커밋 기준 classify). allowed는 거기 안 든다.
+        self.assertEqual(counts.missed, len(core_gt()) - 2)
 
 
 class TestMalformed(_FixtureDir):
