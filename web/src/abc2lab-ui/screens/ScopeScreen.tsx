@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Brand } from '../components/Brand';
 import { Screen } from '../components/Screen';
 import { Switch } from '../components/Switch';
-import { Pill, Strong, Sub } from '../components/ui';
+import { MockBanner, Pill, Strong, Sub } from '../components/ui';
 import { cx } from '../lib/cx';
 import { useGo } from '../nav';
 import type { Target } from '../types';
@@ -179,6 +179,7 @@ export default function ScopeScreen({ target }: { target: Target }) {
           </span>
         </div>
         <div style={{ padding: '22px 24px' }}>
+          <MockBanner>범위 확인 화면은 시안이에요. 실제 탐색 범위·엔드포인트 목록은 엔진 연동 후 떠요.</MockBanner>
           <h1 className="big">이 범위로 점검할까요?</h1>
           <p className="lead">
             사이트를 먼저 훑어봤어요. 어디를 점검할지 확인만 해주면 바로 시작할게요.{' '}

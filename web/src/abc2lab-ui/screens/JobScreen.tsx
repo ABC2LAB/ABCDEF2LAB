@@ -2,7 +2,7 @@ import { ChoiceGroup } from '../components/Choice';
 import { Screen } from '../components/Screen';
 import { Stepper } from '../components/Stepper';
 import { CancelLink, TopBar } from '../components/TopBar';
-import { Pill } from '../components/ui';
+import { MockBanner, Pill } from '../components/ui';
 import { useGo } from '../nav';
 import type { Target } from '../types';
 
@@ -14,6 +14,9 @@ export default function JobScreen({ target }: { target: Target }) {
       <div className="frame">
         <TopBar right={<CancelLink />} />
         <Stepper current={3} />
+        <div style={{ padding: '0 24px' }}>
+          <MockBanner>작업 설정 흐름은 시안이에요. 실제 점검 생성·시작은 엔진 실행 연결 후예요.</MockBanner>
+        </div>
         <div className="wrap">
           <div className="col">
             <h1 className="big">거의 다 됐어요</h1>

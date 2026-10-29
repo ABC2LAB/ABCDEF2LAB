@@ -1,6 +1,6 @@
 import { Screen } from '../components/Screen';
 import { TopBar } from '../components/TopBar';
-import { Pill, Strong } from '../components/ui';
+import { MockBanner, Pill, Strong } from '../components/ui';
 import { useGo } from '../nav';
 
 const linkStyle = { color: 'var(--teal-ink)', fontWeight: 600, cursor: 'pointer' } as const;
@@ -19,6 +19,7 @@ export default function ApprovalScreen() {
       <div className="frame">
         <TopBar current="history" />
         <div style={{ padding: '22px 24px', maxWidth: 720 }}>
+          <MockBanner>승인 게이트 화면은 시안이에요. 실제 승인 대기 큐는 /api/intercept/pending 연동 후 떠요.</MockBanner>
           <div className="crumb">
             <a onClick={() => go('history')}>점검 기록</a> › <span>승인</span>
           </div>

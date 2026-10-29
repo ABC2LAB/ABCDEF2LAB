@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Screen } from '../components/Screen';
 import { TopBar } from '../components/TopBar';
+import { MockBanner } from '../components/ui';
 import { VerifyDomainModal } from '../components/VerifyDomainModal';
 import { isInternalUrl } from '../lib/net';
 import { useGo } from '../nav';
@@ -31,6 +32,11 @@ export default function EntryScreen({ onStart }: Props) {
       <div className="frame">
         <TopBar current="entry" />
         <div style={{ padding: '64px 24px', maxWidth: 600, margin: '0 auto', textAlign: 'center' }}>
+          <div style={{ textAlign: 'left' }}>
+            <MockBanner>
+              이 ‘새 점검’ 흐름(진입 · 범위 확인 · 작업 설정)은 시안이에요. 실제 점검 시작(엔진 실행)은 연결 전이에요.
+            </MockBanner>
+          </div>
           <h1 style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-.6px', marginBottom: 26 }}>
             어떤 사이트를 점검할까요?
           </h1>

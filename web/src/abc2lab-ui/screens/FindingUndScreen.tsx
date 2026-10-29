@@ -1,6 +1,6 @@
 import { Screen } from '../components/Screen';
 import { TopBar } from '../components/TopBar';
-import { Pill, Sev, Strong, VerdictBadge } from '../components/ui';
+import { MockBanner, Pill, Sev, Strong, VerdictBadge } from '../components/ui';
 import { useGo } from '../nav';
 
 const bodyText = { fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.7, margin: 0 } as const;
@@ -13,6 +13,9 @@ export default function FindingUndScreen() {
       <div className="frame">
         <TopBar current="history" />
         <div style={{ padding: '22px 24px', maxWidth: 760 }}>
+          <MockBanner>
+            판단 불가 상세는 시안이에요. 실제 판정(확정/의심/판단 불가)과 증거는 E③ 오라클 연동 후 채워져요.
+          </MockBanner>
           <div className="crumb">
             <a onClick={() => go('history')}>점검 기록</a> ›{' '}
             <a onClick={() => go('report')}>blog.example.com</a> › <span>발견</span>
