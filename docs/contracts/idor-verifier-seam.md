@@ -67,5 +67,5 @@ oracle.Evaluate(oracle.CaseInput{ Policy, Subjects, Facts }, observedAt) → ora
 ## 5. Open / 핸드오프 (동찬)
 - **실 `Transmitter`** — `idor/verifier.go`의 seam은 fake(테스트)뿐. 실 구현은 §2.2 ARTEX 경계(guard+intercept) 배선 = E²(동찬). 금요일 복귀 후 전송만 끼우면 교차조회 1건이 end-to-end로 도는 자리까지 맞춰 둠.
 - **상태변경 허가 정책** — setup(POST)·destructive-last의 승인+리셋 게이트 정책은 E²(동찬). 검증기는 `StateChanging` 플래그만 올린다.
-- **`type` 명명** — resource_ref의 type을 E²가 어떻게 뽑을지 확정되면 correlation `gt_correlation.json`의 `types`와 레코드가 채워진다(지금은 전부 비어 out-of-list).
+- **`type` 명명** — resource_ref의 type을 E²가 어떻게 뽑을지 확정되면 평가 쪽 GT 상관 데이터(`scripts/eval/`)의 `types`와 레코드가 채워진다(지금은 전부 비어 out-of-list).
 - **신원 status↔ref 결합** — kg-policy Open #5, E² 배선에서 정렬.
