@@ -44,10 +44,12 @@ type AccountRef struct {
 
 // AccessRequest is one request the verifier asks E² to transmit. The verifier only
 // proposes it; whether it goes out, and whether a state-changing one is permitted, is
-// E²'s decision (절대규칙 3). ResourceRef is a logical id (e.g. "basket/42"), not a raw
-// URL — resolving it to a target-scoped URL is E²'s job. Inputs are the non-sensitive
-// values the verifier itself placed in the request, used downstream to exclude
-// reflection; credentials are never here (절대규칙 2).
+// E²'s decision (절대규칙 3). ResourceRef is a logical "type:id" ref (e.g. "basket:42"),
+// not a raw URL — type (before the last colon) is the stable resource kind, id (after)
+// an instance valid only within one reset generation; resolving it to a target-scoped
+// URL is E²'s job (seam 계약 §1). Inputs are the non-sensitive values the verifier
+// itself placed in the request, used downstream to exclude reflection; credentials are
+// never here (절대규칙 2).
 type AccessRequest struct {
 	As            AccountRef
 	Method        string
@@ -71,9 +73,24 @@ type Capture struct {
 // lab returns HTTP 200 on errors). A permitted, completed request returns ok=true with
 // a Capture; a refused or undecidable transmission returns ok=false, and the verifier
 // treats that step as unverifiable (절대규칙 5), never as success.
+//
+// Real transmission crosses ARTEX's control boundary: 승인 게이트 guard.Guard →
+// intercept.Interceptor (seam 계약 §2.2). That wiring is E²'s, not this package's.
 type Transmitter interface {
 	Send(req AccessRequest) (Capture, bool)
 }
+
+// StubTransmitter is the explicit placeholder standing in for the real E² transmitter
+// until 이동찬 wires it. It performs NO transmission: every request is refused
+// (ok=false), so the verifier degrades every step to unverifiable (fail-closed, 절대규칙
+// 3·5) rather than claiming access. It exists so the seam is filled and callable; the
+// real impl replaces it.
+//
+// TODO(이동찬): 상태변경 허가 정책 + 실 전송 — guard.Guard→intercept.Interceptor 경계 배선으로
+// 교체. 금요일 복귀 후 이 stub만 실 transmitter로 바꾸면 교차조회 1건이 end-to-end로 돈다.
+type StubTransmitter struct{}
+
+func (StubTransmitter) Send(AccessRequest) (Capture, bool) { return Capture{}, false }
 
 // PolicyResolver is the KG seam (TODO(이경준): real impl is KG's). It supplies the
 // things the verifier cannot know itself: the registered expected-access policy the
