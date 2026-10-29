@@ -7,7 +7,7 @@ baseline(원본 ARTEX) vs 개선 후(우리 포크)를 같은 조건으로 측�
 ## 구성
 - `ground_truth.py` — 평가 정답(코어 GT 9 = 수평5·수직4, BAC category 10, 별도축 3).
   **평가에만** 쓴다(절대규칙 7). 엔진·탐색 경로에서 import 금지.
-- `aggregate.py` — 순수 집계. §4 분류(확정/오탐/미탐/판단불가) + §5 평균 ± 분산 + 표 렌더.
+- `aggregate.py` — 순수 집계. §4 분류(확정/오탐/미탐/판단불가) + §5 평균 ± 표본 표준편차(SD) + 표 렌더.
 - `collect.py` — I/O 어댑터. Juice Shop `/api/Challenges` 해결상태, env 설정, 스캔출력 파싱.
 - `scoreboard.py` — 스코어보드 스냅샷(프로토콜 §2). 원본→정규화(`{key: solved}`) 규칙, 정규화본 파서,
   GT key 누락 검사(누락 = 에러, 미해결로 간주 X).

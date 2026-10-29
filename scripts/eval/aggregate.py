@@ -1,7 +1,7 @@
 """측정 매트릭스 집계 — 순수 계산부.
 
 반복 1회(RepeatResult)를 §4 판정 기준으로 분류하고, 조건별 N회를 §5 매트릭스
-(평균 ± 분산)로 집계한다. 네트워크·파일·시계 접근 없음 — collect.py가 I/O로
+(평균 ± 표본 표준편차(SD))로 집계한다. 네트워크·파일·시계 접근 없음 — collect.py가 I/O로
 RepeatResult를 만들어 여기로 넘긴다. 순수하게 둬서 테이블 테스트가 가능하다.
 
 분류 입력은 네 가지다(프로토콜 §4 판정표):
@@ -185,7 +185,7 @@ def aggregate_condition(
 
 
 def render_matrix(rows: list[ConditionAggregate], basis_name: str) -> str:
-    """§5 매트릭스를 Markdown 표로. 값은 평균 ± 분산, 반복 수 명시."""
+    """§5 매트릭스를 Markdown 표로. 값은 평균 ± 표본 표준편차(SD), 반복 수 명시."""
     header = (
         f"### 측정 매트릭스 — {basis_name} 기준\n\n"
         "| 조건 | 확정까지 시간 | 총 요청 수 | 차단 시도 수 | 확정 수 | 오탐 수 | 미탐 수 | 판단불가 수 | out-of-list |\n"
