@@ -180,8 +180,15 @@ func TestEvaluateCases(t *testing.T) {
 			want: Undecidable, contains: []JudgeReason{ReasonSubjectNotVerified}, identity: StateUnknown,
 		},
 		{
-			name: "empty owner subject ref reserves identity",
+			name: "empty evaluated subject ref reserves identity",
 			in:   mut(func(c *CaseInput) { c.Subjects.EvaluatedRef = "" }),
+			want: Undecidable, contains: []JudgeReason{ReasonSubjectNotVerified}, identity: StateUnknown,
+		},
+		{
+			// checkIdentity holds on either empty ref; the owner side is the
+			// symmetric case test_oracle.py does not cover on either leg.
+			name: "empty owner subject ref reserves identity",
+			in:   mut(func(c *CaseInput) { c.Subjects.OwnerRef = "" }),
 			want: Undecidable, contains: []JudgeReason{ReasonSubjectNotVerified}, identity: StateUnknown,
 		},
 		{
@@ -202,6 +209,13 @@ func TestEvaluateCases(t *testing.T) {
 		{
 			name: "deny without data match -> undecidable",
 			in:   mut(func(c *CaseInput) { c.Facts.NontrivialDataMatch = StateNo }), want: Undecidable,
+		},
+		{
+			// Fail-closed invariant (test_oracle.py::deny_without_valid_exception_is_never_allowed):
+			// a registered DENY never reads as Allowed, whatever the (b)(c) evidence. The base case
+			// covers the strong-evidence leg (confirmed); this pins the failed-data leg explicitly.
+			name: "deny policy is never allowed even when data fails (fail-closed guard)",
+			in:   mut(func(c *CaseInput) { c.Facts.NontrivialDataMatch = StateNo }), notWant: Allowed,
 		},
 		{
 			name: "unverifiable data -> undecidable",
@@ -318,6 +332,16 @@ func TestEvaluatePolicyCombinationInvariants(t *testing.T) {
 						}
 						if got.Value == Allowed && got.PolicyCheck != StateNo {
 							t.Errorf("allowed with policy_check=%s, want no", got.PolicyCheck)
+						}
+						// Fail-closed invariant over every combination: Allowed only on an
+						// allow path (explicit ALLOW, or a resolved sharing/delegation
+						// exception). So a DENY with no resolved exception is never Allowed.
+						if got.Value == Allowed {
+							allowPath := access == AccessAllow || sharing == ResolvedAllow || delegation == ResolvedAllow
+							if !allowPath {
+								t.Errorf("allowed without an allow path: access=%s sharing=%s deleg=%s",
+									access, sharing, delegation)
+							}
 						}
 						if got.Value == Confirmed {
 							if access != AccessDeny || sharing != ResolvedNone || delegation != ResolvedNone {
