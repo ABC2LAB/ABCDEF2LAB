@@ -12,8 +12,9 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import NamedTuple
 from urllib.parse import urlparse
 
@@ -146,11 +147,15 @@ class ScanParseResult(NamedTuple):
     conflicts = 위반_후보(confirmed·suspected)와 위반_미관찰(allowed) 레코드가 같이 온 챌린지
     키(정렬). 판정은 tie-break 순위로 정하되 모순은 숨기지 않고 따로 남긴다 — KG·정책
     불일치나 reset 세대 혼입 신호일 수 있다.
+
+    confirmed_records = 챌린지별 confirmed 레코드 전부(증거 3조건 판정용, 프로토콜 §4-2).
+    판정 tie-break과 별개로 모은다 — 확정은 그중 증거 충족 레코드가 하나 이상인지로 본다.
     """
 
     verdicts: dict[str, ScanVerdict]
     out_of_list: tuple[str, ...]
     conflicts: tuple[str, ...]
+    confirmed_records: Mapping[str, tuple[VerdictRecord, ...]] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -167,6 +172,8 @@ class VerdictRecord:
     resource_ref: str
     axis: str | None
     scan_verdict: ScanVerdict
+    # 증거 ref = traffic id(본문 아님, 계약 §2(d)). 정수 id도 문자열로 맞춰 traffic 인덱스 key와 비교한다.
+    traffic_evidence_refs: tuple[str, ...] = ()
 
 
 def _load_json_records(path: str) -> list[object]:
@@ -222,6 +229,9 @@ def _validate_record(index: int, raw: object) -> tuple[VerdictRecord | None, lis
         if not isinstance(value, str) or not value:
             errors.append(f"[{index}] {name} 부재/빈값: {value!r}")
 
+    refs, ref_errors = _parse_evidence_refs(index, raw.get("traffic_evidence_refs"))
+    errors.extend(ref_errors)
+
     if errors:
         return None, errors
     axis = raw.get("axis")
@@ -232,7 +242,25 @@ def _validate_record(index: int, raw: object) -> tuple[VerdictRecord | None, lis
         resource_ref=raw["resource_ref"],
         axis=axis if isinstance(axis, str) else None,
         scan_verdict=_ORACLE_VALUE_TO_SCAN[oracle_value],
+        traffic_evidence_refs=refs,
     ), []
+
+
+def _parse_evidence_refs(index: int, raw: object) -> tuple[tuple[str, ...], list[str]]:
+    """traffic_evidence_refs — traffic id 배열. 없거나 null이면 빈 값(증거 (a) 미충족으로 간다)."""
+    if raw is None:
+        return (), []
+    if not isinstance(raw, list):
+        return (), [f"[{index}] traffic_evidence_refs는 id 배열이어야 함: {type(raw).__name__}"]
+    errors: list[str] = []
+    refs: list[str] = []
+    for ref in raw:
+        # bool은 int의 하위형 — True가 id 1로 새지 않게 막는다.
+        if isinstance(ref, bool) or not isinstance(ref, (str, int)) or ref == "":
+            errors.append(f"[{index}] 잘못된 traffic ref: {ref!r}")
+        else:
+            refs.append(str(ref))
+    return tuple(dict.fromkeys(refs)), errors
 
 
 def parse_scan_output(
@@ -258,6 +286,7 @@ def parse_scan_output(
     out_of_list: list[str] = []
     candidate_keys: set[str] = set()
     allowed_keys: set[str] = set()
+    confirmed: dict[str, list[VerdictRecord]] = {}
 
     for i, raw in enumerate(raw_records):
         record, record_errors = _validate_record(i, raw)
@@ -278,6 +307,8 @@ def parse_scan_output(
             candidate_keys.add(key)
         elif record.oracle_value == "allowed":
             allowed_keys.add(key)
+        if record.scan_verdict is ScanVerdict.CONFIRMED:
+            confirmed.setdefault(key, []).append(record)
 
     if errors:
         raise ScanOutputError(
@@ -288,4 +319,5 @@ def parse_scan_output(
         verdicts=verdicts,
         out_of_list=tuple(out_of_list),
         conflicts=tuple(sorted(candidate_keys & allowed_keys)),
+        confirmed_records=MappingProxyType({k: tuple(v) for k, v in confirmed.items()}),
     )
