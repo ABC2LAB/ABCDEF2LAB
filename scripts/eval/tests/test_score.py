@@ -31,6 +31,7 @@ from score import (  # noqa: E402
     check_comparable,
     main,
     score_repeat,
+    score_run,
 )
 from scoreboard import SnapshotError  # noqa: E402
 
@@ -205,6 +206,58 @@ class TestEvidenceAndCoverage(_RunDir):
         self.assertEqual((c.missed, c.undecided), (2, 7))
 
 
+class TestWarnings(_RunDir):
+    """A10 — 이상 신호는 stderr 경고로만. 무엇·어디를 적고, 판정은 바꾸지 않는다."""
+
+    def _counts(self, records: list[dict], name: str = "r0", **kwargs: object):
+        scored = score_run(self.load([self.make_run(name, records)])[0], self.correlate, **kwargs)
+        return count_basis(scored.result, core_gt()), scored.warnings
+
+    def test_allowed_anomaly_names_run_and_challenge(self) -> None:
+        counts, warnings = self._counts([_record("allowed", "rest:basket:1")])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("ALLOWED 이상치", warnings[0])
+        self.assertIn("우리@test#0", warnings[0])
+        self.assertIn("'basketAccessChallenge'", warnings[0])
+        self.assertEqual((counts.undecided, counts.missed), (9, 0))  # 판단불가 그대로, 미탐으로 안 감
+
+    def test_conflict_warns_without_changing_counts(self) -> None:
+        plain, plain_warnings = self._counts([_record("confirmed", "rest:basket:1")], "r0")
+        mixed, mixed_warnings = self._counts(
+            [_record("confirmed", "rest:basket:1"), _record("allowed", "rest:basket:7")], "r1"
+        )
+        self.assertEqual(plain, mixed)  # 경고가 붙어도 칸별 개수는 같다
+        self.assertEqual(plain_warnings, ())
+        self.assertEqual(len(mixed_warnings), 1)
+        self.assertIn("모순", mixed_warnings[0])
+        self.assertIn("'basketAccessChallenge'", mixed_warnings[0])
+
+    def test_dangling_ref_names_record_and_missing_refs_only(self) -> None:
+        records = [_record("confirmed", "rest:basket:1", traffic_evidence_refs=["t-ok", "t-gone"])]
+        _, warnings = self._counts(records, traffic={"t-ok": "rest:basket:1"})
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("끊긴 ref", warnings[0])
+        self.assertIn("'basketAccessChallenge'", warnings[0])
+        self.assertIn("rest:basket:1", warnings[0])
+        self.assertIn("'t-gone'", warnings[0])
+        self.assertNotIn("t-ok", warnings[0])
+
+    def test_no_index_is_not_a_dangling_warning(self) -> None:
+        records = [_record("confirmed", "rest:basket:1", traffic_evidence_refs=["t-gone"])]
+        _, warnings = self._counts(records)
+        self.assertEqual(warnings, ())
+
+    def test_cli_warnings_on_stderr_only(self) -> None:
+        runs = [self.make_run("r0", [_record("confirmed", "rest:basket:1"), _record("allowed", "rest:basket:2"),
+                                     _record("allowed", "rest:feedback:1")])]
+        code, out, err = self.run_main(runs)
+        self.assertEqual(code, 0)
+        self.assertIn("경고[모순]", err)
+        self.assertIn("경고[ALLOWED 이상치]", err)
+        self.assertNotIn("경고", out)  # 표는 파싱·재검증 대상 — 경고가 섞이지 않는다
+        self.assertTrue(out.startswith("모델 태그: "))
+
+
 class TestSameScript(_RunDir):
     """T5 — 정규화 뒤 채점은 엔진을 안 본다. baseline은 0점 대신 에러."""
 
@@ -275,7 +328,7 @@ class TestReport(_RunDir):
 
     def _runs(self) -> list[dict]:
         return [
-            self.make_run("r0", [_record("suspected", "rest:feedback:3")]),
+            self.make_run("r0", [_record("suspected", "rest:feedback:3"), _record("allowed", "rest:basket:4")]),
             self.make_run("r1", [_record("confirmed", "rest:basket:1")], repeat_index=1),
             self.make_run(
                 "r2", [], condition="우리@measured", elapsed_seconds=60, total_requests=10, blocked_attempts=3
@@ -286,6 +339,7 @@ class TestReport(_RunDir):
         runs = self._runs()
         first, second = self.run_main(runs), self.run_main(runs)
         self.assertEqual(first[0], 0)
+        self.assertIn("경고[ALLOWED 이상치]", first[2])  # stderr 경고 순서까지 같은지 본다
         self.assertEqual(first, second)
 
     def test_unmeasured_renders_dash_and_rows_keep_manifest_order(self) -> None:
