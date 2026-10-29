@@ -9,12 +9,27 @@ baseline(원본 ARTEX) vs 개선 후(우리 포크)를 같은 조건으로 측�
   **평가에만** 쓴다(절대규칙 7). 엔진·탐색 경로에서 import 금지.
 - `aggregate.py` — 순수 집계. §4 분류(확정/오탐/미탐/판단불가) + §5 평균 ± 분산 + 표 렌더.
 - `collect.py` — I/O 어댑터. Juice Shop `/api/Challenges` 해결상태, env 설정, 스캔출력 파싱.
-- `tests/` — 순수부 테이블 테스트.
+- `scoreboard.py` — 스코어보드 스냅샷(프로토콜 §2). 원본→정규화(`{key: solved}`) 규칙, 정규화본 파서,
+  GT key 누락 검사(누락 = 에러, 미해결로 간주 X).
+- `manifest.py` — 회차 메타데이터(조건·엔진·model_tag·reset 세대·레코드/스냅샷 경로·시간·요청수).
+  시간·요청수는 러너가 못 주면 null → 표 "—".
+- `score.py` — 저장 raw 채점기 CLI. 회차 manifest → §4 분류 → §5 표(코어 GT 9 / BAC 10).
+  엔진별로 다른 건 '레코드 → 판정' 어댑터 하나뿐. 통제변수 검사(모델 태그 하나·회차마다 다른 reset 세대).
+- `tests/` — 순수부 테이블 테스트 + 합성 fixture end-to-end.
 
 ## 실행
 ```bash
 cd scripts/eval
-python3 -I -m unittest discover -s tests   # 순수부 테스트
+python3 -I -m unittest discover -s tests   # 테스트
+python3 -I score.py <manifest.json>        # 채점 (레포 밖 결과물 디렉터리의 manifest)
+```
+
+manifest 모양(경로는 manifest 파일 기준 상대경로 가능, 결과물이라 커밋 금지):
+```json
+{"runs": [{"condition": "우리@35b", "engine": "ours", "model_tag": "<정확한 태그>",
+           "reset_generation": "<회차마다 다름>", "repeat_index": 0,
+           "records_path": "run0/records.json", "snapshot_path": "run0/snapshot.json",
+           "elapsed_seconds": null, "total_requests": null}]}
 ```
 
 ## 설정 (코드 하드코딩 금지 — .env)
@@ -36,4 +51,5 @@ python3 -I -m unittest discover -s tests   # 순수부 테스트
 - 판정 레코드 **물리 형식**(DB 쿼리 vs JSON 덤프) — 이동찬 어댑터와 정렬. 어댑터만 바꾸면 됨.
 - `correlate` 실 매핑 테이블(vuln_class·엔드포인트→챌린지) — 평가 전용 GT로 따로 둔다.
 - TODO(윤재상): baseline(원본 ARTEX) 출력은 판정 레코드를 안 냄 — 별도 어댑터로 같은 레코드를 만들지 정렬.
+  그 전까지 `score.py`는 `engine: "baseline"` 회차를 **에러로 멈춘다**(A5 보류 — 0점 채점 금지).
 - 판정 레코드 테이블명·마이그레이션은 verdict-record.md §5 Open.
