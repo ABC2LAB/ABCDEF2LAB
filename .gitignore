@@ -27,6 +27,7 @@ web/next-env.d.ts
 # os
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 
 # claude code local state
 .claude/
