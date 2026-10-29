@@ -168,6 +168,15 @@ class TestAggregateAndRender(unittest.TestCase):
         self.assertIn("코어 GT(인가 9)", out)
         self.assertIn("확정 수", out)
 
+    def test_unmeasured_repeat_renders_dash_not_partial_mean(self):
+        # 한 회차라도 미측정(None)이면 남은 회차만으로 평균 내지 않고 "—".
+        core, (r1, r2) = self._two_repeats()
+        r2 = RepeatResult("우리@32b", None, None, verdicts=r2.verdicts, solved=r2.solved)
+        agg = aggregate_condition("우리@32b", [r1, r2], core)
+        self.assertEqual(agg.elapsed_seconds.render(), "—")
+        self.assertEqual(agg.total_requests.render(), "—")
+        self.assertEqual(agg.confirmed.mean, 9.0)  # 판정 칸은 영향 없음
+
 
 if __name__ == "__main__":
     unittest.main()

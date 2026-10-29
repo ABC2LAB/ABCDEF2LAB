@@ -68,11 +68,12 @@ class RepeatResult:
 
     verdicts/solved의 키는 challenge key. 기준 분모(core/bac)에 있는 키가 여기 없으면
     판정 NONE·미해결로 간주한다(= 미탐). out_of_list_keys는 GT 목록에 없는 finding.
+    elapsed_seconds·total_requests는 러너가 측정 못 하면 None — 표에 "—"(값 지어내지 않음).
     """
 
     condition: str  # 예: "원본@35b", "우리@35b"
-    elapsed_seconds: float  # 확정까지 시간 (초)
-    total_requests: int  # 총 요청 수
+    elapsed_seconds: float | None  # 확정까지 시간 (초), 미측정 None
+    total_requests: int | None  # 총 요청 수, 미측정 None
     verdicts: dict[str, ScanVerdict] = field(default_factory=dict)
     solved: dict[str, bool] = field(default_factory=dict)
     out_of_list_keys: tuple[str, ...] = ()
@@ -128,6 +129,13 @@ def _stat(values: list[float]) -> Stat:
     return Stat(statistics.mean(values), stdev, len(values))
 
 
+def _optional_stat(values: list[float | int | None]) -> Stat:
+    """측정이 빠진 회차가 하나라도 있으면 "—"(n=0). 일부 회차만으로 평균을 내 누락을 가리지 않는다."""
+    if any(v is None for v in values):
+        return Stat(0.0, None, 0)
+    return _stat([float(v) for v in values])
+
+
 @dataclass(frozen=True)
 class ConditionAggregate:
     """한 조건의 N회 반복을 한 기준으로 집계한 결과(매트릭스 한 행)."""
@@ -149,8 +157,8 @@ def aggregate_condition(
     counts = [count_basis(r, basis) for r in repeats]
     return ConditionAggregate(
         condition=condition,
-        elapsed_seconds=_stat([r.elapsed_seconds for r in repeats]),
-        total_requests=_stat([float(r.total_requests) for r in repeats]),
+        elapsed_seconds=_optional_stat([r.elapsed_seconds for r in repeats]),
+        total_requests=_optional_stat([r.total_requests for r in repeats]),
         confirmed=_stat([float(c.confirmed) for c in counts]),
         false_positive=_stat([float(c.false_positive) for c in counts]),
         missed=_stat([float(c.missed) for c in counts]),
