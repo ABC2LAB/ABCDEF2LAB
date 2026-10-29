@@ -1,15 +1,37 @@
-import { useMemo } from "react";
+import { Fragment, useMemo, useState } from "react";
+import { Modal } from "../components/Modal";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
-import { Sev, Strong } from "../components/ui";
+import { Sev, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
-import { type EngineActivity, type EngineTask, getActivity, getTask } from "../lib/engine";
+import {
+  type EngineActivity,
+  type EngineCoverage,
+  type EngineFinding,
+  type EngineTokens,
+  getActivity,
+  getCoverage,
+  getTask,
+  getTokens,
+  listTaskFindings,
+} from "../lib/engine";
+import { cx } from "../lib/cx";
 import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
 import type { Severity, Target } from "../types";
 
-const SEV_ORDER: Severity[] = ["critical", "high", "medium", "low"];
-const SEV_LABEL: Record<Severity, string> = { critical: "심각", high: "높음", medium: "중간", low: "낮음" };
+/* ── 목업(엔진 개발 후 실데이터로) ─────────────────────────────────
+ * 예상 남은 시간 / 예상 토큰은 추정치라 엔진 작업 후 추가 예정 — 지금은 목업 유지.
+ * 그 외 슬롯(진행바·토큰 실사용·발견·커버리지·활동)은 실데이터로 배선.         */
+const MOCK = { etaRange: "12~15", elapsed: "경과 18분", tokenEst: "예상 1.8~2.1M" } as const;
+
+const PIPELINE = ["자산 탐색", "범위 확인", "점검 계획", "취약점 점검", "검증", "마무리", "보고서"];
+// 실 단계 데이터는 아직 없어 status 로 근사(슬롯은 실데이터 들어오면 교체).
+function pipelineNow(status: string): number {
+  if (status === "done" || status === "failed") return 6;
+  if (status === "running" || status === "paused" || status === "timeout") return 3;
+  return 1;
+}
 
 const STATUS_LABEL: Record<string, string> = {
   created: "대기",
@@ -20,22 +42,18 @@ const STATUS_LABEL: Record<string, string> = {
   timeout: "시간초과",
 };
 
-// 활동 종류(kind) → 라벨·점 색
-const KIND: Record<string, { label: string; dot: string }> = {
-  round: { label: "라운드", dot: "var(--muted)" },
-  text: { label: "메시지", dot: "var(--teal)" },
-  result: { label: "결과", dot: "var(--teal-ink)" },
-  tool: { label: "도구", dot: "var(--brand)" },
-  tool_use: { label: "도구", dot: "var(--brand)" },
-  observation: { label: "관찰", dot: "var(--teal)" },
-  finding: { label: "발견", dot: "var(--danger)" },
-  plan: { label: "계획", dot: "var(--muted)" },
-  intent: { label: "의도", dot: "var(--muted)" },
-};
-function kindInfo(k: string): { label: string; dot: string } {
-  return KIND[k] ?? { label: k || "활동", dot: "var(--line-2)" };
+const SEV_ORDER: Severity[] = ["critical", "high", "medium", "low"];
+const SEV_SET = new Set<string>(SEV_ORDER);
+const SEV_LABEL: Record<Severity, string> = { critical: "심각", high: "높음", medium: "중간", low: "낮음" };
+function toSeverity(raw: string): Severity {
+  return SEV_SET.has(raw) ? (raw as Severity) : "low";
 }
 
+function fmtTokens(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
+}
 function tsLabel(ts: number): string {
   if (!ts) return "—";
   const dt = new Date(ts);
@@ -44,32 +62,149 @@ function tsLabel(ts: number): string {
   return `${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`;
 }
 
-const clamp2 = {
-  display: "-webkit-box",
-  WebkitLineClamp: 2,
-  WebkitBoxOrient: "vertical" as const,
-  overflow: "hidden",
-} as const;
+/** 실 커버리지(분모·탐색수·발견수)를 셀 그리드로(와플). per-endpoint 판정은 없어 비율 근사:
+ *  발견수만큼 'f', 나머지 탐색분 'o', 나머지 'n'. 숫자 라벨은 실값. */
+function coverageCells(denominator: number, tested: number, found: number, cap = 48): string[] {
+  const n = Math.min(denominator, cap) || 0;
+  const scale = denominator > cap ? cap / denominator : 1;
+  const t = Math.min(Math.round(tested * scale), n);
+  const f = Math.min(Math.round(found * scale), t);
+  return Array.from({ length: n }, (_, i) => (i < f ? "f" : i < t ? "o" : "n"));
+}
 
-/** ===== 진행/활동 로그 (선택 점검의 실 활동 타임라인) ===== */
+type ActDot = "teal" | "blue" | "warn" | "red";
+function actDot(e: EngineActivity): ActDot {
+  if (e.isError || e.kind === "finding") return "red";
+  if (e.kind === "tool" || e.kind === "tool_use") return "blue";
+  if (e.kind === "result" || e.kind === "text") return "teal";
+  return "warn";
+}
+
+/* ---------- 상세 보기 팝업 (활동 로그) ---------- */
+function LiveDetailModal({
+  open,
+  onClose,
+  title,
+  status,
+  covPct,
+  acts,
+  truncated,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  status: string;
+  covPct: number;
+  acts: EngineActivity[];
+  truncated: boolean;
+}) {
+  return (
+    <Modal open={open} onClose={onClose}>
+      <div className="rpop" role="dialog" aria-label="활동 로그">
+        <div className="rpop-head">
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="rpt">{title}</div>
+            <div className="rpbar">
+              <i style={{ width: `${covPct}%` }} />
+            </div>
+            <div className="rpd">
+              검사 범위 {covPct}% · 활동 {acts.length}건{truncated ? " (앞부분)" : ""}
+            </div>
+          </div>
+          <button className="rpop-x" type="button" onClick={onClose} aria-label="닫기">
+            ✕
+          </button>
+        </div>
+        <div className="rpop-now">
+          {status === "running" ? <span className="spin" /> : null}
+          <div style={{ minWidth: 0 }}>
+            <div className="rpnl">상태</div>
+            <div className="rpnv">{STATUS_LABEL[status] ?? status}</div>
+          </div>
+        </div>
+        <div className="rpop-body">
+          <div className="rp-left">
+            <div className="rp-h">활동 로그</div>
+            <div className="rlegend">
+              <span>
+                <span className="rdot teal" />
+                메시지·결과
+              </span>
+              <span>
+                <span className="rdot blue" />
+                도구
+              </span>
+              <span>
+                <span className="rdot warn" />
+                라운드·계획
+              </span>
+              <span>
+                <span className="rdot red" />
+                발견·오류
+              </span>
+            </div>
+            <div className="rlog">
+              {acts.length === 0 ? (
+                <div style={{ color: "var(--muted)", fontSize: 13, padding: "12px 0" }}>기록된 활동이 없어요.</div>
+              ) : (
+                acts.map((e) => (
+                  <div className="rrow" key={e.seq}>
+                    <span className="rt2">{tsLabel(e.ts)}</span>
+                    <span className={`rdot ${actDot(e)}`} />
+                    <span className="rx">
+                      {e.worker ? `${e.worker} · ` : ""}
+                      {e.summary || e.kind}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+          <div className="rp-right">
+            <div className="rp-h">점검 계획</div>
+            <div className="rpnote">
+              의도(계획)는 플래너만 만들고 워커들이 실행해요. 계획 단계 표시는 <Strong>엔진 연동 후</Strong> 실데이터로
+              채워져요(지금은 활동 로그로 과정을 확인).
+            </div>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- 진행 대시보드 ---------- */
+const small = { fontSize: 13, fontWeight: 600, color: "var(--muted)" } as const;
+const btnSm = { padding: "8px 13px", fontSize: 13 } as const;
+
+/** ===== 진행 대시보드 ===== */
 export default function LiveScreen({ target }: { target: Target }) {
   const go = useGo();
   const { taskId } = useSelection();
+  const [detailOpen, setDetailOpen] = useState(false);
 
-  const { data: task } = useApiResource<EngineTask | null>(
-    () => (taskId ? getTask(taskId) : Promise.resolve(null)),
-    [taskId],
-  );
-  const { data: acts, loading, error } = useApiResource<EngineActivity[]>(() => getActivity(taskId ?? ""), [taskId]);
+  const taskRes = useApiResource(() => (taskId ? getTask(taskId) : Promise.resolve(null)), [taskId]);
+  const findRes = useApiResource<EngineFinding[]>(() => listTaskFindings(taskId ?? ""), [taskId]);
+  const covRes = useApiResource<EngineCoverage | null>(() => getCoverage(taskId ?? ""), [taskId]);
+  const tokRes = useApiResource<EngineTokens>(() => getTokens(taskId ?? ""), [taskId]);
+  const actRes = useApiResource<EngineActivity[]>(() => getActivity(taskId ?? ""), [taskId]);
 
-  const rows = useMemo(() => [...(acts ?? [])].sort((a, b) => a.seq - b.seq), [acts]);
-  // getActivity 는 앞(시간순 처음)에서 limit 건만 가져온다 → 꽉 차면 뒤가 더 있다는 뜻.
-  const truncated = rows.length >= 300;
+  const task = taskRes.data;
+  const findings = useMemo(() => findRes.data ?? [], [findRes.data]);
+  const cov = covRes.data;
+  const acts = useMemo(() => [...(actRes.data ?? [])].sort((a, b) => a.seq - b.seq), [actRes.data]);
 
-  const f = task?.findings ?? { critical: 0, high: 0, medium: 0, low: 0 };
-  const sevBadges = SEV_ORDER.filter((lvl) => (f[lvl] ?? 0) > 0);
+  const sevCounts = useMemo(() => {
+    const c: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const f of findings) c[toSeverity(f.severity)] += 1;
+    return c;
+  }, [findings]);
+
+  const status = task?.status ?? "";
   const title = task?.name?.trim() || target.url || "진행 상황";
-  const statusText = task ? (STATUS_LABEL[task.status] ?? task.status) : "";
+  const covPct = cov && cov.denominator > 0 ? Math.round((cov.tested / cov.denominator) * 100) : 0;
+  const tokenTotal = (tokRes.data?.input ?? 0) + (tokRes.data?.output ?? 0);
+  const cells = cov ? coverageCells(cov.denominator, cov.tested, findings.length) : [];
 
   if (!taskId) {
     return (
@@ -77,7 +212,7 @@ export default function LiveScreen({ target }: { target: Target }) {
         <div className="frame">
           <TopBar current="history" />
           <div style={{ textAlign: "center", padding: "64px 24px", color: "var(--muted)" }}>
-            <p style={{ marginBottom: 16 }}>활동 로그를 볼 점검을 먼저 골라 주세요.</p>
+            <p style={{ marginBottom: 16 }}>진행 상황을 볼 점검을 먼저 골라 주세요.</p>
             <button className="btn primary" type="button" onClick={() => go("history")}>
               점검 기록 열기
             </button>
@@ -92,80 +227,216 @@ export default function LiveScreen({ target }: { target: Target }) {
       <div className="frame">
         <TopBar current="history" />
         <div style={{ padding: "22px 24px" }}>
-          <div className="crumb">
-            {/* biome-ignore lint/a11y/useValidAnchor: 원본 시안 crumb 이동(앵커 스타일 유지) */}
-            <a onClick={() => go("history")}>점검 기록</a> › <span>활동 로그</span>
-          </div>
-          <div className="rhead" style={{ marginBottom: 10 }}>
-            <div style={{ minWidth: 0 }}>
-              <h1 className="big" style={{ marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={title}>
-                {title}
-              </h1>
-              <p className="lead" style={{ marginBottom: 0 }}>
-                {statusText ? `${statusText} · ` : ""}
-                {loading
-                  ? "활동 불러오는 중…"
-                  : error
-                    ? "활동을 불러오지 못했어요."
-                    : `활동 ${rows.length}건${truncated ? " · 앞부분만(이후 더 있음)" : ""}`}
-              </p>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              flexWrap: "wrap",
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ fontSize: 13, color: "var(--muted)", minWidth: 0 }}>
+              점검 · <Strong>{title}</Strong>
+              {status ? ` · ${STATUS_LABEL[status] ?? status}` : ""}
             </div>
-            <div className="row" style={{ flexWrap: "wrap", alignSelf: "center" }}>
-              {sevBadges.map((lvl) => (
-                <Sev key={lvl} level={lvl}>
-                  {SEV_LABEL[lvl]} {f[lvl]}
-                </Sev>
-              ))}
-              {task && (task.status === "done" || task.status === "failed") && (
-                <button className="btn" type="button" onClick={() => go("report")}>
+            <div className="row" style={{ flexWrap: "wrap" }}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 원본 시안 badge 이동 유지 */}
+              <span className="badge" onClick={() => go("approval")}>
+                승인 대기
+              </span>
+              {(status === "done" || status === "failed") && (
+                <button className="btn" type="button" style={btnSm} onClick={() => go("report")}>
                   보고서
                 </button>
               )}
             </div>
           </div>
 
-          {error ? (
-            <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
-              활동 로그를 불러오지 못했어요. ({error})
+          <div className="pipe">
+            {PIPELINE.map((label, i) => {
+              const now = pipelineNow(status);
+              return (
+                <Fragment key={label}>
+                  {i > 0 && <span className={cx("d", i <= now && "on")} />}
+                  <span className={cx("p", i < now && "done", i === now && "now")}>{label}</span>
+                </Fragment>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 4 }}>
+            검사 범위 <Strong>{covPct}%</Strong>
+            {cov && cov.denominator > 0 ? ` · ${cov.tested}/${cov.denominator} 자산 탐색` : ""}
+          </div>
+          <div className="bar">
+            <i style={{ width: `${covPct}%` }} />
+          </div>
+
+          <div className="nowdoing" style={{ marginTop: 16 }}>
+            {status === "running" ? <span className="spin" /> : null}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>상태</div>
+              <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+                {status === "running"
+                  ? "점검 진행 중"
+                  : status === "done"
+                    ? "점검 완료 — 아래 결과·보고서를 확인하세요"
+                    : (STATUS_LABEL[status] ?? status) || "—"}
+              </div>
             </div>
-          ) : !loading && rows.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>
-              이 점검에는 기록된 활동이 없어요.
+            <button
+              className="btn"
+              type="button"
+              onClick={() => setDetailOpen(true)}
+              style={{ marginLeft: "auto", flex: "none", ...btnSm }}
+            >
+              상세 보기
+            </button>
+          </div>
+
+          <div className="dgrid" style={{ margin: "0 0 22px" }}>
+            {/* 목업 유지: 예상 남은 시간(엔진 개발 후) */}
+            <div className="tile">
+              <div className="k">예상 남은 시간</div>
+              <div className="v">
+                {MOCK.etaRange}
+                <span style={small}>분</span>
+              </div>
+              <div className="sub">{MOCK.elapsed} · 예시</div>
             </div>
-          ) : (
-            <div className="log">
-              {rows.map((e) => {
-                const ki = kindInfo(e.kind);
-                const dot = e.isError ? "var(--danger)" : ki.dot;
-                return (
-                  <div
-                    key={e.seq}
-                    className="logrow"
-                    style={e.isError ? { background: "var(--danger-weak)" } : undefined}
-                  >
-                    <span className="ts">{tsLabel(e.ts)}</span>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flex: "none", width: 92 }}>
-                      <span className="dot" style={{ background: dot }} />
-                      <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{ki.label}</span>
+            {/* 실데이터: 소모 토큰(실사용). 예상치 sub 는 목업 */}
+            <div className="tile">
+              <div className="k">소모 토큰</div>
+              <div className="v">{tokRes.loading ? "…" : fmtTokens(tokenTotal)}</div>
+              <div className="sub">{MOCK.tokenEst} · 예시</div>
+            </div>
+            {/* 실데이터: 탐색한 자산 */}
+            <div className="tile">
+              <div className="k">탐색한 자산</div>
+              <div className="v">{cov ? cov.tested : "—"}</div>
+              <div className="sub">{cov ? `범위 ${cov.denominator}` : "집계 전"}</div>
+            </div>
+          </div>
+
+          <div className="wrap" style={{ padding: 0, gap: 22 }}>
+            <div className="col" style={{ flex: "1 1 300px" }}>
+              <h3 style={{ fontSize: 14, marginBottom: 10 }}>
+                발견 (심각도별) <Sub>· 총 {findings.length}건</Sub>
+              </h3>
+              <div className="row" style={{ flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                {SEV_ORDER.map((s) => (
+                  <Sev key={s} level={s}>
+                    {SEV_LABEL[s]} {sevCounts[s]}
+                  </Sev>
+                ))}
+              </div>
+              <div
+                style={{
+                  border: "1px solid var(--line)",
+                  borderRadius: 12,
+                  padding: "4px 14px",
+                  marginTop: 8,
+                }}
+              >
+                <div style={{ fontSize: 12, color: "var(--muted)", paddingTop: 11 }}>최근 발견</div>
+                {findRes.loading ? (
+                  <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>불러오는 중…</div>
+                ) : findings.length === 0 ? (
+                  <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>아직 발견이 없어요.</div>
+                ) : (
+                  findings.slice(0, 4).map((f) => (
+                    // biome-ignore lint/a11y/useKeyWithClickEvents: 원본 시안 .find 클릭 이동 유지
+                    <div key={f.id} className="find" onClick={() => go("report")} style={{ cursor: "pointer" }}>
+                      <Sev level={toSeverity(f.severity)} />
+                      <span className="nm">{f.name || f.vulnclass || "이름 없는 발견"}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+            <div className="col" style={{ flex: "1 1 260px" }}>
+              <h3 style={{ fontSize: 14, marginBottom: 10 }}>판정 결과</h3>
+              <div className="vcard">
+                {[
+                  ["확정", "var(--teal-ink)"],
+                  ["의심", "var(--mid)"],
+                  ["판단 불가", "var(--muted)"],
+                  ["판정 중", "var(--faint)"],
+                ].map(([label, color]) => (
+                  <div className="vbox" key={label}>
+                    <div className="n" style={{ color, fontSize: 18 }}>
+                      —
+                    </div>
+                    <div className="l">{label}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="hint">
+                확정·의심·판단 불가 <Strong>판정</Strong>은 E③ 오라클 연동 후 채워져요(증거 부족은 오탐 대신 판단
+                불가로 남겨요).
+              </div>
+              <h3 style={{ fontSize: 14, margin: "18px 0 8px" }}>
+                검사 커버리지 <Sub>· {cov ? `${cov.tested} / ${cov.denominator} 자산` : "집계 전"}</Sub>
+              </h3>
+              {cov && cov.denominator > 0 ? (
+                <>
+                  <div className="covgrid">
+                    {cells.map((c, i) => (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: 와플 셀은 위치가 곧 키
+                      <span key={i} className={`cc ${c}`} />
+                    ))}
+                  </div>
+                  <div className="cov">
+                    <span>
+                      <span className="dot" style={{ background: "var(--teal)" }} />
+                      검사 · 발견
                     </span>
-                    <span className="msg" style={{ minWidth: 0 }}>
-                      <span style={clamp2} title={e.summary}>
-                        {e.worker ? <span style={{ color: "var(--faint)" }}>{e.worker} · </span> : null}
-                        {e.summary || <span style={{ color: "var(--faint)" }}>(요약 없음)</span>}
-                      </span>
+                    <span>
+                      <span className="dot" style={{ background: "var(--teal-border)" }} />
+                      검사 · 이상 없음
+                    </span>
+                    <span>
+                      <span className="dot" style={{ background: "var(--line-2)" }} />
+                      미검사
                     </span>
                   </div>
-                );
-              })}
+                </>
+              ) : (
+                <div style={{ fontSize: 13, color: "var(--muted)", padding: "8px 0" }}>커버리지 집계 전이에요.</div>
+              )}
             </div>
-          )}
+          </div>
 
-          <div className="hint">
-            의도(계획)는 플래너만 만들고 워커들이 실행해요. 위는 그 과정을 시간순으로 기록한 활동이에요. 각 줄의 원문
-            입력·응답(민감값 포함 가능)은 <Strong>여기 노출하지 않아요.</Strong>
+          <div className="hr" />
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ fontSize: 13, color: "var(--muted)" }}>
+              활동 {acts.length}건 기록됨 · 상세는 <Strong>상세 보기</Strong>
+            </div>
+            <button className="btn" type="button" onClick={() => go("history")}>
+              점검 기록 보기
+            </button>
           </div>
         </div>
       </div>
+
+      <LiveDetailModal
+        open={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        title={title}
+        status={status}
+        covPct={covPct}
+        acts={acts}
+        truncated={acts.length >= 300}
+      />
     </Screen>
   );
 }
