@@ -30,6 +30,7 @@ Thumbs.db
 
 # claude code local state
 .claude/
+/CLAUDE.md
 
 # Codex / OMX local instructions, configuration, and runtime state
 .codex/
