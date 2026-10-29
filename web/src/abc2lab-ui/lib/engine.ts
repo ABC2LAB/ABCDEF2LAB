@@ -110,10 +110,10 @@ export async function getAudit(taskId: string): Promise<AuditResponse> {
 }
 
 /**
- * GET /api/intercept/history — 전송 통제(E²)가 개입한 요청 기록.
+ * GET /api/intercept/task/{id} — ARTEX 승인 게이트(intercept)가 개입한 요청 기록(해당 task).
  * 허용까지 다 남기는 원장이 아니라, 룰/판정으로 **차단**했거나 승인 대기로 잡힌 이벤트다.
  * (tool_input 원문은 민감값을 품을 수 있어 의도적으로 안 받는다.)
- * ※ 변조탐지 해시체인·권한분리는 우리 기여 — 아직 이 레코드에 없다("준비 중").
+ * ※ 우리 전송 통제(E²)·변조탐지 해시체인·권한분리는 아직 이 레코드에 없다("연동 전").
  */
 export type EngineControlEvent = {
   id: number;
@@ -144,24 +144,23 @@ type InterceptHistoryRaw = {
   created_at?: string;
 };
 
-// TODO(이경준): 서버가 history task 필터를 지원하면 ?task= 로 좁히기(지금은 전역 받아 클라에서 task_id 필터).
+// task 전용 라우트라 서버에서 이미 이 task로 스코프됨(전역+클라필터 아님 → 잘림/오집계 없음).
 export async function getControlLog(taskId: string): Promise<EngineControlEvent[]> {
   if (!taskId) return [];
-  const res = await apiFetch<{ items?: InterceptHistoryRaw[]; total?: number }>("/api/intercept/history?limit=500");
-  const items = res.items ?? [];
-  return items
-    .filter((r) => String(r.task_id ?? "") === taskId)
-    .map((r) => ({
-      id: r.id,
-      ts: Date.parse(r.decided_at || r.created_at || "") || 0,
-      taskId: String(r.task_id ?? ""),
-      agent: r.agent_name ?? "",
-      tool: r.tool_name ?? "",
-      status: r.status ?? "",
-      source: r.decision_source ?? "",
-      reason: r.reason ?? "",
-      ruleName: r.rule_name ?? "",
-    }));
+  const res = await apiFetch<{ items?: InterceptHistoryRaw[]; total?: number }>(
+    `/api/intercept/task/${encodeURIComponent(taskId)}`,
+  );
+  return (res.items ?? []).map((r) => ({
+    id: r.id,
+    ts: Date.parse(r.decided_at || r.created_at || "") || 0,
+    taskId: String(r.task_id ?? ""),
+    agent: r.agent_name ?? "",
+    tool: r.tool_name ?? "",
+    status: r.status ?? "",
+    source: r.decision_source ?? "",
+    reason: r.reason ?? "",
+    ruleName: r.rule_name ?? "",
+  }));
 }
 
 /**
