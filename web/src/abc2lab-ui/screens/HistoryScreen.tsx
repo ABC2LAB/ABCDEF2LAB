@@ -9,6 +9,8 @@ import { useGo } from "../nav";
 import type { Severity } from "../types";
 
 const btnSm = { padding: "9px 15px", fontSize: 13 } as const;
+// 긴 이름/설명이 카드를 밀어내지 않게 한 줄로 자르고 … 처리 (부모가 minWidth:0 이라야 동작)
+const oneLine = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
 
 const STATUS_LABEL: Record<string, string> = {
   created: "대기",
@@ -62,7 +64,14 @@ function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "re
   const f = task.findings ?? { critical: 0, high: 0, medium: 0, low: 0 };
   const badges = SEV_ORDER.filter((lvl) => (f[lvl] ?? 0) > 0);
   const terminal = isTerminal(task.status);
-  const title = task.name || task.description || "이름 없는 점검";
+  const hasFindings = badges.length > 0;
+  // 종료된 점검이거나 이미 발견이 쌓인 점검이면 상태와 무관하게 보고서를 볼 수 있다
+  // (일시중지/진행 중이어도 지금까지의 결과 열람 — Live 는 아직 목업이라 데이터 있으면 보고서로).
+  const canReport = terminal || hasFindings;
+  const name = task.name?.trim();
+  const title = name || "이름 없는 점검";
+  // 이름이 비어 있을 때만 설명(대상 프롬프트 등)을 한 줄로 잘라 부제로 — 긴 문단이 제목을 먹지 않게.
+  const subtitle = name ? undefined : task.description?.trim();
 
   const parts = [timeLabel(task.created_at), STATUS_LABEL[task.status] ?? task.status];
   if (task.goals_total > 0) parts.push(`목표 ${task.goals_met}/${task.goals_total}`);
@@ -70,7 +79,14 @@ function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "re
   return (
     <div className="hcard">
       <div style={{ minWidth: 0 }}>
-        <div className="nm">{title}</div>
+        <div className="nm" style={oneLine} title={title}>
+          {title}
+        </div>
+        {subtitle && (
+          <div className="meta" style={oneLine} title={subtitle}>
+            {subtitle}
+          </div>
+        )}
         <div className="meta">{parts.filter(Boolean).join(" · ")}</div>
       </div>
       <div className="acts">
@@ -84,12 +100,12 @@ function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "re
           <Pill tone="muted">발견 없음</Pill>
         ) : null}
         <button
-          className={terminal ? "btn" : "btn primary"}
+          className={canReport ? "btn" : "btn primary"}
           type="button"
-          onClick={() => onOpen(terminal ? "report" : "live")}
+          onClick={() => onOpen(canReport ? "report" : "live")}
           style={btnSm}
         >
-          {terminal ? "보고서" : "이어 보기"}
+          {canReport ? "보고서" : "이어 보기"}
         </button>
       </div>
     </div>
