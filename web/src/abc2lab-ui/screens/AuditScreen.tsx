@@ -49,7 +49,7 @@ const noticeBox = {
   marginBottom: 14,
 } as const;
 
-/** ===== 통제 기록(감사) — 전송 통제(E²)가 개입한 요청 ===== */
+/** ===== 통제 기록(감사) — ARTEX 승인 게이트(intercept)가 개입한 요청 ===== */
 export default function AuditScreen() {
   const go = useGo();
   const { taskId } = useSelection();
@@ -110,7 +110,7 @@ export default function AuditScreen() {
                   ? "불러오는 중…"
                   : error
                     ? "불러오지 못했어요."
-                    : `전송 통제(E²) 개입 ${events.length}건`}
+                    : `승인 게이트(ARTEX intercept) 개입 ${events.length}건`}
               </p>
             </div>
             {/* 변조탐지 해시체인은 우리 기여(미구현) — "무결"을 단정하지 않는다 */}
@@ -120,9 +120,10 @@ export default function AuditScreen() {
           </div>
 
           <div style={noticeBox}>
-            전송 통제(E²)가 <Strong>차단</Strong>했거나 승인 대기로 잡은 요청 기록이에요(허용까지 남기는 원장은 아님).{" "}
-            <Strong>변조 탐지 해시체인</Strong>과 <Strong>로그 권한 분리</Strong>는 우리가 얹는 기여로, 연동되면 각
-            줄에 체인 해시가 붙어요.
+            ARTEX <Strong>승인 게이트(intercept)</Strong>가 에이전트 도구 호출을 <Strong>차단</Strong>했거나 승인
+            대기로 잡은 기록이에요(허용까지 남기는 원장은 아님). 우리{" "}
+            <Strong>전송 통제(E², 네트워크 경계)</Strong>와 <Strong>변조 탐지 해시체인·로그 권한 분리</Strong>는{" "}
+            <Strong>연동 전</Strong> — 연동되면 각 줄에 체인 해시가 붙어요.
           </div>
 
           <Tabs<FilterKey>
@@ -188,8 +189,8 @@ export default function AuditScreen() {
           )}
 
           <div className="hint">
-            각 줄은 전송 통제(E²)가 막거나 승인 대기로 잡은 요청이에요. 변조 탐지 체인과 권한 분리가 연동되면 한 줄이라도
-            바뀔 때 <Strong>그 뒤 체인이 전부 깨져서 변조가 드러나요.</Strong>
+            각 줄은 ARTEX 승인 게이트가 막거나 승인 대기로 잡은 도구 호출이에요. 전송 통제(E²)·변조 탐지 체인·권한
+            분리가 연동되면 한 줄이라도 바뀔 때 <Strong>그 뒤 체인이 전부 깨져서 변조가 드러나요.</Strong>
           </div>
         </div>
       </div>

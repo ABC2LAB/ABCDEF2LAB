@@ -52,14 +52,15 @@ export default function SettingsScreen() {
         <div style={{ padding: "22px 24px", maxWidth: 780 }}>
           <h1 className="big">설정 · 통제 정책</h1>
           <p className="lead">
-            실행 허용은 LLM이 아니라 <Strong>전송 통제(E²)</Strong>가 쥐어요. 아래 규칙을 통과한 요청만 나가고,
-            통과·차단은 전부 감사 로그로 남아요.
+            실행 허용은 LLM이 아니라 <Strong>통제 규칙</Strong>이 정해요. 지금은 ARTEX 기본{" "}
+            <Strong>승인 게이트(intercept)</Strong>가 에이전트 도구 호출을 거릅니다. 우리{" "}
+            <Strong>전송 통제(E², 네트워크 경계)</Strong>와 변조 탐지 감사는 아직 <Strong>연동 전</Strong>이에요.
           </p>
 
           {/* ── 활성 통제 규칙 (E²) — 실데이터 ── */}
           <div className="card">
             <h3>
-              활성 통제 규칙 <Sub>· 전송 통제(E²)가 요청을 거르는 규칙</Sub>
+              활성 통제 규칙 <Sub>· ARTEX 승인 게이트(intercept)가 도구 호출을 거르는 규칙</Sub>
             </h3>
 
             {rulesRes.loading ? (
@@ -102,8 +103,8 @@ export default function SettingsScreen() {
                   );
                 })}
                 <div className="hint">
-                  엔진 내장 기본 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 전송 통제(E²) 엔진 연동 후 열려요(그 전엔
-                  읽기 전용).
+                  ARTEX 내장 기본 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E²) 연동 후 열려요(그
+                  전엔 읽기 전용).
                 </div>
               </>
             )}
@@ -168,7 +169,7 @@ export default function SettingsScreen() {
               <div className="tx">
                 <div className="t">감사 로그</div>
                 <div className="d">
-                  모든 요청과 승인 결정이 로그로 남아요. (변조 탐지 체인·권한 분리는 우리가 얹는 기여 — 연동 후.)
+                  통제가 차단했거나 승인 대기로 잡은 요청이 기록돼요. (변조 탐지 체인·권한 분리는 우리가 얹는 기여 — 연동 후.)
                 </div>
               </div>
               <button
