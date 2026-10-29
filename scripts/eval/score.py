@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aggregate import RepeatResult, aggregate_condition, render_matrix  # noqa: E402
 from collect import ScanOutputError, ScanParseResult, VerdictRecord, parse_scan_output  # noqa: E402
 from correlation import DEFAULT_PATH, CorrelationError, load_correlation  # noqa: E402
+from evidence import TrafficIndex, challenge_has_evidence  # noqa: E402
 from ground_truth import bac_category, core_gt  # noqa: E402
 from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa: E402
 from scoreboard import SnapshotError, parse_scoreboard_snapshot, require_basis_keys  # noqa: E402
@@ -61,10 +62,24 @@ _VERDICT_ADAPTERS: dict[Engine, Callable[[RunManifest, Correlate], ScanParseResu
 }
 
 
+def confirmed_evidence(
+    parsed: ScanParseResult, traffic: TrafficIndex | None, correlate: Correlate
+) -> dict[str, bool]:
+    """챌린지별 증거 3조건 충족(§4-2) — confirmed 레코드 중 충족 레코드가 하나 이상인가."""
+    return {
+        key: challenge_has_evidence(records, key, traffic, correlate)
+        for key, records in parsed.confirmed_records.items()
+    }
+
+
 def assemble_repeat(
-    manifest: RunManifest, parsed: ScanParseResult, solved: dict[str, bool]
+    manifest: RunManifest,
+    parsed: ScanParseResult,
+    solved: dict[str, bool],
+    evidence_ok: dict[str, bool],
+    covered: frozenset[str] | None,
 ) -> RepeatResult:
-    """정규화된 판정·해결상태 → RepeatResult. 엔진을 보지 않는다(같은 입력이면 같은 결과)."""
+    """정규화된 판정·해결상태·증거·커버리지 → RepeatResult. 엔진을 보지 않는다."""
     return RepeatResult(
         condition=manifest.condition,
         elapsed_seconds=manifest.elapsed_seconds,
@@ -72,15 +87,29 @@ def assemble_repeat(
         verdicts=dict(parsed.verdicts),
         solved=dict(solved),
         out_of_list_keys=parsed.out_of_list,
+        evidence_ok=dict(evidence_ok),
+        covered=covered,
     )
 
 
-def score_repeat(manifest: RunManifest, correlate: Correlate) -> RepeatResult:
-    """회차 1개를 채점 입력으로. 스냅샷에 채점 분모(코어 ∪ BAC)의 key가 빠지면 에러(§2)."""
+def score_repeat(
+    manifest: RunManifest,
+    correlate: Correlate,
+    *,
+    traffic: TrafficIndex | None = None,
+    covered: frozenset[str] | None = None,
+) -> RepeatResult:
+    """회차 1개를 채점 입력으로. 스냅샷에 채점 분모(코어 ∪ BAC)의 key가 빠지면 에러(§2).
+
+    traffic 인덱스·커버리지는 아직 로더가 없어 CLI는 None으로 부른다(TODO(이동찬) traffic
+    export·type 명명, TODO(이경준) 커버리지 지도). None이면 증거 (b)(c)를 확인할 수 없어
+    confirmed+해결은 판단불가, 판정 없음+미해결도 판단불가다 — 설계상 정직한 결과.
+    """
     parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate)
     solved = parse_scoreboard_snapshot(manifest.snapshot_path)
     require_basis_keys(solved, core_gt() + bac_category())
-    return assemble_repeat(manifest, parsed, solved)
+    evidence_ok = confirmed_evidence(parsed, traffic, correlate)
+    return assemble_repeat(manifest, parsed, solved, evidence_ok, covered)
 
 
 def check_comparable(manifests: list[RunManifest]) -> None:

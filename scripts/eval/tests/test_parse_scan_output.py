@@ -171,11 +171,11 @@ class TestNoSilentReclassification(_FixtureDir):
             out_of_list_keys=out_of_list,
         )
         counts = count_basis(repeat, core_gt())
-        self.assertEqual(counts.undecided, 2)
         self.assertEqual(counts.false_positive, 0)
         self.assertEqual(counts.confirmed, 0)
-        # 레코드 없는 나머지 코어 7개만 미탐 측(이 커밋 기준 classify). allowed는 거기 안 든다.
-        self.assertEqual(counts.missed, len(core_gt()) - 2)
+        # undecidable·allowed 2개 + 레코드 없는 나머지 7개(미해결·커버리지 출처 없음, §4-4) = 전부 판단불가.
+        self.assertEqual(counts.undecided, len(core_gt()))
+        self.assertEqual(counts.missed, 0)
 
 
 class TestMalformed(_FixtureDir):

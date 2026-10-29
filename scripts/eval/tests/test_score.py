@@ -160,6 +160,51 @@ class TestDenominator(_RunDir):
             self.assertEqual(c.confirmed + c.false_positive + c.missed + c.undecided, size)
 
 
+class TestEvidenceAndCoverage(_RunDir):
+    """T3②·T4 end-to-end — 증거·커버리지가 없으면 확정·미탐을 주지 않는다."""
+
+    _SOLID = [_record("confirmed", "rest:basket:1", traffic_evidence_refs=["t-cross"])]
+    _TRAFFIC = {"t-cross": "rest:basket:1"}
+
+    def _core(self, run: dict, **kwargs: object):
+        return count_basis(score_repeat(self.load([run])[0], self.correlate, **kwargs), core_gt())
+
+    def test_t4_cli_path_confirmed_solved_is_undecided(self) -> None:
+        # traffic 인덱스 없음(지금 CLI 경로) → 증거 (b)(c) 확인 불가 → 확정 아님.
+        run = self.make_run("r0", self._SOLID, solved={"basketAccessChallenge": True})
+        c = self._core(run)
+        self.assertEqual((c.confirmed, c.false_positive), (0, 0))
+        code, out, _ = self.run_main([run])
+        self.assertEqual(code, 0)
+        self.assertIn("| 우리@test | — | — | 0 (n=1) | 0 (n=1) | 0 (n=1) | 9 (n=1) |", out)
+
+    def test_confirmed_only_with_traffic_index_fixture(self) -> None:
+        # 확정 칸은 traffic 인덱스가 붙어야(지금은 fixture에서만) 나온다.
+        run = self.make_run("r0", self._SOLID, solved={"basketAccessChallenge": True})
+        self.assertEqual(self._core(run, traffic=self._TRAFFIC).confirmed, 1)
+
+    def test_t4_records_without_solid_ref_stay_undecided_even_with_index(self) -> None:
+        noisy = [
+            _record("confirmed", "rest:basket:1"),
+            _record("confirmed", "rest:basket:2", traffic_evidence_refs=["t-gone", "t-login"]),
+        ]
+        run = self.make_run("r0", noisy, solved={"basketAccessChallenge": True})
+        c = self._core(run, traffic={"t-login": "rest:user:login"})
+        self.assertEqual((c.confirmed, c.undecided), (0, 9))
+
+    def test_t3_no_finding_unsolved_is_undecided_not_missed(self) -> None:
+        c = self._core(self.make_run("r0", []))
+        self.assertEqual((c.missed, c.undecided), (0, 9))
+
+    def test_solve_without_finding_is_missed(self) -> None:
+        c = self._core(self.make_run("r0", [], solved={"forgedReviewChallenge": True}))
+        self.assertEqual((c.missed, c.undecided), (1, 8))
+
+    def test_coverage_fixture_turns_unsolved_no_finding_into_missed(self) -> None:
+        c = self._core(self.make_run("r0", []), covered=frozenset({"adminSectionChallenge", "feedbackChallenge"}))
+        self.assertEqual((c.missed, c.undecided), (2, 7))
+
+
 class TestSameScript(_RunDir):
     """T5 — 정규화 뒤 채점은 엔진을 안 본다. baseline은 0점 대신 에러."""
 
@@ -170,7 +215,8 @@ class TestSameScript(_RunDir):
         self.assertIs(base.engine, Engine.BASELINE)
         parsed = ScanParseResult(verdicts={}, out_of_list=("rest:x:1",), conflicts=())
         solved = {k: False for k in _SCORED_KEYS}
-        self.assertEqual(assemble_repeat(ours, parsed, solved), assemble_repeat(base, parsed, solved))
+        args = (parsed, solved, {"basketAccessChallenge": True}, frozenset({"feedbackChallenge"}))
+        self.assertEqual(assemble_repeat(ours, *args), assemble_repeat(base, *args))
 
     def test_baseline_is_error_not_zero(self) -> None:
         run = self.make_run("r0", [], engine="baseline", condition="원본@test")
