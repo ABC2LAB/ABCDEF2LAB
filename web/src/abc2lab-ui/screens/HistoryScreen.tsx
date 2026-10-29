@@ -1,0 +1,238 @@
+import { useMemo, useState } from "react";
+import { Screen } from "../components/Screen";
+import { TopBar } from "../components/TopBar";
+import { Pill, Sev, Strong } from "../components/ui";
+import { useApiResource } from "../lib/api";
+import { type EngineTask, listTasks } from "../lib/engine";
+import { useSelection } from "../lib/selection";
+import { useGo } from "../nav";
+import type { Severity } from "../types";
+
+const btnSm = { padding: "9px 15px", fontSize: 13 } as const;
+
+const STATUS_LABEL: Record<string, string> = {
+  created: "대기",
+  running: "진행 중",
+  paused: "일시중지",
+  done: "완료",
+  failed: "실패",
+};
+
+const SORTS = [
+  { key: "new", label: "최신순" },
+  { key: "old", label: "오래된순" },
+] as const;
+type SortKey = (typeof SORTS)[number]["key"];
+
+const SEV_ORDER: Severity[] = ["critical", "high", "medium", "low"];
+const SEV_COUNT_LABEL: Record<Severity, string> = {
+  critical: "심각",
+  high: "높음",
+  medium: "중간",
+  low: "낮음",
+};
+
+function isRunning(status: string): boolean {
+  return status === "running" || status === "paused" || status === "created";
+}
+function isTerminal(status: string): boolean {
+  return status === "done" || status === "failed";
+}
+
+/** created_at(RFC3339) → 그룹 키(YYYY-MM-DD)와 표시용 날짜/시각 */
+function dayKey(iso: string): string {
+  return iso ? iso.slice(0, 10) : "";
+}
+function dayLabel(key: string): string {
+  if (!key) return "날짜 미상";
+  const today = new Date().toISOString().slice(0, 10);
+  if (key === today) return "오늘";
+  const [, m, d] = key.split("-");
+  return `${Number(m)}/${Number(d)}`;
+}
+function timeLabel(iso: string): string {
+  if (!iso) return "";
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return "";
+  return `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+}
+
+/** 한 점검(task) 카드 */
+function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "report") => void }) {
+  const f = task.findings ?? { critical: 0, high: 0, medium: 0, low: 0 };
+  const badges = SEV_ORDER.filter((lvl) => (f[lvl] ?? 0) > 0);
+  const terminal = isTerminal(task.status);
+  const title = task.name || task.description || "이름 없는 점검";
+
+  const parts = [timeLabel(task.created_at), STATUS_LABEL[task.status] ?? task.status];
+  if (task.goals_total > 0) parts.push(`목표 ${task.goals_met}/${task.goals_total}`);
+
+  return (
+    <div className="hcard">
+      <div style={{ minWidth: 0 }}>
+        <div className="nm">{title}</div>
+        <div className="meta">{parts.filter(Boolean).join(" · ")}</div>
+      </div>
+      <div className="acts">
+        {badges.length > 0 ? (
+          badges.map((lvl) => (
+            <Sev key={lvl} level={lvl}>
+              {SEV_COUNT_LABEL[lvl]} {f[lvl]}
+            </Sev>
+          ))
+        ) : terminal ? (
+          <Pill tone="muted">발견 없음</Pill>
+        ) : null}
+        <button
+          className={terminal ? "btn" : "btn primary"}
+          type="button"
+          onClick={() => onOpen(terminal ? "report" : "live")}
+          style={btnSm}
+        >
+          {terminal ? "보고서" : "이어 보기"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** ===== 점검 기록 ===== */
+export default function HistoryScreen() {
+  const go = useGo();
+  const { selectTask } = useSelection();
+  const { data, loading, error, reload } = useApiResource(listTasks);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<SortKey>("new");
+
+  const tasks = data?.tasks ?? [];
+
+  const counts = useMemo(
+    () => ({
+      all: tasks.length,
+      running: tasks.filter((t) => t.status === "running" || t.status === "paused").length,
+      done: tasks.filter((t) => t.status === "done").length,
+      failed: tasks.filter((t) => t.status === "failed").length,
+    }),
+    [tasks],
+  );
+
+  const groups = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = tasks.filter((t) => {
+      if (!q) return true;
+      return (t.name || t.description || "").toLowerCase().includes(q);
+    });
+    filtered.sort((a, b) =>
+      sort === "new" ? b.created_at.localeCompare(a.created_at) : a.created_at.localeCompare(b.created_at),
+    );
+    const byDay = new Map<string, EngineTask[]>();
+    for (const t of filtered) {
+      const k = dayKey(t.created_at);
+      const arr = byDay.get(k);
+      if (arr) arr.push(t);
+      else byDay.set(k, [t]);
+    }
+    return [...byDay.entries()];
+  }, [tasks, query, sort]);
+
+  return (
+    <Screen id="history">
+      <div className="frame">
+        <TopBar current="history" />
+        <div style={{ padding: "22px 24px" }}>
+          <h1 className="big">점검 기록</h1>
+          <p className="lead">
+            {loading ? (
+              "불러오는 중…"
+            ) : error ? (
+              "기록을 불러오지 못했어요."
+            ) : (
+              <>
+                지금까지 <Strong>{counts.all}번</Strong> 점검했어요. 각 점검의 보고서는 카드에서 바로 열어요.
+              </>
+            )}
+          </p>
+
+          <div className="search">
+            <input
+              className="inp"
+              placeholder="기록 검색"
+              style={{ flex: "1 1 220px" }}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="기록 검색"
+            />
+            <select
+              className="inp"
+              style={{ flex: "0 1 160px" }}
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortKey)}
+              aria-label="정렬"
+            >
+              {SORTS.map((s) => (
+                <option key={s.key} value={s.key}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+            <button className="btn primary" type="button" onClick={() => go("entry")}>
+              ＋ 새 점검
+            </button>
+          </div>
+
+          {error ? (
+            <div className="hcard" style={{ borderColor: "var(--danger-border)", background: "var(--danger-weak)" }}>
+              <div style={{ minWidth: 0 }}>
+                <div className="nm">불러오기 실패</div>
+                <div className="meta">{error}</div>
+              </div>
+              <div className="acts">
+                <button className="btn" type="button" onClick={reload} style={btnSm}>
+                  다시 시도
+                </button>
+              </div>
+            </div>
+          ) : !loading && tasks.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "48px 0", color: "var(--muted)" }}>
+              <p style={{ marginBottom: 16 }}>아직 점검 기록이 없어요.</p>
+              <button className="btn primary" type="button" onClick={() => go("entry")}>
+                ＋ 첫 점검 시작
+              </button>
+            </div>
+          ) : (
+            <>
+              {counts.all > 0 && (
+                <div className="search" style={{ gap: 8, marginTop: 4 }}>
+                  <Pill tone="muted">전체 {counts.all}</Pill>
+                  {counts.running > 0 && <Pill>진행 중 {counts.running}</Pill>}
+                  {counts.done > 0 && <Pill tone="muted">완료 {counts.done}</Pill>}
+                  {counts.failed > 0 && <Pill tone="warn">실패 {counts.failed}</Pill>}
+                </div>
+              )}
+              {groups.map(([key, items]) => (
+                <div key={key || "unknown"}>
+                  <div className="daylab">{dayLabel(key)}</div>
+                  {items.map((t) => (
+                    <TaskCard
+                      key={t.id}
+                      task={t}
+                      onOpen={(s) => {
+                        selectTask(t.id);
+                        go(s);
+                      }}
+                    />
+                  ))}
+                </div>
+              ))}
+              {!loading && groups.length === 0 && query && (
+                <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
+                  “{query}” 에 맞는 기록이 없어요.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </Screen>
+  );
+}

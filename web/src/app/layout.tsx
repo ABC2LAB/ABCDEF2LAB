@@ -1,60 +1,20 @@
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import type { Metadata } from "next";
-
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { APP_CONFIG } from "@/config/app-config";
-import { resolveLocale } from "@/i18n/config";
-import { IntlRuntimeProvider } from "@/i18n/intl-runtime-provider";
-import { fontVars } from "@/lib/fonts/registry";
-import { PREFERENCE_DEFAULTS } from "@/lib/preferences/preferences-config";
-import { ThemeBootScript } from "@/scripts/theme-boot";
-import { PreferencesStoreProvider } from "@/stores/preferences/preferences-provider";
-
-import "./globals.css";
+// ABC2LAB 점검 흐름 UI 전용 전역 스타일(원본 시안 그대로). 기존 globals.css(Tailwind/shadcn)는
+// :root·body 를 덮어써 시안과 충돌하므로 여기서 불러오지 않는다.
+import "@/abc2lab-ui/abc2lab.css";
 
 export const metadata: Metadata = {
-  title: APP_CONFIG.meta.title,
-  description: APP_CONFIG.meta.description,
+  title: "ABC2LAB 점검 흐름",
 };
 
+// TODO(이경준): Noto Sans KR 정확 렌더는 폐쇄망에서 외부 요청 없이 쓰도록 빌드타임 self-host
+// (next/font 로컬 또는 public/)로 붙인다. 지금은 abc2lab.css 의 한글 폴백 폰트로 뜬다.
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
-  const { theme_mode, theme_preset, content_layout, navbar_style, sidebar_variant, sidebar_collapsible, font } =
-    PREFERENCE_DEFAULTS;
-  const locale = resolveLocale();
   return (
-    <html
-      lang={locale}
-      data-theme-mode={theme_mode}
-      data-theme-preset={theme_preset}
-      data-content-layout={content_layout}
-      data-navbar-style={navbar_style}
-      data-sidebar-variant={sidebar_variant}
-      data-sidebar-collapsible={sidebar_collapsible}
-      data-font={font}
-      suppressHydrationWarning
-    >
-      <head>
-        {/* Applies theme and layout preferences on load to avoid flicker and unnecessary server rerenders. */}
-        <ThemeBootScript />
-      </head>
-      <body className={`${fontVars} min-h-screen antialiased`}>
-        <IntlRuntimeProvider>
-          <TooltipProvider>
-            <PreferencesStoreProvider
-              themeMode={theme_mode}
-              themePreset={theme_preset}
-              contentLayout={content_layout}
-              navbarStyle={navbar_style}
-              font={font}
-            >
-              {children}
-              <Toaster />
-            </PreferencesStoreProvider>
-          </TooltipProvider>
-        </IntlRuntimeProvider>
-      </body>
+    <html lang="ko">
+      <body>{children}</body>
     </html>
   );
 }
