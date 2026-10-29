@@ -4,33 +4,41 @@ import { Tabs } from "../components/Tabs";
 import { TopBar } from "../components/TopBar";
 import { Strong } from "../components/ui";
 import { useApiResource } from "../lib/api";
-import { type EngineAuditEntry, getAudit } from "../lib/engine";
+import { type EngineControlEvent, getControlLog } from "../lib/engine";
 import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
 
-type Who = "sys" | "agent" | "op";
-const WHO_LABEL: Record<Who, string> = { sys: "시스템", agent: "에이전트", op: "사람" };
+// 누가 통제를 정했나 (decision_source)
+const SOURCE_LABEL: Record<string, string> = { rule: "규칙", judge: "모델 판정", user: "사람" };
+function sourceLabel(s: string): string {
+  return SOURCE_LABEL[s] ?? (s || "—");
+}
+// 범주색 재사용: 규칙=시스템, 모델판정=에이전트, 사람=op
+const SOURCE_WHO: Record<string, string> = { rule: "sys", judge: "agent", user: "op" };
 
-type FilterKey = "all" | "agent" | "human" | "system";
-const FILTER_WHO: Record<Exclude<FilterKey, "all">, Who> = { agent: "agent", human: "op", system: "sys" };
+type FilterKey = "all" | "rule" | "judge" | "user";
 
-/** E² 게이트 로그는 에이전트 도구 호출. 차단은 통제(시스템)가 막은 것 → who 파생 */
-function entryWho(e: EngineAuditEntry): Who {
-  return e.action === "block" ? "sys" : "agent";
+/** status → 표시 라벨·색 */
+function statusInfo(status: string): { label: string; style: React.CSSProperties } {
+  const s = status.toLowerCase();
+  if (s.includes("den") || s.includes("block"))
+    return { label: "차단", style: { color: "var(--danger)", fontWeight: 700 } };
+  if (s.includes("pend")) return { label: "대기", style: { color: "var(--muted)", fontWeight: 700 } };
+  if (s.includes("allow") || s.includes("approv"))
+    return { label: "허용", style: { color: "var(--teal-ink)", fontWeight: 700 } };
+  return { label: status || "—", style: { color: "var(--muted)", fontWeight: 700 } };
 }
 
-/** unix epoch(초 또는 ms) → HH:MM:SS */
+/** ISO/epoch → HH:MM:SS */
 function tsLabel(ts: number): string {
   if (!ts) return "—";
-  const ms = ts < 1e12 ? ts * 1000 : ts;
-  const dt = new Date(ms);
+  const dt = new Date(ts);
   if (Number.isNaN(dt.getTime())) return "—";
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`;
 }
 
-const allowed = { color: "var(--teal-ink)" } as const;
-const blocked = { color: "var(--warn)" } as const;
+const oneLine = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
 const noticeBox = {
   fontSize: 12.5,
   color: "var(--muted)",
@@ -41,30 +49,31 @@ const noticeBox = {
   marginBottom: 14,
 } as const;
 
-/** ===== 감사 로그 ===== */
+/** ===== 통제 기록(감사) — 전송 통제(E²)가 개입한 요청 ===== */
 export default function AuditScreen() {
   const go = useGo();
   const { taskId } = useSelection();
   const [filter, setFilter] = useState<FilterKey>("all");
 
-  const { data, loading, error } = useApiResource(() => getAudit(taskId ?? ""), [taskId]);
-  const entries = useMemo(() => data?.entries ?? [], [data]);
+  const { data, loading, error } = useApiResource(() => getControlLog(taskId ?? ""), [taskId]);
+  const events = useMemo<EngineControlEvent[]>(() => data ?? [], [data]);
 
   const counts = useMemo(() => {
-    let agent = 0;
-    let sys = 0;
-    for (const e of entries) {
-      if (entryWho(e) === "sys") sys += 1;
-      else agent += 1;
+    let rule = 0;
+    let judge = 0;
+    let user = 0;
+    for (const e of events) {
+      if (e.source === "rule") rule += 1;
+      else if (e.source === "judge") judge += 1;
+      else if (e.source === "user") user += 1;
     }
-    return { all: entries.length, agent, system: sys, human: 0 };
-  }, [entries]);
+    return { all: events.length, rule, judge, user };
+  }, [events]);
 
   const rows = useMemo(() => {
-    if (filter === "all") return entries;
-    const who = FILTER_WHO[filter];
-    return entries.filter((e) => entryWho(e) === who);
-  }, [entries, filter]);
+    if (filter === "all") return events;
+    return events.filter((e) => e.source === filter);
+  }, [events, filter]);
 
   if (!taskId) {
     return (
@@ -72,7 +81,7 @@ export default function AuditScreen() {
         <div className="frame">
           <TopBar current="settings" />
           <div style={{ textAlign: "center", padding: "64px 24px", color: "var(--muted)" }}>
-            <p style={{ marginBottom: 16 }}>감사 로그를 볼 점검을 먼저 골라 주세요.</p>
+            <p style={{ marginBottom: 16 }}>통제 기록을 볼 점검을 먼저 골라 주세요.</p>
             <button className="btn primary" type="button" onClick={() => go("history")}>
               점검 기록 열기
             </button>
@@ -89,15 +98,19 @@ export default function AuditScreen() {
         <div style={{ padding: "22px 24px" }}>
           <div className="crumb">
             {/* biome-ignore lint/a11y/useValidAnchor: 원본 시안 crumb 이동(앵커 스타일 유지) */}
-            <a onClick={() => go("settings")}>설정</a> › <span>감사 로그</span>
+            <a onClick={() => go("settings")}>설정</a> › <span>통제 기록</span>
           </div>
           <div className="rhead" style={{ marginBottom: 14 }}>
             <div>
               <h1 className="big" style={{ marginBottom: 4 }}>
-                감사 로그
+                통제 기록
               </h1>
               <p className="lead" style={{ marginBottom: 0 }}>
-                {loading ? "불러오는 중…" : error ? "불러오지 못했어요." : `E² 게이트 기록 ${entries.length}건`}
+                {loading
+                  ? "불러오는 중…"
+                  : error
+                    ? "불러오지 못했어요."
+                    : `전송 통제(E²) 개입 ${events.length}건`}
               </p>
             </div>
             {/* 변조탐지 해시체인은 우리 기여(미구현) — "무결"을 단정하지 않는다 */}
@@ -107,8 +120,9 @@ export default function AuditScreen() {
           </div>
 
           <div style={noticeBox}>
-            아래는 전송 통제(E²)가 게이트한 요청 기록이에요. <Strong>변조 탐지 해시체인</Strong>과{" "}
-            <Strong>로그 권한 분리</Strong>는 우리가 얹는 기여로, 연동되면 각 줄에 체인 해시가 붙어요.
+            전송 통제(E²)가 <Strong>차단</Strong>했거나 승인 대기로 잡은 요청 기록이에요(허용까지 남기는 원장은 아님).{" "}
+            <Strong>변조 탐지 해시체인</Strong>과 <Strong>로그 권한 분리</Strong>는 우리가 얹는 기여로, 연동되면 각
+            줄에 체인 해시가 붙어요.
           </div>
 
           <Tabs<FilterKey>
@@ -116,38 +130,48 @@ export default function AuditScreen() {
             onChange={setFilter}
             items={[
               { key: "all", label: "전체", count: counts.all },
-              { key: "agent", label: "에이전트 요청", count: counts.agent },
-              { key: "human", label: "사람 결정", count: counts.human },
-              { key: "system", label: "시스템", count: counts.system },
+              { key: "rule", label: "규칙", count: counts.rule },
+              { key: "judge", label: "모델 판정", count: counts.judge },
+              { key: "user", label: "사람", count: counts.user },
             ]}
           />
 
           {error ? (
             <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
-              감사 로그를 불러오지 못했어요. ({error})
+              통제 기록을 불러오지 못했어요. ({error})
             </div>
-          ) : !loading && entries.length === 0 ? (
+          ) : !loading && events.length === 0 ? (
             <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>
-              아직 이 점검에서 나간 요청 기록이 없어요.
+              이 점검에서 통제가 개입한 기록이 없어요.
             </div>
           ) : (
             <div className="log">
-              {rows.map((e, i) => {
-                const who = entryWho(e);
-                const isBlock = e.action === "block";
+              {rows.map((e) => {
+                const st = statusInfo(e.status);
+                const who = SOURCE_WHO[e.source] ?? "sys";
+                const blocked = st.label === "차단";
                 return (
                   <div
-                    // biome-ignore lint/suspicious/noArrayIndexKey: 감사 엔트리에 안정 id 없음(ts+tool+i)
-                    key={`${e.ts}-${e.tool}-${i}`}
+                    key={e.id}
                     className="logrow"
-                    style={isBlock ? { background: "var(--warn-weak)" } : undefined}
+                    style={blocked ? { background: "var(--warn-weak)" } : undefined}
                   >
                     <span className="ts">{tsLabel(e.ts)}</span>
-                    <span className={`who ${who}`}>{WHO_LABEL[who]}</span>
-                    <span className="msg">
-                      <code>{e.command || e.tool}</code> ·{" "}
-                      <strong style={isBlock ? blocked : allowed}>{isBlock ? "E² 차단" : "E² 허용"}</strong>
-                      {e.reason ? ` · ${e.reason}` : ""}
+                    <span className={`who ${who}`}>{sourceLabel(e.source)}</span>
+                    <span className="msg" style={{ minWidth: 0 }}>
+                      <span style={{ ...(oneLine as React.CSSProperties), display: "block" }} title={e.reason || e.ruleName}>
+                        {e.agent ? <span style={{ color: "var(--faint)" }}>{e.agent} · </span> : null}
+                        <code>{e.tool || "요청"}</code> · <strong style={st.style}>{st.label}</strong>
+                        {e.reason ? ` · ${e.reason}` : ""}
+                      </span>
+                      {e.ruleName ? (
+                        <span
+                          style={{ ...(oneLine as React.CSSProperties), display: "block", fontSize: 11, color: "var(--faint)" }}
+                          title={e.ruleName}
+                        >
+                          {e.ruleName}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="hash" style={{ color: "var(--muted)" }}>
                       준비 중
@@ -155,7 +179,7 @@ export default function AuditScreen() {
                   </div>
                 );
               })}
-              {!loading && rows.length === 0 && entries.length > 0 && (
+              {!loading && rows.length === 0 && events.length > 0 && (
                 <div style={{ textAlign: "center", padding: "24px 0", color: "var(--muted)" }}>
                   이 분류에 해당하는 기록이 없어요.
                 </div>
@@ -164,8 +188,8 @@ export default function AuditScreen() {
           )}
 
           <div className="hint">
-            각 줄은 전송 통제(E²)가 허용/차단한 요청이에요. 변조 탐지 체인과 권한 분리가 연동되면 한 줄이라도 바뀔 때{" "}
-            <Strong>그 뒤 체인이 전부 깨져서 변조가 드러나요.</Strong>
+            각 줄은 전송 통제(E²)가 막거나 승인 대기로 잡은 요청이에요. 변조 탐지 체인과 권한 분리가 연동되면 한 줄이라도
+            바뀔 때 <Strong>그 뒤 체인이 전부 깨져서 변조가 드러나요.</Strong>
           </div>
         </div>
       </div>
