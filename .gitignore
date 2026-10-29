@@ -27,9 +27,11 @@ web/next-env.d.ts
 # os
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 
 # claude code local state
 .claude/
+/CLAUDE.md
 
 # Codex / OMX local instructions, configuration, and runtime state
 .codex/
