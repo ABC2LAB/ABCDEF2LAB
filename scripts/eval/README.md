@@ -1,8 +1,9 @@
 # 평가 스크립트 (뼈대)
 
 baseline(원본 ARTEX) vs 개선 후(우리 포크)를 같은 조건으로 측정·집계한다.
-측정 조건의 정본은 `docs/evaluation/evaluation-protocol.md` — 여기는 그 §3·§4·§5를
-코드로 옮긴 집계 틀이다. 숫자가 아니라 틀만 있다.
+측정 조건의 정본은 [평가 프로토콜](../../docs/evaluation/evaluation-protocol.md)이며, 여기는 이를 코드화하는 중인 집계 뼈대다.
+
+**공식 평가 사용 전 보완 필요:** 현재 채점기는 records·snapshot의 회차 출처를 검증하지만, 새 정본의 pre/post 스냅샷·엔진 해결 귀속은 아직 구현하지 않았다. 해당 입력 검증·회귀 시험이 반영되기 전에는 기존 표를 새 프로토콜에 따른 공식 baseline/개선 비교에 사용하지 않는다. 기존 테스트 통과는 새 규칙 구현 완료의 증명이 아니다.
 
 ## 구성
 - `ground_truth.py` — 평가 정답(코어 GT 9 = 수평5·수직4, BAC category 10, 별도축 3).
@@ -50,10 +51,11 @@ manifest 모양(경로는 manifest 파일 기준 상대경로 가능, 결과물�
   (vuln_class·resource_ref)→챌린지 상관은 평가가 쥔다. None이면 out-of-list.
 - 깨진 레코드·계약 밖 verdict/필드·민감값 누출은 전부 모아 `ScanOutputError`(fail-closed).
   undecidable→판단불가, allowed→ALLOWED(판단불가) — 오탐·취약점없음으로 바뀌지 않는다.
-- 한 챌린지에 레코드가 여럿이면 tie-break `confirmed > suspected > undecidable > allowed/none`.
+- 판정 우선순위와 레코드 없음 처리는 [평가 프로토콜 §4](../../docs/evaluation/evaluation-protocol.md#4-판정-기준)가 정본이다. ALLOWED와 레코드 없음을 구분하며, pre/post·귀속 선행 규칙까지 구현해야 정본을 준수한다.
   위반_후보(confirmed·suspected)와 allowed가 섞인 챌린지는 `conflicts`로 따로 남긴다(판정은 안 바뀜).
 
 ## 아직 막힌 경계 (TODO)
+- pre/post 스냅샷·요청 종료 확인·내용 해시/시각 검증·엔진 해결 귀속과 사전 해결 처리 — 프로토콜 §2·§4의 필수 입력과 회귀 사례를 채점기에 반영해야 한다.
 - 판정 레코드 **물리 형식**(DB 쿼리 vs JSON 덤프) — 이동찬 어댑터와 정렬. 어댑터만 바꾸면 됨.
 - `correlate` 실 매핑 테이블(vuln_class·엔드포인트→챌린지) — 평가 전용 GT로 따로 둔다.
 - TODO(윤재상): baseline(원본 ARTEX) 출력은 판정 레코드를 안 냄 — 별도 어댑터로 같은 레코드를 만들지 정렬.
