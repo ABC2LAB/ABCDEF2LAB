@@ -246,6 +246,26 @@ class TestLoadAndCLI(unittest.TestCase):
                 check_preflight(load_preflight(self.path))
             self.assertNotIn("SYNTHETIC-PRIVATE", str(caught.exception))
 
+    def test_duplicate_valid_model_tag_is_rejected_before_last_value_wins(self):
+        payload = configuration()
+        sections = {
+            name: json.dumps(payload[name], separators=(",", ":"))
+            for name in ("pins", "baseline")
+        }
+        ours = json.dumps(payload["ours"], separators=(",", ":"))
+        ours = ours.replace(
+            '"model_tag":"example-model:fixed-tag"',
+            '"model_tag":"other-model:fixed-tag","model_tag":"example-model:fixed-tag"',
+            1,
+        )
+        self.path.write_text(
+            '{"pins":' + sections["pins"] + ',"baseline":' + sections["baseline"] + ',"ours":' + ours + '}',
+            encoding="utf-8",
+        )
+        with self.assertRaises(PreflightError) as caught:
+            load_preflight(self.path)
+        self.assertEqual(caught.exception.errors, ("config: DUPLICATE_KEY",))
+
     def test_size_limit_and_unreadable_file_report_sanitized_errors(self):
         raw = self.path.read_bytes()
         self.path.write_bytes(raw + b" " * (MAX_CONFIG_BYTES - len(raw)))
