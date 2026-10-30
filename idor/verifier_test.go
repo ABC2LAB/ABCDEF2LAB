@@ -272,3 +272,21 @@ func TestVerifyReadFailClosed(t *testing.T) {
 		}
 	})
 }
+
+func TestVerifyDiscardsCanariesFromFailedLookup(t *testing.T) {
+	for _, entry := range []struct {
+		name string
+		run  func(Candidate, Transmitter, PolicyResolver) Result
+	}{{"Verify", Verify}, {"VerifyRead", VerifyRead}} {
+		t.Run(entry.name, func(t *testing.T) {
+			cand, tx, kg := cleanScenario(time.Now())
+			// A failed lookup may return partial or stale data alongside false.
+			// Those values cannot establish registered ownership evidence.
+			kg.canOK = false
+			got := entry.run(cand, tx, kg)
+			if got.Verdict.Value != oracle.Undecidable {
+				t.Fatalf("failed canary lookup: verdict=%s, want undecidable", got.Verdict.Value)
+			}
+		})
+	}
+}

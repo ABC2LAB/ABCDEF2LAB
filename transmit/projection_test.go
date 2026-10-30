@@ -255,12 +255,12 @@ func TestVerifierWithRealReadOnlyTransport(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantEvents := 1 + int(wantReads)*2 // denied setup result + admitted reads' intent/results
+			wantEvents := int(wantReads) * 2 // each admitted read has intent/result events
 			if scenario == "unverified-session" {
 				wantEvents = 0 // preflight refuses before invoking Verify or Send
 			}
 			if strings.Contains(string(data), e2Secret) || len(recorder.events) != wantEvents {
-				t.Fatal("unsafe or missing audit events for denied setup and two reads")
+				t.Fatal("unsafe or missing audit events for the two reads")
 			}
 		})
 	}

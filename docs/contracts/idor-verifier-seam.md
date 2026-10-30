@@ -39,7 +39,7 @@ AccessRequest{ As AccountRef; Method string; ResourceRef string; StateChanging b
 - 검증기는 요청을 제안; E²가 허용/차단, 네트워크 전송, 본문 스코핑, Normal/ErrorTemplate 분류(상태코드 아닌 본문 모양 — 랩은 오류에도 HTTP 200)를 수행.
 - 현재 `idor.Verify`는 setup POST(`StateChanging=true`)를 제안한 뒤 owner GET·cross GET을 제안한다. **초기 조회 통합에서는 운영자/fixture가 비민감 canary를 미리 준비하고 E²가 setup POST를 거부한다.** 이후 owner read로 기존 표식이 확인되어야 비교 증거가 된다. setup POST 허용은 별도 승인·리셋 시험환경에서만 확장한다. GET도 등록된 조회 행동인지 E²가 확인한다.
 - 읽기 전용 진입점 `idor.VerifyRead(c Candidate, tx Transmitter, kg PolicyResolver) Result`는 `idor.Transmitter`를 받아 setup POST 없이 owner GET·cross GET만 제안한다(초기 조회 통합용). destructive-last는 순서 규칙이지 실행 허가가 아니며 이 경로는 거기까지 가지 않는다. GET도 상태를 바꿀 수 있어(절대규칙 6) 읽기 전용(비변경) 등록 확인은 E²(전송기) 몫이다.
-- 실 구현: `transmit/`의 HTTP 실행기(E², 이동찬 — [E② 전송기](./e2-http-transmitter.md), PR #30 머지). `idor.Transmitter`를 이미 구현한다. 실행기는 실행 범위·등록·세션·감사 저장기가 있어야 만들어지므로, 서버 어댑터가 서버 검증 설정으로 실행기를 만들어 `idor.VerifyRead`에 `tx`로 주입한다(서버 주입 연결 예정, dev 미병합). 등록 GET만 보내고 상태변경 요청은 전부 거부한다.
+- 실 구현: `transmit/`의 HTTP 실행기(E², 이동찬 — [E② 전송기](./e2-http-transmitter.md), PR #30 머지)는 `idor.Transmitter`를 구현한다. 서버 어댑터는 서버 검증 설정으로 실행기를 만들고 **`tx.VerifyRead(candidate, kg)`를 호출**한다(서버 연결 예정, dev 미병합). 이 메서드가 등록 신원·실행 허가와 KG/응답 투영 표식의 정확한 일치를 확인하고 사본을 고정한 뒤 내부에서 `idor.VerifyRead`를 호출한다. `idor.VerifyRead(candidate, tx, kg)`에 독립 KG를 직접 주입하면 이 사전 검증을 우회하므로 HTTP 통합 확정 경로로 사용하지 않는다. 등록 GET만 보내고 상태변경 요청은 전부 거부한다.
 - 허용·완료 → `ok=true`+`Capture`. 거부·판단불가 → `ok=false`, 검증기는 그 단계를 **검증불가로** 두고 성공으로 기록하지 않음(절대규칙 5).
 
 **기존 코드와 연결 책임**: `guard.Guard`·`intercept.Interceptor`는 도구 호출의 승인 게이트다. `Decision.Action=allow`는 실행 승인일 뿐, 요청 송신·응답 수신이나 `Send`의 `ok=true`를 뜻하지 않는다. 새 E² 전송기는 지원하는 HTTP 경로의 실제 전송 직전에 대상 origin·계정·행동·승인·예산·중지를 검사하고, 리다이렉트·재시도를 지원하면 매번 다시 검사한다. 셸·MCP 등 미지원 경로는 통제 모드에서 차단/제외한다. 기존 프록시 설정만으로 우회가 없다고 주장하지 않으며, 검증된 경로만 통제 범위로 기록한다.
@@ -67,7 +67,7 @@ oracle.Evaluate(oracle.CaseInput{ Policy, Subjects, Facts }, observedAt) → ora
 | `type` 명명 규칙 | **미정** | E²(동찬) 확정 후 correlation `types`·레코드가 채움. 짐작 금지 |
 
 ## 5. Open / 핸드오프 (동찬)
-- **실 `Transmitter`** — `transmit/`의 HTTP 실행기(PR #30)가 `idor.Transmitter`를 구현한다. 서버 어댑터가 실행기를 만들어 주입하는 연결은 예정(dev 미병합). `idor.StubTransmitter`는 전송기가 없는 경로의 fail-closed 자리표시로 남는다. end-to-end에는 서버 주입·GUARD 연결과 감사 저장기 서버 연결(E²), 실 `PolicyResolver`(KG)·증거 어댑터·§6 저장 연결이 더 필요하다. (제안) HTTP 실행기의 읽기 진입점이 `idor.Verify` 대신 `idor.VerifyRead`를 부르면 매번 거부될 setup 제안이 빠진다 — 동찬 결정.
+- **실 `Transmitter`** — `transmit/`의 HTTP 실행기(PR #30)가 `idor.Transmitter`를 구현하고 `tx.VerifyRead`에서 사전 검증 후 `idor.VerifyRead`를 호출한다. 서버 어댑터가 실행기를 만들고 이 메서드를 호출하는 연결은 예정(dev 미병합). `idor.StubTransmitter`는 전송기가 없는 경로의 fail-closed 자리표시로 남는다. end-to-end에는 서버 연결·GUARD 연결과 감사 저장기 서버 연결(E²), 실 `PolicyResolver`(KG)·증거 어댑터·§6 저장 연결이 더 필요하다.
 - **상태변경 허가 정책** — setup(POST)·destructive-last의 승인+리셋 게이트 정책은 E²(동찬). 검증기의 `StateChanging`은 제안 정보이며 실행 허가가 아니다. 초기 조회 경로의 fixture 준비와 setup POST 차단은 §2.2를 따른다.
 - **`type` 명명** — resource_ref의 type을 E²가 어떻게 뽑을지 확정되면 평가 쪽 GT 상관 데이터(`scripts/eval/`)의 `types`와 레코드가 채워진다(지금은 전부 비어 out-of-list).
 - **신원 status↔ref 결합** — kg-policy Open #5, E² 배선에서 정렬.
@@ -84,8 +84,8 @@ oracle.Evaluate(oracle.CaseInput{ Policy, Subjects, Facts }, observedAt) → ora
 | 단계 | 책임 |
 |---|---|
 | 후보 구성 | 서버가 재검증 conversation→finding→원래 작업을 확인하고, 등록된 계정·자원에서 `idor.Candidate`를 구성한다. 모델의 ID·계정 참조는 다시 검증하며 자격 원문이나 모델이 선언한 신원 상태를 신뢰하지 않는다. 작업·검사·정책 버전·reset 세대는 서버 문맥에 바인딩한다. |
-| 검사 실행 | 엔진의 검증 실행 단계에서 `idor.Verify(candidate, transmitter, policyResolver)`를 호출한다. (제안) 초기 조회 경로는 setup이 없는 `idor.VerifyRead`(또는 이를 감싸는 HTTP 실행기의 읽기 진입점)를 쓴다. 해당 인가 검사는 이 경로로 수행하고, 기존 LLM 도구로 같은 검사를 실행한 뒤 저장 시점에 다시 실행하지 않는다. 추가 실행은 새 실행 식별자와 E² 판단이 필요하다. |
-| 판정 | `Verify` 내부의 `Compare`·`Evaluate`가 `Result.Verdict`·`Result.Facts`를 만든다. 기존의 신뢰 가능한 캡처를 평가할 때는 순수 비교·판정만 호출하고, 평가/저장을 위해 새 요청을 보내지 않는다. |
+| 검사 실행 | 초기 HTTP 조회는 엔진 검증 실행 단계에서 `tx.VerifyRead(candidate, policyResolver)`를 호출한다. 실행기의 사전 검증과 고정 resolver를 통과한 뒤 내부 `idor.VerifyRead`가 owner/cross GET을 제안한다. 해당 인가 검사는 이 경로로 수행하고, 기존 LLM 도구로 같은 검사를 실행한 뒤 저장 시점에 다시 실행하지 않는다. 추가 실행은 새 실행 식별자와 E² 판단이 필요하다. |
+| 판정 | `Verify`·`VerifyRead`가 공유하는 `Compare`·`Evaluate`가 `Result.Verdict`·`Result.Facts`를 만든다. 기존의 신뢰 가능한 캡처를 평가할 때는 순수 비교·판정만 호출하고, 평가/저장을 위해 새 요청을 보내지 않는다. |
 | 구조화 저장 | 서버 어댑터가 Result와 해당 실행의 정책·신원·관찰 시각·증거 참조를 [판정 레코드 §2](./verdict-record.md)에 맞춰 별도 저장한다. `Result` 자체가 이 메타데이터를 모두 반환하는 것은 아니며, 실 어댑터가 서버 문맥·정책 reader·전송 영수증을 보존·대조해야 한다. |
 | 재검증 결론 저장 | 기존 `finding_retests`의 `reproduced/fixed/inconclusive` 수명주기를 유지한다. 별도 판정 레코드와 동일 conversation·검사·증거를 연결하고, 저장 재시도는 기존 결과를 사용하며 네트워크 검사를 재실행하지 않는다. 연결 필드·물리 저장 형식·트랜잭션은 구현 시 확정한다. |
 

@@ -56,7 +56,7 @@ func (t *HTTPTransmitter) VerifyRead(candidate idor.Candidate, kg idor.PolicyRes
 	if reason := t.gate(t.ctx); reason != "" {
 		return refused(reason)
 	}
-	return idor.Verify(candidate, t, frozen), ""
+	return idor.VerifyRead(candidate, t, frozen), ""
 }
 
 func sameMarkers(expected, actual []idor.Marker) bool {

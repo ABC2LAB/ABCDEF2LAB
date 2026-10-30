@@ -13,8 +13,9 @@
 // seam, which KG (이경준) owns and registers (kg-policy §3.1: KG registers+classifies,
 // the verifier plants and the comparator consumes — neither reclassifies). The real
 // Transmitter is E²'s HTTP executor in transmit/ (이동찬, merged in #30); a server
-// adapter builds it from server-validated configuration and injects it (서버 주입
-// 연결 예정, dev 미병합). The real PolicyResolver is still KG's to implement (tests
+// adapter builds it from server-validated configuration and calls its VerifyRead
+// method, which binds KG snapshots before invoking this package (서버 연결 예정).
+// The real PolicyResolver is still KG's to implement (tests
 // use fakes). The two interfaces below ARE the boundary
 // contract the verifier requires of E² and KG — review target for both.
 //
@@ -82,8 +83,10 @@ type Capture struct {
 // The real implementation is E²'s HTTP executor in transmit/ (이동찬, merged in #30 —
 // docs/contracts/e2-http-transmitter.md); it already satisfies this interface. The
 // executor needs the run's registry, sessions and audit recorder, so a server adapter
-// builds it from server-validated configuration and injects it as tx into VerifyRead
-// (서버 주입 연결 예정, dev 미병합). It sends registered GETs only and refuses every
+// builds it from server-validated configuration and calls its VerifyRead method
+// (서버 연결 예정, dev 미병합). That method checks and freezes KG markers against the
+// projection registry before calling idor.VerifyRead; direct composition must not
+// bypass that binding. It sends registered GETs only and refuses every
 // state-changing request. Connecting it to
 // ARTEX's control boundary (승인 게이트 guard.Guard → intercept.Interceptor, seam 계약
 // §2.2) is E²'s follow-up, not this package's.
@@ -164,7 +167,8 @@ func Verify(c Candidate, tx Transmitter, kg PolicyResolver) Result {
 // setup. It proposes only GETs with StateChanging=false: no setup, and never a
 // destructive step. destructive-last is an ordering rule for a later, separately
 // gated increment, not a permission, so this path never reaches it. tx is any
-// idor.Transmitter — in production the E² executor a server adapter injects.
+// idor.Transmitter. The E² executor's VerifyRead method supplies the transmitter and
+// frozen KG answers after checking their registration binding.
 // GET도 상태를 바꿀 수 있어(절대규칙 6), 읽기 전용(비변경) 등록 확인은 E²(전송기) 몫이고
 // 이 패키지의 몫이 아니다.
 //
@@ -172,8 +176,8 @@ func Verify(c Candidate, tx Transmitter, kg PolicyResolver) Result {
 // outside this package; if they are absent the owner read cannot show them,
 // setup-success is unproven, and the verdict degrades to UNDECIDABLE.
 //
-// (제안) E²'s HTTP executor currently wraps Verify, whose setup it always refuses;
-// wrapping this instead drops that refused write. Its owner (이동찬) decides.
+// HTTP integration must enter through the executor's VerifyRead method so its
+// canary/projection preflight cannot be bypassed by injecting an unrelated KG.
 func VerifyRead(c Candidate, tx Transmitter, kg PolicyResolver) Result {
 	policy, canaries := resolveCase(c, kg)
 	return readSequence(c, tx, policy, canaries)
@@ -189,7 +193,11 @@ func resolveCase(c Candidate, kg PolicyResolver) (oracle.PolicyAssertion, []Mark
 	}
 
 	// KG-registered canaries (empty/failed → setup-success unprovable → UNDECIDABLE).
-	canaries, _ := kg.Canaries(c.ResourceRef, c.Owner)
+	canaries, ok := kg.Canaries(c.ResourceRef, c.Owner)
+	if !ok {
+		// Failed lookups may return partial or stale values; they are not evidence.
+		canaries = nil
+	}
 	return policy, canaries
 }
 
