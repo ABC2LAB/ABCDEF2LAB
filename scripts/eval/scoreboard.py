@@ -16,6 +16,7 @@ import json
 from collections.abc import Iterable
 
 from ground_truth import Challenge
+from manifest import RunManifest
 
 
 class SnapshotError(ValueError):
@@ -66,8 +67,8 @@ def normalize_challenges(payload: object) -> dict[str, bool]:
     return solved
 
 
-def parse_scoreboard_snapshot(path: str) -> dict[str, bool]:
-    """정규화 스냅샷 파일(`{key: solved}` JSON 객체)을 읽어 검증한다. 채점 입력은 이것뿐(§2)."""
+def parse_scoreboard_snapshot(path: str, manifest: RunManifest | None = None) -> dict[str, bool]:
+    """정규화 스냅샷을 읽는다. 채점 시 회차 envelope도 manifest와 대조한다."""
     with open(path, encoding="utf-8") as f:
         try:
             payload = json.load(f, object_pairs_hook=_Pairs)
@@ -75,6 +76,26 @@ def parse_scoreboard_snapshot(path: str) -> dict[str, bool]:
             raise SnapshotError(f"스냅샷 JSON 파싱 실패: {e}") from e
     if not isinstance(payload, _Pairs):
         raise SnapshotError(f"정규화 스냅샷 최상위가 객체가 아님: {type(payload).__name__}")
+
+    if manifest is not None:
+        envelope: dict[str, object] = {}
+        errors = []
+        for key, value in payload:
+            if key in envelope:
+                errors.append(f"snapshot envelope key 중복: '{key}'")
+            elif key not in {"run_id", "reset_generation", "solved"}:
+                errors.append(f"snapshot envelope 모르는 필드: '{key}'")
+            else:
+                envelope[key] = value
+        for name in ("run_id", "reset_generation"):
+            expected = getattr(manifest, name)
+            if envelope.get(name) != expected:
+                errors.append(f"snapshot envelope {name} 불일치/부재: manifest={expected!r}, snapshot={envelope.get(name)!r}")
+        if not isinstance(envelope.get("solved"), _Pairs):
+            errors.append("snapshot envelope solved 객체 부재/부정")
+        if errors:
+            raise SnapshotError("; ".join(errors))
+        payload = envelope["solved"]
 
     errors: list[str] = []
     solved: dict[str, bool] = {}

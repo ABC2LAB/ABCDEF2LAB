@@ -27,11 +27,16 @@ python3 -I score.py <manifest.json>        # 채점 (레포 밖 결과물 디렉
 
 manifest 모양(경로는 manifest 파일 기준 상대경로 가능, 결과물이라 커밋 금지):
 ```json
-{"runs": [{"condition": "우리@35b", "engine": "ours", "model_tag": "<정확한 태그>",
-           "reset_generation": "<회차마다 다름>", "repeat_index": 0,
+{"runs": [{"condition": "우리@35b", "engine": "ours", "run_id": "<회차 식별자>",
+           "model_tag": "<정확한 태그>", "reset_generation": "<회차마다 다름>", "repeat_index": 0,
            "records_path": "run0/records.json", "snapshot_path": "run0/snapshot.json",
            "elapsed_seconds": null, "total_requests": null, "blocked_attempts": null}]}
 ```
+
+채점용 `records.json`은 `run_id`·`model_tag`·`reset_generation`·`records` envelope다.
+각 record의 `model_tag`·`reset_generation`도 manifest와 일치해야 한다.
+채점용 `snapshot.json`은 `{"run_id": "...", "reset_generation": "...", "solved": {"<challenge key>": false}}` 형태다.
+`solved` 안쪽만 프로토콜 §2의 정규화 맵이며, 두 파일의 회차 정보가 manifest와 다르면 표를 내지 않는다.
 
 ## 설정 (코드 하드코딩 금지 — .env)
 - `EVAL_TARGET_ORIGIN` — 랩 대상 origin (예 `http://127.0.0.1:3000`). localhost 랩만 허용.
@@ -40,11 +45,11 @@ manifest 모양(경로는 manifest 파일 기준 상대경로 가능, 결과물�
 
 ## `parse_scan_output` — 판정 레코드 → 챌린지별 판정
 입력은 [판정 레코드 계약](../../docs/contracts/verdict-record.md)의 **논리적 레코드**만 받는다.
-- 물리적 출처는 얇은 어댑터 뒤 — 지금은 JSON 파일(`[...]` 또는 `{"records": [...]}`) 하나.
+- 단독 파서는 JSON 배열도 읽는다. `score.py` 채점 입력은 `{"run_id": "...", "model_tag": "...", "reset_generation": "...", "records": [...]}` envelope가 필수다. 세 값은 manifest와 일치해야 하며, 각 레코드의 `model_tag`·`reset_generation`도 일치해야 한다. 빈 배열도 envelope 검사를 통과해야 한다.
 - `correlate(record) -> 챌린지 키 | None`를 **호출자가 주입**한다. 레코드엔 GT 키가 없고(절대규칙 7),
   (vuln_class·resource_ref)→챌린지 상관은 평가가 쥔다. None이면 out-of-list.
 - 깨진 레코드·계약 밖 verdict/필드·민감값 누출은 전부 모아 `ScanOutputError`(fail-closed).
-  undecidable→판단불가, allowed→NONE(미탐 측) — 오탐·취약점없음으로 바뀌지 않는다.
+  undecidable→판단불가, allowed→ALLOWED(판단불가) — 오탐·취약점없음으로 바뀌지 않는다.
 - 한 챌린지에 레코드가 여럿이면 tie-break `confirmed > suspected > undecidable > allowed/none`.
   위반_후보(confirmed·suspected)와 allowed가 섞인 챌린지는 `conflicts`로 따로 남긴다(판정은 안 바뀜).
 

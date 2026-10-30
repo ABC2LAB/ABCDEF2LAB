@@ -38,6 +38,7 @@ class RunManifest:
 
     condition: str  # 매트릭스 행 이름, 예 "우리@35b"
     engine: Engine
+    run_id: str  # 수집 회차 식별자 — records envelope와 같아야 함
     model_tag: str  # 통제변수 — 비교 대상 전 회차가 같은 문자열이어야(§6)
     reset_generation: str  # Juice Shop reset 세대 — 회차마다 달라야(§4-5)
     repeat_index: int
@@ -49,16 +50,26 @@ class RunManifest:
     blocked_attempts: int | None = None  # E²가 막은 전송 시도 수 — 별도 지표, 총 요청 수에 섞지 않음(§5)
 
 
-_REQUIRED_STR = ("condition", "model_tag", "reset_generation", "records_path", "snapshot_path")
+_REQUIRED_STR = ("condition", "run_id", "model_tag", "reset_generation", "records_path", "snapshot_path")
 _COUNTS = ("total_requests", "blocked_attempts")
 _FIELDS = frozenset(_REQUIRED_STR + _COUNTS + ("engine", "repeat_index", "elapsed_seconds"))
+
+
+def _unique_manifest_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """JSON 중복 키로 회차 통제변수가 조용히 바뀌는 것을 막는다."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ManifestError(f"manifest JSON key 중복: '{key}'")
+        result[key] = value
+    return result
 
 
 def load_manifests(path: str) -> list[RunManifest]:
     """manifest 파일을 읽어 회차 목록으로. 하나라도 틀리면 전부 모아 ManifestError."""
     with open(path, encoding="utf-8") as f:
         try:
-            payload = json.load(f)
+            payload = json.load(f, object_pairs_hook=_unique_manifest_object)
         except json.JSONDecodeError as e:
             raise ManifestError(f"manifest JSON 파싱 실패: {e}") from e
     if isinstance(payload, dict):
@@ -114,6 +125,7 @@ def _parse_run(index: int, raw: object, base: str) -> tuple[RunManifest | None, 
     return RunManifest(
         condition=raw["condition"],
         engine=engine,
+        run_id=raw["run_id"],
         model_tag=raw["model_tag"],
         reset_generation=raw["reset_generation"],
         repeat_index=repeat_index,

@@ -60,7 +60,7 @@ class Report(NamedTuple):
 
 
 def _ours_verdicts(manifest: RunManifest, correlate: Correlate) -> ScanParseResult:
-    return parse_scan_output(manifest.records_path, correlate)
+    return parse_scan_output(manifest.records_path, correlate, manifest=manifest)
 
 
 def _baseline_verdicts(manifest: RunManifest, correlate: Correlate) -> ScanParseResult:
@@ -161,7 +161,7 @@ def score_run(
     상관 가능으로 보지 않아 '판정 없음 + 해결'도 판단불가다.
     """
     parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate)
-    solved = parse_scoreboard_snapshot(manifest.snapshot_path)
+    solved = parse_scoreboard_snapshot(manifest.snapshot_path, manifest)
     require_basis_keys(solved, core_gt() + bac_category())
     evidence_ok = confirmed_evidence(parsed, traffic, correlate)
     result = assemble_repeat(manifest, parsed, solved, evidence_ok, covered, correlatable)
@@ -189,11 +189,13 @@ def check_comparable(manifests: list[RunManifest]) -> None:
         errors.append(f"모델 태그가 여럿: {tags} — 통제변수는 단일 태그(§6)")
 
     by_generation: dict[str, list[str]] = {}
+    by_run_id: dict[str, list[str]] = {}
     seen_repeats: set[tuple[str, int]] = set()
     engines: dict[str, set[str]] = {}
     for m in manifests:
         run = f"{m.condition}#{m.repeat_index}"
         by_generation.setdefault(m.reset_generation, []).append(run)
+        by_run_id.setdefault(m.run_id, []).append(run)
         if (m.condition, m.repeat_index) in seen_repeats:
             errors.append(f"회차 중복: {run}")
         seen_repeats.add((m.condition, m.repeat_index))
@@ -202,6 +204,9 @@ def check_comparable(manifests: list[RunManifest]) -> None:
     for generation, runs in sorted(by_generation.items()):
         if len(runs) > 1:
             errors.append(f"reset 세대 '{generation}'를 회차 {runs}가 공유 — 회차마다 리셋(§4-5)")
+    for run_id, runs in sorted(by_run_id.items()):
+        if len(runs) > 1:
+            errors.append(f"run_id '{run_id}'를 회차 {runs}가 공유")
     for condition, names in sorted(engines.items()):
         if len(names) > 1:
             errors.append(f"조건 '{condition}'에 엔진이 섞임: {sorted(names)}")

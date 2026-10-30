@@ -22,6 +22,7 @@ def _run(**overrides: object) -> dict:
     run: dict = {
         "condition": "우리@test",
         "engine": "ours",
+        "run_id": "run-1",
         "model_tag": "test-model",
         "reset_generation": "gen-1",
         "repeat_index": 0,
@@ -92,6 +93,11 @@ class TestReject(_ManifestDir):
         del run["model_tag"]
         self.assertRejected([run], "model_tag")
 
+    def test_missing_run_id_rejected(self) -> None:
+        run = _run()
+        del run["run_id"]
+        self.assertRejected([run], "run_id")
+
     def test_unknown_engine_label(self) -> None:
         self.assertRejected([_run(engine="원본")], "engine")
 
@@ -105,6 +111,16 @@ class TestReject(_ManifestDir):
         self.assertRejected([_run(total_requests=1.5)], "total_requests")
         self.assertRejected([_run(blocked_attempts=-1)], "blocked_attempts")
         self.assertRejected([_run(blocked_attempts=True)], "blocked_attempts")
+
+    def test_duplicate_model_tag_json_key_rejected(self) -> None:
+        path = os.path.join(self._tmp.name, "manifest.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps([_run()]).replace(
+                '"model_tag": "test-model"',
+                '"model_tag": "old-model", "model_tag": "test-model"',
+            ))
+        with self.assertRaisesRegex(ManifestError, "key 중복"):
+            load_manifests(path)
 
     def test_nan_elapsed_rejected(self) -> None:
         path = os.path.join(self._tmp.name, "manifest.json")

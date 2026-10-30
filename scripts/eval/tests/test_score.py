@@ -88,16 +88,10 @@ class _RunDir(unittest.TestCase):
     ) -> dict:
         """회차 디렉터리를 만들고 manifest 회차 항목(상대경로)을 돌려준다."""
         os.makedirs(self._path(name))
-        with open(self._path(name, "records.json"), "w", encoding="utf-8") as f:
-            json.dump(records, f)
-        snapshot = {k: False for k in _SCORED_KEYS} | (solved or {})
-        for key in drop_keys:
-            del snapshot[key]
-        with open(self._path(name, "snapshot.json"), "w", encoding="utf-8") as f:
-            json.dump(snapshot, f)
         run: dict = {
             "condition": "우리@test",
             "engine": "ours",
+            "run_id": f"run-{name}",
             "model_tag": "test-model",
             "reset_generation": f"gen-{name}",
             "repeat_index": 0,
@@ -105,6 +99,20 @@ class _RunDir(unittest.TestCase):
             "snapshot_path": f"{name}/snapshot.json",
         }
         run.update(overrides)
+        stamped = [dict(record, reset_generation=record.get("reset_generation", run["reset_generation"]))
+                   for record in records]
+        with open(self._path(name, "records.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "run_id": run["run_id"],
+                "model_tag": run["model_tag"],
+                "reset_generation": run["reset_generation"],
+                "records": stamped,
+            }, f)
+        snapshot = {k: False for k in _SCORED_KEYS} | (solved or {})
+        for key in drop_keys:
+            del snapshot[key]
+        with open(self._path(name, "snapshot.json"), "w", encoding="utf-8") as f:
+            json.dump({"run_id": run["run_id"], "reset_generation": run["reset_generation"], "solved": snapshot}, f)
         return run
 
     def write_manifest(self, runs: list[dict]) -> str:
@@ -344,6 +352,106 @@ class TestComparable(_RunDir):
 
     def test_valid_repeats_pass(self) -> None:
         check_comparable(self.load([self.make_run("r0", []), self.make_run("r1", [], repeat_index=1)]))
+
+
+class TestRecordProvenance(_RunDir):
+    """다른 회차·모델·reset 레코드가 점수로 섞이지 않는다."""
+
+    def _replace_records(self, run: dict, payload: object) -> None:
+        with open(self._path(run["records_path"]), "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+    def _read_records(self, run: dict) -> dict:
+        with open(self._path(run["records_path"]), encoding="utf-8") as f:
+            return json.load(f)
+
+    def assert_stops(self, run: dict, fragment: str) -> None:
+        with self.assertRaisesRegex(ScanOutputError, fragment):
+            score_repeat(self.load([run])[0], self.correlate)
+        code, out, err = self.run_main([run])
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn(fragment, err)
+
+    def test_unstamped_records_rejected_even_when_empty(self) -> None:
+        run = self.make_run("r0", [])
+        self._replace_records(run, [])
+        self.assert_stops(run, "envelope")
+
+    def test_envelope_missing_or_mismatched_run_id_rejected(self) -> None:
+        run = self.make_run("r0", [])
+        for run_id in (None, "other-run"):
+            payload = self._read_records(run)
+            if run_id is None:
+                del payload["run_id"]
+            else:
+                payload["run_id"] = run_id
+            self._replace_records(run, payload)
+            self.assert_stops(run, "run_id")
+
+    def test_envelope_model_and_reset_mismatch_rejected_with_no_records(self) -> None:
+        for field, value in (("model_tag", "other-model"), ("reset_generation", "old-reset")):
+            run = self.make_run(field, [])
+            payload = self._read_records(run)
+            payload[field] = value
+            self._replace_records(run, payload)
+            self.assert_stops(run, field)
+
+    def test_duplicate_record_model_tag_json_key_rejected(self) -> None:
+        run = self.make_run("r0", [_record("confirmed", "rest:basket:1")])
+        path = self._path(run["records_path"])
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(raw.replace(
+                '"resource_ref": "rest:basket:1", "model_tag": "test-model"',
+                '"resource_ref": "rest:basket:1", "model_tag": "old-model", "model_tag": "test-model"',
+            ))
+        self.assert_stops(run, "key 중복")
+
+    def test_record_model_and_reset_mismatch_rejected(self) -> None:
+        for field, value in (("model_tag", "other-model"), ("reset_generation", "old-reset")):
+            run = self.make_run(field, [_record("confirmed", "rest:basket:1", **{field: value})])
+            self.assert_stops(run, field)
+
+    def test_missing_record_provenance_rejected_even_when_unmapped(self) -> None:
+        run = self.make_run("r0", [_record("confirmed", "rest:unknown:1")])
+        payload = self._read_records(run)
+        del payload["records"][0]["model_tag"]
+        self._replace_records(run, payload)
+        self.assert_stops(run, "model_tag")
+
+    def test_duplicate_run_id_rejected_before_table(self) -> None:
+        runs = [self.make_run("r0", []), self.make_run("r1", [], repeat_index=1, run_id="run-r0")]
+        with self.assertRaisesRegex(ComparabilityError, "run_id"):
+            check_comparable(self.load(runs))
+        code, out, err = self.run_main(runs)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("run_id", err)
+
+
+class TestSnapshotProvenance(_RunDir):
+    """다른 reset 또는 회차의 post 스냅샷을 점수에 쓰지 않는다."""
+
+    def test_unstamped_snapshot_rejected(self) -> None:
+        run = self.make_run("r0", [])
+        with open(self._path(run["snapshot_path"]), "w", encoding="utf-8") as f:
+            json.dump({key: False for key in _SCORED_KEYS}, f)
+        code, out, err = self.run_main([run])
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("snapshot envelope", err)
+
+    def test_mismatched_run_or_reset_rejected(self) -> None:
+        for field in ("run_id", "reset_generation"):
+            run = self.make_run(field, [])
+            path = self._path(run["snapshot_path"])
+            with open(path, encoding="utf-8") as f:
+                payload = json.load(f)
+            payload[field] = "another-run"
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            code, out, err = self.run_main([run])
+            self.assertEqual((code, out), (2, ""))
+            self.assertIn(field, err)
 
 
 class TestSnapshotGuard(_RunDir):
