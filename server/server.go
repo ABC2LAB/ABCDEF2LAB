@@ -239,6 +239,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// First-run protection: cache the password hash and, while none is set, issue
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
 	s.bootstrapAuth()
+	if err := s.initControlledReads(keyDir, dataDir); err != nil {
+		log.Fatalf("[E2] private execution store unavailable; server startup stopped")
+	}
+	s.engine.controlledIdle = s.parkControlledReadTask
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
@@ -839,6 +843,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/tasks/{id}/llm", s.updateTaskLLMProfiles)
 	mux.HandleFunc("GET /api/tasks/{id}/llm/resolution", s.taskLLMResolutionHandler)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/control", s.controlIntent)
+	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/controlled-read", s.registerControlledReadHTTP)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/messages", s.sendWorkerMessage)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/rerun", s.rerunIntent)    // 重跑单条 blocked/exhausted/stopped 意图
 	mux.HandleFunc("POST /api/tasks/{id}/intents/rerun-blocked", s.rerunBlocked) // 批量重跑本任务全部 blocked 意图
@@ -3792,6 +3797,10 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no active task")
 		return
 	}
+	if s.engine.controlledTask(t.ID) {
+		writeErr(w, 409, "통제 조회 작업은 등록된 조회 도구로만 실행할 수 있습니다")
+		return
+	}
 	if s.engine.IsDeleting(t.ID) {
 		writeErr(w, 409, errTaskDeletingNewMessage)
 		return
@@ -3815,6 +3824,11 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	// turn busy before its first activity/file write, including rule-mode turns.
 	// If deletion wins the race, the second barrier check rejects this request.
 	s.chatMu.Lock()
+	if s.engine.controlledTask(t.ID) {
+		s.chatMu.Unlock()
+		writeErr(w, 409, "통제 조회 작업은 등록된 조회 도구로만 실행할 수 있습니다")
+		return
+	}
 	if s.engine.IsDeleting(t.ID) {
 		s.chatMu.Unlock()
 		writeErr(w, 409, errTaskDeletingNewMessage)
