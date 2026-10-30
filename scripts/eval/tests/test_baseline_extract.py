@@ -192,8 +192,16 @@ class TestExtractBaseline(unittest.TestCase):
             raw = finding()
             del raw[field]
             self.reject(raw, ": ")
-        for field in ("severity", "status"):
-            self.reject(finding() | {field: "SYNTHETIC-PRIVATE"}, "UNSUPPORTED_VALUE")
+        self.reject(finding() | {"status": "SYNTHETIC-PRIVATE"}, "UNSUPPORTED_VALUE")
+
+    def test_unregistered_severity_is_null_and_marked_without_echo(self):
+        for value in ("", "info", "SYNTHETIC-PRIVATE"):
+            raw = finding()
+            raw["severity"] = value
+            row = self.extract(raw).findings[0]
+            self.assertIsNone(row.severity)
+            self.assertIn("severity", row.unmapped_fields)
+            self.assertNotIn("SYNTHETIC-PRIVATE", json.dumps(asdict(row)))
 
     def test_asset_reference_shape_id_type_and_duplicates_are_checked(self):
         for raw in ({}, [None], [{"id": 77, "type": "endpoint"}], [{"id": "77", "type": 1}],
@@ -224,7 +232,10 @@ class TestExtractBaseline(unittest.TestCase):
         self.reject(finding() | {"traffic_bindings": finding()["traffic_bindings"] * 2}, "DUPLICATE")
 
     def test_duplicate_source_ids_and_unknown_request_or_db_fields_are_rejected(self):
-        self.reject([finding(), finding()], "DUPLICATE")
+        second = finding()
+        second.update(finding_id="124")
+        second["traffic_bindings"][0].update(id="3", finding_id="124")
+        self.reject([finding(), second], "finding.id: DUPLICATE")
         for field in ("traffic_refs", "oracle_value", "vuln_class", "SYNTHETIC-PRIVATE-KEY"):
             self.reject(finding() | {field: "SYNTHETIC-PRIVATE"}, "UNKNOWN_FIELDS")
 
@@ -298,6 +309,13 @@ class TestBaselineCLI(unittest.TestCase):
                 self.assertNotIn("SYNTHETIC-PRIVATE", result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
             path.write_bytes(original)
+
+    def test_valid_finding_field_duplicate_is_rejected_as_duplicate_key(self):
+        raw = json.dumps(finding()).replace('"status": "confirmed"', '"status": "pending", "status": "confirmed"', 1)
+        self.input.write_text("[" + raw + "]", encoding="utf-8")
+        result = self.cli()
+        self.assertEqual((result.returncode, result.stdout), (2, ""))
+        self.assertEqual(result.stderr, "json: DUPLICATE_KEY\n")
 
     def test_oversized_inputs_and_missing_files_are_sanitized_failures(self):
         for path, limit in ((self.input, MAX_INPUT_BYTES), (self.vocab, MAX_VOCABULARY_BYTES)):

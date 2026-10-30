@@ -54,15 +54,15 @@ python3 -I -B scripts/eval/baseline_extract.py \
 | `findings[].source_id` | DTO의 원래 `id`. task 조회에서는 탐색 노드, 전역 조회에서는 DB finding ID이므로 namespace를 추정하지 않음 |
 | `finding_id` | 선택적 standalone finding ID. `source_id`에서 만들어 채우지 않음 |
 | `vuln_class`, `asset_refs[].type` | 등록된 정규 분류 라벨. 미등록 값은 null |
-| `severity`, `source_status` | 원본의 severity 4종과 triage 상태 9종만 보존 |
+| `severity`, `source_status` | 등록된 severity 4종과 triage 상태 9종만 보존. 원본의 빈 값·화이트리스트 밖 severity는 null로 내리고 `unmapped_fields`에 `severity`를 표시 |
 | `asset_refs[].id` | 원본에 선언된 자원 ID |
 | `traffic_binding_refs[]` | 원본 binding의 `binding_id`, `finding_id`, `role`만 보존. role은 baseline/proof/verification/supporting |
-| `unmapped_fields` | 미등록 원문을 담지 않는 `vulnclass` / `assets.type` 표시 |
+| `unmapped_fields` | 미등록 원문을 담지 않는 `vulnclass` / `assets.type` / `severity` 표시 |
 
 원본 DTO는 signed int64를 문자열로 직렬화한다. 이 평가 추출기는 정상 DB 참조로 사용할 양의 정규 10진 문자열만 지원하며,
 JSON 숫자·UUID·0·음수·앞자리0·범위 초과를 거부한다. 양수 제한은 이 추출기의 입력 정책이다.
 근거 binding은 명시적 `finding_id`가 있어야 하며 소유 finding ID와 일치해야 한다.
-source ID와 binding ID는 응답 전체에서 중복을 거부한다. 자원 ID는 한 finding 안에서 중복을 거부하며 서로 다른 finding의 공유 자원은 허용한다.
+source ID와 binding ID는 응답 전체에서 중복을 거부한다. 자원 ID는 한 finding 안에서 중복을 거부하며 서로 다른 finding의 공유 자원은 허용한다. 원본 severity는 화이트리스트가 보장되지 않으므로 지원하지 않는 문자열을 baseline 전체 실패로 만들지 않고 null과 `unmapped_fields`로 표시한다.
 원문의 `snapshot_id`·`source_traffic_id`는 자유 문자열이므로 출력하지 않는다. 후속 수집기는 binding ID로 원본 근거를 조회·검증해야 한다.
 
 분류와 참조를 포함하는 합성 FindingDTO 예시:

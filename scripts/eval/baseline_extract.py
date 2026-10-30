@@ -51,7 +51,7 @@ class ExtractedFinding:
     source_id: str
     finding_id: str | None
     vuln_class: str | None
-    severity: str
+    severity: str | None
     source_status: str
     asset_refs: tuple[AssetReference, ...] | None
     traffic_binding_refs: tuple[TrafficBindingReference, ...] | None
@@ -94,6 +94,16 @@ def _id(value: object, path: str) -> str:
 def _enum(value: object, choices: tuple[str, ...], path: str) -> str:
     if not isinstance(value, str) or value not in choices:
         _fail(path, "UNSUPPORTED_VALUE")
+    return value
+
+
+def _severity(value: object, path: str, unmapped: set[str]) -> str | None:
+    """원본 severity는 자유 문자열이므로 지원하지 않는 값은 보존하지 않고 표시한다."""
+    if not isinstance(value, str):
+        _fail(path, "EXPECTED_STRING")
+    if value not in _SEVERITIES:
+        unmapped.add("severity")
+        return None
     return value
 
 
@@ -166,7 +176,7 @@ def _finding(raw: object, classes: dict[str, str], types: dict[str, str]) -> Ext
     vuln_class = _classification(row.get("vulnclass"), classes, "finding.vulnclass")
     if vuln_class is None:
         unmapped.add("vulnclass")
-    severity = _enum(row.get("severity"), _SEVERITIES, "finding.severity")
+    severity = _severity(row.get("severity"), "finding.severity", unmapped)
     status = _enum(row.get("status"), _STATUSES, "finding.status")
     assets = _assets(row.get("assets"), types, unmapped)
     bindings = _bindings(row.get("traffic_bindings"), finding_id)
