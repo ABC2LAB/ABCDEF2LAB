@@ -4,16 +4,10 @@
 (평균 ± 표본 표준편차(SD))로 집계한다. 네트워크·파일·시계 접근 없음 — collect.py가 I/O로
 RepeatResult를 만들어 여기로 넘긴다. 순수하게 둬서 테이블 테스트가 가능하다.
 
-분류 입력은 다섯 가지다(프로토콜 §4 판정표):
-  1) 엔진이 그 챌린지에 내린 판정(ScanVerdict)          — 엔진의 주장
-  2) Juice Shop에서 실제로 해결됐는지(solved)           — `/api/Challenges`의 독립 정답
-  3) confirmed 주장의 증거 3조건 충족(evidence_ok)       — evidence.py가 계산(§4-2)
-  4) 커버리지 기록(covered)                              — 판정 레코드와 별개 출처(§4-4)
-  5) 상관 가능 여부(correlatable)                        — GT 상관 type 유무, '판정 없음'의 의미 게이트
-
-제목 매핑만으로 성공 처리하지 않는다(§4.1). confirmed 주장이라도 실제 해결이
-뒷받침되지 않으면 오탐이다(§4.2). 목록에 없는 finding은 즉시 오탐이 아니라
-out-of-list로 따로 센다(§4.3). 확인 못 한 것은 판단불가다 — 유리한 쪽으로 채우지 않는다.
+분류는 사전 해결과 독립 러너의 엔진 귀속을 먼저 확인한 뒤, 판정·증거·커버리지·
+상관 가능 여부를 적용한다. pre를 확인하지 못했거나 pre=true면 판단불가다.
+pre=false→post=true여도 엔진 귀속을 확인하지 못하면 판단불가다.
+목록에 없는 finding은 즉시 오탐이 아니라 out-of-list로 따로 센다(§4-3).
 """
 
 from __future__ import annotations
@@ -50,20 +44,19 @@ class Bucket(Enum):
 
 
 def classify(
-    verdict: ScanVerdict, solved: bool, *, evidence_ok: bool, covered: bool, correlatable: bool
+    verdict: ScanVerdict, solved: bool, *, evidence_ok: bool, covered: bool, correlatable: bool,
+    pre_solved: bool | None = None, engine_attributed: bool = False,
 ) -> Bucket:
-    """한 GT 챌린지 → 매트릭스 칸. 프로토콜 §4 판정표 그대로.
+    """프로토콜 §4: 사전 해결/미확인 pre와 귀속 미확인 solve는 우선 판단불가.
 
-    - confirmed + 해결 + 증거 충족   → 확정
-    - confirmed + 해결 + 증거 미충족 → 판단불가 (확인 못 한 증거로 확정 주지 않음, §4-2)
-    - confirmed + 미해결            → 오탐 (증거 유무와 무관 — 증거 부족이 오탐 회피 수단이 되지 않게)
-    - suspected/undecidable        → 판단불가 (confirmed 주장이 아님, 해결 여부와 무관)
-    - allowed                      → 판단불가 (GT에 ALLOWED = KG·정책 오류 신호, §4-6)
-    - 판정 없음 + 해결 + 상관 가능            → 미탐 (solve 자체가 커버리지 증거 — 해결시키고 보고 안 함)
-    - 판정 없음 + 미해결 + 커버리지 + 상관 가능 → 미탐
-    - 판정 없음 + 미해결 + 커버리지 없음       → 판단불가 (미해결을 자동 미탐 처리하지 않음, §4-4)
-    - 판정 없음 + 상관 불가                   → 판단불가 (type이 없어 레코드가 붙을 길이 없음 = '판정 없음'을 모름)
+    확인된 새 solve만 증거가 있는 confirmed 또는 상관 가능한 판정 없음에 크레딧을 준다.
+    pre=false·post=false의 confirmed는 증거와 무관하게 오탐이며, 판정 없음의 미탐은
+    실제 검사 커버리지와 상관 가능 여부가 모두 필요하다.
     """
+    if pre_solved is not False:
+        return Bucket.UNDECIDED
+    if solved and not engine_attributed:
+        return Bucket.UNDECIDED
     if verdict is ScanVerdict.CONFIRMED:
         if not solved:
             return Bucket.FALSE_POSITIVE
@@ -81,7 +74,7 @@ class RepeatResult:
     """조건 1개 × 반복 1회의 원자료. collect.py가 채운다.
 
     verdicts/solved/evidence_ok의 키는 challenge key. 기준 분모(core/bac)에 있는 키가 여기
-    없으면 판정 NONE·미해결·증거 미충족으로 본다 — 커버리지가 없으면 판단불가(§4-4).
+    없으면 판정 NONE·미해결·증거 미충족으로 본다. pre_solved 누락은 확인 불가로 판단불가다.
     out_of_list_keys는 GT 목록에 없는 finding.
     elapsed_seconds·total_requests는 러너가 측정 못 하면 None — 표에 "—"(값 지어내지 않음).
     """
@@ -95,6 +88,8 @@ class RepeatResult:
     evidence_ok: dict[str, bool] = field(default_factory=dict)  # confirmed 챌린지의 증거 3조건 충족
     covered: frozenset[str] | None = None  # 커버리지 기록이 있는 챌린지. None = 출처 없음
     correlatable: frozenset[str] | None = None  # GT 상관 type이 있는 챌린지. None = 정보 없음(상관 불가로 봄)
+    pre_solved: dict[str, bool] = field(default_factory=dict)  # 누락은 pre 확인 불가
+    engine_solved: frozenset[str] = frozenset()  # 독립 러너의 직접 해결 이벤트로 확인한 항목
     blocked_attempts: int | None = None  # E² 차단 시도 수 — 총 요청 수와 별도 지표(§5), 미측정 None
 
 
@@ -119,6 +114,8 @@ def count_basis(repeat: RepeatResult, basis: tuple[Challenge, ...]) -> Counts:
             evidence_ok=repeat.evidence_ok.get(ch.key, False),
             covered=repeat.covered is not None and ch.key in repeat.covered,
             correlatable=repeat.correlatable is not None and ch.key in repeat.correlatable,
+            pre_solved=repeat.pre_solved.get(ch.key),
+            engine_attributed=ch.key in repeat.engine_solved,
         )
         tally[bucket] += 1
     return Counts(

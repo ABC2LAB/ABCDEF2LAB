@@ -1,7 +1,7 @@
 """평가 회차 manifest — 저장된 raw 한 회차를 채점기에 넘기는 메타데이터.
 
 회차 1개 = 조건 1개 × 반복 1회(스캔 1회 = Juice Shop 리셋 1회, 프로토콜 §2·§4-5).
-판정 레코드·스코어보드 정규화 스냅샷의 경로와 통제변수(model_tag·reset_generation)를
+판정 레코드·pre/post 정규화 스냅샷·독립 러너 기록의 경로와 통제변수를
 싣는다. 확정까지 시간·총 요청 수·차단 시도 수는 러너가 측정해 줄 때만 싣고, 없으면
 None — 표에는 "—"로 나가고 값을 지어내지 않는다.
 
@@ -43,14 +43,17 @@ class RunManifest:
     reset_generation: str  # Juice Shop reset 세대 — 회차마다 달라야(§4-5)
     repeat_index: int
     records_path: str  # 판정 레코드 JSON (verdict-record)
-    snapshot_path: str  # 스코어보드 정규화 스냅샷 (§2)
+    snapshot_path: str  # post 정규화 스냅샷 (§2)
+    pre_snapshot_path: str  # fixture 준비 이후, 엔진 시작 이전 스냅샷
+    run_record_path: str  # 별도 신뢰 러너가 서명한 회차 기록
     elapsed_seconds: float | None = None  # 확정까지 시간 — 미측정이면 None
     # 총 요청 수 = 실제로 대상에 전송된 HTTP만(traffic 기록분). E² 차단 시도·LLM 호출 제외(§5).
     total_requests: int | None = None
     blocked_attempts: int | None = None  # E²가 막은 전송 시도 수 — 별도 지표, 총 요청 수에 섞지 않음(§5)
 
 
-_REQUIRED_STR = ("condition", "run_id", "model_tag", "reset_generation", "records_path", "snapshot_path")
+_REQUIRED_STR = ("condition", "run_id", "model_tag", "reset_generation", "records_path",
+                 "snapshot_path", "pre_snapshot_path", "run_record_path")
 _COUNTS = ("total_requests", "blocked_attempts")
 _FIELDS = frozenset(_REQUIRED_STR + _COUNTS + ("engine", "repeat_index", "elapsed_seconds"))
 
@@ -103,7 +106,8 @@ def _parse_run(index: int, raw: object, base: str) -> tuple[RunManifest | None, 
         if not isinstance(value, str) or not value:
             errors.append(f"[{index}] {name} 부재/빈값: {value!r}")
 
-    engine = _ENGINES.get(raw.get("engine"))
+    engine_value = raw.get("engine")
+    engine = _ENGINES.get(engine_value) if isinstance(engine_value, str) else None
     if engine is None:
         errors.append(f"[{index}] engine 부정: {raw.get('engine')!r} (허용: {sorted(_ENGINES)})")
 
@@ -131,6 +135,8 @@ def _parse_run(index: int, raw: object, base: str) -> tuple[RunManifest | None, 
         repeat_index=repeat_index,
         records_path=os.path.normpath(os.path.join(base, raw["records_path"])),
         snapshot_path=os.path.normpath(os.path.join(base, raw["snapshot_path"])),
+        pre_snapshot_path=os.path.normpath(os.path.join(base, raw["pre_snapshot_path"])),
+        run_record_path=os.path.normpath(os.path.join(base, raw["run_record_path"])),
         elapsed_seconds=None if elapsed is None else float(elapsed),
         total_requests=raw.get("total_requests"),
         blocked_attempts=raw.get("blocked_attempts"),
@@ -144,4 +150,7 @@ def _is_int(value: object) -> bool:
 
 def _is_finite_number(value: object) -> bool:
     # json.load는 NaN·Infinity를 받아들인다 — 측정값으로는 거부한다.
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    try:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    except OverflowError:
+        return False

@@ -28,6 +28,8 @@ def _run(**overrides: object) -> dict:
         "repeat_index": 0,
         "records_path": "run0/records.json",
         "snapshot_path": "run0/snapshot.json",
+        "pre_snapshot_path": "run0/pre.json",
+        "run_record_path": "run0/runner.json",
     }
     run.update(overrides)
     return run
