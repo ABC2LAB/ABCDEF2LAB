@@ -2,7 +2,7 @@
 
 작성: 2026-10-30 · 이동찬 · 최민준님과 협의할 제안
 
-상태: **최민준님과 합의 전인 저장 게이트 제안. 공통 모드 코어와 DB reader·단방향 등록은 별도 PR #43의 범위다. Engine/최초 finding 저장·판정 issuance/link는 아직 연결하지 않았다.** 판정 레코드 확장과 수동 confirmed 경로는 계약·증거 게이트 우회 여부를 별도로 검토하기 전 활성화하지 않는다.
+상태: **합의 전인 저장 게이트 제안이며 합의 전 dev에 병합하지 않는다. 판정 레코드는 최민준님의 계약 영역이다.** 발급 레코드·재검증 매핑·잠금 순서는 필드 확인 후 별도 합의한다. 사람 수동 확정은 §1.1의 세 조건을 반영한 조건부 제안이다. 공통 모드 코어와 DB reader·단방향 등록은 별도 PR #43의 범위이며, Engine/최초 finding 저장·판정 issuance/link는 아직 연결하지 않았다.
 
 연결: [순수 오라클](./e3-oracle.md) · [판정 레코드](./verdict-record.md) · [IDOR 엔진 연결](./idor-verifier-seam.md#6-엔진-연결-계약-제안--이동찬-구현용) · [시험 명세](./e3-storage-gate-tests.md)
 
@@ -19,7 +19,15 @@
 
 게이트는 **자동 finding 생성/검증 승격**을 다룬다. `record_fact`가 만드는 `kind='fact', state='confirmed'`는 취약점 확정이 아니므로 차단 대상에 넣지 않는다. pending finding의 triage만 confirmed로 바꿔 E③ 검증 결과처럼 사용하는 우회도 막아야 한다.
 
-운영자가 기존 finding을 수동 confirmed로 triage하는 것은 허용하는 방향을 제안한다. 서버 인증으로 확인한 actor·reason·`confirmation_source=human`을 별도로 기록하고, E③ 검증 상태/판정 참조는 바꾸지 않는다. 모델이 `human`이라는 문자열을 보내는 것으로 이 경로를 쓸 수 없다. triage confirmed를 평가용 E③ CONFIRMED로 export하지 않으며 그래프 node·triage·E③ 검증을 각각 표시/집계한다. 이 구분을 소비하는 API/export가 준비되지 않으면 통제 모드의 새 수동 confirmed 경로도 활성화하지 않는다.
+### 1.1 사람 수동 확정의 세 조건
+
+운영자가 기존 finding을 수동 확정하는 경로는 다음 세 조건을 모두 만족하는 경우에 한해 제안한다. 아래는 저장·집계의 논리 요구사항이며, 필드명·타입·물리 저장 형식은 최민준님과 확인 후 확정한다.
+
+1. **별도 카테고리 저장:** 오라클의 증거 기반 `CONFIRMED`와 구별되는 **사람 수동 확정** 카테고리로 저장한다. `findings.status='confirmed'`만으로 두 결과를 합치지 않는다. 수동 확정은 기존 E③ 검증 상태·판정 참조를 바꾸거나 oracle 판정/issuance를 새로 발급하지 않는다. `confirmation_source=human`은 출처 표기의 후보이며, 모델이 그 문자열을 보내는 것만으로 수동 권한을 얻지 못한다.
+2. **자동 매트릭스 집계 제외:** [평가 프로토콜 §5](../evaluation/evaluation-protocol.md#5-측정-매트릭스-값은-비움-틀만)의 자동 매트릭스 `CONFIRMED` 집계(확정 수)에 사람 수동 확정을 넣지 않는다. API/export·평가 어댑터는 서버가 검증한 저장 카테고리·출처를 확인하고, triage confirmed를 oracle confirmed로 변환하지 않는다. 수동 확정만 추가해도 자동 확정 수·확정까지 시간과 기존 판정 칸·GT 분모는 바뀌지 않아야 한다. 기존 자동 판정은 프로토콜 §4를 그대로 따르고, 수동 내역은 별도 운영 집계로만 표시한다. 출처를 확인하지 못한 기록은 자동 CONFIRMED 입력으로 승격하지 않는다.
+3. **승인자·시각·근거 로그 필수:** 서버 인증으로 확인한 승인자의 비민감 참조, 서버가 기록한 승인 시각, 판단 사유와 검토 근거의 참조를 필수 로그로 보존한다. 근거 로그에는 원문·토큰·계정 값을 넣지 않는다. 승인자·시각·근거 중 하나가 누락/위조됐거나 필수 로그 저장이 실패하면 수동 확정을 거부한다. 수동 카테고리 기록·triage 변경·필수 로그는 같은 트랜잭션에서 원자적으로 저장해 부분 성공을 남기지 않는다.
+
+저장·API/export·평가 어댑터에서 세 조건을 검증하기 전에는 이 수동 경로를 활성화하지 않는다. 이 조건부 제안이 발급 레코드·재검증 매핑·잠금 순서까지 합의됐다는 뜻은 아니다.
 
 ## 2. 현재 저장 경로 — 확인한 사실
 
@@ -33,7 +41,7 @@
 | [db/finding_traffic.go:342](../../db/finding_traffic.go#L342) `RecordFindingTx` | 노드 confirmed + standalone finding + 증거 연결을 동일 트랜잭션에 생성 | 최하위 저장에서 서버 모드·판정·근거를 검사 |
 | [db/exploration.go:197](../../db/exploration.go#L197) `AddNode`, [:268](../../db/exploration.go#L268) `SetNodeState` | 일반 노드 생성·상태 변경 | finding으로 confirmed 생성/승격할 때 같은 불변조건 적용 |
 | [db/findings.go:82](../../db/findings.go#L82) `AddFinding` | standalone finding 직접 INSERT, status 미지정 | 통제 finding 직접 생성 우회 금지. 후보는 기존 hint/fact로 보존 |
-| [db/findings.go:697](../../db/findings.go#L697) `SetFindingStatus`, [db/notification.go:483](../../db/notification.go#L483) `SetFindingStatusTx` | triage 변경 | 자동 승격은 판정 검증, 수동은 인증된 actor/reason/source 기록. 기존 bare setter는 이 출처 없이 controlled confirmed 변경 금지 |
+| [db/findings.go:697](../../db/findings.go#L697) `SetFindingStatus`, [db/notification.go:483](../../db/notification.go#L483) `SetFindingStatusTx` | triage 변경 | 자동 승격은 판정 검증, 수동은 §1.1의 별도 카테고리·집계 제외·필수 승인 로그 적용. 기존 bare setter는 출처 없이 controlled confirmed 변경 금지 |
 | [db/findings.go:747](../../db/findings.go#L747) `SetFindingVulnClass` | 유형을 바꾸고 node payload에도 반영 | 기존 판정을 다른 유형의 확정으로 재사용하지 않음 |
 | [db/task_archives_restore.go:161](../../db/task_archives_restore.go#L161) `restoreTaskArchive` | 일반 row 복원으로 node/findings 복원 | mode·발급 판정·연결 없는 controlled 복원 금지 |
 | [db/finding_retests.go:194](../../db/finding_retests.go#L194) `RecordFindingRetestResult` | conversation에 문자열 결론 저장 | server-owned execution·finding·판정 연결 검증 |
@@ -123,15 +131,15 @@ reader 오류는 일반 문자열/JSON에 원문을 내보내지 않는 형태�
 1. task 소유권·서버 모드·archive 상태 확인. 통제/unknown에서 기존 fallback 금지.
 2. 서버가 고른 정본 판정과 근거 묶음을 읽고 잠금/불변성 확인.
 3. 같은 작업·의도·execution·case·계정·자원·reset·승인·KG 버전·근거 revision/digest인지 대조.
-4. 지원 유형의 정상 발급된 `CONFIRMED`, 필수 체크/비교 신호와 영수증 연결, 수명주기 완료를 확인. 역사적 정책의 유효성 기준은 **관찰 시각**이며 단순히 저장 시각에 만료되었다는 이유로 판정을 바꾸지 않음.
+4. 지원 유형에서 오라클이 증거 기반으로 발급한 `CONFIRMED`, 필수 체크/비교 신호와 영수증 연결, 수명주기 완료를 확인. 역사적 정책의 유효성 기준은 **관찰 시각**이며 단순히 저장 시각에 만료되었다는 이유로 판정을 바꾸지 않음.
 5. 서버 저장 연산 키의 동일 재시도는 기존 finding/node ID 반환. 같은 키에 다른 불변 입력, 다른 finding에 이미 연결된 판정은 conflict.
 6. finding node·standalone finding·판정 연결·근거 버전을 원자적으로 저장. 중간 오류는 모두 rollback. 동일 판정으로 최초 finding을 2개 만들지 못하도록 DB 유일성으로 보강.
 
-초기 standalone triage는 ARTEX 기존 pending 기본값을 유지한다. node confirmed·E③ 검증 연결과 사람이 관리하는 triage를 따로 둔다. 자동 triage confirmed 승격은 동일 issuance에 근거해야 하고, 수동 승격은 §1의 actor/reason/source를 사용하며 E③ 검증 상태를 바꾸지 않는다. notification outbox는 기존 의미를 유지하며 이를 E② 필수 감사 기록으로 대신하지 않는다.
+초기 standalone triage는 ARTEX 기존 pending 기본값을 유지한다. node confirmed·E③ 검증 연결과 사람이 관리하는 triage를 따로 둔다. 자동 triage confirmed 승격은 동일 issuance에 근거해야 한다. 수동 확정은 §1.1의 별도 카테고리·승인자/시각/근거 로그를 원자적으로 저장하고 E③ 검증 상태나 자동 매트릭스 집계를 바꾸지 않는다. notification outbox의 best-effort 성공은 수동 승인 필수 로그나 E② 필수 감사 기록의 저장 성공을 대신하지 않는다.
 
 ### 5.3 일반 API·근거 수정
 
-- `AddNode(finding, confirmed)`, `SetNodeState`, `AddFinding` 같은 generic 경로는 통제 finding의 생성/자동 확정을 명시적으로 거부하고 전용 저장 경로를 사용한다. 기존 bare status setter도 controlled confirmed 변경을 거부하고 서버의 자동/수동 출처가 검증된 경로만 사용한다. hint/fact의 일반 기록은 유지한다.
+- `AddNode(finding, confirmed)`, `SetNodeState`, `AddFinding` 같은 generic 경로는 통제 finding의 생성/자동 확정을 명시적으로 거부하고 전용 저장 경로를 사용한다. 기존 bare status setter도 controlled confirmed 변경을 거부한다. 자동 경로는 판정 출처를, 수동 경로는 §1.1의 카테고리·승인 로그를 검증한 전용 경로만 사용한다. hint/fact의 일반 기록은 유지한다.
 - 연결된 통제 finding의 근거를 `Store.Bind`, `EditFindingTraffic` 또는 evidence 갱신으로 바꾸면서 이전 판정을 유효하게 유지하지 못한다. **첫 구현은 이런 변경을 거부**한다. 새 근거 revision/판정을 만든 뒤 동일 트랜잭션에서 연결을 교체하는 후속 절차를 별도로 제공한다.
 - `SetFindingVulnClass`로 판정 의미를 바꾸는 것도 초기 범위에서는 거부한다. name/severity 등의 표시·triage metadata와, vulnclass/resource/evidence처럼 판정에 영향을 주는 항목을 구분한다.
 - 기록의 task/node 연결을 비우거나 다른 exploration으로 옮겨 모드를 우회하지 못한다. task 삭제 뒤 남는 standalone finding도 출처/모드 fence를 보존해야 한다. task에 cascade 삭제되지 않는 issuance/불변 provenance로 과거 확인 근거를 남기고, `findings.task_id/node_id`가 NULL이 되어도 이를 legacy로 재분류하지 않는다. 이 보존을 구현하기 전 controlled task/finding 삭제는 명시 거부한다.
@@ -180,6 +188,8 @@ server-owned conversation→retest→finding→원래 task와 새 검증 executi
 
 ## 9. 남은 협의
 
+- 판정 레코드 계약 담당 최민준님과 실제 필드를 확인한 뒤 발급 레코드·재검증 결과 매핑·잠금 순서를 합의한다. 이 문서는 그 합의 전 제안으로 유지하며 dev 병합을 보류한다.
+- 사람 수동 확정은 §1.1의 세 조건을 적용한 별도 카테고리·평가 제외·승인자/시각/근거 로그 필드와 API/export 동작을 확인한다. 조건부 수용을 전체 저장 계약의 합의로 확대하지 않는다.
 - 판정/연결 테이블과 write 권한·FK·archive/delete 처리의 구체 설계(이동찬·최민준).
 - 서버 execution 근거 manifest와 E② 감사 완료/관찰 참조의 생성·동결 시점(이동찬, 진행 중인 E② 세션).
 - private marker와 DB mode fence의 이관·재시작·등록 경합 처리(이동찬).

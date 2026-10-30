@@ -1,9 +1,9 @@
 # E③ 저장 게이트 — 회귀 시험 명세
 
-상태: **아래 전체 finding 저장/통합 시험 58건은 계획이다. 별도 모드 코어 단위 시험과 DB reader/등록 통합 시험을 부분 구현했다.**
+상태: **합의 전 제안이며 아래 전체 finding 저장/통합 시험 61건은 계획이다. 합의 전 dev에 병합하지 않는다.** 별도 모드 코어 단위 시험과 DB reader/등록 통합 시험을 부분 구현했다. 판정 레코드·발급·재검증 매핑·잠금 순서는 최민준님과 필드 확인 후 합의한다.
 연결: [저장 계약 초안](./e3-storage-gate.md) · [오라클 규칙](./e3-oracle.md) · [판정 레코드](./verdict-record.md)
 
-부분 진행: 별도 [PR #43](https://github.com/ABC2LAB/ABCDEF2LAB/pull/43)의 `taskmode/` 단위 시험과 DB reader/단방향 등록에서 E3G24~28의 mode 판별·정본 등록/조회·경합·실패 기준 일부를 검증했다. 아래 58건은 전체 finding 저장 경계의 명세이며 그 시험이 완료된 것은 아니다. 실제 marker 이관·Engine/RecordFindingTx 연결은 아직 없다.
+부분 진행: 별도 [PR #43](https://github.com/ABC2LAB/ABCDEF2LAB/pull/43)의 `taskmode/` 단위 시험과 DB reader/단방향 등록에서 E3G24~28의 mode 판별·정본 등록/조회·경합·실패 기준 일부를 검증했다. 아래 61건은 전체 finding 저장 경계의 명세이며 그 시험이 완료된 것은 아니다. 실제 marker 이관·Engine/RecordFindingTx 연결은 아직 없다.
 
 ## 1. fixture와 관측값
 
@@ -17,10 +17,12 @@
 - `CN`: 새 confirmed finding 노드 수.
 - `CT`: 새 triage confirmed 행 수. 수동 출처를 E③ 결과에 합산하지 않음.
 - `EV`: 정본 issuance/판정과 같은 근거에 유효하게 연결된 E③ 검증 finding 수.
+- `H`: 오라클 CONFIRMED와 별도 카테고리로 저장된 사람 수동 확정 수.
+- `A`: 승인자·승인 시각·판단 사유·검토 근거 참조를 모두 보존한 성공 수동 승인 필수 로그 수. 거부 시도 로그와 구분.
 - `R`: 저장 동작 중 target에 도달한 요청 수. 모든 저장 시험에서 **0**.
 - 기존 행·유효 연결·triage가 보존/변경되었는지, 재시도 반환 ID가 같은지 확인.
 
-신규 정상 저장은 `N=1,F=1,L=1,CN=1,CT=0,EV=1,R=0`이다(triage 초기 pending). 아래 표의 `N/F/L/EV=0` 거부는 CN/CT 증가도 0이라는 뜻이며 이미 보존한 비확정 판정 레코드는 삭제하지 않는다. 변경/재검증 시험은 기존 행의 상태도 별도로 assert한다. 사람이 수동 triage하는 시험에서는 CT만 변할 수 있고 CN/EV는 변하지 않는다. notification은 기존 best-effort 정책을 유지하며 필수 E② 감사의 성공 지표로 쓰지 않는다.
+신규 정상 자동 저장은 `N=1,F=1,L=1,CN=1,CT=0,EV=1,H=0,A=0,R=0`이다(triage 초기 pending). 아래 표의 `N/F/L/EV=0` 거부는 CN/CT 증가도 0이라는 뜻이며 이미 보존한 비확정 판정 레코드는 삭제하지 않는다. 변경/재검증 시험은 기존 행의 상태도 별도로 assert한다. 사람 수동 확정은 기존 finding에서 H/A를 함께 증가시키며 CT는 변경 가능하지만 CN/EV·oracle 판정/issuance와 자동 매트릭스는 바꾸지 않는다. H/A는 논리 관측값이며 확정된 저장 필드명이 아니다. notification의 best-effort 성공은 수동 승인 필수 로그나 E② 필수 감사 성공을 대신하지 않는다.
 
 ## 2. 계획된 사례
 
@@ -80,18 +82,21 @@
 | E3G52 | finding delete ↔ retest finish 교차 transaction | 잠금 순서 유지, 보존 미구현일 때 controlled 삭제 거부, 삭제 뒤 새 link/triage 변경 0, deadlock/timeout 0 |
 | E3G53 | owner/cross 사이 reader가 다른 KG version 또는 동일 version/다른 digest 반환 | snapshot 혼합 거부, N/F/L/EV=0 |
 | E3G54 | 관찰 완료 뒤 판정 발급 전에 최신 KG 변경 | 동결 snapshot ID/version/digest로 역사적 판정, 최신 상태를 조용히 대입하지 않음 |
-| E3G55 | 인증된 운영자가 기존 finding을 수동 confirmed로 triage | source=human·actor/reason 보존, CT만 증가 가능, CN/EV·평가 oracle 결과 변화 0 |
-| E3G56 | 모델/일반 호출자가 source=human·actor 문자열만 주입 | 수동 권한으로 인정하지 않음, CT/EV 증가 0 |
+| E3G55 | 인증된 운영자가 기존 finding을 수동 확정, 세 조건 충족 | 별도 사람 수동 확정 H=1·승인자/시각/사유/근거 로그 A=1 원자 저장, CT만 변경 가능, CN/EV·oracle 판정/issuance·자동 매트릭스 변화 0 |
+| E3G56 | 모델/일반 호출자가 source=human·승인자·시각 문자열만 주입 | 서버 인증·승인 로그로 인정하지 않음, H/A/CT/EV 증가 0 |
 | E3G57 | task/node FK가 NULL이 된 잔존 finding의 출처 조회 | immutable provenance/mode 유지, 자동 legacy 재분류 0. 보존 미구현이면 사전 삭제 거부 |
 | E3G58 | issuance/link 저장 재시도와 finding_id 조회/export | 판정/issuance 본문 불변, finding_id는 link projection, 중복 발급/두 번째 finding 연결 0 |
+| E3G59 | 수동 확정만 있거나 기존 자동 판정에 수동 확정을 추가한 뒤 API/export·평가 실행; 출처 불명 기록 포함 | 사람 카테고리 별도 보존, 평가 프로토콜 §5의 자동 CONFIRMED 집계에 수동/출처 불명 기록 포함 0. 수동 추가 전후 자동 확정 수·확정까지 시간·기존 판정 칸·GT 분모 동일 |
+| E3G60 | 수동 승인자·서버 승인 시각·판단 사유·검토 근거 참조 각각 누락/위조 | 각 subtest에서 수동 확정 거부, H/A/CT 증가 0, 기존 oracle 판정·자동 집계 불변 |
+| E3G61 | 수동 승인 필수 로그 저장 실패/트랜잭션 rollback, notification만 성공 | 수동 카테고리·triage·승인 로그 전체 rollback, H/A/CT 증가 0, 부분 성공/수동 확정 성공 응답 0 |
 
-표의 조건별 나열은 구현 시 각각 subtest로 나눈다. 위 58건은 명세 행 수이며 실행된 Go 테스트/최하위 사례 수가 아니다. E3G49~52는 barrier로 두 transaction을 교차 진행하고 전용 timeout으로 종료를 확인한다. 작업 전제에 따라 둘 다 선형적으로 완료할 수 있으면 그 결과도 허용하되, 최종 불변조건 위반은 0이어야 한다. E3G38의 3회는 시험의 재시도 상한이며 제품 설정 기본값이 아니다.
+표의 조건별 나열은 구현 시 각각 subtest로 나눈다. 위 61건은 명세 행 수이며 실행된 Go 테스트/최하위 사례 수가 아니다. E3G49~52는 barrier로 두 transaction을 교차 진행하고 전용 timeout으로 종료를 확인한다. 작업 전제에 따라 둘 다 선형적으로 완료할 수 있으면 그 결과도 허용하되, 최종 불변조건 위반은 0이어야 한다. E3G38의 3회는 시험의 재시도 상한이며 제품 설정 기본값이 아니다.
 
 ## 3. 시험 계층과 실행 순서
 
 1. **순수 검증 단위 시험:** 불변 binding·enum·발급자/정본 조회의 음성 사례, 관찰 시각 정책 유효성. fake reader는 DB의 원자성/발급 권한을 입증하지 않는다.
 2. **격리 PostgreSQL 통합:** 실제 RecordFindingTx 및 일반 삽입/갱신, 유일 제약, task/finding 잠금, 동시 20회, 실패 주입·rollback. 실행 전 전용 DB를 확인하고 팀 공유 DB에 파괴적인 fixture 정리를 하지 않는다. DB 미설정으로 skip한 것은 통과 근거에서 제외한다.
 3. **소유 synthetic 통합:** 실제 등록 전송/비민감 projection→판정 발급→최초 저장, retest 연결. 먼저 수행한 owner/cross 요청과 저장 단계의 R=0을 분리 집계. 대상 앱 특화 경로를 제품 코드에 하드코딩하지 않는다.
-4. **관측·회귀:** 일반 legacy/fact·인증된 human triage 유지, 노드·triage·E③ 검증 세 축과 export 검사. 필수 감사 실패와 notification 실패는 다른 의미로 시험한다.
+4. **관측·회귀:** 일반 legacy/fact·사람 수동 확정의 별도 카테고리·필수 승인자/시각/근거 로그와 export를 검사한다. 자동 오라클 결과와 수동 기록을 함께 넣어도 [평가 프로토콜 §5](../evaluation/evaluation-protocol.md#5-측정-매트릭스-값은-비움-틀만)의 자동 매트릭스가 수동 조작 전후 동일한지 비교한다. 필수 로그/감사 실패와 notification 실패는 다른 의미로 시험한다.
 
-전체 저장 게이트 구현 뒤 범위에 맞춰 `gofmt`, 관련 `go test`, `go vet`, 소스 build, 동시성 경로의 `-race`를 실행한다. 별도 PR #43에서 `taskmode/` 단위 검증과 DB reader·등록 통합 시험을 수행했지만, 위 58개 finding 저장 시험을 완료로 기록하지 않는다. 문서에서는 링크·실제 심볼/라인·사례 ID 유일성도 확인한다.
+전체 저장 게이트 구현 뒤 범위에 맞춰 `gofmt`, 관련 `go test`, `go vet`, 소스 build, 동시성 경로의 `-race`를 실행한다. 별도 PR #43에서 `taskmode/` 단위 검증과 DB reader·등록 통합 시험을 수행했지만, 위 61개 finding 저장 시험을 완료로 기록하지 않는다. 문서에서는 링크·실제 심볼/라인·사례 ID 유일성도 확인한다.
