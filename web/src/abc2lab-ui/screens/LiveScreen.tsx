@@ -525,7 +525,10 @@ export default function LiveScreen({ target }: { target: Target }) {
                       ? "작업과 증거의 비동기 보관을 요청합니다"
                       : "일시정지 또는 종료 상태이고 진행 요청이 없을 때 보관할 수 있어요"
                   }
-                  onClick={() => setEndTarget({ id: taskId, name: title })}
+                  onClick={() => {
+                    setActionMsg(null);
+                    setEndTarget({ id: taskId, name: title });
+                  }}
                 >
                   보관 요청
                 </button>
@@ -539,7 +542,7 @@ export default function LiveScreen({ target }: { target: Target }) {
           </div>
 
           {taskRes.error && <p role="alert">점검 정보를 불러오지 못했어요. 새로고침해 주세요.</p>}
-          {actionMsg?.taskId === taskId && <p role="alert">{actionMsg.message}</p>}
+          {actionMsg?.taskId === taskId && !endTarget && <p role="alert">{actionMsg.message}</p>}
           {currentArchive && (
             <div className="card" role="status">
               <p>
@@ -753,6 +756,7 @@ export default function LiveScreen({ target }: { target: Target }) {
                 <Strong>{endTarget.name}</Strong> 작업과 증거의 보관을 요청해요. 접수 후 백그라운드에서 처리하며, 완료
                 전에는 보관 성공이 아니에요. 완료된 보관은 별도 복원 기능으로 복원할 수 있어요.
               </p>
+              {actionMsg?.taskId === endTarget.id && <p role="alert">{actionMsg.message}</p>}
             </div>
             <div className="vpop-foot">
               <button className="btn" type="button" disabled={actionBusy} onClick={() => setEndTarget(null)}>

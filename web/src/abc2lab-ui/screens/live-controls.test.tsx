@@ -105,6 +105,15 @@ describe("task-bound controls", () => {
     await waitFor(() => expect(engine.getTaskArchive).toHaveBeenCalledWith("42"));
     await waitFor(() => expect(go).toHaveBeenCalledWith("history"));
   });
+  it("shows a rejected archive request inside its still-open confirmation", async () => {
+    vi.mocked(engine.archiveTask).mockRejectedValue(new Error("synthetic archive conflict"));
+    render(<Harness />);
+    const dialog = await openArchive();
+    fireEvent.click(within(dialog).getByRole("button", { name: "보관 요청" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("synthetic archive conflict");
+    expect(go).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole("button", { name: "보관 요청" })).toBeEnabled();
+  });
   it("does not apply an old task's archive response to the new task", async () => {
     let finish!: (value: engine.EngineTaskArchive) => void;
     vi.mocked(engine.archiveTask).mockReturnValue(
