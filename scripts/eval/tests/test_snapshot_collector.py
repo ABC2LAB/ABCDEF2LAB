@@ -144,9 +144,11 @@ class TestSnapshotCollector(unittest.TestCase):
                    self.origin + "?token=SYNTHETIC", self.origin + "#fragment",
                    "http://user:SYNTHETIC@127.0.0.1", "http://127.0.0.1:0", "http://127.0.0.1:65536",
                    self.origin + "\n", "http://127.1", "http://[::1%zone]")
-        for origin in invalid:
-            with self.subTest(origin=origin):
-                self.assert_failure(replace(self.config, origin=origin))
+        with patch("snapshot_collector.http.client.HTTPConnection") as connection:
+            for origin in invalid:
+                with self.subTest(origin=origin):
+                    self.assert_failure(replace(self.config, origin=origin))
+            connection.assert_not_called()
         self.assertEqual(self.state["requests"], [])
 
     def test_invalid_path_or_header_injection_send_nothing(self):
