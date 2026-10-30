@@ -125,8 +125,8 @@ export default function SettingsScreen() {
                   );
                 })}
                 <div className="hint">
-                  ARTEX 내장 기본 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E²) 연동 후 열려요(그
-                  전엔 읽기 전용).
+                  ARTEX에 등록된 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E²) 연동 후 열려요(그 전엔
+                  읽기 전용).
                 </div>
               </>
             )}

@@ -175,3 +175,47 @@ describe("engine state fidelity", () => {
     expect(await screen.findByRole("button", { name: "보고서" })).toBeVisible();
   });
 });
+
+describe("unavailable progress data", () => {
+  it.each(["queued", "failed", "timeout"])("does not infer completed phases from %s", async (status) => {
+    const task = await engine.getTask("task-1");
+    vi.mocked(engine.getTask).mockResolvedValue({ ...task, status });
+    const view = show("live", <LiveScreen target={{ url: "http://example.test", host: "example.test" }} />);
+    await waitFor(() => expect(engine.getTask).toHaveBeenCalled());
+    expect(view.container.querySelectorAll(".pipe .done, .pipe .now, .pipe .on")).toHaveLength(0);
+    expect(screen.getByText("점검 흐름 예시 · 단계별 진행 미연결")).toBeVisible();
+  });
+  it.each(["missing", "disabled", "failed"])("does not show zero percent for %s coverage", async (state) => {
+    if (state === "failed") vi.mocked(engine.getCoverage).mockRejectedValue(new Error("synthetic coverage error"));
+    if (state === "disabled")
+      vi.mocked(engine.getCoverage).mockResolvedValue({
+        enabled: false,
+        denominator: 3,
+        tested: 2,
+        pct: 2 / 3,
+        scopeRows: 1,
+        byType: [],
+      });
+    show("live", <LiveScreen target={{ url: "http://example.test", host: "example.test" }} />);
+    await waitFor(() => expect(engine.getCoverage).toHaveBeenCalled());
+    if (state === "disabled") expect(await screen.findByText("커버리지 기능이 비활성화돼 있어요.")).toBeVisible();
+    if (state === "failed") expect(await screen.findByText("커버리지를 불러오지 못했어요.")).toBeVisible();
+    expect(screen.queryByText("0%")).toBeNull();
+    expect(screen.getByText(/^검사 범위/).textContent).toContain("—");
+    fireEvent.click(screen.getByRole("button", { name: "상세 보기" }));
+    expect(screen.getByText(/^탐색 범위 미확인/)).toBeVisible();
+  });
+});
+
+it("keeps a successful zero coverage measurement as zero", async () => {
+  vi.mocked(engine.getCoverage).mockResolvedValue({
+    enabled: true,
+    denominator: 3,
+    tested: 0,
+    pct: 0,
+    scopeRows: 1,
+    byType: [],
+  });
+  show("live", <LiveScreen target={{ url: "http://example.test", host: "example.test" }} />);
+  expect(await screen.findByText("0%")).toBeVisible();
+});

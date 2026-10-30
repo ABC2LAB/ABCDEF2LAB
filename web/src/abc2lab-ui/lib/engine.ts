@@ -82,7 +82,7 @@ export async function listTaskFindings(taskId: string): Promise<EngineFinding[]>
 }
 
 /**
- * guard/guard.go AuditEntry — E²(GUARD)가 게이트한 도구 호출 1건.
+ * guard/guard.go AuditEntry — ARTEX guard가 검토한 도구 호출 1건. 실제 송신 E² 증명과는 별개다.
  * ※ 변조탐지 해시체인·권한분리(우리 기여)는 아직 이 레코드에 없다 — UI에서 "준비 중"으로 둔다.
  */
 export type EngineAuditEntry = {
@@ -100,7 +100,7 @@ export type AuditResponse = {
   entries: EngineAuditEntry[];
 };
 
-/** GET /api/audit?task={id} — 해당 task의 E² 게이트 감사 로그 */
+/** GET /api/audit?task={id} — 해당 task의 ARTEX guard 도구 검토 로그 */
 export async function getAudit(taskId: string): Promise<AuditResponse> {
   if (!taskId) return { entries: [] };
   // task 없으면 서버가 bare [] 를 주므로(핸들러), entries 추출을 방어적으로.

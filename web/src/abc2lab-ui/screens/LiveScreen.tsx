@@ -5,7 +5,6 @@ import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { Sev, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
-import { cx } from "../lib/cx";
 import {
   type EngineActivity,
   type EngineCoverage,
@@ -27,12 +26,6 @@ import type { Severity, Target } from "../types";
 const MOCK = { etaRange: "12~15", elapsed: "경과 18분", tokenEst: "예상 1.8~2.1M" } as const;
 
 const PIPELINE = ["자산 탐색", "범위 확인", "점검 계획", "취약점 점검", "검증", "마무리", "보고서"];
-// 실 단계 데이터는 아직 없어 status 로 근사(슬롯은 실데이터 들어오면 교체).
-function pipelineNow(status: string): number {
-  if (status === "done" || status === "failed" || status === "timeout") return 6;
-  if (status === "running" || status === "paused") return 3;
-  return 1;
-}
 
 const STATUS_LABEL: Record<string, string> = {
   created: "대기",
@@ -96,7 +89,7 @@ function LiveDetailModal({
   onClose: () => void;
   title: string;
   status: string;
-  covPct: number;
+  covPct: number | null;
   acts: EngineActivity[];
   truncated: boolean;
   loading: boolean;
@@ -109,10 +102,11 @@ function LiveDetailModal({
           <div style={{ minWidth: 0, flex: 1 }}>
             <div className="rpt">{title}</div>
             <div className="rpbar">
-              <i style={{ width: `${covPct}%` }} />
+              <i style={{ width: `${covPct ?? 0}%` }} />
             </div>
             <div className="rpd">
-              탐색 범위 {covPct}% · 활동 {loading ? "조회 중" : error ? "조회 실패" : `${acts.length}건`}
+              탐색 범위 {covPct === null ? "미확인" : `${covPct}%`} · 활동{" "}
+              {loading ? "조회 중" : error ? "조회 실패" : `${acts.length}건`}
               {truncated ? " (앞부분)" : ""}
             </div>
           </div>
@@ -223,7 +217,7 @@ export default function LiveScreen({ target }: { target: Target }) {
 
   const status = task?.status ?? "";
   const title = task?.name?.trim() || task?.description?.trim() || (taskId ? `점검 #${taskId}` : target.url);
-  const covPct = cov && cov.denominator > 0 ? Math.round((cov.tested / cov.denominator) * 100) : 0;
+  const covPct = cov?.enabled && cov.denominator > 0 ? Math.round((cov.tested / cov.denominator) * 100) : null;
   const tokenTotal = (tokRes.data?.input ?? 0) + (tokRes.data?.output ?? 0);
   const cells = cov ? coverageCells(cov.denominator, cov.tested) : [];
 
@@ -299,23 +293,21 @@ export default function LiveScreen({ target }: { target: Target }) {
             </div>
           </div>
 
+          <p className="hint">점검 흐름 예시 · 단계별 진행 미연결</p>
           <div className="pipe">
-            {PIPELINE.map((label, i) => {
-              const now = pipelineNow(status);
-              return (
-                <Fragment key={label}>
-                  {i > 0 && <span className={cx("d", i <= now && "on")} />}
-                  <span className={cx("p", i < now && "done", i === now && "now")}>{label}</span>
-                </Fragment>
-              );
-            })}
+            {PIPELINE.map((label, i) => (
+              <Fragment key={label}>
+                {i > 0 && <span className="d" />}
+                <span className="p">{label}</span>
+              </Fragment>
+            ))}
           </div>
           <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 4 }}>
-            검사 범위 <Strong>{covPct}%</Strong>
-            {cov && cov.denominator > 0 ? ` · ${cov.tested}/${cov.denominator} 자산 탐색` : ""}
+            검사 범위 <Strong>{covPct === null ? "—" : `${covPct}%`}</Strong>
+            {covPct !== null && cov ? ` · ${cov.tested}/${cov.denominator} 자산 탐색` : " · 미확인"}
           </div>
           <div className="bar">
-            <i style={{ width: `${covPct}%` }} />
+            <i style={{ width: `${covPct ?? 0}%` }} />
           </div>
 
           <div className="nowdoing" style={{ marginTop: 16 }}>
@@ -359,8 +351,8 @@ export default function LiveScreen({ target }: { target: Target }) {
             {/* 실데이터: 탐색한 자산 */}
             <div className="tile">
               <div className="k">탐색한 자산</div>
-              <div className="v">{cov ? cov.tested : "—"}</div>
-              <div className="sub">{cov ? `범위 ${cov.denominator}` : "집계 전"}</div>
+              <div className="v">{cov?.enabled ? cov.tested : "—"}</div>
+              <div className="sub">{cov?.enabled ? `범위 ${cov.denominator}` : "집계 전"}</div>
             </div>
           </div>
 
@@ -441,9 +433,9 @@ export default function LiveScreen({ target }: { target: Target }) {
                 남겨요).
               </div>
               <h3 style={{ fontSize: 14, margin: "18px 0 8px" }}>
-                검사 커버리지 <Sub>· {cov ? `${cov.tested} / ${cov.denominator} 자산` : "집계 전"}</Sub>
+                검사 커버리지 <Sub>· {cov?.enabled ? `${cov.tested} / ${cov.denominator} 자산` : "집계 전"}</Sub>
               </h3>
-              {cov && cov.denominator > 0 ? (
+              {covPct !== null ? (
                 <>
                   <div className="covgrid">
                     {cells.map((c, i) => (
@@ -465,7 +457,13 @@ export default function LiveScreen({ target }: { target: Target }) {
                 </>
               ) : (
                 <div style={{ fontSize: 13, color: "var(--muted)", padding: "8px 0" }}>
-                  {covRes.error ? "커버리지를 불러오지 못했어요." : "커버리지 집계 전이에요."}
+                  {covRes.loading
+                    ? "커버리지 조회 중이에요."
+                    : covRes.error
+                      ? "커버리지를 불러오지 못했어요."
+                      : cov && !cov.enabled
+                        ? "커버리지 기능이 비활성화돼 있어요."
+                        : "커버리지 집계 전이에요."}
                 </div>
               )}
             </div>
