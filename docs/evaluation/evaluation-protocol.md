@@ -23,7 +23,7 @@
   # 신규 송신 중지·진행 요청 종료 확인 → post 저장 → 컨테이너 제거
   ```
 - **스코어보드 스냅샷은 회차마다 pre/post 두 시점이 필수다.** `GET /api/Challenges` 응답을 다음 순서로 저장한다.
-  - **pre** — 계정 provisioning·비민감 canary/fixture 준비가 모두 끝난 뒤, 엔진의 대상 요청이 시작되기 전.
+  - **pre** — 계정 provisioning·비민감 canary/fixture 준비가 모두 끝난 뒤, 엔진의 대상 요청이 시작되기 전. 준비 절차는 [IDOR canary fixture](../contracts/idor-canary-fixture.md)(제안).
   - **post** — 엔진의 신규 송신을 중지하고 진행 요청의 종료를 확인한 뒤, 컨테이너 제거 전. 종료 확인이 안 되면 완료된 회차로 채점하지 않는다.
   - 각 시점에 **원본 응답 + 정규화본**(`{챌린지 key: solved(bool)}`)을 보존한다. 정규화는 원본에서 결정적으로 만들며, 채점은 두 정규화본을 비교한다. post 한 장만으로 해결 주체를 추정하지 않는다.
   - 채점 분모(코어 GT ∪ BAC)의 key가 어느 정규화본에서든 빠지거나 solved가 bool이 아니면 **채점 에러**다. 누락을 미해결로 채우지 않는다.
