@@ -107,8 +107,10 @@ func retryableWorkerModelError(reason harness.TerminalReason, err error) bool {
 // (re)installed at runtime (LLM configured from the UI); the loops always run
 // but idle until an LLM is set.
 type Engine struct {
-	m        *Manager
-	debounce time.Duration
+	m               *Manager
+	debounce        time.Duration
+	controlledReads *controlledReadRuntime // installed by Server before any task starts
+	controlledIdle  func(*Task)            // parks a drained controlled task
 
 	bc *Broadcaster // live activity pub/sub (SSE)
 
@@ -275,6 +277,9 @@ func (e *Engine) StopTask(taskID string) {
 	if rt != nil {
 		rt.wg.Wait()
 	}
+	if e.controlledReads != nil {
+		e.controlledReads.discardTask(taskID)
+	}
 
 	e.execMu.Lock()
 	if cancel := e.execCancel[taskID]; cancel != nil {
@@ -315,6 +320,9 @@ func (e *Engine) cancelExec(taskID string, cause error) {
 		cancel(cause)
 	}
 	e.execMu.Unlock()
+	if e.controlledReads != nil {
+		e.controlledReads.discardTask(taskID)
+	}
 }
 
 // Resume un-pauses a task and nudges a fresh planning round. The next exec under
@@ -862,6 +870,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if e.IsDeleting(t.ID) {
 			return
 		}
+		if e.controlledTask(t.ID) {
+			return // controlled tasks execute registered reads; no autonomous tool path
+		}
 		// terminal task (goals all met → done, or failed): the run is over. A
 		// resume/nudge — e.g. auto-resume of the active task on restart — must NOT
 		// re-plan (it would burn an LLM round and re-confirm a settled result).
@@ -988,6 +999,7 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 		}
 		claimed := e.runWorkerStep(ctx, t, name, worker)
 		e.decInflight(t.ID)
+		e.maybeParkControlledTask(t)
 		if !claimed && sleepCtx(ctx, 800*time.Millisecond) {
 			return
 		}
@@ -1039,6 +1051,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	label := fmt.Sprintf("%s · #%d", name, iid)
 	workCtx = intercept.WithTaskContext(workCtx, t.ID, label, taskEmit)
+	// Acquire once for this whole work, including provider retries. A controlled
+	// tombstone without a fresh server registration must never use legacy tools.
+	workCtx, finishControlled, controlledErr := e.prepareControlledRead(workCtx, t, intent)
 	// nudges 有意建在 model_error 重跑循环之外:空转续跑的上限是「这条意图」的总量，
 	// 重跑一轮不该把额度清零重来。
 	hooks := steerHooks{
@@ -1049,16 +1064,20 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		label:  label,
 	}
 	wTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	e.BeginLLMCall(t.ID)
 	var reason harness.TerminalReason
 	var wrote agent.WriteCounts
 	var err error
-	if hasChatMessage {
-		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+	if controlledErr != nil {
+		reason, err = harness.ReasonHookStopped, controlledErr
 	} else {
-		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+		e.BeginLLMCall(t.ID)
+		if hasChatMessage {
+			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+		} else {
+			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+		}
+		e.EndLLMCall(t.ID)
 	}
-	e.EndLLMCall(t.ID)
 	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
 	// 未暂停/未终止/未取消【且未进入收尾】时重试；否则让位给对应分支处理(收尾期不
 	// 再重试,避免退避挤占其他 worker 的优雅收尾窗口)。
@@ -1079,6 +1098,15 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 		e.EndLLMCall(t.ID)
 	}
+	var finalizeErr error
+	if finishControlled != nil {
+		finalizeErr = finishControlled()
+		if finalizeErr != nil {
+			log.Printf("[E2] task %s intent #%d execution audit finalization failed: %v", t.ID, intent.ID, finalizeErr)
+			err = errors.Join(err, finalizeErr)
+			reason = harness.ReasonHookStopped
+		}
+	}
 	// Capture kill state before detachWork cancels workCtx. kill = this work's
 	// ctx was cancelled (planner kill_work) while the TASK ctx kept running; a
 	// pause cancels the task ctx (ectx) instead. Checking workCtx.Err() AFTER
@@ -1098,10 +1126,12 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			action = "cancel"
 		}
 	}
+	// An interrupted read is an execution failure, not a failure to pause or
+	// cancel. The controller still needs the persisted state and cleanup result.
 	var controlErr error
 	defer func() { completeWork(controlErr) }()
 	if action == "pause" {
-		controlErr = transitionIntentState(t.Store, intent.ID, "running", "paused")
+		controlErr = errors.Join(controlErr, transitionIntentState(t.Store, intent.ID, "running", "paused"))
 		if controlErr != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 暂停状态落库失败: %v", name, t.ID, intent.ID, controlErr)
 			return true
@@ -1114,7 +1144,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		// Park the stopped run in paused before handing cleanup to the API. If the
 		// request disconnects after cancellation, the intent remains recoverable and
 		// a later cancel can finish cleanup instead of leaving a phantom running row.
-		controlErr = transitionIntentState(t.Store, intent.ID, "running", "paused")
+		controlErr = errors.Join(controlErr, transitionIntentState(t.Store, intent.ID, "running", "paused"))
 		if controlErr != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 取消栅栏落库失败: %v", name, t.ID, intent.ID, controlErr)
 			return true
@@ -1242,7 +1272,10 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	e.emitActivity(t, db.Activity{NodeID: &uid, Worker: "user", Kind: "user", Summary: message, Detail: message})
 	release = false // ownership of the admission passes to the goroutine
 	go func() {
-		defer e.decInflight(t.ID)
+		defer func() {
+			e.decInflight(t.ID)
+			e.maybeParkControlledTask(t)
+		}()
 		e.runIntent(ctx, t, "chat", worker, node, requestID, agentMessage)
 	}()
 	return nil
