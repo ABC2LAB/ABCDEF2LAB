@@ -1,7 +1,7 @@
-import { DEFAULT_TARGET_URL, type Target } from '../types';
+import { DEFAULT_TARGET_URL, type Target } from "../types";
 
 function stripToHost(url: string): string {
-  return url.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  return url.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
 }
 
 /**
@@ -16,18 +16,18 @@ export function isInternalUrl(url: string): boolean | null {
     return null;
   }
   if (!h) return null;
-  if (h === 'localhost' || h === '::1') return true;
-  if (h.indexOf('.') === -1) return true;
+  // URL.hostname 은 IPv6 를 대괄호 포함([::1])으로 돌려준다 → 정규화
+  h = h.replace(/^\[/, "").replace(/\]$/, "");
+  if (h === "localhost" || h === "::1") return true;
+  // IPv6: 루프백·ULA(fc00::/7)·링크로컬(fe80::/10)만 주소 형식상 내부로 표시한다.
+  if (h.includes(":")) return /^fe[89ab][0-9a-f]:/i.test(h) || /^f[cd][0-9a-f]{2}:/i.test(h);
+  if (h.indexOf(".") === -1) return true;
   const m = h.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
   if (!m) return false;
   const a = Number(m[1]);
   const b = Number(m[2]);
   return (
-    a === 127 ||
-    a === 10 ||
-    (a === 192 && b === 168) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 169 && b === 254)
+    a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254)
   );
 }
 
@@ -36,7 +36,7 @@ export function hostOf(url: string): string {
   try {
     return new URL(url).host;
   } catch {
-    return stripToHost(url || '');
+    return stripToHost(url || "");
   }
 }
 
@@ -54,9 +54,5 @@ export function toTarget(input: string): Target {
 
 /** DNS TXT 소유 확인용 1회용 토큰 (원본과 같은 형식) */
 export function randomVerifyToken(): string {
-  return (
-    'abc2lab-verify=' +
-    Math.random().toString(16).slice(2, 10) +
-    Math.random().toString(16).slice(2, 8)
-  );
+  return `abc2lab-verify=${Math.random().toString(16).slice(2, 10)}${Math.random().toString(16).slice(2, 8)}`;
 }

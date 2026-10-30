@@ -12,12 +12,15 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import NamedTuple
 from urllib.parse import urlparse
 
 from aggregate import ScanVerdict
+from manifest import RunManifest
+from scoreboard import normalize_challenges
 
 # 랩 전용 허용 호스트. 대상 origin은 .env로 고정하고, 그 호스트가 이 집합에 들 때만
 # 요청한다(CLAUDE.md 절대규칙 1: 설정의 대상 origin만, localhost 랩). 외부 대상 없음.
@@ -66,7 +69,8 @@ def read_solved_state(config: EvalConfig, timeout_seconds: float = 10.0) -> dict
     """Juice Shop `/api/Challenges`에서 챌린지별 실제 해결 여부를 읽는다.
 
     집계의 독립 정답(solved)이다. 엔진 출력과 분리된 경로로, 엔진 주장의 검증에만 쓴다.
-    challenges.yml/`/api/Challenges`의 각 항목은 key와 solved(bool)를 가진다.
+    행 파싱은 저장 스냅샷 정규화와 같은 규칙(scoreboard.normalize_challenges)을 쓴다 —
+    key 없는 행·불리언 아닌 solved는 건너뛰지 않고 SnapshotError.
     """
     _reject_non_lab_origin(config.target_origin)
     url = f"{config.target_origin}/api/Challenges"
@@ -77,13 +81,7 @@ def read_solved_state(config: EvalConfig, timeout_seconds: float = 10.0) -> dict
         if final_host not in _ALLOWED_HOSTS:
             raise RuntimeError(f"응답 최종 호스트가 랩 밖: {final_host!r}")
         payload = json.load(resp)
-    rows = payload.get("data", payload) if isinstance(payload, dict) else payload
-    solved: dict[str, bool] = {}
-    for row in rows:
-        key = row.get("key")
-        if key:
-            solved[key] = bool(row.get("solved", False))
-    return solved
+    return normalize_challenges(payload)
 
 
 # 판정 레코드 계약(docs/contracts/verdict-record.md §2)이 정의한 필드 전체. 이 집합 밖
@@ -109,12 +107,12 @@ _KNOWN_FIELDS = frozenset({
 })
 
 # 계약 §2(b) oracle_value → 집계용 ScanVerdict. 값 목록은 계약에 정의된 그대로다.
-# allowed(위반 미관찰)는 확정이 아니므로 NONE(aggregate.ScanVerdict 주석, 계약 §4).
+# allowed(위반 미관찰)는 NONE(판정 없음)과 섞지 않는다 — 집계에서 판단불가(프로토콜 §4-6).
 _ORACLE_VALUE_TO_SCAN = {
     "confirmed": ScanVerdict.CONFIRMED,
     "suspected": ScanVerdict.SUSPECTED,
     "undecidable": ScanVerdict.UNDECIDABLE,
-    "allowed": ScanVerdict.NONE,
+    "allowed": ScanVerdict.ALLOWED,
 }
 
 # tie-break 순위: confirmed > suspected > undecidable > allowed/none. 엔진이 한 번이라도
@@ -123,6 +121,7 @@ _PRECEDENCE = {
     ScanVerdict.CONFIRMED: 3,
     ScanVerdict.SUSPECTED: 2,
     ScanVerdict.UNDECIDABLE: 1,
+    ScanVerdict.ALLOWED: 0,
     ScanVerdict.NONE: 0,
 }
 
@@ -149,11 +148,15 @@ class ScanParseResult(NamedTuple):
     conflicts = 위반_후보(confirmed·suspected)와 위반_미관찰(allowed) 레코드가 같이 온 챌린지
     키(정렬). 판정은 tie-break 순위로 정하되 모순은 숨기지 않고 따로 남긴다 — KG·정책
     불일치나 reset 세대 혼입 신호일 수 있다.
+
+    confirmed_records = 챌린지별 confirmed 레코드 전부(증거 3조건 판정용, 프로토콜 §4-2).
+    판정 tie-break과 별개로 모은다 — 확정은 그중 증거 충족 레코드가 하나 이상인지로 본다.
     """
 
     verdicts: dict[str, ScanVerdict]
     out_of_list: tuple[str, ...]
     conflicts: tuple[str, ...]
+    confirmed_records: Mapping[str, tuple[VerdictRecord, ...]] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -170,20 +173,51 @@ class VerdictRecord:
     resource_ref: str
     axis: str | None
     scan_verdict: ScanVerdict
+    # 증거 ref = traffic id(본문 아님, 계약 §2(d)). 정수 id도 문자열로 맞춰 traffic 인덱스 key와 비교한다.
+    traffic_evidence_refs: tuple[str, ...] = ()
 
 
-def _load_json_records(path: str) -> list[object]:
+def _unique_record_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """JSON 중복 키를 거부해 뒤쪽 model/reset 값이 앞쪽 값을 덮지 못하게 한다."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ScanOutputError(f"판정 레코드 JSON key 중복: '{key}'")
+        result[key] = value
+    return result
+
+
+def _load_json_records(path: str, manifest: RunManifest | None = None) -> list[object]:
     """물리적 출처 어댑터 — 지금은 JSON 파일 하나뿐.
 
-    최상위는 레코드 배열 또는 {"records": [...]}. DB 쿼리 등 다른 출처가 정해지면 같은
+    단독 파서는 레코드 배열도 읽는다. 채점 시에는 회차 메타데이터를 가진 envelope가 필수다.
+    DB 쿼리 등 다른 출처가 정해지면 같은
     '레코드 dict 리스트'를 돌려주는 형제 어댑터를 추가한다. 아래 검증·상관은 논리적
     레코드만 받으므로 그대로 재사용된다(물리 형식은 이동찬 어댑터와 미정).
     """
     with open(path, encoding="utf-8") as f:
         try:
-            payload = json.load(f)
+            payload = json.load(f, object_pairs_hook=_unique_record_object)
         except json.JSONDecodeError as e:
             raise ScanOutputError(f"판정 레코드 JSON 파싱 실패: {e}") from e
+    if manifest is not None:
+        if not isinstance(payload, dict):
+            raise ScanOutputError("채점용 판정 레코드는 회차 메타데이터 envelope가 필요함")
+        expected = {
+            "run_id": manifest.run_id,
+            "model_tag": manifest.model_tag,
+            "reset_generation": manifest.reset_generation,
+        }
+        known = {*expected, "records"}
+        errors = [f"records envelope 모르는 필드: '{key}'" for key in payload if key not in known]
+        for name, value in expected.items():
+            if payload.get(name) != value:
+                errors.append(
+                    f"records envelope {name} 불일치/부재: "
+                    f"manifest={value!r}, records={payload.get(name)!r}"
+                )
+        if errors:
+            raise ScanOutputError("; ".join(errors))
     if isinstance(payload, dict) and "records" in payload:
         payload = payload["records"]
     if not isinstance(payload, list):
@@ -191,7 +225,9 @@ def _load_json_records(path: str) -> list[object]:
     return payload
 
 
-def _validate_record(index: int, raw: object) -> tuple[VerdictRecord | None, list[str]]:
+def _validate_record(
+    index: int, raw: object, manifest: RunManifest | None = None
+) -> tuple[VerdictRecord | None, list[str]]:
     """레코드 1건을 계약대로 검증. 실패 사유는 전부 모아 돌려준다(첫 오류에서 멈추지 않음)."""
     if not isinstance(raw, dict):
         return None, [f"[{index}] 레코드가 객체가 아님: {type(raw).__name__}"]
@@ -203,6 +239,14 @@ def _validate_record(index: int, raw: object) -> tuple[VerdictRecord | None, lis
                 errors.append(f"[{index}] 민감 필드 '{key}'에 값이 실림 — null/{_REDACTED}여야 함(절대규칙 2)")
         elif key not in _KNOWN_FIELDS:
             errors.append(f"[{index}] 계약에 없는 필드: '{key}'")
+
+    if manifest is not None:
+        for name in ("model_tag", "reset_generation"):
+            expected = getattr(manifest, name)
+            if raw.get(name) != expected:
+                errors.append(
+                    f"[{index}] {name} 불일치/부재: manifest={expected!r}, record={raw.get(name)!r}"
+                )
 
     oracle_value = raw.get("oracle_value")
     if oracle_value not in _ORACLE_VALUE_TO_SCAN:
@@ -225,6 +269,9 @@ def _validate_record(index: int, raw: object) -> tuple[VerdictRecord | None, lis
         if not isinstance(value, str) or not value:
             errors.append(f"[{index}] {name} 부재/빈값: {value!r}")
 
+    refs, ref_errors = _parse_evidence_refs(index, raw.get("traffic_evidence_refs"))
+    errors.extend(ref_errors)
+
     if errors:
         return None, errors
     axis = raw.get("axis")
@@ -235,11 +282,29 @@ def _validate_record(index: int, raw: object) -> tuple[VerdictRecord | None, lis
         resource_ref=raw["resource_ref"],
         axis=axis if isinstance(axis, str) else None,
         scan_verdict=_ORACLE_VALUE_TO_SCAN[oracle_value],
+        traffic_evidence_refs=refs,
     ), []
 
 
+def _parse_evidence_refs(index: int, raw: object) -> tuple[tuple[str, ...], list[str]]:
+    """traffic_evidence_refs — traffic id 배열. 없거나 null이면 빈 값(증거 (a) 미충족으로 간다)."""
+    if raw is None:
+        return (), []
+    if not isinstance(raw, list):
+        return (), [f"[{index}] traffic_evidence_refs는 id 배열이어야 함: {type(raw).__name__}"]
+    errors: list[str] = []
+    refs: list[str] = []
+    for ref in raw:
+        # bool은 int의 하위형 — True가 id 1로 새지 않게 막는다.
+        if isinstance(ref, bool) or not isinstance(ref, (str, int)) or ref == "":
+            errors.append(f"[{index}] 잘못된 traffic ref: {ref!r}")
+        else:
+            refs.append(str(ref))
+    return tuple(dict.fromkeys(refs)), errors
+
+
 def parse_scan_output(
-    path: str, correlate: Callable[[VerdictRecord], str | None]
+    path: str, correlate: Callable[[VerdictRecord], str | None], *, manifest: RunManifest | None = None
 ) -> ScanParseResult:
     """판정 레코드(docs/contracts/verdict-record.md) → (챌린지별 판정, out-of-list 키들, 모순 챌린지).
 
@@ -249,21 +314,22 @@ def parse_scan_output(
 
     fail-closed(절대규칙 5): 깨진 레코드·부정 verdict·계약 밖 필드·민감값 누출은 조용히
     버리지 않고 전부 모아 ScanOutputError로 올린다 — 일부만 빠진 매트릭스를 정상처럼
-    내지 않는다. undecidable은 UNDECIDABLE, allowed는 NONE으로만 가고 '오탐'이나
+    내지 않는다. undecidable은 UNDECIDABLE, allowed는 ALLOWED로만 가고 '오탐'이나
     '취약점 없음'으로 바뀌지 않는다(분류는 aggregate.classify가 solved와 함께).
 
     TODO(윤재상): baseline(원본 ARTEX) 출력은 이 레코드를 내지 않는다 — 별도 어댑터로
     같은 VerdictRecord를 만들지, baseline은 finding→NONE/CONFIRMED만 매핑할지 정렬 필요.
     """
-    raw_records = _load_json_records(path)
+    raw_records = _load_json_records(path, manifest)
     errors: list[str] = []
     verdicts: dict[str, ScanVerdict] = {}
     out_of_list: list[str] = []
     candidate_keys: set[str] = set()
     allowed_keys: set[str] = set()
+    confirmed: dict[str, list[VerdictRecord]] = {}
 
     for i, raw in enumerate(raw_records):
-        record, record_errors = _validate_record(i, raw)
+        record, record_errors = _validate_record(i, raw, manifest)
         if record is None:
             errors.extend(record_errors)
             continue
@@ -281,6 +347,8 @@ def parse_scan_output(
             candidate_keys.add(key)
         elif record.oracle_value == "allowed":
             allowed_keys.add(key)
+        if record.scan_verdict is ScanVerdict.CONFIRMED:
+            confirmed.setdefault(key, []).append(record)
 
     if errors:
         raise ScanOutputError(
@@ -291,4 +359,5 @@ def parse_scan_output(
         verdicts=verdicts,
         out_of_list=tuple(out_of_list),
         conflicts=tuple(sorted(candidate_keys & allowed_keys)),
+        confirmed_records=MappingProxyType({k: tuple(v) for k, v in confirmed.items()}),
     )

@@ -71,25 +71,25 @@ class _FixtureDir(unittest.TestCase):
 
 class TestNormal(_FixtureDir):
     def test_all_contract_verdicts_map(self) -> None:
-        """계약의 oracle_value 4종이 전부 매핑된다 — allowed는 NONE."""
+        """계약의 oracle_value 4종이 전부 매핑된다 — allowed는 NONE(판정 없음)과 구분된 ALLOWED."""
         path = self.write([
             _record("confirmed", "basket/1"),
             _record("suspected", "basket/2"),
             _record("undecidable", "feedback/1"),
             _record("allowed", "review/1"),
         ])
-        verdicts, out_of_list, _ = parse_scan_output(path, _correlate)
+        verdicts, out_of_list, *_ = parse_scan_output(path, _correlate)
         self.assertEqual(verdicts, {
             "basketAccessChallenge": ScanVerdict.CONFIRMED,
             "basketManipulateChallenge": ScanVerdict.SUSPECTED,
             "forgedFeedbackChallenge": ScanVerdict.UNDECIDABLE,
-            "forgedReviewChallenge": ScanVerdict.NONE,
+            "forgedReviewChallenge": ScanVerdict.ALLOWED,
         })
         self.assertEqual(out_of_list, ())
 
     def test_records_envelope_accepted(self) -> None:
         path = self.write({"records": [_record("confirmed", "basket/1")]})
-        verdicts, _, _ = parse_scan_output(path, _correlate)
+        verdicts, *_ = parse_scan_output(path, _correlate)
         self.assertEqual(verdicts, {"basketAccessChallenge": ScanVerdict.CONFIRMED})
 
     def test_out_of_list_deduped(self) -> None:
@@ -99,7 +99,7 @@ class TestNormal(_FixtureDir):
             _record("suspected", "admin/secret-page"),
             _record("confirmed", "basket/1"),
         ])
-        verdicts, out_of_list, _ = parse_scan_output(path, _correlate)
+        verdicts, out_of_list, *_ = parse_scan_output(path, _correlate)
         self.assertEqual(out_of_list, ("admin/secret-page",))
         self.assertEqual(verdicts, {"basketAccessChallenge": ScanVerdict.CONFIRMED})
 
@@ -111,7 +111,7 @@ class TestNormal(_FixtureDir):
             _record("allowed", "basket/2"),
             _record("undecidable", "basket/2"),
         ])
-        verdicts, _, _ = parse_scan_output(path, _correlate)
+        verdicts, *_ = parse_scan_output(path, _correlate)
         self.assertEqual(verdicts["basketAccessChallenge"], ScanVerdict.CONFIRMED)
         self.assertEqual(verdicts["basketManipulateChallenge"], ScanVerdict.UNDECIDABLE)
 
@@ -153,15 +153,15 @@ class TestConflicts(_FixtureDir):
 
 class TestNoSilentReclassification(_FixtureDir):
     def test_undecidable_and_allowed_not_turned_into_fp_or_clean(self) -> None:
-        """판단불가는 판단불가로, allowed는 미탐으로 — 오탐/확정으로 바뀌지 않는다.
+        """판단불가·allowed는 판단불가로 — 오탐/확정/미탐으로 바뀌지 않는다(§4-6).
 
-        solved=True여도 undecidable은 UNDECIDED, allowed(NONE)는 MISSED(확정 크레딧 없음).
+        solved=True여도 undecidable·allowed는 UNDECIDED(확정 크레딧도, 미탐 처리도 없음).
         """
         path = self.write([
             _record("undecidable", "basket/1"),
             _record("allowed", "basket/2"),
         ])
-        verdicts, out_of_list, _ = parse_scan_output(path, _correlate)
+        verdicts, out_of_list, *_ = parse_scan_output(path, _correlate)
         repeat = RepeatResult(
             condition="test",
             elapsed_seconds=1.0,
@@ -171,11 +171,11 @@ class TestNoSilentReclassification(_FixtureDir):
             out_of_list_keys=out_of_list,
         )
         counts = count_basis(repeat, core_gt())
-        self.assertEqual(counts.undecided, 1)
         self.assertEqual(counts.false_positive, 0)
         self.assertEqual(counts.confirmed, 0)
-        # 코어 9개 중 판단불가 1 외 나머지 8개(allowed 포함)는 미탐.
-        self.assertEqual(counts.missed, len(core_gt()) - 1)
+        # undecidable·allowed 2개 + 레코드 없는 나머지 7개(미해결·커버리지 출처 없음, §4-4) = 전부 판단불가.
+        self.assertEqual(counts.undecided, len(core_gt()))
+        self.assertEqual(counts.missed, 0)
 
 
 class TestMalformed(_FixtureDir):
@@ -233,6 +233,39 @@ class TestMalformed(_FixtureDir):
         self.assertIn("레코드 3개 중", msg)
         self.assertNotIn("[0]", msg)
 
+    def test_bad_evidence_refs(self) -> None:
+        self.assert_error([_record("confirmed", "basket/1", traffic_evidence_refs="t1")], "id 배열")
+        for bad in (True, "", 1.5, None, {"id": 1}):
+            self.assert_error([_record("confirmed", "basket/1", traffic_evidence_refs=["t1", bad])], "잘못된 traffic ref")
+
+
+class TestEvidenceRefs(_FixtureDir):
+    def test_refs_normalized_to_str_and_deduped(self) -> None:
+        path = self.write([_record("confirmed", "basket/1", traffic_evidence_refs=[7, "7", "t2"])])
+        rec, = parse_scan_output(path, _correlate).confirmed_records["basketAccessChallenge"]
+        self.assertEqual(rec.traffic_evidence_refs, ("7", "t2"))
+
+    def test_absent_or_null_refs_are_empty(self) -> None:
+        path = self.write([
+            _record("confirmed", "basket/1"),
+            _record("confirmed", "basket/1", traffic_evidence_refs=None),
+        ])
+        records = parse_scan_output(path, _correlate).confirmed_records["basketAccessChallenge"]
+        self.assertEqual([r.traffic_evidence_refs for r in records], [(), ()])
+
+    def test_confirmed_records_collects_only_mapped_confirmed(self) -> None:
+        # 증거 판정은 confirmed 레코드에만 — suspected·allowed·out-of-list는 안 모은다.
+        path = self.write([
+            _record("confirmed", "basket/1", traffic_evidence_refs=["a"]),
+            _record("confirmed", "basket/1", traffic_evidence_refs=["b"]),
+            _record("suspected", "basket/1"),
+            _record("allowed", "basket/2"),
+            _record("confirmed", "admin/secret-page"),
+        ])
+        confirmed = parse_scan_output(path, _correlate).confirmed_records
+        self.assertEqual(list(confirmed), ["basketAccessChallenge"])
+        self.assertEqual([r.traffic_evidence_refs for r in confirmed["basketAccessChallenge"]], [("a",), ("b",)])
+
 
 class TestRedaction(_FixtureDir):
     def test_leaked_token_rejected_without_echoing_value(self) -> None:
@@ -256,7 +289,7 @@ class TestRedaction(_FixtureDir):
         path = self.write([
             _record("confirmed", "basket/1", authorization="[REDACTED]", cookie=None),
         ])
-        verdicts, _, _ = parse_scan_output(path, _correlate)
+        verdicts, *_ = parse_scan_output(path, _correlate)
         self.assertEqual(verdicts, {"basketAccessChallenge": ScanVerdict.CONFIRMED})
 
 
