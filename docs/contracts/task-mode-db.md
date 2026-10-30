@@ -1,6 +1,6 @@
 # 실행·저장 공통 mode DB — 구현 초안
 
-2026-10-30 · 이동찬 · 검토/피드백용. [순수 모드 판별](../../taskmode/mode.go) · [E③ 저장 게이트](./e3-storage-gate.md#4-통제-작업-판별--선행-조건)
+2026-10-30 · 이동찬 · 검토/피드백용. [순수 모드 판별](../../taskmode/mode.go)
 
 상태: **실제 PostgreSQL reader·단방향 등록·DB 통합 시험 구현. Engine/최초 finding 저장 연결과 기존 파일 marker 이관은 후속.** 팀 최종 저장 규격 확정이나 기존 ARTEX 전체 통신/저장 강제 완료를 뜻하지 않는다.
 
@@ -39,6 +39,8 @@ record, err := db.RegisterTaskModeTx(ctx, tx, taskID, mode, markerReader)
 ```
 
 첫 메서드는 transaction을 생성하고 **commit 성공 뒤에만** Record를 반환한다. begin/조회/갱신/commit 실패는 zero Record와 오류다. Tx 함수의 반환값은 아직 미커밋이며 caller가 commit하기 전에 승인 파일·실행 lease를 발행하면 안 된다. rollback은 등록을 취소하고 retry는 기존 mode/version을 보존한다.
+
+서버는 legacy 작업을 **task 생성 시점에 미리(eager) 등록**한다. 미등록 작업을 admission 시점에 뒤늦게(lazy) legacy로 등록하지 않는다. 상태 디렉터리가 유실되어 marker가 clear로 읽혀도, 미등록 controlled 작업을 legacy로 강등해서는 안 된다. 이 생성·admission 배선은 후속 구현이다.
 
 등록은 실제 task row를 `FOR UPDATE`로 잠그고 deleted/archived/archive 진행 상태를 확인한 뒤 mode를 읽고 쓴다. 미존재 task/잘못된 mode·ID·취소는 거부한다. canonical controlled fence가 있다고 실제 marker·실행 허가까지 준비된 것은 아니다.
 

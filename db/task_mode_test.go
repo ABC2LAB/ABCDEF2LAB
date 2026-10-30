@@ -319,6 +319,7 @@ func TestTaskModeDatabaseGuards(t *testing.T) {
 	d := taskModeTestDB(t)
 	statements := []struct{ name, query string }{
 		{"downgrade", `UPDATE task_control_modes SET mode='explicit_legacy',version=1 WHERE task_id=$1`},
+		{"downgrade_with_next_version", `UPDATE task_control_modes SET mode='explicit_legacy',version=version+1 WHERE task_id=$1`},
 		{"version_reset", `UPDATE task_control_modes SET version=2 WHERE task_id=$1`},
 		{"identity_change", `UPDATE task_control_modes SET task_id=task_id+1000000 WHERE task_id=$1`},
 		{"delete_fence", `DELETE FROM task_control_modes WHERE task_id=$1`},
