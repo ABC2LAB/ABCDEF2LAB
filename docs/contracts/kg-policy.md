@@ -82,36 +82,43 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 - ⚠️ **GT 상관 언급 주의(절대규칙 7 가드)** — 지도 resource 축은 `resource_ref`의 type을 평가 GT 상관과 **공유**한다(§6 Open #1·E² type 명명). 이 문서·UI·그 외 평가 밖 코드에서 평가 GT 상관을 적을 땐 **설명 + 디렉토리(`scripts/eval/`)로만** 쓰고 그 데이터 파일명·모듈 import 리터럴을 쓰지 않는다 — eval 가드(`test_gt_not_referenced_outside_eval`)가 평가 밖의 그 리터럴을 전부 막는다(PR #26에서 걸렸던 지점).
 
 ### 4.1 판정 레코드 → 지도 읽기 필드 (verdict-record Open #4 응답)
-접근통제 지도(`web/.../screens/AccessMapScreen.tsx`, `lib/kg.ts`)가 판정 레코드([verdict-record §2](./verdict-record.md))에서 **읽는 필드와 셀 파생 규칙**을 고정한다. 레코드는 "셀 색"을 직접 담지 않고 지도가 **파생**한다. 지도는 enum·ref·필드명만 읽고 응답 본문·canary **값**·자격 원문은 읽지 않는다(§3 마스킹, 절대규칙 2·8).
+판정 레코드([verdict-record §2](./verdict-record.md))를 접근통제 지도에 투영할 **향후 읽기 어댑터의 계약 제안**이다. 현재 `web/src/abc2lab-ui/lib/kg.ts`·`screens/AccessMapScreen.tsx`는 목업이며 판정 레코드를 읽지 않는다. 아래 필드 전체가 현재 UI 타입에 구현됐거나 레코드와 1:1로 대응한다는 뜻은 아니다. 레코드는 "셀 색"을 직접 담지 않고, 서버가 검증한 레코드·커버리지·KG 메타데이터를 어댑터가 조합한다. 응답 본문·canary **값**·자격 원문은 지도에 전달하지 않는다(§3 마스킹, 절대규칙 2·8).
 
-**(a) 축·헤더 — 레코드 → `lib/kg.ts` 타입:**
-| 지도 요소 | 레코드 필드(verdict-record) | 비고 |
+**(a) 축·헤더 — 향후 projection이 읽을 근거:**
+| 지도 요소 | 근거 | 현재 타입과의 경계 |
 |---|---|---|
-| 행 principal `ref` (`KgPrincipal.ref`) | `evaluated_ref` | 라벨만 |
-| 행 검증 status | `evaluated_status` | 미검증(zero)=fail-closed 표시 |
-| 열 resource `label`/`id` (`KgResource`) | `resource_ref`(`type:id`, §1) | type=안정 종류, id=reset 세대 인스턴스 |
+| 행 principal `ref` (`KgPrincipal.ref`) | `evaluated_ref` | 라벨만. `role` 표시값은 KG 등록에서 보강 |
+| 행 검증 status | `evaluated_status` | **관찰 당시** 신원 상태. 현재 `KgPrincipal`에는 status 필드 없음. 현재 실행 자격은 E²가 별도 확인 |
+| 열 resource `id`/`label` (`KgResource`) | 전체 `resource_ref`(`type:id`, [seam §1](./idor-verifier-seam.md#1-resource_ref-규약--typeid-임시확정--민준경준)) + KG 표시 라벨 | type만으로 인스턴스를 합치지 않음. id는 reset 세대 안에서만 유효하며 표시 라벨은 별도 보강 |
 | 열 소유자 `ownerRef` | `owner_ref` | 라벨만 |
-| 축 `axis`(H/V) | `axis`(`horizontal`/`vertical`) | horizontal=수평(v0.1 판정 축), vertical=후속 미리보기 |
-| `policyVersion`(지도 헤더) | `policy_version` | 감사·통제변수 표기 |
+| 판정 축 | 레코드 `axis`(`horizontal`/`vertical`) | v0.1은 horizontal만. 현재 `KgPrincipal.axis`의 H/V는 목업 행 그룹이므로 직접 대입하지 않음 |
+| 조회 범위 | 서버의 task 문맥 + envelope `run_id` + `model_tag`·`reset_generation`·`policy_version` | 현재 `AccessMap`에는 회차·세대 메타데이터 없음. 실제 API/타입 확장은 Open #6 |
+| 셀 근거 선택·이력 | `id`·`case_ref`·`observed_at` + 전체 principal/resource ref | 동일 셀에 여러 case·재검증 레코드가 있을 수 있음 |
+| `policyVersion`(지도 헤더) | 선택 범위의 `policy_version` | 모든 표시 셀을 같은 snapshot으로 검증한 경우에만 단일 버전 표시 |
 
-**(b) 셀 판정 파생 — `AccessDecision` ← 레코드:**
-| 지도 셀(`AccessDecision`) | 파생 조건 | 근거 필드 |
+**조회 범위·선택을 먼저 검증한다.** 한 지도는 서버가 선택한 task/run·model·reset 세대·정책 snapshot·판정 축에 한정한다. 레코드 envelope와 커버리지도 같은 범위여야 한다. 다른 범위의 과거 레코드는 현재 셀에 재사용하지 않고 별도 이력으로만 읽는다. 필수 연결 누락·불일치가 있으면 해당 데이터의 로딩을 거부하거나 `unknown`과 부족 사유로 표시하며 색을 추정하지 않는다. `run_id`는 envelope의 회차 키이지 `case_ref`의 대체값이 아니다.
+
+같은 셀의 복수 레코드를 입력 순서나 마지막 항목 우선으로 덮지 않는다. 서버가 선택한 case와 레코드 id를 고정하고 그 근거·관찰시각을 표시한다. 유일한 선택을 검증할 수 없거나 같은 선택 안에서 근거가 상충하면 `unknown`과 상충 사유를 표시한다. 선택·이력 API의 물리 형식은 Open #6에서 정하며, 과거 confirmed를 새 세대나 근거 없는 결과로 지우지 않는다.
+
+**(b) 셀 판정 파생 — `AccessDecision`과 근거의 경계:**
+| 지도 셀(`AccessDecision`) | 파생 조건 | 제한 |
 |---|---|---|
-| `vuln`(취약) | `access_policy_result=위반_후보` | `oracle_value`∈{confirmed, suspected} — 둘 다 v0.1은 한 색, note로 구분 |
-| `unknown`(판정 불가) | `access_policy_result=판정_불가` | `oracle_value=undecidable` |
-| `allow-ok`(정상 허용) | `access_policy_result=위반_미관찰` ∧ `expected_access=allow` | `oracle_value=allowed` |
-| `deny-ok`(정상 차단) | `access_policy_result=위반_미관찰` ∧ `expected_access=deny` | 교차 접근이 정상 차단됨 |
-| `untested`(미검사) | **해당 (principal,resource)에 레코드 없음** → **커버리지로 판단, 레코드로 판단 안 함** | [평가 읽기 계약 §4](./verdict-record.md)("레코드 없음 ≠ 미탐") |
-| `na` | 적용 불가 축(주체=자원 소유자 자신 등) | — |
+| `vuln`(위반 후보) | 서버가 검증한 같은 범위의 `access_policy_result=위반_후보` **및** `oracle_value`∈{confirmed, suspected} | 색은 공유할 수 있으나 본문/배지에 **확정·의심을 항상 구분**. note만으로 구분하지 않음 |
+| `unknown`(판정 불가) | `판정_불가`/undecidable, 근거 누락·불일치·상충, 또는 현재 레코드만으로 실제 접근 결과를 정할 수 없음 | `oracle_value=allowed`만 있으면 "정책상 허용, 접근 관측 미확인" 사유로 여기에 둠 |
+| `allow-ok`(정상 허용) | **현재 판정 레코드 단독으로 산출하지 않음** | 동일 실행의 검증된 정상 접근 관찰과 유효한 허용 정책을 결합하는 후속 계약이 필요. 확정 전에는 `unknown` |
+| `deny-ok`(정상 차단) | **현재 판정 레코드 단독으로 산출하지 않음** | 유효한 deny·공유/위임 예외 해소와 실제 애플리케이션 인가 차단 관찰의 후속 계약이 필요. 확정 전에는 `unknown` |
+| `untested`(미검사) | 유효한 판정 레코드가 없고 **동일 회차·case·세대의 커버리지가 명시적으로 시도 없음을 확인** | 레코드 없음만으로는 결정하지 않음. 커버리지 불명 또는 시도됐으나 레코드 누락이면 `unknown` |
+| `na` | 신뢰할 수 있는 KG/검사 계획이 그 조합을 명시적으로 적용 불가로 분류 | 레코드 부재나 `owner_ref=evaluated_ref`만으로 추론하지 않음. 소유자 자신의 정상 접근도 정책·관찰 근거로 별도 표현 가능. 유효한 관찰과 적용 불가 근거가 상충하면 `unknown` |
 
 **(c) 파생 규칙(절대규칙 5·fail-closed):**
-- 셀 결정은 **레코드 단독이 아니라 레코드+커버리지 조합**이다. 레코드 없는 칸은 `untested`(안 찔러봄)지 "취약 없음"이 아니다 — 부재를 `deny-ok`/`allow-ok`로 칠하지 않는다. "검사했으나 미관찰"(`위반_미관찰`)과 "안 찔러봄"(레코드 없음)을 **색으로 분리**한다(평가 §4).
-- `vuln`의 confirmed/suspected는 v0.1에서 둘 다 `vuln` 한 색, note에 구분. 음영 세분은 후속.
-- 셀 note = `reason_codes`(정책→신원→데이터 순) + canary 노출 시 `canary_fields`(응답 **필드명만**, 값 아님 — §3).
-- 정책 만료·`hint_matches_canonical=false`로 UNDECIDABLE 된 셀은 **7번째 색을 만들지 않고** `unknown`으로 접고 note에 사유. fail-closed 3분류(취약/판정불가/미검사)를 유지한다(§6 Open #1).
-- v0.1 지도는 `axis=horizontal` 레코드만 판정 축으로 읽는다. vertical은 후속(지금은 흐리게 미리보기).
+- `access_policy_result=위반_미관찰`은 `oracle_value=allowed`의 저장 표현이며 **실제 허용·차단 관찰이나 취약점 없음의 증명이 아니다**([seam §6.2](./idor-verifier-seam.md#62-전송-결과와-판정의-구분)). 명시적 allow이면 데이터 비교가 불명이어도 allowed가 가능하다. `expected_access=deny`여도 sharing/delegation의 `resolved_allow` 예외로 allowed가 되므로, expected_access만 보고 `deny-ok`로 분기하지 않는다.
+- 정상 허용·차단의 별도 관찰 계약(근거 ref·실행 연결·판정 우선순위)은 Open #6이다. E²의 송신 전 거부·예산/중지·네트워크 실패를 애플리케이션의 정상 차단으로 바꾸지 않으며 HTTP 상태코드 하나로도 결정하지 않는다. 현재 레코드에는 이 차단 관찰을 독립적으로 입증하는 필드가 없다.
+- 커버리지 부재는 시도 없음이 아니다. 레코드와 커버리지가 상충해도 `untested`나 정상색으로 내리지 않는다. "검사했으나 판정/근거 불명"과 "명시적으로 미검사"를 분리한다([판정 레코드 §4](./verdict-record.md#4-평가-읽기-계약-eval-count_basis--레코드)).
+- 셀 note = `reason_codes`(정책→신원→데이터 순) + canary 노출 시 `canary_fields`(응답 **필드명만**, 값 아님 — §3). 레코드의 enum 간 모순·미등록 값도 `unknown`으로 표시하고 사유를 남긴다.
+- 정책 유효창은 `policy_valid_from ≤ observed_at < policy_valid_until`로 평가한다. **관찰시각 기준** 만료·`hint_matches_canonical=false`로 UNDECIDABLE 된 셀은 `unknown`과 사유로 표시한다. 현재 시각에 만료됐다는 이유만으로 과거의 유효한 관찰을 덮지 않는다. reset 세대 교체는 새 실행/지도 범위에 이전 세대의 정책·표식·판정을 재사용하지 않는 별도 경계다.
+- v0.1 실제 연결은 horizontal 레코드만 판정 축으로 읽는다. vertical과 현재 목업 색/라벨은 후속 미리보기다. 현재 UI의 `vuln` 공통 "취약" 라벨은 확정/의심 구분 및 이 절의 조회 범위·상태 확장을 구현한 뒤 실데이터에 연결한다. 이 PR은 문서만 바꾸며 연결 완료를 뜻하지 않는다.
 
-> 교차참조: 이 §4.1은 verdict-record "시각화 읽기 필드 = 이경준" 경계(verdict-record §0·Open #4)의 응답이다. verdict-record.md 쪽 역링크는 그 문서 소유자(최민준)에게 리뷰로 제안한다 — 직접 편집하지 않음.
+> 교차참조: 이 §4.1은 verdict-record "시각화 읽기 필드 = 이경준" 경계(verdict-record §0·Open #4)의 응답 제안이다. verdict-record.md 쪽 역링크는 그 문서 소유자(최민준)에게 리뷰로 제안한다 — 직접 편집하지 않음.
 
 ## 5. 분담·경계
 - **UI-only (이경준, 지금 가능):** 접근통제 지도 뷰 설계·프로토타입(KG API 목업으로), 정책·소유 입력/표시 UI, canary 등록 화면.
@@ -123,8 +130,11 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 1. **정본(canonical) 정책의 출처·저장 + `policy_version`↔유효창↔정본 reader** (oracle Open #2·verdict-record Open #3 페어, 이동찬↔이경준):
    - **내 제안**: 정본은 **수동 등록 fixture 레지스트리**(관측 추론 아님). 관측 추론 결과는 `ExpectedAccess=unknown` 상한(정본 아님, §3).
    - `policy_version` = 정본 reader가 resolve 시점에 준 **snapshot 버전 문자열**(§3 이미 명시). 레코드의 `policy_valid_from/until`도 같은 reader가 싣고, 오라클이 `observed_at` 기준으로 유효성 판정(만료·`hint_matches_canonical=false` → UNDECIDABLE → 지도 `unknown`, §4.1).
+   - **현재 구현과 구분**: `oracle.PolicyAssertion`·`idor.PolicyResolver.ResolvePolicy`는 정책 버전/reset 메타데이터를 반환하지 않는다. 위 snapshot 전달은 서버 관리 실행 묶음/어댑터의 보강 계약([seam §6.1](./idor-verifier-seam.md#61-현재-호출과-새-실행-책임))이며 정본 저장·발급 API는 아직 미정이다.
    - **이동찬 질문**: (a) 정본 reader = fixture 레지스트리인가 server config인가 — `policy_version` 문자열 **포맷·발급 주체**(지도 헤더·감사에 그대로 표기). (b) reset 세대 교체 시 정책 유효창 **무효화 지점**(세대 섞임 → 어댑터가 Evaluate 전 UNDECIDABLE, verdict-record §2d).
 2. **principal 역할 레벨(수직)의 소스** — 후속 수직 오라클 전에 선설계(권한 레벨 어디서 얻나).
 3. **canary 등록 저장 위치** — 자산 `Extra` 재사용 vs 신규 테이블. UX·`Trivial` 분류 주체는 KG 로 확정(§3.1), **저장 위치만** 협의(최민준↔이동찬).
 4. **KG 저장소 테이블명·마이그레이션 담당** — oracle Open #5(판정 레코드 테이블)와 함께 최민준↔이동찬.
 5. **신원 status 와 KG ref 의 결합 지점** — 어댑터가 둘을 `SubjectContext` 로 합치는 위치(서버 바인딩 vs 어댑터).
+
+6. **지도 실데이터 읽기 어댑터** — task/run·model·reset·snapshot 범위와 case/레코드 선택·이력 API, 세대 교체의 reader/실행 무효화 시점, KG의 applicability 근거, 정상 접근/애플리케이션 차단 관찰의 필드·서버 검증·판정 우선순위. 현재 목업 타입 확장과 확정/의심 가시 표시는 실제 연결 전에 정렬한다. (이경준↔최민준↔이동찬)
