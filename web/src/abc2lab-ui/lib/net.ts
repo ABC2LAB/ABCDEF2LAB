@@ -16,6 +16,8 @@ export function isInternalUrl(url: string): boolean | null {
     return null;
   }
   if (!h) return null;
+  // URL.hostname 은 IPv6 를 대괄호 포함([::1])으로 돌려준다 → 정규화
+  h = h.replace(/^\[/, "").replace(/\]$/, "");
   if (h === "localhost" || h === "::1") return true;
   // IPv6: 루프백(::1)·ULA(fc00::/7)·링크로컬(fe80::)만 내부. 공인 IPv6를 "점이 없다"는 이유로 내부로 보지 않는다.
   if (h.includes(":")) return /^fe80:/i.test(h) || /^f[cd][0-9a-f]{2}:/i.test(h);

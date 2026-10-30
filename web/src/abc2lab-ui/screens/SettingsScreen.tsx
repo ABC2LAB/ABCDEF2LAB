@@ -4,6 +4,7 @@ import { TopBar } from "../components/TopBar";
 import { Pill, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineInterceptRule, getInterceptRules, getLLM } from "../lib/engine";
+import { isInternalUrl } from "../lib/net";
 import { useGo } from "../nav";
 
 const bodyText = { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
@@ -22,11 +23,17 @@ const patStyle = {
   color: "var(--muted)",
 };
 
-/** base_url 이 내부망/로컬을 가리키는지 대략 판별 (완전 로컬 모드 표시용) */
+/** base_url 의 **호스트**가 내부망/로컬을 가리키는지 판별 (완전 로컬 모드 표시용).
+ *  전체 URL 문자열이 아니라 hostname 기준 — 쿼리에 'ollama' 가 있다고 로컬로 보지 않는다. */
 function isLocalUrl(u: string): boolean {
-  return /localhost|127\.0\.0\.1|::1|ollama|host\.docker\.internal|(^|\/\/)10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\./i.test(
-    u,
-  );
+  if (isInternalUrl(u) === true) return true; // localhost · 사설 IP · IPv6 루프백/ULA 등
+  let h: string;
+  try {
+    h = new URL(u).hostname.replace(/^\[/, "").replace(/\]$/, "");
+  } catch {
+    return false;
+  }
+  return /^(ollama|host\.docker\.internal)$/i.test(h);
 }
 
 /** ===== 설정 · 통제 정책 ===== */
@@ -131,7 +138,7 @@ export default function SettingsScreen() {
                   </div>
                 </div>
                 <div className="hint">
-                  모델을 붙여야 점검(탐색)이 돌아요. 완전 로컬 모드에서는 외부 송신이 차단돼요.
+                  모델을 붙여야 점검(탐색)이 돌아요. 완전 로컬 모드의 외부 송신 차단은 E² 연동 후예요.
                 </div>
               </>
             ) : (
@@ -155,7 +162,7 @@ export default function SettingsScreen() {
                       color: isLocalUrl(llm.base_url) ? "var(--teal-ink)" : "var(--warn)",
                     }}
                   >
-                    {isLocalUrl(llm.base_url) ? "로컬" : "외부 송신"}
+                    {isLocalUrl(llm.base_url) ? "내부 주소" : "외부 주소"}
                   </span>
                 </div>
               </div>
@@ -169,7 +176,8 @@ export default function SettingsScreen() {
               <div className="tx">
                 <div className="t">감사 로그</div>
                 <div className="d">
-                  통제가 차단했거나 승인 대기로 잡은 요청이 기록돼요. (변조 탐지 체인·권한 분리는 우리가 얹는 기여 — 연동 후.)
+                  통제가 차단했거나 승인 대기로 잡은 요청이 기록돼요. (변조 탐지 체인·권한 분리는 우리가 얹는 기여 —
+                  연동 후.)
                 </div>
               </div>
               <button

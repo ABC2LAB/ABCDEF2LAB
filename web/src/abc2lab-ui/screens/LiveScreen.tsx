@@ -182,6 +182,7 @@ export default function LiveScreen({ target }: { target: Target }) {
   const go = useGo();
   const { taskId } = useSelection();
   const [detailOpen, setDetailOpen] = useState(false);
+  const [fetchedAt, setFetchedAt] = useState(() => Date.now());
 
   const taskRes = useApiResource(() => (taskId ? getTask(taskId) : Promise.resolve(null)), [taskId]);
   const findRes = useApiResource<EngineFinding[]>(() => listTaskFindings(taskId ?? ""), [taskId]);
@@ -205,6 +206,16 @@ export default function LiveScreen({ target }: { target: Target }) {
   const covPct = cov && cov.denominator > 0 ? Math.round((cov.tested / cov.denominator) * 100) : 0;
   const tokenTotal = (tokRes.data?.input ?? 0) + (tokRes.data?.output ?? 0);
   const cells = cov ? coverageCells(cov.denominator, cov.tested, findings.length) : [];
+
+  // 데이터는 task 선택 시 한 번 조회한 스냅샷 — 자동 갱신은 미연결(후속). 수동 새로고침만.
+  function refreshAll() {
+    taskRes.reload();
+    findRes.reload();
+    covRes.reload();
+    tokRes.reload();
+    actRes.reload();
+    setFetchedAt(Date.now());
+  }
 
   if (!taskId) {
     return (
@@ -240,8 +251,14 @@ export default function LiveScreen({ target }: { target: Target }) {
             <div style={{ fontSize: 13, color: "var(--muted)", minWidth: 0 }}>
               점검 · <Strong>{title}</Strong>
               {status ? ` · ${STATUS_LABEL[status] ?? status}` : ""}
+              <div style={{ fontSize: 11.5, color: "var(--faint)", marginTop: 2 }}>
+                조회 {tsLabel(fetchedAt)} · 자동 갱신 미연결(스냅샷 — 새로고침 눌러 갱신)
+              </div>
             </div>
             <div className="row" style={{ flexWrap: "wrap" }}>
+              <button className="btn" type="button" style={btnSm} onClick={refreshAll}>
+                ↻ 새로고침
+              </button>
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: 원본 시안 badge 이동 유지 */}
               <span className="badge" onClick={() => go("approval")}>
                 승인 대기
@@ -373,8 +390,8 @@ export default function LiveScreen({ target }: { target: Target }) {
                 ))}
               </div>
               <div className="hint">
-                확정·의심·판단 불가 <Strong>판정</Strong>은 E③ 오라클 연동 후 채워져요(증거 부족은 오탐 대신 판단
-                불가로 남겨요).
+                확정·의심·판단 불가 <Strong>판정</Strong>은 E③ 오라클 연동 후 채워져요(증거 부족은 오탐 대신 판단 불가로
+                남겨요).
               </div>
               <h3 style={{ fontSize: 14, margin: "18px 0 8px" }}>
                 검사 커버리지 <Sub>· {cov ? `${cov.tested} / ${cov.denominator} 자산` : "집계 전"}</Sub>
