@@ -1,13 +1,14 @@
 # 평가 스크립트 (뼈대)
 
 baseline(원본 ARTEX) vs 개선 후(우리 포크)를 같은 조건으로 측정·집계한다.
-측정 조건의 정본은 `docs/evaluation/evaluation-protocol.md` — 여기는 그 §3·§4·§5를
-코드로 옮긴 집계 틀이다. 숫자가 아니라 틀만 있다.
+측정 조건의 정본은 [평가 프로토콜](../../docs/evaluation/evaluation-protocol.md)이며, 여기는 이를 코드화하는 중인 집계 뼈대다.
+
+**공식 평가 사용 전 보완 필요:** 현재 코드와 미병합 PR #28은 pre/post 스냅샷·엔진 해결 귀속·회차/모델/reset 연결 검증을 모두 구현하지 않았다. 기존 표는 새 프로토콜에 따른 공식 baseline/개선 비교에 사용하지 않는다. 단위 테스트 통과는 기존 구현의 회귀 확인이며 새 규칙 준수의 증명이 아니다.
 
 ## 구성
 - `ground_truth.py` — 평가 정답(코어 GT 9 = 수평5·수직4, BAC category 10, 별도축 3).
   **평가에만** 쓴다(절대규칙 7). 엔진·탐색 경로에서 import 금지.
-- `aggregate.py` — 순수 집계. §4 분류(확정/오탐/미탐/판단불가) + §5 평균 ± 분산 + 표 렌더.
+- `aggregate.py` — 기존 순수 집계·표 렌더 뼈대. 증거/커버리지/해결 귀속 게이트와 표본 SD 규칙은 정본에 맞춰 보완해야 한다.
 - `collect.py` — I/O 어댑터. Juice Shop `/api/Challenges` 해결상태, env 설정, 스캔출력 파싱.
 - `tests/` — 순수부 테이블 테스트.
 
@@ -28,8 +29,8 @@ python3 -I -m unittest discover -s tests   # 순수부 테스트
 - `correlate(record) -> 챌린지 키 | None`를 **호출자가 주입**한다. 레코드엔 GT 키가 없고(절대규칙 7),
   (vuln_class·resource_ref)→챌린지 상관은 평가가 쥔다. None이면 out-of-list.
 - 깨진 레코드·계약 밖 verdict/필드·민감값 누출은 전부 모아 `ScanOutputError`(fail-closed).
-  undecidable→판단불가, allowed→NONE(미탐 측) — 오탐·취약점없음으로 바뀌지 않는다.
-- 한 챌린지에 레코드가 여럿이면 tie-break `confirmed > suspected > undecidable > allowed/none`.
+  현재의 `allowed→NONE` 변환은 **수정할 기존 동작**이다. 새 정본은 ALLOWED를 보존하고 판단불가 + 경고로 분류한다.
+- 판정 우선순위와 레코드 없음 처리는 [평가 프로토콜 §4](../../docs/evaluation/evaluation-protocol.md#4-판정-기준)가 정본이다. 기존 구현의 `allowed/none` 병합을 새 규칙으로 사용하지 않는다.
   위반_후보(confirmed·suspected)와 allowed가 섞인 챌린지는 `conflicts`로 따로 남긴다(판정은 안 바뀜).
 
 ## 아직 막힌 경계 (TODO)
