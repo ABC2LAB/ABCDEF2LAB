@@ -234,7 +234,7 @@ func TestControlledReadRuntimePauseCancelsRegisteredRead(t *testing.T) {
 	started := make(chan struct{})
 	target := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done() }))
 	defer target.Close()
-	e, task, intent, _ := runtimeReadFixture(t, target.URL)
+	e, task, intent, store := runtimeReadFixture(t, target.URL)
 	ctx, finish, err := e.prepareControlledRead(e.execContextFor(context.Background(), task.ID), task, intent)
 	if err != nil {
 		t.Fatal(err)
@@ -251,13 +251,36 @@ func TestControlledReadRuntimePauseCancelsRegisteredRead(t *testing.T) {
 		t.Fatal("registered request did not start")
 	}
 	e.Pause(task.ID, agent.AbortPausedByUser)
+	// Close the lease before the Worker returns. The sent request still needs a
+	// terminal result and checkpoint before the journal can be closed.
+	if err := finish(); err == nil {
+		t.Fatal("interrupted read reported completion")
+	}
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("pause did not cancel controlled worker")
 	}
-	if err := finish(); err == nil {
-		t.Fatal("interrupted read reported completion")
+	journals, _ := filepath.Glob(filepath.Join(store.journalDirectory(), "*.jsonl"))
+	checkpoints, _ := filepath.Glob(filepath.Join(store.journalDirectory(), "*.checkpoint"))
+	if len(journals) != 1 || len(checkpoints) != 1 {
+		t.Fatalf("journal/checkpoint count=%d/%d", len(journals), len(checkpoints))
+	}
+	checkpointBody, err := os.ReadFile(checkpoints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint auditlog.Checkpoint
+	if err := json.Unmarshal(checkpointBody, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := os.Open(journals[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	if summary, err := auditlog.Verify(context.Background(), journal, bytes.Repeat([]byte{0x71}, 32), checkpoint); err != nil || summary.Intents != 1 || summary.Results != 1 {
+		t.Fatalf("paused request audit incomplete: summary=%+v err=%v", summary, err)
 	}
 }
 
@@ -319,6 +342,26 @@ func TestControlledReadInitializationRejectsUnavailableStore(t *testing.T) {
 	s := &Server{engine: NewEngine(nil), ctx: context.Background()}
 	if err := s.initControlledReads(root, root); err == nil || s.engine.controlledReads != nil {
 		t.Fatal("unavailable authority was installed as a silent task-blocking runtime")
+	}
+}
+
+func TestControlledReadDefaultsStayInsidePersistentDataDirectory(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	t.Setenv("ARTEX_E2_SNAPSHOT_DIR", "")
+	t.Setenv("ARTEX_E2_STATE_DIR", "")
+	s := &Server{engine: NewEngine(nil), ctx: context.Background()}
+	if err := s.initControlledReads(root, dataDir); err != nil {
+		t.Fatal(err)
+	}
+	store := s.engine.controlledReads.store
+	if store.snapshotDir != filepath.Join(dataDir, "e2-snapshots") || store.stateDir != filepath.Join(dataDir, "e2-state") {
+		t.Fatalf("private store escaped data directory: snapshots=%q state=%q", store.snapshotDir, store.stateDir)
+	}
+	for _, name := range []string{"e2-snapshots", "e2-state"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("private store created in key directory: %s: %v", name, err)
+		}
 	}
 }
 

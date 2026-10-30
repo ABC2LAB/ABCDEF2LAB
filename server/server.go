@@ -240,7 +240,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
 	s.bootstrapAuth()
 	if err := s.initControlledReads(keyDir, dataDir); err != nil {
-		log.Fatalf("[E2] private execution store unavailable; server startup stopped")
+		log.Fatalf("[E2] private execution store unavailable; server startup stopped: %v", err)
 	}
 	s.engine.controlledIdle = s.parkControlledReadTask
 	s.initSideQuestions()

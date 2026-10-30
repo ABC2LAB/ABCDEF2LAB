@@ -1102,6 +1102,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	if finishControlled != nil {
 		finalizeErr = finishControlled()
 		if finalizeErr != nil {
+			log.Printf("[E2] task %s intent #%d execution audit finalization failed: %v", t.ID, intent.ID, finalizeErr)
 			err = errors.Join(err, finalizeErr)
 			reason = harness.ReasonHookStopped
 		}
@@ -1125,7 +1126,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			action = "cancel"
 		}
 	}
-	controlErr := finalizeErr
+	// An interrupted read is an execution failure, not a failure to pause or
+	// cancel. The controller still needs the persisted state and cleanup result.
+	var controlErr error
 	defer func() { completeWork(controlErr) }()
 	if action == "pause" {
 		controlErr = errors.Join(controlErr, transitionIntentState(t.Store, intent.ID, "running", "paused"))

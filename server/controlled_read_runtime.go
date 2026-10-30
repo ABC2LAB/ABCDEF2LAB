@@ -96,17 +96,15 @@ func (r *controlledReadRuntime) cancelPendingWork(key controlledWorkKey, mutate 
 	return mutate()
 }
 
-func (s *Server) initControlledReads(keyDir, dataDir string) error {
+func (s *Server) initControlledReads(_ string, dataDir string) error {
 	snapshotDir, stateDir := os.Getenv("ARTEX_E2_SNAPSHOT_DIR"), os.Getenv("ARTEX_E2_STATE_DIR")
-	base := keyDir
-	if base == "" {
-		base = dataDir
+	// The data directory is the persisted runtime store and is git-ignored in
+	// source runs. keyDir can be the checkout root or an unpersisted image path.
+	if snapshotDir == "" && dataDir != "" {
+		snapshotDir = filepath.Join(dataDir, "e2-snapshots")
 	}
-	if snapshotDir == "" && base != "" {
-		snapshotDir = filepath.Join(base, "e2-snapshots")
-	}
-	if stateDir == "" && base != "" {
-		stateDir = filepath.Join(base, "e2-state")
+	if stateDir == "" && dataDir != "" {
+		stateDir = filepath.Join(dataDir, "e2-state")
 	}
 	store, err := openControlledReadStore(snapshotDir, stateDir)
 	if err != nil {
@@ -343,7 +341,7 @@ func (r *controlledCheckpointRecorder) Record(ctx context.Context, event transmi
 
 func (l *controlledReadLease) close() error {
 	l.once.Do(func() {
-		l.tx.Stop()
+		l.tx.StopAndWait()
 		l.recorder.mu.Lock()
 		defer l.recorder.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), l.timeout)

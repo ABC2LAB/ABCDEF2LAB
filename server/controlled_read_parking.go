@@ -86,7 +86,7 @@ func (s *Server) parkControlledReadTask(task *Task) {
 	defer s.engine.decInflight(task.ID)
 	s.engine.Pause(task.ID, agent.AbortPausedByOrchestrator)
 	if err := s.m.ApplyTaskPause(task.ID); err != nil {
-		log.Printf("[E2] controlled task parking could not be persisted")
+		log.Printf("[E2] controlled task parking could not be persisted: %v", err)
 		s.engine.Resume(task)
 		return
 	}

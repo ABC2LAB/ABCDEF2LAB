@@ -270,3 +270,57 @@ func TestControlledReadEngineDBCancelRevokesPendingAndParksTask(t *testing.T) {
 		})
 	}
 }
+
+func TestControlledReadEngineDBControlRunningReadCompletesCleanup(t *testing.T) {
+	for _, action := range []string{"pause", "cancel"} {
+		t.Run(action, func(t *testing.T) {
+			started := make(chan struct{})
+			target := controlledReadTarget(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				close(started)
+				<-r.Context().Done()
+			}))
+			f := newControlledReadDBFixture(t, target.URL)
+			f.registerAndResume(t)
+			if err := f.intentState("running"); err != nil {
+				t.Fatal(err)
+			}
+			workerDone := make(chan struct{})
+			go func() {
+				defer close(workerDone)
+				p := &runtimeReadProvider{t: t, name: agent.ControlledHTTPToolName, input: `{"account_ref":"owner","resource_ref":"doc:one"}`}
+				f.e.runIntent(context.Background(), f.task, "worker", runtimeWorker(t, p), f.intent, "", "")
+			}()
+			select {
+			case <-started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("registered request did not start")
+			}
+			body := `{"action":"` + action + `"}`
+			if action == "cancel" {
+				body = `{"action":"cancel","reason":"approval revoked","mode":"soft"}`
+			}
+			request := httptest.NewRequest(http.MethodPost, "/api/tasks/"+f.task.ID+"/intents/"+itoa(f.intent.ID)+"/control", strings.NewReader(body))
+			request.SetPathValue("id", f.task.ID)
+			request.SetPathValue("iid", itoa(f.intent.ID))
+			response := httptest.NewRecorder()
+			f.s.controlIntent(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s status=%d body=%s", action, response.Code, response.Body.String())
+			}
+			select {
+			case <-workerDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("interrupted worker did not settle")
+			}
+			intent, err := f.task.Store.GetNode(f.intent.ID)
+			want := "paused"
+			if action == "cancel" {
+				want = db.StateIntentDeleted
+			}
+			if err != nil || intent == nil || intent.State != want {
+				t.Fatalf("%s state=%+v err=%v, want %s", action, intent, err, want)
+			}
+			f.assertAudit(t)
+		})
+	}
+}

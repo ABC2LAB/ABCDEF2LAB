@@ -35,9 +35,11 @@ type HTTPTransmitter struct {
 	budget    uint64
 	serial    chan struct{}
 	attempt   atomic.Uint64
+	inflight  sync.WaitGroup
 
 	mu          sync.Mutex
 	stopped     bool
+	closing     bool
 	auditFailed bool
 	used        uint64
 	lastStart   time.Time
@@ -162,6 +164,17 @@ func (t *HTTPTransmitter) Stop() {
 	t.cancel()
 }
 
+// StopAndWait seals admission, cancels active sends and waits for their result
+// records. A caller may close its audit journal only after this returns.
+func (t *HTTPTransmitter) StopAndWait() {
+	t.mu.Lock()
+	t.closing = true
+	t.stopped = true
+	t.mu.Unlock()
+	t.cancel()
+	t.inflight.Wait()
+}
+
 func (t *HTTPTransmitter) Send(req idor.AccessRequest) (idor.Capture, bool) {
 	capture, _, ok := t.SendDetailed(req)
 	return capture, ok
@@ -173,6 +186,15 @@ func (t *HTTPTransmitter) SendDetailed(proposal idor.AccessRequest) (capture ido
 	ctx, cancel := context.WithTimeout(t.ctx, t.timeout)
 	defer cancel()
 	receipt = Receipt{Scope: t.scope, Attempt: t.attempt.Add(1), At: time.Now(), Method: "UNSUPPORTED"}
+	t.mu.Lock()
+	if t.closing {
+		t.mu.Unlock()
+		receipt.Reason = Stopped
+		return
+	}
+	t.inflight.Add(1)
+	t.mu.Unlock()
+	defer t.inflight.Done()
 	acquired := false
 	if proposal.Method == http.MethodGet {
 		receipt.Method = http.MethodGet
