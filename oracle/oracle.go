@@ -34,6 +34,16 @@ func checkExpectedPolicy(p PolicyAssertion, observedAt time.Time) CheckOutcome {
 	if observedAt.Before(p.ValidFrom) || !observedAt.Before(p.ValidUntil) {
 		return CheckOutcome{StateUnknown, ReasonExpectedAccessPolicyInvalid}
 	}
+	// Unset or unrecognized enum values are malformed policy, not a registered
+	// UNKNOWN assertion that can support Suspected or an explicit allow path.
+	if p.ExpectedAccess != AccessAllow && p.ExpectedAccess != AccessDeny && p.ExpectedAccess != AccessUnknown {
+		return CheckOutcome{StateUnknown, ReasonExpectedAccessPolicyInvalid}
+	}
+	for _, resolution := range []ResolutionState{p.Sharing, p.Delegation} {
+		if resolution != ResolvedNone && resolution != ResolvedAllow && resolution != ResolutionUnknown {
+			return CheckOutcome{StateUnknown, ReasonExpectedAccessPolicyInvalid}
+		}
+	}
 	if p.ExpectedAccess == AccessAllow {
 		return CheckOutcome{StateNo, ReasonPolicyAllows}
 	}
@@ -89,7 +99,9 @@ func checkData(f ComparisonFacts) CheckOutcome {
 		}
 	}
 	for _, st := range required {
-		if st == StateUnknown {
+		// Only explicit YES proves a fact; zero and unrecognized values carry no
+		// evidence, just like the declared UNKNOWN state.
+		if st != StateYes {
 			return CheckOutcome{StateUnknown, ReasonDataUnverifiable}
 		}
 	}
