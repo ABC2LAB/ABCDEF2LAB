@@ -31,6 +31,12 @@ function statusInfo(status: string): { label: string; style: React.CSSProperties
   return { label: status || "—", style: { color: "var(--muted)", fontWeight: 700 } };
 }
 
+function controlLead(loading: boolean, error: string | null, count: number): string {
+  if (loading) return "불러오는 중…";
+  if (error) return "불러오지 못했어요.";
+  return `승인 게이트(ARTEX intercept) 개입 ${count}건`;
+}
+
 /** ISO/epoch → HH:MM:SS */
 function tsLabel(ts: number): string {
   if (!ts) return "—";
@@ -76,6 +82,7 @@ export default function AuditScreen() {
     if (filter === "all") return events;
     return events.filter((e) => e.source === filter);
   }, [events, filter]);
+  const lead = controlLead(loading, error, events.length);
 
   if (!taskId) {
     return (
@@ -117,11 +124,7 @@ export default function AuditScreen() {
                 통제 기록
               </h1>
               <p className="lead" style={{ marginBottom: 0 }}>
-                {loading
-                  ? "불러오는 중…"
-                  : error
-                    ? "불러오지 못했어요."
-                    : `승인 게이트(ARTEX intercept) 개입 ${events.length}건`}
+                {lead}
               </p>
             </div>
             {/* 변조탐지 해시체인은 우리 기여(미구현) — "무결"을 단정하지 않는다 */}
@@ -148,15 +151,17 @@ export default function AuditScreen() {
             ]}
           />
 
-          {error ? (
+          {error && (
             <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
               통제 기록을 불러오지 못했어요. ({error})
             </div>
-          ) : !loading && events.length === 0 ? (
+          )}
+          {!error && !loading && events.length === 0 && (
             <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>
               이 점검에서 통제가 개입한 기록이 없어요.
             </div>
-          ) : (
+          )}
+          {!error && (loading || events.length > 0) && (
             <div className="log">
               {rows.map((e) => {
                 const st = statusInfo(e.status);

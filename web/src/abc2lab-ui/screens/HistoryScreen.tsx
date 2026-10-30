@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
@@ -64,20 +64,35 @@ function timeLabel(iso: string): string {
 
 /** 한 점검(task) 카드 */
 function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "report") => void }) {
-  const f = task.findings ?? { critical: 0, high: 0, medium: 0, low: 0 };
-  const badges = SEV_ORDER.filter((lvl) => (f[lvl] ?? 0) > 0);
+  const f = task.findings;
+  const badges = SEV_ORDER.filter((lvl) => f[lvl] > 0);
   const terminal = isTerminal(task.status);
   const hasFindings = badges.length > 0;
   // 종료된 점검이거나 이미 발견이 쌓인 점검이면 상태와 무관하게 보고서를 볼 수 있다
   // 일시중지/진행 중이어도 지금까지의 결과를 열람한다.
   const canReport = terminal || hasFindings;
-  const name = task.name?.trim();
+  const name = task.name.trim();
   const title = name || "이름 없는 점검";
   // 이름이 비어 있을 때만 설명(대상 프롬프트 등)을 한 줄로 잘라 부제로 — 긴 문단이 제목을 먹지 않게.
-  const subtitle = name ? undefined : task.description?.trim();
+  const subtitle = name ? undefined : task.description.trim();
 
   const parts = [timeLabel(task.created_at), STATUS_LABEL[task.status] ?? task.status];
   if (task.goals_total > 0) parts.push(`목표 ${task.goals_met}/${task.goals_total}`);
+
+  let findingsBadge: ReactNode;
+  if (badges.length > 0) {
+    findingsBadge = badges.map((lvl) => (
+      <Sev key={lvl} level={lvl}>
+        {SEV_COUNT_LABEL[lvl]} {f[lvl]}
+      </Sev>
+    ));
+  } else if (task.status === "failed" || task.status === "timeout") {
+    findingsBadge = <Pill tone="warn">{STATUS_LABEL[task.status]} · 미완료</Pill>;
+  } else if (task.status === "done") {
+    findingsBadge = <Pill tone="muted">발견 없음</Pill>;
+  } else {
+    findingsBadge = null;
+  }
 
   return (
     <div className="hcard">
@@ -93,17 +108,7 @@ function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "re
         <div className="meta">{parts.filter(Boolean).join(" · ")}</div>
       </div>
       <div className="acts">
-        {badges.length > 0 ? (
-          badges.map((lvl) => (
-            <Sev key={lvl} level={lvl}>
-              {SEV_COUNT_LABEL[lvl]} {f[lvl]}
-            </Sev>
-          ))
-        ) : task.status === "failed" || task.status === "timeout" ? (
-          <Pill tone="warn">{STATUS_LABEL[task.status]} · 미완료</Pill>
-        ) : task.status === "done" ? (
-          <Pill tone="muted">발견 없음</Pill>
-        ) : null}
+        {findingsBadge}
         <button
           className={canReport ? "btn" : "btn primary"}
           type="button"
@@ -156,23 +161,85 @@ export default function HistoryScreen() {
     return [...byDay.entries()];
   }, [tasks, query, sort]);
 
+  let leadContent: ReactNode;
+  if (loading) {
+    leadContent = "불러오는 중…";
+  } else if (error) {
+    leadContent = "기록을 불러오지 못했어요.";
+  } else {
+    leadContent = (
+      <>
+        지금까지 <Strong>{counts.all}번</Strong> 점검했어요. 각 점검의 보고서는 카드에서 바로 열어요.
+      </>
+    );
+  }
+
+  let historyContent: ReactNode;
+  if (error) {
+    historyContent = (
+      <div className="hcard" style={{ borderColor: "var(--danger-border)", background: "var(--danger-weak)" }}>
+        <div style={{ minWidth: 0 }}>
+          <div className="nm">불러오기 실패</div>
+          <div className="meta">{error}</div>
+        </div>
+        <div className="acts">
+          <button className="btn" type="button" onClick={reload} style={btnSm}>
+            다시 시도
+          </button>
+        </div>
+      </div>
+    );
+  } else if (!loading && tasks.length === 0) {
+    historyContent = (
+      <div style={{ textAlign: "center", padding: "48px 0", color: "var(--muted)" }}>
+        <p style={{ marginBottom: 16 }}>아직 점검 기록이 없어요.</p>
+        <button className="btn primary" type="button" onClick={() => go("entry")}>
+          ＋ 첫 점검 시작
+        </button>
+      </div>
+    );
+  } else {
+    historyContent = (
+      <>
+        {counts.all > 0 && (
+          <div className="search" style={{ gap: 8, marginTop: 4 }}>
+            <Pill tone="muted">전체 {counts.all}</Pill>
+            {counts.running > 0 && <Pill>진행·대기 {counts.running}</Pill>}
+            {counts.done > 0 && <Pill tone="muted">완료 {counts.done}</Pill>}
+            {counts.failed > 0 && <Pill tone="warn">미완료 {counts.failed}</Pill>}
+          </div>
+        )}
+        {groups.map(([key, items]) => (
+          <div key={key || "unknown"}>
+            <div className="daylab">{dayLabel(key)}</div>
+            {items.map((t) => (
+              <TaskCard
+                key={t.id}
+                task={t}
+                onOpen={(s) => {
+                  selectTask(t.id);
+                  go(s);
+                }}
+              />
+            ))}
+          </div>
+        ))}
+        {!loading && groups.length === 0 && query && (
+          <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
+            “{query}” 에 맞는 기록이 없어요.
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <Screen id="history">
       <div className="frame">
         <TopBar current="history" />
         <div style={{ padding: "22px 24px" }}>
           <h1 className="big">점검 기록</h1>
-          <p className="lead">
-            {loading ? (
-              "불러오는 중…"
-            ) : error ? (
-              "기록을 불러오지 못했어요."
-            ) : (
-              <>
-                지금까지 <Strong>{counts.all}번</Strong> 점검했어요. 각 점검의 보고서는 카드에서 바로 열어요.
-              </>
-            )}
-          </p>
+          <p className="lead">{leadContent}</p>
 
           <div className="search">
             <input
@@ -201,57 +268,7 @@ export default function HistoryScreen() {
             </button>
           </div>
 
-          {error ? (
-            <div className="hcard" style={{ borderColor: "var(--danger-border)", background: "var(--danger-weak)" }}>
-              <div style={{ minWidth: 0 }}>
-                <div className="nm">불러오기 실패</div>
-                <div className="meta">{error}</div>
-              </div>
-              <div className="acts">
-                <button className="btn" type="button" onClick={reload} style={btnSm}>
-                  다시 시도
-                </button>
-              </div>
-            </div>
-          ) : !loading && tasks.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "48px 0", color: "var(--muted)" }}>
-              <p style={{ marginBottom: 16 }}>아직 점검 기록이 없어요.</p>
-              <button className="btn primary" type="button" onClick={() => go("entry")}>
-                ＋ 첫 점검 시작
-              </button>
-            </div>
-          ) : (
-            <>
-              {counts.all > 0 && (
-                <div className="search" style={{ gap: 8, marginTop: 4 }}>
-                  <Pill tone="muted">전체 {counts.all}</Pill>
-                  {counts.running > 0 && <Pill>진행·대기 {counts.running}</Pill>}
-                  {counts.done > 0 && <Pill tone="muted">완료 {counts.done}</Pill>}
-                  {counts.failed > 0 && <Pill tone="warn">미완료 {counts.failed}</Pill>}
-                </div>
-              )}
-              {groups.map(([key, items]) => (
-                <div key={key || "unknown"}>
-                  <div className="daylab">{dayLabel(key)}</div>
-                  {items.map((t) => (
-                    <TaskCard
-                      key={t.id}
-                      task={t}
-                      onOpen={(s) => {
-                        selectTask(t.id);
-                        go(s);
-                      }}
-                    />
-                  ))}
-                </div>
-              ))}
-              {!loading && groups.length === 0 && query && (
-                <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
-                  “{query}” 에 맞는 기록이 없어요.
-                </div>
-              )}
-            </>
-          )}
+          {historyContent}
         </div>
       </div>
     </Screen>

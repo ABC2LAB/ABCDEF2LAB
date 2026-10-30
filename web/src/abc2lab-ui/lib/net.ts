@@ -54,5 +54,5 @@ export function toTarget(input: string): Target {
 
 /** DNS TXT 소유 확인용 1회용 토큰 (원본과 같은 형식) */
 export function randomVerifyToken(): string {
-  return "abc2lab-verify=" + Math.random().toString(16).slice(2, 10) + Math.random().toString(16).slice(2, 8);
+  return `abc2lab-verify=${Math.random().toString(16).slice(2, 10)}${Math.random().toString(16).slice(2, 8)}`;
 }

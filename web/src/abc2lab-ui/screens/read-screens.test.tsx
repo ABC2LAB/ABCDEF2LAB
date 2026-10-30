@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as engine from "../lib/engine";
 import { SelectionContext } from "../lib/selection";
 import { NavContext, type ScreenId } from "../nav";
+import AuditScreen from "./AuditScreen";
 import HistoryScreen from "./HistoryScreen";
 import LiveScreen from "./LiveScreen";
 import ReportScreen from "./ReportScreen";
@@ -14,6 +15,7 @@ import SettingsScreen from "./SettingsScreen";
 
 vi.mock("../lib/engine", () => ({
   getTask: vi.fn(),
+  getControlLog: vi.fn(),
   listTasks: vi.fn(),
   listTaskFindings: vi.fn(),
   getCoverage: vi.fn(),
@@ -46,6 +48,8 @@ beforeEach(() => {
     in_flight: 0,
     findings: { critical: 0, high: 0, medium: 0, low: 0 },
   });
+  vi.mocked(engine.listTasks).mockResolvedValue({ active: "", tasks: [] });
+  vi.mocked(engine.getControlLog).mockResolvedValue([]);
   vi.mocked(engine.listTaskFindings).mockResolvedValue([]);
   vi.mocked(engine.getCoverage).mockResolvedValue(null);
   vi.mocked(engine.getTokens).mockResolvedValue({ input: 0, output: 0 });
@@ -218,4 +222,112 @@ it("keeps a successful zero coverage measurement as zero", async () => {
   });
   show("live", <LiveScreen target={{ url: "http://example.test", host: "example.test" }} />);
   expect(await screen.findByText("0%")).toBeVisible();
+});
+
+describe("read state boundaries before conditional cleanup", () => {
+  it("keeps settings lookup errors distinct from empty rules and unconfigured models", async () => {
+    vi.mocked(engine.getInterceptRules).mockRejectedValue(new Error("rules unavailable"));
+    vi.mocked(engine.getLLM).mockRejectedValue(new Error("model unavailable"));
+    show("settings", <SettingsScreen />);
+    expect(await screen.findByText(/통제 규칙을 불러오지 못했어요/)).toBeVisible();
+    expect(await screen.findByText(/모델 설정을 불러오지 못했어요/)).toBeVisible();
+    expect(screen.queryByText("등록된 통제 규칙이 없어요.")).toBeNull();
+    expect(screen.queryByText("아직 모델이 연결되지 않았어요")).toBeNull();
+  });
+  it("keeps loading settings distinct from unconfigured settings", () => {
+    vi.mocked(engine.getInterceptRules).mockReturnValue(
+      new Promise(() => {
+        /* Keep this request pending to verify the loading state. */
+      }),
+    );
+    vi.mocked(engine.getLLM).mockReturnValue(
+      new Promise(() => {
+        /* Keep this request pending to verify the loading state. */
+      }),
+    );
+    show("settings", <SettingsScreen />);
+    expect(screen.getAllByText("불러오는 중…").length).toBeGreaterThan(0);
+    expect(screen.queryByText("등록된 통제 규칙이 없어요.")).toBeNull();
+    expect(screen.queryByText("아직 모델이 연결되지 않았어요")).toBeNull();
+  });
+  it("shows successfully empty settings without a lookup error", async () => {
+    vi.mocked(engine.getLLM).mockResolvedValue({
+      configured: false,
+      provider: "",
+      model: "",
+      base_url: "",
+      key_set: false,
+      context_window_k: 0,
+    });
+    show("settings", <SettingsScreen />);
+    expect(await screen.findByText("등록된 통제 규칙이 없어요.")).toBeVisible();
+    expect(await screen.findByText("아직 모델이 연결되지 않았어요")).toBeVisible();
+  });
+  it.each(["loading", "error", "empty"])("keeps %s task history truthful", async (state) => {
+    if (state === "loading")
+      vi.mocked(engine.listTasks).mockReturnValue(
+        new Promise(() => {
+          /* Keep this request pending to verify the loading state. */
+        }),
+      );
+    if (state === "error") vi.mocked(engine.listTasks).mockRejectedValue(new Error("history unavailable"));
+    show("history", <HistoryScreen />);
+    if (state === "loading") expect(screen.getByText("불러오는 중…")).toBeVisible();
+    if (state === "error") expect(await screen.findByText("불러오기 실패")).toBeVisible();
+    if (state === "empty") expect(await screen.findByText("아직 점검 기록이 없어요.")).toBeVisible();
+    else expect(screen.queryByText("아직 점검 기록이 없어요.")).toBeNull();
+  });
+  it.each(["loading", "error", "empty"])("keeps %s control history truthful", async (state) => {
+    if (state === "loading")
+      vi.mocked(engine.getControlLog).mockReturnValue(
+        new Promise(() => {
+          /* Keep this request pending to verify the loading state. */
+        }),
+      );
+    if (state === "error") vi.mocked(engine.getControlLog).mockRejectedValue(new Error("control unavailable"));
+    show("audit", <AuditScreen />);
+    if (state === "loading") expect(screen.getByText("불러오는 중…")).toBeVisible();
+    if (state === "error") expect(await screen.findByText(/통제 기록을 불러오지 못했어요/)).toBeVisible();
+    if (state === "empty") expect(await screen.findByText("이 점검에서 통제가 개입한 기록이 없어요.")).toBeVisible();
+    else expect(screen.queryByText("이 점검에서 통제가 개입한 기록이 없어요.")).toBeNull();
+  });
+  it.each(["error", "disabled", "empty", "measured"])("keeps %s report coverage distinct", async (state) => {
+    if (state === "error") vi.mocked(engine.getCoverage).mockRejectedValue(new Error("coverage unavailable"));
+    else
+      vi.mocked(engine.getCoverage).mockResolvedValue({
+        enabled: state !== "disabled",
+        denominator: state === "measured" ? 4 : 0,
+        tested: state === "measured" ? 1 : 0,
+        pct: 0,
+        scopeRows: 1,
+        byType: [],
+      });
+    show("report", <ReportScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "커버리지" }));
+    const labels = {
+      error: "커버리지를 불러오지 못했어요.",
+      disabled: "이 점검은 커버리지 집계가 꺼져 있어요.",
+      empty: "아직 범위(scope) 안에 집계된 자산이 없어요.",
+      measured: "1/4 · 25%",
+    };
+    expect(await screen.findByText(labels[state as keyof typeof labels])).toBeVisible();
+  });
+  it.each(["loading", "error", "empty"])("keeps %s activity log distinct", async (state) => {
+    if (state === "loading")
+      vi.mocked(engine.getActivity).mockReturnValue(
+        new Promise(() => {
+          /* Keep this request pending to verify the loading state. */
+        }),
+      );
+    if (state === "error") vi.mocked(engine.getActivity).mockRejectedValue(new Error("activity unavailable"));
+    show("live", <LiveScreen target={{ url: "http://example.test", host: "example.test" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "상세 보기" }));
+    const labels = {
+      loading: "활동 기록을 불러오는 중이에요.",
+      error: "활동 기록을 불러오지 못했어요.",
+      empty: "기록된 활동이 없어요.",
+    };
+    expect(await screen.findByText(labels[state as keyof typeof labels])).toBeVisible();
+    if (state !== "empty") expect(screen.queryByText("기록된 활동이 없어요.")).toBeNull();
+  });
 });
