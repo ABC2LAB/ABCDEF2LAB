@@ -17,6 +17,9 @@ export function CopyButton({ text }: { text: string }) {
     }
     timers.set(() => setStatus("idle"), 1200);
   }
+  let label = "복사";
+  if (status === "copied") label = "복사됨";
+  if (status === "failed") label = "복사 실패";
   return (
     <button
       className="vcopy"
@@ -26,7 +29,7 @@ export function CopyButton({ text }: { text: string }) {
         void copy();
       }}
     >
-      {status === "copied" ? "복사됨" : status === "failed" ? "복사 실패" : "복사"}
+      {label}
     </button>
   );
 }

@@ -25,6 +25,13 @@ const patStyle = {
 };
 const ACTION_LABEL: Record<string, string> = { allow: "허용", deny: "차단", ask: "승인 필요" };
 
+function actionColor(action: string): string {
+  if (action === "deny") return "var(--danger)";
+  if (action === "ask") return "var(--warn)";
+  if (action === "allow") return "var(--teal-ink)";
+  return "var(--muted)";
+}
+
 /** base_url 의 **호스트**가 내부망/로컬을 가리키는지 판별 (완전 로컬 모드 표시용).
  *  전체 URL 문자열이 아니라 hostname 기준 — 쿼리에 'ollama' 가 있다고 로컬로 보지 않는다. */
 function isLocalUrl(u: string): boolean {
@@ -76,13 +83,14 @@ export default function SettingsScreen() {
               활성 통제 규칙 <Sub>· ARTEX 승인 게이트(intercept)가 도구 호출을 거르는 규칙</Sub>
             </h3>
 
-            {rulesRes.loading ? (
-              <p style={bodyText}>불러오는 중…</p>
-            ) : rulesRes.error ? (
+            {rulesRes.loading && <p style={bodyText}>불러오는 중…</p>}
+            {!rulesRes.loading && rulesRes.error && (
               <p style={bodyText}>통제 규칙을 불러오지 못했어요. ({rulesRes.error})</p>
-            ) : rules.length === 0 ? (
+            )}
+            {!rulesRes.loading && !rulesRes.error && rules.length === 0 && (
               <p style={bodyText}>등록된 통제 규칙이 없어요.</p>
-            ) : (
+            )}
+            {!rulesRes.loading && !rulesRes.error && rules.length > 0 && (
               <>
                 <div className="search" style={{ gap: 8, marginBottom: 10 }}>
                   <Pill tone="muted">전체 {ruleStats.total}</Pill>
@@ -93,13 +101,7 @@ export default function SettingsScreen() {
                 </div>
                 {rules.map((r) => {
                   const deny = r.action === "deny";
-                  const color = deny
-                    ? "var(--danger)"
-                    : r.action === "ask"
-                      ? "var(--warn)"
-                      : r.action === "allow"
-                        ? "var(--teal-ink)"
-                        : "var(--muted)";
+                  const color = actionColor(r.action);
                   return (
                     <div key={r.id} className="frow" style={{ cursor: "default" }}>
                       <Pill tone={r.enabled ? undefined : "muted"}>{r.enabled ? "사용" : "꺼짐"}</Pill>
@@ -137,11 +139,9 @@ export default function SettingsScreen() {
             <h3>
               모델 <Sub>· 어떤 LLM으로 도는가</Sub>
             </h3>
-            {llmRes.loading ? (
-              <p style={bodyText}>불러오는 중…</p>
-            ) : llmRes.error ? (
-              <p style={bodyText}>모델 설정을 불러오지 못했어요. ({llmRes.error})</p>
-            ) : !llm?.configured ? (
+            {llmRes.loading && <p style={bodyText}>불러오는 중…</p>}
+            {!llmRes.loading && llmRes.error && <p style={bodyText}>모델 설정을 불러오지 못했어요. ({llmRes.error})</p>}
+            {!llmRes.loading && !llmRes.error && !llm?.configured && (
               <>
                 <div className="frow" style={{ cursor: "default" }}>
                   <Pill tone="muted">미설정</Pill>
@@ -156,7 +156,8 @@ export default function SettingsScreen() {
                   모델을 붙여야 점검(탐색)이 돌아요. 완전 로컬 모드의 외부 송신 차단은 E² 연동 후예요.
                 </div>
               </>
-            ) : (
+            )}
+            {!llmRes.loading && !llmRes.error && llm?.configured && (
               <div className="frow" style={{ cursor: "default" }}>
                 <Pill>{isLocalUrl(llm.base_url) ? "내부" : "외부"}</Pill>
                 <div style={{ minWidth: 0 }}>

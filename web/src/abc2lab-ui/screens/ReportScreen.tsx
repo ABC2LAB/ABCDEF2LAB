@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import { Screen } from "../components/Screen";
 import { Tabs } from "../components/Tabs";
@@ -164,6 +164,113 @@ export default function ReportScreen() {
     );
   }
 
+  let reportLead: string;
+  if (error) {
+    reportLead = "보고서를 불러오지 못했어요.";
+  } else if (task) {
+    reportLead = [
+      whenLabel(task.created_at),
+      STATUS_LABEL[task.status] ?? task.status,
+      task.goals_total > 0 ? `목표 ${task.goals_met}/${task.goals_total}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  } else {
+    reportLead = "…";
+  }
+
+  let findingSummary: string;
+  if (!findingsReady) {
+    if (findRes.loading) {
+      findingSummary = "불러오는 중…";
+    } else {
+      findingSummary = "조회 실패";
+    }
+  } else if (findings.length === 0) {
+    findingSummary = "아직 없음";
+  } else {
+    findingSummary = SEV_ORDER.filter((s) => sevCounts[s] > 0)
+      .map((s) => `${({ critical: "심각", high: "높음", medium: "중간", low: "낮음" } as const)[s]} ${sevCounts[s]}`)
+      .concat(unclassified ? [`미분류 ${unclassified}`] : [])
+      .join(" · ");
+  }
+
+  let summaryContent: ReactNode;
+  if (loading) {
+    summaryContent = "보고서를 불러오는 중이에요.";
+  } else if (error) {
+    summaryContent = "보고서를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.";
+  } else if (findings.length === 0) {
+    summaryContent = (
+      <>
+        아직 이 점검에서 <Strong>발견이 없어요</Strong>. 점검이 진행되면 심각도별로 여기에 쌓여요. (확정·의심·판단 불가{" "}
+        <Strong>판정</Strong> 구분은 E③ 오라클 연동 후 표시돼요.)
+      </>
+    );
+  } else {
+    summaryContent = (
+      <>
+        이 점검에서 <Strong>{findings.length}건</Strong>이 발견됐어요. 심각·높음{" "}
+        <Strong>{sevCounts.critical + sevCounts.high}건</Strong>을 먼저 확인하세요. 각 발견의 확정·의심·판단 불가{" "}
+        <Strong>판정</Strong>은 E③ 오라클 연동 후 표시돼요.
+      </>
+    );
+  }
+
+  let findingRows: ReactNode;
+  if (findRes.loading) {
+    findingRows = <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>불러오는 중…</div>;
+  } else if (findRes.error) {
+    findingRows = (
+      <div role="alert" style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
+        발견 목록을 불러오지 못했어요.
+      </div>
+    );
+  } else if (findings.length === 0) {
+    findingRows = (
+      <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>
+        이 점검에서 발견된 항목이 없어요.
+      </div>
+    );
+  } else {
+    findingRows = findings.map((f) => (
+      <div key={f.id} className="frow" style={{ cursor: "default" }}>
+        <Sev level={toSeverity(f.severity)} />
+        <div style={{ minWidth: 0 }}>
+          <div className="nm">{findingName(f)}</div>
+          <div className="ep">{findingEndpoint(f)}</div>
+        </div>
+        <div className="rt">
+          <Pill tone="muted">판정 준비 중</Pill>
+        </div>
+      </div>
+    ));
+  }
+
+  let coverageContent: ReactNode;
+  if (covRes.loading) {
+    coverageContent = <p style={bodyText}>불러오는 중…</p>;
+  } else if (covRes.error) {
+    coverageContent = <p style={bodyText}>커버리지를 불러오지 못했어요.</p>;
+  } else if (!cov?.enabled) {
+    coverageContent = <p style={bodyText}>이 점검은 커버리지 집계가 꺼져 있어요.</p>;
+  } else if (cov.denominator === 0) {
+    coverageContent = <p style={bodyText}>아직 범위(scope) 안에 집계된 자산이 없어요.</p>;
+  } else {
+    coverageContent = (
+      <>
+        <CoverageBar label="전체" tested={cov.tested} total={cov.denominator} strong />
+        {cov.byType.map((t) => (
+          <CoverageBar key={t.type} label={TYPE_LABEL[t.type] ?? t.type} tested={t.tested} total={t.total} />
+        ))}
+        <p className="hint" style={{ marginTop: 14 }}>
+          분모 = 범위(scope) 내 자산 수, 분자 = 실제로 요청·탐색한 수. 미검사(분모−분자)는{" "}
+          <Strong>“취약 없음”이 아니라 “아직 안 본 것”</Strong>이에요.
+        </p>
+      </>
+    );
+  }
+
   return (
     <Screen id="report">
       <div className="frame">
@@ -188,17 +295,7 @@ export default function ReportScreen() {
                 {loading && !task ? "불러오는 중…" : title}
               </h1>
               <p className="lead" style={{ marginBottom: 0 }}>
-                {error
-                  ? "보고서를 불러오지 못했어요."
-                  : task
-                    ? [
-                        whenLabel(task.created_at),
-                        STATUS_LABEL[task.status] ?? task.status,
-                        task.goals_total > 0 ? `목표 ${task.goals_met}/${task.goals_total}` : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")
-                    : "…"}
+                {reportLead}
               </p>
             </div>
             <div style={{ textAlign: "right" }}>
@@ -222,21 +319,7 @@ export default function ReportScreen() {
             <div className="tile">
               <div className="k">발견</div>
               <div className="v">{findingsReady ? findings.length : "—"}</div>
-              <div className="sub">
-                {!findingsReady
-                  ? findRes.loading
-                    ? "불러오는 중…"
-                    : "조회 실패"
-                  : findings.length === 0
-                    ? "아직 없음"
-                    : SEV_ORDER.filter((s) => sevCounts[s] > 0)
-                        .map(
-                          (s) =>
-                            `${({ critical: "심각", high: "높음", medium: "중간", low: "낮음" } as const)[s]} ${sevCounts[s]}`,
-                        )
-                        .concat(unclassified ? [`미분류 ${unclassified}`] : [])
-                        .join(" · ")}
-              </div>
+              <div className="sub">{findingSummary}</div>
             </div>
             {SEV_ORDER.map((s) => (
               <div className="tile" key={s}>
@@ -272,24 +355,7 @@ export default function ReportScreen() {
           <div className="rpanel" hidden={panel !== "sum"}>
             <div className="card">
               <h3>한눈에</h3>
-              <p style={bodyText}>
-                {loading ? (
-                  "보고서를 불러오는 중이에요."
-                ) : error ? (
-                  "보고서를 불러오지 못했어요. 잠시 후 다시 시도해 주세요."
-                ) : findings.length === 0 ? (
-                  <>
-                    아직 이 점검에서 <Strong>발견이 없어요</Strong>. 점검이 진행되면 심각도별로 여기에 쌓여요.
-                    (확정·의심·판단 불가 <Strong>판정</Strong> 구분은 E③ 오라클 연동 후 표시돼요.)
-                  </>
-                ) : (
-                  <>
-                    이 점검에서 <Strong>{findings.length}건</Strong>이 발견됐어요. 심각·높음{" "}
-                    <Strong>{sevCounts.critical + sevCounts.high}건</Strong>을 먼저 확인하세요. 각 발견의 확정·의심·판단
-                    불가 <Strong>판정</Strong>은 E③ 오라클 연동 후 표시돼요.
-                  </>
-                )}
-              </p>
+              <p style={bodyText}>{summaryContent}</p>
             </div>
           </div>
 
@@ -301,30 +367,7 @@ export default function ReportScreen() {
                 연동 후 표시돼요.
               </p>
             )}
-            {findRes.loading ? (
-              <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>불러오는 중…</div>
-            ) : findRes.error ? (
-              <div role="alert" style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
-                발견 목록을 불러오지 못했어요.
-              </div>
-            ) : findings.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>
-                이 점검에서 발견된 항목이 없어요.
-              </div>
-            ) : (
-              findings.map((f) => (
-                <div key={f.id} className="frow" style={{ cursor: "default" }}>
-                  <Sev level={toSeverity(f.severity)} />
-                  <div style={{ minWidth: 0 }}>
-                    <div className="nm">{findingName(f)}</div>
-                    <div className="ep">{findingEndpoint(f)}</div>
-                  </div>
-                  <div className="rt">
-                    <Pill tone="muted">판정 준비 중</Pill>
-                  </div>
-                </div>
-              ))
-            )}
+            {findingRows}
           </div>
 
           {/* 커버리지 */}
@@ -333,26 +376,7 @@ export default function ReportScreen() {
               <h3>
                 검사 커버리지 <Sub>· 범위 내 자산 대비 실제 탐색</Sub>
               </h3>
-              {covRes.loading ? (
-                <p style={bodyText}>불러오는 중…</p>
-              ) : covRes.error ? (
-                <p style={bodyText}>커버리지를 불러오지 못했어요.</p>
-              ) : !cov || !cov.enabled ? (
-                <p style={bodyText}>이 점검은 커버리지 집계가 꺼져 있어요.</p>
-              ) : cov.denominator === 0 ? (
-                <p style={bodyText}>아직 범위(scope) 안에 집계된 자산이 없어요.</p>
-              ) : (
-                <>
-                  <CoverageBar label="전체" tested={cov.tested} total={cov.denominator} strong />
-                  {cov.byType.map((t) => (
-                    <CoverageBar key={t.type} label={TYPE_LABEL[t.type] ?? t.type} tested={t.tested} total={t.total} />
-                  ))}
-                  <p className="hint" style={{ marginTop: 14 }}>
-                    분모 = 범위(scope) 내 자산 수, 분자 = 실제로 요청·탐색한 수. 미검사(분모−분자)는{" "}
-                    <Strong>“취약 없음”이 아니라 “아직 안 본 것”</Strong>이에요.
-                  </p>
-                </>
-              )}
+              {coverageContent}
             </div>
           </div>
 
