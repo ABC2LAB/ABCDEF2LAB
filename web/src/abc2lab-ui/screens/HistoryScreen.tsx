@@ -85,7 +85,7 @@ function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "re
   } else if (task.status === "failed" || task.status === "timeout") {
     findingsBadge = <Pill tone="warn">{STATUS_LABEL[task.status]} · 미완료</Pill>;
   } else if (task.status === "done") {
-    findingsBadge = <Pill tone="muted">발견 없음</Pill>;
+    findingsBadge = <Pill tone="muted">발견 목록 확인</Pill>;
   }
 
   const parts = [timeLabel(task.created_at), STATUS_LABEL[task.status] ?? task.status];
@@ -166,7 +166,8 @@ export default function HistoryScreen() {
   } else {
     leadContent = (
       <>
-        지금까지 <Strong>{counts.all}번</Strong> 점검했어요. 각 점검의 보고서는 카드에서 바로 열어요.
+        지금까지 <Strong>{counts.all}번</Strong> 점검했어요. 각 점검의 보고서는 카드에서 바로 열어요. 미분류 항목을
+        포함한 전체 발견은 보고서에서 확인해 주세요.
       </>
     );
   }

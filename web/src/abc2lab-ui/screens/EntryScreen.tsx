@@ -51,13 +51,18 @@ function RecentScans() {
           전체 기록 {tasks.length} →
         </button>
       </div>
+      <p className="hint">미분류 항목을 포함한 전체 발견은 보고서에서 확인해 주세요.</p>
       <div className="recent-list">
         {recent.map((t) => {
           const terminal = t.status === "done" || t.status === "failed" || t.status === "timeout";
           const f = t.findings ?? { critical: 0, high: 0, medium: 0, low: 0 };
           const topSev = SEV_ORDER.find((s) => (f[s] ?? 0) > 0);
-          const total = SEV_ORDER.reduce((n, s) => n + (f[s] ?? 0), 0);
-          const meta = [STATUS_LABEL[t.status] ?? t.status, dateLabel(t.created_at), total > 0 ? `발견 ${total}` : ""]
+          const classifiedTotal = SEV_ORDER.reduce((n, s) => n + (f[s] ?? 0), 0);
+          const meta = [
+            STATUS_LABEL[t.status] ?? t.status,
+            dateLabel(t.created_at),
+            classifiedTotal > 0 ? `위험도 분류 ${classifiedTotal}` : "",
+          ]
             .filter(Boolean)
             .join(" · ");
           let resultBadge: ReactNode;
@@ -68,7 +73,7 @@ function RecentScans() {
               </span>
             );
           } else if (t.status === "done") {
-            resultBadge = <span className="stag none">발견 없음</span>;
+            resultBadge = <span className="stag none">발견 목록 확인</span>;
           } else {
             resultBadge = <span className="stag none">{STATUS_LABEL[t.status]} · 미완료</span>;
           }

@@ -264,7 +264,7 @@ export default function LiveScreen({ target }: { target: Target }) {
     ["created", "queued", "running", "paused"].includes(t.status),
   );
   const taskListReady = !tasksRes.loading && !tasksRes.error && tasksRes.data !== null;
-  const allFindings = (tasksRes.data?.tasks ?? []).reduce(
+  const classifiedFindings = (tasksRes.data?.tasks ?? []).reduce(
     (sum, t) => sum + Object.values(t.findings).reduce((n, c) => n + c, 0),
     0,
   );
@@ -467,7 +467,7 @@ export default function LiveScreen({ target }: { target: Target }) {
                 </button>
               ))}
               <span className="jt-total">
-                조회된 작업 전체 발견 <b>{taskListReady ? allFindings : "—"}</b>건
+                위험도 분류 집계 <b>{taskListReady ? classifiedFindings : "—"}</b>건 · 미분류 제외
               </span>
             </div>
           )}
