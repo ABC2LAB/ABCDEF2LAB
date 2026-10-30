@@ -8,7 +8,7 @@
 - **task** = 대상+범위 1회 진단 단위. 생성→control(start/stop)→exploration→findings.
 - **exploration** = 엔진 탐색: activity(스트림)·graph·frontier·intents·nodes.
 - **findings** = 발견. 워크플로우 `status`와 **E③ 구조화 판정**(CONFIRMED/SUSPECTED/UNDECIDABLE)은 별개 — 후자는 verdict-record 계약.
-- **intercept** = E② 전송 통제 경계. `pending`(승인 대기)·`decide`(허용/차단)·`history`(전송 기록)·`rules`(통제 정책).
+- **intercept** = ARTEX 도구 호출 승인 게이트. `pending`(승인 대기)·`decide`(허용/차단)·`history`(명시적 결정/승인 기록)·`rules`(allow/deny/ask 규칙). 실제 네트워크 전송 통제 E②의 집행·송신 증명과는 별개다.
 - **audit** = 감사 로그.
 
 ## 화면별 매핑
@@ -24,9 +24,9 @@
 | **report** (보고서) | `GET /api/tasks/{id}`, `GET /api/exploration/findings`, `GET /api/tasks/{id}/coverage` | 발견 목록·커버리지·위험도 4단 타일 (※ `/api/report`·`/api/stats`는 코드 미사용) |
 | **finding** (발견 상세·확정) | `GET /api/exploration/findings/{id}`, `/{id}/retests`, `/{id}/lineage`, `GET /api/traffic/exchange` | 증거·HTTP 교환·재시험(E③) |
 | **finding-und** (판단불가) | 위와 동일, 판정=UNDECIDABLE 분기 | 같은 상세 API, 판정값으로 분기 |
-| **approval** (승인) | `GET /api/intercept/pending`, `POST /api/intercept/pending/{id}/decide` | **E² 경계** — 협의: 이동찬 |
+| **approval** (승인) | `GET /api/intercept/pending`, `POST /api/intercept/pending/{id}/decide` | ARTEX 도구 승인 게이트. 실제 송신 E②와의 연결 — 협의: 이동찬 |
 | **settings** (통제 정책) | `GET/PUT /api/settings`, `GET/POST /api/intercept/rules`, `PUT /api/intercept/tool-config`, `GET /api/llm` | DLP·허용목록·모델 |
-| **audit** (통제 기록) | `GET /api/intercept/task/{id}`(배선됨), `/api/intercept/history` | ARTEX 승인 게이트 차단/승인대기 기록(허용 원장 아님). 변조탐지·권한분리·우리 E²는 연동 전 |
+| **audit** (통제 기록) | `GET /api/intercept/task/{id}`(배선됨), `/api/intercept/history` | ARTEX 승인 게이트의 명시적 허용/차단 결정·승인 요청 기록(전체 송신 원장은 아님). 변조탐지·권한분리·우리 E²는 UI 연동 전 |
 
 ## 데이터 모양 변환 (배선 시 주의)
 - **심각도**: 프론트를 ARTEX와 동일한 `critical|high|medium|low`(4단)으로 맞춤 → **변환 없음**(확정). `abc2lab-ui/types.ts` Severity, `dto.go:316`.

@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { Pill, Strong, Sub } from "../components/ui";
@@ -22,6 +23,7 @@ const patStyle = {
   wordBreak: "break-all" as const,
   color: "var(--muted)",
 };
+const ACTION_LABEL: Record<string, string> = { allow: "허용", deny: "차단", ask: "승인 필요" };
 
 /** base_url 의 **호스트**가 내부망/로컬을 가리키는지 판별 (완전 로컬 모드 표시용).
  *  전체 URL 문자열이 아니라 hostname 기준 — 쿼리에 'ollama' 가 있다고 로컬로 보지 않는다. */
@@ -47,9 +49,14 @@ export default function SettingsScreen() {
   const llm = llmRes.data;
 
   const ruleStats = useMemo(() => {
-    const on = rules.filter((r) => r.enabled).length;
-    const deny = rules.filter((r) => r.action === "deny").length;
-    return { total: rules.length, on, deny };
+    const active = rules.filter((r) => r.enabled);
+    return {
+      total: rules.length,
+      on: active.length,
+      deny: active.filter((r) => r.action === "deny").length,
+      allow: active.filter((r) => r.action === "allow").length,
+      ask: active.filter((r) => r.action === "ask").length,
+    };
   }, [rules]);
 
   return (
@@ -59,8 +66,7 @@ export default function SettingsScreen() {
         <div style={{ padding: "22px 24px", maxWidth: 780 }}>
           <h1 className="big">설정 · 통제 정책</h1>
           <p className="lead">
-            실행 허용은 LLM이 아니라 <Strong>통제 규칙</Strong>이 정해요. 지금은 ARTEX 기본{" "}
-            <Strong>승인 게이트(intercept)</Strong>가 에이전트 도구 호출을 거릅니다. 우리{" "}
+            현재는 ARTEX <Strong>승인 게이트(intercept)</Strong>의 규칙과 모델 판정으로 도구 호출을 검토해요. 우리{" "}
             <Strong>전송 통제(E², 네트워크 경계)</Strong>와 변조 탐지 감사는 아직 <Strong>연동 전</Strong>이에요.
           </p>
 
@@ -82,9 +88,18 @@ export default function SettingsScreen() {
                   <Pill tone="muted">전체 {ruleStats.total}</Pill>
                   <Pill>사용 중 {ruleStats.on}</Pill>
                   {ruleStats.deny > 0 && <Pill tone="warn">차단 {ruleStats.deny}</Pill>}
+                  {ruleStats.allow > 0 && <Pill>허용 {ruleStats.allow}</Pill>}
+                  {ruleStats.ask > 0 && <Pill tone="warn">승인 필요 {ruleStats.ask}</Pill>}
                 </div>
                 {rules.map((r) => {
                   const deny = r.action === "deny";
+                  const color = deny
+                    ? "var(--danger)"
+                    : r.action === "ask"
+                      ? "var(--warn)"
+                      : r.action === "allow"
+                        ? "var(--teal-ink)"
+                        : "var(--muted)";
                   return (
                     <div key={r.id} className="frow" style={{ cursor: "default" }}>
                       <Pill tone={r.enabled ? undefined : "muted"}>{r.enabled ? "사용" : "꺼짐"}</Pill>
@@ -99,11 +114,11 @@ export default function SettingsScreen() {
                           className="badge"
                           style={{
                             padding: "5px 10px",
-                            color: deny ? "var(--danger)" : "var(--teal-ink)",
+                            color,
                             background: deny ? "var(--danger-weak)" : undefined,
                           }}
                         >
-                          {deny ? "차단" : "허용"}
+                          {ACTION_LABEL[r.action] ?? "알 수 없음"}
                         </span>
                       </div>
                     </div>
@@ -176,8 +191,8 @@ export default function SettingsScreen() {
               <div className="tx">
                 <div className="t">감사 로그</div>
                 <div className="d">
-                  통제가 차단했거나 승인 대기로 잡은 요청이 기록돼요. (변조 탐지 체인·권한 분리는 우리가 얹는 기여 —
-                  연동 후.)
+                  승인 게이트의 명시적 허용·차단 결정과 승인 요청이 기록돼요. (변조 탐지 체인·권한 분리는 우리가 얹는
+                  기여 — 연동 후.)
                 </div>
               </div>
               <button

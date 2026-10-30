@@ -1,9 +1,11 @@
 import { Fragment, useMemo, useState } from "react";
+
 import { Modal } from "../components/Modal";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { Sev, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
+import { cx } from "../lib/cx";
 import {
   type EngineActivity,
   type EngineCoverage,
@@ -15,7 +17,6 @@ import {
   getTokens,
   listTaskFindings,
 } from "../lib/engine";
-import { cx } from "../lib/cx";
 import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
 import type { Severity, Target } from "../types";
@@ -28,13 +29,14 @@ const MOCK = { etaRange: "12~15", elapsed: "경과 18분", tokenEst: "예상 1.8
 const PIPELINE = ["자산 탐색", "범위 확인", "점검 계획", "취약점 점검", "검증", "마무리", "보고서"];
 // 실 단계 데이터는 아직 없어 status 로 근사(슬롯은 실데이터 들어오면 교체).
 function pipelineNow(status: string): number {
-  if (status === "done" || status === "failed") return 6;
-  if (status === "running" || status === "paused" || status === "timeout") return 3;
+  if (status === "done" || status === "failed" || status === "timeout") return 6;
+  if (status === "running" || status === "paused") return 3;
   return 1;
 }
 
 const STATUS_LABEL: Record<string, string> = {
   created: "대기",
+  queued: "실행 대기",
   running: "진행 중",
   paused: "일시중지",
   done: "완료",
@@ -45,8 +47,8 @@ const STATUS_LABEL: Record<string, string> = {
 const SEV_ORDER: Severity[] = ["critical", "high", "medium", "low"];
 const SEV_SET = new Set<string>(SEV_ORDER);
 const SEV_LABEL: Record<Severity, string> = { critical: "심각", high: "높음", medium: "중간", low: "낮음" };
-function toSeverity(raw: string): Severity {
-  return SEV_SET.has(raw) ? (raw as Severity) : "low";
+function toSeverity(raw: string): Severity | undefined {
+  return SEV_SET.has(raw) ? (raw as Severity) : undefined;
 }
 
 function fmtTokens(n: number): string {
@@ -62,14 +64,12 @@ function tsLabel(ts: number): string {
   return `${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`;
 }
 
-/** 실 커버리지(분모·탐색수·발견수)를 셀 그리드로(와플). per-endpoint 판정은 없어 비율 근사:
- *  발견수만큼 'f', 나머지 탐색분 'o', 나머지 'n'. 숫자 라벨은 실값. */
-function coverageCells(denominator: number, tested: number, found: number, cap = 48): string[] {
+/** 탐색 집계 비율을 표시한다. 각 칸은 특정 자산이나 취약점 판정을 나타내지 않는다. */
+function coverageCells(denominator: number, tested: number, cap = 48): string[] {
   const n = Math.min(denominator, cap) || 0;
   const scale = denominator > cap ? cap / denominator : 1;
   const t = Math.min(Math.round(tested * scale), n);
-  const f = Math.min(Math.round(found * scale), t);
-  return Array.from({ length: n }, (_, i) => (i < f ? "f" : i < t ? "o" : "n"));
+  return Array.from({ length: n }, (_, i) => (i < t ? "o" : "n"));
 }
 
 type ActDot = "teal" | "blue" | "warn" | "red";
@@ -89,6 +89,8 @@ function LiveDetailModal({
   covPct,
   acts,
   truncated,
+  loading,
+  error,
 }: {
   open: boolean;
   onClose: () => void;
@@ -97,6 +99,8 @@ function LiveDetailModal({
   covPct: number;
   acts: EngineActivity[];
   truncated: boolean;
+  loading: boolean;
+  error: string | null;
 }) {
   return (
     <Modal open={open} onClose={onClose}>
@@ -108,7 +112,8 @@ function LiveDetailModal({
               <i style={{ width: `${covPct}%` }} />
             </div>
             <div className="rpd">
-              검사 범위 {covPct}% · 활동 {acts.length}건{truncated ? " (앞부분)" : ""}
+              탐색 범위 {covPct}% · 활동 {loading ? "조회 중" : error ? "조회 실패" : `${acts.length}건`}
+              {truncated ? " (앞부분)" : ""}
             </div>
           </div>
           <button className="rpop-x" type="button" onClick={onClose} aria-label="닫기">
@@ -144,7 +149,11 @@ function LiveDetailModal({
               </span>
             </div>
             <div className="rlog">
-              {acts.length === 0 ? (
+              {loading ? (
+                <div>활동 기록을 불러오는 중이에요.</div>
+              ) : error ? (
+                <div role="alert">활동 기록을 불러오지 못했어요.</div>
+              ) : acts.length === 0 ? (
                 <div style={{ color: "var(--muted)", fontSize: 13, padding: "12px 0" }}>기록된 활동이 없어요.</div>
               ) : (
                 acts.map((e) => (
@@ -182,7 +191,6 @@ export default function LiveScreen({ target }: { target: Target }) {
   const go = useGo();
   const { taskId } = useSelection();
   const [detailOpen, setDetailOpen] = useState(false);
-  const [fetchedAt, setFetchedAt] = useState(() => Date.now());
 
   const taskRes = useApiResource(() => (taskId ? getTask(taskId) : Promise.resolve(null)), [taskId]);
   const findRes = useApiResource<EngineFinding[]>(() => listTaskFindings(taskId ?? ""), [taskId]);
@@ -194,18 +202,30 @@ export default function LiveScreen({ target }: { target: Target }) {
   const findings = useMemo(() => findRes.data ?? [], [findRes.data]);
   const cov = covRes.data;
   const acts = useMemo(() => [...(actRes.data ?? [])].sort((a, b) => a.seq - b.seq), [actRes.data]);
+  const resources = [taskRes, findRes, covRes, tokRes, actRes];
+  const snapshotLoading = resources.some((r) => r.loading);
+  const snapshotError = resources.some((r) => r.error);
+  const fetchedAt = resources.every((r) => r.fetchedAt !== null)
+    ? Math.min(...resources.map((r) => r.fetchedAt ?? 0))
+    : null;
+  const findingsReady = !findRes.loading && !findRes.error && findRes.data !== null;
 
   const sevCounts = useMemo(() => {
     const c: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const f of findings) c[toSeverity(f.severity)] += 1;
+    for (const f of findings) {
+      const severity = toSeverity(f.severity);
+      if (severity) c[severity] += 1;
+    }
     return c;
   }, [findings]);
 
+  const unclassified = findings.length - Object.values(sevCounts).reduce((sum, count) => sum + count, 0);
+
   const status = task?.status ?? "";
-  const title = task?.name?.trim() || target.url || "진행 상황";
+  const title = task?.name?.trim() || task?.description?.trim() || (taskId ? `점검 #${taskId}` : target.url);
   const covPct = cov && cov.denominator > 0 ? Math.round((cov.tested / cov.denominator) * 100) : 0;
   const tokenTotal = (tokRes.data?.input ?? 0) + (tokRes.data?.output ?? 0);
-  const cells = cov ? coverageCells(cov.denominator, cov.tested, findings.length) : [];
+  const cells = cov ? coverageCells(cov.denominator, cov.tested) : [];
 
   // 데이터는 task 선택 시 한 번 조회한 스냅샷 — 자동 갱신은 미연결(후속). 수동 새로고침만.
   function refreshAll() {
@@ -214,7 +234,6 @@ export default function LiveScreen({ target }: { target: Target }) {
     covRes.reload();
     tokRes.reload();
     actRes.reload();
-    setFetchedAt(Date.now());
   }
 
   if (!taskId) {
@@ -252,18 +271,27 @@ export default function LiveScreen({ target }: { target: Target }) {
               점검 · <Strong>{title}</Strong>
               {status ? ` · ${STATUS_LABEL[status] ?? status}` : ""}
               <div style={{ fontSize: 11.5, color: "var(--faint)", marginTop: 2 }}>
-                조회 {tsLabel(fetchedAt)} · 자동 갱신 미연결(스냅샷 — 새로고침 눌러 갱신)
+                {snapshotLoading
+                  ? "조회 중…"
+                  : snapshotError
+                    ? "일부 조회 실패 — 새로고침해 주세요"
+                    : `조회 ${tsLabel(fetchedAt ?? 0)}`}{" "}
+                · 자동 갱신 미연결(새로고침 눌러 갱신)
               </div>
             </div>
             <div className="row" style={{ flexWrap: "wrap" }}>
-              <button className="btn" type="button" style={btnSm} onClick={refreshAll}>
+              <button className="btn" type="button" style={btnSm} onClick={refreshAll} disabled={snapshotLoading}>
                 ↻ 새로고침
               </button>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 원본 시안 badge 이동 유지 */}
-              <span className="badge" onClick={() => go("approval")}>
+              <button
+                className="badge"
+                type="button"
+                style={{ border: 0, background: "none", cursor: "pointer" }}
+                onClick={() => go("approval")}
+              >
                 승인 대기
-              </span>
-              {(status === "done" || status === "failed") && (
+              </button>
+              {(status === "done" || status === "failed" || status === "timeout") && (
                 <button className="btn" type="button" style={btnSm} onClick={() => go("report")}>
                   보고서
                 </button>
@@ -325,7 +353,7 @@ export default function LiveScreen({ target }: { target: Target }) {
             {/* 실데이터: 소모 토큰(실사용). 예상치 sub 는 목업 */}
             <div className="tile">
               <div className="k">소모 토큰</div>
-              <div className="v">{tokRes.loading ? "…" : fmtTokens(tokenTotal)}</div>
+              <div className="v">{tokRes.loading ? "…" : tokRes.error ? "—" : fmtTokens(tokenTotal)}</div>
               <div className="sub">{MOCK.tokenEst} · 예시</div>
             </div>
             {/* 실데이터: 탐색한 자산 */}
@@ -339,14 +367,15 @@ export default function LiveScreen({ target }: { target: Target }) {
           <div className="wrap" style={{ padding: 0, gap: 22 }}>
             <div className="col" style={{ flex: "1 1 300px" }}>
               <h3 style={{ fontSize: 14, marginBottom: 10 }}>
-                발견 (심각도별) <Sub>· 총 {findings.length}건</Sub>
+                발견 (심각도별) <Sub>· {findingsReady ? `총 ${findings.length}건` : "조회 중/미확인"}</Sub>
               </h3>
               <div className="row" style={{ flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
                 {SEV_ORDER.map((s) => (
                   <Sev key={s} level={s}>
-                    {SEV_LABEL[s]} {sevCounts[s]}
+                    {SEV_LABEL[s]} {findingsReady ? sevCounts[s] : "—"}
                   </Sev>
                 ))}
+                {findingsReady && unclassified > 0 && <Sev level={undefined}>미분류 {unclassified}</Sev>}
               </div>
               <div
                 style={{
@@ -359,15 +388,33 @@ export default function LiveScreen({ target }: { target: Target }) {
                 <div style={{ fontSize: 12, color: "var(--muted)", paddingTop: 11 }}>최근 발견</div>
                 {findRes.loading ? (
                   <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>불러오는 중…</div>
+                ) : findRes.error ? (
+                  <div role="alert" style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>
+                    발견 목록을 불러오지 못했어요.
+                  </div>
                 ) : findings.length === 0 ? (
                   <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>아직 발견이 없어요.</div>
                 ) : (
                   findings.slice(0, 4).map((f) => (
-                    // biome-ignore lint/a11y/useKeyWithClickEvents: 원본 시안 .find 클릭 이동 유지
-                    <div key={f.id} className="find" onClick={() => go("report")} style={{ cursor: "pointer" }}>
+                    <button
+                      key={f.id}
+                      className="find"
+                      type="button"
+                      onClick={() => go("report")}
+                      style={{
+                        color: "inherit",
+                        background: "none",
+                        borderRight: 0,
+                        borderBottom: 0,
+                        borderLeft: 0,
+                        width: "100%",
+                        textAlign: "left",
+                        cursor: "pointer",
+                      }}
+                    >
                       <Sev level={toSeverity(f.severity)} />
                       <span className="nm">{f.name || f.vulnclass || "이름 없는 발견"}</span>
-                    </div>
+                    </button>
                   ))
                 )}
               </div>
@@ -406,21 +453,20 @@ export default function LiveScreen({ target }: { target: Target }) {
                   </div>
                   <div className="cov">
                     <span>
-                      <span className="dot" style={{ background: "var(--teal)" }} />
-                      검사 · 발견
-                    </span>
-                    <span>
                       <span className="dot" style={{ background: "var(--teal-border)" }} />
-                      검사 · 이상 없음
+                      탐색됨 · 판정 미연결
                     </span>
                     <span>
                       <span className="dot" style={{ background: "var(--line-2)" }} />
-                      미검사
+                      미탐색
                     </span>
                   </div>
+                  <p className="hint">범위 내 자산의 탐색 비율이에요. 자산별 취약 판정은 아직 연결 전이에요.</p>
                 </>
               ) : (
-                <div style={{ fontSize: 13, color: "var(--muted)", padding: "8px 0" }}>커버리지 집계 전이에요.</div>
+                <div style={{ fontSize: 13, color: "var(--muted)", padding: "8px 0" }}>
+                  {covRes.error ? "커버리지를 불러오지 못했어요." : "커버리지 집계 전이에요."}
+                </div>
               )}
             </div>
           </div>
@@ -436,7 +482,8 @@ export default function LiveScreen({ target }: { target: Target }) {
             }}
           >
             <div style={{ fontSize: 13, color: "var(--muted)" }}>
-              활동 {acts.length}건 기록됨 · 상세는 <Strong>상세 보기</Strong>
+              활동 {actRes.loading ? "조회 중" : actRes.error ? "조회 실패" : `${acts.length}건 기록됨`} · 상세는{" "}
+              <Strong>상세 보기</Strong>
             </div>
             <button className="btn" type="button" onClick={() => go("history")}>
               점검 기록 보기
@@ -453,6 +500,8 @@ export default function LiveScreen({ target }: { target: Target }) {
         covPct={covPct}
         acts={acts}
         truncated={acts.length >= 300}
+        loading={actRes.loading}
+        error={actRes.error}
       />
     </Screen>
   );

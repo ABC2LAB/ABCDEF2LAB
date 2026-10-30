@@ -19,7 +19,7 @@ export type EngineTask = {
   name: string;
   description: string;
   goal: string;
-  /** created | running | paused | done | failed */
+  /** created | queued | running | paused | done | failed | timeout */
   status: string;
   created_at: string;
   completed_at: string;
@@ -111,7 +111,7 @@ export async function getAudit(taskId: string): Promise<AuditResponse> {
 
 /**
  * GET /api/intercept/task/{id} — ARTEX 승인 게이트(intercept)가 개입한 요청 기록(해당 task).
- * 허용까지 다 남기는 원장이 아니라, 룰/판정으로 **차단**했거나 승인 대기로 잡힌 이벤트다.
+ * 명시적 허용·차단 결정과 승인 요청을 남긴다. 모든 실제 송신을 남기는 원장은 아니다.
  * (tool_input 원문은 민감값을 품을 수 있어 의도적으로 안 받는다.)
  * ※ 우리 전송 통제(E²)·변조탐지 해시체인·권한분리는 아직 이 레코드에 없다("연동 전").
  */
@@ -123,7 +123,7 @@ export type EngineControlEvent = {
   /** 요청한 에이전트 (예: work#1 · #256) */
   agent: string;
   tool: string;
-  /** denied | approved | pending | … (이 데이터셋은 대개 denied) */
+  /** allowed | denied | approved | pending | … */
   status: string;
   /** 누가 정했나: rule | judge | user */
   source: string;
@@ -266,7 +266,7 @@ export async function getLLM(): Promise<EngineLLM> {
   return apiFetch<EngineLLM>("/api/llm");
 }
 
-/** GET /api/intercept/rules 의 규칙 1건 — E² 전송 통제 규칙(전역) */
+/** GET /api/intercept/rules 의 규칙 1건 — ARTEX 도구 호출 승인 규칙(전역) */
 export type EngineInterceptRule = {
   id: number;
   name: string;
@@ -277,7 +277,7 @@ export type EngineInterceptRule = {
   /** regex | … */
   match_type: string;
   pattern: string;
-  /** deny | allow */
+  /** deny | allow | ask */
   action: string;
   message?: string;
 };

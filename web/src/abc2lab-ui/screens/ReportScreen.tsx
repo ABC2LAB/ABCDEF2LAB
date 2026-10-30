@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+
 import { Screen } from "../components/Screen";
 import { Tabs } from "../components/Tabs";
 import { TopBar } from "../components/TopBar";
@@ -7,15 +8,15 @@ import { useApiResource } from "../lib/api";
 import { type EngineCoverage, type EngineFinding, getCoverage, getTask, listTaskFindings } from "../lib/engine";
 import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
-import { type Severity } from "../types";
+import type { Severity } from "../types";
 
 type PanelKey = "sum" | "list" | "cov" | "map" | "ev";
 
 const SEV_ORDER: Severity[] = ["critical", "high", "medium", "low"];
 const SEV_SET = new Set<string>(SEV_ORDER);
-/** 엔진 severity 문자열 → UI Severity (모르는 값은 low로 보수적으로) */
-function toSeverity(raw: string): Severity {
-  return SEV_SET.has(raw) ? (raw as Severity) : "low";
+/** 알려지지 않은 심각도를 낮음으로 축소하지 않는다. */
+function toSeverity(raw: string): Severity | undefined {
+  return SEV_SET.has(raw) ? (raw as Severity) : undefined;
 }
 
 const SEV_LABEL: Record<Severity, string> = { critical: "심각", high: "높음", medium: "중간", low: "낮음" };
@@ -29,10 +30,12 @@ const SEV_SUB: Record<Severity, string> = { critical: "즉시 확인", high: "�
 
 const STATUS_LABEL: Record<string, string> = {
   created: "대기",
+  queued: "실행 대기",
   running: "진행 중",
   paused: "일시중지",
   done: "완료",
   failed: "실패",
+  timeout: "시간초과",
 };
 
 /** 발견 하나의 표시용 엔드포인트: 첫 자산 라벨("GET /url") 우선, 없으면 유형 */
@@ -40,7 +43,7 @@ function findingEndpoint(f: EngineFinding): string {
   return f.assets?.[0]?.label || f.vulnclass || "";
 }
 function findingName(f: EngineFinding): string {
-  return f.name || f.vulnclass || "이름 없는 발견";
+  return f.name?.trim() ? f.name : f.vulnclass || "이름 없는 발견";
 }
 
 /** created_at(RFC3339) → "10/25 14:03" */
@@ -126,16 +129,22 @@ export default function ReportScreen() {
   const task = taskRes.data;
   const findings = useMemo(() => findRes.data ?? [], [findRes.data]);
   const cov = covRes.data;
+  const findingsReady = !findRes.loading && !findRes.error && findRes.data !== null;
 
   // 심각도별 집계(실데이터). 판정(확정/의심/판단불가)은 E③ 연동 전이라 집계하지 않는다.
   const sevCounts = useMemo(() => {
     const c: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const f of findings) c[toSeverity(f.severity)] += 1;
+    for (const f of findings) {
+      const severity = toSeverity(f.severity);
+      if (severity) c[severity] += 1;
+    }
     return c;
   }, [findings]);
 
+  const unclassified = findings.length - Object.values(sevCounts).reduce((sum, count) => sum + count, 0);
+
   const loading = taskRes.loading || findRes.loading;
-  const error = taskRes.error || findRes.error;
+  const error = taskRes.error ?? findRes.error;
   const title = task?.name || task?.description || (taskId ? `점검 #${taskId}` : "");
 
   // 선택된 점검이 없으면 안내
@@ -162,7 +171,16 @@ export default function ReportScreen() {
         <div style={{ padding: "22px 24px" }}>
           <div className="crumb">
             {/* biome-ignore lint/a11y/useValidAnchor: 원본 시안의 탭 내 이동(앵커 스타일 유지) */}
-            <a onClick={() => go("history")}>점검 기록</a> › <span>{title || "…"}</span>
+            <a
+              href="#history"
+              onClick={(event) => {
+                event.preventDefault();
+                go("history");
+              }}
+            >
+              점검 기록
+            </a>{" "}
+            › <span>{title || "…"}</span>
           </div>
           <div className="rhead">
             <div style={{ minWidth: 0 }}>
@@ -203,23 +221,28 @@ export default function ReportScreen() {
           <div className="dgrid" style={{ marginBottom: 20 }}>
             <div className="tile">
               <div className="k">발견</div>
-              <div className="v">{findings.length}</div>
+              <div className="v">{findingsReady ? findings.length : "—"}</div>
               <div className="sub">
-                {findings.length === 0
-                  ? "아직 없음"
-                  : SEV_ORDER.filter((s) => sevCounts[s] > 0)
-                      .map(
-                        (s) =>
-                          `${({ critical: "심각", high: "높음", medium: "중간", low: "낮음" } as const)[s]} ${sevCounts[s]}`,
-                      )
-                      .join(" · ")}
+                {!findingsReady
+                  ? findRes.loading
+                    ? "불러오는 중…"
+                    : "조회 실패"
+                  : findings.length === 0
+                    ? "아직 없음"
+                    : SEV_ORDER.filter((s) => sevCounts[s] > 0)
+                        .map(
+                          (s) =>
+                            `${({ critical: "심각", high: "높음", medium: "중간", low: "낮음" } as const)[s]} ${sevCounts[s]}`,
+                        )
+                        .concat(unclassified ? [`미분류 ${unclassified}`] : [])
+                        .join(" · ")}
               </div>
             </div>
             {SEV_ORDER.map((s) => (
               <div className="tile" key={s}>
                 <div className="k">{SEV_LABEL[s]}</div>
                 <div className="v" style={{ color: sevCounts[s] > 0 ? SEV_COLOR[s] : undefined }}>
-                  {sevCounts[s]}
+                  {findingsReady ? sevCounts[s] : "—"}
                 </div>
                 <div className="sub">{SEV_SUB[s]}</div>
               </div>
@@ -238,7 +261,7 @@ export default function ReportScreen() {
             onChange={setPanel}
             items={[
               { key: "sum", label: "요약" },
-              { key: "list", label: "발견 목록", count: findings.length },
+              { key: "list", label: "발견 목록", count: findingsReady ? findings.length : undefined },
               { key: "cov", label: "커버리지" },
               { key: "map", label: "접근통제 지도" },
               { key: "ev", label: "증거 · 감사" },
@@ -250,7 +273,9 @@ export default function ReportScreen() {
             <div className="card">
               <h3>한눈에</h3>
               <p style={bodyText}>
-                {error ? (
+                {loading ? (
+                  "보고서를 불러오는 중이에요."
+                ) : error ? (
                   "보고서를 불러오지 못했어요. 잠시 후 다시 시도해 주세요."
                 ) : findings.length === 0 ? (
                   <>
@@ -278,6 +303,10 @@ export default function ReportScreen() {
             )}
             {findRes.loading ? (
               <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>불러오는 중…</div>
+            ) : findRes.error ? (
+              <div role="alert" style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
+                발견 목록을 불러오지 못했어요.
+              </div>
             ) : findings.length === 0 ? (
               <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>
                 이 점검에서 발견된 항목이 없어요.
@@ -348,8 +377,8 @@ export default function ReportScreen() {
             <div className="card" style={{ marginBottom: 0 }}>
               <h3>감사 기록</h3>
               <p className="hint" style={{ marginTop: 0, marginBottom: 12 }}>
-                이 점검 중 통제가 차단했거나 승인 대기로 잡은 요청이 기록으로 남아요. (변조 탐지 체인·로그 권한 분리는
-                우리가 얹는 기여 — 연동 후.)
+                이 점검의 승인 게이트가 남긴 명시적 허용·차단 결정과 승인 요청을 볼 수 있어요. (변조 탐지 체인·로그 권한
+                분리는 우리가 얹는 기여 — 연동 후.)
               </p>
               <button className="btn" type="button" onClick={() => go("audit")}>
                 감사 로그 열기 →

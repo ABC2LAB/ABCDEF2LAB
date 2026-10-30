@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+
 import { Screen } from "../components/Screen";
 import { Tabs } from "../components/Tabs";
 import { TopBar } from "../components/TopBar";
@@ -99,7 +100,16 @@ export default function AuditScreen() {
         <div style={{ padding: "22px 24px" }}>
           <div className="crumb">
             {/* biome-ignore lint/a11y/useValidAnchor: 원본 시안 crumb 이동(앵커 스타일 유지) */}
-            <a onClick={() => go("settings")}>설정</a> › <span>통제 기록</span>
+            <a
+              href="#settings"
+              onClick={(event) => {
+                event.preventDefault();
+                go("settings");
+              }}
+            >
+              설정
+            </a>{" "}
+            › <span>통제 기록</span>
           </div>
           <div className="rhead" style={{ marginBottom: 14 }}>
             <div>
@@ -121,8 +131,8 @@ export default function AuditScreen() {
           </div>
 
           <div style={noticeBox}>
-            ARTEX <Strong>승인 게이트(intercept)</Strong>가 에이전트 도구 호출을 <Strong>차단</Strong>했거나 승인 대기로
-            잡은 기록이에요(허용까지 남기는 원장은 아님). 우리 <Strong>전송 통제(E², 네트워크 경계)</Strong>와{" "}
+            ARTEX <Strong>승인 게이트(intercept)</Strong>의 명시적 허용·차단 결정과 승인 요청 기록이에요. 모든 실제
+            송신을 기록하는 원장은 아니에요. 우리 <Strong>전송 통제(E², 네트워크 경계)</Strong>와{" "}
             <Strong>변조 탐지 해시체인·로그 권한 분리</Strong>는 <Strong>연동 전</Strong> — 연동되면 각 줄에 체인 해시가
             붙어요.
           </div>
@@ -194,7 +204,7 @@ export default function AuditScreen() {
           )}
 
           <div className="hint">
-            각 줄은 ARTEX 승인 게이트가 막거나 승인 대기로 잡은 도구 호출이에요. 전송 통제(E²)·변조 탐지 체인·권한
+            각 줄은 ARTEX 승인 게이트가 기록한 도구 호출 결정이나 승인 요청이에요. 전송 통제(E²)·변조 탐지 체인·권한
             분리가 연동되면 한 줄이라도 바뀔 때 <Strong>그 뒤 체인이 전부 깨져서 변조가 드러나요.</Strong>
           </div>
         </div>
