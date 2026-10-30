@@ -50,8 +50,13 @@ class CorrelationTable:
 
     @property
     def unmapped(self) -> tuple[str, ...]:
-        """type이 하나도 없는 챌린지 — 상관이 안 돼 항상 미탐 측으로 간다. 러너가 경고로 띄운다."""
+        """type이 하나도 없는 챌린지 — 레코드가 상관되지 않아 '판정 없음'을 알 수 없다(판단불가 측). 러너가 경고로 띄운다."""
         return tuple(r.challenge for r in self.rules if not r.types)
+
+    @property
+    def operative(self) -> frozenset[str]:
+        """type이 하나 이상인(상관 가능한) 챌린지. 여기 없는 챌린지는 '판정 없음'을 알 수 없다."""
+        return frozenset(r.challenge for r in self.rules if r.types)
 
     def correlate(self, record: object) -> str | None:
         """레코드 → 챌린지 키. 매칭 없음 = None(out-of-list). 둘 이상 매칭 = 에러(GT 모호).
