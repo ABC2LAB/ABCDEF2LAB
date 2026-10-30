@@ -28,7 +28,11 @@ vi.mock("../lib/engine", () => ({
 function show(id: ScreenId, child: ReactNode) {
   return render(
     <NavContext.Provider value={{ screen: id, go: vi.fn() }}>
-      <SelectionContext.Provider value={{ taskId: "task-1", selectTask: vi.fn() }}>{child}</SelectionContext.Provider>
+      <SelectionContext.Provider
+        value={{ taskId: "task-1", selectTask: vi.fn(), tasksVersion: 0, refreshTasks: vi.fn() }}
+      >
+        {child}
+      </SelectionContext.Provider>
     </NavContext.Provider>,
   );
 }

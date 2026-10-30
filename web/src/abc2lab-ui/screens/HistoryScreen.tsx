@@ -69,17 +69,13 @@ function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "re
   const terminal = isTerminal(task.status);
   const hasFindings = badges.length > 0;
   // 종료된 점검이거나 이미 발견이 쌓인 점검이면 상태와 무관하게 보고서를 볼 수 있다
-  // 일시중지/진행 중이어도 지금까지의 결과를 열람한다.
+  // (일시중지/진행 중이어도 지금까지의 결과를 열람한다).
   const canReport = terminal || hasFindings;
   const name = task.name.trim();
   const title = name || "이름 없는 점검";
   // 이름이 비어 있을 때만 설명(대상 프롬프트 등)을 한 줄로 잘라 부제로 — 긴 문단이 제목을 먹지 않게.
   const subtitle = name ? undefined : task.description.trim();
-
-  const parts = [timeLabel(task.created_at), STATUS_LABEL[task.status] ?? task.status];
-  if (task.goals_total > 0) parts.push(`목표 ${task.goals_met}/${task.goals_total}`);
-
-  let findingsBadge: ReactNode;
+  let findingsBadge: ReactNode = null;
   if (badges.length > 0) {
     findingsBadge = badges.map((lvl) => (
       <Sev key={lvl} level={lvl}>
@@ -89,10 +85,11 @@ function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "re
   } else if (task.status === "failed" || task.status === "timeout") {
     findingsBadge = <Pill tone="warn">{STATUS_LABEL[task.status]} · 미완료</Pill>;
   } else if (task.status === "done") {
-    findingsBadge = <Pill tone="muted">발견 없음</Pill>;
-  } else {
-    findingsBadge = null;
+    findingsBadge = <Pill tone="muted">발견 목록 확인</Pill>;
   }
+
+  const parts = [timeLabel(task.created_at), STATUS_LABEL[task.status] ?? task.status];
+  if (task.goals_total > 0) parts.push(`목표 ${task.goals_met}/${task.goals_total}`);
 
   return (
     <div className="hcard">
@@ -125,8 +122,8 @@ function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "re
 /** ===== 점검 기록 ===== */
 export default function HistoryScreen() {
   const go = useGo();
-  const { selectTask } = useSelection();
-  const { data, loading, error, reload } = useApiResource(listTasks);
+  const { selectTask, tasksVersion } = useSelection();
+  const { data, loading, error, reload } = useApiResource(listTasks, [tasksVersion]);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("new");
 
@@ -169,7 +166,8 @@ export default function HistoryScreen() {
   } else {
     leadContent = (
       <>
-        지금까지 <Strong>{counts.all}번</Strong> 점검했어요. 각 점검의 보고서는 카드에서 바로 열어요.
+        지금까지 <Strong>{counts.all}번</Strong> 점검했어요. 각 점검의 보고서는 카드에서 바로 열어요. 미분류 항목을
+        포함한 전체 발견은 보고서에서 확인해 주세요.
       </>
     );
   }
@@ -238,8 +236,19 @@ export default function HistoryScreen() {
       <div className="frame">
         <TopBar current="history" />
         <div style={{ padding: "22px 24px" }}>
-          <h1 className="big">점검 기록</h1>
-          <p className="lead">{leadContent}</p>
+          <div className="rhead" style={{ marginBottom: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <h1 className="big" style={{ marginBottom: 4 }}>
+                점검 기록
+              </h1>
+              <p className="lead" style={{ marginBottom: 0 }}>
+                {leadContent}
+              </p>
+            </div>
+            <button className="btn primary" type="button" onClick={() => go("entry")} style={{ flex: "none" }}>
+              ＋ 새 점검
+            </button>
+          </div>
 
           <div className="search">
             <input
@@ -263,9 +272,6 @@ export default function HistoryScreen() {
                 </option>
               ))}
             </select>
-            <button className="btn primary" type="button" onClick={() => go("entry")}>
-              ＋ 새 점검
-            </button>
           </div>
 
           {historyContent}
