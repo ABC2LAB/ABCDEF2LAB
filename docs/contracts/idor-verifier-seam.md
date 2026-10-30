@@ -39,6 +39,7 @@ AccessRequest{ As AccountRef; Method string; ResourceRef string; StateChanging b
 - 검증기는 요청을 제안; E²가 허용/차단, 네트워크 전송, 본문 스코핑, Normal/ErrorTemplate 분류(상태코드 아닌 본문 모양 — 랩은 오류에도 HTTP 200)를 수행.
 - 현재 `idor.Verify`는 setup POST(`StateChanging=true`)를 제안한 뒤 owner GET·cross GET을 제안한다. **초기 조회 통합에서는 운영자/fixture가 비민감 canary를 미리 준비하고 E²가 setup POST를 거부한다.** 이후 owner read로 기존 표식이 확인되어야 비교 증거가 된다. setup POST 허용은 별도 승인·리셋 시험환경에서만 확장한다. GET도 등록된 조회 행동인지 E²가 확인한다.
 - 읽기 전용 진입점 `idor.VerifyRead(c Candidate, tx Transmitter, kg PolicyResolver) Result`는 `idor.Transmitter`를 받아 setup POST 없이 owner GET·cross GET만 제안한다(초기 조회 통합용). destructive-last는 순서 규칙이지 실행 허가가 아니며 이 경로는 거기까지 가지 않는다. GET도 상태를 바꿀 수 있어(절대규칙 6) 읽기 전용(비변경) 등록 확인은 E²(전송기) 몫이다.
+- 사전 표식 준비·소유 확인·KG/실행기 등록·회차별 정리는 [IDOR canary fixture 절차](./idor-canary-fixture.md)(제안)를 따른다. 준비용 쓰기는 조회 경로와 분리한다.
 - 실 구현: `transmit/`의 HTTP 실행기(E², 이동찬 — [E② 전송기](./e2-http-transmitter.md), PR #30 머지)는 `idor.Transmitter`를 구현한다. 서버 어댑터는 서버 검증 설정으로 실행기를 만들고 **`tx.VerifyRead(candidate, kg)`를 호출**한다(서버 연결 예정, dev 미병합). 이 메서드가 등록 신원·실행 허가와 KG/응답 투영 표식의 정확한 일치를 확인하고 사본을 고정한 뒤 내부에서 `idor.VerifyRead`를 호출한다. `idor.VerifyRead(candidate, tx, kg)`에 독립 KG를 직접 주입하면 이 사전 검증을 우회하므로 HTTP 통합 확정 경로로 사용하지 않는다. 등록 GET만 보내고 상태변경 요청은 전부 거부한다.
 - 허용·완료 → `ok=true`+`Capture`. 거부·판단불가 → `ok=false`, 검증기는 그 단계를 **검증불가로** 두고 성공으로 기록하지 않음(절대규칙 5).
 
