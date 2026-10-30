@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useMemo, useState } from "react";
 
 import { Modal } from "../components/Modal";
 import { Screen } from "../components/Screen";
@@ -95,6 +95,35 @@ function LiveDetailModal({
   loading: boolean;
   error: string | null;
 }) {
+  let activityCountLabel: string;
+  if (loading) {
+    activityCountLabel = "조회 중";
+  } else if (error) {
+    activityCountLabel = "조회 실패";
+  } else {
+    activityCountLabel = `${acts.length}건`;
+  }
+
+  let activityRows: ReactNode;
+  if (loading) {
+    activityRows = <div>활동 기록을 불러오는 중이에요.</div>;
+  } else if (error) {
+    activityRows = <div role="alert">활동 기록을 불러오지 못했어요.</div>;
+  } else if (acts.length === 0) {
+    activityRows = <div style={{ color: "var(--muted)", fontSize: 13, padding: "12px 0" }}>기록된 활동이 없어요.</div>;
+  } else {
+    activityRows = acts.map((e) => (
+      <div className="rrow" key={e.seq}>
+        <span className="rt2">{tsLabel(e.ts)}</span>
+        <span className={`rdot ${actDot(e)}`} />
+        <span className="rx">
+          {e.worker ? `${e.worker} · ` : ""}
+          {e.summary || e.kind}
+        </span>
+      </div>
+    ));
+  }
+
   return (
     <Modal open={open} onClose={onClose}>
       <div className="rpop" role="dialog" aria-label="활동 로그">
@@ -105,8 +134,7 @@ function LiveDetailModal({
               <i style={{ width: `${covPct ?? 0}%` }} />
             </div>
             <div className="rpd">
-              탐색 범위 {covPct === null ? "미확인" : `${covPct}%`} · 활동{" "}
-              {loading ? "조회 중" : error ? "조회 실패" : `${acts.length}건`}
+              탐색 범위 {covPct === null ? "미확인" : `${covPct}%`} · 활동 {activityCountLabel}
               {truncated ? " (앞부분)" : ""}
             </div>
           </div>
@@ -142,26 +170,7 @@ function LiveDetailModal({
                 발견·오류
               </span>
             </div>
-            <div className="rlog">
-              {loading ? (
-                <div>활동 기록을 불러오는 중이에요.</div>
-              ) : error ? (
-                <div role="alert">활동 기록을 불러오지 못했어요.</div>
-              ) : acts.length === 0 ? (
-                <div style={{ color: "var(--muted)", fontSize: 13, padding: "12px 0" }}>기록된 활동이 없어요.</div>
-              ) : (
-                acts.map((e) => (
-                  <div className="rrow" key={e.seq}>
-                    <span className="rt2">{tsLabel(e.ts)}</span>
-                    <span className={`rdot ${actDot(e)}`} />
-                    <span className="rx">
-                      {e.worker ? `${e.worker} · ` : ""}
-                      {e.summary || e.kind}
-                    </span>
-                  </div>
-                ))
-              )}
-            </div>
+            <div className="rlog">{activityRows}</div>
           </div>
           <div className="rp-right">
             <div className="rp-h">점검 계획</div>
@@ -246,6 +255,88 @@ export default function LiveScreen({ target }: { target: Target }) {
     );
   }
 
+  let snapshotLabel: string;
+  if (snapshotLoading) {
+    snapshotLabel = "조회 중…";
+  } else if (snapshotError) {
+    snapshotLabel = "일부 조회 실패 — 새로고침해 주세요";
+  } else {
+    snapshotLabel = `조회 ${tsLabel(fetchedAt ?? 0)}`;
+  }
+
+  let statusLabel: string;
+  if (status === "running") {
+    statusLabel = "점검 진행 중";
+  } else if (status === "done") {
+    statusLabel = "점검 완료 — 아래 결과·보고서를 확인하세요";
+  } else {
+    statusLabel = (STATUS_LABEL[status] ?? status) || "—";
+  }
+
+  let tokenLabel: string;
+  if (tokRes.loading) {
+    tokenLabel = "…";
+  } else if (tokRes.error) {
+    tokenLabel = "—";
+  } else {
+    tokenLabel = fmtTokens(tokenTotal);
+  }
+
+  let findingRows: ReactNode;
+  if (findRes.loading) {
+    findingRows = <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>불러오는 중…</div>;
+  } else if (findRes.error) {
+    findingRows = (
+      <div role="alert" style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>
+        발견 목록을 불러오지 못했어요.
+      </div>
+    );
+  } else if (findings.length === 0) {
+    findingRows = <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>아직 발견이 없어요.</div>;
+  } else {
+    findingRows = findings.slice(0, 4).map((f) => (
+      <button
+        key={f.id}
+        className="find"
+        type="button"
+        onClick={() => go("report")}
+        style={{
+          color: "inherit",
+          background: "none",
+          borderRight: 0,
+          borderBottom: 0,
+          borderLeft: 0,
+          width: "100%",
+          textAlign: "left",
+          cursor: "pointer",
+        }}
+      >
+        <Sev level={toSeverity(f.severity)} />
+        <span className="nm">{f.name || f.vulnclass || "이름 없는 발견"}</span>
+      </button>
+    ));
+  }
+
+  let coverageMessage: string;
+  if (covRes.loading) {
+    coverageMessage = "커버리지 조회 중이에요.";
+  } else if (covRes.error) {
+    coverageMessage = "커버리지를 불러오지 못했어요.";
+  } else if (cov && !cov.enabled) {
+    coverageMessage = "커버리지 기능이 비활성화돼 있어요.";
+  } else {
+    coverageMessage = "커버리지 집계 전이에요.";
+  }
+
+  let activityLabel: string;
+  if (actRes.loading) {
+    activityLabel = "조회 중";
+  } else if (actRes.error) {
+    activityLabel = "조회 실패";
+  } else {
+    activityLabel = `${acts.length}건 기록됨`;
+  }
+
   return (
     <Screen id="live">
       <div className="frame">
@@ -265,12 +356,7 @@ export default function LiveScreen({ target }: { target: Target }) {
               점검 · <Strong>{title}</Strong>
               {status ? ` · ${STATUS_LABEL[status] ?? status}` : ""}
               <div style={{ fontSize: 11.5, color: "var(--faint)", marginTop: 2 }}>
-                {snapshotLoading
-                  ? "조회 중…"
-                  : snapshotError
-                    ? "일부 조회 실패 — 새로고침해 주세요"
-                    : `조회 ${tsLabel(fetchedAt ?? 0)}`}{" "}
-                · 자동 갱신 미연결(새로고침 눌러 갱신)
+                {snapshotLabel} · 자동 갱신 미연결(새로고침 눌러 갱신)
               </div>
             </div>
             <div className="row" style={{ flexWrap: "wrap" }}>
@@ -314,13 +400,7 @@ export default function LiveScreen({ target }: { target: Target }) {
             {status === "running" ? <span className="spin" /> : null}
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 12, color: "var(--muted)" }}>상태</div>
-              <div style={{ fontSize: 13.5, fontWeight: 600 }}>
-                {status === "running"
-                  ? "점검 진행 중"
-                  : status === "done"
-                    ? "점검 완료 — 아래 결과·보고서를 확인하세요"
-                    : (STATUS_LABEL[status] ?? status) || "—"}
-              </div>
+              <div style={{ fontSize: 13.5, fontWeight: 600 }}>{statusLabel}</div>
             </div>
             <button
               className="btn"
@@ -345,7 +425,7 @@ export default function LiveScreen({ target }: { target: Target }) {
             {/* 실데이터: 소모 토큰(실사용). 예상치 sub 는 목업 */}
             <div className="tile">
               <div className="k">소모 토큰</div>
-              <div className="v">{tokRes.loading ? "…" : tokRes.error ? "—" : fmtTokens(tokenTotal)}</div>
+              <div className="v">{tokenLabel}</div>
               <div className="sub">{MOCK.tokenEst} · 예시</div>
             </div>
             {/* 실데이터: 탐색한 자산 */}
@@ -378,37 +458,7 @@ export default function LiveScreen({ target }: { target: Target }) {
                 }}
               >
                 <div style={{ fontSize: 12, color: "var(--muted)", paddingTop: 11 }}>최근 발견</div>
-                {findRes.loading ? (
-                  <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>불러오는 중…</div>
-                ) : findRes.error ? (
-                  <div role="alert" style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>
-                    발견 목록을 불러오지 못했어요.
-                  </div>
-                ) : findings.length === 0 ? (
-                  <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>아직 발견이 없어요.</div>
-                ) : (
-                  findings.slice(0, 4).map((f) => (
-                    <button
-                      key={f.id}
-                      className="find"
-                      type="button"
-                      onClick={() => go("report")}
-                      style={{
-                        color: "inherit",
-                        background: "none",
-                        borderRight: 0,
-                        borderBottom: 0,
-                        borderLeft: 0,
-                        width: "100%",
-                        textAlign: "left",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <Sev level={toSeverity(f.severity)} />
-                      <span className="nm">{f.name || f.vulnclass || "이름 없는 발견"}</span>
-                    </button>
-                  ))
-                )}
+                {findingRows}
               </div>
             </div>
             <div className="col" style={{ flex: "1 1 260px" }}>
@@ -456,15 +506,7 @@ export default function LiveScreen({ target }: { target: Target }) {
                   <p className="hint">범위 내 자산의 탐색 비율이에요. 자산별 취약 판정은 아직 연결 전이에요.</p>
                 </>
               ) : (
-                <div style={{ fontSize: 13, color: "var(--muted)", padding: "8px 0" }}>
-                  {covRes.loading
-                    ? "커버리지 조회 중이에요."
-                    : covRes.error
-                      ? "커버리지를 불러오지 못했어요."
-                      : cov && !cov.enabled
-                        ? "커버리지 기능이 비활성화돼 있어요."
-                        : "커버리지 집계 전이에요."}
-                </div>
+                <div style={{ fontSize: 13, color: "var(--muted)", padding: "8px 0" }}>{coverageMessage}</div>
               )}
             </div>
           </div>
@@ -480,8 +522,7 @@ export default function LiveScreen({ target }: { target: Target }) {
             }}
           >
             <div style={{ fontSize: 13, color: "var(--muted)" }}>
-              활동 {actRes.loading ? "조회 중" : actRes.error ? "조회 실패" : `${acts.length}건 기록됨`} · 상세는{" "}
-              <Strong>상세 보기</Strong>
+              활동 {activityLabel} · 상세는 <Strong>상세 보기</Strong>
             </div>
             <button className="btn" type="button" onClick={() => go("history")}>
               점검 기록 보기
