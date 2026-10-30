@@ -104,7 +104,14 @@ def _key(key: bytes | None) -> bytes:
 
 def read_runner_key(path: str) -> bytes:
     """명령 인자에는 키 파일 경로만 받는다. 키 값은 출력·아티팩트에 기록하지 않는다."""
-    return _key(Path(path).read_bytes())
+    if not all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_CLOEXEC")):
+        raise RunRecordError("안전한 러너 키 파일 읽기를 지원하는 환경 필요")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+            raise RunRecordError("러너 키 파일은 일반 파일이고 소유자 전용 권한이어야 함")
+        return _key(stream.read())
 
 
 def sign_run_record(payload: dict, key: bytes) -> dict:
@@ -262,7 +269,7 @@ def _load_run_inputs(manifest: RunManifest, runner_key: bytes | None, correlate,
         for artifact_name, manifest_path in (("records", manifest.records_path),
                                              ("pre", manifest.pre_snapshot_path),
                                              ("post", manifest.snapshot_path)):
-            if name == artifact_name and path != Path(os.path.abspath(manifest_path)):
+            if name == artifact_name and path != Path(manifest_path).resolve():
                 raise RunRecordError(f"{name}: manifest 경로 불일치")
         data, file_id = directory.read(str(relative))
         if file_id in file_ids:
