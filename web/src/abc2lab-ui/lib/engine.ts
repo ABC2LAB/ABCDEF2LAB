@@ -248,6 +248,19 @@ export async function getTokens(taskId: string): Promise<EngineTokens> {
   return { input: r.total?.input_tokens ?? 0, output: r.total?.output_tokens ?? 0 };
 }
 
+/** POST /api/tasks/{id}/control — 일시정지/다시 시작(엔진 상태 변경, running/paused 인 task에만 유효). */
+export async function controlTask(taskId: string, action: "pause" | "resume"): Promise<void> {
+  await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/control`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+}
+
+/** POST /api/tasks/{id}/archive — 점검 종료(보관·증거 보존). */
+export async function archiveTask(taskId: string): Promise<void> {
+  await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/archive`, { method: "POST" });
+}
+
 /**
  * GET /api/llm 응답 — 현재 LLM 설정(전역, task 무관).
  * ※ key_set 은 "키가 설정됐는지" 불리언일 뿐 키 값이 아니다(값은 서버가 안 준다).

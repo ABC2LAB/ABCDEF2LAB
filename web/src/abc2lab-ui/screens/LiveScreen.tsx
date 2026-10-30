@@ -8,12 +8,16 @@ import {
   type EngineActivity,
   type EngineCoverage,
   type EngineFinding,
+  type EngineTask,
   type EngineTokens,
+  archiveTask,
+  controlTask,
   getActivity,
   getCoverage,
   getTask,
   getTokens,
   listTaskFindings,
+  listTasks,
 } from "../lib/engine";
 import { cx } from "../lib/cx";
 import { useSelection } from "../lib/selection";
@@ -180,14 +184,18 @@ const btnSm = { padding: "8px 13px", fontSize: 13 } as const;
 /** ===== 진행 대시보드 ===== */
 export default function LiveScreen({ target }: { target: Target }) {
   const go = useGo();
-  const { taskId } = useSelection();
+  const { taskId, selectTask } = useSelection();
   const [detailOpen, setDetailOpen] = useState(false);
+  const [endOpen, setEndOpen] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
 
   const taskRes = useApiResource(() => (taskId ? getTask(taskId) : Promise.resolve(null)), [taskId]);
   const findRes = useApiResource<EngineFinding[]>(() => listTaskFindings(taskId ?? ""), [taskId]);
   const covRes = useApiResource<EngineCoverage | null>(() => getCoverage(taskId ?? ""), [taskId]);
   const tokRes = useApiResource<EngineTokens>(() => getTokens(taskId ?? ""), [taskId]);
   const actRes = useApiResource<EngineActivity[]>(() => getActivity(taskId ?? ""), [taskId]);
+  const tasksRes = useApiResource(listTasks);
 
   const task = taskRes.data;
   const findings = useMemo(() => findRes.data ?? [], [findRes.data]);
@@ -205,6 +213,52 @@ export default function LiveScreen({ target }: { target: Target }) {
   const covPct = cov && cov.denominator > 0 ? Math.round((cov.tested / cov.denominator) * 100) : 0;
   const tokenTotal = (tokRes.data?.input ?? 0) + (tokRes.data?.output ?? 0);
   const cells = cov ? coverageCells(cov.denominator, cov.tested, findings.length) : [];
+  const terminal = status === "done" || status === "failed" || status === "timeout";
+
+  // 진행 중인 작업 탭 = 종료되지 않은(실행/일시정지/대기) task 들
+  const jobs = useMemo<EngineTask[]>(
+    () => (tasksRes.data?.tasks ?? []).filter((t) => !["done", "failed", "timeout"].includes(t.status)),
+    [tasksRes.data],
+  );
+  const allFindings = useMemo(
+    () =>
+      (tasksRes.data?.tasks ?? []).reduce(
+        (s, t) => s + (t.findings ? t.findings.critical + t.findings.high + t.findings.medium + t.findings.low : 0),
+        0,
+      ),
+    [tasksRes.data],
+  );
+
+  // 일시정지/다시 시작·종료는 엔진 상태 변경(running/paused 인 task에만 유효) — 완료된 task엔 409가 날 수 있다.
+  async function doControl(action: "pause" | "resume") {
+    if (!taskId) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await controlTask(taskId, action);
+      taskRes.reload();
+      tasksRes.reload();
+    } catch (e) {
+      setActionMsg(e instanceof Error ? e.message : "제어에 실패했어요.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+  async function doArchive() {
+    if (!taskId) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await archiveTask(taskId);
+      setEndOpen(false);
+      tasksRes.reload();
+      go("history");
+    } catch (e) {
+      setActionMsg(e instanceof Error ? e.message : "종료에 실패했어요.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
 
   if (!taskId) {
     return (
@@ -227,6 +281,32 @@ export default function LiveScreen({ target }: { target: Target }) {
       <div className="frame">
         <TopBar current="history" />
         <div style={{ padding: "22px 24px" }}>
+          {jobs.length > 0 && (
+            <div className="jobtabs" role="tablist" aria-label="진행 중인 작업">
+              <span className="jt-lab">진행 중인 작업 {jobs.length}</span>
+              {jobs.map((t) => {
+                const on = t.id === taskId;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={on}
+                    className={`jt${on ? " on" : ""}`}
+                    onClick={() => selectTask(t.id)}
+                  >
+                    <span className={`jt-dot ${t.status === "running" ? "run" : "wait"}`} />
+                    <span className="jt-name">{t.name?.trim() || "이름 없는 점검"}</span>
+                    <span className="jt-sub">{STATUS_LABEL[t.status] ?? t.status}</span>
+                  </button>
+                );
+              })}
+              <span className="jt-total">
+                전체 작업 발견 <b>{allFindings}</b>건
+              </span>
+            </div>
+          )}
+
           <div
             style={{
               display: "flex",
@@ -246,13 +326,50 @@ export default function LiveScreen({ target }: { target: Target }) {
               <span className="badge" onClick={() => go("approval")}>
                 승인 대기
               </span>
-              {(status === "done" || status === "failed") && (
+              {terminal ? (
                 <button className="btn" type="button" style={btnSm} onClick={() => go("report")}>
                   보고서
                 </button>
+              ) : (
+                <>
+                  <button
+                    className={`btn${status === "paused" ? " primary" : ""}`}
+                    type="button"
+                    style={btnSm}
+                    disabled={actionBusy}
+                    aria-pressed={status === "paused"}
+                    onClick={() => doControl(status === "paused" ? "resume" : "pause")}
+                  >
+                    {status === "paused" ? "다시 시작" : "일시정지"}
+                  </button>
+                  <button
+                    className="btn danger"
+                    type="button"
+                    style={btnSm}
+                    disabled={actionBusy}
+                    onClick={() => setEndOpen(true)}
+                  >
+                    종료
+                  </button>
+                </>
               )}
             </div>
           </div>
+          {actionMsg && (
+            <div
+              style={{
+                fontSize: 12.5,
+                color: "var(--warn)",
+                background: "var(--warn-weak)",
+                border: "1px solid var(--warn-border)",
+                borderRadius: 8,
+                padding: "8px 12px",
+                marginBottom: 12,
+              }}
+            >
+              {actionMsg}
+            </div>
+          )}
 
           <div className="pipe">
             {PIPELINE.map((label, i) => {
@@ -373,8 +490,8 @@ export default function LiveScreen({ target }: { target: Target }) {
                 ))}
               </div>
               <div className="hint">
-                확정·의심·판단 불가 <Strong>판정</Strong>은 E③ 오라클 연동 후 채워져요(증거 부족은 오탐 대신 판단
-                불가로 남겨요).
+                확정·의심·판단 불가 <Strong>판정</Strong>은 E③ 오라클 연동 후 채워져요(증거 부족은 오탐 대신 판단 불가로
+                남겨요).
               </div>
               <h3 style={{ fontSize: 14, margin: "18px 0 8px" }}>
                 검사 커버리지 <Sub>· {cov ? `${cov.tested} / ${cov.denominator} 자산` : "집계 전"}</Sub>
@@ -437,6 +554,35 @@ export default function LiveScreen({ target }: { target: Target }) {
         acts={acts}
         truncated={acts.length >= 300}
       />
+
+      {endOpen && (
+        <Modal open={endOpen} onClose={() => setEndOpen(false)}>
+          <div className="rpop" role="dialog" aria-label="점검 종료 확인" style={{ maxWidth: 440 }}>
+            <div className="rpop-head">
+              <div style={{ minWidth: 0 }}>
+                <div className="rpt">점검을 종료할까요?</div>
+              </div>
+              <button className="rpop-x" type="button" onClick={() => setEndOpen(false)} aria-label="닫기">
+                ✕
+              </button>
+            </div>
+            <div style={{ padding: "16px 22px" }}>
+              <p style={{ fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7, margin: 0 }}>
+                <Strong>{title}</Strong> 점검을 종료(보관)해요. 지금까지의 증거는 보존되고 미검사 항목은 미검사로
+                남아요. 되돌릴 수 없어요.
+              </p>
+            </div>
+            <div className="vpop-foot">
+              <button className="btn" type="button" onClick={() => setEndOpen(false)} disabled={actionBusy}>
+                취소
+              </button>
+              <button className="btn danger" type="button" onClick={doArchive} disabled={actionBusy}>
+                {actionBusy ? "종료 중…" : "종료"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </Screen>
   );
 }

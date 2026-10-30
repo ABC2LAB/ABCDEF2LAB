@@ -2357,3 +2357,76 @@ details.adv[open] .chev {
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* ===== design-ref 이식: 진행 대시보드 — 실행 중인 작업 탭 ===== */
+.jobtabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.jt-lab {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+  margin-right: 4px;
+}
+.jt {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.jt:hover {
+  border-color: var(--teal-border);
+}
+.jt.on {
+  border-color: var(--teal);
+  background: var(--teal-weak);
+  box-shadow: inset 0 0 0 1px var(--teal);
+}
+.jt:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+.jt-sub {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.jt-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.jt-dot.run {
+  background: var(--teal);
+}
+.jt-dot.wait {
+  background: var(--warn);
+}
+.jt-dot.stop {
+  background: var(--danger);
+  border-radius: 2px;
+}
+.jt-total {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.jt-total b {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
