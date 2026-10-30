@@ -190,3 +190,85 @@ func TestVerifyReflectionWired(t *testing.T) {
 		t.Fatalf("reflected canary must not confirm, got confirmed")
 	}
 }
+
+// recordingTx wraps a Transmitter and keeps every proposed request, so a test can
+// assert what the verifier asked E² to send — not only what came back.
+type recordingTx struct {
+	inner Transmitter
+	sent  []AccessRequest
+}
+
+func (r *recordingTx) Send(req AccessRequest) (Capture, bool) {
+	r.sent = append(r.sent, req)
+	return r.inner.Send(req)
+}
+
+func TestVerifyReadProposesOnlyReads(t *testing.T) {
+	now := time.Now()
+	cand, tx, kg := cleanScenario(now)
+
+	rec := &recordingTx{inner: tx}
+	VerifyRead(cand, rec, kg)
+	if len(rec.sent) != 2 {
+		t.Fatalf("VerifyRead proposed %d requests, want exactly owner GET + cross GET", len(rec.sent))
+	}
+	for _, r := range rec.sent {
+		if r.Method != "GET" || r.StateChanging {
+			t.Fatalf("VerifyRead proposed %s (StateChanging=%v), want read-only GET", r.Method, r.StateChanging)
+		}
+	}
+
+	// Contrast: the same recorder does catch Verify's setup write.
+	rec = &recordingTx{inner: tx}
+	Verify(cand, rec, kg)
+	if !rec.sent[0].StateChanging {
+		t.Fatalf("Verify's first request should be the state-changing setup")
+	}
+}
+
+func TestVerifyReadConfirmsWithFixtureCanary(t *testing.T) {
+	// The canary was planted by an approved fixture, and the transmitter refuses writes
+	// (no POST key), as transmit.HTTPTransmitter does. Reads alone confirm the leak.
+	now := time.Now()
+	cand, tx, kg := cleanScenario(now)
+	delete(tx.byKey, "owner|POST|"+testResource)
+
+	got := VerifyRead(cand, tx, kg)
+	if got.Verdict.Value != oracle.Confirmed {
+		t.Fatalf("fixture canary: verdict = %q, want confirmed (reasons %v)", got.Verdict.Value, got.Verdict.ReasonCodes)
+	}
+}
+
+func TestVerifyReadSharesVerifyReadSequence(t *testing.T) {
+	// Verify ignores its setup result, so with the same reads both entry points must
+	// judge identically — they differ only in the setup proposal.
+	now := time.Now()
+	cand, tx, kg := cleanScenario(now)
+	read, full := VerifyRead(cand, tx, kg), Verify(cand, tx, kg)
+	if read.Facts != full.Facts || read.Verdict.Value != full.Verdict.Value {
+		t.Fatalf("VerifyRead %+v / %q != Verify %+v / %q", read.Facts, read.Verdict.Value, full.Facts, full.Verdict.Value)
+	}
+}
+
+func TestVerifyReadFailClosed(t *testing.T) {
+	now := time.Now()
+
+	t.Run("stub transmitter refuses everything", func(t *testing.T) {
+		cand, _, kg := cleanScenario(now)
+		if got := VerifyRead(cand, StubTransmitter{}, kg); got.Verdict.Value != oracle.Undecidable {
+			t.Fatalf("stub: verdict = %q, want undecidable", got.Verdict.Value)
+		}
+	})
+
+	t.Run("fixture canary missing from owner read", func(t *testing.T) {
+		cand, tx, kg := cleanScenario(now)
+		bare := Capture{View: ResponseView{ResourceRef: testResource, Normal: true, TemplateClassified: true, Body: `{"id":42}`}, ObservedAt: now}
+		tx.byKey["owner|GET|"+testResource] = struct {
+			cap Capture
+			ok  bool
+		}{bare, true}
+		if got := VerifyRead(cand, tx, kg); got.Verdict.Value == oracle.Confirmed {
+			t.Fatalf("missing fixture canary must not confirm, got confirmed")
+		}
+	})
+}

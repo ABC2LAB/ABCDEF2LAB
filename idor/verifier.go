@@ -1,23 +1,28 @@
 // This file is the horizontal-IDOR verifier orchestration (최민준 담당, me.md:
 // "다계정 + setup-success + destructive-last, 얇은 조회 경로부터"). It sequences one
-// horizontal-IDOR check end to end — setup, owner baseline, cross access, compare,
-// oracle — and returns the oracle verdict. It is the walking-skeleton glue between
-// the merged pieces (idor.Compare + oracle.Evaluate).
+// horizontal-IDOR check end to end — owner baseline, cross access, compare, oracle —
+// and returns the oracle verdict. Two entry points share that read sequence: VerifyRead
+// (read-only, canaries prepared by an approved fixture) and Verify (proposes a setup
+// write first). It is the walking-skeleton glue between the merged pieces
+// (idor.Compare + oracle.Evaluate).
 //
 // Separation of duties (CLAUDE.md 절대규칙 3, "판정·허용을 같은 손이 쥐지 않게"): this
 // package proposes requests, it does NOT decide execution. Every request goes through
 // the Transmitter seam, which E² (이동찬) owns and permits; the verifier never sends on
 // its own. Policy, and the canary markers to plant, come through the PolicyResolver
 // seam, which KG (이경준) owns and registers (kg-policy §3.1: KG registers+classifies,
-// the verifier plants and the comparator consumes — neither reclassifies). This file
-// ships only fake seams (in the test); the real ones are the respective owners' to
-// implement. The two interfaces below ARE the boundary contract the verifier requires
-// of E² and KG — review target for both.
+// the verifier plants and the comparator consumes — neither reclassifies). The real
+// Transmitter is E²'s HTTP executor in transmit/ (이동찬, merged in #30); a server
+// adapter builds it from server-validated configuration and injects it (서버 주입
+// 연결 예정, dev 미병합). The real PolicyResolver is still KG's to implement (tests
+// use fakes). The two interfaces below ARE the boundary
+// contract the verifier requires of E² and KG — review target for both.
 //
-// Read-only (CLAUDE.md 얇은 IDOR = 초기 조회 한정, 절대규칙 6): the only state-changing
-// request is setup (planting A's own registered canary), marked StateChanging so E²
-// gates it behind the approval + reset environment. Cross access is GET. destructive-
-// last is not executed here — that is a later, separately gated increment.
+// Read-only (CLAUDE.md 얇은 IDOR = 초기 조회 한정, 절대규칙 6): VerifyRead proposes no
+// state-changing request. Verify's only state-changing request is setup (planting A's
+// own registered canary), marked StateChanging so E² gates it behind the approval +
+// reset environment. Cross access is GET. destructive-last is not executed here — it
+// is a later, separately gated increment, and its ordering is not a permission.
 package idor
 
 import (
@@ -67,27 +72,31 @@ type Capture struct {
 	ObservedAt time.Time
 }
 
-// Transmitter is the E² seam (TODO(이동찬): real impl is E²'s). The verifier hands it an
-// AccessRequest; E² decides permission, performs the network transmission, scopes the
-// body, and classifies Normal/ErrorTemplate by body shape (not by status code — the
-// lab returns HTTP 200 on errors). A permitted, completed request returns ok=true with
-// a Capture; a refused or undecidable transmission returns ok=false, and the verifier
-// treats that step as unverifiable (절대규칙 5), never as success.
+// Transmitter is the E² seam. The verifier hands it an AccessRequest; E² decides
+// permission, performs the network transmission, scopes the body, and classifies
+// Normal/ErrorTemplate by body shape (not by status code — the lab returns HTTP 200 on
+// errors). A permitted, completed request returns ok=true with a Capture; a refused or
+// undecidable transmission returns ok=false, and the verifier treats that step as
+// unverifiable (절대규칙 5), never as success.
 //
-// Real transmission crosses ARTEX's control boundary: 승인 게이트 guard.Guard →
-// intercept.Interceptor (seam 계약 §2.2). That wiring is E²'s, not this package's.
+// The real implementation is E²'s HTTP executor in transmit/ (이동찬, merged in #30 —
+// docs/contracts/e2-http-transmitter.md); it already satisfies this interface. The
+// executor needs the run's registry, sessions and audit recorder, so a server adapter
+// builds it from server-validated configuration and injects it as tx into VerifyRead
+// (서버 주입 연결 예정, dev 미병합). It sends registered GETs only and refuses every
+// state-changing request. Connecting it to
+// ARTEX's control boundary (승인 게이트 guard.Guard → intercept.Interceptor, seam 계약
+// §2.2) is E²'s follow-up, not this package's.
 type Transmitter interface {
 	Send(req AccessRequest) (Capture, bool)
 }
 
-// StubTransmitter is the explicit placeholder standing in for the real E² transmitter
-// until 이동찬 wires it. It performs NO transmission: every request is refused
+// StubTransmitter is the explicit fail-closed placeholder for wherever no real E²
+// transmitter is configured. It performs NO transmission: every request is refused
 // (ok=false), so the verifier degrades every step to unverifiable (fail-closed, 절대규칙
-// 3·5) rather than claiming access. It exists so the seam is filled and callable; the
-// real impl replaces it.
+// 3·5) rather than claiming access. The real one is E²'s HTTP executor in transmit/.
 //
-// TODO(이동찬): 상태변경 허가 정책 + 실 전송 — guard.Guard→intercept.Interceptor 경계 배선으로
-// 교체. 금요일 복귀 후 이 stub만 실 transmitter로 바꾸면 교차조회 1건이 end-to-end로 돈다.
+// TODO(이동찬): 상태변경 허가 정책 — HTTP 실행기는 지금 상태변경 요청을 전부 거부한다.
 type StubTransmitter struct{}
 
 func (StubTransmitter) Send(AccessRequest) (Capture, bool) { return Capture{}, false }
@@ -126,21 +135,18 @@ type Result struct {
 	Facts   oracle.ComparisonFacts
 }
 
-// Verify runs the horizontal-IDOR sequence for one candidate over the E² and KG seams.
+// Verify runs the horizontal-IDOR sequence for one candidate over the E² and KG seams:
+// it proposes the setup write, then runs the same read sequence as VerifyRead.
 // It is fail-closed throughout: any seam that refuses or cannot answer leaves the
 // dependent signal unverifiable, so the verdict degrades to UNDECIDABLE rather than
 // claiming access (절대규칙 5). setup-success is proven by the owner read showing the
 // canary, not by trusting the setup response.
+//
+// The real E² transmitter refuses every state-changing request, so there the setup is
+// always refused and only adds an audit entry — prefer VerifyRead with canaries
+// prepared by an approved fixture.
 func Verify(c Candidate, tx Transmitter, kg PolicyResolver) Result {
-	policy, ok := kg.ResolvePolicy(c.ResourceRef, c.Owner, c.Evaluated)
-	if !ok {
-		// Unresolved policy: zero value has no registered source → expected access
-		// unknown → oracle returns UNDECIDABLE. Never assume allow or deny.
-		policy = oracle.PolicyAssertion{}
-	}
-
-	// KG-registered canaries (empty/failed → setup-success unprovable → UNDECIDABLE).
-	canaries, _ := kg.Canaries(c.ResourceRef, c.Owner)
+	policy, canaries := resolveCase(c, kg)
 
 	// setup: plant the registered canaries in A's own resource. State-changing, so E²
 	// gates execution behind the approval + reset environment; the result is
@@ -150,6 +156,46 @@ func Verify(c Candidate, tx Transmitter, kg PolicyResolver) Result {
 		StateChanging: true, Inputs: canaryValues(canaries),
 	})
 
+	return readSequence(c, tx, policy, canaries)
+}
+
+// VerifyRead is the read-only entry point (얇은 IDOR = 초기 조회 한정, 절대규칙 6): owner
+// read, cross read, compare, oracle — the same read sequence Verify runs after its
+// setup. It proposes only GETs with StateChanging=false: no setup, and never a
+// destructive step. destructive-last is an ordering rule for a later, separately
+// gated increment, not a permission, so this path never reaches it. tx is any
+// idor.Transmitter — in production the E² executor a server adapter injects.
+// GET도 상태를 바꿀 수 있어(절대규칙 6), 읽기 전용(비변경) 등록 확인은 E²(전송기) 몫이고
+// 이 패키지의 몫이 아니다.
+//
+// The canaries must already be in A's resource, prepared by an approved fixture
+// outside this package; if they are absent the owner read cannot show them,
+// setup-success is unproven, and the verdict degrades to UNDECIDABLE.
+//
+// (제안) E²'s HTTP executor currently wraps Verify, whose setup it always refuses;
+// wrapping this instead drops that refused write. Its owner (이동찬) decides.
+func VerifyRead(c Candidate, tx Transmitter, kg PolicyResolver) Result {
+	policy, canaries := resolveCase(c, kg)
+	return readSequence(c, tx, policy, canaries)
+}
+
+// resolveCase reads the KG inputs shared by Verify and VerifyRead.
+func resolveCase(c Candidate, kg PolicyResolver) (oracle.PolicyAssertion, []Marker) {
+	policy, ok := kg.ResolvePolicy(c.ResourceRef, c.Owner, c.Evaluated)
+	if !ok {
+		// Unresolved policy: zero value has no registered source → expected access
+		// unknown → oracle returns UNDECIDABLE. Never assume allow or deny.
+		policy = oracle.PolicyAssertion{}
+	}
+
+	// KG-registered canaries (empty/failed → setup-success unprovable → UNDECIDABLE).
+	canaries, _ := kg.Canaries(c.ResourceRef, c.Owner)
+	return policy, canaries
+}
+
+// readSequence is the part Verify and VerifyRead share. It proposes exactly two
+// requests, both GET with StateChanging=false.
+func readSequence(c Candidate, tx Transmitter, policy oracle.PolicyAssertion, canaries []Marker) Result {
 	ownerCap, ownerOK := tx.Send(AccessRequest{As: c.Owner, Method: "GET", ResourceRef: c.ResourceRef})
 
 	crossReq := AccessRequest{
