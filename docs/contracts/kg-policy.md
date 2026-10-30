@@ -2,6 +2,7 @@
 
 작성: 2026-10-27 · 이경준 · 팀 검토용 초안
 개정: 2026-10-28 — §3.1 추가(canary/`Trivial` 등록 주체, 비교기 PR #13 정렬)
+개정: 2026-10-30 — §4.1 추가(판정 레코드→접근통제 지도 읽기 필드, [verdict-record](./verdict-record.md) Open #4 응답), §6 Open #1 정렬(`policy_version`↔유효창↔정본 reader, verdict-record Open #3)
 상태: **설계 초안. 저장소·어댑터·API 미구현.** [e3-oracle](./e3-oracle.md) Open #2·#3 에 대한 응답.
 연결: [E③ 오라클](./e3-oracle.md) · [평가 프로토콜](../evaluation/evaluation-protocol.md) · [개선 계획 Phase 3](../development-plan.md)
 
@@ -80,6 +81,38 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 - 데이터 소스 = KG API(신규). 배치는 기존 자산 커버리지 그래프(포함 트리) 위에 **접근 레이어**를 덧대는 방향 검토 — `function/assets` · `function/findings` 페이지와 연계.
 - ⚠️ **GT 상관 언급 주의(절대규칙 7 가드)** — 지도 resource 축은 `resource_ref`의 type을 평가 GT 상관과 **공유**한다(§6 Open #1·E² type 명명). 이 문서·UI·그 외 평가 밖 코드에서 평가 GT 상관을 적을 땐 **설명 + 디렉토리(`scripts/eval/`)로만** 쓰고 그 데이터 파일명·모듈 import 리터럴을 쓰지 않는다 — eval 가드(`test_gt_not_referenced_outside_eval`)가 평가 밖의 그 리터럴을 전부 막는다(PR #26에서 걸렸던 지점).
 
+### 4.1 판정 레코드 → 지도 읽기 필드 (verdict-record Open #4 응답)
+접근통제 지도(`web/.../screens/AccessMapScreen.tsx`, `lib/kg.ts`)가 판정 레코드([verdict-record §2](./verdict-record.md))에서 **읽는 필드와 셀 파생 규칙**을 고정한다. 레코드는 "셀 색"을 직접 담지 않고 지도가 **파생**한다. 지도는 enum·ref·필드명만 읽고 응답 본문·canary **값**·자격 원문은 읽지 않는다(§3 마스킹, 절대규칙 2·8).
+
+**(a) 축·헤더 — 레코드 → `lib/kg.ts` 타입:**
+| 지도 요소 | 레코드 필드(verdict-record) | 비고 |
+|---|---|---|
+| 행 principal `ref` (`KgPrincipal.ref`) | `evaluated_ref` | 라벨만 |
+| 행 검증 status | `evaluated_status` | 미검증(zero)=fail-closed 표시 |
+| 열 resource `label`/`id` (`KgResource`) | `resource_ref`(`type:id`, §1) | type=안정 종류, id=reset 세대 인스턴스 |
+| 열 소유자 `ownerRef` | `owner_ref` | 라벨만 |
+| 축 `axis`(H/V) | `axis`(`horizontal`/`vertical`) | horizontal=수평(v0.1 판정 축), vertical=후속 미리보기 |
+| `policyVersion`(지도 헤더) | `policy_version` | 감사·통제변수 표기 |
+
+**(b) 셀 판정 파생 — `AccessDecision` ← 레코드:**
+| 지도 셀(`AccessDecision`) | 파생 조건 | 근거 필드 |
+|---|---|---|
+| `vuln`(취약) | `access_policy_result=위반_후보` | `oracle_value`∈{confirmed, suspected} — 둘 다 v0.1은 한 색, note로 구분 |
+| `unknown`(판정 불가) | `access_policy_result=판정_불가` | `oracle_value=undecidable` |
+| `allow-ok`(정상 허용) | `access_policy_result=위반_미관찰` ∧ `expected_access=allow` | `oracle_value=allowed` |
+| `deny-ok`(정상 차단) | `access_policy_result=위반_미관찰` ∧ `expected_access=deny` | 교차 접근이 정상 차단됨 |
+| `untested`(미검사) | **해당 (principal,resource)에 레코드 없음** → **커버리지로 판단, 레코드로 판단 안 함** | [평가 읽기 계약 §4](./verdict-record.md)("레코드 없음 ≠ 미탐") |
+| `na` | 적용 불가 축(주체=자원 소유자 자신 등) | — |
+
+**(c) 파생 규칙(절대규칙 5·fail-closed):**
+- 셀 결정은 **레코드 단독이 아니라 레코드+커버리지 조합**이다. 레코드 없는 칸은 `untested`(안 찔러봄)지 "취약 없음"이 아니다 — 부재를 `deny-ok`/`allow-ok`로 칠하지 않는다. "검사했으나 미관찰"(`위반_미관찰`)과 "안 찔러봄"(레코드 없음)을 **색으로 분리**한다(평가 §4).
+- `vuln`의 confirmed/suspected는 v0.1에서 둘 다 `vuln` 한 색, note에 구분. 음영 세분은 후속.
+- 셀 note = `reason_codes`(정책→신원→데이터 순) + canary 노출 시 `canary_fields`(응답 **필드명만**, 값 아님 — §3).
+- 정책 만료·`hint_matches_canonical=false`로 UNDECIDABLE 된 셀은 **7번째 색을 만들지 않고** `unknown`으로 접고 note에 사유. fail-closed 3분류(취약/판정불가/미검사)를 유지한다(§6 Open #1).
+- v0.1 지도는 `axis=horizontal` 레코드만 판정 축으로 읽는다. vertical은 후속(지금은 흐리게 미리보기).
+
+> 교차참조: 이 §4.1은 verdict-record "시각화 읽기 필드 = 이경준" 경계(verdict-record §0·Open #4)의 응답이다. verdict-record.md 쪽 역링크는 그 문서 소유자(최민준)에게 리뷰로 제안한다 — 직접 편집하지 않음.
+
 ## 5. 분담·경계
 - **UI-only (이경준, 지금 가능):** 접근통제 지도 뷰 설계·프로토타입(KG API 목업으로), 정책·소유 입력/표시 UI, canary 등록 화면.
 - **Canary 레지스트리 경계 (확정):** 등록·`Trivial` 분류 = KG(이경준 UI + 저장은 협의). 소비 = 비교기(최민준, PR #13 `idor.Marker`), 비교기는 재분류 안 함(§3.1). 저장 위치만 Open #3.
@@ -87,7 +120,10 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 - **집행(E②) 경계:** 접근통제 지도는 E② 에 "**읽기 전용 교차 조회만 허용**" 범위를 넘긴다(조회 한정, 상태변경은 별도 승인 시험환경 — 절대규칙 6). 실행 허용은 KG/LLM 이 아니라 E② 가 정한다(절대규칙 3).
 
 ## 6. Open — 팀 정렬 필요
-1. **정본(canonical) 정책의 출처·저장** (oracle Open #2 과 페어, 이동찬↔이경준): 수동 등록 fixture 인가, 관측 추론인가. 추론이면 그 결과는 `ExpectedAccess=unknown` 상한(정본 아님).
+1. **정본(canonical) 정책의 출처·저장 + `policy_version`↔유효창↔정본 reader** (oracle Open #2·verdict-record Open #3 페어, 이동찬↔이경준):
+   - **내 제안**: 정본은 **수동 등록 fixture 레지스트리**(관측 추론 아님). 관측 추론 결과는 `ExpectedAccess=unknown` 상한(정본 아님, §3).
+   - `policy_version` = 정본 reader가 resolve 시점에 준 **snapshot 버전 문자열**(§3 이미 명시). 레코드의 `policy_valid_from/until`도 같은 reader가 싣고, 오라클이 `observed_at` 기준으로 유효성 판정(만료·`hint_matches_canonical=false` → UNDECIDABLE → 지도 `unknown`, §4.1).
+   - **이동찬 질문**: (a) 정본 reader = fixture 레지스트리인가 server config인가 — `policy_version` 문자열 **포맷·발급 주체**(지도 헤더·감사에 그대로 표기). (b) reset 세대 교체 시 정책 유효창 **무효화 지점**(세대 섞임 → 어댑터가 Evaluate 전 UNDECIDABLE, verdict-record §2d).
 2. **principal 역할 레벨(수직)의 소스** — 후속 수직 오라클 전에 선설계(권한 레벨 어디서 얻나).
 3. **canary 등록 저장 위치** — 자산 `Extra` 재사용 vs 신규 테이블. UX·`Trivial` 분류 주체는 KG 로 확정(§3.1), **저장 위치만** 협의(최민준↔이동찬).
 4. **KG 저장소 테이블명·마이그레이션 담당** — oracle Open #5(판정 레코드 테이블)와 함께 최민준↔이동찬.
