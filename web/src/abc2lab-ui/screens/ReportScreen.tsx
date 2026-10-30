@@ -1,4 +1,13 @@
-import { type CSSProperties, type PointerEvent as RPointerEvent, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  type PointerEvent as RPointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { Strong, Sub } from "../components/ui";
@@ -22,9 +31,9 @@ const SEV_COLOR: Record<Severity, string> = {
   low: "var(--lo)",
 };
 const SEV_SUB: Record<Severity, string> = { critical: "즉시 확인", high: "우선 확인", medium: "참고", low: "참고" };
-/** 엔진 severity 문자열 → UI Severity(4단, 모르는 값은 low로 보수적으로) */
-function toSeverity(raw: string): Severity {
-  return SEV_SET.has(raw) ? (raw as Severity) : "low";
+/** 엔진 severity 문자열 → UI Severity. 알 수 없는 값은 미분류로 보존한다. */
+function toSeverity(raw: string): Severity | undefined {
+  return SEV_SET.has(raw) ? (raw as Severity) : undefined;
 }
 const NOMINAL_COLORS = ["--v-c1", "--v-c2", "--v-c3", "--v-c4"];
 
@@ -44,7 +53,9 @@ function findingEndpoint(f: EngineFinding): string {
   return f.assets?.[0]?.label || f.vulnclass || "";
 }
 function findingName(f: EngineFinding): string {
-  return f.name || f.vulnclass || "이름 없는 발견";
+  if (f.name?.length) return f.name;
+  if (f.vulnclass.length > 0) return f.vulnclass;
+  return "이름 없는 발견";
 }
 function whenLabel(iso: string): string {
   if (!iso) return "";
@@ -56,6 +67,7 @@ function whenLabel(iso: string): string {
 
 const STATUS_LABEL: Record<string, string> = {
   created: "대기",
+  queued: "실행 대기",
   running: "진행 중",
   paused: "일시중지",
   done: "완료",
@@ -108,13 +120,23 @@ function CoverageBar({
 /** ===== 보고서 ===== */
 export default function ReportScreen() {
   const go = useGo();
-  const { taskId } = useSelection();
+  const { taskId, tasksVersion } = useSelection();
   const [tab, setTab] = useState<Tab>("sum");
   const [openRow, setOpenRow] = useState<string | null>(null);
 
-  const taskRes = useApiResource(() => (taskId ? getTask(taskId) : Promise.resolve(null)), [taskId]);
-  const findRes = useApiResource<EngineFinding[]>(() => listTaskFindings(taskId ?? ""), [taskId]);
-  const covRes = useApiResource<EngineCoverage | null>(() => getCoverage(taskId ?? ""), [taskId]);
+  useEffect(() => {
+    if (taskId === null) {
+      setTab("sum");
+      setOpenRow(null);
+      return;
+    }
+    setTab("sum");
+    setOpenRow(null);
+  }, [taskId]);
+
+  const taskRes = useApiResource(() => (taskId ? getTask(taskId) : Promise.resolve(null)), [taskId, tasksVersion]);
+  const findRes = useApiResource<EngineFinding[]>(() => listTaskFindings(taskId ?? ""), [taskId, tasksVersion]);
+  const covRes = useApiResource<EngineCoverage | null>(() => getCoverage(taskId ?? ""), [taskId, tasksVersion]);
 
   const task = taskRes.data;
   const findings = useMemo(() => findRes.data ?? [], [findRes.data]);
@@ -122,13 +144,38 @@ export default function ReportScreen() {
 
   const sevCounts = useMemo(() => {
     const c: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const f of findings) c[toSeverity(f.severity)] += 1;
+    for (const f of findings) {
+      const severity = toSeverity(f.severity);
+      if (severity) c[severity] += 1;
+    }
     return c;
   }, [findings]);
+  const unknownCount = useMemo(() => findings.filter((f) => !toSeverity(f.severity)).length, [findings]);
+  const findingsReady = !findRes.loading && !findRes.error && findRes.data !== null && findRes.data !== undefined;
 
   const loading = taskRes.loading || findRes.loading;
-  const error = taskRes.error || findRes.error;
+  const error = taskRes.error ?? findRes.error;
   const title = task?.name || task?.description || (taskId ? `점검 #${taskId}` : "");
+  let reportLead = "…";
+  if (error) reportLead = "보고서를 불러오지 못했어요.";
+  else if (task) {
+    reportLead = [
+      whenLabel(task.created_at),
+      STATUS_LABEL[task.status] ?? task.status,
+      task.goals_total > 0 ? `목표 ${task.goals_met}/${task.goals_total}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  let findingSummary = "조회 실패 · 미확인";
+  if (findRes.loading) findingSummary = "불러오는 중…";
+  else if (findingsReady && findings.length === 0) findingSummary = "아직 없음";
+  else if (findingsReady) {
+    findingSummary = [
+      ...SEV_ORDER.filter((s) => sevCounts[s] > 0).map((s) => `${SEV_LABEL[s]} ${sevCounts[s]}`),
+      ...(unknownCount ? [`미분류 ${unknownCount}`] : []),
+    ].join(" · ");
+  }
 
   function openFinding(id: string) {
     setTab("list");
@@ -164,8 +211,17 @@ export default function ReportScreen() {
             점검 기록으로 돌아가기
           </button>
           <div className="crumb">
-            {/* biome-ignore lint/a11y/useValidAnchor: 원본 시안의 탭 내 이동(앵커 스타일 유지) */}
-            <a onClick={() => go("history")}>점검 기록</a> › <span>{title || "…"}</span>
+            <button
+              type="button"
+              className="crumb-link"
+              onClick={(event) => {
+                event.preventDefault();
+                go("history");
+              }}
+            >
+              점검 기록
+            </button>{" "}
+            › <span>{title || "…"}</span>
           </div>
 
           {/* === 헤더 · 내보내기 === */}
@@ -175,17 +231,7 @@ export default function ReportScreen() {
                 {loading && !task ? "불러오는 중…" : title}
               </h1>
               <p className="lead" style={{ marginBottom: 0 }}>
-                {error
-                  ? "보고서를 불러오지 못했어요."
-                  : task
-                    ? [
-                        whenLabel(task.created_at),
-                        STATUS_LABEL[task.status] ?? task.status,
-                        task.goals_total > 0 ? `목표 ${task.goals_met}/${task.goals_total}` : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")
-                    : "…"}
+                {reportLead}
               </p>
             </div>
             <div style={{ textAlign: "right" }}>
@@ -205,20 +251,14 @@ export default function ReportScreen() {
           <div className="dgrid" style={{ marginBottom: 14 }}>
             <div className="tile">
               <div className="k">발견</div>
-              <div className="v">{findings.length}</div>
-              <div className="sub">
-                {findings.length === 0
-                  ? "아직 없음"
-                  : SEV_ORDER.filter((s) => sevCounts[s] > 0)
-                      .map((s) => `${SEV_LABEL[s]} ${sevCounts[s]}`)
-                      .join(" · ")}
-              </div>
+              <div className="v">{findingsReady ? findings.length : "—"}</div>
+              <div className="sub">{findingSummary}</div>
             </div>
             {SEV_ORDER.map((s) => (
               <div className="tile" key={s}>
                 <div className="k">{SEV_LABEL[s]}</div>
-                <div className="v" style={{ color: sevCounts[s] > 0 ? SEV_COLOR[s] : undefined }}>
-                  {sevCounts[s]}
+                <div className="v" style={{ color: findingsReady && sevCounts[s] > 0 ? SEV_COLOR[s] : undefined }}>
+                  {findingsReady ? sevCounts[s] : "—"}
                 </div>
                 <div className="sub">{SEV_SUB[s]}</div>
               </div>
@@ -233,7 +273,7 @@ export default function ReportScreen() {
           </div>
 
           {/* === 배지 읽는 법 === */}
-          <div className="legend-key" aria-label="배지 읽는 법">
+          <div className="legend-key">
             <div>
               <span className="lk">위험도</span>
               <span className="sev critical">심각</span>
@@ -262,23 +302,34 @@ export default function ReportScreen() {
                 ["ev", "증거 · 감사"],
               ] as [Tab, string][]
             ).map(([k, l]) => (
-              <button key={k} className={`tab${tab === k ? " on" : ""}`} type="button" onClick={() => setTab(k)}>
+              <button key={k} className={tab === k ? "on tab" : "tab"} type="button" onClick={() => setTab(k)}>
                 {l}
-                {k === "list" && <span className="c">{findings.length}</span>}
+                {k === "list" && <span className="c">{findingsReady ? findings.length : "—"}</span>}
               </button>
             ))}
           </div>
 
           {tab === "sum" && (
-            <SummaryPanel findings={findings} sevCounts={sevCounts} cov={cov} onOpenFinding={openFinding} />
+            <SummaryPanel
+              findings={findings}
+              findingsReady={findingsReady}
+              findingsLoading={findRes.loading}
+              findingsError={findRes.error}
+              sevCounts={sevCounts}
+              cov={cov}
+              coverageLoading={covRes.loading}
+              coverageError={covRes.error}
+              taskKey={taskId}
+              onOpenFinding={openFinding}
+            />
           )}
           {tab === "list" && (
             <ListPanel
               findings={findings}
               loading={findRes.loading}
+              error={findRes.error}
               openRow={openRow}
               setOpenRow={setOpenRow}
-              go={go}
             />
           )}
           {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} />}
@@ -293,27 +344,45 @@ export default function ReportScreen() {
 /* ---------------- 요약 탭 ---------------- */
 function SummaryPanel({
   findings,
+  findingsReady,
+  findingsLoading,
+  findingsError,
   sevCounts,
   cov,
+  coverageLoading,
+  coverageError,
+  taskKey,
   onOpenFinding,
 }: {
   findings: EngineFinding[];
+  findingsReady: boolean;
+  findingsLoading: boolean;
+  findingsError: string | null;
   sevCounts: Record<Severity, number>;
   cov: EngineCoverage | null | undefined;
+  coverageLoading: boolean;
+  coverageError: string | null;
+  taskKey: string;
   onOpenFinding: (id: string) => void;
 }) {
   const untestedPct =
-    cov && cov.denominator > 0 ? Math.round(((cov.denominator - cov.tested) / cov.denominator) * 100) : null;
+    !coverageLoading && !coverageError && cov?.enabled && cov.denominator > 0
+      ? Math.round(((cov.denominator - cov.tested) / cov.denominator) * 100)
+      : null;
   return (
     <div className="rpanel">
       <div className="card">
         <h3>한눈에</h3>
         <p style={bodyText}>
-          {findings.length === 0 ? (
+          {!findingsReady && findingsLoading && "발견 목록을 불러오는 중이에요."}
+          {!findingsReady && !findingsLoading && findingsError && "발견 목록을 불러오지 못했어요."}
+          {!findingsReady && !findingsLoading && !findingsError && "발견 목록을 확인할 수 없어요."}
+          {findingsReady && findings.length === 0 && (
             <>
               아직 이 점검에서 <Strong>발견이 없어요</Strong>. 점검이 진행되면 위험도별로 여기에 쌓여요.
             </>
-          ) : (
+          )}
+          {findingsReady && findings.length > 0 && (
             <>
               이 점검에서 <Strong>{findings.length}건</Strong>이 발견됐어요. 위험도{" "}
               <Strong>
@@ -326,7 +395,14 @@ function SummaryPanel({
         </p>
       </div>
 
-      <FindingsViz findings={findings} onOpenFinding={onOpenFinding} />
+      <FindingsViz
+        key={taskKey}
+        findings={findings}
+        ready={findingsReady}
+        loading={findingsLoading}
+        error={findingsError}
+        onOpenFinding={onOpenFinding}
+      />
 
       <div className="wrap" style={{ padding: 0, gap: 16 }}>
         <div className="col" style={{ flex: "1 1 260px" }}>
@@ -351,7 +427,15 @@ function SummaryPanel({
         <div className="col" style={{ flex: "1 1 260px" }}>
           <div className="card" style={{ marginBottom: 0 }}>
             <h3>미검사 영역 {untestedPct !== null && <span style={subH}>· {untestedPct}%</span>}</h3>
-            {cov && cov.denominator > 0 ? (
+            {coverageLoading && <p style={bodyText}>커버리지를 불러오는 중이에요.</p>}
+            {!coverageLoading && coverageError && <p style={bodyText}>커버리지를 불러오지 못했어요.</p>}
+            {!coverageLoading && !coverageError && (cov === null || cov === undefined) && (
+              <p style={bodyText}>커버리지 집계 전이거나 확인할 수 없어요.</p>
+            )}
+            {!coverageLoading && !coverageError && cov !== null && cov !== undefined && !cov.enabled && (
+              <p style={bodyText}>커버리지 집계가 꺼져 있어요.</p>
+            )}
+            {!coverageLoading && !coverageError && cov?.enabled && cov.denominator > 0 && (
               <>
                 <div className="find">
                   <span className="pill" style={{ background: "var(--surface-2)", color: "var(--muted)" }}>
@@ -363,7 +447,8 @@ function SummaryPanel({
                 </div>
                 <div className="hint">미검사는 "취약 없음"이 아니라 "아직 안 본 것"이에요.</div>
               </>
-            ) : (
+            )}
+            {!coverageLoading && !coverageError && cov?.enabled && cov.denominator === 0 && (
               <p style={bodyText}>커버리지 집계 전이에요.</p>
             )}
           </div>
@@ -376,7 +461,19 @@ function SummaryPanel({
 /* ---------------- 발견 그래프 ---------------- */
 type VizRow = { id: string; label: string; color: string; items: EngineFinding[]; n: number };
 
-function FindingsViz({ findings, onOpenFinding }: { findings: EngineFinding[]; onOpenFinding: (id: string) => void }) {
+function FindingsViz({
+  findings,
+  ready,
+  loading,
+  error,
+  onOpenFinding,
+}: {
+  findings: EngineFinding[];
+  ready: boolean;
+  loading: boolean;
+  error: string | null;
+  onOpenFinding: (id: string) => void;
+}) {
   const [dim, setDim] = useState<DimKey>("sev");
   const [kind, setKind] = useState<Kind>("bar");
   const [pick, setPick] = useState<string | null>(null);
@@ -384,17 +481,28 @@ function FindingsViz({ findings, onOpenFinding }: { findings: EngineFinding[]; o
   const cardRef = useRef<HTMLDivElement>(null);
 
   const dimName = dim === "sev" ? "위험도" : "유형";
-  const pct = (n: number) => (findings.length ? Math.round((n * 100) / findings.length) : 0) + "%";
+  const pct = (n: number) => `${findings.length ? Math.round((n * 100) / findings.length) : 0}%`;
 
   const rows: VizRow[] = useMemo(() => {
     if (dim === "sev") {
-      return SEV_ORDER.map((s) => ({
+      const nominal: VizRow[] = SEV_ORDER.map((s) => ({
         id: s,
         label: SEV_LABEL[s],
         color: SEV_COLOR[s],
         items: findings.filter((f) => toSeverity(f.severity) === s),
         n: 0,
       })).map((r) => ({ ...r, n: r.items.length }));
+      const unknownItems = findings.filter((f) => !toSeverity(f.severity));
+      if (unknownItems.length) {
+        nominal.push({
+          id: "unknown",
+          label: "미분류",
+          color: "var(--muted)",
+          items: unknownItems,
+          n: unknownItems.length,
+        });
+      }
+      return nominal;
     }
     // 유형: vulnclass 로 그룹 (실데이터)
     const groups = new Map<string, EngineFinding[]>();
@@ -447,6 +555,17 @@ function FindingsViz({ findings, onOpenFinding }: { findings: EngineFinding[]; o
     </div>
   );
 
+  if (!ready) {
+    let unavailableMessage = "발견 목록을 확인할 수 없어요.";
+    if (loading) unavailableMessage = "발견 목록을 불러오는 중이에요.";
+    else if (error) unavailableMessage = "발견 목록을 불러오지 못했어요.";
+    return (
+      <div className="card">
+        <h3>발견 한눈에 보기</h3>
+        <p style={bodyText}>{unavailableMessage}</p>
+      </div>
+    );
+  }
   if (findings.length === 0) {
     return (
       <div className="card">
@@ -463,8 +582,8 @@ function FindingsViz({ findings, onOpenFinding }: { findings: EngineFinding[]; o
           발견 한눈에 보기 <span style={subH}>· 같은 발견 {findings.length}건을 기준과 그래프를 바꿔 봐요</span>
         </h3>
         <div className="viz-ctrls">
-          <div className="seg" role="group" aria-label="데이터 기준">
-            <span className="seg-lab">기준</span>
+          <fieldset className="seg">
+            <legend className="seg-lab">기준</legend>
             {(["sev", "type"] as DimKey[]).map((k) => (
               <button
                 key={k}
@@ -478,9 +597,9 @@ function FindingsViz({ findings, onOpenFinding }: { findings: EngineFinding[]; o
                 {k === "sev" ? "위험도" : "유형"}
               </button>
             ))}
-          </div>
-          <div className="seg" role="group" aria-label="그래프 종류">
-            <span className="seg-lab">보기</span>
+          </fieldset>
+          <fieldset className="seg">
+            <legend className="seg-lab">보기</legend>
             {(
               [
                 ["bar", "막대"],
@@ -492,7 +611,7 @@ function FindingsViz({ findings, onOpenFinding }: { findings: EngineFinding[]; o
                 {l}
               </button>
             ))}
-          </div>
+          </fieldset>
         </div>
       </div>
 
@@ -517,7 +636,7 @@ function FindingsViz({ findings, onOpenFinding }: { findings: EngineFinding[]; o
         )}
         {kind === "share" && (
           <>
-            <div className="vshare" role="group" aria-label={`${dimName}별 비율`}>
+            <fieldset className="vshare" aria-label={`${dimName}별 비율`}>
               {rows
                 .filter((r) => r.n > 0)
                 .map((r) => (
@@ -528,7 +647,7 @@ function FindingsViz({ findings, onOpenFinding }: { findings: EngineFinding[]; o
                     {...catProps(r)}
                   />
                 ))}
-            </div>
+            </fieldset>
             <div className="vlegend">
               {rows.map((r) => (
                 <button key={r.id} className={`vleg${dimCls(r)}`} {...catProps(r)}>
@@ -605,19 +724,26 @@ function FindingsViz({ findings, onOpenFinding }: { findings: EngineFinding[]; o
 function ListPanel({
   findings,
   loading,
+  error,
   openRow,
   setOpenRow,
-  go,
 }: {
   findings: EngineFinding[];
   loading: boolean;
+  error: string | null;
   openRow: string | null;
   setOpenRow: (id: string | null) => void;
-  go: (s: "finding") => void;
 }) {
   const toggle = (id: string) => setOpenRow(openRow === id ? null : id);
   if (loading) {
     return <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>불러오는 중…</div>;
+  }
+  if (error) {
+    return (
+      <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>
+        발견 목록을 불러오지 못했어요.
+      </div>
+    );
   }
   if (findings.length === 0) {
     return (
@@ -635,26 +761,20 @@ function ListPanel({
       {findings.map((f) => {
         const open = openRow === f.id;
         const sev = toSeverity(f.severity);
+        const sevLabel = sev ? SEV_LABEL[sev] : "미분류";
         return (
           <div key={f.id}>
-            <div
+            <button
+              type="button"
               id={`frow-${f.id}`}
               className="frow"
-              role="button"
-              tabIndex={0}
               aria-expanded={open}
               aria-controls={`fs-${f.id}`}
               onClick={() => toggle(f.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  toggle(f.id);
-                }
-              }}
             >
-              <span className={`sev ${sev}`}>
+              <span className={`sev${sev ? ` ${sev}` : ""}`}>
                 <span className="chip-k">위험도</span>
-                {SEV_LABEL[sev]}
+                {sevLabel}
               </span>
               <div style={{ minWidth: 0 }}>
                 <div className="nm">{findingName(f)}</div>
@@ -668,7 +788,7 @@ function ListPanel({
                   ▾
                 </span>
               </div>
-            </div>
+            </button>
             {open && (
               <div className="fsum" id={`fs-${f.id}`}>
                 <dl>
@@ -679,14 +799,14 @@ function ListPanel({
                     <code>{findingEndpoint(f) || "—"}</code>
                   </dd>
                   <dt>위험도</dt>
-                  <dd>{SEV_LABEL[sev]}</dd>
+                  <dd>{sevLabel}</dd>
                   <dt>증거 · 판정</dt>
                   <dd style={{ color: "var(--muted)" }}>
                     구조화 증거(요청/응답 · canary)와 확정/의심/판단 불가 판정은 E③ 오라클 연동 후 채워져요.
                   </dd>
                 </dl>
-                <button type="button" className="btn" onClick={() => go("finding")}>
-                  자세히 보기 →
+                <button type="button" className="btn" disabled>
+                  자세히 보기 (E③ 연동 후)
                 </button>
               </div>
             )}
@@ -707,32 +827,32 @@ function CoveragePanel({
   loading: boolean;
   error: string | null;
 }) {
+  let content: ReactNode;
+  if (loading) content = <p style={bodyText}>불러오는 중…</p>;
+  else if (error) content = <p style={bodyText}>커버리지를 불러오지 못했어요.</p>;
+  else if (!cov?.enabled) content = <p style={bodyText}>이 점검은 커버리지 집계가 꺼져 있어요.</p>;
+  else if (cov.denominator === 0) content = <p style={bodyText}>아직 범위(scope) 안에 집계된 자산이 없어요.</p>;
+  else {
+    content = (
+      <>
+        <CoverageBar label="전체" tested={cov.tested} total={cov.denominator} strong />
+        {cov.byType.map((t) => (
+          <CoverageBar key={t.type} label={TYPE_LABEL[t.type] ?? t.type} tested={t.tested} total={t.total} />
+        ))}
+        <p className="hint" style={{ marginTop: 14 }}>
+          분모 = 범위(scope) 내 자산 수, 분자 = 실제로 요청 · 탐색한 수. 미검사(분모−분자)는{" "}
+          <Strong>"취약 없음"이 아니라 "아직 안 본 것"</Strong>이에요.
+        </p>
+      </>
+    );
+  }
   return (
     <div className="rpanel">
       <div className="card">
         <h3>
           검사 커버리지 <Sub>· 범위 내 자산 대비 실제 탐색</Sub>
         </h3>
-        {loading ? (
-          <p style={bodyText}>불러오는 중…</p>
-        ) : error ? (
-          <p style={bodyText}>커버리지를 불러오지 못했어요.</p>
-        ) : !cov || !cov.enabled ? (
-          <p style={bodyText}>이 점검은 커버리지 집계가 꺼져 있어요.</p>
-        ) : cov.denominator === 0 ? (
-          <p style={bodyText}>아직 범위(scope) 안에 집계된 자산이 없어요.</p>
-        ) : (
-          <>
-            <CoverageBar label="전체" tested={cov.tested} total={cov.denominator} strong />
-            {cov.byType.map((t) => (
-              <CoverageBar key={t.type} label={TYPE_LABEL[t.type] ?? t.type} tested={t.tested} total={t.total} />
-            ))}
-            <p className="hint" style={{ marginTop: 14 }}>
-              분모 = 범위(scope) 내 자산 수, 분자 = 실제로 요청 · 탐색한 수. 미검사(분모−분자)는{" "}
-              <Strong>"취약 없음"이 아니라 "아직 안 본 것"</Strong>이에요.
-            </p>
-          </>
-        )}
+        {content}
       </div>
     </div>
   );
@@ -765,8 +885,8 @@ function EvidencePanel({ go }: { go: (s: "audit") => void }) {
       <div className="card" style={{ marginBottom: 0 }}>
         <h3>감사 기록</h3>
         <p className="hint" style={{ marginTop: 0, marginBottom: 12 }}>
-          이 점검 중 통제가 차단했거나 승인 대기로 잡은 요청이 기록으로 남아요. (변조 탐지 체인 · 권한 분리는 우리가
-          얹는 기여 — 연동 후.)
+          이 점검 중 명시적으로 허용하거나 차단한 결정과 승인 요청이 기록으로 남아요. 전체 송신 원장은 별도 기록이며,
+          변조 탐지 체인 · 권한 분리는 연동 후 제공돼요.
         </p>
         <button className="btn" type="button" onClick={() => go("audit")}>
           통제 기록 열기 →

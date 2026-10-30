@@ -1,9 +1,10 @@
 import { useMemo } from "react";
+
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
-import { type TokenUsage, getTokenUsage } from "../lib/engine";
+import { getTokenUsage, TOKEN_DAILY_DAYS, type TokenUsage } from "../lib/engine";
 import { useGo } from "../nav";
 
 function fmt(n: number): string {
@@ -14,17 +15,17 @@ function fmt(n: number): string {
 }
 function dayLabel(iso: string): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!parts) return iso;
+  return `${Number(parts[2])}/${Number(parts[3])}`;
 }
 
 const bodyText = { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
 
-/** ===== 토큰 · 비용 대시보드 (전역 집계) ===== */
+/** ===== 토큰 사용량 대시보드 (전역 집계) ===== */
 export default function TokensScreen() {
   const go = useGo();
-  const { data, loading, error } = useApiResource<TokenUsage>(getTokenUsage);
+  const { data, loading, error, reload, fetchedAt } = useApiResource<TokenUsage>(getTokenUsage);
 
   const byProfile = useMemo(
     () => [...(data?.byProfile ?? [])].sort((a, b) => b.input + b.output - (a.input + a.output)),
@@ -48,38 +49,54 @@ export default function TokensScreen() {
 
   const dailyMax = Math.max(1, ...daily.map((d) => d.input + d.output));
 
+  let stateMessage: string | null;
+  if (loading) {
+    stateMessage = "불러오는 중…";
+  } else if (error) {
+    stateMessage = `토큰 사용량을 불러오지 못했어요. (${error})`;
+  } else if (byProfile.length === 0 && daily.length === 0) {
+    stateMessage = "아직 집계된 토큰 사용이 없어요.";
+  } else {
+    stateMessage = null;
+  }
+
   return (
     <Screen id="tokens">
       <div className="frame">
         <TopBar current="settings" />
         <div style={{ padding: "22px 24px" }}>
           <div className="crumb">
-            {/* biome-ignore lint/a11y/useValidAnchor: 원본 시안 crumb 이동(앵커 스타일 유지) */}
-            <a onClick={() => go("settings")}>설정</a> › <span>토큰 · 비용</span>
+            <button className="lnk" type="button" onClick={() => go("settings")}>
+              설정
+            </button>{" "}
+            › <span>토큰 사용량</span>
           </div>
           <h1 className="big" style={{ marginBottom: 4 }}>
-            토큰 · 비용
+            토큰 사용량
           </h1>
           <p className="lead">
-            점검에 쓴 LLM 토큰을 모델별 · 일자별로 모아 봐요. baseline(원본) 대비 우리 개선의 <Strong>비용 효율</Strong>
-            을 재는 근거예요.
+            전체 작업에서 기록된 운영 토큰 사용량이에요. 프로필별 누적값과 최근 {TOKEN_DAILY_DAYS}일의 UTC 일자별 집계를
+            보여줘요. 같은 회차·조건을 고정한 baseline 비교와 금액 환산은 아직 지원하지 않아요.
           </p>
 
-          {loading ? (
-            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>불러오는 중…</div>
-          ) : error ? (
-            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>
-              토큰 사용량을 불러오지 못했어요. ({error})
-            </div>
-          ) : byProfile.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>
-              아직 집계된 토큰 사용이 없어요.
+          <div className="row" style={{ marginBottom: 12 }}>
+            <button className="btn" type="button" disabled={loading} onClick={reload}>
+              새로고침
+            </button>
+            <Sub>{fetchedAt ? `조회 ${new Date(fetchedAt).toLocaleTimeString()}` : "조회 미확인"} · 수동 갱신</Sub>
+          </div>
+          {stateMessage ? (
+            <div
+              role={error ? "alert" : "status"}
+              style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}
+            >
+              {stateMessage}
             </div>
           ) : (
             <>
               <div className="dgrid" style={{ marginBottom: 20 }}>
                 <div className="tile">
-                  <div className="k">총 토큰</div>
+                  <div className="k">누적 입력·출력 토큰</div>
                   <div className="v">{fmt(totals.total)}</div>
                   <div className="sub">
                     입력 {fmt(totals.input)} · 출력 {fmt(totals.output)}
@@ -91,7 +108,7 @@ export default function TokensScreen() {
                   <div className="sub">LLM 요청 수</div>
                 </div>
                 <div className="tile">
-                  <div className="k">모델</div>
+                  <div className="k">프로필</div>
                   <div className="v">{byProfile.length}</div>
                   <div className="sub">사용된 프로필</div>
                 </div>
@@ -100,19 +117,19 @@ export default function TokensScreen() {
                   <div className="v" style={{ color: totals.cacheRead > 0 ? "var(--teal-ink)" : undefined }}>
                     {fmt(totals.cacheRead)}
                   </div>
-                  <div className="sub">재사용 토큰(절감)</div>
+                  <div className="sub">캐시에서 읽은 토큰</div>
                 </div>
               </div>
 
               <div className="card">
                 <h3>
-                  모델별 사용량 <Sub>· 토큰 많은 순</Sub>
+                  프로필별 누적 사용량 <Sub>· 입력+출력 토큰 많은 순</Sub>
                 </h3>
                 <div className="scrollx">
                   <table className="vtable">
                     <thead>
                       <tr>
-                        {["모델", "호출", "작업", "입력", "출력", "합계"].map((h) => (
+                        {["프로필", "호출", "작업", "입력", "출력", "합계"].map((h) => (
                           <th key={h}>{h}</th>
                         ))}
                       </tr>
@@ -137,7 +154,7 @@ export default function TokensScreen() {
 
               <div className="card" style={{ marginBottom: 0 }}>
                 <h3>
-                  일자별 토큰 <Sub>· 입력+출력 합계</Sub>
+                  일자별 토큰 <Sub>· 최근 {TOKEN_DAILY_DAYS}일(UTC), 입력+출력 합계</Sub>
                 </h3>
                 {daily.length === 0 ? (
                   <p style={bodyText}>일자별 집계가 없어요.</p>

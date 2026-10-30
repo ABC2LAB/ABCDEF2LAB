@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
+
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { MockBanner } from "../components/ui";
@@ -20,6 +21,7 @@ const SEV_LABEL: Record<Severity, string> = { critical: "심각", high: "높음"
 const STATUS_LABEL: Record<string, string> = {
   created: "대기",
   running: "진행 중",
+  queued: "실행 대기",
   paused: "일시중지",
   done: "완료",
   failed: "실패",
@@ -35,14 +37,14 @@ function dateLabel(iso: string): string {
 /** 진입 하단 최근 점검 — 실 /api/tasks 에서 최근 4건 (없으면 숨김) */
 function RecentScans() {
   const go = useGo();
-  const { selectTask } = useSelection();
-  const { data, loading, error } = useApiResource(listTasks);
+  const { selectTask, tasksVersion } = useSelection();
+  const { data, loading, error } = useApiResource(listTasks, [tasksVersion]);
   const tasks: EngineTask[] = data?.tasks ?? [];
   if (loading || error || tasks.length === 0) return null;
   const recent = [...tasks].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 4);
 
   return (
-    <div className="recent" aria-labelledby="recent-title">
+    <section className="recent" aria-labelledby="recent-title">
       <div className="recent-head">
         <span id="recent-title">최근 점검</span>
         <button type="button" className="lnk" onClick={() => go("history")}>
@@ -51,13 +53,25 @@ function RecentScans() {
       </div>
       <div className="recent-list">
         {recent.map((t) => {
-          const terminal = t.status === "done" || t.status === "failed";
+          const terminal = t.status === "done" || t.status === "failed" || t.status === "timeout";
           const f = t.findings ?? { critical: 0, high: 0, medium: 0, low: 0 };
           const topSev = SEV_ORDER.find((s) => (f[s] ?? 0) > 0);
           const total = SEV_ORDER.reduce((n, s) => n + (f[s] ?? 0), 0);
           const meta = [STATUS_LABEL[t.status] ?? t.status, dateLabel(t.created_at), total > 0 ? `발견 ${total}` : ""]
             .filter(Boolean)
             .join(" · ");
+          let resultBadge: ReactNode;
+          if (topSev) {
+            resultBadge = (
+              <span className={`sev ${topSev}`}>
+                {SEV_LABEL[topSev]} {f[topSev]}
+              </span>
+            );
+          } else if (t.status === "done") {
+            resultBadge = <span className="stag none">발견 없음</span>;
+          } else {
+            resultBadge = <span className="stag none">{STATUS_LABEL[t.status]} · 미완료</span>;
+          }
           return (
             <div className="recent-row" key={t.id}>
               <div className="recent-main">
@@ -67,13 +81,7 @@ function RecentScans() {
               <div className="recent-acts">
                 {terminal ? (
                   <>
-                    {topSev ? (
-                      <span className={`sev ${topSev}`}>
-                        {SEV_LABEL[topSev]} {f[topSev]}
-                      </span>
-                    ) : (
-                      <span className="stag none">발견 없음</span>
-                    )}
+                    {resultBadge}
                     <button
                       className="btn xs"
                       type="button"
@@ -107,7 +115,7 @@ function RecentScans() {
           );
         })}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -160,7 +168,7 @@ export default function EntryScreen({ onStart }: Props) {
             </button>
           </div>
           <p className="hint" style={{ textAlign: "left" }}>
-            본인이 점검 권한을 가진 사이트만 입력해 주세요. 허용된 주소 범위는 설정 → 통제 정책에서 관리해요.
+            본인이 점검 권한을 가진 사이트만 입력해 주세요. 범위와 통제 정책은 엔진 연동 후 설정할 수 있어요.
           </p>
 
           <RecentScans />

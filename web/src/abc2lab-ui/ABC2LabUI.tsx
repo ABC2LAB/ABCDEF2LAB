@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./abc2lab.css";
 import { toTarget } from "./lib/net";
-import { SelectionContext, type Selection } from "./lib/selection";
-import { NavContext, isScreenId, type NavValue, type ScreenId } from "./nav";
+import { type Selection, SelectionContext } from "./lib/selection";
+import { isScreenId, NavContext, type NavValue, type ScreenId } from "./nav";
 import AccessMapScreen from "./screens/AccessMapScreen";
 import ApprovalScreen from "./screens/ApprovalScreen";
 import AuditScreen from "./screens/AuditScreen";
@@ -42,7 +42,12 @@ export default function ABC2LabUI({ initialScreen = "entry", syncHash = true, th
 
   // 지금 보고 있는 점검(task) — 기록에서 카드를 열 때 지정. report/live/finding 이 읽는다.
   const [taskId, setTaskId] = useState<string | null>(null);
-  const selection = useMemo<Selection>(() => ({ taskId, selectTask: setTaskId }), [taskId]);
+  const [tasksVersion, setTasksVersion] = useState(0);
+  const refreshTasks = useCallback(() => setTasksVersion((version) => version + 1), []);
+  const selection = useMemo<Selection>(
+    () => ({ taskId, selectTask: setTaskId, tasksVersion, refreshTasks }),
+    [taskId, tasksVersion, refreshTasks],
+  );
 
   const go = useCallback(
     (next: ScreenId) => {
