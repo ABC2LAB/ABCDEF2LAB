@@ -156,18 +156,27 @@ export default function HistoryScreen() {
       <div className="frame">
         <TopBar current="history" />
         <div style={{ padding: "22px 24px" }}>
-          <h1 className="big">점검 기록</h1>
-          <p className="lead">
-            {loading ? (
-              "불러오는 중…"
-            ) : error ? (
-              "기록을 불러오지 못했어요."
-            ) : (
-              <>
-                지금까지 <Strong>{counts.all}번</Strong> 점검했어요. 각 점검의 보고서는 카드에서 바로 열어요.
-              </>
-            )}
-          </p>
+          <div className="rhead" style={{ marginBottom: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <h1 className="big" style={{ marginBottom: 4 }}>
+                점검 기록
+              </h1>
+              <p className="lead" style={{ marginBottom: 0 }}>
+                {loading ? (
+                  "불러오는 중…"
+                ) : error ? (
+                  "기록을 불러오지 못했어요."
+                ) : (
+                  <>
+                    지금까지 <Strong>{counts.all}번</Strong> 점검했어요. 각 점검의 보고서는 카드에서 바로 열어요.
+                  </>
+                )}
+              </p>
+            </div>
+            <button className="btn primary" type="button" onClick={() => go("entry")} style={{ flex: "none" }}>
+              ＋ 새 점검
+            </button>
+          </div>
 
           <div className="search">
             <input
@@ -191,9 +200,6 @@ export default function HistoryScreen() {
                 </option>
               ))}
             </select>
-            <button className="btn primary" type="button" onClick={() => go("entry")}>
-              ＋ 새 점검
-            </button>
           </div>
 
           {error ? (
