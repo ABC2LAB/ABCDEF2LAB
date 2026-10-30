@@ -107,3 +107,33 @@ func TestDuplicateSessionAndAmbiguousCanaryRegistrationRefused(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyReadAuditsOnlyOwnerAndCrossReads(t *testing.T) {
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"ok","data":{"note":"`+e2Canary+`"}}`)
+	}))
+	defer server.Close()
+	rec := &recorder{}
+	cfg := e2FixtureConfig(server.URL, rec)
+	tx, err := transmit.NewHTTP(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Stop()
+	candidate := idor.Candidate{Owner: cfg.Sessions[0].Account, Evaluated: cfg.Sessions[1].Account, ResourceRef: cfg.Resources[0].Ref}
+	result, reason := tx.VerifyRead(candidate, e2Policy{})
+	if reason != "" || result.Verdict.Value != oracle.Confirmed || hits.Load() != 2 {
+		t.Fatalf("read sequence: reason=%s verdict=%s hits=%d", reason, result.Verdict.Value, hits.Load())
+	}
+	if len(rec.events) != 4 {
+		t.Fatalf("read sequence audit events=%d, want two intent/result pairs", len(rec.events))
+	}
+	for _, event := range rec.events {
+		if event.Method != http.MethodGet || event.Reason == transmit.UnsupportedAction {
+			t.Fatalf("read sequence proposed setup: stage=%s method=%s reason=%s", event.Stage, event.Method, event.Reason)
+		}
+	}
+}
