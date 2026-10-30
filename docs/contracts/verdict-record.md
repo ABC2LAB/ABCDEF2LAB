@@ -17,10 +17,11 @@ E③ 오라클(`oracle.Evaluate`)이 내는 **구조화 판정 1건**을 저장�
 ## 2. 필드
 
 ### (a) 연결·식별
+**필수 회차 연결:** 채점용 JSON 출력은 `run_id`·`model_tag`·`reset_generation`·`records` envelope로 묶는다. 서버/평가 러너가 부여한 상위 `run_id`가 그 안의 모든 레코드와 pre/post·traffic·커버리지를 연결하는 회차 키다. GT 정보를 담지 않으며 `case_ref`로 대체하지 않는다. 각 레코드의 `model_tag`·`reset_generation`도 envelope와 일치해야 한다. 다른 물리 저장 방식도 동일한 불변 회차 연결을 보존해야 한다.
+
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `id` | id | 레코드 PK |
-| `run_id` | string | 서버/평가 러너가 부여한 회차 식별자. GT 정보를 담지 않으며 pre/post·traffic·커버리지의 회차 메타데이터와 같아야 한다. `case_ref`로 대체하지 않는다. |
 | `finding_id` | id? | 연관 ARTEX finding(있으면). 판정이 finding 생성보다 앞서면 NULL |
 | `case_ref` | string | case 식별(작업·의도·엔드포인트·자료상태 해시). 같은 근거만 한 case |
 | `axis` | enum | `horizontal`(v0.1). 수직은 후속 v0.2가 같은 레코드에 `vertical` 로 |
@@ -73,7 +74,7 @@ E③ 오라클(`oracle.Evaluate`)이 내는 **구조화 판정 1건**을 저장�
 - 레코드 없음은 자동 미탐이 아니다. 상관 가능 여부와 실제 검사 커버리지 또는 엔진 귀속 해결을 확인한다.
 - `oracle_value=allowed`는 정책상 허용 판단이며, GT에 allowed뿐이면 판단불가 + 경고로 남긴다. NONE/미탐으로 접지 않는다.
 - 회차·모델·reset 세대 및 필수 입력의 오류는 채점 중단이다. 물리 저장/어댑터는 이 연결 근거를 보존해야 한다.
-- 레코드의 필수 `run_id`는 러너의 회차 기록 및 각 아티팩트 메타데이터와 대조한다. 없거나 다르면 채점 중단이다. `model_tag`·`reset_generation`만 같다는 이유로 회차 일치를 추정하지 않는다. 이 필드의 발행·파싱·검증도 후속 어댑터 구현 범위다.
+- 판정 envelope의 필수 `run_id`는 러너의 회차 기록 및 각 아티팩트 메타데이터와 대조한다. 없거나 다르면 채점 중단이다. `model_tag`·`reset_generation`만 같다는 이유로 회차 일치를 추정하지 않는다. 현재 JSON 채점기는 envelope의 회차 검증을 지원하며, 엔진의 실제 레코드 발행·저장 연결은 후속 어댑터 구현 범위다.
 
 - **절대규칙 7**: 레코드는 GT 챌린지 키를 **담지 않는다**. 레코드는 자연 증거(`vuln_class`·`resource_ref`)만 싣고, (vuln_class·엔드포인트)→챌린지 매핑은 **평가 쪽(평가 전용 GT)** 이 소유한다. GT 를 탐색·판정·레코드에 넣지 않는다.
 - 현재 `parse_scan_output`에는 JSON 레코드 파싱 뼈대가 있으나 위 평가 규칙 전체를 구현한 것은 아니다. 공식 비교는 프로토콜 §1의 구현 조건을 충족한 채점기로 수행한다.
