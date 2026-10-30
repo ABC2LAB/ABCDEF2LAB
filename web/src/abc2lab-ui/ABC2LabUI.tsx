@@ -16,6 +16,7 @@ import ReportScreen from "./screens/ReportScreen";
 import ScopeScreen from "./screens/ScopeScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import TargetScreen from "./screens/TargetScreen";
+import TokensScreen from "./screens/TokensScreen";
 import { DEFAULT_TARGET_URL, type Target } from "./types";
 
 export type ABC2LabUIProps = {
@@ -100,6 +101,7 @@ export default function ABC2LabUI({ initialScreen = "entry", syncHash = true, th
           <SettingsScreen />
           <AuditScreen />
           <AccessMapScreen />
+          <TokensScreen />
         </div>
       </SelectionContext.Provider>
     </NavContext.Provider>

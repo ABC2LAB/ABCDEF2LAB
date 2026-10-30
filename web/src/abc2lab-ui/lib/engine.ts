@@ -248,6 +248,56 @@ export async function getTokens(taskId: string): Promise<EngineTokens> {
   return { input: r.total?.input_tokens ?? 0, output: r.total?.output_tokens ?? 0 };
 }
 
+/**
+ * 토큰·비용 대시보드: GET /api/tokens/usage(모델별) + /api/tokens/daily(일자별 합계).
+ * 전역 집계(task 무관). 비용은 엔진이 금액을 안 주므로 토큰량만 — 단가는 미노출.
+ */
+export type TokenProfile = {
+  profileName: string;
+  calls: number;
+  tasks: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+export type TokenDaily = { day: string; input: number; output: number; cacheRead: number };
+export type TokenUsage = { byProfile: TokenProfile[]; daily: TokenDaily[] };
+
+export async function getTokenUsage(): Promise<TokenUsage> {
+  type RawP = {
+    profile_name?: string;
+    calls?: number;
+    tasks?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_tokens?: number;
+    cache_write_tokens?: number;
+  };
+  type RawD = { day?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number };
+  const [usage, daily] = await Promise.all([
+    apiFetch<{ by_profile?: RawP[] }>("/api/tokens/usage"),
+    apiFetch<RawD[]>("/api/tokens/daily"),
+  ]);
+  return {
+    byProfile: (usage.by_profile ?? []).map((p) => ({
+      profileName: p.profile_name || "(미지정)",
+      calls: p.calls ?? 0,
+      tasks: p.tasks ?? 0,
+      input: p.input_tokens ?? 0,
+      output: p.output_tokens ?? 0,
+      cacheRead: p.cache_read_tokens ?? 0,
+      cacheWrite: p.cache_write_tokens ?? 0,
+    })),
+    daily: (Array.isArray(daily) ? daily : []).map((d) => ({
+      day: d.day || "",
+      input: d.input_tokens ?? 0,
+      output: d.output_tokens ?? 0,
+      cacheRead: d.cache_read_tokens ?? 0,
+    })),
+  };
+}
+
 /** POST /api/tasks/{id}/control — 일시정지/다시 시작(엔진 상태 변경, running/paused 인 task에만 유효). */
 export async function controlTask(taskId: string, action: "pause" | "resume"): Promise<void> {
   await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/control`, {

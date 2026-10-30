@@ -169,13 +169,28 @@ export default function SettingsScreen() {
               <div className="tx">
                 <div className="t">감사 로그</div>
                 <div className="d">
-                  통제가 차단했거나 승인 대기로 잡은 요청이 기록돼요. (변조 탐지 체인·권한 분리는 우리가 얹는 기여 — 연동 후.)
+                  통제가 차단했거나 승인 대기로 잡은 요청이 기록돼요. (변조 탐지 체인·권한 분리는 우리가 얹는 기여 —
+                  연동 후.)
                 </div>
               </div>
               <button
                 className="btn"
                 type="button"
                 onClick={() => go("audit")}
+                style={{ flex: "none", padding: "10px 14px", fontSize: 13 }}
+              >
+                열기
+              </button>
+            </div>
+            <div className="setrow">
+              <div className="tx">
+                <div className="t">토큰 · 비용</div>
+                <div className="d">모델별 · 일자별 토큰 사용량(실데이터). baseline 대비 비용 효율 측정 근거.</div>
+              </div>
+              <button
+                className="btn"
+                type="button"
+                onClick={() => go("tokens")}
                 style={{ flex: "none", padding: "10px 14px", fontSize: 13 }}
               >
                 열기
