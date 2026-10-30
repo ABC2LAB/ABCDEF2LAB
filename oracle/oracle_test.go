@@ -211,13 +211,6 @@ func TestEvaluateCases(t *testing.T) {
 			in:   mut(func(c *CaseInput) { c.Facts.NontrivialDataMatch = StateNo }), want: Undecidable,
 		},
 		{
-			// Fail-closed invariant (test_oracle.py::deny_without_valid_exception_is_never_allowed):
-			// a registered DENY never reads as Allowed, whatever the (b)(c) evidence. The base case
-			// covers the strong-evidence leg (confirmed); this pins the failed-data leg explicitly.
-			name: "deny policy is never allowed even when data fails (fail-closed guard)",
-			in:   mut(func(c *CaseInput) { c.Facts.NontrivialDataMatch = StateNo }), notWant: Allowed,
-		},
-		{
 			name: "unverifiable data -> undecidable",
 			in:   mut(func(c *CaseInput) { c.Facts.NontrivialDataMatch = StateUnknown }), want: Undecidable,
 			contains: []JudgeReason{ReasonDataUnverifiable}, data: StateUnknown,
@@ -275,6 +268,152 @@ func TestEvaluateCases(t *testing.T) {
 			}
 			if tc.data != skip && got.DataCheck != tc.data {
 				t.Fatalf("data_check = %q, want %q", got.DataCheck, tc.data)
+			}
+		})
+	}
+}
+
+func TestEvaluateInvalidComparisonFactsFailClosed(t *testing.T) {
+	factFields := []struct {
+		name string
+		set  func(*ComparisonFacts, CheckState)
+	}{
+		{name: "same_resource", set: func(f *ComparisonFacts, state CheckState) { f.SameResource = state }},
+		{name: "owner_normal_data", set: func(f *ComparisonFacts, state CheckState) { f.OwnerNormalData = state }},
+		{name: "cross_normal_data", set: func(f *ComparisonFacts, state CheckState) { f.CrossNormalData = state }},
+		{name: "nontrivial_data_match", set: func(f *ComparisonFacts, state CheckState) { f.NontrivialDataMatch = state }},
+		{name: "reflection_excluded", set: func(f *ComparisonFacts, state CheckState) { f.ReflectionExcluded = state }},
+		{name: "template_excluded", set: func(f *ComparisonFacts, state CheckState) { f.TemplateExcluded = state }},
+	}
+	states := []struct {
+		name  string
+		state CheckState
+	}{
+		{name: "unset", state: ""},
+		{name: "unknown", state: StateUnknown},
+		{name: "invalid", state: CheckState("invalid")},
+	}
+
+	assertUndecidable := func(t *testing.T, name string, c CaseInput) {
+		t.Helper()
+		got := Evaluate(c, observedAt)
+		if got.Value != Undecidable {
+			t.Fatalf("%s: value = %q, want %q (reasons %v)", name, got.Value, Undecidable, got.ReasonCodes)
+		}
+		if got.DataCheck != StateUnknown {
+			t.Fatalf("%s: data_check = %q, want %q", name, got.DataCheck, StateUnknown)
+		}
+		wantReasons := []JudgeReason{
+			ReasonPolicyDenyResolved,
+			ReasonSubjectsDistinctVerified,
+			ReasonDataUnverifiable,
+		}
+		if !reasonsEqual(got.ReasonCodes, wantReasons) {
+			t.Fatalf("%s: reasons = %v, want %v", name, got.ReasonCodes, wantReasons)
+		}
+	}
+
+	t.Run("all facts unset", func(t *testing.T) {
+		assertUndecidable(t, "all facts unset", mut(func(c *CaseInput) {
+			c.Facts = ComparisonFacts{}
+		}))
+	})
+	for _, field := range factFields {
+		for _, state := range states {
+			t.Run(field.name+"/"+state.name, func(t *testing.T) {
+				assertUndecidable(t, field.name+"/"+state.name, mut(func(c *CaseInput) {
+					field.set(&c.Facts, state.state)
+				}))
+			})
+		}
+	}
+}
+
+func TestEvaluateInvalidPolicyEnumsFailClosed(t *testing.T) {
+	invalidPolicies := []struct {
+		name string
+		mut  func(*PolicyAssertion)
+	}{
+		{name: "expected_access unset", mut: func(p *PolicyAssertion) { p.ExpectedAccess = "" }},
+		{name: "expected_access invalid", mut: func(p *PolicyAssertion) { p.ExpectedAccess = ExpectedAccess("invalid") }},
+		{name: "sharing unset", mut: func(p *PolicyAssertion) { p.Sharing = "" }},
+		{name: "sharing invalid", mut: func(p *PolicyAssertion) { p.Sharing = ResolutionState("invalid") }},
+		{name: "delegation unset", mut: func(p *PolicyAssertion) { p.Delegation = "" }},
+		{name: "delegation invalid", mut: func(p *PolicyAssertion) { p.Delegation = ResolutionState("invalid") }},
+		{name: "all enums unset", mut: func(p *PolicyAssertion) {
+			p.ExpectedAccess = ""
+			p.Sharing = ""
+			p.Delegation = ""
+		}},
+	}
+
+	for _, tc := range invalidPolicies {
+		t.Run(tc.name, func(t *testing.T) {
+			c := baseCase()
+			tc.mut(&c.Policy)
+			got := Evaluate(c, observedAt)
+			if got.Value != Undecidable {
+				t.Fatalf("value = %q, want %q (reasons %v)", got.Value, Undecidable, got.ReasonCodes)
+			}
+			if got.PolicyCheck != StateUnknown {
+				t.Fatalf("policy_check = %q, want %q", got.PolicyCheck, StateUnknown)
+			}
+			wantReasons := []JudgeReason{
+				ReasonExpectedAccessPolicyInvalid,
+				ReasonSubjectsDistinctVerified,
+				ReasonDataNontrivialMatch,
+			}
+			if !reasonsEqual(got.ReasonCodes, wantReasons) {
+				t.Fatalf("reasons = %v, want %v", got.ReasonCodes, wantReasons)
+			}
+		})
+	}
+}
+
+func TestEvaluateMalformedPolicyCannotUseAllowPath(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*PolicyAssertion)
+	}{
+		{name: "invalid expected access with resolved sharing allow", mut: func(p *PolicyAssertion) {
+			p.ExpectedAccess = ExpectedAccess("invalid")
+			p.Sharing = ResolvedAllow
+		}},
+		{name: "invalid expected access with resolved delegation allow", mut: func(p *PolicyAssertion) {
+			p.ExpectedAccess = ExpectedAccess("invalid")
+			p.Delegation = ResolvedAllow
+		}},
+		{name: "invalid sharing with explicit access allow", mut: func(p *PolicyAssertion) {
+			p.ExpectedAccess = AccessAllow
+			p.Sharing = ResolutionState("invalid")
+		}},
+		{name: "invalid delegation with explicit access allow", mut: func(p *PolicyAssertion) {
+			p.ExpectedAccess = AccessAllow
+			p.Delegation = ResolutionState("invalid")
+		}},
+		{name: "invalid sharing with resolved delegation allow", mut: func(p *PolicyAssertion) {
+			p.Sharing = ResolutionState("invalid")
+			p.Delegation = ResolvedAllow
+		}},
+		{name: "invalid delegation with resolved sharing allow", mut: func(p *PolicyAssertion) {
+			p.Delegation = ResolutionState("invalid")
+			p.Sharing = ResolvedAllow
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := baseCase()
+			tc.mut(&c.Policy)
+			got := Evaluate(c, observedAt)
+			if got.Value != Undecidable {
+				t.Fatalf("value = %q, want %q (reasons %v)", got.Value, Undecidable, got.ReasonCodes)
+			}
+			if got.PolicyCheck != StateUnknown {
+				t.Fatalf("policy_check = %q, want %q", got.PolicyCheck, StateUnknown)
+			}
+			if got.ReasonCodes[0] != ReasonExpectedAccessPolicyInvalid {
+				t.Fatalf("first reason = %q, want %q", got.ReasonCodes[0], ReasonExpectedAccessPolicyInvalid)
 			}
 		})
 	}
