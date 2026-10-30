@@ -75,6 +75,8 @@ work/
 test-results/
 scan-output/
 evidence-local/
+e2-snapshots/
+e2-state/
 # 데모 앱을 로컬에서 기동하면 생기는 런타임 데이터(녹화 프록시 트래픽 인덱스 DB·
 # mitmproxy CA 개인키 등)라 공개 저장소에 커밋하지 않는다(BRIEF 경계 #2).
 /demo-data/

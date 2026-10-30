@@ -21,11 +21,13 @@ import (
 )
 
 type recorder struct {
-	mu      sync.Mutex
-	events  []transmit.Event
-	failAt  string
-	started chan struct{}
-	release chan struct{}
+	mu            sync.Mutex
+	events        []transmit.Event
+	failAt        string
+	started       chan struct{}
+	release       chan struct{}
+	resultStarted chan struct{}
+	resultRelease chan struct{}
 }
 
 func (r *recorder) Record(_ context.Context, event transmit.Event) error {
@@ -40,6 +42,10 @@ func (r *recorder) Record(_ context.Context, event transmit.Event) error {
 	}
 	if r.release != nil && event.Stage == "intent" {
 		<-r.release
+	}
+	if r.resultStarted != nil && event.Stage == "result" {
+		close(r.resultStarted)
+		<-r.resultRelease
 	}
 	r.events = append(r.events, event)
 	if r.failAt == event.Stage {
@@ -547,5 +553,47 @@ func TestHTTPTransmitterStopCancelsInFlight(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("queued request was not canceled")
+	}
+}
+
+func TestHTTPTransmitterStopAndWaitDrainsResultBeforeAuditClose(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	rec := &recorder{resultStarted: make(chan struct{}), resultRelease: make(chan struct{})}
+	tx, err := transmit.NewHTTP(context.Background(), transportConfig(server.URL, rec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := make(chan transmit.Receipt, 1)
+	go func() { _, receipt, _ := tx.SendDetailed(transportRequest("owner", "h-owner")); sent <- receipt }()
+	select {
+	case <-rec.resultStarted:
+	case <-time.After(time.Second):
+		t.Fatal("result audit did not start")
+	}
+	drained := make(chan struct{})
+	go func() { tx.StopAndWait(); close(drained) }()
+	select {
+	case <-drained:
+		t.Fatal("audit closed while result was still recording")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(rec.resultRelease)
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("result audit did not drain")
+	}
+	<-sent
+	if len(rec.events) != 2 || rec.events[0].Stage != "intent" || rec.events[1].Stage != "result" || hits.Load() != 1 {
+		t.Fatalf("incomplete audit after drain: events=%d hits=%d", len(rec.events), hits.Load())
+	}
+	_, receipt, ok := tx.SendDetailed(transportRequest("owner", "h-owner"))
+	if ok || receipt.Admitted || hits.Load() != 1 || len(rec.events) != 2 {
+		t.Fatalf("send after audit close: receipt=%+v hits=%d events=%d", receipt, hits.Load(), len(rec.events))
 	}
 }

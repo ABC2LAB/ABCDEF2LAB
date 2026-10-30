@@ -34,6 +34,9 @@ from score import (  # noqa: E402
     score_run,
 )
 from scoreboard import SnapshotError  # noqa: E402
+from run_record import RunRecordError  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from run_fixture import RunFixture  # noqa: E402
 
 # 채점 분모 전체(코어 ∪ BAC). 합성 스냅샷은 기본으로 이 key를 전부 미해결로 싣는다.
 _SCORED_KEYS = sorted({c.key for c in core_gt() + bac_category()})
@@ -59,6 +62,12 @@ class _RunDir(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
+        self.runner_key = os.urandom(32)
+        self.key_path = self._path("runner.key")
+        with open(self.key_path, "wb") as f:
+            f.write(self.runner_key)
+        os.chmod(self.key_path, 0o600)
+        self.fixture = RunFixture(self._tmp.name, self.runner_key)
         self.correlation_path = self._write_correlation()
         table = load_correlation(self.correlation_path)
         self.correlate = table.correlate
@@ -87,33 +96,7 @@ class _RunDir(unittest.TestCase):
         **overrides: object,
     ) -> dict:
         """회차 디렉터리를 만들고 manifest 회차 항목(상대경로)을 돌려준다."""
-        os.makedirs(self._path(name))
-        run: dict = {
-            "condition": "우리@test",
-            "engine": "ours",
-            "run_id": f"run-{name}",
-            "model_tag": "test-model",
-            "reset_generation": f"gen-{name}",
-            "repeat_index": 0,
-            "records_path": f"{name}/records.json",
-            "snapshot_path": f"{name}/snapshot.json",
-        }
-        run.update(overrides)
-        stamped = [dict(record, reset_generation=record.get("reset_generation", run["reset_generation"]))
-                   for record in records]
-        with open(self._path(name, "records.json"), "w", encoding="utf-8") as f:
-            json.dump({
-                "run_id": run["run_id"],
-                "model_tag": run["model_tag"],
-                "reset_generation": run["reset_generation"],
-                "records": stamped,
-            }, f)
-        snapshot = {k: False for k in _SCORED_KEYS} | (solved or {})
-        for key in drop_keys:
-            del snapshot[key]
-        with open(self._path(name, "snapshot.json"), "w", encoding="utf-8") as f:
-            json.dump({"run_id": run["run_id"], "reset_generation": run["reset_generation"], "solved": snapshot}, f)
-        return run
+        return self.fixture.make(name, records, solved, drop_keys, **overrides)
 
     def write_manifest(self, runs: list[dict]) -> str:
         path = self._path("manifest.json")
@@ -127,7 +110,8 @@ class _RunDir(unittest.TestCase):
     def run_main(self, runs: list[dict], correlation_path: str | None = None) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main([self.write_manifest(runs), "--correlation", correlation_path or self.correlation_path])
+            code = main([self.write_manifest(runs), "--correlation", correlation_path or self.correlation_path,
+                         "--runner-key-file", self.key_path])
         return code, out.getvalue(), err.getvalue()
 
 
@@ -138,13 +122,13 @@ class TestTitleMapping(_RunDir):
         # 레코드가 제목을 실어 오면 계약 밖 필드로 막힌다 — 제목으로 상관할 길이 없다.
         run = self.make_run("r0", [_record("confirmed", "rest:basket:1", name="View Basket")])
         with self.assertRaises(ScanOutputError):
-            score_repeat(self.load([run])[0], self.correlate)
+            score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key)
         code, out, _ = self.run_main([run])
         self.assertEqual((code, out), (2, ""))
 
     def test_confirmed_without_solve_is_false_positive(self) -> None:
         run = self.make_run("r0", [_record("confirmed", "rest:basket:1")])
-        counts = count_basis(score_repeat(self.load([run])[0], self.correlate), core_gt())
+        counts = count_basis(score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key), core_gt())
         self.assertEqual((counts.confirmed, counts.false_positive), (0, 1))
 
 
@@ -154,7 +138,7 @@ class TestOutOfList(_RunDir):
     def test_unmapped_finding_counted_separately(self) -> None:
         run = self.make_run("r0", [_record("confirmed", "rest:unknownThing:7")])
         for basis in (core_gt(), bac_category()):
-            counts = count_basis(score_repeat(self.load([run])[0], self.correlate), basis)
+            counts = count_basis(score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key), basis)
             self.assertEqual(counts.out_of_list, 1)
             self.assertEqual(counts.false_positive, 0)
 
@@ -164,8 +148,8 @@ class TestDenominator(_RunDir):
 
     def test_non_gt_unsolved_not_counted(self) -> None:
         extra = {f"notInGt{i}Challenge": False for i in range(93)}
-        run = self.make_run("r0", [], solved=extra)
-        repeat = score_repeat(self.load([run])[0], self.correlate)
+        run = self.make_run("r0", [], solved=extra, pre=extra)
+        repeat = score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key)
         for basis, size in ((core_gt(), 9), (bac_category(), 10)):
             c = count_basis(repeat, basis)
             self.assertEqual(c.confirmed + c.false_positive + c.missed + c.undecided, size)
@@ -178,8 +162,11 @@ class TestEvidenceAndCoverage(_RunDir):
     _TRAFFIC = {"t-cross": "rest:basket:1"}
 
     def _core(self, run: dict, **kwargs: object):
+        traffic, covered = kwargs.pop("traffic", None), kwargs.pop("covered", None)
+        if traffic is not None or covered is not None:
+            self.fixture.evidence(run, traffic, covered)
         kwargs.setdefault("correlatable", self.correlatable)
-        return count_basis(score_repeat(self.load([run])[0], self.correlate, **kwargs), core_gt())
+        return count_basis(score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key, **kwargs), core_gt())
 
     def test_t4_cli_path_confirmed_solved_is_undecided(self) -> None:
         # traffic 인덱스 없음(지금 CLI 경로) → 증거 (b)(c) 확인 불가 → 확정 아님.
@@ -250,7 +237,10 @@ class TestWarnings(_RunDir):
     """A10 — 이상 신호는 stderr 경고로만. 무엇·어디를 적고, 판정은 바꾸지 않는다."""
 
     def _counts(self, records: list[dict], name: str = "r0", **kwargs: object):
-        scored = score_run(self.load([self.make_run(name, records)])[0], self.correlate, **kwargs)
+        run = self.make_run(name, records)
+        if kwargs:
+            self.fixture.evidence(run, **kwargs)
+        scored = score_run(self.load([run])[0], self.correlate, runner_key=self.runner_key)
         return count_basis(scored.result, core_gt()), scored.warnings
 
     def test_allowed_anomaly_names_run_and_challenge(self) -> None:
@@ -315,7 +305,7 @@ class TestSameScript(_RunDir):
     def test_baseline_is_error_not_zero(self) -> None:
         run = self.make_run("r0", [], engine="baseline", condition="원본@test")
         with self.assertRaisesRegex(BaselineNotImplementedError, "A5"):
-            score_repeat(self.load([run])[0], self.correlate)
+            score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key)
 
     def test_cli_stops_without_table_on_baseline(self) -> None:
         runs = [
@@ -360,14 +350,15 @@ class TestRecordProvenance(_RunDir):
     def _replace_records(self, run: dict, payload: object) -> None:
         with open(self._path(run["records_path"]), "w", encoding="utf-8") as f:
             json.dump(payload, f)
+        self.fixture.reseal(run)
 
     def _read_records(self, run: dict) -> dict:
         with open(self._path(run["records_path"]), encoding="utf-8") as f:
             return json.load(f)
 
     def assert_stops(self, run: dict, fragment: str) -> None:
-        with self.assertRaisesRegex(ScanOutputError, fragment):
-            score_repeat(self.load([run])[0], self.correlate)
+        with self.assertRaisesRegex((ScanOutputError, RunRecordError), fragment):
+            score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key)
         code, out, err = self.run_main([run])
         self.assertEqual((code, out), (2, ""))
         self.assertIn(fragment, err)
@@ -406,6 +397,7 @@ class TestRecordProvenance(_RunDir):
                 '"resource_ref": "rest:basket:1", "model_tag": "test-model"',
                 '"resource_ref": "rest:basket:1", "model_tag": "old-model", "model_tag": "test-model"',
             ))
+        self.fixture.reseal(run)
         self.assert_stops(run, "key 중복")
 
     def test_record_model_and_reset_mismatch_rejected(self) -> None:
@@ -438,7 +430,7 @@ class TestSnapshotProvenance(_RunDir):
             json.dump({key: False for key in _SCORED_KEYS}, f)
         code, out, err = self.run_main([run])
         self.assertEqual((code, out), (2, ""))
-        self.assertIn("snapshot envelope", err)
+        self.assertIn("불일치", err)
 
     def test_mismatched_run_or_reset_rejected(self) -> None:
         for field in ("run_id", "reset_generation"):
@@ -449,6 +441,7 @@ class TestSnapshotProvenance(_RunDir):
             payload[field] = "another-run"
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f)
+            self.fixture.reseal(run)
             code, out, err = self.run_main([run])
             self.assertEqual((code, out), (2, ""))
             self.assertIn(field, err)
@@ -460,7 +453,7 @@ class TestSnapshotGuard(_RunDir):
     def test_missing_gt_key_stops_scoring(self) -> None:
         run = self.make_run("r0", [], drop_keys=("basketAccessChallenge",))
         with self.assertRaisesRegex(SnapshotError, "basketAccessChallenge"):
-            score_repeat(self.load([run])[0], self.correlate)
+            score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key)
         self.assertEqual(self.run_main([run])[:2], (2, ""))
 
 
