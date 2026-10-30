@@ -9,14 +9,15 @@ import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
 
 // 누가 통제를 정했나 (decision_source)
-const SOURCE_LABEL: Record<string, string> = { rule: "규칙", judge: "모델 판정", user: "사람" };
+// 서버 decision_source 값: rule | model | unknown (dto)
+const SOURCE_LABEL: Record<string, string> = { rule: "규칙", model: "모델 판정", unknown: "미상" };
 function sourceLabel(s: string): string {
   return SOURCE_LABEL[s] ?? (s || "—");
 }
-// 범주색 재사용: 규칙=시스템, 모델판정=에이전트, 사람=op
-const SOURCE_WHO: Record<string, string> = { rule: "sys", judge: "agent", user: "op" };
+// 범주색 재사용: 규칙=시스템, 모델판정=에이전트, 미상=op
+const SOURCE_WHO: Record<string, string> = { rule: "sys", model: "agent", unknown: "op" };
 
-type FilterKey = "all" | "rule" | "judge" | "user";
+type FilterKey = "all" | "rule" | "model" | "unknown";
 
 /** status → 표시 라벨·색 */
 function statusInfo(status: string): { label: string; style: React.CSSProperties } {
@@ -60,14 +61,14 @@ export default function AuditScreen() {
 
   const counts = useMemo(() => {
     let rule = 0;
-    let judge = 0;
-    let user = 0;
+    let model = 0;
+    let unknown = 0;
     for (const e of events) {
       if (e.source === "rule") rule += 1;
-      else if (e.source === "judge") judge += 1;
-      else if (e.source === "user") user += 1;
+      else if (e.source === "model") model += 1;
+      else unknown += 1;
     }
-    return { all: events.length, rule, judge, user };
+    return { all: events.length, rule, model, unknown };
   }, [events]);
 
   const rows = useMemo(() => {
@@ -120,10 +121,10 @@ export default function AuditScreen() {
           </div>
 
           <div style={noticeBox}>
-            ARTEX <Strong>승인 게이트(intercept)</Strong>가 에이전트 도구 호출을 <Strong>차단</Strong>했거나 승인
-            대기로 잡은 기록이에요(허용까지 남기는 원장은 아님). 우리{" "}
-            <Strong>전송 통제(E², 네트워크 경계)</Strong>와 <Strong>변조 탐지 해시체인·로그 권한 분리</Strong>는{" "}
-            <Strong>연동 전</Strong> — 연동되면 각 줄에 체인 해시가 붙어요.
+            ARTEX <Strong>승인 게이트(intercept)</Strong>가 에이전트 도구 호출을 <Strong>차단</Strong>했거나 승인 대기로
+            잡은 기록이에요(허용까지 남기는 원장은 아님). 우리 <Strong>전송 통제(E², 네트워크 경계)</Strong>와{" "}
+            <Strong>변조 탐지 해시체인·로그 권한 분리</Strong>는 <Strong>연동 전</Strong> — 연동되면 각 줄에 체인 해시가
+            붙어요.
           </div>
 
           <Tabs<FilterKey>
@@ -132,8 +133,8 @@ export default function AuditScreen() {
             items={[
               { key: "all", label: "전체", count: counts.all },
               { key: "rule", label: "규칙", count: counts.rule },
-              { key: "judge", label: "모델 판정", count: counts.judge },
-              { key: "user", label: "사람", count: counts.user },
+              { key: "model", label: "모델 판정", count: counts.model },
+              { key: "unknown", label: "미상", count: counts.unknown },
             ]}
           />
 
@@ -152,22 +153,26 @@ export default function AuditScreen() {
                 const who = SOURCE_WHO[e.source] ?? "sys";
                 const blocked = st.label === "차단";
                 return (
-                  <div
-                    key={e.id}
-                    className="logrow"
-                    style={blocked ? { background: "var(--warn-weak)" } : undefined}
-                  >
+                  <div key={e.id} className="logrow" style={blocked ? { background: "var(--warn-weak)" } : undefined}>
                     <span className="ts">{tsLabel(e.ts)}</span>
                     <span className={`who ${who}`}>{sourceLabel(e.source)}</span>
                     <span className="msg" style={{ minWidth: 0 }}>
-                      <span style={{ ...(oneLine as React.CSSProperties), display: "block" }} title={e.reason || e.ruleName}>
+                      <span
+                        style={{ ...(oneLine as React.CSSProperties), display: "block" }}
+                        title={e.reason || e.ruleName}
+                      >
                         {e.agent ? <span style={{ color: "var(--faint)" }}>{e.agent} · </span> : null}
                         <code>{e.tool || "요청"}</code> · <strong style={st.style}>{st.label}</strong>
                         {e.reason ? ` · ${e.reason}` : ""}
                       </span>
                       {e.ruleName ? (
                         <span
-                          style={{ ...(oneLine as React.CSSProperties), display: "block", fontSize: 11, color: "var(--faint)" }}
+                          style={{
+                            ...(oneLine as React.CSSProperties),
+                            display: "block",
+                            fontSize: 11,
+                            color: "var(--faint)",
+                          }}
                           title={e.ruleName}
                         >
                           {e.ruleName}

@@ -272,8 +272,8 @@ export default function ReportScreen() {
           <div className="rpanel" hidden={panel !== "list"}>
             {findings.length > 0 && (
               <p className="hint" style={{ marginTop: 0 }}>
-                이름·엔드포인트·심각도는 실데이터예요. 증거 상세와 확정·의심·판단 불가 <Strong>판정</Strong>은 E③
-                오라클 연동 후 표시돼요.
+                이름·엔드포인트·심각도는 실데이터예요. 증거 상세와 확정·의심·판단 불가 <Strong>판정</Strong>은 E③ 오라클
+                연동 후 표시돼요.
               </p>
             )}
             {findRes.loading ? (
@@ -316,12 +316,7 @@ export default function ReportScreen() {
                 <>
                   <CoverageBar label="전체" tested={cov.tested} total={cov.denominator} strong />
                   {cov.byType.map((t) => (
-                    <CoverageBar
-                      key={t.type}
-                      label={TYPE_LABEL[t.type] ?? t.type}
-                      tested={t.tested}
-                      total={t.total}
-                    />
+                    <CoverageBar key={t.type} label={TYPE_LABEL[t.type] ?? t.type} tested={t.tested} total={t.total} />
                   ))}
                   <p className="hint" style={{ marginTop: 14 }}>
                     분모 = 범위(scope) 내 자산 수, 분자 = 실제로 요청·탐색한 수. 미검사(분모−분자)는{" "}
@@ -353,8 +348,8 @@ export default function ReportScreen() {
             <div className="card" style={{ marginBottom: 0 }}>
               <h3>감사 기록</h3>
               <p className="hint" style={{ marginTop: 0, marginBottom: 12 }}>
-                이 점검 중 나간 요청과 사람의 승인 결정이 변조 탐지되는 로그로 남아요. 점검 운영자는 로그를 지울 수
-                없어요(권한 분리).
+                이 점검 중 통제가 차단했거나 승인 대기로 잡은 요청이 기록으로 남아요. (변조 탐지 체인·로그 권한 분리는
+                우리가 얹는 기여 — 연동 후.)
               </p>
               <button className="btn" type="button" onClick={() => go("audit")}>
                 감사 로그 열기 →

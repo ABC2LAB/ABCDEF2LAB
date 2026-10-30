@@ -96,7 +96,9 @@ function TaskCard({ task, onOpen }: { task: EngineTask; onOpen: (s: "live" | "re
               {SEV_COUNT_LABEL[lvl]} {f[lvl]}
             </Sev>
           ))
-        ) : terminal ? (
+        ) : task.status === "failed" ? (
+          <Pill tone="warn">실패 · 미완료</Pill>
+        ) : task.status === "done" ? (
           <Pill tone="muted">발견 없음</Pill>
         ) : null}
         <button
