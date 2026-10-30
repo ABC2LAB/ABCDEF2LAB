@@ -101,6 +101,13 @@ class TestNormal(_GtFixture):
         expected = sorted(c.key for c in core_gt() if c.key not in _SYNTHETIC)
         self.assertEqual(sorted(table.unmapped), expected)
 
+    def test_operative_is_complement_of_unmapped(self) -> None:
+        # 상관 가능(type ≥ 1) 챌린지 — '판정 없음 + 해결 → 미탐' 게이트의 근거.
+        table = self.load()
+        self.assertEqual(table.operative, frozenset(_SYNTHETIC))
+        self.assertEqual(table.operative | set(table.unmapped), {c.key for c in core_gt()})
+        self.assertFalse(table.operative & set(table.unmapped))
+
 
 class TestNoMatchIsOutOfList(_GtFixture):
     def test_type_not_in_gt(self) -> None:
