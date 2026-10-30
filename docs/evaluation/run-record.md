@@ -8,6 +8,7 @@
 manifest는 파일 위치와 비교 행을 지정한다. 해결 주체나 요청 종료를 스스로 선언할 수 없다.
 엔진과 키를 공유하지 않는 **신뢰 러너**가 실제 관측 후 `run_record.sign_run_record(payload, key)`로 기록을 발행한다.
 채점기는 별도 CLI `--runner-key-file`로 선택한 키를 사용한다. 키는 최소 32-byte 랜덤 값이며 결과물과 엔진 밖에서 보관한다.
+키 파일은 일반 파일·소유자 전용 권한(예: `0600`)이어야 한다. 그룹/기타 읽기·쓰기·실행 권한이나 심볼릭 링크가 있으면 채점을 중단한다.
 
 서명은 HMAC-SHA256이다. `signature`를 제외한 JSON을 `sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False`로 UTF-8 직렬화한다.
 소문자 64자리 hex signature를 `hmac.compare_digest`로 대조한다. 중복 JSON key·NaN·Infinity는 거부한다.
@@ -55,7 +56,7 @@ manifest는 파일 위치와 비교 행을 지정한다. 해결 주체나 요청
 
 descriptor의 5개 신원 필드는 러너 기록과 같아야 한다. pre/raw는 phase=pre, post/raw는 phase=post, 나머지는 phase=engine이다.
 경로 이탈·symlink·같은 파일의 중복 역할은 거부한다. 열린 디렉터리 FD 기준으로 각 경로 요소를 O_NOFOLLOW로 열어 검사/읽기 사이 교체도 차단한다. 안전한 dir_fd/O_NOFOLLOW를 지원하는 POSIX 환경이 필요하며 미지원 환경은 중단한다. 해시를 검증한 동일 바이트를 JSON으로 해석한다.
-manifest의 records/pre/post 경로도 해당 descriptor와 일치해야 한다.
+manifest의 records/pre/post 경로도 해당 descriptor와 일치해야 한다. 결과 디렉터리의 심볼릭 링크 별칭은 실제 경로로 정규화해 비교하지만, 아티팩트를 읽을 때는 각 경로 요소의 심볼릭 링크를 거부한다.
 
 - `pre_raw`, `post_raw`: 대상 `/api/Challenges` 응답 행 배열 또는 `{"data": [...]}`. 대상의 raw 응답이다.
 - `pre`, `post`: 위 5개 신원 필드 + `phase` + `solved`만 있는 envelope. `solved`는 `{key: bool}` 정규화 맵이다.
@@ -85,6 +86,9 @@ traffic은 실제 송신·응답 완료된 엔진 요청의 비민감 인덱스�
 - 모든 이벤트는 pre..post 사이의 `false→true`와 연결되어야 한다. ID/챌린지 중복이나 상태 모순은 오류다.
 - 이벤트 미수집(null)·빈 배열·other/unknown만 있으면 새 해결도 귀속 미확인으로 판단불가다.
 - v1에는 `exclusive_window=true`나 manifest의 자체 귀속 선언을 허용하지 않는다.
+
+Juice Shop scoreboard의 pre/post 해결 상태만으로는 해결 주체를 알 수 없다. 실제 러너·관측기가 `actor=engine` 이벤트를 발행하지 못하면 새로 해결된 항목은 전부 귀속 미확인으로 판단불가다. 따라서 현재 합성 시험의 확정·해결 기반 미탐 수를 실측 가능 성과로 해석하면 안 된다.
+평가 전에는 격리된 새 인스턴스와 pre 이후 배타 구간을 신뢰 러너가 보증하는 방식을 귀속 근거로 추가할지, 해결 요청과 E② traffic id를 연결하는 관측기를 먼저 만들지 결정해야 한다. 두 방식 모두 현재 v1 입력·채점에는 구현되지 않았다.
 
 ## 반복 비교와 실패
 

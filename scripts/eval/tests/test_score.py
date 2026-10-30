@@ -66,6 +66,7 @@ class _RunDir(unittest.TestCase):
         self.key_path = self._path("runner.key")
         with open(self.key_path, "wb") as f:
             f.write(self.runner_key)
+        os.chmod(self.key_path, 0o600)
         self.fixture = RunFixture(self._tmp.name, self.runner_key)
         self.correlation_path = self._write_correlation()
         table = load_correlation(self.correlation_path)

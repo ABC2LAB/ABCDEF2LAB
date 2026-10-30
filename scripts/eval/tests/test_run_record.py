@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aggregate import Bucket, ScanVerdict, classify, count_basis
 from ground_truth import core_gt
 from manifest import load_manifests
-from run_record import RunRecordError, load_run_inputs
+from run_record import RunRecordError, load_run_inputs, read_runner_key
 from score import score_run
 from test_score import _RunDir, _record
 
@@ -146,10 +146,24 @@ class TestRunInputGuards(_RunDir):
         self.alter(run, "pre", lambda data: data["solved"].update({KEY: "false"}))
         self.stops(run, "불리언")
 
-    def test_hash_and_size_detect_unresigned_changes(self):
+    def test_same_size_unresigned_change_fails_hash_check(self):
         run = self.make_run("r0", [])
-        self.alter(run, "post", lambda data: data["solved"].update({KEY: True}), reseal=False)
-        self.stops(run, "불일치")
+        path = self.artifact(run, "post")
+        original = path.read_bytes()
+        changed = original.replace(f'"{KEY}": false'.encode(), f'"{KEY}": true '.encode())
+        self.assertNotEqual(original, changed)
+        self.assertEqual(len(original), len(changed))
+        path.write_bytes(changed)
+        with self.assertRaisesRegex(RunRecordError, "^post: 파일 해시 불일치$"):
+            load_run_inputs(self.load([run])[0], self.runner_key, self.correlate)
+        self.stops(run, "post: 파일 해시 불일치")
+
+    def test_unresigned_size_change_fails_size_check(self):
+        run = self.make_run("r0", [])
+        path = self.artifact(run, "post")
+        path.write_bytes(path.read_bytes() + b" ")
+        with self.assertRaisesRegex(RunRecordError, "^post: 파일 크기 불일치$"):
+            load_run_inputs(self.load([run])[0], self.runner_key, self.correlate)
 
     def test_raw_and_normalized_disagreement_rejected(self):
         run = self.make_run("r0", [])
@@ -172,8 +186,23 @@ class TestRunInputGuards(_RunDir):
     def test_runner_context_must_match_manifest(self):
         for field in ("run_id", "model_tag", "reset_generation", "engine"):
             run = self.make_run(field, [])
-            self.receipt_change(run, lambda data: data.update({field: "other"}))
-            self.stops(run, field)
+            receipt = self.fixture.receipt(run)
+            receipt[field] = "other"
+            for descriptor in receipt["artifacts"].values():
+                if descriptor is None:
+                    continue
+                if field in descriptor:
+                    descriptor[field] = "other"
+                path = Path(self._path(run["run_record_path"])).parent / descriptor["path"]
+                payload = json.loads(path.read_bytes())
+                if field in payload:
+                    payload[field] = "other"
+                    path.write_text(json.dumps(payload))
+            self.fixture._write_receipt(run, receipt)
+            self.fixture.reseal(run)
+            with self.assertRaisesRegex(RunRecordError, f"^러너 기록 {field} 불일치$"):
+                load_run_inputs(self.load([run])[0], self.runner_key, self.correlate)
+            self.stops(run, f"러너 기록 {field} 불일치")
 
     def test_all_artifact_metadata_and_phase_bound_to_run(self):
         for name in ("pre", "post_raw", "records", "traffic", "coverage", "solve_events"):
@@ -220,6 +249,17 @@ class TestRunInputGuards(_RunDir):
         Path(self.key_path).write_bytes(b"short")
         self.stops(run, "러너 키")
 
+    def test_runner_key_requires_owner_only_regular_file(self):
+        run = self.make_run("r0", [])
+        os.chmod(self.key_path, 0o644)
+        self.stops(run, "소유자 전용 권한")
+        os.chmod(self.key_path, 0o600)
+        self.assertEqual(read_runner_key(self.key_path), self.runner_key)
+        link = self._path("key-link")
+        Path(link).symlink_to(self.key_path)
+        with self.assertRaises(OSError):
+            read_runner_key(link)
+
     def test_path_escape_duplicate_and_symlink_rejected(self):
         for path in ("../outside.json", "/tmp/outside.json", "records.json"):
             run = self.make_run(f"r{len(os.listdir(self._tmp.name))}", [])
@@ -230,6 +270,25 @@ class TestRunInputGuards(_RunDir):
         link.unlink()
         link.symlink_to(self.key_path)
         self.stops(run, "경로")
+
+    def test_hardlinked_artifact_roles_rejected(self):
+        run = self.make_run("r0", [])
+        source, target = self.artifact(run, "pre_raw"), self.artifact(run, "post_raw")
+        self.assertEqual(source.read_bytes(), target.read_bytes())
+        target.unlink()
+        os.link(source, target)
+        self.assertEqual(source.stat().st_ino, target.stat().st_ino)
+        with self.assertRaisesRegex(RunRecordError, "^아티팩트 파일 경로/역할 중복$"):
+            load_run_inputs(self.load([run])[0], self.runner_key, self.correlate)
+
+    def test_manifest_paths_allow_symlinked_run_directory(self):
+        run = self.make_run("r0", [])
+        alias = Path(self._path("run-alias"))
+        alias.symlink_to(self._path("r0"), target_is_directory=True)
+        for field in ("records_path", "pre_snapshot_path", "snapshot_path", "run_record_path"):
+            run[field] = run[field].replace("r0/", "run-alias/", 1)
+        inputs = load_run_inputs(self.load([run])[0], self.runner_key, self.correlate)
+        self.assertFalse(inputs.post[KEY])
 
     def test_duplicate_receipt_json_keys_rejected(self):
         run = self.make_run("r0", [])

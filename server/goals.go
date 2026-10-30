@@ -60,6 +60,10 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 }
 
 func (s *Server) startTaskEngine(t *Task) {
+	if s.engine.controlledTask(t.ID) {
+		s.engine.Run(s.ctx, t)
+		return
+	}
 	ctx := s.engine.execContextFor(s.ctx, t.ID)
 	if ctx.Err() != nil || s.engine.IsDeleting(t.ID) {
 		return
@@ -196,7 +200,9 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	// Install the execution barrier before reviving a terminal/paused task. Without
 	// this ordering, its already-running worker loops can claim the newly-opened
 	// intent in the gap between status=running and queued=true.
-	if shouldQueue || wasTerminal || wasPaused || wasQueued {
+	// An existing pause already supplies this barrier. Re-cancelling it would
+	// revoke the fresh controlled-read approval registered while paused.
+	if !engineWasPaused && (shouldQueue || wasTerminal || wasPaused || wasQueued) {
 		s.engine.Pause(t.ID, agent.Causef("queued_for_admission", "任务等待运行准入",
 			"任务正在等待并发队列或准入状态提交，本次执行已停止；只有获得运行槽后才会重新领取意图"))
 	}

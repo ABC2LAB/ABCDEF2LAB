@@ -234,6 +234,9 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 const timeoutFinalRoundSummaryFmt = "작업 시간 초과 마무리·최종 판정(%d차)"
 
 func (e *Engine) runFinalPlannerRound(ctx context.Context, t *Task) (met bool) {
+	if e.controlledTask(t.ID) {
+		return false
+	}
 	if e.IsDeleting(t.ID) {
 		return false
 	}

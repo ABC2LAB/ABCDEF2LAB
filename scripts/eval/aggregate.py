@@ -47,11 +47,19 @@ def classify(
     verdict: ScanVerdict, solved: bool, *, evidence_ok: bool, covered: bool, correlatable: bool,
     pre_solved: bool | None = None, engine_attributed: bool = False,
 ) -> Bucket:
-    """프로토콜 §4: 사전 해결/미확인 pre와 귀속 미확인 solve는 우선 판단불가.
+    """한 GT 챌린지 → 매트릭스 칸. 프로토콜 §4 판정표.
 
-    확인된 새 solve만 증거가 있는 confirmed 또는 상관 가능한 판정 없음에 크레딧을 준다.
-    pre=false·post=false의 confirmed는 증거와 무관하게 오탐이며, 판정 없음의 미탐은
-    실제 검사 커버리지와 상관 가능 여부가 모두 필요하다.
+    - pre 미확인 또는 pre=true → 판단불가 (사전 해결을 성과로 세지 않음)
+    - pre=false·post=true지만 엔진 귀속 미확인 → 판단불가
+    - confirmed + 해결 + 증거 충족   → 확정
+    - confirmed + 해결 + 증거 미충족 → 판단불가 (확인 못 한 증거로 확정 주지 않음, §4-2)
+    - confirmed + 미해결            → 오탐 (증거 유무와 무관, §4-2)
+    - suspected/undecidable        → 판단불가 (confirmed 주장이 아님)
+    - allowed                      → 판단불가 (GT에 ALLOWED = KG·정책 오류 신호, §4-6)
+    - 판정 없음 + 해결 + 상관 가능            → 미탐 (해결시키고 보고하지 않음)
+    - 판정 없음 + 미해결 + 커버리지 + 상관 가능 → 미탐
+    - 판정 없음 + 미해결 + 커버리지 없음       → 판단불가 (§4-4)
+    - 판정 없음 + 상관 불가                   → 판단불가 (판정 없음 자체를 모름)
     """
     if pre_solved is not False:
         return Bucket.UNDECIDED
