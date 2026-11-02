@@ -1,0 +1,125 @@
+"""러너 docker 경계. 실제 docker를 실행하지 않고 가짜 실행기로 인자·환경·출력 해석만 본다."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import runner_docker
+from runner_docker import CommandResult, Docker, DockerError, client_environment
+
+
+class FakeExecutor:
+    def __init__(self, *results: CommandResult):
+        self.results = list(results)
+        self.calls = []
+
+    def __call__(self, args, env, stdin, timeout):
+        self.calls.append((list(args), dict(env), stdin, timeout))
+        return self.results.pop(0)
+
+
+def ok(value) -> CommandResult:
+    return CommandResult(0, json.dumps(value).encode())
+
+
+def server(version="29.1.3", **overrides) -> dict:
+    return {"Version": version, "Os": "linux", "Arch": "amd64", "Platform": {"Name": "Docker Engine - Community"}} | overrides
+
+
+class TestClientEnvironment(unittest.TestCase):
+    def test_only_docker_client_names_pass_from_shell(self):
+        shell = {"PATH": "/usr/bin", "DOCKER_HOST": "unix:///run/docker.sock", "OPENAI_API_KEY": "sk-secret",
+                 "EVAL_ENGINE_IMAGE": "shell/override:1", "ARTEX_LLM_MODEL": "other", "COMPOSE_FILE": "x.yaml"}
+        env = client_environment(shell, {"EVAL_ENGINE_IMAGE": "runner/value:1"})
+        self.assertEqual(env, {"PATH": "/usr/bin", "DOCKER_HOST": "unix:///run/docker.sock",
+                               "EVAL_ENGINE_IMAGE": "runner/value:1"})
+
+    def test_runner_value_may_not_shadow_client_name(self):
+        with self.assertRaises(DockerError):
+            client_environment({"PATH": "/usr/bin"}, {"PATH": "/tmp"})
+
+
+class TestDocker(unittest.TestCase):
+    def test_daemon_identity_and_call_shape(self):
+        fake = FakeExecutor(ok(server()))
+        identity = Docker(fake, {"PATH": "/usr/bin"}, 30.0).daemon()
+        self.assertEqual((identity.version, identity.os, identity.arch, identity.platform),
+                         ("29.1.3", "linux", "amd64", "Docker Engine - Community"))
+        args, env, stdin, timeout = fake.calls[0]
+        self.assertEqual(args, ["version", "--format", "{{json .Server}}"])
+        self.assertEqual((env, stdin, timeout), ({"PATH": "/usr/bin"}, None, 30.0))
+
+    def test_server_version_floor(self):
+        for version in ("28.0.0", "28.0.1", "29.1.3", "28.0.0+dfsg1", "100.0.0"):
+            Docker(FakeExecutor(ok(server(version))), {}, 1).daemon()
+        for version in ("27.5.1", "28.0.0-rc.1", "27.99.99", "v29.0.0", "29", "", "29.a.0"):
+            with self.assertRaises(DockerError) as caught:
+                Docker(FakeExecutor(ok(server(version))), {}, 1).daemon()
+            self.assertIn(str(caught.exception), ("docker_server_too_old", "docker_version_output_invalid"))
+
+    def test_daemon_output_must_be_complete(self):
+        for value in (server(Os=""), server(Platform="x"), server(Arch=None), [], "29.1.3"):
+            with self.assertRaises(DockerError) as caught:
+                Docker(FakeExecutor(ok(value)), {}, 1).daemon()
+            self.assertEqual(str(caught.exception), "docker_version_output_invalid")
+
+    def test_failures_use_fixed_codes_without_output(self):
+        secret = b"OPENAI_API_KEY=sk-secret /srv/eval/runs"
+        cases = [
+            (CommandResult(1, secret), "docker_version_failed"),
+            (CommandResult(0, b"not json " + secret), "docker_version_failed_output_invalid"),
+            (CommandResult(0, b"\xff"), "docker_version_failed_output_invalid"),
+        ]
+        for result, code in cases:
+            with self.assertRaises(DockerError) as caught:
+                Docker(FakeExecutor(result), {}, 1).daemon()
+            self.assertEqual(str(caught.exception), code)
+            self.assertNotIn("sk-secret", repr(caught.exception))
+
+    def test_output_size_capped(self):
+        with patch.object(runner_docker, "MAX_OUTPUT_BYTES", 8):
+            with self.assertRaises(DockerError) as caught:
+                Docker(FakeExecutor(CommandResult(0, b"123456789")), {}, 1).run(["x"], code="c")
+        self.assertEqual(str(caught.exception), "c_output_too_large")
+
+    def test_image_id_is_content_id_and_reference_follows_separator(self):
+        fake = FakeExecutor(ok("sha256:" + "a" * 64))
+        self.assertEqual(Docker(fake, {}, 1).image_id("example/o:fixed"), "sha256:" + "a" * 64)
+        self.assertEqual(fake.calls[0][0], ["image", "inspect", "--format", "{{json .Id}}", "--", "example/o:fixed"])
+        for value in ("sha256:" + "A" * 64, "a" * 64, ["sha256:" + "a" * 64], None):
+            with self.assertRaises(DockerError):
+                Docker(FakeExecutor(ok(value)), {}, 1).image_id("example/o:fixed")
+        with self.assertRaises(DockerError) as caught:
+            Docker(FakeExecutor(CommandResult(1, b"")), {}, 1).image_id("example/o:fixed")
+        self.assertEqual(str(caught.exception), "docker_image_missing")
+
+
+class TestRunDocker(unittest.TestCase):
+    def test_runs_without_shell_and_maps_timeout(self):
+        import subprocess
+
+        with patch.object(subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, b"{}", None)
+            result = runner_docker.run_docker(["version"], {"PATH": "/usr/bin"}, None, 5.0)
+        self.assertEqual(result, CommandResult(0, b"{}"))
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ["docker", "version"])
+        self.assertNotIn("shell", kwargs)
+        self.assertEqual(kwargs["env"], {"PATH": "/usr/bin"})
+        self.assertEqual(kwargs["timeout"], 5.0)
+        for error, code in ((subprocess.TimeoutExpired(["docker"], 5.0), "docker_timeout"),
+                            (FileNotFoundError(), "docker_unavailable")):
+            with patch.object(subprocess, "run", side_effect=error):
+                with self.assertRaises(DockerError) as caught:
+                    runner_docker.run_docker(["version"], {}, None, 5.0)
+            self.assertEqual(str(caught.exception), code)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,5 +1,6 @@
 # 평가 층: deploy/engine-isolated/compose.yaml 위에 얹는다.
-#   docker compose -p eval-<run_id> -f deploy/engine-isolated/compose.yaml -f deploy/eval/compose.eval.yaml up -d
+#   docker compose -p eval-<run_id> --env-file <비밀 env> -f deploy/engine-isolated/compose.yaml -f deploy/eval/compose.eval.yaml up -d
+# 평가 러너(scripts/eval/runner_config.py)가 project·비밀 아닌 값·증거 디렉터리를 정해 이 명령을 부른다.
 # 엔진 망과 대상 망을 동시에 잇는 것은 eval-meter 하나뿐이다. 관측 front(eval-obs)는
 # 대상 망과 관측 망에만 붙어 엔진이 닿을 수 없다. 대상은 publish하지 않는다.
 # 서명 키·Docker 소켓은 어느 컨테이너에도 주지 않는다.

@@ -1,0 +1,361 @@
+"""러너 설정·회차 계획·회차 디렉터리. docker·대상 앱·모델을 사용하지 않는다."""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from runner_config import (
+    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LOCAL_LLM, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES,
+    RunnerConfigError, compose_base_args,
+    compose_environment, create_run_directory, load_runner_config, new_run_id, parse_runner_config, plan_run,
+)
+from test_preflight import configuration, local_llm
+
+
+def image(name: str, digit: str) -> dict:
+    return {"ref": f"example/{name}:fixed", "id": "sha256:" + digit * 64}
+
+
+def runner_config() -> dict:
+    return {
+        "version": 1,
+        "runs_root": "/srv/eval/runs",
+        "secrets_env_file": "/srv/eval/eval.secrets.env",
+        "images": {"engine_baseline": image("b", "1"), "engine_ours": image("o", "2"),
+                   "engine_db": image("d", "3"), "meter": image("m", "4")},
+        "target_image_id": "sha256:" + "5" * 64,
+        "ports": {"engine_api_host": 18787, "engine_container": 8787, "target": 3000, "obs": 8081, "obs_host": 18081},
+        "observer_path": "/api/records",
+        "engine": {"llm_provider": "openai", "llm_stream": True},
+        "engine_db": {"user": "artex", "name": "artex"},
+        "tmpfs": {"engine_db": "1g", "engine_data": "512m"},
+        "health": {"interval": "2s", "timeout": "2s", "retries": 30},
+        "docker_timeout_seconds": 120,
+    }
+
+
+class TestParseRunnerConfig(unittest.TestCase):
+    def reject(self, payload, expected):
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(payload)
+        self.assertIn(expected, caught.exception.errors)
+
+    def test_valid_config_parses(self):
+        config = parse_runner_config(runner_config())
+        self.assertEqual(config.images["engine_ours"].ref, "example/o:fixed")
+        self.assertEqual(config.ports["obs_host"], 18081)
+        self.assertEqual(config.docker_timeout_seconds, 120.0)
+
+    def test_missing_and_unknown_fields_rejected(self):
+        payload = runner_config()
+        del payload["observer_path"]
+        self.reject(payload, "config.observer_path: MISSING")
+        self.reject(runner_config() | {"extra": 1}, "config: UNKNOWN_FIELDS")
+        payload = runner_config()
+        payload["images"]["engine_ours"]["tag"] = "x"
+        self.reject(payload, "config.images.engine_ours: UNKNOWN_FIELDS")
+        payload = runner_config()
+        del payload["images"]["meter"]
+        self.reject(payload, "config.images.meter: MISSING")
+
+    def test_version_must_be_exact_int(self):
+        for version in (2, True, "1", 1.0):
+            payload = runner_config() | {"version": version}
+            self.reject(payload, "config.version: UNSUPPORTED")
+
+    def test_paths_must_be_absolute_and_normal(self):
+        for value in ("relative/runs", "/srv/../etc", "/srv/eval/", "/srv//eval", "", 5):
+            self.reject(runner_config() | {"runs_root": value}, "config.runs_root: EXPECTED_ABSOLUTE_PATH")
+            self.reject(runner_config() | {"secrets_env_file": value}, "config.secrets_env_file: EXPECTED_ABSOLUTE_PATH")
+
+    def test_images_need_fixed_reference_and_content_id(self):
+        for ref in ("example/o", "example/o:latest", "example/o:todo", "-x:1"):
+            payload = runner_config()
+            payload["images"]["engine_ours"]["ref"] = ref
+            self.reject(payload, "config.images.engine_ours.ref: INVALID")
+        for value in ("sha256:" + "A" * 64, "sha256:" + "a" * 63, "a" * 64, None):
+            payload = runner_config()
+            payload["images"]["meter"]["id"] = value
+            self.reject(payload, "config.images.meter.id: INVALID")
+            self.reject(runner_config() | {"target_image_id": value}, "config.target_image_id: INVALID")
+
+    def test_ports(self):
+        for value in (0, 65536, "8080", True, 80.0):
+            payload = runner_config()
+            payload["ports"]["obs"] = value
+            self.reject(payload, "config.ports.obs: INVALID")
+        payload = runner_config()
+        payload["ports"]["obs_host"] = payload["ports"]["engine_api_host"]
+        self.reject(payload, "config.ports: HOST_PORT_CONFLICT")
+
+    def test_observer_path_follows_meter_rule(self):
+        for value in ("api/x", "/a?b", "/a#b", "/a%2f", "/a\\b", "/a b", "//a", "/a/../b", "/a/./b", "/é", ""):
+            self.reject(runner_config() | {"observer_path": value}, "config.observer_path: INVALID")
+        parse_runner_config(runner_config() | {"observer_path": "/"})
+
+    def test_engine_db_tmpfs_health_and_timeout(self):
+        cases = [
+            (("engine", "llm_provider"), "ollama", "config.engine.llm_provider: UNSUPPORTED"),
+            (("engine", "llm_stream"), "true", "config.engine.llm_stream: EXPECTED_BOOL"),
+            (("engine_db", "user"), "Artex", "config.engine_db.user: INVALID"),
+            (("engine_db", "name"), "a;b", "config.engine_db.name: INVALID"),
+            (("tmpfs", "engine_db"), "0", "config.tmpfs.engine_db: INVALID"),
+            (("tmpfs", "engine_data"), "1G", "config.tmpfs.engine_data: INVALID"),
+            (("health", "interval"), "2", "config.health.interval: INVALID"),
+            (("health", "timeout"), "0s", "config.health.timeout: INVALID"),
+            (("health", "retries"), 0, "config.health.retries: INVALID"),
+        ]
+        for (section, key), value, expected in cases:
+            payload = runner_config()
+            payload[section][key] = value
+            self.reject(payload, expected)
+        for value in (0, -1, 3601, True, "60", float("nan")):
+            self.reject(runner_config() | {"docker_timeout_seconds": value}, "config.docker_timeout_seconds: INVALID")
+
+    def test_load_rejects_duplicate_key_and_nonfinite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "runner.json")
+            path.write_text('{"version": 1, "version": 1}', encoding="utf-8")
+            with self.assertRaises(RunnerConfigError) as caught:
+                load_runner_config(path)
+            self.assertEqual(caught.exception.errors, ["config: DUPLICATE_KEY"])
+            path.write_text(json.dumps(runner_config()).replace("120", "NaN"), encoding="utf-8")
+            with self.assertRaises(RunnerConfigError) as caught:
+                load_runner_config(path)
+            self.assertEqual(caught.exception.errors, ["config: NONFINITE_NUMBER"])
+            path.write_text(json.dumps(runner_config()), encoding="utf-8")
+            self.assertEqual(load_runner_config(path).observer_path, "/api/records")
+
+
+class TestPlanRun(unittest.TestCase):
+    def setUp(self):
+        self.config = parse_runner_config(runner_config())
+
+    def test_api_plan_takes_llm_and_target_from_preflight(self):
+        preflight = configuration()
+        plan = plan_run(self.config, preflight, "ours", "ours-20261102t000000z-00000000")
+        self.assertEqual(plan.project, "eval-ours-20261102t000000z-00000000")
+        self.assertEqual(plan.compose_files, (COMPOSE_COMMON, COMPOSE_EVAL))
+        self.assertEqual(plan.source_sha, "2" * 40)
+        self.assertEqual(plan.engine_image.ref, "example/o:fixed")
+        self.assertEqual(plan.target_image.ref, preflight["pins"]["target_image"])
+        self.assertEqual(plan.compose_env["ARTEX_LLM_MODEL"], preflight["ours"]["llm"]["model"])
+        self.assertEqual(plan.compose_env["ARTEX_LLM_BASE_URL"], preflight["ours"]["llm"]["base_url"])
+        self.assertEqual(plan.compose_env["EVAL_METER_PORT"], "8080")
+        self.assertEqual(plan.compose_env["ARTEX_LLM_STREAM"], "true")
+        no_stream = runner_config()
+        no_stream["engine"]["llm_stream"] = False
+        self.assertEqual(plan_run(parse_runner_config(no_stream), preflight, "ours", "o").compose_env["ARTEX_LLM_STREAM"],
+                         "false")
+        self.assertNotIn("EVAL_LLM_HOST_IP", plan.compose_env)
+        self.assertEqual(plan_run(self.config, preflight, "baseline", "b").engine_image.ref, "example/b:fixed")
+
+    def test_local_plan_adds_overlay_and_fixed_ip(self):
+        preflight = configuration()
+        for side in ("baseline", "ours"):
+            preflight[side]["llm"] = local_llm()
+        plan = plan_run(self.config, preflight, "baseline", "b")
+        self.assertEqual(plan.compose_files, (COMPOSE_COMMON, COMPOSE_LOCAL_LLM, COMPOSE_EVAL))
+        self.assertEqual(plan.compose_env["EVAL_LLM_HOSTNAME"], "llm-host")
+        self.assertEqual(plan.compose_env["EVAL_LLM_HOST_IP"], "172.17.0.1")
+
+    def test_compose_env_never_carries_secret_names(self):
+        plan = plan_run(self.config, configuration(), "ours", "o")
+        for name in ("EVAL_ENGINE_DB_PASSWORD", "EVAL_ENGINE_ADMIN_PASSWORD", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+            self.assertNotIn(name, plan.compose_env)
+        args = compose_base_args(plan)
+        self.assertEqual(args[:5], ["compose", "-p", plan.project, "--env-file", "/srv/eval/eval.secrets.env"])
+
+    def test_invalid_preflight_or_side_rejected(self):
+        preflight = configuration()
+        preflight["ours"]["seed"] = 7
+        with self.assertRaises(RunnerConfigError) as caught:
+            plan_run(self.config, preflight, "ours", "o")
+        self.assertIn("preflight: comparison.seed: MISMATCH", caught.exception.errors)
+        with self.assertRaises(RunnerConfigError):
+            plan_run(self.config, configuration(), "both", "o")
+
+    def test_target_origin_must_name_the_meter_service(self):
+        preflight = configuration()
+        for side in ("baseline", "ours"):
+            preflight[side]["target_origin"] = "http://target:8080"
+        with self.assertRaises(RunnerConfigError) as caught:
+            plan_run(self.config, preflight, "ours", "o")
+        self.assertEqual(caught.exception.errors, ["preflight.ours.target_origin: NOT_EVAL_METER"])
+
+    def test_plan_does_not_mutate_preflight(self):
+        preflight = configuration()
+        before = copy.deepcopy(preflight)
+        plan_run(self.config, preflight, "ours", "o")
+        self.assertEqual(preflight, before)
+
+
+class TestRunIdentity(unittest.TestCase):
+    def test_run_id_is_compose_safe_and_unique(self):
+        moment = datetime(2026, 11, 2, 1, 2, 3, tzinfo=timezone.utc)
+        first, second = new_run_id("ours", moment), new_run_id("ours", moment)
+        self.assertRegex(first, r"^ours-20261102t010203z-[0-9a-f]{8}$")
+        self.assertNotEqual(first, second)
+        with self.assertRaises(RunnerConfigError):
+            new_run_id("both", moment)
+
+
+@unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "geteuid"), "POSIX 전용")
+class TestRunDirectory(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name, "runs")
+        self.root.mkdir(mode=0o700)
+        os.chmod(self.root, 0o700)
+        self.old_umask = os.umask(0o022)
+
+    def tearDown(self):
+        os.umask(self.old_umask)
+        self.tmp.cleanup()
+
+    def test_creates_private_run_and_meter_directories(self):
+        directory = create_run_directory(self.root, "ours-1")
+        for path in (directory.run, directory.meter):
+            info = os.lstat(path)
+            self.assertTrue(stat.S_ISDIR(info.st_mode))
+            self.assertEqual(stat.S_IMODE(info.st_mode), 0o700)
+            self.assertEqual(info.st_uid, os.geteuid())
+        self.assertEqual(directory.meter.parent, directory.run)
+
+    def test_mode_is_exact_even_when_umask_strips_owner_bits(self):
+        os.umask(0o277)
+        directory = create_run_directory(self.root, "ours-1")
+        for path in (directory.run, directory.meter):
+            self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o700)
+
+    def test_existing_run_directory_rejected(self):
+        create_run_directory(self.root, "ours-1")
+        with self.assertRaises(RunnerConfigError) as caught:
+            create_run_directory(self.root, "ours-1")
+        self.assertEqual(caught.exception.errors, ["run_directory: EXISTS"])
+
+    def test_root_must_be_exactly_private_and_not_a_symlink(self):
+        os.chmod(self.root, 0o750)
+        with self.assertRaises(RunnerConfigError) as caught:
+            create_run_directory(self.root, "ours-1")
+        self.assertEqual(caught.exception.errors, ["runs_root: NOT_PRIVATE"])
+        os.chmod(self.root, 0o700)
+        link = Path(self.tmp.name, "link")
+        link.symlink_to(self.root)
+        with self.assertRaises(RunnerConfigError) as caught:
+            create_run_directory(link, "ours-1")
+        self.assertEqual(caught.exception.errors, ["runs_root: UNAVAILABLE"])
+
+    def test_run_id_shape_checked_before_touching_disk(self):
+        for run_id in ("../x", "Ours", "", "a/b", "-a"):
+            with self.assertRaises(RunnerConfigError):
+                create_run_directory(self.root, run_id)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_compose_environment_adds_meter_dir_and_runner_ids(self):
+        plan = plan_run(parse_runner_config(runner_config()), configuration(), "ours", "ours-1")
+        directory = create_run_directory(self.root, "ours-1")
+        env = compose_environment(plan, directory)
+        self.assertEqual(env["EVAL_EVIDENCE_DIR"], str(directory.meter))
+        self.assertEqual(env["EVAL_RUNNER_UID"], str(os.geteuid()))
+        self.assertEqual(env["EVAL_RUNNER_GID"], str(os.getegid()))
+        self.assertNotIn("EVAL_EVIDENCE_DIR", plan.compose_env)
+
+
+def _yaml_without_comments(text: str) -> str:
+    return "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.splitlines())
+
+
+def compose_variables(paths) -> set[str]:
+    """compose 보간 대상 ${VAR} 이름. $$는 compose의 리터럴 $ 이스케이프라 제외한다."""
+    names = set()
+    for path in paths:
+        text = _yaml_without_comments(Path(path).read_text(encoding="utf-8")).replace("$$", "")
+        bare = re.findall(r"\$(?!\{)", text)
+        if bare:
+            raise AssertionError(f"{Path(path).name}: 중괄호 없는 $VAR 참조")
+        names |= set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", text))
+    return names
+
+
+def compose_services(path) -> set[str]:
+    services, inside = set(), False
+    for line in _yaml_without_comments(Path(path).read_text(encoding="utf-8")).splitlines():
+        if not line.strip():
+            continue
+        if not line.startswith(" "):
+            inside = line.rstrip() == "services:"
+            continue
+        match = re.fullmatch(r"  ([A-Za-z0-9_.-]+):\s*", line)
+        if inside and match:
+            services.add(match.group(1))
+    return services
+
+
+@unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "geteuid"), "POSIX 전용")
+class TestComposeContract(unittest.TestCase):
+    """compose가 보간하는 이름 = 러너가 넘기는 이름 ∪ 비밀 이름. 그래야 비밀 파일에 비밀 아닌
+    키가 섞여도 셸 환경(러너 값)이 항상 이긴다. 러너는 비밀 파일을 읽지 않는다."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name, "runs")
+        self.root.mkdir(mode=0o700)
+        os.chmod(self.root, 0o700)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_compose_variables_equal_runner_env_plus_secrets_per_backend(self):
+        config = parse_runner_config(runner_config())
+        for backend, llm in (("api", None), ("local", local_llm())):
+            preflight = configuration()
+            if llm:
+                for side in ("baseline", "ours"):
+                    preflight[side]["llm"] = llm
+            plan = plan_run(config, preflight, "ours", f"ours-{backend}")
+            env = compose_environment(plan, create_run_directory(self.root, f"ours-{backend}"))
+            with self.subTest(backend=backend):
+                self.assertEqual(set(env) & SECRET_ENV_NAMES, set())
+                self.assertEqual(compose_variables(plan.compose_files), set(env) | SECRET_ENV_NAMES)
+
+    def test_every_compose_file_is_covered(self):
+        files = {COMPOSE_COMMON, COMPOSE_LOCAL_LLM, COMPOSE_EVAL}
+        on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
+        on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
+        self.assertEqual(on_disk, files)
+
+    def test_secrets_example_lists_exactly_the_secret_names(self):
+        text = (REPO_ROOT / "deploy" / "eval" / "eval.secrets.env.example").read_text(encoding="utf-8")
+        keys = {line.split("=", 1)[0] for line in text.splitlines() if line and not line.startswith("#")}
+        self.assertEqual(keys, set(SECRET_ENV_NAMES))
+        self.assertNotRegex(text, r"(?m)^[A-Z_]+=.+$")
+
+    def test_meter_service_matches_origin_check(self):
+        self.assertIn(METER_SERVICE, compose_services(COMPOSE_EVAL))
+        self.assertEqual(compose_services(COMPOSE_EVAL), {"engine-db", "engine", "target", METER_SERVICE, "eval-obs"})
+        self.assertEqual(compose_services(COMPOSE_COMMON), {"engine", "engine-db"})
+
+    def test_variable_scanner_sees_escapes_and_comments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "c.yaml")
+            path.write_text('a: "$$X ${Y:?} ${Z:-}"  # ${COMMENTED}\n', encoding="utf-8")
+            self.assertEqual(compose_variables([path]), {"Y", "Z"})
+            path.write_text("a: $BARE\n", encoding="utf-8")
+            with self.assertRaises(AssertionError):
+                compose_variables([path])
+
+
+if __name__ == "__main__":
+    unittest.main()
