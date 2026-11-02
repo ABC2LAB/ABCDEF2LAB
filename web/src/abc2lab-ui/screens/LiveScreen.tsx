@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { Modal } from "../components/Modal";
 import { Screen } from "../components/Screen";
@@ -6,18 +6,23 @@ import { TopBar } from "../components/TopBar";
 import { Sev, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import {
+  archiveTask,
+  controlTask,
   type EngineActivity,
   type EngineCoverage,
   type EngineFinding,
+  type EngineTaskArchive,
   type EngineTokens,
   getActivity,
   getCoverage,
   getTask,
+  getTaskArchive,
   getTokens,
   listTaskFindings,
+  listTasks,
 } from "../lib/engine";
 import { useSelection } from "../lib/selection";
-import { useGo } from "../nav";
+import { useNav } from "../nav";
 import type { Severity, Target } from "../types";
 
 /* ── 목업(엔진 개발 후 실데이터로) ─────────────────────────────────
@@ -191,15 +196,33 @@ const btnSm = { padding: "8px 13px", fontSize: 13 } as const;
 
 /** ===== 진행 대시보드 ===== */
 export default function LiveScreen({ target }: { target: Target }) {
-  const go = useGo();
-  const { taskId } = useSelection();
+  const nav = useNav();
+  const go = nav.go;
+  const { taskId, selectTask, tasksVersion, refreshTasks } = useSelection();
+  const currentView = useRef({ taskId, screen: nav.screen });
+  currentView.current = { taskId, screen: nav.screen };
+  const actionLock = useRef(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionMsg, setActionMsg] = useState<{ taskId: string; message: string } | null>(null);
+  const [endTarget, setEndTarget] = useState<{ id: string; name: string } | null>(null);
+  type ArchiveInfo = EngineTaskArchive & { name: string };
+  const [archives, setArchives] = useState<Record<string, ArchiveInfo>>({});
+  const archivesRef = useRef(archives);
+  archivesRef.current = archives;
+  const [archiveCheckBusy, setArchiveCheckBusy] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
 
-  const taskRes = useApiResource(() => (taskId ? getTask(taskId) : Promise.resolve(null)), [taskId]);
-  const findRes = useApiResource<EngineFinding[]>(() => listTaskFindings(taskId ?? ""), [taskId]);
-  const covRes = useApiResource<EngineCoverage | null>(() => getCoverage(taskId ?? ""), [taskId]);
-  const tokRes = useApiResource<EngineTokens>(() => getTokens(taskId ?? ""), [taskId]);
-  const actRes = useApiResource<EngineActivity[]>(() => getActivity(taskId ?? ""), [taskId]);
+  const taskRes = useApiResource(() => (taskId ? getTask(taskId) : Promise.resolve(null)), [taskId, tasksVersion]);
+  const findRes = useApiResource<EngineFinding[]>(() => listTaskFindings(taskId ?? ""), [taskId, tasksVersion]);
+  const covRes = useApiResource<EngineCoverage | null>(() => getCoverage(taskId ?? ""), [taskId, tasksVersion]);
+  const tokRes = useApiResource<EngineTokens>(() => getTokens(taskId ?? ""), [taskId, tasksVersion]);
+  const actRes = useApiResource<EngineActivity[]>(() => getActivity(taskId ?? ""), [taskId, tasksVersion]);
+
+  const tasksRes = useApiResource(listTasks, [tasksVersion]);
+  useEffect(() => {
+    setEndTarget((previous) => (previous?.id === taskId && nav.screen === "live" ? previous : null));
+    setDetailOpen(false);
+  }, [taskId, nav.screen]);
 
   const task = taskRes.data;
   const findings = useMemo(() => findRes.data ?? [], [findRes.data]);
@@ -230,6 +253,88 @@ export default function LiveScreen({ target }: { target: Target }) {
   const tokenTotal = (tokRes.data?.input ?? 0) + (tokRes.data?.output ?? 0);
   const cells = cov ? coverageCells(cov.denominator, cov.tested) : [];
 
+  const terminal = ["done", "failed", "timeout"].includes(status);
+  const taskReady = !!task && task.id === taskId && !taskRes.loading && !taskRes.error;
+  const currentArchive = taskId ? archives[taskId] : undefined;
+  const archivePending = currentArchive && ["archive_queued", "archiving"].includes(currentArchive.state);
+  const canPause = taskReady && ["running", "queued"].includes(status);
+  const canResume = taskReady && status === "paused";
+  const canArchive = taskReady && (status === "paused" || terminal) && task.in_flight === 0;
+  const jobs = (tasksRes.data?.tasks ?? []).filter((t) =>
+    ["created", "queued", "running", "paused"].includes(t.status),
+  );
+  const taskListReady = !tasksRes.loading && !tasksRes.error && tasksRes.data !== null;
+  const classifiedFindings = (tasksRes.data?.tasks ?? []).reduce(
+    (sum, t) => sum + Object.values(t.findings).reduce((n, c) => n + c, 0),
+    0,
+  );
+
+  async function doControl(action: "pause" | "resume") {
+    if (!taskId || !taskReady || actionLock.current || archivePending) return;
+    if ((action === "pause" && !canPause) || (action === "resume" && !canResume)) return;
+    const id = taskId;
+    actionLock.current = true;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await controlTask(id, action);
+      refreshTasks();
+    } catch (error) {
+      setActionMsg({ taskId: id, message: error instanceof Error ? error.message : "제어에 실패했어요." });
+    } finally {
+      actionLock.current = false;
+      setActionBusy(false);
+    }
+  }
+
+  async function doArchive() {
+    const target = endTarget;
+    if (!target || target.id !== taskId || !canArchive || actionLock.current || archivePending) return;
+    actionLock.current = true;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      const receipt = await archiveTask(target.id);
+      setArchives((previous) => ({ ...previous, [target.id]: { ...receipt, name: target.name } }));
+      setEndTarget(null);
+      refreshTasks();
+    } catch (error) {
+      setActionMsg({
+        taskId: target.id,
+        message: error instanceof Error ? error.message : "보관 요청을 확인하지 못했어요.",
+      });
+    } finally {
+      actionLock.current = false;
+      setActionBusy(false);
+    }
+  }
+
+  async function checkArchive() {
+    if (!currentArchive || archiveCheckBusy) return;
+    const receipt = currentArchive;
+    setArchiveCheckBusy(true);
+    try {
+      const result = await getTaskArchive(receipt.id);
+      if (result.taskId !== receipt.taskId) throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+      if (archivesRef.current[receipt.taskId]?.id !== receipt.id) return;
+      setArchives((previous) => ({ ...previous, [receipt.taskId]: { ...receipt, ...result } }));
+      if (result.state === "ready") {
+        refreshTasks();
+        if (currentView.current.taskId === receipt.taskId && currentView.current.screen === "live") {
+          selectTask(null);
+          go("history");
+        }
+      }
+    } catch (error) {
+      setActionMsg({
+        taskId: receipt.taskId,
+        message: error instanceof Error ? error.message : "보관 상태를 확인하지 못했어요.",
+      });
+    } finally {
+      setArchiveCheckBusy(false);
+    }
+  }
+
   // 데이터는 task 선택 시 한 번 조회한 스냅샷 — 자동 갱신은 미연결(후속). 수동 새로고침만.
   function refreshAll() {
     taskRes.reload();
@@ -237,6 +342,7 @@ export default function LiveScreen({ target }: { target: Target }) {
     covRes.reload();
     tokRes.reload();
     actRes.reload();
+    tasksRes.reload();
   }
 
   if (!taskId) {
@@ -342,6 +448,29 @@ export default function LiveScreen({ target }: { target: Target }) {
       <div className="frame">
         <TopBar current="history" />
         <div style={{ padding: "22px 24px" }}>
+          {tasksRes.error && <p role="alert">작업 목록을 불러오지 못했어요.</p>}
+          {jobs.length > 0 && (
+            <div className="jobtabs" role="tablist" aria-label="실행 중 작업">
+              {jobs.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={t.id === taskId}
+                  disabled={actionBusy}
+                  className={t.id === taskId ? "jt on" : "jt"}
+                  onClick={() => selectTask(t.id)}
+                >
+                  <span className={`jt-dot ${t.status === "running" ? "run" : "wait"}`} />
+                  <span className="jt-name">{t.name.trim() || "이름 없는 점검"}</span>
+                  <span className="jt-sub">{STATUS_LABEL[t.status] ?? t.status}</span>
+                </button>
+              ))}
+              <span className="jt-total">
+                위험도 분류 집계 <b>{taskListReady ? classifiedFindings : "—"}</b>건 · 미분류 제외
+              </span>
+            </div>
+          )}
           <div
             style={{
               display: "flex",
@@ -369,8 +498,41 @@ export default function LiveScreen({ target }: { target: Target }) {
                 style={{ border: 0, background: "none", cursor: "pointer" }}
                 onClick={() => go("approval")}
               >
-                승인 대기
+                승인 화면
               </button>
+              {(canPause || canResume) && (
+                <button
+                  className={canResume ? "btn primary" : "btn"}
+                  type="button"
+                  style={btnSm}
+                  disabled={actionBusy || !!archivePending}
+                  aria-pressed={canResume}
+                  onClick={() => {
+                    void doControl(canResume ? "resume" : "pause");
+                  }}
+                >
+                  {canResume ? "다시 시작" : "일시정지"}
+                </button>
+              )}
+              {taskReady && (
+                <button
+                  className="btn danger"
+                  type="button"
+                  style={btnSm}
+                  disabled={!canArchive || actionBusy || !!archivePending}
+                  title={
+                    canArchive
+                      ? "작업과 증거의 비동기 보관을 요청합니다"
+                      : "일시정지 또는 종료 상태이고 진행 요청이 없을 때 보관할 수 있어요"
+                  }
+                  onClick={() => {
+                    setActionMsg(null);
+                    setEndTarget({ id: taskId, name: title });
+                  }}
+                >
+                  보관 요청
+                </button>
+              )}
               {(status === "done" || status === "failed" || status === "timeout") && (
                 <button className="btn" type="button" style={btnSm} onClick={() => go("report")}>
                   보고서
@@ -379,6 +541,33 @@ export default function LiveScreen({ target }: { target: Target }) {
             </div>
           </div>
 
+          {taskRes.error && <p role="alert">점검 정보를 불러오지 못했어요. 새로고침해 주세요.</p>}
+          {actionMsg?.taskId === taskId && !endTarget && <p role="alert">{actionMsg.message}</p>}
+          {currentArchive && (
+            <div className="card" role="status">
+              <p>
+                보관 #{currentArchive.id} · {currentArchive.name} ·{" "}
+                {(
+                  {
+                    archive_queued: "요청 접수 · 처리 대기",
+                    archiving: "보관 처리 중",
+                    archive_failed: "보관 처리 실패",
+                    ready: "보관 완료",
+                  } as Record<string, string>
+                )[currentArchive.state] ?? "상태 미확인"}
+              </p>
+              <button
+                className="btn"
+                type="button"
+                disabled={archiveCheckBusy}
+                onClick={() => {
+                  void checkArchive();
+                }}
+              >
+                보관 상태 새로고침
+              </button>
+            </div>
+          )}
           <p className="hint">점검 흐름 예시 · 단계별 진행 미연결</p>
           <div className="pipe">
             {PIPELINE.map((label, i) => (
@@ -542,6 +731,51 @@ export default function LiveScreen({ target }: { target: Target }) {
         loading={actRes.loading}
         error={actRes.error}
       />
+      {endTarget?.id === taskId && nav.screen === "live" && (
+        <Modal
+          open
+          onClose={() => {
+            if (!actionBusy) setEndTarget(null);
+          }}
+        >
+          <div className="rpop" role="dialog" aria-label="보관 요청 확인" style={{ maxWidth: 440 }}>
+            <div className="rpop-head">
+              <div className="rpt">보관을 요청할까요?</div>
+              <button
+                className="rpop-x"
+                type="button"
+                disabled={actionBusy}
+                onClick={() => setEndTarget(null)}
+                aria-label="닫기"
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{ padding: "16px 22px" }}>
+              <p style={{ fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7 }}>
+                <Strong>{endTarget.name}</Strong> 작업과 증거의 보관을 요청해요. 접수 후 백그라운드에서 처리하며, 완료
+                전에는 보관 성공이 아니에요. 완료된 보관은 별도 복원 기능으로 복원할 수 있어요.
+              </p>
+              {actionMsg?.taskId === endTarget.id && <p role="alert">{actionMsg.message}</p>}
+            </div>
+            <div className="vpop-foot">
+              <button className="btn" type="button" disabled={actionBusy} onClick={() => setEndTarget(null)}>
+                취소
+              </button>
+              <button
+                className="btn danger"
+                type="button"
+                disabled={actionBusy || !canArchive}
+                onClick={() => {
+                  void doArchive();
+                }}
+              >
+                {actionBusy ? "요청 중…" : "보관 요청"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </Screen>
   );
 }

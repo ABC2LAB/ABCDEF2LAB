@@ -23,13 +23,18 @@ const patStyle = {
   wordBreak: "break-all" as const,
   color: "var(--muted)",
 };
-const ACTION_LABEL: Record<string, string> = { allow: "허용", deny: "차단", ask: "승인 필요" };
 
 function actionColor(action: string): string {
   if (action === "deny") return "var(--danger)";
   if (action === "ask") return "var(--warn)";
   if (action === "allow") return "var(--teal-ink)";
   return "var(--muted)";
+}
+function actionLabel(action: string): string {
+  if (action === "allow") return "허용";
+  if (action === "deny") return "차단";
+  if (action === "ask") return "승인 필요";
+  return "알 수 없음";
 }
 
 /** base_url 의 **호스트**가 내부망/로컬을 가리키는지 판별 (완전 로컬 모드 표시용).
@@ -120,7 +125,7 @@ export default function SettingsScreen() {
                             background: deny ? "var(--danger-weak)" : undefined,
                           }}
                         >
-                          {ACTION_LABEL[r.action] ?? "알 수 없음"}
+                          {actionLabel(r.action)}
                         </span>
                       </div>
                     </div>
@@ -200,6 +205,23 @@ export default function SettingsScreen() {
                 className="btn"
                 type="button"
                 onClick={() => go("audit")}
+                style={{ flex: "none", padding: "10px 14px", fontSize: 13 }}
+              >
+                열기
+              </button>
+            </div>
+            <div className="setrow">
+              <div className="tx">
+                <div className="t">토큰 사용량</div>
+                <div className="d">
+                  운영 전체의 프로필별 누적과 일자별 토큰 사용량을 보여줘요. 금액 환산과 baseline 효율 비교는 단가·평가
+                  조건 연동 후예요.
+                </div>
+              </div>
+              <button
+                className="btn"
+                type="button"
+                onClick={() => go("tokens")}
                 style={{ flex: "none", padding: "10px 14px", fontSize: 13 }}
               >
                 열기

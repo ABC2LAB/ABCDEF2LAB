@@ -249,6 +249,96 @@ export async function getTokens(taskId: string): Promise<EngineTokens> {
 }
 
 /**
+ * 토큰 대시보드: GET /api/tokens/usage — 프로필별 누적과 최근 UTC 일자별 원장 집계.
+ * 전역 집계(task 무관). 비용은 엔진이 금액을 안 주므로 토큰량만 — 단가는 미노출.
+ */
+export type TokenProfile = {
+  profileName: string;
+  calls: number;
+  tasks: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+export type TokenDaily = { day: string; input: number; output: number; cacheRead: number };
+export type TokenUsage = { byProfile: TokenProfile[]; daily: TokenDaily[] };
+
+export const TOKEN_DAILY_DAYS = 365;
+
+export async function getTokenUsage(): Promise<TokenUsage> {
+  type RawP = {
+    profile_name: string;
+    calls: number;
+    tasks: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+  };
+  type RawD = { date: string; input_tokens: number; output_tokens: number; cache_read_tokens: number };
+  const usage = await apiFetch<{ by_profile: RawP[] | null; daily: RawD[] | null }>(
+    `/api/tokens/usage?days=${TOKEN_DAILY_DAYS}`,
+  );
+  // The ledger returns one UTC date row per profile; the chart needs one row per date.
+  const daily = new Map<string, TokenDaily>();
+  for (const row of usage.daily ?? []) {
+    const day = daily.get(row.date) ?? { day: row.date, input: 0, output: 0, cacheRead: 0 };
+    day.input += row.input_tokens;
+    day.output += row.output_tokens;
+    day.cacheRead += row.cache_read_tokens;
+    daily.set(row.date, day);
+  }
+  return {
+    byProfile: (usage.by_profile ?? []).map((p) => ({
+      profileName: p.profile_name || "(미지정)",
+      calls: p.calls,
+      tasks: p.tasks,
+      input: p.input_tokens,
+      output: p.output_tokens,
+      cacheRead: p.cache_read_tokens,
+      cacheWrite: p.cache_write_tokens,
+    })),
+    daily: [...daily.values()].sort((a, b) => a.day.localeCompare(b.day)),
+  };
+}
+
+/** POST /api/tasks/{id}/control — 일시정지/다시 시작(엔진 상태 변경, pause: running/queued, resume: paused). */
+export async function controlTask(taskId: string, action: "pause" | "resume"): Promise<void> {
+  await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/control`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+}
+
+/** Accepted archive job; it completes asynchronously and can later be restored. */
+export type EngineTaskArchive = { id: string; taskId: string; state: string };
+type ArchiveRaw = { id?: string | number; task_id?: string | number; state?: string };
+
+function archiveReceipt(raw: ArchiveRaw | null): EngineTaskArchive {
+  if (!raw || raw.id == null || raw.task_id == null || typeof raw.state !== "string") {
+    throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+  }
+  return { id: String(raw.id), taskId: String(raw.task_id), state: raw.state };
+}
+
+/** POST /api/tasks/{id}/archive — queue a cold archive job (202, not completion). */
+export async function archiveTask(taskId: string): Promise<EngineTaskArchive> {
+  const result = archiveReceipt(
+    await apiFetch<ArchiveRaw>(`/api/tasks/${encodeURIComponent(taskId)}/archive`, { method: "POST" }),
+  );
+  if (result.taskId !== taskId) throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+  return result;
+}
+
+/** GET /api/task-archives/{archiveId} — status uses the archive id, not task id. */
+export async function getTaskArchive(archiveId: string): Promise<EngineTaskArchive> {
+  const result = archiveReceipt(await apiFetch<ArchiveRaw>(`/api/task-archives/${encodeURIComponent(archiveId)}`));
+  if (result.id !== archiveId) throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+  return result;
+}
+
+/**
  * GET /api/llm 응답 — 현재 LLM 설정(전역, task 무관).
  * ※ key_set 은 "키가 설정됐는지" 불리언일 뿐 키 값이 아니다(값은 서버가 안 준다).
  */
