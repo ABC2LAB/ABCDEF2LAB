@@ -271,11 +271,14 @@ class TestScoreboardProperties(unittest.TestCase):
                            {_KEYS[0]: False, _KEYS[1]: True})
         self.assert_snapshot_rejected(duplicate, "key 중복")
 
-        class DeduplicatedPairs(scoreboard._Pairs):
-            def __init__(self, pairs):
-                super().__init__(dict(pairs).items())
+        original_load = json.load
 
-        with patch.object(scoreboard, "_Pairs", DeduplicatedPairs):
+        def discard_duplicate_keys(source, **kwargs):
+            original_hook = kwargs["object_pairs_hook"]
+            kwargs["object_pairs_hook"] = lambda pairs: original_hook(dict(pairs).items())
+            return original_load(source, **kwargs)
+
+        with patch.object(scoreboard.json, "load", side_effect=discard_duplicate_keys):
             with self.assertRaises(AssertionError):
                 self.assert_snapshot_rejected(duplicate, "key 중복")
 

@@ -51,6 +51,23 @@ func TestApplySchemaRetriesOnlyDeadlocks(t *testing.T) {
 	}
 }
 
+func TestTaskModeSchemaRetriesOnlyItsDDL(t *testing.T) {
+	attempts, pauses := 0, 0
+	err := applyTaskModeSchemaWithRetry(t.Context(), schemaExecFunc(func(_ context.Context, query string, _ ...any) (sql.Result, error) {
+		if query != taskModeSchemaSQL {
+			t.Fatal("retry executed a different schema")
+		}
+		attempts++
+		if attempts == 1 {
+			return nil, &pgconn.PgError{Code: "40P01"}
+		}
+		return nil, nil
+	}), func(time.Duration) { pauses++ })
+	if err != nil || attempts != 2 || pauses != 1 {
+		t.Fatalf("task-mode schema retry: attempts=%d pauses=%d err=%v", attempts, pauses, err)
+	}
+}
+
 // testDSN returns the configured DSN, skipping the test when neither the env var
 // nor a config file supplies one (DSN no longer has a built-in default).
 func testDSN(t *testing.T) string {

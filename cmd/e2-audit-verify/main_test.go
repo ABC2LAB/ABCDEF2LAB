@@ -139,7 +139,7 @@ func TestRunRejectsIntegrityAndInputFailuresWithoutPartialSummary(t *testing.T) 
 		t.Fatal(err)
 	}
 	code, stdout, stderr := invokeVerify(t, context.Background(), "--journal", journal, "--checkpoint", checkpoint, "--key-file", key)
-	if code != 1 || stdout != "" || stderr == "" {
+	if code != 1 || stdout != "" || stderr != "audit_integrity_failed\n" {
 		t.Fatalf("integrity failure boundary: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if strings.Contains(stderr, "x") || strings.Contains(stderr, journal) || strings.Contains(stderr, key) {
@@ -163,7 +163,7 @@ func TestRunRejectsWholeEventRollbackWithLatestCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, stdout, stderr := invokeVerify(t, context.Background(), "--journal", journal, "--checkpoint", checkpoint, "--key-file", key)
-	if code != 1 || stdout != "" || stderr == "" {
+	if code != 1 || stdout != "" || stderr != "audit_integrity_failed\n" {
 		t.Fatalf("whole-event rollback boundary: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
@@ -232,7 +232,7 @@ func TestRunAcceptsPrettyCheckpointButRejectsRollbackAndCrossScope(t *testing.T)
 		t.Fatal(err)
 	}
 	code, stdout, stderr = invokeVerify(t, context.Background(), "--journal", journal, "--checkpoint", checkpoint, "--key-file", key)
-	if code != 1 || stdout != "" || stderr == "" {
+	if code != 1 || stdout != "" || stderr != "audit_integrity_failed\n" {
 		t.Fatalf("rollback checkpoint boundary: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if err := json.Unmarshal(original, &cp); err != nil {
@@ -262,7 +262,7 @@ func TestRunCanceledContextIsFailureWithoutOutput(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	code, stdout, stderr := invokeVerify(t, ctx, "--journal", journal, "--checkpoint", checkpoint, "--key-file", key)
-	if code != 1 || stdout != "" || stderr == "" {
+	if code != 1 || stdout != "" || stderr != "audit_verification_canceled\n" {
 		t.Fatalf("cancel boundary: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }

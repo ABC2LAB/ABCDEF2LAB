@@ -23,6 +23,9 @@ func taskModeTestDB(t *testing.T) *DB {
 	if dsn == "" {
 		t.Skip("set ARTEX_TASK_MODE_TEST_DSN to a dedicated PostgreSQL test database")
 	}
+	if configured, _, err := DSN(); err == nil && strings.TrimSpace(configured) == strings.TrimSpace(dsn) {
+		t.Fatal("ARTEX_TASK_MODE_TEST_DSN must be a dedicated database, not the general DSN")
+	}
 	d, err := Open(dsn)
 	if err != nil {
 		t.Fatal("dedicated task-mode PostgreSQL initialization failed")
@@ -68,6 +71,21 @@ func TestTaskModeRegistration(t *testing.T) {
 		decision, err := taskmode.Resolve(t.Context(), id, TaskModeReader(tx, modeMarker(taskmode.MarkerClear)))
 		if err != nil || decision.Route() != taskmode.Legacy {
 			t.Fatalf("route=%v err=%v", decision.Route(), err)
+		}
+	})
+	t.Run("legacy_revalidates_clear_marker_on_idempotent_retry", func(t *testing.T) {
+		id := taskModeTestTask(t, d)
+		if _, err := d.RegisterTaskMode(t.Context(), id, taskmode.ModeLegacy, modeMarker(taskmode.MarkerClear)); err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		marker := func(_ context.Context, taskID int64) (taskmode.Marker, error) {
+			calls++
+			return taskmode.Marker{TaskID: taskID, State: taskmode.MarkerClear}, nil
+		}
+		r, err := d.RegisterTaskMode(t.Context(), id, taskmode.ModeLegacy, marker)
+		if err != nil || r.Mode != taskmode.ModeLegacy || r.Version != 1 || calls != 1 {
+			t.Fatalf("legacy retry record=%+v err=%v marker_calls=%d", r, err, calls)
 		}
 	})
 	t.Run("controlled_before_marker", func(t *testing.T) {

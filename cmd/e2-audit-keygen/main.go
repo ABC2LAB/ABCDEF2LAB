@@ -32,6 +32,7 @@ const (
 	outputUnavailable   = "audit_key_output_unavailable"
 )
 
+// Keep this filename contract aligned with server/controlled_read_store.go safeFile.
 var keyName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 type syncCloser interface {

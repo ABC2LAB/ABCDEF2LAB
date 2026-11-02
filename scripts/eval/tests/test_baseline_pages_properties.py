@@ -110,6 +110,17 @@ class TestBaselinePagesProperties(unittest.TestCase):
         self.assertEqual((pages, vocab), before)
         self.assertNotIn(_MARKER, str(caught.exception))
 
+    def test_each_page_must_keep_total_and_page_size(self):
+        rows = _stream(4)
+        pages = _partition(rows, 2)
+        self.assert_merged(pages, rows, 2)
+        for field, value in (("total", 5), ("page_size", 3)):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(pages)
+                # The first page remains valid by itself; only inter-page metadata differs.
+                changed[0][field] = value
+                self.assert_rejected(changed, "pages: PAGINATION_MISMATCH")
+
     def test_all_bounded_partitions_and_arrivals_preserve_stream_and_references(self):
         for optional, total, size in itertools.product((False, True), range(9), _SIZES):
             rows = _stream(total, optional=optional)

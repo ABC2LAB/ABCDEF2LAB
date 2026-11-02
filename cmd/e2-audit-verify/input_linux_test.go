@@ -57,7 +57,7 @@ func TestRunRejectsKeyWithWrongModeOrLength(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, stdout, stderr := invokeVerify(t, context.Background(), "--journal", journal, "--checkpoint", checkpoint, "--key-file", key)
-	if code != 1 || stdout != "" || stderr == "" {
+	if code != 1 || stdout != "" || stderr != "audit_input_unavailable\n" {
 		t.Fatalf("key mode boundary: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if err := os.Chmod(key, 0o600); err != nil {
@@ -67,21 +67,21 @@ func TestRunRejectsKeyWithWrongModeOrLength(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, stdout, stderr = invokeVerify(t, context.Background(), "--journal", journal, "--checkpoint", checkpoint, "--key-file", key)
-	if code != 1 || stdout != "" || stderr == "" {
+	if code != 1 || stdout != "" || stderr != "audit_input_invalid\n" {
 		t.Fatalf("key length boundary: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if err := os.WriteFile(key, bytes.Repeat([]byte{0x24}, 32), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code, stdout, stderr = invokeVerify(t, context.Background(), "--journal", journal, "--checkpoint", checkpoint, "--key-file", key)
-	if code != 1 || stdout != "" || stderr == "" {
+	if code != 1 || stdout != "" || stderr != "audit_integrity_failed\n" {
 		t.Fatalf("wrong key boundary: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if err := os.WriteFile(key, bytes.Repeat([]byte{0x25}, 33), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code, stdout, stderr = invokeVerify(t, context.Background(), "--journal", journal, "--checkpoint", checkpoint, "--key-file", key)
-	if code != 1 || stdout != "" || stderr == "" {
+	if code != 1 || stdout != "" || stderr != "audit_input_unavailable\n" {
 		t.Fatalf("oversized key boundary: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
