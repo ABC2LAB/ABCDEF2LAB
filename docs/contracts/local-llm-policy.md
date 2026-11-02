@@ -1,6 +1,6 @@
 # 완전 로컬 LLM 허용 정책 코어
 
-범위: 신규 `llmpolicy`의 순수 판별 함수. provider 연결은 [PR #56](https://github.com/ABC2LAB/ABCDEF2LAB/pull/56) 머지 후 별도 작업이다. 기존 provider·HTTP 전송기·환경 설정을 수정하지 않는다. 이 코어 구현만으로 실제 외부 송신이 차단되었다고 설명하지 않는다.
+범위: `llmpolicy.New`·`Policy.Decide`의 순수 판별 계약. 실제 HTTP 요청·dial 검사와 명시적 `Config.NewLocalProvider` 연결은 [로컬 LLM HTTP 어댑터](./local-llm-http.md)에서 관리한다. 서버·profile 자동 배선은 PR #71 병합 이후 별도 작업이다. 이 순수 코어 단독으로 실제 외부 송신 차단이 완료됐다고 설명하지 않는다.
 
 ## 입력과 허용 기준
 
