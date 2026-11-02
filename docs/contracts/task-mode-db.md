@@ -69,7 +69,7 @@ reader는 caller의 살아 있는 **READ COMMITTED** transaction에서 같은 ta
 
 일반 오류 문자열/JSON은 DB·marker 원문을 포함하지 않는다. `errors.Is/As` 진단 원인은 보존하지만 원인 Unwrap 결과를 모델/공유 로그로 내보내지 않는다. mode unknown·DB 장애를 일반 경로 허용으로 바꾸지 않는다.
 
-시험은 공유 개발 DB 대신 전용 PostgreSQL16 컨테이너에서 실행했다. `ARTEX_TASK_MODE_TEST_DSN`이 없는 경우 시험은 명시적 skip이고, 값이 있지만 연결/초기화가 실패하면 fail이다. 이 DSN이 일반 `DSN()`과 같으면 fixture가 즉시 실패한다. 실제 검증에서는 일반 DB와 다른 전용 DSN을 주입하고 skip 0을 확인한다.
+시험은 공유 개발 DB 대신 전용 PostgreSQL16 컨테이너에서 실행했다. `ARTEX_TASK_MODE_TEST_DSN`이 없는 경우 시험은 명시적 skip이고, 값이 있지만 연결/초기화가 실패하면 fail이다. fixture는 두 DSN을 `pgx.ParseConfig`로 파싱해 database 이름이 같고 primary/fallback host·port 집합이 겹치는지 비교하며, scheme 별칭, 기본 포트, host 대소문자·trailing dot, localhost/loopback 표기, 사용자·SSL·기타 query 순서는 DB identity에서 무시한다. 파싱 실패는 fail이다. 이 identity guard는 DNS 조회나 네트워크 연결을 하지 않으며, 라우터 뒤의 물리 cluster가 같은지 증명하지 않는다. Unix socket 경로는 대소문자를 보존하므로 별도 표기 차이는 보수적으로 구분한다. 실제 검증에서는 일반 DB와 다른 전용 DSN을 주입하고 skip 0을 확인한다.
 
 시험 범위: 정상/멱등 등록·역전환/marker 오류 거부, 미등록/없는 task·테이블·닫힌 tx·취소 시 Block, rollback/commit 실패, schema 재적용, 삭제/archive guard, 등록→조회/조회→등록 경합, 서로 다른 task 독립성, 20개 동시 등록, legacy/control 양 순서 경합, callback 동안 task 잠금 유지. 실패 모드는 실제 DB 변화량과 backend lock wait로 관측한다. 테스트용 marker 함수는 실제 파일 어댑터의 검증 완료를 뜻하지 않는다.
 

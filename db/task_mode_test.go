@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/taskmode"
+	"github.com/jackc/pgx/v5"
 )
 
 // These tests never use the shared/config-file DSN. A broken explicitly
@@ -23,7 +25,16 @@ func taskModeTestDB(t *testing.T) *DB {
 	if dsn == "" {
 		t.Skip("set ARTEX_TASK_MODE_TEST_DSN to a dedicated PostgreSQL test database")
 	}
-	if configured, _, err := DSN(); err == nil && strings.TrimSpace(configured) == strings.TrimSpace(dsn) {
+	if configured, _, err := DSN(); err == nil {
+		same, compareErr := sameTaskModeDatabase(configured, dsn)
+		if compareErr != nil {
+			t.Fatal("could not compare dedicated task-mode database with general DSN")
+		}
+		if same {
+			t.Fatal("ARTEX_TASK_MODE_TEST_DSN must be a dedicated database, not the general DSN")
+		}
+	}
+	if strings.TrimSpace(dsn) == "" {
 		t.Fatal("ARTEX_TASK_MODE_TEST_DSN must be a dedicated database, not the general DSN")
 	}
 	d, err := Open(dsn)
@@ -32,6 +43,151 @@ func taskModeTestDB(t *testing.T) *DB {
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	return d
+}
+
+type taskModeDatabaseEndpoint struct {
+	host string
+	port uint16
+}
+
+func sameTaskModeDatabase(primaryDSN, candidateDSN string) (bool, error) {
+	primary, err := pgx.ParseConfig(primaryDSN)
+	if err != nil {
+		return false, fmt.Errorf("parse primary DSN: %w", err)
+	}
+	candidate, err := pgx.ParseConfig(candidateDSN)
+	if err != nil {
+		return false, fmt.Errorf("parse candidate DSN: %w", err)
+	}
+	if primary.Database != candidate.Database {
+		return false, nil
+	}
+	candidateEndpoints := taskModeDatabaseEndpoints(candidate)
+	for endpoint := range taskModeDatabaseEndpoints(primary) {
+		if _, found := candidateEndpoints[endpoint]; found {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func taskModeDatabaseEndpoints(config *pgx.ConnConfig) map[taskModeDatabaseEndpoint]struct{} {
+	endpoints := make(map[taskModeDatabaseEndpoint]struct{}, 1+len(config.Fallbacks))
+	add := func(host string, port uint16) {
+		endpoints[taskModeDatabaseEndpoint{host: canonicalTaskModeHost(host), port: port}] = struct{}{}
+	}
+	add(config.Host, config.Port)
+	for _, fallback := range config.Fallbacks {
+		add(fallback.Host, fallback.Port)
+	}
+
+	return endpoints
+}
+
+func canonicalTaskModeHost(host string) string {
+	host = strings.TrimSpace(host)
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		if addr.IsLoopback() {
+			return "loopback"
+		}
+		return addr.String()
+	}
+	if strings.HasPrefix(host, "/") {
+		return host
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "localhost" {
+		return "loopback"
+	}
+	return host
+}
+
+func TestSameTaskModeDatabaseCanonicalizesDSNs(t *testing.T) {
+	tests := []struct {
+		name  string
+		left  string
+		right string
+		same  bool
+	}{
+		{
+			name:  "scheme host case default port query order and user are not identity",
+			left:  "postgres://alice@DB.EXAMPLE.TEST/app?sslmode=disable&application_name=one",
+			right: "postgresql://bob@db.example.test:5432/app?application_name=two&sslmode=require",
+			same:  true,
+		},
+		{
+			name:  "hostname trailing dot",
+			left:  "postgres://alice@db.example.test./app",
+			right: "postgres://bob@DB.EXAMPLE.TEST:5432/app",
+			same:  true,
+		},
+		{
+			name:  "localhost loopback aliases",
+			left:  "postgres://alice@localhost/app",
+			right: "postgres://bob@127.0.0.1:5432/app",
+			same:  true,
+		},
+		{
+			name:  "ipv4 mapped ipv6",
+			left:  "postgres://alice@[::ffff:127.0.0.1]/app",
+			right: "postgres://bob@127.0.0.1:5432/app",
+			same:  true,
+		},
+		{
+			name:  "fallback endpoint order",
+			left:  "host=primary.example,backup.example port=5432,5433 dbname=app user=alice",
+			right: "host=backup.example,primary.example port=5433,5432 dbname=app user=bob",
+			same:  true,
+		},
+		{
+			name:  "fallback endpoint overlap is rejected",
+			left:  "host=primary.example,backup.example port=5432,5433 dbname=app user=alice",
+			right: "host=backup.example,other.example port=5433,5434 dbname=app user=bob",
+			same:  true,
+		},
+		{
+			name:  "different database",
+			left:  "postgres://alice@db.example.test/app",
+			right: "postgres://alice@db.example.test/other",
+			same:  false,
+		},
+		{
+			name:  "different port",
+			left:  "postgres://alice@db.example.test:5432/app",
+			right: "postgres://alice@db.example.test:5433/app",
+			same:  false,
+		},
+		{
+			name:  "different host",
+			left:  "postgres://alice@one.example.test/app",
+			right: "postgres://alice@two.example.test/app",
+			same:  false,
+		},
+		{
+			name:  "unix socket path case is preserved",
+			left:  "host=/tmp/Postgres dbname=app user=alice",
+			right: "host=/tmp/postgres dbname=app user=alice",
+			same:  false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := sameTaskModeDatabase(test.left, test.right)
+			if err != nil {
+				t.Fatalf("sameTaskModeDatabase() error = %v", err)
+			}
+			if got != test.same {
+				t.Fatalf("sameTaskModeDatabase() = %v, want %v", got, test.same)
+			}
+		})
+	}
+}
+
+func TestSameTaskModeDatabaseRejectsInvalidDSN(t *testing.T) {
+	if _, err := sameTaskModeDatabase("not a postgres dsn", "postgres://localhost/app"); err == nil {
+		t.Fatal("sameTaskModeDatabase() error = nil, want parse error")
+	}
 }
 
 func taskModeTestTask(t *testing.T, d *DB) int64 {
