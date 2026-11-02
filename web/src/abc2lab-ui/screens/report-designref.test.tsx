@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as engine from "../lib/engine";
@@ -69,9 +69,60 @@ beforeEach(() => {
     },
   ]);
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("ReportScreen design-ref regressions", () => {
+  it.each(["막대", "비율", "표"])("%s에서 유형을 합쳐도 건수와 원문 상세를 보존한다", async (view) => {
+    // jsdom에는 레이아웃 스크롤이 없으므로 상세를 여는 상태 전환만 확인한다.
+    vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
+    const template: engine.EngineFinding = {
+      id: "",
+      vulnclass: "",
+      name: "",
+      severity: "low",
+      status: "pending",
+      summary: "합성 발견",
+      ts: "2026-10-30T00:00:00Z",
+    };
+    const findings = [
+      { ...template, id: "idor", name: "첫 접근통제 발견", vulnclass: "IDOR" },
+      { ...template, id: "reference", name: "두 접근통제 발견", vulnclass: "Insecure Direct Object Reference" },
+      { ...template, id: "xss", name: "스크립트 발견", vulnclass: "Stored XSS" },
+      { ...template, id: "other", name: "미지원 유형 발견", vulnclass: "Future Category" },
+      { ...template, id: "empty", name: "유형 빈 발견", vulnclass: "" },
+    ];
+    const original = structuredClone(findings);
+    vi.mocked(engine.listTaskFindings).mockResolvedValueOnce(findings);
+    show();
+    await screen.findByText("발견 한눈에 보기");
+    fireEvent.click(screen.getByRole("button", { name: "유형" }));
+    fireEvent.click(screen.getByRole("button", { name: view }));
+    expect(screen.getByText(/빈 값과 분류되지 않은 유형은 기타에 포함/)).toBeVisible();
+    expect(screen.getByText(/같은 발견 5건/)).toBeVisible();
+
+    if (view === "표") {
+      const table = screen.getByRole("table");
+      expect(within(table).getAllByRole("row")).toHaveLength(4);
+      const accessRow = within(table).getByText("접근통제 (IDOR 포함)").closest("tr") as HTMLElement;
+      expect(within(accessRow).getByText("2건")).toBeVisible();
+      expect(within(accessRow).getByText("40%")).toBeVisible();
+      expect(within(table).getByText("기타").closest("tr")).toHaveTextContent("2건40%");
+      fireEvent.click(within(accessRow).getByRole("button", { name: "두 접근통제 발견" }));
+    } else {
+      const accessButtons = screen.getAllByRole("button", { name: "유형 접근통제 (IDOR 포함) 2건 40%" });
+      expect(screen.getAllByRole("button", { name: "유형 기타 2건 40%" })).toHaveLength(view === "비율" ? 2 : 1);
+      fireEvent.click(accessButtons[0]);
+      expect(screen.getByRole("button", { name: "첫 접근통제 발견" })).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "두 접근통제 발견" }));
+    }
+
+    expect(await screen.findByText("Insecure Direct Object Reference", { selector: "dd" })).toBeVisible();
+    expect(findings).toEqual(original);
+  });
+
   it("keeps unknown severity in graph and table totals", async () => {
     show();
     await screen.findByText("발견 한눈에 보기");

@@ -201,9 +201,8 @@ func validateControlledReadSpec(spec controlledReadSpec) error {
 			return errControlledReadUnavailable
 		}
 	}
-	cfg := spec.HTTP
-	cfg.Scope = transmit.Scope{RunRef: "validation", TaskRef: spec.TaskID, CaseRef: spec.CaseRef, ResetRef: spec.ResetRef, PolicyRef: spec.PolicyRef}
-	cfg.Recorder = controlledReadValidationRecorder{}
+	scope := transmit.Scope{RunRef: "validation", TaskRef: spec.TaskID, CaseRef: spec.CaseRef, ResetRef: spec.ResetRef, PolicyRef: spec.PolicyRef}
+	cfg := controlledReadHTTPConfig(spec, scope, controlledReadValidationRecorder{})
 	tx, err := transmit.NewHTTP(context.Background(), cfg)
 	if err != nil {
 		return errControlledReadUnavailable
@@ -283,8 +282,7 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 		return ctx, nil, errControlledReadUnavailable
 	}
 	recorder := &controlledCheckpointRecorder{journal: journal, store: r.store}
-	cfg := spec.HTTP
-	cfg.Scope, cfg.Recorder = scope, recorder
+	cfg := controlledReadHTTPConfig(spec, scope, recorder)
 	tx, err := transmit.NewHTTP(ctx, cfg)
 	if err != nil {
 		journal.Close()
@@ -342,6 +340,7 @@ func (r *controlledCheckpointRecorder) Record(ctx context.Context, event transmi
 func (l *controlledReadLease) close() error {
 	l.once.Do(func() {
 		l.tx.StopAndWait()
+		halted := l.tx.HealthStatus().Halted
 		l.recorder.mu.Lock()
 		defer l.recorder.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
@@ -353,7 +352,7 @@ func (l *controlledReadLease) close() error {
 			l.closeErr = errControlledReadUnavailable
 		}
 		l.resultMu.Lock()
-		if !l.observed || l.denied {
+		if !l.observed || l.denied || halted {
 			l.closeErr = errControlledReadUnavailable
 		}
 		l.resultMu.Unlock()
@@ -365,7 +364,7 @@ func (l *controlledReadLease) close() error {
 }
 
 func (l *controlledReadLease) tool() actool.CoreTool {
-	return roTool(agent.ControlledHTTPToolName, "Perform one approved read using registered account and resource references. No arbitrary URL, headers or methods.", map[string]any{
+	return roTool(agent.ControlledHTTPToolName, "Perform one approved read using registered account and resource references. No arbitrary URL, headers or methods. If health.Halted is true, stop requesting and report its reason codes. Continue/below_threshold or insufficient_samples is not a normal or safe result and does not authorize another request. ok only reports capture completion.", map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
 			"account_ref":  map[string]any{"type": "string", "enum": l.accounts},
@@ -383,20 +382,26 @@ func (l *controlledReadLease) tool() actool.CoreTool {
 		stop := context.AfterFunc(ctx, l.tx.Stop)
 		defer stop()
 		capture, receipt, ok := l.tx.SendDetailed(idor.AccessRequest{As: l.sessions[account], ResourceRef: resource, Method: "GET"})
+		var health *transmit.HealthStatus
+		if status := l.tx.HealthStatus(); status.Enabled {
+			health = &status
+		}
+		halted := health != nil && health.Halted
 		l.resultMu.Lock()
 		l.observed = l.observed || ok
-		l.denied = l.denied || !ok
+		l.denied = l.denied || !ok || halted
 		l.resultMu.Unlock()
 		out, err := json.Marshal(struct {
-			OK      bool             `json:"ok"`
-			Receipt transmit.Receipt `json:"receipt"`
-			Capture idor.Capture     `json:"capture"`
-		}{ok, receipt, capture})
+			OK      bool                   `json:"ok"`
+			Receipt transmit.Receipt       `json:"receipt"`
+			Capture idor.Capture           `json:"capture"`
+			Health  *transmit.HealthStatus `json:"health,omitempty"`
+		}{ok, receipt, capture, health})
 		if err != nil {
 			return actool.Errorf("controlled_read_result_unavailable"), nil
 		}
 		result := actool.Text(string(out))
-		result.IsError = !ok
+		result.IsError = !ok || halted
 		return result, nil
 	})
 }

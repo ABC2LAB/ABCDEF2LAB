@@ -32,6 +32,7 @@ type HTTPTransmitter struct {
 	timeout   time.Duration
 	bodyLimit int64
 	interval  time.Duration
+	health    *healthState
 	budget    uint64
 	serial    chan struct{}
 	attempt   atomic.Uint64
@@ -116,12 +117,17 @@ func NewHTTP(parent context.Context, cfg Config) (*HTTPTransmitter, error) {
 		resource.Accounts = append([]string(nil), resource.Accounts...)
 		resources[resource.Ref] = binding{resource, u, accounts}
 	}
+	health, err := newHealthState(cfg.Health, cfg.RequestTimeout, cfg.MinInterval)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(parent)
 	t := &HTTPTransmitter{
 		ctx: ctx, cancel: cancel, scope: cfg.Scope, expires: cfg.ExpiresAt,
 		sessions: sessions, resources: resources, recorder: cfg.Recorder,
 		timeout: cfg.RequestTimeout, bodyLimit: cfg.MaxBodyBytes, interval: cfg.MinInterval,
 		budget: cfg.MaxRequests, serial: make(chan struct{}, 1),
+		health: health,
 	}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
@@ -196,6 +202,7 @@ func (t *HTTPTransmitter) SendDetailed(proposal idor.AccessRequest) (capture ido
 	t.mu.Unlock()
 	defer t.inflight.Done()
 	acquired := false
+	var network *networkObservation
 	if proposal.Method == http.MethodGet {
 		receipt.Method = http.MethodGet
 	}
@@ -212,6 +219,7 @@ func (t *HTTPTransmitter) SendDetailed(proposal idor.AccessRequest) (capture ido
 		if acquired {
 			defer func() { <-t.serial }()
 		}
+		t.observeHealth(network, receipt)
 		receipt.At = time.Now()
 		if !t.record("result", receipt) {
 			receipt.Reason, capture, ok = AuditUnavailable, idor.Capture{}, false
@@ -284,16 +292,21 @@ func (t *HTTPTransmitter) SendDetailed(proposal idor.AccessRequest) (capture ido
 	if !receipt.Admitted {
 		return
 	}
+	if t.health != nil {
+		network, ctx = newNetworkObservation(ctx, t.health.config.NetworkTimeout)
+		defer network.dispose()
+	}
 	var written atomic.Bool
 	trace := &httptrace.ClientTrace{WroteRequest: func(info httptrace.WroteRequestInfo) {
 		if info.Err == nil {
 			written.Store(true)
 		}
-	}}
+	}, ConnectStart: func(_, _ string) { network.start() }}
 	request = request.WithContext(httptrace.WithClientTrace(ctx, trace))
 	response, err := t.client.Do(request)
 	receipt.RequestWritten = written.Load()
 	if err != nil {
+		network.finish(err, 0)
 		receipt.Reason = TransportError
 		if ctx.Err() != nil {
 			receipt.Reason = t.contextReason(ctx)
@@ -301,20 +314,44 @@ func (t *HTTPTransmitter) SendDetailed(proposal idor.AccessRequest) (capture ido
 		return
 	}
 	receipt.ResponseReceived, receipt.StatusCode = true, response.StatusCode
+	bodyClosed := false
+	closeBody := func() error {
+		if bodyClosed {
+			return nil
+		}
+		bodyClosed = true
+		err := response.Body.Close()
+		network.bodyClosed(err)
+		return err
+	}
 	defer func() {
-		if err := response.Body.Close(); err != nil && ok {
+		err := closeBody()
+		if network != nil && errors.Is(context.Cause(ctx), errHealthNetworkTimeout) {
+			// Headers-only and body-limit paths also close their body here.
+			// A health deadline outranks their earlier response-policy reason.
+			receipt.Reason, capture, ok = t.contextReason(ctx), idor.Capture{}, false
+		} else if err != nil && ok {
 			receipt.Reason, capture, ok = TransportError, idor.Capture{}, false
 		}
 	}()
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		network.responseRead(nil, response.StatusCode)
 		receipt.Reason = RedirectRefused
 		return
 	}
 	if encoding := response.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		network.responseRead(nil, response.StatusCode)
 		receipt.Reason = UnsupportedResponse
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, t.bodyLimit+1))
+	network.responseRead(err, response.StatusCode)
+	var closeErr error
+	if network != nil {
+		// Finish all health-observed body I/O before potentially expensive JSON
+		// projection. With health disabled, retain the existing defer lifecycle.
+		closeErr = closeBody()
+	}
 	if err != nil {
 		receipt.Reason = TransportError
 		if ctx.Err() != nil {
@@ -328,6 +365,10 @@ func (t *HTTPTransmitter) SendDetailed(proposal idor.AccessRequest) (capture ido
 	}
 	if reason := t.contextReasonIfDone(ctx); reason != "" {
 		receipt.Reason = reason
+		return
+	}
+	if closeErr != nil {
+		receipt.Reason = TransportError
 		return
 	}
 	view := project(body, response.Header.Get("Content-Type"), b.resource.Ref, b.resource.View, request, proposal)
@@ -404,7 +445,7 @@ func (t *HTTPTransmitter) contextReason(ctx context.Context) Reason {
 	if !time.Now().Before(t.expires) {
 		return ExpiredApproval
 	}
-	if ctx.Err() == context.DeadlineExceeded {
+	if ctx.Err() == context.DeadlineExceeded || errors.Is(context.Cause(ctx), errHealthNetworkTimeout) {
 		return TimedOut
 	}
 	return Canceled

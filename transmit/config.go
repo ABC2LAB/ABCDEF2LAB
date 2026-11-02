@@ -75,6 +75,7 @@ type Config struct {
 	MaxBodyBytes   int64
 	RootCAs        *x509.CertPool `json:"-"`
 	Recorder       Recorder       `json:"-"`
+	Health         *HealthConfig  `json:"-"`
 }
 
 // Recorder must acknowledge durable intent before a request can be admitted.

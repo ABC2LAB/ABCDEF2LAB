@@ -96,7 +96,7 @@ KG snapshot은 owner/cross 실행 전에 ID·version·내용 digest를 동결하
 
 ### 4.1 공통 판별 코어의 첫 구현 초안
 
-`taskmode.Decide`는 서버가 공급한 `Record{TaskID, Mode, Version}`와 `Marker{TaskID, State}`를 검사하는 순수 함수다. `Version`은 양의 mode fence revision이다. 별도 [PR #43](https://github.com/ABC2LAB/ABCDEF2LAB/pull/43)은 `task_control_modes` 테이블과 등록 API를 제안하며 팀 최종 저장 규격은 합의 전이다. marker의 clear는 **부재를 정상 확인한 값**이며 조회 실패를 false/clear로 변환하면 안 된다.
+`taskmode.Decide`는 서버가 공급한 `Record{TaskID, Mode, Version}`와 `Marker{TaskID, State}`를 검사하는 순수 함수다. `Version`은 양의 mode fence revision이다. `task_control_modes` 테이블과 등록 API는 별도 [PR #43](https://github.com/ABC2LAB/ABCDEF2LAB/pull/43)에서 구현해 `3c454a2`로 dev에 병합했다. marker의 clear는 **부재를 정상 확인한 값**이며 조회 실패를 false/clear로 변환하면 안 된다.
 
 | 정본 | marker | 판별 결과 |
 |---|---|---|
@@ -187,7 +187,7 @@ server-owned conversation→retest→finding→원래 task와 새 검증 executi
 4. recorder/fallback·일반 삽입/승격·근거 변경·retest 경계를 차례로 연결. 저장 코드에서 새 HTTP 요청 0건을 확인.
 5. owned synthetic fixture로 owner/cross→판정→최초 저장·재검증까지 확인. 모델·실 대상 baseline 없이 검증 가능.
 
-§4.1의 공통 모드 코어와 DB mode reader/등록·스키마는 별도 PR #43에서 검토한다. 이 문서는 판정 issuance/link 저장 구조, E② 등록 API, KG·검증기 코드를 바꾸지 않는다. 현재 통제 Worker에 `report_finding`이 없다는 방어도 게이트 완성 전에 해제하지 않는다.
+§4.1의 공통 모드 코어와 DB mode reader/등록·스키마는 별도 PR #43으로 dev에 병합됐다. 이 문서는 판정 issuance/link 저장 구조, E② 등록 API, KG·검증기 코드를 바꾸지 않는다. 현재 통제 Worker에 `report_finding`이 없다는 방어도 게이트 완성 전에 해제하지 않는다.
 
 ## 9. 남은 협의
 
