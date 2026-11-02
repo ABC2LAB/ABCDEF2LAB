@@ -19,7 +19,7 @@ type controlledHealthJSON struct {
 	NetworkTimeoutMS *int64 `json:"network_timeout_ms"`
 }
 
-func decodeControlledReadHealth(raw json.RawMessage, requestTimeout time.Duration, maxRequests uint64) (*transmit.HealthConfig, error) {
+func decodeControlledReadHealth(raw json.RawMessage, requestTimeout, minInterval time.Duration, maxRequests uint64) (*transmit.HealthConfig, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -40,10 +40,7 @@ func decodeControlledReadHealth(raw json.RawMessage, requestTimeout time.Duratio
 		},
 		NetworkTimeout: time.Duration(*in.NetworkTimeoutMS) * time.Millisecond,
 	}
-	if health.NetworkTimeout <= 0 || health.NetworkTimeout >= requestTimeout || health.Policy.SlowAfter >= health.NetworkTimeout {
-		return nil, errControlledReadSnapshot
-	}
-	if _, err := targethealth.Evaluate(health.Policy, nil, time.Now()); err != nil {
+	if err := transmit.ValidateHealthConfig(*health, requestTimeout, minInterval); err != nil {
 		return nil, errControlledReadSnapshot
 	}
 	for _, limit := range []int{health.Policy.MinSamples, health.Policy.FailureLimit, health.Policy.SlowLimit} {

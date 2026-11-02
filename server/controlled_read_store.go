@@ -292,7 +292,7 @@ func (s *controlledReadStore) load(taskID string, intentID int64, snapshotRef st
 	if in.MinIntervalMS > math.MaxInt64/int64(time.Millisecond) || in.RequestTimeoutMS > math.MaxInt64/int64(time.Millisecond) || cfg.MinInterval < 0 || cfg.RequestTimeout <= 0 {
 		return out, errControlledReadSnapshot
 	}
-	cfg.Health, err = decodeControlledReadHealth(in.Health, cfg.RequestTimeout, cfg.MaxRequests)
+	cfg.Health, err = decodeControlledReadHealth(in.Health, cfg.RequestTimeout, cfg.MinInterval, cfg.MaxRequests)
 	if err != nil {
 		return out, errControlledReadSnapshot
 	}

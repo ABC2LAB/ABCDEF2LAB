@@ -117,7 +117,7 @@ func NewHTTP(parent context.Context, cfg Config) (*HTTPTransmitter, error) {
 		resource.Accounts = append([]string(nil), resource.Accounts...)
 		resources[resource.Ref] = binding{resource, u, accounts}
 	}
-	health, err := newHealthState(cfg.Health, cfg.RequestTimeout)
+	health, err := newHealthState(cfg.Health, cfg.RequestTimeout, cfg.MinInterval)
 	if err != nil {
 		return nil, err
 	}

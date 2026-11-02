@@ -380,6 +380,24 @@ func TestHealthInvalidPolicyRejectedAndConfigCopied(t *testing.T) {
 		{"unreachable slow threshold", func(c *transmit.Config) {
 			c.Health.Policy.SlowAfter, c.Health.Policy.SlowLimit = c.Health.NetworkTimeout, 2
 		}},
+		{"minimum exceeds failure threshold", func(c *transmit.Config) { c.Health.Policy.MinSamples, c.Health.Policy.FailureLimit = 3, 2 }},
+		{"minimum exceeds slow threshold", func(c *transmit.Config) {
+			c.Health.Policy.SlowAfter, c.Health.Policy.SlowLimit = 100*time.Millisecond, 2
+			c.Health.Policy.MinSamples, c.Health.Policy.FailureLimit = 3, 3
+		}},
+		{"failure threshold cannot fit window", func(c *transmit.Config) {
+			c.Health.Policy.Window, c.Health.NetworkTimeout = 250*time.Millisecond, 100*time.Millisecond
+			c.Health.Policy.MinSamples, c.Health.Policy.FailureLimit = 2, 4
+		}},
+		{"min interval cannot fit window", func(c *transmit.Config) {
+			c.Health.Policy.Window, c.Health.NetworkTimeout, c.MinInterval = 199*time.Millisecond, 100*time.Millisecond, 200*time.Millisecond
+			c.Health.Policy.MinSamples, c.Health.Policy.FailureLimit = 2, 2
+		}},
+		{"slow threshold cannot fit window", func(c *transmit.Config) {
+			c.Health.Policy.Window, c.Health.NetworkTimeout = 1500*time.Millisecond, 500*time.Millisecond
+			c.Health.Policy.MinSamples, c.Health.Policy.FailureLimit, c.Health.Policy.SlowLimit = 2, 2, 4
+			c.Health.Policy.SlowAfter = 100 * time.Millisecond
+		}},
 		{"invalid policy", func(c *transmit.Config) { c.Health.Policy.MinSamples = 1 }},
 		{"invalid scope alias", func(c *transmit.Config) { c.Health.Policy.ScopeRef = "not/a/health/ref" }},
 	} {
@@ -412,6 +430,73 @@ func TestHealthInvalidPolicyRejectedAndConfigCopied(t *testing.T) {
 	encoded, err := json.Marshal(tx.HealthStatus())
 	if err != nil || strings.Contains(string(encoded), "basket/42") || strings.Contains(string(encoded), server.URL) || strings.Contains(string(encoded), "http-execution") {
 		t.Fatal("status exposed identifiers")
+	}
+}
+
+func TestHealthWindowFeasibilityStrictBoundary(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	for _, tc := range []struct {
+		name    string
+		window  time.Duration
+		wantErr bool
+	}{
+		{"exact equality", 90 * time.Millisecond, true},
+		{"one nanosecond over", 90*time.Millisecond + time.Nanosecond, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := transportConfig(server.URL, &recorder{})
+			cfg.Health = healthPolicy()
+			cfg.Health.Policy.Window = tc.window
+			cfg.Health.Policy.MinSamples, cfg.Health.Policy.FailureLimit = 4, 4
+			cfg.Health.NetworkTimeout = 30 * time.Millisecond
+			tx, err := transmit.NewHTTP(context.Background(), cfg)
+			if tx != nil {
+				defer tx.StopAndWait()
+			}
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("NewHTTP error=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestHealthLoopbackStopsForFeasibleWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	under := transportConfig(server.URL, &recorder{})
+	under.Health = healthPolicy()
+	under.Health.Policy.Window = 89 * time.Millisecond
+	under.Health.Policy.MinSamples, under.Health.Policy.FailureLimit = 4, 4
+	under.Health.NetworkTimeout = 30 * time.Millisecond
+	if _, err := transmit.NewHTTP(context.Background(), under); err == nil {
+		t.Fatal("window at or below three network gaps was accepted")
+	}
+
+	over := transportConfig(server.URL, &recorder{})
+	over.Health = healthPolicy()
+	// Admission's exact boundary is tested above; leave scheduling headroom
+	// here so the real timeout regression does not depend on CI timer jitter.
+	over.Health.Policy.Window = 350 * time.Millisecond
+	over.Health.Policy.MinSamples, over.Health.Policy.FailureLimit = 4, 4
+	over.Health.NetworkTimeout = 30 * time.Millisecond
+	tx, err := transmit.NewHTTP(context.Background(), over)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.StopAndWait()
+	for i := 0; i < 4; i++ {
+		_, receipt, ok := tx.SendDetailed(transportRequest("owner", "h-owner"))
+		if ok || receipt.Reason != transmit.TimedOut {
+			t.Fatalf("timeout %d: ok=%v receipt=%+v", i, ok, receipt)
+		}
+	}
+	state := tx.HealthStatus()
+	if !state.Halted || state.Decision.Counts.Failures != 4 {
+		t.Fatalf("feasible boundary did not stop: %+v", state)
 	}
 }
 

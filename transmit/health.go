@@ -21,6 +21,37 @@ type HealthConfig struct {
 	NetworkTimeout time.Duration
 }
 
+// ValidateHealthConfig checks the complete admission policy, including the
+// minimum number of samples needed to reach every enabled stop threshold and
+// whether serial requests can produce that many samples inside the window.
+// The multiplication is expressed as division to keep validation overflow-safe.
+func ValidateHealthConfig(config HealthConfig, requestTimeout, minInterval time.Duration) error {
+	if requestTimeout <= 0 || config.NetworkTimeout <= 0 || config.NetworkTimeout >= requestTimeout || minInterval < 0 {
+		return invalid("health network timeout")
+	}
+	if config.Policy.SlowAfter >= config.NetworkTimeout {
+		return invalid("health slow threshold")
+	}
+	if _, err := targethealth.Evaluate(config.Policy, nil, time.Now()); err != nil {
+		return invalid("health policy")
+	}
+	k := config.Policy.MinSamples
+	if config.Policy.FailureLimit > k {
+		k = config.Policy.FailureLimit
+	}
+	if config.Policy.SlowLimit > k {
+		k = config.Policy.SlowLimit
+	}
+	gap := config.NetworkTimeout
+	if minInterval > gap {
+		gap = minInterval
+	}
+	if k > 1 && (gap <= 0 || time.Duration(k-1) > (config.Policy.Window-1)/gap) {
+		return invalid("health threshold window")
+	}
+	return nil
+}
+
 // HealthStatus is the last in-memory assessment, never an admission permission
 // or an outage diagnosis. Halted is sticky for this instance. InputValid=false
 // distinguishes a monitor input/capacity failure from observed degradation.
@@ -40,16 +71,13 @@ type healthState struct {
 	status       HealthStatus
 }
 
-func newHealthState(config *HealthConfig, requestTimeout time.Duration) (*healthState, error) {
+func newHealthState(config *HealthConfig, requestTimeout, minInterval time.Duration) (*healthState, error) {
 	if config == nil {
 		return nil, nil
 	}
 	cfg := *config
-	if cfg.NetworkTimeout <= 0 || cfg.NetworkTimeout >= requestTimeout {
-		return nil, invalid("health network timeout")
-	}
-	if cfg.Policy.SlowAfter >= cfg.NetworkTimeout {
-		return nil, invalid("health slow threshold")
+	if err := ValidateHealthConfig(cfg, requestTimeout, minInterval); err != nil {
+		return nil, err
 	}
 	decision, err := targethealth.Evaluate(cfg.Policy, nil, time.Now())
 	if err != nil {

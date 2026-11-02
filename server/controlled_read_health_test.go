@@ -29,7 +29,7 @@ func TestControlledReadHealthDecodeExplicitPolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			health, err := decodeControlledReadHealth(raw, time.Second, 4)
+			health, err := decodeControlledReadHealth(raw, time.Second, 0, 4)
 			if err != nil || health == nil {
 				t.Fatalf("decode health: %v", err)
 			}
@@ -42,9 +42,24 @@ func TestControlledReadHealthDecodeExplicitPolicy(t *testing.T) {
 			}
 		})
 	}
-	health, err := decodeControlledReadHealth(nil, time.Second, 1)
+	health, err := decodeControlledReadHealth(nil, time.Second, 0, 1)
 	if err != nil || health != nil {
 		t.Fatal("omitted health no longer preserves legacy behavior")
+	}
+}
+
+func TestControlledReadHealthDecodeChecksMinInterval(t *testing.T) {
+	fields := controlledHealthFields()
+	fields["window_ms"], fields["network_timeout_ms"] = 199, 100
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health, err := decodeControlledReadHealth(raw, time.Second, 0, 2); err != nil || health == nil {
+		t.Fatal("control policy should fit when no minimum interval is configured")
+	}
+	if health, err := decodeControlledReadHealth(raw, time.Second, 200*time.Millisecond, 2); err != errControlledReadSnapshot || health != nil {
+		t.Fatal("decode ignored the configured minimum interval")
 	}
 }
 
@@ -58,7 +73,7 @@ func TestControlledReadHealthRejectsMalformedPolicy(t *testing.T) {
 	}
 	for _, raw := range rawCases {
 		t.Run(raw, func(t *testing.T) {
-			health, err := decodeControlledReadHealth(json.RawMessage(raw), time.Second, 4)
+			health, err := decodeControlledReadHealth(json.RawMessage(raw), time.Second, 0, 4)
 			if err != errControlledReadSnapshot || health != nil {
 				t.Fatal("malformed policy accepted or raw error escaped")
 			}
@@ -80,7 +95,7 @@ func TestControlledReadHealthRequiresEveryField(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				health, err := decodeControlledReadHealth(raw, time.Second, 4)
+				health, err := decodeControlledReadHealth(raw, time.Second, 0, 4)
 				if err != errControlledReadSnapshot || health != nil {
 					t.Fatal("missing/null policy field silently defaulted")
 				}
@@ -118,6 +133,9 @@ func TestControlledReadHealthRejectsUnsafePolicy(t *testing.T) {
 		{"unreachable samples", "min_samples", 3, 2},
 		{"unreachable failures", "failure_limit", 3, 2},
 		{"unreachable slow", "slow_limit", 3, 2},
+		{"minimum exceeds failure threshold", "min_samples", 3, 4},
+		{"minimum exceeds slow threshold", "min_samples", 3, 4},
+		{"failure threshold cannot fit window", "failure_limit", 4, 4},
 		{"insufficient budget", "max_samples", 16, 1},
 		{"fraction", "min_samples", 2.5, 4},
 		{"string", "window_ms", "5000", 4},
@@ -130,11 +148,21 @@ func TestControlledReadHealthRejectsUnsafePolicy(t *testing.T) {
 			if tc.name == "unreachable slow" {
 				fields["slow_after_ms"] = 100
 			}
+			if tc.name == "minimum exceeds failure threshold" {
+				fields["failure_limit"] = 2
+			}
+			if tc.name == "minimum exceeds slow threshold" {
+				fields["slow_after_ms"], fields["slow_limit"], fields["failure_limit"] = 100, 2, 3
+			}
+			if tc.name == "failure threshold cannot fit window" {
+				fields["window_ms"], fields["network_timeout_ms"] = 250, 100
+				fields["min_samples"] = 2
+			}
 			raw, err := json.Marshal(fields)
 			if err != nil {
 				t.Fatal(err)
 			}
-			health, err := decodeControlledReadHealth(raw, time.Second, tc.budget)
+			health, err := decodeControlledReadHealth(raw, time.Second, 0, tc.budget)
 			if err != errControlledReadSnapshot || health != nil {
 				t.Fatal("unsafe policy accepted or raw error escaped")
 			}

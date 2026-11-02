@@ -364,7 +364,7 @@ func (l *controlledReadLease) close() error {
 }
 
 func (l *controlledReadLease) tool() actool.CoreTool {
-	return roTool(agent.ControlledHTTPToolName, "Perform one approved read using registered account and resource references. No arbitrary URL, headers or methods. If health.Halted is true, stop requesting and report its reason codes. ok only reports capture completion.", map[string]any{
+	return roTool(agent.ControlledHTTPToolName, "Perform one approved read using registered account and resource references. No arbitrary URL, headers or methods. If health.Halted is true, stop requesting and report its reason codes. Continue/below_threshold or insufficient_samples is not a normal or safe result and does not authorize another request. ok only reports capture completion.", map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
 			"account_ref":  map[string]any{"type": "string", "enum": l.accounts},

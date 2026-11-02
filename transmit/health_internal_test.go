@@ -44,7 +44,7 @@ func healthTestObservation(attempt uint64, completed time.Time, outcome targethe
 
 func newHealthTestState(t *testing.T, cfg targethealth.Config) *healthState {
 	t.Helper()
-	h, err := newHealthState(&HealthConfig{Policy: cfg, NetworkTimeout: time.Second}, 2*time.Second)
+	h, err := newHealthState(&HealthConfig{Policy: cfg, NetworkTimeout: time.Second}, 2*time.Second, 0)
 	if err != nil {
 		t.Fatalf("newHealthState() error = %v", err)
 	}
