@@ -8,6 +8,7 @@ LLM 모델·주소·대상 이미지·계측기 origin은 사전검사 선언(pr
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -31,8 +32,18 @@ METER_DIR_NAME = "meter"
 # compose 파일의 나머지 ${VAR}는 전부 러너가 넘긴다(테스트로 집합 일치를 고정).
 SECRET_ENV_NAMES = frozenset({"EVAL_ENGINE_ADMIN_PASSWORD", "EVAL_ENGINE_DB_PASSWORD",
                               "OPENAI_API_KEY", "ANTHROPIC_API_KEY"})
-# compose 평가 층의 계측기 서비스 이름. 엔진은 이 이름으로만 대상에 닿는다.
+# compose 서비스·망 키(deploy/ 파일과 같은 이름, 테스트로 고정). 엔진은 계측기 이름으로만 대상에 닿는다.
+ENGINE_SERVICE = "engine"
+ENGINE_DB_SERVICE = "engine-db"
+TARGET_SERVICE = "target"
 METER_SERVICE = "eval-meter"
+OBS_SERVICE = "eval-obs"
+ENGINE_NET = "engine_net"
+TARGET_NET = "target_net"
+LLM_NET = "llm_net"
+OBS_NET = "obs_net"
+MAX_HOST_LISTEN_ALLOW = 32
+MAX_REASON_LENGTH = 200
 
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _TMPFS_SIZE = re.compile(r"[1-9][0-9]{0,8}[kmg]?\Z")
@@ -42,7 +53,8 @@ _LLM_PROVIDERS = ("anthropic", "openai")
 _IMAGE_ROLES = ("engine_baseline", "engine_ours", "engine_db", "meter")
 _PORTS = ("engine_api_host", "engine_container", "target", "obs", "obs_host")
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
-               "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds")
+               "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
+               "host_listen_allowlist")
 
 
 class RunnerConfigError(ValueError):
@@ -57,6 +69,15 @@ class RunnerConfigError(ValueError):
 class Image:
     ref: str
     id: str
+
+
+@dataclass(frozen=True)
+class HostListen:
+    """loopback 밖 호스트 리슨 중 허용할 것 하나. 근거(reason)를 함께 기록한다."""
+
+    address: str
+    port: int
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -77,6 +98,7 @@ class RunnerConfig:
     health_timeout: str
     health_retries: int
     docker_timeout_seconds: float
+    host_listen_allowlist: tuple[HostListen, ...]
 
 
 @dataclass(frozen=True)
@@ -194,6 +216,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     timeout = top.get("docker_timeout_seconds")
     if "docker_timeout_seconds" in top and not (type(timeout) in (int, float) and 0 < timeout <= 3600):
         errors.append("config.docker_timeout_seconds: INVALID")
+    allowlist = _host_listen_allowlist(top.get("host_listen_allowlist"), errors) if "host_listen_allowlist" in top else ()
     if errors:
         raise RunnerConfigError(errors)
     return RunnerConfig(
@@ -203,7 +226,43 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         engine_db_user=db["user"], engine_db_name=db["name"],
         tmpfs_engine_db=tmpfs["engine_db"], tmpfs_engine_data=tmpfs["engine_data"],
         health_interval=health["interval"], health_timeout=health["timeout"], health_retries=health["retries"],
-        docker_timeout_seconds=float(timeout))
+        docker_timeout_seconds=float(timeout), host_listen_allowlist=allowlist)
+
+
+def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:
+    """기본은 거부. 특정 주소만 받는다(0.0.0.0·:: 같은 전체 주소와 loopback은 허용 대상이 아님)."""
+    prefix = "config.host_listen_allowlist"
+    if not isinstance(raw, list) or len(raw) > MAX_HOST_LISTEN_ALLOW:
+        errors.append(f"{prefix}: INVALID")
+        return ()
+    entries, seen = [], set()
+    for index, item in enumerate(raw):
+        label = f"{prefix}[{index}]"
+        fields = _exact(item, ("address", "port", "reason"), label, errors)
+        if len(fields) != 3 or set(fields) != {"address", "port", "reason"}:
+            continue
+        address, port, reason = fields["address"], fields["port"], fields["reason"]
+        try:
+            parsed = ipaddress.ip_address(address) if isinstance(address, str) else None
+        except ValueError:
+            parsed = None
+        if (parsed is None or str(parsed) != address or parsed.is_loopback or parsed.is_unspecified
+                or getattr(parsed, "ipv4_mapped", None) is not None):
+            errors.append(f"{label}.address: INVALID")
+            continue
+        if not _int(port, 1, 65535):
+            errors.append(f"{label}.port: INVALID")
+            continue
+        if (not isinstance(reason, str) or not reason.strip() or len(reason) > MAX_REASON_LENGTH
+                or any(ord(char) < 32 or ord(char) == 127 for char in reason)):
+            errors.append(f"{label}.reason: INVALID")
+            continue
+        if (address, port) in seen:
+            errors.append(f"{label}: DUPLICATE")
+            continue
+        seen.add((address, port))
+        entries.append(HostListen(address, port, reason))
+    return tuple(entries)
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

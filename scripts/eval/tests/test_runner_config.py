@@ -42,6 +42,7 @@ def runner_config() -> dict:
         "tmpfs": {"engine_db": "1g", "engine_data": "512m"},
         "health": {"interval": "2s", "timeout": "2s", "retries": 30},
         "docker_timeout_seconds": 120,
+        "host_listen_allowlist": [],
     }
 
 
@@ -122,6 +123,35 @@ class TestParseRunnerConfig(unittest.TestCase):
             self.reject(payload, expected)
         for value in (0, -1, 3601, True, "60", float("nan")):
             self.reject(runner_config() | {"docker_timeout_seconds": value}, "config.docker_timeout_seconds: INVALID")
+
+    def test_host_listen_allowlist_is_specific_and_justified(self):
+        entry = {"address": "10.255.255.254", "port": 53, "reason": "WSL DNS 터널링(lo의 /32 주소)"}
+        config = parse_runner_config(runner_config() | {"host_listen_allowlist": [entry]})
+        self.assertEqual([(e.address, e.port, e.reason) for e in config.host_listen_allowlist],
+                         [("10.255.255.254", 53, entry["reason"])])
+        cases = [
+            (entry | {"address": "0.0.0.0"}, "[0].address: INVALID"),
+            (entry | {"address": "::"}, "[0].address: INVALID"),
+            (entry | {"address": "127.0.0.1"}, "[0].address: INVALID"),
+            (entry | {"address": "::ffff:10.0.0.1"}, "[0].address: INVALID"),
+            (entry | {"address": "::ffff:a00:1"}, "[0].address: INVALID"),
+            (entry | {"address": "fd00:0::1"}, "[0].address: INVALID"),
+            (entry | {"address": "host.local"}, "[0].address: INVALID"),
+            (entry | {"port": 0}, "[0].port: INVALID"),
+            (entry | {"port": True}, "[0].port: INVALID"),
+            (entry | {"reason": " "}, "[0].reason: INVALID"),
+            (entry | {"reason": "a\nb"}, "[0].reason: INVALID"),
+            (entry | {"reason": "x" * 201}, "[0].reason: INVALID"),
+            ({"address": "10.0.0.1", "port": 53}, "[0].reason: MISSING"),
+            (entry | {"why": "x"}, "[0]: UNKNOWN_FIELDS"),
+        ]
+        for item, expected in cases:
+            self.reject(runner_config() | {"host_listen_allowlist": [item]}, "config.host_listen_allowlist" + expected)
+        self.reject(runner_config() | {"host_listen_allowlist": [entry, dict(entry)]},
+                    "config.host_listen_allowlist[1]: DUPLICATE")
+        self.reject(runner_config() | {"host_listen_allowlist": {}}, "config.host_listen_allowlist: INVALID")
+        self.reject(runner_config() | {"host_listen_allowlist": [entry | {"port": p} for p in range(1, 34)]},
+                    "config.host_listen_allowlist: INVALID")
 
     def test_load_rejects_duplicate_key_and_nonfinite(self):
         with tempfile.TemporaryDirectory() as directory:

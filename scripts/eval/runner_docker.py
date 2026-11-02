@@ -22,6 +22,17 @@ MIN_SERVER_VERSION = (28, 0, 0)
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(.*)\Z", re.S)
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_OBJECT_ID = re.compile(r"[0-9a-f]{64}\Z")
+_PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
+# 컨테이너 inspect는 이 필드만 꺼낸다. .Config.Env 등 비밀이 들 수 있는 필드는 러너 메모리에도 올리지 않는다.
+CONTAINER_TEMPLATE = (
+    '{"id":{{json .Id}},'
+    '"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
+    '"service":{{json (index .Config.Labels "com.docker.compose.service")}},'
+    '"image":{{json .Image}},"running":{{json .State.Running}},'
+    '"started_at":{{json .State.StartedAt}},"restart_count":{{json .RestartCount}},'
+    '"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}}}'
+)
 
 
 class DockerError(RuntimeError):
@@ -66,6 +77,11 @@ def run_docker(args: Sequence[str], env: Mapping[str, str], stdin: bytes | None,
     return CommandResult(completed.returncode, completed.stdout)
 
 
+def _require_project(project: str) -> None:
+    if not isinstance(project, str) or not _PROJECT.fullmatch(project):
+        raise DockerError("docker_project_invalid")
+
+
 def _version_ok(version: str) -> bool:
     match = _VERSION.match(version)
     if not match:
@@ -96,6 +112,48 @@ class Docker:
             return json.loads(out.decode("utf-8"))
         except (UnicodeError, ValueError, RecursionError):
             raise DockerError(code + "_output_invalid") from None
+
+    def json_lines(self, args: Sequence[str], *, code: str) -> list:
+        out = self.run(args, code=code)
+        try:
+            return [json.loads(line) for line in out.decode("utf-8").splitlines() if line.strip()]
+        except (UnicodeError, ValueError, RecursionError):
+            raise DockerError(code + "_output_invalid") from None
+
+    def _ids(self, args: Sequence[str], *, code: str) -> list[str]:
+        try:
+            ids = [line.strip() for line in self.run(args, code=code).decode("ascii").splitlines() if line.strip()]
+        except UnicodeError:
+            raise DockerError(code + "_output_invalid") from None
+        if not all(_OBJECT_ID.fullmatch(value) for value in ids) or len(set(ids)) != len(ids):
+            raise DockerError(code + "_output_invalid")
+        return sorted(ids)
+
+    def project_network_ids(self, project: str) -> list[str]:
+        _require_project(project)
+        return self._ids(["network", "ls", "--no-trunc", "--quiet", "--filter",
+                          f"label=com.docker.compose.project={project}"], code="docker_network_list_failed")
+
+    def project_container_ids(self, project: str) -> list[str]:
+        """멈춘 것까지 전부(-a). 회차 구성원이 죽어 있으면 그것도 점검 대상이다."""
+        _require_project(project)
+        return self._ids(["ps", "--all", "--no-trunc", "--quiet", "--filter",
+                          f"label=com.docker.compose.project={project}"], code="docker_container_list_failed")
+
+    def running_container_ids(self) -> list[str]:
+        return self._ids(["ps", "--no-trunc", "--quiet"], code="docker_container_list_failed")
+
+    def inspect_networks(self, ids: Sequence[str]) -> list:
+        if not ids:
+            return []
+        return self.json_lines(["network", "inspect", "--format", "{{json .}}", "--", *ids],
+                               code="docker_network_inspect_failed")
+
+    def inspect_containers(self, ids: Sequence[str]) -> list:
+        if not ids:
+            return []
+        return self.json_lines(["container", "inspect", "--format", CONTAINER_TEMPLATE, "--", *ids],
+                               code="docker_container_inspect_failed")
 
     def daemon(self) -> DaemonIdentity:
         server = self.json(["version", "--format", "{{json .Server}}"], code="docker_version_failed")
