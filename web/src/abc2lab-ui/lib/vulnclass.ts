@@ -23,13 +23,17 @@ const RULES: { key: string; label: string; re: RegExp }[] = [
     label: "인젝션(SQL·명령)",
     re: /\b(?:sql[\s_-]*injection|sqli|cwe-89|command[\s_-]+injection|os command|cwe-78)\b/i,
   },
-  { key: "xss", label: "XSS", re: /xss|cross.?site script/i },
+  { key: "xss", label: "XSS", re: /\b(?:xss|cross[\s_-]*site[\s_-]+script(?:ing)?)\b/i },
   {
     key: "auth",
     label: "인증 · 세션",
     re: /\b(?:auth(?:entication)?|jwt|session|2fa|brute ?force|weak password|credentials?|a07)\b/i,
   },
-  { key: "bizlogic", label: "비즈니스 로직", re: /business.?logic|price manipulation|payment|negative quantity/i },
+  {
+    key: "bizlogic",
+    label: "비즈니스 로직",
+    re: /\b(?:business[\s_-]*logic|price manipulation|payment|negative quantity)\b/i,
+  },
   {
     key: "infodisc",
     label: "정보 노출",

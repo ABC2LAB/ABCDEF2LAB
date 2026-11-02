@@ -94,4 +94,17 @@ describe("canonicalVulnClass", () => {
   ])("미지원 코드 %s 를 지원 코드의 접두부로 분류하지 않는다", (raw) => {
     expect(canonicalVulnClass(raw).key).toBe("other");
   });
+
+  it.each(["XSSS", "businessxlogic"])("%s 를 비슷한 키워드의 계열로 분류하지 않는다", (raw) => {
+    expect(canonicalVulnClass(raw).key).toBe("other");
+  });
+
+  it.each([
+    ["Cross-site scripting", "xss"],
+    ["Cross_site_scripting", "xss"],
+    ["business-logic", "bizlogic"],
+    ["businesslogic", "bizlogic"],
+  ])("구분자를 명시한 표기 %s → %s", (raw, key) => {
+    expect(canonicalVulnClass(raw).key).toBe(key);
+  });
 });
