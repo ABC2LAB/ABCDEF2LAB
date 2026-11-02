@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 
 	"github.com/Autumn-27/norma/harness"
@@ -16,12 +17,10 @@ import (
 // WrapupOverride, if set, returns the stored wrap-up prompt for an agent key and
 // whether a non-empty one exists. Wired by the server to the agents table (like
 // PromptOverride for system prompts). nil / empty → the built-in default is used.
-var WrapupOverride func(agentKey string) (string, bool)
 
 // WrapupMaxTurnsOverride, if set, returns the admin-configured turn budget for the
 // wrap-up phase of an agent and whether a positive one exists. Wired to the agents
 // table. nil / ≤0 → the built-in per-agent default (wrapupTurnDefaults) is used.
-var WrapupMaxTurnsOverride func(agentKey string) (int, bool)
 
 // 内置默认收尾提示词,按 agent key 索引。worker 复用历史上硬编码的 settleWrapUpPrompt
 // (定义在 worker.go),planner/mainagent 各有一版;未命中的(自定义 agent)走通用兜底。
@@ -67,9 +66,9 @@ func WrapupTurnsDefault(agentKey string) int {
 
 // resolveWrapup returns the effective wrap-up prompt: the DB override (if set and
 // non-empty) over the built-in default.
-func resolveWrapup(agentKey string) string {
-	if WrapupOverride != nil {
-		if t, ok := WrapupOverride(agentKey); ok && strings.TrimSpace(t) != "" {
+func resolveWrapup(ctx context.Context, agentKey string) string {
+	if h := RuntimeHooksFrom(ctx).WrapupOverride; h != nil {
+		if t, ok := h(agentKey); ok && strings.TrimSpace(t) != "" {
 			return t
 		}
 	}
@@ -78,9 +77,9 @@ func resolveWrapup(agentKey string) string {
 
 // resolveWrapupTurns returns the effective wrap-up turn budget: a positive DB
 // override over the built-in per-agent default.
-func resolveWrapupTurns(agentKey string) int {
-	if WrapupMaxTurnsOverride != nil {
-		if v, ok := WrapupMaxTurnsOverride(agentKey); ok && v > 0 {
+func resolveWrapupTurns(ctx context.Context, agentKey string) int {
+	if h := RuntimeHooksFrom(ctx).WrapupMaxTurnsOverride; h != nil {
+		if v, ok := h(agentKey); ok && v > 0 {
 			return v
 		}
 	}
@@ -91,11 +90,11 @@ func resolveWrapupTurns(agentKey string) int {
 // turn budget are admin-editable per agent; disabled tools are code-owned policy so
 // a user can't edit away the "stop probing" guardrail. Resolved fresh each run
 // (reads DB live), so edits apply on the next run without a restart.
-func wrapupSettlement(agentKey string, disabledTools []string) *harness.Settlement {
+func wrapupSettlement(ctx context.Context, agentKey string, disabledTools []string) *harness.Settlement {
 	return &harness.Settlement{
-		Prompt:        withWrapupLang(resolveWrapup(agentKey)),
+		Prompt:        withWrapupLang(ctx, resolveWrapup(ctx, agentKey)),
 		DisabledTools: disabledTools,
-		MaxTurns:      resolveWrapupTurns(agentKey),
+		MaxTurns:      resolveWrapupTurns(ctx, agentKey),
 	}
 }
 
@@ -106,11 +105,11 @@ func wrapupSettlement(agentKey string, disabledTools []string) *harness.Settleme
 // 사용자 노출 텍스트의 언어만 강제한다. 요약을 내지 않는 planner 계열에는 무해하다.
 // 기본 언어 ko 에서는 꼬리를 붙이지 않는다. 시스템 프롬프트의 langDirective 가 이미
 // 한국어 출력을 강제하고 있어, 기본 경로의 모델 입력을 이전 버전과 같게 둔다(벤치마크 드리프트 방지).
-func withWrapupLang(prompt string) string {
+func withWrapupLang(ctx context.Context, prompt string) string {
 	if strings.TrimSpace(prompt) == "" {
 		return prompt
 	}
-	lang := resolveOutputLang()
+	lang := resolveOutputLang(ctx)
 	if lang == "ko" {
 		return prompt
 	}
@@ -125,11 +124,6 @@ func withWrapupLang(prompt string) string {
 
 // WrapupTaskTimeoutOverride / …TurnsOverride：任务超时收尾词与轮数的 DB 覆盖
 // （wire 到 agents.task_timeout_wrapup_prompt / _max_turns，仅 worker/planner）。
-var (
-	WrapupTaskTimeoutOverride      func(agentKey string) (string, bool)
-	WrapupTaskTimeoutTurnsOverride func(agentKey string) (int, bool)
-)
-
 var taskTimeoutWrapupDefaults = map[string]string{
 	"worker":  workerTaskTimeoutDefault,
 	"planner": plannerTaskTimeoutDefault,
@@ -146,22 +140,22 @@ func TaskTimeoutWrapupDefault(agentKey string) string {
 
 // resolveTaskTimeoutWrapup：DB 覆盖(非空) > 内置默认。空串表示该 agent 无任务超时词
 // （非 worker/planner），此时调用方应回退 per-run 词。
-func resolveTaskTimeoutWrapup(agentKey string) string {
-	if WrapupTaskTimeoutOverride != nil {
-		if t, ok := WrapupTaskTimeoutOverride(agentKey); ok && strings.TrimSpace(t) != "" {
+func resolveTaskTimeoutWrapup(ctx context.Context, agentKey string) string {
+	if h := RuntimeHooksFrom(ctx).WrapupTaskTimeoutOverride; h != nil {
+		if t, ok := h(agentKey); ok && strings.TrimSpace(t) != "" {
 			return t
 		}
 	}
 	return TaskTimeoutWrapupDefault(agentKey)
 }
 
-func resolveTaskTimeoutTurns(agentKey string) int {
-	if WrapupTaskTimeoutTurnsOverride != nil {
-		if v, ok := WrapupTaskTimeoutTurnsOverride(agentKey); ok && v > 0 {
+func resolveTaskTimeoutTurns(ctx context.Context, agentKey string) int {
+	if h := RuntimeHooksFrom(ctx).WrapupTaskTimeoutTurnsOverride; h != nil {
+		if v, ok := h(agentKey); ok && v > 0 {
 			return v
 		}
 	}
-	return resolveWrapupTurns(agentKey) // 默认沿用 per-run 轮数
+	return resolveWrapupTurns(ctx, agentKey) // 默认沿用 per-run 轮数
 }
 
 // wrapupSettlementForTask builds settlement for a worker/planner run that is aware
@@ -171,20 +165,20 @@ func resolveTaskTimeoutTurns(agentKey string) int {
 //   - clamped=false → 任务还早：两种 reason 都用 per-run 词（即退化为 wrapupSettlement）。
 //
 // 交给 harness 的 PromptByReason 在收尾时按【实际】reason 现场挑，无 build 时错配。
-func wrapupSettlementForTask(agentKey string, disabledTools []string, clamped bool) *harness.Settlement {
-	perRun := withWrapupLang(resolveWrapup(agentKey))
+func wrapupSettlementForTask(ctx context.Context, agentKey string, disabledTools []string, clamped bool) *harness.Settlement {
+	perRun := withWrapupLang(ctx, resolveWrapup(ctx, agentKey))
 	st := &harness.Settlement{
 		Prompt:        perRun, // 兜底(也是非 clamped 时两种 reason 的取值)
 		DisabledTools: disabledTools,
-		MaxTurns:      resolveWrapupTurns(agentKey),
+		MaxTurns:      resolveWrapupTurns(ctx, agentKey),
 	}
 	if clamped {
-		if tt := resolveTaskTimeoutWrapup(agentKey); tt != "" {
+		if tt := resolveTaskTimeoutWrapup(ctx, agentKey); tt != "" {
 			st.PromptByReason = map[harness.TerminalReason]string{
-				harness.ReasonTimeout:  withWrapupLang(tt), // 任务到点
-				harness.ReasonMaxTurns: perRun,             // 步数先耗尽、任务还剩时间
+				harness.ReasonTimeout:  withWrapupLang(ctx, tt), // 任务到点
+				harness.ReasonMaxTurns: perRun,                  // 步数先耗尽、任务还剩时间
 			}
-			st.MaxTurns = resolveTaskTimeoutTurns(agentKey)
+			st.MaxTurns = resolveTaskTimeoutTurns(ctx, agentKey)
 		}
 	}
 	return st

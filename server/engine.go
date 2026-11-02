@@ -168,7 +168,8 @@ type Engine struct {
 	resolveAuthoritative bool
 	// readiness reports whether a global LLM provider is configured — the signal behind
 	// Ready()/the llm_configured indicator. Wired once at startup; nil → not ready.
-	readiness func() bool
+	readiness    func() bool
+	runtimeHooks *agent.RuntimeHooks // nil for standalone engines; assigned before startup
 }
 
 type taskRuntime struct {
@@ -785,10 +786,18 @@ func (e *Engine) ReadyFor(t *Task) bool {
 	return p != nil && w != nil
 }
 
+func (e *Engine) withRuntimeHooks(ctx context.Context) context.Context {
+	if e.runtimeHooks != nil {
+		return agent.WithRuntimeHooks(ctx, *e.runtimeHooks)
+	}
+	return ctx
+}
+
 // Run starts the planner loop + N worker loops for a task. The loops always run
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
+	ctx = e.withRuntimeHooks(ctx)
 	workers := e.m.Workers()
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
@@ -1010,6 +1019,7 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 // runIntent. Returns false when nothing was claimable. The pool worker loop is its
 // only caller.
 func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker *agent.Worker) bool {
+	ctx = e.withRuntimeHooks(ctx)
 	intent := e.claimNext(t, name)
 	if intent == nil {
 		return false
@@ -1234,6 +1244,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 // task pause/delete/shutdown still stops it). Returns an error if the run could not
 // be started; the intent is left untouched in that case.
 func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64, requestID, message, agentMessage string) error {
+	ctx = e.withRuntimeHooks(ctx)
 	if !e.beginTaskOperation(t.ID) {
 		return fmt.Errorf("task is being deleted")
 	}
