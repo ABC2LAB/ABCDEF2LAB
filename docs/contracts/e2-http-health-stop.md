@@ -7,7 +7,7 @@
 - trusted Go caller가 `transmit.Config.Health`에 `*transmit.HealthConfig`를 전달한다. nil이면 기존 전송 동작이며 health 판정을 했다는 뜻이 아니다.
 - `HealthConfig.Policy`는 기존 `targethealth.Config`다. 창·표본·실패/지연 임계치를 모두 명시한다. 기본 임계치나 자동 baseline 학습은 없다.
 - `Policy.ScopeRef`는 이 전송기 실행 전용으로 발급한 불투명 참조다. 서버의 실행 결속·다른 인스턴스로의 재발급은 caller 책임이다. 어댑터는 외부 observation을 받지 않고 이 전송기의 실제 관측만 넣는다.
-- `HealthConfig.NetworkTimeout`은 양수이며 기존 전체 `RequestTimeout`보다 작아야 한다. 지연 판단이 활성화되면 `Policy.SlowAfter < NetworkTimeout`이어야 한다. `min_samples`는 실패 임계치 및 활성 지연 임계치 이하이고, 활성 임계치 중 최댓값을 `k`라 할 때 `(k-1) × max(NetworkTimeout, MinInterval) < Window`여야 한다. 잘못된 정책은 `NewHTTP`에서 거부하며 네트워크 요청을 보내지 않는다.
+- `HealthConfig.NetworkTimeout`은 양수이며 기존 전체 `RequestTimeout`보다 작아야 한다. 지연 판단이 활성화되면 `Policy.SlowAfter < NetworkTimeout`이어야 한다. `min_samples`는 실패 임계치 및 활성 지연 임계치 이하이고, 활성 임계치 중 최댓값을 `k`라 할 때 `(k-1) × max(RequestTimeout, MinInterval) < Window`여야 한다. 잘못된 정책은 `NewHTTP`에서 거부하며 네트워크 요청을 보내지 않는다.
 - 입력 정책은 생성 시 복사한다. 변경된 Go 포인터·LLM 출력으로 실행 중 정책을 넓힐 수 없다. 재설정/재개 API는 제공하지 않는다.
 
 ## 서버 승인 snapshot 연결
@@ -23,7 +23,7 @@
 | `slow_after_ms`·`slow_limit` | 지연 기준과 중단 임계치. 비활성화는 둘 다 명시적 0 |
 | `network_timeout_ms` | 실제 연결 시작부터의 제한 시간. 전체 요청 제한 시간보다 작음 |
 
-밀리초 곱셈은 오버플로 전에 거부하며 코어의 임계치 관계도 검사한다. `min_samples`는 `failure_limit` 이하이고, 지연 중단이 활성화되면 `slow_limit` 이하이어야 한다. 직렬 전송에서 활성 임계치 중 가장 큰 `k`에 대해 `(k-1) × max(network_timeout_ms, min_interval_ms) < window_ms`도 만족해야 한다. `min_samples`·`failure_limit`·활성 `slow_limit`은 해당 승인의 `max_requests`를 넘길 수 없다. `max_samples`는 요청 예산을 늘리지 않으며 예산보다 클 수 있다. 이 검사는 직렬 최악 간격에서의 정적 가능성만 보장하며, 외부 스케줄링·대기 지연 때문에 실제 창 안에 최소 표본이 모인다는 보장은 없다.
+밀리초 곱셈은 오버플로 전에 거부하며 코어의 임계치 관계도 검사한다. `min_samples`는 `failure_limit` 이하이고, 지연 중단이 활성화되면 `slow_limit` 이하이어야 한다. 직렬 전송에서 활성 임계치 중 가장 큰 `k`에 대해 `(k-1) × max(request_timeout_ms, min_interval_ms) < window_ms`도 만족해야 한다. `min_samples`·`failure_limit`·활성 `slow_limit`은 해당 승인의 `max_requests`를 넘길 수 없다. `max_samples`는 요청 예산을 늘리지 않으며 예산보다 클 수 있다. 네트워크 timeout만으로 간격을 잡지 않고 전체 RequestTimeout으로 연결 전 처리·감사 I/O의 여유를 둔다. 이 검사는 직렬 간격의 정적 가능성만 보장하며, 감사 I/O가 그 여유를 넘거나 외부 스케줄링·대기 지연이 발생하면 실제 창 안에 최소 표본이 모인다는 보장은 없다.
 
 snapshot은 `scope_ref`를 받지 않는다. 서버는 등록 검증 때 임시 검증 범위를 쓰고, 실제 준비 때 새로 발급한 `RunRef`를 `Policy.ScopeRef`에 묶는다. 두 경로는 같은 복사 helper를 사용해 pending 정책이나 다른 실행의 설정을 바꾸지 않는다. 같은 snapshot을 재등록해도 새 전송기·RunRef·빈 관측 창으로 시작하므로 운영자는 기존 재등록 규칙대로 새 승인으로 취급해야 한다.
 
