@@ -66,6 +66,8 @@ type OracleVerdict struct {
 ### (a) check_expected_policy
 등록 정책이 평가 주체 B를 **명시 DENY**하고 sharing·delegation이 모두 `RESOLVED_NONE`인가. 유효성은 **근거 관찰시각 `observed_at`** 기준(판정시각 TTL 경과만으로 당시 유효했던 근거를 버리지 않음). 등록출처 없음→`POLICY_MISSING`(UNKNOWN), 힌트≠정본 또는 관찰시각에 유효창 밖→`POLICY_INVALID`(UNKNOWN), 허용(직접 ALLOW / sharing·delegation RESOLVED_ALLOW)→NO, 공유·위임 불명→`SHARING_OR_DELEGATION_UNKNOWN`, 기대접근 불명→`EXPECTED_ACCESS_UNKNOWN`, 그 외 해소된 DENY→`POLICY_DENY_RESOLVED`(YES).
 
+관찰 시각과 정책 유효창 양끝은 누락되지 않은 UTC instant여야 한다(UTC 기준 연도 1~9999, Go zero time 제외). 기본값·표현 범위 밖 시각·비어 있거나 역전된 유효창은 `POLICY_INVALID`로 `UNDECIDABLE`을 반환한다. 기본 시작 시각을 무기한 과거로 해석하지 않는다. 시간대 표시는 같은 instant의 유효성을 바꾸지 않으며, 현재 시각을 읽거나 과거의 유효한 관찰을 재만료시키지 않는다.
+
 ### (b) check_identity
 A(소유자)·B(평가) 모두 `VERIFIED`이고 ref가 비어있지 않으며 **서로 다른** 주체인가. 만료·불명·빈 ref→UNKNOWN(`SUBJECT_NOT_VERIFIED`), 같은 주체→NO(`SUBJECTS_NOT_DISTINCT`), 아니면 YES.
 
