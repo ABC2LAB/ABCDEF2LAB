@@ -44,6 +44,24 @@
 
 `audit.key`는 32바이트 임의 바이너리 HMAC 키, `owner-session.secret`는 해당 헤더의 원문 값이다. 파일/키를 레포·작업 설명·전달 JSON·모델/공유 로그에 넣지 않는다. GET이라도 상태를 바꿀 수 있으므로 `read_only=true`는 운영자가 확인해 등록한다. 선택적인 `resources[].view`는 기존 `transmit.JSONViewRule` 필드 형식이며 없으면 응답을 미분류하고 본문을 모델에 전달하지 않는다.
 
+선택적인 `health` 객체로 [장애 징후 중지 정책](./e2-http-health-stop.md)을 지정할 수 있다. 기존 승인 JSON에 다음 객체를 추가하는 예시이며 값은 운영자가 승인한 임계치로 정한다. 필드 생략·null·임의 `scope_ref`는 허용하지 않는다. 객체 자체를 생략하면 기존 동작을 유지한다.
+
+```json
+{
+  "health": {
+    "window_ms": 10000,
+    "max_samples": 64,
+    "min_samples": 2,
+    "failure_limit": 2,
+    "slow_after_ms": 0,
+    "slow_limit": 0,
+    "network_timeout_ms": 3000
+  }
+}
+```
+
+서버는 등록 검증과 실제 실행 모두에서 health 정책을 복사하고 실제 실행의 새 RunRef에 관측 범위를 묶는다. 이 설정은 private snapshot으로만 공급하며 기존 등록 API와 Worker 입력에 임계치·URL·scope를 추가하지 않는다. health 중단은 Worker의 안전한 도구 결과와 실행 종료 실패에 반영하며 단일 요청 완료를 진단 완료로 취급하지 않는다. 정책/중단 상태의 봉인 감사·재시작 후 유지·UI 설정은 후속이다.
+
 ## 등록과 실행
 
 1. 종료 상태가 아닌 작업을 일시정지하고 Worker·Planner·작업 주 대화가 모두 끝났는지 확인한다. done/failed/timeout 작업에는 직접 등록할 수 없다.

@@ -122,7 +122,7 @@ func TestEvaluateMinimumSamplesAndIsolatedFailures(t *testing.T) {
 	}
 	// Even a configured failure limit does not bypass the explicit sample minimum.
 	cfg := testConfig()
-	cfg.FailureLimit = 2
+	cfg.FailureLimit = 3
 	got, err := Evaluate(cfg, []Observation{failure(1, Timeout), failure(2, Timeout)}, observedNow)
 	if err != nil || got.Recommendation != Continue || got.ReasonCodes[0] != InsufficientSamples || got.Counts.Failures != 2 {
 		t.Fatalf("sample minimum bypassed: %+v, %v", got, err)
@@ -133,7 +133,7 @@ func TestEvaluateConfiguredLimits(t *testing.T) {
 	t.Parallel()
 	t.Run("failure limit differs from sample minimum", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.FailureLimit = 2
+		cfg.MinSamples, cfg.FailureLimit = 2, 2
 		got, err := Evaluate(cfg, []Observation{response(1, 200), response(2, 503), response(3, 429)}, observedNow)
 		if err != nil || got.Recommendation != StopRecommended || !reflect.DeepEqual(got.ReasonCodes, []Reason{FailureThreshold}) || got.Counts.Failures != 2 {
 			t.Fatalf("configured failure limit = %+v, %v", got, err)
@@ -141,7 +141,7 @@ func TestEvaluateConfiguredLimits(t *testing.T) {
 	})
 	t.Run("independent slow limit", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.SlowLimit = 2
+		cfg.MinSamples, cfg.FailureLimit, cfg.SlowLimit = 2, 2, 2
 		input := []Observation{response(1, 503), response(2, 200), response(3, 200)}
 		input[0].Elapsed, input[2].Elapsed = cfg.SlowAfter, cfg.SlowAfter
 		got, err := Evaluate(cfg, input, observedNow)
@@ -235,6 +235,7 @@ func TestEvaluateRejectsInvalidConfig(t *testing.T) {
 		{"zero minimum", func(c *Config) { c.MinSamples = 0 }},
 		{"single sample minimum", func(c *Config) { c.MinSamples = 1 }},
 		{"minimum above max", func(c *Config) { c.MinSamples = c.MaxSamples + 1 }},
+		{"minimum above failure threshold", func(c *Config) { c.MinSamples, c.FailureLimit = 4, 3 }},
 		{"zero failure limit", func(c *Config) { c.FailureLimit = 0 }},
 		{"single failure limit", func(c *Config) { c.FailureLimit = 1 }},
 		{"failure limit above max", func(c *Config) { c.FailureLimit = c.MaxSamples + 1 }},
@@ -243,6 +244,7 @@ func TestEvaluateRejectsInvalidConfig(t *testing.T) {
 		{"enabled slow duration but zero limit", func(c *Config) { c.SlowLimit = 0 }},
 		{"single slow limit", func(c *Config) { c.SlowLimit = 1 }},
 		{"slow limit above max", func(c *Config) { c.SlowLimit = c.MaxSamples + 1 }},
+		{"minimum above slow threshold", func(c *Config) { c.MinSamples, c.SlowLimit = 4, 3 }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := testConfig()

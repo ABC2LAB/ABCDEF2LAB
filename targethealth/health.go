@@ -174,13 +174,14 @@ func Evaluate(cfg Config, observations []Observation, now time.Time) (Decision, 
 
 func validConfig(cfg Config) bool {
 	if !validRef(cfg.ScopeRef) || cfg.Window <= 0 || cfg.MaxSamples < minSignalSamples || cfg.MaxSamples > MaxWindowSamples ||
-		cfg.MinSamples < minSignalSamples || cfg.MinSamples > cfg.MaxSamples || cfg.FailureLimit < minSignalSamples || cfg.FailureLimit > cfg.MaxSamples {
+		cfg.MinSamples < minSignalSamples || cfg.MinSamples > cfg.MaxSamples || cfg.FailureLimit < minSignalSamples || cfg.FailureLimit > cfg.MaxSamples ||
+		cfg.MinSamples > cfg.FailureLimit {
 		return false
 	}
 	if cfg.SlowAfter == 0 {
 		return cfg.SlowLimit == 0
 	}
-	return cfg.SlowAfter > 0 && cfg.SlowLimit >= minSignalSamples && cfg.SlowLimit <= cfg.MaxSamples
+	return cfg.SlowAfter > 0 && cfg.SlowLimit >= minSignalSamples && cfg.SlowLimit <= cfg.MaxSamples && cfg.MinSamples <= cfg.SlowLimit
 }
 
 func validObservation(scope string, observation Observation, now time.Time) bool {

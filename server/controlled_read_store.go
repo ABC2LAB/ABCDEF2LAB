@@ -227,22 +227,23 @@ func (s *controlledReadStore) marked(taskID string, intentID int64) (bool, error
 }
 
 type snapshotJSON struct {
-	TaskID           string         `json:"task_id"`
-	IntentID         int64          `json:"intent_id"`
-	CaseRef          string         `json:"case_ref"`
-	ResetRef         string         `json:"reset_ref"`
-	PolicyRef        string         `json:"policy_ref"`
-	Origin           string         `json:"origin"`
-	ConnectIP        string         `json:"connect_ip"`
-	ExpiresAt        time.Time      `json:"expires_at"`
-	MaxRequests      uint64         `json:"max_requests"`
-	MinIntervalMS    int64          `json:"min_interval_ms"`
-	RequestTimeoutMS int64          `json:"request_timeout_ms"`
-	MaxBodyBytes     int64          `json:"max_body_bytes"`
-	KeyRef           string         `json:"key_ref"`
-	KeyFile          string         `json:"key_file"`
-	Sessions         []sessionJSON  `json:"sessions"`
-	Resources        []resourceJSON `json:"resources"`
+	TaskID           string          `json:"task_id"`
+	IntentID         int64           `json:"intent_id"`
+	CaseRef          string          `json:"case_ref"`
+	ResetRef         string          `json:"reset_ref"`
+	PolicyRef        string          `json:"policy_ref"`
+	Origin           string          `json:"origin"`
+	ConnectIP        string          `json:"connect_ip"`
+	ExpiresAt        time.Time       `json:"expires_at"`
+	MaxRequests      uint64          `json:"max_requests"`
+	MinIntervalMS    int64           `json:"min_interval_ms"`
+	RequestTimeoutMS int64           `json:"request_timeout_ms"`
+	MaxBodyBytes     int64           `json:"max_body_bytes"`
+	KeyRef           string          `json:"key_ref"`
+	KeyFile          string          `json:"key_file"`
+	Sessions         []sessionJSON   `json:"sessions"`
+	Resources        []resourceJSON  `json:"resources"`
+	Health           json.RawMessage `json:"health,omitempty"`
 }
 type sessionJSON struct {
 	Label       string               `json:"label"`
@@ -287,12 +288,16 @@ func (s *controlledReadStore) load(taskID string, intentID int64, snapshotRef st
 	if err != nil || !ip.IsValid() || ip.IsUnspecified() || ip.IsMulticast() {
 		return out, errControlledReadSnapshot
 	}
-	key, err := readPrivate(filepath.Join(s.snapshotDir, in.KeyFile), 33)
-	if err != nil || len(key) != auditlog.KeyBytes {
-		return out, errControlledReadSnapshot
-	}
 	cfg := transmit.Config{Scope: transmit.Scope{TaskRef: taskID, CaseRef: in.CaseRef, ResetRef: in.ResetRef, PolicyRef: in.PolicyRef}, Origin: in.Origin, ConnectIP: ip, ExpiresAt: in.ExpiresAt, MaxRequests: in.MaxRequests, MinInterval: time.Duration(in.MinIntervalMS) * time.Millisecond, RequestTimeout: time.Duration(in.RequestTimeoutMS) * time.Millisecond, MaxBodyBytes: in.MaxBodyBytes}
 	if in.MinIntervalMS > math.MaxInt64/int64(time.Millisecond) || in.RequestTimeoutMS > math.MaxInt64/int64(time.Millisecond) || cfg.MinInterval < 0 || cfg.RequestTimeout <= 0 {
+		return out, errControlledReadSnapshot
+	}
+	cfg.Health, err = decodeControlledReadHealth(in.Health, cfg.RequestTimeout, cfg.MinInterval, cfg.MaxRequests)
+	if err != nil {
+		return out, errControlledReadSnapshot
+	}
+	key, err := readPrivate(filepath.Join(s.snapshotDir, in.KeyFile), 33)
+	if err != nil || len(key) != auditlog.KeyBytes {
 		return out, errControlledReadSnapshot
 	}
 	sessionLabels := map[string]bool{}
