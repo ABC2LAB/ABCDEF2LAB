@@ -98,7 +98,7 @@ func TestErrCatalogFormatVerbsMatch(t *testing.T) {
 // return has an en/zh/es translation, so a non-Korean user who fails a login or
 // the first-run setup sees the error in the chosen language.
 func TestAuthErrorsTranslated(t *testing.T) {
-	t.Cleanup(func() { config.CurrentLanguage = nil })
+	t.Cleanup(func() { config.SetCurrentLanguage(nil) })
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "auth.go", nil, 0)
 	if err != nil {
@@ -127,7 +127,7 @@ func TestAuthErrorsTranslated(t *testing.T) {
 		t.Fatal("found no authErr constants; the scan is broken")
 	}
 	for _, lang := range []string{"en", "zh", "es"} {
-		config.CurrentLanguage = func() string { return lang }
+		config.SetCurrentLanguage(func() string { return lang })
 		for _, m := range msgs {
 			if trMsg(m) == m {
 				t.Errorf("auth error has no %s translation: %q", lang, m)

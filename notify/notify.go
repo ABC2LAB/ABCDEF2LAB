@@ -10,6 +10,8 @@
 // 不允许把 webhook URL 之类的东西缓存进实现自身的字段。
 package notify
 
+import "sync"
+
 // 渠道类型标识。取值同时是 notification_channels.kind 的合法集合，由 server 侧
 // 白名单校验（与 findings.status 同理，不用 DB CHECK，方便后续加渠道）。
 const (
@@ -42,17 +44,35 @@ var severityRank = map[string]int{
 // SeverityRank 返回级别的序数；未知级别返回 0。
 func SeverityRank(severity string) int { return severityRank[severity] }
 
-// Lang, when wired by the server, returns the active user-facing output language
-// ("en"/"ko"/"zh"/"es"/"ja") for the strings this leaf package renders into push /
-// email messages (severity and status labels). Kept as an injected func so the
-// package stays standard-library-only: it does not import config/db/server. nil
-// (unit tests / standalone) → labelLang falls back to "ko", preserving the Korean
-// localization golden tests.
-var Lang func() string
+// SetLanguageResolver wires the active user-facing output language
+// ("en"/"ko"/"zh"/"es"/"ja") for the strings this leaf package renders into
+// push / email messages (severity and status labels). Kept as an injected func so
+// the package stays standard-library-only: it does not import config/db/server.
+// A nil resolver (unit tests / standalone) makes labelLang fall back to "ko",
+// preserving the Korean localization golden tests.
+var languageResolver struct {
+	sync.RWMutex
+	fn func() string
+}
+
+// SetLanguageResolver installs the process-wide language resolver and returns
+// the previously installed resolver. The resolver is snapshotted under the
+// lock, but invoked after releasing it so callbacks may safely re-enter this
+// package (including by replacing the resolver).
+func SetLanguageResolver(fn func() string) (previous func() string) {
+	languageResolver.Lock()
+	previous = languageResolver.fn
+	languageResolver.fn = fn
+	languageResolver.Unlock()
+	return previous
+}
 
 func labelLang() string {
-	if Lang != nil {
-		switch v := Lang(); v {
+	languageResolver.RLock()
+	fn := languageResolver.fn
+	languageResolver.RUnlock()
+	if fn != nil {
+		switch v := fn(); v {
 		case "en", "ko", "zh", "es", "ja":
 			return v
 		}
