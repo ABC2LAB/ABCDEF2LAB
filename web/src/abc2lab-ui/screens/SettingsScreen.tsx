@@ -23,6 +23,41 @@ const patStyle = {
   wordBreak: "break-all" as const,
   color: "var(--muted)",
 };
+const groupHd = {
+  fontSize: 12,
+  fontWeight: 600,
+  color: "var(--muted)",
+  letterSpacing: "0.02em",
+  margin: "14px 0 6px",
+} as const;
+
+/** 통제 규칙 한 줄. 차단/허용 그룹에서 같은 모양으로 재사용. */
+function RuleRow({ rule }: { rule: EngineInterceptRule }) {
+  const deny = rule.action === "deny";
+  return (
+    <div className="frow" style={{ cursor: "default" }}>
+      <Pill tone={rule.enabled ? undefined : "muted"}>{rule.enabled ? "사용" : "꺼짐"}</Pill>
+      <div style={{ minWidth: 0 }}>
+        <div className="nm">{rule.name}</div>
+        <div className="ep" style={patStyle}>
+          {rule.match_target} · {rule.match_type} · {rule.pattern}
+        </div>
+      </div>
+      <div className="rt">
+        <span
+          className="badge"
+          style={{
+            padding: "5px 10px",
+            color: actionColor(rule.action),
+            background: deny ? "var(--danger-weak)" : undefined,
+          }}
+        >
+          {actionLabel(rule.action)}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 function actionColor(action: string): string {
   if (action === "deny") return "var(--danger)";
@@ -71,6 +106,19 @@ export default function SettingsScreen() {
     };
   }, [rules]);
 
+  // 인가 중심 그룹: 제한적인 결정부터 (차단 → 승인 필요 → 허용). fail-closed 순서.
+  const ruleGroups = useMemo(() => {
+    const known = ["deny", "ask", "allow"];
+    const groups = [
+      { key: "deny", label: "차단", rules: rules.filter((r) => r.action === "deny") },
+      { key: "ask", label: "승인 필요", rules: rules.filter((r) => r.action === "ask") },
+      { key: "allow", label: "허용", rules: rules.filter((r) => r.action === "allow") },
+    ];
+    const other = rules.filter((r) => !known.includes(r.action));
+    if (other.length > 0) groups.push({ key: "other", label: "기타", rules: other });
+    return groups.filter((g) => g.rules.length > 0);
+  }, [rules]);
+
   return (
     <Screen id="settings">
       <div className="frame">
@@ -104,33 +152,16 @@ export default function SettingsScreen() {
                   {ruleStats.allow > 0 && <Pill>허용 {ruleStats.allow}</Pill>}
                   {ruleStats.ask > 0 && <Pill tone="warn">승인 필요 {ruleStats.ask}</Pill>}
                 </div>
-                {rules.map((r) => {
-                  const deny = r.action === "deny";
-                  const color = actionColor(r.action);
-                  return (
-                    <div key={r.id} className="frow" style={{ cursor: "default" }}>
-                      <Pill tone={r.enabled ? undefined : "muted"}>{r.enabled ? "사용" : "꺼짐"}</Pill>
-                      <div style={{ minWidth: 0 }}>
-                        <div className="nm">{r.name}</div>
-                        <div className="ep" style={patStyle}>
-                          {r.match_target} · {r.match_type} · {r.pattern}
-                        </div>
-                      </div>
-                      <div className="rt">
-                        <span
-                          className="badge"
-                          style={{
-                            padding: "5px 10px",
-                            color,
-                            background: deny ? "var(--danger-weak)" : undefined,
-                          }}
-                        >
-                          {actionLabel(r.action)}
-                        </span>
-                      </div>
+                {ruleGroups.map((g) => (
+                  <div key={g.key}>
+                    <div style={groupHd}>
+                      {g.label} · {g.rules.length}
                     </div>
-                  );
-                })}
+                    {g.rules.map((r) => (
+                      <RuleRow key={r.id} rule={r} />
+                    ))}
+                  </div>
+                ))}
                 <div className="hint">
                   ARTEX에 등록된 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E²) 연동 후 열려요(그 전엔
                   읽기 전용).
@@ -242,7 +273,10 @@ export default function SettingsScreen() {
                 <Strong>대상 주소 허용 목록 · 소유 확인</Strong> — 검증된 origin만 요청 (전용 라우트 없음)
               </li>
               <li>
-                <Strong>안전 스위치</Strong> — 완전 로컬 모드 / 상태 변경 승인 필요 / canary 사용
+                <Strong>안전 스위치</Strong> — 완전 로컬 모드 / 상태 변경 승인 필요
+              </li>
+              <li>
+                <Strong>표식(canary)</Strong> — 심은 표식이 유출 경로에서 되돌아오는지 관측
               </li>
               <li>
                 <Strong>kill-switch</Strong> — 모든 점검 즉시 중지
