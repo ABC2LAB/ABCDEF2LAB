@@ -1,0 +1,64 @@
+# 공통 층: 엔진 컨테이너 + 망 격리. 현재는 평가용이다.
+# 대상으로 가는 정문(front door)은 이 층에 없고 deploy/eval의 계측기가 overlay로 붙는다.
+# 실사용 배치 전에 llm_net을 LLM 전용 출구로 좁혀야 한다. llm_net은 internal이 아니라
+# 엔진이 NAT로 바깥 어디든 나갈 수 있다. 평가에서는 대상이 internal 망에만 있어 이 경로로
+# 닿지 못하지만(부정 연결 점검의 "대상 IP 직접 실패"), 조직 망의 대상이라면 엔진이
+# llm_net으로 직접 닿아 정문을 우회한다.
+# TODO(최민준): 실사용 전 llm_net 옆문 제거(LLM을 internal 망 컨테이너로 등)
+#
+# 회차마다 project를 새로 만든다(예: docker compose -p eval-<run_id> ...). 망 이름은
+# project 접두어가 붙어 회차 전용이 되며, 끝나면 down -v로 망·볼륨을 지운다.
+# 값은 전부 .env(커밋 금지)에서 받는다. 필수 값이 비면 compose가 시작하지 않는다.
+
+services:
+  engine:
+    image: ${EVAL_ENGINE_IMAGE:?엔진 이미지(소스 커밋 태그)를 설정하세요}
+    depends_on:
+      engine-db:
+        condition: service_healthy
+    environment:
+      ARTEX_PG_DSN: postgres://${EVAL_ENGINE_DB_USER:?}:${EVAL_ENGINE_DB_PASSWORD:?}@engine-db:5432/${EVAL_ENGINE_DB_NAME:?}?sslmode=disable
+      ARTEX_ADMIN_PASSWORD: ${EVAL_ENGINE_ADMIN_PASSWORD:?}
+      ARTEX_LLM_PROVIDER: ${ARTEX_LLM_PROVIDER:?}
+      ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:?}
+      ARTEX_LLM_BASE_URL: ${ARTEX_LLM_BASE_URL:?}
+      ARTEX_LLM_STREAM: ${ARTEX_LLM_STREAM:-}
+      # 키 값은 .env에서만 온다. 러너의 회차 기록·격리 근거에는 이름만 남는다(절대규칙 2).
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - engine-data:/app/data
+    ports:
+      # 엔진 API는 호스트 루프백에만. 0.0.0.0 공개 금지.
+      - "127.0.0.1:${EVAL_ENGINE_API_PORT:?}:${EVAL_ENGINE_CONTAINER_PORT:?}"
+    networks:
+      - engine_net
+      - llm_net
+
+  engine-db:
+    image: ${EVAL_ENGINE_DB_IMAGE:?엔진 DB 이미지(digest 고정)를 설정하세요}
+    environment:
+      POSTGRES_USER: ${EVAL_ENGINE_DB_USER:?}
+      POSTGRES_PASSWORD: ${EVAL_ENGINE_DB_PASSWORD:?}
+      POSTGRES_DB: ${EVAL_ENGINE_DB_NAME:?}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: ${EVAL_HEALTH_INTERVAL:?}
+      timeout: ${EVAL_HEALTH_TIMEOUT:?}
+      retries: ${EVAL_HEALTH_RETRIES:?}
+    volumes:
+      - engine-db-data:/var/lib/postgresql/data
+    networks:
+      - engine_net
+
+networks:
+  # 엔진·엔진 DB·정문만. 외부로 나가는 경로 없음.
+  engine_net:
+    internal: true
+  # 엔진의 LLM 연결 전용. internal이 아니므로 엔진은 외부로도 나갈 수 있다.
+  # 이 구성이 보장하는 것은 대상 망 차단뿐이다(완전 로컬 모드를 망으로 보장하지 않음).
+  llm_net: {}
+
+volumes:
+  engine-data: {}
+  engine-db-data: {}

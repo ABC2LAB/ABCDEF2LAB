@@ -1,0 +1,9 @@
+# 선택 overlay: 같은 머신의 로컬 LLM 서버를 쓸 때만 붙인다(평가 기본은 외부 API).
+# compose의 host-gateway는 Docker 엔진마다 다른 주소로 풀리므로 쓰지 않고, 회차와
+# 무관한 고정 IP를 설정값으로 준다. LLM 서버는 그 IP에만 바인딩한다(0.0.0.0 금지).
+# ARTEX_LLM_BASE_URL의 호스트는 EVAL_LLM_HOSTNAME으로 맞춘다.
+
+services:
+  engine:
+    extra_hosts:
+      - "${EVAL_LLM_HOSTNAME:?}:${EVAL_LLM_HOST_IP:?}"

@@ -1,0 +1,66 @@
+# 평가 층: deploy/engine-isolated/compose.yaml 위에 얹는다.
+#   docker compose -p eval-<run_id> -f deploy/engine-isolated/compose.yaml -f deploy/eval/compose.eval.yaml up -d
+# 엔진 망과 대상 망을 동시에 잇는 것은 eval-meter 하나뿐이다. 관측 front(eval-obs)는
+# 대상 망과 관측 망에만 붙어 엔진이 닿을 수 없다. 대상은 publish하지 않는다.
+# 서명 키·Docker 소켓은 어느 컨테이너에도 주지 않는다.
+
+services:
+  # 평가 회차의 엔진 DB는 메모리에만 둔다. 회차끼리 DB를 이어 쓰면 측정이 오염되고,
+  # 디스크에 DB 덤프가 남는다. 수집은 down 전에 엔진 API로 한다. 공통 층은 그대로 둔다.
+  engine-db:
+    volumes: !reset []
+    tmpfs:
+      - /var/lib/postgresql/data:size=${EVAL_ENGINE_DB_TMPFS_SIZE:?}
+
+  target:
+    image: ${EVAL_TARGET_IMAGE:?대상 이미지(digest 고정)를 설정하세요}
+    networks:
+      - target_net
+
+  eval-meter:
+    image: ${EVAL_METER_IMAGE:?계측기 이미지를 설정하세요}
+    # 증거 디렉터리(0700) 소유자와 같은 uid여야 계측기가 쓸 수 있다.
+    user: "${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}"
+    command:
+      - -role=engine
+      - -listen=:${EVAL_METER_PORT:?}
+      - -upstream=http://target:${EVAL_TARGET_PORT:?}
+      - -log-dir=/evidence
+    volumes:
+      - ${EVAL_EVIDENCE_DIR:?}:/evidence
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [target]
+    networks:
+      - engine_net
+      - target_net
+
+  eval-obs:
+    image: ${EVAL_METER_IMAGE:?}
+    user: "${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}"
+    command:
+      - -role=observer
+      - -listen=:${EVAL_OBS_PORT:?}
+      - -upstream=http://target:${EVAL_TARGET_PORT:?}
+      - -log-dir=/evidence
+      - -allow-path=${EVAL_OBS_PATH:?}
+    volumes:
+      - ${EVAL_EVIDENCE_DIR:?}:/evidence
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      # 호스트 수집기 전용. 루프백에만 publish(수집기의 loopback 가드와 짝).
+      - "127.0.0.1:${EVAL_OBS_HOST_PORT:?}:${EVAL_OBS_PORT:?}"
+    depends_on: [target]
+    networks:
+      - target_net
+      - obs_net
+
+networks:
+  # 대상·계측기·관측 front만. 외부·호스트로 나가는 경로 없음.
+  target_net:
+    internal: true
+  # 관측 포트 publish 전용(internal 망은 publish할 수 없다). 관측 front만 연결.
+  obs_net: {}
