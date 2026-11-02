@@ -19,7 +19,7 @@ export type EngineTask = {
   name: string;
   description: string;
   goal: string;
-  /** created | running | paused | done | failed */
+  /** created | queued | running | paused | done | failed | timeout */
   status: string;
   created_at: string;
   completed_at: string;
@@ -82,7 +82,7 @@ export async function listTaskFindings(taskId: string): Promise<EngineFinding[]>
 }
 
 /**
- * guard/guard.go AuditEntry — E²(GUARD)가 게이트한 도구 호출 1건.
+ * guard/guard.go AuditEntry — ARTEX guard가 검토한 도구 호출 1건. 실제 송신 E² 증명과는 별개다.
  * ※ 변조탐지 해시체인·권한분리(우리 기여)는 아직 이 레코드에 없다 — UI에서 "준비 중"으로 둔다.
  */
 export type EngineAuditEntry = {
@@ -100,7 +100,7 @@ export type AuditResponse = {
   entries: EngineAuditEntry[];
 };
 
-/** GET /api/audit?task={id} — 해당 task의 E² 게이트 감사 로그 */
+/** GET /api/audit?task={id} — 해당 task의 ARTEX guard 도구 검토 로그 */
 export async function getAudit(taskId: string): Promise<AuditResponse> {
   if (!taskId) return { entries: [] };
   // task 없으면 서버가 bare [] 를 주므로(핸들러), entries 추출을 방어적으로.
@@ -111,7 +111,7 @@ export async function getAudit(taskId: string): Promise<AuditResponse> {
 
 /**
  * GET /api/intercept/task/{id} — ARTEX 승인 게이트(intercept)가 개입한 요청 기록(해당 task).
- * 허용까지 다 남기는 원장이 아니라, 룰/판정으로 **차단**했거나 승인 대기로 잡힌 이벤트다.
+ * 명시적 허용·차단 결정과 승인 요청을 남긴다. 모든 실제 송신을 남기는 원장은 아니다.
  * (tool_input 원문은 민감값을 품을 수 있어 의도적으로 안 받는다.)
  * ※ 우리 전송 통제(E²)·변조탐지 해시체인·권한분리는 아직 이 레코드에 없다("연동 전").
  */
@@ -123,7 +123,7 @@ export type EngineControlEvent = {
   /** 요청한 에이전트 (예: work#1 · #256) */
   agent: string;
   tool: string;
-  /** denied | approved | pending | … (이 데이터셋은 대개 denied) */
+  /** allowed | denied | approved | pending | … */
   status: string;
   /** 누가 정했나: rule | judge | user */
   source: string;
@@ -249,6 +249,96 @@ export async function getTokens(taskId: string): Promise<EngineTokens> {
 }
 
 /**
+ * 토큰 대시보드: GET /api/tokens/usage — 프로필별 누적과 최근 UTC 일자별 원장 집계.
+ * 전역 집계(task 무관). 비용은 엔진이 금액을 안 주므로 토큰량만 — 단가는 미노출.
+ */
+export type TokenProfile = {
+  profileName: string;
+  calls: number;
+  tasks: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+export type TokenDaily = { day: string; input: number; output: number; cacheRead: number };
+export type TokenUsage = { byProfile: TokenProfile[]; daily: TokenDaily[] };
+
+export const TOKEN_DAILY_DAYS = 365;
+
+export async function getTokenUsage(): Promise<TokenUsage> {
+  type RawP = {
+    profile_name: string;
+    calls: number;
+    tasks: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+  };
+  type RawD = { date: string; input_tokens: number; output_tokens: number; cache_read_tokens: number };
+  const usage = await apiFetch<{ by_profile: RawP[] | null; daily: RawD[] | null }>(
+    `/api/tokens/usage?days=${TOKEN_DAILY_DAYS}`,
+  );
+  // The ledger returns one UTC date row per profile; the chart needs one row per date.
+  const daily = new Map<string, TokenDaily>();
+  for (const row of usage.daily ?? []) {
+    const day = daily.get(row.date) ?? { day: row.date, input: 0, output: 0, cacheRead: 0 };
+    day.input += row.input_tokens;
+    day.output += row.output_tokens;
+    day.cacheRead += row.cache_read_tokens;
+    daily.set(row.date, day);
+  }
+  return {
+    byProfile: (usage.by_profile ?? []).map((p) => ({
+      profileName: p.profile_name || "(미지정)",
+      calls: p.calls,
+      tasks: p.tasks,
+      input: p.input_tokens,
+      output: p.output_tokens,
+      cacheRead: p.cache_read_tokens,
+      cacheWrite: p.cache_write_tokens,
+    })),
+    daily: [...daily.values()].sort((a, b) => a.day.localeCompare(b.day)),
+  };
+}
+
+/** POST /api/tasks/{id}/control — 일시정지/다시 시작(엔진 상태 변경, pause: running/queued, resume: paused). */
+export async function controlTask(taskId: string, action: "pause" | "resume"): Promise<void> {
+  await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/control`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+}
+
+/** Accepted archive job; it completes asynchronously and can later be restored. */
+export type EngineTaskArchive = { id: string; taskId: string; state: string };
+type ArchiveRaw = { id?: string | number; task_id?: string | number; state?: string };
+
+function archiveReceipt(raw: ArchiveRaw | null): EngineTaskArchive {
+  if (!raw || raw.id == null || raw.task_id == null || typeof raw.state !== "string") {
+    throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+  }
+  return { id: String(raw.id), taskId: String(raw.task_id), state: raw.state };
+}
+
+/** POST /api/tasks/{id}/archive — queue a cold archive job (202, not completion). */
+export async function archiveTask(taskId: string): Promise<EngineTaskArchive> {
+  const result = archiveReceipt(
+    await apiFetch<ArchiveRaw>(`/api/tasks/${encodeURIComponent(taskId)}/archive`, { method: "POST" }),
+  );
+  if (result.taskId !== taskId) throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+  return result;
+}
+
+/** GET /api/task-archives/{archiveId} — status uses the archive id, not task id. */
+export async function getTaskArchive(archiveId: string): Promise<EngineTaskArchive> {
+  const result = archiveReceipt(await apiFetch<ArchiveRaw>(`/api/task-archives/${encodeURIComponent(archiveId)}`));
+  if (result.id !== archiveId) throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+  return result;
+}
+
+/**
  * GET /api/llm 응답 — 현재 LLM 설정(전역, task 무관).
  * ※ key_set 은 "키가 설정됐는지" 불리언일 뿐 키 값이 아니다(값은 서버가 안 준다).
  */
@@ -266,7 +356,7 @@ export async function getLLM(): Promise<EngineLLM> {
   return apiFetch<EngineLLM>("/api/llm");
 }
 
-/** GET /api/intercept/rules 의 규칙 1건 — E² 전송 통제 규칙(전역) */
+/** GET /api/intercept/rules 의 규칙 1건 — ARTEX 도구 호출 승인 규칙(전역) */
 export type EngineInterceptRule = {
   id: number;
   name: string;
@@ -277,7 +367,7 @@ export type EngineInterceptRule = {
   /** regex | … */
   match_type: string;
   pattern: string;
-  /** deny | allow */
+  /** deny | allow | ask */
   action: string;
   message?: string;
 };

@@ -200,6 +200,10 @@ def _load_json_records(path: str, manifest: RunManifest | None = None) -> list[o
             payload = json.load(f, object_pairs_hook=_unique_record_object)
         except json.JSONDecodeError as e:
             raise ScanOutputError(f"판정 레코드 JSON 파싱 실패: {e}") from e
+    return _records_payload(payload, manifest)
+
+
+def _records_payload(payload: object, manifest: RunManifest | None) -> list[object]:
     if manifest is not None:
         if not isinstance(payload, dict):
             raise ScanOutputError("채점용 판정 레코드는 회차 메타데이터 envelope가 필요함")
@@ -249,7 +253,7 @@ def _validate_record(
                 )
 
     oracle_value = raw.get("oracle_value")
-    if oracle_value not in _ORACLE_VALUE_TO_SCAN:
+    if not isinstance(oracle_value, str) or oracle_value not in _ORACLE_VALUE_TO_SCAN:
         errors.append(
             f"[{index}] oracle_value 부재/부정: {oracle_value!r} (계약: {sorted(_ORACLE_VALUE_TO_SCAN)})"
         )
@@ -257,7 +261,7 @@ def _validate_record(
     # 계약 §2(b)·e3-oracle §8-①: allowed면 vuln_verdict=null, 그 외엔 oracle_value와 같아야.
     if "vuln_verdict" not in raw:
         errors.append(f"[{index}] vuln_verdict 필드 부재(allowed면 null로 명시)")
-    elif oracle_value in _ORACLE_VALUE_TO_SCAN:
+    elif isinstance(oracle_value, str) and oracle_value in _ORACLE_VALUE_TO_SCAN:
         vuln_verdict = raw["vuln_verdict"]
         if oracle_value == "allowed" and vuln_verdict is not None:
             errors.append(f"[{index}] allowed인데 vuln_verdict가 null 아님: {vuln_verdict!r}")
@@ -320,7 +324,17 @@ def parse_scan_output(
     TODO(윤재상): baseline(원본 ARTEX) 출력은 이 레코드를 내지 않는다 — 별도 어댑터로
     같은 VerdictRecord를 만들지, baseline은 finding→NONE/CONFIRMED만 매핑할지 정렬 필요.
     """
-    raw_records = _load_json_records(path, manifest)
+    return _parse_records(_load_json_records(path, manifest), correlate, manifest)
+
+
+def parse_scan_payload(
+    payload: object, correlate: Callable[[VerdictRecord], str | None], *, manifest: RunManifest
+) -> ScanParseResult:
+    """러너 해시 검증과 같은 바이트에서 읽은 payload를 사용한다(파일 재읽기 금지)."""
+    return _parse_records(_records_payload(payload, manifest), correlate, manifest)
+
+
+def _parse_records(raw_records: list[object], correlate, manifest: RunManifest | None) -> ScanParseResult:
     errors: list[str] = []
     verdicts: dict[str, ScanVerdict] = {}
     out_of_list: list[str] = []

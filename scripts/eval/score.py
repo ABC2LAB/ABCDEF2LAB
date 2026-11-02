@@ -11,7 +11,8 @@ baseline 어댑터는 아직 없다(A5 — 원본 ARTEX finding의 GT 상관 기
 GT(챌린지 목록)는 이 디렉터리 안에서만 쓴다(절대규칙 7). 하나라도 실패하면 표를 내지
 않는다 — 일부 회차만 빠진 매트릭스를 정상처럼 보이지 않게(절대규칙 5).
 
-실행: python3 -I scripts/eval/score.py <manifest.json> [--correlation <GT 상관 JSON>]
+실행: python3 -I scripts/eval/score.py <manifest.json> --runner-key-file <키 파일>
+      [--correlation <GT 상관 JSON>]
 """
 
 from __future__ import annotations
@@ -27,12 +28,14 @@ from typing import NamedTuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aggregate import RepeatResult, ScanVerdict, aggregate_condition, render_matrix  # noqa: E402
-from collect import ScanOutputError, ScanParseResult, VerdictRecord, parse_scan_output  # noqa: E402
+from collect import ScanOutputError, ScanParseResult, VerdictRecord, parse_scan_payload  # noqa: E402
 from correlation import DEFAULT_PATH, CorrelationError, load_correlation  # noqa: E402
 from evidence import TrafficIndex, challenge_has_evidence, dangling_refs  # noqa: E402
 from ground_truth import bac_category, core_gt  # noqa: E402
 from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa: E402
-from scoreboard import SnapshotError, parse_scoreboard_snapshot, require_basis_keys  # noqa: E402
+from scoreboard import SnapshotError  # noqa: E402
+
+from run_record import RunInputs, RunRecordError, load_run_inputs, read_runner_key  # noqa: E402
 
 Correlate = Callable[[VerdictRecord], str | None]
 
@@ -50,6 +53,7 @@ class ScoredRepeat(NamedTuple):
 
     result: RepeatResult
     warnings: tuple[str, ...]
+    inputs: RunInputs
 
 
 class Report(NamedTuple):
@@ -59,11 +63,11 @@ class Report(NamedTuple):
     warnings: tuple[str, ...]
 
 
-def _ours_verdicts(manifest: RunManifest, correlate: Correlate) -> ScanParseResult:
-    return parse_scan_output(manifest.records_path, correlate, manifest=manifest)
+def _ours_verdicts(manifest: RunManifest, correlate: Correlate, payload: object) -> ScanParseResult:
+    return parse_scan_payload(payload, correlate, manifest=manifest)
 
 
-def _baseline_verdicts(manifest: RunManifest, correlate: Correlate) -> ScanParseResult:
+def _baseline_verdicts(manifest: RunManifest, correlate: Correlate, payload: object) -> ScanParseResult:
     raise BaselineNotImplementedError(
         f"미구현(A5 보류): baseline 회차 '{manifest.condition}'#{manifest.repeat_index} — "
         "원본 ARTEX finding의 GT 상관 기준이 정해지지 않아 채점하지 않는다(0점 처리 금지)"
@@ -71,7 +75,7 @@ def _baseline_verdicts(manifest: RunManifest, correlate: Correlate) -> ScanParse
 
 
 # 엔진별로 다른 유일한 곳 — 레코드 → 챌린지별 판정. 이 뒤 채점은 엔진을 보지 않는다.
-_VERDICT_ADAPTERS: dict[Engine, Callable[[RunManifest, Correlate], ScanParseResult]] = {
+_VERDICT_ADAPTERS: dict[Engine, Callable[[RunManifest, Correlate, object], ScanParseResult]] = {
     Engine.OURS: _ours_verdicts,
     Engine.BASELINE: _baseline_verdicts,
 }
@@ -94,6 +98,7 @@ def assemble_repeat(
     evidence_ok: dict[str, bool],
     covered: frozenset[str] | None,
     correlatable: frozenset[str] | None,
+    *, pre_solved: dict[str, bool] | None = None, engine_solved: frozenset[str] = frozenset(),
 ) -> RepeatResult:
     """정규화된 판정·해결상태·증거·커버리지·상관 가능 여부 → RepeatResult. 엔진을 보지 않는다."""
     return RepeatResult(
@@ -107,6 +112,8 @@ def assemble_repeat(
         evidence_ok=dict(evidence_ok),
         covered=covered,
         correlatable=correlatable,
+        pre_solved=dict(pre_solved or {}),
+        engine_solved=engine_solved,
     )
 
 
@@ -148,36 +155,31 @@ def score_run(
     manifest: RunManifest,
     correlate: Correlate,
     *,
-    traffic: TrafficIndex | None = None,
-    covered: frozenset[str] | None = None,
+    runner_key: bytes | None = None,
     correlatable: frozenset[str] | None = None,
 ) -> ScoredRepeat:
-    """회차 1개를 채점 입력 + 경고로. 스냅샷에 채점 분모(코어 ∪ BAC)의 key가 빠지면 에러(§2).
-
-    traffic 인덱스·커버리지는 아직 로더가 없어 CLI는 None으로 부른다(TODO(이동찬) traffic
-    export·type 명명, TODO(이경준) 커버리지 지도). None이면 증거 (b)(c)를 확인할 수 없어
-    confirmed+해결은 판단불가, 판정 없음+미해결도 판단불가다 — 설계상 정직한 결과.
-    correlatable은 GT 상관 표의 type 있는 챌린지(CLI는 표에서 넘긴다). None이면 어느 챌린지도
-    상관 가능으로 보지 않아 '판정 없음 + 해결'도 판단불가다.
-    """
-    parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate)
-    solved = parse_scoreboard_snapshot(manifest.snapshot_path, manifest)
-    require_basis_keys(solved, core_gt() + bac_category())
-    evidence_ok = confirmed_evidence(parsed, traffic, correlate)
-    result = assemble_repeat(manifest, parsed, solved, evidence_ok, covered, correlatable)
-    return ScoredRepeat(result, repeat_warnings(manifest, parsed, traffic))
+    """서명된 러너 기록으로 회차 입력을 검증한 뒤 채점한다. 임의 traffic/coverage 주입은 없다."""
+    inputs = load_run_inputs(manifest, runner_key, correlate)
+    parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate, inputs.records)
+    evidence_ok = confirmed_evidence(parsed, inputs.traffic, correlate)
+    result = assemble_repeat(manifest, parsed, inputs.post, evidence_ok, inputs.covered, correlatable,
+                             pre_solved=inputs.pre, engine_solved=inputs.engine_solved)
+    warnings = list(repeat_warnings(manifest, parsed, inputs.traffic))
+    basis = {c.key for c in core_gt() + bac_category()}
+    for key in sorted(basis):
+        if inputs.pre[key]:
+            warnings.append(f"경고[사전 해결] {manifest.condition}#{manifest.repeat_index}: '{key}' — 판단불가")
+        elif inputs.post[key] and key not in inputs.engine_solved:
+            warnings.append(f"경고[해결 귀속 미확인] {manifest.condition}#{manifest.repeat_index}: '{key}' — 판단불가")
+    return ScoredRepeat(result, tuple(warnings), inputs)
 
 
 def score_repeat(
-    manifest: RunManifest,
-    correlate: Correlate,
-    *,
-    traffic: TrafficIndex | None = None,
-    covered: frozenset[str] | None = None,
+    manifest: RunManifest, correlate: Correlate, *, runner_key: bytes | None = None,
     correlatable: frozenset[str] | None = None,
 ) -> RepeatResult:
     """score_run에서 채점 입력만. 경고가 필요 없는 호출용."""
-    return score_run(manifest, correlate, traffic=traffic, covered=covered, correlatable=correlatable).result
+    return score_run(manifest, correlate, runner_key=runner_key, correlatable=correlatable).result
 
 
 def check_comparable(manifests: list[RunManifest]) -> None:
@@ -215,14 +217,27 @@ def check_comparable(manifests: list[RunManifest]) -> None:
 
 
 def build_report(
-    manifests: list[RunManifest], correlate: Correlate, correlatable: frozenset[str]
+    manifests: list[RunManifest], correlate: Correlate, correlatable: frozenset[str],
+    *, runner_key: bytes | None = None,
 ) -> Report:
     """전 회차를 채점해 코어 GT·BAC 두 표와 경고를 만든다. 행·경고 순서는 manifest 순서."""
     check_comparable(manifests)
     by_condition: dict[str, list[RepeatResult]] = {}
     warnings: list[str] = []
+    reference = None
+    seen_executions: set[str] = set()
     for m in manifests:
-        scored = score_run(m, correlate, correlatable=correlatable)
+        scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
+        inputs = scored.inputs
+        basis = {c.key for c in core_gt() + bac_category()}
+        conditions = (inputs.fixture_fingerprint, inputs.environment_fingerprint,
+                      tuple((key, inputs.pre[key]) for key in sorted(basis)))
+        if reference is not None and conditions != reference:
+            raise ComparabilityError("fixture/환경/pre 해결 상태 불일치 — 동일 조건 비교 중단")
+        reference = conditions
+        if inputs.execution_id in seen_executions:
+            raise ComparabilityError("execution_id 중복 — 러너 기록 재사용")
+        seen_executions.add(inputs.execution_id)
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 
@@ -236,6 +251,7 @@ def build_report(
 # 표를 내지 않고 멈추는 오류들. 그 밖의 예외는 버그라 그대로 올린다.
 _STOP_ERRORS = (
     ManifestError,
+    RunRecordError,
     SnapshotError,
     ScanOutputError,
     CorrelationError,
@@ -248,11 +264,13 @@ _STOP_ERRORS = (
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="저장 raw → 평가 프로토콜 §4 분류 → §5 매트릭스")
     parser.add_argument("manifest", help="회차 manifest JSON")
+    parser.add_argument("--runner-key-file", required=True, help="엔진 밖의 신뢰 러너 HMAC 키 파일(값 출력 금지)")
     parser.add_argument("--correlation", default=DEFAULT_PATH, help="평가 전용 GT 상관 JSON")
     args = parser.parse_args(argv)
     try:
         table = load_correlation(args.correlation)
-        report = build_report(load_manifests(args.manifest), table.correlate, table.operative)
+        report = build_report(load_manifests(args.manifest), table.correlate, table.operative,
+                              runner_key=read_runner_key(args.runner_key_file))
     except _STOP_ERRORS as e:
         print(f"채점 중단: {e}", file=sys.stderr)
         return 2

@@ -359,6 +359,15 @@ func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int
 }
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
+	if execution, ok := controlledReadExecutionFrom(ctx); ok {
+		// This branch must remain before ToolSet, asset graph, augmentation, and
+		// transcript setup. A malformed restricted binding is an error, never a
+		// fallback to the ordinary worker capability set.
+		if err := validateControlledRead(execution, taskID, intentIDOf(intent), intent, message); err != nil {
+			return harness.ReasonModelError, WriteCounts{}, err
+		}
+		return w.executeControlledRead(ctx, name, taskID, intent, hooks, emit, execution)
+	}
 	tsx := NewToolSet(ts, name)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)

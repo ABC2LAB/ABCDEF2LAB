@@ -15,6 +15,7 @@ export const SCREENS = [
   "settings",
   "audit",
   "access-map",
+  "tokens",
 ] as const;
 
 export type ScreenId = (typeof SCREENS)[number];

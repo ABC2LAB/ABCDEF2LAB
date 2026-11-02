@@ -94,7 +94,8 @@ _PROTOCOL_TABLE = (
 
 
 def _cls(verdict, solved, evidence_ok=False, covered=False, correlatable=False):
-    return classify(verdict, solved, evidence_ok=evidence_ok, covered=covered, correlatable=correlatable)
+    return classify(verdict, solved, evidence_ok=evidence_ok, covered=covered, correlatable=correlatable,
+                    pre_solved=False, engine_attributed=True)
 
 
 class TestClassify(unittest.TestCase):
@@ -156,6 +157,8 @@ class TestCountBasis(unittest.TestCase):
             elapsed_seconds=10.0,
             total_requests=100,
             verdicts={c.key: ScanVerdict.CONFIRMED for c in core},
+            pre_solved={c.key: False for c in core},
+            engine_solved=frozenset(c.key for c in core),
             solved={c.key: True for c in core},
             evidence_ok={c.key: True for c in core},
         )
@@ -170,6 +173,8 @@ class TestCountBasis(unittest.TestCase):
         repeat = RepeatResult(
             "우리@35b", None, None,
             verdicts={c.key: ScanVerdict.CONFIRMED for c in core},
+            pre_solved={c.key: False for c in core},
+            engine_solved=frozenset(c.key for c in core),
             solved={c.key: True for c in core},
         )
         counts = count_basis(repeat, core)
@@ -184,7 +189,8 @@ class TestCountBasis(unittest.TestCase):
     def test_missing_keys_with_coverage_are_missed(self):
         core = core_gt()
         keys = frozenset(c.key for c in core)
-        repeat = RepeatResult("원본@7B", 5.0, 50, covered=keys, correlatable=keys)
+        repeat = RepeatResult("원본@7B", 5.0, 50, covered=keys, correlatable=keys,
+                              pre_solved={key: False for key in keys})
         self.assertEqual(count_basis(repeat, core).missed, 9)
 
     def test_coverage_without_correlatable_info_is_undecided(self):
@@ -226,12 +232,16 @@ class TestAggregateAndRender(unittest.TestCase):
         r1 = RepeatResult(
             "우리@32b", 10.0, 100,
             verdicts={c.key: ScanVerdict.CONFIRMED for c in core},
+            pre_solved={c.key: False for c in core},
+            engine_solved=frozenset(c.key for c in core),
             solved={c.key: True for c in core},
             evidence_ok={c.key: True for c in core},
         )
         r2 = RepeatResult(
             "우리@32b", 20.0, 120,
             verdicts={c.key: ScanVerdict.CONFIRMED for c in core},
+            pre_solved={c.key: False for c in core},
+            engine_solved=frozenset(c.key for c in core),
             solved={c.key: True for c in core},
             evidence_ok={c.key: True for c in core},
         )
@@ -276,7 +286,8 @@ class TestAggregateAndRender(unittest.TestCase):
     def test_unmeasured_repeat_renders_dash_not_partial_mean(self):
         # 한 회차라도 미측정(None)이면 남은 회차만으로 평균 내지 않고 "—".
         core, (r1, r2) = self._two_repeats()
-        r2 = RepeatResult("우리@32b", None, None, verdicts=r2.verdicts, solved=r2.solved, evidence_ok=r2.evidence_ok)
+        r2 = RepeatResult("우리@32b", None, None, verdicts=r2.verdicts, solved=r2.solved, evidence_ok=r2.evidence_ok,
+                          pre_solved=r2.pre_solved, engine_solved=r2.engine_solved)
         agg = aggregate_condition("우리@32b", [r1, r2], core)
         self.assertEqual(agg.elapsed_seconds.render(), "—")
         self.assertEqual(agg.total_requests.render(), "—")

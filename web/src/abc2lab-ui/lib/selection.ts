@@ -8,6 +8,8 @@ import { createContext, useContext } from "react";
 export type Selection = {
   /** 선택된 task id (없으면 null — 화면은 "먼저 선택" 안내로 폴백) */
   taskId: string | null;
+  tasksVersion: number;
+  refreshTasks: () => void;
   selectTask: (id: string | null) => void;
 };
 

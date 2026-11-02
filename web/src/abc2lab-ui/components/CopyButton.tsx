@@ -1,26 +1,35 @@
-import { useState } from 'react';
-import { useTimeouts } from '../lib/hooks';
+import { useState } from "react";
 
-/** 원본 .vcopy: 누르면 클립보드에 복사하고 1.2초간 "복사됨" */
+import { useTimeouts } from "../lib/hooks";
+
+/** 클립보드 쓰기 결과를 표시하고 1.2초 후 초기화한다. */
 export function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
   const timers = useTimeouts();
+  async function copy() {
+    timers.clearAll();
+    setStatus("copying");
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("copied");
+    } catch {
+      setStatus("failed");
+    }
+    timers.set(() => setStatus("idle"), 1200);
+  }
+  let label = "복사";
+  if (status === "copied") label = "복사됨";
+  if (status === "failed") label = "복사 실패";
   return (
     <button
       className="vcopy"
       type="button"
+      disabled={status === "copying"}
       onClick={() => {
-        try {
-          void navigator.clipboard?.writeText(text).catch(() => {});
-        } catch {
-          /* 클립보드를 못 쓰는 환경이면 무시 */
-        }
-        setCopied(true);
-        timers.clearAll();
-        timers.set(() => setCopied(false), 1200);
+        void copy();
       }}
     >
-      {copied ? '복사됨' : '복사'}
+      {label}
     </button>
   );
 }

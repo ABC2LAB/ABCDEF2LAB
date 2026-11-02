@@ -121,39 +121,48 @@ export function useApiResource<T>(
   data: T | null;
   loading: boolean;
   error: string | null;
+  fetchedAt: number | null;
   reload: () => void;
 } {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
+  const requestVersion = useRef(0);
   // fetcher 는 화면마다 인라인으로 만들어 넘기므로 ref 로 고정한다. 재조회 트리거는 deps 가 전담.
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
 
   // run 은 deps 에만 의존한다(fetcher 는 ref). deps 변경 → run 재생성 → effect 재실행.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 재조회 트리거는 호출부 deps 로 명시
   const run = useCallback(() => {
-    let alive = true;
+    const version = ++requestVersion.current;
+    setData(null);
     setLoading(true);
     setError(null);
-    fetcherRef
-      .current()
-      .then((value) => {
-        if (alive) setData(value);
-      })
-      .catch((e: unknown) => {
-        if (alive) setError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setFetchedAt(null);
+    void (async () => {
+      try {
+        const value = await fetcherRef.current();
+        if (version === requestVersion.current) {
+          setData(value);
+          setFetchedAt(Date.now());
+        }
+      } catch (e: unknown) {
+        if (version === requestVersion.current) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (version === requestVersion.current) setLoading(false);
+      }
+    })();
+    // biome-ignore lint/correctness/useExhaustiveDependencies: 재조회 트리거는 호출부 deps 로 명시
   }, deps);
 
-  useEffect(() => run(), [run]);
+  useEffect(() => {
+    run();
+    // Include manual reloads: their return values are not effect cleanup callbacks.
+    return () => {
+      requestVersion.current += 1;
+    };
+  }, [run]);
 
-  return { data, loading, error, reload: run };
+  return { data, loading, error, fetchedAt, reload: run };
 }

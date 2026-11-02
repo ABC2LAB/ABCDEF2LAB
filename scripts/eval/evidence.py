@@ -9,8 +9,8 @@
 확정을 얻는 길은 (c)가 막는다. traffic에 없는 ref(끊긴 ref)는 세지 않고 경고로 올린다.
 
 traffic 인덱스는 논리 모양만 정한다 — `{traffic id: 요청 대상 resource_ref(type:id)}`.
-실제 traffic 기록에서 이걸 만드는 로더는 아직 없다(TODO(이동찬): E² type 명명·traffic
-export와 함께). 인덱스가 없으면(None) (b)·(c)를 확인할 수 없으니 충족이 아니다(fail-closed).
+공식 채점은 run_record가 서명된 러너 기록에 묶인 traffic 아티팩트에서만 읽는다.
+실제 E² traffic export 연결은 후속이다. 인덱스가 없으면(None) (b)·(c)는 미충족이다.
 """
 
 from __future__ import annotations
