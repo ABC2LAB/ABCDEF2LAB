@@ -17,15 +17,25 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from preflight import MAX_CONFIG_BYTES, PreflightError, check_preflight, load_preflight
 
 
+def api_llm():
+    return {"backend": "api", "base_url": "https://llm-api.example/api/v1", "model": "example-org/example-model",
+            "provider": "example-provider", "fallbacks": False}
+
+
+def local_llm():
+    return {"backend": "local", "base_url": "http://llm-host:11434/v1", "model": "example-model:fixed-tag",
+            "hostname": "llm-host", "host_ip": "172.17.0.1"}
+
+
 def configuration():
     shared = {
         "source_sha": "1" * 40,
         "target_image": "example/target:15.0.0",
-        "model_tag": "example-model:fixed-tag",
-        "llm_base_url": "http://127.0.0.1:11434/v1",
+        "network_mode": "dedicated_network",
+        "llm": api_llm(),
         "temperature": 0,
         "seed": 42,
-        "target_origin": "http://127.0.0.1:3000",
+        "target_origin": "http://eval-meter:8080",
         "worker_count": 1,
         "time_budget_seconds": 1200,
         "request_budget": 100,
@@ -84,9 +94,8 @@ class TestCheckPreflight(unittest.TestCase):
 
     def test_all_shared_conditions_must_match(self):
         changes = {
-            "model_tag": "different-model:fixed-tag",
-            "llm_base_url": "http://127.0.0.1:11435/v1",
-            "temperature": 0.2, "seed": 43, "target_origin": "http://127.0.0.1:3001",
+            "llm": api_llm() | {"provider": "other-provider"},
+            "temperature": 0.2, "seed": 43, "target_origin": "http://eval-meter:8081",
             "worker_count": 2, "time_budget_seconds": 600, "request_budget": 200,
             "fixture_fingerprint": "d" * 64, "environment_fingerprint": "e" * 64,
             "scope_fingerprint": "f" * 64,
@@ -119,13 +128,12 @@ class TestCheckPreflight(unittest.TestCase):
                 payload["ours"][field] = value
                 self.reject(payload, f"ours.{field}: INVALID")
 
-    def test_mutable_or_unset_model_and_image_references_fail(self):
-        for field in ("model_tag", "target_image"):
-            for value in (None, "", "example", "example:latest", "example:LATEST", "example:TODO",
-                          "<fixed-tag>", "example:${TAG}", "example:tag with spaces", "example:tag\n"):
-                payload = configuration()
-                payload["ours"][field] = value
-                self.reject(payload, f"ours.{field}: INVALID")
+    def test_mutable_or_unset_image_references_fail(self):
+        for value in (None, "", "example", "example:latest", "example:LATEST", "example:TODO",
+                      "<fixed-tag>", "example:${TAG}", "example:tag with spaces", "example:tag\n"):
+            payload = configuration()
+            payload["ours"]["target_image"] = value
+            self.reject(payload, "ours.target_image: INVALID")
         payload = configuration()
         payload["pins"]["target_image"] = "example:latest"
         self.reject(payload, "pins.target_image: INVALID")
@@ -136,7 +144,6 @@ class TestCheckPreflight(unittest.TestCase):
         payload["pins"]["target_image"] = image
         for section in ("baseline", "ours"):
             payload[section]["target_image"] = image
-            payload[section]["model_tag"] = "team/model:fixed-tag"
         check_preflight(payload)
 
     def test_latest_tag_cannot_hide_behind_image_digest(self):
@@ -164,28 +171,124 @@ class TestCheckPreflight(unittest.TestCase):
             payload["ours"]["target_image"] = image
             self.reject(payload, "ours.target_image: INVALID")
 
-    def test_only_loopback_urls_without_credentials_or_query_are_supported(self):
-        invalid = (None, "", "http://example.invalid", "http://192.0.2.1", "http://127.1",
-                   "file:///tmp/config", "http://user:SYNTHETIC-PRIVATE@127.0.0.1",
-                   "http://127.0.0.1?token=SYNTHETIC-PRIVATE", "http://127.0.0.1?",
-                   "http://127.0.0.1#fragment", "http://127.0.0.1:0", "http://127.0.0.1:65536",
-                   "http://[::1%zone]", "http://127.0.0.1\n", "http://127.0.0.1/../v1",
-                   "http://127.0.0.1//v1", "http://127.0.0.1\\path")
-        for field in ("target_origin", "llm_base_url"):
-            for value in invalid:
+    def test_target_origin_is_the_meter_service_origin_only(self):
+        invalid = (None, "", "http://127.0.0.1:3000", "http://localhost:3000", "http://192.0.2.1:8080",
+                   "https://eval-meter:8080", "http://eval-meter", "http://eval-meter:8080/v1",
+                   "http://eval-meter.example:8080", "http://Eval-Meter:8080", "http://eval_meter:8080",
+                   "http://8080:8080", "http://user:SYNTHETIC-PRIVATE@eval-meter:8080",
+                   "http://eval-meter:8080?token=SYNTHETIC-PRIVATE", "http://eval-meter:8080#f",
+                   "http://eval-meter:0", "http://eval-meter:65536", "http://eval-meter:8080\n",
+                   "http://[::1]:8080", "file:///tmp/config", "http://eval-meter:8080" + "/" * 600)
+        for value in invalid:
+            payload = configuration()
+            payload["ours"]["target_origin"] = value
+            self.reject(payload, "ours.target_origin: INVALID")
+        payload = configuration()
+        for section in ("baseline", "ours"):
+            payload[section]["target_origin"] = "http://eval-meter:8080/"
+        check_preflight(payload)
+
+    def test_only_dedicated_network_mode_is_supported(self):
+        for value in (None, "", "loopback_only", "DEDICATED_NETWORK", 1, ["dedicated_network"]):
+            payload = configuration()
+            payload["ours"]["network_mode"] = value
+            self.reject(payload, "ours.network_mode: INVALID")
+
+    def test_api_backend_requires_pinned_model_provider_and_disabled_fallbacks(self):
+        invalid = [
+            api_llm() | {"base_url": "http://llm-api.example/api/v1"},
+            api_llm() | {"base_url": "https://203.0.113.5/api/v1"},
+            api_llm() | {"base_url": "https://localhost/api/v1"},
+            api_llm() | {"base_url": "https://user:SYNTHETIC-PRIVATE@llm-api.example/v1"},
+            api_llm() | {"base_url": "https://llm-api.example/v1?key=SYNTHETIC-PRIVATE"},
+            api_llm() | {"base_url": "https://llm-api.example/../v1"},
+            api_llm() | {"model": "example-model"},
+            api_llm() | {"model": "example-org/latest"},
+            api_llm() | {"model": "example-org/example-model:latest"},
+            api_llm() | {"model": "example-org/todo"},
+            api_llm() | {"model": "example-org/<model>"},
+            api_llm() | {"provider": ""},
+            api_llm() | {"provider": "Example-Provider"},
+            api_llm() | {"provider": "tbd"},
+            api_llm() | {"provider": None},
+            api_llm() | {"fallbacks": True},
+            api_llm() | {"fallbacks": None},
+            api_llm() | {"fallbacks": 0},
+            api_llm() | {"fallbacks": "false"},
+            {key: value for key, value in api_llm().items() if key != "provider"},
+            {key: value for key, value in api_llm().items() if key != "fallbacks"},
+            api_llm() | {"hostname": "llm-host"},
+            {key: value for key, value in api_llm().items() if key != "backend"},
+            api_llm() | {"backend": "API"},
+            api_llm() | {"backend": ["api"]},
+            api_llm() | {"backend": None},
+            None, "https://llm-api.example/api/v1", [],
+        ]
+        for value in invalid:
+            with self.subTest(value=value):
+                payload = configuration()
+                payload["ours"]["llm"] = value
+                self.reject(payload, "ours.llm: INVALID")
+        payload = configuration()
+        for section in ("baseline", "ours"):
+            payload[section]["llm"] = api_llm() | {"model": "example-org/example-model:variant",
+                                                   "base_url": "https://llm-api.example:8443/"}
+        check_preflight(payload)
+
+    def test_local_backend_requires_fixed_private_ip_and_matching_hostname(self):
+        invalid = [
+            local_llm() | {"base_url": "http://other-host:11434/v1"},
+            local_llm() | {"base_url": "http://172.17.0.1:11434/v1"},
+            local_llm() | {"hostname": "localhost", "base_url": "http://localhost:11434/v1"},
+            local_llm() | {"host_ip": "127.0.0.1"},
+            local_llm() | {"host_ip": "0.0.0.0"},
+            local_llm() | {"host_ip": "169.254.1.1"},
+            local_llm() | {"host_ip": "203.0.113.5"},
+            local_llm() | {"host_ip": "224.0.0.1"},
+            local_llm() | {"host_ip": "172.017.0.1"},
+            local_llm() | {"host_ip": "fe80::1"},
+            local_llm() | {"host_ip": 1},
+            local_llm() | {"model": "example-model:latest"},
+            local_llm() | {"model": "example-model"},
+            local_llm() | {"provider": "example-provider"},
+            {key: value for key, value in local_llm().items() if key != "host_ip"},
+        ]
+        for value in invalid:
+            with self.subTest(value=value):
+                payload = configuration()
+                payload["ours"]["llm"] = value
+                self.reject(payload, "ours.llm: INVALID")
+        payload = configuration()
+        for section in ("baseline", "ours"):
+            payload[section]["llm"] = local_llm()
+        check_preflight(payload)
+        payload["ours"]["llm"] = local_llm() | {"host_ip": "fd00::1"}
+        self.reject(payload, "comparison.llm: MISMATCH")
+
+    def test_each_url_guard_rejects_on_its_own(self):
+        # 다른 검사에 먼저 걸리지 않게, 해당 가드 하나만 어기는 입력을 쓴다.
+        long_path = "/" + "a" * 600
+        cases = (
+            ("target_origin", "http://user:secret@eval-meter:8080"),
+            ("llm", api_llm() | {"base_url": "https://user:secret@llm-api.example/v1"}),
+            ("llm", api_llm() | {"base_url": "https://llm-api.example" + long_path}),
+            ("llm", local_llm() | {"host_ip": "fd00:0::1"}),
+            ("llm", local_llm() | {"host_ip": "FD00::1"}),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
                 payload = configuration()
                 payload["ours"][field] = value
                 self.reject(payload, f"ours.{field}: INVALID")
         payload = configuration()
-        payload["ours"]["target_origin"] += "/v1"
-        self.reject(payload, "ours.target_origin: INVALID")
-
-    def test_localhost_ipv6_https_and_model_base_path_are_allowed(self):
-        payload = configuration()
         for section in ("baseline", "ours"):
-            payload[section]["target_origin"] = "https://[::1]:3000/"
-            payload[section]["llm_base_url"] = "http://localhost:11434/v1/"
+            payload[section]["llm"] = local_llm() | {"host_ip": "fd00::1"}
         check_preflight(payload)
+
+    def test_backend_kind_must_match_between_baseline_and_ours(self):
+        payload = configuration()
+        payload["ours"]["llm"] = local_llm()
+        self.reject(payload, "comparison.llm: MISMATCH")
 
     def test_unknown_sampling_values_and_boolean_or_nonfinite_numbers_fail(self):
         values = {
@@ -210,10 +313,11 @@ class TestCheckPreflight(unittest.TestCase):
 
     def test_multiple_errors_have_deterministic_fixed_paths_and_no_input_values(self):
         payload = configuration()
-        payload["ours"].update(model_tag="SYNTHETIC-PRIVATE", target_origin="https://SYNTHETIC-PRIVATE.invalid")
+        payload["ours"].update(llm=api_llm() | {"model": "SYNTHETIC-PRIVATE"},
+                               target_origin="https://SYNTHETIC-PRIVATE.invalid")
         with self.assertRaises(PreflightError) as caught:
             check_preflight(payload)
-        self.assertEqual(caught.exception.errors, ("ours.model_tag: INVALID", "ours.target_origin: INVALID"))
+        self.assertEqual(caught.exception.errors, ("ours.llm: INVALID", "ours.target_origin: INVALID"))
         self.assertNotIn("SYNTHETIC-PRIVATE", str(caught.exception))
 
 
@@ -246,7 +350,7 @@ class TestLoadAndCLI(unittest.TestCase):
                 check_preflight(load_preflight(self.path))
             self.assertNotIn("SYNTHETIC-PRIVATE", str(caught.exception))
 
-    def test_duplicate_valid_model_tag_is_rejected_before_last_value_wins(self):
+    def test_duplicate_valid_seed_is_rejected_before_last_value_wins(self):
         payload = configuration()
         sections = {
             name: json.dumps(payload[name], separators=(",", ":"))
@@ -254,8 +358,8 @@ class TestLoadAndCLI(unittest.TestCase):
         }
         ours = json.dumps(payload["ours"], separators=(",", ":"))
         ours = ours.replace(
-            '"model_tag":"example-model:fixed-tag"',
-            '"model_tag":"other-model:fixed-tag","model_tag":"example-model:fixed-tag"',
+            '"seed":42',
+            '"seed":43,"seed":42',
             1,
         )
         self.path.write_text(
@@ -284,15 +388,16 @@ class TestLoadAndCLI(unittest.TestCase):
         self.assertEqual(result.stderr, "")
         self.assertIn("검사 통과", result.stdout)
         self.assertNotIn("example-model", result.stdout)
+        self.assertNotIn("llm-api.example", result.stdout)
 
     def test_cli_failure_exits_two_without_success_output_or_private_data(self):
         payload = configuration()
-        payload["ours"]["llm_base_url"] = "http://user:SYNTHETIC-PRIVATE@127.0.0.1"
+        payload["ours"]["llm"] = api_llm() | {"base_url": "https://user:SYNTHETIC-PRIVATE@llm-api.example/v1"}
         self.path.write_text(json.dumps(payload), encoding="utf-8")
         result = self.cli()
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, "")
-        self.assertIn("ours.llm_base_url: INVALID", result.stderr)
+        self.assertIn("ours.llm: INVALID", result.stderr)
         self.assertNotIn("SYNTHETIC-PRIVATE", result.stderr)
 
     def test_cli_missing_file_exits_two_without_traceback(self):
