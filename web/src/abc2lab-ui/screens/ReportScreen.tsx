@@ -14,6 +14,7 @@ import { Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineCoverage, type EngineFinding, getCoverage, getTask, listTaskFindings } from "../lib/engine";
 import { useSelection } from "../lib/selection";
+import { canonicalVulnClass } from "../lib/vulnclass";
 import { useGo } from "../nav";
 import type { Severity } from "../types";
 
@@ -504,22 +505,23 @@ function FindingsViz({
       }
       return nominal;
     }
-    // 유형: vulnclass 로 그룹 (실데이터)
-    const groups = new Map<string, EngineFinding[]>();
+    // 유형: vulnclass 를 표시용 정규 계열로 묶는다(원문은 발견 상세에 그대로, 저장·판정 불변).
+    // LLM 자유서술이라 같은 취약점이 여러 라벨로 쪼개지는 걸 계열로 합친다(lib/vulnclass).
+    const groups = new Map<string, { label: string; items: EngineFinding[] }>();
     for (const f of findings) {
-      const key = f.vulnclass || "기타";
-      const arr = groups.get(key);
-      if (arr) arr.push(f);
-      else groups.set(key, [f]);
+      const fam = canonicalVulnClass(f.vulnclass);
+      const g = groups.get(fam.key);
+      if (g) g.items.push(f);
+      else groups.set(fam.key, { label: fam.label, items: [f] });
     }
     return [...groups.entries()]
-      .sort((a, b) => b[1].length - a[1].length)
-      .map(([key, items], i) => ({
+      .sort((a, b) => b[1].items.length - a[1].items.length)
+      .map(([key, g], i) => ({
         id: key,
-        label: key,
+        label: g.label,
         color: `var(${NOMINAL_COLORS[i % NOMINAL_COLORS.length]})`,
-        items,
-        n: items.length,
+        items: g.items,
+        n: g.items.length,
       }));
   }, [dim, findings]);
 
@@ -614,6 +616,8 @@ function FindingsViz({
           </fieldset>
         </div>
       </div>
+
+      {dim === "type" && <p className="hint">유형은 표시용 계열로 묶었어요 — 원문 유형은 발견 상세에 그대로 있어요.</p>}
 
       <div>
         {kind === "bar" && (
