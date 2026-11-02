@@ -128,6 +128,14 @@ class TestHTTPResponseProperties(unittest.TestCase):
         self.assertEqual(wire, before)
         self.assertNotIn("SYNTHETIC-PRIVATE-MARKER", str(caught.exception))
 
+    def assert_rejected_with_error(self, wire: bytes, maximum: int, message: str):
+        before = bytes(wire)
+        with self.assertRaises(collector.SnapshotCollectionError) as caught:
+            _read(wire, maximum)
+        self.assertEqual(wire, before)
+        self.assertEqual(str(caught.exception), message)
+        self.assertNotIn("SYNTHETIC-PRIVATE-MARKER", str(caught.exception))
+
     def test_content_length_and_eof_return_each_declared_body_once(self):
         for body in (b"", _SHORT_BODY, _BODY):
             for framing in ("length", "eof"):
@@ -228,6 +236,34 @@ class TestHTTPResponseProperties(unittest.TestCase):
         for wire in cases:
             with self.subTest(wire=wire[:36]):
                 self.assert_rejected(wire, max(len(wire), len(_BODY) + 32))
+
+    def test_reader_rejects_independent_framing_guards_before_body_semantics(self):
+        # Keep the body valid and within the cap so each assertion exercises only
+        # the indicated wire-level guard.
+        chunked_bad_data_crlf = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n5\r\nhelloXX0\r\n\r\n"
+        )
+        self.assert_rejected_with_error(
+            chunked_bad_data_crlf, len(chunked_bad_data_crlf), "chunked 응답 body 미완료"
+        )
+
+        transfer_and_length = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            b"Transfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n"
+            b"5\r\nhello\r\n0\r\n\r\n"
+        )
+        self.assert_rejected_with_error(
+            transfer_and_length, len(transfer_and_length), "응답 전송 framing 부정"
+        )
+
+        for value in (b"+5", b"5_0", "５".encode("utf-8")):
+            wire = (
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Content-Length: " + value + b"\r\n\r\n" + _BODY
+            )
+            with self.subTest(content_length=value):
+                self.assert_rejected_with_error(wire, len(wire), "응답 길이 부정")
 
     def test_regression_assertions_detect_cap_trailing_and_chunk_assembly_weakening(self):
         oversized = _wire(_BODY + b"X", framing="length", declared=len(_BODY) + 1)
