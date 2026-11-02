@@ -33,6 +33,37 @@ func TestSelectedAddressMustBelongToCurrentResolution(t *testing.T) {
 	}
 }
 
+func TestDecisionReasonsIdentifyIndependentResolutionGuards(t *testing.T) {
+	loopback := netip.MustParseAddr("127.0.0.1")
+	p, err := llmpolicy.New([]llmpolicy.Endpoint{{Origin: "http://model.internal", Addresses: []netip.Addr{loopback}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		resolved  []netip.Addr
+		connectIP netip.Addr
+		want      llmpolicy.Reason
+	}{
+		{name: "resolution missing", resolved: nil, connectIP: loopback, want: llmpolicy.ReasonResolutionMissing},
+		{name: "zone address", resolved: []netip.Addr{netip.MustParseAddr("fe80::1%eth0")}, connectIP: loopback, want: llmpolicy.ReasonAddressInvalid},
+		{name: "invalid connect address", resolved: []netip.Addr{loopback}, want: llmpolicy.ReasonConnectInvalid},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			d := p.Decide(llmpolicy.Input{
+				URL:         "http://model.internal/api",
+				Transport:   llmpolicy.Direct,
+				ResolvedIPs: test.resolved,
+				ConnectIP:   test.connectIP,
+			})
+			if d.Allowed() || d.Reason() != test.want {
+				t.Fatalf("decision = %v, want reason %s", d, test.want)
+			}
+		})
+	}
+}
+
 func TestPinCountBoundaryAndInvalidAddress(t *testing.T) {
 	pins := make([]netip.Addr, 64)
 	for i := range pins {
