@@ -372,6 +372,13 @@ class TestComposeContract(unittest.TestCase):
         self.assertEqual(keys, set(SECRET_ENV_NAMES))
         self.assertNotRegex(text, r"(?m)^[A-Z_]+=.+$")
 
+    def test_no_restart_policy_anywhere(self):
+        # 회차 중 자동 재시작은 계측기 카운터·대상 상태·엔진 tmpfs를 조용히 초기화한다. 기본값(no)에 맡긴다.
+        for path in (COMPOSE_COMMON, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
+            text = _yaml_without_comments(Path(path).read_text(encoding="utf-8"))
+            with self.subTest(path=path.name):
+                self.assertNotRegex(text, r"(?m)^\s*restart\s*:")
+
     def test_meter_service_matches_origin_check(self):
         self.assertIn(METER_SERVICE, compose_services(COMPOSE_EVAL))
         self.assertEqual(compose_services(COMPOSE_EVAL), {"engine-db", "engine", "target", METER_SERVICE, "eval-obs"})
