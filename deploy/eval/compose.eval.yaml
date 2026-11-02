@@ -12,6 +12,14 @@ services:
     tmpfs:
       - /var/lib/postgresql/data:size=${EVAL_ENGINE_DB_TMPFS_SIZE:?}
 
+  # 엔진 데이터(/app/data: SQLite 저장소의 MITM 트래픽 원문, transcripts, E② 상태)도
+  # 회차 한정이라 메모리에만 둔다. 엔진 이미지는 이 경로에 파일을 넣지 않고 VOLUME만
+  # 선언하므로(baseline·개선 후 Dockerfile 동일) tmpfs로 덮어도 이미지 내용이 가려지지 않는다.
+  engine:
+    volumes: !reset []
+    tmpfs:
+      - /app/data:size=${EVAL_ENGINE_DATA_TMPFS_SIZE:?}
+
   target:
     image: ${EVAL_TARGET_IMAGE:?대상 이미지(digest 고정)를 설정하세요}
     networks:
