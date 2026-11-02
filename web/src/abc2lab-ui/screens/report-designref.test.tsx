@@ -98,8 +98,8 @@ describe("ReportScreen design-ref regressions", () => {
     vi.mocked(engine.listTaskFindings).mockResolvedValueOnce(findings);
     show();
     await screen.findByText("발견 한눈에 보기");
-    fireEvent.click(screen.getByRole("button", { name: "유형", exact: true }));
-    fireEvent.click(screen.getByRole("button", { name: view, exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "유형" }));
+    fireEvent.click(screen.getByRole("button", { name: view }));
     expect(screen.getByText(/빈 값과 분류되지 않은 유형은 기타에 포함/)).toBeVisible();
     expect(screen.getByText(/같은 발견 5건/)).toBeVisible();
 
