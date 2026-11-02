@@ -2211,19 +2211,29 @@ func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	scope := q.Get("scope")
 	format := q.Get("format")
+	if !validReportExportFormat(format) {
+		writeErr(w, 400, "bad export format")
+		return
+	}
 
 	var ids []int64
 	var filter db.FindingFilter
 	switch scope {
 	case "selected":
-		for _, part := range strings.Split(q.Get("ids"), ",") {
+		for remaining := q.Get("ids"); remaining != ""; {
+			part, rest, _ := strings.Cut(remaining, ",")
+			remaining = rest
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
 			}
 			id, err := strconv.ParseInt(part, 10, 64)
 			if err != nil || id <= 0 {
-				writeErr(w, 400, "bad finding id: "+part)
+				writeErr(w, 400, "bad finding id")
+				return
+			}
+			if len(ids) == report.MaxFindings {
+				writeErr(w, 422, "report export limit exceeded")
 				return
 			}
 			ids = append(ids, id)
@@ -2237,71 +2247,26 @@ func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 	case "filtered", "":
 		filter = findingFilterFromQuery(q)
 	default:
-		writeErr(w, 400, "bad scope: "+scope)
+		writeErr(w, 400, "bad export scope")
 		return
 	}
 
-	fs, err := s.m.pg.ListFindingsForExport(filter, ids)
+	fs, err := s.m.pg.ListFindingsForExportBounded(filter, ids, report.MaxFindings+1)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeErr(w, 500, "report export unavailable")
+		return
+	}
+	if len(fs) > report.MaxFindings {
+		writeErr(w, 422, "report export limit exceeded")
 		return
 	}
 
-	stage, err := os.MkdirTemp("", "artex-finding-export-")
-	if err != nil {
-		writeErr(w, 500, err.Error())
+	// Freeze versions and bindings without copying private request/response blobs.
+	if err = s.evidenceStore().StageFindingsExport(r.Context(), fs, "", false); err != nil {
+		reportExportEvidenceError(w, err)
 		return
 	}
-	defer os.RemoveAll(stage)
-	if err = s.evidenceStore().StageFindingsExport(r.Context(), fs, stage, format == "md-zip"); err != nil {
-		evidenceError(w, err)
-		return
-	}
-	now := time.Now()
-	stamp := now.Format("20060102-150405")
-	setDownload := func(contentType, filename string) {
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	}
-
-	switch format {
-	case "md-single":
-		setDownload("text/markdown; charset=utf-8", "findings-"+stamp+".md")
-		_, _ = w.Write([]byte(report.FindingsMarkdown(fs, now)))
-	case "md-zip":
-		path := filepath.Join(stage, "findings.zip")
-		if err := buildFindingsEvidenceZip(path, fs, stage, now); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		defer file.Close()
-		setDownload("application/zip", "findings-"+stamp+".zip")
-		http.ServeContent(w, r, "findings.zip", now, file)
-	case "csv":
-		setDownload("text/csv; charset=utf-8", "findings-"+stamp+".csv")
-		_, _ = w.Write(report.FindingsCSV(fs))
-	case "json":
-		assets := s.resolveFindingAssets(fs)
-		out := make([]FindingDTO, 0, len(fs))
-		for _, f := range fs {
-			for i := range f.TrafficBindings {
-				f.TrafficBindings[i].Snapshot.ReqHead = ""
-				f.TrafficBindings[i].Snapshot.RespHead = ""
-			}
-			out = append(out, findingFromDB(f, assets))
-		}
-		setDownload("application/json; charset=utf-8", "findings-"+stamp+".json")
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(out)
-	default:
-		writeErr(w, 400, "bad format: "+format)
-	}
+	writeFindingsExport(w, r, fs, format, time.Now())
 }
 
 func findingProvenanceInTask(contextTask *Task, findingTaskID *int64) (sourceTaskID string, inherited, allowed bool) {
@@ -3996,10 +3961,18 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no active task")
 		return
 	}
-	findings, _ := t.Store.ListByKind(db.KindFinding, 1000) // 纯漏洞（事实是独立的 KindFact，不进报告）
+	findings, err := t.Store.ListByKind(db.KindFinding, 1000)
+	if err != nil {
+		writeErr(w, 500, "report export unavailable")
+		return
+	}
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
+		ns, err := s.m.Assets().QueryByType(ty, 100000, 0)
+		if err != nil {
+			writeErr(w, 500, "report export unavailable")
+			return
+		}
 		if len(ns) > 0 {
 			counts[ty] = len(ns)
 		}
