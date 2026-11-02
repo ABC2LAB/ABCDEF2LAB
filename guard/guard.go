@@ -84,7 +84,11 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	if g.interceptor == nil {
 		return hook.Result{}
 	}
-	if !g.interceptor.IsToolEnabled(ev.ToolName) {
+	enabled, err := g.interceptor.CheckToolEnabled(ev.ToolName)
+	if err != nil {
+		return g.block(ev.ToolName, systemBlockMessage(err.Error()), "")
+	}
+	if !enabled {
 		return hook.Result{}
 	}
 	ctx = intercept.WithCall(ctx, ev.ToolName, ev.Input)
