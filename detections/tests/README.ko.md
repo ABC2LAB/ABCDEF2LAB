@@ -1,5 +1,7 @@
 # ARTEX 탐지 규칙 테스트
 
+> **기존 참고 자료:** 현재 프로젝트 안내는 [ABC2LAB 문서](../../docs/README.md)를 확인합니다. 아래 절차·예시 출력은 기반 자료이며 현재 체크아웃의 검증 결과가 아닙니다. 원본 CI 워크플로는 현재 저장소에 없으므로 자동 실행·머지 게이트로 간주하지 않습니다. 해당 파일을 읽는 하네스·지표·MISP 시험은 조정 전 실패할 수 있습니다.
+
 한국어 · [English](README.md)
 
 [`../`](../) 아래의 탐지 규칙이 실제로 발화하는지, 그리고 그에 못지않게 중요한, 양성(benign)
@@ -19,7 +21,7 @@
 코드로 종료합니다.
 
 스위트를 돌리기 전에 하네스 자기 점검([`check-harness-sync.sh`](check-harness-sync.sh))을 먼저 실행합니다.
-이 점검은 위의 스위트 목록, [CI](../../.github/workflows/detections.yml) 의 스위트별 스텝, 디스크의 스위트
+이 점검은 위의 스위트 목록, `.github/workflows/detections.yml` 의 스위트별 스텝, 디스크의 스위트
 디렉터리 이 셋이 서로 다른 스위트나 다른 순서를 가리키면 실행을 실패로 끝냅니다. 이것은 여덟 스위트가
 스스로 보지 못하는 유일한 공백입니다. 세 곳 중 한 곳에만 배선된 스위트(예: `run-all.sh` 항목 없이 CI
 스텝만 추가하거나, 어느 쪽에도 넣지 않은 디렉터리)는 스위트별 테스트를 모두 통과하면서도, 로컬에서
@@ -371,7 +373,7 @@ ARTEX 트래픽에 조용히 매칭을 멈춥니다. 각 지표에 대해 양방
   근거를 확인한 모든 지문은 이 목록에 나타나야 합니다. 그래서 공개된 CSV 는 자신이 유래했다고 주장하는
   소스에서 어느 방향으로도 조용히 어긋날 수 없습니다.
 - **두 관문이 고정된 각 소스에서 발화함**: 테스트가 읽는 모든 상류 소스는 그것을 돌리는 두 관문에
-  포함됩니다. CI 워크플로의 `push`·`pull_request` paths 필터([`.github/workflows/detections.yml`](../../.github/workflows/detections.yml))와
+  포함됩니다. CI 워크플로의 `push`·`pull_request` paths 필터(`.github/workflows/detections.yml`)와
   로컬 pre-commit 훅의 `files` 정규식([`.pre-commit-config.yaml`](../../.pre-commit-config.yaml))입니다.
   필요한 집합은 지표 자체에서 파생되므로, 새 소스를 고정하면서(예전의 `cmd/artex/main.go` 포트가
   그랬듯) *두* 관문에 모두 배선하지 않으면 여기서 실패합니다. 그러지 않으면 그 소스만 건드린 변경이
@@ -455,7 +457,7 @@ detections/tests/misp/run.sh
 [`../README.ko.md`](../README.ko.md) 의 규칙 색인을 보십시오.
 
 여덟 스위트는 모두 `detections/` 를 건드리는 모든 push 나 pull request 에서 CI 로 돕니다
-([`../../.github/workflows/detections.yml`](../../.github/workflows/detections.yml) 참조). 그리고 지표
+(`.github/workflows/detections.yml` 참조). 그리고 지표
 테스트는 그것이 고정한 상류 소스 파일(`enrich/`, `selfupdate/`, `guard/`, `db/`, `cmd/artex/main.go`)이
 바뀔 때도 돕니다. 그래서 지표를 떨어뜨리거나, ATT&CK 레이어에서 어긋나거나, 문서화한 백엔드에서
 변환이 멈추거나, SigmaHQ 관례를 깨거나, 소스와 동기화가 어긋나거나, MISP 이벤트가 CSV 에서 어긋나게

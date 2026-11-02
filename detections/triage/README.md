@@ -1,5 +1,7 @@
 # ARTEX host triage
 
+> **Inherited reference:** see the [ABC2LAB documentation](../../docs/README.md) for the current project. The procedures and sample outputs below are inherited material, not verification results for this checkout. The original CI workflow is absent, so automatic CI/merge gates are not provided here. Harness, indicator, and MISP checks that read that file may fail until adapted.
+
 English · [한국어](README.ko.md)
 
 > 한국어: [`artex_host_triage.py`](artex_host_triage.py) 는 ARTEX 가 돌았다고 의심되는 **호스트 한 대에서 직접**
@@ -107,7 +109,7 @@ The `--self-test` builds a synthetic host — a data directory with a planted CA
 log containing each marker; a port listing; and a captured process-environment dump — and asserts every
 check fires on it, then asserts a clean host, a benign log, and a corporate-proxy process produce **zero**
 findings (no false positives). It is wired into the
-[`detections` CI workflow](../../.github/workflows/detections.yml) and re-run by
+`.github/workflows/detections.yml` and re-run by
 [`detections/tests/run-all.sh`](../tests/run-all.sh), so a change that breaks a check, or that drifts an
 indicator away from the source string it greps for, fails the merge gate. A detection you cannot run is
 only a claim.

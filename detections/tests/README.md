@@ -1,5 +1,7 @@
 # ARTEX detection rule tests
 
+> **Inherited reference:** see the [ABC2LAB documentation](../../docs/README.md) for the current project. The procedures and sample outputs below are inherited material, not verification results for this checkout. The original CI workflow is absent, so automatic CI/merge gates are not provided here. Harness, indicator, and MISP checks that read that file may fail until adapted.
+
 English · [한국어](README.ko.md)
 
 > 한국어: 이 디렉터리는 [`../`](../)의 탐지 규칙이 실제로 발화하는지를 재현 가능하게 증명하는
@@ -23,7 +25,7 @@ have to invoke the eight `run.sh` scripts by hand. Each suite runs to completion
 the script prints a one-line PASS/FAIL summary per suite at the end, and it exits non-zero if any suite failed.
 
 Before the suites, it runs a harness self-check ([`check-harness-sync.sh`](check-harness-sync.sh)) that fails
-the run if this suite list, the per-suite steps in [CI](../../.github/workflows/detections.yml), and the suite
+the run if this suite list, the per-suite steps in `.github/workflows/detections.yml`, and the suite
 directories on disk ever name different suites or a different order. That is the one gap the eight suites
 cannot see on their own: a suite wired into only one of the three (a new CI step with no `run-all.sh` entry, or
 a directory never added to either) would otherwise pass every per-suite test while a green local `run-all.sh`
@@ -375,7 +377,7 @@ each indicator, bidirectionally:
   published CSV cannot silently drift from the source it claims to come from, in either direction.
 - **Both gates fire on each pinned source** — every upstream source the test reads is covered by the two
   gates that run it: the CI workflow's `push` and `pull_request` paths filter
-  ([`.github/workflows/detections.yml`](../../.github/workflows/detections.yml)) and the local pre-commit
+  (`.github/workflows/detections.yml`) and the local pre-commit
   hook's `files` regex ([`.pre-commit-config.yaml`](../../.pre-commit-config.yaml)). The required set is
   derived from the indicators themselves, so pinning a new source (as the `cmd/artex/main.go` ports once were)
   without wiring it into *both* gates fails here — otherwise a change touching only that source skips the test
@@ -454,9 +456,9 @@ library with `PYMISP_VERSION` if you mirror them internally.
 A new detection rule is stronger with a test that shows it firing. Tests should synthesize their own input
 deterministically, assert engine-version-independent properties exactly (and softer ones as floors with a
 recorded reference), and avoid any content that reads as attack guidance. See
-[`../../CONTRIBUTING.en.md`](../../CONTRIBUTING.en.md) and the rule indexes in [`../README.md`](../README.md).
+[`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) and the rule indexes in [`../README.md`](../README.md).
 
-All eight suites run in CI (see [`../../.github/workflows/detections.yml`](../../.github/workflows/detections.yml))
+All eight suites run in CI (see `.github/workflows/detections.yml`)
 on every push or pull request that touches `detections/` — and the indicator test also runs when the upstream
 source files it pins (`enrich/`, `selfupdate/`, `guard/`, `db/`, `cmd/artex/main.go`) change — so a rule
 change that drops an indicator, drifts from the ATT&CK layer, stops converting on a documented backend,
