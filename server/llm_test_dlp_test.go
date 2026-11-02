@@ -253,5 +253,9 @@ func TestLLMTestDLPMalformedAndNoAPIKey(t *testing.T) {
 	if got["error"] != errLLMTestNoAPIKey {
 		t.Fatalf("no-key error did not use the fixed message")
 	}
+	latency, ok := got["latency_ms"].(float64)
+	if !ok || latency != 0 {
+		t.Fatalf("no-key latency_ms=%v, want numeric zero", got["latency_ms"])
+	}
 	assertLLMTestDLP(t, llmTestDLPSentinel, body, logs)
 }
