@@ -205,7 +205,7 @@ func TestFindingTrafficAPIAndExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binaries := 0
+	redactedMessages := 0
 	linked := false
 	for _, entry := range archive.File {
 		r, err := entry.Open()
@@ -217,32 +217,39 @@ func TestFindingTrafficAPIAndExport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.HasSuffix(entry.Name, "/response.bin") {
-			binaries++
-			if !bytes.Equal(raw, body) {
-				t.Fatal("export changed binary")
+		if strings.HasSuffix(entry.Name, ".bin") {
+			t.Fatal("shared export contains a raw body attachment")
+		}
+		if strings.HasSuffix(entry.Name, ".http") {
+			redactedMessages++
+			if string(raw) != "[REDACTED]\n" {
+				t.Fatal("shared message is not redacted")
 			}
 		}
 		if strings.HasSuffix(entry.Name, ".md") && bytes.Contains(raw, []byte(fmt.Sprintf("evidence/%d/%d/", f.FindingID, third))) {
 			linked = true
 		}
 	}
-	if binaries != 3 || !linked {
-		t.Fatalf("missing attachments/links: %d %v", binaries, linked)
+	if redactedMessages != 6 || !linked {
+		t.Fatalf("missing redacted attachments/links: %d %v", redactedMessages, linked)
 	}
 	// Reports can use snapshots with capture stopped and original rows gone.
 	result, err := s.toolGetFindingTraffic().Call(context.Background(), json.RawMessage(fmt.Sprintf(`{"finding_id":"%d"}`, f.FindingID)), nil)
 	if err != nil || !strings.Contains(result.Flatten(), "proof note") {
 		t.Fatal(result, err)
 	}
-	// Corrupt body must fail before an attachment response is sent.
+	// A shared export does not read raw blobs; original-evidence integrity is
+	// still enforced by the separate authorized body reader.
 	snap := list.Bindings[0].Snapshot
 	path := filepath.Join(s.m.dir, "evidence", "blobs", snap.RespHash[:2], snap.RespHash+".bin")
 	if err = os.WriteFile(path, []byte("corrupt"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if w = req("GET", exportURL, ""); w.Code < 400 || strings.Contains(w.Header().Get("Content-Type"), "zip") {
-		t.Fatal("corrupt export returned an attachment", w.Code)
+	if w = req("GET", exportURL, ""); w.Code != 200 || !strings.Contains(w.Header().Get("Content-Type"), "zip") {
+		t.Fatal("redacted export depended on a raw blob", w.Code)
+	}
+	if w = req("GET", fmt.Sprintf("%s/%d/body?side=response&download=1", base, first), ""); w.Code < 400 {
+		t.Fatal("raw reader accepted a corrupt blob", w.Code)
 	}
 }
 
