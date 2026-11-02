@@ -10,9 +10,10 @@ import (
 
 type captureContextKey struct{}
 
-// Capture collects the untouched wire bodies of one logical LLM call. The
-// Recorder creates it and puts it on the context; the HTTP transport that norma
-// dials through (agent.quotaAwareTransport) finds it there and fills it in.
+// Capture tracks one logical LLM call. NewCapture keeps untouched wire bodies
+// for an explicitly raw diagnostic path; NewMetadataCapture keeps only status,
+// presence and byte counts for Recorder/connection diagnostics. The HTTP
+// transport that norma dials through finds either mode on the context.
 //
 // This exists because everything the Recorder itself sees is already normalized:
 // llm.CompletionRequest is re-serialized rather than the body buildBody() sent,
@@ -27,19 +28,30 @@ type captureContextKey struct{}
 // The transport writes from norma's stream-reading goroutine while the Recorder
 // snapshots at stream end, so all state is mutex-guarded.
 type Capture struct {
-	mu       sync.Mutex
-	request  string
-	attempts []*attempt
+	mu           sync.Mutex
+	metadataOnly bool
+	request      string
+	requestSeen  bool
+	attempts     []*attempt
 }
 
 type attempt struct {
-	status int
-	body   strings.Builder
+	status    int
+	body      strings.Builder
+	bodyBytes int
 }
 
 // NewCapture returns a context carrying a fresh Capture, plus the Capture itself.
 func NewCapture(ctx context.Context) (context.Context, *Capture) {
 	c := &Capture{}
+	return context.WithValue(ctx, captureContextKey{}, c), c
+}
+
+// NewMetadataCapture records only attempt status, body presence and byte
+// counts. It is used at persistence/diagnostics boundaries where copying
+// provider bodies would create an unnecessary transient secret retention path.
+func NewMetadataCapture(ctx context.Context) (context.Context, *Capture) {
+	c := &Capture{metadataOnly: true}
 	return context.WithValue(ctx, captureContextKey{}, c), c
 }
 
@@ -54,17 +66,48 @@ func CaptureFrom(ctx context.Context) *Capture {
 	return c
 }
 
-// SetRequest stores the outgoing request body. Retries re-send identical bytes,
-// so only the first attempt's body is kept.
+// SetRequest records request presence and, in raw mode, stores the outgoing
+// request body. Retries re-send identical bytes, so only the first raw body is kept.
 func (c *Capture) SetRequest(body string) {
 	if c == nil || body == "" {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.requestSeen = true
+	if c.metadataOnly {
+		return
+	}
 	if c.request == "" {
 		c.request = body
 	}
+}
+
+// MarkRequest records that the transport attempted a request without retaining
+// or reconstructing its body. It is used by metadata-only diagnostics.
+func (c *Capture) MarkRequest() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.requestSeen = true
+	c.mu.Unlock()
+}
+
+// SetRequestSnapshot supplies a lazy raw request snapshot. Metadata-only
+// captures return before invoking snapshot, so the provider transport never
+// asks net/http for a second body copy on the persistence path.
+func (c *Capture) SetRequestSnapshot(snapshot func() string) {
+	if c == nil || snapshot == nil {
+		return
+	}
+	c.mu.Lock()
+	metadataOnly, alreadySet := c.metadataOnly, c.request != ""
+	c.mu.Unlock()
+	if metadataOnly || alreadySet {
+		return
+	}
+	c.SetRequest(snapshot())
 }
 
 // TeeResponse opens a new attempt and wraps rc so everything read from it is
@@ -101,6 +144,9 @@ func (c *Capture) RawResponse() string {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.metadataOnly {
+		return ""
+	}
 	switch len(c.attempts) {
 	case 0:
 		return ""
@@ -153,10 +199,20 @@ func (t *teeBody) Read(p []byte) (int, error) {
 	n, err := t.rc.Read(p)
 	if n > 0 {
 		t.c.mu.Lock()
-		t.a.body.Write(p[:n])
+		t.a.bodyBytes = saturatingAdd(t.a.bodyBytes, n)
+		if !t.c.metadataOnly {
+			t.a.body.Write(p[:n])
+		}
 		t.c.mu.Unlock()
 	}
 	return n, err
 }
 
 func (t *teeBody) Close() error { return t.rc.Close() }
+
+func saturatingAdd(current, added int) int {
+	if added > 0 && current > int(^uint(0)>>1)-added {
+		return int(^uint(0) >> 1)
+	}
+	return current + added
+}

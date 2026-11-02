@@ -59,25 +59,25 @@ return err
 
 ## llmrec 저장 경계
 
-`Wrap`은 기존 시그니처를 유지하며 내부에서 불변 호스트 정책을 만든다. recording을 켜도 원문 기록으로 되돌릴 수 없다. provider 요청과 호출자에게 전달되는 응답·이벤트·오류는 그대로다. DLP는 그 결과를 DB에 복제하는 경계에 적용한다.
+`Wrap`은 기존 시그니처를 유지하며 내부에서 불변 호스트 정책을 만든다. recording을 켜도 원문 기록으로 되돌릴 수 없다. provider 요청과 호출자에게 전달되는 응답·이벤트·오류는 그대로다. DLP는 그 결과를 DB에 복제하는 경계에 적용한다. Recorder의 Capture는 상태·바이트 수·존재 여부만 보관하며 provider wire body를 복사하지 않는다.
 
 | DB 필드 | 신규 Recorder 저장값 |
 |---|---|
 | `request_body` | 유효한 JSON. system/messages/tools/stop/thinking/temperature는 `[REDACTED]`, max_tokens/tools_count는 범위 검사한 정수 |
 | `response_body` | 유효한 JSON. text/thinking은 `[REDACTED]`, usage는 범위 검사한 정수, stop_reason은 고정된 알려진 값 또는 `[REDACTED]` |
-| `raw_request` | 비어 있지 않은 요청 capture가 있으면 `[REDACTED]`, 없으면 빈 값 |
+| `raw_request` | metadata-only Capture에서 전송 시도가 있으면 `[REDACTED]`, 시도가 없으면 빈 값. 본문은 저장하지 않음 |
 | `raw_response` | HTTP 응답 attempt가 있으면 빈 응답이어도 `[REDACTED]`, attempt가 없으면 빈 값 |
 | `error` | 호출 오류·취소가 있으면 `[REDACTED]`, 없으면 빈 값 |
 
 호스트가 소유하는 model/profile/session/task/worker 참조, 상태, 지연시간, 사용량 메타데이터는 유지한다. 여기에 대상 원문이나 자격증명을 넣으면 안 된다. stop_reason은 고정 switch로 먼저 분류하고 고정 enum으로 검증한다. 제공자가 준 문자열을 enum에 동적으로 등록하지 않는다.
 
-정규화 본문은 원문을 직렬화하기 전에 최소화하고, raw 본문은 Capture lock 안에서 존재 여부만 읽는다. 원문 wire를 DB용 문자열로 복사하거나 Stream의 text/thinking을 누적하지 않는다. 잘못된 메시지 내 RawMessage, 대형 본문, 임의 SSE framing도 이 기록 경계를 우회하지 않는다. Capture의 일시적인 원문과 provider 통신은 별도다.
+정규화 본문은 원문을 직렬화하기 전에 최소화하고, raw 본문은 Capture lock 안에서 존재 여부만 읽는다. 원문 wire를 DB용 문자열로 복사하거나 Stream의 text/thinking을 누적하지 않는다. 잘못된 메시지 내 RawMessage, 대형 본문, 임의 SSE framing도 이 기록 경계를 우회하지 않는다. 연결시험·Recorder의 metadata-only Capture는 응답 상태와 UTF-8이 아닌 wire 바이트 수만 남기며 원문 getter는 빈 값이다. 하위 transport의 기존 raw Capture API는 별도 테스트·진단 경로에서만 사용한다.
 
 request/response/raw/error wrapper 전체가 `dlp.Project`를 통과한 뒤에만 각 컬럼으로 분해해 동기 INSERT한다. 정책 누락·오류·투영 실패는 `llm_records` 행을 저장하지 않으며 원문 fallback은 없다. `llm_usage` 기록과 provider 결과 전달은 유지한다. 실패 로그는 원문 없는 고정 문구다. 취소된 호출의 최종 안전 기록을 남기기 위해 투영은 bounded in-memory 작업에서 독립 context를 사용한다.
 
 기록용 정책 한도는 최소화된 메타데이터에 적용하는 내부 구조 상한이다: 입력·출력 각 32 KiB, 값 깊이 8, 객체당 16필드, 배열당 1원소, 정수는 PostgreSQL INTEGER 범위의 비음수다. 원문 크기와 관계없이 저장 대상은 이 최소 메타데이터뿐이다.
 
-과거 원문 행을 삭제·이관하지 않는다. archive/restore와 `db.InsertLLMRecord` 직접 호출은 별도 책임이며 이 PR이 DB 전체에 보편적인 DLP를 강제하는 것은 아니다.
+과거 원문 행을 삭제·이관하지 않는다. 운영 전환 시 기존 `llm_records` 원문 행의 보존·삭제는 별도 승인된 보존 정책으로 처리해야 한다. archive/restore와 `db.InsertLLMRecord` 직접 호출은 별도 책임이며 이 PR이 DB 전체에 보편적인 DLP를 강제하는 것은 아니다.
 
 ## 후속 연결
 

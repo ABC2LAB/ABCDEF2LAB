@@ -123,3 +123,41 @@ func TestRoundTripWithoutCaptureIsUnchanged(t *testing.T) {
 		t.Fatalf("body=%q", got)
 	}
 }
+
+func TestRoundTripMetadataCaptureDoesNotCallGetBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+	client, err := quotaAwareHTTPClient("", "")
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	const reqBody = `{"private":"request-body"}`
+	req, err := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var getBodyCalls int
+	req.GetBody = func() (io.ReadCloser, error) {
+		getBodyCalls++
+		return io.NopCloser(strings.NewReader(reqBody)), nil
+	}
+	ctx, capt := llmrec.NewMetadataCapture(req.Context())
+	req = req.WithContext(ctx)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if getBodyCalls != 0 {
+		t.Fatalf("metadata capture requested GetBody %d times", getBodyCalls)
+	}
+	if request, _ := capt.MetadataPresence(); !request {
+		t.Fatal("metadata capture did not record the request attempt")
+	}
+	if got := capt.RawRequest(); got != "" {
+		t.Fatalf("metadata capture retained request body: %q", got)
+	}
+}
