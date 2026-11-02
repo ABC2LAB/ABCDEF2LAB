@@ -69,7 +69,7 @@ describe("rule display groups", () => {
     expect(within(unknown).queryByText("허용")).toBeNull();
     expect(within(unknown).getByText("꺼짐")).toBeVisible();
     expect(within(disabled).getByText("꺼짐")).toBeVisible();
-    expect(screen.getByText("사용 중 3")).toBeVisible();
+    expect(screen.getByText("설정 켜짐 3")).toBeVisible();
   });
   it("does not render empty groups as a successful result after lookup fails", async () => {
     vi.mocked(engine.getInterceptRules).mockRejectedValue(new Error("synthetic rules failure"));
@@ -77,5 +77,17 @@ describe("rule display groups", () => {
     expect(await screen.findByText(/통제 규칙을 불러오지 못했어요/)).toBeVisible();
     expect(screen.queryByText("등록된 통제 규칙이 없어요.")).toBeNull();
     expect(screen.queryByRole("heading", { level: 4 })).toBeNull();
+  });
+
+  it("labels enabled legacy rules as configuration without claiming the invalid regex is applied", async () => {
+    vi.mocked(engine.getInterceptRules).mockResolvedValue([
+      { ...rule(6, "기존 정규식 오류 규칙", "deny", 10), match_type: "regex", pattern: "(" },
+    ]);
+    show();
+    const row = (await screen.findByText("기존 정규식 오류 규칙")).closest(".frow") as HTMLElement;
+    expect(within(row).getByText("설정 켜짐")).toBeVisible();
+    expect(within(row).queryByText("사용")).toBeNull();
+    expect(screen.getByText("설정 켜짐 1")).toBeVisible();
+    expect(screen.getByText(/정규식 오류가 있는 규칙은 적용되지 않아요/)).toBeVisible();
   });
 });
