@@ -29,7 +29,7 @@ func TestURLGrammarFailsClosed(t *testing.T) {
 	urls := []string{
 		"", "localhost:80", "http:localhost", "//localhost", "ftp://localhost",
 		"http://user:synthetic-secret@localhost", "http://@localhost", "http://localhost/#", "http://localhost/#fragment",
-		" http://localhost", "http://localhost ", "http://localhost/\t", "http://localhost/\xff",
+		" http://localhost", "http://localhost ", "http://localhost/\t", "http://localhost/\xff", "http://localhost/a b",
 		"http://localhost\\@evil.invalid", "http://localhost/%00", "http://localhost/%0a", "http://localhost/%5c",
 		"http://localhost/?x=%0a", "http://localhost/?x=%5c", "http://localhost/?x=%zz", "http://localhost/%ff", "http://localhost/?x=%ff",
 		"http://locаlhost", "http://127.1", "http://0177.0.0.1", "http://2130706433", "http://0x7f000001", "http://0x7f.0.0.1",
@@ -45,6 +45,29 @@ func TestURLGrammarFailsClosed(t *testing.T) {
 				t.Fatal("unsupported URL was accepted or misclassified")
 			}
 		})
+	}
+}
+
+func TestResolutionRequiresEveryAddressToBePinned(t *testing.T) {
+	loopback := netip.MustParseAddr("127.0.0.1")
+	unpinned := netip.MustParseAddr("10.0.0.2")
+	p, err := llmpolicy.New([]llmpolicy.Endpoint{{
+		Origin:    "http://model.internal",
+		Addresses: []netip.Addr{loopback, netip.MustParseAddr("10.0.0.1")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, resolved := range [][]netip.Addr{{loopback, unpinned}, {unpinned, loopback}} {
+		d := p.Decide(llmpolicy.Input{
+			URL:         "http://model.internal/api",
+			Transport:   llmpolicy.Direct,
+			ResolvedIPs: resolved,
+			ConnectIP:   loopback,
+		})
+		if d.Allowed() || d.Reason() != llmpolicy.ReasonAddressDenied {
+			t.Fatalf("mixed pinned/unpinned resolution = %v, want %s", d, llmpolicy.ReasonAddressDenied)
+		}
 	}
 }
 

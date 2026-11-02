@@ -165,7 +165,25 @@ func TestControlledReadPrivateAtPinsDirectory(t *testing.T) {
 }
 
 func TestControlledReadPrivateAtRejectsInvalidReference(t *testing.T) {
-	directory, err := os.Open(privateReadTestDir(t))
+	root := privateReadTestDir(t)
+	if err := os.WriteFile(filepath.Join(root, "input"), []byte("valid fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	private := filepath.Join(root, "private")
+	if err := os.Mkdir(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(private, "input"), []byte("valid fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(private, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "input"), []byte("nested fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.Open(private)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +192,7 @@ func TestControlledReadPrivateAtRejectsInvalidReference(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	for _, name := range []string{"", ".", "..", "../input", "/input", "nested/input", "input/", "nul\x00input"} {
+	for _, name := range []string{"", ".", "..", "../input", "nested/../input", filepath.Join(private, "input"), "nested/input", "input/", "nul\x00input"} {
 		t.Run(name, func(t *testing.T) {
 			got, err := readPrivateAt(directory, name, 16)
 			if err != errControlledReadStorage || got != nil {
@@ -193,6 +211,8 @@ func TestControlledReadPrivateAtRejectsInvalidReference(t *testing.T) {
 	}
 }
 
+// Concurrent replacement is probabilistic regression detection; it cannot
+// exhaust every inspection/open schedule.
 func TestControlledReadPrivateConcurrentReplacement(t *testing.T) {
 	root := privateReadTestDir(t)
 	path := filepath.Join(root, "input")
@@ -234,6 +254,13 @@ func TestControlledReadPrivateConcurrentReplacement(t *testing.T) {
 						body, mode = []byte("excluded fixture"), 0o644
 					}
 					err = os.WriteFile(staged, body, mode)
+				}
+				if err == nil {
+					// Explicit mode avoids a restrictive process umask making this
+					// public replacement accidentally private and weakening the race.
+					if variant == "public" {
+						err = os.Chmod(staged, 0o644)
+					}
 				}
 				if err == nil {
 					err = os.Rename(staged, path)

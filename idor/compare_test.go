@@ -18,11 +18,11 @@ func baseCapture() CrossAccessCapture {
 			{Field: "id", Value: "42", Trivial: true}, // identifier — excluded from match
 		},
 		Owner: ResponseView{
-			ResourceRef: "basket/42", Normal: true, TemplateClassified: true,
+			ResourceRef: "basket:42", Normal: true, TemplateClassified: true,
 			Body: `{"id":42,"email":"` + canary + `"}`,
 		},
 		Cross: ResponseView{
-			ResourceRef: "basket/42", Normal: true, TemplateClassified: true,
+			ResourceRef: "basket:42", Normal: true, TemplateClassified: true,
 			Body: `{"id":42,"email":"` + canary + `"}`,
 		},
 		RequesterInputs:         []string{"basket", "42"}, // id only; canary not among B's inputs
@@ -54,7 +54,7 @@ func TestCompareSignals(t *testing.T) {
 	}{
 		{
 			"다른 자원 → SameResource No",
-			func(c *CrossAccessCapture) { c.Cross.ResourceRef = "basket/99" },
+			func(c *CrossAccessCapture) { c.Cross.ResourceRef = "basket:99" },
 			func(f oracle.ComparisonFacts) oracle.CheckState { return f.SameResource },
 			oracle.StateNo,
 		},

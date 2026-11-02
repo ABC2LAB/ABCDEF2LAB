@@ -151,6 +151,7 @@ func TestNewRejectsInvalidPolicyConfiguration(t *testing.T) {
 		{"empty-origin", []llmpolicy.Endpoint{{Addresses: []netip.Addr{public}}}},
 		{"missing-pins", []llmpolicy.Endpoint{{Origin: "http://svc.test"}}},
 		{"public-pin", []llmpolicy.Endpoint{{Origin: "http://svc.test", Addresses: []netip.Addr{public}}}},
+		{"literal-origin-mismatched-pin", []llmpolicy.Endpoint{{Origin: "http://127.0.0.1", Addresses: []netip.Addr{addr(t, "127.0.0.2")}}}},
 		{"zone-pin", []llmpolicy.Endpoint{{Origin: "http://svc.test", Addresses: []netip.Addr{zone}}}},
 		{"duplicate-origin-default-port", []llmpolicy.Endpoint{endpoint(t, "http://svc.test", "10.0.0.1"), endpoint(t, "http://svc.test:80", "10.0.0.1")}},
 		{"duplicate-mapped-pin", []llmpolicy.Endpoint{{Origin: "http://svc.test", Addresses: []netip.Addr{addr(t, "192.168.0.1"), addr(t, "::ffff:192.168.0.1")}}}},

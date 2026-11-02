@@ -48,6 +48,9 @@ CODEX.local.md
 
 # 内嵌前端的单二进制产物
 /artex
+# E② 감사 CLI를 레포 루트에서 go build 하면 생기는 바이너리
+/e2-audit-verify
+/e2-audit-keygen
 # 一键更新在可执行文件旁留下的中间产物（暂存件 / 备份 / 失败版本 / 升级标记）
 /artex.new
 /artex.new.sha256
@@ -93,6 +96,8 @@ secrets.env
 # --- Windows 소스 빌드 로컬 산출물: 커밋 금지 ---
 # go build -o artex.exe 로 생기는 Windows 단일 바이너리(유닉스판 /artex 와 대응)
 /artex.exe
+/e2-audit-verify.exe
+/e2-audit-keygen.exe
 # 로컬 설정에 쓴 비밀(예: PostgreSQL 비밀번호). 절대 커밋하지 않는다.
 /.secrets/
 # SWC_NATIVE_BINDING_CACHE 를 프로젝트 하위로 돌릴 때 생기는 네이티브 바인딩 캐시
