@@ -470,6 +470,19 @@ RETURNING id, created_at`, s.expID, audit.NodeID, utf8Clean(audit.Worker), utf8C
 // filter;ids 为空时按 filter 导出(导出当前筛选/全部)。结果按严重等级降序、
 // 再按时间倒序,与「导出汇总报告」的分组顺序一致。
 func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, error) {
+	return d.listFindingsForExport(f, ids, 0)
+}
+
+// ListFindingsForExportBounded limits rows inside SQL. The caller may request
+// its export cap plus one row to detect overflow without staging evidence.
+func (d *DB) ListFindingsForExportBounded(f FindingFilter, ids []int64, limit int) ([]*DBFinding, error) {
+	if limit <= 0 {
+		return nil, errors.New("export row limit must be positive")
+	}
+	return d.listFindingsForExport(f, ids, limit)
+}
+
+func (d *DB) listFindingsForExport(f FindingFilter, ids []int64, limit int) ([]*DBFinding, error) {
 	const order = `ORDER BY CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC`
 	cols := findingSelectCols + `, COALESCE(f.report, '')`
 
@@ -499,6 +512,10 @@ func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, 
 		args = wargs
 	}
 
+	if limit > 0 {
+		args = append(args, limit)
+		q += fmt.Sprintf(" LIMIT $%d", len(args))
+	}
 	rows, err := d.Query(q, args...)
 	if err != nil {
 		return nil, err

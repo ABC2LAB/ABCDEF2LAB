@@ -1,5 +1,5 @@
-// Package llmpolicy classifies host-owned local LLM connection snapshots. It
-// performs no resolution or I/O and does not itself enforce provider traffic.
+// Package llmpolicy classifies host-owned local LLM connection snapshots.
+// Policy performs no I/O; NewClient supplies the explicit HTTP enforcement path.
 package llmpolicy
 
 import (

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -176,14 +177,20 @@ func TestAuthInitRequiresSetupTokenDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// bcrypt and DB work can outlast the production TTL under -race. Prepare a
+	// fresh cache window explicitly, then expire it below to test both states.
+	prevTTL := passHashCacheTTL
+	passHashCacheTTL = time.Hour
+	t.Cleanup(func() { passHashCacheTTL = prevTTL })
+	if _, err := s.reloadPassHash(); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.m.pg.SetSetting(authPassKey, string(resetHash)); err != nil {
 		t.Fatal(err)
 	}
 	code, body = rig.do(http.MethodGet, "/api/ping", tok3, nil)
 	rig.expect(200, code, body, "")
-	prevTTL := passHashCacheTTL
 	passHashCacheTTL = 0
-	t.Cleanup(func() { passHashCacheTTL = prevTTL })
 	code, body = rig.do(http.MethodGet, "/api/ping", tok3, nil)
 	rig.expect(401, code, body, authErrTokenInvalid)
 	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ARTEX", "password": "changed-pass-123"})
