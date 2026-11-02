@@ -155,6 +155,21 @@ class Docker:
         return self.json_lines(["container", "inspect", "--format", CONTAINER_TEMPLATE, "--", *ids],
                                code="docker_container_inspect_failed")
 
+    def compose_up(self, base_args: Sequence[str], wait_seconds: int) -> None:
+        """pull·빌드 없이 띄우고 healthcheck·실행 상태를 기다린다. 이미지는 미리 내용 ID로 확인해 둔다."""
+        self.run([*base_args, "up", "--detach", "--pull", "never", "--no-build", "--wait",
+                  "--wait-timeout", str(wait_seconds)], code="docker_compose_up_failed")
+
+    def compose_down(self, base_args: Sequence[str], timeout_seconds: int) -> None:
+        """회차 망·볼륨·컨테이너를 지운다. 성공·실패와 무관하게 러너가 항상 부른다."""
+        self.run([*base_args, "down", "--volumes", "--remove-orphans", "--timeout", str(timeout_seconds)],
+                 code="docker_compose_down_failed")
+
+    def signal(self, container_id: str, signal_name: str) -> None:
+        if not _OBJECT_ID.fullmatch(container_id or "") or signal_name not in ("USR1",):
+            raise DockerError("docker_signal_invalid")
+        self.run(["kill", "--signal", signal_name, container_id], code="docker_signal_failed")
+
     def probe(self, image: str, engine_container_id: str, plan: bytes, uid: int, gid: int) -> bytes:
         """엔진 컨테이너의 네트워크 namespace에서 계측기 이미지(내용 ID)의 probe 역할을 1회 실행한다.
 

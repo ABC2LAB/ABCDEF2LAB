@@ -44,6 +44,10 @@ def runner_config() -> dict:
         "docker_timeout_seconds": 120,
         "host_listen_allowlist": [],
         "probe_timeout_ms": 2000,
+        "runner_key_path": "/srv/eval-keys/runner.key",
+        "run": {"compose_wait_seconds": 120, "down_timeout_seconds": 30, "ready_timeout_seconds": 120,
+                "budget_poll_seconds": 5, "drain_timeout_seconds": 60, "snapshot_timeout_seconds": 30,
+                "snapshot_max_bytes": 4194304},
     }
 
 
@@ -156,6 +160,20 @@ class TestParseRunnerConfig(unittest.TestCase):
         self.reject(runner_config() | {"host_listen_allowlist": {}}, "config.host_listen_allowlist: INVALID")
         self.reject(runner_config() | {"host_listen_allowlist": [entry | {"port": p} for p in range(1, 34)]},
                     "config.host_listen_allowlist: INVALID")
+
+    def test_runner_key_outside_runs_root_and_run_values(self):
+        for value in ("/srv/eval/runs/key", "/srv/eval/runs", "/srv/eval/runs/a/b.key"):
+            self.reject(runner_config() | {"runner_key_path": value}, "config.runner_key_path: INSIDE_RUNS_ROOT")
+        parse_runner_config(runner_config() | {"runner_key_path": "/srv/eval/runs-keys/k"})
+        self.reject(runner_config() | {"runner_key_path": "keys/k"}, "config.runner_key_path: EXPECTED_ABSOLUTE_PATH")
+        for name, value in (("drain_timeout_seconds", 0), ("budget_poll_seconds", 3601), ("snapshot_max_bytes", True),
+                            ("snapshot_max_bytes", 16 * 1024 * 1024 + 1), ("ready_timeout_seconds", 1.5)):
+            payload = runner_config()
+            payload["run"][name] = value
+            self.reject(payload, f"config.run.{name}: INVALID")
+        payload = runner_config()
+        del payload["run"]["down_timeout_seconds"]
+        self.reject(payload, "config.run.down_timeout_seconds: MISSING")
 
     def test_load_rejects_duplicate_key_and_nonfinite(self):
         with tempfile.TemporaryDirectory() as directory:

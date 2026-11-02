@@ -56,7 +56,12 @@ _IMAGE_ROLES = ("engine_baseline", "engine_ours", "engine_db", "meter")
 _PORTS = ("engine_api_host", "engine_container", "target", "obs", "obs_host")
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
-               "host_listen_allowlist", "probe_timeout_ms")
+               "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run")
+# 회차 진행 시간·크기 값(초). 실패 시 재시도하지 않으므로 각 값이 그 단계의 유일한 기회다.
+_RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_seconds", "budget_poll_seconds",
+               "drain_timeout_seconds", "snapshot_timeout_seconds", "snapshot_max_bytes")
+MAX_RUN_SECONDS = 3600
+MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 
 
 class RunnerConfigError(ValueError):
@@ -102,6 +107,8 @@ class RunnerConfig:
     docker_timeout_seconds: float
     host_listen_allowlist: tuple[HostListen, ...]
     probe_timeout_ms: int
+    runner_key_path: Path
+    run: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -222,6 +229,19 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     allowlist = _host_listen_allowlist(top.get("host_listen_allowlist"), errors) if "host_listen_allowlist" in top else ()
     if "probe_timeout_ms" in top and not _int(top["probe_timeout_ms"], 1, MAX_PROBE_TIMEOUT_MS):
         errors.append("config.probe_timeout_ms: INVALID")
+    if "runner_key_path" in top:
+        key_path = top["runner_key_path"]
+        if not _absolute_path(key_path):
+            errors.append("config.runner_key_path: EXPECTED_ABSOLUTE_PATH")
+        elif _absolute_path(top.get("runs_root")) and (key_path == top["runs_root"]
+                                                       or key_path.startswith(top["runs_root"].rstrip("/") + "/")):
+            # 서명 키는 회차 디렉터리 밖에 둔다. 회차 자료와 함께 복사·공유되지 않게.
+            errors.append("config.runner_key_path: INSIDE_RUNS_ROOT")
+    run = _exact(top.get("run"), _RUN_FIELDS, "config.run", errors) if "run" in top else {}
+    for name in _RUN_FIELDS:
+        limit = MAX_SNAPSHOT_BYTES if name == "snapshot_max_bytes" else MAX_RUN_SECONDS
+        if name in run and not _int(run[name], 1, limit):
+            errors.append(f"config.run.{name}: INVALID")
     if errors:
         raise RunnerConfigError(errors)
     return RunnerConfig(
@@ -232,7 +252,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         tmpfs_engine_db=tmpfs["engine_db"], tmpfs_engine_data=tmpfs["engine_data"],
         health_interval=health["interval"], health_timeout=health["timeout"], health_retries=health["retries"],
         docker_timeout_seconds=float(timeout), host_listen_allowlist=allowlist,
-        probe_timeout_ms=top["probe_timeout_ms"])
+        probe_timeout_ms=top["probe_timeout_ms"], runner_key_path=Path(top["runner_key_path"]),
+        run={name: run[name] for name in _RUN_FIELDS})
 
 
 def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:

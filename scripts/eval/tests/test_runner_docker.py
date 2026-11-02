@@ -189,6 +189,33 @@ class TestProbeCall(unittest.TestCase):
         self.assertEqual(str(caught.exception), "docker_probe_failed")
 
 
+class TestComposeCalls(unittest.TestCase):
+    def test_up_never_pulls_or_builds_and_waits(self):
+        fake = FakeExecutor(CommandResult(0, b""), CommandResult(0, b""))
+        docker = Docker(fake, {}, 1)
+        base = ["compose", "-p", "eval-ours-1", "--env-file", "/s.env", "-f", "/c.yaml"]
+        docker.compose_up(base, 120)
+        docker.compose_down(base, 30)
+        self.assertEqual(fake.calls[0][0], base + ["up", "--detach", "--pull", "never", "--no-build", "--wait",
+                                                   "--wait-timeout", "120"])
+        self.assertEqual(fake.calls[1][0], base + ["down", "--volumes", "--remove-orphans", "--timeout", "30"])
+        for method, code in ((docker.compose_up, "docker_compose_up_failed"),
+                             (docker.compose_down, "docker_compose_down_failed")):
+            with self.assertRaises(DockerError) as caught:
+                method.__func__(Docker(FakeExecutor(CommandResult(1, b"")), {}, 1), base, 1)
+            self.assertEqual(str(caught.exception), code)
+
+    def test_signal_only_usr1_to_full_id(self):
+        fake = FakeExecutor(CommandResult(0, b""))
+        Docker(fake, {}, 1).signal(ID_A, "USR1")
+        self.assertEqual(fake.calls[0][0], ["kill", "--signal", "USR1", ID_A])
+        for container, name in ((ID_A, "KILL"), (ID_A, "TERM"), ("short", "USR1"), ("", "USR1")):
+            fake = FakeExecutor()
+            with self.assertRaises(DockerError):
+                Docker(fake, {}, 1).signal(container, name)
+            self.assertEqual(fake.calls, [])
+
+
 class TestRunDocker(unittest.TestCase):
     def test_runs_without_shell_and_maps_timeout(self):
         import subprocess

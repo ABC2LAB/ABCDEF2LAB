@@ -1,0 +1,151 @@
+"""근거 저장(O_EXCL·0600)과 계측기 기록 읽기. 실제 계측기 없이 합성 파일로 본다."""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from runner_evidence import (
+    DRAINED_MARKER, ENGINE_LOG, OBSERVER_LOG, EvidenceDir, EvidenceError, MeterFiles, sequence_complete,
+)
+
+
+def engine_row(seq, kind="request"):
+    return {"seq": seq, "kind": kind, "method": "GET", "status": 200, "started_at": "a", "completed_at": "b",
+            "response_bytes": 1, "outcome": "completed"}
+
+
+def observer_row(seq, decision="registered"):
+    return {"seq": seq, "decision": decision, "method": "GET", "status": 200, "started_at": "a", "completed_at": "b",
+            "response_bytes": 1}
+
+
+@unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "geteuid"), "POSIX 전용")
+class TestEvidenceDir(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name, "run")
+        self.dir.mkdir(mode=0o700)
+        os.chmod(self.dir, 0o700)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_writes_once_private_and_remembers_digest(self):
+        evidence = EvidenceDir(self.dir)
+        digest = evidence.write_json("pre-checks.json", {"b": 1, "a": "한"})
+        path = self.dir / "pre-checks.json"
+        self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o600)
+        self.assertEqual(path.read_bytes(), '{"a":"한","b":1}\n'.encode())
+        self.assertEqual(evidence.digests(), {"pre-checks.json": digest})
+        with self.assertRaises(EvidenceError) as caught:
+            evidence.write_json("pre-checks.json", {})
+        self.assertEqual(str(caught.exception), "evidence_exists")
+        self.assertEqual(path.read_bytes(), '{"a":"한","b":1}\n'.encode())
+
+    def test_rejects_bad_names_payloads_and_public_dir(self):
+        evidence = EvidenceDir(self.dir)
+        for name in ("../x.json", "x.txt", "X.json", "a/b.json", ".json"):
+            with self.assertRaises(EvidenceError):
+                evidence.write_json(name, {})
+        for payload in ({"x": float("nan")}, {"x": object()}):
+            with self.assertRaises(EvidenceError):
+                evidence.write_json("p.json", payload)
+        self.assertEqual(list(self.dir.iterdir()), [])
+        os.chmod(self.dir, 0o750)
+        with self.assertRaises(EvidenceError) as caught:
+            evidence.write_json("p.json", {})
+        self.assertEqual(str(caught.exception), "evidence_dir_not_private")
+
+    def test_symlink_target_not_followed(self):
+        outside = Path(self.tmp.name, "outside.json")
+        outside.write_text("keep")
+        (self.dir / "p.json").symlink_to(outside)
+        with self.assertRaises(EvidenceError):
+            EvidenceDir(self.dir).write_json("p.json", {})
+        self.assertEqual(outside.read_text(), "keep")
+
+
+@unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "geteuid"), "POSIX 전용")
+class TestMeterFiles(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name, "meter")
+        self.dir.mkdir(mode=0o700)
+        os.chmod(self.dir, 0o700)
+        self.meter = MeterFiles(self.dir)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, name, text):
+        path = self.dir / name
+        path.write_text(text)
+        os.chmod(path, 0o600)
+
+    def test_missing_log_counts_zero(self):
+        self.assertEqual(self.meter.forwarded(), 0)
+        self.assertEqual(self.meter.observer_rows(), [])
+        self.assertIsNone(self.meter.marker(DRAINED_MARKER))
+
+    def test_counts_only_forwarded_complete_lines(self):
+        lines = [engine_row(2), engine_row(1), engine_row(3, "rejected")]
+        partial = json.dumps(engine_row(4))[:20]
+        self.write(ENGINE_LOG, "".join(json.dumps(r) + "\n" for r in lines) + partial)
+        self.assertEqual(self.meter.forwarded(), 2)
+        self.assertTrue(sequence_complete(self.meter.engine_rows()))
+
+    def test_rows_must_have_exact_fields_and_unique_seq(self):
+        for rows in ([engine_row(1) | {"path": "/x"}], [{k: v for k, v in engine_row(1).items() if k != "kind"}],
+                     [engine_row(1), engine_row(1)], [engine_row(1) | {"seq": "1"}]):
+            self.write(ENGINE_LOG, "".join(json.dumps(r) + "\n" for r in rows))
+            with self.assertRaises(EvidenceError):
+                self.meter.engine_rows()
+        self.write(ENGINE_LOG, "not json\n")
+        with self.assertRaises(EvidenceError):
+            self.meter.forwarded()
+        self.write(OBSERVER_LOG, json.dumps(observer_row(1) | {"query": "x"}) + "\n")
+        with self.assertRaises(EvidenceError):
+            self.meter.observer_rows()
+
+    def test_sequence_complete_detects_gaps(self):
+        self.assertTrue(sequence_complete([]))
+        self.assertTrue(sequence_complete([{"seq": 2}, {"seq": 1}]))
+        self.assertFalse(sequence_complete([{"seq": 1}, {"seq": 3}]))
+        self.assertFalse(sequence_complete([{"seq": 2}]))
+
+    def test_marker_role_and_name(self):
+        self.write(DRAINED_MARKER, json.dumps({"role": "engine", "inflight_at_drain": 0}))
+        self.assertEqual(self.meter.marker(DRAINED_MARKER)["inflight_at_drain"], 0)
+        self.write(DRAINED_MARKER, json.dumps({"role": "observer"}))
+        with self.assertRaises(EvidenceError):
+            self.meter.marker(DRAINED_MARKER)
+        with self.assertRaises(EvidenceError):
+            self.meter.marker("../x.json")
+
+    def test_symlinked_or_non_regular_files_rejected(self):
+        outside = Path(self.tmp.name, "outside.jsonl")
+        outside.write_text(json.dumps(engine_row(1)) + "\n")
+        (self.dir / ENGINE_LOG).symlink_to(outside)
+        with self.assertRaises(EvidenceError):
+            self.meter.forwarded()
+        (self.dir / ENGINE_LOG).unlink()
+        (self.dir / ENGINE_LOG).mkdir()
+        with self.assertRaises(EvidenceError):
+            self.meter.forwarded()
+
+    def test_meter_dir_must_be_private(self):
+        os.chmod(self.dir, 0o755)
+        with self.assertRaises(EvidenceError):
+            self.meter.forwarded()
+
+
+if __name__ == "__main__":
+    unittest.main()
