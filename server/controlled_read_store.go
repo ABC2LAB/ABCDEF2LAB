@@ -411,23 +411,6 @@ func syncDir(path string) error {
 	}
 	return ce
 }
-func readPrivate(path string, max int64) ([]byte, error) {
-	st, e := os.Lstat(path)
-	if e != nil || st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || st.Mode().Perm() != 0o600 || st.Size() > max {
-		return nil, errControlledReadStorage
-	}
-	f, e := os.Open(path)
-	if e != nil {
-		return nil, errControlledReadStorage
-	}
-	defer f.Close()
-	b, e := io.ReadAll(io.LimitReader(f, max+1))
-	if e != nil || int64(len(b)) > max {
-		return nil, errControlledReadStorage
-	}
-	return b, nil
-}
-
 func strictJSON(data []byte, dst any) error {
 	if e := scanJSON(data); e != nil {
 		return e
