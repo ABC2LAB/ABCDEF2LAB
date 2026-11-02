@@ -23,6 +23,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/config"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
@@ -92,6 +93,8 @@ const (
 
 	// LLM 연결 테스트·웹 검색 프로브 (writeJSON {ok:false, error:…}, 설정 화면 점검 결과)
 	errLLMTestNoAPIKey         = "API Key가 제공되지 않았습니다"
+	errLLMTestInvalidRequest   = "연결 시험 요청 형식이 올바르지 않습니다"
+	errLLMTestFailed           = "모델 연결 시험에 실패했습니다"
 	errWebSearchProbeNoResults = "검색 결과가 0건입니다(요청이 제한되었거나 프록시가 연결되지 않았을 수 있습니다)"
 )
 
@@ -1492,7 +1495,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		SessionHeaderKey string `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, err.Error())
+		writeErr(w, http.StatusBadRequest, errLLMTestInvalidRequest)
 		return
 	}
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
@@ -1528,33 +1531,24 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		s.cfgMu.Unlock()
 	}
 	if cfg.APIKey == "" {
-		writeJSON(w, 200, map[string]any{"ok": false, "error": trMsg(errLLMTestNoAPIKey)})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": trMsg(errLLMTestNoAPIKey), "latency_ms": 0})
 		return
 	}
 	// 重试参数【不】带进连接测试:测试有 30s 硬超时,把配置的重试次数/长间隔叠上去
 	// 只会让一个本来能用的端点测成"超时失败"。测试看的是"这个端点通不通",重试节奏
 	// 是跑起来之后的事。
-	lat, reply, err := agent.TestConnection(r.Context(), cfg)
+	// A successful probe proves the model replied; its free-form reply and all
+	// provider errors remain private to the probe, not this public response.
+	lat, _, err := agent.TestConnection(r.Context(), cfg)
 	if err != nil {
-		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": trMsg(errLLMTestFailed), "latency_ms": lat.Milliseconds()})
 		return
 	}
-	// 回传模型实际回复，让"测试通过"有据可查：看得见它确实说了话，而不只是 HTTP 200。
-	writeJSON(w, 200, map[string]any{
-		"ok": true, "latency_ms": lat.Milliseconds(), "model": cfg.Model, "reply": truncateReply(reply),
+	// Keep the established field names/types without echoing user-controlled
+	// model identifiers or model-generated text.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "latency_ms": lat.Milliseconds(), "model": dlp.Redacted, "reply": dlp.Redacted,
 	})
-}
-
-// truncateReply clips a connection-test reply for display. A model told to answer
-// "OK" can still ramble (or think out loud); the UI only needs enough to show it
-// really said something. Rune-based so multibyte text never splits mid-character.
-func truncateReply(s string) string {
-	const max = 200
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max]) + "…"
 }
 
 type createTaskReq struct {
