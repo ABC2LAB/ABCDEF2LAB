@@ -70,8 +70,7 @@ func scanTaskModeMarkers(ctx context.Context, options controlledTaskMarkerReader
 			clear(body)
 			return taskmode.Marker{}, errTaskMarkerReaderRead
 		}
-		var decoded markerFile
-		decodeErr := strictJSON(body, &decoded)
+		decoded, decodeErr := decodeTaskModeMarker(body)
 		clear(body)
 		if decodeErr != nil || decoded.TaskID != entry.task || decoded.IntentID != entry.intent || !decoded.Controlled {
 			return taskmode.Marker{}, errTaskMarkerReaderRead

@@ -21,13 +21,13 @@
 
 ## Linux 파일 확인
 
-[`Linux 구현`](../../server/controlled_read_marker_reader_linux.go)은 root를 `O_DIRECTORY|O_NOFOLLOW`로 읽기 전용으로 열어 exact `0700`과 anchor inode를 비교한다. fd 기준으로 전체 목록을 상한 내에서 읽고, marker를 검증한 뒤 두 번째 목록과 각 파일의 inode·mode·size·mtime, 마지막 root 경로를 다시 확인한다. 목록마다 별도 directory open description을 사용하므로 동시 reader가 offset을 공유하지 않는다. reader 소유 fd의 close 오류도 결과를 무효화하며 borrowed anchor는 닫지 않는다. [기존 private reader](../../server/controlled_read_private_linux.go)의 `readPrivateAt`, `markerFile`, `strictJSON`, ID 규칙을 재사용한다.
+[`Linux 구현`](../../server/controlled_read_marker_reader_linux.go)은 root를 `O_DIRECTORY|O_NOFOLLOW`로 읽기 전용으로 열어 exact `0700`과 anchor inode를 비교한다. fd 기준으로 전체 목록을 상한 내에서 읽고, marker를 검증한 뒤 두 번째 목록과 각 파일의 inode·mode·size·mtime, 마지막 root 경로를 다시 확인한다. 목록마다 별도 directory open description을 사용하므로 동시 reader가 offset을 공유하지 않는다. reader 소유 fd의 close 오류도 결과를 무효화하며 borrowed anchor는 닫지 않는다. [기존 private reader](../../server/controlled_read_private_linux.go)의 `readPrivateAt`, `markerFile`, ID 규칙을 재사용하고, [reader 전용 JSON 검사](../../server/controlled_read_marker_json.go)로 marker 필드를 확인한다.
 
 예약 namespace는 대소문자 무시 기준 `controlled-`로 시작하거나 `.marker`로 끝나는 이름이다. 실제 허용 이름은 소문자 `controlled-<task>.task.marker`, `controlled-<task>-<intent>.marker`이며 ID는 선행 0 없는 양의 int64 십진수다. 불명확한 이름을 무시해 `clear`로 만들지 않는다.
 
 보수적인 초안으로 **다른 task의 예약 marker도 이름·파일·JSON 검증을 마친 뒤** 대상에서 제외한다. 다른 task의 정상 파일은 대상의 존재 근거가 아니며, 손상된 예약 파일은 대상과 무관해 보여도 조회를 차단한다. 이 선택은 가용성을 줄일 수 있다. 일반 비marker 항목은 목록 상한에만 포함하고 snapshot·journal·checkpoint·시크릿 본문을 열지 않는다.
 
-각 marker는 regular file exact `0600`, 최대 4096 bytes, 링크/FIFO 거부, strict JSON·filename/JSON task/intent 일치·`controlled=true`를 요구한다. task marker의 누락 `intent_id`는 기존 호환대로 0으로 읽는다. task marker 뒤 intent가 손상돼도 부분 `present`를 반환하지 않는다.
+각 marker는 regular file exact `0600`, 최대 4096 bytes, 링크/FIFO 거부, strict JSON·filename/JSON task/intent 일치·`controlled=true`를 요구한다. 필드명은 JSON escape 해석 뒤 정확한 `task_id`·`intent_id`·`controlled`만 허용한다. 중복·unknown·대소문자 변형·null·다른 타입을 거부한다. `task_id`와 boolean `controlled`는 필수이며 `intent_id`는 int64 범위의 음수가 아닌 정수다. task marker의 누락 `intent_id`는 기존 호환대로 0으로 읽는다. task marker 뒤 intent가 손상돼도 부분 `present`를 반환하지 않는다.
 
 | 전체 검증 성공 시 대상 파일 | 결과 |
 |---|---|
@@ -47,3 +47,5 @@ root·파일·목록·scope·취소 오류(FM05~08)는 위 성공보다 우선�
 실제 DB 등록과 reader의 양방향 경합(MT06), crash·이관 멱등성·실행/저장 통합(MT07~09), 재기동 root 신뢰 회복은 이번 시험에 포함되지 않는다. 비 Linux 검증은 대표 target 컴파일이며 실행 시험과 구분한다. 기존 [판정표](./task-mode-marker.md)의 이관·활성화 기준은 유지한다.
 
 **확인한 결과:** 신규 reader 최하위 사례 67개, 기존 private/store 38개와 taskmode 37개가 race에서 통과했고 실패·skip은 0이다. 최신 dev 반영 뒤 server 대상 105개·vet·전체 build를 재확인했으며 reader와 taskmode 소스는 이전 검증본과 동일하다. Darwin server 테스트 바이너리의 cross-compile도 통과했다. 비 Linux 실행이나 실제 DB/file 등록 경합을 시험한 결과는 아니다.
+
+**리뷰 후속 검증(2026-11-02):** `controlled` 대소문자 별칭의 마지막 값으로 손상된 marker가 통과함을 수정 전 재현했다. reader 전용 필드/타입 검사와 신규 JSON 사례 10개를 추가했고 marker reader·private/store 대상 race, 전체 Go 시험·vet·build·gofmt/diff 및 Darwin server cross-build를 통과했다. 기존 JSON 형식의 task marker `intent_id` 생략과 단일 escaped key·필드 순서 변경은 정상 처리한다. 비 Linux 실행·DB/file 등록 경합·운영 배선은 여전히 미실행이다.
