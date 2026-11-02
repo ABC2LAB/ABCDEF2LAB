@@ -1,13 +1,13 @@
 # E③ 저장 게이트 — 회귀 시험 명세
 
-상태: **합의 전 제안이며 아래 전체 finding 저장/통합 시험 61건은 계획이다. 합의 전 dev에 병합하지 않는다.** 별도 모드 코어 단위 시험과 DB reader/등록 통합 시험을 부분 구현했다. 판정 레코드·발급·재검증 매핑·잠금 순서는 최민준님과 필드 확인 후 합의한다.
+상태: **리뷰 합의·보완 요청 반영본이며 아래 전체 finding 저장/통합 시험 65건은 계획이다. 문서 최종 확인 뒤 병합을 검토한다.** 재검증 매핑·저장 불변식의 합의와 발급 레코드의 하네스 세대 토큰·전체 `resource_ref` 보완을 반영했다. 별도 모드 코어 단위 시험과 DB reader/등록 통합 시험은 부분 구현했지만, 이 문서의 저장 게이트 시험은 실행하지 않았다. 잠금 순서의 구현·경합 검증은 이동찬의 엔진 책임이다.
 연결: [저장 계약 초안](./e3-storage-gate.md) · [오라클 규칙](./e3-oracle.md) · [판정 레코드](./verdict-record.md)
 
-부분 진행: 별도 [PR #43](https://github.com/ABC2LAB/ABCDEF2LAB/pull/43)의 `taskmode/` 단위 시험과 DB reader/단방향 등록에서 E3G24~28의 mode 판별·정본 등록/조회·경합·실패 기준 일부를 검증했다. 아래 61건은 전체 finding 저장 경계의 명세이며 그 시험이 완료된 것은 아니다. 실제 marker 이관·Engine/RecordFindingTx 연결은 아직 없다.
+부분 진행: 별도 [PR #43](https://github.com/ABC2LAB/ABCDEF2LAB/pull/43)의 `taskmode/` 단위 시험과 DB reader/단방향 등록에서 E3G24~28의 mode 판별·정본 등록/조회·경합·실패 기준 일부를 검증했다. 아래 65건은 전체 finding 저장 경계의 명세이며 그 시험이 완료된 것은 아니다. 실제 marker 이관·Engine/RecordFindingTx 연결은 아직 없다.
 
 ## 1. fixture와 관측값
 
-임의의 소유 synthetic fixture와 비민감 비교 신호만 사용한다. 실제 계정/키/응답/스캔 출력은 읽지 않는다. positive fixture는 같은 task·intent·execution·case·resource·reset·승인·KG snapshot·계정/세션·근거 revision에 속하는 owner 정상 대조와 cross 응답, 완결된 영수증/감사, 서버 발급 `CONFIRMED` 판정을 가진다.
+임의의 소유 synthetic fixture와 비민감 비교 신호만 사용한다. 실제 계정/키/응답/스캔 출력은 읽지 않는다. positive fixture는 같은 task·intent·execution·case·전체 `resource_ref`·run/reset·하네스 발급 세대 토큰·대상 인스턴스·승인·KG snapshot·계정/세션·근거 revision에 속하는 owner 정상 대조와 cross 응답, 완결된 영수증/감사, 서버 발급 `CONFIRMED` 판정을 가진다. 토큰의 발급·동일 묶음 재시도·새 reset 규칙은 [canary fixture §2](./idor-canary-fixture.md)를 따른다.
 
 각 시험은 문자열 verdict 외에 다음 **DB 변화량/수신 건수**를 검증한다.
 
@@ -89,8 +89,12 @@
 | E3G59 | 수동 확정만 있거나 기존 자동 판정에 수동 확정을 추가한 뒤 API/export·평가 실행; 출처 불명 기록 포함 | 사람 카테고리 별도 보존, 평가 프로토콜 §5의 자동 CONFIRMED 집계에 수동/출처 불명 기록 포함 0. 수동 추가 전후 자동 확정 수·확정까지 시간·기존 판정 칸·GT 분모 동일 |
 | E3G60 | 수동 승인자·서버 승인 시각·판단 사유·검토 근거 참조 각각 누락/위조 | 각 subtest에서 수동 확정 거부, H/A/CT 증가 0, 기존 oracle 판정·자동 집계 불변 |
 | E3G61 | 수동 승인 필수 로그 저장 실패/트랜잭션 rollback, notification만 성공 | 수동 카테고리·triage·승인 로그 전체 rollback, H/A/CT 증가 0, 부분 성공/수동 확정 성공 응답 0 |
+| E3G62 | fixture/KG 등록/캡처/판정 issuance 중 어느 단계에서 하네스 발급 세대 토큰 누락·출처 불명 | 단계별 subtest에서 근거 재사용·자동 확정 금지, N/F/L/EV=0, R=0 |
+| E3G63 | reset은 같지만 단계 간 토큰이 다름, 또는 토큰은 같지만 run/reset/대상 인스턴스 결속 불일치 | 각각 binding_mismatch, N/F/L/EV=0. 토큰만으로 회차·세대 일치 추론 금지 |
+| E3G64 | 콜론을 포함한 type의 정상 `resource_ref`, 형식 누락/불완전, 같은 id·다른 type 또는 같은 type·다른 id의 근거 대입 | 정상 참조는 마지막 콜론으로 나눈 전체 type/id를 보존. 불완전/다른 전체 참조는 거부, N/F/L/EV=0 |
+| E3G65 | 같은 세대·같은 준비 묶음/저장 연산의 재시도, 이후 새 reset에서 이전 토큰/issuance 재사용 | 동일 묶음은 토큰 재발급·추가 finding 없이 기존 결과 ID 반환. 새 reset은 새 세대·새 토큰 필수이며 이전 결속 재사용 거부 |
 
-표의 조건별 나열은 구현 시 각각 subtest로 나눈다. 위 61건은 명세 행 수이며 실행된 Go 테스트/최하위 사례 수가 아니다. E3G49~52는 barrier로 두 transaction을 교차 진행하고 전용 timeout으로 종료를 확인한다. 작업 전제에 따라 둘 다 선형적으로 완료할 수 있으면 그 결과도 허용하되, 최종 불변조건 위반은 0이어야 한다. E3G38의 3회는 시험의 재시도 상한이며 제품 설정 기본값이 아니다.
+표의 조건별 나열은 구현 시 각각 subtest로 나눈다. 위 65건은 명세 행 수이며 실행된 Go 테스트/최하위 사례 수가 아니다. E3G49~52는 barrier로 두 transaction을 교차 진행하고 전용 timeout으로 종료를 확인한다. 작업 전제에 따라 둘 다 선형적으로 완료할 수 있으면 그 결과도 허용하되, 최종 불변조건 위반은 0이어야 한다. E3G38의 3회는 시험의 재시도 상한이며 제품 설정 기본값이 아니다.
 
 ## 3. 시험 계층과 실행 순서
 
@@ -99,4 +103,4 @@
 3. **소유 synthetic 통합:** 실제 등록 전송/비민감 projection→판정 발급→최초 저장, retest 연결. 먼저 수행한 owner/cross 요청과 저장 단계의 R=0을 분리 집계. 대상 앱 특화 경로를 제품 코드에 하드코딩하지 않는다.
 4. **관측·회귀:** 일반 legacy/fact·사람 수동 확정의 별도 카테고리·필수 승인자/시각/근거 로그와 export를 검사한다. 자동 오라클 결과와 수동 기록을 함께 넣어도 [평가 프로토콜 §5](../evaluation/evaluation-protocol.md#5-측정-매트릭스-값은-비움-틀만)의 자동 매트릭스가 수동 조작 전후 동일한지 비교한다. 필수 로그/감사 실패와 notification 실패는 다른 의미로 시험한다.
 
-전체 저장 게이트 구현 뒤 범위에 맞춰 `gofmt`, 관련 `go test`, `go vet`, 소스 build, 동시성 경로의 `-race`를 실행한다. 별도 PR #43에서 `taskmode/` 단위 검증과 DB reader·등록 통합 시험을 수행했지만, 위 61개 finding 저장 시험을 완료로 기록하지 않는다. 문서에서는 링크·실제 심볼/라인·사례 ID 유일성도 확인한다.
+전체 저장 게이트 구현 뒤 범위에 맞춰 `gofmt`, 관련 `go test`, `go vet`, 소스 build, 동시성 경로의 `-race`를 실행한다. 별도 PR #43에서 `taskmode/` 단위 검증과 DB reader·등록 통합 시험을 수행했지만, 위 65개 finding 저장 시험을 완료로 기록하지 않는다. 문서에서는 링크·실제 심볼/라인·사례 ID 유일성도 확인한다.
