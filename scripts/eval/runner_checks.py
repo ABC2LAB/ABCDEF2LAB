@@ -77,6 +77,8 @@ class ContainerFact:
     # 재시작해도 ID·이미지는 그대로라 이 둘로 회차 중 재시작(계측기 카운터 유실·대상 상태 초기화·tmpfs 소실)을 잡는다.
     started_at: str
     restart_count: int
+    # 컨테이너가 여는 포트(EXPOSE·publish 모두, 예: "3000/tcp"). 부정 연결 점검의 목적지 포트로 쓴다.
+    exposed: frozenset[str]
     bindings: frozenset[Binding]
     network_ids: frozenset[str]
 
@@ -90,6 +92,8 @@ class NetworkFact:
     internal: bool
     members: Mapping[str, tuple[str, ...]]
     gateways: tuple[str, ...]
+    # 컨테이너 이름(compose는 project 접두어를 붙인다). Docker 내장 DNS가 서비스 이름과 함께 해석하는 이름이다.
+    member_names: Mapping[str, str]
 
 
 @dataclass(frozen=True, order=True)
@@ -141,9 +145,9 @@ def _str(value: object, code: str) -> str:
     return value
 
 
-def _bindings(raw: object) -> frozenset[Binding]:
+def _ports(raw: object) -> tuple[frozenset[str], frozenset[Binding]]:
     if raw is None:
-        return frozenset()
+        return frozenset(), frozenset()
     if not isinstance(raw, dict):
         raise CheckInputError("container_ports_invalid")
     result = set()
@@ -161,7 +165,7 @@ def _bindings(raw: object) -> frozenset[Binding]:
             if not isinstance(host_ip, str) or not isinstance(host_port, str) or not host_port.isdigit():
                 raise CheckInputError("container_ports_invalid")
             result.add(Binding(key, host_ip, int(host_port)))
-    return frozenset(result)
+    return frozenset(raw), frozenset(result)
 
 
 def parse_container(raw: object) -> ContainerFact:
@@ -184,9 +188,10 @@ def parse_container(raw: object) -> ContainerFact:
         if not isinstance(attachment, dict) or not isinstance(attachment.get("NetworkID"), str):
             raise CheckInputError("container_networks_invalid")
         network_ids.add(attachment["NetworkID"])
+    exposed, bindings = _ports(raw["ports"])
     return ContainerFact(container_id, _str(raw["project"], "container_fact_invalid"),
                          _str(raw["service"], "container_fact_invalid"), _str(raw["image"], "container_fact_invalid"),
-                         raw["running"], started_at, restart_count, _bindings(raw["ports"]), frozenset(network_ids))
+                         raw["running"], started_at, restart_count, exposed, bindings, frozenset(network_ids))
 
 
 def _address(value: str) -> str:
@@ -208,13 +213,14 @@ def parse_network(raw: object) -> NetworkFact:
     if (not isinstance(labels, dict) or not isinstance(containers, dict) or not isinstance(ipam, dict)
             or type(raw.get("Internal")) is not bool):
         raise CheckInputError("network_fact_invalid")
-    members = {}
+    members, names = {}, {}
     for container_id, endpoint in containers.items():
         if not _CONTAINER_ID.fullmatch(container_id) or not isinstance(endpoint, dict):
             raise CheckInputError("network_fact_invalid")
         addresses = tuple(sorted(filter(None, (_address(_str(endpoint.get(name, ""), "network_fact_invalid"))
                                                 for name in ("IPv4Address", "IPv6Address")))))
         members[container_id] = addresses
+        names[container_id] = _str(endpoint.get("Name", ""), "network_fact_invalid").lstrip("/")
     gateways = []
     config = [] if ipam.get("Config") is None else ipam.get("Config")
     if not isinstance(config, list):
@@ -228,7 +234,7 @@ def parse_network(raw: object) -> NetworkFact:
     return NetworkFact(_str(raw.get("Id"), "network_fact_invalid"), _str(raw.get("Name"), "network_fact_invalid"),
                        _str(labels.get(PROJECT_LABEL, ""), "network_fact_invalid"),
                        _str(labels.get(NETWORK_LABEL, ""), "network_fact_invalid"),
-                       raw["Internal"], members, tuple(sorted(gateways)))
+                       raw["Internal"], members, tuple(sorted(gateways)), names)
 
 
 def _is_loopback(address: str) -> bool:
@@ -388,12 +394,14 @@ def network_snapshot(daemon: DaemonIdentity, project: str, networks: Iterable[Ne
         "networks": {
             n.key: {"id": n.id, "name": n.name, "internal": n.internal, "gateways": list(n.gateways),
                     "members": {service_by_id.get(cid, "?" + cid[:12]): list(addrs)
-                                for cid, addrs in sorted(n.members.items())}}
+                                for cid, addrs in sorted(n.members.items())},
+                    "names": {service_by_id.get(cid, "?" + cid[:12]): name
+                              for cid, name in sorted(n.member_names.items())}}
             for n in sorted((n for n in networks if n.project == project), key=lambda n: (n.key, n.id))
         },
         "services": {
             c.service: {"id": c.id, "image": c.image, "running": c.running,
-                        "started_at": c.started_at, "restart_count": c.restart_count,
+                        "started_at": c.started_at, "restart_count": c.restart_count, "exposed": sorted(c.exposed),
                         "bindings": [[b.container_port, b.host_ip, b.host_port] for b in sorted(c.bindings)]}
             for c in sorted(containers, key=lambda c: (c.service, c.id))
         },

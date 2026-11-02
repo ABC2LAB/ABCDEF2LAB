@@ -44,6 +44,8 @@ LLM_NET = "llm_net"
 OBS_NET = "obs_net"
 MAX_HOST_LISTEN_ALLOW = 32
 MAX_REASON_LENGTH = 200
+# 점검 하나의 연결·해석 제한. 실패 기대 경로는 대부분 timeout으로 끝나므로 회차 준비 시간을 키운다.
+MAX_PROBE_TIMEOUT_MS = 60_000
 
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _TMPFS_SIZE = re.compile(r"[1-9][0-9]{0,8}[kmg]?\Z")
@@ -54,7 +56,7 @@ _IMAGE_ROLES = ("engine_baseline", "engine_ours", "engine_db", "meter")
 _PORTS = ("engine_api_host", "engine_container", "target", "obs", "obs_host")
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
-               "host_listen_allowlist")
+               "host_listen_allowlist", "probe_timeout_ms")
 
 
 class RunnerConfigError(ValueError):
@@ -99,6 +101,7 @@ class RunnerConfig:
     health_retries: int
     docker_timeout_seconds: float
     host_listen_allowlist: tuple[HostListen, ...]
+    probe_timeout_ms: int
 
 
 @dataclass(frozen=True)
@@ -217,6 +220,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     if "docker_timeout_seconds" in top and not (type(timeout) in (int, float) and 0 < timeout <= 3600):
         errors.append("config.docker_timeout_seconds: INVALID")
     allowlist = _host_listen_allowlist(top.get("host_listen_allowlist"), errors) if "host_listen_allowlist" in top else ()
+    if "probe_timeout_ms" in top and not _int(top["probe_timeout_ms"], 1, MAX_PROBE_TIMEOUT_MS):
+        errors.append("config.probe_timeout_ms: INVALID")
     if errors:
         raise RunnerConfigError(errors)
     return RunnerConfig(
@@ -226,7 +231,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         engine_db_user=db["user"], engine_db_name=db["name"],
         tmpfs_engine_db=tmpfs["engine_db"], tmpfs_engine_data=tmpfs["engine_data"],
         health_interval=health["interval"], health_timeout=health["timeout"], health_retries=health["retries"],
-        docker_timeout_seconds=float(timeout), host_listen_allowlist=allowlist)
+        docker_timeout_seconds=float(timeout), host_listen_allowlist=allowlist,
+        probe_timeout_ms=top["probe_timeout_ms"])
 
 
 def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:

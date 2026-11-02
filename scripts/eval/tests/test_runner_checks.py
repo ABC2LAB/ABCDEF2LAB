@@ -23,7 +23,8 @@ from test_runner_config import _yaml_without_comments, runner_config
 
 PROJECT = "eval-ours-1"
 DAEMON = DaemonIdentity("29.1.3", "linux", "amd64", "Docker Engine - Community")
-SERVICE_IDS = {name: f"{n:064x}" for n, name in enumerate(("engine", "engine-db", "target", "eval-meter", "eval-obs"), 1)}
+# 실제 ID처럼 앞 12자리(짧은 ID)가 서로 다르게.
+SERVICE_IDS = {name: str(n) * 64 for n, name in enumerate(("engine", "engine-db", "target", "eval-meter", "eval-obs"), 1)}
 NET_IDS = {key: f"{n:064x}" for n, key in enumerate(("engine_net", "target_net", "llm_net", "obs_net"), 100)}
 MEMBERS = {"engine_net": ("engine", "engine-db", "eval-meter"), "target_net": ("target", "eval-meter", "eval-obs"),
            "llm_net": ("engine",), "obs_net": ("eval-obs",)}
@@ -47,7 +48,7 @@ def raw_world():
             "Id": NET_IDS[key], "Name": f"{PROJECT}_{key}", "Internal": INTERNAL[key],
             "Labels": {"com.docker.compose.project": PROJECT, "com.docker.compose.network": key},
             "IPAM": {"Config": [{"Subnet": f"172.{30 + n}.0.0/16", "Gateway": f"172.{30 + n}.0.1"}]},
-            "Containers": {SERVICE_IDS[s]: {"Name": s, "IPv4Address": f"172.{30 + n}.0.{i + 2}/16", "IPv6Address": ""}
+            "Containers": {SERVICE_IDS[s]: {"Name": f"{PROJECT}-{s}-1", "IPv4Address": f"172.{30 + n}.0.{i + 2}/16", "IPv6Address": ""}
                            for i, s in enumerate(services)},
         })
     ports = {"engine": {"8787/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18787"}], "8788/tcp": None},
@@ -165,9 +166,13 @@ class TestParse(unittest.TestCase):
         engine = next(c for c in containers if c.service == "engine")
         self.assertEqual(engine.bindings, {Binding("8787/tcp", "127.0.0.1", 18787)})
         self.assertEqual(engine.network_ids, {NET_IDS["engine_net"], NET_IDS["llm_net"]})
+        self.assertEqual(engine.exposed, {"8787/tcp", "8788/tcp"})
+        self.assertEqual(next(c for c in containers if c.service == "target").exposed, {"3000/tcp"})
+        self.assertEqual(next(c for c in containers if c.service == "eval-meter").exposed, frozenset())
         target_net = next(n for n in networks if n.key == "target_net")
         self.assertEqual(target_net.members[SERVICE_IDS["target"]], ("172.31.0.2",))
         self.assertEqual(target_net.gateways, ("172.31.0.1",))
+        self.assertEqual(target_net.member_names[SERVICE_IDS["target"]], f"{PROJECT}-target-1")
 
     def test_container_fact_shape_is_closed(self):
         _, containers = raw_world()

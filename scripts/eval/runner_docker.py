@@ -155,6 +155,23 @@ class Docker:
         return self.json_lines(["container", "inspect", "--format", CONTAINER_TEMPLATE, "--", *ids],
                                code="docker_container_inspect_failed")
 
+    def probe(self, image: str, engine_container_id: str, plan: bytes, uid: int, gid: int) -> bytes:
+        """엔진 컨테이너의 네트워크 namespace에서 계측기 이미지(내용 ID)의 probe 역할을 1회 실행한다.
+
+        엔진 이미지 내용에 기대지 않는다. 마운트·소켓·권한 없이 읽기 전용으로 돌고, pull하지 않는다.
+        종료 코드가 0이 아니면(계획 오류·시작 실패) 호출 실패이며, 점검 무효로 처리하는 것은 호출자다.
+        """
+        if not _OBJECT_ID.fullmatch(engine_container_id or ""):
+            raise DockerError("docker_probe_target_invalid")
+        if not isinstance(image, str) or not _IMAGE_ID.fullmatch(image):
+            raise DockerError("docker_probe_image_not_id")
+        if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0:
+            raise DockerError("docker_probe_user_invalid")
+        return self.run(["run", "--rm", "-i", "--pull", "never", "--network", f"container:{engine_container_id}",
+                         "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                         "--user", f"{uid}:{gid}", "--", image, "-role=probe"],
+                        stdin=plan, code="docker_probe_failed")
+
     def daemon(self) -> DaemonIdentity:
         server = self.json(["version", "--format", "{{json .Server}}"], code="docker_version_failed")
         if not isinstance(server, dict):

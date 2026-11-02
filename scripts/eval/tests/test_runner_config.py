@@ -43,6 +43,7 @@ def runner_config() -> dict:
         "health": {"interval": "2s", "timeout": "2s", "retries": 30},
         "docker_timeout_seconds": 120,
         "host_listen_allowlist": [],
+        "probe_timeout_ms": 2000,
     }
 
 
@@ -123,6 +124,9 @@ class TestParseRunnerConfig(unittest.TestCase):
             self.reject(payload, expected)
         for value in (0, -1, 3601, True, "60", float("nan")):
             self.reject(runner_config() | {"docker_timeout_seconds": value}, "config.docker_timeout_seconds: INVALID")
+        for value in (0, 60_001, 1.5, True, "2000"):
+            self.reject(runner_config() | {"probe_timeout_ms": value}, "config.probe_timeout_ms: INVALID")
+        self.assertEqual(parse_runner_config(runner_config() | {"probe_timeout_ms": 60_000}).probe_timeout_ms, 60_000)
 
     def test_host_listen_allowlist_is_specific_and_justified(self):
         entry = {"address": "10.255.255.254", "port": 53, "reason": "WSL DNS 터널링(lo의 /32 주소)"}

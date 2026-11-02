@@ -102,6 +102,7 @@ class TestDocker(unittest.TestCase):
 
 
 ID_A, ID_B = "a" * 64, "b" * 64
+IMAGE_ID = "sha256:" + "c" * 64
 
 
 class TestFactGathering(unittest.TestCase):
@@ -160,6 +161,32 @@ class TestFactGathering(unittest.TestCase):
                           "networks"})
         self.assertIn("{{json .State.StartedAt}}", template)
         self.assertIn("{{json .RestartCount}}", template)
+
+
+class TestProbeCall(unittest.TestCase):
+    def test_probe_joins_engine_netns_without_privileges_or_pull(self):
+        fake = FakeExecutor(CommandResult(0, b'{"results":[]}'))
+        out = Docker(fake, {}, 1).probe(IMAGE_ID, ID_A, b'{"plan":1}', 1000, 1001)
+        self.assertEqual(out, b'{"results":[]}')
+        args, _, stdin, _ = fake.calls[0]
+        self.assertEqual(args, ["run", "--rm", "-i", "--pull", "never", "--network", f"container:{ID_A}",
+                                "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                                "--user", "1000:1001", "--", IMAGE_ID, "-role=probe"])
+        self.assertEqual(stdin, b'{"plan":1}')
+        self.assertFalse(any(arg in ("-v", "--volume", "--mount", "--privileged") for arg in args))
+
+    def test_probe_inputs_checked_before_call(self):
+        cases = [(IMAGE_ID, "short", 1, 1), (IMAGE_ID, "", 1, 1), (IMAGE_ID, ID_A, -1, 1), (IMAGE_ID, ID_A, 1, True),
+                 (IMAGE_ID, ID_A, "1", 1), ("example/m:fixed", ID_A, 1, 1), ("example/m@" + IMAGE_ID, ID_A, 1, 1),
+                 ("a" * 64, ID_A, 1, 1)]
+        for image, engine, uid, gid in cases:
+            fake = FakeExecutor()
+            with self.assertRaises(DockerError):
+                Docker(fake, {}, 1).probe(image, engine, b"{}", uid, gid)
+            self.assertEqual(fake.calls, [])
+        with self.assertRaises(DockerError) as caught:
+            Docker(FakeExecutor(CommandResult(2, b"")), {}, 1).probe(IMAGE_ID, ID_A, b"{}", 1, 1)
+        self.assertEqual(str(caught.exception), "docker_probe_failed")
 
 
 class TestRunDocker(unittest.TestCase):
