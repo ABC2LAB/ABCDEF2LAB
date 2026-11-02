@@ -107,9 +107,9 @@ class TestSnapshotSensitiveFieldsProperties(unittest.TestCase):
     def test_layer_literal_alias_expectations_cover_near_misses(self):
         expected = {
             "authorization": (True, False), "Authorization": (True, False),
-            " cookie ": (False, False), "COOKIE": (True, False),
+            " cookie ": (True, False), "COOKIE": (True, False),
             "set-cookie": (True, False), "password": (True, False),
-            "token": (True, False), " token ": (False, False),
+            "token": (True, False), " token ": (True, False),
             "secret": (True, False), "access_token": (True, True),
             "ACCESS_TOKEN": (True, True), "access-token": (False, True),
             "refresh_token": (True, True), "refresh-token": (False, True),
@@ -148,6 +148,21 @@ class TestSnapshotSensitiveFieldsProperties(unittest.TestCase):
                                 self.assert_saved(raw)
                             self.assert_chain(raw, writer_rejects=writer_rejects,
                                               collector_rejects=collector_rejects)
+
+    def test_writer_surrounding_whitespace_cannot_hide_known_sensitive_names(self):
+        cases = ((" cookie ", False), ("\tTOKEN\r\n", False),
+                 ("\u3000Password\u3000", False), (" ACCESS_TOKEN ", True),
+                 (" refresh_token ", True), (" Set-Cookie ", False))
+        base = self.root
+        for index, (name, collector_rejects) in enumerate(cases):
+            self.root = base / str(index)
+            self.root.mkdir()
+            with self.subTest(name=name):
+                unsafe = valid_raw({"nested": [{name: MARKER}]})
+                self.assert_writer_rejected(unsafe)
+                self.assert_chain(unsafe, writer_rejects=True, collector_rejects=collector_rejects)
+                for safe in (None, "[REDACTED]"):
+                    self.assert_saved(valid_raw({"nested": [{name: safe}]}), checked=True)
 
     def test_writer_case_insensitive_names_and_safe_values_are_explicit(self):
         names = ("Authorization", "COOKIE", "Set-Cookie", "Password", "TOKEN", "Secret",
