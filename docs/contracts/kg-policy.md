@@ -3,6 +3,7 @@
 작성: 2026-10-27 · 이경준 · 팀 검토용 초안
 개정: 2026-10-28 — §3.1 추가(canary/`Trivial` 등록 주체, 비교기 PR #13 정렬)
 개정: 2026-10-30 — §4.1 추가(판정 레코드→접근통제 지도 읽기 필드, [verdict-record](./verdict-record.md) Open #4 응답), §6 Open #1 정렬(`policy_version`↔유효창↔정본 reader, verdict-record Open #3)
+개정: 2026-11-02 — §3.2 추가(Canary 등록 계약 — 등록 시점·결속 저장·등록 키·원자적 유일성·멱등·역참조, [idor-canary-fixture](./idor-canary-fixture.md) Open #1 응답)
 상태: **설계 초안. 저장소·어댑터·API 미구현.** [e3-oracle](./e3-oracle.md) Open #2·#3 에 대한 응답.
 연결: [E③ 오라클](./e3-oracle.md) · [평가 프로토콜](../evaluation/evaluation-protocol.md) · [개선 계획 Phase 3](../development-plan.md)
 
@@ -75,6 +76,22 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 - **fail-closed 기본값** — A-고유 데이터인지 **확신 못 하면 `Trivial=true`**(제외). 식별자를 데이터로 오분류하면(`Trivial=false`) id 반사가 매칭을 통과해 false CONFIRMED 로 샐 수 있다. 확신 없을 때 제외하면 비자명 표식이 0개 → 오라클 `NontrivialDataMatch=Unknown` → UNDECIDABLE 로 떨어진다. 거짓 확정보다 미확정이 안전(절대규칙 5).
 - **canary-substring 모델이 안 맞는 경우** — 구조적 컬렉션 누수(예: basketAccess 가 공유 카탈로그 필드만 담은 A-연관 목록 반환)는 `Value` substring 으로 A-고유를 못 가린다. 그 엔드포인트는 KG 가 소유 바인딩만 주고 `NontrivialDataMatch` 는 capture 가 직접 계산한다(A-연관 목록이 교차엔 있고 B 자기 것엔 없음). 이 분기는 compare↔capture 경계(e3-oracle §8-④, 최민준·이동찬) — KG 는 소유·표식까지만.
 
+### 3.2 Canary 등록 계약 (idor-canary-fixture Open #1 응답)
+> **소유·설계 = KG(이경준).** write 저장·엔드포인트 **구현**은 `db/`·`server/`(이동찬·최민준 협의·리뷰). 여기 "계약"은 의미·불변식이지 구현 소유가 아니다. 이 절이 정본이고 [canary fixture §2](./idor-canary-fixture.md)는 이를 소비·정렬한다.
+
+등록 단위 = `Canary{Field, Value, Trivial}`(§2·§3.1) + 결속 메타(세대 토큰 · 소유 계정 라벨 `owner_ref` · `resource_ref`).
+
+- **(1) 등록 시점** — fixture 가 표식을 **심는 같은 준비 단계**에서 등록한다(심기 없는 등록·등록 없는 심기 = 준비 실패). 검사(`VerifyRead`) **전에** 끝낸다. reset 세대마다 다시 적용하며(fixture §3), 토큰 발급 → provisioning → 심기+등록 순서를 지킨다. KG 는 검사 중 값을 **실시간 생성·동기화하지 않는다**.
+- **(2) 결속 저장(발급 아님)** — KG 는 세대 토큰과 `(run_id, reset_generation)` 결속을 **저장만** 한다. 토큰 발급·재결속 권한은 없다(= 하네스/fixture, fixture Open #2). `run_id` 와 `reset_generation` 은 **별도 축** — 토큰으로 둘을 대체·추론하지 않는다. 공유 근거에는 묶음 참조·세대·완료 여부만 남기고 토큰·표식 **원문 값**은 내보내지 않는다(절대규칙 2·8).
+- **(3) 등록 키 · 원자적 유일성** — 등록 키 = `(run_id, reset_generation, 세대 토큰, bundle_ref, owner_ref, resource_ref, Field)`. 한 세대 안에서 `Value` 의 **전역 유일성**을 강제한다. 유일성 확인과 등록은 동시 요청에도 **원자적**이며 last-writer-wins 를 금지한다. 값 → 소유자 역참조가 이 유일성에 근거한다.
+- **(4) 멱등 재시도(no-op)** — 같은 키 + 모든 불변 내용(`Value`·`Trivial`·생성 규칙 버전)이 동일한 재등록은 **기존 참조를 반환하는 멱등 성공**이다. 새 등록·재생성이 아니다.
+- **(5) 충돌·불변 변경 = 준비 실패** — 같은 값을 **다른 등록 키**에 쓰거나, 같은 키의 불변 내용을 바꾸려 하면 **준비 실패**다. 부분 실패는 고쳐 이어가지 않고, 진행 요청 종료·회차 폐기 확인 뒤 리셋부터 **새 묶음**으로 다시 한다(fixture §3).
+- **(6) 표식 → 소유 계정 역참조** — `Value → owner_ref` 대응은 **정본 등록에서만** 확인한다. owner 응답의 HTTP 200·표식 노출만으로 소유권을 추정하지 않는다. 등록 소유자와 실제 준비 결과가 다르거나 미확인이면 준비 실패다. 역참조 산출물은 **`owner_ref` 라벨만**(계정 원문·토큰 값 금지, 절대규칙 2). 이 역참조가 §3.1 비교기 `idor.Marker` 의 "A-고유" 근거이자 §3 오라클 `Subjects.OwnerRef` 축의 소스다.
+
+**여기서 안 정하는 것**: 저장 위치·물리 형식(Open #3), 불변 준비 묶음의 물리 저장·부분 실패 검출 API(fixture Open #5), `resource_ref` 의 `type` 명명(§6 Open #1·fixture Open #6 — 접근통제 지도와 **공유 축**이라 type 확정 시 함께 재검토).
+
+> 교차참조: 이 §3.2 는 canary fixture Open #1(= "KG 등록 계약 = 이경준")의 응답 제안이다. idor-canary-fixture.md 쪽 역링크는 그 문서 소유자(최민준)에게 리뷰로 제안한다 — 직접 편집하지 않음.
+
 ## 4. 접근통제 지도 (시각화 — 내 UI 담당)
 - **principal × resource 매트릭스** + 셀에 관측 결과(allow/deny/unknown/미검사) 오버레이. **수평**(같은 역할·교차 계정) 먼저, **수직**(역할 레벨차)은 후속.
 - 회색 = 미검사(T1.6 커버리지 세분: 계정×기능×검사항목). "미검사"와 "검사했으나 미관찰"을 색으로 구분 — 미실행을 "취약점 없음"으로 보이지 않게(절대규칙 5).
@@ -133,7 +150,7 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
    - **현재 구현과 구분**: `oracle.PolicyAssertion`·`idor.PolicyResolver.ResolvePolicy`는 정책 버전/reset 메타데이터를 반환하지 않는다. 위 snapshot 전달은 서버 관리 실행 묶음/어댑터의 보강 계약([seam §6.1](./idor-verifier-seam.md#61-현재-호출과-새-실행-책임))이며 정본 저장·발급 API는 아직 미정이다.
    - **이동찬 질문**: (a) 정본 reader = fixture 레지스트리인가 server config인가 — `policy_version` 문자열 **포맷·발급 주체**(지도 헤더·감사에 그대로 표기). (b) reset 세대 교체 시 정책 유효창 **무효화 지점**(세대 섞임 → 어댑터가 Evaluate 전 UNDECIDABLE, verdict-record §2d).
 2. **principal 역할 레벨(수직)의 소스** — 후속 수직 오라클 전에 선설계(권한 레벨 어디서 얻나).
-3. **canary 등록 저장 위치** — 자산 `Extra` 재사용 vs 신규 테이블. UX·`Trivial` 분류 주체는 KG 로 확정(§3.1), **저장 위치만** 협의(최민준↔이동찬).
+3. **canary 등록 저장 위치** — 자산 `Extra` 재사용 vs 신규 테이블. UX·`Trivial` 분류 주체는 KG 로 확정(§3.1), 등록 **계약**(키·멱등·결속·역참조)은 §3.2 에서 확정, **저장 위치·물리 형식만** 협의(최민준↔이동찬).
 4. **KG 저장소 테이블명·마이그레이션 담당** — oracle Open #5(판정 레코드 테이블)와 함께 최민준↔이동찬.
 5. **신원 status 와 KG ref 의 결합 지점** — 어댑터가 둘을 `SubjectContext` 로 합치는 위치(서버 바인딩 vs 어댑터).
 
