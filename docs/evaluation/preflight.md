@@ -67,8 +67,8 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
 ```
 
 `pins`는 평가 담당자가 합의한 값을 프로토콜에서 옮긴다. 현행 프로토콜의 대상 이미지는
-`bkimminich/juice-shop:v15.0.0`, 원본 소스는 프로젝트에서 고정한
-`fdfb7a17b7da5e2de716c0e98475ec77a41c64c6`다. CLI는 입력된 pins와 대조하며 합의나 입력 출처를 인증하지 않는다.
+`bkimminich/juice-shop:v15.0.0`이다. baseline 빌드 소스는 e53a79f(base/artex-import). upstream fdfb7a17에서 비빌드 파일 49개만 삭제했고 코드 차이는 0.
+`pins.baseline_source_sha`에는 전체 SHA `e53a79fe4df0c95a5b09274de8db321fa038b00b`를 쓴다. CLI는 입력된 pins와 대조하며 합의나 입력 출처를 인증하지 않는다.
 
 | 필드 | 검사 |
 |---|---|
