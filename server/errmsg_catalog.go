@@ -5,6 +5,8 @@ package server
 // from the Korean source + translations; do not edit by hand. "ko" is the key
 // itself and is not stored. See errmsg_i18n.go (trMsg) for lookup.
 var errCatalog = map[string]map[string]string{
+	"통제 규칙 설정을 확인할 수 없어 실행을 차단했습니다":       {"en": "Execution was blocked because the interception configuration could not be verified", "zh": "无法验证拦截配置，已阻止执行", "es": "Se bloqueó la ejecución porque no se pudo verificar la configuración de interceptación", "ja": "インターセプト設定を確認できないため実行をブロックしました"},
+	"pattern 값이 올바른 정규식이 아닙니다":            {"en": "The pattern is not a valid regular expression", "zh": "pattern 不是有效的正则表达式", "es": "El patrón no es una expresión regular válida", "ja": "pattern は有効な正規表現ではありません"},
 	"인증이 필요합니다":                           {"en": "Authentication is required", "zh": "需要身份验证", "es": "Se requiere autenticación", "ja": "認証が必要です"},
 	"token 이 유효하지 않거나 만료되었습니다":            {"en": "The token is invalid or has expired", "zh": "token 无效或已过期", "es": "El token no es válido o ha caducado", "ja": "token が無効か、有効期限が切れています"},
 	"비밀번호가 이미 설정되어 있습니다":                  {"en": "A password has already been set", "zh": "密码已设置", "es": "Ya se ha establecido una contraseña", "ja": "パスワードは既に設定されています"},
