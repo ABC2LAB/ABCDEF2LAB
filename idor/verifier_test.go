@@ -44,7 +44,7 @@ func (f fakeKG) Canaries(string, AccountRef) ([]Marker, bool) {
 }
 
 const (
-	testResource = "basket/42"
+	testResource = "basket:42"
 	testCanary   = "canary-9b1c4d@lab.local"
 )
 
