@@ -3956,21 +3956,33 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 }
 
 func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
+	const (
+		maxGraphReportFindings = 1000
+		maxGraphReportAssets   = 100000
+	)
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
 		writeErr(w, 404, "no active task")
 		return
 	}
-	findings, err := t.Store.ListByKind(db.KindFinding, 1000)
+	findings, err := t.Store.ListByKind(db.KindFinding, maxGraphReportFindings+1)
 	if err != nil {
 		writeErr(w, 500, "report export unavailable")
 		return
 	}
+	if len(findings) > maxGraphReportFindings {
+		writeErr(w, http.StatusUnprocessableEntity, "report export limit exceeded")
+		return
+	}
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		ns, err := s.m.Assets().QueryByType(ty, 100000, 0)
+		ns, err := s.m.Assets().QueryByType(ty, maxGraphReportAssets+1, 0)
 		if err != nil {
 			writeErr(w, 500, "report export unavailable")
+			return
+		}
+		if len(ns) > maxGraphReportAssets {
+			writeErr(w, http.StatusUnprocessableEntity, "report export limit exceeded")
 			return
 		}
 		if len(ns) > 0 {
