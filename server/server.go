@@ -3976,17 +3976,17 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		ns, err := s.m.Assets().QueryByType(ty, maxGraphReportAssets+1, 0)
+		count, err := s.m.Assets().CountByType(ty)
 		if err != nil {
 			writeErr(w, 500, "report export unavailable")
 			return
 		}
-		if len(ns) > maxGraphReportAssets {
+		if count > maxGraphReportAssets {
 			writeErr(w, http.StatusUnprocessableEntity, "report export limit exceeded")
 			return
 		}
-		if len(ns) > 0 {
-			counts[ty] = len(ns)
+		if count > 0 {
+			counts[ty] = count
 		}
 	}
 	md := report.Markdown(report.Input{
