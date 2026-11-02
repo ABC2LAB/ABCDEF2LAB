@@ -144,8 +144,8 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 **(1) 위치·책임 분리.** 읽기 어댑터 = **서버 projection(순수 read)**. 판정 발급 경로(세대 검증·정책 재resolve·Evaluate)와 분리한다. 읽기 어댑터는 저장된 판정·관측을 조회·투영만 하고, **불일치 자료는 거부하거나 unknown으로 표시**하며, 과거 판정을 현재 셀에 재사용하지 않고, GET이 누락 셀을 채우려 새 검증을 실행하지 않는다. UI는 조합·판정하지 않고 서버 검증 결과만 렌더(절대규칙 3·4·5). 응답 본문·canary 값·자격 원문은 지도에 전달하지 않는다(§3).
 
 **(2) 2단계 — 검증 → 상태 파생.** 단일 우선순위가 아니라 두 단계다.
-- **A. 검증(gate):** scope·출처·선택을 먼저 검증. 불일치·출처 미검증·선택 모호·상충이면 `unknown` + **projection-error 사유**(오라클 사유와 별도 네임스페이스). 색 추정 금지.
-- **B. 상태 파생:** A를 통과한 **단일·scope 결속·유효 레코드**(+관측)에서만 셀 상태를 도출한다. **오라클 원값을 보존**하며 "근거 부족이면 무조건 unknown"으로 정상적 `suspected`나 `UNDECIDABLE`을 지우지 않는다. "IDOR 입증 부족(UNDECIDABLE)"과 "출처·선택 오류"는 다른 사유의 unknown으로 구분한다.
+- **A. 검증(gate):** 조회 성공 여부와 **존재하는 입력**의 scope·출처·선택을 먼저 검증한다. 정상 조회의 레코드 0건은 그 자체로 출처 오류가 아니다. 조회 실패·불일치·출처 미검증·선택 모호·상충이면 `unknown` + **projection-error 사유**(오라클 사유와 별도 네임스페이스)이며 색을 추정하지 않는다.
+- **B. 상태 파생:** A를 통과한 입력을 **판정 레코드가 있는 분기 / 없는 분기**로 나눈다. 레코드가 있으면 단일·scope 결속·유효 레코드(+관측)에서 상태를 도출하고 **오라클 원값을 보존**한다. 정상적 `suspected`나 `UNDECIDABLE`을 출처 오류로 지우지 않으며 "IDOR 입증 부족"과 "출처·선택 오류"는 다른 사유의 unknown이다. 레코드가 없으면 같은 범위의 검사계획·시도 상태·applicability 근거로 아래 상태를 파생한다. 실행 실패·E² 사전 거부·시도 후 레코드 누락은 `unknown`이고, **조회 성공과 해당 범위의 모든 관련 근거 부재를 확인한 경우만 `blank`**다. 조회 실패·미확인을 blank로 변환하지 않는다.
 
 **(3) 셀 상태 (§4.1 (b) 확장·재정의):**
 | 상태 | 산출 조건 | 가능 시점 |
@@ -157,17 +157,17 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 | `deny-ok` 정상차단 | **보류.** 오라클에 "차단 확인" 값 없음(유효 deny라도 data_no_match면 UNDECIDABLE). 데이터 없음만으론 앱 차단 미증명. 앱 인가 차단 **관측 계약** 전까지 산출 않고 `unknown`(위반 미관찰·차단 미증명) | ❌ Phase 3 |
 | `untested` 미시도 | **검사계획 + 시도 상태**가 같은 scope·case·행동에 결속되어 명시적 미시도를 확인한 경우만. 현재 coverage(자산 scope·탐색 fact anchor 집계)로는 불가 | ❌ Phase 2 (E① 선행) |
 | `na` 적용불가 | KG/검사계획의 명시적 applicability 근거. 레코드 부재·`owner==evaluated`만으론 추론 금지 | 근거 생기면 |
-| `blank` 기록없음 | 레코드·커버리지·applicability 근거가 **전부 없음**. "판정했으나 불가(unknown)"·"명시적 미시도(untested)"와 구분하는 정직한 빈칸 | 즉시(당분간 다수) |
+| `blank` 기록없음 | **조회 성공을 확인**했고 같은 범위의 레코드·관측/시도 상태·커버리지·applicability 근거가 **전부 없음**. "판정했으나 불가(unknown)"·"명시적 미시도(untested)"와 구분하는 정직한 빈칸 | 즉시(당분간 다수) |
 
-단일 레코드 내 tiebreak: confirmed > suspected > unknown > allow-ok > untested > na > blank.
+A 검증·B 분기의 근거 요건을 통과한 표시 후보의 우선순위(복수 레코드의 선택 모호·상충 해소에는 사용하지 않음): confirmed > suspected > unknown > allow-ok > untested > na > blank.
 
 **(4) scope.** 조회 쿼리 = 조회 조건이며 **출처 증명이 아니다**. 서버는 쿼리 외에 내부적으로 task·대상 인스턴스·준비 묶음·전체 `resource_ref`·검사 행동을 결속·검증한다. `Scope.RunRef`(개별 실행)는 평가 `run_id`와, `Scope.PolicyRef`(실행 승인)는 KG `policy_version`과 다르다. **`model_tag`는 scope 축이 아니라 헤더 메타**(회차 고정 모델 식별자·제공자·샘플링 메타와 연결). v0.1은 **horizontal·읽기** 한정.
 
-**(5) 근거 필드.** `record_id`·`observed_at`은 **nullable**(untested/na/blank엔 없음). untested→커버리지 근거, na→applicability 근거, unknown→사유. 오라클 `reason_codes`와 projection-error 사유는 **별도**. 셀 note = 사유 + `canary_fields`(필드명만, 값 아님 §3).
+**(5) 근거 필드.** `record_id`·`observed_at`은 **nullable**(untested/na/blank엔 없음). untested→검사계획·시도 상태 근거, na→applicability 근거, unknown→사유. 오라클 `reason_codes`와 projection-error 사유는 **별도**. 셀 note = 사유 + `canary_fields`(필드명만, 값 아님 §3).
 
 **(6) 발급 주체·세대.** `run_id`: 평가=러너, 실사용=서버([verdict-record §2a](./verdict-record.md)). `reset_generation`: 평가=러너, 실사용=리셋 훅. 서버가 개별 execution을 발급·결속하고 KG는 결속 저장만(임의 발급·재결속 없음, §3.2). 세대 교체 = 새 scope — 이전 세대 정책·표식·판정·커버리지를 새 지도에 재사용 않고 새 세대에서 다시 resolve·검증한다. 과거 confirmed 보존 = 이력 보존이지 현재 색 승계 아님.
 
-**(7) UI 측 (이경준, 일부 선행 가능).** `lib/kg.ts` `getAccessMap`만 목업→실 API 교체. **선행 하드닝(API 전 가능):** 현재 화면의 중복 셀 last-writer-wins·누락 셀→untested 동작을 제거하고 누락·중복은 오류/`blank` 처리, `suspected`(별도 색)·`blank` 상태 추가, `deny-ok` 보류 표시, `oracle_value` 확정/의심 배지.
+**(7) UI 측 (이경준, 일부 선행 가능).** `lib/kg.ts` `getAccessMap`만 목업→실 API 교체. **선행 하드닝(API 전 가능):** 현재 화면의 중복 셀 last-writer-wins·누락 셀→untested 동작을 제거하고 중복은 명시적 로딩 오류 또는 projection-error `unknown`으로 처리하고, 정상 조회에서 관련 근거 0건을 확인한 누락만 `blank`로 처리하며, `suspected`(별도 색)·`blank` 상태 추가, `deny-ok` 보류 표시, `oracle_value` 확정/의심 배지.
 
 **단계(phasing).** Phase 1: confirmed·suspected·allow-ok·unknown·blank. Phase 2: untested(E① 탐색종료·재계획 + 검사계획/시도상태 선행)·na. Phase 3: deny-ok(앱 인가 차단 관측 계약 선행).
 
