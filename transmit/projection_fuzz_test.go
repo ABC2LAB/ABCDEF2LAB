@@ -132,6 +132,37 @@ func FuzzProjectionRegisteredEvidenceOnly(f *testing.F) {
 		if nonJSON := project(control, "text/plain", proposal.ResourceRef, rule, request, proposal); nonJSON != (idor.ResponseView{ResourceRef: proposal.ResourceRef}) {
 			t.Fatal("non-JSON response became classified evidence")
 		}
+		problem := project(control, "application/problem+json", proposal.ResourceRef, rule, request, proposal)
+		if problem.Body != projectionFuzzFirst || !problem.Normal || !problem.TemplateClassified || problem.ErrorTemplate {
+			t.Fatal("application/problem+json lost the registered normal evidence")
+		}
+		errorBody := projectionFuzzJSON(t, map[string]any{
+			"status": "error", "data": map[string]string{"note": projectionFuzzFirst, "noise": string(body)},
+		})
+		errorView := project(errorBody, "application/json", proposal.ResourceRef, rule, request, proposal)
+		if !errorView.TemplateClassified || !errorView.ErrorTemplate || errorView.Normal || errorView.Body != "" {
+			t.Fatal("registered marker in an error template became evidence")
+		}
+		nonNormalBody := projectionFuzzJSON(t, map[string]any{
+			"status": "pending", "data": map[string]string{"note": projectionFuzzFirst, "noise": string(body)},
+		})
+		nonNormal := project(nonNormalBody, "application/json", proposal.ResourceRef, rule, request, proposal)
+		if nonNormal != (idor.ResponseView{ResourceRef: proposal.ResourceRef}) {
+			t.Fatal("non-normal status became classified evidence")
+		}
+		trivialRule := *rule
+		trivialRule.Markers = append([]idor.Marker(nil), rule.Markers...)
+		trivialRule.Markers[0].Trivial = true
+		trivial := project(control, "application/json", proposal.ResourceRef, &trivialRule, request, proposal)
+		if trivial != (idor.ResponseView{ResourceRef: proposal.ResourceRef}) {
+			t.Fatal("trivial marker became evidence")
+		}
+		shapeAbsent := projectionFuzzJSON(t, map[string]any{
+			"status": "ok", "data": map[string]string{"private": string(body)},
+		})
+		if absent := project(shapeAbsent, "application/json", proposal.ResourceRef, rule, request, proposal); absent != (idor.ResponseView{ResourceRef: proposal.ResourceRef}) {
+			t.Fatal("payload without a registered shape became classified evidence")
+		}
 		// Finding a marker in an unrelated field or in a different registered
 		// field cannot substitute for an exact match in its own registered field.
 		mismatch := projectionFuzzJSON(t, map[string]any{
