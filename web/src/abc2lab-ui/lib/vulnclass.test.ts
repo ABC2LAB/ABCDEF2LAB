@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { canonicalVulnClass } from "./vulnclass";
 
-// 실 35B 런(artexrun) findings 의 vulnclass 45건=35종을 그대로 고정한다.
-// 표시용 계열 분류기가 이 변형들을 7계열로 모으는지 회귀로 잡는다.
+// 표시용 계열 분류의 표기 예시 36개. 실행 결과 건수를 증명하는 자료는 아니다.
 const CASES: [string, string][] = [
   // 접근통제 · IDOR
   ["IDOR", "access"],
@@ -63,7 +62,36 @@ describe("canonicalVulnClass", () => {
   });
 
   it("label 은 계열 표시명을 돌려준다", () => {
-    expect(canonicalVulnClass("IDOR").label).toBe("접근통제 · IDOR");
+    expect(canonicalVulnClass("IDOR").label).toBe("접근통제 (IDOR 포함)");
     expect(canonicalVulnClass("nope-unknown").label).toBe("기타");
+  });
+
+  it.each([
+    "Authorization Bypass",
+    "Missing Authorization",
+    "Improper Authorization",
+  ])("인가 결함 %s 는 인증이 아닌 접근통제 계열", (raw) => {
+    expect(canonicalVulnClass(raw).key).toBe("access");
+  });
+
+  it.each([
+    "SQL-Injection",
+    "SQL_Injection",
+    "SQL\tInjection",
+    "Command_Injection",
+  ])("구분자가 다른 %s 도 인젝션 계열", (raw) => {
+    expect(canonicalVulnClass(raw).key).toBe("injection");
+  });
+
+  it.each([
+    "CWE-787",
+    "CWE-789",
+    "CWE-890",
+    "CWE-6390",
+    "CWE-2000",
+    "A010",
+    "A070",
+  ])("미지원 코드 %s 를 지원 코드의 접두부로 분류하지 않는다", (raw) => {
+    expect(canonicalVulnClass(raw).key).toBe("other");
   });
 });

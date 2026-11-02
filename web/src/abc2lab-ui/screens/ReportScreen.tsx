@@ -617,7 +617,12 @@ function FindingsViz({
         </div>
       </div>
 
-      {dim === "type" && <p className="hint">유형은 표시용 계열로 묶었어요 — 원문 유형은 발견 상세에 그대로 있어요.</p>}
+      {dim === "type" && (
+        <p className="hint">
+          유형은 표시용 계열로 묶었어요. 빈 값과 분류되지 않은 유형은 기타에 포함하며, 원문 유형은 발견 상세에 그대로
+          있어요.
+        </p>
+      )}
 
       <div>
         {kind === "bar" && (
