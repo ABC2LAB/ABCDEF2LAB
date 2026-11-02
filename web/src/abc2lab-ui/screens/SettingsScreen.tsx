@@ -39,6 +39,9 @@ function RuleRow({ rule }: { rule: EngineInterceptRule }) {
       <Pill tone={rule.enabled ? undefined : "muted"}>{rule.enabled ? "사용" : "꺼짐"}</Pill>
       <div style={{ minWidth: 0 }}>
         <div className="nm">{rule.name}</div>
+        <div className="ep">
+          우선순위 {rule.priority} · ID {rule.id}
+        </div>
         <div className="ep" style={patStyle}>
           {rule.match_target} · {rule.match_type} · {rule.pattern}
         </div>
@@ -106,7 +109,7 @@ export default function SettingsScreen() {
     };
   }, [rules]);
 
-  // 인가 중심 그룹: 제한적인 결정부터 (차단 → 승인 필요 → 허용). fail-closed 순서.
+  // 동작별 표시 그룹이다. 실제 평가는 서버의 priority DESC, id ASC 순서다.
   const ruleGroups = useMemo(() => {
     const known = ["deny", "ask", "allow"];
     const groups = [
@@ -152,11 +155,15 @@ export default function SettingsScreen() {
                   {ruleStats.allow > 0 && <Pill>허용 {ruleStats.allow}</Pill>}
                   {ruleStats.ask > 0 && <Pill tone="warn">승인 필요 {ruleStats.ask}</Pill>}
                 </div>
+                <p className="hint">
+                  그룹은 표시용이며, 수는 꺼진 규칙을 포함한 등록 수예요. 실제 검사는 우선순위 숫자가 큰 규칙부터
+                  검사하고, 같으면 ID가 작은 순서로 먼저 일치한 사용 중 규칙 하나를 적용해요.
+                </p>
                 {ruleGroups.map((g) => (
                   <div key={g.key}>
-                    <div style={groupHd}>
+                    <h4 style={groupHd}>
                       {g.label} · {g.rules.length}
-                    </div>
+                    </h4>
                     {g.rules.map((r) => (
                       <RuleRow key={r.id} rule={r} />
                     ))}
