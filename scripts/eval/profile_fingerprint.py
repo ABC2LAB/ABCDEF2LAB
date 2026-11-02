@@ -118,7 +118,9 @@ def _reference(value: object, path: str, *, image: bool = False) -> str:
 
 
 def _url(value: object, path: str, *, base_url: bool = False) -> str:
-    if not _ascii(value) or len(value) > MAX_PATH_LENGTH or any(char in value for char in "?#%\\"):
+    if (not _ascii(value) or len(value) > MAX_PATH_LENGTH
+            or any(char in value for char in "?#%\\<>{}$")
+            or _PLACEHOLDER.search(value)):
         _fail(path, "INVALID_LOCAL_URL")
     try:
         parsed = urlsplit(value)

@@ -70,6 +70,9 @@ URL은 HTTP(S) loopback IP/localhost만 지원하며 인증정보·query·fragme
 경로는 `/`로 시작하는 비민감 정적 경로나 `{object}` 같은 전체 segment 템플릿이다. 실제 계정/자원 값·query·fragment·퍼센트 인코딩·glob·역참조는 넣지 않는다.
 메서드는 GET/HEAD/OPTIONS/POST/PUT/PATCH/DELETE/TRACE 중 명시한 값만 받는다. 프로파일에 적는 행위가 실행 허가를 뜻하지 않는다.
 
+`scope.paths`와 `scope.vuln_classes`는 절대 규칙 7에 따라 평가 정답(챌린지 목록)을 보고 선택하지 않는다. 둘은 평가 선언의
+일관성을 나타내고 지문화하는 값이며, 엔진 탐색·프롬프트·도구 입력으로 전달되는 선택 목록이 아니다.
+
 인증정보·쿠키·토큰·비밀번호·계정 원문·canary 값·원문 응답·스캔 결과·artifact 경로를 받는 필드는 없다.
 회차별 run/reset/instance/execution ID, 시각·sequence, 엔진별 source SHA도 거부하며 각자의 러너 기록에서 관리한다.
 별칭·모델명·경로 등 문자열이 실제로 비민감한지는 이 도구가 판정하지 않는다. 평가자가 검토한 선언만 입력하며 비밀을 별칭으로 위장해 해시하지 않는다.
@@ -107,6 +110,14 @@ URL은 HTTP(S) loopback IP/localhost만 지원하며 인증정보·query·fragme
 scope의 origin과 환경의 모델·샘플링·이미지·예산은 실제 실행 설정에도 같은 선언을 사용해야 한다. 자동 적용·서명·실행 승인 기능은 없다.
 지문은 이 v1 선언과 준비 절차 revision의 일치를 나타내며 실환경·하드웨어·모델 내용·준비 완료·pre 상태를 증명하지 않는다.
 실제 비교에서는 해당 조건을 별도로 확인하고, pre/post·회차 신원·원자료 출처·귀속을 신뢰 러너 기록으로 검증한다.
+
+현재 코드 소비자는 다음과 같다.
+
+| 소비자 | 사용하는 값 | 역할 |
+|---|---|---|
+| `scripts/eval/preflight.py` | 세 fingerprint와 공통 환경 필드 | baseline/ours 선언의 일관성·지문 비교만 검사하며 경로/분류를 엔진에 전달하지 않음 |
+| `scripts/eval/run_record.py`·`score.py` | `fixture_fingerprint`, `environment_fingerprint` | 서명된 러너 기록의 지문 검증과 회차 사이 동일 조건 대조 |
+| 평가 엔진 입력 | `scope.paths`, `scope.vuln_classes` | 현재 소비자 없음; profile fingerprint는 이 선언을 검증·해시만 함 |
 
 합성 테스트는 고정 벡터, 정렬 불변성, 숫자 동등성과 정밀도, 조건 변경의 지문 분리, scope→환경 결속,
 허용 밖 필드의 해시 전 거부, 소유 참조·중복·타입 오류, 원문 미출력·CLI 종료·파일 보존을 확인한다.

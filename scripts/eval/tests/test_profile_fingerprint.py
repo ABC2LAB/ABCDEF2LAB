@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import preflight
+import profile_fingerprint
 from profile_fingerprint import FORMAT, MAX_INPUT_BYTES, ProfileError, generate_fingerprints
 
 
@@ -271,6 +273,27 @@ class TestProfileFingerprint(unittest.TestCase):
         payload["scope"]["target_origin"] += "extra"
         self.reject(payload, "INVALID_LOCAL_URL")
 
+    def test_url_validation_corpus_does_not_drift_from_preflight(self):
+        corpus = (
+            ("http://127.0.0.1", False, True),
+            ("https://[::1]:3000/", False, True),
+            ("http://localhost:11434/v1/", True, True),
+            ("http://127.0.0.1/${X}", True, False),
+            ("http://127.0.0.1/<v1>", True, False),
+            ("http://127.0.0.1/todo", True, False),
+            ("http://127.0.0.1/../v1", True, False),
+            ("http://user:password@127.0.0.1", False, False),
+        )
+        for value, base_url, expected in corpus:
+            with self.subTest(value=value, base_url=base_url):
+                try:
+                    profile_fingerprint._url(value, "url", base_url=base_url)
+                    profile_valid = True
+                except ProfileError:
+                    profile_valid = False
+                self.assertEqual(profile_valid, expected)
+                self.assertEqual(preflight._local_url(value, base_url=base_url), expected)
+
     def test_model_and_image_are_explicit_non_latest_references(self):
         for field in ("model_tag", "target_image"):
             for value in (None, "", "example", "example:latest", "example:LATEST", "example:TODO", "<model>", "example:with space"):
@@ -359,14 +382,29 @@ class TestProfileCLI(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (2, ""))
         self.assertEqual(result.stderr, "environment: UNKNOWN_FIELDS\n")
 
-    def test_duplicate_nonfinite_invalid_utf8_or_malformed_json_is_sanitized(self):
-        for raw in (b'{"SYNTHETIC-PRIVATE":1,"SYNTHETIC-PRIVATE":2}', b'{"x":NaN}', b'{"x":Infinity}',
-                    b"\xff", b'{"SYNTHETIC-PRIVATE":', b"[" * 2000 + b"]" * 2000):
+    def test_invalid_utf8_or_malformed_json_is_sanitized(self):
+        for raw in (b"\xff", b'{"SYNTHETIC-PRIVATE":', b"[" * 2000 + b"]" * 2000):
             self.path.write_bytes(raw)
             result = self.cli()
             self.assertEqual((result.returncode, result.stdout), (2, ""))
             self.assertNotIn("SYNTHETIC-PRIVATE", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
+
+    def test_duplicate_valid_temperature_is_rejected_with_exact_sanitized_code(self):
+        raw = json.dumps(profile(), separators=(",", ":"))
+        raw = raw.replace('"temperature":0', '"temperature":0,"temperature":0.7', 1)
+        self.path.write_text(raw, encoding="utf-8")
+        result = self.cli()
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (2, "", "json: DUPLICATE_KEY\n"))
+
+    def test_nonfinite_valid_temperature_is_rejected_with_exact_sanitized_code(self):
+        raw = json.dumps(profile(), separators=(",", ":"))
+        raw = raw.replace('"temperature":0', '"temperature":NaN', 1)
+        self.path.write_text(raw, encoding="utf-8")
+        result = self.cli()
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (2, "", "json: NONFINITE_NUMBER\n"))
 
     def test_size_limit_and_missing_files_return_sanitized_exit_two(self):
         before = self.path.read_bytes()
