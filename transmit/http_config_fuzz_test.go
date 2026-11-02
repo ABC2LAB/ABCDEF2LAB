@@ -52,6 +52,7 @@ func FuzzHTTPConfigURLContract(f *testing.F) {
 		cfg := configFuzzConfig(rec)
 		accepted := true
 		wantAuthority := "target.test:8080"
+		wantOriginError := false
 		switch mode % 24 {
 		case 0:
 			cfg.Origin = "http://TARGET.TEST:8080"
@@ -87,8 +88,9 @@ func FuzzHTTPConfigURLContract(f *testing.F) {
 			cfg.Resources[0].URL = "http://target.test:8080/%zz"
 			accepted = false
 		case 10:
-			cfg.Resources[0].URL = "http://target.test:99999/resource"
-			accepted = false
+			cfg.Origin = "http://target.test:99999"
+			cfg.Resources[0].URL = cfg.Origin + "/resource"
+			accepted, wantOriginError = false, true
 		case 11:
 			cfg.Origin = "//target.test:8080"
 			accepted = false
@@ -111,8 +113,9 @@ func FuzzHTTPConfigURLContract(f *testing.F) {
 			cfg.Resources[0].URL = "http://target.test:8081/resource"
 			accepted = false
 		case 18:
-			cfg.Resources[0].URL = "http://target.test:0/resource"
-			accepted = false
+			cfg.Origin = "http://target.test:0"
+			cfg.Resources[0].URL = cfg.Origin + "/resource"
+			accepted, wantOriginError = false, true
 		case 19:
 			cfg.Origin = "http://fixture@target.test:8080"
 			accepted = false
@@ -123,8 +126,9 @@ func FuzzHTTPConfigURLContract(f *testing.F) {
 			cfg.Resources[0].URL = "ftp://target.test:8080/resource"
 			accepted = false
 		case 22:
-			cfg.Resources[0].URL = "http://[fe80::1%25fixture]:8080/resource"
-			accepted = false
+			cfg.Origin = "http://[fe80::1%25fixture]:8080"
+			cfg.Resources[0].URL = cfg.Origin + "/resource"
+			accepted, wantOriginError = false, true
 		case 23:
 			// These generated ports are all positive and below 65536.
 			wantAuthority = "target.test:" + strconv.Itoa(1+len(suffix)*256+int(mode))
@@ -145,10 +149,47 @@ func FuzzHTTPConfigURLContract(f *testing.F) {
 			if got := tx.resources["resource-fuzz"].url.Host; got != wantAuthority {
 				t.Fatalf("canonical authority = %q, want %q", got, wantAuthority)
 			}
-		} else if err == nil {
-			t.Fatalf("invalid URL mode %d accepted", mode%24)
+		} else {
+			if err == nil {
+				t.Fatalf("invalid URL mode %d accepted", mode%24)
+			}
+			if wantOriginError && err.Error() != "transmit: invalid origin" {
+				t.Fatalf("invalid origin mode %d error = %q, want %q", mode%24, err, "transmit: invalid origin")
+			}
 		}
 	})
+}
+
+// Construct URLs directly to keep parsing and origin comparison from masking
+// the authority contract. These are same-package checks, not a public API.
+func TestHTTPConfigAuthorityGuardIsolation(t *testing.T) {
+	tests := []struct {
+		name, host, wantAddr, wantErr string
+	}{
+		{name: "invalid port zero", host: "target.test:0", wantErr: "transmit: invalid port"},
+		{name: "invalid port too large", host: "target.test:99999", wantErr: "transmit: invalid port"},
+		{name: "percent zone", host: "[fe80::1%fixture]:8080", wantErr: "transmit: invalid host"},
+		{name: "backslash host", host: `target.test\fixture:8080`, wantErr: "transmit: invalid host"},
+		{name: "valid port one", host: "target.test:1", wantAddr: "target.test:1"},
+		{name: "valid port maximum", host: "target.test:65535", wantAddr: "target.test:65535"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := authority(&url.URL{Scheme: "http", Host: tt.host})
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("authority(%q) error = %v, want %q", tt.host, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("authority(%q) unexpected error: %v", tt.host, err)
+			}
+			if got != tt.wantAddr {
+				t.Fatalf("authority(%q) = %q, want %q", tt.host, got, tt.wantAddr)
+			}
+		})
+	}
 }
 
 func FuzzHTTPConfigSnapshotIsolation(f *testing.F) {
