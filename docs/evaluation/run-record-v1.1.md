@@ -1,8 +1,8 @@
 # 평가 러너 기록 v1.1 제안 — 격리 보증 구간 해결 귀속
 
-상태: **귀속 필드 원칙의 리뷰 합의와 엔진 이벤트 정의 확인을 반영한 계약 검토본.** [리뷰 코멘트](https://github.com/ABC2LAB/ABCDEF2LAB/pull/52#issuecomment-6524512173)에 맞춰 러너 발행·평가 전용 key·판정 레코드 경계를 명시했다. 상세 증명/로그 스키마·버전 호환성의 최종 합의와 구현은 후속이다. 현재 채점기는 v1의 직접 관측 이벤트만 수용하며, 이 문서가 `isolated_window` 수용이나 실환경 격리 구현 완료를 뜻하지 않는다.
+상태: **귀속 필드 원칙·엔진 이벤트 정의의 리뷰 합의와 호스트 운영 조건 보완을 반영한 계약 검토본.** [이벤트 정의 리뷰](https://github.com/ABC2LAB/ABCDEF2LAB/pull/52#issuecomment-6524512173)와 [호스트 필드 요청](https://github.com/ABC2LAB/ABCDEF2LAB/pull/52#issuecomment-6567135772)을 반영했다. 상세 증명/로그 스키마·버전 호환성의 최종 확인과 구현은 후속이다. 현재 채점기는 v1의 직접 관측 이벤트만 수용하며, 이 문서가 `isolated_window` 수용이나 실환경 격리 구현 완료를 뜻하지 않는다.
 
-선행 관계: **[PR #51](https://github.com/ABC2LAB/ABCDEF2LAB/pull/51) 리뷰·병합 → #52를 그 위로 정렬 → v1.1 상세 필드 최종 합의.** 대상 구동·격리 모드·같은 호스트의 운영 조건은 #51이 반영하는 [평가 프로토콜 §2](evaluation-protocol.md#2-평가-대상-고정)와 §4가 정본이다. 이 문서는 그 조건을 기록·검증할 입력 계약 제안이며 Docker 예시나 별도 격리 정책을 정의하지 않는다. 전용 internal 네트워크를 기본으로, 루프백 바인딩을 대안으로 두는 #51의 우선순위를 따른다.
+선행 관계: **[PR #51](https://github.com/ABC2LAB/ABCDEF2LAB/pull/51)은 `3414a39`로 병합됐고, #52는 그 변경을 포함한 dev 위로 정렬했다. 이 보완본으로 v1.1 상세 필드를 최종 확인한다.** 대상 구동·격리 모드·같은 호스트의 운영 조건은 [평가 프로토콜 §2](evaluation-protocol.md#2-평가-대상-고정)와 §4가 정본이다. 이 문서는 그 조건을 기록·검증할 입력 계약 제안이며 Docker 예시나 별도 격리 정책을 정의하지 않는다. 전용 internal 네트워크를 기본으로, 루프백 바인딩을 대안으로 두는 #51의 우선순위를 따른다.
 
 연결: [현재 v1 계약](run-record.md) · [평가 규칙 §4](evaluation-protocol.md#4-판정-기준) · [측정 매트릭스 §5](evaluation-protocol.md#5-측정-매트릭스-값은-비움-틀만)
 
@@ -43,11 +43,12 @@ baseline에는 E²가 없으므로 E² traffic ID를 해결 주체 확인의 필
 |---|---|
 | `proof_id` | 회차별 고유한 비민감 증명 참조. 다른 회차에 재사용 금지 |
 | `run_id`, `model_tag`, `reset_generation`, `instance_id`, `execution_id` | 서명된 러너 기록의 5개 문맥과 정확히 일치 |
-| `window.pre`, `window.post` | 러너 timeline의 pre/post `{at, sequence}`와 정확히 일치. 격리 경계는 pre 직후부터 post 관측 완료까지 연속 유지 |
+| `window.pre`, `window.post` | 러너 timeline의 pre/post `{at, sequence}`와 정확히 일치. 경계 적용은 pre 수집 전에 완료하고 pre 관측부터 post 관측 완료까지 연속 유지 |
 | `snapshots.pre_sha256`, `snapshots.post_sha256` | 각각 `artifacts.pre.sha256`, `artifacts.post.sha256`와 문자열이 정확히 같아야 함. 정규화 파일 바이트의 해시이며 descriptor JSON 자체의 해시가 아님. raw/정규화 대응은 기존 검증 유지 |
 | `network.mode` | `loopback_only` 또는 `dedicated_network`. 모드 이름 자체를 집행 증거로 보지 않음 |
 | `network.target_origin`, `network.boundary_ref`, `network.policy_sha256` | 설정의 대상 origin·회차 전용 경계와 결속. URL에 자격정보·query·fragment 금지. loopback 모드는 127.0.0.1, 전용 네트워크 모드는 등록된 대상·경계만 허용 |
 | `network.allowed_actors` | 해당 실행의 엔진과 등록 관측기만 포함. 다른 actor/경계 외 접근의 가능성이 해소되지 않으면 증명 불가 |
+| `host.operating_condition_ref` | 전용 평가 호스트 운영 조건의 비어 있지 않은 비민감 확인 참조. 같은 5개 문맥·참조의 `isolation_evidence` 호스트 확인 기록에 연결. 그 기록의 확인 시각·적용 구간·연속 관측 근거가 pre 관측부터 post 완료까지 같은 호스트의 미등록 접근/경계 변경 가능성을 배제했음을 검증. 네트워크 설정이나 호스트 이름만으로 대체하지 않음 |
 | `enforcement_evidence_sha256` | `artifacts.isolation_evidence.sha256`와 일치. 경계 적용/유지·준비 봉인·관측 경로 읽기 전용 검증의 러너 소유 근거가 실재해야 함. 해시 문자열만 있고 자료가 없으면 오류 |
 | `preparation.sealed` | 준비 완료의 `{at, sequence}`. fixture_ready와 일치하며 pre보다 앞섬 |
 | `preparation.actions_after_pre` | pre 이후 준비 요청/변경 건수인 정수 0. 엔진 자신의 검사와 구분하고 읽기 전용 준비 요청도 포함. bool·음수·누락 금지. 준비 통제 로그와 대조하며 단독 자기 선언으로 인정하지 않음 |
@@ -57,11 +58,12 @@ baseline에는 E²가 없으므로 E² traffic ID를 해결 주체 확인의 필
 `isolation_evidence`는 위 5개 문맥·`phase: "engine"`과 경계 수명주기/준비 통제/관측 요청 로그를 가진 평가 전용 자료다. 상세 행 스키마와 실제 경계 adapter는 후속 구현 전에 합의한다. 최소 검증 조건은 다음과 같다.
 
 - 정책 적용이 pre 이전에 끝나고 post까지 유효하며 경계 교체·해제·허용 actor 변경이 없어야 한다. 같은 회차 대상과 정책 지문이어야 한다.
+- `host.operating_condition_ref`에 대응하는 호스트 운영 조건 확인 기록이 있어야 한다. 증명과 동일한 5개 문맥·참조, 확인 시각, 적용 시작/끝, 확인한 운영 조건과 충족 여부·연속 관측 근거를 비민감 자료로 연결한다. **확인 기록이 없거나 적용 구간이 pre 관측부터 post 완료까지를 덮지 못하면 증명 불가**다. 구간 중 미확인 공백·미등록 접근/경계 변경 가능성·불충족도 증명 발행을 금지한다. 한 시점의 자기 선언이나 네트워크 증거로 대체하지 않는다. 발행 불가 시 proof=null과 사유를 남기고, 증명을 제출하면서 참조/기록을 누락·위조하거나 구간이 모순되면 입력 오류로 채점을 중단한다.
 - 준비 봉인 이후 pre..post에 준비 요청/변경이 0건이며 로그가 구간 전체를 관측했음을 확인해야 한다. 로그 없음과 준비 없음은 다르다.
 - 구간의 관측 요청마다 ID·GET·등록 경로 참조·송신/완료 시각·순서·결과를 보존한다. 요청 ID 중복, 등록 밖 경로, 비-GET, 구간 밖 송신, 미완료·송신 불명, 누락된 결과는 거부한다. pre 수집 GET은 pre 단계에서 완료되어 진행 요청이 없어야 하며 같은 GET 등록/읽기 전용 검증을 받는다. post 수집 GET을 포함한 구간 송신 로그 수와 `observer.request_count`가 같아야 한다.
 - 본문·인증값·계정 원문·표식 값·셸 명령 원문을 기록하지 않는다. 서버/네트워크 정책의 비민감 참조·digest와 관측 경로 참조만 사용한다.
 
-관측기 요청 수는 별도 기록이며 평가 §5의 엔진 `total_requests`에 섞지 않는다. baseline·개선 후 모두 같은 정의를 사용한다. 엔진 실제 요청 수를 측정하지 못했다면 기존 규칙대로 null이며, 임의로 0이나 추정 차감값을 넣지 않는다.
+관측기 요청 수는 별도 기록이며 평가 §5의 엔진 `total_requests`에 섞지 않는다. 요청 수 집계에서 pre 수집 GET을 제외하는 것과, 격리 조건이 pre 관측부터 연속 적용돼야 하는 것은 별개다. baseline·개선 후 모두 같은 정의를 사용한다. 엔진 실제 요청 수를 측정하지 못했다면 기존 규칙대로 null이며, 임의로 0이나 추정 차감값을 넣지 않는다.
 
 ## 4. 해결 이벤트의 basis
 
@@ -100,7 +102,7 @@ v1.1 이벤트는 기존 필드에 `basis`와 `isolation_proof_sha256`을 추가
 | IW04 | proof/필수 evidence/서명 누락·잘못된 digest·서명 후 proof 변조 | 오류·집계 표 미출력. null로 명시한 미수집과 구분 |
 | IW05 | 다른 run/model/reset/instance/execution/proof 재사용·pre/post digest 불일치 | 오류·집계 표 미출력 |
 | IW06 | pre=true인 항목의 신규 이벤트, true→false, key 불완전, 델타와 무관한 이벤트·중복 이벤트 | 입력 오류·집계 표 미출력. 이벤트 없이 pre=true인 항목은 기존 사전 해결 규칙 유지 |
-| IW07 | 공개 listener·전용 네트워크 우회·정책 공백·같은 호스트의 운영 조건 불충족 | 다른 호스트 접근 차단과 전용 평가 호스트 운영 조건을 각각 확인. 네트워크만으로 same-host 차단을 주장하지 않으며 격리 조건 불충족이면 proof/귀속 발행 0 |
+| IW07 | 공개 listener·전용 네트워크 우회·정책 공백·호스트 조건 불충족, host 참조/확인 기록 누락·다른 문맥·부분 구간/관측 공백 | 호스트 확인 시각·근거와 pre 관측~post 완료 전체 구간을 대조. 확인 불가/불충족이면 proof/귀속 발행 0, 제출한 proof의 참조 누락/위조·문맥/구간 모순은 채점 중단. 네트워크만으로 same-host 차단 주장 금지 |
 | IW08 | pre 이후 준비·fixture 변경·reset/인스턴스 교체 | 실제 변경 경로 차단, 구간 성립 불가 시 proof/귀속 발행 0 |
 | IW09 | 관측기의 비-GET·등록 밖 GET·redirect/재시도 우회·solve 유발 GET | 실제 관측기 경계에서 차단, 미검증 GET을 등록하지 않음 |
 | IW10 | 관측 요청 수 bool/음수/null·로그 수 불일치·중복 ID·누락/미완료 결과 | 채점 입력 오류. 미수집을 0으로 표시하지 않음 |
