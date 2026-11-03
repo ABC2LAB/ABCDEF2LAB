@@ -100,7 +100,7 @@ func Prepare(ctx context.Context, in Input, reader SourceReader) (Prepared, erro
 	}
 	facts := in.Evidence.Result.Result.Facts
 	payload := map[string]any{
-		"record_version": int64(1), "case_ref": in.Expected.Scope.CaseRef, "axis": "horizontal",
+		"case_ref": in.Expected.Scope.CaseRef, "axis": "horizontal",
 		"oracle_value": string(verdict.Value), "vuln_verdict": vuln, "access_policy_result": access,
 		"policy_check": string(verdict.PolicyCheck), "identity_check": string(verdict.IdentityCheck),
 		"data_check": string(verdict.DataCheck), "reason_codes": verdict.ReasonCodes,

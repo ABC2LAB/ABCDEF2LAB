@@ -77,6 +77,10 @@ func TestPrepareRequiresTrustedCompleteSource(t *testing.T) {
 		{"missing instance", func(s *Source) { s.InstanceRef = "" }, ErrInvalid},
 		{"checkpoint scope", func(s *Source) { s.FinalCheckpointScope.RunRef = "foreign" }, ErrInvalid},
 		{"checkpoint absent", func(s *Source) { s.FinalCheckpointDigest = [32]byte{} }, ErrInvalid},
+		{"checkpoint sequence zero", func(s *Source) { s.FinalCheckpointSequence = 0 }, ErrInvalid},
+		{"created before receipt", func(s *Source) {
+			s.RecordCreatedAt = in.Evidence.Cross.Receipt.At.Add(-time.Nanosecond)
+		}, ErrInvalid},
 		{"field mismatch", func(s *Source) { s.CanaryFields = []string{"other"} }, ErrInvalid},
 		{"invalid UTF8", func(s *Source) { s.ModelTag = string([]byte{0xff}) }, ErrInvalid},
 		{"wrong policy", func(s *Source) { s.Policy.ExpectedAccess = oracle.AccessAllow }, ErrInvalid},
@@ -146,34 +150,74 @@ func TestPreparedIsDeterministicAndImmutable(t *testing.T) {
 	}
 }
 
-func TestPrepareRejectsPrecisionChangeAndForgedVerdict(t *testing.T) {
+func TestPrepareRejectsPrecisionChange(t *testing.T) {
 	in, source := fixture()
-	in.Evidence.Result.Result.Verdict.Value = oracle.Allowed
-	if _, err := Prepare(t.Context(), in, sourceReader(source)); !errors.Is(err, ErrInvalid) {
-		t.Fatal("forged result accepted", err)
-	}
-	in, source = fixture()
 	// At the original observation time this policy is valid. Truncation makes
 	// its upper bound equal to the observation, which would change the verdict.
 	source.Policy.ValidUntil = in.Evidence.Result.ObservedAt.Add(500 * time.Nanosecond)
 	in.Evidence.Policy.Assertion = source.Policy
-	source.EvidenceDigest, _ = EvidenceDigest(in.Evidence)
-
+	var err error
+	source.EvidenceDigest, err = EvidenceDigest(in.Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Prepare(t.Context(), in, sourceReader(source)); !errors.Is(err, ErrPrecision) {
 		t.Fatal("precision changed historical verdict", err)
 	}
 }
 
-func TestCanonicalSharedPythonVectors(t *testing.T) {
-	got, err := canonical(map[string]any{"z": int64(math.MaxInt64), "a": []any{"<>&\u2028\u2029", true, nil, "é", "\n"}})
-	want := "{\"a\":[\"<>&\u2028\u2029\",true,null,\"é\",\"\\n\"],\"z\":9223372036854775807}"
-	if err != nil || string(got) != want {
-		t.Fatalf("canonical mismatch: %q %v", got, err)
+func TestPrepareRecomputesVerdictWithMatchingEvidenceDigest(t *testing.T) {
+	in, source := fixture()
+	confirmed := in.Evidence.Result.Result.Verdict
+	// These facts produce undecidable, but a caller still supplies confirmed.
+	in.Evidence.Result.Result.Facts.NontrivialDataMatch = oracle.StateUnknown
+	in.Evidence.Result.Result.Verdict = oracle.Evaluate(oracle.CaseInput{
+		Policy: source.Policy,
+		Subjects: oracle.SubjectContext{
+			OwnerStatus: in.Expected.Owner.Status, EvaluatedStatus: in.Expected.Evaluated.Status,
+			OwnerRef: in.Expected.Owner.Label, EvaluatedRef: in.Expected.Evaluated.Label,
+		},
+		Facts: in.Evidence.Result.Result.Facts,
+	}, in.Evidence.Result.ObservedAt)
+	if in.Evidence.Result.Result.Verdict.Value != oracle.Undecidable {
+		t.Fatal("control fixture must recompute undecidable")
 	}
-	for _, value := range []any{map[string]any{"bad": string([]byte{0xff})}, float64(1), uint64(math.MaxUint64), strings.Repeat("x", MaxCanonicalBytes)} {
-		if _, err := canonical(value); !errors.Is(err, ErrInvalid) {
-			t.Fatalf("unsupported canonical input accepted: %T %v", value, err)
-		}
+	var err error
+	source.EvidenceDigest, err = EvidenceDigest(in.Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := Prepare(t.Context(), in, sourceReader(source))
+	snapshot, valid := prepared.Snapshot()
+	if err != nil || !valid || snapshot.Value != oracle.Undecidable {
+		t.Fatalf("valid recomputed control rejected: %v", err)
+	}
+
+	in.Evidence.Result.Result.Verdict = confirmed
+	source.EvidenceDigest, err = EvidenceDigest(in.Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := evidencebind.Check(in.Expected, in.Evidence)
+	if checked.BindingValid || checked.BindingReason != evidencebind.VerdictMismatch {
+		t.Fatalf("forged fixture must reach verdict recomputation: %+v", checked)
+	}
+	prepared, err = Prepare(t.Context(), in, sourceReader(source))
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("digest-matched forged confirmed accepted: %v", err)
+	}
+	if _, valid := prepared.Snapshot(); valid {
+		t.Fatal("forged result issued prepared record")
+	}
+}
+
+func TestPrepareAcceptsCheckpointAndCreationBoundaries(t *testing.T) {
+	in, source := fixture()
+	source.FinalCheckpointSequence = 1
+	source.RecordCreatedAt = in.Evidence.Cross.Receipt.At
+	prepared, err := Prepare(t.Context(), in, sourceReader(source))
+	if _, valid := prepared.Snapshot(); err != nil || !valid {
+		t.Fatalf("first checkpoint and creation at receipt rejected: %v", err)
 	}
 }
 

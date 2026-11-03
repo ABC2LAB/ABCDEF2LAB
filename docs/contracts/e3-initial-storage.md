@@ -5,17 +5,18 @@
 
 ## 기준과 의존
 
-- 개발 기준: `origin/dev 5912a8e5f996a83d0264d4aadccc20cc74074e08`.
-- 선행: 열린 [PR #130](https://github.com/ABC2LAB/ABCDEF2LAB/pull/130)의
-  `9b07265ca21ece5ab74fbf4521690cbfb37cd903`.
-- 갈래: `codex/first-idor-e3`; 선행과 dev를 일반 merge로 포함했다.
+- 최종 통합 검토 기준: `dev b1dea7458b8ff80744991de5b5c46c54f91465ec`.
+- 저장 결정은 위 dev에 포함된 [저장 게이트](e3-storage-gate.md)를 기준으로 읽는다.
+  #130 최종 head `646102123c85c11e7bd09b523c408a8e037d1012`는 이 기준에 이미 통합됐다.
+- E③ 개발 갈래 `codex/first-idor-e3`를 `codex/first-idor-integration`에 일반 merge로 결합했다.
 - [verdict-record](verdict-record.md),
   [저장 게이트](e3-storage-gate.md),
   [증거 결속](e3-evidence-binding.md),
   [모드 DB](task-mode-db.md)를 사용한다.
-- 서명 정수 64비트, UTC 소수점 6자리, canonical 64KiB 상한은 #130에
-  명시된 제안 중 이번 구현의 보수적인 가정이다. 팀 합의가 끝났다는 뜻이 아니다.
-  변경되면 canonical vector와 저장 호환성을 함께 재검토해야 한다.
+- signed int64, 판정 시각 UTC 소수점 6자리 Z, canonical 1~65536바이트는
+  #142 평가 담당 리뷰의 v1 결정이다([저장 게이트 §9.1](e3-storage-gate.md#91-팀-결정을-위한-저장-경계-제안)).
+  `record_version`은 DB 열에만 두며 정형 payload에는 넣지 않는다.
+  공용 벡터는 [canonical-v1.json](../../e3record/testdata/canonical-v1.json)이며 평가 reader의 회귀 연결은 별도 후속이다.
 
 ## 호출과 신뢰
 
@@ -83,6 +84,12 @@ canary에는 검증된 필드명만 남긴다.
 진입은 **알려진 controlled fence**에 대해 전용 경로 사용을 요구한다.
 negative ID의 기존 NULL sentinel과 존재하지 않는 대상의 no-op은 보존한다.
 intent/fact 변경은 finding evidence 전역 잠금을 추가로 잡지 않는다.
+
+현재 `cmd/artex/main.go`는 여전히 `server.New`로 시작하므로 신뢰 host가 자동으로 설치되지 않는다.
+반면 generic AddFinding·SetNodeState·SetFindingStatus·retest 등의 호환 경로는 legacy를 포함해
+`WithEvidenceTx`의 전역 evidence advisory lock과 mode guard를 거친다. legacy에 controlled 판정을
+요구하지는 않지만, 잠금 획득·transaction 비용과 작업 간 직렬화 영향이 추가된다.
+기능 회귀 결과와 처리량/지연 성능 검증은 구분하며, 성능 영향은 아직 벤치마크하지 않았다.
 
 이 호환 guard는 전역 unknown 모드 저장 게이트의 완성본이 아니다.
 기존 legacy API의 missing fence 동작은 유지하므로, 서버 admission이 unknown을

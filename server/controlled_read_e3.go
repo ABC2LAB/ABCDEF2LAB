@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"slices"
 	"strconv"
 	"sync"
@@ -25,13 +26,14 @@ var ErrControlledFindingConflict = errors.New("controlled_finding_conflict")
 type controlledFindingStoreFailure struct {
 	cause          error
 	classification error
+	operation      [sha256.Size]byte
 }
 
 func (e controlledFindingStoreFailure) Error() string        { return e.classification.Error() }
 func (e controlledFindingStoreFailure) Unwrap() error        { return e.cause }
 func (e controlledFindingStoreFailure) Is(target error) bool { return target == e.classification }
 
-func controlledFindingPersistenceError(err error) error {
+func controlledFindingPersistenceError(err error, operation [sha256.Size]byte) error {
 	classification := ErrControlledFindingOutcomeUnknown
 	switch {
 	case errors.Is(err, db.ErrControlledFindingConflict):
@@ -39,7 +41,7 @@ func controlledFindingPersistenceError(err error) error {
 	case errors.Is(err, db.ErrControlledFindingInput), errors.Is(err, db.ErrControlledFindingMode):
 		classification = ErrControlledFindingUnavailable
 	}
-	return controlledFindingStoreFailure{cause: err, classification: classification}
+	return controlledFindingStoreFailure{cause: err, classification: classification, operation: operation}
 }
 
 // ControlledReadFindingPlan is resolved by a trusted host, never model JSON.
@@ -248,8 +250,9 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 	}
 	c.mu.Lock()
 	if c.prepared && (c.operation != snapshot.OperationKey || c.inputKey != snapshot.InputDigest) {
+		conflict := controlledFindingStoreFailure{cause: ErrControlledFindingConflict, classification: ErrControlledFindingConflict, operation: c.operation}
 		c.mu.Unlock()
-		return ErrControlledFindingConflict
+		return conflict
 	}
 	c.prepared, c.operation, c.inputKey = true, snapshot.OperationKey, snapshot.InputDigest
 	c.mu.Unlock()
@@ -258,8 +261,30 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 	}
 	if _, err := c.save(ctx, prepared, c.markers); err != nil {
 		// A transport/commit failure is not proof that nothing was persisted.
-		// Keep a stable diagnostic plus a server-only cause for reconciliation.
-		return controlledFindingPersistenceError(err)
+		// Carry a fixed classification and non-secret operation key to finish's
+		// server diagnostic. The underlying cause must never be logged verbatim.
+		return controlledFindingPersistenceError(err, snapshot.OperationKey)
 	}
 	return nil
+}
+
+// Finalize is called once by the execution path; it does not automatically retry
+// an uncertain commit. This server-only diagnostic lets an operator reconcile
+// the operation against persisted rows without exposing source or SQL errors.
+func logControlledFindingFinalizationFailure(err error) {
+	reason := "finalization_rejected"
+	switch {
+	case errors.Is(err, ErrControlledFindingOutcomeUnknown):
+		reason = "storage_outcome_unknown"
+	case errors.Is(err, ErrControlledFindingConflict):
+		reason = "storage_conflict"
+	case errors.Is(err, ErrControlledFindingUnavailable):
+		reason = "storage_rejected"
+	}
+	key := "unavailable"
+	var failure controlledFindingStoreFailure
+	if errors.As(err, &failure) && failure.operation != ([sha256.Size]byte{}) {
+		key = hex.EncodeToString(failure.operation[:])
+	}
+	log.Printf("[controlled-read] finalization_failed reason=%s operation_key=%s", reason, key)
 }
