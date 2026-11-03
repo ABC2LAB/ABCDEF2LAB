@@ -77,7 +77,7 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
 | `network_mode` | `dedicated_network`만 지원(러너 v1, 평가 프로토콜 §2). 양쪽 일치 |
 | `target_origin` | 엔진이 보는 계측기 origin: `http://<서비스 이름>:<포트>`. 서비스 이름은 소문자 DNS label 하나(`localhost`·숫자·IP 아님), 포트 명시, 경로는 없음 또는 `/`. 인증정보·query·fragment 금지 |
 | `llm` | 백엔드별로 정확한 키 집합. 섞이거나 빠지면 거부. 양쪽 객체가 정확히 같아야 함(평가 프로토콜 §6) |
-| `llm`(api) | `backend:"api"`, `base_url`(https, 점 있는 DNS 이름, base path 허용), `model`(제공자 모델 ID `org/model[:variant]`, `latest`·TODO 거부), `provider`(고정할 제공자 label), `fallbacks:false`(bool `false`만) |
+| `llm`(api) | `backend:"api"`, `base_url`(https, 점 있는 DNS 이름, base path 허용), `model`(제공자 모델 ID `org/model[:variant]`, `latest`·TODO 거부), `provider`(고정할 제공자 slug. OpenRouter 엔드포인트 tag처럼 `slug/변형`(예: `deepinfra/fp8`)을 한 단계까지 받으며, 변형을 붙이면 그 정밀도 엔드포인트 하나로 고정되고 기본 slug는 그 제공자의 모든 변형에 매칭된다. 공식 비교는 변형 slug 권장), `fallbacks:false`(bool `false`만) |
 | `llm`(local) | `backend:"local"`, `base_url`(호스트가 `hostname`과 같음), `model`(`name:tag`, `latest` 거부), `hostname`(DNS label), `host_ip`(정규 표기의 사설 IP — `llmpolicy` 사설 대역 중 loopback(127/8·::1)을 제외한 10/8·172.16/12·192.168/16·fc00::/7. 컨테이너에서 호스트 loopback으로는 닿지 않으므로 제외) |
 | `temperature` / `seed` | 전자는 0 이상 유한수, 후자는 0 이상 정수. null·bool·암묵적 기본값 금지 |
 | `worker_count` / `request_budget` | 1 이상 정수 |

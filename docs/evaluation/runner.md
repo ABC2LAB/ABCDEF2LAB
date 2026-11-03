@@ -37,7 +37,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | 분류 매핑 | 평가자가 검토한 원본 분류 → 평가 `vuln_class`·자산 type 매핑 JSON(형식은 `baseline_extract.py`, 8MiB 이하·중복 키 거부). baseline·개선 후가 **같은 파일**을 쓴다. 원본 SHA-256이 `findings.json`에 남아 집계에서 대조한다. 매핑에 없는 값은 실패가 아니라 `null` + `unmapped_fields`로 남는다 |
 | `runs_root` | 러너 uid 소유·정확히 0700 디렉터리. 회차마다 그 아래에 새 디렉터리를 만든다 |
 | CA 묶음 | api 백엔드에서 게이트웨이가 쓸 호스트의 TLS 신뢰 묶음 경로(읽기 전용 마운트) |
-| LLM 고정 조건 | api: 고정할 제공자 전체 slug(사전검사 `llm.provider`)와 그 응답 표시 이름(설정 `expected_provider_name`)을 팀이 함께 정한다. local: 로컬 서버를 고정 IP에만 바인딩 |
+| LLM 고정 조건 | api: 고정할 제공자 전체 slug(사전검사 `llm.provider`, 정밀도까지 고정하려면 `deepinfra/fp8`처럼 엔드포인트 tag)와 그 응답 표시 이름(설정 `expected_provider_name`, 변형 없이 예: `DeepInfra`)을 팀이 함께 정한다. local: 로컬 서버를 고정 IP에만 바인딩 |
 
 ## 설정(`runner.json`, 비밀 없음, 레포 밖)
 
@@ -189,7 +189,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 - **개선 후 판정 레코드:** findings만 수집한다. 구조화 판정 레코드는 물리 형식(#18) 결정 후 추가 신호로 붙인다.
 - **tmpfs 사용량:** 회차 메모리(엔진 DB·엔진 데이터)의 seal 시점 사용량을 아직 재지 않는다. 결과 기록(완료·무효 모두)에
   `tmpfs_usage: "not_measured"`를 남기며, 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다.
-- **아직 실측하지 않은 것:** tmpfs 사용량, 평가 머신에서의 같은 항목들. api 백엔드의 정밀도(양자화) 고정(OpenRouter `quantizations`)은 아직 요청에 넣지 않는다(후속 검토).
+- **아직 실측하지 않은 것:** tmpfs 사용량, 평가 머신에서의 같은 항목들. api 백엔드는 정밀도까지 고정한 엔드포인트 tag(예: `deepinfra/fp8`)로 아직 회차를 돌리지 않았다(11/03 스모크는 기본 slug `deepinfra` — 그 시점 이 모델의 DeepInfra 엔드포인트는 fp8 하나였다).
 
 ## 스모크 실측 (11/03, 개발 머신)
 
