@@ -24,7 +24,7 @@
 운영자가 기존 finding을 수동 확정하는 경로는 다음 세 조건을 모두 만족하는 경우에 한해 제안한다. 아래는 저장·집계의 논리 요구사항이며, 필드명·타입·물리 저장 형식은 최민준님과 확인 후 확정한다.
 
 1. **별도 카테고리 저장:** 오라클의 증거 기반 `CONFIRMED`와 구별되는 **사람 수동 확정** 카테고리로 저장한다. `findings.status='confirmed'`만으로 두 결과를 합치지 않는다. 수동 확정은 기존 E③ 검증 상태·판정 참조를 바꾸거나 oracle 판정/issuance를 새로 발급하지 않는다. `confirmation_source=human`은 출처 표기의 후보이며, 모델이 그 문자열을 보내는 것만으로 수동 권한을 얻지 못한다.
-2. **자동 매트릭스 집계 제외:** [평가 프로토콜 §5](../evaluation/evaluation-protocol.md#5-측정-매트릭스-값은-비움-틀만)의 자동 매트릭스 `CONFIRMED` 집계(확정 수)에 사람 수동 확정을 넣지 않는다. API/export·평가 어댑터는 서버가 검증한 저장 카테고리·출처를 확인하고, triage confirmed를 oracle confirmed로 변환하지 않는다. 수동 확정만 추가해도 자동 확정 수·확정까지 시간과 기존 판정 칸·GT 분모는 바뀌지 않아야 한다. 기존 자동 판정은 프로토콜 §4를 그대로 따르고, 수동 내역은 별도 운영 집계로만 표시한다. 출처를 확인하지 못한 기록은 자동 CONFIRMED 입력으로 승격하지 않는다.
+2. **자동 매트릭스 집계 제외:** [평가 프로토콜 §5](../evaluation/evaluation-protocol.md#5-측정-매트릭스-값은-비움-틀만)의 자동 매트릭스 `CONFIRMED` 집계(확정 수)에 사람 수동 확정을 넣지 않는다. API/export·평가 어댑터는 서버가 검증한 저장 카테고리·출처를 확인하고, triage confirmed를 oracle confirmed로 변환하지 않는다. 수동 확정만 추가해도 자동 확정 수·확정까지 시간과 기존 판정 칸·GT 분모는 바뀌지 않아야 한다. 기존 자동 판정은 프로토콜 §4를 그대로 따르고, 수동 내역은 평가 export에서도 별도 카테고리의 **건수만** 보고하며, 확정·의심·판단불가·오탐 등 어느 판정 지표·분모에도 포함하지 않는다. oracle 판정이 없는 finding을 수동 확정으로 보충하지 않는다. 출처를 확인하지 못한 기록은 자동 CONFIRMED 입력으로 승격하지 않는다.
 3. **승인자·시각·근거 로그 필수:** 서버 인증으로 확인한 승인자의 비민감 참조, 서버가 기록한 승인 시각, 판단 사유와 검토 근거의 참조를 필수 로그로 보존한다. 근거 로그에는 원문·토큰·계정 값을 넣지 않는다. 승인자·시각·근거 중 하나가 누락/위조됐거나 필수 로그 저장이 실패하면 수동 확정을 거부한다. 수동 카테고리 기록·triage 변경·필수 로그는 같은 트랜잭션에서 원자적으로 저장해 부분 성공을 남기지 않는다.
 
 저장·API/export·평가 어댑터에서 세 조건을 검증하기 전에는 이 수동 경로를 활성화하지 않는다. 문서의 계약 합의와 실제 수동 경로·저장 게이트의 구현/시험 완료는 별개다. 합의 반영과 남은 구현 협의는 §9에서 구분한다.
@@ -157,17 +157,23 @@ reader 오류는 일반 문자열/JSON에 원문을 내보내지 않는 형태�
 
 task ID를 찾으려고 finding을 먼저 읽어야 하면 잠그지 않고 찾은 뒤, task 잠금 후 finding을 잠그며 소유 관계를 재확인한다. task/finding의 다중 잠금이 필요하면 같은 종류의 행은 ID 오름차순으로 잠근다. 실제 기존 경로 전체와 lock order를 맞추고 DB 교차 transaction 시험을 통과하기 전 활성화하지 않는다. `go test -race`는 DB deadlock 검증을 대신하지 않는다.
 
-### 5.5 물리 저장 스키마 권장안 — 팀 확인 전
+### 5.5 물리 저장 스키마 권장안 — 리뷰 결정 일부 반영
 
-아래는 §3·§5의 **구현 검토안**이다. 테이블명·열 이름은 가칭이며 마이그레이션이나 서버 배선이 아니다. 최민준님의 `verdict-record` 필드 의미·평가 읽기 계약을 바꾸지 않고, 이경준님의 KG snapshot 발급 형식도 여기서 확정하지 않는다. 현재 [db/schema.sql](../../db/schema.sql)의 `tasks`·`exploration_nodes`·`findings`·`finding_retests` 키는 모두 `BIGINT`다. `findings.task_id/node_id`는 `ON DELETE SET NULL`, `finding_retests.finding_id`는 `ON DELETE CASCADE`이므로, 출처·연결 정본을 그 nullable 열이나 재검증 자유텍스트에만 두지 않는다.
+아래는 §3·§5의 **구현 검토안**이다. 테이블명·열 이름은 가칭이며 마이그레이션이나 서버 배선이 아니다. 최민준님의 `verdict-record` 필드 의미·평가 읽기 계약을 바꾸지 않고, 이경준님의 KG snapshot 발급 형식도 여기서 확정하지 않는다. [최민준님 리뷰](https://github.com/ABC2LAB/ABCDEF2LAB/pull/123#pullrequestreview-5747067709)의 canonical 정본·평가 회차 결속·수동 export·재검증 읽기 결정을 아래에 반영했다. 그 밖의 payload 세부 schema·숫자 타입·상한값, KG snapshot 공급과 보존 정책은 미결정으로 유지한다. 현재 [db/schema.sql](../../db/schema.sql)의 `tasks`·`exploration_nodes`·`findings`·`finding_retests` 키는 모두 `BIGINT`다. `findings.task_id/node_id`는 `ON DELETE SET NULL`, `finding_retests.finding_id`는 `ON DELETE CASCADE`이므로, 출처·연결 정본을 그 nullable 열이나 재검증 자유텍스트에만 두지 않는다.
 
 | 가칭 테이블 | 필수 열·제약 | 목적 |
 |---|---|---|
 | `e3_evidence_manifests` | `id BIGSERIAL PK`, `task_id BIGINT NOT NULL`, `execution_ref TEXT`, `evidence_revision BIGINT > 0`, `digest BYTEA`, KG snapshot ID/version/digest, owner/cross 관찰·완결 영수증·필수 감사 checkpoint의 **비민감 참조**, `frozen_at TIMESTAMPTZ`; `(task_id, execution_ref, evidence_revision)` 유일 | 서버가 검증 후 동결한 참조 묶음. 요청/응답·표식 값·자격 원문은 열/JSON에 넣지 않음. 같은 키에 다른 digest는 충돌 |
-| `e3_oracle_verdicts` | `id BIGSERIAL PK`, `record_version SMALLINT`, 최민준님 계약 중 `finding_id`를 제외한 검증된 `payload JSONB`, `oracle_value` 허용 enum, `payload_digest BYTEA`, `created_at`; `finding_id` 열 없음 | 순수 판정과 평가 필드를 수정 불가 본문으로 저장. typed adapter가 필수 필드·세 체크·신호·비밀 제외를 검사한 정형 직렬화만 넣음. JSONB 자체가 출처 검증을 대신하지 않음 |
-| `e3_verdict_issuances` | `id BIGSERIAL PK`, `verdict_id BIGINT NOT NULL UNIQUE`, `manifest_id BIGINT NOT NULL`, `task_id/exploration_id/intent_id BIGINT NOT NULL`, `purpose IN (initial,retest)`, retest이면 `retest_id BIGINT NOT NULL`, `mode_version BIGINT > 0`, 별도 `eval_run_id`와 E② `execution_ref`, `case_ref`, 전체 `resource_ref`, reset 세대·하네스 발급 세대 토큰 **참조**·인스턴스·승인·KG snapshot 참조/버전/digest·owner/evaluated 비민감 계정/세션 참조, `observed_at`, `operation_key BYTEA UNIQUE`, `input_digest BYTEA`, `issued_at`; 필수 열 `NOT NULL` | 신뢰 서버의 발급 출처·동일 실행/근거 결속. 토큰 값·canary 값 대신 서버가 검증한 참조만 보존. 같은 발급에 판정 하나, 판정에 발급 하나 |
+| `e3_oracle_verdicts` | `id BIGSERIAL PK`, `record_version SMALLINT`, `finding_id`를 제외한 typed adapter 정형 바이트 `payload_canonical BYTEA NOT NULL`(`octet_length` 상한 필수·값 미정), 그 바이트의 조회용 사본 `payload JSONB`, `oracle_value` 허용 enum, `payload_digest BYTEA`, `created_at`; `finding_id` 열 없음 | 순수 판정과 평가 필드를 수정 불가 본문으로 저장. `payload_digest = SHA-256(payload_canonical)`. JSONB는 정본 바이트에서만 파생하며 export·재확인은 canonical 기준 |
+| `e3_verdict_issuances` | `id BIGSERIAL PK`, `verdict_id BIGINT NOT NULL UNIQUE`, `manifest_id BIGINT NOT NULL`, `task_id/exploration_id/intent_id BIGINT NOT NULL`, `purpose IN (initial,retest)`, retest이면 `retest_id BIGINT NOT NULL`, `mode_version BIGINT > 0`, `eval_run_id`(평가 발급은 필수·비평가는 NULL 허용)와 별도 E② `execution_ref`, `case_ref`, 전체 `resource_ref`, 모델·reset 세대·하네스 발급 세대 토큰 **참조**·인스턴스·승인·KG snapshot 참조/버전/digest·owner/evaluated 비민감 계정/세션 참조, `observed_at`, `operation_key BYTEA UNIQUE`, `input_digest BYTEA`, `issued_at`; 필수 열 `NOT NULL` | 신뢰 서버의 발급 출처·동일 실행/근거 결속. 토큰 값·canary 값 대신 서버가 검증한 참조만 보존. 같은 발급에 판정 하나, 판정에 발급 하나. 평가 회차·모델·reset은 아래 동일 transaction 대조 적용 |
 | `e3_verdict_links` | `id BIGSERIAL PK`, `issuance_id BIGINT NOT NULL UNIQUE`, `task_id/finding_id BIGINT NOT NULL`, `purpose IN (initial,retest)`, `retest_id BIGINT NULL`, `evidence_version BIGINT NOT NULL`, `linked_at`; `initial`은 retest NULL, `retest`는 issuance의 retest와 일치 | 판정 본문을 바꾸지 않고 최초 finding 또는 같은 finding의 재검증에 연결. `finding_id` 조회/export는 여기서 투영 |
-| `e3_human_confirmations` | `id BIGSERIAL PK`, `task_id/finding_id BIGINT NOT NULL`, 서버 인증 `actor_ref`, 서버 `approved_at`, 제한된 사유 코드·검토 근거 **참조**, `operation_key BYTEA UNIQUE`, `input_digest BYTEA`, `created_at`; 전부 필수·불변 | §1.1의 controlled finding 사람 수동 카테고리와 필수 승인 로그를 한 행에 보존. triage 변경과 같은 transaction. oracle 판정/issuance를 만들거나 자동 평가에 합산하지 않음 |
+| `e3_human_confirmations` | `id BIGSERIAL PK`, `task_id/finding_id BIGINT NOT NULL`, 서버 인증 `actor_ref`, 서버 `approved_at`, 제한된 사유 코드·검토 근거 **참조**, `operation_key BYTEA UNIQUE`, `input_digest BYTEA`, `created_at`; 전부 필수·불변 | §1.1의 controlled finding 사람 수동 카테고리와 필수 승인 로그를 한 행에 보존. triage 변경과 같은 transaction. oracle 판정/issuance를 만들지 않으며, 평가 export는 별도 건수만 보고하고 모든 판정 지표·분모에서 제외 |
+
+**정본 바이트·조회 사본.** typed adapter는 `verdict-record`의 필수 필드·세 체크·신호·비밀 제외를 검사한 뒤 정형 바이트를 만들고 `payload_canonical`에 그대로 저장한다. 빈 바이트를 거부하고 `CHECK (octet_length(payload_canonical) <= 확정할_상한)`에 해당하는 상한을 적용한다. 상한의 실제 값과 payload 세부 schema·필드별 숫자 타입/정밀도/허용 범위는 별도 확정하며, 이 문구를 실행 가능한 DDL로 보지 않는다. `payload JSONB`는 그 바이트에서 파생한 조회용 사본이며 독립 입력으로 받지 않는다. export·재확인은 저장한 canonical 바이트의 SHA-256을 `payload_digest`와 대조하고 그 바이트를 읽는다. JSONB를 다시 직렬화해 원래 digest를 재구성하지 않는다.
+
+**정형 직렬화 v1 규칙:** [러너 기록의 서명 직렬화](../evaluation/run-record.md)와 같은 `json.dumps(typed_value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")` 바이트 규칙을 사용한다. 즉 객체 키 재귀 정렬·배열 순서 유지, 공백 없는 쉼표/콜론 구분자, BOM·말미 개행 없는 UTF-8, 문자열 escape와 숫자는 해당 직렬화의 정수/유한 실수 표기를 따르며 NaN/Infinity는 거부한다. 원문 JSON의 중복 키·숫자 token을 보존하는 방식은 사용하지 않는다. 이것은 직렬화 규칙이며 필드별 숫자 타입을 새로 허용/확정하는 것이 아니다. 다른 언어의 encoder가 자동으로 같은 바이트를 만든다고 가정하지 않고 공유 합성 벡터로 일치를 검증한 뒤 adapter를 연결한다.
+
+**평가 회차 결속.** controlled 작업에서 평가 회차용으로 발급할 때 `eval_run_id`는 필수이며, 신뢰 러너 회차 기록의 `run_id`와 정확히 같아야 한다. E② `execution_ref`나 `case_ref`로 회차 ID를 대신하거나 모델/reset 일치만으로 추론하지 않는다. 비평가 실행의 발급은 `eval_run_id=NULL`을 명시적으로 허용하되 그 행은 평가 export에서 제외한다. canonical 판정 본문의 `model_tag`·`reset_generation`과 issuance의 모델·reset 참조가 가리키는 불변값을 판정/issuance 저장의 **같은 transaction**에서 대조하고, 회차 또는 모델/reset 불일치는 `save_conflict`로 거부한다. 하네스 세대 토큰은 reset 세대 문자열을 대체하지 않는다. 현재 러너는 엔진에 `run_id`를 전달하지 않으므로 서버 설정 또는 작업 생성 필드 등 신뢰 전달 경로가 별도로 필요하다. 러너 쪽은 최민준님이 별도 개발하며 이 문서에서 필드/API를 구현·확정하거나 배선 완료로 표현하지 않는다.
 
 **FK·유일성.** 모든 SHA-256 digest/key `BYTEA`에는 열마다 `CHECK (octet_length(column_name) = 32)`를 둔다. manifest→`tasks`, issuance→manifest/verdict/`tasks`/`explorations`/intent node/(retest이면)`finding_retests`, link→issuance/`findings`/(retest이면)`finding_retests`, human→`findings`/`tasks`는 모두 `ON DELETE RESTRICT`, `ON UPDATE RESTRICT`를 제안한다. `e3_oracle_verdicts`는 finding을 참조하지 않는다. `tasks(id,exploration_id)`, `exploration_nodes(id,exploration_id)`, `findings(id,task_id)`, `finding_retests(id,finding_id)`, manifest `(id,task_id)`, issuance `(id,task_id)`의 복합 유일 키와 복합 FK로 task→exploration→intent, task→manifest→issuance→finding, retest→finding의 소유 관계를 DB에서도 보강한다. intent `kind='intent'`, controlled mode, KG/세대/계정 진위는 FK만으로 증명할 수 없어 같은 transaction의 서버 검사를 유지한다. link에는 `finding_id WHERE purpose='initial'`과 `retest_id WHERE purpose='retest'`의 부분 유일 인덱스를 둔다. link의 purpose는 issuance와 대조한다. 다른 finding에 같은 issuance를 연결하거나 한 retest에 판정을 중복 연결할 수 없다. 실제 DDL의 복합 FK·인덱스는 전용 PostgreSQL에서 기존 nullable 행과 archive 경로를 검증한 뒤 적용한다.
 
@@ -177,7 +183,7 @@ task ID를 찾으려고 finding을 먼저 읽어야 하면 잠그지 않고 찾�
 
 **잠금·재시도.** `taskmode`와 같이 `READ COMMITTED` transaction을 쓴다. 모든 새 저장/승격/근거 변경·삭제 거부 경로는 기존 `WithEvidenceTx`의 evidence advisory lock → `tasks` row → 별도 명령의 mode fence/marker 판별 → manifest/issuance(키 순서) → finding(여러 행은 ID 오름차순) → retest → link/evidence 순서로 맞춘다. task/finding/retest ID를 찾기 위한 선행 조회는 `FOR UPDATE` 없이 하고 잠금 뒤 소유 관계를 재확인한다. `FinishFindingRetest`의 현재 finding→retest 순서는 controlled 경로에서 앞의 evidence/task 단계를 추가해야 하며, 일반 경로와 잠금 역전이 남지 않는지 교차 transaction 시험이 필요하다. 등록은 task fence를 커밋하고 파일 marker를 처리하며 task 잠금 안에서 evidence lock을 역순 요청하지 않는다. 유일 제약 충돌/직렬화 실패만 제한된 재시도 대상이고 매번 새 transaction에서 정본을 다시 읽는다. 이 설계만으로 deadlock 부재·DB 권한 분리·실제 저장 게이트 완료를 주장하지 않는다.
 
-**확정 전 확인.** 최민준님과 판정 payload의 물리 직렬화·수동 확정의 출처/평가 읽기·재검증 link 의미를, 이경준님과 KG snapshot ID/version/digest 공급을 확인한다. 서버 실행 어댑터의 manifest·관찰·감사 checkpoint 참조 발행 시점, DB 역할·보존 기간/삭제 절차도 실제 배선 전 정해야 한다. 이 제안은 E3G37~40·47~52·55~61의 DB 경합/rollback·삭제·수동 집계 시험을 통과해야 확정할 수 있다.
+**확정 전 확인.** 최민준님의 canonical 정본·회차 결속·수동 평가 제외·재검증 읽기 결정은 위와 §1.1·§7에 반영했다. payload 세부 schema·필드별 숫자 타입·정형 바이트 상한과 공유 직렬화 벡터는 후속으로 확정·검증하고, 이경준님과 KG snapshot ID/version/digest 공급을 확인한다. 서버 실행 어댑터의 manifest·관찰·감사 checkpoint 참조 발행 시점, DB 역할·보존 기간/삭제 절차도 실제 배선 전 정해야 한다. 이 제안은 E3G37~40·47~52·55~61의 DB 경합/rollback·삭제·수동 집계 시험을 통과해야 확정할 수 있다.
 
 ## 6. 판정·실패 처리
 
@@ -194,7 +200,9 @@ task ID를 찾으려고 finding을 먼저 읽어야 하면 잠그지 않고 찾�
 
 ## 7. 재검증
 
-server-owned conversation→retest→finding→원래 task와 새 검증 execution을 연결한다. 재검증을 최초 finding과 같은 의미의 새 finding 생성으로 처리하지 않는다.
+server-owned conversation→retest→finding→원래 task와 새 검증 execution을 연결한다. 재검증마다 **별도 issuance·verdict·link**를 만들며 최초 판정/발급/연결을 덮어쓰지 않는다. 재검증을 최초 finding과 같은 의미의 새 finding 생성으로 처리하지 않는다.
+
+평가 export는 해당 `eval_run_id`에서 발급한 판정만 읽고, 다른 회차의 재검증 결과로 해당 회차 판정을 바꾸지 않는다. 같은 finding에 최초·재검증 판정이 함께 있으면 [verdict-record §4의 count_basis](./verdict-record.md#4-평가-읽기-계약-eval-count_basis--레코드)를 따르며, 최신값 덮어쓰기(last-writer-wins)로 집계하지 않는다. 같은 회차의 증거·커버리지·해결 귀속을 함께 보는 기존 평가 판정 기준을 유지한다.
 
 - 해당 finding의 같은 증거에 대한 검증된 `CONFIRMED`는 `reproduced`로 연결할 수 있다. 별도 판정 참조와 실행 연결이 필요하다.
 - `ALLOWED`·실행 차단·응답 미확인·근거 부족을 자동 `fixed`로 변환하지 않는다. 초기 조회 게이트는 fixed를 증명하는 별도 규칙을 구현하지 않으며, 이 경로는 `inconclusive`와 사유를 사용한다.
@@ -214,8 +222,8 @@ server-owned conversation→retest→finding→원래 task와 새 검증 executi
 ## 9. 남은 협의
 
 - 재검증 매핑과 동일 실행/근거·완결 영수증·판정/issuance 동일 transaction·finding/link 원자 저장 불변식은 리뷰에서 합의했다. 발급 레코드의 두 보완 항목은 §3과 시험 명세에 반영했으며 수정본의 최종 확인을 받는다. 잠금 순서 자체는 이동찬이 기존 엔진 경로와 맞춰 구현·DB 경합 시험으로 검증한다.
-- 사람 수동 확정은 §1.1의 세 조건을 적용한 별도 카테고리·평가 제외·승인자/시각/근거 로그 필드와 API/export 동작을 확인한다. 조건부 수용을 전체 저장 계약의 합의로 확대하지 않는다.
-- §5.5의 판정/발급/연결·수동 승인 테이블, write 권한·FK·멱등키·보존/삭제·잠금 순서는 **이동찬의 권장 검토안**이다. 최민준님의 판정/수동 출처 계약 확인과 실제 DDL·경합 시험 전에는 확정 저장 규격이나 구현 완료가 아니다.
+- 최민준님 리뷰의 canonical 바이트 정본·회차 결속·수동 export 별도 건수/모든 판정 지표·분모 제외·별도 재검증 읽기 결정은 §5.5·§1.1·§7에 반영했다. 승인자/시각/근거 로그 필드와 API/export, payload 세부 schema·숫자 타입·상한 및 언어 간 직렬화 일치 검증은 후속이다. 이 결정들을 전체 물리 저장 계약의 합의나 구현 완료로 확대하지 않는다.
+- §5.5의 판정/발급/연결·수동 승인 테이블, write 권한·FK·멱등키·보존/삭제·잠금 순서는 **이동찬의 권장 검토안**이다. 위 리뷰 결정 밖의 세부 형식 확인과 실제 DDL·경합 시험 전에는 확정 저장 규격이나 구현 완료가 아니다.
 - 서버 execution 근거 manifest와 E② 감사 완료/관찰 참조의 생성·동결 시점(이동찬, 진행 중인 E② 세션).
 - private marker와 DB mode fence의 이관·재시작·등록 경합 처리(이동찬).
 - KG 버전/정본 snapshot 제공, 허용 결과 저장의 이름(최민준·이경준). 기존 `oracle` 의미는 유지.
