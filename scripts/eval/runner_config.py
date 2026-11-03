@@ -77,6 +77,10 @@ def duration_seconds(text: str) -> float:
 _DB_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
 # 게이트웨이가 chat completions 경로만 받으므로 엔진은 OpenAI 호환 형식만 쓴다(OpenRouter·Ollama 둘 다 지원).
 _LLM_PROVIDERS = ("openai",)
+# 엔진 LLM 정책 모드(#125, ARTEX_LLM_POLICY_MODE). 엔진 기본값은 local-only라 운영자 pin manifest와 그에 맞는 DB
+# profile이 있어야 뜬다. 평가 회차는 LLM을 게이트웨이로만 내보내므로(망 격리) external만 받는다. local-only는 §6
+# 외부 송신 차단 음성 시험용이며 러너가 manifest·profile을 준비하지 않는다. baseline(e53a79f)은 이 스위치가 없다.
+_LLM_POLICY_MODES = ("external",)
 _IMAGE_ROLES = ("engine_baseline", "engine_ours", "engine_db", "meter")
 _PORTS = ("engine_api_host", "engine_container", "target", "obs", "obs_host", "llm_gateway", "api_front")
 # expected_provider_name: generation 조회가 돌려주는 응답 제공자 표시 이름(고정 slug와 짝, 팀이 정함).
@@ -136,6 +140,7 @@ class RunnerConfig:
     observer_path: str
     llm_provider: str
     llm_stream: bool
+    llm_policy_mode: str
     engine_db_user: str
     engine_db_name: str
     tmpfs_engine_db: str
@@ -258,11 +263,14 @@ def parse_runner_config(raw: object) -> RunnerConfig:
             errors.append("config.ports: HOST_PORT_CONFLICT")
     if "observer_path" in top and not _observer_path(top["observer_path"]):
         errors.append("config.observer_path: INVALID")
-    engine = _exact(top.get("engine"), ("llm_provider", "llm_stream"), "config.engine", errors) if "engine" in top else {}
+    engine = (_exact(top.get("engine"), ("llm_provider", "llm_stream", "llm_policy_mode"), "config.engine", errors)
+              if "engine" in top else {})
     if "llm_provider" in engine and engine["llm_provider"] not in _LLM_PROVIDERS:
         errors.append("config.engine.llm_provider: UNSUPPORTED")
     if "llm_stream" in engine and type(engine["llm_stream"]) is not bool:
         errors.append("config.engine.llm_stream: EXPECTED_BOOL")
+    if "llm_policy_mode" in engine and engine["llm_policy_mode"] not in _LLM_POLICY_MODES:
+        errors.append("config.engine.llm_policy_mode: UNSUPPORTED")
     db = _exact(top.get("engine_db"), ("user", "name"), "config.engine_db", errors) if "engine_db" in top else {}
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
@@ -339,7 +347,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     return RunnerConfig(
         runs_root=Path(top["runs_root"]), secrets_env_file=Path(top["secrets_env_file"]), images=images,
         target_image_id=top["target_image_id"], ports=dict(ports), observer_path=top["observer_path"],
-        llm_provider=engine["llm_provider"], llm_stream=engine["llm_stream"],
+        llm_provider=engine["llm_provider"], llm_stream=engine["llm_stream"], llm_policy_mode=engine["llm_policy_mode"],
         engine_db_user=db["user"], engine_db_name=db["name"],
         tmpfs_engine_db=tmpfs["engine_db"], tmpfs_engine_data=tmpfs["engine_data"],
         health_interval=health["interval"], health_timeout=health["timeout"], health_retries=health["retries"],
@@ -464,6 +472,7 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "ARTEX_LLM_MODEL": llm["model"],
         "ARTEX_LLM_BASE_URL": f"http://{LLM_GW_SERVICE}:{gateway_port}{base_path}",
         "ARTEX_LLM_STREAM": "true" if config.llm_stream else "false",
+        "EVAL_ENGINE_LLM_POLICY_MODE": config.llm_policy_mode,
         "EVAL_TARGET_PORT": str(config.ports["target"]),
         "EVAL_METER_PORT": str(origin.port),
         "EVAL_OBS_PORT": str(config.ports["obs"]),

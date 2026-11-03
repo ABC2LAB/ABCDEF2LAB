@@ -132,6 +132,7 @@ class RunSpec:
     task_request_sha256: str
     host_watch_max_gap_seconds: float
     events_lookback_seconds: float
+    llm_policy_mode: str
 
 
 class WatchHandle(Protocol):
@@ -359,6 +360,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "task_request_sha256": spec.task_request_sha256,
+                     # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline 엔진에는 이 스위치가 없다.
+                     "engine_llm_policy": {"declared": spec.llm_policy_mode, "observed": None},
                      "window": {"host_watch": window["host_watch"], "events": {
                          key: window["docker_events"][key] for key in ("event_count", "kinds", "complete")}},
                      "daemon": pre["daemon"], "scoreboards": {"pre": pre_board, "post": post_board}}
@@ -531,7 +534,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_request_sha256=task_request_sha256,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
-        events_lookback_seconds=config.health_timeout_seconds)
+        events_lookback_seconds=config.health_timeout_seconds, llm_policy_mode=config.llm_policy_mode)
 
 
 def main(argv: list[str] | None = None) -> int:

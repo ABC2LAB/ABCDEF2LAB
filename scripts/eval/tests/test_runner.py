@@ -282,6 +282,8 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual((task["format"], task["request_sha256"], task["task_id"]),
                          ("abc2lab-eval-runner-task-v1", "t" * 64, "17"))
         self.assertEqual(result["task_request_sha256"], "t" * 64)
+        # 엔진 LLM 정책 모드는 선언값만 남는다(엔진이 드러내지 않음 → 관측 null).
+        self.assertEqual(result["engine_llm_policy"], {"declared": "external", "observed": None})
         # 사용량을 재기 전에는 서명된 완료 기록에도 미측정을 명시한다(공식 비교 제외 근거).
         self.assertEqual(result["tmpfs_usage"], "not_measured")
 

@@ -25,6 +25,8 @@ services:
       # LLM 게이트웨이 주소. 러너가 사전검사 선언의 LLM 주소 경로를 붙여 넘긴다.
       ARTEX_LLM_BASE_URL: ${ARTEX_LLM_BASE_URL:?}
       ARTEX_LLM_STREAM: ${ARTEX_LLM_STREAM:-}
+      # 엔진 LLM 정책 모드(#125). 러너 설정에서 받는다(평가는 external). 이 스위치가 없는 엔진(baseline)은 무시한다.
+      ARTEX_LLM_POLICY_MODE: ${EVAL_ENGINE_LLM_POLICY_MODE:?}
       # 엔진은 키가 비면 LLM을 끈다. 진짜 키는 게이트웨이만 갖고, 게이트웨이는 엔진이 보낸 이 값을 버린다.
       OPENAI_API_KEY: gateway-holds-the-key
     volumes:
