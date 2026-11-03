@@ -195,6 +195,17 @@ class TestBaselineCollectorProperties(unittest.TestCase):
                     self.assertEqual(calls[1][1], min(config.max_page_bytes,
                                                       cap - len(bodies[0])))
 
+    def test_zero_remaining_total_budget_stops_before_next_request(self):
+        payloads = _pages(3, 2)
+        first_body = _body(payloads[0])
+        config = self.config(page_size=2, max_page_bytes=len(first_body),
+                             max_total_bytes=len(first_body))
+
+        error, calls = self.collect_failure(config, payloads)
+
+        self.assertEqual(str(error), "TOTAL_BYTE_CAP_EXCEEDED")
+        self.assertEqual([number for number, _ in calls], [1])
+
     def test_invalid_configuration_has_zero_requests_and_reader_rejects_first_cap(self):
         payloads = _pages(1, 1)
         for config in (self.config(page_size=0), self.config(max_pages=0),
