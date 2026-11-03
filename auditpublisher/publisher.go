@@ -41,18 +41,18 @@ type RootScope interface {
 // publisher scope, current epoch, key mapping and Seal lifecycle evidence.
 // Nothing in this package constructs that Host or activates an HTTP execution.
 type Config struct {
-	Store            *auditcheckpoint.Store
+	Store            *auditcheckpoint.Store `json:"-"`
 	Epoch            auditcheckpoint.Epoch
 	PublisherRef     string
-	RootScope        RootScope
+	RootScope        RootScope `json:"-"`
 	Filename         string
-	Scope            transmit.Scope
+	Scope            transmit.Scope `json:"-"`
 	KeyRef           string
-	Key              []byte
+	Key              []byte `json:"-"`
 	MaxSnapshotBytes int64
 	// BindCloseWitness gives the trusted Host this instance's Close evidence
 	// before Register. It must not reenter Publisher or start SQL work.
-	BindCloseWitness func(*CloseWitness) error
+	BindCloseWitness func(*CloseWitness) error `json:"-"`
 }
 
 // Publisher is a transmit.Recorder. Its nil-free Record result means the local

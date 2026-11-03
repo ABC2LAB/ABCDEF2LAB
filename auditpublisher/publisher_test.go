@@ -8,7 +8,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -84,6 +86,33 @@ type publisherFixture struct {
 	root   *syntheticRootScope
 	config Config
 	path   string
+}
+
+func TestConfigJSONOmitsKeysAndCapabilities(t *testing.T) {
+	key := []byte("synthetic-private-key-never-in-json")
+	config := Config{Store: &auditcheckpoint.Store{}, RootScope: &syntheticRootScope{dir: "private-root"},
+		Scope: transmit.Scope{RunRef: "private-run"}, Key: key,
+		BindCloseWitness: func(*CloseWitness) error { return nil }, PublisherRef: "metadata-only"}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Config JSON refused redacted capabilities: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Store", "RootScope", "Scope", "Key", "BindCloseWitness"} {
+		if _, present := fields[name]; present {
+			t.Fatalf("Config JSON emitted private field %s", name)
+		}
+	}
+	if bytes.Contains(encoded, []byte(base64.StdEncoding.EncodeToString(key))) ||
+		bytes.Contains(encoded, []byte("private-root")) || bytes.Contains(encoded, []byte("private-run")) {
+		t.Fatal("Config JSON exposed private key or scope contents")
+	}
+	if _, present := fields["PublisherRef"]; !present {
+		t.Fatal("Config JSON omitted harmless metadata unexpectedly")
+	}
 }
 
 func fixture(t *testing.T) *publisherFixture {
