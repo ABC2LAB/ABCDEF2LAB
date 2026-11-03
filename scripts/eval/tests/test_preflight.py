@@ -39,6 +39,7 @@ def configuration():
         "worker_count": 1,
         "time_budget_seconds": 1200,
         "request_budget": 100,
+        "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
         "fixture_fingerprint": "a" * 64,
         "environment_fingerprint": "b" * 64,
         "scope_fingerprint": "c" * 64,
@@ -102,6 +103,7 @@ class TestCheckPreflight(unittest.TestCase):
             "llm": api_llm() | {"provider": "other-provider"},
             "temperature": 0.2, "seed": 43, "target_origin": "http://eval-meter:8081",
             "worker_count": 2, "time_budget_seconds": 600, "request_budget": 200,
+            "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"},
             "fixture_fingerprint": "d" * 64, "environment_fingerprint": "e" * 64,
             "scope_fingerprint": "f" * 64,
         }

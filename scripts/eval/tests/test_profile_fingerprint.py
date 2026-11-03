@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import os
 import re
@@ -34,7 +35,7 @@ def local_llm():
 
 def profile():
     return {
-        "version": 2,
+        "version": 3,
         "fixture": {
             "preparation_id": "read_fixture", "preparation_revision": 1,
             "accounts": [{"label": "owner", "role": "basic"}, {"label": "peer", "role": "basic"}],
@@ -49,6 +50,7 @@ def profile():
             "network_mode": "dedicated_network", "llm": api_llm(),
             "temperature": 0, "seed": 42, "target_image": "example/target:15.0.0",
             "worker_count": 1, "time_budget_seconds": 1200, "request_budget": 100,
+            "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
         },
         "scope": {"target_origin": "http://eval-meter:8080", "methods": ["GET", "HEAD"],
                   "paths": ["/api/records/{object}", "/api/status"], "vuln_classes": ["idor", "bola"]},
@@ -62,12 +64,13 @@ class TestProfileFingerprint(unittest.TestCase):
         self.assertIn(expected, str(caught.exception))
         self.assertNotIn("SYNTHETIC-PRIVATE", str(caught.exception))
 
-    def test_v2_fixed_canonical_vectors(self):
+    def test_v3_fixed_canonical_vectors(self):
+        # v3: 환경에 run_storage(tmpfs 크기·하한)가 들어가고 format 문자열이 바뀌어 세 지문 모두 v2와 다르다.
         self.assertEqual(asdict(generate_fingerprints(profile())), {
-            "format": "abc2lab-eval-profile-v2",
-            "fixture_fingerprint": "8a4420314602508967de9bfd5949e688cae243c44cfe8d8d387e0ef7d3bcfb82",
-            "environment_fingerprint": "eb2f747cd5185939ca20fe1470650a5a16ca50116774ed71c86a39085a24907d",
-            "scope_fingerprint": "ccbb0773d8884a93e880b9434c2cc49244901fd673c2723ecd8b07adffa22683",
+            "format": "abc2lab-eval-profile-v3",
+            "fixture_fingerprint": "3f17600f9137bd5599e37ba967096579e1e9087ccf0bb2a88ae9361701fbdd74",
+            "environment_fingerprint": "0db48516f8984286f710ac5acafc68e8a5470daa43b21d6d2fc967c2f4a24564",
+            "scope_fingerprint": "f75a82a89c6c8999cb9be671d0b51dbac69a3900de8c86914c85b08b5f079e1f",
         })
 
     def test_digest_fields_fit_current_preflight_without_changing_source_pins(self):
@@ -127,7 +130,9 @@ class TestProfileFingerprint(unittest.TestCase):
         expected = generate_fingerprints(profile())
         changes = {"llm": api_llm() | {"provider": "other-provider"},
                    "temperature": 0.25, "seed": 43, "target_image": "example/target:16.0.0",
-                   "worker_count": 2, "time_budget_seconds": 600, "request_budget": 101}
+                   "worker_count": 2, "time_budget_seconds": 600, "request_budget": 101,
+                   # tmpfs 하한이 다르면 같은 측정값으로도 완료·무효가 갈린다(#140 리뷰) → 환경 지문이 달라야 한다.
+                   "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"}}
         for field, value in changes.items():
             payload = profile()
             payload["environment"][field] = value
@@ -209,7 +214,7 @@ class TestProfileFingerprint(unittest.TestCase):
             payload = profile()
             del payload[field]
             self.reject(payload, "MISSING_FIELDS")
-        for value in (None, True, 0, 1, 3, "2"):
+        for value in (None, True, 0, 1, 2, 4, "3"):  # v2(run_storage 없음)는 v3와 섞지 않는다
             self.reject(profile() | {"version": value}, "UNSUPPORTED_VERSION")
         for field in ("fixture", "environment", "scope"):
             payload = profile()
@@ -325,6 +330,32 @@ class TestProfileFingerprint(unittest.TestCase):
         payload = profile()
         payload["environment"]["llm"] = local_llm()
         generate_fingerprints(payload)
+
+    def test_run_storage_validation_does_not_drift(self):
+        # tmpfs 크기·하한: 프로파일 지문·사전검사·러너 설정이 같은 값을 받아야 선언과 실제 compose·판정이 어긋나지 않는다.
+        import runner_config
+        sizes = ("1", "16", "16k", "16m", "1g", "999999999", "999999999g", "0", "016", "1G", "1.5m", "1mb", "-1", "",
+                 " 1m", "1m ", "1t", "1000000000")
+        for text in sizes:
+            with self.subTest(size=text):
+                ok = bool(profile_fingerprint._STORAGE_SIZE.fullmatch(text))
+                self.assertEqual(ok, bool(preflight._STORAGE_SIZE.fullmatch(text)))
+                self.assertEqual(ok, bool(runner_config._TMPFS_SIZE.fullmatch(text)))
+                if ok:
+                    self.assertEqual(profile_fingerprint._storage_bytes(text), runner_config.size_bytes(text))
+                    self.assertEqual(preflight._storage_bytes(text), runner_config.size_bytes(text))
+        for db, data, low in itertools.product(("1g", "512m", "16m"), ("512m", "16m", "1024k"), ("8m", "16m", "512m")):
+            value = {"engine_db_tmpfs": db, "engine_data_tmpfs": data, "tmpfs_min_free": low}
+            with self.subTest(value=value):
+                self.assertEqual(profile_fingerprint._run_storage(value), preflight._run_storage(value))
+                expected = runner_config.size_bytes(low) < min(runner_config.size_bytes(db), runner_config.size_bytes(data))
+                self.assertEqual(profile_fingerprint._run_storage(value), expected)
+        for bad in (None, [], {}, {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m"},
+                    {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "8m", "extra": "1"},
+                    {"engine_db_tmpfs": 1, "engine_data_tmpfs": "512m", "tmpfs_min_free": "8m"}):
+            with self.subTest(bad=bad):
+                self.assertFalse(profile_fingerprint._run_storage(bad))
+                self.assertFalse(preflight._run_storage(bad))
 
     def test_url_and_llm_validation_does_not_drift_from_preflight(self):
         # 두 검증기는 같은 정의 블록을 갖는다. 소스가 갈라지면 여기서 먼저 걸린다.
