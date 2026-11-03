@@ -37,7 +37,8 @@ CONTAINER_TEMPLATE = (
     '"service":{{json (index .Config.Labels "com.docker.compose.service")}},'
     '"image":{{json .Image}},"running":{{json .State.Running}},'
     '"started_at":{{json .State.StartedAt}},"restart_count":{{json .RestartCount}},'
-    '"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}}}'
+    '"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}},'
+    '"network_mode":{{json .HostConfig.NetworkMode}},"pid_mode":{{json .HostConfig.PidMode}}}'
 )
 
 

@@ -30,7 +30,10 @@ NETWORK_LABEL = "com.docker.compose.network"
 LOOPBACK_V4 = "127.0.0.1"
 _CONTAINER_ID = re.compile(r"[0-9a-f]{64}\Z")
 _CONTAINER_FIELDS = frozenset({"id", "project", "service", "image", "running", "started_at", "restart_count",
-                               "ports", "networks"})
+                               "ports", "networks", "network_mode", "pid_mode"})
+# HostConfig.NetworkMode·PidMode의 다른 컨테이너 namespace 공유 표기. docker는 이름·짧은 ID로 지정해도 전체 ID로
+# 저장한다(11/03 실측, 29.1.3).
+_SHARED_NAMESPACE = "container:"
 _PORT_KEY = re.compile(r"[1-9][0-9]{0,4}/(?:tcp|udp|sctp)\Z")
 _TCP_LISTEN = "0A"
 PROC_TCP = "/proc/net/tcp"
@@ -81,6 +84,9 @@ class ContainerFact:
     exposed: frozenset[str]
     bindings: frozenset[Binding]
     network_ids: frozenset[str]
+    # `container:<ID>`면 그 컨테이너의 망·PID namespace를 같이 쓴다. 망 구성원·망 연결 이벤트에는 보이지 않는다.
+    network_mode: str
+    pid_mode: str
 
 
 @dataclass(frozen=True)
@@ -203,7 +209,9 @@ def parse_container(raw: object) -> ContainerFact:
     exposed, bindings = _ports(raw["ports"])
     return ContainerFact(container_id, _label(raw["project"]), _label(raw["service"]),
                          _str(raw["image"], "container_fact_invalid"),
-                         raw["running"], started_at, restart_count, exposed, bindings, frozenset(network_ids))
+                         raw["running"], started_at, restart_count, exposed, bindings, frozenset(network_ids),
+                         _str(raw["network_mode"], "container_fact_invalid"),
+                         _str(raw["pid_mode"], "container_fact_invalid"))
 
 
 def _address(value: str) -> str:
@@ -332,6 +340,25 @@ def check_other_publishes(project: str, containers: Iterable[ContainerFact]) -> 
             continue
         if any(not _is_loopback(binding.host_ip) for binding in container.bindings):
             violations.add(f"host.container.{container.id[:12]}: NON_LOOPBACK_PUBLISH")
+    return sorted(violations)
+
+
+def check_namespace_sharing(run_containers: Iterable[ContainerFact], running: Iterable[ContainerFact]) -> list[str]:
+    """회차 컨테이너의 망·PID namespace를 같이 쓰는 실행 중 컨테이너가 없어야 한다.
+
+    `docker run --network container:<대상>`은 망 구성원·망 연결 이벤트에 보이지 않고 대상에 바로 닿는다. 구간 중 새로
+    생기는 것은 구간 감시(runner_window)가 잡고, 구간 전부터 떠 있던 것은 이 pre/post 점검이 잡는다. 공유 대상이
+    전체 ID가 아니면(이름 표기 등) 회차 컨테이너인지 가릴 수 없으므로 위반으로 본다.
+    """
+    run_ids = {container.id for container in run_containers}
+    violations = set()
+    for container in running:
+        for kind, mode in (("NETWORK", container.network_mode), ("PID", container.pid_mode)):
+            if not mode.startswith(_SHARED_NAMESPACE):
+                continue
+            target = mode[len(_SHARED_NAMESPACE):]
+            if target in run_ids or not _CONTAINER_ID.fullmatch(target):
+                violations.add(f"host.container.{container.id[:12]}: SHARES_{kind}_NAMESPACE")
     return sorted(violations)
 
 

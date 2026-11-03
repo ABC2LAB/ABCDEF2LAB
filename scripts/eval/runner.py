@@ -34,9 +34,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from preflight import PreflightError, load_preflight  # noqa: E402
 from run_record import read_runner_key, sign_run_record  # noqa: E402
 from runner_checks import (  # noqa: E402
-    ExpectedTopology, Listener, allowed_host_listens, check_host_listeners, check_other_publishes, check_topology,
-    compare_snapshots, expected_topology, listeners_outside_loopback, network_snapshot, parse_container,
-    parse_network, policy_sha256, read_host_listeners,
+    ExpectedTopology, Listener, allowed_host_listens, check_host_listeners, check_namespace_sharing,
+    check_other_publishes, check_topology, compare_snapshots, expected_topology, listeners_outside_loopback,
+    network_snapshot, parse_container, parse_network, policy_sha256, read_host_listeners,
 )
 from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE, METER_SERVICE, OBS_SERVICE, TARGET_SERVICE,
@@ -238,7 +238,8 @@ def _check_phase(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase:
     listeners = _step(state, f"{phase}_host_listeners_failed", ports.host_listeners)
     state.listeners[phase] = listeners_outside_loopback(listeners)
     topology = check_topology(spec.expected, spec.project, networks, containers)
-    host = check_other_publishes(spec.project, running) + check_host_listeners(listeners, spec.allowed_listens)
+    host = (check_other_publishes(spec.project, running) + check_namespace_sharing(containers, running)
+            + check_host_listeners(listeners, spec.allowed_listens))
     snapshot = network_snapshot(facts.daemon, spec.project, networks, containers)
     images = sorted(f"service.{service}: IMAGE_MISMATCH" for role, services in _IMAGE_SERVICES.items()
                     for service in services

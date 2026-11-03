@@ -159,7 +159,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `compose_up_failed` | 기동 실패(down은 실행) |
 | `{pre,post}_facts_failed`, `{pre,post}_host_listeners_failed` | docker·/proc 사실 수집 실패 |
 | `{pre,post}_topology_violation` | 망·구성원·publish·이미지가 기대 구성과 다름 |
-| `{pre,post}_host_condition_violation` | 다른 컨테이너의 loopback 밖 publish 또는 허용 안 된 호스트 리슨 |
+| `{pre,post}_host_condition_violation` | 다른 컨테이너의 loopback 밖 publish, 회차 컨테이너의 망·PID namespace를 같이 쓰는 실행 중 컨테이너(`HostConfig.NetworkMode`·`PidMode` = `container:<회차 컨테이너 ID>`, 전체 ID가 아닌 표기도 위반), 또는 허용 안 된 호스트 리슨 |
 | `{pre,post}_probe_invalid`, `{pre,post}_probe_violation` | 부정 연결 점검 무효(양성 대조 실패·실패 종류 불일치·probe 오류) 또는 위반(막혀야 할 경로가 열림). 경로별 내용은 `*-probe.json` |
 | `target_not_ready`, `pre_scoreboard_failed`, `post_scoreboard_failed` | 관측 front로 대상 준비·스코어보드 수집 실패 |
 | `pre_requests_nonzero` | 작업 시작 전에 엔진이 대상으로 보냄 |

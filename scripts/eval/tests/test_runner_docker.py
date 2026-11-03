@@ -243,9 +243,12 @@ class TestFactGathering(unittest.TestCase):
         self.assertNotIn("{{json .Config.Labels}}", template)
         self.assertEqual(set(re.findall(r'"([a-z_]+)":', template)),
                          {"id", "project", "service", "image", "running", "started_at", "restart_count", "ports",
-                          "networks"})
+                          "networks", "network_mode", "pid_mode"})
         self.assertIn("{{json .State.StartedAt}}", template)
         self.assertIn("{{json .RestartCount}}", template)
+        self.assertNotIn("{{json .HostConfig}}", template)  # Binds 등 경로가 들 수 있어 필드 두 개만
+        self.assertIn('"network_mode":{{json .HostConfig.NetworkMode}}', template)
+        self.assertIn('"pid_mode":{{json .HostConfig.PidMode}}', template)
 
 
 class TestProbeCall(unittest.TestCase):

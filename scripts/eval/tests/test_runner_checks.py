@@ -12,9 +12,9 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_checks import (
-    Binding, CheckInputError, Listener, allowed_host_listens, check_host_listeners, check_other_publishes,
-    check_topology, compare_snapshots, expected_topology, network_snapshot, parse_container, parse_network,
-    parse_proc_net_tcp, policy_sha256, read_host_listeners,
+    Binding, CheckInputError, Listener, allowed_host_listens, check_host_listeners, check_namespace_sharing,
+    check_other_publishes, check_topology, compare_snapshots, expected_topology, network_snapshot, parse_container,
+    parse_network, parse_proc_net_tcp, policy_sha256, read_host_listeners,
 )
 from runner_config import COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LOCAL_LLM, parse_runner_config, plan_run
 from runner_docker import DaemonIdentity
@@ -65,7 +65,9 @@ def raw_world():
                     for key, members in MEMBERS.items() if service in members}
         containers.append({"id": container_id, "project": PROJECT, "service": service, "image": "sha256:" + "9" * 64,
                            "running": True, "started_at": "2026-11-02T01:00:00.123456789Z", "restart_count": 0,
-                           "ports": ports[service], "networks": attached})
+                           "ports": ports[service], "networks": attached,
+                           "network_mode": f"{PROJECT}_{next(k for k, m in MEMBERS.items() if service in m)}",
+                           "pid_mode": ""})
     return networks, containers
 
 
@@ -218,7 +220,8 @@ class TestParse(unittest.TestCase):
                        lambda c: c.update(restart_count=True), lambda c: c.update(restart_count="0"),
                        lambda c: c.update(ports={"8787/tcp": [{"HostIp": "127.0.0.1", "HostPort": "x"}]}),
                        lambda c: c.update(ports={"8787": None}), lambda c: c.update(ports=[]),
-                       lambda c: c.update(networks={"n": {"IPAddress": "1"}})):
+                       lambda c: c.update(networks={"n": {"IPAddress": "1"}}), lambda c: c.pop("network_mode"),
+                       lambda c: c.update(network_mode=None), lambda c: c.update(pid_mode=0)):
             raw = copy.deepcopy(containers[0])
             mutate(raw)
             with self.assertRaises(CheckInputError):
@@ -325,12 +328,41 @@ class TestTopology(unittest.TestCase):
                 self.assertEqual(self.check(), [f"service.{service}: PUBLISH_MISMATCH"])
 
 
-def foreign(ports, project="other", service="web"):
+def foreign(ports, project="other", network_mode="bridge", pid_mode="", service="web"):
     return parse_container({"id": "a" * 64, "project": project, "service": service, "image": "x", "running": True,
-                            "started_at": "2026-11-02T00:00:00Z", "restart_count": 0, "ports": ports, "networks": {}})
+                            "started_at": "2026-11-02T00:00:00Z", "restart_count": 0, "ports": ports, "networks": {},
+                            "network_mode": network_mode, "pid_mode": pid_mode})
 
 
 class TestHostConditions(unittest.TestCase):
+    def test_no_container_may_share_a_run_container_namespace(self):
+        networks, containers = raw_world()
+        _, run = facts(networks, containers)
+        target = SERVICE_IDS["target"]
+        self.assertEqual(check_namespace_sharing(run, run), [])  # 회차 컨테이너 자신(compose 망 모드)
+        ok = [foreign(None), foreign(None, network_mode="host"), foreign(None, network_mode="none"),
+              foreign(None, network_mode="container:" + "b" * 64, pid_mode="container:" + "b" * 64),  # 회차 밖끼리
+              foreign(None, pid_mode="host"), foreign(None, network_mode="lab-container-net")]  # 이름에 든 단어는 무관
+        for item in ok:
+            with self.subTest(mode=(item.network_mode[:14], item.pid_mode[:14])):
+                self.assertEqual(check_namespace_sharing(run, run + [item]), [])
+        cases = {"NETWORK": dict(network_mode="container:" + target), "PID": dict(pid_mode="container:" + target),
+                 "NETWORK_UNLABELED": dict(network_mode="container:" + target, project=None, service=None)}
+        for kind, modes in cases.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(check_namespace_sharing(run, [foreign(None, **modes)]),
+                                 [f"host.container.aaaaaaaaaaaa: SHARES_{kind.split('_')[0]}_NAMESPACE"])
+        # 회차 컨테이너인지 가릴 수 없는 표기(이름·짧은 ID·대문자)는 위반으로 본다.
+        for mode in ("container:target", "container:" + target[:12], "container:" + target.upper(), "container:"):
+            with self.subTest(mode=mode[:20]):
+                self.assertEqual(check_namespace_sharing(run, [foreign(None, network_mode=mode)]),
+                                 ["host.container.aaaaaaaaaaaa: SHARES_NETWORK_NAMESPACE"])
+        # 멈춘 회차 컨테이너도 회차 컨테이너다(재시작하면 공유가 살아난다).
+        stopped = [dict(c, running=False) if c["service"] == "target" else c for c in containers]
+        self.assertEqual(check_namespace_sharing(facts(networks, stopped)[1],
+                                                 [foreign(None, network_mode="container:" + target)]),
+                         ["host.container.aaaaaaaaaaaa: SHARES_NETWORK_NAMESPACE"])
+
     def test_other_containers_must_publish_on_loopback_only(self):
         for host_ip in ("127.0.0.1", "::1", "127.0.0.53", "::ffff:127.0.0.1"):
             self.assertEqual(check_other_publishes(PROJECT, [foreign({"80/tcp": [{"HostIp": host_ip, "HostPort": "8080"}]})]), [])
@@ -468,7 +500,8 @@ class TestSnapshots(unittest.TestCase):
     def test_snapshot_ignores_other_projects(self):
         networks, containers = raw_world()
         containers.append({"id": "a" * 64, "project": "other", "service": "web", "image": "x", "running": True,
-                           "started_at": "2026-11-02T00:00:00Z", "restart_count": 0, "ports": None, "networks": {}})
+                           "started_at": "2026-11-02T00:00:00Z", "restart_count": 0, "ports": None, "networks": {},
+                           "network_mode": "bridge", "pid_mode": ""})
         self.assertEqual(compare_snapshots(self.snapshot(), self.snapshot(networks, containers)), [])
 
 

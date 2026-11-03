@@ -493,9 +493,16 @@ class TestFailures(unittest.TestCase):
         self.assertEqual(evidence.files["pre-checks.json"]["host_violations"], ["host.listen.0.0.0.0:8080: NOT_ALLOWED"])
         foreign = {"id": "a" * 64, "project": "dev", "service": "web", "image": "x", "running": True,
                    "started_at": "t", "restart_count": 0, "ports": {"80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "80"}]},
-                   "networks": {}}
+                   "networks": {}, "network_mode": "bridge", "pid_mode": ""}
         result, ports, _, evidence = run(lambda p, m, c: setattr(p, "running", [foreign]))
         self.assert_invalid(result, ports, evidence, "pre_host_condition_violation")
+        # 구간 전부터 대상 netns를 같이 쓰던 컨테이너(망 이벤트·망 구성원에 안 보임)
+        target = next(x for x in raw_world()[1] if x["service"] == "target")["id"]
+        shared = dict(foreign, ports=None, network_mode="container:" + target)
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "running", [shared]))
+        self.assert_invalid(result, ports, evidence, "pre_host_condition_violation")
+        self.assertEqual(evidence.files["pre-checks.json"]["host_violations"],
+                         ["host.container.aaaaaaaaaaaa: SHARES_NETWORK_NAMESPACE"])
 
     def test_llm_provider_conditions_decide_the_run(self):
         cases = [
