@@ -146,7 +146,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 	var capt *Capture
 	if recordBodies {
 		reqBody = r.requestMetadata(req)
-		ctx, capt = NewCapture(ctx)
+		ctx, capt = NewMetadataCapture(ctx)
 	}
 
 	return func(yield func(llm.StreamEvent, error) bool) {
@@ -232,7 +232,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	var capt *Capture
 	if recordBodies {
 		reqBody = r.requestMetadata(req)
-		ctx, capt = NewCapture(ctx)
+		ctx, capt = NewMetadataCapture(ctx)
 	}
 
 	msg, stopReason, usage, err := r.inner.Complete(ctx, req)

@@ -48,6 +48,8 @@ DB 메타데이터의 nil finding, 음수 참조/버전/길이/순서/`captured_
 
 HTTP reader는 SQL의 `LIMIT 10001`로 초과 확인용 한 건까지만 읽고, 10,000건을 넘으면 evidence staging 전에 고정 422로 거부한다. selected 요청은 ID를 순차 파싱하며 10,000개를 넘으면 DB 접근 전에 같은 고정 오류로 거부한다. 기존 `ListFindingsForExport` 시그니처는 유지하고 이 출력 경로에서만 bounded reader를 사용한다. 이 행 수 제한이 단일 DB 필드의 크기나 DB 내부 정렬 비용까지 제한한다는 뜻은 아니다.
 
+그래프 Markdown 보고서(`/api/report`)는 기존 경계를 유지해 finding 최대 1,000건, 자산 type별 최대 100,000건을 허용한다. finding은 상한보다 한 건 많은 sentinel까지 SQL에서 읽는다. 자산은 기존 `CountByType`으로 개수만 조회하여 본문·extra 등 전체 행을 메모리에 만들지 않는다. 어느 경계든 초과하면 Markdown을 만들거나 일부 결과를 내보내지 않고 `report export limit exceeded` 고정 422로 거부한다. COUNT의 DB 내부 스캔 비용이나 개별 finding payload의 바이트 크기까지 제한하는 것은 아니다.
+
 ## 검증 기준
 
 합성 canary를 자유 필드·URL·헤더·hash·임의 enum에 넣고 Markdown·CSV·디코딩한 JSON·압축 해제한 ZIP·파일명 어디에도 남지 않는지 확인한다. 알려진 상태·심각도·HTTP 코드·참조·버전은 대조 사례로 유지한다. 원본 구조·참조 배열·DB 값·증거 파일은 export 전후 동일해야 한다.

@@ -25,6 +25,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/artex/notify"
@@ -112,10 +113,11 @@ const (
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	m            *Manager
-	engine       *Engine
-	ctx          context.Context
-	runtimeHooks agent.RuntimeHooks // immutable callbacks owned by this server
+	m             *Manager
+	engine        *Engine
+	ctx           context.Context
+	runtimeHooks  agent.RuntimeHooks         // immutable callbacks owned by this server
+	localResolver *llmpolicy.ProfileResolver // nil only in explicit external/legacy mode
 
 	skillDir string // root directory for skill subdirectories
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
@@ -230,11 +232,15 @@ type triggeredRun struct {
 }
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {
+	return newServer(ctx, m, skillDir, dataDir, keyDir, nil)
+}
+
+func newServer(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, localResolver *llmpolicy.ProfileResolver) *Server {
 	key, err := loadOrCreateJWTKey(keyDir, dataDir)
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
@@ -452,14 +458,16 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 }
 
 // reapplyActiveProfile hot-reloads the engine from the active DB profile so that
-// saving or activating a profile takes effect without a restart. Best-effort:
-// logs on failure and leaves the running engine untouched.
+// saving or activating a profile takes effect without a restart. In local-only
+// mode, failure clears the old global provider; external mode keeps it.
 func (s *Server) reapplyActiveProfile() {
 	cfg, ok := s.loadLLMConfig()
 	if !ok {
+		s.clearLocalLLM()
 		return
 	}
 	if err := s.applyLLM(cfg); err != nil {
+		s.clearLocalLLM()
 		log.Printf("[engine] reapply active profile failed: %v", err)
 		return
 	}
@@ -494,14 +502,33 @@ func maxTokensResolver(cfg agent.Config) func() int {
 // the running engine as the GLOBAL active pair. Safe to call at runtime (UI configures LLM).
 func (s *Server) applyLLM(cfg agent.Config) error {
 	var prov llm.Provider
+	if s.localResolver != nil {
+		active, err := s.m.pg.ActiveProfile()
+		if err != nil || active == nil {
+			return ErrLocalLLMProfile
+		}
+		activeCfg, ok := s.loadProfileConfig(active.ID)
+		if !ok || activeCfg != cfg {
+			return ErrLocalLLMProfile
+		}
+		prov, _, ok = s.providerForProfile(active.ID)
+		if !ok {
+			return ErrLocalLLMProfile
+		}
+	}
 	// A persisted active profile must use the same cached provider as task chains
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
-	if active, _ := s.m.pg.ActiveProfile(); active != nil {
-		if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
-			prov, _, _ = s.providerForProfile(active.ID)
+	if s.localResolver == nil {
+		if active, _ := s.m.pg.ActiveProfile(); active != nil {
+			if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
+				prov, _, _ = s.providerForProfile(active.ID)
+			}
 		}
 	}
 	if prov == nil {
+		if s.localResolver != nil {
+			return ErrLocalLLMProfile
+		}
 		var err error
 		prov, err = cfg.NewProvider()
 		if err != nil {
@@ -600,9 +627,16 @@ func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) *int64 
 // config was active.
 func (s *Server) resolveChatAgent(c *db.Conversation) *agent.ChatAgent {
 	ca := s.chatAgentRef()
+	if s.localResolver != nil {
+		if _, _, ok := s.globalProvider(); !ok {
+			ca = nil
+		}
+	}
 	if eff := s.effectiveProfileForAgent(c.AgentKey, c.LLMProfileID); eff != nil {
 		if pa := s.chatAgentForProfile(*eff); pa != nil {
 			ca = pa
+		} else if s.localResolver != nil {
+			return nil // invalid explicit binding cannot fall back to global
 		}
 	}
 	return ca
@@ -625,11 +659,18 @@ func (s *Server) chatUnavailableReason() string {
 
 // providerForProfile returns a cached provider+cfg for a profile id, so every agent
 // bound/pinned to the same profile shares one provider instance (one rate limiter).
-// ok=false when the profile is missing/invalid → caller falls back to the global pair.
+// ok=false when the profile is missing/invalid. Local-only callers must not
+// reinterpret this as permission to use a different provider.
 func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool) {
 	s.provCacheMu.Lock()
 	if e := s.provByProfile[id]; e != nil {
 		s.provCacheMu.Unlock()
+		if s.localResolver != nil {
+			current, ok := s.loadProfileConfig(id)
+			if !ok || current != e.cfg {
+				return nil, agent.Config{}, false
+			}
+		}
 		return e.prov, e.cfg, true
 	}
 	generation := s.provCacheGen
@@ -638,7 +679,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	if !ok {
 		return nil, agent.Config{}, false
 	}
-	prov, err := cfg.NewProvider()
+	prov, err := s.newProfileProvider(id, cfg)
 	if err != nil {
 		log.Printf("[engine] build provider for LLM profile %d failed: %v", id, err)
 		return nil, agent.Config{}, false
@@ -664,12 +705,19 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 }
 
 // chatAgentForProfile returns a ChatAgent built from a specific LLM profile, cached
-// per profile id. Returns nil if the profile is missing or has no API key.
+// per profile id. In local-only mode, even a cached agent must pass the current
+// profile check before it can be returned.
 func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	s.profMu.Lock()
 	cached := s.profChatAgents[id]
 	s.profMu.Unlock()
 	if cached != nil {
+		if s.localResolver == nil {
+			return cached
+		}
+		if _, _, ok := s.providerForProfile(id); !ok {
+			return nil
+		}
 		return cached
 	}
 	prov, cfg, ok := s.providerForProfile(id)
@@ -1376,6 +1424,10 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 
 // setLLM configures the LLM at runtime. A blank api_key keeps the existing key.
 func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
+	if s.localResolver != nil {
+		writeErr(w, http.StatusForbidden, "로컬 전용 모드에서는 기본 LLM 설정 변경을 사용할 수 없습니다")
+		return
+	}
 	var req struct {
 		Provider        string  `json:"provider"`
 		Model           string  `json:"model"`
@@ -1435,6 +1487,10 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 
 // testLLM makes a real minimal completion to verify the config works.
 func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
+	if s.localResolver != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": trMsg(errLLMTestFailed), "latency_ms": 0})
+		return // the legacy probe constructs an unguarded provider
+	}
 	var req struct {
 		Provider         string `json:"provider"`
 		Model            string `json:"model"`
@@ -3909,25 +3965,37 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 }
 
 func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
+	const (
+		maxGraphReportFindings = 1000
+		maxGraphReportAssets   = 100000
+	)
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
 		writeErr(w, 404, "no active task")
 		return
 	}
-	findings, err := t.Store.ListByKind(db.KindFinding, 1000)
+	findings, err := t.Store.ListByKind(db.KindFinding, maxGraphReportFindings+1)
 	if err != nil {
 		writeErr(w, 500, "report export unavailable")
 		return
 	}
+	if len(findings) > maxGraphReportFindings {
+		writeErr(w, http.StatusUnprocessableEntity, "report export limit exceeded")
+		return
+	}
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		ns, err := s.m.Assets().QueryByType(ty, 100000, 0)
+		count, err := s.m.Assets().CountByType(ty)
 		if err != nil {
 			writeErr(w, 500, "report export unavailable")
 			return
 		}
-		if len(ns) > 0 {
-			counts[ty] = len(ns)
+		if count > maxGraphReportAssets {
+			writeErr(w, http.StatusUnprocessableEntity, "report export limit exceeded")
+			return
+		}
+		if count > 0 {
+			counts[ty] = count
 		}
 	}
 	md := report.Markdown(report.Input{

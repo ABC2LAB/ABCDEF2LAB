@@ -1,11 +1,13 @@
 # ARTEX 탐지 규칙 (Suricata / 네트워크)
 
+> **기존 참고 자료:** 현재 프로젝트 안내는 [ABC2LAB 문서](../../docs/README.md)를 확인합니다. 아래 절차·예시 출력은 기반 자료이며 현재 체크아웃의 검증 결과가 아닙니다. 원본 CI 워크플로는 현재 저장소에 없으므로 자동 실행·머지 게이트로 간주하지 않습니다. 해당 파일을 읽는 하네스·지표·MISP 시험은 조정 전 실패할 수 있습니다.
+
 한국어 · [English](README.md)
 
 [Sigma 규칙](../sigma/)의 네트워크 계층 짝입니다. 이 [Suricata](https://suricata.io) 시그니처는
 네트워크 선에서 관측되는 두 가지 ARTEX 산출물을 다루며, 모든 지표는 추정이 아니라 이 저장소
 소스에서 확인한 문자열이나 행동에 근거합니다. 호스트·로그·SIEM 계층은 [`../sigma/`](../sigma/)에
-있고, 전체 그림은 방어 가이드([한국어](../../docs/defense-ko.md) · [English](../../docs/defense-en.md))가
+있고, 전체 그림은 방어 가이드([한국어 참고 자료](../../docs/defense-ko.md))가
 설명합니다.
 
 ## 규칙: [`artex.rules`](artex.rules)

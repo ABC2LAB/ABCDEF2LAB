@@ -89,6 +89,24 @@ func TestMatchLoadFailureReturnsDenial(t *testing.T) {
 	}
 }
 
+func TestMissingDatabaseCannotPublishConfiguration(t *testing.T) {
+	for _, d := range []*db.DB{nil, {}} {
+		ic := New(d)
+		if _, err := ic.rules(); err != ErrConfigurationUnavailable {
+			t.Fatalf("missing database load = %v", err)
+		}
+		if enabled, err := ic.CheckToolEnabled("Read"); enabled || err != ErrConfigurationUnavailable {
+			t.Fatal("missing database looked like a valid tool configuration")
+		}
+		if decision, matched := ic.Match("Read", []byte(`{}`)); !matched || decision.Action != "deny" || decision.RuleID != 0 {
+			t.Fatal("missing database did not deny without attributing a rule")
+		}
+		if ic.cached != nil || ic.enabledTools != nil {
+			t.Fatal("missing database published configuration")
+		}
+	}
+}
+
 func TestInvalidEnabledToolsCannotDisableInterception(t *testing.T) {
 	d := configurationTestDB(t)
 	previous, existed, err := d.GetSetting("intercept_enabled_tools")

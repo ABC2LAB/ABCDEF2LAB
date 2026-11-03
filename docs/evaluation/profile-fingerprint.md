@@ -59,7 +59,7 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
 | environment | 정확한 모델 태그·LLM base URL·temperature/seed·대상 이미지·worker/시간/요청 예산 |
 | scope | 대상 origin·명시적 HTTP 메서드·경로 템플릿·검사 분류 라벨 |
 
-준비 절차 ID와 revision은 평가자가 합의한 비민감 준비 명세를 가리킨다. 명세 내용이 바뀌면 revision도 바꿔야 한다.
+준비 절차 ID와 revision은 평가자가 합의한 비민감 준비 명세를 가리킨다. 명세 내용이 바뀌면 revision도 바꿔야 한다. fixture fingerprint는 이 ID·revision과 선언된 fixture 구조의 해시이며, 실제 fixture 데이터가 준비·적용됐다는 증명이 아니다.
 계정·자원·역할·분류 라벨은 `[a-z][a-z0-9_]{0,63}` 형식의 논리 별칭이다. 실제 username·계정 ID·이메일·자원 ID를 넣지 않는다.
 자원의 owner는 이 프로파일에 선언한 논리 계정 라벨이어야 한다. 계정·자원 배열이 모두 빈 익명 준비 조건도 명시적으로 허용한다.
 revision·개수·worker·요청 예산은 1 이상 signed int64 범위 정수, seed는 0 이상 같은 범위 정수다. bool·문자열·실수로 대체할 수 없다.
@@ -81,9 +81,9 @@ URL은 HTTP(S) loopback IP/localhost만 지원하며 인증정보·query·fragme
 ## 정규화와 SHA-256 v1
 
 1. 입력 전체의 필드·타입·참조를 검사한 후 정규화한다. 잘못된 입력을 일부라도 해시해 출력하지 않는다.
-2. 계정·자원 배열은 label로, scope의 methods/paths/vuln_classes는 문자열로 정렬한다. 중복 라벨·항목은 거부한다.
+2. 계정·자원 배열은 label로, scope의 methods/paths/vuln_classes는 문자열의 **Unicode 코드포인트 순서**로 정렬한다. 중복 라벨·항목은 거부한다.
 3. temperature와 시간 예산은 정밀도를 보존한 십진 **문자열**로 만든다. 예: `0`, `0.0`, `-0.000`은 `"0"`, `1200`, `1.200e3`은 `"1200"`이다.
-   JSON 소수는 Decimal로 읽고 기본 precision에 따른 반올림을 하지 않는다. 0 이외 숫자의 유효 자릿수와 exponent 절댓값은 각각 128 이내로 제한하고 초과는 거부한다.
+   JSON 소수는 Decimal로 읽고 기본 precision에 따른 반올림을 하지 않는다. 0 이외 숫자의 입력 표기 자릿수와 exponent 절댓값은 각각 128 이내로 제한하고 초과는 거부한다. 입력 표기는 보존하지 않으며 같은 수의 표기는 같은 정규화 문자열·지문이 된다.
 4. URL·라벨·경로·모델명 문자열은 그대로 보존한다. localhost/IP·대소문자·끝 slash·다른 태그를 같은 값으로 추정하지 않는다.
 5. 각 지문은 `{format: "abc2lab-eval-profile-v1", kind: "fixture"|"environment"|"scope", profile: 정규화된 객체}`의 JSON을 사용한다.
    key 정렬, `separators=(",", ":")`, `ensure_ascii=True`, `allow_nan=False`로 직렬화한 ASCII bytes에 SHA-256을 적용한다. 줄바꿈은 포함하지 않는다.

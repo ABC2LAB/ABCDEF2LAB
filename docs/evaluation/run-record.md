@@ -34,7 +34,7 @@ manifest는 파일 위치와 비교 행을 지정한다. 해결 주체나 요청
 | `run_id`, `engine`, `model_tag`, `reset_generation`, `condition`, `repeat_index` | manifest와 정확히 일치 |
 | `elapsed_seconds`, `total_requests`, `blocked_attempts` | 러너의 실제 측정값 또는 null. manifest와 대조하여 표의 값 변경/누락을 차단 |
 | `instance_id`, `execution_id` | 실제 대상 인스턴스와 엔진 실행의 고유 ID |
-| `fixture_fingerprint` | 준비 명세의 SHA-256. 비교 대상의 계정 라벨/역할·fixture 조건은 같아야 함. 비밀/표식 값을 기록하지 않음 |
+| `fixture_fingerprint` | [프로파일 지문 형식](profile-fingerprint.md)에 따른 준비 명세 ID/revision과 선언된 fixture 조건의 SHA-256. 비교 대상의 계정 라벨/역할·fixture 조건은 같아야 함. 비밀/표식 값을 기록하지 않음. 지문만으로 준비 완료·실제 데이터 적용을 증명하지 않음 |
 | `environment_fingerprint` | 고정 모델/샘플링·대상 이미지·범위/예산 등 공통 평가 설정의 SHA-256. 엔진별 소스 SHA는 공통 지문에 섞지 않음 |
 | `requests_drained` | 실제 진행 요청 종료를 러너가 확인한 true. false/누락은 채점 중단 |
 | `timeline` | 아래 6단계 각각 `{"at": "timezone 포함 ISO 시각", "sequence": 0 이상 정수}` |

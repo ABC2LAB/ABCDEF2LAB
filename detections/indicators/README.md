@@ -1,5 +1,7 @@
 # ARTEX indicators (machine-readable)
 
+> **Inherited reference:** see the [ABC2LAB documentation](../../docs/README.md) for the current project. The procedures and sample outputs below are inherited material, not verification results for this checkout. The original CI workflow is absent, so automatic CI/merge gates are not provided here. Harness, indicator, and MISP checks that read that file may fail until adapted.
+
 English · [한국어](README.ko.md)
 
 > 한국어: [`artex_indicators.csv`](artex_indicators.csv) 는 ARTEX 가 실제로 내보내는 고유 지문(침해지표,
@@ -15,7 +17,7 @@ atomic indicators rather than the detection logic: drop [`artex_indicators.csv`]
 into a threat-intelligence platform, a SIEM lookup table, or a host-triage checklist. Every value is a
 string verified in this repository's source — the same grounding the
 [detection rules](../README.md) and the defense guide
-([Korean](../../docs/defense-ko.md) · [English](../../docs/defense-en.md), section 2) rely on — and each
+([Korean reference](../../docs/defense-ko.md), section 2) rely on — and each
 row records where it comes from and which rule (if any) is built on it.
 
 ## Columns

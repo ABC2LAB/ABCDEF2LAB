@@ -79,6 +79,50 @@ func TestRunCreatesCompatiblePrivateKeyWithoutPrintingIt(t *testing.T) {
 	}
 }
 
+func TestRunCreatesTwoDistinctNonZeroKeys(t *testing.T) {
+	t.Parallel()
+	dir := privateKeyDirectory(t)
+	firstPath := filepath.Join(dir, "first.key")
+	secondPath := filepath.Join(dir, "second.key")
+	for _, path := range []string{firstPath, secondPath} {
+		code, out, diagnostic := invokeKeygen(context.Background(), path)
+		if code != 0 || out != created+"\n" || diagnostic != "" {
+			t.Fatalf("generation boundary for %s: exit=%d stdout=%q stderr=%q", path, code, out, diagnostic)
+		}
+	}
+	first, second := readGeneratedKey(t, firstPath), readGeneratedKey(t, secondPath)
+	defer clear(first)
+	defer clear(second)
+	if bytes.Equal(first, make([]byte, len(first))) || bytes.Equal(second, make([]byte, len(second))) {
+		t.Fatal("generated key was all zero bytes")
+	}
+	if bytes.Equal(first, second) {
+		t.Fatal("independent key generations produced identical bytes")
+	}
+}
+
+func TestKeygenUnknownArgumentSubprocessDoesNotEchoSentinel(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestKeygenUnknownArgumentChild$")
+	command.Env = append(os.Environ(), "E2_KEYGEN_UNKNOWN_ARG_CHILD=1")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("unknown argument subprocess unexpectedly succeeded: %q", output)
+	}
+	if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 2 {
+		t.Fatalf("unknown argument subprocess exit=%v output=%q", err, output)
+	}
+	if strings.Contains(string(output), "PRIVATE-SENTINEL") {
+		t.Fatalf("unknown argument leaked into subprocess diagnostics: %q", output)
+	}
+}
+
+func TestKeygenUnknownArgumentChild(t *testing.T) {
+	if os.Getenv("E2_KEYGEN_UNKNOWN_ARG_CHILD") != "1" {
+		return
+	}
+	os.Exit(run(context.Background(), []string{"--PRIVATE-SENTINEL"}, io.Discard, os.Stderr))
+}
+
 func TestRunDoesNotOverwriteOrChmodExistingDestination(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(privateKeyDirectory(t), "audit.key")
