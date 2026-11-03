@@ -70,7 +70,7 @@ baseline에는 E²가 없으므로 E² traffic ID를 해결 주체 확인의 필
 
 | `kind` | 필드 | 채점기 검증 |
 |---|---|---|
-| `boundary` | `event`(`applied`·`maintained`·`released`), `boundary_ref`, `network_ids`(정렬), `policy_sha256` | `applied.at` < pre 관측, `maintained`가 post 관측 직전, 셋의 `boundary_ref`·`network_ids`·`policy_sha256`이 증명의 `network.*`와 모두 같음 |
+| `boundary` | `event`(`applied`·`maintained`·`released`), `boundary_ref`, `network_ids`(정렬), `policy_sha256` | `applied`·`maintained`는 정확히 한 행씩 필수, `released`는 선택(있으면 한 행). `applied.at` ≤ pre 관측, `maintained.at` ≤ post 관측. 있는 행 전부의 `boundary_ref`·`network_ids`·`policy_sha256`이 증명의 `network.*`와 같음. 해제는 구간(pre 관측~post 완료) 뒤의 일이라 귀속 판단에 쓰지 않고, 정리 실패는 러너 결과 기록의 무효 사유(`down_failed`)로 남는다 |
 | `network_snapshot` | `phase`(`pre`·`post`), `networks`(`name`·`id`·`internal`·`members`), `publishes`(`service`·`host_ip`·`host_port`·`container_port`), `services`(`id`·`image`·`started_at`·`restart_count`) | pre·post가 같고 `policy_sha256`을 다시 계산하면 증명 값과 같음. 다르면 구간 중 경계 변경 |
 | `connectivity_check` | `phase`, `id`, `probe_kind`(`tcp`·`dns`), `target`, `role`(`positive`·`negative`), `expected`, `accepted`, `observed`, `code`, `verdict` | pre·post 각각 모든 행 `verdict: "match"`. 양성 대조 실패·부정 경로 성공·실패 종류 불일치가 있으면 증명 불가 |
 | `host_condition` | `phase`, `operating_condition_ref`, `daemon`(`version`·`os`·`arch`·`platform`), `listeners_outside_loopback`, `allowed_listens`(`address`·`port`), `other_publishes`, `satisfied` | pre·post 두 행, `operating_condition_ref`가 증명의 `host.operating_condition_ref`와 같고 둘 다 `satisfied: true` |
@@ -144,6 +144,6 @@ v1.1 이벤트는 기존 필드에 `basis`와 `isolation_proof_sha256`을 추가
 | IW14 | v1 직접 관측 기록, v1.1 proof 없는 direct_event/engine 기록, 알 수 없는 버전 | v1은 합성 시험·과거 형식 회귀 검증에서만 수용하고 공식 비교표 귀속에는 사용하지 않음. v1.1은 격리 증명 없는 엔진 귀속 거부, 알 수 없는 버전/느슨한 타입 변환 거부 |
 | IW15 | post 델타만 있고 실제 엔진 확정 시각 없음·사람 수동 확정만 추가 | elapsed_seconds 추정 생성 0, 자동 CONFIRMED 증가 0 |
 | IW16 | v1.1 `records`=null(판정 미수집)·레코드 0건 envelope·v1의 records null | null은 모든 GT 판정 판단불가(판정 미수집)·커버리지가 있어도 미탐 0, 해결 귀속은 따로 보고. 0건 envelope는 기존 규칙. v1의 null은 입력 오류 |
-| IW17 | §3.1 행 오류: 모르는 kind·순번 공백, 한 행 안의 중복 `kind`(예: `connectivity_check`에 점검 종류를 `kind`로 넣음)·`probe_kind` 누락, `host_watch` 공백 초과·구간 미포함, `docker_events_window` 불완전·외부 연결·재시작, pre/post `network_snapshot` 불일치, `connectivity_check` 불일치, `in_window` 관측 행 수 ≠ `request_count` | 러너는 proof 발행 0(사유 보존). 제출된 proof에서 발견하면 입력 오류·집계 표 미출력 |
+| IW17 | §3.1 행 오류: 모르는 kind·순번 공백, `boundary`의 `applied`·`maintained` 누락이나 중복·`released` 두 행 이상(두 행·세 행 정상 수용), 한 행 안의 중복 `kind`(예: `connectivity_check`에 점검 종류를 `kind`로 넣음)·`probe_kind` 누락, `host_watch` 공백 초과·구간 미포함, `docker_events_window` 불완전·외부 연결·재시작, pre/post `network_snapshot` 불일치, `connectivity_check` 불일치, `in_window` 관측 행 수 ≠ `request_count` | 러너는 proof 발행 0(사유 보존). 제출된 proof에서 발견하면 입력 오류·집계 표 미출력 |
 
 합의한 계약의 후속 순서는 채점기·합성 회귀 구현 → 실제 러너의 격리/준비/관측 경계 구현과 우회 시험 → baseline·개선 후 같은 조건의 실측이다. 합성 서명·해시 시험은 실제 격리 집행 검증을 대신하지 않는다. 그 전까지 현재 v1의 fail-closed 동작을 합성 시험·과거 형식 회귀 검증에서 유지하며 공식 비교 완료로 표시하지 않는다.
