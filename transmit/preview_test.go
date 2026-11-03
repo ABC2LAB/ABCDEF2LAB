@@ -42,6 +42,7 @@ func TestHTTPPreviewRegistrationAndNoEffects(t *testing.T) {
 	}{
 		{"match", func(*idor.AccessRequest) {}, transmit.PreviewRegistrationMatch, "", http.MethodGet, "basket/42", "owner", "approval-1"},
 		{"post", func(r *idor.AccessRequest) { r.Method = "POST-secret" }, transmit.PreviewRegistrationRejected, transmit.PreviewReason(transmit.UnsupportedAction), "UNSUPPORTED", "basket/42", "owner", "approval-1"},
+		{"lowercase get", func(r *idor.AccessRequest) { r.Method = "get" }, transmit.PreviewRegistrationRejected, transmit.PreviewReason(transmit.UnsupportedAction), "UNSUPPORTED", "basket/42", "owner", "approval-1"},
 		{"state changing", func(r *idor.AccessRequest) { r.StateChanging = true }, transmit.PreviewRegistrationRejected, transmit.PreviewReason(transmit.UnsupportedAction), http.MethodGet, "basket/42", "owner", "approval-1"},
 		{"unknown resource", func(r *idor.AccessRequest) { r.ResourceRef = "secret-resource" }, transmit.PreviewRegistrationRejected, transmit.PreviewReason(transmit.UnknownResource), http.MethodGet, "", "owner", ""},
 		{"unknown account", func(r *idor.AccessRequest) { r.As.Label = "secret-account" }, transmit.PreviewRegistrationRejected, transmit.PreviewReason(transmit.UnknownAccount), http.MethodGet, "basket/42", "", "approval-1"},
@@ -192,6 +193,7 @@ func TestHTTPPreviewMatchesSendRegistrationRefusals(t *testing.T) {
 		change func(*idor.AccessRequest)
 	}{
 		{"method", func(r *idor.AccessRequest) { r.Method = http.MethodPost }},
+		{"lowercase method", func(r *idor.AccessRequest) { r.Method = "get" }},
 		{"state", func(r *idor.AccessRequest) { r.StateChanging = true }},
 		{"resource", func(r *idor.AccessRequest) { r.ResourceRef = "outside" }},
 		{"account", func(r *idor.AccessRequest) { r.As.Label = "outside" }},
@@ -253,5 +255,61 @@ func TestHTTPPreviewAfterAnotherExecutionUsesSharedBudget(t *testing.T) {
 	_, receipt, ok = second.SendDetailed(proposal)
 	if ok || receipt.Reason != transmit.BudgetExhausted || hits.Load() != 1 {
 		t.Fatalf("second execution: ok=%v receipt=%+v hits=%d", ok, receipt, hits.Load())
+	}
+}
+
+func TestHTTPPreviewChecksRegisteredSessionStatus(t *testing.T) {
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer target.Close()
+	cases := []struct {
+		name   string
+		status oracle.SubjectStatus
+		want   transmit.PreviewStatus
+	}{
+		{"verified", oracle.SubjectVerified, transmit.PreviewRegistrationMatch},
+		{"unknown", oracle.SubjectUnknown, transmit.PreviewRegistrationRejected},
+		{"expired", oracle.SubjectExpired, transmit.PreviewRegistrationRejected},
+		{"mismatch", oracle.SubjectMismatch, transmit.PreviewRegistrationRejected},
+		{"unset", "", transmit.PreviewRegistrationRejected},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recorder{}
+			cfg := transportConfig(target.URL, rec)
+			cfg.Sessions[0].Account.Status = tc.status
+			proposal := transportRequest("owner", "h-owner")
+			// Keep every request identity field equal to the registered session;
+			// a mismatch would mask a missing registered-status check.
+			proposal.As = cfg.Sessions[0].Account
+			tx, err := transmit.NewHTTP(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(tx.StopAndWait)
+			beforeHits := hits.Load()
+			preview := tx.Preview(proposal)
+			wantReason := transmit.PreviewReason(transmit.UnverifiedAccount)
+			if tc.want == transmit.PreviewRegistrationMatch {
+				wantReason = ""
+			}
+			if preview.Status != tc.want || preview.Reason != wantReason {
+				t.Fatalf("matching registered identity: preview=%+v want=%s/%s", preview, tc.want, wantReason)
+			}
+			if hits.Load() != beforeHits || len(rec.events) != 0 {
+				t.Fatalf("preview side effects: hits=%d before=%d events=%d", hits.Load(), beforeHits, len(rec.events))
+			}
+			_, receipt, ok := tx.SendDetailed(proposal)
+			if tc.want == transmit.PreviewRegistrationMatch {
+				if !ok || !receipt.Admitted || receipt.Reason != transmit.Completed || hits.Load() != beforeHits+1 {
+					t.Fatalf("verified positive control: ok=%v receipt=%+v hits=%d", ok, receipt, hits.Load())
+				}
+			} else if ok || receipt.Admitted || receipt.Reason != transmit.UnverifiedAccount || hits.Load() != beforeHits {
+				t.Fatalf("unverified registered session: ok=%v receipt=%+v hits=%d", ok, receipt, hits.Load())
+			}
+		})
 	}
 }
