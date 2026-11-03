@@ -130,10 +130,10 @@ export default function SettingsScreen() {
           <h1 className="big">설정 · 통제 정책</h1>
           <p className="lead">
             현재는 ARTEX <Strong>승인 게이트(intercept)</Strong>의 규칙과 모델 판정으로 도구 호출을 검토해요. 우리{" "}
-            <Strong>전송 통제(E², 네트워크 경계)</Strong>와 변조 탐지 감사는 아직 <Strong>연동 전</Strong>이에요.
+            <Strong>전송 통제(E②, 네트워크 경계)</Strong>와 변조 탐지 감사는 아직 <Strong>연동 전</Strong>이에요.
           </p>
 
-          {/* ── 활성 통제 규칙 (E²) — 실데이터 ── */}
+          {/* ── 활성 통제 규칙 (E②) — 실데이터 ── */}
           <div className="card">
             <h3>
               활성 통제 규칙 <Sub>· ARTEX 승인 게이트(intercept)가 도구 호출을 거르는 규칙</Sub>
@@ -173,7 +173,7 @@ export default function SettingsScreen() {
                   </div>
                 ))}
                 <div className="hint">
-                  ARTEX에 등록된 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E²) 연동 후 열려요(그 전엔
+                  ARTEX에 등록된 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E②) 연동 후 열려요(그 전엔
                   읽기 전용).
                 </div>
               </>
@@ -199,7 +199,7 @@ export default function SettingsScreen() {
                   </div>
                 </div>
                 <div className="hint">
-                  모델을 붙여야 점검(탐색)이 돌아요. 완전 로컬 모드의 외부 송신 차단은 E² 연동 후예요.
+                  모델을 붙여야 점검(탐색)이 돌아요. 완전 로컬 모드의 외부 송신 차단은 E② 연동 후예요.
                 </div>
               </>
             )}
@@ -270,10 +270,10 @@ export default function SettingsScreen() {
             </div>
           </div>
 
-          {/* ── 준비 중 (E² 연동 예정) ── */}
+          {/* ── 준비 중 (E② 연동 예정) ── */}
           <div className="card" style={{ marginBottom: 0 }}>
             <h3>
-              준비 중 <Sub>· 전송 통제(E²) 연동 후 열려요</Sub>
+              준비 중 <Sub>· 전송 통제(E②) 연동 후 열려요</Sub>
             </h3>
             <div style={noticeBox}>
               아래는 통제 UI로 설계만 됐고 아직 엔진에 안 붙은 항목이에요. 실데이터인 척하지 않으려고 비워 뒀어요.

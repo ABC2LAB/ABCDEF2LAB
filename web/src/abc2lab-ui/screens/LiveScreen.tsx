@@ -3,7 +3,7 @@ import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "
 import { Modal } from "../components/Modal";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
-import { Sev, Strong, Sub } from "../components/ui";
+import { RefreshIcon, Sev, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import {
   archiveTask,
@@ -492,7 +492,7 @@ export default function LiveScreen({ target }: { target: Target }) {
             </div>
             <div className="row" style={{ flexWrap: "wrap" }}>
               <button className="btn" type="button" style={btnSm} onClick={refreshAll} disabled={snapshotLoading}>
-                ↻ 새로고침
+                <RefreshIcon /> 새로고침
               </button>
               <button
                 className="badge"

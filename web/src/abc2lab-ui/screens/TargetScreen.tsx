@@ -3,7 +3,7 @@ import { Choice, ChoiceGroup } from "../components/Choice";
 import { Screen } from "../components/Screen";
 import { Stepper } from "../components/Stepper";
 import { CancelLink, TopBar } from "../components/TopBar";
-import { MockBanner, Strong } from "../components/ui";
+import { MockBanner, RefreshIcon, Strong } from "../components/ui";
 import { isInternalUrl } from "../lib/net";
 import { useGo } from "../nav";
 import type { Target } from "../types";
@@ -21,6 +21,7 @@ export default function TargetScreen({ target }: { target: Target }) {
   const [auth, setAuth] = useState<boolean | null>(null);
   // 로그인 방법: 0 = 아이디·비밀번호, 1 = 세션 직접 입력
   const [authMethod, setAuthMethod] = useState(0);
+  const [keyEditing, setKeyEditing] = useState(false);
   const [accountCount, setAccountCount] = useState(2);
 
   // LLM 실행 위치
@@ -34,7 +35,7 @@ export default function TargetScreen({ target }: { target: Target }) {
     setEndpointBadge(
       ok
         ? { ok: true, text: "✓ 내부 주소예요 (hostname 기준)" }
-        : { ok: false, text: "⚠ 외부(공인) 주소 — 완전 로컬 모드 차단은 E² 연동 후" },
+        : { ok: false, text: "⚠ 외부(공인) 주소 — 완전 로컬 모드 차단은 E② 연동 후" },
     );
   };
 
@@ -77,7 +78,7 @@ export default function TargetScreen({ target }: { target: Target }) {
         <div className="wrap">
           <div className="col">
             <h1 className="big">어떻게 점검할까요?</h1>
-            <p className="lead">로그인 접근과 분석 엔진, 알림을 정해 주세요.</p>
+            <p className="lead">로그인 접근과 분석 엔진을 정해 주세요.</p>
 
             {/* 인증 */}
             <div className="qlab">인증 · 로그인이 필요한 영역도 점검할까요?</div>
@@ -188,8 +189,14 @@ export default function TargetScreen({ target }: { target: Target }) {
                 <select className="inp" id="l-model" value={localModel} onChange={(e) => setLocalModel(e.target.value)}>
                   <option value="">(연동 후 설치된 모델 목록)</option>
                 </select>
-                <button className="btn" type="button" aria-label="새로고침" style={{ padding: "0 15px" }}>
-                  ↻
+                <button
+                  className="btn"
+                  type="button"
+                  aria-label="모델 목록 새로고침"
+                  title="모델 목록 새로고침"
+                  style={{ padding: "0 14px" }}
+                >
+                  <RefreshIcon />
                 </button>
               </div>
               <div className="hint">
@@ -197,11 +204,11 @@ export default function TargetScreen({ target }: { target: Target }) {
               </div>
               <details className="adv">
                 <summary>
-                  <span className="chev">▸</span> 다른 내부 LLM 지정
+                  <span className="chev">▸</span> LLM 서버 주소 변경
                 </summary>
                 <div style={{ paddingBottom: 12 }}>
                   <label className="fl" htmlFor="ep">
-                    엔드포인트
+                    서버 주소
                   </label>
                   <div className="row" style={{ marginBottom: 8 }}>
                     <input
@@ -249,7 +256,7 @@ export default function TargetScreen({ target }: { target: Target }) {
                   <span className="fsmall">
                     프록시 <span className="opt">· 선택</span>
                   </span>
-                  <input className="inp sm" placeholder="socks5://user:pass@127.0.0.1:1080" />
+                  <input className="inp sm" placeholder="예: http://proxy.corp.example:3128" />
                   <div className="hint">로컬은 API 키가 필요 없어요. 서버가 토큰을 요구할 때만 추가하세요.</div>
                 </div>
               </details>
@@ -274,15 +281,30 @@ export default function TargetScreen({ target }: { target: Target }) {
               <label className="fl" htmlFor="e-key">
                 API 키
               </label>
-              <input
-                className="inp"
-                id="e-key"
-                type="password"
-                defaultValue="sk-placeholder-key-0000"
-                style={{ marginBottom: 8 }}
-              />
+              {keyEditing ? (
+                <div className="row" style={{ marginBottom: 8 }}>
+                  <input
+                    className="inp"
+                    id="e-key"
+                    type="password"
+                    placeholder="새 API 키 붙여넣기"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button className="btn" type="button" onClick={() => setKeyEditing(false)}>
+                    취소
+                  </button>
+                </div>
+              ) : (
+                <div className="keyset">
+                  <span className="badge ok">등록됨</span>
+                  <button className="btn" type="button" onClick={() => setKeyEditing(true)}>
+                    교체
+                  </button>
+                </div>
+              )}
               <div className="hint" style={{ marginBottom: 16 }}>
-                저장 시 가려지고 로그 · 내보내기엔 안 나갑니다.
+                저장한 키는 화면에 다시 보이지 않아요. 로그 · 보고서 · 내보내기 파일에도 들어가지 않아요.
               </div>
               <label className="fl" htmlFor="e-model">
                 모델
@@ -316,7 +338,7 @@ export default function TargetScreen({ target }: { target: Target }) {
                   </span>
                   <input
                     className="inp sm"
-                    placeholder="socks5://user:pass@127.0.0.1:1080"
+                    placeholder="예: http://proxy.corp.example:3128"
                     style={{ marginBottom: 14 }}
                   />
                   <span className="fsmall">
@@ -326,18 +348,6 @@ export default function TargetScreen({ target }: { target: Target }) {
                 </div>
               </details>
             </div>
-
-            <div className="hr" />
-
-            {/* 알림 */}
-            <div className="qlab">점검 중 발견을 바로 알려드릴까요?</div>
-            <ChoiceGroup
-              style={{ marginBottom: 0 }}
-              options={[
-                { t: "네, 바로 알림 받을게요", d: "중요한 발견이 나오면 알려드려요" },
-                { t: "아니요, 끝나고 한 번에", d: "완료 후 보고서로 확인" },
-              ]}
-            />
           </div>
 
           <aside className="side">

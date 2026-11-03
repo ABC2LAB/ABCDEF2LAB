@@ -2581,3 +2581,19 @@ h1.big {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 외부 API 키: 저장된 키는 보여주지 않고 '등록됨' + 교체 */
+.keyset {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.keyset .btn {
+  margin-left: auto;
+  padding: 7px 14px;
+}

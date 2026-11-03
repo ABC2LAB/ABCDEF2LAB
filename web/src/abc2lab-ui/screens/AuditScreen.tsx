@@ -135,7 +135,7 @@ export default function AuditScreen() {
 
           <div style={noticeBox}>
             ARTEX <Strong>승인 게이트(intercept)</Strong>의 명시적 허용·차단 결정과 승인 요청 기록이에요. 모든 실제
-            송신을 기록하는 원장은 아니에요. 우리 <Strong>전송 통제(E², 네트워크 경계)</Strong>와{" "}
+            송신을 기록하는 원장은 아니에요. 우리 <Strong>전송 통제(E②, 네트워크 경계)</Strong>와{" "}
             <Strong>변조 탐지 해시체인·로그 권한 분리</Strong>는 <Strong>연동 전</Strong> — 연동되면 각 줄에 체인 해시가
             붙어요.
           </div>
@@ -209,7 +209,7 @@ export default function AuditScreen() {
           )}
 
           <div className="hint">
-            각 줄은 ARTEX 승인 게이트가 기록한 도구 호출 결정이나 승인 요청이에요. 전송 통제(E²)·변조 탐지 체인·권한
+            각 줄은 ARTEX 승인 게이트가 기록한 도구 호출 결정이나 승인 요청이에요. 전송 통제(E②)·변조 탐지 체인·권한
             분리가 연동되면 한 줄이라도 바뀔 때 <Strong>그 뒤 체인이 전부 깨져서 변조가 드러나요.</Strong>
           </div>
         </div>

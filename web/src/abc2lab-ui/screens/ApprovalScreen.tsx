@@ -38,7 +38,7 @@ export default function ApprovalScreen() {
           <p className="lead" style={{ marginBottom: 12 }}>
             조회(GET)는 자동으로 하지만,{' '}
             <Strong>상태를 바꾸는 요청은 보내기 전에 사람이 확인</Strong>해요. 확인하기 전까지 전송
-            통제(E²)가 이 요청을 막고 있어요.
+            통제(E②)가 이 요청을 막고 있어요.
           </p>
           <div className="hint" style={{ marginTop: 0, marginBottom: 22 }}>
             관련 발견 ·{' '}

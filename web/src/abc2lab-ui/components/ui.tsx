@@ -2,6 +2,27 @@ import type { CSSProperties, ReactNode } from "react";
 
 import { SEVERITY_LABEL, type Severity, VERDICT_LABEL, type Verdict } from "../types";
 
+/** 새로고침 아이콘 (↻ 글자 대신). 색은 글자색을 따름 */
+export function RefreshIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ flex: "none", verticalAlign: "-0.15em" }}
+    >
+      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+      <path d="M20 4v5h-5" />
+    </svg>
+  );
+}
+
 /** <strong style="color:var(--fg)"> — 회색 문장 속 강조 */
 export function Strong({ children }: { children: ReactNode }) {
   return <strong style={{ color: "var(--fg)" }}>{children}</strong>;
