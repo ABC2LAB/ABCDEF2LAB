@@ -25,6 +25,8 @@ from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_
 
 CONFIG_VERSION = 1
 SIDES = ("baseline", "ours")
+# 엔진 LLM 정책 스위치(ARTEX_LLM_POLICY_MODE, #125)가 있는 쪽. baseline(e53a79f)에는 없다.
+POLICY_SWITCH_SIDE = "ours"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_COMMON = REPO_ROOT / "deploy" / "engine-isolated" / "compose.yaml"
 COMPOSE_LOCAL_LLM = REPO_ROOT / "deploy" / "engine-isolated" / "compose.local-llm.yaml"

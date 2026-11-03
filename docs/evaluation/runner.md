@@ -56,7 +56,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `observer_path` | 관측 front가 통과시킬 스코어보드 GET 경로 1개 |
 | `observer_readonly_ref` | 그 GET이 해당 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(200자 이하). 러너가 만들 수 없는 근거라 설정으로 받고, 격리 근거 `observer_readonly` 행에 그대로 남긴다 |
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
-| `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null) |
+| `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null). baseline 회차는 compose 값이 같이 넘어가도 엔진이 읽지 않으므로 선언값도 null이다 |
 | `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한, DB healthcheck |
 | `llm_gateway.generation_path` | api: generation 조회 경로(예: OpenRouter `/api/v1/generation`) |
 | `llm_gateway.verify_attempts`, `verify_interval_seconds` | generation마다 조회 횟수(1~100)와 간격 |

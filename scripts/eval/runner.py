@@ -40,7 +40,7 @@ from runner_checks import (  # noqa: E402
 )
 from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE, METER_SERVICE, OBS_SERVICE, TARGET_SERVICE,
-    RunDirectory, RunnerConfig,
+    POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig,
     RunnerConfigError, RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config,
     new_run_id, plan_run,
 )
@@ -139,7 +139,8 @@ class RunSpec:
     task_request_sha256: str
     host_watch_max_gap_seconds: float
     events_lookback_seconds: float
-    llm_policy_mode: str
+    # 선언한 엔진 LLM 정책 모드. baseline(e53a79f)에는 이 스위치가 없어 None(선언 없음)이다.
+    llm_policy_mode: str | None
     condition: str
     repeat_index: int
     model_tag: str
@@ -398,7 +399,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "task_request_sha256": spec.task_request_sha256,
-                     # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline 엔진에는 이 스위치가 없다.
+                     # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline은 스위치가 없어 선언도 null.
                      "engine_llm_policy": {"declared": spec.llm_policy_mode, "observed": None},
                      "window": {"host_watch": window["host_watch"], "events": {
                          key: window["docker_events"][key] for key in ("event_count", "kinds", "complete")}},
@@ -629,7 +630,10 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_request_sha256=task_request_sha256,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
-        events_lookback_seconds=config.health_timeout_seconds, llm_policy_mode=config.llm_policy_mode,
+        events_lookback_seconds=config.health_timeout_seconds,
+        # compose는 두 엔진에 같은 값을 넘기지만 baseline은 읽지 않는다. 결과 기록에 external로 적으면 정책이 있는 것처럼
+        # 읽히므로 선언하지 않는다(#133 리뷰).
+        llm_policy_mode=config.llm_policy_mode if plan.side == POLICY_SWITCH_SIDE else None,
         condition=condition, repeat_index=repeat_index, model_tag=plan.llm["model"],
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
         target_origin=declared["target_origin"], observer_path=config.observer_path,

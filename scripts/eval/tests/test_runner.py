@@ -34,10 +34,10 @@ ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "ev
            "eval-llm-gw": "meter", "eval-api": "meter"}
 
 
-def make_spec():
+def make_spec(side="ours"):
     preflight = configuration()
     config = parse_runner_config(runner_config())
-    plan = plan_run(config, preflight, "ours", "ours-1")
+    plan = plan_run(config, preflight, side, f"{side}-1")
     return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0)
 
 
@@ -315,6 +315,9 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(result["task_request_sha256"], "t" * 64)
         # 엔진 LLM 정책 모드는 선언값만 남는다(엔진이 드러내지 않음 → 관측 null).
         self.assertEqual(result["engine_llm_policy"], {"declared": "external", "observed": None})
+        # baseline(e53a79f)에는 스위치가 없어 같은 compose 값이 넘어가도 선언하지 않는다(#133 리뷰).
+        self.assertIsNone(make_spec("baseline").llm_policy_mode)
+        self.assertEqual(make_spec("ours").llm_policy_mode, "external")
         # 사용량을 재기 전에는 서명된 완료 기록에도 미측정을 명시한다(공식 비교 제외 근거).
         self.assertEqual(result["tmpfs_usage"], "not_measured")
 
