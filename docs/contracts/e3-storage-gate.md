@@ -1,6 +1,6 @@
 # E③ 확정 저장 게이트 — 구현 준비 초안
 
-작성: 2026-10-30 · 수정: 2026-11-02 · 이동찬 · 계약 리뷰 반영·구현 준비
+작성: 2026-10-30 · 수정: 2026-11-03 · 이동찬 · 계약 리뷰 반영·물리 저장안 검토
 
 상태: **재검증 매핑·저장 불변식의 리뷰 합의와 발급 레코드 보완 요청을 반영한 문서 검토본이다. 판정 레코드는 최민준님의 계약 영역이다.** [리뷰 코멘트](https://github.com/ABC2LAB/ABCDEF2LAB/pull/48#issuecomment-6524511615)의 두 보완 항목(하네스 발급 세대 토큰·전체 `resource_ref`)을 §3에 명시했다. 문서 최종 확인 뒤 병합을 검토하며, 잠금 순서의 구현·경합 검증은 이동찬의 엔진 책임이다. 사람 수동 확정은 §1.1의 세 조건을 유지한다. 공통 모드 코어와 DB reader·단방향 등록은 별도 PR #43의 범위이며, Engine/최초 finding 저장·판정 issuance/link는 아직 연결하지 않았다.
 
@@ -157,6 +157,28 @@ reader 오류는 일반 문자열/JSON에 원문을 내보내지 않는 형태�
 
 task ID를 찾으려고 finding을 먼저 읽어야 하면 잠그지 않고 찾은 뒤, task 잠금 후 finding을 잠그며 소유 관계를 재확인한다. task/finding의 다중 잠금이 필요하면 같은 종류의 행은 ID 오름차순으로 잠근다. 실제 기존 경로 전체와 lock order를 맞추고 DB 교차 transaction 시험을 통과하기 전 활성화하지 않는다. `go test -race`는 DB deadlock 검증을 대신하지 않는다.
 
+### 5.5 물리 저장 스키마 권장안 — 팀 확인 전
+
+아래는 §3·§5의 **구현 검토안**이다. 테이블명·열 이름은 가칭이며 마이그레이션이나 서버 배선이 아니다. 최민준님의 `verdict-record` 필드 의미·평가 읽기 계약을 바꾸지 않고, 이경준님의 KG snapshot 발급 형식도 여기서 확정하지 않는다. 현재 [db/schema.sql](../../db/schema.sql)의 `tasks`·`exploration_nodes`·`findings`·`finding_retests` 키는 모두 `BIGINT`다. `findings.task_id/node_id`는 `ON DELETE SET NULL`, `finding_retests.finding_id`는 `ON DELETE CASCADE`이므로, 출처·연결 정본을 그 nullable 열이나 재검증 자유텍스트에만 두지 않는다.
+
+| 가칭 테이블 | 필수 열·제약 | 목적 |
+|---|---|---|
+| `e3_evidence_manifests` | `id BIGSERIAL PK`, `task_id BIGINT NOT NULL`, `execution_ref TEXT`, `evidence_revision BIGINT > 0`, `digest BYTEA`, KG snapshot ID/version/digest, owner/cross 관찰·완결 영수증·필수 감사 checkpoint의 **비민감 참조**, `frozen_at TIMESTAMPTZ`; `(task_id, execution_ref, evidence_revision)` 유일 | 서버가 검증 후 동결한 참조 묶음. 요청/응답·표식 값·자격 원문은 열/JSON에 넣지 않음. 같은 키에 다른 digest는 충돌 |
+| `e3_oracle_verdicts` | `id BIGSERIAL PK`, `record_version SMALLINT`, 최민준님 계약 중 `finding_id`를 제외한 검증된 `payload JSONB`, `oracle_value` 허용 enum, `payload_digest BYTEA`, `created_at`; `finding_id` 열 없음 | 순수 판정과 평가 필드를 수정 불가 본문으로 저장. typed adapter가 필수 필드·세 체크·신호·비밀 제외를 검사한 정형 직렬화만 넣음. JSONB 자체가 출처 검증을 대신하지 않음 |
+| `e3_verdict_issuances` | `id BIGSERIAL PK`, `verdict_id BIGINT NOT NULL UNIQUE`, `manifest_id BIGINT NOT NULL`, `task_id/exploration_id/intent_id BIGINT NOT NULL`, `purpose IN (initial,retest)`, retest이면 `retest_id BIGINT NOT NULL`, `mode_version BIGINT > 0`, 별도 `eval_run_id`와 E② `execution_ref`, `case_ref`, 전체 `resource_ref`, reset 세대·하네스 발급 세대 토큰 **참조**·인스턴스·승인·KG snapshot 참조/버전/digest·owner/evaluated 비민감 계정/세션 참조, `observed_at`, `operation_key BYTEA UNIQUE`, `input_digest BYTEA`, `issued_at`; 필수 열 `NOT NULL` | 신뢰 서버의 발급 출처·동일 실행/근거 결속. 토큰 값·canary 값 대신 서버가 검증한 참조만 보존. 같은 발급에 판정 하나, 판정에 발급 하나 |
+| `e3_verdict_links` | `id BIGSERIAL PK`, `issuance_id BIGINT NOT NULL UNIQUE`, `task_id/finding_id BIGINT NOT NULL`, `purpose IN (initial,retest)`, `retest_id BIGINT NULL`, `evidence_version BIGINT NOT NULL`, `linked_at`; `initial`은 retest NULL, `retest`는 issuance의 retest와 일치 | 판정 본문을 바꾸지 않고 최초 finding 또는 같은 finding의 재검증에 연결. `finding_id` 조회/export는 여기서 투영 |
+| `e3_human_confirmations` | `id BIGSERIAL PK`, `task_id/finding_id BIGINT NOT NULL`, 서버 인증 `actor_ref`, 서버 `approved_at`, 제한된 사유 코드·검토 근거 **참조**, `operation_key BYTEA UNIQUE`, `input_digest BYTEA`, `created_at`; 전부 필수·불변 | §1.1의 controlled finding 사람 수동 카테고리와 필수 승인 로그를 한 행에 보존. triage 변경과 같은 transaction. oracle 판정/issuance를 만들거나 자동 평가에 합산하지 않음 |
+
+**FK·유일성.** 모든 SHA-256 digest/key `BYTEA`에는 열마다 `CHECK (octet_length(column_name) = 32)`를 둔다. manifest→`tasks`, issuance→manifest/verdict/`tasks`/`explorations`/intent node/(retest이면)`finding_retests`, link→issuance/`findings`/(retest이면)`finding_retests`, human→`findings`/`tasks`는 모두 `ON DELETE RESTRICT`, `ON UPDATE RESTRICT`를 제안한다. `e3_oracle_verdicts`는 finding을 참조하지 않는다. `tasks(id,exploration_id)`, `exploration_nodes(id,exploration_id)`, `findings(id,task_id)`, `finding_retests(id,finding_id)`, manifest `(id,task_id)`, issuance `(id,task_id)`의 복합 유일 키와 복합 FK로 task→exploration→intent, task→manifest→issuance→finding, retest→finding의 소유 관계를 DB에서도 보강한다. intent `kind='intent'`, controlled mode, KG/세대/계정 진위는 FK만으로 증명할 수 없어 같은 transaction의 서버 검사를 유지한다. link에는 `finding_id WHERE purpose='initial'`과 `retest_id WHERE purpose='retest'`의 부분 유일 인덱스를 둔다. link의 purpose는 issuance와 대조한다. 다른 finding에 같은 issuance를 연결하거나 한 retest에 판정을 중복 연결할 수 없다. 실제 DDL의 복합 FK·인덱스는 전용 PostgreSQL에서 기존 nullable 행과 archive 경로를 검증한 뒤 적용한다.
+
+**멱등키.** 서버가 길이 구분된 정형 tuple `(version=1, task_id, execution_ref, case_ref, evidence_revision, purpose, retest_id 또는 0)`의 SHA-256으로 `operation_key`를 만든다. 모델/클라이언트가 준 키를 받지 않는다. `input_digest`는 판정 본문 digest와 issuance/manifest의 모든 불변 binding을 정형 직렬화한 SHA-256이다. 같은 operation key·같은 digest의 발급/최초 저장/재검증 재시도는 기존 ID와 결론을 반환하고 송신·재발급을 하지 않는다. 같은 키·다른 digest는 `save_conflict`이며 last-writer-wins 갱신은 없다. 동시 insert는 유일 제약으로 한 행에 수렴한 뒤 기존 행을 잠가 digest와 link를 대조한다. manifest는 `(task_id, execution_ref, evidence_revision)` 충돌에서도 digest를 비교한다. 사람 수동 확정의 operation key는 서버가 발급한 승인 요청 ID와 finding ID의 정형 tuple에서 만들고, 같은 키·다른 승인자/사유/근거는 충돌로 거부한다. 판정+issuance는 한 transaction, 최초 node/finding/link/근거 버전과 수동 triage+필수 승인 로그는 각자 한 transaction이다. 발급 성공 뒤 finding 저장 실패는 발급 레코드만 남을 수 있지만 link/node/finding의 부분 성공은 남기지 않는다.
+
+**보존·쓰기 권한.** 초기 구현은 controlled task·연결 finding·retest의 hard/soft delete와 archive/restore를 mutation 전에 거부하고, 새 정본 행·비민감 manifest·수동 승인 로그를 자동 TTL/GC로 지우지 않는다. 이 행들은 runtime에서 INSERT 후 UPDATE/DELETE를 금지하는 trigger와 권한을 제안한다. 위 `RESTRICT` FK와 현재 `task_control_modes`의 controlled 삭제/아카이브 guard가 방어선을 이룬다. 기존 `finding_traffic_bindings`의 cascade나 `findings.task_id`의 SET NULL에 의지하지 않는다. 기존 explicit_legacy 수동 triage·삭제 동작은 이 초기 controlled 설계로 바꾸지 않으며, 수동 출처 정책을 legacy까지 확대할지는 별도 합의한다. 안전한 별도 보존/삭제·archive snapshot, 재식별 방지와 기간 정책을 합의·시험하기 전에는 일반 삭제/복원 경로를 열지 않는다. 기존 traffic snapshot의 URL/헤더 원문을 새 E③ 테이블에 복사하지 않으며, 원문 보존 정책을 이 설계가 연장한다고 주장하지 않는다. migration owner만 DDL을 하고 모델·일반 도구에는 정본 테이블 쓰기 권한을 주지 않는 방향이다. 현재 단일 DB 자격증명만 쓰는 경로에서 별도 DB 역할로 발급/연결을 강제했다고 주장할 수 없으므로 권한 분리는 구현 검토 항목이다.
+
+**잠금·재시도.** `taskmode`와 같이 `READ COMMITTED` transaction을 쓴다. 모든 새 저장/승격/근거 변경·삭제 거부 경로는 기존 `WithEvidenceTx`의 evidence advisory lock → `tasks` row → 별도 명령의 mode fence/marker 판별 → manifest/issuance(키 순서) → finding(여러 행은 ID 오름차순) → retest → link/evidence 순서로 맞춘다. task/finding/retest ID를 찾기 위한 선행 조회는 `FOR UPDATE` 없이 하고 잠금 뒤 소유 관계를 재확인한다. `FinishFindingRetest`의 현재 finding→retest 순서는 controlled 경로에서 앞의 evidence/task 단계를 추가해야 하며, 일반 경로와 잠금 역전이 남지 않는지 교차 transaction 시험이 필요하다. 등록은 task fence를 커밋하고 파일 marker를 처리하며 task 잠금 안에서 evidence lock을 역순 요청하지 않는다. 유일 제약 충돌/직렬화 실패만 제한된 재시도 대상이고 매번 새 transaction에서 정본을 다시 읽는다. 이 설계만으로 deadlock 부재·DB 권한 분리·실제 저장 게이트 완료를 주장하지 않는다.
+
+**확정 전 확인.** 최민준님과 판정 payload의 물리 직렬화·수동 확정의 출처/평가 읽기·재검증 link 의미를, 이경준님과 KG snapshot ID/version/digest 공급을 확인한다. 서버 실행 어댑터의 manifest·관찰·감사 checkpoint 참조 발행 시점, DB 역할·보존 기간/삭제 절차도 실제 배선 전 정해야 한다. 이 제안은 E3G37~40·47~52·55~61의 DB 경합/rollback·삭제·수동 집계 시험을 통과해야 확정할 수 있다.
+
 ## 6. 판정·실패 처리
 
 | 결과 | 구조화 기록 | finding 확정 |
@@ -193,7 +215,7 @@ server-owned conversation→retest→finding→원래 task와 새 검증 executi
 
 - 재검증 매핑과 동일 실행/근거·완결 영수증·판정/issuance 동일 transaction·finding/link 원자 저장 불변식은 리뷰에서 합의했다. 발급 레코드의 두 보완 항목은 §3과 시험 명세에 반영했으며 수정본의 최종 확인을 받는다. 잠금 순서 자체는 이동찬이 기존 엔진 경로와 맞춰 구현·DB 경합 시험으로 검증한다.
 - 사람 수동 확정은 §1.1의 세 조건을 적용한 별도 카테고리·평가 제외·승인자/시각/근거 로그 필드와 API/export 동작을 확인한다. 조건부 수용을 전체 저장 계약의 합의로 확대하지 않는다.
-- 판정/연결 테이블과 write 권한·FK·archive/delete 처리의 구체 설계(이동찬·최민준).
+- §5.5의 판정/발급/연결·수동 승인 테이블, write 권한·FK·멱등키·보존/삭제·잠금 순서는 **이동찬의 권장 검토안**이다. 최민준님의 판정/수동 출처 계약 확인과 실제 DDL·경합 시험 전에는 확정 저장 규격이나 구현 완료가 아니다.
 - 서버 execution 근거 manifest와 E② 감사 완료/관찰 참조의 생성·동결 시점(이동찬, 진행 중인 E② 세션).
 - private marker와 DB mode fence의 이관·재시작·등록 경합 처리(이동찬).
 - KG 버전/정본 snapshot 제공, 허용 결과 저장의 이름(최민준·이경준). 기존 `oracle` 의미는 유지.
