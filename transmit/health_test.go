@@ -441,8 +441,8 @@ func TestHealthWindowFeasibilityStrictBoundary(t *testing.T) {
 		window  time.Duration
 		wantErr bool
 	}{
-		{"exact equality", 90 * time.Millisecond, true},
-		{"one nanosecond over", 90*time.Millisecond + time.Nanosecond, false},
+		{"exact equality", 120 * time.Millisecond, true},
+		{"one nanosecond over", 120*time.Millisecond + time.Nanosecond, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := transportConfig(server.URL, &recorder{})
@@ -450,6 +450,7 @@ func TestHealthWindowFeasibilityStrictBoundary(t *testing.T) {
 			cfg.Health.Policy.Window = tc.window
 			cfg.Health.Policy.MinSamples, cfg.Health.Policy.FailureLimit = 4, 4
 			cfg.Health.NetworkTimeout = 30 * time.Millisecond
+			cfg.RequestTimeout = 40 * time.Millisecond
 			tx, err := transmit.NewHTTP(context.Background(), cfg)
 			if tx != nil {
 				defer tx.StopAndWait()
@@ -469,14 +470,20 @@ func TestHealthLoopbackStopsForFeasibleWindow(t *testing.T) {
 
 	under := transportConfig(server.URL, &recorder{})
 	under.Health = healthPolicy()
-	under.Health.Policy.Window = 89 * time.Millisecond
+	under.RequestTimeout = 100 * time.Millisecond
+	under.Health.Policy.Window = 299 * time.Millisecond
 	under.Health.Policy.MinSamples, under.Health.Policy.FailureLimit = 4, 4
 	under.Health.NetworkTimeout = 30 * time.Millisecond
 	if _, err := transmit.NewHTTP(context.Background(), under); err == nil {
-		t.Fatal("window at or below three network gaps was accepted")
+		t.Fatal("window at or below three request gaps was accepted")
 	}
 
-	over := transportConfig(server.URL, &recorder{})
+	rec := &healthRecorder{hook: func(context.Context, transmit.Event) error {
+		time.Sleep(5 * time.Millisecond)
+		return nil
+	}}
+	over := transportConfig(server.URL, rec)
+	over.RequestTimeout = 100 * time.Millisecond
 	over.Health = healthPolicy()
 	// Admission's exact boundary is tested above; leave scheduling headroom
 	// here so the real timeout regression does not depend on CI timer jitter.

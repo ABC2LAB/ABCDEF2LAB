@@ -55,11 +55,24 @@ func TestControlledReadHealthDecodeChecksMinInterval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if health, err := decodeControlledReadHealth(raw, time.Second, 0, 2); err != nil || health == nil {
+	if health, err := decodeControlledReadHealth(raw, 150*time.Millisecond, 0, 2); err != nil || health == nil {
 		t.Fatal("control policy should fit when no minimum interval is configured")
 	}
-	if health, err := decodeControlledReadHealth(raw, time.Second, 200*time.Millisecond, 2); err != errControlledReadSnapshot || health != nil {
+	if health, err := decodeControlledReadHealth(raw, 150*time.Millisecond, 200*time.Millisecond, 2); err != errControlledReadSnapshot || health != nil {
 		t.Fatal("decode ignored the configured minimum interval")
+	}
+}
+
+func TestControlledReadHealthDecodeReservesAuditHeadroom(t *testing.T) {
+	fields := controlledHealthFields()
+	fields["window_ms"], fields["network_timeout_ms"] = 205, 100
+	fields["min_samples"], fields["failure_limit"] = 3, 3
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health, err := decodeControlledReadHealth(raw, 200*time.Millisecond, 0, 3); err != errControlledReadSnapshot || health != nil {
+		t.Fatal("decode accepted a window sized only for network timeouts")
 	}
 }
 

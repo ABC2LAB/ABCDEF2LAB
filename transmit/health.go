@@ -42,7 +42,9 @@ func ValidateHealthConfig(config HealthConfig, requestTimeout, minInterval time.
 	if config.Policy.SlowLimit > k {
 		k = config.Policy.SlowLimit
 	}
-	gap := config.NetworkTimeout
+	// Leave the full request deadline as headroom for admission and audit I/O
+	// between network observations; network timeout alone understates that gap.
+	gap := requestTimeout
 	if minInterval > gap {
 		gap = minInterval
 	}
