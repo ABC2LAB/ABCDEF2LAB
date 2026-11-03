@@ -26,6 +26,8 @@ SQL commit 결과가 불명확할 때는 **같은 operation ref·Request·소유
 
 ## Local Close witness (draft)
 
+`Open` takes ownership of every nonnil, non-typed-nil `RootScope` at call entry, even when context, Store, limit, binder, root Context, or Anchor validation fails. It calls `Release` exactly once on every failed Open; after successful Open, the Publisher calls it exactly once on Seal or Abort. Nil and typed-nil scopes transfer no ownership. Callers must not release or reuse a transferred scope.
+
 `Config.BindCloseWitness` is mandatory. `Open` creates one `*CloseWitness` after the local journal header exists and passes it to the trusted Host binder before CPD Register, outside Publisher and SQL locks. The binder must attach this exact instance to that Host's authorized execution and must not reenter the Publisher or begin SQL work. A nil, zero, unbound, or failed binder leaves no usable recorder. This binding is an in-process Go reference; it is not a serialized signature or a model-facing capability.
 
 `CloseWitness.Check(access)` can be used by the Host during CPD Seal authorization. It matches the original epoch, publisher, full scope, journal ID, key reference, and exact candidate checkpoint. It becomes true only after this Publisher's `Journal.Close` succeeds without a prior Open/Record/Abort failure. Failure invalidates it. Check has a separate short lock, so a Host call from Seal does not reenter `Publisher.mu`. The Host must independently prove its own HTTP `StopAndWait`, current principal/epoch/key authority, and lifecycle state; the witness does not prove task completion or that a remote Seal committed. Exact-operation reconciliation remains required after an uncertain commit.
