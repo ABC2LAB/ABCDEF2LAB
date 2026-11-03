@@ -7,6 +7,26 @@ import (
 	"github.com/Autumn-27/artex/oracle"
 )
 
+// ReadObservation is evidence from one actual read in a verification. Capture
+// is ephemeral comparator input; it must not be exported or persisted as a body.
+type ReadObservation struct {
+	Capture  idor.Capture `json:"-"`
+	Receipt  Receipt
+	Captured bool
+}
+
+// ReadVerification keeps a verdict with the exact frozen policy and the two
+// actual observations that produced it. It grants no finding-storage authority;
+// the host must still seal the journal and verify provenance before saving.
+type ReadVerification struct {
+	Result         idor.Result
+	FrozenPolicy   oracle.PolicyAssertion
+	PolicyResolved bool
+	CanaryFields   []string
+	Owner          ReadObservation
+	Evaluated      ReadObservation
+}
+
 // VerifyRead is the supported composition with the existing IDOR verifier. It
 // binds that verifier's independent KG canaries to the exact projection snapshot
 // before any request. Directly composing Send with an unrelated marker catalog
@@ -16,8 +36,16 @@ import (
 // returned verdict is UNDECIDABLE. An empty reason means the snapshots agreed,
 // not that transmission succeeded: inspect Result.Verdict and the audit trail.
 func (t *HTTPTransmitter) VerifyRead(candidate idor.Candidate, kg idor.PolicyResolver) (idor.Result, Reason) {
-	refused := func(reason Reason) (idor.Result, Reason) {
-		return idor.Result{Verdict: oracle.Evaluate(oracle.CaseInput{}, time.Time{})}, reason
+	verification, reason := t.VerifyReadDetailed(candidate, kg)
+	return verification.Result, reason
+}
+
+// VerifyReadDetailed uses the same preflight and one owner/cross read sequence
+// as VerifyRead. Receipt and observation times are collected during that sequence,
+// never reconstructed by issuing another request or reading a later KG snapshot.
+func (t *HTTPTransmitter) VerifyReadDetailed(candidate idor.Candidate, kg idor.PolicyResolver) (ReadVerification, Reason) {
+	refused := func(reason Reason) (ReadVerification, Reason) {
+		return ReadVerification{Result: idor.Result{Verdict: oracle.Evaluate(oracle.CaseInput{}, time.Time{})}}, reason
 	}
 	if reason := t.gate(t.ctx); reason != "" {
 		return refused(reason)
@@ -56,7 +84,19 @@ func (t *HTTPTransmitter) VerifyRead(candidate idor.Candidate, kg idor.PolicyRes
 	if reason := t.gate(t.ctx); reason != "" {
 		return refused(reason)
 	}
-	return idor.VerifyRead(candidate, t, frozen), ""
+	observed := &verificationTransmitter{tx: t}
+	result := idor.VerifyRead(candidate, observed, frozen)
+	verification := ReadVerification{
+		Result: result, PolicyResolved: policyOK,
+		Owner: observed.reads[0], Evaluated: observed.reads[1],
+	}
+	if policyOK {
+		verification.FrozenPolicy = policy
+	}
+	for _, marker := range markers {
+		verification.CanaryFields = append(verification.CanaryFields, marker.Field)
+	}
+	return verification, ""
 }
 
 func sameMarkers(expected, actual []idor.Marker) bool {
@@ -95,4 +135,22 @@ func (f frozenPolicy) Canaries(resource string, owner idor.AccountRef) ([]idor.M
 		return nil, false
 	}
 	return append([]idor.Marker(nil), f.markers...), true
+}
+
+// The supported verifier proposes precisely owner then evaluated GET. Keep all
+// observations private to this invocation, including refused/partial reads.
+type verificationTransmitter struct {
+	tx    *HTTPTransmitter
+	reads [2]ReadObservation
+	next  int
+}
+
+func (v *verificationTransmitter) Send(request idor.AccessRequest) (idor.Capture, bool) {
+	if v.next >= len(v.reads) {
+		return idor.Capture{}, false
+	}
+	capture, receipt, ok := v.tx.SendDetailed(request)
+	v.reads[v.next] = ReadObservation{Capture: capture, Receipt: receipt, Captured: ok}
+	v.next++
+	return capture, ok
 }

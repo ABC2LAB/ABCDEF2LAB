@@ -23,10 +23,11 @@ const ControlledHTTPToolName = "controlled_http_get"
 // read. Tool output is sanitized by the server-side tool before it reaches the
 // model; this package does not load assets, transcripts, or credentials.
 type ControlledReadExecution struct {
-	TaskID   int64
-	IntentID int64
-	RunRef   string
-	Tool     actool.CoreTool
+	TaskID       int64
+	IntentID     int64
+	RunRef       string
+	Tool         actool.CoreTool
+	Verification bool
 }
 
 type controlledReadExecutionKey struct{}
@@ -97,9 +98,13 @@ func (w *Worker) executeControlledRead(ctx context.Context, name string, taskID 
 
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, IntentID: intent.ID})
 	maxDur, _ := clampMaxDuration(taskClockFrom(ctx).DeadlineUnix, w.runTimeout)
+	prompt := controlledReadSystemPrompt
+	if execution.Verification {
+		prompt = controlledVerifiedReadSystemPrompt
+	}
 	opts := agentcore.Options{
 		Provider:               w.prov,
-		SystemPrompt:           []string{controlledReadSystemPrompt},
+		SystemPrompt:           []string{prompt},
 		Tools:                  []actool.CoreTool{execution.Tool},
 		SessionID:              "controlled-read-" + execution.RunRef,
 		PermissionMode:         permission.ModeBypass,
@@ -131,3 +136,11 @@ func (w *Worker) executeControlledRead(ctx context.Context, name string, taskID 
 	})
 	return reason, WriteCounts{}, err
 }
+
+const controlledVerifiedReadSystemPrompt = `You execute a server-bound owner/cross read verification.
+Use only the registered controlled_http_get tool and references in its schema.
+Never invent URLs, credentials, sessions, policy, canaries, or arbitrary commands.
+The server supplies the oracle result; report its staged evidence faithfully.
+Staged evidence is not a saved finding. Only the host can finalize its audit and
+persist a finding after this execution completes. Do not claim diagnosis completion.
+This session cannot create findings or perform state-changing requests.`
