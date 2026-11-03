@@ -4,7 +4,8 @@
 **한 번** 실행하고, 결과 기록(완료+서명 또는 무효+사유)을 정확히 하나 남긴다. 자동 재시도는 없다. 실패하면 사유를 남기고
 끝나며, 다시 돌리면 새 `run_id`의 새 회차다. 실패 회차도 결과 기록이 남으므로 집계에서 건수와 사유를 보고한다.
 
-> 상태: 실제 Docker 스모크 전이다. 아래 "아직 안 된 것"을 먼저 확인한다.
+> 상태: 개발 머신에서 local 백엔드(가짜 LLM) 스모크를 마쳤다(아래 "스모크 실측"). api 백엔드 스모크와 평가 머신 확인은 아직이다.
+> 아래 "아직 안 된 것"을 먼저 확인한다.
 
 ## 실행
 
@@ -101,7 +102,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   meter-summary.json  llm-summary.json
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
-  runner-result.json             완료(+서명) 또는 무효(+사유·실패 단계)
+  runner-result.json             완료(+서명) 또는 무효(+사유·실패 단계: 사유가 나온 점검, 예상 밖 예외·중단이면 마지막으로 시작한 단계)
 ```
 
 근거 파일은 O_EXCL·0600으로 한 번만 쓴다. 무효 기록에는 측정값·근거 목록·서명을 넣지 않는다.
@@ -170,4 +171,25 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 - **개선 후 판정 레코드:** findings만 수집한다. 구조화 판정 레코드는 물리 형식(#18) 결정 후 추가 신호로 붙인다.
 - **tmpfs 사용량:** 회차 메모리(엔진 DB·엔진 데이터)의 seal 시점 사용량을 아직 재지 않는다. 결과 기록(완료·무효 모두)에
   `tmpfs_usage: "not_measured"`를 남기며, 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다.
-- **실측으로 확인할 것(스모크):** 부정 연결 점검의 실패 종류(Docker가 DROP인지 REJECT인지, 내장 DNS가 바깥 이름에 어떻게 답하는지), probe가 엔진의 /etc/hosts를 보는지, `docker run sha256:<id>` 동작, internal 망의 호스트 쪽 게이트웨이 주소 유무, OpenRouter generation 조회의 `provider_responses`·엔드포인트 ID 형태, 재시작·엔진 망 부착 고장 주입, probe 전후 계측기 건수 불변.
+- **아직 실측하지 않은 것:** OpenRouter generation 조회의 `provider_responses`·엔드포인트 ID 형태(api 백엔드 스모크), 엔진이 대상에 실제로 요청을 보낼 때의 계측기 전달 건수·drain(가짜 LLM으로는 엔진이 요청을 내지 않음), tmpfs 사용량.
+
+## 스모크 실측 (11/03, 개발 머신)
+
+환경: WSL2 Ubuntu 24.04, Ubuntu `docker.io` 29.1.3(Docker Desktop 통합 끔) + `docker-compose-v2` 2.40.3, local 백엔드 + 호스트
+고정 IP(docker0 `172.17.0.1`)의 가짜 OpenAI 호환 LLM(정해진 짧은 응답, 외부 송신 없음), ours 엔진(웹 UI 미내장 빌드), 시간 예산 90초.
+평가 머신의 결과가 아니며, 평가 머신이 정해지면 같은 항목을 다시 확인한다.
+
+- **완료 회차 1회(서명됨):** pre/post 망·publish·이미지·호스트 조건 위반 0, 부정 연결 13개 경로 모두 기대 종류, 관측 요청 3건 =
+  러너 호출 수, 작업 생성(요청 본문 해시 기록), 시간 예산 종료, LLM 게이트웨이 2건 전달·seal 뒤 거부 0, findings 0건, 정리 후
+  회차 컨테이너·망 0.
+- **부정 연결 실패 종류:** 다른 망 IP 직접(대상·관측 front·LLM 원 주소) = `unreachable`(엔진 망이 internal이라 경로 없음),
+  엔진 망 게이트웨이:관측 포트 = `refused`(internal 망에도 호스트 쪽 게이트웨이 주소가 있고, 관측 포트는 127.0.0.1에만 publish),
+  다른 망의 이름(서비스·컨테이너 이름·짧은 ID) = `dns_error`(SERVFAIL: 내장 DNS가 모르는 이름을 바깥으로 넘기지 못함). 이름 경로의
+  허용 종류를 `not_found`·`dns_error`로 정했다. `docker run sha256:<id>`(probe 이미지 내용 ID 지정)는 동작했다.
+- **고장 주입(회차 도중, 작업 생성 뒤):** 엔진을 대상 망에 연결 → `post_topology_violation` / 대상 재시작 → `boundary_changed` /
+  엔진 재시작 → `boundary_changed` / 계측기 재시작 → `seal_failed`(계측기가 기존 기록 파일을 덮어쓰지 않아 다시 뜨지 않음). 넷 다
+  무효·미서명, 정리 후 컨테이너·망 0.
+- **스모크로 고친 것:** `python3 -I` 실행 시 같은 디렉터리 모듈 import 실패, 배포판 데몬의 빈 `Platform.Name`을 출력 오류로 거부,
+  internal 망 DNS 실패 종류, 무효 기록의 `failed_step`이 마지막 단계(근거 쓰기)로 남던 것.
+- **이 머신 한정 설정:** 호스트 리슨 허용 목록에 WSL DNS 터널링 리졸버 `10.255.255.254:53`(근거 포함). 엔진 이미지는 호스트에
+  node가 없어 웹 UI 없이 빌드했다(baseline·ours 동일, 평가는 API만 쓴다).
