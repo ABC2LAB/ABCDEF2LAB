@@ -21,6 +21,7 @@ from runner_config import (
     COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, compose_environment, create_run_directory,
     parse_runner_config, plan_run,
 )
+from runner_engine import task_request
 from runner_probe import PASS, ProbeOutcome
 from test_preflight import configuration
 from test_runner_checks import DAEMON, raw_world
@@ -36,7 +37,7 @@ def make_spec():
     preflight = configuration()
     config = parse_runner_config(runner_config())
     plan = plan_run(config, preflight, "ours", "ours-1")
-    return build_spec(config, plan, preflight)
+    return build_spec(config, plan, preflight, "t" * 64)
 
 
 class FakeClock:
@@ -124,6 +125,7 @@ class FakePorts:
         self.calls = []
         self.fail = {}
         self.started = self.sealed = False
+        self.on_start = None
         self.ready_calls = 1
         self.post_world = None
         self.probe_status = {"pre": PASS, "post": PASS}
@@ -180,9 +182,12 @@ class FakePorts:
         self._call(f"scoreboard:{phase}")
         return {"raw": {"sha256": phase}, "normalized": {"sha256": phase}}
 
-    def confirm_start(self):
-        self._call("confirm_start")
+    def start_task(self):
+        self._call("start_task")
+        if self.on_start:
+            self.on_start()
         self.started = True
+        return "17"
 
     def seal(self, meter_id):
         self._call("seal")
@@ -219,7 +224,7 @@ def run(mutate=None, mutate_gateway=None):
 
 
 FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "wait_ready",
-              "scoreboard:pre", "confirm_start", "seal", "seal_gateway", "facts:post", "listeners:post", "probe:post",
+              "scoreboard:pre", "start_task", "seal", "seal_gateway", "facts:post", "listeners:post", "probe:post",
               "scoreboard:post", "findings", "down", "sign"]
 
 
@@ -232,7 +237,7 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(evidence.files[RESULT_NAME], result)
         self.assertEqual(set(evidence.files), {"pre-checks.json", "pre-probe.json", "post-checks.json",
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
-                                               "findings.json", RESULT_NAME})
+                                               "findings.json", "task.json", RESULT_NAME})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
         self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
         self.assertEqual(ports.sealed_id, "4" * 64)
@@ -242,6 +247,28 @@ class TestCompleteRun(unittest.TestCase):
                           result["llm"]["generations"], result["llm"]["providers"]),
                          ("example-provider", "Example", 2, ["Example"]))
         self.assertEqual(evidence.files["llm-summary.json"]["reasons"], [])
+        task = evidence.files["task.json"]
+        self.assertEqual((task["format"], task["request_sha256"], task["task_id"]),
+                         ("abc2lab-eval-runner-task-v1", "t" * 64, "17"))
+        self.assertEqual(result["task_request_sha256"], "t" * 64)
+
+    def test_budget_clock_starts_before_task_creation(self):
+        # 생성 요청이 오래 걸려도 그 시간은 예산에 들어간다(엔진은 생성과 동시에 기동).
+        def slow_start(ports, meter, clock):
+            meter.per_poll = 0
+            ports.on_start = lambda: clock.sleep(100)
+        result, _, _, evidence = run(slow_start)
+        summary, task = evidence.files["meter-summary.json"], evidence.files["task.json"]
+        requested = datetime.fromisoformat(summary["task_requested_at"])
+        created = datetime.fromisoformat(summary["task_created_at"])
+        stopped = datetime.fromisoformat(summary["stopped_at"])
+        self.assertEqual((created - requested).total_seconds(), 100)
+        self.assertEqual((task["requested_at"], task["created_at"]),
+                         (summary["task_requested_at"], summary["task_created_at"]))
+        elapsed = (stopped - requested).total_seconds()
+        self.assertGreaterEqual(elapsed, summary["time_budget_seconds"])
+        self.assertLess(elapsed, summary["time_budget_seconds"] + 100)
+        self.assertEqual(result["status"], COMPLETE)
 
     def test_request_budget_overshoot_recorded_not_hidden(self):
         result, _, _, evidence = run(lambda p, m, c: setattr(m, "per_poll", 35))
@@ -278,14 +305,14 @@ class TestFailures(unittest.TestCase):
     def test_pre_requests_must_be_zero(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "pre_forwarded", 1))
         self.assert_invalid(result, ports, evidence, "pre_requests_nonzero")
-        self.assertNotIn("confirm_start", ports.calls)
+        self.assertNotIn("start_task", ports.calls)
         self.assertNotIn("meter-summary.json", evidence.files)
 
     def test_each_step_failure_is_invalid_with_down_and_no_signature(self):
         cases = [
             ("up", "compose_up_failed"), ("facts:pre", "pre_facts_failed"), ("listeners:pre", "pre_host_listeners_failed"),
             ("probe:pre", "pre_probe_invalid"), ("wait_ready", "target_not_ready"), ("scoreboard:pre", "pre_scoreboard_failed"),
-            ("confirm_start", "start_not_confirmed"), ("seal", "seal_failed"), ("seal_gateway", "llm_seal_failed"),
+            ("start_task", "task_start_failed"), ("seal", "seal_failed"), ("seal_gateway", "llm_seal_failed"),
             ("facts:post", "post_facts_failed"),
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
             ("findings", "findings_failed"),
@@ -424,7 +451,7 @@ class TestFailures(unittest.TestCase):
     def test_interrupt_still_downs_and_records(self):
         spec = make_spec()
         ports = FakePorts(spec)
-        ports.fail["confirm_start"] = KeyboardInterrupt()
+        ports.fail["start_task"] = KeyboardInterrupt()
         evidence = FakeEvidence()
         with self.assertRaises(KeyboardInterrupt):
             execute_run(spec, ports, FakeMeter(ports), FakeGateway(ports), evidence, FakeClock().clock())
@@ -481,7 +508,7 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
             self.assertEqual(env["EVAL_EVIDENCE_DIR"], str(directory.meter))
             self.assertNotEqual(directory.meter, directory.run)
             self.assertNotIn(str(config.runner_key_path), "\n".join(env.values()))
-            ports = DockerPorts(config, plan, directory, docker=None, findings=dict, confirm=lambda: None)
+            ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1")
             snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
             with patch.object(runner, "collect_snapshot") as collect:
                 collect.return_value.artifacts.raw = {"path": "pre/raw.json"}
@@ -494,50 +521,67 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
 
 
 class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
-    """비밀번호는 getpass로 한 번 받아 findings 수집에만 넘긴다. argv·환경·docker 호출·출력에 없다."""
+    """비밀번호는 getpass로 한 번 받아 작업 생성·findings 수집에만 넘긴다. argv·환경·docker 호출·출력에 없다."""
 
-    def test_password_reaches_only_the_findings_collector(self):
+    def inputs(self, tmp, change=None, origin=None):
+        from test_baseline_extract import vocabulary
+        root = Path(tmp, "runs")
+        root.mkdir(mode=0o700)
+        os.chmod(root, 0o700)
+        vocab = Path(tmp, "vocabulary.json")
+        vocab.write_text(json.dumps(vocabulary()))
+        payload = runner_config() | {"runs_root": str(root), "runner_key_path": str(Path(tmp, "k"))}
+        payload["findings"] = dict(payload["findings"], vocabulary_path=str(vocab))
+        if change:
+            change(payload)
+        preflight = configuration()
+        if origin:
+            for side in ("baseline", "ours"):
+                preflight[side]["target_origin"] = origin
+        config_path, preflight_path = Path(tmp, "runner.json"), Path(tmp, "preflight.json")
+        config_path.write_text(json.dumps(payload))
+        preflight_path.write_text(json.dumps(preflight))
+        return root, ["--config", str(config_path), "--preflight", str(preflight_path), "--side", "ours"]
+
+    def test_password_reaches_only_task_start_and_findings(self):
         import contextlib
         import io
-        import json as json_module
         from test_runner_engine import PASSWORD
-        from test_baseline_extract import vocabulary
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp, "runs")
-            root.mkdir(mode=0o700)
-            os.chmod(root, 0o700)
-            vocab = Path(tmp, "vocabulary.json")
-            vocab.write_text(json_module.dumps(vocabulary()))
-            config_payload = runner_config() | {"runs_root": str(root), "runner_key_path": str(Path(tmp, "k"))}
-            config_payload["findings"] = dict(config_payload["findings"], vocabulary_path=str(vocab))
-            config_path, preflight_path = Path(tmp, "runner.json"), Path(tmp, "preflight.json")
-            config_path.write_text(json_module.dumps(config_payload))
-            preflight_path.write_text(json_module.dumps(configuration()))
+            root, argv = self.inputs(tmp)
             seen = {}
 
             def fake_docker(executor, env, timeout):
                 seen["docker_env"] = dict(env)
                 return object()
 
+            def fake_start(port, secret, request, timeout):
+                seen["start"] = (port, secret.reveal(), request.sha256, timeout)
+                return "17"
+
             def fake_collect(port, secret, settings, vocabulary_obj, digest, *, side, build_source):
-                seen["secret"] = secret.reveal()
-                seen["collect"] = (port, side, build_source, digest)
+                seen["collect"] = (port, secret.reveal(), side, build_source)
                 return {"findings": []}
 
             def fake_execute(spec, ports, meter, gateway, evidence, clock):
+                seen["spec_task"] = spec.task_request_sha256
+                seen["task_id"] = ports.start_task()
                 ports.findings()
                 return {"run_id": spec.run_id, "status": INVALID, "reasons": ["x"]}
 
             out, err = io.StringIO(), io.StringIO()
             with patch.object(runner.getpass, "getpass", return_value=PASSWORD), \
                     patch.object(runner, "Docker", side_effect=fake_docker), \
+                    patch.object(runner, "start_task", side_effect=fake_start), \
                     patch.object(runner, "collect_findings", side_effect=fake_collect), \
                     patch.object(runner, "execute_run", side_effect=fake_execute), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = runner.main(["--config", str(config_path), "--preflight", str(preflight_path), "--side", "ours"])
+                code = runner.main(argv)
             self.assertEqual(code, 1)
-            self.assertEqual(seen["secret"], PASSWORD)
-            self.assertEqual(seen["collect"][:3], (18787, "ours", "2" * 40))
+            expected = task_request(runner_config()["task"], configuration()["ours"]["target_origin"])
+            self.assertEqual(seen["start"], (18787, PASSWORD, expected.sha256, 20))
+            self.assertEqual((seen["spec_task"], seen["task_id"]), (expected.sha256, "17"))
+            self.assertEqual(seen["collect"], (18787, PASSWORD, "ours", "2" * 40))
             self.assertNotIn(PASSWORD, "\n".join(seen["docker_env"].values()))
             self.assertNotIn(PASSWORD, out.getvalue() + err.getvalue())
             self.assertNotIn(PASSWORD, "\n".join(os.environ.values()))
@@ -545,32 +589,52 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                 if written.is_file():
                     self.assertNotIn(PASSWORD, written.read_text(errors="ignore"))
 
-    def test_invalid_vocabulary_stops_before_asking_or_creating_a_run(self):
-        import io
+    def test_task_target_is_checked_against_this_run_origin(self):
+        # 계측기 포트가 다른 구성이면 작업 대상도 그 origin이어야 한다(고정 문자열과 비교하지 않는다).
+        def use_8081(payload):
+            payload["task"]["description"] = "평가 대상 http://eval-meter:8081 진단"
+
+        cases = ((use_8081, "http://eval-meter:8081", None), (None, "http://eval-meter:8081", "task_target_mismatch"))
+        for change, origin, code in cases:
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                root, argv = self.inputs(tmp, change, origin)
+                with patch.object(runner.getpass, "getpass", side_effect=KeyboardInterrupt) as ask, \
+                        patch("sys.stderr") as err:
+                    if code is None:
+                        with self.assertRaises(KeyboardInterrupt):
+                            runner.main(argv)
+                        ask.assert_called_once()  # 작업 대상 검사를 통과해 비밀번호까지 왔다
+                    else:
+                        self.assertEqual(runner.main(argv), 2)
+                        ask.assert_not_called()
+                self.assertEqual(list(root.iterdir()), [])
+
+    def test_bad_inputs_stop_before_asking_or_creating_a_run(self):
         import contextlib
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp, "runs")
-            root.mkdir(mode=0o700)
-            os.chmod(root, 0o700)
-            config_payload = runner_config() | {"runs_root": str(root), "runner_key_path": str(Path(tmp, "k"))}
-            config_payload["findings"] = dict(config_payload["findings"], vocabulary_path=str(Path(tmp, "missing.json")))
-            config_path, preflight_path = Path(tmp, "runner.json"), Path(tmp, "preflight.json")
-            config_path.write_text(json.dumps(config_payload))
-            preflight_path.write_text(json.dumps(configuration()))
-            err = io.StringIO()
-            with patch.object(runner.getpass, "getpass") as ask, contextlib.redirect_stderr(err):
-                code = runner.main(["--config", str(config_path), "--preflight", str(preflight_path), "--side", "ours"])
-            self.assertEqual(code, 2)
-            ask.assert_not_called()
-            self.assertEqual(err.getvalue().strip(), "findings_vocabulary_invalid")
-            self.assertEqual(list(root.iterdir()), [])
+        import io
+
+        def missing_vocabulary(payload):
+            payload["findings"]["vocabulary_path"] = "/nonexistent/vocabulary.json"
+
+        def other_target(payload):
+            payload["task"]["goal"] = "http://juice-shop:3000 에서 인가 우회를 찾는다"
+
+        for change, code in ((missing_vocabulary, "findings_vocabulary_invalid"), (other_target, "task_target_mismatch")):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                root, argv = self.inputs(tmp, change)
+                err = io.StringIO()
+                with patch.object(runner.getpass, "getpass") as ask, contextlib.redirect_stderr(err):
+                    self.assertEqual(runner.main(argv), 2)
+                ask.assert_not_called()
+                self.assertEqual(err.getvalue().strip(), code)
+                self.assertEqual(list(root.iterdir()), [])
 
 
 class TestSignatureKey(unittest.TestCase):
     def test_key_read_only_at_sign_time_from_config_path(self):
         config = parse_runner_config(runner_config())
         plan = plan_run(config, configuration(), "ours", "ours-1")
-        ports = DockerPorts(config, plan, None, docker=None, findings=dict, confirm=lambda: None)
+        ports = DockerPorts(config, plan, None, docker=None, findings=dict, start=lambda: "1")
         with patch.object(runner, "read_runner_key", return_value=b"k" * 32) as read_key:
             signed = ports.sign({"run_id": "ours-1"})
         read_key.assert_called_once_with("/srv/eval-keys/runner.key")

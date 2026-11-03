@@ -48,11 +48,15 @@ def runner_config() -> dict:
         "runner_key_path": "/srv/eval-keys/runner.key",
         "run": {"compose_wait_seconds": 120, "down_timeout_seconds": 30, "ready_timeout_seconds": 120,
                 "budget_poll_seconds": 5, "drain_timeout_seconds": 60, "snapshot_timeout_seconds": 30,
-                "snapshot_max_bytes": 4194304, "llm_verify_timeout_seconds": 300},
+                "snapshot_max_bytes": 4194304, "llm_verify_timeout_seconds": 300,
+                "task_create_timeout_seconds": 20},
         "llm_gateway": {"generation_path": "/api/v1/generation", "verify_attempts": 5, "verify_interval_seconds": 2,
                         "ca_bundle": "/etc/ssl/certs/ca-certificates.crt", "expected_provider_name": "Example"},
         "findings": {"vocabulary_path": "/srv/eval/vocabulary.json", "page_size": 100, "timeout_seconds": 30,
                      "max_page_bytes": 1048576, "max_total_bytes": 8388608, "max_pages": 100},
+        "task": {"description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.\n로그인 계정은 엔진 설정을 쓴다.",
+                 "goal": "다른 사용자의 자원에 접근되는지 확인한다", "timeout_seconds": 1200,
+                 "plan_heartbeat_seconds": 600, "seed_first_intent": False, "coverage_enabled": True},
     }
 
 
@@ -79,6 +83,19 @@ class TestParseRunnerConfig(unittest.TestCase):
         payload = runner_config()
         del payload["findings"]["max_pages"]
         self.reject(payload, "config.findings.max_pages: MISSING")
+
+    def test_task_takes_only_the_evaluation_fields(self):
+        payload = runner_config()
+        payload["task"].update(description="x" * 4000, timeout_seconds=0, plan_heartbeat_seconds=86400)
+        self.assertEqual(parse_runner_config(payload).task["timeout_seconds"], 0)
+        for extra in ("llm_profile_id", "llm_profile_ids", "source_task_ids", "company_ids", "intercept_rules", "name"):
+            with self.subTest(extra=extra):
+                payload = runner_config()
+                payload["task"][extra] = []
+                self.reject(payload, "config.task: UNKNOWN_FIELDS")
+        payload = runner_config()
+        del payload["task"]
+        self.reject(payload, "config.task: MISSING")
 
     def test_missing_and_unknown_fields_rejected(self):
         payload = runner_config()
@@ -149,6 +166,17 @@ class TestParseRunnerConfig(unittest.TestCase):
             (("findings", "max_page_bytes"), 8 * 1024 * 1024 + 1, "config.findings.max_page_bytes: INVALID"),
             (("findings", "max_page_bytes"), 0, "config.findings.max_page_bytes: INVALID"),
             (("findings", "max_pages"), 10_001, "config.findings.max_pages: INVALID"),
+            (("task", "description"), "   ", "config.task.description: INVALID"),
+            (("task", "description"), "a\tb", "config.task.description: INVALID"),
+            (("task", "goal"), "x" * 4001, "config.task.goal: INVALID"),
+            (("task", "goal"), "a\x7fb", "config.task.goal: INVALID"),
+            (("task", "goal"), 7, "config.task.goal: INVALID"),
+            (("task", "timeout_seconds"), -1, "config.task.timeout_seconds: INVALID"),
+            (("task", "timeout_seconds"), 86401, "config.task.timeout_seconds: INVALID"),
+            (("task", "plan_heartbeat_seconds"), True, "config.task.plan_heartbeat_seconds: INVALID"),
+            (("task", "seed_first_intent"), "false", "config.task.seed_first_intent: EXPECTED_BOOL"),
+            (("task", "coverage_enabled"), 1, "config.task.coverage_enabled: EXPECTED_BOOL"),
+            (("run", "task_create_timeout_seconds"), 0, "config.run.task_create_timeout_seconds: INVALID"),
             (("findings", "max_pages"), True, "config.findings.max_pages: INVALID"),
             (("findings", "timeout_seconds"), 3601, "config.findings.timeout_seconds: INVALID"),
             (("ports", "llm_gateway"), 0, "config.ports.llm_gateway: INVALID"),

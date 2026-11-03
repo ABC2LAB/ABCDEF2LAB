@@ -1,7 +1,7 @@
 """평가 러너 회차 순서(평가 프로토콜 §2).
 
   기동(대상·계측기·관측·engine-db·엔진) → pre 점검(5b)·probe(5c) → 대상 준비 → pre scoreboard
-  → 계측기 전달 0 확인 → 작업 시작(운영자) → 시간·요청 예산 → 계측기 seal(USR1) → drained 확인
+  → 계측기 전달 0 확인 → 작업 생성(엔진 API, 생성=기동) → 시간·요청 예산 → 계측기 seal(USR1) → drained 확인
   → LLM 게이트웨이 seal → post 점검·probe → post scoreboard → 관측·계측 기록 대조
   → 게이트웨이 검증 마커 대기·응답 제공자 판정 → findings → down → 서명
 
@@ -40,7 +40,7 @@ from runner_config import (
     new_run_id, plan_run,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker
-from runner_engine import AdminSecret, EngineAPIError, collect_findings, load_vocabulary
+from runner_engine import AdminSecret, EngineAPIError, collect_findings, load_vocabulary, start_task, task_request
 from runner_evidence import DRAINED_MARKER, SEALED_MARKER, EvidenceDir, GatewayFiles, MeterFiles, sequence_complete
 from runner_llm import judge_llm
 from runner_probe import PASS, ProbeOutcome, run_probe
@@ -48,6 +48,7 @@ from snapshot_collector import SnapshotEndpoint, collect_snapshot
 from snapshot_writer import SnapshotContext
 
 RESULT_FORMAT = "abc2lab-eval-runner-result-v1"
+TASK_EVIDENCE_FORMAT = "abc2lab-eval-runner-task-v1"
 RESULT_NAME = "runner-result.json"
 COMPLETE, INVALID = "complete", "invalid"
 # 이미지 역할 → 그 이미지를 쓰는 compose 서비스. 기동 후 컨테이너 이미지가 설정의 내용 ID와 같아야 한다.
@@ -81,7 +82,7 @@ class RunPorts(Protocol):
     def probe(self, snapshot: dict) -> ProbeOutcome: ...
     def wait_ready(self) -> int: ...
     def scoreboard(self, phase: str, snapshot: dict) -> dict: ...
-    def confirm_start(self) -> None: ...
+    def start_task(self) -> str: ...
     def seal(self, meter_container_id: str) -> None: ...
     def seal_gateway(self, gateway_container_id: str) -> None: ...
     def findings(self) -> dict: ...
@@ -111,6 +112,7 @@ class RunSpec:
     llm_provider_slug: str
     llm_provider_name: str
     llm_verify_timeout_seconds: int
+    task_request_sha256: str
 
 
 @dataclass
@@ -224,9 +226,13 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if pre_forwarded != 0:
         raise RunFailure("pre_requests_nonzero")  # 작업 시작 전에 엔진이 대상으로 보냈다
 
-    prompted_at = _stamp(clock)
-    _step(state, "start_not_confirmed", ports.confirm_start)
-    started_at, started = _stamp(clock), clock.monotonic()
+    # 예산 시계는 생성 요청 직전부터 잰다(엔진은 생성과 동시에 기동하므로 요청 지연도 예산에 넣는다).
+    requested_at, started = _stamp(clock), clock.monotonic()
+    task_id = _step(state, "task_start_failed", ports.start_task)
+    created_at = _stamp(clock)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("task.json", {
+        "format": TASK_EVIDENCE_FORMAT, "request_sha256": spec.task_request_sha256, "task_id": task_id,
+        "requested_at": requested_at, "created_at": created_at}))
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started)
     stopped_at = _stamp(clock)
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER_SERVICE]["id"]))
@@ -250,7 +256,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if sealed is None or not sequence_complete(rows) or forwarded != drained.get("forwarded_requests"):
         raise RunFailure("meter_log_inconsistent")
     meter_summary = {
-        "start_prompted_at": prompted_at, "start_confirmed_at": started_at, "stopped_at": stopped_at,
+        "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
         "stop_reason": stop_reason, "forwarded_at_stop": forwarded_at_stop,
         "sealed_at": sealed.get("sealed_at"), "drained_at": drained.get("drained_at"),
         "forwarded_requests": forwarded, "request_budget": spec.request_budget,
@@ -272,6 +278,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
+                     "task_request_sha256": spec.task_request_sha256,
                      "daemon": pre["daemon"], "scoreboards": {"pre": pre_board, "post": post_board}}
 
 
@@ -328,9 +335,9 @@ def _read_text(path: str) -> str | None:
 
 class DockerPorts:
     def __init__(self, config: RunnerConfig, plan: RunPlan, directory: RunDirectory, docker: Docker,
-                 findings: Callable[[], dict], confirm: Callable[[], None]):
+                 findings: Callable[[], dict], start: Callable[[], str]):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
-        self._findings, self._confirm = findings, confirm
+        self._findings, self._start = findings, start
         self.base_args = compose_base_args(plan)
         self.obs_origin = f"http://127.0.0.1:{config.ports['obs_host']}"
 
@@ -391,8 +398,8 @@ class DockerPorts:
         return {"raw": collected.artifacts.raw, "normalized": collected.artifacts.normalized,
                 "requested_at": collected.requested_at, "received_at": collected.received_at}
 
-    def confirm_start(self) -> None:
-        self._confirm()
+    def start_task(self) -> str:
+        return self._start()
 
     def seal(self, meter_container_id: str) -> None:
         self.docker.signal(meter_container_id, "USR1")
@@ -408,13 +415,7 @@ class DockerPorts:
         return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
 
 
-def _operator_confirm() -> None:
-    answer = input("엔진에서 작업을 시작한 뒤 start를 입력하세요(그 외 입력은 중단): ")
-    if answer.strip() != "start":
-        raise RunFailure("start_not_confirmed")
-
-
-def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict) -> RunSpec:
+def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str) -> RunSpec:
     declared = preflight[plan.side]
     return RunSpec(
         run_id=plan.run_id, side=plan.side, project=plan.project, llm_backend=plan.llm["backend"],
@@ -424,7 +425,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict) -> RunSpec:
         poll_seconds=config.run["budget_poll_seconds"], drain_timeout_seconds=config.run["drain_timeout_seconds"],
         llm_provider_slug=plan.llm.get("provider", ""),
         llm_provider_name=config.llm_gateway["expected_provider_name"],
-        llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"])
+        llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
+        task_request_sha256=task_request_sha256)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -437,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         config = load_runner_config(args.config)
         preflight = load_preflight(args.preflight)
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
+        task = task_request(config.task, preflight[plan.side]["target_origin"])
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])
         # 설정이 통과한 뒤에만 묻는다. 비밀번호는 이 프로세스 메모리에만 있고 어디에도 쓰지 않는다.
         secret = AdminSecret(getpass.getpass("엔진 관리자 비밀번호(화면에 표시되지 않음): "))
@@ -450,13 +453,16 @@ def main(argv: list[str] | None = None) -> int:
     docker = Docker(run_docker, client_environment(os.environ, compose_environment(plan, directory)),
                     config.docker_timeout_seconds)
 
+    def start() -> str:
+        return start_task(config.ports["engine_api_host"], secret, task, config.run["task_create_timeout_seconds"])
+
     def findings() -> dict:
         return collect_findings(config.ports["engine_api_host"], secret, config.findings, vocabulary,
                                 vocabulary_sha256, side=plan.side, build_source=plan.source_sha)
 
-    ports = DockerPorts(config, plan, directory, docker, findings, _operator_confirm)
+    ports = DockerPorts(config, plan, directory, docker, findings, start)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
-    result = execute_run(build_spec(config, plan, preflight), ports, MeterFiles(directory.meter),
+    result = execute_run(build_spec(config, plan, preflight, task.sha256), ports, MeterFiles(directory.meter),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
     return 0 if result["status"] == COMPLETE else 1
