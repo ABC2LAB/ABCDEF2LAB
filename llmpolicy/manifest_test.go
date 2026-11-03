@@ -29,7 +29,8 @@ func manifestEncode(t *testing.T, profiles ...map[string]any) []byte {
 
 func manifestRejected(t *testing.T, body []byte) {
 	t.Helper()
-	resolver, err := ParseProfileManifest(body)
+	// Limit capacity too, so malformed escapes cannot read beyond the input length.
+	resolver, err := ParseProfileManifest(body[:len(body):len(body)])
 	if resolver != nil || err != ErrInvalidProfileManifest || !errors.Is(err, ErrInvalidProfileManifest) {
 		t.Fatalf("expected nil resolver and fixed error; got %v %v", resolver, err)
 	}
@@ -64,7 +65,7 @@ func TestProfileManifestValid(t *testing.T) {
 func TestProfileManifestRejectsStructure(t *testing.T) {
 	cases := map[string]string{
 		"empty": "", "whitespace": " \r\n", "null": "null", "array": "[]", "scalar": "1", "object": "{}",
-		"missing version": `{"profiles":[]}`, "missing profiles": `{"version":1}`,
+		"missing version": strings.Replace(manifestValid, `"version":1,`, "", 1), "missing profiles": `{"version":1}`,
 		"version null": `{"version":null,"profiles":[]}`, "version string": `{"version":"1","profiles":[]}`,
 		"version float":       strings.Replace(manifestValid, `"version":1`, `"version":1.0`, 1),
 		"version exponent":    strings.Replace(manifestValid, `"version":1`, `"version":1e0`, 1),
@@ -75,6 +76,7 @@ func TestProfileManifestRejectsStructure(t *testing.T) {
 		"syntax": manifestValid[:len(manifestValid)-1], "trailing object": manifestValid + `{}`, "trailing null": manifestValid + ` null`,
 		"trailing garbage": manifestValid + ` unexpected`, "bom": "\xef\xbb\xbf" + manifestValid,
 		"unknown root":              strings.Replace(manifestValid, `"version":1`, `"enabled":true,"version":1`, 1),
+		"case version":              strings.Replace(manifestValid, `"version"`, `"Version"`, 1),
 		"case root":                 strings.Replace(manifestValid, `"profiles"`, `"Profiles"`, 1),
 		"duplicate root":            strings.Replace(manifestValid, `"version":1`, `"version":1,"version":1`, 1),
 		"escaped duplicate root":    strings.Replace(manifestValid, `"version":1`, `"version":1,"\u0076ersion":1`, 1),
@@ -111,7 +113,7 @@ func TestProfileManifestRejectsPolicyFailures(t *testing.T) {
 	for name, values := range map[string]any{
 		"empty": []string{}, "null": []string(nil), "public": []string{"8.8.8.8"}, "invalid": []string{"not-an-ip"},
 		"duplicate": []string{"10.0.0.1", "10.0.0.1"}, "normalized duplicate": []string{"10.0.0.1", "::ffff:10.0.0.1"},
-		"zone": []string{"fe80::1%eth0"}, "nonstring": []any{7}, "scalar": "10.0.0.1",
+		"zone": []string{"fe80::1%eth0"}, "nonstring": []any{7}, "mixed": []any{"10.0.0.1", 7}, "scalar": "10.0.0.1",
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := manifestProfile()
@@ -195,7 +197,11 @@ func TestProfileManifestLimits(t *testing.T) {
 }
 
 func TestProfileManifestEncoding(t *testing.T) {
-	for _, model := range []string{`\ud800`, `\udc00`, `\ud800x`, `\ud800\u0041`, `\ud800\ud800`, `\uZZZZ`, "\xff"} {
+	prefix := manifestValid[:strings.Index(manifestValid, "local:test")]
+	for name, escape := range map[string]string{"trailing backslash": `\`, "short unicode escape": `\u12`} {
+		t.Run(name, func(t *testing.T) { manifestRejected(t, []byte(prefix+escape)) })
+	}
+	for _, model := range []string{`\ud800`, `\udc00`, `\ud800x`, `\ud800\u0041`, `\ud800\ud800`, `\ud800xxdc00`, `\uZZZZ`, "\xff"} {
 		t.Run(fmt.Sprintf("%q", model), func(t *testing.T) {
 			body := strings.Replace(manifestValid, "local:test", model, 1)
 			manifestRejected(t, []byte(body))
@@ -260,10 +266,20 @@ func TestProfileManifestIsolationAndSafeErrors(t *testing.T) {
 }
 
 func FuzzParseProfileManifest(f *testing.F) {
-	for _, body := range []string{manifestValid, `{}`, `null`, manifestValid + `{}`, strings.Replace(manifestValid, "local:test", `\ud800`, 1)} {
+	prefix := manifestValid[:strings.Index(manifestValid, "local:test")]
+	for _, body := range []string{
+		manifestValid, `{}`, `null`, manifestValid + `{}`,
+		strings.Replace(manifestValid, "local:test", `\ud800`, 1),
+		prefix + `\`, prefix + `\u12`,
+		strings.Replace(manifestValid, "local:test", `\ud800xxdc00`, 1),
+		strings.Replace(manifestValid, `["10.0.0.1"]`, `["10.0.0.1",7]`, 1),
+		strings.Replace(manifestValid, `"version"`, `"Version"`, 1),
+	} {
 		f.Add([]byte(body))
 	}
 	f.Fuzz(func(t *testing.T, body []byte) {
+		// Exercise lookahead bounds even when the fuzz buffer has spare capacity.
+		body = body[:len(body):len(body)]
 		r, err := ParseProfileManifest(body)
 		if err != nil {
 			if r != nil || err != ErrInvalidProfileManifest {
