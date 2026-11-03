@@ -13,6 +13,10 @@ import (
 // server test suite so cross-package DELETE cleanup races with db/agent
 // packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
+	// Provider clients clone the default transport. Keep dummy credentials and
+	// synthetic prompts inside the test process's loopback fixtures, including
+	// restored task runtimes that unexpectedly try the provider's default URL.
+	installTestHTTPBoundary()
 	// server.New starts the realtime notifier's background delivery loop
 	// (notifyTick) unless this env var is set. The notify integration tests
 	// drive stepRealtime/stepDigest directly (see newNotifyFixture) and only
@@ -31,7 +35,6 @@ func TestMain(m *testing.M) {
 	// Production defaults to English (config.DefaultLanguage); individual tests
 	// that need another language set it explicitly (t.Setenv / the settings table).
 	os.Setenv("ARTEX_LANG", "ko")
-
 
 	dsn, _, err := db.DSN()
 	if err != nil {

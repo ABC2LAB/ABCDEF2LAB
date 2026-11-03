@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -131,7 +132,16 @@ func (e *Engine) controlledTask(taskID string) bool {
 // registerControlledRead is called only by the authenticated API with an opaque
 // snapshot reference. Pause, active-work check and publication serialize with
 // acquire, so a racing resume cannot enter an ordinary worker past the marker.
-func (e *Engine) registerControlledRead(ctx context.Context, task *Task, intentID int64, snapshotRef string, makeRunnable ...func() error) error {
+func (e *Engine) registerControlledRead(ctx context.Context, task *Task, intentID int64, snapshotRef string, makeRunnable ...func() error) (err error) {
+	defer func() {
+		if err != nil {
+			reason := "runtime_unavailable"
+			if errors.Is(err, errControlledReadNotPaused) {
+				reason = "requires_paused_task"
+			}
+			log.Printf("[controlled-read] registration_rejected reason=%s", reason)
+		}
+	}()
 	r := e.controlledReads
 	if r == nil || r.store == nil || task == nil {
 		return errControlledReadUnavailable
@@ -157,6 +167,7 @@ func (e *Engine) registerControlledRead(ctx context.Context, task *Task, intentI
 	}
 	// Persist the downgrade barrier before any fallible secret/profile load.
 	if err := r.store.mark(task.ID, intentID); err != nil {
+		log.Print("[controlled-read] registration_failed reason=marker_write_failed")
 		return errControlledReadUnavailable
 	}
 	if previous, exists := r.pending[key]; exists {
@@ -165,9 +176,11 @@ func (e *Engine) registerControlledRead(ctx context.Context, task *Task, intentI
 	}
 	spec, err := r.store.load(task.ID, intentID, snapshotRef)
 	if err != nil {
+		log.Print("[controlled-read] registration_failed reason=snapshot_load_failed")
 		return errControlledReadUnavailable
 	}
 	if err := validateControlledReadSpec(spec); err != nil {
+		log.Print("[controlled-read] registration_failed reason=snapshot_validation_failed")
 		clear(spec.Key)
 		return errControlledReadUnavailable
 	}
@@ -177,6 +190,7 @@ func (e *Engine) registerControlledRead(ctx context.Context, task *Task, intentI
 	}
 	if len(makeRunnable) > 0 && makeRunnable[0] != nil {
 		if err := makeRunnable[0](); err != nil {
+			log.Print("[controlled-read] registration_failed reason=intent_transition_failed")
 			clear(spec.Key)
 			return errControlledReadUnavailable
 		}

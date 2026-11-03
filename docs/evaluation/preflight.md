@@ -86,7 +86,7 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
 | `environment_fingerprint` | 공통 비민감 환경 프로파일의 SHA-256. 비교하는 소스 SHA는 제외 |
 | `scope_fingerprint` | 공통 검사 대상 범위 프로파일의 SHA-256 |
 
-소스 SHA 이외 조건은 같아야 한다. URL·LLM 객체도 선언 값을 정확히 비교하며 끝 slash 차이 등을 자동으로 같은 값으로 취급하지 않는다. LLM 백엔드 종류가 다르면 비교를 거부한다.
+소스 SHA 이외 조건은 같아야 한다. baseline과 ours의 `source_sha`가 같은 것도 허용하지만, 이는 선언된 출처가 같다는 뜻일 뿐 엔진 구현의 차이·실행 분리·비교의 유효성을 증명하지 않는다. URL·LLM 객체도 선언 값을 정확히 비교하며 끝 slash 차이 등을 자동으로 같은 값으로 취급하지 않는다. LLM 백엔드 종류가 다르면 비교를 거부한다.
 fingerprint는 이미 합의한 비민감 프로파일을 결정적으로 직렬화해 계산한 값을 전달한다. 인증정보나 실제 계정 원문의 해시는 금지다.
 회차마다 다른 run/reset/instance/execution ID, 실제 자원 ID나 실측 pre 상태는 이 설정에 넣지 않으며 실행 후 신뢰 기록에서 검증한다.
 

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -28,15 +29,24 @@ func TestAugmentToolsDoesNotMixHookGenerations(t *testing.T) {
 		cleanup()
 		done <- owner
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("tool augmentation did not enter the first hook")
+	}
 	h.ToolResolve = func(_ context.Context, _ string, tools []actool.CoreTool) []actool.CoreTool {
 		owner = "B"
 		return tools
 	}
 	// The captured context keeps the A snapshot even after h is changed.
 	close(resume)
-	if got := <-done; got != "A" {
-		t.Fatalf("tool assembly mixed the active owner A with replacement owner %s", got)
+	select {
+	case got := <-done:
+		if got != "A" {
+			t.Fatalf("tool assembly mixed the active owner A with replacement owner %s", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tool augmentation remained blocked after its captured hook resumed")
 	}
 }
 

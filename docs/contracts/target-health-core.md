@@ -26,15 +26,15 @@
 각 Observation은 ScopeRef·Attempt·ResourceRef·NetworkStarted·CompletedAt·Elapsed·Outcome·StatusCode를 가진다.
 
 - NetworkStarted=true는 **실제 네트워크 호출을 시작한 수집 지점**에서만 기록한다. admission이나 RequestWritten만으로 추정하지 않는다. false는 입력 오류다.
-- Elapsed는 호출자의 단조 시계로 측정한 네트워크 호출부터 응답 완료/네트워크 실패까지의 시간이다. 큐·rate-limit·감사 저장 대기는 제외한다. 기존 `Receipt.At-AdmittedAt`으로 대신하지 않는다.
+- Elapsed는 호출자의 단조 시계로 측정한 네트워크 호출부터 응답 완료/네트워크 실패까지의 시간이다. 큐·rate-limit·감사 저장 대기는 제외한다. 기존 `Receipt.At-AdmittedAt`으로 대신하지 않는다. adapter는 네트워크 시작·완료 시각과 Elapsed를 같은 단조 시계 샘플에서 기록해야 하며, 이 조건을 보장할 수 없으면 health 표본으로 제출하지 않는다.
 - Outcome=response는 최종 HTTP status 200~599가 필수다. timeout/transport_error는 status0 또는 헤더 수신 후 body 오류의 status 200~599를 허용한다. 외부 취소·정책 거부·큐 대기 timeout·감사 저장 실패는 대상 오류로 변환하지 않는다. 네트워크 deadline과 로컬 원인의 구분도 adapter 책임이다.
-- 미래·0 완료시각, 음수 Elapsed, 알 수 없는 enum/status, 중복 Attempt, 다른 ScopeRef는 거부한다. 만료된 관측도 먼저 검증하며, 전체 batch가 MaxSamples보다 크면 거부한다. 호출자는 오래된 관측을 제거하고 한도 내 창을 유지해야 한다. 한도 초과 시 일부만 잘라 계속 진행하지 않는다.
+- 미래·0 완료시각, 음수 Elapsed, 알 수 없는 enum/status, 중복 Attempt, 다른 ScopeRef는 거부한다. 만료된 관측도 먼저 검증하며, 전체 batch가 MaxSamples보다 크면 거부한다. 호출자는 오래된 관측을 제거하고 한도 내 창을 유지해야 한다. 한도 초과 시 일부만 잘라 계속 진행하지 않는다. 순서 독립성은 이 검증을 모두 통과한 정상 batch에만 적용하며, 잘못된 관측·중복·만료 표본을 재배열해 유효한 창으로 만들 수는 없다.
 
 ## 집계와 반환
 
 - timeout·transport_error·HTTP429·HTTP5xx를 Failures에 합산한다. 관측 하나는 실패 한 번만 센다. 예를 들어 status503을 가진 body timeout은 Timeouts와 Failures에만 한 번씩 집계한다.
 - 일반401·403·404·리다이렉트·나머지4xx는 그 status만으로 실패로 세지 않는다. 다만 오래 걸린 완료 응답이면 지연 신호가 될 수 있다.
-- `Elapsed >= SlowAfter`인 완료 응답을 SlowResponses에 집계한다. 느린503은 실패·지연 양쪽 신호가 될 수 있다. Timeout/TransportError는 지연에 중복 집계하지 않는다.
+- `Elapsed >= SlowAfter`인 완료 응답을 SlowResponses에 집계한다. 느린503은 실패·지연 양쪽 신호가 될 수 있다. Timeout/TransportError는 지연에 중복 집계하지 않는다. SlowLimit은 활성화 시 `2 <= SlowLimit <= MaxSamples`여야 하며 `MinSamples <= SlowLimit`도 만족해야 한다. 이는 현재 코어 설정 검증과 동일하다.
 - Counts는 창 안 Samples·Failures·Timeouts·TransportErrors·RateLimited·ServerErrors·SlowResponses·DistinctResources를 담는다. 같은 자원의 반복 오류만으로도 중단 권고가 가능하며 DistinctResources는 대상 전체 장애의 증명이 아니다.
 
 | 조건 | Recommendation / ReasonCodes |

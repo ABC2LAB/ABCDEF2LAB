@@ -31,7 +31,8 @@ func checkExpectedPolicy(p PolicyAssertion, observedAt time.Time) CheckOutcome {
 	}
 	// valid_from <= observedAt < valid_until. A policy that started after the
 	// observation, or had already expired at it, is Unknown.
-	if observedAt.Before(p.ValidFrom) || !observedAt.Before(p.ValidUntil) {
+	if !validPolicyInstant(observedAt) || !validPolicyInstant(p.ValidFrom) || !validPolicyInstant(p.ValidUntil) ||
+		!p.ValidFrom.Before(p.ValidUntil) || observedAt.Before(p.ValidFrom) || !observedAt.Before(p.ValidUntil) {
 		return CheckOutcome{StateUnknown, ReasonExpectedAccessPolicyInvalid}
 	}
 	// Unset or unrecognized enum values are malformed policy, not a registered
@@ -57,6 +58,13 @@ func checkExpectedPolicy(p PolicyAssertion, observedAt time.Time) CheckOutcome {
 		return CheckOutcome{StateUnknown, ReasonExpectedAccessUnknown}
 	}
 	return CheckOutcome{StateYes, ReasonPolicyDenyResolved}
+}
+
+// A missing timestamp must not turn into an unbounded policy window. Validate
+// the UTC instant so a different presentation zone cannot change the result.
+func validPolicyInstant(at time.Time) bool {
+	utc := at.UTC()
+	return !utc.IsZero() && utc.Year() >= 1 && utc.Year() <= 9999
 }
 
 // checkIdentity — (b): are A and B both verified, with non-empty refs, and

@@ -69,6 +69,9 @@ registry의 일반 문자열/Go 형식 출력은 결속 metadata를 가리고 JS
 
 후속 host adapter는 다음을 함께 구현해야 한다.
 
+- local-only 정책 적용/끔을 신뢰 호스트 설정으로 명시한다. 끔은 운영자가 선택한 기존 provider 경로이며 해석·핀 검사 실패 뒤 자동 fallback으로 사용하지 않는다. 적용 여부를 profile 지문·회차 기록으로 내보내는 필드와 결속은 평가 담당자와 합의한 뒤 연결한다. 외부 API 평가의 ours 회차는 정책을 명시적으로 끈 상태를 기록해야 하며, 현재 순수 resolver가 그 상태를 생성하거나 집행하는 것은 아니다.
+- BaseURL 끝 slash·host 대소문자를 포함한 정확한 tuple 불일치는 기존 고정 오류 `ErrProfileTargetMismatch`로 구분한다. 후속 운영 안내는 원문 URL을 노출하지 않고 이 사유와 정확 일치 규칙을 설명한다.
+
 - 신뢰 manifest의 일관된 읽기·출처 검증과 effective profile target/config snapshot을 확보한다.
 - 성공한 policy와 **같은 config**를 [Config.NewLocalProvider](./local-llm-http.md)에 전달한다. Proxy·빈 BaseURL·SDK 지원·Host/TLS·매 요청/dial DNS/IP 검증은 기존 factory/HTTP 어댑터가 담당한다. 이 resolver에 그 검사를 중복 구현하지 않는다.
 - resolver/factory 실패를 기존 `providerForProfile`의 bool 실패나 다른 profile/global/legacy 생성자 fallback으로 바꾸지 않는다. 각 명시적 profile 선택마다 그 profile의 policy를 새로 확인한다.

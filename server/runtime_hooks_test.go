@@ -3,6 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +64,7 @@ func TestNewServersKeepTheirRuntimeHooks(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(t.Context())
 		t.Cleanup(cancel)
-		return New(ctx, manager, skillRoot, t.TempDir(), t.TempDir())
+		return newTestServer(t, ctx, manager, skillRoot, t.TempDir(), t.TempDir())
 	}
 	a := makeServer(first, "A")
 	b := makeServer(second, "B")
@@ -115,5 +119,64 @@ func TestEngineRuntimeContextKeepsOwnerAndParent(t *testing.T) {
 	}
 	if agent.RuntimeHooksFrom((&Engine{}).withRuntimeHooks(parent)).OutputLanguage() != "ja" {
 		t.Fatal("standalone engine overwrote its caller's runtime")
+	}
+}
+
+func TestHandlerBindsServerRuntimeHooksAtHTTPAgentBoundary(t *testing.T) {
+	previousLanguage := config.SetCurrentLanguage(nil)
+	previousNotify := notify.SetLanguageResolver(nil)
+	t.Cleanup(func() {
+		config.SetCurrentLanguage(previousLanguage)
+		notify.SetLanguageResolver(previousNotify)
+	})
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	s := newTestServer(t, context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
+
+	owner := make(chan string, 1)
+	// Atomic language updates preserve the immutable server-owned hook bundle.
+	s.outputLang.Store("en")
+	foreign := agent.RuntimeHooks{OutputLanguage: func() string { return "ja" }}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	endpoint, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observeTestHTTPDial(t, endpoint.Host, func(ctx context.Context) {
+		hooks := agent.RuntimeHooksFrom(ctx)
+		if hooks.OutputLanguage == nil {
+			owner <- "missing"
+			return
+		}
+		owner <- hooks.OutputLanguage()
+	})
+
+	token, err := signJWT(s.jwtKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/test", strings.NewReader(`{"provider":"openai","model":"fixture","base_url":"`+upstream.URL+`","api_key":"fixture-key","streaming":false}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req = req.WithContext(agent.WithRuntimeHooks(req.Context(), foreign))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("HTTP status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case got := <-owner:
+		if got != "en" {
+			t.Fatalf("HTTP agent request used foreign runtime-hook owner %q", got)
+		}
+	default:
+		t.Fatal("agent HTTP request did not reach the observed provider boundary")
 	}
 }

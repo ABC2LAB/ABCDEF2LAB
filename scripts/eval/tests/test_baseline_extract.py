@@ -298,6 +298,25 @@ class TestBaselineCLI(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (2, ""))
         self.assertEqual(result.stderr, "source_sha: UNSUPPORTED_COMMIT\n")
 
+    def test_nonfinite_values_in_supported_documents_have_exact_json_diagnostic(self):
+        for path in (self.input, self.vocab):
+            original = path.read_bytes()
+            try:
+                document = json.loads(original)
+                for nonfinite in ("NaN", "Infinity", "1e9999"):
+                    # Retain the valid document around a value the raw loader must reject.
+                    if path == self.input:
+                        document[0]["summary"] = "NONFINITE_PLACEHOLDER"
+                    else:
+                        document["vulnclasses"]["synthetic"] = "NONFINITE_PLACEHOLDER"
+                    raw = json.dumps(document).replace('"NONFINITE_PLACEHOLDER"', nonfinite)
+                    path.write_text(raw, encoding="utf-8")
+                    result = self.cli()
+                    self.assertEqual((result.returncode, result.stdout), (2, ""))
+                    self.assertEqual(result.stderr, "json: NONFINITE_NUMBER\n")
+            finally:
+                path.write_bytes(original)
+
     def test_both_json_inputs_reject_duplicates_nonfinite_and_invalid_utf8(self):
         for path in (self.input, self.vocab):
             original = path.read_bytes()

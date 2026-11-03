@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import collect
 from aggregate import ScanVerdict
 from manifest import Engine, RunManifest
-from test_parse_scan_output import _record
+from scan_fixtures import record as _record
 
 _RUN, _MODEL, _RESET = "synthetic-run", "synthetic-model", "synthetic-reset"
 _Z, _A = "syntheticZ", "syntheticA"

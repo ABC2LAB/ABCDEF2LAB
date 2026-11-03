@@ -17,6 +17,7 @@ import (
 
 	"github.com/Autumn-27/artex/idor"
 	"github.com/Autumn-27/artex/oracle"
+	"github.com/Autumn-27/artex/transmit/budget"
 )
 
 // Scope binds a transmitter to one server-issued execution snapshot. PolicyRef
@@ -60,22 +61,33 @@ type JSONViewRule struct {
 	Markers     []idor.Marker
 }
 
+// CumulativeBudget binds this execution to a server-owned approval ledger.
+// The host registers the grant and retains one Ledger across all executions
+// sharing Key. A missing or invalid grant refuses sends; it is never created
+// implicitly by NewHTTP.
+type CumulativeBudget struct {
+	Ledger  *budget.Ledger `json:"-"`
+	Key     budget.Key
+	Binding budget.Binding
+}
+
 // Config is trusted server configuration. NewHTTP copies all mutable fields.
 // ConnectIP is an operator-approved binding; the transmitter never resolves DNS.
 type Config struct {
-	Scope          Scope
-	Origin         string
-	ConnectIP      netip.Addr
-	ExpiresAt      time.Time
-	Sessions       []Session
-	Resources      []Resource
-	MaxRequests    uint64
-	MinInterval    time.Duration
-	RequestTimeout time.Duration
-	MaxBodyBytes   int64
-	RootCAs        *x509.CertPool `json:"-"`
-	Recorder       Recorder       `json:"-"`
-	Health         *HealthConfig  `json:"-"`
+	Scope            Scope
+	Origin           string
+	ConnectIP        netip.Addr
+	ExpiresAt        time.Time
+	Sessions         []Session
+	Resources        []Resource
+	MaxRequests      uint64
+	MinInterval      time.Duration
+	RequestTimeout   time.Duration
+	MaxBodyBytes     int64
+	RootCAs          *x509.CertPool    `json:"-"`
+	Recorder         Recorder          `json:"-"`
+	Health           *HealthConfig     `json:"-"`
+	CumulativeBudget *CumulativeBudget `json:"-"`
 }
 
 // Recorder must acknowledge durable intent before a request can be admitted.
@@ -100,6 +112,7 @@ const (
 	AccountNotApproved  Reason = "account_not_approved"
 	ExpiredApproval     Reason = "expired_approval"
 	BudgetExhausted     Reason = "budget_exhausted"
+	BudgetUnavailable   Reason = "budget_unavailable"
 	AuditUnavailable    Reason = "audit_unavailable"
 	TransportError      Reason = "transport_error"
 	TimedOut            Reason = "timed_out"

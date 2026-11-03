@@ -1,5 +1,7 @@
 # ARTEX 호스트 분류(triage)
 
+> **기존 참고 자료:** 현재 프로젝트 안내는 [ABC2LAB 문서](../../docs/README.md)를 확인합니다. 아래 절차·예시 출력은 기반 자료이며 현재 체크아웃의 검증 결과가 아닙니다. 원본 CI 워크플로는 현재 저장소에 없으므로 자동 실행·머지 게이트로 간주하지 않습니다. 해당 파일을 읽는 하네스·지표·MISP 시험은 조정 전 실패할 수 있습니다.
+
 한국어 · [English](README.md)
 
 [`artex_host_triage.py`](artex_host_triage.py) 는 ARTEX 가 실행된 정황이 의심되는 **호스트 한 대에서 직접**
@@ -100,7 +102,6 @@ detections/triage/artex_host_triage.py --self-test
 
 `--self-test` 는 합성 호스트를 만듭니다. 심어 둔 CA·색인·블롭 저장소가 있는 데이터 디렉터리, 각 마커가 든
 로그, 포트 목록, 캡처한 프로세스 환경변수 덤프를 만든 뒤, 모든 점검이 그 위에서 발화하는지 단언하고, 이어서
-깨끗한 호스트·정상 로그·회사 프록시 프로세스에서는 발견이 **0** 건인지(오탐이 없는지) 단언합니다. 이 자가 테스트는 [`detections` CI
-워크플로](../../.github/workflows/detections.yml)에 연결되어 있고 [`detections/tests/run-all.sh`](../tests/run-all.sh)
+깨끗한 호스트·정상 로그·회사 프록시 프로세스에서는 발견이 **0** 건인지(오탐이 없는지) 단언합니다. 이 자가 테스트는 `.github/workflows/detections.yml`에 연결되어 있고 [`detections/tests/run-all.sh`](../tests/run-all.sh)
 가 다시 돌립니다. 그래서 어떤 점검이 깨지거나, 지표가 grep 하는 소스 문자열에서 어긋나면 머지 게이트에서
 실패합니다. 돌려 볼 수 없는 탐지는 주장일 뿐이라는 원칙을 따릅니다.

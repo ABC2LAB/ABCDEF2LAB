@@ -107,6 +107,15 @@ class TestSnapshotWriter(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assert_input_rejected(raw)
 
+    def test_valid_payload_with_duplicate_solved_key_is_rejected_exactly(self):
+        first = self.rows[0]
+        rows = [json.dumps(row, separators=(",", ":")) for row in self.rows[1:]]
+        raw = ('{"data":[' + ",".join(rows) + ',{"key":' + json.dumps(first["key"]) +
+               ',"solved":false,"solved":true}]}').encode()
+        with self.assertRaisesRegex(SnapshotWriteError, "^원본 JSON key 중복$"):
+            self.write(raw=raw)
+        self.assertEqual(list(self.root.iterdir()), [])
+
     def test_missing_gt_nonbool_and_invalid_rows_rejected(self):
         values = (self.rows[:-1], [dict(row, solved="false") for row in self.rows],
                   [dict(row, solved=0) for row in self.rows], ["not-a-row"], [])
@@ -209,6 +218,23 @@ class TestSnapshotWriter(unittest.TestCase):
             with self.assertRaisesRegex(SnapshotWriteError, "정리 확인"):
                 self.write()
         self.assertEqual((self.root / "pre" / "foreign").read_bytes(), b"keep")
+        self.assertTrue((self.root / "original-pre").is_dir())
+
+    def test_phase_open_failure_keeps_empty_replacement_directory(self):
+        actual = os.open
+
+        def replace_phase(path, flags, *args, **kwargs):
+            if path == "pre":
+                (self.root / "pre").rename(self.root / "original-pre")
+                (self.root / "pre").mkdir()
+                raise OSError(errno.EIO, "synthetic empty replacement")
+            return actual(path, flags, *args, **kwargs)
+
+        with patch("snapshot_writer.os.open", side_effect=replace_phase):
+            with self.assertRaisesRegex(SnapshotWriteError, "정리 확인"):
+                self.write()
+        self.assertTrue((self.root / "pre").is_dir())
+        self.assertEqual(list((self.root / "pre").iterdir()), [])
         self.assertTrue((self.root / "original-pre").is_dir())
 
     def test_normalized_output_is_deterministic(self):
