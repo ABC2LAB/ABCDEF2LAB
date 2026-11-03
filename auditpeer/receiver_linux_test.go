@@ -443,8 +443,12 @@ func TestTimeoutAndGateWaitAreBounded(t *testing.T) {
 	if _, err := r2.Receive(ctx); !errors.Is(err, ErrTimeout) {
 		t.Fatalf("waiting receiver timeout error %v", err)
 	}
-	_ = r2.Close()
-	<-active
+	if err := r2.Close(); err != nil {
+		t.Fatal("close active receiver failed")
+	}
+	if err := <-active; !errors.Is(err, ErrClosed) {
+		t.Fatalf("active receive did not remain blocked until close: %v", err)
+	}
 }
 
 type observedRead struct {

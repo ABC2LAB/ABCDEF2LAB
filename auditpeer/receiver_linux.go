@@ -7,6 +7,7 @@ package auditpeer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -78,7 +79,9 @@ func NewReceiver(conn *net.UnixConn, limits Limits) (receiver *Receiver, err err
 	}
 	defer func() {
 		if err != nil {
-			_ = conn.Close()
+			if closeErr := conn.Close(); closeErr != nil {
+				slog.Warn("audit_peer_cleanup_failed", "stage", "constructor_close")
+			}
 		}
 	}()
 	if limits.MaxPacketBytes < 1 || limits.MaxPacketBytes > MaxPacketBytes || limits.Timeout <= 0 || limits.Timeout > MaxReceiveTimeout {
@@ -167,7 +170,9 @@ func (r *Receiver) Receive(ctx context.Context) (packet Packet, err error) {
 	callbackDone := make(chan struct{})
 	stop := context.AfterFunc(op, func() {
 		defer close(callbackDone)
-		_ = r.conn.SetReadDeadline(time.Now())
+		if deadlineErr := r.conn.SetReadDeadline(time.Now()); deadlineErr != nil && !r.closed.Load() {
+			slog.Warn("audit_peer_wakeup_failed", "stage", "cancel_deadline")
+		}
 	})
 	defer func() {
 		// Join a callback that already began before clearing the shared deadline.

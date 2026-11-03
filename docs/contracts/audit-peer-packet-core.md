@@ -14,6 +14,14 @@ sender가 kernel에서 허용한 real/effective/saved UID/GID를 선택할 수 �
 있으면 다른 값을 지정할 수도 있으므로 **현재 effective UID의 증명**으로 쓰지 않는다.
 [Linux unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html)
 
+비특권 사용자도 허용된 환경에서 user/PID namespace를 새로 만들면 그 namespace의
+capability를 얻을 수 있다. 예를 들어 자기 namespace의 다른 프로세스(손자) PID를
+SCM_CREDENTIALS로 주장할 수 있어, 수신자가 관찰한 PID를 실제 송신 프로세스의
+독점 신원으로 해석하면 안 된다. UID도 수신 namespace의 mapping과 함께 해석한다.
+호스트 설계에서는 PID 재사용과 이 귀속 한계를 함께 다루고 SO_PEERPIDFD 등 대안을
+검토해야 한다. 이 코어가 해당 프로세스 handle이나 namespace 정책을 구현한 것은 아니다.
+[Linux user_namespaces(7)](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)
+
 이 관찰은 PID 재사용·namespace mapping·현재 process handle·등록된 principal·
 role/instance lease·epoch를 입증하지 않는다. privileged sender와 중계 터널도 호스트가
 따로 다뤄야 한다. FD 위임을 막거나 E②/DB/감사 권한을 발급하는 API가 아니다.
@@ -83,6 +91,8 @@ constructor와 매 read에서 해당 option이 켜져 있으면 차단하고, EN
 2026-11-03, Go 1.26.3 linux/amd64·WSL kernel 6.18.33.2에서 전체 race
 **34 pass / 0 fail / 0 skip**을 확인했다. 후속 pidfd CLOEXEC 직접 단언을 추가한
 집중 race도 **4 pass / 0 fail / 0 skip**이다. 둘을 합쳐 고유 사례 수로 세지 않는다.
+피드백 보완 뒤 전체 race는 **40 pass / 0 fail / 0 skip**(상위·하위 시험 노드 포함)이며,
+생성자 경계와 실제 PASSCRED 전 큐 packet 시험을 포함한다. vet도 통과했다.
 독립 코드 리뷰의 EINTR 재시도·SCM_PIDFD 누수를 보완하고 재리뷰를 마쳤으며,
 vet·전체 build가 통과했다. 기존 Go consumer의 auditpeer import 검색은 0건이다.
 
@@ -93,6 +103,9 @@ SO_PEERCRED의 parent PID와 상속 FD로 보낸 메시지의 child PID가 다�
 
 실제 SO_PASSPIDFD 옵션 차단과 kernel-installed pidfd 폐기·FD count도 확인한다.
 구형 커널의 이 옵션 전용 사례는 skip으로 표시하며 실행하지 않은 증거로 합산하지 않는다.
+PASSCRED를 켜기 전에 실제 socket에 큐에 넣은 packet의 zero-PID credential 거부와,
+그 뒤 정상 packet 수락은 별도의 실제 커널 경로 시험으로 확인한다. namespace 안 다른
+PID를 주장하는 사례의 새 실행은 포함하지 않으며 위 한계와 초기 검증 수를 구분한다.
 malformed/duplicate/extra control·zero PID와 일부 EINTR는 private fault injection으로
 검증하고, production 수신은 실제 recvmsg에 고정한다. UID·계정·서비스·DB·기동 권한을 바꾸지 않는다.
 
