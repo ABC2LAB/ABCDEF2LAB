@@ -17,21 +17,23 @@ import (
 )
 
 const (
-	Version        = 1
-	KeyBytes       = 32
-	MaxRecordBytes = 16 * 1024 // Includes the required newline framing.
-	journalIDBytes = 16
+	Version           = 1
+	KeyBytes          = 32
+	MaxRecordBytes    = 16 * 1024 // Includes the required newline framing.
+	MaxTimelineEvents = 1000
+	journalIDBytes    = 16
 )
 
 var (
-	ErrConfig    = errors.New("auditlog: invalid configuration")
-	ErrEvent     = errors.New("auditlog: invalid event")
-	ErrExists    = errors.New("auditlog: file already exists")
-	ErrStorage   = errors.New("auditlog: storage unavailable")
-	ErrClosed    = errors.New("auditlog: recorder closed")
-	ErrFailed    = errors.New("auditlog: recorder failed")
-	ErrIntegrity = errors.New("auditlog: integrity verification failed")
-	ErrRead      = errors.New("auditlog: input unavailable")
+	ErrConfig        = errors.New("auditlog: invalid configuration")
+	ErrEvent         = errors.New("auditlog: invalid event")
+	ErrExists        = errors.New("auditlog: file already exists")
+	ErrStorage       = errors.New("auditlog: storage unavailable")
+	ErrClosed        = errors.New("auditlog: recorder closed")
+	ErrFailed        = errors.New("auditlog: recorder failed")
+	ErrIntegrity     = errors.New("auditlog: integrity verification failed")
+	ErrRead          = errors.New("auditlog: input unavailable")
+	ErrTimelineLimit = errors.New("auditlog: timeline event limit exceeded")
 )
 
 // Config is trusted server configuration. Keys need 32 random bytes from the
@@ -60,6 +62,33 @@ type Summary struct {
 	Checkpoint Checkpoint
 	Intents    uint64
 	Results    uint64
+}
+
+// TimelineEvent is a narrow view of one authenticated event. References must be
+// server-issued non-sensitive IDs; verification cannot establish their meaning.
+type TimelineEvent struct {
+	At          time.Time       `json:"at"`
+	AccountRef  string          `json:"account_ref"`
+	ResourceRef string          `json:"resource_ref"`
+	Stage       string          `json:"stage"`
+	Reason      transmit.Reason `json:"reason"`
+	Observed    ObservedState   `json:"observed"`
+}
+
+// ObservedState is transport observation, not proof of application access.
+type ObservedState struct {
+	Admitted         bool `json:"admitted"`
+	RequestWritten   bool `json:"request_written"`
+	ResponseReceived bool `json:"response_received"`
+	StatusCode       int  `json:"status_code"`
+}
+
+func timelineEvent(event transmit.Event) TimelineEvent {
+	return TimelineEvent{At: event.At, AccountRef: event.AccountRef,
+		ResourceRef: event.ResourceRef, Stage: event.Stage, Reason: event.Reason,
+		Observed: ObservedState{Admitted: event.Admitted,
+			RequestWritten: event.RequestWritten, ResponseReceived: event.ResponseReceived,
+			StatusCode: event.StatusCode}}
 }
 
 type header struct {

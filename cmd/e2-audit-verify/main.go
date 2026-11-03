@@ -20,7 +20,7 @@ import (
 
 const maxCheckpointBytes = 4096
 
-const usage = "Usage: e2-audit-verify --journal FILE --checkpoint TRUSTED_FILE --key-file PRIVATE_FILE\n"
+const usage = "Usage: e2-audit-verify --journal FILE --checkpoint TRUSTED_FILE --key-file PRIVATE_FILE [--timeline [--max-events N]]\n"
 
 var errInput = errors.New("audit_input_unavailable")
 
@@ -38,14 +38,24 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	journal := flags.String("journal", "", "closed journal file")
 	checkpoint := flags.String("checkpoint", "", "independently trusted latest checkpoint")
 	key := flags.String("key-file", "", "private 32-byte binary key file")
+	timeline := flags.Bool("timeline", false, "print authenticated event timeline")
+	maxEvents := flags.Int("max-events", auditlog.MaxTimelineEvents, "maximum timeline events")
 	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
 		if n, err := io.WriteString(stdout, usage); err != nil || n != len(usage) {
 			return failure(stderr, "audit_output_unavailable")
 		}
 		return 0
-	} else if err != nil || flags.NArg() != 0 || *journal == "" || *checkpoint == "" || *key == "" {
+	} else if err != nil || flags.NArg() != 0 || *journal == "" || *checkpoint == "" || *key == "" || *maxEvents < 1 || *maxEvents > auditlog.MaxTimelineEvents {
 		if n, err := io.WriteString(stderr, usage); err != nil || n != len(usage) {
 			return 1 // A broken diagnostic sink cannot receive its own error code.
+		}
+		return 2
+	}
+	usedLimit := false
+	flags.Visit(func(f *flag.Flag) { usedLimit = usedLimit || f.Name == "max-events" })
+	if usedLimit && !*timeline {
+		if n, err := io.WriteString(stderr, usage); err != nil || n != len(usage) {
+			return 1
 		}
 		return 2
 	}
@@ -55,14 +65,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if ctx == nil {
 		return failure(stderr, "audit_input_invalid")
 	}
-	summary, code := verifyFiles(ctx, *journal, *checkpoint, *key)
+	result, code := verifyFiles(ctx, *journal, *checkpoint, *key, *timeline, *maxEvents)
 	if code != "" {
 		return failure(stderr, code)
 	}
 	if ctx.Err() != nil {
 		return failure(stderr, "audit_verification_canceled")
 	}
-	body, err := json.Marshal(summary)
+	body, err := json.Marshal(result)
 	if err != nil {
 		return failure(stderr, "audit_output_unavailable")
 	}
@@ -78,36 +88,40 @@ func failure(stderr io.Writer, code string) int {
 	return 1
 }
 
-func verifyFiles(ctx context.Context, journalPath, checkpointPath, keyPath string) (summary auditlog.Summary, code string) {
+func verifyFiles(ctx context.Context, journalPath, checkpointPath, keyPath string, timeline bool, maxEvents int) (result any, code string) {
 	if ctx.Err() != nil {
-		return summary, "audit_verification_canceled"
+		return nil, "audit_verification_canceled"
 	}
 	key, err := readBounded(keyPath, auditlog.KeyBytes, true)
 	if err != nil {
-		return summary, "audit_input_unavailable"
+		return nil, "audit_input_unavailable"
 	}
 	defer clear(key)
 	if len(key) != auditlog.KeyBytes {
-		return summary, "audit_input_invalid"
+		return nil, "audit_input_invalid"
 	}
 	encoded, err := readBounded(checkpointPath, maxCheckpointBytes, false)
 	if err != nil {
-		return summary, "audit_input_unavailable"
+		return nil, "audit_input_unavailable"
 	}
 	checkpoint, err := decodeCheckpoint(encoded)
 	if err != nil {
-		return summary, "audit_input_invalid"
+		return nil, "audit_input_invalid"
 	}
 	journal, err := openRegular(journalPath, false)
 	if err != nil {
-		return summary, "audit_input_unavailable"
+		return nil, "audit_input_unavailable"
 	}
 	defer func() {
 		if err := journal.Close(); err != nil && code == "" {
-			summary, code = auditlog.Summary{}, "audit_input_unavailable"
+			result, code = nil, "audit_input_unavailable"
 		}
 	}()
-	summary, err = auditlog.Verify(ctx, journal, key, checkpoint)
+	if timeline {
+		result, err = auditlog.VerifyTimeline(ctx, journal, key, checkpoint, maxEvents)
+	} else {
+		result, err = auditlog.Verify(ctx, journal, key, checkpoint)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -116,12 +130,14 @@ func verifyFiles(ctx context.Context, journalPath, checkpointPath, keyPath strin
 			code = "audit_integrity_failed"
 		case errors.Is(err, auditlog.ErrConfig):
 			code = "audit_input_invalid"
+		case errors.Is(err, auditlog.ErrTimelineLimit):
+			code = "audit_timeline_limit_exceeded"
 		default:
 			code = "audit_input_unavailable"
 		}
-		return auditlog.Summary{}, code
+		return nil, code
 	}
-	return summary, ""
+	return result, ""
 }
 
 func readBounded(path string, limit int64, private bool) ([]byte, error) {

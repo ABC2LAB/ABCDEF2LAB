@@ -24,7 +24,11 @@ checkpoint는 기존 `auditlog.Checkpoint`의 `json.Marshal` 형식으로 보존
 
 ## 출력과 종료 코드
 
-전체 검증이 성공해야 stdout에 기존 `auditlog.Summary` JSON 한 줄을 쓴다. `Checkpoint`와 `Intents`·`Results` 건수를 포함하며 요청/응답 본문·개별 이벤트·인증 헤더·키·입력 경로는 출력하지 않는다. checkpoint의 참조는 저장기가 요구하는 비민감 식별자라는 전제가 유지된다.
+기본 실행은 기존대로 전체 검증이 성공해야 stdout에 `auditlog.Summary` JSON 한 줄을 쓴다. `Checkpoint`와 `Intents`·`Results` 건수를 포함하며 요청/응답 본문·개별 이벤트·인증 헤더·키·입력 경로는 출력하지 않는다. checkpoint의 참조는 저장기가 요구하는 비민감 식별자라는 전제가 유지된다.
+
+`--timeline`은 같은 키·checkpoint·journal 전체를 한 번 검증한 뒤, 시간순 JSON 배열 한 줄을 출력한다. 각 항목은 `at`(이벤트 시각), `account_ref`, `resource_ref`, `stage`, `reason`, `observed`(`admitted`, `request_written`, `response_received`, `status_code`)만 포함한다. 시각이 같은 항목은 journal 순번을 유지한다. 참조는 저장기와 서버가 보증하는 비민감 ID라는 전제가 필요하며 이 명령은 참조의 실제 의미를 재검증하지 않는다. 전송 관측값은 애플리케이션 접근 성공이나 취약점 판정이 아니다.
+
+`--max-events N`은 타임라인 모드에서만 사용한다. 기본값과 허용 상한은 1000이며 1~1000만 받는다. 인증된 이벤트가 이 수를 넘으면 끝까지 검증한 뒤 `audit_timeline_limit_exceeded`로 실패하고 stdout은 비운다. 전체 검증 실패나 마지막 레코드 오류가 있으면 앞선 항목도 출력하지 않는다. 정상적인 빈 journal은 `[]`를 출력한다. 타임라인도 입력 사본이 검증 중 바뀌지 않아야 한다.
 
 | 경우 | 종료 코드 | 출력 |
 |---|---:|---|
@@ -34,6 +38,7 @@ checkpoint는 기존 `auditlog.Checkpoint`의 `json.Marshal` 형식으로 보존
 | 입력/키/형식 오류 | 1 | `audit_input_unavailable` 또는 `audit_input_invalid` |
 | MAC·범위·순서·최종 checkpoint 불일치 | 1 | `audit_integrity_failed` |
 | 취소 | 1 | `audit_verification_canceled` |
+| 타임라인 출력 상한 초과 | 1 | `audit_timeline_limit_exceeded` |
 | 출력 실패 | 1 | `audit_output_unavailable` |
 | Linux 이외 환경 | 1 | `audit_platform_unsupported` |
 
