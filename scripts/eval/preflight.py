@@ -21,7 +21,7 @@ _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 _PLACEHOLDER = re.compile(r"(?:^|[/:._-])(?:todo|tbd|changeme|placeholder)(?:$|[/:._-])", re.I)
 _SHARED = (
     "network_mode", "llm", "temperature", "seed", "target_origin",
-    "worker_count", "time_budget_seconds", "request_budget",
+    "worker_count", "time_budget_seconds", "request_budget", "run_storage",
     "fixture_fingerprint", "environment_fingerprint", "scope_fingerprint",
 )
 # 러너 v1은 전용 망 격리만 지원한다(평가 프로토콜 §2). 엔진은 계측기 origin으로만 대상에 닿는다.
@@ -32,6 +32,12 @@ _PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 # 로컬 LLM 고정 IP: llmpolicy/policy.go의 사설 대역 중 loopback(127/8·::1)을 제외한 4개.
 # 엔진은 컨테이너라 호스트 loopback으로는 닿지 않으므로 제외한다. ipaddress.is_private는 문서용 대역까지 포함해 쓰지 않는다.
 _LOCAL_NETWORKS = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
+# 회차 메모리(tmpfs) 조건: 엔진 DB·엔진 데이터 크기와 구간 종료 뒤 남아야 할 최소 공간. compose tmpfs size 표기
+# (1024배 k·m·g). 프로파일 지문·러너 설정과 같은 정의이며(drift 테스트), 하한이 다르면 같은 측정값으로도 완료·무효가 갈리므로
+# 환경 지문에 넣는다(#140 리뷰).
+_STORAGE_SIZE = re.compile(r"[1-9][0-9]{0,8}[kmg]?\Z")
+_STORAGE_UNIT = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
+RUN_STORAGE_FIELDS = ("engine_db_tmpfs", "engine_data_tmpfs", "tmpfs_min_free")
 # 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
 _LLM_FIELDS = {
     "api": ("backend", "base_url", "model", "provider", "fallbacks"),
@@ -151,6 +157,20 @@ def _number(value: object, *, positive: bool) -> bool:
         return False
 
 
+def _storage_bytes(text: str) -> int:
+    return int(text[:-1]) * _STORAGE_UNIT[text[-1]] if text[-1] in _STORAGE_UNIT else int(text)
+
+
+def _run_storage(value: object) -> bool:
+    """세 크기가 모두 형식에 맞고 하한이 두 tmpfs보다 작아야 한다(아니면 모든 회차가 무효)."""
+    if not isinstance(value, dict) or set(value) != set(RUN_STORAGE_FIELDS):
+        return False
+    if not all(isinstance(value[name], str) and _STORAGE_SIZE.fullmatch(value[name]) for name in RUN_STORAGE_FIELDS):
+        return False
+    return _storage_bytes(value["tmpfs_min_free"]) < min(_storage_bytes(value["engine_db_tmpfs"]),
+                                                         _storage_bytes(value["engine_data_tmpfs"]))
+
+
 def _valid(field: str, value: object) -> bool:
     if field in ("source_sha", "baseline_source_sha"):
         return isinstance(value, str) and bool(_SHA.fullmatch(value))
@@ -164,6 +184,8 @@ def _valid(field: str, value: object) -> bool:
         return _meter_origin(value)
     if field == "llm":
         return _llm(value)
+    if field == "run_storage":
+        return _run_storage(value)
     if field == "temperature":
         return _number(value, positive=False)
     if field == "time_budget_seconds":

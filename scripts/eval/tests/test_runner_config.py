@@ -16,8 +16,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES,
-    RunnerConfigError, compose_base_args, secret_env_names,
+    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH,
+    METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError, compose_base_args, secret_env_names, size_bytes,
     compose_environment, create_run_directory, load_runner_config, new_run_id, parse_runner_config, plan_run,
 )
 from test_preflight import configuration, local_llm
@@ -40,7 +40,7 @@ def runner_config() -> dict:
         "observer_path": "/api/records",
         "engine": {"llm_provider": "openai", "llm_stream": True, "llm_policy_mode": "external"},
         "engine_db": {"user": "artex", "name": "artex"},
-        "tmpfs": {"engine_db": "1g", "engine_data": "512m"},
+        "tmpfs": {"engine_db": "1g", "engine_data": "512m", "min_free": "16m"},
         "health": {"interval": "2s", "timeout": "2s", "retries": 30},
         "docker_timeout_seconds": 120,
         "host_listen_allowlist": [],
@@ -204,6 +204,10 @@ class TestParseRunnerConfig(unittest.TestCase):
             (("engine_db", "name"), "a;b", "config.engine_db.name: INVALID"),
             (("tmpfs", "engine_db"), "0", "config.tmpfs.engine_db: INVALID"),
             (("tmpfs", "engine_data"), "1G", "config.tmpfs.engine_data: INVALID"),
+            (("tmpfs", "min_free"), "0", "config.tmpfs.min_free: INVALID"),
+            (("tmpfs", "min_free"), 16, "config.tmpfs.min_free: INVALID"),
+            (("tmpfs", "min_free"), "512m", "config.tmpfs.min_free: NOT_BELOW_SIZE"),  # engine_data와 같음
+            (("tmpfs", "min_free"), "2g", "config.tmpfs.min_free: NOT_BELOW_SIZE"),
             (("health", "interval"), "2", "config.health.interval: INVALID"),
             (("health", "timeout"), "0s", "config.health.timeout: INVALID"),
             (("health", "retries"), 0, "config.health.retries: INVALID"),
@@ -495,6 +499,26 @@ class TestComposeContract(unittest.TestCase):
             with self.subTest(backend=backend):
                 self.assertEqual(set(env) & SECRET_ENV_NAMES, set())
                 self.assertEqual(compose_variables(plan.compose_files), set(env) | secret_env_names(backend))
+
+    def test_tmpfs_sizes_and_lower_bound(self):
+        self.assertEqual([size_bytes(v) for v in ("16", "16k", "16m", "1g")], [16, 16 * 1024, 16 * 1024 ** 2, 1024 ** 3])
+        for bad in ("0", "1G", "1.5m", "", None, 16):
+            with self.subTest(bad=bad), self.assertRaises(RunnerConfigError):
+                size_bytes(bad)
+        self.assertEqual(parse_runner_config(runner_config()).tmpfs_min_free_bytes, 16 * 1024 ** 2)
+        payload = runner_config()
+        del payload["tmpfs"]["min_free"]
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(payload)
+        self.assertIn("config.tmpfs.min_free: MISSING", caught.exception.errors)
+
+    def test_tmpfs_mount_paths_match_the_eval_compose(self):
+        # 러너가 df로 재는 경로가 compose가 tmpfs로 덮는 경로와 다르면 이미지 볼륨·디스크를 재게 된다.
+        text = _yaml_without_comments(COMPOSE_EVAL.read_text(encoding="utf-8"))
+        for path, size_var in ((ENGINE_DB_DATA_PATH, "EVAL_ENGINE_DB_TMPFS_SIZE"),
+                               (ENGINE_DATA_PATH, "EVAL_ENGINE_DATA_TMPFS_SIZE")):
+            with self.subTest(path=path):
+                self.assertIn(f"- {path}:size=${{{size_var}:?}}", text)
 
     def test_every_compose_file_is_covered(self):
         files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL}

@@ -2,7 +2,7 @@
 
   기동(대상·계측기·관측·engine-db·엔진) → pre 점검(5b)·probe(5c) → 대상 준비 → pre scoreboard
   → 계측기 전달 0 확인 → 작업 생성(엔진 API, 생성=기동) → 시간·요청 예산 → 계측기 seal(USR1) → drained 확인
-  → LLM 게이트웨이 seal → post 점검·probe → post scoreboard → 관측·계측 기록 대조
+  → LLM 게이트웨이 seal → post 점검·probe → post scoreboard → 구간 판정 → tmpfs 사용량 → 관측·계측 기록 대조
   → 게이트웨이 검증 마커 대기·응답 제공자 판정 → findings → down → 서명
 
 어느 단계든 실패하면 고정 사유 코드로 "무효" 기록 하나만 남기고 성공 기록·서명은 만들지 않는다.
@@ -39,10 +39,9 @@ from runner_checks import (  # noqa: E402
     network_snapshot, parse_container, parse_network, policy_sha256, read_host_listeners,
 )
 from runner_config import (  # noqa: E402
-    API_FRONT_SERVICE, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE, METER_SERVICE, OBS_SERVICE, TARGET_SERVICE,
-    POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig,
-    RunnerConfigError, RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config,
-    new_run_id, plan_run,
+    API_FRONT_SERVICE, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
+    METER_SERVICE, OBS_SERVICE, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
+    RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from runner_engine import (  # noqa: E402
@@ -66,9 +65,10 @@ from snapshot_writer import SnapshotContext  # noqa: E402
 
 RESULT_FORMAT = "abc2lab-eval-runner-result-v1"
 TASK_EVIDENCE_FORMAT = "abc2lab-eval-runner-task-v1"
-# 회차 메모리(엔진 DB·엔진 데이터 tmpfs)의 seal 시점 사용량은 아직 재지 않는다. 잰 척하지 않고 미측정을 그대로
-# 남긴다. 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다(평가 프로토콜 §2).
+# 회차 메모리(엔진 DB·엔진 데이터 tmpfs) 사용량을 재기 전에 끝난 회차의 값. 잰 척하지 않고 미측정을 그대로 남긴다.
+# 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다(평가 프로토콜 §2).
 TMPFS_NOT_MEASURED = "not_measured"
+TMPFS_VOLUMES = ("engine_db", "engine_data")
 RESULT_NAME = "runner-result.json"
 RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
 MAX_CONDITION_LENGTH = 100
@@ -109,6 +109,7 @@ class RunPorts(Protocol):
     def start_events(self, since: str) -> "EventsHandle": ...
     def seal(self, meter_container_id: str) -> None: ...
     def seal_gateway(self, gateway_container_id: str) -> None: ...
+    def tmpfs_usage(self, phase: str, snapshot: dict) -> dict: ...
     def findings(self) -> dict: ...
     def sign(self, payload: dict) -> dict: ...
 
@@ -141,6 +142,7 @@ class RunSpec:
     events_lookback_seconds: float
     # 선언한 엔진 LLM 정책 모드. baseline(e53a79f)에는 이 스위치가 없어 None(선언 없음)이다.
     llm_policy_mode: str | None
+    tmpfs_min_free_bytes: int
     condition: str
     repeat_index: int
     model_tag: str
@@ -172,6 +174,8 @@ class _State:
     # 러너가 띄운 probe 컨테이너 ID. 구간 감시가 이 ID의 생성·시작만 허용한다.
     runner_containers: set = field(default_factory=set)
     record: dict | None = None
+    tmpfs_usage: object = TMPFS_NOT_MEASURED
+    tmpfs_pre: dict | None = None
 
 
 def _stamp(clock: Clock) -> str:
@@ -317,6 +321,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
 
     pre = _check_phase(spec, ports, evidence, state, "pre")
     _probe(ports, evidence, state, "pre", pre)
+    # 구간 전에 회차 tmpfs의 마운트 ID를 잡아 둔다. post에서 같은 마운트 객체를 쟀는지 대조하는 기준이다(#140 리뷰).
+    state.tmpfs_pre = _step(state, "pre_tmpfs_measure_failed", lambda: ports.tmpfs_usage("pre", pre))
+    if set(state.tmpfs_pre) != set(TMPFS_VOLUMES):
+        raise RunFailure("pre_tmpfs_measure_failed")
     pre_checked_at = _stamp(clock)  # 경계 적용·점검 완료(pre 관측 전)
     ready_calls = _step(state, "target_not_ready", ports.wait_ready)
     state.observer_calls += ready_calls
@@ -361,6 +369,18 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     window_end = clock.now()
     streamed = _step(state, "window_events_failed", lambda: _stop_events(state, _ns(window_end)))
     window = _window(spec, evidence, state, pre, window_start, window_end, stopped, streamed)
+    # 구간이 닫힌 뒤에 잰다: 구간 중 회차 컨테이너 exec는 경계 변경이다. seal 이후 값이므로 그사이 사용량이 줄었을
+    # 가능성은 남는다(평가 프로토콜 §2). 남은 공간이 하한 미만이면 쓰기 실패를 엔진이 삼켰을 수 있어 무효다.
+    measured = _step(state, "tmpfs_measure_failed", lambda: ports.tmpfs_usage("post", post))
+    if set(measured) != set(TMPFS_VOLUMES):
+        raise RunFailure("tmpfs_measure_failed")
+    # 적용한 하한과 구간 전 측정도 서명되는 결과에 남겨 어떤 기준·어떤 마운트로 통과·무효였는지 다시 확인할 수 있게 한다.
+    state.tmpfs_usage = dict(measured, min_free_bytes=spec.tmpfs_min_free_bytes, pre=state.tmpfs_pre)
+    # 같은 경로라도 다른 마운트(부모 경로 변경·symlink·다시 마운트)를 쟀다면 회차 저장소의 근거가 아니다.
+    if any(measured[name]["mount_id"] != state.tmpfs_pre[name]["mount_id"] for name in TMPFS_VOLUMES):
+        raise RunFailure("tmpfs_mount_changed")
+    if any(measured[name]["available_bytes"] < spec.tmpfs_min_free_bytes for name in TMPFS_VOLUMES):
+        raise RunFailure("tmpfs_full")
 
     observer = _step(state, "meter_read_failed", meter.observer_rows)
     if len(observer) != state.observer_calls or any(row["decision"] != "registered" for row in observer):
@@ -485,7 +505,7 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
             except Exception:
                 reasons.append("down_failed")
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
-            "llm_backend": spec.llm_backend, "tmpfs_usage": TMPFS_NOT_MEASURED,
+            "llm_backend": spec.llm_backend, "tmpfs_usage": state.tmpfs_usage,
             "started_at": started_at, "finished_at": _stamp(clock)}
     if not reasons and state.record is not None:
         # v1.1 러너 기록도 down까지 통과한 뒤에만 서명한다(엔진 감사 키와 별도인 러너 키).
@@ -608,6 +628,14 @@ class DockerPorts:
     def seal_gateway(self, gateway_container_id: str) -> None:
         self.docker.signal(gateway_container_id, "USR1")
 
+    def tmpfs_usage(self, phase: str, snapshot: dict) -> dict:
+        # 엔진 안의 df 대신 계측기 이미지의 statfs 역할로 잰다(엔진 도구가 바꿀 수 있는 실행파일을 믿지 않음).
+        # 단계 구분 없이 같은 방법으로 재며, pre·post 대조는 호출자(_run_steps)가 한다.
+        services, meter = snapshot["services"], self.config.images["meter"].id
+        (engine_db,) = self.docker.statfs(meter, services[ENGINE_DB_SERVICE]["id"], [ENGINE_DB_DATA_PATH])
+        (engine_data,) = self.docker.statfs(meter, services[ENGINE_SERVICE]["id"], [ENGINE_DATA_PATH])
+        return {"engine_db": engine_db, "engine_data": engine_data}
+
     def findings(self) -> dict:
         return self._findings()
 
@@ -634,6 +662,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         # compose는 두 엔진에 같은 값을 넘기지만 baseline은 읽지 않는다. 결과 기록에 external로 적으면 정책이 있는 것처럼
         # 읽히므로 선언하지 않는다(#133 리뷰).
         llm_policy_mode=config.llm_policy_mode if plan.side == POLICY_SWITCH_SIDE else None,
+        tmpfs_min_free_bytes=config.tmpfs_min_free_bytes,
         condition=condition, repeat_index=repeat_index, model_tag=plan.llm["model"],
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
         target_origin=declared["target_origin"], observer_path=config.observer_path,
