@@ -1,6 +1,6 @@
 # 평가 러너 기록 v1.1 — 격리 보증 구간 해결 귀속
 
-상태: **2026-11-02 귀속 필드 원칙·엔진 이벤트 정의·호스트 운영 조건 필드까지 최민준과 합의한 입력 계약.** [이벤트 정의 리뷰](https://github.com/ABC2LAB/ABCDEF2LAB/pull/52#issuecomment-6524512173)와 [호스트 필드 요청](https://github.com/ABC2LAB/ABCDEF2LAB/pull/52#issuecomment-6567135772)을 반영했다. 채점기·러너 구현과 실환경 검증은 후속이다. 현재 채점기는 v1의 직접 관측 이벤트만 수용하며, 이 문서가 `isolated_window` 수용이나 실환경 격리 구현 완료를 뜻하지 않는다.
+상태: **2026-11-02 귀속 필드 원칙·엔진 이벤트 정의·호스트 운영 조건 필드까지 최민준과 합의한 입력 계약.** 2026-11-03 `records` null(판정 미수집)과 §3.1 `isolation_evidence` 행 직렬화를 최민준이 제안(이동찬 리뷰). [이벤트 정의 리뷰](https://github.com/ABC2LAB/ABCDEF2LAB/pull/52#issuecomment-6524512173)와 [호스트 필드 요청](https://github.com/ABC2LAB/ABCDEF2LAB/pull/52#issuecomment-6567135772)을 반영했다. 채점기·러너 구현과 실환경 검증은 후속이다. 현재 채점기는 v1의 직접 관측 이벤트만 수용하며, 이 문서가 `isolated_window` 수용이나 실환경 격리 구현 완료를 뜻하지 않는다.
 
 선행 관계: **[PR #51](https://github.com/ABC2LAB/ABCDEF2LAB/pull/51)은 `3414a39`로 병합됐고, #52는 그 변경을 포함한 dev 위로 정렬했다.** 대상 구동·격리 모드·같은 호스트의 운영 조건은 [평가 프로토콜 §2](evaluation-protocol.md#2-평가-대상-고정)와 §4가 정본이다. 이 문서는 그 조건을 기록·검증할 입력 계약이며 Docker 예시나 별도 격리 정책을 정의하지 않는다. 전용 internal 네트워크를 기본으로, 루프백 바인딩을 대안으로 두는 #51의 우선순위를 따른다.
 
@@ -34,6 +34,7 @@ baseline에는 E²가 없으므로 E² traffic ID를 해결 주체 확인의 필
 - `version`: 문자열 `"1.1"`을 사용한다. 기존 정수 `1` 기록은 합성 시험·과거 형식 회귀 검증에서 기존 직접 관측 규칙으로 읽는다. 버전을 느슨한 숫자/문자열 변환으로 비교하지 않는다.
 - `isolation_proof`: 아래 구조의 객체 또는 null. 구간 증명이 없으면 null이며 `isolated_window` 이벤트를 인정하지 않는다.
 - `artifacts.isolation_evidence`: 격리 집행·관측 로그의 descriptor 또는 null. 기존 descriptor와 같은 문맥·phase=engine·안전한 경로·size·SHA-256 검증을 적용한다. 증명 객체가 있으면 이 자료도 필수다.
+- `artifacts.records`: v1.1에서는 판정 레코드 envelope descriptor 또는 **null**이다. null은 **판정 미수집**(그 회차의 엔진·baseline 출력 어댑터가 판정 레코드를 내지 못함)이며, 채점기는 그 회차의 모든 GT 판정을 판단불가(사유: 판정 미수집)로 두고 해결 귀속(`isolated_window`)만 검증·보고한다. null을 "판정 없음 → 미탐"으로 읽지 않고(커버리지 기록이 있어도), 레코드 0건인 envelope와 구분한다. v1(정수 `1`) 기록은 기존대로 `records` 필수다.
 
 `isolation_proof`와 `artifacts.isolation_evidence`는 둘 다 null이거나 둘 다 유효한 객체여야 한다. 한쪽만 제출한 부분 증명은 입력 오류다.
 
@@ -62,6 +63,26 @@ baseline에는 E²가 없으므로 E² traffic ID를 해결 주체 확인의 필
 - 준비 봉인 이후 pre..post에 준비 요청/변경이 0건이며 로그가 구간 전체를 관측했음을 확인해야 한다. 로그 없음과 준비 없음은 다르다.
 - 구간의 관측 요청마다 ID·GET·등록 경로 참조·송신/완료 시각·순서·결과를 보존한다. 요청 ID 중복, 등록 밖 경로, 비-GET, 구간 밖 송신, 미완료·송신 불명, 누락된 결과는 거부한다. pre 수집 GET은 pre 단계에서 완료되어 진행 요청이 없어야 하며 같은 GET 등록/읽기 전용 검증을 받는다. post 수집 GET을 포함한 구간 송신 로그 수와 `observer.request_count`가 같아야 한다.
 - 본문·인증값·계정 원문·표식 값·셸 명령 원문을 기록하지 않는다. 서버/네트워크 정책의 비민감 참조·digest와 관측 경로 참조만 사용한다.
+
+### 3.1 `isolation_evidence` 행 직렬화 — 러너 형식 v1(제안)
+
+파일은 JSON 객체 하나다: 5개 문맥(`run_id`·`model_tag`·`reset_generation`·`instance_id`·`execution_id`) + `phase: "engine"` + `format: "abc2lab-isolation-evidence-v1"` + `rows`(배열). 모든 행은 `kind`, 파일 안 순번 `seq`(1부터 엄격 증가), 러너 벽시각 `at`(timezone 포함 ISO)을 가진다. 모르는 `kind`·필드, 중복 키, 순번 공백은 입력 오류다. 값은 비민감만 쓴다: 컨테이너 내부 IP·서비스 이름·망/컨테이너 ID·digest·경로 참조는 넣고, 요청/응답 본문·헤더·비밀·계정 원문·표식 값은 넣지 않는다.
+
+| `kind` | 필드 | 채점기 검증 |
+|---|---|---|
+| `boundary` | `event`(`applied`·`maintained`·`released`), `boundary_ref`, `network_ids`(정렬), `policy_sha256` | `applied.at` < pre 관측, `maintained`가 post 관측 직전, 셋의 `boundary_ref`·`network_ids`·`policy_sha256`이 증명의 `network.*`와 모두 같음 |
+| `network_snapshot` | `phase`(`pre`·`post`), `networks`(`name`·`id`·`internal`·`members`), `publishes`(`service`·`host_ip`·`host_port`·`container_port`), `services`(`id`·`image`·`started_at`·`restart_count`) | pre·post가 같고 `policy_sha256`을 다시 계산하면 증명 값과 같음. 다르면 구간 중 경계 변경 |
+| `connectivity_check` | `phase`, `id`, `kind`(`tcp`·`dns`), `target`, `role`(`positive`·`negative`), `expected`, `accepted`, `observed`, `code`, `verdict` | pre·post 각각 모든 행 `verdict: "match"`. 양성 대조 실패·부정 경로 성공·실패 종류 불일치가 있으면 증명 불가 |
+| `host_condition` | `phase`, `operating_condition_ref`, `daemon`(`version`·`os`·`arch`·`platform`), `listeners_outside_loopback`, `allowed_listens`(`address`·`port`), `other_publishes`, `satisfied` | pre·post 두 행, `operating_condition_ref`가 증명의 `host.operating_condition_ref`와 같고 둘 다 `satisfied: true` |
+| `host_watch` | `observed_from`, `observed_to`, `samples`, `max_gap_seconds`, `allowed_max_gap_seconds`, `violations` | 구간이 pre 관측부터 post 완료까지 덮고, `max_gap_seconds` ≤ 허용값, `violations` 0. 아니면 증명 불가(미확인 공백) |
+| `docker_events_window` | `since`, `until`, `event_count`, `kinds`(종류별 건수), `foreign_attach`, `run_container_restarts`, `complete` | `since` ≤ pre 관측, `until` ≥ post 완료, `foreign_attach`·`run_container_restarts` 0, `complete: true`(데몬 이벤트 버퍼 한도 안) |
+| `preparation` | `sealed`(`at`·`sequence`), `actions_after_pre`, `channels`, `basis` | `sealed` = timeline `fixture_ready`, `actions_after_pre` 정수 0, `channels` 빈 배열(러너에 준비 채널 없음), `basis`는 허용 actor 외 대상 접근이 없음을 보인 행(`network_snapshot`·`docker_events_window`)과 관측 로그 참조 |
+| `observer_readonly` | `path_ref`, `method`, `verification_ref` | 등록 GET마다 한 행. `verification_ref`는 그 대상 버전에서 해당 GET이 상태를 바꾸지 않음을 확인한 별도 기록 참조 |
+| `observer_request` | `request_seq`, `method`, `path_ref`, `sent_at`, `completed_at`, `status`, `decision`, `window`(`before_pre`·`pre`·`in_window`) | 요청마다 한 행, `request_seq` 중복 없음, 전부 GET·등록 `path_ref`·`decision: "registered"`·완료. `in_window` 행 수 = 증명의 `observer.request_count`(post 수집 GET 포함, pre GET 제외) |
+| `engine_meter_summary` | `forwarded_requests`, `rejected_after_seal`, `forced_closed_streams`, `log_rows`, `sequence_complete` | `sequence_complete: true`, `forwarded_requests`는 러너 기록 `total_requests`와 같음 |
+| `drain` | `engine_end`(`at`·`sequence`), `sealed_at`, `drained_at`, `inflight` | `engine_end` = timeline `engine_end`, `inflight` 0, `drained_at` ≤ timeline `drained` ≤ post 관측 |
+
+`host_watch`는 이벤트가 없는 호스트 리슨을 구간 중 주기적으로 확인한 요약이고, `docker_events_window`는 데몬이 기록한 구간의 망 연결·해제와 컨테이너 시작·재시작을 빠짐없이 받은 요약이다. 둘 중 하나라도 없거나 구간을 덮지 못하면 러너는 증명을 발행하지 않는다(proof=null과 사유). 두 행이 있어도 같은 호스트의 다른 프로세스까지 막았다는 뜻은 아니며, 그 부분은 평가 프로토콜 §2의 호스트 운영 조건이 맡는다.
 
 관측기 요청 수는 별도 기록이며 평가 §5의 엔진 `total_requests`에 섞지 않는다. 요청 수 집계에서 pre 수집 GET을 제외하는 것과, 격리 조건이 pre 관측부터 연속 적용돼야 하는 것은 별개다. baseline·개선 후 모두 같은 정의를 사용한다. 엔진 실제 요청 수를 측정하지 못했다면 기존 규칙대로 null이며, 임의로 0이나 추정 차감값을 넣지 않는다.
 
@@ -111,5 +132,7 @@ v1.1 이벤트는 기존 필드에 `basis`와 `isolation_proof_sha256`을 추가
 | IW13 | 유효 proof의 신규 해결 이벤트 누락/추가·other/unknown 혼입, 빈 델타/빈 이벤트; 또는 proof=null인 미수집 | 불완전/모순 입력은 오류, 완전한 빈 집합은 정상, proof=null은 엔진 귀속 미확인. 정상 engine 이벤트라도 최종 확정은 기존 평가 §4 적용 |
 | IW14 | v1 직접 관측 기록, v1.1 proof 없는 direct_event/engine 기록, 알 수 없는 버전 | v1은 합성 시험·과거 형식 회귀 검증에서만 수용하고 공식 비교표 귀속에는 사용하지 않음. v1.1은 격리 증명 없는 엔진 귀속 거부, 알 수 없는 버전/느슨한 타입 변환 거부 |
 | IW15 | post 델타만 있고 실제 엔진 확정 시각 없음·사람 수동 확정만 추가 | elapsed_seconds 추정 생성 0, 자동 CONFIRMED 증가 0 |
+| IW16 | v1.1 `records`=null(판정 미수집)·레코드 0건 envelope·v1의 records null | null은 모든 GT 판정 판단불가(판정 미수집)·커버리지가 있어도 미탐 0, 해결 귀속은 따로 보고. 0건 envelope는 기존 규칙. v1의 null은 입력 오류 |
+| IW17 | §3.1 행 오류: 모르는 kind·순번 공백, `host_watch` 공백 초과·구간 미포함, `docker_events_window` 불완전·외부 연결·재시작, pre/post `network_snapshot` 불일치, `connectivity_check` 불일치, `in_window` 관측 행 수 ≠ `request_count` | 러너는 proof 발행 0(사유 보존). 제출된 proof에서 발견하면 입력 오류·집계 표 미출력 |
 
 합의한 계약의 후속 순서는 채점기·합성 회귀 구현 → 실제 러너의 격리/준비/관측 경계 구현과 우회 시험 → baseline·개선 후 같은 조건의 실측이다. 합성 서명·해시 시험은 실제 격리 집행 검증을 대신하지 않는다. 그 전까지 현재 v1의 fail-closed 동작을 합성 시험·과거 형식 회귀 검증에서 유지하며 공식 비교 완료로 표시하지 않는다.
