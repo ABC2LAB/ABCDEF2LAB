@@ -535,6 +535,17 @@ select.inp:focus {
   background: var(--teal-weak);
   color: var(--teal-ink);
 }
+/* 행(.frow) 왼쪽 배지: 오른쪽 내용이 길어도 줄어들거나 두 줄로 꺾이지 않게 고정 */
+.frow > .pill {
+  flex: none;
+  white-space: nowrap;
+  min-width: 72px;
+  text-align: center;
+}
+.frow > div:not(.rt) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .warnbox {
   display: flex;
   gap: 10px;
