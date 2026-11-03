@@ -38,6 +38,7 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
     "worker_count": 1,
     "time_budget_seconds": 1200,
     "request_budget": 100,
+    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
     "fixture_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "environment_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "scope_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
@@ -59,6 +60,7 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
     "worker_count": 1,
     "time_budget_seconds": 1200,
     "request_budget": 100,
+    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
     "fixture_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "environment_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "scope_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
@@ -82,6 +84,7 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
 | `temperature` / `seed` | 전자는 0 이상 유한수, 후자는 0 이상 정수. null·bool·암묵적 기본값 금지 |
 | `worker_count` / `request_budget` | 1 이상 정수 |
 | `time_budget_seconds` | 양의 유한수 |
+| `run_storage` | 회차 메모리 조건 `{engine_db_tmpfs, engine_data_tmpfs, tmpfs_min_free}` — compose tmpfs size 표기, 하한은 두 크기보다 작아야 함. 프로파일 지문 v3의 환경 입력과 같은 객체이고 러너 설정 `tmpfs`와 정확히 같아야 회차가 시작됨 |
 | `fixture_fingerprint` | 비민감 준비 절차·역할·자료 조건의 SHA-256(소문자 16진수 64자리) |
 | `environment_fingerprint` | 공통 비민감 환경 프로파일의 SHA-256. 비교하는 소스 SHA는 제외 |
 | `scope_fingerprint` | 공통 검사 대상 범위 프로파일의 SHA-256 |
