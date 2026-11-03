@@ -10,9 +10,12 @@
 //     everything else, logging each decision.
 //   - probe: reports which network paths are reachable from inside the engine
 //     container's namespace; the runner, not the probe, owns the expectations.
+//   - llm-gateway: the engine's only route to its LLM. api pins the serving
+//     provider on every request and holds the API key; local forwards as is.
 //
 // It never logs paths, queries, headers or bodies, never receives the runner
-// signing key and never needs the Docker socket.
+// signing key and never needs the Docker socket. Only the llm-gateway role may
+// see the LLM API key; every other role refuses to start if it is present.
 package main
 
 import (
@@ -31,7 +34,10 @@ import (
 	"time"
 )
 
-const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream http://HOST:PORT -log-dir PRIVATE_DIR [-allow-path /PATH]\n       eval-meter -role probe < PLAN_JSON\n"
+const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream http://HOST:PORT -log-dir PRIVATE_DIR [-allow-path /PATH]\n" +
+	"       eval-meter -role llm-gateway -backend api|local -listen ADDR -upstream ORIGIN -allow-path /PATH -log-dir PRIVATE_DIR\n" +
+	"                  [api: -provider SLUG -generation-path /PATH -verify-attempts N -verify-interval DURATION, key in " + llmKeyEnv + "]\n" +
+	"       eval-meter -role probe < PLAN_JSON\n"
 
 const (
 	invalidInput        = "eval_meter_input_invalid"
@@ -42,12 +48,21 @@ const (
 	listenUnavailable   = "eval_meter_listen_unavailable"
 	serveFailed         = "eval_meter_serve_failed"
 	probeOutputFailed   = "eval_meter_probe_output_unavailable"
+	keyNotAllowed       = "eval_meter_key_not_allowed"
 )
 
 const (
 	roleEngine   = "engine"
 	roleObserver = "observer"
 	roleProbe    = "probe"
+	roleGateway  = "llm-gateway"
+)
+
+// Bounds on the gateway's verification so a run cannot wait on it forever.
+const (
+	maxVerifyAttempts = 100
+	maxVerifyInterval = 10 * time.Minute
+	maxKeyLength      = 512
 )
 
 // Slow clients must not hold the front open indefinitely; the target's own
@@ -69,10 +84,25 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	listen := flags.String("listen", "", "listen address")
 	upstream := flags.String("upstream", "", "target origin http://HOST:PORT")
 	logDir := flags.String("log-dir", "", "existing private 0700 directory for evidence")
-	allowPath := flags.String("allow-path", "", "observer: the single registered GET path")
+	allowPath := flags.String("allow-path", "", "observer: the single registered GET path; llm-gateway: the chat completions path")
+	backend := flags.String("backend", "", "llm-gateway: api or local")
+	provider := flags.String("provider", "", "llm-gateway api: full provider slug to pin")
+	generationPath := flags.String("generation-path", "", "llm-gateway api: generation stats path")
+	verifyAttempts := flags.Int("verify-attempts", 0, "llm-gateway api: lookups per generation id")
+	verifyInterval := flags.Duration("verify-interval", 0, "llm-gateway api: wait between lookups")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fail(stderr, invalidInput)
 	}
+	key := os.Getenv(llmKeyEnv)
+	gatewayFlags := *backend != "" || *provider != "" || *generationPath != "" || *verifyAttempts != 0 || *verifyInterval != 0
+	if *role != roleGateway && key != "" {
+		// A key in a meter, observer or probe container means the compose wiring is wrong.
+		return fail(stderr, keyNotAllowed)
+	}
+	if *role != roleGateway && gatewayFlags {
+		return fail(stderr, invalidInput)
+	}
+	var gatewayCfg gatewayConfig
 	switch *role {
 	case roleProbe:
 		if *listen != "" || *upstream != "" || *logDir != "" || *allowPath != "" {
@@ -80,10 +110,20 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return runProbe(stdin, stdout, stderr)
 	case roleEngine, roleObserver:
+	case roleGateway:
+		cfg, ok := gatewayFromFlags(*backend, *upstream, *allowPath, *provider, *generationPath, *verifyAttempts,
+			*verifyInterval, key)
+		if !ok || *listen == "" || *logDir == "" {
+			return fail(stderr, invalidInput)
+		}
+		gatewayCfg = cfg
 	default:
 		return fail(stderr, invalidInput)
 	}
 	target, ok := parseUpstream(*upstream)
+	if *role == roleGateway {
+		target, ok = gatewayCfg.upstream, true
+	}
 	if !ok || *listen == "" || *logDir == "" || (*role == roleEngine) != (*allowPath == "") {
 		return fail(stderr, invalidInput)
 	}
@@ -113,6 +153,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(stderr, code)
 		}
 		handler, finish = o, o.close
+	case roleGateway:
+		g, code := newLLMGateway(dir, gatewayCfg, defaultUpstreamTransport(), time.Now, time.Sleep)
+		if code != "" {
+			return fail(stderr, code)
+		}
+		handler, seal, finish = g, g.seal, g.close
 	}
 
 	listener, err := net.Listen("tcp", *listen)
@@ -193,6 +239,54 @@ func parseUpstream(raw string) (*url.URL, bool) {
 		return nil, false
 	}
 	return &url.URL{Scheme: u.Scheme, Host: u.Host}, true
+}
+
+// gatewayFromFlags checks the per-backend rules: api talks https to the
+// provider and must pin and verify; local talks http to a fixed address on the
+// host and must carry no key, so the API key can never reach a local server.
+func gatewayFromFlags(backend, upstream, allowPath, provider, generationPath string, attempts int,
+	interval time.Duration, key string) (gatewayConfig, bool) {
+	cfg := gatewayConfig{backend: backend, allowPath: allowPath, provider: provider, generationPath: generationPath,
+		key: key, verifyAttempts: attempts, verifyInterval: interval}
+	if !validAllowPath(allowPath) {
+		return cfg, false
+	}
+	switch backend {
+	case backendAPI:
+		cfg.upstream = parseGatewayUpstream(upstream, "https")
+		return cfg, cfg.upstream != nil && providerSlugRe.MatchString(provider) && validAllowPath(generationPath) &&
+			attempts >= 1 && attempts <= maxVerifyAttempts && interval > 0 && interval <= maxVerifyInterval &&
+			validKey(key)
+	case backendLocal:
+		cfg.upstream = parseGatewayUpstream(upstream, "http")
+		return cfg, cfg.upstream != nil && provider == "" && generationPath == "" && attempts == 0 && interval == 0 &&
+			key == ""
+	}
+	return cfg, false
+}
+
+// parseGatewayUpstream accepts a bare origin; the gateway forwards the
+// registered path unchanged, so the engine's base URL path must match it.
+func parseGatewayUpstream(raw, scheme string) *url.URL {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != scheme || u.Hostname() == "" || u.User != nil || u.Opaque != "" ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return nil
+	}
+	return &url.URL{Scheme: u.Scheme, Host: u.Host}
+}
+
+// validKey keeps the key usable as a header value without echoing it anywhere.
+func validKey(key string) bool {
+	if key == "" || len(key) > maxKeyLength {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < 0x21 || key[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func validAllowPath(path string) bool {
