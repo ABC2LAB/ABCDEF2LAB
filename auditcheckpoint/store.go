@@ -438,6 +438,11 @@ func (r *contextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	n, err := r.source.Read(p)
+	// A broken Reader can otherwise pass an impossible count into io.ReadAll,
+	// which may panic before Publish can return its fixed verification error.
+	if n < 0 || n > len(p) {
+		return 0, ErrVerification
+	}
 	if r.ctx.Err() != nil {
 		return n, r.ctx.Err()
 	}

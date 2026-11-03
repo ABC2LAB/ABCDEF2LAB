@@ -209,7 +209,7 @@ func TestVerifyExtensionRequiresExplicitConfiguration(t *testing.T) {
 			case "events-ceiling":
 				f.limits.MaxEvents = MaxExtensionEvents + 1
 			case "timeout-ceiling":
-				f.limits.Timeout = MaxExtensionTimeout + 1
+				f.limits.Timeout = MaxExtensionTimeout + time.Nanosecond
 			case "previous-version":
 				f.previous.Version++
 			case "candidate-version":
@@ -277,9 +277,11 @@ func (r *extensionCancelReader) Read(p []byte) (int, error) {
 type extensionCountingReader struct {
 	reader io.Reader
 	bytes  int
+	calls  int
 }
 
 func (r *extensionCountingReader) Read(p []byte) (int, error) {
+	r.calls++
 	n, err := r.reader.Read(p)
 	r.bytes += n
 	return n, err
@@ -319,4 +321,134 @@ func (r *extensionChangingReader) Read(p []byte) (int, error) {
 	n := copy(p, r.data[r.offset:])
 	r.offset += n
 	return n, nil
+}
+
+// The input is intentionally much larger than the snapshot budget. A final
+// length check alone cannot enforce the amount consumed from the caller.
+func TestVerifyExtensionStopsReadingAtByteLimit(t *testing.T) {
+	f := newExtensionFixture(t, 2)
+	f.limits.MaxBytes = 4096
+	source := &extensionCountingReader{reader: bytes.NewReader(bytes.Repeat([]byte("x"), 8<<20))}
+	got, err := VerifyExtension(context.Background(), source, f.config.Key, f.previous, f.candidate, f.limits)
+	if !errors.Is(err, ErrExtensionLimit) || got != (ExtensionSummary{}) || source.bytes != 4097 {
+		t.Fatalf("snapshot over-read: bytes=%d calls=%d err=%v", source.bytes, source.calls, err)
+	}
+	t.Logf("input_bytes=%d max_bytes=%d consumed_bytes=%d read_calls=%d", 8<<20, f.limits.MaxBytes, source.bytes, source.calls)
+}
+
+func TestVerifyExtensionDeadlineStopsProgressingReader(t *testing.T) {
+	f := newExtensionFixture(t, 2)
+	f.limits.Timeout = 20 * time.Millisecond
+	source := &extensionSlowByteReader{reader: bytes.NewReader(f.data), delay: 2 * time.Millisecond}
+	got, err := VerifyExtension(context.Background(), source, f.config.Key, f.previous, f.candidate, f.limits)
+	// Removing the wrapper's context checks still returns DeadlineExceeded
+	// eventually; consuming the whole input must also fail this assertion.
+	if !errors.Is(err, context.DeadlineExceeded) || got != (ExtensionSummary{}) ||
+		source.calls == 0 || source.calls > 64 || source.bytes == 0 || source.bytes >= len(f.data)/8 {
+		t.Fatalf("deadline did not bound progressing reads: bytes=%d/%d calls=%d err=%v", source.bytes, len(f.data), source.calls, err)
+	}
+	t.Logf("input_bytes=%d consumed_bytes=%d read_calls=%d call_limit=%d", len(f.data), source.bytes, source.calls, 64)
+}
+
+type extensionSlowByteReader struct {
+	reader       *bytes.Reader
+	delay        time.Duration
+	calls, bytes int
+}
+
+func (r *extensionSlowByteReader) Read(p []byte) (int, error) {
+	r.calls++
+	time.Sleep(r.delay)
+	n, err := r.reader.Read(p[:1])
+	r.bytes += n
+	return n, err
+}
+
+func TestVerifyExtensionAcceptsExactLimits(t *testing.T) {
+	for _, name := range []string{"snapshot-and-events", "configuration-ceilings"} {
+		t.Run(name, func(t *testing.T) {
+			f := newExtensionFixture(t, 2)
+			if name == "snapshot-and-events" {
+				f.limits.MaxBytes = int64(len(f.data))
+				f.limits.MaxEvents = f.candidate.Sequence
+			} else {
+				// A short valid input checks the exact configuration ceilings
+				// immediately; this does not wait for the two-minute deadline.
+				f.limits = ExtensionLimits{MaxBytes: MaxExtensionBytes, MaxEvents: MaxExtensionEvents, Timeout: MaxExtensionTimeout}
+			}
+			got, err := VerifyExtension(context.Background(), bytes.NewReader(f.data), f.config.Key, f.previous, f.candidate, f.limits)
+			if err != nil || got.Current.Checkpoint != f.candidate || got.Previous != f.previous {
+				t.Fatal("inclusive limit boundary rejected valid input", err)
+			}
+		})
+	}
+}
+
+func TestVerifyExtensionCountsConsecutiveEmptyReads(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		emptyReads int
+		reject     bool
+	}{{"99-reset-after-progress", 99, false}, {"100-without-progress", 100, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newExtensionFixture(t, 2)
+			source := &extensionIntermittentReader{reader: bytes.NewReader(f.data), emptyReads: tc.emptyReads, remaining: tc.emptyReads, rounds: 2}
+			got, err := VerifyExtension(context.Background(), source, f.config.Key, f.previous, f.candidate, f.limits)
+			consumed := len(f.data) - source.reader.Len()
+			if tc.reject {
+				if !errors.Is(err, ErrRead) || got != (ExtensionSummary{}) || source.calls != 100 || consumed != 0 {
+					t.Fatalf("consecutive empty boundary changed: calls=%d bytes=%d err=%v", source.calls, consumed, err)
+				}
+			} else if err != nil || got.Current.Checkpoint != f.candidate || source.calls < 200 || consumed != len(f.data) {
+				t.Fatalf("progress did not reset empty counter: calls=%d bytes=%d err=%v", source.calls, consumed, err)
+			}
+			t.Logf("empty_reads_per_round=%d rounds=%d consumed_bytes=%d read_calls=%d", tc.emptyReads, 2, consumed, source.calls)
+		})
+	}
+}
+
+type extensionIntermittentReader struct {
+	reader                               *bytes.Reader
+	emptyReads, remaining, rounds, calls int
+}
+
+func (r *extensionIntermittentReader) Read(p []byte) (int, error) {
+	r.calls++
+	if r.rounds > 0 {
+		if r.remaining > 0 {
+			r.remaining--
+			return 0, nil
+		}
+		n, err := r.reader.Read(p)
+		if n > 0 {
+			r.rounds--
+			r.remaining = r.emptyReads
+		}
+		return n, err
+	}
+	return r.reader.Read(p)
+}
+
+func TestVerifyExtensionRejectsInvalidReaderCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		negative bool
+	}{{"negative", true}, {"larger-than-buffer", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newExtensionFixture(t, 2)
+			got, err := VerifyExtension(context.Background(), extensionInvalidCountReader{negative: tc.negative}, f.config.Key, f.previous, f.candidate, f.limits)
+			if !errors.Is(err, ErrRead) || got != (ExtensionSummary{}) {
+				t.Fatal("invalid Reader count did not fail with a fixed read error", err)
+			}
+		})
+	}
+}
+
+type extensionInvalidCountReader struct{ negative bool }
+
+func (r extensionInvalidCountReader) Read(p []byte) (int, error) {
+	if r.negative {
+		return -1, nil
+	}
+	return len(p) + 1, nil
 }

@@ -9,11 +9,18 @@ import (
 	"time"
 )
 
-// These ceilings bound this verifier's resources, not execution permission.
+// These provisional ceilings bound verifier resources, not execution permission.
+// TODO(이동찬): measure the largest synthetic run's memory/verification cost and
+// confirm these deployment limits with the CPD04 reviewers before activation.
 const (
-	MaxExtensionBytes      = int64(64 << 20)
-	MaxExtensionEvents     = uint64(40000)
-	MaxExtensionTimeout    = 2 * time.Minute
+	// Conservative snapshot input cap; allocation overhead remains unmeasured.
+	MaxExtensionBytes = int64(64 << 20)
+	// Independent total-event cap, with headroom above intent/result pairs.
+	// Refused attempts can record results without spending a request budget.
+	MaxExtensionEvents = uint64(40000)
+	// Matches server/controlled_read_store.go's maxControlledTimeoutMS ceiling.
+	MaxExtensionTimeout = 2 * time.Minute
+	// Follows bufio's maxConsecutiveEmptyReads convention for no progress.
 	maxExtensionEmptyReads = 100
 )
 
@@ -117,6 +124,11 @@ func (r *extensionContextReader) Read(buffer []byte) (int, error) {
 		return 0, err
 	}
 	n, err := r.source.Read(buffer)
+	// A broken Reader must not pass an impossible count to io.ReadAll, whose
+	// buffer slicing would otherwise panic before a fixed read error is returned.
+	if n < 0 || n > len(buffer) {
+		return 0, ErrRead
+	}
 	if canceled := r.ctx.Err(); canceled != nil {
 		return n, canceled
 	}

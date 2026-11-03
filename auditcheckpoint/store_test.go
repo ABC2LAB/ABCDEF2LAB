@@ -641,6 +641,35 @@ func (errorReader) Read([]byte) (int, error) {
 	return 0, errors.New("private source error must not escape")
 }
 
+type impossibleCountReader struct{ negative bool }
+
+func (r impossibleCountReader) Read(p []byte) (int, error) {
+	if r.negative {
+		return -1, nil
+	}
+	return len(p) + 1, nil
+}
+
+func TestStoreRejectsImpossibleReaderCountsBeforePublication(t *testing.T) {
+	for _, mode := range []string{"negative", "over-buffer"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t, true)
+			request := f.req(Register, "op:impossible-read", 0, 0, 0)
+			got, err := f.store.Publish(context.Background(), request, impossibleCountReader{negative: mode == "negative"})
+			if !errors.Is(err, ErrVerification) || got != (Receipt{}) {
+				t.Fatalf("impossible source count returned receipt or nonverification error: %v", err)
+			}
+			counts(t, f, 0, 0)
+			if head, err := f.store.Head(context.Background(), f.query("")); !errors.Is(err, ErrNotFound) || head != (Head{}) {
+				t.Fatalf("impossible source count created head: %v", err)
+			}
+			if receipt, err := f.store.Operation(context.Background(), f.query(request.OperationRef)); !errors.Is(err, ErrNotFound) || receipt != (Receipt{}) {
+				t.Fatalf("impossible source count created operation receipt: %v", err)
+			}
+		})
+	}
+}
+
 func TestStoreDDLImmutableAndMigrationIdempotent(t *testing.T) {
 	f := newFixture(t, true)
 	publish(t, f, f.req(Register, "op:r", 0, 0, 0), 0)
