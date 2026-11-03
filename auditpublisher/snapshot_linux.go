@@ -19,10 +19,17 @@ type journalRoot struct {
 	dir  *os.File
 }
 
+// snapshotFile keeps the read/stat boundary injectable without exposing a public capability.
+type snapshotFile interface {
+	io.ReaderAt
+	Stat() (os.FileInfo, error)
+	Close() error
+}
+
 type journalSnapshot struct {
 	root *journalRoot
 	name string
-	file *os.File
+	file snapshotFile
 	info os.FileInfo
 	max  int64
 }
@@ -42,7 +49,7 @@ func openJournalRoot(path string, anchor *os.File) (*journalRoot, error) {
 	dir := os.NewFile(uintptr(fd), "auditpublisher-root")
 	opened, err := dir.Stat()
 	if err != nil || !validDirectory(opened) || !os.SameFile(trusted, opened) {
-		_ = dir.Close()
+		logCloseFailure("root-open-close", dir.Close())
 		return nil, ErrUnavailable
 	}
 	return &journalRoot{path: path, info: trusted, dir: dir}, nil
@@ -79,6 +86,7 @@ func (r *journalRoot) current() error {
 	current := os.NewFile(uintptr(fd), "auditpublisher-current-root")
 	info, err = current.Stat()
 	closeErr := current.Close()
+	logCloseFailure("snapshot-current-close", closeErr)
 	if err != nil || closeErr != nil || !validDirectory(info) || !os.SameFile(r.info, info) {
 		return ErrUnavailable
 	}
@@ -96,7 +104,7 @@ func (r *journalRoot) attach(name string, max int64) (*journalSnapshot, error) {
 	file := os.NewFile(uintptr(fd), "auditpublisher-journal-snapshot")
 	info, err := file.Stat()
 	if err != nil || !validFile(info, max) || r.current() != nil {
-		_ = file.Close()
+		logCloseFailure("snapshot-attach-close", file.Close())
 		return nil, ErrUnavailable
 	}
 	return &journalSnapshot{root: r, name: name, file: file, info: info, max: max}, nil
@@ -117,6 +125,7 @@ func (s *journalSnapshot) current() error {
 	current := os.NewFile(uintptr(fd), "auditpublisher-current-journal")
 	currentInfo, statErr := current.Stat()
 	closeErr := current.Close()
+	logCloseFailure("snapshot-current-close", closeErr)
 	if statErr != nil || closeErr != nil || !validFile(currentInfo, s.max) || !os.SameFile(info, currentInfo) {
 		return ErrUnavailable
 	}
