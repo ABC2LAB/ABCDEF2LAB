@@ -112,18 +112,11 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf(config.T("[config] skill 디렉터리: %s"), skillDir)
-	var srv *server.Server
-	switch os.Getenv("ARTEX_LLM_POLICY_MODE") {
-	case "", "local-only":
-		// A deployed binary starts in local-only mode unless the operator
-		// explicitly chooses external evaluation mode. A missing/bad policy
-		// stops startup before any provider can be constructed.
-		srv, err = server.NewWithLocalLLM(ctx, mgr, skillDir, *dataDir, config.BaseDir(), os.Getenv("ARTEX_LLM_PIN_MANIFEST"))
-	case "external":
-		srv = server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
-	default:
-		log.Fatal("invalid ARTEX_LLM_POLICY_MODE")
-	}
+	srv, err := newPolicyServer(os.Getenv("ARTEX_LLM_POLICY_MODE"), func() (*server.Server, error) {
+		return server.NewWithLocalLLM(ctx, mgr, skillDir, *dataDir, config.BaseDir(), os.Getenv("ARTEX_LLM_PIN_MANIFEST"))
+	}, func() *server.Server {
+		return server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	})
 	if err != nil {
 		log.Fatalf("local LLM policy: %v", err)
 	}
@@ -172,4 +165,17 @@ func shutdownContext(signalCtx context.Context) (context.Context, context.Cancel
 		}
 	}()
 	return ctx, shutdown
+}
+
+// newPolicyServer chooses exactly one startup path before a listener is built.
+// Policy failure never falls through to the external factory.
+func newPolicyServer(mode string, local func() (*server.Server, error), external func() *server.Server) (*server.Server, error) {
+	switch mode {
+	case "", "local-only":
+		return local()
+	case "external":
+		return external(), nil
+	default:
+		return nil, fmt.Errorf("invalid ARTEX_LLM_POLICY_MODE")
+	}
 }

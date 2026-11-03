@@ -141,19 +141,53 @@ func TestLocalOnlyStartupUsesPinnedActiveProfile(t *testing.T) {
 	if err := os.WriteFile(manifestPath, []byte(manifest), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s, err := NewWithLocalLLM(ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), manifestPath)
-	if err != nil {
-		cancel()
-		t.Fatal(err)
+	for _, name := range []string{"pinned", "unpinned active", "env only"} {
+		t.Run(name, func(t *testing.T) {
+			switch name {
+			case "unpinned active":
+				profile.ID, profile.Model = id, "not-pinned"
+				if _, err := m.pg.SaveProfile(profile); err != nil {
+					t.Fatal(err)
+				}
+			case "env only":
+				if _, err := m.pg.Exec(`UPDATE llm_profiles SET is_default=false`); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("ARTEX_LLM_PROVIDER", "openai")
+				t.Setenv("OPENAI_API_KEY", "synthetic-env-only")
+				t.Setenv("ARTEX_LLM_MODEL", "local:test")
+				t.Setenv("ARTEX_LLM_BASE_URL", baseURL)
+				if _, ok := agent.FromEnv(); !ok {
+					t.Fatal("env fixture does not build a legacy config")
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			s, err := NewWithLocalLLM(ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), manifestPath)
+			if err != nil {
+				cancel()
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { cancel(); drainTestServer(t, s) })
+			if s.localResolver == nil {
+				t.Fatal("startup discarded the local policy resolver")
+			}
+			write := httptest.NewRecorder()
+			s.setLLM(write, httptest.NewRequest(http.MethodPost, "/api/llm", strings.NewReader(`{}`)))
+			if write.Code != http.StatusForbidden {
+				t.Fatalf("startup accepted legacy settings: %d", write.Code)
+			}
+			_, _, global := s.globalProvider()
+			chat := s.resolveChatAgent(&db.Conversation{})
+			if name == "pinned" {
+				if !global || chat == nil {
+					t.Fatal("pinned startup did not install local providers")
+				}
+			} else if global || chat != nil || s.llmOn || s.llmProv != nil || s.chatAgent != nil {
+				t.Fatal("untrusted active/env config made local engine ready")
+			}
+		})
 	}
-	t.Cleanup(func() { cancel(); drainTestServer(t, s) })
-	if _, _, ok := s.globalProvider(); !ok {
-		t.Fatal("server did not install the pinned active profile")
-	}
-	if s.resolveChatAgent(&db.Conversation{}) == nil {
-		t.Fatal("server did not install a local chat agent")
-	}
+
 }
 
 func TestLocalOnlyExplicitBindingAndStaleCache(t *testing.T) {
