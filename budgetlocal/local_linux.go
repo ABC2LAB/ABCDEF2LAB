@@ -153,6 +153,18 @@ func (s *Server) accept() {
 		if err != nil {
 			return
 		}
+		deadline := time.Now().Add(s.timeout)
+		if conn.SetDeadline(deadline) != nil {
+			_ = conn.Close()
+			continue
+		}
+		uid, err := peerUID(conn)
+		if err != nil || uid != s.operatorUID {
+			rejectPeer(conn)
+			continue
+		}
+		// Only authenticated operators can occupy issuance workers. A rejected
+		// peer gets one nonblocking response attempt, without its own goroutine.
 		select {
 		case s.sem <- struct{}{}:
 		default:
@@ -169,11 +181,11 @@ func (s *Server) accept() {
 		s.conns[conn] = struct{}{}
 		s.wg.Add(1)
 		s.mu.Unlock()
-		go s.handle(conn)
+		go s.handle(conn, uid, deadline)
 	}
 }
 
-func (s *Server) handle(conn *net.UnixConn) {
+func (s *Server) handle(conn *net.UnixConn, uid uint32, deadline time.Time) {
 	defer func() {
 		s.mu.Lock()
 		delete(s.conns, conn)
@@ -182,15 +194,6 @@ func (s *Server) handle(conn *net.UnixConn) {
 		<-s.sem
 		s.wg.Done()
 	}()
-	deadline := time.Now().Add(s.timeout)
-	if conn.SetDeadline(deadline) != nil {
-		return
-	}
-	uid, err := peerUID(conn)
-	if err != nil || uid != s.operatorUID {
-		writeWire(conn, wireResponse{Error: wireRejected})
-		return
-	}
 	data, err := io.ReadAll(io.LimitReader(conn, maxMessageBytes+1))
 	if err != nil {
 		writeWire(conn, wireResponse{Error: wireRejected})
@@ -256,6 +259,24 @@ func peerUID(conn *net.UnixConn) (uint32, error) {
 		return 0, ErrUnavailable
 	}
 	return uid, nil
+}
+
+// rejectPeer cannot wait on a peer that refuses to read. Delivery is best
+// effort, as with any failed response write; no approval callback has run.
+func rejectPeer(conn *net.UnixConn) {
+	defer conn.Close()
+	data, err := json.Marshal(wireResponse{Error: wireRejected})
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return
+	}
+	_ = raw.Control(func(fd uintptr) {
+		_, _ = syscall.SendmsgN(int(fd), data, nil, nil, syscall.MSG_DONTWAIT|syscall.MSG_NOSIGNAL)
+	})
 }
 
 func writeWire(conn *net.UnixConn, response wireResponse) {
