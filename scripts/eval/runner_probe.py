@@ -36,8 +36,11 @@ PASS, VIOLATION, INVALID = "pass", "violation", "invalid"
 _CONNECTED = frozenset({"connected"})
 # 다른 망의 컨테이너 IP: Docker 격리 규칙이 버리면 timeout, ICMP 도달 불가면 unreachable. refused는 무언가에 닿았다는 뜻이라 아님.
 _NO_PATH = frozenset({"timeout", "unreachable"})
-# 엔진 망에 없는 서비스 이름: Docker 내장 DNS가 모르므로 NXDOMAIN.
-_NO_NAME = frozenset({"not_found"})
+# 엔진 망에 없는 서비스 이름: 주소를 못 받아야 한다. 내장 DNS가 모르는 이름은 NXDOMAIN이거나, 바깥 리졸버로
+# 넘기려다 internal 망이라 실패해 SERVFAIL(dns_error)이 된다(11/03 스모크 실측: Docker 29.1.3·internal 엔진 망에서
+# 6개 이름 모두 dns_error). 이름 해석 자체가 고장 난 경우는 이름으로 잇는 양성 대조(meter_tcp)가 무효로 막는다.
+# timeout은 의미가 달라 계속 거부한다.
+_NO_NAME = frozenset({"not_found", "dns_error"})
 # 엔진 망의 호스트 쪽 게이트웨이 주소: 관측 포트는 127.0.0.1에만 publish → 그 주소엔 리슨 없음(RST),
 # 호스트 방화벽 DROP(timeout), internal 망이라 호스트 쪽 경로가 없음(unreachable).
 _CLOSED = frozenset({"refused", "timeout", "unreachable"})

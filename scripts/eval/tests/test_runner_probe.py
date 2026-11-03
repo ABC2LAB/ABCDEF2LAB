@@ -80,7 +80,7 @@ class TestExpectations(unittest.TestCase):
         accepted = {e.id: e.accepted for e in expectations}
         self.assertEqual(accepted["meter_tcp"], {"connected"})
         self.assertEqual(accepted["target_ip:172.31.0.2:3000"], {"timeout", "unreachable"})
-        self.assertEqual(accepted["dns:target"], {"not_found"})
+        self.assertEqual(accepted["dns:target"], {"not_found", "dns_error"})
         self.assertEqual(accepted["gateway_obs:172.30.0.1:18081"], {"refused", "timeout", "unreachable"})
         self.assertEqual(accepted["llm_upstream:llm-api.example:443"], {"timeout", "unreachable", "not_found", "dns_error"})
         self.assertEqual(accepted["llm_gateway_tcp"], {"connected"})
@@ -206,7 +206,8 @@ class TestEvaluate(unittest.TestCase):
         for check_id, observed in (("target_ip:172.31.0.2:3000", ("fail", "refused")),
                                    ("obs_ip:172.34.0.2:8081", ("fail", "error")),
                                    ("dns:target", ("fail", "timeout")),
-                                   ("dns:eval-obs", ("fail", "dns_error")),
+                                   ("dns:eval-obs", ("fail", "refused")),
+                                   ("dns:eval-obs", ("fail", "error")),
                                    ("gateway_obs:172.30.0.1:18081", ("fail", "error")),
                                    ("llm_upstream:llm-api.example:443", ("fail", "refused"))):
             with self.subTest(check_id=check_id):
@@ -216,7 +217,9 @@ class TestEvaluate(unittest.TestCase):
                                    ("gateway_obs:172.30.0.1:18081", ("fail", "timeout")),
                                    ("gateway_obs:172.30.0.1:18081", ("fail", "unreachable")),
                                    ("llm_upstream:llm-api.example:443", ("fail", "not_found")),
-                                   ("llm_upstream:llm-api.example:443", ("fail", "dns_error"))):
+                                   ("llm_upstream:llm-api.example:443", ("fail", "dns_error")),
+                                   ("dns:eval-obs", ("fail", "not_found")),
+                                   ("dns:eval-obs", ("fail", "dns_error"))):
             self.assertEqual(self.evaluate(**{check_id: observed}).status, PASS)
 
     def test_positive_control_failure_invalidates_whole_run(self):
