@@ -106,7 +106,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   llm/                           LLM 게이트웨이 기록(게이트웨이에만 마운트, 계측기와 분리)
   pre/  post/                    스코어보드 원본·정규화본(어느 컨테이너에도 마운트하지 않음, 절대규칙 7)
   pre-checks.json  post-checks.json   망 스냅샷·policy_sha256·위반 목록
-  pre-probe.json   post-probe.json    경로별 기대·실제·판정
+  pre-probe.json   post-probe.json    경로별 기대·실제·판정, probe 컨테이너 ID
+  pre-probe.cid    post-probe.cid     docker --cidfile이 쓴 probe 컨테이너 ID(구간 감시 허용 목록)
   meter-summary.json  llm-summary.json
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
@@ -165,7 +166,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `task_start_failed` | 작업 생성 실패: 로그인 실패, 생성 요청 연결 실패·시한 초과, 201 아닌 응답, 응답에 작업 ID 없음. 다시 보내지 않는다(시한 초과면 작업이 생겼을 수 있음) |
 | `seal_failed`, `drain_timeout`, `drain_incomplete` | 계측기 seal 실패, drain 시한 초과, 진행 중 요청·기록 불완전 |
 | `boundary_changed` | pre와 post 사이 데몬·망·주소·컨테이너 교체·재시작 |
-| `window_boundary_changed` | 구간(pre 관측 직전~post 관측 완료) 데몬 이벤트에 회차 망·회차 컨테이너의 연결·해제·생명주기·exec가 있음. 허용: 계측기·게이트웨이 seal(USR1)과 engine-db의 선언된 healthcheck |
+| `window_boundary_changed` | 구간(pre 관측 직전~post 관측 완료) 데몬 이벤트에 회차 망·회차 컨테이너의 연결·해제·생명주기·exec가 있거나, 회차 밖 컨테이너가 생성·시작·재시작됨(`--network container:<회차 컨테이너>`는 망 이벤트 없이 namespace를 같이 쓰므로). 허용: 계측기·게이트웨이 seal(USR1), engine-db의 선언된 healthcheck, 러너가 띄운 probe(cidfile ID) |
 | `window_events_incomplete` | 구간 이벤트가 데몬 버퍼 크기(256)에 닿아 앞쪽이 버려졌을 수 있음 |
 | `window_host_condition_violation`, `window_host_watch_gap` | 구간 중 허용되지 않은 호스트 리슨·읽기 실패, 표본 사이 공백이 허용값 초과 |
 | `window_watch_failed`, `window_events_failed` | 감시 시작·종료 실패, `docker events` 실패·형식 밖 출력 |
@@ -206,6 +207,9 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 - **고장 주입(회차 도중, 작업 생성 뒤):** 엔진을 대상 망에 연결 → `post_topology_violation` / 대상 재시작 → `boundary_changed` /
   엔진 재시작 → `boundary_changed` / 계측기 재시작 → `seal_failed`(계측기가 기존 기록 파일을 덮어쓰지 않아 다시 뜨지 않음). 넷 다
   무효·미서명, 정리 후 컨테이너·망 0.
+- **회차 밖 컨테이너의 namespace 공유(11/03):** 구간 중 `docker run --network container:<대상>`(망 연결 이벤트 없음) →
+  `window_boundary_changed`(회차 밖 컨테이너 create·start), 무효·미서명. 같은 날 정상 회차는 러너 post probe의 컨테이너 이벤트
+  5건(create·attach·start·die·destroy)만 cidfile ID로 허용되고 완료·서명.
 - **스모크로 고친 것:** `python3 -I` 실행 시 같은 디렉터리 모듈 import 실패, 배포판 데몬의 빈 `Platform.Name`을 출력 오류로 거부,
   internal 망 DNS 실패 종류, 무효 기록의 `failed_step`이 마지막 단계(근거 쓰기)로 남던 것.
 - **이 머신 한정 설정:** 호스트 리슨 허용 목록에 WSL DNS 터널링 리졸버 `10.255.255.254:53`(근거 포함). 엔진 이미지는 호스트에

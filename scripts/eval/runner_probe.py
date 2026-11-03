@@ -19,6 +19,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
@@ -71,6 +72,8 @@ class ProbeOutcome:
     rows: tuple[dict, ...]
     started_at: str = ""
     finished_at: str = ""
+    # 러너가 띄운 probe 컨테이너 ID(--cidfile). 구간 감시가 이 ID의 생성·시작만 러너 것으로 허용한다.
+    container_id: str | None = None
 
 
 def _hostport(host: str, port: int) -> str:
@@ -235,7 +238,8 @@ def _stamp(now: Callable[[], datetime]) -> str:
 
 
 def run_probe(docker: Docker, meter_image_id: str, snapshot: dict, plan: RunPlan, timeout_ms: int, uid: int,
-              gid: int, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> ProbeOutcome:
+              gid: int, cidfile: Path,
+              now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> ProbeOutcome:
     """스냅샷의 엔진 컨테이너 netns에서 probe 1회. 도출·실행·해석 어디서 실패해도 무효로 돌려준다.
 
     이미지는 태그가 아니라 내용 ID(러너 설정의 계측기 이미지 ID)로만 받는다. 태그는 회차 중 다른 이미지를 가리킬 수 있다.
@@ -249,10 +253,12 @@ def run_probe(docker: Docker, meter_image_id: str, snapshot: dict, plan: RunPlan
     except ProbeSetupError as exc:
         return ProbeOutcome(INVALID, (str(exc),), (), started, _stamp(now))
     engine = snapshot["services"].get(ENGINE_SERVICE, {}).get("id", "")
+    container_id = None
     try:
-        output = docker.probe(meter_image_id, engine, probe_plan(expectations, timeout_ms), uid, gid)
+        output, container_id = docker.probe(meter_image_id, engine, probe_plan(expectations, timeout_ms), uid, gid,
+                                            cidfile)
     except DockerError:
         outcome = _invalid(expectations, "probe_run_failed")
     else:
         outcome = evaluate_probe(expectations, output)
-    return ProbeOutcome(outcome.status, outcome.reasons, outcome.rows, started, _stamp(now))
+    return ProbeOutcome(outcome.status, outcome.reasons, outcome.rows, started, _stamp(now), container_id)

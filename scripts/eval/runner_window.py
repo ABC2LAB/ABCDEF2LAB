@@ -8,6 +8,9 @@ pre·post 두 시점 점검은 끝까지 남는 변화(재시작·구성원 변�
 - 데몬 이벤트: 구간 시작에 `docker events --since <시작 − healthcheck timeout>` 스트림을 열어 두고 post 뒤에
   닫는다(데몬은 지난 이벤트를 256개만 보관해 구간 끝 일괄 조회로는 긴 구간을 못 덮는다). 회차 망·회차
   컨테이너에 생긴 일을 보며, 허용하는 것은 계측기·게이트웨이 seal(USR1)과 engine-db의 선언된 healthcheck뿐이다.
+  회차 밖 컨테이너는 생성할 때 `--network container:<회차 컨테이너>`로 회차 컨테이너의 망 namespace를 같이 쓸 수
+  있고 그때는 망 연결 이벤트가 없다. 이벤트에는 망 모드가 없으므로 구간 중 회차 밖 컨테이너의 생성·시작은 러너
+  자신의 probe(--cidfile로 받은 ID)를 빼고 전부 경계 변경으로 본다(전용 평가 호스트, 프로토콜 §2).
   구간 시작 전(lookback) 이벤트는 판정하지 않고, 구간에 걸친 healthcheck exec의 ID를 알아 두는 데만 쓴다.
   스트림이 끊기거나 해석할 수 없거나, 시작 전 재생분이 버퍼 크기에 닿으면 불완전이다.
 
@@ -31,6 +34,8 @@ SEAL_SIGNAL = "10"
 ENGINE_DB_HEALTHCHECK = '/bin/sh -c pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 _HEALTHY = "health_status: healthy"
 _EXEC_CREATE, _EXEC_START, _EXEC_DIE = "exec_create: ", "exec_start: ", "exec_die"
+# 회차 밖 컨테이너가 이 동작을 하면 새 namespace 공유가 생길 수 있다(공유는 생성 때 정해지고 시작으로 살아난다).
+_FOREIGN_START = frozenset({"create", "start", "restart"})
 
 
 class WindowError(ValueError):
@@ -121,11 +126,13 @@ def _text(value: object, code: str) -> str:
 
 
 def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str], run_containers: dict[str, str],
-                 sealable: frozenset[str], healthchecked: frozenset[str], stream_complete: bool) -> dict:
+                 sealable: frozenset[str], healthchecked: frozenset[str], runner_containers: frozenset[str],
+                 stream_complete: bool) -> dict:
     """구간 이벤트를 판정한다. run_networks·run_containers는 ID → 서비스(망 이름)다.
 
     window_start_ns보다 앞선 이벤트(lookback)는 healthcheck exec ID만 알아 두고 판정하지 않는다.
     sealable: seal 신호(USR1)를 받는 서비스. healthchecked: 선언된 healthcheck exec를 허용하는 서비스.
+    runner_containers: 러너가 구간 중 직접 띄운 컨테이너 ID(post probe). 그 밖의 회차 밖 컨테이너 생성·시작은 위반.
     결과에는 종류별 건수와 위반 요약(서비스 이름·동작)만 남기고 이벤트 원문은 남기지 않는다.
     """
     if not isinstance(events, list) or type(window_start_ns) is not int:
@@ -133,7 +140,7 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
     kinds: dict[str, int] = {}
     boundary: list[dict] = []
     allowed_exec_ids: set[str] = set()
-    lookback = 0
+    lookback = runner_events = 0
     for event in events:  # 데몬이 시각 순서로 보낸다(재생분 다음 실시간)
         if not isinstance(event, dict):
             raise WindowError("docker_events_invalid")
@@ -166,7 +173,13 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
                 boundary.append({"type": kind, "action": label, "network": run_networks.get(actor_id, "foreign"),
                                  "service": who})
             continue
-        if kind != "container" or actor_id not in run_containers:
+        if kind != "container":
+            continue
+        if actor_id not in run_containers:
+            if actor_id in runner_containers:
+                runner_events += 1
+            elif label in _FOREIGN_START:
+                boundary.append({"type": kind, "action": label, "service": "foreign"})
             continue
         service = run_containers[actor_id]
         if label == "kill" and service in sealable and attributes.get("signal") == SEAL_SIGNAL:
@@ -183,7 +196,7 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
                 continue
         boundary.append({"type": kind, "action": label, "service": service})
     return {"event_count": len(events) - lookback, "lookback_events": lookback, "kinds": dict(sorted(kinds.items())),
-            "boundary_events": boundary, "stream_complete": stream_complete,
+            "runner_container_events": runner_events, "boundary_events": boundary, "stream_complete": stream_complete,
             "complete": stream_complete and lookback < DOCKER_EVENTS_BUFFER}
 
 

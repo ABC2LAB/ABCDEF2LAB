@@ -6,8 +6,10 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -247,16 +249,46 @@ class TestFactGathering(unittest.TestCase):
 
 
 class TestProbeCall(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cidfile = Path(self._tmp.name) / "post-probe.cid"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def writing_cid(self, content, result=CommandResult(0, b'{"results":[]}')):
+        """docker CLI처럼 --cidfile 경로에 컨테이너 ID를 쓰고 결과를 돌려주는 실행기."""
+        calls = []
+
+        def executor(args, env, stdin, timeout):
+            calls.append((list(args), dict(env), stdin, timeout))
+            if content is not None:
+                Path(args[args.index("--cidfile") + 1]).write_bytes(content)
+            return result
+        executor.calls = calls
+        return executor
+
     def test_probe_joins_engine_netns_without_privileges_or_pull(self):
-        fake = FakeExecutor(CommandResult(0, b'{"results":[]}'))
-        out = Docker(fake, {}, 1).probe(IMAGE_ID, ID_A, b'{"plan":1}', 1000, 1001)
-        self.assertEqual(out, b'{"results":[]}')
+        fake = self.writing_cid(ID_B.encode())
+        out, container_id = Docker(fake, {}, 1).probe(IMAGE_ID, ID_A, b'{"plan":1}', 1000, 1001, self.cidfile)
+        self.assertEqual((out, container_id), (b'{"results":[]}', ID_B))
         args, _, stdin, _ = fake.calls[0]
-        self.assertEqual(args, ["run", "--rm", "-i", "--pull", "never", "--network", f"container:{ID_A}",
+        self.assertEqual(args, ["run", "--rm", "-i", "--pull", "never", "--cidfile", str(self.cidfile),
+                                "--network", f"container:{ID_A}",
                                 "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                                 "--user", "1000:1001", "--", IMAGE_ID, "-role=probe"])
         self.assertEqual(stdin, b'{"plan":1}')
         self.assertFalse(any(arg in ("-v", "--volume", "--mount", "--privileged") for arg in args))
+
+    def test_probe_container_id_must_be_one_full_id(self):
+        # cidfile이 없거나 ID가 아니면 그 probe를 러너 것으로 인정할 수 없다(구간 감시 허용 목록이 비게 됨).
+        for content in (None, b"", ID_B[:12].encode(), (ID_B + "\n").encode(), (ID_B + ID_B).encode(),
+                        ID_B.upper().encode(), b"\xff" * 64):
+            with self.subTest(content=content[:8] if content else content):
+                self.cidfile.unlink(missing_ok=True)
+                with self.assertRaises(DockerError) as caught:
+                    Docker(self.writing_cid(content), {}, 1).probe(IMAGE_ID, ID_A, b"{}", 1, 1, self.cidfile)
+                self.assertEqual(str(caught.exception), "docker_probe_cid_invalid")
 
     def test_probe_inputs_checked_before_call(self):
         cases = [(IMAGE_ID, "short", 1, 1), (IMAGE_ID, "", 1, 1), (IMAGE_ID, ID_A, -1, 1), (IMAGE_ID, ID_A, 1, True),
@@ -265,10 +297,10 @@ class TestProbeCall(unittest.TestCase):
         for image, engine, uid, gid in cases:
             fake = FakeExecutor()
             with self.assertRaises(DockerError):
-                Docker(fake, {}, 1).probe(image, engine, b"{}", uid, gid)
+                Docker(fake, {}, 1).probe(image, engine, b"{}", uid, gid, self.cidfile)
             self.assertEqual(fake.calls, [])
         with self.assertRaises(DockerError) as caught:
-            Docker(FakeExecutor(CommandResult(2, b"")), {}, 1).probe(IMAGE_ID, ID_A, b"{}", 1, 1)
+            Docker(FakeExecutor(CommandResult(2, b"")), {}, 1).probe(IMAGE_ID, ID_A, b"{}", 1, 1, self.cidfile)
         self.assertEqual(str(caught.exception), "docker_probe_failed")
 
 

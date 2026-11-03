@@ -25,6 +25,7 @@ RUN = {cid: service for service, cid in IDS.items()}
 SEALABLE = frozenset({"eval-meter", "eval-llm-gw"})
 HEALTH = frozenset({"engine-db"})
 OTHER = "f" * 64
+PROBE = "c" * 64  # 러너가 구간 중 띄운 post probe(--cidfile ID)
 
 
 START = 1_000_000_000_000_000_000  # 구간 시작(나노초)
@@ -35,8 +36,8 @@ def event(kind, action, actor, at=START + 1, **attributes):
             "time": at // 10**9, "timeNano": at, "scope": "local"}
 
 
-def judge(events, complete=True):
-    return judge_events(events, START, NET, RUN, SEALABLE, HEALTH, complete)
+def judge(events, complete=True, runner=frozenset()):
+    return judge_events(events, START, NET, RUN, SEALABLE, HEALTH, runner, complete)
 
 
 class TestJudgeEvents(unittest.TestCase):
@@ -48,14 +49,18 @@ class TestJudgeEvents(unittest.TestCase):
             event("container", "exec_start: " + ENGINE_DB_HEALTHCHECK, IDS["engine-db"], execID="x1"),
             event("container", "exec_die", IDS["engine-db"], execID="x1", exitCode="0"),
             event("container", "health_status: healthy", IDS["engine-db"]),
-            # probe 컨테이너(회차 밖, 엔진 netns 공유)의 생명주기와 무관한 망·볼륨 이벤트는 판정 밖이다.
-            event("container", "create", OTHER, name="probe"), event("container", "die", OTHER, exitCode="0"),
-            event("network", "connect", "z" * 64, container=OTHER, name="bridge"),
+            # 러너 자신의 probe(회차 밖, 엔진 netns 공유)는 cidfile ID로만 허용한다.
+            event("container", "create", PROBE, name="probe"), event("container", "start", PROBE),
+            event("container", "die", PROBE, exitCode="0"),
+            # 이미 있던 회차 밖 컨테이너의 종료와 회차 밖 망·볼륨 이벤트는 새 namespace 공유를 만들지 않는다.
+            event("container", "die", OTHER, exitCode="0"), event("container", "destroy", OTHER),
+            event("network", "connect", "z" * 64, container=PROBE, name="none"),
             event("volume", "mount", "v" * 64, container=IDS["engine-db"]),
         ]
-        summary = judge(events)
-        self.assertEqual((summary["boundary_events"], summary["complete"], summary["event_count"]), ([], True, 10))
+        summary = judge(events, runner=frozenset({PROBE}))
+        self.assertEqual((summary["boundary_events"], summary["complete"], summary["event_count"]), ([], True, 13))
         self.assertEqual(summary["kinds"]["container.kill"], 2)
+        self.assertEqual(summary["runner_container_events"], 3)
         self.assertEqual(events_reasons(summary), [])
 
     def test_boundary_changes_are_caught(self):
@@ -76,6 +81,10 @@ class TestJudgeEvents(unittest.TestCase):
             "db_healthcheck_without_exec_id": event("container", "exec_create: " + ENGINE_DB_HEALTHCHECK,
                                                     IDS["engine-db"]),
             "engine_stop": event("container", "stop", IDS["engine"]),
+            # 회차 밖 컨테이너는 `--network container:<회차 컨테이너>`로 망 이벤트 없이 namespace를 같이 쓸 수 있다.
+            "foreign_container_created": event("container", "create", OTHER),
+            "foreign_container_started": event("container", "start", OTHER),
+            "foreign_container_restarted": event("container", "restart", OTHER),
         }
         for name, item in cases.items():
             with self.subTest(name=name):
@@ -86,12 +95,17 @@ class TestJudgeEvents(unittest.TestCase):
         self.assertEqual(attach, {"type": "network", "action": "connect", "network": "target_net", "service": "engine"})
         foreign = judge([cases["foreign_attached_to_run_net"]])["boundary_events"][0]
         self.assertEqual(foreign["service"], "foreign")
+        started = judge([cases["foreign_container_started"]], runner=frozenset({PROBE}))["boundary_events"]
+        self.assertEqual(started, [{"type": "container", "action": "start", "service": "foreign"}])
+        # 러너 probe로 인정하는 건 정확히 그 ID다. 회차 컨테이너 ID를 넣어도 회차 컨테이너 규칙이 먼저다.
+        self.assertEqual(len(judge([cases["target_restart"]], runner=frozenset({IDS["target"]}))["boundary_events"]), 1)
 
     def test_completeness_follows_the_stream_and_replay(self):
         # 구간 안 이벤트는 스트림으로 받으므로 개수와 무관하다(실측: healthcheck만으로 초당 1.5건).
-        many = [event("container", "create", OTHER)] * (DOCKER_EVENTS_BUFFER * 4)
-        self.assertTrue(judge(many)["complete"])
-        self.assertEqual(events_reasons(judge(many, complete=False)), ["window_events_incomplete"])
+        many = [event("container", "create", PROBE)] * (DOCKER_EVENTS_BUFFER * 4)
+        self.assertTrue(judge(many, runner=frozenset({PROBE}))["complete"])
+        self.assertEqual(events_reasons(judge(many, complete=False, runner=frozenset({PROBE}))),
+                         ["window_events_incomplete"])
         # 구간 시작 전 재생분(lookback)이 데몬 버퍼 크기에 닿으면 앞쪽이 버려졌을 수 있다.
         replay = [event("container", "create", OTHER, at=START - 5)] * (DOCKER_EVENTS_BUFFER - 1)
         self.assertTrue(judge(replay)["complete"])
@@ -123,12 +137,12 @@ class TestJudgeEvents(unittest.TestCase):
             with self.subTest(bad=str(bad)[:40]), self.assertRaises(WindowError):
                 judge(bad)
         with self.assertRaises(WindowError):
-            judge_events({}, START, NET, RUN, SEALABLE, HEALTH, True)
+            judge_events({}, START, NET, RUN, SEALABLE, HEALTH, frozenset(), True)
         for stamp in ("1", None, 1.5, True):
             with self.subTest(stamp=stamp), self.assertRaises(WindowError):
                 judge([dict(event("container", "start", OTHER), timeNano=stamp)])
         with self.assertRaises(WindowError):
-            judge_events([], "0", NET, RUN, SEALABLE, HEALTH, True)
+            judge_events([], "0", NET, RUN, SEALABLE, HEALTH, frozenset(), True)
 
     def test_healthcheck_matches_compose_declaration(self):
         # compose의 CMD-SHELL과 다르면 정상 healthcheck가 위반으로 잡히거나, 다른 exec가 허용된다.

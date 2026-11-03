@@ -7,6 +7,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -261,17 +262,19 @@ class TestEvaluate(unittest.TestCase):
 
 
 METER_ID = "sha256:" + "4" * 64
+PROBE_ID = "c" * 64
+CIDFILE = Path("/nonexistent/post-probe.cid")  # 가짜 docker는 파일을 쓰지 않는다
 
 
 class FakeDocker:
     def __init__(self, output=None, error=None):
         self.output, self.error, self.calls = output, error, []
 
-    def probe(self, image, engine, plan, uid, gid):
-        self.calls.append((image, engine, plan, uid, gid))
+    def probe(self, image, engine, plan, uid, gid, cidfile):
+        self.calls.append((image, engine, plan, uid, gid, cidfile))
         if self.error:
             raise self.error
-        return self.output(json.loads(plan)) if callable(self.output) else self.output
+        return (self.output(json.loads(plan)) if callable(self.output) else self.output), PROBE_ID
 
 
 def clock():
@@ -284,10 +287,10 @@ class TestRunProbe(unittest.TestCase):
         snapshot, plan = make_snapshot(), make_plan()
         expectations = probe_expectations(plan, snapshot)
         docker = FakeDocker(lambda _plan: expected_report(expectations))
-        outcome = run_probe(docker, METER_ID, snapshot, plan, 2000, 1000, 1000, clock())
-        self.assertEqual(outcome.status, PASS)
-        image, engine, sent, uid, gid = docker.calls[0]
-        self.assertEqual((image, engine, uid, gid), (METER_ID, SERVICE_IDS["engine"], 1000, 1000))
+        outcome = run_probe(docker, METER_ID, snapshot, plan, 2000, 1000, 1000, CIDFILE, clock())
+        self.assertEqual((outcome.status, outcome.container_id), (PASS, PROBE_ID))
+        image, engine, sent, uid, gid, cidfile = docker.calls[0]
+        self.assertEqual((image, engine, uid, gid, cidfile), (METER_ID, SERVICE_IDS["engine"], 1000, 1000, CIDFILE))
         self.assertEqual(sent, probe_plan(expectations, 2000))
         self.assertEqual((outcome.started_at, outcome.finished_at),
                          ("2026-11-02T01:00:00+00:00", "2026-11-02T01:00:01+00:00"))
@@ -295,21 +298,22 @@ class TestRunProbe(unittest.TestCase):
     def test_probe_image_must_be_content_id(self):
         for image in ("example/m:fixed", "example/m@sha256:" + "4" * 64, "4" * 64, "sha256:" + "A" * 64, None):
             docker = FakeDocker(b"{}")
-            outcome = run_probe(docker, image, make_snapshot(), make_plan(), 2000, 1, 1, clock())
+            outcome = run_probe(docker, image, make_snapshot(), make_plan(), 2000, 1, 1, CIDFILE, clock())
             self.assertEqual((outcome.status, outcome.reasons), (INVALID, ("probe_image_not_id",)))
             self.assertEqual(docker.calls, [])
 
     def test_probe_run_failure_is_invalid(self):
         outcome = run_probe(FakeDocker(error=DockerError("docker_probe_failed")), METER_ID, make_snapshot(),
-                            make_plan(), 2000, 1, 1, clock())
-        self.assertEqual((outcome.status, outcome.reasons), (INVALID, ("probe_run_failed",)))
+                            make_plan(), 2000, 1, 1, CIDFILE, clock())
+        self.assertEqual((outcome.status, outcome.reasons, outcome.container_id), (INVALID, ("probe_run_failed",), None))
         self.assertTrue(outcome.rows and all(r["verdict"] == "not_observed" for r in outcome.rows))
 
     def test_setup_failure_is_invalid_without_running_probe(self):
         networks, containers = raw_world()
         by_service(containers, "eval-obs")["ports"] = {}
         docker = FakeDocker(b"{}")
-        outcome = run_probe(docker, METER_ID, make_snapshot(networks, containers), make_plan(), 2000, 1, 1, clock())
+        outcome = run_probe(docker, METER_ID, make_snapshot(networks, containers), make_plan(), 2000, 1, 1, CIDFILE,
+                            clock())
         self.assertEqual((outcome.status, outcome.reasons, outcome.rows), (INVALID, ("obs_port_unknown",), ()))
         self.assertEqual(docker.calls, [])
 

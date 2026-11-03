@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import IO, Callable, Mapping, Protocol, Sequence
 
 # docker CLI가 데몬에 접속하는 데 쓰는 이름만 셸에서 가져온다.
@@ -24,7 +25,8 @@ MIN_SERVER_VERSION = (28, 0, 0)
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(.*)\Z", re.S)
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_OBJECT_ID = re.compile(r"[0-9a-f]{64}\Z")
+_OBJECT_ID_LENGTH = 64
+_OBJECT_ID = re.compile(r"[0-9a-f]{%d}\Z" % _OBJECT_ID_LENGTH)
 _PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
 # docker events --since/--until에 넘기는 UTC 시각(초 소수 9자리까지). 러너가 만든 값만 받는다.
 _EVENT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z\Z")
@@ -103,6 +105,19 @@ def open_docker_stream(args: Sequence[str], env: Mapping[str, str]) -> StreamPro
                                 stderr=None)
     except OSError:
         raise DockerError("docker_unavailable") from None
+
+
+def _read_cidfile(path: Path) -> str:
+    """docker가 쓴 컨테이너 ID(64 hex) 하나. 없거나 모양이 다르면 그 probe를 러너 것으로 인정할 수 없다."""
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(_OBJECT_ID_LENGTH + 1)  # 한 바이트 더 읽어 뒤에 붙은 내용도 거부한다
+        value = data.decode("ascii")
+    except (OSError, UnicodeError):
+        raise DockerError("docker_probe_cid_invalid") from None
+    if not _OBJECT_ID.fullmatch(value):
+        raise DockerError("docker_probe_cid_invalid")
+    return value
 
 
 class EventStream:
@@ -256,11 +271,14 @@ class Docker:
             raise DockerError("docker_signal_invalid")
         self.run(["kill", "--signal", signal_name, container_id], code="docker_signal_failed")
 
-    def probe(self, image: str, engine_container_id: str, plan: bytes, uid: int, gid: int) -> bytes:
+    def probe(self, image: str, engine_container_id: str, plan: bytes, uid: int, gid: int,
+              cidfile: Path) -> tuple[bytes, str]:
         """엔진 컨테이너의 네트워크 namespace에서 계측기 이미지(내용 ID)의 probe 역할을 1회 실행한다.
 
         엔진 이미지 내용에 기대지 않는다. 마운트·소켓·권한 없이 읽기 전용으로 돌고, pull하지 않는다.
         종료 코드가 0이 아니면(계획 오류·시작 실패) 호출 실패이며, 점검 무효로 처리하는 것은 호출자다.
+        probe 컨테이너 ID를 `--cidfile`로 받아 출력과 함께 돌려준다. 구간 감시는 러너 자신의 probe만 허용하고
+        그 밖의 컨테이너 생성·시작은 경계 변경으로 본다(runner_window). cidfile은 회차 디렉터리 안 새 경로다.
         """
         if not _OBJECT_ID.fullmatch(engine_container_id or ""):
             raise DockerError("docker_probe_target_invalid")
@@ -268,10 +286,12 @@ class Docker:
             raise DockerError("docker_probe_image_not_id")
         if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0:
             raise DockerError("docker_probe_user_invalid")
-        return self.run(["run", "--rm", "-i", "--pull", "never", "--network", f"container:{engine_container_id}",
-                         "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-                         "--user", f"{uid}:{gid}", "--", image, "-role=probe"],
-                        stdin=plan, code="docker_probe_failed")
+        output = self.run(["run", "--rm", "-i", "--pull", "never", "--cidfile", str(cidfile),
+                           "--network", f"container:{engine_container_id}",
+                           "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                           "--user", f"{uid}:{gid}", "--", image, "-role=probe"],
+                          stdin=plan, code="docker_probe_failed")
+        return output, _read_cidfile(cidfile)
 
     def daemon(self) -> DaemonIdentity:
         server = self.json(["version", "--format", "{{json .Server}}"], code="docker_version_failed")

@@ -101,7 +101,7 @@ class RunPorts(Protocol):
     def down(self) -> None: ...
     def facts(self) -> Facts: ...
     def host_listeners(self) -> frozenset[Listener]: ...
-    def probe(self, snapshot: dict) -> ProbeOutcome: ...
+    def probe(self, phase: str, snapshot: dict) -> ProbeOutcome: ...
     def wait_ready(self) -> int: ...
     def scoreboard(self, phase: str, snapshot: dict) -> dict: ...
     def start_task(self) -> str: ...
@@ -168,6 +168,8 @@ class _State:
     events: object | None = None
     listeners: dict = field(default_factory=dict)
     probes: dict = field(default_factory=dict)
+    # 러너가 띄운 probe 컨테이너 ID. 구간 감시가 이 ID의 생성·시작만 허용한다.
+    runner_containers: set = field(default_factory=set)
     record: dict | None = None
 
 
@@ -207,7 +209,7 @@ def _window(spec: RunSpec, evidence, state: _State, pre: dict, start: datetime, 
     containers = {s["id"]: service for service, s in pre["services"].items()}
     events = _step(state, "window_events_failed", lambda: judge_events(
         raw, _ns(start), networks, containers, frozenset({METER_SERVICE, LLM_GW_SERVICE}),
-        frozenset({ENGINE_DB_SERVICE}), stream_complete))
+        frozenset({ENGINE_DB_SERVICE}), frozenset(state.runner_containers), stream_complete))
     reasons = watch_reasons(host) + events_reasons(events)
     record = {"start": _event_time(start), "end": _event_time(end), "lookback_seconds": spec.events_lookback_seconds,
               "host_watch": host, "docker_events": events, "reasons": reasons}
@@ -252,11 +254,13 @@ def _check_phase(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase:
 
 
 def _probe(ports: RunPorts, evidence, state: _State, phase: str, snapshot: dict) -> str:
-    outcome = _step(state, f"{phase}_probe_invalid", lambda: ports.probe(snapshot))
+    outcome = _step(state, f"{phase}_probe_invalid", lambda: ports.probe(phase, snapshot))
     state.probes[phase] = [dict(row) for row in outcome.rows]
+    if outcome.container_id:
+        state.runner_containers.add(outcome.container_id)
     _step(state, "evidence_write_failed", lambda: evidence.write_json(f"{phase}-probe.json", {
         "phase": phase, "status": outcome.status, "reasons": list(outcome.reasons), "rows": list(outcome.rows),
-        "started_at": outcome.started_at, "finished_at": outcome.finished_at}))
+        "started_at": outcome.started_at, "finished_at": outcome.finished_at, "container_id": outcome.container_id}))
     if outcome.status != PASS:
         raise RunFailure(f"{phase}_probe_{outcome.status}")
     return outcome.status
@@ -545,9 +549,11 @@ class DockerPorts:
     def host_listeners(self) -> frozenset[Listener]:
         return read_host_listeners(_read_text)
 
-    def probe(self, snapshot: dict) -> ProbeOutcome:
+    def probe(self, phase: str, snapshot: dict) -> ProbeOutcome:
+        # cidfile은 회차 디렉터리(러너 uid·0700) 안 단계별 새 경로다. docker는 이미 있는 파일이면 실행을 거부한다.
         return run_probe(self.docker, self.config.images["meter"].id, snapshot, self.plan,
-                         self.config.probe_timeout_ms, os.geteuid(), os.getegid())
+                         self.config.probe_timeout_ms, os.geteuid(), os.getegid(),
+                         self.directory.run / f"{phase}-probe.cid")
 
     def wait_ready(self) -> int:
         """관측 front로 등록 GET을 200이 올 때까지. 응답을 받은 호출 수를 돌려준다(관측 로그 대조용)."""

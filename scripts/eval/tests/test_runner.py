@@ -41,6 +41,9 @@ def make_spec():
     return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0)
 
 
+# 러너가 띄운 probe 컨테이너 ID(--cidfile). 구간 감시의 허용 목록이 된다.
+PROBE_IDS = {"pre": "a1" * 32, "post": "b2" * 32}
+
 class FakeClock:
     def __init__(self):
         self.t = 0.0
@@ -134,6 +137,7 @@ class FakePorts:
         self.ready_calls = 1
         self.post_world = None
         self.probe_status = {"pre": PASS, "post": PASS}
+        self.probe_phases = []
         self.phase = "pre"
         self.listeners = frozenset()
         self.running = []
@@ -184,14 +188,15 @@ class FakePorts:
         self._call(f"listeners:{self.phase}")
         return self.listeners
 
-    def probe(self, snapshot):
+    def probe(self, phase, snapshot):
         self._call(f"probe:{self.phase}")
+        self.probe_phases.append(phase)
         status = self.probe_status[self.phase]
         rows = ({"id": "meter_tcp", "kind": "tcp", "target": "eval-meter:8080", "role": "positive", "expected": "success",
                  "accepted": ["connected"], "observed": "success", "code": "connected", "verdict": "match"},
                 {"id": "dns:target", "kind": "dns", "target": "target", "role": "negative", "expected": "fail",
                  "accepted": ["not_found", "dns_error"], "observed": "fail", "code": "dns_error", "verdict": "match"})
-        return ProbeOutcome(status, () if status == PASS else ("x",), rows, "a", "b")
+        return ProbeOutcome(status, () if status == PASS else ("x",), rows, "a", "b", PROBE_IDS[phase])
 
     def wait_ready(self):
         self._call("wait_ready")
@@ -614,10 +619,30 @@ class TestFailures(unittest.TestCase):
                 {"Type": "container", "Action": "health_status: healthy", "Actor": {"ID": ids["engine-db"]},
                  "timeNano": late},
             ]
-        result, _, _, evidence = run(normal)
+        result, ports, _, evidence = run(normal)
         self.assertEqual(result["status"], COMPLETE)
         self.assertEqual(evidence.files["window-watch.json"]["docker_events"]["boundary_events"], [])
         self.assertEqual(result["window"]["events"]["event_count"], 5)
+        self.assertEqual(ports.probe_phases, ["pre", "post"])
+        self.assertEqual(evidence.files["post-probe.json"]["container_id"], PROBE_IDS["post"])
+
+    def test_only_the_runner_post_probe_may_start_a_container_in_the_window(self):
+        # 구간 중 러너가 띄운 post probe(cidfile ID)의 생성·시작은 허용, 그 밖의 컨테이너 생성은 namespace 공유
+        # 가능성이 있어 무효. 엔진 netns를 같이 쓰는 probe와 같은 모양(망 이벤트 없음)이다.
+        late = 4_000_000_000_000_000_000
+
+        def starts(container_id):
+            return [{"Type": "container", "Action": action, "Actor": {"ID": container_id, "Attributes": {}},
+                     "timeNano": late} for action in ("create", "attach", "start", "die", "destroy")]
+
+        result, _, _, evidence = run(lambda p, m, c: setattr(p, "events_list", starts(PROBE_IDS["post"])))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(evidence.files["window-watch.json"]["docker_events"]["runner_container_events"], 5)
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "events_list", starts("f" * 64)))
+        self.assert_invalid(result, ports, evidence, "window_boundary_changed")
+        self.assertEqual(evidence.files["window-watch.json"]["docker_events"]["boundary_events"],
+                         [{"type": "container", "action": "create", "service": "foreign"},
+                          {"type": "container", "action": "start", "service": "foreign"}])
 
     def test_window_failures_of_the_watch_itself(self):
         for name, code in (("watch:start", "window_watch_failed"), ("watch:stop", "window_watch_failed"),
