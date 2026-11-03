@@ -66,13 +66,13 @@ baseline에는 E²가 없으므로 E² traffic ID를 해결 주체 확인의 필
 
 ### 3.1 `isolation_evidence` 행 직렬화 — 러너 형식 v1(제안)
 
-파일은 JSON 객체 하나다: 5개 문맥(`run_id`·`model_tag`·`reset_generation`·`instance_id`·`execution_id`) + `phase: "engine"` + `format: "abc2lab-isolation-evidence-v1"` + `rows`(배열). 모든 행은 `kind`, 파일 안 순번 `seq`(1부터 엄격 증가), 러너 벽시각 `at`(timezone 포함 ISO)을 가진다. 모르는 `kind`·필드, 중복 키, 순번 공백은 입력 오류다. 값은 비민감만 쓴다: 컨테이너 내부 IP·서비스 이름·망/컨테이너 ID·digest·경로 참조는 넣고, 요청/응답 본문·헤더·비밀·계정 원문·표식 값은 넣지 않는다.
+파일은 JSON 객체 하나다: 5개 문맥(`run_id`·`model_tag`·`reset_generation`·`instance_id`·`execution_id`) + `phase: "engine"` + `format: "abc2lab-isolation-evidence-v1"` + `rows`(배열). 모든 행은 `kind`, 파일 안 순번 `seq`(1부터 엄격 증가), 러너 벽시각 `at`(timezone 포함 ISO)을 가진다. `kind`는 행 종류 구분자로만 쓰며, 행 안의 다른 필드는 `kind`라는 이름을 쓰지 않는다(평평한 객체라 중복 키가 된다). 모르는 `kind`·필드, 중복 키, 순번 공백은 입력 오류다. 값은 비민감만 쓴다: 컨테이너 내부 IP·서비스 이름·망/컨테이너 ID·digest·경로 참조는 넣고, 요청/응답 본문·헤더·비밀·계정 원문·표식 값은 넣지 않는다.
 
 | `kind` | 필드 | 채점기 검증 |
 |---|---|---|
 | `boundary` | `event`(`applied`·`maintained`·`released`), `boundary_ref`, `network_ids`(정렬), `policy_sha256` | `applied.at` < pre 관측, `maintained`가 post 관측 직전, 셋의 `boundary_ref`·`network_ids`·`policy_sha256`이 증명의 `network.*`와 모두 같음 |
 | `network_snapshot` | `phase`(`pre`·`post`), `networks`(`name`·`id`·`internal`·`members`), `publishes`(`service`·`host_ip`·`host_port`·`container_port`), `services`(`id`·`image`·`started_at`·`restart_count`) | pre·post가 같고 `policy_sha256`을 다시 계산하면 증명 값과 같음. 다르면 구간 중 경계 변경 |
-| `connectivity_check` | `phase`, `id`, `kind`(`tcp`·`dns`), `target`, `role`(`positive`·`negative`), `expected`, `accepted`, `observed`, `code`, `verdict` | pre·post 각각 모든 행 `verdict: "match"`. 양성 대조 실패·부정 경로 성공·실패 종류 불일치가 있으면 증명 불가 |
+| `connectivity_check` | `phase`, `id`, `probe_kind`(`tcp`·`dns`), `target`, `role`(`positive`·`negative`), `expected`, `accepted`, `observed`, `code`, `verdict` | pre·post 각각 모든 행 `verdict: "match"`. 양성 대조 실패·부정 경로 성공·실패 종류 불일치가 있으면 증명 불가 |
 | `host_condition` | `phase`, `operating_condition_ref`, `daemon`(`version`·`os`·`arch`·`platform`), `listeners_outside_loopback`, `allowed_listens`(`address`·`port`), `other_publishes`, `satisfied` | pre·post 두 행, `operating_condition_ref`가 증명의 `host.operating_condition_ref`와 같고 둘 다 `satisfied: true` |
 | `host_watch` | `observed_from`, `observed_to`, `samples`, `max_gap_seconds`, `allowed_max_gap_seconds`, `violations` | 구간이 pre 관측부터 post 완료까지 덮고, `max_gap_seconds` ≤ 허용값, `violations` 0. 아니면 증명 불가(미확인 공백) |
 | `docker_events_window` | `since`, `until`, `event_count`, `kinds`(종류별 건수), `foreign_attach`, `run_container_restarts`, `complete` | `since` ≤ pre 관측, `until` ≥ post 완료, `foreign_attach`·`run_container_restarts` 0, `complete: true`(데몬 이벤트 버퍼 한도 안) |
@@ -81,6 +81,17 @@ baseline에는 E²가 없으므로 E² traffic ID를 해결 주체 확인의 필
 | `observer_request` | `request_seq`, `method`, `path_ref`, `sent_at`, `completed_at`, `status`, `decision`, `window`(`before_pre`·`pre`·`in_window`) | 요청마다 한 행, `request_seq` 중복 없음, 전부 GET·등록 `path_ref`·`decision: "registered"`·완료. `in_window` 행 수 = 증명의 `observer.request_count`(post 수집 GET 포함, pre GET 제외) |
 | `engine_meter_summary` | `forwarded_requests`, `rejected_after_seal`, `forced_closed_streams`, `log_rows`, `sequence_complete` | `sequence_complete: true`, `forwarded_requests`는 러너 기록 `total_requests`와 같음 |
 | `drain` | `engine_end`(`at`·`sequence`), `sealed_at`, `drained_at`, `inflight` | `engine_end` = timeline `engine_end`, `inflight` 0, `drained_at` ≤ timeline `drained` ≤ post 관측 |
+
+`connectivity_check` 행 예시(값은 구조 예시이며 실제 회차 자료가 아니다):
+
+```json
+{"kind":"connectivity_check","seq":7,"at":"2026-11-03T06:46:44+00:00","phase":"pre","id":"meter_tcp",
+ "probe_kind":"tcp","target":"eval-meter:8080","role":"positive","expected":"success",
+ "accepted":["connected"],"observed":"success","code":"connected","verdict":"match"}
+{"kind":"connectivity_check","seq":8,"at":"2026-11-03T06:46:44+00:00","phase":"pre","id":"dns:target",
+ "probe_kind":"dns","target":"target","role":"negative","expected":"fail",
+ "accepted":["not_found","dns_error"],"observed":"fail","code":"dns_error","verdict":"match"}
+```
 
 `host_watch`는 이벤트가 없는 호스트 리슨을 구간 중 주기적으로 확인한 요약이고, `docker_events_window`는 데몬이 기록한 구간의 망 연결·해제와 컨테이너 시작·재시작을 빠짐없이 받은 요약이다. 둘 중 하나라도 없거나 구간을 덮지 못하면 러너는 증명을 발행하지 않는다(proof=null과 사유). 두 행이 있어도 같은 호스트의 다른 프로세스까지 막았다는 뜻은 아니며, 그 부분은 평가 프로토콜 §2의 호스트 운영 조건이 맡는다.
 
@@ -133,6 +144,6 @@ v1.1 이벤트는 기존 필드에 `basis`와 `isolation_proof_sha256`을 추가
 | IW14 | v1 직접 관측 기록, v1.1 proof 없는 direct_event/engine 기록, 알 수 없는 버전 | v1은 합성 시험·과거 형식 회귀 검증에서만 수용하고 공식 비교표 귀속에는 사용하지 않음. v1.1은 격리 증명 없는 엔진 귀속 거부, 알 수 없는 버전/느슨한 타입 변환 거부 |
 | IW15 | post 델타만 있고 실제 엔진 확정 시각 없음·사람 수동 확정만 추가 | elapsed_seconds 추정 생성 0, 자동 CONFIRMED 증가 0 |
 | IW16 | v1.1 `records`=null(판정 미수집)·레코드 0건 envelope·v1의 records null | null은 모든 GT 판정 판단불가(판정 미수집)·커버리지가 있어도 미탐 0, 해결 귀속은 따로 보고. 0건 envelope는 기존 규칙. v1의 null은 입력 오류 |
-| IW17 | §3.1 행 오류: 모르는 kind·순번 공백, `host_watch` 공백 초과·구간 미포함, `docker_events_window` 불완전·외부 연결·재시작, pre/post `network_snapshot` 불일치, `connectivity_check` 불일치, `in_window` 관측 행 수 ≠ `request_count` | 러너는 proof 발행 0(사유 보존). 제출된 proof에서 발견하면 입력 오류·집계 표 미출력 |
+| IW17 | §3.1 행 오류: 모르는 kind·순번 공백, 한 행 안의 중복 `kind`(예: `connectivity_check`에 점검 종류를 `kind`로 넣음)·`probe_kind` 누락, `host_watch` 공백 초과·구간 미포함, `docker_events_window` 불완전·외부 연결·재시작, pre/post `network_snapshot` 불일치, `connectivity_check` 불일치, `in_window` 관측 행 수 ≠ `request_count` | 러너는 proof 발행 0(사유 보존). 제출된 proof에서 발견하면 입력 오류·집계 표 미출력 |
 
 합의한 계약의 후속 순서는 채점기·합성 회귀 구현 → 실제 러너의 격리/준비/관측 경계 구현과 우회 시험 → baseline·개선 후 같은 조건의 실측이다. 합성 서명·해시 시험은 실제 격리 집행 검증을 대신하지 않는다. 그 전까지 현재 v1의 fail-closed 동작을 합성 시험·과거 형식 회귀 검증에서 유지하며 공식 비교 완료로 표시하지 않는다.
