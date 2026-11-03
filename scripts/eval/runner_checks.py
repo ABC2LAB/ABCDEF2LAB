@@ -175,6 +175,11 @@ def _ports(raw: object) -> tuple[frozenset[str], frozenset[Binding]]:
     return frozenset(raw), frozenset(result)
 
 
+def _label(value: object) -> str:
+    """compose 라벨 값. compose 밖 컨테이너는 라벨이 없어 템플릿이 null을 낸다(11/03 실측) → 빈 문자열(회차 밖)."""
+    return "" if value is None else _str(value, "container_fact_invalid")
+
+
 def parse_container(raw: object) -> ContainerFact:
     """runner_docker.CONTAINER_TEMPLATE 출력 1건. 환경변수 등 비밀이 들 수 있는 필드는 받지 않는다."""
     if not isinstance(raw, dict) or set(raw) != _CONTAINER_FIELDS:
@@ -196,8 +201,8 @@ def parse_container(raw: object) -> ContainerFact:
             raise CheckInputError("container_networks_invalid")
         network_ids.add(attachment["NetworkID"])
     exposed, bindings = _ports(raw["ports"])
-    return ContainerFact(container_id, _str(raw["project"], "container_fact_invalid"),
-                         _str(raw["service"], "container_fact_invalid"), _str(raw["image"], "container_fact_invalid"),
+    return ContainerFact(container_id, _label(raw["project"]), _label(raw["service"]),
+                         _str(raw["image"], "container_fact_invalid"),
                          raw["running"], started_at, restart_count, exposed, bindings, frozenset(network_ids))
 
 

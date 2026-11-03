@@ -325,8 +325,8 @@ class TestTopology(unittest.TestCase):
                 self.assertEqual(self.check(), [f"service.{service}: PUBLISH_MISMATCH"])
 
 
-def foreign(ports, project="other"):
-    return parse_container({"id": "a" * 64, "project": project, "service": "web", "image": "x", "running": True,
+def foreign(ports, project="other", service="web"):
+    return parse_container({"id": "a" * 64, "project": project, "service": service, "image": "x", "running": True,
                             "started_at": "2026-11-02T00:00:00Z", "restart_count": 0, "ports": ports, "networks": {}})
 
 
@@ -339,6 +339,13 @@ class TestHostConditions(unittest.TestCase):
             self.assertEqual(got, ["host.container.aaaaaaaaaaaa: NON_LOOPBACK_PUBLISH"])
         own = foreign({"80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8080"}]}, project=PROJECT)
         self.assertEqual(check_other_publishes(PROJECT, [own]), [])
+        # compose 밖 컨테이너(`docker run`)는 라벨이 없어 템플릿이 null을 낸다. 회차 밖으로 보고 그대로 점검한다.
+        plain = foreign({"80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8080"}]}, project=None, service=None)
+        self.assertEqual((plain.project, plain.service), ("", ""))
+        self.assertEqual(check_other_publishes(PROJECT, [plain]), ["host.container.aaaaaaaaaaaa: NON_LOOPBACK_PUBLISH"])
+        for bad in (dict(project=0), dict(service=["web"])):
+            with self.subTest(bad=bad), self.assertRaises(CheckInputError):
+                foreign(None, **bad)
 
     def test_listeners_outside_loopback_need_exact_allowance(self):
         listeners = {Listener("127.0.0.1", 11434), Listener("127.0.0.53", 53), Listener("::1", 631),
