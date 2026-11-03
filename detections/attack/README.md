@@ -1,5 +1,7 @@
 # ARTEX ATT&CK coverage
 
+> **Inherited reference:** see the [ABC2LAB documentation](../../docs/README.md) for the current project. The procedures and sample outputs below are inherited material, not verification results for this checkout. The original CI workflow is absent, so automatic CI/merge gates are not provided here. Harness, indicator, and MISP checks that read that file may fail until adapted.
+
 English · [한국어](README.ko.md)
 
 > 한국어: 이 디렉터리는 [`../`](../)의 ARTEX 탐지 규칙(Sigma·Suricata)이 다루는 공격 기법을
@@ -70,7 +72,7 @@ Eight techniques across six tactics. Each maps to the rule(s) that tag it:
   prober (`artex-enrich/1.0`) in the reconnaissance phase and the norma SDK WebFetch tool (`norma/0.4`) in
   the attack phase — while the rest of the attack traffic follows tool-default fingerprints; the durable
   detection is behavioural
-  (see the defense guide, [Korean](../../docs/defense-ko.md) · [English](../../docs/defense-en.md), sections 1–2 and 4.1–4.2). The pure web multi-stage
+  (see the defense guide, [Korean reference](../../docs/defense-ko.md), sections 1–2 and 4.1–4.2). The pure web multi-stage
   case still needs base rules specific to your environment.
 - **Static indicators can be changed.** An operator can set a different User-Agent, so the absence of a
   tagged indicator does not imply safety. This is the same caveat the rule files carry.
@@ -87,4 +89,4 @@ detections/tests/attack/run.sh
 
 When you add or retag a rule, update this layer to match — the test fails if a rule technique is missing
 from the layer or a layer technique is absent from the rules. See [`../README.md`](../README.md) and
-[`../../CONTRIBUTING.en.md`](../../CONTRIBUTING.en.md).
+[`../../CONTRIBUTING.md`](../../CONTRIBUTING.md).

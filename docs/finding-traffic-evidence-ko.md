@@ -1,10 +1,10 @@
-# 취약점 다중 트래픽 증거
+# 취약점 다중 트래픽 증거 — 기반 설계 참고
 
-> 이 문서는 상류(원본) ARTEX 의 설계 문서를 한국어로 옮긴 것입니다. 취약점과 트래픽 증거를 연결하는
-> 기능의 설계를 기여자·메인테이너를 위해 정리합니다. 원문(중국어)은
-> [`finding-traffic-evidence-zh.md`](finding-traffic-evidence-zh.md) 에 보존돼 있습니다.
->
-> English: **[Vulnerability multi-traffic evidence (finding-traffic-evidence-en.md)](finding-traffic-evidence-en.md)**.
+이 문서는 상류(원본) ARTEX 의 설계 문서를 한국어로 옮긴 것입니다. 아래 기능 설계와 과거 로컬 엔드투엔드 검증 기록은 기반 프로젝트의 자료이며, 이번 ABC2LAB 통합 검증의 성과를 뜻하지 않습니다.
+
+이 문서는 현재 재사용하는 취약점과 트래픽 증거 연결 기능의 API·버전·저장 동작을 설명합니다.
+이 기능과 [구조화 근거 판정](contracts/e3-oracle.md), [최초 확정 저장 설계](contracts/e3-storage-gate.md)를 구분합니다.
+트래픽이 연결되었다는 사실만으로 E③ 판정·서버 발급·확정 저장 검증이 완료되지는 않습니다.
 
 취약점 상세 화면의 「연결된 트래픽」은 여러 페이지에 걸친 다중 선택, 용도와 설명 입력, 정렬, 바인딩 해제를 지원합니다. 트래픽 페이지에서도 여러 레코드를 한 번에 선택해 이미 있는 취약점 하나에 연결할 수 있습니다. 작업이 상속한 취약점 증거는 읽기 전용이며, 수정하려면 원본 작업으로 들어가야 합니다.
 
@@ -92,7 +92,6 @@ Markdown 의 상대 링크는 `[REDACTED]`만 든 요청/응답 안내 파일을
 
 ```sh
 # 각 패키지를 실행하기 전에 ARTEX_PG_DSN 을 해당 독립 테스트 데이터베이스로 설정합니다. 명시적 설정이 실패하면 반드시 오류를 내야 합니다.
-go test ./<package> -count=1
 go test -race -p 1 ./evidence ./db ./agent ./server -run 'TestEvidence|TestFindingTraffic|TestFindingEvidence|TestReportFindingAtomicContract|TestTaskArchive'
 ```
 
