@@ -25,7 +25,7 @@ type ControlledReadHostOptions struct {
 // An optional local manifest uses the existing fail-closed local LLM loader;
 // without it, the established DB/env provider selection remains in effect.
 func NewWithControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, keyDir string, options ControlledReadHostOptions) (*Server, error) {
-	return newControlledReadHost(ctx, m, skillDir, dataDir, keyDir, options, nil)
+	return newControlledReadHost(ctx, m, skillDir, dataDir, keyDir, options, nil, nil)
 }
 
 // ControlledReadDurableHostOptions is trusted Go assembly only. Missing or failed
@@ -39,10 +39,10 @@ func NewWithDurableControlledReadHost(ctx context.Context, m *Manager, skillDir,
 	if options.Publisher == nil {
 		return nil, ErrControlledReadHostConfiguration
 	}
-	return newControlledReadHost(ctx, m, skillDir, dataDir, keyDir, options.Host, options.Publisher)
+	return newControlledReadHost(ctx, m, skillDir, dataDir, keyDir, options.Host, options.Publisher, nil)
 }
 
-func newControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, keyDir string, options ControlledReadHostOptions, publisher ControlledReadPublisherFactory) (*Server, error) {
+func newControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, keyDir string, options ControlledReadHostOptions, publisher ControlledReadPublisherFactory, revisions *controlledRevisionServices) (*Server, error) {
 	if ctx == nil || m == nil || m.pg == nil || options.Findings == nil ||
 		options.Mode.RootPath == "" || options.Mode.RootAnchor == nil || options.Mode.CheckRoot == nil || options.Mode.CheckTaskQuiescent == nil {
 		return nil, ErrControlledReadHostConfiguration
@@ -64,7 +64,7 @@ func newControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, k
 				return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 			}
 		}
-		if err := s.ConfigureControlledReadFindings(options.Findings); err != nil {
+		if err := s.configureControlledReadFindings(options.Findings, revisions); err != nil {
 			return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 		}
 		return nil
