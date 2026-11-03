@@ -2047,6 +2047,10 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 // Anthropic-compatible third parties (e.g. DeepSeek) whose model list lives only on
 // the OpenAI path, it falls back to the OpenAI endpoint at the stripped root.
 func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
+	if s.localResolver != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": trMsg(errLLMTestFailed)})
+		return // legacy discovery sends form/stored keys through an unguarded client
+	}
 	var req struct {
 		Provider  string `json:"provider"` // "openai" | "anthropic"
 		BaseURL   string `json:"base_url"`

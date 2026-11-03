@@ -12,7 +12,7 @@ import (
 )
 
 // MaxProfileManifestBytes bounds the full JSON document, including whitespace.
-// A future file loader must separately bound its read before calling the parser.
+// File loaders must also bound the read before calling the parser.
 const MaxProfileManifestBytes = 1 << 20
 
 var ErrInvalidProfileManifest = errors.New("llmpolicy: invalid profile manifest")

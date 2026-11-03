@@ -6,7 +6,7 @@
 
 pin은 **운영자가 배포 시 관리하는 별도의 read-only 정책 manifest**에서 공급한다. DB의 사용자 편집 profile, task/conversation metadata, 모델 출력, 모델 URL, DNS 응답으로 pin 목록을 만들거나 보충하지 않는다. 운영자가 승인한 정책과 실제 선택된 profile의 입력을 서로 독립적으로 읽는다.
 
-이 단계의 구현 경계는 신뢰된 host loader가 manifest를 검증해 전달한 `[]llmpolicy.ProfilePin`이다. 생성자는 원본 파일이나 호출자를 인증하지 않는다. manifest의 구체적인 파일 경로·JSON/env 파서·권한/링크/원자적 읽기·설정 재적용은 아직 구현하지 않았으며 실제 서버 연결과 함께 후속으로 둔다. 모델 요청에서 이 Go 타입을 조립할 수 있다는 사실이 운영자 출처를 증명하지 않는다.
+이 단계의 구현 경계는 신뢰된 host loader가 manifest를 검증해 전달한 `[]llmpolicy.ProfilePin`이다. 생성자는 원본 파일이나 호출자를 인증하지 않는다. [JSON v1 엄격 파서](./local-llm-manifest.md)와 [Linux 파일 로더](./local-llm-manifest-file.md)는 별도로 구현했다. 운영자가 지정하는 파일 경로의 host 설정·정책 적용/끔·설정 재적용과 실제 서버 연결은 후속으로 둔다. 모델 요청에서 이 Go 타입을 조립할 수 있다는 사실이 운영자 출처를 증명하지 않는다.
 
 manifest는 credential 저장소가 아니다. API key, key hint, 쿠키·헤더 원문을 아래 입력이나 오류/공유 로그로 복사하지 않는다. policy 등록과 registry 조회는 파일·DB·DNS·socket·환경변수·시계에 접근하지 않는다.
 
@@ -72,7 +72,7 @@ registry의 일반 문자열/Go 형식 출력은 결속 metadata를 가리고 JS
 - local-only 정책 적용/끔을 신뢰 호스트 설정으로 명시한다. 끔은 운영자가 선택한 기존 provider 경로이며 해석·핀 검사 실패 뒤 자동 fallback으로 사용하지 않는다. 적용 여부를 profile 지문·회차 기록으로 내보내는 필드와 결속은 평가 담당자와 합의한 뒤 연결한다. 외부 API 평가의 ours 회차는 정책을 명시적으로 끈 상태를 기록해야 하며, 현재 순수 resolver가 그 상태를 생성하거나 집행하는 것은 아니다.
 - BaseURL 끝 slash·host 대소문자를 포함한 정확한 tuple 불일치는 기존 고정 오류 `ErrProfileTargetMismatch`로 구분한다. 후속 운영 안내는 원문 URL을 노출하지 않고 이 사유와 정확 일치 규칙을 설명한다.
 
-- 신뢰 manifest의 일관된 읽기·출처 검증과 effective profile target/config snapshot을 확보한다.
+- [Linux 파일 로더](./local-llm-manifest-file.md)로 검증한 manifest와 effective profile target/config snapshot을 일관되게 확보한다. 로더 성공만으로 profile/provider가 설치되지는 않는다.
 - 성공한 policy와 **같은 config**를 [Config.NewLocalProvider](./local-llm-http.md)에 전달한다. Proxy·빈 BaseURL·SDK 지원·Host/TLS·매 요청/dial DNS/IP 검증은 기존 factory/HTTP 어댑터가 담당한다. 이 resolver에 그 검사를 중복 구현하지 않는다.
 - resolver/factory 실패를 기존 `providerForProfile`의 bool 실패나 다른 profile/global/legacy 생성자 fallback으로 바꾸지 않는다. 각 명시적 profile 선택마다 그 profile의 policy를 새로 확인한다.
 - 정책 변경은 새 registry를 만든다. 정책 제거·reload 실패 후 이전 provider/registry 캐시로 새 요청을 조용히 허용하지 않도록 무효화·적용 세대를 조율한다. 이 순수 객체가 이미 발급된 provider를 폐기하거나 진행 중인 요청을 되돌리지는 않는다.
@@ -83,4 +83,4 @@ DB schema·UI·profile 모드 선택·캐시/재로드·실제 provider 생성·
 
 합성 typed 입력으로 누락·중복·tuple 변조·URL/주소 오류·`/v1` 분리·profile별 pin 격리·원본 및 반환 값 교체·동시 조회·안전한 오류/출력을 시험한다. 긍정 대조는 반환 policy의 실제 `Decide`로 확인한다. 실제 manifest 파일 인증, DB profile 설정, server/provider 연결, 외부 모델 호출과 대상 진단을 실행한 결과는 아니다.
 
-**확인한 결과:** 신규 resolver 최하위 사례 66개와 기존 HTTP/TLS를 포함한 `llmpolicy` 전체 238개가 race에서 통과했고 실패·skip은 0이다. 신규 resolver 함수의 statement coverage는 100%이며 관련 vet·전체 build·gofmt/공백·상대 링크 검사와 독립 코드 리뷰를 확인했다. 실제 파일 로더·profile/DB 연결·reload/fallback의 통합 시험은 포함하지 않는다.
+**확인한 결과:** 신규 resolver 최하위 사례 66개와 기존 HTTP/TLS를 포함한 `llmpolicy` 전체 238개가 race에서 통과했고 실패·skip은 0이다. 신규 resolver 함수의 statement coverage는 100%이며 관련 vet·전체 build·gofmt/공백·상대 링크 검사와 독립 코드 리뷰를 확인했다. 이 절의 검증은 순수 resolver에 한정된다. 파일 로더 검증은 별도 계약에 기록했고 profile/DB 연결·reload/fallback의 통합 시험은 포함하지 않는다.

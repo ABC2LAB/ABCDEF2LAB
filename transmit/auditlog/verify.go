@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"io"
+	"sort"
 	"unicode/utf8"
 )
 
@@ -16,6 +17,37 @@ import (
 // A failed verification returns no partial summary. As with regular file writes,
 // context checks cannot forcibly interrupt an arbitrary blocking Reader.
 func Verify(ctx context.Context, source io.Reader, key []byte, expected Checkpoint) (Summary, error) {
+	return verify(ctx, source, key, expected, nil)
+}
+
+// VerifyTimeline authenticates the complete journal before returning a bounded,
+// chronological view. Equal timestamps retain journal sequence order. A limit
+// overrun is reported only after the remaining input has been verified, and no
+// partial timeline is returned on any error.
+func VerifyTimeline(ctx context.Context, source io.Reader, key []byte, expected Checkpoint, limit int) ([]TimelineEvent, error) {
+	if limit < 1 || limit > MaxTimelineEvents {
+		return nil, ErrConfig
+	}
+	events := make([]TimelineEvent, 0)
+	exceeded := false
+	_, err := verify(ctx, source, key, expected, func(event eventPayload) {
+		if len(events) < limit {
+			events = append(events, timelineEvent(event.Event))
+		} else {
+			exceeded = true
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if exceeded {
+		return nil, ErrTimelineLimit
+	}
+	sort.SliceStable(events, func(i, j int) bool { return events[i].At.Before(events[j].At) })
+	return events, nil
+}
+
+func verify(ctx context.Context, source io.Reader, key []byte, expected Checkpoint, visit func(eventPayload)) (Summary, error) {
 	if ctx == nil || source == nil || len(key) != KeyBytes || expected.Version != Version || !validScope(expected.Scope) || !validRef(expected.KeyRef) || !validHex(expected.JournalID, journalIDBytes) || !validHex(expected.MAC, sha256.Size) {
 		return Summary{}, ErrConfig
 	}
@@ -62,6 +94,9 @@ func Verify(ctx context.Context, source io.Reader, key []byte, expected Checkpoi
 		mac, err := sign(key, "event", entry.Record)
 		if err != nil || !equalMAC(mac, entry.MAC) {
 			return Summary{}, ErrIntegrity
+		}
+		if visit != nil {
+			visit(entry.Record)
 		}
 		head.Sequence, head.MAC = entry.Record.Sequence, entry.MAC
 		if entry.Record.Event.Stage == "intent" {
