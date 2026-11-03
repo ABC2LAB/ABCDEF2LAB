@@ -307,6 +307,54 @@ class TestProbeCall(unittest.TestCase):
         self.assertEqual(str(caught.exception), "docker_probe_failed")
 
 
+GNU_DF = (b"Filesystem     1024-blocks  Used Available Capacity Mounted on\n"
+          b"tmpfs                 8192   128      8064       2% /app/data\n")
+BUSYBOX_DF = (b"Filesystem           1024-blocks    Used Available Capacity Mounted on\n"
+              b"tmpfs                     8192         0      8192   0% /var/lib/postgresql/data\n")
+
+
+class TestTmpfsUsage(unittest.TestCase):
+    """`df -P -k` 출력(11/03 실측: 엔진 이미지 GNU coreutils, postgres:16-alpine busybox)."""
+
+    def test_both_df_flavours_parse(self):
+        self.assertEqual(runner_docker.parse_tmpfs_df(GNU_DF, "/app/data"),
+                         {"size_bytes": 8192 * 1024, "used_bytes": 128 * 1024, "available_bytes": 8064 * 1024})
+        self.assertEqual(runner_docker.parse_tmpfs_df(BUSYBOX_DF, "/var/lib/postgresql/data")["available_bytes"],
+                         8192 * 1024)
+
+    def test_other_filesystems_and_malformed_output_rejected(self):
+        disk = GNU_DF.replace(b"tmpfs      ", b"/dev/sdd   ")
+        with self.assertRaises(DockerError) as caught:
+            runner_docker.parse_tmpfs_df(disk, "/app/data")
+        self.assertEqual(str(caught.exception), "docker_tmpfs_not_tmpfs")
+        bad = [GNU_DF.replace(b"/app/data", b"/app"),  # 다른 마운트(경로가 tmpfs가 아님)
+               GNU_DF.replace(b"1024-blocks", b"512-blocks"),  # -k 무시
+               GNU_DF + b"tmpfs 1 0 1 0% /app/data\n",  # 줄 더 있음
+               GNU_DF.split(b"\n")[0] + b"\n",  # 데이터 줄 없음
+               GNU_DF.replace(b"  128", b" -128"), GNU_DF.replace(b"   8064", b"   9999"),  # 음수·크기 초과
+               GNU_DF.replace(b"  128", b"12.8"), GNU_DF.replace(b"2%", b"2 "), b"\xff" + GNU_DF,
+               GNU_DF.replace(b"   8192", b"      0").replace(b"8064", b"   0").replace(b"128", b"  0")]
+        for output in bad:
+            with self.subTest(output=output[-40:]), self.assertRaises(DockerError) as caught:
+                runner_docker.parse_tmpfs_df(output, "/app/data")
+            self.assertEqual(str(caught.exception), "docker_tmpfs_usage_output_invalid")
+
+    def test_exec_runs_only_df_on_the_given_container_and_path(self):
+        fake = FakeExecutor(CommandResult(0, GNU_DF))
+        usage = Docker(fake, {}, 1).tmpfs_usage(ID_A, "/app/data")
+        self.assertEqual(usage["used_bytes"], 128 * 1024)
+        self.assertEqual(fake.calls[0][0], ["exec", ID_A, "df", "-P", "-k", "/app/data"])
+        for container, path in (("short", "/app/data"), (ID_A, "app/data"), (ID_A, "/app/../etc"), (ID_A, "/app data"),
+                                (ID_A, ""), (ID_A, None)):
+            fake = FakeExecutor()
+            with self.subTest(container=container[:5], path=path), self.assertRaises(DockerError):
+                Docker(fake, {}, 1).tmpfs_usage(container, path)
+            self.assertEqual(fake.calls, [])
+        with self.assertRaises(DockerError) as caught:
+            Docker(FakeExecutor(CommandResult(1, b"")), {}, 1).tmpfs_usage(ID_A, "/app/data")
+        self.assertEqual(str(caught.exception), "docker_tmpfs_usage_failed")
+
+
 class TestComposeCalls(unittest.TestCase):
     def test_up_never_pulls_or_builds_and_waits(self):
         fake = FakeExecutor(CommandResult(0, b""), CommandResult(0, b""))

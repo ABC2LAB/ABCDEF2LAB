@@ -28,6 +28,10 @@ _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _OBJECT_ID_LENGTH = 64
 _OBJECT_ID = re.compile(r"[0-9a-f]{%d}\Z" % _OBJECT_ID_LENGTH)
 _PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
+# tmpfs 사용량은 `df -P -k`(POSIX 출력, 1024바이트 블록)로 읽는다. GNU coreutils·busybox 둘 다 같은 머리줄을 낸다(11/03 실측).
+DF_BLOCK_BYTES = 1024
+_DF_HEADER = ("Filesystem", "1024-blocks", "Used", "Available", "Capacity", "Mounted", "on")
+_MOUNT_PATH = re.compile(r"/[a-z0-9_./-]{1,200}\Z")
 # docker events --since/--until에 넘기는 UTC 시각(초 소수 9자리까지). 러너가 만든 값만 받는다.
 _EVENT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z\Z")
 # 컨테이너 inspect는 이 필드만 꺼낸다. .Config.Env 등 비밀이 들 수 있는 필드는 러너 메모리에도 올리지 않는다.
@@ -106,6 +110,26 @@ def open_docker_stream(args: Sequence[str], env: Mapping[str, str]) -> StreamPro
                                 stderr=None)
     except OSError:
         raise DockerError("docker_unavailable") from None
+
+
+def parse_tmpfs_df(output: bytes, path: str) -> dict:
+    """`df -P -k <path>` 출력에서 그 경로 tmpfs의 크기·사용·남은 바이트. 다른 파일시스템이면 거부한다."""
+    try:
+        lines = output.decode("ascii").splitlines()
+    except UnicodeError:
+        raise DockerError("docker_tmpfs_usage_output_invalid") from None
+    if len(lines) != 2 or tuple(lines[0].split()) != _DF_HEADER:
+        raise DockerError("docker_tmpfs_usage_output_invalid")
+    fields = lines[1].split()
+    if (len(fields) != 6 or fields[5] != path or not all(f.isdigit() for f in fields[1:4])
+            or not fields[4].endswith("%")):
+        raise DockerError("docker_tmpfs_usage_output_invalid")
+    if fields[0] != "tmpfs":
+        raise DockerError("docker_tmpfs_not_tmpfs")  # compose의 tmpfs 덮어쓰기가 빠지면 이미지 볼륨·디스크를 잰다
+    size, used, available = (int(field) * DF_BLOCK_BYTES for field in fields[1:4])
+    if size <= 0 or used > size or available > size:
+        raise DockerError("docker_tmpfs_usage_output_invalid")
+    return {"size_bytes": size, "used_bytes": used, "available_bytes": available}
 
 
 def _read_cidfile(path: Path) -> str:
@@ -293,6 +317,15 @@ class Docker:
                            "--user", f"{uid}:{gid}", "--", image, "-role=probe"],
                           stdin=plan, code="docker_probe_failed")
         return output, _read_cidfile(cidfile)
+
+    def tmpfs_usage(self, container_id: str, path: str) -> dict:
+        """회차 컨테이너 안 tmpfs 마운트의 사용량. 구간 감시가 끝난 뒤에만 부른다(구간 중 exec는 경계 변경이다)."""
+        if not _OBJECT_ID.fullmatch(container_id or ""):
+            raise DockerError("docker_tmpfs_target_invalid")
+        if not isinstance(path, str) or not _MOUNT_PATH.fullmatch(path) or ".." in path:
+            raise DockerError("docker_tmpfs_path_invalid")
+        output = self.run(["exec", container_id, "df", "-P", "-k", path], code="docker_tmpfs_usage_failed")
+        return parse_tmpfs_df(output, path)
 
     def daemon(self) -> DaemonIdentity:
         server = self.json(["version", "--format", "{{json .Server}}"], code="docker_version_failed")

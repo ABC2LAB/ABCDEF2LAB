@@ -23,6 +23,7 @@ from runner_config import (
 )
 from runner_engine import task_request
 from runner_window import WatchSample
+from runner_docker import DockerError
 from runner_probe import PASS, ProbeOutcome
 from test_preflight import configuration
 from test_runner_checks import DAEMON, raw_world
@@ -41,6 +42,7 @@ def make_spec(side="ours"):
     return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0)
 
 
+MIB = 1024 * 1024
 # 러너가 띄운 probe 컨테이너 ID(--cidfile). 구간 감시의 허용 목록이 된다.
 PROBE_IDS = {"pre": "a1" * 32, "post": "b2" * 32}
 
@@ -137,6 +139,9 @@ class FakePorts:
         self.ready_calls = 1
         self.post_world = None
         self.probe_status = {"pre": PASS, "post": PASS}
+        self.tmpfs = {name: {"size_bytes": 512 * MIB, "used_bytes": 8 * MIB, "available_bytes": 504 * MIB}
+                      for name in ("engine_db", "engine_data")}
+        self.tmpfs_error = None
         self.probe_phases = []
         self.phase = "pre"
         self.listeners = frozenset()
@@ -254,6 +259,12 @@ class FakePorts:
         self._call("seal_gateway")
         self.gateway_sealed_id = gateway_id
 
+    def tmpfs_usage(self, snapshot):
+        self._call("tmpfs")
+        if self.tmpfs_error:
+            raise self.tmpfs_error
+        return copy.deepcopy(self.tmpfs)
+
     def findings(self):
         self._call("findings")
         return {"items": 0}
@@ -284,8 +295,8 @@ def run(mutate=None, mutate_gateway=None):
 
 FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "wait_ready",
               "events:start", "watch:start", "scoreboard:pre", "start_task", "seal", "seal_gateway", "facts:post",
-              "listeners:post", "probe:post", "scoreboard:post", "watch:stop", "events:stop", "findings", "down",
-              "sign", "sign"]
+              "listeners:post", "probe:post", "scoreboard:post", "watch:stop", "events:stop", "tmpfs", "findings",
+              "down", "sign", "sign"]
 
 
 class TestCompleteRun(unittest.TestCase):
@@ -318,8 +329,9 @@ class TestCompleteRun(unittest.TestCase):
         # baseline(e53a79f)에는 스위치가 없어 같은 compose 값이 넘어가도 선언하지 않는다(#133 리뷰).
         self.assertIsNone(make_spec("baseline").llm_policy_mode)
         self.assertEqual(make_spec("ours").llm_policy_mode, "external")
-        # 사용량을 재기 전에는 서명된 완료 기록에도 미측정을 명시한다(공식 비교 제외 근거).
-        self.assertEqual(result["tmpfs_usage"], "not_measured")
+        # 구간이 닫힌 뒤 잰 tmpfs 사용량이 서명된 완료 기록에 남는다(구간 중 exec는 경계 변경이므로 그 뒤에 잰다).
+        self.assertEqual(result["tmpfs_usage"], ports.tmpfs)
+        self.assertLess(ports.calls.index("events:stop"), ports.calls.index("tmpfs"))
 
     def test_v11_record_binds_proof_events_and_evidence(self):
         from runner_record import canonical_sha256
@@ -415,7 +427,10 @@ class TestFailures(unittest.TestCase):
         for field in ("signature", "evidence", "meter", "images", "scoreboards", "policy_sha256"):
             self.assertNotIn(field, result)
         self.assertNotIn("/secret/path", repr(result))
-        self.assertEqual(result["tmpfs_usage"], "not_measured")
+        # 구간이 닫히기 전에 끝난 회차는 미측정, 잰 뒤 무효가 된 회차는 잰 값을 그대로 남긴다.
+        measured = "tmpfs" in ports.calls and ports.tmpfs_error is None and "tmpfs" not in ports.fail
+        expected = ports.tmpfs if measured else "not_measured"
+        self.assertEqual(result["tmpfs_usage"], expected)
 
     def test_pre_requests_must_be_zero(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "pre_forwarded", 1))
@@ -430,13 +445,31 @@ class TestFailures(unittest.TestCase):
             ("start_task", "task_start_failed"), ("seal", "seal_failed"), ("seal_gateway", "llm_seal_failed"),
             ("facts:post", "post_facts_failed"),
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
-            ("findings", "findings_failed"),
+            ("tmpfs", "tmpfs_measure_failed"), ("findings", "findings_failed"),
         ]
         for name, reason in cases:
             with self.subTest(step=name):
                 result, ports, _, evidence = run(failing(name))
                 self.assert_invalid(result, ports, evidence, reason)
                 self.assertEqual(ports.calls[-1], "down")
+
+    def test_tmpfs_at_or_near_its_limit_invalidates_the_run(self):
+        spec = make_spec()
+        for name in ("engine_db", "engine_data"):
+            for available, reason in ((spec.tmpfs_min_free_bytes - 1, "tmpfs_full"), (0, "tmpfs_full"),
+                                      (spec.tmpfs_min_free_bytes, None)):
+                with self.subTest(name=name, available=available):
+                    result, ports, _, evidence = run(
+                        lambda p, m, c, n=name, a=available: p.tmpfs[n].update(available_bytes=a))
+                    if reason is None:  # 하한과 같으면 아직 닿지 않은 것
+                        self.assertEqual(result["status"], COMPLETE)
+                    else:
+                        self.assert_invalid(result, ports, evidence, reason)
+                        self.assertEqual(result["tmpfs_usage"][name]["available_bytes"], available)
+                        self.assertNotIn("findings", ports.calls)
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "tmpfs_error", DockerError("docker_tmpfs_not_tmpfs")))
+        self.assert_invalid(result, ports, evidence, "tmpfs_measure_failed")
+        self.assertEqual(result["tmpfs_usage"], "not_measured")
 
     def test_probe_statuses(self):
         for phase in ("pre", "post"):
