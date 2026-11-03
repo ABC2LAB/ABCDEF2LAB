@@ -118,8 +118,12 @@ oracle.py는 "소유자 객체의 **비자명 실데이터**"가 교차응답에
 | 13 | reflection_excluded=NO / template_excluded=NO / nontrivial=NO | ¬CONFIRMED, data=NO | DATA_REFLECTION/TEMPLATE_PRESENT / DATA_NO_MATCH |
 | 14 | nontrivial_data_match=UNKNOWN | UNDECIDABLE | DATA_UNVERIFIABLE |
 | 15 | **전수 조합**: ExpectedAccess × Resolution² × registered × 유효창 | 불변식 | 부재·무효→UNDECIDABLE / CONFIRMED는 DENY+RESOLVED_NONE에서만 / SUSPECTED는 내용불명 두 사유에서만 / ALLOWED는 policy_check=NO |
+| 16 | `observed_at` / `valid_from` / `valid_until` 중 하나가 Go zero time | UNDECIDABLE | POLICY_INVALID (DENY·ALLOW·UNKNOWN 모두) |
+| 17 | 관찰 시각 또는 유효창 양끝의 UTC 연도가 1~9999 범위 밖 (현지 표기 연도가 범위 안이어도) | UNDECIDABLE | POLICY_INVALID (UTC instant로 검증) |
+| 18 | `valid_from == valid_until`인 빈 창 / `valid_from > valid_until`인 역전 창 | UNDECIDABLE | POLICY_INVALID |
+| 19 | 유효한 UTC 연도 1·9999의 정책 시작/끝을 현지 연도 0·10000으로 표시, 관찰은 창 안 | DENY→CONFIRMED / ALLOW→ALLOWED / UNKNOWN→SUSPECTED | 같은 instant의 시간대 표시만으로 유효성을 바꾸지 않음 |
 
-→ Go: #1~#14 table test, #15 조합/property test. (test_oracle.py 23케이스 전수 대응)
+→ Go: #1~#14·#16~#19 table test, #15 조합/property test. #16~#19는 Go 시각 검증 보강이며 기존 test_oracle.py 23케이스 대응에 추가한다.
 
 ## 7. Python → Go 포팅 주의
 - **check_data는 canary 분기(§3 (c)) — oracle.py "실데이터"를 그대로 포팅하지 말 것.** 민감 응답 매칭 구현은 절대규칙 8 위반.

@@ -29,6 +29,12 @@ func TestOracleInvalidTimesAreUndecidable(t *testing.T) {
 		{"missing_observation", func(_ *CaseInput, at *time.Time) { *at = time.Time{} }},
 		{"missing_start", func(c *CaseInput, _ *time.Time) { c.Policy.ValidFrom = time.Time{} }},
 		{"missing_end", func(c *CaseInput, _ *time.Time) { c.Policy.ValidUntil = time.Time{} }},
+		{"empty_window", func(c *CaseInput, _ *time.Time) {
+			c.Policy.ValidFrom, c.Policy.ValidUntil = observedAt, observedAt
+		}},
+		{"reversed_window", func(c *CaseInput, _ *time.Time) {
+			c.Policy.ValidFrom, c.Policy.ValidUntil = observedAt.Add(time.Hour), observedAt.Add(-time.Hour)
+		}},
 		{"missing_observation_and_start", func(c *CaseInput, at *time.Time) {
 			c.Policy.ValidFrom, *at = time.Time{}, time.Time{}
 		}},
@@ -45,6 +51,15 @@ func TestOracleInvalidTimesAreUndecidable(t *testing.T) {
 		}},
 		{"end_year_10000", func(c *CaseInput, _ *time.Time) {
 			c.Policy.ValidUntil = time.Date(10000, time.June, 1, 0, 0, 0, 0, time.UTC)
+		}},
+		// Local calendar years can appear valid while the UTC instant is not.
+		{"start_utc_year_zero_local_year_one", func(c *CaseInput, _ *time.Time) {
+			c.Policy.ValidFrom = time.Date(0, 12, 31, 23, 0, 0, 0, time.UTC).
+				In(time.FixedZone("local-year-one", 2*3600))
+		}},
+		{"end_utc_year_10000_local_year_9999", func(c *CaseInput, _ *time.Time) {
+			c.Policy.ValidUntil = time.Date(10000, 1, 1, 1, 0, 0, 0, time.UTC).
+				In(time.FixedZone("local-year-9999", -2*3600))
 		}},
 	}
 	for _, path := range timePolicyCases() {
@@ -79,6 +94,15 @@ func TestOracleValidHistoricalTimesUseUTCInstants(t *testing.T) {
 		{"utc_year_9999", time.Date(9999, 12, 31, 21, 0, 0, 0, time.UTC),
 			time.Date(9999, 12, 31, 22, 0, 0, 0, time.UTC),
 			time.Date(9999, 12, 31, 23, 0, 0, 0, time.UTC)},
+		// Normalize policy endpoints too, independently of observedAt.
+		{"start_utc_year_one_local_year_zero",
+			time.Date(1, 1, 1, 1, 0, 0, 0, time.UTC).In(time.FixedZone("local-year-zero", -2*3600)),
+			time.Date(1, 1, 1, 2, 0, 0, 0, time.UTC),
+			time.Date(1, 1, 1, 3, 0, 0, 0, time.UTC)},
+		{"end_utc_year_9999_local_year_10000",
+			time.Date(9999, 12, 31, 21, 0, 0, 0, time.UTC),
+			time.Date(9999, 12, 31, 22, 0, 0, 0, time.UTC),
+			time.Date(9999, 12, 31, 23, 0, 0, 0, time.UTC).In(time.FixedZone("local-year-10000", 2*3600))},
 	}
 	for _, path := range timePolicyCases() {
 		t.Run(path.name, func(t *testing.T) {
