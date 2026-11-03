@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,11 +17,25 @@ import (
 	"github.com/Autumn-27/artex/budgetlocal"
 )
 
+const operatorCommandTimeout = 10 * time.Second
+const operatorFileLimit = 4096
+
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, "budget approval rejected")
-		os.Exit(1)
+	code, message := resultDiagnostic(run(context.Background(), os.Args[1:], os.Stdout))
+	if code != 0 {
+		fmt.Fprintln(os.Stderr, message)
+		os.Exit(code)
 	}
+}
+
+func resultDiagnostic(err error) (int, string) {
+	if err == nil {
+		return 0, ""
+	}
+	if errors.Is(err, budgetlocal.ErrInvalid) || errors.Is(err, budgetlocal.ErrDenied) {
+		return 1, "budget approval rejected"
+	}
+	return 3, "budget approval outcome unknown; retry the same approval_request_ref"
 }
 
 func run(ctx context.Context, args []string, out io.Writer) error {
@@ -33,7 +48,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	}
 	configData, err := readPrivateOperatorFile(*configPath)
 	if err != nil {
-		return err
+		return budgetlocal.ErrDenied
 	}
 	config, err := budgetlocal.ParseClientConfig(configData)
 	if err != nil {
@@ -41,19 +56,30 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	}
 	data, err := readPrivateOperatorFile(*requestPath)
 	if err != nil {
-		return err
+		return budgetlocal.ErrDenied
 	}
 	request, err := budgetlocal.ParseRequest(data)
 	if err != nil {
 		return err
 	}
-	issueCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	issueCtx, cancel := context.WithTimeout(ctx, operatorCommandTimeout)
 	defer cancel()
 	response, err := budgetlocal.Submit(issueCtx, config.SocketPath, config.ServerUID, request)
 	if err != nil {
-		return err
+		if errors.Is(err, budgetlocal.ErrDenied) || errors.Is(err, budgetlocal.ErrInvalid) {
+			return err
+		}
+		return budgetlocal.ErrUnknown
 	}
-	return json.NewEncoder(out).Encode(response)
+	data, err = json.Marshal(response)
+	if err != nil {
+		return budgetlocal.ErrUnknown
+	}
+	data = append(data, '\n')
+	if n, err := out.Write(data); err != nil || n != len(data) {
+		return budgetlocal.ErrUnknown
+	}
+	return nil
 }
 
 func readPrivateOperatorFile(path string) ([]byte, error) {
@@ -81,20 +107,24 @@ func readPrivateOperatorFile(path string) ([]byte, error) {
 	if err != nil || !os.SameFile(info, opened) {
 		return nil, budgetlocal.ErrUnavailable
 	}
-	data, err := io.ReadAll(io.LimitReader(f, 4097))
-	if err != nil || len(data) == 0 || len(data) > 4096 {
+	data, err := io.ReadAll(io.LimitReader(f, operatorFileLimit+1))
+	if err != nil || len(data) == 0 || len(data) > operatorFileLimit {
 		return nil, budgetlocal.ErrInvalid
 	}
 	return data, nil
 }
 
 func trustedPrivateRequestDirectory(dir string, operatorUID uint32) bool {
+	return trustedPrivateRequestDirectoryWithLstat(dir, operatorUID, os.Lstat)
+}
+
+func trustedPrivateRequestDirectoryWithLstat(dir string, operatorUID uint32, lstat func(string) (os.FileInfo, error)) bool {
 	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
 		return false
 	}
 	childOwner := operatorUID
 	for current := dir; ; current = filepath.Dir(current) {
-		info, err := os.Lstat(current)
+		info, err := lstat(current)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return false
 		}

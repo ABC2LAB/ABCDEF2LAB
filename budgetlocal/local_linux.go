@@ -5,6 +5,7 @@ package budgetlocal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 )
 
 const requestTimeout = 5 * time.Second
+const maxInFlight = 16
 
 // Server owns a local IPC endpoint. Server, operator, and model execution UIDs
 // must be distinct so model-controlled processes cannot issue grants or replace
@@ -37,6 +39,7 @@ type Server struct {
 	conns       map[*net.UnixConn]struct{}
 	wg          sync.WaitGroup
 	closed      bool
+	timeout     time.Duration
 }
 
 // Listen requires a pre-provisioned, server-owned 0755 directory. The socket
@@ -47,7 +50,11 @@ func Listen(ctx context.Context, path string, operatorUID, modelUID uint32, appr
 }
 
 func listen(ctx context.Context, path string, operatorUID, modelUID uint32, approve AuthorizeAndIssue, allowSameUID bool) (*Server, error) {
-	if ctx == nil || approve == nil ||
+	return listenWithTimeout(ctx, path, operatorUID, modelUID, approve, allowSameUID, requestTimeout)
+}
+
+func listenWithTimeout(ctx context.Context, path string, operatorUID, modelUID uint32, approve AuthorizeAndIssue, allowSameUID bool, timeout time.Duration) (*Server, error) {
+	if ctx == nil || approve == nil || timeout <= 0 ||
 		(!allowSameUID && !validAuthorityUIDs(uint32(os.Geteuid()), operatorUID, modelUID)) ||
 		!filepath.IsAbs(path) {
 		return nil, ErrInvalid
@@ -87,7 +94,7 @@ func listen(ctx context.Context, path string, operatorUID, modelUID uint32, appr
 	runCtx, cancel := context.WithCancel(ctx)
 	s := &Server{listener: listener, path: path, socket: socket, operatorUID: operatorUID,
 		approve: approve, ctx: runCtx, cancel: cancel,
-		acceptDone: make(chan struct{}), sem: make(chan struct{}, 16),
+		acceptDone: make(chan struct{}), sem: make(chan struct{}, maxInFlight), timeout: timeout,
 		conns: make(map[*net.UnixConn]struct{})}
 	go func() {
 		<-runCtx.Done()
@@ -107,12 +114,16 @@ func validAuthorityUIDs(serverUID, operatorUID, modelUID uint32) bool {
 // such as /tmp is allowed only when its child entry is root/server owned; other
 // group/world-writable ancestors and symlinks are refused.
 func trustedSocketDirectory(dir string, serverUID uint32) bool {
+	return trustedSocketDirectoryWithLstat(dir, serverUID, os.Lstat)
+}
+
+func trustedSocketDirectoryWithLstat(dir string, serverUID uint32, lstat func(string) (os.FileInfo, error)) bool {
 	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
 		return false
 	}
 	childOwner := serverUID
 	for current := dir; ; current = filepath.Dir(current) {
-		info, err := os.Lstat(current)
+		info, err := lstat(current)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return false
 		}
@@ -171,22 +182,26 @@ func (s *Server) handle(conn *net.UnixConn) {
 		<-s.sem
 		s.wg.Done()
 	}()
-	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
+	deadline := time.Now().Add(s.timeout)
+	if conn.SetDeadline(deadline) != nil {
+		return
+	}
 	uid, err := peerUID(conn)
 	if err != nil || uid != s.operatorUID {
+		writeWire(conn, wireResponse{Error: wireRejected})
 		return
 	}
 	data, err := io.ReadAll(io.LimitReader(conn, maxMessageBytes+1))
 	if err != nil {
-		writeWire(conn, wireResponse{Error: "rejected"})
+		writeWire(conn, wireResponse{Error: wireRejected})
 		return
 	}
 	request, err := ParseRequest(data)
 	if err != nil {
-		writeWire(conn, wireResponse{Error: "rejected"})
+		writeWire(conn, wireResponse{Error: wireRejected})
 		return
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, requestTimeout)
+	ctx, cancel := context.WithDeadline(s.ctx, deadline)
 	defer cancel()
 	now := time.Now().UTC()
 	issuerRef := fmt.Sprintf("uid.%d", uid)
@@ -197,7 +212,15 @@ func (s *Server) handle(conn *net.UnixConn) {
 		MaxRequests: request.MaxRequests, ValidFrom: request.ValidFrom, ValidUntil: request.ValidUntil,
 	}
 	record, err := s.approve(ctx, uid, approved, now)
-	if err != nil || ctx.Err() != nil || record.State != "ready" ||
+	if err != nil {
+		code := wireUnknown
+		if errors.Is(err, ErrDenied) && record == (db.BudgetApprovalRecord{}) && ctx.Err() == nil {
+			code = wireRejected
+		}
+		writeWire(conn, wireResponse{Error: code})
+		return
+	}
+	if ctx.Err() != nil || record.State != "ready" ||
 		record.RequestRef != request.RequestRef || record.IssuerRef != issuerRef ||
 		record.Grant.Key.TaskRef != request.TaskRef || !validRef(record.Grant.Key.BudgetRef) ||
 		record.Grant.Binding != approved.Binding ||
@@ -205,7 +228,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 		!record.Grant.ValidFrom.Equal(request.ValidFrom.Round(0).UTC().Truncate(time.Microsecond)) ||
 		!record.Grant.ValidUntil.Equal(request.ValidUntil.Round(0).UTC().Truncate(time.Microsecond)) ||
 		!validRef(record.Epoch) {
-		writeWire(conn, wireResponse{Error: "rejected"})
+		writeWire(conn, wireResponse{Error: wireUnknown})
 		return
 	}
 	writeWire(conn, wireResponse{Response: Response{RequestRef: record.RequestRef,

@@ -63,6 +63,9 @@ func testRequest() Request {
 
 func socketPath(t *testing.T) string {
 	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("socket deployment requires a non-root server UID")
+	}
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -143,7 +146,7 @@ func TestLocalIssuerPeerUIDDeniedBeforeValidation(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o666 {
 		t.Fatalf("peer-checked local socket missing: %v", err)
 	}
-	if _, err := submit(context.Background(), path, uint32(os.Geteuid()), testRequest(), true); !errors.Is(err, ErrUnavailable) {
+	if _, err := submit(context.Background(), path, uint32(os.Geteuid()), testRequest(), true); !errors.Is(err, ErrDenied) && !errors.Is(err, ErrUnknown) {
 		t.Fatalf("wrong UID issued: %v", err)
 	}
 	calls, _ := issuer.snapshot()
@@ -259,6 +262,10 @@ func TestLocalIssuerRejectsMismatchedReadyRecord(t *testing.T) {
 		{"reset", func(r *db.BudgetApprovalRecord) { r.Grant.Binding.ResetRef = "other" }},
 		{"limit", func(r *db.BudgetApprovalRecord) { r.Grant.MaxRequests++ }},
 		{"period", func(r *db.BudgetApprovalRecord) { r.Grant.ValidUntil = r.Grant.ValidUntil.Add(time.Second) }},
+		{"valid_from", func(r *db.BudgetApprovalRecord) { r.Grant.ValidFrom = r.Grant.ValidFrom.Add(time.Second) }},
+		{"state", func(r *db.BudgetApprovalRecord) { r.State = "prepared" }},
+		{"budget_ref", func(r *db.BudgetApprovalRecord) { r.Grant.Key.BudgetRef = "" }},
+		{"epoch", func(r *db.BudgetApprovalRecord) { r.Epoch = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
@@ -268,7 +275,7 @@ func TestLocalIssuerRejectsMismatchedReadyRecord(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer server.Close(context.Background())
-			if response, err := submit(context.Background(), path, uint32(os.Geteuid()), testRequest(), true); !errors.Is(err, ErrDenied) || response != (Response{}) {
+			if response, err := submit(context.Background(), path, uint32(os.Geteuid()), testRequest(), true); !errors.Is(err, ErrUnknown) || response != (Response{}) {
 				t.Fatalf("mismatched ready record exposed: %+v, %v", response, err)
 			}
 		})

@@ -17,12 +17,17 @@ import (
 	"github.com/Autumn-27/artex/db"
 )
 
-const maxMessageBytes = 4096
+const (
+	maxMessageBytes = 4096
+	wireRejected    = "rejected"
+	wireUnknown     = "unknown"
+)
 
 var (
 	ErrInvalid     = errors.New("budgetlocal: invalid request")
 	ErrUnavailable = errors.New("budgetlocal: unavailable")
 	ErrDenied      = errors.New("budgetlocal: rejected")
+	ErrUnknown     = errors.New("budgetlocal: outcome unknown")
 )
 
 var refPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$`)
@@ -69,7 +74,10 @@ type wireResponse struct {
 // AuthorizeAndIssue must hold the server's task/policy/reset registration
 // synchronization from authorization through BudgetAuthority.Issue. The
 // request's IssuerRef is derived by the socket adapter from SO_PEERCRED.
-// A nil callback is never accepted.
+// Return ErrDenied only for a definitive denial known to precede issuance.
+// Any other callback failure, deadline or record returned together with an error
+// has an unknown outcome and must be retried with the same RequestRef.
+// The callback must honor cancellation. A nil callback is never accepted.
 type AuthorizeAndIssue func(context.Context, uint32, db.BudgetApprovalRequest, time.Time) (db.BudgetApprovalRecord, error)
 
 func validRef(ref string) bool {

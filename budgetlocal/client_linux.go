@@ -22,7 +22,11 @@ func Submit(ctx context.Context, path string, expectedServerUID uint32, request 
 }
 
 func submit(ctx context.Context, path string, expectedServerUID uint32, request Request, allowSameUID bool) (Response, error) {
-	if ctx == nil || !filepath.IsAbs(path) || !validRequest(request) ||
+	return submitWithTimeout(ctx, path, expectedServerUID, request, allowSameUID, requestTimeout)
+}
+
+func submitWithTimeout(ctx context.Context, path string, expectedServerUID uint32, request Request, allowSameUID bool, timeout time.Duration) (Response, error) {
+	if ctx == nil || timeout <= 0 || !filepath.IsAbs(path) || !validRequest(request) ||
 		expectedServerUID == 0 || expectedServerUID == ^uint32(0) ||
 		(!allowSameUID && expectedServerUID == uint32(os.Geteuid())) {
 		return Response{}, ErrInvalid
@@ -55,47 +59,52 @@ func submit(ctx context.Context, path string, expectedServerUID uint32, request 
 	}
 	raw, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
 	if err != nil {
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
 	conn, ok := raw.(*net.UnixConn)
 	if !ok {
 		_ = raw.Close()
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
 	defer conn.Close()
 	uid, err := peerUID(conn)
 	if err != nil || uid != expectedServerUID {
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
-	deadline := time.Now().Add(requestTimeout)
+	deadline := time.Now().Add(timeout)
 	if until, exists := ctx.Deadline(); exists && until.Before(deadline) {
 		deadline = until
 	}
 	if err := conn.SetDeadline(deadline); err != nil {
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	if _, err := conn.Write(data); err != nil {
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
 	if err := conn.CloseWrite(); err != nil {
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
 	reply, err := io.ReadAll(io.LimitReader(conn, maxMessageBytes+1))
 	if err != nil || len(reply) > maxMessageBytes || !singleTopLevelKeys(reply) {
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
 	decoder := json.NewDecoder(bytes.NewReader(reply))
 	decoder.DisallowUnknownFields()
 	var wire wireResponse
 	if decoder.Decode(&wire) != nil {
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
 	var extra any
 	if decoder.Decode(&extra) != io.EOF {
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
 	if wire.Error != "" {
-		return Response{}, ErrDenied
+		if wire.Error == wireRejected && wire.Response == (Response{}) {
+			return Response{}, ErrDenied
+		}
+		return Response{}, ErrUnknown
 	}
 	if wire.RequestRef != request.RequestRef || wire.TaskRef != request.TaskRef ||
 		!validRef(wire.BudgetRef) || !validRef(wire.Epoch) || wire.State != "ready" ||
@@ -103,7 +112,7 @@ func submit(ctx context.Context, path string, expectedServerUID uint32, request 
 		wire.MaxRequests != request.MaxRequests ||
 		!wire.ValidFrom.Equal(request.ValidFrom.Round(0).UTC().Truncate(time.Microsecond)) ||
 		!wire.ValidUntil.Equal(request.ValidUntil.Round(0).UTC().Truncate(time.Microsecond)) {
-		return Response{}, ErrUnavailable
+		return Response{}, ErrUnknown
 	}
 	return wire.Response, nil
 }
