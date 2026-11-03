@@ -29,7 +29,7 @@ import (
 // These are owned httptest/PG fixtures with a fake model and fake identity/KG
 // authorities. Passing them is not a real Juice Shop diagnostic.
 func TestFirstIDORSyntheticEngineThroughStoredFinding(t *testing.T) {
-	for _, mode := range []string{"confirmed", "late-pause", "missing-source", "source-error", "checkpoint-mismatch", "unknown-commit-source-change"} {
+	for _, mode := range []string{"confirmed", "late-pause", "missing-source", "source-error", "checkpoint-mismatch", "storage-rejected", "unknown-commit-source-change"} {
 		t.Run(mode, func(t *testing.T) {
 			diagnosticPath := filepath.Join(t.TempDir(), "finalization.log")
 			diagnosticFile, err := os.Create(diagnosticPath)
@@ -73,6 +73,7 @@ func TestFirstIDORSyntheticEngineThroughStoredFinding(t *testing.T) {
 			var retryFinalize func(context.Context, ControlledReadVerificationEvidence) error
 			var lastEvidence ControlledReadVerificationEvidence
 			var firstSaveError error
+			var attemptedOperation [sha256.Size]byte
 			var writes atomic.Int64
 			release := func() { releaseOnce.Do(func() { close(sourceRelease) }) }
 			t.Cleanup(release)
@@ -158,7 +159,7 @@ func TestFirstIDORSyntheticEngineThroughStoredFinding(t *testing.T) {
 					Candidate: idor.Candidate{Owner: owner, Evaluated: peer, ResourceRef: request.ResourceRef},
 					KG:        kg, Source: source}, nil
 			}
-			if mode == "unknown-commit-source-change" {
+			if mode == "unknown-commit-source-change" || mode == "storage-rejected" {
 				markers, markerErr := f.s.ControlledTaskModeMarkers()
 				if markerErr != nil {
 					t.Fatal(markerErr)
@@ -175,7 +176,28 @@ func TestFirstIDORSyntheticEngineThroughStoredFinding(t *testing.T) {
 					store := collector.save
 					collector.save = func(ctx context.Context, prepared e3record.Prepared, markers db.TaskModeMarkerReader) (db.ControlledFindingResult, error) {
 						writes.Add(1)
+						snapshot, valid := prepared.Snapshot()
+						if !valid {
+							return db.ControlledFindingResult{}, db.ErrControlledFindingInput
+						}
+						attemptedOperation = snapshot.OperationKey
+						var originalState string
+						if mode == "storage-rejected" {
+							if err := f.m.pg.QueryRowContext(ctx, "SELECT state FROM exploration_nodes WHERE id=$1", request.IntentID).Scan(&originalState); err != nil {
+								return db.ControlledFindingResult{}, err
+							}
+							// Test-owned DB corruption after Prepare must be rejected by the real writer.
+							if _, err := f.m.pg.ExecContext(ctx, "UPDATE exploration_nodes SET kind='fact',state='confirmed' WHERE id=$1", request.IntentID); err != nil {
+								return db.ControlledFindingResult{}, err
+							}
+						}
 						result, err := store(ctx, prepared, markers)
+						if mode == "storage-rejected" {
+							if _, restoreErr := f.m.pg.ExecContext(ctx, "UPDATE exploration_nodes SET kind='intent',state=$2 WHERE id=$1", request.IntentID, originalState); restoreErr != nil {
+								return db.ControlledFindingResult{}, restoreErr
+							}
+							return result, err
+						}
 						if err != nil {
 							return result, err
 						}
@@ -244,16 +266,37 @@ func TestFirstIDORSyntheticEngineThroughStoredFinding(t *testing.T) {
 				release()
 				t.Fatal("synthetic controlled execution did not finish")
 			}
+			if mode == "source-error" || mode == "checkpoint-mismatch" || mode == "storage-rejected" {
+				reason, key := "source_rejected", "unavailable"
+				if mode == "storage-rejected" {
+					if !errors.Is(firstSaveError, ErrControlledFindingUnavailable) ||
+						!errors.Is(firstSaveError, db.ErrControlledFindingInput) ||
+						attemptedOperation == ([sha256.Size]byte{}) || writes.Load() != 1 {
+						t.Fatal("real database input rejection lost its unavailable classification or attempted operation")
+					}
+					reason, key = "storage_rejected", fmt.Sprintf("%x", attemptedOperation)
+				}
+				diagnosticBytes, readErr := os.ReadFile(diagnosticPath)
+				if readErr != nil || bytes.Count(diagnosticBytes, []byte("finalization_failed")) != 1 ||
+					!bytes.Contains(diagnosticBytes, []byte("reason="+reason+" operation_key="+key)) {
+					t.Fatal("actual execution finish did not distinguish preparation from database rejection")
+				}
+				for _, forbidden := range []string{"SYNTHETIC_PRIVATE_SOURCE_ERROR", runtimeSecret, verificationTestMarker} {
+					if bytes.Contains(diagnosticBytes, []byte(forbidden)) {
+						t.Fatal("private source or observed data reached the finalization diagnostic")
+					}
+				}
+			}
 			if mode == "unknown-commit-source-change" {
 				if !errors.Is(firstSaveError, ErrControlledFindingOutcomeUnknown) || retryFinalize == nil {
 					t.Fatalf("committed but lost acknowledgement was misclassified: %v", firstSaveError)
 				}
 				var diagnostic controlledFindingStoreFailure
-				if !errors.As(firstSaveError, &diagnostic) || diagnostic.operation == ([sha256.Size]byte{}) {
+				if !errors.As(firstSaveError, &diagnostic) || attemptedOperation == ([sha256.Size]byte{}) || diagnostic.operation != attemptedOperation {
 					t.Fatal("uncertain commit lost its stable operation key")
 				}
 				diagnosticBytes, readErr := os.ReadFile(diagnosticPath)
-				if readErr != nil || !bytes.Contains(diagnosticBytes, []byte(fmt.Sprintf("reason=storage_outcome_unknown operation_key=%x", diagnostic.operation))) {
+				if readErr != nil || !bytes.Contains(diagnosticBytes, []byte(fmt.Sprintf("reason=storage_outcome_unknown operation_key=%x", attemptedOperation))) {
 					t.Fatal("actual execution finish lost the reconciliation diagnostic")
 				}
 				revision.Store(2)
@@ -262,6 +305,12 @@ func TestFirstIDORSyntheticEngineThroughStoredFinding(t *testing.T) {
 				cancelRetry()
 				if !errors.Is(err, ErrControlledFindingConflict) || writes.Load() != 1 {
 					t.Fatalf("changed retry reached a second write: %v writes=%d", err, writes.Load())
+				}
+				logControlledFindingFinalizationFailure(err)
+				diagnosticBytes, readErr = os.ReadFile(diagnosticPath)
+				if readErr != nil || bytes.Count(diagnosticBytes, []byte("finalization_failed")) != 2 ||
+					!bytes.Contains(diagnosticBytes, []byte(fmt.Sprintf("reason=storage_conflict operation_key=%x", attemptedOperation))) {
+					t.Fatal("collector conflict lost the original attempted operation key")
 				}
 			}
 			var findings, nodes, records int
