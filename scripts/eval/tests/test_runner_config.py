@@ -55,6 +55,7 @@ def runner_config() -> dict:
                         "ca_bundle": "/etc/ssl/certs/ca-certificates.crt", "expected_provider_name": "Example"},
         "findings": {"vocabulary_path": "/srv/eval/vocabulary.json", "page_size": 100, "timeout_seconds": 30,
                      "max_page_bytes": 1048576, "max_total_bytes": 8388608, "max_pages": 100},
+        "observer_readonly_ref": "verify:juice-shop-15.0.0:get-api-challenges",
         "task": {"description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.\n로그인 계정은 엔진 설정을 쓴다.",
                  "goal": "다른 사용자의 자원에 접근되는지 확인한다", "timeout_seconds": 1200,
                  "plan_heartbeat_seconds": 600, "seed_first_intent": False, "coverage_enabled": True},
@@ -84,6 +85,16 @@ class TestParseRunnerConfig(unittest.TestCase):
         payload = runner_config()
         del payload["findings"]["max_pages"]
         self.reject(payload, "config.findings.max_pages: MISSING")
+
+    def test_observer_readonly_ref_is_a_required_plain_reference(self):
+        for value in ("", " ref", "ref\n", "x" * 201, 7, None):
+            with self.subTest(value=str(value)[:12]):
+                self.reject(runner_config() | {"observer_readonly_ref": value}, "config.observer_readonly_ref: INVALID")
+        payload = runner_config()
+        del payload["observer_readonly_ref"]
+        self.reject(payload, "config.observer_readonly_ref: MISSING")
+        self.assertEqual(parse_runner_config(runner_config() | {"observer_readonly_ref": "x" * 200}).observer_readonly_ref,
+                         "x" * 200)
 
     def test_task_takes_only_the_evaluation_fields(self):
         payload = runner_config()

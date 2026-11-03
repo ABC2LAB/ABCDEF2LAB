@@ -35,8 +35,8 @@ from preflight import PreflightError, load_preflight  # noqa: E402
 from run_record import read_runner_key, sign_run_record  # noqa: E402
 from runner_checks import (  # noqa: E402
     ExpectedTopology, Listener, allowed_host_listens, check_host_listeners, check_other_publishes, check_topology,
-    compare_snapshots, expected_topology, network_snapshot, parse_container, parse_network, policy_sha256,
-    read_host_listeners,
+    compare_snapshots, expected_topology, listeners_outside_loopback, network_snapshot, parse_container,
+    parse_network, policy_sha256, read_host_listeners,
 )
 from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE, METER_SERVICE, OBS_SERVICE, TARGET_SERVICE,
@@ -49,10 +49,15 @@ from runner_engine import (  # noqa: E402
     AdminSecret, EngineAPIError, collect_findings, load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
-    DRAINED_MARKER, SEALED_MARKER, EvidenceDir, GatewayFiles, MeterFiles, forwarded_count, sequence_complete,
+    DRAINED_MARKER, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_count,
+    read_private_json, sequence_complete,
 )
 from runner_llm import judge_llm  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
+from runner_record import (  # noqa: E402
+    RecordContext, canonical_sha256, descriptor, evidence_rows, isolation_evidence, isolation_proof, path_ref,
+    run_record, solve_events, timeline,
+)
 from runner_window import (  # noqa: E402
     BackgroundWatch, HostWatch, events_reasons, judge_events, watch_reasons, watch_summary,
 )
@@ -65,6 +70,8 @@ TASK_EVIDENCE_FORMAT = "abc2lab-eval-runner-task-v1"
 # 남긴다. 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다(평가 프로토콜 §2).
 TMPFS_NOT_MEASURED = "not_measured"
 RESULT_NAME = "runner-result.json"
+RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
+MAX_CONDITION_LENGTH = 100
 COMPLETE, INVALID = "complete", "invalid"
 # 이미지 역할 → 그 이미지를 쓰는 compose 서비스. 기동 후 컨테이너 이미지가 설정의 내용 ID와 같아야 한다.
 _IMAGE_SERVICES = {"engine": (ENGINE_SERVICE,), "engine_db": (ENGINE_DB_SERVICE,), "target": (TARGET_SERVICE,),
@@ -133,6 +140,14 @@ class RunSpec:
     host_watch_max_gap_seconds: float
     events_lookback_seconds: float
     llm_policy_mode: str
+    condition: str
+    repeat_index: int
+    model_tag: str
+    fixture_fingerprint: str
+    environment_fingerprint: str
+    target_origin: str
+    observer_path: str
+    observer_readonly_ref: str
 
 
 class WatchHandle(Protocol):
@@ -151,6 +166,9 @@ class _State:
     step: str = "start"
     watch: object | None = None
     events: object | None = None
+    listeners: dict = field(default_factory=dict)
+    probes: dict = field(default_factory=dict)
+    record: dict | None = None
 
 
 def _stamp(clock: Clock) -> str:
@@ -216,6 +234,7 @@ def _check_phase(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase:
     containers = _step(state, f"{phase}_facts_failed", lambda: [parse_container(c) for c in facts.containers])
     running = _step(state, f"{phase}_facts_failed", lambda: [parse_container(c) for c in facts.running])
     listeners = _step(state, f"{phase}_host_listeners_failed", ports.host_listeners)
+    state.listeners[phase] = listeners_outside_loopback(listeners)
     topology = check_topology(spec.expected, spec.project, networks, containers)
     host = check_other_publishes(spec.project, running) + check_host_listeners(listeners, spec.allowed_listens)
     snapshot = network_snapshot(facts.daemon, spec.project, networks, containers)
@@ -234,6 +253,7 @@ def _check_phase(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase:
 
 def _probe(ports: RunPorts, evidence, state: _State, phase: str, snapshot: dict) -> str:
     outcome = _step(state, f"{phase}_probe_invalid", lambda: ports.probe(snapshot))
+    state.probes[phase] = [dict(row) for row in outcome.rows]
     _step(state, "evidence_write_failed", lambda: evidence.write_json(f"{phase}-probe.json", {
         "phase": phase, "status": outcome.status, "reasons": list(outcome.reasons), "rows": list(outcome.rows),
         "started_at": outcome.started_at, "finished_at": outcome.finished_at}))
@@ -291,7 +311,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
 
     pre = _check_phase(spec, ports, evidence, state, "pre")
     _probe(ports, evidence, state, "pre", pre)
-    state.observer_calls += _step(state, "target_not_ready", ports.wait_ready)
+    pre_checked_at = _stamp(clock)  # 경계 적용·점검 완료(pre 관측 전)
+    ready_calls = _step(state, "target_not_ready", ports.wait_ready)
+    state.observer_calls += ready_calls
+    fixture_ready_at = _stamp(clock)  # 러너에는 준비 채널이 없다: 대상 준비 확인이 준비 봉인 시점
     # 격리 구간은 pre 관측 직전부터 post 관측 완료까지다. 그 동안 호스트 리슨을 주기적으로 보고, 끝나면 데몬 이벤트를 받는다.
     window_start = clock.now()
     state.events = _step(state, "window_events_failed", lambda: ports.start_events(
@@ -299,6 +322,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.watch = _step(state, "window_watch_failed", ports.start_host_watch)
     state.observer_calls += 1
     pre_board = _step(state, "pre_scoreboard_failed", lambda: ports.scoreboard("pre", pre))
+    pre_solved = pre_board.pop("solved")
     pre_forwarded = _step(state, "meter_read_failed", meter.forwarded)
     if pre_forwarded != 0:
         raise RunFailure("pre_requests_nonzero")  # 작업 시작 전에 엔진이 대상으로 보냈다
@@ -313,16 +337,20 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started)
     stopped_at = _stamp(clock)
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER_SERVICE]["id"]))
+    engine_end_at = _stamp(clock)
     drained = _wait_drained(spec, meter, clock, state)
+    drained_at = _stamp(clock)
     # 엔진의 작업은 끝났다. 게이트웨이도 새 LLM 요청을 막고, drain 뒤 응답 제공자 조회를 시작한다.
     _step(state, "llm_seal_failed", lambda: ports.seal_gateway(pre["services"][LLM_GW_SERVICE]["id"]))
 
     post = _check_phase(spec, ports, evidence, state, "post")
+    post_check_at = _stamp(clock)
     if compare_snapshots(pre, post):
         raise RunFailure("boundary_changed")
     _probe(ports, evidence, state, "post", post)
     state.observer_calls += 1
     post_board = _step(state, "post_scoreboard_failed", lambda: ports.scoreboard("post", post))
+    post_solved = post_board.pop("solved")
     stopped = _step(state, "window_watch_failed", lambda: _stop_watch(state))
     window_end = clock.now()
     streamed = _step(state, "window_events_failed", lambda: _stop_events(state, _ns(window_end)))
@@ -358,6 +386,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure(llm_reasons[0])
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
+    steps = timeline({"fixture_ready": fixture_ready_at, "pre": pre_board["received_at"], "engine_start": requested_at,
+                      "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
+    state.record = _step(state, "record_build_failed", lambda: _build_record(
+        spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
+        observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "task_request_sha256": spec.task_request_sha256,
                      # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline 엔진에는 이 스위치가 없다.
@@ -365,6 +398,49 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                      "window": {"host_watch": window["host_watch"], "events": {
                          key: window["docker_events"][key] for key in ("event_count", "kinds", "complete")}},
                      "daemon": pre["daemon"], "scoreboards": {"pre": pre_board, "post": post_board}}
+
+
+def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict, pre_board: dict, post_board: dict,
+                  pre_solved: dict, post_solved: dict, steps: dict, window: dict, observer: list, ready_calls: int,
+                  meter_summary: dict, drained: dict, engine_rows: int, pre_checked_at: str,
+                  post_check_at: str) -> dict:
+    """v1.1 러너 기록(서명 전)과 그 근거 파일 둘(격리 근거·해결 이벤트)을 만든다. 서명은 down 뒤."""
+    context = RecordContext(run_id=spec.run_id, model_tag=spec.model_tag,
+                            reset_generation=pre["services"][TARGET_SERVICE]["id"],
+                            instance_id=pre["services"][TARGET_SERVICE]["id"],
+                            execution_id=pre["services"][ENGINE_SERVICE]["id"])
+    boundary_ref, host_ref = "compose:" + spec.project, "host-condition:" + spec.run_id
+    get_ref = path_ref(spec.observer_path)
+    policy = policy_sha256(pre)
+    allowed = [{"address": item.address, "port": item.port} for item in spec.allowed_listens]
+    rows = evidence_rows(
+        pre_at=pre_checked_at, post_check_at=post_check_at, window=window, pre=pre, post=post,
+        pre_probe=state.probes["pre"], post_probe=state.probes["post"], host_ref=host_ref,
+        pre_listeners=state.listeners["pre"], post_listeners=state.listeners["post"], allowed=allowed,
+        boundary_ref=boundary_ref, policy=policy, steps=steps, observer_rows=observer, ready_calls=ready_calls,
+        observer_path_ref=get_ref, readonly_ref=spec.observer_readonly_ref, meter=meter_summary,
+        drained=drained, engine_rows=engine_rows)
+    evidence.write_json("isolation-evidence.json", isolation_evidence(context, rows))
+    evidence_sha, evidence_size = evidence.describe("isolation-evidence.json")
+    in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
+    proof = isolation_proof(context, steps, pre_board["normalized"]["sha256"], post_board["normalized"]["sha256"],
+                            spec.target_origin, boundary_ref, policy, host_ref, evidence_sha,
+                            "eval-obs:" + pre["services"][OBS_SERVICE]["id"], get_ref, in_window)
+    events = solve_events(context, pre_solved, post_solved, steps["post"], canonical_sha256(proof))
+    evidence.write_json("solve-events.json", dict(context.fields(), phase="engine", events=events))
+    events_sha, events_size = evidence.describe("solve-events.json")
+    artifacts = {
+        "pre_raw": pre_board["raw"], "pre": pre_board["normalized"],
+        "post_raw": post_board["raw"], "post": post_board["normalized"],
+        "records": None, "traffic": None, "coverage": None,  # 판정 미수집(run-record-v1.1 §3)
+        "solve_events": descriptor(context, "solve-events.json", events_sha, events_size, "engine"),
+        "isolation_evidence": descriptor(context, "isolation-evidence.json", evidence_sha, evidence_size, "engine"),
+    }
+    return run_record(context, engine=spec.side, condition=spec.condition, repeat_index=spec.repeat_index,
+                      total_requests=meter_summary["forwarded_requests"],
+                      fixture_fingerprint=spec.fixture_fingerprint,
+                      environment_fingerprint=spec.environment_fingerprint, steps=steps, artifacts=artifacts,
+                      proof=proof)
 
 
 def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: GatewayFiles, evidence,
@@ -405,6 +481,12 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
             "llm_backend": spec.llm_backend, "tmpfs_usage": TMPFS_NOT_MEASURED,
             "started_at": started_at, "finished_at": _stamp(clock)}
+    if not reasons and state.record is not None:
+        # v1.1 러너 기록도 down까지 통과한 뒤에만 서명한다(엔진 감사 키와 별도인 러너 키).
+        try:
+            evidence.write_json(RECORD_NAME, ports.sign(state.record))
+        except Exception:
+            reasons.append("record_sign_failed")
     if not reasons:
         payload = dict(base, status=COMPLETE, images=dict(spec.image_ids), evidence=evidence.digests(),
                        **state.summary)
@@ -494,8 +576,13 @@ class DockerPorts:
         endpoint = SnapshotEndpoint(self.obs_origin, self.config.observer_path,
                                     self.config.run["snapshot_timeout_seconds"], self.config.run["snapshot_max_bytes"])
         collected = collect_snapshot(endpoint, self.directory.run, phase, context)
+        # 해결 상태 맵(평가 전용 key)은 v1.1 이벤트 발행에만 쓰고 결과 요약에는 넣지 않는다.
+        normalized = read_private_json(self.directory.run / phase, "normalized.json")
+        if not isinstance(normalized, dict) or not isinstance(normalized.get("solved"), dict):
+            raise EvidenceError("snapshot_normalized_invalid")
         return {"raw": collected.artifacts.raw, "normalized": collected.artifacts.normalized,
-                "requested_at": collected.requested_at, "received_at": collected.received_at}
+                "requested_at": collected.requested_at, "received_at": collected.received_at,
+                "solved": normalized["solved"]}
 
     def start_task(self) -> str:
         return self._start()
@@ -521,7 +608,8 @@ class DockerPorts:
         return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
 
 
-def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str) -> RunSpec:
+def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str, condition: str,
+               repeat_index: int) -> RunSpec:
     declared = preflight[plan.side]
     return RunSpec(
         run_id=plan.run_id, side=plan.side, project=plan.project, llm_backend=plan.llm["backend"],
@@ -534,7 +622,11 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_request_sha256=task_request_sha256,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
-        events_lookback_seconds=config.health_timeout_seconds, llm_policy_mode=config.llm_policy_mode)
+        events_lookback_seconds=config.health_timeout_seconds, llm_policy_mode=config.llm_policy_mode,
+        condition=condition, repeat_index=repeat_index, model_tag=plan.llm["model"],
+        fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
+        target_origin=declared["target_origin"], observer_path=config.observer_path,
+        observer_readonly_ref=config.observer_readonly_ref)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -542,7 +634,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", required=True)
     parser.add_argument("--preflight", required=True)
     parser.add_argument("--side", required=True, choices=("baseline", "ours"))
+    # 측정 매트릭스 행 이름(예 "우리@35b")과 반복 번호. v1.1 기록에 서명되고 채점 manifest와 정확히 같아야 한다.
+    parser.add_argument("--condition", required=True)
+    parser.add_argument("--repeat", required=True, type=int)
     args = parser.parse_args(argv)
+    if (not 0 < len(args.condition) <= MAX_CONDITION_LENGTH or args.condition.strip() != args.condition
+            or any(ord(c) < 32 or ord(c) == 127 for c in args.condition)):
+        print("condition: INVALID", file=sys.stderr)
+        return 2
+    if args.repeat < 0:
+        print("repeat: INVALID", file=sys.stderr)
+        return 2
     try:
         config = load_runner_config(args.config)
         preflight = load_preflight(args.preflight)
@@ -570,7 +672,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ports = DockerPorts(config, plan, directory, docker, findings, start)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
-    result = execute_run(build_spec(config, plan, preflight, task.sha256), ports, MeterFiles(directory.meter),
+    result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat), ports, MeterFiles(directory.meter),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
     return 0 if result["status"] == COMPLETE else 1

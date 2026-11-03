@@ -10,9 +10,11 @@
 ## 실행
 
 ```bash
-python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --preflight /private/eval/preflight.json --side ours
+python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --preflight /private/eval/preflight.json --side ours \
+  --condition "우리@35b" --repeat 0
 ```
 
+- `--condition`·`--repeat`는 측정 매트릭스 행 이름과 반복 번호다. v1.1 러너 기록에 서명되며 채점 manifest의 값과 정확히 같아야 한다.
 - 종료 코드: `0` 완료(서명됨), `1` 무효(사유는 결과 기록), `2` 설정·사전검사·작업 대상·분류 매핑·비밀번호 형식 오류(회차를 만들지 않음).
 - 설정·사전검사·작업 대상·분류 매핑이 통과하면 엔진 관리자 비밀번호를 **한 번** 묻는다(getpass, 화면에 표시 안 됨). 비밀 env 파일의
   `EVAL_ENGINE_ADMIN_PASSWORD`와 같은 값이다. 비밀번호는 러너 프로세스 메모리에만 있고 argv·환경변수·docker 호출·회차 파일·
@@ -50,6 +52,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `ports.target`, `ports.obs`, `ports.obs_host` | 대상 포트(계측기 upstream), 관측 front 포트와 그 호스트 루프백 포트 |
 | `ports.llm_gateway`, `ports.api_front` | LLM 게이트웨이·엔진 API front의 컨테이너 포트 |
 | `observer_path` | 관측 front가 통과시킬 스코어보드 GET 경로 1개 |
+| `observer_readonly_ref` | 그 GET이 해당 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(200자 이하). 러너가 만들 수 없는 근거라 설정으로 받고, 격리 근거 `observer_readonly` 행에 그대로 남긴다 |
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
 | `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null) |
 | `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한, DB healthcheck |
@@ -106,6 +109,9 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
+  isolation-evidence.json        격리 근거 행(러너 기록 v1.1 §3.1 형식, 완료 회차만)
+  solve-events.json              pre=false→post=true 키마다 isolated_window 해결 이벤트(평가 전용 key, 완료 회차만)
+  run-record.json                서명된 러너 기록 v1.1(채점기 입력, 완료 회차만. records=null 판정 미수집)
   runner-result.json             완료(+서명) 또는 무효(+사유·실패 단계: 사유가 나온 점검, 예상 밖 예외·중단이면 마지막으로 시작한 단계)
 ```
 
@@ -170,6 +176,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `findings_failed` | findings 단계 실패: 로그인 실패(연결·HTTP 상태·응답 형식), 페이지 수집 실패(한도 초과·건수 불일치·형식 밖 응답), 추출 실패 |
 | `evidence_write_failed` | 근거 파일 쓰기 실패 |
 | `down_failed`, `sign_failed` | 정리·서명 실패(측정은 끝났어도 무효) |
+| `record_build_failed`, `record_sign_failed` | v1.1 러너 기록(격리 근거·해결 이벤트·증명) 작성 실패, 그 서명·저장 실패 |
 | `interrupted`, `unexpected_error` | Ctrl-C(정리·기록 후 다시 올림), 예상 밖 예외(정리·기록함) |
 
 `llm-summary.json`에는 LLM 사유가 전부 남고, 결과 기록의 사유는 그중 정렬 첫째다.

@@ -38,7 +38,7 @@ def make_spec():
     preflight = configuration()
     config = parse_runner_config(runner_config())
     plan = plan_run(config, preflight, "ours", "ours-1")
-    return build_spec(config, plan, preflight, "t" * 64)
+    return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0)
 
 
 class FakeClock:
@@ -84,7 +84,8 @@ class FakeMeter:
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
-        return [{"seq": i, "decision": "registered"} for i in range(1, count + 1)]
+        return [{"seq": i, "decision": "registered", "method": "GET", "status": 200, "started_at": f"s{i}",
+                 "completed_at": f"c{i}", "response_bytes": 10} for i in range(1, count + 1)]
 
     def marker(self, name):
         if not self.ports.sealed:
@@ -119,6 +120,9 @@ class FakeEvidence:
     def digests(self):
         return {name: "h-" + name for name in self.files}
 
+    def describe(self, name):
+        return "h-" + name, len(json.dumps(self.files[name]))
+
 
 class FakePorts:
     def __init__(self, spec):
@@ -137,6 +141,10 @@ class FakePorts:
         self.watch_stopped = (0.0, 1.0, [WatchSample(0.5, (), None)])
         self.events_list = []
         self.events_complete = True
+        self.solved = {"pre": {"basket": False, "admin": True, "feedback": False},
+                       "post": {"basket": True, "admin": True, "feedback": False}}
+        self.sign_calls = 0
+        self.sign_fail_at = None
         self.watch_stops = 0
         self.events_stops = []
 
@@ -179,7 +187,11 @@ class FakePorts:
     def probe(self, snapshot):
         self._call(f"probe:{self.phase}")
         status = self.probe_status[self.phase]
-        return ProbeOutcome(status, () if status == PASS else ("x",), (), "a", "b")
+        rows = ({"id": "meter_tcp", "kind": "tcp", "target": "eval-meter:8080", "role": "positive", "expected": "success",
+                 "accepted": ["connected"], "observed": "success", "code": "connected", "verdict": "match"},
+                {"id": "dns:target", "kind": "dns", "target": "target", "role": "negative", "expected": "fail",
+                 "accepted": ["not_found", "dns_error"], "observed": "fail", "code": "dns_error", "verdict": "match"})
+        return ProbeOutcome(status, () if status == PASS else ("x",), rows, "a", "b")
 
     def wait_ready(self):
         self._call("wait_ready")
@@ -187,7 +199,15 @@ class FakePorts:
 
     def scoreboard(self, phase, snapshot):
         self._call(f"scoreboard:{phase}")
-        return {"raw": {"sha256": phase}, "normalized": {"sha256": phase}}
+        context = {"run_id": self.spec.run_id, "model_tag": self.spec.model_tag,
+                   "reset_generation": snapshot["services"]["target"]["id"],
+                   "instance_id": snapshot["services"]["target"]["id"],
+                   "execution_id": snapshot["services"]["engine"]["id"]}
+        return {"raw": dict(context, path=f"{phase}/raw.json", sha256="r" + phase, size=10, phase=phase),
+                "normalized": dict(context, path=f"{phase}/normalized.json", sha256="n" + phase, size=5, phase=phase),
+                "requested_at": f"2026-11-02T00:00:0{1 if phase == 'pre' else 8}+00:00",
+                "received_at": f"2026-11-02T00:00:0{2 if phase == 'pre' else 9}+00:00",
+                "solved": dict(self.solved[phase])}
 
     def start_task(self):
         self._call("start_task")
@@ -234,6 +254,10 @@ class FakePorts:
         return {"items": 0}
 
     def sign(self, payload):
+        self.sign_calls += 1
+        if self.sign_fail_at == self.sign_calls:
+            self.calls.append("sign")
+            raise RuntimeError("sign failed")
         self._call("sign")
         return dict(payload, signature="sig")
 
@@ -256,7 +280,7 @@ def run(mutate=None, mutate_gateway=None):
 FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "wait_ready",
               "events:start", "watch:start", "scoreboard:pre", "start_task", "seal", "seal_gateway", "facts:post",
               "listeners:post", "probe:post", "scoreboard:post", "watch:stop", "events:stop", "findings", "down",
-              "sign"]
+              "sign", "sign"]
 
 
 class TestCompleteRun(unittest.TestCase):
@@ -268,7 +292,9 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(evidence.files[RESULT_NAME], result)
         self.assertEqual(set(evidence.files), {"pre-checks.json", "pre-probe.json", "post-checks.json",
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
-                                               "findings.json", "task.json", "window-watch.json", RESULT_NAME})
+                                               "findings.json", "task.json", "window-watch.json",
+                                               "isolation-evidence.json", "solve-events.json", "run-record.json",
+                                               RESULT_NAME})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
         self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
         self.assertEqual(ports.sealed_id, "4" * 64)
@@ -286,6 +312,51 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(result["engine_llm_policy"], {"declared": "external", "observed": None})
         # 사용량을 재기 전에는 서명된 완료 기록에도 미측정을 명시한다(공식 비교 제외 근거).
         self.assertEqual(result["tmpfs_usage"], "not_measured")
+
+    def test_v11_record_binds_proof_events_and_evidence(self):
+        from runner_record import canonical_sha256
+        result, ports, _, evidence = run()
+        record = evidence.files["run-record.json"]
+        self.assertEqual((record["version"], record["signature"], record["engine"], record["condition"],
+                          record["repeat_index"]), ("1.1", "sig", "ours", "우리@35b", 0))
+        proof = record["isolation_proof"]
+        events = evidence.files["solve-events.json"]["events"]
+        # 신규 해결(basket: false→true)만, admin(사전 해결)·feedback(미해결)은 없음. 이벤트는 증명 digest로 묶인다.
+        self.assertEqual([e["challenge"] for e in events], ["basket"])
+        self.assertEqual(events[0]["isolation_proof_sha256"], canonical_sha256(proof))
+        self.assertEqual(events[0]["sequence"], record["timeline"]["post"]["sequence"])
+        artifacts = record["artifacts"]
+        self.assertEqual((artifacts["records"], artifacts["traffic"], artifacts["coverage"]), (None, None, None))
+        self.assertEqual(artifacts["isolation_evidence"]["sha256"], "h-isolation-evidence.json")
+        self.assertEqual(proof["enforcement_evidence_sha256"], "h-isolation-evidence.json")
+        self.assertEqual(artifacts["solve_events"]["sha256"], "h-solve-events.json")
+        self.assertEqual((proof["snapshots"]["pre_sha256"], proof["snapshots"]["post_sha256"]), ("npre", "npost"))
+        self.assertEqual(proof["observer"]["request_count"], 1)  # post 수집 GET만(pre 제외)
+        rows = evidence.files["isolation-evidence.json"]["rows"]
+        windows = [r["window"] for r in rows if r["kind"] == "observer_request"]
+        self.assertEqual(windows, ["before_pre", "pre", "in_window"])
+        self.assertEqual([r["seq"] for r in rows], list(range(1, len(rows) + 1)))
+        kinds = {r["kind"] for r in rows}
+        self.assertTrue({"boundary", "network_snapshot", "host_condition", "host_watch", "docker_events_window",
+                         "preparation", "observer_readonly", "observer_request", "engine_meter_summary",
+                         "drain"} <= kinds)
+        self.assertEqual([r["event"] for r in rows if r["kind"] == "boundary"], ["applied", "maintained"])
+        checks = [(r["phase"], r["probe_kind"]) for r in rows if r["kind"] == "connectivity_check"]
+        self.assertEqual(checks, [("pre", "tcp"), ("pre", "dns"), ("post", "tcp"), ("post", "dns")])
+        self.assertEqual([r["sequence"] for r in record["timeline"].values()], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(record["total_requests"], evidence.files["meter-summary.json"]["forwarded_requests"])
+        # 결과 기록의 서명 대상 근거 목록에 v1.1 기록도 들어간다.
+        self.assertIn("run-record.json", result["evidence"])
+        # 해결 상태 맵(평가 전용 key)은 결과 요약에 넣지 않는다.
+        self.assertNotIn("solved", result["scoreboards"]["pre"])
+        self.assertNotIn("solved", result["scoreboards"]["post"])
+        self.assertNotIn("basket", json.dumps(result))
+
+    def test_invalid_runs_write_no_v11_record(self):
+        result, _, _, evidence = run(failing("findings"))
+        self.assertEqual(result["status"], INVALID)
+        for name in ("run-record.json", "isolation-evidence.json", "solve-events.json"):
+            self.assertNotIn(name, evidence.files)
 
     def test_budget_clock_starts_before_task_creation(self):
         # 생성 요청이 오래 걸려도 그 시간은 예산에 들어간다(엔진은 생성과 동시에 기동).
@@ -480,9 +551,14 @@ class TestFailures(unittest.TestCase):
         self.assert_invalid(result, ports, evidence, ["findings_failed", "down_failed"])
 
     def test_sign_failure_is_invalid(self):
-        result, ports, _, evidence = run(failing("sign"))
-        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["sign_failed"]))
+        # 서명은 v1.1 러너 기록 → 결과 기록 순서. 어느 쪽이 실패해도 무효이고 서명된 결과는 없다.
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "sign_fail_at", 1))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["record_sign_failed"]))
         self.assertEqual(ports.calls[-2:], ["down", "sign"])
+        self.assertNotIn("run-record.json", evidence.files)
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "sign_fail_at", 2))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["sign_failed"]))
+        self.assertEqual(ports.calls[-3:], ["down", "sign", "sign"])
 
     def test_interrupt_still_downs_and_records(self):
         spec = make_spec()
@@ -646,10 +722,14 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
             self.assertNotIn(str(config.runner_key_path), "\n".join(env.values()))
             ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1")
             snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
-            with patch.object(runner, "collect_snapshot") as collect:
+            with patch.object(runner, "collect_snapshot") as collect, \
+                    patch.object(runner, "read_private_json", return_value={"solved": {"k": False}}) as read:
                 collect.return_value.artifacts.raw = {"path": "pre/raw.json"}
                 collect.return_value.artifacts.normalized = {"path": "pre/normalized.json"}
-                ports.scoreboard("pre", snapshot)
+                board = ports.scoreboard("pre", snapshot)
+            # 해결 상태 맵은 회차 디렉터리의 정규화본에서 읽는다(계측기 마운트 밖).
+            self.assertEqual(read.call_args[0], (directory.run / "pre", "normalized.json"))
+            self.assertEqual(board["solved"], {"k": False})
             endpoint, run_directory, phase, _ = collect.call_args[0]
             self.assertEqual((run_directory, phase), (directory.run, "pre"))
             self.assertEqual(endpoint.origin, "http://127.0.0.1:18081")
@@ -677,7 +757,8 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
         config_path, preflight_path = Path(tmp, "runner.json"), Path(tmp, "preflight.json")
         config_path.write_text(json.dumps(payload))
         preflight_path.write_text(json.dumps(preflight))
-        return root, ["--config", str(config_path), "--preflight", str(preflight_path), "--side", "ours"]
+        return root, ["--config", str(config_path), "--preflight", str(preflight_path), "--side", "ours",
+                      "--condition", "우리@35b", "--repeat", "0"]
 
     def test_password_reaches_only_task_start_and_findings(self):
         import contextlib
@@ -743,6 +824,21 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                     else:
                         self.assertEqual(runner.main(argv), 2)
                         ask.assert_not_called()
+                self.assertEqual(list(root.iterdir()), [])
+
+    def test_condition_and_repeat_are_checked_first(self):
+        import contextlib
+        import io
+        for flag, value, code in (("--condition", "", "condition: INVALID"), ("--condition", " 우리", "condition: INVALID"),
+                                  ("--condition", "x" * 101, "condition: INVALID"), ("--repeat", "-1", "repeat: INVALID")):
+            with self.subTest(flag=flag, value=value[:5]), tempfile.TemporaryDirectory() as tmp:
+                root, argv = self.inputs(tmp)
+                argv[argv.index(flag) + 1] = value
+                err = io.StringIO()
+                with patch.object(runner.getpass, "getpass") as ask, contextlib.redirect_stderr(err):
+                    self.assertEqual(runner.main(argv), 2)
+                ask.assert_not_called()
+                self.assertEqual(err.getvalue().strip(), code)
                 self.assertEqual(list(root.iterdir()), [])
 
     def test_bad_inputs_stop_before_asking_or_creating_a_run(self):

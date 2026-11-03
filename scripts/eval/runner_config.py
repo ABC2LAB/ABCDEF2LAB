@@ -88,7 +88,8 @@ _GATEWAY_FIELDS = ("generation_path", "verify_attempts", "verify_interval_second
 MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
-               "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task")
+               "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
+               "observer_readonly_ref")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -98,6 +99,7 @@ MAX_FINDINGS_PAGES = 10_000
 _TASK_FIELDS = ("description", "goal", "timeout_seconds", "plan_heartbeat_seconds", "seed_first_intent",
                 "coverage_enabled")
 MAX_TASK_TEXT_LENGTH = 4000
+MAX_REFERENCE_LENGTH = 200
 MAX_TASK_SECONDS = 24 * 3600
 # 회차 진행 시간·크기 값(초). 실패 시 재시도하지 않으므로 각 값이 그 단계의 유일한 기회다.
 _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_seconds", "budget_poll_seconds",
@@ -156,6 +158,7 @@ class RunnerConfig:
     llm_gateway: dict
     findings: dict
     task: dict
+    observer_readonly_ref: str
 
     @property
     def health_timeout_seconds(self) -> float:
@@ -202,6 +205,11 @@ def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) 
 
 def _int(value: object, low: int, high: int) -> bool:
     return type(value) is int and low <= value <= high
+
+
+def _reference(value: object) -> bool:
+    return (isinstance(value, str) and 0 < len(value) <= MAX_REFERENCE_LENGTH and value.strip() == value
+            and not any(ord(c) < 32 or ord(c) == 127 for c in value))
 
 
 def _task_text(value: object) -> bool:
@@ -322,6 +330,9 @@ def parse_runner_config(raw: object) -> RunnerConfig:
                        ("max_pages", MAX_FINDINGS_PAGES)):
         if name in findings and not _int(findings[name], 1, high):
             errors.append(f"config.findings.{name}: INVALID")
+    # 등록 관측 GET이 그 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(v1.1 §3 observer). 러너가 만들 수 없는 근거다.
+    if "observer_readonly_ref" in top and not _reference(top["observer_readonly_ref"]):
+        errors.append("config.observer_readonly_ref: INVALID")
     task = _exact(top.get("task"), _TASK_FIELDS, "config.task", errors) if "task" in top else {}
     for name in ("description", "goal"):
         if name in task and not _task_text(task[name]):
@@ -356,7 +367,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         run={name: run[name] for name in _RUN_FIELDS},
         llm_gateway={name: gateway[name] for name in _GATEWAY_FIELDS},
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
-        task={name: task[name] for name in _TASK_FIELDS})
+        task={name: task[name] for name in _TASK_FIELDS},
+        observer_readonly_ref=top["observer_readonly_ref"])
 
 
 def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:

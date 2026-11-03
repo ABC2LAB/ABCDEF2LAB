@@ -61,6 +61,7 @@ class EvidenceDir:
     def __init__(self, path: Path):
         self.path = path
         self._digests: dict[str, str] = {}
+        self._sizes: dict[str, int] = {}
 
     def write_json(self, name: str, payload: object) -> str:
         if not _NAME.fullmatch(name):
@@ -87,10 +88,28 @@ class EvidenceDir:
             os.close(directory)
         digest = hashlib.sha256(data).hexdigest()
         self._digests[name] = digest
+        self._sizes[name] = len(data)
         return digest
 
     def digests(self) -> dict[str, str]:
         return dict(self._digests)
+
+    def describe(self, name: str) -> tuple[str, int]:
+        """쓴 파일의 (SHA-256, 바이트 수). 러너 기록 descriptor용."""
+        if name not in self._digests:
+            raise EvidenceError("evidence_unknown")
+        return self._digests[name], self._sizes[name]
+
+
+def read_private_json(directory: Path, name: str) -> object:
+    """러너가 쓴 회차 파일(러너 uid 소유 일반 파일)을 JSON으로 읽는다. 없거나 해석 불가면 오류."""
+    data = _read_owned(directory, name)
+    if data is None:
+        raise EvidenceError("evidence_missing")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        raise EvidenceError("evidence_invalid") from None
 
 
 def _read_owned(directory: Path, name: str) -> bytes | None:

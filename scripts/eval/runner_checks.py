@@ -380,6 +380,11 @@ def read_host_listeners(read_text: Callable[[str], str | None]) -> frozenset[Lis
     return frozenset(listeners)
 
 
+def listeners_outside_loopback(listeners: Iterable[Listener]) -> list[str]:
+    """격리 근거용: loopback이 아닌 호스트 리슨(주소:포트, 정렬)."""
+    return sorted({f"{item.address}:{item.port}" for item in listeners if not _is_loopback(item.address)})
+
+
 def check_host_listeners(listeners: Iterable[Listener], allowed: frozenset[Listener]) -> list[str]:
     """loopback이 아닌 주소(0.0.0.0·[::]·특정 IP 전부)의 리슨은 허용 집합에 정확히 있어야 한다."""
     violations = set()
