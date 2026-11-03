@@ -33,6 +33,7 @@ type fakeHost struct {
 	key                []byte
 	deny               bool
 	keyHook            func()
+	keyContextHook     func(context.Context)
 	leaseCtx           context.Context
 	acquired, released atomic.Int64
 }
@@ -55,7 +56,10 @@ func (l *fakeLease) Context() context.Context {
 	return context.Background()
 }
 func (l *fakeLease) Epoch() Epoch { return l.epoch }
-func (l *fakeLease) ResolveKey(context.Context, Binding) ([]byte, error) {
+func (l *fakeLease) ResolveKey(ctx context.Context, _ Binding) ([]byte, error) {
+	if l.host.keyContextHook != nil {
+		l.host.keyContextHook(ctx)
+	}
 	if l.host.keyHook != nil {
 		l.host.keyHook()
 	}
@@ -477,14 +481,25 @@ func TestStoreRollbackAndCommitUnknown(t *testing.T) {
 }
 
 func TestStoreEpochAndAuthorityFailClosed(t *testing.T) {
-	for _, mode := range []string{"missing-epoch", "wrong-host-epoch", "epoch-race", "epoch-new-anchor", "auth-denied", "read-denied", "lease-cancelled", "wrong-read-scope", "nil-key"} {
+	for _, mode := range []string{"missing-epoch", "wrong-host-epoch", "lease-epoch-mismatch", "epoch-race", "epoch-new-anchor", "auth-denied", "read-denied", "lease-cancelled", "wrong-read-scope", "nil-key"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newFixture(t, mode != "missing-epoch")
 			r := f.req(Register, "op:r", 0, 0, 0)
 			if mode == "read-denied" || mode == "wrong-read-scope" || mode == "epoch-new-anchor" {
 				publish(t, f, r, 0)
 			}
+			want := ErrAuthority
 			switch mode {
+			case "missing-epoch", "epoch-race":
+				want = ErrEpoch
+			case "wrong-read-scope":
+				want = ErrConflict
+			case "epoch-new-anchor":
+				want = ErrNotFound
+			}
+			switch mode {
+			case "lease-epoch-mismatch":
+				f.host.epoch.Generation++
 			case "wrong-host-epoch":
 				r.Epoch.EpochRef = "caller:forged"
 			case "epoch-race":
@@ -514,17 +529,17 @@ func TestStoreEpochAndAuthorityFailClosed(t *testing.T) {
 				if mode == "wrong-read-scope" {
 					q.Binding.Scope.TaskRef = "task:other"
 				}
-				if got, err := f.store.Head(context.Background(), q); err == nil || got != (Head{}) {
-					t.Fatal("unauthorized/stale head read")
+				if got, err := f.store.Head(context.Background(), q); !errors.Is(err, want) || got != (Head{}) {
+					t.Fatalf("unauthorized/stale head read: got %v want %v", err, want)
 				}
 				q.OperationRef = r.OperationRef
-				if got, err := f.store.Operation(context.Background(), q); err == nil || got != (Receipt{}) {
-					t.Fatal("unauthorized/stale operation read")
+				if got, err := f.store.Operation(context.Background(), q); !errors.Is(err, want) || got != (Receipt{}) {
+					t.Fatalf("unauthorized/stale operation read: got %v want %v", err, want)
 				}
 				counts(t, f, 1, 1)
 			} else {
-				if got, err := f.store.Publish(context.Background(), r, bytes.NewReader(f.snap[0])); err == nil || got != (Receipt{}) {
-					t.Fatal("missing authority accepted")
+				if got, err := f.store.Publish(context.Background(), r, bytes.NewReader(f.snap[0])); !errors.Is(err, want) || got != (Receipt{}) {
+					t.Fatalf("missing authority: got %v want %v", err, want)
 				}
 				counts(t, f, 0, 0)
 			}
