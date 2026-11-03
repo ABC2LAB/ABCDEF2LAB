@@ -221,10 +221,23 @@ server-owned conversation→retest→finding→원래 task와 새 검증 executi
 
 ## 9. 남은 협의
 
+### 9.1 팀 결정을 위한 저장 경계 제안
+
+다음 표는 §5.5의 미결정 항목을 리뷰 가능한 선택으로 좁힌 **제안**이다. 담당자의 확인과 수용 증거가 갖춰지기 전에는 저장 게이트의 확정 계약이나 구현 완료로 취급하지 않는다. 기존 판정 필드의 의미, KG 발급 책임, 평가 러너 API는 이 표로 바꾸지 않는다.
+
+| 결정 항목 | 권장 검토안과 보류 조건 | 확인 담당 · 수용 증거 |
+|---|---|---|
+| 판정 정본 바이트 | `verdict-record`의 기존 필드만 typed adapter가 직렬화한다. v1에는 부동소수점 필드를 추가하지 않고, 식별용 정수는 signed 64-bit 범위의 정확한 정수로 제한한다. **`verdict-record` 정본 시각만** UTC RFC 3339의 소수 6자리와 `Z` 접미사를 쓰는 문자열로 정규화하는 안을 검토한다. 평가 러너 v1.1의 나노초 기록 형식은 이 제안의 적용 대상이 아니다. `payload_canonical` 상한은 **64 KiB 제안값**으로 두되 실제 최대 합성 레코드와 여유를 재서 확정한다. 범위·정밀도·상한이 합의되지 않거나 Go/Python 바이트가 다르면 발급 연결을 보류한다. | 최민준·이동찬: 최소/최대 값, HTML 문자 `<`·`>`·`&`, U+2028·U+2029, 배열 순서, 시각 오프셋, 경계 크기, 부동소수점 거부를 공유 벡터로 검증해 두 언어의 바이트·SHA-256 일치 확인. 잘못된 UTF-8은 U+FFFD 치환 없이 adapter 입력 오류로 거부. Python 평가 reader도 signed 64-bit 경계와 범위 밖 거부를 명시 검사. 필드별 타입과 schema version 승인. |
+| KG snapshot 공급·보존 | owner/cross 전에 같은 불변 snapshot의 ID·version·내용 digest를 정본 reader가 발급하고, 판정·issuance가 그 세 값과 관찰시각을 결속한다는 안이다. **snapshot ID는 task·run·reset 세대 안에서 유일**하며 다른 세대의 같은 ID/version을 재사용하지 않고 세대 교체 시 새 snapshot을 발급한다. **digest 범위는 case의 정책·주체 축 해소 결과 전체**다: 대상 `resource_ref`, 비민감 주체 참조와 계정별 `ExpectedAccess`, `HasRegisteredSource`, `ValidFrom`/`ValidUntil`, `PolicyVersion`, `HintMatchesCanonical`, 공유·위임 해소 상태, reset 세대 결속을 §5.5 정형 직렬화 v1 바이트로 만든 SHA-256이다. canary는 값 없이 등록 참조 `bundle_ref`만 포함한다([KG 계약](./kg-policy.md) §3·§3.1·§3.2). 같은 ID/version의 다른 digest나 보존 중 snapshot 유실은 신규 발급·근거 재확인을 거부한다. 이미 저장된 불변 판정의 읽기는 유지하되 검증 성공으로 표시하지 않는다. **평가 export·채점 완료까지는 보존 하한**이며, controlled 판정이 참조하는 snapshot은 판정과 함께 TTL 없이 보존한다. 상한·파기 절차는 판정 보존 정책과 함께 정하며 합의 전 자동 TTL·파기를 두지 않는다. export 재확인 실패는 확정으로 세지 않고 사유를 보존한 판단불가(`UNDECIDABLE`)로 전달한다. digest만 남기는 방식은 재현 가능성 입증 후에만 재검토한다. | 최민준: KG 소유·권한 항목을 대리 검토했고 이경준 복귀 후 사후 확인을 요청할 예정이다. ID·version·digest와 세대 메타를 함께 공급하는 정본 reader/API 구현은 KG 쪽 후속이다. 발급/재조회·동일 version 이종 내용·세대 재사용·snapshot 유실·export 재확인 실패·보존 경계 시험은 구현 후 검증한다. 평가 어댑터는 최민준 담당이며 이 행이 구현·시험 완료를 뜻하지 않는다. |
+| 실행 근거 manifest 동결 | E② owner/cross 관찰과 완결 영수증, **필수 감사 checkpoint의 영속 성공 후**, oracle issuance 전에 서버가 비민감 참조를 한 revision으로 동결하는 안을 검토한다. 일부 근거/감사가 실패하면 manifest를 발급하지 않는다. 동일한 불변 근거로 재시도하면 같은 revision에 멱등 수렴하고, 관찰·근거가 달라졌다면 새 revision을 발급한다. 같은 revision의 다른 digest는 충돌이며 과거 revision을 덮지 않는다. | 이동찬·E② 담당: 관찰·영수증·감사 참조의 발행자와 순서를 확인하고, 중간 실패·재시작·동시 재시도·누락 checkpoint 시험으로 미완결 근거가 `CONFIRMED` 저장에 닿지 않음을 증명. |
+| DB 작성 권한·보존 | 최초에는 서버 전용 transaction과 불변 trigger/제약으로 쓰기 경계를 만들고, DB 역할 분리 전에는 단일 자격증명 경로의 임의 SQL 차단을 주장하지 않는다. controlled 정본·수동 승인 로그에 자동 TTL을 두지 않고 삭제·archive/restore는 §5.3처럼 거부한다. 보존 기간과 적법한 삭제·복원 절차가 합의되기 전 운영 활성화 범위를 별도로 제한한다. | 이동찬·최민준: migration/runtime/읽기 역할과 보존 책임자를 정하고 권한 거부, 원자 rollback, 삭제·복원 거부, 보존 기간 경계 시험을 승인. 실제 DB 역할·운영 권한 변경은 별도 작업. |
+
+[최민준의 첫 리뷰](https://github.com/ABC2LAB/ABCDEF2LAB/pull/130#issuecomment-6598432852)의 정본 바이트 벡터·평가 읽기 경계 보완은 유지한다. 64 KiB·숫자 범위·시각 형식은 여전히 팀 검토용 제안이다. [최신 대리 검토](https://github.com/ABC2LAB/ABCDEF2LAB/pull/130#issuecomment-6601175022)에서 최민준은 이경준의 11/03~11/04 부재 중 KG 소유·권한 항목을 대리 확인하고, 위 digest 범위·ID 세대 결속·보존 하한을 명시하면 Ready로 전환하도록 허용했다. 이는 최민준의 대리 검토이며 **이경준의 직접 확인을 완료한 것은 아니다.** 복귀 후 사후 확인은 별도로 남긴다. 정본 reader/API와 실제 저장·보존 배선 및 수용시험도 후속이며 문서의 Ready가 구현·운영 활성화 완료를 뜻하지 않는다.
+
+### 9.2 그 밖의 남은 협의
+
 - 재검증 매핑과 동일 실행/근거·완결 영수증·판정/issuance 동일 transaction·finding/link 원자 저장 불변식은 리뷰에서 합의했다. 발급 레코드의 두 보완 항목은 §3과 시험 명세에 반영했으며 수정본의 최종 확인을 받는다. 잠금 순서 자체는 이동찬이 기존 엔진 경로와 맞춰 구현·DB 경합 시험으로 검증한다.
 - 최민준님 리뷰의 canonical 바이트 정본·회차 결속·수동 export 별도 건수/모든 판정 지표·분모 제외·별도 재검증 읽기 결정은 §5.5·§1.1·§7에 반영했다. 승인자/시각/근거 로그 필드와 API/export, payload 세부 schema·숫자 타입·상한 및 언어 간 직렬화 일치 검증은 후속이다. 이 결정들을 전체 물리 저장 계약의 합의나 구현 완료로 확대하지 않는다.
 - §5.5의 판정/발급/연결·수동 승인 테이블, write 권한·FK·멱등키·보존/삭제·잠금 순서는 **이동찬의 권장 검토안**이다. 위 리뷰 결정 밖의 세부 형식 확인과 실제 DDL·경합 시험 전에는 확정 저장 규격이나 구현 완료가 아니다.
-- 서버 execution 근거 manifest와 E② 감사 완료/관찰 참조의 생성·동결 시점(이동찬, 진행 중인 E② 세션).
 - private marker와 DB mode fence의 이관·재시작·등록 경합 처리(이동찬).
-- KG 버전/정본 snapshot 제공, 허용 결과 저장의 이름(최민준·이경준). 기존 `oracle` 의미는 유지.
-- 수직 IDOR·상태변경·fixed 입증·근거 revision 교체는 초기 조회 게이트 이후 범위.
+- 허용 결과 저장의 이름은 최민준·이경준과 확인한다. 기존 `oracle` 의미는 유지. 수직 IDOR·상태변경·fixed 입증·근거 revision 교체는 초기 조회 게이트 이후 범위.
