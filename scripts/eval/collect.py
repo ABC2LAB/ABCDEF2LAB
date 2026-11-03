@@ -32,7 +32,7 @@ class EvalConfig:
     """평가 환경 설정. 값은 .env에서 온다 — 코드 하드코딩 금지(프로토콜 §2·§6)."""
 
     target_origin: str  # 예: http://127.0.0.1:3000 (EVAL_TARGET_ORIGIN)
-    llm_base_url: str | None  # ARTEX_LLM_BASE_URL (Ollama)
+    llm_base_url: str | None  # ARTEX_LLM_BASE_URL (평가는 외부 API 허용, 평가 프로토콜 §6)
     model_tag: str | None  # baseline·개선 후 동일해야 하는 정확한 태그 (§6)
 
 

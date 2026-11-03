@@ -1,4 +1,4 @@
-"""프로파일→지문→사전검사 경계의 유한한 생성형 회귀(조합 900개).
+"""프로파일→지문→사전검사 경계의 유한한 생성형 회귀(조합 858개).
 
 합성 선언만 사용한다. 원래 프로파일은 preflight 입력이 아니므로 변경 시 지문을
 재생성해 연결한다. 제품 코드·기존 테스트는 수정하지 않고 공개 API와 합성 fixture를
@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import preflight
 import profile_fingerprint as fingerprint
-from test_profile_fingerprint import profile
+from test_profile_fingerprint import api_llm, profile
 
 _ARRAYS = (("fixture", "accounts"), ("fixture", "resources"),
            ("scope", "methods"), ("scope", "paths"), ("scope", "vuln_classes"))
@@ -35,11 +35,12 @@ _SAMPLED_ORDERS = (_ORDERS[0], *(flags for flags in _ORDERS if sum(flags) == 1),
 _NUMBERS = (("0", "1200"), ("0.0", "1200.0"), ("-0.000", "1.2e3"), ("0e5", "120000e-2"))
 _DIGESTS = ("fixture_fingerprint", "environment_fingerprint", "scope_fingerprint")
 _ENV_CHANGES = {
-    "model_tag": "other-model:fixed-tag", "llm_base_url": "http://localhost:11434/v1",
+    # 모델·제공자·base URL·fallback은 하나의 llm 객체로 비교된다(평가 프로토콜 §6).
+    "llm": api_llm() | {"model": "example-org/other-model", "provider": "other-provider"},
     "temperature": 0.25, "seed": 43, "target_image": "example/target:16.0.0",
     "worker_count": 2, "time_budget_seconds": 600, "request_budget": 101,
 }
-_SCOPE_CHANGES = {"target_origin": "http://127.0.0.1:3001", "methods": ["GET"],
+_SCOPE_CHANGES = {"target_origin": "http://eval-meter:8081", "methods": ["GET"],
                   "paths": ["/api/records/{object}"], "vuln_classes": ["idor"]}
 
 
@@ -143,7 +144,7 @@ class TestProfilePreflightProperties(unittest.TestCase):
         self.assertEqual(set(caught.exception.errors), expected)
         self.assertEqual(len(caught.exception.errors), len(expected))
         self.assertEqual(payload, before)
-        for value in ("example-model", "other-model", "127.0.0.1", "/api/records"):
+        for value in ("example-model", "other-model", "other-provider", "llm-api.example", "eval-meter", "/api/records"):
             self.assertNotIn(value, str(caught.exception))
 
     def assert_one_sided_change(self, family, field, changed_wire, side):
@@ -180,7 +181,7 @@ class TestProfilePreflightProperties(unittest.TestCase):
             with self.subTest(family=family, field=field, flags=flags, keys=reverse, side=side):
                 self.assert_one_sided_change(family, field, _wire(changed, flags, reverse), side)
                 cases += 1
-        self.assertEqual(cases, 420)
+        self.assertEqual(cases, 392)
 
     def test_equal_changes_on_both_sides_remain_comparable(self):
         cases = 0
@@ -192,7 +193,7 @@ class TestProfilePreflightProperties(unittest.TestCase):
                 self.assertEqual(_digest(left), _digest(right))
                 self.assert_passes(_pair(left, right))
                 cases += 1
-        self.assertEqual(cases, 210)
+        self.assertEqual(cases, 196)
 
     def test_digest_preserves_decimal_changes_hidden_by_float_controls(self):
         literals = ("0.1234567890123456789012345678901", "0.1234567890123456789012345678902")
@@ -231,7 +232,7 @@ class TestProfilePreflightProperties(unittest.TestCase):
                         path.write_text(wire, encoding="utf-8")
                         code, out, err = invoke(fingerprint.main, [str(path)])
                         self.assertEqual((code, err), (0, ""))
-                        self.assertNotIn("127.0.0.1", out)
+                        self.assertNotIn("eval-meter", out)
                         digests.append(json.loads(out))
                     payload = _pair(left, right, *digests)
                     config_path.write_text(json.dumps(payload), encoding="utf-8")
