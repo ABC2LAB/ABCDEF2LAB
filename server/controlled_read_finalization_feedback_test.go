@@ -34,6 +34,8 @@ func TestControlledFinalizationSafeReconciliationDiagnostic(t *testing.T) {
 		{"unknown", "storage_outcome_unknown", errors.New(privateCause), true},
 		{"conflict", "storage_conflict", fmt.Errorf("%w: %s", db.ErrControlledFindingConflict, privateCause), true},
 		{"rejected", "storage_rejected", fmt.Errorf("%w: %s", db.ErrControlledFindingMode, privateCause), true},
+		{"source", "source_rejected", fmt.Errorf("%w: %s", controlledFindingSourceFailure{}, privateCause), false},
+		{"before-storage", "finalization_rejected", ErrControlledFindingUnavailable, false},
 		{"callback", "finalization_rejected", errors.New(privateCause), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,6 +51,10 @@ func TestControlledFinalizationSafeReconciliationDiagnostic(t *testing.T) {
 			failure := tc.cause
 			if tc.typed {
 				failure = controlledFindingPersistenceError(failure, operation)
+			}
+			if tc.name == "source" && (!errors.Is(failure, ErrControlledFindingUnavailable) ||
+				(controlledFindingSourceFailure{}).Error() != ErrControlledFindingUnavailable.Error()) {
+				t.Fatal("source classification changed the public unavailable contract")
 			}
 			calls := 0
 			state := &controlledReadVerificationState{

@@ -62,12 +62,13 @@ Source/DB I/O 중에는 work/runtime/recorder 잠금을 잡지 않는다.
 CONFIRMED finding/node/link를 원자 커밋한다. 그 밖의 판정은 구조화 기록만 만든다.
 첫 prepared operation key/input digest를 고정한다. 같은 입력 재시도는 DB 멱등 경계를 사용하며,
 응답 유실 뒤 Source revision 등 불변 입력이 바뀌면 두 번째 writer 호출 전에 conflict다.
-입력/모드 거절, 충돌, 커밋 결과 불명을 구분한다. 결과 불명을 미저장으로 단정하지 않는다.
+저장 전 Source/Prepare 거절, DB 입력/모드 거절, 충돌, 커밋 결과 불명을 구분한다. 결과 불명을 미저장으로 단정하지 않는다.
 실제 실행의 finish는 finalizer를 한 번 호출하며 자동 재시도·DB 대조를 수행하지 않는다.
 실패 시 모델/intent에는 일반 실패만 돌려주고, 서버 로그에는 고정 사유
-`storage_rejected`·`storage_conflict`·`storage_outcome_unknown`(기타 callback 오류는
-`finalization_rejected`)와 사용 가능한 비민감 operation key를 남긴다. Prepare 이전 등 key를
-발급하지 못한 경우 `unavailable`이다. 원문 Source/SQL 오류·자격값은 로그에 넣지 않는다.
+`source_rejected`(Source/Prepare 검증 실패)·`storage_rejected`(DB 입력/모드 거절)·
+`storage_conflict`·`storage_outcome_unknown`(기타 callback 오류는 `finalization_rejected`)와
+사용 가능한 비민감 operation key를 남긴다. Source/Prepare 실패처럼 key를 발급하지 못한
+경우 `unavailable`이다. 원문 Source/SQL 오류·자격값은 로그에 넣지 않는다.
 ACK 유실로 intent가 blocked여도 해당 key로 저장 행을 운영자가 대조해야 하며,
 대조·복구 API나 자동 재송신 기능을 구현했다고 주장하지 않는다.
 
@@ -81,10 +82,11 @@ owned HTTP 대상, 격리 PostgreSQL을 사용한다. 실제 Juice Shop 진단�
 | confirmed | owner/cross 실제 HTTP 2회, 감사 HMAC 검증, finding/node/issuance 각 1개, intent done |
 | late-pause | 완료 claim 뒤 pause, 같은 저장 1개와 done 유지, DB·메모리 pause 유지 |
 | missing-source | HTTP 0회, 저장 0개 |
-| source-error / checkpoint-mismatch | HTTP 각 2회, 저장 0개 |
-| unknown-commit-source-change | 실제 커밋 1개 뒤 ACK 유실, 결과 불명, 변경된 Source 재시도는 conflict·writer 총 1회 |
+| source-error / checkpoint-mismatch | HTTP 각 2회, 저장 0개, 로그 `source_rejected`·key `unavailable` |
+| storage-rejected | HTTP 2회, 실제 DB intent kind 거절·저장 0개, 로그 `storage_rejected`·시도한 operation key 일치 |
+| unknown-commit-source-change | 실제 커밋 1개 뒤 ACK 유실, 결과 불명, 변경된 Source 재시도는 conflict·writer 총 1회, 두 로그의 원래 operation key 일치 |
 
-위 6개와 상위 테스트는 race 실행에서 7 pass / 0 fail / 0 skip이다.
+위 7개와 상위 테스트는 race 실행에서 8 pass / 0 fail / 0 skip이다.
 격리 DB의 canonical 판정 6건은 Python `json.dumps(sort_keys=True, separators=(",", ":"),
 ensure_ascii=False, allow_nan=False)`와 정확히 일치했다. HTML 문자·비ASCII·U+2028/U+2029를 포함한다.
 원문 payload·비밀·canary 값을 출력하거나 commit하지 않고 건수만 확인했다.
