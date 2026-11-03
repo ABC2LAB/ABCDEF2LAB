@@ -100,8 +100,22 @@ func TestLocalOnlyBindingReadFailureStopsChatFallback(t *testing.T) {
 	}
 }
 
+func TestLocalOnlyBindingReadFailureWithoutPinStopsGlobalChat(t *testing.T) {
+	s, fixture := bindingReadServer(t, true, true)
+	s.chatAgent = &agent.ChatAgent{}
+	s.llmProv = blockedLocalProvider{}
+	s.llmOn = true
+	if s.resolveChatAgent(&db.Conversation{AgentKey: "worker"}) != nil {
+		t.Fatal("binding lookup failure without a pin selected global chat")
+	}
+	if fixture.bindingReads.Load() != 1 || fixture.fallbackReads.Load() != 0 {
+		t.Fatalf("binding=%d fallback=%d", fixture.bindingReads.Load(), fixture.fallbackReads.Load())
+	}
+}
+
 func TestLocalOnlyMissingBindingStoreStopsFallback(t *testing.T) {
-	s := &Server{m: &Manager{}, localResolver: localTestResolver(t, "http://127.0.0.1:11434/v1")}
+	s := &Server{m: &Manager{}, localResolver: localTestResolver(t, "http://127.0.0.1:11434/v1"),
+		chatAgent: &agent.ChatAgent{}, llmProv: blockedLocalProvider{}, llmOn: true}
 	provider, _, ok := s.agentBindingProvider("worker")
 	if _, blocked := provider.(blockedLocalProvider); !ok || !blocked {
 		t.Fatal("unavailable binding source permitted fallback")
