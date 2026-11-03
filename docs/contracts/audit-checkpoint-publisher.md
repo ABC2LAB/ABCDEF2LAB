@@ -6,7 +6,7 @@
 
 ## 기준과 API
 
-- 기준: `dev` `88415fff88f1c66c4307ba370c360e6ad338efcc`, 감사 확장 검증 `9ec769ccd66f4e7ed1ee32aaed772c05fb30c023`, CPD 저장 코어 `8bf68804592a7b8e71c54e907a6ee391cde55f37`. 마지막 코어의 `Host/Lease`, `Publish`, `Head`가 이 구현의 직접 의존이다. 별도 인증 권한 초안 [#146](https://github.com/ABC2LAB/ABCDEF2LAB/pull/146)은 코드 선행 조건이나 확정된 운영 정책이 아니다.
+- 기준: `dev` `88415fff88f1c66c4307ba370c360e6ad338efcc`, 감사 확장 검증 `b3652a180668c2752e1f8fb6130e0c3d298b9496`, CPD 저장 코어 `f5515077eda692be4b212d379303d8fddcb036d8`. 마지막 코어의 `Host/Lease`, `Publish`, `Head`가 이 구현의 직접 의존이다. 별도 인증 권한 초안 [#146](https://github.com/ABC2LAB/ABCDEF2LAB/pull/146)은 코드 선행 조건이나 확정된 운영 정책이 아니다.
 - `auditpublisher.Open(ctx, Config)`은 host가 준 `Store`, `Epoch`, `PublisherRef`, 전체 `Scope`, `KeyRef`, HMAC 키, 필수 `RootScope` lease(철회 context·장기 root fd·절대 directory 경로·배타 writer 수명), 새 filename, snapshot 상한을 요구한다. `auditlog.Create`가 새 header 파일/디렉터리를 Sync한 뒤 상한 있는 원본 snapshot으로 CPD `Register`와 **별도 현재 `Head` 조회**를 완료해야 recorder를 반환한다. 실패한 journal 파일은 남기고 새 RunRef/파일로 자동 재시도하지 않는다.
 - `(*Publisher).Record`는 호출을 직렬화해 `Journal.Record`의 전체 event Write+Sync → root에 묶인 파일의 불변·상한 적용 snapshot → CPD `Append` CAS/내구 ACK → 별도 현재 `Head` 대조를 수행한다. 어느 단계든 실패하면 sticky 오류로 이후 송신에 성공 ACK를 주지 않는다. 이전 연산 receipt는 현재 head가 아니다.
 - 성공한 `Open`/`Record` 뒤 `AcknowledgedHead()`는 그 인스턴스가 마지막으로 확인한 checkpoint·revision의 **메타데이터 사본**을 준다. 서버는 이를 기존 보호된 로컬 checkpoint sidecar에 저장할 수 있지만, 이 사본은 독립된 현재 정본 조회/권한이 아니다. sidecar 저장 실패나 `NewHTTP` 생성 실패 시 `Abort()`로 이후 Record를 막고 journal/key/fd를 닫으며 원본을 보존한다. 실패 후 `Seal`을 호출하지 않는다.
