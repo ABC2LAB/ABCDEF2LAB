@@ -20,7 +20,11 @@ import (
 //go:embed budget_authority_schema.sql
 var budgetAuthoritySchemaSQL string
 
-const budgetAuthorityLockKey int64 = 7337741002
+const (
+	// 1001 through 1004 are reserved for schema, tests, company and evidence.
+	budgetAuthorityLockKey      int64 = 7337741005
+	budgetAuthorityProbeTimeout       = 5 * time.Second
+)
 
 var (
 	ErrBudgetAuthorityUnavailable = errors.New("budget_authority_unavailable")
@@ -248,7 +252,7 @@ func (a *BudgetAuthority) Close(ctx context.Context, now time.Time) error {
 }
 
 func releaseBudgetAuthorityConn(conn *sql.Conn) error {
-	unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	unlockCtx, cancel := context.WithTimeout(context.Background(), budgetAuthorityProbeTimeout)
 	defer cancel()
 	var unlocked bool
 	unlockErr := conn.QueryRowContext(unlockCtx, `SELECT pg_advisory_unlock($1)`, budgetAuthorityLockKey).Scan(&unlocked)
@@ -297,22 +301,38 @@ SELECT request_ref,$1,'closed',$2 FROM moved`, epoch, now); err != nil {
 }
 
 func (a *BudgetAuthority) checkActive(ctx context.Context) error {
-	if a.closed {
+	if a.closed || ctx.Err() != nil {
 		return ErrBudgetAuthorityUnavailable
 	}
+	// A caller disconnect must not cancel the dedicated lock session. Probe
+	// authority using its own bounded context and refuse this caller separately.
+	probe, cancel := context.WithTimeout(context.Background(), budgetAuthorityProbeTimeout)
+	defer cancel()
 	var backendID int
 	var held bool
-	if err := a.conn.QueryRowContext(ctx, `SELECT pg_backend_pid(), EXISTS (
+	if err := a.conn.QueryRowContext(probe, `SELECT pg_backend_pid(), EXISTS (
 SELECT 1 FROM pg_locks WHERE pid=pg_backend_pid() AND locktype='advisory' AND granted
 AND classid=($1::bigint >> 32)::oid
-AND objid=($1::bigint & 4294967295)::oid AND objsubid=1)`, budgetAuthorityLockKey).Scan(&backendID, &held); err != nil || backendID != a.backendID || !held {
+AND objid=($1::bigint & 4294967295)::oid AND objsubid=1)`, budgetAuthorityLockKey).Scan(&backendID, &held); err != nil {
+		return ErrBudgetAuthorityUnavailable
+	}
+	if backendID != a.backendID || !held {
 		a.closed = true
 		return ErrBudgetAuthorityUnavailable
 	}
 	var epoch string
 	var closed bool
-	if err := a.db.QueryRowContext(ctx, `SELECT epoch,closed FROM budget_authority_current WHERE singleton=1`).Scan(&epoch, &closed); err != nil || epoch != a.epoch || closed {
+	if err := a.db.QueryRowContext(probe, `SELECT epoch,closed FROM budget_authority_current WHERE singleton=1`).Scan(&epoch, &closed); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			a.closed = true
+		}
+		return ErrBudgetAuthorityUnavailable
+	}
+	if epoch != a.epoch || closed {
 		a.closed = true
+		return ErrBudgetAuthorityUnavailable
+	}
+	if ctx.Err() != nil {
 		return ErrBudgetAuthorityUnavailable
 	}
 	return nil
