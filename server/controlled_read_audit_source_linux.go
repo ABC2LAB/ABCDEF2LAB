@@ -11,6 +11,9 @@ import (
 	"github.com/Autumn-27/artex/transmit/auditlog"
 )
 
+// The v1 checkpoint has six bounded 128-byte references, fixed-width journal/MAC
+// fields and integer counters. 4 KiB leaves conservative encoding headroom while
+// bounding this separate metadata read; it is not the journal/event byte budget.
 const maxControlledAuditCheckpointBytes = int64(4096)
 
 func openControlledAuditRoot(host ControlledTaskModeHost) (*os.File, error) {

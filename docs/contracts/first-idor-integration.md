@@ -63,6 +63,13 @@ CONFIRMED finding/node/link를 원자 커밋한다. 그 밖의 판정은 구조�
 첫 prepared operation key/input digest를 고정한다. 같은 입력 재시도는 DB 멱등 경계를 사용하며,
 응답 유실 뒤 Source revision 등 불변 입력이 바뀌면 두 번째 writer 호출 전에 conflict다.
 입력/모드 거절, 충돌, 커밋 결과 불명을 구분한다. 결과 불명을 미저장으로 단정하지 않는다.
+실제 실행의 finish는 finalizer를 한 번 호출하며 자동 재시도·DB 대조를 수행하지 않는다.
+실패 시 모델/intent에는 일반 실패만 돌려주고, 서버 로그에는 고정 사유
+`storage_rejected`·`storage_conflict`·`storage_outcome_unknown`(기타 callback 오류는
+`finalization_rejected`)와 사용 가능한 비민감 operation key를 남긴다. Prepare 이전 등 key를
+발급하지 못한 경우 `unavailable`이다. 원문 Source/SQL 오류·자격값은 로그에 넣지 않는다.
+ACK 유실로 intent가 blocked여도 해당 key로 저장 행을 운영자가 대조해야 하며,
+대조·복구 API나 자동 재송신 기능을 구현했다고 주장하지 않는다.
 
 ## 확인한 시험과 한계
 
@@ -89,7 +96,7 @@ go test -race ./server -run '^TestFirstIDORSyntheticEngineThroughStoredFinding$'
 
 전체 수용시험·운영 활성화 완료를 주장하지 않는다. generic 저장 API는 known-controlled의
 생성/승격/근거 변경/재검증을 거부하지만 모든 unknown 작업의 전역 DB gate는 후속이다.
-64 KiB 정본 바이트·signed64·UTC6 형식은 #130의 검토안 범위이며 운영 확정으로 확대하지 않는다.
+정본 1~65536바이트·signed int64·판정 UTC6 Z는 #142 평가 담당의 v1 결정이다. 다른 운영 권한·보존 정책의 확정으로 확대하지 않는다.
 공유 예산의 실제 서버 연결, 재검증 저장·수동 확정·평가 export·Preview REST도 이 범위 밖이다.
 
 ## 실제 Juice Shop 첫 회차 전 남은 연결
@@ -104,3 +111,14 @@ go test -race ./server -run '^TestFirstIDORSyntheticEngineThroughStoredFinding$'
    기존 결과 조회를 확인한다. 합성 통과 건수와 실제 진단 결과는 따로 보고한다.
 
 현재 이 변경에서는 실제 Juice Shop 회차를 실행하지 않았다.
+
+## #142 리뷰 피드백 검증
+
+- controlled 작업 삭제 시험은 일반 finding 생성 API를 우회하는 **합성 DB fixture**로 준비하고 삭제 거부와 출처 보존을 다시 확인했다. 실제 저장 권한을 raw INSERT로 제공한 것이 아니다.
+- verdict/issuance/link/manifest의 UPDATE·DELETE·TRUNCATE, mode version·intent kind·manifest 내용·링크 재생·읽기 digest·running retest 전환의 거부와 legacy 대조를 보강했다. completed 전용 가드는 후단 finding 상태 가드에 가려지지 않도록 `reproduced` 대조를 포함한다.
+- worker가 반환한 뒤 최종 감사 저장과 실제 완료 claim 사이에서 work/task 취소·pause·delete·action을 각각 시험했다. 허용 대조는 저장 1회·HTTP 2회, 거부 대조는 저장 0회·HTTP 2회다.
+- 서명 정수·시각·65536/65537 경계, checkpoint sequence 0·생성 시각, digest를 다시 맞춘 위조 판정의 재계산 거부를 확인했다. [공용 벡터](../../e3record/testdata/canonical-v1.json) 27개는 Go와 별도 Python 검사가 같은 파일을 읽었다. 현재 `collect.py`는 새 Prepare 기대 payload를 받고, 과거 `record_version` 추가 대조는 거부한다.
+- 최종 **분할 race 검증 집계는 3794 pass / 0 fail / 2 skip**(상위·하위 사례 포함)이다. 첫 전체 실행은 UID/조상 소유자·DNS 격리 조건과 server 누적 10분 제한으로 종료코드 1이었다. 제품 Go 코드를 바꾸지 않고 해당 환경 패키지와 미완료 server 시험만 재검증해 집계했다. server 상위 시험 428개의 종료 결과를 모두 확인했다.
+- skip은 외부 모델 live 시험 `TestLiveContextReview`와 실제 root 권한이 필요한 `TestRunRejectsParentOwnedByAnotherUser`다. 전체 vet·Linux 빌드·Windows server 빌드·gofmt·문서 상대 링크 34개·diff 검사가 통과했다.
+
+이 수치는 합성 회귀이며 실제 Juice Shop 실행·운영 권한 공급·처리량 벤치마크 결과가 아니다. 평가 Python의 공용 벡터 회귀 연결은 최민준 담당 후속으로 남긴다.

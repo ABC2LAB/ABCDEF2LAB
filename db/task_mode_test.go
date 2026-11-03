@@ -898,7 +898,11 @@ func TestTaskModeArchiveAndCommitFailure(t *testing.T) {
 		if _, err := d.RegisterTaskMode(t.Context(), id, taskmode.ModeControlled, nil); err != nil {
 			t.Fatal(err)
 		}
-		finding, err := d.AddFinding(id, 0, "synthetic_class", "", "low", "synthetic source binding", "non-sensitive fixture", "fixture", nil)
+		// A controlled task deliberately rejects the generic AddFinding API.
+		// Seed only the historical source-binding fixture being protected here.
+		var finding int64
+		err := d.QueryRow(`INSERT INTO findings(task_id,vulnclass,name,severity,summary,evidence,worker,asset_ids)
+VALUES($1,'synthetic_class','','low','synthetic source binding','non-sensitive fixture','fixture','[]'::jsonb) RETURNING id`, id).Scan(&finding)
 		if err != nil {
 			t.Fatal(err)
 		}

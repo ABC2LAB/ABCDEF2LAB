@@ -224,6 +224,7 @@ func (v *controlledReadVerificationState) finish(l *controlledReadLease, complet
 		return errControlledReadUnavailable
 	}
 	if err := callback(ctx, evidence); err != nil {
+		logControlledFindingFinalizationFailure(err)
 		return errControlledReadUnavailable
 	}
 	return nil

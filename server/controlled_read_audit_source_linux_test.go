@@ -28,6 +28,7 @@ type finalAuditSourceFixture struct {
 	key                 []byte
 	journal, checkpoint string
 	options             ControlledReadAuditSourceOptions
+	cancelLifecycle     context.CancelFunc
 }
 
 // Authority callbacks below belong to the owned synthetic fixture. They do not
@@ -77,7 +78,7 @@ func newFinalAuditSourceFixture(t *testing.T) *finalAuditSourceFixture {
 	r.mode = &controlledTaskModeConfig{lifecycle: lifecycle, host: ControlledTaskModeHost{RootPath: store.stateDir, RootAnchor: rootAnchor, CheckRoot: func(ctx context.Context) error { return ctx.Err() }}}
 	f := &finalAuditSourceFixture{s: &Server{ctx: lifecycle, engine: &Engine{controlledReads: r}}, store: store, scope: scope,
 		anchor: ControlledReadAuditAnchor{Checkpoint: cp, Ref: "synthetic-sealed-head"}, key: key,
-		journal: filepath.Join(store.journalDirectory(), scope.RunRef+".jsonl"), checkpoint: filepath.Join(store.journalDirectory(), cp.JournalID+".checkpoint")}
+		journal: filepath.Join(store.journalDirectory(), scope.RunRef+".jsonl"), checkpoint: filepath.Join(store.journalDirectory(), cp.JournalID+".checkpoint"), cancelLifecycle: cancel}
 	f.options = ControlledReadAuditSourceOptions{MaxJournalBytes: 1 << 20, MaxEvents: 4, Timeout: time.Second,
 		LatestCheckpoint: func(ctx context.Context, actual transmit.Scope) (ControlledReadAuditAnchor, error) {
 			if ctx.Err() != nil || actual != f.scope {
@@ -146,7 +147,7 @@ func TestFinalAuditSourceBindsOnlyVerifiedAuditMetadata(t *testing.T) {
 }
 
 func TestFinalAuditSourceRejectsUntrustedOrIncompleteInputs(t *testing.T) {
-	for _, name := range []string{"head-error", "head-changed", "head-revoked", "key-error", "key-length", "wrong-key", "key-changed", "key-revoked", "scope", "run-path", "checkpoint-body", "journal-tamper", "journal-truncated", "journal-tail", "byte-limit", "event-limit", "journal-symlink", "checkpoint-symlink", "journal-fifo", "journal-hardlink", "file-mode", "directory-mode", "root-mode", "root-replaced", "journals-symlink", "root-trust-lost", "root-revoked-during-read", "cancelled", "timeout", "closed-runtime"} {
+	for _, name := range []string{"head-error", "head-changed", "head-revoked", "key-error", "key-length", "wrong-key", "key-changed", "key-revoked", "scope", "run-path", "checkpoint-body", "journal-tamper", "journal-truncated", "journal-tail", "byte-limit", "event-limit", "journal-symlink", "checkpoint-symlink", "journal-fifo", "journal-hardlink", "file-mode", "directory-mode", "root-mode", "root-replaced", "journals-symlink", "root-trust-lost", "root-revoked-during-read", "root-mode-during-read", "cancelled", "timeout", "closed-runtime"} {
 		t.Run(name, func(t *testing.T) {
 			f := newFinalAuditSourceFixture(t)
 			ctx := context.Background()
@@ -157,6 +158,16 @@ func TestFinalAuditSourceRejectsUntrustedOrIncompleteInputs(t *testing.T) {
 				headCalls++
 				if name == "head-error" || name == "head-revoked" && headCalls == 2 {
 					return ControlledReadAuditAnchor{}, errors.New("PRIVATE-HEAD-ERROR")
+				}
+				// These providers deliberately do not validate the requested
+				// scope, so only the adapter can reject the mismatch/path.
+				if name == "scope" {
+					return f.anchor, nil
+				}
+				if name == "run-path" {
+					got := f.anchor
+					got.Checkpoint.Scope = scope
+					return got, nil
 				}
 				got, err := head(ctx, scope)
 				if name == "head-changed" && headCalls == 2 {
@@ -175,6 +186,14 @@ func TestFinalAuditSourceRejectsUntrustedOrIncompleteInputs(t *testing.T) {
 				}
 				if name == "root-revoked-during-read" && keyCalls == 2 {
 					f.s.engine.controlledReads.mode.host.CheckRoot = func(context.Context) error { return errors.New("synthetic root trust revoked after file verification") }
+				}
+				if name == "root-mode-during-read" && keyCalls == 2 {
+					if err := os.Chmod(f.store.stateDir, 0o750); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if name == "scope" || name == "run-path" {
+					return f.key, nil
 				}
 				got, err := key(ctx, request)
 				if name == "key-length" {
@@ -259,12 +278,20 @@ func TestFinalAuditSourceRejectsUntrustedOrIncompleteInputs(t *testing.T) {
 			case "root-mode":
 				chmod(f.store.stateDir, 0o750)
 			case "root-replaced":
+				// Keep valid bytes, permissions and ownership; only the root
+				// inode differs from the still-open trusted anchor.
+				journal, checkpoint := read(f.journal), read(f.checkpoint)
 				if err := os.Rename(f.store.stateDir, f.store.stateDir+".saved"); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Mkdir(f.store.stateDir, 0o700); err != nil {
 					t.Fatal(err)
 				}
+				if err := os.Mkdir(f.store.journalDirectory(), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				write(f.journal, journal)
+				write(f.checkpoint, checkpoint)
 			case "journals-symlink":
 				path := f.store.journalDirectory()
 				if err := os.Rename(path, path+".saved"); err != nil {
@@ -287,6 +314,36 @@ func TestFinalAuditSourceRejectsUntrustedOrIncompleteInputs(t *testing.T) {
 			result, err := r.Read(ctx, scope)
 			if !errors.Is(err, ErrControlledReadAuditSource) || result.valid || strings.Contains(err.Error(), "PRIVATE") {
 				t.Fatalf("untrusted audit yielded a result: %v", err)
+			}
+			switch name {
+			case "scope":
+				if headCalls != 1 || keyCalls != 0 {
+					t.Fatal("scope mismatch did not stop before key/file verification", headCalls, keyCalls)
+				}
+			case "run-path":
+				if headCalls != 0 || keyCalls != 0 {
+					t.Fatal("unsafe run path reached a provider", headCalls, keyCalls)
+				}
+			case "root-replaced":
+				replacement, err := os.Open(f.store.stateDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer replacement.Close()
+				original := r.mode.host.RootAnchor
+				r.mode.host.RootAnchor = replacement
+				defer func() { r.mode.host.RootAnchor = original }()
+				if control, err := r.Read(ctx, scope); err != nil || !control.valid {
+					t.Fatal("identical copied root was invalid with its own trusted anchor", err)
+				}
+			case "root-mode-during-read":
+				if headCalls != 2 || keyCalls != 2 {
+					t.Fatal("root mode change must follow successful file verification", headCalls, keyCalls)
+				}
+				chmod(f.store.stateDir, 0o700)
+				if control, err := r.Read(ctx, scope); err != nil || !control.valid {
+					t.Fatal("restoring only root mode did not restore valid reading", err)
+				}
 			}
 		})
 	}
@@ -382,6 +439,11 @@ func TestFinalAuditSourceReaderRechecksTrustForEveryFinalization(t *testing.T) {
 	if !errors.Is(err, ErrControlledReadAuditSource) || second.FinalCheckpointRef != "" {
 		t.Fatal("cached verification survived key trust loss")
 	}
+	revoked = false
+	restored, err := wrapped(context.Background(), expected)
+	if err != nil || restored.FinalCheckpointRef != f.anchor.Ref {
+		t.Fatal("trust restoration did not restore the valid control", err)
+	}
 	other := expected
 	other.IntentID++
 	if _, err := wrapped(context.Background(), other); !errors.Is(err, ErrControlledReadAuditSource) {
@@ -414,8 +476,16 @@ func TestFinalAuditSourceReadsOnlyExaminedInode(t *testing.T) {
 				if err := os.WriteFile(f.journal+".replacement", body, 0o600); err != nil {
 					t.Fatal(err)
 				}
+				if err := os.Chtimes(f.journal+".replacement", before.ModTime(), before.ModTime()); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.Rename(f.journal+".replacement", f.journal); err != nil {
 					t.Fatal(err)
+				}
+				after, err := taskMarkerStat(directory, filepath.Base(f.journal))
+				if err != nil || !validControlledAuditInfo(after, f.options.MaxJournalBytes, uid) ||
+					before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || os.SameFile(before, after) {
+					t.Fatal("replacement must differ only in inode identity", err)
 				}
 			} else {
 				if err := os.Link(f.journal, f.journal+".link"); err != nil {
@@ -427,5 +497,18 @@ func TestFinalAuditSourceReadsOnlyExaminedInode(t *testing.T) {
 				t.Fatal("unexamined inode/link state was read")
 			}
 		})
+	}
+}
+
+func TestFinalAuditSourceRejectsLifecycleCancellationAfterConstruction(t *testing.T) {
+	f := newFinalAuditSourceFixture(t)
+	r := f.reader(t)
+	if control, err := r.Read(context.Background(), f.scope); err != nil || !control.valid {
+		t.Fatal("live lifecycle control failed", err)
+	}
+	f.cancelLifecycle()
+	result, err := r.Read(context.Background(), f.scope)
+	if !errors.Is(err, ErrControlledReadAuditSource) || result.valid {
+		t.Fatal("reader survived lifecycle cancellation after construction", err)
 	}
 }

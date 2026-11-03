@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,6 +31,15 @@ import (
 func TestFirstIDORSyntheticEngineThroughStoredFinding(t *testing.T) {
 	for _, mode := range []string{"confirmed", "late-pause", "missing-source", "source-error", "checkpoint-mismatch", "unknown-commit-source-change"} {
 		t.Run(mode, func(t *testing.T) {
+			diagnosticPath := filepath.Join(t.TempDir(), "finalization.log")
+			diagnosticFile, err := os.Create(diagnosticPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer diagnosticFile.Close()
+			previousLog := log.Writer()
+			log.SetOutput(diagnosticFile)
+			defer log.SetOutput(previousLog)
 			var hits atomic.Int64
 			var resolved, collections, finalizations, sourceCalls atomic.Int64
 			target := controlledReadTarget(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -237,6 +247,14 @@ func TestFirstIDORSyntheticEngineThroughStoredFinding(t *testing.T) {
 			if mode == "unknown-commit-source-change" {
 				if !errors.Is(firstSaveError, ErrControlledFindingOutcomeUnknown) || retryFinalize == nil {
 					t.Fatalf("committed but lost acknowledgement was misclassified: %v", firstSaveError)
+				}
+				var diagnostic controlledFindingStoreFailure
+				if !errors.As(firstSaveError, &diagnostic) || diagnostic.operation == ([sha256.Size]byte{}) {
+					t.Fatal("uncertain commit lost its stable operation key")
+				}
+				diagnosticBytes, readErr := os.ReadFile(diagnosticPath)
+				if readErr != nil || !bytes.Contains(diagnosticBytes, []byte(fmt.Sprintf("reason=storage_outcome_unknown operation_key=%x", diagnostic.operation))) {
+					t.Fatal("actual execution finish lost the reconciliation diagnostic")
 				}
 				revision.Store(2)
 				retryCtx, cancelRetry := context.WithTimeout(context.Background(), 2*time.Second)

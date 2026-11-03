@@ -18,7 +18,11 @@ var ErrControlledReadAuditSource = errors.New("controlled_read_audit_source_unav
 
 // These are reader resource ceilings, not execution approvals or defaults.
 const (
-	maxControlledAuditSourceBytes   = int64(64 << 20)
+	maxControlledAuditSourceBytes = int64(64 << 20)
+	// Four slots per request ceiling give reader headroom above the usual
+	// intent/result pair. Denied attempts also record results without spending
+	// MaxRequests, so this caps ALL events independently; it is not a proven
+	// maximum journal size for an admitted execution.
 	maxControlledAuditSourceEvents  = uint64(4 * maxControlledRequests)
 	maxControlledAuditSourceTimeout = 2 * time.Minute
 )
@@ -108,6 +112,9 @@ type ControlledReadFinalAudit struct {
 	intents, results uint64
 }
 
+// Read verifies the current audit snapshot. A retained result proves no later
+// trust state: call Read afresh for each finalization/retry, then Bind immediately.
+// SourceReader provides that composition without caching verified results.
 func (r *ControlledReadAuditSource) Read(ctx context.Context, scope transmit.Scope) (ControlledReadFinalAudit, error) {
 	if r == nil || ctx == nil || ctx.Err() != nil {
 		return ControlledReadFinalAudit{}, ErrControlledReadAuditSource
@@ -164,6 +171,8 @@ func (r *ControlledReadAuditSource) Read(ctx context.Context, scope transmit.Sco
 // Bind supplies only audit fields for the same execution. Conflicting supplied
 // audit fields are refused. All source authority and engine disposition fields
 // remain exactly as supplied; Prepare and the private E2 collector still decide.
+// Bind does not recheck filesystem/provider trust. Use a fresh Read from this
+// finalization, or SourceReader; do not cache a result for later binding.
 func (a ControlledReadFinalAudit) Bind(source e3record.Source) (e3record.Source, error) {
 	cp := a.anchor.Checkpoint
 	if !a.valid || source.Expected.Scope != cp.Scope ||

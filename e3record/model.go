@@ -14,8 +14,8 @@ import (
 	"github.com/Autumn-27/artex/transmit"
 )
 
-// MaxCanonicalBytes is the v1 implementation ceiling under review in #130.
-// It is not a claim that the team's pending payload-size policy is final.
+// MaxCanonicalBytes is the inclusive v1 canonical byte ceiling confirmed in
+// PR #142 review 5751671737 and docs/contracts/e3-storage-gate.md.
 const MaxCanonicalBytes = 64 << 10
 
 var (
