@@ -103,8 +103,8 @@ type taskLLMStreamHooks struct {
 
 // current resolves the provider this role runs on, by precedence:
 // Agent 绑定 → 任务 LLM 配置链 → 全局/环境配置。
-// 绑定优先于任务链：某个角色被显式指定了模型，就一直跑在那个模型上；绑定不存在或
-// 构建失败时才降级到任务链，任务链为空时再降级到全局配置。
+// 绑定优先于任务链：某个角色被显式指定了模型，就一直跑在那个模型上；绑定不存在时
+// 降级到任务链。外部模式下绑定构建失败也降级；local-only 模式下失败即阻断。
 // 返回的 profile id 只有走任务链时才非零 —— streamTaskLLM 以此判断额度错误是否
 // 应该推进任务的故障转移状态（绑定/全局路径不改任务链状态，沿用既有语义）。
 func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
@@ -488,9 +488,9 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 
 // agentBindingProvider resolves the profile a role is explicitly bound to
 // (agents.llm_profile_id) — the highest-precedence level for task agents. ok=false
-// when the role has no binding or the bound profile no longer builds, so callers
-// fall through to the task chain. A bound profile stays exclusive unless
-// llm_pool_bind_fallback is on, which is what poolForBinding encodes.
+// when the role has no binding or, in external mode, the bound profile no longer
+// builds. Local-only mode returns a blocked provider for an invalid binding so
+// callers cannot fall through. External mode honors llm_pool_bind_fallback.
 func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Config, bool) {
 	id := s.effectiveProfileForAgent(agentKey, nil)
 	if id == nil {
@@ -498,6 +498,9 @@ func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Conf
 	}
 	prov, cfg, ok := s.providerForProfile(*id)
 	if !ok {
+		if s.localResolver != nil {
+			return blockedLocalProvider{}, agent.Config{}, true
+		}
 		return nil, agent.Config{}, false
 	}
 	return s.poolForBinding(*id, prov, cfg), cfg, true
@@ -508,11 +511,25 @@ func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Conf
 // task chain.
 func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
 	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
-	if !s.llmOn || s.llmProv == nil {
+	prov, cfg, on := s.llmProv, s.llmCfg, s.llmOn
+	s.cfgMu.Unlock()
+	if !on || prov == nil {
 		return nil, agent.Config{}, false
 	}
-	return s.llmProv, s.llmCfg, true
+	if s.localResolver != nil {
+		active, err := s.m.pg.ActiveProfile()
+		if err != nil || active == nil {
+			return nil, agent.Config{}, false
+		}
+		current, ok := s.loadProfileConfig(active.ID)
+		if !ok || current != cfg {
+			return nil, agent.Config{}, false
+		}
+		if _, _, ok := s.providerForProfile(active.ID); !ok {
+			return nil, agent.Config{}, false
+		}
+	}
+	return prov, cfg, true
 }
 
 // taskRuntimeAvailable reports whether every listed role can resolve a provider
@@ -533,7 +550,10 @@ func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 		_, _, unboundReady = s.globalProvider()
 	}
 	for _, key := range agentKeys {
-		if _, _, ok := s.agentBindingProvider(key); ok {
+		if provider, _, ok := s.agentBindingProvider(key); ok {
+			if _, blocked := provider.(blockedLocalProvider); blocked {
+				return false
+			}
 			continue
 		}
 		if !unboundReady {

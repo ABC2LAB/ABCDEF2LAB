@@ -112,7 +112,21 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf(config.T("[config] skill 디렉터리: %s"), skillDir)
-	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	var srv *server.Server
+	switch os.Getenv("ARTEX_LLM_POLICY_MODE") {
+	case "", "local-only":
+		// A deployed binary starts in local-only mode unless the operator
+		// explicitly chooses external evaluation mode. A missing/bad policy
+		// stops startup before any provider can be constructed.
+		srv, err = server.NewWithLocalLLM(ctx, mgr, skillDir, *dataDir, config.BaseDir(), os.Getenv("ARTEX_LLM_PIN_MANIFEST"))
+	case "external":
+		srv = server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	default:
+		log.Fatal("invalid ARTEX_LLM_POLICY_MODE")
+	}
+	if err != nil {
+		log.Fatalf("local LLM policy: %v", err)
+	}
 	srv.WarnIfExposed(*addr)
 	httpSrv := &http.Server{
 		Addr:              *addr,
