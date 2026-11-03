@@ -26,7 +26,7 @@ INT64 = (1 << 63) - 1
 
 
 def digest(kind, value):
-    wire = json.dumps({"format": "abc2lab-eval-profile-v1", "kind": kind, "profile": value},
+    wire = json.dumps({"format": fingerprint.FORMAT, "kind": kind, "profile": value},
                       sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.new("sha256", wire.encode("ascii")).hexdigest()
 
@@ -103,7 +103,8 @@ class TestProfileNumericReferenceProperties(unittest.TestCase):
 
     def test_tag_digest_and_placeholder_reference_matrix_has_explicit_policy(self):
         cases = []
-        for field in ("model_tag", "target_image"):
+        # v2에서 모델 참조는 llm.model 규칙(백엔드별, test_preflight·test_profile_fingerprint)으로 옮겨 갔다.
+        for field in ("target_image",):
             cases.extend((field, value, True, True) for value in
                          ("repo:fixed-tag", "registry.example:5000/repo:v1", "repo:latestish", "repo:todoish"))
             cases.extend((field, "repo:" + tag, False, False) for tag in
@@ -122,7 +123,6 @@ class TestProfileNumericReferenceProperties(unittest.TestCase):
             ("target_image", "repo:LaTeSt@sha256:" + HEX, False, False),
             ("target_image", "repo@sha256:" + "A" * 64, False, False),
             ("target_image", "repo/placeholder:v1@sha256:" + HEX, False, False),
-            ("model_tag", "repo@sha256:" + HEX, False, False),
         ))
         for index, (field, value, profile_valid, preflight_valid) in enumerate(cases):
             with self.subTest(case=index, field=field):

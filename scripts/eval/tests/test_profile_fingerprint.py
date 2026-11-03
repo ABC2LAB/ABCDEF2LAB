@@ -22,9 +22,19 @@ import profile_fingerprint
 from profile_fingerprint import FORMAT, MAX_INPUT_BYTES, ProfileError, generate_fingerprints
 
 
+def api_llm():
+    return {"backend": "api", "base_url": "https://llm-api.example/api/v1", "model": "example-org/example-model",
+            "provider": "example-provider", "fallbacks": False}
+
+
+def local_llm():
+    return {"backend": "local", "base_url": "http://llm-host:11434/v1", "model": "example-model:fixed-tag",
+            "hostname": "llm-host", "host_ip": "172.17.0.1"}
+
+
 def profile():
     return {
-        "version": 1,
+        "version": 2,
         "fixture": {
             "preparation_id": "read_fixture", "preparation_revision": 1,
             "accounts": [{"label": "owner", "role": "basic"}, {"label": "peer", "role": "basic"}],
@@ -36,11 +46,11 @@ def profile():
             ],
         },
         "environment": {
-            "model_tag": "example-model:fixed-tag", "llm_base_url": "http://127.0.0.1:11434/v1",
+            "network_mode": "dedicated_network", "llm": api_llm(),
             "temperature": 0, "seed": 42, "target_image": "example/target:15.0.0",
             "worker_count": 1, "time_budget_seconds": 1200, "request_budget": 100,
         },
-        "scope": {"target_origin": "http://127.0.0.1:3000", "methods": ["GET", "HEAD"],
+        "scope": {"target_origin": "http://eval-meter:8080", "methods": ["GET", "HEAD"],
                   "paths": ["/api/records/{object}", "/api/status"], "vuln_classes": ["idor", "bola"]},
     }
 
@@ -52,12 +62,12 @@ class TestProfileFingerprint(unittest.TestCase):
         self.assertIn(expected, str(caught.exception))
         self.assertNotIn("SYNTHETIC-PRIVATE", str(caught.exception))
 
-    def test_v1_fixed_canonical_vectors(self):
+    def test_v2_fixed_canonical_vectors(self):
         self.assertEqual(asdict(generate_fingerprints(profile())), {
-            "format": "abc2lab-eval-profile-v1",
-            "fixture_fingerprint": "6a8961b760c86d504d5b4dbb195667e0201ae81f19bf9d75df65b3d617d814c7",
-            "environment_fingerprint": "a7e7b7f4d76df9cf2489eee85a9a3dfc17220788b03f2883e6d94ccdf08be2d9",
-            "scope_fingerprint": "da1d4647a93b44dfedfd9418f7dd230d97691acea9fd0ca9a1e24eb7fbaf1f91",
+            "format": "abc2lab-eval-profile-v2",
+            "fixture_fingerprint": "8a4420314602508967de9bfd5949e688cae243c44cfe8d8d387e0ef7d3bcfb82",
+            "environment_fingerprint": "eb2f747cd5185939ca20fe1470650a5a16ca50116774ed71c86a39085a24907d",
+            "scope_fingerprint": "ccbb0773d8884a93e880b9434c2cc49244901fd673c2723ecd8b07adffa22683",
         })
 
     def test_digest_fields_fit_current_preflight_without_changing_source_pins(self):
@@ -87,7 +97,8 @@ class TestProfileFingerprint(unittest.TestCase):
         self.assertTrue(all(re.fullmatch("[0-9a-f]{64}", digest) for digest in digests))
         text = json.dumps(asdict(result))
         self.assertNotIn("example-model", text)
-        self.assertNotIn("127.0.0.1", text)
+        self.assertNotIn("llm-api.example", text)
+        self.assertNotIn("eval-meter", text)
 
     def test_dictionary_and_set_array_order_do_not_affect_fingerprints(self):
         payload = profile()
@@ -114,7 +125,7 @@ class TestProfileFingerprint(unittest.TestCase):
 
     def test_each_environment_condition_changes_only_environment_digest(self):
         expected = generate_fingerprints(profile())
-        changes = {"model_tag": "other-model:fixed-tag", "llm_base_url": "http://localhost:11434/v1",
+        changes = {"llm": api_llm() | {"provider": "other-provider"},
                    "temperature": 0.25, "seed": 43, "target_image": "example/target:16.0.0",
                    "worker_count": 2, "time_budget_seconds": 600, "request_budget": 101}
         for field, value in changes.items():
@@ -124,10 +135,39 @@ class TestProfileFingerprint(unittest.TestCase):
             self.assertNotEqual(expected.environment_fingerprint, result.environment_fingerprint, field)
             self.assertEqual(expected.fixture_fingerprint, result.fixture_fingerprint)
             self.assertEqual(expected.scope_fingerprint, result.scope_fingerprint)
+        # API 고정 조건과 백엔드 종류가 각각 환경 지문을 바꾼다(baseline·ours 지문 대조의 근거).
+        for llm in (api_llm() | {"model": "example-org/other-model"},
+                    api_llm() | {"base_url": "https://other-api.example/api/v1"}, local_llm()):
+            payload = profile()
+            payload["environment"]["llm"] = llm
+            self.assertNotEqual(expected.environment_fingerprint, generate_fingerprints(payload).environment_fingerprint)
+
+    def test_each_llm_subfield_changes_only_environment_digest(self):
+        # llm 객체가 한 값으로 묶여 비교되더라도, 하위 필드 하나하나가 지문에 들어가야 한다.
+        cases = {
+            "api.base_url": (api_llm(), {"base_url": "https://llm-api.example/api/v2"}),
+            "api.model": (api_llm(), {"model": "example-org/other-model"}),
+            "api.provider": (api_llm(), {"provider": "other-provider"}),
+            "local.base_url": (local_llm(), {"base_url": "http://llm-host:11435/v1"}),
+            "local.model": (local_llm(), {"model": "other-model:fixed-tag"}),
+            # hostname은 base_url 호스트와 같아야 하므로 둘을 함께 바꾼다.
+            "local.hostname": (local_llm(), {"hostname": "other-llm", "base_url": "http://other-llm:11434/v1"}),
+            "local.host_ip": (local_llm(), {"host_ip": "10.0.0.5"}),
+        }
+        for name, (base, change) in cases.items():
+            with self.subTest(field=name):
+                payload = profile()
+                payload["environment"]["llm"] = base
+                before = generate_fingerprints(payload)
+                payload["environment"]["llm"] = base | change
+                after = generate_fingerprints(payload)
+                self.assertNotEqual(before.environment_fingerprint, after.environment_fingerprint)
+                self.assertEqual(before.fixture_fingerprint, after.fixture_fingerprint)
+                self.assertEqual(before.scope_fingerprint, after.scope_fingerprint)
 
     def test_each_scope_condition_changes_scope_and_environment(self):
         expected = generate_fingerprints(profile())
-        changes = {"target_origin": "http://127.0.0.1:3001", "methods": ["GET"],
+        changes = {"target_origin": "http://eval-meter:8081", "methods": ["GET"],
                    "paths": ["/api/records/{object}"], "vuln_classes": ["idor"]}
         for field, value in changes.items():
             payload = profile()
@@ -169,7 +209,7 @@ class TestProfileFingerprint(unittest.TestCase):
             payload = profile()
             del payload[field]
             self.reject(payload, "MISSING_FIELDS")
-        for value in (None, True, 0, 2, "1"):
+        for value in (None, True, 0, 1, 3, "2"):
             self.reject(profile() | {"version": value}, "UNSUPPORTED_VERSION")
         for field in ("fixture", "environment", "scope"):
             payload = profile()
@@ -257,49 +297,65 @@ class TestProfileFingerprint(unittest.TestCase):
         payload["scope"]["paths"] = ["/", "/v1/items/{item}/", "/static-name.json"]
         generate_fingerprints(payload)
 
-    def test_url_literals_are_preserved_and_unsupported_or_private_urls_rejected(self):
-        for section, field in (("scope", "target_origin"), ("environment", "llm_base_url")):
-            for value in (None, "", "http://example.invalid", "http://192.0.2.1", "http://127.1",
-                          "file:///tmp/data", "http://user:SYNTHETIC-PRIVATE@127.0.0.1", "http://127.0.0.1?",
-                          "http://127.0.0.1#", "http://[::1%zone]", "http://127.0.0.1:0", "http://127.0.0.1:65536",
-                          "http://127.0.0.1/../v1", "http://127.0.0.1//v1", "http://127.0.0.1\n"):
-                payload = profile()
-                payload[section][field] = value
-                self.reject(payload, "INVALID_LOCAL_URL")
+    def test_target_origin_must_be_the_meter_service_origin(self):
+        for value in (None, "", "http://127.0.0.1:3000", "http://localhost:3000", "https://eval-meter:8080",
+                      "http://eval-meter", "http://eval-meter:8080/v1", "http://eval-meter.example:8080",
+                      "http://Eval-Meter:8080", "http://user:SYNTHETIC-PRIVATE@eval-meter:8080",
+                      "http://eval-meter:8080?", "http://eval-meter:0", "http://eval-meter:8080\n"):
+            payload = profile()
+            payload["scope"]["target_origin"] = value
+            self.reject(payload, "INVALID_TARGET_ORIGIN")
         payload = profile()
-        payload["scope"]["target_origin"] = "https://[::1]:3000/"
-        payload["environment"]["llm_base_url"] = "http://localhost:11434/v1/"
+        payload["scope"]["target_origin"] = "http://eval-meter:8080/"
         generate_fingerprints(payload)
-        payload["scope"]["target_origin"] += "extra"
-        self.reject(payload, "INVALID_LOCAL_URL")
 
-    def test_url_validation_corpus_does_not_drift_from_preflight(self):
-        corpus = (
-            ("http://127.0.0.1", False, True),
-            ("https://[::1]:3000/", False, True),
-            ("http://localhost:11434/v1/", True, True),
-            ("http://127.0.0.1/${X}", True, False),
-            ("http://127.0.0.1/<v1>", True, False),
-            ("http://127.0.0.1/todo", True, False),
-            ("http://127.0.0.1/../v1", True, False),
-            ("http://user:password@127.0.0.1", False, False),
-        )
-        for value, base_url, expected in corpus:
-            with self.subTest(value=value, base_url=base_url):
-                try:
-                    profile_fingerprint._url(value, "url", base_url=base_url)
-                    profile_valid = True
-                except ProfileError:
-                    profile_valid = False
-                self.assertEqual(profile_valid, expected)
-                self.assertEqual(preflight._local_url(value, base_url=base_url), expected)
+    def test_network_mode_and_llm_object_are_strict(self):
+        for value in (None, "loopback_only", "", 1):
+            payload = profile()
+            payload["environment"]["network_mode"] = value
+            self.reject(payload, "UNSUPPORTED_NETWORK_MODE")
+        for value in (None, [], api_llm() | {"fallbacks": True}, api_llm() | {"base_url": "http://llm-api.example/v1"},
+                      api_llm() | {"model": "example-model"}, api_llm() | {"hostname": "llm-host"},
+                      local_llm() | {"host_ip": "127.0.0.1"}, local_llm() | {"host_ip": "203.0.113.5"},
+                      local_llm() | {"base_url": "http://other-host:11434/v1"}, api_llm() | {"backend": ["api"]},
+                      api_llm() | {"model": "SYNTHETIC-PRIVATE/latest"}):
+            payload = profile()
+            payload["environment"]["llm"] = value
+            self.reject(payload, "INVALID_LLM")
+        payload = profile()
+        payload["environment"]["llm"] = local_llm()
+        generate_fingerprints(payload)
+
+    def test_url_and_llm_validation_does_not_drift_from_preflight(self):
+        # 두 검증기는 같은 정의 블록을 갖는다. 소스가 갈라지면 여기서 먼저 걸린다.
+        def block(module):
+            source = Path(module.__file__).read_text(encoding="utf-8")
+            start = source.index("def _split_url(")
+            return source[start:source.index("\ndef ", source.index("def _llm(") + 1)]
+        self.assertEqual(block(preflight), block(profile_fingerprint))
+        for name in ("_NETWORK_MODES", "_LLM_FIELDS", "MAX_URL_LENGTH"):
+            self.assertEqual(getattr(preflight, name), getattr(profile_fingerprint, name), name)
+        for name in ("_DNS_LABEL", "_MODEL_SEGMENT", "_PROVIDER", "_PLACEHOLDER"):
+            self.assertEqual(getattr(preflight, name).pattern, getattr(profile_fingerprint, name).pattern, name)
+        self.assertEqual(preflight._LOCAL_NETWORKS, profile_fingerprint._LOCAL_NETWORKS)
+        origins = ("http://eval-meter:8080", "http://eval-meter:8080/", "http://127.0.0.1:3000",
+                   "http://eval-meter", "https://eval-meter:8080", "http://eval-meter:8080/${X}",
+                   "http://eval-meter:8080/<v1>", "http://todo:8080", "http://eval-meter:8080" + "/" * 600)
+        for value in origins:
+            with self.subTest(origin=value):
+                self.assertEqual(preflight._meter_origin(value), profile_fingerprint._meter_origin(value))
+        llms = (api_llm(), local_llm(), api_llm() | {"fallbacks": True}, local_llm() | {"host_ip": "10.0.0.1"},
+                local_llm() | {"host_ip": "127.0.0.1"}, api_llm() | {"provider": "todo"},
+                api_llm() | {"model": "example-org/example-model:free"}, {"backend": "api"}, None)
+        for value in llms:
+            with self.subTest(llm=value):
+                self.assertEqual(preflight._llm(value), profile_fingerprint._llm(value))
 
     def test_model_and_image_are_explicit_non_latest_references(self):
-        for field in ("model_tag", "target_image"):
-            for value in (None, "", "example", "example:latest", "example:LATEST", "example:TODO", "<model>", "example:with space"):
-                payload = profile()
-                payload["environment"][field] = value
-                self.reject(payload, "EXPECTED_PINNED_REFERENCE")
+        for value in (None, "", "example", "example:latest", "example:LATEST", "example:TODO", "<model>", "example:with space"):
+            payload = profile()
+            payload["environment"]["target_image"] = value
+            self.reject(payload, "EXPECTED_PINNED_REFERENCE")
         for image in ("example:latest@sha256:" + "a" * 64, "example@sha256:" + "a" * 63):
             payload = profile()
             payload["environment"]["target_image"] = image

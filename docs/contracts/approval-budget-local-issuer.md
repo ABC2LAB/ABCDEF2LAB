@@ -19,11 +19,13 @@ CLI는 성공 시 exit 0과 승인 메타데이터, 확정 거부 시 exit 1과 
 
 서버는 읽기부터 callback까지 RPC당 5초 deadline을 공유한다. 클라이언트도 5초와 호출자 deadline 중 이른 시각을 적용하고 취소 시 연결을 닫는다. 서버 Close는 callback 취소와 연결 종료 후 종료를 기다린다. callback은 취소에 협조해야 한다. 비공개 시간 제한·Lstat 주입 헬퍼는 시험 전용이고 공개 UID 정책을 완화하지 않는다.
 
-이 브랜치는 #119의 `d7edcbf961f3d218e7b9dbcb470ff58b4c4f6681`를 일반 merge로 포함한다. 격리 PostgreSQL 시험은 DB 확정 후 응답 상실 시 같은 참조의 멱등 재시도와, authority probe 중 callback 만료 뒤 기존 ready Resolve·다음 승인 성공을 검증한다. #119 병합 후 dev base 전환과 재검증이 남아 있다. CLI 응답은 비민감 승인 메타데이터이지 송신 권한이 아니다. 같은 요청 참조의 발급 멱등성과 DB 확정 후 게시 규칙은 [승인 DB 정본](./approval-budget-store.md)이 집행한다.
+이 브랜치는 #119의 `d7edcbf961f3d218e7b9dbcb470ff58b4c4f6681`를 일반 merge로 포함한다. 격리 PostgreSQL 시험은 DB 확정 후 응답 상실 시 같은 참조의 멱등 재시도와, authority probe 중 callback 만료 뒤 기존 ready Resolve·다음 승인 성공을 검증한다. 최신 dev를 일반 merge로 반영하고 IPC·CLI 결합 race·vet·전체 빌드로 재검증했다. CLI 응답은 비민감 승인 메타데이터이지 송신 권한이 아니다. 같은 요청 참조의 발급 멱등성과 DB 확정 후 게시 규칙은 [승인 DB 정본](./approval-budget-store.md)이 집행한다.
 
 이번 PR은 소켓 서버를 제품 서버 기동에 등록하지 않고, 실제 운영자 계정·모델 계정·디렉터리 권한·운영 DB를 변경하지 않는다. 현재 배포에서 모델 도구 실행 UID가 서버 UID와 같다면 이 경계를 활성화해서는 안 된다. 별도 신뢰 기동기와 실제 OS 신원 분리, task/policy/reset validator, 종료·재시작 처리, 서버 실행 연결은 후속 검증이 필요하다. 개발 시험의 승인 성공 경로는 동일 UID를 허용하는 **비공개 테스트 헬퍼**로 프로토콜만 검증한다. 실제 분리 OS 계정의 운영 수용시험은 완료하지 않았다.
 
-비차단 후속: 분리 OS 계정에서 peer·소켓 owner 가드를 각각 확인하는 수용시험, 요청 파일의 openat(O_NOFOLLOW|O_NONBLOCK)·하드링크 거부 및 경합 방어는 별도 후속이다. 현재 CLI의 일반 파일 확인은 FIFO 교체 경합을 완전히 방지하지 않는다.
+CLI의 요청·신뢰 config 파일은 각 상위 디렉터리를 fd로 고정해 소유자·권한을 검사하고 symlink를 거부한다. 최종 파일은 openat(O_NOFOLLOW|O_NONBLOCK) 후 열린 inode가 운영자 소유의 0600 일반 파일·링크 수 1인지 확인한 뒤 최대 4096바이트를 읽는다. 경로 검사 뒤 FIFO·symlink로 바뀐 항목을 따라가거나 writer를 기다리지 않는다. 신뢰된 운영자가 읽는 동안 같은 inode의 내용을 수정하는 경우까지 원자 snapshot으로 보장하지 않으며, 운영자 파일은 임시 파일 작성 후 rename으로 교체해야 한다.
+
+비차단 후속: 분리 OS 계정에서 peer·소켓 owner 가드를 각각 확인하는 수용시험은 아직 완료하지 않았다.
 
 연결 수락 시 peer 인증과 RPC deadline 설정은 발급 슬롯 점유보다 먼저 수행한다. 거부 peer는 고루틴·발급 슬롯 없이 비대기 송신을 한 번 시도한 뒤 연결을 닫으며, 응답 뒤 EOF까지 시험해 fd 종료를 확인한다. 허가된 운영자 요청의 동시 발급 슬롯은 제한하고 처리 뒤 반환한다. 이 보호는 커널 연결 큐 고갈이나 CPU 범람 방어를 보장하지 않는다.
 

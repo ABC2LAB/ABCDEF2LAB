@@ -35,7 +35,7 @@ from ground_truth import bac_category, core_gt  # noqa: E402
 from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa: E402
 from scoreboard import SnapshotError  # noqa: E402
 
-from run_record import RunInputs, RunRecordError, load_run_inputs, read_runner_key  # noqa: E402
+from run_record import V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key  # noqa: E402
 
 Correlate = Callable[[VerdictRecord], str | None]
 
@@ -160,11 +160,20 @@ def score_run(
 ) -> ScoredRepeat:
     """서명된 러너 기록으로 회차 입력을 검증한 뒤 채점한다. 임의 traffic/coverage 주입은 없다."""
     inputs = load_run_inputs(manifest, runner_key, correlate)
-    parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate, inputs.records)
+    run = f"{manifest.condition}#{manifest.repeat_index}"
+    if inputs.judgments_collected:
+        parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate, inputs.records)
+    else:
+        parsed = _uncollected_verdicts()
     evidence_ok = confirmed_evidence(parsed, inputs.traffic, correlate)
     result = assemble_repeat(manifest, parsed, inputs.post, evidence_ok, inputs.covered, correlatable,
                              pre_solved=inputs.pre, engine_solved=inputs.engine_solved)
     warnings = list(repeat_warnings(manifest, parsed, inputs.traffic))
+    if not inputs.judgments_collected:
+        warnings.append(f"경고[판정 미수집] {run}: v1.1 records=null — GT 판정 전부 판단불가(미탐·오탐·확정 0), "
+                        "해결 귀속만 보고(프로토콜 §4-7)")
+    if inputs.version == V11 and inputs.proof_id is None:
+        warnings.append(f"경고[격리 증명 없음] {run}: 새 해결의 엔진 귀속 미확인(run-record-v1.1 §4)")
     basis = {c.key for c in core_gt() + bac_category()}
     for key in sorted(basis):
         if inputs.pre[key]:
@@ -172,6 +181,12 @@ def score_run(
         elif inputs.post[key] and key not in inputs.engine_solved:
             warnings.append(f"경고[해결 귀속 미확인] {manifest.condition}#{manifest.repeat_index}: '{key}' — 판단불가")
     return ScoredRepeat(result, tuple(warnings), inputs)
+
+
+def _uncollected_verdicts() -> ScanParseResult:
+    """판정 미수집: GT 전 항목을 판단불가 판정으로. 판정표에서 해결·커버리지와 무관하게 판단불가가 된다."""
+    keys = sorted({c.key for c in core_gt() + bac_category()})
+    return ScanParseResult({key: ScanVerdict.UNDECIDABLE for key in keys}, (), (), {})
 
 
 def score_repeat(
@@ -226,6 +241,8 @@ def build_report(
     warnings: list[str] = []
     reference = None
     seen_executions: set[str] = set()
+    seen_proofs: set[str] = set()
+    versions: set[str] = set()
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs
@@ -238,9 +255,19 @@ def build_report(
         if inputs.execution_id in seen_executions:
             raise ComparabilityError("execution_id 중복 — 러너 기록 재사용")
         seen_executions.add(inputs.execution_id)
+        if inputs.proof_id is not None:
+            if inputs.proof_id in seen_proofs:
+                raise ComparabilityError("격리 증명 proof_id 재사용")
+            seen_proofs.add(inputs.proof_id)
+        versions.add(inputs.version)
+        if len(versions) > 1:
+            raise ComparabilityError("러너 기록 v1/v1.1 혼합 — 같은 귀속 방식끼리만 비교(프로토콜 §4)")
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 
+    if versions == {V1}:
+        warnings.append("경고[공식 비교 아님] 러너 기록 v1(직접 관측 이벤트) — 합성 시험·과거 형식 회귀 검증용, "
+                        "공식 비교표는 v1.1 isolated_window만(프로토콜 §4)")
     sections = [f"모델 태그: {manifests[0].model_tag}\n"]
     for basis_name, basis in (("코어 GT(인가 9)", core_gt()), ("BAC category(10)", bac_category())):
         rows = [aggregate_condition(c, repeats, basis) for c, repeats in by_condition.items()]

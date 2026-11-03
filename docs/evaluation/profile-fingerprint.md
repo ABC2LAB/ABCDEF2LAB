@@ -21,7 +21,7 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "fixture": {
     "preparation_id": "read_fixture",
     "preparation_revision": 1,
@@ -35,8 +35,14 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
     ]
   },
   "environment": {
-    "model_tag": "example-model:fixed-tag",
-    "llm_base_url": "http://127.0.0.1:11434/v1",
+    "network_mode": "dedicated_network",
+    "llm": {
+      "backend": "api",
+      "base_url": "https://llm-api.example/api/v1",
+      "model": "example-org/example-model",
+      "provider": "example-provider",
+      "fallbacks": false
+    },
     "temperature": 0,
     "seed": 42,
     "target_image": "example/target:15.0.0",
@@ -45,7 +51,7 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
     "request_budget": 100
   },
   "scope": {
-    "target_origin": "http://127.0.0.1:3000",
+    "target_origin": "http://eval-meter:8080",
     "methods": ["GET", "HEAD"],
     "paths": ["/api/records/{object}", "/api/status"],
     "vuln_classes": ["idor", "bola"]
@@ -56,7 +62,7 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
 | 프로파일 | 허용 조건 |
 |---|---|
 | fixture | 비민감 준비 절차 ID/revision, 논리 계정 라벨·역할, 논리 자원 라벨·종류·소유 라벨·개수·공유/위임 여부 |
-| environment | 정확한 모델 태그·LLM base URL·temperature/seed·대상 이미지·worker/시간/요청 예산 |
+| environment | 망 모드·LLM 객체(백엔드 종류와 API 고정 조건 또는 로컬 고정 IP)·temperature/seed·대상 이미지·worker/시간/요청 예산 |
 | scope | 대상 origin·명시적 HTTP 메서드·경로 템플릿·검사 분류 라벨 |
 
 준비 절차 ID와 revision은 평가자가 합의한 비민감 준비 명세를 가리킨다. 명세 내용이 바뀌면 revision도 바꿔야 한다. fixture fingerprint는 이 ID·revision과 선언된 fixture 구조의 해시이며, 실제 fixture 데이터가 준비·적용됐다는 증명이 아니다.
@@ -65,8 +71,8 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
 revision·개수·worker·요청 예산은 1 이상 signed int64 범위 정수, seed는 0 이상 같은 범위 정수다. bool·문자열·실수로 대체할 수 없다.
 shared/delegated는 bool이다. temperature는 0 이상 유한수, 시간 예산은 양의 유한수이며 null·암묵적 기본값은 허용하지 않는다.
 
-메타데이터의 모델/이미지는 명시적 tag 또는 이미지의 SHA-256 digest를 요구하며 latest·TODO를 거부한다.
-URL은 HTTP(S) loopback IP/localhost만 지원하며 인증정보·query·fragment를 거부한다. LLM URL은 base path도 허용한다.
+대상 이미지는 명시적 tag 또는 SHA-256 digest를 요구하며 latest·TODO를 거부한다.
+`scope.target_origin`과 `environment.llm`의 규칙은 [사전검사](preflight.md)와 같은 정의다(두 스크립트를 drift 테스트로 묶는다). 대상 origin은 엔진이 보는 계측기 origin이고, LLM 객체는 api·local 백엔드별로 정확한 키 집합을 요구한다. API 고정 조건(모델 ID·고정 제공자·fallback 끔)과 로컬 고정 IP가 환경 지문에 들어가므로 baseline·개선 후 조건이 다르면 지문이 달라진다.
 경로는 `/`로 시작하는 비민감 정적 경로나 `{object}` 같은 전체 segment 템플릿이다. 실제 계정/자원 값·query·fragment·퍼센트 인코딩·glob·역참조는 넣지 않는다.
 메서드는 GET/HEAD/OPTIONS/POST/PUT/PATCH/DELETE/TRACE 중 명시한 값만 받는다. 프로파일에 적는 행위가 실행 허가를 뜻하지 않는다.
 
@@ -78,14 +84,14 @@ URL은 HTTP(S) loopback IP/localhost만 지원하며 인증정보·query·fragme
 별칭·모델명·경로 등 문자열이 실제로 비민감한지는 이 도구가 판정하지 않는다. 평가자가 검토한 선언만 입력하며 비밀을 별칭으로 위장해 해시하지 않는다.
 실제 프로파일과 결과는 레포 밖에 보관하며 커밋하지 않는다. 엔진·LLM이 만든 임의 JSON, `.env`, 계정 파일을 입력하지 않는다.
 
-## 정규화와 SHA-256 v1
+## 정규화와 SHA-256 v2
 
 1. 입력 전체의 필드·타입·참조를 검사한 후 정규화한다. 잘못된 입력을 일부라도 해시해 출력하지 않는다.
 2. 계정·자원 배열은 label로, scope의 methods/paths/vuln_classes는 문자열의 **Unicode 코드포인트 순서**로 정렬한다. 중복 라벨·항목은 거부한다.
 3. temperature와 시간 예산은 정밀도를 보존한 십진 **문자열**로 만든다. 예: `0`, `0.0`, `-0.000`은 `"0"`, `1200`, `1.200e3`은 `"1200"`이다.
    JSON 소수는 Decimal로 읽고 기본 precision에 따른 반올림을 하지 않는다. 0 이외 숫자의 입력 표기 자릿수와 exponent 절댓값은 각각 128 이내로 제한하고 초과는 거부한다. 입력 표기는 보존하지 않으며 같은 수의 표기는 같은 정규화 문자열·지문이 된다.
-4. URL·라벨·경로·모델명 문자열은 그대로 보존한다. localhost/IP·대소문자·끝 slash·다른 태그를 같은 값으로 추정하지 않는다.
-5. 각 지문은 `{format: "abc2lab-eval-profile-v1", kind: "fixture"|"environment"|"scope", profile: 정규화된 객체}`의 JSON을 사용한다.
+4. URL·라벨·경로·모델 식별자 문자열과 LLM 객체 값은 그대로 보존한다. 대소문자·끝 slash·다른 태그를 같은 값으로 추정하지 않는다.
+5. 각 지문은 `{format: "abc2lab-eval-profile-v2", kind: "fixture"|"environment"|"scope", profile: 정규화된 객체}`의 JSON을 사용한다.
    key 정렬, `separators=(",", ":")`, `ensure_ascii=True`, `allow_nan=False`로 직렬화한 ASCII bytes에 SHA-256을 적용한다. 줄바꿈은 포함하지 않는다.
 6. scope를 먼저 지문화하고, environment 객체에 `scope_fingerprint`를 추가한 뒤 환경 지문을 계산한다. scope가 바뀌면 환경 지문도 바뀐다.
    fixture는 독립 지문이며, 비교 시 fixture와 environment 모두 확인해야 한다.
@@ -94,14 +100,14 @@ URL은 HTTP(S) loopback IP/localhost만 지원하며 인증정보·query·fragme
 
 ```json
 {
-  "format": "abc2lab-eval-profile-v1",
-  "fixture_fingerprint": "6a8961b760c86d504d5b4dbb195667e0201ae81f19bf9d75df65b3d617d814c7",
-  "environment_fingerprint": "a7e7b7f4d76df9cf2489eee85a9a3dfc17220788b03f2883e6d94ccdf08be2d9",
-  "scope_fingerprint": "da1d4647a93b44dfedfd9418f7dd230d97691acea9fd0ca9a1e24eb7fbaf1f91"
+  "format": "abc2lab-eval-profile-v2",
+  "fixture_fingerprint": "8a4420314602508967de9bfd5949e688cae243c44cfe8d8d387e0ef7d3bcfb82",
+  "environment_fingerprint": "eb2f747cd5185939ca20fe1470650a5a16ca50116774ed71c86a39085a24907d",
+  "scope_fingerprint": "ccbb0773d8884a93e880b9434c2cc49244901fd673c2723ecd8b07adffa22683"
 }
 ```
 
-해시 버전이나 정규화 규칙을 임의로 섞지 않는다. 다른 구현에서 만들면 위 벡터가 일치해야 한다.
+해시 버전이나 정규화 규칙을 임의로 섞지 않는다. v1 프로파일(로컬 loopback 전제)은 v2와 섞어 비교하지 않으며 CLI가 거부한다. 다른 구현에서 만들면 위 벡터가 일치해야 한다.
 중복 JSON key·비유한수·잘못된 UTF-8/JSON·과대 파일은 거부한다. 오류 메시지는 입력값을 담지 않는다.
 
 ## 연결과 검증 범위
