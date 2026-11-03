@@ -913,6 +913,11 @@ details.adv[open] .chev {
   display: none;
 }
 .frow {
+  /* <button> 은 기본이 '내용 너비 + 가운데 정렬'이라 행마다 폭이 달라진다 → 가로 꽉 채우고 왼쪽 정렬 */
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
   display: flex;
   gap: 12px;
   align-items: center;
@@ -2205,11 +2210,13 @@ details.adv[open] .chev {
 .frow .sev {
   flex: none;
   white-space: nowrap;
+  min-width: 92px;
+  justify-content: center;
 }
 .frow[aria-expanded="true"] {
   border-color: var(--teal-border);
   background: var(--surface-2);
-  border-radius: 12px 12px 0 0;
+  border-radius: 6px 6px 0 0;
   margin-bottom: 0;
 }
 .frow[aria-expanded="true"] .acc-chev {
@@ -2218,7 +2225,7 @@ details.adv[open] .chev {
 .fsum {
   border: 1px solid var(--teal-border);
   border-top: none;
-  border-radius: 0 0 12px 12px;
+  border-radius: 0 0 6px 6px;
   padding: 2px 16px 16px;
   margin: 0 0 10px;
   background: var(--surface);
