@@ -27,13 +27,16 @@ import (
 )
 
 const (
-	uidSmokeMarker             = "boxed-kernel-uids-v1"
-	uidSmokeServer      uint32 = 41001
-	uidSmokeOperator    uint32 = 41002
-	uidSmokeModel       uint32 = 41003
-	uidSmokeOther       uint32 = 41004
-	uidSmokeFalseServer uint32 = 41005
-	uidSmokeTimeout            = 12 * time.Second
+	uidSmokeMarker                 = "boxed-kernel-uids-v1"
+	uidSmokeServer          uint32 = 41001
+	uidSmokeOperator        uint32 = 41002
+	uidSmokeModel           uint32 = 41003
+	uidSmokeOther           uint32 = 41004
+	uidSmokeFalseServer     uint32 = 41005
+	uidSmokeTimeout                = 12 * time.Second
+	uidSmokeCloseTimeout           = 2 * time.Second
+	uidSmokePeerDialTimeout        = 2 * time.Second
+	uidSmokeSubmitTimeout          = 5 * time.Second
 )
 
 type uidSmokeCredentials struct {
@@ -261,7 +264,7 @@ func uidSmokeServe(path string, tc uidSmokeCase) uidSmokeReport {
 		}, nil
 	}
 	server, err := budgetlocal.Listen(context.Background(), path, tc.operator, tc.model, approve)
-	report := uidSmokeReport{Stage: "rejected", Credentials: uidSmokeCredentialsNow(), Invalid: errors.Is(err, budgetlocal.ErrInvalid)}
+	report := uidSmokeReport{Stage: "rejected", Credentials: uidSmokeCredentialsNow(), Calls: calls.Load(), Invalid: errors.Is(err, budgetlocal.ErrInvalid)}
 	if err != nil {
 		return report
 	}
@@ -272,7 +275,7 @@ func uidSmokeServe(path string, tc uidSmokeCase) uidSmokeReport {
 	// The coordinator owns the write end. Close/EOF is the normal shutdown signal.
 	var one [1]byte
 	_, _ = os.Stdin.Read(one[:])
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), uidSmokeCloseTimeout)
 	defer cancel()
 	if server.Close(ctx) != nil {
 		return uidSmokeReport{Stage: "close-failed"}
@@ -284,7 +287,7 @@ func uidSmokeSubmit(path string, tc uidSmokeCase) uidSmokeReport {
 	report := uidSmokeReport{Stage: "client", Credentials: uidSmokeCredentialsNow()}
 	// This independent SO_PEERCRED observation records the actual connected server
 	// UID. It does not replace Submit's own public pinned-peer checks.
-	conn, err := net.DialTimeout("unix", path, 2*time.Second)
+	conn, err := net.DialTimeout("unix", path, uidSmokePeerDialTimeout)
 	if err != nil {
 		return uidSmokeReport{Stage: "probe-failed"}
 	}
@@ -313,7 +316,7 @@ func uidSmokeSubmit(path string, tc uidSmokeCase) uidSmokeReport {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	request := budgetlocal.Request{RequestRef: "synthetic-request", TaskRef: "synthetic-task", PolicyRef: "synthetic-policy",
 		ResetRef: "synthetic-reset", MaxRequests: 1, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Minute)}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), uidSmokeSubmitTimeout)
 	defer cancel()
 	response, err := budgetlocal.Submit(ctx, path, tc.expectedServer, request)
 	report.Granted = err == nil && response.State == "ready" && response.BudgetRef == "synthetic-budget"

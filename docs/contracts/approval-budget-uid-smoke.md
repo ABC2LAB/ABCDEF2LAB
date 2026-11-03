@@ -111,6 +111,14 @@ fi
 timeout 뒤에도 실행 중이면 동일 ID/name/label을 검증한 그 container만 stop한다.
 다른 세션의 container/process는 보존한다.
 
+## 회귀 실행 시점
+
+이 tag는 기본 `go test`와 현재 CI에 포함되지 않는다. `budgetlocal`의 Listen/Submit,
+SO_PEERCRED·peer pin·socket 소유권·UID 가드를 변경하는 PR과 Linux 릴리스 전에는 위
+수동 box 절차를 다시 실행하고 정확한 head·11개 결과·exit code를 남긴다. 이 규칙을
+자동 CI 배선 완료로 해석하지 않는다. model과 wrong-operator 사례는 서로 다른 실제
+client UID를 쓰지만 같은 서버의 operator UID 가드를 확인하는 사례다.
+
 ## 이번 실측
 
 2026-11-03, Go 1.26.3 linux/amd64 정적 binary와 캐시 이미지
