@@ -41,6 +41,7 @@ type syntheticHost struct {
 	denyRegister atomic.Bool
 	denyAppend   atomic.Bool
 	allowSeal    atomic.Bool
+	witness      atomic.Pointer[CloseWitness]
 	acquired     atomic.Int64
 	released     atomic.Int64
 }
@@ -63,7 +64,7 @@ func (h *syntheticHost) Acquire(_ context.Context, a auditcheckpoint.Access) (au
 	if a.Epoch != h.epoch || a.Binding.PublisherRef != h.publisher || a.Binding.Scope != h.scope || a.Binding.KeyRef != "key:synthetic" ||
 		a.Purpose == auditcheckpoint.PublishAccess && (a.Publication.Kind == auditcheckpoint.Register && h.denyRegister.Load() ||
 			a.Publication.Kind == auditcheckpoint.Append && h.denyAppend.Load() ||
-			a.Publication.Kind == auditcheckpoint.Seal && !h.allowSeal.Load()) {
+			a.Publication.Kind == auditcheckpoint.Seal && (!h.allowSeal.Load() || !h.witness.Load().Check(a))) {
 		return nil, errors.New("synthetic authority refusal")
 	}
 	h.acquired.Add(1)
@@ -144,7 +145,13 @@ func fixture(t *testing.T) *publisherFixture {
 	t.Cleanup(cancel)
 	f := &publisherFixture{db: db, store: store, host: host, root: root, path: filepath.Join(dir, "synthetic.jsonl")}
 	f.config = Config{Store: store, Epoch: epoch, PublisherRef: host.publisher, RootScope: root,
-		Filename: "synthetic.jsonl", Scope: scope, KeyRef: "key:synthetic", Key: host.key, MaxSnapshotBytes: 1 << 20}
+		Filename: "synthetic.jsonl", Scope: scope, KeyRef: "key:synthetic", Key: host.key, MaxSnapshotBytes: 1 << 20,
+		BindCloseWitness: func(w *CloseWitness) error {
+			if !host.witness.CompareAndSwap(nil, w) {
+				return errors.New("synthetic witness already bound")
+			}
+			return nil
+		}}
 	t.Cleanup(func() {
 		if host.acquired.Load() != host.released.Load() {
 			t.Error("synthetic Host lease leaked")
@@ -195,6 +202,77 @@ func stopped(scope transmit.Scope, attempt uint64) transmit.Event {
 	return transmit.Event{Stage: "result", Receipt: transmit.Receipt{Scope: scope, Attempt: attempt,
 		AccountRef: "owner", SessionRef: "session", ResourceRef: "resource", ApprovalRef: "approval",
 		Method: "GET", Reason: transmit.Stopped, At: time.Now().UTC()}}
+}
+
+func sealAccess(f *publisherFixture, p *Publisher) auditcheckpoint.Access {
+	cp := p.head.Checkpoint
+	return auditcheckpoint.Access{Purpose: auditcheckpoint.PublishAccess, Epoch: f.host.epoch,
+		Binding: auditcheckpoint.Binding{PublisherRef: f.host.publisher, Scope: f.host.scope,
+			JournalID: cp.JournalID, KeyRef: cp.KeyRef},
+		Publication: auditcheckpoint.Request{Epoch: f.host.epoch, PublisherRef: f.host.publisher,
+			Kind: auditcheckpoint.Seal, Previous: cp, Candidate: cp}}
+}
+
+func TestCloseWitnessExactBindingAndRealClose(t *testing.T) {
+	f := fixture(t)
+	p := f.open(t)
+	access := sealAccess(f, p)
+	w := f.host.witness.Load()
+	if w == nil || w.Check(access) || (&CloseWitness{}).Check(access) || (*CloseWitness)(nil).Check(access) {
+		t.Fatal("unclosed or zero witness authorized Seal")
+	}
+	f.host.allowSeal.Store(true) // synthetic drain assertion; this checks only local Close evidence
+	if lease, err := f.host.Acquire(context.Background(), access); err == nil {
+		lease.Release()
+		t.Fatal("Host accepted Seal before Journal.Close")
+	}
+	if _, err := p.Seal(context.Background()); err != nil {
+		t.Fatalf("Host could not inspect witness during Seal: %v", err)
+	}
+	if !w.Check(access) {
+		t.Fatal("successful local Close was not evidenced")
+	}
+	wrong := access
+	wrong.Binding.JournalID += ":other"
+	if w.Check(wrong) {
+		t.Fatal("witness authorized another journal")
+	}
+	wrong = access
+	wrong.Publication.Candidate.Sequence++
+	if w.Check(wrong) {
+		t.Fatal("witness authorized another checkpoint")
+	}
+	wrong = access
+	wrong.Epoch.Generation++
+	wrong.Publication.Epoch = wrong.Epoch
+	if w.Check(wrong) {
+		t.Fatal("witness authorized another epoch")
+	}
+}
+
+func TestCloseWitnessInvalidatedOnAbortAndRecordFailure(t *testing.T) {
+	t.Run("abort", func(t *testing.T) {
+		f := fixture(t)
+		p := f.open(t)
+		access := sealAccess(f, p)
+		if err := p.Abort(); err != nil {
+			t.Fatal(err)
+		}
+		if f.host.witness.Load().Check(access) {
+			t.Fatal("aborted journal had Close evidence")
+		}
+	})
+	t.Run("record-failure", func(t *testing.T) {
+		f := fixture(t)
+		p := f.open(t)
+		f.host.denyAppend.Store(true)
+		if err := p.Record(context.Background(), intent(f.host.scope, 1)); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("expected failed Record, got %v", err)
+		}
+		if f.host.witness.Load().Check(sealAccess(f, p)) {
+			t.Fatal("failed journal had Close evidence")
+		}
+	})
 }
 
 func TestPublisherDurableHeaderAppendSeal(t *testing.T) {
@@ -257,6 +335,30 @@ func TestPublisherHeaderRefusalLeavesFileAndNoRecorder(t *testing.T) {
 	}
 	if f.root.released.Load() != 1 {
 		t.Fatal("failed registration retained root scope")
+	}
+	if w := f.host.witness.Load(); w == nil || w.Check(auditcheckpoint.Access{}) || !w.failed {
+		t.Fatal("failed Open did not invalidate its bound Close witness")
+	}
+	f.counts(t, 0)
+}
+
+func TestCloseWitnessBinderFailureInvalidatesAndPreservesHeader(t *testing.T) {
+	f := fixture(t)
+	f.config.BindCloseWitness = func(w *CloseWitness) error {
+		f.host.witness.Store(w)
+		return errors.New("synthetic binder failed after retaining witness")
+	}
+	if p, err := Open(context.Background(), f.config); p != nil || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("failed binder returned usable publisher: %v", err)
+	}
+	if w := f.host.witness.Load(); w == nil || !w.failed || w.ready {
+		t.Fatal("failed binder retained usable Close evidence")
+	}
+	if f.root.released.Load() != 1 {
+		t.Fatal("failed binder retained root scope")
+	}
+	if info, err := os.Stat(f.path); err != nil || info.Size() == 0 {
+		t.Fatal("failed binder erased original synced header")
 	}
 	f.counts(t, 0)
 }
@@ -395,6 +497,9 @@ func TestPublisherResultAndSealRefusalsNeverSucceed(t *testing.T) {
 		}
 		if _, err := p.Seal(context.Background()); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("unauthenticated seal succeeded: %v", err)
+		}
+		if f.host.witness.Load().Check(sealAccess(f, p)) {
+			t.Fatal("failed Seal retained Close authorization")
 		}
 		if h := f.head(t, p); h.Phase != auditcheckpoint.Open || h.Checkpoint.Sequence != 1 {
 			t.Fatal("seal failure changed current phase")

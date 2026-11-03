@@ -50,6 +50,9 @@ type Config struct {
 	KeyRef           string
 	Key              []byte
 	MaxSnapshotBytes int64
+	// BindCloseWitness gives the trusted Host this instance's Close evidence
+	// before Register. It must not reenter Publisher or start SQL work.
+	BindCloseWitness func(*CloseWitness) error
 }
 
 // Publisher is a transmit.Recorder. Its nil-free Record result means the local
@@ -65,6 +68,7 @@ type Publisher struct {
 	journal   *auditlog.Journal
 	snapshot  *journalSnapshot
 	head      auditcheckpoint.Head
+	witness   *CloseWitness
 	failed    bool
 	closed    bool
 }
@@ -89,7 +93,7 @@ var _ transmit.Recorder = (*Publisher)(nil)
 // any created journal on disk for diagnosis and never substitutes a new RunRef.
 func Open(ctx context.Context, config Config) (*Publisher, error) {
 	if ctx == nil || ctx.Err() != nil || config.Store == nil || nilRootScope(config.RootScope) ||
-		config.MaxSnapshotBytes <= 0 || config.MaxSnapshotBytes > auditlog.MaxExtensionBytes {
+		config.MaxSnapshotBytes <= 0 || config.MaxSnapshotBytes > auditlog.MaxExtensionBytes || config.BindCloseWitness == nil {
 		return nil, ErrConfig
 	}
 	rootCtx, anchor := config.RootScope.Context(), config.RootScope.Anchor()
@@ -120,7 +124,9 @@ func Open(ctx context.Context, config Config) (*Publisher, error) {
 		_ = root.close()
 		return nil, ErrUnavailable
 	}
+	var witness *CloseWitness
 	closeFailedOpen := func(snapshot *journalSnapshot) {
+		witness.invalidate()
 		if snapshot != nil {
 			_ = snapshot.close()
 		}
@@ -135,6 +141,13 @@ func Open(ctx context.Context, config Config) (*Publisher, error) {
 	p := &Publisher{store: storeAdapter{config.Store}, epoch: config.Epoch, rootScope: config.RootScope, rootCtx: rootCtx,
 		publisher: config.PublisherRef, journal: journal, snapshot: snapshot}
 	cp := journal.Checkpoint()
+	witness = newCloseWitness(config.Epoch, auditcheckpoint.Binding{PublisherRef: config.PublisherRef,
+		Scope: cp.Scope, JournalID: cp.JournalID, KeyRef: cp.KeyRef}, rootCtx)
+	p.witness = witness
+	if err := config.BindCloseWitness(witness); err != nil {
+		closeFailedOpen(snapshot)
+		return nil, ErrUnavailable
+	}
 	owned, err := snapshot.read(ctx)
 	if err != nil {
 		closeFailedOpen(snapshot)
@@ -169,32 +182,32 @@ func (p *Publisher) Record(ctx context.Context, event transmit.Event) error {
 		return ErrFailed
 	}
 	if p.rootCtx == nil {
-		p.failed = true
+		p.fail()
 		return ErrUnavailable
 	}
 	ctx, cancel := bindRootContext(ctx, p.rootCtx)
 	defer cancel()
 	if ctx.Err() != nil {
-		p.failed = true
+		p.fail()
 		return ErrUnavailable
 	}
 	operation, err := newOperationRef()
 	if err != nil {
-		p.failed = true
+		p.fail()
 		return ErrUnavailable
 	}
 	if err := p.journal.Record(ctx, event); err != nil {
-		p.failed = true
+		p.fail()
 		return ErrUnavailable
 	}
 	candidate := p.journal.Checkpoint()
 	if candidate.Sequence != p.head.Checkpoint.Sequence+1 {
-		p.failed = true
+		p.fail()
 		return ErrUnavailable
 	}
 	owned, err := p.snapshot.read(ctx)
 	if err != nil {
-		p.failed = true
+		p.fail()
 		return ErrUnavailable
 	}
 	defer clear(owned)
@@ -203,7 +216,7 @@ func (p *Publisher) Record(ctx context.Context, event transmit.Event) error {
 		ExpectedRevision: p.head.Revision, Previous: p.head.Checkpoint, Candidate: candidate}
 	head, err := p.publish(ctx, request, owned, auditcheckpoint.Open)
 	if err != nil {
-		p.failed = true
+		p.fail()
 		return ErrUnavailable
 	}
 	p.head = head
@@ -245,44 +258,45 @@ func (p *Publisher) Seal(ctx context.Context) (result auditcheckpoint.Head, resu
 		rootErr := p.snapshot.root.close()
 		p.rootScope.Release()
 		if snapshotErr != nil || rootErr != nil {
-			p.failed = true
+			p.fail()
 			result, resultErr = auditcheckpoint.Head{}, ErrUnavailable
 		}
 	}()
 	if p.rootCtx == nil {
-		p.failed = true
+		p.fail()
 		_ = p.journal.Close()
 		return auditcheckpoint.Head{}, ErrUnavailable
 	}
 	ctx, cancel := bindRootContext(ctx, p.rootCtx)
 	defer cancel()
 	if p.failed || ctx.Err() != nil {
-		p.failed = true
+		p.fail()
 		_ = p.journal.Close()
 		return auditcheckpoint.Head{}, ErrFailed
 	}
 	operation, err := newOperationRef()
 	if err != nil {
-		p.failed = true
+		p.fail()
 		_ = p.journal.Close()
 		return auditcheckpoint.Head{}, ErrUnavailable
 	}
 	if err := p.journal.Close(); err != nil {
-		p.failed = true
+		p.fail()
 		return auditcheckpoint.Head{}, ErrUnavailable
 	}
 	owned, err := p.snapshot.read(ctx)
 	if err != nil {
-		p.failed = true
+		p.fail()
 		return auditcheckpoint.Head{}, ErrUnavailable
 	}
 	defer clear(owned)
 	request := auditcheckpoint.Request{Epoch: p.epoch, OperationRef: operation,
 		PublisherRef: p.publisher, Kind: auditcheckpoint.Seal,
 		ExpectedRevision: p.head.Revision, Previous: p.head.Checkpoint, Candidate: p.head.Checkpoint}
+	p.witness.arm(p.head.Checkpoint)
 	head, err := p.publish(ctx, request, owned, auditcheckpoint.Sealed)
 	if err != nil {
-		p.failed = true
+		p.fail()
 		return auditcheckpoint.Head{}, ErrUnavailable
 	}
 	p.head = head
@@ -301,7 +315,8 @@ func (p *Publisher) Abort() error {
 	if p.closed {
 		return ErrClosed
 	}
-	p.closed, p.failed = true, true
+	p.closed = true
+	p.fail()
 	journalErr := p.journal.Close()
 	snapshotErr := p.snapshot.close()
 	rootErr := p.snapshot.root.close()
@@ -310,6 +325,13 @@ func (p *Publisher) Abort() error {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+// fail is called with Publisher.mu held. The witness has its own short lock
+// and never reenters Publisher.mu or starts SQL work.
+func (p *Publisher) fail() {
+	p.failed = true
+	p.witness.invalidate()
 }
 
 // publish retries an uncertain SQL commit only with the exact same operation

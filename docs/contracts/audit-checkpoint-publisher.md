@@ -23,3 +23,9 @@ SQL commit 결과가 불명확할 때는 **같은 operation ref·Request·소유
 전용 PostgreSQL의 임시 schema·합성 Host/키·소유 loopback 대상만 사용하는 package 시험은 header/current head, intent ACK 거부 시 수신 0, result/Seal 장애의 비승격, 부분 journal 보존, 같은 연산 재확인, 취소·동시 Record·hardlink 거부를 확인한다. 실제 모델·대상·권한자·키 서비스·전원 장애는 시험 대상이 아니다.
 
 운영 연결은 별도 PR에서 `server/controlledCheckpointRecorder`를 교체하고 `NewHTTP` 전에 `Open` ACK를 요구해야 한다. 서버가 실제 `StopAndWait`와 Host의 마감 증언을 연결하고, 권한·epoch/anchor·키·파일 root 수명·보존/복원·평가 on/off 조건을 검증하기 전에는 이 패키지의 존재를 외부 최신성 또는 실행 통제 완료로 해석하지 않는다. [CPD 계약](./e2-audit-journal.md#최신-checkpoint-외부-게시--계약-확정-초안)의 CPD01~05와 CPS01~12는 전체 운영 수용 조건으로 남는다.
+
+## Local Close witness (draft)
+
+`Config.BindCloseWitness` is mandatory. `Open` creates one `*CloseWitness` after the local journal header exists and passes it to the trusted Host binder before CPD Register, outside Publisher and SQL locks. The binder must attach this exact instance to that Host's authorized execution and must not reenter the Publisher or begin SQL work. A nil, zero, unbound, or failed binder leaves no usable recorder. This binding is an in-process Go reference; it is not a serialized signature or a model-facing capability.
+
+`CloseWitness.Check(access)` can be used by the Host during CPD Seal authorization. It matches the original epoch, publisher, full scope, journal ID, key reference, and exact candidate checkpoint. It becomes true only after this Publisher's `Journal.Close` succeeds without a prior Open/Record/Abort failure. Failure invalidates it. Check has a separate short lock, so a Host call from Seal does not reenter `Publisher.mu`. The Host must independently prove its own HTTP `StopAndWait`, current principal/epoch/key authority, and lifecycle state; the witness does not prove task completion or that a remote Seal committed. Exact-operation reconciliation remains required after an uncertain commit.
