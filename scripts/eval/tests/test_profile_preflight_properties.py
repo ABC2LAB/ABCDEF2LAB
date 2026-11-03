@@ -39,6 +39,7 @@ _ENV_CHANGES = {
     "llm": api_llm() | {"model": "example-org/other-model", "provider": "other-provider"},
     "temperature": 0.25, "seed": 43, "target_image": "example/target:16.0.0",
     "worker_count": 2, "time_budget_seconds": 600, "request_budget": 101,
+    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"},
 }
 _SCOPE_CHANGES = {"target_origin": "http://eval-meter:8081", "methods": ["GET"],
                   "paths": ["/api/records/{object}"], "vuln_classes": ["idor"]}
@@ -181,7 +182,7 @@ class TestProfilePreflightProperties(unittest.TestCase):
             with self.subTest(family=family, field=field, flags=flags, keys=reverse, side=side):
                 self.assert_one_sided_change(family, field, _wire(changed, flags, reverse), side)
                 cases += 1
-        self.assertEqual(cases, 392)
+        self.assertEqual(cases, 420)  # 변경 15종(환경 8·scope 4·fixture 3) × 순서 7 × 키 순서 2 × 쪽 2
 
     def test_equal_changes_on_both_sides_remain_comparable(self):
         cases = 0
@@ -193,7 +194,7 @@ class TestProfilePreflightProperties(unittest.TestCase):
                 self.assertEqual(_digest(left), _digest(right))
                 self.assert_passes(_pair(left, right))
                 cases += 1
-        self.assertEqual(cases, 196)
+        self.assertEqual(cases, 210)
 
     def test_digest_preserves_decimal_changes_hidden_by_float_controls(self):
         literals = ("0.1234567890123456789012345678901", "0.1234567890123456789012345678902")

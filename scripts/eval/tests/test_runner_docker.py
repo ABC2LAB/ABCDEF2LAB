@@ -307,6 +307,69 @@ class TestProbeCall(unittest.TestCase):
         self.assertEqual(str(caught.exception), "docker_probe_failed")
 
 
+def statfs_report(*rows):
+    return json.dumps({"results": [dict(zip(("path", "mount_id", "size_bytes", "used_bytes", "available_bytes"), row))
+                                   for row in rows]}).encode()
+
+
+class TestStatfs(unittest.TestCase):
+    """tmpfs 사용량은 대상 밖의 계측기 statfs 역할로 잰다(#140 리뷰: 엔진 안 df는 엔진 도구가 바꿀 수 있고,
+    경로만으로는 다른 마운트를 잴 수 있음 → 보고의 마운트 ID를 호출자가 구간 전후로 대조)."""
+
+    def test_runs_meter_image_outside_the_target_with_only_ptrace(self):
+        report = statfs_report(("/app/data", 41, 8 << 20, 1 << 20, 7 << 20))
+        fake = FakeExecutor(CommandResult(0, report))
+        usage = Docker(fake, {}, 1).statfs(IMAGE_ID, ID_A, ["/app/data"])
+        self.assertEqual(usage, [{"mount_id": 41, "size_bytes": 8 << 20, "used_bytes": 1 << 20,
+                                  "available_bytes": 7 << 20}])
+        args, _, stdin, _ = fake.calls[0]
+        self.assertEqual(args, ["run", "--rm", "-i", "--pull", "never", "--network", "none", "--pid", f"container:{ID_A}",
+                                "--read-only", "--cap-drop", "ALL", "--cap-add", "SYS_PTRACE",
+                                "--security-opt", "no-new-privileges:true", "--user", "0:0", "--", IMAGE_ID,
+                                "-role=statfs"])
+        self.assertEqual(json.loads(stdin), {"paths": ["/app/data"]})  # 대상 컨테이너 안의 마운트 지점
+        self.assertNotIn("exec", args)  # 대상 안의 실행파일은 실행하지 않는다
+        self.assertFalse(any(arg in ("-v", "--volume", "--mount", "--privileged") for arg in args))
+
+    def test_report_must_match_the_request(self):
+        paths = ["/app/data"]
+        good = ("/app/data", 41, 8192, 1024, 7168)
+        self.assertEqual(runner_docker.parse_statfs_report(statfs_report(good), paths)[0]["mount_id"], 41)
+        bad = [statfs_report(), statfs_report(good, good), statfs_report(("/app", 41, 8192, 1024, 7168)),
+               statfs_report(("/proc/1/root/app/data", 41, 8192, 1024, 7168)),
+               statfs_report(("/app/data", 41, 0, 0, 0)), statfs_report(("/app/data", 41, 8192, 9000, 0)),
+               statfs_report(("/app/data", 41, 8192, 1024, 7169)),  # 남은 공간 > 크기 - 사용
+               statfs_report(("/app/data", 41, 8192, -1, 7168)),
+               statfs_report(("/app/data", 41, 8192.0, 1024, 7168)),
+               statfs_report(("/app/data", 41, True, 1024, 7168)),
+               statfs_report(("/app/data", 41, 8192, 1024, False)),  # JSON false는 0이 아니다
+               statfs_report(("/app/data", 0, 8192, 1024, 7168)),  # 마운트 ID 없음
+               statfs_report(("/app/data", True, 8192, 1024, 7168)),
+               statfs_report(("/app/data", "41", 8192, 1024, 7168)),
+               json.dumps({"results": [{"path": "/app/data", "size_bytes": 8192, "used_bytes": 1024,
+                                        "available_bytes": 7168}]}).encode(),  # 마운트 ID 필드 누락
+               json.dumps({"results": [], "extra": 1}).encode(), b"[]", b"\xff", b"",
+               json.dumps({"results": [dict(zip(("path", "mount_id", "size_bytes", "used_bytes", "available_bytes"),
+                                                good), extra=1)]}).encode()]
+        for output in bad:
+            with self.subTest(output=output[:60]), self.assertRaises(DockerError) as caught:
+                runner_docker.parse_statfs_report(output, paths)
+            self.assertEqual(str(caught.exception), "docker_statfs_output_invalid")
+
+    def test_inputs_checked_before_call(self):
+        for image, container, paths in ((IMAGE_ID, "short", ["/app/data"]), ("example/m:1", ID_A, ["/app/data"]),
+                                        (IMAGE_ID, ID_A, []), (IMAGE_ID, ID_A, ["app/data"]),
+                                        (IMAGE_ID, ID_A, ["/app/../etc"]), (IMAGE_ID, ID_A, ["/app data"]),
+                                        (IMAGE_ID, ID_A, [None])):
+            fake = FakeExecutor()
+            with self.subTest(image=image[:8], container=container[:5], paths=paths), self.assertRaises(DockerError):
+                Docker(fake, {}, 1).statfs(image, container, paths)
+            self.assertEqual(fake.calls, [])
+        with self.assertRaises(DockerError) as caught:
+            Docker(FakeExecutor(CommandResult(1, b"")), {}, 1).statfs(IMAGE_ID, ID_A, ["/app/data"])
+        self.assertEqual(str(caught.exception), "docker_statfs_failed")
+
+
 class TestComposeCalls(unittest.TestCase):
     def test_up_never_pulls_or_builds_and_waits(self):
         fake = FakeExecutor(CommandResult(0, b""), CommandResult(0, b""))

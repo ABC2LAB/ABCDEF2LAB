@@ -57,7 +57,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `observer_readonly_ref` | 그 GET이 해당 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(200자 이하). 러너가 만들 수 없는 근거라 설정으로 받고, 격리 근거 `observer_readonly` 행에 그대로 남긴다 |
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
 | `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null). baseline 회차는 compose 값이 같이 넘어가도 엔진이 읽지 않으므로 선언값도 null이다 |
-| `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한, DB healthcheck |
+| `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data,min_free}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한과 구간 종료 뒤 남아야 할 최소 공간(두 상한보다 작아야 함), DB healthcheck. `tmpfs` 세 값은 사전검사 `run_storage`(프로파일 v3 환경 지문 입력)와 글자 그대로 같아야 시작한다 |
 | `llm_gateway.generation_path` | api: generation 조회 경로(예: OpenRouter `/api/v1/generation`) |
 | `llm_gateway.verify_attempts`, `verify_interval_seconds` | generation마다 조회 횟수(1~100)와 간격 |
 | `llm_gateway.ca_bundle`, `expected_provider_name` | 호스트 CA 묶음 경로, 기대 응답 제공자 표시 이름 |
@@ -86,13 +86,14 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 ```
 [up 전]  project 이름 중복 없음 → 이미지 내용 ID 확인 → 회차 디렉터리(0700) 생성
 [기동]   compose up(--pull never, --no-build, --wait)
-[pre]    망·publish·이미지·호스트 조건 점검 → 부정 연결 점검 → 대상 준비 → 구간 감시 시작 → pre 스코어보드
+[pre]    망·publish·이미지·호스트 조건 점검 → 부정 연결 점검 → tmpfs 마운트 ID·사용량(구간 전) → 대상 준비 → 구간 감시 시작 → pre 스코어보드
          계측기 전달 건수 == 0
 [작업]   새로 로그인 → POST /api/tasks(설정의 task, 생성=기동) → task.json
          요청 예산 또는 시간 예산까지 폴링 → 계측기 seal → drain 확인
          LLM 게이트웨이 seal(새 LLM 요청 거부·진행 중 취소 → generation 조회 시작)
 [post]   점검 반복 + pre와 비교(망·주소·컨테이너 교체·재시작) → 부정 연결 점검 → post 스코어보드
          구간 감시 종료 → 구간 판정(호스트 리슨 표본·데몬 이벤트) → window-watch.json
+         tmpfs 사용량(계측기 이미지 statfs 역할을 대상 PID namespace에 붙여 측정) → 마운트 ID가 구간 전과 다르면 무효 → 남은 공간 < min_free면 무효
          관측 로그 건수 == 러너 호출 수, 계측기 순번 완결·건수 일치
          LLM 검증 마커 대기 → 응답 제공자 판정 → findings(새 로그인 → 페이지 수집 → 추출)
 [끝]     compose down -v(성공·실패와 무관) → 모두 통과면 서명 → runner-result.json
@@ -176,6 +177,10 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `llm_generation_unverified`, `llm_generation_unverifiable` | 조회 안 된 generation, generation ID 없는 응답 |
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
 | `llm_pin_mismatch`, `llm_backend_mismatch`, `llm_log_incomplete` | 게이트웨이가 다른 slug를 고정, 백엔드 구성이 섞임, 게이트웨이 기록 불완전 |
+| `tmpfs_measure_failed` | 구간 종료 뒤 tmpfs 사용량을 읽지 못함(측정 컨테이너 실행·권한 실패, 커널 파일시스템 종류가 tmpfs 아님, 형식·크기가 맞지 않는 보고, 두 볼륨이 정확히 오지 않음). 결과의 `tmpfs_usage`는 `not_measured` |
+| `pre_tmpfs_measure_failed` | 구간 전 tmpfs 마운트 ID·사용량을 읽지 못함(사유는 `tmpfs_measure_failed`와 같음). 구간을 시작하지 않는다 |
+| `tmpfs_mount_changed` | 구간 뒤 잰 tmpfs의 마운트 ID가 구간 전과 다름 — 같은 경로라도 다른 마운트(부모 경로 변경·symlink·다시 마운트)를 잰 것이라 회차 저장소의 근거가 아니다. 양쪽 값은 결과에 남는다 |
+| `tmpfs_full` | 엔진 DB·엔진 데이터 tmpfs 중 하나라도 남은 공간이 `tmpfs.min_free` 미만(상한 도달 — 엔진이 쓰기 실패를 삼켰을 수 있음). 잰 값과 적용 하한(`min_free_bytes`)은 결과에 남는다 |
 | `findings_failed` | findings 단계 실패: 로그인 실패(연결·HTTP 상태·응답 형식), 페이지 수집 실패(한도 초과·건수 불일치·형식 밖 응답), 추출 실패 |
 | `evidence_write_failed` | 근거 파일 쓰기 실패 |
 | `down_failed`, `sign_failed` | 정리·서명 실패(측정은 끝났어도 무효) |
@@ -187,9 +192,17 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 ## 아직 안 된 것
 
 - **개선 후 판정 레코드:** findings만 수집한다. 구조화 판정 레코드는 물리 형식(#18) 결정 후 추가 신호로 붙인다.
-- **tmpfs 사용량:** 회차 메모리(엔진 DB·엔진 데이터)의 seal 시점 사용량을 아직 재지 않는다. 결과 기록(완료·무효 모두)에
-  `tmpfs_usage: "not_measured"`를 남기며, 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다.
-- **아직 실측하지 않은 것:** tmpfs 사용량, 평가 머신에서의 같은 항목들. api 백엔드의 정밀도(양자화) 고정(OpenRouter `quantizations`)은 아직 요청에 넣지 않는다(후속 검토).
+- **tmpfs 사용량 측정 방법:** 엔진 안의 `df`나 `PATH`는 엔진 도구(Bash·Write 등)가 바꿀 수 있어 믿지 않는다(#140 리뷰). 러너가 계측기 이미지(내용 ID)를
+  망 없이·읽기 전용·pull 없이 띄워 대상 컨테이너의 PID namespace에 붙인다. 측정 역할은 대상의 `/proc/1/mountinfo`에서 마운트 지점이 정확히 그
+  경로인 tmpfs를 찾고, `/proc/1/root/<마운트>`를 마지막 symlink를 따르지 않고 한 번 연 뒤 그 객체의 마운트 ID(statx)가 mountinfo의 ID와 같을 때만
+  같은 fd로 statfs한다(커널 파일시스템 종류가 tmpfs인지 확인). 경로 문자열만으로는 부모 경로 변경이나 symlink(예: 컨테이너마다 있는 `/dev/shm`)로
+  다른 tmpfs를 잴 수 있어서다(#140 리뷰). 러너는 구간 전에도 한 번 재서 마운트 ID를 기록하고 구간 뒤 같은 ID일 때만 받는다. 다른 프로세스의
+  root를 따라가려고 root 사용자와 `SYS_PTRACE` 하나만 주고 나머지 권한은 뺀다. 대상 안의 실행파일은 실행하지 않는다. 결과 `tmpfs_usage`에는
+  두 볼륨의 마운트 ID·크기·사용·남은 바이트, 구간 전 측정(`pre`), 적용 하한 `min_free_bytes`가 서명되어 남는다.
+- **tmpfs 사용량 시점:** 구간 중 새 컨테이너 시작·회차 컨테이너 exec는 경계 변경이라 seal 시점이 아니라 구간 종료 직후에 한 번 잰다. seal 뒤에도
+  엔진은 계속 돌므로 보통 그 값은 seal 시점 이상이지만, 그사이 사용량이 줄었을 가능성(예: DB 정리)은 배제하지 못한다. 측정 전에
+  끝난 회차는 `tmpfs_usage: "not_measured"`이고 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다.
+- **아직 실측하지 않은 것:** 평가 머신에서의 같은 항목들. api 백엔드의 정밀도(양자화) 고정(OpenRouter `quantizations`)은 아직 요청에 넣지 않는다(후속 검토).
 
 ## 스모크 실측 (11/03, 개발 머신)
 
@@ -217,6 +230,9 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   `provider_responses`는 generation마다 1건(엔드포인트 ID 1종, 상태 200×45·499×3 — 499는 봉인으로 끊긴 요청), fallback 시도 0.
   부정 연결 13개 경로·구간 감시(호스트 리슨 표본 62, 최대 공백 2.0초, 데몬 이벤트 경계 변경 0) 통과. 구간 안 신규 해결 3건이
   `isolated_window`로 귀속됐고 findings 1건, 채점은 판정 미수집이라 코어 GT 9개 전부 판단불가. API 키는 비밀 env 파일로만 넘겼다.
+- **tmpfs 사용량 측정(11/03):** local 백엔드 완료·서명 회차에서 구간 종료 뒤 `df -P -k`로 엔진 DB tmpfs 1 GiB 중 약 50 MiB,
+  엔진 데이터 tmpfs 512 MiB 중 약 0.2 MiB 사용(남은 공간 하한 8 MiB 통과). 두 이미지(엔진: GNU coreutils, postgres:16-alpine:
+  busybox) 모두 같은 `df -P -k` 머리줄을 냈고, 측정 exec는 구간 밖이라 구간 경계 변경 0.
 - **스모크로 고친 것:** `python3 -I` 실행 시 같은 디렉터리 모듈 import 실패, 배포판 데몬의 빈 `Platform.Name`을 출력 오류로 거부,
   internal 망 DNS 실패 종류, 무효 기록의 `failed_step`이 마지막 단계(근거 쓰기)로 남던 것.
 - **이 머신 한정 설정:** 호스트 리슨 허용 목록에 WSL DNS 터널링 리졸버 `10.255.255.254:53`(근거 포함). 엔진 이미지는 호스트에
