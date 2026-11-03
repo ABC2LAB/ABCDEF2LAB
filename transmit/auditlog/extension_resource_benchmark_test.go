@@ -8,16 +8,27 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/Autumn-27/artex/transmit"
+)
+
+// Duplicated fixture assumptions are checked against their owners by the small
+// tagged drift test before any manual resource measurements.
+const (
+	resourceMaxRefLength             = 128
+	resourceControlledRequestCeiling = 10000
 )
 
 // This manual benchmark never runs in the default test suite. Run each case in
@@ -81,6 +92,10 @@ func BenchmarkExtensionResource(b *testing.B) {
 	runtime.GC()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
+	var usageBefore syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usageBefore); err != nil {
+		b.Fatal("pre-verification self resource usage unavailable")
+	}
 	b.ReportAllocs()
 	b.SetBytes(size)
 	b.ResetTimer()
@@ -110,6 +125,7 @@ func BenchmarkExtensionResource(b *testing.B) {
 	b.ReportMetric(float64(before.HeapAlloc)/(1<<20), "heap_before_MiB")
 	b.ReportMetric(float64(after.HeapAlloc)/(1<<20), "heap_after_MiB")
 	b.ReportMetric(float64(after.HeapSys)/(1<<20), "heap_sys_after_MiB")
+	b.ReportMetric(float64(usageBefore.Maxrss)/1024, "self_maxrss_before_MiB")
 	b.ReportMetric(float64(usage.Maxrss)/1024, "self_maxrss_MiB") // Linux ru_maxrss is KiB.
 	if ingestOnly {
 		b.ReportMetric(1, "limit_refused")
@@ -149,7 +165,7 @@ func resourceEvent(sequence, count int, scope transmit.Scope, ref string) transm
 		}
 	} else {
 		event.Stage, event.Reason = "result", transmit.BudgetExhausted
-		event.Attempt = uint64(10000 + sequence - count/2)
+		event.Attempt = uint64(resourceControlledRequestCeiling + sequence - count/2)
 	}
 	return event
 }
@@ -163,8 +179,8 @@ func resourceFixture(directory string, count int, headerPrefix bool) (string, []
 	// and in five header Scope refs. This finds the largest valid ref length
 	// under 64 MiB without repeatedly building large journal files.
 	refLength := 1 + int((MaxExtensionBytes-baseline)/int64(9*count+5))
-	if refLength > 128 {
-		refLength = 128
+	if refLength > resourceMaxRefLength {
+		refLength = resourceMaxRefLength
 	}
 	if refLength < 1 {
 		return "", nil, Checkpoint{}, Checkpoint{}, 0, ErrExtensionLimit
@@ -259,4 +275,39 @@ func resourceEstimatedBytes(count int) (int64, error) {
 		total += int64(len(line))
 	}
 	return total, nil
+}
+
+// This only checks fixture assumptions in the source checkout. It does not
+// construct a large journal, run the benchmark, or assert performance limits.
+func TestResourceFixtureContractNoDrift(t *testing.T) {
+	if !validRef(resourceRef(resourceMaxRefLength)) || validRef(resourceRef(resourceMaxRefLength+1)) {
+		t.Fatal("audit reference bound changed; review fixture sizing before remeasurement")
+	}
+	// The server constant is private, and importing server would cycle back to
+	// auditlog. Parse its declaration instead of adding a production API.
+	source, err := parser.ParseFile(token.NewFileSet(), "../../server/controlled_read_store.go", nil, 0)
+	if err != nil {
+		t.Fatal("server request ceiling source unavailable", err)
+	}
+	var ceiling ast.Expr
+	ast.Inspect(source, func(node ast.Node) bool {
+		spec, ok := node.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for i, name := range spec.Names {
+			if name.Name == "maxControlledRequests" && i < len(spec.Values) {
+				ceiling = spec.Values[i]
+			}
+		}
+		return false
+	})
+	literal, ok := ceiling.(*ast.BasicLit)
+	if !ok || literal.Kind != token.INT {
+		t.Fatal("server request ceiling declaration changed; review the fixture")
+	}
+	actual, err := strconv.ParseInt(literal.Value, 0, 64)
+	if err != nil || actual != resourceControlledRequestCeiling {
+		t.Fatal("server request ceiling changed; review synthetic event/attempt assumptions", actual, err)
+	}
 }
