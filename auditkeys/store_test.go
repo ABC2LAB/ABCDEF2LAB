@@ -300,8 +300,12 @@ func TestRegistryRetireDestroyRequireIndependentProofs(t *testing.T) {
 func TestRegistryMappingAndAlias(t *testing.T) {
 	f := registryFixture(t)
 	f.prepare(t)
+	callsBefore := f.auth.calls.Load()
 	if _, err := f.store.Prepare(context.Background(), "key-1", "version-2", "", "replace"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("mapping replacement error %v", err)
+	}
+	if f.auth.calls.Load() != callsBefore {
+		t.Fatal("known mapping mismatch reached authority")
 	}
 	f.auth.update(func() { f.auth.identities["version-alias"] = "synthetic-identity-1" })
 	if _, err := f.store.Prepare(context.Background(), "alias", "version-alias", "", "alias-op"); !errors.Is(err, ErrConflict) {

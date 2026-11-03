@@ -88,7 +88,8 @@ registry가 이 근거를 스스로 만들거나 키를 삭제하지 않는다.
 ## 원자성·전이·재시도
 
 정상 전이는 `prepared → active → retiring → retired`다.
-어느 비파기 상태에서든 `compromised`로 갈 수 있다.
+`prepared/active/retiring/retired → compromised`를 허용한다.
+이미 `compromised`인 상태에서 같은 상태로 다시 전이하지 않는다.
 `prepared/retired/compromised → destroyed`만 허용하며 이전 상태로 돌아가지 않는다.
 retiring·compromised로 metadata를 바꾸는 것만으로 이미 복사된 HMAC 키를 회수하거나
 추가 서명을 기술적으로 막았다고 주장하지 않는다.
@@ -141,6 +142,10 @@ SQL 오류는 외부 Error 문자열에서 고정 사유로 숨긴다.
 동일 operation·내용 충돌·동시 CAS, provider I/O 시점 row lock,
 중간 rollback·commit 후 ACK 유실, 과거 revision 재생·과거 영수증과 현재 상태 구분,
 키 identity 교체·신뢰 장애를 검사한다.
+mapping 시험은 나머지 state/revision을 합법적으로 유지하고 SQLSTATE `23514`와
+정확한 trigger 사유를 확인한다. initial insert·revision 건너뛰기·retired 재활성화,
+신뢰 획득 중 현재 revision/state 변경·Inspect 재확인, 동일 operation의 actor/policy/근거
+변경, 비동기 consume 조기 반환과 실제 commit 시점 실패를 별도로 검사한다.
 
 실제 secret provider, 운영 key, 실제 인증/anchor, admission·키 회수·폐기·배포 또는
 Juice Shop 회차를 검증한 결과가 아니다.

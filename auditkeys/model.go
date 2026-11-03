@@ -108,8 +108,10 @@ func New(db *sql.DB, config Config, authority Authority) (*Store, error) {
 	return &Store{db: db, config: config, authority: authority}, nil
 }
 
+const maxRefBytes = 128
+
 func validRef(s string) bool {
-	if len(s) < 1 || len(s) > 128 || strings.Contains(s, "://") {
+	if len(s) < 1 || len(s) > maxRefBytes || strings.Contains(s, "://") {
 		return false
 	}
 	for i, c := range []byte(s) {
