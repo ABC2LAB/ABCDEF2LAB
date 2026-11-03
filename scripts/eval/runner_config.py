@@ -66,13 +66,15 @@ _DB_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
 _LLM_PROVIDERS = ("openai",)
 _IMAGE_ROLES = ("engine_baseline", "engine_ours", "engine_db", "meter")
 _PORTS = ("engine_api_host", "engine_container", "target", "obs", "obs_host", "llm_gateway", "api_front")
-_GATEWAY_FIELDS = ("generation_path", "verify_attempts", "verify_interval_seconds", "ca_bundle")
+# expected_provider_name: generation 조회가 돌려주는 응답 제공자 표시 이름(고정 slug와 짝, 팀이 정함).
+_GATEWAY_FIELDS = ("generation_path", "verify_attempts", "verify_interval_seconds", "ca_bundle", "expected_provider_name")
+MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway")
 # 회차 진행 시간·크기 값(초). 실패 시 재시도하지 않으므로 각 값이 그 단계의 유일한 기회다.
 _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_seconds", "budget_poll_seconds",
-               "drain_timeout_seconds", "snapshot_timeout_seconds", "snapshot_max_bytes")
+               "drain_timeout_seconds", "snapshot_timeout_seconds", "snapshot_max_bytes", "llm_verify_timeout_seconds")
 MAX_RUN_SECONDS = 3600
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 
@@ -262,6 +264,11 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         errors.append("config.llm_gateway.verify_interval_seconds: INVALID")
     if "ca_bundle" in gateway and not _absolute_path(gateway["ca_bundle"]):
         errors.append("config.llm_gateway.ca_bundle: EXPECTED_ABSOLUTE_PATH")
+    name = gateway.get("expected_provider_name")
+    if "expected_provider_name" in gateway and (not isinstance(name, str) or not name.strip()
+                                                or len(name) > MAX_PROVIDER_NAME_LENGTH
+                                                or any(ord(c) < 32 or ord(c) == 127 for c in name)):
+        errors.append("config.llm_gateway.expected_provider_name: INVALID")
     run = _exact(top.get("run"), _RUN_FIELDS, "config.run", errors) if "run" in top else {}
     for name in _RUN_FIELDS:
         limit = MAX_SNAPSHOT_BYTES if name == "snapshot_max_bytes" else MAX_RUN_SECONDS

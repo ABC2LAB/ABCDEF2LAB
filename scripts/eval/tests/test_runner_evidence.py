@@ -13,7 +13,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
-    DRAINED_MARKER, ENGINE_LOG, OBSERVER_LOG, EvidenceDir, EvidenceError, MeterFiles, sequence_complete,
+    DRAINED_MARKER, ENGINE_LOG, LLM_VERIFIED_MARKER, OBSERVER_LOG, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
+    sequence_complete,
 )
 
 
@@ -140,6 +141,22 @@ class TestMeterFiles(unittest.TestCase):
         (self.dir / ENGINE_LOG).mkdir()
         with self.assertRaises(EvidenceError):
             self.meter.forwarded()
+
+    def test_gateway_marker_reading(self):
+        gateway = GatewayFiles(self.dir)
+        self.assertIsNone(gateway.verified())
+        self.write(LLM_VERIFIED_MARKER, json.dumps({"role": "llm-gateway", "backend": "api"}))
+        self.assertEqual(gateway.verified()["backend"], "api")
+        for text in ('{"role": "engine"}', "not json", "[]"):
+            self.write(LLM_VERIFIED_MARKER, text)
+            with self.assertRaises(EvidenceError):
+                gateway.verified()
+        (self.dir / LLM_VERIFIED_MARKER).unlink()
+        outside = Path(self.tmp.name, "forged.json")
+        outside.write_text(json.dumps({"role": "llm-gateway"}))
+        (self.dir / LLM_VERIFIED_MARKER).symlink_to(outside)
+        with self.assertRaises(EvidenceError):
+            gateway.verified()
 
     def test_meter_dir_must_be_private(self):
         os.chmod(self.dir, 0o755)

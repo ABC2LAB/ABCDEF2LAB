@@ -24,6 +24,8 @@ from runner_probe import PASS, ProbeOutcome
 from test_preflight import configuration
 from test_runner_checks import DAEMON, raw_world
 from test_runner_config import _yaml_without_comments, runner_config
+from test_runner_llm import generation as llm_generation
+from test_runner_llm import marker as llm_marker
 
 ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "eval-meter": "meter", "eval-obs": "meter",
            "eval-llm-gw": "meter", "eval-api": "meter"}
@@ -88,6 +90,17 @@ class FakeMeter:
             forwarded = self._forwarded() if self.drained_forwarded is None else self.drained_forwarded
             return dict(self.drained, forwarded_requests=forwarded)
         return {"role": "engine", "sealed_at": "t"}
+
+
+class FakeGateway:
+    """llm/ 디렉터리 흉내. 게이트웨이 seal 뒤에야 검증 마커가 생긴다."""
+
+    def __init__(self, ports):
+        self.ports = ports
+        self.marker = llm_marker()
+
+    def verified(self):
+        return self.marker if "seal_gateway" in self.ports.calls else None
 
 
 class FakeEvidence:
@@ -176,6 +189,10 @@ class FakePorts:
         self.phase = "post"
         self.sealed_id = meter_id
 
+    def seal_gateway(self, gateway_id):
+        self._call("seal_gateway")
+        self.gateway_sealed_id = gateway_id
+
     def findings(self):
         self._call("findings")
         return {"items": 0}
@@ -185,20 +202,23 @@ class FakePorts:
         return dict(payload, signature="sig")
 
 
-def run(mutate=None):
+def run(mutate=None, mutate_gateway=None):
     spec = make_spec()
     ports = FakePorts(spec)
     meter = FakeMeter(ports)
+    gateway = FakeGateway(ports)
     evidence = FakeEvidence()
     clock = FakeClock()
     if mutate:
         mutate(ports, meter, clock)
-    result = execute_run(spec, ports, meter, evidence, clock.clock())
+    if mutate_gateway:
+        mutate_gateway(gateway)
+    result = execute_run(spec, ports, meter, gateway, evidence, clock.clock())
     return result, ports, meter, evidence
 
 
 FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "wait_ready",
-              "scoreboard:pre", "confirm_start", "seal", "facts:post", "listeners:post", "probe:post",
+              "scoreboard:pre", "confirm_start", "seal", "seal_gateway", "facts:post", "listeners:post", "probe:post",
               "scoreboard:post", "findings", "down", "sign"]
 
 
@@ -210,11 +230,17 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(result["signature"], "sig")
         self.assertEqual(evidence.files[RESULT_NAME], result)
         self.assertEqual(set(evidence.files), {"pre-checks.json", "pre-probe.json", "post-checks.json",
-                                               "post-probe.json", "meter-summary.json", "findings.json", RESULT_NAME})
+                                               "post-probe.json", "meter-summary.json", "llm-summary.json",
+                                               "findings.json", RESULT_NAME})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
         self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
         self.assertEqual(ports.sealed_id, "4" * 64)
+        self.assertEqual(ports.gateway_sealed_id, "6" * 64)
         self.assertEqual(result["llm_backend"], "api")
+        self.assertEqual((result["llm"]["pinned_provider"], result["llm"]["expected_provider_name"],
+                          result["llm"]["generations"], result["llm"]["providers"]),
+                         ("example-provider", "Example", 2, ["Example"]))
+        self.assertEqual(evidence.files["llm-summary.json"]["reasons"], [])
 
     def test_request_budget_overshoot_recorded_not_hidden(self):
         result, _, _, evidence = run(lambda p, m, c: setattr(m, "per_poll", 35))
@@ -258,7 +284,8 @@ class TestFailures(unittest.TestCase):
         cases = [
             ("up", "compose_up_failed"), ("facts:pre", "pre_facts_failed"), ("listeners:pre", "pre_host_listeners_failed"),
             ("probe:pre", "pre_probe_invalid"), ("wait_ready", "target_not_ready"), ("scoreboard:pre", "pre_scoreboard_failed"),
-            ("confirm_start", "start_not_confirmed"), ("seal", "seal_failed"), ("facts:post", "post_facts_failed"),
+            ("confirm_start", "start_not_confirmed"), ("seal", "seal_failed"), ("seal_gateway", "llm_seal_failed"),
+            ("facts:post", "post_facts_failed"),
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
             ("findings", "findings_failed"),
         ]
@@ -330,6 +357,32 @@ class TestFailures(unittest.TestCase):
         result, ports, _, evidence = run(lambda p, m, c: setattr(p, "running", [foreign]))
         self.assert_invalid(result, ports, evidence, "pre_host_condition_violation")
 
+    def test_llm_provider_conditions_decide_the_run(self):
+        cases = [
+            (lambda g: setattr(g, "marker", llm_marker(generations=[llm_generation("g", provider="Other")])),
+             "llm_provider_mismatch"),
+            (lambda g: setattr(g, "marker", llm_marker(generations=[llm_generation("g", attempts=[])])),
+             "llm_fallback_unverifiable"),
+            (lambda g: setattr(g, "marker", llm_marker(generations=[llm_generation("g", status="unverified")])),
+             "llm_generation_unverified"),
+            (lambda g: setattr(g, "marker", llm_marker(provider="other-provider")), "llm_pin_mismatch"),
+            (lambda g: setattr(g, "marker", llm_marker(log_complete=False)), "llm_log_incomplete"),
+            (lambda g: setattr(g, "marker", {"role": "llm-gateway"}), "llm_marker_invalid"),
+            (lambda g: setattr(g, "verified", lambda: None), "llm_unverified"),
+            (lambda g: setattr(g, "verified", lambda: (_ for _ in ()).throw(OSError("x"))), "llm_read_failed"),
+        ]
+        for mutate, reason in cases:
+            with self.subTest(reason=reason):
+                result, ports, _, evidence = run(mutate_gateway=mutate)
+                self.assert_invalid(result, ports, evidence, reason)
+                self.assertNotIn("findings", ports.calls)  # LLM 조건이 확인돼야 findings로 간다
+
+    def test_llm_reasons_are_all_kept_in_evidence(self):
+        bad = llm_marker(log_complete=False, generations=[llm_generation("g", provider="Other")])
+        result, ports, _, evidence = run(mutate_gateway=lambda g: setattr(g, "marker", bad))
+        self.assertEqual(result["reasons"], ["llm_log_incomplete"])
+        self.assertEqual(evidence.files["llm-summary.json"]["reasons"], ["llm_log_incomplete", "llm_provider_mismatch"])
+
     def test_project_exists_or_image_mismatch_never_touches_compose(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(p, "preexisting", lambda: p._call("preexisting") or True))
         self.assert_invalid(result, ports, evidence, "project_exists", down=False)
@@ -373,7 +426,7 @@ class TestFailures(unittest.TestCase):
         ports.fail["confirm_start"] = KeyboardInterrupt()
         evidence = FakeEvidence()
         with self.assertRaises(KeyboardInterrupt):
-            execute_run(spec, ports, FakeMeter(ports), evidence, FakeClock().clock())
+            execute_run(spec, ports, FakeMeter(ports), FakeGateway(ports), evidence, FakeClock().clock())
         self.assertEqual(evidence.files[RESULT_NAME]["reasons"], ["interrupted"])
         self.assertEqual(ports.calls[-1], "down")
 

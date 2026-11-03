@@ -1,8 +1,9 @@
 """평가 러너 회차 순서(평가 프로토콜 §2).
 
   기동(대상·계측기·관측·engine-db·엔진) → pre 점검(5b)·probe(5c) → 대상 준비 → pre scoreboard
-  → 계측기 전달 0 확인 → 작업 시작(운영자) → 시간·요청 예산 → seal(USR1) → drained 확인
-  → post 점검·probe → post scoreboard → 관측·계측 기록 대조 → findings → down → 서명
+  → 계측기 전달 0 확인 → 작업 시작(운영자) → 시간·요청 예산 → 계측기 seal(USR1) → drained 확인
+  → LLM 게이트웨이 seal → post 점검·probe → post scoreboard → 관측·계측 기록 대조
+  → 게이트웨이 검증 마커 대기·응답 제공자 판정 → findings → down → 서명
 
 어느 단계든 실패하면 고정 사유 코드로 "무효" 기록 하나만 남기고 성공 기록·서명은 만들지 않는다.
 down은 이 회차가 up을 시도했다면 성공·실패와 무관하게 실행한다(down 실패도 사유). 자동 재시도는 없다.
@@ -38,7 +39,8 @@ from runner_config import (
     new_run_id, plan_run,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker
-from runner_evidence import DRAINED_MARKER, SEALED_MARKER, EvidenceDir, MeterFiles, sequence_complete
+from runner_evidence import DRAINED_MARKER, SEALED_MARKER, EvidenceDir, GatewayFiles, MeterFiles, sequence_complete
+from runner_llm import judge_llm
 from runner_probe import PASS, ProbeOutcome, run_probe
 from snapshot_collector import SnapshotEndpoint, collect_snapshot
 from snapshot_writer import SnapshotContext
@@ -79,6 +81,7 @@ class RunPorts(Protocol):
     def scoreboard(self, phase: str, snapshot: dict) -> dict: ...
     def confirm_start(self) -> None: ...
     def seal(self, meter_container_id: str) -> None: ...
+    def seal_gateway(self, gateway_container_id: str) -> None: ...
     def findings(self) -> dict: ...
     def sign(self, payload: dict) -> dict: ...
 
@@ -103,6 +106,9 @@ class RunSpec:
     request_budget: int
     poll_seconds: int
     drain_timeout_seconds: int
+    llm_provider_slug: str
+    llm_provider_name: str
+    llm_verify_timeout_seconds: int
 
 
 @dataclass
@@ -184,7 +190,20 @@ def _wait_drained(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State)
     return drained
 
 
-def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, evidence, clock: Clock, state: _State) -> None:
+def _wait_llm_verified(spec: RunSpec, gateway: GatewayFiles, clock: Clock, state: _State) -> dict:
+    """게이트웨이는 drain 뒤 generation마다 조회해서 마커를 쓴다. 시한 안에 없으면 그 회차의 LLM 조건은 미검증이다."""
+    deadline = clock.monotonic() + spec.llm_verify_timeout_seconds
+    while True:
+        verified = _step(state, "llm_read_failed", gateway.verified)
+        if verified is not None:
+            return verified
+        if clock.monotonic() >= deadline:
+            raise RunFailure("llm_unverified")
+        clock.sleep(spec.poll_seconds)
+
+
+def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: GatewayFiles, evidence, clock: Clock,
+               state: _State) -> None:
     if _step(state, "project_check_failed", ports.preexisting):
         # 회차 project 이름은 회차마다 새로 만든다. 이미 있으면 이 러너 것이 아니므로 건드리지 않는다(down도 안 함).
         raise RunFailure("project_exists")
@@ -210,6 +229,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, evidence, cloc
     stopped_at = _stamp(clock)
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER_SERVICE]["id"]))
     drained = _wait_drained(spec, meter, clock, state)
+    # 엔진의 작업은 끝났다. 게이트웨이도 새 LLM 요청을 막고, drain 뒤 응답 제공자 조회를 시작한다.
+    _step(state, "llm_seal_failed", lambda: ports.seal_gateway(pre["services"][LLM_GW_SERVICE]["id"]))
 
     post = _check_phase(spec, ports, evidence, state, "post")
     if compare_snapshots(pre, post):
@@ -238,20 +259,29 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, evidence, cloc
         "time_budget_seconds": spec.time_budget_seconds, "observer_requests": len(observer),
     }
     _step(state, "evidence_write_failed", lambda: evidence.write_json("meter-summary.json", meter_summary))
+    verified = _wait_llm_verified(spec, gateway, clock, state)
+    llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
+        verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name))
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json",
+                                                                      dict(llm_summary, reasons=llm_reasons)))
+    if llm_reasons:
+        # 사유가 여럿이면 정렬 첫째를 회차 사유로, 전부는 llm-summary.json에 남는다.
+        raise RunFailure(llm_reasons[0])
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
-    state.summary = {"meter": meter_summary, "policy_sha256": policy_sha256(pre), "daemon": pre["daemon"],
-                     "scoreboards": {"pre": pre_board, "post": post_board}}
+    state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
+                     "daemon": pre["daemon"], "scoreboards": {"pre": pre_board, "post": post_board}}
 
 
-def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, evidence, clock: Clock) -> dict:
+def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: GatewayFiles, evidence,
+                clock: Clock) -> dict:
     """회차 1회. 결과 기록(완료·서명 또는 무효)을 정확히 하나 쓰고 그 내용을 돌려준다."""
     state = _State()
     started_at = _stamp(clock)
     reasons: list[str] = []
     interrupted = False
     try:
-        _run_steps(spec, ports, meter, evidence, clock, state)
+        _run_steps(spec, ports, meter, gateway, evidence, clock, state)
     except RunFailure as exc:
         reasons.append(exc.code)
     except KeyboardInterrupt:
@@ -365,6 +395,9 @@ class DockerPorts:
     def seal(self, meter_container_id: str) -> None:
         self.docker.signal(meter_container_id, "USR1")
 
+    def seal_gateway(self, gateway_container_id: str) -> None:
+        self.docker.signal(gateway_container_id, "USR1")
+
     def findings(self) -> dict:
         return self._findings()
 
@@ -392,7 +425,10 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict) -> RunSpec:
         expected=expected_topology(config, plan), allowed_listens=allowed_host_listens(config, plan),
         image_ids={role: image.id for role, image in plan.images.items()},
         time_budget_seconds=declared["time_budget_seconds"], request_budget=declared["request_budget"],
-        poll_seconds=config.run["budget_poll_seconds"], drain_timeout_seconds=config.run["drain_timeout_seconds"])
+        poll_seconds=config.run["budget_poll_seconds"], drain_timeout_seconds=config.run["drain_timeout_seconds"],
+        llm_provider_slug=plan.llm.get("provider", ""),
+        llm_provider_name=config.llm_gateway["expected_provider_name"],
+        llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -414,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
     ports = DockerPorts(config, plan, directory, docker, _findings_unavailable, _operator_confirm)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight), ports, MeterFiles(directory.meter),
-                         EvidenceDir(directory.run), clock)
+                         GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
     return 0 if result["status"] == COMPLETE else 1
 

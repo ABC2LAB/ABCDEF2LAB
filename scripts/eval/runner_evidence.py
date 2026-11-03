@@ -19,6 +19,7 @@ SEALED_MARKER = "engine-sealed.json"
 DRAINED_MARKER = "engine-drained.json"
 TERMINATED_MARKER = "engine-terminated.json"
 OBSERVER_LOG = "observer-requests.jsonl"
+LLM_VERIFIED_MARKER = "llm-verified.json"
 MAX_METER_FILE_BYTES = 64 * 1024 * 1024
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\.json\Z")
 _ENGINE_ROW = frozenset({"seq", "kind", "method", "status", "started_at", "completed_at", "response_bytes", "outcome"})
@@ -152,4 +153,24 @@ class MeterFiles:
             raise EvidenceError("meter_marker_invalid") from None
         if not isinstance(marker, dict) or marker.get("role") != "engine":
             raise EvidenceError("meter_marker_invalid")
+        return marker
+
+
+class GatewayFiles:
+    """LLM 게이트웨이 bind 디렉터리 읽기(계측기와 따로 둔 llm/). 러너는 쓰지 않는다."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def verified(self) -> dict | None:
+        """seal·drain 뒤 게이트웨이가 쓰는 검증 마커. 아직 없으면 None."""
+        data = _read_owned(self.path, LLM_VERIFIED_MARKER)
+        if data is None:
+            return None
+        try:
+            marker = json.loads(data.decode("utf-8"))
+        except (UnicodeError, ValueError, RecursionError):
+            raise EvidenceError("llm_marker_invalid") from None
+        if not isinstance(marker, dict) or marker.get("role") != "llm-gateway":
+            raise EvidenceError("llm_marker_invalid")
         return marker

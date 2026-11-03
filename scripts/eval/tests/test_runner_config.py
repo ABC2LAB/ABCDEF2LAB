@@ -48,9 +48,9 @@ def runner_config() -> dict:
         "runner_key_path": "/srv/eval-keys/runner.key",
         "run": {"compose_wait_seconds": 120, "down_timeout_seconds": 30, "ready_timeout_seconds": 120,
                 "budget_poll_seconds": 5, "drain_timeout_seconds": 60, "snapshot_timeout_seconds": 30,
-                "snapshot_max_bytes": 4194304},
+                "snapshot_max_bytes": 4194304, "llm_verify_timeout_seconds": 300},
         "llm_gateway": {"generation_path": "/api/v1/generation", "verify_attempts": 5, "verify_interval_seconds": 2,
-                        "ca_bundle": "/etc/ssl/certs/ca-certificates.crt"},
+                        "ca_bundle": "/etc/ssl/certs/ca-certificates.crt", "expected_provider_name": "Example"},
     }
 
 
@@ -123,6 +123,11 @@ class TestParseRunnerConfig(unittest.TestCase):
             (("llm_gateway", "verify_interval_seconds"), 601, "config.llm_gateway.verify_interval_seconds: INVALID"),
             (("llm_gateway", "verify_interval_seconds"), True, "config.llm_gateway.verify_interval_seconds: INVALID"),
             (("llm_gateway", "ca_bundle"), "certs/ca.crt", "config.llm_gateway.ca_bundle: EXPECTED_ABSOLUTE_PATH"),
+            (("llm_gateway", "expected_provider_name"), " ", "config.llm_gateway.expected_provider_name: INVALID"),
+            (("llm_gateway", "expected_provider_name"), "a\nb", "config.llm_gateway.expected_provider_name: INVALID"),
+            (("llm_gateway", "expected_provider_name"), "x" * 101, "config.llm_gateway.expected_provider_name: INVALID"),
+            (("llm_gateway", "expected_provider_name"), 7, "config.llm_gateway.expected_provider_name: INVALID"),
+            (("run", "llm_verify_timeout_seconds"), 0, "config.run.llm_verify_timeout_seconds: INVALID"),
             (("ports", "llm_gateway"), 0, "config.ports.llm_gateway: INVALID"),
             (("ports", "api_front"), 70000, "config.ports.api_front: INVALID"),
             (("engine", "llm_stream"), "true", "config.engine.llm_stream: EXPECTED_BOOL"),
