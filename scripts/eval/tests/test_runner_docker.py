@@ -307,52 +307,59 @@ class TestProbeCall(unittest.TestCase):
         self.assertEqual(str(caught.exception), "docker_probe_failed")
 
 
-GNU_DF = (b"Filesystem     1024-blocks  Used Available Capacity Mounted on\n"
-          b"tmpfs                 8192   128      8064       2% /app/data\n")
-BUSYBOX_DF = (b"Filesystem           1024-blocks    Used Available Capacity Mounted on\n"
-              b"tmpfs                     8192         0      8192   0% /var/lib/postgresql/data\n")
+def statfs_report(*rows):
+    return json.dumps({"results": [dict(zip(("path", "size_bytes", "used_bytes", "available_bytes"), row))
+                                   for row in rows]}).encode()
 
 
-class TestTmpfsUsage(unittest.TestCase):
-    """`df -P -k` 출력(11/03 실측: 엔진 이미지 GNU coreutils, postgres:16-alpine busybox)."""
+class TestStatfs(unittest.TestCase):
+    """tmpfs 사용량은 대상 밖의 계측기 statfs 역할로 잰다(#140 리뷰: 엔진 안 df는 엔진 도구가 바꿀 수 있음)."""
 
-    def test_both_df_flavours_parse(self):
-        self.assertEqual(runner_docker.parse_tmpfs_df(GNU_DF, "/app/data"),
-                         {"size_bytes": 8192 * 1024, "used_bytes": 128 * 1024, "available_bytes": 8064 * 1024})
-        self.assertEqual(runner_docker.parse_tmpfs_df(BUSYBOX_DF, "/var/lib/postgresql/data")["available_bytes"],
-                         8192 * 1024)
+    def test_runs_meter_image_outside_the_target_with_only_ptrace(self):
+        report = statfs_report(("/proc/1/root/app/data", 8 << 20, 1 << 20, 7 << 20))
+        fake = FakeExecutor(CommandResult(0, report))
+        usage = Docker(fake, {}, 1).statfs(IMAGE_ID, ID_A, ["/app/data"])
+        self.assertEqual(usage, [{"size_bytes": 8 << 20, "used_bytes": 1 << 20, "available_bytes": 7 << 20}])
+        args, _, stdin, _ = fake.calls[0]
+        self.assertEqual(args, ["run", "--rm", "-i", "--pull", "never", "--network", "none", "--pid", f"container:{ID_A}",
+                                "--read-only", "--cap-drop", "ALL", "--cap-add", "SYS_PTRACE",
+                                "--security-opt", "no-new-privileges:true", "--user", "0:0", "--", IMAGE_ID,
+                                "-role=statfs"])
+        self.assertEqual(json.loads(stdin), {"paths": ["/proc/1/root/app/data"]})
+        self.assertNotIn("exec", args)  # 대상 안의 실행파일은 실행하지 않는다
+        self.assertFalse(any(arg in ("-v", "--volume", "--mount", "--privileged") for arg in args))
 
-    def test_other_filesystems_and_malformed_output_rejected(self):
-        disk = GNU_DF.replace(b"tmpfs      ", b"/dev/sdd   ")
-        with self.assertRaises(DockerError) as caught:
-            runner_docker.parse_tmpfs_df(disk, "/app/data")
-        self.assertEqual(str(caught.exception), "docker_tmpfs_not_tmpfs")
-        bad = [GNU_DF.replace(b"/app/data", b"/app"),  # 다른 마운트(경로가 tmpfs가 아님)
-               GNU_DF.replace(b"1024-blocks", b"512-blocks"),  # -k 무시
-               GNU_DF + b"tmpfs 1 0 1 0% /app/data\n",  # 줄 더 있음
-               GNU_DF.split(b"\n")[0] + b"\n",  # 데이터 줄 없음
-               GNU_DF.replace(b"  128", b" -128"), GNU_DF.replace(b"   8064", b"   9999"),  # 음수·크기 초과
-               GNU_DF.replace(b"  128", b"12.8"), GNU_DF.replace(b"2%", b"2 "), b"\xff" + GNU_DF,
-               GNU_DF.replace(b"   8192", b"      0").replace(b"8064", b"   0").replace(b"128", b"  0")]
+    def test_report_must_match_the_request(self):
+        paths = ["/proc/1/root/app/data"]
+        good = ("/proc/1/root/app/data", 8192, 1024, 7168)
+        self.assertEqual(runner_docker.parse_statfs_report(statfs_report(good), paths)[0]["used_bytes"], 1024)
+        bad = [statfs_report(), statfs_report(good, good), statfs_report(("/proc/1/root/app", 8192, 1024, 7168)),
+               statfs_report(("/proc/1/root/app/data", 0, 0, 0)), statfs_report(("/proc/1/root/app/data", 8192, 9000, 0)),
+               statfs_report(("/proc/1/root/app/data", 8192, 1024, 7169)),  # 남은 공간 > 크기 - 사용
+               statfs_report(("/proc/1/root/app/data", 8192, -1, 7168)),
+               statfs_report(("/proc/1/root/app/data", 8192.0, 1024, 7168)),
+               statfs_report(("/proc/1/root/app/data", True, 1024, 7168)),
+               statfs_report(("/proc/1/root/app/data", 8192, 1024, False)),  # JSON false는 0이 아니다
+               json.dumps({"results": [], "extra": 1}).encode(), b"[]", b"\xff", b"",
+               json.dumps({"results": [dict(zip(("path", "size_bytes", "used_bytes", "available_bytes"), good),
+                                            extra=1)]}).encode()]
         for output in bad:
-            with self.subTest(output=output[-40:]), self.assertRaises(DockerError) as caught:
-                runner_docker.parse_tmpfs_df(output, "/app/data")
-            self.assertEqual(str(caught.exception), "docker_tmpfs_usage_output_invalid")
+            with self.subTest(output=output[:60]), self.assertRaises(DockerError) as caught:
+                runner_docker.parse_statfs_report(output, paths)
+            self.assertEqual(str(caught.exception), "docker_statfs_output_invalid")
 
-    def test_exec_runs_only_df_on_the_given_container_and_path(self):
-        fake = FakeExecutor(CommandResult(0, GNU_DF))
-        usage = Docker(fake, {}, 1).tmpfs_usage(ID_A, "/app/data")
-        self.assertEqual(usage["used_bytes"], 128 * 1024)
-        self.assertEqual(fake.calls[0][0], ["exec", ID_A, "df", "-P", "-k", "/app/data"])
-        for container, path in (("short", "/app/data"), (ID_A, "app/data"), (ID_A, "/app/../etc"), (ID_A, "/app data"),
-                                (ID_A, ""), (ID_A, None)):
+    def test_inputs_checked_before_call(self):
+        for image, container, paths in ((IMAGE_ID, "short", ["/app/data"]), ("example/m:1", ID_A, ["/app/data"]),
+                                        (IMAGE_ID, ID_A, []), (IMAGE_ID, ID_A, ["app/data"]),
+                                        (IMAGE_ID, ID_A, ["/app/../etc"]), (IMAGE_ID, ID_A, ["/app data"]),
+                                        (IMAGE_ID, ID_A, [None])):
             fake = FakeExecutor()
-            with self.subTest(container=container[:5], path=path), self.assertRaises(DockerError):
-                Docker(fake, {}, 1).tmpfs_usage(container, path)
+            with self.subTest(image=image[:8], container=container[:5], paths=paths), self.assertRaises(DockerError):
+                Docker(fake, {}, 1).statfs(image, container, paths)
             self.assertEqual(fake.calls, [])
         with self.assertRaises(DockerError) as caught:
-            Docker(FakeExecutor(CommandResult(1, b"")), {}, 1).tmpfs_usage(ID_A, "/app/data")
-        self.assertEqual(str(caught.exception), "docker_tmpfs_usage_failed")
+            Docker(FakeExecutor(CommandResult(1, b"")), {}, 1).statfs(IMAGE_ID, ID_A, ["/app/data"])
+        self.assertEqual(str(caught.exception), "docker_statfs_failed")
 
 
 class TestComposeCalls(unittest.TestCase):

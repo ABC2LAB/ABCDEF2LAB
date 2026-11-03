@@ -616,9 +616,11 @@ class DockerPorts:
         self.docker.signal(gateway_container_id, "USR1")
 
     def tmpfs_usage(self, snapshot: dict) -> dict:
-        services = snapshot["services"]
-        return {"engine_db": self.docker.tmpfs_usage(services[ENGINE_DB_SERVICE]["id"], ENGINE_DB_DATA_PATH),
-                "engine_data": self.docker.tmpfs_usage(services[ENGINE_SERVICE]["id"], ENGINE_DATA_PATH)}
+        # 엔진 안의 df 대신 계측기 이미지의 statfs 역할로 잰다(엔진 도구가 바꿀 수 있는 실행파일을 믿지 않음).
+        services, meter = snapshot["services"], self.config.images["meter"].id
+        (engine_db,) = self.docker.statfs(meter, services[ENGINE_DB_SERVICE]["id"], [ENGINE_DB_DATA_PATH])
+        (engine_data,) = self.docker.statfs(meter, services[ENGINE_SERVICE]["id"], [ENGINE_DATA_PATH])
+        return {"engine_db": engine_db, "engine_data": engine_data}
 
     def findings(self) -> dict:
         return self._findings()
