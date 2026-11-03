@@ -199,11 +199,24 @@ func (s *Store) Reconcile(ctx context.Context, d Descriptor) (Receipt, error) {
 	if err != nil {
 		return Receipt{}, err
 	}
-	if row.Receipt != after.Receipt || row.revision != after.revision || row.mode != after.mode || row.execution != after.execution || row.purpose != after.purpose || !bytes.Equal(row.binding, after.binding) || !bytes.Equal(row.operationDigest, after.operationDigest) || !bytes.Equal(row.inputDigest, after.inputDigest) || !bytes.Equal(row.evidenceDigest, after.evidenceDigest) {
+	if !sameReconciliationRow(row, after) {
 		return Receipt{}, ErrConflict
 	}
 	if ctx.Err() != nil {
 		return Receipt{}, ErrScope
 	}
 	return out, nil
+}
+
+// SQL TIMESTAMPTZ identifies an instant; pool sessions can scan the same value
+// with different locations. Normalize only the timestamp representations while
+// keeping every other receipt field and immutable stored byte exact.
+func sameReconciliationRow(left, right reconciliationRow) bool {
+	a, b := left.Receipt, right.Receipt
+	a.IssuedAt, a.RecordedAt = a.IssuedAt.UTC(), a.RecordedAt.UTC()
+	b.IssuedAt, b.RecordedAt = b.IssuedAt.UTC(), b.RecordedAt.UTC()
+	return a == b && left.revision == right.revision && left.mode == right.mode &&
+		left.execution == right.execution && left.purpose == right.purpose &&
+		bytes.Equal(left.binding, right.binding) && bytes.Equal(left.operationDigest, right.operationDigest) &&
+		bytes.Equal(left.inputDigest, right.inputDigest) && bytes.Equal(left.evidenceDigest, right.evidenceDigest)
 }

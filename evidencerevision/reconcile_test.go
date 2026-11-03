@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/evidencebind"
 	"github.com/google/uuid"
@@ -264,4 +265,34 @@ func TestReconcileDescriptorIsMinimalMetadataAndNeverIssueInput(t *testing.T) {
 		}
 	}
 	revisionCounts(t, f, 0, 0)
+}
+
+func TestReconciliationRowComparisonUsesTimestampInstants(t *testing.T) {
+	at := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
+	base := reconciliationRow{
+		Receipt: Receipt{OperationRef: "synthetic:operation", TaskID: 1, ExplorationID: 2, IntentID: 3,
+			IssuedAt: at, RecordedAt: at.Add(time.Second)},
+		revision: 7, mode: 1, execution: "synthetic:execution", purpose: "initial",
+		binding: []byte("binding"), operationDigest: []byte("operation"), inputDigest: []byte("input"), evidenceDigest: []byte("evidence"),
+	}
+	for _, name := range []string{"same-instant-other-location", "issued-instant-changed", "recorded-instant-changed", "receipt-field-changed", "stored-bytes-changed"} {
+		t.Run(name, func(t *testing.T) {
+			after := base
+			after.IssuedAt = base.IssuedAt.In(time.FixedZone("synthetic-east", 9*60*60))
+			after.RecordedAt = base.RecordedAt.In(time.FixedZone("synthetic-west", -5*60*60))
+			switch name {
+			case "issued-instant-changed":
+				after.IssuedAt = after.IssuedAt.Add(time.Microsecond)
+			case "recorded-instant-changed":
+				after.RecordedAt = after.RecordedAt.Add(time.Microsecond)
+			case "receipt-field-changed":
+				after.IntentID++
+			case "stored-bytes-changed":
+				after.binding = []byte("changed")
+			}
+			if got := sameReconciliationRow(base, after); got != (name == "same-instant-other-location") {
+				t.Fatalf("timestamp/immutable comparison mismatch: %v", got)
+			}
+		})
+	}
 }
