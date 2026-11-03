@@ -1,6 +1,6 @@
 # 감사 키 registry 영속 코어 — 팀 검토용 구현
 
-상태: KLD01`05의 **metadata 전이 코어 구현 제안**.
+상태: KLD01~05의 **metadata 전이 코어 구현 제안**.
 실제 secret provider·운영자 인증·DB 역할·host anchor·키 공급·회전·파기 실행과
 서버 기동은 연결하지 않는다. 이 문서나 migration 실행이 운영 권한을 발급하지 않는다.
 
@@ -8,6 +8,7 @@
 
 기준 `dev d68d78e3d69be5a4d029a1ae7b274d1e6bf599ab`의
 [KLD 수명 제안](e2-audit-key-generation-cli.md)을 사용한다.
+게시 전 최신 dev `88415fff88f1c66c4307ba370c360e6ad338efcc`를 정상 merge했다. 추가 평가 계측 범위는 이 코어/계약과 충돌하지 않으며 merge 뒤 전체 Go build도 통과했다.
 코드는 열린 PR의 병합에 의존하지 않는다.
 신규 `auditkeys/`와 이 문서만 변경하며 journal v1, 기존 CLI, shared server/DB,
 checkpoint registry, 평가 러너 키에는 자동 적용하지 않는다.
