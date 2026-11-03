@@ -1,6 +1,6 @@
 # E② 감사 파일 오프라인 검증 명령
 
-상태: 병합된 [감사 저장기](./e2-audit-journal.md)의 `auditlog.Verify`를 호출하는 운영자용 Linux 명령. 서버·LLM·DB·대상 서비스에 연결하지 않고 입력 파일을 수정하지 않는다. 서버 실행 어댑터·KG·UI 없이 사용할 수 있다.
+상태: 병합된 [감사 저장기](./e2-audit-journal.md)의 `auditlog.Verify`(요약) 또는 `auditlog.VerifyTimeline`(타임라인)을 호출하는 운영자용 Linux 명령. 서버·LLM·DB·대상 서비스에 연결하지 않고 입력 파일을 수정하지 않는다. 서버 실행 어댑터·KG·UI 없이 사용할 수 있다.
 
 ## 실행
 
@@ -24,20 +24,25 @@ checkpoint는 기존 `auditlog.Checkpoint`의 `json.Marshal` 형식으로 보존
 
 ## 출력과 종료 코드
 
-전체 검증이 성공해야 stdout에 기존 `auditlog.Summary` JSON 한 줄을 쓴다. `Checkpoint`와 `Intents`·`Results` 건수를 포함하며 요청/응답 본문·개별 이벤트·인증 헤더·키·입력 경로는 출력하지 않는다. checkpoint의 참조는 저장기가 요구하는 비민감 식별자라는 전제가 유지된다.
+기본 실행은 기존대로 전체 검증이 성공해야 stdout에 `auditlog.Summary` JSON 한 줄을 쓴다. `Checkpoint`와 `Intents`·`Results` 건수를 포함하며 요청/응답 본문·개별 이벤트·인증 헤더·키·입력 경로는 출력하지 않는다. checkpoint의 참조는 저장기가 요구하는 비민감 식별자라는 전제가 유지된다.
+
+`--timeline`은 같은 키·checkpoint·journal 전체를 한 번 검증한 뒤, 시간순 JSON 배열 한 줄을 출력한다. 각 항목은 `at`(이벤트 시각), `account_ref`, `resource_ref`, `stage`, `reason`, `observed`(`admitted`, `request_written`, `response_received`, `status_code`)만 포함한다. 시각이 같은 항목은 journal 순번을 유지한다. 정렬 기준은 `at`이므로 서버 시계가 뒤로 가면 서로 다른 시각의 항목은 journal 기록 순서와 다르게 보일 수 있다. 출력에는 sequence·attempt가 없어 이 투영만으로 전체 기록 순서나 intent/result 짝을 복원할 수 없다. 참조는 저장기와 서버가 보증하는 비민감 ID라는 전제가 필요하며 이 명령은 참조의 실제 의미를 재검증하지 않는다. 전송 관측값은 애플리케이션 접근 성공이나 취약점 판정이 아니다.
+
+`--max-events N`은 타임라인 모드에서만 사용한다. 기본값과 허용 상한은 1000이며 1~1000만 받는다. 인증된 이벤트가 이 수를 넘으면 끝까지 검증한 뒤 `audit_timeline_limit_exceeded`로 실패하고 stdout은 비운다. 전체 검증 실패나 마지막 레코드 오류가 있으면 앞선 항목도 출력하지 않는다. 정상적인 빈 journal은 `[]`를 출력한다. 타임라인도 입력 사본이 검증 중 바뀌지 않아야 한다.
 
 | 경우 | 종료 코드 | 출력 |
 |---|---:|---|
-| 전체 검증 성공 | 0 | stdout에 요약 JSON, stderr 비움 |
+| 전체 검증 성공 | 0 | stdout에 기본 요약 JSON 또는 `--timeline` 배열, stderr 비움 |
 | `--help`/`-h` | 0 | 고정 사용법 |
-| 인자 누락·알 수 없는 옵션·위치 인자 | 2 | stderr에 고정 사용법 |
+| 인자 누락·알 수 없는 옵션·위치 인자·`--max-events` 범위 밖 또는 `--timeline` 없이 지정 | 2 | stderr에 고정 사용법 |
 | 입력/키/형식 오류 | 1 | `audit_input_unavailable` 또는 `audit_input_invalid` |
 | MAC·범위·순서·최종 checkpoint 불일치 | 1 | `audit_integrity_failed` |
 | 취소 | 1 | `audit_verification_canceled` |
+| 타임라인 출력 상한 초과 | 1 | `audit_timeline_limit_exceeded` |
 | 출력 실패 | 1 | `audit_output_unavailable` |
 | Linux 이외 환경 | 1 | `audit_platform_unsupported` |
 
-입력·검증 실패에는 stdout 요약을 남기지 않고, stderr에도 원문·경로·원시 OS 오류를 노출하지 않는다. 출력 장치의 부분 쓰기 실패는 stdout에 불완전한 prefix를 남길 수 있으므로 **소비자는 종료 코드 0과 완전한 JSON을 모두 확인**한다. 일반 파일의 커널 IO 자체를 강제로 중단하는 명령은 아니며, 취소는 검증 함수의 협력적 context 확인을 따른다.
+입력·검증 실패에는 stdout 요약이나 타임라인을 남기지 않고, stderr에도 원문·경로·원시 OS 오류를 노출하지 않는다. 출력 장치의 부분 쓰기 실패는 stdout에 불완전한 prefix를 남길 수 있으므로 **소비자는 종료 코드 0과 완전한 JSON을 모두 확인**한다. 일반 파일의 커널 IO 자체를 강제로 중단하는 명령은 아니며, 취소는 검증 함수의 협력적 context 확인을 따른다.
 
 ## 검증 의미
 
@@ -45,4 +50,4 @@ checkpoint는 기존 `auditlog.Checkpoint`의 `json.Marshal` 형식으로 보존
 
 이벤트 수는 실제 요청 전송 건수나 취약점 수와 다르다. intent 기록이 있어도 전송이 실패할 수 있고 result에는 거부도 포함된다. 이 명령은 승인 적정성·로그인 성공·접근 성공·E③ 취약점 판정·OS 권한 분리를 검사하지 않는다. HMAC 키가 유출된 공격자의 재서명은 별도의 키 보호가 필요하다.
 
-합성 journal·키·checkpoint로 정상 검증과 내용/끝부분 변조, 다른 범위/키/checkpoint, 입력 형식·권한·파일 종류, 취소·출력 실패를 시험한다. 실제 스캔 로그·계정·모델 호출·baseline 자료는 사용하지 않는다.
+합성 journal·키·checkpoint로 정상 검증과 내용/끝부분 변조, 다른 범위/키/checkpoint, 입력 형식·권한·파일 종류, 취소·출력 실패를 시험한다. 타임라인은 정확한 JSON·전송 관측값 투영, 상한에 도달한 뒤의 후반 변조 우선순위, 같은 시각을 섞은 40건의 안정 정렬, 기본/명시 상한 1000건 성공·1001건 무출력 실패를 시험한다. 실제 스캔 로그·계정·모델 호출·baseline 자료는 사용하지 않는다.
