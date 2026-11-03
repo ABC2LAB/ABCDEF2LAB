@@ -168,5 +168,6 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 ## 아직 안 된 것
 
 - **개선 후 판정 레코드:** findings만 수집한다. 구조화 판정 레코드는 물리 형식(#18) 결정 후 추가 신호로 붙인다.
-- **tmpfs 사용량:** 회차 메모리(엔진 DB·엔진 데이터)의 seal 시점 사용량을 아직 재지 않는다.
+- **tmpfs 사용량:** 회차 메모리(엔진 DB·엔진 데이터)의 seal 시점 사용량을 아직 재지 않는다. 결과 기록(완료·무효 모두)에
+  `tmpfs_usage: "not_measured"`를 남기며, 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다.
 - **실측으로 확인할 것(스모크):** 부정 연결 점검의 실패 종류(Docker가 DROP인지 REJECT인지, 내장 DNS가 바깥 이름에 어떻게 답하는지), probe가 엔진의 /etc/hosts를 보는지, `docker run sha256:<id>` 동작, internal 망의 호스트 쪽 게이트웨이 주소 유무, OpenRouter generation 조회의 `provider_responses`·엔드포인트 ID 형태, 재시작·엔진 망 부착 고장 주입, probe 전후 계측기 건수 불변.

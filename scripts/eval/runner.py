@@ -49,6 +49,9 @@ from snapshot_writer import SnapshotContext
 
 RESULT_FORMAT = "abc2lab-eval-runner-result-v1"
 TASK_EVIDENCE_FORMAT = "abc2lab-eval-runner-task-v1"
+# 회차 메모리(엔진 DB·엔진 데이터 tmpfs)의 seal 시점 사용량은 아직 재지 않는다. 잰 척하지 않고 미측정을 그대로
+# 남긴다. 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다(평가 프로토콜 §2).
+TMPFS_NOT_MEASURED = "not_measured"
 RESULT_NAME = "runner-result.json"
 COMPLETE, INVALID = "complete", "invalid"
 # 이미지 역할 → 그 이미지를 쓰는 compose 서비스. 기동 후 컨테이너 이미지가 설정의 내용 ID와 같아야 한다.
@@ -305,7 +308,8 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
             except Exception:
                 reasons.append("down_failed")
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
-            "llm_backend": spec.llm_backend, "started_at": started_at, "finished_at": _stamp(clock)}
+            "llm_backend": spec.llm_backend, "tmpfs_usage": TMPFS_NOT_MEASURED,
+            "started_at": started_at, "finished_at": _stamp(clock)}
     if not reasons:
         payload = dict(base, status=COMPLETE, images=dict(spec.image_ids), evidence=evidence.digests(),
                        **state.summary)
