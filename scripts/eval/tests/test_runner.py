@@ -143,8 +143,13 @@ class FakePorts:
         self.ready_calls = 1
         self.post_world = None
         self.probe_status = {"pre": PASS, "post": PASS}
-        self.tmpfs = {name: {"size_bytes": 512 * MIB, "used_bytes": 8 * MIB, "available_bytes": 504 * MIB}
-                      for name in ("engine_db", "engine_data")}
+        # 구간 전(pre)·후(post) 측정. 마운트 ID가 같아야 같은 회차 저장소를 잰 것이다.
+        self.tmpfs_pre = {name: {"mount_id": mount_id, "size_bytes": 512 * MIB, "used_bytes": 0,
+                                 "available_bytes": 512 * MIB}
+                          for name, mount_id in (("engine_db", 101), ("engine_data", 102))}
+        self.tmpfs = {name: {"mount_id": mount_id, "size_bytes": 512 * MIB, "used_bytes": 8 * MIB,
+                             "available_bytes": 504 * MIB}
+                      for name, mount_id in (("engine_db", 101), ("engine_data", 102))}
         self.tmpfs_error = None
         self.probe_phases = []
         self.phase = "pre"
@@ -263,8 +268,10 @@ class FakePorts:
         self._call("seal_gateway")
         self.gateway_sealed_id = gateway_id
 
-    def tmpfs_usage(self, snapshot):
-        self._call("tmpfs")
+    def tmpfs_usage(self, phase, snapshot):
+        self._call(f"tmpfs:{phase}")
+        if phase == "pre":
+            return copy.deepcopy(self.tmpfs_pre)
         if self.tmpfs_error:
             raise self.tmpfs_error
         return copy.deepcopy(self.tmpfs)
@@ -297,9 +304,9 @@ def run(mutate=None, mutate_gateway=None, spec=None):
     return result, ports, meter, evidence
 
 
-FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "wait_ready",
+FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre", "wait_ready",
               "events:start", "watch:start", "scoreboard:pre", "start_task", "seal", "seal_gateway", "facts:post",
-              "listeners:post", "probe:post", "scoreboard:post", "watch:stop", "events:stop", "tmpfs", "findings",
+              "listeners:post", "probe:post", "scoreboard:post", "watch:stop", "events:stop", "tmpfs:post", "findings",
               "down", "sign", "sign"]
 
 
@@ -335,8 +342,9 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(make_spec("ours").llm_policy_mode, "external")
         # 구간이 닫힌 뒤 잰 tmpfs 사용량이 서명된 완료 기록에 남는다(구간 중 exec는 경계 변경이므로 그 뒤에 잰다).
         # 적용한 하한(바이트)도 서명되는 결과에 남는다(#140 리뷰: 기록만으로 통과 기준을 다시 확인).
-        self.assertEqual(result["tmpfs_usage"], ports.tmpfs | {"min_free_bytes": 16 * MIB})
-        self.assertLess(ports.calls.index("events:stop"), ports.calls.index("tmpfs"))
+        self.assertEqual(result["tmpfs_usage"], ports.tmpfs | {"min_free_bytes": 16 * MIB, "pre": ports.tmpfs_pre})
+        self.assertLess(ports.calls.index("events:stop"), ports.calls.index("tmpfs:post"))
+        self.assertLess(ports.calls.index("tmpfs:pre"), ports.calls.index("events:start"))  # 구간 전 측정
 
     def test_v11_record_binds_proof_events_and_evidence(self):
         from runner_record import canonical_sha256
@@ -433,9 +441,10 @@ class TestFailures(unittest.TestCase):
             self.assertNotIn(field, result)
         self.assertNotIn("/secret/path", repr(result))
         # 구간이 닫히기 전에 끝난 회차는 미측정, 잰 뒤 무효가 된 회차는 잰 값을 그대로 남긴다.
-        measured = ("tmpfs" in ports.calls and ports.tmpfs_error is None and "tmpfs" not in ports.fail
+        measured = ("tmpfs:post" in ports.calls and ports.tmpfs_error is None and "tmpfs:post" not in ports.fail
                     and set(ports.tmpfs) == {"engine_db", "engine_data"})
-        expected = ports.tmpfs | {"min_free_bytes": ports.spec.tmpfs_min_free_bytes} if measured else "not_measured"
+        expected = (ports.tmpfs | {"min_free_bytes": ports.spec.tmpfs_min_free_bytes, "pre": ports.tmpfs_pre}
+                    if measured else "not_measured")
         self.assertEqual(result["tmpfs_usage"], expected)
 
     def test_pre_requests_must_be_zero(self):
@@ -451,7 +460,8 @@ class TestFailures(unittest.TestCase):
             ("start_task", "task_start_failed"), ("seal", "seal_failed"), ("seal_gateway", "llm_seal_failed"),
             ("facts:post", "post_facts_failed"),
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
-            ("tmpfs", "tmpfs_measure_failed"), ("findings", "findings_failed"),
+            ("tmpfs:pre", "pre_tmpfs_measure_failed"), ("tmpfs:post", "tmpfs_measure_failed"),
+            ("findings", "findings_failed"),
         ]
         for name, reason in cases:
             with self.subTest(step=name):
@@ -480,6 +490,19 @@ class TestFailures(unittest.TestCase):
         result, ports, _, evidence = run(lambda p, m, c: p.tmpfs.pop("engine_data"))
         self.assert_invalid(result, ports, evidence, "tmpfs_measure_failed")
         self.assertEqual(result["tmpfs_usage"], "not_measured")
+
+    def test_post_must_measure_the_same_mounts_as_pre(self):
+        # #140 리뷰: 같은 경로라도 다른 tmpfs(부모 경로 변경·symlink·다시 마운트)를 쟀다면 회차 저장소 근거가 아니다.
+        for name in ("engine_db", "engine_data"):
+            with self.subTest(name=name):
+                result, ports, _, evidence = run(lambda p, m, c, n=name: p.tmpfs[n].update(mount_id=999))
+                self.assert_invalid(result, ports, evidence, "tmpfs_mount_changed")
+                self.assertEqual(result["tmpfs_usage"][name]["mount_id"], 999)
+                self.assertEqual(result["tmpfs_usage"]["pre"][name]["mount_id"], ports.tmpfs_pre[name]["mount_id"])
+                self.assertNotIn("findings", ports.calls)
+        result, ports, _, evidence = run(lambda p, m, c: p.tmpfs_pre.pop("engine_db"))
+        self.assert_invalid(result, ports, evidence, "pre_tmpfs_measure_failed")
+        self.assertNotIn("events:start", ports.calls)  # 구간 전에 멈춘다
 
     def test_threshold_is_recorded_and_bound_to_the_comparison(self):
         # #140 리뷰 재현: 같은 측정값(남은 20MiB)에 하한만 8m/32m로 바꾸면 완료·무효가 갈린다. 적용 하한이 서명되는

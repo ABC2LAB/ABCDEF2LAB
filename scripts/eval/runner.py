@@ -109,7 +109,7 @@ class RunPorts(Protocol):
     def start_events(self, since: str) -> "EventsHandle": ...
     def seal(self, meter_container_id: str) -> None: ...
     def seal_gateway(self, gateway_container_id: str) -> None: ...
-    def tmpfs_usage(self, snapshot: dict) -> dict: ...
+    def tmpfs_usage(self, phase: str, snapshot: dict) -> dict: ...
     def findings(self) -> dict: ...
     def sign(self, payload: dict) -> dict: ...
 
@@ -175,6 +175,7 @@ class _State:
     runner_containers: set = field(default_factory=set)
     record: dict | None = None
     tmpfs_usage: object = TMPFS_NOT_MEASURED
+    tmpfs_pre: dict | None = None
 
 
 def _stamp(clock: Clock) -> str:
@@ -320,6 +321,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
 
     pre = _check_phase(spec, ports, evidence, state, "pre")
     _probe(ports, evidence, state, "pre", pre)
+    # 구간 전에 회차 tmpfs의 마운트 ID를 잡아 둔다. post에서 같은 마운트 객체를 쟀는지 대조하는 기준이다(#140 리뷰).
+    state.tmpfs_pre = _step(state, "pre_tmpfs_measure_failed", lambda: ports.tmpfs_usage("pre", pre))
+    if set(state.tmpfs_pre) != set(TMPFS_VOLUMES):
+        raise RunFailure("pre_tmpfs_measure_failed")
     pre_checked_at = _stamp(clock)  # 경계 적용·점검 완료(pre 관측 전)
     ready_calls = _step(state, "target_not_ready", ports.wait_ready)
     state.observer_calls += ready_calls
@@ -366,11 +371,14 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     window = _window(spec, evidence, state, pre, window_start, window_end, stopped, streamed)
     # 구간이 닫힌 뒤에 잰다: 구간 중 회차 컨테이너 exec는 경계 변경이다. seal 이후 값이므로 그사이 사용량이 줄었을
     # 가능성은 남는다(평가 프로토콜 §2). 남은 공간이 하한 미만이면 쓰기 실패를 엔진이 삼켰을 수 있어 무효다.
-    measured = _step(state, "tmpfs_measure_failed", lambda: ports.tmpfs_usage(post))
+    measured = _step(state, "tmpfs_measure_failed", lambda: ports.tmpfs_usage("post", post))
     if set(measured) != set(TMPFS_VOLUMES):
         raise RunFailure("tmpfs_measure_failed")
-    # 적용한 하한도 서명되는 결과에 남겨 어떤 기준으로 통과·무효였는지 기록만으로 다시 확인할 수 있게 한다.
-    state.tmpfs_usage = dict(measured, min_free_bytes=spec.tmpfs_min_free_bytes)
+    # 적용한 하한과 구간 전 측정도 서명되는 결과에 남겨 어떤 기준·어떤 마운트로 통과·무효였는지 다시 확인할 수 있게 한다.
+    state.tmpfs_usage = dict(measured, min_free_bytes=spec.tmpfs_min_free_bytes, pre=state.tmpfs_pre)
+    # 같은 경로라도 다른 마운트(부모 경로 변경·symlink·다시 마운트)를 쟀다면 회차 저장소의 근거가 아니다.
+    if any(measured[name]["mount_id"] != state.tmpfs_pre[name]["mount_id"] for name in TMPFS_VOLUMES):
+        raise RunFailure("tmpfs_mount_changed")
     if any(measured[name]["available_bytes"] < spec.tmpfs_min_free_bytes for name in TMPFS_VOLUMES):
         raise RunFailure("tmpfs_full")
 
@@ -620,8 +628,9 @@ class DockerPorts:
     def seal_gateway(self, gateway_container_id: str) -> None:
         self.docker.signal(gateway_container_id, "USR1")
 
-    def tmpfs_usage(self, snapshot: dict) -> dict:
+    def tmpfs_usage(self, phase: str, snapshot: dict) -> dict:
         # 엔진 안의 df 대신 계측기 이미지의 statfs 역할로 잰다(엔진 도구가 바꿀 수 있는 실행파일을 믿지 않음).
+        # 단계 구분 없이 같은 방법으로 재며, pre·post 대조는 호출자(_run_steps)가 한다.
         services, meter = snapshot["services"], self.config.images["meter"].id
         (engine_db,) = self.docker.statfs(meter, services[ENGINE_DB_SERVICE]["id"], [ENGINE_DB_DATA_PATH])
         (engine_data,) = self.docker.statfs(meter, services[ENGINE_SERVICE]["id"], [ENGINE_DATA_PATH])

@@ -41,7 +41,7 @@ const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream ht
 	"                  [api: -provider SLUG -generation-path /PATH -verify-attempts N -verify-interval DURATION, key in " + llmKeyEnv + "]\n" +
 	"       eval-meter -role api-front -listen ADDR -upstream http://ENGINE:PORT\n" +
 	"       eval-meter -role probe < PLAN_JSON\n" +
-	"       eval-meter -role statfs < {\"paths\":[\"/proc/1/root/MOUNT\"]}\n"
+	"       eval-meter -role statfs < {\"paths\":[\"/MOUNT/POINT\"]}  (inside the PID namespace of the measured container)\n"
 
 const (
 	invalidInput        = "eval_meter_input_invalid"
@@ -55,6 +55,8 @@ const (
 	keyNotAllowed       = "eval_meter_key_not_allowed"
 	statfsFailed        = "eval_meter_statfs_failed"
 	statfsNotTmpfs      = "eval_meter_statfs_not_tmpfs"
+	statfsNotMounted    = "eval_meter_statfs_not_mounted"
+	statfsMountMismatch = "eval_meter_statfs_mount_mismatch"
 )
 
 const (

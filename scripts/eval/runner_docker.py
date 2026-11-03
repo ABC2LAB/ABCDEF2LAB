@@ -28,11 +28,11 @@ _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _OBJECT_ID_LENGTH = 64
 _OBJECT_ID = re.compile(r"[0-9a-f]{%d}\Z" % _OBJECT_ID_LENGTH)
 _PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
-# tmpfs 사용량은 계측기 이미지의 statfs 역할이 잰다. 측정 컨테이너가 대상 컨테이너의 PID namespace에 붙어
-# /proc/1/root/<마운트>를 statfs하므로 대상 안의 실행파일·PATH(엔진 도구가 바꿀 수 있음)를 쓰지 않는다(#140 리뷰).
-STATFS_ROOT = "/proc/1/root"
+# tmpfs 사용량은 계측기 이미지의 statfs 역할이 잰다. 측정 컨테이너가 대상 컨테이너의 PID namespace에 붙어 대상의
+# mountinfo에서 그 마운트 지점의 tmpfs를 찾고, /proc/1/root로 연 객체가 그 마운트인지(마운트 ID) 확인한 뒤 잰다.
+# 대상 안의 실행파일·PATH(엔진 도구가 바꿀 수 있음)를 쓰지 않는다(#140 리뷰).
 _MOUNT_PATH = re.compile(r"/[a-z0-9_./-]{1,200}\Z")
-_STATFS_FIELDS = frozenset({"path", "size_bytes", "used_bytes", "available_bytes"})
+_STATFS_FIELDS = frozenset({"path", "mount_id", "size_bytes", "used_bytes", "available_bytes"})
 # docker events --since/--until에 넘기는 UTC 시각(초 소수 9자리까지). 러너가 만든 값만 받는다.
 _EVENT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z\Z")
 # 컨테이너 inspect는 이 필드만 꺼낸다. .Config.Env 등 비밀이 들 수 있는 필드는 러너 메모리에도 올리지 않는다.
@@ -126,11 +126,12 @@ def parse_statfs_report(output: bytes, paths: Sequence[str]) -> list[dict]:
     for result, path in zip(results, paths):
         if not isinstance(result, dict) or set(result) != _STATFS_FIELDS or result["path"] != path:
             raise DockerError("docker_statfs_output_invalid")
-        size, used, available = (result[key] for key in ("size_bytes", "used_bytes", "available_bytes"))
-        if (any(type(value) is not int or value < 0 for value in (size, used, available)) or size == 0
-                or used > size or available > size - used):
+        mount_id, size, used, available = (result[key] for key in ("mount_id", "size_bytes", "used_bytes",
+                                                                   "available_bytes"))
+        if (any(type(value) is not int or value < 0 for value in (mount_id, size, used, available)) or size == 0
+                or mount_id == 0 or used > size or available > size - used):
             raise DockerError("docker_statfs_output_invalid")
-        usages.append({"size_bytes": size, "used_bytes": used, "available_bytes": available})
+        usages.append({"mount_id": mount_id, "size_bytes": size, "used_bytes": used, "available_bytes": available})
     return usages
 
 
@@ -323,9 +324,10 @@ class Docker:
     def statfs(self, image: str, container_id: str, mount_paths: Sequence[str]) -> list[dict]:
         """대상 컨테이너의 tmpfs 마운트를 대상 밖에서 잰다. 구간 감시가 끝난 뒤에만 부른다(새 컨테이너 시작은 구간 위반).
 
-        계측기 이미지(내용 ID)를 망 없이·읽기 전용·pull 없이 띄우고, 대상의 PID namespace에 붙여 /proc/1/root로 들어간다.
-        다른 프로세스의 root를 따라가려면 root 사용자와 CAP_SYS_PTRACE가 필요하다(그 밖의 권한은 모두 뺀다). 대상 안의
-        실행파일은 실행하지 않으므로 엔진 도구가 측정 도구를 바꿔 값을 꾸밀 수 없다.
+        계측기 이미지(내용 ID)를 망 없이·읽기 전용·pull 없이 띄우고, 대상의 PID namespace에 붙여 대상의 mountinfo와
+        /proc/1/root를 읽는다. 다른 프로세스의 root를 따라가려면 root 사용자와 CAP_SYS_PTRACE가 필요하다(그 밖의 권한은
+        모두 뺀다). 대상 안의 실행파일은 실행하지 않으며, 보고에는 잰 마운트의 ID가 들어 있어 호출자가 구간 전후 같은
+        마운트인지 대조한다. 경로는 대상 컨테이너 안의 마운트 지점이다.
         """
         if not _OBJECT_ID.fullmatch(container_id or ""):
             raise DockerError("docker_statfs_target_invalid")
@@ -334,7 +336,7 @@ class Docker:
         if (not mount_paths or any(not isinstance(path, str) or not _MOUNT_PATH.fullmatch(path) or ".." in path
                                    for path in mount_paths)):
             raise DockerError("docker_statfs_path_invalid")
-        paths = [STATFS_ROOT + path for path in mount_paths]
+        paths = list(mount_paths)
         output = self.run(["run", "--rm", "-i", "--pull", "never", "--network", "none",
                            "--pid", f"container:{container_id}", "--read-only", "--cap-drop", "ALL",
                            "--cap-add", "SYS_PTRACE", "--security-opt", "no-new-privileges:true", "--user", "0:0",
