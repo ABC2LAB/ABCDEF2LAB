@@ -849,7 +849,11 @@ details.adv[open] .chev {
   display: flex;
   gap: 14px;
   align-items: center;
-  flex-wrap: wrap;
+}
+/* 이름이 길어도 위험도·버튼이 아래 줄로 떨어지지 않게: 이름 칸만 줄어들고(말줄임) 오른쪽은 고정 */
+.hcard > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .hcard .nm {
   font-size: 16px;
@@ -865,7 +869,7 @@ details.adv[open] .chev {
   display: flex;
   gap: 8px;
   align-items: center;
-  flex-wrap: wrap;
+  flex: none;
 }
 .daylab {
   font-size: 13px;
@@ -2568,4 +2572,12 @@ h1.big {
 .vbadge2.ok {
   background: var(--ok-weak);
   color: var(--ok);
+}
+
+/* 진행 화면 작업 탭: 이름이 길면 말줄임 (전체 이름은 마우스를 올리면 보임) */
+.jt-name {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

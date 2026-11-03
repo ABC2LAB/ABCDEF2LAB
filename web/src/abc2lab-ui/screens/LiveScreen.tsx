@@ -462,7 +462,9 @@ export default function LiveScreen({ target }: { target: Target }) {
                   onClick={() => selectTask(t.id)}
                 >
                   <span className={`jt-dot ${t.status === "running" ? "run" : "wait"}`} />
-                  <span className="jt-name">{t.name.trim() || "이름 없는 점검"}</span>
+                  <span className="jt-name" title={t.name.trim() || undefined}>
+                    {t.name.trim() || "이름 없는 점검"}
+                  </span>
                   <span className="jt-sub">{STATUS_LABEL[t.status] ?? t.status}</span>
                 </button>
               ))}
