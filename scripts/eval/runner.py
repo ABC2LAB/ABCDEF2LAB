@@ -304,6 +304,8 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
         _run_steps(spec, ports, meter, gateway, evidence, clock, state)
     except RunFailure as exc:
         reasons.append(exc.code)
+        # 점검 결과로 직접 실패한 경우(probe 무효·pre 요청 등) 마지막으로 시작한 단계가 아니라 그 사유의 단계다.
+        state.step = exc.code
     except KeyboardInterrupt:
         reasons.append("interrupted")
         interrupted = True

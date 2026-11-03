@@ -461,6 +461,15 @@ class TestFailures(unittest.TestCase):
         self.assertEqual(evidence.files[RESULT_NAME]["reasons"], ["interrupted"])
         self.assertEqual(ports.calls[-1], "down")
 
+    def test_failed_step_names_the_failing_check(self):
+        # 근거를 쓴 뒤 점검 결과로 실패해도 마지막 단계(근거 쓰기)가 아니라 실패한 점검이 남는다(스모크에서 발견).
+        cases = ((lambda p, m, c: p.probe_status.__setitem__("pre", "invalid"), "pre_probe_invalid"),
+                 (lambda p, m, c: setattr(m, "pre_forwarded", 1), "pre_requests_nonzero"))
+        for mutate, code in cases:
+            with self.subTest(code=code):
+                result, _, _, _ = run(mutate)
+                self.assertEqual((result["reasons"], result["failed_step"]), ([code], code))
+
     def test_unexpected_error_still_recorded(self):
         # 순서 코드 안에서 port가 아닌 곳의 예외(여기선 drained 마커 모양 이상)도 무효 기록·down으로 끝난다.
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "marker", lambda name: ["not", "dict"]))
