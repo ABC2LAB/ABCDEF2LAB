@@ -71,7 +71,7 @@ class FakeMeter:
         self.per_poll = 30
         self.polls = 0
         self.drained = {"role": "engine", "drained_at": "t", "inflight_at_drain": 0, "log_complete": True,
-                        "rejected_after_seal": 2, "forced_closed_streams": 0}
+                        "rejected_after_seal": 2, "forced_closed_streams": 0, "forced_cancelled_requests": 0}
         self.observer_extra = 0
         self.rows_override = None
         self.drained_forwarded = None
@@ -88,8 +88,9 @@ class FakeMeter:
         if self.rows_override is not None:
             return self.rows_override
         n = self._forwarded()
-        return [{"seq": i, "kind": "request"} for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected"}, {"seq": n + 2, "kind": "rejected"}]
+        return [{"seq": i, "kind": "request", "outcome": "completed"} for i in range(1, n + 1)] + \
+               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal"},
+                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal"}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -532,9 +533,51 @@ class TestFailures(unittest.TestCase):
     def test_drain(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(p, "seal", lambda _id: p._call("seal")))
         self.assert_invalid(result, ports, evidence, "drain_timeout")
-        for field, value in (("inflight_at_drain", 1), ("log_complete", False)):
+        for field, value in (("inflight_at_drain", 1), ("log_complete", False), ("forced_cancelled_requests", -1),
+                             ("forced_cancelled_requests", True), ("forced_cancelled_requests", "1")):
             result, ports, _, evidence = run(lambda p, m, c: m.drained.__setitem__(field, value))
             self.assert_invalid(result, ports, evidence, "drain_incomplete")
+        result, ports, _, evidence = run(lambda p, m, c: m.drained.pop("forced_cancelled_requests"))
+        self.assert_invalid(result, ports, evidence, "drain_incomplete")
+
+    def test_requests_cut_after_the_grace_are_counted_and_settled_before_post(self):
+        slept = []
+
+        def cut_one(p, m, c):
+            m.per_poll, m.drained_forwarded = 0, 2
+            m.drained["forced_cancelled_requests"] = 1
+            m.rows_override = [{"seq": 1, "kind": "request", "outcome": "completed"},
+                               {"seq": 2, "kind": "request", "outcome": "forced_cancelled"}]
+            sleep = c.sleep
+            c.sleep = lambda seconds: (slept.append((seconds, list(p.calls))), sleep(seconds))
+        result, ports, _, evidence = run(cut_one)
+        self.assertEqual(result["status"], COMPLETE)
+        summary = evidence.files["meter-summary.json"]
+        self.assertEqual((summary["forwarded_requests"], summary["forced_cancelled_requests"],
+                          summary["drain_grace_seconds"], summary["post_settle_seconds"]), (2, 1, 30, 2))
+        # 정착 대기는 drain 확인 뒤, 게이트웨이 봉인·post 점검 전에 한 번
+        settles = [calls for seconds, calls in slept if seconds == 2]
+        self.assertEqual(len(settles), 1)
+        self.assertEqual(settles[0][-1], "seal")
+        drain = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "drain")
+        self.assertEqual((drain["grace_seconds"], drain["forced_cancelled"], drain["settle_seconds"]), (30, 1, 2))
+        self.assertEqual(evidence.files["run-record.json"]["total_requests"], 2)
+
+    def test_no_settle_without_cut_requests(self):
+        slept = []
+        result, _, _, evidence = run(lambda p, m, c: setattr(c, "sleep", lambda s: slept.append(s)))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn(2, slept)
+        self.assertEqual(evidence.files["meter-summary.json"]["post_settle_seconds"], 0)
+
+    def test_cut_count_must_match_the_meter_rows(self):
+        def mismatch(p, m, c):
+            m.per_poll, m.drained_forwarded = 0, 2
+            m.drained["forced_cancelled_requests"] = 1
+            m.rows_override = [{"seq": 1, "kind": "request", "outcome": "completed"},
+                               {"seq": 2, "kind": "request", "outcome": "completed"}]
+        result, ports, _, evidence = run(mismatch)
+        self.assert_invalid(result, ports, evidence, "meter_log_inconsistent")
 
     def test_boundary_changes_between_pre_and_post(self):
         def restart_target(networks, containers):
@@ -554,20 +597,22 @@ class TestFailures(unittest.TestCase):
     def test_meter_and_observer_records_must_agree(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "observer_extra", 1))
         self.assert_invalid(result, ports, evidence, "observer_count_mismatch")
-        result, ports, _, evidence = run(lambda p, m, c: setattr(m, "rows_override", [{"seq": 2, "kind": "request"}]))
+        result, ports, _, evidence = run(lambda p, m, c: setattr(m, "rows_override", [
+            {"seq": 2, "kind": "request", "outcome": "completed"}]))
         self.assert_invalid(result, ports, evidence, "meter_log_inconsistent")
 
     def test_meter_sequence_and_count_checked_separately(self):
         def gap(p, m, c):
             # 전달 건수는 drained와 같지만 순번 2가 빠짐(기록 유실)
-            m.rows_override = [{"seq": 1, "kind": "request"}, {"seq": 3, "kind": "request"}]
+            m.rows_override = [{"seq": 1, "kind": "request", "outcome": "completed"},
+                               {"seq": 3, "kind": "request", "outcome": "completed"}]
             m.drained_forwarded = 2
         result, ports, _, evidence = run(gap)
         self.assert_invalid(result, ports, evidence, "meter_log_inconsistent")
 
         def count(p, m, c):
             # 순번은 완결이지만 drained 마커의 전달 건수와 다름
-            m.rows_override = [{"seq": i, "kind": "request"} for i in (1, 2, 3)]
+            m.rows_override = [{"seq": i, "kind": "request", "outcome": "completed"} for i in (1, 2, 3)]
             m.drained_forwarded = 5
         result, ports, _, evidence = run(count)
         self.assert_invalid(result, ports, evidence, "meter_log_inconsistent")
@@ -769,14 +814,15 @@ class TestFailures(unittest.TestCase):
         # 계측기가 drain 마커에 센 전달 2건 = request 1 + stream 1. rejected는 빼고 대조해야 완료다.
         def mixed(p, m, c):
             m.per_poll = 0
-            m.rows_override = [{"seq": 1, "kind": "request"}, {"seq": 2, "kind": "stream"},
-                               {"seq": 3, "kind": "rejected"}]
+            m.rows_override = [{"seq": 1, "kind": "request", "outcome": "completed"},
+                               {"seq": 2, "kind": "stream", "outcome": "completed"},
+                               {"seq": 3, "kind": "rejected", "outcome": "rejected_after_seal"}]
             m.drained_forwarded = 2
         result, _, _, evidence = run(mixed)
         self.assertEqual(result["status"], COMPLETE)
         self.assertEqual(evidence.files["meter-summary.json"]["forwarded_requests"], 2)
         result, _, _, _ = run(lambda p, m, c: (mixed(p, m, c), setattr(m, "rows_override", m.rows_override + [
-            {"seq": 4, "kind": "upgrade"}])))
+            {"seq": 4, "kind": "upgrade", "outcome": "completed"}])))
         self.assertEqual(result["reasons"], ["meter_log_inconsistent"])
 
     def test_failed_step_names_the_failing_check(self):

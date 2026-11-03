@@ -17,8 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
     COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH,
-    METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError, compose_base_args, secret_env_names, size_bytes,
-    compose_environment, create_run_directory, load_runner_config, new_run_id, parse_runner_config, plan_run,
+    MAX_DRAIN_GRACE_SECONDS, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError, compose_base_args,
+    secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config, new_run_id,
+    parse_runner_config, plan_run,
 )
 from test_preflight import configuration, local_llm
 
@@ -50,7 +51,7 @@ def runner_config() -> dict:
                 "budget_poll_seconds": 5, "drain_timeout_seconds": 60, "snapshot_timeout_seconds": 30,
                 "snapshot_max_bytes": 4194304, "llm_verify_timeout_seconds": 300,
                 "task_create_timeout_seconds": 20, "host_watch_interval_seconds": 2,
-                "host_watch_max_gap_seconds": 15},
+                "host_watch_max_gap_seconds": 15, "drain_grace_seconds": 30, "post_settle_seconds": 2},
         "llm_gateway": {"generation_path": "/api/v1/generation", "verify_attempts": 5, "verify_interval_seconds": 2,
                         "ca_bundle": "/etc/ssl/certs/ca-certificates.crt", "expected_provider_name": "Example"},
         "findings": {"vocabulary_path": "/srv/eval/vocabulary.json", "page_size": 100, "timeout_seconds": 30,
@@ -261,9 +262,32 @@ class TestParseRunnerConfig(unittest.TestCase):
             payload = runner_config()
             payload["run"][name] = value
             self.reject(payload, f"config.run.{name}: INVALID")
+        for name, value in (("drain_grace_seconds", 0), ("drain_grace_seconds", 601), ("post_settle_seconds", 0),
+                            ("post_settle_seconds", True)):
+            payload = runner_config()
+            payload["run"][name] = value
+            self.reject(payload, f"config.run.{name}: INVALID")
         payload = runner_config()
         del payload["run"]["down_timeout_seconds"]
         self.reject(payload, "config.run.down_timeout_seconds: MISSING")
+
+    def test_drain_grace_ends_before_the_runner_gives_up(self):
+        # 계측기가 끊기 전에 러너가 drain_timeout으로 끝내면 유예는 쓸모가 없다. 같은 값도 경합이라 거부한다.
+        for grace in (60, 61):
+            payload = runner_config()
+            payload["run"]["drain_grace_seconds"] = grace
+            self.reject(payload, "config.run.drain_grace_seconds: NOT_BELOW_DRAIN_TIMEOUT")
+        payload = runner_config()
+        payload["run"]["drain_grace_seconds"] = 59
+        parse_runner_config(payload)
+
+    def test_drain_grace_limit_matches_the_go_meter(self):
+        text = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/main.go").read_text(encoding="utf-8")
+        match = re.search(r"maxDrainGrace = (\d+) \* time\.Minute", text)
+        self.assertIsNotNone(match)
+        self.assertEqual(int(match.group(1)) * 60, MAX_DRAIN_GRACE_SECONDS)
+        compose = (Path(__file__).resolve().parents[3] / "deploy/eval/compose.eval.yaml").read_text(encoding="utf-8")
+        self.assertIn("- -drain-grace=${EVAL_METER_DRAIN_GRACE:?}", compose)
 
     def test_load_rejects_duplicate_key_and_nonfinite(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -303,6 +327,7 @@ class TestPlanRun(unittest.TestCase):
                          ("/api/v1/generation", "5", "2s", "/etc/ssl/certs/ca-certificates.crt"))
         self.assertEqual((plan.compose_env["EVAL_LLM_GW_PORT"], plan.compose_env["EVAL_API_FRONT_PORT"]), ("8090", "8091"))
         self.assertEqual(plan.compose_env["EVAL_METER_PORT"], "8080")
+        self.assertEqual(plan.compose_env["EVAL_METER_DRAIN_GRACE"], "30s")
         self.assertEqual(plan.compose_env["ARTEX_LLM_STREAM"], "true")
         no_stream = runner_config()
         no_stream["engine"]["llm_stream"] = False

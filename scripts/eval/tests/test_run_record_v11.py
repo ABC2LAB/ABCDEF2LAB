@@ -155,6 +155,14 @@ class TestRejectedV11(_V11):
         self.reject("engine_meter_summary", tamper_rows=lambda rows: row_of(rows, "engine_meter_summary").update(
             forwarded_requests=6))
         self.reject("drain", "b", tamper_rows=lambda rows: row_of(rows, "drain").update(inflight=1))
+        # 유예 뒤 끊은 요청 수·적용 값은 정수로 남아야 한다. 끊은 요청이 있어도 전달된 요청이라 증명은 유지한다.
+        for index, (name, value) in enumerate((("forced_cancelled", -1), ("forced_cancelled", True),
+                                               ("grace_seconds", "30"), ("settle_seconds", None))):
+            self.reject("drain", f"c{index}", tamper_rows=lambda rows, n=name, v=value: row_of(rows, "drain").update(
+                {n: v}))
+        self.reject("drain", "d", tamper_rows=lambda rows: row_of(rows, "drain").pop("forced_cancelled"))
+        self.assertEqual(self.inputs(self.v11("cut", tamper_rows=lambda rows: row_of(rows, "drain").update(
+            forced_cancelled=1, settle_seconds=2))).version, "1.1")
 
     def test_iw12_drain_times_are_checked_against_the_window(self):
         # fixture: 봉인 00:08, drain 완료 00:09, timeline drained 00:09, post 00:10 — 경계값(같은 시각)은 통과

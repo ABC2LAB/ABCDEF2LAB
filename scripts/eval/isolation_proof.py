@@ -38,7 +38,8 @@ _ROW_FIELDS = {
                          "window"},
     "engine_meter_summary": {"forwarded_requests", "rejected_after_seal", "forced_closed_streams", "log_rows",
                              "sequence_complete"},
-    "drain": {"engine_end", "sealed_at", "drained_at", "inflight"},
+    "drain": {"engine_end", "sealed_at", "drained_at", "inflight", "grace_seconds", "forced_cancelled",
+              "settle_seconds"},
 }
 _EVENT_FIELDS = frozenset({"id", "challenge", "actor", "execution_id", "observed_at", "sequence", "basis",
                            "isolation_proof_sha256"})
@@ -194,6 +195,9 @@ def check_isolation(receipt: dict, steps: dict[str, tuple[datetime, int]], artif
     drain = _one(rows, "drain")
     if drain["engine_end"] != timeline["engine_end"] or type(drain["inflight"]) is not int or drain["inflight"] != 0:
         raise IsolationError("isolation_evidence.drain: engine_end 불일치 또는 진행 요청 남음")
+    # 유예 뒤 끊은 요청은 전달된 요청이라 증명은 유지하되 건수·적용 값이 정수로 남아 있어야 한다(조용히 빼지 않음).
+    for name in ("grace_seconds", "forced_cancelled", "settle_seconds"):
+        _int(drain[name], f"isolation_evidence.drain.{name}")
     sealed_at = _time(drain["sealed_at"], "isolation_evidence.drain.sealed_at")
     drained_at = _time(drain["drained_at"], "isolation_evidence.drain.drained_at")
     if not sealed_at <= drained_at <= steps["drained"][0] <= post_at:

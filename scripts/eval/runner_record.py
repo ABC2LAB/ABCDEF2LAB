@@ -117,7 +117,8 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
     rows += [
         {"kind": "drain", "at": steps["drained"]["at"], "engine_end": dict(steps["engine_end"]),
          "sealed_at": meter["sealed_at"], "drained_at": meter["drained_at"],
-         "inflight": drained.get("inflight_at_drain")},
+         "inflight": drained.get("inflight_at_drain"), "grace_seconds": meter["drain_grace_seconds"],
+         "forced_cancelled": meter["forced_cancelled_requests"], "settle_seconds": meter["post_settle_seconds"]},
         {"kind": "engine_meter_summary", "at": steps["drained"]["at"],
          "forwarded_requests": meter["forwarded_requests"], "rejected_after_seal": meter["rejected_after_seal"],
          "forced_closed_streams": meter["forced_closed_streams"], "log_rows": engine_rows, "sequence_complete": True},

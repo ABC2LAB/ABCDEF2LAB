@@ -120,8 +120,11 @@ MAX_TASK_SECONDS = 24 * 3600
 # 회차 진행 시간·크기 값(초). 실패 시 재시도하지 않으므로 각 값이 그 단계의 유일한 기회다.
 _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_seconds", "budget_poll_seconds",
                "drain_timeout_seconds", "snapshot_timeout_seconds", "snapshot_max_bytes", "llm_verify_timeout_seconds",
-               "task_create_timeout_seconds", "host_watch_interval_seconds", "host_watch_max_gap_seconds")
+               "task_create_timeout_seconds", "host_watch_interval_seconds", "host_watch_max_gap_seconds",
+               "drain_grace_seconds", "post_settle_seconds")
 MAX_RUN_SECONDS = 3600
+# 계측기(cmd/eval-meter maxDrainGrace)가 받는 봉인 후 유예 상한과 같다(테스트로 고정).
+MAX_DRAIN_GRACE_SECONDS = 600
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 
 
@@ -372,7 +375,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
             errors.append(f"config.task.{name}: EXPECTED_BOOL")
     run = _exact(top.get("run"), _RUN_FIELDS, "config.run", errors) if "run" in top else {}
     for name in _RUN_FIELDS:
-        limit = MAX_SNAPSHOT_BYTES if name == "snapshot_max_bytes" else MAX_RUN_SECONDS
+        limit = {"snapshot_max_bytes": MAX_SNAPSHOT_BYTES, "drain_grace_seconds": MAX_DRAIN_GRACE_SECONDS}.get(
+            name, MAX_RUN_SECONDS)
         if name in run and not _int(run[name], 1, limit):
             errors.append(f"config.run.{name}: INVALID")
     # 공백 상한이 표본 간격 이하이면 정상 회차도 항상 공백 초과가 된다.
@@ -380,6 +384,11 @@ def parse_runner_config(raw: object) -> RunnerConfig:
             and _int(run.get("host_watch_max_gap_seconds"), 1, MAX_RUN_SECONDS)
             and run["host_watch_max_gap_seconds"] <= run["host_watch_interval_seconds"]):
         errors.append("config.run.host_watch_max_gap_seconds: NOT_ABOVE_INTERVAL")
+    # 유예가 drain 시한 이상이면 계측기가 강제 종료하기 전에 러너가 먼저 drain_timeout으로 끝낸다.
+    if (_int(run.get("drain_grace_seconds"), 1, MAX_DRAIN_GRACE_SECONDS)
+            and _int(run.get("drain_timeout_seconds"), 1, MAX_RUN_SECONDS)
+            and run["drain_grace_seconds"] >= run["drain_timeout_seconds"]):
+        errors.append("config.run.drain_grace_seconds: NOT_BELOW_DRAIN_TIMEOUT")
     if errors:
         raise RunnerConfigError(errors)
     return RunnerConfig(
@@ -519,6 +528,7 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "EVAL_ENGINE_LLM_POLICY_MODE": config.llm_policy_mode,
         "EVAL_TARGET_PORT": str(config.ports["target"]),
         "EVAL_METER_PORT": str(origin.port),
+        "EVAL_METER_DRAIN_GRACE": f"{config.run['drain_grace_seconds']}s",
         "EVAL_OBS_PORT": str(config.ports["obs"]),
         "EVAL_OBS_HOST_PORT": str(config.ports["obs_host"]),
         "EVAL_OBS_PATH": config.observer_path,
