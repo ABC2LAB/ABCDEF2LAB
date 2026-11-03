@@ -9,7 +9,7 @@ export function Strong({ children }: { children: ReactNode }) {
 
 /** 제목 옆 작은 회색 설명 (font-weight:500; color:muted; 12px) */
 export function Sub({ children }: { children: ReactNode }) {
-  return <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 12 }}>{children}</span>;
+  return <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 13 }}>{children}</span>;
 }
 
 const PILL_TONE: Record<"muted" | "warn", CSSProperties> = {
@@ -45,11 +45,11 @@ export function MockBanner({ children }: { children?: ReactNode }) {
   return (
     <div
       style={{
-        fontSize: 12.5,
+        fontSize: 13,
         color: "var(--warn)",
         background: "var(--warn-weak)",
         border: "1px solid var(--warn-border)",
-        borderRadius: 8,
+        borderRadius: 6,
         padding: "9px 12px",
         marginBottom: 14,
       }}

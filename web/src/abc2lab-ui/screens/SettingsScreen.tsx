@@ -8,23 +8,23 @@ import { type EngineInterceptRule, getInterceptRules, getLLM } from "../lib/engi
 import { isInternalUrl } from "../lib/net";
 import { useGo } from "../nav";
 
-const bodyText = { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
+const bodyText = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
 const noticeBox = {
-  fontSize: 12.5,
+  fontSize: 13,
   color: "var(--muted)",
   background: "var(--surface-2)",
   border: "1px dashed var(--line-2)",
-  borderRadius: 8,
+  borderRadius: 6,
   padding: "10px 12px",
 } as const;
 const patStyle = {
   fontFamily: "var(--mono)",
-  fontSize: 11.5,
+  fontSize: 12,
   wordBreak: "break-all" as const,
   color: "var(--muted)",
 };
 const groupHd = {
-  fontSize: 12,
+  fontSize: 13,
   fontWeight: 600,
   color: "var(--muted)",
   letterSpacing: "0.02em",
@@ -246,7 +246,7 @@ export default function SettingsScreen() {
                 className="btn"
                 type="button"
                 onClick={() => go("audit")}
-                style={{ flex: "none", padding: "10px 14px", fontSize: 13 }}
+                style={{ flex: "none", padding: "10px 14px", fontSize: 14 }}
               >
                 열기
               </button>
@@ -263,7 +263,7 @@ export default function SettingsScreen() {
                 className="btn"
                 type="button"
                 onClick={() => go("tokens")}
-                style={{ flex: "none", padding: "10px 14px", fontSize: 13 }}
+                style={{ flex: "none", padding: "10px 14px", fontSize: 14 }}
               >
                 열기
               </button>

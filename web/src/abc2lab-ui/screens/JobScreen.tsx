@@ -38,10 +38,10 @@ export default function JobScreen({ target }: { target: Target }) {
             <details className="adv" open style={{ marginTop: 20 }}>
               <summary>
                 <span className="chev">▸</span> 리소스 (범위 · 워커 · 제외 경로){" "}
-                <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 12 }}>· 기본값으로 둬도 돼요</span>
+                <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 13 }}>· 기본값으로 둬도 돼요</span>
               </summary>
               <div style={{ padding: "8px 0 4px" }}>
-                <span className="fsmall" style={{ fontSize: 13 }}>
+                <span className="fsmall" style={{ fontSize: 14 }}>
                   점검 범위
                 </span>
                 <ChoiceGroup
@@ -53,7 +53,7 @@ export default function JobScreen({ target }: { target: Target }) {
                     { t: "제한 없음", d: "새로 찾을 게 없을 때까지 · 자동 종료" },
                   ]}
                 />
-                <span className="fsmall" style={{ fontSize: 13 }}>
+                <span className="fsmall" style={{ fontSize: 14 }}>
                   워커 수 <span className="opt">· 동시에 점검하는 작업 수</span>
                 </span>
                 <ChoiceGroup
@@ -69,7 +69,7 @@ export default function JobScreen({ target }: { target: Target }) {
                   워커가 많을수록 빠르지만 토큰을 더 써요. 단일 GPU 로컬이면 2~4가 적당해요.
                 </div>
                 <div className="hr" style={{ margin: "4px 0 16px" }} />
-                <span className="fsmall" style={{ fontSize: 13 }}>
+                <span className="fsmall" style={{ fontSize: 14 }}>
                   제외 경로 <span className="opt">· 선택</span>
                 </span>
                 <input className="inp sm" placeholder="예: /admin/delete* , /api/*/purge" style={{ marginBottom: 8 }} />
@@ -79,7 +79,7 @@ export default function JobScreen({ target }: { target: Target }) {
                     color: "var(--danger)",
                     background: "var(--danger-weak)",
                     border: "1px solid var(--danger-border)",
-                    borderRadius: 10,
+                    borderRadius: 6,
                     padding: "11px 13px",
                     marginTop: 8,
                     lineHeight: 1.7,

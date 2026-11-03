@@ -166,11 +166,11 @@ export default function ScopeScreen({ target }: { target: Target }) {
           <div style={{ minWidth: 0 }}>
             <Brand style={{ fontSize: 16 }}>
               ABC2LAB{' '}
-              <span style={{ fontWeight: 500, fontSize: 13, color: 'var(--muted)', marginLeft: 4 }}>
+              <span style={{ fontWeight: 500, fontSize: 14, color: 'var(--muted)', marginLeft: 4 }}>
                 웹 보안 자동 점검
               </span>
             </Brand>
-            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 3 }}>
+            <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 3 }}>
               점검 대상 · <Strong>{target.url}</Strong>
             </div>
           </div>

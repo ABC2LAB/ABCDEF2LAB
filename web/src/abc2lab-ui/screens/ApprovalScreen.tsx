@@ -7,7 +7,7 @@ const linkStyle = { color: 'var(--teal-ink)', fontWeight: 600, cursor: 'pointer'
 const optionDesc = {
   fontWeight: 500,
   color: 'var(--muted)',
-  fontSize: 12.5,
+  fontSize: 13,
   marginTop: 2,
 } as const;
 
@@ -50,7 +50,7 @@ export default function ApprovalScreen() {
           <div className="card">
             <h3>에이전트가 하려는 일</h3>
             <p
-              style={{ fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.7, margin: '0 0 12px' }}
+              style={{ fontSize: 14, color: 'var(--muted)', lineHeight: 1.7, margin: '0 0 12px' }}
             >
               결제 단계에서 <Strong>금액을 임의로 바꿔도 주문이 생성되는지</Strong> 확인하려고 해요.
               성공하면 비즈니스 로직 취약점이지만, 이 요청은 <Strong>실제 주문을 생성</Strong>할 수

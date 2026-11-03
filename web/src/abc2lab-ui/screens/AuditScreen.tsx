@@ -48,11 +48,11 @@ function tsLabel(ts: number): string {
 
 const oneLine = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
 const noticeBox = {
-  fontSize: 12.5,
+  fontSize: 13,
   color: "var(--muted)",
   background: "var(--surface-2)",
   border: "1px dashed var(--line-2)",
-  borderRadius: 8,
+  borderRadius: 6,
   padding: "10px 12px",
   marginBottom: 14,
 } as const;
@@ -185,7 +185,7 @@ export default function AuditScreen() {
                           style={{
                             ...(oneLine as React.CSSProperties),
                             display: "block",
-                            fontSize: 11,
+                            fontSize: 12,
                             color: "var(--faint)",
                           }}
                           title={e.ruleName}

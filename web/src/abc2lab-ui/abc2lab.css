@@ -35,99 +35,111 @@ img {
 /* ---- 앱 스타일 블록 ---- */
 /* 밝은 앱 셸(상단 네비) + 화면별 섹션. 상세 보기 팝업만 다크(Redme 참고) */
 :root {
-  --bg: #fbfaf7;
+  --bg: #ffffff;
   --surface: #ffffff;
-  --surface-2: #f7f5ef;
-  --fg: #1a1a17;
-  --muted: #8a8980;
-  --faint: #a3a299;
-  --line: #efebe2;
-  --line-2: #e6e1d7;
-  --teal: #0e8c7f;
-  --teal-ink: #0a6b61;
-  --teal-weak: #e5f4f1;
-  --teal-border: #cfe6e1;
-  --warn: #946a14;
-  --warn-weak: #fcf8f0;
-  --warn-border: #ead9b8;
+  --surface-2: #f6f8fa;
+  --fg: #101828;
+  --muted: #475467;
+  --faint: #5f6b7a;
+  --line: #e4e7ec;
+  --line-2: #d0d5dd;
+  --teal: #1f6feb;
+  --teal-ink: #175cd3;
+  --teal-weak: #eff5ff;
+  --teal-border: #b2ccff;
+  --warn: #b54708;
+  --warn-weak: #fffaeb;
+  --warn-border: #fedf89;
   --crit: #8b1a10;
   --crit-weak: #f6e1de;
-  --hi: #c0392b;
-  --hi-weak: #fbecea;
-  --mid: #b4791a;
-  --mid-weak: #fbf3e4;
-  --lo: #5b8a82;
-  --lo-weak: #eaf3f1;
-  --danger: #c0392b;
-  --danger-weak: #fbecea;
-  --danger-border: #edc3bd;
-  --brand: #6e1b1b;
-  --r: 14px;
-  --r-sm: 10px;
+  --hi: #d92d20;
+  --hi-weak: #fef3f2;
+  --mid: #b54708;
+  --mid-weak: #fffaeb;
+  --lo: #3b6aa0;
+  --lo-weak: #eff4fa;
+  --danger: #d92d20;
+  --danger-weak: #fef3f2;
+  --danger-border: #fecdca;
+  --brand: #7a1f1f;
+  --r: 8px;
+  --r-sm: 6px;
   --font: "Noto Sans KR Variable", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --ok: #067647;
+  --ok-weak: #ecfdf3;
+  --ok-border: #abefc6;
+  --hdr: #0f1624;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #13110d;
-    --surface: #1c1a15;
-    --surface-2: #211e18;
-    --fg: #edeae1;
-    --muted: #9f9a8c;
-    --faint: #746f62;
-    --line: #2c291f;
-    --line-2: #3a3529;
-    --teal: #2cbda8;
-    --teal-ink: #7fe0d2;
-    --teal-weak: #14302b;
-    --teal-border: #2f6a60;
-    --warn: #d8a24a;
-    --warn-weak: #2a2113;
-    --warn-border: #53431f;
+    --bg: #0d1117;
+    --surface: #11161e;
+    --surface-2: #161c25;
+    --fg: #e6edf3;
+    --muted: #a8b3c1;
+    --faint: #8d99a8;
+    --line: #232b36;
+    --line-2: #2e3846;
+    --teal: #4c8dff;
+    --teal-ink: #8db6ff;
+    --teal-weak: #13213a;
+    --teal-border: #22406e;
+    --warn: #f2a541;
+    --warn-weak: #2a1f0e;
+    --warn-border: #5c4214;
     --crit: #f2998d;
     --crit-weak: #381713;
-    --hi: #e8695c;
-    --hi-weak: #2d1715;
-    --mid: #d8a24a;
-    --mid-weak: #2a2113;
-    --lo: #57b7a8;
-    --lo-weak: #15302b;
-    --danger: #e8695c;
-    --danger-weak: #2d1715;
-    --danger-border: #5a2b26;
-    --brand: #e8847d;
+    --hi: #f97066;
+    --hi-weak: #2c1515;
+    --mid: #f2a541;
+    --mid-weak: #2a1f0e;
+    --lo: #86aee0;
+    --lo-weak: #152238;
+    --danger: #f97066;
+    --danger-weak: #2c1515;
+    --danger-border: #5e2626;
+    --brand: #f4a7a7;
     color-scheme: dark;
+    --ok: #47cd89;
+    --ok-weak: #0e2a1c;
+    --ok-border: #1d5a3a;
+    --hdr: #0a0e14;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #13110d;
-  --surface: #1c1a15;
-  --surface-2: #211e18;
-  --fg: #edeae1;
-  --muted: #9f9a8c;
-  --faint: #746f62;
-  --line: #2c291f;
-  --line-2: #3a3529;
-  --teal: #2cbda8;
-  --teal-ink: #7fe0d2;
-  --teal-weak: #14302b;
-  --teal-border: #2f6a60;
-  --warn: #d8a24a;
-  --warn-weak: #2a2113;
-  --warn-border: #53431f;
+  --bg: #0d1117;
+  --surface: #11161e;
+  --surface-2: #161c25;
+  --fg: #e6edf3;
+  --muted: #a8b3c1;
+  --faint: #8d99a8;
+  --line: #232b36;
+  --line-2: #2e3846;
+  --teal: #4c8dff;
+  --teal-ink: #8db6ff;
+  --teal-weak: #13213a;
+  --teal-border: #22406e;
+  --warn: #f2a541;
+  --warn-weak: #2a1f0e;
+  --warn-border: #5c4214;
   --crit: #f2998d;
   --crit-weak: #381713;
-  --hi: #e8695c;
-  --hi-weak: #2d1715;
-  --mid: #d8a24a;
-  --mid-weak: #2a2113;
-  --lo: #57b7a8;
-  --lo-weak: #15302b;
-  --danger: #e8695c;
-  --danger-weak: #2d1715;
-  --danger-border: #5a2b26;
-  --brand: #e8847d;
+  --hi: #f97066;
+  --hi-weak: #2c1515;
+  --mid: #f2a541;
+  --mid-weak: #2a1f0e;
+  --lo: #86aee0;
+  --lo-weak: #152238;
+  --danger: #f97066;
+  --danger-weak: #2c1515;
+  --danger-border: #5e2626;
+  --brand: #f4a7a7;
   color-scheme: dark;
+  --ok: #47cd89;
+  --ok-weak: #0e2a1c;
+  --ok-border: #1d5a3a;
+  --hdr: #0a0e14;
 }
 
 * {
@@ -153,7 +165,7 @@ code {
   font-family: var(--mono);
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 4px;
   padding: 1px 6px;
   font-size: 0.86em;
 }
@@ -173,19 +185,19 @@ code {
   padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
 .switch .lab {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--faint);
   letter-spacing: 0.04em;
   margin-right: 4px;
 }
 .switch button {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--muted);
   background: none;
   border: 1px solid var(--line-2);
-  border-radius: 999px;
+  border-radius: 4px;
   padding: 6px 13px;
   cursor: pointer;
 }
@@ -217,7 +229,7 @@ code {
   margin: 20px auto 0;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -233,8 +245,8 @@ code {
   display: flex;
   align-items: center;
   gap: 9px;
-  font-weight: 900;
-  font-size: 17px;
+  font-weight: 700;
+  font-size: 18px;
   letter-spacing: -0.3px;
   color: var(--brand);
 }
@@ -248,7 +260,7 @@ code {
   flex-wrap: wrap;
 }
 .nav a {
-  font-size: 13.5px;
+  font-size: 14px;
   color: var(--muted);
   font-weight: 500;
   cursor: pointer;
@@ -258,7 +270,7 @@ code {
   font-weight: 700;
 }
 .muted-link {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
   cursor: pointer;
 }
@@ -281,7 +293,7 @@ code {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   background: var(--surface);
   border: 1.5px solid var(--line-2);
@@ -294,7 +306,7 @@ code {
   color: #fff;
 }
 .stepper .s .t {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--faint);
 }
 .stepper .s.now .t,
@@ -330,11 +342,11 @@ code {
   min-width: 0;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 8px;
   padding: 20px;
 }
 .side h2 {
-  font-size: 14px;
+  font-size: 15px;
   color: var(--muted);
   font-weight: 700;
   margin-bottom: 14px;
@@ -343,11 +355,11 @@ code {
   margin-bottom: 13px;
 }
 .srow .k {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 .srow .v {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   word-break: break-all;
 }
@@ -359,17 +371,17 @@ code {
 
 h1.big {
   font-size: 24px;
-  font-weight: 900;
+  font-weight: 700;
   letter-spacing: -0.5px;
   margin-bottom: 6px;
 }
 .lead {
-  font-size: 15px;
+  font-size: 16px;
   color: var(--muted);
   margin-bottom: 22px;
 }
 .qlab {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--fg);
   margin-bottom: 8px;
@@ -386,7 +398,7 @@ h1.big {
   text-align: left;
   background: var(--surface);
   border: 1px solid var(--line-2);
-  border-radius: 12px;
+  border-radius: 6px;
   padding: 14px;
   cursor: pointer;
   color: var(--fg);
@@ -395,11 +407,11 @@ h1.big {
   border-color: var(--teal-border);
 }
 .choice .t {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
 }
 .choice .d {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 2px;
 }
@@ -414,7 +426,7 @@ h1.big {
 
 .panel {
   border: 1px dashed var(--teal-border);
-  border-radius: 14px;
+  border-radius: 8px;
   padding: 18px;
   margin-bottom: 22px;
 }
@@ -424,7 +436,7 @@ h1.big {
 }
 label.fl {
   display: block;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--fg);
   margin-bottom: 8px;
@@ -438,11 +450,11 @@ label.fl .opt,
 select.inp {
   width: 100%;
   font-family: inherit;
-  font-size: 15px;
+  font-size: 16px;
   color: var(--fg);
   background: var(--surface);
   border: 1px solid var(--line-2);
-  border-radius: 12px;
+  border-radius: 6px;
   padding: 12px 15px;
   outline: none;
   min-width: 0;
@@ -459,8 +471,8 @@ select.inp:focus {
 }
 .btn {
   font-weight: 700;
-  font-size: 14px;
-  border-radius: 12px;
+  font-size: 15px;
+  border-radius: 6px;
   cursor: pointer;
   padding: 12px 16px;
   border: 1px solid var(--line-2);
@@ -487,7 +499,7 @@ select.inp:focus {
   border-color: var(--danger);
 }
 .hint {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 8px;
   line-height: 1.6;
@@ -496,9 +508,9 @@ select.inp:focus {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
-  border-radius: 999px;
+  border-radius: 4px;
   padding: 7px 12px;
 }
 .badge.ok {
@@ -516,9 +528,9 @@ select.inp:focus {
 }
 .pill {
   display: inline-block;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  border-radius: 999px;
+  border-radius: 4px;
   padding: 2px 9px;
   background: var(--teal-weak);
   color: var(--teal-ink);
@@ -529,10 +541,10 @@ select.inp:focus {
   align-items: flex-start;
   background: var(--surface);
   border: 1px solid var(--warn-border);
-  border-radius: 12px;
+  border-radius: 6px;
   padding: 13px 15px;
   margin-bottom: 16px;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.6;
   color: var(--warn);
 }
@@ -544,7 +556,7 @@ details.adv > summary {
   cursor: pointer;
   list-style: none;
   padding: 12px 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--teal-ink);
   display: flex;
@@ -559,7 +571,7 @@ details.adv > summary::-webkit-details-marker {
 }
 details.adv .chev {
   transition: transform 0.15s;
-  font-size: 11px;
+  font-size: 12px;
 }
 details.adv[open] .chev {
   transform: rotate(90deg);
@@ -574,16 +586,16 @@ details.adv[open] .chev {
   min-width: 0;
 }
 .fsmall {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--fg);
   margin-bottom: 6px;
   display: block;
 }
 .inp.sm {
-  font-size: 14px;
+  font-size: 15px;
   padding: 11px 14px;
-  border-radius: 10px;
+  border-radius: 6px;
 }
 .stack {
   display: flex;
@@ -597,7 +609,7 @@ details.adv[open] .chev {
   margin-bottom: 0;
 }
 .aclab {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   margin-bottom: 6px;
 }
@@ -610,22 +622,22 @@ details.adv[open] .chev {
 .tile {
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 6px;
   padding: 14px 16px;
 }
 .tile .k {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 .tile .v {
   font-size: 22px;
-  font-weight: 900;
+  font-weight: 700;
   letter-spacing: -0.5px;
   font-variant-numeric: tabular-nums;
   margin-top: 3px;
 }
 .tile .sub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--faint);
   margin-top: 2px;
 }
@@ -637,7 +649,7 @@ details.adv[open] .chev {
   margin: 4px 0 18px;
 }
 .pipe .p {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--faint);
   white-space: nowrap;
 }
@@ -647,7 +659,7 @@ details.adv[open] .chev {
 }
 .pipe .p.now {
   color: var(--fg);
-  font-weight: 800;
+  font-weight: 600;
 }
 .pipe .d {
   width: 14px;
@@ -661,7 +673,7 @@ details.adv[open] .chev {
 .bar {
   height: 9px;
   background: var(--line);
-  border-radius: 999px;
+  border-radius: 4px;
   overflow: hidden;
   margin: 8px 0;
 }
@@ -669,15 +681,15 @@ details.adv[open] .chev {
   display: block;
   height: 100%;
   background: var(--teal);
-  border-radius: 999px;
+  border-radius: 4px;
 }
 .sev {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
-  border-radius: 7px;
+  border-radius: 4px;
   padding: 3px 8px;
 }
 .sev.critical {
@@ -706,16 +718,16 @@ details.adv[open] .chev {
   text-align: center;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 6px;
   padding: 12px;
 }
 .vbox .n {
   font-size: 22px;
-  font-weight: 900;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 .vbox .l {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   margin-top: 2px;
 }
@@ -727,7 +739,7 @@ details.adv[open] .chev {
   border-top: 1px solid var(--line);
 }
 .find .nm {
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 600;
   min-width: 0;
 }
@@ -735,7 +747,7 @@ details.adv[open] .chev {
   display: flex;
   gap: 16px;
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 10px;
 }
@@ -774,7 +786,7 @@ details.adv[open] .chev {
   align-items: center;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 6px;
   padding: 12px 15px;
   margin-bottom: 16px;
 }
@@ -800,17 +812,17 @@ details.adv[open] .chev {
   margin: 4px 0 18px;
 }
 .tab {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--muted);
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 4px;
   padding: 6px 13px;
   cursor: pointer;
 }
 .tab .c {
-  font-weight: 800;
+  font-weight: 600;
   margin-left: 4px;
 }
 .tab.on {
@@ -820,7 +832,7 @@ details.adv[open] .chev {
 }
 .hcard {
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 8px;
   padding: 16px;
   margin-bottom: 12px;
   display: flex;
@@ -829,11 +841,11 @@ details.adv[open] .chev {
   flex-wrap: wrap;
 }
 .hcard .nm {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
 }
 .hcard .meta {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 3px;
 }
@@ -845,7 +857,7 @@ details.adv[open] .chev {
   flex-wrap: wrap;
 }
 .daylab {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--faint);
   letter-spacing: 0.04em;
@@ -859,7 +871,7 @@ details.adv[open] .chev {
 }
 
 .crumb {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
   margin-bottom: 12px;
 }
@@ -880,9 +892,9 @@ details.adv[open] .chev {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  font-weight: 800;
-  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 4px;
   padding: 4px 10px;
 }
 .vbadge2.ok {
@@ -906,7 +918,7 @@ details.adv[open] .chev {
   align-items: center;
   padding: 14px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 6px;
   margin-bottom: 10px;
   cursor: pointer;
   background: var(--surface);
@@ -916,12 +928,12 @@ details.adv[open] .chev {
   background: var(--surface-2);
 }
 .frow .nm {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
 }
 .frow .ep {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
   margin-top: 3px;
   word-break: break-all;
@@ -940,7 +952,7 @@ details.adv[open] .chev {
 .matrix {
   border-collapse: separate;
   border-spacing: 5px;
-  font-size: 12px;
+  font-size: 13px;
   min-width: 540px;
 }
 .matrix th {
@@ -948,12 +960,12 @@ details.adv[open] .chev {
   color: var(--muted);
   text-align: center;
   padding: 4px 6px;
-  font-size: 11.5px;
+  font-size: 12px;
   vertical-align: bottom;
 }
 .matrix td {
   text-align: center;
-  border-radius: 9px;
+  border-radius: 6px;
   padding: 11px 8px;
   font-weight: 700;
   min-width: 70px;
@@ -967,7 +979,7 @@ details.adv[open] .chev {
 }
 .matrix td.rowh .sm {
   display: block;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--faint);
   font-weight: 500;
 }
@@ -1001,17 +1013,17 @@ details.adv[open] .chev {
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 12px;
 }
 .ev {
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 13px 15px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.75;
   overflow-x: auto;
   white-space: pre;
@@ -1030,7 +1042,7 @@ details.adv[open] .chev {
 }
 .cmp {
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
   min-width: 560px;
   width: 100%;
 }
@@ -1042,28 +1054,28 @@ details.adv[open] .chev {
   vertical-align: top;
 }
 .cmp th {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   font-weight: 700;
 }
 .cmp code {
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .card {
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 8px;
   padding: 18px;
   margin-bottom: 16px;
 }
 .card h3 {
-  font-size: 14px;
+  font-size: 15px;
   margin-bottom: 10px;
 }
 .sw {
   position: relative;
   width: 42px;
   height: 24px;
-  border-radius: 999px;
+  border-radius: 4px;
   background: var(--line-2);
   border: none;
   cursor: pointer;
@@ -1112,11 +1124,11 @@ details.adv[open] .chev {
   min-width: 0;
 }
 .setrow .tx .t {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
 }
 .setrow .tx .d {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 2px;
   line-height: 1.6;
@@ -1127,9 +1139,9 @@ details.adv[open] .chev {
   gap: 8px;
   background: var(--surface-2);
   border: 1px solid var(--line-2);
-  border-radius: 999px;
+  border-radius: 4px;
   padding: 5px 9px 5px 12px;
-  font-size: 12.5px;
+  font-size: 13px;
   margin: 4px 6px 0 0;
   font-family: var(--mono);
 }
@@ -1138,7 +1150,7 @@ details.adv[open] .chev {
   background: none;
   color: var(--faint);
   cursor: pointer;
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1;
   padding: 0;
 }
@@ -1154,7 +1166,7 @@ details.adv[open] .chev {
   gap: 10px;
   padding: 10px 0;
   border-top: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 14px;
   flex-wrap: wrap;
 }
 .arow:first-child {
@@ -1164,12 +1176,12 @@ details.adv[open] .chev {
   flex: 1 1 200px;
   min-width: 0;
   word-break: break-all;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 .vtag {
-  font-size: 11px;
-  font-weight: 800;
-  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 4px;
   padding: 3px 8px;
   flex: none;
 }
@@ -1182,7 +1194,7 @@ details.adv[open] .chev {
   color: var(--danger);
 }
 .vexp {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--faint);
   flex: none;
 }
@@ -1201,7 +1213,7 @@ details.adv[open] .chev {
 }
 .log {
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 6px;
   overflow: hidden;
 }
 .logrow {
@@ -1210,7 +1222,7 @@ details.adv[open] .chev {
   align-items: center;
   padding: 12px 14px;
   border-top: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 14px;
   flex-wrap: wrap;
 }
 .logrow:first-child {
@@ -1218,14 +1230,14 @@ details.adv[open] .chev {
 }
 .logrow .ts {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--faint);
   flex: none;
 }
 .who {
-  font-size: 10.5px;
-  font-weight: 800;
-  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 4px;
   padding: 2px 7px;
   flex: none;
 }
@@ -1247,14 +1259,14 @@ details.adv[open] .chev {
 }
 .logrow .hash {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--faint);
   flex: none;
 }
 
 .area {
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 6px;
   margin-bottom: 10px;
   overflow: hidden;
 }
@@ -1279,7 +1291,7 @@ details.adv[open] .chev {
 }
 .arexp .chev {
   transition: transform 0.15s;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   flex: none;
 }
@@ -1290,11 +1302,11 @@ details.adv[open] .chev {
   min-width: 0;
 }
 .arhead .tx .t {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
 }
 .arhead .tx .d {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 2px;
 }
@@ -1311,7 +1323,7 @@ details.adv[open] .chev {
   border-top: 1px solid var(--line);
   background: var(--surface-2);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
 }
 .eprow code {
   background: none;
@@ -1335,7 +1347,7 @@ details.adv[open] .chev {
   border: none;
   border-top: 1px solid var(--line);
   background: var(--surface-2);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--teal-ink);
   font-weight: 600;
   cursor: pointer;
@@ -1373,7 +1385,7 @@ details.adv[open] .chev {
   flex-direction: column;
   background: #111418;
   border: 1px solid #262a31;
-  border-radius: 16px;
+  border-radius: 8px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   color: #e7e9ee;
@@ -1393,7 +1405,7 @@ details.adv[open] .chev {
 .rpbar {
   height: 6px;
   background: #23272e;
-  border-radius: 999px;
+  border-radius: 4px;
   overflow: hidden;
   margin: 8px 0 6px;
   max-width: 360px;
@@ -1402,7 +1414,7 @@ details.adv[open] .chev {
   display: block;
   height: 100%;
   background: #2cbda8;
-  border-radius: 999px;
+  border-radius: 4px;
 }
 .rpop-now {
   display: flex;
@@ -1413,11 +1425,11 @@ details.adv[open] .chev {
   flex: none;
 }
 .rpnl {
-  font-size: 11.5px;
+  font-size: 12px;
   color: #8b93a1;
 }
 .rpnv {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: #e7e9ee;
   margin-top: 1px;
@@ -1426,7 +1438,7 @@ details.adv[open] .chev {
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
-  font-size: 11px;
+  font-size: 12px;
   color: #8b93a1;
   margin-bottom: 10px;
 }
@@ -1442,10 +1454,10 @@ details.adv[open] .chev {
 }
 .rpt {
   font-size: 16px;
-  font-weight: 800;
+  font-weight: 600;
 }
 .rpd {
-  font-size: 12.5px;
+  font-size: 13px;
   color: #8b93a1;
   margin-top: 2px;
 }
@@ -1464,7 +1476,7 @@ details.adv[open] .chev {
 }
 .rpop-meta {
   padding: 12px 20px;
-  font-size: 12.5px;
+  font-size: 13px;
   color: #9aa1ab;
   border-bottom: 1px solid #262a31;
   flex: none;
@@ -1492,7 +1504,7 @@ details.adv[open] .chev {
   background: #0d1013;
 }
 .rp-h {
-  font-size: 12px;
+  font-size: 13px;
   color: #8b93a1;
   font-weight: 700;
   margin-bottom: 12px;
@@ -1502,7 +1514,7 @@ details.adv[open] .chev {
 }
 .rlog {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
 }
 .rrow {
   display: flex;
@@ -1555,7 +1567,7 @@ details.adv[open] .chev {
   gap: 11px;
   align-items: flex-start;
   padding: 9px 0;
-  font-size: 13px;
+  font-size: 14px;
   color: #8b93a1;
   border-top: 1px solid #1d2127;
 }
@@ -1604,7 +1616,7 @@ details.adv[open] .chev {
 }
 .rpnote {
   color: #6b727c;
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 14px;
   line-height: 1.6;
 }
@@ -1630,7 +1642,7 @@ details.adv[open] .chev {
   overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 8px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
 }
 .vpop-head {
@@ -1642,10 +1654,10 @@ details.adv[open] .chev {
 }
 .vpt {
   font-size: 16px;
-  font-weight: 800;
+  font-weight: 600;
 }
 .vpd {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 3px;
   line-height: 1.5;
@@ -1655,7 +1667,7 @@ details.adv[open] .chev {
   background: none;
   border: none;
   color: var(--muted);
-  font-size: 17px;
+  font-size: 18px;
   cursor: pointer;
   line-height: 1;
   flex: none;
@@ -1671,9 +1683,9 @@ details.adv[open] .chev {
   gap: 8px;
   background: var(--warn-weak);
   border: 1px solid var(--warn-border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 11px 13px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--warn);
   line-height: 1.6;
   margin-bottom: 4px;
@@ -1685,7 +1697,7 @@ details.adv[open] .chev {
   display: flex;
   gap: 10px;
   align-items: center;
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 700;
   margin: 16px 0 8px;
 }
@@ -1697,13 +1709,13 @@ details.adv[open] .chev {
   color: var(--teal-ink);
   display: grid;
   place-items: center;
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 600;
   flex: none;
 }
 .vrec {
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 6px;
   overflow: hidden;
 }
 .vrr {
@@ -1712,13 +1724,13 @@ details.adv[open] .chev {
   gap: 10px;
   padding: 10px 13px;
   border-top: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 14px;
 }
 .vrr:first-child {
   border-top: none;
 }
 .vrr .vk {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
   font-weight: 700;
   width: 80px;
@@ -1731,12 +1743,12 @@ details.adv[open] .chev {
 }
 .vcopy {
   flex: none;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--teal-ink);
   background: none;
   border: 1px solid var(--line-2);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 5px 9px;
   cursor: pointer;
 }
@@ -1744,16 +1756,16 @@ details.adv[open] .chev {
   border-color: var(--teal);
 }
 .vhint {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   line-height: 1.6;
   margin-top: 8px;
 }
 .vstate {
   margin-top: 12px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 11px 13px;
 }
 .vstate.checking {
@@ -1794,6 +1806,7 @@ details.adv[open] .chev {
   --v-c2: #eb6834;
   --v-c3: #1baf7a;
   --v-c4: #eda100;
+  --v-crit: #7a1a12;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -1807,6 +1820,7 @@ details.adv[open] .chev {
     --v-c2: #d95926;
     --v-c3: #199e70;
     --v-c4: #c98500;
+    --v-crit: #c8281f;
   }
 }
 :root[data-theme="dark"] {
@@ -1820,6 +1834,7 @@ details.adv[open] .chev {
   --v-c2: #d95926;
   --v-c3: #199e70;
   --v-c4: #c98500;
+  --v-crit: #c8281f;
 }
 
 .backbtn {
@@ -1828,12 +1843,12 @@ details.adv[open] .chev {
   gap: 7px;
   margin: 0 0 14px;
   padding: 7px 13px 7px 10px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--fg);
   background: var(--surface);
   border: 1px solid var(--line-2);
-  border-radius: 10px;
+  border-radius: 6px;
   cursor: pointer;
 }
 .backbtn:hover {
@@ -1845,7 +1860,7 @@ details.adv[open] .chev {
   outline-offset: 2px;
 }
 .backbtn .arr {
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1;
 }
 
@@ -1885,7 +1900,7 @@ details.adv[open] .chev {
   flex-wrap: wrap;
   gap: 8px 28px;
   margin: -6px 0 16px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 .legend-key > div {
@@ -1895,7 +1910,7 @@ details.adv[open] .chev {
   flex-wrap: wrap;
 }
 .legend-key .lk {
-  font-weight: 800;
+  font-weight: 600;
   color: var(--fg);
   margin-right: 2px;
 }
@@ -1904,7 +1919,7 @@ details.adv[open] .chev {
 }
 .legend-key .sev,
 .legend-key .vbadge2 {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .viz {
@@ -1933,23 +1948,23 @@ details.adv[open] .chev {
   gap: 2px;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 3px;
 }
 .seg-lab {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--muted);
   padding: 0 6px 0 4px;
 }
 .seg button {
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--muted);
   background: none;
   border: none;
-  border-radius: 7px;
+  border-radius: 4px;
   padding: 5px 10px;
   cursor: pointer;
 }
@@ -1974,7 +1989,7 @@ details.adv[open] .chev {
   width: 100%;
   background: none;
   border: none;
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 7px 8px;
   cursor: pointer;
   font-family: inherit;
@@ -1989,7 +2004,7 @@ details.adv[open] .chev {
   outline-offset: 1px;
 }
 .vr-lab {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
 }
 .vr-track {
@@ -2004,13 +2019,13 @@ details.adv[open] .chev {
   min-width: 3px;
 }
 .vr-val {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .vr-val b {
   color: var(--fg);
-  font-size: 13px;
+  font-size: 14px;
 }
 .vrow.dim .vr-fill,
 .vseg.dim {
@@ -2055,12 +2070,12 @@ details.adv[open] .chev {
   align-items: center;
   gap: 7px;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--fg);
   background: none;
   border: none;
   padding: 5px 7px;
-  border-radius: 7px;
+  border-radius: 4px;
   cursor: pointer;
 }
 .vleg:hover {
@@ -2075,7 +2090,7 @@ details.adv[open] .chev {
 }
 .vleg .pc {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 .vsw {
@@ -2088,7 +2103,7 @@ details.adv[open] .chev {
 .vtable {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
 }
 .vtable th,
 .vtable td {
@@ -2098,7 +2113,7 @@ details.adv[open] .chev {
   vertical-align: top;
 }
 .vtable th {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   font-weight: 700;
 }
@@ -2118,7 +2133,7 @@ details.adv[open] .chev {
   display: block;
   text-align: left;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--teal-ink);
   background: none;
   border: none;
@@ -2135,7 +2150,7 @@ details.adv[open] .chev {
   border-radius: 4px;
 }
 .viz-note {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 10px;
 }
@@ -2148,14 +2163,14 @@ details.adv[open] .chev {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   margin-bottom: 6px;
 }
 .vpick-h button {
   margin-left: auto;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--muted);
   background: none;
@@ -2169,20 +2184,20 @@ details.adv[open] .chev {
   pointer-events: none;
   background: var(--fg);
   color: var(--surface);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 7px 10px;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
   white-space: nowrap;
 }
 .vtip strong {
   display: block;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .frow .acc-chev {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   transition: transform 0.15s;
   margin-left: 2px;
@@ -2213,12 +2228,12 @@ details.adv[open] .chev {
   grid-template-columns: 96px minmax(0, 1fr);
   gap: 9px 14px;
   margin: 14px 0;
-  font-size: 13px;
+  font-size: 14px;
 }
 .fsum dt {
   color: var(--muted);
   font-weight: 700;
-  font-size: 12px;
+  font-size: 13px;
   padding-top: 1px;
 }
 .fsum dd {
@@ -2230,7 +2245,7 @@ details.adv[open] .chev {
 }
 .fsum .btn {
   padding: 9px 14px;
-  font-size: 13px;
+  font-size: 14px;
 }
 @media (max-width: 560px) {
   .fsum dl {
@@ -2258,13 +2273,13 @@ details.adv[open] .chev {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--muted);
 }
 .recent-head a,
 .recent-head button.lnk {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--teal-ink);
   cursor: pointer;
@@ -2274,7 +2289,7 @@ details.adv[open] .chev {
 }
 .recent-list {
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 8px;
   overflow: hidden;
   background: var(--surface);
 }
@@ -2294,12 +2309,12 @@ details.adv[open] .chev {
   min-width: 0;
 }
 .recent-main .nm {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
 .recent-main .meta {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 2px;
 }
@@ -2312,13 +2327,13 @@ details.adv[open] .chev {
 }
 .btn.xs {
   padding: 7px 12px;
-  font-size: 12.5px;
-  border-radius: 10px;
+  font-size: 13px;
+  border-radius: 6px;
 }
 .stag {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
-  border-radius: 7px;
+  border-radius: 4px;
   padding: 3px 8px;
   white-space: nowrap;
 }
@@ -2342,7 +2357,7 @@ details.adv[open] .chev {
   border: none;
   padding: 4px 2px;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--muted);
   cursor: pointer;
@@ -2369,8 +2384,8 @@ details.adv[open] .chev {
   border-bottom: 1px solid var(--line);
 }
 .jt-lab {
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--muted);
   margin-right: 4px;
 }
@@ -2379,12 +2394,12 @@ details.adv[open] .chev {
   align-items: center;
   gap: 8px;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--fg);
   background: var(--surface);
   border: 1px solid var(--line-2);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 8px 12px;
   cursor: pointer;
 }
@@ -2401,7 +2416,7 @@ details.adv[open] .chev {
   outline-offset: 2px;
 }
 .jt-sub {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--muted);
 }
@@ -2423,10 +2438,116 @@ details.adv[open] .chev {
 }
 .jt-total {
   margin-left: auto;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
 }
 .jt-total b {
   color: var(--fg);
   font-variant-numeric: tabular-nums;
+}
+
+/* ===== 화면 체계 정리 (목업 v23·v25): 흰 바탕 + 어두운 상단 바 + 작은 모서리 ===== */
+body {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+.frame {
+  max-width: 1120px;
+  margin: 0 auto;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+}
+.top {
+  position: relative;
+  z-index: 1;
+  min-height: 56px;
+  padding: 0 24px;
+  background: var(--hdr);
+  border-bottom: none;
+  box-shadow: 0 0 0 100vmax var(--hdr);
+  clip-path: inset(0 -100vmax);
+  --brand: #ffffff;
+}
+:root[data-theme="dark"] .top {
+  border-bottom: 1px solid var(--line);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .top {
+    border-bottom: 1px solid var(--line);
+  }
+}
+.top .brand {
+  color: #ffffff;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+.top .nav {
+  align-self: stretch;
+  gap: 2px;
+}
+.top .nav a {
+  display: flex;
+  align-items: center;
+  height: 56px;
+  padding: 0 12px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #98a2b3;
+  border-bottom: 2px solid transparent;
+}
+.top .nav a:hover {
+  color: #e4e7ec;
+}
+.top .nav a.cur {
+  color: #ffffff;
+  font-weight: 600;
+  border-bottom-color: #4c8dff;
+}
+.top .muted-link {
+  color: #98a2b3;
+}
+.top .muted-link:hover {
+  color: #ffffff;
+}
+h1.big {
+  font-size: 22px;
+  letter-spacing: -0.3px;
+}
+.lead {
+  font-size: 15px;
+}
+.btn {
+  padding: 9px 14px;
+}
+.sw {
+  border-radius: 999px;
+}
+.badge {
+  border-radius: 4px;
+  padding: 4px 9px;
+  font-weight: 600;
+}
+.pill {
+  border-radius: 6px;
+}
+.tile {
+  padding: 12px 15px;
+}
+.tile,
+.vbox,
+.nowdoing {
+  border-color: transparent;
+}
+.tile .sub {
+  color: var(--muted);
+}
+.vtag.ok,
+.pi.ok {
+  color: var(--ok);
+}
+.vbadge2.ok {
+  background: var(--ok-weak);
+  color: var(--ok);
 }

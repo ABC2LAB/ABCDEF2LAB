@@ -101,7 +101,7 @@ export default function TargetScreen({ target }: { target: Target }) {
                 주면 서로의 자원에 접근되는지(
                 <Strong>권한 경계 · IDOR</Strong>)까지 점검해요.
               </div>
-              <span className="fsmall" style={{ fontSize: 13 }}>
+              <span className="fsmall" style={{ fontSize: 14 }}>
                 로그인 방법
               </span>
               <ChoiceGroup
@@ -122,7 +122,7 @@ export default function TargetScreen({ target }: { target: Target }) {
                         {i === 1 && (
                           <>
                             {" "}
-                            <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 11 }}>
+                            <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 12 }}>
                               · 권한 경계(IDOR) 점검용
                             </span>
                           </>
@@ -152,7 +152,7 @@ export default function TargetScreen({ target }: { target: Target }) {
                 <div className="acct">
                   <div className="aclab">
                     계정 B · 세션{" "}
-                    <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 11 }}>· 권한 경계(IDOR)용</span>
+                    <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 12 }}>· 권한 경계(IDOR)용</span>
                   </div>
                   <input className="inp" placeholder="Cookie 또는 Authorization 헤더 값 붙여넣기" />
                 </div>

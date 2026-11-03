@@ -20,7 +20,7 @@ function dayLabel(iso: string): string {
   return `${Number(parts[2])}/${Number(parts[3])}`;
 }
 
-const bodyText = { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
+const bodyText = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
 
 /** ===== 토큰 사용량 대시보드 (전역 집계) ===== */
 export default function TokensScreen() {
