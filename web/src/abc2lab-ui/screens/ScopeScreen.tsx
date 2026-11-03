@@ -1,158 +1,116 @@
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import { Brand } from '../components/Brand';
 import { Screen } from '../components/Screen';
-import { Switch } from '../components/Switch';
 import { MockBanner, Pill, Strong, Sub } from '../components/ui';
 import { cx } from '../lib/cx';
 import { useGo } from '../nav';
 import type { Target } from '../types';
 
-type Endpoint = {
+/** 경로 하나 = 줄 하나. 같은 경로의 여러 메소드는 합쳐서 보여준다 */
+type ScopePath = {
   path: string;
+  /** 엔진이 찾은 요청 방식. 화면엔 직접 안 보이고, 바꾸는 요청이 있으면 태그로만 */
+  methods: string[];
   /** 기본 포함 여부 (기본 true) */
   on?: boolean;
-  /** "그 외 N개 더 펼치기"를 눌러야 보이는 항목 */
-  more?: boolean;
+  /** 태그 문구를 직접 정할 때 (예: 결제) */
+  label?: string;
 };
 
-type AreaDef = {
-  title: string;
-  count: number;
-  tag?: ReactNode;
-  desc: string;
-  switchLabel: string;
-  endpoints: Endpoint[];
-  moreLabel?: string;
-};
+const CHANGE_WORD: Record<string, string> = { POST: '등록', PUT: '수정', PATCH: '수정', DELETE: '삭제' };
 
-const more = (paths: string[]): Endpoint[] => paths.map((path) => ({ path, more: true }));
+/** 바꾸는 요청이 있는 경로만 태그. 조회만 하는 경로는 아무 표시 없음 */
+function changeTag(ep: ScopePath): string | null {
+  const changes = ep.methods.filter((m) => m in CHANGE_WORD);
+  if (changes.length === 0) return null;
+  const words = ep.label ?? [...new Set(changes.map((m) => CHANGE_WORD[m]))].join('·');
+  const onlyChanges = changes.length === ep.methods.length;
+  return `${words}${onlyChanges ? '' : ' 포함'} · 승인 후`;
+}
 
-const AREAS: AreaDef[] = [
-  {
-    title: '공개 영역',
-    count: 12,
-    desc: '로그인 없이 보이는 페이지·API',
-    switchLabel: '공개 영역 전체',
-    endpoints: [
-      { path: 'GET /' },
-      { path: 'GET /products' },
-      { path: 'GET /products/{id}' },
-      { path: 'GET /search' },
-      { path: 'GET /health', on: false },
-      ...more([
-        'GET /login',
-        'GET /register',
-        'GET /about',
-        'GET /faq',
-        'GET /categories',
-        'GET /sitemap.xml',
-        'GET /robots.txt',
-      ]),
-    ],
-    moreLabel: '그 외 7개 더 펼치기 ▾',
-  },
-  {
-    title: '로그인 후 영역',
-    count: 23,
-    desc: '계정 A·B로 들어가는 곳 · 권한 경계(IDOR) 점검',
-    switchLabel: '로그인 후 영역 전체',
-    endpoints: [
-      { path: 'GET /api/orders' },
-      { path: 'GET /api/orders/{id}' },
-      { path: 'GET /api/cart' },
-      { path: 'PUT /api/users/{id}' },
-      { path: 'GET /api/profile' },
-      ...more([
-        'GET /api/users/{id}',
-        'GET /api/addresses',
-        'POST /api/addresses',
-        'GET /api/wishlist',
-        'GET /api/reviews',
-        'GET /api/notifications',
-        'GET /api/coupons',
-        'GET /api/messages',
-        'GET /api/settings',
-      ]),
-    ],
-    moreLabel: '그 외 18개 더 펼치기 ▾',
-  },
-  {
-    title: '결제·주문 변경',
-    count: 5,
-    tag: <Pill tone="warn">상태 변경</Pill>,
-    desc: '데이터를 바꾸는 흐름 · 재현할 땐 승인 + 격리환경이 필요해요',
-    switchLabel: '결제 주문 변경 전체',
-    endpoints: [
-      { path: 'POST /api/checkout' },
-      { path: 'POST /api/cart/add' },
-      { path: 'PATCH /api/orders/{id}' },
-      { path: 'DELETE /api/cart/{id}', on: false },
-      { path: 'POST /api/orders' },
-    ],
-  },
-  {
-    title: '관리자 영역',
-    count: 7,
-    desc: '관리자 전용으로 보이는 기능 · 수직 권한 점검',
-    switchLabel: '관리자 영역 전체',
-    endpoints: [
-      { path: 'GET /admin' },
-      { path: 'GET /admin/stats' },
-      { path: 'GET /admin/users' },
-      { path: 'POST /admin/users' },
-      ...more(['GET /admin/orders', 'PUT /admin/products/{id}', 'GET /admin/logs']),
-    ],
-    moreLabel: '그 외 3개 더 펼치기 ▾',
-  },
+const g = (path: string, on?: boolean): ScopePath => ({ path, methods: ['GET'], on });
+
+const PATHS: ScopePath[] = [
+  g('/'),
+  g('/products'),
+  g('/products/{id}'),
+  g('/search'),
+  g('/health', false),
+  g('/login'),
+  g('/register'),
+  g('/about'),
+  g('/faq'),
+  g('/categories'),
+  g('/sitemap.xml'),
+  g('/robots.txt'),
+  { path: '/api/orders', methods: ['GET', 'POST'] },
+  { path: '/api/orders/{id}', methods: ['GET', 'PATCH'] },
+  g('/api/cart'),
+  { path: '/api/cart/add', methods: ['POST'], label: '장바구니 담기' },
+  { path: '/api/cart/{id}', methods: ['DELETE'], on: false },
+  { path: '/api/checkout', methods: ['POST'], label: '결제' },
+  { path: '/api/users/{id}', methods: ['GET', 'PUT'] },
+  g('/api/profile'),
+  { path: '/api/addresses', methods: ['GET', 'POST'] },
+  g('/api/wishlist'),
+  g('/api/reviews'),
+  g('/api/notifications'),
+  g('/api/coupons'),
+  g('/api/messages'),
+  g('/api/settings'),
+  g('/admin'),
+  g('/admin/stats'),
+  { path: '/admin/users', methods: ['GET', 'POST'] },
+  g('/admin/orders'),
+  { path: '/admin/products/{id}', methods: ['PUT'] },
+  g('/admin/logs'),
 ];
 
-function ScopeArea({ area }: { area: AreaDef }) {
-  const [expanded, setExpanded] = useState(false);
-  const [showMore, setShowMore] = useState(false);
-  const [enabled, setEnabled] = useState(() => area.endpoints.map((ep) => ep.on !== false));
+/** 처음엔 이만큼만 보여주고 나머지는 '더 보기' */
+const FIRST_SHOWN = 12;
+
+function ScopeList() {
+  const [enabled, setEnabled] = useState(() => PATHS.map((ep) => ep.on !== false));
+  const [showAll, setShowAll] = useState(false);
+  const changeCount = PATHS.filter((ep) => changeTag(ep)).length;
+  const offCount = enabled.filter((v) => !v).length;
+  const shown = showAll ? PATHS : PATHS.slice(0, FIRST_SHOWN);
 
   return (
-    <div className="area">
-      <div className="arhead">
-        <button
-          className="arexp"
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((v) => !v)}
-        >
-          <span className="chev">▸</span>
-          <div className="tx">
-            <div className="t">
-              {area.title}{' '}
-              <span style={{ color: 'var(--muted)', fontWeight: 500 }}>· {area.count}</span>
-              {area.tag && <> {area.tag}</>}
-            </div>
-            <div className="d">{area.desc}</div>
-          </div>
-        </button>
-        <Switch defaultOn label={area.switchLabel} />
-      </div>
-      <div className="eplist" hidden={!expanded}>
-        {area.endpoints.map((ep, i) =>
-          ep.more && !showMore ? null : (
-            <div key={i} className={cx('eprow', !enabled[i] && 'off')}>
+    <>
+      <p className="scope-sum">
+        경로 <Strong>{PATHS.length}</Strong>개 · 이 중 <Strong>{changeCount}</Strong>개는 바꾸는 요청이 있어 승인 후 전송
+        {offCount > 0 && <> · 제외 {offCount}개</>}
+      </p>
+      <div className="eplist flat">
+        {shown.map((ep, i) => {
+          const on = enabled[i];
+          const tag = changeTag(ep);
+          return (
+            <button
+              key={ep.path}
+              type="button"
+              className={cx('eprow', 'eprow-btn', !on && 'off')}
+              aria-pressed={on}
+              aria-label={`${ep.path} ${on ? '점검함' : '제외됨'}${tag ? `, ${tag}` : ''}`}
+              onClick={() => setEnabled((prev) => prev.map((v, j) => (j === i ? !v : v)))}
+            >
               <code>{ep.path}</code>
-              <Switch
-                sm
-                className="mu"
-                on={enabled[i]}
-                onChange={(on) => setEnabled((prev) => prev.map((v, j) => (j === i ? on : v)))}
-              />
-            </div>
-          ),
-        )}
-        {area.moreLabel && !showMore && (
-          <button className="epmore" type="button" onClick={() => setShowMore(true)}>
-            {area.moreLabel}
+              {tag && <span className="eptag">{tag}</span>}
+              <span className="epstate">{on ? '점검' : '제외'}</span>
+              <span className={cx('sw', 'sm', on && 'on')} aria-hidden="true">
+                <i />
+              </span>
+            </button>
+          );
+        })}
+        {!showAll && PATHS.length > FIRST_SHOWN && (
+          <button className="epmore" type="button" onClick={() => setShowAll(true)}>
+            그 외 {PATHS.length - FIRST_SHOWN}개 더 보기 ▾
           </button>
         )}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -187,9 +145,9 @@ export default function ScopeScreen({ target }: { target: Target }) {
           </p>
           <div className="dgrid" style={{ marginBottom: 20 }}>
             <div className="tile">
-              <div className="k">발견한 엔드포인트</div>
-              <div className="v">47</div>
-              <div className="sub">페이지 12 · API 35</div>
+              <div className="k">발견한 경로</div>
+              <div className="v">{PATHS.length}</div>
+              <div className="sub">요청 방식까지 세면 {PATHS.reduce((n, ep) => n + ep.methods.length, 0)}개</div>
             </div>
             <div className="tile">
               <div className="k">로그인 영역</div>
@@ -206,11 +164,9 @@ export default function ScopeScreen({ target }: { target: Target }) {
           </div>
           <div className="card">
             <h3>
-              점검할 영역 <Sub>· 펼쳐서 주소별로 뺄 수 있어요</Sub>
+              점검할 경로 <Sub>· 누르면 점검에서 빼거나 다시 넣을 수 있어요</Sub>
             </h3>
-            {AREAS.map((area) => (
-              <ScopeArea key={area.title} area={area} />
-            ))}
+            <ScopeList />
             <div className="setrow" style={{ opacity: 0.55, borderTop: 'none', paddingTop: 14 }}>
               <div className="tx">
                 <div className="t">

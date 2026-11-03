@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { ChoiceGroup } from "../components/Choice";
 import { Screen } from "../components/Screen";
 import { Stepper } from "../components/Stepper";
@@ -6,9 +8,14 @@ import { MockBanner, Pill } from "../components/ui";
 import { useGo } from "../nav";
 import type { Target } from "../types";
 
+/** 엔진 기본 워커 수 (server/manager.go defaultWorkers) */
+const DEFAULT_WORKERS = 3;
+const WORKER_OPTIONS = [1, 2, 3, 4, 6, 8];
+
 /** ===== 작업 설정 ===== */
 export default function JobScreen({ target }: { target: Target }) {
   const go = useGo();
+  const [workers, setWorkers] = useState(DEFAULT_WORKERS);
   return (
     <Screen id="job">
       <div className="frame">
@@ -54,19 +61,19 @@ export default function JobScreen({ target }: { target: Target }) {
                   ]}
                 />
                 <span className="fsmall" style={{ fontSize: 14 }}>
-                  워커 수 <span className="opt">· 동시에 점검하는 작업 수</span>
+                  워커 수 <span className="opt">· 이번 점검만</span>
                 </span>
-                <ChoiceGroup
-                  defaultValue={1}
-                  style={{ marginBottom: 8 }}
-                  options={[
-                    { t: "2", d: "가장 안정적" },
-                    { t: "4", d: "권장" },
-                    { t: "8", d: "가장 빠름" },
-                  ]}
-                />
+                <div className="seg wk-seg" role="group" aria-label="워커 수">
+                  {WORKER_OPTIONS.map((n) => (
+                    <button key={n} type="button" aria-pressed={workers === n} onClick={() => setWorkers(n)}>
+                      {n}
+                      {n === DEFAULT_WORKERS && " (기본)"}
+                    </button>
+                  ))}
+                </div>
                 <div className="hint" style={{ marginBottom: 18 }}>
-                  워커가 많을수록 빠르지만 토큰을 더 써요. 단일 GPU 로컬이면 2~4가 적당해요.
+                  LLM이 동시에 처리하는 작업 수예요. 늘리면 GPU 부하와 토큰 사용량이 늘어나요. 대상 서버 요청 속도는
+                  전송 통제가 제한하므로 워커 수와 관계없어요.
                 </div>
                 <div className="hr" style={{ margin: "4px 0 16px" }} />
                 <span className="fsmall" style={{ fontSize: 14 }}>
@@ -116,7 +123,7 @@ export default function JobScreen({ target }: { target: Target }) {
             <div className="hr" style={{ margin: "14px 0" }} />
             <div className="srow">
               <div className="k">범위 · 워커</div>
-              <div className="v">표준 · 4</div>
+              <div className="v">표준 · {workers}</div>
             </div>
             <div className="srow">
               <div className="k">상태 변경</div>

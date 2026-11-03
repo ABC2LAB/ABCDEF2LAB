@@ -1997,6 +1997,13 @@ details.adv[open] .chev {
   outline: 2px solid var(--teal);
   outline-offset: 1px;
 }
+/* 작업 설정: 워커 수 선택 */
+.wk-seg {
+  margin: 2px 0 6px;
+}
+.wk-seg button {
+  min-width: 52px;
+}
 .vbars {
   display: grid;
   gap: 2px;
@@ -2623,4 +2630,63 @@ h1.big {
 .acdel:focus-visible {
   outline: 2px solid var(--teal);
   outline-offset: 1px;
+}
+
+/* 범위 확인: 영역 없이 경로만 한 목록, 줄을 누르면 점검 ↔ 제외 */
+.scope-sum {
+  margin: -2px 0 12px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.eplist.flat {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.eplist.flat .eprow:first-child {
+  border-top: none;
+}
+.eprow-btn {
+  width: 100%;
+  padding: 9px 14px;
+  text-align: left;
+  color: var(--fg);
+  border: none;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  cursor: pointer;
+}
+.eprow-btn:hover {
+  background: var(--surface-2);
+}
+.eprow-btn:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+}
+.eprow-btn .eptag {
+  flex: none;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+  background: var(--warn-weak);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+.eprow-btn .epstate {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--muted);
+}
+.eprow-btn .sw {
+  display: inline-block;
+  pointer-events: none;
+}
+.eprow-btn.off .eptag {
+  opacity: 0.5;
+}
+.eplist.flat .epmore {
+  border-top: 1px solid var(--line);
 }
