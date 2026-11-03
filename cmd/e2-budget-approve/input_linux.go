@@ -48,6 +48,8 @@ func openPrivateOperatorDirectory(dir string, uid uint32) (*os.File, error) {
 	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
 		return nil, budgetlocal.ErrInvalid
 	}
+	// O_PATH pins directories without requiring read permission: trusted
+	// ancestors may grant search (execute) permission only.
 	fd, err := syscall.Open(string(filepath.Separator), unix.O_PATH|syscall.O_CLOEXEC|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, budgetlocal.ErrUnavailable

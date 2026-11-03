@@ -62,6 +62,9 @@ func TestPrivateInputFIFOIsRejectedWithoutWriter(t *testing.T) {
 		if _, err := readPrivateOperatorFile(path); !errors.Is(err, budgetlocal.ErrUnavailable) {
 			t.Fatalf("FIFO accepted: %v", err)
 		}
+		if _, err := os.Stdout.WriteString("private-input-fifo-rejected\n"); err != nil {
+			t.Fatal(err)
+		}
 		return
 	}
 	dir := privateInputDirectory(t)
@@ -73,8 +76,12 @@ func TestPrivateInputFIFOIsRejectedWithoutWriter(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPrivateInputFIFOIsRejectedWithoutWriter$")
 	cmd.Env = append(os.Environ(), "E2_BUDGET_TEST_FIFO="+path)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("FIFO read failed or blocked: %v %s", err, output)
+	}
+	if !bytes.Contains(output, []byte("private-input-fifo-rejected\n")) {
+		t.Fatalf("FIFO subprocess did not execute its rejection check: %s", output)
 	}
 }
 
