@@ -95,6 +95,26 @@ class TestJudgeEvents(unittest.TestCase):
         self.assertEqual(attach, {"type": "network", "action": "connect", "network": "target_net", "service": "engine"})
         foreign = judge([cases["foreign_attached_to_run_net"]])["boundary_events"][0]
         self.assertEqual(foreign["service"], "foreign")
+        # 러너 probe ID라도 정상 생명주기 밖의 동작은 위반(#126 리뷰: 같은 CID에 exec·kill·restart 주입)
+        for action, extra in (("exec_create: sh -c id", {"execID": "p1"}), ("exec_start: sh -c id", {"execID": "p1"}),
+                              ("exec_die", {"execID": "p1"}), ("kill", {"signal": "9"}), ("restart", {}),
+                              ("stop", {}), ("pause", {})):
+            with self.subTest(probe_action=action):
+                summary = judge([event("container", action, PROBE, **extra)], runner=frozenset({PROBE}))
+                self.assertEqual(summary["boundary_events"],
+                                 [{"type": "container", "action": action.split(":", 1)[0], "service": "runner_probe"}])
+                self.assertEqual(summary["runner_container_events"], 0)
+        # 정상 생명주기도 각 한 번뿐이다(다시 시작하면 namespace 공유가 다시 살아난다).
+        lifecycle = [event("container", a, PROBE) for a in ("create", "attach", "start", "die", "destroy")]
+        normal = judge(lifecycle, runner=frozenset({PROBE}))
+        self.assertEqual((normal["runner_container_events"], normal["boundary_events"]), (5, []))
+        again = judge(lifecycle + [event("container", "start", PROBE)], runner=frozenset({PROBE}))
+        self.assertEqual(again["boundary_events"], [{"type": "container", "action": "start", "service": "runner_probe"}])
+        # 두 probe(pre·post)는 각자 한 번씩
+        other_probe = "5" * 64
+        both = judge(lifecycle + [event("container", a, other_probe) for a in ("create", "start")],
+                     runner=frozenset({PROBE, other_probe}))
+        self.assertEqual((both["runner_container_events"], both["boundary_events"]), (7, []))
         started = judge([cases["foreign_container_started"]], runner=frozenset({PROBE}))["boundary_events"]
         self.assertEqual(started, [{"type": "container", "action": "start", "service": "foreign"}])
         # 러너 probe로 인정하는 건 정확히 그 ID다. 회차 컨테이너 ID를 넣어도 회차 컨테이너 규칙이 먼저다.
@@ -102,10 +122,9 @@ class TestJudgeEvents(unittest.TestCase):
 
     def test_completeness_follows_the_stream_and_replay(self):
         # 구간 안 이벤트는 스트림으로 받으므로 개수와 무관하다(실측: healthcheck만으로 초당 1.5건).
-        many = [event("container", "create", PROBE)] * (DOCKER_EVENTS_BUFFER * 4)
-        self.assertTrue(judge(many, runner=frozenset({PROBE}))["complete"])
-        self.assertEqual(events_reasons(judge(many, complete=False, runner=frozenset({PROBE}))),
-                         ["window_events_incomplete"])
+        many = [event("container", "die", OTHER)] * (DOCKER_EVENTS_BUFFER * 4)  # 판정 밖 이벤트
+        self.assertTrue(judge(many)["complete"])
+        self.assertEqual(events_reasons(judge(many, complete=False)), ["window_events_incomplete"])
         # 구간 시작 전 재생분(lookback)이 데몬 버퍼 크기에 닿으면 앞쪽이 버려졌을 수 있다.
         replay = [event("container", "create", OTHER, at=START - 5)] * (DOCKER_EVENTS_BUFFER - 1)
         self.assertTrue(judge(replay)["complete"])

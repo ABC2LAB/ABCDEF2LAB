@@ -166,7 +166,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `task_start_failed` | 작업 생성 실패: 로그인 실패, 생성 요청 연결 실패·시한 초과, 201 아닌 응답, 응답에 작업 ID 없음. 다시 보내지 않는다(시한 초과면 작업이 생겼을 수 있음) |
 | `seal_failed`, `drain_timeout`, `drain_incomplete` | 계측기 seal 실패, drain 시한 초과, 진행 중 요청·기록 불완전 |
 | `boundary_changed` | pre와 post 사이 데몬·망·주소·컨테이너 교체·재시작 |
-| `window_boundary_changed` | 구간(pre 관측 직전~post 관측 완료) 데몬 이벤트에 회차 망·회차 컨테이너의 연결·해제·생명주기·exec가 있거나, 회차 밖 컨테이너가 생성·시작·재시작됨(`--network container:<회차 컨테이너>`는 망 이벤트 없이 namespace를 같이 쓰므로). 허용: 계측기·게이트웨이 seal(USR1), engine-db의 선언된 healthcheck, 러너가 띄운 probe(cidfile ID) |
+| `window_boundary_changed` | 구간(pre 관측 직전~post 관측 완료) 데몬 이벤트에 회차 망·회차 컨테이너의 연결·해제·생명주기·exec가 있거나, 회차 밖 컨테이너가 생성·시작·재시작됨(`--network container:<회차 컨테이너>`는 망 이벤트 없이 namespace를 같이 쓰므로). 허용: 계측기·게이트웨이 seal(USR1), engine-db의 선언된 healthcheck, 러너가 띄운 probe(cidfile ID)의 정상 생명주기(create·attach·start·die·destroy 각 1회 — 같은 ID의 exec·kill·restart·재시작은 위반) |
 | `window_events_incomplete` | 구간 이벤트가 데몬 버퍼 크기(256)에 닿아 앞쪽이 버려졌을 수 있음 |
 | `window_host_condition_violation`, `window_host_watch_gap` | 구간 중 허용되지 않은 호스트 리슨·읽기 실패, 표본 사이 공백이 허용값 초과 |
 | `window_watch_failed`, `window_events_failed` | 감시 시작·종료 실패, `docker events` 실패·형식 밖 출력 |

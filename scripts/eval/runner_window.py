@@ -10,7 +10,8 @@ pre·post 두 시점 점검은 끝까지 남는 변화(재시작·구성원 변�
   컨테이너에 생긴 일을 보며, 허용하는 것은 계측기·게이트웨이 seal(USR1)과 engine-db의 선언된 healthcheck뿐이다.
   회차 밖 컨테이너는 생성할 때 `--network container:<회차 컨테이너>`로 회차 컨테이너의 망 namespace를 같이 쓸 수
   있고 그때는 망 연결 이벤트가 없다. 이벤트에는 망 모드가 없으므로 구간 중 회차 밖 컨테이너의 생성·시작은 러너
-  자신의 probe(--cidfile로 받은 ID)를 빼고 전부 경계 변경으로 본다(전용 평가 호스트, 프로토콜 §2).
+  자신의 probe(--cidfile로 받은 ID)를 빼고 전부 경계 변경으로 본다(전용 평가 호스트, 프로토콜 §2). probe도
+  `docker run --rm`의 정상 생명주기(생성·attach·시작·종료·삭제 각 한 번)만 허용한다.
   구간 시작 전(lookback) 이벤트는 판정하지 않고, 구간에 걸친 healthcheck exec의 ID를 알아 두는 데만 쓴다.
   스트림이 끊기거나 해석할 수 없거나, 시작 전 재생분이 버퍼 크기에 닿으면 불완전이다.
 
@@ -36,6 +37,9 @@ _HEALTHY = "health_status: healthy"
 _EXEC_CREATE, _EXEC_START, _EXEC_DIE = "exec_create: ", "exec_start: ", "exec_die"
 # 회차 밖 컨테이너가 이 동작을 하면 새 namespace 공유가 생길 수 있다(공유는 생성 때 정해지고 시작으로 살아난다).
 _FOREIGN_START = frozenset({"create", "start", "restart"})
+# 러너 probe(`docker run --rm -i`)의 정상 생명주기. 같은 ID의 exec·kill·restart나 두 번째 시작은 러너가 하지 않는
+# 일이므로 경계 변경이다(#126 리뷰).
+_PROBE_LIFECYCLE = frozenset({"create", "attach", "start", "die", "destroy"})
 
 
 class WindowError(ValueError):
@@ -140,6 +144,7 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
     kinds: dict[str, int] = {}
     boundary: list[dict] = []
     allowed_exec_ids: set[str] = set()
+    probe_seen: set[tuple[str, str]] = set()
     lookback = runner_events = 0
     for event in events:  # 데몬이 시각 순서로 보낸다(재생분 다음 실시간)
         if not isinstance(event, dict):
@@ -177,7 +182,11 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
             continue
         if actor_id not in run_containers:
             if actor_id in runner_containers:
-                runner_events += 1
+                if action in _PROBE_LIFECYCLE and (actor_id, action) not in probe_seen:
+                    probe_seen.add((actor_id, action))
+                    runner_events += 1
+                else:
+                    boundary.append({"type": kind, "action": label, "service": "runner_probe"})
             elif label in _FOREIGN_START:
                 boundary.append({"type": kind, "action": label, "service": "foreign"})
             continue
