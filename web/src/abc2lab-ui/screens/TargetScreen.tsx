@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Choice, ChoiceGroup } from "../components/Choice";
 import { Screen } from "../components/Screen";
 import { Stepper } from "../components/Stepper";
@@ -22,7 +22,19 @@ export default function TargetScreen({ target }: { target: Target }) {
   // 로그인 방법: 0 = 아이디·비밀번호, 1 = 세션 직접 입력
   const [authMethod, setAuthMethod] = useState(0);
   const [keyEditing, setKeyEditing] = useState(false);
-  const [accountCount, setAccountCount] = useState(2);
+  // 계정 A·B는 기본 쌍(교차 계정 점검용)이라 고정. 추가한 계정만 id로 관리해서 지워도 다른 행 입력값이 섞이지 않게
+  const [extraAccounts, setExtraAccounts] = useState<number[]>([]);
+  const nextAccountId = useRef(0);
+  const addAccountBtn = useRef<HTMLButtonElement>(null);
+  const addAccount = () => {
+    const id = nextAccountId.current++;
+    setExtraAccounts((list) => [...list, id]);
+    requestAnimationFrame(() => document.getElementById(`acct-${id}-id`)?.focus());
+  };
+  const removeAccount = (id: number) => {
+    setExtraAccounts((list) => list.filter((x) => x !== id));
+    addAccountBtn.current?.focus();
+  };
 
   // LLM 실행 위치
   const [llm, setLlm] = useState<LlmMode | null>(null);
@@ -116,8 +128,8 @@ export default function TargetScreen({ target }: { target: Target }) {
               />
               <div hidden={authMethod === 1}>
                 <div>
-                  {Array.from({ length: accountCount }, (_, i) => (
-                    <div className="acct" key={i}>
+                  {[0, 1].map((i) => (
+                    <div className="acct" key={`base-${i}`}>
                       <div className="aclab">
                         계정 {String.fromCharCode(65 + i)}
                         {i === 1 && (
@@ -135,11 +147,46 @@ export default function TargetScreen({ target }: { target: Target }) {
                       </div>
                     </div>
                   ))}
+                  {extraAccounts.map((id, i) => {
+                    const name = `계정 ${String.fromCharCode(67 + i)}`;
+                    return (
+                      <div className="acct added" key={id}>
+                        <div className="aclab">
+                          <span>{name}</span>
+                          <button
+                            className="acdel"
+                            type="button"
+                            aria-label={`${name} 삭제`}
+                            onClick={() => removeAccount(id)}
+                          >
+                            삭제
+                          </button>
+                        </div>
+                        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                          <input
+                            className="inp"
+                            id={`acct-${id}-id`}
+                            style={{ flex: "1 1 140px" }}
+                            placeholder="테스트 아이디"
+                            aria-label={`${name} 아이디`}
+                          />
+                          <input
+                            className="inp"
+                            style={{ flex: "1 1 140px" }}
+                            type="password"
+                            placeholder="비밀번호"
+                            aria-label={`${name} 비밀번호`}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
                 <button
                   className="btn"
                   type="button"
-                  onClick={() => setAccountCount((n) => n + 1)}
+                  ref={addAccountBtn}
+                  onClick={addAccount}
                   style={{ marginTop: 12, width: "100%", borderStyle: "dashed" }}
                 >
                   ＋ 계정 추가

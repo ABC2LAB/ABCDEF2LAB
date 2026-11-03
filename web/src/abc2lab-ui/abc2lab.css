@@ -2597,3 +2597,30 @@ h1.big {
   margin-left: auto;
   padding: 7px 14px;
 }
+
+/* 점검 방식: 추가한 계정(C부터) 삭제 버튼 */
+.acct.added .aclab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.acdel {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: inherit;
+}
+.acdel:hover {
+  color: var(--danger);
+  background: var(--danger-weak);
+}
+.acdel:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
