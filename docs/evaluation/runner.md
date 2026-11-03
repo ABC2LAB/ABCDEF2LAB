@@ -57,7 +57,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `observer_readonly_ref` | 그 GET이 해당 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(200자 이하). 러너가 만들 수 없는 근거라 설정으로 받고, 격리 근거 `observer_readonly` 행에 그대로 남긴다 |
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
 | `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null). baseline 회차는 compose 값이 같이 넘어가도 엔진이 읽지 않으므로 선언값도 null이다 |
-| `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data,min_free}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한과 구간 종료 뒤 남아야 할 최소 공간(두 상한보다 작아야 함), DB healthcheck |
+| `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data,min_free}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한과 구간 종료 뒤 남아야 할 최소 공간(두 상한보다 작아야 함), DB healthcheck. `tmpfs` 세 값은 사전검사 `run_storage`(프로파일 v3 환경 지문 입력)와 글자 그대로 같아야 시작한다 |
 | `llm_gateway.generation_path` | api: generation 조회 경로(예: OpenRouter `/api/v1/generation`) |
 | `llm_gateway.verify_attempts`, `verify_interval_seconds` | generation마다 조회 횟수(1~100)와 간격 |
 | `llm_gateway.ca_bundle`, `expected_provider_name` | 호스트 CA 묶음 경로, 기대 응답 제공자 표시 이름 |
@@ -177,8 +177,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `llm_generation_unverified`, `llm_generation_unverifiable` | 조회 안 된 generation, generation ID 없는 응답 |
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
 | `llm_pin_mismatch`, `llm_backend_mismatch`, `llm_log_incomplete` | 게이트웨이가 다른 slug를 고정, 백엔드 구성이 섞임, 게이트웨이 기록 불완전 |
-| `tmpfs_measure_failed` | 구간 종료 뒤 tmpfs 사용량을 읽지 못함(측정 컨테이너 실행·권한 실패, 커널 파일시스템 종류가 tmpfs 아님, 형식·크기가 맞지 않는 보고). 결과의 `tmpfs_usage`는 `not_measured` |
-| `tmpfs_full` | 엔진 DB·엔진 데이터 tmpfs 중 하나라도 남은 공간이 `tmpfs.min_free` 미만(상한 도달 — 엔진이 쓰기 실패를 삼켰을 수 있음). 잰 값은 결과에 남는다 |
+| `tmpfs_measure_failed` | 구간 종료 뒤 tmpfs 사용량을 읽지 못함(측정 컨테이너 실행·권한 실패, 커널 파일시스템 종류가 tmpfs 아님, 형식·크기가 맞지 않는 보고, 두 볼륨이 정확히 오지 않음). 결과의 `tmpfs_usage`는 `not_measured` |
+| `tmpfs_full` | 엔진 DB·엔진 데이터 tmpfs 중 하나라도 남은 공간이 `tmpfs.min_free` 미만(상한 도달 — 엔진이 쓰기 실패를 삼켰을 수 있음). 잰 값과 적용 하한(`min_free_bytes`)은 결과에 남는다 |
 | `findings_failed` | findings 단계 실패: 로그인 실패(연결·HTTP 상태·응답 형식), 페이지 수집 실패(한도 초과·건수 불일치·형식 밖 응답), 추출 실패 |
 | `evidence_write_failed` | 근거 파일 쓰기 실패 |
 | `down_failed`, `sign_failed` | 정리·서명 실패(측정은 끝났어도 무효) |
@@ -193,6 +193,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 - **tmpfs 사용량 측정 방법:** 엔진 안의 `df`나 `PATH`는 엔진 도구(Bash·Write 등)가 바꿀 수 있어 믿지 않는다(#140 리뷰). 러너가 계측기 이미지(내용 ID)를
   망 없이·읽기 전용·pull 없이 띄워 대상 컨테이너의 PID namespace에 붙이고, `/proc/1/root/<마운트>`를 statfs로 잰다(커널 파일시스템 종류가 tmpfs인지
   확인). 다른 프로세스의 root를 따라가려고 root 사용자와 `SYS_PTRACE` 하나만 주고 나머지 권한은 뺀다. 대상 안의 실행파일은 실행하지 않는다.
+  결과 `tmpfs_usage`에는 두 볼륨의 크기·사용·남은 바이트와 적용 하한 `min_free_bytes`가 서명되어 남는다.
 - **tmpfs 사용량 시점:** 구간 중 새 컨테이너 시작·회차 컨테이너 exec는 경계 변경이라 seal 시점이 아니라 구간 종료 직후에 한 번 잰다. seal 뒤에도
   엔진은 계속 돌므로 보통 그 값은 seal 시점 이상이지만, 그사이 사용량이 줄었을 가능성(예: DB 정리)은 배제하지 못한다. 측정 전에
   끝난 회차는 `tmpfs_usage: "not_measured"`이고 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다.

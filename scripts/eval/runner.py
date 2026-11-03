@@ -68,6 +68,7 @@ TASK_EVIDENCE_FORMAT = "abc2lab-eval-runner-task-v1"
 # 회차 메모리(엔진 DB·엔진 데이터 tmpfs) 사용량을 재기 전에 끝난 회차의 값. 잰 척하지 않고 미측정을 그대로 남긴다.
 # 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다(평가 프로토콜 §2).
 TMPFS_NOT_MEASURED = "not_measured"
+TMPFS_VOLUMES = ("engine_db", "engine_data")
 RESULT_NAME = "runner-result.json"
 RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
 MAX_CONDITION_LENGTH = 100
@@ -365,8 +366,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     window = _window(spec, evidence, state, pre, window_start, window_end, stopped, streamed)
     # 구간이 닫힌 뒤에 잰다: 구간 중 회차 컨테이너 exec는 경계 변경이다. seal 이후 값이므로 그사이 사용량이 줄었을
     # 가능성은 남는다(평가 프로토콜 §2). 남은 공간이 하한 미만이면 쓰기 실패를 엔진이 삼켰을 수 있어 무효다.
-    state.tmpfs_usage = _step(state, "tmpfs_measure_failed", lambda: ports.tmpfs_usage(post))
-    if any(usage["available_bytes"] < spec.tmpfs_min_free_bytes for usage in state.tmpfs_usage.values()):
+    measured = _step(state, "tmpfs_measure_failed", lambda: ports.tmpfs_usage(post))
+    if set(measured) != set(TMPFS_VOLUMES):
+        raise RunFailure("tmpfs_measure_failed")
+    # 적용한 하한도 서명되는 결과에 남겨 어떤 기준으로 통과·무효였는지 기록만으로 다시 확인할 수 있게 한다.
+    state.tmpfs_usage = dict(measured, min_free_bytes=spec.tmpfs_min_free_bytes)
+    if any(measured[name]["available_bytes"] < spec.tmpfs_min_free_bytes for name in TMPFS_VOLUMES):
         raise RunFailure("tmpfs_full")
 
     observer = _step(state, "meter_read_failed", meter.observer_rows)

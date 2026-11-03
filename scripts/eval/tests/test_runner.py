@@ -18,8 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import runner
 from runner import COMPLETE, INVALID, RESULT_NAME, Clock, DockerPorts, Facts, RunFailure, build_spec, execute_run
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, compose_environment, create_run_directory,
-    parse_runner_config, plan_run,
+    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, RunnerConfigError, compose_environment,
+    create_run_directory, parse_runner_config, plan_run,
 )
 from runner_engine import task_request
 from runner_window import WatchSample
@@ -35,9 +35,13 @@ ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "ev
            "eval-llm-gw": "meter", "eval-api": "meter"}
 
 
-def make_spec(side="ours"):
-    preflight = configuration()
-    config = parse_runner_config(runner_config())
+def make_spec(side="ours", min_free=None):
+    preflight, payload = configuration(), runner_config()
+    if min_free is not None:  # 하한은 러너 설정과 사전검사 선언(환경 지문 입력)에 같이 바꿔야 한다
+        payload["tmpfs"]["min_free"] = min_free
+        for name in ("baseline", "ours"):
+            preflight[name]["run_storage"]["tmpfs_min_free"] = min_free
+    config = parse_runner_config(payload)
     plan = plan_run(config, preflight, side, f"{side}-1")
     return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0)
 
@@ -278,8 +282,8 @@ class FakePorts:
         return dict(payload, signature="sig")
 
 
-def run(mutate=None, mutate_gateway=None):
-    spec = make_spec()
+def run(mutate=None, mutate_gateway=None, spec=None):
+    spec = spec or make_spec()
     ports = FakePorts(spec)
     meter = FakeMeter(ports)
     gateway = FakeGateway(ports)
@@ -330,7 +334,8 @@ class TestCompleteRun(unittest.TestCase):
         self.assertIsNone(make_spec("baseline").llm_policy_mode)
         self.assertEqual(make_spec("ours").llm_policy_mode, "external")
         # 구간이 닫힌 뒤 잰 tmpfs 사용량이 서명된 완료 기록에 남는다(구간 중 exec는 경계 변경이므로 그 뒤에 잰다).
-        self.assertEqual(result["tmpfs_usage"], ports.tmpfs)
+        # 적용한 하한(바이트)도 서명되는 결과에 남는다(#140 리뷰: 기록만으로 통과 기준을 다시 확인).
+        self.assertEqual(result["tmpfs_usage"], ports.tmpfs | {"min_free_bytes": 16 * MIB})
         self.assertLess(ports.calls.index("events:stop"), ports.calls.index("tmpfs"))
 
     def test_v11_record_binds_proof_events_and_evidence(self):
@@ -428,8 +433,9 @@ class TestFailures(unittest.TestCase):
             self.assertNotIn(field, result)
         self.assertNotIn("/secret/path", repr(result))
         # 구간이 닫히기 전에 끝난 회차는 미측정, 잰 뒤 무효가 된 회차는 잰 값을 그대로 남긴다.
-        measured = "tmpfs" in ports.calls and ports.tmpfs_error is None and "tmpfs" not in ports.fail
-        expected = ports.tmpfs if measured else "not_measured"
+        measured = ("tmpfs" in ports.calls and ports.tmpfs_error is None and "tmpfs" not in ports.fail
+                    and set(ports.tmpfs) == {"engine_db", "engine_data"})
+        expected = ports.tmpfs | {"min_free_bytes": ports.spec.tmpfs_min_free_bytes} if measured else "not_measured"
         self.assertEqual(result["tmpfs_usage"], expected)
 
     def test_pre_requests_must_be_zero(self):
@@ -467,9 +473,30 @@ class TestFailures(unittest.TestCase):
                         self.assert_invalid(result, ports, evidence, reason)
                         self.assertEqual(result["tmpfs_usage"][name]["available_bytes"], available)
                         self.assertNotIn("findings", ports.calls)
-        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "tmpfs_error", DockerError("docker_tmpfs_not_tmpfs")))
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "tmpfs_error", DockerError("docker_statfs_failed")))
         self.assert_invalid(result, ports, evidence, "tmpfs_measure_failed")
         self.assertEqual(result["tmpfs_usage"], "not_measured")
+        # 측정 결과에 두 볼륨이 정확히 있어야 한다(빠지거나 더 있으면 측정 실패).
+        result, ports, _, evidence = run(lambda p, m, c: p.tmpfs.pop("engine_data"))
+        self.assert_invalid(result, ports, evidence, "tmpfs_measure_failed")
+        self.assertEqual(result["tmpfs_usage"], "not_measured")
+
+    def test_threshold_is_recorded_and_bound_to_the_comparison(self):
+        # #140 리뷰 재현: 같은 측정값(남은 20MiB)에 하한만 8m/32m로 바꾸면 완료·무효가 갈린다. 적용 하한이 서명되는
+        # 결과에 남고, 하한은 사전검사 선언(환경 지문 입력)과 같아야만 시작된다.
+        def twenty_mib_left(p, m, c):
+            for usage in p.tmpfs.values():
+                usage.update(used_bytes=usage["size_bytes"] - 20 * MIB, available_bytes=20 * MIB)
+        loose, ports, _, _ = run(twenty_mib_left, spec=make_spec(min_free="8m"))
+        self.assertEqual((loose["status"], loose["tmpfs_usage"]["min_free_bytes"]), (COMPLETE, 8 * MIB))
+        strict, ports, _, evidence = run(twenty_mib_left, spec=make_spec(min_free="32m"))
+        self.assert_invalid(strict, ports, evidence, "tmpfs_full")
+        self.assertEqual(strict["tmpfs_usage"]["min_free_bytes"], 32 * MIB)
+        preflight, payload = configuration(), runner_config()
+        payload["tmpfs"]["min_free"] = "8m"  # 선언은 16m 그대로
+        with self.assertRaises(RunnerConfigError) as caught:
+            plan_run(parse_runner_config(payload), preflight, "ours", "ours-1")
+        self.assertEqual(caught.exception.errors, ["preflight.ours.run_storage: CONFIG_MISMATCH"])
 
     def test_probe_statuses(self):
         for phase in ("pre", "post"):

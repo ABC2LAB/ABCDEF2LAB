@@ -485,6 +485,11 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     origin = urlsplit(declared["target_origin"])
     if origin.hostname != METER_SERVICE:
         raise RunnerConfigError([f"preflight.{side}.target_origin: NOT_EVAL_METER"])
+    # tmpfs 크기·하한은 비교 조건이다(환경 지문에 들어감). 러너 설정이 선언과 한 글자라도 다르면 시작하지 않는다.
+    storage = {"engine_db_tmpfs": config.tmpfs_engine_db, "engine_data_tmpfs": config.tmpfs_engine_data,
+               "tmpfs_min_free": config.tmpfs_min_free}
+    if declared["run_storage"] != storage:
+        raise RunnerConfigError([f"preflight.{side}.run_storage: CONFIG_MISMATCH"])
     engine_image = config.images[f"engine_{side}"]
     target_image = Image(declared["target_image"], config.target_image_id)
     # 선언의 base_url은 비교 조건(어느 LLM 엔드포인트인가)이고, 엔진은 그 대신 게이트웨이에 닿는다.
