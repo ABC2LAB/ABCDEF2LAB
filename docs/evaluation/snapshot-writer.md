@@ -30,6 +30,7 @@ runner_record["artifacts"][phase] = artifacts.normalized
 `run_directory`는 이미 만들어진 실행 결과 디렉터리다. 신원 필드와 크기 상한은 실제 수집기 설정에서 전달한다.
 수집기는 비민감 챌린지 응답 body만 넘긴다. 인증 헤더·쿠키·계정 원문·일반 스캔 로그를 이 API에 전달하지 않는다.
 저장기는 JSON 중복 key·비유한수·잘못된 solved/GT key와 알려진 민감 필드값을 거부한다.
+민감 필드명은 앞뒤 공백(Unicode 공백 포함)을 제거하고 소문자로 비교한다. ` cookie `·탭/개행이 붙은 `TOKEN`도 해당 알려진 필드로 검사하며, 값이 null 또는 `[REDACTED]`일 때만 통과한다. 이 비교는 알려진 이름 목록을 확대하거나 원본 JSON bytes를 변경하지 않는다.
 이 검사는 수집기의 비민감 데이터 선별을 대체하지 않는다. 원본 JSON은 수정/마스킹하지 않고 bytes 그대로 보존한다.
 
 ## 출력과 실패 처리

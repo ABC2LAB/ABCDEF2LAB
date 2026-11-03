@@ -75,7 +75,7 @@ def _validate_raw(raw: bytes) -> dict[str, bool]:
         value = pending.pop()
         if isinstance(value, dict):
             for key, item in value.items():
-                if key.lower() in _SENSITIVE_FIELDS and item not in (None, "[REDACTED]"):
+                if key.strip().lower() in _SENSITIVE_FIELDS and item not in (None, "[REDACTED]"):
                     raise SnapshotWriteError("원본에 민감 필드값이 있음")
                 pending.append(item)
         elif isinstance(value, list):
