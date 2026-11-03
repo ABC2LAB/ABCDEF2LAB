@@ -248,16 +248,8 @@ func (t *HTTPTransmitter) SendDetailed(proposal idor.AccessRequest) (capture ido
 		receipt.Reason = reason
 		return
 	}
-	switch {
-	case proposal.Method != http.MethodGet || proposal.StateChanging:
-		receipt.Reason = UnsupportedAction
-	case !knownResource:
-		receipt.Reason = UnknownResource
-	case !knownAccount:
-		receipt.Reason = UnknownAccount
-	case !b.resource.ReadOnly || !b.accounts[session.Account.Label]:
-		receipt.Reason = AccountNotApproved
-	default:
+	receipt.Reason = staticRegistrationReason(proposal, b, knownResource, session, knownAccount)
+	if receipt.Reason == "" {
 		receipt.Reason = checkAccount(proposal, session, time.Now())
 	}
 	if receipt.Reason != "" {
