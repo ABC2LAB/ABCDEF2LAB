@@ -606,7 +606,9 @@ func TestEngineTerminateRecordsUndrainedStop(t *testing.T) {
 }
 
 func TestEngineSealRaceCountsEveryRequest(t *testing.T) {
-	const total = 200
+	// total requests race the seal; whether any of them lose depends on scheduling, so the
+	// rejection path is pinned by a separate batch that starts only after seal returns.
+	const total, afterSeal = 200, 20
 	var hits atomic.Int64
 	quarter := make(chan struct{})
 	var quarterOnce sync.Once
@@ -645,6 +647,17 @@ func TestEngineSealRaceCountsEveryRequest(t *testing.T) {
 		t.Fatal("requests never reached the target")
 	}
 	m.seal()
+	for i := 0; i < afterSeal; i++ {
+		req, _ := http.NewRequest(http.MethodGet, front.URL+"/after", nil)
+		resp, err := transport.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("request after seal failed: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("request after seal: status %d, want 503", resp.StatusCode)
+		}
+	}
 	wg.Wait()
 	close(statuses)
 	var ok, rejected int
@@ -680,9 +693,10 @@ func TestEngineSealRaceCountsEveryRequest(t *testing.T) {
 			rejectedRows++
 		}
 	}
-	// Every request is either forwarded-and-counted or rejected-and-counted.
+	// Every request is either forwarded-and-counted or rejected-and-counted. The racing batch may
+	// lose none or some; every request started after seal is rejected and counted.
 	if ok+rejected != total || int64(ok) != hits.Load() || drained.Forwarded != uint64(ok) ||
-		forwardedRows != ok || rejectedRows != rejected || len(rows) != total || rejected == 0 {
+		forwardedRows != ok || rejectedRows != rejected+afterSeal || len(rows) != total+afterSeal {
 		t.Fatalf("ok=%d rejected=%d hits=%d forwarded=%d rows=%d/%d/%d", ok, rejected, hits.Load(), drained.Forwarded,
 			forwardedRows, rejectedRows, len(rows))
 	}
