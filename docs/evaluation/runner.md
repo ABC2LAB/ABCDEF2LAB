@@ -4,8 +4,7 @@
 **한 번** 실행하고, 결과 기록(완료+서명 또는 무효+사유)을 정확히 하나 남긴다. 자동 재시도는 없다. 실패하면 사유를 남기고
 끝나며, 다시 돌리면 새 `run_id`의 새 회차다. 실패 회차도 결과 기록이 남으므로 집계에서 건수와 사유를 보고한다.
 
-> 상태: 실제 Docker 스모크 전이다. 아래 "아직 안 된 것"을 먼저 확인한다. 특히 findings 추출 경로가 연결되기 전에는
-> 모든 회차가 `findings_extractor_unavailable`로 무효가 된다.
+> 상태: 실제 Docker 스모크 전이다. 아래 "아직 안 된 것"을 먼저 확인한다.
 
 ## 실행
 
@@ -13,7 +12,11 @@
 python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --preflight /private/eval/preflight.json --side ours
 ```
 
-- 종료 코드: `0` 완료(서명됨), `1` 무효(사유는 결과 기록), `2` 설정·사전검사 오류(회차를 만들지 않음).
+- 종료 코드: `0` 완료(서명됨), `1` 무효(사유는 결과 기록), `2` 설정·사전검사·분류 매핑·비밀번호 형식 오류(회차를 만들지 않음).
+- 설정·사전검사·분류 매핑이 통과하면 엔진 관리자 비밀번호를 **한 번** 묻는다(getpass, 화면에 표시 안 됨). 비밀 env 파일의
+  `EVAL_ENGINE_ADMIN_PASSWORD`와 같은 값이다. 비밀번호는 러너 프로세스 메모리에만 있고 argv·환경변수·docker 호출·회차 파일·
+  출력·예외 문구에 넣지 않는다. 토큰은 findings 직전에 루프백 엔진 API(`127.0.0.1:ports.engine_api_host`)로 새로 로그인해
+  받고 그 호출 안에서만 쓴다.
 - stdout은 `run_id 상태 사유…` 한 줄이다. docker의 진단(stderr)은 운영자 터미널로만 가고 러너 기록에는 남지 않는다.
 - 회차 중간에 운영자 확인이 한 번 있다(작업 시작, 아래 순서 5). 그 밖에는 손대지 않는다.
 
@@ -26,6 +29,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | 사전검사 선언 | [사전검사](preflight.md) 형식. 러너가 다시 검사한다 |
 | 비밀 env 파일 | `deploy/eval/eval.secrets.env.example`을 복사해 레포 밖에 두고 채운다(관리자·DB 비밀번호, api 백엔드면 `EVAL_LLM_API_KEY`). 러너는 이 파일을 읽지 않고 compose가 직접 읽는다 |
 | 서명 키 | `e2-audit-keygen`으로 엔진 감사 키와 **별도로** 발급, 0600, `runs_root` 밖 |
+| 분류 매핑 | 평가자가 검토한 원본 분류 → 평가 `vuln_class`·자산 type 매핑 JSON(형식은 `baseline_extract.py`, 8MiB 이하·중복 키 거부). baseline·개선 후가 **같은 파일**을 쓴다. 원본 SHA-256이 `findings.json`에 남아 집계에서 대조한다. 매핑에 없는 값은 실패가 아니라 `null` + `unmapped_fields`로 남는다 |
 | `runs_root` | 러너 uid 소유·정확히 0700 디렉터리. 회차마다 그 아래에 새 디렉터리를 만든다 |
 | CA 묶음 | api 백엔드에서 게이트웨이가 쓸 호스트의 TLS 신뢰 묶음 경로(읽기 전용 마운트) |
 | LLM 고정 조건 | api: 고정할 제공자 전체 slug(사전검사 `llm.provider`)와 그 응답 표시 이름(설정 `expected_provider_name`)을 팀이 함께 정한다. local: 로컬 서버를 고정 IP에만 바인딩 |
@@ -53,6 +57,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `docker_timeout_seconds`, `probe_timeout_ms` | docker 호출 하나와 부정 연결 점검 하나의 시한 |
 | `host_listen_allowlist` | loopback 밖 호스트 리슨 중 허용할 것. `{"address", "port", "reason"}`, 특정 주소만(0.0.0.0·`::`·loopback 불가), 근거 필수. 기본은 빈 목록 |
 | `run.*` | compose 대기, down 시한, 대상 준비, 예산 폴링 간격, drain 시한, 스냅샷 시한·크기, LLM 검증 대기(초) |
+| `findings.vocabulary_path` | 분류 매핑 JSON 절대 경로(레포 밖). 회차를 만들기 전에 읽어 검증한다 |
+| `findings.{page_size,timeout_seconds,max_page_bytes,max_total_bytes,max_pages}` | findings 페이지 크기(1~200), 연결·읽기 시한(초), 페이지당·합계 바이트(각 8MiB 이하), 최대 페이지 수 |
 
 예: WSL DNS 터널링 주소를 허용해야 하는 개발 머신이라면 근거와 함께 적는다.
 
@@ -75,7 +81,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
          LLM 게이트웨이 seal(새 LLM 요청 거부·진행 중 취소 → generation 조회 시작)
 [post]   점검 반복 + pre와 비교(망·주소·컨테이너 교체·재시작) → 부정 연결 점검 → post 스코어보드
          관측 로그 건수 == 러너 호출 수, 계측기 순번 완결·건수 일치
-         LLM 검증 마커 대기 → 응답 제공자 판정 → findings
+         LLM 검증 마커 대기 → 응답 제공자 판정 → findings(새 로그인 → 페이지 수집 → 추출)
 [끝]     compose down -v(성공·실패와 무관) → 모두 통과면 서명 → runner-result.json
 ```
 
@@ -88,11 +94,27 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   pre/  post/                    스코어보드 원본·정규화본(어느 컨테이너에도 마운트하지 않음, 절대규칙 7)
   pre-checks.json  post-checks.json   망 스냅샷·policy_sha256·위반 목록
   pre-probe.json   post-probe.json    경로별 기대·실제·판정
-  meter-summary.json  llm-summary.json  findings.json
+  meter-summary.json  llm-summary.json
+  findings.json                  원본 수집기·추출기의 비민감 투영(아래)
   runner-result.json             완료(+서명) 또는 무효(+사유·실패 단계)
 ```
 
 근거 파일은 O_EXCL·0600으로 한 번만 쓴다. 무효 기록에는 측정값·근거 목록·서명을 넣지 않는다.
+
+`findings.json`은 baseline·개선 후 모두 **같은 추출 경로**(`baseline_pages_collector` → `baseline_extract`, 수정 없음)를 거친
+투영만 담는다. API 응답 원본·제목·설명·자산 이름은 저장하지 않는다(절대규칙 2). 추출기는 원본 FindingDTO 형식(upstream
+`fdfb7a17`)으로 고정돼 있고, 개선 후 엔진의 `FindingDTO`·`FindingAssetDTO`·`db.FindingTrafficBinding`·findings 목록 핸들러·
+로그인 핸들러가 그 커밋과 같다는 것을 `tests/test_runner_engine.py`가 고정한다(바뀌면 테스트가 깨지고 추출 경로를 다시 본다).
+그래서 기록에는 두 출처를 따로 둔다.
+
+| 필드 | 뜻 |
+|---|---|
+| `dto_format_source` | 추출기가 기준으로 삼은 응답 형식의 커밋(항상 upstream `fdfb7a17`). 빌드 출처가 아니다 |
+| `build_source` | 실제로 돈 엔진의 소스 커밋(baseline `e53a79f…`, 개선 후는 빌드한 dev 커밋) |
+| `vocabulary_sha256` | 분류 매핑 파일 원본의 SHA-256 |
+| `declared_total`, `page_size`, `page_count`, `findings[]` | 엔진이 선언한 전체 건수, 수집 단위, 추출된 행(ID·분류·심각도·상태·자산 ID/type·트래픽 결속 ID/역할·`unmapped_fields`) |
+
+개선 후 엔진의 구조화 판정 레코드는 물리 형식(#18)이 정해진 뒤 별도 신호로 붙인다. 지금은 findings만 같은 경로로 비교한다.
 
 ## 사유 코드
 
@@ -116,7 +138,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `llm_generation_unverified`, `llm_generation_unverifiable` | 조회 안 된 generation, generation ID 없는 응답 |
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
 | `llm_pin_mismatch`, `llm_backend_mismatch`, `llm_log_incomplete` | 게이트웨이가 다른 slug를 고정, 백엔드 구성이 섞임, 게이트웨이 기록 불완전 |
-| `findings_extractor_unavailable`, `findings_failed` | findings 추출 경로 미연결(현재 항상), 수집 실패 |
+| `findings_failed` | findings 단계 실패: 로그인 실패(연결·HTTP 상태·응답 형식), 페이지 수집 실패(한도 초과·건수 불일치·형식 밖 응답), 추출 실패 |
 | `evidence_write_failed` | 근거 파일 쓰기 실패 |
 | `down_failed`, `sign_failed` | 정리·서명 실패(측정은 끝났어도 무효) |
 | `interrupted`, `unexpected_error` | Ctrl-C(정리·기록 후 다시 올림), 예상 밖 예외(정리·기록함) |
@@ -125,7 +147,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 ## 아직 안 된 것
 
-- **findings 추출:** 원본 추출기는 upstream SHA로 고정돼 있고 개선 후 엔진용 추출기는 없다. 연결 전에는 모든 회차가 무효다(5e).
+- **개선 후 판정 레코드:** findings만 수집한다. 구조화 판정 레코드는 물리 형식(#18) 결정 후 추가 신호로 붙인다.
 - **작업 시작:** 운영자가 엔진 UI에서 작업을 손으로 만든다. 러너가 엔진 API로 작업을 만들고 작업 내용의 해시를 기록하는 방식으로 바꿀 예정이다.
 - **tmpfs 사용량:** 회차 메모리(엔진 DB·엔진 데이터)의 seal 시점 사용량을 아직 재지 않는다.
 - **실측으로 확인할 것(스모크):** 부정 연결 점검의 실패 종류(Docker가 DROP인지 REJECT인지, 내장 DNS가 바깥 이름에 어떻게 답하는지), probe가 엔진의 /etc/hosts를 보는지, `docker run sha256:<id>` 동작, internal 망의 호스트 쪽 게이트웨이 주소 유무, OpenRouter generation 조회의 `provider_responses`·엔드포인트 ID 형태, 재시작·엔진 망 부착 고장 주입, probe 전후 계측기 건수 불변.

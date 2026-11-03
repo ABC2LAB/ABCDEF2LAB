@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from baseline_extract import MAX_INPUT_BYTES
+from baseline_pages_collector import MAX_PAGE_SIZE
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
 
 CONFIG_VERSION = 1
@@ -71,7 +73,11 @@ _GATEWAY_FIELDS = ("generation_path", "verify_attempts", "verify_interval_second
 MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
-               "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway")
+               "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings")
+# findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
+_FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
+# 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
+MAX_FINDINGS_PAGES = 10_000
 # 회차 진행 시간·크기 값(초). 실패 시 재시도하지 않으므로 각 값이 그 단계의 유일한 기회다.
 _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_seconds", "budget_poll_seconds",
                "drain_timeout_seconds", "snapshot_timeout_seconds", "snapshot_max_bytes", "llm_verify_timeout_seconds")
@@ -125,6 +131,7 @@ class RunnerConfig:
     runner_key_path: Path
     run: dict[str, int]
     llm_gateway: dict
+    findings: dict
 
 
 @dataclass(frozen=True)
@@ -269,6 +276,14 @@ def parse_runner_config(raw: object) -> RunnerConfig:
                                                 or len(name) > MAX_PROVIDER_NAME_LENGTH
                                                 or any(ord(c) < 32 or ord(c) == 127 for c in name)):
         errors.append("config.llm_gateway.expected_provider_name: INVALID")
+    findings = _exact(top.get("findings"), _FINDINGS_FIELDS, "config.findings", errors) if "findings" in top else {}
+    if "vocabulary_path" in findings and not _absolute_path(findings["vocabulary_path"]):
+        errors.append("config.findings.vocabulary_path: EXPECTED_ABSOLUTE_PATH")
+    for name, high in (("page_size", MAX_PAGE_SIZE), ("timeout_seconds", MAX_RUN_SECONDS),
+                       ("max_page_bytes", MAX_INPUT_BYTES), ("max_total_bytes", MAX_INPUT_BYTES),
+                       ("max_pages", MAX_FINDINGS_PAGES)):
+        if name in findings and not _int(findings[name], 1, high):
+            errors.append(f"config.findings.{name}: INVALID")
     run = _exact(top.get("run"), _RUN_FIELDS, "config.run", errors) if "run" in top else {}
     for name in _RUN_FIELDS:
         limit = MAX_SNAPSHOT_BYTES if name == "snapshot_max_bytes" else MAX_RUN_SECONDS
@@ -286,7 +301,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         docker_timeout_seconds=float(timeout), host_listen_allowlist=allowlist,
         probe_timeout_ms=top["probe_timeout_ms"], runner_key_path=Path(top["runner_key_path"]),
         run={name: run[name] for name in _RUN_FIELDS},
-        llm_gateway={name: gateway[name] for name in _GATEWAY_FIELDS})
+        llm_gateway={name: gateway[name] for name in _GATEWAY_FIELDS},
+        findings={name: findings[name] for name in _FINDINGS_FIELDS})
 
 
 def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:

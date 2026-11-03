@@ -15,6 +15,7 @@ down은 이 회차가 up을 시도했다면 성공·실패와 무관하게 실�
 from __future__ import annotations
 
 import argparse
+import getpass
 import http.client
 import os
 import sys
@@ -39,6 +40,7 @@ from runner_config import (
     new_run_id, plan_run,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker
+from runner_engine import AdminSecret, EngineAPIError, collect_findings, load_vocabulary
 from runner_evidence import DRAINED_MARKER, SEALED_MARKER, EvidenceDir, GatewayFiles, MeterFiles, sequence_complete
 from runner_llm import judge_llm
 from runner_probe import PASS, ProbeOutcome, run_probe
@@ -406,12 +408,6 @@ class DockerPorts:
         return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
 
 
-def _findings_unavailable() -> dict:
-    # TODO(최민준): findings 추출 경로 결정 후 연결 — 원본 추출기는 upstream fdfb7a17 고정이라 baseline 빌드
-    # 소스(e53a79f)를 거부하고, 개선 후 엔진용 추출기는 없다. API 원본 덤프는 금지(절대규칙 2)라 그 전엔 무효.
-    raise RunFailure("findings_extractor_unavailable")
-
-
 def _operator_confirm() -> None:
     answer = input("엔진에서 작업을 시작한 뒤 start를 입력하세요(그 외 입력은 중단): ")
     if answer.strip() != "start":
@@ -441,13 +437,24 @@ def main(argv: list[str] | None = None) -> int:
         config = load_runner_config(args.config)
         preflight = load_preflight(args.preflight)
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
+        vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])
+        # 설정이 통과한 뒤에만 묻는다. 비밀번호는 이 프로세스 메모리에만 있고 어디에도 쓰지 않는다.
+        secret = AdminSecret(getpass.getpass("엔진 관리자 비밀번호(화면에 표시되지 않음): "))
         directory = create_run_directory(config.runs_root, plan.run_id)
     except (RunnerConfigError, PreflightError) as exc:
         print("\n".join(getattr(exc, "errors", ["config: INVALID"])), file=sys.stderr)
         return 2
+    except EngineAPIError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     docker = Docker(run_docker, client_environment(os.environ, compose_environment(plan, directory)),
                     config.docker_timeout_seconds)
-    ports = DockerPorts(config, plan, directory, docker, _findings_unavailable, _operator_confirm)
+
+    def findings() -> dict:
+        return collect_findings(config.ports["engine_api_host"], secret, config.findings, vocabulary,
+                                vocabulary_sha256, side=plan.side, build_source=plan.source_sha)
+
+    ports = DockerPorts(config, plan, directory, docker, findings, _operator_confirm)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight), ports, MeterFiles(directory.meter),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 import sys
@@ -490,6 +491,79 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
             self.assertEqual((run_directory, phase), (directory.run, "pre"))
             self.assertEqual(endpoint.origin, "http://127.0.0.1:18081")
             self.assertFalse(str(run_directory).startswith(str(directory.meter)))
+
+
+class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
+    """비밀번호는 getpass로 한 번 받아 findings 수집에만 넘긴다. argv·환경·docker 호출·출력에 없다."""
+
+    def test_password_reaches_only_the_findings_collector(self):
+        import contextlib
+        import io
+        import json as json_module
+        from test_runner_engine import PASSWORD
+        from test_baseline_extract import vocabulary
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "runs")
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            vocab = Path(tmp, "vocabulary.json")
+            vocab.write_text(json_module.dumps(vocabulary()))
+            config_payload = runner_config() | {"runs_root": str(root), "runner_key_path": str(Path(tmp, "k"))}
+            config_payload["findings"] = dict(config_payload["findings"], vocabulary_path=str(vocab))
+            config_path, preflight_path = Path(tmp, "runner.json"), Path(tmp, "preflight.json")
+            config_path.write_text(json_module.dumps(config_payload))
+            preflight_path.write_text(json_module.dumps(configuration()))
+            seen = {}
+
+            def fake_docker(executor, env, timeout):
+                seen["docker_env"] = dict(env)
+                return object()
+
+            def fake_collect(port, secret, settings, vocabulary_obj, digest, *, side, build_source):
+                seen["secret"] = secret.reveal()
+                seen["collect"] = (port, side, build_source, digest)
+                return {"findings": []}
+
+            def fake_execute(spec, ports, meter, gateway, evidence, clock):
+                ports.findings()
+                return {"run_id": spec.run_id, "status": INVALID, "reasons": ["x"]}
+
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(runner.getpass, "getpass", return_value=PASSWORD), \
+                    patch.object(runner, "Docker", side_effect=fake_docker), \
+                    patch.object(runner, "collect_findings", side_effect=fake_collect), \
+                    patch.object(runner, "execute_run", side_effect=fake_execute), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = runner.main(["--config", str(config_path), "--preflight", str(preflight_path), "--side", "ours"])
+            self.assertEqual(code, 1)
+            self.assertEqual(seen["secret"], PASSWORD)
+            self.assertEqual(seen["collect"][:3], (18787, "ours", "2" * 40))
+            self.assertNotIn(PASSWORD, "\n".join(seen["docker_env"].values()))
+            self.assertNotIn(PASSWORD, out.getvalue() + err.getvalue())
+            self.assertNotIn(PASSWORD, "\n".join(os.environ.values()))
+            for written in root.rglob("*"):
+                if written.is_file():
+                    self.assertNotIn(PASSWORD, written.read_text(errors="ignore"))
+
+    def test_invalid_vocabulary_stops_before_asking_or_creating_a_run(self):
+        import io
+        import contextlib
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "runs")
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            config_payload = runner_config() | {"runs_root": str(root), "runner_key_path": str(Path(tmp, "k"))}
+            config_payload["findings"] = dict(config_payload["findings"], vocabulary_path=str(Path(tmp, "missing.json")))
+            config_path, preflight_path = Path(tmp, "runner.json"), Path(tmp, "preflight.json")
+            config_path.write_text(json.dumps(config_payload))
+            preflight_path.write_text(json.dumps(configuration()))
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass") as ask, contextlib.redirect_stderr(err):
+                code = runner.main(["--config", str(config_path), "--preflight", str(preflight_path), "--side", "ours"])
+            self.assertEqual(code, 2)
+            ask.assert_not_called()
+            self.assertEqual(err.getvalue().strip(), "findings_vocabulary_invalid")
+            self.assertEqual(list(root.iterdir()), [])
 
 
 class TestSignatureKey(unittest.TestCase):

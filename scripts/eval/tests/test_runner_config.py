@@ -51,6 +51,8 @@ def runner_config() -> dict:
                 "snapshot_max_bytes": 4194304, "llm_verify_timeout_seconds": 300},
         "llm_gateway": {"generation_path": "/api/v1/generation", "verify_attempts": 5, "verify_interval_seconds": 2,
                         "ca_bundle": "/etc/ssl/certs/ca-certificates.crt", "expected_provider_name": "Example"},
+        "findings": {"vocabulary_path": "/srv/eval/vocabulary.json", "page_size": 100, "timeout_seconds": 30,
+                     "max_page_bytes": 1048576, "max_total_bytes": 8388608, "max_pages": 100},
     }
 
 
@@ -65,6 +67,18 @@ class TestParseRunnerConfig(unittest.TestCase):
         self.assertEqual(config.images["engine_ours"].ref, "example/o:fixed")
         self.assertEqual(config.ports["obs_host"], 18081)
         self.assertEqual(config.docker_timeout_seconds, 120.0)
+
+    def test_findings_limits_accept_the_collector_maximums(self):
+        payload = runner_config()
+        payload["findings"].update(page_size=200, max_page_bytes=8 * 1024 * 1024, max_total_bytes=8 * 1024 * 1024,
+                                   max_pages=10_000)
+        self.assertEqual(parse_runner_config(payload).findings["page_size"], 200)
+        payload = runner_config()
+        del payload["findings"]
+        self.reject(payload, "config.findings: MISSING")
+        payload = runner_config()
+        del payload["findings"]["max_pages"]
+        self.reject(payload, "config.findings.max_pages: MISSING")
 
     def test_missing_and_unknown_fields_rejected(self):
         payload = runner_config()
@@ -128,6 +142,15 @@ class TestParseRunnerConfig(unittest.TestCase):
             (("llm_gateway", "expected_provider_name"), "x" * 101, "config.llm_gateway.expected_provider_name: INVALID"),
             (("llm_gateway", "expected_provider_name"), 7, "config.llm_gateway.expected_provider_name: INVALID"),
             (("run", "llm_verify_timeout_seconds"), 0, "config.run.llm_verify_timeout_seconds: INVALID"),
+            (("findings", "vocabulary_path"), "vocabulary.json", "config.findings.vocabulary_path: EXPECTED_ABSOLUTE_PATH"),
+            (("findings", "page_size"), 201, "config.findings.page_size: INVALID"),
+            (("findings", "page_size"), 0, "config.findings.page_size: INVALID"),
+            (("findings", "max_total_bytes"), 8 * 1024 * 1024 + 1, "config.findings.max_total_bytes: INVALID"),
+            (("findings", "max_page_bytes"), 8 * 1024 * 1024 + 1, "config.findings.max_page_bytes: INVALID"),
+            (("findings", "max_page_bytes"), 0, "config.findings.max_page_bytes: INVALID"),
+            (("findings", "max_pages"), 10_001, "config.findings.max_pages: INVALID"),
+            (("findings", "max_pages"), True, "config.findings.max_pages: INVALID"),
+            (("findings", "timeout_seconds"), 3601, "config.findings.timeout_seconds: INVALID"),
             (("ports", "llm_gateway"), 0, "config.ports.llm_gateway: INVALID"),
             (("ports", "api_front"), 70000, "config.ports.api_front: INVALID"),
             (("engine", "llm_stream"), "true", "config.engine.llm_stream: EXPECTED_BOOL"),
