@@ -94,3 +94,62 @@ VALUES($1,$2,'case.forged',$3,$4,$5,$6,$7,$8,$9,$10)`,
 		t.Fatalf("valid run was lost or forged row persisted: count=%d err=%v", count, err)
 	}
 }
+
+// NOT VALID would admit new rows safely while silently retaining an existing
+// forged provenance row. Startup must validate old rows too and fail closed.
+func TestBudgetRunBindingProvenanceUpgradeRejectsExistingMismatch(t *testing.T) {
+	d := taskModeTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	authority := budgetTestAuthority(t, d, now)
+	first, err := authority.Issue(ctx, budgetTestRequest(t, now), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := authority.Issue(ctx, budgetTestRequest(t, now), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good, err := bindBudgetTestRun(ctx, authority, first, "case.upgrade.good", now.Add(time.Minute), now)
+	if err != nil || good.Ledger == nil {
+		t.Fatalf("valid binding fixture failed: %v", err)
+	}
+	forgedRef, err := newBudgetRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE budget_run_bindings DROP CONSTRAINT budget_run_approval_provenance_fk`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO budget_run_bindings
+ (run_ref,task_ref,case_ref,policy_ref,reset_ref,budget_ref,approval_request_ref,issuer_ref,epoch,expires_at,bound_at)
+ VALUES($1,$2,'case.upgrade.forged',$3,$4,$5,$6,$7,$8,$9,$10)`, forgedRef, first.Grant.Key.TaskRef,
+		first.Grant.Binding.PolicyRef, first.Grant.Binding.ResetRef, second.Grant.Key.BudgetRef, first.RequestRef,
+		first.IssuerRef, first.Epoch, now.Add(time.Minute), now); err != nil {
+		t.Fatalf("existing mismatch fixture was not created: %v", err)
+	}
+	_, err = tx.ExecContext(ctx, budgetRunBindingSchemaSQL)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		t.Fatalf("upgrade accepted an existing provenance mismatch: %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	var validated bool
+	if err := d.QueryRowContext(ctx, `SELECT convalidated FROM pg_constraint WHERE conrelid='budget_run_bindings'::regclass AND conname='budget_run_approval_provenance_fk'`).Scan(&validated); err != nil || !validated {
+		t.Fatalf("rollback did not restore validated constraint: %v", err)
+	}
+	var forgedCount, goodCount int
+	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM budget_run_bindings WHERE run_ref=$1`, forgedRef).Scan(&forgedCount); err != nil || forgedCount != 0 {
+		t.Fatalf("forged fixture escaped transaction: %d %v", forgedCount, err)
+	}
+	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM budget_run_bindings WHERE approval_request_ref=$1`, first.RequestRef).Scan(&goodCount); err != nil || goodCount != 1 {
+		t.Fatalf("valid evidence changed: %d %v", goodCount, err)
+	}
+}
