@@ -4,6 +4,8 @@ package budgetlocal
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"sync/atomic"
@@ -45,6 +47,18 @@ func isolatedAuthority(t *testing.T) (*db.DB, *db.BudgetAuthority) {
 	return d, authority
 }
 
+// Each issuance test invocation needs fresh references because a completed
+// authority epoch durably closes its approvals instead of deleting them.
+// Retrying one request within the same test still reuses its original ref.
+func approvalTestRef(t *testing.T) string {
+	t.Helper()
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		t.Fatal("could not generate approval fixture reference")
+	}
+	return "request." + hex.EncodeToString(token[:])
+}
+
 func TestCommittedApprovalWithLostReplyRetriesSameReference(t *testing.T) {
 	path := socketPath(t)
 	d, authority := isolatedAuthority(t)
@@ -66,7 +80,7 @@ func TestCommittedApprovalWithLostReplyRetriesSameReference(t *testing.T) {
 	}
 	defer s.Close(context.Background())
 	request := testRequest()
-	request.RequestRef = "committed.lost.reply"
+	request.RequestRef = approvalTestRef(t)
 	response, err := submit(context.Background(), path, uint32(os.Geteuid()), request, true)
 	if !errors.Is(err, ErrUnknown) || response != (Response{}) {
 		t.Fatalf("ambiguous committed result: %+v %v", response, err)
@@ -94,7 +108,7 @@ func TestApprovalTimeoutDoesNotLatchAuthorityClosed(t *testing.T) {
 	path := socketPath(t)
 	d, authority := isolatedAuthority(t)
 	priorRequest := testRequest()
-	priorRequest.RequestRef = "prior.ready"
+	priorRequest.RequestRef = approvalTestRef(t)
 	prior, err := authority.Issue(context.Background(), db.BudgetApprovalRequest{
 		RequestRef: priorRequest.RequestRef, IssuerRef: "operator.prior", TaskRef: priorRequest.TaskRef,
 		Binding: budget.Binding{PolicyRef: priorRequest.PolicyRef, ResetRef: priorRequest.ResetRef}, MaxRequests: priorRequest.MaxRequests,
@@ -128,7 +142,7 @@ func TestApprovalTimeoutDoesNotLatchAuthorityClosed(t *testing.T) {
 	defer s.Close(context.Background())
 	defer tx.Rollback()
 	request := testRequest()
-	request.RequestRef = "probe.timeout"
+	request.RequestRef = approvalTestRef(t)
 	result := make(chan error, 1)
 	go func() {
 		response, err := submit(context.Background(), path, uint32(os.Geteuid()), request, true)
@@ -189,7 +203,7 @@ func TestApprovalTimeoutDoesNotLatchAuthorityClosed(t *testing.T) {
 	if err != nil || registration.Ledger == nil {
 		t.Fatalf("timeout latched authority closed: %v", err)
 	}
-	request.RequestRef = "after.probe.timeout"
+	request.RequestRef = approvalTestRef(t)
 	response, err := submit(context.Background(), path, uint32(os.Geteuid()), request, true)
 	if err != nil || response.State != "ready" {
 		t.Fatalf("next approval failed: %+v %v", response, err)

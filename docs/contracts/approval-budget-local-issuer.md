@@ -19,7 +19,7 @@ CLI는 성공 시 exit 0과 승인 메타데이터, 확정 거부 시 exit 1과 
 
 서버는 읽기부터 callback까지 RPC당 5초 deadline을 공유한다. 클라이언트도 5초와 호출자 deadline 중 이른 시각을 적용하고 취소 시 연결을 닫는다. 서버 Close는 callback 취소와 연결 종료 후 종료를 기다린다. callback은 취소에 협조해야 한다. 비공개 시간 제한·Lstat 주입 헬퍼는 시험 전용이고 공개 UID 정책을 완화하지 않는다.
 
-이 브랜치는 #119의 `e21845d4890a96162d8ec20141c115fba22517e9`를 일반 merge로 포함한다. 격리 PostgreSQL 시험은 DB 확정 후 응답 상실 시 같은 참조의 멱등 재시도와, authority probe 중 callback 만료 뒤 기존 ready Resolve·다음 승인 성공을 검증한다. #119 병합 후 dev base 전환과 재검증이 남아 있다. CLI 응답은 비민감 승인 메타데이터이지 송신 권한이 아니다. 같은 요청 참조의 발급 멱등성과 DB 확정 후 게시 규칙은 [승인 DB 정본](./approval-budget-store.md)이 집행한다.
+이 브랜치는 #119의 `d7edcbf961f3d218e7b9dbcb470ff58b4c4f6681`를 일반 merge로 포함한다. 격리 PostgreSQL 시험은 DB 확정 후 응답 상실 시 같은 참조의 멱등 재시도와, authority probe 중 callback 만료 뒤 기존 ready Resolve·다음 승인 성공을 검증한다. #119 병합 후 dev base 전환과 재검증이 남아 있다. CLI 응답은 비민감 승인 메타데이터이지 송신 권한이 아니다. 같은 요청 참조의 발급 멱등성과 DB 확정 후 게시 규칙은 [승인 DB 정본](./approval-budget-store.md)이 집행한다.
 
 이번 PR은 소켓 서버를 제품 서버 기동에 등록하지 않고, 실제 운영자 계정·모델 계정·디렉터리 권한·운영 DB를 변경하지 않는다. 현재 배포에서 모델 도구 실행 UID가 서버 UID와 같다면 이 경계를 활성화해서는 안 된다. 별도 신뢰 기동기와 실제 OS 신원 분리, task/policy/reset validator, 종료·재시작 처리, 서버 실행 연결은 후속 검증이 필요하다. 개발 시험의 승인 성공 경로는 동일 UID를 허용하는 **비공개 테스트 헬퍼**로 프로토콜만 검증한다. 실제 분리 OS 계정의 운영 수용시험은 완료하지 않았다.
 

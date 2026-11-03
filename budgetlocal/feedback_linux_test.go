@@ -136,6 +136,12 @@ func TestServerGrantValidationReturnsUnknownWithoutMetadata(t *testing.T) {
 		name   string
 		change func(*db.BudgetApprovalRecord)
 	}{
+		{"request_ref", func(r *db.BudgetApprovalRecord) { r.RequestRef = "other.request" }},
+		{"task_ref", func(r *db.BudgetApprovalRecord) { r.Grant.Key.TaskRef = "other.task" }},
+		{"policy_ref", func(r *db.BudgetApprovalRecord) { r.Grant.Binding.PolicyRef = "other.policy" }},
+		{"reset_ref", func(r *db.BudgetApprovalRecord) { r.Grant.Binding.ResetRef = "other.reset" }},
+		{"max_requests", func(r *db.BudgetApprovalRecord) { r.Grant.MaxRequests++ }},
+		{"valid_until", func(r *db.BudgetApprovalRecord) { r.Grant.ValidUntil = r.Grant.ValidUntil.Add(time.Second) }},
 		{"valid_from", func(r *db.BudgetApprovalRecord) { r.Grant.ValidFrom = r.Grant.ValidFrom.Add(time.Second) }},
 		{"state", func(r *db.BudgetApprovalRecord) { r.State = "prepared" }},
 		{"budget_ref", func(r *db.BudgetApprovalRecord) { r.Grant.Key.BudgetRef = "" }},
