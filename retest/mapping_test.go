@@ -113,7 +113,7 @@ func TestMapBlockedAndUncertainReceipts(t *testing.T) {
 	reasons := []transmit.Reason{
 		transmit.Stopped, transmit.Canceled, transmit.UnsupportedAction, transmit.UnknownResource,
 		transmit.UnknownAccount, transmit.UnverifiedAccount, transmit.ExpiredAccount, transmit.AccountNotApproved,
-		transmit.ExpiredApproval, transmit.BudgetExhausted, transmit.TransportError, transmit.TimedOut,
+		transmit.ExpiredApproval, transmit.BudgetExhausted, transmit.BudgetUnavailable, transmit.TransportError, transmit.TimedOut,
 		transmit.RedirectRefused, transmit.ResponseTooLarge, transmit.UnsupportedResponse, transmit.InvalidCandidate,
 		transmit.CanaryMismatch, "", "unrecognized",
 	}
