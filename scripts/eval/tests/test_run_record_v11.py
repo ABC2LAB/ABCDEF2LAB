@@ -156,6 +156,21 @@ class TestRejectedV11(_V11):
             forwarded_requests=6))
         self.reject("drain", "b", tamper_rows=lambda rows: row_of(rows, "drain").update(inflight=1))
 
+    def test_iw12_drain_times_are_checked_against_the_window(self):
+        # fixture: 봉인 00:08, drain 완료 00:09, timeline drained 00:09, post 00:10 — 경계값(같은 시각)은 통과
+        self.assertEqual(self.inputs(self.v11()).version, "1.1")
+        # 진행 요청 0에서 봉인하면 계측기는 봉인·drain 완료를 같은 시각으로 적는다(실측 회차 모양).
+        self.assertEqual(self.inputs(self.v11("same", tamper_rows=lambda rows: row_of(rows, "drain").update(
+            sealed_at="2026-10-30T00:00:09.000000000Z", drained_at="2026-10-30T00:00:09.000000000Z"))).version, "1.1")
+        cases = {"drained_at 뒤 봉인": dict(sealed_at="2026-10-30T00:00:09.500Z"),
+                 "timeline drained 뒤 drain 완료": dict(drained_at="2026-10-30T00:00:09.100Z"),
+                 "post 뒤 drain 완료": dict(drained_at="2026-10-30T01:00:10Z"),
+                 "timezone 없음": dict(drained_at="2026-10-30T00:00:09"),
+                 "시각 아님": dict(sealed_at="sealed")}
+        for index, (label, change) in enumerate(cases.items()):
+            with self.subTest(label):
+                self.reject("drain", f"t{index}", tamper_rows=lambda rows, c=change: row_of(rows, "drain").update(c))
+
     def test_iw13_unproven_run_cannot_claim_engine_solves(self):
         event = {"id": "solve-1", "challenge": KEY, "actor": "engine", "execution_id": "execution-a",
                  "observed_at": "2026-10-30T00:00:10+00:00", "sequence": 6, "basis": "isolated_window",
@@ -220,6 +235,29 @@ class TestProofFields(_V11):
                         and r["role"] == "negative"]:
                 drop(rows, row)
         self.reject("양성·부정", tamper_rows=only_positive)
+
+    def test_connectivity_verdict_is_recomputed_not_trusted(self):
+        # verdict="match"는 그대로 두고 실제 결과만 바꾼다(#126 리뷰 재현).
+        negative = dict(phase="post", role="negative")
+        cases = {"부정 경로 성공": (negative, dict(observed="success", code="connected")),
+                 "부정 경로 성공(code는 accepted 안)": (negative, dict(observed="success")),
+                 "accepted 밖 실패 종류": (negative, dict(code="refused")),
+                 "양성 대조 실패": (dict(phase="pre", role="positive"), dict(observed="fail", code="timeout")),
+                 "양성 accepted 밖": (dict(phase="pre", role="positive"), dict(code="refused")),
+                 "역할과 기대 불일치": (negative, dict(expected="success"))}
+        for index, (label, (match, change)) in enumerate(cases.items()):
+            with self.subTest(label):
+                self.reject("불일치 경로", f"v{index}", tamper_rows=lambda rows, m=match, c=change: row_of(
+                    rows, "connectivity_check", **m).update(c))
+        malformed = {"accepted 빈 목록": dict(accepted=[]), "accepted 문자열 아님": dict(accepted=[["dns_error"]]),
+                     "accepted 중복": dict(accepted=["dns_error", "dns_error"]), "code 없음": dict(code=None),
+                     "모르는 점검 종류": dict(probe_kind="http")}
+        for index, (label, change) in enumerate(malformed.items()):
+            with self.subTest(label):
+                self.reject("점검 형식", f"m{index}", tamper_rows=lambda rows, c=change: row_of(
+                    rows, "connectivity_check", **negative).update(c))
+        self.reject("양성·부정", "role", tamper_rows=lambda rows: row_of(rows, "connectivity_check", **negative).update(
+            role="neutral"))
 
     def test_v1_records_still_required(self):
         run = self.make_run("v1null", [])

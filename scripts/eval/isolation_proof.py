@@ -16,6 +16,8 @@ _CONTEXT = ("run_id", "model_tag", "reset_generation", "instance_id", "execution
 EVIDENCE_FORMAT = "abc2lab-isolation-evidence-v1"
 NETWORK_MODES = ("loopback_only", "dedicated_network")
 ALLOWED_ACTORS = frozenset({"engine", "observer"})
+# 양성 대조는 연결 성공, 부정 경로는 실패가 기대값이다.
+_PROBE_EXPECTED = {"positive": "success", "negative": "fail"}
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _PROOF_FIELDS = frozenset(_CONTEXT) | {"proof_id", "window", "snapshots", "network", "host",
                                        "enforcement_evidence_sha256", "preparation", "observer"}
@@ -192,6 +194,10 @@ def check_isolation(receipt: dict, steps: dict[str, tuple[datetime, int]], artif
     drain = _one(rows, "drain")
     if drain["engine_end"] != timeline["engine_end"] or type(drain["inflight"]) is not int or drain["inflight"] != 0:
         raise IsolationError("isolation_evidence.drain: engine_end 불일치 또는 진행 요청 남음")
+    sealed_at = _time(drain["sealed_at"], "isolation_evidence.drain.sealed_at")
+    drained_at = _time(drain["drained_at"], "isolation_evidence.drain.drained_at")
+    if not sealed_at <= drained_at <= steps["drained"][0] <= post_at:
+        raise IsolationError("isolation_evidence.drain: 봉인 ≤ drain 완료 ≤ timeline drained ≤ post 관측이어야 함")
     return proof
 
 
@@ -230,10 +236,25 @@ def _check_connectivity(rows: dict) -> None:
         roles = {row["role"] for row in checks}
         if not checks or roles != {"positive", "negative"}:
             raise IsolationError("isolation_evidence.connectivity_check: 단계마다 양성·부정 점검 필요")
-        if any(row["verdict"] != "match" or row["probe_kind"] not in ("tcp", "dns") for row in checks):
+        if any(row["verdict"] != "match" or not _probe_matches(row) for row in checks):
             raise IsolationError("isolation_evidence.connectivity_check: 불일치 경로 있음")
     if any(row["phase"] not in ("pre", "post") for row in rows["connectivity_check"]):
         raise IsolationError("isolation_evidence.connectivity_check: 모르는 단계")
+
+
+def _probe_matches(row: dict) -> bool:
+    """러너가 적은 verdict를 믿지 않고 역할·기대·관측·실패 종류로 다시 판정한다(#126 리뷰).
+
+    accepted 목록 자체가 경로에 맞는지는 러너 기대표 소관이라 여기서는 형식만 본다.
+    """
+    accepted = row["accepted"]
+    if (row["probe_kind"] not in ("tcp", "dns") or row["role"] not in _PROBE_EXPECTED
+            or not isinstance(accepted, list) or not accepted
+            or any(not isinstance(code, str) or not code for code in accepted) or len(set(accepted)) != len(accepted)
+            or not isinstance(row["code"], str)):
+        raise IsolationError("isolation_evidence.connectivity_check: 점검 형식 오류")
+    expected = _PROBE_EXPECTED[row["role"]]
+    return row["expected"] == expected and row["observed"] == expected and row["code"] in accepted
 
 
 def _check_host(rows: dict, host_ref: str, pre_at: datetime, post_at: datetime) -> None:
