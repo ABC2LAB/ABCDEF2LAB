@@ -209,7 +209,12 @@ func FuzzRedactionRejectsInvalidSubtrees(f *testing.F) {
 		case 5:
 			value = []byte(`{` + string(literal) + ":\"\xff\"}")
 		case 6:
-			value = []byte(strings.Repeat("[", redactionFuzzDepthLimit) + string(literal) + strings.Repeat("]", redactionFuzzDepthLimit))
+			// The scalar starts at depth 2/3/4 for body/header/item paths.
+			// Accept exactly MaxDepth before rejecting the next nesting level.
+			nesting := redactionFuzzDepthLimit - []int{2, 3, 4}[path]
+			boundary := []byte(strings.Repeat("[", nesting) + string(literal) + strings.Repeat("]", nesting))
+			redactionFuzzExpectSafe(t, p, redactionFuzzDocument(boundary, path))
+			value = append(append([]byte{'['}, boundary...), ']')
 			wantErr = dlp.ErrLimit
 		case 7:
 			items := make([]json.RawMessage, redactionFuzzWidthLimit+1)

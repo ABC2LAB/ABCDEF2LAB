@@ -224,6 +224,9 @@ func TestLocalHTTPProxyEnvironmentIgnored(t *testing.T) {
 		t.Fatal("fixture client failed")
 	}
 	defer c.CloseIdleConnections()
+	if c.Transport.(*httpAdapter).base.Proxy != nil {
+		t.Fatal("environment proxy hook installed")
+	}
 	localHTTPDialGuard(t, c)
 	resp, err := c.Get(o)
 	if err != nil {
@@ -232,6 +235,34 @@ func TestLocalHTTPProxyEnvironmentIgnored(t *testing.T) {
 	resp.Body.Close()
 	if modelHits.Load() != 1 || proxyHits.Load() != 0 {
 		t.Fatal("environment proxy changed the direct route")
+	}
+}
+
+func TestLocalHTTPDialRejectsAuthorityOutsideRequestPlan(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	o := localHTTPOrigin(t, srv)
+	c, err := NewClient(localHTTPPolicy(t, o), ClientOptions{LookupIP: localHTTPLookup})
+	if err != nil {
+		t.Fatal("fixture client failed")
+	}
+	defer c.CloseIdleConnections()
+	parsed, ok := parseOrigin(o, false)
+	if !ok {
+		t.Fatal("fixture origin failed")
+	}
+	_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal("fixture port failed")
+	}
+	plan := dialPlan{
+		ctx: context.Background(), url: o, origin: parsed, host: "model.internal", port: port,
+		resolved: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, selected: netip.MustParseAddr("127.0.0.1"),
+	}
+	ctx := context.WithValue(context.Background(), dialPlanKey{}, plan)
+	conn, err := c.Transport.(*httpAdapter).dialContext(ctx, "tcp", net.JoinHostPort("127.0.0.2", port))
+	if conn != nil || !errors.Is(err, ErrRequestBlocked) {
+		t.Fatalf("dial authority escape was accepted: conn=%v err=%v", conn, err)
 	}
 }
 

@@ -52,6 +52,11 @@ class TestCheckPreflight(unittest.TestCase):
         check_preflight(payload)
         self.assertEqual(payload, original)
 
+    def test_same_source_sha_is_allowed_but_proves_no_engine_difference_or_valid_comparison(self):
+        payload = configuration()
+        payload["ours"]["source_sha"] = payload["baseline"]["source_sha"]
+        check_preflight(payload)
+
     def test_every_required_field_must_be_explicit(self):
         for section in ("pins", "baseline", "ours"):
             for field in configuration()[section]:

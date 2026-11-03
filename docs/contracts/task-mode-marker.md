@@ -1,6 +1,6 @@
 # 실행·저장 공통 marker 조회·이관 판정표
 
-2026-11-02 · 이동찬 · dev `36c9c1f` 기준
+2026-11-02 · 이동찬 · 초기 구현 검토를 바탕으로 한 후속 어댑터 기준
 
 상태: **후속 marker 어댑터의 구현 기준 초안. 실제 어댑터·이관기·실행/저장 배선은 미구현이다.** 이 문서에서 채택한 규칙과 기존 코드의 동작을 구분한다. 팀의 최종 리뷰·합의를 이미 마쳤다는 뜻이 아니다.
 
@@ -64,6 +64,8 @@ root의 영속 저장소·허용 writer·등록 잠금 참여를 운영 환경�
 | DM08 | mode/task ID/revision/marker enum이 잘못됨 | 어떤 값 | `Block` | 기존 코어의 해당 거부 사유 |
 | DM09 | DB·marker reader 오류·nil reader·취소 | 어떤 값 | `Block` + 오류 | `Resolve`의 해당 거부 사유 |
 
+DM08은 순수 코어에 잘못된 값을 직접 전달한 경우다. DB reader가 저장된 mode/version 손상을 발견하면 reader 오류를 반환하므로 실제 DB 경유 경로는 DM09로 간다.
+
 DM03/06은 `MarkerUnknown` 값을 판별한 경우다. 실제 새 marker reader가 FM03/05~08의 오류를 반환하면 DM09 경로가 적용된다. 오류 시 reader의 반환 marker는 zero 값이며 caller는 오류와 부분 값을 조합해 허용하지 않는다. 오류의 세부 원인은 진단용으로만 유지하고 모델·공유 로그에는 안전한 오류 범주만 사용한다.
 
 정본이 없으면 marker가 `clear`여도 차단한다. controlled 정본만 있고 파일이 없으면 **등록 미완료로 차단**하며 mode를 legacy로 내리지 않는다. 오류가 없더라도 `Decision.Route()`가 `Block`일 수 있으므로 caller는 error와 Route를 모두 확인한다.
@@ -89,10 +91,12 @@ DM03/06은 `MarkerUnknown` 값을 판별한 경우다. 실제 새 marker reader�
 
 ## 6. 등록·조회 경합과 활성화 조건
 
+현재 `registerControlledRead`는 DB fence 배선 없이 파일 marker부터 기록한다. 아래 fence→marker→lease 순서는 후속 연결의 요구사항이며 현재 런타임에 이미 적용된 순서가 아니다.
+
 - DB reader는 기존 `READ COMMITTED`, task row 잠금 뒤 별도 mode 조회를 유지한다. 저장 경로의 순서는 기존 evidence advisory lock → task row → 후속 finding/판정이다. reader의 transaction은 admission/저장 완료까지 유지하고 Decision을 다음 동작에 캐시하지 않는다.
 - **파일 writer와 reader가 같은 task 등록 동기화에 참여해야 한다.** reader callback 안에서 새 transaction을 시작하거나 evidence/global lock·등록 완료를 기다리지 않는다. 기존 `r.mu` 안에 DB task 잠금을 추가하는 식으로 잠금 순서를 역전하지 않는다. runtime 잠금 조립은 후속 코드 경로 검토·경합 시험의 대상이다.
-- controlled 등록은 DB fence commit → task 잠금 아래 marker 생성/검증 → 별도 승인/lease 설치 순서다. fence를 먼저 커밋하므로 파일 작업까지의 틈은 DM04/09의 차단 상태다. 파일 작업이 실패해도 fence를 rollback한 것처럼 처리하거나 파일을 지워 legacy로 되돌리지 않는다.
-- marker 생성 단계는 fence commit 이후 같은 task row를 다시 잠근 transaction에서 수행한다. 이는 reader callback 안의 중첩 transaction이 아니다. 파일 Sync/후속 DB commit 실패가 파일을 되돌리지 못한다는 전제로 남은 상태를 재조회한다. task marker만 남으면 FM02이며 실행 lease 부재로 실행은 차단한다.
+- **후속 어댑터의 등록 규칙:** controlled 등록은 DB fence commit → task 잠금 아래 marker 생성/검증 → 별도 승인/lease 설치 순서다. fence를 먼저 커밋하므로 파일 작업까지의 틈은 DM04/09의 차단 상태다. 파일 작업이 실패해도 fence를 rollback한 것처럼 처리하거나 파일을 지워 legacy로 되돌리지 않는다.
+- **후속 어댑터의 marker 생성 규칙:** marker 생성 단계는 fence commit 이후 같은 task row를 다시 잠근 transaction에서 수행한다. 이는 reader callback 안의 중첩 transaction이 아니다. 파일 Sync/후속 DB commit 실패가 파일을 되돌리지 못한다는 전제로 남은 상태를 재조회한다. task marker만 남으면 FM02이며 실행 lease 부재로 실행은 차단한다.
 - 기존 active Worker를 멈추지 않은 채 mode를 바꾸거나, DB 잠금에 참여하지 않는 구버전 파일 writer와 새 reader를 함께 활성화하지 않는다. 단일 프로세스 mutex만으로 다른 프로세스와 DB/file 원자성을 주장하지 않는다.
 - 다중 서버는 모든 관련 writer/reader가 같은 DB task 잠금과 신뢰 state 저장소를 사용하는 것을 검증한 뒤 지원한다. 파일 존재를 두 번 확인한 사실이나 fd 고정만으로 등록 경합·복원·root 교체를 해결했다고 표시하지 않는다.
 

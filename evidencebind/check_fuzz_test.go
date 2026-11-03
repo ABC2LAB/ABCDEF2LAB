@@ -68,17 +68,20 @@ func FuzzEvidenceBindingRejectsInputMutation(f *testing.F) {
 		case 3:
 			in.Cross.Receipt.Method = http.MethodPost
 		case 4:
-			in.Cross.Evidence.ID = foreign
+			in.Cross.Evidence.ID = in.Owner.Evidence.ID
+			in.Result.CrossEvidence = in.Cross.Evidence
 		case 5:
 			in.Cross.Receipt.ApprovalRef = foreign
 		case 6:
 			in.Cross.Receipt.ResourceRef = foreign
 		case 7:
 			in.Cross.Evidence.Scope.RunRef = foreign
+			in.Result.CrossEvidence = in.Cross.Evidence
 		case 8:
 			in.Result.Result.Verdict.Value = oracle.Suspected
 		case 9:
 			in.Cross.Evidence.ID = ""
+			in.Result.CrossEvidence = in.Cross.Evidence
 		case 10:
 			in.Cross.Evidence.IntentID++
 			in.Result.CrossEvidence = in.Cross.Evidence
@@ -88,6 +91,7 @@ func FuzzEvidenceBindingRejectsInputMutation(f *testing.F) {
 			in.Cross.Receipt.SessionRef = foreign
 		case 13:
 			in.Cross.Evidence.Role = OwnerRead
+			in.Result.CrossEvidence = in.Cross.Evidence
 		}
 		beforeCheck := cloneInput(in)
 		got := Check(checkContext(), in)

@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/oracle"
 )
@@ -187,4 +188,20 @@ func FuzzCompareMetamorphic(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestComparePartialReflectionCannotConfirm(t *testing.T) {
+	const canary = "canary-7f3a9c@lab.local"
+	capture := baseCapture()
+	capture.RequesterInputs = []string{"q=pre+" + canary + "+-suf"}
+
+	facts := Compare(capture)
+	if facts.ReflectionExcluded != oracle.StateNo {
+		t.Fatalf("partial query reflection = %q, want no", facts.ReflectionExcluded)
+	}
+	now := time.Now().UTC()
+	verdict := oracle.Evaluate(denyCase(facts, now), now)
+	if verdict.Value == oracle.Confirmed {
+		t.Fatalf("partial query reflection was confirmed: %+v", verdict)
+	}
 }

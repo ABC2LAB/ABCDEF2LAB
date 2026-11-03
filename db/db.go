@@ -45,8 +45,16 @@ func isPostgresDeadlock(err error) bool {
 }
 
 func applySchemaWithRetry(ctx context.Context, execer schemaExecer, sleep func(time.Duration)) error {
+	return applyDDLWithRetry(ctx, execer, schemaSQL, sleep)
+}
+
+func applyTaskModeSchemaWithRetry(ctx context.Context, execer schemaExecer, sleep func(time.Duration)) error {
+	return applyDDLWithRetry(ctx, execer, taskModeSchemaSQL, sleep)
+}
+
+func applyDDLWithRetry(ctx context.Context, execer schemaExecer, ddl string, sleep func(time.Duration)) error {
 	for attempt := 0; ; attempt++ {
-		if _, err := execer.ExecContext(ctx, schemaSQL); err != nil {
+		if _, err := execer.ExecContext(ctx, ddl); err != nil {
 			if !isPostgresDeadlock(err) || attempt >= len(schemaDeadlockRetryDelays) {
 				return err
 			}
@@ -161,7 +169,7 @@ func Open(dsn string) (*DB, error) {
 		if err := applySchemaWithRetry(context.Background(), conn, time.Sleep); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
-		if _, err := conn.ExecContext(context.Background(), taskModeSchemaSQL); err != nil {
+		if err := applyTaskModeSchemaWithRetry(context.Background(), conn, time.Sleep); err != nil {
 			return fmt.Errorf("apply task mode schema: %w", err)
 		}
 		if err := d.seedBuiltins(); err != nil {
