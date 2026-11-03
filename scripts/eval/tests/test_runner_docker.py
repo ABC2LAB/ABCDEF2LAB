@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
 import sys
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -27,17 +27,41 @@ class FakeExecutor:
 
 
 class FakeStream:
-    """docker events 프로세스 대역. died=True면 구간 도중 끊긴 것처럼 poll()이 종료 코드를 낸다."""
+    """docker events 프로세스 대역. 실제처럼 terminate() 전까지 stdout이 열려 있다(파이프).
 
-    def __init__(self, lines, died=False):
-        self.stdout = io.BytesIO(b"".join(lines))
+    died=True면 구간 도중 프로세스가 끝난 것처럼 poll()이 종료 코드를 낸다. eof_early=True면 프로세스는 살아 있는데
+    stdout만 먼저 닫힌다(#126 리뷰의 조기 EOF).
+    """
+
+    def __init__(self, lines, died=False, eof_early=False):
+        read_fd, self._write_fd = os.pipe()
+        self.stdout = os.fdopen(read_fd, "rb")
         self.died, self.terminated = died, False
+        self._lock = threading.Lock()
+
+        def feed():
+            for line in lines:
+                os.write(self._write_fd, line)
+            if eof_early:
+                self._close()
+        self._feeder = threading.Thread(target=feed, daemon=True)
+        self._feeder.start()
+        if eof_early:
+            self._feeder.join(timeout=5)
+
+    def _close(self):
+        with self._lock:
+            if self._write_fd is not None:
+                os.close(self._write_fd)
+                self._write_fd = None
 
     def poll(self):
         return 1 if self.died else None
 
     def terminate(self):
         self.terminated = True
+        self._feeder.join(timeout=5)
+        self._close()
 
     def wait(self, timeout=None):
         return 0
@@ -99,13 +123,17 @@ class TestDocker(unittest.TestCase):
     def test_event_stream_incomplete_cases(self):
         good = json.dumps({"Type": "network", "Action": "connect", "Actor": {"ID": "n"}, "timeNano": 1}).encode() + b"\n"
         cases = {"died_midway": (FakeStream([good], died=True)),
+                 "stdout_closed_while_alive": FakeStream([good], eof_early=True),
                  "unparseable": FakeStream([good, b"{not json\n"]),
                  "not_object": FakeStream([b"[1]\n"]),
                  "huge_line": FakeStream([b"{" + b" " * (64 * 1024 + 10) + b"}\n"])}
         for name, process in cases.items():
             with self.subTest(name=name):
                 docker = Docker(FakeExecutor(), {}, 1, stream_opener=lambda a, e, p=process: p, sleep=lambda s: None)
-                _, complete = docker.event_stream("2026-11-03T04:39:30Z").stop(10**19)
+                stream = docker.event_stream("2026-11-03T04:39:30Z")
+                if name == "stdout_closed_while_alive":
+                    stream._reader.join(timeout=5)  # 조기 EOF를 reader가 먼저 본 뒤에 러너가 멈춘다
+                _, complete = stream.stop(10**19)
                 self.assertFalse(complete)
         for since in ("2026-11-03 04:39:30", "1h", "--filter=x", "", "2026-11-03T04:39:30+09:00"):
             with self.subTest(since=since), self.assertRaises(DockerError) as caught:

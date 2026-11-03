@@ -112,6 +112,8 @@ class EventStream:
         self._process, self._sleep = process, sleep
         self._events: list[dict] = []
         self._broken = False
+        # 러너가 종료를 시작한 뒤의 EOF만 정상이다. 그 전의 EOF는 프로세스가 살아 있어도 구간 중 관측 공백이다(#126 리뷰).
+        self._stopping = threading.Event()
         self._reader = threading.Thread(target=self._read, name="docker-events", daemon=True)
         self._reader.start()
 
@@ -120,6 +122,8 @@ class EventStream:
             while True:
                 line = self._process.stdout.readline(MAX_EVENT_LINE_BYTES + 1)
                 if not line:
+                    if not self._stopping.is_set():
+                        self._broken = True
                     return
                 if len(line) > MAX_EVENT_LINE_BYTES or len(self._events) >= MAX_STREAM_EVENTS:
                     self._broken = True
@@ -136,6 +140,7 @@ class EventStream:
         """until_ns(나노초)까지의 이벤트와 완결 여부. 유예 뒤에도 프로세스가 살아 있어야 구간 내내 붙어 있던 것이다."""
         self._sleep(EVENTS_DRAIN_GRACE_SECONDS)
         alive = self._process.poll() is None
+        self._stopping.set()
         self._process.terminate()
         try:
             self._process.wait(timeout=EVENTS_DRAIN_GRACE_SECONDS * 10)
