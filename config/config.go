@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Database is the PostgreSQL connection config. Either set DSN directly, or set
@@ -55,22 +56,41 @@ func NormalizeLanguage(code string) string {
 	return ""
 }
 
-// CurrentLanguage, when wired by the server, returns the active user-facing
+// SetCurrentLanguage wires the runtime resolver for the active user-facing
 // output language picked at runtime (settings table) layered over the bootstrap
 // default. It is the single source backend display strings (enum labels, etc.)
-// read through ActiveLanguage. nil (unit tests / standalone) → ActiveLanguage
-// falls back to "ko", which keeps the Korean localization golden tests green.
-var CurrentLanguage func() string
+// read through ActiveLanguage. A nil resolver (unit tests / standalone) makes
+// ActiveLanguage fall back to "ko", which keeps the Korean localization golden
+// tests green.
+var currentLanguage struct {
+	sync.RWMutex
+	fn func() string
+}
+
+// SetCurrentLanguage installs the process-wide runtime language resolver and
+// returns the previously installed resolver. The resolver is snapshotted under
+// the lock, but always invoked after releasing it so callbacks may re-enter
+// this package (including by replacing the resolver).
+func SetCurrentLanguage(fn func() string) (previous func() string) {
+	currentLanguage.Lock()
+	previous = currentLanguage.fn
+	currentLanguage.fn = fn
+	currentLanguage.Unlock()
+	return previous
+}
 
 // ActiveLanguage resolves the language for backend display strings. Precedence:
 // the runtime hook (settings table, via the server) over an unwired fallback of
-// "ko". Production always wires CurrentLanguage, so a fresh deploy resolves to the
+// "ko". Production always wires SetCurrentLanguage, so a fresh deploy resolves to the
 // configured default (DefaultLanguage = "en") through that hook; the "ko" fallback
 // only applies when the hook is absent (unit tests / standalone), so the Korean
 // localization golden tests hold without each having to pin the language.
 func ActiveLanguage() string {
-	if CurrentLanguage != nil {
-		if v := NormalizeLanguage(CurrentLanguage()); v != "" {
+	currentLanguage.RLock()
+	fn := currentLanguage.fn
+	currentLanguage.RUnlock()
+	if fn != nil {
+		if v := NormalizeLanguage(fn()); v != "" {
 			return v
 		}
 	}

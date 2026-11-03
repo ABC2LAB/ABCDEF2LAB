@@ -23,7 +23,7 @@ func TestOutputLanguageCacheFollowsSettings(t *testing.T) {
 	}
 	defer m.Close()
 	prev, hadPrev, _ := m.pg.GetSetting(settingOutputLanguage)
-	t.Cleanup(func() { config.CurrentLanguage = nil })
+	t.Cleanup(func() { config.SetCurrentLanguage(nil) })
 	// defer (not t.Cleanup) so the restore runs before the deferred m.Close.
 	defer func() {
 		if hadPrev {

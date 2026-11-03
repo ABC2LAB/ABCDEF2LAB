@@ -74,12 +74,12 @@ const goalsScopeTail = `
 // the langDirective tail can't drift between runtime and test. EngagementDescription
 // is intentionally left empty: the task description rides in the user message, not
 // the {{.EngagementDescription}} var (see DecomposeGoalsWithProvider).
-func goalsSystem(dataDir string, withScope bool) string {
-	sys := renderSystem("goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()})
+func goalsSystem(ctx context.Context, dataDir string, withScope bool) string {
+	sys := renderSystem(ctx, "goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()})
 	if withScope {
 		sys += goalsScopeTail
 	}
-	return sys + langDirective(resolveOutputLang())
+	return sys + langDirective(resolveOutputLang(ctx))
 }
 
 // GoalSpec is one decomposed objective.
@@ -146,7 +146,7 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// tail last so a DB-edited body can't drop it. Description rides in the user
 	// message, NOT the {{.EngagementDescription}} var, so a prompt can't inject it twice.
 	withScope := as != nil && taskID > 0
-	sys := goalsSystem(dataDir, withScope)
+	sys := goalsSystem(ctx, dataDir, withScope)
 	// set_constraints 始终可用(不依赖 asset store):正文已含「先抽操作约束再拆目标」这步
 	// (可在 agent 编辑页改措辞),这里只需接上工具。
 	tools := []actool.CoreTool{tsx.setGoals(), tsx.setConstraints()}

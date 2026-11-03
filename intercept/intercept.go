@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,6 +25,9 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 )
+
+// ErrConfigurationUnavailable never includes stored patterns or DB diagnostics.
+var ErrConfigurationUnavailable = errors.New("통제 규칙 설정을 확인할 수 없어 실행을 차단했습니다")
 
 // 사용자에게 노출되는 가로채기 판정·승인 메시지(한국어). judge 판정 결과·규칙 메시지는
 // 승인 기록(reason)·활동 스트림·409 응답으로 표시된다. 성능에 영향을 주는 에이전트 두뇌
@@ -179,11 +183,16 @@ func (i *Interceptor) Invalidate() {
 }
 
 func (i *Interceptor) loadLocked() error {
+	if i.db == nil || i.db.DB == nil {
+		log.Print("[intercept] configuration_load_failed reason=database_unavailable")
+		return ErrConfigurationUnavailable
+	}
 	rules, err := i.db.ListInterceptRules()
 	if err != nil {
-		return err
+		log.Print("[intercept] configuration_load_failed reason=rules_unavailable")
+		return ErrConfigurationUnavailable
 	}
-	var out []compiledRule
+	out := make([]compiledRule, 0, len(rules))
 	for _, r := range rules {
 		if !r.Enabled {
 			continue
@@ -192,34 +201,36 @@ func (i *Interceptor) loadLocked() error {
 		if r.MatchType == "regex" {
 			re, err := regexp.Compile(r.Pattern)
 			if err != nil {
-				continue // skip rules with bad regex rather than crashing
+				log.Printf("[intercept] configuration_load_failed reason=invalid_regex rule_id=%d", r.ID)
+				return ErrConfigurationUnavailable
 			}
 			cr.re = re
 		}
 		out = append(out, cr)
 	}
-	i.cached = out
-
 	// Load enabled-tools set from settings, falling back to hard-coded defaults.
-	val, ok, _ := i.db.GetSetting("intercept_enabled_tools")
+	val, ok, err := i.db.GetSetting("intercept_enabled_tools")
+	if err != nil {
+		log.Print("[intercept] configuration_load_failed reason=enabled_tools_unavailable")
+		return ErrConfigurationUnavailable
+	}
+	enabledTools := make(map[string]bool)
 	if !ok {
-		m := make(map[string]bool, len(defaultEnabledTools))
 		for _, n := range defaultEnabledTools {
-			m[n] = true
+			enabledTools[n] = true
 		}
-		i.enabledTools = m
 	} else {
-		var names []string
-		if json.Unmarshal([]byte(val), &names) != nil {
-			i.enabledTools = map[string]bool{}
-		} else {
-			m := make(map[string]bool, len(names))
-			for _, n := range names {
-				m[n] = true
-			}
-			i.enabledTools = m
+		names, err := parseEnabledTools(val)
+		if err != nil {
+			log.Print("[intercept] configuration_load_failed reason=enabled_tools_invalid")
+			return ErrConfigurationUnavailable
+		}
+		for _, n := range names {
+			enabledTools[n] = true
 		}
 	}
+	// Publish both caches only after the entire configuration is valid.
+	i.cached, i.enabledTools = out, enabledTools
 	return nil
 }
 
@@ -243,42 +254,62 @@ func (i *Interceptor) rules() ([]compiledRule, error) {
 	return i.cached, nil
 }
 
-// IsToolEnabled returns true if the named tool is in the intercept-enabled set
-// (i.e. it should enter the rule-matching path). Uses the same double-check lock
-// pattern as rules().
+// IsToolEnabled conservatively routes failed loads to Match's denial path.
+// Callers that can report configuration errors should use CheckToolEnabled.
 func (i *Interceptor) IsToolEnabled(name string) bool {
+	enabled, err := i.CheckToolEnabled(name)
+	return enabled || err != nil
+}
+
+// CheckToolEnabled distinguishes an explicitly excluded tool from a failed load.
+func (i *Interceptor) CheckToolEnabled(name string) (bool, error) {
 	i.mu.RLock()
 	if i.enabledTools != nil {
 		v := i.enabledTools[name]
 		i.mu.RUnlock()
-		return v
+		return v, nil
 	}
 	i.mu.RUnlock()
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.enabledTools == nil {
-		_ = i.loadLocked()
+		if err := i.loadLocked(); err != nil {
+			return false, err
+		}
 	}
-	return i.enabledTools[name]
+	return i.enabledTools[name], nil
 }
 
 // GetEnabledTools returns the ordered list of tool names that are currently
 // configured to enter the intercept rule system. When the setting has never been
 // saved the hard-coded default list is returned.
 func (i *Interceptor) GetEnabledTools() ([]string, error) {
+	if i.db == nil || i.db.DB == nil {
+		log.Print("[intercept] configuration_load_failed reason=database_unavailable")
+		return nil, ErrConfigurationUnavailable
+	}
 	val, ok, err := i.db.GetSetting("intercept_enabled_tools")
 	if err != nil {
-		return nil, err
+		log.Print("[intercept] configuration_load_failed reason=enabled_tools_unavailable")
+		return nil, ErrConfigurationUnavailable
 	}
 	if !ok {
 		out := make([]string, len(defaultEnabledTools))
 		copy(out, defaultEnabledTools)
 		return out, nil
 	}
+	names, err := parseEnabledTools(val)
+	if err != nil {
+		log.Print("[intercept] configuration_load_failed reason=enabled_tools_invalid")
+	}
+	return names, err
+}
+
+func parseEnabledTools(value string) ([]string, error) {
 	var names []string
-	if err := json.Unmarshal([]byte(val), &names); err != nil {
-		return []string{}, nil
+	if json.Unmarshal([]byte(value), &names) != nil || names == nil {
+		return nil, ErrConfigurationUnavailable
 	}
 	return names, nil
 }
@@ -286,6 +317,9 @@ func (i *Interceptor) GetEnabledTools() ([]string, error) {
 // SetEnabledTools persists the list of tool names that should enter the intercept
 // rule system, then invalidates the cache so the next call picks up the new list.
 func (i *Interceptor) SetEnabledTools(tools []string) error {
+	if tools == nil {
+		tools = []string{}
+	}
 	b, err := json.Marshal(tools)
 	if err != nil {
 		return err
@@ -517,10 +551,14 @@ func judgeActionLabel(action string) string {
 
 // Match evaluates the rule list (priority DESC) against a tool call.
 // Returns (Decision, true) for the first matching enabled rule, or
-// (Decision{}, false) if no rule matches.
+// (Decision{}, false) if no rule matches. An invalid/unavailable configuration
+// returns an unattributed denial; it must not enter the no-match fallback.
 func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	rules, err := i.rules()
-	if err != nil || len(rules) == 0 {
+	if err != nil {
+		return Decision{Action: "deny", Message: ErrConfigurationUnavailable.Error()}, true
+	}
+	if len(rules) == 0 {
 		return Decision{}, false
 	}
 	for _, r := range rules {

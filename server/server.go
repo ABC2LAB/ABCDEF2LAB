@@ -112,9 +112,10 @@ const (
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	m      *Manager
-	engine *Engine
-	ctx    context.Context
+	m            *Manager
+	engine       *Engine
+	ctx          context.Context
+	runtimeHooks agent.RuntimeHooks // immutable callbacks owned by this server
 
 	skillDir string // root directory for skill subdirectories
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
@@ -246,6 +247,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Fatalf("[E2] private execution store unavailable; server startup stopped: %v", err)
 	}
 	s.engine.controlledIdle = s.parkControlledReadTask
+	s.outputLang.Store(s.loadOutputLanguage())
+	s.runtimeHooks = s.buildRuntimeHooks()
+	s.ctx = agent.WithRuntimeHooks(s.ctx, s.runtimeHooks)
+	s.engine.runtimeHooks = &s.runtimeHooks
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
@@ -270,65 +275,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
-		agent.PromptOverride = func(key string) (string, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil {
-				return "", false
-			}
-			t, err := m.pg.CurrentPrompt(a.ID)
-			if err != nil || t == "" {
-				return "", false
-			}
-			return t, true
-		}
-		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
-		agent.WrapupOverride = func(key string) (string, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil || a.WrapupPrompt == "" {
-				return "", false
-			}
-			return a.WrapupPrompt, true
-		}
-		// Wire DB-stored wrap-up turn budgets. 0 / missing → built-in per-agent default.
-		agent.WrapupMaxTurnsOverride = func(key string) (int, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil || a.WrapupMaxTurns <= 0 {
-				return 0, false
-			}
-			return a.WrapupMaxTurns, true
-		}
-		// Wire DB-stored TASK-TIMEOUT wrap-up prompt/turns (worker/planner). Empty/0 → default.
-		agent.WrapupTaskTimeoutOverride = func(key string) (string, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil || a.TaskTimeoutWrapupPrompt == "" {
-				return "", false
-			}
-			return a.TaskTimeoutWrapupPrompt, true
-		}
-		agent.WrapupTaskTimeoutTurnsOverride = func(key string) (int, bool) {
-			a, err := m.pg.GetAgentByKey(key)
-			if err != nil || a == nil || a.TaskTimeoutWrapupMaxTurns <= 0 {
-				return 0, false
-			}
-			return a.TaskTimeoutWrapupMaxTurns, true
-		}
-		// Wire the user-facing output language. Precedence: the runtime setting a
-		// user picked in the UI (settings table) over the bootstrap default
-		// (config.Language() = ARTEX_LANG > config file > "ko"). Resolved once
-		// here and cached in s.outputLang; putSettings refreshes the cache, so a
-		// language change in the UI applies to the next agent turn without a
-		// restart. Both agent.OutputLanguage (langDirective + wrap-up
-		// language tail for LLM-generated text) and config.CurrentLanguage (backend
-		// enum labels such as severity/status) resolve through the same closure, so
-		// generated text and fixed backend strings share one chosen language.
-		s.outputLang.Store(s.loadOutputLanguage())
-		resolveLang := s.outputLanguage
-		agent.OutputLanguage = resolveLang
-		config.CurrentLanguage = resolveLang
-		notify.Lang = resolveLang                       // 푸시·이메일의 심각도·상태 라벨도 같은 언어를 따른다
-		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
-		domainReg := buildDomainReg(m.Assets())
-		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
+		// Backend message catalogs remain process-wide; their callback access is
+		// synchronized. Agent prompts and tools use the server-owned bundle.
+		config.SetCurrentLanguage(s.outputLanguage)
+		notify.SetLanguageResolver(s.outputLanguage)
 		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
 		s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
 		if err := s.seedFindingRetester(); err != nil {
@@ -1057,7 +1007,10 @@ func (s *Server) Handler() http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
-	return root
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := agent.WithRuntimeHooks(r.Context(), s.runtimeHooks)
+		root.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // --- handlers ---

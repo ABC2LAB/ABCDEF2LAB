@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -13,17 +14,16 @@ const findingIDGuidance = "\n\n**漏洞编号约定**：finding_id 是独立漏�
 // The server supplies the persisted setting. A missing setting/host is off.
 // Consulted at assembly and again on writes so an already-running session
 // cannot keep binding after the user switches the feature off.
-var FindingTrafficBindingEnabled func() bool
-
-func findingTrafficBindingEnabled() bool {
-	return FindingTrafficBindingEnabled != nil && FindingTrafficBindingEnabled()
+func findingTrafficBindingEnabled(ctx context.Context) bool {
+	h := RuntimeHooksFrom(ctx).FindingTrafficBindingEnabled
+	return h != nil && h()
 }
 
 // Applied after ToolResolve: user descriptions and prompts remain intact, while
 // all actual reporters (including Planner and custom chat agents) see the same
 // API contract. Disabled/unbound tools are never reintroduced here.
-func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.CoreTool, string) {
-	if !findingTrafficBindingEnabled() {
+func findingWorkflowTools(ctx context.Context, agentKey string, tools []actool.CoreTool) ([]actool.CoreTool, string) {
+	if !findingTrafficBindingEnabled(ctx) {
 		out := make([]actool.CoreTool, 0, len(tools))
 		for _, tool := range tools {
 			if tool.Name() == "bind_finding_traffic" {

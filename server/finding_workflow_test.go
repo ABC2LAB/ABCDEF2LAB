@@ -40,7 +40,7 @@ func workflowTool(t *testing.T, tools []actool.CoreTool, name string) actool.Cor
 func TestFindingWorkflowAutoHintToPlannerAndSetting(t *testing.T) {
 	s, initial, request := trafficEvidenceServer(t)
 	pg := s.m.pg
-	ctx := context.Background()
+	ctx := agent.WithRuntimeHooks(context.Background(), s.runtimeHooks)
 	if _, err := pg.Exec(`DELETE FROM settings WHERE key=$1`, settingAgentTrafficBinding); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestFindingWorkflowMigrationPreservesUserConfiguration(t *testing.T) {
 func TestFindingWorkflowReporterBindsBeforeWritingReport(t *testing.T) {
 	s, f, request := trafficEvidenceServer(t)
 	pg := s.m.pg
-	ctx := context.Background()
+	ctx := agent.WithRuntimeHooks(context.Background(), s.runtimeHooks)
 	if err := pg.SetBool(settingAgentTrafficBinding, true); err != nil {
 		t.Fatal(err)
 	}

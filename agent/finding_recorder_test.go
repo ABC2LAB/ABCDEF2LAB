@@ -51,9 +51,7 @@ func TestReportFindingOptionalTrafficWithoutCapture(t *testing.T) {
 }
 
 func TestReportFindingAtomicContract(t *testing.T) {
-	old := FindingTrafficBindingEnabled
-	FindingTrafficBindingEnabled = func() bool { return true }
-	t.Cleanup(func() { FindingTrafficBindingEnabled = old })
+	ctx := WithRuntimeHooks(t.Context(), RuntimeHooks{FindingTrafficBindingEnabled: func() bool { return true }})
 	d := testDB(t)
 	defer d.Close()
 	task, err := d.CreateTask("report contract", "fixture", nil, 0, 0)
@@ -69,7 +67,7 @@ func TestReportFindingAtomicContract(t *testing.T) {
 	ts.notifyFinding = func(int64, string) { notices++ }
 	call := func(body string) string {
 		t.Helper()
-		res, err := ts.addFinding().Call(t.Context(), json.RawMessage(body), nil)
+		res, err := ts.addFinding().Call(ctx, json.RawMessage(body), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
