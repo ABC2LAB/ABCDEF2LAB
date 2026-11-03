@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -201,6 +202,11 @@ func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority
 		return 0, err
 	}
 	defer tx.Rollback()
+	if kind == KindFinding {
+		if err := rejectControlledTaskTx(context.Background(), tx, 0, s.expID, 0); err != nil {
+			return 0, err
+		}
+	}
 	var id int64
 	if err := tx.QueryRow(`
 INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
@@ -266,8 +272,27 @@ ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, from, re
 // SetNodeState updates any node's state (never deletes). content_version bumps
 // so a folded member's state flip invalidates its digest's cached body (§5.3).
 func (s *ExplorationStore) SetNodeState(id int64, state string) error {
-	_, err := s.db.Exec(`UPDATE exploration_nodes SET state=$1, blocked_reason=NULL, content_version=content_version+1 WHERE id=$2 AND exploration_id=$3`, state, id, s.expID)
-	return err
+	var kind string
+	err := s.db.QueryRow(`SELECT kind FROM exploration_nodes WHERE id=$1 AND exploration_id=$2`, id, s.expID).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if kind != KindFinding {
+		// Intent/fact mutation must not acquire the finding evidence lock. The SQL
+		// condition also refuses a concurrent change into a finding.
+		_, err = s.db.Exec(`UPDATE exploration_nodes SET state=$1,blocked_reason=NULL,content_version=content_version+1 WHERE id=$2 AND exploration_id=$3 AND kind<>'finding'`, state, id, s.expID)
+		return err
+	}
+	return s.db.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if err := rejectControlledTaskTx(context.Background(), tx, 0, s.expID, id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`UPDATE exploration_nodes SET state=$1,blocked_reason=NULL,content_version=content_version+1 WHERE id=$2 AND exploration_id=$3 AND kind='finding'`, state, id, s.expID)
+		return err
+	})
 }
 
 // UpdateGoalPayload rewrites a goal node's payload text (and optional vulnclass);

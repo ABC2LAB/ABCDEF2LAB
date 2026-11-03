@@ -91,6 +91,10 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 		return nil, nil, false, err
 	}
 	defer tx.Rollback()
+	// Initial finding storage does not authorize a controlled retest.
+	if err := rejectControlledFindingTx(ctx, tx, findingID); err != nil {
+		return nil, nil, false, err
+	}
 	var title string
 	var snapshot []byte
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(f.name,''), NULLIF(f.vulnclass,''), '未分类'),
@@ -180,13 +184,20 @@ func (d *DB) FailPendingRetestForConversation(conversationID int64, reason strin
 	return err
 }
 
-func (d *DB) StartFindingRetest(ctx context.Context, id int64) (bool, error) {
-	res, err := d.ExecContext(ctx, `UPDATE finding_retests SET status='running', started_at=now() WHERE id=$1 AND status='pending'`, id)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n == 1, err
+func (d *DB) StartFindingRetest(ctx context.Context, id int64) (started bool, err error) {
+	err = d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+		if err := rejectControlledRetestTx(ctx, tx, id, 0); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE finding_retests SET status='running',started_at=now() WHERE id=$1 AND status='pending'`, id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		started = n == 1
+		return err
+	})
+	return
 }
 
 // RecordFindingRetestResult never accepts a finding ID: ownership comes from the
@@ -202,17 +213,22 @@ func (d *DB) RecordFindingRetestResult(ctx context.Context, conversationID int64
 	if len(summary) > 16000 || len(evidence) > 128000 {
 		return errors.New("复测结论过长（summary ≤ 16KB，evidence ≤ 128KB）")
 	}
-	res, err := d.ExecContext(ctx, `UPDATE finding_retests SET verdict=$2,summary=$3,evidence=$4
+	return d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+		if err := rejectControlledRetestTx(ctx, tx, 0, conversationID); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE finding_retests SET verdict=$2,summary=$3,evidence=$4
 	WHERE conversation_id=$1 AND status='running' AND (verdict='' OR (verdict=$2 AND summary=$3 AND evidence=$4))`, conversationID, verdict, summary, evidence)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err != nil {
-		return err
-	} else if n == 0 {
-		return ErrRetestNotRunning
-	}
-	return nil
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			return ErrRetestNotRunning
+		}
+		return nil
+	})
 }
 
 // FinishFindingRetest seals the result. Cancellation/failure takes precedence
@@ -227,6 +243,15 @@ func (d *DB) FinishFindingRetest(id int64, status, reason string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if status == "completed" {
+		if err := rejectControlledRetestTx(context.Background(), tx, id, 0); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1)`, findingEvidenceLockKey); err != nil {
+			return err
+		}
+	}
 	// Lock the finding before the retest, matching creation and cascading deletion.
 	var findingID int64
 	err = tx.QueryRow(`SELECT f.id FROM findings f WHERE f.id=(SELECT finding_id FROM finding_retests WHERE id=$1) FOR UPDATE OF f`, id).Scan(&findingID)
