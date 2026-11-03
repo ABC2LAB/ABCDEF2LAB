@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"sync/atomic"
@@ -43,11 +44,18 @@ func TestDeniedPeerDoesNotNeedAnIssuanceSlot(t *testing.T) {
 			t.Fatal(err)
 		}
 		var reply wireResponse
-		err = json.NewDecoder(conn).Decode(&reply)
-		conn.Close()
+		decoder := json.NewDecoder(conn)
+		err = decoder.Decode(&reply)
 		if err != nil || reply.Error != wireRejected || reply.Response != (Response{}) {
+			conn.Close()
 			t.Fatalf("denial %d used issuance capacity: %+v err=%v", i, reply, err)
 		}
+		// A reply alone does not prove the denied peer fd was closed.
+		if _, err := io.ReadAll(io.MultiReader(decoder.Buffered(), conn)); err != nil {
+			conn.Close()
+			t.Fatalf("denial %d did not close after its response: %v", i, err)
+		}
+		conn.Close()
 	}
 	if len(s.sem) != maxInFlight {
 		t.Fatal("rejected peers changed issuance occupancy")
