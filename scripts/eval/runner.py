@@ -49,7 +49,7 @@ from runner_engine import (  # noqa: E402
     AdminSecret, EngineAPIError, collect_findings, load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
-    DRAINED_MARKER, SEALED_MARKER, EvidenceDir, GatewayFiles, MeterFiles, sequence_complete,
+    DRAINED_MARKER, SEALED_MARKER, EvidenceDir, GatewayFiles, MeterFiles, forwarded_count, sequence_complete,
 )
 from runner_llm import judge_llm  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
@@ -332,7 +332,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure("observer_count_mismatch")
     rows = _step(state, "meter_read_failed", meter.engine_rows)
     sealed = _step(state, "meter_read_failed", lambda: meter.marker(SEALED_MARKER))
-    forwarded = sum(1 for row in rows if row["kind"] == "request")
+    forwarded = _step(state, "meter_log_inconsistent", lambda: forwarded_count(rows))
     if sealed is None or not sequence_complete(rows) or forwarded != drained.get("forwarded_requests"):
         raise RunFailure("meter_log_inconsistent")
     meter_summary = {

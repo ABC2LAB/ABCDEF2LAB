@@ -569,6 +569,20 @@ class TestFailures(unittest.TestCase):
         self.assertEqual(result["window"]["host_watch"]["samples"], 1)
         self.assertEqual(evidence.files["window-watch.json"]["reasons"], [])
 
+    def test_upgraded_stream_rows_are_forwarded_requests(self):
+        # 계측기가 drain 마커에 센 전달 2건 = request 1 + stream 1. rejected는 빼고 대조해야 완료다.
+        def mixed(p, m, c):
+            m.per_poll = 0
+            m.rows_override = [{"seq": 1, "kind": "request"}, {"seq": 2, "kind": "stream"},
+                               {"seq": 3, "kind": "rejected"}]
+            m.drained_forwarded = 2
+        result, _, _, evidence = run(mixed)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(evidence.files["meter-summary.json"]["forwarded_requests"], 2)
+        result, _, _, _ = run(lambda p, m, c: (mixed(p, m, c), setattr(m, "rows_override", m.rows_override + [
+            {"seq": 4, "kind": "upgrade"}])))
+        self.assertEqual(result["reasons"], ["meter_log_inconsistent"])
+
     def test_failed_step_names_the_failing_check(self):
         # 근거를 쓴 뒤 점검 결과로 실패해도 마지막 단계(근거 쓰기)가 아니라 실패한 점검이 남는다(스모크에서 발견).
         cases = ((lambda p, m, c: p.probe_status.__setitem__("pre", "invalid"), "pre_probe_invalid"),

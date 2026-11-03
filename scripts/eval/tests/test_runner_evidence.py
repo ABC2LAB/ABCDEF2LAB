@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import stat
 import sys
@@ -13,8 +14,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
-    DRAINED_MARKER, ENGINE_LOG, LLM_VERIFIED_MARKER, OBSERVER_LOG, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
-    sequence_complete,
+    DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, LLM_VERIFIED_MARKER, OBSERVER_LOG, EvidenceDir, EvidenceError,
+    GatewayFiles, MeterFiles, forwarded_count, sequence_complete,
 )
 
 
@@ -102,6 +103,23 @@ class TestMeterFiles(unittest.TestCase):
         self.write(ENGINE_LOG, "".join(json.dumps(r) + "\n" for r in lines) + partial)
         self.assertEqual(self.meter.forwarded(), 2)
         self.assertTrue(sequence_complete(self.meter.engine_rows()))
+
+    def test_upgraded_streams_count_as_forwarded(self):
+        # 동찬 #126 리뷰: 계측기는 upgrade도 전달로 세고 완료 행을 kind=stream으로 쓴다.
+        lines = [engine_row(1), engine_row(2, "stream"), engine_row(3, "rejected")]
+        self.write(ENGINE_LOG, "".join(json.dumps(r) + "\n" for r in lines))
+        self.assertEqual(self.meter.forwarded(), 2)
+        self.assertEqual(forwarded_count([engine_row(1, "stream")]), 1)
+        with self.assertRaises(EvidenceError):
+            forwarded_count([engine_row(1, "upgrade")])
+
+    def test_kinds_match_the_go_meter(self):
+        text = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/proxy.go").read_text(encoding="utf-8")
+        kinds = set(re.findall(r'Kind(?::|\s*=)\s*"([a-z]+)"', text))
+        self.assertEqual(kinds, set(ENGINE_KINDS))
+        # rejected가 아닌 경로는 전달 건수를 올린다(forwarded++ 한 곳, rejected 분기 뒤).
+        self.assertEqual(text.count("m.forwarded++"), 1)
+        self.assertLess(text.index('Kind: "rejected"'), text.index("m.forwarded++"))
 
     def test_rows_must_have_exact_fields_and_unique_seq(self):
         for rows in ([engine_row(1) | {"path": "/x"}], [{k: v for k, v in engine_row(1).items() if k != "kind"}],

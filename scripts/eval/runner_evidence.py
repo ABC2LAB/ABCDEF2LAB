@@ -26,6 +26,19 @@ _ENGINE_ROW = frozenset({"seq", "kind", "method", "status", "started_at", "compl
 _OBSERVER_ROW = frozenset({"seq", "decision", "method", "status", "started_at", "completed_at", "response_bytes"})
 
 
+# 계측기(cmd/eval-meter engineMeter)가 대상에 전달한 행 종류. upgrade(WebSocket 등)는 완료 행이 "stream"이고
+# 계측기 전달 건수(forwarded)에 들어간다. "rejected"(seal 뒤 거부)는 전달이 아니다. Go 쪽과 같은지 테스트로 고정.
+FORWARDED_KINDS = frozenset({"request", "stream"})
+ENGINE_KINDS = FORWARDED_KINDS | {"rejected"}
+
+
+def forwarded_count(rows: list[dict]) -> int:
+    """계측기와 같은 기준의 전달 건수. 모르는 종류가 있으면 기록을 믿을 수 없으므로 거부한다."""
+    if any(row.get("kind") not in ENGINE_KINDS for row in rows):
+        raise EvidenceError("meter_log_invalid")
+    return sum(1 for row in rows if row["kind"] in FORWARDED_KINDS)
+
+
 class EvidenceError(RuntimeError):
     """근거 저장·읽기 실패. 고정 코드만 담는다."""
 
@@ -135,8 +148,8 @@ class MeterFiles:
         return _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW)
 
     def forwarded(self) -> int:
-        """대상에 전달한 요청 수(seal 후 거부 건 제외)."""
-        return sum(1 for row in self.engine_rows() if row["kind"] == "request")
+        """대상에 전달한 요청 수(stream 포함, seal 후 거부 건 제외)."""
+        return forwarded_count(self.engine_rows())
 
     def observer_rows(self) -> list[dict]:
         return _rows(_read_owned(self.path, OBSERVER_LOG), _OBSERVER_ROW)
