@@ -4,7 +4,7 @@
 **한 번** 실행하고, 결과 기록(완료+서명 또는 무효+사유)을 정확히 하나 남긴다. 자동 재시도는 없다. 실패하면 사유를 남기고
 끝나며, 다시 돌리면 새 `run_id`의 새 회차다. 실패 회차도 결과 기록이 남으므로 집계에서 건수와 사유를 보고한다.
 
-> 상태: 개발 머신에서 local 백엔드(가짜 LLM) 스모크를 마쳤다(아래 "스모크 실측"). api 백엔드 스모크와 평가 머신 확인은 아직이다.
+> 상태: 개발 머신에서 local 백엔드(가짜 LLM)와 api 백엔드(OpenRouter) 스모크를 마쳤다(아래 "스모크 실측"). 평가 머신 확인은 아직이다.
 > 아래 "아직 안 된 것"을 먼저 확인한다.
 
 ## 실행
@@ -189,7 +189,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 - **개선 후 판정 레코드:** findings만 수집한다. 구조화 판정 레코드는 물리 형식(#18) 결정 후 추가 신호로 붙인다.
 - **tmpfs 사용량:** 회차 메모리(엔진 DB·엔진 데이터)의 seal 시점 사용량을 아직 재지 않는다. 결과 기록(완료·무효 모두)에
   `tmpfs_usage: "not_measured"`를 남기며, 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다.
-- **아직 실측하지 않은 것:** OpenRouter generation 조회의 `provider_responses`·엔드포인트 ID 형태(api 백엔드 스모크), 엔진이 대상에 실제로 요청을 보낼 때의 계측기 전달 건수·drain(가짜 LLM으로는 엔진이 요청을 내지 않음), tmpfs 사용량.
+- **아직 실측하지 않은 것:** tmpfs 사용량, 평가 머신에서의 같은 항목들. api 백엔드의 정밀도(양자화) 고정(OpenRouter `quantizations`)은 아직 요청에 넣지 않는다(후속 검토).
 
 ## 스모크 실측 (11/03, 개발 머신)
 
@@ -210,6 +210,13 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 - **회차 밖 컨테이너의 namespace 공유(11/03):** 구간 중 `docker run --network container:<대상>`(망 연결 이벤트 없음) →
   `window_boundary_changed`(회차 밖 컨테이너 create·start), 무효·미서명. 같은 날 정상 회차는 러너 post probe의 컨테이너 이벤트
   5건(create·attach·start·die·destroy)만 cidfile ID로 허용되고 완료·서명.
+- **api 백엔드 회차 1회(11/03, 서명됨):** 모델 `qwen/qwen3.6-35b-a3b`, 고정 제공자 slug `deepinfra`(기대 표시 이름 `DeepInfra`),
+  fallback 끔, 개선 후 엔진(dev 9b06c05 빌드, 정책 모드 external), 예산 240초·요청 100건. 엔진이 요청 예산 100건을 약 2분 만에 써서
+  그때 봉인했다(계측기 전달 100 = `total_requests`, 봉인 뒤 거부 0, drain 시 진행 0). LLM 게이트웨이는 응답 48건이 모두 generation
+  ID를 가졌고 봉인 뒤 엔진의 LLM 요청 12건을 503으로 거부했다. generation 조회 48건 전부 검증: 응답 제공자 `DeepInfra`,
+  `provider_responses`는 generation마다 1건(엔드포인트 ID 1종, 상태 200×45·499×3 — 499는 봉인으로 끊긴 요청), fallback 시도 0.
+  부정 연결 13개 경로·구간 감시(호스트 리슨 표본 62, 최대 공백 2.0초, 데몬 이벤트 경계 변경 0) 통과. 구간 안 신규 해결 3건이
+  `isolated_window`로 귀속됐고 findings 1건, 채점은 판정 미수집이라 코어 GT 9개 전부 판단불가. API 키는 비밀 env 파일로만 넘겼다.
 - **스모크로 고친 것:** `python3 -I` 실행 시 같은 디렉터리 모듈 import 실패, 배포판 데몬의 빈 `Platform.Name`을 출력 오류로 거부,
   internal 망 DNS 실패 종류, 무효 기록의 `failed_step`이 마지막 단계(근거 쓰기)로 남던 것.
 - **이 머신 한정 설정:** 호스트 리슨 허용 목록에 WSL DNS 터널링 리졸버 `10.255.255.254:53`(근거 포함). 엔진 이미지는 호스트에
