@@ -45,6 +45,26 @@ func TestBudgetAuthorityCrashRestartClosesPreviousReady(t *testing.T) {
 	if err := d.QueryRowContext(ctx, `SELECT pg_terminate_backend($1)`, a.backendID).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate authority backend: terminated=%t err=%v", terminated, err)
 	}
+	// pg_terminate_backend acknowledges the signal, not backend exit. Wait for
+	// its session (and advisory lock) to disappear before exercising restart.
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var present bool
+		if err := d.QueryRowContext(waitCtx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1)`, a.backendID).Scan(&present); err != nil {
+			t.Fatal("authority backend termination could not be confirmed")
+		}
+		if !present {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-waitCtx.Done():
+			t.Fatal("authority backend termination timed out")
+		}
+	}
 	next := budgetTestAuthority(t, d, now.Add(time.Second))
 	if next.Epoch() == first.Epoch {
 		t.Fatal("crash restart reused epoch")
