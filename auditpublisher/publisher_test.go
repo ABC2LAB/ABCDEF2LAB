@@ -242,6 +242,48 @@ func sealAccess(f *publisherFixture, p *Publisher) auditcheckpoint.Access {
 			Kind: auditcheckpoint.Seal, Previous: cp, Candidate: cp}}
 }
 
+func TestOpenTransfersRootScopeOnEveryValidationOutcome(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := []struct {
+		name   string
+		ctx    context.Context
+		change func(*Config, *syntheticRootScope)
+	}{
+		{"nil-context", nil, nil},
+		{"canceled-context", canceled, nil},
+		{"nil-store", context.Background(), func(c *Config, _ *syntheticRootScope) { c.Store = nil }},
+		{"invalid-limit", context.Background(), func(c *Config, _ *syntheticRootScope) { c.MaxSnapshotBytes = 0 }},
+		{"nil-binder", context.Background(), func(c *Config, _ *syntheticRootScope) { c.BindCloseWitness = nil }},
+		{"nil-root-context", context.Background(), func(_ *Config, r *syntheticRootScope) { r.ctx = nil }},
+		{"canceled-root-context", context.Background(), func(_ *Config, r *syntheticRootScope) { r.ctx = canceled }},
+		{"nil-anchor", context.Background(), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := &syntheticRootScope{ctx: context.Background()}
+			config := Config{Store: &auditcheckpoint.Store{}, RootScope: root, MaxSnapshotBytes: 1,
+				BindCloseWitness: func(*CloseWitness) error { return nil }}
+			if tc.change != nil {
+				tc.change(&config, root)
+			}
+			if p, err := Open(tc.ctx, config); p != nil || !errors.Is(err, ErrConfig) {
+				t.Fatalf("invalid Open = %v, %v", p, err)
+			}
+			if got := root.released.Load(); got != 1 {
+				t.Fatalf("root Release count = %d, want 1", got)
+			}
+		})
+	}
+	if p, err := Open(context.Background(), Config{}); p != nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("nil root Open = %v, %v", p, err)
+	}
+	var typedNil *syntheticRootScope
+	if p, err := Open(context.Background(), Config{RootScope: typedNil}); p != nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("typed-nil root Open = %v, %v", p, err)
+	}
+}
+
 func TestCloseWitnessExactBindingAndRealClose(t *testing.T) {
 	f := fixture(t)
 	p := f.open(t)
@@ -351,6 +393,9 @@ func TestPublisherDurableHeaderAppendSeal(t *testing.T) {
 	if err := p.Record(context.Background(), intent(f.host.scope, 2)); !errors.Is(err, ErrClosed) {
 		t.Fatalf("record after seal = %v", err)
 	}
+	if _, err := p.Seal(context.Background()); !errors.Is(err, ErrClosed) || f.root.released.Load() != 1 {
+		t.Fatalf("repeated Seal = %v, root Release count = %d", err, f.root.released.Load())
+	}
 }
 
 func TestPublisherHeaderRefusalLeavesFileAndNoRecorder(t *testing.T) {
@@ -409,6 +454,9 @@ func TestPublisherAbortAfterSetupFailurePreservesOpenHead(t *testing.T) {
 	}
 	if err := p.Record(context.Background(), intent(f.host.scope, 1)); !errors.Is(err, ErrClosed) {
 		t.Fatalf("aborted publisher accepted a record: %v", err)
+	}
+	if err := p.Abort(); !errors.Is(err, ErrClosed) || f.root.released.Load() != 1 {
+		t.Fatalf("repeated Abort = %v, root Release count = %d", err, f.root.released.Load())
 	}
 	if info, err := os.Stat(f.path); err != nil || info.Size() == 0 {
 		t.Fatal("Abort removed the original journal")

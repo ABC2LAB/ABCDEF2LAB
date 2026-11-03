@@ -28,7 +28,9 @@ var (
 // The host must bind its long-held Anchor, directory, exclusive writer scope and
 // revocation Context to this execution. Methods and Release must not reenter the
 // Publisher, start SQL work, or drain a transmitter while Publisher.mu is held.
-// Open takes ownership of a valid lease and releases it on failure/Seal/Abort.
+// Open takes ownership of every nonnil, non-typed-nil lease at call entry,
+// including when validation fails, and releases it on failure/Seal/Abort.
+// A nil or typed-nil RootScope transfers no ownership.
 type RootScope interface {
 	Context() context.Context
 	Anchor() *os.File
@@ -92,12 +94,7 @@ var _ transmit.Recorder = (*Publisher)(nil)
 // Register/current-Head acknowledgement have been verified. A failed Open leaves
 // any created journal on disk for diagnosis and never substitutes a new RunRef.
 func Open(ctx context.Context, config Config) (*Publisher, error) {
-	if ctx == nil || ctx.Err() != nil || config.Store == nil || nilRootScope(config.RootScope) ||
-		config.MaxSnapshotBytes <= 0 || config.MaxSnapshotBytes > auditlog.MaxExtensionBytes || config.BindCloseWitness == nil {
-		return nil, ErrConfig
-	}
-	rootCtx, anchor := config.RootScope.Context(), config.RootScope.Anchor()
-	if rootCtx == nil || rootCtx.Err() != nil || anchor == nil {
+	if nilRootScope(config.RootScope) {
 		return nil, ErrConfig
 	}
 	keepScope := false
@@ -106,6 +103,14 @@ func Open(ctx context.Context, config Config) (*Publisher, error) {
 			config.RootScope.Release()
 		}
 	}()
+	if ctx == nil || ctx.Err() != nil || config.Store == nil ||
+		config.MaxSnapshotBytes <= 0 || config.MaxSnapshotBytes > auditlog.MaxExtensionBytes || config.BindCloseWitness == nil {
+		return nil, ErrConfig
+	}
+	rootCtx, anchor := config.RootScope.Context(), config.RootScope.Anchor()
+	if rootCtx == nil || rootCtx.Err() != nil || anchor == nil {
+		return nil, ErrConfig
+	}
 	ctx, cancel := bindRootContext(ctx, rootCtx)
 	defer cancel()
 	operation, err := newOperationRef()
