@@ -633,6 +633,18 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                 self.assertEqual(list(root.iterdir()), [])
 
 
+class TestCommandLine(unittest.TestCase):
+    def test_isolated_python_runs_the_documented_command(self):
+        # 운영 문서의 실행 형태(python3 -I, 다른 cwd). -I는 스크립트 디렉터리를 sys.path에 올리지 않는다.
+        import subprocess
+        script = Path(runner.__file__).resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            done = subprocess.run([sys.executable, "-I", "-B", str(script), "--help"], cwd=tmp, capture_output=True,
+                                  text=True, timeout=60, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr[-500:])
+        self.assertIn("--side", done.stdout)
+
+
 class TestSignatureKey(unittest.TestCase):
     def test_key_read_only_at_sign_time_from_config_path(self):
         config = parse_runner_config(runner_config())

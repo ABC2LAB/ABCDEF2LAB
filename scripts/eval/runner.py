@@ -26,26 +26,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
-from preflight import PreflightError, load_preflight
-from run_record import read_runner_key, sign_run_record
-from runner_checks import (
+# python3 -I(-P 포함)는 스크립트 디렉터리를 sys.path에 올리지 않는다(score.py와 같은 이유). 같은 디렉터리의
+# 평가 모듈(우리 코드)만 명시적으로 올린다 — cwd·사용자 site-packages는 계속 차단된다.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from preflight import PreflightError, load_preflight  # noqa: E402
+from run_record import read_runner_key, sign_run_record  # noqa: E402
+from runner_checks import (  # noqa: E402
     ExpectedTopology, Listener, allowed_host_listens, check_host_listeners, check_other_publishes, check_topology,
     compare_snapshots, expected_topology, network_snapshot, parse_container, parse_network, policy_sha256,
     read_host_listeners,
 )
-from runner_config import (
+from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE, METER_SERVICE, OBS_SERVICE, TARGET_SERVICE,
     RunDirectory, RunnerConfig,
     RunnerConfigError, RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config,
     new_run_id, plan_run,
 )
-from runner_docker import Docker, DockerError, client_environment, run_docker
-from runner_engine import AdminSecret, EngineAPIError, collect_findings, load_vocabulary, start_task, task_request
-from runner_evidence import DRAINED_MARKER, SEALED_MARKER, EvidenceDir, GatewayFiles, MeterFiles, sequence_complete
-from runner_llm import judge_llm
-from runner_probe import PASS, ProbeOutcome, run_probe
-from snapshot_collector import SnapshotEndpoint, collect_snapshot
-from snapshot_writer import SnapshotContext
+from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
+from runner_engine import (  # noqa: E402
+    AdminSecret, EngineAPIError, collect_findings, load_vocabulary, start_task, task_request,
+)
+from runner_evidence import (  # noqa: E402
+    DRAINED_MARKER, SEALED_MARKER, EvidenceDir, GatewayFiles, MeterFiles, sequence_complete,
+)
+from runner_llm import judge_llm  # noqa: E402
+from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
+from snapshot_collector import SnapshotEndpoint, collect_snapshot  # noqa: E402
+from snapshot_writer import SnapshotContext  # noqa: E402
 
 RESULT_FORMAT = "abc2lab-eval-runner-result-v1"
 TASK_EVIDENCE_FORMAT = "abc2lab-eval-runner-task-v1"
