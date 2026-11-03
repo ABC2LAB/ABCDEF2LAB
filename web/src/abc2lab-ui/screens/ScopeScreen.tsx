@@ -760,7 +760,6 @@ function EndpointRow({ i, s, host }: { i: number; s: ScopeState; host: string })
         />
         <button type="button" className="op-x" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
           <code className="op-p">{e.p}</code>
-          <span className="op-d">{e.d}</span>
           <span className="op-tags">{rowTags(e, on, rule)}</span>
           <Chevron />
         </button>
@@ -831,8 +830,8 @@ function MethodBox({
         />
         <button type="button" className="opm-x" aria-expanded={open} onClick={() => setClosed((v) => !v)}>
           <span className="op-m">{m}</span>
-          <span className="opm-c">
-            {idx.length}개 중 {hs.count}개 포함
+          <span className="opm-c" title={`${idx.length}개 중 ${hs.count}개 포함`}>
+            {hs.count}/{idx.length}
           </span>
           <Chevron />
         </button>
@@ -933,18 +932,8 @@ function ScopeList({ s, host }: { s: ScopeState; host: string }) {
               >
                 <span className="opg-t">{g.t}</span>
                 <span className="opg-d">{g.d}</span>
-                <span className="opg-mix">
-                  {METHODS.map((m) => {
-                    const n = idx.filter((i) => EP[i].m === m).length;
-                    return n ? (
-                      <span key={m} className={cx("mcnt", methodClass(m))}>
-                        {m} {n}
-                      </span>
-                    ) : null;
-                  })}
-                </span>
-                <span className="opg-c">
-                  {idx.length}개 중 {hs.count}개 포함
+                <span className="opg-c" title={`${idx.length}개 중 ${hs.count}개 포함`}>
+                  {hs.count}/{idx.length}
                 </span>
                 <Chevron />
               </button>
@@ -1067,12 +1056,7 @@ export default function ScopeScreen({ target }: { target: Target }) {
       <div className="frame">
         <div className="top">
           <div style={{ minWidth: 0 }}>
-            <Brand style={{ fontSize: 16 }}>
-              ABC2LAB{" "}
-              <span style={{ fontWeight: 500, fontSize: 14, color: "var(--muted)", marginLeft: 4 }}>
-                웹 보안 자동 점검
-              </span>
-            </Brand>
+            <Brand style={{ fontSize: 16 }}>ABC2LAB</Brand>
             <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 3 }}>
               점검 대상 · <span className="t-url">{target.url}</span>
             </div>
@@ -1091,19 +1075,16 @@ export default function ScopeScreen({ target }: { target: Target }) {
             <div className="tile">
               <div className="k">엔드포인트</div>
               <div className="v">{EP.length}</div>
-              <div className="sub">메서드 + 경로 기준 · {GROUPS.length}개 기능</div>
             </div>
             <div className="tile">
               <div className="k">로그인 영역</div>
               <div className="v" style={{ fontSize: 18 }}>
                 확인됨
               </div>
-              <div className="sub">계정 A · B로 접근</div>
             </div>
             <div className="tile">
               <div className="k">승인 후 전송</div>
               <div className="v">{sum.ap}</div>
-              <div className="sub">포함한 상태 변경 요청</div>
             </div>
           </div>
           <ScopeList s={s} host={target.host} />

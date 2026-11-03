@@ -4,7 +4,7 @@ import { ChoiceGroup } from "../components/Choice";
 import { Screen } from "../components/Screen";
 import { Stepper } from "../components/Stepper";
 import { CancelLink, TopBar } from "../components/TopBar";
-import { MockBanner, Pill } from "../components/ui";
+import { MockBanner, Pill, Strong } from "../components/ui";
 import { useGo } from "../nav";
 import type { Target } from "../types";
 
@@ -26,20 +26,29 @@ export default function JobScreen({ target }: { target: Target }) {
         </div>
         <div className="wrap">
           <div className="col">
-            <h1 className="big">거의 다 됐어요</h1>
-            <p className="lead">작업 이름만 정하면 바로 시작할 수 있어요. 리소스는 필요할 때만 조정하면 돼요.</p>
+            <h1 className="big" style={{ marginBottom: 18 }}>
+              작업 설정
+            </h1>
             <div className="stack">
               <div>
                 <label className="fl" htmlFor="j-name">
-                  이름 <span style={{ color: "var(--teal)" }}>*</span>
+                  작업 이름 <span style={{ color: "var(--teal)" }}>*</span>
                 </label>
                 <input className="inp" id="j-name" placeholder="예: shop 정기 점검" />
               </div>
               <div>
                 <label className="fl" htmlFor="j-goal">
-                  목표 <span className="opt">· 선택</span>
+                  점검 목표 <span className="opt">· 선택</span>
                 </label>
-                <input className="inp" id="j-goal" placeholder="예: 로그인 후 주문·결제 흐름의 권한 점검" />
+                <input
+                  className="inp"
+                  id="j-goal"
+                  placeholder="예: 로그인 후 주문·결제 흐름의 권한 점검"
+                  aria-describedby="j-goal-help"
+                />
+                <div className="hint" id="j-goal-help">
+                  비워 두면 <Strong>기본 목표</Strong>로 점검해요.
+                </div>
               </div>
             </div>
             <details className="adv" open style={{ marginTop: 20 }}>
@@ -63,14 +72,14 @@ export default function JobScreen({ target }: { target: Target }) {
                 <span className="fsmall" style={{ fontSize: 14 }}>
                   워커 수 <span className="opt">· 이번 점검만</span>
                 </span>
-                <div className="seg wk-seg" role="group" aria-label="워커 수">
+                <fieldset className="seg wk-seg" aria-label="워커 수">
                   {WORKER_OPTIONS.map((n) => (
                     <button key={n} type="button" aria-pressed={workers === n} onClick={() => setWorkers(n)}>
                       {n}
                       {n === DEFAULT_WORKERS && " (기본)"}
                     </button>
                   ))}
-                </div>
+                </fieldset>
                 <div className="hint" style={{ marginBottom: 18 }}>
                   LLM이 동시에 처리하는 작업 수예요. 늘리면 GPU 부하와 토큰 사용량이 늘어나요. 대상 서버 요청 속도는
                   전송 통제가 제한하므로 워커 수와 관계없어요.

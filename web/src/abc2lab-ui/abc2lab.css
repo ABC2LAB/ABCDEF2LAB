@@ -2000,6 +2000,7 @@ details.adv[open] .chev {
 /* 작업 설정: 워커 수 선택 */
 .wk-seg {
   margin: 2px 0 6px;
+  min-width: 0;
 }
 .wk-seg button {
   min-width: 52px;
@@ -2838,21 +2839,6 @@ h1.big {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.opg-mix {
-  flex: none;
-  display: flex;
-  gap: 5px;
-}
-.mcnt {
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ink);
-  background: var(--soft);
-  border-radius: 4px;
-  padding: 2px 7px;
-  white-space: nowrap;
-}
 .opg-c,
 .opm-c {
   margin-left: 12px;
@@ -2967,17 +2953,9 @@ h1.big {
   border: none;
   padding: 0;
 }
-.op-d {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 14px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .op-tags {
   flex: none;
+  margin-left: auto;
   display: flex;
   gap: 6px;
 }
