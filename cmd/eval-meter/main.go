@@ -12,6 +12,8 @@
 //     container's namespace; the runner, not the probe, owns the expectations.
 //   - llm-gateway: the engine's only route to its LLM. api pins the serving
 //     provider on every request and holds the API key; local forwards as is.
+//   - api-front: publishes the engine API on the host loopback, because a
+//     container on internal networks only cannot publish a port itself.
 //
 // It never logs paths, queries, headers or bodies, never receives the runner
 // signing key and never needs the Docker socket. Only the llm-gateway role may
@@ -37,6 +39,7 @@ import (
 const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream http://HOST:PORT -log-dir PRIVATE_DIR [-allow-path /PATH]\n" +
 	"       eval-meter -role llm-gateway -backend api|local -listen ADDR -upstream ORIGIN -allow-path /PATH -log-dir PRIVATE_DIR\n" +
 	"                  [api: -provider SLUG -generation-path /PATH -verify-attempts N -verify-interval DURATION, key in " + llmKeyEnv + "]\n" +
+	"       eval-meter -role api-front -listen ADDR -upstream http://ENGINE:PORT\n" +
 	"       eval-meter -role probe < PLAN_JSON\n"
 
 const (
@@ -56,6 +59,7 @@ const (
 	roleObserver = "observer"
 	roleProbe    = "probe"
 	roleGateway  = "llm-gateway"
+	roleAPIFront = "api-front"
 )
 
 // Bounds on the gateway's verification so a run cannot wait on it forever.
@@ -109,6 +113,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(stderr, invalidInput)
 		}
 		return runProbe(stdin, stdout, stderr)
+	case roleAPIFront:
+		engine, ok := parseUpstream(*upstream)
+		if !ok || *listen == "" || *logDir != "" || *allowPath != "" {
+			return fail(stderr, invalidInput)
+		}
+		return serve(*listen, newAPIFront(engine), nil, nil, func() error { return nil }, stderr)
 	case roleEngine, roleObserver:
 	case roleGateway:
 		cfg, ok := gatewayFromFlags(*backend, *upstream, *allowPath, *provider, *generationPath, *verifyAttempts,
@@ -160,8 +170,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		handler, seal, finish = g, g.seal, g.close
 	}
+	return serve(*listen, handler, seal, terminate, finish, stderr)
+}
 
-	listener, err := net.Listen("tcp", *listen)
+// serve runs one front until SIGTERM/interrupt; the seal signal only seals.
+func serve(listen string, handler http.Handler, seal func(), terminate func(string), finish func() error,
+	stderr io.Writer) int {
+	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		if err := finish(); err != nil {
 			fmt.Fprintln(stderr, storageUnavailable)
