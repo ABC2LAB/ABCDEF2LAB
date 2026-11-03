@@ -2,7 +2,7 @@
 
 2026-11-02 · 이동찬
 
-상태: **JSON bytes → 로컬 profile resolver의 순수 파서 초안. 실제 파일·profile/provider 연결은 별도 후속이다.** [profile 정책 입력 계약](./local-llm-profile-policy.md)의 host-owned `ProfilePin`을 만들어 기존 `NewProfileResolver`에 전달한다. 기존 서버 설정·provider 선택·캐시·fallback은 바꾸지 않는다.
+상태: **JSON bytes → 로컬 profile resolver의 순수 파서. Linux 파일 로더는 [별도 계약](./local-llm-manifest-file.md)으로 구현했고 실제 profile/provider 연결은 후속이다.** [profile 정책 입력 계약](./local-llm-profile-policy.md)의 host-owned `ProfilePin`을 만들어 기존 `NewProfileResolver`에 전달한다. 기존 서버 설정·provider 선택·캐시·fallback은 바꾸지 않는다.
 
 ## JSON v1 계약
 
@@ -48,7 +48,7 @@ envelope의 `version`, `profiles`와 각 profile의 다섯 필드는 전부 필�
 
 모든 실패는 `nil` resolver와 고정 `ErrInvalidProfileManifest`다. 부분 pin 목록·구체적인 필드 경로·원문 URL/IP/model·underlying JSON/주소 오류를 노출하지 않는다. 성공 객체는 입력 byte slice와 독립적이며 매번 새 registry를 만들고 동시 파싱이 가능하다. 입력을 동시에 변경하는 caller까지 동기화하는 API는 아니다.
 
-파싱 성공은 **파일·운영자 출처 인증이 아니다.** 실제 파일의 권한·링크·일관된 bounded read, pin과 편집 가능한 DB profile의 독립성, host 적용/끔 설정, 재로드·정책 제거·기존 provider 무효화·fallback 차단은 후속이다. 파일 loader는 이 API 호출 전에 읽기 자체의 상한과 신뢰를 검증해야 한다. 파서가 반환한 resolver를 기존 서버에 자동 설치하거나 이전 provider를 폐기하지 않는다.
+파싱 성공은 **파일·운영자 출처 인증이 아니다.** pin과 편집 가능한 DB profile의 독립성, host 적용/끔 설정, 재로드·정책 제거·기존 provider 무효화·fallback 차단은 후속이다. [Linux 파일 로더](./local-llm-manifest-file.md)는 이 API 호출 전에 읽기 자체의 상한과 신뢰를 검증한다. 파서가 반환한 resolver를 기존 서버에 자동 설치하거나 이전 provider를 폐기하지 않는다.
 
 ## 시험 범위
 
