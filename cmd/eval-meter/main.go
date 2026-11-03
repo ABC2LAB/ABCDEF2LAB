@@ -173,9 +173,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return serve(*listen, handler, seal, terminate, finish, stderr)
 }
 
+// listening is told the bound address once a front accepts connections. Tests start fronts on port 0 and
+// learn the address here instead of picking a free port, closing it and hoping nothing else takes it.
+var listening = func(net.Addr) {}
+
 // serve runs one front until SIGTERM/interrupt; the seal signal only seals.
 func serve(listen string, handler http.Handler, seal func(), terminate func(string), finish func() error,
 	stderr io.Writer) int {
+	// Handlers go in before the port opens: a seal or stop sent as soon as the front is reachable must be
+	// recorded, not hit the default action.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, append([]os.Signal{syscall.SIGTERM, os.Interrupt}, sealSignals...)...)
+	defer signal.Stop(signals)
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		if err := finish(); err != nil {
@@ -186,10 +195,7 @@ func serve(listen string, handler http.Handler, seal func(), terminate func(stri
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
-
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, append([]os.Signal{syscall.SIGTERM, os.Interrupt}, sealSignals...)...)
-	defer signal.Stop(signals)
+	listening(listener.Addr())
 	exit := 0
 	reason := "signal"
 loop:

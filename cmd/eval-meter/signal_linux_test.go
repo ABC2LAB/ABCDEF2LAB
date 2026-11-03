@@ -15,34 +15,29 @@ import (
 )
 
 // runEngine starts the real command loop so the signal wiring, not just the
-// meter methods, is under test.
+// meter methods, is under test. The front binds port 0 and reports its own
+// address, so no other listener can stand in for it.
 func runEngine(t *testing.T, upstream string) (string, string, chan int) {
 	t.Helper()
-	free, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := free.Addr().String()
-	_ = free.Close()
+	bound := make(chan net.Addr, 1)
+	listening = func(addr net.Addr) { bound <- addr }
+	t.Cleanup(func() { listening = func(net.Addr) {} })
 	dir, _ := privateTestDir(t)
 	exit := make(chan int, 1)
 	go func() {
 		var stderr bytes.Buffer
-		exit <- run([]string{"-role", "engine", "-listen", addr, "-upstream", upstream, "-log-dir", dir},
+		exit <- run([]string{"-role", "engine", "-listen", "127.0.0.1:0", "-upstream", upstream, "-log-dir", dir},
 			strings.NewReader(""), io.Discard, &stderr)
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if conn, err := net.Dial("tcp", addr); err == nil {
-			_ = conn.Close()
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("front never started listening")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case addr := <-bound:
+		return addr.String(), dir, exit
+	case code := <-exit:
+		t.Fatalf("front exited %d before listening", code)
+	case <-time.After(5 * time.Second):
+		t.Fatal("front never started listening")
 	}
-	return addr, dir, exit
+	return "", "", nil
 }
 
 func waitFile(t *testing.T, path string) {
@@ -62,9 +57,11 @@ func waitFile(t *testing.T, path string) {
 func TestRunEngineSignals(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer upstream.Close()
+	// A fresh transport per run: no idle connection from an earlier front can be reused.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	for _, sealFirst := range []bool{true, false} {
 		addr, dir, exit := runEngine(t, upstream.URL)
-		resp, err := http.Get("http://" + addr + "/x")
+		resp, err := client.Get("http://" + addr + "/x")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,5 +87,41 @@ func TestRunEngineSignals(t *testing.T) {
 		if got.Sealed != sealFirst || got.Drained != sealFirst || got.Forwarded != 1 || got.Reason != "signal" {
 			t.Fatalf("sealFirst=%v terminated marker: %+v", sealFirst, got)
 		}
+	}
+}
+
+// A seal sent the moment the front is reachable must be recorded: the signal
+// handlers are installed before the port opens.
+func TestRunEngineSealAtFirstListenIsRecorded(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	dir, _ := privateTestDir(t)
+	listening = func(net.Addr) {
+		if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { listening = func(net.Addr) {} })
+	exit := make(chan int, 1)
+	go func() {
+		var stderr bytes.Buffer
+		exit <- run([]string{"-role", "engine", "-listen", "127.0.0.1:0", "-upstream", upstream.URL, "-log-dir", dir},
+			strings.NewReader(""), io.Discard, &stderr)
+	}()
+	waitFile(t, filepath.Join(dir, drainedName))
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-exit:
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("front did not stop on SIGTERM")
+	}
+	got := readMarker[terminatedMarker](t, filepath.Join(dir, terminatedName))
+	if !got.Sealed || !got.Drained || got.Forwarded != 0 {
+		t.Fatalf("terminated marker: %+v", got)
 	}
 }
