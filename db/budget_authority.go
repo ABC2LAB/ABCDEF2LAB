@@ -60,9 +60,9 @@ type BudgetApprovalRecord struct {
 	Grant      budget.Grant
 }
 
-// BudgetRegistration may be used to construct a controlled transmitter only
-// while the host keeps this authority alive and its execution gate open.
-// A future server adapter must stop existing executions if authority is lost.
+// BudgetRegistration is a ready-approval diagnostic snapshot, not a durable
+// execution binding. An execution adapter must obtain its ledger via BindRun.
+// The host must stop existing executions if authority is lost.
 type BudgetRegistration struct {
 	Grant  budget.Grant
 	Epoch  string
@@ -71,7 +71,8 @@ type BudgetRegistration struct {
 
 // BudgetAuthority owns one ledger and one PostgreSQL advisory lock session.
 // A new process always starts a new epoch and never restores old reservations.
-// Do not copy or expose the ledger outside Resolve.
+// Do not copy or expose the ledger outside authority-validated accessors.
+// Execution adapters must use BindRun to persist provenance before admission.
 type BudgetAuthority struct {
 	mu        sync.Mutex
 	db        *DB
@@ -204,8 +205,8 @@ func (a *BudgetAuthority) Issue(ctx context.Context, request BudgetApprovalReque
 	return record, nil
 }
 
-// Resolve verifies the live epoch and durable ready state before handing the
-// same ledger pointer to a new controlled execution. No missing-budget fallback.
+// Resolve diagnoses the live epoch and durable ready state. It does not persist
+// an execution binding and must not start a controlled execution; use BindRun.
 func (a *BudgetAuthority) Resolve(ctx context.Context, key budget.Key, binding budget.Binding) (BudgetRegistration, error) {
 	if a == nil || ctx == nil {
 		return BudgetRegistration{}, ErrBudgetApprovalInvalid
