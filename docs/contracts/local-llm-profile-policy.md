@@ -6,7 +6,7 @@
 
 pin은 **운영자가 배포 시 관리하는 별도의 read-only 정책 manifest**에서 공급한다. DB의 사용자 편집 profile, task/conversation metadata, 모델 출력, 모델 URL, DNS 응답으로 pin 목록을 만들거나 보충하지 않는다. 운영자가 승인한 정책과 실제 선택된 profile의 입력을 서로 독립적으로 읽는다.
 
-이 단계의 구현 경계는 신뢰된 host loader가 manifest를 검증해 전달한 `[]llmpolicy.ProfilePin`이다. 생성자는 원본 파일이나 호출자를 인증하지 않는다. manifest의 구체적인 파일 경로·JSON/env 파서·권한/링크/원자적 읽기·설정 재적용은 아직 구현하지 않았으며 실제 서버 연결과 함께 후속으로 둔다. 모델 요청에서 이 Go 타입을 조립할 수 있다는 사실이 운영자 출처를 증명하지 않는다.
+이 단계의 구현 경계는 신뢰된 host loader가 manifest를 검증해 전달한 `[]llmpolicy.ProfilePin`이다. 생성자는 원본 파일이나 호출자를 인증하지 않는다. [JSON v1 엄격 파서](./local-llm-manifest.md)와 [Linux 파일 로더](./local-llm-manifest-file.md)는 별도로 구현했다. 운영자가 지정하는 파일 경로의 host 설정·정책 적용/끔·설정 재적용과 실제 서버 연결은 후속으로 둔다. 모델 요청에서 이 Go 타입을 조립할 수 있다는 사실이 운영자 출처를 증명하지 않는다.
 
 manifest는 credential 저장소가 아니다. API key, key hint, 쿠키·헤더 원문을 아래 입력이나 오류/공유 로그로 복사하지 않는다. policy 등록과 registry 조회는 파일·DB·DNS·socket·환경변수·시계에 접근하지 않는다.
 
@@ -83,4 +83,4 @@ DB schema·UI·profile 모드 선택·캐시/재로드·실제 provider 생성·
 
 합성 typed 입력으로 누락·중복·tuple 변조·URL/주소 오류·`/v1` 분리·profile별 pin 격리·원본 및 반환 값 교체·동시 조회·안전한 오류/출력을 시험한다. 긍정 대조는 반환 policy의 실제 `Decide`로 확인한다. 실제 manifest 파일 인증, DB profile 설정, server/provider 연결, 외부 모델 호출과 대상 진단을 실행한 결과는 아니다.
 
-**확인한 결과:** 신규 resolver 최하위 사례 66개와 기존 HTTP/TLS를 포함한 `llmpolicy` 전체 238개가 race에서 통과했고 실패·skip은 0이다. 신규 resolver 함수의 statement coverage는 100%이며 관련 vet·전체 build·gofmt/공백·상대 링크 검사와 독립 코드 리뷰를 확인했다. 실제 파일 로더·profile/DB 연결·reload/fallback의 통합 시험은 포함하지 않는다.
+**확인한 결과:** 신규 resolver 최하위 사례 66개와 기존 HTTP/TLS를 포함한 `llmpolicy` 전체 238개가 race에서 통과했고 실패·skip은 0이다. 신규 resolver 함수의 statement coverage는 100%이며 관련 vet·전체 build·gofmt/공백·상대 링크 검사와 독립 코드 리뷰를 확인했다. 이 절의 검증은 순수 resolver에 한정된다. 파일 로더 검증은 별도 계약에 기록했고 profile/DB 연결·reload/fallback의 통합 시험은 포함하지 않는다.
