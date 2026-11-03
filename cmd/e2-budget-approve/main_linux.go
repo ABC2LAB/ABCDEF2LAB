@@ -87,35 +87,16 @@ func readPrivateOperatorFile(path string) ([]byte, error) {
 		return nil, budgetlocal.ErrInvalid
 	}
 	path = filepath.Clean(path)
-	if !trustedPrivateRequestDirectory(filepath.Dir(path), uint32(os.Geteuid())) {
-		return nil, budgetlocal.ErrUnavailable
-	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		return nil, budgetlocal.ErrUnavailable
-	}
-	fileStat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || fileStat.Uid != uint32(os.Geteuid()) {
-		return nil, budgetlocal.ErrUnavailable
-	}
-	f, err := os.Open(path)
+	f, err := openPrivateOperatorInput(path)
 	if err != nil {
-		return nil, budgetlocal.ErrUnavailable
+		return nil, err
 	}
-	defer f.Close()
-	opened, err := f.Stat()
-	if err != nil || !os.SameFile(info, opened) {
-		return nil, budgetlocal.ErrUnavailable
-	}
-	data, err := io.ReadAll(io.LimitReader(f, operatorFileLimit+1))
-	if err != nil || len(data) == 0 || len(data) > operatorFileLimit {
+	data, readErr := io.ReadAll(io.LimitReader(f, operatorFileLimit+1))
+	closeErr := f.Close()
+	if readErr != nil || closeErr != nil || len(data) == 0 || len(data) > operatorFileLimit {
 		return nil, budgetlocal.ErrInvalid
 	}
 	return data, nil
-}
-
-func trustedPrivateRequestDirectory(dir string, operatorUID uint32) bool {
-	return trustedPrivateRequestDirectoryWithLstat(dir, operatorUID, os.Lstat)
 }
 
 func trustedPrivateRequestDirectoryWithLstat(dir string, operatorUID uint32, lstat func(string) (os.FileInfo, error)) bool {

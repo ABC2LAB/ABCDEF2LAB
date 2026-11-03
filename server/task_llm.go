@@ -492,7 +492,10 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 // builds. Local-only mode returns a blocked provider for an invalid binding so
 // callers cannot fall through. External mode honors llm_pool_bind_fallback.
 func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Config, bool) {
-	id := s.effectiveProfileForAgent(agentKey, nil)
+	id, err := s.effectiveProfileForAgent(agentKey, nil)
+	if err != nil && s.localResolver != nil {
+		return blockedLocalProvider{}, agent.Config{}, true
+	}
 	if id == nil {
 		return nil, agent.Config{}, false
 	}

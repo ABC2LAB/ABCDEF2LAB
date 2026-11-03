@@ -79,25 +79,29 @@ func ValidSeverity(s string) bool {
 // AddFinding inserts a finding into the standalone findings table. taskID and
 // nodeID may be 0 (stored as NULL). name may be "" (frontend falls back to
 // vulnclass). Returns the new finding id.
-func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, worker string, assetIDs []int64) (int64, error) {
-	aidsJSON, _ := json.Marshal(assetIDs)
+func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, worker string, assetIDs []int64) (id int64, err error) {
+	if taskID < 0 {
+		taskID = 0
+	}
+	if nodeID < 0 {
+		nodeID = 0
+	}
+
+	aidsJSON, err := json.Marshal(assetIDs)
+	if err != nil {
+		return 0, err
+	}
 	if assetIDs == nil {
 		aidsJSON = []byte("[]")
 	}
-	var tid, nid *int64
-	if taskID > 0 {
-		tid = &taskID
-	}
-	if nodeID > 0 {
-		nid = &nodeID
-	}
-	var id int64
-	err := d.QueryRow(
-		`INSERT INTO findings (task_id, node_id, vulnclass, name, severity, summary, evidence, worker, asset_ids)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		tid, nid, vulnclass, name, severity, summary, evidence, worker, string(aidsJSON),
-	).Scan(&id)
-	return id, err
+	err = d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if err := rejectControlledTaskTx(context.Background(), tx, taskID, 0, nodeID); err != nil {
+			return err
+		}
+		return tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids)
+VALUES(NULLIF($1,0),NULLIF($2,0),$3,$4,$5,$6,$7,$8,$9) RETURNING id`, taskID, nodeID, vulnclass, name, severity, summary, evidence, worker, string(aidsJSON)).Scan(&id)
+	})
+	return
 }
 
 // findingSelectCols is the column list (with task_description join) every finding
@@ -674,6 +678,9 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 // rows affected (0 = no finding with that id).
 func (d *DB) DeleteFinding(id int64) (n int64, err error) {
 	err = d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if err := rejectControlledFindingTx(context.Background(), tx, id); err != nil {
+			return err
+		}
 		if err := LockFindingEvidenceTx(tx, id, nil); err != nil {
 			if errors.Is(err, ErrFindingNotFound) {
 				return nil
@@ -698,12 +705,19 @@ func (d *DB) DeleteFinding(id int64) (n int64, err error) {
 // DeleteFindingsByTask removes all findings rows of a task. The originating
 // exploration finding nodes are cascade-deleted separately when the task's
 // exploration subgraph is dropped. Returns rows deleted.
-func (d *DB) DeleteFindingsByTask(taskID int64) (int64, error) {
-	res, err := d.Exec(`DELETE FROM findings WHERE task_id=$1`, taskID)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+func (d *DB) DeleteFindingsByTask(taskID int64) (n int64, err error) {
+	err = d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if err := rejectControlledTaskTx(context.Background(), tx, taskID, 0, 0); err != nil {
+			return err
+		}
+		res, err := tx.Exec(`DELETE FROM findings WHERE task_id=$1`, taskID)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return
 }
 
 // SetFindingStatus updates one finding's triage state. Returns rows affected.
@@ -711,12 +725,21 @@ func (d *DB) DeleteFindingsByTask(taskID int64) (int64, error) {
 // 底层 setter：只改状态、不登记推送事件。生产代码改状态请走
 // SetFindingStatusWithNotify —— 直接调本函数会让「状态变更推送」静默失效。
 // 保留它是为了让不关心通知的用例（参数校验、复测流程）能单独驱动状态。
-func (d *DB) SetFindingStatus(id int64, status string) (int64, error) {
-	res, err := d.Exec(`UPDATE findings SET status=$1 WHERE id=$2`, status, id)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+func (d *DB) SetFindingStatus(id int64, status string) (n int64, err error) {
+	err = d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if status == FindingConfirmed || status == FindingFixed {
+			if err := rejectControlledFindingTx(context.Background(), tx, id); err != nil {
+				return err
+			}
+		}
+		res, err := tx.Exec(`UPDATE findings SET status=$1 WHERE id=$2`, status, id)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return
 }
 
 // SetFindingReportByNodeID sets the Markdown report on the standalone finding row
@@ -762,8 +785,26 @@ func (d *DB) SetFindingName(id int64, name string) (int64, error) {
 }
 
 // SetFindingVulnClass updates one finding's 漏洞类别 (+ node payload sync).
-func (d *DB) SetFindingVulnClass(id int64, vulnclass string) (int64, error) {
-	return d.setFindingCol(id, "vulnclass", "vulnclass", vulnclass)
+func (d *DB) SetFindingVulnClass(id int64, vulnclass string) (n int64, err error) {
+	err = d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if err := rejectControlledFindingTx(context.Background(), tx, id); err != nil {
+			return err
+		}
+		var nodeID sql.NullInt64
+		err := tx.QueryRow(`UPDATE findings SET vulnclass=$1 WHERE id=$2 RETURNING node_id`, vulnclass, id).Scan(&nodeID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		n = 1
+		if nodeID.Valid {
+			_, err = tx.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{vulnclass}',to_jsonb($1::text)) WHERE id=$2`, vulnclass, nodeID.Int64)
+		}
+		return err
+	})
+	return
 }
 
 // FindingMeta is the standalone-row data (id, triage state, anchored assets) the
