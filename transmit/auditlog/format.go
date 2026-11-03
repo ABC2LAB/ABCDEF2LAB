@@ -144,7 +144,7 @@ func validEvent(event transmit.Event, scope transmit.Scope) bool {
 		case transmit.Completed, transmit.Stopped, transmit.Canceled, transmit.UnsupportedAction,
 			transmit.UnknownResource, transmit.UnknownAccount, transmit.UnverifiedAccount,
 			transmit.ExpiredAccount, transmit.AccountNotApproved, transmit.ExpiredApproval,
-			transmit.BudgetExhausted, transmit.AuditUnavailable, transmit.TransportError,
+			transmit.BudgetExhausted, transmit.BudgetUnavailable, transmit.AuditUnavailable, transmit.TransportError,
 			transmit.TimedOut, transmit.RedirectRefused, transmit.ResponseTooLarge,
 			transmit.UnsupportedResponse, transmit.InvalidCandidate, transmit.CanaryMismatch:
 			return true

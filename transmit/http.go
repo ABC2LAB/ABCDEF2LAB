@@ -16,27 +16,29 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/idor"
+	"github.com/Autumn-27/artex/transmit/budget"
 )
 
 // HTTPTransmitter owns an immutable execution snapshot. Create a fresh instance
 // for each case/reset/policy generation; approvals cannot be widened in place.
 type HTTPTransmitter struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	scope     Scope
-	expires   time.Time
-	sessions  map[string]Session
-	resources map[string]binding
-	recorder  Recorder
-	client    *http.Client
-	timeout   time.Duration
-	bodyLimit int64
-	interval  time.Duration
-	health    *healthState
-	budget    uint64
-	serial    chan struct{}
-	attempt   atomic.Uint64
-	inflight  sync.WaitGroup
+	ctx              context.Context
+	cancel           context.CancelFunc
+	scope            Scope
+	expires          time.Time
+	sessions         map[string]Session
+	resources        map[string]binding
+	recorder         Recorder
+	client           *http.Client
+	timeout          time.Duration
+	bodyLimit        int64
+	interval         time.Duration
+	health           *healthState
+	budget           uint64
+	cumulativeBudget *CumulativeBudget
+	serial           chan struct{}
+	attempt          atomic.Uint64
+	inflight         sync.WaitGroup
 
 	mu          sync.Mutex
 	stopped     bool
@@ -58,6 +60,16 @@ func NewHTTP(parent context.Context, cfg Config) (*HTTPTransmitter, error) {
 		if !refPattern.MatchString(ref) {
 			return nil, invalid("scope reference")
 		}
+	}
+	var cumulativeBudget *CumulativeBudget
+	if cfg.CumulativeBudget != nil {
+		shared := *cfg.CumulativeBudget
+		if shared.Ledger == nil || shared.Key.TaskRef != cfg.Scope.TaskRef ||
+			shared.Binding.PolicyRef != cfg.Scope.PolicyRef || shared.Binding.ResetRef != cfg.Scope.ResetRef ||
+			!refPattern.MatchString(shared.Key.BudgetRef) || strings.Contains(shared.Key.BudgetRef, "://") {
+			return nil, invalid("cumulative budget")
+		}
+		cumulativeBudget = &shared
 	}
 	if cfg.ExpiresAt.IsZero() || cfg.MaxRequests == 0 || cfg.RequestTimeout <= 0 || cfg.MinInterval < 0 || cfg.MaxBodyBytes <= 0 || cfg.MaxBodyBytes == math.MaxInt64 {
 		return nil, invalid("limits or approval expiry")
@@ -127,7 +139,7 @@ func NewHTTP(parent context.Context, cfg Config) (*HTTPTransmitter, error) {
 		sessions: sessions, resources: resources, recorder: cfg.Recorder,
 		timeout: cfg.RequestTimeout, bodyLimit: cfg.MaxBodyBytes, interval: cfg.MinInterval,
 		budget: cfg.MaxRequests, serial: make(chan struct{}, 1),
-		health: health,
+		health: health, cumulativeBudget: cumulativeBudget,
 	}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
@@ -281,6 +293,19 @@ func (t *HTTPTransmitter) SendDetailed(proposal idor.AccessRequest) (capture ido
 	receipt.Reason = t.gateLocked(ctx)
 	if receipt.Reason == "" {
 		receipt.Reason = checkAccount(proposal, session, time.Now())
+	}
+	if receipt.Reason == "" && t.cumulativeBudget != nil {
+		shared := t.cumulativeBudget
+		err := shared.Ledger.Reserve(shared.Key, shared.Binding,
+			budget.Attempt{RunRef: t.scope.RunRef, Sequence: receipt.Attempt}, time.Now())
+		switch {
+		case errors.Is(err, budget.ErrExhausted):
+			receipt.Reason = BudgetExhausted
+		case errors.Is(err, budget.ErrExpired):
+			receipt.Reason = ExpiredApproval
+		case err != nil:
+			receipt.Reason = BudgetUnavailable
+		}
 	}
 	if receipt.Reason == "" {
 		t.used++
