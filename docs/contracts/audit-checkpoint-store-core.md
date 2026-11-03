@@ -3,7 +3,7 @@
 2026-11-03 · 이동찬 · **개발용 코어 구현, 운영 비활성·팀 계약 미확정**
 
 기준은 최신 `dev` `88415fff88f1c66c4307ba370c360e6ad338efcc`와 열린 선행 #145
-`9ec769ccd66f4e7ed1ee32aaed772c05fb30c023`이다. 이 선행의
+`b3652a180668c2752e1f8fb6130e0c3d298b9496`이다. 이 선행의
 [`auditlog.VerifyExtension`](../../transmit/auditlog/extension.go)을 사용한다.
 선행 head 변경 시 고유 diff와 prefix 검증 영향을 다시 확인한다. 기존 서버·DB 초기화·운영
 권한과 다른 담당의 키 수명 registry는 수정하지 않는다.
