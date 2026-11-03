@@ -48,7 +48,7 @@ git clone --branch dev https://github.com/ABC2LAB/ABCDEF2LAB.git
 cd ABCDEF2LAB
 ```
 
-Go 1.26.3, Node.js 22 이상, PostgreSQL 16을 준비하고 [로컬 개발 안내](docs/local-dev-ko.md)를 따릅니다.
+Go 1.26.3, Node.js 22.22.2 이상인 22.x 계열, PostgreSQL 16을 준비하고 [로컬 개발 안내](docs/local-dev-ko.md)를 따릅니다.
 현재 Compose의 `artex` 서비스는 기반 프로젝트의 이미지를 사용하므로 ABC2LAB 변경 확인에는 소스 실행을 사용합니다.
 
 실행 파일 `artex`, Go 모듈 경로, `ARTEX_*` 환경변수와 기존 API 이름은 현재 코드의 호환 식별자입니다. 문서의 프로젝트 이름과 구분합니다.
@@ -79,6 +79,7 @@ Go 1.26.3, Node.js 22 이상, PostgreSQL 16을 준비하고 [로컬 개발 안�
 ## 출처와 라이선스
 
 ABC2LAB은 [ARTEX](https://github.com/Autumn-27/ARTEX)의 [global edition](https://github.com/jiwoochris/artex-global)을 기반으로 개발합니다.
+에이전트 SDK는 [Autumn-27/norma](https://github.com/Autumn-27/norma)를 사용합니다([go.mod](go.mod)).
 포크 기준 커밋은 [`fdfb7a17b7da5e2de716c0e98475ec77a41c64c6`](https://github.com/ABC2LAB/ABCDEF2LAB/commit/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6)입니다.
 원본 출처와 AGPL-3.0 [LICENSE](LICENSE)를 유지합니다. [기존 기반 자료](docs/README.md#기존-참고-자료)는 현재 제품 안내와 구분합니다.
 

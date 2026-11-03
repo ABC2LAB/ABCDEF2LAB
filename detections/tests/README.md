@@ -20,17 +20,9 @@ repository.
 
 ## Run every suite at once — [`run-all.sh`](run-all.sh)
 
-[`run-all.sh`](run-all.sh) runs all eight suites below in one command, in the same order as CI, so you do not
-have to invoke the eight `run.sh` scripts by hand. Each suite runs to completion even if an earlier one fails,
-the script prints a one-line PASS/FAIL summary per suite at the end, and it exits non-zero if any suite failed.
+[`run-all.sh`](run-all.sh) contains the inherited eight-suite sequence. Its harness reads the original workflow file, which is absent from this checkout, so the complete runner is not currently a verified execution path. The per-suite procedures and sample outputs below are reference material.
 
-Before the suites, it runs a harness self-check ([`check-harness-sync.sh`](check-harness-sync.sh)) that fails
-the run if this suite list, the per-suite steps in `.github/workflows/detections.yml`, and the suite
-directories on disk ever name different suites or a different order. That is the one gap the eight suites
-cannot see on their own: a suite wired into only one of the three (a new CI step with no `run-all.sh` entry, or
-a directory never added to either) would otherwise pass every per-suite test while a green local `run-all.sh`
-quietly stopped meaning a green CI. The check is a gate, not a ninth suite: it stays out of the summary
-below, so the eight detection suites stay eight.
+Before the suites, [`check-harness-sync.sh`](check-harness-sync.sh) compares the runner, suite directories, and `.github/workflows/detections.yml`. That workflow is absent here; the harness must be adapted before claiming a successful complete run. It remains a prerequisite check, not an additional suite.
 
 Two more gates run the same way — before the suite loop, out of the summary, and never counted as suites:
 the [host-triage tool](../triage/)'s `--self-test` ([`triage-selftest.sh`](triage-selftest.sh)) and the
@@ -458,9 +450,4 @@ deterministically, assert engine-version-independent properties exactly (and sof
 recorded reference), and avoid any content that reads as attack guidance. See
 [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) and the rule indexes in [`../README.md`](../README.md).
 
-All eight suites run in CI (see `.github/workflows/detections.yml`)
-on every push or pull request that touches `detections/` — and the indicator test also runs when the upstream
-source files it pins (`enrich/`, `selfupdate/`, `guard/`, `db/`, `cmd/artex/main.go`) change — so a rule
-change that drops an indicator, drifts from the ATT&CK layer, stops converting on a documented backend,
-breaks a SigmaHQ convention, falls out of sync with the source, lets the MISP event drift from the CSV, or
-pins a new source the workflow does not yet watch turns the build red before it can merge.
+This checkout does not contain `.github/workflows/detections.yml`, so these suites are not automatically enforced by a current CI or merge gate. Adapt the workflow-dependent harness and verify the actual environment before running the complete inherited runner. Record the commands and results explicitly; the examples above are not current CI results.

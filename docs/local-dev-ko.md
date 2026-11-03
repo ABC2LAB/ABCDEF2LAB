@@ -6,9 +6,11 @@
 ## 준비
 
 - Go **1.26.3**: [go.mod](../go.mod) 기준
-- Node.js **22 이상**과 npm
+- Node.js **22.22.2 이상인 22.x 계열**과 npm: [잠금 파일](../web/package-lock.json)의 개발 의존성 기준. `jsdom`은 `^22.22.2 || ^24.15.0 || >=26.0.0`, `vitest`는 `^22.12.0 || ^24.0.0 || >=26.0.0`을 요구하므로 단순히 22 이상만으로 충분하다고 적지 않습니다.
 - PostgreSQL **16** 또는 Docker
 - [ABC2LAB 저장소](https://github.com/ABC2LAB/ABCDEF2LAB)의 `dev` 소스
+
+[Dockerfile](../Dockerfile)의 Node 20.x는 미리 빌드한 바이너리를 넣는 실행 이미지의 도구 환경입니다. 이 안내의 프런트엔드 개발·시험 의존성 요구와 구분하며, 이미지 안에서 Next.js를 컴파일한다는 뜻이 아닙니다.
 
 아래 명령은 저장소 루트에서 시작합니다. `.env`·`config.json`·키·실행 기록은 커밋하지 않습니다.
 설정 파일 예시는 [config.example.json](../config.example.json), Compose 입력 예시는 [.env.example](../.env.example)입니다.
