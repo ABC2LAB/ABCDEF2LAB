@@ -22,6 +22,7 @@ from runner_config import (
     parse_runner_config, plan_run,
 )
 from runner_engine import task_request
+from runner_window import WatchSample
 from runner_probe import PASS, ProbeOutcome
 from test_preflight import configuration
 from test_runner_checks import DAEMON, raw_world
@@ -132,6 +133,12 @@ class FakePorts:
         self.phase = "pre"
         self.listeners = frozenset()
         self.running = []
+        # 구간 감시: 정상 표본 하나(공백 0.5초)와 빈 이벤트가 기본.
+        self.watch_stopped = (0.0, 1.0, [WatchSample(0.5, (), None)])
+        self.events_list = []
+        self.events_complete = True
+        self.watch_stops = 0
+        self.events_stops = []
 
     def _call(self, name):
         self.calls.append(name)
@@ -189,6 +196,29 @@ class FakePorts:
         self.started = True
         return "17"
 
+    def start_host_watch(self):
+        self._call("watch:start")
+        ports = self
+
+        class Handle:
+            def stop(self):
+                ports._call("watch:stop")
+                ports.watch_stops += 1
+                return ports.watch_stopped
+        return Handle()
+
+    def start_events(self, since):
+        self._call("events:start")
+        self.events_since = since
+        ports = self
+
+        class Stream:
+            def stop(self, until_ns):
+                ports._call("events:stop")
+                ports.events_stops.append(until_ns)
+                return ports.events_list, ports.events_complete
+        return Stream()
+
     def seal(self, meter_id):
         self._call("seal")
         self.sealed = True
@@ -224,8 +254,9 @@ def run(mutate=None, mutate_gateway=None):
 
 
 FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "wait_ready",
-              "scoreboard:pre", "start_task", "seal", "seal_gateway", "facts:post", "listeners:post", "probe:post",
-              "scoreboard:post", "findings", "down", "sign"]
+              "events:start", "watch:start", "scoreboard:pre", "start_task", "seal", "seal_gateway", "facts:post",
+              "listeners:post", "probe:post", "scoreboard:post", "watch:stop", "events:stop", "findings", "down",
+              "sign"]
 
 
 class TestCompleteRun(unittest.TestCase):
@@ -237,7 +268,7 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(evidence.files[RESULT_NAME], result)
         self.assertEqual(set(evidence.files), {"pre-checks.json", "pre-probe.json", "post-checks.json",
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
-                                               "findings.json", "task.json", RESULT_NAME})
+                                               "findings.json", "task.json", "window-watch.json", RESULT_NAME})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
         self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
         self.assertEqual(ports.sealed_id, "4" * 64)
@@ -460,6 +491,83 @@ class TestFailures(unittest.TestCase):
             execute_run(spec, ports, FakeMeter(ports), FakeGateway(ports), evidence, FakeClock().clock())
         self.assertEqual(evidence.files[RESULT_NAME]["reasons"], ["interrupted"])
         self.assertEqual(ports.calls[-1], "down")
+
+    def test_window_violations_invalidate_with_evidence(self):
+        network = {"Type": "network", "Action": "connect", "Actor": {"ID": "n" * 64, "Attributes": {}}}
+
+        def attach(p, m, c):
+            # 엔진을 대상 망에 붙인 이벤트(스모크 고장 주입과 같은 모양). 망 ID는 pre 스냅샷에서 가져온다.
+            target = next(n for n in raw_world()[0] if n["Labels"]["com.docker.compose.network"] == "target_net")
+            engine = next(x for x in raw_world()[1] if x["service"] == "engine")
+            p.events_list = [dict(network, Actor={"ID": target["Id"], "Attributes": {"container": engine["id"]}},
+                                  timeNano=4_000_000_000_000_000_000)]
+        cases = {
+            "window_boundary_changed": attach,
+            "window_host_condition_violation": lambda p, m, c: setattr(
+                p, "watch_stopped", (0.0, 1.0, [WatchSample(0.5, ("host.listen.0.0.0.0:3000: NOT_ALLOWED",), None)])),
+            "window_host_watch_gap": lambda p, m, c: setattr(p, "watch_stopped", (0.0, 100.0, [WatchSample(0.5, (), None)])),
+            "window_events_incomplete": lambda p, m, c: setattr(p, "events_complete", False),
+        }
+        for code, mutate in cases.items():
+            with self.subTest(code=code):
+                result, ports, _, evidence = run(mutate)
+                self.assert_invalid(result, ports, evidence, code)
+                self.assertEqual(result["failed_step"], code)
+                self.assertEqual(evidence.files["window-watch.json"]["reasons"][0], code)
+                self.assertNotIn("findings", ports.calls)  # 구간이 깨진 회차는 그 뒤로 진행하지 않는다
+
+    def test_expected_window_events_keep_the_run_complete(self):
+        # 실제 회차에 늘 생기는 이벤트: 계측기·게이트웨이 seal(USR1)과 engine-db healthcheck. 이것만으로 무효가 되면 안 된다.
+        from runner_window import ENGINE_DB_HEALTHCHECK
+
+        late = 4_000_000_000_000_000_000  # 구간 안(가짜 시계 기준 한참 뒤)
+
+        def normal(p, m, c):
+            ids = {x["service"]: x["id"] for x in raw_world()[1]}
+            p.events_list = [
+                {"Type": "container", "Action": "kill", "Actor": {"ID": ids["eval-meter"], "Attributes": {"signal": "10"}},
+                 "timeNano": late},
+                {"Type": "container", "Action": "kill", "Actor": {"ID": ids["eval-llm-gw"], "Attributes": {"signal": "10"}},
+                 "timeNano": late},
+                {"Type": "container", "Action": "exec_create: " + ENGINE_DB_HEALTHCHECK,
+                 "Actor": {"ID": ids["engine-db"], "Attributes": {"execID": "h1"}}, "timeNano": late},
+                {"Type": "container", "Action": "exec_die", "Actor": {"ID": ids["engine-db"], "Attributes": {"execID": "h1"}},
+                 "timeNano": late},
+                {"Type": "container", "Action": "health_status: healthy", "Actor": {"ID": ids["engine-db"]},
+                 "timeNano": late},
+            ]
+        result, _, _, evidence = run(normal)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(evidence.files["window-watch.json"]["docker_events"]["boundary_events"], [])
+        self.assertEqual(result["window"]["events"]["event_count"], 5)
+
+    def test_window_failures_of_the_watch_itself(self):
+        for name, code in (("watch:start", "window_watch_failed"), ("watch:stop", "window_watch_failed"),
+                           ("events:start", "window_events_failed"), ("events:stop", "window_events_failed")):
+            with self.subTest(step=name):
+                result, ports, _, evidence = run(failing(name))
+                self.assert_invalid(result, ports, evidence, code)
+
+    def test_watch_is_stopped_even_when_the_run_fails_midway(self):
+        result, ports, _, _ = run(failing("start_task"))
+        self.assertEqual(result["reasons"], ["task_start_failed"])
+        self.assertEqual(ports.watch_stops, 1)
+        self.assertEqual(len(ports.events_stops), 1)  # 스트림 프로세스도 남기지 않는다
+        self.assertEqual(ports.calls[-3:], ["watch:stop", "events:stop", "down"])
+
+    def test_events_window_covers_pre_to_post(self):
+        result, ports, _, evidence = run()
+        self.assertRegex(ports.events_since, r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z\Z")
+        record = evidence.files["window-watch.json"]
+        # 스트림은 구간 시작보다 healthcheck timeout+여유만큼 앞서 열고, 끝은 post 뒤 시각까지 받는다.
+        start = datetime.fromisoformat(record["start"].replace("Z", "+00:00")[:26] + "+00:00")
+        since = datetime.fromisoformat(ports.events_since.replace("Z", "")[:26] + "+00:00")
+        self.assertEqual((start - since).total_seconds(), record["lookback_seconds"])
+        self.assertEqual(record["lookback_seconds"], 3.0)  # health.timeout 2s + 1
+        self.assertGreater(ports.events_stops[0], 0)
+        self.assertEqual(result["window"]["events"], {"event_count": 0, "kinds": {}, "complete": True})
+        self.assertEqual(result["window"]["host_watch"]["samples"], 1)
+        self.assertEqual(evidence.files["window-watch.json"]["reasons"], [])
 
     def test_failed_step_names_the_failing_check(self):
         # 근거를 쓴 뒤 점검 결과로 실패해도 마지막 단계(근거 쓰기)가 아니라 실패한 점검이 남는다(스모크에서 발견).

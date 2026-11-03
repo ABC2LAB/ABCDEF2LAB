@@ -15,6 +15,7 @@ down은 이 회차가 up을 시도했다면 성공·실패와 무관하게 실�
 from __future__ import annotations
 
 import argparse
+import calendar
 import getpass
 import http.client
 import os
@@ -22,7 +23,7 @@ import sys
 import time
 from contextlib import closing
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -52,6 +53,9 @@ from runner_evidence import (  # noqa: E402
 )
 from runner_llm import judge_llm  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
+from runner_window import (  # noqa: E402
+    BackgroundWatch, HostWatch, events_reasons, judge_events, watch_reasons, watch_summary,
+)
 from snapshot_collector import SnapshotEndpoint, collect_snapshot  # noqa: E402
 from snapshot_writer import SnapshotContext  # noqa: E402
 
@@ -94,6 +98,8 @@ class RunPorts(Protocol):
     def wait_ready(self) -> int: ...
     def scoreboard(self, phase: str, snapshot: dict) -> dict: ...
     def start_task(self) -> str: ...
+    def start_host_watch(self) -> "WatchHandle": ...
+    def start_events(self, since: str) -> "EventsHandle": ...
     def seal(self, meter_container_id: str) -> None: ...
     def seal_gateway(self, gateway_container_id: str) -> None: ...
     def findings(self) -> dict: ...
@@ -124,6 +130,16 @@ class RunSpec:
     llm_provider_name: str
     llm_verify_timeout_seconds: int
     task_request_sha256: str
+    host_watch_max_gap_seconds: float
+    events_lookback_seconds: float
+
+
+class WatchHandle(Protocol):
+    def stop(self) -> tuple: ...
+
+
+class EventsHandle(Protocol):
+    def stop(self, until_ns: int) -> tuple[list, bool]: ...
 
 
 @dataclass
@@ -132,10 +148,54 @@ class _State:
     observer_calls: int = 0
     summary: dict = field(default_factory=dict)
     step: str = "start"
+    watch: object | None = None
+    events: object | None = None
 
 
 def _stamp(clock: Clock) -> str:
     return clock.now().astimezone(timezone.utc).isoformat()
+
+
+def _event_time(moment: datetime) -> str:
+    """docker events --since 형식(UTC, 나노초 자리까지)."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z"
+
+
+def _ns(moment: datetime) -> int:
+    """docker 이벤트 timeNano와 같은 단위(UTC epoch 나노초). 마이크로초까지는 정확하다."""
+    moment = moment.astimezone(timezone.utc)
+    return (calendar.timegm(moment.utctimetuple()) * 1_000_000 + moment.microsecond) * 1000
+
+
+def _stop_events(state: _State, until_ns: int) -> tuple:
+    stream, state.events = state.events, None
+    return stream.stop(until_ns)
+
+
+def _stop_watch(state: _State) -> tuple:
+    watch, state.watch = state.watch, None
+    return watch.stop()
+
+
+def _window(spec: RunSpec, evidence, state: _State, pre: dict, start: datetime, end: datetime,
+            stopped: tuple, streamed: tuple) -> dict:
+    """구간 감시 판정(runner_window). 위반이면 근거를 남긴 뒤 첫 사유로 무효."""
+    started, finished, samples = stopped
+    host = _step(state, "window_watch_failed",
+                 lambda: watch_summary(started, finished, samples, spec.host_watch_max_gap_seconds))
+    raw, stream_complete = streamed
+    networks = {n["id"]: key for key, n in pre["networks"].items()}
+    containers = {s["id"]: service for service, s in pre["services"].items()}
+    events = _step(state, "window_events_failed", lambda: judge_events(
+        raw, _ns(start), networks, containers, frozenset({METER_SERVICE, LLM_GW_SERVICE}),
+        frozenset({ENGINE_DB_SERVICE}), stream_complete))
+    reasons = watch_reasons(host) + events_reasons(events)
+    record = {"start": _event_time(start), "end": _event_time(end), "lookback_seconds": spec.events_lookback_seconds,
+              "host_watch": host, "docker_events": events, "reasons": reasons}
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("window-watch.json", record))
+    if reasons:
+        raise RunFailure(reasons[0])
+    return record
 
 
 def _step(state: _State, code: str, action: Callable):
@@ -231,6 +291,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     pre = _check_phase(spec, ports, evidence, state, "pre")
     _probe(ports, evidence, state, "pre", pre)
     state.observer_calls += _step(state, "target_not_ready", ports.wait_ready)
+    # 격리 구간은 pre 관측 직전부터 post 관측 완료까지다. 그 동안 호스트 리슨을 주기적으로 보고, 끝나면 데몬 이벤트를 받는다.
+    window_start = clock.now()
+    state.events = _step(state, "window_events_failed", lambda: ports.start_events(
+        _event_time(window_start - timedelta(seconds=spec.events_lookback_seconds))))
+    state.watch = _step(state, "window_watch_failed", ports.start_host_watch)
     state.observer_calls += 1
     pre_board = _step(state, "pre_scoreboard_failed", lambda: ports.scoreboard("pre", pre))
     pre_forwarded = _step(state, "meter_read_failed", meter.forwarded)
@@ -257,6 +322,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     _probe(ports, evidence, state, "post", post)
     state.observer_calls += 1
     post_board = _step(state, "post_scoreboard_failed", lambda: ports.scoreboard("post", post))
+    stopped = _step(state, "window_watch_failed", lambda: _stop_watch(state))
+    window_end = clock.now()
+    streamed = _step(state, "window_events_failed", lambda: _stop_events(state, _ns(window_end)))
+    window = _window(spec, evidence, state, pre, window_start, window_end, stopped, streamed)
 
     observer = _step(state, "meter_read_failed", meter.observer_rows)
     if len(observer) != state.observer_calls or any(row["decision"] != "registered" for row in observer):
@@ -290,6 +359,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "task_request_sha256": spec.task_request_sha256,
+                     "window": {"host_watch": window["host_watch"], "events": {
+                         key: window["docker_events"][key] for key in ("event_count", "kinds", "complete")}},
                      "daemon": pre["daemon"], "scoreboards": {"pre": pre_board, "post": post_board}}
 
 
@@ -312,6 +383,17 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
     except Exception:
         reasons.append("unexpected_error")
     finally:
+        if state.watch is not None:
+            try:
+                _stop_watch(state)  # 실패로 끝난 회차에서도 감시 스레드를 남기지 않는다
+            except Exception:
+                # 이미 무효 사유가 있다. 정리 실패는 기록을 바꾸지 않되 운영자에게 고정 코드로 알린다.
+                print("window_watch_stop_failed", file=sys.stderr)
+        if state.events is not None:
+            try:
+                _stop_events(state, 0)  # 이벤트 스트림 프로세스도 남기지 않는다(결과는 쓰지 않음)
+            except Exception:
+                print("window_events_stop_failed", file=sys.stderr)
         if state.up_attempted:
             try:
                 ports.down()
@@ -415,6 +497,13 @@ class DockerPorts:
     def start_task(self) -> str:
         return self._start()
 
+    def start_host_watch(self) -> BackgroundWatch:
+        watch = HostWatch(self.host_listeners, allowed_host_listens(self.config, self.plan), time.monotonic)
+        return BackgroundWatch(watch, self.config.run["host_watch_interval_seconds"]).start()
+
+    def start_events(self, since: str):
+        return self.docker.event_stream(since)
+
     def seal(self, meter_container_id: str) -> None:
         self.docker.signal(meter_container_id, "USR1")
 
@@ -440,7 +529,9 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_provider_slug=plan.llm.get("provider", ""),
         llm_provider_name=config.llm_gateway["expected_provider_name"],
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
-        task_request_sha256=task_request_sha256)
+        task_request_sha256=task_request_sha256,
+        host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
+        events_lookback_seconds=config.health_timeout_seconds)
 
 
 def main(argv: list[str] | None = None) -> int:

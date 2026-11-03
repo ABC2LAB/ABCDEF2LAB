@@ -59,6 +59,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `host_listen_allowlist` | loopback 밖 호스트 리슨 중 허용할 것. `{"address", "port", "reason"}`, 특정 주소만(0.0.0.0·`::`·loopback 불가), 근거 필수. 기본은 빈 목록 |
 | `run.*` | compose 대기, down 시한, 대상 준비, 예산 폴링 간격, drain 시한, 스냅샷 시한·크기, LLM 검증 대기(초) |
 | `run.task_create_timeout_seconds` | 작업 생성(로그인 + `POST /api/tasks`) 연결·읽기 시한(초) |
+| `run.host_watch_interval_seconds`, `run.host_watch_max_gap_seconds` | 구간 중 호스트 리슨 확인 간격과 허용 최대 공백(초). 공백 상한은 간격보다 커야 한다 |
 | `task.{description,goal}` | 엔진 작업 설명·목표(각 4000자 이하, 줄바꿈 외 제어 문자 불가). 대상은 회차 대상 origin 하나만 적는다(아래) |
 | `task.{timeout_seconds,plan_heartbeat_seconds}` | 엔진 작업 시한·planner 주기(초, 0~86400, 엔진 의미 그대로: 0=시한 없음·기본 주기) |
 | `task.{seed_first_intent,coverage_enabled}` | 엔진 작업 옵션(bool, 생략 불가) |
@@ -79,12 +80,13 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 ```
 [up 전]  project 이름 중복 없음 → 이미지 내용 ID 확인 → 회차 디렉터리(0700) 생성
 [기동]   compose up(--pull never, --no-build, --wait)
-[pre]    망·publish·이미지·호스트 조건 점검 → 부정 연결 점검 → 대상 준비 → pre 스코어보드
+[pre]    망·publish·이미지·호스트 조건 점검 → 부정 연결 점검 → 대상 준비 → 구간 감시 시작 → pre 스코어보드
          계측기 전달 건수 == 0
 [작업]   새로 로그인 → POST /api/tasks(설정의 task, 생성=기동) → task.json
          요청 예산 또는 시간 예산까지 폴링 → 계측기 seal → drain 확인
          LLM 게이트웨이 seal(새 LLM 요청 거부·진행 중 취소 → generation 조회 시작)
 [post]   점검 반복 + pre와 비교(망·주소·컨테이너 교체·재시작) → 부정 연결 점검 → post 스코어보드
+         구간 감시 종료 → 구간 판정(호스트 리슨 표본·데몬 이벤트) → window-watch.json
          관측 로그 건수 == 러너 호출 수, 계측기 순번 완결·건수 일치
          LLM 검증 마커 대기 → 응답 제공자 판정 → findings(새 로그인 → 페이지 수집 → 추출)
 [끝]     compose down -v(성공·실패와 무관) → 모두 통과면 서명 → runner-result.json
@@ -101,6 +103,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   pre-probe.json   post-probe.json    경로별 기대·실제·판정
   meter-summary.json  llm-summary.json
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
+  window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
   runner-result.json             완료(+서명) 또는 무효(+사유·실패 단계: 사유가 나온 점검, 예상 밖 예외·중단이면 마지막으로 시작한 단계)
 ```
@@ -153,6 +156,10 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `task_start_failed` | 작업 생성 실패: 로그인 실패, 생성 요청 연결 실패·시한 초과, 201 아닌 응답, 응답에 작업 ID 없음. 다시 보내지 않는다(시한 초과면 작업이 생겼을 수 있음) |
 | `seal_failed`, `drain_timeout`, `drain_incomplete` | 계측기 seal 실패, drain 시한 초과, 진행 중 요청·기록 불완전 |
 | `boundary_changed` | pre와 post 사이 데몬·망·주소·컨테이너 교체·재시작 |
+| `window_boundary_changed` | 구간(pre 관측 직전~post 관측 완료) 데몬 이벤트에 회차 망·회차 컨테이너의 연결·해제·생명주기·exec가 있음. 허용: 계측기·게이트웨이 seal(USR1)과 engine-db의 선언된 healthcheck |
+| `window_events_incomplete` | 구간 이벤트가 데몬 버퍼 크기(256)에 닿아 앞쪽이 버려졌을 수 있음 |
+| `window_host_condition_violation`, `window_host_watch_gap` | 구간 중 허용되지 않은 호스트 리슨·읽기 실패, 표본 사이 공백이 허용값 초과 |
+| `window_watch_failed`, `window_events_failed` | 감시 시작·종료 실패, `docker events` 실패·형식 밖 출력 |
 | `observer_count_mismatch` | 관측 로그 건수가 러너 호출 수와 다르거나 거부 기록이 있음 |
 | `meter_read_failed`, `meter_log_inconsistent` | 계측기 기록 읽기 실패, 순번 누락·건수 불일치 |
 | `llm_seal_failed`, `llm_read_failed`, `llm_unverified`, `llm_marker_invalid` | 게이트웨이 seal 실패, 기록 읽기 실패, 검증 마커 시한 초과, 마커 형식 오류 |

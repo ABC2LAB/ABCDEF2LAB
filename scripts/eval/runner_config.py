@@ -63,6 +63,17 @@ MAX_PROBE_TIMEOUT_MS = 60_000
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _TMPFS_SIZE = re.compile(r"[1-9][0-9]{0,8}[kmg]?\Z")
 _DURATION = re.compile(r"[1-9][0-9]{0,5}(?:ms|s|m)\Z")
+# 이벤트 시각(데몬)과 러너 시각은 같은 호스트 시계지만 기록 시점이 조금 다르다.
+LOOKBACK_MARGIN_SECONDS = 1.0
+_DURATION_UNIT = {"ms": 0.001, "s": 1.0, "m": 60.0}
+
+
+def duration_seconds(text: str) -> float:
+    """compose healthcheck 시간 문자열(_DURATION 형식)을 초로 바꾼다."""
+    if not isinstance(text, str) or not _DURATION.fullmatch(text):
+        raise RunnerConfigError(["config.health: INVALID_DURATION"])
+    unit = "ms" if text.endswith("ms") else text[-1]
+    return int(text[: -len(unit)]) * _DURATION_UNIT[unit]
 _DB_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
 # 게이트웨이가 chat completions 경로만 받으므로 엔진은 OpenAI 호환 형식만 쓴다(OpenRouter·Ollama 둘 다 지원).
 _LLM_PROVIDERS = ("openai",)
@@ -87,7 +98,7 @@ MAX_TASK_SECONDS = 24 * 3600
 # 회차 진행 시간·크기 값(초). 실패 시 재시도하지 않으므로 각 값이 그 단계의 유일한 기회다.
 _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_seconds", "budget_poll_seconds",
                "drain_timeout_seconds", "snapshot_timeout_seconds", "snapshot_max_bytes", "llm_verify_timeout_seconds",
-               "task_create_timeout_seconds")
+               "task_create_timeout_seconds", "host_watch_interval_seconds", "host_watch_max_gap_seconds")
 MAX_RUN_SECONDS = 3600
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 
@@ -140,6 +151,11 @@ class RunnerConfig:
     llm_gateway: dict
     findings: dict
     task: dict
+
+    @property
+    def health_timeout_seconds(self) -> float:
+        """구간 이벤트 lookback(초): 구간 안에서 끝나는 healthcheck exec는 이 시간 안에 시작됐다(+여유)."""
+        return duration_seconds(self.health_timeout) + LOOKBACK_MARGIN_SECONDS
 
 
 @dataclass(frozen=True)
@@ -313,6 +329,11 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         limit = MAX_SNAPSHOT_BYTES if name == "snapshot_max_bytes" else MAX_RUN_SECONDS
         if name in run and not _int(run[name], 1, limit):
             errors.append(f"config.run.{name}: INVALID")
+    # 공백 상한이 표본 간격 이하이면 정상 회차도 항상 공백 초과가 된다.
+    if (_int(run.get("host_watch_interval_seconds"), 1, MAX_RUN_SECONDS)
+            and _int(run.get("host_watch_max_gap_seconds"), 1, MAX_RUN_SECONDS)
+            and run["host_watch_max_gap_seconds"] <= run["host_watch_interval_seconds"]):
+        errors.append("config.run.host_watch_max_gap_seconds: NOT_ABOVE_INTERVAL")
     if errors:
         raise RunnerConfigError(errors)
     return RunnerConfig(

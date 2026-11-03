@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
-from typing import Callable, Mapping, Sequence
+from typing import IO, Callable, Mapping, Protocol, Sequence
 
 # docker CLI가 데몬에 접속하는 데 쓰는 이름만 셸에서 가져온다.
 DOCKER_CLIENT_ENV = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG",
@@ -24,6 +26,8 @@ _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(.*)\Z", re.S)
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _OBJECT_ID = re.compile(r"[0-9a-f]{64}\Z")
 _PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
+# docker events --since/--until에 넘기는 UTC 시각(초 소수 9자리까지). 러너가 만든 값만 받는다.
+_EVENT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z\Z")
 # 컨테이너 inspect는 이 필드만 꺼낸다. .Config.Env 등 비밀이 들 수 있는 필드는 러너 메모리에도 올리지 않는다.
 CONTAINER_TEMPLATE = (
     '{"id":{{json .Id}},'
@@ -77,6 +81,72 @@ def run_docker(args: Sequence[str], env: Mapping[str, str], stdin: bytes | None,
     return CommandResult(completed.returncode, completed.stdout)
 
 
+# 구간 이벤트 스트림. 데몬은 지난 이벤트를 256개만 보관하므로 구간 끝에 한 번에 조회하면 긴 구간(healthcheck만으로
+# 초당 1.5건)을 덮지 못한다. 그래서 구간 시작에 스트림을 열어 두고 실시간으로 받는다.
+MAX_STREAM_EVENTS = 100_000  # 메모리 상한. 넘으면 불완전
+MAX_EVENT_LINE_BYTES = 64 * 1024
+# 구간 끝 시각을 정한 뒤 그때까지의 이벤트가 스트림에 도착하도록 기다리는 시간(초).
+EVENTS_DRAIN_GRACE_SECONDS = 1.0
+
+
+class StreamProcess(Protocol):
+    stdout: IO[bytes]
+
+    def poll(self) -> int | None: ...
+    def terminate(self) -> None: ...
+    def wait(self, timeout: float | None = None) -> int: ...
+
+
+def open_docker_stream(args: Sequence[str], env: Mapping[str, str]) -> StreamProcess:
+    try:
+        return subprocess.Popen(["docker", *args], env=dict(env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=None)
+    except OSError:
+        raise DockerError("docker_unavailable") from None
+
+
+class EventStream:
+    """`docker events --since`를 구간 동안 읽는다. 끊김·해석 불가·상한 초과는 불완전(complete=False)이다."""
+
+    def __init__(self, process: StreamProcess, sleep: Callable[[float], None] = time.sleep):
+        self._process, self._sleep = process, sleep
+        self._events: list[dict] = []
+        self._broken = False
+        self._reader = threading.Thread(target=self._read, name="docker-events", daemon=True)
+        self._reader.start()
+
+    def _read(self) -> None:
+        try:
+            while True:
+                line = self._process.stdout.readline(MAX_EVENT_LINE_BYTES + 1)
+                if not line:
+                    return
+                if len(line) > MAX_EVENT_LINE_BYTES or len(self._events) >= MAX_STREAM_EVENTS:
+                    self._broken = True
+                    return
+                event = json.loads(line.decode("utf-8"))
+                if not isinstance(event, dict):
+                    self._broken = True
+                    return
+                self._events.append(event)
+        except (OSError, ValueError, UnicodeError, RecursionError):
+            self._broken = True
+
+    def stop(self, until_ns: int) -> tuple[list[dict], bool]:
+        """until_ns(나노초)까지의 이벤트와 완결 여부. 유예 뒤에도 프로세스가 살아 있어야 구간 내내 붙어 있던 것이다."""
+        self._sleep(EVENTS_DRAIN_GRACE_SECONDS)
+        alive = self._process.poll() is None
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=EVENTS_DRAIN_GRACE_SECONDS * 10)
+        except subprocess.TimeoutExpired:
+            alive = False
+        self._reader.join(timeout=EVENTS_DRAIN_GRACE_SECONDS * 10)
+        complete = alive and not self._broken and not self._reader.is_alive()
+        events = [e for e in self._events if not isinstance(e.get("timeNano"), int) or e["timeNano"] <= until_ns]
+        return events, complete
+
+
 def _require_project(project: str) -> None:
     if not isinstance(project, str) or not _PROJECT.fullmatch(project):
         raise DockerError("docker_project_invalid")
@@ -92,10 +162,14 @@ def _version_ok(version: str) -> bool:
 
 
 class Docker:
-    def __init__(self, executor: Executor, env: Mapping[str, str], timeout: float):
+    def __init__(self, executor: Executor, env: Mapping[str, str], timeout: float,
+                 stream_opener: Callable[[Sequence[str], Mapping[str, str]], StreamProcess] = open_docker_stream,
+                 sleep: Callable[[float], None] = time.sleep):
         self._executor = executor
         self._env = dict(env)
         self._timeout = timeout
+        self._stream_opener = stream_opener
+        self._sleep = sleep
 
     def run(self, args: Sequence[str], *, stdin: bytes | None = None, code: str) -> bytes:
         """성공(종료 0)한 호출의 stdout만 돌려준다. 실패는 호출별 고정 code."""
@@ -164,6 +238,13 @@ class Docker:
         """회차 망·볼륨·컨테이너를 지운다. 성공·실패와 무관하게 러너가 항상 부른다."""
         self.run([*base_args, "down", "--volumes", "--remove-orphans", "--timeout", str(timeout_seconds)],
                  code="docker_compose_down_failed")
+
+    def event_stream(self, since: str) -> EventStream:
+        """since부터 데몬 이벤트를 실시간으로 받기 시작한다. 필터 없이 전부 받아 러너가 판정한다."""
+        if not _EVENT_TIME.fullmatch(since or ""):
+            raise DockerError("docker_events_window_invalid")
+        return EventStream(self._stream_opener(["events", "--since", since, "--format", "{{json .}}"], self._env),
+                           self._sleep)
 
     def signal(self, container_id: str, signal_name: str) -> None:
         if not _OBJECT_ID.fullmatch(container_id or "") or signal_name not in ("USR1",):

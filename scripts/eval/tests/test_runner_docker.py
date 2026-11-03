@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -23,6 +24,23 @@ class FakeExecutor:
     def __call__(self, args, env, stdin, timeout):
         self.calls.append((list(args), dict(env), stdin, timeout))
         return self.results.pop(0)
+
+
+class FakeStream:
+    """docker events 프로세스 대역. died=True면 구간 도중 끊긴 것처럼 poll()이 종료 코드를 낸다."""
+
+    def __init__(self, lines, died=False):
+        self.stdout = io.BytesIO(b"".join(lines))
+        self.died, self.terminated = died, False
+
+    def poll(self):
+        return 1 if self.died else None
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
 
 
 def ok(value) -> CommandResult:
@@ -63,6 +81,36 @@ class TestDocker(unittest.TestCase):
             with self.assertRaises(DockerError) as caught:
                 Docker(FakeExecutor(ok(server(version))), {}, 1).daemon()
             self.assertIn(str(caught.exception), ("docker_server_too_old", "docker_version_output_invalid"))
+
+    def test_event_stream_reads_until_window_end(self):
+        lines = [json.dumps({"Type": "container", "Action": "start", "Actor": {"ID": "x"}, "timeNano": t}).encode() + b"\n"
+                 for t in (10, 20, 30)]
+        process = FakeStream(lines)
+        opened = []
+        docker = Docker(FakeExecutor(), {"PATH": "/usr/bin"}, 1, stream_opener=lambda a, e: opened.append((a, e)) or process,
+                        sleep=lambda seconds: None)
+        stream = docker.event_stream("2026-11-03T04:39:30.712177000Z")
+        events, complete = stream.stop(20)
+        self.assertEqual(opened, [(["events", "--since", "2026-11-03T04:39:30.712177000Z", "--format", "{{json .}}"],
+                                   {"PATH": "/usr/bin"})])
+        self.assertEqual(([e["timeNano"] for e in events], complete), ([10, 20], True))
+        self.assertTrue(process.terminated)
+
+    def test_event_stream_incomplete_cases(self):
+        good = json.dumps({"Type": "network", "Action": "connect", "Actor": {"ID": "n"}, "timeNano": 1}).encode() + b"\n"
+        cases = {"died_midway": (FakeStream([good], died=True)),
+                 "unparseable": FakeStream([good, b"{not json\n"]),
+                 "not_object": FakeStream([b"[1]\n"]),
+                 "huge_line": FakeStream([b"{" + b" " * (64 * 1024 + 10) + b"}\n"])}
+        for name, process in cases.items():
+            with self.subTest(name=name):
+                docker = Docker(FakeExecutor(), {}, 1, stream_opener=lambda a, e, p=process: p, sleep=lambda s: None)
+                _, complete = docker.event_stream("2026-11-03T04:39:30Z").stop(10**19)
+                self.assertFalse(complete)
+        for since in ("2026-11-03 04:39:30", "1h", "--filter=x", "", "2026-11-03T04:39:30+09:00"):
+            with self.subTest(since=since), self.assertRaises(DockerError) as caught:
+                Docker(FakeExecutor(), {}, 1, stream_opener=lambda a, e: FakeStream([])).event_stream(since)
+            self.assertEqual(str(caught.exception), "docker_events_window_invalid")
 
     def test_distribution_daemon_with_empty_platform_name(self):
         # Ubuntu docker.io 29.1.3 실측: Platform.Name == "". 빈 이름도 식별값으로 남고 다른 이름과는 다르다.
