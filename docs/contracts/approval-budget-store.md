@@ -7,8 +7,8 @@
 ## 정본과 세대
 
 - `budget_authority_epochs`는 서버 권한 세대의 시작·종료 시각을 보관한다. `budget_authority_current`는 현재 세대 하나를 가리킨다.
-- `budget_approvals`는 `ApprovalRequestRef`를 기본키로 보관한다. 발급자, task, 새 `BudgetRef`, policy/reset 결속, 한도, 기간, 세대는 발급 후 바꿀 수 없다. `budget_approval_events`는 준비·사용 가능·닫힘 전이를 기록한다. 두 테이블의 삭제와 truncate를 차단한다.
-- 단일 프로세스가 전용 PostgreSQL 세션 advisory lock을 잡고 한 세대와 한 `budget.Ledger`를 소유한다. 두 번째 권한자는 시작에 실패한다. 잠금 세션과 현재 DB 세대가 확인되지 않으면 새 승인·실행 연결을 거부한다.
+- `budget_approvals`는 `ApprovalRequestRef`를 기본키로 보관한다. 발급자, task, 새 `BudgetRef`, policy/reset 결속, 한도, 기간, 세대는 발급 후 바꿀 수 없다. `budget_approval_events`는 준비·사용 가능·닫힘 전이를 기록한다. 두 테이블의 삭제와 truncate를 앱 경로의 실수 방지용 trigger로 차단한다. 테이블 owner의 trigger 비활성화나 superuser의 복제 설정 변경까지 막는 변조 방지는 아니며, 별도 DB 권한 분리는 후속이다.
+- 단일 프로세스가 전용 PostgreSQL 세션 advisory lock을 잡고 한 세대와 한 `budget.Ledger`를 소유한다. 두 번째 권한자는 시작에 실패한다. 잠금 세션과 현재 DB 세대가 확인되지 않으면 새 승인·실행 연결을 거부한다. authority 잠금 키는 `7337741005`로 schema/test/company/evidence 예약 키와 분리한다. 잠금·세대 질의는 호출자와 분리된 최대 5초 context를 쓰며, 호출자 취소는 해당 요청만 거부한다. DB 질의 오류는 현재 호출을 차단하고, 실제 잠금/backend·세대 불일치나 닫힘을 확인하면 로컬 gate를 닫는다.
 - 프로세스 재시작은 새 세대와 빈 Ledger다. 이전 세대의 사용 가능 승인은 닫힘으로 전이하고 자동 등록하지 않는다. 준비 중 승인도 새 세대에서 사용하지 않는다. 재시작 후 새 예산은 새 요청 참조를 가진 명시 승인으로 발급한다.
 
 ## 발급 순서
@@ -24,4 +24,4 @@
 
 이 코어에는 운영자 인증 endpoint, task·policy/reset 조회, 철회 시 실행 중지, 실행→예산 연결 정본, HTTP `Config.CumulativeBudget` 배선이 없다. 호출자는 `Resolve` 결과를 실행에 넣기 전에 이 검증과 실행 등록 gate를 구현하고, 권한 상실·종료 때 기존 실행을 중지·drain해야 한다. 이 코어 단독으로 공유예산 서버 수용시험 SB01–SB12 또는 실서비스 통신 통제가 완료된 것은 아니다.
 
-격리된 PostgreSQL 통합 시험은 같은 요청의 동시 발급·중복 예약 보존·상이한 요청 충돌, 저장의 준비/사용 가능/기동 실패와 동일 요청 재시도, 독점 세대·잠금 상실·재시작 차단, 불변 승인·이력 삭제/truncate 거부를 확인한다. 이 시험은 실제 모델이나 외부 대상에 요청을 보내지 않는다.
+격리된 PostgreSQL 통합 시험은 같은 요청의 동시 발급·중복 예약 보존·상이한 요청 충돌, 저장의 준비/사용 가능/기동 실패와 동일 요청 재시도, 독점 세대·잠금 상실·재시작 차단, 불변 승인·이력 삭제/truncate 거부를 확인한다. Close 없이 backend를 종료한 crash 재시작의 이전 ready→closed·이력1건, 동일 요청의 task/policy/reset/기간 개별 충돌, DB ready·binding·조회 실패 재확인과 caller 취소 뒤 정상 재시도도 고정한다. current/epochs를 권한으로 직접 삭제·변조하는 복구와 강한 DB 역할 분리는 별도 후속이다. 이 시험은 실제 모델이나 외부 대상에 요청을 보내지 않는다.
