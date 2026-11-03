@@ -1,6 +1,6 @@
 """부정 연결 점검(평가 프로토콜 §2): 엔진 netns 안에서 경로별 연결을 보고 기대와 대조한다.
 
-목적지(대상·관측 front 주소와 포트, LLM 망 게이트웨이, 관측 publish 포트)는 5b 스냅샷(docker inspect)에서
+목적지(대상·관측 front 주소와 포트, 엔진 망의 호스트 쪽 게이트웨이 주소, 관측 publish 포트)는 5b 스냅샷(docker inspect)에서
 가져온다. 설정값을 목적지로 쓰면 실제로 떠 있는 것과 다른 곳을 점검할 수 있기 때문이다. 양성 대조(계측기·LLM)는
 엔진이 실제로 쓰도록 선언된 경로(사전검사 origin·LLM 주소)다.
 
@@ -23,7 +23,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from runner_config import (
-    ENGINE_SERVICE, LLM_NET, METER_SERVICE, OBS_SERVICE, TARGET_SERVICE, RunPlan,
+    ENGINE_SERVICE, LLM_GW_SERVICE, METER_SERVICE, OBS_SERVICE, TARGET_SERVICE, RunPlan,
 )
 from runner_docker import Docker, DockerError
 
@@ -38,8 +38,11 @@ _CONNECTED = frozenset({"connected"})
 _NO_PATH = frozenset({"timeout", "unreachable"})
 # 엔진 망에 없는 서비스 이름: Docker 내장 DNS가 모르므로 NXDOMAIN.
 _NO_NAME = frozenset({"not_found"})
-# 게이트웨이(호스트)는 닿지만 관측 포트는 127.0.0.1에만 publish → 그 주소엔 리슨 없음(RST) 또는 호스트 방화벽 DROP.
-_CLOSED = frozenset({"refused", "timeout"})
+# 엔진 망의 호스트 쪽 게이트웨이 주소: 관측 포트는 127.0.0.1에만 publish → 그 주소엔 리슨 없음(RST),
+# 호스트 방화벽 DROP(timeout), internal 망이라 호스트 쪽 경로가 없음(unreachable).
+_CLOSED = frozenset({"refused", "timeout", "unreachable"})
+# 엔진이 LLM upstream에 직접: internal 망이라 바깥 경로가 없다. 이름 기반이면 내장 DNS가 바깥 이름을 못 풀 수도 있다.
+_NO_EXTERNAL = frozenset({"timeout", "unreachable", "not_found", "dns_error"})
 _CODE = re.compile(r"[a-z0-9_]{1,64}\Z")
 _DNS_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,252}[A-Za-z0-9])?\Z")
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -111,20 +114,25 @@ def _require(values: list, code: str) -> list:
 
 
 def probe_expectations(plan: RunPlan, snapshot: dict) -> tuple[PathExpectation, ...]:
-    """경로별 기대(성공·실패와 허용 결과 코드). 성공 기대가 양성 대조다."""
+    """경로별 기대(성공·실패와 허용 결과 코드). 성공 기대가 양성 대조다.
+
+    엔진의 LLM 경로는 게이트웨이(양성)이고, LLM upstream에 직접 닿는 경로는 실패여야 한다(음성).
+    """
     llm = urlsplit(plan.llm["base_url"])
     llm_port = llm.port or {"http": 80, "https": 443}[llm.scheme]
     if plan.llm["backend"] == "api":
-        # TCP 연결만(TLS·요청 내용 없음). 프로토콜 §2 표의 "API 호스트:443 TCP 연결만".
-        llm_target = _hostport(llm.hostname, llm_port)
+        # TCP 연결만(TLS·요청 내용 없음). 이름 기반이라 DNS 단계에서 끝나도 경로 없음이다.
+        upstream, upstream_accepted = _hostport(llm.hostname, llm_port), _NO_EXTERNAL
     elif plan.llm["backend"] == "local":
-        # 엔진이 쓰는 이름(extra_hosts) 그대로. probe가 엔진의 /etc/hosts를 못 보면 스모크에서 IP 기준으로 바꾼다.
-        llm_target = _hostport(plan.llm["hostname"], llm_port)
+        # 고정 IP 기준. 엔진에는 extra_hosts가 없으므로(게이트웨이만 가짐) 이름으로는 처음부터 안 풀린다.
+        upstream, upstream_accepted = _hostport(plan.llm["host_ip"], llm_port), _NO_PATH
     else:
         raise ProbeSetupError("llm_backend_unsupported")
+    gateway_port = int(plan.compose_env["EVAL_LLM_GW_PORT"])
     rows = [
         PathExpectation("meter_tcp", TCP, _hostport(METER_SERVICE, plan.meter_port), POSITIVE, _CONNECTED),
-        PathExpectation("llm_tcp", TCP, llm_target, POSITIVE, _CONNECTED),
+        PathExpectation("llm_gateway_tcp", TCP, _hostport(LLM_GW_SERVICE, gateway_port), POSITIVE, _CONNECTED),
+        PathExpectation(f"llm_upstream:{upstream}", TCP, upstream, NEGATIVE, upstream_accepted),
     ]
     target_ports = _target_ports(plan, snapshot)
     for address in _require(_addresses(snapshot, TARGET_SERVICE), "target_address_unknown"):
@@ -141,7 +149,9 @@ def probe_expectations(plan: RunPlan, snapshot: dict) -> tuple[PathExpectation, 
             rows.append(PathExpectation(f"dns:{name}", DNS, name, NEGATIVE, _NO_NAME))
     obs_host_ports = _require(sorted({b[2] for b in snapshot["services"].get(OBS_SERVICE, {}).get("bindings", [])}),
                               "obs_host_port_unknown")
-    gateways = _require(list(snapshot["networks"].get(LLM_NET, {}).get("gateways", [])), "llm_gateway_unknown")
+    # 엔진이 붙은 망의 호스트 쪽 게이트웨이 주소. internal 망은 없을 수 있고, 그러면 호스트로 가는 주소 자체가 없다.
+    gateways = sorted({gateway for network in snapshot["networks"].values()
+                       if ENGINE_SERVICE in network["members"] for gateway in network["gateways"]})
     for gateway in gateways:
         for port in obs_host_ports:
             rows.append(PathExpectation(f"gateway_obs:{_hostport(gateway, port)}", TCP, _hostport(gateway, port),

@@ -16,8 +16,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LOCAL_LLM, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES,
-    RunnerConfigError, compose_base_args,
+    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES,
+    RunnerConfigError, compose_base_args, secret_env_names,
     compose_environment, create_run_directory, load_runner_config, new_run_id, parse_runner_config, plan_run,
 )
 from test_preflight import configuration, local_llm
@@ -35,7 +35,8 @@ def runner_config() -> dict:
         "images": {"engine_baseline": image("b", "1"), "engine_ours": image("o", "2"),
                    "engine_db": image("d", "3"), "meter": image("m", "4")},
         "target_image_id": "sha256:" + "5" * 64,
-        "ports": {"engine_api_host": 18787, "engine_container": 8787, "target": 3000, "obs": 8081, "obs_host": 18081},
+        "ports": {"engine_api_host": 18787, "engine_container": 8787, "target": 3000, "obs": 8081, "obs_host": 18081,
+                  "llm_gateway": 8090, "api_front": 8091},
         "observer_path": "/api/records",
         "engine": {"llm_provider": "openai", "llm_stream": True},
         "engine_db": {"user": "artex", "name": "artex"},
@@ -48,6 +49,8 @@ def runner_config() -> dict:
         "run": {"compose_wait_seconds": 120, "down_timeout_seconds": 30, "ready_timeout_seconds": 120,
                 "budget_poll_seconds": 5, "drain_timeout_seconds": 60, "snapshot_timeout_seconds": 30,
                 "snapshot_max_bytes": 4194304},
+        "llm_gateway": {"generation_path": "/api/v1/generation", "verify_attempts": 5, "verify_interval_seconds": 2,
+                        "ca_bundle": "/etc/ssl/certs/ca-certificates.crt"},
     }
 
 
@@ -113,6 +116,15 @@ class TestParseRunnerConfig(unittest.TestCase):
     def test_engine_db_tmpfs_health_and_timeout(self):
         cases = [
             (("engine", "llm_provider"), "ollama", "config.engine.llm_provider: UNSUPPORTED"),
+            (("engine", "llm_provider"), "anthropic", "config.engine.llm_provider: UNSUPPORTED"),
+            (("llm_gateway", "generation_path"), "api/v1/generation", "config.llm_gateway.generation_path: INVALID"),
+            (("llm_gateway", "verify_attempts"), 0, "config.llm_gateway.verify_attempts: INVALID"),
+            (("llm_gateway", "verify_attempts"), 101, "config.llm_gateway.verify_attempts: INVALID"),
+            (("llm_gateway", "verify_interval_seconds"), 601, "config.llm_gateway.verify_interval_seconds: INVALID"),
+            (("llm_gateway", "verify_interval_seconds"), True, "config.llm_gateway.verify_interval_seconds: INVALID"),
+            (("llm_gateway", "ca_bundle"), "certs/ca.crt", "config.llm_gateway.ca_bundle: EXPECTED_ABSOLUTE_PATH"),
+            (("ports", "llm_gateway"), 0, "config.ports.llm_gateway: INVALID"),
+            (("ports", "api_front"), 70000, "config.ports.api_front: INVALID"),
             (("engine", "llm_stream"), "true", "config.engine.llm_stream: EXPECTED_BOOL"),
             (("engine_db", "user"), "Artex", "config.engine_db.user: INVALID"),
             (("engine_db", "name"), "a;b", "config.engine_db.name: INVALID"),
@@ -198,12 +210,20 @@ class TestPlanRun(unittest.TestCase):
         preflight = configuration()
         plan = plan_run(self.config, preflight, "ours", "ours-20261102t000000z-00000000")
         self.assertEqual(plan.project, "eval-ours-20261102t000000z-00000000")
-        self.assertEqual(plan.compose_files, (COMPOSE_COMMON, COMPOSE_EVAL))
+        self.assertEqual(plan.compose_files, (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_EVAL))
         self.assertEqual(plan.source_sha, "2" * 40)
         self.assertEqual(plan.engine_image.ref, "example/o:fixed")
         self.assertEqual(plan.target_image.ref, preflight["pins"]["target_image"])
         self.assertEqual(plan.compose_env["ARTEX_LLM_MODEL"], preflight["ours"]["llm"]["model"])
-        self.assertEqual(plan.compose_env["ARTEX_LLM_BASE_URL"], preflight["ours"]["llm"]["base_url"])
+        # 엔진은 선언의 엔드포인트 대신 게이트웨이에 닿는다. 경로(/api/v1)는 그대로 붙인다.
+        self.assertEqual(plan.compose_env["ARTEX_LLM_BASE_URL"], "http://eval-llm-gw:8090/api/v1")
+        self.assertEqual(plan.compose_env["EVAL_LLM_UPSTREAM"], "https://llm-api.example")
+        self.assertEqual(plan.compose_env["EVAL_LLM_CHAT_PATH"], "/api/v1/chat/completions")
+        self.assertEqual(plan.compose_env["EVAL_LLM_PROVIDER"], preflight["ours"]["llm"]["provider"])
+        self.assertEqual((plan.compose_env["EVAL_LLM_GENERATION_PATH"], plan.compose_env["EVAL_LLM_VERIFY_ATTEMPTS"],
+                          plan.compose_env["EVAL_LLM_VERIFY_INTERVAL"], plan.compose_env["EVAL_CA_BUNDLE"]),
+                         ("/api/v1/generation", "5", "2s", "/etc/ssl/certs/ca-certificates.crt"))
+        self.assertEqual((plan.compose_env["EVAL_LLM_GW_PORT"], plan.compose_env["EVAL_API_FRONT_PORT"]), ("8090", "8091"))
         self.assertEqual(plan.compose_env["EVAL_METER_PORT"], "8080")
         self.assertEqual(plan.compose_env["ARTEX_LLM_STREAM"], "true")
         no_stream = runner_config()
@@ -221,10 +241,28 @@ class TestPlanRun(unittest.TestCase):
         self.assertEqual(plan.compose_files, (COMPOSE_COMMON, COMPOSE_LOCAL_LLM, COMPOSE_EVAL))
         self.assertEqual(plan.compose_env["EVAL_LLM_HOSTNAME"], "llm-host")
         self.assertEqual(plan.compose_env["EVAL_LLM_HOST_IP"], "172.17.0.1")
+        self.assertEqual(plan.compose_env["EVAL_LLM_UPSTREAM"], "http://llm-host:11434")
+        self.assertEqual(plan.compose_env["EVAL_LLM_CHAT_PATH"], "/v1/chat/completions")
+        self.assertEqual(plan.compose_env["ARTEX_LLM_BASE_URL"], "http://eval-llm-gw:8090/v1")
+        for name in ("EVAL_LLM_PROVIDER", "EVAL_LLM_GENERATION_PATH", "EVAL_LLM_VERIFY_ATTEMPTS", "EVAL_CA_BUNDLE"):
+            self.assertNotIn(name, plan.compose_env)
+
+    def test_gateway_paths_handle_root_and_trailing_slash(self):
+        for base_url, chat, engine in (("https://llm-api.example", "/chat/completions", "http://eval-llm-gw:8090"),
+                                       ("https://llm-api.example/api/v1/", "/api/v1/chat/completions",
+                                        "http://eval-llm-gw:8090/api/v1")):
+            preflight = configuration()
+            for side in ("baseline", "ours"):
+                preflight[side]["llm"]["base_url"] = base_url
+            plan = plan_run(self.config, preflight, "ours", "o")
+            with self.subTest(base_url=base_url):
+                self.assertEqual(plan.compose_env["EVAL_LLM_CHAT_PATH"], chat)
+                self.assertEqual(plan.compose_env["ARTEX_LLM_BASE_URL"], engine)
 
     def test_compose_env_never_carries_secret_names(self):
         plan = plan_run(self.config, configuration(), "ours", "o")
-        for name in ("EVAL_ENGINE_DB_PASSWORD", "EVAL_ENGINE_ADMIN_PASSWORD", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        for name in ("EVAL_ENGINE_DB_PASSWORD", "EVAL_ENGINE_ADMIN_PASSWORD", "EVAL_LLM_API_KEY", "OPENAI_API_KEY",
+                     "ANTHROPIC_API_KEY"):
             self.assertNotIn(name, plan.compose_env)
         args = compose_base_args(plan)
         self.assertEqual(args[:5], ["compose", "-p", plan.project, "--env-file", "/srv/eval/eval.secrets.env"])
@@ -278,7 +316,7 @@ class TestRunDirectory(unittest.TestCase):
 
     def test_creates_private_run_and_meter_directories(self):
         directory = create_run_directory(self.root, "ours-1")
-        for path in (directory.run, directory.meter):
+        for path in (directory.run, directory.meter, directory.llm):
             info = os.lstat(path)
             self.assertTrue(stat.S_ISDIR(info.st_mode))
             self.assertEqual(stat.S_IMODE(info.st_mode), 0o700)
@@ -288,7 +326,7 @@ class TestRunDirectory(unittest.TestCase):
     def test_mode_is_exact_even_when_umask_strips_owner_bits(self):
         os.umask(0o277)
         directory = create_run_directory(self.root, "ours-1")
-        for path in (directory.run, directory.meter):
+        for path in (directory.run, directory.meter, directory.llm):
             self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o700)
 
     def test_existing_run_directory_rejected(self):
@@ -320,6 +358,8 @@ class TestRunDirectory(unittest.TestCase):
         directory = create_run_directory(self.root, "ours-1")
         env = compose_environment(plan, directory)
         self.assertEqual(env["EVAL_EVIDENCE_DIR"], str(directory.meter))
+        self.assertEqual(env["EVAL_LLM_EVIDENCE_DIR"], str(directory.llm))
+        self.assertNotEqual(directory.llm, directory.meter)
         self.assertEqual(env["EVAL_RUNNER_UID"], str(os.geteuid()))
         self.assertEqual(env["EVAL_RUNNER_GID"], str(os.getegid()))
         self.assertNotIn("EVAL_EVIDENCE_DIR", plan.compose_env)
@@ -380,10 +420,10 @@ class TestComposeContract(unittest.TestCase):
             env = compose_environment(plan, create_run_directory(self.root, f"ours-{backend}"))
             with self.subTest(backend=backend):
                 self.assertEqual(set(env) & SECRET_ENV_NAMES, set())
-                self.assertEqual(compose_variables(plan.compose_files), set(env) | SECRET_ENV_NAMES)
+                self.assertEqual(compose_variables(plan.compose_files), set(env) | secret_env_names(backend))
 
     def test_every_compose_file_is_covered(self):
-        files = {COMPOSE_COMMON, COMPOSE_LOCAL_LLM, COMPOSE_EVAL}
+        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL}
         on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
         on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
         self.assertEqual(on_disk, files)
@@ -396,15 +436,26 @@ class TestComposeContract(unittest.TestCase):
 
     def test_no_restart_policy_anywhere(self):
         # 회차 중 자동 재시작은 계측기 카운터·대상 상태·엔진 tmpfs를 조용히 초기화한다. 기본값(no)에 맡긴다.
-        for path in (COMPOSE_COMMON, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
             text = _yaml_without_comments(Path(path).read_text(encoding="utf-8"))
             with self.subTest(path=path.name):
                 self.assertNotRegex(text, r"(?m)^\s*restart\s*:")
 
+    def test_every_publish_is_loopback_only(self):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
+            lines = _yaml_without_comments(Path(path).read_text(encoding="utf-8")).splitlines()
+            entries = []
+            for index, line in enumerate(lines):
+                if re.fullmatch(r"    ports:\s*", line):
+                    entries += [l.strip()[2:] for l in lines[index + 1:] if l.startswith("      - ")][:1]
+            with self.subTest(path=path.name):
+                for entry in entries:
+                    self.assertTrue(entry.strip('"').startswith("127.0.0.1:"), entry)
+
     def test_meter_service_matches_origin_check(self):
         self.assertIn(METER_SERVICE, compose_services(COMPOSE_EVAL))
         self.assertEqual(compose_services(COMPOSE_EVAL), {"engine-db", "engine", "target", METER_SERVICE, "eval-obs"})
-        self.assertEqual(compose_services(COMPOSE_COMMON), {"engine", "engine-db"})
+        self.assertEqual(compose_services(COMPOSE_COMMON), {"engine", "engine-db", "eval-llm-gw", "eval-api"})
 
     def test_variable_scanner_sees_escapes_and_comments(self):
         with tempfile.TemporaryDirectory() as directory:

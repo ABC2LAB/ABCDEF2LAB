@@ -39,23 +39,24 @@ def make_snapshot(networks=None, containers=None):
 
 EXPECTED_API = {
     "meter_tcp": ("tcp", "eval-meter:8080", POSITIVE),
-    "llm_tcp": ("tcp", "llm-api.example:443", POSITIVE),
+    "llm_gateway_tcp": ("tcp", "eval-llm-gw:8090", POSITIVE),
+    "llm_upstream:llm-api.example:443": ("tcp", "llm-api.example:443", NEGATIVE),
     "target_ip:172.31.0.2:3000": ("tcp", "172.31.0.2:3000", NEGATIVE),
     "obs_ip:172.31.0.4:8081": ("tcp", "172.31.0.4:8081", NEGATIVE),
-    "obs_ip:172.33.0.2:8081": ("tcp", "172.33.0.2:8081", NEGATIVE),
+    "obs_ip:172.34.0.2:8081": ("tcp", "172.34.0.2:8081", NEGATIVE),
     "dns:target": ("dns", "target", NEGATIVE),
     "dns:eval-ours-1-target-1": ("dns", "eval-ours-1-target-1", NEGATIVE),
     "dns:333333333333": ("dns", "333333333333", NEGATIVE),
     "dns:eval-obs": ("dns", "eval-obs", NEGATIVE),
     "dns:eval-ours-1-eval-obs-1": ("dns", "eval-ours-1-eval-obs-1", NEGATIVE),
     "dns:555555555555": ("dns", "555555555555", NEGATIVE),
-    "gateway_obs:172.32.0.1:18081": ("tcp", "172.32.0.1:18081", NEGATIVE),
+    "gateway_obs:172.30.0.1:18081": ("tcp", "172.30.0.1:18081", NEGATIVE),
 }
 
 
 def expected_report(expectations, **overrides):
     """기대대로 나온 probe 출력. overrides로 특정 id의 (observed, code)를 바꾼다."""
-    natural = {"meter_tcp": ("success", "connected"), "llm_tcp": ("success", "connected")}
+    natural = {"meter_tcp": ("success", "connected"), "llm_gateway_tcp": ("success", "connected")}
     results = []
     for e in expectations:
         if e.id in overrides:
@@ -80,13 +81,18 @@ class TestExpectations(unittest.TestCase):
         self.assertEqual(accepted["meter_tcp"], {"connected"})
         self.assertEqual(accepted["target_ip:172.31.0.2:3000"], {"timeout", "unreachable"})
         self.assertEqual(accepted["dns:target"], {"not_found"})
-        self.assertEqual(accepted["gateway_obs:172.32.0.1:18081"], {"refused", "timeout"})
+        self.assertEqual(accepted["gateway_obs:172.30.0.1:18081"], {"refused", "timeout", "unreachable"})
+        self.assertEqual(accepted["llm_upstream:llm-api.example:443"], {"timeout", "unreachable", "not_found", "dns_error"})
+        self.assertEqual(accepted["llm_gateway_tcp"], {"connected"})
 
     def test_local_backend_changes_only_the_llm_path(self):
-        local = {e.id: e.target for e in probe_expectations(make_plan("local"), make_snapshot())}
+        local_rows = probe_expectations(make_plan("local"), make_snapshot())
+        local = {e.id: e.target for e in local_rows}
         api = {e.id: e.target for e in probe_expectations(make_plan(), make_snapshot())}
-        self.assertEqual(local.pop("llm_tcp"), "llm-host:11434")
-        api.pop("llm_tcp")
+        # 로컬은 고정 IP로 직접 닿는지 본다(엔진에는 extra_hosts가 없다). 경로 없음만 허용한다.
+        self.assertEqual(local.pop("llm_upstream:172.17.0.1:11434"), "172.17.0.1:11434")
+        self.assertEqual(next(e.accepted for e in local_rows if e.id.startswith("llm_upstream:")), {"timeout", "unreachable"})
+        api.pop("llm_upstream:llm-api.example:443")
         self.assertEqual(local, api)
 
     def test_target_ports_are_upstream_port_plus_snapshot_ports(self):
@@ -108,12 +114,21 @@ class TestExpectations(unittest.TestCase):
         by_key(networks, "target_net")["Containers"][SERVICE_IDS["target"]].update(
             IPv4Address="172.31.0.50/16", IPv6Address="fd00::50/64")
         by_service(containers, "target")["ports"] = {"3000/tcp": None, "3001/tcp": None, "53/udp": None}
-        by_key(networks, "llm_net")["IPAM"]["Config"].append({"Subnet": "fd01::/64", "Gateway": "fd01::1"})
+        by_key(networks, "engine_net")["IPAM"]["Config"].append({"Subnet": "fd01::/64", "Gateway": "fd01::1"})
         targets = {e.target for e in probe_expectations(make_plan(), make_snapshot(networks, containers))}
         for target in ("172.31.0.50:3000", "172.31.0.50:3001", "[fd00::50]:3000", "[fd00::50]:3001",
-                       "[fd01::1]:18081", "172.32.0.1:18081"):
+                       "[fd01::1]:18081", "172.30.0.1:18081"):
             self.assertIn(target, targets)
         self.assertNotIn("172.31.0.50:53", targets)
+        # 엔진이 붙지 않은 망의 게이트웨이(예: 게이트웨이의 출구 망)는 점검 대상이 아니다.
+        self.assertNotIn("172.32.0.1:18081", targets)
+
+    def test_engine_network_without_host_gateway_has_no_gateway_rows(self):
+        networks, containers = raw_world()
+        by_key(networks, "engine_net")["IPAM"] = {"Config": []}
+        rows = probe_expectations(make_plan(), make_snapshot(networks, containers))
+        self.assertEqual([e for e in rows if e.id.startswith("gateway_obs:")], [])
+        self.assertIn("llm_gateway_tcp", {e.id for e in rows})
 
     def test_missing_destinations_are_setup_errors(self):
         cases = []
@@ -124,9 +139,6 @@ class TestExpectations(unittest.TestCase):
         networks, containers = raw_world()
         by_service(containers, "eval-obs")["ports"] = {}
         cases.append((networks, containers, "obs_port_unknown"))
-        networks, containers = raw_world()
-        by_key(networks, "llm_net")["IPAM"] = {"Config": []}
-        cases.append((networks, containers, "llm_gateway_unknown"))
         networks, containers = raw_world()
         by_service(containers, "eval-obs")["ports"] = {"8081/tcp": None}
         cases.append((networks, containers, "obs_host_port_unknown"))
@@ -144,9 +156,9 @@ class TestExpectations(unittest.TestCase):
 
     def test_too_many_checks_is_setup_error(self):
         networks, containers = raw_world()
-        by_service(containers, "target")["ports"] = {f"{3000 + n}/tcp": None for n in range(53)}
+        by_service(containers, "target")["ports"] = {f"{3000 + n}/tcp": None for n in range(52)}
         self.assertEqual(len(probe_expectations(make_plan(), make_snapshot(networks, containers))), 64)
-        by_service(containers, "target")["ports"] = {f"{3000 + n}/tcp": None for n in range(54)}
+        by_service(containers, "target")["ports"] = {f"{3000 + n}/tcp": None for n in range(53)}
         with self.assertRaises(ProbeSetupError) as caught:
             probe_expectations(make_plan(), make_snapshot(networks, containers))
         self.assertEqual(str(caught.exception), "probe_plan_invalid")
@@ -192,19 +204,23 @@ class TestEvaluate(unittest.TestCase):
 
     def test_expected_failure_must_have_expected_kind(self):
         for check_id, observed in (("target_ip:172.31.0.2:3000", ("fail", "refused")),
-                                   ("obs_ip:172.33.0.2:8081", ("fail", "error")),
+                                   ("obs_ip:172.34.0.2:8081", ("fail", "error")),
                                    ("dns:target", ("fail", "timeout")),
                                    ("dns:eval-obs", ("fail", "dns_error")),
-                                   ("gateway_obs:172.32.0.1:18081", ("fail", "unreachable"))):
+                                   ("gateway_obs:172.30.0.1:18081", ("fail", "error")),
+                                   ("llm_upstream:llm-api.example:443", ("fail", "refused"))):
             with self.subTest(check_id=check_id):
                 outcome = self.evaluate(**{check_id: observed})
                 self.assertEqual((outcome.status, outcome.reasons), (INVALID, ("failure_kind_mismatch",)))
         for check_id, observed in (("target_ip:172.31.0.2:3000", ("fail", "unreachable")),
-                                   ("gateway_obs:172.32.0.1:18081", ("fail", "timeout"))):
+                                   ("gateway_obs:172.30.0.1:18081", ("fail", "timeout")),
+                                   ("gateway_obs:172.30.0.1:18081", ("fail", "unreachable")),
+                                   ("llm_upstream:llm-api.example:443", ("fail", "not_found")),
+                                   ("llm_upstream:llm-api.example:443", ("fail", "dns_error"))):
             self.assertEqual(self.evaluate(**{check_id: observed}).status, PASS)
 
     def test_positive_control_failure_invalidates_whole_run(self):
-        for check_id in ("meter_tcp", "llm_tcp"):
+        for check_id in ("meter_tcp", "llm_gateway_tcp"):
             for observed in (("fail", "timeout"), ("fail", "refused"), ("success", "connected_close_error")):
                 with self.subTest(check_id=check_id, observed=observed):
                     outcome = self.evaluate(**{check_id: observed})
@@ -288,10 +304,10 @@ class TestRunProbe(unittest.TestCase):
 
     def test_setup_failure_is_invalid_without_running_probe(self):
         networks, containers = raw_world()
-        by_key(networks, "llm_net")["IPAM"] = {"Config": []}
+        by_service(containers, "eval-obs")["ports"] = {}
         docker = FakeDocker(b"{}")
         outcome = run_probe(docker, METER_ID, make_snapshot(networks, containers), make_plan(), 2000, 1, 1, clock())
-        self.assertEqual((outcome.status, outcome.reasons, outcome.rows), (INVALID, ("llm_gateway_unknown",), ()))
+        self.assertEqual((outcome.status, outcome.reasons, outcome.rows), (INVALID, ("obs_port_unknown",), ()))
         self.assertEqual(docker.calls, [])
 
 

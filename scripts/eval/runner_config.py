@@ -26,22 +26,33 @@ SIDES = ("baseline", "ours")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_COMMON = REPO_ROOT / "deploy" / "engine-isolated" / "compose.yaml"
 COMPOSE_LOCAL_LLM = REPO_ROOT / "deploy" / "engine-isolated" / "compose.local-llm.yaml"
+COMPOSE_LLM_API = REPO_ROOT / "deploy" / "engine-isolated" / "compose.llm-api.yaml"
 COMPOSE_EVAL = REPO_ROOT / "deploy" / "eval" / "compose.eval.yaml"
 METER_DIR_NAME = "meter"
+# 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
+LLM_DIR_NAME = "llm"
 # compose가 비밀 env 파일에서 직접 읽는 이름. 러너는 이 값을 만들지도 읽지도 않는다.
 # compose 파일의 나머지 ${VAR}는 전부 러너가 넘긴다(테스트로 집합 일치를 고정).
-SECRET_ENV_NAMES = frozenset({"EVAL_ENGINE_ADMIN_PASSWORD", "EVAL_ENGINE_DB_PASSWORD",
-                              "OPENAI_API_KEY", "ANTHROPIC_API_KEY"})
+_BASE_SECRETS = frozenset({"EVAL_ENGINE_ADMIN_PASSWORD", "EVAL_ENGINE_DB_PASSWORD"})
+_API_SECRETS = frozenset({"EVAL_LLM_API_KEY"})
+SECRET_ENV_NAMES = _BASE_SECRETS | _API_SECRETS
 # compose 서비스·망 키(deploy/ 파일과 같은 이름, 테스트로 고정). 엔진은 계측기 이름으로만 대상에 닿는다.
 ENGINE_SERVICE = "engine"
 ENGINE_DB_SERVICE = "engine-db"
 TARGET_SERVICE = "target"
 METER_SERVICE = "eval-meter"
 OBS_SERVICE = "eval-obs"
+LLM_GW_SERVICE = "eval-llm-gw"
+API_FRONT_SERVICE = "eval-api"
 ENGINE_NET = "engine_net"
 TARGET_NET = "target_net"
-LLM_NET = "llm_net"
+LLM_EGRESS_NET = "llm_egress_net"
+ENGINE_API_NET = "engine_api_net"
 OBS_NET = "obs_net"
+# 엔진의 OpenAI 형식 클라이언트가 base URL 뒤에 붙이는 경로(agent/provider.go). 게이트웨이는 이 경로만 받는다.
+CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
+MAX_VERIFY_ATTEMPTS = 100
+MAX_VERIFY_INTERVAL_SECONDS = 600
 MAX_HOST_LISTEN_ALLOW = 32
 MAX_REASON_LENGTH = 200
 # 점검 하나의 연결·해석 제한. 실패 기대 경로는 대부분 timeout으로 끝나므로 회차 준비 시간을 키운다.
@@ -51,12 +62,14 @@ _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _TMPFS_SIZE = re.compile(r"[1-9][0-9]{0,8}[kmg]?\Z")
 _DURATION = re.compile(r"[1-9][0-9]{0,5}(?:ms|s|m)\Z")
 _DB_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
-_LLM_PROVIDERS = ("anthropic", "openai")
+# 게이트웨이가 chat completions 경로만 받으므로 엔진은 OpenAI 호환 형식만 쓴다(OpenRouter·Ollama 둘 다 지원).
+_LLM_PROVIDERS = ("openai",)
 _IMAGE_ROLES = ("engine_baseline", "engine_ours", "engine_db", "meter")
-_PORTS = ("engine_api_host", "engine_container", "target", "obs", "obs_host")
+_PORTS = ("engine_api_host", "engine_container", "target", "obs", "obs_host", "llm_gateway", "api_front")
+_GATEWAY_FIELDS = ("generation_path", "verify_attempts", "verify_interval_seconds", "ca_bundle")
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
-               "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run")
+               "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway")
 # 회차 진행 시간·크기 값(초). 실패 시 재시도하지 않으므로 각 값이 그 단계의 유일한 기회다.
 _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_seconds", "budget_poll_seconds",
                "drain_timeout_seconds", "snapshot_timeout_seconds", "snapshot_max_bytes")
@@ -109,6 +122,7 @@ class RunnerConfig:
     probe_timeout_ms: int
     runner_key_path: Path
     run: dict[str, int]
+    llm_gateway: dict
 
 
 @dataclass(frozen=True)
@@ -133,6 +147,7 @@ class RunPlan:
 class RunDirectory:
     run: Path
     meter: Path
+    llm: Path
 
 
 def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
@@ -237,6 +252,16 @@ def parse_runner_config(raw: object) -> RunnerConfig:
                                                        or key_path.startswith(top["runs_root"].rstrip("/") + "/")):
             # 서명 키는 회차 디렉터리 밖에 둔다. 회차 자료와 함께 복사·공유되지 않게.
             errors.append("config.runner_key_path: INSIDE_RUNS_ROOT")
+    gateway = _exact(top.get("llm_gateway"), _GATEWAY_FIELDS, "config.llm_gateway", errors) if "llm_gateway" in top else {}
+    if "generation_path" in gateway and not _observer_path(gateway["generation_path"]):
+        errors.append("config.llm_gateway.generation_path: INVALID")
+    if "verify_attempts" in gateway and not _int(gateway["verify_attempts"], 1, MAX_VERIFY_ATTEMPTS):
+        errors.append("config.llm_gateway.verify_attempts: INVALID")
+    if "verify_interval_seconds" in gateway and not _int(gateway["verify_interval_seconds"], 1,
+                                                          MAX_VERIFY_INTERVAL_SECONDS):
+        errors.append("config.llm_gateway.verify_interval_seconds: INVALID")
+    if "ca_bundle" in gateway and not _absolute_path(gateway["ca_bundle"]):
+        errors.append("config.llm_gateway.ca_bundle: EXPECTED_ABSOLUTE_PATH")
     run = _exact(top.get("run"), _RUN_FIELDS, "config.run", errors) if "run" in top else {}
     for name in _RUN_FIELDS:
         limit = MAX_SNAPSHOT_BYTES if name == "snapshot_max_bytes" else MAX_RUN_SECONDS
@@ -253,7 +278,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         health_interval=health["interval"], health_timeout=health["timeout"], health_retries=health["retries"],
         docker_timeout_seconds=float(timeout), host_listen_allowlist=allowlist,
         probe_timeout_ms=top["probe_timeout_ms"], runner_key_path=Path(top["runner_key_path"]),
-        run={name: run[name] for name in _RUN_FIELDS})
+        run={name: run[name] for name in _RUN_FIELDS},
+        llm_gateway={name: gateway[name] for name in _GATEWAY_FIELDS})
 
 
 def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:
@@ -345,7 +371,12 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         raise RunnerConfigError([f"preflight.{side}.target_origin: NOT_EVAL_METER"])
     engine_image = config.images[f"engine_{side}"]
     target_image = Image(declared["target_image"], config.target_image_id)
-    files = [COMPOSE_COMMON, COMPOSE_EVAL]
+    # 선언의 base_url은 비교 조건(어느 LLM 엔드포인트인가)이고, 엔진은 그 대신 게이트웨이에 닿는다.
+    # 게이트웨이 주소는 평가 구성의 내부 사항이라 선언·지문에 넣지 않고 여기서 만든다.
+    upstream = urlsplit(llm["base_url"])
+    base_path = upstream.path.rstrip("/")
+    gateway_port = config.ports["llm_gateway"]
+    files = [COMPOSE_COMMON, COMPOSE_LLM_API if llm["backend"] == "api" else COMPOSE_LOCAL_LLM, COMPOSE_EVAL]
     env = {
         "EVAL_ENGINE_IMAGE": engine_image.ref,
         "EVAL_ENGINE_DB_IMAGE": config.images["engine_db"].ref,
@@ -362,16 +393,25 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "EVAL_ENGINE_DATA_TMPFS_SIZE": config.tmpfs_engine_data,
         "ARTEX_LLM_PROVIDER": config.llm_provider,
         "ARTEX_LLM_MODEL": llm["model"],
-        "ARTEX_LLM_BASE_URL": llm["base_url"],
+        "ARTEX_LLM_BASE_URL": f"http://{LLM_GW_SERVICE}:{gateway_port}{base_path}",
         "ARTEX_LLM_STREAM": "true" if config.llm_stream else "false",
         "EVAL_TARGET_PORT": str(config.ports["target"]),
         "EVAL_METER_PORT": str(origin.port),
         "EVAL_OBS_PORT": str(config.ports["obs"]),
         "EVAL_OBS_HOST_PORT": str(config.ports["obs_host"]),
         "EVAL_OBS_PATH": config.observer_path,
+        "EVAL_API_FRONT_PORT": str(config.ports["api_front"]),
+        "EVAL_LLM_GW_PORT": str(gateway_port),
+        "EVAL_LLM_UPSTREAM": f"{upstream.scheme}://{upstream.netloc}",
+        "EVAL_LLM_CHAT_PATH": base_path + CHAT_COMPLETIONS_SUFFIX,
     }
-    if llm["backend"] == "local":
-        files.insert(1, COMPOSE_LOCAL_LLM)
+    if llm["backend"] == "api":
+        env["EVAL_LLM_PROVIDER"] = llm["provider"]
+        env["EVAL_LLM_GENERATION_PATH"] = config.llm_gateway["generation_path"]
+        env["EVAL_LLM_VERIFY_ATTEMPTS"] = str(config.llm_gateway["verify_attempts"])
+        env["EVAL_LLM_VERIFY_INTERVAL"] = f"{config.llm_gateway['verify_interval_seconds']}s"
+        env["EVAL_CA_BUNDLE"] = config.llm_gateway["ca_bundle"]
+    else:
         env["EVAL_LLM_HOSTNAME"] = llm["hostname"]
         env["EVAL_LLM_HOST_IP"] = llm["host_ip"]
     images = {"engine": engine_image, "engine_db": config.images["engine_db"],
@@ -418,6 +458,7 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
         run_fd = _make_private_child(root_fd, run_id)
         try:
             os.close(_make_private_child(run_fd, METER_DIR_NAME))
+            os.close(_make_private_child(run_fd, LLM_DIR_NAME))
         finally:
             os.close(run_fd)
     except FileExistsError:
@@ -427,15 +468,21 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
     finally:
         os.close(root_fd)
     run = runs_root / run_id
-    return RunDirectory(run=run, meter=run / METER_DIR_NAME)
+    return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME)
 
 
 def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str]:
     env = dict(plan.compose_env)
     env["EVAL_EVIDENCE_DIR"] = str(directory.meter)
+    env["EVAL_LLM_EVIDENCE_DIR"] = str(directory.llm)
     env["EVAL_RUNNER_UID"] = str(os.geteuid())
     env["EVAL_RUNNER_GID"] = str(os.getegid())
     return env
+
+
+def secret_env_names(backend: str) -> frozenset[str]:
+    """그 백엔드의 compose가 비밀 env 파일에서 읽는 이름. local에는 API 키가 없다."""
+    return _BASE_SECRETS | (_API_SECRETS if backend == "api" else frozenset())
 
 
 def compose_base_args(plan: RunPlan) -> list[str]:

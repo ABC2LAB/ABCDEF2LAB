@@ -32,7 +32,8 @@ from runner_checks import (
     read_host_listeners,
 )
 from runner_config import (
-    ENGINE_DB_SERVICE, ENGINE_SERVICE, METER_SERVICE, OBS_SERVICE, TARGET_SERVICE, RunDirectory, RunnerConfig,
+    API_FRONT_SERVICE, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE, METER_SERVICE, OBS_SERVICE, TARGET_SERVICE,
+    RunDirectory, RunnerConfig,
     RunnerConfigError, RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config,
     new_run_id, plan_run,
 )
@@ -47,7 +48,7 @@ RESULT_NAME = "runner-result.json"
 COMPLETE, INVALID = "complete", "invalid"
 # 이미지 역할 → 그 이미지를 쓰는 compose 서비스. 기동 후 컨테이너 이미지가 설정의 내용 ID와 같아야 한다.
 _IMAGE_SERVICES = {"engine": (ENGINE_SERVICE,), "engine_db": (ENGINE_DB_SERVICE,), "target": (TARGET_SERVICE,),
-                   "meter": (METER_SERVICE, OBS_SERVICE)}
+                   "meter": (METER_SERVICE, OBS_SERVICE, LLM_GW_SERVICE, API_FRONT_SERVICE)}
 
 
 class RunFailure(Exception):

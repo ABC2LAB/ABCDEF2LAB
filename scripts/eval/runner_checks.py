@@ -20,8 +20,8 @@ from typing import Callable, Iterable, Mapping
 from urllib.parse import urlsplit
 
 from runner_config import (
-    ENGINE_DB_SERVICE, ENGINE_NET, ENGINE_SERVICE, LLM_NET, METER_SERVICE, OBS_NET, OBS_SERVICE, TARGET_NET,
-    TARGET_SERVICE, RunnerConfig, RunPlan,
+    API_FRONT_SERVICE, ENGINE_API_NET, ENGINE_DB_SERVICE, ENGINE_NET, ENGINE_SERVICE, LLM_EGRESS_NET, LLM_GW_SERVICE,
+    METER_SERVICE, OBS_NET, OBS_SERVICE, TARGET_NET, TARGET_SERVICE, RunnerConfig, RunPlan,
 )
 from runner_docker import DaemonIdentity
 
@@ -103,22 +103,29 @@ class Listener:
 
 
 def expected_topology(config: RunnerConfig, plan: RunPlan) -> ExpectedTopology:
-    """평가 프로토콜 §2 망 표를 회차 계획에서 도출한다. 지금은 api·local이 같은 망 구성이다."""
+    """평가 프로토콜 §2 망 표를 회차 계획에서 도출한다. api·local은 같은 망 구성이다(차이는 게이트웨이 설정뿐).
+
+    엔진은 internal 망 하나에만 붙고, 바깥 경로는 게이트웨이, 엔진 API publish는 API front가 맡는다.
+    """
     if plan.llm["backend"] not in ("api", "local"):
         raise CheckInputError("llm_backend_unsupported")
     ports = config.ports
     return ExpectedTopology(
         networks={
-            ENGINE_NET: NetworkExpectation(True, frozenset({ENGINE_SERVICE, ENGINE_DB_SERVICE, METER_SERVICE})),
+            ENGINE_NET: NetworkExpectation(True, frozenset({ENGINE_SERVICE, ENGINE_DB_SERVICE, METER_SERVICE,
+                                                            LLM_GW_SERVICE, API_FRONT_SERVICE})),
             TARGET_NET: NetworkExpectation(True, frozenset({TARGET_SERVICE, METER_SERVICE, OBS_SERVICE})),
-            LLM_NET: NetworkExpectation(False, frozenset({ENGINE_SERVICE})),
+            LLM_EGRESS_NET: NetworkExpectation(False, frozenset({LLM_GW_SERVICE})),
+            ENGINE_API_NET: NetworkExpectation(False, frozenset({API_FRONT_SERVICE})),
             OBS_NET: NetworkExpectation(False, frozenset({OBS_SERVICE})),
         },
         publishes={
-            ENGINE_SERVICE: frozenset({Binding(f"{ports['engine_container']}/tcp", LOOPBACK_V4, ports["engine_api_host"])}),
+            ENGINE_SERVICE: frozenset(),
             ENGINE_DB_SERVICE: frozenset(),
             TARGET_SERVICE: frozenset(),
             METER_SERVICE: frozenset(),
+            LLM_GW_SERVICE: frozenset(),
+            API_FRONT_SERVICE: frozenset({Binding(f"{ports['api_front']}/tcp", LOOPBACK_V4, ports["engine_api_host"])}),
             OBS_SERVICE: frozenset({Binding(f"{ports['obs']}/tcp", LOOPBACK_V4, ports["obs_host"])}),
         },
     )
@@ -313,7 +320,7 @@ def check_topology(expected: ExpectedTopology, project: str, networks: Iterable[
 
 
 def check_other_publishes(project: str, containers: Iterable[ContainerFact]) -> list[str]:
-    """회차 밖 컨테이너가 loopback 밖으로 publish하면 엔진이 LLM 망 게이트웨이로 닿을 수 있다."""
+    """회차 밖 컨테이너가 loopback 밖으로 publish하면 엔진이 엔진 망의 호스트 쪽 게이트웨이 주소로 닿을 수 있다."""
     violations = set()
     for container in containers:
         if container.project == project:

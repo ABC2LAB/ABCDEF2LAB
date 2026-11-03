@@ -17,15 +17,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import runner
 from runner import COMPLETE, INVALID, RESULT_NAME, Clock, DockerPorts, Facts, RunFailure, build_spec, execute_run
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LOCAL_LLM, compose_environment, create_run_directory, parse_runner_config,
-    plan_run,
+    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, compose_environment, create_run_directory,
+    parse_runner_config, plan_run,
 )
 from runner_probe import PASS, ProbeOutcome
 from test_preflight import configuration
 from test_runner_checks import DAEMON, raw_world
 from test_runner_config import _yaml_without_comments, runner_config
 
-ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "eval-meter": "meter", "eval-obs": "meter"}
+ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "eval-meter": "meter", "eval-obs": "meter",
+           "eval-llm-gw": "meter", "eval-api": "meter"}
 
 
 def make_spec():
@@ -345,6 +346,15 @@ class TestFailures(unittest.TestCase):
         result, ports, _, evidence = run(lambda p, m, c: setattr(p, "post_world", swap))
         self.assert_invalid(result, ports, evidence, "post_topology_violation")
 
+    def test_gateway_and_api_front_images_are_checked(self):
+        for service in ("eval-llm-gw", "eval-api"):
+            def swap(networks, containers, service=service):
+                next(c for c in containers if c["service"] == service)["image"] = "sha256:" + "f" * 64
+            result, ports, _, evidence = run(lambda p, m, c: setattr(p, "post_world", swap))
+            with self.subTest(service=service):
+                self.assert_invalid(result, ports, evidence, "post_topology_violation")
+                self.assertIn(f"service.{service}: IMAGE_MISMATCH", evidence.files["post-checks.json"]["image_violations"])
+
     def test_down_failure_after_success_is_invalid_and_unsigned(self):
         result, ports, _, evidence = run(failing("down"))
         self.assert_invalid(result, ports, evidence, "down_failed")
@@ -380,7 +390,7 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
 
     def services_referencing(self, needle):
         found = set()
-        for path in (COMPOSE_COMMON, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
             section = service = None
             for line in _yaml_without_comments(Path(path).read_text(encoding="utf-8")).splitlines():
                 if line and not line.startswith(" "):
@@ -397,6 +407,13 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         self.assertEqual(self.services_referencing("EVAL_EVIDENCE_DIR"), {"eval-meter", "eval-obs"})
         text = Path(COMPOSE_EVAL).read_text(encoding="utf-8")
         self.assertRegex(text, r"(?m)^  engine:\n(?:    .*\n)*?    volumes: !reset \[\]")
+
+    def test_api_key_reaches_only_the_gateway(self):
+        # 엔진·계측기·관측 front에는 API 키가 없다. 엔진은 자리값만 받는다(게이트웨이가 버린다).
+        self.assertEqual(self.services_referencing("EVAL_LLM_API_KEY"), {"eval-llm-gw"})
+        for name in ("OPENAI_API_KEY}", "ANTHROPIC_API_KEY", "${OPENAI_API_KEY"):
+            self.assertEqual(self.services_referencing(name), set())
+        self.assertEqual(self.services_referencing("EVAL_LLM_EVIDENCE_DIR"), {"eval-llm-gw"})
 
     def test_meter_mount_is_a_subdirectory_apart_from_scoreboards(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -24,11 +24,14 @@ from test_runner_config import _yaml_without_comments, runner_config
 PROJECT = "eval-ours-1"
 DAEMON = DaemonIdentity("29.1.3", "linux", "amd64", "Docker Engine - Community")
 # 실제 ID처럼 앞 12자리(짧은 ID)가 서로 다르게.
-SERVICE_IDS = {name: str(n) * 64 for n, name in enumerate(("engine", "engine-db", "target", "eval-meter", "eval-obs"), 1)}
-NET_IDS = {key: f"{n:064x}" for n, key in enumerate(("engine_net", "target_net", "llm_net", "obs_net"), 100)}
-MEMBERS = {"engine_net": ("engine", "engine-db", "eval-meter"), "target_net": ("target", "eval-meter", "eval-obs"),
-           "llm_net": ("engine",), "obs_net": ("eval-obs",)}
-INTERNAL = {"engine_net": True, "target_net": True, "llm_net": False, "obs_net": False}
+SERVICE_IDS = {name: str(n) * 64 for n, name in enumerate(
+    ("engine", "engine-db", "target", "eval-meter", "eval-obs", "eval-llm-gw", "eval-api"), 1)}
+NET_IDS = {key: f"{n:064x}" for n, key in enumerate(
+    ("engine_net", "target_net", "llm_egress_net", "engine_api_net", "obs_net"), 100)}
+MEMBERS = {"engine_net": ("engine", "engine-db", "eval-meter", "eval-llm-gw", "eval-api"),
+           "target_net": ("target", "eval-meter", "eval-obs"), "llm_egress_net": ("eval-llm-gw",),
+           "engine_api_net": ("eval-api",), "obs_net": ("eval-obs",)}
+INTERNAL = {"engine_net": True, "target_net": True, "llm_egress_net": False, "engine_api_net": False, "obs_net": False}
 
 
 def plan_for(backend="api"):
@@ -51,7 +54,9 @@ def raw_world():
             "Containers": {SERVICE_IDS[s]: {"Name": f"{PROJECT}-{s}-1", "IPv4Address": f"172.{30 + n}.0.{i + 2}/16", "IPv6Address": ""}
                            for i, s in enumerate(services)},
         })
-    ports = {"engine": {"8787/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18787"}], "8788/tcp": None},
+    ports = {"engine": {"8787/tcp": None, "8788/tcp": None},
+             "eval-api": {"8091/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18787"}]},
+             "eval-llm-gw": {},
              "eval-obs": {"8081/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18081"}]},
              "engine-db": {"5432/tcp": None}, "target": {"3000/tcp": None}, "eval-meter": {}}
     containers = []
@@ -127,13 +132,43 @@ class TestExpectations(unittest.TestCase):
                                  {k: (internal[k], members.get(k, set())) for k in internal})
                 self.assertEqual(expected.services, frozenset(service_nets))
 
+    def test_publishing_services_match_compose_files(self):
+        # 기대 구성에서 publish하는 서비스 = compose에서 ports를 가진 서비스(엔진은 직접 publish하지 않는다).
+        for backend in ("api", "local"):
+            config, plan = plan_for(backend)
+            expected = expected_topology(config, plan)
+            with_ports = set()
+            for path in plan.compose_files:
+                section = service = None
+                for line in _yaml_without_comments(Path(path).read_text(encoding="utf-8")).splitlines():
+                    if line and not line.startswith(" "):
+                        section = line.split(":")[0]
+                        continue
+                    top = re.fullmatch(r"  ([A-Za-z0-9_.-]+):.*", line)
+                    if section == "services" and top:
+                        service = top.group(1)
+                    elif section == "services" and re.fullmatch(r"    ports:\s*", line):
+                        with_ports.add(service)
+            with self.subTest(backend=backend):
+                self.assertEqual(with_ports, {s for s, bindings in expected.publishes.items() if bindings})
+
     def test_publishes_come_from_config_ports_on_loopback(self):
         config, plan = plan_for()
         expected = expected_topology(config, plan)
-        self.assertEqual(expected.publishes["engine"], {Binding("8787/tcp", "127.0.0.1", 18787)})
+        # 엔진은 internal 망에만 있어 publish하지 않고, 엔진 API는 API front가 루프백에 publish한다.
+        self.assertEqual(expected.publishes["eval-api"], {Binding("8091/tcp", "127.0.0.1", 18787)})
         self.assertEqual(expected.publishes["eval-obs"], {Binding("8081/tcp", "127.0.0.1", 18081)})
-        for service in ("engine-db", "target", "eval-meter"):
+        for service in ("engine", "engine-db", "target", "eval-meter", "eval-llm-gw"):
             self.assertEqual(expected.publishes[service], frozenset())
+
+    def test_engine_is_on_the_internal_network_only(self):
+        config, plan = plan_for()
+        expected = expected_topology(config, plan)
+        on = {key for key, network in expected.networks.items() if "engine" in network.members}
+        self.assertEqual(on, {"engine_net"})
+        self.assertTrue(expected.networks["engine_net"].internal)
+        gateway_nets = {key for key, network in expected.networks.items() if "eval-llm-gw" in network.members}
+        self.assertEqual(gateway_nets, {"engine_net", "llm_egress_net"})
 
     def test_host_listen_allowance_by_backend(self):
         config, plan = plan_for("api")
@@ -164,8 +199,8 @@ class TestParse(unittest.TestCase):
     def test_world_parses(self):
         networks, containers = facts(*raw_world())
         engine = next(c for c in containers if c.service == "engine")
-        self.assertEqual(engine.bindings, {Binding("8787/tcp", "127.0.0.1", 18787)})
-        self.assertEqual(engine.network_ids, {NET_IDS["engine_net"], NET_IDS["llm_net"]})
+        self.assertEqual(engine.bindings, frozenset())
+        self.assertEqual(engine.network_ids, {NET_IDS["engine_net"]})
         self.assertEqual(engine.exposed, {"8787/tcp", "8788/tcp"})
         self.assertEqual(next(c for c in containers if c.service == "target").exposed, {"3000/tcp"})
         self.assertEqual(next(c for c in containers if c.service == "eval-meter").exposed, frozenset())
@@ -245,10 +280,10 @@ class TestTopology(unittest.TestCase):
         extra["Labels"]["com.docker.compose.network"] = "default"
         self.networks.append(extra)
         self.assertEqual(self.check(), ["network.default: UNEXPECTED"])
-        dup = copy.deepcopy(by_key(self.networks, "llm_net"))
+        dup = copy.deepcopy(by_key(self.networks, "llm_egress_net"))
         dup.update(Id="c" * 64, Containers={})
         self.networks = [n for n in self.networks if n is not extra] + [dup]
-        self.assertIn("network.llm_net: DUPLICATE", self.check())
+        self.assertIn("network.llm_egress_net: DUPLICATE", self.check())
         self.networks = [n for n in raw_world()[0] if n["Labels"]["com.docker.compose.network"] != "obs_net"]
         self.assertIn("network.obs_net: MISSING", self.check())
 
@@ -275,9 +310,11 @@ class TestTopology(unittest.TestCase):
 
     def test_publishes_exact(self):
         cases = [
-            ("engine", {"8787/tcp": [{"HostIp": "0.0.0.0", "HostPort": "18787"}]}),
-            ("engine", {"8787/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18787"}, {"HostIp": "::", "HostPort": "18787"}]}),
-            ("engine", {"8787/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18788"}]}),
+            ("engine", {"8787/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18787"}]}),
+            ("eval-api", {"8091/tcp": [{"HostIp": "0.0.0.0", "HostPort": "18787"}]}),
+            ("eval-api", {"8091/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18787"}, {"HostIp": "::", "HostPort": "18787"}]}),
+            ("eval-api", {"8091/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18788"}]}),
+            ("eval-llm-gw", {"8090/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8090"}]}),
             ("target", {"3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3000"}]}),
             ("eval-obs", {}),
         ]
@@ -381,10 +418,10 @@ class TestSnapshots(unittest.TestCase):
     def test_policy_changes_with_bindings_members_or_internal(self):
         base = policy_sha256(self.snapshot())
         networks, containers = raw_world()
-        by_service(containers, "engine")["ports"] = {"8787/tcp": [{"HostIp": "0.0.0.0", "HostPort": "18787"}]}
+        by_service(containers, "eval-api")["ports"] = {"8091/tcp": [{"HostIp": "0.0.0.0", "HostPort": "18787"}]}
         self.assertNotEqual(policy_sha256(self.snapshot(networks, containers)), base)
         networks, containers = raw_world()
-        by_key(networks, "llm_net")["Internal"] = True
+        by_key(networks, "llm_egress_net")["Internal"] = True
         self.assertNotEqual(policy_sha256(self.snapshot(networks, containers)), base)
         networks, containers = raw_world()
         del by_key(networks, "obs_net")["Containers"][SERVICE_IDS["eval-obs"]]
@@ -405,7 +442,7 @@ class TestSnapshots(unittest.TestCase):
         by_key(networks, "target_net")["Containers"][SERVICE_IDS["target"]]["IPv4Address"] = "172.31.0.77/16"
         self.assertEqual(compare_snapshots(pre, self.snapshot(networks, containers)), ["snapshot.networks: CHANGED"])
         networks, containers = raw_world()
-        by_key(networks, "llm_net")["IPAM"]["Config"][0]["Gateway"] = "172.32.0.254"
+        by_key(networks, "engine_net")["IPAM"]["Config"][0]["Gateway"] = "172.30.0.254"
         self.assertEqual(compare_snapshots(pre, self.snapshot(networks, containers)), ["snapshot.networks: CHANGED"])
         # 재시작: ID·이미지는 같고 시작 시각·재시작 횟수만 바뀐다. 계측기·대상·엔진 각각.
         for service in ("eval-meter", "target", "engine"):

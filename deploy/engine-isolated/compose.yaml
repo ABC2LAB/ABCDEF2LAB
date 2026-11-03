@@ -1,10 +1,10 @@
 # 공통 층: 엔진 컨테이너 + 망 격리. 현재는 평가용이다.
-# 대상으로 가는 정문(front door)은 이 층에 없고 deploy/eval의 계측기가 overlay로 붙는다.
-# 실사용 배치 전에 llm_net을 LLM 전용 출구로 좁혀야 한다. llm_net은 internal이 아니라
-# 엔진이 NAT로 바깥 어디든 나갈 수 있다. 평가에서는 대상이 internal 망에만 있어 이 경로로
-# 닿지 못하지만(부정 연결 점검의 "대상 IP 직접 실패"), 조직 망의 대상이라면 엔진이
-# llm_net으로 직접 닿아 정문을 우회한다.
-# TODO(최민준): 실사용 전 llm_net 옆문 제거(LLM을 internal 망 컨테이너로 등)
+# 엔진은 internal 망(engine_net) 하나에만 붙어 바깥으로 직접 나가지 못한다. 엔진의 바깥 경로는
+# LLM 게이트웨이(eval-llm-gw) 하나이고, 엔진 API는 API front(eval-api)가 호스트 루프백에만 publish한다
+# (internal 망에만 붙은 컨테이너는 포트를 publish할 수 없다). 대상으로 가는 정문(front door)은 이 층에
+# 없고 deploy/eval의 계측기가 overlay로 붙는다.
+# LLM 백엔드 overlay(compose.llm-api.yaml 또는 compose.local-llm.yaml)를 정확히 하나 붙여야 게이트웨이가
+# 뜬다. 두 백엔드가 같은 망 구성이라 로컬 LLM으로 바꿀 때는 overlay와 설정값만 바꾼다.
 #
 # 회차마다 project를 새로 만든다(예: docker compose -p eval-<run_id> ...). 망 이름은
 # project 접두어가 붙어 회차 전용이 되며, 끝나면 down -v로 망·볼륨을 지운다.
@@ -22,19 +22,15 @@ services:
       ARTEX_ADMIN_PASSWORD: ${EVAL_ENGINE_ADMIN_PASSWORD:?}
       ARTEX_LLM_PROVIDER: ${ARTEX_LLM_PROVIDER:?}
       ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:?}
+      # LLM 게이트웨이 주소. 러너가 사전검사 선언의 LLM 주소 경로를 붙여 넘긴다.
       ARTEX_LLM_BASE_URL: ${ARTEX_LLM_BASE_URL:?}
       ARTEX_LLM_STREAM: ${ARTEX_LLM_STREAM:-}
-      # 키 값은 .env에서만 온다. 러너의 회차 기록·격리 근거에는 이름만 남는다(절대규칙 2).
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # 엔진은 키가 비면 LLM을 끈다. 진짜 키는 게이트웨이만 갖고, 게이트웨이는 엔진이 보낸 이 값을 버린다.
+      OPENAI_API_KEY: gateway-holds-the-key
     volumes:
       - engine-data:/app/data
-    ports:
-      # 엔진 API는 호스트 루프백에만. 0.0.0.0 공개 금지.
-      - "127.0.0.1:${EVAL_ENGINE_API_PORT:?}:${EVAL_ENGINE_CONTAINER_PORT:?}"
     networks:
       - engine_net
-      - llm_net
 
   engine-db:
     image: ${EVAL_ENGINE_DB_IMAGE:?엔진 DB 이미지(digest 고정)를 설정하세요}
@@ -52,13 +48,46 @@ services:
     networks:
       - engine_net
 
+  # 엔진의 유일한 바깥 경로. command(백엔드별 규칙)는 LLM 백엔드 overlay가 정한다.
+  # 기록 디렉터리는 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
+  eval-llm-gw:
+    image: ${EVAL_METER_IMAGE:?}
+    user: "${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}"
+    volumes:
+      - ${EVAL_LLM_EVIDENCE_DIR:?}:/evidence
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks:
+      - engine_net
+      - llm_egress_net
+
+  # 엔진 API를 고치지 않고 호스트 루프백에 publish한다. 기록·비밀 없음.
+  eval-api:
+    image: ${EVAL_METER_IMAGE:?}
+    user: "${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}"
+    command:
+      - -role=api-front
+      - -listen=:${EVAL_API_FRONT_PORT:?}
+      - -upstream=http://engine:${EVAL_ENGINE_CONTAINER_PORT:?}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      # 엔진 API는 호스트 루프백에만. 0.0.0.0 공개 금지.
+      - "127.0.0.1:${EVAL_ENGINE_API_PORT:?}:${EVAL_API_FRONT_PORT:?}"
+    networks:
+      - engine_net
+      - engine_api_net
+
 networks:
-  # 엔진·엔진 DB·정문만. 외부로 나가는 경로 없음.
+  # 엔진·엔진 DB·게이트웨이·API front(+평가 층의 계측기). 외부로 나가는 경로 없음.
   engine_net:
     internal: true
-  # 엔진의 LLM 연결 전용. internal이 아니므로 엔진은 외부로도 나갈 수 있다.
-  # 이 구성이 보장하는 것은 대상 망 차단뿐이다(완전 로컬 모드를 망으로 보장하지 않음).
-  llm_net: {}
+  # 게이트웨이의 LLM 출구. 게이트웨이만 붙는다.
+  llm_egress_net: {}
+  # 엔진 API publish 전용(internal 망은 publish할 수 없다). API front만 붙는다.
+  engine_api_net: {}
 
 volumes:
   engine-data: {}
