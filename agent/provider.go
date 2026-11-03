@@ -445,12 +445,12 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 			req.Header.Set(t.sessionHeaderKey, sid)
 		}
 	}
-	// When LLM recording is on, the Recorder puts a Capture on the context so the
-	// raw wire bodies can be persisted. This is the only layer that still sees
-	// them: norma builds the request body internally and decodes the SSE response
-	// before either reaches the recorder.
+	// Recorder and connection diagnostics retain only request/response presence
+	// and numeric wire metadata. Explicit raw diagnostic captures still see the
+	// bodies here, before norma decodes provider events.
 	capt := llmrec.CaptureFrom(req.Context())
-	capt.SetRequest(requestBodySnapshot(req))
+	capt.MarkRequest()
+	capt.SetRequestSnapshot(func() string { return requestBodySnapshot(req) })
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {
@@ -538,7 +538,7 @@ func logTestConnection(capt *llmrec.Capture, latency time.Duration, failed bool)
 // reply text for internal callers; public API handlers must redact the reply
 // and error. Diagnostic logs contain only status, size and latency metadata.
 func TestConnection(ctx context.Context, c Config) (latency time.Duration, reply string, err error) {
-	ctx, capt := llmrec.NewCapture(ctx)
+	ctx, capt := llmrec.NewMetadataCapture(ctx)
 	// Read final return values, including initialization errors and empty replies.
 	defer func() { logTestConnection(capt, latency, err != nil) }()
 	prov, err := c.NewProvider()

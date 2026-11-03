@@ -24,7 +24,7 @@ API의 HTTP 200/400과 provider가 실제로 응답한 HTTP 상태는 서로 다
 
 설정의 provider/model/endpoint/proxy 문자열, URL userinfo·path·query, API key, 원문 응답·오류·SSE 프레임을 로그 필드로 받지 않는다. 길이 제한만으로 원문을 안전하다고 판단하지 않는다.
 
-`Capture.Metadata()`는 mutex 아래에서 응답 attempt의 상태와 `body.Len()`만 읽어 독립된 사본을 반환한다. 크기는 UTF-8 rune 수가 아닌 바이트 수이며 빈 응답 attempt도 0바이트 항목으로 남긴다. 원문 getter·`Attempts()`의 wire 계약과 provider 전송 내용은 유지한다.
+`Capture.Metadata()`는 mutex 아래에서 응답 attempt의 상태와 바이트 수만 읽어 독립된 사본을 반환한다. 크기는 UTF-8 rune 수가 아닌 wire 바이트 수이며 빈 응답 attempt도 0바이트 항목으로 남긴다. 연결시험의 Capture는 metadata-only 모드라 원문 body를 보관하지 않는다. `raw_request` 표시는 본문 복사가 아니라 전송 시도 존재를 뜻하며 요청 완료·송신 성공을 증명하지 않는다. 원문 getter·`Attempts()`의 기존 wire 계약과 provider 전송 내용은 별도 raw Capture 경로에서 유지한다.
 
 `TestConnection`의 기존 시그니처와 내부 호출자에게 돌려주는 reply/error는 유지한다. HTTP handler는 reply를 버리고, 원문 error를 문자열로 변환하지 않는다. 원문은 임의 웹 응답처럼 취급해야 하므로 다른 공개 출력 경로에 연결하지 않는다.
 
