@@ -23,6 +23,11 @@ var ErrInvalidProfileManifestFile = errors.New("llmpolicy: invalid profile manif
 // It only returns a resolver. Installing it and invalidating old providers is
 // the host's responsibility.
 func LoadProfileManifestFile(path string) (*ProfileResolver, error) {
+	return loadProfileManifestFile(path, io.ReadAll)
+}
+
+// Keep the read dependency call-scoped so rechecks can be tested without shared hooks.
+func loadProfileManifestFile(path string, readAll func(io.Reader) ([]byte, error)) (*ProfileResolver, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.IndexByte(path, 0) >= 0 {
 		return nil, ErrInvalidProfileManifestFile
 	}
@@ -70,7 +75,7 @@ func LoadProfileManifestFile(path string) (*ProfileResolver, error) {
 	if unix.Fstat(fd, &before) != nil || !ownedManifestFile(before) || before.Size < 1 || before.Size > MaxProfileManifestBytes {
 		return nil, ErrInvalidProfileManifestFile
 	}
-	data, err := io.ReadAll(io.LimitReader(file, MaxProfileManifestBytes+1))
+	data, err := readAll(io.LimitReader(file, MaxProfileManifestBytes+1))
 	if err != nil || len(data) != int(before.Size) {
 		return nil, ErrInvalidProfileManifestFile
 	}
