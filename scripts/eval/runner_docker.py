@@ -194,7 +194,9 @@ class Docker:
         platform = server.get("Platform")
         fields = (server.get("Version"), server.get("Os"), server.get("Arch"),
                   platform.get("Name") if isinstance(platform, dict) else None)
-        if not all(isinstance(value, str) and value for value in fields):
+        # 배포판 패키지(Ubuntu docker.io 등)는 Platform.Name을 비워 둔다. 이름은 있으면 기록·대조하고, 빈 값도
+        # 하나의 값으로 대조한다(Desktop↔배포판 전환은 그대로 다름으로 잡힌다). 버전·OS·아키텍처는 비면 거부.
+        if not all(isinstance(value, str) for value in fields) or not all(fields[:3]):
             raise DockerError("docker_version_output_invalid")
         identity = DaemonIdentity(*fields)
         if not _version_ok(identity.version):

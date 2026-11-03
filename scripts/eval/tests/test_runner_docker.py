@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import runner_docker
-from runner_docker import CommandResult, Docker, DockerError, client_environment
+from runner_docker import CommandResult, DaemonIdentity, Docker, DockerError, client_environment
 
 
 class FakeExecutor:
@@ -64,8 +64,15 @@ class TestDocker(unittest.TestCase):
                 Docker(FakeExecutor(ok(server(version))), {}, 1).daemon()
             self.assertIn(str(caught.exception), ("docker_server_too_old", "docker_version_output_invalid"))
 
+    def test_distribution_daemon_with_empty_platform_name(self):
+        # Ubuntu docker.io 29.1.3 실측: Platform.Name == "". 빈 이름도 식별값으로 남고 다른 이름과는 다르다.
+        identity = Docker(FakeExecutor(ok(server(Platform={"Name": ""}))), {}, 1).daemon()
+        self.assertEqual(identity, DaemonIdentity("29.1.3", "linux", "amd64", ""))
+        self.assertNotEqual(identity, Docker(FakeExecutor(ok(server())), {}, 1).daemon())
+
     def test_daemon_output_must_be_complete(self):
-        for value in (server(Os=""), server(Platform="x"), server(Arch=None), [], "29.1.3"):
+        for value in (server(Os=""), server(Version=""), server(Arch=""), server(Platform="x"), server(Arch=None),
+                      server(Platform={}), server(Platform={"Name": None}), server(Platform={"Name": 7}), [], "29.1.3"):
             with self.assertRaises(DockerError) as caught:
                 Docker(FakeExecutor(ok(value)), {}, 1).daemon()
             self.assertEqual(str(caught.exception), "docker_version_output_invalid")
