@@ -4,14 +4,20 @@
 
 ## 1. 범위와 현재 코드
 
-기준 dev는 `d68d78e3d69be5a4d029a1ae7b274d1e6bf599ab`다.
+초안 작성 기준은 dev `d68d78e3d69be5a4d029a1ae7b274d1e6bf599ab`이며,
+코드 부재를 재검토한 dev는 `88415fff88f1c66c4307ba370c360e6ad338efcc`다.
 기존 [CPD](./e2-audit-journal.md)·[KLD](./e2-audit-key-generation-cli.md)·
 [MD01/02/04](./task-mode-marker.md#81-결정표)의 역할과 실패 경계를 유지한다.
 현재 [#142](https://github.com/ABC2LAB/ABCDEF2LAB/pull/142)의 엔진/최초 저장,
 [#143](https://github.com/ABC2LAB/ABCDEF2LAB/pull/143)의 감사 Source,
 [#145](https://github.com/ABC2LAB/ABCDEF2LAB/pull/145)의 snapshot prefix 검증은
 실제 publisher·최신 sealed head·키 신뢰·배치/자식 종료 권위를 발급하지 않는다.
-별도 영속 코어의 typed Go Host/Authority도 실제 인증 공급자가 연결되기 전에는 운영 근거가 아니다.
+별도 영속 코어는 위 dev에는 없고 다음 열린 PR에만 있다.
+[#147](https://github.com/ABC2LAB/ABCDEF2LAB/pull/147) 확인 head `8e0efd9a0f8995cf19e3421ed058dda11896a53a`의
+[`auditkeys.Authority`](https://github.com/ABC2LAB/ABCDEF2LAB/blob/8e0efd9a0f8995cf19e3421ed058dda11896a53a/auditkeys/model.go#L76)와
+[#148](https://github.com/ABC2LAB/ABCDEF2LAB/pull/148) 확인 head `f5515077eda692be4b212d379303d8fddcb036d8`의
+[`auditcheckpoint.Host`](https://github.com/ABC2LAB/ABCDEF2LAB/blob/f5515077eda692be4b212d379303d8fddcb036d8/auditcheckpoint/types.go#L122)가
+아래 typed Go Host/Authority 설명의 출처다. 실제 인증 공급자가 연결되기 전에는 운영 근거가 아니다.
 
 이 초안은 그 빈 경계를 첫 구현으로 좁히는 선택지다. 실제 producer·데몬·DB 역할·
 UID 분리·비밀 저장소·서명 형식이 이미 존재하거나 팀에서 확정됐다고 가정하지 않는다.
@@ -26,11 +32,14 @@ UID 분리·비밀 저장소·서명 형식이 이미 존재하거나 팀에서 
 | AH03 | **운영자가 확인한 store/epoch/root 배치**만 사용. supervisor가 검증된 장기 handle·현재 배치/instance lease와 외부 복원 anchor를 공급. 기존 epoch row가 없거나 불일치하면 유지보수/차단. | MD02의 운영 책임 겸임 권장안인 이동찬과 실제 운영자. 실제 책임·provisioning·복구 승인 확정 필요. 빈 DB/새 경로를 새 신뢰 세대로 자동 승인하지 않음. |
 | AH04 | registry는 **secret provider가 검증한 불변 key identity/version 결속**만 소비. 모델·일반 client는 opaque identity를 발급하지 않음. namespace당 첫 provider는 하나의 검증된 identity domain으로 제한하는 안. | 이동찬(KLD 공급), 실제 secret provider/운영자, 최민준(해석). 실제 identity·동일 key alias 방지·scope 유지 증거가 없으면 active/신뢰 소비 보류. 다른 domain 이관은 별도 검토. |
 | AH05 | 인증·secret mapping·epoch 확인에서 얻은 **유효한 trust scope 동안** 코어 연산을 실행. 취소/회수는 새 scope 발급을 닫고 기존 연산을 포착·drain한 뒤 확정. | 이동찬. 단발 `true` callback이나 전후 값 일치만으로 lease·ABA 방지·복원 연속성을 주장하지 않음. 실제 scope 공급 구현 전 비활성. |
-| AH06 | publisher는 path 대신 **상한이 있는 snapshot 바이트**를 전달. 서비스가 한 번 소유 복사해 전체/이전 prefix를 검사. metadata API와 secret-key 전달은 분리. | 이동찬·최민준. 아직 없는 wire framing/한도/비밀 전달 API는 후속 검토. 서버가 client 파일 경로를 열거나 검증 중 live 파일을 자르지 않음. |
+| AH06 | publisher는 path 대신 **상한이 있는 snapshot 바이트**를 전달. 서비스가 한 번 소유 복사해 전체/이전 prefix를 검사. CPD04에 따라 publisher RPC로 HMAC 키를 받거나 전달하지 않으며, 서비스가 별도 비밀 저장소의 검증된 KeyRef 매핑으로 선택. | 이동찬(wire framing/한도·비밀 저장소 연결), 최민준(무결성 리뷰). 해당 연결은 후속 검토. 서버가 client 파일 경로를 열거나 검증 중 live 파일을 자르지 않음. |
 
 이동찬은 위 서버/어댑터 구현 담당이며 운영 책임 겸임은 기존 문서의 **권장안**이다.
 최민준은 무결성·소비/평가 경계 리뷰어이며 실제 OS/DB 권한 발급자로 새로 지정하지 않는다.
 이경준·윤재상의 KG/fixture 발급 영역도 이 초안으로 변경하지 않는다.
+
+[CPD의 평가 후속](./e2-audit-journal.md)에 따라 평가 회차에서는 외부 게시 on/off를 프로파일 조건으로 고정하고,
+epoch 공급·socket 경로를 [러너 격리 근거(평가 프로토콜 §2)](../evaluation/evaluation-protocol.md)에 넣는 합의 전에는 활성화하지 않는다.
 
 ## 3. 신원·권한 조립 제안
 
@@ -53,14 +62,16 @@ service가 그 검증된 instance 수명을 연결에 결속하는 방식을 제
 권한 강하/instance 변경 뒤에는 기존 연결을 폐기하고 최종 신원으로 새 연결·lease를 얻는다.
 매 operation의 현재 instance/trust scope·회수 상태를 확인하되, 그 재확인이 이미 위임된
 live endpoint의 실제 발신자를 자동 구별하는 장치는 아니다. 비위임 경계를 입증할 수 없으면
-첫 배치를 활성화하지 않는다. packet credential 등 다른 방식은 별도 후속 검토다.
+첫 배치를 활성화하지 않는다. 메시지별 packet credential 관찰의 후속 코어는 열린
+[#154](https://github.com/ABC2LAB/ABCDEF2LAB/pull/154) 확인 head `a7223e626f63a32244faa02389385e6baa5aec65`에서 제안한다.
+이 초안의 인증·권한 배치가 완료됐다는 뜻은 아니다.
 
 | 인증 뒤 권한 | 허용할 제안 범위 | 추가 필수 근거 |
 | --- | --- | --- |
 | publisher | 등록된 namespace/instance의 journal 최초 등록·연속 게시·마감, 자기 연산 ACK/현재 head 조회 | 전체 Scope/JournalID/KeyRef 불변 결속, 현재 store epoch, expected revision, 실제 publisher 수명 |
 | consumer/reader | 허용된 실행의 현재 sealed head와 비민감 metadata 조회 | 현재 epoch/읽기 권한/키 신뢰 확인. 과거 ACK 조회를 최신 head로 대체하지 않음. |
 | operator/control | 명시 승인된 key metadata 전이·설치/복구 절차 요청 | kernel/host 인증 + 실제 작업별 승인·dependency/drain 근거. 모델/worker가 operator 요청을 대행해 권한을 얻지 않음. |
-| migration/provisioning | 검토된 DDL과 별도 승인된 배치/anchor provisioning | runtime API와 별도 설치 권한. 라이브러리의 Migrate 성공은 epoch 신뢰·실행 활성화 성공이 아님. |
+| migration/provisioning | 검토된 DDL과 별도 승인된 배치/anchor provisioning | runtime API와 별도 설치 권한. 열린 [#147의 Migrate](https://github.com/ABC2LAB/ABCDEF2LAB/blob/8e0efd9a0f8995cf19e3421ed058dda11896a53a/auditkeys/store.go#L21)·[#148의 Migrate](https://github.com/ABC2LAB/ABCDEF2LAB/blob/f5515077eda692be4b212d379303d8fddcb036d8/auditcheckpoint/store.go#L25) 성공은 epoch 신뢰·실행 활성화 성공이 아님. |
 | model/미등록 peer | 없음 | parsing·검증·발급 worker 슬롯을 점유하기 전 가능한 지점에서 거부. 커널 큐/CPU 고갈 방어까지 구현됐다고 주장하지 않음. |
 
 CPD의 sealed는 순수 MAC 결과나 진단 성공 상태가 아니다. 실제 close/drain 주체의 최종
@@ -78,7 +89,8 @@ context는 임의 차단 Reader/협조하지 않는 공급자를 강제 중단�
 
 registry metadata RPC에는 키 원문·hex/base64·공개 fingerprint를 넣지 않는다. 실제 secret
 provider가 같은 key에 여러 version/alias를 붙여도 canonical identity를 일관되게 확인해야 한다.
-opaque identity 문자열의 UNIQUE 제약은 **공급자가 검증한 identity의 중복**만 막으며 실제
+열린 [#147 schema의 `UNIQUE(namespace,secret_identity)`](https://github.com/ABC2LAB/ABCDEF2LAB/blob/8e0efd9a0f8995cf19e3421ed058dda11896a53a/auditkeys/schema.sql#L12)는
+**공급자가 검증한 identity의 중복**만 막으며 실제
 key 바이트의 진위를 자체 증명하지 않는다. 준비 metadata·파일 존재·32바이트 길이를 active로
 번역하지 않는다. journal 생성의 active 검사와 과거 검증용 키 소비 허용을 별도로 확인한다.
 
