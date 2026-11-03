@@ -607,16 +607,25 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 
 // effectiveProfileForAgent resolves the LLM profile id an agent should run on, by
 // precedence: agent binding (agents.llm_profile_id) → pin (task/conversation) → nil
-// (caller falls back to the global active profile). A binding to a deleted profile
-// can't happen (FK ON DELETE SET NULL); an otherwise-invalid one is dropped downstream
-// by loadProfileConfig, letting the caller fall back.
-func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) *int64 {
-	if s.m.pg != nil && agentKey != "" {
-		if a, _ := s.m.pg.GetAgentByKey(agentKey); a != nil && a.LLMProfileID != nil {
-			return a.LLMProfileID
-		}
+// (caller falls back to the global active profile). A failed binding lookup is
+// different from a successful lookup without a binding. Local-only callers must
+// stop on that failure rather than select a lower-precedence profile.
+func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) (*int64, error) {
+	if agentKey == "" {
+		return pinID, nil
 	}
-	return pinID
+	if s.m == nil || s.m.pg == nil {
+		return pinID, ErrLocalLLMProfile
+	}
+	a, err := s.m.pg.GetAgentByKey(agentKey)
+	if err != nil {
+		log.Printf("[engine] load agent LLM binding failed")
+		return pinID, ErrLocalLLMProfile
+	}
+	if a != nil && a.LLMProfileID != nil {
+		return a.LLMProfileID, nil
+	}
+	return pinID, nil
 }
 
 // resolveChatAgent picks the ChatAgent for one conversation: the agent's own
@@ -626,14 +635,18 @@ func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) *int64 
 // picked a valid profile still got rejected with "LLM 未配置" when no global
 // config was active.
 func (s *Server) resolveChatAgent(c *db.Conversation) *agent.ChatAgent {
+	effective, err := s.effectiveProfileForAgent(c.AgentKey, c.LLMProfileID)
+	if err != nil && s.localResolver != nil {
+		return nil
+	}
 	ca := s.chatAgentRef()
 	if s.localResolver != nil {
 		if _, _, ok := s.globalProvider(); !ok {
 			ca = nil
 		}
 	}
-	if eff := s.effectiveProfileForAgent(c.AgentKey, c.LLMProfileID); eff != nil {
-		if pa := s.chatAgentForProfile(*eff); pa != nil {
+	if effective != nil {
+		if pa := s.chatAgentForProfile(*effective); pa != nil {
 			ca = pa
 		} else if s.localResolver != nil {
 			return nil // invalid explicit binding cannot fall back to global
