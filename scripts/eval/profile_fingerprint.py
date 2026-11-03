@@ -14,9 +14,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-FORMAT = "abc2lab-eval-profile-v1"
+FORMAT = "abc2lab-eval-profile-v2"
 MAX_INPUT_BYTES = 64 * 1024
 MAX_PATH_LENGTH = 512
+MAX_URL_LENGTH = 512
 MAX_REFERENCE_LENGTH = 256
 MAX_DECIMAL_DIGITS = 128
 MAX_DECIMAL_EXPONENT = 128
@@ -28,6 +29,19 @@ _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _PLACEHOLDER = re.compile(r"(?:^|[/:._-])(?:todo|tbd|changeme|placeholder)(?:$|[/:._-])", re.I)
 _METHODS = ("GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE", "TRACE")
+# 러너 v1은 전용 망 격리만 지원한다(평가 프로토콜 §2). 엔진은 계측기 origin으로만 대상에 닿는다.
+_NETWORK_MODES = ("dedicated_network",)
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_MODEL_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
+# 로컬 LLM 고정 IP: llmpolicy/policy.go의 사설 대역 중 loopback(127/8·::1)을 제외한 4개.
+# 엔진은 컨테이너라 호스트 loopback으로는 닿지 않으므로 제외한다. ipaddress.is_private는 문서용 대역까지 포함해 쓰지 않는다.
+_LOCAL_NETWORKS = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
+# 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
+_LLM_FIELDS = {
+    "api": ("backend", "base_url", "model", "provider", "fallbacks"),
+    "local": ("backend", "base_url", "model", "hostname", "host_ip"),
+}
 
 
 class ProfileError(ValueError):
@@ -117,29 +131,89 @@ def _reference(value: object, path: str, *, image: bool = False) -> str:
     return value
 
 
-def _url(value: object, path: str, *, base_url: bool = False) -> str:
-    if (not _ascii(value) or len(value) > MAX_PATH_LENGTH
-            or any(char in value for char in "?#%\\<>{}$")
-            or _PLACEHOLDER.search(value)):
-        _fail(path, "INVALID_LOCAL_URL")
+def _text(value: object) -> bool:
+    return (isinstance(value, str) and bool(value) and value.isascii()
+            and all(32 < ord(char) < 127 for char in value)
+            and not any(char in value for char in "<>{}$") and not _PLACEHOLDER.search(value))
+
+
+def _tagged_reference(value: object) -> bool:
+    if not _text(value):
+        return False
+    name, separator, tag = value.rpartition(":")
+    return bool(separator and _REFERENCE_NAME.fullmatch(name) and _TAG.fullmatch(tag)
+                and tag.casefold() != "latest")
+
+
+# 아래 URL·LLM 판정은 preflight.py와 같은 정의다(drift 테스트로 묶음).
+def _split_url(value: object):
+    if not _text(value) or len(value) > MAX_URL_LENGTH or any(char in value for char in "?#%\\"):
+        return None
     try:
         parsed = urlsplit(value)
         host, port = parsed.hostname, parsed.port
-        if (parsed.scheme not in ("http", "https") or not host
-                or parsed.username is not None or parsed.password is not None
-                or port is not None and not 1 <= port <= 65535
-                or host != "localhost" and not ipaddress.ip_address(host).is_loopback):
-            _fail(path, "INVALID_LOCAL_URL")
-        if base_url:
-            if "//" in parsed.path or any(part in (".", "..") for part in parsed.path.split("/")):
-                _fail(path, "INVALID_LOCAL_URL")
-        elif parsed.path not in ("", "/"):
-            _fail(path, "INVALID_LOCAL_URL")
-    except ProfileError:
-        raise
     except ValueError:
-        raise ProfileError(f"{path}: INVALID_LOCAL_URL") from None
-    return value
+        return None
+    if (parsed.scheme not in ("http", "https") or not host or parsed.netloc != parsed.netloc.lower()
+            or parsed.username is not None or parsed.password is not None
+            or port is not None and not 1 <= port <= 65535):
+        return None
+    return parsed
+
+
+def _service_name(host: object) -> bool:
+    return (isinstance(host, str) and bool(_DNS_LABEL.fullmatch(host))
+            and host != "localhost" and not host.isdigit())
+
+
+def _dns_name(host: str) -> bool:
+    labels = host.split(".")
+    return (len(host) <= 253 and len(labels) >= 2 and all(_DNS_LABEL.fullmatch(label) for label in labels)
+            and not labels[-1].isdigit())
+
+
+def _base_path(path: str) -> bool:
+    return "//" not in path and not any(part in (".", "..") for part in path.split("/"))
+
+
+def _meter_origin(value: object) -> bool:
+    """전용 망에서 엔진이 보는 대상 origin = 계측기 서비스 이름과 명시 포트. loopback·IP는 아니다."""
+    parsed = _split_url(value)
+    return (parsed is not None and parsed.scheme == "http" and _service_name(parsed.hostname)
+            and parsed.port is not None and parsed.path in ("", "/"))
+
+
+def _api_model(value: object) -> bool:
+    if not _text(value):
+        return False
+    name, separator, variant = value.partition(":")
+    segments = name.split("/")
+    parts = [*segments, variant] if separator else segments
+    return (len(segments) >= 2 and all(_MODEL_SEGMENT.fullmatch(part) for part in parts)
+            and all(part.casefold() != "latest" for part in parts))
+
+
+def _llm(value: object) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("backend"), str) or value["backend"] not in _LLM_FIELDS:
+        return False
+    if set(value) != set(_LLM_FIELDS[value["backend"]]):
+        return False
+    parsed = _split_url(value["base_url"])
+    if parsed is None or not _base_path(parsed.path):
+        return False
+    if value["backend"] == "api":
+        provider = value["provider"]
+        return (parsed.scheme == "https" and _dns_name(parsed.hostname) and _api_model(value["model"])
+                and isinstance(provider, str) and bool(_PROVIDER.fullmatch(provider))
+                and not _PLACEHOLDER.search(provider) and value["fallbacks"] is False)
+    host_ip = value["host_ip"]
+    try:
+        address = ipaddress.ip_address(host_ip) if isinstance(host_ip, str) else None
+    except ValueError:
+        address = None
+    return (_service_name(value["hostname"]) and parsed.hostname == value["hostname"]
+            and _tagged_reference(value["model"]) and address is not None and host_ip == str(address)
+            and any(address in network for network in _LOCAL_NETWORKS))
 
 
 def _path(value: object) -> str:
@@ -159,7 +233,9 @@ def _path(value: object) -> str:
 
 def _scope(raw: object) -> dict:
     raw = _object(raw, ("target_origin", "methods", "paths", "vuln_classes"), "scope")
-    normalized = {"target_origin": _url(raw["target_origin"], "scope.target_origin")}
+    if not _meter_origin(raw["target_origin"]):
+        _fail("scope.target_origin", "INVALID_TARGET_ORIGIN")
+    normalized = {"target_origin": raw["target_origin"]}
     for field in ("methods", "paths", "vuln_classes"):
         values = raw[field]
         if not isinstance(values, list) or not values:
@@ -216,11 +292,16 @@ def _fixture(raw: object) -> dict:
 
 
 def _environment(raw: object) -> dict:
-    raw = _object(raw, ("model_tag", "llm_base_url", "temperature", "seed", "target_image",
+    raw = _object(raw, ("network_mode", "llm", "temperature", "seed", "target_image",
                         "worker_count", "time_budget_seconds", "request_budget"), "environment")
+    if raw["network_mode"] not in _NETWORK_MODES:
+        _fail("environment.network_mode", "UNSUPPORTED_NETWORK_MODE")
+    if not _llm(raw["llm"]):
+        _fail("environment.llm", "INVALID_LLM")
     return {
-        "model_tag": _reference(raw["model_tag"], "environment.model_tag"),
-        "llm_base_url": _url(raw["llm_base_url"], "environment.llm_base_url", base_url=True),
+        "network_mode": raw["network_mode"],
+        # API 고정 조건(모델·제공자·fallback)과 로컬 고정 IP가 모두 환경 지문에 들어간다.
+        "llm": dict(raw["llm"]),
         "temperature": _number(raw["temperature"], "environment.temperature", positive=False),
         "seed": _integer(raw["seed"], "environment.seed", zero=True),
         "target_image": _reference(raw["target_image"], "environment.target_image", image=True),
@@ -228,7 +309,6 @@ def _environment(raw: object) -> dict:
         "time_budget_seconds": _number(raw["time_budget_seconds"], "environment.time_budget_seconds", positive=True),
         "request_budget": _integer(raw["request_budget"], "environment.request_budget"),
     }
-
 
 def _digest(kind: str, profile: dict) -> str:
     envelope = {"format": FORMAT, "kind": kind, "profile": profile}
@@ -239,7 +319,7 @@ def _digest(kind: str, profile: dict) -> str:
 def generate_fingerprints(payload: object) -> ProfileFingerprints:
     """허용된 선언을 모두 검증한 후 지문화한다. 실환경 일치나 비밀 부재를 인증하지 않는다."""
     raw = _object(payload, ("version", "fixture", "environment", "scope"), "profile")
-    if type(raw["version"]) is not int or raw["version"] != 1:
+    if type(raw["version"]) is not int or raw["version"] != 2:
         _fail("profile.version", "UNSUPPORTED_VERSION")
     fixture = _fixture(raw["fixture"])
     scope = _scope(raw["scope"])

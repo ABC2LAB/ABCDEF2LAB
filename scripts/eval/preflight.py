@@ -13,16 +13,30 @@ from urllib.parse import urlsplit
 
 
 MAX_CONFIG_BYTES = 64 * 1024
+MAX_URL_LENGTH = 512
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 _REFERENCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9./:_-]*\Z")
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 _PLACEHOLDER = re.compile(r"(?:^|[/:._-])(?:todo|tbd|changeme|placeholder)(?:$|[/:._-])", re.I)
 _SHARED = (
-    "model_tag", "llm_base_url", "temperature", "seed", "target_origin",
+    "network_mode", "llm", "temperature", "seed", "target_origin",
     "worker_count", "time_budget_seconds", "request_budget",
     "fixture_fingerprint", "environment_fingerprint", "scope_fingerprint",
 )
+# 러너 v1은 전용 망 격리만 지원한다(평가 프로토콜 §2). 엔진은 계측기 origin으로만 대상에 닿는다.
+_NETWORK_MODES = ("dedicated_network",)
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_MODEL_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
+# 로컬 LLM 고정 IP: llmpolicy/policy.go의 사설 대역 중 loopback(127/8·::1)을 제외한 4개.
+# 엔진은 컨테이너라 호스트 loopback으로는 닿지 않으므로 제외한다. ipaddress.is_private는 문서용 대역까지 포함해 쓰지 않는다.
+_LOCAL_NETWORKS = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
+# 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
+_LLM_FIELDS = {
+    "api": ("backend", "base_url", "model", "provider", "fallbacks"),
+    "local": ("backend", "base_url", "model", "hostname", "host_ip"),
+}
 _RUN_FIELDS = ("source_sha", "target_image", *_SHARED)
 _PIN_FIELDS = ("baseline_source_sha", "target_image")
 
@@ -58,23 +72,75 @@ def _image_reference(value: object) -> bool:
     return _tagged_reference(value)
 
 
-def _local_url(value: object, *, base_url: bool) -> bool:
-    if not _text(value) or any(char in value for char in "?#%\\"):
-        return False
+# 아래 URL·LLM 판정은 profile_fingerprint.py와 같은 정의다(drift 테스트로 묶음).
+def _split_url(value: object):
+    if not _text(value) or len(value) > MAX_URL_LENGTH or any(char in value for char in "?#%\\"):
+        return None
     try:
         parsed = urlsplit(value)
         host, port = parsed.hostname, parsed.port
-        if (parsed.scheme not in ("http", "https") or not host
-                or parsed.username is not None or parsed.password is not None
-                or port is not None and not 1 <= port <= 65535):
-            return False
-        if host != "localhost" and not ipaddress.ip_address(host).is_loopback:
-            return False
-        if base_url:
-            return "//" not in parsed.path and not any(part in (".", "..") for part in parsed.path.split("/"))
-        return parsed.path in ("", "/")
     except ValueError:
+        return None
+    if (parsed.scheme not in ("http", "https") or not host or parsed.netloc != parsed.netloc.lower()
+            or parsed.username is not None or parsed.password is not None
+            or port is not None and not 1 <= port <= 65535):
+        return None
+    return parsed
+
+
+def _service_name(host: object) -> bool:
+    return (isinstance(host, str) and bool(_DNS_LABEL.fullmatch(host))
+            and host != "localhost" and not host.isdigit())
+
+
+def _dns_name(host: str) -> bool:
+    labels = host.split(".")
+    return (len(host) <= 253 and len(labels) >= 2 and all(_DNS_LABEL.fullmatch(label) for label in labels)
+            and not labels[-1].isdigit())
+
+
+def _base_path(path: str) -> bool:
+    return "//" not in path and not any(part in (".", "..") for part in path.split("/"))
+
+
+def _meter_origin(value: object) -> bool:
+    """전용 망에서 엔진이 보는 대상 origin = 계측기 서비스 이름과 명시 포트. loopback·IP는 아니다."""
+    parsed = _split_url(value)
+    return (parsed is not None and parsed.scheme == "http" and _service_name(parsed.hostname)
+            and parsed.port is not None and parsed.path in ("", "/"))
+
+
+def _api_model(value: object) -> bool:
+    if not _text(value):
         return False
+    name, separator, variant = value.partition(":")
+    segments = name.split("/")
+    parts = [*segments, variant] if separator else segments
+    return (len(segments) >= 2 and all(_MODEL_SEGMENT.fullmatch(part) for part in parts)
+            and all(part.casefold() != "latest" for part in parts))
+
+
+def _llm(value: object) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("backend"), str) or value["backend"] not in _LLM_FIELDS:
+        return False
+    if set(value) != set(_LLM_FIELDS[value["backend"]]):
+        return False
+    parsed = _split_url(value["base_url"])
+    if parsed is None or not _base_path(parsed.path):
+        return False
+    if value["backend"] == "api":
+        provider = value["provider"]
+        return (parsed.scheme == "https" and _dns_name(parsed.hostname) and _api_model(value["model"])
+                and isinstance(provider, str) and bool(_PROVIDER.fullmatch(provider))
+                and not _PLACEHOLDER.search(provider) and value["fallbacks"] is False)
+    host_ip = value["host_ip"]
+    try:
+        address = ipaddress.ip_address(host_ip) if isinstance(host_ip, str) else None
+    except ValueError:
+        address = None
+    return (_service_name(value["hostname"]) and parsed.hostname == value["hostname"]
+            and _tagged_reference(value["model"]) and address is not None and host_ip == str(address)
+            and any(address in network for network in _LOCAL_NETWORKS))
 
 
 def _number(value: object, *, positive: bool) -> bool:
@@ -92,10 +158,12 @@ def _valid(field: str, value: object) -> bool:
         return isinstance(value, str) and bool(_FINGERPRINT.fullmatch(value))
     if field == "target_image":
         return _image_reference(value)
-    if field == "model_tag":
-        return _tagged_reference(value)
-    if field in ("target_origin", "llm_base_url"):
-        return _local_url(value, base_url=field == "llm_base_url")
+    if field == "network_mode":
+        return value in _NETWORK_MODES
+    if field == "target_origin":
+        return _meter_origin(value)
+    if field == "llm":
+        return _llm(value)
     if field == "temperature":
         return _number(value, positive=False)
     if field == "time_budget_seconds":
