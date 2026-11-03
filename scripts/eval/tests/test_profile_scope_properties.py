@@ -19,7 +19,7 @@ from test_profile_fingerprint import profile
 
 
 def digest(kind, value):
-    envelope = {"format": "abc2lab-eval-profile-v1", "kind": kind, "profile": value}
+    envelope = {"format": fingerprint.FORMAT, "kind": kind, "profile": value}
     wire = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.new("sha256", wire.encode("ascii")).hexdigest()
 
@@ -139,7 +139,7 @@ class TestProfileScopeProperties(unittest.TestCase):
 
     def test_scope_field_changes_bind_environment_and_preserve_fixture(self):
         base = self.assert_canonical(profile())
-        changes = {"target_origin": "https://[::1]:3000/", "methods": ["GET"],
+        changes = {"target_origin": "http://eval-meter:8081/", "methods": ["GET"],
                    "paths": ["/api/other/{item}"], "vuln_classes": ["idor"]}
         for field, value in changes.items():
             with self.subTest(field=field):
