@@ -553,6 +553,49 @@ const RULES = {
   ],
 };
 
+/** 승인 대기 예시 — 대시보드의 "승인하기"와 승인 화면의 허용 · 거부가 이 상태를 바꾼다(새로고침하면 처음으로) */
+const PENDING: {
+  id: number;
+  task_id: string;
+  agent_name: string;
+  tool_name: string;
+  tool_input: unknown;
+  status: string;
+  reason: string;
+  created_at: string;
+  decided_at: string | null;
+}[] = [
+  {
+    id: 41,
+    task_id: MOCK_DEFAULT_TASK,
+    agent_name: "work#3",
+    tool_name: "http_request",
+    tool_input: {
+      method: "PUT",
+      url: "https://shop.example.com/api/users/2/role",
+      headers: { Cookie: "session=example-session-value", "Content-Type": "application/json" },
+      body: { role: "admin" },
+    },
+    status: "pending",
+    reason: "가로채기 규칙 [상태 변경 승인] 에 따라 사용자 승인이 필요합니다. 잠시 기다려 주세요",
+    created_at: iso(0.2 * H),
+    decided_at: null,
+  },
+  {
+    id: 42,
+    task_id: MOCK_DEFAULT_TASK,
+    agent_name: "work#5",
+    tool_name: "Bash",
+    tool_input: {
+      command: "curl -s -X DELETE -H 'Authorization: Bearer example-token' https://shop.example.com/api/reviews/7",
+    },
+    status: "pending",
+    reason: "가로채기 규칙 [상태 변경 승인] 에 따라 사용자 승인이 필요합니다. 잠시 기다려 주세요",
+    created_at: iso(0.1 * H),
+    decided_at: null,
+  },
+];
+
 function taskIdFrom(url: URL): string {
   return url.searchParams.get("task") ?? "";
 }
@@ -561,7 +604,7 @@ type Route = {
   method: string;
   path: RegExp;
   /** undefined 를 돌려주면 "없음"으로 실패시킨다 */
-  reply: (params: string[], url: URL) => unknown;
+  reply: (params: string[], url: URL, init: RequestInit) => unknown;
 };
 
 const NO_CONTENT = Symbol("no-content");
@@ -602,6 +645,25 @@ const ROUTES: Route[] = [
   { method: "GET", path: /^\/api\/audit$/, reply: () => ({ entries: [] }) },
   { method: "GET", path: /^\/api\/intercept\/task\/([^/]+)$/, reply: ([id]) => controlLog(id) },
   { method: "GET", path: /^\/api\/intercept\/rules$/, reply: () => RULES },
+  {
+    method: "GET",
+    path: /^\/api\/intercept\/pending$/,
+    reply: () => ({ pending: PENDING.filter((p) => p.status === "pending").map(({ tool_input: _i, ...p }) => p) }),
+  },
+  { method: "GET", path: /^\/api\/intercept\/pending\/(\d+)$/, reply: ([id]) => PENDING.find((p) => p.id === +id) },
+  {
+    method: "POST",
+    path: /^\/api\/intercept\/pending\/(\d+)\/decide$/,
+    reply: ([id], _url, init) => {
+      const p = PENDING.find((x) => x.id === +id);
+      const { decision } = JSON.parse(typeof init.body === "string" ? init.body : "{}") as { decision?: string };
+      // 이미 결정된 요청 · 잘못된 값은 실패시킨다(엔진은 409 · 400)
+      if (p?.status !== "pending" || (decision !== "allowed" && decision !== "denied")) return undefined;
+      p.status = decision;
+      p.decided_at = new Date().toISOString();
+      return { ok: true };
+    },
+  },
   { method: "GET", path: /^\/api\/tokens\/usage$/, reply: () => tokenUsage() },
   { method: "GET", path: /^\/api\/llm$/, reply: () => LLM },
 ];
@@ -614,7 +676,7 @@ export async function mockFetch<T>(path: string, init: RequestInit = {}): Promis
   for (const route of ROUTES) {
     const match = route.method === method ? url.pathname.match(route.path) : null;
     if (!match) continue;
-    const body = route.reply(match.slice(1).map(decodeURIComponent), url);
+    const body = route.reply(match.slice(1).map(decodeURIComponent), url, init);
     if (body === NO_CONTENT) return undefined as T;
     if (body !== undefined) return body as T;
     break;

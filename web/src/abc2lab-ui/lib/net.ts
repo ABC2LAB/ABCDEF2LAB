@@ -31,6 +31,19 @@ export function isInternalUrl(url: string): boolean | null {
   );
 }
 
+/** LLM base_url 의 **호스트**가 내부망/로컬을 가리키는지 판별 (완전 로컬 모드 표시용).
+ *  전체 URL 문자열이 아니라 hostname 기준 — 쿼리에 'ollama' 가 있다고 로컬로 보지 않는다. */
+export function isLocalUrl(u: string): boolean {
+  if (isInternalUrl(u) === true) return true; // localhost · 사설 IP · IPv6 루프백/ULA 등
+  let h: string;
+  try {
+    h = new URL(u).hostname.replace(/^\[/, "").replace(/\]$/, "");
+  } catch {
+    return false;
+  }
+  return /^(ollama|host\.docker\.internal)$/i.test(h);
+}
+
 /** 원본 hostOf() */
 export function hostOf(url: string): string {
   try {

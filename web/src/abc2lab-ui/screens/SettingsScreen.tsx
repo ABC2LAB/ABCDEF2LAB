@@ -5,7 +5,7 @@ import { TopBar } from "../components/TopBar";
 import { Pill, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineInterceptRule, getInterceptRules, getLLM } from "../lib/engine";
-import { isInternalUrl } from "../lib/net";
+import { isLocalUrl } from "../lib/net";
 import { useGo } from "../nav";
 
 const bodyText = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
@@ -73,19 +73,6 @@ function actionLabel(action: string): string {
   if (action === "deny") return "차단";
   if (action === "ask") return "승인 필요";
   return "알 수 없음";
-}
-
-/** base_url 의 **호스트**가 내부망/로컬을 가리키는지 판별 (완전 로컬 모드 표시용).
- *  전체 URL 문자열이 아니라 hostname 기준 — 쿼리에 'ollama' 가 있다고 로컬로 보지 않는다. */
-function isLocalUrl(u: string): boolean {
-  if (isInternalUrl(u) === true) return true; // localhost · 사설 IP · IPv6 루프백/ULA 등
-  let h: string;
-  try {
-    h = new URL(u).hostname.replace(/^\[/, "").replace(/\]$/, "");
-  } catch {
-    return false;
-  }
-  return /^(ollama|host\.docker\.internal)$/i.test(h);
 }
 
 /** ===== 설정 · 통제 정책 ===== */

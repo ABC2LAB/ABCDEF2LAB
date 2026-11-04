@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./abc2lab.css";
+import { ApprovalContext, type ApprovalTarget } from "./lib/approval";
 import { MOCK, MOCK_DEFAULT_TASK } from "./lib/mock";
 import { toTarget } from "./lib/net";
 import { type Selection, SelectionContext } from "./lib/selection";
@@ -7,6 +8,7 @@ import { isScreenId, NavContext, type NavValue, type ScreenId } from "./nav";
 import AccessMapScreen from "./screens/AccessMapScreen";
 import ApprovalScreen from "./screens/ApprovalScreen";
 import AuditScreen from "./screens/AuditScreen";
+import DashboardScreen from "./screens/DashboardScreen";
 import EntryScreen from "./screens/EntryScreen";
 import FindingScreen from "./screens/FindingScreen";
 import FindingUndScreen from "./screens/FindingUndScreen";
@@ -33,7 +35,7 @@ export type ABC2LabUIProps = {
 };
 
 /** ABC2LAB 점검 흐름 UI (원본 ABC2LAB_UI.html 의 React + TypeScript 버전) */
-export default function ABC2LabUI({ initialScreen = "entry", syncHash = true, theme }: ABC2LabUIProps) {
+export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true, theme }: ABC2LabUIProps) {
   // 초기값은 SSR/CSR 가 같아야(hydration) 하므로 결정적으로 initialScreen 으로 둔다.
   // URL 해시(#settings 등) 반영은 마운트 후 아래 effect 에서 — 서버는 해시를 못 읽기 때문.
   const [screen, setScreen] = useState<ScreenId>(initialScreen);
@@ -82,6 +84,20 @@ export default function ABC2LabUI({ initialScreen = "entry", syncHash = true, th
 
   const nav = useMemo<NavValue>(() => ({ screen, go }), [screen, go]);
 
+  // 승인 화면이 처리할 승인 요청 — 대시보드의 "승인하기"가 고른 요청 id 를 넘긴다
+  const [pendingId, setPendingId] = useState<number | null>(null);
+  const approval = useMemo<ApprovalTarget>(
+    () => ({
+      pendingId,
+      selectPending: setPendingId,
+      openApproval: (id) => {
+        setPendingId(id);
+        go("approval");
+      },
+    }),
+    [pendingId, go],
+  );
+
   // 원본 CSS가 :root[data-theme] 로 테마를 고르기 때문에 <html> 에 속성을 달아요
   useEffect(() => {
     const root = document.documentElement;
@@ -93,27 +109,30 @@ export default function ABC2LabUI({ initialScreen = "entry", syncHash = true, th
   return (
     <NavContext.Provider value={nav}>
       <SelectionContext.Provider value={selection}>
-        {MOCK && (
-          <div className="mock-banner" role="note">
-            목업 예시 데이터예요 — 실제 점검 결과가 아니에요
+        <ApprovalContext.Provider value={approval}>
+          {MOCK && (
+            <div className="mock-banner" role="note">
+              목업 예시 데이터예요 — 실제 점검 결과가 아니에요
+            </div>
+          )}
+          <div className="stage">
+            <DashboardScreen />
+            <EntryScreen onStart={(input) => setTarget(toTarget(input))} />
+            <TargetScreen target={target} />
+            <JobScreen target={target} />
+            <ScopeScreen target={target} />
+            <LiveScreen target={target} />
+            <HistoryScreen />
+            <ReportScreen />
+            <FindingScreen />
+            <FindingUndScreen />
+            <ApprovalScreen />
+            <SettingsScreen />
+            <AuditScreen />
+            <AccessMapScreen />
+            <TokensScreen />
           </div>
-        )}
-        <div className="stage">
-          <EntryScreen onStart={(input) => setTarget(toTarget(input))} />
-          <TargetScreen target={target} />
-          <JobScreen target={target} />
-          <ScopeScreen target={target} />
-          <LiveScreen target={target} />
-          <HistoryScreen />
-          <ReportScreen />
-          <FindingScreen />
-          <FindingUndScreen />
-          <ApprovalScreen />
-          <SettingsScreen />
-          <AuditScreen />
-          <AccessMapScreen />
-          <TokensScreen />
-        </div>
+        </ApprovalContext.Provider>
       </SelectionContext.Provider>
     </NavContext.Provider>
   );
