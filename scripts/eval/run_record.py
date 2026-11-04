@@ -20,7 +20,7 @@ from pathlib import Path
 from aggregate import ScanVerdict
 from collect import VerdictRecord
 from ground_truth import bac_category, core_gt
-from isolation_proof import IsolationError, check_isolated_events, check_isolation, check_unproven_events
+from isolation_proof import IsolationError, check_isolated_events, check_isolation, check_unproven_events, drain_policy
 from manifest import RunManifest
 from scoreboard import SnapshotError, normalize_challenges, require_basis_keys
 
@@ -51,6 +51,7 @@ class RunInputs:
     version: str = V1
     judgments_collected: bool = True  # v1.1 records=null이면 False(판정 미수집)
     proof_id: str | None = None  # v1.1 격리 증명(없으면 귀속 미확인)
+    drain_policy: tuple[int, int] | None = None  # v1.1 증명 근거의 봉인 뒤 (유예, 정착 대기) 초
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict:
@@ -388,14 +389,16 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
     try:
         if proof is None:
             check_unproven_events(rows("solve_events", "events"))
-            engine_solved, proof_id = frozenset(), None
+            engine_solved, proof_id, policy = frozenset(), None, None
         else:
             proof = check_isolation(receipt, steps, artifacts, proof, loaded["isolation_evidence"])
             engine_solved = check_isolated_events(rows("solve_events", "events"), receipt, proof, steps, pre, post)
             proof_id = proof["proof_id"]
+            policy = drain_policy(receipt, loaded["isolation_evidence"])
     except IsolationError as exc:
         raise RunRecordError(str(exc)) from None
     return RunInputs(pre, post, loaded["records"], traffic,
                      None if covered is None else frozenset(covered), engine_solved,
                      receipt["execution_id"], receipt["fixture_fingerprint"], receipt["environment_fingerprint"],
-                     version=V11, judgments_collected=loaded["records"] is not None, proof_id=proof_id)
+                     version=V11, judgments_collected=loaded["records"] is not None, proof_id=proof_id,
+                     drain_policy=policy)
