@@ -20,7 +20,7 @@ controlled → legacy 전환과 mode 행 삭제를 허용하지 않는다.
 |---|---|---|
 | [archive DB snapshot](../../db/task_archives.go#L573) | task/탐색/finding/traffic 등 명시된 테이블을 수집 | revision/operation·E③ 정본·mode fence의 보존 묶음은 현재 포맷에 없음 |
 | [archive 파일 포장](../../server/task_archive_package.go#L130) | task 디렉터리와 해당 탐색 transcript를 이동 | 별도 host가 제공하는 descriptor root, E② journal/checkpoint를 함께 포장한다는 계약이 없음 |
-| [archive compact](../../db/task_archives_restore.go#L84), [archive purge](../../db/task_archives_restore.go#L764), [task cascade delete](../../db/tasks.go#L647) | finding/intent 노드 또는 task/탐색을 삭제 | [revision FK](../../evidencerevision/schema.sql#L1)는 task/탐색/intent를 참조하며 history/operation은 변경·삭제 불가. finding 0만으로 삭제 가능하지 않음 |
+| [archive compact](../../db/task_archives_restore.go#L84), [archive purge](../../db/task_archives_restore.go#L764), [task cascade delete](../../db/tasks.go#L647) | finding/intent 노드 또는 task/탐색을 삭제 | [revision FK](../../evidencerevision/schema.sql#L1)는 task/탐색/intent를 참조하며 revision/operation 행의 UPDATE/DELETE는 거부되지만, 이 행 트리거는 TRUNCATE·owner DDL을 막지 않음. finding 0만으로 삭제 가능하지 않음 |
 | [descriptor 게시](../../evidencerevision/descriptor_files_linux.go#L158) | pending Write/Sync → no-replace rename → directory Sync/close 후 ACK | 중간 실패·경쟁·ACK 불명 때 pending 또는 final이 남을 수 있으며 보존됨 |
 | [정확한 final Load](../../evidencerevision/descriptor_files_linux.go#L251) | 알려진 operation에 해당하는 최종 파일만 보호 root에서 읽음 | 목록·pending 발견/읽기·수리·삭제 API는 없음 |
 
@@ -103,7 +103,7 @@ finding 상태는 별도 권한을 갖춘 정본/link 조회로 확인할 사항
 
 | 결정 ID | 팀이 합의할 사항 | 합의 전 경계 |
 |---|---|---|
-| RRD01 | metadata·원문별 보존기간, 책임자, 비용/용량 한계와 규정상 삭제 요구 처리 | 현행 자동 TTL/GC 없음과 controlled archive/delete 차단 유지 |
+| RRD01 | metadata·원문별 보존기간, 책임자, 비용/용량 한계와 규정상 삭제 요구 처리(평가 회차마다 tmpfs로 폐기하는 엔진 DB는 제외) | 현행 자동 TTL/GC 없음과 controlled archive/delete 차단 유지 |
 | RRD02 | pending 발견·열람·격리·삭제의 실제 주체/권한과 증거 보존 절차 | 목록 API/권한을 추정하지 않고 알려진 operation의 기존 Load/Reconcile만 사용 |
 | RRD03 | SQL/descriptor/audit의 일관된 backup·restore 경계 및 실제 namespace/epoch/anchor 승인 주체 | archive를 완전한 복구 자료로 인증하거나 다른 root에 자동 결속하지 않음 |
 | RRD04 | 합법적 삭제/이관에서 불변 FK·정본/link·키 관리와 장기 검증 가능성을 유지할 절차 | cascade나 trigger 비활성화로 기존 차단을 우회하지 않음. 일반 삭제/복원 경로를 열지 않음 |
