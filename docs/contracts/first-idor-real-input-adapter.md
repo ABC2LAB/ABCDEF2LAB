@@ -49,15 +49,14 @@ EvalRunID를 강제로 비워 평가 자료를 비평가로 바꾸지 않는다.
 `EvidenceDigest/RecordCreatedAt/Completed/Finalized`는 기존 collector/engine 생산값,
 `EvidenceRevision`은 #159의 실제 발행 경로를 그대로 따른다.
 
-C의 최종 revision-aware 통합 기준은 #159 `32bd87f77460953f2a60a5de3cdc391cc0b75758`다.
-착수 확인한 #143 `1dfc4a0fbf9f47db07eacf8df420fcbd9982e9ad` 및 #149
-`8cc0d5588fb6e8b6313434006224cccd8968bab2` → #151
-`edbfc8015921dd0a8bbf71ee6a6b741e84f35c11`,
-#156 `684451300875251325eb507db30c4d3b45ec4dbc` → #157
-`9c079d92e5728411774005cf4760124a55068bb4` → #158
-`e6af2335fbd0412fccf03df589f95d754c26c41b`는 모두 #159 조상임을 확인했다.
-#151·#158 이후 #159, 그 뒤 A/B를 C에서 최종 결합한다. A와 B의 새 PR 상호 의존은 없다.
-선행 head 변경 시 C가 실제 공급/저장 의미의 영향을 다시 대조한다.
+C의 최종 revision-aware 조립은 [#151](https://github.com/ABC2LAB/ABCDEF2LAB/pull/151) →
+[#156](https://github.com/ABC2LAB/ABCDEF2LAB/pull/156) →
+[#157](https://github.com/ABC2LAB/ABCDEF2LAB/pull/157) →
+[#158](https://github.com/ABC2LAB/ABCDEF2LAB/pull/158) →
+[#159](https://github.com/ABC2LAB/ABCDEF2LAB/pull/159)의 기능 선행 순서를 따른다.
+착수 당시의 고정 SHA를 현재 head로 해석하지 않는다. 실제 채택 head와 병합·대기 상태는
+PR 본문의 기준 표 및 원격 상태에서 확인하고, 선행 변경 시 C가 공급/저장 의미의 영향을 다시
+대조한다. 후행을 적용한 뒤 A/B를 C에서 결합하며, A와 B의 새 PR 상호 코드 의존은 없다.
 
 실제 KG reader·동결 snapshot/digest/canary는 이경준, 비평가 reset/health·generation·instance는
 윤재상 등 기존 생산 경계에서 확인한다. 인증된 A/B session·정확한 자원별 승인과 실제 task/mode/model
