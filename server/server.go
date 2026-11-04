@@ -236,9 +236,17 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 }
 
 func newServer(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, localResolver *llmpolicy.ProfileResolver) *Server {
+	s, err := newServerConfigured(ctx, m, skillDir, dataDir, keyDir, localResolver, nil)
+	if err != nil {
+		log.Fatalf("[server] startup stopped: %v", err)
+	}
+	return s
+}
+
+func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, localResolver *llmpolicy.ProfileResolver, bootstrap func(*Server) error) (*Server, error) {
 	key, err := loadOrCreateJWTKey(keyDir, dataDir)
 	if err != nil {
-		log.Fatalf("[auth] JWT key: %v", err)
+		return nil, fmt.Errorf("[auth] JWT key: %w", err)
 	}
 	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
@@ -250,7 +258,12 @@ func newServer(ctx context.Context, m *Manager, skillDir string, dataDir string,
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
 	s.bootstrapAuth()
 	if err := s.initControlledReads(keyDir, dataDir); err != nil {
-		log.Fatalf("[E2] private execution store unavailable; server startup stopped: %v", err)
+		return nil, fmt.Errorf("[E2] private execution store unavailable; server startup stopped: %w", err)
+	}
+	if bootstrap != nil {
+		if err := bootstrap(s); err != nil {
+			return nil, err
+		}
 	}
 	s.engine.controlledIdle = s.parkControlledReadTask
 	s.outputLang.Store(s.loadOutputLanguage())
@@ -329,7 +342,7 @@ func newServer(ctx context.Context, m *Manager, skillDir string, dataDir string,
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
-	return s
+	return s, nil
 }
 
 // Restored deadline and worker loops must inherit the same context as new tasks,
