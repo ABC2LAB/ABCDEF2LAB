@@ -30,6 +30,13 @@ git diff --check
 DB 관련 변경은 소유한 전용 시험 DB에서 검증합니다. `ARTEX_PG_DSN`과 `ARTEX_TASK_MODE_TEST_DSN` 등 시험별 입력은 해당 테스트·계약을 확인합니다.
 명시한 DSN이 실패하면 실패로 처리하고, 필요한 DB 시험의 SKIP은 통과로 간주하지 않습니다. 실제 실행 건수·경합·rollback과 실패 경로를 기록합니다.
 
+PR과 `dev` push는 [CI](.github/workflows/ci.yml)가 자동으로 검사합니다.
+- Go: `go build`·`go vet`, darwin·windows 크로스빌드(`./...`·`./cmd/...`), PR이 바꾼 Go 파일의 `gofmt`와 `git diff --check`
+- 1회용 PostgreSQL 16으로 loopback만 있는 망에서 패키지마다 `go test -race`를 돌립니다. DB는 시험 DSN 변수마다 따로 두고 패키지마다 새로 만듭니다. 시험 단위 PASS/FAIL/SKIP 수와 SKIP 목록을 요약에 남깁니다.
+- 평가 스크립트 unittest를 돌립니다.
+
+로컬에서는 `scripts/ci/pg-up.sh <빈 디렉터리>`로 같은 DB를 만들 수 있습니다. 출력 줄을 한 줄씩 `export`하세요. DSN에 `&`가 있어 `source`로 읽으면 값이 잘립니다. 웹(`web/`) 검사는 아직 CI에 없습니다.
+
 프런트엔드 변경은 영향받은 테스트와 변경 파일의 Biome 검사, 정적 빌드·타입 검사를 수행합니다.
 
 ```bash

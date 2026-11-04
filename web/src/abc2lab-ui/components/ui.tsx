@@ -2,6 +2,27 @@ import type { CSSProperties, ReactNode } from "react";
 
 import { SEVERITY_LABEL, type Severity, VERDICT_LABEL, type Verdict } from "../types";
 
+/** 새로고침 아이콘 (↻ 글자 대신). 색은 글자색을 따름 */
+export function RefreshIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ flex: "none", verticalAlign: "-0.15em" }}
+    >
+      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+      <path d="M20 4v5h-5" />
+    </svg>
+  );
+}
+
 /** <strong style="color:var(--fg)"> — 회색 문장 속 강조 */
 export function Strong({ children }: { children: ReactNode }) {
   return <strong style={{ color: "var(--fg)" }}>{children}</strong>;
@@ -9,7 +30,7 @@ export function Strong({ children }: { children: ReactNode }) {
 
 /** 제목 옆 작은 회색 설명 (font-weight:500; color:muted; 12px) */
 export function Sub({ children }: { children: ReactNode }) {
-  return <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 12 }}>{children}</span>;
+  return <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 13 }}>{children}</span>;
 }
 
 const PILL_TONE: Record<"muted" | "warn", CSSProperties> = {
@@ -45,11 +66,11 @@ export function MockBanner({ children }: { children?: ReactNode }) {
   return (
     <div
       style={{
-        fontSize: 12.5,
+        fontSize: 13,
         color: "var(--warn)",
         background: "var(--warn-weak)",
         border: "1px solid var(--warn-border)",
-        borderRadius: 8,
+        borderRadius: 6,
         padding: "9px 12px",
         marginBottom: 14,
       }}
