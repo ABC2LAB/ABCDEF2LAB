@@ -1,5 +1,6 @@
-import type { Metadata } from "next";
 import type { ReactNode } from "react";
+
+import type { Metadata } from "next";
 
 // 폐쇄망에서 외부 요청 없이 한글이 뜨도록 Noto Sans KR 을 self-host (fontsource, 빌드타임 번들).
 // variable 축이라 한 패밀리("Noto Sans KR Variable")로 전 weight 커버, unicode-range 로 필요한 글자 청크만 로드.
@@ -9,7 +10,8 @@ import "@fontsource-variable/noto-sans-kr/index.css";
 import "@/abc2lab-ui/abc2lab.css";
 
 export const metadata: Metadata = {
-  title: "ABC2LAB 점검 흐름",
+  title: "ABC2LAB",
+  applicationName: "ABC2LAB",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
