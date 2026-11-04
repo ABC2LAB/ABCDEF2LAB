@@ -7,6 +7,7 @@ import { isScreenId, NavContext, type NavValue, type ScreenId } from "./nav";
 import AccessMapScreen from "./screens/AccessMapScreen";
 import ApprovalScreen from "./screens/ApprovalScreen";
 import AuditScreen from "./screens/AuditScreen";
+import DashboardScreen from "./screens/DashboardScreen";
 import EntryScreen from "./screens/EntryScreen";
 import FindingScreen from "./screens/FindingScreen";
 import FindingUndScreen from "./screens/FindingUndScreen";
@@ -33,7 +34,7 @@ export type ABC2LabUIProps = {
 };
 
 /** ABC2LAB 점검 흐름 UI (원본 ABC2LAB_UI.html 의 React + TypeScript 버전) */
-export default function ABC2LabUI({ initialScreen = "entry", syncHash = true, theme }: ABC2LabUIProps) {
+export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true, theme }: ABC2LabUIProps) {
   // 초기값은 SSR/CSR 가 같아야(hydration) 하므로 결정적으로 initialScreen 으로 둔다.
   // URL 해시(#settings 등) 반영은 마운트 후 아래 effect 에서 — 서버는 해시를 못 읽기 때문.
   const [screen, setScreen] = useState<ScreenId>(initialScreen);
@@ -99,6 +100,7 @@ export default function ABC2LabUI({ initialScreen = "entry", syncHash = true, th
           </div>
         )}
         <div className="stage">
+          <DashboardScreen />
           <EntryScreen onStart={(input) => setTarget(toTarget(input))} />
           <TargetScreen target={target} />
           <JobScreen target={target} />

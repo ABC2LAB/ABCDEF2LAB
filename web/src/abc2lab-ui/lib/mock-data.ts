@@ -602,6 +602,22 @@ const ROUTES: Route[] = [
   { method: "GET", path: /^\/api\/audit$/, reply: () => ({ entries: [] }) },
   { method: "GET", path: /^\/api\/intercept\/task\/([^/]+)$/, reply: ([id]) => controlLog(id) },
   { method: "GET", path: /^\/api\/intercept\/rules$/, reply: () => RULES },
+  {
+    method: "GET",
+    path: /^\/api\/intercept\/pending$/,
+    reply: () => ({
+      pending: [
+        {
+          id: 41,
+          task_id: MOCK_DEFAULT_TASK,
+          agent_name: "work#3",
+          tool_name: "http_request",
+          status: "pending",
+          created_at: iso(0.2 * H),
+        },
+      ],
+    }),
+  },
   { method: "GET", path: /^\/api\/tokens\/usage$/, reply: () => tokenUsage() },
   { method: "GET", path: /^\/api\/llm$/, reply: () => LLM },
 ];

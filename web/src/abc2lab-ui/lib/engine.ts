@@ -413,3 +413,19 @@ export async function getInterceptRules(): Promise<EngineInterceptRule[]> {
   const res = await apiFetch<{ rules?: EngineInterceptRule[] }>("/api/intercept/rules");
   return res.rules ?? [];
 }
+
+/** db/intercept.go InterceptPending (UI가 쓰는 부분) — 승인 게이트에 걸려 사람의 결정을 기다리는 도구 호출 */
+export type EnginePendingApproval = {
+  id: number;
+  task_id: string | null;
+  agent_name: string;
+  tool_name: string;
+  status: string;
+  created_at: string;
+};
+
+/** GET /api/intercept/pending — 승인 대기 목록(모든 점검 공통, 최신순) */
+export async function listPendingApprovals(): Promise<EnginePendingApproval[]> {
+  const res = await apiFetch<{ pending?: EnginePendingApproval[] | null }>("/api/intercept/pending");
+  return (res.pending ?? []).filter((p) => p.status === "pending");
+}
