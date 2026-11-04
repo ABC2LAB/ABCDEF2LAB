@@ -6,7 +6,8 @@
   python3 -I -B scripts/eval/provider_recheck.py "$D/endpoints.json"
 
 통과 조건: 응답 모델이 공식 프로파일 모델이고, 고정 slug가 엔드포인트 하나에만 매칭되며(접두 매칭 규칙), 그 엔드포인트의
-제공자 표시 이름·정밀도가 고정 근거와 같고, 게이트웨이가 넣는 파라미터를 전부 지원한다고 표시한다.
+제공자 표시 이름·정밀도가 고정 근거와 같고, 게이트웨이가 넣는 샘플링 값과 엔진이 보내는 파라미터(tools 등, 근거 파일
+engine_parameters)를 전부 지원한다고 표시한다.
 하나라도 다르면 그 세션을 시작하지 않는다(§6). 종료 코드: 0 같음, 1 다름, 2 입력 오류.
 """
 
@@ -54,9 +55,12 @@ def recheck(response: bytes, profile: dict, endpoints_evidence: dict, params_evi
             if endpoint.get(field) != pinned[0][field]:
                 differences.append(f"{field}가 고정 때 값과 다름")
         supported = endpoint.get("supported_parameters")
-        missing = sorted(set(params_evidence["pinned_parameters"]) - set(supported if isinstance(supported, list) else []))
+        # 게이트웨이가 넣는 샘플링 값과 엔진이 보내는 파라미터(tools 등) 모두. require_parameters:true라서
+        # 하나라도 지원 목록에서 빠지면 그 요청이 거부된다.
+        required = set(params_evidence["pinned_parameters"]) | set(params_evidence["engine_parameters"])
+        missing = sorted(required - set(supported if isinstance(supported, list) else []))
         if missing:
-            differences.append(f"지원 표시가 빠진 고정 파라미터 {missing}")
+            differences.append(f"지원 표시가 빠진 파라미터 {missing}")
     return differences
 
 

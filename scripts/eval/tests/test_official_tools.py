@@ -94,9 +94,19 @@ class TestOfficialPreflight(TempDir):
         self.assertEqual(out.read_text(encoding="utf-8"), first)
 
 
+def required_parameters() -> list:
+    """게이트웨이가 넣는 샘플링 값 + 엔진이 보내는 파라미터(근거 파일)."""
+    evidence = load(PARAMS)
+    return evidence["pinned_parameters"] + evidence["engine_parameters"]
+
+
+def without(name: str) -> list:
+    return [p for p in required_parameters() + ["tool_choice"] if p != name]
+
+
 def endpoint(tag: str = "deepinfra/fp8", provider: str = "DeepInfra", quantization: str = "fp8",
              parameters: list | None = None) -> dict:
-    params = load(PARAMS)["pinned_parameters"] + ["tools", "max_tokens"] if parameters is None else parameters
+    params = required_parameters() + ["tool_choice"] if parameters is None else parameters
     return {"tag": tag, "provider_name": provider, "quantization": quantization, "supported_parameters": params}
 
 
@@ -121,15 +131,23 @@ class TestProviderRecheck(TempDir):
             "two": response(endpoint(), endpoint("deepinfra/fp8/turbo")),
             "quantization": response(endpoint(quantization="fp4")),
             "provider": response(endpoint(provider="DeepInfra2")),
-            "parameter": response(endpoint(parameters=[p for p in load(PARAMS)["pinned_parameters"] if p != "top_k"])),
+            "parameter": response(endpoint(parameters=without("top_k"))),
+            "tools": response(endpoint(parameters=without("tools"))),
             "not-a-list": response(endpoint(parameters="top_k")),
         }
         expected = {"model": "응답 모델", "none": "0개", "two": "2개", "quantization": "quantization",
-                    "provider": "provider_name", "parameter": "['top_k']", "not-a-list": "지원 표시가 빠진"}
+                    "provider": "provider_name", "parameter": "['top_k']", "tools": "['tools']",
+                    "not-a-list": "지원 표시가 빠진"}
         for name, raw in cases.items():
             with self.subTest(name=name):
                 found = self.differences(raw)
                 self.assertTrue(any(expected[name] in d for d in found), found)
+
+    def test_every_engine_parameter_is_required(self):
+        for name in load(PARAMS)["engine_parameters"]:
+            with self.subTest(name=name):
+                found = self.differences(response(endpoint(parameters=without(name))))
+                self.assertEqual(found, [f"지원 표시가 빠진 파라미터 ['{name}']"])
 
     def test_malformed_response_is_an_input_error(self):
         for raw in (b"[]", b'{"data": []}', b'{"data": {"id": "x"}}', b'{"data": {"endpoints": [1]}}'):
@@ -149,7 +167,9 @@ class TestProviderRecheck(TempDir):
 
     def test_main_exit_codes(self):
         path = self.dir / "endpoints.json"
-        cases = ((response(endpoint()), 0), (response(endpoint(quantization="fp4")), 1), (b"not json", 2))
+        # tools만 빠져도 "같음"(0)이 아니라 다름(1)이어야 한다 — 엔진이 매 요청에 tools를 보낸다.
+        cases = ((response(endpoint()), 0), (response(endpoint(quantization="fp4")), 1),
+                 (response(endpoint(parameters=without("tools"))), 1), (b"not json", 2))
         for raw, code in cases:
             with self.subTest(code=code):
                 path.write_bytes(raw)
