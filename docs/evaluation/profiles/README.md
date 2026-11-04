@@ -4,7 +4,7 @@
 
 | 파일 | 내용 |
 |---|---|
-| `official-35b.json` | 공식 비교 프로파일 v4(fixture·environment·scope). 예산(`time_budget_seconds`·`request_budget`)은 시범 회차 뒤 한 번만 조정한다 |
+| `official-35b.json` | 공식 비교 프로파일 v5(fixture·environment·scope). 예산(`time_budget_seconds`·`request_budget`)은 시범 회차 뒤 한 번만 조정한다 |
 | `evidence/openrouter-endpoints-*.json` | 고정 제공자 slug가 엔드포인트 하나·정밀도 하나에만 매칭됐다는 조회 근거(조회 시각·원문 응답 SHA-256 포함) |
 | `evidence/qwen3.6-35b-a3b-model-card-*.json` | 샘플링 고정값의 근거: 모델 공식 카드 커밋·README SHA-256·권장 샘플링 원문·고른 모드와 이유·고정 제공자의 파라미터 지원 |
 

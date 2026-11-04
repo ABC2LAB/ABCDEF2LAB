@@ -85,11 +85,12 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 ## 회차 순서
 
 ```
-[up 전]  project 이름 중복 없음 → 이미지 내용 ID 확인 → 회차 디렉터리(0700) 생성
+[up 전]  project 이름 중복 없음 → 이미지 내용 ID 확인 → 머신 사양(CPU·논리 CPU·메모리·커널·Docker 버전·머신 ID 해시) → 회차 디렉터리(0700) 생성
 [기동]   compose up(--pull never, --no-build, --wait)
 [pre]    망·publish·이미지·호스트 조건 점검 → 부정 연결 점검 → tmpfs 마운트 ID·사용량(구간 전) → 대상 준비 → 구간 감시 시작 → pre 스코어보드
          계측기 전달 건수 == 0
-[작업]   새로 로그인 → POST /api/tasks(설정의 task, 생성=기동) → task.json
+[작업]   새로 로그인 → 실행 설정 스냅샷(GET /api/settings·/api/llm, 프록시는 설정 여부로) → workers·엔진 LLM 모델·프록시 대조
+         → engine-settings.json → POST /api/tasks(설정의 task, 생성=기동) → task.json
          요청 예산 또는 시간 예산까지 폴링 → 계측기 seal → drain 확인(유예가 지나도 열린 요청은 계측기가 취소·건수 기록)
          → 취소가 있었으면 정착 대기
          LLM 게이트웨이 seal(새 LLM 요청 거부·진행 중 취소 → generation 조회 시작)
@@ -97,7 +98,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
          구간 감시 종료 → 구간 판정(호스트 리슨 표본·데몬 이벤트) → window-watch.json
          tmpfs 사용량(계측기 이미지 statfs 역할을 대상 PID namespace에 붙여 측정) → 마운트 ID가 구간 전과 다르면 무효 → 남은 공간 < min_free면 무효
          관측 로그 건수 == 러너 호출 수, 계측기 순번 완결·건수 일치
-         LLM 검증 마커 대기 → 응답 제공자 판정 → findings(새 로그인 → 페이지 수집 → 추출)
+         LLM 검증 마커 대기 → 응답 제공자·적용 샘플링 판정 → findings(새 로그인 → 페이지 수집 → 추출)
 [끝]     compose down -v(성공·실패와 무관) → 모두 통과면 서명 → runner-result.json
 ```
 
@@ -113,6 +114,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   pre-probe.cid    post-probe.cid     docker --cidfile이 쓴 probe 컨테이너 ID(구간 감시 허용 목록)
   meter-summary.json  llm-summary.json
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
+  engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 그 SHA-256은 서명 근거 `run_conditions`에
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
   isolation-evidence.json        격리 근거 행(러너 기록 v1.1 §3.1 형식, 완료 회차만)
@@ -159,6 +161,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 |---|---|
 | `project_exists` | 같은 project가 이미 있음(이 러너 것이 아니므로 up·down 모두 안 함) |
 | `project_check_failed`, `image_id_failed`, `image_id_mismatch` | 사전 조회 실패, 로컬 이미지가 설정의 내용 ID와 다름 |
+| `host_spec_failed` | 머신 사양을 읽지 못함(`/proc/cpuinfo` 모델명·`/proc/meminfo` MemTotal·`/etc/machine-id`·Docker 버전) |
+| `engine_settings_failed`, `engine_settings_mismatch` | 실행 설정 조회 실패·형식 오류, 또는 workers가 선언 `worker_count`와 다름·엔진 LLM 모델이 선언과 다름·프록시가 설정됨(송신 경로가 계측기·게이트웨이 밖으로 바뀜) |
 | `compose_up_failed` | 기동 실패(down은 실행) |
 | `{pre,post}_facts_failed`, `{pre,post}_host_listeners_failed` | docker·/proc 사실 수집 실패 |
 | `{pre,post}_topology_violation` | 망·구성원·publish·이미지가 기대 구성과 다름 |
@@ -179,6 +183,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `llm_generation_unverified`, `llm_generation_unverifiable` | 조회 안 된 generation, generation ID 없는 응답 |
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
 | `llm_pin_mismatch`, `llm_backend_mismatch`, `llm_log_incomplete` | 게이트웨이가 다른 slug를 고정, 백엔드 구성이 섞임, 게이트웨이 기록 불완전 |
+| `llm_sampling_mismatch` | 게이트웨이가 실제로 넣은 샘플링(검증 마커 `sampling`)이 선언(temperature·sampling·seed)과 다름. local 회차에 값이 있어도 이 사유 |
 | `tmpfs_measure_failed` | 구간 종료 뒤 tmpfs 사용량을 읽지 못함(측정 컨테이너 실행·권한 실패, 커널 파일시스템 종류가 tmpfs 아님, 형식·크기가 맞지 않는 보고, 두 볼륨이 정확히 오지 않음). 결과의 `tmpfs_usage`는 `not_measured` |
 | `pre_tmpfs_measure_failed` | 구간 전 tmpfs 마운트 ID·사용량을 읽지 못함(사유는 `tmpfs_measure_failed`와 같음). 구간을 시작하지 않는다 |
 | `tmpfs_mount_changed` | 구간 뒤 잰 tmpfs의 마운트 ID가 구간 전과 다름 — 같은 경로라도 다른 마운트(부모 경로 변경·symlink·다시 마운트)를 잰 것이라 회차 저장소의 근거가 아니다. 양쪽 값은 결과에 남는다 |
