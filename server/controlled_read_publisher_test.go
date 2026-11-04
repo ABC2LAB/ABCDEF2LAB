@@ -491,6 +491,23 @@ func TestDurableAuditStrictConstructorUsesFactoryWithValidHost(t *testing.T) {
 			t.Setenv(notifyBackgroundDisabledEnv, "1")
 			// Fixed isolated values avoid issuing auth keys or setup tokens.
 			// No authentication endpoint is invoked.
+			previousPassHash, hadPassHash, err := f.m.pg.GetSetting(authPassKey)
+			if err != nil {
+				t.Fatal("auth setting snapshot unavailable")
+			}
+			// Restore before fixture cleanup closes the shared test DB, including
+			// the early nil-factory return and failed construction paths.
+			t.Cleanup(func() {
+				var restoreErr error
+				if hadPassHash {
+					restoreErr = f.m.pg.SetSetting(authPassKey, previousPassHash)
+				} else {
+					_, restoreErr = f.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, authPassKey)
+				}
+				if restoreErr != nil {
+					t.Error("auth setting restore failed")
+				}
+			})
 			if err := f.m.pg.SetSetting(authPassKey, "synthetic-disabled-login"); err != nil {
 				t.Fatal(err)
 			}
