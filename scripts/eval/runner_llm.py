@@ -54,9 +54,10 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
     _check_shape(marker)
     reasons: set[str] = set()
     # 숫자 표기(1과 1.0)는 같은 값으로 본다. 키·값이 하나라도 다르거나 빠지면 고정이 아니다.
+    # float로 바꾸지 않고 그대로 비교한다: 파이썬의 int·float 비교는 정확해서 2^53을 넘는 seed도 구분한다.
     applied = marker["sampling"]
     if (applied is None) != (sampling is None) or (
-            applied is not None and any(float(applied[key]) != float(sampling[key]) for key in SAMPLING_KEYS)):
+            applied is not None and any(applied[key] != sampling[key] for key in SAMPLING_KEYS)):
         reasons.add("llm_sampling_mismatch")
     if marker["backend"] != backend:
         reasons.add("llm_backend_mismatch")

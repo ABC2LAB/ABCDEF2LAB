@@ -623,6 +623,22 @@ class TestFailures(unittest.TestCase):
         result, ports, _, evidence = run(mutate_gateway=lambda g: g.marker["sampling"].update(temperature=0.7))
         self.assert_invalid(result, ports, evidence, "llm_sampling_mismatch")
 
+    def test_large_integer_seed_mismatch_is_not_signed(self):
+        # 선언 seed 2^53+1. 게이트웨이가 2^53을 넣었으면 float로 같아 보여도 무효이고 서명하지 않는다.
+        preflight, payload = configuration(), runner_config()
+        for name in ("baseline", "ours"):
+            preflight[name]["seed"] = 2 ** 53 + 1
+        config = parse_runner_config(payload)
+        spec = build_spec(config, plan_run(config, preflight, "ours", "ours-1"), preflight, "t" * 64, "우리@35b", 0)
+        self.assertEqual(spec.llm_sampling["seed"], 2 ** 53 + 1)
+        result, ports, _, evidence = run(spec=spec, mutate_gateway=lambda g: g.marker.update(
+            sampling=dict(spec.llm_sampling)))
+        self.assertEqual((result["status"], ports.sign_calls), (COMPLETE, 2))
+        result, ports, _, evidence = run(spec=spec, mutate_gateway=lambda g: g.marker.update(
+            sampling=dict(spec.llm_sampling, seed=2 ** 53)))
+        self.assert_invalid(result, ports, evidence, "llm_sampling_mismatch")
+        self.assertEqual(ports.sign_calls, 0)
+
     def test_no_settle_without_cut_requests(self):
         slept = []
         result, _, _, evidence = run(lambda p, m, c: setattr(c, "sleep", lambda s: slept.append(s)))
