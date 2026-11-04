@@ -9,7 +9,7 @@ import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
 import type { Severity } from "../types";
 
-const btnSm = { padding: "9px 15px", fontSize: 13 } as const;
+const btnSm = { padding: "9px 15px", fontSize: 14 } as const;
 // 긴 이름/설명이 카드를 밀어내지 않게 한 줄로 자르고 … 처리 (부모가 minWidth:0 이라야 동작)
 const oneLine = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
 

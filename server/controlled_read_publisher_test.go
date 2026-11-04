@@ -491,6 +491,23 @@ func TestDurableAuditStrictConstructorUsesFactoryWithValidHost(t *testing.T) {
 			t.Setenv(notifyBackgroundDisabledEnv, "1")
 			// Fixed isolated values avoid issuing auth keys or setup tokens.
 			// No authentication endpoint is invoked.
+			previousPassHash, hadPassHash, err := f.m.pg.GetSetting(authPassKey)
+			if err != nil {
+				t.Fatal("auth setting snapshot unavailable")
+			}
+			// Restore before fixture cleanup closes the shared test DB, including
+			// the early nil-factory return and failed construction paths.
+			t.Cleanup(func() {
+				var restoreErr error
+				if hadPassHash {
+					restoreErr = f.m.pg.SetSetting(authPassKey, previousPassHash)
+				} else {
+					_, restoreErr = f.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, authPassKey)
+				}
+				if restoreErr != nil {
+					t.Error("auth setting restore failed")
+				}
+			})
 			if err := f.m.pg.SetSetting(authPassKey, "synthetic-disabled-login"); err != nil {
 				t.Fatal(err)
 			}
@@ -596,6 +613,10 @@ func (r mismatchedPublisherRoot) Directory() string { return r.dir }
 func TestDurableAuditRejectsDifferentJournalDirectory(t *testing.T) {
 	f := newControlledVerificationDBFixture(t, "http://127.0.0.1:1")
 	h := installDurableTestPublisher(t, f, "success")
+	stages := &durableStageLog{}
+	previous := log.Writer()
+	log.SetOutput(stages)
+	t.Cleanup(func() { log.SetOutput(previous) })
 	r := f.e.controlledReads
 	original := r.publisher.factory
 	r.publisher.factory = func(ctx context.Context, req ControlledReadPublisherRequest) (ControlledReadPublisherPlan, error) {
@@ -611,6 +632,12 @@ func TestDurableAuditRejectsDifferentJournalDirectory(t *testing.T) {
 	scope := transmit.Scope{RunRef: "synthetic-directory", TaskRef: f.task.ID, CaseRef: spec.CaseRef, ResetRef: spec.ResetRef, PolicyRef: spec.PolicyRef}
 	if journal, err := r.openPublishedJournal(context.Background(), r.publisher, spec, scope); journal != nil || !errors.Is(err, ErrControlledReadPublisher) || h.rootReleased.Load() != 1 {
 		t.Fatalf("different journal directory accepted or root leaked: %v", err)
+	}
+
+	// The downstream Open also rejects a different directory. Pin the local
+	// category so removing this guard cannot hide behind that later rejection.
+	if strings.Count(stages.String(), "[controlled-read] publisher_failed reason=root_scope") != 1 {
+		t.Fatal("directory guard was masked by a downstream publisher failure")
 	}
 }
 
