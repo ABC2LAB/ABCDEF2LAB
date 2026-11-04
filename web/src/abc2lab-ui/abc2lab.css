@@ -3270,3 +3270,17 @@ h1.big {
 .eplist.flat .epmore {
   border-top: 1px solid var(--line);
 }
+
+/* 목업 빌드(NEXT_PUBLIC_MOCK=1) 표시 — 예시 데이터를 실제 결과로 읽지 않게 항상 위에 고정 */
+.mock-banner {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  padding: 6px 12px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--warn-weak);
+  color: var(--warn);
+  border-bottom: 1px solid var(--warn-border);
+}
