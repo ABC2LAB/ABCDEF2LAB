@@ -406,7 +406,7 @@ func (r *controlledCheckpointRecorder) Record(ctx context.Context, event transmi
 		return errControlledReadUnavailable
 	}
 	if r.published != nil {
-		if err := r.published.record(ctx, event, r.store); err != nil {
+		if err := r.published.record(ctx, event); err != nil {
 			r.failed = true
 			return errControlledReadUnavailable
 		}
