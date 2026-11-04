@@ -14,8 +14,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-FORMAT = "abc2lab-eval-profile-v4"
-PROFILE_VERSION = 4
+FORMAT = "abc2lab-eval-profile-v5"
+PROFILE_VERSION = 5
 MAX_INPUT_BYTES = 64 * 1024
 MAX_PATH_LENGTH = 512
 MAX_URL_LENGTH = 512
@@ -52,6 +52,11 @@ RUN_STORAGE_FIELDS = ("engine_db_tmpfs", "engine_data_tmpfs", "tmpfs_min_free")
 RUN_DRAIN_FIELDS = ("grace_seconds", "settle_seconds")
 MAX_DRAIN_GRACE_SECONDS = 600
 MAX_SETTLE_SECONDS = 3600
+# temperature·seed 외 샘플링 고정값. 엔진은 샘플링을 보내지 않아 평가 LLM 게이트웨이가 요청마다 넣는다(평가 프로토콜 §6).
+# 범위는 게이트웨이(cmd/eval-meter sampling.go)와 같다(drift 테스트).
+SAMPLING_FIELDS = ("top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty")
+MAX_TOP_K = 1000
+MAX_PENALTY = 2
 # 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
 _LLM_FIELDS = {
     "api": ("backend", "base_url", "model", "provider", "fallbacks"),
@@ -328,8 +333,45 @@ def _run_drain(value: object) -> bool:
     return all(type(value[name]) is int and 1 <= value[name] <= limits[name] for name in RUN_DRAIN_FIELDS)
 
 
+def _bounded(value: object, path: str, low: int, high: int, *, low_open: bool) -> str:
+    """low~high(low_open이면 low 제외) 사이 유한 십진수를 _number와 같은 표기로 정규화한다. 음수도 받는다."""
+    if type(value) not in (int, float, Decimal):
+        _fail(path, "INVALID_NUMBER")
+    try:
+        number = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (ValueError, InvalidOperation):
+        _fail(path, "INVALID_NUMBER")
+    if not number.is_finite() or number < low or number > high or (low_open and number == low):
+        _fail(path, "INVALID_NUMBER")
+    if number == 0:
+        return "0"
+    parts = number.as_tuple()
+    if len(parts.digits) > MAX_DECIMAL_DIGITS or abs(parts.exponent) > MAX_DECIMAL_EXPONENT:
+        _fail(path, "NUMBER_TOO_LARGE")
+    text = format(number, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _sampling(raw: object) -> dict:
+    """temperature·seed 외 다섯 값. 하나라도 빠지면 제공자 기본값으로 조용히 돌아가므로 정확히 다섯 키를 요구한다."""
+    if not isinstance(raw, dict) or set(raw) != set(SAMPLING_FIELDS):
+        _fail("environment.sampling", "INVALID_SAMPLING")
+    top_k = raw["top_k"]
+    if type(top_k) is not int or not 1 <= top_k <= MAX_TOP_K:
+        _fail("environment.sampling.top_k", "INVALID_NUMBER")
+    return {
+        "top_p": _bounded(raw["top_p"], "environment.sampling.top_p", 0, 1, low_open=True),
+        "top_k": top_k,
+        "min_p": _bounded(raw["min_p"], "environment.sampling.min_p", 0, 1, low_open=False),
+        "presence_penalty": _bounded(raw["presence_penalty"], "environment.sampling.presence_penalty",
+                                     -MAX_PENALTY, MAX_PENALTY, low_open=False),
+        "repetition_penalty": _bounded(raw["repetition_penalty"], "environment.sampling.repetition_penalty",
+                                       0, MAX_PENALTY, low_open=True),
+    }
+
+
 def _environment(raw: object) -> dict:
-    raw = _object(raw, ("network_mode", "llm", "temperature", "seed", "target_image",
+    raw = _object(raw, ("network_mode", "llm", "temperature", "sampling", "seed", "target_image",
                         "worker_count", "time_budget_seconds", "request_budget", "run_storage", "run_drain"),
                   "environment")
     if raw["network_mode"] not in _NETWORK_MODES:
@@ -345,6 +387,7 @@ def _environment(raw: object) -> dict:
         # API 고정 조건(모델·제공자·fallback)과 로컬 고정 IP가 모두 환경 지문에 들어간다.
         "llm": dict(raw["llm"]),
         "temperature": _number(raw["temperature"], "environment.temperature", positive=False),
+        "sampling": _sampling(raw["sampling"]),
         "seed": _integer(raw["seed"], "environment.seed", zero=True),
         "target_image": _reference(raw["target_image"], "environment.target_image", image=True),
         "worker_count": _integer(raw["worker_count"], "environment.worker_count"),

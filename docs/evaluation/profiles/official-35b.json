@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "fixture": {
     "preparation_id": "anonymous",
     "preparation_revision": 1,
@@ -16,6 +16,7 @@
       "fallbacks": false
     },
     "temperature": 1.0,
+    "sampling": {"top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0},
     "seed": 42,
     "target_image": "bkimminich/juice-shop:v15.0.0@sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d",
     "worker_count": 3,
