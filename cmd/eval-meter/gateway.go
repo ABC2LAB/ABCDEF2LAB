@@ -353,12 +353,16 @@ func checkObject(body []byte) (int, error) {
 
 // pinRequest inserts the sampling parameters and the routing object right after
 // the opening brace so the rest of the engine's body reaches the provider byte
-// for byte.
+// for byte. require_parameters makes the router refuse the request when the
+// pinned provider does not support a parameter in it; without it the router
+// drops that parameter silently, and the applied values in the verified marker
+// would no longer be what the provider used.
 func pinRequest(body []byte, open int, slug string, sampling *samplingParams) []byte {
 	pin, _ := json.Marshal(struct {
-		Order          []string `json:"order"`
-		AllowFallbacks bool     `json:"allow_fallbacks"`
-	}{Order: []string{slug}, AllowFallbacks: false})
+		Order             []string `json:"order"`
+		AllowFallbacks    bool     `json:"allow_fallbacks"`
+		RequireParameters bool     `json:"require_parameters"`
+	}{Order: []string{slug}, AllowFallbacks: false, RequireParameters: true})
 	var field []byte
 	if sampling != nil {
 		field = append(sampling.fields(), ',')

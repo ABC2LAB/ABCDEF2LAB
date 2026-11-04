@@ -273,7 +273,8 @@ func TestGatewayPinsProviderAndUsesOwnKey(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("calls %d", len(calls))
 	}
-	want := `{` + pinnedSamplingFields + `,"provider":{"order":["` + pinnedSlug + `"],"allow_fallbacks":false},` +
+	want := `{` + pinnedSamplingFields + `,"provider":{"order":["` + pinnedSlug +
+		`"],"allow_fallbacks":false,"require_parameters":true},` +
 		engineBody[1:]
 	if calls[0].body != want {
 		t.Fatalf("upstream body %q, want %q", calls[0].body, want)
@@ -322,7 +323,7 @@ func TestGatewayPinsEmptyAndSpacedObjects(t *testing.T) {
 		if err := json.Unmarshal([]byte(call.body), &decoded); err != nil {
 			t.Fatalf("upstream body %q is not JSON: %v", call.body, err)
 		}
-		if string(decoded["provider"]) != `{"order":["`+pinnedSlug+`"],"allow_fallbacks":false}` {
+		if string(decoded["provider"]) != `{"order":["`+pinnedSlug+`"],"allow_fallbacks":false,"require_parameters":true}` {
 			t.Fatalf("provider %s", decoded["provider"])
 		}
 		if string(decoded["temperature"]) != "1" || string(decoded["top_k"]) != "20" || string(decoded["seed"]) != "42" {
