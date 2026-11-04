@@ -3585,6 +3585,33 @@ h1.big {
 .dash-head .btn {
   flex: none;
 }
+.dash-acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+/* 승인 화면: 글자처럼 보이는 이동 버튼 */
+.ap-link {
+  font: inherit;
+  font-weight: 600;
+  color: var(--teal-ink);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.ap-link:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.dash-snap {
+  font-size: 12px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
 .dash-err {
   border-color: var(--danger-border);
   background: var(--danger-weak);

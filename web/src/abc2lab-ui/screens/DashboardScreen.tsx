@@ -1,8 +1,8 @@
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
-import { Pill, Sev } from "../components/ui";
+import { Pill, RefreshIcon, Sev } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { cx } from "../lib/cx";
 import {
@@ -18,7 +18,8 @@ import {
 } from "../lib/engine";
 import { isLocalUrl } from "../lib/net";
 import { useSelection } from "../lib/selection";
-import { useGo } from "../nav";
+import { useApprovalTarget } from "../lib/approval";
+import { useNav } from "../nav";
 import { SEVERITY_LABEL, type Severity } from "../types";
 
 const SEV_ORDER: Severity[] = ["critical", "high", "medium", "low"];
@@ -102,6 +103,11 @@ function tokenParts(n: number): [string, string] {
 function tokenText(n: number): string {
   return tokenParts(n).join("");
 }
+function clock(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 const join = (parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(" · ");
 
 function Tile({ k, v, sub, attn }: { k: string; v: ReactNode; sub: ReactNode; attn?: "warn" }) {
@@ -124,13 +130,19 @@ const TODO_KIND_LABEL: Record<Exclude<TodoKind, "approval">, string> = {
 
 /** ===== 대시보드 (메인) ===== */
 export default function DashboardScreen() {
-  const go = useGo();
+  const { screen, go } = useNav();
   const { selectTask, tasksVersion } = useSelection();
-  const tasksRes = useApiResource(listTasks, [tasksVersion]);
-  const pendingRes = useApiResource(listPendingApprovals, [tasksVersion]);
-  const tokenRes = useApiResource(getTokenUsage, [tasksVersion]);
-  const llmRes = useApiResource(getLLM);
-  const rulesRes = useApiResource(getInterceptRules);
+  const { openApproval } = useApprovalTarget();
+  // 화면은 언마운트되지 않고 숨겨지기만 한다. 그래서 대시보드에 들어올 때마다(active) 다시 조회하고,
+  // 머무는 동안에는 [새로고침](refresh)으로 다시 읽는다. 숨겨져 있을 때는 조회하지 않는다.
+  const active = screen === "dashboard";
+  const [refresh, setRefresh] = useState(0);
+  const when = <T,>(fetch: () => Promise<T>) => (active ? fetch() : Promise.resolve(null));
+  const tasksRes = useApiResource(() => when(listTasks), [tasksVersion, active, refresh]);
+  const pendingRes = useApiResource(() => when(listPendingApprovals), [tasksVersion, active, refresh]);
+  const tokenRes = useApiResource(() => when(getTokenUsage), [tasksVersion, active, refresh]);
+  const llmRes = useApiResource(() => when(getLLM), [active, refresh]);
+  const rulesRes = useApiResource(() => when(getInterceptRules), [active, refresh]);
 
   const tasks = useMemo<EngineTask[]>(() => tasksRes.data?.tasks ?? [], [tasksRes.data]);
   const pending = useMemo(() => pendingRes.data ?? [], [pendingRes.data]);
@@ -158,8 +170,8 @@ export default function DashboardScreen() {
   const shown = stats.finished.slice(0, LIST_MAX);
   const shownKey = shown.map((t) => t.id).join(",");
   const covRes = useApiResource(
-    () => Promise.all(shown.map((t) => getCoverage(t.id).catch(() => null))),
-    [shownKey, tasksVersion],
+    () => when(() => Promise.all(shown.map((t) => getCoverage(t.id).catch(() => null)))),
+    [shownKey, tasksVersion, active, refresh],
   );
   const coverage = new Map<string, EngineCoverage>();
   shown.forEach((t, i) => {
@@ -190,7 +202,7 @@ export default function DashboardScreen() {
           type="button"
           onClick={() => {
             if (p.task_id) selectTask(p.task_id);
-            go("approval");
+            openApproval(p.id);
           }}
         >
           승인하기
@@ -299,6 +311,13 @@ export default function DashboardScreen() {
   const rulesOn = rules.filter((r) => r.enabled);
   const rulesDeny = rulesOn.filter((r) => r.action === "deny").length;
 
+  const resources = [tasksRes, pendingRes, tokenRes, llmRes, rulesRes];
+  const reloading = resources.some((r) => r.loading);
+  const fetched = resources.map((r) => r.fetchedAt).filter((t): t is number => t !== null);
+  let snapshot = "조회 중…";
+  if (!reloading && resources.some((r) => r.error)) snapshot = "일부 조회 실패 · 새로고침해 주세요";
+  else if (!reloading && fetched.length) snapshot = `조회 ${clock(Math.min(...fetched))}`;
+
   return (
     <Screen id="dashboard">
       <div className="frame">
@@ -308,9 +327,15 @@ export default function DashboardScreen() {
             <h1 className="big" style={{ marginBottom: 0 }}>
               대시보드
             </h1>
-            <button className="btn primary" type="button" onClick={() => go("entry")}>
-              + 새 점검
-            </button>
+            <div className="dash-acts">
+              <span className="dash-snap">{snapshot}</span>
+              <button className="btn" type="button" onClick={() => setRefresh((n) => n + 1)} disabled={reloading}>
+                <RefreshIcon /> 새로고침
+              </button>
+              <button className="btn primary" type="button" onClick={() => go("entry")}>
+                + 새 점검
+              </button>
+            </div>
           </div>
 
           {tasksRes.error && (

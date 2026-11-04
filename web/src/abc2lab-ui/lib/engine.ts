@@ -429,3 +429,29 @@ export async function listPendingApprovals(): Promise<EnginePendingApproval[]> {
   const res = await apiFetch<{ pending?: EnginePendingApproval[] | null }>("/api/intercept/pending");
   return (res.pending ?? []).filter((p) => p.status === "pending");
 }
+
+/** db/intercept.go InterceptPending 전체 — 승인 화면이 판단에 쓰는 요청 내용 포함 */
+export type EnginePendingDetail = EnginePendingApproval & {
+  /** 에이전트가 실행하려는 도구 입력(JSON). 비밀 값이 있을 수 있어 화면에는 가려서 보여 준다 */
+  tool_input?: unknown;
+  /** 걸린 통제 규칙의 메시지 또는 모델 판정 이유 */
+  reason?: string;
+  decision_source?: string;
+  decided_at?: string | null;
+};
+
+/** GET /api/intercept/pending/{id} — 승인 요청 하나(이미 결정된 요청도 상태와 함께 돌려준다) */
+export async function getPendingApproval(id: number): Promise<EnginePendingDetail> {
+  return apiFetch<EnginePendingDetail>(`/api/intercept/pending/${encodeURIComponent(String(id))}`);
+}
+
+/**
+ * POST /api/intercept/pending/{id}/decide — 사람의 결정(allowed=이번 한 번 허용, denied=거부).
+ * 이미 결정된 요청이면 서버가 409 를 돌려주고 ApiError(status 409)로 던져진다.
+ */
+export async function decidePendingApproval(id: number, decision: "allowed" | "denied"): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/intercept/pending/${encodeURIComponent(String(id))}/decide`, {
+    method: "POST",
+    body: JSON.stringify({ decision }),
+  });
+}
