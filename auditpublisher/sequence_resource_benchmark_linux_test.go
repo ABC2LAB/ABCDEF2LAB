@@ -27,6 +27,8 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
+const sequenceMaxPairs = 512
+
 // Explicit -benchtime=1x and -count provide one independently checked sequence
 // per repetition. No production authority or request is issued by this fixture.
 func BenchmarkPublisherSequenceResource(b *testing.B) {
@@ -35,7 +37,7 @@ func BenchmarkPublisherSequenceResource(b *testing.B) {
 		b.Fatal("manual benchmark requires -benchtime=1x")
 	}
 	n, err := strconv.Atoi(os.Getenv("ARTEX_AUDIT_SEQUENCE_N"))
-	if err != nil || (n != 1 && n != 8 && n != 32 && n != 128 && n != 512) {
+	if err != nil || (n != 1 && n != 8 && n != 32 && n != 128 && n != sequenceMaxPairs) {
 		b.Fatal("set ARTEX_AUDIT_SEQUENCE_N to 1, 8, 32, 128 or 512 pairs")
 	}
 	s := sequenceSample{Pairs: n, Stage: "setup"}
@@ -379,7 +381,7 @@ func newSequenceFixture(b *testing.B) (_ *sequenceFixture, err error) {
 	if _, err = f.db.ExecContext(ctx, `INSERT INTO audit_checkpoint_epochs VALUES($1,$2,$3,$4)`, e.StoreRef, e.EpochRef, int64(e.Generation), e.AnchorDigest[:]); err != nil {
 		return nil, err
 	}
-	f.store, err = auditcheckpoint.New(f.db, f.host, auditlog.ExtensionLimits{MaxBytes: 8 << 20, MaxEvents: 1024, Timeout: 10 * time.Second})
+	f.store, err = auditcheckpoint.New(f.db, f.host, auditlog.ExtensionLimits{MaxBytes: 8 << 20, MaxEvents: 2 * sequenceMaxPairs, Timeout: 10 * time.Second})
 	if err != nil {
 		return nil, err
 	}
