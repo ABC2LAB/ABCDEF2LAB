@@ -983,6 +983,12 @@ details.adv[open] .chev {
   font-size: 12px;
   vertical-align: bottom;
 }
+.matrix th .sm {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--faint);
+}
 .matrix td {
   text-align: center;
   border-radius: 6px;
@@ -1028,6 +1034,275 @@ details.adv[open] .chev {
   background: var(--warn-weak);
   color: var(--warn);
   outline: 1.5px solid var(--warn-border);
+}
+.map-mock {
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px dashed var(--line-2);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+}
+
+/* 보고서 자산 그래프: 도메인 → 서비스 → 경로 묶음 → 엔드포인트 */
+.ag-seg {
+  margin: 0;
+  min-width: 0;
+}
+.ag-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.ag-sum {
+  font-size: 14px;
+  color: var(--muted);
+  margin: 0 0 12px;
+  line-height: 1.6;
+}
+.ag-sum b {
+  color: var(--fg);
+}
+.ag-blk + .ag-blk {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.ag-site {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+.agc {
+  position: relative;
+  min-width: 920px;
+}
+.agc svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+}
+.agc path {
+  fill: none;
+  stroke: var(--line-2);
+  stroke-width: 1.5;
+  transition: stroke 0.12s;
+}
+.agc path.out {
+  stroke-dasharray: 3 3;
+}
+.agc path.on {
+  stroke: var(--teal);
+  stroke-width: 2;
+}
+.adot {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.adot.ok {
+  background: var(--teal);
+}
+.adot.wait {
+  background: var(--bg);
+  border: 2px solid var(--warn);
+}
+.adot.out {
+  background: var(--bg);
+  border: 1.5px dashed var(--faint);
+}
+.adot.int {
+  background: var(--fg);
+}
+.adot.more {
+  background: var(--bg);
+  border: 1.5px dashed var(--line-2);
+}
+/* 많은 묶음: "+ N개 더" 버튼과 목록 필터 줄 */
+.agmore {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--teal-ink);
+  background: var(--bg);
+  border: 1px dashed var(--teal-border);
+  border-radius: 4px;
+  padding: 1px 9px;
+  cursor: pointer;
+  line-height: 18px;
+}
+.agmore:hover {
+  border-style: solid;
+}
+.agmore:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+.ag-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--teal-weak);
+  border: 1px solid var(--teal-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 0 0 10px;
+}
+.ag-filter b {
+  color: var(--fg);
+}
+.ag-filter button {
+  margin-left: auto;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--teal-ink);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.leg .adot {
+  position: static;
+  display: inline-block;
+  vertical-align: -1px;
+  margin-right: 5px;
+}
+.alab {
+  position: absolute;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+}
+.alab .row1 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg);
+  padding-right: 4px;
+}
+.alab .k {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.alab .nm {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 다음 단계 노드와 겹치지 않게 앞 세 단계 이름은 폭을 묶는다(전체 이름은 title) */
+.alab.col-d .nm {
+  max-width: 146px;
+}
+.alab.col-s .nm {
+  max-width: 182px;
+}
+/* 세로 줄기(엔드포인트 x − 18)에 닿지 않게 */
+.alab.col-g .row1 {
+  max-width: 104px;
+}
+.alab .sub {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 16px;
+  background: var(--bg);
+  padding-right: 4px;
+}
+.alab.out .k {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+.ag-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.achip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 1px 9px 1px 2px;
+  cursor: pointer;
+  line-height: 18px;
+}
+.achip:hover {
+  border-color: var(--teal);
+}
+.achip:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+.achip.demo {
+  cursor: default;
+}
+.achip .sev {
+  font-size: 12px;
+  padding: 0 7px;
+  border-radius: 4px;
+  line-height: 18px;
+}
+.achip-t {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agt td .achip {
+  margin: 2px 6px 2px 0;
+}
+.agt td.k {
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.agt tr.out td.k {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+.agst {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+.agst.ok {
+  color: var(--teal-ink);
+  background: var(--teal-weak);
+}
+.agst.wait {
+  color: var(--warn);
+  background: var(--warn-weak);
+}
+.agst.out {
+  color: var(--faint);
+  border: 1px dashed var(--line-2);
 }
 .leg {
   display: flex;
@@ -2001,6 +2276,17 @@ details.adv[open] .chev {
 .wk-seg {
   margin: 2px 0 6px;
   min-width: 0;
+}
+/* 작업 설정: 리소스 설정은 접지 않고 항상 펼침 */
+.res-sec {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.res-h {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 4px;
 }
 .wk-seg button {
   min-width: 52px;
