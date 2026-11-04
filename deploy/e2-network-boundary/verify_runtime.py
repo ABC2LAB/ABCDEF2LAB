@@ -24,10 +24,13 @@ def _published(ports: Any) -> bool:
     return isinstance(ports, dict) and any(value for value in ports.values())
 
 
-def _root_user(value: Any) -> bool:
-    first = str(value or "").split(":", 1)[0].lower()
-    # A username can resolve to UID 0 inside an image. Require a numeric UID.
-    return not first.isdecimal() or int(first) == 0
+def _nonroot_ids(value: Any) -> tuple[int, int] | None:
+    # Image usernames or implicit groups can resolve to privileged IDs.
+    parts = str(value or "").split(":")
+    if len(parts) != 2 or not all(part.isascii() and part.isdecimal() and len(part) <= 10 for part in parts):
+        return None
+    uid, gid = (int(part) for part in parts)
+    return (uid, gid) if 0 < uid < 0xFFFFFFFF and 0 < gid < 0xFFFFFFFF else None
 
 
 def _extra_privilege(host: dict[str, Any]) -> bool:
@@ -54,11 +57,17 @@ def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], 
     sh = sender.get("HostConfig") or {}
     tn = (tool.get("NetworkSettings") or {}).get("Networks") or {}
     sn = (sender.get("NetworkSettings") or {}).get("Networks") or {}
+    tool_ids = _nonroot_ids((tool.get("Config") or {}).get("User"))
+    sender_ids = _nonroot_ids((sender.get("Config") or {}).get("User"))
 
     if (tool.get("State") or {}).get("Running") is not True:
         issues.append("tool_not_running")
     if (sender.get("State") or {}).get("Running") is not True:
         issues.append("sender_not_running")
+    for obj, role in ((tool, "tool"), (sender, "sender")):
+        pid = (obj.get("State") or {}).get("Pid")
+        if type(pid) is not int or pid < 1:
+            issues.append(role + "_process_pid_unavailable")
     if (target.get("State") or {}).get("Running") is not True:
         issues.append("target_not_running")
     if not run_ref or not project:
@@ -86,8 +95,12 @@ def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], 
         issues.append("tool_unbounded_processes")
     if th.get("PortBindings") or _published((tool.get("NetworkSettings") or {}).get("Ports")):
         issues.append("tool_published_port")
-    if _root_user((tool.get("Config") or {}).get("User")):
+    if tool_ids is None:
         issues.append("tool_root_user")
+    # The default private PID namespaces remain fail-closed until C can prove
+    # exact peer identity and prevent cross-UID /proc metadata disclosure.
+    if th.get("PidMode") != "" or th.get("UsernsMode") != "":
+        issues.append("tool_pid_or_user_namespace_unapproved")
 
     mounts = tool.get("Mounts") or []
     if len(mounts) != 1 or mounts[0].get("Destination") != CHANNEL or mounts[0].get("Name") != channel_volume or mounts[0].get("RW") is not False or mounts[0].get("Type") != "volume":
@@ -110,8 +123,12 @@ def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], 
         issues.append("target_network_membership_mismatch")
     if sh.get("Privileged") or sh.get("NetworkMode") == "host" or sh.get("PortBindings") or _published((sender.get("NetworkSettings") or {}).get("Ports")) or _extra_privilege(sh):
         issues.append("sender_host_or_published_port")
-    if _root_user((sender.get("Config") or {}).get("User")) or not sh.get("ReadonlyRootfs") or "ALL" not in [x.upper() for x in sh.get("CapDrop") or []] or "no-new-privileges:true" not in (sh.get("SecurityOpt") or []):
+    if sender_ids is None or not sh.get("ReadonlyRootfs") or "ALL" not in [x.upper() for x in sh.get("CapDrop") or []] or "no-new-privileges:true" not in (sh.get("SecurityOpt") or []):
         issues.append("sender_privilege_or_filesystem")
+    if sh.get("PidMode") != "" or sh.get("UsernsMode") != "" or sh.get("IpcMode") == "host":
+        issues.append("sender_namespace_unapproved")
+    if tool_ids is not None and sender_ids is not None and (tool_ids[0] == sender_ids[0] or tool_ids[1] == sender_ids[1]):
+        issues.append("process_users_not_separated")
     return sorted(set(issues))
 
 

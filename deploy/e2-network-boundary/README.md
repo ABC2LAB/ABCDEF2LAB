@@ -17,13 +17,15 @@
 
 ## 실행 상태 검사와 남은 C 작업
 
-`verify_runtime.py`는 C가 프로세스를 시작한 뒤 **실제** Docker 객체를 검사합니다. 도구의 네트워크 모드·마운트·권한, 전송부의 네트워크·포트, 대상 네트워크의 `Internal` 값과 양쪽 `isolated` 게이트웨이 모드, 정확한 두 구성원, 채널 볼륨 레이블을 확인합니다. 이 검사 자체는 권한을 부여하지 않습니다. 검사기는 볼륨이 바인드 기반 `Options`가 없는 일반 로컬 볼륨인지도 확인합니다. C는 볼륨 내부를 검사하고 Unix 소켓 ACL을 집행해야 합니다. B의 메타데이터 검사만으로는 소켓의 소유자나 프로토콜을 증명할 수 없습니다.
+`verify_runtime.py`는 C가 프로세스를 시작한 뒤 **실제** Docker 객체를 검사합니다. 도구의 네트워크 모드·마운트·권한, 전송부의 네트워크·포트, 대상 네트워크의 `Internal` 값과 양쪽 `isolated` 게이트웨이 모드, 정확한 두 구성원, 채널 볼륨 레이블을 확인합니다. 실행 중인 두 프로세스의 Docker PID와 서로 다른 명시적 비root UID·GID도 요구하고, 양쪽의 임의 PID·user namespace 참여를 거부합니다. 이 검사 자체는 권한을 부여하지 않습니다. 검사기는 볼륨이 바인드 기반 `Options`가 없는 일반 로컬 볼륨인지도 확인합니다. C는 볼륨 내부를 검사하고 Unix 소켓 ACL을 집행해야 합니다. B의 메타데이터 검사만으로는 소켓의 소유자나 프로토콜 또는 살아 있는 프로세스 handle을 증명할 수 없습니다.
 
 C는 계약 순서에 따라 `BlockNewFlows(run)`과 `TerminateAndWait(run)`을 제공하고, cgroup·프로세스·상속된 디스크립터의 종료 증거를 확보해야 합니다. 이어서 A의 신규 요청 차단·기존 요청 배출을 조율하고 감사 마감 뒤 권한을 해제해야 합니다. 컨테이너나 A만 중지한 사실로는 이 순서를 증명할 수 없습니다.
 
 `test_verify_runtime.py`는 합성 inspect 데이터로 검사기를 시험합니다. `test_compose_config.py`는 합성 값으로 Compose 구성을 렌더링합니다. `test_compose_docker.py`는 폐기용 유휴 프로세스 두 개로 실제 Compose 구성을 시작해 Docker 상태를 검사한 뒤 해당 프로젝트를 제거합니다. `test_boundary_docker.py`는 긍정 대조군과 대상 수신 건수를 사용해 직접 IPv4/IPv6 TCP·UDP, DNS, 프록시 변경, 불투명 CONNECT, `/bin/sh` 자식, Python 손자 프로세스를 검사합니다. `test_channel_docker.py`는 A의 ready nonce·요청·제한 ACK와 같은 패킷 형식을 사용하는 **합성 전송부** 및 `probe_packet_channel.py`로 HTTP 대상 수신 1건, 스트림 소켓 대체 시도 차단, 커널 자격 관측을 확인합니다. 실제 A 서비스나 C의 `PeerAuthorizer`는 호출하지 않습니다. 최종 A/C 시험과 필요한 연결 입력은 [`ACCEPTANCE.md`](./ACCEPTANCE.md)에 적었습니다.
 
-현재 Docker Desktop의 별도 기본 PID namespace에서 합성 전송부가 관측한 도구 패킷의 `SCM_CREDENTIALS`에는 UID·GID가 예상값으로 들어왔지만 PID는 0이었습니다. A의 `auditpeer` 수신기는 PID가 0 이하인 패킷을 거부하므로, 현 Compose 구성과 A 진입점의 실제 연결은 **차단**됩니다. C와 A는 격리를 유지하면서 전송부에 유효한 커널 PID가 보이도록 프로세스·namespace 배치를 합의하고, 살아 있는 프로세스 handle·실행 결속·철회를 확인하는 host `PeerAuthorizer`를 제공해야 합니다. 이 문서는 PID namespace 변경이나 무검사 허가를 자동 적용하지 않습니다.
+현재 Docker Desktop의 별도 기본 PID namespace에서 합성 전송부가 관측한 도구 패킷의 `SCM_CREDENTIALS`에는 UID·GID가 예상값으로 들어왔지만 PID는 0이었습니다. A의 `auditpeer` 수신기는 PID가 0 이하인 패킷을 거부하므로, 현 Compose 구성과 A 진입점의 실제 연결은 **차단**됩니다.
+
+폐기용 **후보 실험**에서 도구를 정확한 전송부 컨테이너 ID의 사설 PID namespace에 합류시키고 서로 다른 비root UID·GID와 각자의 네트워크 namespace를 유지하자 양의 패킷 PID가 관측됐습니다. 도구의 signal·ptrace, `/proc`의 `environ`·`mem`·`fd` 접근은 거부됐고 전송부 종료 뒤 합성 도구도 중지됐습니다. 하지만 도구가 전송부의 `/proc/.../cmdline`을 읽을 수 있어 이 후보는 **차단** 상태입니다. 후보의 볼륨 권한은 폐기용 fixture이고 운영 소켓 ACL 증거가 아닙니다. 제품 Compose는 PID namespace 공유를 적용하지 않으며 B 검사기는 정확한 전송부 ID에 대한 합류도 현재 거부합니다. C와 A는 `/proc` 노출을 해결하고 살아 있는 프로세스 handle·실행 결속·철회를 요청마다 확인하는 host `PeerAuthorizer`, 소켓 ACL과 실제 종료 증거를 합의해야 합니다. PID 0 허용이나 무검사 허가는 추가하지 않습니다.
 
 `probe_network.py`는 격리된 도구 프로세스 안에서 **폐기 가능한 합성 대상**만 시험하는 제한된 프로브입니다. 페이로드나 비밀을 수집하지 않고 시도와 오류만 보고합니다. 등록된 GET의 성공, TLS, 철회, 예산, 감사에 관한 수용시험은 C와 통합한 **실제 A 서비스**를 대상으로 실행해야 합니다. 시험용 전달 결과를 NE01, NE02, NE08, NE09의 수용시험 통과로 취급하지 마세요.
 

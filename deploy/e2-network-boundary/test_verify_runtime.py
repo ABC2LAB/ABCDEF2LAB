@@ -16,12 +16,12 @@ NETWORK_ID = "synthetic-network-id"
 def objects():
     tool = {
         "Id": "synthetic-tool-id",
-        "State": {"Running": True},
+        "State": {"Running": True, "Pid": 1001},
         "Config": {"User": "10001:10001", "Labels": {
             "org.abc2lab.e2.run": RUN, "org.abc2lab.e2.role": "tool",
             "com.docker.compose.project": PROJECT}},
         "HostConfig": {
-            "NetworkMode": "none", "Privileged": False, "PidMode": "private",
+            "NetworkMode": "none", "Privileged": False, "PidMode": "", "UsernsMode": "",
             "IpcMode": "private", "ReadonlyRootfs": True, "CapDrop": ["ALL"],
             "SecurityOpt": ["no-new-privileges:true"], "PidsLimit": 128,
             "PortBindings": {},
@@ -31,11 +31,12 @@ def objects():
     }
     sender = {
         "Id": "synthetic-sender-id",
-        "State": {"Running": True},
+        "State": {"Running": True, "Pid": 1002},
         "Config": {"User": "10002:10002", "Labels": {
             "org.abc2lab.e2.run": RUN, "org.abc2lab.e2.role": "sender",
             "com.docker.compose.project": PROJECT}},
-        "HostConfig": {"NetworkMode": NETWORK, "Privileged": False, "PortBindings": {},
+        "HostConfig": {"NetworkMode": NETWORK, "PidMode": "", "UsernsMode": "",
+                       "Privileged": False, "PortBindings": {},
                        "ReadonlyRootfs": True, "CapDrop": ["ALL"],
                        "SecurityOpt": ["no-new-privileges:true"]},
         "NetworkSettings": {"Networks": {NETWORK: {"NetworkID": NETWORK_ID}}, "Ports": {}},
@@ -109,6 +110,34 @@ class RuntimeChecks(unittest.TestCase):
         self.sender["Config"]["User"] = "root"
         self.sender["HostConfig"]["ReadonlyRootfs"] = False
         self.assertIn("sender_privilege_or_filesystem", self.inspect())
+
+    def test_pid_namespace_join_or_host_namespace_is_rejected(self):
+        self.tool["HostConfig"]["PidMode"] = "container:unapproved-id"
+        self.sender["HostConfig"]["PidMode"] = "host"
+        self.assertIn("tool_pid_or_user_namespace_unapproved", self.inspect())
+        self.assertIn("sender_namespace_unapproved", self.inspect())
+        self.tool["HostConfig"]["PidMode"] = "container:" + self.sender["Id"]
+        self.assertIn("tool_pid_or_user_namespace_unapproved", self.inspect())
+
+    def test_same_uid_or_gid_and_missing_process_pid_are_rejected(self):
+        self.sender["Config"]["User"] = "10001:10002"
+        self.tool["State"]["Pid"] = 0
+        self.assertIn("process_users_not_separated", self.inspect())
+        self.assertIn("tool_process_pid_unavailable", self.inspect())
+        self.sender["Config"]["User"] = "10002:10001"
+        self.assertIn("process_users_not_separated", self.inspect())
+
+    def test_root_or_implicit_group_and_user_namespace_are_rejected(self):
+        self.tool["Config"]["User"] = "10001:0"
+        self.sender["Config"]["User"] = "10002"
+        self.tool["HostConfig"]["UsernsMode"] = "host"
+        self.assertIn("tool_root_user", self.inspect())
+        self.assertIn("sender_privilege_or_filesystem", self.inspect())
+        self.assertIn("tool_pid_or_user_namespace_unapproved", self.inspect())
+        self.tool["Config"]["User"] = "99999999999999999999:10001"
+        self.sender["State"]["Pid"] = True
+        self.assertIn("tool_root_user", self.inspect())
+        self.assertIn("sender_process_pid_unavailable", self.inspect())
 
     def test_false_no_new_privileges_is_rejected(self):
         self.tool["HostConfig"]["SecurityOpt"] = ["no-new-privileges:false"]
