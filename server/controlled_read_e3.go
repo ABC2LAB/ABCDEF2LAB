@@ -15,6 +15,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e3record"
 	"github.com/Autumn-27/artex/evidencebind"
+	"github.com/Autumn-27/artex/evidencerevision"
 	"github.com/Autumn-27/artex/idor"
 	"github.com/Autumn-27/artex/transmit/auditlog"
 )
@@ -69,6 +70,10 @@ type ControlledReadFindingResolver func(context.Context, ControlledReadVerificat
 // ConfigureControlledReadFindings installs the verified-read collector and the
 // dedicated transactional sink together, before any work is admitted.
 func (s *Server) ConfigureControlledReadFindings(resolve ControlledReadFindingResolver) error {
+	return s.configureControlledReadFindings(resolve, nil)
+}
+
+func (s *Server) configureControlledReadFindings(resolve ControlledReadFindingResolver, revisions *controlledRevisionServices) error {
 	if s == nil || s.m == nil || s.m.pg == nil || resolve == nil {
 		return ErrControlledFindingUnavailable
 	}
@@ -84,6 +89,10 @@ func (s *Server) ConfigureControlledReadFindings(resolve ControlledReadFindingRe
 		collector, err := newControlledFindingCollector(s.m.pg, markers, request, plan)
 		if err != nil {
 			return ControlledReadVerificationPlan{}, err
+		}
+		if revisions != nil {
+			collector.revisions = revisions
+			collector.revisionOperation = controlledRevisionOperation(request)
 		}
 		return collector.verificationPlan(), nil
 	})
@@ -108,26 +117,39 @@ func (c *controlledFindingCollector) verificationPlan() ControlledReadVerificati
 }
 
 type controlledFindingCollector struct {
-	mu         sync.Mutex
-	save       func(context.Context, e3record.Prepared, db.TaskModeMarkerReader) (db.ControlledFindingResult, error)
-	markers    db.TaskModeMarkerReader
-	request    ControlledReadVerificationRequest
-	plan       ControlledReadFindingPlan
-	collected  bool
-	finalizing bool
-	saved      bool
-	createdAt  time.Time
-	input      e3record.Input
-	digest     [sha256.Size]byte
-	checkpoint [sha256.Size]byte
-	prepared   bool
-	operation  [sha256.Size]byte
-	inputKey   [sha256.Size]byte
+	revisions         *controlledRevisionServices
+	revisionOperation string
+	revisionCollected evidencerevision.Collected
+	revisionFailure   error
+	mu                sync.Mutex
+	save              func(context.Context, e3record.Prepared, db.TaskModeMarkerReader) (db.ControlledFindingResult, error)
+	markers           db.TaskModeMarkerReader
+	request           ControlledReadVerificationRequest
+	plan              ControlledReadFindingPlan
+	collected         bool
+	finalizing        bool
+	saved             bool
+	createdAt         time.Time
+	input             e3record.Input
+	digest            [sha256.Size]byte
+	checkpoint        [sha256.Size]byte
+	prepared          bool
+	operation         [sha256.Size]byte
+	inputKey          [sha256.Size]byte
 }
 
 func (c *controlledFindingCollector) collect(ctx context.Context, evidence ControlledReadVerificationEvidence) error {
 	if ctx == nil || ctx.Err() != nil || evidence.Request != c.request || evidence.Completed || evidence.Finalized ||
 		evidence.FinalCheckpoint != (auditlog.Checkpoint{}) {
+		return ErrControlledFindingUnavailable
+	}
+	c.mu.Lock()
+	failure, unavailable := c.revisionFailure, c.collected || c.finalizing || c.saved
+	c.mu.Unlock()
+	if failure != nil {
+		return failure
+	}
+	if unavailable {
 		return ErrControlledFindingUnavailable
 	}
 	detail := evidence.Verification
@@ -160,12 +182,29 @@ func (c *controlledFindingCollector) collect(ctx context.Context, evidence Contr
 	if err != nil {
 		return ErrControlledFindingUnavailable
 	}
+	var collected evidencerevision.Collected
+	if c.revisions != nil {
+		collected, err = evidencerevision.Capture(expected, input.Evidence, input.CanaryFields)
+		if err != nil {
+			failure, first := c.retainRevisionFailure("capture_rejected")
+			if first {
+				// Collect errors are intentionally hidden from the model, so the
+				// private collector records this fixed reason before that boundary.
+				logControlledFindingFinalizationFailure(failure)
+			}
+			return failure
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.revisionFailure != nil {
+		return c.revisionFailure
+	}
 	if c.collected || c.finalizing || c.saved {
 		return ErrControlledFindingUnavailable
 	}
 	c.input, c.digest, c.createdAt = input, digest, time.Now().Round(0).UTC()
+	c.revisionCollected = collected
 	c.collected = true
 	return nil
 }
@@ -234,8 +273,19 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 	}()
 	// The independent metadata reader supplies genuine KG/fixture/identity and
 	// protected audit truth. The private collector supplies only what E2 observed.
+	var revisionErr error
 	reader := func(ctx context.Context, expected evidencebind.Context) (e3record.Source, error) {
-		source, err := c.plan.Source(ctx, expected)
+		var source e3record.Source
+		var err error
+		if c.revisions != nil {
+			source, err = c.revisionSource(ctx, expected)
+			if err != nil {
+				revisionErr = err
+				return e3record.Source{}, err
+			}
+		} else {
+			source, err = c.plan.Source(ctx, expected)
+		}
 		if err != nil || source.FinalCheckpointDigest != checkpointDigest ||
 			source.FinalCheckpointScope != evidence.FinalCheckpoint.Scope ||
 			source.FinalCheckpointSequence != evidence.FinalCheckpoint.Sequence ||
@@ -249,6 +299,9 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 	}
 	prepared, err := e3record.Prepare(ctx, input, reader)
 	if err != nil {
+		if revisionErr != nil {
+			return revisionErr
+		}
 		return controlledFindingSourceFailure{}
 	}
 	snapshot, valid := prepared.Snapshot()
@@ -280,6 +333,11 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 // the operation against persisted rows without exposing source or SQL errors.
 func logControlledFindingFinalizationFailure(err error) {
 	reason := "finalization_rejected"
+	var revision controlledRevisionFailure
+	if errors.As(err, &revision) {
+		log.Printf("[controlled-read] revision_failed reason=%s operation_ref=%s", revision.reason, revision.operation)
+		return
+	}
 	var sourceFailure controlledFindingSourceFailure
 	var failure controlledFindingStoreFailure
 	switch {
