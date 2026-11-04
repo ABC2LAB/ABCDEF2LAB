@@ -3,7 +3,7 @@ import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "
 import { Modal } from "../components/Modal";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
-import { Sev, Strong, Sub } from "../components/ui";
+import { RefreshIcon, Sev, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import {
   archiveTask,
@@ -115,7 +115,7 @@ function LiveDetailModal({
   } else if (error) {
     activityRows = <div role="alert">활동 기록을 불러오지 못했어요.</div>;
   } else if (acts.length === 0) {
-    activityRows = <div style={{ color: "var(--muted)", fontSize: 13, padding: "12px 0" }}>기록된 활동이 없어요.</div>;
+    activityRows = <div style={{ color: "var(--muted)", fontSize: 14, padding: "12px 0" }}>기록된 활동이 없어요.</div>;
   } else {
     activityRows = acts.map((e) => (
       <div className="rrow" key={e.seq}>
@@ -191,8 +191,8 @@ function LiveDetailModal({
 }
 
 /* ---------- 진행 대시보드 ---------- */
-const small = { fontSize: 13, fontWeight: 600, color: "var(--muted)" } as const;
-const btnSm = { padding: "8px 13px", fontSize: 13 } as const;
+const small = { fontSize: 14, fontWeight: 600, color: "var(--muted)" } as const;
+const btnSm = { padding: "8px 13px", fontSize: 14 } as const;
 
 /** ===== 진행 대시보드 ===== */
 export default function LiveScreen({ target }: { target: Target }) {
@@ -390,15 +390,15 @@ export default function LiveScreen({ target }: { target: Target }) {
 
   let findingRows: ReactNode;
   if (findRes.loading) {
-    findingRows = <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>불러오는 중…</div>;
+    findingRows = <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 14 }}>불러오는 중…</div>;
   } else if (findRes.error) {
     findingRows = (
-      <div role="alert" style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>
+      <div role="alert" style={{ padding: "12px 0", color: "var(--muted)", fontSize: 14 }}>
         발견 목록을 불러오지 못했어요.
       </div>
     );
   } else if (findings.length === 0) {
-    findingRows = <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13 }}>아직 발견이 없어요.</div>;
+    findingRows = <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 14 }}>아직 발견이 없어요.</div>;
   } else {
     findingRows = findings.slice(0, 4).map((f) => (
       <button
@@ -462,7 +462,9 @@ export default function LiveScreen({ target }: { target: Target }) {
                   onClick={() => selectTask(t.id)}
                 >
                   <span className={`jt-dot ${t.status === "running" ? "run" : "wait"}`} />
-                  <span className="jt-name">{t.name.trim() || "이름 없는 점검"}</span>
+                  <span className="jt-name" title={t.name.trim() || undefined}>
+                    {t.name.trim() || "이름 없는 점검"}
+                  </span>
                   <span className="jt-sub">{STATUS_LABEL[t.status] ?? t.status}</span>
                 </button>
               ))}
@@ -481,16 +483,16 @@ export default function LiveScreen({ target }: { target: Target }) {
               marginBottom: 16,
             }}
           >
-            <div style={{ fontSize: 13, color: "var(--muted)", minWidth: 0 }}>
+            <div style={{ fontSize: 14, color: "var(--muted)", minWidth: 0 }}>
               점검 · <Strong>{title}</Strong>
               {status ? ` · ${STATUS_LABEL[status] ?? status}` : ""}
-              <div style={{ fontSize: 11.5, color: "var(--faint)", marginTop: 2 }}>
+              <div style={{ fontSize: 12, color: "var(--faint)", marginTop: 2 }}>
                 {snapshotLabel} · 자동 갱신 미연결(새로고침 눌러 갱신)
               </div>
             </div>
             <div className="row" style={{ flexWrap: "wrap" }}>
               <button className="btn" type="button" style={btnSm} onClick={refreshAll} disabled={snapshotLoading}>
-                ↻ 새로고침
+                <RefreshIcon /> 새로고침
               </button>
               <button
                 className="badge"
@@ -577,7 +579,7 @@ export default function LiveScreen({ target }: { target: Target }) {
               </Fragment>
             ))}
           </div>
-          <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 4 }}>
+          <div style={{ fontSize: 14, color: "var(--muted)", marginBottom: 4 }}>
             검사 범위 <Strong>{covPct === null ? "—" : `${covPct}%`}</Strong>
             {covPct !== null && cov ? ` · ${cov.tested}/${cov.denominator} 자산 탐색` : " · 미확인"}
           </div>
@@ -588,8 +590,8 @@ export default function LiveScreen({ target }: { target: Target }) {
           <div className="nowdoing" style={{ marginTop: 16 }}>
             {status === "running" ? <span className="spin" /> : null}
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: "var(--muted)" }}>상태</div>
-              <div style={{ fontSize: 13.5, fontWeight: 600 }}>{statusLabel}</div>
+              <div style={{ fontSize: 13, color: "var(--muted)" }}>상태</div>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{statusLabel}</div>
             </div>
             <button
               className="btn"
@@ -627,7 +629,7 @@ export default function LiveScreen({ target }: { target: Target }) {
 
           <div className="wrap" style={{ padding: 0, gap: 22 }}>
             <div className="col" style={{ flex: "1 1 300px" }}>
-              <h3 style={{ fontSize: 14, marginBottom: 10 }}>
+              <h3 style={{ fontSize: 15, marginBottom: 10 }}>
                 발견 (심각도별) <Sub>· {findingsReady ? `총 ${findings.length}건` : "조회 중/미확인"}</Sub>
               </h3>
               <div className="row" style={{ flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
@@ -641,17 +643,17 @@ export default function LiveScreen({ target }: { target: Target }) {
               <div
                 style={{
                   border: "1px solid var(--line)",
-                  borderRadius: 12,
+                  borderRadius: 6,
                   padding: "4px 14px",
                   marginTop: 8,
                 }}
               >
-                <div style={{ fontSize: 12, color: "var(--muted)", paddingTop: 11 }}>최근 발견</div>
+                <div style={{ fontSize: 13, color: "var(--muted)", paddingTop: 11 }}>최근 발견</div>
                 {findingRows}
               </div>
             </div>
             <div className="col" style={{ flex: "1 1 260px" }}>
-              <h3 style={{ fontSize: 14, marginBottom: 10 }}>판정 결과</h3>
+              <h3 style={{ fontSize: 15, marginBottom: 10 }}>판정 결과</h3>
               <div className="vcard">
                 {[
                   ["확정", "var(--teal-ink)"],
@@ -671,7 +673,7 @@ export default function LiveScreen({ target }: { target: Target }) {
                 확정·의심·판단 불가 <Strong>판정</Strong>은 E③ 오라클 연동 후 채워져요(증거 부족은 오탐 대신 판단 불가로
                 남겨요).
               </div>
-              <h3 style={{ fontSize: 14, margin: "18px 0 8px" }}>
+              <h3 style={{ fontSize: 15, margin: "18px 0 8px" }}>
                 검사 커버리지 <Sub>· {cov?.enabled ? `${cov.tested} / ${cov.denominator} 자산` : "집계 전"}</Sub>
               </h3>
               {covPct !== null ? (
@@ -695,7 +697,7 @@ export default function LiveScreen({ target }: { target: Target }) {
                   <p className="hint">범위 내 자산의 탐색 비율이에요. 자산별 취약 판정은 아직 연결 전이에요.</p>
                 </>
               ) : (
-                <div style={{ fontSize: 13, color: "var(--muted)", padding: "8px 0" }}>{coverageMessage}</div>
+                <div style={{ fontSize: 14, color: "var(--muted)", padding: "8px 0" }}>{coverageMessage}</div>
               )}
             </div>
           </div>
@@ -710,7 +712,7 @@ export default function LiveScreen({ target }: { target: Target }) {
               flexWrap: "wrap",
             }}
           >
-            <div style={{ fontSize: 13, color: "var(--muted)" }}>
+            <div style={{ fontSize: 14, color: "var(--muted)" }}>
               활동 {activityLabel} · 상세는 <Strong>상세 보기</Strong>
             </div>
             <button className="btn" type="button" onClick={() => go("history")}>
@@ -752,7 +754,7 @@ export default function LiveScreen({ target }: { target: Target }) {
               </button>
             </div>
             <div style={{ padding: "16px 22px" }}>
-              <p style={{ fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7 }}>
+              <p style={{ fontSize: 14, color: "var(--muted)", lineHeight: 1.7 }}>
                 <Strong>{endTarget.name}</Strong> 작업과 증거의 보관을 요청해요. 접수 후 백그라운드에서 처리하며, 완료
                 전에는 보관 성공이 아니에요. 완료된 보관은 별도 복원 기능으로 복원할 수 있어요.
               </p>
