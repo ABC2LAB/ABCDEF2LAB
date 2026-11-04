@@ -311,6 +311,94 @@ const COVERAGE: Record<
   },
 };
 
+/** 자산 그래프용 데모 쇼핑몰 경로. 발견이 걸린 경로를 먼저 두고 COVERAGE 의 엔드포인트 수만큼 자른다. */
+const MOCK_ORIGIN = "https://shop.example.com";
+const SHOP_PATHS = [
+  "/",
+  "/products",
+  "/products/{id}",
+  "/search",
+  "/login",
+  "/register",
+  "/cart",
+  "/api/products",
+  "/api/products/{id}",
+  "/api/orders",
+  "/api/orders/{id}",
+  "/api/carts/{id}",
+  "/api/users",
+  "/api/users/{id}",
+  "/api/users/{id}/profile",
+  "/api/addresses",
+  "/api/addresses/{id}",
+  "/api/reviews",
+  "/api/reviews/{id}",
+  "/api/coupons",
+  "/api/wishlist",
+  "/api/auth/login",
+  "/api/auth/logout",
+  "/api/payments/verify",
+  "/api/notifications",
+  "/api/admin/users",
+  "/api/admin/stats",
+  "/api/admin/orders",
+  "/admin",
+  "/admin/users",
+  "/admin/orders",
+  "/admin/settings",
+  "/admin/logs",
+  "/api/orders/{id}/receipt",
+  "/api/orders/{id}/tracking",
+  "/api/products/{id}/qna",
+  "/api/users/{id}/orders",
+  "/api/admin/coupons",
+  "/admin/reports",
+  "/api/health",
+];
+
+/** GET /api/tasks/{id}/coverage-graph 예시 — 엔드포인트 수 · 검사 수는 COVERAGE 의 endpoint 값과 같다. */
+function coverageGraph(id: string) {
+  const c = COVERAGE[id];
+  if (!c) return undefined;
+  const ep = c.by_type.find((t) => t.type === "endpoint") ?? { total: 0, tested: 0 };
+  const fromFindings = (FINDINGS[id] ?? []).flatMap((f) => f.assets.map((a) => a.label.replace(/^[A-Z]+\s+/, "")));
+  const paths = [...new Set([...fromFindings, ...SHOP_PATHS])].slice(0, ep.total);
+  const service = {
+    key: "a:1",
+    kind: "service",
+    label: MOCK_ORIGIN,
+    tested: true,
+    in_scope: true,
+    asset_id: 1,
+    url: MOCK_ORIGIN,
+  };
+  const nodes = [
+    {
+      key: "r:shop.example.com",
+      kind: "root_domain",
+      label: "shop.example.com",
+      tested: false,
+      in_scope: false,
+      domain: "shop.example.com",
+    },
+    service,
+    ...paths.map((p, i) => ({
+      key: `a:${100 + i}`,
+      kind: "endpoint",
+      label: `${MOCK_ORIGIN}${p}`,
+      url: `${MOCK_ORIGIN}${p}`,
+      tested: i < ep.tested,
+      in_scope: true,
+      asset_id: 100 + i,
+    })),
+  ];
+  const edges = [
+    { src: service.key, dst: "r:shop.example.com" },
+    ...paths.map((_, i) => ({ src: `a:${100 + i}`, dst: service.key })),
+  ];
+  return { nodes, edges };
+}
+
 const TOKENS: Record<string, [number, number]> = {
   "1005": [182_400, 21_300],
   "1004": [412_900, 48_700],
@@ -489,6 +577,7 @@ const ROUTES: Route[] = [
       return c && { enabled: true, scope_rows: c.denominator, pct: c.tested / c.denominator, ...c };
     },
   },
+  { method: "GET", path: /^\/api\/tasks\/([^/]+)\/coverage-graph$/, reply: ([id]) => coverageGraph(id) },
   { method: "POST", path: /^\/api\/tasks\/([^/]+)\/control$/, reply: () => NO_CONTENT },
   {
     method: "POST",
