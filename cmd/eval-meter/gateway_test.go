@@ -21,6 +21,12 @@ const (
 	chatPath   = "/api/v1/chat/completions"
 	genPath    = "/api/v1/generation"
 	pinnedSlug = "example-provider/fp8"
+	// The official profile's sampling (model card, thinking mode, general tasks) plus seed.
+	pinnedSampling = `{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":1.5,` +
+		`"repetition_penalty":1.0,"seed":42}`
+	// How the gateway re-encodes it ahead of the provider pin.
+	pinnedSamplingFields = `"temperature":1,"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.5,` +
+		`"repetition_penalty":1,"seed":42`
 )
 
 type upstreamCall struct {
@@ -146,6 +152,11 @@ func newHarness(t *testing.T, backend string) *gatewayHarness {
 	if backend == backendAPI {
 		upstream = httptest.NewTLSServer(h.provider)
 		cfg.provider, cfg.generationPath, cfg.key = pinnedSlug, genPath, canaryKey
+		sampling, ok := parseSampling(pinnedSampling)
+		if !ok {
+			t.Fatal("test sampling rejected")
+		}
+		cfg.sampling = sampling
 		cfg.verifyAttempts, cfg.verifyInterval = 3, time.Millisecond
 	} else {
 		upstream = httptest.NewServer(h.provider)
@@ -262,7 +273,8 @@ func TestGatewayPinsProviderAndUsesOwnKey(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("calls %d", len(calls))
 	}
-	want := `{"provider":{"order":["` + pinnedSlug + `"],"allow_fallbacks":false},` + engineBody[1:]
+	want := `{` + pinnedSamplingFields + `,"provider":{"order":["` + pinnedSlug + `"],"allow_fallbacks":false},` +
+		engineBody[1:]
 	if calls[0].body != want {
 		t.Fatalf("upstream body %q, want %q", calls[0].body, want)
 	}
@@ -313,6 +325,9 @@ func TestGatewayPinsEmptyAndSpacedObjects(t *testing.T) {
 		if string(decoded["provider"]) != `{"order":["`+pinnedSlug+`"],"allow_fallbacks":false}` {
 			t.Fatalf("provider %s", decoded["provider"])
 		}
+		if string(decoded["temperature"]) != "1" || string(decoded["top_k"]) != "20" || string(decoded["seed"]) != "42" {
+			t.Fatalf("sampling not pinned in %q", call.body)
+		}
 	}
 }
 
@@ -336,6 +351,15 @@ func TestGatewayRejectsWithoutForwarding(t *testing.T) {
 		{"duplicate", http.MethodPost, chatPath, "application/json", `{"model":"a","model":"b"}`, nil, 400, "rejected_body"},
 		{"provider", http.MethodPost, chatPath, "application/json", `{"provider":{"order":["other"]}}`, nil, 400, "rejected_body"},
 		{"escaped provider", http.MethodPost, chatPath, "application/json", `{"provider":{}}`, nil, 400, "rejected_body"},
+		// An engine-chosen sampling value would mix with the pinned one: refused, never overwritten.
+		{"temperature", http.MethodPost, chatPath, "application/json", `{"temperature":0}`, nil, 400, "rejected_body"},
+		{"top_p", http.MethodPost, chatPath, "application/json", `{"top_p":1}`, nil, 400, "rejected_body"},
+		{"top_k", http.MethodPost, chatPath, "application/json", `{"top_k":1}`, nil, 400, "rejected_body"},
+		{"min_p", http.MethodPost, chatPath, "application/json", `{"min_p":0}`, nil, 400, "rejected_body"},
+		{"presence_penalty", http.MethodPost, chatPath, "application/json", `{"presence_penalty":0}`, nil, 400, "rejected_body"},
+		{"repetition_penalty", http.MethodPost, chatPath, "application/json", `{"repetition_penalty":1}`, nil, 400, "rejected_body"},
+		{"seed", http.MethodPost, chatPath, "application/json", `{"seed":1}`, nil, 400, "rejected_body"},
+		{"frequency_penalty", http.MethodPost, chatPath, "application/json", `{"frequency_penalty":0}`, nil, 400, "rejected_body"},
 		{"too large", http.MethodPost, chatPath, "application/json", `{"x":"` + strings.Repeat("a", maxLLMRequestBytes) + `"}`, nil, 413, "rejected_too_large"},
 	}
 	for _, tc := range cases {
@@ -385,7 +409,8 @@ func TestGatewayLocalForwardsUnchangedWithoutKey(t *testing.T) {
 	}
 	h.waitRows(t, 1)
 	marker := h.sealAndWait(t)
-	if marker.Backend != backendLocal || marker.Forwarded != 1 || len(marker.Generations) != 0 || !marker.LogComplete {
+	if marker.Backend != backendLocal || marker.Sampling != nil || marker.Forwarded != 1 || len(marker.Generations) != 0 ||
+		!marker.LogComplete {
 		t.Fatalf("marker %+v", marker)
 	}
 	h.provider.mu.Lock()
@@ -419,8 +444,9 @@ func TestGatewaySealCancelsVerifiesAndNeverWritesKey(t *testing.T) {
 		t.Fatalf("after seal: %d", resp.StatusCode)
 	}
 
+	want, _ := parseSampling(pinnedSampling)
 	if marker.Role != roleGateway || marker.Backend != backendAPI || marker.Provider != pinnedSlug ||
-		marker.Forwarded != 2 || marker.CancelledBySeal != 1 || marker.MissingIDs != 0 || !marker.LogComplete {
+		marker.Sampling == nil || *marker.Sampling != *want || marker.Forwarded != 2 || marker.CancelledBySeal != 1 || marker.MissingIDs != 0 || !marker.LogComplete {
 		t.Fatalf("marker %+v", marker)
 	}
 	if len(marker.Generations) != 2 {
@@ -615,8 +641,8 @@ func TestGenerationIDScanning(t *testing.T) {
 func TestRunGatewayFlagRules(t *testing.T) {
 	path, _ := privateTestDir(t)
 	api := []string{"-role", "llm-gateway", "-backend", "api", "-listen", "127.0.0.1:0", "-upstream", "https://llm.example",
-		"-allow-path", chatPath, "-log-dir", path, "-provider", pinnedSlug, "-generation-path", genPath,
-		"-verify-attempts", "3", "-verify-interval", "2s"}
+		"-allow-path", chatPath, "-log-dir", path, "-provider", pinnedSlug, "-sampling", pinnedSampling,
+		"-generation-path", genPath, "-verify-attempts", "3", "-verify-interval", "2s"}
 	local := []string{"-role", "llm-gateway", "-backend", "local", "-listen", "127.0.0.1:0", "-upstream",
 		"http://llm-host:11434", "-allow-path", "/v1/chat/completions", "-log-dir", path}
 	replace := func(args []string, flag, value string) []string {
@@ -650,6 +676,11 @@ func TestRunGatewayFlagRules(t *testing.T) {
 		{"api upstream path", replace(api, "-upstream", "https://llm.example/api"), canaryKey, invalidInput},
 		{"api no provider", drop(api, "-provider"), canaryKey, invalidInput},
 		{"api bad provider", replace(api, "-provider", "Other Provider"), canaryKey, invalidInput},
+		{"api no sampling", drop(api, "-sampling"), canaryKey, invalidInput},
+		{"api sampling missing seed", replace(api, "-sampling", strings.Replace(pinnedSampling, `,"seed":42`, "", 1)), canaryKey, invalidInput},
+		{"api sampling unknown key", replace(api, "-sampling", strings.Replace(pinnedSampling, `"seed"`, `"seeds"`, 1)), canaryKey, invalidInput},
+		{"api sampling trailing", replace(api, "-sampling", pinnedSampling+" {}"), canaryKey, invalidInput},
+		{"local with sampling", append(append([]string(nil), local...), "-sampling", pinnedSampling), "", invalidInput},
 		{"api no generation path", drop(api, "-generation-path"), canaryKey, invalidInput},
 		{"api zero attempts", replace(api, "-verify-attempts", "0"), canaryKey, invalidInput},
 		{"api too many attempts", replace(api, "-verify-attempts", "101"), canaryKey, invalidInput},
@@ -681,10 +712,63 @@ func TestRunGatewayFlagRules(t *testing.T) {
 			}
 		})
 	}
-	if _, ok := gatewayFromFlags("api", "https://llm.example", chatPath, pinnedSlug, genPath, 3, time.Second, canaryKey); !ok {
+	if _, ok := gatewayFromFlags("api", "https://llm.example", chatPath, pinnedSlug, pinnedSampling, genPath, 3,
+		time.Second, canaryKey); !ok {
 		t.Fatal("valid api config rejected")
 	}
-	if _, ok := gatewayFromFlags("local", "http://llm-host:11434", "/v1/chat/completions", "", "", 0, 0, ""); !ok {
+	if _, ok := gatewayFromFlags("local", "http://llm-host:11434", "/v1/chat/completions", "", "", "", 0, 0, ""); !ok {
 		t.Fatal("valid local config rejected")
+	}
+}
+
+func TestParseSamplingRanges(t *testing.T) {
+	base := map[string]string{"temperature": "1.0", "top_p": "0.95", "top_k": "20", "min_p": "0.0",
+		"presence_penalty": "1.5", "repetition_penalty": "1.0", "seed": "42"}
+	render := func(change map[string]string) string {
+		parts := []string{}
+		for _, name := range []string{"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty", "seed"} {
+			value, ok := base[name]
+			if v, changed := change[name]; changed {
+				value, ok = v, v != ""
+			}
+			if ok {
+				parts = append(parts, `"`+name+`":`+value)
+			}
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	}
+	if _, ok := parseSampling(render(nil)); !ok {
+		t.Fatal("official sampling rejected")
+	}
+	accepted := []map[string]string{
+		{"temperature": "0"}, {"temperature": "2"}, {"top_p": "1"}, {"top_k": "1"}, {"top_k": "1000"},
+		{"min_p": "1"}, {"presence_penalty": "-2"}, {"presence_penalty": "2"}, {"repetition_penalty": "2"},
+		{"seed": "0"}, {"seed": "9223372036854775807"},
+	}
+	for _, change := range accepted {
+		if _, ok := parseSampling(render(change)); !ok {
+			t.Fatalf("%v rejected", change)
+		}
+	}
+	rejected := []map[string]string{
+		{"temperature": "-0.1"}, {"temperature": "2.01"}, {"top_p": "0"}, {"top_p": "1.01"}, {"top_k": "0"},
+		{"top_k": "1001"}, {"top_k": "20.5"}, {"min_p": "-0.1"}, {"min_p": "1.1"}, {"presence_penalty": "-2.1"},
+		{"presence_penalty": "2.1"}, {"repetition_penalty": "0"}, {"repetition_penalty": "2.1"}, {"seed": "-1"},
+		{"seed": "1.5"}, {"seed": "9223372036854775808"}, {"temperature": `"1"`}, {"temperature": "null"},
+		{"temperature": ""}, {"top_p": ""}, {"top_k": ""}, {"min_p": ""}, {"presence_penalty": ""},
+		{"repetition_penalty": ""}, {"seed": ""},
+	}
+	for _, change := range rejected {
+		if _, ok := parseSampling(render(change)); ok {
+			t.Fatalf("%v accepted", change)
+		}
+	}
+	// All seven keys present plus one more: an unknown key is refused on its own, not because another is missing.
+	extra := strings.TrimSuffix(render(nil), "}") + `,"frequency_penalty":0}`
+	for _, raw := range []string{"", "{}", "[]", `{"temperature":1} x`, extra,
+		strings.Repeat(" ", maxSamplingFlagBytes+1) + render(nil)} {
+		if _, ok := parseSampling(raw); ok {
+			t.Fatalf("%q accepted", raw)
+		}
 	}
 }
