@@ -35,6 +35,7 @@ declare -A databases=(
 	[ARTEX_INTERCEPT_TEST_DSN]=artex_intercept
 	[ARTEX_TASK_MODE_TEST_DSN]=artex_task_mode
 	[ARTEX_E3_TEST_DSN]=artex_e3
+	[ARTEX_EVIDENCE_REVISION_TEST_DSN]=artex_evidence_revision
 	[ARTEX_AUDIT_TEST_DSN]=artex_audit
 	[ENGINE_METRICS_TEST_DSN]=artex_engine_metrics
 )
