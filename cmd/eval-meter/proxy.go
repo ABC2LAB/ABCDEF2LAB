@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -115,6 +116,7 @@ type drainedMarker struct {
 	StreamsTotal      uint64 `json:"streams_total"`
 	RejectedAfterSeal uint64 `json:"rejected_after_seal"`
 	ForcedClosed      uint64 `json:"forced_closed_streams"`
+	ForcedCancelled   uint64 `json:"forced_cancelled_requests"`
 	InflightAtDrain   int    `json:"inflight_at_drain"`
 	LogComplete       bool   `json:"log_complete"`
 }
@@ -130,6 +132,7 @@ type terminatedMarker struct {
 	Drained             bool   `json:"drained"`
 	InflightAtTerminate int    `json:"inflight_at_terminate"`
 	OpenStreams         int    `json:"open_streams"`
+	ForcedCancelled     uint64 `json:"forced_cancelled_requests"`
 	Forwarded           uint64 `json:"forwarded_requests"`
 	RejectedAfterSeal   uint64 `json:"rejected_after_seal"`
 	LogComplete         bool   `json:"log_complete"`
@@ -137,11 +140,15 @@ type terminatedMarker struct {
 
 // engineMeter counts admitted requests. An upgrade handshake stays in flight
 // until the connection is hijacked; from then on it is a stream that seal
-// closes, so a long-lived socket cannot block the drain forever.
+// closes, so a long-lived socket cannot block the drain forever. A plain
+// request that is still open drainGrace after seal (a long poll, a response the
+// target never finishes) is cancelled toward the target and counted, for the
+// same reason; every request was admitted before seal, so nothing new is sent.
 type engineMeter struct {
-	proxy *httputil.ReverseProxy
-	dir   *os.File
-	now   func() time.Time
+	proxy      *httputil.ReverseProxy
+	dir        *os.File
+	now        func() time.Time
+	drainGrace time.Duration
 
 	mu           sync.Mutex
 	log          *rowLog
@@ -155,25 +162,32 @@ type engineMeter struct {
 	forcedClosed uint64
 	streams      map[uint64]net.Conn
 	forced       map[uint64]bool
+	cancels      map[uint64]context.CancelFunc
+	cancelled    map[uint64]bool
+	forcedCancel uint64
+	graceTimer   *time.Timer
 	logFailed    bool
 	drainedAt    time.Time
 	drained      chan struct{}
 	markerFailed bool
 }
 
-func newEngineMeter(dir *os.File, target *url.URL, now func() time.Time) (*engineMeter, string) {
+func newEngineMeter(dir *os.File, target *url.URL, now func() time.Time, drainGrace time.Duration) (*engineMeter, string) {
 	file, code := createPrivateFile(dir, engineLogName)
 	if code != "" {
 		return nil, code
 	}
 	return &engineMeter{
-		proxy:   newReverseProxy(target),
-		dir:     dir,
-		now:     now,
-		log:     &rowLog{file: file},
-		streams: map[uint64]net.Conn{},
-		forced:  map[uint64]bool{},
-		drained: make(chan struct{}),
+		proxy:      newReverseProxy(target),
+		dir:        dir,
+		now:        now,
+		drainGrace: drainGrace,
+		log:        &rowLog{file: file},
+		streams:    map[uint64]net.Conn{},
+		forced:     map[uint64]bool{},
+		cancels:    map[uint64]context.CancelFunc{},
+		cancelled:  map[uint64]bool{},
+		drained:    make(chan struct{}),
 	}, ""
 }
 
@@ -195,18 +209,34 @@ func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isUpgrade(r) {
 		m.streamsTotal++
 	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	m.cancels[seq] = cancel
 	m.mu.Unlock()
 
 	rec := &statusRecorder{ResponseWriter: w, hijack: func(conn net.Conn) error { return m.trackStream(seq, conn) }}
-	m.proxy.ServeHTTP(rec, r)
-	completed := m.now()
+	finished := false
+	// The proxy aborts a response whose body copy fails (the grace cancelling it
+	// mid-body, the engine or target dropping the connection) with
+	// panic(http.ErrAbortHandler); the bookkeeping must still run once or the
+	// drain would wait forever.
+	defer func() { m.finishRequest(seq, r.Method, started, rec, !finished) }()
+	m.proxy.ServeHTTP(rec, r.WithContext(ctx))
+	finished = true
+}
 
+func (m *engineMeter) finishRequest(seq uint64, method string, started time.Time, rec *statusRecorder, aborted bool) {
+	completed := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	row := engineRow{Seq: seq, Kind: "request", Method: r.Method, Status: rec.status, StartedAt: stamp(started),
+	delete(m.cancels, seq)
+	row := engineRow{Seq: seq, Kind: "request", Method: method, Status: rec.status, StartedAt: stamp(started),
 		CompletedAt: stamp(completed), ResponseBytes: rec.bytes, Outcome: "completed"}
-	if rec.upstreamFailed {
+	switch {
+	case rec.upstreamFailed:
 		row.Outcome = "upstream_error"
+	case aborted:
+		row.Outcome = "aborted"
 	}
 	if rec.hijacked {
 		row.Kind = "stream"
@@ -217,6 +247,10 @@ func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		m.inflight--
+		if m.cancelled[seq] {
+			row.Outcome = "forced_cancelled"
+			delete(m.cancelled, seq)
+		}
 	}
 	m.writeRowLocked(row)
 	m.maybeDrainedLocked(completed)
@@ -228,6 +262,13 @@ func (m *engineMeter) trackStream(seq uint64, conn net.Conn) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.inflight--
+	delete(m.cancels, seq) // a stream is closed by seal, not cancelled as a request
+	if m.cancelled[seq] {
+		// The grace ran out during the handshake: the row will be a forced-closed
+		// stream, so it must not also count as a cancelled request.
+		m.forcedCancel--
+		delete(m.cancelled, seq)
+	}
 	if m.sealed {
 		m.forcedClosed++
 		m.forced[seq] = true
@@ -259,6 +300,25 @@ func (m *engineMeter) seal() {
 	m.writeMarkerLocked(sealedName, sealedMarker{Role: roleEngine, SealedAt: stamp(m.sealedAt), InflightAtSeal: m.inflight,
 		ForcedClosed: m.forcedClosed, LogComplete: !m.logFailed, ForwardedAtSeal: m.forwarded})
 	m.maybeDrainedLocked(m.sealedAt)
+	if m.drainedAt.IsZero() && m.drainGrace > 0 {
+		m.graceTimer = time.AfterFunc(m.drainGrace, m.cancelInflight)
+	}
+}
+
+// cancelInflight ends the requests still open drainGrace after seal. Each
+// handler then returns, writes its row as forced_cancelled and lets the drain
+// complete; the count goes into the drained and terminated markers.
+func (m *engineMeter) cancelInflight() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// After the drain nothing is left here: finished requests and hijacked
+	// streams have removed their entries and sealed requests never add one.
+	for seq, cancel := range m.cancels {
+		cancel()
+		m.forcedCancel++
+		m.cancelled[seq] = true
+		delete(m.cancels, seq)
+	}
 }
 
 func (m *engineMeter) maybeDrainedLocked(at time.Time) {
@@ -271,7 +331,8 @@ func (m *engineMeter) maybeDrainedLocked(at time.Time) {
 	}
 	m.writeMarkerLocked(drainedName, drainedMarker{Role: roleEngine, SealedAt: stamp(m.sealedAt), DrainedAt: stamp(at),
 		Forwarded: m.forwarded, StreamsTotal: m.streamsTotal, RejectedAfterSeal: m.rejected,
-		ForcedClosed: m.forcedClosed, InflightAtDrain: m.inflight, LogComplete: !m.logFailed})
+		ForcedClosed: m.forcedClosed, ForcedCancelled: m.forcedCancel, InflightAtDrain: m.inflight,
+		LogComplete: !m.logFailed})
 	close(m.drained)
 }
 
@@ -299,12 +360,15 @@ func (m *engineMeter) terminate(reason string) {
 	}
 	m.writeMarkerLocked(terminatedName, terminatedMarker{Role: roleEngine, Reason: reason, TerminatedAt: stamp(m.now()),
 		Sealed: m.sealed, Drained: !m.drainedAt.IsZero(), InflightAtTerminate: m.inflight, OpenStreams: len(m.streams),
-		Forwarded: m.forwarded, RejectedAfterSeal: m.rejected, LogComplete: !m.logFailed})
+		ForcedCancelled: m.forcedCancel, Forwarded: m.forwarded, RejectedAfterSeal: m.rejected, LogComplete: !m.logFailed})
 }
 
 func (m *engineMeter) close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.graceTimer != nil {
+		m.graceTimer.Stop()
+	}
 	syncErr := m.log.file.Sync()
 	closeErr := m.log.file.Close()
 	if m.markerFailed {

@@ -21,14 +21,17 @@ _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 _PLACEHOLDER = re.compile(r"(?:^|[/:._-])(?:todo|tbd|changeme|placeholder)(?:$|[/:._-])", re.I)
 _SHARED = (
     "network_mode", "llm", "temperature", "seed", "target_origin",
-    "worker_count", "time_budget_seconds", "request_budget", "run_storage",
+    "worker_count", "time_budget_seconds", "request_budget", "run_storage", "run_drain",
     "fixture_fingerprint", "environment_fingerprint", "scope_fingerprint",
 )
 # 러너 v1은 전용 망 격리만 지원한다(평가 프로토콜 §2). 엔진은 계측기 origin으로만 대상에 닿는다.
 _NETWORK_MODES = ("dedicated_network",)
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _MODEL_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-_PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
+# 제공자 slug. OpenRouter 엔드포인트 tag처럼 `slug/변형`(예: deepinfra/fp8)까지 받는다. 문법 검사일 뿐이다: OpenRouter slug는
+# `provider[/variant][/region][/tier]` 접두 매칭이라 두 segment가 단일 엔드포인트·정밀도를 보장하지 않는다(평가 프로토콜 §6).
+# 게이트웨이(cmd/eval-meter providerSlugRe)와 같은 문법이며 drift 테스트로 묶는다.
+_PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}(?:/[a-z0-9][a-z0-9._-]{0,63})?\Z")
 # 로컬 LLM 고정 IP: llmpolicy/policy.go의 사설 대역 중 loopback(127/8·::1)을 제외한 4개.
 # 엔진은 컨테이너라 호스트 loopback으로는 닿지 않으므로 제외한다. ipaddress.is_private는 문서용 대역까지 포함해 쓰지 않는다.
 _LOCAL_NETWORKS = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
@@ -38,6 +41,12 @@ _LOCAL_NETWORKS = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172
 _STORAGE_SIZE = re.compile(r"[1-9][0-9]{0,8}[kmg]?\Z")
 _STORAGE_UNIT = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
 RUN_STORAGE_FIELDS = ("engine_db_tmpfs", "engine_data_tmpfs", "tmpfs_min_free")
+# 봉인 뒤 drain 정책(초): 계측기가 열린 요청을 끊기까지의 유예와, 끊은 요청이 있을 때 post 관측 전 정착 대기.
+# 둘 다 post 관측 시점과 취소 여부를 바꾸므로 비교 조건이다(#153 리뷰). 상한은 프로파일 지문·러너 설정·계측기와 같다
+# (drift 테스트).
+RUN_DRAIN_FIELDS = ("grace_seconds", "settle_seconds")
+MAX_DRAIN_GRACE_SECONDS = 600
+MAX_SETTLE_SECONDS = 3600
 # 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
 _LLM_FIELDS = {
     "api": ("backend", "base_url", "model", "provider", "fallbacks"),
@@ -171,6 +180,14 @@ def _run_storage(value: object) -> bool:
                                                          _storage_bytes(value["engine_data_tmpfs"]))
 
 
+def _run_drain(value: object) -> bool:
+    """유예·정착 대기가 정확히 두 키이고 각각 1 이상 상한 이하 정수여야 한다."""
+    if not isinstance(value, dict) or set(value) != set(RUN_DRAIN_FIELDS):
+        return False
+    limits = {"grace_seconds": MAX_DRAIN_GRACE_SECONDS, "settle_seconds": MAX_SETTLE_SECONDS}
+    return all(type(value[name]) is int and 1 <= value[name] <= limits[name] for name in RUN_DRAIN_FIELDS)
+
+
 def _valid(field: str, value: object) -> bool:
     if field in ("source_sha", "baseline_source_sha"):
         return isinstance(value, str) and bool(_SHA.fullmatch(value))
@@ -186,6 +203,8 @@ def _valid(field: str, value: object) -> bool:
         return _llm(value)
     if field == "run_storage":
         return _run_storage(value)
+    if field == "run_drain":
+        return _run_drain(value)
     if field == "temperature":
         return _number(value, positive=False)
     if field == "time_budget_seconds":
