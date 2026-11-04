@@ -97,13 +97,30 @@ func TestRealInputsBindingRejectsMismatchExpiryAndAmbiguity(t *testing.T) {
 		{"empty-kg-version", func(_ *ControlledReadVerificationRequest, e *evidencebind.Context, _ *transmit.Config) {
 			e.KGPolicyVersion = ""
 		}},
+		// Keep the session equal to the unverified expected subject, so the
+		// subject guard cannot be hidden by the later session-equality check.
+		{"expected-owner-unverified", func(_ *ControlledReadVerificationRequest, e *evidencebind.Context, c *transmit.Config) {
+			e.Owner.Status = "unverified"
+			c.Sessions[0].Account = e.Owner
+		}},
+		{"owner-not-approved", func(_ *ControlledReadVerificationRequest, e *evidencebind.Context, c *transmit.Config) {
+			c.Resources[0].Accounts = []string{e.Evaluated.Label}
+		}},
+		// Both resources are otherwise valid: matches==1 must not mask a
+		// mismatch between the request and the selected expected resource.
+		{"request-resource-among-two-approved", func(_ *ControlledReadVerificationRequest, e *evidencebind.Context, c *transmit.Config) {
+			other := c.Resources[0]
+			other.Ref = "object:8"
+			c.Resources = append(c.Resources, other)
+			e.ResourceRef = other.Ref
+		}},
 		{"unverified", func(_ *ControlledReadVerificationRequest, _ *evidencebind.Context, c *transmit.Config) {
 			c.Sessions[0].Account.Status = "unverified"
 		}},
 		{"handle", func(_ *ControlledReadVerificationRequest, _ *evidencebind.Context, c *transmit.Config) {
 			c.Sessions[1].Account.Handle = "other"
 		}},
-		{"same-account", func(_ *ControlledReadVerificationRequest, e *evidencebind.Context, _ *transmit.Config) {
+		{"evaluated-request-account-mismatch", func(_ *ControlledReadVerificationRequest, e *evidencebind.Context, _ *transmit.Config) {
 			e.Evaluated = e.Owner
 		}},
 		{"missing-session", func(_ *ControlledReadVerificationRequest, _ *evidencebind.Context, c *transmit.Config) {
