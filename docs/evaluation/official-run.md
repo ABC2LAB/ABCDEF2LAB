@@ -135,13 +135,14 @@ python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --pr
 
 ```bash
 python3 -I -B scripts/eval/session_runs.py /srv/abc2lab-eval/official-<날짜>/runs --repeats 3 \
-  --manifest /srv/abc2lab-eval/official-<날짜>/manifest.json
+  --runner-key-file /srv/abc2lab-eval-keys/runner.key --manifest /srv/abc2lab-eval/official-<날짜>/manifest.json
 python3 -I -B scripts/eval/score.py /srv/abc2lab-eval/official-<날짜>/manifest.json --runner-key-file /srv/abc2lab-eval-keys/runner.key
 ```
 
-- `session_runs.py`는 쪽별 시도·유효·무효(사유별)·무효율, 시작 시각 순서, 유효 순서가 교대 순서와 맞는지를 출력한다.
-  2N 초과·유효 부족·순서 어긋남은 `경고[…]`로 알린다. 형식이 틀린 결과, 쪽 안의 조건 이름 섞임, 같은 `--repeat`의 완료 중복,
-  작업 요청 해시 불일치는 집계를 멈춘다. manifest에는 완료(서명) 회차만 들어간다.
+- `session_runs.py`는 완료 회차의 결과 파일과 회차 기록 서명(HMAC)을 먼저 검증한다(채점기는 회차 기록만 검증하므로 결과
+  파일의 작업 요청 해시는 여기서 확인된다). 그다음 쪽별 시도·유효·무효(사유별)·무효율, 시작 시각 순서, 유효 순서가 교대 순서와 맞는지를 출력한다.
+  2N 초과·유효 부족·순서 어긋남은 `경고[…]`로 알린다. 서명 불일치, 형식이 틀린 결과, 쪽 안의 조건 이름 섞임, 같은 `--repeat`의
+  완료 중복, 작업 요청 해시 불일치는 집계를 멈춘다. manifest에는 완료(서명) 회차만 들어간다.
 - 결과 표에는 §5.1대로 조건별 시도 수·유효 수·무효 사유별 수를 함께 싣는다. 무효율은 쪽별로 따로 쓴다.
 - 첫 공식 비교의 주 지표는 회차당 엔진 귀속 해결 수(코어 GT 9·BAC 10), 평균 ± SD다. 판정 칸은 판정 레코드가 붙을 때까지 판단불가(판정 미수집)이며,
   붙으면 같은 서명 회차 묶음으로 다시 채점한다(§5.1). 익명 fixture라 IDOR 개선 효과는 주장하지 않는다.

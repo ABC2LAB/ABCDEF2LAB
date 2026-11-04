@@ -1,7 +1,10 @@
 """공식 회차 세션 정리 — 세션 runs_root 하나를 읽어 시도·무효 집계와 채점 manifest를 만든다(평가 프로토콜 §5.1).
 
-실행: python3 -I -B scripts/eval/session_runs.py <runs_root> --repeats N [--manifest <새 파일>]
+실행: python3 -I -B scripts/eval/session_runs.py <runs_root> --repeats N --runner-key-file <러너 키> [--manifest <새 파일>]
 
+- 완료 회차는 `runner-result.json`과 `run-record.json`의 러너 서명(HMAC)을 먼저 검증하고, 그 뒤에야 값(작업 요청
+  해시·조건·반복 번호)을 쓴다. 서명이 맞지 않으면 집계를 멈춘다(채점기는 회차 기록만 검증하므로 결과 파일은 여기서 본다).
+  무효 결과는 러너가 서명하지 않는다.
 - 회차 디렉터리마다 `runner-result.json`(완료·무효 모두 있음)을 읽는다. 형식이 틀린 결과는 집계를 멈춘다(조용히 빼지 않음).
   결과 파일이 없는 디렉터리(러너가 강제 종료된 시도)는 `result_missing` 무효 시도로 센다.
 - 쪽별 시도·유효·무효(사유별)·무효율과 시작 시각 순서를 출력한다. 유효 회차 순서가 §5.1 교대 순서(N=3이면 B O O B B O)와
@@ -16,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
@@ -27,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from run_record import RunRecordError, read_runner_key, sign_run_record  # noqa: E402
 from runner import COMPLETE, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME  # noqa: E402
 
 SIDES = ("baseline", "ours")
@@ -35,6 +40,7 @@ SIDE_LETTER = {"baseline": "B", "ours": "O"}
 RUN_ID = re.compile(r"^(baseline|ours)-(\d{8}t\d{6}z)-[0-9a-f]{8}$")
 RESULT_MISSING = "result_missing"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+SIGNATURE = re.compile(r"^[0-9a-f]{64}$")
 # 판정 레코드가 없는 회차의 자리값 — 채점기는 records=null이면 이 경로를 읽지 않는다(runner.md "실행").
 RECORDS_UNCOLLECTED = "records-uncollected.json"
 
@@ -88,7 +94,19 @@ def _stamp(value: object) -> datetime | None:
     return moment if moment.tzinfo is not None else None
 
 
-def _attempt(directory: Path, errors: list[str]) -> Attempt | None:
+def _signed(value: dict, key: bytes) -> bool:
+    """러너가 sign_run_record로 붙인 HMAC이 맞는지. 채점기(run_record)와 같은 계산이다."""
+    signature = value.get("signature")
+    if not isinstance(signature, str) or not SIGNATURE.match(signature):
+        return False
+    try:
+        expected = sign_run_record({k: v for k, v in value.items() if k != "signature"}, key)["signature"]
+    except RunRecordError:
+        return False
+    return hmac.compare_digest(signature, expected)
+
+
+def _attempt(directory: Path, key: bytes, errors: list[str]) -> Attempt | None:
     match = RUN_ID.match(directory.name)
     if not match:
         errors.append(f"{directory.name}: 러너 회차 디렉터리 이름이 아님")
@@ -100,6 +118,10 @@ def _attempt(directory: Path, errors: list[str]) -> Attempt | None:
         return Attempt(directory.name, side, started, INVALID, RESULT_MISSING, None)
     result = _load_json(result_path, errors)
     if result is None:
+        return None
+    # 완료라고 적힌 결과는 서명부터 본다. 서명 전에는 그 안의 값을 믿지 않는다.
+    if result.get("status") == COMPLETE and not _signed(result, key):
+        errors.append(f"{directory.name}: {RESULT_NAME} 서명 불일치")
         return None
     started = _stamp(result.get("started_at"))
     status = result.get("status")
@@ -120,6 +142,9 @@ def _attempt(directory: Path, errors: list[str]) -> Attempt | None:
     record = _load_json(directory / RECORD_NAME, errors)
     if record is None:
         return None
+    if not _signed(record, key):
+        errors.append(f"{directory.name}: {RECORD_NAME} 서명 불일치")
+        return None
     if (record.get("run_id") != directory.name or record.get("engine") != side
             or not isinstance(record.get("condition"), str) or not record["condition"]
             or not isinstance(record.get("repeat_index"), int) or isinstance(record.get("repeat_index"), bool)):
@@ -134,12 +159,12 @@ def _attempt(directory: Path, errors: list[str]) -> Attempt | None:
     return Attempt(directory.name, side, started, COMPLETE, None, record, task_sha256)
 
 
-def read_session(runs_root: Path) -> list[Attempt]:
-    """runs_root 바로 아래 회차 디렉터리를 시작 시각 순으로 읽는다."""
+def read_session(runs_root: Path, key: bytes) -> list[Attempt]:
+    """runs_root 바로 아래 회차 디렉터리를 시작 시각 순으로 읽는다. key는 러너 서명 키."""
     if not runs_root.is_dir():
         raise SessionError([f"{runs_root}: 디렉터리가 아님"])
     errors: list[str] = []
-    attempts = [a for d in sorted(runs_root.iterdir()) if d.is_dir() and (a := _attempt(d, errors)) is not None]
+    attempts = [a for d in sorted(runs_root.iterdir()) if d.is_dir() and (a := _attempt(d, key, errors)) is not None]
     complete = [a for a in attempts if a.record is not None]
     # 작업 설명·목표·옵션도 비교 조건이다. 같은 설정이면 요청 본문 해시가 같다(baseline·개선 후 공통).
     tasks = sorted({a.task_sha256 for a in complete})
@@ -221,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="공식 회차 세션의 시도·무효 집계와 채점 manifest (평가 프로토콜 §5.1)")
     parser.add_argument("runs_root", help="이 세션만 담은 러너 runs_root")
     parser.add_argument("--repeats", type=int, required=True, help="조건당 유효 회차 수 N(§5.1, 3 이상)")
+    parser.add_argument("--runner-key-file", required=True, help="러너 서명 키 파일(채점에 쓰는 것과 같은 키)")
     parser.add_argument("--manifest", help="완료 회차 채점 manifest를 쓸 새 파일(있으면 거부)")
     args = parser.parse_args(argv)
     if args.repeats < 3:
@@ -228,7 +254,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     runs_root = Path(args.runs_root)
     try:
-        attempts = read_session(runs_root)
+        key = read_runner_key(args.runner_key_file)
+    except (OSError, RunRecordError) as error:
+        print(f"러너 키를 읽지 못함: {error}", file=sys.stderr)
+        return 2
+    try:
+        attempts = read_session(runs_root, key)
         payload = build_manifest(runs_root, attempts)
     except SessionError as error:
         print(f"세션 읽기 중단: {error}", file=sys.stderr)
