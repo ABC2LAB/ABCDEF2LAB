@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/e3record"
+	"github.com/Autumn-27/artex/evidencebind"
 	"github.com/Autumn-27/artex/idor"
 	"github.com/Autumn-27/artex/oracle"
 	"github.com/Autumn-27/artex/transmit"
@@ -19,6 +21,23 @@ type ControlledReadVerificationRequest struct {
 	Scope                   transmit.Scope
 	TaskID, IntentID        int64
 	AccountRef, ResourceRef string
+	// Runtime-only pointer: requests stay comparable and JSON/model input
+	// cannot mint or recover a handle from matching reference strings.
+	config *ControlledReadConfigHandle
+}
+
+// ConfigView returns a detached, non-sensitive projection of this execution's
+// actual HTTP configuration. It is metadata, not proof of identity/approval.
+// The runtime lifecycle and request binding must still be valid at each call.
+func (r ControlledReadVerificationRequest) ConfigView(ctx context.Context) (ControlledReadConfigView, error) {
+	return r.config.View(ctx, r)
+}
+
+// BindRealInputs uses only the actual runtime handle's private projection with
+// #165. C supplies authentic Context/KG/Source; this does not authenticate those
+// providers, assemble audit truth, or fill collector/revision-owned fields.
+func (r ControlledReadVerificationRequest) BindRealInputs(ctx context.Context, expected evidencebind.Context, kg idor.PolicyResolver, source e3record.SourceReader) (ControlledReadFindingPlan, error) {
+	return r.config.Bind(ctx, r, expected, kg, source)
 }
 
 type ControlledReadVerificationEvidence struct {
@@ -146,7 +165,7 @@ func (v *controlledReadVerificationState) execute(ctx context.Context, l *contro
 	if v.host == nil || v.host.resolve == nil || v.host.lifecycle == nil || v.host.lifecycle.Err() != nil {
 		return nil, errControlledReadUnavailable
 	}
-	request := ControlledReadVerificationRequest{Scope: l.scope, TaskID: v.taskID, IntentID: v.intentID, AccountRef: account, ResourceRef: resource}
+	request := ControlledReadVerificationRequest{Scope: l.scope, TaskID: v.taskID, IntentID: v.intentID, AccountRef: account, ResourceRef: resource, config: l.config}
 	plan, resolveErr := v.host.resolve(ctx, request)
 	if resolveErr != nil || ctx.Err() != nil || plan.Finalize == nil || nilPolicyResolver(plan.KG) ||
 		plan.Candidate.ResourceRef != resource || plan.Candidate.Evaluated.Label != account {
