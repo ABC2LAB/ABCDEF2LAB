@@ -51,11 +51,10 @@ export default function JobScreen({ target }: { target: Target }) {
                 </div>
               </div>
             </div>
-            <details className="adv" open style={{ marginTop: 20 }}>
-              <summary>
-                <span className="chev">▸</span> 리소스 (범위 · 워커 · 제외 경로){" "}
-                <span style={{ fontWeight: 500, color: "var(--muted)", fontSize: 13 }}>· 기본값으로 둬도 돼요</span>
-              </summary>
+            <section className="res-sec" aria-labelledby="res-title">
+              <h2 className="res-h" id="res-title">
+                리소스 설정
+              </h2>
               <div style={{ padding: "8px 0 4px" }}>
                 <span className="fsmall" style={{ fontSize: 14 }}>
                   점검 범위
@@ -105,7 +104,7 @@ export default function JobScreen({ target }: { target: Target }) {
                   넣으세요. 모든 점검에 공통으로 걸 규칙은 설정 → 통제 정책에서 관리해요.
                 </div>
               </div>
-            </details>
+            </section>
           </div>
 
           {/* 원본 시안 그대로 고정 요약 — 실제 연동 시 앞 단계 값으로 바꾸면 돼요 */}

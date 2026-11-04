@@ -2277,6 +2277,17 @@ details.adv[open] .chev {
   margin: 2px 0 6px;
   min-width: 0;
 }
+/* 작업 설정: 리소스 설정은 접지 않고 항상 펼침 */
+.res-sec {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.res-h {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
 .wk-seg button {
   min-width: 52px;
 }
