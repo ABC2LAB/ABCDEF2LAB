@@ -139,7 +139,7 @@ func probeOnce(check probeCheck, timeout time.Duration) (string, string) {
 	case probeHTTPGet:
 		return probeHTTP(ctx, check.URL)
 	case probeDNS:
-		addrs, err := net.DefaultResolver.LookupHost(ctx, check.Name)
+		addrs, err := lookupHost(ctx, check.Name)
 		if err != nil || len(addrs) == 0 {
 			return "fail", dnsCode(err)
 		}
@@ -188,6 +188,10 @@ func dialCode(err error) string {
 	}
 	return "error"
 }
+
+// lookupHost is the resolver of the namespace the probe runs in. Tests replace
+// it so a missing name does not depend on reaching a DNS server.
+var lookupHost = net.DefaultResolver.LookupHost
 
 func dnsCode(err error) string {
 	var dnsErr *net.DNSError
