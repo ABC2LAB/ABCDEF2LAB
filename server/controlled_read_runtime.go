@@ -49,6 +49,7 @@ type controlledReadRuntime struct {
 	closed       bool
 	verification *controlledReadVerificationConfig
 	mode         *controlledTaskModeConfig
+	publisher    *controlledReadPublisherConfig
 	quiescing    map[string]bool
 	tokens       map[controlledWorkKey]*controlledReadTransition
 }
@@ -311,6 +312,7 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 	delete(r.pending, key) // consumed once, including initialization failures
 	r.active[key] = true
 	verificationHost := r.verification
+	publisherHost := r.publisher
 	r.mu.Unlock()
 	defer clear(spec.Key)
 	release := func() { r.mu.Lock(); delete(r.active, key); r.mu.Unlock() }
@@ -320,23 +322,47 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 	}
 	runRef := "e2-" + uuid.NewString()
 	scope := transmit.Scope{RunRef: runRef, TaskRef: task.ID, CaseRef: spec.CaseRef, ResetRef: spec.ResetRef, PolicyRef: spec.PolicyRef}
-	journal, err := auditlog.Create(r.store.journalDirectory(), runRef+".jsonl", auditlog.Config{Scope: scope, KeyRef: spec.KeyRef, Key: spec.Key})
-	if err != nil {
-		release()
-		return ctx, nil, errControlledReadUnavailable
+	var journal *auditlog.Journal
+	var published *controlledPublishedJournal
+	if publisherHost != nil {
+		published, err = r.openPublishedJournal(ctx, publisherHost, spec, scope)
+		if err != nil {
+			release()
+			return ctx, nil, errControlledReadUnavailable
+		}
+	} else {
+		journal, err = auditlog.Create(r.store.journalDirectory(), runRef+".jsonl", auditlog.Config{Scope: scope, KeyRef: spec.KeyRef, Key: spec.Key})
+		if err != nil {
+			release()
+			return ctx, nil, errControlledReadUnavailable
+		}
+		if err := r.store.saveCheckpoint(ctx, journal.Checkpoint()); err != nil {
+			_ = journal.Close()
+			release()
+			return ctx, nil, errControlledReadUnavailable
+		}
 	}
-	if err := r.store.saveCheckpoint(ctx, journal.Checkpoint()); err != nil {
-		journal.Close()
-		release()
-		return ctx, nil, errControlledReadUnavailable
-	}
-	recorder := &controlledCheckpointRecorder{journal: journal, store: r.store}
+	recorder := &controlledCheckpointRecorder{journal: journal, published: published, store: r.store}
 	cfg := controlledReadHTTPConfig(spec, scope, recorder)
-	tx, err := transmit.NewHTTP(ctx, cfg)
-	if err != nil {
-		journal.Close()
+	httpCtx := ctx
+	if published != nil {
+		httpCtx = published.httpContext(ctx)
+	}
+	tx, err := transmit.NewHTTP(httpCtx, cfg)
+	if err != nil || httpCtx.Err() != nil {
+		if tx != nil {
+			tx.StopAndWait()
+		}
+		if published != nil {
+			published.abort()
+		} else {
+			_ = journal.Close()
+		}
 		release()
 		return ctx, nil, errControlledReadUnavailable
+	}
+	if published != nil {
+		published.drain.bind(tx)
 	}
 	lease := &controlledReadLease{tx: tx, journal: journal, recorder: recorder, store: r.store, scope: scope,
 		timeout: cfg.RequestTimeout, runtime: r, work: key, sessions: make(map[string]idor.AccountRef)}
@@ -366,10 +392,11 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 // Journal and protected checkpoint acknowledgement form one admission record.
 // Failure in either half is sticky and denies subsequent attempts.
 type controlledCheckpointRecorder struct {
-	mu      sync.Mutex
-	journal *auditlog.Journal
-	store   *controlledReadStore
-	failed  bool
+	mu        sync.Mutex
+	journal   *auditlog.Journal
+	published *controlledPublishedJournal
+	store     *controlledReadStore
+	failed    bool
 }
 
 func (r *controlledCheckpointRecorder) Record(ctx context.Context, event transmit.Event) error {
@@ -377,6 +404,13 @@ func (r *controlledCheckpointRecorder) Record(ctx context.Context, event transmi
 	defer r.mu.Unlock()
 	if r.failed {
 		return errControlledReadUnavailable
+	}
+	if r.published != nil {
+		if err := r.published.record(ctx, event, r.store); err != nil {
+			r.failed = true
+			return errControlledReadUnavailable
+		}
+		return nil
 	}
 	if err := r.journal.Record(ctx, event); err != nil {
 		r.failed = true
@@ -391,24 +425,40 @@ func (r *controlledCheckpointRecorder) Record(ctx context.Context, event transmi
 
 func (l *controlledReadLease) close(disposition ...bool) error {
 	l.once.Do(func() {
-		l.tx.StopAndWait()
-		halted := l.tx.HealthStatus().Halted
-		l.recorder.mu.Lock()
-		ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
-		defer cancel()
-		if err := l.journal.Close(); err != nil {
+		if l.recorder.published == nil {
+			l.tx.StopAndWait()
+		} else if !l.recorder.published.drain.stopAndWait(l.tx) {
+			l.tx.StopAndWait()
 			l.closeErr = errControlledReadUnavailable
 		}
-		checkpoint := l.journal.Checkpoint()
-		if err := l.store.saveCheckpoint(ctx, checkpoint); err != nil || l.recorder.failed {
-			l.closeErr = errControlledReadUnavailable
+		halted := l.tx.HealthStatus().Halted
+		l.resultMu.Lock()
+		observedOK := l.observed && !l.denied && !halted
+		l.resultMu.Unlock()
+		l.recorder.mu.Lock()
+		var checkpoint auditlog.Checkpoint
+		if l.recorder.published != nil {
+			completed := observedOK && len(disposition) == 1 && disposition[0]
+			var err error
+			checkpoint, err = l.closePublishedAudit(completed)
+			if err != nil {
+				l.closeErr = errControlledReadUnavailable
+			}
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
+			defer cancel()
+			if err := l.journal.Close(); err != nil {
+				l.closeErr = errControlledReadUnavailable
+			}
+			checkpoint = l.journal.Checkpoint()
+			if err := l.store.saveCheckpoint(ctx, checkpoint); err != nil || l.recorder.failed {
+				l.closeErr = errControlledReadUnavailable
+			}
 		}
 		l.recorder.mu.Unlock()
-		l.resultMu.Lock()
-		if !l.observed || l.denied || halted {
+		if !observedOK {
 			l.closeErr = errControlledReadUnavailable
 		}
-		l.resultMu.Unlock()
 		l.runtime.mu.Lock()
 		delete(l.runtime.active, l.work)
 		l.runtime.mu.Unlock()
