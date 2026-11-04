@@ -77,6 +77,37 @@ func readReconciliationRow(ctx context.Context, q reconciliationQueryer, operati
 	return r, nil
 }
 
+// A missing row is only conclusive after serializing with Issue's task lock.
+// Release that lock before parsing/hashing the copied immutable metadata.
+func (s *Store) readReconciliationSnapshot(ctx context.Context, d Descriptor) (reconciliationRow, error) {
+	row, err := readReconciliationRow(ctx, s.db, d.OperationRef)
+	if !errors.Is(err, ErrNotFound) {
+		return row, err
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return reconciliationRow{}, ErrStore
+	}
+	defer tx.Rollback()
+	var taskID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id=$1 FOR SHARE`, d.TaskID).Scan(&taskID)
+	if err != nil {
+		if ctx.Err() != nil {
+			return reconciliationRow{}, ErrScope
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return reconciliationRow{}, ErrBinding
+		}
+		return reconciliationRow{}, ErrStore
+	}
+	// READ COMMITTED takes a new snapshot after any pending Issue has settled.
+	row, err = readReconciliationRow(ctx, tx, d.OperationRef)
+	if ctx.Err() != nil {
+		return reconciliationRow{}, ErrScope
+	}
+	return row, err
+}
+
 type reconciliationBinding struct {
 	Version        int
 	Expected       evidencebind.Context
@@ -157,8 +188,9 @@ func (s *Store) Reconcile(ctx context.Context, d Descriptor) (Receipt, error) {
 	if leaseCtx.Err() != nil {
 		return Receipt{}, ErrScope
 	}
-	// Immutable metadata is copied and parsed/hashed before any SQL row lock.
-	row, err := readReconciliationRow(ctx, s.db, d.OperationRef)
+	// Existing metadata is copied immediately; a missing row first waits for
+	// pending issuance. Parsing/hashing always happens after that lock is released.
+	row, err := s.readReconciliationSnapshot(ctx, d)
 	if err != nil {
 		return Receipt{}, err
 	}

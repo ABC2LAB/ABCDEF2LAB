@@ -77,12 +77,11 @@ func controlledRevisionOperation(request ControlledReadVerificationRequest) stri
 
 func (c *controlledFindingCollector) revisionSource(ctx context.Context, expected evidencebind.Context) (e3record.Source, error) {
 	fail := func(reason string) (e3record.Source, error) {
-		err := controlledRevisionFailure{reason: reason, operation: c.revisionOperation}
-		c.revisionFailure = err
+		err, _ := c.retainRevisionFailure(reason)
 		return e3record.Source{}, err
 	}
-	if c.revisionFailure != nil {
-		return e3record.Source{}, c.revisionFailure
+	if err := c.currentRevisionFailure(); err != nil {
+		return e3record.Source{}, err
 	}
 	// A is read only after the engine's completion claim. Its exploration/mode
 	// facts select the SQL request; no cached runtime value grants authority.
@@ -123,4 +122,22 @@ func (c *controlledFindingCollector) revisionSource(ctx context.Context, expecte
 	}
 	b.EvidenceRevision = receipt.Revision
 	return b, nil
+}
+
+// A collection failure can precede the finalizer. Keep the first per-operation
+// reason under the same private state lock; diagnostics run after unlocking.
+func (c *controlledFindingCollector) retainRevisionFailure(reason string) (error, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	first := c.revisionFailure == nil
+	if first {
+		c.revisionFailure = controlledRevisionFailure{reason: reason, operation: c.revisionOperation}
+	}
+	return c.revisionFailure, first
+}
+
+func (c *controlledFindingCollector) currentRevisionFailure() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.revisionFailure
 }

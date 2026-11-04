@@ -150,7 +150,7 @@ export default function EntryScreen({ onStart }: Props) {
               아래 <strong style={{ color: "var(--warn)" }}>최근 점검</strong>은 실데이터예요.
             </MockBanner>
           </div>
-          <h1 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "-.6px", marginBottom: 26 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-.6px", marginBottom: 26 }}>
             어떤 사이트를 점검할까요?
           </h1>
           <label className="fl" style={{ textAlign: "left" }} htmlFor="e-url">

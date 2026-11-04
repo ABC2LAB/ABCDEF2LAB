@@ -48,8 +48,8 @@ from runner_engine import (  # noqa: E402
     AdminSecret, EngineAPIError, collect_findings, load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
-    DRAINED_MARKER, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_count,
-    read_private_json, sequence_complete,
+    DRAINED_MARKER, FORCED_CANCELLED_OUTCOME, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
+    forwarded_count, read_private_json, sequence_complete,
 )
 from runner_llm import judge_llm  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
@@ -134,6 +134,8 @@ class RunSpec:
     request_budget: int
     poll_seconds: int
     drain_timeout_seconds: int
+    drain_grace_seconds: int
+    post_settle_seconds: int
     llm_provider_slug: str
     llm_provider_name: str
     llm_verify_timeout_seconds: int
@@ -291,7 +293,9 @@ def _wait_drained(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State)
         if clock.monotonic() >= deadline:
             raise RunFailure("drain_timeout")
         clock.sleep(spec.poll_seconds)
-    if drained.get("inflight_at_drain") != 0 or drained.get("log_complete") is not True:
+    cancelled = drained.get("forced_cancelled_requests")
+    if (drained.get("inflight_at_drain") != 0 or drained.get("log_complete") is not True
+            or type(cancelled) is not int or cancelled < 0):
         raise RunFailure("drain_incomplete")
     return drained
 
@@ -354,6 +358,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     engine_end_at = _stamp(clock)
     drained = _wait_drained(spec, meter, clock, state)
     drained_at = _stamp(clock)
+    # 계측기가 끊은 요청은 대상 쪽 처리가 아직 끝나지 않았을 수 있다. post 관측 전에 설정한 만큼 기다리되, 그사이
+    # 끝난 처리를 다 잡는다고 주장하지 않는다(평가 프로토콜 §2). 끊은 요청이 없으면 기다리지 않는다.
+    settled = spec.post_settle_seconds if drained["forced_cancelled_requests"] else 0
+    if settled:
+        clock.sleep(settled)
     # 엔진의 작업은 끝났다. 게이트웨이도 새 LLM 요청을 막고, drain 뒤 응답 제공자 조회를 시작한다.
     _step(state, "llm_seal_failed", lambda: ports.seal_gateway(pre["services"][LLM_GW_SERVICE]["id"]))
 
@@ -388,7 +397,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     rows = _step(state, "meter_read_failed", meter.engine_rows)
     sealed = _step(state, "meter_read_failed", lambda: meter.marker(SEALED_MARKER))
     forwarded = _step(state, "meter_log_inconsistent", lambda: forwarded_count(rows))
-    if sealed is None or not sequence_complete(rows) or forwarded != drained.get("forwarded_requests"):
+    cancelled_rows = sum(1 for row in rows if row["outcome"] == FORCED_CANCELLED_OUTCOME)
+    if (sealed is None or not sequence_complete(rows) or forwarded != drained.get("forwarded_requests")
+            or cancelled_rows != drained["forced_cancelled_requests"]):
         raise RunFailure("meter_log_inconsistent")
     meter_summary = {
         "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
@@ -399,6 +410,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "over_budget": max(0, forwarded - spec.request_budget),
         "rejected_after_seal": drained.get("rejected_after_seal"),
         "forced_closed_streams": drained.get("forced_closed_streams"),
+        # 봉인 뒤 유예가 지나 계측기가 끊은 요청. 전달은 됐으므로 forwarded_requests에 들어 있다.
+        "forced_cancelled_requests": drained["forced_cancelled_requests"],
+        # 유예·정착 대기는 선언과 대조한 정책 값, 적용 대기는 이 회차 결과(끊은 요청이 없으면 0)다.
+        "drain_grace_seconds": spec.drain_grace_seconds, "post_settle_seconds": spec.post_settle_seconds,
+        "post_settle_applied_seconds": settled,
         "time_budget_seconds": spec.time_budget_seconds, "observer_requests": len(observer),
     }
     _step(state, "evidence_write_failed", lambda: evidence.write_json("meter-summary.json", meter_summary))
@@ -653,6 +669,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         image_ids={role: image.id for role, image in plan.images.items()},
         time_budget_seconds=declared["time_budget_seconds"], request_budget=declared["request_budget"],
         poll_seconds=config.run["budget_poll_seconds"], drain_timeout_seconds=config.run["drain_timeout_seconds"],
+        drain_grace_seconds=config.run["drain_grace_seconds"], post_settle_seconds=config.run["post_settle_seconds"],
         llm_provider_slug=plan.llm.get("provider", ""),
         llm_provider_name=config.llm_gateway["expected_provider_name"],
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],

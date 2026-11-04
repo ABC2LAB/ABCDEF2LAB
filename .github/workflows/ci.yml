@@ -1,0 +1,110 @@
+name: ci
+
+on:
+  # base 필터를 두지 않는다: 바로 아래 PR 브랜치를 base로 쓰는 스택 PR도 검사해야 한다(PR 템플릿·#168 리뷰).
+  pull_request:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # go.mod의 버전만 쓴다. 시험 단계는 망이 없어 도구 체인을 내려받을 수 없다.
+  GOTOOLCHAIN: local
+
+jobs:
+  go-static:
+    name: Go build·vet·gofmt·크로스빌드
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - name: darwin·windows 크로스빌드
+        run: |
+          for os in darwin windows; do
+            GOOS=$os GOARCH=amd64 go build ./... ./cmd/...
+          done
+      # upstream에서 온 파일 중 gofmt가 안 맞는 것이 있어 PR이 바꾼 Go 파일만 본다.
+      - name: gofmt·공백 검사(PR이 바꾼 파일)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff --check "$BASE_SHA" HEAD
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA" HEAD -- '*.go')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "바뀐 Go 파일 없음"
+            exit 0
+          fi
+          unformatted=$(gofmt -l "${files[@]}")
+          if [ -n "$unformatted" ]; then
+            echo "gofmt가 필요한 파일:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  go-test:
+    name: Go 시험(PostgreSQL 16·race·외부망 차단)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: 시험 DB(1회용 PostgreSQL 16, 소켓 전용)
+        run: |
+          if [ ! -x /usr/lib/postgresql/16/bin/initdb ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-16
+          fi
+          scripts/ci/pg-up.sh "$RUNNER_TEMP/pg" >>"$GITHUB_ENV"
+      # 시험 코드(TestMain 포함)는 아래 망 없는 단계에서만 실행한다. 여기서는 모듈만 받는다.
+      - name: 모듈 받기(이 단계까지만 망 사용)
+        run: go mod download
+      # 시험이 외부 API·DNS에 닿지 않게 loopback만 있는 망 namespace에서 runner 권한으로 돌린다
+      # (CLAUDE.md 절대 규칙 8). DB는 unix 소켓이라 그대로 닿는다.
+      - name: go test
+        run: |
+          export CI_UID=$(id -u) CI_GID=$(id -g) CI_PATH=$PATH CI_HOME=$HOME
+          sudo --preserve-env unshare --net -- bash -c '
+            set -euo pipefail
+            ip link set lo up
+            if timeout 3 bash -c "</dev/tcp/1.1.1.1/443" 2>/dev/null; then
+              echo "외부망 차단 실패" >&2
+              exit 1
+            fi
+            exec setpriv --reuid="$CI_UID" --regid="$CI_GID" --init-groups \
+              env PATH="$CI_PATH" HOME="$CI_HOME" \
+              scripts/ci/go-test.sh "$RUNNER_TEMP/go-test.json" ./... -race -count=1 -timeout 20m
+          '
+      - name: PostgreSQL 로그 꼬리(실패 시)
+        if: failure()
+        run: tail -n 50 "$RUNNER_TEMP/pg/postgres.log" || true
+
+  eval:
+    name: 평가 스크립트 시험
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: unittest
+        working-directory: scripts/eval
+        run: python3 -I -B -m unittest discover -s tests

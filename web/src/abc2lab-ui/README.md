@@ -53,6 +53,11 @@ components/        Brand, TopBar, Stepper, Switch, Choice, Tabs, Modal, CopyButt
 screens/           화면 12개 (Entry, Target, Job, Scope, Live, History, Report, Finding, FindingUnd, Approval, Settings, Audit)
 ```
 
+## 목업 모드
+
+`NEXT_PUBLIC_MOCK=1`로 빌드하면 엔진에 요청하지 않고(로그인도 안 함) `lib/mock-data.ts`의 예시 데이터로 화면을 채워요. Vercel 시연용이에요.
+화면 맨 위에 "목업 예시 데이터" 배너가 고정되고, 일반 빌드는 예시 데이터를 불러오지 않아요(목업일 때만 동적 import).
+
 ## 원본과 다른 점
 
 - 발견 상세 증거 JSON의 `"address": "[REDACTED]` 에 빠진 닫는 따옴표를 추가
