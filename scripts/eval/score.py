@@ -243,6 +243,7 @@ def build_report(
     seen_executions: set[str] = set()
     seen_proofs: set[str] = set()
     versions: set[str] = set()
+    drain_policies: set[tuple[int, int]] = set()
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs
@@ -262,6 +263,13 @@ def build_report(
         versions.add(inputs.version)
         if len(versions) > 1:
             raise ComparabilityError("러너 기록 v1/v1.1 혼합 — 같은 귀속 방식끼리만 비교(프로토콜 §4)")
+        # 봉인 뒤 유예·정착 대기는 post 관측 시점과 취소 여부를 바꾼다. 환경 지문으로 고정되지만 서명 근거도 같아야
+        # 한다(#153 리뷰). 끊은 건수·적용 대기는 결과라 비교하지 않는다.
+        if inputs.drain_policy is not None:
+            drain_policies.add(inputs.drain_policy)
+            if len(drain_policies) > 1:
+                raise ComparabilityError(f"drain 유예·정착 대기 정책 불일치 {sorted(drain_policies)} — "
+                                         "같은 정책끼리만 비교(프로토콜 §2)")
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 

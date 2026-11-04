@@ -36,6 +36,8 @@ services:
       - -listen=:${EVAL_METER_PORT:?}
       - -upstream=http://target:${EVAL_TARGET_PORT:?}
       - -log-dir=/evidence
+      # 봉인 뒤 이 시간이 지나도 끝나지 않은 엔진 요청은 대상 쪽으로 취소하고 건수를 남긴다(러너 drain 시한보다 짧게).
+      - -drain-grace=${EVAL_METER_DRAIN_GRACE:?}
     volumes:
       - ${EVAL_EVIDENCE_DIR:?}:/evidence
     read_only: true

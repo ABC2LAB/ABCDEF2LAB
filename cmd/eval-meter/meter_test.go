@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -70,7 +72,7 @@ func recordingUpstream(t *testing.T) (*httptest.Server, func() []seenRequest) {
 func newTestEngine(t *testing.T, upstream *httptest.Server) (*engineMeter, *httptest.Server, string) {
 	t.Helper()
 	path, dir := privateTestDir(t)
-	m, code := newEngineMeter(dir, targetURL(t, upstream), time.Now)
+	m, code := newEngineMeter(dir, targetURL(t, upstream), time.Now, 0)
 	if code != "" {
 		t.Fatalf("engine meter: %s", code)
 	}
@@ -535,6 +537,12 @@ func TestProbeReportsObservedPaths(t *testing.T) {
 		{"id": "name", "kind": "dns", "name": "eval-meter-missing.invalid"},
 	}}
 	input, _ := json.Marshal(plan)
+	// The missing name is answered here, not by whatever DNS the test host has
+	// (CI runs without one); the real resolver's codes are covered by dnsCode.
+	lookupHost = func(_ context.Context, name string) ([]string, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+	}
+	t.Cleanup(func() { lookupHost = net.DefaultResolver.LookupHost })
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-role", "probe"}, bytes.NewReader(input), &stdout, &stderr); code != 0 {
 		t.Fatalf("probe exit %d: %s", code, stderr.String())
@@ -555,6 +563,27 @@ func TestProbeReportsObservedPaths(t *testing.T) {
 	for _, result := range report.Results {
 		if got := [2]string{result.Observed, result.Code}; got != want[result.ID] {
 			t.Fatalf("%s: got %v want %v", result.ID, got, want[result.ID])
+		}
+	}
+}
+
+func TestDNSCodeSeparatesMissingNamesFromResolverFailures(t *testing.T) {
+	// Runner probe rules accept not_found and dns_error separately (an unknown
+	// name versus a resolver that could not answer), so the mapping is pinned.
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"no addresses":  {nil, "no_address"},
+		"missing":       {&net.DNSError{Err: "no such host", IsNotFound: true}, "not_found"},
+		"timeout":       {&net.DNSError{Err: "i/o timeout", IsTimeout: true}, "timeout"},
+		"deadline":      {context.DeadlineExceeded, "timeout"},
+		"server failed": {&net.DNSError{Err: "server misbehaving"}, "dns_error"},
+		"other":         {errors.New("boom"), "dns_error"},
+	}
+	for name, c := range cases {
+		if got := dnsCode(c.err); got != c.want {
+			t.Fatalf("%s: dnsCode = %q, want %q", name, got, c.want)
 		}
 	}
 }

@@ -30,6 +30,8 @@ _OBSERVER_ROW = frozenset({"seq", "decision", "method", "status", "started_at", 
 # 계측기 전달 건수(forwarded)에 들어간다. "rejected"(seal 뒤 거부)는 전달이 아니다. Go 쪽과 같은지 테스트로 고정.
 FORWARDED_KINDS = frozenset({"request", "stream"})
 ENGINE_KINDS = FORWARDED_KINDS | {"rejected"}
+# 봉인 뒤 유예(-drain-grace)가 지나 계측기가 대상 쪽으로 취소한 요청 행의 outcome. 건수는 drained 마커와 같아야 한다.
+FORCED_CANCELLED_OUTCOME = "forced_cancelled"
 
 
 def forwarded_count(rows: list[dict]) -> int:
