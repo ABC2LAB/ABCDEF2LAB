@@ -265,7 +265,7 @@ func (p *controlledPublishedJournal) abort() {
 	}
 }
 
-func (p *controlledPublishedJournal) record(ctx context.Context, event transmit.Event, store *controlledReadStore) error {
+func (p *controlledPublishedJournal) record(ctx context.Context, event transmit.Event) error {
 	if err := p.publisher.Record(ctx, event); err != nil {
 		return controlledPublisherFailure("record")
 	}

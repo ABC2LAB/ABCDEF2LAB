@@ -155,6 +155,24 @@ class TestRejectedV11(_V11):
         self.reject("engine_meter_summary", tamper_rows=lambda rows: row_of(rows, "engine_meter_summary").update(
             forwarded_requests=6))
         self.reject("drain", "b", tamper_rows=lambda rows: row_of(rows, "drain").update(inflight=1))
+        # 유예 뒤 끊은 요청 수·적용 값은 정수로 남아야 한다. 끊은 요청이 있어도 전달된 요청이라 증명은 유지한다.
+        # 유예·정착 대기는 정책이라 1 이상이다.
+        for index, (name, value) in enumerate((("forced_cancelled", -1), ("forced_cancelled", True),
+                                               ("grace_seconds", "30"), ("settle_seconds", None),
+                                               ("grace_seconds", 0), ("settle_seconds", 0),
+                                               ("settle_applied_seconds", -1), ("settle_applied_seconds", 2.0))):
+            self.reject("drain", f"c{index}", tamper_rows=lambda rows, n=name, v=value: row_of(rows, "drain").update(
+                {n: v}))
+        for index, name in enumerate(("forced_cancelled", "settle_applied_seconds")):
+            self.reject("drain", f"d{index}", tamper_rows=lambda rows, n=name: row_of(rows, "drain").pop(n))
+        # 적용 대기는 끊은 요청이 있을 때만 정책 값이고 아니면 0이다(설정 정책과 적용 결과를 구분).
+        for index, change in enumerate((dict(settle_applied_seconds=2), dict(forced_cancelled=1),
+                                        dict(forced_cancelled=1, settle_applied_seconds=3))):
+            self.reject("settle_applied_seconds", f"e{index}",
+                        tamper_rows=lambda rows, c=change: row_of(rows, "drain").update(c))
+        cut = self.inputs(self.v11("cut", tamper_rows=lambda rows: row_of(rows, "drain").update(
+            forced_cancelled=1, settle_applied_seconds=2)))
+        self.assertEqual((cut.version, cut.drain_policy), ("1.1", (30, 2)))
 
     def test_iw12_drain_times_are_checked_against_the_window(self):
         # fixture: 봉인 00:08, drain 완료 00:09, timeline drained 00:09, post 00:10 — 경계값(같은 시각)은 통과
@@ -277,6 +295,22 @@ class TestComparison(_V11):
         second = self.v11("p2", repeat_index=1, tamper_proof=lambda p: p.update(proof_id="proof-run-p1"))
         with self.assertRaisesRegex(ComparabilityError, "proof_id"):
             build_report(self.load([first, second]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_runs_with_different_drain_policies_are_not_compared(self):
+        # 같은 환경 지문이라도 서명 근거의 유예·정착 대기가 다르면 비교하지 않는다(#153 리뷰).
+        same = [self.v11("s1"), self.v11("s2", repeat_index=1)]
+        build_report(self.load(same), self.correlate, self.correlatable, runner_key=self.runner_key)
+        for index, change in enumerate((dict(grace_seconds=10), dict(settle_seconds=20))):
+            with self.subTest(change=change):
+                other = self.v11(f"g{index}", repeat_index=1,
+                                 tamper_rows=lambda rows, c=change: row_of(rows, "drain").update(c))
+                with self.assertRaisesRegex(ComparabilityError, "drain 유예·정착 대기 정책 불일치"):
+                    build_report(self.load([self.v11(f"b{index}"), other]), self.correlate, self.correlatable,
+                                 runner_key=self.runner_key)
+        # 끊은 건수·적용 대기는 결과라 회차마다 달라도 비교한다.
+        cut = self.v11("c1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "drain").update(
+            forced_cancelled=1, settle_applied_seconds=2))
+        build_report(self.load([self.v11("c0"), cut]), self.correlate, self.correlatable, runner_key=self.runner_key)
 
     def test_v1_only_comparison_is_flagged_not_official(self):
         report = build_report(self.load([self.make_run("v1only", [])]), self.correlate, self.correlatable,

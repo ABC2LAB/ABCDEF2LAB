@@ -77,3 +77,7 @@ trigger/제약을 해제하지 않고, canonical binding 변경을 원래 digest
 
 이 합성 시험은 실제 프로세스/운영 인증·보호 Descriptor 저장·epoch/key/권한 발급·실제 HTTP/LLM/Juice Shop
 진단이 아니다. 운영 DB·기존 서버/스키마·타 PR head는 변경하지 않는다.
+
+## NotFound와 진행 중 발행
+
+첫 조회에 행이 없으면 descriptor의 task를 FOR SHARE로 잠가 진행 중 Issue의 FOR UPDATE/commit 또는 rollback을 기다린 뒤 READ COMMITTED의 새 snapshot으로 재조회한다. 누락 task는 binding 거부, 대기 중 취소는 scope 거부다. 잠금 해제 뒤 metadata를 파싱·해시하고 기존 최종 SQL 관계/불변 행 검사를 유지한다. 이 조회는 INSERT·commit·sequence 발행을 하지 않는다. NotFound는 직렬화된 조회 시점의 부재이며 이후 새 Issue를 금지하거나 결과 불명을 즉시 미발행으로 바꾸는 권한이 아니다.
