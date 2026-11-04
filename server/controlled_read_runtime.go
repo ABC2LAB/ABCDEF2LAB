@@ -18,6 +18,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/idor"
+	"github.com/Autumn-27/artex/taskmode"
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/Autumn-27/artex/transmit/auditlog"
 	actool "github.com/Autumn-27/norma/tool"
@@ -41,15 +42,19 @@ type controlledWorkKey struct {
 // The registry is server-owned, never supplied in task/intent JSON. Disk markers
 // distinguish a normal task from a controlled task missing its one-use lease.
 type controlledReadRuntime struct {
-	store   *controlledReadStore
-	mu      sync.Mutex
-	pending map[controlledWorkKey]controlledReadSpec
-	active  map[controlledWorkKey]bool
-	closed  bool
+	store        *controlledReadStore
+	mu           sync.Mutex
+	pending      map[controlledWorkKey]controlledReadSpec
+	active       map[controlledWorkKey]bool
+	closed       bool
+	verification *controlledReadVerificationConfig
+	mode         *controlledTaskModeConfig
+	quiescing    map[string]bool
+	tokens       map[controlledWorkKey]*controlledReadTransition
 }
 
 func newControlledReadRuntime(store *controlledReadStore) *controlledReadRuntime {
-	return &controlledReadRuntime{store: store, pending: make(map[controlledWorkKey]controlledReadSpec), active: make(map[controlledWorkKey]bool)}
+	return &controlledReadRuntime{store: store, pending: make(map[controlledWorkKey]controlledReadSpec), active: make(map[controlledWorkKey]bool), quiescing: make(map[string]bool), tokens: make(map[controlledWorkKey]*controlledReadTransition)}
 }
 
 func (r *controlledReadRuntime) discardTask(taskID string) {
@@ -58,6 +63,11 @@ func (r *controlledReadRuntime) discardTask(taskID string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for key := range r.tokens {
+		if key.task == taskID {
+			delete(r.tokens, key)
+		}
+	}
 	for key, spec := range r.pending {
 		if key.task == taskID {
 			clear(spec.Key)
@@ -82,6 +92,7 @@ func (r *controlledReadRuntime) discardAll() {
 		delete(r.pending, key)
 	}
 	clear(r.active)
+	clear(r.tokens)
 	r.closed = true
 }
 
@@ -89,6 +100,15 @@ func (r *controlledReadRuntime) discardAll() {
 // Revocation is conservative even when the database mutation later fails.
 func (r *controlledReadRuntime) cancelPendingWork(key controlledWorkKey, mutate func() error) error {
 	r.mu.Lock()
+	if r.mode != nil {
+		delete(r.tokens, key)
+		if spec, exists := r.pending[key]; exists {
+			clear(spec.Key)
+			delete(r.pending, key)
+		}
+		r.mu.Unlock()
+		return mutate()
+	}
 	defer r.mu.Unlock()
 	if spec, exists := r.pending[key]; exists {
 		clear(spec.Key)
@@ -121,6 +141,10 @@ func (s *Server) initControlledReads(_ string, dataDir string) error {
 func (e *Engine) controlledTask(taskID string) bool {
 	if e == nil || e.controlledReads == nil {
 		return false
+	}
+	if e.controlledReads.mode != nil {
+		decision, err := e.resolveControlledTaskMode(e.controlledReads.mode.lifecycle, taskID)
+		return err != nil || decision.Route() != taskmode.Legacy
 	}
 	if e.controlledReads.store == nil {
 		return true
@@ -226,33 +250,43 @@ func validateControlledReadSpec(spec controlledReadSpec) error {
 }
 
 type controlledReadLease struct {
-	tx        *transmit.HTTPTransmitter
-	journal   *auditlog.Journal
-	recorder  *controlledCheckpointRecorder
-	store     *controlledReadStore
-	scope     transmit.Scope
-	sessions  map[string]idor.AccountRef
-	accounts  []string
-	resources []string
-	timeout   time.Duration
-	runtime   *controlledReadRuntime
-	work      controlledWorkKey
-	once      sync.Once
-	closeErr  error
-	resultMu  sync.Mutex
-	observed  bool
-	denied    bool
+	tx           *transmit.HTTPTransmitter
+	journal      *auditlog.Journal
+	recorder     *controlledCheckpointRecorder
+	store        *controlledReadStore
+	scope        transmit.Scope
+	sessions     map[string]idor.AccountRef
+	accounts     []string
+	resources    []string
+	timeout      time.Duration
+	runtime      *controlledReadRuntime
+	work         controlledWorkKey
+	once         sync.Once
+	closeErr     error
+	resultMu     sync.Mutex
+	observed     bool
+	denied       bool
+	verification *controlledReadVerificationState
 }
 
 // prepareControlledRead is invoked once per runIntent, outside model retries.
 // A tombstone without a pending registration is a hard refusal, never fallback.
-func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *db.Node) (context.Context, func() error, error) {
+func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *db.Node) (context.Context, func(...bool) error, error) {
 	r := e.controlledReads
 	if r == nil {
 		return ctx, nil, nil
 	}
 	if r.store == nil || task == nil || intent == nil {
 		return ctx, nil, errControlledReadUnavailable
+	}
+	if r.mode != nil {
+		decision, err := e.resolveControlledTaskMode(ctx, task.ID)
+		if err != nil || decision.Route() == taskmode.Block {
+			return ctx, nil, errControlledReadUnavailable
+		}
+		if decision.Route() == taskmode.Legacy {
+			return ctx, nil, nil
+		}
 	}
 	key := controlledWorkKey{task.ID, intent.ID}
 	r.mu.Lock()
@@ -276,6 +310,7 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 	}
 	delete(r.pending, key) // consumed once, including initialization failures
 	r.active[key] = true
+	verificationHost := r.verification
 	r.mu.Unlock()
 	defer clear(spec.Key)
 	release := func() { r.mu.Lock(); delete(r.active, key); r.mu.Unlock() }
@@ -319,8 +354,11 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 		lease.close()
 		return ctx, nil, errControlledReadUnavailable
 	}
+	if verificationHost != nil {
+		lease.verification = &controlledReadVerificationState{host: verificationHost, runCtx: ctx, taskID: taskID, intentID: intent.ID}
+	}
 	ctx = agent.WithControlledReadExecution(ctx, agent.ControlledReadExecution{
-		TaskID: taskID, IntentID: intent.ID, RunRef: runRef, Tool: lease.tool(),
+		TaskID: taskID, IntentID: intent.ID, RunRef: runRef, Tool: lease.tool(), Verification: lease.verification != nil,
 	})
 	return ctx, lease.close, nil
 }
@@ -351,20 +389,21 @@ func (r *controlledCheckpointRecorder) Record(ctx context.Context, event transmi
 	return nil
 }
 
-func (l *controlledReadLease) close() error {
+func (l *controlledReadLease) close(disposition ...bool) error {
 	l.once.Do(func() {
 		l.tx.StopAndWait()
 		halted := l.tx.HealthStatus().Halted
 		l.recorder.mu.Lock()
-		defer l.recorder.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
 		defer cancel()
 		if err := l.journal.Close(); err != nil {
 			l.closeErr = errControlledReadUnavailable
 		}
-		if err := l.store.saveCheckpoint(ctx, l.journal.Checkpoint()); err != nil || l.recorder.failed {
+		checkpoint := l.journal.Checkpoint()
+		if err := l.store.saveCheckpoint(ctx, checkpoint); err != nil || l.recorder.failed {
 			l.closeErr = errControlledReadUnavailable
 		}
+		l.recorder.mu.Unlock()
 		l.resultMu.Lock()
 		if !l.observed || l.denied || halted {
 			l.closeErr = errControlledReadUnavailable
@@ -373,11 +412,24 @@ func (l *controlledReadLease) close() error {
 		l.runtime.mu.Lock()
 		delete(l.runtime.active, l.work)
 		l.runtime.mu.Unlock()
+		// Cleanup alone never commits a staged verdict. The engine supplies its
+		// successful disposition, and storage runs outside journal/runtime locks.
+		if l.closeErr == nil && l.verification != nil {
+			completed := len(disposition) == 1 && disposition[0]
+			if completed {
+				claim, ok := l.verification.runCtx.Value(controlledReadCompletionClaimKey{}).(func() bool)
+				completed = ok && claim()
+			}
+			l.closeErr = l.verification.finish(l, completed, checkpoint)
+		}
 	})
 	return l.closeErr
 }
 
 func (l *controlledReadLease) tool() actool.CoreTool {
+	if l.verification != nil {
+		return l.verificationTool()
+	}
 	return roTool(agent.ControlledHTTPToolName, "Perform one approved read using registered account and resource references. No arbitrary URL, headers or methods. If health.Halted is true, stop requesting and report its reason codes. Continue/below_threshold or insufficient_samples is not a normal or safe result and does not authorize another request. ok only reports capture completion.", map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{

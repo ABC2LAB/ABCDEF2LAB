@@ -76,9 +76,9 @@ const STATUS_LABEL: Record<string, string> = {
   timeout: "시간초과",
 };
 
-const btnSm = { padding: "9px 14px", fontSize: 13 } as const;
-const bodyText: CSSProperties = { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7, margin: 0 };
-const subH: CSSProperties = { fontWeight: 500, color: "var(--muted)", fontSize: 12 };
+const btnSm = { padding: "9px 14px", fontSize: 14 } as const;
+const bodyText: CSSProperties = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 };
+const subH: CSSProperties = { fontWeight: 500, color: "var(--muted)", fontSize: 13 };
 
 /** 커버리지 한 줄 바 */
 function CoverageBar({
@@ -108,11 +108,11 @@ function CoverageBar({
           height: strong ? 10 : 7,
           background: "var(--surface-2)",
           border: "1px solid var(--line)",
-          borderRadius: 999,
+          borderRadius: 4,
           overflow: "hidden",
         }}
       >
-        <div style={{ width: `${pct}%`, height: "100%", background: "var(--teal)", borderRadius: 999 }} />
+        <div style={{ width: `${pct}%`, height: "100%", background: "var(--teal)", borderRadius: 4 }} />
       </div>
     </div>
   );
@@ -236,7 +236,7 @@ export default function ReportScreen() {
               </p>
             </div>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>내보내기</div>
+              <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 6 }}>내보내기</div>
               <div className="row" style={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
                 {/* TODO(이경준): GET /api/report 연결 — 지금은 비활성 */}
                 {["HTML", "PDF", "JSON"].map((f) => (
@@ -266,7 +266,7 @@ export default function ReportScreen() {
             ))}
             <div className="tile">
               <div className="k">판정</div>
-              <div className="v" style={{ fontSize: 15, color: "var(--muted)", fontWeight: 600 }}>
+              <div className="v" style={{ fontSize: 16, color: "var(--muted)", fontWeight: 600 }}>
                 준비 중
               </div>
               <div className="sub">E③ 연동 후</div>
