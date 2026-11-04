@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/Autumn-27/artex/auditcheckpoint"
 	"github.com/Autumn-27/artex/auditpublisher"
@@ -37,9 +39,10 @@ type ControlledReadPublisherPlan struct {
 }
 type ControlledReadPublisherFactory func(context.Context, ControlledReadPublisherRequest) (ControlledReadPublisherPlan, error)
 type controlledReadPublisherConfig struct {
-	factory   ControlledReadPublisherFactory
-	lifecycle context.Context
-	db        *sql.DB
+	factory        ControlledReadPublisherFactory
+	lifecycle      context.Context
+	db             *sql.DB
+	saveCheckpoint func(context.Context, auditlog.Checkpoint) error
 }
 
 func (s *Server) ConfigureControlledReadPublisher(factory ControlledReadPublisherFactory) error {
@@ -55,7 +58,7 @@ func (s *Server) ConfigureControlledReadPublisher(factory ControlledReadPublishe
 	if r.closed || r.mode == nil || r.publisher != nil || len(r.pending) != 0 || len(r.active) != 0 {
 		return ErrControlledReadPublisher
 	}
-	r.publisher = &controlledReadPublisherConfig{factory: factory, lifecycle: s.ctx, db: s.m.pg.DB}
+	r.publisher = &controlledReadPublisherConfig{factory: factory, lifecycle: s.ctx, db: s.m.pg.DB, saveCheckpoint: r.store.saveCheckpoint}
 	return nil
 }
 
@@ -155,11 +158,13 @@ func (r *controlledPublisherRoot) Release() {
 }
 
 type controlledPublishedJournal struct {
-	publisher  *auditpublisher.Publisher
-	drain      *controlledHTTPDrain
-	rootCtx    context.Context
-	httpCancel context.CancelFunc
-	stopHTTP   func() bool
+	publisher      *auditpublisher.Publisher
+	drain          *controlledHTTPDrain
+	rootCtx        context.Context
+	httpCancel     context.CancelFunc
+	stopHTTP       func() bool
+	sealTimeout    time.Duration
+	saveCheckpoint func(context.Context, auditlog.Checkpoint) error
 }
 
 func nilPublisherCapability(v any) bool {
@@ -176,16 +181,16 @@ func nilPublisherCapability(v any) bool {
 
 // Called after the short runtime reservation, with no runtime/work/DB lock.
 func (r *controlledReadRuntime) openPublishedJournal(ctx context.Context, config *controlledReadPublisherConfig, spec controlledReadSpec, scope transmit.Scope) (*controlledPublishedJournal, error) {
-	if config == nil || config.factory == nil || config.lifecycle == nil || config.lifecycle.Err() != nil || r.mode == nil || r.mode.host.CheckRoot(ctx) != nil {
-		return nil, ErrControlledReadPublisher
+	if config == nil || config.factory == nil || config.saveCheckpoint == nil || config.lifecycle == nil || config.lifecycle.Err() != nil || r.mode == nil || r.mode.host.CheckRoot(ctx) != nil {
+		return nil, controlledPublisherFailure("configuration")
 	}
 	request := ControlledReadPublisherRequest{Scope: scope, IntentID: spec.IntentID, KeyRef: spec.KeyRef, Filename: scope.RunRef + ".jsonl"}
 	plan, err := config.factory(ctx, request)
 	if err != nil {
-		return nil, ErrControlledReadPublisher
+		return nil, controlledPublisherFailure("factory")
 	}
 	if nilPublisherCapability(plan.RootScope) {
-		return nil, ErrControlledReadPublisher
+		return nil, controlledPublisherFailure("plan_root")
 	}
 	keep := false
 	defer func() {
@@ -194,12 +199,12 @@ func (r *controlledReadRuntime) openPublishedJournal(ctx context.Context, config
 		}
 	}()
 	if nilPublisherCapability(plan.Host) || plan.RootScope.Context() == nil || plan.RootScope.Context().Err() != nil || plan.RootScope.Anchor() == nil || filepath.Clean(plan.RootScope.Directory()) != r.store.journalDirectory() {
-		return nil, ErrControlledReadPublisher
+		return nil, controlledPublisherFailure("root_scope")
 	}
 	anchored, err := plan.RootScope.Anchor().Stat()
 	current, pathErr := os.Lstat(r.store.journalDirectory())
 	if err != nil || pathErr != nil || current.Mode() != os.ModeDir|0o700 || !os.SameFile(anchored, current) {
-		return nil, ErrControlledReadPublisher
+		return nil, controlledPublisherFailure("root_anchor")
 	}
 	rootCtx, cancel := context.WithCancel(plan.RootScope.Context())
 	root := &controlledPublisherRoot{real: plan.RootScope, ctx: rootCtx, cancel: cancel, stop: context.AfterFunc(config.lifecycle, cancel)}
@@ -215,20 +220,24 @@ func (r *controlledReadRuntime) openPublishedJournal(ctx context.Context, config
 	host := &controlledCheckpointHost{real: plan.Host, epoch: plan.Epoch, scope: scope, keyRef: spec.KeyRef, publisher: plan.PublisherRef, drain: drain}
 	store, err := auditcheckpoint.New(config.db, host, plan.Limits)
 	if err != nil {
-		return nil, ErrControlledReadPublisher
+		return nil, controlledPublisherFailure("store")
 	}
 	// Open consumes every nonnil RootScope even on error. The server's
 	// pre-Open cleanup must stop before that transfer, not release it again.
 	owned = true
 	p, err := auditpublisher.Open(ctx, auditpublisher.Config{Store: store, Epoch: plan.Epoch, PublisherRef: plan.PublisherRef, RootScope: root, Filename: request.Filename, Scope: scope, KeyRef: spec.KeyRef, Key: spec.Key, MaxSnapshotBytes: plan.Limits.MaxBytes, BindCloseWitness: host.bindClose})
 	if err != nil {
-		return nil, ErrControlledReadPublisher
+		return nil, controlledPublisherFailure("open")
 	}
-	journal := &controlledPublishedJournal{publisher: p, drain: drain, rootCtx: rootCtx}
+	journal := &controlledPublishedJournal{publisher: p, drain: drain, rootCtx: rootCtx, sealTimeout: plan.Limits.Timeout, saveCheckpoint: config.saveCheckpoint}
 	head, err := p.AcknowledgedHead()
-	if err != nil || head.Phase != auditcheckpoint.Open || head.Revision != 1 || head.Checkpoint.Sequence != 0 || head.Checkpoint.Scope != scope || head.Checkpoint.KeyRef != spec.KeyRef || r.store.saveCheckpoint(ctx, head.Checkpoint) != nil {
+	if err != nil || head.Phase != auditcheckpoint.Open || head.Revision != 1 || head.Checkpoint.Sequence != 0 || head.Checkpoint.Scope != scope || head.Checkpoint.KeyRef != spec.KeyRef {
 		journal.abort()
-		return nil, ErrControlledReadPublisher
+		return nil, controlledPublisherFailure("header_ack")
+	}
+	if journal.saveCheckpoint(ctx, head.Checkpoint) != nil {
+		journal.abort()
+		return nil, controlledPublisherFailure("header_sidecar")
 	}
 	return journal, nil
 }
@@ -249,15 +258,23 @@ func (p *controlledPublishedJournal) stopHTTPContext() {
 		p.httpCancel()
 	}
 }
-func (p *controlledPublishedJournal) abort() { p.stopHTTPContext(); _ = p.publisher.Abort() }
+func (p *controlledPublishedJournal) abort() {
+	p.stopHTTPContext()
+	if err := p.publisher.Abort(); err != nil && !errors.Is(err, auditpublisher.ErrClosed) {
+		controlledPublisherFailure("abort")
+	}
+}
 
-func (p *controlledPublishedJournal) record(ctx context.Context, event transmit.Event, store *controlledReadStore) error {
+func (p *controlledPublishedJournal) record(ctx context.Context, event transmit.Event) error {
 	if err := p.publisher.Record(ctx, event); err != nil {
-		return ErrControlledReadPublisher
+		return controlledPublisherFailure("record")
 	}
 	head, err := p.publisher.AcknowledgedHead()
-	if err != nil || head.Phase != auditcheckpoint.Open || head.Checkpoint.Scope != event.Scope || store.saveCheckpoint(ctx, head.Checkpoint) != nil {
-		return ErrControlledReadPublisher
+	if err != nil || head.Phase != auditcheckpoint.Open || head.Checkpoint.Scope != event.Scope {
+		return controlledPublisherFailure("record_ack")
+	}
+	if p.saveCheckpoint(ctx, head.Checkpoint) != nil {
+		return controlledPublisherFailure("record_sidecar")
 	}
 	return nil
 }
@@ -271,15 +288,24 @@ func (l *controlledReadLease) closePublishedAudit(completed bool) (auditlog.Chec
 		p.abort()
 		return auditlog.Checkpoint{}, ErrControlledReadPublisher
 	}
-	ctx, cancel := context.WithTimeout(l.runtime.publisher.lifecycle, l.timeout)
+	ctx, cancel := context.WithTimeout(l.runtime.publisher.lifecycle, p.sealTimeout)
 	defer cancel()
 	head, err := p.publisher.Seal(ctx)
 	if err != nil {
 		p.abort()
-		return auditlog.Checkpoint{}, ErrControlledReadPublisher
+		return auditlog.Checkpoint{}, controlledPublisherFailure("seal")
 	}
-	if head.Phase != auditcheckpoint.Sealed || head.Checkpoint.Scope != l.scope || l.store.saveCheckpoint(ctx, head.Checkpoint) != nil {
-		return auditlog.Checkpoint{}, ErrControlledReadPublisher
+	if head.Phase != auditcheckpoint.Sealed || head.Checkpoint.Scope != l.scope {
+		return auditlog.Checkpoint{}, controlledPublisherFailure("seal_ack")
+	}
+	if p.saveCheckpoint(ctx, head.Checkpoint) != nil {
+		return auditlog.Checkpoint{}, controlledPublisherFailure("final_sidecar")
 	}
 	return head.Checkpoint, nil
+}
+
+// Only static categories are logged; provider and filesystem error values stay private.
+func controlledPublisherFailure(category string) error {
+	log.Printf("[controlled-read] publisher_failed reason=%s", category)
+	return ErrControlledReadPublisher
 }

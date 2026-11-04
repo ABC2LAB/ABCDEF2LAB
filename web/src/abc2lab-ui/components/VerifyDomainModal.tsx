@@ -48,11 +48,11 @@ export function VerifyDomainModal({ url, onClose, onNext }: Props) {
         <div className="vpop-body">
           <div
             style={{
-              fontSize: 12,
+              fontSize: 13,
               color: "var(--warn)",
               background: "var(--warn-weak)",
               border: "1px solid var(--warn-border)",
-              borderRadius: 8,
+              borderRadius: 6,
               padding: "8px 11px",
               marginBottom: 12,
             }}

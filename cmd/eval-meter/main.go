@@ -37,6 +37,7 @@ import (
 )
 
 const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream http://HOST:PORT -log-dir PRIVATE_DIR [-allow-path /PATH]\n" +
+	"                  [engine: -drain-grace DURATION]\n" +
 	"       eval-meter -role llm-gateway -backend api|local -listen ADDR -upstream ORIGIN -allow-path /PATH -log-dir PRIVATE_DIR\n" +
 	"                  [api: -provider SLUG -generation-path /PATH -verify-attempts N -verify-interval DURATION, key in " + llmKeyEnv + "]\n" +
 	"       eval-meter -role api-front -listen ADDR -upstream http://ENGINE:PORT\n" +
@@ -75,6 +76,10 @@ const (
 	maxKeyLength      = 512
 )
 
+// Upper bound on how long the engine front waits after seal before cancelling
+// open requests; the runner's own drain timeout must be longer.
+const maxDrainGrace = 10 * time.Minute
+
 // Slow clients must not hold the front open indefinitely; the target's own
 // behaviour is not limited by these values.
 const (
@@ -100,6 +105,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	generationPath := flags.String("generation-path", "", "llm-gateway api: generation stats path")
 	verifyAttempts := flags.Int("verify-attempts", 0, "llm-gateway api: lookups per generation id")
 	verifyInterval := flags.Duration("verify-interval", 0, "llm-gateway api: wait between lookups")
+	drainGrace := flags.Duration("drain-grace", 0, "engine: after seal, cancel requests still open this long (0: wait)")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fail(stderr, invalidInput)
 	}
@@ -110,6 +116,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, keyNotAllowed)
 	}
 	if *role != roleGateway && gatewayFlags {
+		return fail(stderr, invalidInput)
+	}
+	if (*role != roleEngine && *drainGrace != 0) || *drainGrace < 0 || *drainGrace > maxDrainGrace {
 		return fail(stderr, invalidInput)
 	}
 	var gatewayCfg gatewayConfig
@@ -163,7 +172,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var finish func() error
 	switch *role {
 	case roleEngine:
-		m, code := newEngineMeter(dir, target, time.Now)
+		m, code := newEngineMeter(dir, target, time.Now, *drainGrace)
 		if code != "" {
 			return fail(stderr, code)
 		}

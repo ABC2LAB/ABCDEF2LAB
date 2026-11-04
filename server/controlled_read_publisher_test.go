@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -47,6 +49,7 @@ type durableTestHost struct {
 	sourceRelease chan struct{}
 	sealEntered   chan struct{}
 	sealRelease   chan struct{}
+	sealBudget    chan time.Duration
 	sourceCalls   atomic.Int64
 }
 type durableTestLease struct {
@@ -77,6 +80,14 @@ func (h *durableTestHost) Acquire(ctx context.Context, a auditcheckpoint.Access)
 		h.mu.Unlock()
 		if r.Kind == auditcheckpoint.Seal {
 			h.seals.Add(1)
+			if h.sealBudget != nil {
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					h.sealBudget <- 0
+				} else {
+					h.sealBudget <- time.Until(deadline)
+				}
+			}
 			if h.sealEntered != nil {
 				close(h.sealEntered)
 				select {
@@ -97,27 +108,7 @@ func (l *durableTestLease) ResolveKey(context.Context, auditcheckpoint.Binding) 
 	}
 	return l.host.key, nil
 }
-func (l *durableTestLease) Release() {
-	h := l.host
-	if l.access.Purpose != auditcheckpoint.HeadAccess {
-		return
-	}
-	h.mu.Lock()
-	cp := h.lastCP
-	h.mu.Unlock()
-	match := h.mode == "header-sidecar" && cp.Sequence == 0 || h.mode == "intent-sidecar" && cp.Sequence == 1 || h.mode == "final-sidecar" && h.seals.Load() > 0
-	if match && h.fileError.CompareAndSwap(false, true) {
-		path := filepath.Join(h.dir, cp.JournalID+".checkpoint")
-		if _, err := os.Lstat(path); err == nil {
-			if err := os.Rename(path, path+".preserved"); err != nil {
-				panic("synthetic sidecar fault")
-			}
-		}
-		if err := os.Mkdir(path, 0o700); err != nil {
-			panic("synthetic sidecar fault")
-		}
-	}
-}
+func (l *durableTestLease) Release() {}
 
 type durableTestRoot struct {
 	h      *durableTestHost
@@ -182,6 +173,24 @@ func installDurableTestPublisher(t *testing.T, f *controlledReadDBFixture, mode 
 		return ControlledReadPublisherPlan{Host: h, Epoch: h.epoch, PublisherRef: "publisher:synthetic", RootScope: root, Limits: auditlog.ExtensionLimits{MaxBytes: 1 << 20, MaxEvents: 16, Timeout: 3 * time.Second}}, nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	config := f.e.controlledReads.publisher
+	save := config.saveCheckpoint
+	config.saveCheckpoint = func(ctx context.Context, cp auditlog.Checkpoint) error {
+		match := mode == "header-sidecar" && cp.Sequence == 0 ||
+			mode == "intent-sidecar" && cp.Sequence == 1 ||
+			mode == "final-sidecar" && h.seals.Load() > 0
+		if match && h.fileError.CompareAndSwap(false, true) {
+			// Keep a valid header sidecar too: ignoring this error must not fail
+			// later merely because a reader cannot find the original file.
+			if mode == "header-sidecar" {
+				if err := save(ctx, cp); err != nil {
+					return err
+				}
+			}
+			return errControlledReadStorage
+		}
+		return save(ctx, cp)
 	}
 	return h
 }
@@ -250,6 +259,13 @@ func installDurableTestFinding(t *testing.T, f *controlledReadDBFixture, h *dura
 func TestDurableAuditServerSyntheticFindingsAndFailures(t *testing.T) {
 	for _, mode := range []string{"success", "late-pause", "cancel-before-claim", "factory-error", "header", "intent", "result", "seal", "header-sidecar", "intent-sidecar", "final-sidecar", "source", "source-key", "root-revoke", "key-revoke", "epoch"} {
 		t.Run(mode, func(t *testing.T) {
+			var stages *durableStageLog
+			if strings.HasSuffix(mode, "-sidecar") {
+				stages = &durableStageLog{}
+				previous := log.Writer()
+				log.SetOutput(stages)
+				defer log.SetOutput(previous)
+			}
 			var hits atomic.Int64
 			var host *durableTestHost
 			target := controlledReadTarget(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +404,41 @@ func TestDurableAuditServerSyntheticFindingsAndFailures(t *testing.T) {
 				if !host.fileError.Load() {
 					t.Fatal("sidecar fault injection did not execute")
 				}
+				category, phase, revision, sidecarSequence := "header_sidecar", auditcheckpoint.Open, uint64(1), uint64(0)
+				if mode == "intent-sidecar" {
+					category, revision = "record_sidecar", 2
+				}
+				if mode == "final-sidecar" {
+					category, phase, revision, sidecarSequence = "final_sidecar", auditcheckpoint.Sealed, 6, 4
+					if hits.Load() != 2 {
+						t.Fatal("final sidecar failure did not preserve completed HTTP observations")
+					}
+				}
+				if !strings.Contains(stages.String(), "[controlled-read] publisher_failed reason="+category) ||
+					strings.Contains(stages.String(), "synthetic private auth error") || host.sourceCalls.Load() != 0 {
+					t.Fatal("sidecar failure was masked by a downstream failure or leaked raw errors")
+				}
+				host.mu.Lock()
+				binding := host.last
+				host.mu.Unlock()
+				checkpoints, err := auditcheckpoint.New(f.m.pg.DB, host, auditlog.ExtensionLimits{MaxBytes: 1 << 20, MaxEvents: 16, Timeout: time.Second})
+				if err != nil {
+					t.Fatal(err)
+				}
+				head, err := checkpoints.Head(context.Background(), auditcheckpoint.Query{Epoch: host.epoch, Binding: binding})
+				if err != nil || head.Phase != phase || head.Revision != revision {
+					t.Fatal("sidecar fault did not stop at the intended durable phase")
+				}
+				path := filepath.Join(host.dir, head.Checkpoint.JournalID+".checkpoint")
+				info, err := os.Stat(path)
+				if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+					t.Fatal("sidecar fault removed the valid existing file")
+				}
+				body, err := os.ReadFile(path)
+				var retained auditlog.Checkpoint
+				if err != nil || json.Unmarshal(body, &retained) != nil || retained.Sequence != sidecarSequence || retained.Scope != head.Checkpoint.Scope {
+					t.Fatal("sidecar fault did not preserve the expected readable checkpoint")
+				}
 			}
 		})
 	}
@@ -419,11 +470,209 @@ func TestDurableAuditOpaqueHTTPDrainAndCloseWitness(t *testing.T) {
 }
 
 func TestDurableAuditConstructorAndConfigAreNotJSONAuthority(t *testing.T) {
-	if server, err := NewWithDurableControlledReadHost(context.Background(), nil, "", "", "", ControlledReadDurableHostOptions{}); server != nil || err == nil {
-		t.Fatal("strict constructor fell back without factory")
-	}
 	data, err := json.Marshal(ControlledReadPublisherPlan{Host: &durableTestHost{}, PublisherRef: "private-ref", Epoch: auditcheckpoint.Epoch{StoreRef: "private-store"}})
 	if err != nil || string(data) != "{}" {
 		t.Fatal("Go host capability leaked to JSON")
 	}
+}
+
+func TestDurableAuditStrictConstructorUsesFactoryWithValidHost(t *testing.T) {
+	for _, mode := range []string{"nil", "success", "factory-error"} {
+		t.Run(mode, func(t *testing.T) {
+			var hits, calls atomic.Int64
+			target := controlledReadTarget(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+			f := newControlledVerificationDBFixture(t, target.URL)
+			h := installDurableTestPublisher(t, f, "success")
+			original := f.e.controlledReads.publisher.factory
+			modeHost := f.e.controlledReads.mode.host
+			t.Setenv("ARTEX_E2_SNAPSHOT_DIR", f.store.snapshotDir)
+			t.Setenv("ARTEX_E2_STATE_DIR", f.store.stateDir)
+			t.Setenv("ARTEX_LLM_API_KEY", "")
+			t.Setenv(notifyBackgroundDisabledEnv, "1")
+			// Fixed isolated values avoid issuing auth keys or setup tokens.
+			// No authentication endpoint is invoked.
+			previousPassHash, hadPassHash, err := f.m.pg.GetSetting(authPassKey)
+			if err != nil {
+				t.Fatal("auth setting snapshot unavailable")
+			}
+			// Restore before fixture cleanup closes the shared test DB, including
+			// the early nil-factory return and failed construction paths.
+			t.Cleanup(func() {
+				var restoreErr error
+				if hadPassHash {
+					restoreErr = f.m.pg.SetSetting(authPassKey, previousPassHash)
+				} else {
+					_, restoreErr = f.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, authPassKey)
+				}
+				if restoreErr != nil {
+					t.Error("auth setting restore failed")
+				}
+			})
+			if err := f.m.pg.SetSetting(authPassKey, "synthetic-disabled-login"); err != nil {
+				t.Fatal(err)
+			}
+			keyDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(keyDir, jwtKeyFilename), bytes.Repeat([]byte("s"), 32), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			factory := ControlledReadPublisherFactory(func(ctx context.Context, req ControlledReadPublisherRequest) (ControlledReadPublisherPlan, error) {
+				calls.Add(1)
+				if mode == "factory-error" {
+					return ControlledReadPublisherPlan{}, errors.New("synthetic-private-factory-error")
+				}
+				return original(ctx, req)
+			})
+			if mode == "nil" {
+				factory = nil
+			}
+			lifecycle, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			s, err := NewWithDurableControlledReadHost(lifecycle, f.m, t.TempDir(), t.TempDir(), keyDir, ControlledReadDurableHostOptions{
+				Host: ControlledReadHostOptions{Mode: modeHost, Findings: func(context.Context, ControlledReadVerificationRequest) (ControlledReadFindingPlan, error) {
+					return ControlledReadFindingPlan{}, ErrControlledFindingUnavailable
+				}}, Publisher: factory,
+			})
+			if mode == "nil" {
+				if s != nil || !errors.Is(err, ErrControlledReadHostConfiguration) {
+					t.Fatalf("nil factory accepted with otherwise valid host: %v", err)
+				}
+				return
+			}
+			if err != nil || s == nil || s.engine.controlledReads.publisher == nil || s.engine.controlledReads.verification == nil {
+				t.Fatalf("valid strict bootstrap did not install publisher and findings: %v", err)
+			}
+			f.s, f.e, f.store = s, s.engine, s.engine.controlledReads.store
+			// Only the finite fake Worker fixture owns execution.
+			f.e.started.Store(f.task.ID, true)
+			f.e.Pause(f.task.ID, errors.New("synthetic paused"))
+			f.registerAndResume(t)
+			if err := f.intentState("running"); err != nil {
+				t.Fatal(err)
+			}
+			_, finish, err := f.e.prepareControlledRead(context.Background(), f.task, f.intent)
+			if mode == "factory-error" {
+				if err == nil || finish != nil || calls.Load() != 1 || hits.Load() != 0 {
+					t.Fatalf("failed factory fell back: err=%v factory=%d hits=%d", err, calls.Load(), hits.Load())
+				}
+				journals, globErr := filepath.Glob(filepath.Join(h.dir, "*.jsonl"))
+				if globErr != nil || len(journals) != 0 {
+					t.Fatal("factory failure created a local-only journal")
+				}
+				return
+			}
+			if err != nil || finish == nil || calls.Load() != 1 {
+				t.Fatalf("execution did not use installed factory: %v / %d", err, calls.Load())
+			}
+			if err := finish(false); err == nil {
+				t.Fatal("test cleanup sealed unexecuted work")
+			}
+			var registrations int
+			if err := f.m.pg.QueryRow("SELECT count(*) FROM audit_checkpoint_history WHERE store_ref=$1", h.epoch.StoreRef).Scan(&registrations); err != nil || registrations != 1 || h.rootReleased.Load() != 1 {
+				t.Fatalf("strict execution did not durably register/abort its publisher: %v", err)
+			}
+		})
+	}
+}
+
+func TestDurableAuditConfigureRequiresModeAndIdleRuntime(t *testing.T) {
+	f := newControlledVerificationDBFixture(t, "http://127.0.0.1:1")
+	r := f.e.controlledReads
+	factory := ControlledReadPublisherFactory(func(context.Context, ControlledReadPublisherRequest) (ControlledReadPublisherPlan, error) {
+		t.Fatal("configuration invoked execution factory")
+		return ControlledReadPublisherPlan{}, ErrControlledReadPublisher
+	})
+	mode := r.mode
+	r.mode = nil
+	if err := f.s.ConfigureControlledReadPublisher(factory); !errors.Is(err, ErrControlledReadPublisher) {
+		t.Fatal("publisher configured without task mode")
+	}
+	r.mode = mode
+	key := controlledWorkKey{task: f.task.ID, intent: f.intent.ID}
+	r.pending[key] = controlledReadSpec{}
+	if err := f.s.ConfigureControlledReadPublisher(factory); !errors.Is(err, ErrControlledReadPublisher) {
+		t.Fatal("publisher configured after pending admission")
+	}
+	delete(r.pending, key)
+	r.active[key] = true
+	if err := f.s.ConfigureControlledReadPublisher(factory); !errors.Is(err, ErrControlledReadPublisher) {
+		t.Fatal("publisher configured during active execution")
+	}
+	delete(r.active, key)
+	if err := f.s.ConfigureControlledReadPublisher(factory); err != nil {
+		t.Fatalf("idle configured-mode control failed: %v", err)
+	}
+}
+
+type mismatchedPublisherRoot struct {
+	auditpublisher.RootScope
+	dir string
+}
+
+func (r mismatchedPublisherRoot) Directory() string { return r.dir }
+
+func TestDurableAuditRejectsDifferentJournalDirectory(t *testing.T) {
+	f := newControlledVerificationDBFixture(t, "http://127.0.0.1:1")
+	h := installDurableTestPublisher(t, f, "success")
+	stages := &durableStageLog{}
+	previous := log.Writer()
+	log.SetOutput(stages)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	r := f.e.controlledReads
+	original := r.publisher.factory
+	r.publisher.factory = func(ctx context.Context, req ControlledReadPublisherRequest) (ControlledReadPublisherPlan, error) {
+		p, err := original(ctx, req)
+		p.RootScope = mismatchedPublisherRoot{RootScope: p.RootScope, dir: t.TempDir()}
+		return p, err
+	}
+	spec, err := f.store.load(f.task.ID, f.intent.ID, "approved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(spec.Key)
+	scope := transmit.Scope{RunRef: "synthetic-directory", TaskRef: f.task.ID, CaseRef: spec.CaseRef, ResetRef: spec.ResetRef, PolicyRef: spec.PolicyRef}
+	if journal, err := r.openPublishedJournal(context.Background(), r.publisher, spec, scope); journal != nil || !errors.Is(err, ErrControlledReadPublisher) || h.rootReleased.Load() != 1 {
+		t.Fatalf("different journal directory accepted or root leaked: %v", err)
+	}
+
+	// The downstream Open also rejects a different directory. Pin the local
+	// category so removing this guard cannot hide behind that later rejection.
+	if strings.Count(stages.String(), "[controlled-read] publisher_failed reason=root_scope") != 1 {
+		t.Fatal("directory guard was masked by a downstream publisher failure")
+	}
+}
+
+func TestDurableAuditRootReleaseStopsLifecycleCallbackOnce(t *testing.T) {
+	var stopped, cancelled atomic.Int64
+	h := &durableTestHost{}
+	anchor, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := &controlledPublisherRoot{
+		real:   &durableTestRoot{h: h, anchor: anchor},
+		stop:   func() bool { stopped.Add(1); return true },
+		cancel: func() { cancelled.Add(1) },
+	}
+	root.Release()
+	root.Release()
+	if stopped.Load() != 1 || cancelled.Load() != 1 || h.rootReleased.Load() != 1 {
+		t.Fatal("Release failed to stop the callback and release each owned resource once")
+	}
+}
+
+type durableStageLog struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (w *durableStageLog) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buffer.Write(b)
+}
+
+func (w *durableStageLog) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buffer.String()
 }

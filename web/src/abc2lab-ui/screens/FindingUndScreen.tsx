@@ -3,7 +3,7 @@ import { TopBar } from '../components/TopBar';
 import { MockBanner, Pill, Sev, Strong, VerdictBadge } from '../components/ui';
 import { useGo } from '../nav';
 
-const bodyText = { fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.7, margin: 0 } as const;
+const bodyText = { fontSize: 14, color: 'var(--muted)', lineHeight: 1.7, margin: 0 } as const;
 
 /** ===== 발견 상세 · 판단 불가 ===== */
 export default function FindingUndScreen() {
@@ -33,7 +33,7 @@ export default function FindingUndScreen() {
           </h1>
           <div
             className="ep"
-            style={{ fontFamily: 'var(--mono)', fontSize: 12.5, color: 'var(--muted)' }}
+            style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--muted)' }}
           >
             POST /api/checkout · price_override
           </div>
@@ -52,9 +52,9 @@ export default function FindingUndScreen() {
           >
             <h3 style={{ color: 'var(--warn)' }}>왜 &quot;판단 불가&quot;인가</h3>
             <p
-              style={{ fontSize: 13.5, color: 'var(--warn)', lineHeight: 1.7, margin: '0 0 10px' }}
+              style={{ fontSize: 14, color: 'var(--warn)', lineHeight: 1.7, margin: '0 0 10px' }}
             >
-              이건 <strong>상태를 바꾸는 요청</strong>이라 전송 통제(E²)가 보내기 전에 막아뒀어요.
+              이건 <strong>상태를 바꾸는 요청</strong>이라 전송 통제(E②)가 보내기 전에 막아뒀어요.
               사람이 승인하기 전까진 실제로 보내지 않았고, 그래서{' '}
               <strong>취약한지 아닌지 결론을 내리지 못했어요.</strong>
             </p>
@@ -70,7 +70,7 @@ export default function FindingUndScreen() {
               style={{
                 margin: 0,
                 paddingLeft: 18,
-                fontSize: 13.5,
+                fontSize: 14,
                 color: 'var(--muted)',
                 lineHeight: 1.8,
               }}
