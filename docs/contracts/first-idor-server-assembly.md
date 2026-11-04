@@ -1,6 +1,9 @@
 # 첫 IDOR 서버 조립 경계
 
-상태: C의 감사 bootstrap 연결 구현. 실제 입력·운영 공급자 연결과 실제 진단 완료를 뜻하지 않는다.
+상태: 기존 C bootstrap을 보존하고 최신 선행·A/B·Config handle을 결합했다.
+전체 finalization scope는 세션2의 충돌 보완 인계 대기다. 실제 진단은 미실행이다.
+
+아래 기존 설계·수치는 최초 #166 제출 당시 기록이며, 최신 상태는 마지막 재개 기록을 따른다.
 
 ## 생성 순서와 호환성
 
@@ -92,3 +95,48 @@ A/B 완료물을 확인한 뒤 실제 연결로 간다.
 실패 0건이다(부모 test를 포함한 pass 이벤트 67건).
 `go vet ./server`, `go build ./...`, gofmt·diff 검사와 독립 리뷰를 수행했다.
 실제 PostgreSQL·실제 LLM·Juice Shop 진단과 종료 orchestration 시험은 미실행이다.
+
+
+## 2026-11-04 재개: 선행 결합과 정확한 대기 지점
+
+재개 시 확인한 dev는 `b1ebc71d3fad5833308619f5dfd221496a2c5ac1`이다.
+현재 제품 코드 통합 기준은 `931354e3a6a260abff040168a3015e382fdd7572`이며
+기존 C `fc36aa41804188c06513c62b8d5d75af63bc776a`를 조상으로 보존한다.
+
+| 받은 결과 | 통합한 SHA / 상태 |
+|---|---|
+| #151 | `3c9ee431c5846822d38e86d15207affa37130378` |
+| #156 | `ef17137e76df4d80fd10017e29e2ef7496341e24` |
+| #157 | `cbdf6a82dc3317eab3ebe6c0de4abb24f449a80a` |
+| A #165 | `7d5516f132b91d57ea0ff7819688dee10e0d4dd9` |
+| Config handle #171 | `dd7d962cfd8010de0d1aac4115998900de58fa7e` |
+| 보존 B | `acd5333d8a23db9743a8c40b1c399f6deee784bb` |
+| finalization scope | `ee508a4d6bd455a37259c2fae40d968ad9c96355` 확인, **미통합** |
+
+선행·A/B·handle은 정상 merge했다. 닫힌 후행 PR을 다시 열지 않았으며,
+보존 분기의 존재나 C 통합을 dev 반영으로 취급하지 않는다.
+Config handle의 `View/Bind`는 있으나 runtime → verification → Resolver 전달은
+세션1의 미완료다. C는 별도 Config로 handle을 만들어 실제 출처인 것처럼 대체하지 않는다.
+
+scope merge는 `server/controlled_read_e3.go`의 reader 한 구간에서 #159와 충돌해
+해당 merge만 abort했다. **사용자는 C의 수동 해소 대신 세션2의 보완 인계 대기를 선택했다.**
+세션2 보완 시 기존 `revisionSource` 분기와 `revisionErr` 분류를 유지하면서
+그 전후의 `checkScope()`를 결합해야 한다. scope 획득은 collector mutex 밖에서,
+revision Source A/B·descriptor I/O·SQL Issue·Prepare·최종 save 반환까지 보유해야 한다.
+기존 revision 서비스를 버리는 일반 Findings 재설정으로 충돌을 우회하면 안 된다.
+
+현재 `NewWithControlledReadAssembly`는 감사 결속을 요구하지만 전체 finalization scope의
+필수성을 강제하는 C 연결은 아직 없다. 이 hook의 보완·strict 주입 전에는 실제 기동 조건을
+충족하지 않는다. B의 `Bind/Revoke/Close` 어댑터를 실제 authority·감독자의 대체물로 쓰지 않는다.
+`cmd/first-controlled-diagnosis`는 미작성이며 빈 실행 도구나 가짜 producer를 추가하지 않았다.
+
+통합 기준의 소유 폐기용 PostgreSQL16 회귀는 다음과 같다. 모두 실제 DB와 합성 공급자 시험이다.
+
+- host 수명 + revision 복구: **130 leaf pass / 0 skip / 0 fail**.
+- C·감사 Source·revision 연결·strict 생성자·A·Config handle: **122 leaf pass / 0 skip / 0 fail**.
+- 관련 vet, 전체 build, gofmt·diff 검사 통과. 고유 라벨의 시험 컨테이너 제거 확인.
+
+실제 운영 담당자·보호된 자료 경로는 사용자 확인상 미정이다.
+[기존 입력 대장](first-idor-host-inputs.md)의 실제 session/승인/KG/fixture·RootTrust/key/epoch·
+복원/자식 추적·모델/대상/DB/state 자료가 필요하다. 실제 LLM·Juice Shop 회차와
+같은 execution의 전송·감사·판정·revision·저장·결과 조회 대조는 미실행이다.
