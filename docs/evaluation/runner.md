@@ -37,7 +37,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | 분류 매핑 | 평가자가 검토한 원본 분류 → 평가 `vuln_class`·자산 type 매핑 JSON(형식은 `baseline_extract.py`, 8MiB 이하·중복 키 거부). baseline·개선 후가 **같은 파일**을 쓴다. 원본 SHA-256이 `findings.json`에 남아 집계에서 대조한다. 매핑에 없는 값은 실패가 아니라 `null` + `unmapped_fields`로 남는다 |
 | `runs_root` | 러너 uid 소유·정확히 0700 디렉터리. 회차마다 그 아래에 새 디렉터리를 만든다 |
 | CA 묶음 | api 백엔드에서 게이트웨이가 쓸 호스트의 TLS 신뢰 묶음 경로(읽기 전용 마운트) |
-| LLM 고정 조건 | api: 고정할 제공자 전체 slug(사전검사 `llm.provider`, 정밀도까지 고정하려면 `deepinfra/fp8`처럼 엔드포인트 tag)와 그 응답 표시 이름(설정 `expected_provider_name`, 변형 없이 예: `DeepInfra`)을 팀이 함께 정한다. local: 로컬 서버를 고정 IP에만 바인딩 |
+| LLM 고정 조건 | api: 고정할 제공자 전체 slug(사전검사 `llm.provider`. `deepinfra/fp8` 같은 변형 tag도 접두 매칭이라 단일 엔드포인트·정밀도를 보장하지 않으며, 정밀도 고정 근거는 프로토콜 §6의 메타데이터 확인을 거쳐야 함)와 그 응답 표시 이름(설정 `expected_provider_name`, 변형 없이 예: `DeepInfra`)을 팀이 함께 정한다. local: 로컬 서버를 고정 IP에만 바인딩 |
 
 ## 설정(`runner.json`, 비밀 없음, 레포 밖)
 
@@ -203,8 +203,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   엔진은 계속 돌므로 보통 그 값은 seal 시점 이상이지만, 그사이 사용량이 줄었을 가능성(예: DB 정리)은 배제하지 못한다. 측정 전에
   끝난 회차는 `tmpfs_usage: "not_measured"`이고 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다.
 - **아직 실측하지 않은 것:** 평가 머신에서의 같은 항목들. api 백엔드의 엔드포인트 tag(`deepinfra/fp8`) 회차는 11/03 개발 머신에서 1회만 돌렸고,
-  이 브랜치 단독이 아니라 #140·drain 유예(#153)를 합친 트리였다(완료·서명, generation 27건의 응답 제공자 전부 `DeepInfra`). 정밀도는
-  요청 고정 근거로만 확인된다(프로토콜 §6).
+  이 브랜치 단독이 아니라 #140·drain 유예(#153)를 합친 트리였다(완료·서명, generation 27건의 응답 제공자 전부 `DeepInfra`). 실측한 것은
+  그 slug가 요청에서 수락되고 응답 제공자가 DeepInfra였다는 것까지이고, 그 회차의 단일 엔드포인트·정밀도는 확인하지 않았다(프로토콜 §6).
 
 ## 스모크 실측 (11/03, 개발 머신)
 

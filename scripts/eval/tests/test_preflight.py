@@ -201,8 +201,9 @@ class TestCheckPreflight(unittest.TestCase):
             payload["ours"]["network_mode"] = value
             self.reject(payload, "ours.network_mode: INVALID")
 
-    def test_api_provider_may_pin_one_endpoint_variant(self):
-        # OpenRouter 엔드포인트 tag(`slug/변형`, 예: deepinfra/fp8)는 그 정밀도 엔드포인트 하나로 고정한다.
+    def test_api_provider_accepts_one_variant_segment(self):
+        # OpenRouter 엔드포인트 tag(`slug/변형`, 예: deepinfra/fp8)를 문법상 한 단계까지 받는다. 접두 매칭이라
+        # 단일 엔드포인트·정밀도 보장은 아니다(평가 프로토콜 §6).
         for provider in ("deepinfra", "deepinfra/fp8", "atlas-cloud/fp8", "deepinfra/turbo", "a.b_c-d/e.f_g-h"):
             with self.subTest(provider=provider):
                 payload = configuration()
