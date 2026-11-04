@@ -8,11 +8,11 @@ import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
 
 const noticeBox = {
-  fontSize: 12.5,
+  fontSize: 13,
   color: "var(--muted)",
   background: "var(--surface-2)",
   border: "1px dashed var(--line-2)",
-  borderRadius: 8,
+  borderRadius: 6,
   padding: "10px 12px",
   marginBottom: 14,
 } as const;
@@ -99,7 +99,7 @@ export default function AccessMapScreen() {
                       {data.resources.map((r) => (
                         <th key={r.id}>
                           {r.label}
-                          <span style={{ display: "block", fontSize: 10.5, fontWeight: 500, color: "var(--faint)" }}>
+                          <span style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--faint)" }}>
                             소유 {r.ownerRef}
                           </span>
                         </th>
