@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"time"
 )
@@ -59,6 +60,28 @@ func storageInspectionError(ctx context.Context, stage string) error {
 	return storageInspectionFailure(stage)
 }
 
+// Keep diagnostics useful without retaining driver errors, which may contain
+// SQL, schema names, credentials or server messages. Only a validated SQLSTATE
+// and a fixed call-site stage enter the log; public errors remain unchanged.
+func storageInspectionDriverError(ctx context.Context, stage string, cause error) error {
+	state := "unavailable"
+	var coded interface{ SQLState() string }
+	if errors.As(cause, &coded) {
+		candidate := coded.SQLState()
+		valid := len(candidate) == 5
+		for i := 0; i < len(candidate); i++ {
+			if !(candidate[i] >= '0' && candidate[i] <= '9' || candidate[i] >= 'A' && candidate[i] <= 'Z') {
+				valid = false
+			}
+		}
+		if valid {
+			state = candidate
+		}
+	}
+	log.Printf("[controlled-read] storage_inspection_failed stage=%s sqlstate=%s", stage, state)
+	return storageInspectionError(ctx, stage)
+}
+
 type storageInspectionObject struct{ name, columns string }
 
 // The inventory covers direct CPD/revision and initial E3 SQL plus the base
@@ -76,7 +99,8 @@ func storageInspectionObjects() []storageInspectionObject {
 		{"e3_oracle_verdicts", "id:int8 record_version:int2 payload_canonical:bytea payload:jsonb payload_digest:bytea oracle_value:text"},
 		{"e3_verdict_issuances", "id:int8 verdict_id:int8 manifest_id:int8 task_id:int8 exploration_id:int8 intent_id:int8 mode_version:int8 purpose:text execution_ref:text case_ref:text resource_ref:text eval_run_id:text model_tag:text reset_generation:text kg_snapshot_ref:text kg_policy_version:text kg_snapshot_digest:bytea harness_generation_ref:text target_instance_ref:text operation_key:bytea input_digest:bytea binding_canonical:bytea"},
 		{"e3_verdict_links", "id:int8 issuance_id:int8 task_id:int8 finding_id:int8 purpose:text evidence_version:int8"},
-		{"tasks", "id:int8 exploration_id:int8"},
+		{"tasks", "id:int8 exploration_id:int8 deleted_at:timestamptz"},
+		{"task_archives", "task_id:int8 state:text"},
 		{"explorations", "id:int8"},
 		{"task_control_modes", "task_id:int8 mode:text version:int8"},
 		{"exploration_nodes", "id:int8 exploration_id:int8 kind:text payload:jsonb priority:int4 state:text origin:text"},
@@ -102,12 +126,12 @@ func (s *Server) InspectControlledReadStorage(ctx context.Context) (out Controll
 	}
 	tx, err := s.m.pg.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
-		return out, storageInspectionError(ctx, "transaction")
+		return out, storageInspectionDriverError(ctx, "transaction", err)
 	}
 	defer func() {
 		rollbackErr := tx.Rollback()
 		if err == nil && rollbackErr != nil {
-			out, err = ControlledReadStorageReport{}, storageInspectionError(ctx, "rollback")
+			out, err = ControlledReadStorageReport{}, storageInspectionDriverError(ctx, "rollback", rollbackErr)
 		}
 	}()
 	out.ResolutionBasis = "inspected_connection_search_path"
@@ -157,7 +181,7 @@ func inspectStorageRelation(ctx context.Context, tx *sql.Tx, spec storageInspect
 	var oid sql.NullInt64
 	var ordinary, selectAccess, insertAccess, updateAccess sql.NullBool
 	if err := tx.QueryRowContext(ctx, storageInspectionRelationSQL, spec.name).Scan(&fact.NameObservedInCatalog, &fact.Resolved, &oid, &ordinary, &selectAccess, &insertAccess, &updateAccess); err != nil {
-		return ControlledReadStorageRelation{}, storageInspectionError(ctx, "catalog")
+		return ControlledReadStorageRelation{}, storageInspectionDriverError(ctx, "catalog", err)
 	}
 	if !fact.Resolved {
 		return fact, nil
@@ -187,21 +211,24 @@ func inspectStorageRelation(ctx context.Context, tx *sql.Tx, spec storageInspect
 	}
 	rows, queryErr := tx.QueryContext(ctx, storageInspectionColumnsSQL, oid.Int64, encoded)
 	if queryErr != nil {
-		return ControlledReadStorageRelation{}, storageInspectionError(ctx, "columns")
+		return ControlledReadStorageRelation{}, storageInspectionDriverError(ctx, "columns", queryErr)
 	}
 	defer func() {
 		if closeErr := rows.Close(); err == nil && closeErr != nil {
-			fact, err = ControlledReadStorageRelation{}, storageInspectionError(ctx, "columns_close")
+			fact, err = ControlledReadStorageRelation{}, storageInspectionDriverError(ctx, "columns_close", closeErr)
 		}
 	}()
 	for rows.Next() {
 		var column ControlledReadStorageColumn
 		if scanErr := rows.Scan(&column.Name, &column.Present, &column.BuiltinTypeMatches); scanErr != nil {
-			return ControlledReadStorageRelation{}, storageInspectionError(ctx, "columns")
+			return ControlledReadStorageRelation{}, storageInspectionDriverError(ctx, "columns", scanErr)
 		}
 		fact.Columns = append(fact.Columns, column)
 	}
-	if rows.Err() != nil || len(fact.Columns) != len(columns) {
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return ControlledReadStorageRelation{}, storageInspectionDriverError(ctx, "columns", rowsErr)
+	}
+	if len(fact.Columns) != len(columns) {
 		return ControlledReadStorageRelation{}, storageInspectionError(ctx, "columns")
 	}
 	return fact, nil

@@ -2,7 +2,7 @@
 
 ## 상태와 호출
 
-선행 #159 head `32bd87f77460953f2a60a5de3cdc391cc0b75758` 기반의 명시적인 trusted Go 진단이다.
+선행 #159 head `40b26d010d1620f3c4f03d788c714de3aed5ca18` 기반의 명시적인 trusted Go 진단이다.
 `(*Server).InspectControlledReadStorage(ctx)`는 실제 `s.m.pg.DB`만 사용한다.
 기본 startup·HTTP·CLI·등록·전송·최종화에는 연결하지 않는다. 응답에 종합 ready/허용 판정은 없다.
 
@@ -12,7 +12,7 @@
 
 ## 고정 검사 범위
 
-이 단위는 다음 16개 관계와 직접 SQL이 쓰는 고정 column/builtin type 목록만 검사한다.
+이 단위는 다음 17개 관계와 직접 SQL이 쓰는 고정 column/builtin type 목록만 검사한다.
 범위는 해당 head의 `auditcheckpoint/store.go`, `evidencerevision` 저장 SQL,
 `db/e3_findings.go` 및 관련 schema의 직접 참조에서 정했다. 그 함수들이 부르는 모든 helper의
 추가 의존성까지 검사하는 목록은 아니다.
@@ -20,7 +20,7 @@
 - CPD: audit_checkpoint_epochs/history/heads/operations.
 - revision: evidence_revision_initials/operations.
 - 최초 E③: e3_evidence_manifests, e3_oracle_verdicts, e3_verdict_issuances, e3_verdict_links.
-- 직접 결속/저장 기반: tasks, explorations, task_control_modes, exploration_nodes,
+- 직접 결속/저장 기반: tasks(deleted_at 포함), task_archives(task_id/state), explorations, task_control_modes, exploration_nodes,
   exploration_edges, findings.
 
 새 SQL 객체·새 key registry 검사·migration·수리·쓰기 권한 부여는 하지 않는다.
@@ -34,6 +34,8 @@ transaction으로 `pg_catalog`만 읽고 rollback한다. caller의 더 짧은 de
 이는 연결/rollback 정리까지 포함한 벽시계 반환 SLA가 아니다. DDL/DML·row lock·
 sequence allocation·migration·commit을 하지 않는다. 실패/취소/timeout/rollback 오류는
 고정 사유와 빈 report로 반환하며 일부 결과를 정상 report로 반환하지 않는다.
+driver 실패 로그에는 고정 stage와 검증된 5자리 SQLSTATE(없거나 형식이 다르면 unavailable)만 남긴다.
+원시 오류·SQL·schema/role 이름·DSN을 로그에 추가하거나 반환 오류의 cause로 연결하지 않는다.
 
 `resolution_basis=inspected_connection_search_path`는 **그 연결의 실제 search_path**로
 고정된 비한정 관계 이름을 해석했다는 뜻이다. 실제 저장 SQL도 비한정 이름을 쓰지만 다른 pool 연결이나
@@ -65,15 +67,20 @@ UPDATE로도 허용될 수 있다. [PostgreSQL 16 SELECT 문서](https://www.pos
 
 고정 `unassessed`는 위 항목 외에도 host/root/epoch/key 신뢰, search_path 신뢰와 다른 연결,
 mode/archive 및 다른 helper 의존성, 간접 notification 저장, 내구성과 미래 실행을 명시한다.
-예를 들어 helper가 쓰는 task의 추가 상태 column이나 task_archives까지 검사했다는 뜻은 아니다.
+직접 revision SQL의 tasks.deleted_at과 task_archives.task_id/state는 포함하지만,
+archive/mode helper의 나머지 column·상태 전이·정책 의미와 간접 의존성까지 검사했다는 뜻은 아니다.
 진단이 actual authority lease를 발급하지 않는다.
 
 ## 검증과 제한
 
-wrapper가 실제 CID/name/label을 확인한 소유 폐기용 PG16에서만 fixture schema와 NOLOGIN role을 만든다.
-운영 DB·host 계정/권한은 바꾸지 않는다. 실제 ARTEX 및 CPD/revision migration을 적용한 schema와
+레포에 container CID/name/label 소유를 확인하는 wrapper는 없다. 시험 가드는
+`ARTEX_STORAGE_INSPECTION_OWNED_PG`의 `codex-owned-pg-v1:<64hex>` **형식 검사뿐이며 소유 증명이 아니다**.
+시험은 연결한 DB에서 CREATE/DROP SCHEMA와 CREATE/DROP ROLE을 실행한다. 따라서 실행자가 별도로
+소유와 폐기를 확인한 전용 PG16 DB만 `ARTEX_STORAGE_INSPECTION_TEST_DSN`으로 공급해야 한다.
+운영·공유·소유 미확인 DB에는 실행하지 않는다. DSN이 없으면 실제 PG 시험은 SKIP이며 PASS로 계산하지 않는다. 실제 ARTEX 및 CPD/revision migration을 적용한 schema와
 누락/부분/wrong-type fixture, search_path 우선순위·schema USAGE 부족, 개별 table 권한과 column grant,
-취소/deadline·실제 pool 대기 중 내부 context deadline 취소, 잘못된 config를 검사한다.
+취소/deadline의 고정 사유·실제 pool 대기 중 내부 context deadline 취소, 잘못된 config를 검사한다.
+PG16의 schema USAGE 부재는 to_regclass NULL에 따른 미해석 사실로 단언한다.
 네트워크 장애나 rollback 정리의 최대 시간을 실측한 시험은 아니다. 사용자 schema의 실제 text=text 연산자가
 대조 쿼리에서는 예외를 내지만 한정된 진단 쿼리에서는 실행되지 않는 것도 검사한다.
 
@@ -81,3 +88,7 @@ side-effect view의 sequence가 증가하지 않고, 실제 driver가 read-only 
 수행하는지 검사한다. 이 검증은 실제 DB catalog 조회이며 mock 성공으로 계산하지 않는다.
 호출의 실제 table payload 평가·키 읽기·전원 장애·운영 격리·실제 Juice Shop 회차는 검증하지 않는다.
 fixture의 합성 권한과 실제 운영 권위는 구분한다.
+
+네트워크 없는 합성 driver 회귀는 repeatable-read/read-only/deadline과 rollback, 첫 관계 이후
+실패 시 빈 report, catalog 이름 미관찰, 고정 오류·원시 cause 비연결·SQLSTATE-only 로그를 검사한다.
+이는 실제 PG 회귀를 대체하지 않으며 로컬 소유 DB가 없을 때 실제 PG 결과를 주장하지 않는다.

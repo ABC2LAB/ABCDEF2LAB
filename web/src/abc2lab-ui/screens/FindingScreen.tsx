@@ -3,15 +3,15 @@ import { TopBar } from '../components/TopBar';
 import { Pill, Sev, Strong, Sub, VerdictBadge } from '../components/ui';
 import { useGo } from '../nav';
 
-const bodyText = { fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.7, margin: 0 } as const;
+const bodyText = { fontSize: 14, color: 'var(--muted)', lineHeight: 1.7, margin: 0 } as const;
 const listText = {
   margin: 0,
   paddingLeft: 18,
-  fontSize: 13.5,
+  fontSize: 14,
   color: 'var(--muted)',
   lineHeight: 1.8,
 } as const;
-const cellSub = { color: 'var(--muted)', fontSize: 12 } as const;
+const cellSub = { color: 'var(--muted)', fontSize: 13 } as const;
 
 /** ===== 발견 상세 · 확정 ===== */
 export default function FindingScreen() {
@@ -27,11 +27,11 @@ export default function FindingScreen() {
           </div>
           <div
             style={{
-              fontSize: 12.5,
+              fontSize: 13,
               color: 'var(--warn)',
               background: 'var(--warn-weak)',
               border: '1px solid var(--warn-border)',
-              borderRadius: 8,
+              borderRadius: 6,
               padding: '10px 12px',
               marginBottom: 14,
             }}
@@ -53,7 +53,7 @@ export default function FindingScreen() {
           </h1>
           <div
             className="ep"
-            style={{ fontFamily: 'var(--mono)', fontSize: 12.5, color: 'var(--muted)' }}
+            style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--muted)' }}
           >
             GET /api/orders/1012
           </div>
@@ -96,7 +96,7 @@ export default function FindingScreen() {
                       <code>200</code> · 본인 주문
                     </td>
                     <td>
-                      <span className="vbadge2 ok" style={{ fontSize: 11 }}>
+                      <span className="vbadge2 ok" style={{ fontSize: 12 }}>
                         정상
                       </span>
                     </td>
@@ -120,7 +120,7 @@ export default function FindingScreen() {
                       <span
                         className="vbadge2"
                         style={{
-                          fontSize: 11,
+                          fontSize: 12,
                           background: 'var(--danger-weak)',
                           color: 'var(--danger)',
                         }}
@@ -142,7 +142,7 @@ export default function FindingScreen() {
                       <code>302</code> · 로그인으로
                     </td>
                     <td>
-                      <span className="vbadge2 ok" style={{ fontSize: 11 }}>
+                      <span className="vbadge2 ok" style={{ fontSize: 12 }}>
                         정상 차단
                       </span>
                     </td>

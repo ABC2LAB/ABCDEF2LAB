@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/url"
 	"os"
 	"regexp"
@@ -18,11 +21,13 @@ import (
 	"github.com/Autumn-27/artex/evidencerevision"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// This fixture changes roles/schemas only in the parent-owned disposable
-// container verified by the wrapper. It authenticates no real execution host.
+// This fixture executes CREATE/DROP SCHEMA and ROLE. Its marker checks format
+// only, not ownership: supply an independently verified, owned disposable DB.
+// There is no repository wrapper that verifies container CID/name/labels.
 type storageInspectionFixture struct {
 	admin          *sql.DB
 	owner          *pgdb.DB
@@ -38,7 +43,7 @@ func newStorageInspectionFixture(t *testing.T, full bool) *storageInspectionFixt
 		t.Skip("owned storage inspection PostgreSQL not supplied")
 	}
 	if !regexp.MustCompile(`^codex-owned-pg-v1:[a-f0-9]{64}$`).MatchString(os.Getenv("ARTEX_STORAGE_INSPECTION_OWNED_PG")) {
-		t.Fatal("owned container guard required")
+		t.Fatal("owned disposable database marker format required; marker does not prove ownership")
 	}
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
@@ -197,7 +202,7 @@ func storageInspectionPrivilege(t *testing.T, r ControlledReadStorageRelation, n
 func TestControlledStorageInspectionActualMigrations(t *testing.T) {
 	f := newStorageInspectionFixture(t, true)
 	out := storageInspectionRun(t, f.owner.DB)
-	if len(out.Relations) != 16 || out.ResolutionBasis != "inspected_connection_search_path" || len(out.Unassessed) < 6 {
+	if len(out.Relations) != 17 || out.ResolutionBasis != "inspected_connection_search_path" || len(out.Unassessed) < 6 {
 		t.Fatal("report boundaries")
 	}
 	for _, r := range out.Relations {
@@ -229,7 +234,7 @@ func TestControlledStorageInspectionActualMigrations(t *testing.T) {
 func TestControlledStorageInspectionUnresolvedAndPartial(t *testing.T) {
 	f := newStorageInspectionFixture(t, false)
 	first := storageInspectionRelation(t, storageInspectionRun(t, f.owner.DB), "evidence_revision_initials")
-	if first.Resolved || first.OrdinaryTable != nil || len(first.Columns) != 0 || len(first.TablePrivileges) != 0 {
+	if first.NameObservedInCatalog || first.Resolved || first.OrdinaryTable != nil || len(first.Columns) != 0 || len(first.TablePrivileges) != 0 {
 		t.Fatal("unresolved relation was assessed as present/absent columns")
 	}
 	if _, err := f.owner.ExecContext(t.Context(), `CREATE TABLE evidence_revision_initials(revision TEXT,task_id BIGINT)`); err != nil {
@@ -267,14 +272,13 @@ func TestControlledStorageInspectionSearchPathAndSchemaUsage(t *testing.T) {
 	role := f.addRole(t)
 	denied := f.pool(t, []string{f.schema}, role, nil)
 	report, err := storageInspectionServer(denied).InspectControlledReadStorage(t.Context())
-	if err != nil { // Some supported configurations surface permission errors.
-		if !errors.Is(err, ErrControlledReadStorageInspection) || len(report.Relations) != 0 {
-			t.Fatal("permission error became absence report")
-		}
-		return
+	// In PG16 an inaccessible schema is skipped during unqualified resolution:
+	// to_regclass returns NULL, rather than a permission-error fallback.
+	if err != nil {
+		t.Fatal("PG16 schema USAGE absence must produce unresolved facts")
 	}
 	r := storageInspectionRelation(t, report, "evidence_revision_initials")
-	if !r.NameObservedInCatalog || r.Resolved || r.OrdinaryTable != nil || len(r.Columns) != 0 {
+	if !r.NameObservedInCatalog || r.Resolved || r.OrdinaryTable != nil || len(r.Columns) != 0 || len(r.TablePrivileges) != 0 {
 		t.Fatal("schema USAGE absence became object absence")
 	}
 }
@@ -341,8 +345,8 @@ func TestControlledStorageInspectionRejectsOperatorShadowing(t *testing.T) {
 }
 
 type storageInspectionTrace struct {
-	enabled, readOnly, unexpected atomic.Bool
-	selects, commits              atomic.Int64
+	enabled, readOnly, repeatableRead, unexpected atomic.Bool
+	selects, commits                              atomic.Int64
 }
 
 func (t *storageInspectionTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
@@ -353,6 +357,7 @@ func (t *storageInspectionTrace) TraceQueryStart(ctx context.Context, _ *pgx.Con
 	switch {
 	case strings.HasPrefix(sqlText, "begin"):
 		t.readOnly.Store(strings.Contains(sqlText, "read only"))
+		t.repeatableRead.Store(strings.Contains(sqlText, "repeatable read"))
 	case strings.HasPrefix(sqlText, "select"), strings.HasPrefix(sqlText, "with"):
 		t.selects.Add(1)
 	case strings.HasPrefix(sqlText, "rollback"):
@@ -389,7 +394,7 @@ func TestControlledStorageInspectionNoPayloadWriteOrSequence(t *testing.T) {
 	if f.owner.QueryRowContext(t.Context(), `SELECT last_value,is_called FROM inspection_probe`).Scan(&after, &afterCalled) != nil || before != after || beforeCalled != afterCalled {
 		t.Fatal("inspection evaluated payload/allocated sequence")
 	}
-	if !trace.readOnly.Load() || trace.selects.Load() == 0 || trace.commits.Load() != 0 || trace.unexpected.Load() {
+	if !trace.readOnly.Load() || !trace.repeatableRead.Load() || trace.selects.Load() == 0 || trace.commits.Load() != 0 || trace.unexpected.Load() {
 		t.Fatal("actual driver transaction was not read-only rollback")
 	}
 	var objects int
@@ -427,6 +432,13 @@ func TestControlledStorageInspectionCancellationAndBound(t *testing.T) {
 			if !errors.Is(err, ErrControlledReadStorageInspection) || len(out.Relations) != 0 || out.ResolutionBasis != "" {
 				t.Fatal("cancel/timeout returned facts")
 			}
+			want := "controlled_read_storage_inspection_unavailable:deadline"
+			if mode == "cancelled" {
+				want = "controlled_read_storage_inspection_unavailable:cancelled"
+			}
+			if err.Error() != want {
+				t.Fatalf("reason = %q, want %q", err.Error(), want)
+			}
 			if mode == "internal-bound" && time.Since(start) > 6*time.Second {
 				t.Fatal("internal inspection bound not honored")
 			}
@@ -437,13 +449,16 @@ func TestControlledStorageInspectionCancellationAndBound(t *testing.T) {
 func TestControlledStorageInspectionInvalidConfiguration(t *testing.T) {
 	for _, s := range []*Server{nil, {}, {m: &Manager{}}, {m: &Manager{pg: &pgdb.DB{}}}} {
 		out, err := s.InspectControlledReadStorage(t.Context())
-		if !errors.Is(err, ErrControlledReadStorageInspection) || len(out.Relations) != 0 {
+		if !errors.Is(err, ErrControlledReadStorageInspection) || err.Error() != "controlled_read_storage_inspection_unavailable:configuration" || len(out.Relations) != 0 {
 			t.Fatal("invalid server accepted")
 		}
 	}
-	if out, err := (&Server{}).InspectControlledReadStorage(nil); !errors.Is(err, ErrControlledReadStorageInspection) || len(out.Relations) != 0 {
+	if out, err := (&Server{}).InspectControlledReadStorage(nil); !errors.Is(err, ErrControlledReadStorageInspection) || err.Error() != "controlled_read_storage_inspection_unavailable:configuration" || len(out.Relations) != 0 {
 		t.Fatal("nil context accepted")
 	}
+}
+
+func TestControlledStorageInspectionClosedDatabase(t *testing.T) {
 	f := newStorageInspectionFixture(t, false)
 	p := f.pool(t, []string{f.schema}, "", nil)
 	if p.Close() != nil {
@@ -451,5 +466,156 @@ func TestControlledStorageInspectionInvalidConfiguration(t *testing.T) {
 	}
 	if out, err := storageInspectionServer(p).InspectControlledReadStorage(t.Context()); !errors.Is(err, ErrControlledReadStorageInspection) || len(out.Relations) != 0 || strings.Contains(err.Error(), f.schema) {
 		t.Fatal("closed database leaked diagnostics")
+	}
+}
+
+func TestControlledStorageInspectionFixedErrors(t *testing.T) {
+	capture := &durableStageLog{}
+	previous := log.Writer()
+	log.SetOutput(capture)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	private := errors.New("private-driver-detail-must-not-escape")
+	for _, state := range []string{"42501", "bad\nprivate-driver-detail-must-not-escape", "lower", ""} {
+		cause := errors.Join(&pgconn.PgError{Code: state, Message: private.Error()}, private)
+		err := storageInspectionDriverError(t.Context(), "catalog", cause)
+		if err.Error() != "controlled_read_storage_inspection_unavailable:catalog" || !errors.Is(err, ErrControlledReadStorageInspection) || errors.Is(err, private) {
+			t.Fatal("driver cause escaped fixed error boundary")
+		}
+	}
+	for _, cause := range []error{private, nil} {
+		_ = storageInspectionDriverError(t.Context(), "transaction", cause)
+	}
+	text := capture.String()
+	if !strings.Contains(text, "stage=catalog sqlstate=42501") || strings.Count(text, "sqlstate=unavailable") != 5 || strings.Contains(text, private.Error()) || strings.Contains(text, "lower") {
+		t.Fatal("SQLSTATE-only diagnostic leaked driver data or lost fixed diagnostic")
+	}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	expired, stop := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer stop()
+	for _, tc := range []struct {
+		ctx    context.Context
+		reason string
+	}{{cancelled, "cancelled"}, {expired, "deadline"}} {
+		if err := storageInspectionError(tc.ctx, "transaction"); err.Error() != "controlled_read_storage_inspection_unavailable:"+tc.reason {
+			t.Fatal("caller cancellation reason lost")
+		}
+	}
+}
+
+func TestControlledStorageInspectionDirectRevisionSQLInventory(t *testing.T) {
+	source, err := os.ReadFile("../evidencerevision/store.go")
+	if err != nil {
+		t.Fatal("read current direct revision SQL")
+	}
+	inventory := map[string]map[string]string{}
+	for _, object := range storageInspectionObjects() {
+		inventory[object.name] = map[string]string{}
+		for _, entry := range strings.Fields(object.columns) {
+			pair := strings.SplitN(entry, ":", 2)
+			inventory[object.name][pair[0]] = pair[1]
+		}
+	}
+	// Compare actual fixed SELECT/WHERE columns, rather than building a schema
+	// from the inventory itself. Broader helper dependencies remain unassessed.
+	matches := regexp.MustCompile(`SELECT ([a-z_,]+) FROM (tasks|task_archives) WHERE ([a-z_]+)=`).FindAllStringSubmatch(string(source), -1)
+	seen := map[string]bool{}
+	for _, match := range matches {
+		seen[match[2]] = true
+		for _, column := range append(strings.Split(match[1], ","), match[3]) {
+			if inventory[match[2]][column] == "" {
+				t.Fatalf("direct revision SQL missing from inventory: %s.%s", match[2], column)
+			}
+		}
+	}
+	if !seen["tasks"] || !seen["task_archives"] || inventory["tasks"]["deleted_at"] != "timestamptz" || inventory["task_archives"]["state"] != "text" {
+		t.Fatal("direct archive/deletion SQL or required builtin type not covered")
+	}
+}
+
+// A local database/sql driver fixes the intermediate-failure boundary without
+// network/DB access. The successful control returns every unresolved fact.
+type storageInspectionConnector struct{ conn *storageInspectionConn }
+
+func (c storageInspectionConnector) Connect(context.Context) (driver.Conn, error) { return c.conn, nil }
+func (c storageInspectionConnector) Driver() driver.Driver                        { return storageInspectionDriver{} }
+
+type storageInspectionDriver struct{}
+
+func (storageInspectionDriver) Open(string) (driver.Conn, error) { return nil, errors.New("unused") }
+
+type storageInspectionConn struct {
+	options          driver.TxOptions
+	remaining        time.Duration
+	calls, rollbacks int
+	failOn           int
+}
+
+func (*storageInspectionConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("unexpected prepare")
+}
+func (*storageInspectionConn) Close() error { return nil }
+func (*storageInspectionConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("unexpected legacy begin")
+}
+func (c *storageInspectionConn) BeginTx(ctx context.Context, options driver.TxOptions) (driver.Tx, error) {
+	c.options = options
+	deadline, ok := ctx.Deadline()
+	if ok {
+		c.remaining = time.Until(deadline)
+	}
+	return storageInspectionTx{c}, nil
+}
+func (c *storageInspectionConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	c.calls++
+	if c.failOn != 0 && c.calls == c.failOn {
+		return nil, &pgconn.PgError{Code: "42501", Message: "private query detail"}
+	}
+	return &storageInspectionRows{}, nil
+}
+
+type storageInspectionTx struct{ c *storageInspectionConn }
+
+func (storageInspectionTx) Commit() error      { return errors.New("unexpected commit") }
+func (tx storageInspectionTx) Rollback() error { tx.c.rollbacks++; return nil }
+
+type storageInspectionRows struct{ done bool }
+
+func (*storageInspectionRows) Columns() []string {
+	return []string{"observed", "resolved", "oid", "ordinary", "select", "insert", "update"}
+}
+func (*storageInspectionRows) Close() error { return nil }
+func (r *storageInspectionRows) Next(values []driver.Value) error {
+	if r.done {
+		return io.EOF
+	}
+	r.done = true
+	copy(values, []driver.Value{false, false, nil, nil, nil, nil, nil})
+	return nil
+}
+
+func TestControlledStorageInspectionTransactionAndPartialFailure(t *testing.T) {
+	for _, failOn := range []int{0, 2} {
+		t.Run(map[int]string{0: "complete", 2: "after-first-relation"}[failOn], func(t *testing.T) {
+			conn := &storageInspectionConn{failOn: failOn}
+			pool := sql.OpenDB(storageInspectionConnector{conn})
+			defer pool.Close()
+			out, err := storageInspectionServer(pool).InspectControlledReadStorage(t.Context())
+			if conn.options.Isolation != driver.IsolationLevel(sql.LevelRepeatableRead) || !conn.options.ReadOnly || conn.remaining <= 0 || conn.remaining > controlledStorageInspectionTimeout || conn.rollbacks != 1 {
+				t.Fatal("transaction lost isolation/read-only/deadline/rollback boundary")
+			}
+			if failOn == 0 {
+				if err != nil || len(out.Relations) != 17 || conn.calls != 17 {
+					t.Fatal("valid synthetic control rejected")
+				}
+				for _, relation := range out.Relations {
+					if relation.NameObservedInCatalog || relation.Resolved {
+						t.Fatal("absent catalog entry became observed")
+					}
+				}
+			} else if err == nil || err.Error() != "controlled_read_storage_inspection_unavailable:catalog" || conn.calls != 2 || len(out.Relations) != 0 || out.ResolutionBasis != "" || len(out.Unassessed) != 0 {
+				t.Fatal("intermediate catalog failure exposed a partial report or raw error")
+			}
+		})
 	}
 }
