@@ -28,7 +28,7 @@ func (s *Server) registerControlledReadHTTP(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusNotFound, "작업을 찾을 수 없습니다")
 		return
 	}
-	if !s.engine.beginTaskOperation(task.ID) {
+	if !s.engine.beginControlledReadRegistration(task.ID) {
 		writeErr(w, http.StatusConflict, "종료 중인 작업에는 조회를 등록할 수 없습니다")
 		return
 	}
@@ -41,13 +41,28 @@ func (s *Server) registerControlledReadHTTP(w http.ResponseWriter, r *http.Reque
 	// Main-agent chat ignores ordinary task pause; serialize registration with
 	// its admission as well, so it cannot race the durable controlled marker.
 	s.chatMu.Lock()
-	defer s.chatMu.Unlock()
+	chatLocked := true
+	defer func() {
+		if chatLocked {
+			s.chatMu.Unlock()
+		}
+	}()
 	if s.chatBusy[task.ID] || s.engine.inflightCount(task.ID) > 1 {
 		writeErr(w, http.StatusConflict, "실행 중인 작업이 끝난 뒤 조회를 등록하세요")
 		return
 	}
 	if intent.State == "running" {
 		writeErr(w, http.StatusConflict, "실행 중인 의도는 종료된 뒤 다시 등록하세요")
+		return
+	}
+	if s.engine.controlledReads != nil && s.engine.controlledReads.mode != nil {
+		chatLocked = false
+		s.chatMu.Unlock()
+		if err := s.engine.registerControlledReadMode(r.Context(), task, intentID, request.SnapshotRef, intent.State); err != nil {
+			writeErr(w, http.StatusConflict, "통제 등록을 검증하지 못했습니다. 작업은 차단 상태로 유지됩니다")
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"task_id": task.ID, "intent_id": intentID, "state": "registered"})
 		return
 	}
 	ready := func() error {

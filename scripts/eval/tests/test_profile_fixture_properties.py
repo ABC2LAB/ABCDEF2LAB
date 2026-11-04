@@ -24,7 +24,7 @@ PRIVATE_MARKER = "SYNTHETIC-PRIVATE-FIXTURE-MARKER"
 def declaration() -> dict:
     """실계정·환경·URL과 무관한 최소 유효 선언."""
     return {
-        "version": 2,
+        "version": 4,
         "fixture": {
             "preparation_id": "fixture_recipe",
             "preparation_revision": 7,
@@ -47,6 +47,8 @@ def declaration() -> dict:
                     "hostname": "fixture-llm", "host_ip": "10.0.0.5"},
             "temperature": 0, "seed": 11, "target_image": "fixture/image:1.0.0",
             "worker_count": 1, "time_budget_seconds": 60, "request_budget": 10,
+            "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
+            "run_drain": {"grace_seconds": 30, "settle_seconds": 2},
         },
         "scope": {"target_origin": "http://eval-meter:8080", "methods": ["GET"],
                   "paths": ["/fixture/{item}"], "vuln_classes": ["idor"]},

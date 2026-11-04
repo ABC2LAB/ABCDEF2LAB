@@ -1,0 +1,393 @@
+{
+  "format_version": 1,
+  "description": "Representative v1 vectors authored for PR142 feedback. The review's original 3009-vector corpus was not attached or reproduced.",
+  "rules": {
+    "json": "UTF-8; sort object keys by Unicode code point; compact separators; ensure_ascii=false; no Unicode normalization; preserve array order; signed int64 only; reject floats, NaN/Inf and invalid UTF-8.",
+    "time": "Parse an RFC3339 instant, convert to UTC, truncate sub-microseconds, format six fractional digits plus Z, then encode the resulting JSON string.",
+    "limit": "Inclusive 65536 canonical UTF-8 bytes.",
+    "input_kinds": {
+      "json": "value is a JSON value; decode integers exactly, never through a float.",
+      "uint64": "value is an unsigned decimal integer string; preserve its unsigned type before validating signed int64 range.",
+      "float64": "value is a float string, including NaN and +/-Inf; construct a float before validating.",
+      "utf8_hex": "value is the hex encoding of raw string bytes; reject invalid UTF-8 before JSON replacement can occur.",
+      "repeat_string": "repeat value exactly count times before canonical encoding.",
+      "time": "value is the RFC3339 instant described above."
+    },
+    "expected": "utf8 is the exact expected canonical text. utf8_repeat expands prefix + text * count + suffix to the exact expected bytes. byte_length and sha256 refer to UTF-8 bytes; error is the expected fixed rejection code."
+  },
+  "vectors": [
+    {
+      "name": "nested-html-unicode",
+      "input": {
+        "kind": "json",
+        "value": {
+          "z": 9223372036854775807,
+          "a": [
+            "<>&\u2028\u2029",
+            true,
+            null,
+            "\u00e9",
+            "\n"
+          ]
+        }
+      },
+      "expected": {
+        "utf8": "{\"a\":[\"<>&\u2028\u2029\",true,null,\"\u00e9\",\"\\n\"],\"z\":9223372036854775807}",
+        "byte_length": 63,
+        "sha256": "beaaedd3fb78fafeb9ee8266d2ab3674cbec3a82350f5e45da4ebebe77fa1511"
+      }
+    },
+    {
+      "name": "signed-int64-bounds",
+      "input": {
+        "kind": "json",
+        "value": {
+          "max": 9223372036854775807,
+          "min": -9223372036854775808,
+          "zero": 0
+        }
+      },
+      "expected": {
+        "utf8": "{\"max\":9223372036854775807,\"min\":-9223372036854775808,\"zero\":0}",
+        "byte_length": 63,
+        "sha256": "f0312149245bc3a9766e8fe6e878016c359b5b8ea0bb65cf054f49ed68900f99"
+      }
+    },
+    {
+      "name": "control-escapes",
+      "input": {
+        "kind": "json",
+        "value": {
+          "text": "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f\"\\/"
+        }
+      },
+      "expected": {
+        "utf8": "{\"text\":\"\\u0000\\u0001\\u0002\\u0003\\u0004\\u0005\\u0006\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u000f\\u0010\\u0011\\u0012\\u0013\\u0014\\u0015\\u0016\\u0017\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f\\\"\\\\/\"}",
+        "byte_length": 188,
+        "sha256": "9ee4a3931d4d51e684b1702e86e38b1bbf88e15938521e0faed04dc3d47fd430"
+      }
+    },
+    {
+      "name": "latin1-c1",
+      "input": {
+        "kind": "json",
+        "value": {
+          "text": "\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008a\u008b\u008c\u008d\u008e\u008f\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009a\u009b\u009c\u009d\u009e\u009f\u00a0\u00a1\u00a2\u00a3\u00a4\u00a5\u00a6\u00a7\u00a8\u00a9\u00aa\u00ab\u00ac\u00ad\u00ae\u00af\u00b0\u00b1\u00b2\u00b3\u00b4\u00b5\u00b6\u00b7\u00b8\u00b9\u00ba\u00bb\u00bc\u00bd\u00be\u00bf\u00c0\u00c1\u00c2\u00c3\u00c4\u00c5\u00c6\u00c7\u00c8\u00c9\u00ca\u00cb\u00cc\u00cd\u00ce\u00cf\u00d0\u00d1\u00d2\u00d3\u00d4\u00d5\u00d6\u00d7\u00d8\u00d9\u00da\u00db\u00dc\u00dd\u00de\u00df\u00e0\u00e1\u00e2\u00e3\u00e4\u00e5\u00e6\u00e7\u00e8\u00e9\u00ea\u00eb\u00ec\u00ed\u00ee\u00ef\u00f0\u00f1\u00f2\u00f3\u00f4\u00f5\u00f6\u00f7\u00f8\u00f9\u00fa\u00fb\u00fc\u00fd\u00fe\u00ff"
+        }
+      },
+      "expected": {
+        "utf8": "{\"text\":\"\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008a\u008b\u008c\u008d\u008e\u008f\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009a\u009b\u009c\u009d\u009e\u009f\u00a0\u00a1\u00a2\u00a3\u00a4\u00a5\u00a6\u00a7\u00a8\u00a9\u00aa\u00ab\u00ac\u00ad\u00ae\u00af\u00b0\u00b1\u00b2\u00b3\u00b4\u00b5\u00b6\u00b7\u00b8\u00b9\u00ba\u00bb\u00bc\u00bd\u00be\u00bf\u00c0\u00c1\u00c2\u00c3\u00c4\u00c5\u00c6\u00c7\u00c8\u00c9\u00ca\u00cb\u00cc\u00cd\u00ce\u00cf\u00d0\u00d1\u00d2\u00d3\u00d4\u00d5\u00d6\u00d7\u00d8\u00d9\u00da\u00db\u00dc\u00dd\u00de\u00df\u00e0\u00e1\u00e2\u00e3\u00e4\u00e5\u00e6\u00e7\u00e8\u00e9\u00ea\u00eb\u00ec\u00ed\u00ee\u00ef\u00f0\u00f1\u00f2\u00f3\u00f4\u00f5\u00f6\u00f7\u00f8\u00f9\u00fa\u00fb\u00fc\u00fd\u00fe\u00ff\"}",
+        "byte_length": 267,
+        "sha256": "2de5445aabbe95ee855f21f9a76b2f80d651a1f2469ee69ca4bf48b63625fc55"
+      }
+    },
+    {
+      "name": "bom-astral-key-order",
+      "input": {
+        "kind": "json",
+        "value": {
+          "\ud83d\ude00": "astral",
+          "\ue000": "bmp",
+          "\ufeff": "\ufeff",
+          "a": "\ud83d\ude00\u2028\u2029"
+        }
+      },
+      "expected": {
+        "utf8": "{\"a\":\"\ud83d\ude00\u2028\u2029\",\"\ue000\":\"bmp\",\"\ufeff\":\"\ufeff\",\"\ud83d\ude00\":\"astral\"}",
+        "byte_length": 58,
+        "sha256": "6a9e30b3408e33d8a0178ba4e2b20852a8cc35085d285c1b6c497b92d6eebe97"
+      }
+    },
+    {
+      "name": "empty-values",
+      "input": {
+        "kind": "json",
+        "value": {
+          "array": [],
+          "object": {},
+          "empty": "",
+          "false": false,
+          "null": null
+        }
+      },
+      "expected": {
+        "utf8": "{\"array\":[],\"empty\":\"\",\"false\":false,\"null\":null,\"object\":{}}",
+        "byte_length": 61,
+        "sha256": "bc683bfac4265dae687766d92dd20f94daafc34fac83c5c7e37dcb73e2ea4445"
+      }
+    },
+    {
+      "name": "ordered-arrays",
+      "input": {
+        "kind": "json",
+        "value": [
+          3,
+          2,
+          1,
+          {
+            "z": [
+              "b",
+              "a"
+            ],
+            "a": {
+              "y": 2,
+              "x": 1
+            }
+          }
+        ]
+      },
+      "expected": {
+        "utf8": "[3,2,1,{\"a\":{\"x\":1,\"y\":2},\"z\":[\"b\",\"a\"]}]",
+        "byte_length": 41,
+        "sha256": "7cc611461724d5470ae2516bd28fa88a0a64b9b818216637d25840326b97611b"
+      }
+    },
+    {
+      "name": "decomposed-unicode",
+      "input": {
+        "kind": "json",
+        "value": {
+          "composed": "\u00e9",
+          "decomposed": "e\u0301"
+        }
+      },
+      "expected": {
+        "utf8": "{\"composed\":\"\u00e9\",\"decomposed\":\"e\u0301\"}",
+        "byte_length": 36,
+        "sha256": "7f04a9b0f36600f4b530afbb2601cb43068497f57b6ac5e07b2c173534c523ab"
+      }
+    },
+    {
+      "name": "uint64-at-signed-max",
+      "input": {
+        "kind": "uint64",
+        "value": "9223372036854775807"
+      },
+      "expected": {
+        "utf8": "9223372036854775807",
+        "byte_length": 19,
+        "sha256": "b34a1c30a715f6bf8b7243afa7fab883ce3612b7231716bdcbbdc1982e1aed29"
+      }
+    },
+    {
+      "name": "utc-offset-microseconds",
+      "input": {
+        "kind": "time",
+        "value": "2026-11-03T21:00:20.123456789+09:00"
+      },
+      "expected": {
+        "utf8": "\"2026-11-03T12:00:20.123456Z\"",
+        "byte_length": 29,
+        "sha256": "3cb5a1cf8a37fa348831ab368d2f6b9bf8cb4ccb0a2fd9540b06b5de890747d1"
+      }
+    },
+    {
+      "name": "utc-negative-offset",
+      "input": {
+        "kind": "time",
+        "value": "2026-11-03T07:00:20-05:00"
+      },
+      "expected": {
+        "utf8": "\"2026-11-03T12:00:20.000000Z\"",
+        "byte_length": 29,
+        "sha256": "e3e05f2ac9f328f3fa634fdd208d2a2c7da999497c440315cc6fb7ece0f7ddc0"
+      }
+    },
+    {
+      "name": "utc-first-year",
+      "input": {
+        "kind": "time",
+        "value": "0001-01-01T00:00:00Z"
+      },
+      "expected": {
+        "utf8": "\"0001-01-01T00:00:00.000000Z\"",
+        "byte_length": 29,
+        "sha256": "5157957512168ba6ad637cad9bed424ec78bcc47c5f0ce7d5f36aff6dfc56744"
+      }
+    },
+    {
+      "name": "utc-last-year",
+      "input": {
+        "kind": "time",
+        "value": "9999-12-31T23:59:59.999999999Z"
+      },
+      "expected": {
+        "utf8": "\"9999-12-31T23:59:59.999999Z\"",
+        "byte_length": 29,
+        "sha256": "652e4701ee1f01e9927eabced37172251a0502a8e4a36b91a149e51ad7920c12"
+      }
+    },
+    {
+      "name": "confirmed-verdict-record",
+      "input": {
+        "kind": "json",
+        "value": {
+          "case_ref": "case-1",
+          "axis": "horizontal",
+          "oracle_value": "confirmed",
+          "vuln_verdict": "confirmed",
+          "access_policy_result": "\uc704\ubc18_\ud6c4\ubcf4",
+          "policy_check": "yes",
+          "identity_check": "yes",
+          "data_check": "yes",
+          "reason_codes": [
+            "policy_deny_resolved",
+            "subjects_distinct_verified",
+            "data_nontrivial_match"
+          ],
+          "same_resource": "yes",
+          "owner_normal_data": "yes",
+          "cross_normal_data": "yes",
+          "nontrivial_data_match": "yes",
+          "reflection_excluded": "yes",
+          "template_excluded": "yes",
+          "canary_fields": [
+            "note"
+          ],
+          "expected_access": "deny",
+          "sharing": "resolved_none",
+          "delegation": "resolved_none",
+          "policy_version": "kg-1",
+          "policy_valid_from": "2026-11-03T11:00:20.000000Z",
+          "policy_valid_until": "2026-11-03T13:00:20.000000Z",
+          "hint_matches_canonical": true,
+          "observed_at": "2026-11-03T12:00:20.000000Z",
+          "reset_generation": "reset-generation-1",
+          "owner_ref": "owner",
+          "evaluated_ref": "reader",
+          "owner_status": "verified",
+          "evaluated_status": "verified",
+          "traffic_evidence_refs": [],
+          "vuln_class": "IDOR",
+          "resource_ref": "document:one",
+          "model_tag": "synthetic-model",
+          "created_at": "2026-11-03T12:00:30.000000Z"
+        }
+      },
+      "expected": {
+        "utf8": "{\"access_policy_result\":\"\uc704\ubc18_\ud6c4\ubcf4\",\"axis\":\"horizontal\",\"canary_fields\":[\"note\"],\"case_ref\":\"case-1\",\"created_at\":\"2026-11-03T12:00:30.000000Z\",\"cross_normal_data\":\"yes\",\"data_check\":\"yes\",\"delegation\":\"resolved_none\",\"evaluated_ref\":\"reader\",\"evaluated_status\":\"verified\",\"expected_access\":\"deny\",\"hint_matches_canonical\":true,\"identity_check\":\"yes\",\"model_tag\":\"synthetic-model\",\"nontrivial_data_match\":\"yes\",\"observed_at\":\"2026-11-03T12:00:20.000000Z\",\"oracle_value\":\"confirmed\",\"owner_normal_data\":\"yes\",\"owner_ref\":\"owner\",\"owner_status\":\"verified\",\"policy_check\":\"yes\",\"policy_valid_from\":\"2026-11-03T11:00:20.000000Z\",\"policy_valid_until\":\"2026-11-03T13:00:20.000000Z\",\"policy_version\":\"kg-1\",\"reason_codes\":[\"policy_deny_resolved\",\"subjects_distinct_verified\",\"data_nontrivial_match\"],\"reflection_excluded\":\"yes\",\"reset_generation\":\"reset-generation-1\",\"resource_ref\":\"document:one\",\"same_resource\":\"yes\",\"sharing\":\"resolved_none\",\"template_excluded\":\"yes\",\"traffic_evidence_refs\":[],\"vuln_class\":\"IDOR\",\"vuln_verdict\":\"confirmed\"}",
+        "byte_length": 1043,
+        "sha256": "4c418d7ca729a690ec14130f307ea62c977db8fbd80171dfe27a28c31cd81786"
+      }
+    },
+    {
+      "name": "canonical-65536-bytes",
+      "input": {
+        "kind": "repeat_string",
+        "value": "x",
+        "count": 65534
+      },
+      "expected": {
+        "utf8_repeat": {
+          "prefix": "\"",
+          "text": "x",
+          "count": 65534,
+          "suffix": "\""
+        },
+        "byte_length": 65536,
+        "sha256": "92241a24e27390491bc165dadfd9b4db4ede1235d9a56d877f0d0c63071e1dd1"
+      }
+    },
+    {
+      "name": "canonical-65537-bytes",
+      "input": {
+        "kind": "repeat_string",
+        "value": "x",
+        "count": 65535
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "invalid-utf8-string",
+      "input": {
+        "kind": "utf8_hex",
+        "value": "ff"
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "float64-integer-valued",
+      "input": {
+        "kind": "float64",
+        "value": "1"
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "float64-fraction",
+      "input": {
+        "kind": "float64",
+        "value": "1.5"
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "float64-nan",
+      "input": {
+        "kind": "float64",
+        "value": "NaN"
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "float64-positive-infinity",
+      "input": {
+        "kind": "float64",
+        "value": "+Inf"
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "float64-negative-infinity",
+      "input": {
+        "kind": "float64",
+        "value": "-Inf"
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "uint64-above-signed-max",
+      "input": {
+        "kind": "uint64",
+        "value": "9223372036854775808"
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "uint64-max",
+      "input": {
+        "kind": "uint64",
+        "value": "18446744073709551615"
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "json-integer-above-signed-max",
+      "input": {
+        "kind": "json",
+        "value": 9223372036854775808
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "json-integer-below-signed-min",
+      "input": {
+        "kind": "json",
+        "value": -9223372036854775809
+      },
+      "error": "e3_record_invalid"
+    },
+    {
+      "name": "json-float",
+      "input": {
+        "kind": "json",
+        "value": {
+          "nested": [
+            1.5
+          ]
+        }
+      },
+      "error": "e3_record_invalid"
+    }
+  ]
+}

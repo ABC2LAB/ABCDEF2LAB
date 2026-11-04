@@ -178,6 +178,9 @@ func Open(dsn string) (*DB, error) {
 		if err := applyDDLWithRetry(context.Background(), conn, budgetRunBindingSchemaSQL, time.Sleep); err != nil {
 			return fmt.Errorf("apply budget run binding schema: %w", err)
 		}
+		if err := applyDDLWithRetry(context.Background(), conn, e3FindingSchemaSQL, time.Sleep); err != nil {
+			return fmt.Errorf("apply E3 finding schema: %w", err)
+		}
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}

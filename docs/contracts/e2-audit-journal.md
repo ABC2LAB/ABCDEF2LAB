@@ -94,7 +94,28 @@ journal, err := auditlog.Create(privateDir, newFileName, auditlog.Config{
 | 다른 epoch/revision, 없는 기존 정본, 기존 prefix를 포함하지 않는 candidate | 차단/충돌. 로컬 파일에서 정본을 재구성해 허용하지 않음 |
 | 이미 sealed/incomplete/quarantined인 journal에 새 이벤트/재개 | 거부. 같은 저장 연산의 정확한 재시도 결과 조회만 허용 |
 
-verifier는 caller가 검증 중 바꿀 수 없는 **같은 불변 snapshot**에 대해 candidate 전체의 MAC·범위·스키마·끝부분과 기존 정본 prefix의 Sequence/MAC를 함께 확인한다. 현재 [`auditlog.Verify`](../../transmit/auditlog/verify.go)는 **하나의 expected checkpoint와 전체 입력**만 확인하며, 새 candidate를 넣어 성공했다는 사실만으로 기존 head 포함이 증명되지는 않는다. 후속 adapter는 같은 snapshot에서 기존 순번의 인증된 MAC을 비교하거나, 정확히 그 개행 경계에서 끝나는 불변 prefix도 기존 head로 별도 검증해야 한다. live 파일을 잘라 수정하거나, 기존 head를 넘긴 전체 reader를 그대로 Verify해 prefix 검증을 했다고 보고하지 않는다. 이 adapter/불변 snapshot 공급은 현재 미구현이다.
+verifier는 caller가 검증 중 바꿀 수 없는 **같은 불변 snapshot**에 대해 candidate 전체의 MAC·범위·스키마·끝부분과 기존 정본 prefix의 Sequence/MAC를 함께 확인한다. 현재 [`auditlog.Verify`](../../transmit/auditlog/verify.go)는 **하나의 expected checkpoint와 전체 입력**만 확인하며, 새 candidate를 넣어 성공했다는 사실만으로 기존 head 포함이 증명되지는 않는다. 후속 adapter는 같은 snapshot에서 기존 순번의 인증된 MAC을 비교하거나, 정확히 그 개행 경계에서 끝나는 불변 prefix도 기존 head로 별도 검증해야 한다. live 파일을 잘라 수정하거나, 기존 head를 넘긴 전체 reader를 그대로 Verify해 prefix 검증을 했다고 보고하지 않는다.
+
+**별도 검증 코어:** [`auditlog.VerifyExtension`](../../transmit/auditlog/extension.go)은 명시적 byte/event/timeout 상한 아래 입력을 한 번 읽어 소유하는 불변 bytes를 만들고, 같은 bytes의 candidate 전체와 기존 head 순번의 정확한 개행 경계 prefix를 각각 `Verify`한다. context가 임의의 차단 Reader를 강제 해제하지는 못한다. header-only head와 정확한 재시도를 지원하며 유효 MAC의 다른 분기·추가 tail·상한 초과·취소·무진행 Reader는 결과 없이 거부한다. 이 순수 검증 코어는 이전 head의 신뢰·publisher 인증·epoch/revision/phase·CAS/보존·외부 snapshot 공급과 키 수명을 구현하지 않는다. 아래 동기 게시/정본 store 활성화 완료로 해석하지 않는다. 실제 공급/소유 경계는 [첫 회차 입력 대장](./first-idor-host-inputs.md)에 구분한다.
+
+**호출·공급 현황:** 통합 기준 dev `88415fff88f1c66c4307ba370c360e6ad338efcc`와 검증 코어
+`b3652a180668c2752e1f8fb6130e0c3d298b9496`에서 각각 `git grep -n VerifyExtension -- '*.go'`로
+확인한 비테스트 호출처는 0건이다(함수 선언·주석 제외). 이 기준에서 코어는 시험에서만 호출하며,
+CPD publisher adapter와 외부 불변 snapshot 공급은 미구현이다. 기존 Recorder/server에 자동 연결하지 않는다.
+
+`MaxExtensionBytes=64 MiB`·`MaxExtensionEvents=40,000`·`MaxExtensionTimeout=2분`은
+최대 합성 실행 비용을 측정해 확정한 값이 아닌 **잠정 검증 자원 상한**이다.
+64 MiB는 snapshot 입력 바이트의 보수적 상한이고, 40,000은 intent/result 쌍 위에 여유를 둔 독립적인
+전체 이벤트 제한이다. 거부 result는 request 예산을 쓰지 않을 수 있어 이 수치를 실행 최대값으로 유도하지 않는다.
+2분은 현재 서버 `maxControlledTimeoutMS`와 맞춘 시간 상한이며, 실행 승인/예산을 대신하지 않는다.
+연속 빈 읽기 100회 제한은 Go `bufio.maxConsecutiveEmptyReads`의 관례를 따른 무진행 방어이며
+진행이 있으면 카운터를 초기화한다.
+`TODO(이동찬): CPD04에 따라 최대 합성 실행의 메모리·검증 비용을 측정하고 담당 리뷰로 운영 상한을 확정한다.`
+
+byte 상한은 초과 여부 확인용 한 바이트를 포함해 실제 소비를 `MaxBytes+1`까지 제한한다.
+timeout/cancel은 각 Reader 호출 전후와 검증 경계에서 확인하므로, 진행하는 Reader의 후속 호출을 중단한다.
+context를 따르지 않고 현재 호출 안에서 막히는 Reader나 정규 파일의 kernel I/O를 강제로 끊지는 못한다.
+`n<0` 또는 `n>len(p)`처럼 Reader 계약을 어긴 길이는 panic 대신 고정 `ErrRead`로 거부한다.
 
 연산 ref별 동일 요청은 저장된 같은 결과를 반환하고 같은 ref·다른 요청은 거부한다. 응답 유실/commit 불명확 시 새 journal·operation ref·승인을 만들지 않고 그 ref의 결과와 **현재 head를 별도로** 인증 조회한다. 과거 연산 ACK 재조회는 그 연산의 성공 증명일 뿐 현재 최신 head라는 뜻이 아니다. journal별 게시를 직렬화하고, 동시 CAS 충돌을 자동 overwrite로 해결하지 않는다. 크기/이벤트 수/시간 상한 초과나 검증 취소도 성공으로 처리하지 않는다.
 

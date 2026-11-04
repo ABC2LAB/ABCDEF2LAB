@@ -38,6 +38,8 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
     "worker_count": 1,
     "time_budget_seconds": 1200,
     "request_budget": 100,
+    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
+    "run_drain": {"grace_seconds": 30, "settle_seconds": 5},
     "fixture_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "environment_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "scope_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
@@ -59,6 +61,8 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
     "worker_count": 1,
     "time_budget_seconds": 1200,
     "request_budget": 100,
+    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
+    "run_drain": {"grace_seconds": 30, "settle_seconds": 5},
     "fixture_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "environment_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "scope_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
@@ -77,11 +81,13 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
 | `network_mode` | `dedicated_network`만 지원(러너 v1, 평가 프로토콜 §2). 양쪽 일치 |
 | `target_origin` | 엔진이 보는 계측기 origin: `http://<서비스 이름>:<포트>`. 서비스 이름은 소문자 DNS label 하나(`localhost`·숫자·IP 아님), 포트 명시, 경로는 없음 또는 `/`. 인증정보·query·fragment 금지 |
 | `llm` | 백엔드별로 정확한 키 집합. 섞이거나 빠지면 거부. 양쪽 객체가 정확히 같아야 함(평가 프로토콜 §6) |
-| `llm`(api) | `backend:"api"`, `base_url`(https, 점 있는 DNS 이름, base path 허용), `model`(제공자 모델 ID `org/model[:variant]`, `latest`·TODO 거부), `provider`(고정할 제공자 label), `fallbacks:false`(bool `false`만) |
+| `llm`(api) | `backend:"api"`, `base_url`(https, 점 있는 DNS 이름, base path 허용), `model`(제공자 모델 ID `org/model[:variant]`, `latest`·TODO 거부), `provider`(고정할 제공자 slug. OpenRouter 엔드포인트 tag처럼 `slug/변형`(예: `deepinfra/fp8`)을 한 단계까지 받는다. 문법 검사일 뿐이며, OpenRouter slug는 `provider[/variant][/region][/tier]` 접두 매칭이라 두 segment가 단일 엔드포인트·정밀도를 보장하지 않는다. 정밀도 고정 근거는 프로토콜 §6의 엔드포인트 메타데이터 확인을 거친 경우에만 기록), `fallbacks:false`(bool `false`만) |
 | `llm`(local) | `backend:"local"`, `base_url`(호스트가 `hostname`과 같음), `model`(`name:tag`, `latest` 거부), `hostname`(DNS label), `host_ip`(정규 표기의 사설 IP — `llmpolicy` 사설 대역 중 loopback(127/8·::1)을 제외한 10/8·172.16/12·192.168/16·fc00::/7. 컨테이너에서 호스트 loopback으로는 닿지 않으므로 제외) |
 | `temperature` / `seed` | 전자는 0 이상 유한수, 후자는 0 이상 정수. null·bool·암묵적 기본값 금지 |
 | `worker_count` / `request_budget` | 1 이상 정수 |
 | `time_budget_seconds` | 양의 유한수 |
+| `run_storage` | 회차 메모리 조건 `{engine_db_tmpfs, engine_data_tmpfs, tmpfs_min_free}` — compose tmpfs size 표기, 하한은 두 크기보다 작아야 함. 프로파일 지문 v4의 환경 입력과 같은 객체이고 러너 설정 `tmpfs`와 정확히 같아야 회차가 시작됨 |
+| `run_drain` | 봉인 뒤 drain 정책 `{grace_seconds, settle_seconds}` — 계측기가 열린 요청을 끊기까지의 유예(1~600초)와 끊은 요청이 있을 때 post 전 정착 대기(1~3600초), 정수. 둘 다 post 관측 시점과 취소 여부를 바꾸는 비교 조건이라 프로파일 지문 v4의 환경 입력과 같은 객체이고 러너 설정 `run.drain_grace_seconds`·`run.post_settle_seconds`와 정확히 같아야 회차가 시작됨(#153 리뷰) |
 | `fixture_fingerprint` | 비민감 준비 절차·역할·자료 조건의 SHA-256(소문자 16진수 64자리) |
 | `environment_fingerprint` | 공통 비민감 환경 프로파일의 SHA-256. 비교하는 소스 SHA는 제외 |
 | `scope_fingerprint` | 공통 검사 대상 범위 프로파일의 SHA-256 |

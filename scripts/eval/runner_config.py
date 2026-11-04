@@ -48,6 +48,9 @@ METER_SERVICE = "eval-meter"
 OBS_SERVICE = "eval-obs"
 LLM_GW_SERVICE = "eval-llm-gw"
 API_FRONT_SERVICE = "eval-api"
+# 회차 메모리(tmpfs) 마운트 경로(deploy/eval/compose.eval.yaml과 같은 값, 테스트로 고정).
+ENGINE_DB_DATA_PATH = "/var/lib/postgresql/data"
+ENGINE_DATA_PATH = "/app/data"
 ENGINE_NET = "engine_net"
 TARGET_NET = "target_net"
 LLM_EGRESS_NET = "llm_egress_net"
@@ -68,6 +71,17 @@ _DURATION = re.compile(r"[1-9][0-9]{0,5}(?:ms|s|m)\Z")
 # 이벤트 시각(데몬)과 러너 시각은 같은 호스트 시계지만 기록 시점이 조금 다르다.
 LOOKBACK_MARGIN_SECONDS = 1.0
 _DURATION_UNIT = {"ms": 0.001, "s": 1.0, "m": 60.0}
+# compose tmpfs size 접미사(docker의 RAM 단위, 1024배).
+_SIZE_UNIT = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
+
+
+def size_bytes(text: str) -> int:
+    """compose tmpfs 크기 문자열(_TMPFS_SIZE 형식)을 바이트로 바꾼다."""
+    if not isinstance(text, str) or not _TMPFS_SIZE.fullmatch(text):
+        raise RunnerConfigError(["config.tmpfs: INVALID_SIZE"])
+    if text[-1] in _SIZE_UNIT:
+        return int(text[:-1]) * _SIZE_UNIT[text[-1]]
+    return int(text)
 
 
 def duration_seconds(text: str) -> float:
@@ -106,8 +120,11 @@ MAX_TASK_SECONDS = 24 * 3600
 # 회차 진행 시간·크기 값(초). 실패 시 재시도하지 않으므로 각 값이 그 단계의 유일한 기회다.
 _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_seconds", "budget_poll_seconds",
                "drain_timeout_seconds", "snapshot_timeout_seconds", "snapshot_max_bytes", "llm_verify_timeout_seconds",
-               "task_create_timeout_seconds", "host_watch_interval_seconds", "host_watch_max_gap_seconds")
+               "task_create_timeout_seconds", "host_watch_interval_seconds", "host_watch_max_gap_seconds",
+               "drain_grace_seconds", "post_settle_seconds")
 MAX_RUN_SECONDS = 3600
+# 계측기(cmd/eval-meter maxDrainGrace)가 받는 봉인 후 유예 상한과 같다(테스트로 고정).
+MAX_DRAIN_GRACE_SECONDS = 600
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 
 
@@ -149,6 +166,8 @@ class RunnerConfig:
     engine_db_name: str
     tmpfs_engine_db: str
     tmpfs_engine_data: str
+    # 구간 종료 뒤 tmpfs에 이만큼도 남지 않았으면 상한에 닿은 것으로 보고 회차를 무효로 한다.
+    tmpfs_min_free: str
     health_interval: str
     health_timeout: str
     health_retries: int
@@ -161,6 +180,10 @@ class RunnerConfig:
     findings: dict
     task: dict
     observer_readonly_ref: str
+
+    @property
+    def tmpfs_min_free_bytes(self) -> int:
+        return size_bytes(self.tmpfs_min_free)
 
     @property
     def health_timeout_seconds(self) -> float:
@@ -285,10 +308,15 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
             errors.append(f"config.engine_db.{name}: INVALID")
-    tmpfs = _exact(top.get("tmpfs"), ("engine_db", "engine_data"), "config.tmpfs", errors) if "tmpfs" in top else {}
-    for name in ("engine_db", "engine_data"):
+    tmpfs_keys = ("engine_db", "engine_data", "min_free")
+    tmpfs = _exact(top.get("tmpfs"), tmpfs_keys, "config.tmpfs", errors) if "tmpfs" in top else {}
+    for name in tmpfs_keys:
         if name in tmpfs and not (isinstance(tmpfs[name], str) and _TMPFS_SIZE.fullmatch(tmpfs[name])):
             errors.append(f"config.tmpfs.{name}: INVALID")
+    sizes = [tmpfs.get(name) for name in tmpfs_keys]
+    if all(isinstance(v, str) and _TMPFS_SIZE.fullmatch(v) for v in sizes) and \
+            size_bytes(tmpfs["min_free"]) >= min(size_bytes(tmpfs["engine_db"]), size_bytes(tmpfs["engine_data"])):
+        errors.append("config.tmpfs.min_free: NOT_BELOW_SIZE")  # 이러면 모든 회차가 상한 도달로 무효가 된다
     health = _exact(top.get("health"), ("interval", "timeout", "retries"), "config.health", errors) if "health" in top else {}
     for name in ("interval", "timeout"):
         if name in health and not (isinstance(health[name], str) and _DURATION.fullmatch(health[name])):
@@ -347,7 +375,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
             errors.append(f"config.task.{name}: EXPECTED_BOOL")
     run = _exact(top.get("run"), _RUN_FIELDS, "config.run", errors) if "run" in top else {}
     for name in _RUN_FIELDS:
-        limit = MAX_SNAPSHOT_BYTES if name == "snapshot_max_bytes" else MAX_RUN_SECONDS
+        limit = {"snapshot_max_bytes": MAX_SNAPSHOT_BYTES, "drain_grace_seconds": MAX_DRAIN_GRACE_SECONDS}.get(
+            name, MAX_RUN_SECONDS)
         if name in run and not _int(run[name], 1, limit):
             errors.append(f"config.run.{name}: INVALID")
     # 공백 상한이 표본 간격 이하이면 정상 회차도 항상 공백 초과가 된다.
@@ -355,6 +384,11 @@ def parse_runner_config(raw: object) -> RunnerConfig:
             and _int(run.get("host_watch_max_gap_seconds"), 1, MAX_RUN_SECONDS)
             and run["host_watch_max_gap_seconds"] <= run["host_watch_interval_seconds"]):
         errors.append("config.run.host_watch_max_gap_seconds: NOT_ABOVE_INTERVAL")
+    # 유예가 drain 시한 이상이면 계측기가 강제 종료하기 전에 러너가 먼저 drain_timeout으로 끝낸다.
+    if (_int(run.get("drain_grace_seconds"), 1, MAX_DRAIN_GRACE_SECONDS)
+            and _int(run.get("drain_timeout_seconds"), 1, MAX_RUN_SECONDS)
+            and run["drain_grace_seconds"] >= run["drain_timeout_seconds"]):
+        errors.append("config.run.drain_grace_seconds: NOT_BELOW_DRAIN_TIMEOUT")
     if errors:
         raise RunnerConfigError(errors)
     return RunnerConfig(
@@ -362,7 +396,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         target_image_id=top["target_image_id"], ports=dict(ports), observer_path=top["observer_path"],
         llm_provider=engine["llm_provider"], llm_stream=engine["llm_stream"], llm_policy_mode=engine["llm_policy_mode"],
         engine_db_user=db["user"], engine_db_name=db["name"],
-        tmpfs_engine_db=tmpfs["engine_db"], tmpfs_engine_data=tmpfs["engine_data"],
+        tmpfs_engine_db=tmpfs["engine_db"], tmpfs_engine_data=tmpfs["engine_data"], tmpfs_min_free=tmpfs["min_free"],
         health_interval=health["interval"], health_timeout=health["timeout"], health_retries=health["retries"],
         docker_timeout_seconds=float(timeout), host_listen_allowlist=allowlist,
         probe_timeout_ms=top["probe_timeout_ms"], runner_key_path=Path(top["runner_key_path"]),
@@ -460,6 +494,15 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     origin = urlsplit(declared["target_origin"])
     if origin.hostname != METER_SERVICE:
         raise RunnerConfigError([f"preflight.{side}.target_origin: NOT_EVAL_METER"])
+    # tmpfs 크기·하한은 비교 조건이다(환경 지문에 들어감). 러너 설정이 선언과 한 글자라도 다르면 시작하지 않는다.
+    storage = {"engine_db_tmpfs": config.tmpfs_engine_db, "engine_data_tmpfs": config.tmpfs_engine_data,
+               "tmpfs_min_free": config.tmpfs_min_free}
+    if declared["run_storage"] != storage:
+        raise RunnerConfigError([f"preflight.{side}.run_storage: CONFIG_MISMATCH"])
+    # 봉인 뒤 유예·정착 대기도 비교 조건이다(#153 리뷰). 선언과 다른 값으로 돌면 같은 지문으로 다른 회차가 된다.
+    drain = {"grace_seconds": config.run["drain_grace_seconds"], "settle_seconds": config.run["post_settle_seconds"]}
+    if declared["run_drain"] != drain:
+        raise RunnerConfigError([f"preflight.{side}.run_drain: CONFIG_MISMATCH"])
     engine_image = config.images[f"engine_{side}"]
     target_image = Image(declared["target_image"], config.target_image_id)
     # 선언의 base_url은 비교 조건(어느 LLM 엔드포인트인가)이고, 엔진은 그 대신 게이트웨이에 닿는다.
@@ -489,6 +532,7 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "EVAL_ENGINE_LLM_POLICY_MODE": config.llm_policy_mode,
         "EVAL_TARGET_PORT": str(config.ports["target"]),
         "EVAL_METER_PORT": str(origin.port),
+        "EVAL_METER_DRAIN_GRACE": f"{config.run['drain_grace_seconds']}s",
         "EVAL_OBS_PORT": str(config.ports["obs"]),
         "EVAL_OBS_HOST_PORT": str(config.ports["obs_host"]),
         "EVAL_OBS_PATH": config.observer_path,

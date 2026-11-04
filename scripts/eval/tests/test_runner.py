@@ -18,11 +18,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import runner
 from runner import COMPLETE, INVALID, RESULT_NAME, Clock, DockerPorts, Facts, RunFailure, build_spec, execute_run
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, compose_environment, create_run_directory,
-    parse_runner_config, plan_run,
+    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, RunnerConfigError, compose_environment,
+    create_run_directory, parse_runner_config, plan_run,
 )
 from runner_engine import task_request
 from runner_window import WatchSample
+from runner_docker import DockerError
 from runner_probe import PASS, ProbeOutcome
 from test_preflight import configuration
 from test_runner_checks import DAEMON, raw_world
@@ -34,13 +35,18 @@ ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "ev
            "eval-llm-gw": "meter", "eval-api": "meter"}
 
 
-def make_spec(side="ours"):
-    preflight = configuration()
-    config = parse_runner_config(runner_config())
+def make_spec(side="ours", min_free=None):
+    preflight, payload = configuration(), runner_config()
+    if min_free is not None:  # 하한은 러너 설정과 사전검사 선언(환경 지문 입력)에 같이 바꿔야 한다
+        payload["tmpfs"]["min_free"] = min_free
+        for name in ("baseline", "ours"):
+            preflight[name]["run_storage"]["tmpfs_min_free"] = min_free
+    config = parse_runner_config(payload)
     plan = plan_run(config, preflight, side, f"{side}-1")
     return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0)
 
 
+MIB = 1024 * 1024
 # 러너가 띄운 probe 컨테이너 ID(--cidfile). 구간 감시의 허용 목록이 된다.
 PROBE_IDS = {"pre": "a1" * 32, "post": "b2" * 32}
 
@@ -65,7 +71,7 @@ class FakeMeter:
         self.per_poll = 30
         self.polls = 0
         self.drained = {"role": "engine", "drained_at": "t", "inflight_at_drain": 0, "log_complete": True,
-                        "rejected_after_seal": 2, "forced_closed_streams": 0}
+                        "rejected_after_seal": 2, "forced_closed_streams": 0, "forced_cancelled_requests": 0}
         self.observer_extra = 0
         self.rows_override = None
         self.drained_forwarded = None
@@ -82,8 +88,9 @@ class FakeMeter:
         if self.rows_override is not None:
             return self.rows_override
         n = self._forwarded()
-        return [{"seq": i, "kind": "request"} for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected"}, {"seq": n + 2, "kind": "rejected"}]
+        return [{"seq": i, "kind": "request", "outcome": "completed"} for i in range(1, n + 1)] + \
+               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal"},
+                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal"}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -137,6 +144,14 @@ class FakePorts:
         self.ready_calls = 1
         self.post_world = None
         self.probe_status = {"pre": PASS, "post": PASS}
+        # 구간 전(pre)·후(post) 측정. 마운트 ID가 같아야 같은 회차 저장소를 잰 것이다.
+        self.tmpfs_pre = {name: {"mount_id": mount_id, "size_bytes": 512 * MIB, "used_bytes": 0,
+                                 "available_bytes": 512 * MIB}
+                          for name, mount_id in (("engine_db", 101), ("engine_data", 102))}
+        self.tmpfs = {name: {"mount_id": mount_id, "size_bytes": 512 * MIB, "used_bytes": 8 * MIB,
+                             "available_bytes": 504 * MIB}
+                      for name, mount_id in (("engine_db", 101), ("engine_data", 102))}
+        self.tmpfs_error = None
         self.probe_phases = []
         self.phase = "pre"
         self.listeners = frozenset()
@@ -254,6 +269,14 @@ class FakePorts:
         self._call("seal_gateway")
         self.gateway_sealed_id = gateway_id
 
+    def tmpfs_usage(self, phase, snapshot):
+        self._call(f"tmpfs:{phase}")
+        if phase == "pre":
+            return copy.deepcopy(self.tmpfs_pre)
+        if self.tmpfs_error:
+            raise self.tmpfs_error
+        return copy.deepcopy(self.tmpfs)
+
     def findings(self):
         self._call("findings")
         return {"items": 0}
@@ -267,8 +290,8 @@ class FakePorts:
         return dict(payload, signature="sig")
 
 
-def run(mutate=None, mutate_gateway=None):
-    spec = make_spec()
+def run(mutate=None, mutate_gateway=None, spec=None):
+    spec = spec or make_spec()
     ports = FakePorts(spec)
     meter = FakeMeter(ports)
     gateway = FakeGateway(ports)
@@ -282,10 +305,10 @@ def run(mutate=None, mutate_gateway=None):
     return result, ports, meter, evidence
 
 
-FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "wait_ready",
+FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre", "wait_ready",
               "events:start", "watch:start", "scoreboard:pre", "start_task", "seal", "seal_gateway", "facts:post",
-              "listeners:post", "probe:post", "scoreboard:post", "watch:stop", "events:stop", "findings", "down",
-              "sign", "sign"]
+              "listeners:post", "probe:post", "scoreboard:post", "watch:stop", "events:stop", "tmpfs:post", "findings",
+              "down", "sign", "sign"]
 
 
 class TestCompleteRun(unittest.TestCase):
@@ -318,8 +341,11 @@ class TestCompleteRun(unittest.TestCase):
         # baseline(e53a79f)에는 스위치가 없어 같은 compose 값이 넘어가도 선언하지 않는다(#133 리뷰).
         self.assertIsNone(make_spec("baseline").llm_policy_mode)
         self.assertEqual(make_spec("ours").llm_policy_mode, "external")
-        # 사용량을 재기 전에는 서명된 완료 기록에도 미측정을 명시한다(공식 비교 제외 근거).
-        self.assertEqual(result["tmpfs_usage"], "not_measured")
+        # 구간이 닫힌 뒤 잰 tmpfs 사용량이 서명된 완료 기록에 남는다(구간 중 exec는 경계 변경이므로 그 뒤에 잰다).
+        # 적용한 하한(바이트)도 서명되는 결과에 남는다(#140 리뷰: 기록만으로 통과 기준을 다시 확인).
+        self.assertEqual(result["tmpfs_usage"], ports.tmpfs | {"min_free_bytes": 16 * MIB, "pre": ports.tmpfs_pre})
+        self.assertLess(ports.calls.index("events:stop"), ports.calls.index("tmpfs:post"))
+        self.assertLess(ports.calls.index("tmpfs:pre"), ports.calls.index("events:start"))  # 구간 전 측정
 
     def test_v11_record_binds_proof_events_and_evidence(self):
         from runner_record import canonical_sha256
@@ -415,7 +441,12 @@ class TestFailures(unittest.TestCase):
         for field in ("signature", "evidence", "meter", "images", "scoreboards", "policy_sha256"):
             self.assertNotIn(field, result)
         self.assertNotIn("/secret/path", repr(result))
-        self.assertEqual(result["tmpfs_usage"], "not_measured")
+        # 구간이 닫히기 전에 끝난 회차는 미측정, 잰 뒤 무효가 된 회차는 잰 값을 그대로 남긴다.
+        measured = ("tmpfs:post" in ports.calls and ports.tmpfs_error is None and "tmpfs:post" not in ports.fail
+                    and set(ports.tmpfs) == {"engine_db", "engine_data"})
+        expected = (ports.tmpfs | {"min_free_bytes": ports.spec.tmpfs_min_free_bytes, "pre": ports.tmpfs_pre}
+                    if measured else "not_measured")
+        self.assertEqual(result["tmpfs_usage"], expected)
 
     def test_pre_requests_must_be_zero(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "pre_forwarded", 1))
@@ -430,6 +461,7 @@ class TestFailures(unittest.TestCase):
             ("start_task", "task_start_failed"), ("seal", "seal_failed"), ("seal_gateway", "llm_seal_failed"),
             ("facts:post", "post_facts_failed"),
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
+            ("tmpfs:pre", "pre_tmpfs_measure_failed"), ("tmpfs:post", "tmpfs_measure_failed"),
             ("findings", "findings_failed"),
         ]
         for name, reason in cases:
@@ -437,6 +469,58 @@ class TestFailures(unittest.TestCase):
                 result, ports, _, evidence = run(failing(name))
                 self.assert_invalid(result, ports, evidence, reason)
                 self.assertEqual(ports.calls[-1], "down")
+
+    def test_tmpfs_at_or_near_its_limit_invalidates_the_run(self):
+        spec = make_spec()
+        for name in ("engine_db", "engine_data"):
+            for available, reason in ((spec.tmpfs_min_free_bytes - 1, "tmpfs_full"), (0, "tmpfs_full"),
+                                      (spec.tmpfs_min_free_bytes, None)):
+                with self.subTest(name=name, available=available):
+                    result, ports, _, evidence = run(
+                        lambda p, m, c, n=name, a=available: p.tmpfs[n].update(available_bytes=a))
+                    if reason is None:  # 하한과 같으면 아직 닿지 않은 것
+                        self.assertEqual(result["status"], COMPLETE)
+                    else:
+                        self.assert_invalid(result, ports, evidence, reason)
+                        self.assertEqual(result["tmpfs_usage"][name]["available_bytes"], available)
+                        self.assertNotIn("findings", ports.calls)
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "tmpfs_error", DockerError("docker_statfs_failed")))
+        self.assert_invalid(result, ports, evidence, "tmpfs_measure_failed")
+        self.assertEqual(result["tmpfs_usage"], "not_measured")
+        # 측정 결과에 두 볼륨이 정확히 있어야 한다(빠지거나 더 있으면 측정 실패).
+        result, ports, _, evidence = run(lambda p, m, c: p.tmpfs.pop("engine_data"))
+        self.assert_invalid(result, ports, evidence, "tmpfs_measure_failed")
+        self.assertEqual(result["tmpfs_usage"], "not_measured")
+
+    def test_post_must_measure_the_same_mounts_as_pre(self):
+        # #140 리뷰: 같은 경로라도 다른 tmpfs(부모 경로 변경·symlink·다시 마운트)를 쟀다면 회차 저장소 근거가 아니다.
+        for name in ("engine_db", "engine_data"):
+            with self.subTest(name=name):
+                result, ports, _, evidence = run(lambda p, m, c, n=name: p.tmpfs[n].update(mount_id=999))
+                self.assert_invalid(result, ports, evidence, "tmpfs_mount_changed")
+                self.assertEqual(result["tmpfs_usage"][name]["mount_id"], 999)
+                self.assertEqual(result["tmpfs_usage"]["pre"][name]["mount_id"], ports.tmpfs_pre[name]["mount_id"])
+                self.assertNotIn("findings", ports.calls)
+        result, ports, _, evidence = run(lambda p, m, c: p.tmpfs_pre.pop("engine_db"))
+        self.assert_invalid(result, ports, evidence, "pre_tmpfs_measure_failed")
+        self.assertNotIn("events:start", ports.calls)  # 구간 전에 멈춘다
+
+    def test_threshold_is_recorded_and_bound_to_the_comparison(self):
+        # #140 리뷰 재현: 같은 측정값(남은 20MiB)에 하한만 8m/32m로 바꾸면 완료·무효가 갈린다. 적용 하한이 서명되는
+        # 결과에 남고, 하한은 사전검사 선언(환경 지문 입력)과 같아야만 시작된다.
+        def twenty_mib_left(p, m, c):
+            for usage in p.tmpfs.values():
+                usage.update(used_bytes=usage["size_bytes"] - 20 * MIB, available_bytes=20 * MIB)
+        loose, ports, _, _ = run(twenty_mib_left, spec=make_spec(min_free="8m"))
+        self.assertEqual((loose["status"], loose["tmpfs_usage"]["min_free_bytes"]), (COMPLETE, 8 * MIB))
+        strict, ports, _, evidence = run(twenty_mib_left, spec=make_spec(min_free="32m"))
+        self.assert_invalid(strict, ports, evidence, "tmpfs_full")
+        self.assertEqual(strict["tmpfs_usage"]["min_free_bytes"], 32 * MIB)
+        preflight, payload = configuration(), runner_config()
+        payload["tmpfs"]["min_free"] = "8m"  # 선언은 16m 그대로
+        with self.assertRaises(RunnerConfigError) as caught:
+            plan_run(parse_runner_config(payload), preflight, "ours", "ours-1")
+        self.assertEqual(caught.exception.errors, ["preflight.ours.run_storage: CONFIG_MISMATCH"])
 
     def test_probe_statuses(self):
         for phase in ("pre", "post"):
@@ -449,9 +533,57 @@ class TestFailures(unittest.TestCase):
     def test_drain(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(p, "seal", lambda _id: p._call("seal")))
         self.assert_invalid(result, ports, evidence, "drain_timeout")
-        for field, value in (("inflight_at_drain", 1), ("log_complete", False)):
+        for field, value in (("inflight_at_drain", 1), ("log_complete", False), ("forced_cancelled_requests", -1),
+                             ("forced_cancelled_requests", True), ("forced_cancelled_requests", "1")):
             result, ports, _, evidence = run(lambda p, m, c: m.drained.__setitem__(field, value))
             self.assert_invalid(result, ports, evidence, "drain_incomplete")
+        result, ports, _, evidence = run(lambda p, m, c: m.drained.pop("forced_cancelled_requests"))
+        self.assert_invalid(result, ports, evidence, "drain_incomplete")
+
+    def test_requests_cut_after_the_grace_are_counted_and_settled_before_post(self):
+        slept = []
+
+        def cut_one(p, m, c):
+            m.per_poll, m.drained_forwarded = 0, 2
+            m.drained["forced_cancelled_requests"] = 1
+            m.rows_override = [{"seq": 1, "kind": "request", "outcome": "completed"},
+                               {"seq": 2, "kind": "request", "outcome": "forced_cancelled"}]
+            sleep = c.sleep
+            c.sleep = lambda seconds: (slept.append((seconds, list(p.calls))), sleep(seconds))
+        result, ports, _, evidence = run(cut_one)
+        self.assertEqual(result["status"], COMPLETE)
+        summary = evidence.files["meter-summary.json"]
+        self.assertEqual((summary["forwarded_requests"], summary["forced_cancelled_requests"],
+                          summary["drain_grace_seconds"], summary["post_settle_seconds"],
+                          summary["post_settle_applied_seconds"]), (2, 1, 30, 2, 2))
+        # 정착 대기는 drain 확인 뒤, 게이트웨이 봉인·post 점검 전에 한 번
+        settles = [calls for seconds, calls in slept if seconds == 2]
+        self.assertEqual(len(settles), 1)
+        self.assertEqual(settles[0][-1], "seal")
+        drain = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "drain")
+        self.assertEqual((drain["grace_seconds"], drain["settle_seconds"], drain["forced_cancelled"],
+                          drain["settle_applied_seconds"]), (30, 2, 1, 2))
+        self.assertEqual(evidence.files["run-record.json"]["total_requests"], 2)
+
+    def test_no_settle_without_cut_requests(self):
+        slept = []
+        result, _, _, evidence = run(lambda p, m, c: setattr(c, "sleep", lambda s: slept.append(s)))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn(2, slept)
+        summary = evidence.files["meter-summary.json"]
+        # 정책 값은 남고 적용 대기만 0이다.
+        self.assertEqual((summary["post_settle_seconds"], summary["post_settle_applied_seconds"]), (2, 0))
+        drain = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "drain")
+        self.assertEqual((drain["settle_seconds"], drain["settle_applied_seconds"]), (2, 0))
+
+    def test_cut_count_must_match_the_meter_rows(self):
+        def mismatch(p, m, c):
+            m.per_poll, m.drained_forwarded = 0, 2
+            m.drained["forced_cancelled_requests"] = 1
+            m.rows_override = [{"seq": 1, "kind": "request", "outcome": "completed"},
+                               {"seq": 2, "kind": "request", "outcome": "completed"}]
+        result, ports, _, evidence = run(mismatch)
+        self.assert_invalid(result, ports, evidence, "meter_log_inconsistent")
 
     def test_boundary_changes_between_pre_and_post(self):
         def restart_target(networks, containers):
@@ -471,20 +603,22 @@ class TestFailures(unittest.TestCase):
     def test_meter_and_observer_records_must_agree(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "observer_extra", 1))
         self.assert_invalid(result, ports, evidence, "observer_count_mismatch")
-        result, ports, _, evidence = run(lambda p, m, c: setattr(m, "rows_override", [{"seq": 2, "kind": "request"}]))
+        result, ports, _, evidence = run(lambda p, m, c: setattr(m, "rows_override", [
+            {"seq": 2, "kind": "request", "outcome": "completed"}]))
         self.assert_invalid(result, ports, evidence, "meter_log_inconsistent")
 
     def test_meter_sequence_and_count_checked_separately(self):
         def gap(p, m, c):
             # 전달 건수는 drained와 같지만 순번 2가 빠짐(기록 유실)
-            m.rows_override = [{"seq": 1, "kind": "request"}, {"seq": 3, "kind": "request"}]
+            m.rows_override = [{"seq": 1, "kind": "request", "outcome": "completed"},
+                               {"seq": 3, "kind": "request", "outcome": "completed"}]
             m.drained_forwarded = 2
         result, ports, _, evidence = run(gap)
         self.assert_invalid(result, ports, evidence, "meter_log_inconsistent")
 
         def count(p, m, c):
             # 순번은 완결이지만 drained 마커의 전달 건수와 다름
-            m.rows_override = [{"seq": i, "kind": "request"} for i in (1, 2, 3)]
+            m.rows_override = [{"seq": i, "kind": "request", "outcome": "completed"} for i in (1, 2, 3)]
             m.drained_forwarded = 5
         result, ports, _, evidence = run(count)
         self.assert_invalid(result, ports, evidence, "meter_log_inconsistent")
@@ -686,14 +820,15 @@ class TestFailures(unittest.TestCase):
         # 계측기가 drain 마커에 센 전달 2건 = request 1 + stream 1. rejected는 빼고 대조해야 완료다.
         def mixed(p, m, c):
             m.per_poll = 0
-            m.rows_override = [{"seq": 1, "kind": "request"}, {"seq": 2, "kind": "stream"},
-                               {"seq": 3, "kind": "rejected"}]
+            m.rows_override = [{"seq": 1, "kind": "request", "outcome": "completed"},
+                               {"seq": 2, "kind": "stream", "outcome": "completed"},
+                               {"seq": 3, "kind": "rejected", "outcome": "rejected_after_seal"}]
             m.drained_forwarded = 2
         result, _, _, evidence = run(mixed)
         self.assertEqual(result["status"], COMPLETE)
         self.assertEqual(evidence.files["meter-summary.json"]["forwarded_requests"], 2)
         result, _, _, _ = run(lambda p, m, c: (mixed(p, m, c), setattr(m, "rows_override", m.rows_override + [
-            {"seq": 4, "kind": "upgrade"}])))
+            {"seq": 4, "kind": "upgrade", "outcome": "completed"}])))
         self.assertEqual(result["reasons"], ["meter_log_inconsistent"])
 
     def test_failed_step_names_the_failing_check(self):

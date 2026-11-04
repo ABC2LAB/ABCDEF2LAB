@@ -39,6 +39,8 @@ def configuration():
         "worker_count": 1,
         "time_budget_seconds": 1200,
         "request_budget": 100,
+        "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
+        "run_drain": {"grace_seconds": 30, "settle_seconds": 2},
         "fixture_fingerprint": "a" * 64,
         "environment_fingerprint": "b" * 64,
         "scope_fingerprint": "c" * 64,
@@ -102,6 +104,8 @@ class TestCheckPreflight(unittest.TestCase):
             "llm": api_llm() | {"provider": "other-provider"},
             "temperature": 0.2, "seed": 43, "target_origin": "http://eval-meter:8081",
             "worker_count": 2, "time_budget_seconds": 600, "request_budget": 200,
+            "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"},
+            "run_drain": {"grace_seconds": 60, "settle_seconds": 2},
             "fixture_fingerprint": "d" * 64, "environment_fingerprint": "e" * 64,
             "scope_fingerprint": "f" * 64,
         }
@@ -199,6 +203,19 @@ class TestCheckPreflight(unittest.TestCase):
             payload["ours"]["network_mode"] = value
             self.reject(payload, "ours.network_mode: INVALID")
 
+    def test_api_provider_accepts_one_variant_segment(self):
+        # OpenRouter 엔드포인트 tag(`slug/변형`, 예: deepinfra/fp8)를 문법상 한 단계까지 받는다. 접두 매칭이라
+        # 단일 엔드포인트·정밀도 보장은 아니다(평가 프로토콜 §6).
+        for provider in ("deepinfra", "deepinfra/fp8", "atlas-cloud/fp8", "deepinfra/turbo", "a.b_c-d/e.f_g-h"):
+            with self.subTest(provider=provider):
+                payload = configuration()
+                for side in ("baseline", "ours"):
+                    payload[side]["llm"] = api_llm() | {"provider": provider}
+                check_preflight(payload)
+        payload = configuration()
+        payload["ours"]["llm"] = api_llm() | {"provider": "example-provider/fp8"}  # 변형만 달라도 다른 조건
+        self.reject(payload, "comparison.llm: MISMATCH")
+
     def test_api_backend_requires_pinned_model_provider_and_disabled_fallbacks(self):
         invalid = [
             api_llm() | {"base_url": "http://llm-api.example/api/v1"},
@@ -216,6 +233,10 @@ class TestCheckPreflight(unittest.TestCase):
             api_llm() | {"provider": "Example-Provider"},
             api_llm() | {"provider": "tbd"},
             api_llm() | {"provider": None},
+            # 엔드포인트 변형은 한 단계만: 빈 변형·두 단계·대문자·공백·변형만은 거부
+            api_llm() | {"provider": "deepinfra/"}, api_llm() | {"provider": "deepinfra/fp8/turbo"},
+            api_llm() | {"provider": "deepinfra/FP8"}, api_llm() | {"provider": "/fp8"},
+            api_llm() | {"provider": "deepinfra /fp8"}, api_llm() | {"provider": "deepinfra/todo"},
             api_llm() | {"fallbacks": True},
             api_llm() | {"fallbacks": None},
             api_llm() | {"fallbacks": 0},
