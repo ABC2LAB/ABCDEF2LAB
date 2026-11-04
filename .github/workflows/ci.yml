@@ -1,8 +1,8 @@
 name: ci
 
 on:
+  # base 필터를 두지 않는다: 바로 아래 PR 브랜치를 base로 쓰는 스택 PR도 검사해야 한다(PR 템플릿·#168 리뷰).
   pull_request:
-    branches: [dev, main]
   push:
     branches: [dev]
 
