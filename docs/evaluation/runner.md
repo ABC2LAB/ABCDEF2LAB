@@ -23,6 +23,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 - stdout은 `run_id 상태 사유…` 한 줄이다. docker의 진단(stderr)은 운영자 터미널로만 가고 러너 기록에는 남지 않는다.
 - 회차 중간에 운영자가 할 일은 없다. 작업은 러너가 설정의 `task` 내용으로 엔진 API에 만든다(아래 "작업 생성").
 
+공식·시범 회차의 순서·입력 준비·집계는 [공식 회차 실행 절차](official-run.md)를 따른다.
+
 채점: 완료 회차의 `run-record.json`을 채점 manifest의 `run_record_path`로 넣고 `python3 -I -B scripts/eval/score.py <manifest> --runner-key-file <러너 키>`로 채점한다(`records_path`는 records=null이면 읽지 않는다).
 
 ## 준비물
