@@ -77,3 +77,9 @@ WSL2 Linux amd64, Intel i5-8265U, Go 1.26.3. benchmark 프로세스 CPU affinity
 ## 검토·검증
 
 독립 코드 리뷰에서 CREATE 실패 후 소유하지 않은 schema 정리 가능성과 실패 표본의 미측정 0 표현을 지적받아 수정했고 재리뷰에서 추가 차단 지적이 없었다. tagged compile은 실제 DB 시험과 구별한다. 최종 코드의 tagged compile, 기본 tag에서 benchmark 제외 확인, 관련 tagged vet, 전체 Go build, gofmt/diff 검사를 통과했다. 최종 선행 head·원격 SHA·CI는 PR/작업 결과에서 별도로 확인한다. 여기의 12회는 실제 DB·파일을 사용한 benchmark 실행이며 일반 단위시험 12개라는 뜻이 아니다.
+
+## DSN 가드 보완 (리뷰 반영)
+
+연결 전에 URL의 명시 포트와 `pgx.ParseConfig`의 실제 Host·Port·Database를 함께 대조한다. Host는 `127.0.0.1`, Database는 `audit_sequence_bench`, Port는 URL의 1~65535 포트와 같아야 하며 Fallbacks는 0개여야 한다. query의 `dbname`·`host`·`port` 덮어쓰기로 다른 연결 대상이 되거나 SSL/다중 호스트 fallback이 생기면 고정 오류로 거부한다. 예시에는 `sslmode=disable`을 사용한다. 이 검사는 대상 형식의 제한이며 DB 소유를 인증하지 않는다. 실제 폐기용 인스턴스의 소유 확인은 실행자의 필수 전제다.
+
+순수 파싱 회귀는 연결·schema 생성 없이 정확 대상 2건과 query 덮어쓰기·fallback 등 거부 10건을 검사한다. 실제 PG와 전체 sequence 벤치마크는 이 보완 검증에서 재실행하지 않는다.

@@ -264,14 +264,65 @@ type sequenceFixture struct {
 	publisher     *Publisher
 }
 
-func newSequenceFixture(b *testing.B) (_ *sequenceFixture, err error) {
-	dsn := os.Getenv("ARTEX_AUDIT_SEQUENCE_DSN")
+// Parse the exact connection target before OpenDB can establish a connection.
+// URL query settings (including dbname/host/port) override URL fields in pgx.
+func sequenceDatabaseConfig(dsn, disposable string) (*pgx.ConnConfig, error) {
+	reject := errors.New("explicit disposable database required")
 	u, err := url.Parse(dsn)
-	if err != nil || os.Getenv("ARTEX_AUDIT_SEQUENCE_DISPOSABLE") != "yes" || u.Scheme != "postgres" ||
+	if err != nil || disposable != "yes" || u.Scheme != "postgres" ||
 		u.Hostname() != "127.0.0.1" || u.Port() == "" || u.Path != "/audit_sequence_bench" {
-		return nil, errors.New("explicit disposable database required")
+		return nil, reject
+	}
+	port, err := strconv.ParseUint(u.Port(), 10, 16)
+	if err != nil || port == 0 {
+		return nil, reject
 	}
 	pg, err := pgx.ParseConfig(dsn)
+	if err != nil || pg.Host != "127.0.0.1" || pg.Port != uint16(port) ||
+		pg.Database != "audit_sequence_bench" || len(pg.Fallbacks) != 0 {
+		return nil, reject
+	}
+	return pg, nil
+}
+
+func TestSequenceDatabaseConfig(t *testing.T) {
+	// Parsing only: no database, network dial, schema or benchmark is started.
+	base := "postgres://synthetic:synthetic@127.0.0.1:55432/audit_sequence_bench"
+	cases := []struct {
+		name, dsn, disposable string
+		valid                 bool
+	}{
+		{"exact", base + "?sslmode=disable", "yes", true},
+		{"same-db-query", base + "?sslmode=disable&dbname=audit_sequence_bench", "yes", true},
+		{"dbname-override", base + "?sslmode=disable&dbname=other_database", "yes", false},
+		{"encoded-dbname-override", base + "?sslmode=disable&%64bname=other_database", "yes", false},
+		{"host-override", base + "?sslmode=disable&host=127.0.0.2", "yes", false},
+		{"port-override", base + "?sslmode=disable&port=55433", "yes", false},
+		{"fallback", base + "?sslmode=prefer", "yes", false},
+		{"multi-host", base + "?sslmode=disable&host=127.0.0.1,127.0.0.1", "yes", false},
+		{"missing-explicit-port", "postgres://synthetic:synthetic@127.0.0.1/audit_sequence_bench?sslmode=disable", "yes", false},
+		{"zero-port", "postgres://synthetic:synthetic@127.0.0.1:0/audit_sequence_bench?sslmode=disable", "yes", false},
+		{"wrong-path", "postgres://synthetic:synthetic@127.0.0.1:55432/other_database?sslmode=disable&dbname=audit_sequence_bench", "yes", false},
+		{"not-disposable", base + "?sslmode=disable", "no", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := sequenceDatabaseConfig(tc.dsn, tc.disposable)
+			if !tc.valid {
+				if err == nil || cfg != nil || err.Error() != "explicit disposable database required" {
+					t.Fatal("unsafe target accepted or raw DSN error exposed")
+				}
+				return
+			}
+			if err != nil || cfg == nil || cfg.Host != "127.0.0.1" || cfg.Port != 55432 || cfg.Database != "audit_sequence_bench" || len(cfg.Fallbacks) != 0 {
+				t.Fatal("exact disposable target rejected")
+			}
+		})
+	}
+}
+
+func newSequenceFixture(b *testing.B) (_ *sequenceFixture, err error) {
+	pg, err := sequenceDatabaseConfig(os.Getenv("ARTEX_AUDIT_SEQUENCE_DSN"), os.Getenv("ARTEX_AUDIT_SEQUENCE_DISPOSABLE"))
 	if err != nil {
 		return nil, err
 	}
