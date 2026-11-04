@@ -143,6 +143,15 @@ func (c *controlledFindingCollector) collect(ctx context.Context, evidence Contr
 		evidence.FinalCheckpoint != (auditlog.Checkpoint{}) {
 		return ErrControlledFindingUnavailable
 	}
+	c.mu.Lock()
+	failure, unavailable := c.revisionFailure, c.collected || c.finalizing || c.saved
+	c.mu.Unlock()
+	if failure != nil {
+		return failure
+	}
+	if unavailable {
+		return ErrControlledFindingUnavailable
+	}
 	detail := evidence.Verification
 	if !detail.PolicyResolved || !detail.Owner.Captured || !detail.Evaluated.Captured {
 		return ErrControlledFindingUnavailable
@@ -177,11 +186,20 @@ func (c *controlledFindingCollector) collect(ctx context.Context, evidence Contr
 	if c.revisions != nil {
 		collected, err = evidencerevision.Capture(expected, input.Evidence, input.CanaryFields)
 		if err != nil {
-			return controlledRevisionFailure{reason: "capture_rejected", operation: c.revisionOperation}
+			failure, first := c.retainRevisionFailure("capture_rejected")
+			if first {
+				// Collect errors are intentionally hidden from the model, so the
+				// private collector records this fixed reason before that boundary.
+				logControlledFindingFinalizationFailure(failure)
+			}
+			return failure
 		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.revisionFailure != nil {
+		return c.revisionFailure
+	}
 	if c.collected || c.finalizing || c.saved {
 		return ErrControlledFindingUnavailable
 	}

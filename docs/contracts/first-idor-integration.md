@@ -69,6 +69,8 @@ CONFIRMED finding/node/link를 원자 커밋한다. 그 밖의 판정은 구조�
 `storage_conflict`·`storage_outcome_unknown`(기타 callback 오류는 `finalization_rejected`)와
 사용 가능한 비민감 operation key를 남긴다. Source/Prepare 실패처럼 key를 발급하지 못한
 경우 `unavailable`이다. 원문 Source/SQL 오류·자격값은 로그에 넣지 않는다.
+
+revision 연결에서는 고정 `revision_failed reason=… operation_ref=…`로 Capture/Source/descriptor/발급 실패를 finding 저장 실패와 구분한다. Capture의 첫 실패도 보존하며 모델에 일반 거부를 반환하기 전에 잠금 밖에서 한 번 기록한다. 원문 관찰·오류·자격은 노출하지 않는다.
 ACK 유실로 intent가 blocked여도 해당 key로 저장 행을 운영자가 대조해야 하며,
 대조·복구 API나 자동 재송신 기능을 구현했다고 주장하지 않는다.
 
