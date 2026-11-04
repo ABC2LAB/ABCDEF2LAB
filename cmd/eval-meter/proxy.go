@@ -215,16 +215,28 @@ func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 
 	rec := &statusRecorder{ResponseWriter: w, hijack: func(conn net.Conn) error { return m.trackStream(seq, conn) }}
+	finished := false
+	// The proxy aborts a response whose body copy fails (the grace cancelling it
+	// mid-body, the engine or target dropping the connection) with
+	// panic(http.ErrAbortHandler); the bookkeeping must still run once or the
+	// drain would wait forever.
+	defer func() { m.finishRequest(seq, r.Method, started, rec, !finished) }()
 	m.proxy.ServeHTTP(rec, r.WithContext(ctx))
-	completed := m.now()
+	finished = true
+}
 
+func (m *engineMeter) finishRequest(seq uint64, method string, started time.Time, rec *statusRecorder, aborted bool) {
+	completed := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.cancels, seq)
-	row := engineRow{Seq: seq, Kind: "request", Method: r.Method, Status: rec.status, StartedAt: stamp(started),
+	row := engineRow{Seq: seq, Kind: "request", Method: method, Status: rec.status, StartedAt: stamp(started),
 		CompletedAt: stamp(completed), ResponseBytes: rec.bytes, Outcome: "completed"}
-	if rec.upstreamFailed {
+	switch {
+	case rec.upstreamFailed:
 		row.Outcome = "upstream_error"
+	case aborted:
+		row.Outcome = "aborted"
 	}
 	if rec.hijacked {
 		row.Kind = "stream"

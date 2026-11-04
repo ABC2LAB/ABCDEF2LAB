@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,40 @@ func hangingTarget(t *testing.T, release <-chan struct{}) (*httptest.Server, <-c
 		target.Close()
 	})
 	return target, arrived
+}
+
+// streamingTarget answers 200 with a first line and then holds the body open
+// until the request is cancelled, like an event stream the engine left running.
+func streamingTarget(t *testing.T) (*httptest.Server, <-chan struct{}) {
+	t.Helper()
+	cut := make(chan struct{}, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("first\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		cut <- struct{}{}
+	}))
+	t.Cleanup(func() {
+		target.CloseClientConnections()
+		target.Close()
+	})
+	return target, cut
+}
+
+// readFirstLine opens the stream through the meter and returns once the first
+// body bytes have arrived, so the response is already mid-body.
+func readFirstLine(t *testing.T, front *httptest.Server) *http.Response {
+	t.Helper()
+	resp, err := http.Get(front.URL + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make([]byte, len("first\n"))
+	if _, err := io.ReadFull(resp.Body, first); err != nil || string(first) != "first\n" {
+		t.Fatalf("first line %q %v", first, err)
+	}
+	return resp
 }
 
 func graceEngine(t *testing.T, target *httptest.Server, grace time.Duration) (*engineMeter, *httptest.Server, string) {
@@ -118,6 +153,68 @@ func TestDrainGraceCancelsRequestsStillOpenAfterSeal(t *testing.T) {
 	terminated := readMarker[terminatedMarker](t, filepath.Join(path, terminatedName))
 	if terminated.ForcedCancelled != 1 || !terminated.Drained {
 		t.Fatalf("terminated marker %+v", terminated)
+	}
+}
+
+func TestDrainGraceCancelsAResponseAlreadyMidBody(t *testing.T) {
+	target, cut := streamingTarget(t)
+	m, front, path := graceEngine(t, target, 25*time.Millisecond)
+	resp := readFirstLine(t, front)
+	defer resp.Body.Close()
+	m.seal()
+	// The cancel aborts the body copy with ErrAbortHandler; the request must
+	// still be settled, or the drain never happens.
+	if !drainedWithin(m, 5*time.Second) {
+		t.Fatal("mid-body request was not settled after the grace cancelled it")
+	}
+	<-cut
+	if _, err := io.ReadAll(resp.Body); err == nil {
+		t.Fatal("engine saw a complete body from a cancelled response")
+	}
+	marker := readMarker[drainedMarker](t, filepath.Join(path, drainedName))
+	if marker.ForcedCancelled != 1 || marker.InflightAtDrain != 0 || marker.Forwarded != 1 || !marker.LogComplete {
+		t.Fatalf("drained marker %+v", marker)
+	}
+	rows := readRows[engineRow](t, filepath.Join(path, engineLogName))
+	if len(rows) != 1 || rows[0].Kind != "request" || rows[0].Outcome != "forced_cancelled" || rows[0].Status != http.StatusOK {
+		t.Fatalf("rows %+v", rows)
+	}
+	m.terminate("signal")
+	if terminated := readMarker[terminatedMarker](t, filepath.Join(path, terminatedName)); terminated.ForcedCancelled != 1 || !terminated.Drained {
+		t.Fatalf("terminated marker %+v", terminated)
+	}
+}
+
+func TestEngineDroppingAResponseMidBodyIsSettledAsAborted(t *testing.T) {
+	target, cut := streamingTarget(t)
+	m, front, path := graceEngine(t, target, 0)
+	resp := readFirstLine(t, front)
+	_ = resp.Body.Close() // the engine walks away mid-body
+	<-cut
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		m.mu.Lock()
+		inflight := m.inflight
+		m.mu.Unlock()
+		if inflight == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("aborted request is still counted in flight")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	m.seal()
+	if !drainedWithin(m, 5*time.Second) {
+		t.Fatal("never drained after the aborted request")
+	}
+	marker := readMarker[drainedMarker](t, filepath.Join(path, drainedName))
+	if marker.ForcedCancelled != 0 || marker.InflightAtDrain != 0 || marker.Forwarded != 1 {
+		t.Fatalf("drained marker %+v", marker)
+	}
+	rows := readRows[engineRow](t, filepath.Join(path, engineLogName))
+	if len(rows) != 1 || rows[0].Outcome != "aborted" {
+		t.Fatalf("rows %+v", rows)
 	}
 }
 
