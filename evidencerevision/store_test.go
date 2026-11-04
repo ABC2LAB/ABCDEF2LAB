@@ -21,7 +21,9 @@ import (
 	"github.com/Autumn-27/artex/taskmode"
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // This fixture owns synthetic observations and a marker file. It does not
@@ -268,15 +270,18 @@ func TestRevisionBindingAndNaturalIdentityConflict(t *testing.T) {
 }
 
 func TestRevisionCurrentModeAndSQLFacts(t *testing.T) {
-	for _, name := range []string{"exploration", "mode-version", "wrong-intent-owner", "non-intent", "missing-task", "deleted-task", "clear-marker", "missing-marker"} {
+	for _, name := range []string{"exploration", "mode-version", "wrong-intent-owner", "non-intent", "missing-task", "deleted-task", "legacy-mode", "clear-marker", "missing-marker"} {
 		t.Run(name, func(t *testing.T) {
 			f := newRevisionFixture(t)
 			r := f.request
 			c := f.expected
+			want := ErrBinding
 			switch name {
 			case "exploration":
-				r.ExpectedExplorationID++
+				other := newRevisionFixture(t)
+				r.ExpectedExplorationID = other.request.ExpectedExplorationID
 			case "mode-version":
+				want = ErrMode
 				r.ExpectedModeVersion++
 			case "wrong-intent-owner":
 				other := newRevisionFixture(t)
@@ -295,11 +300,30 @@ func TestRevisionCurrentModeAndSQLFacts(t *testing.T) {
 				c.Scope.TaskRef = strconv.FormatInt(taskID, 10)
 				c.IntentID = intent
 				r.ExpectedExplorationID = exploration
+				// Keep a valid controlled row so the deleted guard cannot be
+				// hidden by a later missing-mode rejection.
+				if _, err := f.d.Exec(`INSERT INTO task_control_modes(task_id,mode,version) VALUES($1,'controlled',1)`, taskID); err != nil {
+					fixtureError(t, "deleted controlled fence", err)
+				}
+				r.ExpectedModeVersion = 1
+			case "legacy-mode":
+				want = ErrMode
+				taskID, exploration, intent := ordinaryRevisionTask(t, f.d)
+				// Deliberately inconsistent raw state: normal registration
+				// rejects legacy without a verified clear marker.
+				if _, err := f.d.Exec(`INSERT INTO task_control_modes(task_id,mode,version) VALUES($1,'explicit_legacy',1)`, taskID); err != nil {
+					fixtureError(t, "legacy fixture fence", err)
+				}
+				c.Scope.TaskRef = strconv.FormatInt(taskID, 10)
+				c.IntentID = intent
+				r.ExpectedExplorationID, r.ExpectedModeVersion = exploration, 1
 			case "clear-marker":
+				want = ErrMode
 				if err := os.WriteFile(f.scope.markerPath, []byte("clear"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			case "missing-marker":
+				want = ErrMode
 				if err := os.Remove(f.scope.markerPath); err != nil {
 					t.Fatal(err)
 				}
@@ -309,8 +333,8 @@ func TestRevisionCurrentModeAndSQLFacts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, err := f.store.Issue(t.Context(), r); err == nil || got != (Receipt{}) {
-				t.Fatal("invalid current SQL/marker binding issued revision")
+			if got, err := f.store.Issue(t.Context(), r); !errors.Is(err, want) || got != (Receipt{}) {
+				t.Fatalf("current SQL/marker guard: got %v, want %v", err, want)
 			}
 			revisionCounts(t, f, 0, 0)
 		})
@@ -529,18 +553,69 @@ func TestRevisionRollbackAndCommitUnknown(t *testing.T) {
 
 func TestRevisionImmutableRowsAndDurableCommit(t *testing.T) {
 	f := newRevisionFixture(t)
+	// Force the session default off; the production transaction must enable
+	// synchronous acknowledgement itself rather than inherit the server default.
+	cfg, err := pgx.ParseConfig(os.Getenv("ARTEX_EVIDENCE_REVISION_TEST_DSN"))
+	if err != nil {
+		t.Fatal("dedicated test DSN invalid")
+	}
+	cfg.RuntimeParams["synchronous_commit"] = "off"
+	pool := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { _ = pool.Close() })
+	var mode string
+	if err := pool.QueryRow(`SHOW synchronous_commit`).Scan(&mode); err != nil || mode != "off" {
+		t.Fatal("fixture session must start asynchronous")
+	}
+	f.store, err = New(pool, f.scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := false
 	f.store.commit = func(tx *sql.Tx) error {
-		var mode string
 		if err := tx.QueryRow(`SHOW synchronous_commit`).Scan(&mode); err != nil || mode != "on" {
 			t.Error("unsafe commit acknowledgement")
 		}
+		committed = true
 		return tx.Commit()
 	}
 	first := issueRevision(t, f, f.request)
+	if !committed {
+		t.Fatal("commit probe not reached")
+	}
+	if err := pool.QueryRow(`SHOW synchronous_commit`).Scan(&mode); err != nil || mode != "off" {
+		t.Fatal("transaction setting leaked into session")
+	}
 	for _, table := range []string{"evidence_revision_initials", "evidence_revision_operations"} {
-		if _, err := f.d.Exec(`DELETE FROM `+table+` WHERE revision=$1`, int64(first.Revision)); err == nil {
-			t.Fatal("immutable history deletion accepted")
+		for _, action := range []string{"UPDATE", "DELETE"} {
+			t.Run(table+"/"+action, func(t *testing.T) {
+				query := `DELETE FROM ` + table + ` WHERE revision=$1`
+				if action == "UPDATE" {
+					column := "execution_ref"
+					if table == "evidence_revision_operations" {
+						column = "operation_ref"
+					}
+					query = `UPDATE ` + table + ` SET ` + column + `=` + column + ` WHERE revision=$1`
+				}
+				_, err := f.d.Exec(query, int64(first.Revision))
+				var pg *pgconn.PgError
+				if !errors.As(err, &pg) || pg.Code != "P0001" || pg.Message != "immutable evidence revision" {
+					t.Fatal("immutable trigger must reject the row operation itself")
+				}
+			})
 		}
+	}
+	revisionCounts(t, f, 1, 1)
+}
+
+func TestRevisionLookupRechecksIntentRelationship(t *testing.T) {
+	f := newRevisionFixture(t)
+	issueRevision(t, f, f.request)
+	other := newRevisionFixture(t)
+	if _, err := f.d.Exec(`UPDATE exploration_nodes SET exploration_id=$1 WHERE id=$2`, other.request.ExpectedExplorationID, f.expected.IntentID); err != nil {
+		fixtureError(t, "move historical intent", err)
+	}
+	if got, err := f.store.Lookup(t.Context(), f.request); !errors.Is(err, ErrBinding) || got != (Receipt{}) {
+		t.Fatal("historical receipt bypassed current SQL relationship")
 	}
 	revisionCounts(t, f, 1, 1)
 }
