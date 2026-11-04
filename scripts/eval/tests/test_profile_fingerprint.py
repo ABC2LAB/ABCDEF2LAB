@@ -35,7 +35,7 @@ def local_llm():
 
 def profile():
     return {
-        "version": 3,
+        "version": 4,
         "fixture": {
             "preparation_id": "read_fixture", "preparation_revision": 1,
             "accounts": [{"label": "owner", "role": "basic"}, {"label": "peer", "role": "basic"}],
@@ -51,6 +51,7 @@ def profile():
             "temperature": 0, "seed": 42, "target_image": "example/target:15.0.0",
             "worker_count": 1, "time_budget_seconds": 1200, "request_budget": 100,
             "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
+            "run_drain": {"grace_seconds": 30, "settle_seconds": 2},
         },
         "scope": {"target_origin": "http://eval-meter:8080", "methods": ["GET", "HEAD"],
                   "paths": ["/api/records/{object}", "/api/status"], "vuln_classes": ["idor", "bola"]},
@@ -64,13 +65,13 @@ class TestProfileFingerprint(unittest.TestCase):
         self.assertIn(expected, str(caught.exception))
         self.assertNotIn("SYNTHETIC-PRIVATE", str(caught.exception))
 
-    def test_v3_fixed_canonical_vectors(self):
-        # v3: 환경에 run_storage(tmpfs 크기·하한)가 들어가고 format 문자열이 바뀌어 세 지문 모두 v2와 다르다.
+    def test_v4_fixed_canonical_vectors(self):
+        # v4: 환경에 run_drain(봉인 뒤 유예·정착 대기)이 들어가고 format 문자열이 바뀌어 세 지문 모두 v3와 다르다.
         self.assertEqual(asdict(generate_fingerprints(profile())), {
-            "format": "abc2lab-eval-profile-v3",
-            "fixture_fingerprint": "3f17600f9137bd5599e37ba967096579e1e9087ccf0bb2a88ae9361701fbdd74",
-            "environment_fingerprint": "0db48516f8984286f710ac5acafc68e8a5470daa43b21d6d2fc967c2f4a24564",
-            "scope_fingerprint": "f75a82a89c6c8999cb9be671d0b51dbac69a3900de8c86914c85b08b5f079e1f",
+            "format": "abc2lab-eval-profile-v4",
+            "fixture_fingerprint": "07de4193e27221c8364f4707d1c46fc61cb5a39843fab1f6bdfcd248be874006",
+            "environment_fingerprint": "13b1db09af8fea3fd9b4e46f642ada21d7b4b6e043852fa6c251690b5c403df7",
+            "scope_fingerprint": "eca6cfb42d5020fbb50e97bde33b799c6892d8da7cf4e3fffc34b829876456ae",
         })
 
     def test_digest_fields_fit_current_preflight_without_changing_source_pins(self):
@@ -132,8 +133,11 @@ class TestProfileFingerprint(unittest.TestCase):
                    "temperature": 0.25, "seed": 43, "target_image": "example/target:16.0.0",
                    "worker_count": 2, "time_budget_seconds": 600, "request_budget": 101,
                    # tmpfs 하한이 다르면 같은 측정값으로도 완료·무효가 갈린다(#140 리뷰) → 환경 지문이 달라야 한다.
-                   "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"}}
-        for field, value in changes.items():
+                   "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"},
+                   # 봉인 뒤 유예·정착 대기는 post 관측 시점과 취소 여부를 바꾼다(#153 리뷰) → 환경 지문이 달라야 한다.
+                   "run_drain": {"grace_seconds": 31, "settle_seconds": 2}}
+        cases = [*changes.items(), ("run_drain", {"grace_seconds": 30, "settle_seconds": 3})]
+        for field, value in cases:
             payload = profile()
             payload["environment"][field] = value
             result = generate_fingerprints(payload)
@@ -214,7 +218,7 @@ class TestProfileFingerprint(unittest.TestCase):
             payload = profile()
             del payload[field]
             self.reject(payload, "MISSING_FIELDS")
-        for value in (None, True, 0, 1, 2, 4, "3"):  # v2(run_storage 없음)는 v3와 섞지 않는다
+        for value in (None, True, 0, 1, 2, 3, 5, "4"):  # v3(run_drain 없음)·v2(run_storage 없음)는 v4와 섞지 않는다
             self.reject(profile() | {"version": value}, "UNSUPPORTED_VERSION")
         for field in ("fixture", "environment", "scope"):
             payload = profile()
@@ -356,6 +360,31 @@ class TestProfileFingerprint(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertFalse(profile_fingerprint._run_storage(bad))
                 self.assertFalse(preflight._run_storage(bad))
+
+    def test_run_drain_validation_does_not_drift(self):
+        # 유예·정착 대기: 프로파일 지문·사전검사·러너 설정·계측기가 같은 범위를 받아야 선언한 정책으로 회차가 돈다.
+        import runner_config
+        self.assertEqual(profile_fingerprint.MAX_DRAIN_GRACE_SECONDS, runner_config.MAX_DRAIN_GRACE_SECONDS)
+        self.assertEqual(preflight.MAX_DRAIN_GRACE_SECONDS, runner_config.MAX_DRAIN_GRACE_SECONDS)
+        self.assertEqual(profile_fingerprint.MAX_SETTLE_SECONDS, runner_config.MAX_RUN_SECONDS)
+        self.assertEqual(preflight.MAX_SETTLE_SECONDS, runner_config.MAX_RUN_SECONDS)
+        for grace in (0, 1, 30, 600, 601, True, 1.0, "30", None, -1):
+            for settle in (0, 1, 2, 3600, 3601, False, 2.0):
+                value = {"grace_seconds": grace, "settle_seconds": settle}
+                with self.subTest(value=value):
+                    expected = (type(grace) is int and 1 <= grace <= 600 and type(settle) is int
+                                and 1 <= settle <= 3600)
+                    self.assertEqual(profile_fingerprint._run_drain(value), expected)
+                    self.assertEqual(preflight._run_drain(value), expected)
+        for bad in (None, [], {}, {"grace_seconds": 30}, {"grace_seconds": 30, "settle_seconds": 2, "extra": 1}):
+            with self.subTest(bad=bad):
+                self.assertFalse(profile_fingerprint._run_drain(bad))
+                self.assertFalse(preflight._run_drain(bad))
+        payload = profile()
+        payload["environment"]["run_drain"] = {"grace_seconds": 0, "settle_seconds": 2}
+        self.reject(payload, "INVALID_RUN_DRAIN")
+        del payload["environment"]["run_drain"]
+        self.reject(payload, "MISSING_FIELDS")
 
     def test_url_and_llm_validation_does_not_drift_from_preflight(self):
         # 두 검증기는 같은 정의 블록을 갖는다. 소스가 갈라지면 여기서 먼저 걸린다.
