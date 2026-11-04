@@ -51,4 +51,4 @@ manifest의 회차 항목:
 - baseline 어댑터는 A5 미구현으로 에러 중단한다. 실제 baseline 비교/스캔을 수행한 결과가 아니다.
 
 실시간 상태 reader의 설정은 `EVAL_TARGET_ORIGIN`, `ARTEX_LLM_BASE_URL`, `EVAL_MODEL_TAG`다.
-로컬 origin만 허용하며, baseline/개선 후의 정확한 모델 태그·샘플링·준비 조건은 프로토콜에서 고정한다.
+대상 origin은 로컬(관측 front의 `127.0.0.1` 포트)만 허용하며, baseline/개선 후의 모델 식별자·제공자·샘플링·준비 조건은 프로토콜 §6에서 고정한다.

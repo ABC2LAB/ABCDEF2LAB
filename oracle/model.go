@@ -97,6 +97,8 @@ type CheckOutcome struct {
 // evidence's observation time, not judgment time (spec §3(a)); HintMatchesCanonical
 // is whether the caller's policy hint matched the canonical policy a reader
 // returned — a mismatch holds the policy invalid regardless of its content.
+// Observation and validity timestamps must be nonzero UTC instants in years
+// 1..9999. Missing bounds do not mean an unbounded validity window.
 type PolicyAssertion struct {
 	ExpectedAccess       ExpectedAccess
 	Sharing              ResolutionState

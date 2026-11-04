@@ -20,6 +20,7 @@ from pathlib import Path
 from aggregate import ScanVerdict
 from collect import VerdictRecord
 from ground_truth import bac_category, core_gt
+from isolation_proof import IsolationError, check_isolated_events, check_isolation, check_unproven_events, drain_policy
 from manifest import RunManifest
 from scoreboard import SnapshotError, normalize_challenges, require_basis_keys
 
@@ -28,6 +29,8 @@ _CONTEXT = ("run_id", "model_tag", "reset_generation", "instance_id", "execution
 _STEPS = ("fixture_ready", "pre", "engine_start", "engine_end", "drained", "post")
 _REQUIRED_ARTIFACTS = ("pre_raw", "pre", "post_raw", "post", "records")
 _OPTIONAL_ARTIFACTS = ("traffic", "coverage", "solve_events")
+# v1.1(run-record-v1.1.md): 격리 근거 descriptor가 추가되고, records는 null(판정 미수집)일 수 있다.
+V1, V11 = "1", "1.1"
 
 
 class RunRecordError(ValueError):
@@ -45,6 +48,10 @@ class RunInputs:
     execution_id: str
     fixture_fingerprint: str
     environment_fingerprint: str
+    version: str = V1
+    judgments_collected: bool = True  # v1.1 records=null이면 False(판정 미수집)
+    proof_id: str | None = None  # v1.1 격리 증명(없으면 귀속 미확인)
+    drain_policy: tuple[int, int] | None = None  # v1.1 증명 근거의 봉인 뒤 (유예, 정착 대기) 초
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict:
@@ -201,7 +208,9 @@ def _load_run_inputs(manifest: RunManifest, runner_key: bytes | None, correlate,
     fields = set(_CONTEXT) | {"version", "engine", "fixture_fingerprint", "environment_fingerprint",
                               "requests_drained", "timeline", "artifacts", "signature", "condition",
                               "repeat_index", "elapsed_seconds", "total_requests", "blocked_attempts"}
-    receipt = _object(signed, fields, "러너 기록")
+    # 필드 집합(v1 또는 v1.1) → 서명 → 버전 순서. 서명 전에는 값을 해석하지 않는다.
+    receipt = _object(signed, fields | {"isolation_proof"} if isinstance(signed, dict) and "isolation_proof" in signed
+                      else fields, "러너 기록")
     signature = receipt["signature"]
     payload = {key: value for key, value in receipt.items() if key != "signature"}
     expected_signature = sign_run_record(payload, _key(runner_key))["signature"]
@@ -209,7 +218,12 @@ def _load_run_inputs(manifest: RunManifest, runner_key: bytes | None, correlate,
             or any(char not in "0123456789abcdef" for char in signature)
             or not hmac.compare_digest(signature, expected_signature)):
         raise RunRecordError("러너 기록 서명 불일치")
-    if type(receipt["version"]) is not int or receipt["version"] != 1:
+    # 버전은 느슨하게 바꾸지 않는다: v1은 정수 1, v1.1은 문자열 "1.1"만. v1.1만 격리 증명 필드를 가진다.
+    if type(receipt["version"]) is int and receipt["version"] == 1 and "isolation_proof" not in receipt:
+        version = V1
+    elif type(receipt["version"]) is str and receipt["version"] == V11 and "isolation_proof" in receipt:
+        version = V11
+    else:
         raise RunRecordError("지원하지 않는 러너 기록 version")
     for field in _CONTEXT + ("fixture_fingerprint", "environment_fingerprint"):
         _text(receipt[field], field)
@@ -247,14 +261,16 @@ def _load_run_inputs(manifest: RunManifest, runner_key: bytes | None, correlate,
         if times[before] > times[after] or sequences[before] >= sequences[after]:
             raise RunRecordError("pre/엔진/요청 종료/post 순서 오류")
 
-    artifacts = _object(receipt["artifacts"], set(_REQUIRED_ARTIFACTS + _OPTIONAL_ARTIFACTS), "artifacts")
+    optional = _OPTIONAL_ARTIFACTS + (("records", "isolation_evidence") if version == V11 else ())
+    names = _REQUIRED_ARTIFACTS + _OPTIONAL_ARTIFACTS + (("isolation_evidence",) if version == V11 else ())
+    artifacts = _object(receipt["artifacts"], set(names), "artifacts")
     base = directory.base
     paths: set[Path] = set()
     file_ids: set[tuple[int, int]] = set()
 
     def artifact(name: str) -> object | None:
         descriptor = artifacts[name]
-        if descriptor is None and name in _OPTIONAL_ARTIFACTS:
+        if descriptor is None and name in optional:
             return None
         descriptor = _object(descriptor, set(_CONTEXT) | {"path", "sha256", "size", "phase"}, name)
         _context(descriptor, receipt, name)
@@ -281,7 +297,7 @@ def _load_run_inputs(manifest: RunManifest, runner_key: bytes | None, correlate,
             raise RunRecordError(f"{name}: 파일 해시 불일치")
         return _decode(data)
 
-    loaded = {name: artifact(name) for name in _REQUIRED_ARTIFACTS + _OPTIONAL_ARTIFACTS}
+    loaded = {name: artifact(name) for name in names}
     pre = _snapshot(loaded["pre"], receipt, "pre")
     post = _snapshot(loaded["post"], receipt, "post")
     for phase, solved in (("pre", pre), ("post", post)):
@@ -331,6 +347,8 @@ def _load_run_inputs(manifest: RunManifest, runner_key: bytes | None, correlate,
         if key is not None:
             covered.add(key)
 
+    if version == V11:
+        return _v11_inputs(receipt, artifacts, loaded, times, sequences, pre, post, traffic, covered, rows)
     events = rows("solve_events", "events")
     engine_solved, seen_ids, seen_keys = set(), set(), set()
     for event in events or []:
@@ -359,3 +377,28 @@ def _load_run_inputs(manifest: RunManifest, runner_key: bytes | None, correlate,
     return RunInputs(pre, post, loaded["records"], traffic,
                      None if covered is None else frozenset(covered), frozenset(engine_solved),
                      receipt["execution_id"], receipt["fixture_fingerprint"], receipt["environment_fingerprint"])
+
+
+def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, sequences: dict, pre: dict, post: dict,
+                traffic, covered, rows) -> RunInputs:
+    """v1.1: 격리 증명이 있으면 isolated_window 이벤트만 귀속, 없으면 엔진 귀속 없음. records=null은 판정 미수집."""
+    proof = receipt["isolation_proof"]
+    if (proof is None) != (artifacts["isolation_evidence"] is None):
+        raise RunRecordError("isolation_proof와 isolation_evidence는 둘 다 null이거나 둘 다 있어야 함")
+    steps = {step: (times[step], sequences[step]) for step in _STEPS}
+    try:
+        if proof is None:
+            check_unproven_events(rows("solve_events", "events"))
+            engine_solved, proof_id, policy = frozenset(), None, None
+        else:
+            proof = check_isolation(receipt, steps, artifacts, proof, loaded["isolation_evidence"])
+            engine_solved = check_isolated_events(rows("solve_events", "events"), receipt, proof, steps, pre, post)
+            proof_id = proof["proof_id"]
+            policy = drain_policy(receipt, loaded["isolation_evidence"])
+    except IsolationError as exc:
+        raise RunRecordError(str(exc)) from None
+    return RunInputs(pre, post, loaded["records"], traffic,
+                     None if covered is None else frozenset(covered), engine_solved,
+                     receipt["execution_id"], receipt["fixture_fingerprint"], receipt["environment_fingerprint"],
+                     version=V11, judgments_collected=loaded["records"] is not None, proof_id=proof_id,
+                     drain_policy=policy)

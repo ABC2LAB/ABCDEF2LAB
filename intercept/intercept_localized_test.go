@@ -53,6 +53,7 @@ func TestInterceptMessagesLocalized(t *testing.T) {
 		{"reasonManualDeny", reasonManualDeny},
 		{"reasonManualAllow", reasonManualAllow},
 		{"ErrAlreadyDecided", ErrAlreadyDecided.Error()},
+		{"ErrConfigurationUnavailable", ErrConfigurationUnavailable.Error()},
 	} {
 		assertKorean(t, c.name, c.s)
 	}

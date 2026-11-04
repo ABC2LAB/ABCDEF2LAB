@@ -33,7 +33,7 @@ type BrandProps = {
   children?: ReactNode;
 };
 
-/** 클릭하면 진입 화면으로 가는 브랜드 */
+/** 클릭하면 대시보드(메인)로 가는 브랜드 */
 export function Brand({ style, children }: BrandProps) {
   const go = useGo();
   return (
@@ -42,9 +42,9 @@ export function Brand({ style, children }: BrandProps) {
       role="link"
       tabIndex={0}
       style={{ cursor: 'pointer', ...style }}
-      onClick={() => go('entry')}
+      onClick={() => go('dashboard')}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') go('entry');
+        if (e.key === 'Enter') go('dashboard');
       }}
     >
       {children ?? (

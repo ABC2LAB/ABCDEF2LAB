@@ -17,7 +17,11 @@ func (c *Capture) Metadata() []AttemptMetadata {
 	defer c.mu.Unlock()
 	out := make([]AttemptMetadata, len(c.attempts))
 	for i, a := range c.attempts {
-		out[i] = AttemptMetadata{Status: a.status, BodyBytes: a.body.Len()}
+		bodyBytes := a.bodyBytes
+		if !c.metadataOnly {
+			bodyBytes = a.body.Len()
+		}
+		out[i] = AttemptMetadata{Status: a.status, BodyBytes: bodyBytes}
 	}
 	return out
 }

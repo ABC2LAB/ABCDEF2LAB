@@ -13,11 +13,14 @@ import { TopBar } from "../components/TopBar";
 import { Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineCoverage, type EngineFinding, getCoverage, getTask, listTaskFindings } from "../lib/engine";
+import { type AccessDecision, DECISION_CELL, DECISION_LABEL, getAccessMap } from "../lib/kg";
 import { useSelection } from "../lib/selection";
+import { canonicalVulnClass } from "../lib/vulnclass";
 import { useGo } from "../nav";
 import type { Severity } from "../types";
+import AssetGraphPanel from "./AssetGraphPanel";
 
-type Tab = "sum" | "list" | "cov" | "map" | "ev";
+type Tab = "sum" | "list" | "cov" | "map" | "asset" | "ev";
 type DimKey = "sev" | "type";
 type Kind = "bar" | "share" | "table";
 
@@ -75,9 +78,9 @@ const STATUS_LABEL: Record<string, string> = {
   timeout: "시간초과",
 };
 
-const btnSm = { padding: "9px 14px", fontSize: 13 } as const;
-const bodyText: CSSProperties = { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7, margin: 0 };
-const subH: CSSProperties = { fontWeight: 500, color: "var(--muted)", fontSize: 12 };
+const btnSm = { padding: "9px 14px", fontSize: 14 } as const;
+const bodyText: CSSProperties = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 };
+const subH: CSSProperties = { fontWeight: 500, color: "var(--muted)", fontSize: 13 };
 
 /** 커버리지 한 줄 바 */
 function CoverageBar({
@@ -107,11 +110,11 @@ function CoverageBar({
           height: strong ? 10 : 7,
           background: "var(--surface-2)",
           border: "1px solid var(--line)",
-          borderRadius: 999,
+          borderRadius: 4,
           overflow: "hidden",
         }}
       >
-        <div style={{ width: `${pct}%`, height: "100%", background: "var(--teal)", borderRadius: 999 }} />
+        <div style={{ width: `${pct}%`, height: "100%", background: "var(--teal)", borderRadius: 4 }} />
       </div>
     </div>
   );
@@ -235,7 +238,7 @@ export default function ReportScreen() {
               </p>
             </div>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>내보내기</div>
+              <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 6 }}>내보내기</div>
               <div className="row" style={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
                 {/* TODO(이경준): GET /api/report 연결 — 지금은 비활성 */}
                 {["HTML", "PDF", "JSON"].map((f) => (
@@ -265,7 +268,7 @@ export default function ReportScreen() {
             ))}
             <div className="tile">
               <div className="k">판정</div>
-              <div className="v" style={{ fontSize: 15, color: "var(--muted)", fontWeight: 600 }}>
+              <div className="v" style={{ fontSize: 16, color: "var(--muted)", fontWeight: 600 }}>
                 준비 중
               </div>
               <div className="sub">E③ 연동 후</div>
@@ -299,6 +302,7 @@ export default function ReportScreen() {
                 ["list", "발견 목록"],
                 ["cov", "커버리지"],
                 ["map", "접근통제 지도"],
+                ["asset", "자산 그래프"],
                 ["ev", "증거 · 감사"],
               ] as [Tab, string][]
             ).map(([k, l]) => (
@@ -333,7 +337,8 @@ export default function ReportScreen() {
             />
           )}
           {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} />}
-          {tab === "map" && <MapPanel go={go} />}
+          {tab === "map" && <MapPanel taskId={taskId} />}
+          {tab === "asset" && <AssetGraphPanel taskId={taskId} findings={findings} onOpenFinding={openFinding} />}
           {tab === "ev" && <EvidencePanel go={go} />}
         </div>
       </div>
@@ -504,22 +509,23 @@ function FindingsViz({
       }
       return nominal;
     }
-    // 유형: vulnclass 로 그룹 (실데이터)
-    const groups = new Map<string, EngineFinding[]>();
+    // 유형: vulnclass 를 표시용 정규 계열로 묶는다(원문은 발견 상세에 그대로, 저장·판정 불변).
+    // LLM 자유서술이라 같은 취약점이 여러 라벨로 쪼개지는 걸 계열로 합친다(lib/vulnclass).
+    const groups = new Map<string, { label: string; items: EngineFinding[] }>();
     for (const f of findings) {
-      const key = f.vulnclass || "기타";
-      const arr = groups.get(key);
-      if (arr) arr.push(f);
-      else groups.set(key, [f]);
+      const fam = canonicalVulnClass(f.vulnclass);
+      const g = groups.get(fam.key);
+      if (g) g.items.push(f);
+      else groups.set(fam.key, { label: fam.label, items: [f] });
     }
     return [...groups.entries()]
-      .sort((a, b) => b[1].length - a[1].length)
-      .map(([key, items], i) => ({
+      .sort((a, b) => b[1].items.length - a[1].items.length)
+      .map(([key, g], i) => ({
         id: key,
-        label: key,
+        label: g.label,
         color: `var(${NOMINAL_COLORS[i % NOMINAL_COLORS.length]})`,
-        items,
-        n: items.length,
+        items: g.items,
+        n: g.items.length,
       }));
   }, [dim, findings]);
 
@@ -614,6 +620,13 @@ function FindingsViz({
           </fieldset>
         </div>
       </div>
+
+      {dim === "type" && (
+        <p className="hint">
+          유형은 표시용 계열로 묶었어요. 빈 값과 분류되지 않은 유형은 기타에 포함하며, 원문 유형은 발견 상세에 그대로
+          있어요.
+        </p>
+      )}
 
       <div>
         {kind === "bar" && (
@@ -859,20 +872,96 @@ function CoveragePanel({
 }
 
 /* ---------------- 접근통제 지도 탭 ---------------- */
-function MapPanel({ go }: { go: (s: "access-map") => void }) {
+/** 칸 안에 쓰는 짧은 이름 (범례는 DECISION_LABEL 의 긴 이름) */
+const CELL_SHORT: Record<AccessDecision, string> = {
+  "allow-ok": "허용",
+  "deny-ok": "차단",
+  vuln: "취약",
+  unknown: "판정 불가",
+  untested: "미검사",
+  na: "—",
+};
+const LEG_DOT: Record<AccessDecision, CSSProperties> = {
+  "allow-ok": { background: "var(--teal)" },
+  "deny-ok": { background: "var(--line-2)" },
+  vuln: { background: "var(--danger)" },
+  unknown: { background: "var(--warn)" },
+  untested: { background: "transparent", border: "1px dashed var(--line-2)" },
+  na: { background: "var(--faint)" },
+};
+
+function MapPanel({ taskId }: { taskId: string }) {
+  const { data, loading, error } = useApiResource(() => getAccessMap(taskId), [taskId]);
+  const cells = useMemo(() => {
+    const m = new Map<string, { decision: AccessDecision; note?: string }>();
+    for (const c of data?.cells ?? []) m.set(`${c.principalRef}|${c.resourceId}`, c);
+    return m;
+  }, [data]);
+  // 판정 불가는 실제로 있을 때만 범례에 넣는다
+  const legend: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "untested"];
+  if (data?.cells.some((c) => c.decision === "unknown")) legend.splice(3, 0, "unknown");
+
+  let content: ReactNode;
+  if (loading) content = <p style={bodyText}>불러오는 중…</p>;
+  else if (error || !data) content = <p style={bodyText}>접근통제 지도를 불러오지 못했어요.</p>;
+  else {
+    content = (
+      <>
+        <div className="scrollx">
+          <table className="matrix">
+            <thead>
+              <tr>
+                <th />
+                {data.resources.map((r) => (
+                  <th key={r.id}>
+                    {r.label}
+                    <span className="sm">소유 {r.ownerRef}</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.principals.map((pr) => (
+                <tr key={pr.ref}>
+                  <td className="rowh">
+                    {pr.ref}
+                    <span className="sm">{pr.role}</span>
+                  </td>
+                  {data.resources.map((r) => {
+                    const cell = cells.get(`${pr.ref}|${r.id}`);
+                    const d: AccessDecision = cell?.decision ?? "untested";
+                    return (
+                      <td key={r.id} className={DECISION_CELL[d]} title={cell?.note || DECISION_LABEL[d]}>
+                        {CELL_SHORT[d]}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="leg">
+          {legend.map((d) => (
+            <span key={d}>
+              <span className="dot" style={LEG_DOT[d]} />
+              {DECISION_LABEL[d]}
+            </span>
+          ))}
+        </div>
+      </>
+    );
+  }
   return (
     <div className="rpanel">
       <div className="card">
-        <h3>
-          접근통제 지도 <Sub>· 누가 어디에 닿는가</Sub>
-        </h3>
-        <p style={bodyText}>
-          행은 <Strong>신원(계정 · 역할)</Strong>, 열은 <Strong>자원(소유자)</Strong>. 닿으면 안 되는 칸이 열리면
-          취약(수평 IDOR · 수직 권한상승)이고, <Strong>미검사 · 판정 불가 · 취약</Strong>를 색으로 구분해요.
+        <h3>접근통제 지도</h3>
+        <p className="hint" style={{ marginTop: 0, marginBottom: 14 }}>
+          행: 계정·역할, 열: 자원. 빨간 칸은 접근되면 안 되는 조합이 열린 경우예요(같은 역할 간:{" "}
+          <Strong>수평 IDOR</Strong>, 상위 역할 자원: <Strong>수직 권한 상승</Strong>).
         </p>
-        <button className="btn primary" type="button" onClick={() => go("access-map")} style={{ marginTop: 14 }}>
-          접근통제 지도 열기 →
-        </button>
+        {data?.mock && <p className="map-mock">예시 데이터예요. 소유·권한 KG 연동 후 실제 결과로 채워져요.</p>}
+        {content}
       </div>
     </div>
   );

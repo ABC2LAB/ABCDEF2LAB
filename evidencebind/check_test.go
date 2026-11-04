@@ -202,11 +202,20 @@ func TestCheckRejectsBindingAndEvidenceMismatches(t *testing.T) {
 			in.Cross.ObservedAt = in.Cross.Receipt.At.Add(time.Nanosecond)
 			in.Result.ObservedAt = in.Cross.ObservedAt
 		}, want: ObservationMismatch},
-		{name: "evidence role", mutate: func(_ Context, in *Input) { in.Cross.Evidence.Role = OwnerRead }, want: EvidenceRefMismatch},
-		{name: "evidence scope", mutate: func(_ Context, in *Input) { in.Cross.Evidence.Scope.RunRef = "other-work" }, want: EvidenceRefMismatch},
-		{name: "evidence attempt", mutate: func(_ Context, in *Input) { in.Cross.Evidence.Attempt = 3 }, want: EvidenceRefMismatch},
-		{name: "empty evidence ref", mutate: func(_ Context, in *Input) { in.Cross.Evidence.ID = "" }, want: EvidenceRefMismatch},
-		{name: "duplicate evidence id", mutate: func(_ Context, in *Input) { in.Cross.Evidence.ID = in.Owner.Evidence.ID }, want: EvidenceRefMismatch},
+		{name: "evidence role", mutate: func(_ Context, in *Input) {
+			in.Cross.Evidence.Role = OwnerRead
+			in.Result.CrossEvidence = in.Cross.Evidence
+		}, want: EvidenceRefMismatch},
+		{name: "evidence scope", mutate: func(_ Context, in *Input) {
+			in.Cross.Evidence.Scope.RunRef = "other-work"
+			in.Result.CrossEvidence = in.Cross.Evidence
+		}, want: EvidenceRefMismatch},
+		{name: "evidence attempt", mutate: func(_ Context, in *Input) { in.Cross.Evidence.Attempt = 3; in.Result.CrossEvidence = in.Cross.Evidence }, want: EvidenceRefMismatch},
+		{name: "empty evidence ref", mutate: func(_ Context, in *Input) { in.Cross.Evidence.ID = ""; in.Result.CrossEvidence = in.Cross.Evidence }, want: EvidenceRefMismatch},
+		{name: "duplicate evidence id", mutate: func(_ Context, in *Input) {
+			in.Cross.Evidence.ID = in.Owner.Evidence.ID
+			in.Result.CrossEvidence = in.Cross.Evidence
+		}, want: EvidenceRefMismatch},
 		{name: "result evidence exchange", mutate: func(_ Context, in *Input) {
 			in.Result.OwnerEvidence, in.Result.CrossEvidence = in.Result.CrossEvidence, in.Result.OwnerEvidence
 		}, want: EvidenceRefMismatch},
@@ -275,6 +284,30 @@ func TestCheckAllowsCompletedBoundedHTTPErrorWithoutNormalClaim(t *testing.T) {
 	got = Check(checkContext(), in)
 	if got.BindingValid || got.BindingReason != VerdictMismatch {
 		t.Fatalf("contradictory normal claim = %+v", got)
+	}
+}
+
+func TestCheckRejectsOwnerNon2xxWithOwnerNormalDataYes(t *testing.T) {
+	in := checkInput()
+	in.Owner.Receipt.StatusCode = http.StatusBadGateway
+	in.Result.Result.Facts.OwnerNormalData = oracle.StateYes
+	setCheckVerdict(&in)
+	got := Check(checkContext(), in)
+	if got.BindingValid || got.BindingReason != VerdictMismatch || got.EffectiveValue != oracle.Undecidable {
+		t.Fatalf("owner non-2xx with normal-data yes accepted: %+v", got)
+	}
+}
+
+func TestCheckRejectsSameLabelDifferentHandleContext(t *testing.T) {
+	expected := checkContext()
+	expected.Evaluated.Label = expected.Owner.Label
+	expected.Evaluated.Handle = "session-c"
+	in := checkInput()
+	in.Policy.Context, in.Owner.Context = expected, expected
+	in.Cross.Context, in.Result.Context = expected, expected
+	got := Check(expected, in)
+	if got.BindingValid || got.BindingReason != MissingContext || got.EffectiveValue != oracle.Undecidable {
+		t.Fatalf("same-label context accepted: %+v", got)
 	}
 }
 

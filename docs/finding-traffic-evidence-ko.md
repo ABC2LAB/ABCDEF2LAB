@@ -1,10 +1,10 @@
-# 취약점 다중 트래픽 증거
+# 취약점 다중 트래픽 증거 — 기반 설계 참고
 
-> 이 문서는 상류(원본) ARTEX 의 설계 문서를 한국어로 옮긴 것입니다. 취약점과 트래픽 증거를 연결하는
-> 기능의 설계를 기여자·메인테이너를 위해 정리합니다. 원문(중국어)은
-> [`finding-traffic-evidence-zh.md`](finding-traffic-evidence-zh.md) 에 보존돼 있습니다.
->
-> English: **[Vulnerability multi-traffic evidence (finding-traffic-evidence-en.md)](finding-traffic-evidence-en.md)**.
+이 문서는 상류(원본) ARTEX 의 설계 문서를 한국어로 옮긴 것입니다. 아래 기능 설계와 과거 로컬 엔드투엔드 검증 기록은 기반 프로젝트의 자료이며, 이번 ABC2LAB 통합 검증의 성과를 뜻하지 않습니다.
+
+이 문서는 현재 재사용하는 취약점과 트래픽 증거 연결 기능의 API·버전·저장 동작을 설명합니다.
+이 기능과 [구조화 근거 판정](contracts/e3-oracle.md), [최초 확정 저장 설계](contracts/e3-storage-gate.md)를 구분합니다.
+트래픽이 연결되었다는 사실만으로 E③ 판정·서버 발급·확정 저장 검증이 완료되지는 않습니다.
 
 취약점 상세 화면의 「연결된 트래픽」은 여러 페이지에 걸친 다중 선택, 용도와 설명 입력, 정렬, 바인딩 해제를 지원합니다. 트래픽 페이지에서도 여러 레코드를 한 번에 선택해 이미 있는 취약점 하나에 연결할 수 있습니다. 작업이 상속한 취약점 증거는 읽기 전용이며, 수정하려면 원본 작업으로 들어가야 합니다.
 
@@ -73,18 +73,16 @@ PostgreSQL advisory lock `7337741004` 이 증거 파일과 SQL 참조를 조율�
 
 ## 내보내기와 보관
 
-Markdown 에는 순서가 있는 증거 목록과 버전이 들어가고, JSON 에는 메타데이터가, CSV 에는 개수와 바인딩 ID 가 추가됩니다. `md-zip` 은 취약점 Markdown 을 유지하면서 다음 구조를 함께 제공합니다:
+공유용 내보내기는 [리포트 export DLP](contracts/report-export-dlp.md)를 적용합니다. 자유문장·URL·원문 PoC·헤더·본문·hash는 가리고, Markdown 의 증거 목록·버전과 CSV 의 개수·바인딩 ID 등 안전 메타데이터는 유지합니다. `md-zip` 은 다음 구조를 제공합니다:
 
 ```text
 evidence/<finding_id>/<binding_id>/
   manifest.json
   request.http
   response.http
-  request.bin
-  response.bin
 ```
 
-Markdown 은 상대 링크로 패킷을 참조합니다. 다운로드를 보내기 전에 첨부 복사, 해시 검증, 압축, 디스크 동기화, 그리고 모든 ZIP 항목의 CRC 읽기 검증을 마칩니다. 항목이 누락되거나 손상되면 다운로드 전체가 실패합니다. 완전한 첨부는 이진 원본 바이트를 그대로 보존합니다.
+Markdown 의 상대 링크는 `[REDACTED]`만 든 요청/응답 안내 파일을 참조하며, manifest도 마스킹된 메타데이터 사본입니다. 원본 본문을 읽거나 복사하지 않습니다. 다운로드 전에 압축·디스크 동기화·모든 ZIP 항목의 CRC 검증을 마칩니다. 원본 본문 부재/손상은 이 공유 사본을 막지 않으며, 원본 열람 API의 해시·길이 무결성 검사는 유지합니다. 공유용 ZIP은 실제 요청을 재현할 원본 패킷이 아닙니다.
 
 보관 v3 는 취약점 바인딩 관계에 따라 스냅샷과 본문을 수집하며, 원본 트래픽이나 도메인에 의존하지 않습니다. 패키지 검증을 마친 뒤에야 핫 데이터를 정리하고, 공유 증거는 계속 보존합니다. 복원은 먼저 설치한 본문을 검증한 뒤 트랜잭션으로 메타데이터와 바인딩을 복원하며, 실패하면 재시도를 지원합니다. v1/v2 도 계속 복원할 수 있고, 빠진 새 필드는 명시적으로 0 으로 채웁니다.
 
@@ -94,7 +92,6 @@ Markdown 은 상대 링크로 패킷을 참조합니다. 다운로드를 보내�
 
 ```sh
 # 각 패키지를 실행하기 전에 ARTEX_PG_DSN 을 해당 독립 테스트 데이터베이스로 설정합니다. 명시적 설정이 실패하면 반드시 오류를 내야 합니다.
-go test ./<package> -count=1
 go test -race -p 1 ./evidence ./db ./agent ./server -run 'TestEvidence|TestFindingTraffic|TestFindingEvidence|TestReportFindingAtomicContract|TestTaskArchive'
 ```
 

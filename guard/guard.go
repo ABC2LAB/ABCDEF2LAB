@@ -18,7 +18,8 @@ import (
 	"github.com/Autumn-27/norma/hook"
 )
 
-// AuditEntry records one gated tool call.
+// AuditEntry records one completed tool-gate decision. An allow does not prove
+// the tool ran successfully or sent a request.
 type AuditEntry struct {
 	TS      int64  `json:"ts"`
 	Tool    string `json:"tool"`
@@ -74,8 +75,13 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 		_ = json.Unmarshal(ev.Input, &in)
 		cmd = in.Text
 	}
-	g.record(ev.ToolName, "allow", "", cmd)
-	return g.applyIntercept(ctx, ev)
+	decision := g.applyIntercept(ctx, ev)
+	// Approval may still be pending inside applyIntercept. Record an allow only
+	// after it returns; block() already records the terminal denial.
+	if decision.Decision != "block" {
+		g.record(ev.ToolName, "allow", "", cmd)
+	}
+	return decision
 }
 
 // applyIntercept evaluates user-configured intercept rules against the tool call.
@@ -84,7 +90,11 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	if g.interceptor == nil {
 		return hook.Result{}
 	}
-	if !g.interceptor.IsToolEnabled(ev.ToolName) {
+	enabled, err := g.interceptor.CheckToolEnabled(ev.ToolName)
+	if err != nil {
+		return g.block(ev.ToolName, systemBlockMessage(err.Error()), "")
+	}
+	if !enabled {
 		return hook.Result{}
 	}
 	ctx = intercept.WithCall(ctx, ev.ToolName, ev.Input)

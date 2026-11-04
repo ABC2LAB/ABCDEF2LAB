@@ -21,10 +21,10 @@ func TestOutputLanguageCacheFollowsSettings(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	t.Cleanup(func() { _ = m.Close() })
 	prev, hadPrev, _ := m.pg.GetSetting(settingOutputLanguage)
-	t.Cleanup(func() { config.CurrentLanguage = nil })
-	// defer (not t.Cleanup) so the restore runs before the deferred m.Close.
+	t.Cleanup(func() { config.SetCurrentLanguage(nil) })
+	// defer (not t.Cleanup) so the restore runs before the fixture closes its DB.
 	defer func() {
 		if hadPrev {
 			_ = m.pg.SetSetting(settingOutputLanguage, prev)
@@ -34,7 +34,7 @@ func TestOutputLanguageCacheFollowsSettings(t *testing.T) {
 	}()
 	_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingOutputLanguage)
 
-	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
+	s := newTestServer(t, context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
 	token, err := signJWT(s.jwtKey)
 	if err != nil {
 		t.Fatal(err)

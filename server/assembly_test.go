@@ -1,14 +1,13 @@
 package server
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // hasSkillTool reports whether the packed tool set contains the Skill meta-tool.
@@ -48,8 +47,8 @@ func TestAssembleVisibleSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wireAgentAugment(pg, skillDir, nil)
-	t.Cleanup(func() { agent.ToolAugment = nil })
+	augment := wireAgentAugment(pg, skillDir, nil)
+	ctx := agent.WithRuntimeHooks(t.Context(), agent.RuntimeHooks{ToolAugment: augment})
 
 	ag, _ := pg.GetAgentByKey("planner")
 	if ag == nil {
@@ -65,7 +64,7 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	t.Cleanup(func() { _ = pg.SetAgentSkillVisibility(ag.ID, orig) })
 
 	// before: skill not visible → no Skill meta-tool
-	extra, _, cleanup := agent.ToolAugment(context.Background(), "planner")
+	extra, _, cleanup := augment(ctx, "planner")
 	cleanup()
 	if hasSkillTool(extra) {
 		t.Fatalf("expected no Skill meta-tool before the skill is made visible")
@@ -78,14 +77,14 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	t.Cleanup(func() { _ = pg.ToggleSkillVisibility(ag.ID, skillName, false) })
 
 	// after: the Skill meta-tool is packed in
-	extra, _, cleanup = agent.ToolAugment(context.Background(), "planner")
+	extra, _, cleanup = augment(ctx, "planner")
 	defer cleanup()
 	if !hasSkillTool(extra) {
 		t.Fatalf("expected the Skill meta-tool after making the skill visible")
 	}
 
 	// AugmentTools appends extra to base without filtering base
-	combined, _, c2 := agent.AugmentTools(context.Background(), "planner", nil)
+	combined, _, c2 := agent.AugmentTools(ctx, "planner", nil)
 	defer c2()
 	if !hasSkillTool(combined) {
 		t.Fatalf("AugmentTools should surface the Skill meta-tool")

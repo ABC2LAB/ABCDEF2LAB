@@ -8,7 +8,7 @@
 
 - [`db/task_mode.go`](../../db/task_mode.go): DB reader·등록 API.
 - [`db/task_mode_schema.sql`](../../db/task_mode_schema.sql): 별도 mode 테이블과 전이/삭제/archive guard.
-- [`db/db.go`](../../db/db.go): 기존 schema migration 잠금 안에서 새 DDL 적용.
+- [`db/db.go`](../../db/db.go): 기존 schema migration 잠금 안에서 새 DDL 적용·deadlock 재시도.
 - [`db/task_mode_test.go`](../../db/task_mode_test.go): 등록·조회·경합·오류의 PostgreSQL 통합 시험.
 
 기존 server/Worker·감사 CLI·평가·UI·KG/idor 코드는 수정하지 않는다. 새 의존성·루트 설정 변경도 없다. 스키마 재적용은 멱등이며 **기존 task를 legacy로 backfill하지 않는다.**
@@ -29,6 +29,8 @@
 Go API와 DB trigger가 다운그레이드·task_id/version 재설정·mode 행 DELETE/TRUNCATE를 거부한다. 이 trigger는 mode 전이 제약이며 직접 SQL의 모든 올바른 전환을 reader와 직렬화하는 기능은 아니다. **정상 writer는 반드시 아래 Go 등록 API를 사용한다.** 같은 DB 권한의 관리자 SQL/trigger 해제를 제어하는 배포 권한 분리는 이번 범위가 아니다.
 
 task 삭제 후 mode 행만 남기는 것으로 finding 출처가 보존되는 것은 아니다. 따라서 immutable provenance와 archive 지원이 완성되기 전에는 **controlled task의 hard/soft delete·archive를 DB에서 거부**한다. 기존 archive 진행/삭제 상태의 작업에는 새 mode를 등록하거나 실행 경로를 허용하지 않는다.
+
+관리자 SQL의 `TRUNCATE tasks RESTART IDENTITY`도 허용된 초기화 절차가 아니다. `task_control_modes`에는 cascade FK가 없고 mode 행 삭제도 차단되므로, tasks만 비우고 ID를 재사용하면 새 task가 이전 task의 mode/version fence를 물려받을 수 있다. 테스트·운영 초기화는 전용 데이터베이스를 폐기·재생성하는 방식으로 수행하며, 공유 DB에서 이 truncate를 실행하지 않는다.
 
 ## 3. 등록 API
 
@@ -67,7 +69,7 @@ reader는 caller의 살아 있는 **READ COMMITTED** transaction에서 같은 ta
 
 일반 오류 문자열/JSON은 DB·marker 원문을 포함하지 않는다. `errors.Is/As` 진단 원인은 보존하지만 원인 Unwrap 결과를 모델/공유 로그로 내보내지 않는다. mode unknown·DB 장애를 일반 경로 허용으로 바꾸지 않는다.
 
-시험은 공유 개발 DB 대신 전용 PostgreSQL16 컨테이너에서 실행했다. `ARTEX_TASK_MODE_TEST_DSN`이 없는 경우 시험은 명시적 skip이고, 값이 있지만 연결/초기화가 실패하면 fail이다. 실제 검증에서는 전용 DSN을 주입하고 skip 0을 확인한다.
+시험은 공유 개발 DB 대신 전용 PostgreSQL16 컨테이너에서 실행했다. `ARTEX_TASK_MODE_TEST_DSN`이 없는 경우 시험은 명시적 skip이고, 값이 있지만 연결/초기화가 실패하면 fail이다. fixture는 두 DSN을 `pgx.ParseConfig`로 파싱해 database 이름이 같고 primary/fallback host·port 집합이 겹치는지 비교하며, scheme 별칭, 기본 포트, host 대소문자·trailing dot, localhost/loopback 표기, 사용자·SSL·기타 query 순서는 DB identity에서 무시한다. 파싱 실패는 fail이다. 이 identity guard는 DNS 조회나 네트워크 연결을 하지 않으며, 라우터 뒤의 물리 cluster가 같은지 증명하지 않는다. Unix socket 경로는 대소문자를 보존하므로 별도 표기 차이는 보수적으로 구분한다. 실제 검증에서는 일반 DB와 다른 전용 DSN을 주입하고 skip 0을 확인한다.
 
 시험 범위: 정상/멱등 등록·역전환/marker 오류 거부, 미등록/없는 task·테이블·닫힌 tx·취소 시 Block, rollback/commit 실패, schema 재적용, 삭제/archive guard, 등록→조회/조회→등록 경합, 서로 다른 task 독립성, 20개 동시 등록, legacy/control 양 순서 경합, callback 동안 task 잠금 유지. 실패 모드는 실제 DB 변화량과 backend lock wait로 관측한다. 테스트용 marker 함수는 실제 파일 어댑터의 검증 완료를 뜻하지 않는다.
 

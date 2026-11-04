@@ -77,7 +77,7 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if linkedAssets[0].TaskSource != "company" || !strings.Contains(linkedAssets[0].TaskSourceSummary, companiesName(t, companies, companyID)) {
 		t.Fatalf("company asset provenance missing: %+v", linkedAssets[0])
 	}
-	overview := tools.graphOverviewData()
+	overview := tools.graphOverviewData(context.Background())
 	coverage, ok := overview["coverage"].(map[string]any)
 	if !ok {
 		t.Fatalf("coverage missing: %#v", overview["coverage"])
@@ -132,7 +132,7 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	disabledTools.SetTaskID(disabledTask.ID)
 	disabledTools.SetCoverageEnabled(false)
 	disabledTools.SetAssetStore(assets, companies)
-	disabledOverview := disabledTools.graphOverviewData()
+	disabledOverview := disabledTools.graphOverviewData(context.Background())
 	disabledCoverage, ok := disabledOverview["coverage"].(map[string]any)
 	if !ok {
 		t.Fatalf("coverage-disabled task lost asset context: %#v", disabledOverview["coverage"])
@@ -262,7 +262,7 @@ func TestBlackboardToolsReadDirectSources(t *testing.T) {
 	if len(afterFacts) != len(beforeFacts) {
 		t.Fatalf("rejected inherited write persisted a fact: before=%d after=%d", len(beforeFacts), len(afterFacts))
 	}
-	overview := tools.graphOverviewData()
+	overview := tools.graphOverviewData(context.Background())
 	related, ok := overview["related_tasks"].([]map[string]any)
 	if !ok || len(related) != 1 {
 		t.Fatalf("related_tasks: %#v", overview["related_tasks"])

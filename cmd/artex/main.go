@@ -112,7 +112,14 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf(config.T("[config] skill 디렉터리: %s"), skillDir)
-	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	srv, err := newPolicyServer(os.Getenv("ARTEX_LLM_POLICY_MODE"), func() (*server.Server, error) {
+		return server.NewWithLocalLLM(ctx, mgr, skillDir, *dataDir, config.BaseDir(), os.Getenv("ARTEX_LLM_PIN_MANIFEST"))
+	}, func() *server.Server {
+		return server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	})
+	if err != nil {
+		log.Fatalf("local LLM policy: %v", err)
+	}
 	srv.WarnIfExposed(*addr)
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -158,4 +165,17 @@ func shutdownContext(signalCtx context.Context) (context.Context, context.Cancel
 		}
 	}()
 	return ctx, shutdown
+}
+
+// newPolicyServer chooses exactly one startup path before a listener is built.
+// Policy failure never falls through to the external factory.
+func newPolicyServer(mode string, local func() (*server.Server, error), external func() *server.Server) (*server.Server, error) {
+	switch mode {
+	case "", "local-only":
+		return local()
+	case "external":
+		return external(), nil
+	default:
+		return nil, fmt.Errorf("invalid ARTEX_LLM_POLICY_MODE")
+	}
 }

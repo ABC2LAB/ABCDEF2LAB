@@ -13,16 +13,45 @@ from urllib.parse import urlsplit
 
 
 MAX_CONFIG_BYTES = 64 * 1024
+MAX_URL_LENGTH = 512
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 _REFERENCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9./:_-]*\Z")
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 _PLACEHOLDER = re.compile(r"(?:^|[/:._-])(?:todo|tbd|changeme|placeholder)(?:$|[/:._-])", re.I)
 _SHARED = (
-    "model_tag", "llm_base_url", "temperature", "seed", "target_origin",
-    "worker_count", "time_budget_seconds", "request_budget",
+    "network_mode", "llm", "temperature", "seed", "target_origin",
+    "worker_count", "time_budget_seconds", "request_budget", "run_storage", "run_drain",
     "fixture_fingerprint", "environment_fingerprint", "scope_fingerprint",
 )
+# 러너 v1은 전용 망 격리만 지원한다(평가 프로토콜 §2). 엔진은 계측기 origin으로만 대상에 닿는다.
+_NETWORK_MODES = ("dedicated_network",)
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_MODEL_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+# 제공자 slug. OpenRouter 엔드포인트 tag처럼 `slug/변형`(예: deepinfra/fp8)까지 받는다. 문법 검사일 뿐이다: OpenRouter slug는
+# `provider[/variant][/region][/tier]` 접두 매칭이라 두 segment가 단일 엔드포인트·정밀도를 보장하지 않는다(평가 프로토콜 §6).
+# 게이트웨이(cmd/eval-meter providerSlugRe)와 같은 문법이며 drift 테스트로 묶는다.
+_PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}(?:/[a-z0-9][a-z0-9._-]{0,63})?\Z")
+# 로컬 LLM 고정 IP: llmpolicy/policy.go의 사설 대역 중 loopback(127/8·::1)을 제외한 4개.
+# 엔진은 컨테이너라 호스트 loopback으로는 닿지 않으므로 제외한다. ipaddress.is_private는 문서용 대역까지 포함해 쓰지 않는다.
+_LOCAL_NETWORKS = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
+# 회차 메모리(tmpfs) 조건: 엔진 DB·엔진 데이터 크기와 구간 종료 뒤 남아야 할 최소 공간. compose tmpfs size 표기
+# (1024배 k·m·g). 프로파일 지문·러너 설정과 같은 정의이며(drift 테스트), 하한이 다르면 같은 측정값으로도 완료·무효가 갈리므로
+# 환경 지문에 넣는다(#140 리뷰).
+_STORAGE_SIZE = re.compile(r"[1-9][0-9]{0,8}[kmg]?\Z")
+_STORAGE_UNIT = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
+RUN_STORAGE_FIELDS = ("engine_db_tmpfs", "engine_data_tmpfs", "tmpfs_min_free")
+# 봉인 뒤 drain 정책(초): 계측기가 열린 요청을 끊기까지의 유예와, 끊은 요청이 있을 때 post 관측 전 정착 대기.
+# 둘 다 post 관측 시점과 취소 여부를 바꾸므로 비교 조건이다(#153 리뷰). 상한은 프로파일 지문·러너 설정·계측기와 같다
+# (drift 테스트).
+RUN_DRAIN_FIELDS = ("grace_seconds", "settle_seconds")
+MAX_DRAIN_GRACE_SECONDS = 600
+MAX_SETTLE_SECONDS = 3600
+# 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
+_LLM_FIELDS = {
+    "api": ("backend", "base_url", "model", "provider", "fallbacks"),
+    "local": ("backend", "base_url", "model", "hostname", "host_ip"),
+}
 _RUN_FIELDS = ("source_sha", "target_image", *_SHARED)
 _PIN_FIELDS = ("baseline_source_sha", "target_image")
 
@@ -58,23 +87,75 @@ def _image_reference(value: object) -> bool:
     return _tagged_reference(value)
 
 
-def _local_url(value: object, *, base_url: bool) -> bool:
-    if not _text(value) or any(char in value for char in "?#%\\"):
-        return False
+# 아래 URL·LLM 판정은 profile_fingerprint.py와 같은 정의다(drift 테스트로 묶음).
+def _split_url(value: object):
+    if not _text(value) or len(value) > MAX_URL_LENGTH or any(char in value for char in "?#%\\"):
+        return None
     try:
         parsed = urlsplit(value)
         host, port = parsed.hostname, parsed.port
-        if (parsed.scheme not in ("http", "https") or not host
-                or parsed.username is not None or parsed.password is not None
-                or port is not None and not 1 <= port <= 65535):
-            return False
-        if host != "localhost" and not ipaddress.ip_address(host).is_loopback:
-            return False
-        if base_url:
-            return "//" not in parsed.path and not any(part in (".", "..") for part in parsed.path.split("/"))
-        return parsed.path in ("", "/")
     except ValueError:
+        return None
+    if (parsed.scheme not in ("http", "https") or not host or parsed.netloc != parsed.netloc.lower()
+            or parsed.username is not None or parsed.password is not None
+            or port is not None and not 1 <= port <= 65535):
+        return None
+    return parsed
+
+
+def _service_name(host: object) -> bool:
+    return (isinstance(host, str) and bool(_DNS_LABEL.fullmatch(host))
+            and host != "localhost" and not host.isdigit())
+
+
+def _dns_name(host: str) -> bool:
+    labels = host.split(".")
+    return (len(host) <= 253 and len(labels) >= 2 and all(_DNS_LABEL.fullmatch(label) for label in labels)
+            and not labels[-1].isdigit())
+
+
+def _base_path(path: str) -> bool:
+    return "//" not in path and not any(part in (".", "..") for part in path.split("/"))
+
+
+def _meter_origin(value: object) -> bool:
+    """전용 망에서 엔진이 보는 대상 origin = 계측기 서비스 이름과 명시 포트. loopback·IP는 아니다."""
+    parsed = _split_url(value)
+    return (parsed is not None and parsed.scheme == "http" and _service_name(parsed.hostname)
+            and parsed.port is not None and parsed.path in ("", "/"))
+
+
+def _api_model(value: object) -> bool:
+    if not _text(value):
         return False
+    name, separator, variant = value.partition(":")
+    segments = name.split("/")
+    parts = [*segments, variant] if separator else segments
+    return (len(segments) >= 2 and all(_MODEL_SEGMENT.fullmatch(part) for part in parts)
+            and all(part.casefold() != "latest" for part in parts))
+
+
+def _llm(value: object) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("backend"), str) or value["backend"] not in _LLM_FIELDS:
+        return False
+    if set(value) != set(_LLM_FIELDS[value["backend"]]):
+        return False
+    parsed = _split_url(value["base_url"])
+    if parsed is None or not _base_path(parsed.path):
+        return False
+    if value["backend"] == "api":
+        provider = value["provider"]
+        return (parsed.scheme == "https" and _dns_name(parsed.hostname) and _api_model(value["model"])
+                and isinstance(provider, str) and bool(_PROVIDER.fullmatch(provider))
+                and not _PLACEHOLDER.search(provider) and value["fallbacks"] is False)
+    host_ip = value["host_ip"]
+    try:
+        address = ipaddress.ip_address(host_ip) if isinstance(host_ip, str) else None
+    except ValueError:
+        address = None
+    return (_service_name(value["hostname"]) and parsed.hostname == value["hostname"]
+            and _tagged_reference(value["model"]) and address is not None and host_ip == str(address)
+            and any(address in network for network in _LOCAL_NETWORKS))
 
 
 def _number(value: object, *, positive: bool) -> bool:
@@ -85,6 +166,28 @@ def _number(value: object, *, positive: bool) -> bool:
         return False
 
 
+def _storage_bytes(text: str) -> int:
+    return int(text[:-1]) * _STORAGE_UNIT[text[-1]] if text[-1] in _STORAGE_UNIT else int(text)
+
+
+def _run_storage(value: object) -> bool:
+    """세 크기가 모두 형식에 맞고 하한이 두 tmpfs보다 작아야 한다(아니면 모든 회차가 무효)."""
+    if not isinstance(value, dict) or set(value) != set(RUN_STORAGE_FIELDS):
+        return False
+    if not all(isinstance(value[name], str) and _STORAGE_SIZE.fullmatch(value[name]) for name in RUN_STORAGE_FIELDS):
+        return False
+    return _storage_bytes(value["tmpfs_min_free"]) < min(_storage_bytes(value["engine_db_tmpfs"]),
+                                                         _storage_bytes(value["engine_data_tmpfs"]))
+
+
+def _run_drain(value: object) -> bool:
+    """유예·정착 대기가 정확히 두 키이고 각각 1 이상 상한 이하 정수여야 한다."""
+    if not isinstance(value, dict) or set(value) != set(RUN_DRAIN_FIELDS):
+        return False
+    limits = {"grace_seconds": MAX_DRAIN_GRACE_SECONDS, "settle_seconds": MAX_SETTLE_SECONDS}
+    return all(type(value[name]) is int and 1 <= value[name] <= limits[name] for name in RUN_DRAIN_FIELDS)
+
+
 def _valid(field: str, value: object) -> bool:
     if field in ("source_sha", "baseline_source_sha"):
         return isinstance(value, str) and bool(_SHA.fullmatch(value))
@@ -92,10 +195,16 @@ def _valid(field: str, value: object) -> bool:
         return isinstance(value, str) and bool(_FINGERPRINT.fullmatch(value))
     if field == "target_image":
         return _image_reference(value)
-    if field == "model_tag":
-        return _tagged_reference(value)
-    if field in ("target_origin", "llm_base_url"):
-        return _local_url(value, base_url=field == "llm_base_url")
+    if field == "network_mode":
+        return value in _NETWORK_MODES
+    if field == "target_origin":
+        return _meter_origin(value)
+    if field == "llm":
+        return _llm(value)
+    if field == "run_storage":
+        return _run_storage(value)
+    if field == "run_drain":
+        return _run_drain(value)
     if field == "temperature":
         return _number(value, positive=False)
     if field == "time_budget_seconds":

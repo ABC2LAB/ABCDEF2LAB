@@ -5,26 +5,26 @@ import { TopBar } from "../components/TopBar";
 import { Pill, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineInterceptRule, getInterceptRules, getLLM } from "../lib/engine";
-import { isInternalUrl } from "../lib/net";
+import { isLocalUrl } from "../lib/net";
 import { useGo } from "../nav";
 
-const bodyText = { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
+const bodyText = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
 const noticeBox = {
-  fontSize: 12.5,
+  fontSize: 13,
   color: "var(--muted)",
   background: "var(--surface-2)",
   border: "1px dashed var(--line-2)",
-  borderRadius: 8,
+  borderRadius: 6,
   padding: "10px 12px",
 } as const;
 const patStyle = {
   fontFamily: "var(--mono)",
-  fontSize: 11.5,
+  fontSize: 12,
   wordBreak: "break-all" as const,
   color: "var(--muted)",
 };
 const groupHd = {
-  fontSize: 12,
+  fontSize: 13,
   fontWeight: 600,
   color: "var(--muted)",
   letterSpacing: "0.02em",
@@ -36,9 +36,12 @@ function RuleRow({ rule }: { rule: EngineInterceptRule }) {
   const deny = rule.action === "deny";
   return (
     <div className="frow" style={{ cursor: "default" }}>
-      <Pill tone={rule.enabled ? undefined : "muted"}>{rule.enabled ? "사용" : "꺼짐"}</Pill>
+      <Pill tone={rule.enabled ? undefined : "muted"}>{rule.enabled ? "설정 켜짐" : "꺼짐"}</Pill>
       <div style={{ minWidth: 0 }}>
         <div className="nm">{rule.name}</div>
+        <div className="ep">
+          우선순위 {rule.priority} · ID {rule.id}
+        </div>
         <div className="ep" style={patStyle}>
           {rule.match_target} · {rule.match_type} · {rule.pattern}
         </div>
@@ -72,19 +75,6 @@ function actionLabel(action: string): string {
   return "알 수 없음";
 }
 
-/** base_url 의 **호스트**가 내부망/로컬을 가리키는지 판별 (완전 로컬 모드 표시용).
- *  전체 URL 문자열이 아니라 hostname 기준 — 쿼리에 'ollama' 가 있다고 로컬로 보지 않는다. */
-function isLocalUrl(u: string): boolean {
-  if (isInternalUrl(u) === true) return true; // localhost · 사설 IP · IPv6 루프백/ULA 등
-  let h: string;
-  try {
-    h = new URL(u).hostname.replace(/^\[/, "").replace(/\]$/, "");
-  } catch {
-    return false;
-  }
-  return /^(ollama|host\.docker\.internal)$/i.test(h);
-}
-
 /** ===== 설정 · 통제 정책 ===== */
 export default function SettingsScreen() {
   const go = useGo();
@@ -106,7 +96,7 @@ export default function SettingsScreen() {
     };
   }, [rules]);
 
-  // 인가 중심 그룹: 제한적인 결정부터 (차단 → 승인 필요 → 허용). fail-closed 순서.
+  // 동작별 표시 그룹이다. 실제 평가는 서버의 priority DESC, id ASC 순서다.
   const ruleGroups = useMemo(() => {
     const known = ["deny", "ask", "allow"];
     const groups = [
@@ -126,14 +116,14 @@ export default function SettingsScreen() {
         <div style={{ padding: "22px 24px", maxWidth: 780 }}>
           <h1 className="big">설정 · 통제 정책</h1>
           <p className="lead">
-            현재는 ARTEX <Strong>승인 게이트(intercept)</Strong>의 규칙과 모델 판정으로 도구 호출을 검토해요. 우리{" "}
-            <Strong>전송 통제(E², 네트워크 경계)</Strong>와 변조 탐지 감사는 아직 <Strong>연동 전</Strong>이에요.
+            현재는 <Strong>승인 게이트(intercept)</Strong>의 규칙과 모델 판정으로 도구 호출을 검토해요. 우리{" "}
+            <Strong>전송 통제(E②, 네트워크 경계)</Strong>와 변조 탐지 감사는 아직 <Strong>연동 전</Strong>이에요.
           </p>
 
-          {/* ── 활성 통제 규칙 (E²) — 실데이터 ── */}
+          {/* ── 활성 통제 규칙 (E②) — 실데이터 ── */}
           <div className="card">
             <h3>
-              활성 통제 규칙 <Sub>· ARTEX 승인 게이트(intercept)가 도구 호출을 거르는 규칙</Sub>
+              활성 통제 규칙 <Sub>· 승인 게이트(intercept)가 도구 호출을 거르는 규칙</Sub>
             </h3>
 
             {rulesRes.loading && <p style={bodyText}>불러오는 중…</p>}
@@ -147,23 +137,30 @@ export default function SettingsScreen() {
               <>
                 <div className="search" style={{ gap: 8, marginBottom: 10 }}>
                   <Pill tone="muted">전체 {ruleStats.total}</Pill>
-                  <Pill>사용 중 {ruleStats.on}</Pill>
+                  <Pill>설정 켜짐 {ruleStats.on}</Pill>
                   {ruleStats.deny > 0 && <Pill tone="warn">차단 {ruleStats.deny}</Pill>}
                   {ruleStats.allow > 0 && <Pill>허용 {ruleStats.allow}</Pill>}
                   {ruleStats.ask > 0 && <Pill tone="warn">승인 필요 {ruleStats.ask}</Pill>}
                 </div>
+                <p className="hint">
+                  그룹은 표시용이며, 수는 꺼진 규칙을 포함한 등록 수예요. 실제 검사는 우선순위 숫자가 큰 규칙부터
+                  검사하고, 같으면 ID가 작은 순서로 먼저 일치한 유효한 켜진 규칙 하나를 적용해요.
+                </p>
+                <p className="hint">
+                  켜짐과 동작별 요약은 저장된 설정 기준이에요. 정규식 오류가 있는 규칙은 적용되지 않아요.
+                </p>
                 {ruleGroups.map((g) => (
                   <div key={g.key}>
-                    <div style={groupHd}>
+                    <h4 style={groupHd}>
                       {g.label} · {g.rules.length}
-                    </div>
+                    </h4>
                     {g.rules.map((r) => (
                       <RuleRow key={r.id} rule={r} />
                     ))}
                   </div>
                 ))}
                 <div className="hint">
-                  ARTEX에 등록된 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E²) 연동 후 열려요(그 전엔
+                  등록된 승인 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E②) 연동 후 열려요(그 전엔
                   읽기 전용).
                 </div>
               </>
@@ -183,13 +180,11 @@ export default function SettingsScreen() {
                   <Pill tone="muted">미설정</Pill>
                   <div style={{ minWidth: 0 }}>
                     <div className="nm">아직 모델이 연결되지 않았어요</div>
-                    <div className="ep">
-                      온프레: 로컬(Ollama) <code>ARTEX_LLM_BASE_URL</code> · 비민감: 외부 API
-                    </div>
+                    <div className="ep">온프레: 로컬(Ollama) · 비민감: 외부 API</div>
                   </div>
                 </div>
                 <div className="hint">
-                  모델을 붙여야 점검(탐색)이 돌아요. 완전 로컬 모드의 외부 송신 차단은 E² 연동 후예요.
+                  모델을 붙여야 점검(탐색)이 돌아요. 완전 로컬 모드의 외부 송신 차단은 E② 연동 후예요.
                 </div>
               </>
             )}
@@ -236,7 +231,7 @@ export default function SettingsScreen() {
                 className="btn"
                 type="button"
                 onClick={() => go("audit")}
-                style={{ flex: "none", padding: "10px 14px", fontSize: 13 }}
+                style={{ flex: "none", padding: "10px 14px", fontSize: 14 }}
               >
                 열기
               </button>
@@ -253,17 +248,17 @@ export default function SettingsScreen() {
                 className="btn"
                 type="button"
                 onClick={() => go("tokens")}
-                style={{ flex: "none", padding: "10px 14px", fontSize: 13 }}
+                style={{ flex: "none", padding: "10px 14px", fontSize: 14 }}
               >
                 열기
               </button>
             </div>
           </div>
 
-          {/* ── 준비 중 (E² 연동 예정) ── */}
+          {/* ── 준비 중 (E② 연동 예정) ── */}
           <div className="card" style={{ marginBottom: 0 }}>
             <h3>
-              준비 중 <Sub>· 전송 통제(E²) 연동 후 열려요</Sub>
+              준비 중 <Sub>· 전송 통제(E②) 연동 후 열려요</Sub>
             </h3>
             <div style={noticeBox}>
               아래는 통제 UI로 설계만 됐고 아직 엔진에 안 붙은 항목이에요. 실데이터인 척하지 않으려고 비워 뒀어요.

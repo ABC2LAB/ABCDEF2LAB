@@ -168,7 +168,8 @@ type Engine struct {
 	resolveAuthoritative bool
 	// readiness reports whether a global LLM provider is configured — the signal behind
 	// Ready()/the llm_configured indicator. Wired once at startup; nil → not ready.
-	readiness func() bool
+	readiness    func() bool
+	runtimeHooks *agent.RuntimeHooks // nil for standalone engines; assigned before startup
 }
 
 type taskRuntime struct {
@@ -178,9 +179,10 @@ type taskRuntime struct {
 }
 
 type workExecution struct {
-	cancel context.CancelCauseFunc
-	done   chan error
-	action string // user action: pause | cancel
+	cancel            context.CancelCauseFunc
+	done              chan error
+	action            string // user action: pause | cancel
+	completionClaimed bool   // guarded by workMu; late cancellation cannot change this disposition
 }
 
 // nextPlannerRound returns the next planner round number for a task (1-based).
@@ -315,11 +317,15 @@ func (e *Engine) StopTask(taskID string) {
 // planner.Plan / worker.Execute), if present. Shared by Pause and the settle
 // sequence's hard-drain backstop.
 func (e *Engine) cancelExec(taskID string, cause error) {
+	// A task cancellation and controlled completion cannot pass one another's
+	// execution decision unnoticed. No registry/DB work is performed here.
+	e.workMu.Lock()
 	e.execMu.Lock()
 	if cancel := e.execCancel[taskID]; cancel != nil {
 		cancel(cause)
 	}
 	e.execMu.Unlock()
+	e.workMu.Unlock()
 	if e.controlledReads != nil {
 		e.controlledReads.discardTask(taskID)
 	}
@@ -418,10 +424,12 @@ func NewEngine(m *Manager) *Engine {
 }
 
 // registerWork records the cancel for the work currently running intentID.
-func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc) {
+func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc) *workExecution {
 	e.workMu.Lock()
-	e.work[intentID] = &workExecution{cancel: cancel, done: make(chan error, 1)}
+	run := &workExecution{cancel: cancel, done: make(chan error, 1)}
+	e.work[intentID] = run
 	e.workMu.Unlock()
+	return run
 }
 
 // detachWork removes the live control handle once Execute has returned. complete
@@ -460,6 +468,10 @@ func (e *Engine) ControlWork(ctx context.Context, intentID int64, action string)
 	if run == nil {
 		e.workMu.Unlock()
 		return fmt.Errorf(trMsg(errWorkControlNoRunningWorkFmt), errWorkControlConflict, intentID)
+	}
+	if run.completionClaimed {
+		e.workMu.Unlock()
+		return fmt.Errorf(trMsg(errWorkControlBusyFmt), errWorkControlConflict, intentID, "completed")
 	}
 	if run.action != "" {
 		e.workMu.Unlock()
@@ -653,14 +665,18 @@ func (h steerHooks) Stop(ctx context.Context, messages []llm.Message) (bool, []s
 // The work's agent-core session honors ctx cancellation and aborts promptly.
 func (e *Engine) KillWork(intentID int64) error {
 	e.workMu.Lock()
+	defer e.workMu.Unlock()
 	run := e.work[intentID]
-	e.workMu.Unlock()
 	if run == nil {
 		// KillWork 는 planner 의 kill_work 도구(agent/tools.go)로 배선되어, 이 오류가
 		// actool.Errorf(err.Error()) 로 에이전트에게 되돌아가는 두뇌 입력이다. SteerWork 와
 		// 같은 이유로 원문을 보존한다.
 		return fmt.Errorf("意图 %d 当前没有运行中的 work（可能已结束或未被领取）", intentID)
 	}
+	if run.completionClaimed {
+		return fmt.Errorf(trMsg(errWorkControlBusyFmt), errWorkControlConflict, intentID, "completed")
+	}
+	// Planner cancellation and completion use the same decision boundary.
 	run.cancel(agent.AbortKilledByPlanner)
 	return nil
 }
@@ -785,10 +801,18 @@ func (e *Engine) ReadyFor(t *Task) bool {
 	return p != nil && w != nil
 }
 
+func (e *Engine) withRuntimeHooks(ctx context.Context) context.Context {
+	if e.runtimeHooks != nil {
+		return agent.WithRuntimeHooks(ctx, *e.runtimeHooks)
+	}
+	return ctx
+}
+
 // Run starts the planner loop + N worker loops for a task. The loops always run
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
+	ctx = e.withRuntimeHooks(ctx)
 	workers := e.m.Workers()
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
@@ -1010,6 +1034,7 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 // runIntent. Returns false when nothing was claimable. The pool worker loop is its
 // only caller.
 func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker *agent.Worker) bool {
+	ctx = e.withRuntimeHooks(ctx)
 	intent := e.claimNext(t, name)
 	if intent == nil {
 		return false
@@ -1040,7 +1065,10 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	// per-work child context so the planner's kill_work can stop just this work.
 	workCtx, workCancel := context.WithCancelCause(ectx)
-	e.registerWork(intent.ID, workCancel)
+	runHandle := e.registerWork(intent.ID, workCancel)
+	workCtx = context.WithValue(workCtx, controlledReadCompletionClaimKey{}, func() bool {
+		return e.claimControlledReadCompletion(t.ID, intent.ID, runHandle, workCtx, ectx)
+	})
 	// wrap the guard hooks so steer_work can inject a mid-run course-correction
 	// for THIS intent (drained before the worker's next tool call).
 	iid := intent.ID
@@ -1100,25 +1128,29 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	var finalizeErr error
 	if finishControlled != nil {
-		finalizeErr = finishControlled()
+		completed := err == nil && reason == harness.ReasonCompleted && workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.IsDeleting(t.ID)
+		finalizeErr = finishControlled(completed)
 		if finalizeErr != nil {
 			log.Printf("[E2] task %s intent #%d execution audit finalization failed: %v", t.ID, intent.ID, finalizeErr)
 			err = errors.Join(err, finalizeErr)
 			reason = harness.ReasonHookStopped
 		}
 	}
+	e.workMu.Lock()
+	completedControlled := runHandle.completionClaimed && finalizeErr == nil
+	e.workMu.Unlock()
 	// Capture kill state before detachWork cancels workCtx. kill = this work's
 	// ctx was cancelled (planner kill_work) while the TASK ctx kept running; a
 	// pause cancels the task ctx (ectx) instead. Checking workCtx.Err() AFTER
 	// unregister would always be true (unregister cancels it) → every completed
 	// work would be wrongly marked stopped.
 	workCause := context.Cause(workCtx)
-	killed := workCtx.Err() != nil && ectx.Err() == nil
+	killed := !completedControlled && workCtx.Err() != nil && ectx.Err() == nil
 	action, completeWork := e.detachWork(intent.ID)
 	// A caller may stop waiting and release its in-memory reservation before the
 	// agent honors cancellation. The named context cause remains authoritative and
 	// still settles the stopped run into a recoverable state.
-	if action == "" {
+	if !completedControlled && action == "" {
 		switch {
 		case errors.Is(workCause, agent.AbortWorkPausedByUser):
 			action = "pause"
@@ -1156,7 +1188,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// if a pause cancelled this run mid-flight, return the intent to the frontier
 	// so it is re-claimed on resume — the worker will resume the prior LLM
 	// conversation from its transcript instead of restarting from scratch.
-	if ectx.Err() != nil && taskExecutionPaused(context.Cause(ectx)) {
+	if !completedControlled && ectx.Err() != nil && taskExecutionPaused(context.Cause(ectx)) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 任务暂停回退失败: %v", name, t.ID, intent.ID, err)
 		}
@@ -1164,7 +1196,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	// 任务超时收尾的硬兜底 cancel(非 pause、非 kill)取消了本 run → 归为 exhausted(已收尾),
 	// 不要误标 blocked。此时 worker 通常已在 settlement 阶段把结果写回。
-	if ectx.Err() != nil && e.isSettling(t.ID) {
+	if !completedControlled && ectx.Err() != nil && e.isSettling(t.ID) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "exhausted"); err != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 超时收尾状态落库失败: %v", name, t.ID, intent.ID, err)
 		}
@@ -1174,7 +1206,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	// 任务已判完成(done via 常规路径)→ 上面 cancelExec 取消了本 run。意图结果已无意义,
 	// 标 stopped(不是 blocked),别污染已完成任务的意图状态。
-	if ectx.Err() != nil && isTerminalStatus(e.m.TaskStatus(t.ID)) {
+	if !completedControlled && ectx.Err() != nil && isTerminalStatus(e.m.TaskStatus(t.ID)) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "stopped"); err != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 终态停止落库失败: %v", name, t.ID, intent.ID, err)
 		}
@@ -1234,6 +1266,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 // task pause/delete/shutdown still stops it). Returns an error if the run could not
 // be started; the intent is left untouched in that case.
 func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64, requestID, message, agentMessage string) error {
+	ctx = e.withRuntimeHooks(ctx)
 	if !e.beginTaskOperation(t.ID) {
 		return fmt.Errorf("task is being deleted")
 	}

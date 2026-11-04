@@ -1,0 +1,96 @@
+# 공통 층: 엔진 컨테이너 + 망 격리. 현재는 평가용이다.
+# 엔진은 internal 망(engine_net) 하나에만 붙어 바깥으로 직접 나가지 못한다. 엔진의 바깥 경로는
+# LLM 게이트웨이(eval-llm-gw) 하나이고, 엔진 API는 API front(eval-api)가 호스트 루프백에만 publish한다
+# (internal 망에만 붙은 컨테이너는 포트를 publish할 수 없다). 대상으로 가는 정문(front door)은 이 층에
+# 없고 deploy/eval의 계측기가 overlay로 붙는다.
+# LLM 백엔드 overlay(compose.llm-api.yaml 또는 compose.local-llm.yaml)를 정확히 하나 붙여야 게이트웨이가
+# 뜬다. 두 백엔드가 같은 망 구성이라 로컬 LLM으로 바꿀 때는 overlay와 설정값만 바꾼다.
+#
+# 회차마다 project를 새로 만든다(예: docker compose -p eval-<run_id> ...). 망 이름은
+# project 접두어가 붙어 회차 전용이 되며, 끝나면 down -v로 망·볼륨을 지운다.
+# 비밀 값(비밀번호·API 키)은 레포 밖 env 파일(--env-file, 커밋 금지)에서, 나머지는 평가 러너가
+# 프로세스 환경으로 넘긴다(scripts/eval/runner_config.py). 필수 값이 비면 compose가 시작하지 않는다.
+
+services:
+  engine:
+    image: ${EVAL_ENGINE_IMAGE:?엔진 이미지(소스 커밋 태그)를 설정하세요}
+    depends_on:
+      engine-db:
+        condition: service_healthy
+    environment:
+      ARTEX_PG_DSN: postgres://${EVAL_ENGINE_DB_USER:?}:${EVAL_ENGINE_DB_PASSWORD:?}@engine-db:5432/${EVAL_ENGINE_DB_NAME:?}?sslmode=disable
+      ARTEX_ADMIN_PASSWORD: ${EVAL_ENGINE_ADMIN_PASSWORD:?}
+      ARTEX_LLM_PROVIDER: ${ARTEX_LLM_PROVIDER:?}
+      ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:?}
+      # LLM 게이트웨이 주소. 러너가 사전검사 선언의 LLM 주소 경로를 붙여 넘긴다.
+      ARTEX_LLM_BASE_URL: ${ARTEX_LLM_BASE_URL:?}
+      ARTEX_LLM_STREAM: ${ARTEX_LLM_STREAM:-}
+      # 엔진 LLM 정책 모드(#125). 러너 설정에서 받는다(평가는 external). 이 스위치가 없는 엔진(baseline)은 무시한다.
+      ARTEX_LLM_POLICY_MODE: ${EVAL_ENGINE_LLM_POLICY_MODE:?}
+      # 엔진은 키가 비면 LLM을 끈다. 진짜 키는 게이트웨이만 갖고, 게이트웨이는 엔진이 보낸 이 값을 버린다.
+      OPENAI_API_KEY: gateway-holds-the-key
+    volumes:
+      - engine-data:/app/data
+    networks:
+      - engine_net
+
+  engine-db:
+    image: ${EVAL_ENGINE_DB_IMAGE:?엔진 DB 이미지(digest 고정)를 설정하세요}
+    environment:
+      POSTGRES_USER: ${EVAL_ENGINE_DB_USER:?}
+      POSTGRES_PASSWORD: ${EVAL_ENGINE_DB_PASSWORD:?}
+      POSTGRES_DB: ${EVAL_ENGINE_DB_NAME:?}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: ${EVAL_HEALTH_INTERVAL:?}
+      timeout: ${EVAL_HEALTH_TIMEOUT:?}
+      retries: ${EVAL_HEALTH_RETRIES:?}
+    volumes:
+      - engine-db-data:/var/lib/postgresql/data
+    networks:
+      - engine_net
+
+  # 엔진의 유일한 바깥 경로. command(백엔드별 규칙)는 LLM 백엔드 overlay가 정한다.
+  # 기록 디렉터리는 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
+  eval-llm-gw:
+    image: ${EVAL_METER_IMAGE:?}
+    user: "${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}"
+    volumes:
+      - ${EVAL_LLM_EVIDENCE_DIR:?}:/evidence
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks:
+      - engine_net
+      - llm_egress_net
+
+  # 엔진 API를 고치지 않고 호스트 루프백에 publish한다. 기록·비밀 없음.
+  eval-api:
+    image: ${EVAL_METER_IMAGE:?}
+    user: "${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}"
+    command:
+      - -role=api-front
+      - -listen=:${EVAL_API_FRONT_PORT:?}
+      - -upstream=http://engine:${EVAL_ENGINE_CONTAINER_PORT:?}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      # 엔진 API는 호스트 루프백에만. 0.0.0.0 공개 금지.
+      - "127.0.0.1:${EVAL_ENGINE_API_PORT:?}:${EVAL_API_FRONT_PORT:?}"
+    networks:
+      - engine_net
+      - engine_api_net
+
+networks:
+  # 엔진·엔진 DB·게이트웨이·API front(+평가 층의 계측기). 외부로 나가는 경로 없음.
+  engine_net:
+    internal: true
+  # 게이트웨이의 LLM 출구. 게이트웨이만 붙는다.
+  llm_egress_net: {}
+  # 엔진 API publish 전용(internal 망은 publish할 수 없다). API front만 붙는다.
+  engine_api_net: {}
+
+volumes:
+  engine-data: {}
+  engine-db-data: {}

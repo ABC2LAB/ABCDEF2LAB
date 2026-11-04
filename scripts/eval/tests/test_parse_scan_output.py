@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from aggregate import RepeatResult, ScanVerdict, count_basis  # noqa: E402
 from collect import ScanOutputError, VerdictRecord, parse_scan_output  # noqa: E402
 from ground_truth import core_gt  # noqa: E402
+from scan_fixtures import record as _record  # noqa: E402
 
 # 평가 쪽이 쥐는 상관(테스트용): resource_ref → GT 챌린지 키. 없으면 out-of-list.
 _CORRELATION = {
@@ -32,29 +33,6 @@ _CORRELATION = {
 
 def _correlate(record: VerdictRecord) -> str | None:
     return _CORRELATION.get(record.resource_ref)
-
-
-def _record(oracle_value: str, resource_ref: str, **overrides: object) -> dict:
-    """계약 §2 모양의 합성 레코드. vuln_verdict는 §8-① 분해대로 맞춰 둔다."""
-    rec: dict = {
-        "id": 1,
-        "case_ref": f"case-{resource_ref}",
-        "axis": "horizontal",
-        "oracle_value": oracle_value,
-        "vuln_verdict": None if oracle_value == "allowed" else oracle_value,
-        "policy_check": "yes",
-        "identity_check": "yes",
-        "data_check": "yes",
-        "reason_codes": ["policy_deny_resolved"],
-        "canary_fields": ["email"],
-        "owner_ref": "owner",
-        "evaluated_ref": "evaluated",
-        "vuln_class": "idor",
-        "resource_ref": resource_ref,
-        "model_tag": "test-model",
-    }
-    rec.update(overrides)
-    return rec
 
 
 class _FixtureDir(unittest.TestCase):

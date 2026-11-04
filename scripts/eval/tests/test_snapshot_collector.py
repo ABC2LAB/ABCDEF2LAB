@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import sys
 import tempfile
@@ -105,7 +106,9 @@ class TestSnapshotCollector(unittest.TestCase):
 
     def test_localhost_is_pinned_to_loopback_and_host_header_preserved(self):
         config = replace(self.config, origin=self.origin.replace("127.0.0.1", "localhost"))
-        self.collect(config)
+        with patch("snapshot_collector.http.client.HTTPConnection", wraps=http.client.HTTPConnection) as connection:
+            self.collect(config)
+        self.assertEqual(connection.call_args.args[0], "127.0.0.1")
         self.assertEqual(self.state["requests"][0][2]["Host"], config.origin.split("//", 1)[1])
 
     def test_proxy_environment_receives_zero_requests(self):
@@ -231,7 +234,15 @@ class TestSnapshotCollector(unittest.TestCase):
 
     def test_ambiguous_transfer_framing_is_rejected(self):
         self.state["headers"] = {"Transfer-Encoding": "chunked"}
-        self.assert_failure()
+        with self.assertRaisesRegex(SnapshotCollectionError, "^응답 전송 framing 부정$"):
+            self.collect()
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_incomplete_chunk_is_rejected_by_reader_before_json_validation(self):
+        self.state.update(chunked=True, body=b"not-json", wire_body=b"3\r\nabc\r\n")
+        with self.assertRaisesRegex(SnapshotCollectionError, "^chunked 응답 길이 미완료$"):
+            self.collect()
+        self.assertEqual(list(self.root.iterdir()), [])
 
     def test_read_timeout_does_not_retry_or_write(self):
         self.state["delay"] = 0.1

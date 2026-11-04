@@ -120,7 +120,13 @@ func (c *Capture) recordingPresence() (request, response bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// A response attempt exists even when its body was empty or never consumed.
-	return c.request != "", len(c.attempts) > 0
+	return c.requestSeen || c.request != "", len(c.attempts) > 0
+}
+
+// MetadataPresence reports whether a request attempt and response attempt were
+// observed without exposing any body content.
+func (c *Capture) MetadataPresence() (request, response bool) {
+	return c.recordingPresence()
 }
 
 func recordingStopReason(reason string) string {

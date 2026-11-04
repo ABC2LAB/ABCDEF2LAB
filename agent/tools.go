@@ -342,8 +342,8 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 	return t.readExpTool("graph_overview",
 		"(探索链路图)探索态势蒸馏摘要：资产计数、无接口的站点、frontier、发现、hints(人类/主 agent 的战略提示，生成意图时须纳入)。规划时先调它。",
 		obj(map[string]any{}),
-		func(context.Context, json.RawMessage) (actool.Result, error) {
-			return jsonResult(t.graphOverviewData())
+		func(ctx context.Context, _ json.RawMessage) (actool.Result, error) {
+			return jsonResult(t.graphOverviewData(ctx))
 		})
 }
 
@@ -351,7 +351,7 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 // graph_overview tool and the planner's wake-up prompt (which pre-injects it so
 // the model needn't spend a turn calling the tool — every plan round starts with
 // an empty context and always needs this first).
-func (t *ToolSet) graphOverviewData() map[string]any {
+func (t *ToolSet) graphOverviewData(ctx context.Context) map[string]any {
 	out := map[string]any{}
 	// goals summary folded in so the planner needn't call list_goals each round.
 	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
@@ -370,7 +370,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		var p map[string]any
 		_ = json.Unmarshal(h.Payload, &p)
 		hint := map[string]any{"id": h.ID, "state": h.State, "text": p["text"]}
-		if findingTrafficBindingEnabled() && p["traffic_refs"] != nil {
+		if findingTrafficBindingEnabled(ctx) && p["traffic_refs"] != nil {
 			hint["traffic_refs"] = p["traffic_refs"]
 		}
 		hsum = append(hsum, hint)
@@ -1243,7 +1243,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		// models routinely emit fields anyway — failing here would discard a confirmed
 		// finding over a stray parameter. The success path below reports evidence_status
 		// "not_bound" with the "已关闭，可在页面人工关联" note, which is what the caller needs.
-		if !findingTrafficBindingEnabled() {
+		if !findingTrafficBindingEnabled(ctx) {
 			a.TrafficRefs, a.EvidenceHintID = nil, nil
 		}
 		if len(a.EvidenceHintID) > 0 && pid(a.EvidenceHintID) <= 0 {
@@ -1288,7 +1288,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if len(recorded.Traffic.Bindings) == 0 {
 			result.EvidenceStatus = "not_bound"
 			result.EvidenceNote = "漏洞已保存，未绑定流量。TCP/无包情形可正常继续；若已有核实的 HTTP 流量，请用可用的 bind_finding_traffic 或漏洞页面补绑，再完成证据交接。不要重复创建漏洞。"
-			if !findingTrafficBindingEnabled() {
+			if !findingTrafficBindingEnabled(ctx) {
 				result.EvidenceNote = "漏洞已保存。Agent 自动绑定流量已关闭，可在页面人工关联流量。"
 			}
 		}
@@ -1412,8 +1412,8 @@ type hintItem struct {
 }
 
 // addOneHint 挂一条 hint 节点(active/human)到探索图,可锚定资产,返回 id。
-func (t *ToolSet) addOneHint(it hintItem) (int64, error) {
-	if len(it.TrafficRefs) > 0 && !findingTrafficBindingEnabled() {
+func (t *ToolSet) addOneHint(ctx context.Context, it hintItem) (int64, error) {
+	if len(it.TrafficRefs) > 0 && !findingTrafficBindingEnabled(ctx) {
 		return 0, fmt.Errorf("Agent 自动绑定流量已关闭，未保存携带 traffic_refs 的提示；可在系统设置开启，或仅交接文字")
 	}
 	if strings.TrimSpace(it.Text) == "" {
@@ -1622,7 +1622,7 @@ func (t *ToolSet) addHint() actool.CoreTool {
 			"traffic_refs": HintTrafficSchema(),
 			"asset_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "锚定的资产 id（可选，0/1/多个）"},
 		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				Hints    []hintItem `json:"hints"`
 				hintItem            // 单条模式：顶层 text/asset_ids
@@ -1638,7 +1638,7 @@ func (t *ToolSet) addHint() actool.CoreTool {
 			errs := map[string]string{}
 			var addedTexts []string
 			for i, it := range items {
-				id, err := t.addOneHint(it)
+				id, err := t.addOneHint(ctx, it)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
