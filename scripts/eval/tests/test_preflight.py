@@ -201,6 +201,19 @@ class TestCheckPreflight(unittest.TestCase):
             payload["ours"]["network_mode"] = value
             self.reject(payload, "ours.network_mode: INVALID")
 
+    def test_api_provider_accepts_one_variant_segment(self):
+        # OpenRouter 엔드포인트 tag(`slug/변형`, 예: deepinfra/fp8)를 문법상 한 단계까지 받는다. 접두 매칭이라
+        # 단일 엔드포인트·정밀도 보장은 아니다(평가 프로토콜 §6).
+        for provider in ("deepinfra", "deepinfra/fp8", "atlas-cloud/fp8", "deepinfra/turbo", "a.b_c-d/e.f_g-h"):
+            with self.subTest(provider=provider):
+                payload = configuration()
+                for side in ("baseline", "ours"):
+                    payload[side]["llm"] = api_llm() | {"provider": provider}
+                check_preflight(payload)
+        payload = configuration()
+        payload["ours"]["llm"] = api_llm() | {"provider": "example-provider/fp8"}  # 변형만 달라도 다른 조건
+        self.reject(payload, "comparison.llm: MISMATCH")
+
     def test_api_backend_requires_pinned_model_provider_and_disabled_fallbacks(self):
         invalid = [
             api_llm() | {"base_url": "http://llm-api.example/api/v1"},
@@ -218,6 +231,10 @@ class TestCheckPreflight(unittest.TestCase):
             api_llm() | {"provider": "Example-Provider"},
             api_llm() | {"provider": "tbd"},
             api_llm() | {"provider": None},
+            # 엔드포인트 변형은 한 단계만: 빈 변형·두 단계·대문자·공백·변형만은 거부
+            api_llm() | {"provider": "deepinfra/"}, api_llm() | {"provider": "deepinfra/fp8/turbo"},
+            api_llm() | {"provider": "deepinfra/FP8"}, api_llm() | {"provider": "/fp8"},
+            api_llm() | {"provider": "deepinfra /fp8"}, api_llm() | {"provider": "deepinfra/todo"},
             api_llm() | {"fallbacks": True},
             api_llm() | {"fallbacks": None},
             api_llm() | {"fallbacks": 0},

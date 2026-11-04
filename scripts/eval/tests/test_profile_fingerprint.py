@@ -369,6 +369,10 @@ class TestProfileFingerprint(unittest.TestCase):
         for name in ("_DNS_LABEL", "_MODEL_SEGMENT", "_PROVIDER", "_PLACEHOLDER"):
             self.assertEqual(getattr(preflight, name).pattern, getattr(profile_fingerprint, name).pattern, name)
         self.assertEqual(preflight._LOCAL_NETWORKS, profile_fingerprint._LOCAL_NETWORKS)
+        # 게이트웨이(Go)가 요청에 그대로 넣는 slug와 같은 문법이어야 선언과 실제 고정이 어긋나지 않는다.
+        gateway = (Path(__file__).resolve().parents[3] / "cmd" / "eval-meter" / "gateway.go").read_text(encoding="utf-8")
+        go_pattern = re.search(r"providerSlugRe\s*=\s*regexp\.MustCompile\(`\^(.*)\$`\)", gateway).group(1)
+        self.assertEqual(go_pattern.replace("(/", "(?:/") + "\\Z", preflight._PROVIDER.pattern)
         origins = ("http://eval-meter:8080", "http://eval-meter:8080/", "http://127.0.0.1:3000",
                    "http://eval-meter", "https://eval-meter:8080", "http://eval-meter:8080/${X}",
                    "http://eval-meter:8080/<v1>", "http://todo:8080", "http://eval-meter:8080" + "/" * 600)
@@ -377,6 +381,7 @@ class TestProfileFingerprint(unittest.TestCase):
                 self.assertEqual(preflight._meter_origin(value), profile_fingerprint._meter_origin(value))
         llms = (api_llm(), local_llm(), api_llm() | {"fallbacks": True}, local_llm() | {"host_ip": "10.0.0.1"},
                 local_llm() | {"host_ip": "127.0.0.1"}, api_llm() | {"provider": "todo"},
+                api_llm() | {"provider": "deepinfra/fp8"}, api_llm() | {"provider": "deepinfra/fp8/x"},
                 api_llm() | {"model": "example-org/example-model:free"}, {"backend": "api"}, None)
         for value in llms:
             with self.subTest(llm=value):

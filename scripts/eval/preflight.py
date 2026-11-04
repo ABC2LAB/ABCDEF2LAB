@@ -28,7 +28,10 @@ _SHARED = (
 _NETWORK_MODES = ("dedicated_network",)
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _MODEL_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-_PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
+# 제공자 slug. OpenRouter 엔드포인트 tag처럼 `slug/변형`(예: deepinfra/fp8)까지 받는다. 문법 검사일 뿐이다: OpenRouter slug는
+# `provider[/variant][/region][/tier]` 접두 매칭이라 두 segment가 단일 엔드포인트·정밀도를 보장하지 않는다(평가 프로토콜 §6).
+# 게이트웨이(cmd/eval-meter providerSlugRe)와 같은 문법이며 drift 테스트로 묶는다.
+_PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}(?:/[a-z0-9][a-z0-9._-]{0,63})?\Z")
 # 로컬 LLM 고정 IP: llmpolicy/policy.go의 사설 대역 중 loopback(127/8·::1)을 제외한 4개.
 # 엔진은 컨테이너라 호스트 loopback으로는 닿지 않으므로 제외한다. ipaddress.is_private는 문서용 대역까지 포함해 쓰지 않는다.
 _LOCAL_NETWORKS = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
