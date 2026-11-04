@@ -174,6 +174,23 @@ class TestRejectedV11(_V11):
             forced_cancelled=1, settle_applied_seconds=2)))
         self.assertEqual((cut.version, cut.drain_policy), ("1.1", (30, 2)))
 
+    def test_run_conditions_row_is_required_and_typed(self):
+        self.reject("run_conditions", "r0", tamper_rows=lambda rows: drop(rows, row_of(rows, "run_conditions")))
+        cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "workers": 0,
+                 "sampling": {"temperature": 1.0}, "host": {"cpu_model": "x"}}
+        for index, (name, value) in enumerate(cases.items()):
+            self.reject("run_conditions", f"r{index + 1}",
+                        tamper_rows=lambda rows, n=name, v=value: row_of(rows, "run_conditions").update({n: v}))
+        self.reject("run_conditions", "r9", tamper_rows=lambda rows: row_of(rows, "run_conditions")["host"].update(
+            logical_cpus=True))
+        self.reject("run_conditions", "r10", tamper_rows=lambda rows: row_of(rows, "run_conditions")["sampling"].update(
+            seed="42"))
+        # local 백엔드는 샘플링을 넣지 않아 null이다.
+        local = self.inputs(self.v11("loc", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            sampling=None)))
+        self.assertEqual(local.version, "1.1")
+        self.assertIsNotNone(self.inputs(self.v11("ok")).run_conditions)
+
     def test_iw12_drain_times_are_checked_against_the_window(self):
         # fixture: 봉인 00:08, drain 완료 00:09, timeline drained 00:09, post 00:10 — 경계값(같은 시각)은 통과
         self.assertEqual(self.inputs(self.v11()).version, "1.1")
@@ -311,6 +328,22 @@ class TestComparison(_V11):
         cut = self.v11("c1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "drain").update(
             forced_cancelled=1, settle_applied_seconds=2))
         build_report(self.load([self.v11("c0"), cut]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_runs_with_different_run_conditions_are_not_compared(self):
+        # 엔진 실행 설정·게이트웨이가 넣은 샘플링·머신 사양·머신이 하나라도 다르면 같은 조건이 아니다(§5.1·§6).
+        build_report(self.load([self.v11("k1"), self.v11("k2", repeat_index=1)]), self.correlate, self.correlatable,
+                     runner_key=self.runner_key)
+        changes = {"엔진 설정": lambda row: row.update(engine_settings_sha256="f" * 64),
+                   "적용 샘플링": lambda row: row["sampling"].update(temperature=0.7),
+                   "머신 사양": lambda row: row["host"].update(memory_kib=1),
+                   "머신": lambda row: row.update(machine_id_sha256="0" * 64)}
+        for index, (label, change) in enumerate(changes.items()):
+            with self.subTest(label=label):
+                other = self.v11(f"m{index}", repeat_index=1,
+                                 tamper_rows=lambda rows, c=change: c(row_of(rows, "run_conditions")))
+                with self.assertRaisesRegex(ComparabilityError, f"회차 조건 불일치\\({label}\\)"):
+                    build_report(self.load([self.v11(f"n{index}"), other]), self.correlate, self.correlatable,
+                                 runner_key=self.runner_key)
 
     def test_v1_only_comparison_is_flagged_not_official(self):
         report = build_report(self.load([self.make_run("v1only", [])]), self.correlate, self.correlatable,

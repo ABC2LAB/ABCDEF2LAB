@@ -17,9 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
     COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH,
-    MAX_DRAIN_GRACE_SECONDS, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError, compose_base_args,
-    secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config, new_run_id,
-    parse_runner_config, plan_run,
+    MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
+    compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
+    new_run_id, parse_runner_config, plan_run,
 )
 from test_preflight import configuration, local_llm
 
@@ -307,6 +307,22 @@ class TestParseRunnerConfig(unittest.TestCase):
 class TestPlanRun(unittest.TestCase):
     def setUp(self):
         self.config = parse_runner_config(runner_config())
+
+    def test_gateway_sampling_comes_from_the_declaration(self):
+        # 엔진은 샘플링을 보내지 않으므로 게이트웨이가 넣을 일곱 값을 선언(temperature·sampling·seed)에서 만든다.
+        preflight = configuration()
+        plan = plan_run(self.config, preflight, "ours", "ours-1")
+        declared = preflight["ours"]
+        self.assertEqual(json.loads(plan.compose_env["EVAL_LLM_SAMPLING"]),
+                         {"temperature": declared["temperature"], **declared["sampling"], "seed": declared["seed"]})
+        preflight["baseline"]["temperature"] = preflight["ours"]["temperature"] = 2.5
+        with self.assertRaises(RunnerConfigError) as caught:
+            plan_run(self.config, preflight, "ours", "ours-1")
+        self.assertEqual(caught.exception.errors, ["preflight.ours.temperature: ABOVE_GATEWAY_LIMIT"])
+        go = (REPO_ROOT / "cmd/eval-meter/sampling.go").read_text(encoding="utf-8")
+        self.assertIn(f"maxTemperature       = {MAX_GATEWAY_TEMPERATURE}\n", go)
+        compose = (REPO_ROOT / "deploy/engine-isolated/compose.llm-api.yaml").read_text(encoding="utf-8")
+        self.assertIn("- -sampling=${EVAL_LLM_SAMPLING:?}", compose)
 
     def test_drain_policy_must_equal_the_declaration(self):
         # 봉인 뒤 유예·정착 대기는 환경 지문에 들어간 비교 조건이다(#153 리뷰). 설정이 선언과 다르면 시작하지 않는다.

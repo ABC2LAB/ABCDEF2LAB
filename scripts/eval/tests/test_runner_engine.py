@@ -22,7 +22,7 @@ from baseline_pages import BaselinePageMerge
 from runner_config import REPO_ROOT
 from runner_engine import (
     _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
-    findings_record, load_vocabulary, login, start_task, task_request,
+    engine_settings, findings_record, load_vocabulary, login, start_task, task_request,
 )
 from test_runner_config import runner_config
 from test_baseline_extract import finding, vocabulary
@@ -111,11 +111,25 @@ class TestDTOFormatGuard(unittest.TestCase):
                             DTO_SHAPES[("server/dto.go", "type FindingDTO struct")])
 
 
+# server/server.go settingsPayload·getLLM 응답 모양(합성 값). 키는 설정 여부 bool만 나오고 프록시는 URL 문자열이다.
+ENGINE_SETTINGS = {"output_language": "ko", "traffic_capture": True, "web_search_enabled": False,
+                   "web_search_backend": "",
+            "brave_key_set": False, "tavily_key_set": False, "web_search_proxy": "", "global_proxy": "",
+            "python_interpreter": "", "workers": 3, "task_concurrency_enabled": False, "task_concurrency_limit": 5,
+            "llm_pool_enabled": False, "noa_compaction": False, "notify_digest_interval_min": 60}
+ENGINE_LLM = {"configured": True, "provider": "openai", "model": "example-org/example-model",
+                "base_url": "http://eval-llm-gw:8090/api/v1", "proxy": "", "key_set": True, "rate_per_second": 0,
+                "rate_per_minute": 0, "context_window_k": 0, "thinking_type": "", "reasoning_effort": ""}
+
+
 class FakeEngine:
     """로그인 1개와 findings 페이지 조회만 하는 합성 엔진 API."""
 
-    def __init__(self, items=None, login_status=200, login_body=None, task_status=201, task_body=None):
+    def __init__(self, items=None, login_status=200, login_body=None, task_status=201, task_body=None,
+                 settings=None):
         self.items = [finding()] if items is None else items
+        # 실행 설정 GET 응답: 경로 → (status, 본문 bytes). 없으면 정상 응답.
+        self.settings = settings or {}
         self.login_status, self.login_body = login_status, login_body
         self.task_status, self.task_body = task_status, task_body
         self.requests = []
@@ -147,6 +161,16 @@ class FakeEngine:
 
             def do_GET(self):
                 engine.requests.append(("GET", self.path, dict(self.headers), b""))
+                if self.path in ("/api/settings", "/api/llm"):
+                    authorized = self.headers.get("Authorization") == f"Bearer {TOKEN}"
+                    status, payload = engine.settings.get(self.path, (200, json.dumps(
+                        ENGINE_SETTINGS if self.path == "/api/settings" else ENGINE_LLM).encode()))
+                    self.send_response(status if authorized else 401)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 query = parse_qs(urlsplit(self.path).query)
                 page, size = int(query["page"][0]), int(query["limit"][0])
                 payload = json.dumps({"items": engine.items, "total": len(engine.items), "page": page,
@@ -394,3 +418,70 @@ class TestVocabulary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEngineSettings(unittest.TestCase):
+    def engine(self, **kwargs):
+        engine = FakeEngine(**kwargs)
+        self.addCleanup(engine.close)
+        return engine
+
+    def test_reads_both_settings_with_one_login_and_replaces_proxies_with_flags(self):
+        engine = self.engine()
+        snapshot = engine_settings(engine.port, AdminSecret(PASSWORD), 5)
+        kinds = [(method, path) for method, path, _, _ in engine.requests]
+        self.assertEqual(kinds, [("POST", "/api/auth/login"), ("GET", "/api/settings"), ("GET", "/api/llm")])
+        for _, path, headers, _ in engine.requests[1:]:
+            self.assertEqual(headers["Authorization"], f"Bearer {TOKEN}")
+        expected_settings = {k: v for k, v in ENGINE_SETTINGS.items() if k not in ("web_search_proxy", "global_proxy")}
+        expected_settings.update(web_search_proxy_set=False, global_proxy_set=False)
+        expected_llm = {k: v for k, v in ENGINE_LLM.items() if k != "proxy"} | {"proxy_set": False}
+        self.assertEqual(snapshot, {"settings": expected_settings, "llm": expected_llm})
+
+    def test_proxy_values_never_reach_the_snapshot(self):
+        secret_proxy = "http://user:synthetic-secret@proxy.example:3128"
+        engine = self.engine(settings={
+            "/api/settings": (200, json.dumps(dict(ENGINE_SETTINGS, global_proxy=secret_proxy)).encode()),
+            "/api/llm": (200, json.dumps(dict(ENGINE_LLM, proxy=" " + secret_proxy)).encode())})
+        snapshot = engine_settings(engine.port, AdminSecret(PASSWORD), 5)
+        self.assertTrue(snapshot["settings"]["global_proxy_set"] and snapshot["llm"]["proxy_set"])
+        self.assertNotIn("synthetic-secret", json.dumps(snapshot))
+
+    def test_unexpected_shapes_fail_with_fixed_codes(self):
+        cases = [
+            ({"/api/settings": (500, b"{}")}, "engine_settings_http_500"),
+            ({"/api/llm": (404, b"{}")}, "engine_settings_http_404"),
+            ({"/api/settings": (200, b"not json")}, "engine_settings_response_invalid"),
+            ({"/api/settings": (200, b"[]")}, "engine_settings_response_invalid"),
+            ({"/api/settings": (200, b"{}")}, "engine_settings_response_invalid"),
+            ({"/api/settings": (200, b'{"workers":3,"workers":4,"web_search_proxy":"","global_proxy":""}')},
+             "engine_settings_response_invalid"),
+            ({"/api/settings": (200, json.dumps(dict(ENGINE_SETTINGS, nested={"a": 1})).encode())},
+             "engine_settings_response_invalid"),
+            ({"/api/llm": (200, json.dumps({k: v for k, v in ENGINE_LLM.items() if k != "proxy"}).encode())},
+             "engine_settings_response_invalid"),
+            ({"/api/settings": (200, json.dumps(dict(ENGINE_SETTINGS, global_proxy=None)).encode())},
+             "engine_settings_response_invalid"),
+            ({"/api/settings": (200, json.dumps(ENGINE_SETTINGS).encode() + b" " * (64 * 1024))},
+             "engine_settings_response_invalid"),
+        ]
+        for settings, code in cases:
+            with self.subTest(code=code, settings=list(settings)):
+                engine = self.engine(settings=settings)
+                with self.assertRaises(EngineAPIError) as caught:
+                    engine_settings(engine.port, AdminSecret(PASSWORD), 5)
+                self.assertEqual(str(caught.exception), code)
+                self.assertNotIn(PASSWORD, str(caught.exception))
+
+    def test_the_engine_responses_still_carry_the_fields_the_runner_rewrites(self):
+        # 러너는 프록시 URL을 설정 여부로 바꾸고 나머지 값은 그대로 남긴다. 핸들러가 키 원문을 내기 시작하거나 프록시
+        # 키 이름이 바뀌면 스냅샷이 비밀을 담거나 대조를 놓치므로 여기서 먼저 걸린다.
+        server = (REPO_ROOT / "server/server.go").read_text(encoding="utf-8")
+        settings = go_block(server, "func (s *Server) settingsPayload(")
+        llm = go_block(server, "func (s *Server) getLLM(")
+        for key in ('"web_search_proxy":', '"global_proxy":', '"workers":'):
+            self.assertIn(key, settings)
+        for key in ('"proxy":', '"model":', '"key_set":'):
+            self.assertIn(key, llm)
+        for block in (settings, llm):
+            self.assertNotRegex(block, r'"(api_key|brave_search_api_key|tavily_search_api_key|password|token)":')

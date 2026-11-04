@@ -31,6 +31,12 @@ from baseline_pages_collector import MAX_BEARER_LENGTH, BaselinePagesEndpoint, c
 
 LOGIN_PATH = "/api/auth/login"
 TASKS_PATH = "/api/tasks"
+# 작업 생성 전에 읽는 실행 설정. 두 응답은 baseline(e53a79f)과 개선 후가 같은 코드로 만든다(평가 프로토콜 §6).
+SETTINGS_PATHS = {"settings": "/api/settings", "llm": "/api/llm"}
+MAX_SETTINGS_RESPONSE_BYTES = 64 * 1024
+# 프록시 URL에는 자격정보가 들어갈 수 있어 값 대신 설정 여부만 남긴다. 평가 회차에서는 비어 있어야 한다
+# (설정되면 엔진 송신 경로가 계측기·게이트웨이 밖으로 바뀐다).
+PROXY_FIELDS = {"settings": ("web_search_proxy", "global_proxy"), "llm": ("proxy",)}
 # 엔진이 고정한 관리자 계정 이름(server/auth.go authLogin). baseline·개선 후 같다.
 ADMIN_USERNAME = "ARTEX"
 MAX_LOGIN_RESPONSE_BYTES = 64 * 1024
@@ -80,6 +86,15 @@ def _post(port: int, path: str, body: bytes, headers: dict, timeout: float, limi
             return response.status, response.read(limit + 1)
 
 
+def _get(port: int, path: str, headers: dict, timeout: float, limit: int) -> tuple[int, bytes]:
+    """루프백 엔진 API에 GET 한 번. _post와 같은 연결 규칙이다."""
+    with closing(http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)) as connection:
+        connection.set_debuglevel(0)
+        connection.request("GET", path, headers={"Accept": "application/json", "Connection": "close", **headers})
+        with closing(connection.getresponse()) as response:
+            return response.status, response.read(limit + 1)
+
+
 def login(port: int, secret: AdminSecret, timeout: float) -> str:
     """루프백 엔진 API에 로그인해 토큰을 돌려준다. 실패는 고정 코드다(본문을 읽어 옮기지 않는다)."""
     body = json.dumps({"username": ADMIN_USERNAME, "password": secret.reveal()}).encode("utf-8")
@@ -124,6 +139,47 @@ def task_request(task: dict, target_origin: str) -> TaskRequest:
         raise EngineAPIError("task_target_mismatch")
     body = json.dumps(task, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
     return TaskRequest(body, hashlib.sha256(body).hexdigest())
+
+
+def _settings_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+
+def engine_settings(port: int, secret: AdminSecret, timeout: float) -> dict:
+    """작업 생성 전 엔진 실행 설정 스냅샷. 값은 평평한 JSON 스칼라만 받고 프록시 URL은 설정 여부로 바꾼다.
+
+    API 키는 응답에 없다(설정 여부 bool만 나온다). 모르는 형태가 오면 고정 코드로 거부한다.
+    """
+    token = login(port, secret, timeout)
+    snapshot = {}
+    for name, path in SETTINGS_PATHS.items():
+        try:
+            status, data = _get(port, path, {"Authorization": f"Bearer {token}"}, timeout, MAX_SETTINGS_RESPONSE_BYTES)
+        except (OSError, http.client.HTTPException, ValueError, OverflowError):
+            raise EngineAPIError("engine_settings_unreachable") from None
+        if status != 200:
+            raise EngineAPIError(f"engine_settings_http_{status}")
+        try:
+            if len(data) > MAX_SETTINGS_RESPONSE_BYTES:
+                raise ValueError
+            values = json.loads(data.decode("utf-8"), object_pairs_hook=_settings_object)
+        except (UnicodeError, ValueError):
+            raise EngineAPIError("engine_settings_response_invalid") from None
+        if (not isinstance(values, dict) or not values
+                or any(not isinstance(value, (str, bool, int, float)) and value is not None
+                       for value in values.values())):
+            raise EngineAPIError("engine_settings_response_invalid")
+        for field in PROXY_FIELDS[name]:
+            if not isinstance(values.get(field), str):
+                raise EngineAPIError("engine_settings_response_invalid")
+            values[f"{field}_set"] = values.pop(field).strip() != ""
+        snapshot[name] = values
+    return snapshot
 
 
 def start_task(port: int, secret: AdminSecret, request: TaskRequest, timeout: float) -> str:

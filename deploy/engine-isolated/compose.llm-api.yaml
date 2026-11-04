@@ -1,5 +1,5 @@
-# LLM 백엔드 overlay(api): 게이트웨이가 https API로 나간다. 요청마다 제공자 고정(order=전체 slug)과
-# fallback 끔을 넣고, seal 뒤 generation 조회로 응답 제공자를 확인한다(평가 프로토콜 §2·§6).
+# LLM 백엔드 overlay(api): 게이트웨이가 https API로 나간다. 요청마다 제공자 고정(order=전체 slug)·
+# fallback 끔·샘플링을 넣고, seal 뒤 generation 조회로 응답 제공자를 확인한다(평가 프로토콜 §2·§6).
 # API 키는 비밀 env 파일에서 게이트웨이 컨테이너에만 들어간다. 엔진·계측기에는 주지 않는다.
 
 services:
@@ -12,6 +12,8 @@ services:
       - -allow-path=${EVAL_LLM_CHAT_PATH:?}
       - -log-dir=/evidence
       - -provider=${EVAL_LLM_PROVIDER:?}
+      # 엔진은 샘플링을 보내지 않으므로 선언값을 게이트웨이가 요청마다 넣는다(엔진이 보내면 거부).
+      - -sampling=${EVAL_LLM_SAMPLING:?}
       - -generation-path=${EVAL_LLM_GENERATION_PATH:?}
       - -verify-attempts=${EVAL_LLM_VERIFY_ATTEMPTS:?}
       - -verify-interval=${EVAL_LLM_VERIFY_INTERVAL:?}

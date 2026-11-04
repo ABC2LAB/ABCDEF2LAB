@@ -24,6 +24,14 @@ STAMPS = {"fixture_ready": "2026-10-30T00:00:00+00:00", "pre": "2026-10-30T00:00
           "drained": "2026-10-30T00:00:09+00:00", "post": "2026-10-30T00:00:10+00:00"}
 
 
+# 서명 근거의 실행 조건 행(엔진 설정 해시·적용 샘플링·머신). 채점기가 회차 사이 같은지 대조한다.
+CONDITIONS = {"engine_settings_sha256": "e" * 64, "workers": 3,
+              "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5,
+                           "repetition_penalty": 1.0, "seed": 42},
+              "host": {"cpu_model": "Example CPU", "logical_cpus": 8, "memory_kib": 16777216, "kernel": "6.0.0",
+                       "docker_server_version": "29.1.3"},
+              "machine_id_sha256": "d" * 64}
+
 def snapshot(name: str) -> dict:
     """runner_checks.network_snapshot 모양의 합성 망 스냅샷(엔진·계측기·대상·관측 front)."""
     ids = {service: hashlib.sha256(f"{name}-{service}".encode()).hexdigest()
@@ -107,7 +115,8 @@ def make_v11(root: Path, key: bytes, name: str, *, pre=None, solved=None, record
             host_ref=f"host-condition:{run['run_id']}", pre_listeners=[], post_listeners=[], allowed=[],
             boundary_ref=f"compose:eval-{name}", policy=policy, steps=steps, observer_rows=observer, ready_calls=1,
             observer_path_ref=path_ref(OBSERVER_PATH), readonly_ref="verify:juice-shop-15:get-challenges",
-            meter=meter, drained={"inflight_at_drain": 0}, engine_rows=total_requests)
+            meter=meter, drained={"inflight_at_drain": 0}, engine_rows=total_requests,
+            conditions=copy.deepcopy(CONDITIONS))
         if tamper_rows:
             tamper_rows(rows)
         evidence = add("isolation_evidence", isolation_evidence(context, rows), "isolation-evidence.json", "engine")

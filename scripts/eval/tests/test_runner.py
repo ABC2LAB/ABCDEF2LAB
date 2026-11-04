@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -162,6 +163,12 @@ class FakePorts:
         self.events_complete = True
         self.solved = {"pre": {"basket": False, "admin": True, "feedback": False},
                        "post": {"basket": True, "admin": True, "feedback": False}}
+        self.host = {"cpu_model": "Example CPU", "logical_cpus": 8, "memory_kib": 16 * 1024 * 1024,
+                     "kernel": "6.0.0-example", "docker_server_version": "29.1.3", "machine_id_sha256": "c" * 64}
+        # 엔진 설정 응답(runner_engine이 프록시를 설정 여부로 바꾼 뒤): 선언 worker_count·모델과 같고 프록시 없음.
+        self.settings = {"settings": {"workers": spec.worker_count, "web_search_proxy_set": False,
+                                      "global_proxy_set": False, "llm_pool_enabled": False},
+                         "llm": {"model": spec.model_tag, "proxy_set": False, "reasoning_effort": ""}}
         self.sign_calls = 0
         self.sign_fail_at = None
         self.watch_stops = 0
@@ -228,6 +235,14 @@ class FakePorts:
                 "requested_at": f"2026-11-02T00:00:0{1 if phase == 'pre' else 8}+00:00",
                 "received_at": f"2026-11-02T00:00:0{2 if phase == 'pre' else 9}+00:00",
                 "solved": dict(self.solved[phase])}
+
+    def host_spec(self):
+        self._call("host_spec")
+        return dict(self.host)
+
+    def engine_settings(self):
+        self._call("engine_settings")
+        return copy.deepcopy(self.settings)
 
     def start_task(self):
         self._call("start_task")
@@ -305,10 +320,10 @@ def run(mutate=None, mutate_gateway=None, spec=None):
     return result, ports, meter, evidence
 
 
-FULL_ORDER = ["preexisting", "image_ids", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre", "wait_ready",
-              "events:start", "watch:start", "scoreboard:pre", "start_task", "seal", "seal_gateway", "facts:post",
-              "listeners:post", "probe:post", "scoreboard:post", "watch:stop", "events:stop", "tmpfs:post", "findings",
-              "down", "sign", "sign"]
+FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
+              "wait_ready", "events:start", "watch:start", "scoreboard:pre", "engine_settings", "start_task", "seal",
+              "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
+              "events:stop", "tmpfs:post", "findings", "down", "sign", "sign"]
 
 
 class TestCompleteRun(unittest.TestCase):
@@ -322,7 +337,7 @@ class TestCompleteRun(unittest.TestCase):
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
                                                "findings.json", "task.json", "window-watch.json",
                                                "isolation-evidence.json", "solve-events.json", "run-record.json",
-                                               RESULT_NAME})
+                                               "engine-settings.json", RESULT_NAME})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
         self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
         self.assertEqual(ports.sealed_id, "4" * 64)
@@ -462,7 +477,7 @@ class TestFailures(unittest.TestCase):
             ("facts:post", "post_facts_failed"),
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
             ("tmpfs:pre", "pre_tmpfs_measure_failed"), ("tmpfs:post", "tmpfs_measure_failed"),
-            ("findings", "findings_failed"),
+            ("findings", "findings_failed"), ("engine_settings", "engine_settings_failed"),
         ]
         for name, reason in cases:
             with self.subTest(step=name):
@@ -564,6 +579,49 @@ class TestFailures(unittest.TestCase):
         self.assertEqual((drain["grace_seconds"], drain["settle_seconds"], drain["forced_cancelled"],
                           drain["settle_applied_seconds"]), (30, 2, 1, 2))
         self.assertEqual(evidence.files["run-record.json"]["total_requests"], 2)
+
+    def test_run_conditions_are_recorded_and_signed(self):
+        result, ports, _, evidence = run()
+        self.assertEqual(result["status"], COMPLETE)
+        conditions = result["run_conditions"]
+        settings = evidence.files["engine-settings.json"]
+        self.assertEqual(settings, ports.settings)
+        self.assertEqual(conditions["engine_settings_sha256"], runner.canonical_sha256(settings))
+        self.assertEqual(conditions["workers"], ports.spec.worker_count)
+        # 선언값이 아니라 게이트웨이가 마커에 남긴 적용값이 기록된다.
+        self.assertEqual(conditions["sampling"], evidence.files["llm-summary.json"]["sampling_applied"])
+        self.assertEqual(conditions["machine_id_sha256"], ports.host["machine_id_sha256"])
+        self.assertNotIn("machine_id_sha256", conditions["host"])
+        row = next(r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "run_conditions")
+        self.assertEqual({key: row[key] for key in conditions}, conditions)
+
+    def test_engine_settings_must_match_the_declaration(self):
+        changes = {"workers": lambda s: s["settings"].update(workers=s["settings"]["workers"] + 1),
+                   "workers type": lambda s: s["settings"].update(workers=str(s["settings"]["workers"])),
+                   "global proxy": lambda s: s["settings"].update(global_proxy_set=True),
+                   "web search proxy": lambda s: s["settings"].update(web_search_proxy_set=True),
+                   "llm proxy": lambda s: s["llm"].update(proxy_set=True),
+                   "model": lambda s: s["llm"].update(model="other/model"),
+                   "missing part": lambda s: s.pop("llm")}
+        for label, change in changes.items():
+            with self.subTest(label=label):
+                result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.settings))
+                self.assert_invalid(result, ports, evidence, "engine_settings_mismatch")
+                self.assertNotIn("start_task", ports.calls)
+
+    def test_host_spec_must_be_complete(self):
+        for label, change in {"missing": lambda h: h.pop("kernel"), "empty model": lambda h: h.update(cpu_model=""),
+                              "zero cpus": lambda h: h.update(logical_cpus=0),
+                              "bad id": lambda h: h.update(machine_id_sha256="x")}.items():
+            with self.subTest(label=label):
+                result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.host))
+                # 컨테이너를 띄우기 전에 멈추므로 내릴 것도 없다.
+                self.assert_invalid(result, ports, evidence, "host_spec_failed", down=False)
+                self.assertNotIn("up", ports.calls)
+
+    def test_gateway_sampling_must_equal_the_declaration(self):
+        result, ports, _, evidence = run(mutate_gateway=lambda g: g.marker["sampling"].update(temperature=0.7))
+        self.assert_invalid(result, ports, evidence, "llm_sampling_mismatch")
 
     def test_no_settle_without_cut_requests(self):
         slept = []
@@ -890,7 +948,7 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
             self.assertEqual(env["EVAL_EVIDENCE_DIR"], str(directory.meter))
             self.assertNotEqual(directory.meter, directory.run)
             self.assertNotIn(str(config.runner_key_path), "\n".join(env.values()))
-            ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1")
+            ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1", settings=dict)
             snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
             with patch.object(runner, "collect_snapshot") as collect, \
                     patch.object(runner, "read_private_json", return_value={"solved": {"k": False}}) as read:
@@ -1048,12 +1106,45 @@ class TestSignatureKey(unittest.TestCase):
     def test_key_read_only_at_sign_time_from_config_path(self):
         config = parse_runner_config(runner_config())
         plan = plan_run(config, configuration(), "ours", "ours-1")
-        ports = DockerPorts(config, plan, None, docker=None, findings=dict, start=lambda: "1")
+        ports = DockerPorts(config, plan, None, docker=None, findings=dict, start=lambda: "1", settings=dict)
         with patch.object(runner, "read_runner_key", return_value=b"k" * 32) as read_key:
             signed = ports.sign({"run_id": "ours-1"})
         read_key.assert_called_once_with("/srv/eval-keys/runner.key")
         self.assertRegex(signed["signature"], r"^[0-9a-f]{64}$")
 
+
+
+class TestHostSpec(unittest.TestCase):
+    FILES = {"/proc/cpuinfo": "processor\t: 0\nmodel name\t: Example CPU @ 2.0GHz\nprocessor\t: 1\n"
+                              "model name\t: Example CPU @ 2.0GHz\n",
+             "/proc/meminfo": "MemTotal:       16384000 kB\nMemFree:        1 kB\n",
+             "/etc/machine-id": "0123456789abcdef0123456789abcdef\n"}
+
+    def spec(self, files):
+        return runner.read_host_spec(files.get, "29.1.3", 8, "6.0.0-example")
+
+    def test_reads_cpu_memory_kernel_docker_and_hashes_the_machine_id(self):
+        host = self.spec(self.FILES)
+        self.assertEqual({k: v for k, v in host.items() if k != "machine_id_sha256"},
+                         {"cpu_model": "Example CPU @ 2.0GHz", "logical_cpus": 8, "memory_kib": 16384000,
+                          "kernel": "6.0.0-example", "docker_server_version": "29.1.3"})
+        # 원문 머신 ID는 남기지 않고, 접두를 붙인 해시만 남긴다.
+        self.assertEqual(host["machine_id_sha256"], hashlib.sha256(
+            b"abc2lab-eval-machine-v1:0123456789abcdef0123456789abcdef").hexdigest())
+        self.assertNotIn("0123456789abcdef", json.dumps(host))
+        self.assertTrue(runner._host_spec_ok(host))
+
+    def test_missing_or_malformed_sources_fail(self):
+        cases = {"no cpuinfo": {"/proc/cpuinfo": None}, "no model": {"/proc/cpuinfo": "processor\t: 0\n"},
+                 "no meminfo": {"/proc/meminfo": None}, "mem unit": {"/proc/meminfo": "MemTotal: 16 MB\n"},
+                 "no machine id": {"/etc/machine-id": None}, "short id": {"/etc/machine-id": "abc\n"},
+                 "upper id": {"/etc/machine-id": "0123456789ABCDEF0123456789ABCDEF\n"}}
+        for label, change in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaises(RunFailure) as caught:
+                    self.spec(dict(self.FILES, **change))
+                self.assertEqual(caught.exception.code, "host_spec_failed")
+        self.assertFalse(runner._host_spec_ok(dict(self.spec(self.FILES), logical_cpus=None)))
 
 if __name__ == "__main__":
     unittest.main()
