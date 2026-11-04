@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { MOCK } from "./mock";
+
 /**
  * ABC2LAB UI ↔ 엔진 API 클라이언트.
  *
@@ -82,6 +84,8 @@ export class ApiError extends Error {
 
 /** 엔진 API 호출. path 는 `/api/...` 전체 경로. 401 이면 토큰을 버리고 한 번만 재로그인·재시도. */
 export async function apiFetch<T>(path: string, init: RequestInit = {}, retryAuth = true): Promise<T> {
+  // 목업 빌드는 엔진에 요청하지 않는다(로그인도 하지 않음). 데이터는 이때만 불러온다.
+  if (MOCK) return (await import("./mock-data")).mockFetch<T>(path, init);
   const t = await ensureToken();
   const headers = new Headers(init.headers);
   if (t) headers.set("Authorization", `Bearer ${t}`);

@@ -1,0 +1,33 @@
+{
+  "version": 4,
+  "fixture": {
+    "preparation_id": "anonymous",
+    "preparation_revision": 1,
+    "accounts": [],
+    "resources": []
+  },
+  "environment": {
+    "network_mode": "dedicated_network",
+    "llm": {
+      "backend": "api",
+      "base_url": "https://openrouter.ai/api/v1",
+      "model": "qwen/qwen3.6-35b-a3b",
+      "provider": "deepinfra/fp8",
+      "fallbacks": false
+    },
+    "temperature": 1.0,
+    "seed": 42,
+    "target_image": "bkimminich/juice-shop:v15.0.0@sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d",
+    "worker_count": 3,
+    "time_budget_seconds": 1200,
+    "request_budget": 400,
+    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
+    "run_drain": {"grace_seconds": 60, "settle_seconds": 10}
+  },
+  "scope": {
+    "target_origin": "http://eval-meter:8080",
+    "methods": ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"],
+    "paths": ["/"],
+    "vuln_classes": ["horizontal_access_control", "vertical_access_control"]
+  }
+}
