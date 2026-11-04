@@ -1,4 +1,4 @@
-import { apiFetch } from "./api";
+import { ApiError, apiFetch } from "./api";
 
 /**
  * 엔진 DTO의 UI가 쓰는 부분만 추린 타입 (정본: server/dto.go).
@@ -236,6 +236,42 @@ export async function getCoverage(taskId: string): Promise<EngineCoverage | null
     pct: r.pct ?? 0,
     byType: r.by_type ?? [],
   };
+}
+
+/**
+ * db/task_scope.go CoverageGraphNode — 자산 그래프 노드(UI가 쓰는 부분).
+ * kind: company | root_domain | subdomain | ip | service | app | endpoint.
+ * in_scope=false 는 연결용 회색 노드(루트 도메인·회사). endpoint·service 의 label 은 URL 이다.
+ */
+export type EngineCoverageNode = {
+  key: string;
+  kind: string;
+  label: string;
+  tested: boolean;
+  in_scope: boolean;
+  asset_id?: number;
+  domain?: string;
+  ip?: string;
+  url?: string;
+  port?: number;
+};
+/** child → parent 포함 관계 (endpoint→service→subdomain/ip→root_domain→company) */
+export type EngineCoverageEdge = { src: string; dst: string };
+export type EngineCoverageGraph = { nodes: EngineCoverageNode[]; edges: EngineCoverageEdge[] };
+
+/**
+ * GET /api/tasks/{id}/coverage-graph — 범위 안 자산 전체와 검사 여부.
+ * 자산 저장소가 꺼져 있으면(503) null 을 돌려준다 — 오류와 "꺼짐"을 화면에서 구분하려고.
+ */
+export async function getCoverageGraph(taskId: string): Promise<EngineCoverageGraph | null> {
+  if (!taskId) return null;
+  try {
+    const r = await apiFetch<Partial<EngineCoverageGraph>>(`/api/tasks/${encodeURIComponent(taskId)}/coverage-graph`);
+    return { nodes: r.nodes ?? [], edges: r.edges ?? [] };
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 503) return null;
+    throw err;
+  }
 }
 
 /** GET /api/exploration/tokens?task={id} — 이 점검의 토큰 사용 합계. */

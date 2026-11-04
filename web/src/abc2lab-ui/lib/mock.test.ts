@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { EngineFinding, EngineTask, TaskListResponse } from "./engine";
+import { buildAssetGraph } from "./asset-graph";
+import type { EngineCoverageGraph, EngineFinding, EngineTask, TaskListResponse } from "./engine";
 import { MOCK_DEFAULT_TASK } from "./mock";
 import { mockFetch } from "./mock-data";
 
@@ -51,6 +52,24 @@ describe("mock data", () => {
         expect(tokens.total.input_tokens).toBeGreaterThan(0);
         expect(activity.items.length).toBeGreaterThan(0);
         expect(control.items.every((row) => row.task_id === task.id)).toBe(true);
+      }),
+    );
+  });
+
+  it("draws the asset graph with the same endpoint counts as the coverage tab and places every finding", async () => {
+    const list = await tasks();
+    await Promise.all(
+      list.map(async (task) => {
+        const [graph, coverage, findings] = await Promise.all([
+          mockFetch<EngineCoverageGraph>(`/api/tasks/${task.id}/coverage-graph`),
+          mockFetch<{ by_type: { type: string; total: number; tested: number }[] }>(`/api/tasks/${task.id}/coverage`),
+          mockFetch<EngineFinding[]>(`/api/exploration/findings?task=${task.id}`),
+        ]);
+        const built = buildAssetGraph(graph, findings);
+        const ep = coverage.by_type.find((t) => t.type === "endpoint");
+        expect(built.stats.inScope, task.id).toBe(ep?.total);
+        expect(built.stats.tested, task.id).toBe(ep?.tested);
+        expect(built.loose, task.id).toEqual([]);
       }),
     );
   });

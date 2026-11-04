@@ -906,8 +906,8 @@ function ScopeList({ s, host }: { s: ScopeState; host: string }) {
         </button>
       </div>
       <p className="ep-legend">
-        <span className="ai">AI 추정</span> 묶음과 경로 설명은 AI가 추정한 내용입니다. 펼치면 관찰한 정보와 나눠 볼 수
-        있고, 포함 여부와 승인 필요 여부는 메서드·경로처럼 <strong>관찰한 사실</strong>로만 정합니다.
+        <span className="ai">AI 추정</span> 묶음·경로 설명은 참고용이며, 포함·승인 여부는 메서드·경로 등{" "}
+        <strong>관찰한 사실</strong>로만 정합니다.
       </p>
       {groups.length === 0 && <p className="op-empty">조건에 맞는 엔드포인트가 없습니다.</p>}
       {groups.map(({ g, idx, vis }) => {
