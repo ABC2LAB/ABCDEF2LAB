@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildAssetGraph } from "./asset-graph";
+import { type AgEndpoint, buildAssetGraph, rankEndpoints, visibleEndpoints } from "./asset-graph";
 import type { EngineCoverageNode, EngineFinding } from "./engine";
 
 const ep = (id: number, url: string, tested = true, in_scope = true): EngineCoverageNode => ({
@@ -117,5 +117,36 @@ describe("buildAssetGraph", () => {
       [],
     );
     expect(g.blocks).toEqual([{ service: "db.test:5432", domain: "db.test", siteFindings: [], groups: [] }]);
+  });
+});
+
+describe("visibleEndpoints", () => {
+  const f = finding("f", []);
+  const mk = (path: string, status: AgEndpoint["status"], withFinding = false): AgEndpoint => ({
+    path,
+    status,
+    findings: withFinding ? [f] : [],
+  });
+  const eps = [
+    mk("/a", "ok"),
+    mk("/b", "wait"),
+    mk("/c", "ok", true),
+    mk("/d", "out"),
+    mk("/e", "ok"),
+    mk("/f", "wait"),
+  ];
+
+  it("draws everything when the group fits", () => {
+    expect(visibleEndpoints(eps, 6)).toEqual({ shown: eps, hidden: [] });
+  });
+
+  it("keeps findings, then untested, then out of scope, in path order", () => {
+    const { shown, hidden } = visibleEndpoints(eps, 4);
+    expect(shown.map((e) => e.path)).toEqual(["/b", "/c", "/d", "/f"]);
+    expect(hidden.map((e) => e.path)).toEqual(["/a", "/e"]);
+  });
+
+  it("ranks a whole group for the filtered list", () => {
+    expect(rankEndpoints(eps).map((e) => e.path)).toEqual(["/c", "/b", "/f", "/d", "/a", "/e"]);
   });
 });

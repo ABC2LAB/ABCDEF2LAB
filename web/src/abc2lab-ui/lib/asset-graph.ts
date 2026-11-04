@@ -25,6 +25,30 @@ export type AssetGraph = {
   stats: AgStats;
 };
 
+/** 중요한 순서: 발견 있음(0) → 미검사 → 범위 밖 → 검사함 */
+const PRI: Record<AgStatus, number> = { wait: 1, out: 2, ok: 3 };
+function priority(e: AgEndpoint): number {
+  return e.findings.length ? 0 : PRI[e.status];
+}
+
+/** 중요한 순서로 정렬한다(같으면 원래 순서). 목록에서 한 묶음만 볼 때 쓴다. */
+export function rankEndpoints(eps: AgEndpoint[]): AgEndpoint[] {
+  return eps
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => priority(a.e) - priority(b.e) || a.i - b.i)
+    .map((r) => r.e);
+}
+
+/**
+ * 그래프에 그릴 엔드포인트와 줄일 엔드포인트. max 개 이하면 전부 그린다.
+ * 넘치면 중요한 순서로 max 개를 고르고, 그린 것은 원래(경로) 순서를 지킨다.
+ */
+export function visibleEndpoints(eps: AgEndpoint[], max: number): { shown: AgEndpoint[]; hidden: AgEndpoint[] } {
+  if (eps.length <= max) return { shown: eps, hidden: [] };
+  const keep = new Set(rankEndpoints(eps).slice(0, max));
+  return { shown: eps.filter((e) => keep.has(e)), hidden: eps.filter((e) => !keep.has(e)) };
+}
+
 const API_SEG = new Set(["api", "rest", "graphql"]);
 const GROUP_NAME: Record<string, string> = { "/": "페이지", api: "API", rest: "API", graphql: "API", admin: "관리자" };
 

@@ -137,4 +137,29 @@ describe("report asset graph tab", () => {
     fireEvent.click(screen.getByRole("button", { name: "자산 그래프" }));
     expect(await screen.findByText(text)).toBeVisible();
   });
+
+  it("folds a large group into '+ N개 더' and lists that group when asked", async () => {
+    const pages = Array.from({ length: 15 }, (_, i) => ({
+      key: `a:${200 + i}`,
+      kind: "endpoint",
+      label: "",
+      url: `https://shop.test/page-${String(i).padStart(2, "0")}`,
+      tested: i !== 14,
+      in_scope: true,
+      asset_id: 200 + i,
+    }));
+    vi.mocked(engine.getCoverageGraph).mockResolvedValue({ nodes: pages, edges: [] });
+    show();
+    fireEvent.click(screen.getByRole("button", { name: "자산 그래프" }));
+    // 미검사 1개는 반드시 그리고, 검사함 3개를 줄인다
+    expect(await screen.findByText("/page-14")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "/ 묶음의 나머지 3개를 목록으로 보기" }));
+    expect(screen.getByText(/묶음 15개만 보는 중/)).toBeVisible();
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(15);
+    // 목록은 중요한 순서 — 미검사가 맨 위
+    expect(within(rows[0]).getByText("미검사")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "전체 보기" }));
+    expect(screen.queryByText(/묶음 15개만 보는 중/)).toBeNull();
+  });
 });

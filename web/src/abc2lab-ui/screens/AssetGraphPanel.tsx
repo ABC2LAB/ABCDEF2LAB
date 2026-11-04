@@ -1,7 +1,14 @@
-import { Fragment, type ReactNode, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useMemo, useRef, useState } from "react";
 
 import { useApiResource } from "../lib/api";
-import { type AgBlock, type AgStatus, buildAssetGraph } from "../lib/asset-graph";
+import {
+  type AgBlock,
+  type AgEndpoint,
+  type AgStatus,
+  buildAssetGraph,
+  rankEndpoints,
+  visibleEndpoints,
+} from "../lib/asset-graph";
 import { type EngineFinding, getCoverageGraph } from "../lib/engine";
 import type { Severity } from "../types";
 
@@ -14,10 +21,31 @@ const ROW = 28;
 const PAD = 16;
 const X = { d: 6, s: 170, g: 372, l: 512 };
 const W = 920;
+/** 묶음 → 엔드포인트 세로 줄기의 x */
+const SX = X.l - 18;
+/** 묶음 하나에 그리는 엔드포인트 수. 넘치면 중요한 것만 그리고 나머지는 "+ N개 더" */
+const MAX_PER_GROUP = 12;
 
 function curve(x1: number, y1: number, x2: number, y2: number): string {
   const m = (x1 + x2) / 2;
   return `M${x1 + 5} ${y1} C${m} ${y1} ${m} ${y2} ${x2 - 5} ${y2}`;
+}
+
+/** 묶음 → 엔드포인트: 세로 줄기에서 가지를 낸다. 수십 개여도 선이 부채꼴로 퍼지지 않는다. */
+function branch(x1: number, y1: number, x2: number, y2: number): string {
+  if (Math.abs(y2 - y1) < 1) return `M${x1 + 5} ${y1} H${x2 - 5}`;
+  const dir = y2 > y1 ? 1 : -1;
+  const r = Math.min(6, Math.abs(y2 - y1));
+  return `M${x1 + 5} ${y1} H${SX} V${y2 - dir * r} Q${SX} ${y2} ${SX + r} ${y2} H${x2 - 5}`;
+}
+
+/** 줄인 엔드포인트의 상태별 개수: "미검사 2 · 검사함 26" */
+function hiddenText(hidden: AgEndpoint[]): string {
+  return (["wait", "out", "ok"] as AgStatus[])
+    .map((st) => [st, hidden.filter((e) => e.status === st).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([st, n]) => `${ST_LABEL[st]} ${n}`)
+    .join(" · ");
 }
 
 function FindingChip({ f, onOpen }: { f: EngineFinding; onOpen: (id: string) => void }) {
@@ -75,24 +103,46 @@ function countOf(eps: { status: AgStatus }[]) {
 }
 
 /** 서비스 하나의 그래프. 노드에 마우스를 올리거나 발견 칩에 초점이 가면 위쪽 경로를 강조한다. */
-function BlockGraph({ block, onOpen }: { block: AgBlock; onOpen: (id: string) => void }) {
+function BlockGraph({
+  block,
+  onOpen,
+  onMore,
+}: {
+  block: AgBlock;
+  onOpen: (id: string) => void;
+  onMore: (groupKey: string) => void;
+}) {
   const [hl, setHl] = useState<string[]>([]);
   let k = 0;
+  const rowY = () => {
+    const y = PAD + k * ROW + ROW / 2;
+    k += 1;
+    return y;
+  };
   const groups = block.groups.map((g, gi) => {
-    const eps = g.eps.map((e, ei) => {
-      const y = PAD + k * ROW + ROW / 2;
-      k += 1;
-      return { e, y, key: `L${gi}-${ei}` };
-    });
-    return { g, gi, eps, y: (eps[0].y + eps[eps.length - 1].y) / 2 };
+    const { shown, hidden } = visibleEndpoints(g.eps, MAX_PER_GROUP);
+    const eps = shown.map((e, ei) => ({ e, y: rowY(), key: `L${gi}-${ei}` }));
+    const more = hidden.length ? { hidden, y: rowY(), key: `M${gi}` } : null;
+    const last = more ? more.y : eps[eps.length - 1].y;
+    return { g, gi, eps, more, y: (eps[0].y + last) / 2 };
   });
   const H = PAD * 2 + Math.max(k, 1) * ROW;
   const sy = groups.length ? (groups[0].y + groups[groups.length - 1].y) / 2 : PAD + ROW / 2;
   const all = countOf(block.groups.flatMap((g) => g.eps));
   const pick = (t: EventTarget) =>
     setHl(((t as Element).closest?.("[data-path]")?.getAttribute("data-path") ?? "").split(" ").filter(Boolean));
-  const cls = (key: string, out = false) =>
-    [hl.includes(key) ? "on" : "", out ? "out" : ""].join(" ").trim() || undefined;
+
+  // 강조한 선은 마지막에 그려서 겹친 다른 가지에 가려지지 않게 한다
+  const paths = [
+    { key: "S", d: curve(X.d, sy, X.s, sy), dashed: false },
+    ...groups.map((G) => ({ key: `G${G.gi}`, d: curve(X.s, sy, X.g, G.y), dashed: false })),
+    ...groups.flatMap((G) => [
+      ...G.eps.map((p) => ({ key: p.key, d: branch(X.g, G.y, X.l, p.y), dashed: p.e.status === "out" })),
+      ...(G.more ? [{ key: G.more.key, d: branch(X.g, G.y, X.l, G.more.y), dashed: true }] : []),
+    ]),
+  ]
+    .map((p) => ({ ...p, on: hl.includes(p.key) }))
+    .sort((a, b) => Number(a.on) - Number(b.on));
 
   return (
     <div className="ag-blk">
@@ -114,15 +164,13 @@ function BlockGraph({ block, onOpen }: { block: AgBlock; onOpen: (id: string) =>
         onBlur={() => setHl([])}
       >
         <svg width={W} height={H} aria-hidden="true">
-          <path d={curve(X.d, sy, X.s, sy)} className={cls("S")} />
-          {groups.map((G) => (
-            <path key={`G${G.gi}`} d={curve(X.s, sy, X.g, G.y)} className={cls(`G${G.gi}`)} />
+          {paths.map((p) => (
+            <path
+              key={p.key}
+              d={p.d}
+              className={[p.on ? "on" : "", p.dashed ? "out" : ""].join(" ").trim() || undefined}
+            />
           ))}
-          {groups.map((G) =>
-            G.eps.map((p) => (
-              <path key={p.key} d={curve(X.g, G.y, X.l, p.y)} className={cls(p.key, p.e.status === "out")} />
-            )),
-          )}
         </svg>
         <Node x={X.d} y={sy} dot="int" path="" className="col-d">
           <div className="row1">
@@ -167,6 +215,20 @@ function BlockGraph({ block, onOpen }: { block: AgBlock; onOpen: (id: string) =>
                   </div>
                 </Node>
               ))}
+              {G.more && (
+                <Node x={X.l} y={G.more.y} dot="more" path={`${G.more.key} G${G.gi} S`}>
+                  <div className="row1">
+                    <button
+                      type="button"
+                      className="agmore"
+                      aria-label={`${G.g.key} 묶음의 나머지 ${G.more.hidden.length}개를 목록으로 보기`}
+                      onClick={() => onMore(G.g.key)}
+                    >
+                      + {G.more.hidden.length}개 더 · {hiddenText(G.more.hidden)}
+                    </button>
+                  </div>
+                </Node>
+              )}
             </Fragment>
           );
         })}
@@ -187,8 +249,20 @@ export default function AssetGraphPanel({
 }) {
   const res = useApiResource(() => getCoverageGraph(taskId), [taskId]);
   const [view, setView] = useState<"graph" | "table">("graph");
+  /** "+ N개 더"로 들어오면 목록에서 그 묶음만 본다 */
+  const [only, setOnly] = useState<{ service: string; key: string } | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const graph = useMemo(() => (res.data ? buildAssetGraph(res.data, findings) : null), [res.data, findings]);
   const ready = !!graph && graph.blocks.length > 0;
+  const show = (v: "graph" | "table") => {
+    setView(v);
+    if (v === "graph") setOnly(null);
+  };
+  const openGroup = (service: string, key: string) => {
+    setOnly({ service, key });
+    setView("table");
+    cardRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
 
   let body: ReactNode;
   if (res.loading) body = <p style={bodyText}>불러오는 중…</p>;
@@ -198,6 +272,8 @@ export default function AssetGraphPanel({
   else {
     const { stats, blocks, loose } = graph;
     const multi = blocks.length > 1;
+    const focus = only && blocks.find((b) => b.service === only.service)?.groups.find((g) => g.key === only.key);
+    const focusCount = focus ? countOf(focus.eps) : null;
     const pct = stats.inScope ? Math.round((stats.tested * 100) / stats.inScope) : 0;
     body = (
       <>
@@ -239,62 +315,89 @@ export default function AssetGraphPanel({
         {view === "graph" ? (
           <div className="scrollx">
             {blocks.map((b) => (
-              <BlockGraph key={b.service} block={b} onOpen={onOpenFinding} />
+              <BlockGraph
+                key={b.service}
+                block={b}
+                onOpen={onOpenFinding}
+                onMore={(key) => openGroup(b.service, key)}
+              />
             ))}
           </div>
         ) : (
-          <div className="scrollx">
-            <table className="vtable agt">
-              <thead>
-                <tr>
-                  <th>묶음</th>
-                  <th>요청</th>
-                  <th>상태</th>
-                  <th>발견</th>
-                </tr>
-              </thead>
-              <tbody>
-                {blocks.map((b) => (
-                  <Fragment key={b.service}>
-                    {b.siteFindings.length > 0 && (
-                      <tr>
-                        <td>서비스 전체</td>
-                        <td className="k">{b.service}</td>
-                        <td>—</td>
-                        <td>
-                          {b.siteFindings.map((f) => (
-                            <FindingChip key={f.id} f={f} onOpen={onOpenFinding} />
-                          ))}
-                        </td>
-                      </tr>
-                    )}
-                    {b.groups.map((g) =>
-                      g.eps.map((e, i) => (
-                        // 같은 URL의 다른 메서드는 경로가 같아서 순번을 함께 쓴다
-                        // biome-ignore lint/suspicious/noArrayIndexKey: 목록은 서버 응답 순서 그대로이고 재정렬하지 않는다
-                        <tr key={`${g.key}-${i}`} className={e.status === "out" ? "out" : undefined}>
-                          <td>
-                            {multi && `${b.service} `}
-                            {g.key}
-                            {g.name && ` ${g.name}`}
-                          </td>
-                          <td className="k">{e.path}</td>
-                          <td>
-                            <span className={`agst ${e.status}`}>{ST_LABEL[e.status]}</span>
-                          </td>
-                          <td>
-                            {e.findings.length
-                              ? e.findings.map((f) => <FindingChip key={f.id} f={f} onOpen={onOpenFinding} />)
-                              : "—"}
-                          </td>
-                        </tr>
-                      )),
-                    )}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            {focus && focusCount && (
+              <div className="ag-filter" role="status">
+                <span>
+                  <b>
+                    {multi && `${only?.service} `}
+                    {focus.key}
+                    {focus.name && ` ${focus.name}`}
+                  </b>{" "}
+                  묶음 {focus.eps.length}개만 보는 중 · 미검사 {focusCount.inScope - focusCount.tested}
+                  {focusCount.out > 0 && ` · 범위 밖 ${focusCount.out}`} · 중요한 순서
+                </span>
+                <button type="button" onClick={() => setOnly(null)}>
+                  전체 보기
+                </button>
+              </div>
+            )}
+            <div className="scrollx">
+              <table className="vtable agt">
+                <thead>
+                  <tr>
+                    <th>묶음</th>
+                    <th>요청</th>
+                    <th>상태</th>
+                    <th>발견</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {blocks.map((b) => {
+                    if (focus && b.service !== only?.service) return null;
+                    return (
+                      <Fragment key={b.service}>
+                        {!focus && b.siteFindings.length > 0 && (
+                          <tr>
+                            <td>서비스 전체</td>
+                            <td className="k">{b.service}</td>
+                            <td>—</td>
+                            <td>
+                              {b.siteFindings.map((f) => (
+                                <FindingChip key={f.id} f={f} onOpen={onOpenFinding} />
+                              ))}
+                            </td>
+                          </tr>
+                        )}
+                        {b.groups.map((g) => {
+                          if (focus && g !== focus) return null;
+                          return (focus ? rankEndpoints(g.eps) : g.eps).map((e, i) => (
+                            // 같은 URL의 다른 메서드는 경로가 같아서 순번을 함께 쓴다
+                            // biome-ignore lint/suspicious/noArrayIndexKey: 줄에 상태가 없어 순서가 바뀌어도 다시 그리기만 한다
+                            <tr key={`${g.key}-${i}`} className={e.status === "out" ? "out" : undefined}>
+                              <td>
+                                {multi && `${b.service} `}
+                                {g.key}
+                                {g.name && ` ${g.name}`}
+                              </td>
+                              <td className="k">{e.path}</td>
+                              <td>
+                                <span className={`agst ${e.status}`}>{ST_LABEL[e.status]}</span>
+                              </td>
+                              <td>
+                                {e.findings.length
+                                  ? e.findings.map((f) => <FindingChip key={f.id} f={f} onOpen={onOpenFinding} />)
+                                  : "—"}
+                              </td>
+                            </tr>
+                          ));
+                        })}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
         {loose.length > 0 && (
           <div className="ag-site" style={{ marginTop: 10 }}>
@@ -313,16 +416,16 @@ export default function AssetGraphPanel({
 
   return (
     <div className="rpanel">
-      <div className="card">
+      <div className="card" ref={cardRef}>
         <div className="ag-head">
           <h3 style={{ marginBottom: 0 }}>자산 그래프</h3>
           {ready && (
             <fieldset className="seg ag-seg">
               <legend className="seg-lab">보기</legend>
-              <button type="button" aria-pressed={view === "graph"} onClick={() => setView("graph")}>
+              <button type="button" aria-pressed={view === "graph"} onClick={() => show("graph")}>
                 그래프
               </button>
-              <button type="button" aria-pressed={view === "table"} onClick={() => setView("table")}>
+              <button type="button" aria-pressed={view === "table"} onClick={() => show("table")}>
                 목록
               </button>
             </fieldset>

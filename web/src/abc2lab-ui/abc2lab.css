@@ -1125,6 +1125,57 @@ details.adv[open] .chev {
 .adot.int {
   background: var(--fg);
 }
+.adot.more {
+  background: var(--bg);
+  border: 1.5px dashed var(--line-2);
+}
+/* 많은 묶음: "+ N개 더" 버튼과 목록 필터 줄 */
+.agmore {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--teal-ink);
+  background: var(--bg);
+  border: 1px dashed var(--teal-border);
+  border-radius: 4px;
+  padding: 1px 9px;
+  cursor: pointer;
+  line-height: 18px;
+}
+.agmore:hover {
+  border-style: solid;
+}
+.agmore:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+.ag-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--teal-weak);
+  border: 1px solid var(--teal-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 0 0 10px;
+}
+.ag-filter b {
+  color: var(--fg);
+}
+.ag-filter button {
+  margin-left: auto;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--teal-ink);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+}
 .leg .adot {
   position: static;
   display: inline-block;
@@ -1160,8 +1211,9 @@ details.adv[open] .chev {
 .alab.col-s .nm {
   max-width: 182px;
 }
+/* 세로 줄기(엔드포인트 x − 18)에 닿지 않게 */
 .alab.col-g .row1 {
-  max-width: 124px;
+  max-width: 104px;
 }
 .alab .sub {
   display: block;
