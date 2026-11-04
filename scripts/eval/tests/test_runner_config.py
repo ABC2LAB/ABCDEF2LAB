@@ -308,6 +308,23 @@ class TestPlanRun(unittest.TestCase):
     def setUp(self):
         self.config = parse_runner_config(runner_config())
 
+    def test_drain_policy_must_equal_the_declaration(self):
+        # 봉인 뒤 유예·정착 대기는 환경 지문에 들어간 비교 조건이다(#153 리뷰). 설정이 선언과 다르면 시작하지 않는다.
+        plan_run(self.config, configuration(), "ours", "ours-1")
+        for name, value in (("drain_grace_seconds", 29), ("post_settle_seconds", 3)):
+            with self.subTest(name=name):
+                payload = runner_config()
+                payload["run"][name] = value
+                with self.assertRaises(RunnerConfigError) as caught:
+                    plan_run(parse_runner_config(payload), configuration(), "ours", "ours-1")
+                self.assertEqual(caught.exception.errors, ["preflight.ours.run_drain: CONFIG_MISMATCH"])
+        # 한쪽 선언만 다르면 사전검사가 먼저 비교 조건 불일치로 거부한다.
+        preflight = configuration()
+        preflight["baseline"]["run_drain"] = {"grace_seconds": 31, "settle_seconds": 2}
+        with self.assertRaises(RunnerConfigError) as caught:
+            plan_run(self.config, preflight, "ours", "ours-1")
+        self.assertTrue(any("run_drain" in error for error in caught.exception.errors), caught.exception.errors)
+
     def test_api_plan_takes_llm_and_target_from_preflight(self):
         preflight = configuration()
         plan = plan_run(self.config, preflight, "ours", "ours-20261102t000000z-00000000")

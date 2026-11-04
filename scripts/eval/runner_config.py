@@ -499,6 +499,10 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
                "tmpfs_min_free": config.tmpfs_min_free}
     if declared["run_storage"] != storage:
         raise RunnerConfigError([f"preflight.{side}.run_storage: CONFIG_MISMATCH"])
+    # 봉인 뒤 유예·정착 대기도 비교 조건이다(#153 리뷰). 선언과 다른 값으로 돌면 같은 지문으로 다른 회차가 된다.
+    drain = {"grace_seconds": config.run["drain_grace_seconds"], "settle_seconds": config.run["post_settle_seconds"]}
+    if declared["run_drain"] != drain:
+        raise RunnerConfigError([f"preflight.{side}.run_drain: CONFIG_MISMATCH"])
     engine_image = config.images[f"engine_{side}"]
     target_image = Image(declared["target_image"], config.target_image_id)
     # 선언의 base_url은 비교 조건(어느 LLM 엔드포인트인가)이고, 엔진은 그 대신 게이트웨이에 닿는다.

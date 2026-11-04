@@ -98,7 +98,8 @@ def make_v11(root: Path, key: bytes, name: str, *, pre=None, solved=None, record
                                                 ("2026-10-30T00:00:00.950Z", "2026-10-30T00:00:01Z"),
                                                 ("2026-10-30T00:00:09.500Z", "2026-10-30T00:00:10Z")))]
         meter = {"forwarded_requests": total_requests, "rejected_after_seal": 0, "forced_closed_streams": 0,
-                 "forced_cancelled_requests": 0, "drain_grace_seconds": 30, "post_settle_seconds": 0,
+                 "forced_cancelled_requests": 0, "drain_grace_seconds": 30, "post_settle_seconds": 2,
+                 "post_settle_applied_seconds": 0,
                  "sealed_at": "2026-10-30T00:00:08Z", "drained_at": "2026-10-30T00:00:09Z"}
         rows = evidence_rows(
             pre_at="2026-10-30T00:00:00.800000+00:00", post_check_at="2026-10-30T00:00:09.200000+00:00",

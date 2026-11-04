@@ -554,13 +554,15 @@ class TestFailures(unittest.TestCase):
         self.assertEqual(result["status"], COMPLETE)
         summary = evidence.files["meter-summary.json"]
         self.assertEqual((summary["forwarded_requests"], summary["forced_cancelled_requests"],
-                          summary["drain_grace_seconds"], summary["post_settle_seconds"]), (2, 1, 30, 2))
+                          summary["drain_grace_seconds"], summary["post_settle_seconds"],
+                          summary["post_settle_applied_seconds"]), (2, 1, 30, 2, 2))
         # 정착 대기는 drain 확인 뒤, 게이트웨이 봉인·post 점검 전에 한 번
         settles = [calls for seconds, calls in slept if seconds == 2]
         self.assertEqual(len(settles), 1)
         self.assertEqual(settles[0][-1], "seal")
         drain = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "drain")
-        self.assertEqual((drain["grace_seconds"], drain["forced_cancelled"], drain["settle_seconds"]), (30, 1, 2))
+        self.assertEqual((drain["grace_seconds"], drain["settle_seconds"], drain["forced_cancelled"],
+                          drain["settle_applied_seconds"]), (30, 2, 1, 2))
         self.assertEqual(evidence.files["run-record.json"]["total_requests"], 2)
 
     def test_no_settle_without_cut_requests(self):
@@ -568,7 +570,11 @@ class TestFailures(unittest.TestCase):
         result, _, _, evidence = run(lambda p, m, c: setattr(c, "sleep", lambda s: slept.append(s)))
         self.assertEqual(result["status"], COMPLETE)
         self.assertNotIn(2, slept)
-        self.assertEqual(evidence.files["meter-summary.json"]["post_settle_seconds"], 0)
+        summary = evidence.files["meter-summary.json"]
+        # 정책 값은 남고 적용 대기만 0이다.
+        self.assertEqual((summary["post_settle_seconds"], summary["post_settle_applied_seconds"]), (2, 0))
+        drain = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "drain")
+        self.assertEqual((drain["settle_seconds"], drain["settle_applied_seconds"]), (2, 0))
 
     def test_cut_count_must_match_the_meter_rows(self):
         def mismatch(p, m, c):

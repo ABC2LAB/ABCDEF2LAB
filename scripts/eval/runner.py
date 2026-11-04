@@ -412,7 +412,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "forced_closed_streams": drained.get("forced_closed_streams"),
         # 봉인 뒤 유예가 지나 계측기가 끊은 요청. 전달은 됐으므로 forwarded_requests에 들어 있다.
         "forced_cancelled_requests": drained["forced_cancelled_requests"],
-        "drain_grace_seconds": spec.drain_grace_seconds, "post_settle_seconds": settled,
+        # 유예·정착 대기는 선언과 대조한 정책 값, 적용 대기는 이 회차 결과(끊은 요청이 없으면 0)다.
+        "drain_grace_seconds": spec.drain_grace_seconds, "post_settle_seconds": spec.post_settle_seconds,
+        "post_settle_applied_seconds": settled,
         "time_budget_seconds": spec.time_budget_seconds, "observer_requests": len(observer),
     }
     _step(state, "evidence_write_failed", lambda: evidence.write_json("meter-summary.json", meter_summary))

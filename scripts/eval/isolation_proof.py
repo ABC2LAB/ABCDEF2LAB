@@ -38,8 +38,8 @@ _ROW_FIELDS = {
                          "window"},
     "engine_meter_summary": {"forwarded_requests", "rejected_after_seal", "forced_closed_streams", "log_rows",
                              "sequence_complete"},
-    "drain": {"engine_end", "sealed_at", "drained_at", "inflight", "grace_seconds", "forced_cancelled",
-              "settle_seconds"},
+    "drain": {"engine_end", "sealed_at", "drained_at", "inflight", "grace_seconds", "settle_seconds",
+              "forced_cancelled", "settle_applied_seconds"},
 }
 _EVENT_FIELDS = frozenset({"id", "challenge", "actor", "execution_id", "observed_at", "sequence", "basis",
                            "isolation_proof_sha256"})
@@ -196,13 +196,24 @@ def check_isolation(receipt: dict, steps: dict[str, tuple[datetime, int]], artif
     if drain["engine_end"] != timeline["engine_end"] or type(drain["inflight"]) is not int or drain["inflight"] != 0:
         raise IsolationError("isolation_evidence.drain: engine_end 불일치 또는 진행 요청 남음")
     # 유예 뒤 끊은 요청은 전달된 요청이라 증명은 유지하되 건수·적용 값이 정수로 남아 있어야 한다(조용히 빼지 않음).
-    for name in ("grace_seconds", "forced_cancelled", "settle_seconds"):
-        _int(drain[name], f"isolation_evidence.drain.{name}")
+    # 유예·정착 대기는 정책(1 이상), 적용 대기는 끊은 요청이 있을 때만 정책 값이고 아니면 0이다.
+    _int(drain["grace_seconds"], "isolation_evidence.drain.grace_seconds", low=1)
+    settle = _int(drain["settle_seconds"], "isolation_evidence.drain.settle_seconds", low=1)
+    cancelled = _int(drain["forced_cancelled"], "isolation_evidence.drain.forced_cancelled")
+    applied = _int(drain["settle_applied_seconds"], "isolation_evidence.drain.settle_applied_seconds")
+    if applied != (settle if cancelled else 0):
+        raise IsolationError("isolation_evidence.drain.settle_applied_seconds: 끊은 요청이 있을 때만 정책 값")
     sealed_at = _time(drain["sealed_at"], "isolation_evidence.drain.sealed_at")
     drained_at = _time(drain["drained_at"], "isolation_evidence.drain.drained_at")
     if not sealed_at <= drained_at <= steps["drained"][0] <= post_at:
         raise IsolationError("isolation_evidence.drain: 봉인 ≤ drain 완료 ≤ timeline drained ≤ post 관측이어야 함")
     return proof
+
+
+def drain_policy(receipt: dict, evidence: object) -> tuple[int, int]:
+    """check_isolation을 통과한 근거의 봉인 뒤 정책(유예, 정착 대기). 채점기가 회차 사이 같은지 대조한다."""
+    drain = _one(_rows(evidence, receipt), "drain")
+    return drain["grace_seconds"], drain["settle_seconds"]
 
 
 def _check_boundary(rows: dict, network: dict, pre_at: datetime, post_at: datetime) -> None:
