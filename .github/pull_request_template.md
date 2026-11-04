@@ -8,7 +8,7 @@
 
 - [ ] **base**: `dev`이거나, 스택이면 바로 아래 PR 브랜치. 아래 PR이 머지되면 base를 `dev`로 바꾼다
 - [ ] **열린 PR 수**: 이 스택에서 리뷰 대기 중인 PR이 3개 이하. 위쪽은 로컬 브랜치에서 계속 작업
-- [ ] **CI 통과**: build·vet·gofmt·darwin/windows 크로스빌드·PostgreSQL 시험·평가 시험. CI 요약의 PASS/FAIL/SKIP 수: 
+- [ ] **CI 통과**: build·vet·gofmt·darwin/windows 크로스빌드·PostgreSQL 시험·평가 시험. CI 요약의 PASS/FAIL/SKIP 수를 적음
 - [ ] **SKIP**: 이 PR이 바꾼 DB 시험이 SKIP으로 지나가지 않음(필요한 DB 시험의 SKIP은 통과가 아님)
 - [ ] **가드마다 시험**: 새 가드를 지우면 실패하는 시험 이름(`가드 위치` → `시험 이름`). 다른 가드가 대신 막아 `err != nil`만으로 통과하지 않게 오류 종류·SQLSTATE까지 단언
 - [ ] **시험 부작용**: 공용 DB·설정·환경 변수·파일을 바꾸는 시험은 `t.Cleanup`으로 원래대로 되돌림
