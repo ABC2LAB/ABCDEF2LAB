@@ -119,6 +119,20 @@ class TestStrictInput(unittest.TestCase):
             with self.subTest(text=text):
                 self.reject(canonical_time, text)
 
+    def test_time_accepts_only_the_v1_rfc3339_range(self):
+        # 숫자는 ASCII만, offset은 시 00–23·분 00–59만. 수락 값은 Go time.Parse 결과와 같다.
+        for text, expected in (("2026-11-03T12:00:20+00:59", "2026-11-03T11:01:20.000000Z"),
+                               ("2026-11-03T12:00:20+23:59", "2026-11-02T12:01:20.000000Z"),
+                               ("2026-11-03T12:00:20-23:59", "2026-11-04T11:59:20.000000Z")):
+            with self.subTest(text=text):
+                self.assertEqual(canonical_time(text), expected)
+        # +00:99·+99:00·비ASCII 숫자는 Go도 거부한다. +00:60·+24:00은 Go가 받지만 RFC3339 밖이라 v1에서 거부.
+        for text in ("2026-11-03T12:00:20+00:99", "2026-11-03T12:00:20+99:00", "2026-11-03T12:00:20+00:60",
+                     "2026-11-03T12:00:20+24:00", "2026-11-03T12:00:20-24:00", "\uff12\uff10\uff12\uff16-11-03T12:00:20Z",
+                     "2026-11-03T12:00:2\u0660Z", "2026-11-03T12:00:20.\uff11Z", "2026-11-03T12:00:20+0\u0669:00"):
+            with self.subTest(text=text):
+                self.reject(canonical_time, text)
+
 
 if __name__ == "__main__":
     unittest.main()

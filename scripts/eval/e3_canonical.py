@@ -18,9 +18,12 @@ from datetime import datetime, timedelta, timezone
 MAX_CANONICAL_BYTES = 65536
 REJECTED = "e3_record_invalid"
 _INT64_MIN, _INT64_MAX = -(1 << 63), (1 << 63) - 1
-# RFC3339 instant. Go time.RFC3339 파싱처럼 대문자 T·Z만 받는다.
+# RFC3339 instant(v1 허용 범위). 대문자 T·Z, ASCII 숫자만 받는다(정규식 \d는 전각 등 다른 숫자도 받아서 쓰지 않음).
+# offset은 RFC3339 §5.6 범위(시 00–23, 분 00–59)만 받는다. Go time.Parse·JSON 디코딩은 +24:00·+00:60도
+# 받지만(더 관대함) v1 입력 범위 밖이라 평가 쪽은 거부한다. Go가 거부하는 +00:99·+99:00·비ASCII 숫자는 양쪽 다 거부.
 _RFC3339 = re.compile(
-    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})\Z")
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,9}))?(Z|[+-][0-9]{2}:[0-9]{2})\Z")
+_MAX_OFFSET_HOURS, _MAX_OFFSET_MINUTES = 23, 59
 
 
 class CanonicalError(ValueError):
@@ -54,8 +57,12 @@ def canonical_time(text: str) -> str:
         raise CanonicalError()
     year, month, day, hour, minute, second, fraction, zone = match.groups()
     micro = int((fraction or "").ljust(6, "0")[:6])
-    offset = timedelta(0) if zone == "Z" else (
-        (1 if zone[0] == "+" else -1) * timedelta(hours=int(zone[1:3]), minutes=int(zone[4:6])))
+    hours, minutes = (0, 0) if zone == "Z" else (int(zone[1:3]), int(zone[4:6]))
+    # 범위 밖 offset을 timedelta로 넘기면 분이 시로 이월돼 다른 정상 시각이 된다(+00:99 → 1시간 39분).
+    if hours > _MAX_OFFSET_HOURS or minutes > _MAX_OFFSET_MINUTES:
+        raise CanonicalError()
+    # 시 상한은 timezone()도 막지만(±24시간 미만) v1 범위를 드러내려고 같이 둔다.
+    offset = (-1 if zone[0] == "-" else 1) * timedelta(hours=hours, minutes=minutes)
     try:
         local = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second), micro,
                          tzinfo=timezone(offset))
