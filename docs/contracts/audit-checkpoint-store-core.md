@@ -119,6 +119,13 @@ Read를 무시하면 context로 강제 중단하지 못한다. 실제 IPC adapte
 row lock 밖의 key callback, transaction rollback·deferred commit 실패와 commit 후 ACK 유실 모사,
 epoch 변경·권위/lease 상실·읽기 결속·한도/취소 및 terminal 경계를 검사한다.
 
+no-op Append가 실제 head UPDATE에서 대기하는 동안 다른 transaction이 revision 3을
+commit해도 CAS가 `ErrConflict`로 거부하고 head를 후퇴시키지 않는지 검사한다.
+또한 cp[2] Seal에 snap[1]을 주는 MAC/prefix 거부, ResolveKey 중 lease 철회의 context 전파,
+commit 직전 독립 연결의 epoch `FOR UPDATE NOWAIT`가 SQLSTATE `55P03`으로 거부되는지
+각각 검사한다. Incomplete/Quarantine의 미수용 candidate·Register의 sequence 0·lease epoch
+불일치도 별도로 검사하고 epoch/권위 거부는 고정 오류 범주까지 단언한다.
+
 commit 후 ACK 유실은 테스트 전용 commit adapter가 실제 PG commit을 한 뒤 오류를 반환하는 주입이다.
 실제 transport 장애·운영 복원·프로세스/UID 격리의 수용시험은 아니다. 합성 권위는 테스트 fixture가
 소유하며 실제 publisher/reader 인증·실키·운영 epoch 발급·실제 Juice Shop/HTTP/LLM 실행은 하지 않는다.

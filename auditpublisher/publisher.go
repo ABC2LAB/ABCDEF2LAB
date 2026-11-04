@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"os"
 	"reflect"
 	"sync"
@@ -115,7 +116,7 @@ func Open(ctx context.Context, config Config) (*Publisher, error) {
 	defer cancel()
 	operation, err := newOperationRef()
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, unavailable("operation-ref")
 	}
 	directory := config.RootScope.Directory()
 	root, err := openJournalRoot(directory, anchor)
@@ -126,22 +127,22 @@ func Open(ctx context.Context, config Config) (*Publisher, error) {
 		Scope: config.Scope, KeyRef: config.KeyRef, Key: config.Key,
 	})
 	if err != nil {
-		_ = root.close()
-		return nil, ErrUnavailable
+		logCloseFailure("root-close", root.close())
+		return nil, unavailable("journal-create")
 	}
 	var witness *CloseWitness
 	closeFailedOpen := func(snapshot *journalSnapshot) {
 		witness.invalidate()
 		if snapshot != nil {
-			_ = snapshot.close()
+			logCloseFailure("snapshot-close", snapshot.close())
 		}
-		_ = journal.Close()
-		_ = root.close()
+		logCloseFailure("journal-close", journal.Close())
+		logCloseFailure("root-close", root.close())
 	}
 	snapshot, err := root.attach(config.Filename, config.MaxSnapshotBytes)
 	if err != nil {
 		closeFailedOpen(nil)
-		return nil, ErrUnavailable
+		return nil, unavailable("snapshot-attach")
 	}
 	p := &Publisher{store: storeAdapter{config.Store}, epoch: config.Epoch, rootScope: config.RootScope, rootCtx: rootCtx,
 		publisher: config.PublisherRef, journal: journal, snapshot: snapshot}
@@ -151,12 +152,12 @@ func Open(ctx context.Context, config Config) (*Publisher, error) {
 	p.witness = witness
 	if err := config.BindCloseWitness(witness); err != nil {
 		closeFailedOpen(snapshot)
-		return nil, ErrUnavailable
+		return nil, unavailable("witness-bind")
 	}
 	owned, err := snapshot.read(ctx)
 	if err != nil {
 		closeFailedOpen(snapshot)
-		return nil, ErrUnavailable
+		return nil, unavailable("snapshot-read")
 	}
 	defer clear(owned)
 	request := auditcheckpoint.Request{Epoch: config.Epoch, OperationRef: operation,
@@ -188,32 +189,32 @@ func (p *Publisher) Record(ctx context.Context, event transmit.Event) error {
 	}
 	if p.rootCtx == nil {
 		p.fail()
-		return ErrUnavailable
+		return unavailable("root-context")
 	}
 	ctx, cancel := bindRootContext(ctx, p.rootCtx)
 	defer cancel()
 	if ctx.Err() != nil {
 		p.fail()
-		return ErrUnavailable
+		return unavailable("context")
 	}
 	operation, err := newOperationRef()
 	if err != nil {
 		p.fail()
-		return ErrUnavailable
+		return unavailable("operation-ref")
 	}
 	if err := p.journal.Record(ctx, event); err != nil {
 		p.fail()
-		return ErrUnavailable
+		return unavailable("journal-record")
 	}
 	candidate := p.journal.Checkpoint()
 	if candidate.Sequence != p.head.Checkpoint.Sequence+1 {
 		p.fail()
-		return ErrUnavailable
+		return unavailable("journal-sequence")
 	}
 	owned, err := p.snapshot.read(ctx)
 	if err != nil {
 		p.fail()
-		return ErrUnavailable
+		return unavailable("snapshot-read")
 	}
 	defer clear(owned)
 	request := auditcheckpoint.Request{Epoch: p.epoch, OperationRef: operation,
@@ -260,7 +261,9 @@ func (p *Publisher) Seal(ctx context.Context) (result auditcheckpoint.Head, resu
 	p.closed = true
 	defer func() {
 		snapshotErr := p.snapshot.close()
+		logCloseFailure("snapshot-close", snapshotErr)
 		rootErr := p.snapshot.root.close()
+		logCloseFailure("root-close", rootErr)
 		p.rootScope.Release()
 		if snapshotErr != nil || rootErr != nil {
 			p.fail()
@@ -269,30 +272,31 @@ func (p *Publisher) Seal(ctx context.Context) (result auditcheckpoint.Head, resu
 	}()
 	if p.rootCtx == nil {
 		p.fail()
-		_ = p.journal.Close()
-		return auditcheckpoint.Head{}, ErrUnavailable
+		logCloseFailure("journal-close", p.journal.Close())
+		return auditcheckpoint.Head{}, unavailable("root-context")
 	}
 	ctx, cancel := bindRootContext(ctx, p.rootCtx)
 	defer cancel()
 	if p.failed || ctx.Err() != nil {
 		p.fail()
-		_ = p.journal.Close()
+		logCloseFailure("journal-close", p.journal.Close())
 		return auditcheckpoint.Head{}, ErrFailed
 	}
 	operation, err := newOperationRef()
 	if err != nil {
 		p.fail()
-		_ = p.journal.Close()
-		return auditcheckpoint.Head{}, ErrUnavailable
+		logCloseFailure("journal-close", p.journal.Close())
+		return auditcheckpoint.Head{}, unavailable("operation-ref")
 	}
 	if err := p.journal.Close(); err != nil {
+		logCloseFailure("journal-close", err)
 		p.fail()
 		return auditcheckpoint.Head{}, ErrUnavailable
 	}
 	owned, err := p.snapshot.read(ctx)
 	if err != nil {
 		p.fail()
-		return auditcheckpoint.Head{}, ErrUnavailable
+		return auditcheckpoint.Head{}, unavailable("snapshot-read")
 	}
 	defer clear(owned)
 	request := auditcheckpoint.Request{Epoch: p.epoch, OperationRef: operation,
@@ -323,8 +327,11 @@ func (p *Publisher) Abort() error {
 	p.closed = true
 	p.fail()
 	journalErr := p.journal.Close()
+	logCloseFailure("journal-close", journalErr)
 	snapshotErr := p.snapshot.close()
+	logCloseFailure("snapshot-close", snapshotErr)
 	rootErr := p.snapshot.root.close()
+	logCloseFailure("root-close", rootErr)
 	p.rootScope.Release()
 	if journalErr != nil || snapshotErr != nil || rootErr != nil {
 		return ErrUnavailable
@@ -347,19 +354,28 @@ func (p *Publisher) publish(ctx context.Context, request auditcheckpoint.Request
 	if errors.Is(err, auditcheckpoint.ErrCommitUnknown) && ctx.Err() == nil {
 		receipt, err = p.store.Publish(ctx, request, bytes.NewReader(snapshot))
 	}
-	if err != nil || ctx.Err() != nil || receipt.OperationRef != request.OperationRef ||
+	if err != nil || ctx.Err() != nil {
+		return auditcheckpoint.Head{}, unavailable("publish")
+	}
+	if receipt.OperationRef != request.OperationRef ||
 		receipt.Head.Revision != request.ExpectedRevision+1 ||
 		receipt.Head.Phase != phase || receipt.Head.Checkpoint != request.Candidate ||
 		receipt.Head.Epoch != request.Epoch || receipt.Head.PublisherRef != request.PublisherRef {
-		return auditcheckpoint.Head{}, ErrUnavailable
+		return auditcheckpoint.Head{}, unavailable("receipt")
 	}
 	query := auditcheckpoint.Query{Epoch: request.Epoch, Binding: auditcheckpoint.Binding{
 		PublisherRef: request.PublisherRef, Scope: request.Candidate.Scope,
 		JournalID: request.Candidate.JournalID, KeyRef: request.Candidate.KeyRef,
 	}}
 	head, err := p.store.Head(ctx, query)
-	if err != nil || ctx.Err() != nil || p.rootCtx.Err() != nil || !sameHead(head, receipt.Head) || p.snapshot.current() != nil {
-		return auditcheckpoint.Head{}, ErrUnavailable
+	if err != nil || ctx.Err() != nil || p.rootCtx.Err() != nil {
+		return auditcheckpoint.Head{}, unavailable("head-read")
+	}
+	if !sameHead(head, receipt.Head) {
+		return auditcheckpoint.Head{}, unavailable("head-match")
+	}
+	if p.snapshot.current() != nil {
+		return auditcheckpoint.Head{}, unavailable("snapshot-current")
 	}
 	return head, nil
 }
@@ -393,4 +409,16 @@ func nilRootScope(scope RootScope) bool {
 		return v.IsNil()
 	}
 	return false
+}
+
+// Diagnostics contain only fixed stage names: store errors can contain private inputs.
+func unavailable(stage string) error {
+	slog.Warn("auditpublisher: operation failed", "stage", stage)
+	return ErrUnavailable
+}
+
+func logCloseFailure(stage string, err error) {
+	if err != nil {
+		slog.Warn("auditpublisher: cleanup failed", "stage", stage)
+	}
 }
