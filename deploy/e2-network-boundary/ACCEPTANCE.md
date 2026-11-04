@@ -16,4 +16,6 @@ B 단독 시험은 폐기 가능한 합성 컨테이너를 사용합니다. 그 
 
 현재 Docker Desktop의 B 기본 합성 패킷 시험은 `SCM_CREDENTIALS`의 UID·GID 일치를 관측했지만 PID는 0이었습니다. A의 `auditpeer`는 PID가 0 이하이면 패킷을 거부합니다. 폐기용 후보 시험에서 정확한 전송부 컨테이너 ID의 사설 PID namespace를 공유하자 양의 패킷 PID와 서로 다른 비root UID·GID, 같은 PID namespace·다른 네트워크 namespace를 관측했습니다. signal·ptrace 및 `/proc`의 `environ`·`mem`·`fd`는 차단됐고 전송부 종료 뒤 합성 도구도 중지됐습니다. 그러나 `/proc/.../cmdline`은 읽을 수 있어 후보는 **차단**입니다. B의 제품 Compose는 기존의 별도 PID namespace를 유지하고 검사기는 임의 참여·동일 UID·GID를 거부합니다. C/A는 `/proc` 노출을 해결하고 살아 있는 프로세스·실행 결속·철회를 요청마다 확인하는 `PeerAuthorizer`를 합의·제공해야 합니다. 현재 구성이나 후보 구성으로 A/B 패킷 양성 시험을 통과했다고 기록할 수 없습니다.
 
+C의 로컬 `88959e4153fc78b83f22f531f553a206fb791e19` OS 자식 시험은 조상 receiver·private `/proc`에서 부모 `cmdline` 읽기 차단을 보고했습니다. B의 기본 비root·권한 제거 Docker 시험에서는 그 방식에 필요한 user/PID/mount/net namespace 생성에 대한 `unshare`와 x86_64 `clone` 호출이 모두 `EPERM`으로 거부됐습니다. Docker private `/proc` 배치 시험은 **SKIP**, 후보는 **BLOCKED_OS_PERMISSION**입니다. 실제 Docker 인증·양성 HTTP/HTTPS 전달은 계속 **미실행**이며, C의 OS 시험 PASS를 Docker PASS로 옮겨 적지 않습니다.
+
 최종 시험 전에 C는 한 실행의 실제 호스트 소유 프로세스 식별자, 보호된 채널 볼륨과 Unix 소켓 ACL, 정확한 대상 컨테이너·네트워크, 등록 자원 매핑, 권한·원장·감사 어댑터, 프로세스·cgroup 종료 증거를 제공하고 검증해야 합니다. 현재 Worker는 서버 프로세스에서 실행되므로 이 Compose 초안만으로 일반 도구 경계를 활성화할 수 없습니다. 실제 입력이 없는 항목은 **차단 또는 미실행**으로 기록해야 하며 합성 결과로 통과 처리해서는 안 됩니다.
