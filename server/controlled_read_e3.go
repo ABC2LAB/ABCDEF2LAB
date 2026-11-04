@@ -23,6 +23,13 @@ var ErrControlledFindingUnavailable = errors.New("controlled_finding_unavailable
 var ErrControlledFindingOutcomeUnknown = errors.New("controlled_finding_storage_outcome_unknown")
 var ErrControlledFindingConflict = errors.New("controlled_finding_conflict")
 
+// Preparation has not reached the writer, so it cannot establish a storage
+// outcome. Preserve the public unavailable error without retaining source data.
+type controlledFindingSourceFailure struct{}
+
+func (controlledFindingSourceFailure) Error() string { return ErrControlledFindingUnavailable.Error() }
+func (controlledFindingSourceFailure) Unwrap() error { return ErrControlledFindingUnavailable }
+
 type controlledFindingStoreFailure struct {
 	cause          error
 	classification error
@@ -242,11 +249,11 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 	}
 	prepared, err := e3record.Prepare(ctx, input, reader)
 	if err != nil {
-		return ErrControlledFindingUnavailable
+		return controlledFindingSourceFailure{}
 	}
 	snapshot, valid := prepared.Snapshot()
 	if !valid {
-		return ErrControlledFindingUnavailable
+		return controlledFindingSourceFailure{}
 	}
 	c.mu.Lock()
 	if c.prepared && (c.operation != snapshot.OperationKey || c.inputKey != snapshot.InputDigest) {
@@ -273,16 +280,19 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 // the operation against persisted rows without exposing source or SQL errors.
 func logControlledFindingFinalizationFailure(err error) {
 	reason := "finalization_rejected"
+	var sourceFailure controlledFindingSourceFailure
+	var failure controlledFindingStoreFailure
 	switch {
+	case errors.As(err, &sourceFailure):
+		reason = "source_rejected"
 	case errors.Is(err, ErrControlledFindingOutcomeUnknown):
 		reason = "storage_outcome_unknown"
 	case errors.Is(err, ErrControlledFindingConflict):
 		reason = "storage_conflict"
-	case errors.Is(err, ErrControlledFindingUnavailable):
+	case errors.As(err, &failure) && errors.Is(err, ErrControlledFindingUnavailable):
 		reason = "storage_rejected"
 	}
 	key := "unavailable"
-	var failure controlledFindingStoreFailure
 	if errors.As(err, &failure) && failure.operation != ([sha256.Size]byte{}) {
 		key = hex.EncodeToString(failure.operation[:])
 	}

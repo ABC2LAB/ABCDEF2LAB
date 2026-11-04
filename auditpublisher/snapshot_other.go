@@ -8,7 +8,7 @@ import (
 )
 
 type journalRoot struct{}
-type journalSnapshot struct{}
+type journalSnapshot struct{ root *journalRoot }
 
 func openJournalRoot(string, *os.File) (*journalRoot, error)        { return nil, ErrUnavailable }
 func (*journalRoot) attach(string, int64) (*journalSnapshot, error) { return nil, ErrUnavailable }

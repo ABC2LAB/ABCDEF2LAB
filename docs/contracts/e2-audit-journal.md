@@ -98,9 +98,10 @@ verifier는 caller가 검증 중 바꿀 수 없는 **같은 불변 snapshot**에
 
 **별도 검증 코어:** [`auditlog.VerifyExtension`](../../transmit/auditlog/extension.go)은 명시적 byte/event/timeout 상한 아래 입력을 한 번 읽어 소유하는 불변 bytes를 만들고, 같은 bytes의 candidate 전체와 기존 head 순번의 정확한 개행 경계 prefix를 각각 `Verify`한다. context가 임의의 차단 Reader를 강제 해제하지는 못한다. header-only head와 정확한 재시도를 지원하며 유효 MAC의 다른 분기·추가 tail·상한 초과·취소·무진행 Reader는 결과 없이 거부한다. 이 순수 검증 코어는 이전 head의 신뢰·publisher 인증·epoch/revision/phase·CAS/보존·외부 snapshot 공급과 키 수명을 구현하지 않는다. 아래 동기 게시/정본 store 활성화 완료로 해석하지 않는다. 실제 공급/소유 경계는 [첫 회차 입력 대장](./first-idor-host-inputs.md)에 구분한다.
 
-**호출·공급 현황:** 이 PR 체크아웃 전체에서 `git grep -n VerifyExtension -- '*.go'`로 확인한
-비테스트 호출처는 0건이다(함수 선언·주석 제외). 현재 코어는 시험에서만 호출하며, CPD publisher
-adapter와 외부 불변 snapshot 공급은 여전히 미구현이다. 기존 Recorder/server에 자동 연결하지 않는다.
+**호출·공급 현황:** 통합 기준 dev `88415fff88f1c66c4307ba370c360e6ad338efcc`와 검증 코어
+`b3652a180668c2752e1f8fb6130e0c3d298b9496`에서 각각 `git grep -n VerifyExtension -- '*.go'`로
+확인한 비테스트 호출처는 0건이다(함수 선언·주석 제외). 이 기준에서 코어는 시험에서만 호출하며,
+CPD publisher adapter와 외부 불변 snapshot 공급은 미구현이다. 기존 Recorder/server에 자동 연결하지 않는다.
 
 `MaxExtensionBytes=64 MiB`·`MaxExtensionEvents=40,000`·`MaxExtensionTimeout=2분`은
 최대 합성 실행 비용을 측정해 확정한 값이 아닌 **잠정 검증 자원 상한**이다.

@@ -56,6 +56,7 @@ RootScope 철회는 HTTP 전용 child context를 취소해 실제 HTTP 전송을
 work context와 분리된다. 정상 Seal의 RootScope.Release가 writer context를 닫아도 이미 끝난 HTTP만
 취소하며 completion claim·fresh SourceReader·finding 저장을 거짓 취소하지 않는다. 서버 lifecycle 취소는
 마감 context에도 계속 적용하며 `Background`로 게시/저장을 이어가는 우회 경로는 만들지 않는다.
+Seal의 별도 게시 시한은 factory Plan의 `Limits.Timeout`을 사용하며 HTTP `RequestTimeout`과 구분한다.
 
 ## reader와 실패 의미
 
@@ -69,6 +70,7 @@ cleanup은 Abort이며 실패한 journal을 잘라 수리·삭제하거나 강�
 SourceReader가 실패하면 원격 head는 이미 sealed일 수 있다. 이때 finding/완료 성공은 반환하지 않으며
 원격 commit을 rollback했다고 주장하지 않는다. 불명 commit에 새 ref·승인을 만들어 자동 재실행하지 않는다.
 실패한 자료와 CPD 상태의 reconciliation/incomplete/quarantine 전이는 실제 host/운영 후속이다.
+factory·Open·각 sidecar·Seal·Abort 오류는 고정된 사유 category만 로그로 남기며 원시 provider/파일 오류나 입력 값은 기록하지 않는다.
 
 Record 직렬화 lock은 동기 ACK까지 유지한다. 잠금 순서는 recorder→publisher→짧은 witness/host lease→SQL이다.
 StopAndWait는 recorder lock 밖에서 먼저 끝낸다. 실제 host/RootScope callback은 publisher/recorder 재진입,
