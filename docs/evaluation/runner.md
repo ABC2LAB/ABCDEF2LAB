@@ -65,7 +65,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `host_listen_allowlist` | loopback 밖 호스트 리슨 중 허용할 것. `{"address", "port", "reason"}`, 특정 주소만(0.0.0.0·`::`·loopback 불가), 근거 필수. 기본은 빈 목록 |
 | `run.*` | compose 대기, down 시한, 대상 준비, 예산 폴링 간격, drain 시한, 스냅샷 시한·크기, LLM 검증 대기(초) |
 | `run.task_create_timeout_seconds` | 작업 생성(로그인 + `POST /api/tasks`) 연결·읽기 시한(초) |
-| `run.drain_grace_seconds`, `run.post_settle_seconds` | 봉인 뒤 계측기가 진행 요청을 기다리는 유예(1~600초, `drain_timeout_seconds`보다 짧아야 함 — 계측기 `-drain-grace`로 넘김)와, 유예가 지나 취소한 요청이 있을 때 post 전 정착 대기(초) |
+| `run.drain_grace_seconds`, `run.post_settle_seconds` | 봉인 뒤 계측기가 진행 요청을 기다리는 유예(1~600초, `drain_timeout_seconds`보다 짧아야 함 — 계측기 `-drain-grace`로 넘김)와, 유예가 지나 취소한 요청이 있을 때 post 전 정착 대기(1~3600초). 둘 다 비교 조건이라 사전검사 `run_drain`의 `grace_seconds`·`settle_seconds`와 정확히 같아야 회차가 시작됨(`preflight.<side>.run_drain: CONFIG_MISMATCH`) |
 | `run.host_watch_interval_seconds`, `run.host_watch_max_gap_seconds` | 구간 중 호스트 리슨 확인 간격과 허용 최대 공백(초). 공백 상한은 간격보다 커야 한다 |
 | `task.{description,goal}` | 엔진 작업 설명·목표(각 4000자 이하, 줄바꿈 외 제어 문자 불가). 대상은 회차 대상 origin 하나만 적는다(아래) |
 | `task.{timeout_seconds,plan_heartbeat_seconds}` | 엔진 작업 시한·planner 주기(초, 0~86400, 엔진 의미 그대로: 0=시한 없음·기본 주기) |
@@ -167,7 +167,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `target_not_ready`, `pre_scoreboard_failed`, `post_scoreboard_failed` | 관측 front로 대상 준비·스코어보드 수집 실패 |
 | `pre_requests_nonzero` | 작업 시작 전에 엔진이 대상으로 보냄 |
 | `task_start_failed` | 작업 생성 실패: 로그인 실패, 생성 요청 연결 실패·시한 초과, 201 아닌 응답, 응답에 작업 ID 없음. 다시 보내지 않는다(시한 초과면 작업이 생겼을 수 있음) |
-| `seal_failed`, `drain_timeout`, `drain_incomplete` | 계측기 seal 실패, drain 시한 초과, 진행 중 요청·기록 불완전·강제 취소 수 없음/형식 오류 |
+| `seal_failed`, `drain_timeout`, `drain_incomplete` | 계측기 seal 실패, drain 시한 초과, 진행 중 요청·기록 불완전·강제 취소 수 없음/형식 오류 (응답 본문 도중 끊긴 요청은 계측기가 `forced_cancelled`·`aborted` 행으로 정산하므로 진행 중으로 남지 않음) |
 | `boundary_changed` | pre와 post 사이 데몬·망·주소·컨테이너 교체·재시작 |
 | `window_boundary_changed` | 구간(pre 관측 직전~post 관측 완료) 데몬 이벤트에 회차 망·회차 컨테이너의 연결·해제·생명주기·exec가 있거나, 회차 밖 컨테이너가 생성·시작·재시작됨(`--network container:<회차 컨테이너>`는 망 이벤트 없이 namespace를 같이 쓰므로). 허용: 계측기·게이트웨이 seal(USR1), engine-db의 선언된 healthcheck, 러너가 띄운 probe(cidfile ID)의 정상 생명주기(create·attach·start·die·destroy 각 1회 — 같은 ID의 exec·kill·restart·재시작은 위반) |
 | `window_events_incomplete` | 구간 이벤트가 데몬 버퍼 크기(256)에 닿아 앞쪽이 버려졌을 수 있음 |

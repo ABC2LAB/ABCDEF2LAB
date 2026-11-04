@@ -21,7 +21,7 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "fixture": {
     "preparation_id": "read_fixture",
     "preparation_revision": 1,
@@ -49,7 +49,8 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
     "worker_count": 1,
     "time_budget_seconds": 1200,
     "request_budget": 100,
-    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"}
+    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
+    "run_drain": {"grace_seconds": 30, "settle_seconds": 2}
   },
   "scope": {
     "target_origin": "http://eval-meter:8080",
@@ -63,7 +64,7 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
 | 프로파일 | 허용 조건 |
 |---|---|
 | fixture | 비민감 준비 절차 ID/revision, 논리 계정 라벨·역할, 논리 자원 라벨·종류·소유 라벨·개수·공유/위임 여부 |
-| environment | 망 모드·LLM 객체(백엔드 종류와 API 고정 조건 또는 로컬 고정 IP)·temperature/seed·대상 이미지·worker/시간/요청 예산·회차 메모리 조건(`run_storage`) |
+| environment | 망 모드·LLM 객체(백엔드 종류와 API 고정 조건 또는 로컬 고정 IP)·temperature/seed·대상 이미지·worker/시간/요청 예산·회차 메모리 조건(`run_storage`)·봉인 뒤 drain 정책(`run_drain`) |
 | scope | 대상 origin·명시적 HTTP 메서드·경로 템플릿·검사 분류 라벨 |
 
 준비 절차 ID와 revision은 평가자가 합의한 비민감 준비 명세를 가리킨다. 명세 내용이 바뀌면 revision도 바꿔야 한다. fixture fingerprint는 이 ID·revision과 선언된 fixture 구조의 해시이며, 실제 fixture 데이터가 준비·적용됐다는 증명이 아니다.
@@ -74,6 +75,7 @@ shared/delegated는 bool이다. temperature는 0 이상 유한수, 시간 예산
 
 대상 이미지는 명시적 tag 또는 SHA-256 digest를 요구하며 latest·TODO를 거부한다.
 `run_storage`는 엔진 DB·엔진 데이터 tmpfs 크기(`engine_db_tmpfs`·`engine_data_tmpfs`)와 구간 종료 뒤 남아야 할 최소 공간(`tmpfs_min_free`)이며, 셋 다 compose tmpfs size 표기(`[1-9][0-9]{0,8}` + 선택 `k`·`m`·`g`, 1024배)이고 하한은 두 크기보다 작아야 한다. 러너가 이 하한으로 회차를 완료·무효(`tmpfs_full`)로 가르므로, 하한이 다르면 같은 측정값으로도 결과가 갈려 환경 지문에 넣는다(v3, #140). 러너 설정의 `tmpfs` 값이 이 선언과 다르면 러너가 시작하지 않는다.
+`run_drain`은 봉인 뒤 계측기가 열린 요청을 끊기까지의 유예(`grace_seconds`, 1~600)와 끊은 요청이 있을 때 post 관측 전 정착 대기(`settle_seconds`, 1~3600)이며 둘 다 정수 초다. post 관측 시점과 취소 여부를 바꾸므로 정책이 다르면 엔진 차이처럼 집계될 수 있어 환경 지문에 넣는다(v4, #153). 러너 설정 `run.drain_grace_seconds`·`run.post_settle_seconds`가 이 선언과 다르면 러너가 시작하지 않는다. 끊은 요청 수와 실제 적용한 대기는 회차 결과라 지문에 넣지 않는다.
 `scope.target_origin`과 `environment.llm`의 규칙은 [사전검사](preflight.md)와 같은 정의다(두 스크립트를 drift 테스트로 묶는다). 대상 origin은 엔진이 보는 계측기 origin이고, LLM 객체는 api·local 백엔드별로 정확한 키 집합을 요구한다. API 고정 조건(모델 ID·고정 제공자·fallback 끔)과 로컬 고정 IP가 환경 지문에 들어가므로 baseline·개선 후 조건이 다르면 지문이 달라진다.
 경로는 `/`로 시작하는 비민감 정적 경로나 `{object}` 같은 전체 segment 템플릿이다. 실제 계정/자원 값·query·fragment·퍼센트 인코딩·glob·역참조는 넣지 않는다.
 메서드는 GET/HEAD/OPTIONS/POST/PUT/PATCH/DELETE/TRACE 중 명시한 값만 받는다. 프로파일에 적는 행위가 실행 허가를 뜻하지 않는다.
@@ -86,14 +88,14 @@ shared/delegated는 bool이다. temperature는 0 이상 유한수, 시간 예산
 별칭·모델명·경로 등 문자열이 실제로 비민감한지는 이 도구가 판정하지 않는다. 평가자가 검토한 선언만 입력하며 비밀을 별칭으로 위장해 해시하지 않는다.
 실제 프로파일과 결과는 레포 밖에 보관하며 커밋하지 않는다. 엔진·LLM이 만든 임의 JSON, `.env`, 계정 파일을 입력하지 않는다.
 
-## 정규화와 SHA-256 v3
+## 정규화와 SHA-256 v4
 
 1. 입력 전체의 필드·타입·참조를 검사한 후 정규화한다. 잘못된 입력을 일부라도 해시해 출력하지 않는다.
 2. 계정·자원 배열은 label로, scope의 methods/paths/vuln_classes는 문자열의 **Unicode 코드포인트 순서**로 정렬한다. 중복 라벨·항목은 거부한다.
 3. temperature와 시간 예산은 정밀도를 보존한 십진 **문자열**로 만든다. 예: `0`, `0.0`, `-0.000`은 `"0"`, `1200`, `1.200e3`은 `"1200"`이다.
    JSON 소수는 Decimal로 읽고 기본 precision에 따른 반올림을 하지 않는다. 0 이외 숫자의 입력 표기 자릿수와 exponent 절댓값은 각각 128 이내로 제한하고 초과는 거부한다. 입력 표기는 보존하지 않으며 같은 수의 표기는 같은 정규화 문자열·지문이 된다.
 4. URL·라벨·경로·모델 식별자 문자열과 LLM 객체 값은 그대로 보존한다. 대소문자·끝 slash·다른 태그를 같은 값으로 추정하지 않는다.
-5. 각 지문은 `{format: "abc2lab-eval-profile-v3", kind: "fixture"|"environment"|"scope", profile: 정규화된 객체}`의 JSON을 사용한다.
+5. 각 지문은 `{format: "abc2lab-eval-profile-v4", kind: "fixture"|"environment"|"scope", profile: 정규화된 객체}`의 JSON을 사용한다.
    key 정렬, `separators=(",", ":")`, `ensure_ascii=True`, `allow_nan=False`로 직렬화한 ASCII bytes에 SHA-256을 적용한다. 줄바꿈은 포함하지 않는다.
 6. scope를 먼저 지문화하고, environment 객체에 `scope_fingerprint`를 추가한 뒤 환경 지문을 계산한다. scope가 바뀌면 환경 지문도 바뀐다.
    fixture는 독립 지문이며, 비교 시 fixture와 environment 모두 확인해야 한다.
@@ -102,14 +104,14 @@ shared/delegated는 bool이다. temperature는 0 이상 유한수, 시간 예산
 
 ```json
 {
-  "format": "abc2lab-eval-profile-v3",
-  "fixture_fingerprint": "3f17600f9137bd5599e37ba967096579e1e9087ccf0bb2a88ae9361701fbdd74",
-  "environment_fingerprint": "0db48516f8984286f710ac5acafc68e8a5470daa43b21d6d2fc967c2f4a24564",
-  "scope_fingerprint": "f75a82a89c6c8999cb9be671d0b51dbac69a3900de8c86914c85b08b5f079e1f"
+  "format": "abc2lab-eval-profile-v4",
+  "fixture_fingerprint": "07de4193e27221c8364f4707d1c46fc61cb5a39843fab1f6bdfcd248be874006",
+  "environment_fingerprint": "13b1db09af8fea3fd9b4e46f642ada21d7b4b6e043852fa6c251690b5c403df7",
+  "scope_fingerprint": "eca6cfb42d5020fbb50e97bde33b799c6892d8da7cf4e3fffc34b829876456ae"
 }
 ```
 
-해시 버전이나 정규화 규칙을 임의로 섞지 않는다. v1 프로파일(로컬 loopback 전제)과 v2 프로파일(`run_storage` 없음)은 v3와 섞어 비교하지 않으며 CLI가 거부한다. 다른 구현에서 만들면 위 벡터가 일치해야 한다.
+해시 버전이나 정규화 규칙을 임의로 섞지 않는다. v1 프로파일(로컬 loopback 전제)·v2 프로파일(`run_storage` 없음)·v3 프로파일(`run_drain` 없음)은 v4와 섞어 비교하지 않으며 CLI가 거부한다. 다른 구현에서 만들면 위 벡터가 일치해야 한다.
 중복 JSON key·비유한수·잘못된 UTF-8/JSON·과대 파일은 거부한다. 오류 메시지는 입력값을 담지 않는다.
 
 ## 연결과 검증 범위
