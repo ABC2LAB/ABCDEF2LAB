@@ -18,6 +18,9 @@ type ControlledReadHostOptions struct {
 	Mode                 ControlledTaskModeHost
 	Findings             ControlledReadFindingResolver
 	LocalLLMManifestPath string
+	// AuditSource optionally binds fresh audit reads during strict bootstrap.
+	// Existing callers without it retain their supplied Source behavior.
+	AuditSource *ControlledReadAuditSourceOptions `json:"-"`
 }
 
 // NewWithControlledReadHost installs strict mode admission and verified-read
@@ -64,7 +67,11 @@ func newControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, k
 				return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 			}
 		}
-		if err := s.configureControlledReadFindings(options.Findings, revisions); err != nil {
+		findings, err := s.bindControlledReadAuditSource(options.Findings, options.AuditSource)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
+		}
+		if err := s.configureControlledReadFindings(findings, revisions); err != nil {
 			return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 		}
 		return nil
