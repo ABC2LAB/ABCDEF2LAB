@@ -45,6 +45,8 @@ const RECENT_FAIL = 7 * DAY;
 /** 이 비율보다 덜 본 점검은 '미검사 영역'으로 처리할 일에 올린다 */
 const LOW_COVERAGE = 0.8;
 const LIST_MAX = 5;
+/** 지금 처리할 일은 이만큼만 먼저 보여 주고, 나머지는 [더보기]로 펼친다 */
+const TODO_FIRST = 4;
 
 function taskName(t: { name?: string } | undefined): string {
   return t?.name?.trim() || "이름 없는 점검";
@@ -137,6 +139,7 @@ export default function DashboardScreen() {
   // 머무는 동안에는 [새로고침](refresh)으로 다시 읽는다. 숨겨져 있을 때는 조회하지 않는다.
   const active = screen === "dashboard";
   const [refresh, setRefresh] = useState(0);
+  const [todoAll, setTodoAll] = useState(false);
   const when = <T,>(fetch: () => Promise<T>) => (active ? fetch() : Promise.resolve(null));
   const tasksRes = useApiResource(() => when(listTasks), [tasksVersion, active, refresh]);
   const pendingRes = useApiResource(() => when(listPendingApprovals), [tasksVersion, active, refresh]);
@@ -379,8 +382,8 @@ export default function DashboardScreen() {
                 {todos.length === 0 ? (
                   <div className="dash-empty">{loadingTasks ? "불러오는 중…" : "지금 처리할 일이 없어요."}</div>
                 ) : (
-                  <div className="recent-list">
-                    {todos.map((t) => (
+                  <div className="recent-list" id="dash-todo-list">
+                    {(todoAll ? todos : todos.slice(0, TODO_FIRST)).map((t) => (
                       <div className="recent-row" key={t.key}>
                         <div className="recent-main">
                           <div className="nm">{t.title}</div>
@@ -396,6 +399,17 @@ export default function DashboardScreen() {
                         </div>
                       </div>
                     ))}
+                    {todos.length > TODO_FIRST && (
+                      <button
+                        type="button"
+                        className="dash-more"
+                        aria-expanded={todoAll}
+                        aria-controls="dash-todo-list"
+                        onClick={() => setTodoAll((v) => !v)}
+                      >
+                        {todoAll ? "접기" : `더보기 · ${todos.length - TODO_FIRST}건 더`}
+                      </button>
+                    )}
                   </div>
                 )}
               </section>

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as engine from "../lib/engine";
@@ -112,5 +112,43 @@ describe("DashboardScreen", () => {
     show();
     const row = (await screen.findByText("미검사 영역 있음 · 커버리지 60%")).closest(".recent-row") as HTMLElement;
     expect(within(row).getByText("점검 thin")).toBeVisible();
+  });
+
+  it("shows four to-dos first and lists the rest behind 더보기", async () => {
+    vi.mocked(engine.listPendingApprovals).mockResolvedValue(
+      [1, 2, 3, 4, 5].map((id) => ({
+        id,
+        task_id: "run",
+        agent_name: "work#1",
+        tool_name: "http_request",
+        status: "pending",
+        created_at: iso(H),
+      })),
+    );
+    show();
+    const todoRows = () =>
+      within(screen.getByText("지금 처리할 일").closest("section") as HTMLElement).getAllByText(/승인 대기|확인 필요/, {
+        selector: ".stag",
+      });
+    // 승인 5 + 일시중지 1 + 시간초과 1 + 덜 본 점검 1 = 8건 중 4건만
+    expect(await screen.findByText("8건")).toBeVisible();
+    await waitFor(() => expect(todoRows()).toHaveLength(4));
+    const more = screen.getByRole("button", { name: "더보기 · 4건 더" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(more);
+    await waitFor(() => expect(todoRows()).toHaveLength(8));
+    // 승인 대기가 먼저 온다
+    expect(todoRows()[0]).toHaveTextContent("승인 대기");
+    expect(screen.getByRole("button", { name: "접기" })).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "접기" }));
+    await waitFor(() => expect(todoRows()).toHaveLength(4));
+  });
+
+  it("hides the 더보기 button when four or fewer to-dos remain", async () => {
+    show();
+    await waitFor(() => expect(screen.getByText("4건")).toBeVisible());
+    expect(screen.queryByRole("button", { name: /더보기/ })).toBeNull();
   });
 });

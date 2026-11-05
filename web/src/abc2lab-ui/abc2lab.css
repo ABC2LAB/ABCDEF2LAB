@@ -3646,6 +3646,28 @@ h1.big {
 .dash-sec {
   margin-bottom: 22px;
 }
+/* 지금 처리할 일: 4개 뒤 [더보기] — 목록 맨 아래 한 줄 버튼 */
+.dash-more {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--teal-ink);
+  background: var(--surface-2);
+  border: none;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+  text-align: center;
+}
+.dash-more:hover {
+  text-decoration: underline;
+}
+.dash-more:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+}
 .dash-cnt {
   font-size: 13px;
   font-weight: 600;
