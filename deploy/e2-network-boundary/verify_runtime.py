@@ -19,7 +19,7 @@ from typing import Any
 CHANNEL = "/run/e2-channel"
 RUN_LABEL = "org.abc2lab.e2.run"
 ROLE_LABEL = "org.abc2lab.e2.role"
-_CONTAINER_ID = re.compile(r"[0-9a-fA-F]{64}")
+_CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
 
 
 def _published(ports: Any) -> bool:

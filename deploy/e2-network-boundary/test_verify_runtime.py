@@ -186,30 +186,38 @@ class RuntimeChecks(unittest.TestCase):
             "target": "c" * 64,
         }
         self.tool["Id"], self.sender["Id"], self.target["Id"] = (full_ids[role] for role in ("tool", "sender", "target"))
-        peers = []
-        for field, peer in (("NetworkMode", full_ids["sender"]),
-                            ("PidMode", full_ids["target"]),
-                            ("IpcMode", full_ids["tool"])):
-            peers.append({"Id": "d" * 64, "HostConfig": {field: "container:" + peer}})
-        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
-                       VOLUME, NETWORK, RUN, PROJECT,
-                       [self.tool, self.sender, self.target, *peers])
-        self.assertIn("unapproved_network_namespace_peer", issues)
-        self.assertIn("unapproved_pid_namespace_peer", issues)
-        self.assertIn("unapproved_ipc_namespace_peer", issues)
+        for field in ("NetworkMode", "PidMode", "IpcMode"):
+            for role, peer in full_ids.items():
+                with self.subTest(field=field, role=role):
+                    foreign = {"Id": "d" * 64, "HostConfig": {field: "container:" + peer}}
+                    issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                                   VOLUME, NETWORK, RUN, PROJECT,
+                                   [self.tool, self.sender, self.target, foreign])
+                    self.assertIn(f"unapproved_{field.removesuffix('Mode').lower()}_namespace_peer", issues)
 
-    def test_namespace_name_and_short_id_are_fail_closed(self):
-        peer = {"Id": "d" * 64, "HostConfig": {
-            "NetworkMode": "container:sender-name",
-            "PidMode": "container:" + ("e" * 63),
-            "IpcMode": "container:target-name",
+        unrelated = {"Id": "d" * 64, "HostConfig": {
+            "NetworkMode": "container:" + ("e" * 64),
+            "PidMode": "container:" + ("e" * 64),
+            "IpcMode": "container:" + ("e" * 64),
         }}
         issues = check(self.tool, self.sender, self.target, self.network, self.volume,
                        VOLUME, NETWORK, RUN, PROJECT,
-                       [self.tool, self.sender, self.target, peer])
-        self.assertIn("unresolved_network_namespace_peer", issues)
-        self.assertIn("unresolved_pid_namespace_peer", issues)
-        self.assertIn("unresolved_ipc_namespace_peer", issues)
+                       [self.tool, self.sender, self.target, unrelated])
+        self.assertNotIn("unapproved_network_namespace_peer", issues)
+        self.assertNotIn("unapproved_pid_namespace_peer", issues)
+        self.assertNotIn("unapproved_ipc_namespace_peer", issues)
+
+    def test_namespace_name_and_short_id_are_fail_closed(self):
+        for field, value in (("NetworkMode", "sender-name"),
+                             ("PidMode", "e" * 63),
+                             ("IpcMode", "g" * 64)):
+            with self.subTest(field=field):
+                peer = {"Id": "d" * 64, "HostConfig": {field: "container:" + value}}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                kind = field.removesuffix("Mode").lower()
+                self.assertIn(f"unresolved_{kind}_namespace_peer", issues)
 
     def test_ipc_namespace_must_be_private(self):
         self.tool["HostConfig"]["IpcMode"] = "shareable"
@@ -281,6 +289,14 @@ class RuntimeChecks(unittest.TestCase):
             "error_kind": "ChildProbeBlocked", "returncode": CHILD_BLOCKED_EXIT}))
         self.assertFalse(expected_failure("direct_ipv4_tcp", {
             "error_kind": "OSError", "errno": 111}))
+        self.assertFalse(expected_failure("proxy_replacement", {
+            "error_kind": "URLError", "errno": 111}))
+        self.assertFalse(expected_failure("shell_child", {
+            "error_kind": "ChildProbeBlocked", "returncode": 1}))
+        self.assertFalse(expected_failure("grandchild", {
+            "error_kind": "ChildProbeBlocked", "returncode": 1}))
+        self.assertFalse(expected_failure("direct_ipv4_tcp", {
+            "error_kind": "TimeoutError", "errno": None}))
 
     def test_broken_python_exit_one_is_not_network_blocked(self):
         import subprocess

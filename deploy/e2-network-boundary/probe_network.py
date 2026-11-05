@@ -20,8 +20,7 @@ CHECK_NAMES = (
     "direct_ipv4_tcp", "direct_ipv6_tcp", "direct_ipv4_udp", "direct_ipv6_udp",
     "dns_resolution", "proxy_replacement", "opaque_connect", "shell_child", "grandchild",
 )
-NETWORK_ERRNOS = {errno.ENETUNREACH, errno.EHOSTUNREACH,
-                  errno.EHOSTDOWN, errno.ETIMEDOUT}
+NETWORK_ERRNOS = {errno.ENETUNREACH}
 DNS_ERRNOS = {-2, -3, -4, -5}  # EAI_NONAME, EAI_AGAIN, EAI_FAIL, EAI_NODATA
 CHILD_BLOCKED_EXIT = 23
 
@@ -73,8 +72,6 @@ def expected_failure(name: str, result: dict[str, object]) -> bool:
         return kind == "gaierror" and value in DNS_ERRNOS
     if name == "proxy_replacement":
         return kind == "URLError" and value in NETWORK_ERRNOS
-    if kind == "TimeoutError":
-        return value is None
     return kind == "OSError" and value in NETWORK_ERRNOS
 
 
