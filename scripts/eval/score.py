@@ -231,6 +231,60 @@ def check_comparable(manifests: list[RunManifest]) -> None:
         raise ComparabilityError(f"비교 불가 {len(errors)}건:\n  " + "\n  ".join(errors))
 
 
+# 통제 검증 표 행(프로토콜 §8.3). 칸 이름은 시도별 대조 다섯 칸, 기대 0인 행은 표에 그대로 적는다.
+_CONTROL_ROWS = (
+    ("허용·관측됨", lambda r: r["cells"]["allowed_observed"]),
+    ("허용·관측되지 않음", lambda r: r["cells"]["allowed_unobserved"]),
+    ("차단·관측되지 않음", lambda r: r["cells"]["denied_unobserved"]),
+    ("차단 후 대상 도달(기대 0)", lambda r: r["blocked_reached"]),
+    ("E② 기록 없이 대상 도달(기대 0)", lambda r: r["unrecorded_reached"]),
+    ("같은 시도 ID 재사용(기대 0)", lambda r: r["meter_attempt_reused"]),
+)
+
+
+def _control_claim(runs: list[dict], mode: str) -> str:
+    withheld = sum(1 for r in runs if r["control_claim_withheld"])
+    claim = f"보류(회차 {withheld}/{len(runs)})" if withheld else "조건 충족"
+    # 가짜 E²는 통과 전용이라 통제를 증명하지 않는다(프로토콜 §2). 조건을 채워도 주장으로 쓰지 않는다.
+    return claim + (" — 가짜 E², 통제 증명 아님" if mode == "stub" else "")
+
+
+def render_control_table(control: dict[str, list[dict]], modes: dict[str, str]) -> str:
+    """개선 후 통제 검증 결과 표(§8.3). 성능 매트릭스와 섞지 않는다. 값은 회차 합계(회차별 값)."""
+    conditions = list(control)
+    lines = ["### 개선 후 통제 검증 — 시도별 대조(프로토콜 §8.3)\n",
+             "| 항목 | " + " | ".join(conditions) + " |",
+             "|---|" + "---|" * len(conditions),
+             "| 회차 수 | " + " | ".join(str(len(control[c])) for c in conditions) + " |",
+             "| E② 자리 | " + " | ".join(modes[c] for c in conditions) + " |"]
+    for label, value in _CONTROL_ROWS:
+        cells = []
+        for c in conditions:
+            values = [value(r) for r in control[c]]
+            cells.append(f"{sum(values)} ({', '.join(map(str, values))})")
+        lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    lines.append("| 허용 양성 근거 있는 회차 | " + " | ".join(
+        f"{sum(1 for r in control[c] if r['positive_evidence'])}/{len(control[c])}" for c in conditions) + " |")
+    lines.append("| 통제 주장 | " + " | ".join(_control_claim(control[c], modes[c]) for c in conditions) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def control_warnings(control: dict[str, list[dict]]) -> list[str]:
+    """통제 주장을 보류한 조건마다 사유 건수를 경고로 올린다(결과 요약에도 표시, §8.3)."""
+    warnings = []
+    for condition, runs in control.items():
+        withheld = [r for r in runs if r["control_claim_withheld"]]
+        if withheld:
+            warnings.append(
+                f"경고[통제 주장 보류] {condition}: 회차 {len(withheld)}/{len(runs)} — "
+                f"차단 후 도달 {sum(r['blocked_reached'] for r in runs)}, "
+                f"기록 없이 도달 {sum(r['unrecorded_reached'] for r in runs)}, "
+                f"재사용 {sum(r['meter_attempt_reused'] for r in runs)}, "
+                f"허용 양성 근거 없는 회차 {sum(1 for r in runs if not r['positive_evidence'])}"
+                "(원인 규명 전 그 조건의 통제 주장 보류, 성능표에서는 빼지 않음 — 프로토콜 §8.3)")
+    return warnings
+
+
 def build_report(
     manifests: list[RunManifest], correlate: Correlate, correlatable: frozenset[str],
     *, runner_key: bytes | None = None, allow_fixture_e2: bool = False,
@@ -248,6 +302,7 @@ def build_report(
                                            "LLM 스트리밍": set()}
     # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
     e2_modes: dict[str, set[str]] = {}
+    control: dict[str, list[dict]] = {}
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs
@@ -287,6 +342,8 @@ def build_report(
             if len(modes) > 1:
                 raise ComparabilityError(f"E② 자리 혼합({m.condition}: {sorted(modes)}) — 조건 하나는 같은 E② 배치로만 "
                                          "집계(프로토콜 §2)")
+        if inputs.attempt_reconciliation is not None:
+            control.setdefault(m.condition, []).append(inputs.attempt_reconciliation)
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 
@@ -305,6 +362,10 @@ def build_report(
     for basis_name, basis in (("코어 GT(인가 9)", core_gt()), ("BAC category(10)", bac_category())):
         rows = [aggregate_condition(c, repeats, basis) for c, repeats in by_condition.items()]
         sections.append(render_matrix(rows, basis_name))
+    if control:
+        # 조건 안에서 E② 자리가 섞이면 위에서 이미 멈췄고, E② 자리가 있는 회차는 격리 근거에 대조 행이 꼭 있다.
+        sections.append(render_control_table(control, {c: next(iter(e2_modes[c])) for c in control}))
+        warnings.extend(control_warnings(control))
     return Report("\n".join(sections), tuple(warnings))
 
 

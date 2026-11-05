@@ -416,6 +416,38 @@ class TestComparison(_V11):
                              self.correlatable, runner_key=self.runner_key)
         self.assertFalse(any("가짜 E②" in w for w in plain.warnings))
 
+    def test_control_table_sums_each_row_per_condition(self):
+        # 행마다 합계가 서로 다르고(행이 뒤바뀌면 드러남) 두 회차 값이 둘 다 0이 아닌 행이 있다(합 대신 최댓값이면 드러남).
+        clean = dict(STUB_RECONCILIATION, cells=dict(STUB_RECONCILIATION["cells"], allowed_observed=3,
+                                                     allowed_unobserved=1))
+        bad = {"cells": {"allowed_observed": 0, "allowed_unobserved": 4, "denied_unobserved": 0, "denied_observed": 1,
+                         "unrecorded_observed": 2},
+               "meter_attempt_reused": 3, "blocked_reached": 1, "unrecorded_reached": 2, "positive_evidence": False,
+               "control_claim_withheld": True}
+        report = build_report(self.load([self.v11("c1", e2=E2_STUB_PLACEMENT, reconciliation=clean),
+                                         self.v11("c2", repeat_index=1, e2=E2_STUB_PLACEMENT, reconciliation=bad)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
+        table = report.text.split("### 개선 후 통제 검증 — 시도별 대조(프로토콜 §8.3)\n", 1)[1]
+        for line in ("| 항목 | 우리@test |", "| 회차 수 | 2 |", "| E② 자리 | stub |",
+                     "| 허용·관측됨 | 3 (3, 0) |", "| 허용·관측되지 않음 | 5 (1, 4) |", "| 차단·관측되지 않음 | 1 (1, 0) |",
+                     "| 차단 후 대상 도달(기대 0) | 1 (0, 1) |", "| E② 기록 없이 대상 도달(기대 0) | 2 (0, 2) |",
+                     "| 같은 시도 ID 재사용(기대 0) | 3 (0, 3) |", "| 허용 양성 근거 있는 회차 | 1/2 |",
+                     "| 통제 주장 | 보류(회차 1/2) — 가짜 E², 통제 증명 아님 |"):
+            self.assertIn(line + "\n", table)
+        self.assertIn("경고[통제 주장 보류] 우리@test: 회차 1/2 — 차단 후 도달 1, 기록 없이 도달 2, 재사용 3, "
+                      "허용 양성 근거 없는 회차 1", "\n".join(report.warnings))
+
+    def test_control_table_only_for_conditions_with_e2(self):
+        clean = build_report(self.load([self.v11("k1", e2=E2_STUB_PLACEMENT),
+                                        self.v11("k2", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
+                             self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
+        self.assertIn("| 통제 주장 | 조건 충족 — 가짜 E², 통제 증명 아님 |\n", clean.text)
+        self.assertFalse(any("통제 주장 보류" in w for w in clean.warnings))
+        # E² 자리가 없는 조건(baseline·E² 없음)에는 대조를 적용하지 않는다(§8.3 첫 문장). 표도 내지 않는다.
+        plain = build_report(self.load([self.v11("k3"), self.v11("k4", repeat_index=1)]), self.correlate,
+                             self.correlatable, runner_key=self.runner_key)
+        self.assertNotIn("통제 검증", plain.text)
+
     def test_runs_with_different_run_conditions_are_not_compared(self):
         # 엔진 실행 설정·게이트웨이가 넣은 샘플링·머신 사양·머신이 하나라도 다르면 같은 조건이 아니다(§5.1·§6).
         build_report(self.load([self.v11("k1"), self.v11("k2", repeat_index=1)]), self.correlate, self.correlatable,
