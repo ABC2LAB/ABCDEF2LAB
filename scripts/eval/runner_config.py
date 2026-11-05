@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
+from runner_docker import container_file_ok
 
 CONFIG_VERSION = 1
 SIDES = ("baseline", "ours")
@@ -39,6 +40,13 @@ METER_DIR_NAME = "meter"
 LLM_DIR_NAME = "llm"
 # 가짜 E²(e2.ours_mode=stub) 결정 행 디렉터리. 계측기 증거와 분리해 E²가 독립 계측 로그·seal 파일에 쓸 수 없게 한다.
 E2_DIR_NAME = "e2"
+# 상태 차이 사본(대상 SQLite) 디렉터리. 사본은 지문을 뜬 즉시 지운다(값이 든 파일을 남기지 않음).
+STATE_DIR_NAME = "state"
+# 상태 차이(프로토콜 §8.2) 설정. null이면 사본을 뜨지 않는다. 앱별 값(DB 경로·해결 신호 테이블)은 여기서만 받는다.
+_STATE_FIELDS = ("sqlite_path", "signal_tables", "max_copy_bytes")
+MAX_STATE_COPY_BYTES = 1 << 30
+MAX_SIGNAL_TABLES = 32
+_TABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 # compose가 비밀 env 파일에서 직접 읽는 이름. 러너는 이 값을 만들지도 읽지도 않는다.
 # compose 파일의 나머지 ${VAR}는 전부 러너가 넘긴다(테스트로 집합 일치를 고정).
 _BASE_SECRETS = frozenset({"EVAL_ENGINE_ADMIN_PASSWORD", "EVAL_ENGINE_DB_PASSWORD"})
@@ -118,7 +126,7 @@ MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
-               "observer_readonly_ref", "e2")
+               "observer_readonly_ref", "e2", "state")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -198,6 +206,8 @@ class RunnerConfig:
     observer_readonly_ref: str
     # 개선 후 회차의 E② 자리(E2_MODES). baseline 회차에는 쓰지 않는다.
     e2_ours_mode: str
+    # 상태 차이 설정(_STATE_FIELDS) 또는 None(끔). 양쪽 회차에 같게 적용한다.
+    state: dict | None
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -235,6 +245,7 @@ class RunDirectory:
     meter: Path
     llm: Path
     e2: Path
+    state: Path
 
 
 def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
@@ -328,6 +339,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     e2 = _exact(top.get("e2"), ("ours_mode",), "config.e2", errors) if "e2" in top else {}
     if "ours_mode" in e2 and e2["ours_mode"] not in E2_MODES:
         errors.append("config.e2.ours_mode: UNSUPPORTED")
+    state = _state(top.get("state"), errors) if "state" in top else None
     db = _exact(top.get("engine_db"), ("user", "name"), "config.engine_db", errors) if "engine_db" in top else {}
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
@@ -428,7 +440,25 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         llm_gateway={name: gateway[name] for name in _GATEWAY_FIELDS},
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},
-        observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"])
+        observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], state=state)
+
+
+def _state(raw: object, errors: list[str]) -> dict | None:
+    if raw is None:
+        return None
+    state = _exact(raw, _STATE_FIELDS, "config.state", errors)
+    if "sqlite_path" in state and not container_file_ok(state["sqlite_path"]):
+        errors.append("config.state.sqlite_path: INVALID")
+    tables = state.get("signal_tables")
+    if "signal_tables" in state and not (
+            isinstance(tables, list) and len(tables) <= MAX_SIGNAL_TABLES and len(set(map(str, tables))) == len(tables)
+            and all(isinstance(t, str) and _TABLE_NAME.fullmatch(t) for t in tables)):
+        errors.append("config.state.signal_tables: INVALID")
+    if "max_copy_bytes" in state and not _int(state["max_copy_bytes"], 1, MAX_STATE_COPY_BYTES):
+        errors.append("config.state.max_copy_bytes: INVALID")
+    if set(state) != set(_STATE_FIELDS) or any(e.startswith("config.state") for e in errors):
+        return None
+    return {"sqlite_path": state["sqlite_path"], "signal_tables": tuple(tables), "max_copy_bytes": state["max_copy_bytes"]}
 
 
 def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:
@@ -632,6 +662,7 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
             os.close(_make_private_child(run_fd, METER_DIR_NAME))
             os.close(_make_private_child(run_fd, LLM_DIR_NAME))
             os.close(_make_private_child(run_fd, E2_DIR_NAME))
+            os.close(_make_private_child(run_fd, STATE_DIR_NAME))
         finally:
             os.close(run_fd)
     except FileExistsError:
@@ -641,7 +672,8 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
     finally:
         os.close(root_fd)
     run = runs_root / run_id
-    return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME, e2=run / E2_DIR_NAME)
+    return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME, e2=run / E2_DIR_NAME,
+                        state=run / STATE_DIR_NAME)
 
 
 def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str]:
