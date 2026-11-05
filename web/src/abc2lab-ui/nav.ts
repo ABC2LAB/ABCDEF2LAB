@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 
 /** 원본 HTML의 data-screen 값과 같아요 (URL 해시로도 쓰여요: #entry, #report …) */
 export const SCREENS = [
+  "dashboard",
   "entry",
   "target",
   "job",

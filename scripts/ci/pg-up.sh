@@ -35,16 +35,20 @@ declare -A databases=(
 	[ARTEX_INTERCEPT_TEST_DSN]=artex_intercept
 	[ARTEX_TASK_MODE_TEST_DSN]=artex_task_mode
 	[ARTEX_E3_TEST_DSN]=artex_e3
+	[ARTEX_EVIDENCE_REVISION_TEST_DSN]=artex_evidence_revision
 	[ARTEX_AUDIT_TEST_DSN]=artex_audit
 	[ENGINE_METRICS_TEST_DSN]=artex_engine_metrics
+	[ARTEX_STORAGE_INSPECTION_TEST_DSN]=artex_storage_inspection
 )
 for name in $(printf '%s\n' "${!databases[@]}" | sort); do
 	"$bin/createdb" --host="$socket" --username="$user" "${databases[$name]}"
 	echo "$name=postgres:///${databases[$name]}?host=$socket&user=$user&sslmode=disable"
 done
-# cmd/engine-metrics의 PG 시험은 role·schema를 만들므로, 이 클러스터가 이 실행이 만든 1회용 인스턴스라는
-# 표식을 요구한다(형식만 검사). 작업 디렉터리 경로의 해시로 채운다.
-echo "ENGINE_METRICS_OWNED_TEST_PG=codex-owned-pg-v1:$(printf '%s' "$root" | sha256sum | cut -c1-64)"
+# cmd/engine-metrics와 server 저장소 검사의 PG 시험은 role·schema를 만들므로, 이 클러스터가 이 실행이 만든
+# 1회용 인스턴스라는 표식을 요구한다(형식만 검사). 작업 디렉터리 경로의 해시로 채운다.
+owned="codex-owned-pg-v1:$(printf '%s' "$root" | sha256sum | cut -c1-64)"
+echo "ENGINE_METRICS_OWNED_TEST_PG=$owned"
+echo "ARTEX_STORAGE_INSPECTION_OWNED_PG=$owned"
 echo "CI_PG_BIN=$bin"
 echo "CI_PG_SOCKET=$socket"
 echo "CI_PG_USER=$user"

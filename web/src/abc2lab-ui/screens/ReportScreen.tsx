@@ -13,12 +13,14 @@ import { TopBar } from "../components/TopBar";
 import { Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineCoverage, type EngineFinding, getCoverage, getTask, listTaskFindings } from "../lib/engine";
+import { type AccessDecision, buildCellResolver, DECISION_CELL, DECISION_LABEL, getAccessMap } from "../lib/kg";
 import { useSelection } from "../lib/selection";
 import { canonicalVulnClass } from "../lib/vulnclass";
 import { useGo } from "../nav";
 import type { Severity } from "../types";
+import AssetGraphPanel from "./AssetGraphPanel";
 
-type Tab = "sum" | "list" | "cov" | "map" | "ev";
+type Tab = "sum" | "list" | "cov" | "map" | "asset" | "ev";
 type DimKey = "sev" | "type";
 type Kind = "bar" | "share" | "table";
 
@@ -300,6 +302,7 @@ export default function ReportScreen() {
                 ["list", "발견 목록"],
                 ["cov", "커버리지"],
                 ["map", "접근통제 지도"],
+                ["asset", "자산 그래프"],
                 ["ev", "증거 · 감사"],
               ] as [Tab, string][]
             ).map(([k, l]) => (
@@ -334,7 +337,8 @@ export default function ReportScreen() {
             />
           )}
           {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} />}
-          {tab === "map" && <MapPanel go={go} />}
+          {tab === "map" && <MapPanel taskId={taskId} />}
+          {tab === "asset" && <AssetGraphPanel taskId={taskId} findings={findings} onOpenFinding={openFinding} />}
           {tab === "ev" && <EvidencePanel go={go} />}
         </div>
       </div>
@@ -868,20 +872,105 @@ function CoveragePanel({
 }
 
 /* ---------------- 접근통제 지도 탭 ---------------- */
-function MapPanel({ go }: { go: (s: "access-map") => void }) {
+/** 칸 안에 쓰는 짧은 이름 (범례는 DECISION_LABEL 의 긴 이름) */
+const CELL_SHORT: Record<AccessDecision, string> = {
+  "allow-ok": "허용",
+  "deny-ok": "차단",
+  vuln: "확정",
+  suspected: "의심",
+  unknown: "판정 불가",
+  untested: "미검사",
+  blank: "기록 없음",
+  na: "—",
+};
+const LEG_DOT: Record<AccessDecision, CSSProperties> = {
+  "allow-ok": { background: "var(--teal)" },
+  "deny-ok": { background: "var(--line-2)" },
+  vuln: { background: "var(--danger)" },
+  suspected: { background: "var(--viol)" },
+  unknown: { background: "var(--warn)" },
+  untested: { background: "transparent", border: "1px dashed var(--line-2)" },
+  blank: { background: "var(--surface-2)", border: "1px solid var(--line-2)" },
+  na: { background: "var(--faint)" },
+};
+/** 보고서 지도 범례 — 기본 축 + 실제로 나타난 상태만 추가 */
+const MAP_LEGEND_BASE: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "untested"];
+const MAP_LEGEND_EXTRA: AccessDecision[] = ["suspected", "unknown", "blank"];
+
+function MapPanel({ taskId }: { taskId: string }) {
+  const { data, loading, error } = useApiResource(() => getAccessMap(taskId), [taskId]);
+  // 전체 지도와 동일한 fail-closed 규칙(중복·미반환 처리)을 공유 리졸버로 적용(kg §4.2(7)).
+  const resolve = useMemo(() => buildCellResolver(data?.cells ?? []), [data]);
+  // 실제로 나타난 추가 상태만 범례에 넣는다
+  const present = new Set<AccessDecision>();
+  if (data) for (const p of data.principals) for (const r of data.resources) present.add(resolve(p.ref, r.id).decision);
+  const legend: AccessDecision[] = [...MAP_LEGEND_BASE, ...MAP_LEGEND_EXTRA.filter((d) => present.has(d))];
+
+  let content: ReactNode;
+  if (loading) content = <p style={bodyText}>불러오는 중…</p>;
+  else if (error || !data) content = <p style={bodyText}>접근통제 지도를 불러오지 못했어요.</p>;
+  else {
+    content = (
+      <>
+        <div className="scrollx">
+          <table className="matrix">
+            <thead>
+              <tr>
+                <th />
+                {data.resources.map((r) => (
+                  <th key={r.id}>
+                    {r.label}
+                    <span className="sm">소유 {r.ownerRef}</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.principals.map((pr) => (
+                <tr key={pr.ref}>
+                  <td className="rowh">
+                    {pr.ref}
+                    <span className="sm">{pr.role}</span>
+                  </td>
+                  {data.resources.map((r) => {
+                    const { decision, note, projectionError } = resolve(pr.ref, r.id);
+                    const title = projectionError
+                      ? `판정 불가(projection): ${projectionError}`
+                      : note || DECISION_LABEL[decision];
+                    return (
+                      <td key={r.id} className={DECISION_CELL[decision]} title={title}>
+                        {/* 축소 뷰: 짧은 라벨(확정/의심)로 구분, 색이 1차 — 배지는 전체 지도에서.
+                            deny-ok(보류)은 리졸버가 unknown 으로 내리므로 여기 셀로는 안 나온다. */}
+                        <span>{CELL_SHORT[decision]}</span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="leg">
+          {legend.map((d) => (
+            <span key={d}>
+              <span className="dot" style={LEG_DOT[d]} />
+              {DECISION_LABEL[d]}
+            </span>
+          ))}
+        </div>
+      </>
+    );
+  }
   return (
     <div className="rpanel">
       <div className="card">
-        <h3>
-          접근통제 지도 <Sub>· 누가 어디에 닿는가</Sub>
-        </h3>
-        <p style={bodyText}>
-          행은 <Strong>신원(계정 · 역할)</Strong>, 열은 <Strong>자원(소유자)</Strong>. 닿으면 안 되는 칸이 열리면
-          취약(수평 IDOR · 수직 권한상승)이고, <Strong>미검사 · 판정 불가 · 취약</Strong>를 색으로 구분해요.
+        <h3>접근통제 지도</h3>
+        <p className="hint" style={{ marginTop: 0, marginBottom: 14 }}>
+          행: 계정·역할, 열: 자원. 빨간 칸은 접근되면 안 되는 조합이 열린 경우예요(같은 역할 간:{" "}
+          <Strong>수평 IDOR</Strong>, 상위 역할 자원: <Strong>수직 권한 상승</Strong>).
         </p>
-        <button className="btn primary" type="button" onClick={() => go("access-map")} style={{ marginTop: 14 }}>
-          접근통제 지도 열기 →
-        </button>
+        {data?.mock && <p className="map-mock">예시 데이터예요. 소유·권한 KG 연동 후 실제 결과로 채워져요.</p>}
+        {content}
       </div>
     </div>
   );

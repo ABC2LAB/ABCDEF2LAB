@@ -2,9 +2,10 @@ import type { ReactNode } from 'react';
 import { useGo } from '../nav';
 import { Brand } from './Brand';
 
-type NavKey = 'entry' | 'history' | 'settings';
+type NavKey = 'dashboard' | 'entry' | 'history' | 'settings';
 
 const NAV_ITEMS: Array<[NavKey, string]> = [
+  ['dashboard', '대시보드'],
   ['entry', '새 점검'],
   ['history', '점검 기록'],
   ['settings', '설정'],
@@ -43,7 +44,7 @@ export function TopBar({ current, right }: TopBarProps) {
 export function CancelLink() {
   const go = useGo();
   return (
-    <span className="muted-link" onClick={() => go('entry')}>
+    <span className="muted-link" onClick={() => go('dashboard')}>
       취소
     </span>
   );

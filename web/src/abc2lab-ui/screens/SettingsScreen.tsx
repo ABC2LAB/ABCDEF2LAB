@@ -5,7 +5,7 @@ import { TopBar } from "../components/TopBar";
 import { Pill, Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineInterceptRule, getInterceptRules, getLLM } from "../lib/engine";
-import { isInternalUrl } from "../lib/net";
+import { isLocalUrl } from "../lib/net";
 import { useGo } from "../nav";
 
 const bodyText = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
@@ -75,19 +75,6 @@ function actionLabel(action: string): string {
   return "알 수 없음";
 }
 
-/** base_url 의 **호스트**가 내부망/로컬을 가리키는지 판별 (완전 로컬 모드 표시용).
- *  전체 URL 문자열이 아니라 hostname 기준 — 쿼리에 'ollama' 가 있다고 로컬로 보지 않는다. */
-function isLocalUrl(u: string): boolean {
-  if (isInternalUrl(u) === true) return true; // localhost · 사설 IP · IPv6 루프백/ULA 등
-  let h: string;
-  try {
-    h = new URL(u).hostname.replace(/^\[/, "").replace(/\]$/, "");
-  } catch {
-    return false;
-  }
-  return /^(ollama|host\.docker\.internal)$/i.test(h);
-}
-
 /** ===== 설정 · 통제 정책 ===== */
 export default function SettingsScreen() {
   const go = useGo();
@@ -129,14 +116,14 @@ export default function SettingsScreen() {
         <div style={{ padding: "22px 24px", maxWidth: 780 }}>
           <h1 className="big">설정 · 통제 정책</h1>
           <p className="lead">
-            현재는 ARTEX <Strong>승인 게이트(intercept)</Strong>의 규칙과 모델 판정으로 도구 호출을 검토해요. 우리{" "}
+            현재는 <Strong>승인 게이트(intercept)</Strong>의 규칙과 모델 판정으로 도구 호출을 검토해요. 우리{" "}
             <Strong>전송 통제(E②, 네트워크 경계)</Strong>와 변조 탐지 감사는 아직 <Strong>연동 전</Strong>이에요.
           </p>
 
           {/* ── 활성 통제 규칙 (E②) — 실데이터 ── */}
           <div className="card">
             <h3>
-              활성 통제 규칙 <Sub>· ARTEX 승인 게이트(intercept)가 도구 호출을 거르는 규칙</Sub>
+              활성 통제 규칙 <Sub>· 승인 게이트(intercept)가 도구 호출을 거르는 규칙</Sub>
             </h3>
 
             {rulesRes.loading && <p style={bodyText}>불러오는 중…</p>}
@@ -173,7 +160,7 @@ export default function SettingsScreen() {
                   </div>
                 ))}
                 <div className="hint">
-                  ARTEX에 등록된 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E②) 연동 후 열려요(그 전엔
+                  등록된 승인 규칙이에요. 규칙 <Strong>추가·수정</Strong>은 우리 전송 통제(E②) 연동 후 열려요(그 전엔
                   읽기 전용).
                 </div>
               </>
@@ -193,9 +180,7 @@ export default function SettingsScreen() {
                   <Pill tone="muted">미설정</Pill>
                   <div style={{ minWidth: 0 }}>
                     <div className="nm">아직 모델이 연결되지 않았어요</div>
-                    <div className="ep">
-                      온프레: 로컬(Ollama) <code>ARTEX_LLM_BASE_URL</code> · 비민감: 외부 API
-                    </div>
+                    <div className="ep">온프레: 로컬(Ollama) · 비민감: 외부 API</div>
                   </div>
                 </div>
                 <div className="hint">
