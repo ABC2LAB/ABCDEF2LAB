@@ -114,7 +114,7 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 | 조회 범위 | 서버의 task 문맥 + envelope `run_id` + `reset_generation`·`policy_version`·판정 축 | §4.2 (4)의 내부 결속 검증을 따른다. 현재 `AccessMap`의 회차·세대 메타데이터/API 확장은 Open #6 |
 | 모델 헤더 메타 | `model_tag` + 회차 고정 모델 식별자·제공자·샘플링 메타 | 조회 축과 구분하되 envelope↔레코드 일치 검증은 유지(§4.2 (2) A) |
 | 셀 근거 선택·이력 | `id`·`case_ref`·`observed_at` + 전체 principal/resource ref | 동일 셀에 여러 case·재검증 레코드가 있을 수 있음 |
-| `policyVersion`(지도 헤더) | 선택 범위의 `policy_version` | 모든 표시 셀을 같은 snapshot으로 검증한 경우에만 단일 버전 표시 |
+| `policyVersion`(지도 헤더) | 선택 범위의 `policy_version` | 모든 표시 셀을 같은 snapshot으로 검증한 경우에만 단일 버전 표시. **1단계 포맷**(kg-fixture-registry §3): `kg-fixture/v1:<snapshot_id>:<digest 64hex>`(≤128바이트, 구분자 `:`). 지도 헤더는 이 문자열을 **변형·절단 없이 그대로** 표기(감사 표기와 1:1) — 이경준 확인(Open #1 (a)) |
 
 **조회 범위·선택을 먼저 검증한다(§4.2 (2)·(4)).** 한 지도는 서버가 선택한 task/run·reset 세대·정책 snapshot·판정 축에 한정한다. 레코드 envelope와 커버리지도 같은 범위여야 한다. `model_tag`는 헤더 메타이며, 조회 축에서 제외해도 envelope↔레코드의 메타 일치 검증을 생략하지 않는다. 다른 범위의 과거 레코드는 현재 셀에 재사용하지 않고 별도 이력으로만 읽는다. 필수 연결 누락·불일치가 있으면 해당 데이터의 로딩을 거부하거나 `unknown`과 부족 사유로 표시하며 색을 추정하지 않는다. `run_id`는 envelope의 회차 키이지 `case_ref`의 대체값이 아니다.
 
@@ -182,6 +182,7 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
    - `policy_version` = 정본 reader가 resolve 시점에 준 **snapshot 버전 문자열**(§3 이미 명시). 레코드의 `policy_valid_from/until`도 같은 reader가 싣고, 오라클이 `observed_at` 기준으로 유효성 판정(만료·`hint_matches_canonical=false` → UNDECIDABLE → 지도 `unknown`, §4.1).
    - **현재 구현과 구분**: `oracle.PolicyAssertion`·`idor.PolicyResolver.ResolvePolicy`는 정책 버전/reset 메타데이터를 반환하지 않는다. 위 snapshot 전달은 서버 관리 실행 묶음/어댑터의 보강 계약([seam §6.1](./idor-verifier-seam.md#61-현재-호출과-새-실행-책임))이며 정본 저장·발급 API는 아직 미정이다.
    - **이동찬 질문**: (a) 정본 reader = fixture 레지스트리인가 server config인가 — `policy_version` 문자열 **포맷·발급 주체**(지도 헤더·감사에 그대로 표기). (b) reset 세대 교체 시 정책 유효창 **무효화 지점**(세대 섞임 → 어댑터가 Evaluate 전 UNDECIDABLE, verdict-record §2d).
+   - **(a) 1단계 응답(#193 채택)**: 정본 reader = fixture 레지스트리([kg-fixture-registry](./kg-fixture-registry.md)). `policy_version` = `kg-fixture/v1:<snapshot_id>:<digest 64hex>` — resolver가 레지스트리 내용 digest로 **결정적 발급**(같은 내용=같은 값), ≤128바이트, 구분자 `:`만(§3). **지도 헤더 표기(이경준 확인)**: 이 문자열을 변형·절단 없이 그대로 표시하고 감사 표기와 1:1(§4.1 헤더 행). 포맷/길이 제약 추가 시 알려주면 반영. (b)는 kg-fixture-registry §4가 1단계 답(무효 snapshot → `ok=false` → UNDECIDABLE → 지도 `unknown`).
 2. **principal 역할 레벨(수직)의 소스** — 후속 수직 오라클 전에 선설계(권한 레벨 어디서 얻나).
 3. **canary 등록 저장 위치** — 자산 `Extra` 재사용 vs 신규 테이블. UX·`Trivial` 분류 주체는 KG 로 확정(§3.1), 등록 **계약 제안**(키·멱등·결속·역참조)은 §3.2 에서 정리하며 **저장 위치·물리 형식/API와 구현 연결**은 협의(최민준↔이동찬).
 4. **KG 저장소 테이블명·마이그레이션 담당** — oracle Open #5(판정 레코드 테이블)와 함께 최민준↔이동찬.
