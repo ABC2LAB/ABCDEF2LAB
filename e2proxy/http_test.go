@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/Autumn-27/artex/transmit/budget"
@@ -239,18 +241,28 @@ func proxyTestListener(t *testing.T, call *Call) (*Proxy, string, *x509.CertPool
 	if err != nil {
 		t.Fatal(err)
 	}
-	served := make(chan error, 1)
-	go func() { served <- p.Serve(listener) }()
+	ready := make(chan struct{})
+	served := make(chan struct{})
+	var serveErr error
+	go func() { serveErr = p.Serve(&proxyReadyListener{Listener: listener, ready: ready}); close(served) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if err := p.Close(ctx); err != nil {
 			t.Error("proxy did not drain")
 		}
-		if err := <-served; err != nil {
+		<-served
+		if serveErr != nil {
 			t.Error("proxy accept failed")
 		}
 	})
+	select {
+	case <-ready:
+	case <-served:
+		t.Fatal("proxy stopped before entering Accept")
+	case <-time.After(3 * time.Second):
+		t.Fatal("proxy did not enter Accept")
+	}
 	return p, listener.Addr().String(), roots
 }
 func proxyTestClient(t *testing.T, addr string, roots *x509.CertPool) *http.Client {
@@ -517,8 +529,12 @@ func TestProxyCloseDrainsIncompleteClientRequest(t *testing.T) {
 		t.Fatal("partial client prevented proxy drain")
 	}
 	conn.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err = conn.Read(make([]byte, 1)); err == nil {
-		t.Fatal("client connection remained open")
+	_, err = conn.Read(make([]byte, 1))
+	if deadline, ok := err.(net.Error); ok && deadline.Timeout() {
+		t.Fatal("read timeout is not evidence of connection closure")
+	}
+	if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatal("client did not observe EOF or a closed/reset connection")
 	}
 }
 
@@ -828,4 +844,15 @@ func TestProxyRawRequestPreservesHostAndRejectsMismatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+type proxyReadyListener struct {
+	net.Listener
+	once  sync.Once
+	ready chan struct{}
+}
+
+func (l *proxyReadyListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { close(l.ready) })
+	return l.Listener.Accept()
 }

@@ -166,3 +166,78 @@ func TestResponseHopFilterPreservesPublicControlLookingFields(t *testing.T) {
 		t.Fatal("ordinary response fields were treated as trusted control or removed")
 	}
 }
+
+func TestProxyRawUnsupportedProtocolsAreCountedAndNeverSent(t *testing.T) {
+	for _, kind := range []string{"websocket", "h2c", "http2_preface", "expect", "http12", "https_absolute", "origin_form"} {
+		t.Run(kind, func(t *testing.T) {
+			var received atomic.Int64
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1) }))
+			defer target.Close()
+			e, call := coreOpen(t, coreConfig(t, target.URL, &coreRecorder{}, 2))
+			_, addr, _ := proxyTestListener(t, call)
+			u, _ := url.Parse(target.URL)
+			uri := target.URL + "/allowed"
+			version, headers := "HTTP/1.1", ""
+			switch kind {
+			case "websocket":
+				headers = "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+			case "h2c":
+				headers = "Upgrade: h2c\r\nConnection: Upgrade, HTTP2-Settings\r\nHTTP2-Settings: AAAAAA\r\n"
+			case "expect":
+				headers = "Expect: 100-continue\r\n"
+			case "http12":
+				version = "HTTP/1.2"
+			case "https_absolute":
+				uri = "https://" + u.Host + "/allowed"
+			case "origin_form":
+				uri = "/allowed"
+			}
+			raw := "GET " + uri + " " + version + "\r\nHost: " + u.Host + "\r\n" + headers + "\r\n"
+			if kind == "http2_preface" {
+				raw = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+			}
+			conn, err := net.DialTimeout("tcp", addr, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+			if _, err = io.WriteString(conn, raw); err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "GET"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			remaining, budgetErr := e.BudgetRemaining()
+			if response.StatusCode != 400 || received.Load() != 0 || e.Snapshot().Counts.Unsupported != 1 || remaining != 2 || budgetErr != nil {
+				t.Fatal("unsupported raw protocol was downgraded, not counted, or sent")
+			}
+		})
+	}
+}
+
+func TestProxyRawEmptyPostKeepsContentLengthZero(t *testing.T) {
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if r.Header.Get("Content-Length") != "0" || len(r.TransferEncoding) != 0 || len(body) != 0 {
+			t.Error("raw empty POST was changed to chunked")
+		}
+		io.WriteString(w, "normal")
+	}))
+	defer target.Close()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 2)
+	cfg.Rules[0].Methods = []string{"POST"}
+	_, call := coreOpen(t, cfg)
+	_, addr, _ := proxyTestListener(t, call)
+	u, _ := url.Parse(target.URL)
+	response := proxyTransferRaw(t, addr, "POST", target.URL+"/allowed", u.Host, "Content-Length: 0\r\n")
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != 200 || received.Load() != 1 {
+		t.Fatal("raw empty POST positive failed")
+	}
+}
