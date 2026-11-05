@@ -25,7 +25,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 회차의 순서·입력 준비·집계는 [회차 실행 절차](official-run.md)(API 개발 측정·시범, GPU 공식 세션은 후속)를 따른다.
 
-채점: 완료 회차의 `run-record.json`을 채점 manifest의 `run_record_path`로 넣고 `python3 -I -B scripts/eval/score.py <manifest> --runner-key-file <러너 키>`로 채점한다(`records_path`는 records=null이면 읽지 않는다).
+채점: 완료 회차의 `run-record.json`을 채점 manifest의 `run_record_path`로 넣고 `python3 -I -B scripts/eval/score.py <manifest> --runner-key-file <러너 키>`로 채점한다(`records_path`는 records=null이면 읽지 않는다). E② 자리가 있는 조건이 있으면 성능 매트릭스 뒤에 **개선 후 통제 검증 표(프로토콜 §8.3)**가 따로 붙는다. 행은 다섯 칸·차단 후 대상 도달·E② 기록 없이 대상 도달·ID 재사용·허용 양성 근거 회차·통제 주장이고, 값은 회차 합계(회차별 값)다. 통제 주장을 보류한 조건은 사유 건수를 stderr 경고로도 낸다. 가짜 E² 조건은 조건을 채워도 "통제 증명 아님"으로 표시한다.
 
 ## 준비물
 
@@ -121,7 +121,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 그 SHA-256은 서명 근거 `run_conditions`에
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
-  attempt-reconciliation.json    e2.ours_mode=stub 회차만: 가짜 E² 결정 행 × 계측기 접수 행 시도별 대조(프로토콜 §8.3 다섯 칸·차단 후 도달·기록 없이 도달·ID 재사용·허용 양성 근거, 건수만, fixture=true). 통제 주장은 `control_claim_withheld=false`일 때만이고, 이 값은 허용 양성 근거가 없을 때도 true다
+  attempt-reconciliation.json    e2.ours_mode=stub 회차만: 가짜 E² 결정 행 × 계측기 접수 행 시도별 대조(프로토콜 §8.3 다섯 칸·차단 후 도달·기록 없이 도달·ID 재사용·허용 양성 근거, 건수만, fixture=true). 통제 주장은 `control_claim_withheld=false`일 때만이고, 이 값은 허용 양성 근거가 없을 때도 true다. 같은 건수가 서명 근거(`isolation-evidence.json`의 `attempt_reconciliation` 행)에도 들어가고, 채점기는 그 행으로 통제 검증 표를 만든다
   isolation-evidence.json        격리 근거 행(러너 기록 v1.1 §3.1 형식, 완료 회차만)
   solve-events.json              pre=false→post=true 키마다 isolated_window 해결 이벤트(평가 전용 key, 완료 회차만)
   run-record.json                서명된 러너 기록 v1.1(채점기 입력, 완료 회차만. records=null 판정 미수집)
