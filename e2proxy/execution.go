@@ -848,7 +848,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		copyReq.URL = &copyURL
 		req = copyReq
 	}
-	if req == nil || req.URL == nil || !supportedMethod(method) || req.ProtoMajor > 1 || req.Method == "CONNECT" || req.Header.Get("Upgrade") != "" || strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade") {
+	if req == nil || req.URL == nil || !supportedMethod(method) || req.ProtoMajor > 1 || req.ProtoMajor == 1 && req.ProtoMinor > 1 || req.Method == "CONNECT" || headerPresent(req.Header, "Upgrade") || headerPresent(req.Header, "Expect") || connectionUpgrade(req.Header) {
 		r.Decision = "unsupported"
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
@@ -945,7 +945,11 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		out.Header[k] = append([]string(nil), vs...)
 	}
 	out.Header.Set(AttemptHeader, r.AttemptID)
-	out.Body = io.NopCloser(bytes.NewReader(body))
+	if len(body) == 0 {
+		out.Body = http.NoBody
+	} else {
+		out.Body = io.NopCloser(bytes.NewReader(body))
+	}
 	out.ContentLength = int64(len(body))
 	out.TransferEncoding = nil
 	out.Trailer = nil
