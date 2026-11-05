@@ -58,7 +58,7 @@ func cloneHeaderClass(source http.Header, credential bool) (http.Header, error) 
 			return nil, ErrConfig
 		}
 		for _, value := range values {
-			if credential && value == "" {
+			if credential && (value == "" || strings.Trim(value, " \t") != value) {
 				return nil, ErrConfig
 			}
 			for _, c := range value {
