@@ -91,21 +91,47 @@ describe("DashboardScreen", () => {
   it("fills the four tiles from engine data", async () => {
     show();
     await screen.findAllByText("점검 run", { selector: ".recent-main .nm" });
-    expect(within(tile("진행 중인 점검")).getByText("2")).toBeVisible();
-    expect(within(tile("진행 중인 점검")).getByText("실행 1 · 일시중지 1")).toBeVisible();
-    expect(await within(tile("승인 대기")).findByText("1")).toBeVisible();
-    // 확인 필요 = 시간초과 1 + 커버리지 60% 1 (일시중지는 진행 중인 점검에서만 센다)
-    expect(await within(tile("확인 필요")).findByText("2")).toBeVisible();
-    expect(within(tile("확인 필요")).getByText("끝까지 못 감 · 미검사 영역")).toBeVisible();
-    // 최근 30일 3.6M, 그 전 30일 3.0M → +20%
-    expect(await within(tile("토큰 사용량 · 최근 30일")).findByText(/지난 30일 대비 \+20%/)).toBeVisible();
+    // 발견된 취약점 = 최근 30일 점검의 심각도 합계, 값과 심각도별 숫자를 빨간색(attn-crit)으로
+    const found = tile("발견된 취약점 · 최근 30일");
+    expect(within(found).getByText("12", { selector: ".v" })).toBeVisible();
+    expect(found).toHaveClass("attn-crit");
+    expect(found.querySelector(".sub")).toHaveTextContent("심각 3 · 높음 2 · 중간 6 · 낮음 1");
+    expect([...found.querySelectorAll(".sub b")].map((b) => b.textContent)).toEqual(["3", "2", "6", "1"]);
+    expect(await within(tile("결정 대기")).findByText("1")).toBeVisible();
+    expect(within(tile("결정 대기")).getByText("승인 1")).toBeVisible();
+    // 결과 확인 = 시간초과 1 + 커버리지 60% 1 (일시중지는 진행 중인 점검에서만 센다)
+    expect(await within(tile("결과 확인")).findByText("2")).toBeVisible();
+    expect(within(tile("결과 확인")).getByText("끝까지 못 감 · 미검사 영역")).toBeVisible();
+    // 최근 30일 3.6M(40일 전 3.0M 은 빠짐) ÷ 최근 30일 점검 5개 → 점검당 평균 720.0K, 지난 기간 비교는 없다
+    const token = tile("토큰 사용량 · 최근 30일");
+    expect(await within(token).findByText("점검당 평균 720.0K")).toBeVisible();
+    expect(token).not.toHaveTextContent("지난 30일 대비");
+    // 진행 중인 점검은 타일 대신 목록 제목 옆에 건수로 보인다
+    expect(screen.queryByText("진행 중인 점검", { selector: ".tile .k" })).toBeNull();
+    const activeHead = screen.getByText("진행 중인 점검", { selector: ".recent-head span" }).closest(".recent-head");
+    expect(within(activeHead as HTMLElement).getByText("2건")).toBeVisible();
+  });
+
+  it("shows no red count when the last 30 days have no findings", async () => {
+    vi.mocked(engine.listTasks).mockResolvedValue({
+      active: null,
+      tasks: [task("old", "done", 40 * 24, { critical: 2, high: 0, medium: 0, low: 0 }), task("ok", "done", 5)],
+    } as unknown as engine.TaskListResponse);
+    show();
+    const found = tile("발견된 취약점 · 최근 30일");
+    expect(await within(found).findByText("최근 30일 발견 없음")).toBeVisible();
+    expect(within(found).getByText("0", { selector: ".v" })).toBeVisible();
+    expect(found).not.toHaveClass("attn-crit");
   });
 
   it("draws finding bars as a share of all findings, not of the largest row", async () => {
     show();
-    expect(await screen.findByText(/총 12건/)).toBeVisible();
     const medium = screen.getAllByText("중간")[0].closest(".dash-sevrow") as HTMLElement;
+    await waitFor(() => expect(within(medium).getByText("6", { selector: ".n" })).toBeVisible());
     expect((medium.querySelector(".bar > i") as HTMLElement).style.width).toBe("50%");
+    // 합계는 위 타일에 있으니 발견 현황 제목에는 기간만 둔다
+    expect(screen.getByText("최근 30일", { selector: ".dash-h3sub" })).toBeVisible();
+    expect(screen.queryByText(/총 12건/)).toBeNull();
   });
 
   it("lists the low-coverage scan as something to check", async () => {
@@ -127,7 +153,7 @@ describe("DashboardScreen", () => {
     );
     show();
     const todoRows = () =>
-      within(screen.getByText("지금 처리할 일").closest("section") as HTMLElement).getAllByText(/승인 대기|확인 필요/, {
+      within(screen.getByText("지금 처리할 일").closest("section") as HTMLElement).getAllByText(/승인 대기|결과 확인/, {
         selector: ".stag",
       });
     // 승인 5 + 시간초과 1 + 덜 본 점검 1 = 7건 중 4건만
@@ -156,8 +182,9 @@ describe("DashboardScreen", () => {
     show();
     const section = (title: string) =>
       screen.getByText(title, { selector: ".recent-head span" }).closest("section") as HTMLElement;
-    await waitFor(() => expect(within(tile("확인 필요")).getByText("2")).toBeVisible());
-    expect(within(tile("진행 중인 점검")).getByText("실행 1 · 일시중지 1")).toBeVisible();
+    await waitFor(() => expect(within(tile("결과 확인")).getByText("2")).toBeVisible());
+    // 진행 중 2건(실행 1 + 일시중지 1)은 목록 제목 옆 건수로만 센다
+    expect(within(section("진행 중인 점검")).getByText("2건")).toBeVisible();
     // 처리할 일 목록에는 없고, 진행 중인 점검 목록에 일시중지로 한 번만 나온다
     expect(within(section("지금 처리할 일")).queryByText("점검 pause")).toBeNull();
     const row = within(section("진행 중인 점검")).getByText("점검 pause").closest(".recent-row") as HTMLElement;

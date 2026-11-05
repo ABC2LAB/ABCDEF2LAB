@@ -3624,6 +3624,14 @@ h1.big {
 .tile.attn-warn .v {
   color: var(--warn);
 }
+/* 발견된 취약점 타일: 합계와 심각도별 숫자를 빨간색으로 */
+.tile.attn-crit .v,
+.tile.attn-crit .sub b {
+  color: var(--crit);
+}
+.tile.attn-crit .sub b {
+  font-weight: 700;
+}
 .tile .v .unit {
   font-size: 14px;
   font-weight: 600;

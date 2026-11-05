@@ -94,6 +94,11 @@ const tileValue = (label: string) =>
   within(screen.getByText(label, { selector: ".tile .k" }).closest(".tile") as HTMLElement).getByText(/^\d+$|^—$/, {
     selector: ".v",
   });
+/** 진행 중인 점검은 타일 대신 목록 제목 옆 건수로 보인다(0건이면 건수 대신 빈 목록 안내) */
+const activeCount = () => {
+  const head = screen.getByText("진행 중인 점검", { selector: ".recent-head span" }).closest(".recent-head");
+  return head?.querySelector(".dash-cnt")?.textContent ?? "0건";
+};
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -124,28 +129,28 @@ describe("dashboard snapshot refresh", () => {
 
   it("reads tasks and approvals again when the dashboard is entered again", async () => {
     show();
-    await waitFor(() => expect(tileValue("진행 중인 점검")).toHaveTextContent("1"));
-    expect(tileValue("승인 대기")).toHaveTextContent("0");
+    await waitFor(() => expect(activeCount()).toBe("1건"));
+    expect(tileValue("결정 대기")).toHaveTextContent("0");
 
     finishAndAsk();
     fireEvent.click(screen.getByRole("button", { name: "다른 화면으로" }));
     fireEvent.click(screen.getByRole("button", { name: "대시보드로" }));
 
-    await waitFor(() => expect(tileValue("진행 중인 점검")).toHaveTextContent("0"));
-    await waitFor(() => expect(tileValue("승인 대기")).toHaveTextContent("1"));
+    await waitFor(() => expect(activeCount()).toBe("0건"));
+    await waitFor(() => expect(tileValue("결정 대기")).toHaveTextContent("1"));
     expect(engine.listTasks).toHaveBeenCalledTimes(2);
     expect(engine.listPendingApprovals).toHaveBeenCalledTimes(2);
   });
 
   it("reads them again on 새로고침 while staying on the dashboard", async () => {
     show();
-    await waitFor(() => expect(tileValue("진행 중인 점검")).toHaveTextContent("1"));
+    await waitFor(() => expect(activeCount()).toBe("1건"));
 
     finishAndAsk();
     fireEvent.click(screen.getByRole("button", { name: "새로고침" }));
 
-    await waitFor(() => expect(tileValue("진행 중인 점검")).toHaveTextContent("0"));
-    await waitFor(() => expect(tileValue("승인 대기")).toHaveTextContent("1"));
+    await waitFor(() => expect(activeCount()).toBe("0건"));
+    await waitFor(() => expect(tileValue("결정 대기")).toHaveTextContent("1"));
   });
 
   it("does not query while the dashboard is hidden", async () => {
