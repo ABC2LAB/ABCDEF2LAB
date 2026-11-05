@@ -374,10 +374,15 @@ func TestPacketChannelEarlyPacketCannotSend(t *testing.T) {
 	if raw, err = client.SyscallConn(); err != nil {
 		t.Fatal(err)
 	}
-	if err = raw.Control(func(fd uintptr) {
-		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PASSCRED, 1)
-	}); err != nil {
-		t.Fatal(err)
+	var sockErr error
+	controlErr := raw.Control(func(fd uintptr) {
+		sockErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PASSCRED, 1)
+	})
+	if controlErr != nil {
+		t.Fatalf("raw socket control: %v", controlErr)
+	}
+	if sockErr != nil {
+		t.Fatalf("enable SO_PASSCRED: %v", sockErr)
 	}
 	if _, err = client.Write([]byte(`{"version":1,"account_ref":"account:1","resource_ref":"item:1","nonce":"00000000000000000000000000000000"}`)); err != nil {
 		t.Fatal(err)
