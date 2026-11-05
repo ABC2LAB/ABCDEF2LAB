@@ -97,6 +97,10 @@ def _daemon_identity(docker_cli: str | None = None) -> dict[str, str]:
 def _namespace_issues(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any],
                       containers: list[dict[str, Any]]) -> list[str]:
     protected = {value for value in (tool.get("Id"), sender.get("Id"), target.get("Id")) if value}
+    known_ids = {
+        value for container in containers
+        if _CONTAINER_ID.fullmatch(value := str(container.get("Id", "")))
+    }
     issues = []
     for container in containers:
         if container.get("Id") in protected:
@@ -110,7 +114,7 @@ def _namespace_issues(tool: dict[str, Any], sender: dict[str, Any], target: dict
             peer = mode.removeprefix("container:")
             if peer in protected:
                 issues.append(f"unapproved_{kind}_namespace_peer")
-            elif not _CONTAINER_ID.fullmatch(peer):
+            elif peer not in known_ids:
                 issues.append(f"unresolved_{kind}_namespace_peer")
     return sorted(set(issues))
 

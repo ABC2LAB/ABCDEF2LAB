@@ -200,9 +200,10 @@ class RuntimeChecks(unittest.TestCase):
             "PidMode": "container:" + ("e" * 64),
             "IpcMode": "container:" + ("e" * 64),
         }}
+        unrelated_target = {"Id": "e" * 64, "HostConfig": {}}
         issues = check(self.tool, self.sender, self.target, self.network, self.volume,
                        VOLUME, NETWORK, RUN, PROJECT,
-                       [self.tool, self.sender, self.target, unrelated])
+                       [self.tool, self.sender, self.target, unrelated, unrelated_target])
         self.assertNotIn("unapproved_network_namespace_peer", issues)
         self.assertNotIn("unapproved_pid_namespace_peer", issues)
         self.assertNotIn("unapproved_ipc_namespace_peer", issues)
@@ -210,7 +211,10 @@ class RuntimeChecks(unittest.TestCase):
     def test_namespace_name_and_short_id_are_fail_closed(self):
         for field, value in (("NetworkMode", "sender-name"),
                              ("PidMode", "e" * 63),
-                             ("IpcMode", "g" * 64)):
+                             ("IpcMode", "g" * 64),
+                             ("NetworkMode", "f" * 64),
+                             ("PidMode", "f" * 64),
+                             ("IpcMode", "f" * 64)):
             with self.subTest(field=field):
                 peer = {"Id": "d" * 64, "HostConfig": {field: "container:" + value}}
                 issues = check(self.tool, self.sender, self.target, self.network, self.volume,
