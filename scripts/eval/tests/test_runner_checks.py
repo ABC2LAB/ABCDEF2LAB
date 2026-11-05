@@ -32,41 +32,53 @@ MEMBERS = {"engine_net": ("engine", "engine-db", "eval-meter", "eval-llm-gw", "e
            "target_net": ("target", "eval-meter", "eval-obs"), "llm_egress_net": ("eval-llm-gw",),
            "engine_api_net": ("eval-api",), "obs_net": ("eval-obs",)}
 INTERNAL = {"engine_net": True, "target_net": True, "llm_egress_net": False, "engine_api_net": False, "obs_net": False}
+# 개선 후 + 가짜 E²(compose.e2-stub.yaml): 엔진 망의 계측기 자리를 eval-e2가 받고, 계측기는 e2_net으로 옮긴다.
+E2_ID = "8" * 64
+MEMBERS_STUB = {"engine_net": ("engine", "engine-db", "eval-e2", "eval-llm-gw", "eval-api"),
+                "target_net": ("target", "eval-meter", "eval-obs"), "llm_egress_net": ("eval-llm-gw",),
+                "engine_api_net": ("eval-api",), "obs_net": ("eval-obs",), "e2_net": ("eval-e2", "eval-meter")}
 
 
-def plan_for(backend="api"):
+def plan_for(backend="api", e2=None, side="ours"):
     preflight = configuration()
     if backend == "local":
-        for side in ("baseline", "ours"):
-            preflight[side]["llm"] = local_llm()
-    config = parse_runner_config(runner_config())
-    return config, plan_run(config, preflight, "ours", "ours-1")
+        for name in ("baseline", "ours"):
+            preflight[name]["llm"] = local_llm()
+    payload = runner_config()
+    if e2 is not None:
+        payload["e2"]["ours_mode"] = e2
+    config = parse_runner_config(payload)
+    return config, plan_run(config, preflight, side, f"{side}-1")
 
 
-def raw_world():
-    """기대 구성과 정확히 같은 합성 docker inspect 출력(망·컨테이너)."""
+def raw_world(stub=False):
+    """기대 구성과 정확히 같은 합성 docker inspect 출력(망·컨테이너). stub=True는 개선 후 + 가짜 E² 구성."""
+    members = MEMBERS_STUB if stub else MEMBERS
+    net_ids = NET_IDS | ({"e2_net": f"{105:064x}"} if stub else {})
+    internal = INTERNAL | {"e2_net": True}
+    service_ids = SERVICE_IDS | ({"eval-e2": E2_ID} if stub else {})
     networks = []
-    for n, (key, services) in enumerate(MEMBERS.items()):
+    for n, (key, services) in enumerate(members.items()):
         networks.append({
-            "Id": NET_IDS[key], "Name": f"{PROJECT}_{key}", "Internal": INTERNAL[key],
+            "Id": net_ids[key], "Name": f"{PROJECT}_{key}", "Internal": internal[key],
             "Labels": {"com.docker.compose.project": PROJECT, "com.docker.compose.network": key},
             "IPAM": {"Config": [{"Subnet": f"172.{30 + n}.0.0/16", "Gateway": f"172.{30 + n}.0.1"}]},
-            "Containers": {SERVICE_IDS[s]: {"Name": f"{PROJECT}-{s}-1", "IPv4Address": f"172.{30 + n}.0.{i + 2}/16", "IPv6Address": ""}
+            "Containers": {service_ids[s]: {"Name": f"{PROJECT}-{s}-1", "IPv4Address": f"172.{30 + n}.0.{i + 2}/16", "IPv6Address": ""}
                            for i, s in enumerate(services)},
         })
     ports = {"engine": {"8787/tcp": None, "8788/tcp": None},
              "eval-api": {"8091/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18787"}]},
              "eval-llm-gw": {},
              "eval-obs": {"8081/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18081"}]},
-             "engine-db": {"5432/tcp": None}, "target": {"3000/tcp": None}, "eval-meter": {}}
+             "engine-db": {"5432/tcp": None}, "target": {"3000/tcp": None}, "eval-meter": {}, "eval-e2": {}}
     containers = []
-    for service, container_id in SERVICE_IDS.items():
-        attached = {f"{PROJECT}_{key}": {"NetworkID": NET_IDS[key], "IPAddress": "x"}
-                    for key, members in MEMBERS.items() if service in members}
+    for service, container_id in service_ids.items():
+        attached = {f"{PROJECT}_{key}": {"NetworkID": net_ids[key], "IPAddress": "x"}
+                    for key, nets in members.items() if service in nets}
         containers.append({"id": container_id, "project": PROJECT, "service": service, "image": "sha256:" + "9" * 64,
                            "running": True, "started_at": "2026-11-02T01:00:00.123456789Z", "restart_count": 0,
                            "ports": ports[service], "networks": attached,
-                           "network_mode": f"{PROJECT}_{next(k for k, m in MEMBERS.items() if service in m)}",
+                           "network_mode": f"{PROJECT}_{next(k for k, m in members.items() if service in m)}",
                            "pid_mode": ""})
     return networks, containers
 
@@ -105,13 +117,17 @@ def compose_layout(paths):
                     net = top.group(1)
                     internal.setdefault(net, False)
                 continue
-            if section == "services" and re.fullmatch(r"    networks:\s*", line):
+            networks_key = re.fullmatch(r"    networks:\s*(!override)?\s*", line)
+            if section == "services" and networks_key:
+                if networks_key.group(1):  # compose의 !override: 앞 파일의 망 목록을 버리고 이 목록으로 바꾼다
+                    service_nets[service] = set()
                 in_networks = True
                 continue
             if section == "services" and re.fullmatch(r"    \S.*", line):
                 in_networks = False
                 continue
-            item = re.fullmatch(r"      - ([A-Za-z0-9_.-]+)\s*", line)
+            item = (re.fullmatch(r"      - ([A-Za-z0-9_.-]+)\s*", line)
+                    or re.fullmatch(r"      ([A-Za-z0-9_.-]+):\s*(\{\})?\s*", line))  # 목록형·매핑형(별칭) 둘 다
             if in_networks and item:
                 service_nets[service].add(item.group(1))
             if section == "networks" and re.fullmatch(r"    internal:\s*true\s*", line):
@@ -121,15 +137,15 @@ def compose_layout(paths):
 
 class TestExpectations(unittest.TestCase):
     def test_topology_matches_compose_files_for_each_backend(self):
-        for backend in ("api", "local"):
-            config, plan = plan_for(backend)
+        for backend, e2 in (("api", None), ("local", None), ("api", "stub"), ("local", "stub")):
+            config, plan = plan_for(backend, e2)
             expected = expected_topology(config, plan)
             service_nets, internal = compose_layout(plan.compose_files)
             members = {}
             for service, nets in service_nets.items():
                 for net in nets:
                     members.setdefault(net, set()).add(service)
-            with self.subTest(backend=backend):
+            with self.subTest(backend=backend, e2=e2):
                 self.assertEqual({k: (v.internal, set(v.members)) for k, v in expected.networks.items()},
                                  {k: (internal[k], members.get(k, set())) for k in internal})
                 self.assertEqual(expected.services, frozenset(service_nets))
@@ -195,6 +211,51 @@ class TestExpectations(unittest.TestCase):
             expected_topology(config, plan)
         with self.assertRaises(CheckInputError):
             allowed_host_listens(config, plan)
+
+
+class TestE2Slot(unittest.TestCase):
+    """개선 후의 E② 자리(프로토콜 §2): 엔진 → E² → 계측기 → 대상, 엔진 → 계측기 직통 없음."""
+
+    def test_stub_takes_the_meter_slot_on_the_engine_net(self):
+        config, plan = plan_for(e2="stub")
+        expected = expected_topology(config, plan)
+        self.assertIn("eval-e2", expected.networks["engine_net"].members)
+        self.assertNotIn("eval-meter", expected.networks["engine_net"].members)
+        self.assertEqual(expected.networks["e2_net"].members, {"eval-e2", "eval-meter"})
+        self.assertTrue(expected.networks["e2_net"].internal)
+        self.assertEqual(expected.networks["target_net"].members, {"target", "eval-meter", "eval-obs"})
+        self.assertEqual(expected.publishes["eval-e2"], frozenset())
+
+    def test_baseline_never_gets_an_e2(self):
+        config, plan = plan_for(e2="stub", side="baseline")
+        expected = expected_topology(config, plan)
+        self.assertEqual(plan.e2_mode, "none")
+        self.assertNotIn("e2_net", expected.networks)
+        self.assertNotIn("eval-e2", expected.services)
+        self.assertIn("eval-meter", expected.networks["engine_net"].members)
+
+    def test_unknown_mode_is_refused(self):
+        import dataclasses
+        config, plan = plan_for()
+        with self.assertRaises(CheckInputError):
+            expected_topology(config, dataclasses.replace(plan, e2_mode="product"))
+
+    def test_stub_world_passes_and_a_direct_meter_path_is_caught(self):
+        config, plan = plan_for(e2="stub")
+        expected = expected_topology(config, plan)
+        networks, containers = raw_world(stub=True)
+        self.assertEqual(check_topology(expected, PROJECT, *facts(networks, containers)), [])
+        # 고장 주입: 계측기를 엔진 망에도 붙이면 엔진 → 계측기 직통이 생긴다.
+        by_key(networks, "engine_net")["Containers"][SERVICE_IDS["eval-meter"]] = {"IPv4Address": "172.30.0.9/16"}
+        by_service(containers, "eval-meter")["networks"]["e"] = {"NetworkID": NET_IDS["engine_net"]}
+        self.assertEqual(check_topology(expected, PROJECT, *facts(networks, containers)),
+                         ["network.engine_net: MEMBERS_MISMATCH"])
+
+    def test_stub_expectation_rejects_a_world_without_the_e2(self):
+        config, plan = plan_for(e2="stub")
+        violations = check_topology(expected_topology(config, plan), PROJECT, *facts(*raw_world()))
+        self.assertIn("service.eval-e2: MISSING", violations)
+        self.assertIn("network.e2_net: MISSING", violations)
 
 
 class TestParse(unittest.TestCase):

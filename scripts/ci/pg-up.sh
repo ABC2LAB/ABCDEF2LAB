@@ -39,6 +39,7 @@ declare -A databases=(
 	[ARTEX_AUDIT_TEST_DSN]=artex_audit
 	[ENGINE_METRICS_TEST_DSN]=artex_engine_metrics
 	[ARTEX_STORAGE_INSPECTION_TEST_DSN]=artex_storage_inspection
+	[ARTEX_FINALIZATION_SCOPE_TEST_DSN]=artex_finalization_scope
 )
 for name in $(printf '%s\n' "${!databases[@]}" | sort); do
 	"$bin/createdb" --host="$socket" --username="$user" "${databases[$name]}"
@@ -49,6 +50,9 @@ done
 owned="codex-owned-pg-v1:$(printf '%s' "$root" | sha256sum | cut -c1-64)"
 echo "ENGINE_METRICS_OWNED_TEST_PG=$owned"
 echo "ARTEX_STORAGE_INSPECTION_OWNED_PG=$owned"
+# server E③ 최종 저장 수명 PG 시험(#215)은 트리거 DDL을 만들므로 1회용 클러스터 확인을 요구한다. 그 시험이 지금 받는
+# 형식은 "1"이다(위 표식 형식으로 맞추면 여기만 바꾼다).
+echo "ARTEX_FINALIZATION_SCOPE_TEST_OWNED=1"
 echo "CI_PG_BIN=$bin"
 echo "CI_PG_SOCKET=$socket"
 echo "CI_PG_USER=$user"

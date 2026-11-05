@@ -1,0 +1,41 @@
+# 개선 후 회차의 E② 자리(평가 프로토콜 §2 "개선 후의 E② 배치")에 통과 전용 가짜 E²를 둔다.
+# compose.eval.yaml 위에 마지막으로 얹는다. 러너가 runner.json의 e2.ours_mode=stub일 때만 붙인다.
+#   엔진 ─(engine_net)─▶ eval-e2 ─(e2_net)─▶ eval-meter ─(target_net)─▶ target
+# 엔진은 지금처럼 http://eval-meter:<포트>로 보낸다(작업 문구·대상 origin·작업 요청 해시가 baseline과 같다).
+# 그 이름을 engine_net에서는 eval-e2가 별칭으로 받고, 실제 계측기는 engine_net에서 빠져 e2_net에만 있다.
+# 계측기는 eval-meter-upstream이라는 다른 별칭으로 둔다: eval-e2는 engine_net의 eval-meter 별칭도 가지므로,
+# 같은 이름을 upstream으로 쓰면 내장 DNS가 자기 자신을 돌려줄 수 있다.
+# 가짜 E²는 통제를 증명하지 않는다. 모든 결정 행이 fixture로 표시되고, 이 회차는 시범·공식·제품 결과가 아니다.
+# 서명 키·Docker 소켓은 주지 않는다.
+
+services:
+  eval-e2:
+    image: ${EVAL_METER_IMAGE:?}
+    user: "${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}"
+    command:
+      - -role=e2-stub
+      - -listen=:${EVAL_METER_PORT:?}
+      - -upstream=http://eval-meter-upstream:${EVAL_METER_PORT:?}
+      - -log-dir=/evidence
+    # 계측기 증거(meter/)와 다른 디렉터리다. E²는 독립 계측 로그·seal/drain 파일에 쓰지 못한다(#207 리뷰).
+    volumes:
+      - ${EVAL_E2_EVIDENCE_DIR:?}:/evidence
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [eval-meter]
+    networks:
+      engine_net:
+        aliases: [eval-meter]
+      e2_net: {}
+
+  eval-meter:
+    networks: !override
+      e2_net:
+        aliases: [eval-meter-upstream]
+      target_net: {}
+
+networks:
+  # 가짜 E²와 계측기만. 엔진은 붙지 않는다(엔진 → 계측기 직통 없음).
+  e2_net:
+    internal: true

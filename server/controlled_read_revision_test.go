@@ -282,8 +282,16 @@ func installRevisionWireFinding(t *testing.T, f *controlledReadDBFixture, h *dur
 			t.Fatal(err)
 		}
 		old := f.s
+		skillDir, dataDir := t.TempDir(), t.TempDir()
+		strictCtx, cancel := context.WithCancel(old.ctx)
 		var strict *Server
-		strict, err = NewWithRevisionedDurableControlledReadHost(old.ctx, f.m, t.TempDir(), t.TempDir(), keyDir, ControlledReadRevisionHostOptions{Durable: ControlledReadDurableHostOptions{Host: ControlledReadHostOptions{Mode: f.e.controlledReads.mode.host, Findings: resolve}, Publisher: f.e.controlledReads.publisher.factory}, Scope: scope, DescriptorRoot: root})
+		// Register after every temporary path and auth/global seam cleanup:
+		// restored task runtimes must join while those dependencies still exist.
+		t.Cleanup(func() {
+			cancel()
+			drainTestServer(t, strict)
+		})
+		strict, err = NewWithRevisionedDurableControlledReadHost(strictCtx, f.m, skillDir, dataDir, keyDir, ControlledReadRevisionHostOptions{Durable: ControlledReadDurableHostOptions{Host: ControlledReadHostOptions{Mode: f.e.controlledReads.mode.host, Findings: resolve}, Publisher: f.e.controlledReads.publisher.factory}, Scope: scope, DescriptorRoot: root})
 		if err == nil {
 			f.s, f.e, f.store = strict, strict.engine, strict.engine.controlledReads.store
 			f.e.started.Store(f.task.ID, true)
@@ -574,11 +582,24 @@ func TestRevisionWireStrictBootstrapRestoresAuthentication(t *testing.T) {
 			} else if _, err := f.m.pg.Exec(`DELETE FROM settings WHERE key=$1`, authPassKey); err != nil {
 				t.Fatal(err)
 			}
+			var restored *Server
 			t.Run("strict-bootstrap", func(t *testing.T) {
 				h := installDurableTestPublisher(t, f, "success")
 				services, scope, root := revisionWireServices(t, f, "strict-bootstrap")
 				installRevisionWireFinding(t, f, h, services, scope, root, "strict-bootstrap")
+				restored = f.s
 			})
+			if restored == nil || restored.ctx.Err() == nil {
+				t.Fatal("strict bootstrap lifecycle was not cancelled before restoring authentication")
+			}
+			if restored.engine.Started(f.task.ID) {
+				t.Fatal("strict bootstrap task runtime survived fixture cleanup")
+			}
+			select {
+			case <-restored.side.done:
+			default:
+				t.Fatal("strict bootstrap snapshot worker survived fixture cleanup")
+			}
 			got, exists, err := f.m.pg.GetSetting(authPassKey)
 			if err != nil || exists != present || present && got != value {
 				t.Fatal("strict bootstrap did not restore original auth presence/value")
