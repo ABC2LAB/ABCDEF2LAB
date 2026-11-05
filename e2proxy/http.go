@@ -90,7 +90,7 @@ func ValidateProxyConfig(cfg ProxyConfig) error {
 func validateProxyConfig(cfg ProxyConfig) (*x509.Certificate, crypto.Signer, error) {
 	if cfg.HeaderTimeout <= 0 || cfg.RequestTimeout <= 0 || cfg.HeaderTimeout > cfg.RequestTimeout ||
 		cfg.MaxHeaderBytes <= 0 || cfg.MaxHeaderBytes > maxProxyHeaderBytes || cfg.MaxConnections <= 0 ||
-		cfg.MaxConnections > 128 || len(cfg.CA.Certificate) == 0 {
+		cfg.MaxConnections > maxProxyConnections || len(cfg.CA.Certificate) == 0 {
 		return nil, nil, ErrProxy
 	}
 	ca, err := x509.ParseCertificate(bytes.Clone(cfg.CA.Certificate[0]))
