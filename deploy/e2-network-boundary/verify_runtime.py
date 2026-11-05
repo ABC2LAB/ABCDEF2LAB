@@ -206,8 +206,18 @@ def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], 
         issues.append("sender_namespace_unapproved")
     if tool_ids is not None and sender_ids is not None and (tool_ids[0] == sender_ids[0] or tool_ids[1] == sender_ids[1]):
         issues.append("process_users_not_separated")
-    if all_containers is not None:
+    if all_containers is None:
+        # Namespace and volume-peer checks require the complete daemon snapshot;
+        # a partial inspection must never be treated as a clean result.
+        issues.append("container_snapshot_unavailable")
+    else:
         issues.extend(_namespace_issues(tool, sender, target, all_containers))
+        allowed_channel_peer_ids = {tool.get("Id"), sender.get("Id")}
+        for container in all_containers:
+            if container.get("Id") in allowed_channel_peer_ids:
+                continue
+            if any(mount.get("Name") == channel_volume for mount in container.get("Mounts") or []):
+                issues.append("unapproved_channel_volume_peer_mount")
     return sorted(set(issues))
 
 

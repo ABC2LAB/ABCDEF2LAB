@@ -16,7 +16,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_boundary_docker import daemon_identity, docker, docker_bin
-from verify_runtime import _inspect, check
+from verify_runtime import _inspect, _inspect_containers, check
 
 
 def compose(files: list[str], project: str, env: dict[str, str], *args: str) -> str:
@@ -37,7 +37,7 @@ def main() -> int:
     project = "e2b-" + suffix
     run_ref = "synthetic-" + suffix
     network = "e2b-target-" + suffix
-    target = "e2b-target-" + suffix
+    target = "e2b-target-container-" + suffix
     volume = "e2b-channel-" + suffix
     files = [str(Path(__file__).with_name("compose.yaml")),
              str(Path(__file__).with_name("compose.fixture.yaml"))]
@@ -75,10 +75,11 @@ def main() -> int:
         sender_id = compose(files, project, env, "ps", "-q", "sender")
         if not tool_id or not sender_id:
             raise RuntimeError("compose_containers_missing")
+        all_containers = _inspect_containers()
         issues = check(_inspect("container", tool_id), _inspect("container", sender_id),
                        _inspect("container", target),
                        _inspect("network", network), _inspect("volume", volume), volume, network,
-                       run_ref, project)
+                       run_ref, project, all_containers)
         outcome["issues"] = issues
         if not issues:
             outcome["status"] = "PASS"

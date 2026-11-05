@@ -1,6 +1,6 @@
 # E② 도구 네트워크 경계(B)
 
-이 디렉터리는 아직 병합되지 않은 [`e2-network-enforcement.md`](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a5d828a9c1860bee566d38aa932d7149642712fb/docs/contracts/e2-network-enforcement.md)(`a5d828a9c1860bee566d38aa932d7149642712fb`)에 따른 B의 배포 경계 초안입니다. 실행 가능한 완성 서비스나 운영 승인 자료가 아닙니다. 현재 `agent.Worker.Execute`와 신뢰된 전송부는 같은 서버 프로세스에서 실행됩니다. C가 도구를 별도 프로세스로 옮겨야 이 구성을 사용할 수 있습니다. A #184에는 이미 수락된 Linux `SOCK_SEQPACKET` 연결을 처리하는 `ServePacketConn`이 추가됐지만 listener, 소켓 ACL, 실제 host 신원 검증자는 C가 제공해야 합니다.
+이 디렉터리는 [`e2-network-enforcement.md`](https://github.com/ABC2LAB/ABCDEF2LAB/blob/745b821167a8b1b0f1843fa3d8e3ed79e8f8409f/docs/contracts/e2-network-enforcement.md)(`745b821167a8b1b0f1843fa3d8e3ed79e8f8409f`)에 따른 B의 배포 경계 초안입니다. 실행 가능한 완성 서비스나 운영 승인 자료가 아닙니다. 현재 `agent.Worker.Execute`와 신뢰된 전송부는 같은 서버 프로세스에서 실행됩니다. C가 도구를 별도 프로세스로 옮겨야 이 구성을 사용할 수 있습니다. A #184에는 이미 수락된 Linux `SOCK_SEQPACKET` 연결을 처리하는 `ServePacketConn`이 추가됐지만 listener, 소켓 ACL, 실제 host 신원 검증자는 C가 제공해야 합니다.
 
 ## 출구 목록
 
@@ -17,7 +17,7 @@
 
 ## 실행 상태 검사와 남은 C 작업
 
-`verify_runtime.py`는 C가 프로세스를 시작한 뒤 **검사 시점의** Docker 객체 스냅샷을 확인합니다. 기본 CLI는 native `docker`이며 `E2_DOCKER_CLI` 또는 `--docker-cli`로 명시적으로 바꿀 수 있고, 출력에는 daemon의 제한된 신원(ID·이름·버전·OS)이 기록됩니다. 도구의 네트워크 모드·마운트·권한, 전송부의 네트워크·포트, 대상 네트워크의 `Internal` 값과 양쪽 `isolated` 게이트웨이 모드, 정확한 두 구성원, 채널 볼륨 레이블을 확인합니다. 실행 중인 두 프로세스의 Docker PID와 서로 다른 명시적 비root UID·GID도 요구하고, 전체 컨테이너 목록에서 대상 network namespace 또는 전송부 PID namespace에 합류한 제3 컨테이너를 정확한 ID로 거부합니다. 도구와 전송부의 IPC namespace는 `private`만 허용하며 대상의 추가 네트워크·공개 포트도 거부합니다. 이 검사는 권한을 부여하지 않으며 검사 시점 이후의 변경을 감시하지 않습니다. 검사기는 볼륨이 바인드 기반 `Options`가 없는 일반 로컬 볼륨인지도 확인합니다. C는 볼륨 내부를 검사하고 Unix 소켓 ACL을 집행해야 합니다. B의 메타데이터 검사만으로는 소켓의 소유자나 프로토콜 또는 살아 있는 프로세스 handle을 증명할 수 없습니다.
+`verify_runtime.py`는 C가 프로세스를 시작한 뒤 **검사 시점의** Docker 객체 스냅샷을 확인합니다. Docker Engine 28 이상을 사용해야 하며, 기본 CLI는 native `docker`이고 `E2_DOCKER_CLI` 또는 `--docker-cli`로 명시적으로 바꿀 수 있습니다. 출력에는 daemon의 제한된 신원(ID·이름·버전·OS)이 기록됩니다. 도구의 네트워크 모드·마운트·권한, 전송부의 네트워크·포트, 대상 네트워크의 `Internal` 값과 양쪽 `isolated` 게이트웨이 모드, 정확한 두 구성원, 채널 볼륨 레이블을 확인합니다. 실행 중인 두 프로세스의 Docker PID와 서로 다른 명시적 비root UID·GID도 요구하고, 전체 컨테이너 목록에서 tool·sender·target의 network/PID/IPC namespace에 합류한 외부 컨테이너를 거부합니다. 보호 대상과 참조 peer의 full ID는 실제 inspect 목록에 결속하고, 불명 참조나 전체 목록 누락은 검사 실패입니다. 채널 볼륨은 tool·sender만 마운트할 수 있으며 target을 포함한 다른 컨테이너의 마운트는 거부합니다. 도구와 전송부의 IPC namespace는 `private`만 허용하며 대상의 추가 네트워크·공개 포트도 거부합니다. 이 검사는 권한을 부여하지 않으며 검사 시점 이후의 변경을 감시하지 않습니다. 검사기는 볼륨이 바인드 기반 `Options`가 없는 일반 로컬 볼륨인지도 확인합니다. C는 볼륨 내부를 검사하고 Unix 소켓 ACL을 집행해야 합니다. B의 메타데이터 검사만으로는 소켓의 소유자나 프로토콜 또는 살아 있는 프로세스 handle을 증명할 수 없습니다.
 
 C는 계약 순서에 따라 `BlockNewFlows(run)`과 `TerminateAndWait(run)`을 제공하고, cgroup·프로세스·상속된 디스크립터의 종료 증거를 확보해야 합니다. 이어서 A의 신규 요청 차단·기존 요청 배출을 조율하고 감사 마감 뒤 권한을 해제해야 합니다. 컨테이너나 A만 중지한 사실로는 이 순서를 증명할 수 없습니다.
 

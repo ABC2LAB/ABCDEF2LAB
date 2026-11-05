@@ -68,7 +68,8 @@ class RuntimeChecks(unittest.TestCase):
         self.tool, self.sender, self.target, self.network, self.volume = copy.deepcopy(objects())
 
     def inspect(self):
-        return check(self.tool, self.sender, self.target, self.network, self.volume, VOLUME, NETWORK, RUN, PROJECT)
+        return check(self.tool, self.sender, self.target, self.network, self.volume, VOLUME, NETWORK, RUN, PROJECT,
+                     [self.tool, self.sender, self.target])
 
     def test_expected_boundary(self):
         self.assertEqual(self.inspect(), [])
@@ -178,6 +179,22 @@ class RuntimeChecks(unittest.TestCase):
                        VOLUME, NETWORK, RUN, PROJECT, [self.tool, self.sender, self.target, peer])
         self.assertIn("unapproved_network_namespace_peer", issues)
         self.assertIn("unapproved_pid_namespace_peer", issues)
+
+    def test_missing_container_snapshot_is_rejected(self):
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT)
+        self.assertIn("container_snapshot_unavailable", issues)
+
+    def test_foreign_channel_volume_mount_is_rejected(self):
+        for peer in (
+            {"Id": "c" * 64, "Mounts": [{"Name": VOLUME, "RW": False}]},
+            {"Id": "d" * 64, "Mounts": [{"Name": VOLUME, "RW": True}]},
+        ):
+            with self.subTest(peer=peer["Id"]):
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("unapproved_channel_volume_peer_mount", issues)
 
     def test_all_namespace_kinds_and_protected_roles_are_rejected(self):
         full_ids = {
@@ -359,6 +376,11 @@ class RuntimeChecks(unittest.TestCase):
         success_code, success = run_with({name: True for name in CHECK_NAMES}, extra=("--expect-success",))
         self.assertEqual(success_code, 0)
         self.assertTrue(success["positive_control"])
+        one_failed = {name: True for name in CHECK_NAMES}
+        one_failed[CHECK_NAMES[0]] = False
+        failed_code, failed = run_with(one_failed, extra=("--expect-success",))
+        self.assertEqual(failed_code, 1)
+        self.assertFalse(failed["positive_control"])
         blocked_code, blocked = run_with({name: False for name in CHECK_NAMES})
         self.assertEqual(blocked_code, 0)
         self.assertEqual(blocked["check_names"], list(CHECK_NAMES))

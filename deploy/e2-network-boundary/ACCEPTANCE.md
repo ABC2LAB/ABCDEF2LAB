@@ -1,6 +1,6 @@
 # B와 A/C 통합 수용시험 인계
 
-기준점: `dev` `f21d73fe89315ae69bd70051fb2d043d363ea1d0`, 미병합 계약 [#183](https://github.com/ABC2LAB/ABCDEF2LAB/pull/183) head `a5d828a9c1860bee566d38aa932d7149642712fb`, 미병합 A [#184](https://github.com/ABC2LAB/ABCDEF2LAB/pull/184) head `66dfebc6c4a337fac52b239f493e26302625dc7a`. 통합 전에 세 SHA를 다시 확인해야 합니다. #184는 Go의 `Open`, `SendRegisteredRead`, `CloseAdmission`, `StopAndWait` 및 수락된 Linux `SOCK_SEQPACKET` 연결용 `ServePacketConn`을 제공하지만 인증된 Unix 소켓 listener·ACL·host `PeerAuthorizer`는 제공하지 않습니다.
+기준점: `dev` `b0cc63b`, [#183](https://github.com/ABC2LAB/ABCDEF2LAB/pull/183) head `745b821167a8b1b0f1843fa3d8e3ed79e8f8409f`, [#184](https://github.com/ABC2LAB/ABCDEF2LAB/pull/184) merged commit `a8f0ed0`. 통합 전에 기준점과 검사 시점의 컨테이너·네트워크·볼륨 스냅샷을 다시 확인해야 합니다. #184는 Go의 `Open`, `SendRegisteredRead`, `CloseAdmission`, `StopAndWait` 및 수락된 Linux `SOCK_SEQPACKET` 연결용 `ServePacketConn`을 제공하지만 인증된 Unix 소켓 listener·ACL·host `PeerAuthorizer`는 제공하지 않습니다.
 
 B 단독 시험은 폐기 가능한 합성 컨테이너를 사용합니다. 그 결과는 실제 A+B+C 수용시험과 분리해서 기록해야 합니다. 여기서는 실제 계정, UID, 승인, 예산, 감사 키·epoch, 모델 또는 대상을 발급하거나 호출하지 않았습니다.
 

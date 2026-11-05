@@ -156,6 +156,10 @@ def main() -> int:
         else:
             raise RuntimeError("synthetic_positive_control_failed")
         script = Path(__file__).with_name("probe_network.py").read_text()
+        expected_names = [
+            "direct_ipv4_tcp", "direct_ipv6_tcp", "direct_ipv4_udp", "direct_ipv6_udp",
+            "dns_resolution", "proxy_replacement", "opaque_connect", "shell_child", "grandchild",
+        ]
         positive_before = count(target)
         positive = subprocess.run(
             [docker_bin(), "run", "--rm", "-i", "--pull=never", "--network", network,
@@ -164,7 +168,17 @@ def main() -> int:
              "--ipv6-udp-port", "8083", "--dns-name", target, "--expect-success"],
             input=script, text=True, capture_output=True, timeout=40, check=False,
         )
-        if positive.returncode != 0:
+        try:
+            positive_probe = json.loads(positive.stdout)
+        except (ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError("synthetic_same_probe_positive_control_invalid_json") from error
+        if (positive.returncode != 0 or positive_probe.get("check_names") != expected_names or
+                positive_probe.get("unexpected_errors") or
+                positive_probe.get("positive_control") is not True or
+                [item.get("name") for item in positive_probe.get("checks", [])] != expected_names or
+                not all(item.get("connected_or_sent") is True
+                        for item in positive_probe.get("checks", [])) or
+                len(positive_probe.get("checks", [])) != len(expected_names)):
             raise RuntimeError("synthetic_same_probe_positive_control_failed")
         positive_after = None
         for _ in range(15):
@@ -193,10 +207,6 @@ def main() -> int:
         probe = json.loads(result.stdout)
         observations["probe_results"] = probe.get("checks", [])
         observations["unexpected_errors"] = probe.get("unexpected_errors", [])
-        expected_names = [
-            "direct_ipv4_tcp", "direct_ipv6_tcp", "direct_ipv4_udp", "direct_ipv6_udp",
-            "dns_resolution", "proxy_replacement", "opaque_connect", "shell_child", "grandchild",
-        ]
         if probe.get("check_names") != expected_names or probe.get("unexpected_errors"):
             raise RuntimeError("synthetic_probe_error_or_name_mismatch")
         after = count(target)
