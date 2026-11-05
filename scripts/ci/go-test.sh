@@ -47,17 +47,20 @@ summary_limit=200
 failure_lines=40
 failure_tests=20
 failure_width=300
+# race 보고는 경합한 두 접근이 앞부분에 있어 끝부분만으로는 원인이 안 보인다. 첫 보고의 앞부분을 따로 붙인다.
+race_lines=40
 
 # 실패한 말단 시험(하위 시험이 실패한 부모는 제외)과, 시험 단위 실패 없이 실패한 패키지(빌드 오류 등)의
 # 출력 마지막 줄들. test2json의 output 이벤트는 그 출력을 낸 시험 이름으로, 컴파일 오류는 build-output으로 묶인다.
 failure_output() {
-	python3 -I - "$out" "$failure_lines" "$failure_tests" "$failure_width" <<'PY'
+	python3 -I - "$out" "$failure_lines" "$failure_tests" "$failure_width" "$race_lines" <<'PY'
 import json
 import sys
 from collections import defaultdict, deque
 
-path, per_test, max_tests, width = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+path, per_test, max_tests, width, race_max = sys.argv[1], *map(int, sys.argv[2:6])
 outputs = defaultdict(lambda: deque(maxlen=per_test))
+races = defaultdict(list)  # 시험마다 첫 race 보고의 앞부분
 builds = defaultdict(lambda: deque(maxlen=per_test))
 failed_tests, failed_packages, failed_builds = [], [], {}
 
@@ -77,7 +80,11 @@ with open(path, encoding="utf-8", errors="replace") as stream:
         if action == "build-output":
             builds[event.get("ImportPath", "")].append(clean(event.get("Output", "")))
         elif action == "output":
-            outputs[key].append(clean(event.get("Output", "")))
+            text = clean(event.get("Output", ""))
+            outputs[key].append(text)
+            race = races[key]
+            if (race and len(race) < race_max) or (not race and "WARNING: DATA RACE" in text):
+                race.append(text)
         elif action == "fail" and key[1]:
             failed_tests.append(key)
         elif action == "fail":
@@ -94,6 +101,10 @@ for package, test in targets[:max_tests]:
     lines = list(outputs[(package, test)])
     if not test and package in failed_builds:
         lines = list(builds[failed_builds[package]]) + lines
+    race = races.get((package, test), [])
+    if race and race[0] not in lines:
+        print("\n".join(race))
+        print("… (race 보고 중간 생략)")
     print("\n".join(lines[-per_test:]) or "(출력 없음)")
 if len(targets) > max_tests:
     print(f"… 실패 {len(targets) - max_tests}개는 생략")
