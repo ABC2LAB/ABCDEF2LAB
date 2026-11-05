@@ -157,9 +157,23 @@ export function buildCellResolver(cells: KgCell[]): (principalRef: string, resou
   };
 }
 
+/** 첫 등장만 남기는 distinct(§4.2 N4) — 중복 선언이 집계·렌더를 왜곡하지 않도록. */
+function distinctBy<T>(items: T[], key: (t: T) => string): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const it of items) {
+    const k = key(it);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(it);
+  }
+  return out;
+}
+
 /**
  * 렌더되는 격자 전체(중복·미반환 칸 포함) 기준 상태 집계.
- * axis 를 주면 해당 축(수평 H / 수직 V) 신원만 센다 — 헤드라인 칩은 판정 축(H)만 세기 위함(§0·§4.2(4)).
+ * - axis 를 주면 해당 축(수평 H / 수직 V) 신원만 센다 — 헤드라인 칩은 판정 축(H)만 세기 위함(§0·§4.2(4)).
+ * - 신원·자원 목록에 중복 ref 가 있어도 distinct 격자 기준으로 한 번만 센다(§4.2 N4).
  */
 export function countDecisions(map: AccessMap, axis?: KgAxis): Record<AccessDecision, number> {
   const resolve = buildCellResolver(map.cells);
@@ -173,11 +187,40 @@ export function countDecisions(map: AccessMap, axis?: KgAxis): Record<AccessDeci
     blank: 0,
     na: 0,
   };
-  const principals = axis ? map.principals.filter((p) => p.axis === axis) : map.principals;
+  const scoped = axis ? map.principals.filter((p) => p.axis === axis) : map.principals;
+  const principals = distinctBy(scoped, (p) => p.ref);
+  const resources = distinctBy(map.resources, (r) => r.id);
   for (const p of principals) {
-    for (const r of map.resources) c[resolve(p.ref, r.id).decision] += 1;
+    for (const r of resources) c[resolve(p.ref, r.id).decision] += 1;
   }
   return c;
+}
+
+/**
+ * projection 무결성 점검(§4.2(2)·N4) — 어긋난 레코드를 조용히 버리지 않고 센다.
+ * - outOfGrid: 선언된 격자(principals×resources) 밖을 가리켜 렌더에서 묻히는 레코드 수
+ * - dupPrincipals / dupResources: 신원·자원 목록의 중복 ref 수(집계·렌더 왜곡 원인)
+ * UI 는 이 값이 0 이 아니면 fail-closed 경고를 띄운다(데이터 불일치를 숨기지 않음).
+ */
+export type MapProjectionIssues = { outOfGrid: number; dupPrincipals: number; dupResources: number };
+
+export function mapProjectionIssues(map: AccessMap): MapProjectionIssues {
+  const principalRefs = new Set(map.principals.map((p) => p.ref));
+  const resourceIds = new Set(map.resources.map((r) => r.id));
+  let outOfGrid = 0;
+  for (const cell of map.cells) {
+    if (!principalRefs.has(cell.principalRef) || !resourceIds.has(cell.resourceId)) outOfGrid += 1;
+  }
+  return {
+    outOfGrid,
+    dupPrincipals: map.principals.length - principalRefs.size,
+    dupResources: map.resources.length - resourceIds.size,
+  };
+}
+
+/** 무결성 문제가 하나라도 있나(§4.2 N4). */
+export function hasProjectionIssues(iss: MapProjectionIssues): boolean {
+  return iss.outOfGrid > 0 || iss.dupPrincipals > 0 || iss.dupResources > 0;
 }
 
 // kg-policy 계약 shape 예시. 수평(A·B 교차)이 판정 축이고, 수직(admin·guest)은 후속 미리보기.

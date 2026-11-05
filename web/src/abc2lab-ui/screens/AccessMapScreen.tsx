@@ -13,6 +13,8 @@ import {
   DECISION_LABEL,
   getAccessMap,
   HELD_DECISIONS,
+  hasProjectionIssues,
+  mapProjectionIssues,
 } from "../lib/kg";
 import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
@@ -25,6 +27,15 @@ const noticeBox = {
   borderRadius: 6,
   padding: "10px 12px",
   marginBottom: 14,
+} as const;
+const warnBox = {
+  fontSize: 13,
+  color: "var(--warn)",
+  background: "var(--warn-weak)",
+  border: "1px solid var(--warn-border)",
+  borderRadius: 6,
+  padding: "10px 12px",
+  marginBottom: 12,
 } as const;
 
 /** 범례 점 색: 셀 판정 → dot 스타일 */
@@ -53,6 +64,8 @@ export default function AccessMapScreen() {
   const resolve = useMemo(() => buildCellResolver(data?.cells ?? []), [data]);
   // 헤드라인 칩은 판정 축(수평 H)만 센다 — 수직(V)은 후속 미리보기라 확정 수에 섞지 않는다(§4.2(4)).
   const counts = useMemo(() => (data ? countDecisions(data, "H") : null), [data]);
+  // projection 무결성(격자 밖 레코드·중복 선언) — 조용히 버리지 않고 경고로 노출(§4.2 N4).
+  const issues = useMemo(() => (data ? mapProjectionIssues(data) : null), [data]);
 
   return (
     <Screen id="access-map">
@@ -87,6 +100,13 @@ export default function AccessMapScreen() {
             </div>
           ) : (
             <>
+              {issues && hasProjectionIssues(issues) && (
+                <div style={warnBox}>
+                  projection 무결성 경고 — 격자 밖 레코드 {issues.outOfGrid}건, 중복 신원 {issues.dupPrincipals}건, 중복
+                  자원 {issues.dupResources}건. 조용히 버리지 않고 표시해요(fail-closed). 실 KG 연동 시 어댑터가 격자와
+                  일치해야 해요.
+                </div>
+              )}
               {counts && (
                 <div className="search" style={{ gap: 8, marginBottom: 12 }}>
                   {counts.vuln > 0 && <Pill tone="warn">취약 확정 {counts.vuln}</Pill>}
