@@ -1035,6 +1035,58 @@ details.adv[open] .chev {
   color: var(--warn);
   outline: 1.5px solid var(--warn-border);
 }
+/* 취약 의심(suspected) 전용 색 — 확정(빨강)·판정불가(주황)와 구분되는 별도 hue(kg-policy §4.2(3)) */
+:root {
+  --viol: #7839ee;
+  --viol-weak: #f4f3ff;
+  --viol-border: #d9d6fe;
+}
+@media (prefers-color-scheme: dark) {
+  /* OS 다크 + 앱 light 토글(data-theme=light)이면 적용 안 함 — 다른 토큰과 가드 규칙 통일 */
+  :root:not([data-theme="light"]) {
+    --viol: #a48afb;
+    --viol-weak: #1b1530;
+    --viol-border: #3f3072;
+  }
+}
+:root[data-theme="dark"] {
+  --viol: #a48afb;
+  --viol-weak: #1b1530;
+  --viol-border: #3f3072;
+}
+/* 취약 의심 — 확정과 색 자체를 분리(배지만으로 X, §4.2(3) 축소 화면 오인 방지) */
+.cell-suspected {
+  background: var(--viol-weak);
+  color: var(--viol);
+  outline: 1.5px solid var(--viol-border);
+}
+/* 기록 없음 — 조회 성공·근거 전무의 정직한 빈칸.
+   미검사(점선)·판정불가(주황)·정상차단(.cell-blk, 채운 회색)과 색으로 구분(빈 칸+실선 테두리) */
+.cell-blank {
+  background: transparent;
+  color: var(--faint);
+  border: 1px solid var(--line-2);
+}
+/* oracle_value 확정/의심 배지 — 셀 색을 1차로, 배지로 보강(§4.2(7)) */
+.cell-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  vertical-align: middle;
+  background: var(--surface);
+  border: 1px solid currentColor;
+}
+/* 정상 차단 Phase 3 보류 표식 */
+.cell-held {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.75;
+}
 .map-mock {
   font-size: 13px;
   color: var(--muted);

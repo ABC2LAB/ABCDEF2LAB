@@ -13,7 +13,7 @@ import { TopBar } from "../components/TopBar";
 import { Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineCoverage, type EngineFinding, getCoverage, getTask, listTaskFindings } from "../lib/engine";
-import { type AccessDecision, DECISION_CELL, DECISION_LABEL, getAccessMap } from "../lib/kg";
+import { type AccessDecision, buildCellResolver, DECISION_CELL, DECISION_LABEL, getAccessMap } from "../lib/kg";
 import { useSelection } from "../lib/selection";
 import { canonicalVulnClass } from "../lib/vulnclass";
 import { useGo } from "../nav";
@@ -876,30 +876,35 @@ function CoveragePanel({
 const CELL_SHORT: Record<AccessDecision, string> = {
   "allow-ok": "허용",
   "deny-ok": "차단",
-  vuln: "취약",
+  vuln: "확정",
+  suspected: "의심",
   unknown: "판정 불가",
   untested: "미검사",
+  blank: "기록 없음",
   na: "—",
 };
 const LEG_DOT: Record<AccessDecision, CSSProperties> = {
   "allow-ok": { background: "var(--teal)" },
   "deny-ok": { background: "var(--line-2)" },
   vuln: { background: "var(--danger)" },
+  suspected: { background: "var(--viol)" },
   unknown: { background: "var(--warn)" },
   untested: { background: "transparent", border: "1px dashed var(--line-2)" },
+  blank: { background: "var(--surface-2)", border: "1px solid var(--line-2)" },
   na: { background: "var(--faint)" },
 };
+/** 보고서 지도 범례 — 기본 축 + 실제로 나타난 상태만 추가 */
+const MAP_LEGEND_BASE: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "untested"];
+const MAP_LEGEND_EXTRA: AccessDecision[] = ["suspected", "unknown", "blank"];
 
 function MapPanel({ taskId }: { taskId: string }) {
   const { data, loading, error } = useApiResource(() => getAccessMap(taskId), [taskId]);
-  const cells = useMemo(() => {
-    const m = new Map<string, { decision: AccessDecision; note?: string }>();
-    for (const c of data?.cells ?? []) m.set(`${c.principalRef}|${c.resourceId}`, c);
-    return m;
-  }, [data]);
-  // 판정 불가는 실제로 있을 때만 범례에 넣는다
-  const legend: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "untested"];
-  if (data?.cells.some((c) => c.decision === "unknown")) legend.splice(3, 0, "unknown");
+  // 전체 지도와 동일한 fail-closed 규칙(중복·미반환 처리)을 공유 리졸버로 적용(kg §4.2(7)).
+  const resolve = useMemo(() => buildCellResolver(data?.cells ?? []), [data]);
+  // 실제로 나타난 추가 상태만 범례에 넣는다
+  const present = new Set<AccessDecision>();
+  if (data) for (const p of data.principals) for (const r of data.resources) present.add(resolve(p.ref, r.id).decision);
+  const legend: AccessDecision[] = [...MAP_LEGEND_BASE, ...MAP_LEGEND_EXTRA.filter((d) => present.has(d))];
 
   let content: ReactNode;
   if (loading) content = <p style={bodyText}>불러오는 중…</p>;
@@ -928,11 +933,15 @@ function MapPanel({ taskId }: { taskId: string }) {
                     <span className="sm">{pr.role}</span>
                   </td>
                   {data.resources.map((r) => {
-                    const cell = cells.get(`${pr.ref}|${r.id}`);
-                    const d: AccessDecision = cell?.decision ?? "untested";
+                    const { decision, note, projectionError } = resolve(pr.ref, r.id);
+                    const title = projectionError
+                      ? `판정 불가(projection): ${projectionError}`
+                      : note || DECISION_LABEL[decision];
                     return (
-                      <td key={r.id} className={DECISION_CELL[d]} title={cell?.note || DECISION_LABEL[d]}>
-                        {CELL_SHORT[d]}
+                      <td key={r.id} className={DECISION_CELL[decision]} title={title}>
+                        {/* 축소 뷰: 짧은 라벨(확정/의심)로 구분, 색이 1차 — 배지는 전체 지도에서.
+                            deny-ok(보류)은 리졸버가 unknown 으로 내리므로 여기 셀로는 안 나온다. */}
+                        <span>{CELL_SHORT[decision]}</span>
                       </td>
                     );
                   })}
