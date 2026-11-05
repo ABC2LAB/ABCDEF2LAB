@@ -17,8 +17,9 @@ services:
       - -listen=:${EVAL_METER_PORT:?}
       - -upstream=http://eval-meter-upstream:${EVAL_METER_PORT:?}
       - -log-dir=/evidence
+    # 계측기 증거(meter/)와 다른 디렉터리다. E²는 독립 계측 로그·seal/drain 파일에 쓰지 못한다(#207 리뷰).
     volumes:
-      - ${EVAL_EVIDENCE_DIR:?}:/evidence
+      - ${EVAL_E2_EVIDENCE_DIR:?}:/evidence
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

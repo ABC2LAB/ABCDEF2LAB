@@ -84,7 +84,10 @@ class TestMeterFiles(unittest.TestCase):
         self.dir = Path(self.tmp.name, "meter")
         self.dir.mkdir(mode=0o700)
         os.chmod(self.dir, 0o700)
-        self.meter = MeterFiles(self.dir)
+        self.e2_dir = Path(self.tmp.name, "e2")
+        self.e2_dir.mkdir(mode=0o700)
+        os.chmod(self.e2_dir, 0o700)
+        self.meter = MeterFiles(self.dir, self.e2_dir)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -94,8 +97,13 @@ class TestMeterFiles(unittest.TestCase):
         path.write_text(text)
         os.chmod(path, 0o600)
 
+    def write_e2(self, text):
+        path = self.e2_dir / "e2-stub-decisions.jsonl"
+        path.write_text(text)
+        os.chmod(path, 0o600)
+
     def stub_rows(self, *rows):
-        self.write("e2-stub-decisions.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
+        self.write_e2("".join(json.dumps(r) + "\n" for r in rows))
 
     @staticmethod
     def stub_row(seq, decision="allowed", attempt=None, **extra):
@@ -110,8 +118,12 @@ class TestMeterFiles(unittest.TestCase):
                        self.stub_row(4))
         self.assertEqual(self.meter.e2_stub_summary(),
                          {"decision_rows": 4, "allowed": 2, "unsupported": 1, "unavailable": 1})
-        self.write("e2-stub-decisions.jsonl", "")
+        self.write_e2("")
         self.assertEqual(self.meter.e2_stub_summary()["decision_rows"], 0)
+        # 계측기 디렉터리에 같은 이름이 있어도 읽지 않는다(E²는 계측기 증거를 쓰지 않는다).
+        self.write("e2-stub-decisions.jsonl", json.dumps(self.stub_row(1)) + "\n")
+        self.assertEqual(self.meter.e2_stub_summary()["decision_rows"], 0)
+        self.assertRaisesRegex(Exception, "e2_stub_log_missing", MeterFiles(self.dir).e2_stub_summary)
 
     def test_e2_stub_summary_rejects_bad_rows(self):
         from runner_evidence import EvidenceError
@@ -131,7 +143,7 @@ class TestMeterFiles(unittest.TestCase):
                 self.stub_rows(*rows)
                 with self.assertRaises(EvidenceError):
                     self.meter.e2_stub_summary()
-        (self.dir / "e2-stub-decisions.jsonl").unlink()
+        (self.e2_dir / "e2-stub-decisions.jsonl").unlink()
         with self.assertRaisesRegex(EvidenceError, "e2_stub_log_missing"):
             self.meter.e2_stub_summary()
 

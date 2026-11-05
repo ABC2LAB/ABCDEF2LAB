@@ -339,6 +339,9 @@ class TestE2Mode(unittest.TestCase):
         self.assertIn(f"-upstream=http://{METER_UPSTREAM_ALIAS}:${{EVAL_METER_PORT:?}}", text)
         self.assertIn("-role=e2-stub", text)
         self.assertIn("networks: !override", text)  # 계측기를 엔진 망에서 빼는 줄
+        # E²는 따로 둔 증거 디렉터리에만 쓴다. 계측기 증거(meter/) 경로를 마운트하지 않는다.
+        self.assertIn("- ${EVAL_E2_EVIDENCE_DIR:?}:/evidence", text)
+        self.assertNotIn("EVAL_EVIDENCE_DIR", text)
 
 
 class TestPlanRun(unittest.TestCase):
@@ -489,17 +492,18 @@ class TestRunDirectory(unittest.TestCase):
 
     def test_creates_private_run_and_meter_directories(self):
         directory = create_run_directory(self.root, "ours-1")
-        for path in (directory.run, directory.meter, directory.llm):
+        for path in (directory.run, directory.meter, directory.llm, directory.e2):
             info = os.lstat(path)
             self.assertTrue(stat.S_ISDIR(info.st_mode))
             self.assertEqual(stat.S_IMODE(info.st_mode), 0o700)
             self.assertEqual(info.st_uid, os.geteuid())
         self.assertEqual(directory.meter.parent, directory.run)
+        self.assertNotEqual(directory.e2, directory.meter)  # E² 증거는 계측기 증거와 다른 bind 디렉터리
 
     def test_mode_is_exact_even_when_umask_strips_owner_bits(self):
         os.umask(0o277)
         directory = create_run_directory(self.root, "ours-1")
-        for path in (directory.run, directory.meter, directory.llm):
+        for path in (directory.run, directory.meter, directory.llm, directory.e2):
             self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o700)
 
     def test_existing_run_directory_rejected(self):

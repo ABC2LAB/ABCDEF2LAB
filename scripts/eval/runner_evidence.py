@@ -186,10 +186,11 @@ def sequence_complete(rows: list[dict]) -> bool:
 
 
 class MeterFiles:
-    """계측기 bind 디렉터리 읽기. 러너는 쓰지 않는다."""
+    """계측기 bind 디렉터리 읽기. 러너는 쓰지 않는다. e2_path는 가짜 E²의 따로 둔 bind 디렉터리다."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, e2_path: Path | None = None):
         self.path = path
+        self.e2_path = e2_path
 
     def engine_rows(self) -> list[dict]:
         rows = _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW)
@@ -209,7 +210,7 @@ class MeterFiles:
 
         파일이 없으면(가짜 E²가 뜨지 않음) 회차 근거가 없는 것이다. 건수만 기록하고, 계측기 행과의 시도별 대조는 채점 쪽 몫이다.
         """
-        data = _read_owned(self.path, E2_STUB_LOG)
+        data = None if self.e2_path is None else _read_owned(self.e2_path, E2_STUB_LOG)
         if data is None:
             raise EvidenceError("e2_stub_log_missing")
         rows = _rows(data, _E2_STUB_ROW)

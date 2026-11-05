@@ -825,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ports = DockerPorts(config, plan, directory, docker, findings, start, settings)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
-    result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat), ports, MeterFiles(directory.meter),
+    result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat), ports, MeterFiles(directory.meter, directory.e2),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
     return 0 if result["status"] == COMPLETE else 1

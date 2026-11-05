@@ -37,6 +37,8 @@ COMPOSE_E2_STUB = REPO_ROOT / "deploy" / "eval" / "compose.e2-stub.yaml"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
 LLM_DIR_NAME = "llm"
+# 가짜 E²(e2.ours_mode=stub) 결정 행 디렉터리. 계측기 증거와 분리해 E²가 독립 계측 로그·seal 파일에 쓸 수 없게 한다.
+E2_DIR_NAME = "e2"
 # compose가 비밀 env 파일에서 직접 읽는 이름. 러너는 이 값을 만들지도 읽지도 않는다.
 # compose 파일의 나머지 ${VAR}는 전부 러너가 넘긴다(테스트로 집합 일치를 고정).
 _BASE_SECRETS = frozenset({"EVAL_ENGINE_ADMIN_PASSWORD", "EVAL_ENGINE_DB_PASSWORD"})
@@ -232,6 +234,7 @@ class RunDirectory:
     run: Path
     meter: Path
     llm: Path
+    e2: Path
 
 
 def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
@@ -628,6 +631,7 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
         try:
             os.close(_make_private_child(run_fd, METER_DIR_NAME))
             os.close(_make_private_child(run_fd, LLM_DIR_NAME))
+            os.close(_make_private_child(run_fd, E2_DIR_NAME))
         finally:
             os.close(run_fd)
     except FileExistsError:
@@ -637,17 +641,18 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
     finally:
         os.close(root_fd)
     run = runs_root / run_id
-    return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME)
+    return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME, e2=run / E2_DIR_NAME)
 
 
 def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str]:
     env = dict(plan.compose_env)
     env["EVAL_EVIDENCE_DIR"] = str(directory.meter)
     env["EVAL_LLM_EVIDENCE_DIR"] = str(directory.llm)
+    if plan.e2_mode == E2_STUB:
+        env["EVAL_E2_EVIDENCE_DIR"] = str(directory.e2)
     env["EVAL_RUNNER_UID"] = str(os.geteuid())
     env["EVAL_RUNNER_GID"] = str(os.getegid())
     return env
-
 
 def secret_env_names(backend: str) -> frozenset[str]:
     """그 백엔드의 compose가 비밀 env 파일에서 읽는 이름. local에는 API 키가 없다."""
