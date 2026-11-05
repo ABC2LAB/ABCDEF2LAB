@@ -17,8 +17,12 @@ from __future__ import annotations
 import argparse
 import calendar
 import getpass
+import hashlib
+import json
 import http.client
 import os
+import platform
+import re
 import sys
 import time
 from contextlib import closing
@@ -45,7 +49,7 @@ from runner_config import (  # noqa: E402
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from runner_engine import (  # noqa: E402
-    AdminSecret, EngineAPIError, collect_findings, load_vocabulary, start_task, task_request,
+    AdminSecret, EngineAPIError, collect_findings, engine_settings, load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, FORCED_CANCELLED_OUTCOME, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
@@ -104,6 +108,8 @@ class RunPorts(Protocol):
     def probe(self, phase: str, snapshot: dict) -> ProbeOutcome: ...
     def wait_ready(self) -> int: ...
     def scoreboard(self, phase: str, snapshot: dict) -> dict: ...
+    def engine_settings(self) -> dict: ...
+    def host_spec(self) -> dict: ...
     def start_task(self) -> str: ...
     def start_host_watch(self) -> "WatchHandle": ...
     def start_events(self, since: str) -> "EventsHandle": ...
@@ -138,13 +144,18 @@ class RunSpec:
     post_settle_seconds: int
     llm_provider_slug: str
     llm_provider_name: str
+    # 게이트웨이가 넣어야 할 샘플링(api, 선언에서 만든 값). local은 None.
+    llm_sampling: dict | None
     llm_verify_timeout_seconds: int
     task_request_sha256: str
     host_watch_max_gap_seconds: float
     events_lookback_seconds: float
     # 선언한 엔진 LLM 정책 모드. baseline(e53a79f)에는 이 스위치가 없어 None(선언 없음)이다.
     llm_policy_mode: str | None
+    # 러너 설정의 엔진 LLM 스트리밍(ARTEX_LLM_STREAM). 엔진 설정 API에 안 나와 설정 스냅샷 해시로는 차이를 못 잡는다.
+    llm_stream: bool
     tmpfs_min_free_bytes: int
+    worker_count: int
     condition: str
     repeat_index: int
     model_tag: str
@@ -178,6 +189,8 @@ class _State:
     record: dict | None = None
     tmpfs_usage: object = TMPFS_NOT_MEASURED
     tmpfs_pre: dict | None = None
+    host: dict | None = None
+    engine_settings_sha256: str | None = None
 
 
 def _stamp(clock: Clock) -> str:
@@ -320,6 +333,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     found = _step(state, "image_id_failed", ports.image_ids)
     if found != spec.image_ids:
         raise RunFailure("image_id_mismatch")
+    # baseline·개선 후가 같은 머신에서 돌았는지 채점기가 대조한다(평가 프로토콜 §5.1).
+    state.host = _step(state, "host_spec_failed", ports.host_spec)
+    if not _host_spec_ok(state.host):
+        raise RunFailure("host_spec_failed")
     state.up_attempted = True
     _step(state, "compose_up_failed", ports.up)
 
@@ -344,6 +361,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     pre_forwarded = _step(state, "meter_read_failed", meter.forwarded)
     if pre_forwarded != 0:
         raise RunFailure("pre_requests_nonzero")  # 작업 시작 전에 엔진이 대상으로 보냈다
+    # 작업 생성 전 실행 설정 전체. 선언과 다르거나 송신 경로를 바꾸는 값이 있으면 그 회차는 같은 조건이 아니다.
+    settings = _step(state, "engine_settings_failed", ports.engine_settings)
+    if not _settings_match(settings, spec):
+        raise RunFailure("engine_settings_mismatch")
+    state.engine_settings_sha256 = canonical_sha256(settings)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("engine-settings.json", settings))
 
     # 예산 시계는 생성 요청 직전부터 잰다(엔진은 생성과 동시에 기동하므로 요청 지연도 예산에 넣는다).
     requested_at, started = _stamp(clock), clock.monotonic()
@@ -420,7 +443,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     _step(state, "evidence_write_failed", lambda: evidence.write_json("meter-summary.json", meter_summary))
     verified = _wait_llm_verified(spec, gateway, clock, state)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
-        verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name))
+        verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling))
     _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json",
                                                                       dict(llm_summary, reasons=llm_reasons)))
     if llm_reasons:
@@ -430,10 +453,18 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
     steps = timeline({"fixture_ready": fixture_ready_at, "pre": pre_board["received_at"], "engine_start": requested_at,
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
+    # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
+    # 스트리밍은 엔진이 SSE와 비스트리밍 경로를 고르는 값이라 시간·응답 처리 조건이 달라진다(#174 리뷰). 선언값이다.
+    conditions = {"engine_settings_sha256": state.engine_settings_sha256, "workers": spec.worker_count,
+                  "llm_stream": spec.llm_stream,
+                  "sampling": llm_summary["sampling_applied"],
+                  "host": {key: value for key, value in state.host.items() if key != "machine_id_sha256"},
+                  "machine_id_sha256": state.host["machine_id_sha256"]}
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
-        observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at))
+        observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
+                     "run_conditions": conditions,
                      "task_request_sha256": spec.task_request_sha256,
                      # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline은 스위치가 없어 선언도 null.
                      "engine_llm_policy": {"declared": spec.llm_policy_mode, "observed": None},
@@ -445,7 +476,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
 def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict, pre_board: dict, post_board: dict,
                   pre_solved: dict, post_solved: dict, steps: dict, window: dict, observer: list, ready_calls: int,
                   meter_summary: dict, drained: dict, engine_rows: int, pre_checked_at: str,
-                  post_check_at: str) -> dict:
+                  post_check_at: str, conditions: dict) -> dict:
     """v1.1 러너 기록(서명 전)과 그 근거 파일 둘(격리 근거·해결 이벤트)을 만든다. 서명은 down 뒤."""
     context = RecordContext(run_id=spec.run_id, model_tag=spec.model_tag,
                             reset_generation=pre["services"][TARGET_SERVICE]["id"],
@@ -461,7 +492,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
         pre_listeners=state.listeners["pre"], post_listeners=state.listeners["post"], allowed=allowed,
         boundary_ref=boundary_ref, policy=policy, steps=steps, observer_rows=observer, ready_calls=ready_calls,
         observer_path_ref=get_ref, readonly_ref=spec.observer_readonly_ref, meter=meter_summary,
-        drained=drained, engine_rows=engine_rows)
+        drained=drained, engine_rows=engine_rows, conditions=conditions)
     evidence.write_json("isolation-evidence.json", isolation_evidence(context, rows))
     evidence_sha, evidence_size = evidence.describe("isolation-evidence.json")
     in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
@@ -548,6 +579,51 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
 # ---- 실제 연결(docker·HTTP·운영자). 판정 규칙은 위와 runner_checks·runner_probe에 있다. ----
 
 
+HOST_SPEC_FIELDS = frozenset({"cpu_model", "logical_cpus", "memory_kib", "kernel", "docker_server_version",
+                              "machine_id_sha256"})
+_MACHINE_ID = re.compile(r"[0-9a-f]{32}\Z")
+_HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+# 머신 ID 원문은 남기지 않는다. 같은 머신인지 대조할 해시만 남기고, 다른 용도의 해시와 섞이지 않게 접두를 붙인다.
+MACHINE_ID_DOMAIN = "abc2lab-eval-machine-v1:"
+# 엔진 송신 경로를 바꾸는 프록시 설정(runner_engine이 설정 여부로 바꾼 키).
+_PROXY_SET = {"settings": ("web_search_proxy_set", "global_proxy_set"), "llm": ("proxy_set",)}
+
+
+def read_host_spec(read_text: Callable[[str], str | None], docker_version: str, cpu_count: int | None,
+                   kernel: str) -> dict:
+    """평가 머신 사양. CPU 모델·논리 CPU·메모리·커널·Docker 버전과 머신 ID 해시. 읽지 못하면 고정 코드로 실패한다."""
+    cpuinfo, meminfo, machine_id = (read_text(path) for path in ("/proc/cpuinfo", "/proc/meminfo", "/etc/machine-id"))
+    models = [line.split(":", 1)[1].strip() for line in (cpuinfo or "").splitlines()
+              if line.startswith("model name") and ":" in line]
+    memory = [line.split()[1] for line in (meminfo or "").splitlines()
+              if line.startswith("MemTotal:") and len(line.split()) == 3 and line.split()[2] == "kB"]
+    machine = (machine_id or "").strip()
+    if not models or not models[0] or len(memory) != 1 or not memory[0].isdigit() or not _MACHINE_ID.fullmatch(machine):
+        raise RunFailure("host_spec_failed")
+    return {"cpu_model": models[0], "logical_cpus": cpu_count, "memory_kib": int(memory[0]), "kernel": kernel,
+            "docker_server_version": docker_version,
+            "machine_id_sha256": hashlib.sha256((MACHINE_ID_DOMAIN + machine).encode("ascii")).hexdigest()}
+
+
+def _host_spec_ok(host: object) -> bool:
+    return (isinstance(host, dict) and set(host) == HOST_SPEC_FIELDS
+            and all(isinstance(host[name], str) and host[name]
+                    for name in ("cpu_model", "kernel", "docker_server_version"))
+            and all(type(host[name]) is int and host[name] >= 1 for name in ("logical_cpus", "memory_kib"))
+            and isinstance(host["machine_id_sha256"], str) and bool(_HEX64.fullmatch(host["machine_id_sha256"])))
+
+
+def _settings_match(settings: object, spec: RunSpec) -> bool:
+    """실행 설정 스냅샷이 선언과 맞고 송신 경로를 바꾸는 값이 없는지. workers는 선언 worker_count와 같아야 한다."""
+    if not isinstance(settings, dict) or set(settings) != set(_PROXY_SET):
+        return False
+    engine, llm = settings["settings"], settings["llm"]
+    proxies = [part[name] for part, names in ((engine, _PROXY_SET["settings"]), (llm, _PROXY_SET["llm"]))
+               for name in names]
+    return (type(engine.get("workers")) is int and engine["workers"] == spec.worker_count
+            and llm.get("model") == spec.model_tag and all(value is False for value in proxies))
+
+
 def _read_text(path: str) -> str | None:
     try:
         with open(path, encoding="ascii") as source:
@@ -558,9 +634,9 @@ def _read_text(path: str) -> str | None:
 
 class DockerPorts:
     def __init__(self, config: RunnerConfig, plan: RunPlan, directory: RunDirectory, docker: Docker,
-                 findings: Callable[[], dict], start: Callable[[], str]):
+                 findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict]):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
-        self._findings, self._start = findings, start
+        self._findings, self._start, self._settings = findings, start, settings
         self.base_args = compose_base_args(plan)
         self.obs_origin = f"http://127.0.0.1:{config.ports['obs_host']}"
 
@@ -628,6 +704,12 @@ class DockerPorts:
                 "requested_at": collected.requested_at, "received_at": collected.received_at,
                 "solved": normalized["solved"]}
 
+    def engine_settings(self) -> dict:
+        return self._settings()
+
+    def host_spec(self) -> dict:
+        return read_host_spec(_read_text, self.docker.daemon().version, os.cpu_count(), platform.release())
+
     def start_task(self) -> str:
         return self._start()
 
@@ -672,6 +754,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         drain_grace_seconds=config.run["drain_grace_seconds"], post_settle_seconds=config.run["post_settle_seconds"],
         llm_provider_slug=plan.llm.get("provider", ""),
         llm_provider_name=config.llm_gateway["expected_provider_name"],
+        llm_sampling=(json.loads(plan.compose_env["EVAL_LLM_SAMPLING"]) if plan.llm["backend"] == "api" else None),
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_request_sha256=task_request_sha256,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
@@ -679,7 +762,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         # compose는 두 엔진에 같은 값을 넘기지만 baseline은 읽지 않는다. 결과 기록에 external로 적으면 정책이 있는 것처럼
         # 읽히므로 선언하지 않는다(#133 리뷰).
         llm_policy_mode=config.llm_policy_mode if plan.side == POLICY_SWITCH_SIDE else None,
-        tmpfs_min_free_bytes=config.tmpfs_min_free_bytes,
+        llm_stream=config.llm_stream,
+        tmpfs_min_free_bytes=config.tmpfs_min_free_bytes, worker_count=declared["worker_count"],
         condition=condition, repeat_index=repeat_index, model_tag=plan.llm["model"],
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
         target_origin=declared["target_origin"], observer_path=config.observer_path,
@@ -727,7 +811,10 @@ def main(argv: list[str] | None = None) -> int:
         return collect_findings(config.ports["engine_api_host"], secret, config.findings, vocabulary,
                                 vocabulary_sha256, side=plan.side, build_source=plan.source_sha)
 
-    ports = DockerPorts(config, plan, directory, docker, findings, start)
+    def settings() -> dict:
+        return engine_settings(config.ports["engine_api_host"], secret, config.run["task_create_timeout_seconds"])
+
+    ports = DockerPorts(config, plan, directory, docker, findings, start, settings)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat), ports, MeterFiles(directory.meter),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)

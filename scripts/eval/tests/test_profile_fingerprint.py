@@ -35,7 +35,7 @@ def local_llm():
 
 def profile():
     return {
-        "version": 4,
+        "version": 5,
         "fixture": {
             "preparation_id": "read_fixture", "preparation_revision": 1,
             "accounts": [{"label": "owner", "role": "basic"}, {"label": "peer", "role": "basic"}],
@@ -52,6 +52,7 @@ def profile():
             "worker_count": 1, "time_budget_seconds": 1200, "request_budget": 100,
             "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
             "run_drain": {"grace_seconds": 30, "settle_seconds": 2},
+            "sampling": {"top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0},
         },
         "scope": {"target_origin": "http://eval-meter:8080", "methods": ["GET", "HEAD"],
                   "paths": ["/api/records/{object}", "/api/status"], "vuln_classes": ["idor", "bola"]},
@@ -65,13 +66,13 @@ class TestProfileFingerprint(unittest.TestCase):
         self.assertIn(expected, str(caught.exception))
         self.assertNotIn("SYNTHETIC-PRIVATE", str(caught.exception))
 
-    def test_v4_fixed_canonical_vectors(self):
-        # v4: 환경에 run_drain(봉인 뒤 유예·정착 대기)이 들어가고 format 문자열이 바뀌어 세 지문 모두 v3와 다르다.
+    def test_v5_fixed_canonical_vectors(self):
+        # v5: 환경에 sampling(temperature·seed 외 샘플링)이 들어가고 format 문자열이 바뀌어 세 지문 모두 v4와 다르다.
         self.assertEqual(asdict(generate_fingerprints(profile())), {
-            "format": "abc2lab-eval-profile-v4",
-            "fixture_fingerprint": "07de4193e27221c8364f4707d1c46fc61cb5a39843fab1f6bdfcd248be874006",
-            "environment_fingerprint": "13b1db09af8fea3fd9b4e46f642ada21d7b4b6e043852fa6c251690b5c403df7",
-            "scope_fingerprint": "eca6cfb42d5020fbb50e97bde33b799c6892d8da7cf4e3fffc34b829876456ae",
+            "format": "abc2lab-eval-profile-v5",
+            "fixture_fingerprint": "bc53151aaa406af7b68e982faf4db5c6c9f87d35b1816eaa1fce74c09a9ebafa",
+            "environment_fingerprint": "965b17f4676092e41c6863077e8b041fe0db9836754b2f805d3cf81b753d6314",
+            "scope_fingerprint": "c846c05f7fd6fada0eecc0239ecc35f295c01e9bfe22c3b5b691d853b244743c",
         })
 
     def test_digest_fields_fit_current_preflight_without_changing_source_pins(self):
@@ -136,7 +137,12 @@ class TestProfileFingerprint(unittest.TestCase):
                    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"},
                    # 봉인 뒤 유예·정착 대기는 post 관측 시점과 취소 여부를 바꾼다(#153 리뷰) → 환경 지문이 달라야 한다.
                    "run_drain": {"grace_seconds": 31, "settle_seconds": 2}}
-        cases = [*changes.items(), ("run_drain", {"grace_seconds": 30, "settle_seconds": 3})]
+        cases = [*changes.items(), ("run_drain", {"grace_seconds": 30, "settle_seconds": 3}),
+                 # 샘플링은 게이트웨이가 요청마다 넣는 비교 조건이다(평가 프로토콜 §6).
+                 ("sampling", {"top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5,
+                               "repetition_penalty": 1.0}),
+                 ("sampling", {"top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": -1.5,
+                               "repetition_penalty": 1.0})]
         for field, value in cases:
             payload = profile()
             payload["environment"][field] = value
@@ -218,7 +224,7 @@ class TestProfileFingerprint(unittest.TestCase):
             payload = profile()
             del payload[field]
             self.reject(payload, "MISSING_FIELDS")
-        for value in (None, True, 0, 1, 2, 3, 5, "4"):  # v3(run_drain 없음)·v2(run_storage 없음)는 v4와 섞지 않는다
+        for value in (None, True, 0, 1, 2, 3, 4, 6, "5"):  # v4(sampling 없음)·v3(run_drain 없음)·v2는 v5와 섞지 않는다
             self.reject(profile() | {"version": value}, "UNSUPPORTED_VERSION")
         for field in ("fixture", "environment", "scope"):
             payload = profile()
@@ -385,6 +391,39 @@ class TestProfileFingerprint(unittest.TestCase):
         self.reject(payload, "INVALID_RUN_DRAIN")
         del payload["environment"]["run_drain"]
         self.reject(payload, "MISSING_FIELDS")
+
+    def test_sampling_validation_does_not_drift(self):
+        # 다섯 값: 프로파일 지문·사전검사·게이트웨이(sampling.go)가 같은 범위를 받아야 선언한 샘플링으로 회차가 돈다.
+        go = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/sampling.go").read_text(encoding="utf-8")
+        self.assertIn(f"maxTopK              = {profile_fingerprint.MAX_TOP_K}\n", go)
+        self.assertIn(f"maxPenalty           = {profile_fingerprint.MAX_PENALTY}\n", go)
+        self.assertEqual((preflight.MAX_TOP_K, preflight.MAX_PENALTY, preflight.SAMPLING_FIELDS),
+                         (profile_fingerprint.MAX_TOP_K, profile_fingerprint.MAX_PENALTY,
+                          profile_fingerprint.SAMPLING_FIELDS))
+        base = {"top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0}
+        changes = {"top_p": (0, 0.0001, 1, 1.0001, -1, True, "0.9", None, float("nan")),
+                   "top_k": (0, 1, 1000, 1001, 20.0, True, "20", -1),
+                   "min_p": (-0.0001, 0, 1, 1.0001, False, float("inf")),
+                   "presence_penalty": (-2.0001, -2, 0, 2, 2.0001, "1.5"),
+                   "repetition_penalty": (0, 0.0001, 2, 2.0001, -1, None)}
+        for name, values in changes.items():
+            for value in values:
+                case = dict(base, **{name: value})
+                with self.subTest(field=name, value=value):
+                    payload = profile()
+                    payload["environment"]["sampling"] = case
+                    try:
+                        generate_fingerprints(payload)
+                        accepted = True
+                    except ProfileError:
+                        accepted = False
+                    self.assertEqual(accepted, preflight._sampling(case))
+        for bad in (None, [], {}, dict(base, extra=1), {k: v for k, v in base.items() if k != "min_p"}):
+            with self.subTest(bad=bad):
+                self.assertFalse(preflight._sampling(bad))
+                payload = profile()
+                payload["environment"]["sampling"] = bad
+                self.reject(payload, "INVALID_SAMPLING")
 
     def test_url_and_llm_validation_does_not_drift_from_preflight(self):
         # 두 검증기는 같은 정의 블록을 갖는다. 소스가 갈라지면 여기서 먼저 걸린다.

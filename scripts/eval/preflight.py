@@ -20,7 +20,7 @@ _REFERENCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9./:_-]*\Z")
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 _PLACEHOLDER = re.compile(r"(?:^|[/:._-])(?:todo|tbd|changeme|placeholder)(?:$|[/:._-])", re.I)
 _SHARED = (
-    "network_mode", "llm", "temperature", "seed", "target_origin",
+    "network_mode", "llm", "temperature", "sampling", "seed", "target_origin",
     "worker_count", "time_budget_seconds", "request_budget", "run_storage", "run_drain",
     "fixture_fingerprint", "environment_fingerprint", "scope_fingerprint",
 )
@@ -47,6 +47,11 @@ RUN_STORAGE_FIELDS = ("engine_db_tmpfs", "engine_data_tmpfs", "tmpfs_min_free")
 RUN_DRAIN_FIELDS = ("grace_seconds", "settle_seconds")
 MAX_DRAIN_GRACE_SECONDS = 600
 MAX_SETTLE_SECONDS = 3600
+# temperature·seed 외 샘플링 고정값. 엔진은 샘플링을 보내지 않아 평가 LLM 게이트웨이가 요청마다 넣는다(평가 프로토콜 §6).
+# 범위는 게이트웨이(cmd/eval-meter sampling.go)와 같다(drift 테스트). 프로파일 지문과 같은 정의.
+SAMPLING_FIELDS = ("top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty")
+MAX_TOP_K = 1000
+MAX_PENALTY = 2
 # 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
 _LLM_FIELDS = {
     "api": ("backend", "base_url", "model", "provider", "fallbacks"),
@@ -188,6 +193,24 @@ def _run_drain(value: object) -> bool:
     return all(type(value[name]) is int and 1 <= value[name] <= limits[name] for name in RUN_DRAIN_FIELDS)
 
 
+def _bounded(value: object, low: int, high: int, *, low_open: bool) -> bool:
+    try:
+        return (type(value) in (int, float) and math.isfinite(value) and low <= value <= high
+                and not (low_open and value == low))
+    except OverflowError:
+        return False
+
+
+def _sampling(value: object) -> bool:
+    """temperature·seed 외 다섯 값이 정확히 있고 게이트웨이가 받는 범위 안이어야 한다."""
+    if not isinstance(value, dict) or set(value) != set(SAMPLING_FIELDS):
+        return False
+    return (type(value["top_k"]) is int and 1 <= value["top_k"] <= MAX_TOP_K
+            and _bounded(value["top_p"], 0, 1, low_open=True) and _bounded(value["min_p"], 0, 1, low_open=False)
+            and _bounded(value["presence_penalty"], -MAX_PENALTY, MAX_PENALTY, low_open=False)
+            and _bounded(value["repetition_penalty"], 0, MAX_PENALTY, low_open=True))
+
+
 def _valid(field: str, value: object) -> bool:
     if field in ("source_sha", "baseline_source_sha"):
         return isinstance(value, str) and bool(_SHA.fullmatch(value))
@@ -205,6 +228,8 @@ def _valid(field: str, value: object) -> bool:
         return _run_storage(value)
     if field == "run_drain":
         return _run_drain(value)
+    if field == "sampling":
+        return _sampling(value)
     if field == "temperature":
         return _number(value, positive=False)
     if field == "time_budget_seconds":

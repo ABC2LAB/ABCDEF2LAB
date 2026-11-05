@@ -102,6 +102,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	allowPath := flags.String("allow-path", "", "observer: the single registered GET path; llm-gateway: the chat completions path")
 	backend := flags.String("backend", "", "llm-gateway: api or local")
 	provider := flags.String("provider", "", "llm-gateway api: full provider slug to pin")
+	sampling := flags.String("sampling", "", "llm-gateway api: JSON object of sampling parameters to pin")
 	generationPath := flags.String("generation-path", "", "llm-gateway api: generation stats path")
 	verifyAttempts := flags.Int("verify-attempts", 0, "llm-gateway api: lookups per generation id")
 	verifyInterval := flags.Duration("verify-interval", 0, "llm-gateway api: wait between lookups")
@@ -110,7 +111,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, invalidInput)
 	}
 	key := os.Getenv(llmKeyEnv)
-	gatewayFlags := *backend != "" || *provider != "" || *generationPath != "" || *verifyAttempts != 0 || *verifyInterval != 0
+	gatewayFlags := *backend != "" || *provider != "" || *sampling != "" || *generationPath != "" ||
+		*verifyAttempts != 0 || *verifyInterval != 0
 	if *role != roleGateway && key != "" {
 		// A key in a meter, observer or probe container means the compose wiring is wrong.
 		return fail(stderr, keyNotAllowed)
@@ -141,8 +143,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return serve(*listen, newAPIFront(engine), nil, nil, func() error { return nil }, stderr)
 	case roleEngine, roleObserver:
 	case roleGateway:
-		cfg, ok := gatewayFromFlags(*backend, *upstream, *allowPath, *provider, *generationPath, *verifyAttempts,
-			*verifyInterval, key)
+		cfg, ok := gatewayFromFlags(*backend, *upstream, *allowPath, *provider, *sampling, *generationPath,
+			*verifyAttempts, *verifyInterval, key)
 		if !ok || *listen == "" || *logDir == "" {
 			return fail(stderr, invalidInput)
 		}
@@ -283,9 +285,11 @@ func parseUpstream(raw string) (*url.URL, bool) {
 }
 
 // gatewayFromFlags checks the per-backend rules: api talks https to the
-// provider and must pin and verify; local talks http to a fixed address on the
-// host and must carry no key, so the API key can never reach a local server.
-func gatewayFromFlags(backend, upstream, allowPath, provider, generationPath string, attempts int,
+// provider and must pin the provider and sampling and verify; local talks http
+// to a fixed address on the host and must carry no key, so the API key can
+// never reach a local server. Sampling is not pinned for local yet, so local
+// refuses the flag rather than pretending to apply it.
+func gatewayFromFlags(backend, upstream, allowPath, provider, sampling, generationPath string, attempts int,
 	interval time.Duration, key string) (gatewayConfig, bool) {
 	cfg := gatewayConfig{backend: backend, allowPath: allowPath, provider: provider, generationPath: generationPath,
 		key: key, verifyAttempts: attempts, verifyInterval: interval}
@@ -295,13 +299,15 @@ func gatewayFromFlags(backend, upstream, allowPath, provider, generationPath str
 	switch backend {
 	case backendAPI:
 		cfg.upstream = parseGatewayUpstream(upstream, "https")
-		return cfg, cfg.upstream != nil && providerSlugRe.MatchString(provider) && validAllowPath(generationPath) &&
+		params, pinned := parseSampling(sampling)
+		cfg.sampling = params
+		return cfg, cfg.upstream != nil && providerSlugRe.MatchString(provider) && pinned && validAllowPath(generationPath) &&
 			attempts >= 1 && attempts <= maxVerifyAttempts && interval > 0 && interval <= maxVerifyInterval &&
 			validKey(key)
 	case backendLocal:
 		cfg.upstream = parseGatewayUpstream(upstream, "http")
-		return cfg, cfg.upstream != nil && provider == "" && generationPath == "" && attempts == 0 && interval == 0 &&
-			key == ""
+		return cfg, cfg.upstream != nil && provider == "" && sampling == "" && generationPath == "" && attempts == 0 &&
+			interval == 0 && key == ""
 	}
 	return cfg, false
 }

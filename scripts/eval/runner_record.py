@@ -94,7 +94,7 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
                   post_probe: list, host_ref: str, pre_listeners: list[str], post_listeners: list[str],
                   allowed: list[dict], boundary_ref: str, policy: str, steps: dict, observer_rows: list[dict],
                   ready_calls: int, observer_path_ref: str, readonly_ref: str, meter: dict, drained: dict,
-                  engine_rows: int) -> list[dict]:
+                  engine_rows: int, conditions: dict) -> list[dict]:
     """러너가 확인한 근거를 §3.1 행으로 옮긴다. seq는 이 함수가 붙인다."""
     network_ids = sorted(n["id"] for n in pre["networks"].values())
     rows: list[dict] = [
@@ -102,6 +102,8 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
          "network_ids": network_ids, "policy_sha256": policy},
         _network_snapshot("pre", pre_at, pre),
         _host_condition("pre", pre_at, host_ref, pre, pre_listeners, allowed),
+        # 회차 사이에 같아야 하는 실행 조건(엔진 설정 해시·적용 샘플링·머신). 채점기가 대조한다.
+        {"kind": "run_conditions", "at": pre_at, **conditions},
     ]
     rows += [_connectivity("pre", pre_at, row) for row in pre_probe]
     rows.append({"kind": "preparation", "at": steps["fixture_ready"]["at"],

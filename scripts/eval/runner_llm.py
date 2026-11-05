@@ -4,17 +4,19 @@
 - api: 모든 generation이 검증되고(미검증·id 없는 응답 0), 응답 제공자가 기대 표시 이름이며(불일치 0),
   응답한 제공자와 다른 제공자로 간 시도가 없어야(fallback 0) 통과한다. 같은 제공자 재시도는 fallback이
   아니다. 시도 목록이 비어 fallback 여부를 확인할 수 없으면 통과로 보지 않는다(fail-closed).
-- local: 제공자 개념이 없어 요청 수만 기록한다. 조회 결과가 있으면 구성이 섞인 것이다.
+- api 샘플링: 게이트웨이가 실제로 넣은 값(마커 `sampling`)이 선언과 같아야 한다(선언이 아니라 적용값을 대조).
+- local: 제공자 개념이 없어 요청 수만 기록한다. 조회 결과가 있으면 구성이 섞인 것이다. 샘플링은 아직 넣지 않는다.
 엔드포인트 ID는 의미를 실측으로 확인하기 전까지 판정에 쓰지 않고 기록만 한다.
 """
 
 from __future__ import annotations
 
-_MARKER_FIELDS = frozenset({"role", "backend", "provider", "sealed_at", "drained_at", "verified_at",
+_MARKER_FIELDS = frozenset({"role", "backend", "provider", "sampling", "sealed_at", "drained_at", "verified_at",
                             "forwarded_requests", "upstream_errors", "rejected_requests", "rejected_after_seal",
                             "cancelled_by_seal", "responses_without_generation_id", "generations", "log_complete"})
 _COUNTS = ("forwarded_requests", "upstream_errors", "rejected_requests", "rejected_after_seal", "cancelled_by_seal",
            "responses_without_generation_id")
+SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty", "seed"})
 
 
 class LLMMarkerError(ValueError):
@@ -23,6 +25,10 @@ class LLMMarkerError(ValueError):
 
 def _check_shape(marker: object) -> None:
     if not isinstance(marker, dict) or set(marker) != _MARKER_FIELDS:
+        raise LLMMarkerError("llm_marker_invalid")
+    sampling = marker["sampling"]
+    if sampling is not None and (not isinstance(sampling, dict) or set(sampling) != SAMPLING_KEYS or any(
+            type(value) not in (int, float) for value in sampling.values())):
         raise LLMMarkerError("llm_marker_invalid")
     if (type(marker["log_complete"]) is not bool or not isinstance(marker["generations"], list)
             or any(type(marker[name]) is not int or marker[name] < 0 for name in _COUNTS)):
@@ -39,10 +45,20 @@ def _check_shape(marker: object) -> None:
                 raise LLMMarkerError("llm_marker_invalid")
 
 
-def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: str) -> tuple[list[str], dict]:
-    """(사유 목록, 기록용 요약). 사유가 없어야 그 회차의 LLM 조건을 고정됐다고 말할 수 있다."""
+def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: str,
+              sampling: dict | None) -> tuple[list[str], dict]:
+    """(사유 목록, 기록용 요약). 사유가 없어야 그 회차의 LLM 조건을 고정됐다고 말할 수 있다.
+
+    sampling은 선언에서 만든 기대 적용값(api)이고, local이면 None이다.
+    """
     _check_shape(marker)
     reasons: set[str] = set()
+    # 숫자 표기(1과 1.0)는 같은 값으로 본다. 키·값이 하나라도 다르거나 빠지면 고정이 아니다.
+    # float로 바꾸지 않고 그대로 비교한다: 파이썬의 int·float 비교는 정확해서 2^53을 넘는 seed도 구분한다.
+    applied = marker["sampling"]
+    if (applied is None) != (sampling is None) or (
+            applied is not None and any(applied[key] != sampling[key] for key in SAMPLING_KEYS)):
+        reasons.add("llm_sampling_mismatch")
     if marker["backend"] != backend:
         reasons.add("llm_backend_mismatch")
     if not marker["log_complete"]:
@@ -76,6 +92,7 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
         reasons.add("llm_backend_mismatch")  # local 회차에 제공자 조회가 섞임
     summary = {
         "backend": marker["backend"], "pinned_provider": marker["provider"], "expected_provider_name": provider_name,
+        "sampling_applied": applied,
         **{name: marker[name] for name in _COUNTS}, "generations": len(generations), "unverified": unverified,
         "provider_mismatch": mismatched, "fallback_attempted": fallback, "fallback_unverifiable": fallback_unknown,
         "providers": sorted(providers), "endpoint_ids": sorted(endpoints),
