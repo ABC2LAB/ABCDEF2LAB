@@ -156,6 +156,9 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 		}
 		r.Methods = append([]string(nil), r.Methods...)
 		r.Headers = r.Headers.Clone()
+		if !identityEncoding(r.Headers, "Accept-Encoding") {
+			return nil, ErrConfig
+		}
 		r.ConnectIP = r.ConnectIP.Unmap()
 		for k, vs := range r.Headers {
 			if k == "" || strings.ContainsAny(k, "\r\n") || reservedAttributionHeader(k) || strings.HasPrefix(strings.ToLower(k), "proxy-") || strings.EqualFold(k, "Host") || strings.EqualFold(k, "Connection") {
