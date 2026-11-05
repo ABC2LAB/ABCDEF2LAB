@@ -583,11 +583,18 @@ class TestE2Slot(unittest.TestCase):
         self.assertEqual((recon["cells"]["allowed_observed"], recon["cells"]["denied_unobserved"], recon["fixture"]),
                          (2, 1, True))
         self.assertTrue(recon["positive_evidence"])
+        # 같은 건수가 서명 근거 행으로도 들어간다(채점기 통제 검증 표의 입력). 시도 ID는 없다.
+        rows = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "attempt_reconciliation"]
+        self.assertEqual([{k: v for k, v in r.items() if k not in ("kind", "seq", "at")} for r in rows],
+                         [{k: v for k, v in recon.items() if k != "fixture"}])
 
     def test_run_without_e2_records_none_and_never_reads_a_stub_log(self):
         result, ports, meter, evidence = run()
         placement = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "e2_placement"]
         self.assertEqual((placement[0]["mode"], placement[0]["decision_rows"], meter.e2_reads), ("none", None, 0))
+        rows = evidence.files["isolation-evidence.json"]["rows"]
+        self.assertFalse(any(r["kind"] == "attempt_reconciliation" for r in rows))
+        self.assertNotIn("attempt-reconciliation.json", evidence.files)
         self.assertEqual(result["e2_mode"], "none")
 
     def test_unreadable_stub_log_invalidates_the_run(self):

@@ -14,6 +14,8 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from attempt_reconcile import RESULT_FIELDS
+
 RUN_RECORD_VERSION = "1.1"
 EVIDENCE_FORMAT = "abc2lab-isolation-evidence-v1"
 STEPS = ("fixture_ready", "pre", "engine_start", "engine_end", "drained", "post")
@@ -94,7 +96,7 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
                   post_probe: list, host_ref: str, pre_listeners: list[str], post_listeners: list[str],
                   allowed: list[dict], boundary_ref: str, policy: str, steps: dict, observer_rows: list[dict],
                   ready_calls: int, observer_path_ref: str, readonly_ref: str, meter: dict, drained: dict,
-                  engine_rows: int, conditions: dict, e2: dict) -> list[dict]:
+                  engine_rows: int, conditions: dict, e2: dict, reconciliation: dict | None = None) -> list[dict]:
     """러너가 확인한 근거를 §3.1 행으로 옮긴다. seq는 이 함수가 붙인다."""
     network_ids = sorted(n["id"] for n in pre["networks"].values())
     rows: list[dict] = [
@@ -127,6 +129,12 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
          "forced_closed_streams": meter["forced_closed_streams"], "log_rows": engine_rows, "sequence_complete": True},
         # 개선 후 회차의 E② 자리(프로토콜 §2). none이면 건수 없음, stub이면 가짜 E² 결정 행 건수(통제 증명 아님).
         {"kind": "e2_placement", "at": steps["drained"]["at"], **e2},
+    ]
+    if reconciliation is not None:
+        # 시도별 대조(프로토콜 §8.3) 건수. 서명 근거에 넣어 채점기가 통제 검증 표를 만든다. 시도 ID는 넣지 않는다.
+        rows.append({"kind": "attempt_reconciliation", "at": steps["drained"]["at"],
+                     **{field: reconciliation[field] for field in RESULT_FIELDS}})
+    rows += [
         _network_snapshot("post", post_check_at, post),
         _host_condition("post", post_check_at, host_ref, post, post_listeners, allowed),
     ]
