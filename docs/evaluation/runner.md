@@ -59,7 +59,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `observer_readonly_ref` | 그 GET이 해당 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(200자 이하). 러너가 만들 수 없는 근거라 설정으로 받고, 격리 근거 `observer_readonly` 행에 그대로 남긴다 |
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
 | `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null). baseline 회차는 compose 값이 같이 넘어가도 엔진이 읽지 않으므로 선언값도 null이다 |
-| `e2.ours_mode` | 개선 후 회차의 E② 자리(프로토콜 §2 개선 후의 E② 배치). `none` = E² 없음(엔진 → 계측기), `stub` = 통과 전용 가짜 E²(`deploy/eval/compose.e2-stub.yaml`, 계측기 `-role=e2-stub`)를 엔진과 계측기 사이에 둔다. baseline 회차에는 적용하지 않는다(원본에는 E²가 없다). `stub` 회차는 망·부정 연결 점검·계측기 시도 ID 대조를 세우는 fixture이며 통제를 증명하지 않으므로 시범·공식·제품 결과에 쓰지 않는다. 제품 E²가 들어오면 값이 하나 늘어난다 |
+| `e2.ours_mode` | 개선 후 회차의 E② 자리(프로토콜 §2 개선 후의 E② 배치). `none` = E² 없음(엔진 → 계측기), `stub` = 통과 전용 가짜 E²(`deploy/eval/compose.e2-stub.yaml`, 계측기 `-role=e2-stub`)를 엔진과 계측기 사이에 둔다. baseline 회차에는 적용하지 않는다(원본에는 E²가 없다). `stub` 회차는 망·부정 연결 점검·계측기 시도 ID 대조를 세우는 fixture이며 통제를 증명하지 않으므로 시범·공식·제품 결과에 쓰지 않는다. 결과·기록에 `e2_mode`가 서명되고, `session_runs.py`·`score.py`는 `--allow-fixture-e2` 없이는 stub 회차를 거부한다. 제품 E²가 들어오면 값이 하나 늘어난다 |
 | `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data,min_free}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한과 구간 종료 뒤 남아야 할 최소 공간(두 상한보다 작아야 함), DB healthcheck. `tmpfs` 세 값은 사전검사 `run_storage`(프로파일 v3 환경 지문 입력)와 글자 그대로 같아야 시작한다 |
 | `llm_gateway.generation_path` | api: generation 조회 경로(예: OpenRouter `/api/v1/generation`) |
 | `llm_gateway.verify_attempts`, `verify_interval_seconds` | generation마다 조회 횟수(1~100)와 간격 |
@@ -109,7 +109,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 ```
 <runs_root>/<run_id>/            0700, 러너만
-  meter/                         계측기·관측 front 기록(계측기 컨테이너에만 마운트). e2.ours_mode=stub이면 가짜 E²의 결정 행 `e2-stub-decisions.jsonl`도 여기
+  meter/                         계측기·관측 front 기록(계측기 컨테이너에만 마운트)
+  e2/                            e2.ours_mode=stub이면 가짜 E²의 결정 행 `e2-stub-decisions.jsonl`(가짜 E²에만 마운트, 계측기 증거와 분리)
   llm/                           LLM 게이트웨이 기록(게이트웨이에만 마운트, 계측기와 분리)
   pre/  post/                    스코어보드 원본·정규화본(어느 컨테이너에도 마운트하지 않음, 절대규칙 7)
   pre-checks.json  post-checks.json   망 스냅샷·policy_sha256·위반 목록
@@ -198,7 +199,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `window_watch_failed`, `window_events_failed` | 감시 시작·종료 실패, `docker events` 실패·형식 밖 출력 |
 | `observer_count_mismatch` | 관측 로그 건수가 러너 호출 수와 다르거나 거부 기록이 있음 |
 | `meter_read_failed`, `meter_log_inconsistent` | 계측기 기록 읽기 실패, 순번 누락·건수 불일치(강제 취소 행 수 ≠ drain 마커의 취소 수 포함) |
-| `e2_stub_log_invalid` | `e2.ours_mode=stub` 회차에서 가짜 E² 결정 행(`meter/e2-stub-decisions.jsonl`)이 없거나 형식이 틀림: fixture 표식 아님, 모르는 결정, 발급된 결정에 시도 ID 없음·발급 실패에 ID 있음, ID 중복, 순번 공백 |
+| `e2_stub_log_invalid` | `e2.ours_mode=stub` 회차에서 가짜 E² 결정 행(`e2/e2-stub-decisions.jsonl`)이 없거나 형식이 틀림: 개행으로 끝나지 않은 꼬리(잘린 행), fixture 표식 아님, 모르는 결정, 메서드·결정 시각 형식, 발급된 결정에 시도 ID 없음·발급 실패에 ID 있음, ID 중복, 순번 공백 |
 | `llm_seal_failed`, `llm_read_failed`, `llm_unverified`, `llm_marker_invalid` | 게이트웨이 seal 실패, 기록 읽기 실패, 검증 마커 시한 초과, 마커 형식 오류 |
 | `llm_generation_unverified`, `llm_generation_unverifiable` | 조회 안 된 generation, generation ID 없는 응답 |
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
