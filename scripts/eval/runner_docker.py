@@ -8,9 +8,12 @@ docker 자신의 진단(stderr)은 운영자 터미널로만 가고 러너 기�
 
 from __future__ import annotations
 
+import io
 import json
+import posixpath
 import re
 import subprocess
+import tarfile
 import threading
 import time
 from dataclasses import dataclass
@@ -33,6 +36,10 @@ _PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
 # 대상 안의 실행파일·PATH(엔진 도구가 바꿀 수 있음)를 쓰지 않는다(#140 리뷰).
 _MOUNT_PATH = re.compile(r"/[a-z0-9_./-]{1,200}\Z")
 _STATFS_FIELDS = frozenset({"path", "mount_id", "size_bytes", "used_bytes", "available_bytes"})
+# 대상 컨테이너에서 꺼낼 파일 경로(상태 차이 사본). 절대 경로, `..`·빈 구간 없음. 앱별 값은 러너 설정에서 온다.
+_CONTAINER_FILE = re.compile(r"/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\Z")
+# docker cp 출력 tar의 헤더·블록 정렬 여유(파일 하나). 내용 상한은 호출자가 정한다.
+_TAR_OVERHEAD_BYTES = 64 * 1024
 # docker events --since/--until에 넘기는 UTC 시각(초 소수 9자리까지). 러너가 만든 값만 받는다.
 _EVENT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z\Z")
 # 컨테이너 inspect는 이 필드만 꺼낸다. .Config.Env 등 비밀이 들 수 있는 필드는 러너 메모리에도 올리지 않는다.
@@ -293,6 +300,44 @@ class Docker:
             raise DockerError("docker_events_window_invalid")
         return EventStream(self._stream_opener(["events", "--since", since, "--format", "{{json .}}"], self._env),
                            self._sleep)
+
+    def pause(self, container_id: str) -> None:
+        if not _OBJECT_ID.fullmatch(container_id or ""):
+            raise DockerError("docker_pause_invalid")
+        self.run(["pause", container_id], code="docker_pause_failed")
+
+    def unpause(self, container_id: str) -> None:
+        if not _OBJECT_ID.fullmatch(container_id or ""):
+            raise DockerError("docker_pause_invalid")
+        self.run(["unpause", container_id], code="docker_unpause_failed")
+
+    def copy_out(self, container_id: str, path: str, max_bytes: int) -> bytes | None:
+        """컨테이너 파일 하나의 내용. 데몬이 읽으므로 대상 안의 실행파일을 쓰지 않는다(엔진이 바꿨을 수 있음).
+
+        docker cp가 실패하면 None이다(없는 파일과 구분하지 않는다. 호출자가 필수 여부를 정한다). 받은 tar는 정규 파일
+        정확히 하나, 이름이 경로의 마지막 구간, 크기 상한 안이어야 한다. 링크·디렉터리는 따라가지 않고 거부한다.
+        """
+        if (not _OBJECT_ID.fullmatch(container_id or "") or not _CONTAINER_FILE.fullmatch(path or "")
+                or any(part in (".", "..") for part in path.split("/")[1:])
+                or type(max_bytes) is not int or max_bytes < 1):
+            raise DockerError("docker_copy_invalid")
+        result = self._executor(["cp", f"{container_id}:{path}", "-"], self._env, None, self._timeout)
+        if result.returncode != 0:
+            return None
+        if len(result.stdout) > max_bytes + _TAR_OVERHEAD_BYTES:
+            raise DockerError("docker_copy_too_large")
+        try:
+            with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
+                members = archive.getmembers()
+                if (len(members) != 1 or not members[0].isreg() or members[0].name != posixpath.basename(path)
+                        or members[0].size > max_bytes):
+                    raise DockerError("docker_copy_output_invalid")
+                data = archive.extractfile(members[0]).read()
+        except (tarfile.TarError, OSError, EOFError):
+            raise DockerError("docker_copy_output_invalid") from None
+        if len(data) != members[0].size:
+            raise DockerError("docker_copy_output_invalid")
+        return data
 
     def signal(self, container_id: str, signal_name: str) -> None:
         if not _OBJECT_ID.fullmatch(container_id or "") or signal_name not in ("USR1",):
