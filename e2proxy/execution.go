@@ -59,6 +59,7 @@ type Execution struct {
 	sending        int
 	transient      uint64
 	secrets        [][]byte
+	secretHeaders  map[string]struct{}
 }
 type Call struct {
 	ingressToken  [32]byte
@@ -115,12 +116,23 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.HeaderMode == "" {
+		cfg.HeaderMode = HeaderPreserve
+	}
+	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal {
+		return nil, ErrConfig
+	}
+	for _, rule := range rules {
+		if cfg.HeaderMode == HeaderPreserve && len(rule.CredentialHeaders) != 0 {
+			return nil, ErrConfig
+		}
+	}
 	cfg.Rules = nil
 	if cfg.RootCAs != nil {
 		cfg.RootCAs = cfg.RootCAs.Clone()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentGate: make(chan struct{}, 1)}, nil
+	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), secretHeaders: credentialHeaderNames(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentGate: make(chan struct{}, 1)}, nil
 }
 func compileRules(rules []Rule) ([]compiledRule, error) {
 	if len(rules) == 0 || len(rules) > 128 {
@@ -155,21 +167,11 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 			return nil, ErrConfig
 		}
 		r.Methods = append([]string(nil), r.Methods...)
-		r.Headers = r.Headers.Clone()
-		if !identityEncoding(r.Headers, "Accept-Encoding") {
-			return nil, ErrConfig
+		r, err = validateRuleHeaders(r)
+		if err != nil {
+			return nil, err
 		}
 		r.ConnectIP = r.ConnectIP.Unmap()
-		for k, vs := range r.Headers {
-			if k == "" || strings.ContainsAny(k, "\r\n") || reservedAttributionHeader(k) || strings.HasPrefix(strings.ToLower(k), "proxy-") || strings.EqualFold(k, "Host") || strings.EqualFold(k, "Connection") {
-				return nil, ErrConfig
-			}
-			for _, v := range vs {
-				if strings.ContainsAny(v, "\r\n") {
-					return nil, ErrConfig
-				}
-			}
-		}
 		u.Host = a
 		out = append(out, compiledRule{Rule: r, origin: u, authority: a, methods: m})
 	}
@@ -587,13 +589,13 @@ func (e *Execution) snapshotLocked(id int64) ExecutionView {
 		ids = append(ids, intent)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	return ExecutionView{Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
+	return ExecutionView{HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
 		State: state, ExpiresAt: e.cfg.ExpiresAt, Counts: e.counts, Reason: reason, AuditComplete: !e.auditFailed && e.cfg.Recorder != nil}
 }
 func (e *Execution) Policy() PolicyView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	v := PolicyView{Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
+	v := PolicyView{HeaderMode: e.cfg.HeaderMode, Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
 	for _, r := range e.rules {
 		v.Rules = append(v.Rules, RuleView{Ref: r.Ref, Methods: append([]string(nil), r.Methods...), PathScopeRef: r.PathScopeRef})
 	}
@@ -852,7 +854,8 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		return finish(nil, ErrDenied)
 	}
 	requestHost, hostOK := preservedRequestHost(req)
-	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") {
+	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") ||
+		headerPresent(req.Header, "Authorization") || headerPresent(req.Header, "Cookie") {
 		r.Decision = "unsupported"
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
@@ -878,6 +881,11 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		return finish(nil, ErrDenied)
 	}
 	defer func() { e.mu.Lock(); e.sending--; e.mu.Unlock() }()
+	requestHeaders, headersOK := forwardRequestHeaders(req.Header, rule)
+	if !headersOK {
+		r.Decision, r.Reason = "unsupported", Unsupported
+		return finish(nil, ErrDenied)
+	}
 	// Consume the caller's bounded body before admission; it never reaches audit.
 	var body []byte
 	if req.Body != nil {
@@ -932,14 +940,8 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	out.Host = requestHost
 	out.RequestURI = ""
 	out.Close = true
-	out.Header = req.Header.Clone()
-	if out.Header == nil {
-		out.Header = make(http.Header)
-	}
-	stripHeaders(out.Header)
-	out.Header.Del("Authorization")
-	out.Header.Del("Cookie")
-	for k, vs := range rule.Headers {
+	out.Header = requestHeaders
+	for k, vs := range rule.CredentialHeaders {
 		out.Header[k] = append([]string(nil), vs...)
 	}
 	out.Header.Set(AttemptHeader, r.AttemptID)
@@ -993,27 +995,16 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, e.cfg.Limits.MaxBodyBytes+1))
 	closeErr := resp.Body.Close()
 	r.ResponseComplete = readErr == nil && closeErr == nil && int64(len(responseBody)) <= e.cfg.Limits.MaxBodyBytes
-	if !r.ResponseComplete || !identityEncoding(resp.Header, "Content-Encoding") {
+	if !r.ResponseComplete || !e.safeHTTPResponse(resp, responseBody) {
+		clear(responseBody)
 		r.Reason = Unknown
 		return finish(nil, ErrDenied)
 	}
-	stripHeaders(resp.Header)
-	resp.Header.Del("Set-Cookie")
-	resp.Header.Del("WWW-Authenticate")
-	resp.Header.Del("Authentication-Info")
-	responseBody = e.RedactOutput(responseBody)
-	for k, vs := range resp.Header {
-		for i, v := range vs {
-			vs[i] = string(e.RedactOutput([]byte(v)))
-		}
-		resp.Header[k] = vs
-	}
-	resp.Header.Del("Content-Length")
-	resp.ContentLength = int64(len(responseBody))
+	// Preserve the original representation and metadata. Only a minimal,
+	// nonsecret method context survives so HEAD retains its length semantics.
 	resp.Body = io.NopCloser(bytes.NewReader(responseBody))
 	resp.Close = true
-	resp.Request = nil
-	resp.Trailer = nil
+	resp.Request = &http.Request{Method: req.Method}
 	r.Reason = Complete
 	return finish(resp, nil)
 }
@@ -1054,7 +1045,7 @@ func credentialValues(rules []compiledRule) [][]byte {
 		}
 	}
 	for _, r := range rules {
-		for k, vs := range r.Headers {
+		for k, vs := range r.CredentialHeaders {
 			for _, v := range vs {
 				add(v)
 				switch strings.ToLower(k) {
