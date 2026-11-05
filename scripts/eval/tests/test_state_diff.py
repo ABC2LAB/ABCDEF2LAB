@@ -122,6 +122,29 @@ class TestRows(_Db):
         self.assertNotIn("Tags", result["tables"])
 
 
+class TestSignals(_Db):
+    def test_signal_table_is_counted_apart_from_the_state_difference(self):
+        # 해결 기록 같은 신호 테이블의 변화는 상태 차이(판정 입력)에 들어가지 않고 건수만 따로 남는다.
+        self.change("UPDATE Codes SET n = 2 WHERE code = 'c1';"
+                             "INSERT INTO Feedbacks (comment, rating) VALUES ('tmp', 1.0);"
+                             "DELETE FROM Feedbacks WHERE comment = 'tmp';")
+        result = diff(self.pre, snapshot(self.path, KEY), frozenset({"Codes", "Feedbacks"}))
+        self.assertEqual((result["changed_tables"], result["content_changed"], result["trace_only"],
+                          result["sequence_changed"]), ([], False, False, {}))
+        self.assertNotIn("Codes", result["tables"])
+        self.assertEqual((result["signals"]["Codes"]["added"], result["signals"]["Codes"]["removed"]), (1, 1))
+        self.assertEqual(result["signals"]["Feedbacks"]["rows_post"], 1)
+        self.assertFalse(any(key.endswith("_ids") for key in result["signals"]["Feedbacks"]))
+
+    def test_signal_tables_must_exist_and_be_a_frozenset_of_names(self):
+        post = snapshot(self.path, KEY)
+        for value, code in ((frozenset({"Nope"}), "state_signal_table_missing"),
+                            ({"Codes"}, "state_signal_tables_invalid"),
+                            (frozenset({1}), "state_signal_tables_invalid")):
+            with self.subTest(value=value), self.assertRaisesRegex(StateDiffError, code):
+                diff(self.pre, post, value)
+
+
 class TestSequence(_Db):
     def test_create_then_delete_leaves_only_a_trace(self):
         # 보상(생성 → 삭제) 뒤 내용은 원복돼도 id 소비는 남는다(§8.2).

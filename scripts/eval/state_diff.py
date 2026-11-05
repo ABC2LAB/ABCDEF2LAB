@@ -16,6 +16,10 @@
 - WAL 모드 DB는 `-wal` 파일까지 같이 복사해야 마지막 커밋이 보인다. `immutable=1`로 열면 WAL을 무시하므로 쓰지 않고
   읽기 전용(`mode=ro`)으로 연다. 사본 디렉터리는 러너 전용이라 SQLite가 `-shm`을 만들어도 대상에는 영향이 없다.
 
+- 앱이 챌린지 해결 기록을 같은 DB에 두는 경우(Juice Shop v15의 `Challenges`) 그 테이블은 `signal_tables`로 넘겨
+  상태 차이와 따로 센다. 해결 기록은 '해결 신호'이지 상태 차이 판정 입력이 아니다(§8.2, 절대규칙 7). 테이블 이름은
+  러너 어댑터 설정에서 받고 이 모듈에 박지 않는다.
+
 이 결과는 '관측 가능한 대상 상태의 변화'일 뿐이다. 메모리 저장(리뷰·주문)·런타임 파일·외부 호출은 여기서 보지 않는다.
 """
 
@@ -141,13 +145,24 @@ def _table_diff(before: dict, after: dict) -> dict:
     return result
 
 
-def diff(pre: dict, post: dict) -> dict:
-    """같은 컨테이너 pre·post 사본 지문의 차이. 건수·정수 id·테이블·열 이름·seq 값만 담는다."""
-    names_pre, names_post = set(pre["tables"]), set(post["tables"])
+def diff(pre: dict, post: dict, signal_tables: frozenset[str] = frozenset()) -> dict:
+    """같은 컨테이너 pre·post 사본 지문의 차이. 건수·정수 id·테이블·열 이름·seq 값만 담는다.
+
+    `signal_tables`(해결 기록 등)는 `signals`에 건수만 따로 두고 상태 차이 판정(changed_tables·content_changed·
+    sequence_changed)에서 뺀다. 이름이 사본에 없으면 설정 오류로 멈춘다(조용히 판정에 섞이지 않게).
+    """
+    if not isinstance(signal_tables, frozenset) or not all(isinstance(name, str) for name in signal_tables):
+        raise StateDiffError("state_signal_tables_invalid")
+    if not signal_tables <= (set(pre["tables"]) & set(post["tables"])):
+        raise StateDiffError("state_signal_table_missing")
+    signals = {name: {key: value for key, value in _table_diff(pre["tables"][name], post["tables"][name]).items()
+                      if not key.endswith("_ids")}
+               for name in sorted(signal_tables)}
+    names_pre, names_post = set(pre["tables"]) - signal_tables, set(post["tables"]) - signal_tables
     tables = {name: _table_diff(pre["tables"][name], post["tables"][name])
               for name in sorted(names_pre & names_post)}
     sequence = {}
-    for table in sorted(set(pre["sequence"]) | set(post["sequence"])):
+    for table in sorted((set(pre["sequence"]) | set(post["sequence"])) - signal_tables):
         before, after = pre["sequence"].get(table), post["sequence"].get(table)
         if before != after:
             sequence[table] = {"pre": before, "post": after}
@@ -155,6 +170,7 @@ def diff(pre: dict, post: dict) -> dict:
                             if t["schema_changed"] or t["added"] or t["removed"] or t["changed"])
     return {
         "tables": tables,
+        "signals": signals,
         "tables_added": sorted(names_post - names_pre),
         "tables_removed": sorted(names_pre - names_post),
         "sequence_changed": sequence,
