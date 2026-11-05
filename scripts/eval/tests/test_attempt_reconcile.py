@@ -60,13 +60,17 @@ class TestCells(unittest.TestCase):
         result = reconcile([decision(A), decision(B)], [seen(A), seen(A), seen(A), seen(B)])
         self.assertEqual((result["meter_attempt_reused"], result["cells"]["allowed_observed"]), (2, 2))
 
-    def test_all_blocked_is_not_positive_evidence(self):
+    def test_all_blocked_is_not_positive_evidence_and_holds_the_claim(self):
         result = reconcile([decision(A, "unsupported"), decision("", "unavailable")], [])
         self.assertFalse(result["positive_evidence"])
-        self.assertFalse(result["control_claim_withheld"])  # 보류 사유는 없지만 허용 양성 근거도 없다
+        # 나쁜 칸은 없지만 허용 양성 근거가 없으므로 통제 주장은 보류한다(전부 막아 0인 건 통과가 아니다).
+        self.assertTrue(result["control_claim_withheld"])
 
-    def test_unknown_attempt_reached_counts_every_receipt(self):
-        self.assertEqual(self.cells([], [seen(D), seen(D)])["unrecorded_observed"], 2)
+    def test_unknown_attempt_reached_counts_every_receipt_and_its_reuse(self):
+        result = reconcile([], [seen(D), seen(D)])
+        self.assertEqual((result["cells"]["unrecorded_observed"], result["meter_attempt_reused"]), (2, 1))
+        mixed = reconcile([decision(A)], [seen(A), seen(D), seen(D), seen(D)])
+        self.assertEqual((mixed["cells"]["unrecorded_observed"], mixed["meter_attempt_reused"]), (3, 2))
 
 
 class TestInputErrors(unittest.TestCase):

@@ -14,7 +14,8 @@ E②의 결정 기록과 독립 계측기의 접수 기록을 시도 ID로 맞�
 - "관측됨"은 계측기에 그 시도 ID를 가진 행(전달·seal 뒤 거부·스트림 모두)이 있다는 뜻이다. 접수만으로 정상 전달을
   주장하지 않는다(§8.3 첫 행). 계측기가 ID 없이·형식 오류로 받은 요청은 어느 시도인지 특정하지 못하므로 기록 없음·관측됨이다.
 - 모든 요청을 막아 관측 0만 만든 것은 통과가 아니다. allowed_observed가 1 이상이어야 허용 양성 근거가 있다.
-- 같은 ID가 계측기에 두 번 이상 나오면 재사용으로 따로 센다(ID는 인증 증명이 아니다, §8.3).
+- 같은 유효 ID가 계측기에 두 번 이상 나오면(E²가 아는 ID든 모르는 ID든) 재사용으로 따로 센다(ID는 인증 증명이 아니다, §8.3).
+- 통제 주장은 허용 양성 근거가 있고 나쁜 칸·재사용이 없을 때만 할 수 있다. `control_claim_withheld`는 그 반대 전부를 뜻한다.
 - 값은 건수뿐이다. 시도 ID·경로·헤더를 결과에 넣지 않는다.
 """
 
@@ -65,7 +66,7 @@ def reconcile(decisions: list[dict], meter_rows: list[dict]) -> dict:
         else:
             counts["denied_observed" if observed else "denied_unobserved"] += 1
     counts["unrecorded_observed"] += sum(n for attempt, n in seen.items() if attempt not in decided)
-    reused = sum(n - 1 for attempt, n in seen.items() if attempt in decided and n > 1)
+    reused = sum(n - 1 for n in seen.values() if n > 1)
     return {
         "cells": {cell: counts[cell] for cell in CELLS},
         "meter_attempt_reused": reused,
@@ -73,5 +74,7 @@ def reconcile(decisions: list[dict], meter_rows: list[dict]) -> dict:
         "blocked_reached": counts["denied_observed"],
         "unrecorded_reached": counts["unrecorded_observed"],
         "positive_evidence": counts["allowed_observed"] > 0,
-        "control_claim_withheld": counts["denied_observed"] > 0 or counts["unrecorded_observed"] > 0 or reused > 0,
+        # 나쁜 칸·재사용이 있거나 허용 양성 근거가 없으면(전부 막아 0인 회차) 통제를 주장하지 않는다(§8.3, #183 NE).
+        "control_claim_withheld": (counts["denied_observed"] > 0 or counts["unrecorded_observed"] > 0 or reused > 0
+                                   or counts["allowed_observed"] == 0),
     }
