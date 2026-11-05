@@ -25,7 +25,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 회차의 순서·입력 준비·집계는 [회차 실행 절차](official-run.md)(API 개발 측정·시범, GPU 공식 세션은 후속)를 따른다.
 
-채점: 완료 회차의 `run-record.json`을 채점 manifest의 `run_record_path`로 넣고 `python3 -I -B scripts/eval/score.py <manifest> --runner-key-file <러너 키>`로 채점한다(`records_path`는 records=null이면 읽지 않는다). E② 자리가 있는 조건이 있으면 성능 매트릭스 뒤에 **개선 후 통제 검증 표(프로토콜 §8.3)**가 따로 붙는다. 행은 다섯 칸·차단 후 대상 도달·E② 기록 없이 대상 도달·ID 재사용·허용 양성 근거 회차·통제 주장이고, 값은 회차 합계(회차별 값)다. 통제 주장을 보류한 조건은 사유 건수를 stderr 경고로도 낸다. 가짜 E² 조건은 조건을 채워도 "통제 증명 아님"으로 표시한다.
+채점: 완료 회차의 `run-record.json`을 채점 manifest의 `run_record_path`로 넣고 `python3 -I -B scripts/eval/score.py <manifest> --runner-key-file <러너 키>`로 채점한다(`records_path`는 records=null이면 읽지 않는다). E② 자리가 있는 조건이 있으면 성능 매트릭스 뒤에 **개선 후 통제 검증 표(프로토콜 §8.3)**가 따로 붙는다. 행은 대조 근거 없는 회차·다섯 칸·차단 후 대상 도달·E② 기록 없이 대상 도달·ID 재사용·허용 양성 근거 회차·통제 주장이고, 값은 회차 합계(회차별 값, 근거 없는 회차는 —)다. 격리 증명이 없어 대조 근거가 없는 회차도 그 조건의 분모에 남고 보류로 센다(미완 기록·미결속은 수용 보류). E② 자리를 서명 근거로 확인한 회차가 하나도 없는 조건은 표에 나오지 않는다. 통제 주장을 보류한 조건은 사유 건수를 stderr 경고로도 낸다. 가짜 E² 조건은 조건을 채워도 "통제 증명 아님"으로 표시한다.
 
 ## 준비물
 

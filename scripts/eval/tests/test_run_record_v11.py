@@ -434,8 +434,24 @@ class TestComparison(_V11):
                      "| 같은 시도 ID 재사용(기대 0) | 3 (0, 3) |", "| 허용 양성 근거 있는 회차 | 1/2 |",
                      "| 통제 주장 | 보류(회차 1/2) — 가짜 E², 통제 증명 아님 |"):
             self.assertIn(line + "\n", table)
-        self.assertIn("경고[통제 주장 보류] 우리@test: 회차 1/2 — 차단 후 도달 1, 기록 없이 도달 2, 재사용 3, "
-                      "허용 양성 근거 없는 회차 1", "\n".join(report.warnings))
+        self.assertIn("| 대조 근거 없는 회차(증명 없음, 기대 0) | 0 |\n", table)
+        self.assertIn("경고[통제 주장 보류] 우리@test: 회차 1/2 — 대조 근거 없는 회차 0, 차단 후 도달 1, "
+                      "기록 없이 도달 2, 재사용 3, 허용 양성 근거 없는 회차 1", "\n".join(report.warnings))
+
+    def test_run_without_reconciliation_evidence_holds_the_claim(self):
+        # 증명 없는 회차는 대조 근거가 없다. 표에서 빠지면 나머지 회차만으로 '조건 충족'이 되므로 분모에 남기고 보류로
+        # 센다(§8.3 미완 기록·미결속은 수용 보류, #225 리뷰). 성능표는 두 회차를 그대로 쓴다.
+        report = build_report(self.load([self.v11("u1", e2=E2_STUB_PLACEMENT, total_requests=5),
+                                         self.v11("u2", repeat_index=1, proof=False, e2=E2_STUB_PLACEMENT,
+                                                  total_requests=9)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
+        table = report.text.split("### 개선 후 통제 검증 — 시도별 대조(프로토콜 §8.3)\n", 1)[1]
+        for line in ("| 회차 수 | 2 |", "| 대조 근거 없는 회차(증명 없음, 기대 0) | 1 |", "| 허용·관측됨 | 4 (4, —) |",
+                     "| 허용 양성 근거 있는 회차 | 1/2 |", "| 통제 주장 | 보류(회차 1/2) — 가짜 E², 통제 증명 아님 |"):
+            self.assertIn(line + "\n", table)
+        self.assertIn("경고[통제 주장 보류] 우리@test: 회차 1/2 — 대조 근거 없는 회차 1,", "\n".join(report.warnings))
+        matrix = report.text.split("### 개선 후 통제 검증", 1)[0]
+        self.assertIn("| 7 ± 2.82843 |", matrix)  # 총 요청 수 5·9 두 회차 평균 ± SD
 
     def test_control_table_only_for_conditions_with_e2(self):
         clean = build_report(self.load([self.v11("k1", e2=E2_STUB_PLACEMENT),
