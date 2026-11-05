@@ -935,3 +935,15 @@ func TestCoreEncodedCredentialEchoIsWithheldAfterSend(t *testing.T) {
 		t.Fatal("encoded credential echo was exposed or called not sent")
 	}
 }
+
+func TestCoreRejectsTrustedCompressedNegotiation(t *testing.T) {
+	for _, encoding := range []string{"gzip", "br", "deflate"} {
+		t.Run(encoding, func(t *testing.T) {
+			cfg := coreConfig(t, "http://target.invalid", &coreRecorder{}, 2)
+			cfg.Rules[0].Headers = http.Header{"aCcEpT-eNcOdInG": {encoding}}
+			if execution, err := NewExecution(t.Context(), cfg); err == nil || execution != nil {
+				t.Fatal("trusted headers opened unsupported compression")
+			}
+		})
+	}
+}
