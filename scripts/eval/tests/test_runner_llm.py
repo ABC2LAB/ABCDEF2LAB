@@ -105,6 +105,13 @@ class TestJudgeSampling(unittest.TestCase):
         self.assertEqual(judge(marker(backend="local", provider="", generations=[]), backend="local")[0],
                          ["llm_sampling_mismatch"])
 
+    def test_large_integer_seed_is_compared_without_float_rounding(self):
+        # 2^53+1과 2^53은 float로 바꾸면 같아진다. 다른 seed가 적용됐으면 고정이 아니다.
+        declared = dict(SAMPLING, seed=2 ** 53 + 1)
+        same = judge_llm(marker(sampling=dict(declared)), "api", SLUG, NAME, declared)[0]
+        rounded = judge_llm(marker(sampling=dict(declared, seed=2 ** 53)), "api", SLUG, NAME, declared)[0]
+        self.assertEqual((same, rounded), ([], ["llm_sampling_mismatch"]))
+
     def test_sampling_shape_is_checked(self):
         for bad in ({}, dict(SAMPLING, extra=1), {k: v for k, v in SAMPLING.items() if k != "seed"},
                     dict(SAMPLING, seed="42"), dict(SAMPLING, top_p=True), [1]):

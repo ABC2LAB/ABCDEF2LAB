@@ -177,7 +177,7 @@ class TestRejectedV11(_V11):
     def test_run_conditions_row_is_required_and_typed(self):
         self.reject("run_conditions", "r0", tamper_rows=lambda rows: drop(rows, row_of(rows, "run_conditions")))
         cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "workers": 0,
-                 "sampling": {"temperature": 1.0}, "host": {"cpu_model": "x"}}
+                 "sampling": {"temperature": 1.0}, "host": {"cpu_model": "x"}, "llm_stream": "true"}
         for index, (name, value) in enumerate(cases.items()):
             self.reject("run_conditions", f"r{index + 1}",
                         tamper_rows=lambda rows, n=name, v=value: row_of(rows, "run_conditions").update({n: v}))
@@ -190,6 +190,9 @@ class TestRejectedV11(_V11):
             sampling=None)))
         self.assertEqual(local.version, "1.1")
         self.assertIsNotNone(self.inputs(self.v11("ok")).run_conditions)
+        # 스트리밍은 bool만 받는다(1·"true"를 true로 읽지 않음). 행에서 빠져도 거부.
+        self.reject("run_conditions", "r11", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(llm_stream=1))
+        self.reject("run_conditions", "r12", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("llm_stream"))
 
     def test_iw12_drain_times_are_checked_against_the_window(self):
         # fixture: 봉인 00:08, drain 완료 00:09, timeline drained 00:09, post 00:10 — 경계값(같은 시각)은 통과
@@ -336,7 +339,8 @@ class TestComparison(_V11):
         changes = {"엔진 설정": lambda row: row.update(engine_settings_sha256="f" * 64),
                    "적용 샘플링": lambda row: row["sampling"].update(temperature=0.7),
                    "머신 사양": lambda row: row["host"].update(memory_kib=1),
-                   "머신": lambda row: row.update(machine_id_sha256="0" * 64)}
+                   "머신": lambda row: row.update(machine_id_sha256="0" * 64),
+                   "LLM 스트리밍": lambda row: row.update(llm_stream=False)}
         for index, (label, change) in enumerate(changes.items()):
             with self.subTest(label=label):
                 other = self.v11(f"m{index}", repeat_index=1,

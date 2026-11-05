@@ -36,8 +36,10 @@ ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "ev
            "eval-llm-gw": "meter", "eval-api": "meter"}
 
 
-def make_spec(side="ours", min_free=None):
+def make_spec(side="ours", min_free=None, stream=None):
     preflight, payload = configuration(), runner_config()
+    if stream is not None:
+        payload["engine"]["llm_stream"] = stream
     if min_free is not None:  # 하한은 러너 설정과 사전검사 선언(환경 지문 입력)에 같이 바꿔야 한다
         payload["tmpfs"]["min_free"] = min_free
         for name in ("baseline", "ours"):
@@ -588,12 +590,25 @@ class TestFailures(unittest.TestCase):
         self.assertEqual(settings, ports.settings)
         self.assertEqual(conditions["engine_settings_sha256"], runner.canonical_sha256(settings))
         self.assertEqual(conditions["workers"], ports.spec.worker_count)
+        self.assertIs(conditions["llm_stream"], ports.spec.llm_stream)
         # 선언값이 아니라 게이트웨이가 마커에 남긴 적용값이 기록된다.
         self.assertEqual(conditions["sampling"], evidence.files["llm-summary.json"]["sampling_applied"])
         self.assertEqual(conditions["machine_id_sha256"], ports.host["machine_id_sha256"])
         self.assertNotIn("machine_id_sha256", conditions["host"])
         row = next(r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "run_conditions")
         self.assertEqual({key: row[key] for key in conditions}, conditions)
+
+    def test_llm_stream_setting_is_a_signed_run_condition(self):
+        # 엔진 설정 API에 안 나오는 스트리밍도 러너 설정값 그대로 서명 근거에 남아야 회차끼리 대조된다(#174 리뷰).
+        for stream in (True, False):
+            with self.subTest(stream=stream):
+                spec = make_spec(stream=stream)
+                self.assertIs(spec.llm_stream, stream)
+                result, _, _, evidence = run(spec=spec)
+                self.assertEqual(result["status"], COMPLETE)
+                self.assertIs(result["run_conditions"]["llm_stream"], stream)
+                row = next(r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "run_conditions")
+                self.assertIs(row["llm_stream"], stream)
 
     def test_engine_settings_must_match_the_declaration(self):
         changes = {"workers": lambda s: s["settings"].update(workers=s["settings"]["workers"] + 1),
@@ -622,6 +637,22 @@ class TestFailures(unittest.TestCase):
     def test_gateway_sampling_must_equal_the_declaration(self):
         result, ports, _, evidence = run(mutate_gateway=lambda g: g.marker["sampling"].update(temperature=0.7))
         self.assert_invalid(result, ports, evidence, "llm_sampling_mismatch")
+
+    def test_large_integer_seed_mismatch_is_not_signed(self):
+        # 선언 seed 2^53+1. 게이트웨이가 2^53을 넣었으면 float로 같아 보여도 무효이고 서명하지 않는다.
+        preflight, payload = configuration(), runner_config()
+        for name in ("baseline", "ours"):
+            preflight[name]["seed"] = 2 ** 53 + 1
+        config = parse_runner_config(payload)
+        spec = build_spec(config, plan_run(config, preflight, "ours", "ours-1"), preflight, "t" * 64, "우리@35b", 0)
+        self.assertEqual(spec.llm_sampling["seed"], 2 ** 53 + 1)
+        result, ports, _, evidence = run(spec=spec, mutate_gateway=lambda g: g.marker.update(
+            sampling=dict(spec.llm_sampling)))
+        self.assertEqual((result["status"], ports.sign_calls), (COMPLETE, 2))
+        result, ports, _, evidence = run(spec=spec, mutate_gateway=lambda g: g.marker.update(
+            sampling=dict(spec.llm_sampling, seed=2 ** 53)))
+        self.assert_invalid(result, ports, evidence, "llm_sampling_mismatch")
+        self.assertEqual(ports.sign_calls, 0)
 
     def test_no_settle_without_cut_requests(self):
         slept = []
