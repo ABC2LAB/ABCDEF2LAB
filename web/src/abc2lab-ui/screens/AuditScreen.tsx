@@ -137,7 +137,17 @@ export default function AuditScreen() {
             <Strong>승인 게이트(intercept)</Strong>의 명시적 허용·차단 결정과 승인 요청 기록이에요. 모든 실제 송신을
             기록하는 원장은 아니에요. 우리 <Strong>전송 통제(E②, 네트워크 경계)</Strong>와{" "}
             <Strong>변조 탐지 해시체인·로그 권한 분리</Strong>는 <Strong>연동 전</Strong> — 연동되면 각 줄에 체인 해시가
-            붙어요.
+            붙어요. {/* biome-ignore lint/a11y/useValidAnchor: 시안 crumb 스타일 링크(href 로 키보드 이동 가능) */}
+            <a
+              href="#e2-flow"
+              style={{ color: "var(--teal-ink)" }}
+              onClick={(event) => {
+                event.preventDefault();
+                go("e2-flow");
+              }}
+            >
+              → 전송 통제 흐름(Bash→요청→허용·차단) 보기
+            </a>
           </div>
 
           <Tabs<FilterKey>
