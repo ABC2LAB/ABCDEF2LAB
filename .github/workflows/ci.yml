@@ -119,3 +119,20 @@ jobs:
       - name: unittest
         working-directory: scripts/eval
         run: python3 -I -B -m unittest discover -s tests
+      - name: Docker Compose CLI 확인(E② 배치 구성 렌더링 시험)
+        run: docker compose version
+      - name: E② 배치 검사기 unittest
+        working-directory: deploy/e2-network-boundary
+        # *_docker.py는 실제 컨테이너를 띄우는 수동 스크립트라 TestCase가 없다. 여기서는 합성 inspect·렌더링 시험만 돈다.
+        # Compose CLI가 없으면 렌더링 시험이 SKIP으로 빠지므로 SKIP을 통과로 보지 않는다.
+        run: |
+          set +e
+          out=$(python3 -I -B -m unittest discover -s . -t . 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
+          if printf '%s\n' "$out" | grep -q 'skipped='; then
+            echo "::error::E② 배치 시험에 SKIP이 있습니다(통과로 보지 않음)"
+            exit 1
+          fi
