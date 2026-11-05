@@ -14,13 +14,26 @@ import subprocess
 import sys
 import urllib.request
 
+CHECK_NAMES = (
+    "direct_ipv4_tcp", "direct_ipv6_tcp", "direct_ipv4_udp", "direct_ipv6_udp",
+    "dns_resolution", "proxy_replacement", "opaque_connect", "shell_child", "grandchild",
+)
+EXPECTED_ERROR_KINDS = {
+    "direct_ipv4_tcp": {"OSError"}, "direct_ipv6_tcp": {"OSError"},
+    "direct_ipv4_udp": {"OSError"}, "direct_ipv6_udp": {"OSError"},
+    "dns_resolution": {"OSError"}, "proxy_replacement": {"OSError", "URLError"},
+    "opaque_connect": {"OSError"}, "shell_child": {"CalledProcessError", "TimeoutExpired"},
+    "grandchild": {"CalledProcessError", "TimeoutExpired"},
+}
+
 
 def attempt(name, action):
     try:
         action()
         return {"name": name, "connected_or_sent": True}
-    except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        return {"name": name, "connected_or_sent": False, "errno": getattr(error, "errno", None)}
+    except Exception as error:  # report; the caller decides whether this is expected
+        return {"name": name, "connected_or_sent": False,
+                "error_kind": type(error).__name__, "errno": getattr(error, "errno", None)}
 
 
 def tcp(address, port, family):
@@ -71,6 +84,8 @@ def main():
     parser.add_argument("--ipv6-tcp-port", required=True, type=int)
     parser.add_argument("--ipv6-udp-port", required=True, type=int)
     parser.add_argument("--dns-name", required=True)
+    parser.add_argument("--expect-success", action="store_true",
+                        help="run the same probe code as a reachable positive control")
     args = parser.parse_args()
     os.environ["HTTP_PROXY"] = f"http://{args.ipv4}:{args.tcp_port}"
     os.environ["HTTPS_PROXY"] = os.environ["HTTP_PROXY"]
@@ -88,8 +103,19 @@ def main():
         attempt("shell_child", lambda: shell_child(args.ipv4, args.tcp_port)),
         attempt("grandchild", lambda: child(args.ipv4, args.tcp_port, nested=True)),
     ]
-    print(json.dumps({"checks": checks, "unexpected_successes": sum(c["connected_or_sent"] for c in checks)}))
-    return 1 if any(c["connected_or_sent"] for c in checks) else 0
+    names = [check["name"] for check in checks]
+    unexpected_errors = [check for check in checks
+                         if not check["connected_or_sent"] and
+                         check.get("error_kind") not in EXPECTED_ERROR_KINDS.get(check["name"], set())]
+    unexpected_successes = sum(check["connected_or_sent"] for check in checks)
+    result = {"checks": checks, "check_names": names,
+              "unexpected_errors": unexpected_errors,
+              "unexpected_successes": unexpected_successes}
+    if args.expect_success:
+        result["positive_control"] = all(check["connected_or_sent"] for check in checks)
+        return 0 if result["positive_control"] else 1
+    result["blocked"] = all(not check["connected_or_sent"] for check in checks)
+    return 0 if names == list(CHECK_NAMES) and result["blocked"] and not unexpected_errors else 1
 
 
 if __name__ == "__main__":

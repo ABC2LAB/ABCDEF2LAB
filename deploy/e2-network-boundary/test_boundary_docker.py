@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -78,8 +79,9 @@ sock.close()
 '''
 
 
-def docker_bin() -> str:
-    value = shutil.which("docker.exe") or shutil.which("docker")
+def docker_bin(explicit: str | None = None) -> str:
+    value = explicit or os.environ.get("E2_DOCKER_CLI") or "docker"
+    value = shutil.which(value) if "/" not in value else value
     if not value:
         raise RuntimeError("docker_cli_unavailable")
     return value
@@ -91,6 +93,14 @@ def docker(*args: str, input_text: str | None = None, timeout: int = 25) -> str:
     if result.returncode:
         raise RuntimeError("docker_command_failed")
     return result.stdout.strip()
+
+
+def daemon_identity() -> dict[str, str]:
+    value = json.loads(docker("info", "--format", "{{json .}}"))
+    if not isinstance(value, dict):
+        raise RuntimeError("docker_daemon_identity_shape")
+    return {field: str(value[field]) for field in ("ID", "Name", "ServerVersion", "OperatingSystem")
+            if value.get(field) is not None}
 
 
 def count(target: str) -> dict[str, int]:
@@ -107,6 +117,7 @@ def main() -> int:
     made_network = made_target = False
     observations: dict[str, object] = {"status": "FAIL", "scope": "B-only synthetic", "checks": {}, "target_received": None}
     try:
+        observations["daemon"] = daemon_identity()
         docker("image", "inspect", args.image)
         docker("network", "create", "--internal", "--ipv6",
                "-o", "com.docker.network.bridge.gateway_mode_ipv4=isolated",
@@ -143,6 +154,15 @@ def main() -> int:
         else:
             raise RuntimeError("synthetic_positive_control_failed")
         script = Path(__file__).with_name("probe_network.py").read_text()
+        positive = subprocess.run(
+            [docker_bin(), "run", "--rm", "-i", "--pull=never", "--network", network,
+             args.image, "python", "-", "--ipv4", ipv4, "--ipv6", ipv6,
+             "--tcp-port", "8080", "--udp-port", "8081", "--ipv6-tcp-port", "8082",
+             "--ipv6-udp-port", "8083", "--dns-name", target, "--expect-success"],
+            input=script, text=True, capture_output=True, timeout=40, check=False,
+        )
+        if positive.returncode != 0:
+            raise RuntimeError("synthetic_same_probe_positive_control_failed")
         result = subprocess.run(
             [docker_bin(), "run", "--rm", "-i", "--pull=never", "--network", "none",
              "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
@@ -156,6 +176,12 @@ def main() -> int:
         if not result.stdout.strip():
             raise RuntimeError("synthetic_probe_unavailable")
         probe = json.loads(result.stdout)
+        expected_names = [
+            "direct_ipv4_tcp", "direct_ipv6_tcp", "direct_ipv4_udp", "direct_ipv6_udp",
+            "dns_resolution", "proxy_replacement", "opaque_connect", "shell_child", "grandchild",
+        ]
+        if probe.get("check_names") != expected_names or probe.get("unexpected_errors"):
+            raise RuntimeError("synthetic_probe_error_or_name_mismatch")
         after = count(target)
         observations["checks"] = {item["name"]: not item["connected_or_sent"] for item in probe["checks"]}
         observations["target_received"] = {key: after[key] - baseline[key] for key in baseline}

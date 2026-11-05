@@ -7,6 +7,7 @@ not the A sender or C worker; no acceptance result is inferred from them.
 from __future__ import annotations
 
 import json
+import argparse
 import os
 from pathlib import Path
 import subprocess
@@ -30,6 +31,8 @@ def compose(files: list[str], project: str, env: dict[str, str], *args: str) -> 
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args()
     suffix = uuid4().hex[:12]
     project = "e2b-" + suffix
     run_ref = "synthetic-" + suffix

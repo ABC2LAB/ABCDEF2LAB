@@ -10,7 +10,7 @@ import unittest
 
 class ComposeConfig(unittest.TestCase):
     def test_rendered_process_separation(self):
-        docker = shutil.which("docker.exe") or shutil.which("docker")
+        docker = shutil.which(os.environ.get("E2_DOCKER_CLI", "docker"))
         if not docker:
             self.skipTest("Docker Compose CLI unavailable")
         env = dict(os.environ)

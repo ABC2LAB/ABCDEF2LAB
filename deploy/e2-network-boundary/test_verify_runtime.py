@@ -4,6 +4,7 @@ import copy
 import unittest
 
 from verify_runtime import CHANNEL, check
+from probe_network import CHECK_NAMES, attempt
 
 
 VOLUME = "e2-run-123-channel"
@@ -35,7 +36,7 @@ def objects():
         "Config": {"User": "10002:10002", "Labels": {
             "org.abc2lab.e2.run": RUN, "org.abc2lab.e2.role": "sender",
             "com.docker.compose.project": PROJECT}},
-        "HostConfig": {"NetworkMode": NETWORK, "PidMode": "", "UsernsMode": "",
+        "HostConfig": {"NetworkMode": NETWORK, "PidMode": "", "UsernsMode": "", "IpcMode": "private",
                        "Privileged": False, "PortBindings": {},
                        "ReadonlyRootfs": True, "CapDrop": ["ALL"],
                        "SecurityOpt": ["no-new-privileges:true"]},
@@ -161,6 +162,23 @@ class RuntimeChecks(unittest.TestCase):
         self.network["Containers"]["unapproved-third-container"] = {}
         self.assertIn("target_network_membership_mismatch", self.inspect())
 
+    def test_unapproved_namespace_peers_are_rejected(self):
+        peer = {"Id": "unapproved-peer", "HostConfig": {
+            "NetworkMode": "container:" + self.target["Id"],
+            "PidMode": "container:" + self.sender["Id"],
+        }}
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT, [self.tool, self.sender, self.target, peer])
+        self.assertIn("unapproved_network_namespace_peer", issues)
+        self.assertIn("unapproved_pid_namespace_peer", issues)
+
+    def test_ipc_namespace_must_be_private(self):
+        self.tool["HostConfig"]["IpcMode"] = "shareable"
+        self.sender["HostConfig"]["IpcMode"] = "container:other"
+        issues = self.inspect()
+        self.assertIn("tool_has_host_privilege", issues)
+        self.assertIn("sender_namespace_unapproved", issues)
+
     def test_wrong_target_network_id_is_rejected(self):
         self.target["NetworkSettings"]["Networks"][NETWORK]["NetworkID"] = "other-network"
         self.assertIn("target_network_membership_mismatch", self.inspect())
@@ -204,6 +222,16 @@ class RuntimeChecks(unittest.TestCase):
         self.assertIn("tool_root_user", issues)
         self.assertIn("tool_not_running", issues)
         self.assertIn("sender_not_running", issues)
+
+    def test_probe_reports_unexpected_exception_instead_of_blocked(self):
+        result = attempt("direct_ipv4_tcp", lambda: (_ for _ in ()).throw(ValueError("bad probe")))
+        self.assertFalse(result["connected_or_sent"])
+        self.assertEqual(result["error_kind"], "ValueError")
+        self.assertNotEqual(result.get("error_kind"), "OSError")
+
+    def test_probe_check_name_contract_is_exact(self):
+        self.assertEqual(len(CHECK_NAMES), 9)
+        self.assertEqual(len(set(CHECK_NAMES)), 9)
 
 
 if __name__ == "__main__":

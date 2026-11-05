@@ -12,8 +12,10 @@ import argparse
 import json
 import subprocess
 import sys
+from pathlib import Path
 from uuid import uuid4
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_boundary_docker import docker, docker_bin
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -37,11 +38,17 @@ def _extra_privilege(host: dict[str, Any]) -> bool:
     return any(host.get(key) for key in ("CapAdd", "Devices", "DeviceRequests", "DeviceCgroupRules")) or any("unconfined" in str(value).lower() for value in host.get("SecurityOpt") or [])
 
 
-def _inspect(kind: str, name: str) -> dict[str, Any]:
-    docker = shutil.which("docker.exe") or shutil.which("docker")
-    if docker is None:
+def _docker_bin(explicit: str | None = None) -> str:
+    value = explicit or os.environ.get("E2_DOCKER_CLI") or "docker"
+    value = shutil.which(value) if "/" not in value else value
+    if value is None:
         raise RuntimeError("docker_cli_unavailable")
-    cmd = [docker, kind, "inspect", name] if kind in {"network", "volume"} else [docker, "inspect", name]
+    return value
+
+
+def _inspect(kind: str, name: str, docker_cli: str | None = None) -> dict[str, Any]:
+    docker = _docker_bin(docker_cli)
+    cmd = [docker, kind, "inspect", name] if kind in {"network", "volume"} else [docker, "inspect", "--type", kind, name]
     result = subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=15)
     if result.returncode:
         raise RuntimeError("docker_inspect_failed")
@@ -51,7 +58,56 @@ def _inspect(kind: str, name: str) -> dict[str, Any]:
     return value[0]
 
 
-def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], network: dict[str, Any], volume: dict[str, Any], channel_volume: str, network_name: str, run_ref: str, project: str) -> list[str]:
+def _inspect_containers(docker_cli: str | None = None) -> list[dict[str, Any]]:
+    docker = _docker_bin(docker_cli)
+    listed = subprocess.run([docker, "ps", "-aq"], text=True, capture_output=True,
+                            check=False, timeout=15)
+    if listed.returncode:
+        raise RuntimeError("docker_container_list_failed")
+    ids = [value for value in listed.stdout.splitlines() if value]
+    if not ids:
+        return []
+    result = subprocess.run([docker, "inspect", "--type", "container", *ids],
+                            text=True, capture_output=True, check=False, timeout=15)
+    if result.returncode:
+        raise RuntimeError("docker_container_inspect_failed")
+    value = json.loads(result.stdout)
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise RuntimeError("docker_container_inspect_shape")
+    return value
+
+
+def _daemon_identity(docker_cli: str | None = None) -> dict[str, str]:
+    docker = _docker_bin(docker_cli)
+    result = subprocess.run([docker, "info", "--format", "{{json .}}"],
+                            text=True, capture_output=True, check=False, timeout=15)
+    if result.returncode:
+        raise RuntimeError("docker_daemon_identity_unavailable")
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict):
+        raise RuntimeError("docker_daemon_identity_shape")
+    fields = ("ID", "Name", "ServerVersion", "OperatingSystem")
+    return {field: str(value[field]) for field in fields if value.get(field) is not None}
+
+
+def _namespace_issues(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any],
+                      containers: list[dict[str, Any]]) -> list[str]:
+    target_id = target.get("Id")
+    sender_id = sender.get("Id")
+    allowed = {tool.get("Id"), sender_id, target_id}
+    issues = []
+    for container in containers:
+        if container.get("Id") in allowed:
+            continue
+        host = container.get("HostConfig") or {}
+        if host.get("NetworkMode") == "container:" + str(target_id):
+            issues.append("unapproved_network_namespace_peer")
+        if host.get("PidMode") == "container:" + str(sender_id):
+            issues.append("unapproved_pid_namespace_peer")
+    return sorted(set(issues))
+
+
+def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], network: dict[str, Any], volume: dict[str, Any], channel_volume: str, network_name: str, run_ref: str, project: str, all_containers: list[dict[str, Any]] | None = None) -> list[str]:
     issues: list[str] = []
     th = tool.get("HostConfig") or {}
     sh = sender.get("HostConfig") or {}
@@ -85,7 +141,7 @@ def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], 
 
     if th.get("NetworkMode") != "none" or set(tn) != {"none"}:
         issues.append("tool_has_ip_network")
-    if th.get("Privileged") or th.get("PidMode") == "host" or th.get("IpcMode") == "host" or _extra_privilege(th):
+    if th.get("Privileged") or th.get("PidMode") == "host" or th.get("IpcMode") != "private" or _extra_privilege(th):
         issues.append("tool_has_host_privilege")
     if not th.get("ReadonlyRootfs") or "ALL" not in [x.upper() for x in th.get("CapDrop") or []]:
         issues.append("tool_filesystem_or_caps")
@@ -117,6 +173,12 @@ def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], 
     if set(sn) != {network_name} or network_name in tn or (sn.get(network_name) or {}).get("NetworkID") != network.get("Id"):
         issues.append("sender_network_mismatch")
     target_networks = (target.get("NetworkSettings") or {}).get("Networks") or {}
+    target_ports = (target.get("NetworkSettings") or {}).get("Ports") or {}
+    target_host = target.get("HostConfig") or {}
+    if set(target_networks) != {network_name}:
+        issues.append("target_has_extra_network")
+    if target_host.get("PortBindings") or _published(target_ports):
+        issues.append("target_published_port")
     members = set((network.get("Containers") or {}).keys())
     expected_members = {sender.get("Id"), target.get("Id")}
     if None in expected_members or len(expected_members) != 2 or members != expected_members or tool.get("Id") in members or (target_networks.get(network_name) or {}).get("NetworkID") != network.get("Id"):
@@ -125,10 +187,12 @@ def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], 
         issues.append("sender_host_or_published_port")
     if sender_ids is None or not sh.get("ReadonlyRootfs") or "ALL" not in [x.upper() for x in sh.get("CapDrop") or []] or "no-new-privileges:true" not in (sh.get("SecurityOpt") or []):
         issues.append("sender_privilege_or_filesystem")
-    if sh.get("PidMode") != "" or sh.get("UsernsMode") != "" or sh.get("IpcMode") == "host":
+    if sh.get("PidMode") != "" or sh.get("UsernsMode") != "" or sh.get("IpcMode") != "private":
         issues.append("sender_namespace_unapproved")
     if tool_ids is not None and sender_ids is not None and (tool_ids[0] == sender_ids[0] or tool_ids[1] == sender_ids[1]):
         issues.append("process_users_not_separated")
+    if all_containers is not None:
+        issues.extend(_namespace_issues(tool, sender, target, all_containers))
     return sorted(set(issues))
 
 
@@ -141,18 +205,23 @@ def main() -> int:
     parser.add_argument("--channel-volume", required=True, help="exact C-prepared external channel volume")
     parser.add_argument("--run-ref", required=True, help="C-verified nonsecret run reference")
     parser.add_argument("--project", required=True, help="exact per-run Compose project")
+    parser.add_argument("--docker-cli", help="explicit Docker CLI path/name (default: docker or E2_DOCKER_CLI)")
     args = parser.parse_args()
     try:
-        tool = _inspect("container", args.tool)
-        sender = _inspect("container", args.sender)
-        target = _inspect("container", args.target)
-        network = _inspect("network", args.network)
-        volume = _inspect("volume", args.channel_volume)
-        issues = check(tool, sender, target, network, volume, args.channel_volume, args.network, args.run_ref, args.project)
+        tool = _inspect("container", args.tool, args.docker_cli)
+        sender = _inspect("container", args.sender, args.docker_cli)
+        target = _inspect("container", args.target, args.docker_cli)
+        network = _inspect("network", args.network, args.docker_cli)
+        volume = _inspect("volume", args.channel_volume, args.docker_cli)
+        containers = _inspect_containers(args.docker_cli)
+        issues = check(tool, sender, target, network, volume, args.channel_volume, args.network,
+                       args.run_ref, args.project, containers)
+        daemon = _daemon_identity(args.docker_cli)
     except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
         print(json.dumps({"status": "FAIL", "issues": ["inspection_unavailable"]}))
         return 1
-    print(json.dumps({"status": "PASS" if not issues else "FAIL", "issues": issues}))
+    print(json.dumps({"status": "PASS" if not issues else "FAIL", "issues": issues,
+                      "daemon": daemon}, sort_keys=True))
     return 0 if not issues else 1
 
 

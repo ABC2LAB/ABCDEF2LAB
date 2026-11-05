@@ -9,6 +9,7 @@ does not prove peer identity, admission, TLS, budget, audit, or C drain.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 from pathlib import Path
 import subprocess
@@ -72,8 +73,9 @@ conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 conn.settimeout(2)
 try:
     conn.connect("/run/e2-channel/registered.sock")
-except OSError:
-    print("stream_rejected")
+except OSError as error:
+    import json
+    print(json.dumps({"status": "stream_rejected", "errno": error.errno}))
 else:
     raise AssertionError("stream connected to packet socket")
 finally:
@@ -235,7 +237,10 @@ def main() -> int:
                                "--read-only", "--pids-limit", "128", "--user", "10001:10001",
                                "--mount", "type=volume,src=" + volume + ",dst=/run/e2-channel,readonly",
                                args.image, "python", "-c", STREAM_CODE)
-        outcome["stream_fallback_blocked"] = stream_result == "stream_rejected"
+        stream_observation = json.loads(stream_result)
+        outcome["stream_fallback_blocked"] = (
+            stream_observation == {"status": "stream_rejected", "errno": errno.EPROTOTYPE}
+        )
         counts = json.loads(docker("exec", target, "python", "-c", COUNT_CODE))
         outcome["target_received"] = counts["http"]
         outcome["stream_fallback_target_delta"] = counts["http"] - before_stream["http"]
@@ -305,7 +310,7 @@ def main() -> int:
             else:
                 outcome["candidate_state"] = "UNVERIFIED_C_HOST_IDENTITY"
         if packet_ok and candidate_checks_ok:
-            outcome["status"] = "PASS"
+            outcome["status"] = "SKIP" if args.candidate_share_pid else "PASS"
     except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError, KeyError) as error:
         outcome["error"] = str(error) if isinstance(error, RuntimeError) else "test_runtime_error"
     finally:
@@ -329,7 +334,7 @@ def main() -> int:
             except (RuntimeError, subprocess.TimeoutExpired):
                 outcome["cleanup"] = "owned_resource_remove_failed"
     print(json.dumps(outcome, sort_keys=True))
-    return 0 if outcome["status"] == "PASS" and "cleanup" not in outcome else 1
+    return 0 if outcome["status"] in {"PASS", "SKIP"} and "cleanup" not in outcome else 1
 
 
 if __name__ == "__main__":
