@@ -83,7 +83,7 @@ type Call struct {
 
 func validRef(v string) bool { return safeRef.MatchString(v) && !strings.Contains(v, "://") }
 func randomRef(prefix string) (string, error) {
-	var b [16]byte
+	var b [randomRefBytes]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", ErrConfig
 	}

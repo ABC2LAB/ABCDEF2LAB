@@ -9,7 +9,10 @@ const (
 	maxExecutionCalls     = 1000
 	maxConcurrentRequests = 100
 	maxExecutionRules     = 128
-	maxEventPageSize      = 200
+	maxProxyConnections   = 128
+	// A random reference uses this many entropy bytes; Journal validates the same length.
+	randomRefBytes   = 16
+	maxEventPageSize = 200
 )
 
 // Bound in-memory request/response buffers and synchronous network/audit work.

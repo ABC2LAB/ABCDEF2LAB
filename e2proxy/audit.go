@@ -26,14 +26,17 @@ import (
 )
 
 const (
-	JournalVersion       = "e2-http-v1"
-	journalIDBytes       = 16
-	journalMinKeyBytes   = 32
-	journalMaxKeyBytes   = 4096
-	journalMaxLineBytes  = 16384
-	journalMaxBytes      = 256 << 20
-	journalMaxEvents     = 100000
-	journalMaxEmptyReads = 100
+	JournalVersion        = "e2-http-v1"
+	journalIDBytes        = 16
+	journalMinKeyBytes    = 32
+	journalMaxKeyBytes    = 4096
+	journalMaxLineBytes   = 16384
+	journalMaxBytes       = 256 << 20
+	journalMaxEvents      = 100000
+	journalMaxNameBytes   = 128
+	journalMaxRefBytes    = 128
+	journalMaxMethodBytes = 16
+	journalMaxEmptyReads  = 100
 )
 
 var (
@@ -404,7 +407,7 @@ func journalMAC(key []byte, domain string, value any) (string, error) {
 }
 
 func validJournalName(name string) bool {
-	if len(name) == 0 || len(name) > 128 || name == "." || name == ".." {
+	if len(name) == 0 || len(name) > journalMaxNameBytes || name == "." || name == ".." {
 		return false
 	}
 	for _, ch := range name {
@@ -416,7 +419,7 @@ func validJournalName(name string) bool {
 }
 
 func validJournalRef(ref string) bool {
-	if len(ref) == 0 || len(ref) > 128 || strings.Contains(ref, "://") {
+	if len(ref) == 0 || len(ref) > journalMaxRefBytes || strings.Contains(ref, "://") {
 		return false
 	}
 	for i, ch := range ref {
@@ -461,7 +464,7 @@ func validJournalEvent(event Event) bool {
 	}
 	switch event.Stage {
 	case "intent", "result":
-		if event.IntentID <= 0 || event.Sequence == 0 || !validJournalRef(event.CallRef) || !validJournalHex(event.AttemptID, 16) {
+		if event.IntentID <= 0 || event.Sequence == 0 || !validJournalRef(event.CallRef) || !validJournalHex(event.AttemptID, randomRefBytes) {
 			return false
 		}
 		if event.Decision != "allowed" && event.Decision != "denied" && event.Decision != "unsupported" {
@@ -487,7 +490,7 @@ func validJournalEvent(event Event) bool {
 	default:
 		return false
 	}
-	if len(event.Method) > 16 {
+	if len(event.Method) > journalMaxMethodBytes {
 		return false
 	}
 	for _, ch := range event.Method {
