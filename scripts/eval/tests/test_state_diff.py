@@ -115,6 +115,51 @@ class TestRows(_Db):
         self.assertEqual((feedback["added"], feedback["removed"], feedback["changed"]), (None, None, None))
         self.assertIn("Feedbacks", result["changed_tables"])
 
+    def test_schema_objects_beyond_plain_columns_are_compared(self):
+        # table_info는 생성 열을 빼고, type='table'만 보면 트리거·뷰·인덱스를 놓친다(#226 리뷰). 전부 상태 변경이다.
+        generated = self.change("ALTER TABLE Pairs ADD COLUMN derived TEXT GENERATED ALWAYS AS (a || 'x') VIRTUAL;")
+        self.assertTrue(generated["tables"]["Pairs"]["schema_changed"])
+        self.assertEqual(generated["schema_objects"]["changed"], [["table", "Pairs"]])
+        self.assertTrue(generated["content_changed"])
+        for ddl, kind, name in (("CREATE TRIGGER trg AFTER INSERT ON Logs BEGIN DELETE FROM Logs; END;", "trigger", "trg"),
+                                ("CREATE VIEW v AS SELECT * FROM Logs;", "view", "v"),
+                                ("CREATE INDEX ix ON Logs(msg);", "index", "ix")):
+            with self.subTest(kind=kind):
+                self.pre = snapshot(self.path, KEY)  # 앞 단계 객체가 쌓인 상태에서 한 객체씩
+                result = self.change(ddl)
+                self.assertEqual(result["schema_objects"], {"added": [[kind, name]], "removed": [], "changed": []})
+                self.assertEqual((result["changed_tables"], result["content_changed"], result["trace_only"]),
+                                 ([], True, False))
+                self.assertEqual(diff(snapshot(self.path, KEY), snapshot(self.path, KEY))["schema_objects"],
+                                 {"added": [], "removed": [], "changed": []})
+        self.pre = snapshot(self.path, KEY)
+        dropped = self.change("DROP INDEX ix;")
+        self.assertEqual(dropped["schema_objects"]["removed"], [["index", "ix"]])
+
+    def test_generated_and_virtual_table_columns_are_read(self):
+        conn = sqlite3.connect(self.path)
+        conn.executescript("ALTER TABLE Pairs ADD COLUMN derived TEXT GENERATED ALWAYS AS (a || 'x') VIRTUAL;"
+                           "CREATE VIRTUAL TABLE Docs USING fts5(body); INSERT INTO Docs VALUES ('one');")
+        conn.commit()
+        conn.close()
+        self.pre = snapshot(self.path, KEY)
+        self.assertIn(("derived", "TEXT", 2), self.pre["tables"]["Pairs"]["columns"])
+        result = self.change("INSERT INTO Docs VALUES ('two');")
+        self.assertEqual(result["tables"]["Docs"]["added"], 1)
+
+    def test_new_object_with_sequence_is_not_trace_only(self):
+        result = self.change("CREATE INDEX fx ON Feedbacks(comment);"
+                             "INSERT INTO Feedbacks (comment, rating) VALUES ('tmp', 1.0);"
+                             "DELETE FROM Feedbacks WHERE comment = 'tmp';")
+        self.assertEqual((result["changed_tables"], result["content_changed"], result["trace_only"]), ([], True, False))
+
+    def test_table_added_with_sequence_is_not_trace_only(self):
+        result = self.change("CREATE TABLE Extra (id INTEGER PRIMARY KEY AUTOINCREMENT);"
+                             "INSERT INTO Extra DEFAULT VALUES; DELETE FROM Extra;")
+        self.assertEqual((result["tables_added"], result["content_changed"], result["trace_only"]),
+                         (["Extra"], True, False))
+        self.assertIn("Extra", result["sequence_changed"])
+
     def test_tables_added_and_removed(self):
         result = self.change("CREATE TABLE Extra (id INTEGER PRIMARY KEY); DROP TABLE Tags;")
         self.assertEqual((result["tables_added"], result["tables_removed"]), (["Extra"], ["Tags"]))
@@ -123,6 +168,11 @@ class TestRows(_Db):
 
 
 class TestSignals(_Db):
+    def test_signal_table_objects_stay_out_of_the_schema_difference(self):
+        self.change("CREATE INDEX cix ON Codes(n);")
+        result = diff(self.pre, snapshot(self.path, KEY), frozenset({"Codes"}))
+        self.assertEqual((result["schema_objects"]["added"], result["content_changed"]), ([], False))
+
     def test_signal_table_is_counted_apart_from_the_state_difference(self):
         # 해결 기록 같은 신호 테이블의 변화는 상태 차이(판정 입력)에 들어가지 않고 건수만 따로 남는다.
         self.change("UPDATE Codes SET n = 2 WHERE code = 'c1';"
@@ -206,12 +256,17 @@ class TestNoValues(_Db):
             fingerprints = table["rows"].values() if table["key"] else table["rows"]
             for fp in fingerprints:
                 self.assertNotIn(fp.hex(), text)
+        for _, fp in self.pre["objects"].values():
+            self.assertNotIn(fp.hex(), text)
+        self.assertNotIn("CREATE", text)  # 정의문(DDL)은 내보내지 않는다
 
     def test_fingerprints_depend_on_the_run_key(self):
-        # 키가 다르면 같은 행도 지문이 다르다. 그래서 pre·post는 같은 회차 키로 떠야 한다.
+        # 키가 다르면 같은 행·정의도 지문이 다르다. 그래서 pre·post는 같은 회차 키로 떠야 한다.
         other = snapshot(self.path, bytes(RUN_KEY_BYTES))
         self.assertNotEqual(self.pre["tables"]["Users"]["rows"][1], other["tables"]["Users"]["rows"][1])
-        self.assertEqual(diff(self.pre, other)["tables"]["Users"]["changed_ids"], [1, 2])
+        result = diff(self.pre, other)
+        self.assertIn(["table", "Users"], result["schema_objects"]["changed"])
+        self.assertTrue(result["tables"]["Users"]["schema_changed"])
 
 
 if __name__ == "__main__":
