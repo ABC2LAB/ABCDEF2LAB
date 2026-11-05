@@ -92,6 +92,7 @@ const (
 	BindingMismatch     Reason = "binding_mismatch"
 	BudgetUnavailable   Reason = "budget_unavailable"
 	BudgetExhausted     Reason = "budget_exhausted"
+	TimedOut            Reason = "timed_out"
 	AuditUnavailable    Reason = "audit_unavailable"
 	TransportUnknown    Reason = "transport_unknown"
 )
@@ -268,6 +269,7 @@ func (b *Boundary) SendRegisteredRead(accountRef, resourceRef string) (out Outco
 	}
 	if out.Receipt.ResponseReceived {
 		out.State = ResponseObserved
+		out.Reason = ""
 		return
 	}
 	out.State, out.Reason = SendPartialOrUnknown, TransportUnknown
@@ -327,6 +329,8 @@ func transmitReason(reason transmit.Reason) Reason {
 		return BudgetUnavailable
 	case transmit.BudgetExhausted:
 		return BudgetExhausted
+	case transmit.TimedOut:
+		return TimedOut
 	case transmit.ExpiredApproval, transmit.ExpiredAccount:
 		return Expired
 	case transmit.AuditUnavailable:

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,13 +22,18 @@ import (
 )
 
 type testPeerAuthorizer struct {
-	calls atomic.Int32
-	deny  bool
-	check func(transmit.Scope, auditpeer.Credentials) bool
+	calls       atomic.Int32
+	releases    atomic.Int32
+	deny        bool
+	permitOnErr bool
+	check       func(transmit.Scope, auditpeer.Credentials) bool
 }
 
 func (p *testPeerAuthorizer) AcquirePeer(_ context.Context, scope transmit.Scope, creds auditpeer.Credentials) (Permit, error) {
 	p.calls.Add(1)
+	if p.permitOnErr {
+		return &syntheticPermit{release: func() { p.releases.Add(1) }}, ErrPeer
+	}
 	if p.deny || p.check == nil || !p.check(scope, creds) {
 		return nil, ErrPeer
 	}
@@ -41,10 +47,21 @@ type serveResult struct {
 
 type waitingPeerAuthorizer struct{ entered chan struct{} }
 
+type delayedPeerAuthorizer struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
 func (p *waitingPeerAuthorizer) AcquirePeer(ctx context.Context, _ transmit.Scope, _ auditpeer.Credentials) (Permit, error) {
 	close(p.entered)
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+func (p *delayedPeerAuthorizer) AcquirePeer(_ context.Context, _ transmit.Scope, _ auditpeer.Credentials) (Permit, error) {
+	close(p.entered)
+	<-p.release
+	return nil, ErrPeer
 }
 
 func socketRequest(t *testing.T, b *Boundary, peer PeerAuthorizer, payload string) ([]byte, serveResult) {
@@ -158,6 +175,21 @@ func TestPacketChannelRejectsUntrustedAndMalformedPackets(t *testing.T) {
 	}
 }
 
+func TestPacketChannelPeerPermitErrorReleasesPermit(t *testing.T) {
+	var received atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received.Add(1)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer target.Close()
+	b, _ := setup(t, target.URL, nil, 2, &syntheticRecorder{}, newAuthority(), true)
+	peer := &testPeerAuthorizer{permitOnErr: true, check: sameProcessPeer}
+	ack, served := socketRequest(t, b, peer, `{"version":1,"account_ref":"account:1","resource_ref":"item:1"}`)
+	if !errors.Is(served.err, ErrPeer) || len(ack) != 0 || peer.calls.Load() != 1 || peer.releases.Load() != 1 || received.Load() != 0 {
+		t.Fatalf("peer permit was not released on error: %+v received=%d calls=%d releases=%d", served, received.Load(), peer.calls.Load(), peer.releases.Load())
+	}
+}
+
 func TestPacketChannelStopClosesIdleConnection(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{}")) }))
 	defer target.Close()
@@ -262,6 +294,62 @@ func TestPacketChannelStopCancelsPeerAdmission(t *testing.T) {
 	}
 }
 
+func TestPacketChannelStopAndWaitDrainsDelayedPeerAdmission(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{}")) }))
+	defer target.Close()
+	b, _ := setup(t, target.URL, nil, 1, &syntheticRecorder{}, newAuthority(), true)
+	path := filepath.Join(t.TempDir(), "registered.sock")
+	listener, err := net.ListenUnix("unixpacket", &net.UnixAddr{Name: path, Net: "unixpacket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	client, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: path, Net: "unixpacket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server, err := listener.AcceptUnix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := &delayedPeerAuthorizer{entered: make(chan struct{}), release: make(chan struct{})}
+	served := make(chan error, 1)
+	go func() { _, serveErr := b.ServePacketConn(server, peer); served <- serveErr }()
+	if err := client.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	ready := make([]byte, 64)
+	n, err := client.Read(ready)
+	if err != nil || n != 39 {
+		t.Fatalf("ready=%q err=%v", ready[:n], err)
+	}
+	if _, err = client.Write([]byte(`{"version":1,"account_ref":"account:1","resource_ref":"item:1","nonce":"` + string(ready[7:n]) + `"}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-peer.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("peer admission was not entered")
+	}
+	drained := make(chan struct{})
+	go func() { b.StopAndWait(); close(drained) }()
+	select {
+	case <-drained:
+		t.Fatal("StopAndWait returned before delayed peer admission completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(peer.release)
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("StopAndWait did not drain delayed peer admission")
+	}
+	if err := <-served; !errors.Is(err, ErrPeer) {
+		t.Fatalf("serve error=%v", err)
+	}
+}
+
 func TestPacketChannelEarlyPacketCannotSend(t *testing.T) {
 	var received atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -282,7 +370,16 @@ func TestPacketChannelEarlyPacketCannotSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if _, err = client.Write([]byte(`{"version":1,"account_ref":"account:1","resource_ref":"item:1"}`)); err != nil {
+	var raw syscall.RawConn
+	if raw, err = client.SyscallConn(); err != nil {
+		t.Fatal(err)
+	}
+	if err = raw.Control(func(fd uintptr) {
+		err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PASSCRED, 1)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.Write([]byte(`{"version":1,"account_ref":"account:1","resource_ref":"item:1","nonce":"00000000000000000000000000000000"}`)); err != nil {
 		t.Fatal(err)
 	}
 	server, err := listener.AcceptUnix()

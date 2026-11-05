@@ -51,16 +51,18 @@ func (r *syntheticRecorder) count(stage string) int {
 }
 
 type syntheticAuthority struct {
-	token     chan struct{}
-	mu        sync.Mutex
-	calls     int
-	checks    []Check
-	err       error
-	revoked   bool
-	nilPermit bool
-	expected  Check
-	strict    bool
-	headOK    bool
+	token       chan struct{}
+	mu          sync.Mutex
+	calls       int
+	checks      []Check
+	err         error
+	permitOnErr bool
+	releases    atomic.Int32
+	revoked     bool
+	nilPermit   bool
+	expected    Check
+	strict      bool
+	headOK      bool
 }
 
 func newAuthority() *syntheticAuthority {
@@ -89,6 +91,9 @@ func (a *syntheticAuthority) Acquire(ctx context.Context, check Check) (Permit, 
 	}
 	a.mu.Unlock()
 	if err != nil {
+		if a.permitOnErr {
+			return &syntheticPermit{release: func() { a.releases.Add(1); a.token <- struct{}{} }}, err
+		}
 		a.token <- struct{}{}
 		return nil, err
 	}
@@ -182,7 +187,7 @@ func TestRegisteredHTTPGetUsesCurrentGateBudgetAndAudit(t *testing.T) {
 	recorder, authority := &syntheticRecorder{}, newAuthority()
 	b, ledger := setup(t, target.URL, nil, 2, recorder, authority, true)
 	out := b.SendRegisteredRead("account:1", "item:1")
-	if out.State != ResponseObserved || !out.Receipt.Admitted || !out.Receipt.ResponseReceived || !out.Captured ||
+	if out.State != ResponseObserved || out.Reason != "" || !out.Receipt.Admitted || !out.Receipt.ResponseReceived || !out.Captured ||
 		received.Load() != 1 || recorder.count("intent") != 1 || recorder.count("result") != 1 {
 		t.Fatalf("unexpected outcome: %+v, received=%d", out, received.Load())
 	}
@@ -197,6 +202,77 @@ func TestRegisteredHTTPGetUsesCurrentGateBudgetAndAudit(t *testing.T) {
 	remaining, err := ledger.Remaining(b.budgetKey, b.binding, time.Now())
 	if err != nil || remaining != 1 {
 		t.Fatalf("remaining=%d err=%v", remaining, err)
+	}
+}
+
+func TestSuccessfulRedirectClearsApprovalReason(t *testing.T) {
+	var received atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		if r.URL.Path == "/read" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer target.Close()
+	b, _ := setup(t, target.URL, nil, 2, &syntheticRecorder{}, newAuthority(), true)
+	out := b.SendRegisteredRead("account:1", "item:1")
+	if out.State != ResponseObserved || out.Reason != "" || !out.Receipt.Admitted || !out.Receipt.ResponseReceived || received.Load() != 1 {
+		t.Fatalf("redirect success retained a failure reason: %+v received=%d", out, received.Load())
+	}
+}
+
+func TestAuthorityPermitErrorReleasesPermit(t *testing.T) {
+	var received atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received.Add(1)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer target.Close()
+	authority := newAuthority()
+	authority.err = errors.New("authority unavailable")
+	authority.permitOnErr = true
+	b, _ := setup(t, target.URL, nil, 2, &syntheticRecorder{}, authority, true)
+	out := b.SendRegisteredRead("account:1", "item:1")
+	if out.Receipt.Admitted || out.State != BlockedPreSend || received.Load() != 0 || authority.releases.Load() != 1 {
+		t.Fatalf("permit returned with error was not released: %+v receives=%d releases=%d", out, received.Load(), authority.releases.Load())
+	}
+}
+
+func TestAuditFailureRemainsTerminalAfterAuthorityRecovers(t *testing.T) {
+	var received atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received.Add(1)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer target.Close()
+	authority := newAuthority()
+	authority.headOK = false
+	b, _ := setup(t, target.URL, nil, 2, &syntheticRecorder{}, authority, true)
+	first := b.SendRegisteredRead("account:1", "item:1")
+	authority.mu.Lock()
+	authority.headOK = true
+	authority.mu.Unlock()
+	second := b.SendRegisteredRead("account:1", "item:1")
+	if first.State != AuditUnknown || second.State != AuditUnknown || second.Reason != AuditUnavailable || second.Receipt.Admitted || received.Load() != 0 {
+		t.Fatalf("audit failure was recoverable: first=%+v second=%+v received=%d", first, second, received.Load())
+	}
+}
+
+func TestTransmitReasonMappings(t *testing.T) {
+	for _, tc := range []struct {
+		input transmit.Reason
+		want  Reason
+	}{
+		{transmit.TimedOut, TimedOut},
+		{transmit.ExpiredApproval, Expired},
+		{transmit.BudgetUnavailable, BudgetUnavailable},
+		{transmit.Stopped, Revoked},
+	} {
+		if got := transmitReason(tc.input); got != tc.want {
+			t.Errorf("transmitReason(%q)=%q, want %q", tc.input, got, tc.want)
+		}
 	}
 }
 
