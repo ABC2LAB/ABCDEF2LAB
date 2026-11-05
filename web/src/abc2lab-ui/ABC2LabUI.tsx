@@ -9,6 +9,7 @@ import { isScreenId, NavContext, type NavValue, type ScreenId } from "./nav";
 import AccessMapScreen from "./screens/AccessMapScreen";
 import ApprovalScreen from "./screens/ApprovalScreen";
 import AuditScreen from "./screens/AuditScreen";
+import CrawlScreen from "./screens/CrawlScreen";
 import DashboardScreen from "./screens/DashboardScreen";
 import EntryScreen from "./screens/EntryScreen";
 import FindingScreen from "./screens/FindingScreen";
@@ -43,6 +44,8 @@ export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true
 
   // 진입 화면에서 입력한 대상 주소 → 요약 · 범위 확인 · 대시보드 · 팝업에 반영
   const [target, setTarget] = useState<Target>(() => toTarget(DEFAULT_TARGET_URL));
+  // 작업 설정의 [점검 시작]을 누를 때마다 1씩 늘려 자산 탐색(시안)을 처음부터 다시 돌린다
+  const [crawlRun, setCrawlRun] = useState(0);
 
   // 지금 보고 있는 점검(task) — 기록에서 카드를 열 때 지정. report/live/finding 이 읽는다.
   const [taskId, setTaskId] = useState<string | null>(MOCK ? MOCK_DEFAULT_TASK : null);
@@ -122,7 +125,8 @@ export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true
             <DashboardScreen />
             <EntryScreen onStart={(input) => setTarget(toTarget(input))} />
             <TargetScreen target={target} />
-            <JobScreen target={target} />
+            <JobScreen target={target} onStart={() => setCrawlRun((n) => n + 1)} />
+            <CrawlScreen target={target} run={crawlRun} />
             <ScopeScreen target={target} />
             <LiveScreen target={target} />
             <HistoryScreen />

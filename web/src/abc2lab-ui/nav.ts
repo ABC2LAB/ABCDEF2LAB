@@ -6,6 +6,7 @@ export const SCREENS = [
   "entry",
   "target",
   "job",
+  "crawl",
   "scope",
   "live",
   "history",

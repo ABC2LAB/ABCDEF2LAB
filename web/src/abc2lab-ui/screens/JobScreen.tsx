@@ -13,7 +13,7 @@ const DEFAULT_WORKERS = 3;
 const WORKER_OPTIONS = [1, 2, 3, 4, 6, 8];
 
 /** ===== 작업 설정 ===== */
-export default function JobScreen({ target }: { target: Target }) {
+export default function JobScreen({ target, onStart }: { target: Target; onStart?: () => void }) {
   const go = useGo();
   const [workers, setWorkers] = useState(DEFAULT_WORKERS);
   return (
@@ -143,7 +143,15 @@ export default function JobScreen({ target }: { target: Target }) {
               <button className="btn" type="button" onClick={() => go("target")}>
                 이전
               </button>
-              <button className="btn primary" type="button" onClick={() => go("scope")} style={{ flex: 1 }}>
+              <button
+                className="btn primary"
+                type="button"
+                onClick={() => {
+                  onStart?.();
+                  go("crawl");
+                }}
+                style={{ flex: 1 }}
+              >
                 점검 시작
               </button>
             </div>
