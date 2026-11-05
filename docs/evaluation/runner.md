@@ -59,6 +59,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `observer_readonly_ref` | 그 GET이 해당 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(200자 이하). 러너가 만들 수 없는 근거라 설정으로 받고, 격리 근거 `observer_readonly` 행에 그대로 남긴다 |
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
 | `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null). baseline 회차는 compose 값이 같이 넘어가도 엔진이 읽지 않으므로 선언값도 null이다 |
+| `e2.ours_mode` | 개선 후 회차의 E② 자리(프로토콜 §2 개선 후의 E② 배치). `none` = E² 없음(엔진 → 계측기), `stub` = 통과 전용 가짜 E²(`deploy/eval/compose.e2-stub.yaml`, 계측기 `-role=e2-stub`)를 엔진과 계측기 사이에 둔다. baseline 회차에는 적용하지 않는다(원본에는 E²가 없다). `stub` 회차는 망·부정 연결 점검·계측기 시도 ID 대조를 세우는 fixture이며 통제를 증명하지 않으므로 시범·공식·제품 결과에 쓰지 않는다. 제품 E²가 들어오면 값이 하나 늘어난다 |
 | `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data,min_free}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한과 구간 종료 뒤 남아야 할 최소 공간(두 상한보다 작아야 함), DB healthcheck. `tmpfs` 세 값은 사전검사 `run_storage`(프로파일 v3 환경 지문 입력)와 글자 그대로 같아야 시작한다 |
 | `llm_gateway.generation_path` | api: generation 조회 경로(예: OpenRouter `/api/v1/generation`) |
 | `llm_gateway.verify_attempts`, `verify_interval_seconds` | generation마다 조회 횟수(1~100)와 간격 |
@@ -108,7 +109,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 ```
 <runs_root>/<run_id>/            0700, 러너만
-  meter/                         계측기·관측 front 기록(계측기 컨테이너에만 마운트)
+  meter/                         계측기·관측 front 기록(계측기 컨테이너에만 마운트). e2.ours_mode=stub이면 가짜 E²의 결정 행 `e2-stub-decisions.jsonl`도 여기
   llm/                           LLM 게이트웨이 기록(게이트웨이에만 마운트, 계측기와 분리)
   pre/  post/                    스코어보드 원본·정규화본(어느 컨테이너에도 마운트하지 않음, 절대규칙 7)
   pre-checks.json  post-checks.json   망 스냅샷·policy_sha256·위반 목록
