@@ -116,14 +116,15 @@ class TestMeterFiles(unittest.TestCase):
     def test_e2_stub_summary_counts_decisions(self):
         self.stub_rows(self.stub_row(1), self.stub_row(2, "unsupported"), self.stub_row(3, "unavailable"),
                        self.stub_row(4))
-        self.assertEqual(self.meter.e2_stub_summary(),
+        from runner_evidence import e2_stub_counts
+        self.assertEqual(e2_stub_counts(self.meter.e2_stub_rows()),
                          {"decision_rows": 4, "allowed": 2, "unsupported": 1, "unavailable": 1})
         self.write_e2("")
-        self.assertEqual(self.meter.e2_stub_summary()["decision_rows"], 0)
+        self.assertEqual(e2_stub_counts(self.meter.e2_stub_rows())["decision_rows"], 0)
         # 계측기 디렉터리에 같은 이름이 있어도 읽지 않는다(E²는 계측기 증거를 쓰지 않는다).
         self.write("e2-stub-decisions.jsonl", json.dumps(self.stub_row(1)) + "\n")
-        self.assertEqual(self.meter.e2_stub_summary()["decision_rows"], 0)
-        self.assertRaisesRegex(Exception, "e2_stub_log_missing", MeterFiles(self.dir).e2_stub_summary)
+        self.assertEqual(e2_stub_counts(self.meter.e2_stub_rows())["decision_rows"], 0)
+        self.assertRaisesRegex(Exception, "e2_stub_log_missing", MeterFiles(self.dir).e2_stub_rows)
 
     def test_e2_stub_summary_rejects_bad_rows(self):
         from runner_evidence import EvidenceError
@@ -148,7 +149,7 @@ class TestMeterFiles(unittest.TestCase):
             with self.subTest(name=name):
                 self.stub_rows(*rows)
                 with self.assertRaises(EvidenceError):
-                    self.meter.e2_stub_summary()
+                    self.meter.e2_stub_rows()
         # 최종 읽기에서는 개행으로 끝나지 않은 꼬리(잘린 행)를 거부한다. 진행 중 로그처럼 버리면 잘린 행을 빼고 센다.
         good = json.dumps(self.stub_row(1))
         for name, text in (("only row without newline", good),
@@ -156,10 +157,10 @@ class TestMeterFiles(unittest.TestCase):
             with self.subTest(name=name):
                 self.write_e2(text)
                 with self.assertRaisesRegex(EvidenceError, "e2_stub_log_invalid"):
-                    self.meter.e2_stub_summary()
+                    self.meter.e2_stub_rows()
         (self.e2_dir / "e2-stub-decisions.jsonl").unlink()
         with self.assertRaisesRegex(EvidenceError, "e2_stub_log_missing"):
-            self.meter.e2_stub_summary()
+            self.meter.e2_stub_rows()
 
     def test_missing_log_counts_zero(self):
         self.assertEqual(self.meter.forwarded(), 0)
