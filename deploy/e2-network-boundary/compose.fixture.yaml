@@ -1,0 +1,6 @@
+# Test-only commands for test_compose_docker.py. Never use as A/C integration.
+services:
+  tool:
+    command: ["python", "-c", "import time; time.sleep(60)"]
+  sender:
+    command: ["python", "-c", "import time; time.sleep(60)"]

@@ -20,7 +20,7 @@ import (
 
 const maxCheckpointBytes = 4096
 
-const usage = "Usage: e2-audit-verify --journal FILE --checkpoint TRUSTED_FILE --key-file PRIVATE_FILE [--timeline [--max-events N]]\n"
+const usage = "Usage: e2-audit-verify --journal FILE --checkpoint TRUSTED_FILE --key-file PRIVATE_FILE [--journal-format registered-get-v1|e2-http-v1] [--timeline [--max-events N]]\n"
 
 var errInput = errors.New("audit_input_unavailable")
 
@@ -37,7 +37,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(io.Discard)
 	journal := flags.String("journal", "", "closed journal file")
 	checkpoint := flags.String("checkpoint", "", "independently trusted latest checkpoint")
-	key := flags.String("key-file", "", "private 32-byte binary key file")
+	key := flags.String("key-file", "", "private binary HMAC key file")
+	format := flags.String("journal-format", registeredGETJournalFormat, "journal wire format")
 	timeline := flags.Bool("timeline", false, "print authenticated event timeline")
 	maxEvents := flags.Int("max-events", auditlog.MaxTimelineEvents, "maximum timeline events")
 	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
@@ -45,7 +46,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return failure(stderr, "audit_output_unavailable")
 		}
 		return 0
-	} else if err != nil || flags.NArg() != 0 || *journal == "" || *checkpoint == "" || *key == "" || *maxEvents < 1 || *maxEvents > auditlog.MaxTimelineEvents {
+	} else if err != nil || flags.NArg() != 0 || *journal == "" || *checkpoint == "" || *key == "" || *maxEvents < 1 || *maxEvents > auditlog.MaxTimelineEvents ||
+		*format != registeredGETJournalFormat && *format != e2proxyJournalFormat {
 		if n, err := io.WriteString(stderr, usage); err != nil || n != len(usage) {
 			return 1 // A broken diagnostic sink cannot receive its own error code.
 		}
@@ -53,7 +55,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	usedLimit := false
 	flags.Visit(func(f *flag.Flag) { usedLimit = usedLimit || f.Name == "max-events" })
-	if usedLimit && !*timeline {
+	if usedLimit && !*timeline || *format == e2proxyJournalFormat && *timeline {
 		if n, err := io.WriteString(stderr, usage); err != nil || n != len(usage) {
 			return 1
 		}
@@ -65,7 +67,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if ctx == nil {
 		return failure(stderr, "audit_input_invalid")
 	}
-	result, code := verifyFiles(ctx, *journal, *checkpoint, *key, *timeline, *maxEvents)
+	var result any
+	var code string
+	if *format == e2proxyJournalFormat {
+		result, code = verifyHTTPFiles(ctx, *journal, *checkpoint, *key)
+	} else {
+		result, code = verifyFiles(ctx, *journal, *checkpoint, *key, *timeline, *maxEvents)
+	}
 	if code != "" {
 		return failure(stderr, code)
 	}

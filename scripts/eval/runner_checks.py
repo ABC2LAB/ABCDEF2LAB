@@ -20,8 +20,9 @@ from typing import Callable, Iterable, Mapping
 from urllib.parse import urlsplit
 
 from runner_config import (
-    API_FRONT_SERVICE, ENGINE_API_NET, ENGINE_DB_SERVICE, ENGINE_NET, ENGINE_SERVICE, LLM_EGRESS_NET, LLM_GW_SERVICE,
-    METER_SERVICE, OBS_NET, OBS_SERVICE, TARGET_NET, TARGET_SERVICE, RunnerConfig, RunPlan,
+    API_FRONT_SERVICE, E2_NET, E2_NONE, E2_SERVICE, E2_STUB, ENGINE_API_NET, ENGINE_DB_SERVICE, ENGINE_NET,
+    ENGINE_SERVICE, LLM_EGRESS_NET, LLM_GW_SERVICE, METER_SERVICE, OBS_NET, OBS_SERVICE, TARGET_NET, TARGET_SERVICE,
+    RunnerConfig, RunPlan,
 )
 from runner_docker import DaemonIdentity
 
@@ -112,29 +113,36 @@ def expected_topology(config: RunnerConfig, plan: RunPlan) -> ExpectedTopology:
     """평가 프로토콜 §2 망 표를 회차 계획에서 도출한다. api·local은 같은 망 구성이다(차이는 게이트웨이 설정뿐).
 
     엔진은 internal 망 하나에만 붙고, 바깥 경로는 게이트웨이, 엔진 API publish는 API front가 맡는다.
+    개선 후 회차에 E²가 있으면(평가 프로토콜 §2 개선 후의 E② 배치) 엔진 망에서 계측기 자리를 E²가 받고,
+    계측기는 E²와 둘만 있는 internal 망으로 옮긴다. 엔진 → 계측기 직통 경로는 없다.
     """
     if plan.llm["backend"] not in ("api", "local"):
         raise CheckInputError("llm_backend_unsupported")
+    if plan.e2_mode not in (E2_NONE, E2_STUB):
+        raise CheckInputError("e2_mode_unsupported")
     ports = config.ports
-    return ExpectedTopology(
-        networks={
-            ENGINE_NET: NetworkExpectation(True, frozenset({ENGINE_SERVICE, ENGINE_DB_SERVICE, METER_SERVICE,
-                                                            LLM_GW_SERVICE, API_FRONT_SERVICE})),
-            TARGET_NET: NetworkExpectation(True, frozenset({TARGET_SERVICE, METER_SERVICE, OBS_SERVICE})),
-            LLM_EGRESS_NET: NetworkExpectation(False, frozenset({LLM_GW_SERVICE})),
-            ENGINE_API_NET: NetworkExpectation(False, frozenset({API_FRONT_SERVICE})),
-            OBS_NET: NetworkExpectation(False, frozenset({OBS_SERVICE})),
-        },
-        publishes={
-            ENGINE_SERVICE: frozenset(),
-            ENGINE_DB_SERVICE: frozenset(),
-            TARGET_SERVICE: frozenset(),
-            METER_SERVICE: frozenset(),
-            LLM_GW_SERVICE: frozenset(),
-            API_FRONT_SERVICE: frozenset({Binding(f"{ports['api_front']}/tcp", LOOPBACK_V4, ports["engine_api_host"])}),
-            OBS_SERVICE: frozenset({Binding(f"{ports['obs']}/tcp", LOOPBACK_V4, ports["obs_host"])}),
-        },
-    )
+    front = E2_SERVICE if plan.e2_mode == E2_STUB else METER_SERVICE
+    networks = {
+        ENGINE_NET: NetworkExpectation(True, frozenset({ENGINE_SERVICE, ENGINE_DB_SERVICE, front,
+                                                        LLM_GW_SERVICE, API_FRONT_SERVICE})),
+        TARGET_NET: NetworkExpectation(True, frozenset({TARGET_SERVICE, METER_SERVICE, OBS_SERVICE})),
+        LLM_EGRESS_NET: NetworkExpectation(False, frozenset({LLM_GW_SERVICE})),
+        ENGINE_API_NET: NetworkExpectation(False, frozenset({API_FRONT_SERVICE})),
+        OBS_NET: NetworkExpectation(False, frozenset({OBS_SERVICE})),
+    }
+    publishes = {
+        ENGINE_SERVICE: frozenset(),
+        ENGINE_DB_SERVICE: frozenset(),
+        TARGET_SERVICE: frozenset(),
+        METER_SERVICE: frozenset(),
+        LLM_GW_SERVICE: frozenset(),
+        API_FRONT_SERVICE: frozenset({Binding(f"{ports['api_front']}/tcp", LOOPBACK_V4, ports["engine_api_host"])}),
+        OBS_SERVICE: frozenset({Binding(f"{ports['obs']}/tcp", LOOPBACK_V4, ports["obs_host"])}),
+    }
+    if plan.e2_mode == E2_STUB:
+        networks[E2_NET] = NetworkExpectation(True, frozenset({E2_SERVICE, METER_SERVICE}))
+        publishes[E2_SERVICE] = frozenset()
+    return ExpectedTopology(networks=networks, publishes=publishes)
 
 
 def _url_port(url: str) -> int:
