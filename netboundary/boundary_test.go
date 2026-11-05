@@ -260,6 +260,28 @@ func TestAuditFailureRemainsTerminalAfterAuthorityRecovers(t *testing.T) {
 	}
 }
 
+func TestMissingPermitRemainsTerminalAfterAuthorityRecovers(t *testing.T) {
+	var received atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received.Add(1)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer target.Close()
+	authority := newAuthority()
+	authority.nilPermit = true
+	b, ledger := setup(t, target.URL, nil, 2, &syntheticRecorder{}, authority, true)
+	first := b.SendRegisteredRead("account:1", "item:1")
+	authority.mu.Lock()
+	authority.nilPermit = false
+	authority.mu.Unlock()
+	second := b.SendRegisteredRead("account:1", "item:1")
+	remaining, err := ledger.Remaining(b.budgetKey, b.binding, time.Now())
+	if first.State != AuditUnknown || second.State != AuditUnknown || second.Reason != AuditUnavailable ||
+		second.Receipt.Admitted || received.Load() != 0 || authority.calls != 1 || err != nil || remaining != 2 {
+		t.Fatalf("missing permit was recoverable: first=%+v second=%+v calls=%d received=%d remaining=%d err=%v", first, second, authority.calls, received.Load(), remaining, err)
+	}
+}
+
 func TestTransmitReasonMappings(t *testing.T) {
 	for _, tc := range []struct {
 		input transmit.Reason

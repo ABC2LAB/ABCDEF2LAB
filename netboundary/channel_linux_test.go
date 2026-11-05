@@ -138,7 +138,7 @@ func TestPacketChannelRegisteredReadAndFixedAck(t *testing.T) {
 	}
 	var decoded ChannelAck
 	if err := json.Unmarshal(ack, &decoded); err != nil || decoded.Version != 1 || decoded.State != ResponseObserved ||
-		!decoded.Admitted || !decoded.ResponseReceived {
+		decoded.Reason != "" || !decoded.Admitted || !decoded.ResponseReceived {
 		t.Fatalf("bad ACK: %q, %+v, %v", ack, decoded, err)
 	}
 	if string(ack) == "" || containsAny(string(ack), "response-value", "private", target.URL, "session:1") {
