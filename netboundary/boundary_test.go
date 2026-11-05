@@ -289,8 +289,10 @@ func TestTransmitReasonMappings(t *testing.T) {
 	}{
 		{transmit.TimedOut, TimedOut},
 		{transmit.ExpiredApproval, Expired},
+		{transmit.ExpiredAccount, Expired},
 		{transmit.BudgetUnavailable, BudgetUnavailable},
 		{transmit.Stopped, Revoked},
+		{transmit.Canceled, Revoked},
 	} {
 		if got := transmitReason(tc.input); got != tc.want {
 			t.Errorf("transmitReason(%q)=%q, want %q", tc.input, got, tc.want)
