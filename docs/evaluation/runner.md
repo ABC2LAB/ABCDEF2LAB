@@ -123,7 +123,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
   attempt-reconciliation.json    e2.ours_mode=stub 회차만: 가짜 E² 결정 행 × 계측기 접수 행 시도별 대조(프로토콜 §8.3 다섯 칸·차단 후 도달·기록 없이 도달·ID 재사용·허용 양성 근거, 건수만, fixture=true). 통제 주장은 `control_claim_withheld=false`일 때만이고, 이 값은 허용 양성 근거가 없을 때도 true다
-  state-diff.json                설정 `state`가 있을 때만: 같은 컨테이너 pre·post SQLite 상태 차이(테이블별 행 수·추가·삭제·변경 건수·정수 id, 열 구성 변경, sqlite_sequence 변화, 신호 테이블은 `signals`에 따로). 값·지문·경로 없음. `state/pre`·`state/post` 디렉터리는 비어 있어야 정상이다(사본을 지운 뒤)
+  state-diff.json                설정 `state`가 있을 때만: 같은 컨테이너 pre·post SQLite 상태 차이(테이블별 행 수·추가·삭제·변경 건수·정수 id, 열 구성 변경, 테이블·인덱스·트리거·뷰 정의 변화 `schema_objects`(종류·이름만), sqlite_sequence 변화, 신호 테이블은 `signals`에 따로). 값·지문·경로 없음. `state/pre`·`state/post` 디렉터리는 비어 있어야 정상이다(사본을 지운 뒤)
   isolation-evidence.json        격리 근거 행(러너 기록 v1.1 §3.1 형식, 완료 회차만)
   solve-events.json              pre=false→post=true 키마다 isolated_window 해결 이벤트(평가 전용 key, 완료 회차만)
   run-record.json                서명된 러너 기록 v1.1(채점기 입력, 완료 회차만. records=null 판정 미수집)
@@ -212,7 +212,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `pre_tmpfs_measure_failed` | 구간 전 tmpfs 마운트 ID·사용량을 읽지 못함(사유는 `tmpfs_measure_failed`와 같음). 구간을 시작하지 않는다 |
 | `tmpfs_mount_changed` | 구간 뒤 잰 tmpfs의 마운트 ID가 구간 전과 다름 — 같은 경로라도 다른 마운트(부모 경로 변경·symlink·다시 마운트)를 잰 것이라 회차 저장소의 근거가 아니다. 양쪽 값은 결과에 남는다 |
 | `tmpfs_full` | 엔진 DB·엔진 데이터 tmpfs 중 하나라도 남은 공간이 `tmpfs.min_free` 미만(상한 도달 — 엔진이 쓰기 실패를 삼켰을 수 있음). 잰 값과 적용 하한(`min_free_bytes`)은 결과에 남는다 |
-| `state_copy_failed` | 상태 차이 사본을 뜨지 못함(대상 pause·unpause 실패, 데몬 복사 실패·크기 초과·형식 밖 tar, SQLite 아님, WAL DB인데 `-wal` 없음, 쓰기 도중 저널, 0600 저장·삭제 실패, 사본을 SQLite로 읽지 못함). pre면 구간을 시작하지 않는다 |
+| `state_copy_failed` | 상태 차이 사본을 뜨지 못함(대상 pause·unpause 실패, 데몬 복사 실패·크기 초과·형식 밖 tar, SQLite 아님, WAL DB인데 `-wal` 없음, 쓰기 도중 저널, 저널 확인 불가(데몬이 '파일 없음'이 아닌 이유로 복사 실패), 0600 저장·삭제 실패, 사본을 SQLite로 읽지 못함). pre면 구간을 시작하지 않는다 |
 | `state_diff_failed` | pre·post 사본 지문을 비교하지 못함(설정한 신호 테이블이 사본에 없음 등) |
 | `findings_failed` | findings 단계 실패: 로그인 실패(연결·HTTP 상태·응답 형식), 페이지 수집 실패(한도 초과·건수 불일치·형식 밖 응답), 추출 실패 |
 | `evidence_write_failed` | 근거 파일 쓰기 실패 |
