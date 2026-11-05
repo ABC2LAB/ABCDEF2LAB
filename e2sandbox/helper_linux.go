@@ -223,8 +223,27 @@ func reopenInNamespace(path string, fd int) error {
 	}
 	defer unix.Close(current)
 	var inherited, local unix.Stat_t
-	if unix.Fstat(fd, &inherited) != nil || unix.Fstat(current, &local) != nil || inherited.Dev != local.Dev || inherited.Ino != local.Ino || inherited.Mode != local.Mode || inherited.Uid != local.Uid || inherited.Gid != local.Gid {
-		return ErrConfig
+	if err := unix.Fstat(fd, &inherited); err != nil {
+		return jailError("source_reopen_inherited_stat", err)
+	}
+	if err := unix.Fstat(current, &local); err != nil {
+		return jailError("source_reopen_local_stat", err)
+	}
+	// Keep every identity guard; expose only the fixed failed component so
+	// namespace/runner differences can be diagnosed without source metadata.
+	for _, field := range []struct {
+		matches bool
+		name    string
+	}{
+		{inherited.Dev == local.Dev, "device"},
+		{inherited.Ino == local.Ino, "inode"},
+		{inherited.Mode == local.Mode, "mode"},
+		{inherited.Uid == local.Uid, "uid"},
+		{inherited.Gid == local.Gid, "gid"},
+	} {
+		if !field.matches {
+			return &jailFailure{step: "source_reopen_" + field.name}
+		}
 	}
 	return unix.Dup3(current, fd, unix.O_CLOEXEC)
 }
@@ -235,6 +254,10 @@ func (e *jailFailure) Error() string { return "e2sandbox: jail_" + e.step }
 func jailError(step string, err error) error {
 	if err == nil {
 		return nil
+	}
+	var detail *jailFailure
+	if errors.As(err, &detail) {
+		return detail
 	}
 	for _, cause := range []struct {
 		errno error
