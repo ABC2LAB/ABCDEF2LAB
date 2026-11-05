@@ -38,8 +38,8 @@
    도구를 실행하면 이미지는 동결 커밋인데 사전검사·실행 구성·채점 규칙은 다른 소스가 될 수 있다.
 
    ```bash
-   BASE=$(git rev-parse e53a79f)
-   OURS=$(git rev-parse eval-api-<YYYYMMDD>)   # 시범 때는 태그 대신 시범에 쓰는 커밋
+   BASE=$(git rev-parse 'e53a79f^{commit}')
+   OURS=$(git rev-parse 'eval-api-<YYYYMMDD>^{commit}')   # 시범 때는 태그 대신 시범에 쓰는 커밋
    W=$(mktemp -d)
    git worktree add -q --detach "$W/baseline" "$BASE"
    git worktree add -q --detach "$W/ours" "$OURS"
@@ -47,6 +47,8 @@
    test "$(git -C "$T" rev-parse HEAD)" = "$OURS" && test -z "$(git -C "$T" status --porcelain)" && echo tools-frozen
    ```
 
+   태그는 `git tag -a`(annotated)로 만든다. annotated 태그에 `git rev-parse <태그>`만 쓰면 커밋이 아니라 태그 객체 SHA가 나와
+   아래 비교와 `--ours-sha`가 틀어지므로, `BASE`·`OURS`는 항상 `^{commit}`으로 커밋 SHA를 구한다.
    `tools-frozen`이 나오지 않으면 세션을 시작하지 않는다. 아래 명령은 전부 `cd "$T"`에서 실행한다(러너는 자기 파일 위치를 기준으로 compose를
    찾으므로 `$T`의 compose가 쓰인다). 도구 출처 커밋(`$OURS`)과 이 확인 결과를 세션 기록에 남긴다(7절).
 1. **다른 일 끄기:** 다른 Claude Code 세션·개발 서버·LAN 시연 컨테이너를 끈다. **Docker Desktop을 종료하고 WSL 통합을 끈다.**
