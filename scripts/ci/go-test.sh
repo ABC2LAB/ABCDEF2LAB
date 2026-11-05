@@ -104,7 +104,9 @@ with open(path, encoding="utf-8", errors="replace") as stream:
                 head.append((index, text))
             recent[key].append((index, text))
         elif action == "run" and key[1]:
+            # -count=N 반복에서는 같은 시험이 다시 돈다. 앞 회차의 완료가 이번 미완료 실행을 가리지 않게 지운다.
             started.append(key)
+            finished.discard(key)
         elif action in ("pass", "skip") and key[1]:
             finished.add(key)
         elif action == "fail" and key[1]:
@@ -119,7 +121,9 @@ failed_package_names = {package for package, _ in failed_packages}
 unfinished = leaves([key for key in dict.fromkeys(started)
                      if key not in finished and key[0] in failed_package_names])
 covered = {package for package, _ in failed_tests} | {package for package, _ in unfinished}
-targets = leaves(failed_tests) + unfinished + [key for key in failed_packages if key[0] not in covered]
+# 반복 실행에서 같은 시험이 실패와 미완료로 둘 다 잡혀도 한 번만 보인다.
+targets = list(dict.fromkeys(leaves(list(dict.fromkeys(failed_tests))) + unfinished
+                             + [key for key in failed_packages if key[0] not in covered]))
 unfinished = set(unfinished)
 for key in targets[:max_tests]:
     package, test = key
