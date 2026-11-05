@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 도구와 모든 자식 프로세스 | 신뢰된 A 서비스로 향하는 `/run/e2-channel` Unix 소켓 | 실행별로 보호된 외부 Docker 볼륨을 읽기 전용으로 마운트하고, Docker `network_mode: none`으로 모든 IP 네트워크를 끔 |
 | 신뢰된 전송부 | 운영자가 만든 내부 대상 네트워크의 피어. 각 전송은 A가 등록된 IP·포트로 제한해야 함 | B가 네트워크 구성원과 호스트 공개 포트 부재를 검사하고, A가 요청을 집행함 |
-| 도구 | 차단: 직접 IPv4/IPv6, DNS/UDP, 프록시 변경, CONNECT 및 임의 Unix 소켓 경로 | 도구에 IP 네트워크나 다른 소켓 마운트를 제공하지 않으며, B의 실행 상태 검사기가 구성 변경을 거부함 |
+| 도구 | 차단: 직접 IPv4/IPv6, DNS/UDP, 프록시 변경, CONNECT 및 임의 Unix 소켓 경로 | 도구에 IP 네트워크나 다른 소켓 마운트를 제공하지 않으며, B의 실행 상태 검사기가 검사 시점의 허용 구성 일탈을 거부함 |
 | 두 프로세스 모두 | 차단: 호스트 Docker 소켓, 호스트 네트워크, 추가 마운트 | 이 구성에서 제공하지 않으며, B의 실행 상태 검사기가 발견하면 거부함 |
 
 전송부의 등록 목적지와 프로토콜 제한은 A가 담당합니다. Docker 내부망만으로는 전송부가 같은 네트워크의 다른 피어에 접근하는 것을 막지 못합니다. C는 승인된 대상만 연결하고 전송부와 대상, 두 컨테이너만 구성원인지 확인해야 합니다. 네트워크는 연결 가능한 상태(`Attachable`)가 아닌 로컬 내부 Docker 브리지로 만들고, IPv4와 IPv6 모두 `com.docker.network.bridge.gateway_mode_ipv4=isolated`, `com.docker.network.bridge.gateway_mode_ipv6=isolated`를 지정해야 합니다. Docker의 일반 `--internal` 브리지는 호스트 브리지 주소가 생겨 해당 주소의 호스트 서비스에 접근할 수 있습니다. 두 `isolated` 모드는 이 주소를 없애며 B는 모드가 빠진 네트워크를 거부합니다([Docker 문서](https://docs.docker.com/engine/network/port-publishing/#gateway-modes)). 대상이 이 네트워크에 들어올 수 없다면 호스트가 소유한 별도 출구 설계를 검토해야 합니다. 일반 브리지로 바꾸어 사용하지 마세요. 호스트 공개 포트는 없습니다.
@@ -17,7 +17,7 @@
 
 ## 실행 상태 검사와 남은 C 작업
 
-`verify_runtime.py`는 C가 프로세스를 시작한 뒤 **검사 시점의** Docker 객체 스냅샷을 확인합니다. Docker Engine 28 이상을 사용해야 하며, 기본 CLI는 native `docker`이고 `E2_DOCKER_CLI` 또는 `--docker-cli`로 명시적으로 바꿀 수 있습니다. 출력에는 daemon의 제한된 신원(ID·이름·버전·OS)이 기록됩니다. 도구의 네트워크 모드·마운트·권한, 전송부의 네트워크·포트, 대상 네트워크의 `Internal` 값과 양쪽 `isolated` 게이트웨이 모드, 정확한 두 구성원, 채널 볼륨 레이블을 확인합니다. 실행 중인 두 프로세스의 Docker PID와 서로 다른 명시적 비root UID·GID도 요구하고, 전체 컨테이너 목록에서 tool·sender·target의 network/PID/IPC namespace에 합류한 외부 컨테이너를 거부합니다. 보호 대상과 참조 peer의 full ID는 실제 inspect 목록에 결속하고, 불명 참조나 전체 목록 누락은 검사 실패입니다. 채널 볼륨은 tool·sender만 마운트할 수 있으며 target을 포함한 다른 컨테이너의 마운트는 거부합니다. 도구와 전송부의 IPC namespace는 `private`만 허용하며 대상의 추가 네트워크·공개 포트도 거부합니다. 이 검사는 권한을 부여하지 않으며 검사 시점 이후의 변경을 감시하지 않습니다. 검사기는 볼륨이 바인드 기반 `Options`가 없는 일반 로컬 볼륨인지도 확인합니다. C는 볼륨 내부를 검사하고 Unix 소켓 ACL을 집행해야 합니다. B의 메타데이터 검사만으로는 소켓의 소유자나 프로토콜 또는 살아 있는 프로세스 handle을 증명할 수 없습니다.
+`verify_runtime.py`는 C가 프로세스를 시작한 뒤 **검사 시점의** Docker 객체 스냅샷을 확인합니다. Docker Engine 28 이상을 사용해야 하며, 기본 CLI는 native `docker`이고 `E2_DOCKER_CLI` 또는 `--docker-cli`로 명시적으로 바꿀 수 있습니다. 출력에는 daemon의 제한된 신원(ID·이름·버전·OS)이 기록됩니다. 도구의 네트워크 모드·마운트·권한, 전송부의 네트워크·포트, 대상 네트워크의 `Internal` 값과 양쪽 `isolated` 게이트웨이 모드, 정확한 두 구성원, 채널 볼륨 레이블을 확인합니다. 실행 중인 두 프로세스의 Docker PID와 서로 다른 명시적 비root UID·GID도 요구하고, 전체 컨테이너 목록에서 tool·sender·target의 network/PID/IPC namespace에 합류한 외부 컨테이너를 거부합니다. 보호 대상과 참조 peer의 full ID는 실제 inspect 목록에 결속하고, 불명 참조나 전체 목록 누락은 검사 실패입니다. 채널 볼륨은 tool·sender만 마운트할 수 있으며 target을 포함한 다른 컨테이너의 마운트는 거부합니다. 이름 없는 bind도 `Source`가 볼륨의 실제 `Mountpoint`와 같거나 상·하위 경로로 겹치면 거부합니다. 이 비교는 Docker daemon의 POSIX 경로를 구성 요소 단위로 대조하며, Mountpoint나 외부 bind Source가 불명확하면 검사 실패로 처리합니다. 도구와 전송부의 IPC namespace는 `private`만 허용하며 대상의 추가 네트워크·공개 포트도 거부합니다. 이 검사는 권한을 부여하지 않으며 검사 시점 이후의 변경을 감시하지 않습니다. 검사기는 볼륨이 바인드 기반 `Options`가 없는 일반 로컬 볼륨인지도 확인합니다. C는 볼륨 내부를 검사하고 Unix 소켓 ACL을 집행해야 합니다. B의 메타데이터 검사만으로는 소켓의 소유자나 프로토콜 또는 살아 있는 프로세스 handle을 증명할 수 없습니다.
 
 C는 계약 순서에 따라 `BlockNewFlows(run)`과 `TerminateAndWait(run)`을 제공하고, cgroup·프로세스·상속된 디스크립터의 종료 증거를 확보해야 합니다. 이어서 A의 신규 요청 차단·기존 요청 배출을 조율하고 감사 마감 뒤 권한을 해제해야 합니다. 컨테이너나 A만 중지한 사실로는 이 순서를 증명할 수 없습니다.
 

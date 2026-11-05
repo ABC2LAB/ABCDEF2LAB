@@ -122,6 +122,24 @@ def _namespace_issues(tool: dict[str, Any], sender: dict[str, Any], target: dict
     return sorted(set(issues))
 
 
+def _canonical_daemon_path(value: Any) -> str | None:
+    """Validate an absolute daemon path without consulting this host's filesystem."""
+    if not isinstance(value, str) or not value or "\x00" in value or not value.startswith("/"):
+        return None
+    if value == "/":
+        return value
+    if value != "/" and value.endswith("/"):
+        return None
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts[1:]):
+        return None
+    return value
+
+
+def _path_contains(parent: str, child: str) -> bool:
+    return child == parent or child.startswith("/" if parent == "/" else parent + "/")
+
+
 def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], network: dict[str, Any], volume: dict[str, Any], channel_volume: str, network_name: str, run_ref: str, project: str, all_containers: list[dict[str, Any]] | None = None) -> list[str]:
     issues: list[str] = []
     th = tool.get("HostConfig") or {}
@@ -213,11 +231,25 @@ def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], 
     else:
         issues.extend(_namespace_issues(tool, sender, target, all_containers))
         allowed_channel_peer_ids = {tool.get("Id"), sender.get("Id")}
+        channel_mountpoint = _canonical_daemon_path(volume.get("Mountpoint"))
+        if channel_mountpoint is None:
+            issues.append("channel_volume_mountpoint_unresolved")
         for container in all_containers:
             if container.get("Id") in allowed_channel_peer_ids:
                 continue
-            if any(mount.get("Name") == channel_volume for mount in container.get("Mounts") or []):
-                issues.append("unapproved_channel_volume_peer_mount")
+            for mount in container.get("Mounts") or []:
+                if mount.get("Name") == channel_volume:
+                    issues.append("unapproved_channel_volume_peer_mount")
+                if mount.get("Type") != "bind":
+                    continue
+                source = _canonical_daemon_path(mount.get("Source"))
+                if source is None:
+                    issues.append("bind_mount_source_unresolved")
+                elif channel_mountpoint is not None and (
+                    _path_contains(source, channel_mountpoint)
+                    or _path_contains(channel_mountpoint, source)
+                ):
+                    issues.append("unapproved_channel_volume_peer_mount")
     return sorted(set(issues))
 
 

@@ -58,7 +58,8 @@ def objects():
                            "com.docker.network.bridge.gateway_mode_ipv6": "isolated"},
                "Containers": {"b" * 64: {}, "c" * 64: {}},
                "Labels": {"org.abc2lab.e2.run": RUN}}
-    volume = {"Name": VOLUME, "Driver": "local", "Scope": "local", "Options": None,
+    volume = {"Name": VOLUME, "Mountpoint": f"/var/lib/docker/volumes/{VOLUME}/_data",
+              "Driver": "local", "Scope": "local", "Options": None,
               "Labels": {"org.abc2lab.e2.run": RUN}}
     return tool, sender, target, network, volume
 
@@ -195,6 +196,135 @@ class RuntimeChecks(unittest.TestCase):
                                VOLUME, NETWORK, RUN, PROJECT,
                                [self.tool, self.sender, self.target, peer])
                 self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_foreign_bind_mount_at_channel_volume_mountpoint_is_rejected(self):
+        peer = {"Id": "d" * 64, "Mounts": [{
+            "Destination": "/tmp/channel",
+            "Source": self.volume["Mountpoint"],
+            "RW": False,
+            "Type": "bind",
+        }]}
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT,
+                       [self.tool, self.sender, self.target, peer])
+        self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_foreign_bind_mount_at_channel_volume_ancestor_is_rejected(self):
+        for source in ("/var/lib/docker/volumes", "/"):
+            with self.subTest(source=source):
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": source,
+                    "RW": True,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_foreign_bind_mount_descendant_of_channel_volume_is_rejected(self):
+        peer = {"Id": "d" * 64, "Mounts": [{
+            "Destination": "/tmp/channel",
+            "Source": self.volume["Mountpoint"] + "/socket",
+            "RW": False,
+            "Type": "bind",
+        }]}
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT,
+                       [self.tool, self.sender, self.target, peer])
+        self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_foreign_bind_mount_is_rejected_regardless_of_read_write_mode(self):
+        for read_write in (False, True):
+            with self.subTest(read_write=read_write):
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": self.volume["Mountpoint"],
+                    "RW": read_write,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_sibling_prefix_bind_mount_is_not_treated_as_channel_volume_overlap(self):
+        for source in (
+            "/var/lib/docker/volumes-other",
+            "/var/lib/docker/volume",
+            self.volume["Mountpoint"] + "_sibling",
+        ):
+            with self.subTest(source=source):
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": source,
+                    "RW": True,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertEqual(issues, [])
+
+    def test_missing_or_invalid_channel_volume_mountpoint_fails_closed(self):
+        for mountpoint in (
+            None,
+            "",
+            42,
+            "relative/path",
+            "/var/lib/docker//volumes/e2-run-123-channel/_data",
+        ):
+            with self.subTest(mountpoint=mountpoint):
+                self.volume.pop("Mountpoint", None)
+                if mountpoint is not None:
+                    self.volume["Mountpoint"] = mountpoint
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": "/var/lib/docker/volumes",
+                    "RW": True,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("channel_volume_mountpoint_unresolved", issues)
+
+    def test_ambiguous_foreign_bind_source_fails_closed(self):
+        for source in (
+            "relative/path",
+            "/var/lib/docker//volumes",
+            "/var/lib/docker/./volumes",
+            "/var/lib/docker/volumes/../volumes",
+            "/var/lib/docker/volumes\x00",
+        ):
+            with self.subTest(source=source):
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": source,
+                    "RW": True,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("bind_mount_source_unresolved", issues)
+
+    def test_missing_or_invalid_foreign_bind_source_fails_closed(self):
+        for source in (None, "", 42, "missing"):
+            with self.subTest(source=source):
+                mount = {
+                    "Destination": "/tmp/channel",
+                    "RW": True,
+                    "Type": "bind",
+                }
+                if source != "missing":
+                    mount["Source"] = source
+                peer = {"Id": "d" * 64, "Mounts": [mount]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("bind_mount_source_unresolved", issues)
 
     def test_all_namespace_kinds_and_protected_roles_are_rejected(self):
         full_ids = {
