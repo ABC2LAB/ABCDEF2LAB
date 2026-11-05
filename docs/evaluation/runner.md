@@ -120,6 +120,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 그 SHA-256은 서명 근거 `run_conditions`에
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
+  attempt-reconciliation.json    e2.ours_mode=stub 회차만: 가짜 E² 결정 행 × 계측기 접수 행 시도별 대조(프로토콜 §8.3 다섯 칸·차단 후 도달·기록 없이 도달·ID 재사용·허용 양성 근거, 건수만, fixture=true)
   isolation-evidence.json        격리 근거 행(러너 기록 v1.1 §3.1 형식, 완료 회차만)
   solve-events.json              pre=false→post=true 키마다 isolated_window 해결 이벤트(평가 전용 key, 완료 회차만)
   run-record.json                서명된 러너 기록 v1.1(채점기 입력, 완료 회차만. records=null 판정 미수집)
