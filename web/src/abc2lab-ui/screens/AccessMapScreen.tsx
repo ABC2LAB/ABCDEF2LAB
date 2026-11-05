@@ -40,6 +40,9 @@ const DOT_STYLE: Record<AccessDecision, React.CSSProperties> = {
 };
 const LEGEND_ORDER: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "suspected", "unknown", "untested", "blank"];
 
+/** 칸 본문 — 확정/의심은 색이 1차 구분, 본문도 서로 다른 말로(§4.2(7)·N7). 나머지는 긴 라벨. */
+const CELL_BODY: Partial<Record<AccessDecision, string>> = { vuln: "취약", suspected: "의심" };
+
 /** ===== 접근통제 지도 (KG) ===== */
 export default function AccessMapScreen() {
   const go = useGo();
@@ -48,8 +51,8 @@ export default function AccessMapScreen() {
 
   // 셀 선택·fail-closed 규칙은 공유 리졸버(lib/kg)로 일원화. UI 는 조합·판정하지 않는다(§4.2(1)).
   const resolve = useMemo(() => buildCellResolver(data?.cells ?? []), [data]);
-  // 집계는 렌더되는 격자 전체 기준(중복·미반환 칸 포함).
-  const counts = useMemo(() => (data ? countDecisions(data) : null), [data]);
+  // 헤드라인 칩은 판정 축(수평 H)만 센다 — 수직(V)은 후속 미리보기라 확정 수에 섞지 않는다(§4.2(4)).
+  const counts = useMemo(() => (data ? countDecisions(data, "H") : null), [data]);
 
   return (
     <Screen id="access-map">
@@ -121,7 +124,6 @@ export default function AccessMapScreen() {
                         {data.resources.map((r) => {
                           const { decision, note, projectionError } = resolve(p.ref, r.id);
                           const badge = DECISION_BADGE[decision];
-                          const held = HELD_DECISIONS.has(decision);
                           const title = projectionError
                             ? `판정 불가(projection): ${projectionError}`
                             : note || DECISION_LABEL[decision];
@@ -132,10 +134,9 @@ export default function AccessMapScreen() {
                               title={title}
                               style={p.axis === "V" ? { opacity: 0.6 } : undefined}
                             >
-                              {/* 확정/의심은 색으로 1차 구분하고 배지로 보강(§4.2(7)) — 라벨 중복 피해 "취약"만 */}
-                              <span>{badge ? "취약" : DECISION_LABEL[decision]}</span>
+                              {/* 확정/의심은 색으로 1차 구분하고 배지로 보강(§4.2(7)). 본문도 서로 다른 말(취약/의심). */}
+                              <span>{CELL_BODY[decision] ?? DECISION_LABEL[decision]}</span>
                               {badge && <span className="cell-badge">{badge}</span>}
-                              {held && <span className="cell-held">보류</span>}
                             </td>
                           );
                         })}

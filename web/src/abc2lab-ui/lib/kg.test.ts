@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { type AccessMap, buildCellResolver, countDecisions, getAccessMap, type KgCell } from "./kg";
+import {
+  type AccessDecision,
+  type AccessMap,
+  buildCellResolver,
+  countDecisions,
+  DECISION_CELL,
+  getAccessMap,
+  type KgCell,
+} from "./kg";
 
 // 접근통제 지도 리졸버·집계의 fail-closed 규칙 검증(kg-policy §4.2(2)·(7)).
 // 목업/계약 shape 에 대한 로직 테스트이며, 실행 결과 건수를 증명하는 자료는 아니다.
@@ -61,6 +69,64 @@ describe("buildCellResolver", () => {
     expect(resolve("A", "r1").decision).toBe("unknown");
     expect(resolve("B", "r1").decision).toBe("allow-ok");
   });
+
+  it("suspected 는 확정으로 승격하지 않고 그대로 suspected", () => {
+    const resolve = buildCellResolver([{ principalRef: "A", resourceId: "r1", decision: "suspected" }]);
+    expect(resolve("A", "r1").decision).toBe("suspected");
+  });
+
+  it("unknown 은 allow-ok 로 완화하지 않고 그대로 unknown", () => {
+    const resolve = buildCellResolver([{ principalRef: "A", resourceId: "r1", decision: "unknown" }]);
+    expect(resolve("A", "r1").decision).toBe("unknown");
+  });
+
+  it("deny-ok(보류)은 '정상 차단'으로 산출하지 않고 unknown (§4.2(3))", () => {
+    const resolve = buildCellResolver([{ principalRef: "A", resourceId: "r1", decision: "deny-ok" }]);
+    const got = resolve("A", "r1");
+    expect(got.decision).toBe("unknown");
+    expect(got.projectionError).toContain("보류");
+  });
+
+  it.each([
+    "confirmed",
+    "SUSPECTED",
+    "safe",
+    "",
+    "constructor",
+    "toString",
+  ])("미등록 판정값 %o 은 색 추정 없이 unknown(미등록 판정값) (§4.1(c))", (raw) => {
+    const resolve = buildCellResolver([{ principalRef: "A", resourceId: "r1", decision: raw as AccessDecision }]);
+    const got = resolve("A", "r1");
+    expect(got.decision).toBe("unknown");
+    expect(got.projectionError).toBe("미등록 판정값");
+  });
+
+  it("projectionError 가 빈 문자열이어도 오류로 보고 unknown (fail-closed)", () => {
+    const resolve = buildCellResolver([
+      { principalRef: "A", resourceId: "r1", decision: "allow-ok", projectionError: "" },
+    ]);
+    const got = resolve("A", "r1");
+    expect(got.decision).toBe("unknown");
+    expect(got.projectionError).toBeTruthy(); // 빈 사유는 대체 문구로 채운다
+  });
+
+  it("구분자(|)가 섞인 ref·id 도 다른 칸과 키 충돌하지 않는다", () => {
+    const resolve = buildCellResolver([
+      { principalRef: "A", resourceId: "x|r", decision: "vuln" },
+      { principalRef: "A|x", resourceId: "r", decision: "allow-ok" },
+    ]);
+    // 순진한 `${p}|${r}` 키라면 둘 다 "A|x|r" 로 충돌한다.
+    expect(resolve("A", "x|r").decision).toBe("vuln");
+    expect(resolve("A|x", "r").decision).toBe("allow-ok");
+  });
+});
+
+describe("DECISION_CELL", () => {
+  it("확정과 의심은 서로 다른 셀 클래스다(색으로 1차 구분, §4.2(7))", () => {
+    expect(DECISION_CELL.vuln).toBeTruthy();
+    expect(DECISION_CELL.suspected).toBeTruthy();
+    expect(DECISION_CELL.vuln).not.toBe(DECISION_CELL.suspected);
+  });
 });
 
 describe("countDecisions", () => {
@@ -106,5 +172,41 @@ describe("countDecisions", () => {
     const map = await getAccessMap(null);
     const total = Object.values(countDecisions(map)).reduce((a, b) => a + b, 0);
     expect(total).toBe(map.principals.length * map.resources.length);
+  });
+
+  it("미등록·프로토타입 판정값이 섞여도 합계가 숫자로 유지된다(NaN·문자열 아님)", () => {
+    const map = gridMap(
+      ["A"],
+      ["r1", "r2"],
+      [
+        { principalRef: "A", resourceId: "r1", decision: "confirmed" as AccessDecision },
+        { principalRef: "A", resourceId: "r2", decision: "constructor" as AccessDecision },
+      ],
+    );
+    const c = countDecisions(map);
+    const total = Object.values(c).reduce((a, b) => a + b, 0);
+    expect(Number.isFinite(total)).toBe(true);
+    expect(total).toBe(1 * 2);
+    expect(c.unknown).toBe(2); // 둘 다 unknown 으로 내려감
+  });
+
+  it("axis 를 주면 해당 축(H) 신원만 세고, 수직 미리보기는 제외한다", () => {
+    const map: AccessMap = {
+      policyVersion: "test",
+      mock: true,
+      principals: [
+        { ref: "A", role: "u", axis: "H" },
+        { ref: "adm", role: "admin", axis: "V" },
+      ],
+      resources: [{ id: "r1", label: "r1", ownerRef: "A" }],
+      cells: [
+        { principalRef: "A", resourceId: "r1", decision: "allow-ok" },
+        { principalRef: "adm", resourceId: "r1", decision: "vuln" }, // 수직 — 후속 미리보기
+      ],
+    };
+    const h = countDecisions(map, "H");
+    expect(h["allow-ok"]).toBe(1);
+    expect(h.vuln).toBe(0); // 판정 축 집계에서 수직 미리보기 제외
+    expect(countDecisions(map).vuln).toBe(1); // 축 미지정은 격자 전체
   });
 });

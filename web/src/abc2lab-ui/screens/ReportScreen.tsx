@@ -13,14 +13,7 @@ import { TopBar } from "../components/TopBar";
 import { Strong, Sub } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineCoverage, type EngineFinding, getCoverage, getTask, listTaskFindings } from "../lib/engine";
-import {
-  type AccessDecision,
-  buildCellResolver,
-  DECISION_CELL,
-  DECISION_LABEL,
-  getAccessMap,
-  HELD_DECISIONS,
-} from "../lib/kg";
+import { type AccessDecision, buildCellResolver, DECISION_CELL, DECISION_LABEL, getAccessMap } from "../lib/kg";
 import { useSelection } from "../lib/selection";
 import { canonicalVulnClass } from "../lib/vulnclass";
 import { useGo } from "../nav";
@@ -946,9 +939,9 @@ function MapPanel({ taskId }: { taskId: string }) {
                       : note || DECISION_LABEL[decision];
                     return (
                       <td key={r.id} className={DECISION_CELL[decision]} title={title}>
-                        {/* 축소 뷰: 짧은 라벨(확정/의심)로 구분, 색이 1차 — 배지는 전체 지도에서 */}
+                        {/* 축소 뷰: 짧은 라벨(확정/의심)로 구분, 색이 1차 — 배지는 전체 지도에서.
+                            deny-ok(보류)은 리졸버가 unknown 으로 내리므로 여기 셀로는 안 나온다. */}
                         <span>{CELL_SHORT[decision]}</span>
-                        {HELD_DECISIONS.has(decision) && <span className="cell-held">보류</span>}
                       </td>
                     );
                   })}

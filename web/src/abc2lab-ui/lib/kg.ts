@@ -55,6 +55,22 @@ export const DECISION_BADGE: Partial<Record<AccessDecision, string>> = {
 /** deny-ok 는 Phase 3 보류 상태임을 화면에 명시한다(§4.2(3)·(7)). */
 export const HELD_DECISIONS: ReadonlySet<AccessDecision> = new Set<AccessDecision>(["deny-ok"]);
 
+/**
+ * 계약이 아는 판정값(§4.1(c)). 리졸버는 이 집합 밖 값을 색으로 추정하지 않고 unknown 으로 내린다.
+ * 어댑터가 `confirmed`·`SUSPECTED`·`safe`·`""`·`constructor` 같은 미등록/프로토타입 키를 실어도
+ * 무색 칸·집계 깨짐(NaN·문자열) 대신 fail-closed 로 막힌다.
+ */
+const KNOWN_DECISIONS: ReadonlySet<AccessDecision> = new Set<AccessDecision>([
+  "allow-ok",
+  "deny-ok",
+  "vuln",
+  "suspected",
+  "unknown",
+  "untested",
+  "blank",
+  "na",
+]);
+
 /** 수평(v0.1 범위) / 수직(후속) */
 export type KgAxis = "H" | "V";
 
@@ -89,38 +105,63 @@ export type AccessMap = {
 /** 한 교차 칸의 최종 표시값. 색을 추정하지 않고 fail-closed(§4.2(2)·(7)). */
 export type ResolvedCell = { decision: AccessDecision; note?: string; projectionError?: string };
 
+/** principal·resource 자유문자열이 구분자와 충돌하지 않도록 키를 안전하게 만든다(예: ref 에 `|` 포함). */
+function cellKey(principalRef: string, resourceId: string): string {
+  return JSON.stringify([principalRef, resourceId]);
+}
+
 /**
- * projection 결과를 fail-closed 로 조합하는 리졸버(§4.2(1)·(2)·(7)).
+ * 셀 하나를 fail-closed 로 정규화한다(§4.1(c)·§4.2(2)·(3)·(7)). 색(decision)을 추정하지 않는다.
+ * 우선순위: projection-error → 미등록 판정값 → 보류(deny-ok 등) → 그대로.
+ */
+function normalizeCell(c: KgCell): ResolvedCell {
+  // projection-error 는 빈 문자열이라도 "오류 있음"으로 본다(fail-closed). note 와 별도 네임스페이스(§4.2(2)).
+  if (c.projectionError != null) {
+    // 빈 사유는 대체 문구로 — 여기선 "" 도 대체해야 하므로 ?? 가 아니라 길이 검사.
+    const reason = c.projectionError.length > 0 ? c.projectionError : "projection 오류(사유 미기재)";
+    return { decision: "unknown", note: c.note, projectionError: reason };
+  }
+  // 계약에 없는 판정값(미등록·프로토타입 키)은 색 추정 없이 unknown(§4.1(c)).
+  if (!KNOWN_DECISIONS.has(c.decision)) {
+    return { decision: "unknown", note: c.note, projectionError: "미등록 판정값" };
+  }
+  // deny-ok 등 보류 판정은 앱 인가 차단 관측 계약(Phase 3) 전까지 산출하지 않는다(§4.2(3)).
+  if (HELD_DECISIONS.has(c.decision)) {
+    return { decision: "unknown", note: c.note, projectionError: "차단 미증명 — 관측 계약 전 보류(Phase 3)" };
+  }
+  return { decision: c.decision, note: c.note };
+}
+
+/**
+ * projection 결과를 fail-closed 로 조합하는 리졸버(§4.2(1)·(2)·(3)·(7)).
  * - 중복 셀: last-writer-wins 금지 → 선택 모호 = projection-error unknown
  * - projection 미반환 셀: untested 로 추정 금지 → 미확인 = projection-error unknown
- * - 어댑터가 projection-error 를 실으면 색 추정 없이 unknown 강제
+ * - projection-error·미등록 판정값·보류(deny-ok) 는 normalizeCell 이 unknown 으로 내린다
  * UI는 이 규칙으로만 칸을 정하고 스스로 판정/조합하지 않는다.
  */
 export function buildCellResolver(cells: KgCell[]): (principalRef: string, resourceId: string) => ResolvedCell {
   const byKey = new Map<string, ResolvedCell>();
   const dup = new Set<string>();
   for (const c of cells) {
-    const k = `${c.principalRef}|${c.resourceId}`;
+    const k = cellKey(c.principalRef, c.resourceId);
     if (byKey.has(k)) {
       dup.add(k);
       continue;
     }
-    byKey.set(
-      k,
-      c.projectionError
-        ? { decision: "unknown", note: c.note, projectionError: c.projectionError }
-        : { decision: c.decision, note: c.note },
-    );
+    byKey.set(k, normalizeCell(c));
   }
   return (principalRef, resourceId) => {
-    const k = `${principalRef}|${resourceId}`;
+    const k = cellKey(principalRef, resourceId);
     if (dup.has(k)) return { decision: "unknown", projectionError: "중복 레코드 — 선택 모호" };
     return byKey.get(k) ?? { decision: "unknown", projectionError: "projection 미반환 — 미확인" };
   };
 }
 
-/** 렌더되는 격자 전체(중복·미반환 칸 포함) 기준 상태 집계. */
-export function countDecisions(map: AccessMap): Record<AccessDecision, number> {
+/**
+ * 렌더되는 격자 전체(중복·미반환 칸 포함) 기준 상태 집계.
+ * axis 를 주면 해당 축(수평 H / 수직 V) 신원만 센다 — 헤드라인 칩은 판정 축(H)만 세기 위함(§0·§4.2(4)).
+ */
+export function countDecisions(map: AccessMap, axis?: KgAxis): Record<AccessDecision, number> {
   const resolve = buildCellResolver(map.cells);
   const c: Record<AccessDecision, number> = {
     "allow-ok": 0,
@@ -132,14 +173,16 @@ export function countDecisions(map: AccessMap): Record<AccessDecision, number> {
     blank: 0,
     na: 0,
   };
-  for (const p of map.principals) {
+  const principals = axis ? map.principals.filter((p) => p.axis === axis) : map.principals;
+  for (const p of principals) {
     for (const r of map.resources) c[resolve(p.ref, r.id).decision] += 1;
   }
   return c;
 }
 
 // kg-policy 계약 shape 예시. 수평(A·B 교차)이 판정 축이고, 수직(admin·guest)은 후속 미리보기.
-// §4.2(3) 상태를 모두 노출: 확정/의심/판정불가/정상허용/정상차단(보류)/기록없음/미검사.
+// Phase 2 산출 상태를 노출: 확정/의심/판정불가/정상허용/기록없음/미검사.
+// deny-ok(정상 차단)은 Phase 3 보류라 산출하지 않는다 — 교차계정 차단 칸은 '차단 미증명'으로 unknown(§4.2(3)).
 const MOCK_MAP: AccessMap = {
   policyVersion: "proto-0",
   mock: true,
@@ -161,8 +204,8 @@ const MOCK_MAP: AccessMap = {
     {
       principalRef: "계정 A",
       resourceId: "r2",
-      decision: "deny-ok",
-      note: "B 자원 접근 차단 — 차단 관측 계약 전까지 보류(Phase 3)",
+      decision: "unknown",
+      note: "B 자원 접근 실패 관측 — 앱 인가 차단 관측 계약 전까지 '정상 차단'으로 산출하지 않음(차단 미증명 보류, Phase 3)",
     },
     { principalRef: "계정 A", resourceId: "r3", decision: "allow-ok", note: "본인 장바구니" },
     {
@@ -195,8 +238,8 @@ const MOCK_MAP: AccessMap = {
     {
       principalRef: "비로그인",
       resourceId: "r1",
-      decision: "deny-ok",
-      note: "로그인 리다이렉트 — 차단 관측 계약 전까지 보류",
+      decision: "unknown",
+      note: "로그인 리다이렉트 관측 — 차단으로 단정 못 함(차단 미증명 보류, Phase 3)",
     },
     {
       principalRef: "비로그인",
