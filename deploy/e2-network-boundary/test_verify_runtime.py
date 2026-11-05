@@ -179,6 +179,38 @@ class RuntimeChecks(unittest.TestCase):
         self.assertIn("unapproved_network_namespace_peer", issues)
         self.assertIn("unapproved_pid_namespace_peer", issues)
 
+    def test_all_namespace_kinds_and_protected_roles_are_rejected(self):
+        full_ids = {
+            "tool": "a" * 64,
+            "sender": "b" * 64,
+            "target": "c" * 64,
+        }
+        self.tool["Id"], self.sender["Id"], self.target["Id"] = (full_ids[role] for role in ("tool", "sender", "target"))
+        peers = []
+        for field, peer in (("NetworkMode", full_ids["sender"]),
+                            ("PidMode", full_ids["target"]),
+                            ("IpcMode", full_ids["tool"])):
+            peers.append({"Id": "d" * 64, "HostConfig": {field: "container:" + peer}})
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT,
+                       [self.tool, self.sender, self.target, *peers])
+        self.assertIn("unapproved_network_namespace_peer", issues)
+        self.assertIn("unapproved_pid_namespace_peer", issues)
+        self.assertIn("unapproved_ipc_namespace_peer", issues)
+
+    def test_namespace_name_and_short_id_are_fail_closed(self):
+        peer = {"Id": "d" * 64, "HostConfig": {
+            "NetworkMode": "container:sender-name",
+            "PidMode": "container:" + ("e" * 63),
+            "IpcMode": "container:target-name",
+        }}
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT,
+                       [self.tool, self.sender, self.target, peer])
+        self.assertIn("unresolved_network_namespace_peer", issues)
+        self.assertIn("unresolved_pid_namespace_peer", issues)
+        self.assertIn("unresolved_ipc_namespace_peer", issues)
+
     def test_ipc_namespace_must_be_private(self):
         self.tool["HostConfig"]["IpcMode"] = "shareable"
         self.sender["HostConfig"]["IpcMode"] = "container:other"
@@ -247,6 +279,8 @@ class RuntimeChecks(unittest.TestCase):
             "error_kind": "ChildProbeBlocked", "returncode": 127}))
         self.assertTrue(expected_failure("shell_child", {
             "error_kind": "ChildProbeBlocked", "returncode": CHILD_BLOCKED_EXIT}))
+        self.assertFalse(expected_failure("direct_ipv4_tcp", {
+            "error_kind": "OSError", "errno": 111}))
 
     def test_broken_python_exit_one_is_not_network_blocked(self):
         import subprocess

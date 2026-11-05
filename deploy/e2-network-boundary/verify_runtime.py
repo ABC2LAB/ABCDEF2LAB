@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from typing import Any
 CHANNEL = "/run/e2-channel"
 RUN_LABEL = "org.abc2lab.e2.run"
 ROLE_LABEL = "org.abc2lab.e2.role"
+_CONTAINER_ID = re.compile(r"[0-9a-fA-F]{64}")
 
 
 def _published(ports: Any) -> bool:
@@ -94,18 +96,22 @@ def _daemon_identity(docker_cli: str | None = None) -> dict[str, str]:
 
 def _namespace_issues(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any],
                       containers: list[dict[str, Any]]) -> list[str]:
-    target_id = target.get("Id")
-    sender_id = sender.get("Id")
-    allowed = {tool.get("Id"), sender_id, target_id}
+    protected = {value for value in (tool.get("Id"), sender.get("Id"), target.get("Id")) if value}
     issues = []
     for container in containers:
-        if container.get("Id") in allowed:
+        if container.get("Id") in protected:
             continue
         host = container.get("HostConfig") or {}
-        if host.get("NetworkMode") == "container:" + str(target_id):
-            issues.append("unapproved_network_namespace_peer")
-        if host.get("PidMode") == "container:" + str(sender_id):
-            issues.append("unapproved_pid_namespace_peer")
+        for kind, mode in (("network", host.get("NetworkMode")),
+                           ("pid", host.get("PidMode")),
+                           ("ipc", host.get("IpcMode"))):
+            if not isinstance(mode, str) or not mode.startswith("container:"):
+                continue
+            peer = mode.removeprefix("container:")
+            if peer in protected:
+                issues.append(f"unapproved_{kind}_namespace_peer")
+            elif not _CONTAINER_ID.fullmatch(peer):
+                issues.append(f"unresolved_{kind}_namespace_peer")
     return sorted(set(issues))
 
 

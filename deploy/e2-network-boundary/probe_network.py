@@ -20,7 +20,7 @@ CHECK_NAMES = (
     "direct_ipv4_tcp", "direct_ipv6_tcp", "direct_ipv4_udp", "direct_ipv6_udp",
     "dns_resolution", "proxy_replacement", "opaque_connect", "shell_child", "grandchild",
 )
-NETWORK_ERRNOS = {errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH,
+NETWORK_ERRNOS = {errno.ENETUNREACH, errno.EHOSTUNREACH,
                   errno.EHOSTDOWN, errno.ETIMEDOUT}
 DNS_ERRNOS = {-2, -3, -4, -5}  # EAI_NONAME, EAI_AGAIN, EAI_FAIL, EAI_NODATA
 CHILD_BLOCKED_EXIT = 23
