@@ -32,6 +32,11 @@ ENGINE_RESPONSE = frozenset({"none", "headers", "complete", "interrupted"})
 ATTEMPT_STATES = frozenset({"absent", "valid", "invalid", "multiple"})
 _ATTEMPT_ID = re.compile(r"[0-9a-f]{32}\Z")
 _OBSERVER_ROW = frozenset({"seq", "decision", "method", "status", "started_at", "completed_at", "response_bytes"})
+# 통과 전용 가짜 E²(cmd/eval-meter e2stub.go)의 결정 행. 보내기 전에 쓰고, 경로·헤더·본문은 없다.
+E2_STUB_LOG = "e2-stub-decisions.jsonl"
+_E2_STUB_ROW = frozenset({"seq", "fixture", "decision", "attempt_id", "caller_attempt", "method", "decided_at"})
+# allowed만 대상 쪽으로 보낸다. unsupported(Upgrade·CONNECT)와 unavailable(ID 발급 실패)은 보내지 않는다.
+E2_STUB_DECISIONS = ("allowed", "unsupported", "unavailable")
 
 
 # 계측기(cmd/eval-meter engineMeter)가 대상에 전달한 행 종류. upgrade(WebSocket 등)는 완료 행이 "stream"이고
@@ -198,6 +203,32 @@ class MeterFiles:
 
     def observer_rows(self) -> list[dict]:
         return _rows(_read_owned(self.path, OBSERVER_LOG), _OBSERVER_ROW)
+
+    def e2_stub_summary(self) -> dict:
+        """가짜 E² 결정 행의 형식 검사와 결정별 건수. 행은 fixture 표식이어야 하고, ID는 발급된 결정에만 있으며 겹치지 않는다.
+
+        파일이 없으면(가짜 E²가 뜨지 않음) 회차 근거가 없는 것이다. 건수만 기록하고, 계측기 행과의 시도별 대조는 채점 쪽 몫이다.
+        """
+        data = _read_owned(self.path, E2_STUB_LOG)
+        if data is None:
+            raise EvidenceError("e2_stub_log_missing")
+        rows = _rows(data, _E2_STUB_ROW)
+        if not sequence_complete(rows):
+            raise EvidenceError("e2_stub_log_invalid")
+        ids = []
+        for row in rows:
+            issued = row["decision"] != "unavailable"
+            attempt = row["attempt_id"]
+            if (row["fixture"] is not True or row["decision"] not in E2_STUB_DECISIONS
+                    or type(row["caller_attempt"]) is not bool or not isinstance(attempt, str)
+                    or bool(_ATTEMPT_ID.fullmatch(attempt)) != issued or (not issued and attempt != "")):
+                raise EvidenceError("e2_stub_log_invalid")
+            if issued:
+                ids.append(attempt)
+        if len(ids) != len(set(ids)):
+            raise EvidenceError("e2_stub_log_invalid")
+        return {"decision_rows": len(rows),
+                **{decision: sum(1 for row in rows if row["decision"] == decision) for decision in E2_STUB_DECISIONS}}
 
     def marker(self, name: str) -> dict | None:
         if name not in (SEALED_MARKER, DRAINED_MARKER, TERMINATED_MARKER):

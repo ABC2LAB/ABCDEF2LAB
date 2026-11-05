@@ -31,6 +31,9 @@ CONDITIONS = {"engine_settings_sha256": "e" * 64, "workers": 3, "llm_stream": Tr
               "host": {"cpu_model": "Example CPU", "logical_cpus": 8, "memory_kib": 16777216, "kernel": "6.0.0",
                        "docker_server_version": "29.1.3"},
               "machine_id_sha256": "d" * 64}
+# E② 자리 행. 기본은 E² 없음(none, 건수 없음). 가짜 E² 회차는 e2=E2_STUB_PLACEMENT로 바꾼다.
+E2_NONE_PLACEMENT = {"mode": "none", "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None}
+E2_STUB_PLACEMENT = {"mode": "stub", "decision_rows": 5, "allowed": 4, "unsupported": 1, "unavailable": 0}
 
 def snapshot(name: str) -> dict:
     """runner_checks.network_snapshot 모양의 합성 망 스냅샷(엔진·계측기·대상·관측 front)."""
@@ -60,7 +63,7 @@ PROBES = [
 
 
 def make_v11(root: Path, key: bytes, name: str, *, pre=None, solved=None, records=None, proof=True,
-             total_requests=5, tamper_rows=None, tamper_proof=None, tamper_events=None, tamper_record=None,
+             total_requests=5, tamper_rows=None, tamper_proof=None, tamper_events=None, tamper_record=None, e2=None,
              **overrides) -> dict:
     """v1.1 회차 디렉터리와 manifest 항목. records=None이면 판정 미수집, proof=False면 증명·근거 null."""
     folder = root / name
@@ -116,7 +119,7 @@ def make_v11(root: Path, key: bytes, name: str, *, pre=None, solved=None, record
             boundary_ref=f"compose:eval-{name}", policy=policy, steps=steps, observer_rows=observer, ready_calls=1,
             observer_path_ref=path_ref(OBSERVER_PATH), readonly_ref="verify:juice-shop-15:get-challenges",
             meter=meter, drained={"inflight_at_drain": 0}, engine_rows=total_requests,
-            conditions=copy.deepcopy(CONDITIONS))
+            conditions=copy.deepcopy(CONDITIONS), e2=copy.deepcopy(e2 or E2_NONE_PLACEMENT))
         if tamper_rows:
             tamper_rows(rows)
         evidence = add("isolation_evidence", isolation_evidence(context, rows), "isolation-evidence.json", "engine")

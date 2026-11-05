@@ -94,6 +94,47 @@ class TestMeterFiles(unittest.TestCase):
         path.write_text(text)
         os.chmod(path, 0o600)
 
+    def stub_rows(self, *rows):
+        self.write("e2-stub-decisions.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
+
+    @staticmethod
+    def stub_row(seq, decision="allowed", attempt=None, **extra):
+        attempt = ("%032x" % seq) if attempt is None and decision != "unavailable" else (attempt or "")
+        row = {"seq": seq, "fixture": True, "decision": decision, "attempt_id": attempt, "caller_attempt": False,
+               "method": "GET", "decided_at": "2026-11-05T00:00:00Z"}
+        row.update(extra)
+        return row
+
+    def test_e2_stub_summary_counts_decisions(self):
+        self.stub_rows(self.stub_row(1), self.stub_row(2, "unsupported"), self.stub_row(3, "unavailable"),
+                       self.stub_row(4))
+        self.assertEqual(self.meter.e2_stub_summary(),
+                         {"decision_rows": 4, "allowed": 2, "unsupported": 1, "unavailable": 1})
+        self.write("e2-stub-decisions.jsonl", "")
+        self.assertEqual(self.meter.e2_stub_summary()["decision_rows"], 0)
+
+    def test_e2_stub_summary_rejects_bad_rows(self):
+        from runner_evidence import EvidenceError
+        cases = {
+            "not a fixture": [self.stub_row(1, fixture=False)],
+            "unknown decision": [self.stub_row(1, "forwarded")],
+            "allowed without an id": [self.stub_row(1, attempt="")],
+            "id with uppercase": [self.stub_row(1, attempt="A" * 32)],
+            "unavailable with an id": [self.stub_row(1, "unavailable", attempt="a" * 32)],
+            "repeated id": [self.stub_row(1, attempt="b" * 32), self.stub_row(2, attempt="b" * 32)],
+            "sequence gap": [self.stub_row(1), self.stub_row(3)],
+            "caller flag not bool": [self.stub_row(1, caller_attempt=1)],
+            "extra field": [self.stub_row(1, path="/x")],
+        }
+        for name, rows in cases.items():
+            with self.subTest(name=name):
+                self.stub_rows(*rows)
+                with self.assertRaises(EvidenceError):
+                    self.meter.e2_stub_summary()
+        (self.dir / "e2-stub-decisions.jsonl").unlink()
+        with self.assertRaisesRegex(EvidenceError, "e2_stub_log_missing"):
+            self.meter.e2_stub_summary()
+
     def test_missing_log_counts_zero(self):
         self.assertEqual(self.meter.forwarded(), 0)
         self.assertEqual(self.meter.observer_rows(), [])

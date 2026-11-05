@@ -80,6 +80,10 @@ class FakeMeter:
         self.observer_extra = 0
         self.rows_override = None
         self.drained_forwarded = None
+        # 가짜 E²(compose.e2-stub.yaml) 결정 행 요약. 회차가 E²를 기대할 때만 읽는다.
+        self.e2_summary = {"decision_rows": 3, "allowed": 2, "unsupported": 1, "unavailable": 0}
+        self.e2_error = None
+        self.e2_reads = 0
 
     def _forwarded(self):
         return self.pre_forwarded if not self.ports.started else min(self.polls * self.per_poll, 10**6)
@@ -88,6 +92,12 @@ class FakeMeter:
         if self.ports.started:
             self.polls += 1
         return self._forwarded()
+
+    def e2_stub_summary(self):
+        self.e2_reads += 1
+        if self.e2_error:
+            raise self.e2_error
+        return dict(self.e2_summary)
 
     def engine_rows(self):
         if self.rows_override is not None:
@@ -456,11 +466,26 @@ class TestE2Slot(unittest.TestCase):
     """개선 후 + 가짜 E² 회차: 망 점검이 E² 배치를 기대하고, E² 컨테이너 이미지도 대조한다."""
 
     def test_stub_run_completes_with_the_e2_layout(self):
-        result, ports, _, evidence = run(spec=make_spec(e2="stub"))
+        result, ports, meter, evidence = run(spec=make_spec(e2="stub"))
         self.assertEqual(result["status"], COMPLETE)
         snapshot = evidence.files["pre-checks.json"]["snapshot"]
         self.assertEqual(set(snapshot["networks"]["e2_net"]["members"]), {"eval-e2", "eval-meter"})
         self.assertNotIn("eval-meter", snapshot["networks"]["engine_net"]["members"])
+        placement = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "e2_placement"]
+        self.assertEqual([{k: v for k, v in r.items() if k not in ("kind", "seq", "at")} for r in placement],
+                         [{"mode": "stub", "decision_rows": 3, "allowed": 2, "unsupported": 1, "unavailable": 0}])
+        self.assertEqual(meter.e2_reads, 1)
+
+    def test_run_without_e2_records_none_and_never_reads_a_stub_log(self):
+        result, ports, meter, evidence = run()
+        placement = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "e2_placement"]
+        self.assertEqual((placement[0]["mode"], placement[0]["decision_rows"], meter.e2_reads), ("none", None, 0))
+
+    def test_unreadable_stub_log_invalidates_the_run(self):
+        from runner_evidence import EvidenceError
+        result, ports, _, evidence = run(lambda p, m, c: setattr(m, "e2_error", EvidenceError("e2_stub_log_invalid")),
+                                         spec=make_spec(e2="stub"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_stub_log_invalid"]))
 
     def test_stub_expectation_rejects_a_world_without_the_e2(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(p, "world_stub", False), spec=make_spec(e2="stub"))

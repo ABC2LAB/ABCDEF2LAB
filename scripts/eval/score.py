@@ -246,6 +246,8 @@ def build_report(
     drain_policies: set[tuple[int, int]] = set()
     run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set(),
                                            "LLM 스트리밍": set()}
+    # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
+    e2_modes: dict[str, set[str]] = {}
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs
@@ -279,9 +281,19 @@ def build_report(
                 if len(seen) > 1:
                     raise ComparabilityError(f"회차 조건 불일치({label}) — 같은 실행 설정·샘플링·머신끼리만 비교"
                                              "(프로토콜 §5.1·§6)")
+        if inputs.e2_mode is not None:
+            modes = e2_modes.setdefault(m.condition, set())
+            modes.add(inputs.e2_mode)
+            if len(modes) > 1:
+                raise ComparabilityError(f"E② 자리 혼합({m.condition}: {sorted(modes)}) — 조건 하나는 같은 E② 배치로만 "
+                                         "집계(프로토콜 §2)")
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 
+    for condition, modes in e2_modes.items():
+        if "stub" in modes:
+            warnings.append(f"경고[공식 비교 아님] {condition}: 통과 전용 가짜 E② 회차 — 배치·부정 연결 점검 확인용이며 "
+                            "통제를 증명하지 않음. 시범·공식·제품 결과에 쓰지 않음(프로토콜 §2)")
     if versions == {V1}:
         warnings.append("경고[공식 비교 아님] 러너 기록 v1(직접 관측 이벤트) — 합성 시험·과거 형식 회귀 검증용, "
                         "공식 비교표는 v1.1 isolated_window만(프로토콜 §4)")

@@ -17,7 +17,7 @@ from run_record import RunRecordError, load_run_inputs
 from runner_checks import policy_sha256
 from runner_record import _network_snapshot
 from score import ComparabilityError, build_report, score_run
-from run_fixture_v11 import make_v11, snapshot
+from run_fixture_v11 import E2_STUB_PLACEMENT, make_v11, snapshot
 from test_score import _RunDir, _record
 
 KEY = "basketAccessChallenge"
@@ -173,6 +173,18 @@ class TestRejectedV11(_V11):
         cut = self.inputs(self.v11("cut", tamper_rows=lambda rows: row_of(rows, "drain").update(
             forced_cancelled=1, settle_applied_seconds=2)))
         self.assertEqual((cut.version, cut.drain_policy), ("1.1", (30, 2)))
+
+    def test_e2_placement_row_is_required_and_typed(self):
+        self.assertEqual(self.inputs(self.v11("en")).e2_mode, "none")
+        self.assertEqual(self.inputs(self.v11("es", e2=E2_STUB_PLACEMENT)).e2_mode, "stub")
+        self.reject("e2_placement", "e0", tamper_rows=lambda rows: drop(rows, row_of(rows, "e2_placement")))
+        bad = [{"mode": "product"}, {"decision_rows": 0}, {"mode": "stub"},
+               {"mode": "stub", "decision_rows": 1, "allowed": 1, "unsupported": 0, "unavailable": 1},
+               {"mode": "stub", "decision_rows": 0, "allowed": 0, "unsupported": 0, "unavailable": -1},
+               {"mode": "stub", "decision_rows": True, "allowed": 1, "unsupported": 0, "unavailable": 0}]
+        for index, change in enumerate(bad):
+            self.reject("e2_placement", f"e{index + 1}",
+                        tamper_rows=lambda rows, c=change: row_of(rows, "e2_placement").update(c))
 
     def test_run_conditions_row_is_required_and_typed(self):
         self.reject("run_conditions", "r0", tamper_rows=lambda rows: drop(rows, row_of(rows, "run_conditions")))
@@ -331,6 +343,20 @@ class TestComparison(_V11):
         cut = self.v11("c1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "drain").update(
             forced_cancelled=1, settle_applied_seconds=2))
         build_report(self.load([self.v11("c0"), cut]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_e2_mode_mixed_within_a_condition_is_not_compared(self):
+        none, stub = self.v11("e1"), self.v11("e2", repeat_index=1, e2=E2_STUB_PLACEMENT)
+        with self.assertRaisesRegex(ComparabilityError, "E② 자리 혼합"):
+            build_report(self.load([none, stub]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_stub_runs_are_flagged_not_official(self):
+        report = build_report(self.load([self.v11("s1", e2=E2_STUB_PLACEMENT),
+                                         self.v11("s2", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertTrue(any("가짜 E②" in w for w in report.warnings), report.warnings)
+        plain = build_report(self.load([self.v11("p1"), self.v11("p2", repeat_index=1)]), self.correlate,
+                             self.correlatable, runner_key=self.runner_key)
+        self.assertFalse(any("가짜 E②" in w for w in plain.warnings))
 
     def test_runs_with_different_run_conditions_are_not_compared(self):
         # 엔진 실행 설정·게이트웨이가 넣은 샘플링·머신 사양·머신이 하나라도 다르면 같은 조건이 아니다(§5.1·§6).
