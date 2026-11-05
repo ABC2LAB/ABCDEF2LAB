@@ -8,9 +8,14 @@ docker 자신의 진단(stderr)은 운영자 터미널로만 가고 러너 기�
 
 from __future__ import annotations
 
+import io
 import json
+import os
+import posixpath
 import re
+import selectors
 import subprocess
+import tarfile
 import threading
 import time
 from dataclasses import dataclass
@@ -33,6 +38,15 @@ _PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
 # 대상 안의 실행파일·PATH(엔진 도구가 바꿀 수 있음)를 쓰지 않는다(#140 리뷰).
 _MOUNT_PATH = re.compile(r"/[a-z0-9_./-]{1,200}\Z")
 _STATFS_FIELDS = frozenset({"path", "mount_id", "size_bytes", "used_bytes", "available_bytes"})
+# 대상 컨테이너에서 꺼낼 파일 경로(상태 차이 사본). 절대 경로, `..`·빈 구간 없음. 앱별 값은 러너 설정에서 온다.
+_CONTAINER_FILE = re.compile(r"/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\Z")
+# docker cp 출력 tar의 헤더·블록 정렬 여유(파일 하나). 내용 상한은 호출자가 정한다.
+_TAR_OVERHEAD_BYTES = 64 * 1024
+# docker cp 실패 중 '그 경로에 파일이 없음'만 따로 본다(데몬 archive stat 404). 문구가 바뀌면 없음이 아니라 실패로
+# 떨어진다(fail-closed). 진단 원문은 분류에만 쓰고 기록·출력하지 않는다.
+_COPY_MISSING = re.compile(rb"Could not find the file |No such container:path: ")
+MAX_DIAGNOSTIC_BYTES = 4096
+_READ_CHUNK = 64 * 1024
 # docker events --since/--until에 넘기는 UTC 시각(초 소수 9자리까지). 러너가 만든 값만 받는다.
 _EVENT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z\Z")
 # 컨테이너 inspect는 이 필드만 꺼낸다. .Config.Env 등 비밀이 들 수 있는 필드는 러너 메모리에도 올리지 않는다.
@@ -45,6 +59,12 @@ CONTAINER_TEMPLATE = (
     '"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}},'
     '"network_mode":{{json .HostConfig.NetworkMode}},"pid_mode":{{json .HostConfig.PidMode}}}'
 )
+
+
+def container_file_ok(path: object) -> bool:
+    """대상 컨테이너 파일 경로(상태 차이 사본). 절대 경로이고 `.`·`..`·빈 구간이 없다."""
+    return (isinstance(path, str) and bool(_CONTAINER_FILE.fullmatch(path))
+            and not any(part in (".", "..") for part in path.split("/")[1:]))
 
 
 class DockerError(RuntimeError):
@@ -76,6 +96,61 @@ def client_environment(source: Mapping[str, str], extra: Mapping[str, str]) -> d
         raise DockerError("docker_env_overlap")
     env.update(extra)
     return env
+
+
+@dataclass(frozen=True)
+class BoundedResult:
+    returncode: int
+    stdout: bytes
+    diagnostic: bytes  # stderr 앞부분(MAX_DIAGNOSTIC_BYTES까지). 분류용이며 기록하지 않는다.
+
+
+BoundedExecutor = Callable[[Sequence[str], Mapping[str, str], float, int], BoundedResult]
+
+
+def run_docker_bounded(args: Sequence[str], env: Mapping[str, str], timeout: float, max_stdout: int,
+                       program: Sequence[str] = ("docker",)) -> BoundedResult:
+    """stdout을 max_stdout까지만 읽는다. 넘거나 시간이 지나면 그 자리에서 프로세스를 죽이고 오류다.
+
+    subprocess.run(stdout=PIPE)는 출력을 끝까지 메모리에 모은 뒤 돌려주므로 큰 파일 복사에 상한이 되지 못한다(#226 리뷰).
+    """
+    try:
+        process = subprocess.Popen([*program, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=dict(env))
+    except OSError:
+        raise DockerError("docker_unavailable") from None
+    out, diagnostic = bytearray(), bytearray()
+    deadline = time.monotonic() + timeout
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            selector.register(process.stderr, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DockerError("docker_timeout")
+                for key, _ in selector.select(remaining):
+                    chunk = os.read(key.fd, _READ_CHUNK)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                    elif key.fileobj is process.stdout:
+                        out += chunk
+                        if len(out) > max_stdout:
+                            raise DockerError("docker_copy_too_large")
+                    else:
+                        diagnostic += chunk[:max(0, MAX_DIAGNOSTIC_BYTES - len(diagnostic))]
+        try:
+            returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise DockerError("docker_timeout") from None
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+    return BoundedResult(returncode, bytes(out), bytes(diagnostic))
 
 
 def run_docker(args: Sequence[str], env: Mapping[str, str], stdin: bytes | None, timeout: float) -> CommandResult:
@@ -212,7 +287,8 @@ def _version_ok(version: str) -> bool:
 class Docker:
     def __init__(self, executor: Executor, env: Mapping[str, str], timeout: float,
                  stream_opener: Callable[[Sequence[str], Mapping[str, str]], StreamProcess] = open_docker_stream,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, bounded: BoundedExecutor = run_docker_bounded):
+        self._bounded = bounded
         self._executor = executor
         self._env = dict(env)
         self._timeout = timeout
@@ -293,6 +369,45 @@ class Docker:
             raise DockerError("docker_events_window_invalid")
         return EventStream(self._stream_opener(["events", "--since", since, "--format", "{{json .}}"], self._env),
                            self._sleep)
+
+    def pause(self, container_id: str) -> None:
+        if not _OBJECT_ID.fullmatch(container_id or ""):
+            raise DockerError("docker_pause_invalid")
+        self.run(["pause", container_id], code="docker_pause_failed")
+
+    def unpause(self, container_id: str) -> None:
+        if not _OBJECT_ID.fullmatch(container_id or ""):
+            raise DockerError("docker_pause_invalid")
+        self.run(["unpause", container_id], code="docker_unpause_failed")
+
+    def copy_out(self, container_id: str, path: str, max_bytes: int) -> bytes | None:
+        """컨테이너 파일 하나의 내용. 데몬이 읽으므로 대상 안의 실행파일을 쓰지 않는다(엔진이 바꿨을 수 있음).
+
+        데몬이 '그 경로에 파일 없음'으로 거부하면 None이다. 그 밖의 실패(권한·데몬 오류·시간 초과)는 없음으로 보지 않고
+        오류다(검사하지 못한 것을 '없음'으로 바꾸지 않는다, #226 리뷰). 출력은 상한까지만 읽는다. 받은 tar는 정규 파일
+        정확히 하나, 이름이 경로의 마지막 구간, 크기 상한 안이어야 한다. 링크·디렉터리는 따라가지 않고 거부한다.
+        """
+        if (not _OBJECT_ID.fullmatch(container_id or "") or not container_file_ok(path)
+                or type(max_bytes) is not int or max_bytes < 1):
+            raise DockerError("docker_copy_invalid")
+        result = self._bounded(["cp", f"{container_id}:{path}", "-"], self._env, self._timeout,
+                               max_bytes + _TAR_OVERHEAD_BYTES)
+        if result.returncode != 0:
+            if _COPY_MISSING.search(result.diagnostic):
+                return None
+            raise DockerError("docker_copy_failed")
+        try:
+            with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
+                members = archive.getmembers()
+                if (len(members) != 1 or not members[0].isreg() or members[0].name != posixpath.basename(path)
+                        or members[0].size > max_bytes):
+                    raise DockerError("docker_copy_output_invalid")
+                data = archive.extractfile(members[0]).read()
+        except (tarfile.TarError, OSError, EOFError):
+            raise DockerError("docker_copy_output_invalid") from None
+        if len(data) != members[0].size:
+            raise DockerError("docker_copy_output_invalid")
+        return data
 
     def signal(self, container_id: str, signal_name: str) -> None:
         if not _OBJECT_ID.fullmatch(container_id or "") or signal_name not in ("USR1",):
