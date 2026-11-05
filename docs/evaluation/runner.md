@@ -198,6 +198,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `window_watch_failed`, `window_events_failed` | 감시 시작·종료 실패, `docker events` 실패·형식 밖 출력 |
 | `observer_count_mismatch` | 관측 로그 건수가 러너 호출 수와 다르거나 거부 기록이 있음 |
 | `meter_read_failed`, `meter_log_inconsistent` | 계측기 기록 읽기 실패, 순번 누락·건수 불일치(강제 취소 행 수 ≠ drain 마커의 취소 수 포함) |
+| `e2_stub_log_invalid` | `e2.ours_mode=stub` 회차에서 가짜 E² 결정 행(`meter/e2-stub-decisions.jsonl`)이 없거나 형식이 틀림: fixture 표식 아님, 모르는 결정, 발급된 결정에 시도 ID 없음·발급 실패에 ID 있음, ID 중복, 순번 공백 |
 | `llm_seal_failed`, `llm_read_failed`, `llm_unverified`, `llm_marker_invalid` | 게이트웨이 seal 실패, 기록 읽기 실패, 검증 마커 시한 초과, 마커 형식 오류 |
 | `llm_generation_unverified`, `llm_generation_unverifiable` | 조회 안 된 generation, generation ID 없는 응답 |
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
