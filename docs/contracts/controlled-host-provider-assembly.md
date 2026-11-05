@@ -2,6 +2,8 @@
 
 상태: **공급자 수명 어댑터 구현, 실제 배치 공급은 미완료.** `controlledhost`는 이미 인증된 실제 공급자를 받는 연결부다. 신원·권한·key/epoch·복원 anchor를 발급하지 않고, 누락 공급자는 `ErrUnavailable`로 거부한다. 합성 시험의 root/권위는 운영 근거가 아니다.
 
+이 문서의 A/B/C는 첫 IDOR 통합의 **실제 입력 어댑터 / host 수명 어댑터 / 서버 기동·종료 통합**을 뜻한다. 기존 기동·종료 통합(C)은 이동찬 담당이다.
+
 ## 기준과 고유 범위
 
 2026-11-04 재개 기준: `dev` `3db9cc1a678ffd36fd67dc970e912aaecaff8fac`에 선행 #159 최종 head
@@ -56,7 +58,7 @@ Publisher acquire closure는 **정확한 server 요청을 캡처해 실제 기�
 6. `server/controlled_read_publisher.go`는 한 HTTPTransmitter의 실제 StopAndWait와 core CloseWitness를 이미 조합한 뒤 실제 Host에 위임한다. 이것을 제거하거나 모든 자식 종료로 승격하지 않는다. 실제 Host의 배치·key·epoch·writer 검사는 여전히 필요하다.
 7. `server/controlled_read_e3.go`의 collector finalize(`revisionSource`/Source → `e3record.Prepare` → 저장)는 실제 전체 읽기 trust scope가 필요한 구간이다. C가 그 구간의 원래 context·권위 lease를 유지할 hook을 확보해야 한다. Source callback이 돌아오거나 Store.Head의 짧은 lease가 해제됐다는 이유로 Prepare/저장 전에 전체 trust를 종료하면 안 된다. B는 Source를 중복 조립하거나 reader를 새로 만들지 않았다.
 8. 읽기 Host는 **현재 권위**에서 정확한 Query의 epoch·Scope/JournalID/KeyRef/publisher와 sealed Head를 확인한다. 과거 receipt·동일 MAC·같은 문자열을 현재 권한으로 승격하지 않는다. 신규 journal Register의 active 검사와 과거 검증용 소비 상태는 실제 key 공급자가 목적별로 구분한다.
-9. 신규 admission 폐쇄 뒤 C가 서버·planner·worker·chat·자식을 종료하고 기존 Publisher/Source/DB 연산을 완료·해제한다. 이어 **SQL row/engine/Publisher 잠금 밖에서** `life.Close(ctx)`를 호출한다. Close timeout은 root 강제 해제가 아니며 소유권이 남는다. drain 뒤 다시 Close해야 한다. 모든 ticket이 끝난 뒤 장기 RootTrust.Release가 정확히 한 번 호출된다.
+9. 신규 admission 폐쇄 뒤 C가 서버·planner·worker·chat·자식을 종료하고 기존 Publisher/Source/DB 연산을 완료·해제한다. 이어 **SQL row/engine/Publisher 잠금 밖에서** `life.Close(ctx)`를 호출한다. drain을 기다리다 Close의 context가 끝나면 root를 해제하지 않고 소유권을 보유한다. drain이 이미 완료된 호출은 context 취소보다 해제를 우선하고 실제 RootTrust.Release가 반환한 뒤 nil을 반환한다. 이미 해제된 경우의 반복 호출도 nil이다. 대기 중 종료된 경우에는 drain 뒤 다시 Close해야 한다. 모든 ticket이 끝난 뒤 장기 RootTrust.Release가 정확히 한 번 호출된다.
 
 Sources의 기존 계약은 유지한다. Acquire가 block하면 Close도 성공을 꾸며 먼저 root를 닫지 않는다. key Authority가 callback을 늦게/중복/비동기로 부르는 계약 위반은 거부하며, 이미 실행 중인 callback의 ticket은 끝날 때까지 유지한다. 이 방어가 위반한 외부 권위를 정상으로 만드는 것은 아니다.
 

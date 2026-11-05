@@ -141,6 +141,44 @@ func TestRootContextCapturedOnceOutsideGate(t *testing.T) {
 	}
 }
 
+func TestCloseCompletedDrainWinsCancellation(t *testing.T) {
+	// Both channels are already ready. Repetition exercises the old select's
+	// random choice while each call asserts the observable ownership result.
+	for i := 0; i < 64; i++ {
+		r := rootFixture(t, context.Background())
+		m := managerFixture(t, r, Sources{})
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := m.Close(cancelled); err != nil || r.releases.Load() != 1 {
+			t.Fatal("completed drain reported cancellation or retained root")
+		}
+		if err := m.Close(cancelled); err != nil || r.releases.Load() != 1 {
+			t.Fatal("completed release was not idempotent under cancellation")
+		}
+	}
+}
+
+func TestCloseCancellationRetainsRootUntilLeaseRelease(t *testing.T) {
+	a := accessFixture()
+	l := &checkpointFixture{ctx: context.Background(), epoch: a.Epoch}
+	r := rootFixture(t, context.Background())
+	m := managerFixture(t, r, Sources{Checkpoints: checkpointSource{func(context.Context, auditcheckpoint.Access) (auditcheckpoint.Lease, error) { return l, nil }}})
+	lease, err := m.Checkpoints().Acquire(context.Background(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(lease.Release)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err = m.Close(cancelled); !errors.Is(err, context.Canceled) || r.releases.Load() != 0 || l.releases.Load() != 0 {
+		t.Fatal("cancelled wait released a live lease/root")
+	}
+	lease.Release()
+	if err = m.Close(cancelled); err != nil || r.releases.Load() != 1 || l.releases.Load() != 1 {
+		t.Fatal("completed lease did not allow exactly one root release")
+	}
+}
+
 func TestUnconfiguredAndExpiredSourcesDeny(t *testing.T) {
 	for _, zero := range []*Lifetime{nil, {}} {
 		zero.Revoke()
@@ -414,7 +452,7 @@ func TestKeyAuthorityBoundContextExactRequestAndDuplicates(t *testing.T) {
 }
 
 func TestKeyCallbackErrorExpiryAndLateCallback(t *testing.T) {
-	for _, kind := range []string{"normal", "error", "expired", "late"} {
+	for _, kind := range []string{"normal", "error", "provider_error", "expired", "late"} {
 		t.Run(kind, func(t *testing.T) {
 			r := rootFixture(t, context.Background())
 			req := auditkeys.TrustRequest{Inspect: true}
@@ -425,7 +463,11 @@ func TestKeyCallbackErrorExpiryAndLateCallback(t *testing.T) {
 					saved = f
 					return nil
 				}
-				return f(auditkeys.Attestation{Request: got})
+				result := f(auditkeys.Attestation{Request: got})
+				if kind == "provider_error" {
+					return wanted
+				}
+				return result
 			})})
 			ctx, stop, e := m.Bind(context.Background())
 			if e != nil {
@@ -452,6 +494,10 @@ func TestKeyCallbackErrorExpiryAndLateCallback(t *testing.T) {
 				if !errors.Is(e, wanted) || calls != 1 {
 					t.Fatal(e)
 				}
+			case "provider_error":
+				if e != ErrUnavailable || calls != 1 {
+					t.Fatal("provider error after successful callback was accepted")
+				}
 			case "expired":
 				if e != ErrUnavailable || calls != 0 {
 					t.Fatal("expired callback")
@@ -474,6 +520,16 @@ func TestEarlyReturningKeyProviderStillHoldsRunningCallback(t *testing.T) {
 		<-started
 		return nil
 	})})
+	var unblockOnce sync.Once
+	unblock := func() { unblockOnce.Do(func() { close(proceed) }) }
+	t.Cleanup(func() {
+		unblock()
+		select {
+		case <-started:
+			<-callbackDone
+		default:
+		}
+	})
 	ctx, stop, e := m.Bind(context.Background())
 	if e != nil {
 		t.Fatal(e)
@@ -483,15 +539,20 @@ func TestEarlyReturningKeyProviderStillHoldsRunningCallback(t *testing.T) {
 		t.Fatal("asynchronous provider accepted")
 	}
 	m.Revoke()
-	expired, cancel := context.WithCancel(context.Background())
-	cancel()
-	if m.Close(expired) == nil || r.releases.Load() != 0 {
-		t.Fatal("callback lost root")
+	select {
+	case <-m.drained:
+		t.Fatal("live callback was counted as drained")
+	default:
 	}
-	close(proceed)
+	deadline, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := m.Close(deadline); !errors.Is(err, context.DeadlineExceeded) || r.releases.Load() != 0 {
+		t.Fatal("callback lost root or deadline result")
+	}
+	unblock()
 	<-callbackDone
-	if e = m.Close(context.Background()); e != nil {
-		t.Fatal(e)
+	if e = m.Close(context.Background()); e != nil || r.releases.Load() != 1 {
+		t.Fatal("callback completion did not release root exactly once")
 	}
 }
 

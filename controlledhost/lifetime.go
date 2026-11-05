@@ -117,8 +117,9 @@ func (m *Lifetime) Revoke() {
 	m.cancel()
 }
 
-// Close must run outside SQL/Publisher/engine locks. Timeout retains ownership;
-// it never force-releases a live root. Call again after operations/children drain.
+// Close must run outside SQL/Publisher/engine locks. Timeout while waiting for
+// drain retains ownership; a completed drain/release wins over cancellation.
+// It never force-releases a live root. Call again after operations/children drain.
 func (m *Lifetime) Close(ctx context.Context) error {
 	if m == nil || ctx == nil || m.ctx == nil || m.cancel == nil {
 		return ErrUnavailable
@@ -126,16 +127,17 @@ func (m *Lifetime) Close(ctx context.Context) error {
 	m.Revoke()
 	select {
 	case <-m.drained:
-	case <-ctx.Done():
-		return ctx.Err()
+	default:
+		select {
+		case <-m.drained:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	m.once.Do(func() { m.stopRoot(); m.stopParent(); m.sources.Root.Release(); close(m.released) })
-	select {
-	case <-m.released:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// Do also waits for a concurrent release to finish. Its known success must
+	// not become a timeout after ownership has already been relinquished.
+	return nil
 }
 
 func (m *Lifetime) live() bool {
