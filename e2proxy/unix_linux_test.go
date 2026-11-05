@@ -129,7 +129,7 @@ func TestProxyUnixRefusesUnboundPeerBeforeTargetSend(t *testing.T) {
 			proxyURL, _ := url.Parse("http://per-call.invalid")
 			protocols := new(http.Protocols)
 			protocols.SetHTTP1(true)
-			transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true,
+			transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true, DisableCompression: true,
 				TLSClientConfig: proxyTestTLSConfig(roots), Protocols: protocols,
 				DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 					return (&net.Dialer{}).DialContext(ctx, "unix", listener.Addr().String())

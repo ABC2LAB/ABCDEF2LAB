@@ -258,7 +258,7 @@ func proxyTestClient(t *testing.T, addr string, roots *x509.CertPool) *http.Clie
 	proxyURL, _ := url.Parse("http://" + addr)
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
-	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true,
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true, DisableCompression: true,
 		TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 		Protocols:       protocols}
 	t.Cleanup(transport.CloseIdleConnections)
@@ -673,5 +673,56 @@ func TestProxyIngressCapabilityNeverAppearsInRepresentations(t *testing.T) {
 	p.mu.Unlock()
 	if !zero || p.validIngress() {
 		t.Fatal("closed proxy retained its host capability")
+	}
+}
+
+func TestProxyTargetObservesOriginalHostAndIdentity(t *testing.T) {
+	for _, secured := range []bool{false, true} {
+		t.Run(fmt.Sprint(secured), func(t *testing.T) {
+			observed := make(chan string, 1)
+			target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				observed <- r.Host + "|" + r.Header.Get("Accept-Encoding")
+				io.WriteString(w, "preserved")
+			}))
+			scheme, name := "http", "EXAMPLE.test"
+			var roots *x509.CertPool
+			if secured {
+				target.StartTLS()
+				scheme = "https"
+				roots = x509.NewCertPool()
+				roots.AddCert(target.Certificate())
+				if len(target.Certificate().DNSNames) == 0 {
+					t.Fatal("TLS fixture lacks named authority")
+				}
+				name = strings.ToUpper(target.Certificate().DNSNames[0])
+			} else {
+				target.Start()
+			}
+			defer target.Close()
+			_, port, err := net.SplitHostPort(target.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			origin := scheme + "://" + strings.ToLower(name) + ":" + port
+			_, call, _ := proxyTestCall(t, origin, roots)
+			_, addr, proxyRoots := proxyTestListener(t, call)
+			req, err := http.NewRequest("GET", origin+"/allowed", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = name + ":" + port
+			req.Header.Set("Accept-Encoding", "identity")
+			response, err := proxyTestClient(t, addr, proxyRoots).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != 200 {
+				t.Fatal("positive proxy delivery failed")
+			}
+			if got := <-observed; got != req.Host+"|identity" {
+				t.Fatalf("proxy rewrote Host/negotiation: %q", got)
+			}
+		})
 	}
 }

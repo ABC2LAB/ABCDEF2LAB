@@ -312,7 +312,6 @@ func (p *Proxy) serveCONNECT(ctx context.Context, conn net.Conn, reader *bufio.R
 		return
 	}
 	inner.URL.Scheme, inner.URL.Host = "https", authority
-	inner.Host = authority
 	p.forward(ctx, secured, inner)
 }
 
