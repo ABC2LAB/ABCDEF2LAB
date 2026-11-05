@@ -7,7 +7,9 @@ import {
   countDecisions,
   DECISION_CELL,
   getAccessMap,
+  hasProjectionIssues,
   type KgCell,
+  mapProjectionIssues,
 } from "./kg";
 
 // 접근통제 지도 리졸버·집계의 fail-closed 규칙 검증(kg-policy §4.2(2)·(7)).
@@ -208,5 +210,44 @@ describe("countDecisions", () => {
     expect(h["allow-ok"]).toBe(1);
     expect(h.vuln).toBe(0); // 판정 축 집계에서 수직 미리보기 제외
     expect(countDecisions(map).vuln).toBe(1); // 축 미지정은 격자 전체
+  });
+
+  it("중복 선언된 신원·자원은 distinct 격자 기준 한 번만 센다(N4)", () => {
+    const dupPrincipal = countDecisions(
+      gridMap(["A", "A"], ["r1"], [{ principalRef: "A", resourceId: "r1", decision: "allow-ok" }]),
+    );
+    expect(dupPrincipal["allow-ok"]).toBe(1); // 2 가 아니라 1
+    const dupResource = countDecisions(
+      gridMap(["A"], ["r1", "r1"], [{ principalRef: "A", resourceId: "r1", decision: "vuln" }]),
+    );
+    expect(dupResource.vuln).toBe(1);
+  });
+});
+
+describe("mapProjectionIssues / hasProjectionIssues", () => {
+  it("격자 밖을 가리키는 레코드를 센다(조용히 버리지 않음)", () => {
+    const map = gridMap(
+      ["A"],
+      ["r1"],
+      [
+        { principalRef: "A", resourceId: "r1", decision: "allow-ok" },
+        { principalRef: "Z", resourceId: "r1", decision: "vuln" }, // Z 는 신원 목록 밖
+        { principalRef: "A", resourceId: "rX", decision: "vuln" }, // rX 는 자원 목록 밖
+      ],
+    );
+    const iss = mapProjectionIssues(map);
+    expect(iss.outOfGrid).toBe(2);
+    expect(hasProjectionIssues(iss)).toBe(true);
+  });
+
+  it("신원·자원 목록의 중복 ref 를 센다", () => {
+    expect(mapProjectionIssues(gridMap(["A", "A", "B"], ["r1"], [])).dupPrincipals).toBe(1);
+    expect(mapProjectionIssues(gridMap(["A"], ["r1", "r1", "r1"], [])).dupResources).toBe(2);
+  });
+
+  it("정상 목업은 무결성 문제 없음", async () => {
+    const iss = mapProjectionIssues(await getAccessMap(null));
+    expect(iss).toEqual({ outOfGrid: 0, dupPrincipals: 0, dupResources: 0 });
+    expect(hasProjectionIssues(iss)).toBe(false);
   });
 });
