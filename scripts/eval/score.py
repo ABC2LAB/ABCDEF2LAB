@@ -233,7 +233,7 @@ def check_comparable(manifests: list[RunManifest]) -> None:
 
 def build_report(
     manifests: list[RunManifest], correlate: Correlate, correlatable: frozenset[str],
-    *, runner_key: bytes | None = None,
+    *, runner_key: bytes | None = None, allow_fixture_e2: bool = False,
 ) -> Report:
     """전 회차를 채점해 코어 GT·BAC 두 표와 경고를 만든다. 행·경고 순서는 manifest 순서."""
     check_comparable(manifests)
@@ -246,6 +246,8 @@ def build_report(
     drain_policies: set[tuple[int, int]] = set()
     run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set(),
                                            "LLM 스트리밍": set()}
+    # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
+    e2_modes: dict[str, set[str]] = {}
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs
@@ -279,9 +281,23 @@ def build_report(
                 if len(seen) > 1:
                     raise ComparabilityError(f"회차 조건 불일치({label}) — 같은 실행 설정·샘플링·머신끼리만 비교"
                                              "(프로토콜 §5.1·§6)")
+        if inputs.e2_mode is not None:
+            modes = e2_modes.setdefault(m.condition, set())
+            modes.add(inputs.e2_mode)
+            if len(modes) > 1:
+                raise ComparabilityError(f"E② 자리 혼합({m.condition}: {sorted(modes)}) — 조건 하나는 같은 E② 배치로만 "
+                                         "집계(프로토콜 §2)")
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 
+    for condition, modes in e2_modes.items():
+        if "stub" in modes:
+            # 가짜 E² 회차는 시범·공식 결과가 아니다(프로토콜 §2). 배치 스모크를 확인할 때만 명시적으로 연다.
+            if not allow_fixture_e2:
+                raise ComparabilityError(f"가짜 E② 회차({condition}) — 공식 채점 대상 아님(프로토콜 §2), "
+                                         "배치 스모크 확인이면 --allow-fixture-e2")
+            warnings.append(f"경고[공식 비교 아님] {condition}: 통과 전용 가짜 E② 회차 — 배치·부정 연결 점검 확인용이며 "
+                            "통제를 증명하지 않음. 시범·공식·제품 결과에 쓰지 않음(프로토콜 §2)")
     if versions == {V1}:
         warnings.append("경고[공식 비교 아님] 러너 기록 v1(직접 관측 이벤트) — 합성 시험·과거 형식 회귀 검증용, "
                         "공식 비교표는 v1.1 isolated_window만(프로토콜 §4)")
@@ -310,11 +326,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("manifest", help="회차 manifest JSON")
     parser.add_argument("--runner-key-file", required=True, help="엔진 밖의 신뢰 러너 HMAC 키 파일(값 출력 금지)")
     parser.add_argument("--correlation", default=DEFAULT_PATH, help="평가 전용 GT 상관 JSON")
+    parser.add_argument("--allow-fixture-e2", action="store_true",
+                        help="가짜 E②(e2_mode=stub) 회차도 채점한다 — 배치 스모크 확인용, 공식 표에는 쓰지 않음")
     args = parser.parse_args(argv)
     try:
         table = load_correlation(args.correlation)
         report = build_report(load_manifests(args.manifest), table.correlate, table.operative,
-                              runner_key=read_runner_key(args.runner_key_file))
+                              runner_key=read_runner_key(args.runner_key_file),
+                              allow_fixture_e2=args.allow_fixture_e2)
     except _STOP_ERRORS as e:
         print(f"채점 중단: {e}", file=sys.stderr)
         return 2

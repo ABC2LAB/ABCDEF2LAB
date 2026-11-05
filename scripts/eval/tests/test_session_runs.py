@@ -48,9 +48,10 @@ class Session:
         write(directory / "runner-result.json", result, signed=fields.get("status") == "complete")
 
     def complete(self, side: str, minute: int, repeat: int, condition: str | None = None,
-                 task: str = "t" * 64) -> Path:
+                 task: str = "t" * 64, e2_mode: object = "none") -> Path:
         directory = self._dir(side, minute)
-        self._result(directory, side, minute, status="complete", task_request_sha256=task.replace("t", "a"))
+        self._result(directory, side, minute, status="complete", task_request_sha256=task.replace("t", "a"),
+                     e2_mode=e2_mode)
         record = {"run_id": directory.name, "engine": side, "condition": condition or CONDITION[side],
                   "repeat_index": repeat, "model_tag": "qwen/qwen3.6-35b-a3b", "reset_generation": "r" * 64,
                   "total_requests": 400, "blocked_attempts": None, "elapsed_seconds": 1200.5,
@@ -85,6 +86,29 @@ class SessionCase(unittest.TestCase):
         for minute, (side, repeat) in enumerate([("baseline", 0), ("ours", 0), ("ours", 1), ("baseline", 1),
                                                  ("baseline", 2), ("ours", 2)]):
             self.s.complete(side, minute * 5, repeat)
+
+
+class TestFixtureE2(SessionCase):
+    """가짜 E²(e2_mode=stub) 회차는 공식 세션 집계에 넣지 않는다(프로토콜 §2). 스모크만 플래그로 연다."""
+
+    def test_stub_runs_are_refused_unless_allowed(self):
+        self.s.complete("baseline", 1, 0)
+        self.s.complete("ours", 2, 0, e2_mode="stub")
+        with self.assertRaises(SessionError) as caught:
+            read_session(self.root, KEY)
+        self.assertTrue(any("e2_mode=stub" in e for e in caught.exception.errors), caught.exception.errors)
+        self.assertEqual(len(read_session(self.root, KEY, allow_fixture_e2=True)), 2)
+
+    def test_missing_or_unknown_e2_mode_is_refused(self):
+        for minute, value in enumerate((None, "product", "")):
+            with self.subTest(value=value):
+                directory = self.s.complete("ours", minute, minute, e2_mode=value)
+                with self.assertRaises(SessionError) as caught:
+                    read_session(self.root, KEY, allow_fixture_e2=True)
+                self.assertTrue(any("e2_mode" in e for e in caught.exception.errors), caught.exception.errors)
+                for child in directory.iterdir():
+                    child.unlink()
+                directory.rmdir()
 
 
 class TestOrder(unittest.TestCase):

@@ -77,6 +77,17 @@ jobs:
       # 시험 코드(TestMain 포함)는 아래 망 없는 단계에서만 실행한다. 여기서는 모듈만 받는다.
       - name: 모듈 받기(이 단계까지만 망 사용)
         run: go mod download
+      # e2sandbox 시험은 비특권 user namespace를 만든다. Ubuntu 23.10+는 AppArmor가 이를 기본으로 제한해
+      # (kernel.apparmor_restrict_unprivileged_userns=1) 기동이 고정 사유로 거부된다(#212 CI의 FAIL 17).
+      # 1회용 러너에서만 풀고 전후 값을 남긴다. 실제 배치에서는 helper용 AppArmor 프로필이나 이 설정이 배치 조건이다.
+      - name: 비특권 user namespace 허용(e2sandbox 시험)
+        run: |
+          key=kernel.apparmor_restrict_unprivileged_userns
+          echo "before: $(sysctl -n "$key" 2>/dev/null || echo absent)"
+          if sysctl -n "$key" >/dev/null 2>&1; then
+            sudo sysctl -w "$key=0"
+          fi
+          echo "after: $(sysctl -n "$key" 2>/dev/null || echo absent)"
       # 시험이 외부 API·DNS에 닿지 않게 loopback만 있는 망 namespace에서 runner 권한으로 돌린다
       # (CLAUDE.md 절대 규칙 8). DB는 unix 소켓이라 그대로 닿는다.
       - name: go test
@@ -108,3 +119,20 @@ jobs:
       - name: unittest
         working-directory: scripts/eval
         run: python3 -I -B -m unittest discover -s tests
+      - name: Docker Compose CLI 확인(E② 배치 구성 렌더링 시험)
+        run: docker compose version
+      - name: E② 배치 검사기 unittest
+        working-directory: deploy/e2-network-boundary
+        # *_docker.py는 실제 컨테이너를 띄우는 수동 스크립트라 TestCase가 없다. 여기서는 합성 inspect·렌더링 시험만 돈다.
+        # Compose CLI가 없으면 렌더링 시험이 SKIP으로 빠지므로 SKIP을 통과로 보지 않는다.
+        run: |
+          set +e
+          out=$(python3 -I -B -m unittest discover -s . -t . 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
+          if printf '%s\n' "$out" | grep -q 'skipped='; then
+            echo "::error::E② 배치 시험에 SKIP이 있습니다(통과로 보지 않음)"
+            exit 1
+          fi

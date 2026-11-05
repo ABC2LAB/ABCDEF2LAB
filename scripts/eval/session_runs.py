@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from isolation_proof import E2_MODES  # noqa: E402
 from run_record import RunRecordError, read_runner_key, sign_run_record  # noqa: E402
 from runner import COMPLETE, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME  # noqa: E402
 
@@ -106,7 +107,7 @@ def _signed(value: dict, key: bytes) -> bool:
     return hmac.compare_digest(signature, expected)
 
 
-def _attempt(directory: Path, key: bytes, errors: list[str]) -> Attempt | None:
+def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: bool = False) -> Attempt | None:
     match = RUN_ID.match(directory.name)
     if not match:
         errors.append(f"{directory.name}: 러너 회차 디렉터리 이름이 아님")
@@ -135,6 +136,15 @@ def _attempt(directory: Path, key: bytes, errors: list[str]) -> Attempt | None:
             errors.append(f"{directory.name}: 무효 결과에 사유가 없음")
             return None
         return Attempt(directory.name, side, started, INVALID, reasons[0], None)
+    # 서명된 E② 자리. 가짜 E²(stub) 회차는 배치 확인용이라 시범·공식 세션 집계에 넣지 않는다(프로토콜 §2).
+    e2_mode = result.get("e2_mode")
+    if e2_mode not in E2_MODES:
+        errors.append(f"{directory.name}: 완료 결과의 e2_mode가 none|stub이 아님")
+        return None
+    if e2_mode == "stub" and not allow_fixture_e2:
+        errors.append(f"{directory.name}: 가짜 E② 회차(e2_mode=stub)는 세션 집계에 넣지 않음 — 배치 확인용(프로토콜 §2), "
+                      "스모크 확인이면 --allow-fixture-e2")
+        return None
     task_sha256 = result.get("task_request_sha256")
     if not isinstance(task_sha256, str) or not SHA256.match(task_sha256):
         errors.append(f"{directory.name}: 완료 결과에 작업 요청 해시가 없음")
@@ -159,12 +169,13 @@ def _attempt(directory: Path, key: bytes, errors: list[str]) -> Attempt | None:
     return Attempt(directory.name, side, started, COMPLETE, None, record, task_sha256)
 
 
-def read_session(runs_root: Path, key: bytes) -> list[Attempt]:
+def read_session(runs_root: Path, key: bytes, allow_fixture_e2: bool = False) -> list[Attempt]:
     """runs_root 바로 아래 회차 디렉터리를 시작 시각 순으로 읽는다. key는 러너 서명 키."""
     if not runs_root.is_dir():
         raise SessionError([f"{runs_root}: 디렉터리가 아님"])
     errors: list[str] = []
-    attempts = [a for d in sorted(runs_root.iterdir()) if d.is_dir() and (a := _attempt(d, key, errors)) is not None]
+    attempts = [a for d in sorted(runs_root.iterdir())
+                if d.is_dir() and (a := _attempt(d, key, errors, allow_fixture_e2)) is not None]
     complete = [a for a in attempts if a.record is not None]
     # 작업 설명·목표·옵션도 비교 조건이다. 같은 설정이면 요청 본문 해시가 같다(baseline·개선 후 공통).
     tasks = sorted({a.task_sha256 for a in complete})
@@ -248,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeats", type=int, required=True, help="조건당 유효 회차 수 N(§5.1, 3 이상)")
     parser.add_argument("--runner-key-file", required=True, help="러너 서명 키 파일(채점에 쓰는 것과 같은 키)")
     parser.add_argument("--manifest", help="완료 회차 채점 manifest를 쓸 새 파일(있으면 거부)")
+    parser.add_argument("--allow-fixture-e2", action="store_true",
+                        help="가짜 E②(e2_mode=stub) 회차도 읽는다 — 배치 스모크 확인용, 시범·공식 세션에는 쓰지 않음")
     args = parser.parse_args(argv)
     if args.repeats < 3:
         print("--repeats는 3 이상이다(§5.1)", file=sys.stderr)
@@ -259,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"러너 키를 읽지 못함: {error}", file=sys.stderr)
         return 2
     try:
-        attempts = read_session(runs_root, key)
+        attempts = read_session(runs_root, key, args.allow_fixture_e2)
         payload = build_manifest(runs_root, attempts)
     except SessionError as error:
         print(f"세션 읽기 중단: {error}", file=sys.stderr)
