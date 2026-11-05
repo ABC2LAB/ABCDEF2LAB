@@ -53,8 +53,9 @@ from runner_engine import (  # noqa: E402
 )
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, FORCED_CANCELLED_OUTCOME, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
-    forwarded_count, read_private_json, sequence_complete,
+    e2_stub_counts, forwarded_count, read_private_json, sequence_complete,
 )
+from attempt_reconcile import reconcile  # noqa: E402
 from runner_llm import judge_llm  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
 from runner_record import (  # noqa: E402
@@ -447,7 +448,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     # E② 자리 기록. 가짜 E²면 결정 행 형식을 검사하고 결정별 건수를 남긴다(통제 증명이 아니라 배치 확인).
     e2 = {"mode": spec.e2_mode, "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None}
     if spec.e2_mode == E2_STUB:
-        e2.update(_step(state, "e2_stub_log_invalid", meter.e2_stub_summary))
+        decisions = _step(state, "e2_stub_log_invalid", meter.e2_stub_rows)
+        e2.update(e2_stub_counts(decisions))
+        # 시도별 대조(프로토콜 §8.3). 나쁜 칸이 나와도 회차를 무효로 하지 않는다(성능표에 포함, 통제 주장만 보류).
+        reconciliation = _step(state, "e2_stub_log_invalid", lambda: reconcile(decisions, rows))
+        _step(state, "evidence_write_failed",
+              lambda: evidence.write_json("attempt-reconciliation.json", dict(reconciliation, fixture=True)))
     verified = _wait_llm_verified(spec, gateway, clock, state)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
         verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling))

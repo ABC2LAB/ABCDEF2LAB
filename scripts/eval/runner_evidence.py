@@ -47,6 +47,12 @@ ENGINE_KINDS = FORWARDED_KINDS | {"rejected"}
 FORCED_CANCELLED_OUTCOME = "forced_cancelled"
 
 
+def e2_stub_counts(rows: list[dict]) -> dict:
+    """검사한 가짜 E² 결정 행의 결정별 건수(격리 근거 e2_placement 행)."""
+    return {"decision_rows": len(rows),
+            **{decision: sum(1 for row in rows if row["decision"] == decision) for decision in E2_STUB_DECISIONS}}
+
+
 def forwarded_count(rows: list[dict]) -> int:
     """계측기와 같은 기준의 전달 건수. 모르는 종류가 있으면 기록을 믿을 수 없으므로 거부한다."""
     if any(row.get("kind") not in ENGINE_KINDS for row in rows):
@@ -204,10 +210,10 @@ class MeterFiles:
     def observer_rows(self) -> list[dict]:
         return _rows(_read_owned(self.path, OBSERVER_LOG), _OBSERVER_ROW)
 
-    def e2_stub_summary(self) -> dict:
-        """가짜 E² 결정 행의 형식 검사와 결정별 건수. 행은 fixture 표식이어야 하고, ID는 발급된 결정에만 있으며 겹치지 않는다.
+    def e2_stub_rows(self) -> list[dict]:
+        """가짜 E² 결정 행. fixture 표식이어야 하고, ID는 발급된 결정에만 있으며 겹치지 않는다.
 
-        파일이 없으면(가짜 E²가 뜨지 않음) 회차 근거가 없는 것이다. 건수만 기록하고, 계측기 행과의 시도별 대조는 채점 쪽 몫이다.
+        파일이 없으면(가짜 E²가 뜨지 않음) 회차 근거가 없는 것이다.
         """
         data = _read_owned(self.path, E2_STUB_LOG)
         if data is None:
@@ -227,8 +233,7 @@ class MeterFiles:
                 ids.append(attempt)
         if len(ids) != len(set(ids)):
             raise EvidenceError("e2_stub_log_invalid")
-        return {"decision_rows": len(rows),
-                **{decision: sum(1 for row in rows if row["decision"] == decision) for decision in E2_STUB_DECISIONS}}
+        return rows
 
     def marker(self, name: str) -> dict | None:
         if name not in (SEALED_MARKER, DRAINED_MARKER, TERMINATED_MARKER):

@@ -108,10 +108,11 @@ class TestMeterFiles(unittest.TestCase):
     def test_e2_stub_summary_counts_decisions(self):
         self.stub_rows(self.stub_row(1), self.stub_row(2, "unsupported"), self.stub_row(3, "unavailable"),
                        self.stub_row(4))
-        self.assertEqual(self.meter.e2_stub_summary(),
+        from runner_evidence import e2_stub_counts
+        self.assertEqual(e2_stub_counts(self.meter.e2_stub_rows()),
                          {"decision_rows": 4, "allowed": 2, "unsupported": 1, "unavailable": 1})
         self.write("e2-stub-decisions.jsonl", "")
-        self.assertEqual(self.meter.e2_stub_summary()["decision_rows"], 0)
+        self.assertEqual(e2_stub_counts(self.meter.e2_stub_rows())["decision_rows"], 0)
 
     def test_e2_stub_summary_rejects_bad_rows(self):
         from runner_evidence import EvidenceError
@@ -130,10 +131,10 @@ class TestMeterFiles(unittest.TestCase):
             with self.subTest(name=name):
                 self.stub_rows(*rows)
                 with self.assertRaises(EvidenceError):
-                    self.meter.e2_stub_summary()
+                    self.meter.e2_stub_rows()
         (self.dir / "e2-stub-decisions.jsonl").unlink()
         with self.assertRaisesRegex(EvidenceError, "e2_stub_log_missing"):
-            self.meter.e2_stub_summary()
+            self.meter.e2_stub_rows()
 
     def test_missing_log_counts_zero(self):
         self.assertEqual(self.meter.forwarded(), 0)
