@@ -363,27 +363,30 @@ func (e *Execution) record(ctx context.Context, ev Event) error {
 	e.recordMu.Lock()
 	defer e.recordMu.Unlock()
 	e.mu.Lock()
-	e.eventIndex++
-	ev.Index = e.eventIndex
+	if e.auditFailed {
+		e.mu.Unlock()
+		return ErrAudit
+	}
+	ev.Index = e.eventIndex + 1
 	ev.At = time.Now().UTC()
-	priorFailure := e.auditFailed
 	e.mu.Unlock()
-	ev.AuditComplete = !priorFailure && ev.Reason != AuditFailed
+	ev.AuditComplete = ev.Reason != AuditFailed
 	err := e.cfg.Recorder.Record(ctx, ev)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err != nil {
-		ev.AuditComplete = false
 		e.auditFailed = true
 		e.stopReason = AuditFailed
 		e.cancel()
-	}
-	e.events = append(e.events, ev)
-	if err != nil {
 		return ErrAudit
 	}
+	// A failed candidate is not a normal event or a committed ordinal. The
+	// failure remains in the receipt/execution latch; recovery is not attempted.
+	e.eventIndex = ev.Index
+	e.events = append(e.events, ev)
 	return nil
 }
+
 func (e *Execution) Stop(ctx context.Context) error   { return e.stop(ctx, Closed) }
 func (e *Execution) Revoke(ctx context.Context) error { return e.stop(ctx, Revoked) }
 func (e *Execution) stop(ctx context.Context, reason Reason) error {
@@ -912,10 +915,19 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Reason = reason
 		return finish(nil, ErrDenied)
 	}
-	if err = e.record(ctx, Event{Stage: "intent", Receipt: r}); err != nil {
+	// Once reserved, the intent ACK has its own bounded persistence context,
+	// just like the result. Caller cancellation never abandons an audit write.
+	intentCtx, intentCancel := context.WithTimeout(context.WithoutCancel(ctx), e.cfg.Limits.RequestTimeout)
+	err = e.record(intentCtx, Event{Stage: "intent", Receipt: r})
+	intentCancel()
+	if err != nil {
 		r.Decision = "denied"
 		r.Reason = AuditFailed
 		return finish(nil, ErrAudit)
+	}
+	if ctx.Err() != nil {
+		r.Reason = Closed
+		return finish(nil, ErrClosed)
 	}
 	workCtx, cancel := context.WithTimeout(c.ctx, e.cfg.Limits.RequestTimeout)
 	defer cancel()
