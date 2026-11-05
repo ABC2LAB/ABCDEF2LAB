@@ -54,8 +54,8 @@ func (ControlledReadConfigHandle) MarshalJSON() ([]byte, error) { return []byte(
 
 // Runtime integration must call this with the same privately held, immutable
 // cfg passed to NewHTTP, after assigning the actual execution Scope. It does
-// not load/validate configuration or authenticate its producer. No runtime call
-// is installed until the shared #151 changes are stable.
+// not load/validate configuration or authenticate its producer. The runtime
+// installs the handle only after the transmitter and task binding succeed.
 func newControlledReadConfigHandle(life context.Context, task, intent int64, cfg transmit.Config) (*ControlledReadConfigHandle, func(), error) {
 	if life == nil || life.Err() != nil || task <= 0 || intent <= 0 || cfg.Scope.TaskRef != strconv.FormatInt(task, 10) || cfg.Scope.RunRef == "" || len(cfg.Sessions) == 0 || cfg.ExpiresAt.IsZero() {
 		return nil, nil, ErrControlledFindingUnavailable
