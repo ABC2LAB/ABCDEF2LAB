@@ -36,6 +36,8 @@ func drainTestServer(t *testing.T, s *Server) {
 	if s == nil {
 		return
 	}
+	drainCtx, cancel := context.WithTimeout(context.Background(), testServerDrainTimeout)
+	defer cancel()
 	deadline := time.NewTimer(testServerDrainTimeout)
 	defer deadline.Stop()
 
@@ -44,7 +46,7 @@ func drainTestServer(t *testing.T, s *Server) {
 	// hold testing.T forever; normal cancellation completes well before the cap.
 	runtimesDone := make(chan struct{})
 	go func() {
-		if s.m != nil {
+		if s.m != nil && s.engine != nil {
 			for _, task := range s.m.List() {
 				if task != nil {
 					s.engine.StopTask(task.ID)
@@ -82,6 +84,14 @@ func drainTestServer(t *testing.T, s *Server) {
 
 	if s.side != nil && !waitTestServerDrain(deadline, s.side.done) {
 		t.Errorf("side-question snapshot worker did not drain within %s", testServerDrainTimeout)
+		return
+	}
+	// Keep the original fixture-only fix runnable against its dev snapshot.
+	// New servers also own GC, scheduler, discovery and reconciliation jobs.
+	if owner, ok := any(s).(interface{ WaitBackground(context.Context) error }); ok {
+		if err := owner.WaitBackground(drainCtx); err != nil {
+			t.Errorf("server background workers did not drain within %s: %v", testServerDrainTimeout, err)
+		}
 	}
 }
 
