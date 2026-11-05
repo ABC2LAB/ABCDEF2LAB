@@ -22,7 +22,15 @@ OBSERVER_LOG = "observer-requests.jsonl"
 LLM_VERIFIED_MARKER = "llm-verified.json"
 MAX_METER_FILE_BYTES = 64 * 1024 * 1024
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\.json\Z")
-_ENGINE_ROW = frozenset({"seq", "kind", "method", "status", "started_at", "completed_at", "response_bytes", "outcome"})
+_ENGINE_ROW = frozenset({"seq", "kind", "method", "status", "started_at", "completed_at", "response_bytes", "outcome",
+                         "sent", "response", "attempt_id_state", "attempt_id"})
+# 계측기 행의 요청 단계(cmd/eval-meter proxy.go와 같은 값). sent=대상까지 갔는지, response=대상이 답했는지이며
+# 같은 시도의 진행 이력이라 배타적 건수가 아니다(평가 프로토콜 §8.3).
+ENGINE_SENT = frozenset({"no", "uncertain", "yes"})
+ENGINE_RESPONSE = frozenset({"none", "headers", "complete", "interrupted"})
+# E② 시도 ID 헤더 검사 결과. 유효할 때만 값(소문자 hex 32자)이 있고, 나머지는 빈 문자열이다(잘못된 원문은 안 남김).
+ATTEMPT_STATES = frozenset({"absent", "valid", "invalid", "multiple"})
+_ATTEMPT_ID = re.compile(r"[0-9a-f]{32}\Z")
 _OBSERVER_ROW = frozenset({"seq", "decision", "method", "status", "started_at", "completed_at", "response_bytes"})
 
 
@@ -154,6 +162,19 @@ def _rows(data: bytes | None, fields: frozenset[str]) -> list[dict]:
     return rows
 
 
+def _engine_stages_valid(row: dict) -> bool:
+    """단계 값이 알려진 집합이고 서로 모순되지 않는지. 거부 행은 대상에 안 갔고, 안 간 요청에 대상 응답은 없다."""
+    state, attempt = row["attempt_id_state"], row["attempt_id"]
+    if row["sent"] not in ENGINE_SENT or row["response"] not in ENGINE_RESPONSE or state not in ATTEMPT_STATES:
+        return False
+    if not isinstance(attempt, str) or (state == "valid") != bool(_ATTEMPT_ID.match(attempt)) or (
+            state != "valid" and attempt != ""):
+        return False
+    if row["kind"] == "rejected" and (row["sent"], row["response"]) != ("no", "none"):
+        return False
+    return row["sent"] != "no" or row["response"] == "none"
+
+
 def sequence_complete(rows: list[dict]) -> bool:
     """계측기는 요청이 끝난 순서로 쓴다. 진행 중 요청이 없을 때(drain 뒤)는 순번이 1..n으로 빠짐없어야 한다."""
     return sorted(row["seq"] for row in rows) == list(range(1, len(rows) + 1))
@@ -166,7 +187,10 @@ class MeterFiles:
         self.path = path
 
     def engine_rows(self) -> list[dict]:
-        return _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW)
+        rows = _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW)
+        if not all(_engine_stages_valid(row) for row in rows):
+            raise EvidenceError("meter_row_invalid")
+        return rows
 
     def forwarded(self) -> int:
         """대상에 전달한 요청 수(stream 포함, seal 후 거부 건 제외)."""
