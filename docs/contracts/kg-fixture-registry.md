@@ -1,6 +1,6 @@
 # KG 1단계 정본: fixture 레지스트리와 최소 resolver (계약 초안)
 
-상태: **제안 · 팀 리뷰용 · 구현 전.** 2026-11-05 결정(kg-policy §6 Open #1의 이경준 제안 채택)에 따른 IDOR 1단계용 최소 KG 경계다.
+상태: **1단계 계약 · 로더·resolver 구현됨([`kgfixture`](../../kgfixture/registry.go)) · 서버 연결 전.** 2026-11-05 결정(kg-policy §6 Open #1의 이경준 제안 채택)에 따른 IDOR 1단계용 최소 KG 경계다.
 분담: 최소 resolver·레지스트리 형식 = 최민준, KG 계약 정합 리뷰 = 이경준, 서버 조립(`ControlledReadFindingResolver`) = 이동찬.
 이 문서는 [kg-policy](./kg-policy.md)·[canary fixture](./idor-canary-fixture.md)·[첫 IDOR 통합](./first-idor-integration.md)의 의미를 바꾸지 않고, 1단계에서 그 계약을 만족하는 **가장 작은 정본 reader**를 정한다.
 
@@ -13,9 +13,11 @@
 
 ## 2. 레지스트리 파일
 
-- 운영자가 회차 준비 단계(심기+등록, kg-policy §3.2(1))에 작성한다. 저장소 밖 보호 경로, 소유자 실행 계정·`0600`, **커밋 금지**(결과물·준비 자료).
+- 운영자가 회차 준비 단계(심기+등록, kg-policy §3.2(1))에 작성한다. 서버가 읽는 사본은 저장소 밖 보호 경로, 소유자 실행 계정·`0600`이다.
+  - **실제 진단 대상(비평가)** 레지스트리는 커밋하지 않는다(대상 조직의 계정·자원 구조를 담는 준비 자료). 결과 전 고정이 필요하면 policy version(내용 digest 포함)만 커밋한다.
+  - **평가용**(공개 연습 대상) 레지스트리는 비밀이 없으므로 결과를 보기 전에 파일째 커밋해 고정한다(§8 #2). 회차 기록의 policy version이 커밋한 파일의 digest와 같아야 그 회차를 쓴다.
 - 담는 것: 참조·라벨·정책 선언·비민감 canary 값. **담지 않는 것**: 계정 비밀번호·세션·쿠키·토큰, 하네스 세대 토큰 원문(절대규칙 2).
-- 형식(논리 필드, 정확한 키 이름은 구현 PR에서 고정):
+- 형식(키 이름은 아래와 정확히 같다. 최상위·`principals[]`·`resources[]`·`policies[]`·`canaries[]` 객체마다 아래 키가 전부 있어야 하고 다른 키는 없어야 한다):
 
 | 필드 | 뜻 | 규칙 |
 |---|---|---|
@@ -29,6 +31,24 @@
 | `resources[].canaries[]` | `field`, `value`, `trivial` | `trivial`은 명시 필수(확신 없으면 true, §3.1). `value`는 한 세대 안에서 전역 유일(§3.2(3)) |
 
 - 모르는 키·중복 키·빈 문자열·형식이 틀린 ref는 전부 **로드 실패**(fail-closed). 부분만 받아 쓰지 않는다.
+- 구현이 고정한 디코딩 규칙(Go·Python 정규 바이트가 갈리지 않게):
+  - 키와 문자열 값은 **출력 가능한 ASCII(0x20~0x7E)만** 쓴다. 제어 문자·DEL·비ASCII(`\u00e9` 같은 이스케이프로 쓴 것 포함)는 거부한다.
+  - 중복 키는 **이스케이프를 푼 키**로 비교한다(`"\u0066ormat"`과 `"format"`은 같은 키). encoding/json은 마지막 값을 조용히 받으므로 토큰 단위로 검사한다.
+  - 숫자는 정수 표기만 디코딩 단계에서 받고(소수·지수 거부), v1 스키마에는 숫자 필드가 없으므로 결국 거부된다. `null`도 거부된다.
+  - `principals`·`resources`는 1개 이상. `policies`·`canaries`는 빈 배열을 허용하며, 그 자원의 조회는 §5에서 `ok=false`가 된다.
+  - `valid_from`·`valid_until`은 `Z`로 끝나는 RFC 3339 UTC(`2026-11-05T00:00:00Z`, 소수 초 9자리까지)이고 `valid_from < valid_until`.
+  - 입력 상한은 1 MiB(`kgfixture.MaxRegistryBytes`). 비었거나 넘으면 `registry_unreadable`.
+- 예(값은 설명용):
+
+```json
+{"format": "abc2lab.kg-fixture-registry/v1", "snapshot_id": "kgfx-run-1", "run_id": "prep-run-1",
+ "reset_generation": "reset-1", "generation_ref": "gen-1", "instance_ref": "target-1",
+ "principals": [{"label": "account-a"}, {"label": "account-b"}],
+ "resources": [{"resource_ref": "note:1001", "owner_ref": "account-a",
+   "policies": [{"evaluated_ref": "account-b", "expected_access": "deny", "sharing": "resolved_none",
+                 "delegation": "resolved_none", "valid_from": "2026-11-05T00:00:00Z", "valid_until": "2026-11-06T00:00:00Z"}],
+   "canaries": [{"field": "body", "value": "kgfx-canary-7f3a", "trivial": false}]}]}
+```
 
 ## 3. snapshot 동결과 식별
 
@@ -38,7 +58,7 @@
 | 값 | 만드는 법 | 들어가는 곳 |
 |---|---|---|
 | snapshot ref | 레지스트리의 `snapshot_id` | `Source.KGSnapshotRef` |
-| snapshot digest | 레지스트리 내용의 정규 JSON(키 정렬·공백 없음·UTF-8) SHA-256 | `Source.KGSnapshotDigest` |
+| snapshot digest | 레지스트리 내용의 정규 JSON(키 바이트 순 정렬·공백 없음·`"`와 `\`만 이스케이프) SHA-256. 문자열이 출력 가능한 ASCII뿐이라 Python `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True)`와 바이트가 같다([공용 벡터](../../kgfixture/testdata/vectors-v1.json), `scripts/eval/kg_fixture_canonical.py`) | `Source.KGSnapshotDigest` |
 | policy version | `kg-fixture/v1:<snapshot_id>:<digest 64 hex>` (`snapshot_id`가 49바이트 이하라 전체 128바이트 이내, `evidencebind`·`e3record` 공통 ref 문법 안) | `Context.KGPolicyVersion` |
 
 - **policy version의 뜻**: 발급 주체는 이 resolver(내용에서 결정적으로 계산)이고, 같은 내용이면 같은 값, 내용이 한 바이트라도 다르면 다른 값이다. 구분자는 기존 ref 검사기(`evidencebind` 참조 문법)가 받는 `:`만 쓴다(`@`는 `MissingContext`로 거부됨, #193 리뷰). 지도 헤더 표기는 이경준 확인(kg-policy §6 Open #1 (a)).
@@ -66,20 +86,33 @@
 ## 6. 비밀·노출
 
 - resolver는 canary 값을 로그·오류·근거 파일·LLM 입력에 내보내지 않는다. 외부로 나가는 역참조 산출물은 `owner_ref` 라벨만이다(§3.2(6), 절대규칙 2).
-- 오류는 고정 코드로만 낸다: `registry_unreadable` · `registry_format` · `registry_unknown_field` · `registry_duplicate` · `ref_format` · `canary_value_not_unique` · `canary_trivial_missing` · `snapshot_invalid`. 원인 문자열에 파일 내용을 넣지 않는다.
+- 오류는 고정 코드로만 낸다(오류 문자열 = `kgfixture: <코드>`). 원인 문자열에 파일 내용을 넣지 않는다.
 
-## 7. 시험 계획 (구현 PR에서)
+| 코드 | 조건 |
+|---|---|
+| `registry_unreadable` | 입력이 비었거나 1 MiB 초과 |
+| `registry_format` | JSON 문법·뒤따르는 데이터·중첩 한도, 비ASCII·제어 문자, 정수 아닌 숫자, 타입·빈 문자열·`null`, 필수 키 누락, `format` 값, 빈 `principals`·`resources`, 등록 안 된 `owner_ref`·`evaluated_ref`, 열거값(`expected_access`·`sharing`·`delegation`), 시각 형식·`valid_from ≥ valid_until`, `trivial`이 bool 아님 |
+| `registry_unknown_field` | 정해진 키 밖의 키 |
+| `registry_duplicate` | 중복 키(이스케이프 별칭 포함), 같은 라벨·`resource_ref`·`evaluated_ref` |
+| `ref_format` | 공통 ref 문법 위반, `snapshot_id` 49바이트 초과, `resource_ref`가 `type:id`가 아님 |
+| `canary_value_not_unique` | canary `value`가 레지스트리 안에서 겹침 |
+| `canary_trivial_missing` | canary에 `trivial` 없음 |
+| `snapshot_invalid` | `Invalidate` 뒤의 `Err()` |
+
+## 7. 시험 (구현됨)
 
 - 로더: 위 §2 규칙마다 거부 사례 1개 이상(모르는 키·중복 키·빈 값·ref 형식·`trivial` 누락·값 중복), 정상 사례의 digest·policy version이 내용에서 결정적인지, 한 바이트 변경이 digest를 바꾸는지.
 - resolver: §5 표의 성공 1 + 실패 조건 각각 단독. 무효화 뒤 두 호출 모두 `ok=false`. 같은 snapshot을 owner·cross가 공유하는지.
 - 노출: canary 값·sentinel 문자열이 오류·로그에 나오지 않는지.
 - 변이 검사로 각 가드가 단독으로 잡히는지 확인한다.
+- 구현: `kgfixture/registry_test.go`·`vectors_test.go`, 공용 벡터 `kgfixture/testdata/vectors-v1.json`(따옴표·역슬래시·이스케이프 별칭은 받고, 비ASCII·제어 문자·DEL·lone surrogate·중복 키·소수는 Go·Python 둘 다 거부), Python 대조 `scripts/eval/tests/test_kg_fixture_vectors.py`.
 
 ## 8. 열린 것
 
-1. policy version 포맷 확정(이동찬·이경준) — §3 제안.
-2. 레지스트리를 누가 작성하는지: 평가 회차는 러너 fixture(최민준), 비평가 통합 회차는 fixture 하네스(윤재상, [실제 입력 대장](./first-idor-host-inputs.md))와 운영자. 작성 도구를 하나로 둘지.
-3. 실제 입력 대장의 "동결한 KG 정책 … 실제 reader" 행 담당(이경준)을 1단계분은 이 resolver(최민준)로 바꾸는 대장 수정 — 대장 담당자 리뷰로.
+1. ~~policy version 포맷 확정~~ — §3 형식으로 구현했다. 지도 헤더 표기는 이경준 확인(#197, kg-policy §4.1).
+2. 레지스트리를 누가 작성하는지. **(제안)** 레지스트리 **내용**(대상 앱의 자원·소유·정책·canary)은 이경준 또는 윤재상이 **챌린지 목록을 보지 않고** 작성하고(절대규칙 7), 결과를 보기 전에 고정한다. 최민준은 형식 리뷰만 한다(검증기·판정 담당이 정책을 쓰지 않게). 비평가 통합 회차의 준비 절차는 fixture 하네스(윤재상, [실제 입력 대장](./first-idor-host-inputs.md))와 운영자. 작성 도구를 하나로 둘지는 열린 채로 둔다.
+   - 고정 방식(2026-11-05 결정): 평가용은 파일째 결과 전 커밋, 실제 진단 대상용은 저장소 밖에 두고 policy version만 커밋(§2).
+3. ~~실제 입력 대장의 "동결한 KG 정책 … 실제 reader" 행을 1단계분은 이 resolver(최민준)로 바꾸는 수정~~ — #197로 반영했다.
 4. `ReadApprovalRef`(자원별 실행 승인)는 E² 등록 몫이라 이 레지스트리에 넣지 않는다. 서버가 같은 `resource_ref`로 대조한다.
 
 ## 9. E② private snapshot과의 대응·1단계 준비 순서
