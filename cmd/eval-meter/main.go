@@ -1,5 +1,5 @@
 // Command eval-meter is the runner-side front for one evaluation run. It runs
-// as one of three roles:
+// as one of these roles:
 //
 //   - engine: forwards each request it receives to the target unchanged and
 //     counts it, so the runner can seal new sends and show that in-flight
@@ -14,6 +14,8 @@
 //     provider on every request and holds the API key; local forwards as is.
 //   - api-front: publishes the engine API on the host loopback, because a
 //     container on internal networks only cannot publish a port itself.
+//   - e2-stub: a pass-through fixture in the improved engine's E② slot. It admits
+//     every request and issues an attempt ID; it proves wiring, never control.
 //
 // It never logs paths, queries, headers or bodies, never receives the runner
 // signing key and never needs the Docker socket. Only the llm-gateway role may
@@ -22,6 +24,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -41,6 +44,7 @@ const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream ht
 	"       eval-meter -role llm-gateway -backend api|local -listen ADDR -upstream ORIGIN -allow-path /PATH -log-dir PRIVATE_DIR\n" +
 	"                  [api: -provider SLUG -generation-path /PATH -verify-attempts N -verify-interval DURATION, key in " + llmKeyEnv + "]\n" +
 	"       eval-meter -role api-front -listen ADDR -upstream http://ENGINE:PORT\n" +
+	"       eval-meter -role e2-stub -listen ADDR -upstream http://METER:PORT -log-dir PRIVATE_DIR\n" +
 	"       eval-meter -role probe < PLAN_JSON\n" +
 	"       eval-meter -role statfs < {\"paths\":[\"/MOUNT/POINT\"]}  (inside the PID namespace of the measured container)\n"
 
@@ -67,6 +71,7 @@ const (
 	roleGateway  = "llm-gateway"
 	roleAPIFront = "api-front"
 	roleStatfs   = "statfs"
+	roleE2Stub   = "e2-stub"
 )
 
 // Bounds on the gateway's verification so a run cannot wait on it forever.
@@ -95,7 +100,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("eval-meter", flag.ContinueOnError)
 	// The default diagnostics echo argument values, which may include paths.
 	flags.SetOutput(io.Discard)
-	role := flags.String("role", "", "engine, observer, probe, llm-gateway, api-front or statfs")
+	role := flags.String("role", "", "engine, observer, probe, llm-gateway, api-front, e2-stub or statfs")
 	listen := flags.String("listen", "", "listen address")
 	upstream := flags.String("upstream", "", "target origin http://HOST:PORT")
 	logDir := flags.String("log-dir", "", "existing private 0700 directory for evidence")
@@ -141,7 +146,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(stderr, invalidInput)
 		}
 		return serve(*listen, newAPIFront(engine), nil, nil, func() error { return nil }, stderr)
-	case roleEngine, roleObserver:
+	case roleEngine, roleObserver, roleE2Stub:
 	case roleGateway:
 		cfg, ok := gatewayFromFlags(*backend, *upstream, *allowPath, *provider, *sampling, *generationPath,
 			*verifyAttempts, *verifyInterval, key)
@@ -156,7 +161,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if *role == roleGateway {
 		target, ok = gatewayCfg.upstream, true
 	}
-	if !ok || *listen == "" || *logDir == "" || (*role == roleEngine) != (*allowPath == "") {
+	// Only the observer and the gateway take an allow-path; the engine meter and the stub forward everything.
+	needsAllowPath := *role == roleObserver || *role == roleGateway
+	if !ok || *listen == "" || *logDir == "" || needsAllowPath == (*allowPath == "") {
 		return fail(stderr, invalidInput)
 	}
 	if *role == roleObserver && !validAllowPath(*allowPath) {
@@ -191,6 +198,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(stderr, code)
 		}
 		handler, seal, finish = g, g.seal, g.close
+	case roleE2Stub:
+		stub, code := newE2Stub(dir, target, rand.Reader, time.Now)
+		if code != "" {
+			return fail(stderr, code)
+		}
+		handler, finish = stub, stub.close
 	}
 	return serve(*listen, handler, seal, terminate, finish, stderr)
 }

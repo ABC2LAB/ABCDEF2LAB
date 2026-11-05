@@ -493,6 +493,10 @@ func TestRunRejectsInvalidInvocation(t *testing.T) {
 		{"-role", "engine", "-listen", "127.0.0.1:0", "-upstream", "http://target", "-log-dir", path},
 		{"-role", "probe", "-upstream", "http://target:3000"},
 		{"-role", "engine", "extra"},
+		{"-role", "e2-stub", "-listen", "127.0.0.1:0", "-upstream", "http://eval-meter:8080", "-log-dir", path, "-allow-path", "/x"},
+		{"-role", "e2-stub", "-listen", "127.0.0.1:0", "-log-dir", path},
+		{"-role", "e2-stub", "-listen", "127.0.0.1:0", "-upstream", "http://eval-meter:8080"},
+		{"-role", "e2-stub", "-listen", "127.0.0.1:0", "-upstream", "http://eval-meter:8080", "-log-dir", path, "-drain-grace", "1s"},
 	} {
 		var stderr bytes.Buffer
 		if code := run(args, strings.NewReader(""), io.Discard, &stderr); code != 2 || !strings.HasPrefix(stderr.String(), invalidInput) {
