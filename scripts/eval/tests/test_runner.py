@@ -33,11 +33,13 @@ from test_runner_llm import generation as llm_generation
 from test_runner_llm import marker as llm_marker
 
 ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "eval-meter": "meter", "eval-obs": "meter",
-           "eval-llm-gw": "meter", "eval-api": "meter"}
+           "eval-llm-gw": "meter", "eval-api": "meter", "eval-e2": "meter"}
 
 
-def make_spec(side="ours", min_free=None, stream=None):
+def make_spec(side="ours", min_free=None, stream=None, e2=None):
     preflight, payload = configuration(), runner_config()
+    if e2 is not None:
+        payload["e2"]["ours_mode"] = e2
     if stream is not None:
         payload["engine"]["llm_stream"] = stream
     if min_free is not None:  # 하한은 러너 설정과 사전검사 선언(환경 지문 입력)에 같이 바꿔야 한다
@@ -78,6 +80,13 @@ class FakeMeter:
         self.observer_extra = 0
         self.rows_override = None
         self.drained_forwarded = None
+        # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
+        # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
+        self.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
+                        {"seq": 2, "decision": "allowed", "attempt_id": "b" * 32},
+                        {"seq": 3, "decision": "unsupported", "attempt_id": "c" * 32}]
+        self.e2_error = None
+        self.e2_reads = 0
 
     def _forwarded(self):
         return self.pre_forwarded if not self.ports.started else min(self.polls * self.per_poll, 10**6)
@@ -87,13 +96,26 @@ class FakeMeter:
             self.polls += 1
         return self._forwarded()
 
+    def e2_stub_rows(self):
+        self.e2_reads += 1
+        if self.e2_error:
+            raise self.e2_error
+        return [dict(row) for row in self.e2_rows]
+
     def engine_rows(self):
         if self.rows_override is not None:
             return self.rows_override
         n = self._forwarded()
-        return [{"seq": i, "kind": "request", "outcome": "completed"} for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal"},
-                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal"}]
+        # E² 회차면 앞 두 요청이 E²가 붙인 시도 ID를 가진다(나머지는 통과 전용 가짜가 아닌 이상 생기지 않지만, 여기선 단순화).
+        stub = "eval-e2" in self.ports.spec.expected.services
+        ids = [row["attempt_id"] for row in self.e2_rows if row["decision"] == "allowed"] if stub else []
+
+        def attempt(i):
+            return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
+                    else {"attempt_id_state": "absent", "attempt_id": ""})
+        return [{"seq": i, "kind": "request", "outcome": "completed", **attempt(i)} for i in range(1, n + 1)] + \
+               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 1)},
+                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 2)}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -146,6 +168,7 @@ class FakePorts:
         self.on_start = None
         self.ready_calls = 1
         self.post_world = None
+        self.world_stub = None
         self.probe_status = {"pre": PASS, "post": PASS}
         # 구간 전(pre)·후(post) 측정. 마운트 ID가 같아야 같은 회차 저장소를 잰 것이다.
         self.tmpfs_pre = {name: {"mount_id": mount_id, "size_bytes": 512 * MIB, "used_bytes": 0,
@@ -182,7 +205,9 @@ class FakePorts:
             raise self.fail[name]
 
     def world(self):
-        networks, containers = raw_world()
+        # 기대 구성이 E²를 가지면(개선 후 + 가짜 E²) 그 구성의 세계를 만든다. 고장 주입은 world_stub으로 뒤집는다.
+        stub = self.world_stub if self.world_stub is not None else "eval-e2" in self.spec.expected.services
+        networks, containers = raw_world(stub)
         for container in containers:
             container["image"] = self.spec.image_ids[ROLE_OF[container["service"]]]
         return networks, containers
@@ -445,6 +470,50 @@ class TestCompleteRun(unittest.TestCase):
 
 def failing(code_or_name, error=None):
     return lambda p, m, c: p.fail.__setitem__(code_or_name, error or RuntimeError("boom /secret/path"))
+
+
+class TestE2Slot(unittest.TestCase):
+    """개선 후 + 가짜 E² 회차: 망 점검이 E² 배치를 기대하고, E² 컨테이너 이미지도 대조한다."""
+
+    def test_stub_run_completes_with_the_e2_layout(self):
+        result, ports, meter, evidence = run(spec=make_spec(e2="stub"))
+        self.assertEqual(result["status"], COMPLETE)
+        snapshot = evidence.files["pre-checks.json"]["snapshot"]
+        self.assertEqual(set(snapshot["networks"]["e2_net"]["members"]), {"eval-e2", "eval-meter"})
+        self.assertNotIn("eval-meter", snapshot["networks"]["engine_net"]["members"])
+        placement = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "e2_placement"]
+        self.assertEqual([{k: v for k, v in r.items() if k not in ("kind", "seq", "at")} for r in placement],
+                         [{"mode": "stub", "decision_rows": 3, "allowed": 2, "unsupported": 1, "unavailable": 0}])
+        self.assertEqual(meter.e2_reads, 1)
+        self.assertEqual(result["e2_mode"], "stub")  # 서명된 결과에 남는다(세션·채점이 거부할 근거)
+        recon = evidence.files["attempt-reconciliation.json"]
+        # 허용 2건은 계측기에 관측, 미지원 1건은 미관측. 나머지 계측기 행은 ID가 없다(이 가짜 세계의 단순화).
+        self.assertEqual((recon["cells"]["allowed_observed"], recon["cells"]["denied_unobserved"], recon["fixture"]),
+                         (2, 1, True))
+        self.assertTrue(recon["positive_evidence"])
+
+    def test_run_without_e2_records_none_and_never_reads_a_stub_log(self):
+        result, ports, meter, evidence = run()
+        placement = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "e2_placement"]
+        self.assertEqual((placement[0]["mode"], placement[0]["decision_rows"], meter.e2_reads), ("none", None, 0))
+        self.assertEqual(result["e2_mode"], "none")
+
+    def test_unreadable_stub_log_invalidates_the_run(self):
+        from runner_evidence import EvidenceError
+        result, ports, _, evidence = run(lambda p, m, c: setattr(m, "e2_error", EvidenceError("e2_stub_log_invalid")),
+                                         spec=make_spec(e2="stub"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_stub_log_invalid"]))
+
+    def test_stub_expectation_rejects_a_world_without_the_e2(self):
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "world_stub", False), spec=make_spec(e2="stub"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["pre_topology_violation"]))
+
+    def test_e2_container_image_is_checked(self):
+        def swap(networks, containers):
+            next(c for c in containers if c["service"] == "eval-e2")["image"] = "sha256:" + "f" * 64
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "post_world", swap), spec=make_spec(e2="stub"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["post_topology_violation"]))
+        self.assertIn("service.eval-e2: IMAGE_MISMATCH", evidence.files["post-checks.json"]["image_violations"])
 
 
 class TestFailures(unittest.TestCase):
