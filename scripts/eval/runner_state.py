@@ -8,7 +8,9 @@
 - WAL DB(헤더 18·19번째 바이트가 2)는 `-wal`까지 있어야 마지막 커밋이 보인다. 없으면 사본을 쓰지 않는다.
 - 롤백 저널(`-journal`)이 있고 헤더가 0이 아니면 멈춘 순간에 쓰기가 진행 중이었다는 뜻이라 사본을 쓰지 않는다
   (읽기 전용으로는 되돌릴 수 없다). 평가 회차에서는 계측기 봉인·drain 뒤라 대상이 조용해야 정상이다.
-- 데몬 복사 실패와 '파일 없음'은 구분하지 않는다. 본 DB와 WAL의 `-wal`은 필수, 저널은 없으면 없는 것으로 본다.
+- '파일 없음'은 데몬이 그 경로에 파일이 없다고 답한 경우만이다(runner_docker.copy_out). 본 DB와 WAL의 `-wal`은
+  필수다. 저널은 확실히 없을 때만 없는 것으로 보고, 저널 복사가 그 밖의 이유로 실패하면 사본을 쓰지 않는다
+  (쓰기 도중 저널을 못 보고 미커밋 행을 읽을 수 있다, #226 리뷰).
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import os
 import posixpath
 import stat
 from pathlib import Path
+
+from runner_docker import DockerError
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 _HEADER_BYTES = 100
@@ -60,7 +64,10 @@ def _copy_files(docker, container_id: str, path: str, max_bytes: int) -> dict[st
         raise StateCopyError("state_copy_missing")
     if len(main) < _HEADER_BYTES or not main.startswith(SQLITE_HEADER):
         raise StateCopyError("state_copy_not_sqlite")
-    journal = docker.copy_out(container_id, path + "-journal", max_bytes)
+    try:
+        journal = docker.copy_out(container_id, path + "-journal", max_bytes)
+    except DockerError:
+        raise StateCopyError("state_copy_journal_unknown") from None
     if journal and any(journal[:_JOURNAL_HEADER_BYTES]):
         raise StateCopyError("state_copy_hot_journal")
     files = {"": main}

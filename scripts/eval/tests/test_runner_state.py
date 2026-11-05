@@ -9,12 +9,13 @@ import stat
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from runner_docker import CommandResult, Docker, DockerError  # noqa: E402
+from runner_docker import BoundedResult, CommandResult, Docker, DockerError, run_docker_bounded  # noqa: E402
 from runner_state import StateCopyError, copy_sqlite  # noqa: E402
 from state_diff import RUN_KEY_BYTES, snapshot  # noqa: E402
 
@@ -39,8 +40,8 @@ def sqlite_bytes(root: Path, wal: bool = False) -> dict[str, bytes]:
 
 
 class FakeDocker:
-    def __init__(self, files: dict[str, bytes], unpause_fails: bool = False):
-        self.files, self.calls, self.unpause_fails = files, [], unpause_fails
+    def __init__(self, files: dict[str, bytes], unpause_fails: bool = False, failing: frozenset = frozenset()):
+        self.files, self.calls, self.unpause_fails, self.failing = files, [], unpause_fails, failing
 
     def pause(self, cid):
         self.calls.append(("pause", cid))
@@ -52,6 +53,8 @@ class FakeDocker:
 
     def copy_out(self, cid, path, max_bytes):
         self.calls.append(("copy", path))
+        if path in self.failing:
+            raise DockerError("docker_copy_failed")
         return self.files.get(path)
 
 
@@ -103,6 +106,14 @@ class TestCopy(unittest.TestCase):
         with self.assertRaisesRegex(StateCopyError, "state_copy_hot_journal"):
             copy_sqlite(hot, CID, DB, dest, MAX)
         self.assertEqual((hot.calls[-1], os.listdir(dest)), (("unpause", CID), []))
+
+    def test_journal_copy_failure_is_not_absence(self):
+        # 저널 복사가 '없음' 말고 다른 이유로 실패하면, 쓰기 도중 저널을 못 본 채 미커밋 행을 읽을 수 있다(#226 리뷰).
+        docker = FakeDocker({DB: sqlite_bytes(self.root)[""]}, failing=frozenset({DB + "-journal"}))
+        dest = self._fresh()
+        with self.assertRaisesRegex(StateCopyError, "state_copy_journal_unknown"):
+            copy_sqlite(docker, CID, DB, dest, MAX)
+        self.assertEqual((docker.calls[-1], os.listdir(dest)), (("unpause", CID), []))
 
     def test_missing_or_foreign_main_file(self):
         for files, code in (({}, "state_copy_missing"), ({DB: b"not sqlite" * 20}, "state_copy_not_sqlite"),
@@ -171,17 +182,35 @@ class Exec:
         return self.result
 
 
+class Bounded:
+    def __init__(self, result: BoundedResult):
+        self.result, self.calls = result, []
+
+    def __call__(self, args, env, timeout, max_stdout):
+        self.calls.append((list(args), max_stdout))
+        return self.result
+
+
+MISSING = b"Error response from daemon: Could not find the file /app/data/target.sqlite-journal in container c\n"
+
+
 class TestDockerCopyOut(unittest.TestCase):
-    def copy(self, stdout=b"", returncode=0, path=DB, max_bytes=MAX):
-        executor = Exec(CommandResult(returncode, stdout))
-        return Docker(executor, {}, 1).copy_out(CID, path, max_bytes), executor.calls
+    def copy(self, stdout=b"", returncode=0, path=DB, max_bytes=MAX, diagnostic=b""):
+        bounded = Bounded(BoundedResult(returncode, stdout, diagnostic))
+        docker = Docker(Exec(CommandResult(0, b"")), {}, 1, bounded=bounded)
+        return docker.copy_out(CID, path, max_bytes), bounded.calls
 
     def test_one_regular_file_is_returned(self):
         data, calls = self.copy(tar_of(("target.sqlite", b"f", b"abc")))
-        self.assertEqual((data, calls), (b"abc", [["cp", f"{CID}:{DB}", "-"]]))
+        # 읽기 상한은 내용 상한 + tar 여유다(실행기가 그 자리에서 끊는다).
+        self.assertEqual((data, calls), (b"abc", [(["cp", f"{CID}:{DB}", "-"], MAX + 64 * 1024)]))
 
-    def test_failed_copy_is_none(self):
-        self.assertIsNone(self.copy(returncode=1)[0])
+    def test_only_a_daemon_missing_answer_is_absence(self):
+        self.assertIsNone(self.copy(returncode=1, diagnostic=MISSING)[0])
+        self.assertIsNone(self.copy(returncode=1, diagnostic=b"Error: No such container:path: c:/x\n")[0])
+        for diagnostic in (b"", b"permission denied", b"Error response from daemon: context deadline exceeded"):
+            with self.subTest(diagnostic=diagnostic), self.assertRaisesRegex(DockerError, "docker_copy_failed"):
+                self.copy(returncode=1, diagnostic=diagnostic)
 
     def test_archive_must_hold_exactly_the_named_regular_file(self):
         for stdout in (tar_of(("target.sqlite", b"l", b"")), tar_of(("target.sqlite", b"d", b"")),
@@ -190,10 +219,6 @@ class TestDockerCopyOut(unittest.TestCase):
                        tar_of(("target.sqlite", b"f", b"x" * 11)), b"not a tar" * 100):
             with self.subTest(stdout=stdout[:20]), self.assertRaisesRegex(DockerError, "docker_copy_output_invalid"):
                 self.copy(stdout, max_bytes=10)
-
-    def test_output_beyond_the_limit_is_refused(self):
-        with self.assertRaisesRegex(DockerError, "docker_copy_too_large"):
-            self.copy(b"\x00" * (10 + 64 * 1024 + 1), max_bytes=10)
 
     def test_arguments_are_checked_before_calling_docker(self):
         for path in ("relative.sqlite", "/a/../b", "/a/./b", "/a//b", "/a/b c", "/", "", "/a/b/"):
@@ -219,6 +244,43 @@ class TestDockerCopyOut(unittest.TestCase):
             failing.pause(CID)
         with self.assertRaisesRegex(DockerError, "docker_unpause_failed"):
             failing.unpause(CID)
+
+
+class TestBoundedRun(unittest.TestCase):
+    """실제 하위 프로세스로 상한·시간 초과에서 생산자가 끝나기 전에 끊는지 본다(docker 대신 python 생산자)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.marker = Path(self._tmp.name) / "finished"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def producer(self, body: str) -> list[str]:
+        return [sys.executable, "-I", "-c", body]
+
+    def test_output_beyond_the_limit_stops_the_producer_before_eof(self):
+        body = ("import os, sys, time\n"
+                "sys.stdout.buffer.write(b'x' * 65536); sys.stdout.flush()\n"
+                "time.sleep(30)\n"
+                f"open({str(self.marker)!r}, 'w').close()\n")
+        started = time.monotonic()
+        with self.assertRaisesRegex(DockerError, "docker_copy_too_large"):
+            run_docker_bounded([], {}, 20, 1024, program=self.producer(body))
+        self.assertLess(time.monotonic() - started, 10)
+        time.sleep(0.2)
+        self.assertFalse(self.marker.exists())  # 생산자는 끝까지 가지 못하고 종료됐다
+
+    def test_timeout_kills_a_silent_producer(self):
+        started = time.monotonic()
+        with self.assertRaisesRegex(DockerError, "docker_timeout"):
+            run_docker_bounded([], {}, 0.5, 1024, program=self.producer("import time; time.sleep(30)"))
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_result_carries_code_output_and_a_capped_diagnostic(self):
+        body = "import sys; sys.stdout.write('abc'); sys.stderr.write('d' * 10000); sys.exit(3)"
+        result = run_docker_bounded([], {}, 20, 1024, program=self.producer(body))
+        self.assertEqual((result.returncode, result.stdout, len(result.diagnostic)), (3, b"abc", 4096))
 
 
 if __name__ == "__main__":
