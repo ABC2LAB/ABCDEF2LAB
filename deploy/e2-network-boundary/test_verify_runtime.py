@@ -23,7 +23,7 @@ NETWORK_ID = "synthetic-network-id"
 
 def objects():
     tool = {
-        "Id": "synthetic-tool-id",
+        "Id": "a" * 64,
         "State": {"Running": True, "Pid": 1001},
         "Config": {"User": "10001:10001", "Labels": {
             "org.abc2lab.e2.run": RUN, "org.abc2lab.e2.role": "tool",
@@ -38,7 +38,7 @@ def objects():
         "Mounts": [{"Destination": CHANNEL, "Name": VOLUME, "RW": False, "Type": "volume"}],
     }
     sender = {
-        "Id": "synthetic-sender-id",
+        "Id": "b" * 64,
         "State": {"Running": True, "Pid": 1002},
         "Config": {"User": "10002:10002", "Labels": {
             "org.abc2lab.e2.run": RUN, "org.abc2lab.e2.role": "sender",
@@ -50,13 +50,13 @@ def objects():
         "NetworkSettings": {"Networks": {NETWORK: {"NetworkID": NETWORK_ID}}, "Ports": {}},
         "Mounts": [{"Destination": CHANNEL, "Name": VOLUME, "RW": True, "Type": "volume"}],
     }
-    target = {"Id": "synthetic-target-id", "State": {"Running": True}, "NetworkSettings": {
+    target = {"Id": "c" * 64, "State": {"Running": True}, "NetworkSettings": {
         "Networks": {NETWORK: {"NetworkID": NETWORK_ID}}}}
     network = {"Id": NETWORK_ID, "Name": NETWORK, "Internal": True,
                "Driver": "bridge", "Scope": "local", "Attachable": False,
                "Options": {"com.docker.network.bridge.gateway_mode_ipv4": "isolated",
                            "com.docker.network.bridge.gateway_mode_ipv6": "isolated"},
-               "Containers": {"synthetic-sender-id": {}, "synthetic-target-id": {}},
+               "Containers": {"b" * 64: {}, "c" * 64: {}},
                "Labels": {"org.abc2lab.e2.run": RUN}}
     volume = {"Name": VOLUME, "Driver": "local", "Scope": "local", "Options": None,
               "Labels": {"org.abc2lab.e2.run": RUN}}
@@ -205,6 +205,18 @@ class RuntimeChecks(unittest.TestCase):
                        VOLUME, NETWORK, RUN, PROJECT,
                        [self.tool, self.sender, self.target, unrelated, unrelated_target])
         self.assertEqual(issues, [])
+
+    def test_protected_namespace_identity_must_be_inspected_full_id(self):
+        for role in range(3):
+            for bad_id in (None, "tool-name", "f" * 64):
+                with self.subTest(role=role, bad_id=bad_id):
+                    tool, sender, target, network, volume = objects()
+                    protected = [tool, sender, target]
+                    inspected = copy.deepcopy(protected)
+                    protected[role]["Id"] = bad_id
+                    issues = check(tool, sender, target, network, volume,
+                                   VOLUME, NETWORK, RUN, PROJECT, inspected)
+                    self.assertIn("protected_namespace_identity_unresolved", issues)
 
     def test_namespace_name_and_short_id_are_fail_closed(self):
         for field, value in (("NetworkMode", "sender-name"),
