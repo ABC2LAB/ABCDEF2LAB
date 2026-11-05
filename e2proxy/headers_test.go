@@ -270,3 +270,14 @@ func TestClassifiedCredentialsRemainPrivateInJSONAndFormatting(t *testing.T) {
 		t.Fatal("explicit proposal setup failed")
 	}
 }
+
+func TestCredentialWireWhitespaceIsRejectedAtConstruction(t *testing.T) {
+	for _, value := range []string{"private ", " private", "\tprivate", "private\t"} {
+		cfg := coreConfig(t, "http://target.invalid", &coreRecorder{}, 2)
+		cfg.HeaderMode = HeaderProtectedSessionProposal
+		cfg.Rules[0].CredentialHeaders = http.Header{"X-Session": {value}}
+		if execution, err := NewExecution(t.Context(), cfg); err == nil || execution != nil {
+			t.Fatal("credential would be normalized after private-value registration")
+		}
+	}
+}
