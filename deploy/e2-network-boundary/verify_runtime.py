@@ -208,6 +208,8 @@ def check(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any], 
     target_networks = (target.get("NetworkSettings") or {}).get("Networks") or {}
     target_ports = (target.get("NetworkSettings") or {}).get("Ports") or {}
     target_host = target.get("HostConfig") or {}
+    if target_host.get("PidMode") != "" or target_host.get("IpcMode") != "private":
+        issues.append("target_namespace_unapproved")
     if set(target_networks) != {network_name}:
         issues.append("target_has_extra_network")
     if target_host.get("PortBindings") or _published(target_ports):
@@ -278,7 +280,11 @@ def main() -> int:
         print(json.dumps({"status": "FAIL", "issues": ["inspection_unavailable"]}))
         return 1
     print(json.dumps({"status": "PASS" if not issues else "FAIL", "issues": issues,
-                      "daemon": daemon}, sort_keys=True))
+                      "daemon": daemon, "inspected": {
+                          "tool": tool.get("Id"), "sender": sender.get("Id"),
+                          "target": target.get("Id"), "network": network.get("Id"),
+                          "channel_volume": volume.get("Name"),
+                      }}, sort_keys=True))
     return 0 if not issues else 1
 
 

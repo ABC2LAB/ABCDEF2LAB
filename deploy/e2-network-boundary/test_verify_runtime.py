@@ -50,7 +50,9 @@ def objects():
         "NetworkSettings": {"Networks": {NETWORK: {"NetworkID": NETWORK_ID}}, "Ports": {}},
         "Mounts": [{"Destination": CHANNEL, "Name": VOLUME, "RW": True, "Type": "volume"}],
     }
-    target = {"Id": "c" * 64, "State": {"Running": True}, "NetworkSettings": {
+    target = {"Id": "c" * 64, "State": {"Running": True},
+              "HostConfig": {"PidMode": "", "IpcMode": "private"},
+              "NetworkSettings": {
         "Networks": {NETWORK: {"NetworkID": NETWORK_ID}}}}
     network = {"Id": NETWORK_ID, "Name": NETWORK, "Internal": True,
                "Driver": "bridge", "Scope": "local", "Attachable": False,
@@ -387,6 +389,30 @@ class RuntimeChecks(unittest.TestCase):
         self.assertIn("tool_has_host_privilege", issues)
         self.assertIn("sender_namespace_unapproved", issues)
 
+    def test_target_pid_host_namespace_is_rejected(self):
+        self.target["HostConfig"]["PidMode"] = "host"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_pid_container_namespace_is_rejected(self):
+        self.target["HostConfig"]["PidMode"] = "container:foreign"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_ipc_shareable_namespace_is_rejected(self):
+        self.target["HostConfig"]["IpcMode"] = "shareable"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_ipc_container_namespace_is_rejected(self):
+        self.target["HostConfig"]["IpcMode"] = "container:foreign"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_ipc_host_namespace_is_rejected(self):
+        self.target["HostConfig"]["IpcMode"] = "host"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_missing_ipc_namespace_is_rejected(self):
+        self.target["HostConfig"].pop("IpcMode")
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
     def test_wrong_target_network_id_is_rejected(self):
         self.target["NetworkSettings"]["Networks"][NETWORK]["NetworkID"] = "other-network"
         self.assertIn("target_network_membership_mismatch", self.inspect())
@@ -531,6 +557,79 @@ class RuntimeChecks(unittest.TestCase):
             with self.assertRaises(RuntimeError) as raised:
                 verify_runtime._daemon_identity("docker")
         self.assertEqual(str(raised.exception), "docker_daemon_identity_fields")
+
+    def test_main_reports_inspected_ids_and_pass_result(self):
+        import sys
+
+        tool, sender, target, network, volume = objects()
+        inspected = {
+            ("container", "tool"): tool,
+            ("container", "sender"): sender,
+            ("container", "target"): target,
+            ("network", NETWORK): network,
+            ("volume", VOLUME): volume,
+        }
+        daemon = {"ID": "daemon-id", "Name": "daemon", "ServerVersion": "29", "OperatingSystem": "Linux"}
+
+        def inspect(kind, name, docker_cli=None):
+            return inspected[(kind, name)]
+
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", [
+                "verify_runtime.py", "--tool", "tool", "--sender", "sender", "--target", "target",
+                "--network", NETWORK, "--channel-volume", VOLUME, "--run-ref", RUN,
+                "--project", PROJECT,
+            ]), mock.patch.object(verify_runtime, "_inspect", side_effect=inspect), \
+                mock.patch.object(verify_runtime, "_inspect_containers",
+                                  return_value=[tool, sender, target]), \
+                mock.patch.object(verify_runtime, "_daemon_identity", return_value=daemon), \
+                contextlib.redirect_stdout(output):
+            code = verify_runtime.main()
+
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(result["daemon"], daemon)
+        self.assertEqual(result["inspected"], {
+            "tool": tool["Id"],
+            "sender": sender["Id"],
+            "target": target["Id"],
+            "network": network["Id"],
+            "channel_volume": volume["Name"],
+        })
+
+    def test_main_fails_when_complete_container_snapshot_is_missing(self):
+        import sys
+
+        tool, sender, target, network, volume = objects()
+        inspected = {
+            ("container", "tool"): tool,
+            ("container", "sender"): sender,
+            ("container", "target"): target,
+            ("network", NETWORK): network,
+            ("volume", VOLUME): volume,
+        }
+        daemon = {"ID": "daemon-id", "Name": "daemon", "ServerVersion": "29", "OperatingSystem": "Linux"}
+
+        def inspect(kind, name, docker_cli=None):
+            return inspected[(kind, name)]
+
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", [
+                "verify_runtime.py", "--tool", "tool", "--sender", "sender", "--target", "target",
+                "--network", NETWORK, "--channel-volume", VOLUME, "--run-ref", RUN,
+                "--project", PROJECT,
+            ]), mock.patch.object(verify_runtime, "_inspect", side_effect=inspect), \
+                mock.patch.object(verify_runtime, "_inspect_containers", return_value=None), \
+                mock.patch.object(verify_runtime, "_daemon_identity", return_value=daemon), \
+                contextlib.redirect_stdout(output):
+            code = verify_runtime.main()
+
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("container_snapshot_unavailable", result["issues"])
 
     def test_proxy_urlerror_preserves_network_errno(self):
         import errno
