@@ -47,7 +47,11 @@ var (
 	ErrJournalLimit     = errors.New("e2proxy: journal verification limit")
 )
 
-// JournalCheckpoint is a Sync-confirmed prefix. The host must retain it outside
+// JournalCheckpoint is a Sync-confirmed prefix, not a delivered Record ACK.
+// Cancellation after a successful Sync advances this prefix but poisons the
+// Journal and returns an error. Keep it distinct from Execution ACK ordinals and
+// AuditComplete; it cannot certify that the caller accepted the persisted event.
+// The host must retain it outside
 // the journal if rollback or truncation must be detected. It is not permission
 // to send and proves no key ownership, epoch, independent storage, or E3 result.
 type JournalCheckpoint struct {
