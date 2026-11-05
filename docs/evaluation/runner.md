@@ -245,6 +245,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 고정 IP(docker0 `172.17.0.1`)의 가짜 OpenAI 호환 LLM(정해진 짧은 응답, 외부 송신 없음), ours 엔진(웹 UI 미내장 빌드), 시간 예산 90초.
 평가 머신의 결과가 아니며, 평가 머신이 정해지면 같은 항목을 다시 확인한다.
 
+- **상태 차이(11/05, 설정 `state` 켬, baseline e53a79f):** 완료·서명. 구간 이벤트 148건 중 pause/unpause 0건(pre 사본은 구간 전 lookback, post 사본은 이벤트 스트림을 닫은 뒤), 경계 위반 0, `state/pre`·`state/post` 빈 디렉터리, `state-diff.json`이 서명 결과 근거 목록에 있음. 가짜 LLM이라 차이 0(테이블 18, 신호 `Challenges` 102→102).
 - **완료 회차 1회(서명됨):** pre/post 망·publish·이미지·호스트 조건 위반 0, 부정 연결 13개 경로 모두 기대 종류, 관측 요청 3건 =
   러너 호출 수, 작업 생성(요청 본문 해시 기록), 시간 예산 종료, LLM 게이트웨이 2건 전달·seal 뒤 거부 0, findings 0건, 정리 후
   회차 컨테이너·망 0.
