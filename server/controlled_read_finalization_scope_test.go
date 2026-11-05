@@ -45,7 +45,7 @@ func (p *finalizationTestProvider) Acquire(ctx context.Context, request Controll
 }
 
 func TestFinalizationScopeWholeCollector(t *testing.T) {
-	for _, mode := range []string{"success", "source-error", "prepare-error", "source-revoke", "source-cancel", "save-error", "save-revoke", "commit-success-cancel", "ack-lost-cancel"} {
+	for _, mode := range []string{"success", "acquire-failure", "check-failure", "prepare-before-save-check-failure", "source-error", "prepare-error", "source-revoke", "source-cancel", "save-error", "save-revoke", "commit-success-cancel", "ack-lost-cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			in, source := finalizationRecordFixture()
 			checkpoint := auditlog.Checkpoint{Version: auditlog.Version, JournalID: "synthetic", Scope: in.Expected.Scope, Sequence: 4, MAC: hex.EncodeToString(make([]byte, sha256.Size))}
@@ -64,6 +64,7 @@ func TestFinalizationScopeWholeCollector(t *testing.T) {
 			c.request = ControlledReadVerificationRequest{Scope: in.Expected.Scope}
 			c.plan = ControlledReadFindingPlan{Expected: in.Expected, RequireFinalizationScope: true}
 			calls, saves := 0, 0
+			preSaveRejected := false
 			unlocked := func() {
 				t.Helper()
 				if !c.mu.TryLock() {
@@ -74,11 +75,27 @@ func TestFinalizationScopeWholeCollector(t *testing.T) {
 					t.Fatal("lease released before synchronous operation completed")
 				}
 			}
-			scope.check = func(context.Context) error { unlocked(); return nil }
+			scope.check = func(ctx context.Context) error {
+				unlocked()
+				if mode == "check-failure" {
+					return errors.New("synthetic initial authority check failed")
+				}
+				if mode == "prepare-before-save-check-failure" && c.prepared {
+					if ctx.Err() != nil || caller.Err() != nil || leaseCtx.Err() != nil {
+						t.Fatal("pre-save Check denial was masked by context cancellation")
+					}
+					preSaveRejected = true
+					return errors.New("synthetic authority check failed after Prepare")
+				}
+				return nil
+			}
 			c.plan.FinalizationScope = &finalizationTestProvider{acquire: func(_ context.Context, request ControlledReadVerificationRequest, expected evidencebind.Context) (ControlledReadFinalizationScope, error) {
 				unlocked()
 				if request != c.request || expected != in.Expected {
 					t.Fatal("scope binding changed")
+				}
+				if mode == "acquire-failure" {
+					return nil, errors.New("synthetic acquisition failed")
 				}
 				return scope, nil
 			}}
@@ -130,8 +147,18 @@ func TestFinalizationScopeWholeCollector(t *testing.T) {
 				return db.ControlledFindingResult{}, nil
 			}
 			err = c.finalize(caller, ControlledReadVerificationEvidence{Request: c.request, Completed: true, Finalized: true, FinalCheckpoint: checkpoint})
-			if scope.releases != 1 || c.finalizing || calls != 1 {
+			wantReleases, wantSources := 1, 1
+			if mode == "acquire-failure" {
+				wantReleases = 0
+			}
+			if mode == "acquire-failure" || mode == "check-failure" {
+				wantSources = 0
+			}
+			if scope.releases != wantReleases || c.finalizing || calls != wantSources {
 				t.Fatalf("release=%d finalizing=%v sources=%d", scope.releases, c.finalizing, calls)
+			}
+			if mode == "prepare-before-save-check-failure" && !preSaveRejected {
+				t.Fatal("test did not reach the post-Prepare Check")
 			}
 			wantSave := mode == "success" || mode == "save-error" || mode == "save-revoke" || mode == "commit-success-cancel" || mode == "ack-lost-cancel"
 			if (saves == 1) != wantSave {
@@ -156,14 +183,14 @@ func TestFinalizationScopeWholeCollector(t *testing.T) {
 }
 
 func TestFinalizationScopeAdmissionAndCleanup(t *testing.T) {
-	for _, mode := range []string{"missing", "typed-nil-provider", "acquire-failure", "partial-acquire", "nil-scope", "typed-nil-scope", "nil-context", "typed-nil-context", "uncancellable", "revoked", "check-failure", "caller-cancel", "success", "compatibility"} {
+	for _, mode := range []string{"missing", "typed-nil-provider", "typed-nil-provider-compatibility", "acquire-failure", "partial-acquire", "nil-scope", "typed-nil-scope", "nil-context", "typed-nil-context", "uncancellable", "revoked", "check-failure", "caller-cancel", "success", "compatibility"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			lease, revoke := context.WithCancel(ctx)
 			defer revoke()
 			scope := &finalizationTestScope{ctx: lease}
-			c := &controlledFindingCollector{plan: ControlledReadFindingPlan{RequireFinalizationScope: mode != "compatibility"}}
+			c := &controlledFindingCollector{plan: ControlledReadFindingPlan{RequireFinalizationScope: mode != "compatibility" && mode != "typed-nil-provider-compatibility"}}
 			var acquired int
 			if mode != "missing" && mode != "compatibility" {
 				c.plan.FinalizationScope = &finalizationTestProvider{acquire: func(context.Context, ControlledReadVerificationRequest, evidencebind.Context) (ControlledReadFinalizationScope, error) {
@@ -193,7 +220,7 @@ func TestFinalizationScopeAdmissionAndCleanup(t *testing.T) {
 					return scope, nil
 				}}
 			}
-			if mode == "typed-nil-provider" {
+			if mode == "typed-nil-provider" || mode == "typed-nil-provider-compatibility" {
 				c.plan.FinalizationScope = (*finalizationTestProvider)(nil)
 			}
 			operation, check, release, err := c.acquireFinalizationScope(ctx)
@@ -308,6 +335,43 @@ func TestFinalizationScopeIndependentCallerCancellation(t *testing.T) {
 			release()
 			if scope.releases != 1 {
 				t.Fatal("release count")
+			}
+		})
+	}
+}
+
+// The host context is independently owned: caller cancellation must be observed
+// even before the asynchronous AfterFunc reaches the operation context.
+func TestFinalizationScopeIndependentHostCallerCancellation(t *testing.T) {
+	for _, stage := range []string{"before-check", "during-check"} {
+		t.Run(stage, func(t *testing.T) {
+			caller, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			host, releaseHost := context.WithCancel(context.Background())
+			defer releaseHost()
+			scope := &finalizationTestScope{ctx: host}
+			armed := false
+			scope.check = func(context.Context) error {
+				if armed && stage == "during-check" {
+					cancel()
+				}
+				return nil
+			}
+			c := &controlledFindingCollector{plan: ControlledReadFindingPlan{RequireFinalizationScope: true,
+				FinalizationScope: &finalizationTestProvider{acquire: func(context.Context, ControlledReadVerificationRequest, evidencebind.Context) (ControlledReadFinalizationScope, error) {
+					return scope, nil
+				}}}}
+			_, check, release, err := c.acquireFinalizationScope(caller)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			armed = true
+			if stage == "before-check" {
+				cancel()
+			}
+			if err := check(); !errors.Is(err, ErrControlledFindingUnavailable) || host.Err() != nil {
+				t.Fatal("caller cancellation was lost or cancelled independent host authority")
 			}
 		})
 	}

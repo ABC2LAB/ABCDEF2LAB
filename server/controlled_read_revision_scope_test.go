@@ -172,8 +172,12 @@ func TestFinalizationRevisionOwnedPostgres(t *testing.T) {
 			}
 			outer := &finalizationTestScope{ctx: leaseCtx}
 			outer.check = func(operation context.Context) error {
-				assertHeld(operation, "check")
-				if mode == "prepare-before-save-revoke" && outer.checks == 4 {
+				stage := "before-prepare"
+				if c.prepared {
+					stage = "prepare-before-save"
+				}
+				assertHeld(operation, stage)
+				if mode == "prepare-before-save-revoke" && stage == "prepare-before-save" {
 					revoke()
 					return errors.New("synthetic authority revoked before save")
 				}
@@ -314,7 +318,7 @@ func TestFinalizationRevisionOwnedPostgres(t *testing.T) {
 			if mode == "issue-ack-lost" && (revisions != 1 || findings != 0 || errors.Is(err, ErrControlledFindingOutcomeUnknown)) {
 				t.Fatal("revision ACK loss confused with finding write")
 			}
-			if mode == "prepare-before-save-revoke" && (!c.prepared || saves != 0 || revisions != 1) {
+			if mode == "prepare-before-save-revoke" && (!c.prepared || stages["prepare-before-save"] != 1 || saves != 0 || revisions != 1) {
 				t.Fatal("post-Prepare revocation did not prevent save")
 			}
 			if positive || mode == "finding-ack-lost-cancel" {
