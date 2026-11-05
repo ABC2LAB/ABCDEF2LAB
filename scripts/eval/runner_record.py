@@ -94,7 +94,7 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
                   post_probe: list, host_ref: str, pre_listeners: list[str], post_listeners: list[str],
                   allowed: list[dict], boundary_ref: str, policy: str, steps: dict, observer_rows: list[dict],
                   ready_calls: int, observer_path_ref: str, readonly_ref: str, meter: dict, drained: dict,
-                  engine_rows: int, conditions: dict) -> list[dict]:
+                  engine_rows: int, conditions: dict, e2: dict) -> list[dict]:
     """러너가 확인한 근거를 §3.1 행으로 옮긴다. seq는 이 함수가 붙인다."""
     network_ids = sorted(n["id"] for n in pre["networks"].values())
     rows: list[dict] = [
@@ -125,6 +125,8 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
         {"kind": "engine_meter_summary", "at": steps["drained"]["at"],
          "forwarded_requests": meter["forwarded_requests"], "rejected_after_seal": meter["rejected_after_seal"],
          "forced_closed_streams": meter["forced_closed_streams"], "log_rows": engine_rows, "sequence_complete": True},
+        # 개선 후 회차의 E② 자리(프로토콜 §2). none이면 건수 없음, stub이면 가짜 E² 결정 행 건수(통제 증명 아님).
+        {"kind": "e2_placement", "at": steps["drained"]["at"], **e2},
         _network_snapshot("post", post_check_at, post),
         _host_condition("post", post_check_at, host_ref, post, post_listeners, allowed),
     ]
