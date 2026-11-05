@@ -17,6 +17,7 @@
 - socket·socketpair의 family는 AF_UNIX/AF_INET/AF_INET6만 허용한다.
   namespace가 격리하지 않는 AF_VSOCK과 나머지 family는 syscall 단계에서 거부한다.
   io_uring_setup/enter/register도 거부해 별도 socket 생성 경로를 열지 않는다.
+  family만 검사하며 socket type·protocol 제한은 별도 network namespace와 제거된 capability에 의존한다.
   허용된 INET family의 실제 대상 직통 차단은 비어 있는 network namespace가 담당한다.
 - LivePeer의 SO_PEERCRED PID 대조에는 launcher와 프록시의 같은 PID namespace가 필요하다.
   별도 E² 서비스 배치에서의 PID 결속 방식은 아직 결정·수용되지 않았다.
