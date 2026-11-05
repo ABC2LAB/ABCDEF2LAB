@@ -137,11 +137,25 @@ class TestMeterFiles(unittest.TestCase):
             "sequence gap": [self.stub_row(1), self.stub_row(3)],
             "caller flag not bool": [self.stub_row(1, caller_attempt=1)],
             "extra field": [self.stub_row(1, path="/x")],
+            "method not a string": [self.stub_row(1, method={})],
+            "method empty": [self.stub_row(1, method="")],
+            "method with a space": [self.stub_row(1, method="GE T")],
+            "time not a string": [self.stub_row(1, decided_at=123)],
+            "time with an offset": [self.stub_row(1, decided_at="2026-11-05T09:00:00+09:00")],
+            "time without seconds": [self.stub_row(1, decided_at="2026-11-05T00:00Z")],
         }
         for name, rows in cases.items():
             with self.subTest(name=name):
                 self.stub_rows(*rows)
                 with self.assertRaises(EvidenceError):
+                    self.meter.e2_stub_summary()
+        # 최종 읽기에서는 개행으로 끝나지 않은 꼬리(잘린 행)를 거부한다. 진행 중 로그처럼 버리면 잘린 행을 빼고 센다.
+        good = json.dumps(self.stub_row(1))
+        for name, text in (("only row without newline", good),
+                           ("truncated second row", good + "\n" + '{"seq":2,"fixture":true')):
+            with self.subTest(name=name):
+                self.write_e2(text)
+                with self.assertRaisesRegex(EvidenceError, "e2_stub_log_invalid"):
                     self.meter.e2_stub_summary()
         (self.e2_dir / "e2-stub-decisions.jsonl").unlink()
         with self.assertRaisesRegex(EvidenceError, "e2_stub_log_missing"):
