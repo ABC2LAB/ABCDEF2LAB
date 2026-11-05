@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -327,7 +328,6 @@ func (p *Proxy) forward(ctx context.Context, conn net.Conn, req *http.Request) {
 		writeProxyFailure(conn, http.StatusBadRequest)
 		return
 	}
-	stripProxyHeaders(req.Header)
 	req.RequestURI = ""
 	req.Close = true
 	resp, _, err := p.call.Do(ctx, req)
@@ -341,7 +341,7 @@ func (p *Proxy) forward(ctx context.Context, conn net.Conn, req *http.Request) {
 	if resp.Body != nil {
 		defer resp.Body.Close()
 	}
-	stripProxyHeaders(resp.Header)
+	stripResponseHopHeaders(resp.Header)
 	resp.Close = true
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
@@ -349,26 +349,20 @@ func (p *Proxy) forward(ctx context.Context, conn net.Conn, req *http.Request) {
 	resp.Header.Set("Connection", "close")
 	// The core has already bounded and observed the upstream body. A client
 	// write error cannot turn its target response into a policy denial.
-	_ = resp.Write(conn)
+	_ = writeProxyResponse(conn, resp)
 }
 
 func (p *Proxy) reject(ctx context.Context, method string) {
 	_, _ = p.call.Reject(ctx, method, Unsupported)
 }
 
-func stripProxyHeaders(headers http.Header) {
+func stripResponseHopHeaders(headers http.Header) {
 	for _, value := range headers.Values("Connection") {
 		for _, named := range strings.Split(value, ",") {
 			headers.Del(strings.TrimSpace(named))
 		}
 	}
-	for key := range headers {
-		lower := strings.ToLower(key)
-		if strings.HasPrefix(lower, "proxy-") || strings.HasPrefix(lower, "x-e2-") || strings.HasPrefix(lower, "x-abc2lab-e2-") {
-			delete(headers, key)
-		}
-	}
-	for _, key := range []string{"Connection", "Keep-Alive", "TE", "Trailer",
+	for _, key := range []string{"Proxy-Authorization", "Proxy-Authenticate", "Proxy-Connection", "Connection", "Keep-Alive", "TE", "Trailer",
 		"Transfer-Encoding", "Upgrade"} {
 		delete(headers, key)
 	}
@@ -520,3 +514,19 @@ func (Proxy) String() string         { return "e2proxy.Proxy[protected]" }
 func (Proxy) GoString() string       { return "e2proxy.Proxy[protected]" }
 func (ProxyConfig) String() string   { return "e2proxy.ProxyConfig[protected]" }
 func (ProxyConfig) GoString() string { return "e2proxy.ProxyConfig[protected]" }
+
+// Response.Write suppresses 304 Content-Length metadata because it has no body.
+// Preserve that selected-representation length without changing any content.
+func writeProxyResponse(conn net.Conn, response *http.Response) error {
+	if response.StatusCode == http.StatusNotModified && headerPresent(response.Header, "Content-Length") {
+		if _, err := fmt.Fprintf(conn, "%s %s\r\n", response.Proto, response.Status); err != nil {
+			return err
+		}
+		if err := response.Header.Write(conn); err != nil {
+			return err
+		}
+		_, err := io.WriteString(conn, "\r\n")
+		return err
+	}
+	return response.Write(conn)
+}
