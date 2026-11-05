@@ -125,6 +125,9 @@ _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_se
 MAX_RUN_SECONDS = 3600
 # 계측기(cmd/eval-meter maxDrainGrace)가 받는 봉인 후 유예 상한과 같다(테스트로 고정).
 MAX_DRAIN_GRACE_SECONDS = 600
+# 게이트웨이(cmd/eval-meter sampling.go maxTemperature)가 받는 temperature 상한. 프로파일은 0 이상이면 받으므로
+# 회차를 만들 때 여기서 먼저 걸러 compose 기동 뒤 게이트웨이 거부로 끝나지 않게 한다(drift 테스트).
+MAX_GATEWAY_TEMPERATURE = 2
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 
 
@@ -543,6 +546,7 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     }
     if llm["backend"] == "api":
         env["EVAL_LLM_PROVIDER"] = llm["provider"]
+        env["EVAL_LLM_SAMPLING"] = gateway_sampling(declared, side)
         env["EVAL_LLM_GENERATION_PATH"] = config.llm_gateway["generation_path"]
         env["EVAL_LLM_VERIFY_ATTEMPTS"] = str(config.llm_gateway["verify_attempts"])
         env["EVAL_LLM_VERIFY_INTERVAL"] = f"{config.llm_gateway['verify_interval_seconds']}s"
@@ -556,6 +560,14 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
                    llm=llm, target_image=target_image, engine_image=engine_image, images=images,
                    meter_port=origin.port, compose_files=tuple(files),
                    secrets_env_file=config.secrets_env_file, compose_env=env)
+
+
+def gateway_sampling(declared: dict, side: str) -> str:
+    """선언의 temperature·sampling·seed를 게이트웨이 -sampling 인자로 만든다. 엔진은 샘플링을 보내지 않는다(§6)."""
+    if declared["temperature"] > MAX_GATEWAY_TEMPERATURE:
+        raise RunnerConfigError([f"preflight.{side}.temperature: ABOVE_GATEWAY_LIMIT"])
+    values = {"temperature": declared["temperature"], **declared["sampling"], "seed": declared["seed"]}
+    return json.dumps(values, separators=(",", ":"))
 
 
 def _open_private_dir(path: Path) -> int:

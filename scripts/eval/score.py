@@ -244,6 +244,8 @@ def build_report(
     seen_proofs: set[str] = set()
     versions: set[str] = set()
     drain_policies: set[tuple[int, int]] = set()
+    run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set(),
+                                           "LLM 스트리밍": set()}
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs
@@ -270,6 +272,13 @@ def build_report(
             if len(drain_policies) > 1:
                 raise ComparabilityError(f"drain 유예·정착 대기 정책 불일치 {sorted(drain_policies)} — "
                                          "같은 정책끼리만 비교(프로토콜 §2)")
+        # 엔진 실행 설정·게이트웨이가 실제 넣은 샘플링·머신이 회차마다 같아야 같은 조건이다(프로토콜 §5.1·§6).
+        if inputs.run_conditions is not None:
+            for (label, seen), value in zip(run_conditions.items(), inputs.run_conditions):
+                seen.add(value)
+                if len(seen) > 1:
+                    raise ComparabilityError(f"회차 조건 불일치({label}) — 같은 실행 설정·샘플링·머신끼리만 비교"
+                                             "(프로토콜 §5.1·§6)")
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 

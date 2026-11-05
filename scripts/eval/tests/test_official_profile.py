@@ -15,6 +15,7 @@ PROFILES = Path(__file__).resolve().parents[3] / "docs/evaluation/profiles"
 OFFICIAL = PROFILES / "official-35b.json"
 EVIDENCE = PROFILES / "evidence/openrouter-endpoints-qwen3.6-35b-a3b-20261104.json"
 CARD = PROFILES / "evidence/qwen3.6-35b-a3b-model-card-20261104.json"
+PARAMS = PROFILES / "evidence/openrouter-endpoint-params-qwen3.6-35b-a3b-20261104.json"
 
 
 class TestOfficialProfile(unittest.TestCase):
@@ -22,8 +23,8 @@ class TestOfficialProfile(unittest.TestCase):
         self.profile = json.loads(OFFICIAL.read_text(encoding="utf-8"))
         self.evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
 
-    def test_declaration_passes_the_v4_validator(self):
-        self.assertEqual(generate_fingerprints(self.profile).format, "abc2lab-eval-profile-v4")
+    def test_declaration_passes_the_v5_validator(self):
+        self.assertEqual(generate_fingerprints(self.profile).format, "abc2lab-eval-profile-v5")
 
     def test_provider_is_the_single_endpoint_found_at_pin_time(self):
         llm = self.profile["environment"]["llm"]
@@ -41,11 +42,26 @@ class TestOfficialProfile(unittest.TestCase):
         chosen = card["recommended"][card["chosen_mode"]]
         self.assertEqual(card["chosen"], chosen)
         environment = self.profile["environment"]
-        # 프로파일 v4에 있는 두 값은 카드 권장값·고정 seed와 같아야 한다. temperature 0(greedy)으로 돌아가지 않는다.
+        # 일곱 값 전부 카드 권장값·고정 seed와 같아야 한다. temperature 0(greedy)으로 돌아가지 않는다.
         self.assertEqual((environment["temperature"], environment["seed"]), (chosen["temperature"], card["seed"]))
+        self.assertEqual(environment["sampling"], {k: v for k, v in chosen.items() if k != "temperature"})
         self.assertNotEqual(environment["temperature"], 0)
         self.assertTrue(card["provider_supports"] and all(card["provider_supports"].values()))
         self.assertEqual(set(card["provider_supports"]), {*chosen, "seed"})
+
+    def test_pinned_endpoint_lists_every_parameter_the_gateway_sends(self):
+        # 게이트웨이가 require_parameters:true를 넣으므로, 지원 목록에 없는 값이 하나라도 있으면 요청이 실패한다(§6).
+        params = json.loads(PARAMS.read_text(encoding="utf-8"))
+        environment = self.profile["environment"]
+        self.assertEqual((params["model"], params["pinned_slug"]),
+                         (environment["llm"]["model"], environment["llm"]["provider"]))
+        sent = {"temperature", "seed", *environment["sampling"]}
+        self.assertEqual(set(params["pinned_parameters"]), sent)
+        self.assertEqual(len(params["matched_endpoints"]), 1)
+        endpoint = params["matched_endpoints"][0]
+        self.assertEqual(endpoint["tag"], environment["llm"]["provider"])
+        self.assertTrue(sent <= set(endpoint["supported_parameters"]))
+        self.assertTrue(endpoint["pinned_parameters_supported"])
 
     def test_target_image_is_pinned_by_digest_and_fixture_is_anonymous(self):
         self.assertRegex(self.profile["environment"]["target_image"], r"^bkimminich/juice-shop:v15\.0\.0@sha256:[0-9a-f]{64}$")

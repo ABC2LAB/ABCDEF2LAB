@@ -33,6 +33,8 @@ def expected_digests(payload):
     scope_digest = digest("scope", canonical_scope)
     # These tests vary only scope; numeric strings are independent literals for the fixed fixture.
     environment = dict(payload["environment"], temperature="0", time_budget_seconds="1200",
+                       sampling={"top_p": "0.95", "top_k": 20, "min_p": "0", "presence_penalty": "1.5",
+                                 "repetition_penalty": "1"},
                        scope_fingerprint=scope_digest)
     return scope_digest, digest("environment", environment)
 

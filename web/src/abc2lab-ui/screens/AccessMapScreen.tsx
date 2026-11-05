@@ -1,9 +1,21 @@
 import { useMemo } from "react";
+
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
-import { Pill, Strong, Sub } from "../components/ui";
+import { Pill, Strong } from "../components/ui";
 import { useApiResource } from "../lib/api";
-import { type AccessDecision, DECISION_CELL, DECISION_LABEL, getAccessMap } from "../lib/kg";
+import {
+  type AccessDecision,
+  buildCellResolver,
+  countDecisions,
+  DECISION_BADGE,
+  DECISION_CELL,
+  DECISION_LABEL,
+  getAccessMap,
+  HELD_DECISIONS,
+  hasProjectionIssues,
+  mapProjectionIssues,
+} from "../lib/kg";
 import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
 
@@ -16,17 +28,31 @@ const noticeBox = {
   padding: "10px 12px",
   marginBottom: 14,
 } as const;
+const warnBox = {
+  fontSize: 13,
+  color: "var(--warn)",
+  background: "var(--warn-weak)",
+  border: "1px solid var(--warn-border)",
+  borderRadius: 6,
+  padding: "10px 12px",
+  marginBottom: 12,
+} as const;
 
 /** 범례 점 색: 셀 판정 → dot 스타일 */
 const DOT_STYLE: Record<AccessDecision, React.CSSProperties> = {
   "allow-ok": { background: "var(--teal)" },
   "deny-ok": { background: "var(--line-2)" },
   vuln: { background: "var(--danger)" },
+  suspected: { background: "var(--viol)" },
   unknown: { background: "var(--warn)" },
   untested: { background: "transparent", border: "1px dashed var(--line-2)" },
+  blank: { background: "var(--surface-2)", border: "1px solid var(--line-2)" },
   na: { background: "var(--faint)" },
 };
-const LEGEND_ORDER: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "unknown", "untested"];
+const LEGEND_ORDER: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "suspected", "unknown", "untested", "blank"];
+
+/** 칸 본문 — 확정/의심은 색이 1차 구분, 본문도 서로 다른 말로(§4.2(7)·N7). 나머지는 긴 라벨. */
+const CELL_BODY: Partial<Record<AccessDecision, string>> = { vuln: "취약", suspected: "의심" };
 
 /** ===== 접근통제 지도 (KG) ===== */
 export default function AccessMapScreen() {
@@ -34,23 +60,12 @@ export default function AccessMapScreen() {
   const { taskId } = useSelection();
   const { data, loading, error } = useApiResource(() => getAccessMap(taskId), [taskId]);
 
-  const cellIndex = useMemo(() => {
-    const m = new Map<string, { decision: AccessDecision; note?: string }>();
-    for (const c of data?.cells ?? []) m.set(`${c.principalRef}|${c.resourceId}`, c);
-    return m;
-  }, [data]);
-
-  const counts = useMemo(() => {
-    let vuln = 0;
-    let unknown = 0;
-    let untested = 0;
-    for (const c of data?.cells ?? []) {
-      if (c.decision === "vuln") vuln += 1;
-      else if (c.decision === "unknown") unknown += 1;
-      else if (c.decision === "untested") untested += 1;
-    }
-    return { vuln, unknown, untested };
-  }, [data]);
+  // 셀 선택·fail-closed 규칙은 공유 리졸버(lib/kg)로 일원화. UI 는 조합·판정하지 않는다(§4.2(1)).
+  const resolve = useMemo(() => buildCellResolver(data?.cells ?? []), [data]);
+  // 헤드라인 칩은 판정 축(수평 H)만 센다 — 수직(V)은 후속 미리보기라 확정 수에 섞지 않는다(§4.2(4)).
+  const counts = useMemo(() => (data ? countDecisions(data, "H") : null), [data]);
+  // projection 무결성(격자 밖 레코드·중복 선언) — 조용히 버리지 않고 경고로 노출(§4.2 N4).
+  const issues = useMemo(() => (data ? mapProjectionIssues(data) : null), [data]);
 
   return (
     <Screen id="access-map">
@@ -71,8 +86,8 @@ export default function AccessMapScreen() {
 
           {data?.mock && (
             <div style={noticeBox}>
-              <Strong>프로토타입</Strong> — 소유·권한 KG 저장소·API는 아직 미구현(kg-policy §5). 아래는 계약 shape를
-              따른 <Strong>예시 데이터</Strong>로, 실 KG 연동 시 그대로 실데이터가 채워져요.{" "}
+              <Strong>프로토타입</Strong> — 소유·권한 KG 저장소·서버 projection API는 아직 미구현(kg-policy §4.2(1)).
+              아래는 계약 shape를 따른 <Strong>예시 데이터</Strong>로, 실 KG 연동 시 그대로 실데이터가 채워져요.{" "}
               <Strong>v0.1 = 수평(교차 계정) 판정</Strong>, 수직(역할 레벨)은 후속.
             </div>
           )}
@@ -85,11 +100,21 @@ export default function AccessMapScreen() {
             </div>
           ) : (
             <>
-              <div className="search" style={{ gap: 8, marginBottom: 12 }}>
-                {counts.vuln > 0 && <Pill tone="warn">취약 {counts.vuln}</Pill>}
-                {counts.unknown > 0 && <Pill tone="warn">판정 불가 {counts.unknown}</Pill>}
-                {counts.untested > 0 && <Pill tone="muted">미검사 {counts.untested}</Pill>}
-              </div>
+              {issues && hasProjectionIssues(issues) && (
+                <div style={warnBox}>
+                  projection 무결성 경고 — 격자 밖 레코드 {issues.outOfGrid}건, 중복 신원 {issues.dupPrincipals}건, 중복
+                  자원 {issues.dupResources}건. 조용히 버리지 않고 표시해요(fail-closed). 실 KG 연동 시 어댑터가 격자와
+                  일치해야 해요.
+                </div>
+              )}
+              {counts && (
+                <div className="search" style={{ gap: 8, marginBottom: 12 }}>
+                  {counts.vuln > 0 && <Pill tone="warn">취약 확정 {counts.vuln}</Pill>}
+                  {counts.suspected > 0 && <Pill tone="warn">취약 의심 {counts.suspected}</Pill>}
+                  {counts.unknown > 0 && <Pill tone="warn">판정 불가 {counts.unknown}</Pill>}
+                  {counts.untested > 0 && <Pill tone="muted">미검사 {counts.untested}</Pill>}
+                </div>
+              )}
 
               <div className="scrollx">
                 <table className="matrix">
@@ -117,16 +142,21 @@ export default function AccessMapScreen() {
                           </span>
                         </td>
                         {data.resources.map((r) => {
-                          const cell = cellIndex.get(`${p.ref}|${r.id}`);
-                          const decision: AccessDecision = cell?.decision ?? "untested";
+                          const { decision, note, projectionError } = resolve(p.ref, r.id);
+                          const badge = DECISION_BADGE[decision];
+                          const title = projectionError
+                            ? `판정 불가(projection): ${projectionError}`
+                            : note || DECISION_LABEL[decision];
                           return (
                             <td
                               key={r.id}
                               className={DECISION_CELL[decision]}
-                              title={cell?.note || DECISION_LABEL[decision]}
+                              title={title}
                               style={p.axis === "V" ? { opacity: 0.6 } : undefined}
                             >
-                              {DECISION_LABEL[decision]}
+                              {/* 확정/의심은 색으로 1차 구분하고 배지로 보강(§4.2(7)). 본문도 서로 다른 말(취약/의심). */}
+                              <span>{CELL_BODY[decision] ?? DECISION_LABEL[decision]}</span>
+                              {badge && <span className="cell-badge">{badge}</span>}
                             </td>
                           );
                         })}
@@ -141,14 +171,16 @@ export default function AccessMapScreen() {
                   <span key={d}>
                     <span className="dot" style={DOT_STYLE[d]} />
                     {DECISION_LABEL[d]}
+                    {HELD_DECISIONS.has(d) ? " (보류)" : ""}
                   </span>
                 ))}
               </div>
 
               <div className="hint">
-                <Strong>미검사·판정 불가·취약는 서로 다른 칸</Strong>이에요. 안 찔러본 칸(미검사)이나 정책을 못 푼
-                칸(판정 불가)을 <Strong>“취약 없음”으로 칠하지 않아요</Strong> — 조회 안 함 ≠ 없음(fail-closed,
-                kg-policy §4·절대규칙 5).
+                <Strong>확정·의심·판정 불가·미검사·기록 없음은 서로 다른 칸</Strong>이에요. 의심(SUSPECTED)은 확정으로
+                올리지 않고, 안 찔러본 칸(미검사)·근거가 전무한 칸(기록 없음)·정책을 못 푼 칸(판정 불가)을{" "}
+                <Strong>“취약 없음”으로 칠하지 않아요</Strong> — 조회 안 함 ≠ 없음(fail-closed, kg-policy §4.2·절대규칙
+                5). 정상 차단은 앱 인가 차단 관측 계약 전까지 <Strong>보류</Strong>예요(§4.2(3)).
               </div>
             </>
           )}

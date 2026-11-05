@@ -41,6 +41,7 @@ _ENV_CHANGES = {
     "worker_count": 2, "time_budget_seconds": 600, "request_budget": 101,
     "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"},
     "run_drain": {"grace_seconds": 31, "settle_seconds": 2},
+    "sampling": {"top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0},
 }
 _SCOPE_CHANGES = {"target_origin": "http://eval-meter:8081", "methods": ["GET"],
                   "paths": ["/api/records/{object}"], "vuln_classes": ["idor"]}
@@ -183,7 +184,7 @@ class TestProfilePreflightProperties(unittest.TestCase):
             with self.subTest(family=family, field=field, flags=flags, keys=reverse, side=side):
                 self.assert_one_sided_change(family, field, _wire(changed, flags, reverse), side)
                 cases += 1
-        self.assertEqual(cases, 448)  # 변경 16종(환경 9·scope 4·fixture 3) × 순서 7 × 키 순서 2 × 쪽 2
+        self.assertEqual(cases, 476)  # 변경 17종(환경 10·scope 4·fixture 3) × 순서 7 × 키 순서 2 × 쪽 2
 
     def test_equal_changes_on_both_sides_remain_comparable(self):
         cases = 0
@@ -195,7 +196,7 @@ class TestProfilePreflightProperties(unittest.TestCase):
                 self.assertEqual(_digest(left), _digest(right))
                 self.assert_passes(_pair(left, right))
                 cases += 1
-        self.assertEqual(cases, 224)
+        self.assertEqual(cases, 238)
 
     def test_digest_preserves_decimal_changes_hidden_by_float_controls(self):
         literals = ("0.1234567890123456789012345678901", "0.1234567890123456789012345678902")

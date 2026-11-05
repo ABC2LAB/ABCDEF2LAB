@@ -53,9 +53,10 @@ type gatewayConfig struct {
 	backend        string
 	upstream       *url.URL
 	allowPath      string
-	provider       string // api: full provider slug pinned on every request
-	generationPath string // api: generation stats endpoint used to verify the pin
-	key            string // api only; never written anywhere
+	provider       string          // api: full provider slug pinned on every request
+	sampling       *samplingParams // api: sampling parameters pinned on every request
+	generationPath string          // api: generation stats endpoint used to verify the pin
+	key            string          // api only; never written anywhere
 	verifyAttempts int
 	verifyInterval time.Duration
 }
@@ -93,6 +94,7 @@ type verifiedMarker struct {
 	Role              string             `json:"role"`
 	Backend           string             `json:"backend"`
 	Provider          string             `json:"provider"`
+	Sampling          *samplingParams    `json:"sampling"` // applied values; null for local
 	SealedAt          string             `json:"sealed_at"`
 	DrainedAt         string             `json:"drained_at"`
 	VerifiedAt        string             `json:"verified_at"`
@@ -315,12 +317,12 @@ func (g *llmGateway) prepare(r *http.Request) ([]byte, int, string) {
 	if g.cfg.backend == backendLocal {
 		return body, 0, ""
 	}
-	return pinProvider(body, open, g.cfg.provider), 0, ""
+	return pinRequest(body, open, g.cfg.provider, g.cfg.sampling), 0, ""
 }
 
 // checkObject accepts one JSON object with unique top-level keys and no
-// "provider" key (an engine-chosen route would mix conditions with the pin),
-// and returns the offset of its opening brace.
+// "provider" or sampling key (an engine-chosen route or sampling value would mix
+// conditions with the pin), and returns the offset of its opening brace.
 func checkObject(body []byte) (int, error) {
 	open := bytes.IndexFunc(body, func(r rune) bool { return r != ' ' && r != '\t' && r != '\n' && r != '\r' })
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -331,7 +333,7 @@ func checkObject(body []byte) (int, error) {
 	for dec.More() {
 		tok, err := dec.Token()
 		key, ok := tok.(string)
-		if err != nil || !ok || seen[key] || key == "provider" {
+		if err != nil || !ok || seen[key] || key == "provider" || samplingKeys[key] {
 			return 0, errBadBody
 		}
 		seen[key] = true
@@ -349,14 +351,23 @@ func checkObject(body []byte) (int, error) {
 	return open, nil
 }
 
-// pinProvider inserts the routing object right after the opening brace so the
-// rest of the engine's body reaches the provider byte for byte.
-func pinProvider(body []byte, open int, slug string) []byte {
+// pinRequest inserts the sampling parameters and the routing object right after
+// the opening brace so the rest of the engine's body reaches the provider byte
+// for byte. require_parameters makes the router refuse the request when the
+// pinned provider does not support a parameter in it; without it the router
+// drops that parameter silently, and the applied values in the verified marker
+// would no longer be what the provider used.
+func pinRequest(body []byte, open int, slug string, sampling *samplingParams) []byte {
 	pin, _ := json.Marshal(struct {
-		Order          []string `json:"order"`
-		AllowFallbacks bool     `json:"allow_fallbacks"`
-	}{Order: []string{slug}, AllowFallbacks: false})
-	field := append([]byte(`"provider":`), pin...)
+		Order             []string `json:"order"`
+		AllowFallbacks    bool     `json:"allow_fallbacks"`
+		RequireParameters bool     `json:"require_parameters"`
+	}{Order: []string{slug}, AllowFallbacks: false, RequireParameters: true})
+	var field []byte
+	if sampling != nil {
+		field = append(sampling.fields(), ',')
+	}
+	field = append(append(field, `"provider":`...), pin...)
 	rest := bytes.TrimLeft(body[open+1:], " \t\r\n")
 	if len(rest) == 0 || rest[0] != '}' {
 		field = append(field, ',')
@@ -484,9 +495,9 @@ func (g *llmGateway) verify(ids []string) error {
 		g.logFailed = true
 	}
 	return writeMarker(g.dir, llmVerifiedName, verifiedMarker{
-		Role: roleGateway, Backend: g.cfg.backend, Provider: g.cfg.provider, SealedAt: stamp(g.sealedAt),
-		DrainedAt: stamp(g.drainedAt), VerifiedAt: stamp(g.now()), Forwarded: g.forwarded,
-		UpstreamErrors: g.upstreamErrors, Rejected: g.rejected,
+		Role: roleGateway, Backend: g.cfg.backend, Provider: g.cfg.provider, Sampling: g.cfg.sampling,
+		SealedAt: stamp(g.sealedAt), DrainedAt: stamp(g.drainedAt), VerifiedAt: stamp(g.now()),
+		Forwarded: g.forwarded, UpstreamErrors: g.upstreamErrors, Rejected: g.rejected,
 		RejectedAfterSeal: g.rejectedAfterSeal, CancelledBySeal: g.cancelledBySeal, MissingIDs: g.missingIDs,
 		Generations: results, LogComplete: !g.logFailed,
 	})

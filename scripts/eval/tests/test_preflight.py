@@ -41,6 +41,7 @@ def configuration():
         "request_budget": 100,
         "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
         "run_drain": {"grace_seconds": 30, "settle_seconds": 2},
+        "sampling": {"top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0},
         "fixture_fingerprint": "a" * 64,
         "environment_fingerprint": "b" * 64,
         "scope_fingerprint": "c" * 64,
@@ -106,6 +107,7 @@ class TestCheckPreflight(unittest.TestCase):
             "worker_count": 2, "time_budget_seconds": 600, "request_budget": 200,
             "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"},
             "run_drain": {"grace_seconds": 60, "settle_seconds": 2},
+            "sampling": {"top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0},
             "fixture_fingerprint": "d" * 64, "environment_fingerprint": "e" * 64,
             "scope_fingerprint": "f" * 64,
         }

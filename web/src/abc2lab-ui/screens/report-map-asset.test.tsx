@@ -64,7 +64,16 @@ describe("report access map tab", () => {
     show();
     fireEvent.click(screen.getByRole("button", { name: "접근통제 지도" }));
     const table = await screen.findByRole("table");
-    expect(within(table).getAllByText("취약").length).toBeGreaterThan(0);
+    // 확정(vuln)/의심(suspected)은 서로 다른 셀 클래스·라벨로 구분한다(색이 1차, §4.2(7)).
+    const confirmed = within(table).getAllByText("확정");
+    const suspected = within(table).getAllByText("의심");
+    expect(confirmed.length).toBeGreaterThan(0);
+    expect(suspected.length).toBeGreaterThan(0);
+    const confCell = confirmed[0].closest("td");
+    const susCell = suspected[0].closest("td");
+    expect(confCell).toHaveClass("cell-vuln");
+    expect(susCell).toHaveClass("cell-suspected");
+    expect(confCell?.className).not.toBe(susCell?.className);
     expect(screen.getByText("예시 데이터예요. 소유·권한 KG 연동 후 실제 결과로 채워져요.")).toBeVisible();
     // 예시 데이터에 판정 불가 칸이 있으니 범례에도 나온다
     expect(screen.getByText("판정 불가", { selector: ".leg span" })).toBeVisible();

@@ -40,6 +40,7 @@ _ROW_FIELDS = {
                              "sequence_complete"},
     "drain": {"engine_end", "sealed_at", "drained_at", "inflight", "grace_seconds", "settle_seconds",
               "forced_cancelled", "settle_applied_seconds"},
+    "run_conditions": {"engine_settings_sha256", "workers", "sampling", "host", "machine_id_sha256", "llm_stream"},
 }
 _EVENT_FIELDS = frozenset({"id", "challenge", "actor", "execution_id", "observed_at", "sequence", "basis",
                            "isolation_proof_sha256"})
@@ -207,7 +208,38 @@ def check_isolation(receipt: dict, steps: dict[str, tuple[datetime, int]], artif
     drained_at = _time(drain["drained_at"], "isolation_evidence.drain.drained_at")
     if not sealed_at <= drained_at <= steps["drained"][0] <= post_at:
         raise IsolationError("isolation_evidence.drain: 봉인 ≤ drain 완료 ≤ timeline drained ≤ post 관측이어야 함")
+    _check_conditions(rows)
     return proof
+
+
+_SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty", "seed"})
+_HOST_KEYS = {"cpu_model": str, "logical_cpus": int, "memory_kib": int, "kernel": str, "docker_server_version": str}
+
+
+def _check_conditions(rows: dict[str, list[dict]]) -> dict:
+    row = _one(rows, "run_conditions")
+    _hex(row["engine_settings_sha256"], "isolation_evidence.run_conditions.engine_settings_sha256")
+    _hex(row["machine_id_sha256"], "isolation_evidence.run_conditions.machine_id_sha256")
+    _int(row["workers"], "isolation_evidence.run_conditions.workers", low=1)
+    if type(row["llm_stream"]) is not bool:
+        raise IsolationError("isolation_evidence.run_conditions.llm_stream: bool")
+    sampling = row["sampling"]
+    if sampling is not None and (not isinstance(sampling, dict) or set(sampling) != _SAMPLING_KEYS or any(
+            type(value) not in (int, float) for value in sampling.values())):
+        raise IsolationError("isolation_evidence.run_conditions.sampling: 일곱 키의 숫자 또는 null")
+    host = row["host"]
+    if not isinstance(host, dict) or set(host) != set(_HOST_KEYS) or any(
+            type(host[name]) is not kind or (kind is str and not host[name]) or (kind is int and host[name] < 1)
+            for name, kind in _HOST_KEYS.items()):
+        raise IsolationError("isolation_evidence.run_conditions.host: 머신 사양 형식 오류")
+    return row
+
+
+def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str, str]:
+    """check_isolation을 통과한 근거의 실행 조건. 채점기가 회차 사이 같은지 대조한다(평가 프로토콜 §5.1·§6)."""
+    row = _one(_rows(evidence, receipt), "run_conditions")
+    return (row["engine_settings_sha256"], canonical_sha256(row["sampling"]), canonical_sha256(row["host"]),
+            row["machine_id_sha256"], "true" if row["llm_stream"] else "false")
 
 
 def drain_policy(receipt: dict, evidence: object) -> tuple[int, int]:

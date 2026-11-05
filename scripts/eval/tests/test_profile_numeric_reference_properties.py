@@ -38,6 +38,8 @@ def expected_environment(payload, numbers=None):
     scope_digest = digest("scope", scope)
     # Canonical numbers are supplied as literal expectations by the case table, not normalized here.
     environment = dict(payload["environment"], temperature="0", time_budget_seconds="1200",
+                       sampling={"top_p": "0.95", "top_k": 20, "min_p": "0", "presence_penalty": "1.5",
+                                 "repetition_penalty": "1"},
                        scope_fingerprint=scope_digest)
     environment.update(numbers or {})
     return scope_digest, digest("environment", environment)

@@ -12,6 +12,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from runner_llm import LLMMarkerError, judge_llm
 
 SLUG, NAME = "example-provider", "Example"
+# 사전검사 픽스처(test_preflight.configuration)의 temperature·sampling·seed로 만든 기대 적용값.
+SAMPLING = {"temperature": 0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5,
+            "repetition_penalty": 1.0, "seed": 42}
 
 
 def generation(gen_id, provider=NAME, attempts=None, status="verified"):
@@ -22,7 +25,8 @@ def generation(gen_id, provider=NAME, attempts=None, status="verified"):
 
 
 def marker(**overrides):
-    base = {"role": "llm-gateway", "backend": "api", "provider": SLUG, "sealed_at": "a", "drained_at": "b",
+    base = {"role": "llm-gateway", "backend": "api", "provider": SLUG, "sampling": dict(SAMPLING),
+            "sealed_at": "a", "drained_at": "b",
             "verified_at": "c", "forwarded_requests": 3, "upstream_errors": 0, "rejected_requests": 0,
             "rejected_after_seal": 1, "cancelled_by_seal": 0, "responses_without_generation_id": 0,
             "generations": [generation("gen-1"), generation("gen-2")], "log_complete": True}
@@ -30,7 +34,7 @@ def marker(**overrides):
 
 
 def judge(m, backend="api"):
-    return judge_llm(m, backend, SLUG if backend == "api" else "", NAME)
+    return judge_llm(m, backend, SLUG if backend == "api" else "", NAME, SAMPLING if backend == "api" else None)
 
 
 class TestJudgeApi(unittest.TestCase):
@@ -86,14 +90,45 @@ class TestJudgeApi(unittest.TestCase):
         self.assertEqual(summary["providers"], [NAME, "Other"])
 
 
+class TestJudgeSampling(unittest.TestCase):
+    def test_applied_sampling_must_equal_the_declaration(self):
+        # 선언이 아니라 게이트웨이가 실제로 넣은 값을 대조한다. 표기(0과 0.0)는 같은 값으로 본다.
+        self.assertEqual(judge(marker(sampling=dict(SAMPLING, temperature=0.0, top_k=20.0)))[0], [])
+        reasons, summary = judge(marker())
+        self.assertEqual((reasons, summary["sampling_applied"]), ([], SAMPLING))
+        for name in SAMPLING:
+            with self.subTest(field=name):
+                changed = dict(SAMPLING, **{name: SAMPLING[name] + 1})
+                self.assertEqual(judge(marker(sampling=changed))[0], ["llm_sampling_mismatch"])
+        self.assertEqual(judge(marker(sampling=None))[0], ["llm_sampling_mismatch"])
+        # local은 샘플링을 넣지 않는다. 마커에 값이 있으면 구성이 섞인 것이다.
+        self.assertEqual(judge(marker(backend="local", provider="", generations=[]), backend="local")[0],
+                         ["llm_sampling_mismatch"])
+
+    def test_large_integer_seed_is_compared_without_float_rounding(self):
+        # 2^53+1과 2^53은 float로 바꾸면 같아진다. 다른 seed가 적용됐으면 고정이 아니다.
+        declared = dict(SAMPLING, seed=2 ** 53 + 1)
+        same = judge_llm(marker(sampling=dict(declared)), "api", SLUG, NAME, declared)[0]
+        rounded = judge_llm(marker(sampling=dict(declared, seed=2 ** 53)), "api", SLUG, NAME, declared)[0]
+        self.assertEqual((same, rounded), ([], ["llm_sampling_mismatch"]))
+
+    def test_sampling_shape_is_checked(self):
+        for bad in ({}, dict(SAMPLING, extra=1), {k: v for k, v in SAMPLING.items() if k != "seed"},
+                    dict(SAMPLING, seed="42"), dict(SAMPLING, top_p=True), [1]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(LLMMarkerError):
+                    judge(marker(sampling=bad))
+
+
 class TestJudgeLocal(unittest.TestCase):
     def test_local_records_counts_only(self):
-        reasons, summary = judge(marker(backend="local", provider="", generations=[]), backend="local")
+        reasons, summary = judge(marker(backend="local", provider="", generations=[], sampling=None), backend="local")
         self.assertEqual(reasons, [])
         self.assertEqual((summary["generations"], summary["forwarded_requests"]), (0, 3))
 
     def test_local_with_lookups_or_pin_is_mixed_configuration(self):
-        for m in (marker(backend="local", provider=""), marker(backend="local", generations=[])):
+        for m in (marker(backend="local", provider="", sampling=None),
+                  marker(backend="local", generations=[], sampling=None)):
             with self.subTest(m=m["provider"]):
                 self.assertEqual(judge(m, backend="local")[0], ["llm_backend_mismatch"])
 
