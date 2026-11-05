@@ -130,6 +130,7 @@ scope의 origin과 환경의 모델·샘플링·이미지·예산은 실제 실�
 | `scripts/eval/preflight.py` | 세 fingerprint와 공통 환경 필드 | baseline/ours 선언의 일관성·지문 비교만 검사하며 경로/분류를 엔진에 전달하지 않음 |
 | `scripts/eval/run_record.py`·`score.py` | `fixture_fingerprint`, `environment_fingerprint` | 서명된 러너 기록의 지문 검증과 회차 사이 동일 조건 대조 |
 | 평가 엔진 입력 | `scope.paths`, `scope.vuln_classes` | 현재 소비자 없음; profile fingerprint는 이 선언을 검증·해시만 함 |
+| 개선 후 E② 정책(공식 비교, 구현 전) | `target_origin`, `scope.methods`, `scope.paths` | 정적 경로 템플릿을 E②의 prefix 범위로 옮긴다. 옮기는 규칙은 E② 정책 지문에 넣어 시범 전에 고정한다([평가 프로토콜](evaluation-protocol.md) §2 개선 후의 E② 배치, E② 공통 계약 #183). 이 표의 템플릿 의미를 E²의 허용 사실로 소급하지 않는다 |
 
 합성 테스트는 고정 벡터, 정렬 불변성, 숫자 동등성과 정밀도, 조건 변경의 지문 분리, scope→환경 결속,
 허용 밖 필드의 해시 전 거부, 소유 참조·중복·타입 오류, 원문 미출력·CLI 종료·파일 보존을 확인한다.

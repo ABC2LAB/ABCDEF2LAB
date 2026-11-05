@@ -9,6 +9,7 @@ import AccessMapScreen from "./screens/AccessMapScreen";
 import ApprovalScreen from "./screens/ApprovalScreen";
 import AuditScreen from "./screens/AuditScreen";
 import DashboardScreen from "./screens/DashboardScreen";
+import E2FlowScreen from "./screens/E2FlowScreen";
 import EntryScreen from "./screens/EntryScreen";
 import FindingScreen from "./screens/FindingScreen";
 import FindingUndScreen from "./screens/FindingUndScreen";
@@ -130,6 +131,7 @@ export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true
             <SettingsScreen />
             <AuditScreen />
             <AccessMapScreen />
+            <E2FlowScreen />
             <TokensScreen />
           </div>
         </ApprovalContext.Provider>
