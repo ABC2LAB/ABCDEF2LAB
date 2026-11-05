@@ -123,6 +123,22 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   runner-result.json             완료(+서명) 또는 무효(+사유·실패 단계: 사유가 나온 점검, 예상 밖 예외·중단이면 마지막으로 시작한 단계)
 ```
 
+### 계측기 요청 기록 (`meter/engine-requests.jsonl`)
+
+요청 하나가 끝날 때 한 줄씩 쓴다. 경로·query·헤더·본문은 남기지 않는다. 러너는 키가 정확히 아래와 같지 않거나 값이 모순되면 그 회차를 무효로 한다(`meter_row_invalid`).
+
+| 키 | 값 |
+|---|---|
+| `seq`·`kind`·`method`·`status`·`started_at`·`completed_at`·`response_bytes`·`outcome` | 기존 의미 그대로. `kind`는 request·stream·rejected(seal 뒤 거부) |
+| `sent` | `no`(대상에 안 감 — seal 거부·연결 못 얻음) / `uncertain`(연결은 됐지만 요청을 다 썼는지 확인 못 함) / `yes`(요청을 다 씀) |
+| `response` | `none`(대상이 보낸 바이트 없음. 계측기가 직접 준 502·503은 대상 응답이 아님) / `headers`(프로토콜 전환 스트림) / `complete`(본문까지 넘김) / `interrupted`(응답이 시작됐지만 끝나지 않음) |
+| `attempt_id_state` | E② 시도 ID 헤더(`X-ABC2LAB-E2-Attempt`) 검사: `absent` / `valid` / `invalid` / `multiple` |
+| `attempt_id` | `valid`일 때만 소문자 hex 32자, 아니면 빈 문자열(잘못된 원문은 남기지 않음) |
+
+- `sent`·`response`는 같은 시도의 진행 이력이라 서로 배타적인 건수로 합산하지 않는다. "보냈는데 응답 없음"(`yes`·`none`)과 `uncertain`이 결과 불명이다. 계측 건수만으로 대상 앱이 실제 처리한 건수를 확정하지 않는다.
+- 계측기는 시도 ID를 기록한 뒤 **대상에 넘기기 전에 그 헤더 하나만 지운다**(평가 프로토콜 §8.3). 형식이 틀려도 요청을 막지 않는다. baseline에는 이 헤더가 없는 것이 정상이다(`absent`).
+- `sent=no`인데 `response`가 `none`이 아니거나, 거부 행이 `no`·`none`이 아니면 모순으로 거부한다.
+
 근거 파일은 O_EXCL·0600으로 한 번만 쓴다. 무효 기록에는 측정값·근거 목록·서명을 넣지 않는다.
 
 ### 작업 생성
