@@ -327,7 +327,8 @@ func TestEngineSealClosesUpgradedStream(t *testing.T) {
 	for {
 		rows := readRows[engineRow](t, filepath.Join(path, engineLogName))
 		if len(rows) == 1 {
-			if rows[0].Kind != "stream" || rows[0].Outcome != "forced_closed" || rows[0].Status != http.StatusSwitchingProtocols {
+			if rows[0].Kind != "stream" || rows[0].Outcome != "forced_closed" || rows[0].Status != http.StatusSwitchingProtocols ||
+				rows[0].Sent != sentYes || rows[0].Response != responseHeaders {
 				t.Fatalf("stream row: %+v", rows[0])
 			}
 			break

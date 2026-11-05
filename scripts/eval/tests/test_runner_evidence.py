@@ -14,14 +14,16 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
-    DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, LLM_VERIFIED_MARKER, OBSERVER_LOG, EvidenceDir, EvidenceError,
-    GatewayFiles, MeterFiles, forwarded_count, sequence_complete,
+    ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_VERIFIED_MARKER,
+    OBSERVER_LOG, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_count, sequence_complete,
 )
 
 
 def engine_row(seq, kind="request"):
+    sent, response = {"rejected": ("no", "none"), "stream": ("yes", "headers")}.get(kind, ("yes", "complete"))
     return {"seq": seq, "kind": kind, "method": "GET", "status": 200, "started_at": "a", "completed_at": "b",
-            "response_bytes": 1, "outcome": "completed"}
+            "response_bytes": 1, "outcome": "completed", "sent": sent, "response": response,
+            "attempt_id_state": "absent", "attempt_id": ""}
 
 
 def observer_row(seq, decision="registered"):
@@ -120,6 +122,37 @@ class TestMeterFiles(unittest.TestCase):
         # rejected가 아닌 경로는 전달 건수를 올린다(forwarded++ 한 곳, rejected 분기 뒤).
         self.assertEqual(text.count("m.forwarded++"), 1)
         self.assertLess(text.index('Kind: "rejected"'), text.index("m.forwarded++"))
+
+    def test_stage_fields_are_checked(self):
+        valid = "0123456789abcdef0123456789abcdef"
+        good = [engine_row(1) | {"attempt_id_state": "valid", "attempt_id": valid},
+                engine_row(2) | {"sent": "uncertain", "response": "none"},
+                engine_row(3) | {"response": "interrupted", "attempt_id_state": "multiple"},
+                engine_row(4, "rejected") | {"attempt_id_state": "invalid"}]
+        self.write(ENGINE_LOG, "".join(json.dumps(r) + "\n" for r in good))
+        self.assertEqual(len(self.meter.engine_rows()), 4)
+        bad = {"모르는 sent": {"sent": "maybe"}, "모르는 response": {"response": "partial"},
+               "모르는 상태": {"attempt_id_state": "weird"}, "유효인데 값 없음": {"attempt_id_state": "valid"},
+               "유효인데 대문자": {"attempt_id_state": "valid", "attempt_id": valid.upper()},
+               "무효인데 값 있음": {"attempt_id_state": "invalid", "attempt_id": valid},
+               "값이 문자열 아님": {"attempt_id": 0},
+               "안 보냈는데 응답": {"sent": "no", "response": "complete"}}
+        for name, change in bad.items():
+            with self.subTest(name=name):
+                self.write(ENGINE_LOG, json.dumps(engine_row(1) | change) + "\n")
+                with self.assertRaises(EvidenceError):
+                    self.meter.engine_rows()
+        # seal 뒤 거부는 대상에 안 갔다.
+        self.write(ENGINE_LOG, json.dumps(engine_row(1, "rejected") | {"sent": "yes", "response": "none"}) + "\n")
+        with self.assertRaises(EvidenceError):
+            self.meter.forwarded()
+
+    def test_stage_values_match_the_go_meter(self):
+        text = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/proxy.go").read_text(encoding="utf-8")
+        for prefix, expected in (("sentNo", ENGINE_SENT), ("responseNone", ENGINE_RESPONSE),
+                                 ("attemptAbsent", ATTEMPT_STATES)):
+            line = next(line for line in text.splitlines() if line.strip().startswith(prefix + ","))
+            self.assertEqual(set(re.findall(r'"([a-z]+)"', line)), set(expected), prefix)
 
     def test_rows_must_have_exact_fields_and_unique_seq(self):
         for rows in ([engine_row(1) | {"path": "/x"}], [{k: v for k, v in engine_row(1).items() if k != "kind"}],

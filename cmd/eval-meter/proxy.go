@@ -7,11 +7,14 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,6 +32,71 @@ var forwardingHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Ho
 
 var errSealed = errors.New("eval-meter: sealed")
 
+// attemptHeader carries the E② attempt ID on requests E② admitted (evaluation
+// protocol §8.3, E② proxy draft §6.1). The meter records a well-formed value and
+// removes only this header before forwarding, so the target receives the same
+// request in baseline and improved runs. A malformed value is counted, never
+// stored, and never blocks the request.
+const attemptHeader = "X-ABC2LAB-E2-Attempt"
+
+var attemptIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// Per-request stages. sent: no = nothing reached the target (sealed or no
+// connection), uncertain = a connection existed but the full write was not
+// confirmed, yes = the request was fully written. response: none = no byte from
+// the target (a meter-made 503/502 is not a target response), headers = response
+// started (or a switched protocol), complete = body relayed to the end,
+// interrupted = response started but did not finish.
+const (
+	sentNo, sentUncertain, sentYes                                       = "no", "uncertain", "yes"
+	responseNone, responseHeaders, responseComplete, responseInterrupted = "none", "headers", "complete", "interrupted"
+	attemptAbsent, attemptValid, attemptInvalid, attemptMultiple         = "absent", "valid", "invalid", "multiple"
+)
+
+func classifyAttempt(h http.Header) (state, id string) {
+	values := h.Values(attemptHeader)
+	switch {
+	case len(values) == 0:
+		return attemptAbsent, ""
+	case len(values) > 1:
+		return attemptMultiple, ""
+	case attemptIDPattern.MatchString(values[0]):
+		return attemptValid, values[0]
+	default:
+		return attemptInvalid, ""
+	}
+}
+
+// requestTrace observes the upstream round trip. Hooks run on transport
+// goroutines and may fire after the handler returns, so flags are atomic; a late
+// confirmation only makes the row more conservative (uncertain), never wrong.
+type requestTrace struct {
+	gotConn, wrote, firstByte atomic.Bool
+}
+
+func (t *requestTrace) client() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { t.gotConn.Store(true) },
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				t.wrote.Store(true)
+			}
+		},
+		GotFirstResponseByte: func() { t.firstByte.Store(true) },
+	}
+}
+
+func (t *requestTrace) sent() string {
+	switch {
+	case !t.gotConn.Load():
+		return sentNo
+	case t.wrote.Load():
+		return sentYes
+	default:
+		return sentUncertain
+	}
+}
+
 func newReverseProxy(target *url.URL) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -40,6 +108,7 @@ func newReverseProxy(target *url.URL) *httputil.ReverseProxy {
 					r.Out.Header[name] = values
 				}
 			}
+			r.Out.Header.Del(attemptHeader)
 		},
 		// The default handler logs the upstream error text, which may carry
 		// addresses; the outcome code alone is enough for the evidence.
@@ -97,6 +166,12 @@ type engineRow struct {
 	CompletedAt   string `json:"completed_at"`
 	ResponseBytes int64  `json:"response_bytes"`
 	Outcome       string `json:"outcome"`
+	// Sent and Response separate "reached the target" from "the target answered";
+	// see the stage constants. They are progress of one attempt, not exclusive counts.
+	Sent           string `json:"sent"`
+	Response       string `json:"response"`
+	AttemptIDState string `json:"attempt_id_state"`
+	AttemptID      string `json:"attempt_id"`
 }
 
 type sealedMarker struct {
@@ -193,13 +268,15 @@ func newEngineMeter(dir *os.File, target *url.URL, now func() time.Time, drainGr
 
 func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := m.now()
+	attemptState, attemptID := classifyAttempt(r.Header)
 	m.mu.Lock()
 	m.seq++
 	seq := m.seq
 	if m.sealed || m.logFailed {
 		m.rejected++
 		m.writeRowLocked(engineRow{Seq: seq, Kind: "rejected", Method: r.Method, Status: http.StatusServiceUnavailable,
-			StartedAt: stamp(started), CompletedAt: stamp(m.now()), Outcome: "rejected_after_seal"})
+			StartedAt: stamp(started), CompletedAt: stamp(m.now()), Outcome: "rejected_after_seal",
+			Sent: sentNo, Response: responseNone, AttemptIDState: attemptState, AttemptID: attemptID})
 		m.mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -215,23 +292,33 @@ func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 
 	rec := &statusRecorder{ResponseWriter: w, hijack: func(conn net.Conn) error { return m.trackStream(seq, conn) }}
+	trace := &requestTrace{}
+	ctx = httptrace.WithClientTrace(ctx, trace.client())
 	finished := false
 	// The proxy aborts a response whose body copy fails (the grace cancelling it
 	// mid-body, the engine or target dropping the connection) with
 	// panic(http.ErrAbortHandler); the bookkeeping must still run once or the
 	// drain would wait forever.
-	defer func() { m.finishRequest(seq, r.Method, started, rec, !finished) }()
+	defer func() { m.finishRequest(seq, r.Method, started, rec, trace, !finished, attemptState, attemptID) }()
 	m.proxy.ServeHTTP(rec, r.WithContext(ctx))
 	finished = true
 }
 
-func (m *engineMeter) finishRequest(seq uint64, method string, started time.Time, rec *statusRecorder, aborted bool) {
+func (m *engineMeter) finishRequest(seq uint64, method string, started time.Time, rec *statusRecorder,
+	trace *requestTrace, aborted bool, attemptState, attemptID string) {
 	completed := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.cancels, seq)
 	row := engineRow{Seq: seq, Kind: "request", Method: method, Status: rec.status, StartedAt: stamp(started),
-		CompletedAt: stamp(completed), ResponseBytes: rec.bytes, Outcome: "completed"}
+		CompletedAt: stamp(completed), ResponseBytes: rec.bytes, Outcome: "completed",
+		Sent: trace.sent(), Response: responseNone, AttemptIDState: attemptState, AttemptID: attemptID}
+	if trace.firstByte.Load() {
+		row.Response = responseComplete
+		if aborted || rec.upstreamFailed {
+			row.Response = responseInterrupted
+		}
+	}
 	switch {
 	case rec.upstreamFailed:
 		row.Outcome = "upstream_error"
@@ -240,6 +327,8 @@ func (m *engineMeter) finishRequest(seq uint64, method string, started time.Time
 	}
 	if rec.hijacked {
 		row.Kind = "stream"
+		// A switched protocol has no relayed body to complete.
+		row.Response = responseHeaders
 		delete(m.streams, seq)
 		if m.forced[seq] {
 			row.Outcome = "forced_closed"
