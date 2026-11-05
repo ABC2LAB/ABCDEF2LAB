@@ -33,6 +33,16 @@ describe("E2FlowScreen", () => {
     expect(chips).toHaveTextContent("불명");
   });
 
+  // 윤재상 리뷰(#196): 송신 뒤 감사 실패는 차단 수에 넣지 않는다.
+  // 목업: 송신 전 거부 3건(차단) + 송신 뒤 감사 실패 1 + 배수 불명 1(불명 2).
+  it("송신 뒤 감사 실패는 차단 수에 안 들어간다(차단 3 · 불명 2)", async () => {
+    const { container } = show();
+    await screen.findByRole("heading", { name: "전송 통제 흐름" });
+    const chips = container.querySelector(".search");
+    expect(chips).toHaveTextContent("차단 3");
+    expect(chips).toHaveTextContent("불명 2");
+  });
+
   it("통과 ≠ 대상 도달 ≠ 감사 저장을 화면에 명시한다(통과를 성공으로 오인시키지 않음)", async () => {
     show();
     await screen.findByRole("heading", { name: "전송 통제 흐름" });

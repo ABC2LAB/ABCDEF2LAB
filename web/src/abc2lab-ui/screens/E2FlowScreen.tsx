@@ -65,7 +65,7 @@ function tsLabel(ts: number): string {
 /** 한 시도 행 — 결정 칩 + 단계 + 안전 사유 + 관측 단서(쓰기·응답·감사저장). */
 function AttemptRow({ raw }: { raw: E2Attempt }) {
   const a = normalizeAttempt(raw);
-  const cls = decisionClass(a.decision);
+  const cls = decisionClass(a);
   return (
     <div className="logrow">
       <span className="ts">{tsLabel(a.observedAt)}</span>
@@ -121,22 +121,33 @@ export default function E2FlowScreen() {
             >
               설정
             </a>{" "}
-            › <a onClick={() => go("audit")}>통제 기록</a> › <span>전송 통제 흐름</span>
+            › {/* biome-ignore lint/a11y/useValidAnchor: 시안 crumb 스타일 링크(href 로 키보드 이동 가능) */}
+            <a
+              href="#audit"
+              onClick={(event) => {
+                event.preventDefault();
+                go("audit");
+              }}
+            >
+              통제 기록
+            </a>{" "}
+            › <span>전송 통제 흐름</span>
           </div>
           <h1 className="big" style={{ marginBottom: 4 }}>
             전송 통제 흐름
           </h1>
           <p className="lead">
-            한 <Strong>Bash 호출</Strong>이 낸 HTTP 요청마다, 전송 통제(E②)가 <Strong>송신 전에</Strong> 허용·차단을
-            정해요. 호출 하나에 요청(시도) 여러 개가 붙을 수 있어요 — 승인 범위 안은 통과, 범위를 넘으면 송신 전 차단.
+            한 <Strong>Bash 호출</Strong>이 낸 HTTP 요청마다 전송 통제(E②)가 허용·차단을 정해요. 호출 하나에 요청(시도)
+            여러 개가 붙을 수 있어요 — 승인 범위 안은 통과, 범위를 넘으면 <Strong>송신 전에 차단</Strong>. 다만 송신 뒤
+            감사 실패처럼 <Strong>이미 나갔을 수 있는 건 차단으로 단정하지 않고 불명</Strong>으로 둬요.
           </p>
 
           {data?.mock && (
             <div style={noticeBox}>
               <Strong>프로토타입</Strong> — E② 네트워크 경계 집행·감사 "표시용 투영"은 아직 미구현·운영 비활성이에요
-              (근거 초안 #183 §5·#189 §2). 범용 경계 감사 사건 표현은 <Strong>버전 합의 전 제안</Strong>이라, 확정되면
-              이 화면은 <Strong>getE2Flow 한 함수만</Strong> 실데이터로 바꾸면 그대로 살아요. 아래는 그 shape 를 따른{" "}
-              <Strong>예시</Strong>예요.
+              (근거 #189 §2, 감사 필드는 #183 §5 제안). 범용 경계 감사 사건 표현은 <Strong>버전 합의 전 제안</Strong>
+              이라, 확정되면 이 화면은 <Strong>getE2Flow 한 함수만</Strong> 실데이터로 바꾸면 그대로 살아요. 아래는 그
+              shape 를 따른 <Strong>예시</Strong>예요.
             </div>
           )}
 

@@ -2,9 +2,10 @@
  * E② 전송 통제 흐름 → "Bash 명령 → 거기서 난 요청 → 허용·차단" 표시용 투영.
  *
  * ※ 프로토타입: E② 네트워크 경계 집행·범용 경계 감사 사건 표현은 아직 미구현·운영 비활성이다.
- *   근거 초안: docs/contracts/e2-network-enforcement.md(#183) §5, docs/e2-proxy-control-decision-draft.md(#189) §2·§5.
- *   #183 §5 는 "범용 경계 사건 감사 표현 = 새 버전·저장 위치·검증자 합의 전까지 구현 제안"이라 필드가 더 바뀔 수 있다.
- *   아래 목업은 그 §5 안전 필드 shape 를 따른 **예시 데이터**다. 실 감사 투영 API 가 생기면 getE2Flow 만 교체한다.
+ *   근거: docs/e2-proxy-control-decision-draft.md(#189, dev 병합) §2·§5·§6.1(시도 ID 형식).
+ *   거부 사유 enum·§5 감사 필드는 docs/contracts/e2-network-enforcement.md(#183 제안, **dev 미병합**)로
+ *   "새 버전·저장 위치·검증자 합의 전까지 구현 제안"이라 필드가 더 바뀔 수 있다(#184 netboundary Go 사유와 매핑 정렬 필요).
+ *   아래 목업은 그 안전 필드 shape 를 따른 **예시 데이터**다. 실 감사 투영 API 가 생기면 getE2Flow 만 교체한다.
  *
  * 안전 규칙(절대규칙 2·#189 §5.1):
  *   - 화면·이 파일에 넣지 않는 것: 명령 원문·URL·query·헤더·본문·세션/키 원문·원시 오류·프록시 귀속 토큰.
@@ -68,10 +69,24 @@ const KNOWN_DECISIONS: ReadonlySet<E2Decision> = new Set<E2Decision>([
   "unknown",
 ]);
 
-/** 집행 결정 → 화면 3분류. 미등록·불명·배수불명은 전부 unknown 으로 내린다(허용으로 추정 금지). */
-export function decisionClass(d: E2Decision): DecisionClass {
-  if (d === "admitted") return "allow";
-  if (DENY_DECISIONS.has(d)) return "deny";
+/** 송신 전에 막았다고 볼 수 있는 단계(차단 신뢰 가능). 그 밖(송신·마감·불명)은 이미 나갔을 수 있다. */
+const PRESEND_STAGES: ReadonlySet<E2Stage> = new Set<E2Stage>(["pre_send", "reserved"]);
+
+/**
+ * 시도 → 화면 3분류(허용/차단/불명). fail-closed. 집행 결정값만이 아니라 **단계·쓰기 관측까지** 본다.
+ * - admitted → allow (도달·저장 증명 아님은 관측 단서로 따로 표시).
+ * - 거부 사유라도 **송신 전(pre_send·reserved)이고 쓰기 관측이 없을 때만** deny(차단).
+ *   송신 뒤거나 쓰기가 관측됐으면 이미 대상에 갔을 수 있어 "차단"으로 단정하지 않고 `unknown`
+ *   (#183 §5 "결과 감사 실패=이미 송신 가능성 유지", #184 netboundary `AuditUnknown`≠`BlockedPreSend`).
+ * - drain_unknown·unknown·미등록 → unknown.
+ * 호출부는 normalizeAttempt 로 정규화한 값을 넘긴다(미등록 decision/stage/write → unknown).
+ */
+export function decisionClass(a: Pick<E2Attempt, "decision" | "stage" | "requestWrite">): DecisionClass {
+  if (a.decision === "admitted") return "allow";
+  if (DENY_DECISIONS.has(a.decision)) {
+    const blockedBeforeSend = PRESEND_STAGES.has(a.stage) && a.requestWrite === "none";
+    return blockedBeforeSend ? "deny" : "unknown";
+  }
   return "unknown"; // drain_unknown · unknown · 미등록
 }
 
@@ -200,7 +215,7 @@ export function summarize(flow: E2Flow): E2Summary {
     for (const raw of call.attempts) {
       const a = normalizeAttempt(raw);
       attempts += 1;
-      const cls = decisionClass(a.decision);
+      const cls = decisionClass(a);
       if (cls === "allow") allow += 1;
       else if (cls === "deny") deny += 1;
       else unknown += 1;
@@ -209,8 +224,9 @@ export function summarize(flow: E2Flow): E2Summary {
   return { calls: flow.calls.length, attempts, allow, deny, unknown, pending };
 }
 
-// ── #183 §5 / #189 §5 shape 예시. Bash/curl 이 관측된 주 송신 경로(#189 §4)라 그걸로 구성.
-//    허용(통과)·여러 거부 사유·불명(배수 불명/감사 불명)을 고루 담아 fail-closed 표시를 보인다.
+// ── #189 §5 / #183(제안) shape 예시. Bash/curl 이 관측된 주 송신 경로(#189 §4)라 그걸로 구성.
+//    허용(통과)·송신 전 거부·불명(송신 뒤 감사 실패/배수 불명)을 고루 담아 fail-closed 표시를 보인다.
+//    시도 ID 는 #189 §6.1 형식(보안 난수 16바이트 → 소문자 hex 32자)으로 둬 실제 길이의 레이아웃도 미리 본다.
 const now = Date.UTC(2026, 10, 5, 4, 30, 0);
 const MOCK_FLOW: E2Flow = {
   runRef: "run · task 1 · reset g1 · policy proto-0",
@@ -224,7 +240,7 @@ const MOCK_FLOW: E2Flow = {
       finalized: true,
       attempts: [
         {
-          attemptId: "atk-01",
+          attemptId: "a1f03c9e7b2d4856c0e1f2a3b4c5d6e7",
           stage: "closed",
           decision: "admitted",
           reason: "등록 자원(owner GET) — 현재 승인·예산·intent ACK 통과",
@@ -235,7 +251,7 @@ const MOCK_FLOW: E2Flow = {
           auditStore: "acked",
         },
         {
-          attemptId: "atk-02",
+          attemptId: "b2e14d0af8c3e967d1f2a3b4c5d6e7f8",
           stage: "closed",
           decision: "admitted",
           reason: "등록 자원(cross GET) — 통과(수평 조회). 도달·저장은 아래 관측값으로만 판단",
@@ -254,7 +270,7 @@ const MOCK_FLOW: E2Flow = {
       finalized: true,
       attempts: [
         {
-          attemptId: "atk-03",
+          attemptId: "c3f2510b19d4fa78e2a3b4c5d6e7f809",
           stage: "pre_send",
           decision: "unsupported_path",
           reason: "등록 외 메서드/경로(상태변경 GET 포함) — 범위 밖",
@@ -273,7 +289,7 @@ const MOCK_FLOW: E2Flow = {
       finalized: true,
       attempts: [
         {
-          attemptId: "atk-04",
+          attemptId: "d4035126a0e5fb89f3b4c5d6e7f8091a",
           stage: "pre_send",
           decision: "budget_exhausted",
           reason: "첫 회차 요청 한도 도달(M04) — 자동 보충/재시도 없음",
@@ -292,7 +308,7 @@ const MOCK_FLOW: E2Flow = {
       finalized: true,
       attempts: [
         {
-          attemptId: "atk-05",
+          attemptId: "e5146237b1f60c90a4c5d6e7f8091a2b",
           stage: "pre_send",
           decision: "revoked",
           reason: "실행 quiescing — barrier 뒤 새 admission 차단",
@@ -305,13 +321,13 @@ const MOCK_FLOW: E2Flow = {
       ],
     },
     {
-      // 결과 단계 감사 실패 → 이미 송신했을 가능성 유지(저장됨으로 단정 금지)
+      // 송신 뒤 결과 감사 실패 → 이미 대상에 갔을 수 있음. "차단" 아님 → 분류 불명(decisionClass)
       callRef: "call-7a5",
       tool: "Bash · curl",
       finalized: false,
       attempts: [
         {
-          attemptId: "atk-06",
+          attemptId: "f6257348c2071da1b5d6e7f8091a2b3c",
           stage: "sent",
           decision: "audit_unavailable",
           reason: "결과 감사 ACK 실패 — 이미 송신 가능성 유지, 이후 admission 0",
@@ -330,7 +346,7 @@ const MOCK_FLOW: E2Flow = {
       finalized: false,
       attempts: [
         {
-          attemptId: "atk-07",
+          attemptId: "07368459d3182eb2c6e7f8091a2b3c4d",
           stage: "closed",
           decision: "drain_unknown",
           reason: "잔존 소켓/자식 식별 불명 — 격리 유지, 성공 Seal 안 함",
@@ -347,9 +363,11 @@ const MOCK_FLOW: E2Flow = {
 
 /**
  * E② 전송 통제 흐름 조회.
- * TODO(이경준): E② 감사 "표시용 투영" API(신규, 이동찬 E② 집행점·감사 소유 — #183 §5·#189 §2) 연동 시
+ * TODO(이경준): E② 감사 "표시용 투영" API(신규, 이동찬 E② 집행점·감사 소유 — #189 §2·#183 §5 제안) 연동 시
  *   이 함수만 실제 fetch 로 교체한다. taskId 는 실행별 스코프용 — 실 API 시그니처를 미리 맞춰 둔다.
- *   범용 경계 감사 사건 표현은 버전 합의 전(§5) 제안이라, 확정되면 필드 매핑을 맞춘다.
+ *   범용 경계 감사 사건 표현은 버전 합의 전 제안이라, 확정되면 필드 매핑을 맞춘다. 특히 #184 netboundary·
+ *   local-llm-policy 의 `timed_out`·`transport_unknown` 등 추가 사유는 지금 전부 unknown(fail-closed)로 떨어지니,
+ *   실 투영 연결 때 거부/불명 매핑을 명시적으로 맞춘다.
  */
 export async function getE2Flow(_taskId: string | null): Promise<E2Flow> {
   return MOCK_FLOW;
