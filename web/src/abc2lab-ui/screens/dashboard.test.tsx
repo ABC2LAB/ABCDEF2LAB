@@ -94,9 +94,9 @@ describe("DashboardScreen", () => {
     expect(within(tile("진행 중인 점검")).getByText("2")).toBeVisible();
     expect(within(tile("진행 중인 점검")).getByText("실행 1 · 일시중지 1")).toBeVisible();
     expect(await within(tile("승인 대기")).findByText("1")).toBeVisible();
-    // 확인 필요 = 일시중지 1 + 시간초과 1 + 커버리지 60% 1
-    expect(await within(tile("확인 필요")).findByText("3")).toBeVisible();
-    expect(within(tile("확인 필요")).getByText("일시중지 · 끝까지 못 감 · 미검사 영역")).toBeVisible();
+    // 확인 필요 = 시간초과 1 + 커버리지 60% 1 (일시중지는 진행 중인 점검에서만 센다)
+    expect(await within(tile("확인 필요")).findByText("2")).toBeVisible();
+    expect(within(tile("확인 필요")).getByText("끝까지 못 감 · 미검사 영역")).toBeVisible();
     // 최근 30일 3.6M, 그 전 30일 3.0M → +20%
     expect(await within(tile("토큰 사용량 · 최근 30일")).findByText(/지난 30일 대비 \+20%/)).toBeVisible();
   });
@@ -130,14 +130,14 @@ describe("DashboardScreen", () => {
       within(screen.getByText("지금 처리할 일").closest("section") as HTMLElement).getAllByText(/승인 대기|확인 필요/, {
         selector: ".stag",
       });
-    // 승인 5 + 일시중지 1 + 시간초과 1 + 덜 본 점검 1 = 8건 중 4건만
-    expect(await screen.findByText("8건")).toBeVisible();
+    // 승인 5 + 시간초과 1 + 덜 본 점검 1 = 7건 중 4건만
+    expect(await screen.findByText("7건")).toBeVisible();
     await waitFor(() => expect(todoRows()).toHaveLength(4));
-    const more = screen.getByRole("button", { name: "더보기 · 4건 더" });
+    const more = screen.getByRole("button", { name: "더보기 · 3건 더" });
     expect(more).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(more);
-    await waitFor(() => expect(todoRows()).toHaveLength(8));
+    await waitFor(() => expect(todoRows()).toHaveLength(7));
     // 승인 대기가 먼저 온다
     expect(todoRows()[0]).toHaveTextContent("승인 대기");
     expect(screen.getByRole("button", { name: "접기" })).toHaveAttribute("aria-expanded", "true");
@@ -148,7 +148,19 @@ describe("DashboardScreen", () => {
 
   it("hides the 더보기 button when four or fewer to-dos remain", async () => {
     show();
-    await waitFor(() => expect(screen.getByText("4건")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("3건")).toBeVisible());
     expect(screen.queryByRole("button", { name: /더보기/ })).toBeNull();
+  });
+
+  it("counts a paused scan once, under 진행 중인 점검 only", async () => {
+    show();
+    const section = (title: string) =>
+      screen.getByText(title, { selector: ".recent-head span" }).closest("section") as HTMLElement;
+    await waitFor(() => expect(within(tile("확인 필요")).getByText("2")).toBeVisible());
+    expect(within(tile("진행 중인 점검")).getByText("실행 1 · 일시중지 1")).toBeVisible();
+    // 처리할 일 목록에는 없고, 진행 중인 점검 목록에 일시중지로 한 번만 나온다
+    expect(within(section("지금 처리할 일")).queryByText("점검 pause")).toBeNull();
+    const row = within(section("진행 중인 점검")).getByText("점검 pause").closest(".recent-row") as HTMLElement;
+    expect(within(row).getByText("일시중지")).toBeVisible();
   });
 });

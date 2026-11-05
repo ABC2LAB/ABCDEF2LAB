@@ -122,10 +122,14 @@ function Tile({ k, v, sub, attn }: { k: string; v: ReactNode; sub: ReactNode; at
   );
 }
 
-type TodoKind = "approval" | "paused" | "unfinished" | "coverage";
+/**
+ * 처리할 일의 종류. 타일 하나에 한 번씩만 세도록 나눈다:
+ * 승인 대기 → '승인 대기' 타일, 끝까지 못 간 점검 · 덜 본 점검 → '확인 필요' 타일.
+ * 일시중지된 점검은 아직 진행 중인 점검이라 '진행 중인 점검' 타일과 목록에서만 보여 준다(중복 집계 방지).
+ */
+type TodoKind = "approval" | "unfinished" | "coverage";
 type Todo = { key: string; kind: TodoKind; title: string; meta: string; action: ReactNode };
 const TODO_KIND_LABEL: Record<Exclude<TodoKind, "approval">, string> = {
-  paused: "일시중지",
   unfinished: "끝까지 못 감",
   coverage: "미검사 영역",
 };
@@ -191,7 +195,7 @@ export default function DashboardScreen() {
     go(screen);
   };
 
-  // ── 지금 처리할 일: 승인 대기 → 일시중지 → 최근 7일 안에 끝까지 못 간 점검 → 덜 본 점검
+  // ── 지금 처리할 일: 승인 대기 → 최근 7일 안에 끝까지 못 간 점검 → 덜 본 점검
   const todos: Todo[] = [];
   for (const p of pending) {
     todos.push({
@@ -209,19 +213,6 @@ export default function DashboardScreen() {
           }}
         >
           승인하기
-        </button>
-      ),
-    });
-  }
-  for (const t of stats.active.filter((x) => x.status === "paused")) {
-    todos.push({
-      key: `pa-${t.id}`,
-      kind: "paused",
-      title: taskName(t),
-      meta: join([startLabel(t.created_at), "멈춘 상태 · 이어서 진행할지 확인"]),
-      action: (
-        <button className="btn xs" type="button" onClick={() => open(t.id, "live")}>
-          확인하기
         </button>
       ),
     });
