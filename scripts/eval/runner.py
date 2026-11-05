@@ -566,6 +566,8 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
                 reasons.append("down_failed")
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
             "llm_backend": spec.llm_backend, "tmpfs_usage": state.tmpfs_usage,
+            # E② 자리. 완료 결과에서는 서명된다. 세션 집계·채점이 가짜 E² 회차를 공식 결과에서 뺄 근거다.
+            "e2_mode": spec.e2_mode,
             "started_at": started_at, "finished_at": _stamp(clock)}
     if not reasons and state.record is not None:
         # v1.1 러너 기록도 down까지 통과한 뒤에만 서명한다(엔진 감사 키와 별도인 러너 키).
@@ -829,7 +831,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ports = DockerPorts(config, plan, directory, docker, findings, start, settings)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
-    result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat), ports, MeterFiles(directory.meter),
+    result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat), ports, MeterFiles(directory.meter, directory.e2),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
     return 0 if result["status"] == COMPLETE else 1

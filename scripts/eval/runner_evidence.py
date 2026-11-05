@@ -37,6 +37,9 @@ E2_STUB_LOG = "e2-stub-decisions.jsonl"
 _E2_STUB_ROW = frozenset({"seq", "fixture", "decision", "attempt_id", "caller_attempt", "method", "decided_at"})
 # allowed만 대상 쪽으로 보낸다. unsupported(Upgrade·CONNECT)와 unavailable(ID 발급 실패)은 보내지 않는다.
 E2_STUB_DECISIONS = ("allowed", "unsupported", "unavailable")
+# 결정 행의 메서드(HTTP token, RFC 9110)와 시각(cmd/eval-meter stamp: RFC 3339 UTC, 소수 초 9자리까지).
+_HTTP_METHOD = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32}\Z")
+_STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z\Z")
 
 
 # 계측기(cmd/eval-meter engineMeter)가 대상에 전달한 행 종류. upgrade(WebSocket 등)는 완료 행이 "stream"이고
@@ -192,10 +195,11 @@ def sequence_complete(rows: list[dict]) -> bool:
 
 
 class MeterFiles:
-    """계측기 bind 디렉터리 읽기. 러너는 쓰지 않는다."""
+    """계측기 bind 디렉터리 읽기. 러너는 쓰지 않는다. e2_path는 가짜 E²의 따로 둔 bind 디렉터리다."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, e2_path: Path | None = None):
         self.path = path
+        self.e2_path = e2_path
 
     def engine_rows(self) -> list[dict]:
         rows = _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW)
@@ -215,9 +219,13 @@ class MeterFiles:
 
         파일이 없으면(가짜 E²가 뜨지 않음) 회차 근거가 없는 것이다.
         """
-        data = _read_owned(self.path, E2_STUB_LOG)
+        data = None if self.e2_path is None else _read_owned(self.e2_path, E2_STUB_LOG)
         if data is None:
             raise EvidenceError("e2_stub_log_missing")
+        # drain 뒤의 최종 읽기다. 진행 중 로그와 달리 개행으로 끝나지 않은 꼬리는 잘린 기록이므로 거부한다
+        # (_rows는 쓰는 중인 마지막 줄을 버리므로 그대로 쓰면 잘린 행을 빼고 센다, #209 리뷰).
+        if data and not data.endswith(b"\n"):
+            raise EvidenceError("e2_stub_log_invalid")
         rows = _rows(data, _E2_STUB_ROW)
         if not sequence_complete(rows):
             raise EvidenceError("e2_stub_log_invalid")
@@ -227,6 +235,8 @@ class MeterFiles:
             attempt = row["attempt_id"]
             if (row["fixture"] is not True or row["decision"] not in E2_STUB_DECISIONS
                     or type(row["caller_attempt"]) is not bool or not isinstance(attempt, str)
+                    or not isinstance(row["method"], str) or not _HTTP_METHOD.match(row["method"])
+                    or not isinstance(row["decided_at"], str) or not _STAMP.match(row["decided_at"])
                     or bool(_ATTEMPT_ID.fullmatch(attempt)) != issued or (not issued and attempt != "")):
                 raise EvidenceError("e2_stub_log_invalid")
             if issued:

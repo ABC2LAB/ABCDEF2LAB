@@ -84,7 +84,10 @@ class TestMeterFiles(unittest.TestCase):
         self.dir = Path(self.tmp.name, "meter")
         self.dir.mkdir(mode=0o700)
         os.chmod(self.dir, 0o700)
-        self.meter = MeterFiles(self.dir)
+        self.e2_dir = Path(self.tmp.name, "e2")
+        self.e2_dir.mkdir(mode=0o700)
+        os.chmod(self.e2_dir, 0o700)
+        self.meter = MeterFiles(self.dir, self.e2_dir)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -94,8 +97,13 @@ class TestMeterFiles(unittest.TestCase):
         path.write_text(text)
         os.chmod(path, 0o600)
 
+    def write_e2(self, text):
+        path = self.e2_dir / "e2-stub-decisions.jsonl"
+        path.write_text(text)
+        os.chmod(path, 0o600)
+
     def stub_rows(self, *rows):
-        self.write("e2-stub-decisions.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
+        self.write_e2("".join(json.dumps(r) + "\n" for r in rows))
 
     @staticmethod
     def stub_row(seq, decision="allowed", attempt=None, **extra):
@@ -111,8 +119,12 @@ class TestMeterFiles(unittest.TestCase):
         from runner_evidence import e2_stub_counts
         self.assertEqual(e2_stub_counts(self.meter.e2_stub_rows()),
                          {"decision_rows": 4, "allowed": 2, "unsupported": 1, "unavailable": 1})
-        self.write("e2-stub-decisions.jsonl", "")
+        self.write_e2("")
         self.assertEqual(e2_stub_counts(self.meter.e2_stub_rows())["decision_rows"], 0)
+        # 계측기 디렉터리에 같은 이름이 있어도 읽지 않는다(E²는 계측기 증거를 쓰지 않는다).
+        self.write("e2-stub-decisions.jsonl", json.dumps(self.stub_row(1)) + "\n")
+        self.assertEqual(e2_stub_counts(self.meter.e2_stub_rows())["decision_rows"], 0)
+        self.assertRaisesRegex(Exception, "e2_stub_log_missing", MeterFiles(self.dir).e2_stub_rows)
 
     def test_e2_stub_summary_rejects_bad_rows(self):
         from runner_evidence import EvidenceError
@@ -126,13 +138,27 @@ class TestMeterFiles(unittest.TestCase):
             "sequence gap": [self.stub_row(1), self.stub_row(3)],
             "caller flag not bool": [self.stub_row(1, caller_attempt=1)],
             "extra field": [self.stub_row(1, path="/x")],
+            "method not a string": [self.stub_row(1, method={})],
+            "method empty": [self.stub_row(1, method="")],
+            "method with a space": [self.stub_row(1, method="GE T")],
+            "time not a string": [self.stub_row(1, decided_at=123)],
+            "time with an offset": [self.stub_row(1, decided_at="2026-11-05T09:00:00+09:00")],
+            "time without seconds": [self.stub_row(1, decided_at="2026-11-05T00:00Z")],
         }
         for name, rows in cases.items():
             with self.subTest(name=name):
                 self.stub_rows(*rows)
                 with self.assertRaises(EvidenceError):
                     self.meter.e2_stub_rows()
-        (self.dir / "e2-stub-decisions.jsonl").unlink()
+        # 최종 읽기에서는 개행으로 끝나지 않은 꼬리(잘린 행)를 거부한다. 진행 중 로그처럼 버리면 잘린 행을 빼고 센다.
+        good = json.dumps(self.stub_row(1))
+        for name, text in (("only row without newline", good),
+                           ("truncated second row", good + "\n" + '{"seq":2,"fixture":true')):
+            with self.subTest(name=name):
+                self.write_e2(text)
+                with self.assertRaisesRegex(EvidenceError, "e2_stub_log_invalid"):
+                    self.meter.e2_stub_rows()
+        (self.e2_dir / "e2-stub-decisions.jsonl").unlink()
         with self.assertRaisesRegex(EvidenceError, "e2_stub_log_missing"):
             self.meter.e2_stub_rows()
 

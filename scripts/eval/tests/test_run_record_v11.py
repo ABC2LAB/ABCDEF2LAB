@@ -349,10 +349,14 @@ class TestComparison(_V11):
         with self.assertRaisesRegex(ComparabilityError, "E② 자리 혼합"):
             build_report(self.load([none, stub]), self.correlate, self.correlatable, runner_key=self.runner_key)
 
-    def test_stub_runs_are_flagged_not_official(self):
-        report = build_report(self.load([self.v11("s1", e2=E2_STUB_PLACEMENT),
-                                         self.v11("s2", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
-                              self.correlate, self.correlatable, runner_key=self.runner_key)
+    def test_stub_runs_are_refused_unless_allowed_then_flagged(self):
+        with self.assertRaisesRegex(ComparabilityError, "가짜 E② 회차"):
+            build_report(self.load([self.v11("s1", e2=E2_STUB_PLACEMENT),
+                                    self.v11("s2", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
+                         self.correlate, self.correlatable, runner_key=self.runner_key)
+        report = build_report(self.load([self.v11("s3", e2=E2_STUB_PLACEMENT),
+                                         self.v11("s4", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
         self.assertTrue(any("가짜 E②" in w for w in report.warnings), report.warnings)
         plain = build_report(self.load([self.v11("p1"), self.v11("p2", repeat_index=1)]), self.correlate,
                              self.correlatable, runner_key=self.runner_key)
