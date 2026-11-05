@@ -205,6 +205,14 @@
       }
     },
     {
+      "name": "canary_field_repeated_on_resource",
+      "registry": "{\"format\":\"abc2lab.kg-fixture-registry/v1\",\"snapshot_id\":\"kgfx-vector-1\",\"run_id\":\"prep-run-1\",\"reset_generation\":\"reset-1\",\"generation_ref\":\"gen-1\",\"instance_ref\":\"target-1\",\"principals\":[{\"label\":\"account-a\"},{\"label\":\"account-b\"}],\"resources\":[{\"resource_ref\":\"note:1001\",\"owner_ref\":\"account-a\",\"policies\":[{\"evaluated_ref\":\"account-b\",\"expected_access\":\"deny\",\"sharing\":\"resolved_none\",\"delegation\":\"resolved_none\",\"valid_from\":\"2026-11-05T00:00:00Z\",\"valid_until\":\"2026-11-06T00:00:00Z\"}],\"canaries\":[{\"field\":\"body\",\"value\":\"kgfx-canary-7f3a\",\"trivial\":false},{\"field\":\"body\",\"value\":\"1001\",\"trivial\":true}]}]}",
+      "expect": {
+        "error": "registry_duplicate",
+        "layer": "schema"
+      }
+    },
+    {
       "name": "snapshot_id_too_long",
       "registry": "{\"format\":\"abc2lab.kg-fixture-registry/v1\",\"snapshot_id\":\"ssssssssssssssssssssssssssssssssssssssssssssssssss\",\"run_id\":\"prep-run-1\",\"reset_generation\":\"reset-1\",\"generation_ref\":\"gen-1\",\"instance_ref\":\"target-1\",\"principals\":[{\"label\":\"account-a\"},{\"label\":\"account-b\"}],\"resources\":[{\"resource_ref\":\"note:1001\",\"owner_ref\":\"account-a\",\"policies\":[{\"evaluated_ref\":\"account-b\",\"expected_access\":\"deny\",\"sharing\":\"resolved_none\",\"delegation\":\"resolved_none\",\"valid_from\":\"2026-11-05T00:00:00Z\",\"valid_until\":\"2026-11-06T00:00:00Z\"}],\"canaries\":[{\"field\":\"body\",\"value\":\"kgfx-canary-7f3a\",\"trivial\":false},{\"field\":\"id\",\"value\":\"1001\",\"trivial\":true}]}]}",
       "expect": {

@@ -28,7 +28,7 @@
 | `principals[]` | 계정 라벨 목록 | `idor.AccountRef.Label`과 1:1. 중복 금지 |
 | `resources[]` | `resource_ref`(전체 `type:id`, 마지막 콜론 split), `owner_ref`(principal 라벨) | `resource_ref` 중복 금지 |
 | `resources[].policies[]` | 평가 주체별 정책: `evaluated_ref`, `expected_access`(allow·deny·unknown), `sharing`·`delegation`(oracle `ResolutionState` 값), `valid_from`·`valid_until` | 모든 필드 명시 필수(누락을 기본값으로 메우지 않음). `evaluated_ref` 중복 금지 |
-| `resources[].canaries[]` | `field`, `value`, `trivial` | `trivial`은 명시 필수(확신 없으면 true, §3.1). `value`는 한 세대 안에서 전역 유일(§3.2(3)) |
+| `resources[].canaries[]` | `field`, `value`, `trivial` | `trivial`은 명시 필수(확신 없으면 true, §3.1). `field`는 한 자원 안에서 유일(등록 키 = 자원+필드). `value`는 한 세대 안에서 전역 유일(§3.2(3)) |
 
 - 모르는 키·중복 키·빈 문자열·형식이 틀린 ref는 전부 **로드 실패**(fail-closed). 부분만 받아 쓰지 않는다.
 - 구현이 고정한 디코딩 규칙(Go·Python 정규 바이트가 갈리지 않게):
@@ -93,11 +93,12 @@
 | `registry_unreadable` | 입력이 비었거나 1 MiB 초과 |
 | `registry_format` | JSON 문법·뒤따르는 데이터·중첩 한도, 비ASCII·제어 문자, 정수 아닌 숫자, 타입·빈 문자열·`null`, 필수 키 누락, `format` 값, 빈 `principals`·`resources`, 등록 안 된 `owner_ref`·`evaluated_ref`, 열거값(`expected_access`·`sharing`·`delegation`), 시각 형식·`valid_from ≥ valid_until`, `trivial`이 bool 아님 |
 | `registry_unknown_field` | 정해진 키 밖의 키 |
-| `registry_duplicate` | 중복 키(이스케이프 별칭 포함), 같은 라벨·`resource_ref`·`evaluated_ref` |
+| `registry_duplicate` | 중복 키(이스케이프 별칭 포함), 같은 라벨·`resource_ref`·`evaluated_ref`, 한 자원 안의 같은 canary `field`(등록 키는 자원+필드이고, E② view가 같은 필드를 거부함) |
 | `ref_format` | 공통 ref 문법 위반, `snapshot_id` 49바이트 초과, `resource_ref`가 `type:id`가 아님 |
 | `canary_value_not_unique` | canary `value`가 레지스트리 안에서 겹침 |
 | `canary_trivial_missing` | canary에 `trivial` 없음 |
-| `snapshot_invalid` | `Invalidate` 뒤의 `Err()` |
+| `snapshot_invalid` | `Invalidate` 뒤의 `Err()`·`CheckPairing` |
+| `pairing_labels` · `pairing_resources` · `pairing_reset` · `pairing_markers` | `CheckPairing`(§9): 라벨 집합 · 자원 참조 집합 · reset 세대 · 자원별 marker 집합이 E② snapshot과 다름 |
 
 ## 7. 시험 (구현됨)
 
@@ -114,11 +115,16 @@
    - 고정 방식(2026-11-05 결정): 평가용은 파일째 결과 전 커밋, 실제 진단 대상용은 저장소 밖에 두고 policy version만 커밋(§2).
 3. ~~실제 입력 대장의 "동결한 KG 정책 … 실제 reader" 행을 1단계분은 이 resolver(최민준)로 바꾸는 수정~~ — #197로 반영했다.
 4. `ReadApprovalRef`(자원별 실행 승인)는 E² 등록 몫이라 이 레지스트리에 넣지 않는다. 서버가 같은 `resource_ref`로 대조한다.
+5. ~~A/B fixture·세션 비밀 파일 형식~~ — 새 형식을 만들지 않는다. E② private snapshot(§9, [E② 서버 런타임](./e2-server-runtime.md))이 그 형식이고, 레지스트리와의 짝은 §9 `CheckPairing`으로 확인한다.
 
 ## 9. E② private snapshot과의 대응·1단계 준비 순서
 
 A/B 세션의 비밀 전달 형식은 새로 만들지 않는다. [E② 서버 런타임](./e2-server-runtime.md)의 private snapshot(전용 `0700` 디렉터리의 `<snapshot_ref>.json` + `0600` 헤더 파일, 세션 원문은 JSON에 넣지 않음)을 그대로 쓴다.
 레지스트리와 snapshot은 **같은 준비 단계에서 함께** 만들고, 아래 값이 서로 맞아야 한다. 서버는 snapshot 등록 때 레지스트리를 로드·동결해 대조하고, 하나라도 다르면 실행하지 않는다(이동찬, 서버 조립).
+
+- 대조 함수: `(*kgfixture.Snapshot).CheckPairing(kgfixture.Pairing)`. 서버가 등록하는 snapshot에서 `sessions[].label`, `reset_ref`, `resources[].ref → resources[].view.Markers`(view 없음 = marker 없음)만 채워 넘긴다. 세션 비밀·URL·승인은 넘기지 않는다.
+- 집합은 정확히 같아야 한다(순서 무관, 한쪽에만 있거나 반복되면 불일치). marker는 `field`·`value`·`trivial` 셋이 모두 같아야 한다. 소유(`owner_ref`)는 대조하지 않는다. E② `accounts`는 조회 허용 목록이지 소유가 아니다.
+- 불일치는 고정 코드(`pairing_*`, §6)로만 알린다. 무효화된 snapshot이면 `snapshot_invalid`다.
 
 | 레지스트리 | E② snapshot | 비고 |
 |---|---|---|

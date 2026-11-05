@@ -220,6 +220,9 @@ func TestParseRejects(t *testing.T) {
 		{name: "canary value repeated on another resource", edit: func(m map[string]any) {
 			resourceAt(m, 1)["canaries"] = []any{map[string]any{"field": "body", "value": sentinel, "trivial": false}}
 		}, want: CodeCanaryNotUnique},
+		{name: "canary field repeated on the same resource", edit: func(m map[string]any) {
+			resourceAt(m, 0)["canaries"].([]any)[1].(map[string]any)["field"] = "body"
+		}, want: CodeDuplicate},
 		{name: "canary value repeated on the same resource", edit: func(m map[string]any) {
 			resourceAt(m, 0)["canaries"].([]any)[1].(map[string]any)["value"] = sentinel
 		}, want: CodeCanaryNotUnique},
@@ -291,6 +294,8 @@ func TestParseRejects(t *testing.T) {
 
 func TestBoundaryInputsAccepted(t *testing.T) {
 	registry := validRegistry()
+	// The same field on another resource is a different canary key and stays allowed.
+	resourceAt(registry, 1)["canaries"] = []any{map[string]any{"field": "body", "value": "kgfx-other-body", "trivial": false}}
 	registry["snapshot_id"] = strings.Repeat("s", maxSnapshotIDBytes)
 	registry["generation_ref"] = strings.Repeat("g", maxRefBytes)
 	canaryOf(registry)["value"] = `say "hi" \ ok ~`
