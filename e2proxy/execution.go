@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -107,9 +108,9 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 		return nil, ErrConfig
 	}
 	l := cfg.Limits
-	if l.MaxAttempts == 0 || l.MaxAttempts > 40000 || l.MaxCalls <= 0 || l.MaxCalls > 1000 || l.MaxConcurrent <= 0 || l.MaxConcurrent > 100 ||
-		l.MaxBodyBytes <= 0 || l.MaxBodyBytes > 16<<20 || l.RequestTimeout <= 0 || l.RequestTimeout > 2*time.Minute ||
-		l.CallTimeout <= 0 || l.CallTimeout > time.Hour || l.MaxDenials == 0 || l.MaxTransient == 0 || l.MaxUnknown == 0 {
+	if l.MaxAttempts == 0 || l.MaxAttempts > maxExecutionAttempts || l.MaxCalls <= 0 || l.MaxCalls > maxExecutionCalls || l.MaxConcurrent <= 0 || l.MaxConcurrent > maxConcurrentRequests ||
+		l.MaxBodyBytes <= 0 || l.MaxBodyBytes > maxRequestBodyBytes || l.RequestTimeout <= 0 || l.RequestTimeout > maxRequestTimeout ||
+		l.CallTimeout <= 0 || l.CallTimeout > maxCallTimeout || l.MaxDenials == 0 || l.MaxTransient == 0 || l.MaxUnknown == 0 {
 		return nil, ErrConfig
 	}
 	rules, err := compileRules(cfg.Rules)
@@ -135,7 +136,7 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), secretHeaders: credentialHeaderNames(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentGate: make(chan struct{}, 1)}, nil
 }
 func compileRules(rules []Rule) ([]compiledRule, error) {
-	if len(rules) == 0 || len(rules) > 128 {
+	if len(rules) == 0 || len(rules) > maxExecutionRules {
 		return nil, ErrConfig
 	}
 	out := make([]compiledRule, 0, len(rules))
@@ -635,8 +636,8 @@ func (e *Execution) Calls() []CallResult {
 func (e *Execution) Events(after uint64, limit int) []Event {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if limit <= 0 || limit > 200 {
-		limit = 200
+	if limit <= 0 || limit > maxEventPageSize {
+		limit = maxEventPageSize
 	}
 	out := []Event{}
 	for _, ev := range e.events {
@@ -662,8 +663,8 @@ func (e *Execution) EventsForIntent(intentID int64, after uint64, limit int) []E
 	if _, registered := e.intents[intentID]; !registered {
 		return out
 	}
-	if limit <= 0 || limit > 200 {
-		limit = 200
+	if limit <= 0 || limit > maxEventPageSize {
+		limit = maxEventPageSize
 	}
 	for _, event := range e.events {
 		if event.IntentID == intentID && event.Index > after {
@@ -810,6 +811,19 @@ type guardedConn struct {
 	c        *Call
 	revision string
 	ob       *observed
+}
+
+// This constructor owns conn. Only an armed connection may become the
+// write-guarded capability returned to net/http's transport.
+func newDeadlineGuardedConn(conn net.Conn, call *Call, revision string, ob *observed) (net.Conn, error) {
+	if err := conn.SetDeadline(time.Now().Add(call.e.cfg.Limits.RequestTimeout)); err != nil {
+		if closeErr := conn.Close(); closeErr != nil {
+			// Fixed diagnostics only: transport errors may contain private peer details.
+			log.Print("[e2proxy] request_connection_close_failed after=deadline_unavailable")
+		}
+		return nil, ErrDenied
+	}
+	return &guardedConn{Conn: conn, c: call, revision: revision, ob: ob}, nil
 }
 
 func (g *guardedConn) Write(p []byte) (int, error) {
@@ -978,8 +992,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		if derr != nil {
 			return nil, ErrDenied
 		}
-		_ = conn.SetDeadline(time.Now().Add(e.cfg.Limits.RequestTimeout))
-		return &guardedConn{Conn: conn, c: c, revision: revision, ob: ob}, nil
+		return newDeadlineGuardedConn(conn, c, revision, ob)
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
