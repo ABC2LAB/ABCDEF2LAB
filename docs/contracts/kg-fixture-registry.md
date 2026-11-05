@@ -28,7 +28,7 @@
 | `principals[]` | 계정 라벨 목록 | `idor.AccountRef.Label`과 1:1. 중복 금지 |
 | `resources[]` | `resource_ref`(전체 `type:id`, 마지막 콜론 split), `owner_ref`(principal 라벨) | `resource_ref` 중복 금지 |
 | `resources[].policies[]` | 평가 주체별 정책: `evaluated_ref`, `expected_access`(allow·deny·unknown), `sharing`·`delegation`(oracle `ResolutionState` 값), `valid_from`·`valid_until` | 모든 필드 명시 필수(누락을 기본값으로 메우지 않음). `evaluated_ref` 중복 금지 |
-| `resources[].canaries[]` | `field`, `value`, `trivial` | `trivial`은 명시 필수(확신 없으면 true, §3.1). `value`는 한 세대 안에서 전역 유일(§3.2(3)) |
+| `resources[].canaries[]` | `field`, `value`, `trivial` | `trivial`은 명시 필수(확신 없으면 true, §3.1). `field`는 한 자원 안에서 유일(등록 키 = 자원+필드). `value`는 한 세대 안에서 전역 유일(§3.2(3)) |
 
 - 모르는 키·중복 키·빈 문자열·형식이 틀린 ref는 전부 **로드 실패**(fail-closed). 부분만 받아 쓰지 않는다.
 - 구현이 고정한 디코딩 규칙(Go·Python 정규 바이트가 갈리지 않게):
@@ -93,7 +93,7 @@
 | `registry_unreadable` | 입력이 비었거나 1 MiB 초과 |
 | `registry_format` | JSON 문법·뒤따르는 데이터·중첩 한도, 비ASCII·제어 문자, 정수 아닌 숫자, 타입·빈 문자열·`null`, 필수 키 누락, `format` 값, 빈 `principals`·`resources`, 등록 안 된 `owner_ref`·`evaluated_ref`, 열거값(`expected_access`·`sharing`·`delegation`), 시각 형식·`valid_from ≥ valid_until`, `trivial`이 bool 아님 |
 | `registry_unknown_field` | 정해진 키 밖의 키 |
-| `registry_duplicate` | 중복 키(이스케이프 별칭 포함), 같은 라벨·`resource_ref`·`evaluated_ref` |
+| `registry_duplicate` | 중복 키(이스케이프 별칭 포함), 같은 라벨·`resource_ref`·`evaluated_ref`, 한 자원 안의 같은 canary `field`(등록 키는 자원+필드이고, E② view가 같은 필드를 거부함) |
 | `ref_format` | 공통 ref 문법 위반, `snapshot_id` 49바이트 초과, `resource_ref`가 `type:id`가 아님 |
 | `canary_value_not_unique` | canary `value`가 레지스트리 안에서 겹침 |
 | `canary_trivial_missing` | canary에 `trivial` 없음 |

@@ -226,11 +226,19 @@ func (s *Snapshot) addResource(item any, principals, canaryValues map[string]boo
 	if err != nil {
 		return err
 	}
+	// A canary is keyed by resource and field (kg-policy §3.2), and the E² view
+	// that receives these markers refuses a repeated field (transmit/config.go),
+	// so one field may carry only one value per resource.
+	canaryFieldsSeen := map[string]bool{}
 	for _, item := range canaries {
 		marker, err := parseCanary(item)
 		if err != nil {
 			return err
 		}
+		if canaryFieldsSeen[marker.Field] {
+			return reject(CodeDuplicate)
+		}
+		canaryFieldsSeen[marker.Field] = true
 		// One generation's canary values are globally unique (kg-policy §3.2(3)),
 		// so an observed value points back to exactly one resource.
 		if canaryValues[marker.Value] {
