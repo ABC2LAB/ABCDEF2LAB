@@ -204,9 +204,7 @@ class RuntimeChecks(unittest.TestCase):
         issues = check(self.tool, self.sender, self.target, self.network, self.volume,
                        VOLUME, NETWORK, RUN, PROJECT,
                        [self.tool, self.sender, self.target, unrelated, unrelated_target])
-        self.assertNotIn("unapproved_network_namespace_peer", issues)
-        self.assertNotIn("unapproved_pid_namespace_peer", issues)
-        self.assertNotIn("unapproved_ipc_namespace_peer", issues)
+        self.assertEqual(issues, [])
 
     def test_namespace_name_and_short_id_are_fail_closed(self):
         for field, value in (("NetworkMode", "sender-name"),
