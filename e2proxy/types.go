@@ -52,6 +52,16 @@ type Recorder interface {
 
 // Rule is privileged input from the trusted approval issuer. A method grant
 // does not assert that an application operation has no side effects.
+// HeaderMode is a transfer-support selection, not an approval or policy digest.
+type HeaderMode string
+
+const (
+	HeaderPreserve HeaderMode = "preserve"
+	// This opt-in host seam is a Draft proposal, not an adopted general-mode
+	// contract or an authorization to activate protected session injection.
+	HeaderProtectedSessionProposal HeaderMode = "protected_session_proposal"
+)
+
 type Rule struct {
 	Ref          string
 	Origin       string
@@ -59,7 +69,12 @@ type Rule struct {
 	PathPrefix   string
 	PathScopeRef string
 	Methods      []string
-	Headers      http.Header `json:"-"`
+	// Headers explicitly declares ordinary, noncredential constraints. Values
+	// must already match the caller; they are never injected or overwritten.
+	Headers http.Header `json:"-"`
+	// CredentialHeaders explicitly declares protected values, including custom
+	// credential names. It is accepted only by the opt-in proposal mode.
+	CredentialHeaders http.Header `json:"-"`
 }
 type Limits struct {
 	MaxAttempts    uint64
@@ -73,6 +88,7 @@ type Limits struct {
 	MaxUnknown     uint64
 }
 type Config struct {
+	HeaderMode     HeaderMode
 	Scope          transmit.Scope
 	IntentID       int64
 	OwnerRef       string
@@ -130,6 +146,7 @@ type Counts struct {
 	Calls            int    `json:"calls"`
 }
 type ExecutionView struct {
+	HeaderMode     HeaderMode     `json:"header_mode"`
 	IntentIDs      []int64        `json:"intent_ids"`
 	Version        string         `json:"version"`
 	Scope          transmit.Scope `json:"scope"`
@@ -148,6 +165,7 @@ type RuleView struct {
 	PathScopeRef string   `json:"path_scope_ref"`
 }
 type PolicyView struct {
+	HeaderMode        HeaderMode `json:"header_mode"`
 	BudgetRef         string     `json:"budget_ref"`
 	RemainingRequests uint64     `json:"remaining_requests"`
 	BudgetAvailable   bool       `json:"budget_available"`

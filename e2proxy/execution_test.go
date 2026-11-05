@@ -213,34 +213,29 @@ func TestCoreStopAuditFailureIsNeverSuccessfulRetry(t *testing.T) {
 		}
 	}
 }
-func TestCoreHeaderSecretsAndAttemptForgery(t *testing.T) {
+func TestCoreAllowedProxyMetadataRemovalKeepsSafeResponse(t *testing.T) {
 	var got http.Header
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Header.Clone()
-		w.Header().Set("Set-Cookie", "private=secret")
-		io.WriteString(w, r.Header.Get("Authorization"))
+		w.Header().Set("X-Public", "untouched")
+		io.WriteString(w, "public response")
 	}))
 	defer target.Close()
-	cfg := coreConfig(t, target.URL, &coreRecorder{}, 2)
-	cfg.Rules[0].Headers = http.Header{"Authorization": {"Bearer synthetic-private"}}
-	_, c := coreOpen(t, cfg)
+	_, call := coreOpen(t, coreConfig(t, target.URL, &coreRecorder{}, 2))
 	req := coreRequest(t, "GET", target.URL+"/allowed")
-	req.Header.Set("Proxy-Authorization", "Bearer attribution-forgery")
-	req.Header.Set(AttemptHeader, "e2v1_"+strings.Repeat("0", 32))
-	req.Header.Set("Cookie", "caller-cookie")
-	req.Header.Set("Authorization", "caller-secret")
-	resp, r, err := c.Do(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
+	req.Header.Set("Proxy-Authorization", "caller-proxy-data")
+	req.Header.Set(AttemptHeader, "caller-forged")
+	response, receipt, err := call.Do(t.Context(), req)
+	if err != nil || response == nil {
+		t.Fatal("positive public response failed")
 	}
-	body, _ := io.ReadAll(resp.Body)
-	if got.Get("Proxy-Authorization") != "" || got.Get("Cookie") != "" || got.Get("Authorization") != "Bearer synthetic-private" || got.Get(AttemptHeader) != r.AttemptID || !safeAttempt.MatchString(r.AttemptID) {
-		t.Fatal("upstream headers")
-	}
-	if string(body) != "[REDACTED]" || resp.Header.Get("Set-Cookie") != "" {
-		t.Fatal("sensitive echo")
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if got.Get("Proxy-Authorization") != "" || got.Get(AttemptHeader) != receipt.AttemptID || !safeAttempt.MatchString(receipt.AttemptID) || string(body) != "public response" || response.Header.Get("X-Public") != "untouched" {
+		t.Fatal("proxy metadata or public response was altered")
 	}
 }
+
 func TestCorePartialResponseIsUnknown(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, ok := w.(http.Hijacker)
@@ -387,7 +382,8 @@ func TestCoreExpiredApprovalIsBlockedAtWrite(t *testing.T) {
 
 func TestCoreRetainsCredentialSubvaluesAfterReduction(t *testing.T) {
 	cfg := coreConfig(t, "http://127.0.0.1", &coreRecorder{}, 2)
-	cfg.Rules[0].Headers = http.Header{"Authorization": {"Bearer synthetic-bearer"}, "Cookie": {"sid=synthetic-cookie; other=synthetic-other"}}
+	cfg.HeaderMode = HeaderProtectedSessionProposal
+	cfg.Rules[0].CredentialHeaders = http.Header{"Authorization": {"Bearer synthetic-bearer"}, "Cookie": {"sid=synthetic-cookie; other=synthetic-other"}}
 	cfg.Rules = append(cfg.Rules, Rule{Ref: "rule2", Origin: "http://127.0.0.1", ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/remaining", PathScopeRef: "remaining", Methods: []string{"GET"}})
 	e, _ := coreOpen(t, cfg)
 	if err := e.Restrict(context.Background(), Restriction{PolicyRevision: "revision2", ExpiresAt: cfg.ExpiresAt, RuleRefs: []string{"rule2"}, Methods: []string{"GET"}}); err != nil {
@@ -928,7 +924,8 @@ func TestCoreEncodedCredentialEchoIsWithheldAfterSend(t *testing.T) {
 	}))
 	defer target.Close()
 	cfg := coreConfig(t, target.URL, &coreRecorder{}, 2)
-	cfg.Rules[0].Headers = http.Header{"Authorization": {"Bearer " + secret}}
+	cfg.HeaderMode = HeaderProtectedSessionProposal
+	cfg.Rules[0].CredentialHeaders = http.Header{"Authorization": {"Bearer " + secret}}
 	_, call := coreOpen(t, cfg)
 	response, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
 	if err == nil || response != nil || received.Load() != 1 || receipt.Decision != "allowed" || !receipt.ForwardAttempted || !receipt.ResponseReceived || receipt.NotSent || receipt.Reason != Unknown {
