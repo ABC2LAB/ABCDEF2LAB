@@ -23,18 +23,20 @@ from test_runner_checks import DAEMON, PROJECT, SERVICE_IDS, by_key, by_service,
 from test_runner_config import runner_config
 
 
-def make_plan(backend="api", **ports):
+def make_plan(backend="api", e2=None, **ports):
     preflight = configuration()
     if backend == "local":
         for side in ("baseline", "ours"):
             preflight[side]["llm"] = local_llm()
     payload = runner_config()
     payload["ports"].update(ports)
+    if e2 is not None:
+        payload["e2"]["ours_mode"] = e2
     return plan_run(parse_runner_config(payload), preflight, "ours", "ours-1")
 
 
-def make_snapshot(networks=None, containers=None):
-    world = raw_world()
+def make_snapshot(networks=None, containers=None, stub=False):
+    world = raw_world(stub)
     return network_snapshot(DAEMON, PROJECT, *facts(networks or world[0], containers or world[1]))
 
 
@@ -75,6 +77,34 @@ def expected_report(expectations, **overrides):
 
 
 class TestExpectations(unittest.TestCase):
+    def test_e2_stub_front_is_positive_and_the_real_meter_is_unreachable(self):
+        rows = {e.id: e for e in probe_expectations(make_plan(e2="stub"), make_snapshot(stub=True))}
+        # 엔진이 보내는 이름은 그대로(eval-meter:8080). 그 이름을 E²가 받는다.
+        self.assertEqual((rows["e2_front_tcp"].target, rows["e2_front_tcp"].role), ("eval-meter:8080", POSITIVE))
+        self.assertNotIn("meter_tcp", rows)
+        # 실제 계측기: target_net·e2_net 주소 모두 경로 없음, 컨테이너 이름·짧은 ID·upstream 별칭은 이름 없음.
+        meter_ips = {k for k in rows if k.startswith("meter_ip:")}
+        self.assertEqual(meter_ips, {"meter_ip:172.31.0.3:8080", "meter_ip:172.35.0.3:8080"})
+        for key in meter_ips:
+            self.assertEqual((rows[key].role, rows[key].accepted), (NEGATIVE, {"timeout", "unreachable"}))
+        for name in ("eval-ours-1-eval-meter-1", "444444444444", "eval-meter-upstream"):
+            self.assertEqual((rows[f"dns:{name}"].role, rows[f"dns:{name}"].accepted),
+                             (NEGATIVE, {"not_found", "dns_error"}))
+        # 계측기 서비스 이름은 엔진 망에서 E²의 별칭이라 음성 대조에 넣지 않는다(양성 대조와 모순).
+        self.assertNotIn("dns:eval-meter", rows)
+        # 나머지 경로(대상·관측 front·LLM·게이트웨이 관측 포트)는 E² 없는 회차와 같다.
+        base = {e.id: (e.kind, e.target, e.role) for e in probe_expectations(make_plan(), make_snapshot())}
+        base.pop("meter_tcp")
+        stub = {k: (e.kind, e.target, e.role) for k, e in rows.items()
+                if k != "e2_front_tcp" and not k.startswith("meter_ip:") and k not in
+                {"dns:eval-ours-1-eval-meter-1", "dns:444444444444", "dns:eval-meter-upstream"}}
+        self.assertEqual(stub, base)
+
+    def test_unknown_e2_mode_is_refused(self):
+        import dataclasses
+        with self.assertRaises(ProbeSetupError):
+            probe_expectations(dataclasses.replace(make_plan(), e2_mode="product"), make_snapshot())
+
     def test_api_paths_from_snapshot_and_backend(self):
         expectations = probe_expectations(make_plan(), make_snapshot())
         self.assertEqual({e.id: (e.kind, e.target, e.role) for e in expectations}, EXPECTED_API)

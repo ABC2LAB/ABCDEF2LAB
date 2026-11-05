@@ -1,0 +1,648 @@
+"""Synthetic guard tests. They do not prove Docker or A integration."""
+
+import copy
+import contextlib
+import io
+import json
+import subprocess
+import unittest
+from unittest import mock
+
+from verify_runtime import CHANNEL, check
+import probe_network
+import verify_runtime
+from probe_network import CHILD_BLOCKED_EXIT, CHECK_NAMES, ChildProbeBlocked, attempt, child, expected_failure
+
+
+VOLUME = "e2-run-123-channel"
+NETWORK = "e2-run-123-target"
+RUN = "run-123"
+PROJECT = "e2-run-123"
+NETWORK_ID = "synthetic-network-id"
+
+
+def objects():
+    tool = {
+        "Id": "a" * 64,
+        "State": {"Running": True, "Pid": 1001},
+        "Config": {"User": "10001:10001", "Labels": {
+            "org.abc2lab.e2.run": RUN, "org.abc2lab.e2.role": "tool",
+            "com.docker.compose.project": PROJECT}},
+        "HostConfig": {
+            "NetworkMode": "none", "Privileged": False, "PidMode": "", "UsernsMode": "",
+            "IpcMode": "private", "ReadonlyRootfs": True, "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges:true"], "PidsLimit": 128,
+            "PortBindings": {},
+        },
+        "NetworkSettings": {"Networks": {"none": {}}, "Ports": {}},
+        "Mounts": [{"Destination": CHANNEL, "Name": VOLUME, "RW": False, "Type": "volume"}],
+    }
+    sender = {
+        "Id": "b" * 64,
+        "State": {"Running": True, "Pid": 1002},
+        "Config": {"User": "10002:10002", "Labels": {
+            "org.abc2lab.e2.run": RUN, "org.abc2lab.e2.role": "sender",
+            "com.docker.compose.project": PROJECT}},
+        "HostConfig": {"NetworkMode": NETWORK, "PidMode": "", "UsernsMode": "", "IpcMode": "private",
+                       "Privileged": False, "PortBindings": {},
+                       "ReadonlyRootfs": True, "CapDrop": ["ALL"],
+                       "SecurityOpt": ["no-new-privileges:true"]},
+        "NetworkSettings": {"Networks": {NETWORK: {"NetworkID": NETWORK_ID}}, "Ports": {}},
+        "Mounts": [{"Destination": CHANNEL, "Name": VOLUME, "RW": True, "Type": "volume"}],
+    }
+    target = {"Id": "c" * 64, "State": {"Running": True},
+              "HostConfig": {"PidMode": "", "IpcMode": "private"},
+              "NetworkSettings": {
+        "Networks": {NETWORK: {"NetworkID": NETWORK_ID}}}}
+    network = {"Id": NETWORK_ID, "Name": NETWORK, "Internal": True,
+               "Driver": "bridge", "Scope": "local", "Attachable": False,
+               "Options": {"com.docker.network.bridge.gateway_mode_ipv4": "isolated",
+                           "com.docker.network.bridge.gateway_mode_ipv6": "isolated"},
+               "Containers": {"b" * 64: {}, "c" * 64: {}},
+               "Labels": {"org.abc2lab.e2.run": RUN}}
+    volume = {"Name": VOLUME, "Mountpoint": f"/var/lib/docker/volumes/{VOLUME}/_data",
+              "Driver": "local", "Scope": "local", "Options": None,
+              "Labels": {"org.abc2lab.e2.run": RUN}}
+    return tool, sender, target, network, volume
+
+
+class RuntimeChecks(unittest.TestCase):
+    def setUp(self):
+        self.tool, self.sender, self.target, self.network, self.volume = copy.deepcopy(objects())
+
+    def inspect(self):
+        return check(self.tool, self.sender, self.target, self.network, self.volume, VOLUME, NETWORK, RUN, PROJECT,
+                     [self.tool, self.sender, self.target])
+
+    def test_expected_boundary(self):
+        self.assertEqual(self.inspect(), [])
+
+    def test_tool_bridge_or_extra_network_is_rejected(self):
+        self.tool["HostConfig"]["NetworkMode"] = "bridge"
+        self.assertIn("tool_has_ip_network", self.inspect())
+        self.tool["HostConfig"]["NetworkMode"] = "none"
+        self.tool["NetworkSettings"]["Networks"][NETWORK] = {}
+        self.assertIn("tool_has_ip_network", self.inspect())
+
+    def test_extra_or_writeable_tool_mount_is_rejected(self):
+        self.tool["Mounts"].append({"Destination": "/var/run/docker.sock", "RW": True})
+        self.assertIn("tool_unapproved_mount", self.inspect())
+        self.tool["Mounts"] = [{"Destination": CHANNEL, "Name": VOLUME, "RW": True, "Type": "volume"}]
+        self.assertIn("tool_unapproved_mount", self.inspect())
+
+    def test_privilege_and_unbounded_children_are_rejected(self):
+        self.tool["HostConfig"]["Privileged"] = True
+        self.tool["HostConfig"]["PidsLimit"] = 0
+        self.assertIn("tool_has_host_privilege", self.inspect())
+        self.assertIn("tool_unbounded_processes", self.inspect())
+
+    def test_cap_add_device_and_unconfined_are_rejected(self):
+        self.tool["HostConfig"]["CapAdd"] = ["NET_ADMIN"]
+        self.sender["HostConfig"]["DeviceRequests"] = [{"Driver": "nvidia"}]
+        self.sender["HostConfig"]["SecurityOpt"] += ["seccomp=unconfined"]
+        self.assertIn("tool_has_host_privilege", self.inspect())
+        self.assertIn("sender_host_or_published_port", self.inspect())
+
+    def test_sender_must_have_internal_target_network_and_same_channel(self):
+        self.network["Internal"] = False
+        self.sender["NetworkSettings"]["Networks"] = {"bridge": {}}
+        self.sender["Mounts"][0]["Name"] = "wrong-volume"
+        issues = self.inspect()
+        self.assertIn("target_network_not_internal", issues)
+        self.assertIn("sender_network_mismatch", issues)
+        self.assertIn("sender_channel_mismatch", issues)
+
+    def test_published_port_and_root_tool_are_rejected(self):
+        self.tool["Config"]["User"] = "0:0"
+        self.sender["HostConfig"]["PortBindings"] = {"80/tcp": [{"HostPort": "8080"}]}
+        self.assertIn("tool_root_user", self.inspect())
+        self.assertIn("sender_host_or_published_port", self.inspect())
+
+    def test_sender_root_or_writable_root_is_rejected(self):
+        self.sender["Config"]["User"] = "root"
+        self.sender["HostConfig"]["ReadonlyRootfs"] = False
+        self.assertIn("sender_privilege_or_filesystem", self.inspect())
+
+    def test_pid_namespace_join_or_host_namespace_is_rejected(self):
+        self.tool["HostConfig"]["PidMode"] = "container:unapproved-id"
+        self.sender["HostConfig"]["PidMode"] = "host"
+        self.assertIn("tool_pid_or_user_namespace_unapproved", self.inspect())
+        self.assertIn("sender_namespace_unapproved", self.inspect())
+        self.tool["HostConfig"]["PidMode"] = "container:" + self.sender["Id"]
+        self.assertIn("tool_pid_or_user_namespace_unapproved", self.inspect())
+
+    def test_same_uid_or_gid_and_missing_process_pid_are_rejected(self):
+        self.sender["Config"]["User"] = "10001:10002"
+        self.tool["State"]["Pid"] = 0
+        self.assertIn("process_users_not_separated", self.inspect())
+        self.assertIn("tool_process_pid_unavailable", self.inspect())
+        self.sender["Config"]["User"] = "10002:10001"
+        self.assertIn("process_users_not_separated", self.inspect())
+
+    def test_root_or_implicit_group_and_user_namespace_are_rejected(self):
+        self.tool["Config"]["User"] = "10001:0"
+        self.sender["Config"]["User"] = "10002"
+        self.tool["HostConfig"]["UsernsMode"] = "host"
+        self.assertIn("tool_root_user", self.inspect())
+        self.assertIn("sender_privilege_or_filesystem", self.inspect())
+        self.assertIn("tool_pid_or_user_namespace_unapproved", self.inspect())
+        self.tool["Config"]["User"] = "99999999999999999999:10001"
+        self.sender["State"]["Pid"] = True
+        self.assertIn("tool_root_user", self.inspect())
+        self.assertIn("sender_process_pid_unavailable", self.inspect())
+
+    def test_false_no_new_privileges_is_rejected(self):
+        self.tool["HostConfig"]["SecurityOpt"] = ["no-new-privileges:false"]
+        self.sender["HostConfig"]["SecurityOpt"] = ["no-new-privileges:false"]
+        self.assertIn("tool_new_privileges", self.inspect())
+        self.assertIn("sender_privilege_or_filesystem", self.inspect())
+
+    def test_sender_extra_host_mount_is_rejected(self):
+        self.sender["Mounts"].append({"Destination": "/var/run/docker.sock", "Source": "/var/run/docker.sock", "RW": True})
+        self.assertIn("sender_channel_mismatch", self.inspect())
+
+    def test_channel_volume_must_match_run(self):
+        self.volume["Labels"]["org.abc2lab.e2.run"] = "other-run"
+        self.assertIn("channel_volume_run_mismatch", self.inspect())
+
+    def test_bind_backed_volume_is_rejected(self):
+        self.volume["Options"] = {"type": "none", "o": "bind", "device": "/var/run"}
+        self.assertIn("channel_volume_driver_or_options", self.inspect())
+
+    def test_unapproved_network_peer_is_rejected(self):
+        self.network["Containers"]["unapproved-third-container"] = {}
+        self.assertIn("target_network_membership_mismatch", self.inspect())
+
+    def test_unapproved_namespace_peers_are_rejected(self):
+        peer = {"Id": "unapproved-peer", "HostConfig": {
+            "NetworkMode": "container:" + self.target["Id"],
+            "PidMode": "container:" + self.sender["Id"],
+        }}
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT, [self.tool, self.sender, self.target, peer])
+        self.assertIn("unapproved_network_namespace_peer", issues)
+        self.assertIn("unapproved_pid_namespace_peer", issues)
+
+    def test_missing_container_snapshot_is_rejected(self):
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT)
+        self.assertIn("container_snapshot_unavailable", issues)
+
+    def test_foreign_channel_volume_mount_is_rejected(self):
+        for peer in (
+            {"Id": "c" * 64, "Mounts": [{"Name": VOLUME, "RW": False}]},
+            {"Id": "d" * 64, "Mounts": [{"Name": VOLUME, "RW": True}]},
+        ):
+            with self.subTest(peer=peer["Id"]):
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_foreign_bind_mount_at_channel_volume_mountpoint_is_rejected(self):
+        peer = {"Id": "d" * 64, "Mounts": [{
+            "Destination": "/tmp/channel",
+            "Source": self.volume["Mountpoint"],
+            "RW": False,
+            "Type": "bind",
+        }]}
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT,
+                       [self.tool, self.sender, self.target, peer])
+        self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_foreign_bind_mount_at_channel_volume_ancestor_is_rejected(self):
+        for source in ("/var/lib/docker/volumes", "/"):
+            with self.subTest(source=source):
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": source,
+                    "RW": True,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_foreign_bind_mount_descendant_of_channel_volume_is_rejected(self):
+        peer = {"Id": "d" * 64, "Mounts": [{
+            "Destination": "/tmp/channel",
+            "Source": self.volume["Mountpoint"] + "/socket",
+            "RW": False,
+            "Type": "bind",
+        }]}
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT,
+                       [self.tool, self.sender, self.target, peer])
+        self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_foreign_bind_mount_is_rejected_regardless_of_read_write_mode(self):
+        for read_write in (False, True):
+            with self.subTest(read_write=read_write):
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": self.volume["Mountpoint"],
+                    "RW": read_write,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("unapproved_channel_volume_peer_mount", issues)
+
+    def test_sibling_prefix_bind_mount_is_not_treated_as_channel_volume_overlap(self):
+        for source in (
+            "/var/lib/docker/volumes-other",
+            "/var/lib/docker/volume",
+            self.volume["Mountpoint"] + "_sibling",
+        ):
+            with self.subTest(source=source):
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": source,
+                    "RW": True,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertEqual(issues, [])
+
+    def test_missing_or_invalid_channel_volume_mountpoint_fails_closed(self):
+        for mountpoint in (
+            None,
+            "",
+            42,
+            "relative/path",
+            "/var/lib/docker//volumes/e2-run-123-channel/_data",
+        ):
+            with self.subTest(mountpoint=mountpoint):
+                self.volume.pop("Mountpoint", None)
+                if mountpoint is not None:
+                    self.volume["Mountpoint"] = mountpoint
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": "/var/lib/docker/volumes",
+                    "RW": True,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("channel_volume_mountpoint_unresolved", issues)
+
+    def test_ambiguous_foreign_bind_source_fails_closed(self):
+        for source in (
+            "relative/path",
+            "/var/lib/docker//volumes",
+            "/var/lib/docker/./volumes",
+            "/var/lib/docker/volumes/../volumes",
+            "/var/lib/docker/volumes\x00",
+        ):
+            with self.subTest(source=source):
+                peer = {"Id": "d" * 64, "Mounts": [{
+                    "Destination": "/tmp/channel",
+                    "Source": source,
+                    "RW": True,
+                    "Type": "bind",
+                }]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("bind_mount_source_unresolved", issues)
+
+    def test_missing_or_invalid_foreign_bind_source_fails_closed(self):
+        for source in (None, "", 42, "missing"):
+            with self.subTest(source=source):
+                mount = {
+                    "Destination": "/tmp/channel",
+                    "RW": True,
+                    "Type": "bind",
+                }
+                if source != "missing":
+                    mount["Source"] = source
+                peer = {"Id": "d" * 64, "Mounts": [mount]}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                self.assertIn("bind_mount_source_unresolved", issues)
+
+    def test_all_namespace_kinds_and_protected_roles_are_rejected(self):
+        full_ids = {
+            "tool": "a" * 64,
+            "sender": "b" * 64,
+            "target": "c" * 64,
+        }
+        self.tool["Id"], self.sender["Id"], self.target["Id"] = (full_ids[role] for role in ("tool", "sender", "target"))
+        for field in ("NetworkMode", "PidMode", "IpcMode"):
+            for role, peer in full_ids.items():
+                with self.subTest(field=field, role=role):
+                    foreign = {"Id": "d" * 64, "HostConfig": {field: "container:" + peer}}
+                    issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                                   VOLUME, NETWORK, RUN, PROJECT,
+                                   [self.tool, self.sender, self.target, foreign])
+                    self.assertIn(f"unapproved_{field.removesuffix('Mode').lower()}_namespace_peer", issues)
+
+        unrelated = {"Id": "d" * 64, "HostConfig": {
+            "NetworkMode": "container:" + ("e" * 64),
+            "PidMode": "container:" + ("e" * 64),
+            "IpcMode": "container:" + ("e" * 64),
+        }}
+        unrelated_target = {"Id": "e" * 64, "HostConfig": {}}
+        issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                       VOLUME, NETWORK, RUN, PROJECT,
+                       [self.tool, self.sender, self.target, unrelated, unrelated_target])
+        self.assertEqual(issues, [])
+
+    def test_protected_namespace_identity_must_be_inspected_full_id(self):
+        for role in range(3):
+            for bad_id in (None, "tool-name", "f" * 64):
+                with self.subTest(role=role, bad_id=bad_id):
+                    tool, sender, target, network, volume = objects()
+                    protected = [tool, sender, target]
+                    inspected = copy.deepcopy(protected)
+                    protected[role]["Id"] = bad_id
+                    issues = check(tool, sender, target, network, volume,
+                                   VOLUME, NETWORK, RUN, PROJECT, inspected)
+                    self.assertIn("protected_namespace_identity_unresolved", issues)
+
+    def test_namespace_name_and_short_id_are_fail_closed(self):
+        for field, value in (("NetworkMode", "sender-name"),
+                             ("PidMode", "e" * 63),
+                             ("IpcMode", "g" * 64),
+                             ("NetworkMode", "f" * 64),
+                             ("PidMode", "f" * 64),
+                             ("IpcMode", "f" * 64)):
+            with self.subTest(field=field):
+                peer = {"Id": "d" * 64, "HostConfig": {field: "container:" + value}}
+                issues = check(self.tool, self.sender, self.target, self.network, self.volume,
+                               VOLUME, NETWORK, RUN, PROJECT,
+                               [self.tool, self.sender, self.target, peer])
+                kind = field.removesuffix("Mode").lower()
+                self.assertIn(f"unresolved_{kind}_namespace_peer", issues)
+
+    def test_ipc_namespace_must_be_private(self):
+        self.tool["HostConfig"]["IpcMode"] = "shareable"
+        self.sender["HostConfig"]["IpcMode"] = "container:other"
+        issues = self.inspect()
+        self.assertIn("tool_has_host_privilege", issues)
+        self.assertIn("sender_namespace_unapproved", issues)
+
+    def test_target_pid_host_namespace_is_rejected(self):
+        self.target["HostConfig"]["PidMode"] = "host"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_pid_container_namespace_is_rejected(self):
+        self.target["HostConfig"]["PidMode"] = "container:foreign"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_ipc_shareable_namespace_is_rejected(self):
+        self.target["HostConfig"]["IpcMode"] = "shareable"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_ipc_container_namespace_is_rejected(self):
+        self.target["HostConfig"]["IpcMode"] = "container:foreign"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_ipc_host_namespace_is_rejected(self):
+        self.target["HostConfig"]["IpcMode"] = "host"
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_target_missing_ipc_namespace_is_rejected(self):
+        self.target["HostConfig"].pop("IpcMode")
+        self.assertEqual(self.inspect(), ["target_namespace_unapproved"])
+
+    def test_wrong_target_network_id_is_rejected(self):
+        self.target["NetworkSettings"]["Networks"][NETWORK]["NetworkID"] = "other-network"
+        self.assertIn("target_network_membership_mismatch", self.inspect())
+
+    def test_nonbridge_or_attachable_target_network_is_rejected(self):
+        self.network["Driver"] = "macvlan"
+        self.network["Attachable"] = True
+        self.assertIn("target_network_not_internal", self.inspect())
+
+    def test_default_internal_bridge_gateway_is_rejected(self):
+        self.network["Options"] = {}
+        self.assertIn("target_network_gateway_not_isolated", self.inspect())
+        self.network["Options"] = {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
+        self.assertIn("target_network_gateway_not_isolated", self.inspect())
+
+    def test_stopped_target_is_rejected(self):
+        self.target["State"]["Running"] = False
+        self.assertIn("target_not_running", self.inspect())
+
+    def test_run_project_role_and_network_id_must_match(self):
+        self.tool["Config"]["Labels"]["org.abc2lab.e2.run"] = "other-run"
+        self.sender["Config"]["Labels"]["com.docker.compose.project"] = "other-project"
+        self.network["Labels"]["org.abc2lab.e2.run"] = "other-run"
+        self.sender["NetworkSettings"]["Networks"][NETWORK]["NetworkID"] = "other-network-id"
+        issues = self.inspect()
+        self.assertIn("tool_run_binding_mismatch", issues)
+        self.assertIn("sender_run_binding_mismatch", issues)
+        self.assertIn("target_network_run_mismatch", issues)
+        self.assertIn("sender_network_mismatch", issues)
+
+    def test_unpublished_exposed_port_is_not_a_host_exit(self):
+        self.tool["NetworkSettings"]["Ports"] = {"8080/tcp": None}
+        self.sender["NetworkSettings"]["Ports"] = {"8080/tcp": None}
+        self.assertEqual(self.inspect(), [])
+
+    def test_numeric_zero_and_stopped_containers_are_rejected(self):
+        self.tool["Config"]["User"] = "0000:10001"
+        self.tool["State"]["Running"] = False
+        self.sender["State"]["Running"] = False
+        issues = self.inspect()
+        self.assertIn("tool_root_user", issues)
+        self.assertIn("tool_not_running", issues)
+        self.assertIn("sender_not_running", issues)
+
+    def test_probe_reports_unexpected_exception_instead_of_blocked(self):
+        result = attempt("direct_ipv4_tcp", lambda: (_ for _ in ()).throw(ValueError("bad probe")))
+        self.assertFalse(result["connected_or_sent"])
+        self.assertEqual(result["error_kind"], "ValueError")
+        self.assertNotEqual(result.get("error_kind"), "OSError")
+
+    def test_probe_check_name_contract_is_exact(self):
+        self.assertEqual(len(CHECK_NAMES), 9)
+        self.assertEqual(len(set(CHECK_NAMES)), 9)
+
+    def test_probe_rejects_wrong_errno_and_child_exit(self):
+        self.assertFalse(expected_failure("direct_ipv4_tcp", {
+            "error_kind": "OSError", "errno": 2}))
+        self.assertFalse(expected_failure("shell_child", {
+            "error_kind": "ChildProbeBlocked", "returncode": 127}))
+        self.assertTrue(expected_failure("shell_child", {
+            "error_kind": "ChildProbeBlocked", "returncode": CHILD_BLOCKED_EXIT}))
+        self.assertFalse(expected_failure("direct_ipv4_tcp", {
+            "error_kind": "OSError", "errno": 111}))
+        self.assertFalse(expected_failure("proxy_replacement", {
+            "error_kind": "URLError", "errno": 111}))
+        self.assertFalse(expected_failure("shell_child", {
+            "error_kind": "ChildProbeBlocked", "returncode": 1}))
+        self.assertFalse(expected_failure("grandchild", {
+            "error_kind": "ChildProbeBlocked", "returncode": 1}))
+        self.assertFalse(expected_failure("direct_ipv4_tcp", {
+            "error_kind": "TimeoutError", "errno": None}))
+
+    def test_broken_python_exit_one_is_not_network_blocked(self):
+        import subprocess
+        result = subprocess.run(["python3", "-c", "if ("], check=False,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(expected_failure("grandchild", {
+            "error_kind": "ChildProbeBlocked", "returncode": result.returncode}))
+
+    def test_child_network_failure_uses_dedicated_exit_code(self):
+        import subprocess
+        from unittest.mock import patch
+        completed = subprocess.CompletedProcess([], CHILD_BLOCKED_EXIT, b"", b"")
+        with self.assertRaises(ChildProbeBlocked) as raised:
+            with patch("probe_network.subprocess.run", return_value=completed):
+                child("127.0.0.1", 1)
+        self.assertEqual(raised.exception.returncode, CHILD_BLOCKED_EXIT)
+
+    def test_probe_main_prints_json_for_success_blocked_and_unknown(self):
+        import sys
+        expected = {
+            "direct_ipv4_tcp": {"error_kind": "OSError", "errno": 101},
+            "direct_ipv6_tcp": {"error_kind": "OSError", "errno": 101},
+            "direct_ipv4_udp": {"error_kind": "OSError", "errno": 101},
+            "direct_ipv6_udp": {"error_kind": "OSError", "errno": 101},
+            "dns_resolution": {"error_kind": "gaierror", "errno": -2},
+            "proxy_replacement": {"error_kind": "URLError", "errno": 101},
+            "opaque_connect": {"error_kind": "OSError", "errno": 101},
+            "shell_child": {"error_kind": "ChildProbeBlocked", "returncode": 23},
+            "grandchild": {"error_kind": "ChildProbeBlocked", "returncode": 23},
+        }
+        args = ["probe_network.py", "--ipv4", "127.0.0.1", "--ipv6", "::1",
+                "--tcp-port", "1", "--udp-port", "2", "--ipv6-tcp-port", "3",
+                "--ipv6-udp-port", "4", "--dns-name", "synthetic.invalid"]
+
+        def run_with(results, overrides=None, extra=()):
+            overrides = overrides or {}
+            output = io.StringIO()
+            with mock.patch.object(sys, "argv", args + list(extra)), \
+                    mock.patch.object(probe_network, "attempt",
+                        side_effect=lambda name, action: {"name": name, "connected_or_sent": results[name], **({} if results[name] else overrides.get(name, expected[name]))}), \
+                    contextlib.redirect_stdout(output):
+                code = probe_network.main()
+            return code, json.loads(output.getvalue())
+
+        success_code, success = run_with({name: True for name in CHECK_NAMES}, extra=("--expect-success",))
+        self.assertEqual(success_code, 0)
+        self.assertTrue(success["positive_control"])
+        one_failed = {name: True for name in CHECK_NAMES}
+        one_failed[CHECK_NAMES[0]] = False
+        failed_code, failed = run_with(one_failed, extra=("--expect-success",))
+        self.assertEqual(failed_code, 1)
+        self.assertFalse(failed["positive_control"])
+        blocked_code, blocked = run_with({name: False for name in CHECK_NAMES})
+        self.assertEqual(blocked_code, 0)
+        self.assertEqual(blocked["check_names"], list(CHECK_NAMES))
+        self.assertFalse(blocked["unexpected_errors"])
+        unknown = {name: False for name in CHECK_NAMES}
+        unknown["direct_ipv4_tcp"] = False
+        output_code, output = run_with(unknown, {"direct_ipv4_tcp": {"error_kind": "ValueError", "errno": None}})
+        self.assertEqual(output_code, 1)
+        self.assertEqual(output["unexpected_errors"][0]["error_kind"], "ValueError")
+
+    def test_daemon_identity_requires_nonblank_fields(self):
+        import json as json_module
+        from unittest.mock import patch
+        completed = subprocess.CompletedProcess([], 0, json_module.dumps({
+            "ID": "", "Name": "daemon", "ServerVersion": "29", "OperatingSystem": "Linux",
+        }), "")
+        with patch("verify_runtime.subprocess.run", return_value=completed):
+            with self.assertRaises(RuntimeError) as raised:
+                verify_runtime._daemon_identity("docker")
+        self.assertEqual(str(raised.exception), "docker_daemon_identity_fields")
+
+    def test_main_reports_inspected_ids_and_pass_result(self):
+        import sys
+
+        tool, sender, target, network, volume = objects()
+        inspected = {
+            ("container", "tool"): tool,
+            ("container", "sender"): sender,
+            ("container", "target"): target,
+            ("network", NETWORK): network,
+            ("volume", VOLUME): volume,
+        }
+        daemon = {"ID": "daemon-id", "Name": "daemon", "ServerVersion": "29", "OperatingSystem": "Linux"}
+
+        def inspect(kind, name, docker_cli=None):
+            return inspected[(kind, name)]
+
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", [
+                "verify_runtime.py", "--tool", "tool", "--sender", "sender", "--target", "target",
+                "--network", NETWORK, "--channel-volume", VOLUME, "--run-ref", RUN,
+                "--project", PROJECT,
+            ]), mock.patch.object(verify_runtime, "_inspect", side_effect=inspect), \
+                mock.patch.object(verify_runtime, "_inspect_containers",
+                                  return_value=[tool, sender, target]), \
+                mock.patch.object(verify_runtime, "_daemon_identity", return_value=daemon), \
+                contextlib.redirect_stdout(output):
+            code = verify_runtime.main()
+
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(result["daemon"], daemon)
+        self.assertEqual(result["inspected"], {
+            "tool": tool["Id"],
+            "sender": sender["Id"],
+            "target": target["Id"],
+            "network": network["Id"],
+            "channel_volume": volume["Name"],
+        })
+
+    def test_main_fails_when_complete_container_snapshot_is_missing(self):
+        import sys
+
+        tool, sender, target, network, volume = objects()
+        inspected = {
+            ("container", "tool"): tool,
+            ("container", "sender"): sender,
+            ("container", "target"): target,
+            ("network", NETWORK): network,
+            ("volume", VOLUME): volume,
+        }
+        daemon = {"ID": "daemon-id", "Name": "daemon", "ServerVersion": "29", "OperatingSystem": "Linux"}
+
+        def inspect(kind, name, docker_cli=None):
+            return inspected[(kind, name)]
+
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", [
+                "verify_runtime.py", "--tool", "tool", "--sender", "sender", "--target", "target",
+                "--network", NETWORK, "--channel-volume", VOLUME, "--run-ref", RUN,
+                "--project", PROJECT,
+            ]), mock.patch.object(verify_runtime, "_inspect", side_effect=inspect), \
+                mock.patch.object(verify_runtime, "_inspect_containers", return_value=None), \
+                mock.patch.object(verify_runtime, "_daemon_identity", return_value=daemon), \
+                contextlib.redirect_stdout(output):
+            code = verify_runtime.main()
+
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("container_snapshot_unavailable", result["issues"])
+
+    def test_proxy_urlerror_preserves_network_errno(self):
+        import errno
+        from urllib.error import URLError
+
+        def refused_proxy():
+            raise URLError(OSError(errno.ENETUNREACH, "synthetic network denial"))
+
+        result = attempt("proxy_replacement", refused_proxy)
+        self.assertEqual(result["error_kind"], "URLError")
+        self.assertEqual(result["errno"], errno.ENETUNREACH)
+        self.assertTrue(expected_failure("proxy_replacement", result))
+
+
+if __name__ == "__main__":
+    unittest.main()

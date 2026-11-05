@@ -41,7 +41,12 @@ _ROW_FIELDS = {
     "drain": {"engine_end", "sealed_at", "drained_at", "inflight", "grace_seconds", "settle_seconds",
               "forced_cancelled", "settle_applied_seconds"},
     "run_conditions": {"engine_settings_sha256", "workers", "sampling", "host", "machine_id_sha256", "llm_stream"},
+    "e2_placement": {"mode", "decision_rows", "allowed", "unsupported", "unavailable"},
 }
+# 개선 후 회차의 E② 자리(러너 e2.ours_mode). 회차 조건(run_conditions)과 달리 baseline·개선 후가 일부러 다르므로
+# 회차 사이 동일성 대조가 아니라 조건별로 섞이지 않는지만 채점기가 본다.
+E2_MODES = ("none", "stub")
+_E2_COUNTS = ("decision_rows", "allowed", "unsupported", "unavailable")
 _EVENT_FIELDS = frozenset({"id", "challenge", "actor", "execution_id", "observed_at", "sequence", "basis",
                            "isolation_proof_sha256"})
 
@@ -233,6 +238,21 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
             for name, kind in _HOST_KEYS.items()):
         raise IsolationError("isolation_evidence.run_conditions.host: 머신 사양 형식 오류")
     return row
+
+
+def e2_mode(receipt: dict, evidence: object) -> str:
+    """격리 근거의 E② 자리 행. none이면 건수가 없고, stub이면 결정별 건수의 합이 결정 행 수와 같아야 한다."""
+    row = _one(_rows(evidence, receipt), "e2_placement")
+    counts = [row[key] for key in _E2_COUNTS]
+    if row["mode"] == "none":
+        if any(count is not None for count in counts):
+            raise IsolationError("isolation_evidence.e2_placement: none에는 건수가 없어야 함")
+    elif row["mode"] == "stub":
+        if not all(type(count) is int and count >= 0 for count in counts) or counts[0] != sum(counts[1:]):
+            raise IsolationError("isolation_evidence.e2_placement: 결정별 건수 형식 오류")
+    else:
+        raise IsolationError("isolation_evidence.e2_placement.mode: none|stub")
+    return row["mode"]
 
 
 def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str, str]:
