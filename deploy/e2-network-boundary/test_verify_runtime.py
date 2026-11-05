@@ -1,10 +1,16 @@
 """Synthetic guard tests. They do not prove Docker or A integration."""
 
 import copy
+import contextlib
+import io
+import json
+import subprocess
 import unittest
 
 from verify_runtime import CHANNEL, check
-from probe_network import CHECK_NAMES, attempt
+import probe_network
+import verify_runtime
+from probe_network import CHILD_BLOCKED_EXIT, CHECK_NAMES, ChildProbeBlocked, attempt, child, expected_failure
 
 
 VOLUME = "e2-run-123-channel"
@@ -232,6 +238,82 @@ class RuntimeChecks(unittest.TestCase):
     def test_probe_check_name_contract_is_exact(self):
         self.assertEqual(len(CHECK_NAMES), 9)
         self.assertEqual(len(set(CHECK_NAMES)), 9)
+
+    def test_probe_rejects_wrong_errno_and_child_exit(self):
+        self.assertFalse(expected_failure("direct_ipv4_tcp", {
+            "error_kind": "OSError", "errno": 2}))
+        self.assertFalse(expected_failure("shell_child", {
+            "error_kind": "ChildProbeBlocked", "returncode": 127}))
+        self.assertTrue(expected_failure("shell_child", {
+            "error_kind": "ChildProbeBlocked", "returncode": CHILD_BLOCKED_EXIT}))
+
+    def test_broken_python_exit_one_is_not_network_blocked(self):
+        import subprocess
+        result = subprocess.run(["python3", "-c", "if ("], check=False,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(expected_failure("grandchild", {
+            "error_kind": "ChildProbeBlocked", "returncode": result.returncode}))
+
+    def test_child_network_failure_uses_dedicated_exit_code(self):
+        import subprocess
+        from unittest.mock import patch
+        completed = subprocess.CompletedProcess([], CHILD_BLOCKED_EXIT, b"", b"")
+        with self.assertRaises(ChildProbeBlocked) as raised:
+            with patch("probe_network.subprocess.run", return_value=completed):
+                child("127.0.0.1", 1)
+        self.assertEqual(raised.exception.returncode, CHILD_BLOCKED_EXIT)
+
+    def test_probe_main_prints_json_for_success_blocked_and_unknown(self):
+        import sys
+        expected = {
+            "direct_ipv4_tcp": {"error_kind": "OSError", "errno": 101},
+            "direct_ipv6_tcp": {"error_kind": "OSError", "errno": 101},
+            "direct_ipv4_udp": {"error_kind": "OSError", "errno": 101},
+            "direct_ipv6_udp": {"error_kind": "OSError", "errno": 101},
+            "dns_resolution": {"error_kind": "gaierror", "errno": -2},
+            "proxy_replacement": {"error_kind": "URLError", "errno": 101},
+            "opaque_connect": {"error_kind": "OSError", "errno": 101},
+            "shell_child": {"error_kind": "ChildProbeBlocked", "returncode": 23},
+            "grandchild": {"error_kind": "ChildProbeBlocked", "returncode": 23},
+        }
+        args = ["probe_network.py", "--ipv4", "127.0.0.1", "--ipv6", "::1",
+                "--tcp-port", "1", "--udp-port", "2", "--ipv6-tcp-port", "3",
+                "--ipv6-udp-port", "4", "--dns-name", "synthetic.invalid"]
+
+        def run_with(results, overrides=None, extra=()):
+            overrides = overrides or {}
+            output = io.StringIO()
+            with unittest.mock.patch.object(sys, "argv", args + list(extra)), \
+                    unittest.mock.patch.object(probe_network, "attempt",
+                        side_effect=lambda name, action: {"name": name, "connected_or_sent": results[name], **({} if results[name] else overrides.get(name, expected[name]))}), \
+                    contextlib.redirect_stdout(output):
+                code = probe_network.main()
+            return code, json.loads(output.getvalue())
+
+        success_code, success = run_with({name: True for name in CHECK_NAMES}, extra=("--expect-success",))
+        self.assertEqual(success_code, 0)
+        self.assertTrue(success["positive_control"])
+        blocked_code, blocked = run_with({name: False for name in CHECK_NAMES})
+        self.assertEqual(blocked_code, 0)
+        self.assertEqual(blocked["check_names"], list(CHECK_NAMES))
+        self.assertFalse(blocked["unexpected_errors"])
+        unknown = {name: False for name in CHECK_NAMES}
+        unknown["direct_ipv4_tcp"] = False
+        output_code, output = run_with(unknown, {"direct_ipv4_tcp": {"error_kind": "ValueError", "errno": None}})
+        self.assertEqual(output_code, 1)
+        self.assertEqual(output["unexpected_errors"][0]["error_kind"], "ValueError")
+
+    def test_daemon_identity_requires_nonblank_fields(self):
+        import json as json_module
+        from unittest.mock import patch
+        completed = subprocess.CompletedProcess([], 0, json_module.dumps({
+            "ID": "", "Name": "daemon", "ServerVersion": "29", "OperatingSystem": "Linux",
+        }), "")
+        with patch("verify_runtime.subprocess.run", return_value=completed):
+            with self.assertRaises(RuntimeError) as raised:
+                verify_runtime._daemon_identity("docker")
+        self.assertEqual(str(raised.exception), "docker_daemon_identity_fields")
 
 
 if __name__ == "__main__":

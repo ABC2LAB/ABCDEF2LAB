@@ -87,7 +87,9 @@ def _daemon_identity(docker_cli: str | None = None) -> dict[str, str]:
     if not isinstance(value, dict):
         raise RuntimeError("docker_daemon_identity_shape")
     fields = ("ID", "Name", "ServerVersion", "OperatingSystem")
-    return {field: str(value[field]) for field in fields if value.get(field) is not None}
+    if any(type(value.get(field)) is not str or not value[field].strip() for field in fields):
+        raise RuntimeError("docker_daemon_identity_fields")
+    return {field: value[field] for field in fields}
 
 
 def _namespace_issues(tool: dict[str, Any], sender: dict[str, Any], target: dict[str, Any],
@@ -217,7 +219,7 @@ def main() -> int:
         issues = check(tool, sender, target, network, volume, args.channel_volume, args.network,
                        args.run_ref, args.project, containers)
         daemon = _daemon_identity(args.docker_cli)
-    except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
+    except (RuntimeError, OSError, json.JSONDecodeError, subprocess.TimeoutExpired):
         print(json.dumps({"status": "FAIL", "issues": ["inspection_unavailable"]}))
         return 1
     print(json.dumps({"status": "PASS" if not issues else "FAIL", "issues": issues,

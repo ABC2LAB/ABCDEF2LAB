@@ -15,7 +15,7 @@ import sys
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_boundary_docker import docker, docker_bin
+from test_boundary_docker import daemon_identity, docker, docker_bin
 from verify_runtime import _inspect, check
 
 
@@ -54,6 +54,7 @@ def main() -> int:
     env.update(synthetic)
     env["WSLENV"] = ":".join(filter(None, [env.get("WSLENV", ""), *synthetic]))
     try:
+        outcome["daemon"] = daemon_identity()
         docker("image", "inspect", "python:3.11-slim")
         docker("network", "create", "--internal", "--ipv6",
                "-o", "com.docker.network.bridge.gateway_mode_ipv4=isolated",

@@ -99,8 +99,10 @@ def daemon_identity() -> dict[str, str]:
     value = json.loads(docker("info", "--format", "{{json .}}"))
     if not isinstance(value, dict):
         raise RuntimeError("docker_daemon_identity_shape")
-    return {field: str(value[field]) for field in ("ID", "Name", "ServerVersion", "OperatingSystem")
-            if value.get(field) is not None}
+    fields = ("ID", "Name", "ServerVersion", "OperatingSystem")
+    if any(type(value.get(field)) is not str or not value[field].strip() for field in fields):
+        raise RuntimeError("docker_daemon_identity_fields")
+    return {field: value[field] for field in fields}
 
 
 def count(target: str) -> dict[str, int]:
@@ -145,8 +147,8 @@ def main() -> int:
             try:
                 docker("run", "--rm", "--pull=never", "--network", network,
                        args.image, "python", "-c", CONTROL_CODE, ipv4, ipv6, target)
-                baseline = count(target)
-                if all(value >= 1 for value in baseline.values()):
+                control_after = count(target)
+                if all(control_after[key] - baseline[key] >= 1 for key in baseline):
                     break
             except RuntimeError:
                 pass
@@ -154,6 +156,7 @@ def main() -> int:
         else:
             raise RuntimeError("synthetic_positive_control_failed")
         script = Path(__file__).with_name("probe_network.py").read_text()
+        positive_before = count(target)
         positive = subprocess.run(
             [docker_bin(), "run", "--rm", "-i", "--pull=never", "--network", network,
              args.image, "python", "-", "--ipv4", ipv4, "--ipv6", ipv6,
@@ -163,6 +166,18 @@ def main() -> int:
         )
         if positive.returncode != 0:
             raise RuntimeError("synthetic_same_probe_positive_control_failed")
+        positive_after = None
+        for _ in range(15):
+            candidate = count(target)
+            if all(candidate[key] - positive_before[key] >= 1 for key in
+                   ("http", "http6", "udp", "udp6", "connect")):
+                positive_after = candidate
+                break
+            time.sleep(0.2)
+        if positive_after is None:
+            raise RuntimeError("synthetic_same_probe_positive_control_delivery_failed")
+        # Do not charge the positive control's traffic to the blocked probe.
+        baseline = positive_after
         result = subprocess.run(
             [docker_bin(), "run", "--rm", "-i", "--pull=never", "--network", "none",
              "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",

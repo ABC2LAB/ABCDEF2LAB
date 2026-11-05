@@ -18,7 +18,7 @@ import time
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_boundary_docker import COUNT_CODE, TARGET_CODE, docker, docker_bin
+from test_boundary_docker import COUNT_CODE, TARGET_CODE, daemon_identity, docker, docker_bin
 
 
 SENDER_CODE = r'''
@@ -169,6 +169,7 @@ def main() -> int:
                                   "candidate_accepted": False,
                                   "a_peer_identity": "UNVERIFIED", "target_received": None}
     try:
+        outcome["daemon"] = daemon_identity()
         docker("image", "inspect", args.image)
         owned.append(("network", network))
         docker("network", "create", "--internal", "--ipv6",

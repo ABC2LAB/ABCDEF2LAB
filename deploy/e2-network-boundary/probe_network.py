@@ -7,6 +7,7 @@ itself proof of no delivery: the outer harness must count target receipts.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import socket
@@ -18,13 +19,34 @@ CHECK_NAMES = (
     "direct_ipv4_tcp", "direct_ipv6_tcp", "direct_ipv4_udp", "direct_ipv6_udp",
     "dns_resolution", "proxy_replacement", "opaque_connect", "shell_child", "grandchild",
 )
-EXPECTED_ERROR_KINDS = {
-    "direct_ipv4_tcp": {"OSError"}, "direct_ipv6_tcp": {"OSError"},
-    "direct_ipv4_udp": {"OSError"}, "direct_ipv6_udp": {"OSError"},
-    "dns_resolution": {"OSError"}, "proxy_replacement": {"OSError", "URLError"},
-    "opaque_connect": {"OSError"}, "shell_child": {"CalledProcessError", "TimeoutExpired"},
-    "grandchild": {"CalledProcessError", "TimeoutExpired"},
-}
+NETWORK_ERRNOS = {errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH,
+                  errno.EHOSTDOWN, errno.ETIMEDOUT}
+DNS_ERRNOS = {-2, -3, -4, -5}  # EAI_NONAME, EAI_AGAIN, EAI_FAIL, EAI_NODATA
+CHILD_BLOCKED_EXIT = 23
+
+
+class ChildProbeBlocked(Exception):
+    def __init__(self, returncode: int):
+        super().__init__(returncode)
+        self.returncode = returncode
+
+
+def _error_kind(error: BaseException) -> str:
+    if isinstance(error, socket.gaierror):
+        return "gaierror"
+    if isinstance(error, TimeoutError):
+        return "TimeoutError"
+    if isinstance(error, OSError):
+        return "OSError"
+    return type(error).__name__
+
+
+def _error_errno(error: BaseException) -> int | None:
+    value = getattr(error, "errno", None)
+    if value is not None:
+        return value
+    reason = getattr(error, "reason", None)
+    return getattr(reason, "errno", None)
 
 
 def attempt(name, action):
@@ -32,8 +54,25 @@ def attempt(name, action):
         action()
         return {"name": name, "connected_or_sent": True}
     except Exception as error:  # report; the caller decides whether this is expected
-        return {"name": name, "connected_or_sent": False,
-                "error_kind": type(error).__name__, "errno": getattr(error, "errno", None)}
+        result = {"name": name, "connected_or_sent": False,
+                  "error_kind": _error_kind(error), "errno": _error_errno(error)}
+        if isinstance(error, ChildProbeBlocked):
+            result["returncode"] = error.returncode
+        return result
+
+
+def expected_failure(name: str, result: dict[str, object]) -> bool:
+    kind = result.get("error_kind")
+    value = result.get("errno")
+    if name in {"shell_child", "grandchild"}:
+        return kind == "ChildProbeBlocked" and result.get("returncode") == CHILD_BLOCKED_EXIT
+    if name == "dns_resolution":
+        return kind == "gaierror" and value in DNS_ERRNOS
+    if name == "proxy_replacement":
+        return kind == "URLError" and value in NETWORK_ERRNOS
+    if kind == "TimeoutError":
+        return value is None
+    return kind == "OSError" and value in NETWORK_ERRNOS
 
 
 def tcp(address, port, family):
@@ -57,22 +96,45 @@ def udp(address, port, family):
 
 def child(address, port, nested=False):
     code = (
-        "import socket,sys; s=socket.socket(); s.settimeout(1); "
-        "s.connect((sys.argv[1],int(sys.argv[2]))); s.sendall(b'GET /child HTTP/1.0\\r\\n\\r\\n')"
+        "import errno,socket,sys\n"
+        "try:\n s=socket.socket(); s.settimeout(1); "
+        " s.connect((sys.argv[1],int(sys.argv[2]))); "
+        " s.sendall(b'GET /child HTTP/1.0\\r\\n\\r\\n')\n"
+        "except OSError as error:\n"
+        " if error.errno in (" + repr(sorted(NETWORK_ERRNOS)) + "):\n"
+        "  raise SystemExit(23)\n"
+        " raise"
     )
     if nested:
-        code = "import subprocess,sys; subprocess.run([sys.executable,'-c'," + repr(code) + ",sys.argv[1],sys.argv[2]],check=True)"
-    subprocess.run([sys.executable, "-c", code, address, str(port)], check=True, timeout=4, capture_output=True)
+        code = ("import subprocess,sys; result=subprocess.run([sys.executable,'-c'," +
+                repr(code) + ",sys.argv[1],sys.argv[2]],check=False); "
+                "raise SystemExit(result.returncode)")
+    result = subprocess.run([sys.executable, "-c", code, address, str(port)],
+                            check=False, timeout=4, capture_output=True)
+    if result.returncode == CHILD_BLOCKED_EXIT:
+        raise ChildProbeBlocked(result.returncode)
+    if result.returncode:
+        raise RuntimeError("child_probe_failed")
 
 
 def shell_child(address, port):
     env = dict(os.environ, SYNTH_IP=address, SYNTH_PORT=str(port))
     command = (
-        "python -c 'import os,socket; s=socket.socket(); s.settimeout(1); "
-        "s.connect((os.environ[\"SYNTH_IP\"],int(os.environ[\"SYNTH_PORT\"]))); "
-        "s.sendall(b\"GET /shell HTTP/1.0\\r\\n\\r\\n\")'"
+        "python -c 'import errno,os,socket,sys\n"
+        "try:\n s=socket.socket(); s.settimeout(1); "
+        " s.connect((os.environ[\"SYNTH_IP\"],int(os.environ[\"SYNTH_PORT\"]))); "
+        " s.sendall(b\"GET /shell HTTP/1.0\\r\\n\\r\\n\")\n"
+        "except OSError as error:\n"
+        " if error.errno in (" + repr(sorted(NETWORK_ERRNOS)) + "):\n"
+        "  raise SystemExit(23)\n"
+        " raise'"
     )
-    subprocess.run(["/bin/sh", "-c", command], env=env, check=True, timeout=4, capture_output=True)
+    result = subprocess.run(["/bin/sh", "-c", command], env=env, check=False,
+                            timeout=4, capture_output=True)
+    if result.returncode == CHILD_BLOCKED_EXIT:
+        raise ChildProbeBlocked(result.returncode)
+    if result.returncode:
+        raise RuntimeError("shell_child_probe_failed")
 
 
 def main():
@@ -106,15 +168,17 @@ def main():
     names = [check["name"] for check in checks]
     unexpected_errors = [check for check in checks
                          if not check["connected_or_sent"] and
-                         check.get("error_kind") not in EXPECTED_ERROR_KINDS.get(check["name"], set())]
+                         not expected_failure(check["name"], check)]
     unexpected_successes = sum(check["connected_or_sent"] for check in checks)
     result = {"checks": checks, "check_names": names,
               "unexpected_errors": unexpected_errors,
               "unexpected_successes": unexpected_successes}
     if args.expect_success:
         result["positive_control"] = all(check["connected_or_sent"] for check in checks)
+        print(json.dumps(result, sort_keys=True))
         return 0 if result["positive_control"] else 1
     result["blocked"] = all(not check["connected_or_sent"] for check in checks)
+    print(json.dumps(result, sort_keys=True))
     return 0 if names == list(CHECK_NAMES) and result["blocked"] and not unexpected_errors else 1
 
 
