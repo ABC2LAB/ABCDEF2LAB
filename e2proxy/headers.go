@@ -194,3 +194,16 @@ func (Config) String() string   { return "e2proxy.Config[protected]" }
 func (Config) GoString() string { return "e2proxy.Config[protected]" }
 func (Rule) String() string     { return "e2proxy.Rule[protected]" }
 func (Rule) GoString() string   { return "e2proxy.Rule[protected]" }
+
+func connectionUpgrade(headers http.Header) bool {
+	for name, values := range headers {
+		if strings.EqualFold(name, "Connection") {
+			for _, value := range values {
+				if strings.Contains(strings.ToLower(value), "upgrade") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
