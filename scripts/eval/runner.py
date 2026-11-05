@@ -447,6 +447,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     _step(state, "evidence_write_failed", lambda: evidence.write_json("meter-summary.json", meter_summary))
     # E② 자리 기록. 가짜 E²면 결정 행 형식을 검사하고 결정별 건수를 남긴다(통제 증명이 아니라 배치 확인).
     e2 = {"mode": spec.e2_mode, "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None}
+    reconciliation = None
     if spec.e2_mode == E2_STUB:
         decisions = _step(state, "e2_stub_log_invalid", meter.e2_stub_rows)
         e2.update(e2_stub_counts(decisions))
@@ -475,7 +476,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                   "machine_id_sha256": state.host["machine_id_sha256"]}
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
-        observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2))
+        observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
+        reconciliation))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "run_conditions": conditions,
                      "task_request_sha256": spec.task_request_sha256,
@@ -489,7 +491,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
 def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict, pre_board: dict, post_board: dict,
                   pre_solved: dict, post_solved: dict, steps: dict, window: dict, observer: list, ready_calls: int,
                   meter_summary: dict, drained: dict, engine_rows: int, pre_checked_at: str,
-                  post_check_at: str, conditions: dict, e2: dict) -> dict:
+                  post_check_at: str, conditions: dict, e2: dict, reconciliation: dict | None) -> dict:
     """v1.1 러너 기록(서명 전)과 그 근거 파일 둘(격리 근거·해결 이벤트)을 만든다. 서명은 down 뒤."""
     context = RecordContext(run_id=spec.run_id, model_tag=spec.model_tag,
                             reset_generation=pre["services"][TARGET_SERVICE]["id"],
@@ -505,7 +507,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
         pre_listeners=state.listeners["pre"], post_listeners=state.listeners["post"], allowed=allowed,
         boundary_ref=boundary_ref, policy=policy, steps=steps, observer_rows=observer, ready_calls=ready_calls,
         observer_path_ref=get_ref, readonly_ref=spec.observer_readonly_ref, meter=meter_summary,
-        drained=drained, engine_rows=engine_rows, conditions=conditions, e2=e2)
+        drained=drained, engine_rows=engine_rows, conditions=conditions, e2=e2, reconciliation=reconciliation)
     evidence.write_json("isolation-evidence.json", isolation_evidence(context, rows))
     evidence_sha, evidence_size = evidence.describe("isolation-evidence.json")
     in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
