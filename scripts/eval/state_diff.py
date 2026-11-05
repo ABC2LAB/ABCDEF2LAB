@@ -10,7 +10,10 @@
 - 정수 기본키 열이 하나인 테이블(SQLite rowid 별칭)은 그 id로 행을 맞춰 추가·삭제·변경을 id와 함께 센다.
   그 밖의 테이블은 지문 다중집합의 증감만 센다. 이때 '변경'은 삭제+추가와 구분되지 않으므로 null로 둔다.
 - 열 구성이 바뀐 테이블은 행을 맞대지 않는다(schema_changed, 행 단위 건수 null). 같은 컨테이너 안에서는 없어야 하는
-  일이라 조용히 비교하지 않는다.
+  일이라 조용히 비교하지 않는다. 열은 `table_xinfo`로 읽어 생성 열·숨은 열까지 넣는다(`table_info`는 생성 열을 뺀다).
+- 행 비교와 별도로 `sqlite_master`의 모든 객체(테이블·인덱스·트리거·뷰)의 정의를 회차 키 지문으로 맞댄다. 트리거·뷰·
+  인덱스 추가도 대상의 동작을 바꾸는 상태 변경이다. 결과에는 객체 종류·이름만 남기고 정의문은 남기지 않는다.
+  정의가 바뀐 테이블은 schema_changed로 행을 맞대지 않는다.
 - sqlite_sequence는 행 비교와 별도로 테이블별 seq 값을 그대로 비교한다. 만들었다 지워 내용이 원복돼도 id 소비 흔적은
   남는다(§8.2 "내용은 원복, 흔적은 남음").
 - WAL 모드 DB는 `-wal` 파일까지 같이 복사해야 마지막 커밋이 보인다. `immutable=1`로 열면 WAL을 무시하므로 쓰지 않고
@@ -82,8 +85,12 @@ def snapshot(path: str | Path, key: bytes) -> dict:
         raise StateDiffError("state_run_key_invalid")
     conn = _open(Path(path))
     try:
-        names = [row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+        objects: dict[tuple[str, str], tuple[str, bytes]] = {}
+        for kind, name, table, sql in conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master"):
+            if not (isinstance(kind, str) and isinstance(name, str) and isinstance(table, str)) or (kind, name) in objects:
+                raise StateDiffError("state_schema_invalid")
+            objects[(kind, name)] = (table, _fingerprint(key, (sql,)))
+        names = sorted(name for kind, name in objects if kind == "table")
         tables: dict[str, dict] = {}
         sequence: dict[str, int] = {}
         for name in names:
@@ -93,18 +100,21 @@ def snapshot(path: str | Path, key: bytes) -> dict:
                         raise StateDiffError("state_sequence_invalid")
                     sequence[table] = seq
                 continue
-            info = conn.execute(f"PRAGMA table_info({_quote(name)})").fetchall()
-            columns = [(row[1], row[2]) for row in info]
+            # (cid, name, type, notnull, default, pk, hidden). hidden: 0 일반, 1 가상 테이블 숨은 열, 2·3 생성 열.
+            # 전부 읽는다. 읽지 못하는 열이 있으면 state_copy_unreadable로 멈춘다(빼고 비교하지 않는다).
+            info = conn.execute(f"PRAGMA table_xinfo({_quote(name)})").fetchall()
+            columns = [(row[1], row[2], row[6]) for row in info]
+            readable = [row[1] for row in info]
             pk = [row for row in info if row[5] > 0]
             # 정수 기본키 열 하나(rowid 별칭)만 행 id로 쓴다. 복합·문자열 키는 지문 다중집합으로 센다.
             key_column = pk[0][1] if len(pk) == 1 and pk[0][2].upper() == "INTEGER" else None
-            select = ", ".join(_quote(c) for c, _ in columns)
+            select = ", ".join(_quote(c) for c in readable)
             rows = conn.execute(f"SELECT {select} FROM {_quote(name)}")
             if key_column is None:
                 tables[name] = {"columns": columns, "key": None,
                                 "rows": Counter(_fingerprint(key, tuple(r)) for r in rows)}
                 continue
-            index = [c for c, _ in columns].index(key_column)
+            index = readable.index(key_column)
             keyed: dict[int, bytes] = {}
             for r in rows:
                 row_id = r[index]
@@ -116,19 +126,19 @@ def snapshot(path: str | Path, key: bytes) -> dict:
         raise StateDiffError("state_copy_unreadable") from None
     finally:
         conn.close()
-    return {"tables": tables, "sequence": sequence}
+    return {"tables": tables, "sequence": sequence, "objects": objects}
 
 
 def _row_count(table: dict) -> int:
     return sum(table["rows"].values()) if table["key"] is None else len(table["rows"])
 
 
-def _table_diff(before: dict, after: dict) -> dict:
+def _table_diff(before: dict, after: dict, redefined: bool = False) -> dict:
     rows_pre, rows_post = _row_count(before), _row_count(after)
     result = {"key": before["key"], "rows_pre": rows_pre, "rows_post": rows_post, "schema_changed": False,
               "added": None, "removed": None, "changed": None,
               "added_ids": None, "removed_ids": None, "changed_ids": None}
-    if before["columns"] != after["columns"] or before["key"] != after["key"]:
+    if redefined or before["columns"] != after["columns"] or before["key"] != after["key"]:
         result["schema_changed"] = True
         return result
     if before["key"] is None:
@@ -159,8 +169,17 @@ def diff(pre: dict, post: dict, signal_tables: frozenset[str] = frozenset()) -> 
                       if not key.endswith("_ids")}
                for name in sorted(signal_tables)}
     names_pre, names_post = set(pre["tables"]) - signal_tables, set(post["tables"]) - signal_tables
-    tables = {name: _table_diff(pre["tables"][name], post["tables"][name])
+    # 객체 정의(테이블·인덱스·트리거·뷰). 신호 테이블에 딸린 객체는 상태 차이에서 뺀다.
+    objects_pre = {k: v for k, v in pre["objects"].items() if v[0] not in signal_tables}
+    objects_post = {k: v for k, v in post["objects"].items() if v[0] not in signal_tables}
+    redefined = sorted(k for k in objects_pre.keys() & objects_post.keys() if objects_pre[k] != objects_post[k])
+    schema_objects = {"added": [list(k) for k in sorted(objects_post.keys() - objects_pre.keys())],
+                      "removed": [list(k) for k in sorted(objects_pre.keys() - objects_post.keys())],
+                      "changed": [list(k) for k in redefined]}
+    tables = {name: _table_diff(pre["tables"][name], post["tables"][name],
+                                ("table", name) in redefined)
               for name in sorted(names_pre & names_post)}
+    schema_moved = any(schema_objects.values())
     sequence = {}
     for table in sorted((set(pre["sequence"]) | set(post["sequence"])) - signal_tables):
         before, after = pre["sequence"].get(table), post["sequence"].get(table)
@@ -170,12 +189,13 @@ def diff(pre: dict, post: dict, signal_tables: frozenset[str] = frozenset()) -> 
                             if t["schema_changed"] or t["added"] or t["removed"] or t["changed"])
     return {
         "tables": tables,
+        "schema_objects": schema_objects,
         "signals": signals,
         "tables_added": sorted(names_post - names_pre),
         "tables_removed": sorted(names_pre - names_post),
         "sequence_changed": sequence,
         "changed_tables": changed_tables,
         # 행 내용·테이블 구성·id 소비 중 하나라도 바뀌었으면 차이 있음. seq만 바뀌면 '내용은 원복, 흔적은 남음'.
-        "content_changed": bool(changed_tables or names_pre != names_post),
-        "trace_only": not changed_tables and names_pre == names_post and bool(sequence),
+        "content_changed": bool(changed_tables or names_pre != names_post or schema_moved),
+        "trace_only": not changed_tables and names_pre == names_post and not schema_moved and bool(sequence),
     }
