@@ -281,3 +281,39 @@ func TestCredentialWireWhitespaceIsRejectedAtConstruction(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotedCredentialCookiePositiveAndEffectiveValueEchoUnknown(t *testing.T) {
+	const cookie = `sid="quoted-private-cookie"`
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		parsed, err := r.Cookie("sid")
+		if err != nil || parsed.Value != "quoted-private-cookie" || r.Header.Get("Cookie") != cookie {
+			t.Error("protected cookie binding was rewritten")
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/echo") {
+			io.WriteString(w, parsed.Value)
+			return
+		}
+		io.WriteString(w, "normal response")
+	}))
+	defer target.Close()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 3)
+	cfg.HeaderMode = HeaderProtectedSessionProposal
+	cfg.Rules[0].CredentialHeaders = http.Header{"Cookie": {cookie}}
+	_, call := coreOpen(t, cfg)
+	response, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if err != nil || response == nil || receipt.Reason != Complete {
+		t.Fatal("normal protected-cookie positive failed")
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if string(body) != "normal response" {
+		t.Fatal("normal response changed")
+	}
+	response, receipt, err = call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed/echo"))
+	if err == nil || response != nil || receipt.Decision != "allowed" || receipt.Reason != Unknown || receipt.NotSent || !receipt.ResponseReceived || received.Load() != 2 {
+		t.Fatal("effective cookie value was disclosed or called not sent")
+	}
+}

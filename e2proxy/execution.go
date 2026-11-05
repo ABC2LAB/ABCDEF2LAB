@@ -1064,6 +1064,12 @@ func credentialValues(rules []compiledRule) [][]byte {
 						}
 					}
 				case "cookie":
+					// Include the standard effective value (notably quoted cookies)
+					// without changing the protected field sent to the target.
+					request := &http.Request{Header: http.Header{"Cookie": {v}}}
+					for _, cookie := range request.Cookies() {
+						add(cookie.Value)
+					}
 					for _, p := range strings.Split(v, ";") {
 						pair := strings.SplitN(strings.TrimSpace(p), "=", 2)
 						if len(pair) == 2 {
