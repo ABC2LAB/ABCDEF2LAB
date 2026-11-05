@@ -233,7 +233,7 @@ def check_comparable(manifests: list[RunManifest]) -> None:
 
 def build_report(
     manifests: list[RunManifest], correlate: Correlate, correlatable: frozenset[str],
-    *, runner_key: bytes | None = None,
+    *, runner_key: bytes | None = None, allow_fixture_e2: bool = False,
 ) -> Report:
     """전 회차를 채점해 코어 GT·BAC 두 표와 경고를 만든다. 행·경고 순서는 manifest 순서."""
     check_comparable(manifests)
@@ -292,6 +292,10 @@ def build_report(
 
     for condition, modes in e2_modes.items():
         if "stub" in modes:
+            # 가짜 E² 회차는 시범·공식 결과가 아니다(프로토콜 §2). 배치 스모크를 확인할 때만 명시적으로 연다.
+            if not allow_fixture_e2:
+                raise ComparabilityError(f"가짜 E② 회차({condition}) — 공식 채점 대상 아님(프로토콜 §2), "
+                                         "배치 스모크 확인이면 --allow-fixture-e2")
             warnings.append(f"경고[공식 비교 아님] {condition}: 통과 전용 가짜 E② 회차 — 배치·부정 연결 점검 확인용이며 "
                             "통제를 증명하지 않음. 시범·공식·제품 결과에 쓰지 않음(프로토콜 §2)")
     if versions == {V1}:
@@ -322,11 +326,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("manifest", help="회차 manifest JSON")
     parser.add_argument("--runner-key-file", required=True, help="엔진 밖의 신뢰 러너 HMAC 키 파일(값 출력 금지)")
     parser.add_argument("--correlation", default=DEFAULT_PATH, help="평가 전용 GT 상관 JSON")
+    parser.add_argument("--allow-fixture-e2", action="store_true",
+                        help="가짜 E②(e2_mode=stub) 회차도 채점한다 — 배치 스모크 확인용, 공식 표에는 쓰지 않음")
     args = parser.parse_args(argv)
     try:
         table = load_correlation(args.correlation)
         report = build_report(load_manifests(args.manifest), table.correlate, table.operative,
-                              runner_key=read_runner_key(args.runner_key_file))
+                              runner_key=read_runner_key(args.runner_key_file),
+                              allow_fixture_e2=args.allow_fixture_e2)
     except _STOP_ERRORS as e:
         print(f"채점 중단: {e}", file=sys.stderr)
         return 2

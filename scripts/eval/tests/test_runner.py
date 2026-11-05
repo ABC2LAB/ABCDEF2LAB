@@ -475,11 +475,13 @@ class TestE2Slot(unittest.TestCase):
         self.assertEqual([{k: v for k, v in r.items() if k not in ("kind", "seq", "at")} for r in placement],
                          [{"mode": "stub", "decision_rows": 3, "allowed": 2, "unsupported": 1, "unavailable": 0}])
         self.assertEqual(meter.e2_reads, 1)
+        self.assertEqual(result["e2_mode"], "stub")  # 서명된 결과에 남는다(세션·채점이 거부할 근거)
 
     def test_run_without_e2_records_none_and_never_reads_a_stub_log(self):
         result, ports, meter, evidence = run()
         placement = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "e2_placement"]
         self.assertEqual((placement[0]["mode"], placement[0]["decision_rows"], meter.e2_reads), ("none", None, 0))
+        self.assertEqual(result["e2_mode"], "none")
 
     def test_unreadable_stub_log_invalidates_the_run(self):
         from runner_evidence import EvidenceError
