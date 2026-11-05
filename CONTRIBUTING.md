@@ -33,7 +33,7 @@ DB 관련 변경은 소유한 전용 시험 DB에서 검증합니다. `ARTEX_PG_
 PR과 `dev` push는 [CI](.github/workflows/ci.yml)가 자동으로 검사합니다.
 - Go: `go build`·`go vet`, darwin·windows 크로스빌드(`./...`·`./cmd/...`), PR이 바꾼 Go 파일의 `gofmt`와 `git diff --check`
 - 1회용 PostgreSQL 16으로 loopback만 있는 망에서 패키지마다 `go test -race`를 돌립니다. DB는 시험 DSN 변수마다 따로 두고 패키지마다 새로 만듭니다. 시험 단위 PASS/FAIL/SKIP 수와 SKIP 목록을 요약에 남깁니다.
-- 평가 스크립트 unittest를 돌립니다.
+- 평가 스크립트 unittest와 E② 배치 검사기(`deploy/e2-network-boundary`) unittest를 돌립니다. 배치 쪽은 합성 inspect·Compose 렌더링 시험만이고 SKIP은 실패로 봅니다. 실제 Docker를 띄우는 `*_docker.py`는 CI에서 돌지 않습니다.
 
 로컬에서는 `scripts/ci/pg-up.sh <빈 디렉터리>`로 같은 DB를 만들 수 있습니다. 출력 줄을 한 줄씩 `export`하세요. DSN에 `&`가 있어 `source`로 읽으면 값이 잘립니다. 웹(`web/`) 검사는 아직 CI에 없습니다.
 

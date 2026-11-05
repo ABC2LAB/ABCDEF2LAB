@@ -80,8 +80,11 @@ class FakeMeter:
         self.observer_extra = 0
         self.rows_override = None
         self.drained_forwarded = None
-        # 가짜 E²(compose.e2-stub.yaml) 결정 행 요약. 회차가 E²를 기대할 때만 읽는다.
-        self.e2_summary = {"decision_rows": 3, "allowed": 2, "unsupported": 1, "unavailable": 0}
+        # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
+        # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
+        self.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
+                        {"seq": 2, "decision": "allowed", "attempt_id": "b" * 32},
+                        {"seq": 3, "decision": "unsupported", "attempt_id": "c" * 32}]
         self.e2_error = None
         self.e2_reads = 0
 
@@ -93,19 +96,26 @@ class FakeMeter:
             self.polls += 1
         return self._forwarded()
 
-    def e2_stub_summary(self):
+    def e2_stub_rows(self):
         self.e2_reads += 1
         if self.e2_error:
             raise self.e2_error
-        return dict(self.e2_summary)
+        return [dict(row) for row in self.e2_rows]
 
     def engine_rows(self):
         if self.rows_override is not None:
             return self.rows_override
         n = self._forwarded()
-        return [{"seq": i, "kind": "request", "outcome": "completed"} for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal"},
-                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal"}]
+        # E² 회차면 앞 두 요청이 E²가 붙인 시도 ID를 가진다(나머지는 통과 전용 가짜가 아닌 이상 생기지 않지만, 여기선 단순화).
+        stub = "eval-e2" in self.ports.spec.expected.services
+        ids = [row["attempt_id"] for row in self.e2_rows if row["decision"] == "allowed"] if stub else []
+
+        def attempt(i):
+            return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
+                    else {"attempt_id_state": "absent", "attempt_id": ""})
+        return [{"seq": i, "kind": "request", "outcome": "completed", **attempt(i)} for i in range(1, n + 1)] + \
+               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 1)},
+                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 2)}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -476,6 +486,11 @@ class TestE2Slot(unittest.TestCase):
                          [{"mode": "stub", "decision_rows": 3, "allowed": 2, "unsupported": 1, "unavailable": 0}])
         self.assertEqual(meter.e2_reads, 1)
         self.assertEqual(result["e2_mode"], "stub")  # 서명된 결과에 남는다(세션·채점이 거부할 근거)
+        recon = evidence.files["attempt-reconciliation.json"]
+        # 허용 2건은 계측기에 관측, 미지원 1건은 미관측. 나머지 계측기 행은 ID가 없다(이 가짜 세계의 단순화).
+        self.assertEqual((recon["cells"]["allowed_observed"], recon["cells"]["denied_unobserved"], recon["fixture"]),
+                         (2, 1, True))
+        self.assertTrue(recon["positive_evidence"])
 
     def test_run_without_e2_records_none_and_never_reads_a_stub_log(self):
         result, ports, meter, evidence = run()
