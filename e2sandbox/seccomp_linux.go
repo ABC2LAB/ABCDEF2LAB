@@ -16,6 +16,12 @@ const (
 	seccompRetErrno       = 0x00050000
 	seccompRetAllow       = 0x7fff0000
 	secureNoRootLocked    = 1 | 2 | 4 | 8
+	maxCapabilityNumber   = 64
+	seccompArchOffset     = 4
+	seccompSyscallOffset  = 0
+	seccompArg0LowOffset  = 16
+	seccompArg0HighOffset = 20
+	x32SyscallBit         = 0x40000000
 )
 
 // The helper retains no capability in any set. Seccomp additionally prevents
@@ -34,7 +40,7 @@ func lockPrivilege() error {
 	if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0); err != nil {
 		return err
 	}
-	for cap := uintptr(0); cap < 64; cap++ {
+	for cap := uintptr(0); cap < maxCapabilityNumber; cap++ {
 		err := unix.Prctl(unix.PR_CAPBSET_DROP, cap, 0, 0, 0)
 		if err != nil && err != unix.EINVAL {
 			return err
@@ -63,13 +69,13 @@ func installSeccomp() error {
 		return unix.SockFilter{Code: code, K: k, Jt: jt, Jf: jf}
 	}
 	f := []unix.SockFilter{
-		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 4),
+		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, seccompArchOffset),
 		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, arch, 1, 0),
 		stmt(unix.BPF_RET|unix.BPF_K, seccompRetKillProcess),
-		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 0),
+		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, seccompSyscallOffset),
 	}
 	if runtime.GOARCH == "amd64" {
-		f = append(f, jump(unix.BPF_JMP|unix.BPF_JGE|unix.BPF_K, 0x40000000, 0, 1),
+		f = append(f, jump(unix.BPF_JMP|unix.BPF_JGE|unix.BPF_K, x32SyscallBit, 0, 1),
 			stmt(unix.BPF_RET|unix.BPF_K, seccompRetErrno|uint32(unix.ENOSYS)))
 	}
 	// Network namespaces do not isolate AF_VSOCK. Restrict both socket creation
@@ -78,10 +84,10 @@ func installSeccomp() error {
 	f = append(f,
 		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, uint32(unix.SYS_SOCKET), 1, 0),
 		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, uint32(unix.SYS_SOCKETPAIR), 0, 9),
-		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 20), // args[0], high word
+		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, seccompArg0HighOffset), // args[0], high word
 		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, 0, 1, 0),
 		stmt(unix.BPF_RET|unix.BPF_K, seccompRetErrno|uint32(unix.EPERM)),
-		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 16), // args[0], low word
+		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, seccompArg0LowOffset), // args[0], low word
 		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, unix.AF_UNIX, 3, 0),
 		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, unix.AF_INET, 2, 0),
 		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, unix.AF_INET6, 1, 0),
@@ -111,7 +117,7 @@ func installSeccomp() error {
 	mask := uint32(unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWNS | unix.CLONE_NEWNET | unix.CLONE_NEWIPC | unix.CLONE_NEWUTS | unix.CLONE_NEWCGROUP)
 	f = append(f,
 		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, uint32(unix.SYS_CLONE), 0, 3),
-		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 16),
+		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, seccompArg0LowOffset),
 		jump(unix.BPF_JMP|unix.BPF_JSET|unix.BPF_K, mask, 0, 1),
 		stmt(unix.BPF_RET|unix.BPF_K, seccompRetErrno|uint32(unix.EPERM)),
 		stmt(unix.BPF_RET|unix.BPF_K, seccompRetAllow),
