@@ -45,3 +45,31 @@ print("socket-and-uring-guards-ok")
 		t.Fatalf("socket/uring boundary result=%+v target_receipts=%d", result, f.receipts.Load())
 	}
 }
+
+func TestSandboxBlocksNamespaceCloneAndClone3(t *testing.T) {
+	// Invalid clone flag pairs would produce EINVAL in the kernel. The
+	// observed EPERM therefore pins the seccomp mask rather than a separate
+	// namespace permission check. A null clone3 pointer would not produce
+	// ENOSYS on kernels that implement clone3.
+	script := fmt.Sprintf(`import ctypes, errno
+libc = ctypes.CDLL(None, use_errno=True)
+def deny(nr, expected, *args):
+    ctypes.set_errno(0)
+    result = libc.syscall(ctypes.c_long(nr), *(ctypes.c_ulonglong(a) for a in args))
+    error = ctypes.get_errno()
+    if result != -1 or error != expected:
+        raise RuntimeError("clone guard mismatch: " + str((nr, result, error, expected)))
+for flags in (%d, %d, %d, %d):
+    deny(%d, errno.EPERM, flags, 0, 0, 0, 0)
+deny(%d, errno.ENOSYS, 0, 0)
+print("clone-guards-ok")
+`, unix.CLONE_NEWUSER|unix.CLONE_THREAD, unix.CLONE_NEWNET|unix.CLONE_THREAD,
+		unix.CLONE_NEWNS|unix.CLONE_THREAD, unix.CLONE_NEWPID|unix.CLONE_THREAD,
+		unix.SYS_CLONE, unix.SYS_CLONE3)
+	f := newSandboxFixture(t, "python3 -c '"+script+"'")
+	result := f.run(t)
+	if result.ExitCode != 0 || !result.BashExited || !result.Drained ||
+		!strings.Contains(string(result.Output), "clone-guards-ok") || f.receipts.Load() != 0 {
+		t.Fatalf("clone boundary result=%+v target_receipts=%d", result, f.receipts.Load())
+	}
+}

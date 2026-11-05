@@ -23,15 +23,17 @@ type Config struct {
 	// Zero resource values use bounded defaults. Scratch is an ephemeral tmpfs;
 	// Workspace is only a private host lifecycle directory and stays empty.
 	ScratchBytes, TempBytes, MaxFileBytes uint64
-	MaxProcesses, CPUSeconds, OpenFiles   uint64
-	Helper                                string
-	Workspace                             string
-	ProxySocket                           string
-	CACert                                string
-	Command                               string
-	Timeout                               time.Duration
-	DrainTimeout                          time.Duration
-	OutputLimit                           int
+	// MaxProcesses caps all tasks in the isolated user namespace, including
+	// the trusted helper; it is not an extra Bash-process allowance.
+	MaxProcesses, CPUSeconds, OpenFiles uint64
+	Helper                              string
+	Workspace                           string
+	ProxySocket                         string
+	CACert                              string
+	Command                             string
+	Timeout                             time.Duration
+	DrainTimeout                        time.Duration
+	OutputLimit                         int
 }
 
 // Result is process evidence, not an HTTP policy or vulnerability decision.
