@@ -268,6 +268,8 @@ type controlledReadLease struct {
 	observed     bool
 	denied       bool
 	verification *controlledReadVerificationState
+	config       *ControlledReadConfigHandle
+	revokeConfig func()
 }
 
 // prepareControlledRead is invoked once per runIntent, outside model retries.
@@ -381,6 +383,14 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 		return ctx, nil, errControlledReadUnavailable
 	}
 	if verificationHost != nil {
+		// Both consumers copy this exact private execution cfg. No handle is
+		// published before HTTP initialization and the task binding succeed.
+		config, revoke, err := newControlledReadConfigHandle(httpCtx, taskID, intent.ID, cfg)
+		if err != nil {
+			lease.close()
+			return ctx, nil, errControlledReadUnavailable
+		}
+		lease.config, lease.revokeConfig = config, revoke
 		lease.verification = &controlledReadVerificationState{host: verificationHost, runCtx: ctx, taskID: taskID, intentID: intent.ID}
 	}
 	ctx = agent.WithControlledReadExecution(ctx, agent.ControlledReadExecution{
@@ -425,6 +435,11 @@ func (r *controlledCheckpointRecorder) Record(ctx context.Context, event transmi
 
 func (l *controlledReadLease) close(disposition ...bool) error {
 	l.once.Do(func() {
+		// Deny fresh metadata lookups before waiting for transmission drain.
+		// Existing finalization uses its collected context, not this handle.
+		if l.revokeConfig != nil {
+			l.revokeConfig()
+		}
 		if l.recorder.published == nil {
 			l.tx.StopAndWait()
 		} else if !l.recorder.published.drain.stopAndWait(l.tx) {
