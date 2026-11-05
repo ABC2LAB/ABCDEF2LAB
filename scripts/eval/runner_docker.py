@@ -61,6 +61,12 @@ CONTAINER_TEMPLATE = (
 )
 
 
+def container_file_ok(path: object) -> bool:
+    """대상 컨테이너 파일 경로(상태 차이 사본). 절대 경로이고 `.`·`..`·빈 구간이 없다."""
+    return (isinstance(path, str) and bool(_CONTAINER_FILE.fullmatch(path))
+            and not any(part in (".", "..") for part in path.split("/")[1:]))
+
+
 class DockerError(RuntimeError):
     """docker 호출 실패. 메시지는 고정 코드이며 docker 출력 원문을 담지 않는다."""
 
@@ -381,8 +387,7 @@ class Docker:
         오류다(검사하지 못한 것을 '없음'으로 바꾸지 않는다, #226 리뷰). 출력은 상한까지만 읽는다. 받은 tar는 정규 파일
         정확히 하나, 이름이 경로의 마지막 구간, 크기 상한 안이어야 한다. 링크·디렉터리는 따라가지 않고 거부한다.
         """
-        if (not _OBJECT_ID.fullmatch(container_id or "") or not _CONTAINER_FILE.fullmatch(path or "")
-                or any(part in (".", "..") for part in path.split("/")[1:])
+        if (not _OBJECT_ID.fullmatch(container_id or "") or not container_file_ok(path)
                 or type(max_bytes) is not int or max_bytes < 1):
             raise DockerError("docker_copy_invalid")
         result = self._bounded(["cp", f"{container_id}:{path}", "-"], self._env, self._timeout,

@@ -43,15 +43,23 @@ def _private_dir(path: Path) -> None:
 
 
 def _write_private(path: Path, data: bytes) -> None:
+    """O_EXCL로 새로 만든 파일에만 쓴다. 쓰기·fsync·close가 실패하면 이 호출이 만든 그 파일을 지운다(#227 리뷰).
+
+    O_EXCL이라 열기에 성공했다면 이 호출이 만든 파일이다. 열기 자체가 실패하면(이미 있음 등) 아무것도 지우지 않는다.
+    """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            view = view[written:]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except BaseException:
+        os.unlink(path)
+        raise
 
 
 def _is_wal(header: bytes) -> bool:
@@ -79,6 +87,17 @@ def _copy_files(docker, container_id: str, path: str, max_bytes: int) -> dict[st
     return files
 
 
+def discard_copy(target: Path) -> None:
+    """사본과 그 곁 파일(-wal·-shm·-journal, SQLite가 열 때 만든 것 포함)을 지운다. 지우지 못하면 오류다(값이 남는다)."""
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            os.unlink(str(target) + suffix)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise StateCopyError("state_copy_discard_failed") from None
+
+
 def copy_sqlite(docker, container_id: str, path: str, dest: Path, max_bytes: int) -> Path:
     """대상을 멈춘 채 SQLite 파일(WAL이면 `-wal`까지)을 꺼내 dest에 0600으로 쓰고 본 사본 경로를 돌려준다.
 
@@ -91,9 +110,14 @@ def copy_sqlite(docker, container_id: str, path: str, dest: Path, max_bytes: int
         files = _copy_files(docker, container_id, path, max_bytes)
     finally:
         docker.unpause(container_id)
+    written: list[str] = []
     for suffix, data in files.items():
         try:
             _write_private(Path(str(target) + suffix), data)
         except OSError:
+            # 일부만 쓴 사본은 남기지 않는다(먼저 있던 파일은 건드리지 않는다).
+            for done in written:
+                os.unlink(str(target) + done)
             raise StateCopyError("state_copy_write_failed") from None
+        written.append(suffix)
     return target

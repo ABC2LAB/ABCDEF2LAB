@@ -56,6 +56,8 @@ from runner_evidence import (  # noqa: E402
     e2_stub_counts, forwarded_count, read_private_json, sequence_complete,
 )
 from attempt_reconcile import reconcile  # noqa: E402
+from runner_state import copy_sqlite, discard_copy  # noqa: E402
+from state_diff import RUN_KEY_BYTES, diff as state_difference, snapshot as state_snapshot  # noqa: E402
 from runner_llm import judge_llm  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
 from runner_record import (  # noqa: E402
@@ -76,6 +78,9 @@ TMPFS_NOT_MEASURED = "not_measured"
 TMPFS_VOLUMES = ("engine_db", "engine_data")
 RESULT_NAME = "runner-result.json"
 RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
+# 상태 차이 근거(프로토콜 §8.2, 러너 설정 state가 있을 때만). 건수·정수 id·테이블·열 이름·seq 값만 담는다.
+STATE_DIFF_NAME = "state-diff.json"
+STATE_DIFF_FORMAT = "abc2lab-state-diff-v1"
 MAX_CONDITION_LENGTH = 100
 COMPLETE, INVALID = "complete", "invalid"
 # 이미지 역할 → 그 이미지를 쓰는 compose 서비스. 기동 후 컨테이너 이미지가 설정의 내용 ID와 같아야 한다.
@@ -118,6 +123,7 @@ class RunPorts(Protocol):
     def seal(self, meter_container_id: str) -> None: ...
     def seal_gateway(self, gateway_container_id: str) -> None: ...
     def tmpfs_usage(self, phase: str, snapshot: dict) -> dict: ...
+    def state_copy(self, phase: str, snapshot: dict) -> Path: ...
     def findings(self) -> dict: ...
     def sign(self, payload: dict) -> dict: ...
 
@@ -168,6 +174,8 @@ class RunSpec:
     target_origin: str
     observer_path: str
     observer_readonly_ref: str
+    # 상태 차이(프로토콜 §8.2)의 해결 신호 테이블. None이면 상태 사본을 뜨지 않는다(러너 설정 state=null).
+    state_signal_tables: frozenset[str] | None = None
 
 
 class WatchHandle(Protocol):
@@ -195,6 +203,9 @@ class _State:
     tmpfs_pre: dict | None = None
     host: dict | None = None
     engine_settings_sha256: str | None = None
+    # 상태 차이: 회차 키(메모리에만)와 pre 사본 지문. 사본 파일은 지문을 뜬 즉시 지운다.
+    state_key: bytes | None = None
+    state_pre: dict | None = None
 
 
 def _stamp(clock: Clock) -> str:
@@ -241,6 +252,14 @@ def _window(spec: RunSpec, evidence, state: _State, pre: dict, start: datetime, 
     if reasons:
         raise RunFailure(reasons[0])
     return record
+
+
+def _state_fingerprint(ports: RunPorts, key: bytes, phase: str, snapshot: dict) -> dict:
+    copy = ports.state_copy(phase, snapshot)
+    try:
+        return state_snapshot(copy, key)
+    finally:
+        discard_copy(copy)
 
 
 def _step(state: _State, code: str, action: Callable):
@@ -354,6 +373,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     ready_calls = _step(state, "target_not_ready", ports.wait_ready)
     state.observer_calls += ready_calls
     fixture_ready_at = _stamp(clock)  # 러너에는 준비 채널이 없다: 대상 준비 확인이 준비 봉인 시점
+    if spec.state_signal_tables is not None:
+        # 상태 차이 pre 사본(§8.2). 대상 pause가 Docker 이벤트를 만드므로 구간 시작 전에 뜬다(구간 시작 전 lookback
+        # 이벤트는 판정하지 않는다). 기동 쓰기는 대상 준비 확인 뒤라 끝났다고 본다.
+        state.state_key = os.urandom(RUN_KEY_BYTES)
+        state.state_pre = _step(state, "state_copy_failed",
+                                lambda: _state_fingerprint(ports, state.state_key, "pre", pre))
     # 격리 구간은 pre 관측 직전부터 post 관측 완료까지다. 그 동안 호스트 리슨을 주기적으로 보고, 끝나면 데몬 이벤트를 받는다.
     window_start = clock.now()
     state.events = _step(state, "window_events_failed", lambda: ports.start_events(
@@ -417,6 +442,14 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure("tmpfs_mount_changed")
     if any(measured[name]["available_bytes"] < spec.tmpfs_min_free_bytes for name in TMPFS_VOLUMES):
         raise RunFailure("tmpfs_full")
+    if spec.state_signal_tables is not None:
+        # post 사본도 구간이 닫힌 뒤에 뜬다. 값 없이 건수·정수 id·이름만 근거로 남긴다(§8.2).
+        post_state = _step(state, "state_copy_failed",
+                           lambda: _state_fingerprint(ports, state.state_key, "post", post))
+        difference = _step(state, "state_diff_failed",
+                           lambda: state_difference(state.state_pre, post_state, spec.state_signal_tables))
+        _step(state, "evidence_write_failed",
+              lambda: evidence.write_json(STATE_DIFF_NAME, dict(difference, format=STATE_DIFF_FORMAT)))
 
     observer = _step(state, "meter_read_failed", meter.observer_rows)
     if len(observer) != state.observer_calls or any(row["decision"] != "registered" for row in observer):
@@ -751,6 +784,14 @@ class DockerPorts:
         (engine_data,) = self.docker.statfs(meter, services[ENGINE_SERVICE]["id"], [ENGINE_DATA_PATH])
         return {"engine_db": engine_db, "engine_data": engine_data}
 
+    def state_copy(self, phase: str, snapshot: dict) -> Path:
+        # 단계마다 새 0700 디렉터리. 사본 파일은 호출자가 지문을 뜬 즉시 지운다.
+        dest = self.directory.state / phase
+        os.mkdir(dest, 0o700)
+        os.chmod(dest, 0o700)
+        return copy_sqlite(self.docker, snapshot["services"][TARGET_SERVICE]["id"], self.config.state["sqlite_path"],
+                           dest, self.config.state["max_copy_bytes"])
+
     def findings(self) -> dict:
         return self._findings()
 
@@ -784,7 +825,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         condition=condition, repeat_index=repeat_index, e2_mode=plan.e2_mode, model_tag=plan.llm["model"],
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
         target_origin=declared["target_origin"], observer_path=config.observer_path,
-        observer_readonly_ref=config.observer_readonly_ref)
+        observer_readonly_ref=config.observer_readonly_ref,
+        state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]))
 
 
 def main(argv: list[str] | None = None) -> int:

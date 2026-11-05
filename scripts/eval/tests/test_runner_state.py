@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import sqlite3
@@ -12,11 +13,12 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_docker import BoundedResult, CommandResult, Docker, DockerError, run_docker_bounded  # noqa: E402
-from runner_state import StateCopyError, copy_sqlite  # noqa: E402
+from runner_state import StateCopyError, copy_sqlite, discard_copy  # noqa: E402
 from state_diff import RUN_KEY_BYTES, snapshot  # noqa: E402
 
 CID = "c" * 64
@@ -145,6 +147,54 @@ class TestCopy(unittest.TestCase):
         with self.assertRaisesRegex(DockerError, "docker_unpause_failed"):
             copy_sqlite(docker, CID, DB, dest, MAX)
         self.assertEqual(os.listdir(dest), [])
+
+    def test_discard_removes_the_copy_and_its_side_files(self):
+        dest = self._fresh()
+        target = dest / "target.sqlite"
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            Path(str(target) + suffix).write_bytes(b"x")
+        (dest / "keep").write_bytes(b"other")
+        discard_copy(target)
+        self.assertEqual(os.listdir(dest), ["keep"])
+        discard_copy(target)  # 이미 없으면 그대로 끝난다
+
+    def test_discard_failure_is_an_error(self):
+        dest = self._fresh()
+        target = dest / "target.sqlite"
+        target.mkdir()  # 파일이 아니라 지우지 못한다
+        with self.assertRaisesRegex(StateCopyError, "state_copy_discard_failed"):
+            discard_copy(target)
+
+    def test_partial_write_is_cleaned_up(self):
+        files = sqlite_bytes(self.root, wal=True)
+        dest = self._fresh()
+        Path(str(dest / "target.sqlite") + "-wal").write_bytes(b"old")  # 두 번째 파일 쓰기가 O_EXCL로 실패
+        with self.assertRaisesRegex(StateCopyError, "state_copy_write_failed"):
+            copy_sqlite(FakeDocker({DB: files[""], DB + "-wal": files["-wal"]}), CID, DB, dest, MAX)
+        self.assertEqual(sorted(os.listdir(dest)), ["target.sqlite-wal"])
+        self.assertEqual((dest / "target.sqlite-wal").read_bytes(), b"old")
+
+    def test_failed_write_removes_the_file_it_created(self):
+        # 새로 만든 파일에 쓰는 도중(ENOSPC) 실패하면 그 파일도 지운다. 앞서 쓴 사본도 지우고, 원래 있던 파일은 둔다.
+        files = sqlite_bytes(self.root, wal=True)
+        dest = self._fresh()
+        (dest / "keep").write_bytes(b"other")
+        real_write, calls = os.write, []
+
+        def failing_write(fd, data):
+            calls.append(len(data))
+            if len(calls) == 2:  # 본 사본은 다 쓰고, -wal을 쓰기 시작할 때 실패
+                raise OSError(errno.ENOSPC, "no space")
+            return real_write(fd, data)
+        with patch("runner_state.os.write", failing_write), \
+                self.assertRaisesRegex(StateCopyError, "state_copy_write_failed"):
+            copy_sqlite(FakeDocker({DB: files[""], DB + "-wal": files["-wal"]}), CID, DB, dest, MAX)
+        self.assertEqual(os.listdir(dest), ["keep"])
+        single = self._fresh()
+        with patch("runner_state.os.write", lambda fd, data: (_ for _ in ()).throw(OSError(errno.ENOSPC, "x"))), \
+                self.assertRaisesRegex(StateCopyError, "state_copy_write_failed"):
+            copy_sqlite(FakeDocker({DB: sqlite_bytes(self._fresh())[""]}), CID, DB, single, MAX)
+        self.assertEqual(os.listdir(single), [])
 
     def test_existing_copy_is_not_overwritten(self):
         main = sqlite_bytes(self.root)[""]
