@@ -85,15 +85,18 @@ func TestControlledReadConfigRuntimeActualSnapshotAndBind(t *testing.T) {
 		request = r
 		view, err := r.ConfigView(ctx)
 		if err != nil || view.Scope != r.Scope || view.Sessions[0].Account != owner || view.Sessions[1].Account != peer || view.Resources[0].ApprovalRef != "read-approval" {
-			t.Fatal("resolver did not receive runtime's exact frozen metadata")
+			t.Error("resolver did not receive runtime's exact frozen metadata")
+			return ControlledReadVerificationPlan{}, ErrControlledFindingUnavailable
 		}
 		for _, value := range []any{r, view} {
 			body, err := json.Marshal(value)
 			if err != nil || strings.Contains(string(body), runtimeSecret) || strings.Contains(string(body), "config") || strings.Contains(string(body), "Headers") {
-				t.Fatal("private config or credentials escaped JSON")
+				t.Error("private config or credentials escaped JSON")
+				return ControlledReadVerificationPlan{}, ErrControlledFindingUnavailable
 			}
 			if strings.Contains(fmt.Sprintf("%#v", value), runtimeSecret) {
-				t.Fatal("private config escaped formatting")
+				t.Error("private config escaped formatting")
+				return ControlledReadVerificationPlan{}, ErrControlledFindingUnavailable
 			}
 		}
 		view.Sessions[0].Account.Handle = "mutated-view"
@@ -102,24 +105,28 @@ func TestControlledReadConfigRuntimeActualSnapshotAndBind(t *testing.T) {
 			ReadApprovalRef: "read-approval", KGPolicyVersion: "synthetic-config-kg-policy", Owner: owner, Evaluated: peer}
 		bound, err := r.BindRealInputs(ctx, expected, configRuntimeKG(), configRuntimeSource)
 		if err != nil || bound.Expected != expected {
-			t.Fatal("actual runtime Bind lost original approved snapshot")
+			t.Error("actual runtime Bind lost original approved snapshot")
+			return ControlledReadVerificationPlan{}, ErrControlledFindingUnavailable
 		}
 		return ControlledReadVerificationPlan{Candidate: bound.Candidate, KG: bound.KG,
 			Collect: func(_ context.Context, evidence ControlledReadVerificationEvidence) error {
 				for i, receipt := range []transmit.Receipt{evidence.Verification.Owner.Receipt, evidence.Verification.Evaluated.Receipt} {
 					account := []idor.AccountRef{owner, peer}[i]
 					if receipt.Scope != r.Scope || receipt.ApprovalRef != expected.ReadApprovalRef || receipt.ResourceRef != expected.ResourceRef || receipt.AccountRef != account.Label || receipt.SessionRef != account.Handle {
-						t.Fatal("actual sender receipt differs from resolver's approved metadata")
+						t.Error("actual sender receipt differs from resolver's approved metadata")
+						return ErrControlledFindingUnavailable
 					}
 				}
 				return nil
 			},
 			Finalize: func(ctx context.Context, evidence ControlledReadVerificationEvidence) error {
 				if evidence.Request != r || ctx.Err() != nil {
-					t.Fatal("finalization lost comparable runtime request")
+					t.Error("finalization lost comparable runtime request")
+					return ErrControlledFindingUnavailable
 				}
 				if _, err := r.ConfigView(ctx); err == nil {
-					t.Fatal("new config lookup remained possible during finalization")
+					t.Error("new config lookup remained possible during finalization")
+					return ErrControlledFindingUnavailable
 				}
 				finalized.Add(1)
 				return nil
@@ -160,7 +167,8 @@ func TestControlledReadConfigRuntimeRequestIsolation(t *testing.T) {
 	e.controlledReads.verification = &controlledReadVerificationConfig{lifecycle: t.Context(), resolve: func(ctx context.Context, r ControlledReadVerificationRequest) (ControlledReadVerificationPlan, error) {
 		request = r
 		if _, err := r.ConfigView(ctx); err != nil {
-			t.Fatal("actual request missing handle")
+			t.Error("actual request missing handle")
+			return ControlledReadVerificationPlan{}, ErrControlledFindingUnavailable
 		}
 		return ControlledReadVerificationPlan{}, ErrControlledFindingUnavailable
 	}}
@@ -349,7 +357,8 @@ func TestControlledReadConfigRuntimePublishedLifetimeCancellation(t *testing.T) 
 			if err := f.s.ConfigureControlledReadVerification(func(ctx context.Context, actual ControlledReadVerificationRequest) (ControlledReadVerificationPlan, error) {
 				request = actual
 				if _, err := actual.ConfigView(ctx); err != nil {
-					t.Fatal("published runtime did not supply live view")
+					t.Error("published runtime did not supply live view")
+					return ControlledReadVerificationPlan{}, ErrControlledFindingUnavailable
 				}
 				return ControlledReadVerificationPlan{}, ErrControlledFindingUnavailable
 			}); err != nil {
