@@ -1,6 +1,6 @@
 # E② 감사 파일 오프라인 검증 명령
 
-상태: 병합된 [감사 저장기](./e2-audit-journal.md)의 `auditlog.Verify`(요약) 또는 `auditlog.VerifyTimeline`(타임라인)을 호출하는 운영자용 Linux 명령. 서버·LLM·DB·대상 서비스에 연결하지 않고 입력 파일을 수정하지 않는다. 서버 실행 어댑터·KG·UI 없이 사용할 수 있다.
+상태: 등록 GET [감사 저장기](./e2-audit-journal.md)의 `auditlog.Verify`(요약)·`auditlog.VerifyTimeline`(타임라인), 또는 일반 HTTP `e2proxy.VerifyJournal`(요약)을 호출하는 운영자용 Linux 명령. 서버·LLM·DB·대상 서비스에 연결하지 않고 입력 파일을 수정하지 않는다. 서버 실행 어댑터·KG·UI 없이 사용할 수 있다.
 
 ## 실행
 
@@ -51,3 +51,38 @@ checkpoint는 기존 `auditlog.Checkpoint`의 `json.Marshal` 형식으로 보존
 이벤트 수는 실제 요청 전송 건수나 취약점 수와 다르다. intent 기록이 있어도 전송이 실패할 수 있고 result에는 거부도 포함된다. 이 명령은 승인 적정성·로그인 성공·접근 성공·E③ 취약점 판정·OS 권한 분리를 검사하지 않는다. HMAC 키가 유출된 공격자의 재서명은 별도의 키 보호가 필요하다.
 
 합성 journal·키·checkpoint로 정상 검증과 내용/끝부분 변조, 다른 범위/키/checkpoint, 입력 형식·권한·파일 종류, 취소·출력 실패를 시험한다. 타임라인은 정확한 JSON·전송 관측값 투영, 상한에 도달한 뒤의 후반 변조 우선순위, 같은 시각을 섞은 40건의 안정 정렬, 기본/명시 상한 1000건 성공·1001건 무출력 실패를 시험한다. 실제 스캔 로그·계정·모델 호출·baseline 자료는 사용하지 않는다.
+
+## 일반 HTTP 감사 형식 선택
+
+일반 프록시의 `e2-http-v1` journal은 등록 GET의 journal v1과 별도 형식이다.
+`--journal-format e2-http-v1`을 명시하면 같은 안전 파일 리더를 거쳐
+`e2proxy.VerifyJournal`에 **항상 제공된 checkpoint를 전달**한다. 형식을 자동 탐지하거나
+검증 실패 뒤 다른 형식으로 재시도하지 않는다. 옵션 생략 또는
+`--journal-format registered-get-v1`은 기존 등록 GET 동작을 선택한다.
+
+```sh
+/tmp/e2-audit-verify \
+  --journal-format e2-http-v1 \
+  --journal /srv/e2-http-export/RUN.journal \
+  --checkpoint /srv/trusted-checkpoints/HTTP.checkpoint \
+  --key-file /srv/e2-secrets/http-audit.key
+```
+
+- checkpoint는 `e2proxy.JournalCheckpoint`의 `json.Marshal` 형식이며 4KiB 이하다.
+  들여쓰기·공백을 제외한 전체 필드명·순서·누락·중복·추가 필드·별칭·후행 값 검사는
+  등록 GET과 같다. 다른 형식의 checkpoint는 거부한다.
+- 키는 일반 HTTP 저장기가 받는 **32~4096바이트 raw HMAC 키**이고 일반 파일·`0600`이어야 한다.
+  기존 keygen의 32바이트 키를 사용할 수 있다. 등록 GET 모드의 키 길이는 계속 32바이트다.
+- 성공 출력은 `e2proxy.JournalSummary` JSON 한 줄(`Checkpoint`, `Events`)뿐이다.
+  이벤트·시도별 상세·입력 경로·키는 출력하지 않는다. `Events`는 요청 전송 건수나
+  완료된 호출 수가 아니다. 정상적인 header-only journal도 0건 요약으로 검증된다.
+- 일반 HTTP 모드에 `--timeline` 또는 `--max-events`를 지정하면 종료 코드 2로 거부한다.
+  기존 GET 타임라인으로 변환하지 않는다. 라이브러리의 바이트·행·이벤트 검증 상한은
+  그대로 적용되며, 초과 시 `audit_verification_limit_exceeded`·종료 코드 1·stdout 비움이다.
+- 나머지 취소·입력·무결성·출력 실패의 종료 코드와 고정 진단은 위 표를 따른다.
+
+`JournalCheckpoint`는 Sync가 확인된 prefix다. Record가 취소되면 이 prefix가 전진했어도
+호출자가 ACK를 받지 못했을 수 있다. 따라서 파일 일치는 Execution ACK·`AuditComplete`·
+호출 마감/결과의 완전성·현재 host head/epoch·키의 운영 권한·승인·E③ 판정을 증명하지 않는다.
+오래된 journal과 그때의 checkpoint를 함께 제공한 경우의 일치를 최신성으로 해석하지 않는다.
+외부 최신 정본 조회·일반 E②와 IDOR의 같은 실행 연결·실제 배치 수용은 별도 작업이다.
