@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./abc2lab.css";
 import { ApprovalContext, type ApprovalTarget } from "./lib/approval";
+import type { EngineFinding } from "./lib/engine";
 import { MOCK, MOCK_DEFAULT_TASK } from "./lib/mock";
 import { toTarget } from "./lib/net";
 import { type Selection, SelectionContext } from "./lib/selection";
@@ -47,9 +48,11 @@ export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true
   const [taskId, setTaskId] = useState<string | null>(MOCK ? MOCK_DEFAULT_TASK : null);
   const [tasksVersion, setTasksVersion] = useState(0);
   const refreshTasks = useCallback(() => setTasksVersion((version) => version + 1), []);
+  // 발견 상세가 보여 줄 발견 — 보고서의 [자세히 보기]가 고른다
+  const [finding, setFinding] = useState<EngineFinding | null>(null);
   const selection = useMemo<Selection>(
-    () => ({ taskId, selectTask: setTaskId, tasksVersion, refreshTasks }),
-    [taskId, tasksVersion, refreshTasks],
+    () => ({ taskId, selectTask: setTaskId, tasksVersion, refreshTasks, finding, selectFinding: setFinding }),
+    [taskId, tasksVersion, refreshTasks, finding],
   );
 
   const go = useCallback(

@@ -1,5 +1,7 @@
 import { createContext, useContext } from "react";
 
+import type { EngineFinding } from "./engine";
+
 /**
  * 지금 보고 있는 점검(task) 선택 상태.
  * 모든 화면이 항상 마운트돼 있어(원본 show/hide 구조), task 범위 화면(report/live/finding…)은
@@ -11,6 +13,12 @@ export type Selection = {
   tasksVersion: number;
   refreshTasks: () => void;
   selectTask: (id: string | null) => void;
+  /**
+   * 발견 상세 화면이 보여 줄 발견 — 보고서의 [자세히 보기]가 목록 항목을 그대로 넘긴다.
+   * 발견 상세를 쓰지 않는 곳(화면 단위 테스트 등)은 비워 둬도 된다.
+   */
+  finding?: EngineFinding | null;
+  selectFinding?: (finding: EngineFinding | null) => void;
 };
 
 export const SelectionContext = createContext<Selection | null>(null);

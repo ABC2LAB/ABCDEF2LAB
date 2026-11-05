@@ -748,6 +748,13 @@ function ListPanel({
   setOpenRow: (id: string | null) => void;
 }) {
   const toggle = (id: string) => setOpenRow(openRow === id ? null : id);
+  // [자세히 보기] → 이 발견을 골라 발견 상세로(엔진이 기록한 증거 · 요청 기록 · 재검증 이력)
+  const go = useGo();
+  const { selectFinding } = useSelection();
+  const openDetail = (f: EngineFinding) => {
+    selectFinding?.(f);
+    go("finding");
+  };
   if (loading) {
     return <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>불러오는 중…</div>;
   }
@@ -768,8 +775,8 @@ function ListPanel({
   return (
     <div className="rpanel">
       <p className="hint" style={{ margin: "0 0 12px" }}>
-        이름 · 엔드포인트 · 위험도는 실데이터예요. 항목을 누르면 핵심만 펼쳐지고, 전체 증거 · 비교표 · 판정은{" "}
-        <Strong>자세히 보기(E③ 연동 후)</Strong>에서 봐요.
+        이름 · 엔드포인트 · 위험도는 실데이터예요. 항목을 누르면 핵심만 펼쳐지고, <Strong>자세히 보기</Strong>에서
+        에이전트가 남긴 증거 · 요청 기록 · 재검증 이력을 봐요. 확정 · 의심 · 판단 불가 판정은 E③ 연동 후예요.
       </p>
       {findings.map((f) => {
         const open = openRow === f.id;
@@ -818,8 +825,8 @@ function ListPanel({
                     구조화 증거(요청/응답 · canary)와 확정/의심/판단 불가 판정은 E③ 오라클 연동 후 채워져요.
                   </dd>
                 </dl>
-                <button type="button" className="btn" disabled>
-                  자세히 보기 (E③ 연동 후)
+                <button type="button" className="btn" onClick={() => openDetail(f)}>
+                  자세히 보기
                 </button>
               </div>
             )}
