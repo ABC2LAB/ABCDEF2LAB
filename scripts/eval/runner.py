@@ -43,7 +43,7 @@ from runner_checks import (  # noqa: E402
     network_snapshot, parse_container, parse_network, policy_sha256, read_host_listeners,
 )
 from runner_config import (  # noqa: E402
-    API_FRONT_SERVICE, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
+    API_FRONT_SERVICE, E2_SERVICE, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
     METER_SERVICE, OBS_SERVICE, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
@@ -78,8 +78,9 @@ RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
 MAX_CONDITION_LENGTH = 100
 COMPLETE, INVALID = "complete", "invalid"
 # 이미지 역할 → 그 이미지를 쓰는 compose 서비스. 기동 후 컨테이너 이미지가 설정의 내용 ID와 같아야 한다.
+# 회차에 없는 서비스(baseline의 E²)는 대조하지 않는다. 있어야 하는지는 망 구성 점검이 따로 본다.
 _IMAGE_SERVICES = {"engine": (ENGINE_SERVICE,), "engine_db": (ENGINE_DB_SERVICE,), "target": (TARGET_SERVICE,),
-                   "meter": (METER_SERVICE, OBS_SERVICE, LLM_GW_SERVICE, API_FRONT_SERVICE)}
+                   "meter": (METER_SERVICE, OBS_SERVICE, LLM_GW_SERVICE, API_FRONT_SERVICE, E2_SERVICE)}
 
 
 class RunFailure(Exception):
@@ -262,7 +263,7 @@ def _check_phase(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase:
             + check_host_listeners(listeners, spec.allowed_listens))
     snapshot = network_snapshot(facts.daemon, spec.project, networks, containers)
     images = sorted(f"service.{service}: IMAGE_MISMATCH" for role, services in _IMAGE_SERVICES.items()
-                    for service in services
+                    for service in services if service in spec.expected.services
                     if snapshot["services"].get(service, {}).get("image") != spec.image_ids[role])
     _step(state, "evidence_write_failed", lambda: evidence.write_json(f"{phase}-checks.json", {
         "phase": phase, "snapshot": snapshot, "policy_sha256": policy_sha256(snapshot),

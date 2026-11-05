@@ -16,7 +16,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH,
+    COMPOSE_COMMON, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_DATA_PATH,
+    ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
     MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
     compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
     new_run_id, parse_runner_config, plan_run,
@@ -57,6 +58,7 @@ def runner_config() -> dict:
         "findings": {"vocabulary_path": "/srv/eval/vocabulary.json", "page_size": 100, "timeout_seconds": 30,
                      "max_page_bytes": 1048576, "max_total_bytes": 8388608, "max_pages": 100},
         "observer_readonly_ref": "verify:juice-shop-15.0.0:get-api-challenges",
+        "e2": {"ours_mode": "none"},
         "task": {"description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.\n로그인 계정은 엔진 설정을 쓴다.",
                  "goal": "다른 사용자의 자원에 접근되는지 확인한다", "timeout_seconds": 1200,
                  "plan_heartbeat_seconds": 600, "seed_first_intent": False, "coverage_enabled": True},
@@ -302,6 +304,41 @@ class TestParseRunnerConfig(unittest.TestCase):
             self.assertEqual(caught.exception.errors, ["config: NONFINITE_NUMBER"])
             path.write_text(json.dumps(runner_config()), encoding="utf-8")
             self.assertEqual(load_runner_config(path).observer_path, "/api/records")
+
+
+class TestE2Mode(unittest.TestCase):
+    def test_e2_block_is_required_and_closed(self):
+        for payload, code in (
+                ({k: v for k, v in runner_config().items() if k != "e2"}, "config.e2: MISSING"),
+                (runner_config() | {"e2": {"ours_mode": "product"}}, "config.e2.ours_mode: UNSUPPORTED"),
+                (runner_config() | {"e2": {"ours_mode": ""}}, "config.e2.ours_mode: UNSUPPORTED"),
+                (runner_config() | {"e2": {}}, "config.e2.ours_mode: MISSING"),
+                (runner_config() | {"e2": {"ours_mode": "stub", "port": 1}}, "config.e2: UNKNOWN_FIELDS"),
+                (runner_config() | {"e2": "stub"}, "config.e2: EXPECTED_OBJECT")):
+            with self.subTest(code=code), self.assertRaises(RunnerConfigError) as caught:
+                parse_runner_config(payload)
+            self.assertIn(code, caught.exception.errors)
+
+    def test_stub_adds_the_overlay_to_the_ours_side_only(self):
+        config = parse_runner_config(runner_config() | {"e2": {"ours_mode": "stub"}})
+        ours = plan_run(config, configuration(), "ours", "ours-1")
+        baseline = plan_run(config, configuration(), "baseline", "baseline-1")
+        self.assertEqual((ours.e2_mode, ours.compose_files[-1]), ("stub", COMPOSE_E2_STUB))
+        self.assertEqual(baseline.e2_mode, "none")
+        self.assertNotIn(COMPOSE_E2_STUB, baseline.compose_files)
+        # E²가 있어도 엔진이 보내는 이름·작업 문구는 그대로다(작업 요청 해시가 baseline과 같다).
+        self.assertEqual(ours.meter_port, baseline.meter_port)
+        none = plan_run(parse_runner_config(runner_config()), configuration(), "ours", "ours-2")
+        self.assertEqual((none.e2_mode, none.compose_files), ("none", (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_EVAL)))
+
+    def test_overlay_names_match_the_runner_constants(self):
+        text = _yaml_without_comments(COMPOSE_E2_STUB.read_text(encoding="utf-8"))
+        self.assertEqual(compose_services(COMPOSE_E2_STUB), {E2_SERVICE, METER_SERVICE})
+        self.assertIn(f"aliases: [{METER_SERVICE}]", text)  # 엔진은 계측기 이름으로 E²에 닿는다
+        self.assertIn(f"aliases: [{METER_UPSTREAM_ALIAS}]", text)
+        self.assertIn(f"-upstream=http://{METER_UPSTREAM_ALIAS}:${{EVAL_METER_PORT:?}}", text)
+        self.assertIn("-role=e2-stub", text)
+        self.assertIn("networks: !override", text)  # 계측기를 엔진 망에서 빼는 줄
 
 
 class TestPlanRun(unittest.TestCase):
@@ -554,6 +591,11 @@ class TestComposeContract(unittest.TestCase):
                     preflight[side]["llm"] = llm
             plan = plan_run(config, preflight, "ours", f"ours-{backend}")
             env = compose_environment(plan, create_run_directory(self.root, f"ours-{backend}"))
+            stub = plan_run(parse_runner_config(runner_config() | {"e2": {"ours_mode": "stub"}}), preflight, "ours",
+                            f"stub-{backend}")
+            stub_env = compose_environment(stub, create_run_directory(self.root, f"stub-{backend}"))
+            with self.subTest(backend=backend, e2="stub"):
+                self.assertEqual(compose_variables(stub.compose_files), set(stub_env) | secret_env_names(backend))
             with self.subTest(backend=backend):
                 self.assertEqual(set(env) & SECRET_ENV_NAMES, set())
                 self.assertEqual(compose_variables(plan.compose_files), set(env) | secret_env_names(backend))
@@ -579,7 +621,7 @@ class TestComposeContract(unittest.TestCase):
                 self.assertIn(f"- {path}:size=${{{size_var}:?}}", text)
 
     def test_every_compose_file_is_covered(self):
-        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL}
+        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB}
         on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
         on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
         self.assertEqual(on_disk, files)
@@ -592,13 +634,13 @@ class TestComposeContract(unittest.TestCase):
 
     def test_no_restart_policy_anywhere(self):
         # 회차 중 자동 재시작은 계측기 카운터·대상 상태·엔진 tmpfs를 조용히 초기화한다. 기본값(no)에 맡긴다.
-        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB):
             text = _yaml_without_comments(Path(path).read_text(encoding="utf-8"))
             with self.subTest(path=path.name):
                 self.assertNotRegex(text, r"(?m)^\s*restart\s*:")
 
     def test_every_publish_is_loopback_only(self):
-        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB):
             lines = _yaml_without_comments(Path(path).read_text(encoding="utf-8")).splitlines()
             entries = []
             for index, line in enumerate(lines):
