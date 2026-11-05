@@ -62,6 +62,10 @@ class TestOfficialProfile(unittest.TestCase):
         self.assertEqual(endpoint["tag"], environment["llm"]["provider"])
         self.assertTrue(sent <= set(endpoint["supported_parameters"]))
         self.assertTrue(endpoint["pinned_parameters_supported"])
+        # 엔진이 보내는 파라미터(tools 등)도 require_parameters:true의 검사를 받는다.
+        self.assertTrue(set(params["engine_parameters"]) <= set(endpoint["supported_parameters"]))
+        self.assertTrue(endpoint["engine_parameters_supported"])
+        self.assertIn("tools", params["engine_parameters"])
 
     def test_target_image_is_pinned_by_digest_and_fixture_is_anonymous(self):
         self.assertRegex(self.profile["environment"]["target_image"], r"^bkimminich/juice-shop:v15\.0\.0@sha256:[0-9a-f]{64}$")
