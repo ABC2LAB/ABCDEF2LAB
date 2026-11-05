@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import unittest
+from unittest import mock
 
 from verify_runtime import CHANNEL, check
 import probe_network
@@ -284,8 +285,8 @@ class RuntimeChecks(unittest.TestCase):
         def run_with(results, overrides=None, extra=()):
             overrides = overrides or {}
             output = io.StringIO()
-            with unittest.mock.patch.object(sys, "argv", args + list(extra)), \
-                    unittest.mock.patch.object(probe_network, "attempt",
+            with mock.patch.object(sys, "argv", args + list(extra)), \
+                    mock.patch.object(probe_network, "attempt",
                         side_effect=lambda name, action: {"name": name, "connected_or_sent": results[name], **({} if results[name] else overrides.get(name, expected[name]))}), \
                     contextlib.redirect_stdout(output):
                 code = probe_network.main()
@@ -314,6 +315,18 @@ class RuntimeChecks(unittest.TestCase):
             with self.assertRaises(RuntimeError) as raised:
                 verify_runtime._daemon_identity("docker")
         self.assertEqual(str(raised.exception), "docker_daemon_identity_fields")
+
+    def test_proxy_urlerror_preserves_network_errno(self):
+        import errno
+        from urllib.error import URLError
+
+        def refused_proxy():
+            raise URLError(OSError(errno.ENETUNREACH, "synthetic network denial"))
+
+        result = attempt("proxy_replacement", refused_proxy)
+        self.assertEqual(result["error_kind"], "URLError")
+        self.assertEqual(result["errno"], errno.ENETUNREACH)
+        self.assertTrue(expected_failure("proxy_replacement", result))
 
 
 if __name__ == "__main__":

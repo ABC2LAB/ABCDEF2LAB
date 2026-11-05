@@ -191,6 +191,8 @@ def main() -> int:
         if not result.stdout.strip():
             raise RuntimeError("synthetic_probe_unavailable")
         probe = json.loads(result.stdout)
+        observations["probe_results"] = probe.get("checks", [])
+        observations["unexpected_errors"] = probe.get("unexpected_errors", [])
         expected_names = [
             "direct_ipv4_tcp", "direct_ipv6_tcp", "direct_ipv4_udp", "direct_ipv6_udp",
             "dns_resolution", "proxy_replacement", "opaque_connect", "shell_child", "grandchild",

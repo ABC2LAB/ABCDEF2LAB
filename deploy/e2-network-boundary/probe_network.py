@@ -13,6 +13,7 @@ import os
 import socket
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 CHECK_NAMES = (
@@ -34,6 +35,8 @@ class ChildProbeBlocked(Exception):
 def _error_kind(error: BaseException) -> str:
     if isinstance(error, socket.gaierror):
         return "gaierror"
+    if isinstance(error, urllib.error.URLError):
+        return "URLError"
     if isinstance(error, TimeoutError):
         return "TimeoutError"
     if isinstance(error, OSError):
