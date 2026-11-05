@@ -18,9 +18,9 @@
 
 공식 비교는 여러 변경을 합친 엔진 전체 비교다. 별도 분리 실험 없이 결과를 E②나 E③ 하나의 효과로 귀속하지 않는다.
 
-현재 공식 프로파일은 계정과 자원을 제공하지 않는 `anonymous` 준비 조건이다. 이는 엔진이 실행 중 스스로 회원가입·로그인을 시도하지 못하게 한다는 뜻은 아니다. 원본이 스스로 IDOR 챌린지를 해결하면 현행 규칙에 따라 해결 수에 포함한다. 수동 A/B fixture를 사용하는 기능 시연 결과는 이 익명 비교표에 합산하지 않는다.
+현재 `official-35b.json`은 API 개발·탐색 측정 프로파일이며, 계정과 자원을 제공하지 않는 `anonymous` 준비 조건을 사용한다. GPU 공식 프로파일은 공식 비교 시점에 별도로 작성·고정한다. 현재 API 프로파일의 익명 조건은 엔진이 실행 중 스스로 회원가입·로그인을 시도하지 못하게 한다는 뜻은 아니다. 원본이 스스로 IDOR 챌린지를 해결하면 현행 프로토콜에 따라 해결 수에 포함한다. 수동 A/B fixture를 사용하는 기능 시연 결과는 익명 비교표에 합산하지 않는다.
 
-Juice Shop은 이미 개발·스모크에 사용한 **고정 평가 대상**이다. 처음 보는 holdout으로 표현하지 않는다. 임의 앱에 대한 일반화는 추후 독립적인 여러 앱에서 확인한다. [공식 프로파일](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/profiles/official-35b.json)
+Juice Shop은 이미 개발·스모크에 사용한 **고정 평가 대상**이다. 처음 보는 holdout으로 표현하지 않는다. 임의 앱에 대한 일반화는 추후 독립적인 여러 앱에서 확인한다. [현재 API 개발 프로파일](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/profiles/official-35b.json). GPU 공식 프로파일은 비교 시점에 별도 작성한다.
 
 ## 결정 상태와 구현 기준
 
@@ -36,14 +36,14 @@ Juice Shop은 이미 개발·스모크에 사용한 **고정 평가 대상**이�
 | --- | --- | --- |
 | 감사·판정 저장과 실제 입력 결속 | #151, #156, #157, #165, #171 병합 상태 확인 | 선택한 dev의 실제 호출 경로와 공급 자료를 대조 |
 | revision-aware 서버 연결 | #159 병합 상태 확인 | 반영된 Source·저장 수명과 실제 공급 조건 대조 |
-| 샘플링 주입·실행 설정 대조 | #174가 열린 상태 | 병합된 코드에서 실제 적용값과 선언값 대조 |
-| 공식 회차 실행 절차·준비 도구 | #176이 열린 상태 | 채택한 머신과 고정 커밋에서 절차 검증 |
-| 실제 계정·KG·host 권한 공급 | 입력 계약에 미확인 사항 존재 | 보호 참조, 생산 주체, 수명과 회수 의미를 확인 |
+| 샘플링 주입·실행 설정 대조 | #174 병합 상태 확인 | 병합된 코드에서 실제 적용값과 선언값 대조 |
+| 공식 회차 실행 절차·준비 도구 | #176 병합 상태 확인 | 채택한 머신과 고정 커밋에서 절차 검증 |
+| 실제 계정·KG·host 권한 공급 | #193 1단계 정본은 수동 fixture registry·최민준 minimal resolver | 보호 참조, 생산 주체, 수명과 회수 의미를 확인 |
 | E② 네트워크 경계 집행 | 11월 4일 HTTP·HTTPS 요청 검사 필수 반영 | TLS 신뢰·구현 방식·실제 배치별 허용·차단 수용시험 확인 |
 
-#159는 `40b26d010d1620f3c4f03d788c714de3aed5ca18` head로 병합됐다. 게시 준비 시 열린 #174의 head는 `6a85f211b86b6d649487084fd977b4e8e62d3102`, #176의 head는 `7de4e723074954969be6e3e5786063e87c45c5e2`다. #176의 코드 선행은 #174이며, 이 초안 자체는 최신 dev 위의 신규 문서로 미병합 코드에 의존하지 않는다. 실제 평가 착수 시 상태와 head를 다시 대조한다.
+#159는 `40b26d010d1620f3c4f03d788c714de3aed5ca18` head로 병합됐고, #174와 #176도 11월 5일 기준 dev에 병합됐다. 실제 평가 착수 시 상태와 head를 다시 대조한다.
 
-문서의 “예정”, “초안”, “합성 시험 통과”, “실제 환경 검증”을 같은 상태로 취급하지 않는다. PR 병합도 실제 계정·권한·배치 자료 확보를 대신하지 않는다. [실제 입력 결속 계약](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/contracts/first-idor-real-input-adapter.md), [#174](https://github.com/ABC2LAB/ABCDEF2LAB/pull/174), [#176](https://github.com/ABC2LAB/ABCDEF2LAB/pull/176)
+문서의 “예정”, “초안”, “합성 시험 통과”, “실제 환경 검증”을 같은 상태로 취급하지 않는다. PR 병합도 실제 계정·권한·배치 자료 확보를 대신하지 않는다. [실제 입력 결속 계약](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/contracts/first-idor-real-input-adapter.md), [#174](https://github.com/ABC2LAB/ABCDEF2LAB/pull/174), [#176](https://github.com/ABC2LAB/ABCDEF2LAB/pull/176), [#193 1단계 KG 계약](https://github.com/ABC2LAB/ABCDEF2LAB/pull/193)
 
 ## 공식 비교의 입력과 환경 고정
 
@@ -59,7 +59,7 @@ GT는 평가·채점에만 사용한다. 챌린지 목록과 해결 여부를 pl
 
 ### 대상과 머신
 
-현행 대상은 Juice Shop v15.0.0이며 이미지 digest는 공식 프로파일을 따른다. 회차마다 대상과 엔진 상태를 새로 준비한다. 준비 작업이 만든 사전 해결 상태는 pre snapshot에 남긴다.
+현행 대상은 Juice Shop v15.0.0이며 이미지 digest는 비교 시점에 고정하는 GPU 공식 프로파일을 따른다. 회차마다 대상과 엔진 상태를 새로 준비한다. 준비 작업이 만든 사전 해결 상태는 pre snapshot에 남긴다.
 
 같은 백엔드 안의 원본·개선본은 같은 평가 머신과 동등한 자원 제한에서 실행한다. CPU·코어·메모리·디스크, 커널·Docker·런타임 버전, 네트워크 정책, 시간 기준, 동시 작업 여부를 기록한다. 같은 물리 머신이라는 조건만으로 동등성을 판단하지 않는다.
 
@@ -67,48 +67,29 @@ GT는 평가·채점에만 사용한다. 챌린지 목록과 해결 여부를 pl
 
 ### 모델과 설정
 
-API 기준 모델 ID는 `qwen/qwen3.6-35b-a3b`, 제공자는 `deepinfra/fp8`, provider fallback은 비활성이다. 샘플링 기준은 다음과 같다.
+모델·제공자·샘플링·worker·적용 검증은 [평가 프로토콜 §6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#6-모델환경-핀)과 선택한 프로파일을 따른다. 이 문서에 수치를 복제하지 않는다. 현재 API 개발 프로파일과 비교 시점에 작성할 GPU 공식 프로파일을 구분해 준비한다.
 
-| 설정 | 기준값 |
-| --- | --- |
-| temperature | 1.0 |
-| top_p | 0.95 |
-| top_k | 20 |
-| min_p | 0.0 |
-| presence_penalty | 1.5 |
-| repetition_penalty | 1.0 |
-| seed | 42 |
-| worker 수 | 3 |
-
-설정 파일의 선언과 실제 적용을 대조한다. 제공자 metadata는 세션마다 재조회하고, 선택 endpoint와 파라미터 지원이 고정 근거와 다르면 시작하지 않는다. seed를 지정해도 실행 결과의 결정성을 보장한다고 표현하지 않는다.
-
-검토 기준 dev에는 공식 샘플링 주입이 아직 반영되지 않았다. #174의 변경을 채택하고 실제 적용 기록을 확인하기 전의 회차는 해당 공식 샘플링 조건을 갖춘 것으로 사용하지 않는다. [모델·환경 기준](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/evaluation-protocol.md#6-모델환경-핀)
+GPU 공식 세션 전 local gateway의 샘플링 적용 보강·검증은 최민준 담당 후속이다. 해당 준비 완료 확인을 GPU 시범의 선행 작업으로 둔다.
 
 ## 반복 예산과 회차 유효성
 
 ### 공식 HTTP 시범 회차
 
-baseline과 개선본을 시간 1,200초·대상 전달 요청 400건으로 각 1회 실행한다. 공식 HTTP 시범 회차는 공식 점수에 포함하지 않는다. 개발 smoke는 이 절의 시범에 포함하지 않으며 예산 조정 근거로 사용하지 않는다. 종료 사유, 전달 건수와 초과분, 소요 시간과 비용을 보고 예산을 한 번만 조정할 수 있다. 양쪽에 동일한 변경을 적용하고 근거를 기록한다. 해결한 GT 항목을 보고 유리한 예산을 고르지 않는다.
+공식 시범과 예산 조정은 [평가 프로토콜 §5.1](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#51-공식-회차-사전-고정-규칙)·[§6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#6-모델환경-핀)을 따른다. API는 개발 측정·개발 smoke에 사용하며 공식 시범은 비교 시점에 고정한 GPU 프로파일로 진행한다.
 
-공식 HTTP 시범은 개선본의 실제 E²가 켜진 공식 비교 범위 정책과 동일한 구성으로만 수행한다. 범위 정책의 내용·지문 고정, 구현, NE 수용시험과 공식 프로파일 대조가 끝나기 전에는 공식 HTTP 시범을 시작하지 않는다. 공식 HTTP 시범 뒤에만 양쪽 공통 예산을 한 번 조정할 수 있으며, 그 조정은 E² 구성을 바꾸지 않는다.
-
-공식 HTTP 시범 후 공식 반복 수, 예산, 작업 문구와 프로파일을 고정하고 태그를 남긴다. 다른 조건 변경이 필요하면 기존 공식 묶음과 구분되는 새 실험 버전으로 계획한다.
+이 계획의 선행 순서는 **제품 E² 정책·승인·지문·구현·HTTP NE 수용 → GPU 공식 프로파일 준비 → 같은 제품 구성의 GPU 시범 → 공통 예산 확정 → 공식 태그·반복 실행**이다. 실제 준비·담당 확인은 아래 단계표에서 관리한다.
 
 ### 공식 반복
 
-조건당 유효 회차는 N ≥ 3이다. N=5 적용 여부는 시범 비용을 보고 공식 시작 전에 정한다. 실행 순서는 짝마다 선행 조건을 바꾸며, N=3이면 `B O O B B O`를 사용한다. 각 실행의 reset은 별도로 수행한다.
+조건당 유효 회차·순서·reset·예산의 정본은 [평가 프로토콜 §5.1](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#51-공식-회차-사전-고정-규칙)이다. 이 초안은 GPU 공식 프로파일을 비교 시점에 고정하고, 결과를 본 뒤 조건을 바꾸지 않는 계획과 책임만 기록한다.
 
 각 반복의 원자료와 평균·표본 표준편차를 함께 보고한다. 완료한 반복 수와 시도 수, 범위도 제시한다. 적은 반복으로 통계적 동등성이나 일반적인 우월성을 확정하지 않는다.
 
 ### 실패와 무효 처리
 
-기술적 무효 회차는 삭제하지 않고 사유 코드와 함께 보존한다. 조건별 시도 상한은 2N이다. 상한을 넘으면 해당 조건을 미완으로 보고하고 원인을 수정한 뒤 다음 실험 버전을 계획한다. 양쪽 무효율과 사유별 수를 각각 보고한다.
+회차 성립 조건·무효 분류는 [평가 프로토콜 §2](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#2-평가-대상-고정), 보존·재실행·시도 상한·미완 보고는 [§5.1](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#51-공식-회차-사전-고정-규칙)을 따른다. 이 문서에는 별도 판정표를 두지 않으며 양쪽 무효율과 사유별 수를 발표 산출물로 남긴다.
 
-엔진의 정상적인 실패·무발견·시간 또는 요청 예산 도달을 결과가 불리하다는 이유로 무효 처리하지 않는다. 수집·격리·설정 위반 등 기술적 무효와 제품의 실행 결과를 사전에 구분한다. timeout은 발생 단계와 기존 러너 분류에 따라 남긴다.
-
-정책 지문 불일치, 망 격리·수집·설정 위반은 회차 시작 거부 또는 **기술적 무효**로 분류한다. 사전 정의한 외부 환경 장애의 무효 규칙도 유지한다. 정상 설정에서 발생한 E² 내부 집행점 장애, 감사 불명, 정책 집행·감사 근거 부족은 **제품 실패**로서 유효 회차에 포함한다. 요청 단위 fail-closed 거부는 회차를 계속하고 차단 시도로 센다. 집행점·감사 인프라 장애는 신규 admission을 멈추고 종료 사유를 기록하며 post를 수집한다. 제품 실패가 발생하면 추가 송신을 중지하고 원자료와 실패 사유를 보존하며, 그 장애로 근거가 부족해진 항목만 `UNDECIDABLE`로 남긴다. 이미 완결된 불변 판정 원값·근거는 보존하고 기존 scorer 규칙을 적용한다. 제품 실패를 성공으로 승격하지 않고 수치 없는 칸을 0으로 채우거나 분모에서 제외하지 않는다. 이 규칙은 결과를 본 뒤 회차 유효성을 바꾸지 않도록 공식 실행 전에 고정한다.
-
-재실행 규칙과 순서는 현행 프로토콜·세션 도구를 따른다. 실패한 쓰기의 결과가 불명인 상황에 별도 RunRef를 만들어 자동 재송신하는 방식은 추가하지 않는다. [사전 고정 규칙](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/evaluation-protocol.md#51-공식-회차-사전-고정-규칙)
+E² 장애의 종결 처리는 사용자 결정이 반영된 [#183 §7.1](https://github.com/ABC2LAB/ABCDEF2LAB/pull/183)을 따른다. 최민준 담당 평가 정본 후속 PR에서 이 종결 의미를 정렬하고 GPU 공식 시범 전에 일치 여부를 확인한다. 이 초안에서 평가 정본을 직접 수정하지 않는다.
 
 ## 지표와 결과 해석
 
@@ -120,7 +101,7 @@ baseline과 개선본을 시간 1,200초·대상 전달 요청 400건으로 각 
 
 보조 지표는 실제 대상 전달 HTTP 요청 수, 별도의 차단 시도 수, 종료 사유, 예산 초과분, 구간 소요 시간과 조건별 무효율이다. LLM 호출과 전송 전 차단은 대상 전달 요청 수에 합산하지 않는다.
 
-E²가 전송 전에 차단한 시도 수는 대상에 전달된 요청 수와 별도 보고한다. 각 시도는 E²가 판정 전에 발급한 `X-ABC2LAB-E2-Attempt`와 내부 `Attempt{RunRef,Sequence}`를 연결하고, #195의 `sent`·`response`·`attempt_id_state`를 평가 프로토콜 §8.3의 다섯 행(허용/관측, 허용/미관측, 거부/미관측, 거부/관측, E² 기록 없음/관측)으로 대조한다. 호출자 ID는 교체하며 허용 요청에는 정확히 하나만 전달한다. CSPRNG 실패·충돌은 송신하지 않고, 이 ID를 인증 증명으로 사용하지 않는다. 정책 지문과 허용·차단·실패 집행 요약은 회차 근거에 남겨야 하지만, 그 수집·물리 형식은 러너·평가 담당의 후속 작업으로 둔다. E² 집행 기록은 독립 계측기를 대체하지 않는다.
+E² 차단 시도, 독립 계측, 시도 ID와 다섯 행 대조는 [평가 프로토콜 §8.3](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#83-개선-후-통제-검증--시도별-대조)과 [E② 공통 계약 #183](https://github.com/ABC2LAB/ABCDEF2LAB/pull/183)을 따른다. 이 문서는 결과에 포함할 지표와 담당만 정하며 E² 기록으로 독립 계측기를 대체하지 않는다.
 
 양쪽이 요청 상한에 도달했다면 같은 요청 수를 효율 개선의 근거로 쓰지 않는다. 시간 지표는 시작·종료 기준과 준비·drain 포함 여부를 명시한다. 확정이 없었던 회차에 시간 상한을 대입해 “확정까지 시간”의 성공 표본으로 만들지 않는다.
 
@@ -146,7 +127,7 @@ E²가 전송 전에 차단한 시도 수는 대상에 전달된 요청 수와 �
 
 - 원본 대비 개선이 없거나 나빠진 결과, 제한된 표본으로 남는 불확실성.
 
-[판정 기준과 측정 매트릭스](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/evaluation-protocol.md), [run-record v1.1](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/run-record-v1.1.md)
+[판정 기준과 측정 매트릭스](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md), [run-record v1.1](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/run-record-v1.1.md)
 
 ## 회차 자료 보존과 재채점
 
@@ -168,7 +149,7 @@ E²가 전송 전에 차단한 시도 수는 대상에 전달된 요청 수와 �
 
 자료는 레포 밖의 보호된 저장소에 보관한다. 비밀번호·쿠키·토큰·실키·원문 journal·DB dump는 커밋하거나 발표 자료로 공유하지 않는다. 검증 가능한 참조와 digest, 비민감 요약을 사용한다.
 
-현행 HMAC 서명키는 검증과 발행에 모두 쓰인다. 따라서 검증을 위해 키를 복사하는 행위도 기록 발행 권한의 이전이다. 키는 엔진·LLM과 분리된 신뢰 러너 경계에서 관리하고 채점도 신뢰 환경에서 수행한다. 보존 기간과 접근 담당자는 실행 전에 정한다. [현재 findings 수집](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/scripts/eval/runner_engine.py#L191), [서명 신뢰 경계](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/run-record.md)
+현행 HMAC 서명키는 검증과 발행에 모두 쓰인다. 따라서 검증을 위해 키를 복사하는 행위도 기록 발행 권한의 이전이다. 키는 엔진·LLM과 분리된 신뢰 러너 경계에서 관리하고 채점도 신뢰 환경에서 수행한다. 보존 기간과 접근 담당자는 실행 전에 정한다. [현재 findings 수집](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/scripts/eval/runner_engine.py), [서명 신뢰 경계](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/run-record.md)
 
 ## IDOR 최소 통합 경로
 
@@ -202,7 +183,7 @@ A/B의 현재 검증된 신원, 계정별로 분리된 유효 세션, 자원의 
 
 7. 저장된 결과와 실행 증거를 대조해 화면에 표시한다.
 
-표식을 만드는 상태 변경은 읽기 검증 경로에서 수행하지 않는다. 승인된 준비 단계로 분리한다. 실제 producer가 없거나 증거가 불충분하면 진행을 거부하거나 정해진 판단불가 사유를 남긴다. [첫 IDOR 통합 계약](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/contracts/first-idor-integration.md), [실제 입력 계약](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/contracts/first-idor-real-input-adapter.md)
+표식을 만드는 상태 변경은 읽기 검증 경로에서 수행하지 않는다. 승인된 준비 단계로 분리한다. 실제 producer가 없거나 증거가 불충분하면 진행을 거부하거나 정해진 판단불가 사유를 남긴다. [첫 IDOR 통합 계약](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/contracts/first-idor-integration.md), [실제 입력 계약](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/contracts/first-idor-real-input-adapter.md)
 
 ## IDOR 수용시험과 지도 표시
 
@@ -225,7 +206,7 @@ A/B의 현재 검증된 신원, 계정별로 분리된 유효 세션, 자원의 
 
 익명으로 A의 자료를 조회하는 검증은 별도 후속 후보로 둔다. 익명 요청의 신원·정책 의미와 현재 검증기의 수용 계약을 먼저 확인한다. 현재 A/B 경로와 같은 수준으로 지원된다고 표현하지 않는다.
 
-원본과의 구조적 차이는 정확한 baseline SHA의 코드로 설명한다. 실제 오탐·미탐이 더 많다는 주장은 별도의 실측 근거를 요구한다. “원본 LLM은 보통 한 계정으로 ID만 바꾼다”는 일반화는 제거한다. [E②의 실제 검증 경로](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/transmit/verifier.go), [E③의 현재 판정 코드](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/oracle/oracle.go)
+원본과의 구조적 차이는 정확한 baseline SHA의 코드로 설명한다. 실제 오탐·미탐이 더 많다는 주장은 별도의 실측 근거를 요구한다. “원본 LLM은 보통 한 계정으로 ID만 바꾼다”는 일반화는 제거한다. [E②의 실제 검증 경로](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/transmit/verifier.go), [E③의 현재 판정 코드](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/oracle/oracle.go)
 
 ## Host 권한과 실행 수명
 
@@ -239,27 +220,23 @@ RootAnchor는 장기 handle과 검증된 배치에 결속한다. 새 경로를 �
 
 성공·각 단계 실패·취소에서 자원 해제 순서를 확인한다. SQL·collector·runtime·Publisher 잠금을 잡은 채 외부 권한 조회나 프로세스 종료·drain을 기다리지 않는다. 이미 commit한 결과와 불명 쓰기를 취소로 되돌렸다고 기록하지 않는다.
 
-이동찬의 공급·연결 작업과 팀원의 입력·KG 산출물을 최종 bootstrap에서 결합한다. 실제 계정·UID·DB role·GRANT·키·epoch와 운영 서비스 활성화는 선택한 배치의 승인 절차에 따른다. 실제 환경의 권위 상실·회수·종료 시험을 통과한 범위만 배치 검증 완료로 표시한다. [실제 공급 주체 대장](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/contracts/first-idor-host-inputs.md)
+이동찬의 공급·연결 작업과 팀원의 입력·KG 산출물을 최종 bootstrap에서 결합한다. 실제 계정·UID·DB role·GRANT·키·epoch와 운영 서비스 활성화는 선택한 배치의 승인 절차에 따른다. 실제 환경의 권위 상실·회수·종료 시험을 통과한 범위만 배치 검증 완료로 표시한다. [실제 공급 주체 대장](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/contracts/first-idor-host-inputs.md)
 
 ## API와 GPU 측정 계획
 
 ### 개발과 최종 측정
 
-API는 개발·탐색과 실행 절차 점검에 사용한다. **12월 18일 발표용 최종 정량 비교는 우리가 관리하는 GPU 환경에서 원본·개선본을 같은 조건으로 반복 측정하는 것을 필수로 한다.** GPU에서 실행만 시연하고 API 수치를 로컬 최종 성능으로 대체하지 않는다. API 결과는 해당 백엔드의 보조 결과로 구분해 보고한다.
+API는 개발·탐색과 실행 절차 점검에만 사용한다. **12월 18일 발표용 최종 정량 비교는 우리가 관리하는 GPU 환경에서 원본·개선본을 같은 조건으로 반복 측정하는 것을 필수로 한다.** GPU에서 실행만 시연하고 API 수치를 최종 성능으로 대체하지 않는다. API 결과는 해당 백엔드의 개발 측정으로 구분해 보고한다. 측정 흐름·GPU 공식 조건·예산은 [평가 프로토콜 §6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#6-모델환경-핀)을 따른다.
 
-채택한 흐름은 API에서 개발·시범을 진행하고, 엔진 버전을 고정한 뒤 GPU에서 원본·개선본을 모두 최종 측정하는 것이다. 초기 GPU 점검은 모델 적재, 도구 호출, sampling·context·동시성 적용과 자원 한계 확인에 사용한다. GPU 공식 비교는 현행 반복·순서·예산·무효 규칙을 그대로 적용한다.
+채택한 흐름은 API로 개발 측정과 개발 smoke를 진행하고, 엔진 버전을 고정한 뒤 GPU에서 원본·개선본을 모두 공식 측정하는 것이다. GPU 공식 프로파일·시범·예산 1회 조정은 비교 시점에 별도로 고정한다. 초기 GPU 점검은 모델 적재와 자원 한계 확인에 사용하며, 공식 비교는 [평가 프로토콜 §5.1·§6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#51-공식-회차-사전-고정-규칙)을 따른다.
 
 여기서 로컬 모델 실측은 우리가 관리하는 GPU 클라우드 인스턴스 안에 모델 서버를 두고 외부 모델 API를 사용하지 않는 실행을 포함한다. 이 결과를 모든 온프레미스 하드웨어의 성능으로 일반화하지 않는다. 완전 로컬 모드의 외부 연결 차단은 별도 수용시험으로 확인한다. GPU 회차는 local backend·실제 모델 endpoint·checkpoint와 tokenizer revision·sampling·context·자원 제한을 별도 프로파일로 고정한다. 현재 API용 프로파일을 그대로 GPU 프로파일이라고 부르지 않으며, 공통 작업·GT·예산·귀속 규칙은 유지한다. 필요한 도구·프로파일 변경은 평가 계약의 담당 검토 후 적용한다.
 
-원본/API, 개선본/API, 원본/GPU, 개선본/GPU의 네 조건을 비교하면 백엔드마다 원본 대비 차이를 계산한다. 원본/API와 개선본/GPU를 직접 비교해 엔진 개선 효과로 제시하지 않는다.
+API 원본·개선본은 개발 측정으로만 기록하고, GPU 원본·개선본만 공식 비교 표에 사용한다. API와 GPU의 동등성·유사성을 별도 지표로 검증하거나 주장하지 않으며, API 결과를 GPU 결과와 합치지 않는다.
 
-### 비교 조건과 유사성
+### GPU 실행 준비
 
-동일 모델 ID와 FP8 표기만으로 동등성을 가정하지 않는다. checkpoint와 tokenizer revision, chat template, thinking·tool parser, context·출력 제한, 런타임 버전, 실제 샘플링, 동시성, cache·warmup 정책을 기록한다. API에서 확인할 수 없는 항목은 비교 한계로 남긴다.
-
-API↔GPU 동등성을 보기 위한 네 조건 각 3회 정도의 비교는 실행 가능성과 변동을 보는 시범으로 취급한다. 같은 백엔드 안의 원본·개선본 공식 비교는 현행 N ≥ 3 규칙을 따르되, 그것만으로 통계적 동등성을 주장하지 않는다. API↔GPU 동등성을 주장하려면 허용 가능한 차이, 지표, 반복·분석 계획을 결과 전에 정의한다. 평균이 비슷하거나 개선 방향이 같다는 이유만으로 동등성을 확정하지 않는다. 동등성 판단이 없더라도 백엔드별 결과를 독립적으로 보고할 수 있다.
-
-현행 local gateway는 요청 본문을 그대로 전달하는 경로다. GPU 회차에서도 sampling의 실제 적용을 검증해야 하며, API 전용 주입만으로 완료로 보지 않는다. 필요한 도구 수정의 작업량은 착수 조사 후 정한다.
+GPU 서빙 환경과 고정 근거의 준비 항목은 [평가 프로토콜 §6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#6-모델환경-핀)을 따른다. GPU 사양·서빙 환경·프로파일 준비와 local gateway 샘플링 보강을 완료한 뒤 공식 시범을 시작한다. API↔GPU 동등성 검증은 수행하지 않는다(11/05 결정).
 
 ### GPU 사양과 비용
 
@@ -269,7 +246,7 @@ VRAM을 고정된 보편적 최솟값으로 단정하지 않는다. 실제 check
 
 견적은 후보별 시간당 가격, 필요한 사용 시간, CPU·API·저장·트래픽 비용, 크레딧 적용 후 금액, 중지 후 남는 비용을 같은 표로 비교한다. 작은 시범의 예상 비용과 전체 상한을 구분하고, 비용 확인·중지 담당자와 종료 시점을 정한다. 공식 반복 수와 재시도 상한으로 필요한 실행 시간을 계산해 견적에 반영하며, 실제 금액·사양은 견적 확인 전 임의로 채우지 않는다.
 
-[현재 local gateway](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/cmd/eval-meter/gateway.go#L293), [vLLM 메모리와 동시성 설정](https://docs.vllm.ai/en/stable/configuration/optimization/)
+[현재 local gateway](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/cmd/eval-meter/gateway.go), [vLLM 메모리와 동시성 설정](https://docs.vllm.ai/en/stable/configuration/optimization/)
 
 ## E② 네트워크 경계 집행
 
@@ -277,9 +254,9 @@ VRAM을 고정된 보편적 최솟값으로 단정하지 않는다. 실제 check
 
 권장 구성은 엔진의 대상 송신을 독립된 E② 집행점으로 모으고 모델 연결은 별도 승인된 gateway로 제한하는 방식이다. **첫 완성 범위는 HTTP·HTTPS 모두에서 실제 요청의 대상·메서드·경로·권한을 검사하는 것이다.** 개발 중 HTTP부터 검증할 수 있으나 최종 완료 조건에서 HTTPS를 제외하지 않는다. 그 밖의 미지원 프로토콜과 검사 불가능한 연결은 기본 차단하며, 검사 없는 CONNECT·TLS 터널로 통과시키지 않는다. 구체 배치는 기존 코어·공유 계약과 대조해 정한다.
 
-공식 비교에서는 기존 **strict controlled-read 등록 GET 모드**와 제품 일반 HTTP 정책 모드를 구분하고, 후자에 정본 프로파일의 동결한 공식 정책 인스턴스를 넣는다. 공식 프로파일의 현재 값은 `target_origin=http://eval-meter:8080`, `paths=["/"]`, 7개 메서드이며 scope 정본은 선택한 프로파일이며 해당 프로파일 지문으로 결속한다. `/` prefix와 정적 템플릿 의미의 차이는 E² 정책 지문과 소비자 표에 고정한다. 범위 안 요청은 실제 E²가 검사·감사한 뒤 공통 독립 평가 계측기로 전달하고, 범위 밖 origin·프로토콜·경로·검사 불가 연결·직접 소켓은 차단한다. 상태 변경은 승인 입력이 있을 때만 허용하며 러너가 회차별 새 인스턴스·폐기 증명을 낸다. Upgrade/WebSocket, 선언 authority로 가는 CONNECT, HTTP/2는 미지원으로 거부·계수한다. 일반 HTTP에는 [E② 공통 계약 #183](https://github.com/ABC2LAB/ABCDEF2LAB/pull/183) §2–§6의 실행·예산·감사 결속을 적용한다. 등록 GET의 ResourceRef 필수·method/body/URL 거부 규칙 대신 파싱된 실제 HTTP 요청을 승인된 scope·인증 입력에 binding하고, 불일치하면 거부·계수한다. 일반 HTTP 감사 버전·ACK·현재 head 검증은 활성화 선행 조건이다. 공식 경로는 **엔진 → 실제 E² → 공통 독립 계측기 → 대상**이며, 계측기는 baseline·개선본에 동일하게 적용한다.
+공식 비교의 제품 일반 HTTP 정책 모드, strict 등록 GET과의 분리, 공식 GPU 프로파일 scope, 승인·예산·감사 결속, 미지원 목록, 엔진 → E² → 공통 계측기 → 대상 경로는 [E② 공통 계약 #183 §7.1](https://github.com/ABC2LAB/ABCDEF2LAB/pull/183)을 따른다. 이 초안은 그 계약을 공식 HTTP 시범·GPU 최종 측정 전에 고정해야 한다는 의존성과 담당만 기록한다.
 
-이 범위 정책의 내용과 지문, 구현·HTTP NE 수용시험(NE11–NE15·NE17)을 공식 HTTP 시범 전에 고정한다. 공식 HTTP 시범도 공식과 동일한 E² 구성으로 수행하고, 그 뒤에만 공통 예산을 한 번 조정한다. E² 정책 지문과 허용·차단·실패 집행 요약의 회차 수집은 러너·평가 담당 후속이며, 이 문서는 새 물리 저장 형식이나 구현 완료를 주장하지 않는다. 공식 비교의 HTTP 계측기 경로는 HTTPS 가로채기 없이 수용할 수 있으며, HTTPS 검사·신뢰·우회 차단은 별도의 제품 완성 요건으로 유지한다.
+범위 정책·지문·구현·NE 수용시험은 [E② 공통 계약 #183](https://github.com/ABC2LAB/ABCDEF2LAB/pull/183)과 평가 프로토콜 §6·§8에 따라 공식 HTTP 시범 전에 고정한다. 이 초안은 공식 HTTP 시범도 같은 GPU E² 구성으로 수행하고 그 뒤 공통 예산을 한 번 조정한다는 일정 의존성만 관리한다. E² 집행 요약 수집은 러너·평가 담당 후속이며, 이 문서는 새 물리 저장 형식이나 구현 완료를 주장하지 않는다. HTTPS 제품 완성은 공식 비교와 별도 요건이다.
 
 유일한 송신 경로만으로 요청의 주체와 권한이 인증되지는 않는다. 신뢰 공급자가 제공한 task·run·reset·계정·자원과 현재 승인, lease·예산·감사를 실제 송신에 결속한다. 모델이 넣은 계정 header나 임의 참조 문자열은 신뢰 입력이 아니다. 승인 누락·만료·회수와 집행점 장애에는 신규 admission을 거부하며, 진행 중인 요청은 정해진 취소·drain·결과 분류를 따른다.
 
@@ -314,9 +291,9 @@ VRAM을 고정된 보편적 최솟값으로 단정하지 않는다. 실제 check
 
 공통 대상 범위·작업·예산과 개선본의 E② 정책·승인 입력을 공식 실행 전에 동결한다. 현행 공식 scope와 충돌하는 변경은 별도 계약 검토와 실험 버전 고정 후 적용한다. 허용된 대상 전달, 제품 차단, 집행 실패를 구분해 보고하고 통제 정책 차이와 실행 비용을 결과 해석에 포함한다.
 
-통제가 강화된 제품의 **HTTP 공식 비교**는 공식 범위 정책 모드의 구현·NE 수용시험 뒤에만 수행한다. 도구 개발용 smoke는 기존 격리 조건 아래 별도로 수행할 수 있지만 공식 점수나 예산 조정의 근거가 아니다. HTTPS를 포함한 E² 집행 완성은 별도의 제품 완료 시연 요건이며, 어느 단계도 다른 단계의 완료로 대체하지 않는다.
+통제가 강화된 제품의 **HTTP 공식 비교**는 공식 범위 정책 모드의 구현·NE 수용시험 뒤에만 수행한다. 도구 개발용 API smoke는 별도로 수행할 수 있지만 공식 점수나 예산 조정의 근거가 아니다. 측정 흐름과 통제 효과 시연은 [평가 프로토콜 §6·§8](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#8-통제-효과-시연과-개선-후-통제-검증)으로 위임하며, HTTPS 제품 완성은 별도 요건이다.
 
-12월 18일 필수 완료 조건은 **HTTP·HTTPS를 검사하는 E② 네트워크 경계 집행과 등록 자원의 읽기 통합 경로**다. 일정이 부족하면 자동 로그인·쓰기 IDOR·수직 지도·HTTP·HTTPS 외 추가 프로토콜을 먼저 줄이고, 집행 미완을 선택 기능 제외로 처리하지 않는다. 담당 구현 순서와 실제 배치 수용시험 일정은 확인한다. [개발 계획의 E② 범위](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/development-plan.md)
+12월 18일 필수 완료 조건은 **HTTP·HTTPS를 검사하는 E② 네트워크 경계 집행과 등록 자원의 읽기 통합 경로**다. 일정이 부족하면 자동 로그인·쓰기 IDOR·수직 지도·HTTP·HTTPS 외 추가 프로토콜을 먼저 줄이고, 집행 미완을 선택 기능 제외로 처리하지 않는다. 담당 구현 순서와 실제 배치 수용시험 일정은 확인한다. [개발 계획의 E② 범위](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/development-plan.md)
 
 ## 로그인 쓰기와 알고리즘 확장
 
@@ -348,13 +325,14 @@ CSRF·다단계 로그인·OAuth/SSO·2FA·CAPTCHA·SPA별 처리는 지원 템�
 | --- | --- | --- |
 | 준비 결정 | 목적, HTTP·HTTPS scope, GPU 비교·견적·비용 상한, 책임과 실제 자료 확보 | 결정표의 해당 실행 차단 항목 해소 |
 | 실행 도구 점검 | 고정 코드와 #174·#176 반영, sampling·worker·격리·보존 대조 | 선언과 실제 적용값 일치, 필요한 자료 수집 확인 |
-| E② 공식 HTTP 범위 고정 | strict 등록 GET과 분리된 공식 HTTP 범위 정책, 지문, 실제 E² 구성과 NE 시험 고정 | `eval-meter:8080`·동일 origin 루트와 모든 하위 경로·7개 메서드·공통 계측 경로 대조, 시범 선행 조건 해소 |
-| 개발 smoke | 양쪽 각 1회, 기존 격리 조건에서 도구·대상 연결 확인 | 실패·종료 사유 보존; 공식 점수·예산 조정 근거로 사용하지 않음 |
+| E② 공식 HTTP 범위 고정 | strict 등록 GET과 분리된 공식 HTTP 범위 정책, 지문, 실제 E² 구성과 NE 시험 고정 | [E② 공통 계약 #183 §7.1](https://github.com/ABC2LAB/ABCDEF2LAB/pull/183)과 평가 프로토콜 §6·§8의 정본 대조, 시범 선행 조건 해소 |
+| 개발 smoke | 개발 격리 조건에서 도구·대상 연결 확인 | 실패·종료 사유 보존; 공식 점수·예산 조정 근거로 사용하지 않음 |
 | E② HTTP 공식 비교 수용 | HTTP 공식 범위의 허용·차단·우회·회수·장애 실제 송신 시험 | HTTP 계측기 경로에서 허용 정상 전달, 미승인·미지원 차단, 장애 시 우회 0건과 감사 확인 |
-| 공식 HTTP 시범 | 공식 범위 정책 모드와 NE 수용 뒤 양쪽 각 1회, 초기 예산·자원 확인 | HTTP 공식 비교 구성에서 실패·비용·종료 사유 보존, 필요 시 공통 예산 한 번 조정 |
-| 공식 고정 | N·순서·프로파일·작업·이미지·소스와 E② HTTP 정책·승인 입력 고정 | HTTP 공식 비교 수용 완료, 태그와 회차 입력 대조 가능; HTTPS 제품 완료는 별도 기록 |
-| 공식 실행 | GPU에서 원본·개선본 교대 실행, 회차별 reset·귀속·종료·보존 | 양쪽 유효 N 또는 2N 상한 미완 보고 |
+| 공식 HTTP 시범 | GPU 공식 프로파일·공식 범위 정책 모드와 NE 수용 뒤 양쪽 각 1회 | HTTP 공식 비교 구성에서 실패·비용·종료 사유 보존, 필요 시 공통 GPU 예산 한 번 조정 |
+| 공식 고정 | 프로토콜의 N·순서·프로파일·작업·이미지·소스와 E② HTTP 정책·승인 입력 고정 | HTTP 공식 비교 수용 완료, 태그와 회차 입력 대조 가능; HTTPS 제품 완료는 별도 기록 |
+| 공식 실행 | GPU에서 원본·개선본 교대 실행, 회차별 reset·귀속·종료·보존 | 프로토콜 §5.1 상한 내 양쪽 유효 회차 또는 미완 보고 |
 | 채점과 검토 | 두 GT 분모, 시도·무효율, 증거·설정 대조 | 반복 원자료와 주장 한계 포함 |
+| 통제 효과 시연 A/B | 성능 비교와 분리한 통제 효과 시연 | [평가 프로토콜 §8](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#8-통제-효과-시연과-개선-후-통제-검증)의 별도 축과 다섯 행 대조를 만족 |
 | IDOR 기능 수용 | 별도 A/B fixture로 양성·음성·오류 사례 실행 | 조회→판정→감사→저장→표시와 실패 분류 일치 |
 | 실제 배치 수용 | host 권한·회수·종료·로컬 경로 검증 | 선택 배치에서 수용시험한 범위 명시 |
 | E② HTTPS 제품 완성 수용 | HTTPS의 인증서·신뢰·메서드·경로 검사와 우회·회수·장애 실제 송신 시험 | HTTP 공식 비교와 별도 일정의 제품 완성 요건으로 결과를 기록 |
@@ -365,21 +343,21 @@ CSRF·다단계 로그인·OAuth/SSO·2FA·CAPTCHA·SPA별 처리는 지원 템�
 
 ## 담당 확인과 결정표
 
-기존 역할을 기준으로 이동찬은 E②·서버 통합과 host·권한 수명, 최민준은 IDOR 검증기·E③ 판정 규칙과 평가 도구, 이경준은 KG·지도·결과 UI, 윤재상은 UI·KG와 평가 실행 지원을 협의한다. 평가 도구의 회차별 실행·채점 역할은 채택한 실행 절차에서 확인한다. 아래 확인 담당은 신규 권한 부여나 일정 확약을 뜻하지 않는다.
+기존 역할을 기준으로 이동찬은 E②·서버 통합과 host·권한 수명, 최민준은 IDOR 검증기·E③ 판정 규칙과 평가 도구, 이경준은 KG·지도·결과 UI, 윤재상은 UI·KG와 평가 실행 지원을 협의한다. 11월 5일 추가 담당은 최민준의 상태 차이 도구·보상 계획기·계측 단계 기록·시도별 대조 채점·KG 최소 resolver와 윤재상의 원본 ② 설정이다. 평가 도구의 회차별 실행·채점 역할은 채택한 실행 절차에서 확인한다. 아래 확인 담당은 신규 권한 부여나 일정 확약을 뜻하지 않는다.
 
 | 결정 항목 | 기준과 채택안 | 확인 담당 | 상태와 착수 조건 |
 | --- | --- | --- | --- |
 | IDOR 제시 방식 | 구조화 검증 능력 추가와 별도 시연 | 민준·동찬·경준 | 원문에 민준 결정 기록, 통합 범위·일정 확인 |
-| 공식 비교 범위 | 익명·동일 입력, 해결 귀속을 첫 주 지표로 사용 | 민준·동찬 | 현행 프로토콜 유지 |
+| 공식 비교 범위 | 익명·동일 입력, 해결 귀속을 첫 주 지표로 사용 | 민준·동찬 | 현행 프로토콜 §2·§5.1·§6을 따름 |
 | 읽기 IDOR 최소 범위 | A/B 두 계정, 등록 비민감 자원, GET | 민준·동찬·경준 | 실제 입력과 API·표시 대응 확인 |
 | 실제 입력·host 공급 | 인증된 producer, 보호 참조와 수명 | 동찬 및 각 입력 생산 담당 | 실제 진단 착수 전 확인 |
 | 판정 자료 보존 | 정리 전 export·증거·coverage 확인 | 민준·동찬·경준 | 재채점을 약속하기 전에 수집 경로 확인 |
 | 전체 실험 비용 | CPU·GPU·API·저장·트래픽 견적 비교 후 총상한 결정 | 동찬·민준 | 11월 4일 선택 반영. 실제 금액·크레딧·사용 시간 확인 |
 | 평가 머신 | 전용 Linux 인스턴스 우선 검토 | 동찬·민준, 실행 지원 담당 | 견적과 GPU 요구를 대조해 제공자·사양·자원·시간 확정 |
-| API·GPU 운영 | API로 개발·시범, 발표용 최종 비교는 GPU에서 원본·개선본 반복 측정 필수 | 민준·동찬 | 11월 4일 선택 반영. GPU 사양·실측 일정 확인 |
-| 반복·예산 | 시범 1,200초·400건, 공식 N ≥ 3 | 민준·동찬 | 시범 후 N=3/5와 최종 예산 고정 |
-| API↔GPU 동등성 | 주장 시 허용 차이·분석을 별도 계획 | 민준·동찬 | 필요 여부부터 결정 |
-| 연습용 대상 | GT와 분리한 다른 앱·실행 신호 사용 | 민준 및 개발 담당 | 대상 선정, Juice Shop 변경 이력 기록 |
+| API·GPU 운영 | API는 개발 측정·smoke, 발표용 최종 비교는 비교 시점에 고정한 GPU 프로파일로 원본·개선본 반복 측정 | 민준·동찬 | 프로토콜 §6에 따름. GPU 사양·실측 일정 확인 |
+| 반복·예산 | 프로토콜 §5.1의 시범·반복·예산 규칙 | 민준·동찬 | 시범 후 프로토콜에 따라 최종 예산 고정 |
+| API↔GPU 동등성 | 하지 않음(11/05, [프로토콜 §6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#6-모델환경-핀)) | 민준·동찬 | API 개발 측정과 GPU 공식 비교를 독립 보고 |
+| 연습용 대상 | GT와 분리한 VAmPI 사용, 추가 환경은 별도 확인 | 민준 및 개발 담당 | 프로토콜 §6 기준, Juice Shop 변경 이력 기록 |
 | E② 네트워크 경계 집행 | 12월 18일 HTTP·HTTPS 요청 검사 필수. 미지원 기본 차단·장애 시 우회 금지 | 동찬, 민준의 망·관측 지원 협의 | 11월 4일 선택 반영. TLS 신뢰·구현 방식·배치·수용시험 일정 확인 |
 | 자동 로그인·쓰기·수직 지도 | 확장 목표로 분리 | 관련 담당 협의 | 최소 시연을 막지 않음 |
 | 결과 보관과 접근 | 레포 외 보호 저장, 서명키 분리 | 민준 및 평가 운영 담당 | 보존 기간·접근·정리 책임 확정 |
@@ -400,18 +378,18 @@ IDOR 시연에서는 “등록한 A/B와 자원에 대해 기대 권한·신원�
 
 - 사용자 첨부 「공식 평가 팀 결정 사항」, 2026년 11월 4일.
 
-- [개발 계획과 역할](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/development-plan.md).
+- [개발 계획과 역할](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/development-plan.md).
 
-- [평가 프로토콜](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/evaluation-protocol.md)과 [공식 프로파일](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/profiles/official-35b.json).
+- [평가 프로토콜](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md)과 [현재 API 개발 프로파일](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/profiles/official-35b.json) (GPU 공식 프로파일은 비교 시점에 별도 고정).
 
-- [러너 안내](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/runner.md), [run-record v1.1](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/run-record-v1.1.md), [HMAC 서명 신뢰 경계](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/evaluation/run-record.md).
+- [러너 안내](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/runner.md), [run-record v1.1](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/run-record-v1.1.md), [HMAC 서명 신뢰 경계](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/run-record.md).
 
-- [첫 IDOR 통합](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/contracts/first-idor-integration.md), [실제 공급 주체 대장](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/contracts/first-idor-host-inputs.md), [실제 입력 결속 어댑터](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/docs/contracts/first-idor-real-input-adapter.md).
+- [첫 IDOR 통합](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/contracts/first-idor-integration.md), [실제 공급 주체 대장](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/contracts/first-idor-host-inputs.md), [실제 입력 결속 어댑터](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/contracts/first-idor-real-input-adapter.md).
 
-- [현재 IDOR 송신 검증](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/transmit/verifier.go), [오라클](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/oracle/oracle.go), [findings 수집](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/scripts/eval/runner_engine.py#L191), [local gateway](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a6db21c28d791dd0b878173669f261a760065350/cmd/eval-meter/gateway.go#L293).
+- [현재 IDOR 송신 검증](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/transmit/verifier.go), [오라클](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/oracle/oracle.go), [findings 수집](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/scripts/eval/runner_engine.py), [local gateway](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/cmd/eval-meter/gateway.go).
 
-- 병합된 [#159](https://github.com/ABC2LAB/ABCDEF2LAB/pull/159)의 상태·head metadata, 열린 [#174](https://github.com/ABC2LAB/ABCDEF2LAB/pull/174), [#176](https://github.com/ABC2LAB/ABCDEF2LAB/pull/176)의 상태·head와 변경 파일 확인.
+- 병합된 [#159](https://github.com/ABC2LAB/ABCDEF2LAB/pull/159), [#174](https://github.com/ABC2LAB/ABCDEF2LAB/pull/174), [#176](https://github.com/ABC2LAB/ABCDEF2LAB/pull/176)의 상태·head와 변경 파일 확인.
 
 - [vLLM 공식 메모리·동시성 문서](https://docs.vllm.ai/en/stable/configuration/optimization/).
 
-저장소 링크는 위 검토 기준 SHA에 고정했다. PR 상태와 제공자 metadata, 실제 배치 준비 상태는 실행 시점에 다시 확인한다.
+정본 링크는 이번 검토 기준 SHA에 고정했고, 과거 검토 기준은 문맥상 필요한 곳에만 표시했다. PR 상태와 제공자 metadata, 실제 배치 준비 상태는 실행 시점에 다시 확인한다.
