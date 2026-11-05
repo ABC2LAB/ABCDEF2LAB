@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import sqlite3
@@ -12,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -171,6 +173,28 @@ class TestCopy(unittest.TestCase):
             copy_sqlite(FakeDocker({DB: files[""], DB + "-wal": files["-wal"]}), CID, DB, dest, MAX)
         self.assertEqual(sorted(os.listdir(dest)), ["target.sqlite-wal"])
         self.assertEqual((dest / "target.sqlite-wal").read_bytes(), b"old")
+
+    def test_failed_write_removes_the_file_it_created(self):
+        # 새로 만든 파일에 쓰는 도중(ENOSPC) 실패하면 그 파일도 지운다. 앞서 쓴 사본도 지우고, 원래 있던 파일은 둔다.
+        files = sqlite_bytes(self.root, wal=True)
+        dest = self._fresh()
+        (dest / "keep").write_bytes(b"other")
+        real_write, calls = os.write, []
+
+        def failing_write(fd, data):
+            calls.append(len(data))
+            if len(calls) == 2:  # 본 사본은 다 쓰고, -wal을 쓰기 시작할 때 실패
+                raise OSError(errno.ENOSPC, "no space")
+            return real_write(fd, data)
+        with patch("runner_state.os.write", failing_write), \
+                self.assertRaisesRegex(StateCopyError, "state_copy_write_failed"):
+            copy_sqlite(FakeDocker({DB: files[""], DB + "-wal": files["-wal"]}), CID, DB, dest, MAX)
+        self.assertEqual(os.listdir(dest), ["keep"])
+        single = self._fresh()
+        with patch("runner_state.os.write", lambda fd, data: (_ for _ in ()).throw(OSError(errno.ENOSPC, "x"))), \
+                self.assertRaisesRegex(StateCopyError, "state_copy_write_failed"):
+            copy_sqlite(FakeDocker({DB: sqlite_bytes(self._fresh())[""]}), CID, DB, single, MAX)
+        self.assertEqual(os.listdir(single), [])
 
     def test_existing_copy_is_not_overwritten(self):
         main = sqlite_bytes(self.root)[""]
