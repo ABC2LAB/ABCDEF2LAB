@@ -69,7 +69,7 @@ func TestE2StubForwardsAndIssuesAttemptID(t *testing.T) {
 	rows := stubRows(t, stub, path)
 	id := got[0].header.Get(attemptHeader)
 	if len(rows) != 1 || !attemptIDPattern.MatchString(id) || rows[0].AttemptID != id || rows[0].Decision != e2StubAllowed ||
-		!rows[0].Fixture || rows[0].CallerAttempt || rows[0].Status != http.StatusOK {
+		!rows[0].Fixture || rows[0].CallerAttempt || rows[0].Method != http.MethodPost || rows[0].DecidedAt == "" {
 		t.Fatalf("rows %+v id %q", rows, id)
 	}
 	log, _ := os.ReadFile(filepath.Join(path, e2StubLogName))
@@ -164,19 +164,84 @@ func randReader() io.Reader { return cryptorand.Reader }
 
 func TestE2StubStopsForwardingAfterLogFailure(t *testing.T) {
 	upstream, seen := recordingUpstream(t)
-	stub, front, _ := newTestStub(t, targetURL(t, upstream), randReader())
-	_ = stub.log.file.Close() // every later row write fails
+	stub, front, path := newTestStub(t, targetURL(t, upstream), randReader())
+	// A read-only descriptor makes every row write fail while Sync and Close
+	// still succeed, so the close error below can only come from the latch.
+	readOnly, err := os.Open(filepath.Join(path, e2StubLogName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub.mu.Lock()
+	writable := stub.log.file
+	stub.log.file = readOnly
+	stub.mu.Unlock()
+	_ = writable.Close()
 	var statuses []int
 	for i := 0; i < 2; i++ {
 		req, _ := http.NewRequest(http.MethodGet, front.URL+"/x", nil)
 		status, _ := send(t, req)
 		statuses = append(statuses, status)
 	}
-	// The first request was already admitted when its row failed; nothing after an unrecorded admission passes.
-	if len(seen()) != 1 || statuses[1] != http.StatusServiceUnavailable {
+	// The decision row is written before forwarding, so not even the first request passes.
+	if len(seen()) != 0 || statuses[0] != http.StatusServiceUnavailable || statuses[1] != http.StatusServiceUnavailable {
 		t.Fatalf("seen=%d statuses=%v", len(seen()), statuses)
 	}
 	if err := stub.close(); err == nil {
 		t.Fatal("close hid the incomplete log")
+	}
+}
+
+// The target only ever sees a request whose allowed row is already in the log.
+func TestE2StubRecordsDecisionBeforeForwarding(t *testing.T) {
+	var logPath string
+	var atTarget []e2StubRow
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atTarget = readRows[e2StubRow](t, logPath)
+		if len(atTarget) != 1 || atTarget[0].AttemptID != r.Header.Get(attemptHeader) {
+			w.WriteHeader(http.StatusTeapot)
+			return
+		}
+		_, _ = io.WriteString(w, "upstream")
+	}))
+	t.Cleanup(upstream.Close)
+	_, front, path := newTestStub(t, targetURL(t, upstream), randReader())
+	logPath = filepath.Join(path, e2StubLogName)
+	req, _ := http.NewRequest(http.MethodGet, front.URL+"/x", nil)
+	if status, _ := send(t, req); status != http.StatusOK {
+		t.Fatalf("status=%d rows at target %+v", status, atTarget)
+	}
+	if atTarget[0].Decision != e2StubAllowed {
+		t.Fatalf("rows at target %+v", atTarget)
+	}
+}
+
+// Upgrade and CONNECT are refused before any send: the meter and the target see
+// nothing, the engine gets 501, and the stub row keeps its issued attempt ID.
+func TestE2StubRefusesUpgradeAndConnectBeforeUpstream(t *testing.T) {
+	upstream, seen := recordingUpstream(t)
+	meter, meterFront, meterPath := newTestEngine(t, upstream)
+	stub, front, stubPath := newTestStub(t, targetURL(t, meterFront), randReader())
+	upgrade, _ := http.NewRequest(http.MethodGet, front.URL+"/socket.io/?EIO=4&transport=websocket", nil)
+	upgrade.Header.Set("Connection", "Upgrade")
+	upgrade.Header.Set("Upgrade", "websocket")
+	upgradeOnly, _ := http.NewRequest(http.MethodGet, front.URL+"/ws", nil)
+	upgradeOnly.Header.Set("Upgrade", "websocket")
+	connect, _ := http.NewRequest(http.MethodConnect, front.URL, nil)
+	connect.Host = "eval-meter:8080"
+	for _, req := range []*http.Request{upgrade, upgradeOnly, connect} {
+		if status, _ := send(t, req); status != http.StatusNotImplemented {
+			t.Fatalf("%s %s: status=%d", req.Method, req.URL.Path, status)
+		}
+	}
+	meter.seal()
+	rows := stubRows(t, stub, stubPath)
+	meterRows := readRows[engineRow](t, filepath.Join(meterPath, engineLogName))
+	if len(seen()) != 0 || len(meterRows) != 0 || len(rows) != 3 {
+		t.Fatalf("target saw %d meter rows %+v stub rows %+v", len(seen()), meterRows, rows)
+	}
+	for i, method := range []string{http.MethodGet, http.MethodGet, http.MethodConnect} {
+		if rows[i].Decision != e2StubUnsupported || rows[i].Method != method || !attemptIDPattern.MatchString(rows[i].AttemptID) {
+			t.Fatalf("row %d %+v", i, rows[i])
+		}
 	}
 }
