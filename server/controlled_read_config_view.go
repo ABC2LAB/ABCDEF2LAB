@@ -10,6 +10,7 @@ import (
 	"github.com/Autumn-27/artex/e3record"
 	"github.com/Autumn-27/artex/evidencebind"
 	"github.com/Autumn-27/artex/idor"
+	"github.com/Autumn-27/artex/kgfixture"
 	"github.com/Autumn-27/artex/transmit"
 )
 
@@ -44,6 +45,7 @@ type controlledReadConfigState struct {
 	selected     bool
 	request      ControlledReadVerificationRequest
 	closed       bool
+	fixture      *kgfixture.Snapshot
 }
 
 // Formatting must not inspect the lifecycle context's private values.
@@ -155,6 +157,9 @@ func (h *ControlledReadConfigHandle) Bind(ctx context.Context, r ControlledReadV
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.life == nil || s.life.Err() != nil || !time.Now().Before(s.until) {
+		return ControlledReadFindingPlan{}, ErrControlledFindingUnavailable
+	}
+	if s.fixture != nil && !sameControlledReadFixture(kg, s.fixture) {
 		return ControlledReadFindingPlan{}, ErrControlledFindingUnavailable
 	}
 	return plan, nil

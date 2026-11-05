@@ -168,7 +168,8 @@ func (v *controlledReadVerificationState) execute(ctx context.Context, l *contro
 	request := ControlledReadVerificationRequest{Scope: l.scope, TaskID: v.taskID, IntentID: v.intentID, AccountRef: account, ResourceRef: resource, config: l.config}
 	plan, resolveErr := v.host.resolve(ctx, request)
 	if resolveErr != nil || ctx.Err() != nil || plan.Finalize == nil || nilPolicyResolver(plan.KG) ||
-		plan.Candidate.ResourceRef != resource || plan.Candidate.Evaluated.Label != account {
+		plan.Candidate.ResourceRef != resource || plan.Candidate.Evaluated.Label != account ||
+		l.fixture != nil && !sameControlledReadFixture(plan.KG, l.fixture) {
 		return nil, errControlledReadUnavailable
 	}
 	for _, subject := range []idor.AccountRef{plan.Candidate.Owner, plan.Candidate.Evaluated} {
