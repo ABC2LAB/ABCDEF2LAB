@@ -72,6 +72,22 @@ func installSeccomp() error {
 		f = append(f, jump(unix.BPF_JMP|unix.BPF_JGE|unix.BPF_K, 0x40000000, 0, 1),
 			stmt(unix.BPF_RET|unix.BPF_K, seccompRetErrno|uint32(unix.ENOSYS)))
 	}
+	// Network namespaces do not isolate AF_VSOCK. Restrict both socket creation
+	// syscalls to the families used by the relay and ordinary HTTP clients.
+	// Check the whole argument so its high word cannot bypass the allow list.
+	f = append(f,
+		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, uint32(unix.SYS_SOCKET), 1, 0),
+		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, uint32(unix.SYS_SOCKETPAIR), 0, 9),
+		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 20), // args[0], high word
+		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, 0, 1, 0),
+		stmt(unix.BPF_RET|unix.BPF_K, seccompRetErrno|uint32(unix.EPERM)),
+		stmt(unix.BPF_LD|unix.BPF_W|unix.BPF_ABS, 16), // args[0], low word
+		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, unix.AF_UNIX, 3, 0),
+		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, unix.AF_INET, 2, 0),
+		jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, unix.AF_INET6, 1, 0),
+		stmt(unix.BPF_RET|unix.BPF_K, seccompRetErrno|uint32(unix.EPERM)),
+		stmt(unix.BPF_RET|unix.BPF_K, seccompRetAllow),
+	)
 	// clone3's flags live behind a pointer and cannot be safely inspected in
 	// classic BPF; ENOSYS lets normal libc threading use the inspected clone.
 	f = append(f, jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, uint32(unix.SYS_CLONE3), 0, 1),
@@ -85,6 +101,9 @@ func installSeccomp() error {
 		unix.SYS_KEXEC_LOAD, unix.SYS_KEXEC_FILE_LOAD, unix.SYS_REBOOT, unix.SYS_SWAPON, unix.SYS_SWAPOFF,
 		unix.SYS_OPEN_TREE, unix.SYS_MOVE_MOUNT, unix.SYS_FSOPEN, unix.SYS_FSCONFIG,
 		unix.SYS_FSMOUNT, unix.SYS_FSPICK, unix.SYS_MOUNT_SETATTR,
+		// Ring operations could otherwise create sockets outside the inspected
+		// socket syscalls. No io_uring descriptor is supported or inherited.
+		unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER,
 	} {
 		f = append(f, jump(unix.BPF_JMP|unix.BPF_JEQ|unix.BPF_K, nr, 0, 1),
 			stmt(unix.BPF_RET|unix.BPF_K, seccompRetErrno|uint32(unix.EPERM)))
