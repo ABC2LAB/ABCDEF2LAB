@@ -72,6 +72,17 @@ def _copy_files(docker, container_id: str, path: str, max_bytes: int) -> dict[st
     return files
 
 
+def discard_copy(target: Path) -> None:
+    """사본과 그 곁 파일(-wal·-shm·-journal, SQLite가 열 때 만든 것 포함)을 지운다. 지우지 못하면 오류다(값이 남는다)."""
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            os.unlink(str(target) + suffix)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise StateCopyError("state_copy_discard_failed") from None
+
+
 def copy_sqlite(docker, container_id: str, path: str, dest: Path, max_bytes: int) -> Path:
     """대상을 멈춘 채 SQLite 파일(WAL이면 `-wal`까지)을 꺼내 dest에 0600으로 쓰고 본 사본 경로를 돌려준다.
 
@@ -84,9 +95,14 @@ def copy_sqlite(docker, container_id: str, path: str, dest: Path, max_bytes: int
         files = _copy_files(docker, container_id, path, max_bytes)
     finally:
         docker.unpause(container_id)
+    written: list[str] = []
     for suffix, data in files.items():
         try:
             _write_private(Path(str(target) + suffix), data)
         except OSError:
+            # 일부만 쓴 사본은 남기지 않는다(먼저 있던 파일은 건드리지 않는다).
+            for done in written:
+                os.unlink(str(target) + done)
             raise StateCopyError("state_copy_write_failed") from None
+        written.append(suffix)
     return target

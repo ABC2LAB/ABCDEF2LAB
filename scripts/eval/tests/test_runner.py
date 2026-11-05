@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -36,8 +37,10 @@ ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "ev
            "eval-llm-gw": "meter", "eval-api": "meter", "eval-e2": "meter"}
 
 
-def make_spec(side="ours", min_free=None, stream=None, e2=None):
+def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None):
     preflight, payload = configuration(), runner_config()
+    if state is not None:
+        payload["state"] = state
     if e2 is not None:
         payload["e2"]["ours_mode"] = e2
     if stream is not None:
@@ -194,6 +197,10 @@ class FakePorts:
         self.settings = {"settings": {"workers": spec.worker_count, "web_search_proxy_set": False,
                                       "global_proxy_set": False, "llm_pool_enabled": False},
                          "llm": {"model": spec.model_tag, "proxy_set": False, "reasoning_effort": ""}}
+        # 상태 차이 사본: 단계별 SQLite 행. state_dir는 시험이 정한다(설정 state가 있는 회차만 부른다).
+        self.state_dir = None
+        self.state_rows = {"pre": [(1, "a")], "post": [(1, "a"), (2, "b")]}
+        self.state_copies = []
         self.sign_calls = 0
         self.sign_fail_at = None
         self.watch_stops = 0
@@ -319,6 +326,19 @@ class FakePorts:
             raise self.tmpfs_error
         return copy.deepcopy(self.tmpfs)
 
+    def state_copy(self, phase, snapshot):
+        self._call(f"state:{phase}")
+        path = Path(self.state_dir) / f"{phase}.sqlite"
+        conn = sqlite3.connect(path)
+        conn.executescript("CREATE TABLE Items (id INTEGER PRIMARY KEY, v TEXT);"
+                           "CREATE TABLE Challenges (id INTEGER PRIMARY KEY, solved INTEGER);")
+        conn.executemany("INSERT INTO Items VALUES (?, ?)", self.state_rows[phase])
+        conn.execute("INSERT INTO Challenges VALUES (1, ?)", (1 if phase == "post" else 0,))
+        conn.commit()
+        conn.close()
+        self.state_copies.append(path)
+        return path
+
     def findings(self):
         self._call("findings")
         return {"items": 0}
@@ -351,6 +371,78 @@ FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "liste
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "down", "sign", "sign"]
+
+
+STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 1 << 20}
+
+
+class TestStateDiff(unittest.TestCase):
+    """상태 차이(프로토콜 §8.2): pre 사본은 구간 시작 전, post 사본은 구간이 닫힌 뒤. 사본은 지문을 뜨고 바로 지운다."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_state(self, extra=None):
+        def mutate(ports, meter, clock):
+            ports.state_dir = self.dir
+            if extra:
+                extra(ports)
+        return run(mutate=mutate, spec=make_spec(state=STATE))
+
+    def test_copies_sit_outside_the_window_and_leave_only_counts(self):
+        result, ports, meter, evidence = self.run_state()
+        self.assertEqual(result["status"], COMPLETE)
+        order = list(FULL_ORDER)
+        order.insert(order.index("wait_ready") + 1, "state:pre")
+        order.insert(order.index("tmpfs:post") + 1, "state:post")
+        self.assertEqual(ports.calls, order)
+        diff = evidence.files["state-diff.json"]
+        self.assertEqual(diff["format"], "abc2lab-state-diff-v1")
+        self.assertEqual((diff["tables"]["Items"]["added_ids"], diff["changed_tables"]), ([2], ["Items"]))
+        # 해결 기록 테이블은 상태 차이가 아니라 신호로 따로 센다.
+        self.assertNotIn("Challenges", diff["tables"])
+        self.assertEqual(diff["signals"]["Challenges"]["changed"], 1)
+        self.assertNotIn('"b"', json.dumps(diff))
+        self.assertEqual([p.exists() for p in ports.state_copies], [False, False])
+        self.assertEqual(os.listdir(self.dir), [])
+
+    def test_no_state_block_takes_no_copy(self):
+        result, ports, meter, evidence = run()
+        self.assertEqual((result["status"], ports.state_copies), (COMPLETE, []))
+        self.assertNotIn("state-diff.json", evidence.files)
+
+    def test_copy_failure_invalidates_the_run_and_still_goes_down(self):
+        for phase in ("pre", "post"):
+            with self.subTest(phase=phase):
+                result, ports, meter, evidence = self.run_state(
+                    lambda ports, p=phase: ports.fail.update({f"state:{p}": DockerError("docker_pause_failed")}))
+                self.assertEqual((result["status"], result["reasons"], result["failed_step"]),
+                                 (INVALID, ["state_copy_failed"], "state_copy_failed"))
+                self.assertIn("down", ports.calls)
+                self.assertNotIn("state-diff.json", evidence.files)
+
+    def test_unreadable_copy_is_discarded_and_invalidates(self):
+        def broken(ports):
+            original = ports.state_copy
+
+            def write_garbage(phase, snapshot):
+                path = original(phase, snapshot)
+                path.write_bytes(b"not a database" * 100)
+                return path
+            ports.state_copy = write_garbage
+        result, ports, meter, evidence = self.run_state(broken)
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["state_copy_failed"]))
+        self.assertEqual(os.listdir(self.dir), [])
+
+    def test_pre_and_post_use_the_same_run_key(self):
+        # 키가 회차 안에서 바뀌면 같은 행도 전부 '변경'으로 보인다.
+        result, ports, meter, evidence = self.run_state(
+            lambda ports: ports.state_rows.update(post=[(1, "a")]))
+        self.assertEqual(evidence.files["state-diff.json"]["changed_tables"], [])
 
 
 class TestCompleteRun(unittest.TestCase):
@@ -1062,6 +1154,27 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
             self.assertEqual((run_directory, phase), (directory.run, "pre"))
             self.assertEqual(endpoint.origin, "http://127.0.0.1:18081")
             self.assertFalse(str(run_directory).startswith(str(directory.meter)))
+
+
+class TestDockerPortsStateCopy(unittest.TestCase):
+    def test_state_copy_uses_the_target_container_and_a_fresh_private_phase_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "runs")
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            config = parse_runner_config(runner_config() | {"runs_root": str(root), "state": STATE})
+            plan = plan_run(config, configuration(), "ours", "ours-1")
+            directory = create_run_directory(root, "ours-1")
+            ports = DockerPorts(config, plan, directory, docker="docker", findings=dict, start=lambda: "1",
+                                settings=dict)
+            snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
+            with patch.object(runner, "copy_sqlite", return_value=Path("copy")) as copy_call:
+                self.assertEqual(ports.state_copy("pre", snapshot), Path("copy"))
+            self.assertEqual(copy_call.call_args[0],
+                             ("docker", "3" * 64, "/app/data/target.sqlite", directory.state / "pre", 1 << 20))
+            self.assertEqual(oct(os.stat(directory.state / "pre").st_mode & 0o777), "0o700")
+            with self.assertRaises(FileExistsError):  # 같은 단계 디렉터리를 다시 쓰지 않는다
+                ports.state_copy("pre", snapshot)
 
 
 class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
