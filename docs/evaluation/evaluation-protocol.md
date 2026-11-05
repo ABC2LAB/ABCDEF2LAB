@@ -73,8 +73,8 @@
     - 도구 동등성 확인은 격리 실행을 엔진에 연결(활성화)하기 전의 수용 조건이다.
   - E② 일반 HTTP 기본 모드(preserve)에는 개선 후에만 있는 현재 구현 차이가 셋 있다(#223 `e2-proxy-transfer-scope.md`).
     - caller 로그인 자격 미지원: `Authorization`·`Cookie`가 붙은 요청은 송신 전 unsupported가 된다.
-    - `Accept-Encoding`은 identity만 받는다.
-    - 자격 응답(`Set-Cookie` 등)의 본문 보류가 unknown 한도에 합산된다.
+    - `Accept-Encoding`에 `identity`가 아닌 값이 붙은 요청은 송신 전 unsupported가 된다. 헤더가 없거나 `identity`면 통과하고, 다른 협상값을 지우고 다시 보내지 않는다.
+    - 자격 응답(`Set-Cookie` 등)은 body·헤더 원문을 통째로 보류해 도구에 공개하지 않고 `unknown`으로 남기며, 이 보류가 unknown 한도에 합산된다.
     - Juice Shop v15는 인증을 `Authorization: Bearer`·`Cookie: token`으로 한다. 그래서 첫째 차이가 있으면 개선 후에는 로그인 뒤 요청을 보낼 수 없다. 셋째는 일반 응답·로그인 응답 13개에 `Set-Cookie`가 없어 이 과녁에서는 거의 걸리지 않는다(11/05 실측, 헤더 이름만 확인).
     - 세 가지를 선언된 차이로 동결할지, 공식 비교 전에 코드로 줄일지는 팀 결정이다(평가 공정성, #189·#223). 결정하고 정책 지문에 반영하기 전에는 공식 회차를 만들지 않는다.
   - E②가 막은 시도는 대상 요청 수(`total_requests`)에 넣지 않고 차단 시도 수(§5)로 따로 센다. E② 관련 사건은 아래 세 갈래로 나눈다. 이 분류는 공식 시범 전에 고정하고, 결과를 본 뒤 다른 갈래로 옮기지 않는다.
