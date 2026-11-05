@@ -244,7 +244,8 @@ def build_report(
     seen_proofs: set[str] = set()
     versions: set[str] = set()
     drain_policies: set[tuple[int, int]] = set()
-    run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set()}
+    run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set(),
+                                           "LLM 스트리밍": set()}
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs

@@ -54,7 +54,7 @@ class RunInputs:
     judgments_collected: bool = True  # v1.1 records=null이면 False(판정 미수집)
     proof_id: str | None = None  # v1.1 격리 증명(없으면 귀속 미확인)
     drain_policy: tuple[int, int] | None = None  # v1.1 증명 근거의 봉인 뒤 (유예, 정착 대기) 초
-    run_conditions: tuple[str, str, str, str] | None = None  # (엔진 설정, 적용 샘플링, 머신 사양, 머신 ID) 해시
+    run_conditions: tuple[str, str, str, str, str] | None = None  # (엔진 설정, 적용 샘플링, 머신 사양, 머신 ID) 해시와 LLM 스트리밍
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict:

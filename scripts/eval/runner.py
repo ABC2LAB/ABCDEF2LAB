@@ -152,6 +152,8 @@ class RunSpec:
     events_lookback_seconds: float
     # 선언한 엔진 LLM 정책 모드. baseline(e53a79f)에는 이 스위치가 없어 None(선언 없음)이다.
     llm_policy_mode: str | None
+    # 러너 설정의 엔진 LLM 스트리밍(ARTEX_LLM_STREAM). 엔진 설정 API에 안 나와 설정 스냅샷 해시로는 차이를 못 잡는다.
+    llm_stream: bool
     tmpfs_min_free_bytes: int
     worker_count: int
     condition: str
@@ -451,8 +453,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
     steps = timeline({"fixture_ready": fixture_ready_at, "pre": pre_board["received_at"], "engine_start": requested_at,
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
-    # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신.
+    # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
+    # 스트리밍은 엔진이 SSE와 비스트리밍 경로를 고르는 값이라 시간·응답 처리 조건이 달라진다(#174 리뷰). 선언값이다.
     conditions = {"engine_settings_sha256": state.engine_settings_sha256, "workers": spec.worker_count,
+                  "llm_stream": spec.llm_stream,
                   "sampling": llm_summary["sampling_applied"],
                   "host": {key: value for key, value in state.host.items() if key != "machine_id_sha256"},
                   "machine_id_sha256": state.host["machine_id_sha256"]}
@@ -758,6 +762,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         # compose는 두 엔진에 같은 값을 넘기지만 baseline은 읽지 않는다. 결과 기록에 external로 적으면 정책이 있는 것처럼
         # 읽히므로 선언하지 않는다(#133 리뷰).
         llm_policy_mode=config.llm_policy_mode if plan.side == POLICY_SWITCH_SIDE else None,
+        llm_stream=config.llm_stream,
         tmpfs_min_free_bytes=config.tmpfs_min_free_bytes, worker_count=declared["worker_count"],
         condition=condition, repeat_index=repeat_index, model_tag=plan.llm["model"],
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],

@@ -276,7 +276,7 @@
   - OpenRouter는 고정 제공자가 지원하지 않는 파라미터를 기본으로 **조용히 빼고** 보낸다. 그러면 마커의 적용값이 제공자가 실제로 쓴 값이 아니게 되므로, 게이트웨이가 `provider.require_parameters:true`를 함께 넣어 요청의 파라미터를 하나라도 지원하지 않으면 요청이 실패하게 한다(fail-closed). 엔진이 보내는 다른 파라미터(tools 등)도 같은 조건을 받는다.
   - 프로파일 v5의 `sampling`(temperature·seed 외 다섯 값)과 temperature·seed가 환경 지문에 들어간다.
   - 게이트웨이 주입이 들어가기 전 회차는 이 샘플링 조건을 갖추지 못해 공식 비교에 쓰지 않는다.
-- worker 수·실행 설정: 공식 프로파일 `worker_count` = `3`. 러너는 이 값을 엔진에 설정하지 않으며, 회차마다 새로 만든 엔진 DB의 기본값(baseline e53a79f·개선 후 모두 3)이 쓰인다. 러너는 작업 생성 전에 엔진 설정 API(`/api/settings`·`/api/llm`, baseline·개선 후 같은 코드)로 실행 설정 전체를 스냅샷한다. workers가 선언과 다르거나, 엔진 LLM 모델이 선언과 다르거나, 프록시가 설정돼 있으면 그 회차는 무효다(`engine_settings_mismatch`). 스냅샷 SHA-256은 서명 근거 `run_conditions`에 남기고, 채점기는 회차끼리 이 해시가 다르면 비교하지 않는다.
+- worker 수·실행 설정: 공식 프로파일 `worker_count` = `3`. 러너는 이 값을 엔진에 설정하지 않으며, 회차마다 새로 만든 엔진 DB의 기본값(baseline e53a79f·개선 후 모두 3)이 쓰인다. 러너는 작업 생성 전에 엔진 설정 API(`/api/settings`·`/api/llm`, baseline·개선 후 같은 코드)로 실행 설정 전체를 스냅샷한다. workers가 선언과 다르거나, 엔진 LLM 모델이 선언과 다르거나, 프록시가 설정돼 있으면 그 회차는 무효다(`engine_settings_mismatch`). 스냅샷 SHA-256은 서명 근거 `run_conditions`에 남기고, 채점기는 회차끼리 이 해시가 다르면 비교하지 않는다. 엔진 LLM 스트리밍(`ARTEX_LLM_STREAM`, 엔진이 SSE와 비스트리밍 경로를 고르는 값)은 이 API에 나오지 않으므로 러너 설정값을 `run_conditions.llm_stream`에 남기고, 채점기는 회차끼리 다르면 비교하지 않는다. 이 값은 선언값이며, 엔진이 실제로 스트리밍 요청을 보냈는지(게이트웨이 요청의 `stream`)를 관측해 결속하는 것은 후속이다.
 - baseline·개선 후 **동일 모델 식별자·동일 제공자·동일 샘플링**으로만 비교 성립.
 
 ## 7. 특화점은 측정 후 결정 (미리 못박지 않음)
