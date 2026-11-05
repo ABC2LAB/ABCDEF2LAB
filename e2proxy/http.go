@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -403,7 +404,23 @@ func readProxyRequest(reader *bufio.Reader, maxBytes int) (*http.Request, error)
 		}
 		lineBytes = 0
 	}
-	return http.ReadRequest(bufio.NewReader(io.MultiReader(bytes.NewReader(header.Bytes()), reader)))
+	// ReadRequest takes Host from an absolute URI and discards the wire Host.
+	// Retain the bounded header value so the caller can compare both authorities
+	// and preserve the validated original value when converting to origin-form.
+	headers := textproto.NewReader(bufio.NewReader(bytes.NewReader(header.Bytes())))
+	if _, err := headers.ReadLine(); err != nil {
+		return nil, ErrProxy
+	}
+	fields, err := headers.ReadMIMEHeader()
+	if err != nil || len(fields.Values("Host")) != 1 || fields.Get("Host") == "" {
+		return nil, ErrProxy
+	}
+	req, err := http.ReadRequest(bufio.NewReader(io.MultiReader(bytes.NewReader(header.Bytes()), reader)))
+	if err != nil {
+		return nil, err
+	}
+	req.Host = fields.Get("Host")
+	return req, nil
 }
 
 func proxyAuthority(value, defaultPort string) (string, string, error) {

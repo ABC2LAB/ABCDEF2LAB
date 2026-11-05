@@ -726,3 +726,106 @@ func TestProxyTargetObservesOriginalHostAndIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyParserRetainsWireHost(t *testing.T) {
+	for _, tc := range []struct{ name, uri, host string }{
+		{"case", "http://example.test:80/allowed", "EXAMPLE.test:80"},
+		{"omitted_default", "http://example.test:80/allowed", "EXAMPLE.test"},
+		{"explicit_default", "http://example.test/allowed", "EXAMPLE.test:80"},
+		{"distinct_authorities", "http://example.test:80/allowed", "other.test:80"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := readProxyRequest(bufio.NewReader(strings.NewReader("GET "+tc.uri+" HTTP/1.1\r\nHost: "+tc.host+"\r\n\r\n")), 8192)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer req.Body.Close()
+			u, err := url.Parse(tc.uri)
+			if err != nil || req.Host != tc.host || req.URL.Host != u.Host {
+				t.Fatal("wire Host or absolute authority was rewritten")
+			}
+		})
+	}
+	if req, err := readProxyRequest(bufio.NewReader(strings.NewReader("GET http://example.test/allowed HTTP/1.1\r\n\r\n")), 8192); err == nil || req != nil {
+		t.Fatal("missing wire Host was invented")
+	}
+}
+
+func TestProxyRawRequestPreservesHostAndRejectsMismatch(t *testing.T) {
+	for _, secured := range []bool{false, true} {
+		t.Run(fmt.Sprint(secured), func(t *testing.T) {
+			var received atomic.Int64
+			observed := make(chan string, 1)
+			target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received.Add(1)
+				observed <- r.Host
+				io.WriteString(w, "preserved")
+			}))
+			scheme, name := "http", "EXAMPLE.test"
+			var roots *x509.CertPool
+			if secured {
+				target.StartTLS()
+				scheme = "https"
+				roots = x509.NewCertPool()
+				roots.AddCert(target.Certificate())
+				if len(target.Certificate().DNSNames) == 0 {
+					t.Fatal("TLS fixture lacks named authority")
+				}
+				name = strings.ToUpper(target.Certificate().DNSNames[0])
+			} else {
+				target.Start()
+			}
+			defer target.Close()
+			_, port, err := net.SplitHostPort(target.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			authority := strings.ToLower(name) + ":" + port
+			origin := scheme + "://" + authority
+			_, call, _ := proxyTestCall(t, origin, roots)
+			_, addr, proxyRoots := proxyTestListener(t, call)
+			send := func(host string) int {
+				t.Helper()
+				var wire net.Conn
+				uri := origin + "/allowed"
+				if secured {
+					conn, reader := proxyTestCONNECT(t, addr, authority)
+					tlsConn := tls.Client(&proxyBufferedConn{Conn: conn, reader: reader}, &tls.Config{RootCAs: proxyRoots, ServerName: strings.ToLower(name), MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
+					if err := tlsConn.Handshake(); err != nil {
+						conn.Close()
+						t.Fatal(err)
+					}
+					wire, uri = tlsConn, "/allowed"
+				} else {
+					var err error
+					wire, err = net.DialTimeout("tcp", addr, time.Second)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				defer wire.Close()
+				_ = wire.SetDeadline(time.Now().Add(3 * time.Second))
+				if _, err := io.WriteString(wire, "GET "+uri+" HTTP/1.1\r\nHost: "+host+"\r\nAccept-Encoding: identity\r\n\r\n"); err != nil {
+					t.Fatal(err)
+				}
+				response, err := http.ReadResponse(bufio.NewReader(wire), &http.Request{Method: "GET"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = io.Copy(io.Discard, response.Body)
+				response.Body.Close()
+				return response.StatusCode
+			}
+			want := name + ":" + port
+			if send(want) != 200 {
+				t.Fatal("raw positive delivery failed")
+			}
+			if got := <-observed; got != want {
+				t.Fatalf("raw Host was rewritten: %q", got)
+			}
+			if send("other.invalid:"+port) != 400 || received.Load() != 1 {
+				t.Fatal("mismatched raw Host reached target")
+			}
+		})
+	}
+}
