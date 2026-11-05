@@ -1,13 +1,17 @@
 package e2proxy
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -810,5 +814,124 @@ func TestCoreBudgetObservationDoesNotCancelReservedRequest(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("reserved response did not complete")
+	}
+}
+
+func TestCorePreservedRequestHost(t *testing.T) {
+	for _, tc := range []struct {
+		name, scheme, authority, host, want string
+		ok                                  bool
+	}{
+		{"http_case", "http", "example.test:80", "EXAMPLE.test:80", "EXAMPLE.test:80", true},
+		{"http_omitted_default", "http", "example.test:80", "EXAMPLE.test", "EXAMPLE.test", true},
+		{"https_omitted_default", "https", "example.test:443", "EXAMPLE.test", "EXAMPLE.test", true},
+		{"https_explicit_default", "https", "example.test", "EXAMPLE.test:443", "EXAMPLE.test:443", true},
+		{"fallback", "http", "EXAMPLE.test", "", "EXAMPLE.test", true},
+		{"other_host", "http", "example.test", "other.test", "", false},
+		{"other_port", "http", "example.test", "example.test:81", "", false},
+		{"path", "http", "example.test", "example.test/path", "", false},
+		{"query", "http", "example.test", "example.test?x=1", "", false},
+		{"userinfo", "http", "example.test", "user@example.test", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, ok := preservedRequestHost(&http.Request{URL: &url.URL{Scheme: tc.scheme, Host: tc.authority}, Host: tc.host})
+			if ok != tc.ok || ok && host != tc.want {
+				t.Fatalf("host preservation: %q %t", host, ok)
+			}
+		})
+	}
+}
+
+func TestCoreTargetObservesOriginalHostAndIdentity(t *testing.T) {
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			observed := make(chan string, 1)
+			target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				observed <- r.Host + "|" + r.Header.Get("Accept-Encoding")
+				io.WriteString(w, "preserved")
+			}))
+			var roots *x509.CertPool
+			name := "EXAMPLE.test"
+			if scheme == "https" {
+				target.StartTLS()
+				roots = x509.NewCertPool()
+				roots.AddCert(target.Certificate())
+				if len(target.Certificate().DNSNames) == 0 {
+					t.Fatal("TLS fixture has no named authority")
+				}
+				name = strings.ToUpper(target.Certificate().DNSNames[0])
+			} else {
+				target.Start()
+			}
+			defer target.Close()
+			_, port, err := net.SplitHostPort(target.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			origin := scheme + "://" + strings.ToLower(name) + ":" + port
+			cfg := coreConfig(t, origin, &coreRecorder{}, 2)
+			cfg.RootCAs = roots
+			_, call := coreOpen(t, cfg)
+			req := coreRequest(t, "GET", origin+"/allowed")
+			req.Host = name + ":" + port
+			req.Header.Set("Accept-Encoding", "identity")
+			response, receipt, err := call.Do(t.Context(), req)
+			if err != nil || response == nil || !receipt.ResponseComplete {
+				t.Fatal("positive delivery failed")
+			}
+			response.Body.Close()
+			if got := <-observed; got != req.Host+"|identity" {
+				t.Fatalf("target observed rewritten request: %q", got)
+			}
+		})
+	}
+}
+
+func TestCoreUnsupportedEncodingAndHostNeverReachTarget(t *testing.T) {
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1) }))
+	defer target.Close()
+	e, call := coreOpen(t, coreConfig(t, target.URL, &coreRecorder{}, 10))
+	for _, encoding := range []string{"gzip", "br", "deflate", "gzip, identity", "identity;q=1"} {
+		t.Run(encoding, func(t *testing.T) {
+			req := coreRequest(t, "GET", target.URL+"/allowed")
+			req.Header.Set("Accept-Encoding", encoding)
+			response, receipt, err := call.Do(t.Context(), req)
+			if err == nil || response != nil || receipt.Decision != "unsupported" || receipt.Reason != Unsupported || !receipt.NotSent || receipt.ForwardAttempted {
+				t.Fatal("unsupported negotiation was sent")
+			}
+		})
+	}
+	req := coreRequest(t, "GET", target.URL+"/allowed")
+	req.Host = "other.invalid"
+	if response, receipt, err := call.Do(t.Context(), req); err == nil || response != nil || !receipt.NotSent {
+		t.Fatal("unchecked Host reached target")
+	}
+	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 10 || received.Load() != 0 {
+		t.Fatal("pre-send refusal spent budget or reached target")
+	}
+}
+
+func TestCoreEncodedCredentialEchoIsWithheldAfterSend(t *testing.T) {
+	const secret = "owned-host-session-echo"
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		var body bytes.Buffer
+		writer := gzip.NewWriter(&body)
+		_, _ = writer.Write([]byte(r.Header.Get("Authorization")))
+		if err := writer.Close(); err != nil {
+			t.Error(err)
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(body.Bytes())
+	}))
+	defer target.Close()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 2)
+	cfg.Rules[0].Headers = http.Header{"Authorization": {"Bearer " + secret}}
+	_, call := coreOpen(t, cfg)
+	response, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if err == nil || response != nil || received.Load() != 1 || receipt.Decision != "allowed" || !receipt.ForwardAttempted || !receipt.ResponseReceived || receipt.NotSent || receipt.Reason != Unknown {
+		t.Fatal("encoded credential echo was exposed or called not sent")
 	}
 }

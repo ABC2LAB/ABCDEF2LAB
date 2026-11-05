@@ -845,6 +845,12 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
 	}
+	requestHost, hostOK := preservedRequestHost(req)
+	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") {
+		r.Decision = "unsupported"
+		r.Reason = Unsupported
+		return finish(nil, ErrDenied)
+	}
 	e := c.e
 	e.mu.Lock()
 	reason := c.blockedLocked()
@@ -908,7 +914,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	u := *req.URL
 	u.Host = rule.authority
 	out.URL = &u
-	out.Host = rule.authority
+	out.Host = requestHost
 	out.RequestURI = ""
 	out.Close = true
 	out.Header = req.Header.Clone()
@@ -918,7 +924,6 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	stripHeaders(out.Header)
 	out.Header.Del("Authorization")
 	out.Header.Del("Cookie")
-	out.Header.Del("Accept-Encoding")
 	for k, vs := range rule.Headers {
 		out.Header[k] = append([]string(nil), vs...)
 	}
@@ -973,7 +978,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, e.cfg.Limits.MaxBodyBytes+1))
 	closeErr := resp.Body.Close()
 	r.ResponseComplete = readErr == nil && closeErr == nil && int64(len(responseBody)) <= e.cfg.Limits.MaxBodyBytes
-	if !r.ResponseComplete {
+	if !r.ResponseComplete || !identityEncoding(resp.Header, "Content-Encoding") {
 		r.Reason = Unknown
 		return finish(nil, ErrDenied)
 	}
@@ -1129,4 +1134,42 @@ func (c *Call) validIngressCapability(token [32]byte) bool {
 func reservedAttributionHeader(key string) bool {
 	lower := strings.ToLower(key)
 	return strings.EqualFold(key, AttemptHeader) || strings.HasPrefix(lower, "x-e2-") || strings.HasPrefix(lower, "x-abc2lab-e2-")
+}
+
+// Host is compared canonically for policy, then retained byte-for-byte for the
+// HTTP request. A virtual host or signature must not see a rewritten authority.
+func preservedRequestHost(req *http.Request) (string, bool) {
+	if req == nil || req.URL == nil {
+		return "", false
+	}
+	host := req.Host
+	if host == "" {
+		host = req.URL.Host
+	}
+	u, err := url.Parse(req.URL.Scheme + "://" + host)
+	if err != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery {
+		return "", false
+	}
+	want, wantErr := canonicalAuthority(req.URL)
+	got, gotErr := canonicalAuthority(u)
+	return host, wantErr == nil && gotErr == nil && got == want
+}
+
+// Compression is outside the initial bounded credential-redaction contract.
+// Preserve explicit identity; reject other negotiation before any reservation
+// or send. An unsolicited encoded response is withheld as a sent/unknown result.
+func identityEncoding(headers http.Header, field string) bool {
+	values := 0
+	for name, entries := range headers {
+		if !strings.EqualFold(name, field) {
+			continue
+		}
+		for _, value := range entries {
+			values++
+			if !strings.EqualFold(strings.TrimSpace(value), "identity") {
+				return false
+			}
+		}
+	}
+	return values <= 1
 }
