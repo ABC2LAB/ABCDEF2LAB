@@ -9,7 +9,7 @@
 - **대상**: IDOR 1단계 — 수평·읽기·한 회차·등록 자원 소수. owner/cross 조회 한 쌍을 같은 동결 snapshot으로 판정한다.
 - **정본**: 운영자가 fixture 준비 때 작성한 **수동 등록 레지스트리** 한 파일. 관측 추론은 정본이 아니다(그 결과는 `ExpectedAccess=unknown` 상한, kg-policy §3).
 - **범위 밖**: 수직(역할) 정책, 여러 회차·세대를 합친 조회, 지도 조회 API(§4.2 전체 규칙), KG 저장소 테이블, canary 등록 API(§3.2 물리 형식). 이것들은 1단계 뒤 정한다.
-- 이 resolver는 대상에 요청을 보내지 않고, DB·네트워크를 읽지 않으며, 세션·계정 비밀을 다루지 않는다. A/B 세션은 별도 비밀 파일로 서버가 받는다.
+- 이 resolver는 대상에 요청을 보내지 않고, DB·네트워크를 읽지 않으며, 세션·계정 비밀을 다루지 않는다. A/B 세션은 E② private snapshot으로 서버가 받는다(§9).
 
 ## 2. 레지스트리 파일
 
@@ -80,3 +80,26 @@
 2. 레지스트리를 누가 작성하는지: 평가 회차는 러너 fixture(최민준), 비평가 통합 회차는 fixture 하네스(윤재상, [실제 입력 대장](./first-idor-host-inputs.md))와 운영자. 작성 도구를 하나로 둘지.
 3. 실제 입력 대장의 "동결한 KG 정책 … 실제 reader" 행 담당(이경준)을 1단계분은 이 resolver(최민준)로 바꾸는 대장 수정 — 대장 담당자 리뷰로.
 4. `ReadApprovalRef`(자원별 실행 승인)는 E² 등록 몫이라 이 레지스트리에 넣지 않는다. 서버가 같은 `resource_ref`로 대조한다.
+
+## 9. E② private snapshot과의 대응·1단계 준비 순서
+
+A/B 세션의 비밀 전달 형식은 새로 만들지 않는다. [E② 서버 런타임](./e2-server-runtime.md)의 private snapshot(전용 `0700` 디렉터리의 `<snapshot_ref>.json` + `0600` 헤더 파일, 세션 원문은 JSON에 넣지 않음)을 그대로 쓴다.
+레지스트리와 snapshot은 **같은 준비 단계에서 함께** 만들고, 아래 값이 서로 맞아야 한다. 서버는 snapshot 등록 때 레지스트리를 로드·동결해 대조하고, 하나라도 다르면 실행하지 않는다(이동찬, 서버 조립).
+
+| 레지스트리 | E② snapshot | 비고 |
+|---|---|---|
+| `principals[].label` | `sessions[].label` | A/B 라벨. handle·헤더 비밀은 snapshot에만 있다 |
+| `resources[].resource_ref` | `resources[].ref` | 전체 `type:id` 정확 일치 |
+| `resources[].owner_ref` | (없음) | 소유 관계는 KG만 안다. snapshot `resources[].accounts`는 조회를 허용한 계정 목록일 뿐 소유를 뜻하지 않는다 |
+| `reset_generation` | `reset_ref` | 같은 reset 세대 |
+| (없음) | `approval_ref`·`url`·`read_only`·한도·키·health | E② 몫이라 레지스트리에 넣지 않는다 |
+
+1단계 준비 순서(운영자, 비평가 통합 회차):
+
+1. 대상을 reset하고 health를 확인한다. 하네스가 세대 참조를 발급한다(레지스트리 `generation_ref`).
+2. A·B 테스트 계정으로 대상에 로그인해 세션을 확인한다. 세션 헤더 값은 snapshot의 `0600` 헤더 파일에만 저장하고 JSON·로그·LLM 입력·근거 파일에 넣지 않는다. `status="verified"`는 이 운영자 확인값이다.
+3. A 소유 비민감 자원에 canary를 심는다(승인된 fixture, [canary fixture](./idor-canary-fixture.md)). 심기와 레지스트리 등록은 같은 단계다(kg-policy §3.2(1)).
+4. snapshot JSON(자원·계정·승인·예산, 만료는 첫 회차 한도 이내)과 레지스트리를 같은 세대로 작성한다. 세션이 snapshot 만료보다 먼저 만료되면 그 시각을 적용한다.
+5. 운영자가 snapshot을 등록하면(`POST /api/tasks/{id}/intents/{iid}/controlled-read`, `{"snapshot_ref": …}`) 서버가 레지스트리를 동결하고 위 표로 대조한 뒤에만 실행한다.
+
+첫 회차는 EvalRunID 없이 돈다(비평가). 평가 회차에서 러너가 이 준비를 자동으로 하는 것은 후속이다.
