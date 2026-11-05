@@ -291,7 +291,7 @@ VRAM을 고정된 보편적 최솟값으로 단정하지 않는다. 실제 check
 
 공통 대상 범위·작업·예산과 개선본의 E② 정책·승인 입력을 공식 실행 전에 동결한다. 현행 공식 scope와 충돌하는 변경은 별도 계약 검토와 실험 버전 고정 후 적용한다. 허용된 대상 전달, 제품 차단, 집행 실패를 구분해 보고하고 통제 정책 차이와 실행 비용을 결과 해석에 포함한다.
 
-통제가 강화된 제품의 **HTTP 공식 비교**는 공식 범위 정책 모드의 구현·NE 수용시험 뒤에만 수행한다. 도구 개발용 API smoke는 별도로 수행할 수 있지만 공식 점수나 예산 조정의 근거가 아니다. 측정 흐름과 통제 효과 시연은 [평가 프로토콜 §6·§8](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#8-통제-효과-시연과-개선-후-통제-검증)으로 위임하며, HTTPS 제품 완성은 별도 요건이다.
+통제가 강화된 제품의 **HTTP 공식 비교**는 공식 범위 정책 모드의 구현·NE 수용시험 뒤에만 수행한다. 도구 개발용 API smoke는 별도로 수행할 수 있지만 공식 점수나 예산 조정의 근거가 아니다. 측정 흐름과 통제 효과 시연은 [평가 프로토콜 §6·§8](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#8-통제-효과-시연과-개선-후-통제-검증-성능-비교와-별도)으로 위임하며, HTTPS 제품 완성은 별도 요건이다.
 
 12월 18일 필수 완료 조건은 **HTTP·HTTPS를 검사하는 E② 네트워크 경계 집행과 등록 자원의 읽기 통합 경로**다. 일정이 부족하면 자동 로그인·쓰기 IDOR·수직 지도·HTTP·HTTPS 외 추가 프로토콜을 먼저 줄이고, 집행 미완을 선택 기능 제외로 처리하지 않는다. 담당 구현 순서와 실제 배치 수용시험 일정은 확인한다. [개발 계획의 E② 범위](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/development-plan.md)
 
@@ -332,7 +332,7 @@ CSRF·다단계 로그인·OAuth/SSO·2FA·CAPTCHA·SPA별 처리는 지원 템�
 | 공식 고정 | 프로토콜의 N·순서·프로파일·작업·이미지·소스와 E② HTTP 정책·승인 입력 고정 | HTTP 공식 비교 수용 완료, 태그와 회차 입력 대조 가능; HTTPS 제품 완료는 별도 기록 |
 | 공식 실행 | GPU에서 원본·개선본 교대 실행, 회차별 reset·귀속·종료·보존 | 프로토콜 §5.1 상한 내 양쪽 유효 회차 또는 미완 보고 |
 | 채점과 검토 | 두 GT 분모, 시도·무효율, 증거·설정 대조 | 반복 원자료와 주장 한계 포함 |
-| 통제 효과 시연 A/B | 성능 비교와 분리한 통제 효과 시연 | [평가 프로토콜 §8](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#8-통제-효과-시연과-개선-후-통제-검증)의 별도 축과 다섯 행 대조를 만족 |
+| 통제 효과 시연 A/B | 성능 비교와 분리한 통제 효과 시연 | [평가 프로토콜 §8](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/evaluation-protocol.md#8-통제-효과-시연과-개선-후-통제-검증-성능-비교와-별도)의 별도 축과 다섯 행 대조를 만족 |
 | IDOR 기능 수용 | 별도 A/B fixture로 양성·음성·오류 사례 실행 | 조회→판정→감사→저장→표시와 실패 분류 일치 |
 | 실제 배치 수용 | host 권한·회수·종료·로컬 경로 검증 | 선택 배치에서 수용시험한 범위 명시 |
 | E② HTTPS 제품 완성 수용 | HTTPS의 인증서·신뢰·메서드·경로 검사와 우회·회수·장애 실제 송신 시험 | HTTP 공식 비교와 별도 일정의 제품 완성 요건으로 결과를 기록 |
