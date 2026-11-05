@@ -27,6 +27,9 @@ from collections import Counter
 ALLOWED_DECISIONS = frozenset({"allowed"})
 DENIED_DECISIONS = frozenset({"unsupported", "unavailable"})
 CELLS = ("allowed_observed", "allowed_unobserved", "denied_unobserved", "denied_observed", "unrecorded_observed")
+# reconcile 결과 키. 러너가 이 키만 격리 근거 attempt_reconciliation 행에 옮긴다.
+RESULT_FIELDS = ("cells", "meter_attempt_reused", "blocked_reached", "unrecorded_reached", "positive_evidence",
+                 "control_claim_withheld")
 
 
 class ReconcileError(ValueError):
