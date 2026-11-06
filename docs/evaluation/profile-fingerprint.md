@@ -65,7 +65,7 @@ python3 -I -B scripts/eval/profile_fingerprint.py /private/evaluation/profile.js
 | 프로파일 | 허용 조건 |
 |---|---|
 | fixture | 비민감 준비 절차 ID/revision, 논리 계정 라벨·역할, 논리 자원 라벨·종류·소유 라벨·개수·공유/위임 여부 |
-| environment | 망 모드·LLM 객체(백엔드 종류와 API 고정 조건 또는 로컬 고정 IP)·temperature/seed·대상 이미지·worker/시간/요청 예산·회차 메모리 조건(`run_storage`)·봉인 뒤 drain 정책(`run_drain`)·temperature·seed 외 샘플링(`sampling`) |
+| environment | 망 모드·LLM 객체(백엔드 종류와 API 고정 조건, 또는 로컬 고정 IP·서빙 조건)·temperature/seed·대상 이미지·worker/시간/요청 예산·회차 메모리 조건(`run_storage`)·봉인 뒤 drain 정책(`run_drain`)·temperature·seed 외 샘플링(`sampling`) |
 | scope | 대상 origin·명시적 HTTP 메서드·경로 템플릿·검사 분류 라벨 |
 
 준비 절차 ID와 revision은 평가자가 합의한 비민감 준비 명세를 가리킨다. 명세 내용이 바뀌면 revision도 바꿔야 한다. fixture fingerprint는 이 ID·revision과 선언된 fixture 구조의 해시이며, 실제 fixture 데이터가 준비·적용됐다는 증명이 아니다.
