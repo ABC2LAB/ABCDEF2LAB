@@ -42,6 +42,7 @@ NOTES = (
     "- 해결 기록은 상태 차이와 따로 센다(GET만으로 해결되는 챌린지가 있다).",
     "- 막아서 못 한 것(인증 뒤 표면 등)과 원본 ②에서 새는 경로는 이 표가 재지 않는다. 결과 문서에 따로 적는다.",
 )
+ALLOW_NOTE = "- 내장 통제를 앞지를 수 있는 파일 allow가 있는 열은 그 규칙이 내장 규칙을 덮었을 수 있어 `원본 ① + 파일 규칙`으로만 읽을 수 없다."
 STUB_NOTE = "- 가짜 E²(stub) 열은 배치 확인용이다. 통제를 증명하지 않고, 시범·공식 결과가 아니다."
 
 
@@ -126,7 +127,7 @@ def _rules(directory: Path, result: dict) -> dict | None:
     if rules is None:
         return None
     if not isinstance(rules, dict) or not isinstance(rules.get("file_sha256"), str) or not _count(rules.get("injected")) \
-            or not _count(rules.get("seeded")):
+            or not _count(rules.get("seeded")) or not _count(rules.get("allow_over_seeded")):
         raise DemoError([f"{directory.name}: 규칙 적용 기록 형식 오류"])
     return rules
 
@@ -219,6 +220,8 @@ def _memory_value(state: dict, field: str) -> int | None:
 
 
 _ROWS = (
+    ("내장 통제를 앞지를 수 있는 파일 allow(기대 0)",
+     lambda run: None if run.rules is None else run.rules["allow_over_seeded"]),
     ("전달 요청 전체", lambda run: run.forwarded),
     *((method, lambda run, name=method: run.methods[name]) for method in COUNTED_METHODS),
     ("그 밖의 메서드", lambda run: run.methods[OTHER_METHOD]),
@@ -257,6 +260,8 @@ def render_table(columns: list[Column]) -> str:
     notes = list(NOTES)
     if any(column.e2_mode == "stub" for column in columns):
         notes.append(STUB_NOTE)
+    if any(run.rules is not None and run.rules["allow_over_seeded"] for column in columns for run in column.runs):
+        notes.append(ALLOW_NOTE)
     return "\n".join(lines) + "\n\n" + "\n".join(notes) + "\n"
 
 

@@ -422,13 +422,26 @@ class TestRefusals(Case):
 
 
 class TestRules(Case):
-    RULES = {"file_sha256": "ab" * 32, "injected": 3, "seeded": 25}
+    RULES = {"file_sha256": "ab" * 32, "injected": 3, "seeded": 25, "allow_over_seeded": 0}
 
     def test_rule_file_row_shows_the_hash_prefix_and_count(self):
         plain, ruled = self.root("plain"), self.root("ruled")
         plain.run()
         ruled.run(condition="원본 ②", rules=self.RULES)
-        self.assertEqual(self.table(plain, ruled)["원본 규칙 파일(sha256 앞부분)"], ["없음", "abababababab (주입 3)"])
+        table = self.table(plain, ruled)
+        self.assertEqual(table["원본 규칙 파일(sha256 앞부분)"], ["없음", "abababababab (주입 3)"])
+        self.assertEqual(table["내장 통제를 앞지를 수 있는 파일 allow(기대 0)"], ["—", "0 (0)"])
+
+    def test_allow_ahead_of_seeded_is_shown_and_noted(self):
+        plain, clean, ahead = self.root("plain"), self.root("clean"), self.root("ahead")
+        plain.run()
+        clean.run(condition="원본 ②", rules=self.RULES)
+        self.assertNotIn("앞지를 수 있는 파일 allow가 있는 열", render_table(
+            [read_column(plain.path, KEY), read_column(clean.path, KEY)]))
+        ahead.run(condition="원본 ②-b", rules=dict(self.RULES, allow_over_seeded=2))
+        column = read_column(ahead.path, KEY)
+        self.assertEqual(rows(render_table([column]))["내장 통제를 앞지를 수 있는 파일 allow(기대 0)"], ["2 (2)"])
+        self.assertIn("`원본 ① + 파일 규칙`으로만 읽을 수 없다", render_table([column]))
 
     def test_one_column_is_one_rule_file(self):
         for label, other in (("other_file", dict(self.RULES, file_sha256="cd" * 32)), ("no_rules", None)):
@@ -440,9 +453,11 @@ class TestRules(Case):
                     read_column(one.path, KEY)
 
     def test_rule_record_format_is_checked(self):
-        cases = {"not_object": "x", "hash": {"file_sha256": 1, "injected": 1, "seeded": 1},
-                 "injected": {"file_sha256": "a", "injected": -1, "seeded": 1},
-                 "seeded": {"file_sha256": "a", "injected": 1, "seeded": True}}
+        good = {"file_sha256": "a", "injected": 1, "seeded": 1, "allow_over_seeded": 0}
+        without_allow = {"file_sha256": "a", "injected": 1, "seeded": 1}
+        cases = {"not_object": "x", "hash": dict(good, file_sha256=1), "injected": dict(good, injected=-1),
+                 "seeded": dict(good, seeded=True), "allow": dict(good, allow_over_seeded=-1),
+                 "allow_missing": without_allow}
         for label, rules in cases.items():
             with self.subTest(label):
                 one = self.root(label)

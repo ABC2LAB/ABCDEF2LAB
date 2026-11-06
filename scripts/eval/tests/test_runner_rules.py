@@ -29,6 +29,7 @@ SEEDED = {"id": 1, "name": "seeded-delete", "enabled": True, "priority": 80, "ma
           "timeout_enabled": False, "timeout_seconds": 60, "timeout_action": "deny",
           "created_at": "2026-11-06T00:00:00Z", "updated_at": "2026-11-06T00:00:00Z"}
 SEEDED_OFF = dict(SEEDED, id=2, name="seeded-off", enabled=False)
+TOOLS = ["Bash", "WebFetch", "shell_open"]  # 엔진 기본 목록을 줄이지 않는 파일 목록
 
 
 def rule(name="block-post", **changes) -> dict:
@@ -202,15 +203,17 @@ class TestApply(FileCase):
         return engine, apply_engine_rules(engine.port, AdminSecret(PASSWORD), rules, 5)
 
     def test_rules_are_added_on_top_of_seeded_and_read_back(self):
-        engine, result = self.apply(rule_file(enabled_tools=["Bash"], rules=[rule(), rule("second", priority=90)]))
-        self.assertEqual([call[0] for call in engine.calls], ["GET", "POST", "POST", "PUT", "GET", "GET"])
+        engine, result = self.apply(rule_file(enabled_tools=["WebFetch", "Bash", "shell_open"],
+                                              rules=[rule(), rule("second", priority=90)]))
+        self.assertEqual([call[0] for call in engine.calls], ["GET", "GET", "POST", "POST", "PUT", "GET", "GET"])
         self.assertTrue(all(engine.authorized))
         self.assertEqual(result["format"], RULES_EVIDENCE_FORMAT)
         self.assertEqual((result["injected"], result["seeded"], result["seeded_enabled"]), (2, 2, 1))
-        self.assertEqual(result["enabled_tools"], ["Bash"])
+        self.assertEqual(result["tools_before"], ["Bash", "WebFetch"])
+        self.assertEqual(result["enabled_tools"], ["WebFetch", "Bash", "shell_open"])
         self.assertEqual([item["name"] for item in engine.rules], ["seeded-delete", "seeded-off", "block-post", "second"])
         self.assertNotEqual(result["seeded_sha256"], result["active_sha256"])
-        created = engine.calls[1][2]
+        created = engine.calls[2][2]
         self.assertEqual((created["enabled"], created["timeout_enabled"], created["action"]), (True, False, "deny"))
 
     def test_tools_are_left_alone_when_the_file_does_not_set_them(self):
@@ -233,7 +236,42 @@ class TestApply(FileCase):
         cases = {"dropped": {"drop_rules": True}, "changed": {"change_rule": True}, "tools_ignored": {"ignore_tools": True}}
         for label, options in cases.items():
             with self.subTest(label), self.assertRaisesRegex(EngineAPIError, "engine_rules_not_applied"):
-                self.apply(rule_file(enabled_tools=["Bash"]), **options)
+                self.apply(rule_file(enabled_tools=TOOLS), **options)
+
+    def test_narrowing_the_tools_is_refused_before_any_write(self):
+        # 도구를 빼면 내장 규칙이 그 도구에 안 걸려 원본 ②가 원본 ①보다 약해진다.
+        for tools in (["Bash"], ["WebFetch", "shell_open"]):
+            with self.subTest(tools=tools):
+                engine = FakeRulesEngine()
+                self.addCleanup(engine.close)
+                rules = load_engine_rules(self.write(rule_file(enabled_tools=tools)))
+                with self.assertRaisesRegex(EngineAPIError, "engine_rules_tools_narrowed"):
+                    apply_engine_rules(engine.port, AdminSecret(PASSWORD), rules, 5)
+                self.assertEqual([call[0] for call in engine.calls], ["GET", "GET"])
+                self.assertEqual(engine.tools, ["Bash", "WebFetch"])
+                self.assertEqual([item["name"] for item in engine.rules], ["seeded-delete", "seeded-off"])
+
+    def test_same_tools_in_another_order_are_not_narrowing(self):
+        _, result = self.apply(rule_file(enabled_tools=["WebFetch", "Bash"]))
+        self.assertEqual(result["enabled_tools"], ["WebFetch", "Bash"])
+
+    def test_allow_rules_that_can_get_ahead_of_seeded_controls_are_counted(self):
+        low = dict(SEEDED, id=3, name="seeded-low", priority=50, action="ask")
+        high = dict(SEEDED, id=4, name="seeded-high", priority=90)
+        cases = (("above", (SEEDED,), [rule(action="allow", priority=81)], 1),
+                 ("tie_seeded_goes_first", (SEEDED,), [rule(action="allow", priority=80)], 0),
+                 ("below", (SEEDED,), [rule(action="allow", priority=79)], 0),
+                 ("deny_does_not_count", (SEEDED,), [rule(action="deny", priority=200)], 0),
+                 ("disabled_seeded_is_not_a_control", (SEEDED_OFF,), [rule(action="allow", priority=200)], 0),
+                 ("seeded_allow_is_not_a_control", (dict(SEEDED, action="allow"),), [rule(action="allow", priority=200)], 0),
+                 ("no_seeded", (), [rule(action="allow", priority=200)], 0),
+                 ("ahead_of_the_lowest_control_only", (low, high), [rule(action="allow", priority=60)], 1),
+                 ("two", (SEEDED,), [rule("a", action="allow", priority=81), rule("b", action="allow", priority=82),
+                                     rule("c", priority=83)], 2))
+        for label, seeded, rules, expected in cases:
+            with self.subTest(label):
+                _, result = self.apply(rule_file(rules=rules), seeded=seeded)
+                self.assertEqual(result["allow_over_seeded"], expected)
 
     def test_name_colliding_with_a_seeded_rule_stops_before_any_write(self):
         engine = FakeRulesEngine()
@@ -254,7 +292,7 @@ class TestApply(FileCase):
                  ({"disconnect_post": True}, "engine_rules_unreachable"))
         for options, code in cases:
             with self.subTest(code=code, options=sorted(options)), self.assertRaisesRegex(EngineAPIError, code):
-                self.apply(rule_file(enabled_tools=["Bash"]), **options)
+                self.apply(rule_file(enabled_tools=TOOLS), **options)
 
     def test_failed_write_is_not_retried(self):
         engine = FakeRulesEngine(post_status=500)

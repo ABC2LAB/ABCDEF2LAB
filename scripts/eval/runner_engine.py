@@ -326,7 +326,8 @@ def _rule_body(rule: dict) -> dict:
 def apply_engine_rules(port: int, secret: AdminSecret, rules: EngineRules, timeout: float) -> dict:
     """새 엔진 DB에 규칙을 넣고 다시 읽어 그대로인지 확인한다. 실패해도 다시 보내지 않는다(회차 무효).
 
-    내장 규칙은 건드리지 않는다. 원본 ②는 원본 ① 기본 설정에 규칙을 더한 것이다.
+    원본 ②는 원본 ① 기본 설정에 규칙을 더한 것이다. 그래서 내장 규칙을 건드리지 않고, 규칙을 타는 도구를 줄이는 파일은
+    아무것도 쓰기 전에 거부한다. 앞서는 allow는 예외가 필요할 수 있어 막지 않고 건수를 근거에 남긴다.
     """
     token = login(port, secret, timeout)
     headers = {"Authorization": f"Bearer {token}"}
@@ -334,6 +335,9 @@ def apply_engine_rules(port: int, secret: AdminSecret, rules: EngineRules, timeo
         seeded = _active_rules(port, headers, timeout)
         if {rule["name"] for rule in seeded} & {rule["name"] for rule in rules.rules}:
             raise EngineAPIError("engine_rules_name_collision")
+        tools_before = _active_tools(port, headers, timeout)
+        if rules.enabled_tools is not None and not set(tools_before) <= set(rules.enabled_tools):
+            raise EngineAPIError("engine_rules_tools_narrowed")
         for rule in rules.rules:
             _engine_json(_post(port, INTERCEPT_RULES_PATH, json.dumps(_rule_body(rule)).encode("utf-8"), headers, timeout,
                                MAX_RULES_RESPONSE_BYTES), 200, MAX_RULES_RESPONSE_BYTES)
@@ -351,7 +355,19 @@ def apply_engine_rules(port: int, secret: AdminSecret, rules: EngineRules, timeo
         raise EngineAPIError("engine_rules_not_applied")
     return {"format": RULES_EVIDENCE_FORMAT, "file_sha256": rules.sha256, "injected": len(rules.rules),
             "seeded": len(seeded), "seeded_enabled": sum(1 for rule in seeded if rule["enabled"] is True),
-            "seeded_sha256": _rules_sha256(seeded), "active_sha256": _rules_sha256(active), "enabled_tools": tools}
+            "seeded_sha256": _rules_sha256(seeded), "active_sha256": _rules_sha256(active), "tools_before": tools_before,
+            "enabled_tools": tools, "allow_over_seeded": _allow_over_seeded(rules.rules, seeded)}
+
+
+def _allow_over_seeded(rules: tuple[dict, ...], seeded: list[dict]) -> int:
+    """켜진 내장 통제(deny·ask) 중 하나라도 앞지를 수 있는 파일 allow 수. 패턴이 실제로 겹치는지는 보지 않는다.
+
+    엔진은 priority가 큰 규칙부터, 같으면 먼저 등록한 규칙부터 본다. 내장 규칙이 먼저 등록되므로 같은 priority는 앞지르지 못한다.
+    """
+    controls = [rule["priority"] for rule in seeded if rule["enabled"] is True and rule["action"] != "allow"]
+    if not controls:
+        return 0
+    return sum(1 for rule in rules if rule["action"] == "allow" and rule["priority"] > min(controls))
 
 
 def _rules_sorted(rules: list[dict]) -> list[str]:
