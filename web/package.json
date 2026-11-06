@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "mockup": "node mockups/serve.mjs",
     "build": "next build",
     "build:static": "NEXT_EXPORT=1 next build",
     "start": "next start",

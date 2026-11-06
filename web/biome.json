@@ -40,7 +40,7 @@
       "!dist",
       "!out",
       "!_parked",
-      "!public/mockups",
+      "!mockups/*.html",
       "!src/components/ui",
       "!src/components/calendar"
     ]
