@@ -28,6 +28,9 @@ from runner_config import (
 from runner_engine import EngineAPIError, task_request
 from runner_window import WatchSample
 from test_verdict_pages import CONTEXT as VERDICT_CONTEXT, two_pages
+from e2_collect import CloseAck, E2Collection, E2CollectionInvalid
+from e2_control import CloseResult, E2ControlError
+from e2_export import E2Export
 from verdict_collector import CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady, VerdictIntegrityError
 from verdict_pages import merge_verdict_pages
 from runner_docker import DockerError
@@ -42,8 +45,17 @@ ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "ev
            "eval-llm-gw": "meter", "eval-api": "meter", "eval-e2": "meter"}
 
 
+E2_IMAGE_ID = "sha256:" + "e" * 64
+E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:test", "id": E2_IMAGE_ID}, "policy_path": "/srv/eval/e2-policy.json",
+                    "policy_fingerprint_sha256": "f" * 64, "header_mode": "evaluation_caller_passthrough", "ready_timeout_seconds": 30,
+                    "close_ack_timeout_seconds": 5, "close_timeout_seconds": 30, "poll_seconds": 1, "exchange_timeout_seconds": 5,
+                    "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30}
+
+
 def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None):
     preflight, payload = configuration(), runner_config()
+    if e2 == "product":
+        payload["e2"], e2 = dict(E2_PRODUCT_BLOCK), None
     if verdict is not None:
         payload["verdict_export"] = verdict
     if state is not None:
@@ -178,6 +190,8 @@ class FakePorts:
     def __init__(self, spec):
         self.serving = {}
         self.verdict_results, self.verdict_args, self.verdict_times = [], [], []
+        self.e2_ready_error = self.e2_bind_error = self.e2_bound = self.e2_collect_args = None
+        self.e2_close_result, self.e2_collection = e2_closed(), e2_collected()
         self.fake_clock, self.verdict_call_seconds = None, 0
         self.rules_sha256 = None
         self.spec = spec
@@ -238,7 +252,9 @@ class FakePorts:
         stub = self.world_stub if self.world_stub is not None else "eval-e2" in self.spec.expected.services
         networks, containers = raw_world(stub)
         for container in containers:
-            container["image"] = self.spec.image_ids[ROLE_OF[container["service"]]]
+            # 제품 E²는 자기 이미지를 쓴다. 가짜 E²는 계측기 이미지의 역할이다.
+            role = "e2" if container["service"] == "eval-e2" and "e2" in self.spec.image_ids else ROLE_OF[container["service"]]
+            container["image"] = self.spec.image_ids[role]
         return networks, containers
 
     def preexisting(self):
@@ -383,6 +399,29 @@ class FakePorts:
         self._call("findings")
         return {"items": 0}
 
+    def e2_service_ready(self):
+        self._call("e2_service_ready")
+        if self.e2_ready_error is not None:
+            raise self.e2_ready_error
+        return {"state": "service_ready", "config_sha256": "1" * 64, "policy_fingerprint_sha256": "f" * 64}
+
+    def e2_bind(self, reset_generation):
+        self._call("e2_bind")
+        self.e2_bound = reset_generation
+        if self.e2_bind_error is not None:
+            raise self.e2_bind_error
+
+    def e2_close(self):
+        self._call("e2_close")
+        return self.e2_close_result
+
+    def e2_collect(self, close, task_id, reset_generation):
+        self._call("e2_collect")
+        self.e2_collect_args = (close, task_id, reset_generation)
+        if isinstance(self.e2_collection, Exception):
+            raise self.e2_collection
+        return self.e2_collection
+
     def verdict_export(self, task_id, context):
         self._call("verdict_export")
         self.verdict_args.append((task_id, context))
@@ -438,6 +477,140 @@ FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "liste
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "apply_engine_settings", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
+
+
+E2_MAC, E2_MANIFEST = "9" * 64, "8" * 64
+
+
+def e2_closed(state="complete", reason=None, execution_ref="execution-1", manifest=E2_MANIFEST):
+    ack = CloseAck("close-1", 6, E2_MAC, manifest) if state == "complete" else None
+    return CloseResult(state, reason, state != "unavailable", execution_ref, manifest, ack)
+
+
+def e2_export_of(decisions=None, state="complete"):
+    rows = [{"attempt_id": "a" * 32, "decision": "allowed"}, {"attempt_id": "b" * 32, "decision": "allowed"},
+            {"attempt_id": "c" * 32, "decision": "denied"}] if decisions is None else decisions
+    return E2Export(state, {}, tuple(rows), 6, 0, 0, 2, (("complete", 2),), (("policy_denied", 1),))
+
+
+def e2_collected(outcome="complete", reason="", export="default"):
+    return E2Collection(outcome, reason, e2_export_of() if export == "default" else export, {"manifest.json": E2_MANIFEST},
+                        {"sequence": 6, "mac": E2_MAC} if outcome == "complete" else None)
+
+
+class TestE2Product(unittest.TestCase):
+    """제품 E② 모드의 러너 순서와 실패 갈래(연결 제안 §4.3). 가짜 port만 쓰며 제품 E²로 돌린 것이 아니다."""
+
+    def go(self, mutate=None, side="ours"):
+        def apply(ports, meter, clock):
+            meter.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
+                             {"seq": 2, "decision": "allowed", "attempt_id": "b" * 32},
+                             {"seq": 3, "decision": "denied", "attempt_id": "c" * 32}]
+            if mutate:
+                mutate(ports)
+        return run(apply, spec=make_spec(side=side, e2="product"))
+
+    def row(self, evidence, kind):
+        return [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == kind]
+
+    def test_complete_run_order_and_signed_rows(self):
+        result, ports, _meter, evidence = self.go()
+        self.assertEqual((result["status"], result["e2_mode"]), (COMPLETE, "product"))
+        calls = ports.calls
+        # 서비스 대조와 bind는 작업 전, E² 종료는 계측기 봉인 전, 수집은 봉인 뒤다.
+        self.assertLess(calls.index("e2_service_ready"), calls.index("e2_bind"))
+        self.assertLess(calls.index("e2_bind"), calls.index("start_task"))
+        self.assertLess(calls.index("start_task"), calls.index("e2_close"))
+        self.assertLess(calls.index("e2_close"), next(i for i, c in enumerate(calls) if c.startswith("seal")))
+        self.assertLess(next(i for i, c in enumerate(calls) if c.startswith("seal")), calls.index("e2_collect"))
+        self.assertLess(calls.index("e2_collect"), calls.index("down"))
+        close, task_id, generation = ports.e2_collect_args
+        self.assertEqual((close.state, task_id, generation, ports.e2_bound), ("complete", "17", ports.e2_bound, generation))
+        record = evidence.files["run-record.json"]
+        self.assertEqual(generation, record["reset_generation"])
+        placement = self.row(evidence, "e2_placement")[0]
+        self.assertEqual((placement["mode"], placement["decision_rows"], placement["allowed"]), ("product", None, None))
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["close_state"], row["collection_outcome"], row["collection_reason"], row["attempts"], row["rows"], row["checkpoint_sequence"]),
+                         ("complete", "complete", None, 3, 6, 6))
+        self.assertEqual(row["decisions"], {"allowed": 2, "denied": 1, "unsupported": 0})
+        self.assertEqual((row["config_sha256"], row["policy_fingerprint_sha256"], row["manifest_sha256"]), ("1" * 64, "f" * 64, E2_MANIFEST))
+        self.assertEqual(evidence.files["e2-service-ready.json"]["state"], "service_ready")
+        self.assertEqual(evidence.files["e2-collection.json"]["outcome"], "complete")
+        cells = self.row(evidence, "attempt_reconciliation")[0]["cells"]
+        self.assertEqual((cells["allowed_observed"], cells["denied_unobserved"], cells["denied_observed"]), (2, 1, 0))
+        self.assertNotIn("fixture", evidence.files["attempt-reconciliation.json"])
+
+    def test_baseline_never_has_the_e2(self):
+        self.assertEqual(make_spec(side="baseline", e2="product").e2_mode, "none")
+        self.assertEqual(make_spec(side="ours", e2="product").e2_mode, "product")
+
+    def test_service_not_ready_refuses_before_the_task(self):
+        for error, reason in ((E2ControlError("policy_fingerprint_sha256_mismatch"), "e2_policy_fingerprint_sha256_mismatch"),
+                              (E2ControlError("service_ready_timeout"), "e2_service_ready_timeout"), (RuntimeError("synthetic"), "e2_service_not_ready")):
+            with self.subTest(reason=reason):
+                result, ports, _meter, _evidence = self.go(lambda p, e=error: setattr(p, "e2_ready_error", e))
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
+                self.assertNotIn("start_task", ports.calls)
+                self.assertNotIn("e2_bind", ports.calls)
+
+    def test_bind_failure_refuses_before_the_task(self):
+        result, ports, _meter, _evidence = self.go(lambda p: setattr(p, "e2_bind_error", E2ControlError("refused_bind_conflict")))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_refused_bind_conflict"]))
+        self.assertNotIn("start_task", ports.calls)
+
+    def test_close_failure_is_a_product_failure_and_the_run_moves_on(self):
+        result, ports, _meter, evidence = self.go(lambda p: setattr(p, "e2_close_result", e2_closed("unavailable", "close_timeout", None, None)))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("e2_collect", ports.calls)
+        self.assertTrue([call for call in ports.calls if call.startswith("seal")])
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["close_state"], row["collection_outcome"], row["collection_reason"], row["decisions"], row["attempts"]),
+                         ("unavailable", "product_failure", "close_timeout", None, None))
+        self.assertEqual(self.row(evidence, "attempt_reconciliation"), [])
+        self.assertNotIn("attempt-reconciliation.json", evidence.files)
+
+    def test_incomplete_export_is_a_product_failure_with_counts_kept(self):
+        def mutate(ports):
+            ports.e2_close_result = e2_closed("incomplete", "audit_failed", manifest=None)
+            ports.e2_collection = e2_collected("product_failure", "export_incomplete")
+        result, ports, _meter, evidence = self.go(mutate)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertIn("e2_collect", ports.calls)
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["close_state"], row["close_reason"], row["collection_outcome"], row["collection_reason"], row["attempts"]),
+                         ("incomplete", "audit_failed", "product_failure", "export_incomplete", 3))
+        self.assertEqual(self.row(evidence, "attempt_reconciliation"), [])
+
+    def test_collection_problems_on_a_complete_close_are_product_failures(self):
+        result, _ports, _meter, evidence = self.go(lambda p: setattr(p, "e2_collection", e2_collected("product_failure", "audit_integrity_failed", None)))
+        self.assertEqual(result["status"], COMPLETE)
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["collection_outcome"], row["collection_reason"], row["decisions"]), ("product_failure", "audit_integrity_failed", None))
+
+    def test_config_violation_at_collection_invalidates_the_run(self):
+        result, _ports, _meter, _evidence = self.go(lambda p: setattr(p, "e2_collection", E2CollectionInvalid("policy_fingerprint_mismatch")))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_policy_fingerprint_mismatch"]))
+
+    def test_unexpected_collection_error_has_a_fixed_reason(self):
+        result, _ports, _meter, _evidence = self.go(lambda p: setattr(p, "e2_collection", RuntimeError("synthetic-value-41c2")))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_collect_failed"]))
+
+    def test_no_execution_is_not_filled_in_as_blocked_or_complete(self):
+        result, ports, _meter, evidence = self.go(lambda p: setattr(p, "e2_close_result", e2_closed("no_execution", None, None, None)))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("e2_collect", ports.calls)
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["close_state"], row["collection_outcome"], row["collection_reason"], row["decisions"]), ("no_execution", "no_execution", None, None))
+        # 실행이 없다는데 계측기에 요청이 있으면 기록 없이 도달한 것으로 센다.
+        cells = self.row(evidence, "attempt_reconciliation")[0]["cells"]
+        self.assertEqual((cells["allowed_observed"], cells["denied_unobserved"]), (0, 0))
+
+    def test_keep_alive_includes_the_close_wait_on_both_sides(self):
+        payload = runner_config()
+        base = runner._llm_keep_alive_seconds(parse_runner_config(payload), 100)
+        payload["e2"] = dict(E2_PRODUCT_BLOCK)
+        self.assertEqual(runner._llm_keep_alive_seconds(parse_runner_config(payload), 100), base + 35)
 
 
 VERDICT_BLOCK = {"page_size": 100, "timeout_seconds": 30, "max_page_bytes": 1 << 20, "max_total_bytes": 8 << 20, "max_pages": 10,

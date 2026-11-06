@@ -60,7 +60,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `observer_readonly_ref` | 그 GET이 해당 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(200자 이하). 러너가 만들 수 없는 근거라 설정으로 받고, 격리 근거 `observer_readonly` 행에 그대로 남긴다 |
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
 | `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null). baseline 회차는 compose 값이 같이 넘어가도 엔진이 읽지 않으므로 선언값도 null이다 |
-| `e2.ours_mode` | 개선 후 회차의 E② 자리(프로토콜 §2 개선 후의 E② 배치). `none` = E² 없음(엔진 → 계측기), `stub` = 통과 전용 가짜 E²(`deploy/eval/compose.e2-stub.yaml`, 계측기 `-role=e2-stub`)를 엔진과 계측기 사이에 둔다. baseline 회차에는 적용하지 않는다(원본에는 E²가 없다). `stub` 회차는 망·부정 연결 점검·계측기 시도 ID 대조를 세우는 fixture이며 통제를 증명하지 않으므로 시범·공식·제품 결과에 쓰지 않는다. 결과·기록에 `e2_mode`가 서명되고, `session_runs.py`·`score.py`는 `--allow-fixture-e2` 없이는 stub 회차를 거부한다. 제품 E²가 들어오면 값이 하나 늘어난다 |
+| `e2.ours_mode` | 개선 후 회차의 E② 자리(프로토콜 §2 개선 후의 E② 배치). `none` = E² 없음(엔진 → 계측기), `stub` = 통과 전용 가짜 E²(`deploy/eval/compose.e2-stub.yaml`, 계측기 `-role=e2-stub`)를 엔진과 계측기 사이에 둔다. baseline 회차에는 적용하지 않는다(원본에는 E²가 없다). `stub` 회차는 망·부정 연결 점검·계측기 시도 ID 대조를 세우는 fixture이며 통제를 증명하지 않으므로 시범·공식·제품 결과에 쓰지 않는다. 결과·기록에 `e2_mode`가 서명되고, `session_runs.py`·`score.py`는 `--allow-fixture-e2` 없이는 stub 회차를 거부한다. 제품 E²가 들어오면 값이 하나 늘어난다 `product` = 제품 E²(아래), 공식 비교에 쓰는 값이다. |
 | `engine_rules` | 원본 ② 규칙 파일의 절대 경로 또는 `null`(프로토콜 §8.1, 형식은 [engine-rules.md](./engine-rules.md)). 원본 회차에만 쓴다. 조건마다 설정 파일을 따로 둔다 |
 | `state` | 상태 차이(프로토콜 §8.1·§8.2) 설정. `null`이면 사본을 뜨지 않는다. 객체면 `sqlite_path`(대상 컨테이너 안 SQLite 절대 경로), `signal_tables`(같은 DB에 있는 해결 기록 등 신호 테이블 이름 목록, 상태 차이 판정에서 빼고 건수만 따로), `max_copy_bytes`(사본 하나의 상한), `runtime_roots`(비교할 런타임 디렉터리 절대 경로 목록, 겹치면 거부, 비어도 됨. 각 루트는 실제 디렉터리여야 하고 링크·정규 파일이면 pre에서 무효. 루트 안의 링크는 링크 자체만 비교하고 링크 대상은 보지 않음), `memory`(메모리 저장 읽기, `null`이면 안 읽음. 객체면 `paths`·`count_field`·`max_body_bytes`·`timeout_ms`)를 정확히 받는다. 앱별 값은 여기서만 받는다(Juice Shop v15: `/juice-shop/data/juiceshop.sqlite`, `["Challenges"]`, 주문 PDF가 쌓이는 `/juice-shop/ftp`와 업로드 디렉터리). 요청이나 기동만으로 바뀌는 디렉터리(접근 로그 `logs`, 기동 때 만드는 `i18n`)는 넣지 않는다. `memory.paths`에는 부작용 없음을 확인한 비로그인 GET만 넣는다. 응답의 `count_field` 배열 길이와 본문 지문을 비교한다. Juice Shop v15는 상품별 리뷰 경로가 해당하고(2회 읽기 동일·해결 신호 변화 0 확인), 주문 목록은 비로그인·일반 계정으로 읽을 수 없어(403·500) 주문은 런타임 디렉터리의 PDF 차이로만 본다. 양쪽 회차에 같게 적용한다. pre 사본은 대상 준비 확인 뒤·구간 시작 전에, post 사본은 구간이 닫히고 tmpfs를 잰 뒤에 뜬다(대상 `docker pause`가 Docker 이벤트를 만들기 때문). SQLite 사본은 회차 키(메모리에만)로 행 지문을 뜬 즉시 지우고, 런타임 디렉터리는 호스트에 파일을 만들지 않고 tar에서 바로 지문을 뜬다. 메모리 읽기는 계측기 이미지의 `state-read` 역할을 대상 netns에서 1회 실행한다(구간 밖, loopback만, 권한·마운트 없음, 로그 드라이버 끔). 등록 관측 front를 거치지 않으므로 관측 로그 대조와 섞이지 않는다 |
 | `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data,min_free}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한과 구간 종료 뒤 남아야 할 최소 공간(두 상한보다 작아야 함), DB healthcheck. `tmpfs` 세 값은 사전검사 `run_storage`(프로파일 v3 환경 지문 입력)와 글자 그대로 같아야 시작한다 |
@@ -128,6 +128,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 그 SHA-256은 서명 근거 `run_conditions`에
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
+  e2-service-ready.json  e2-collection.json   e2.ours_mode=product 회차만: 서비스 대조 값, 종료·수집 결과(아래)
+  e2-config/  e2-control/  e2-copy/     e2.ours_mode=product 회차만: 준비(E²에 읽기 전용), 제어 socket, 러너 전용 사본
   verdict-export.json            설정 `verdict_export`가 있는 개선 후 회차만: 수집 상태·사유·요약(아래). 모았으면 verdict-pages.json·verdict-records.json도
   attempt-reconciliation.json    e2.ours_mode=stub 회차만: 가짜 E² 결정 행 × 계측기 접수 행 시도별 대조(프로토콜 §8.3 다섯 칸·대상 응답 수신·차단 후 도달·기록 없이 도달·ID 재사용·허용 양성 근거, 건수만, fixture=true). 통제 주장은 `control_claim_withheld=false`일 때만이고, 이 값은 허용 양성 근거가 없을 때도 true다. 같은 건수가 서명 근거(`isolation-evidence.json`의 `attempt_reconciliation` 행)에도 들어가고, 채점기는 그 행으로 통제 검증 표를 만든다
   state-diff.json                설정 `state`가 있을 때만: 같은 컨테이너 pre·post SQLite 상태 차이(테이블별 행 수·추가·삭제·변경 건수·정수 id, 열 구성 변경, 테이블·인덱스·트리거·뷰 정의 변화 `schema_objects`(종류·이름만), sqlite_sequence 변화, 신호 테이블은 `signals`에 따로), 런타임 디렉터리별 항목 수·추가·삭제·변경 건수(`runtime`, 항목 경로 없음), 메모리 읽기 합계·변한 경로 수·post에서 못 읽은 경로 수(`memory`, 본문·경로 없음). `content_changed`는 SQLite 쪽만이고 전체 변화 여부는 `state_changed`로 본다. 값·지문·경로 없음. `state/pre`·`state/post` 디렉터리는 비어 있어야 정상이다(사본을 지운 뒤)
@@ -234,6 +236,23 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `interrupted`, `unexpected_error` | Ctrl-C(정리·기록 후 다시 올림), 예상 밖 예외(정리·기록함) |
 
 `llm-summary.json`에는 LLM 사유가 전부 남고, 결과 기록의 사유는 그중 정렬 첫째다.
+
+**제품 E②(`e2.ours_mode=product`):** 개선 후 회차에서만 쓴다. 제품 entrypoint가 아직 없어서 합성 시험으로만 확인했다. 망 배치와 부정 연결 기대값은 가짜 E²와 같다. 설정은 `image`, `policy_path`, `policy_fingerprint_sha256`(시범 전 동결값), `header_mode`, 시한 다섯(`ready_timeout_seconds`, `close_ack_timeout_seconds`, `close_timeout_seconds`, `poll_seconds`, `exchange_timeout_seconds`), `verify_tool`, `verify_timeout_seconds`다.
+
+1. compose 전에 `e2-config/`에 설정·정책 사본·회차 감사 키를 쓴다([제어 채널 제안](../contracts/e2-runner-control-proposal.md) §4). 키 값은 파일로만 있다.
+2. 작업 생성 전에 `ready`를 받아 설정 digest·전달 모드·평가 선언·동결 지문과 대조하고, `bind`로 대상 컨테이너 ID를 넘긴다. 어긋나면 POST 없이 `e2_<코드>`로 무효다.
+3. 예산이 끝나면 계측기보다 E²를 먼저 닫는다. 시한을 넘기면 기다리지 않고 계측기 seal로 넘어간다.
+4. 봉인 뒤 `e2/<execution_ref>`를 러너 전용 사본 `e2-copy/`로 옮겨 `e2-audit-verify`와 투영 행을 대조한다.
+5. 다 맞거나 실행이 없었으면 시도별 대조를 돌린다. `no_execution`은 결정 0건으로 대조해서 계측기에 도달한 요청이 있으면 `unrecorded_observed`로 나온다.
+
+| 결과 | 회차 | 통제 주장 |
+|---|---|---|
+| `complete` | 유효 | 시도별 대조 조건대로 |
+| `no_execution` | 유효 | 허용 양성 근거가 없어 보류 |
+| `product_failure`(close 실패·`incomplete`·형식·무결성 실패) | 유효 | 대조 근거가 없어 보류 |
+| 회차 값·정책 지문 불일치, 파일 소유자, 읽기·검증 명령 장애(`e2_<코드>`) | 무효 | 없음 |
+
+기록: `e2-service-ready.json`, `e2-collection.json`, 격리 근거의 `e2_product` 행. 키 파일은 회차 디렉터리 `e2-config/`에 남는다. 사후 `e2-audit-verify`에 필요하고, 회차 디렉터리는 커밋 금지 결과물이다.
 
 **판정 export:** 설정 `verdict_export`가 null이면 수집하지 않는다. 값이 있으면 개선 후 회차에서만 findings 다음, down 전에 [판정 페이지 제안](../contracts/verdict-record-page-api-proposal.md)대로 동결하고 전체 페이지를 모은다. 동결이 준비 전(409)이면 `ready_poll_seconds` 간격으로 다시 묻고, `ready_wait_seconds`를 넘기면 새 요청을 보내지 않는다.
 
