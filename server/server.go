@@ -3208,7 +3208,7 @@ func (s *Server) activityDetail(w http.ResponseWriter, r *http.Request) {
 // This prevents a guessed global activity id from exposing source planner/main
 // or in-flight transcripts.
 func taskActivityDetail(t *Task, seq int64) (string, error) {
-	return t.Store.ActivityDetailWithSources(seq)
+	return t.Store.ActivityDisplayDetailWithSources(seq)
 }
 
 func (s *Server) getTraffic(w http.ResponseWriter, r *http.Request) {

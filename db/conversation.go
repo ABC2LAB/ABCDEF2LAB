@@ -235,6 +235,8 @@ func (d *DB) DeleteConversations(ids []int64) ([]int64, error) {
 // execution step) and returns its id. Mirrors ExplorationStore.AppendActivity but
 // keyed by conversation_id. Reuses the Activity struct (NodeID is ignored here).
 func (d *DB) AppendConvActivity(convID int64, a Activity) (int64, error) {
+	// 대화 활동은 화면만 읽는다(모델은 세션 기록을 받는다).
+	a = a.ForDisplay()
 	var id int64
 	err := d.QueryRow(`
 INSERT INTO conversation_activities(conversation_id, worker, kind, tool, tool_use_id, is_error, summary, detail, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
