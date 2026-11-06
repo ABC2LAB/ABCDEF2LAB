@@ -107,6 +107,9 @@ func TestLangDirectiveKoreanOnly(t *testing.T) {
 		if !strings.Contains(dir, "planner's situation summary") {
 			t.Fatalf("%s: langDirective must name the planner situation summary as user-facing, got %q", code, dir)
 		}
+		if !strings.Contains(dir, "record_fact summary and detail") {
+			t.Fatalf("%s: langDirective must name record_fact summary and detail as user-facing, got %q", code, dir)
+		}
 		if !strings.Contains(dir, "invisible internal reasoning") {
 			t.Fatalf("%s: langDirective must keep internal reasoning out of the visible reply, got %q", code, dir)
 		}
