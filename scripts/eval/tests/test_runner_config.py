@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_DATA_PATH,
+    COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_DATA_PATH,
     ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
     MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
     compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
@@ -420,6 +420,7 @@ class TestE2Mode(unittest.TestCase):
     def test_overlay_names_match_the_runner_constants(self):
         text = _yaml_without_comments(COMPOSE_E2_STUB.read_text(encoding="utf-8"))
         self.assertEqual(compose_services(COMPOSE_E2_STUB), {E2_SERVICE, METER_SERVICE})
+        self.assertEqual(compose_services(COMPOSE_E2_PRODUCT), {E2_SERVICE, METER_SERVICE})
         self.assertIn(f"aliases: [{METER_SERVICE}]", text)  # 엔진은 계측기 이름으로 E²에 닿는다
         self.assertIn(f"aliases: [{METER_UPSTREAM_ALIAS}]", text)
         self.assertIn(f"-upstream=http://{METER_UPSTREAM_ALIAS}:${{EVAL_METER_PORT:?}}", text)
@@ -728,7 +729,7 @@ class TestComposeContract(unittest.TestCase):
                 self.assertIn(f"- {path}:size=${{{size_var}:?}}", text)
 
     def test_every_compose_file_is_covered(self):
-        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB}
+        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT}
         on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
         on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
         self.assertEqual(on_disk, files)
@@ -741,13 +742,13 @@ class TestComposeContract(unittest.TestCase):
 
     def test_no_restart_policy_anywhere(self):
         # 회차 중 자동 재시작은 계측기 카운터·대상 상태·엔진 tmpfs를 조용히 초기화한다. 기본값(no)에 맡긴다.
-        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT):
             text = _yaml_without_comments(Path(path).read_text(encoding="utf-8"))
             with self.subTest(path=path.name):
                 self.assertNotRegex(text, r"(?m)^\s*restart\s*:")
 
     def test_every_publish_is_loopback_only(self):
-        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT):
             lines = _yaml_without_comments(Path(path).read_text(encoding="utf-8")).splitlines()
             entries = []
             for index, line in enumerate(lines):

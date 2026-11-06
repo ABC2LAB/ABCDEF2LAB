@@ -36,6 +36,8 @@ COMPOSE_LLM_API = REPO_ROOT / "deploy" / "engine-isolated" / "compose.llm-api.ya
 COMPOSE_EVAL = REPO_ROOT / "deploy" / "eval" / "compose.eval.yaml"
 # 개선 후 회차의 E② 자리에 통과 전용 가짜 E²를 둔다(e2.ours_mode=stub일 때만, compose.eval.yaml 다음).
 COMPOSE_E2_STUB = REPO_ROOT / "deploy" / "eval" / "compose.e2-stub.yaml"
+# 제품 E² 자리. 러너 연결 전이라 아직 어떤 회차에도 붙지 않는다.
+COMPOSE_E2_PRODUCT = REPO_ROOT / "deploy" / "eval" / "compose.e2-product.yaml"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
 LLM_DIR_NAME = "llm"
