@@ -75,7 +75,11 @@ func newControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, k
 				return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 			}
 		}
-		if err := s.configureControlledReadFindings(options.Findings, revisions); err != nil {
+		findings := options.Findings
+		if registries != nil {
+			findings = bindControlledReadFixtureFindings(findings)
+		}
+		if err := s.configureControlledReadFindings(findings, revisions); err != nil {
 			return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 		}
 		return nil
