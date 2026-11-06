@@ -9,16 +9,19 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import socket
 import stat
 import struct
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from e2_collect import CloseAck
+from e2_export import E2_HEADER_MODES, E2_LLM_BACKENDS, E2_REASONS, TARGET_PUBLIC_PRACTICE
 
 FORMAT = "abc2lab.e2-runner-control/v1"
 SOCKET_NAME = "e2-control.sock"
@@ -30,6 +33,8 @@ READY_STARTING, READY_SERVICE, READY_FAILED = "starting", "service_ready", "fail
 CLOSE_CLOSING, CLOSE_COMPLETE, CLOSE_INCOMPLETE, CLOSE_NO_EXECUTION = "closing", "complete", "incomplete", "no_execution"
 # 채널 실패로 끝난 close의 상태. 제품 응답 어휘와 겹치지 않는다.
 CLOSE_UNAVAILABLE = "unavailable"
+_READY_STATES = frozenset({READY_STARTING, READY_SERVICE, READY_FAILED})
+_CLOSE_STATES = frozenset({CLOSE_CLOSING, CLOSE_COMPLETE, CLOSE_INCOMPLETE, CLOSE_NO_EXECUTION})
 _HEAD_STATES = frozenset({"no_execution", "running", "closing", "complete", "incomplete"})
 _COMMON = frozenset({"format", "type", "eval_run_id", "reservation_ref"})
 _RESPONSE_FIELDS = {
@@ -40,11 +45,22 @@ _RESPONSE_FIELDS = {
     "close_status": frozenset({"state", "reason", "close_request_ref", "execution_ref", "manifest_sha256", "checkpoint"}),
 }
 _EVALUATION_FIELDS = frozenset({"llm_backend", "target_kind"})
+# 제어 채널 제안 §2의 고정 어휘. 여기 없는 값은 원문일 수 있어 결과로 옮기지 않는다.
+READY_REASONS = frozenset({"config_rejected", "policy_rejected", "audit_unavailable", "startup_failed"})
+CLOSE_REASONS = E2_REASONS | {"drain_timeout", "audit_incomplete", "publish_failed"}
+ERROR_CODES = frozenset({"other_run", "bad_request", "not_ready", "bind_conflict", "close_ref_conflict", "closed", "unavailable"})
 _CHECKPOINT_FIELDS = frozenset({"sequence", "mac"})
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-_CODE = re.compile(r"[a-z0-9_]{1,64}\Z")
 _REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}\Z")
 _TASK_ID = re.compile(r"[1-9][0-9]{0,18}\Z")
+
+
+# 호출자의 남은 시간(초). 단계 전체 시한을 소켓 읽기까지 전달한다.
+Remaining = Callable[[], float]
+
+
+def _NO_DEADLINE() -> float:
+    return math.inf
 
 
 class E2ControlError(RuntimeError):
@@ -88,8 +104,8 @@ def _sha256(value: object) -> bool:
     return isinstance(value, str) and bool(_SHA256.fullmatch(value))
 
 
-def _code(value: object) -> bool:
-    return isinstance(value, str) and bool(_CODE.fullmatch(value))
+def _member(value: object, allowed: frozenset[str]) -> bool:
+    return isinstance(value, str) and value in allowed
 
 
 def _all_null(response: dict, names: tuple[str, ...]) -> bool:
@@ -106,22 +122,24 @@ def _check_checkpoint(value: object) -> None:
 
 def _check_ready(response: dict) -> None:
     state, evaluation = response["state"], response["evaluation"]
-    if state not in (READY_STARTING, READY_SERVICE, READY_FAILED):
+    if not _member(state, _READY_STATES):
         _fail("ready_state_invalid")
-    if response["reason"] is not None and not _code(response["reason"]):
+    if response["reason"] is not None and not _member(response["reason"], READY_REASONS):
         _fail("ready_reason_invalid")
     if state == READY_SERVICE:
-        if not _sha256(response["config_sha256"]) or not _sha256(response["policy_fingerprint_sha256"]) or not _code(response["header_mode"]):
+        if not _sha256(response["config_sha256"]) or not _sha256(response["policy_fingerprint_sha256"]) \
+                or not _member(response["header_mode"], E2_HEADER_MODES):
             _fail("ready_fields_missing")
         if evaluation is not None and (not isinstance(evaluation, dict) or set(evaluation) != _EVALUATION_FIELDS
-                                       or not all(_code(item) for item in evaluation.values())):
+                                       or not _member(evaluation["llm_backend"], E2_LLM_BACKENDS)
+                                       or evaluation["target_kind"] != TARGET_PUBLIC_PRACTICE):
             _fail("ready_evaluation_invalid")
     elif not _all_null(response, ("config_sha256", "header_mode", "evaluation", "policy_fingerprint_sha256")):
         _fail("ready_fields_early")
 
 
 def _check_head(response: dict) -> None:
-    if response["state"] not in _HEAD_STATES:
+    if not _member(response["state"], _HEAD_STATES):
         _fail("head_state_invalid")
     _check_checkpoint(response["checkpoint"])
     names = ("execution_ref", "run_ref", "engine_task_id", "policy_fingerprint_sha256")
@@ -147,9 +165,9 @@ def _check_close_status(response: dict, close_request_ref: str) -> None:
     state = response["state"]
     if response["close_request_ref"] != close_request_ref:
         _fail("close_ref_mismatch")
-    if state not in (CLOSE_CLOSING, CLOSE_COMPLETE, CLOSE_INCOMPLETE, CLOSE_NO_EXECUTION):
+    if not _member(state, _CLOSE_STATES):
         _fail("close_state_invalid")
-    if response["reason"] is not None and not _code(response["reason"]):
+    if response["reason"] is not None and not _member(response["reason"], CLOSE_REASONS):
         _fail("close_reason_invalid")
     _check_checkpoint(response["checkpoint"])
     if response["execution_ref"] is not None and not _ref(response["execution_ref"]):
@@ -179,38 +197,70 @@ class ControlChannel:
             fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         except OSError:
             _fail("control_dir_unavailable")
-        info = os.fstat(fd)
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            os.close(fd)
+            _fail("control_dir_unavailable")
         if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != _PRIVATE_DIR_MODE:
             os.close(fd)
             _fail("control_dir_not_private")
         return fd
 
-    def _exchange(self, line: bytes) -> bytes:
+    def _exchange(self, line: bytes, remaining: Remaining) -> bytes:
+        """한 번의 주고받기. 연결·보내기·받기 전부 이 호출의 상한과 호출자의 남은 시간 안에 끝내고, 시한 뒤 도착은 받지 않는다."""
+        started = time.monotonic()
+
+        def left() -> float:
+            seconds = min(self.timeout_seconds - (time.monotonic() - started), remaining())
+            if seconds <= 0:
+                _unavailable("control_deadline")
+            return seconds
+
         directory = self._open_directory()
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(self.timeout_seconds)
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            except OSError:
+                _unavailable("control_setup_failed")
+            with sock:
                 try:
+                    sock.settimeout(left())
                     # 경로 길이 상한(sun_path)을 넘지 않도록 열어 둔 디렉터리를 거쳐 연결한다.
                     sock.connect(f"/proc/self/fd/{directory}/{SOCKET_NAME}")
+                except TimeoutError:
+                    _unavailable("control_deadline")
                 except OSError:
                     _unavailable("control_unreachable")
-                _pid, uid, _gid = struct.unpack(_PEERCRED_FORMAT, sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
-                                                                                  struct.calcsize(_PEERCRED_FORMAT)))
-                if uid != os.geteuid():
-                    _fail("control_peer_uid_mismatch")
+                self._check_peer(sock)
                 try:
+                    sock.settimeout(left())
                     sock.sendall(line)
-                    return self._read_line(sock)
+                    data = self._read_line(sock, left)
+                except TimeoutError:
+                    _unavailable("control_deadline")
                 except OSError:
                     _unavailable("control_io_failed")
+                left()
+                return data
         finally:
             os.close(directory)
 
     @staticmethod
-    def _read_line(sock: socket.socket) -> bytes:
+    def _check_peer(sock: socket.socket) -> None:
+        try:
+            _pid, uid, _gid = struct.unpack(_PEERCRED_FORMAT, sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                                              struct.calcsize(_PEERCRED_FORMAT)))
+        except (OSError, struct.error):
+            _unavailable("control_setup_failed")
+        if uid != os.geteuid():
+            _fail("control_peer_uid_mismatch")
+
+    @staticmethod
+    def _read_line(sock: socket.socket, left: Callable[[], float]) -> bytes:
         data = bytearray()
         while b"\n" not in data:
+            sock.settimeout(left())
             chunk = sock.recv(_RECV_BYTES)
             if not chunk:
                 _unavailable("response_truncated")
@@ -222,12 +272,12 @@ class ControlChannel:
             _fail("response_invalid")
         return bytes(data[:end])
 
-    def ask(self, request_type: str, **fields: object) -> dict:
+    def ask(self, request_type: str, remaining: Remaining = _NO_DEADLINE, **fields: object) -> dict:
         request = {"format": FORMAT, "type": request_type, "eval_run_id": self.eval_run_id, "reservation_ref": self.reservation_ref, **fields}
         line = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
         if len(line) > MAX_MESSAGE_BYTES:
             _fail("request_too_large")
-        return self._checked(self._exchange(line), request_type)
+        return self._checked(self._exchange(line, remaining), request_type)
 
     def _checked(self, data: bytes, request_type: str) -> dict:
         try:
@@ -241,36 +291,36 @@ class ControlChannel:
         if response.get("eval_run_id") != self.eval_run_id or response.get("reservation_ref") != self.reservation_ref:
             _fail("response_other_run")
         if response.get("type") == "error":
-            if set(response) != _COMMON | {"code"} or not _code(response["code"]):
+            if set(response) != _COMMON | {"code"} or not _member(response["code"], ERROR_CODES):
                 _fail("response_error_invalid")
             _fail("refused_" + response["code"])
         if response.get("type") != request_type or set(response) != _COMMON | _RESPONSE_FIELDS[request_type]:
             _fail("response_fields")
         return response
 
-    def ready(self) -> dict:
-        response = self.ask("ready")
+    def ready(self, remaining: Remaining = _NO_DEADLINE) -> dict:
+        response = self.ask("ready", remaining)
         _check_ready(response)
         return response
 
-    def bind(self, reset_generation: str) -> None:
+    def bind(self, reset_generation: str, remaining: Remaining = _NO_DEADLINE) -> None:
         """대상 컨테이너 ID를 넘긴다. compose 기동 뒤에야 나오므로 설정 파일에 넣을 수 없다."""
-        response = self.ask("bind", reset_generation=reset_generation)
+        response = self.ask("bind", remaining, reset_generation=reset_generation)
         if response["reset_generation"] != reset_generation:
             _fail("bind_mismatch")
 
-    def head(self) -> dict:
-        response = self.ask("head")
+    def head(self, remaining: Remaining = _NO_DEADLINE) -> dict:
+        response = self.ask("head", remaining)
         _check_head(response)
         return response
 
-    def close(self, close_request_ref: str) -> dict:
-        response = self.ask("close", close_request_ref=close_request_ref)
+    def close(self, close_request_ref: str, remaining: Remaining = _NO_DEADLINE) -> dict:
+        response = self.ask("close", remaining, close_request_ref=close_request_ref)
         _check_close(response, close_request_ref)
         return response
 
-    def close_status(self, close_request_ref: str) -> dict:
-        response = self.ask("close_status", close_request_ref=close_request_ref)
+    def close_status(self, close_request_ref: str, remaining: Remaining = _NO_DEADLINE) -> dict:
+        response = self.ask("close_status", remaining, close_request_ref=close_request_ref)
         _check_close_status(response, close_request_ref)
         return response
 
@@ -303,7 +353,7 @@ def wait_service_ready(channel: ControlChannel, expected: ServiceExpectation, wa
     deadline = waiting.monotonic() + timeout_seconds
     while True:
         try:
-            status = channel.ready()
+            status = channel.ready(lambda: deadline - waiting.monotonic())
         except E2ControlUnavailable:
             status = None
         if status is not None:
@@ -339,7 +389,7 @@ def _ask_admission_closed(channel: ControlChannel, close_request_ref: str, waiti
     deadline = waiting.monotonic() + timeout_seconds
     while True:
         try:
-            reply = channel.close(close_request_ref)
+            reply = channel.close(close_request_ref, lambda: deadline - waiting.monotonic())
         except E2ControlUnavailable as exc:
             if _pause_or_stop(waiting, deadline):
                 return _close_result(CLOSE_UNAVAILABLE, exc.code, False)
@@ -360,7 +410,7 @@ def close_execution(channel: ControlChannel, close_request_ref: str, waiting: Wa
     deadline = waiting.monotonic() + close_timeout_seconds
     while True:
         try:
-            status = channel.close_status(close_request_ref)
+            status = channel.close_status(close_request_ref, lambda: deadline - waiting.monotonic())
         except E2ControlUnavailable as exc:
             if _pause_or_stop(waiting, deadline):
                 return _close_result(CLOSE_UNAVAILABLE, exc.code, True)

@@ -30,7 +30,7 @@ E2_REASONS = frozenset({"complete", "unsupported", "policy_denied", "closed", "a
                         "transport_failed", "unknown", "attempt_limit", "denial_limit", "transient_limit", "unknown_limit", "invalid"})
 HEADER_PASSTHROUGH = "evaluation_caller_passthrough"
 E2_HEADER_MODES = frozenset({"preserve", "protected_session_proposal", HEADER_PASSTHROUGH})
-_LLM_BACKENDS = frozenset({"local", "api"})
+E2_LLM_BACKENDS = frozenset({"local", "api"})
 TARGET_PUBLIC_PRACTICE = "public_practice"
 _SCOPE_KEYS = frozenset({"RunRef", "TaskRef", "CaseRef", "ResetRef", "PolicyRef"})
 _REQUIRED_ROW = frozenset({"index", "stage", "intent_id", "version", "scope", "policy_revision", "sequence", "reason", "forward_attempted",
@@ -164,7 +164,7 @@ def _check_expectation(expected: E2Expectation) -> None:
         _fail("EXPECTATION_INVALID")
     if not isinstance(expected.policy_fingerprint_sha256, str) or not _SHA256.fullmatch(expected.policy_fingerprint_sha256):
         _fail("EXPECTATION_INVALID")
-    if expected.header_mode not in E2_HEADER_MODES or expected.llm_backend not in _LLM_BACKENDS:
+    if expected.header_mode not in E2_HEADER_MODES or expected.llm_backend not in E2_LLM_BACKENDS:
         _fail("EXPECTATION_INVALID")
 
 

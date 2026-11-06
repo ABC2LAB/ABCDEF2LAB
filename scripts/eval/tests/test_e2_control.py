@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import socket
+import struct
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -91,6 +93,8 @@ class FakeControl:
                 reply = self.answer(self.requests[-1])
                 if isinstance(reply, threading.Event):
                     reply.wait(5)
+                elif callable(reply):
+                    reply(conn)
                 elif reply is not None:
                     conn.sendall(reply)
 
@@ -115,6 +119,23 @@ class FakeTime:
 
     def waiting(self, poll=2):
         return Waiting(lambda: self.t, self.sleep, poll)
+
+
+def dribble(data, size=64, pause=0.05):
+    """조금씩 천천히 보내는 답. 호출자가 끊으면 멈춘다."""
+    def send(conn):
+        try:
+            for start in range(0, len(data), size):
+                conn.sendall(data[start:start + size])
+                time.sleep(pause)
+        except OSError:
+            pass
+    return send
+
+
+def padded(value, total=4096):
+    body = json.dumps(value).encode()
+    return body + b" " * (total - len(body)) + b"\n"
 
 
 class Case(unittest.TestCase):
@@ -199,7 +220,13 @@ class TestTransport(Case):
         stuck = threading.Event()
         self.addCleanup(stuck.set)
         self.serve(always=stuck)
-        self.rejected("control_io_failed", self.channel(timeout=0.05).ready, E2ControlUnavailable)
+        self.rejected("control_deadline", self.channel(timeout=0.05).ready, E2ControlUnavailable)
+
+    def test_broken_transfer_is_unavailable(self):
+        fake = self.serve(always=line(ready()))
+        with mock.patch.object(socket.socket, "sendall", side_effect=BrokenPipeError("synthetic")):
+            self.rejected("control_io_failed", self.channel().ready, E2ControlUnavailable)
+        self.assertEqual(fake.requests, [])
 
     def test_message_size_limits(self):
         self.serve(b" " * (MAX_MESSAGE_BYTES + 1) + b"\n")
@@ -233,15 +260,23 @@ class TestTransport(Case):
         self.rejected("response_fields", self.channel().ready)
 
     def test_refusal_carries_a_fixed_code_only(self):
-        fake = FakeControl(self.directory, lambda _r: line(message("error", code="closed_run")))
-        self.rejected("refused_closed_run", self.channel().ready)
+        fake = FakeControl(self.directory, lambda _r: line(message("error", code="closed")))
+        self.rejected("refused_closed", self.channel().ready)
         fake.close()
         (self.directory / SOCKET_NAME).unlink()
         fake = FakeControl(self.directory, lambda _r: line(message("error", code=SECRET_LIKE)))
         self.rejected("response_error_invalid", self.channel().ready)
         fake.close()
         (self.directory / SOCKET_NAME).unlink()
-        self.serve(line(message("error", code="closed_run", detail="x")))
+        fake = FakeControl(self.directory, lambda _r: line(message("error", code="synthetic_secret_123")))
+        self.rejected("response_error_invalid", self.channel().ready)
+        fake.close()
+        (self.directory / SOCKET_NAME).unlink()
+        fake = FakeControl(self.directory, lambda _r: line(message("error", code=7)))
+        self.rejected("response_error_invalid", self.channel().ready)
+        fake.close()
+        (self.directory / SOCKET_NAME).unlink()
+        self.serve(line(message("error", code="closed", detail="x")))
         self.rejected("response_error_invalid", self.channel().ready)
 
 
@@ -269,7 +304,11 @@ class TestReadyShape(ReplyCase):
                     (self.directory / SOCKET_NAME).unlink()
 
     def test_bad_shapes(self):
-        self.replies(((ready("other"), "ready_state_invalid"), (ready(reason=SECRET_LIKE), "ready_reason_invalid"),
+        self.replies(((ready("other"), "ready_state_invalid"), (ready(reason=SECRET_LIKE), "ready_reason_invalid"), (ready("failed", reason="synthetic_secret_123"), "ready_reason_invalid"),
+                      (ready("failed", reason=[]), "ready_reason_invalid"), (ready(state=[]), "ready_state_invalid"),
+                      (ready(header_mode="synthetic_secret_123"), "ready_fields_missing"), (ready(header_mode=[]), "ready_fields_missing"),
+                      (ready(evaluation=EVALUATION | {"llm_backend": "synthetic_secret_123"}), "ready_evaluation_invalid"),
+                      (ready(evaluation=EVALUATION | {"target_kind": "synthetic_secret_123"}), "ready_evaluation_invalid"),
                       (ready(config_sha256=None), "ready_fields_missing"), (ready(policy_fingerprint_sha256="x"), "ready_fields_missing"),
                       (ready(header_mode=None), "ready_fields_missing"), (ready(evaluation={}), "ready_evaluation_invalid"),
                       (ready(evaluation="api"), "ready_evaluation_invalid"), (ready(evaluation=EVALUATION | {"run_ref": "x"}), "ready_evaluation_invalid"),
@@ -291,6 +330,96 @@ class TestBind(ReplyCase):
                       (message("error", code="bind_conflict"), "refused_bind_conflict")), lambda: self.channel().bind("target-1"))
 
 
+class TestSetupFailures(Case):
+    """자원 부족·peer 확인 실패도 고정 오류다. 시작 단계는 typed 오류, 종료 단계는 결과로 남는다."""
+
+    def test_socket_creation_failure(self):
+        with mock.patch("e2_control.socket.socket", side_effect=OSError("synthetic")):
+            self.rejected("control_setup_failed", self.channel().ready, E2ControlUnavailable)
+            self.rejected("service_ready_timeout", lambda: wait_service_ready(self.channel(), EXPECTED, self.time.waiting(), 1))
+            result = close_execution(self.channel(), "close-1", self.time.waiting(), 1, 1)
+        self.assertEqual((result.state, result.reason, result.admission_closed), ("unavailable", "control_setup_failed", False))
+
+    def test_peer_check_failure(self):
+        fake = self.serve(always=line(ready()))
+        with mock.patch.object(socket.socket, "getsockopt", side_effect=OSError("synthetic")):
+            self.rejected("control_setup_failed", self.channel().ready, E2ControlUnavailable)
+        with mock.patch("e2_control.struct.unpack", side_effect=struct.error("synthetic")):
+            self.rejected("control_setup_failed", self.channel().ready, E2ControlUnavailable)
+        self.assertEqual(fake.requests, [])
+
+    def test_directory_stat_failure(self):
+        with mock.patch("e2_control.os.fstat", side_effect=OSError("synthetic")):
+            self.rejected("control_dir_unavailable", self.channel().ready)
+
+    def test_failures_keep_no_descriptors(self):
+        before = len(os.listdir("/proc/self/fd"))
+        with mock.patch("e2_control.socket.socket", side_effect=OSError("synthetic")):
+            self.rejected("control_setup_failed", self.channel().ready, E2ControlUnavailable)
+        with mock.patch("e2_control.os.fstat", side_effect=OSError("synthetic")):
+            self.rejected("control_dir_unavailable", self.channel().ready)
+        os.chmod(self.directory, 0o750)
+        self.rejected("control_dir_not_private", self.channel().ready)
+        os.chmod(self.directory, 0o700)
+        self.rejected("control_unreachable", self.channel().ready, E2ControlUnavailable)
+        self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+
+
+class TestDeadlines(Case):
+    """단계 시한이 소켓 읽기까지 간다. 조금씩 오는 답이 시한을 늘리지 못한다."""
+
+    def real(self, poll=0.01):
+        return Waiting(time.monotonic, time.sleep, poll)
+
+    def test_a_dribbling_reply_cannot_outlast_one_exchange(self):
+        self.serve(always=dribble(padded(ready())))
+        started = time.monotonic()
+        self.rejected("control_deadline", self.channel(timeout=0.2).ready, E2ControlUnavailable)
+        self.assertLess(time.monotonic() - started, 1.5)
+
+    def test_a_dribbling_reply_cannot_outlast_the_close_phase(self):
+        def answer(request):
+            return line(closed()) if request["type"] == "close" else dribble(padded(status()))
+        fake = FakeControl(self.directory, answer)
+        self.addCleanup(fake.close)
+        started = time.monotonic()
+        result = close_execution(self.channel(timeout=30), "close-1", self.real(), 1, 0.2)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual((result.state, result.reason, result.ack), ("unavailable", "control_deadline", None))
+
+    def test_a_dribbling_reply_cannot_outlast_the_admission_wait(self):
+        self.serve(always=dribble(padded(closed())))
+        started = time.monotonic()
+        result = close_execution(self.channel(timeout=30), "close-1", self.real(), 0.2, 1)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual((result.state, result.reason, result.admission_closed), ("unavailable", "control_deadline", False))
+
+    def test_a_dribbling_reply_cannot_outlast_the_ready_wait(self):
+        self.serve(always=dribble(padded(ready())))
+        started = time.monotonic()
+        self.rejected("service_ready_timeout", lambda: wait_service_ready(self.channel(timeout=30), EXPECTED, self.real(), 0.2))
+        self.assertLess(time.monotonic() - started, 1.5)
+
+    def test_success_arriving_after_the_deadline_is_not_taken(self):
+        now = [0.0]
+
+        def answer(_request):
+            now[0] = 100.0
+            return line(ready())
+        fake = FakeControl(self.directory, answer)
+        self.addCleanup(fake.close)
+        self.rejected("control_deadline", lambda: self.channel().ready(lambda: 5 - now[0]), E2ControlUnavailable)
+
+    def test_a_connect_timeout_is_the_deadline(self):
+        with mock.patch.object(socket.socket, "connect", side_effect=TimeoutError("synthetic")):
+            self.rejected("control_deadline", self.channel().ready, E2ControlUnavailable)
+
+    def test_an_expired_phase_does_not_connect(self):
+        fake = self.serve(always=line(ready()))
+        self.rejected("control_deadline", lambda: self.channel().ready(lambda: 0), E2ControlUnavailable)
+        self.assertEqual(fake.requests, [])
+
+
 class TestHeadShape(ReplyCase):
     def test_states(self):
         for reply in (head(), head("closing"), head("complete"), head("incomplete", checkpoint=None), head("no_execution")):
@@ -303,7 +432,7 @@ class TestHeadShape(ReplyCase):
                     (self.directory / SOCKET_NAME).unlink()
 
     def test_bad_shapes(self):
-        self.replies(((head("other"), "head_state_invalid"), (head(execution_ref=None), "head_fields_missing"), (head(run_ref="http://x"), "head_fields_missing"),
+        self.replies(((head("other"), "head_state_invalid"), (head() | {"state": []}, "head_state_invalid"), (head() | {"state": {}}, "head_state_invalid"), (head(execution_ref=None), "head_fields_missing"), (head(run_ref="http://x"), "head_fields_missing"),
                       (head(engine_task_id=17), "head_fields_missing"), (head(engine_task_id="0"), "head_fields_missing"),
                       (head(policy_fingerprint_sha256=None), "head_fields_missing"), (head("no_execution", execution_ref="x"), "head_fields_early"),
                       (head("no_execution", checkpoint={"sequence": 0, "mac": MAC}), "head_fields_early"), (head(checkpoint={"sequence": -1, "mac": MAC}), "checkpoint_invalid"),
@@ -403,9 +532,9 @@ class TestClose(Case):
         self.assertEqual(len(fake.requests), 1)
 
     def test_refusal_or_bad_reply_to_close_is_a_result(self):
-        self.serve(line(message("error", code="closed_run")))
+        self.serve(line(message("error", code="closed")))
         result = self.close()
-        self.assertEqual((result.state, result.reason, result.admission_closed), ("unavailable", "refused_closed_run", False))
+        self.assertEqual((result.state, result.reason, result.admission_closed), ("unavailable", "refused_closed", False))
 
     def test_never_finishing_stops_at_the_deadline(self):
         def answer(request):
@@ -428,7 +557,8 @@ class TestClose(Case):
         for reply, reason in ((status(close_request_ref="close-2"), "close_ref_mismatch"), (status() | {"state": "other"}, "close_state_invalid"),
                               (status(checkpoint=None), "close_fields_missing"), (status(manifest_sha256=None), "close_fields_missing"),
                               (status(execution_ref=None), "close_fields_missing"), (status(manifest_sha256="x"), "close_manifest_invalid"),
-                              (status(execution_ref="http://x"), "close_execution_invalid"), (status(reason=SECRET_LIKE), "close_reason_invalid"),
+                              (status(execution_ref="http://x"), "close_execution_invalid"), (status(reason=SECRET_LIKE), "close_reason_invalid"), (status("incomplete", reason="synthetic_secret_123"), "close_reason_invalid"),
+                              (status(reason=[]), "close_reason_invalid"), (status() | {"state": []}, "close_state_invalid"),
                               (status("incomplete", reason=None), "close_incomplete_invalid"),
                               (status("incomplete", checkpoint={"sequence": 6, "mac": MAC}), "close_incomplete_invalid"),
                               (status("closing", checkpoint={"sequence": 6, "mac": MAC}), "close_fields_early"),
