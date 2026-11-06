@@ -16,7 +16,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from state_diff import (  # noqa: E402
-    RUN_KEY_BYTES, StateDiffError, diff, require_directory_root, runtime_diff, snapshot, tree_fingerprint,
+    RUN_KEY_BYTES, StateDiffError, diff, digest_fingerprint, memory_diff, require_directory_root, runtime_diff, snapshot,
+    tree_fingerprint,
 )
 
 KEY = bytes(range(RUN_KEY_BYTES))
@@ -376,6 +377,53 @@ class TestRuntimeTrees(unittest.TestCase):
         text = json.dumps(runtime_diff(pre, {"/app/ftp": fp(("ftp/order_88.pdf", b"secret-body-2"))}))
         for leaked in ("order_77", "order_88", "secret", pre["/app/ftp"]["ftp/order_77.pdf"].hex()):
             self.assertNotIn(leaked, text)
+
+
+def read(count, digest):
+    return {"readable": True, "count": count, "fingerprint": digest_fingerprint(digest, KEY)}
+
+
+UNREADABLE = {"readable": False, "count": None, "fingerprint": None}
+
+
+class TestMemoryReads(unittest.TestCase):
+    def test_same_reads_have_no_difference(self):
+        pre = [read(2, "a" * 64), read(0, "b" * 64)]
+        self.assertEqual(memory_diff(pre, [dict(e) for e in pre]),
+                         {"memory": {"reads": 2, "count_pre": 2, "count_post": 2, "changed": 0, "unreadable_post": 0},
+                          "memory_changed": False})
+
+    def test_added_item_and_same_count_edit_are_both_changes(self):
+        result = memory_diff([read(2, "a" * 64), read(1, "b" * 64)], [read(3, "c" * 64), read(1, "d" * 64)])
+        self.assertEqual(result["memory"], {"reads": 2, "count_pre": 3, "count_post": 4, "changed": 2,
+                                            "unreadable_post": 0})
+        self.assertTrue(result["memory_changed"])
+
+    def test_unreadable_after_the_run_is_a_change_not_a_pass(self):
+        result = memory_diff([read(2, "a" * 64), read(1, "b" * 64)], [UNREADABLE, read(1, "b" * 64)])
+        self.assertEqual(result["memory"], {"reads": 2, "count_pre": 3, "count_post": 1, "changed": 0,
+                                            "unreadable_post": 1})
+        self.assertTrue(result["memory_changed"])
+
+    def test_no_reads_is_no_change(self):
+        self.assertEqual(memory_diff([], []), {"memory": {"reads": 0, "count_pre": 0, "count_post": 0, "changed": 0,
+                                                          "unreadable_post": 0}, "memory_changed": False})
+
+    def test_mismatched_plans_stop(self):
+        for pre, post in (([read(1, "a" * 64)], []), ([], [read(1, "a" * 64)]), ([UNREADABLE], [UNREADABLE])):
+            with self.subTest(pre=pre), self.assertRaisesRegex(StateDiffError, "state_memory_mismatch"):
+                memory_diff(pre, post)
+
+    def test_fingerprint_depends_on_the_key_and_is_not_the_digest(self):
+        digest = "a" * 64
+        self.assertNotEqual(digest_fingerprint(digest, KEY), digest_fingerprint(digest, bytes(RUN_KEY_BYTES)))
+        self.assertNotIn(digest, digest_fingerprint(digest, KEY).hex())
+        for key in (KEY[:-1], "k" * RUN_KEY_BYTES):
+            with self.assertRaisesRegex(StateDiffError, "state_run_key_invalid"):
+                digest_fingerprint(digest, key)
+        text = json.dumps(memory_diff([read(1, digest)], [read(2, "b" * 64)]))
+        self.assertNotIn(digest, text)
+        self.assertNotIn(digest_fingerprint(digest, KEY).hex(), text)
 
 
 if __name__ == "__main__":

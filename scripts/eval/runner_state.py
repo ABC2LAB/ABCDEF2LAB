@@ -15,19 +15,28 @@
 
 from __future__ import annotations
 
+import json
 import os
 import posixpath
+import re
 import stat
 from pathlib import Path
 
 from runner_docker import DockerError
-from state_diff import require_directory_root, tree_fingerprint
+from state_diff import digest_fingerprint, require_directory_root, tree_fingerprint
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 _HEADER_BYTES = 100
 _WAL_VERSION = 2
 # 롤백 저널 헤더(매직 8바이트 + 레코드 수·nonce·초기 크기 등)가 전부 0이면 커밋이 끝난 저널이다(PERSIST 모드).
 _JOURNAL_HEADER_BYTES = 28
+
+
+_READ_OK = "ok"
+_READ_NOT_COUNTED = "not_counted"
+_READ_NO_BODY = frozenset({"status", "transport", "too_large"})
+_READ_FIELDS = frozenset({"code", "status", "count", "sha256"})
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class StateCopyError(RuntimeError):
@@ -110,6 +119,50 @@ def runtime_fingerprints(docker, container_id: str, roots: tuple[str, ...], max_
     finally:
         docker.unpause(container_id)
     return trees
+
+
+def _read_result(result: object) -> dict:
+    """state-read 역할의 결과 한 줄을 계약대로 확인한다. 어긋나면 그 도구를 믿지 않는다."""
+    if not isinstance(result, dict) or set(result) != _READ_FIELDS or type(result["status"]) is not int:
+        raise StateCopyError("state_memory_output_invalid")
+    code, count, digest = result["code"], result["count"], result["sha256"]
+    if code == _READ_OK:
+        valid = type(count) is int and count >= 0 and isinstance(digest, str) and bool(_SHA256.fullmatch(digest))
+    elif code == _READ_NOT_COUNTED:
+        valid = count is None and isinstance(digest, str) and bool(_SHA256.fullmatch(digest))
+    else:
+        valid = code in _READ_NO_BODY and count is None and digest == ""
+    if not valid:
+        raise StateCopyError("state_memory_output_invalid")
+    return result
+
+
+def memory_fingerprints(docker, image: str, container_id: str, memory: dict, port: int, uid: int, gid: int, key: bytes,
+                        *, required: bool) -> list[dict]:
+    """등록 읽기 경로(같은 순서)의 건수와 회차 키 지문. 응답 본문·다이제스트는 남기지 않는다.
+
+    required면(pre) 못 읽은 경로는 설정 오류로 멈춘다. post에서 못 읽으면 그 경로를 readable=False로 돌려준다(변화로 센다).
+    """
+    plan = json.dumps({"port": port, "timeout_ms": memory["timeout_ms"], "max_body_bytes": memory["max_body_bytes"],
+                       "count_field": memory["count_field"], "paths": list(memory["paths"])}).encode()
+    try:
+        report = json.loads(docker.state_read(image, container_id, plan, uid, gid).decode("utf-8"))
+    except (UnicodeError, ValueError, RecursionError):
+        raise StateCopyError("state_memory_output_invalid") from None
+    if not isinstance(report, dict) or set(report) != {"results"} or not isinstance(report["results"], list) \
+            or len(report["results"]) != len(memory["paths"]):
+        raise StateCopyError("state_memory_output_invalid")
+    entries = []
+    for result in report["results"]:
+        checked = _read_result(result)
+        if checked["code"] != _READ_OK:
+            if required:
+                raise StateCopyError("state_memory_unreadable")
+            entries.append({"readable": False, "count": None, "fingerprint": None})
+        else:
+            entries.append({"readable": True, "count": checked["count"],
+                            "fingerprint": digest_fingerprint(checked["sha256"], key)})
+    return entries
 
 
 def discard_copy(target: Path) -> None:

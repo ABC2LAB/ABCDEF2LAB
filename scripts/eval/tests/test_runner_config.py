@@ -308,7 +308,9 @@ class TestParseRunnerConfig(unittest.TestCase):
 
 
 STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 67108864,
-         "runtime_roots": ["/app/ftp", "/app/uploads"]}
+         "runtime_roots": ["/app/ftp", "/app/uploads"],
+         "memory": {"paths": ["/api/a/1", "/api/a/2"], "count_field": "data", "max_body_bytes": 1048576,
+                    "timeout_ms": 5000}}
 
 
 class TestStateDiff(unittest.TestCase):
@@ -316,7 +318,10 @@ class TestStateDiff(unittest.TestCase):
         self.assertIsNone(parse_runner_config(runner_config()).state)
         self.assertEqual(parse_runner_config(runner_config() | {"state": STATE}).state,
                          {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ("Challenges",),
-                          "max_copy_bytes": 67108864, "runtime_roots": ("/app/ftp", "/app/uploads")})
+                          "max_copy_bytes": 67108864, "runtime_roots": ("/app/ftp", "/app/uploads"),
+                          "memory": {"paths": ("/api/a/1", "/api/a/2"), "count_field": "data",
+                                     "max_body_bytes": 1048576, "timeout_ms": 5000}})
+        self.assertIsNone(parse_runner_config(runner_config() | {"state": dict(STATE, memory=None)}).state["memory"])
         self.assertEqual(parse_runner_config(runner_config() | {"state": dict(STATE, runtime_roots=[])}).state[
             "runtime_roots"], ())
         self.assertEqual(parse_runner_config(runner_config() | {"state": dict(STATE, signal_tables=[])}).state[
@@ -352,7 +357,24 @@ class TestStateDiff(unittest.TestCase):
                 (runner_config() | {"state": dict(STATE, runtime_roots=["/app/ftp", "/app/ftp/sub"])},
                  "config.state.runtime_roots: INVALID"),
                 (runner_config() | {"state": dict(STATE, runtime_roots=[f"/r{i}" for i in range(17)])},
-                 "config.state.runtime_roots: INVALID")):
+                 "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": {k: v for k, v in STATE.items() if k != "memory"}},
+                 "config.state.memory: MISSING"),
+                (runner_config() | {"state": dict(STATE, memory="on")}, "config.state.memory: EXPECTED_OBJECT"),
+                (runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], extra=1))},
+                 "config.state.memory: UNKNOWN_FIELDS"),
+                (runner_config() | {"state": dict(STATE, memory={k: v for k, v in STATE["memory"].items() if k != "paths"})},
+                 "config.state.memory.paths: MISSING"),
+                *((runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], paths=paths))},
+                   "config.state.memory.paths: INVALID")
+                  for paths in ([], "/a", ["a"], ["/a?x=1"], ["/a/../b"], ["/a", "/a"], [1],
+                                [f"/p{i}" for i in range(257)], ["/" + "x" * 33000])),
+                *((runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], count_field=field))},
+                   "config.state.memory.count_field: INVALID") for field in ("", "a b", 1)),
+                *((runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], max_body_bytes=value))},
+                   "config.state.memory.max_body_bytes: INVALID") for value in (0, (16 << 20) + 1, True)),
+                *((runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], timeout_ms=value))},
+                   "config.state.memory.timeout_ms: INVALID") for value in (0, 600001, True))):
             with self.subTest(code=code, payload=payload.get("state")), self.assertRaises(RunnerConfigError) as caught:
                 parse_runner_config(payload)
             self.assertIn(code, caught.exception.errors)

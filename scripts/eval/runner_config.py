@@ -43,8 +43,14 @@ E2_DIR_NAME = "e2"
 # 상태 차이 사본(대상 SQLite) 디렉터리. 사본은 지문을 뜬 즉시 지운다(값이 든 파일을 남기지 않음).
 STATE_DIR_NAME = "state"
 # 상태 차이(프로토콜 §8.2) 설정. null이면 사본을 뜨지 않는다. 앱별 값(DB 경로·해결 신호 테이블)은 여기서만 받는다.
-_STATE_FIELDS = ("sqlite_path", "signal_tables", "max_copy_bytes", "runtime_roots")
+_STATE_FIELDS = ("sqlite_path", "signal_tables", "max_copy_bytes", "runtime_roots", "memory")
 MAX_RUNTIME_ROOTS = 16
+# 메모리 저장 읽기(null이면 안 읽음). 계측기 state-read 역할의 계획 한도와 같다(cmd/eval-meter/stateread.go).
+_MEMORY_FIELDS = ("paths", "count_field", "max_body_bytes", "timeout_ms")
+MAX_MEMORY_PATHS = 256
+MAX_MEMORY_BODY_BYTES = 16 << 20
+MAX_MEMORY_PLAN_BYTES = 64 << 10
+MAX_MEMORY_TIMEOUT_MS = 600_000
 MAX_STATE_COPY_BYTES = 1 << 30
 MAX_SIGNAL_TABLES = 32
 _TABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
@@ -464,10 +470,33 @@ def _state(raw: object, errors: list[str]) -> dict | None:
             and len(set(roots)) == len(roots)
             and not any(a != b and b.startswith(a + "/") for a in roots for b in roots)):
         errors.append("config.state.runtime_roots: INVALID")
+    memory = _state_memory(state.get("memory"), errors) if "memory" in state else None
     if set(state) != set(_STATE_FIELDS) or any(e.startswith("config.state") for e in errors):
         return None
     return {"sqlite_path": state["sqlite_path"], "signal_tables": tuple(tables),
-            "max_copy_bytes": state["max_copy_bytes"], "runtime_roots": tuple(roots)}
+            "max_copy_bytes": state["max_copy_bytes"], "runtime_roots": tuple(roots), "memory": memory}
+
+
+def _state_memory(raw: object, errors: list[str]) -> dict | None:
+    if raw is None:
+        return None
+    memory = _exact(raw, _MEMORY_FIELDS, "config.state.memory", errors)
+    paths = memory.get("paths")
+    if "paths" in memory and not (
+            isinstance(paths, list) and 0 < len(paths) <= MAX_MEMORY_PATHS and all(_observer_path(p) for p in paths)
+            and len(set(paths)) == len(paths) and len(json.dumps(paths)) <= MAX_MEMORY_PLAN_BYTES // 2):
+        errors.append("config.state.memory.paths: INVALID")
+    field = memory.get("count_field")
+    if "count_field" in memory and not (isinstance(field, str) and _TABLE_NAME.fullmatch(field)):
+        errors.append("config.state.memory.count_field: INVALID")
+    if "max_body_bytes" in memory and not _int(memory["max_body_bytes"], 1, MAX_MEMORY_BODY_BYTES):
+        errors.append("config.state.memory.max_body_bytes: INVALID")
+    if "timeout_ms" in memory and not _int(memory["timeout_ms"], 1, MAX_MEMORY_TIMEOUT_MS):
+        errors.append("config.state.memory.timeout_ms: INVALID")
+    if set(memory) != set(_MEMORY_FIELDS) or any(e.startswith("config.state.memory") for e in errors):
+        return None
+    return {"paths": tuple(paths), "count_field": field, "max_body_bytes": memory["max_body_bytes"],
+            "timeout_ms": memory["timeout_ms"]}
 
 
 def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:

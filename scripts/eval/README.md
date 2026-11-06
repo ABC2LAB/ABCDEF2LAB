@@ -47,7 +47,7 @@ manifest의 회차 항목:
 - `scoreboard.py`, `collect.py`: 정규화·판정 레코드 파싱. 채점은 해시 검증과 같은 바이트의 payload를 사용한다.
 - `score.py`, `aggregate.py`, `evidence.py`: 엔진 공통 판정·집계와 증거 확인.
 - `correlation.py`, `gt_correlation.json`, `ground_truth.py`: 평가 전용 상관·분모. 실제 type vocab 정렬은 후속이다.
-- `state_diff.py`: 같은 컨테이너 pre·post SQLite 사본의 상태 차이(프로토콜 §8.2). 회차 키로 HMAC한 행 지문으로 맞대고 건수·정수 id·테이블·열 이름·sqlite_sequence 값만 낸다. `runner_state.py`가 사본을 뜬다(대상 pause → 데몬 `docker cp` → unpause, WAL이면 `-wal` 동반, 쓰기 도중 저널이면 거부, 러너 0700 디렉터리에 0600). 런타임 디렉터리는 tar로 받아 항목별 지문으로 비교하고 건수만 낸다. 메모리 저장의 API 읽기 비교는 아직 없다.
+- `state_diff.py`: 같은 컨테이너 pre·post SQLite 사본의 상태 차이(프로토콜 §8.2). 회차 키로 HMAC한 행 지문으로 맞대고 건수·정수 id·테이블·열 이름·sqlite_sequence 값만 낸다. `runner_state.py`가 사본을 뜬다(대상 pause → 데몬 `docker cp` → unpause, WAL이면 `-wal` 동반, 쓰기 도중 저널이면 거부, 러너 0700 디렉터리에 0600). 런타임 디렉터리는 tar로 받아 항목별 지문으로 비교하고 건수만 낸다. 메모리 저장은 등록한 비로그인 GET을 계측기 `state-read` 역할로 대상 netns에서 읽어 건수·지문으로 비교한다.
 - 실제 러너/target observer·E² traffic export·커버리지 export와 이 계약의 연결은 아직 없다. 테스트는 전부 합성 임시 자료다.
 - baseline 어댑터는 A5 미구현으로 에러 중단한다. 실제 baseline 비교/스캔을 수행한 결과가 아니다.
 
