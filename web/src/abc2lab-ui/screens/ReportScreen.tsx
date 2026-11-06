@@ -337,7 +337,7 @@ export default function ReportScreen() {
             />
           )}
           {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} go={go} />}
-          {tab === "map" && <MapPanel taskId={taskId} />}
+          {tab === "map" && <MapPanel taskId={taskId} go={go} />}
           {tab === "asset" && <AssetGraphPanel taskId={taskId} findings={findings} onOpenFinding={openFinding} />}
           {tab === "ev" && <EvidencePanel go={go} />}
         </div>
@@ -902,7 +902,7 @@ const LEG_DOT: Record<AccessDecision, CSSProperties> = {
 const MAP_LEGEND_BASE: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "untested"];
 const MAP_LEGEND_EXTRA: AccessDecision[] = ["suspected", "unknown", "blank"];
 
-function MapPanel({ taskId }: { taskId: string }) {
+function MapPanel({ taskId, go }: { taskId: string; go: (s: "access-map") => void }) {
   const { data, loading, error } = useApiResource(() => getAccessMap(taskId), [taskId]);
   // 전체 지도와 동일한 fail-closed 규칙(중복·미반환 처리)을 공유 리졸버로 적용(kg §4.2(7)).
   const resolve = useMemo(() => buildCellResolver(data?.cells ?? []), [data]);
@@ -976,6 +976,9 @@ function MapPanel({ taskId }: { taskId: string }) {
         </p>
         {data?.mock && <p className="map-mock">예시 데이터예요. 소유·권한 KG 연동 후 실제 결과로 채워져요.</p>}
         {content}
+        <button className="btn" type="button" style={{ marginTop: 14 }} onClick={() => go("access-map")}>
+          전체 접근통제 지도 열기 →
+        </button>
       </div>
     </div>
   );
