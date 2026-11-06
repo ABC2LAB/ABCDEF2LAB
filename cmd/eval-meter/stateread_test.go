@@ -157,6 +157,7 @@ func TestStateReadRefusesBadPlansAndFlags(t *testing.T) {
 		"port zero":   func(p *stateReadPlan) { p.Port = 0 },
 		"port high":   func(p *stateReadPlan) { p.Port = 65536 },
 		"timeout":     func(p *stateReadPlan) { p.TimeoutMS = 0 },
+		"timeout_big": func(p *stateReadPlan) { p.TimeoutMS = maxStateReadTimeoutMS + 1 },
 		"count field": func(p *stateReadPlan) { p.CountField = "" },
 		"body zero":   func(p *stateReadPlan) { p.MaxBodyBytes = 0 },
 		"body high":   func(p *stateReadPlan) { p.MaxBodyBytes = maxStateReadBodyBytes + 1 },
@@ -201,5 +202,19 @@ func TestStateReadRefusesBadPlansAndFlags(t *testing.T) {
 		if code := run([]string{"-role=state-read", flagValue}, bytes.NewReader(valid), &stdout, &stderr); code == 0 || stdout.Len() != 0 {
 			t.Fatalf("flag %s accepted", flagValue)
 		}
+	}
+}
+
+func TestStateReadPlanTimeoutLimitIsInclusive(t *testing.T) {
+	// The runner accepts this same maximum (runner_config MAX_MEMORY_TIMEOUT_MS).
+	body := func(timeout int) *strings.Reader {
+		return strings.NewReader(`{"port":3000,"timeout_ms":` + strconv.Itoa(timeout) +
+			`,"max_body_bytes":1,"count_field":"data","paths":["/a"]}`)
+	}
+	if _, ok := readStateReadPlan(body(maxStateReadTimeoutMS)); !ok {
+		t.Fatal("the limit itself was refused")
+	}
+	if _, ok := readStateReadPlan(body(maxStateReadTimeoutMS + 1)); ok {
+		t.Fatal("a timeout over the limit was accepted")
 	}
 }
