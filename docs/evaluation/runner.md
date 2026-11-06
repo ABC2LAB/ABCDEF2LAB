@@ -245,6 +245,20 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   이 브랜치 단독이 아니라 #140·drain 유예(#153)를 합친 트리였다(완료·서명, generation 27건의 응답 제공자 전부 `DeepInfra`). 실측한 것은
   그 slug가 요청에서 수락되고 응답 제공자가 DeepInfra였다는 것까지이고, 그 회차의 단일 엔드포인트·정밀도는 확인하지 않았다(프로토콜 §6).
 
+## 스모크 도구
+
+API 키 없이 실제 엔진을 끝까지 돌릴 때 쓴다. 판단하는 모델이 아니므로 **요청 수·차단 수를 효과 수치로 쓰지 않는다.**
+
+- `scripts/eval/scripted_llm.py`: 계획 파일의 명령을 Bash 도구 호출로 돌려주는 OpenAI 호환 서버다. 대상 경로는 코드에 없고 계획 파일에 있다. 계획 파일은 레포 밖에 둔다. 플래너 라운드가 반복되므로 요청 수는 시간 예산에 따라 달라진다. local 백엔드의 고정 IP에 띄운다.
+  ```
+  {"model": "<선언한 모델>", "intent_summary": "<의도 설명>", "commands": ["curl ...", "curl ..."]}
+  python3 -I -B scripts/eval/scripted_llm.py --host <LLM 고정 IP> --port <포트> --plan <계획 JSON> [--stats <통계 파일>]
+  ```
+- `scripts/eval/canary_scan.py`: 회차 디렉터리에 합성 토큰 원문이 남았는지 본다. 파일 내용, 파일·디렉터리 이름, 심볼릭 링크 대상을 본다. 출력은 건수와 걸린 경로뿐이고 경로 안의 값은 가린다. 없음 0, 있음 1, 입력 오류·읽기 실패·들어가지 못한 디렉터리는 2로 끝난다.
+  ```
+  python3 -I -B scripts/eval/canary_scan.py <회차 디렉터리> --canary <합성 값>
+  ```
+
 ## 스모크 실측 (11/03, 개발 머신)
 
 환경: WSL2 Ubuntu 24.04, Ubuntu `docker.io` 29.1.3(Docker Desktop 통합 끔) + `docker-compose-v2` 2.40.3, local 백엔드 + 호스트
@@ -253,7 +267,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 - **상태 차이(11/05, 설정 `state` 켬, baseline e53a79f):** 완료·서명. 구간 이벤트 148건 중 pause/unpause 0건(pre 사본은 구간 전 lookback, post 사본은 이벤트 스트림을 닫은 뒤), 경계 위반 0, `state/pre`·`state/post` 빈 디렉터리, `state-diff.json`이 서명 결과 근거 목록에 있음. 가짜 LLM이라 차이 0(테이블 18, 신호 `Challenges` 102→102).
 - **상태 차이 세 갈래(11/06, 설정 `state`에 런타임 루트 3개·메모리 경로 5개, baseline e53a79f):** 완료·서명, 경계 위반 0. 구간 이벤트 71건 중 외부 부착 0·회차 컨테이너 재시작 0(1회용 읽기 컨테이너는 구간 전 lookback과 이벤트 스트림을 닫은 뒤에만 돈다). `state/pre`·`state/post` 파일 0개, 회차 디렉터리 전체에 메모리 경로 문자열 0건. 가짜 LLM이라 차이 0(읽기 5, 건수 4→4). 변화 감지는 1회용 Juice Shop에서 같은 코드로 따로 봤다: 같은 상태끼리 차이 0, 리뷰 1건 쓴 뒤 `changed 1`·건수 2→3.
-- **규칙이 실제 도구 호출을 막는지(11/06, baseline e53a79f):** 정해진 curl을 Bash로 부르는 스크립트 LLM으로 실제 엔진을 돌렸다(외부 송신 없음, 스크립트는 레포 밖). 같은 스크립트로 규칙 없는 회차는 전달 51(POST 17), 내장 규칙 차단 18(`curl -X DELETE`), `Users`·`Wallets` 변화였고, `curl -X POST`를 막는 합성 규칙을 넣은 회차는 전달 52(POST 0), 파일 규칙 차단 28·내장 규칙 차단 28, 상태 변화 없음이었다. 스크립트가 정한 요청이라 효과 수치가 아니다.
+- **합성 토큰 잔류(11/06, baseline e53a79f):** 계획의 명령에 합성 값을 `Authorization`·`Cookie`로 실어 규칙 없는 회차와 규칙 넣은 회차를 돌렸다. `canary_scan.py` 결과는 회차 파일 29개·30개 모두 0건이고, 회차 컨테이너·볼륨·망은 0개였다. 같은 값이 든 계획 파일은 스캔에 걸려서 검사가 동작하는 것도 확인했다.
+- **규칙이 실제 도구 호출을 막는지(11/06, baseline e53a79f):** 정해진 curl을 Bash로 부르는 스크립트 LLM으로 실제 엔진을 돌렸다(`scripted_llm.py`, 외부 송신 없음). 같은 스크립트로 규칙 없는 회차는 전달 51(POST 17), 내장 규칙 차단 18(`curl -X DELETE`), `Users`·`Wallets` 변화였고, `curl -X POST`를 막는 합성 규칙을 넣은 회차는 전달 52(POST 0), 파일 규칙 차단 28·내장 규칙 차단 28, 상태 변화 없음이었다. 스크립트가 정한 요청이라 효과 수치가 아니다.
 - **원본 ② 규칙 주입(11/06, baseline e53a79f):** 합성 규칙 2개와 기본 목록 + 도구 1개를 넣은 회차가 완료·서명됐다(내장 20개 중 19개 켜짐, 다시 읽기 대조 통과, 앞지르는 allow 1 기록). 규칙이 없는 회차는 규칙 API를 부르지 않았고, 도구를 줄인 파일과 엔진이 거부하는 정규식은 작업 생성 전에 무효(`engine_rules_failed`)가 됐다.
 - **시연 A 표(11/06, `control_demo.py`):** 실제 러너 회차 2개(조건 이름만 다름, 가짜 LLM)로 표를 만들었다. 서명·근거 해시 통과, 격리 증명 없는 회차 0, 전달 0이라 메서드 칸이 모두 0이고 E² 없는 회차의 거부 칸은 `—`다. 메서드별 건수는 실제 계측기 로그로 따로 봤다(loopback 임시 서버로 10건 전달, `get`·임의 토큰은 그 밖의 메서드로 2건, 토큰 문자열 미출력).
 - **완료 회차 1회(서명됨):** pre/post 망·publish·이미지·호스트 조건 위반 0, 부정 연결 13개 경로 모두 기대 종류, 관측 요청 3건 =
