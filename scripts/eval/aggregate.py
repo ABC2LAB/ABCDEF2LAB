@@ -178,6 +178,9 @@ class ConditionAggregate:
     missed: Stat
     undecided: Stat
     out_of_list: Stat
+    # 대상 요청을 하나도 보내지 못한 회차 수와 요청 수를 잰 회차 수. 무효는 아니지만 요청 수 감소로 읽으면 안 된다.
+    zero_request_runs: int = 0
+    measured_request_runs: int = 0
 
 
 def aggregate_condition(
@@ -195,6 +198,8 @@ def aggregate_condition(
         missed=_stat([float(c.missed) for c in counts]),
         undecided=_stat([float(c.undecided) for c in counts]),
         out_of_list=_stat([float(c.out_of_list) for c in counts]),
+        zero_request_runs=sum(1 for r in repeats if r.total_requests == 0),
+        measured_request_runs=sum(1 for r in repeats if r.total_requests is not None),
     )
 
 
@@ -213,4 +218,9 @@ def render_matrix(rows: list[ConditionAggregate], basis_name: str) -> str:
             f"| {r.confirmed.render()} | {r.false_positive.render()} | {r.missed.render()} "
             f"| {r.undecided.render()} | {r.out_of_list.render()} |"
         )
-    return header + "\n".join(lines) + "\n"
+    table = header + "\n".join(lines) + "\n"
+    zero = [f"{r.condition} {r.zero_request_runs}/{r.measured_request_runs}" for r in rows if r.zero_request_runs]
+    if zero:
+        table += (f"\n대상 요청 0 회차: {', '.join(zero)}. 진단을 시작하지 못한 회차이므로 "
+                  "요청 수·시간 감소를 효율 개선으로 읽지 않는다.\n")
+    return table
