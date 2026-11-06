@@ -123,4 +123,30 @@ describe("FindingDetail — 불일치 레코드 보수 표시", () => {
     expect(text).toContain("단정하지 않아요");
     expect(text).not.toContain("응답 필드에 그대로 나타났");
   });
+
+  // e3-oracle §3(c) 6 신호 — same_resource·owner/cross_normal 도 보수 판정·서술에 포함.
+  it("oracle=confirmed · 체크 전부 yes 라도 same_resource unknown 이면 '확정' 배지로 올리지 않는다", () => {
+    const { container } = render(
+      <FindingDetail
+        record={rec({ oracleValue: "confirmed", signals: { ...rec().signals, sameResource: "unknown" } })}
+      />,
+    );
+    expect(container.querySelector(".vbadge2.ok")).toBeNull();
+    expect(container.textContent ?? "").toMatch(/보수적으로/);
+  });
+
+  it("same_resource unknown 이면 'B가 A의 실제 자원을 받았다'를 단정하지 않는다", () => {
+    const { container } = render(
+      <FindingDetail
+        record={rec({
+          oracleValue: "undecidable",
+          vulnVerdict: "undecidable",
+          signals: { ...rec().signals, sameResource: "unknown" },
+        })}
+      />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("단정하지 않아요");
+    expect(text).not.toContain("응답 필드에 그대로 나타났");
+  });
 });

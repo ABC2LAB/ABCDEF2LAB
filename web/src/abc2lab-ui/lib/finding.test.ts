@@ -77,6 +77,13 @@ describe("confirmedEvidenceComplete", () => {
       false,
     );
   });
+
+  // e3-oracle §3(c): 6 신호 전부 요구 — same_resource·owner/cross_normal_data 도 본다.
+  it("동일 자원·양쪽 정상응답 신호가 비면 false", () => {
+    expect(confirmedEvidenceComplete(rec({ signals: { ...rec().signals, sameResource: "unknown" } }))).toBe(false);
+    expect(confirmedEvidenceComplete(rec({ signals: { ...rec().signals, ownerNormalData: "no" } }))).toBe(false);
+    expect(confirmedEvidenceComplete(rec({ signals: { ...rec().signals, crossNormalData: "unknown" } }))).toBe(false);
+  });
 });
 
 describe("missingEvidence", () => {
@@ -117,6 +124,12 @@ describe("dataAccessProven", () => {
 
   it("비자명 표식 일치가 unknown 이면 false(증거 없는 취약 관찰 금지)", () => {
     expect(dataAccessProven(rec({ signals: { ...rec().signals, nontrivialDataMatch: "unknown" } }))).toBe(false);
+  });
+
+  it("동일 자원·소유자/교차 정상응답 신호가 비면 false(6 신호 전부 요구, §3(c))", () => {
+    expect(dataAccessProven(rec({ signals: { ...rec().signals, sameResource: "unknown" } }))).toBe(false);
+    expect(dataAccessProven(rec({ signals: { ...rec().signals, ownerNormalData: "unknown" } }))).toBe(false);
+    expect(dataAccessProven(rec({ signals: { ...rec().signals, crossNormalData: "no" } }))).toBe(false);
   });
 });
 

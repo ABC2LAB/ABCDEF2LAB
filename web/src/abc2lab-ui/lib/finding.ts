@@ -107,17 +107,14 @@ export type FindingRecord = {
  * CONFIRMED 증거 3조건이 모두 모였는지(§4 · 세 체크 + 비자명 표식 + 반사·템플릿 배제).
  * UI 는 oracle_value 를 **덮지 않고**(판정은 오라클 몫) 이 값으로 "왜 확정/판단불가"를 정직하게 보인다.
  */
+/** 6 비교 신호가 **전부 YES** 인가 — e3-oracle §3(c): 하나라도 NO/UNKNOWN 이면 data 가 YES 가 아니다. */
+function allSignalsYes(r: FindingRecord): boolean {
+  return COMPARISON_SIGNALS.every((s) => r.signals[s.key] === "yes");
+}
+
 export function confirmedEvidenceComplete(r: FindingRecord): boolean {
   const c = r.checks;
-  const s = r.signals;
-  return (
-    c.policy === "yes" &&
-    c.identity === "yes" &&
-    c.data === "yes" &&
-    s.nontrivialDataMatch === "yes" &&
-    s.reflectionExcluded === "yes" &&
-    s.templateExcluded === "yes"
-  );
+  return c.policy === "yes" && c.identity === "yes" && c.data === "yes" && allSignalsYes(r);
 }
 
 /** 부족한 증거 목록(판단 불가·의심일 때 "무엇이 비었나"). yes 가 아닌 체크·핵심 신호를 라벨로. */
@@ -126,23 +123,21 @@ export function missingEvidence(r: FindingRecord): string[] {
   if (r.checks.policy !== "yes") out.push(`정책 체크(${SIGNAL_LABEL[r.checks.policy]})`);
   if (r.checks.identity !== "yes") out.push(`신원 체크(${SIGNAL_LABEL[r.checks.identity]})`);
   if (r.checks.data !== "yes") out.push(`데이터 체크(${SIGNAL_LABEL[r.checks.data]})`);
-  if (r.signals.nontrivialDataMatch !== "yes")
-    out.push(`비자명 표식 일치(${SIGNAL_LABEL[r.signals.nontrivialDataMatch]})`);
-  if (r.signals.reflectionExcluded !== "yes") out.push(`요청 반사 배제(${SIGNAL_LABEL[r.signals.reflectionExcluded]})`);
-  if (r.signals.templateExcluded !== "yes") out.push(`공통 템플릿 배제(${SIGNAL_LABEL[r.signals.templateExcluded]})`);
+  // 6 비교 신호 전부 점검(e3-oracle §3(c) — same_resource·owner/cross_normal 포함).
+  for (const s of COMPARISON_SIGNALS) {
+    if (r.signals[s.key] !== "yes") out.push(`${s.label}(${SIGNAL_LABEL[r.signals[s.key]]})`);
+  }
   return out;
 }
 
 /**
- * 비자명 데이터 접근을 **주장할 수 있는가** — 세 핵심 신호(비자명 표식 일치·요청 반사 배제·공통 템플릿
- * 배제)가 모두 yes 일 때만. 그 전엔 "표식이 나타났다"를 화면에서 단정하지 않는다(증거 없는 취약 관찰 금지).
+ * 비자명 데이터 접근을 **주장할 수 있는가** — e3-oracle §3(c)의 6 비교 신호(동일 자원·소유자 정상 응답·
+ * 교차 정상 응답·비자명 표식 일치·요청 반사 배제·공통 템플릿 배제)가 **전부 yes** 일 때만.
+ * 그 전엔 "표식이 나타났다/B가 A의 실제 자원을 받았다"를 화면에서 단정하지 않는다(증거 없는 취약 관찰 금지).
  */
 export function dataAccessProven(r: FindingRecord): boolean {
-  return (
-    r.signals.nontrivialDataMatch === "yes" &&
-    r.signals.reflectionExcluded === "yes" &&
-    r.signals.templateExcluded === "yes"
-  );
+  // e3-oracle §3(c): 6 신호 전부 YES(동일 자원·양쪽 정상 응답 포함)라야 교차 데이터 접근을 단정한다.
+  return allSignalsYes(r);
 }
 
 /**
