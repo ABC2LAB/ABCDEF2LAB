@@ -97,6 +97,7 @@ class TestManifest(unittest.TestCase):
         with self.assertRaises(E2ExportError) as caught:
             parse_manifest(json.dumps(manifest).encode(), expected)
         self.assertEqual(str(caught.exception), f"e2_export: {code}")
+        self.assertEqual(caught.exception.code, code)
 
     def test_good_manifest_passes(self):
         self.assertEqual(parse_manifest(json.dumps(good()[0]).encode(), EXPECTED)["state"], "complete")
