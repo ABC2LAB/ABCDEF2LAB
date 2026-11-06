@@ -133,6 +133,28 @@ export function missingEvidence(r: FindingRecord): string[] {
   return out;
 }
 
+/**
+ * 비자명 데이터 접근을 **주장할 수 있는가** — 세 핵심 신호(비자명 표식 일치·요청 반사 배제·공통 템플릿
+ * 배제)가 모두 yes 일 때만. 그 전엔 "표식이 나타났다"를 화면에서 단정하지 않는다(증거 없는 취약 관찰 금지).
+ */
+export function dataAccessProven(r: FindingRecord): boolean {
+  return (
+    r.signals.nontrivialDataMatch === "yes" &&
+    r.signals.reflectionExcluded === "yes" &&
+    r.signals.templateExcluded === "yes"
+  );
+}
+
+/**
+ * 화면에 **표시할** 판정. 오라클 원값(`oracleValue`)은 감사용으로 보존하되, 화면 판정은 증거가 부족하면
+ * 보수적으로 내린다(절대규칙 5·E③ 보수성). `confirmed` 인데 증거 3조건이 불완비면 화면은 `undecidable`.
+ * 원값과 다르면 UI 가 "원값은 감사용"으로 함께 보인다(원값을 숨기지 않음).
+ */
+export function displayVerdict(r: FindingRecord): OracleValue {
+  if (r.oracleValue === "confirmed" && !confirmedEvidenceComplete(r)) return "undecidable";
+  return r.oracleValue;
+}
+
 // ── verdict-record §2 shape 예시. 수평 IDOR CONFIRMED 1건.
 //    canary 는 **필드명만**(값 금지), 요청은 논리 resource_ref(raw URL 아님).
 const now = Date.UTC(2026, 10, 6, 4, 30, 0);
