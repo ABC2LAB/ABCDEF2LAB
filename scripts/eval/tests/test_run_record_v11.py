@@ -201,6 +201,7 @@ class TestRejectedV11(_V11):
                {"cells": dict(cells, allowed_observed=True, allowed_unobserved=3)},
                {"cells": list(cells.values())},
                {"meter_attempt_reused": -1}, {"blocked_reached": "0"}, {"unrecorded_reached": None},
+               {"allowed_responded": -1}, {"allowed_responded": True},
                {"positive_evidence": 1}, {"control_claim_withheld": 0}]
         for index, change in enumerate(bad):
             with self.subTest(change=change):
@@ -213,7 +214,12 @@ class TestRejectedV11(_V11):
         bad = [{"blocked_reached": 1}, {"unrecorded_reached": 1}, {"positive_evidence": False},
                {"control_claim_withheld": True},
                {"meter_attempt_reused": 1},
-               {"cells": dict(cells, allowed_observed=0, allowed_unobserved=4), "positive_evidence": False},
+               {"cells": dict(cells, allowed_observed=0, allowed_unobserved=4), "allowed_responded": 0},
+               # 접수는 있는데 대상 응답이 없으면 양성 근거가 없고 통제 주장은 보류다
+               {"allowed_responded": 0},
+               {"allowed_responded": 0, "positive_evidence": False},
+               {"allowed_responded": 0, "control_claim_withheld": True},
+               {"allowed_responded": 5},
                {"cells": dict(cells, denied_observed=1, denied_unobserved=0), "blocked_reached": 1},
                {"cells": dict(cells, unrecorded_observed=1), "unrecorded_reached": 1}]
         for index, change in enumerate(bad):
@@ -227,7 +233,7 @@ class TestRejectedV11(_V11):
                                         {"allowed_observed": 3, "allowed_unobserved": 0})):
             with self.subTest(change=change):
                 self.reject("칸 합이 E② 결정 건수와 다름", f"s{index}", e2=E2_STUB_PLACEMENT,
-                            reconciliation=dict(STUB_RECONCILIATION, cells=dict(cells, **change)))
+                            reconciliation=dict(STUB_RECONCILIATION, allowed_responded=3, cells=dict(cells, **change)))
         # 차단 쪽 합에는 미지원·사용 불가가 둘 다 들어간다.
         unavailable = dict(E2_STUB_PLACEMENT, unsupported=0, unavailable=1)
         self.assertEqual(self.inputs(self.v11("su", e2=unavailable)).attempt_reconciliation, STUB_RECONCILIATION)
@@ -426,18 +432,18 @@ class TestComparison(_V11):
 
     def test_control_table_sums_each_row_per_condition(self):
         # 행마다 합계가 서로 다르고(행이 뒤바뀌면 드러남) 두 회차 값이 둘 다 0이 아닌 행이 있다(합 대신 최댓값이면 드러남).
-        clean = dict(STUB_RECONCILIATION, cells=dict(STUB_RECONCILIATION["cells"], allowed_observed=3,
-                                                     allowed_unobserved=1))
+        clean = dict(STUB_RECONCILIATION, allowed_responded=2,
+                     cells=dict(STUB_RECONCILIATION["cells"], allowed_observed=3, allowed_unobserved=1))
         bad = {"cells": {"allowed_observed": 0, "allowed_unobserved": 4, "denied_unobserved": 0, "denied_observed": 1,
                          "unrecorded_observed": 2},
-               "meter_attempt_reused": 3, "blocked_reached": 1, "unrecorded_reached": 2, "positive_evidence": False,
-               "control_claim_withheld": True}
+               "allowed_responded": 0, "meter_attempt_reused": 3, "blocked_reached": 1, "unrecorded_reached": 2,
+               "positive_evidence": False, "control_claim_withheld": True}
         report = build_report(self.load([self.v11("c1", e2=E2_STUB_PLACEMENT, reconciliation=clean),
                                          self.v11("c2", repeat_index=1, e2=E2_STUB_PLACEMENT, reconciliation=bad)]),
                               self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
         table = report.text.split("### 개선 후 통제 검증 — 시도별 대조(프로토콜 §8.3)\n", 1)[1]
         for line in ("| 항목 | 우리@test |", "| 회차 수 | 2 |", "| E② 자리 | stub |",
-                     "| 허용·관측됨 | 3 (3, 0) |", "| 허용·관측되지 않음 | 5 (1, 4) |", "| 차단·관측되지 않음 | 1 (1, 0) |",
+                     "| 허용·관측됨 | 3 (3, 0) |", "| 허용·대상 응답 수신(허용 양성 근거) | 2 (2, 0) |", "| 허용·관측되지 않음 | 5 (1, 4) |", "| 차단·관측되지 않음 | 1 (1, 0) |",
                      "| 차단 후 대상 도달(기대 0) | 1 (0, 1) |", "| E② 기록 없이 대상 도달(기대 0) | 2 (0, 2) |",
                      "| 같은 시도 ID 재사용(기대 0) | 3 (0, 3) |", "| 허용 양성 근거 있는 회차 | 1/2 |",
                      "| 통제 주장 | 보류(회차 1/2) — 가짜 E², 통제 증명 아님 |"):

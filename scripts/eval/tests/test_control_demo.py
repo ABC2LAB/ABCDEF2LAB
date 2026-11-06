@@ -56,7 +56,8 @@ def reconciliation_evidence(run_id: str, unsupported: int, unavailable: int, all
          "decision_rows": allowed + unsupported + unavailable, "allowed": allowed, "unsupported": unsupported,
          "unavailable": unavailable},
         {"kind": "attempt_reconciliation", "seq": 2, "at": "2026-11-06T00:00:00Z", "cells": cells,
-         "meter_attempt_reused": 0, "blocked_reached": 0, "unrecorded_reached": 0, "positive_evidence": allowed > 0,
+         "allowed_responded": allowed, "meter_attempt_reused": 0, "blocked_reached": 0, "unrecorded_reached": 0,
+         "positive_evidence": allowed > 0,
          "control_claim_withheld": allowed == 0},
     ])
 
