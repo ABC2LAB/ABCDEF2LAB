@@ -3,12 +3,14 @@ import { TopBar } from "../components/TopBar";
 import { MockBanner, Pill, Sev, Strong, Sub, VerdictBadge } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import {
+  allEvidenceUnknown,
   COMPARISON_SIGNALS,
   displayVerdict,
   type FindingRecord,
   getFindingHeld,
   heldBeforeSend,
   missingEvidence,
+  notTransmitted,
   ORACLE_BADGE,
   SIGNAL_LABEL,
 } from "../lib/finding";
@@ -33,7 +35,9 @@ function Meta({ k, v }: { k: string; v: string }) {
 export function FindingUndDetail({ record }: { record: FindingRecord }) {
   const display = displayVerdict(record);
   const dbadge = ORACLE_BADGE[display];
-  const held = heldBeforeSend(record);
+  const held = heldBeforeSend(record); // E² 송신 전 차단(held_pre_send) 에만 true
+  const notSent = notTransmitted(record); // held_pre_send | none (전송·응답 없음)
+  const allUnknown = allEvidenceUnknown(record); // 세 체크·6 신호 전부 unknown 일 때만 "모두 불명"
   const missing = missingEvidence(record);
 
   return (
@@ -42,7 +46,7 @@ export function FindingUndDetail({ record }: { record: FindingRecord }) {
         <Sev level={record.severity} />
         {dbadge.verdict ? <VerdictBadge verdict={dbadge.verdict} /> : <Pill tone="muted">{dbadge.label}</Pill>}
         <Pill tone="muted">{record.vulnClass}</Pill>
-        {record.stateChanging && <Pill tone="warn">상태 변경 · 승인 대기</Pill>}
+        {record.stateChanging && <Pill tone="warn">{held ? "상태 변경 · 승인 대기" : "상태 변경"}</Pill>}
       </div>
       <h1 className="big" style={{ marginBottom: 4 }}>
         {record.title}
@@ -67,6 +71,10 @@ export function FindingUndDetail({ record }: { record: FindingRecord }) {
               사람이 승인하기 전까진 실제로 보내지 않았고, 그래서{" "}
               <strong>취약한지 아닌지 결론을 내리지 못했어요.</strong>
             </>
+          ) : notSent ? (
+            <>
+              대상에 <strong>실제 전송이 없어</strong>(미실행) 응답 증거가 없고, 그래서 결론을 내리지 못했어요.
+            </>
           ) : (
             <>증거가 부족해 결론을 내리지 못했어요. 아래 미확인 항목을 채워야 판정이 갈려요.</>
           )}
@@ -79,14 +87,24 @@ export function FindingUndDetail({ record }: { record: FindingRecord }) {
       <div className="card">
         <h3>부족한 증거</h3>
         <ul style={listText}>
-          {held && <li>실제 전송·응답이 없음(E²가 송신 전 차단, 승인 대기)</li>}
+          {held ? (
+            <li>실제 전송·응답이 없음(E²가 송신 전 차단, 승인 대기)</li>
+          ) : notSent ? (
+            <li>실제 전송·응답이 없음(미실행)</li>
+          ) : null}
           {missing.map((m) => (
             <li key={m}>{m}</li>
           ))}
         </ul>
         <div className="hint">
-          세 체크·6 비교신호가 모두 <Strong>불명</Strong>이에요(실행 안 됨). GET이라도 상태 변경이 없다고 가정하지 않고,
-          정상 대조도 같은 이유로 미수집이에요.
+          {allUnknown ? (
+            <>
+              세 체크·6 비교신호가 모두 <Strong>불명</Strong>이에요(실행 안 됨).{" "}
+            </>
+          ) : (
+            <>충족된 신호는 아래 통제변수의 신호 상태로 확인하세요. </>
+          )}
+          GET이라도 상태 변경이 없다고 가정하지 않고, 정상 대조도 같은 이유로 미수집이에요.
         </div>
       </div>
 

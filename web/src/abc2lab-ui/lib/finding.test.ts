@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  allEvidenceUnknown,
   confirmedEvidenceComplete,
   dataAccessProven,
   displayComparisonRow,
@@ -10,6 +11,7 @@ import {
   getFindingHeld,
   heldBeforeSend,
   missingEvidence,
+  notTransmitted,
   ORACLE_BADGE,
   type Signal,
 } from "./finding";
@@ -154,15 +156,63 @@ describe("displayComparisonRow (행 취약 보수 하향)", () => {
   });
 });
 
-describe("heldBeforeSend", () => {
-  it("held_pre_send·none 은 true(미실행)", () => {
+describe("heldBeforeSend (E² 차단 전용)", () => {
+  it("held_pre_send 만 true — none/sent/unknown/미지정은 false(none≠E² 차단)", () => {
     expect(heldBeforeSend(rec({ transmission: "held_pre_send" }))).toBe(true);
-    expect(heldBeforeSend(rec({ transmission: "none" }))).toBe(true);
-  });
-  it("sent·unknown·미지정은 false", () => {
+    expect(heldBeforeSend(rec({ transmission: "none" }))).toBe(false);
     expect(heldBeforeSend(rec({ transmission: "sent" }))).toBe(false);
     expect(heldBeforeSend(rec({ transmission: "unknown" }))).toBe(false);
     expect(heldBeforeSend(rec())).toBe(false);
+  });
+});
+
+describe("notTransmitted", () => {
+  it("held_pre_send·none 은 true(전송·응답 없음), sent/unknown/미지정은 false", () => {
+    expect(notTransmitted(rec({ transmission: "held_pre_send" }))).toBe(true);
+    expect(notTransmitted(rec({ transmission: "none" }))).toBe(true);
+    expect(notTransmitted(rec({ transmission: "sent" }))).toBe(false);
+    expect(notTransmitted(rec({ transmission: "unknown" }))).toBe(false);
+    expect(notTransmitted(rec())).toBe(false);
+  });
+});
+
+describe("allEvidenceUnknown", () => {
+  it("세 체크·6 신호 전부 unknown 이면 true", () => {
+    const u: Signal = "unknown";
+    expect(
+      allEvidenceUnknown(
+        rec({
+          checks: { policy: u, identity: u, data: u },
+          signals: {
+            sameResource: u,
+            ownerNormalData: u,
+            crossNormalData: u,
+            nontrivialDataMatch: u,
+            reflectionExcluded: u,
+            templateExcluded: u,
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("하나라도 yes/no 면 false(혼합 신호)", () => {
+    const u: Signal = "unknown";
+    expect(
+      allEvidenceUnknown(
+        rec({
+          checks: { policy: "yes", identity: u, data: u },
+          signals: {
+            sameResource: u,
+            ownerNormalData: u,
+            crossNormalData: u,
+            nontrivialDataMatch: u,
+            reflectionExcluded: u,
+            templateExcluded: u,
+          },
+        }),
+      ),
+    ).toBe(false);
   });
 });
 

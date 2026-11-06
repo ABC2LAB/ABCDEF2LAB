@@ -67,6 +67,25 @@ describe("FindingUndDetail — E² 송신 전 차단 판단 불가", () => {
     // 부족한 증거에 '실제 전송·응답 없음' + 불명 신호가 나열된다.
     expect(container.textContent ?? "").toContain("실제 전송·응답이 없음");
   });
+
+  // 이동찬 리뷰(#250): 혼합 신호면 '모두 불명'을 단정하지 않는다.
+  it("신호가 하나라도 unknown 이 아니면 '모두 불명'을 말하지 않는다", () => {
+    const { container } = render(
+      <FindingUndDetail record={heldRec({ signals: { ...heldRec().signals, sameResource: "yes" } })} />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("모두 불명");
+    expect(text).toContain("충족된 신호는");
+  });
+
+  // 이동찬 리뷰(#250): transmission="none" 은 E² 차단이 아니라 중립 미실행.
+  it("transmission=none 이면 'E²가 막았다'로 단정하지 않고 중립 미실행으로 표시한다", () => {
+    const { container } = render(<FindingUndDetail record={heldRec({ transmission: "none" })} />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("실제 전송이 없어"); // 중립 미실행 서사
+    expect(text).not.toContain("보내기 전에 막아뒀어요"); // E² 차단 단정 없음
+    expect(text).not.toContain("승인 대기"); // 승인 대기 단정 없음
+  });
 });
 
 describe("FindingUndScreen", () => {

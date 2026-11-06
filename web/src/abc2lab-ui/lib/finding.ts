@@ -110,9 +110,27 @@ export type FindingRecord = {
   mock: boolean;
 };
 
-/** E²가 송신 전에 막아 실제로 전송되지 않았나(미실행 — 결론 못 냄의 근거). */
+/**
+ * **E²가 송신 전에 차단**했나 — `held_pre_send` 에만 해당. `none`(그냥 전송 없음)은 E² 차단 근거가 아니다.
+ * "E²가 막았다·승인 대기" 서사는 이 값에만 연결한다(거짓 차단 사유 방지).
+ */
 export function heldBeforeSend(r: FindingRecord): boolean {
+  return r.transmission === "held_pre_send";
+}
+
+/** 대상에 실제로 전송되지 않았나(E² 차단이든 미시도든) — "전송·응답 없음 → 증거 없음"의 중립 근거. */
+export function notTransmitted(r: FindingRecord): boolean {
   return r.transmission === "held_pre_send" || r.transmission === "none";
+}
+
+/** 세 체크·6 비교 신호가 **전부 unknown** 인가(완전 미실행). "모두 불명" 문구는 이 때만 쓴다. */
+export function allEvidenceUnknown(r: FindingRecord): boolean {
+  return (
+    r.checks.policy === "unknown" &&
+    r.checks.identity === "unknown" &&
+    r.checks.data === "unknown" &&
+    COMPARISON_SIGNALS.every((s) => r.signals[s.key] === "unknown")
+  );
 }
 
 /**
