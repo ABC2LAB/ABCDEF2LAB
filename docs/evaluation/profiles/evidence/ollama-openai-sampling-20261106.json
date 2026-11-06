@@ -1,0 +1,67 @@
+{
+  "format": "abc2lab.ollama-sampling-probe/v1",
+  "measured_at": "2026-11-06",
+  "server": {
+    "name": "ollama",
+    "version": "0.32.6",
+    "path": "/v1/chat/completions",
+    "device": "cpu"
+  },
+  "docs": "https://docs.ollama.com/api/openai-compatibility",
+  "method": "짧은 프롬프트 1개, max_tokens 24. 값을 극단으로 주고 서로 다른 출력의 수를 센다. 예열 호출 1회 뒤에 잰다. native는 /api/chat의 options로, 시험 자체가 동작하는지 보는 대조다.",
+  "results": {
+    "granite3.1-moe:1b": {
+      "model": "granite3.1-moe:1b",
+      "same_seed_v1_distinct_of_4": 1,
+      "same_seed_native_distinct_of_4": 1,
+      "different_seed_v1_distinct_of_4": 4,
+      "no_seed_v1_distinct_of_4": 4,
+      "temperature0_different_seed_distinct_of_4": 1,
+      "top_p_tiny_different_seed_distinct_of_4": 1,
+      "v1_top_k1_different_seed_distinct_of_4": 4,
+      "v1_min_p_high_different_seed_distinct_of_4": 4,
+      "native_top_k1_different_seed_distinct_of_4": 1,
+      "penalty_base_stable": true,
+      "presence_penalty_2_changes_output": true,
+      "frequency_penalty_2_changes_output": true,
+      "repetition_penalty_2_changes_output": false,
+      "repeat_penalty_2_changes_output": false
+    },
+    "mistral:latest": {
+      "model": "mistral:latest",
+      "same_seed_v1_distinct_of_4": 1,
+      "same_seed_native_distinct_of_4": 1,
+      "different_seed_v1_distinct_of_4": 4,
+      "no_seed_v1_distinct_of_4": 4,
+      "temperature0_different_seed_distinct_of_4": 1,
+      "top_p_tiny_different_seed_distinct_of_4": 1,
+      "v1_top_k1_different_seed_distinct_of_4": 4,
+      "v1_min_p_high_different_seed_distinct_of_4": 4,
+      "native_top_k1_different_seed_distinct_of_4": 1,
+      "penalty_base_stable": true,
+      "presence_penalty_2_changes_output": true,
+      "frequency_penalty_2_changes_output": true,
+      "repetition_penalty_2_changes_output": false,
+      "repeat_penalty_2_changes_output": false
+    }
+  },
+  "applied": [
+    "temperature",
+    "top_p",
+    "seed",
+    "presence_penalty",
+    "frequency_penalty"
+  ],
+  "ignored_without_error": [
+    "top_k",
+    "min_p",
+    "repetition_penalty",
+    "repeat_penalty"
+  ],
+  "limits": [
+    "gpt-oss·Gemma·GPU에서는 재지 않았다. 로컬 프로파일을 고정할 때 그 모델로 다시 잰다.",
+    "적재 직후 첫 호출은 같은 seed여도 출력이 달랐다(granite 1회 관찰). 공식 회차 전에 예열을 고정한다.",
+    "presence_penalty·frequency_penalty는 2.0에서 출력이 바뀌는 것만 봤다. 값의 크기까지 재지 않았다.",
+    "무시되는 값과 컨텍스트 크기는 요청으로 못 바꾼다. 필요하면 서빙 설정(Modelfile)으로 고정한다."
+  ]
+}
