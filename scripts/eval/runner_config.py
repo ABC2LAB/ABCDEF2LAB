@@ -43,7 +43,8 @@ E2_DIR_NAME = "e2"
 # 상태 차이 사본(대상 SQLite) 디렉터리. 사본은 지문을 뜬 즉시 지운다(값이 든 파일을 남기지 않음).
 STATE_DIR_NAME = "state"
 # 상태 차이(프로토콜 §8.2) 설정. null이면 사본을 뜨지 않는다. 앱별 값(DB 경로·해결 신호 테이블)은 여기서만 받는다.
-_STATE_FIELDS = ("sqlite_path", "signal_tables", "max_copy_bytes")
+_STATE_FIELDS = ("sqlite_path", "signal_tables", "max_copy_bytes", "runtime_roots")
+MAX_RUNTIME_ROOTS = 16
 MAX_STATE_COPY_BYTES = 1 << 30
 MAX_SIGNAL_TABLES = 32
 _TABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
@@ -456,9 +457,17 @@ def _state(raw: object, errors: list[str]) -> dict | None:
         errors.append("config.state.signal_tables: INVALID")
     if "max_copy_bytes" in state and not _int(state["max_copy_bytes"], 1, MAX_STATE_COPY_BYTES):
         errors.append("config.state.max_copy_bytes: INVALID")
+    roots = state.get("runtime_roots")
+    # 겹치는 디렉터리는 같은 파일을 두 번 센다.
+    if "runtime_roots" in state and not (
+            isinstance(roots, list) and len(roots) <= MAX_RUNTIME_ROOTS and all(container_file_ok(r) for r in roots)
+            and len(set(roots)) == len(roots)
+            and not any(a != b and b.startswith(a + "/") for a in roots for b in roots)):
+        errors.append("config.state.runtime_roots: INVALID")
     if set(state) != set(_STATE_FIELDS) or any(e.startswith("config.state") for e in errors):
         return None
-    return {"sqlite_path": state["sqlite_path"], "signal_tables": tuple(tables), "max_copy_bytes": state["max_copy_bytes"]}
+    return {"sqlite_path": state["sqlite_path"], "signal_tables": tuple(tables),
+            "max_copy_bytes": state["max_copy_bytes"], "runtime_roots": tuple(roots)}
 
 
 def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:

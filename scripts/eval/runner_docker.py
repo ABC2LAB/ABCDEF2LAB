@@ -380,6 +380,21 @@ class Docker:
             raise DockerError("docker_pause_invalid")
         self.run(["unpause", container_id], code="docker_unpause_failed")
 
+    def copy_archive(self, container_id: str, path: str, max_bytes: int) -> bytes | None:
+        """컨테이너 경로의 tar 전체(디렉터리면 항목 전부). 데몬이 '파일 없음'이라고 답하면 None, 그 밖의 실패는 오류다.
+
+        출력은 max_bytes까지만 읽는다. 내용은 풀지 않고 그대로 돌려준다(이름이 어떻든 호스트에 파일을 만들지 않는다).
+        """
+        if (not _OBJECT_ID.fullmatch(container_id or "") or not container_file_ok(path)
+                or type(max_bytes) is not int or max_bytes < 1):
+            raise DockerError("docker_copy_invalid")
+        result = self._bounded(["cp", f"{container_id}:{path}", "-"], self._env, self._timeout, max_bytes)
+        if result.returncode != 0:
+            if _COPY_MISSING.search(result.diagnostic):
+                return None
+            raise DockerError("docker_copy_failed")
+        return result.stdout
+
     def copy_out(self, container_id: str, path: str, max_bytes: int) -> bytes | None:
         """컨테이너 파일 하나의 내용. 데몬이 읽으므로 대상 안의 실행파일을 쓰지 않는다(엔진이 바꿨을 수 있음).
 
@@ -387,17 +402,13 @@ class Docker:
         오류다(검사하지 못한 것을 '없음'으로 바꾸지 않는다, #226 리뷰). 출력은 상한까지만 읽는다. 받은 tar는 정규 파일
         정확히 하나, 이름이 경로의 마지막 구간, 크기 상한 안이어야 한다. 링크·디렉터리는 따라가지 않고 거부한다.
         """
-        if (not _OBJECT_ID.fullmatch(container_id or "") or not container_file_ok(path)
-                or type(max_bytes) is not int or max_bytes < 1):
+        if type(max_bytes) is not int or max_bytes < 1:
             raise DockerError("docker_copy_invalid")
-        result = self._bounded(["cp", f"{container_id}:{path}", "-"], self._env, self._timeout,
-                               max_bytes + _TAR_OVERHEAD_BYTES)
-        if result.returncode != 0:
-            if _COPY_MISSING.search(result.diagnostic):
-                return None
-            raise DockerError("docker_copy_failed")
+        stdout = self.copy_archive(container_id, path, max_bytes + _TAR_OVERHEAD_BYTES)
+        if stdout is None:
+            return None
         try:
-            with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
+            with tarfile.open(fileobj=io.BytesIO(stdout), mode="r:") as archive:
                 members = archive.getmembers()
                 if (len(members) != 1 or not members[0].isreg() or members[0].name != posixpath.basename(path)
                         or members[0].size > max_bytes):

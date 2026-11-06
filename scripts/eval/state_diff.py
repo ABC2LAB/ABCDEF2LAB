@@ -1,4 +1,4 @@
-"""대상 저장소 상태 차이 — SQLite 사본 두 개 비교 코어(평가 프로토콜 §8.1·§8.2).
+"""대상 저장소 상태 차이 — SQLite 사본·런타임 파일 비교 코어(평가 프로토콜 §8.1·§8.2).
 
 러너가 격리 구간 밖에서 뜬 **같은 컨테이너**의 pre·post SQLite 사본을 받아 테이블별로 행이 얼마나 바뀌었는지 센다.
 사본 뜨기(대상 일시정지·복사)와 앱별 경로 설정은 이 모듈 밖(러너 어댑터)이다. 여기는 파일 두 개만 본다.
@@ -23,15 +23,20 @@
   상태 차이와 따로 센다. 해결 기록은 '해결 신호'이지 상태 차이 판정 입력이 아니다(§8.2, 절대규칙 7). 테이블 이름은
   러너 어댑터 설정에서 받고 이 모듈에 박지 않는다.
 
-이 결과는 '관측 가능한 대상 상태의 변화'일 뿐이다. 메모리 저장(리뷰·주문)·런타임 파일·외부 호출은 여기서 보지 않는다.
+런타임 파일은 설정한 디렉터리의 tar를 받아 항목별 지문(종류·권한·소유자·내용, 시각 제외)으로 맞댄다. 결과에는 그 디렉터리의
+항목 수와 추가·삭제·변경 건수만 낸다. 파일 이름에 사용자 값이 들어갈 수 있어(주문 번호 등) 항목 경로는 내보내지 않는다.
+
+이 결과는 '관측 가능한 대상 상태의 변화'일 뿐이다. 메모리 저장(리뷰·주문)과 외부 호출은 여기서 보지 않는다.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import sqlite3
 import struct
+import tarfile
 from collections import Counter
 from pathlib import Path
 
@@ -199,3 +204,54 @@ def diff(pre: dict, post: dict, signal_tables: frozenset[str] = frozenset()) -> 
         "content_changed": bool(changed_tables or names_pre != names_post or schema_moved),
         "trace_only": not changed_tables and names_pre == names_post and not schema_moved and bool(sequence),
     }
+
+
+def tree_fingerprint(archive: bytes, key: bytes) -> dict[str, bytes]:
+    """디렉터리 tar의 항목별 지문. 수정 시각은 넣지 않는다(내용이 그대로면 상태 차이가 아니다). 지문은 내보내지 않는다."""
+    if not isinstance(key, bytes) or len(key) != RUN_KEY_BYTES:
+        raise StateDiffError("state_run_key_invalid")
+    entries: dict[str, bytes] = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            for member in tar:
+                if member.name in entries:
+                    raise StateDiffError("state_tree_invalid")
+                if member.isreg():
+                    body = tar.extractfile(member).read()  # 잘린 tar면 tarfile이 ReadError를 낸다
+                else:
+                    body = member.linkname.encode("utf-8", "surrogatepass")
+                # member.type은 정규 파일·디렉터리·링크·장치를 구분한다. 종류만 바뀌어도 변경이다.
+                entries[member.name] = _fingerprint(key, (bytes(member.type), member.mode, member.uid, member.gid, body))
+    except (tarfile.TarError, OSError, EOFError):
+        raise StateDiffError("state_tree_invalid") from None
+    if not entries:
+        raise StateDiffError("state_tree_invalid")
+    return entries
+
+
+def require_directory_root(archive: bytes, root: str) -> None:
+    """요청한 루트가 tar 안에서 실제 디렉터리인지 확인한다. 루트가 링크나 정규 파일이면 대상 안의 변화를 보지 못하는데도 "변화 없음"으로 읽힌다."""
+    name = root.rsplit("/", 1)[-1]
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            if not any(member.name == name and member.isdir() for member in tar):
+                raise StateDiffError("state_tree_root_not_directory")
+    except (tarfile.TarError, OSError, EOFError):
+        raise StateDiffError("state_tree_invalid") from None
+
+
+def _tree_diff(before: dict[str, bytes], after: dict[str, bytes] | None) -> dict:
+    current = {} if after is None else after
+    return {"entries_pre": len(before), "entries_post": len(current), "missing_post": after is None,
+            "added": len(current.keys() - before.keys()), "removed": len(before.keys() - current.keys()),
+            "changed": sum(1 for name in before.keys() & current.keys() if before[name] != current[name])}
+
+
+def runtime_diff(pre: dict[str, dict[str, bytes]], post: dict[str, dict[str, bytes] | None]) -> dict:
+    """설정한 디렉터리별 항목 차이. post에서 디렉터리가 사라졌으면(None) 전부 삭제로 센다(기록할 상태 변화다)."""
+    if set(pre) != set(post) or any(tree is None for tree in pre.values()):
+        raise StateDiffError("state_runtime_roots_mismatch")
+    roots = {root: _tree_diff(pre[root], post[root]) for root in sorted(pre)}
+    return {"runtime": roots,
+            "runtime_changed": any(r["added"] or r["removed"] or r["changed"] or r["missing_post"]
+                                   for r in roots.values())}
