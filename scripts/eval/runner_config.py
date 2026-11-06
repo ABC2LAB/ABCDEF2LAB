@@ -140,11 +140,14 @@ MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "observer_format", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
-               "observer_readonly_ref", "e2", "state", "engine_rules")
+               "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
 MAX_FINDINGS_PAGES = 10_000
+# 개선 후 판정 export 수집 한도(null이면 수집 안 함). findings 한도와 따로 둔다.
+_VERDICT_LIMIT_FIELDS = ("page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
+_VERDICT_FIELDS = _VERDICT_LIMIT_FIELDS + ("ready_wait_seconds", "ready_poll_seconds")
 # 엔진 작업 생성 본문(POST /api/tasks의 createTaskReq 중 평가가 정하는 필드). 프로필·출처 작업·회사·분류·
 # 가로채기 규칙은 받지 않는다(새 DB라 없고, LLM은 엔진 환경 설정 = 게이트웨이를 쓴다).
 _TASK_FIELDS = ("description", "goal", "timeout_seconds", "plan_heartbeat_seconds", "seed_first_intent",
@@ -226,6 +229,8 @@ class RunnerConfig:
     state: dict | None
     # 원본 ② 규칙 파일 경로 또는 None(프로토콜 §8.1). 원본 회차에만 쓴다. 조건마다 설정 파일을 따로 둔다.
     engine_rules: str | None
+    # 개선 후 판정 export 수집 한도(_VERDICT_FIELDS). None이면 수집 안 함(records=null).
+    verdict_export: dict | None
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -410,6 +415,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
                                                 or len(name) > MAX_PROVIDER_NAME_LENGTH
                                                 or any(ord(c) < 32 or ord(c) == 127 for c in name)):
         errors.append("config.llm_gateway.expected_provider_name: INVALID")
+    verdict_export = _verdict_export(top.get("verdict_export"), errors) if "verdict_export" in top else None
     findings = _exact(top.get("findings"), _FINDINGS_FIELDS, "config.findings", errors) if "findings" in top else {}
     if "vocabulary_path" in findings and not _absolute_path(findings["vocabulary_path"]):
         errors.append("config.findings.vocabulary_path: EXPECTED_ABSOLUTE_PATH")
@@ -464,7 +470,19 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},
         observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], state=state,
-        engine_rules=top["engine_rules"])
+        engine_rules=top["engine_rules"], verdict_export=verdict_export)
+
+
+def _verdict_export(raw: object, errors: list[str]) -> dict | None:
+    if raw is None:
+        return None
+    block = _exact(raw, _VERDICT_FIELDS, "config.verdict_export", errors)
+    for name, high in (("page_size", MAX_PAGE_SIZE), ("timeout_seconds", MAX_RUN_SECONDS), ("max_page_bytes", MAX_INPUT_BYTES),
+                       ("max_total_bytes", MAX_INPUT_BYTES), ("max_pages", MAX_FINDINGS_PAGES), ("ready_wait_seconds", MAX_RUN_SECONDS),
+                       ("ready_poll_seconds", MAX_RUN_SECONDS)):
+        if name in block and not _int(block[name], 1, high):
+            errors.append(f"config.verdict_export.{name}: INVALID")
+    return block
 
 
 def _state(raw: object, errors: list[str]) -> dict | None:

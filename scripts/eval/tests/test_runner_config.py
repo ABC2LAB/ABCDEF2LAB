@@ -62,6 +62,7 @@ def runner_config() -> dict:
         "e2": {"ours_mode": "none"},
         "state": None,
         "engine_rules": None,
+        "verdict_export": None,
         "task": {"description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.\n로그인 계정은 엔진 설정을 쓴다.",
                  "goal": "다른 사용자의 자원에 접근되는지 확인한다", "timeout_seconds": 1200,
                  "plan_heartbeat_seconds": 600, "seed_first_intent": False, "coverage_enabled": True},
@@ -91,6 +92,34 @@ class TestParseRunnerConfig(unittest.TestCase):
         payload = runner_config()
         del payload["findings"]["max_pages"]
         self.reject(payload, "config.findings.max_pages: MISSING")
+
+    def test_verdict_export_is_off_when_null_and_closed_when_set(self):
+        self.assertIsNone(parse_runner_config(runner_config()).verdict_export)
+        block = {"page_size": 200, "timeout_seconds": 30, "max_page_bytes": 8 * 1024 * 1024, "max_total_bytes": 8 * 1024 * 1024,
+                 "max_pages": 10_000, "ready_wait_seconds": 60, "ready_poll_seconds": 5}
+        payload = runner_config()
+        payload["verdict_export"] = block
+        self.assertEqual(parse_runner_config(payload).verdict_export, block)
+        payload = runner_config()
+        del payload["verdict_export"]
+        self.reject(payload, "config.verdict_export: MISSING")
+        for changes, reason in (({"page_size": 201}, "page_size: INVALID"), ({"page_size": 0}, "page_size: INVALID"),
+                                ({"timeout_seconds": True}, "timeout_seconds: INVALID"), ({"max_page_bytes": 8 * 1024 * 1024 + 1}, "max_page_bytes: INVALID"),
+                                ({"max_total_bytes": 0}, "max_total_bytes: INVALID"), ({"max_pages": 10_001}, "max_pages: INVALID"),
+                                ({"ready_wait_seconds": 0}, "ready_wait_seconds: INVALID"), ({"ready_poll_seconds": "5"}, "ready_poll_seconds: INVALID")):
+            with self.subTest(changes=changes):
+                payload = runner_config()
+                payload["verdict_export"] = block | changes
+                self.reject(payload, "config.verdict_export." + reason)
+        payload = runner_config()
+        payload["verdict_export"] = {key: value for key, value in block.items() if key != "max_pages"}
+        self.reject(payload, "config.verdict_export.max_pages: MISSING")
+        payload = runner_config()
+        payload["verdict_export"] = block | {"extra": 1}
+        self.reject(payload, "config.verdict_export: UNKNOWN_FIELDS")
+        payload = runner_config()
+        payload["verdict_export"] = "on"
+        self.reject(payload, "config.verdict_export: EXPECTED_OBJECT")
 
     def test_observer_readonly_ref_is_a_required_plain_reference(self):
         for value in ("", " ref", "ref\n", "x" * 201, 7, None):

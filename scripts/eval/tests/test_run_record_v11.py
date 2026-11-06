@@ -186,6 +186,47 @@ class TestRejectedV11(_V11):
             self.reject("e2_placement", f"e{index + 1}",
                         tamper_rows=lambda rows, c=change: row_of(rows, "e2_placement").update(c))
 
+    def _verdict_row(self, status, reason):
+        def add(rows):
+            rows.append({"kind": "verdict_collection", "seq": len(rows) + 1, "at": rows[-1]["at"], "status": status, "reason": reason})
+        return add
+
+    def test_verdict_integrity_failure_stops_grading(self):
+        """무결성 실패가 records=null(판정 미수집)로 숨지 않는다."""
+        self.reject("판정 export 무결성 실패: 채점 중단", "vi",
+                    tamper_rows=self._verdict_row("integrity_failed", "verdict_collect: PAGE_INTEGRITY_FAILED"))
+        run = self.v11("vs", solved={KEY: True}, tamper_rows=self._verdict_row("integrity_failed", "verdict_collect: X"))
+        with self.assertRaisesRegex(RunRecordError, "채점 중단"):
+            score_run(self.load([run])[0], self.correlate, runner_key=self.runner_key, correlatable=self.correlatable)
+
+    def test_verdict_uncollected_stays_undecidable(self):
+        run = self.v11("vn", solved={KEY: True}, tamper_rows=self._verdict_row("not_collected", "verdict_collect: FREEZE_EXPORT_NOT_FOUND"))
+        scored = score_run(self.load([run])[0], self.correlate, runner_key=self.runner_key, correlatable=self.correlatable)
+        self.assertEqual(set(scored.result.verdicts.values()), {ScanVerdict.UNDECIDABLE})
+        self.assertIn(KEY, scored.result.engine_solved)
+
+    def test_verdict_collection_row_must_agree_with_records(self):
+        collected = self.inputs(self.v11("vc", records=[_record("confirmed", "rest:basket:1")],
+                                         tamper_rows=self._verdict_row("collected", None)))
+        self.assertTrue(collected.judgments_collected)
+        self.reject("수집했는데 records가 없음", "v1", tamper_rows=self._verdict_row("collected", None))
+        self.reject("수집했는데 records가 없음", "v2", records=[_record("confirmed", "rest:basket:1")],
+                    tamper_rows=self._verdict_row("collected", "verdict_collect: X"))
+        self.reject("미수집인데 records가 있거나", "v3", records=[_record("confirmed", "rest:basket:1")],
+                    tamper_rows=self._verdict_row("not_collected", "verdict_collect: X"))
+        self.reject("미수집인데 records가 있거나", "v4", tamper_rows=self._verdict_row("not_collected", None))
+        self.reject("미수집인데 records가 있거나", "v5", tamper_rows=self._verdict_row("not_collected", ""))
+        self.reject("미수집인데 records가 있거나", "v9", tamper_rows=self._verdict_row("not_collected", 7))
+        self.reject("미수집인데 records가 있거나", "v6", records=[_record("confirmed", "rest:basket:1")],
+                    tamper_rows=self._verdict_row("integrity_failed", "verdict_collect: X"))
+        self.reject("collected\\|not_collected", "v7", tamper_rows=self._verdict_row("other", "x"))
+
+    def test_verdict_collection_row_is_at_most_one(self):
+        def twice(rows):
+            self._verdict_row("not_collected", "a")(rows)
+            self._verdict_row("not_collected", "a")(rows)
+        self.reject("행은 하나", "v8", tamper_rows=twice)
+
     def test_attempt_reconciliation_row_follows_the_e2_placement(self):
         self.assertIsNone(self.inputs(self.v11("rn")).attempt_reconciliation)
         self.assertEqual(self.inputs(self.v11("rs", e2=E2_STUB_PLACEMENT)).attempt_reconciliation, STUB_RECONCILIATION)

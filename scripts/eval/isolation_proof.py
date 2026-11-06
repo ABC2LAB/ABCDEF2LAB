@@ -43,6 +43,7 @@ _ROW_FIELDS = {
     "run_conditions": {"engine_settings_sha256", "engine_rules_sha256", "workers", "sampling", "host", "machine_id_sha256",
                        "llm_stream"},
     "e2_placement": {"mode", "decision_rows", "allowed", "unsupported", "unavailable"},
+    "verdict_collection": {"status", "reason"},
     "attempt_reconciliation": {"cells", "allowed_responded", "meter_attempt_reused", "blocked_reached", "unrecorded_reached",
                                "positive_evidence", "control_claim_withheld"},
 }
@@ -262,6 +263,29 @@ def e2_mode(receipt: dict, evidence: object) -> str:
     else:
         raise IsolationError("isolation_evidence.e2_placement.mode: none|stub")
     return row["mode"]
+
+
+def verdict_collection(receipt: dict, evidence: object, records: object) -> None:
+    """판정 export 수집 상태를 records와 맞춰 보고, 무결성 실패면 채점을 멈춘다. 수집을 안 켠 회차에는 행이 없다.
+
+    무결성 실패를 records=null과 같게 두면 판정 미수집(판단불가)으로 숨는다(판정 페이지 제안 §3·§6).
+    """
+    rows = _rows(evidence, receipt)["verdict_collection"]
+    if not rows:
+        return
+    if len(rows) > 1:
+        raise IsolationError("isolation_evidence.verdict_collection: 행은 하나")
+    status, reason = rows[0]["status"], rows[0]["reason"]
+    if status == "collected":
+        if reason is not None or records is None:
+            raise IsolationError("isolation_evidence.verdict_collection: 수집했는데 records가 없음")
+    elif status in ("not_collected", "integrity_failed"):
+        if not isinstance(reason, str) or not reason or records is not None:
+            raise IsolationError("isolation_evidence.verdict_collection: 미수집인데 records가 있거나 사유가 없음")
+    else:
+        raise IsolationError("isolation_evidence.verdict_collection.status: collected|not_collected|integrity_failed")
+    if status == "integrity_failed":
+        raise IsolationError("판정 export 무결성 실패: 채점 중단")
 
 
 def _count(value: object) -> bool:
