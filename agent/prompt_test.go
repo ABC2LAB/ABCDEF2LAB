@@ -85,25 +85,18 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 }
 
-// langMarker is the unambiguous substring that proves langDirective selected a
-// given display language. These are the native-script tokens embedded in the
-// (Chinese) directive, so finding one means the output-language mandate names that
-// language. Used by the directive and role-append tests below.
-var langMarker = map[string]string{
-	"ko": "Korean",
-	"en": "English",
-	"zh": "Simplified Chinese",
-	"es": "Spanish",
-	"ja": "Japanese",
-}
-
-// TestLangDirectiveLocalized 는 표시 언어마다 지시문이 그 언어를 지명하고, 기술 원문 보존,
+// TestLangDirectiveKoreanOnly 는 과거 언어 코드에도 한국어를 지명하고, 기술 원문 보존,
 // 대상·자료 언어 모방 금지, planner 상황 요약 포함, 내부 추론 비노출을 유지하는지 고정한다.
-func TestLangDirectiveLocalized(t *testing.T) {
-	for _, code := range SupportedOutputLangs {
+func TestLangDirectiveKoreanOnly(t *testing.T) {
+	for _, code := range []string{"ko", "en", "zh", "es", "ja", "fr", ""} {
 		dir := langDirective(code)
-		if !strings.Contains(dir, langMarker[code]) {
-			t.Fatalf("%s: langDirective must name the display language (%q), got %q", code, langMarker[code], dir)
+		if !strings.Contains(dir, "[Korean]") || !strings.Contains(dir, "in Korean only") {
+			t.Fatalf("%s: display language must be Korean: %q", code, dir)
+		}
+		for _, r := range dir {
+			if r > 127 {
+				t.Fatalf("%s: model-facing directive must be English: %q", code, dir)
+			}
 		}
 		if !strings.Contains(dir, "payloads") || !strings.Contains(dir, "kept exactly as they are") {
 			t.Fatalf("%s: langDirective must keep commands/payloads verbatim, got %q", code, dir)
@@ -123,11 +116,8 @@ func TestLangDirectiveLocalized(t *testing.T) {
 	}
 }
 
-// TestLangDirectiveAppendedToUserFacingRoles pins the localization tail wiring:
-// every user-facing role's system prompt must end with the code-owned
-// output-language directive in the configured language, and a DB-edited body must
-// NOT be able to drop it. Exercised for each supported display language by driving
-// the OutputLanguage hook the roles resolve through.
+// 모든 사용자 대면 역할에 한국어 표시 지시를 붙인다. DB 본문이나 옛 언어 훅으로
+// 이 지시가 빠지거나 다른 표시 언어로 바뀌지 않는지 확인한다.
 func TestLangDirectiveAppendedToUserFacingRoles(t *testing.T) {
 	ctx := context.Background()
 
@@ -136,10 +126,10 @@ func TestLangDirectiveAppendedToUserFacingRoles(t *testing.T) {
 	// artifact tail. A custom body can never translate away the output-language mandate.
 	h := RuntimeHooks{PromptOverride: func(string) (string, bool) { return "BODY-ONLY", true }}
 
-	for _, code := range SupportedOutputLangs {
+	for _, code := range []string{"ko", "en", "zh", "es", "ja", "fr", ""} {
 		h.OutputLanguage = func() string { return code }
 		ctx = WithRuntimeHooks(context.Background(), h)
-		marker := langMarker[code]
+		marker := "[Korean]"
 		cases := map[string]string{
 			"worker":    workerSystem(ctx, "", "", "/data", "/data"),
 			"planner":   plannerSystem(ctx, "g", "/data", "/data"),

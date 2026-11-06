@@ -98,23 +98,9 @@ func wrapupSettlement(ctx context.Context, agentKey string, disabledTools []stri
 	}
 }
 
-// withWrapupLang 은 마무리 프롬프트 뒤에 출력 언어 지시(langDirective)를 덧붙인다.
-// 마무리 프롬프트는 시스템 프롬프트와 달리 langDirective 꼬리가 자동으로 붙지 않으므로,
-// 이렇게 직접 붙여야 사용자에게 보이는 마지막 한 문장 요약이 선택한 표시 언어를 따른다.
-// 마무리 산문 자체는 모델이 읽는 운영 지시문(영어)이고, 이 꼬리가 최고 우선순위로
-// 사용자 노출 텍스트의 언어만 강제한다. 요약을 내지 않는 planner 계열에는 무해하다.
-// 기본 언어 ko 에서는 꼬리를 붙이지 않는다. 시스템 프롬프트의 langDirective 가 이미
-// 한국어 출력을 강제하고 있어, 기본 경로의 모델 입력을 이전 버전과 같게 둔다(벤치마크 드리프트 방지).
-func withWrapupLang(ctx context.Context, prompt string) string {
-	if strings.TrimSpace(prompt) == "" {
-		return prompt
-	}
-	lang := resolveOutputLang(ctx)
-	if lang == "ko" {
-		return prompt
-	}
-	return prompt + langDirective(lang)
-}
+// 표시 언어가 한국어로 고정되어 별도의 언어 꼬리를 붙이지 않는다.
+// 호출부 제거 전까지 기존 시그니처를 유지한다.
+func withWrapupLang(_ context.Context, prompt string) string { return prompt }
 
 // ---------- 任务级超时收尾词（见 docs/任务级超时与收尾设计.md）----------
 //
