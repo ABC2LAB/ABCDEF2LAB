@@ -21,6 +21,7 @@ const (
 	maxStateReadPlanBytes = 64 << 10
 	maxStateReadPaths     = 256
 	maxStateReadBodyBytes = 16 << 20
+	maxStateReadTimeoutMS = 600_000
 )
 
 const (
@@ -86,7 +87,7 @@ func readStateReadPlan(stdin io.Reader) (stateReadPlan, bool) {
 	if err := decoder.Decode(&plan); err != nil || decoder.More() {
 		return plan, false
 	}
-	if plan.Port <= 0 || plan.Port > 65535 || plan.TimeoutMS <= 0 || plan.CountField == "" ||
+	if plan.Port <= 0 || plan.Port > 65535 || plan.TimeoutMS <= 0 || plan.TimeoutMS > maxStateReadTimeoutMS || plan.CountField == "" ||
 		plan.MaxBodyBytes <= 0 || plan.MaxBodyBytes > maxStateReadBodyBytes ||
 		len(plan.Paths) == 0 || len(plan.Paths) > maxStateReadPaths {
 		return plan, false
