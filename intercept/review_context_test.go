@@ -21,7 +21,7 @@ func TestReviewInputIgnoresAuditHistoryAndPreservesCurrentCall(t *testing.T) {
 		{Kind: "tool_result", ToolUseID: "partial", Text: strings.Repeat("部分写入", 10000), IsError: true},
 		{Kind: "tool_result", ToolUseID: "partial", Text: "conflicting result"},
 	}
-	base := WithReviewContext(t.Context(), "/tmp/run", ReviewBackground{Source: BackgroundUserMessage, Text: "读取文件"})
+	base := WithReviewContext(t.Context(), "/tmp/run", ReviewBackground{Source: BackgroundUserMessage, Text: "파일 읽기"})
 	args := json.RawMessage(`{"command":"cat current.txt","content":"` + strings.Repeat("中文", 3000) + `","extra":{"n":12345678901234567890}}`)
 	build := func(ctx context.Context) []byte {
 		t.Helper()
@@ -138,8 +138,8 @@ func TestEffectiveJudgePromptPreservesCustomPolicy(t *testing.T) {
 }
 
 func TestAutomaticAllowRetainsActualReviewContext(t *testing.T) {
-	ctx := WithReviewContext(t.Context(), "", ReviewBackground{Source: BackgroundUserMessage, Text: "请读取刚创建的文件"})
-	ctx, trace := WithTrace(ctx, "请读取刚创建的文件", []db.InterceptContextEntry{
+	ctx := WithReviewContext(t.Context(), "", ReviewBackground{Source: BackgroundUserMessage, Text: "请읽기刚创建的文件"})
+	ctx, trace := WithTrace(ctx, "请읽기刚创建的文件", []db.InterceptContextEntry{
 		{Kind: "tool_use", ToolUseID: "prior", Tool: "Write", Text: `{"file_path":"probe.txt"}`},
 		{Kind: "tool_result", ToolUseID: "prior", Text: "Created probe.txt"},
 	})
@@ -151,10 +151,10 @@ func TestAutomaticAllowRetainsActualReviewContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(input)
-	reason := "实际操作：读取测试文件；成功后的后果：返回文件内容；命中规则：A5"
+	reason := "실제 동작: 시험 파일 읽기; 성공 후 결과: 파일 내용 반환; 적중 규칙: A5"
 	a := auditFor(ctx, Decision{Action: "allow", Message: reason, ModelInput: raw, ModelInputDigest: digestInput(raw)}, args, "allowed")
 	var saved ReviewInput
-	if json.Unmarshal(a.ModelInput, &saved) != nil || saved.Background == nil || saved.Background.Text != "请读取刚创建的文件" || saved.Version != 4 || a.Correlation != "exact" || a.ToolUseID != "current" || a.InitialReason != reason {
+	if json.Unmarshal(a.ModelInput, &saved) != nil || saved.Background == nil || saved.Background.Text != "请읽기刚创建的文件" || saved.Version != 4 || a.Correlation != "exact" || a.ToolUseID != "current" || a.InitialReason != reason {
 		t.Fatal("automatic allow lost the model's input or explanation")
 	}
 	if a.Context != nil || a.UserMessage != "" {

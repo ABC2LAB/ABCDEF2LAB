@@ -65,7 +65,7 @@ func (s *Server) wireInterceptReviewer() {
 		if v.Action == "" {
 			return intercept.Decision{ProfileID: profileID}, errors.New(errJudgeVerdictMalformed)
 		}
-		return intercept.Decision{Action: v.Action, Message: v.Reason, ProfileID: profileID}, nil
+		return intercept.JudgeDecision(v, profileID), nil
 	})
 }
 
