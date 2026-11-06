@@ -10,11 +10,18 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
+from collections.abc import Callable
 from contextlib import closing
+from datetime import datetime, timezone
 
 MAX_RESPONSE_BYTES = 1024 * 1024
 UNVERIFIED = "llm_serving_unverified"
 MISMATCH = "llm_serving_mismatch"
+KEEP_ALIVE_SHORT = "llm_serving_keep_alive_short"
+# 적재 완료와 /api/ps 조회 사이의 여유. 남은 시간이 이보다 더 줄었으면 서버가 요청한 유지 기간을 따르지 않은 것이다.
+KEEP_ALIVE_SLACK_SECONDS = 30
+_EXPIRES_AT = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})")
 
 
 class ServingError(ValueError):
@@ -47,12 +54,29 @@ def _optional_int(value: object) -> int | None:
     return value if type(value) is int else None
 
 
-def read_serving(host: str, port: int, model: str, timeout: float, *, load: bool) -> dict:
-    """서버 버전과 적재된 모델의 digest·컨텍스트를 읽는다. 적재돼 있지 않으면 digest가 None이다.
+def _remaining_seconds(expires_at: object, now: datetime) -> int | None:
+    # 서버 시각은 나노초까지 오고 형식이 바뀔 수 있다. 모르는 형식은 값으로 읽지 않는다.
+    match = _EXPIRES_AT.fullmatch(expires_at) if isinstance(expires_at, str) else None
+    if match is None:
+        return None
+    offset = "+00:00" if match.group(2) == "Z" else match.group(2)
+    try:
+        return int((datetime.fromisoformat(match.group(1) + offset) - now).total_seconds())
+    except ValueError:
+        return None
 
-    load면 먼저 모델을 적재한다. 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 하려는 것이다.
+
+def read_serving(host: str, port: int, model: str, timeout: float, *, keep_alive_seconds: int | None,
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> dict:
+    """서버 버전과 적재된 모델의 digest·컨텍스트·남은 유지 시간을 읽는다. 적재돼 있지 않으면 digest가 None이다.
+
+    keep_alive_seconds를 주면 먼저 그 유지 기간으로 모델을 적재한다. 기본 유지 기간(5분)이면 compose 기동이나 긴 도구
+    실행 중에 모델이 내려가 적재 시간이 시간 예산에 섞이고, 회차 뒤 조회도 "확인 못 함"이 된다. 이 값은 이후의 OpenAI
+    호환 요청에도 이어진다(근거 ollama-keep-alive-20261106.json).
     """
-    if load and _request(host, port, "POST", "/api/generate", {"model": model, "stream": False}, timeout).get("done") is not True:
+    if keep_alive_seconds is not None and _request(
+            host, port, "POST", "/api/generate",
+            {"model": model, "stream": False, "keep_alive": f"{keep_alive_seconds}s"}, timeout).get("done") is not True:
         raise ServingError("llm_serving_read_failed")
     version = _request(host, port, "GET", "/api/version", None, timeout).get("version")
     models = _request(host, port, "GET", "/api/ps", None, timeout).get("models")
@@ -65,16 +89,30 @@ def read_serving(host: str, port: int, model: str, timeout: float, *, load: bool
     quantization = details.get("quantization_level") if isinstance(details, dict) else None
     return {"server_version": version, "model_digest": digest if isinstance(digest, str) else None,
             "context_length": _optional_int(entry.get("context_length")),
+            "keep_alive_remaining_seconds": _remaining_seconds(entry.get("expires_at"), now()),
             # CPU로 밀려났는지 볼 수 있게 남긴다. 판정에는 쓰지 않는다.
             "size": _optional_int(entry.get("size")), "size_vram": _optional_int(entry.get("size_vram")),
             "quantization_level": quantization if isinstance(quantization, str) else None,
             "other_models_loaded": len(models) - len(mine)}
 
 
-def judge_serving(observed: dict, declared: dict) -> str | None:
-    """선언과 다르면 사유 코드를, 같으면 None을 돌려준다."""
+def unload_model(host: str, port: int, model: str, timeout: float) -> None:
+    """모델을 내린다. 회차마다 같은 상태에서 시작하게 하고, 끝난 회차의 모델이 메모리에 남지 않게 한다."""
+    if _request(host, port, "POST", "/api/generate", {"model": model, "stream": False, "keep_alive": 0},
+                timeout).get("done") is not True:
+        raise ServingError("llm_unload_failed")
+
+
+def judge_serving(observed: dict, declared: dict, *, min_keep_alive_seconds: int | None = None) -> str | None:
+    """선언과 다르면 사유 코드를, 같으면 None을 돌려준다. 유지 시간은 적재 직후에만 본다(그 뒤로는 줄어드는 값이다)."""
     if observed["model_digest"] is None or observed["context_length"] is None:
         return UNVERIFIED
     if any(observed[name] != declared[name] for name in ("server_version", "model_digest", "context_length")):
         return MISMATCH
+    if min_keep_alive_seconds is not None:
+        remaining = observed["keep_alive_remaining_seconds"]
+        if remaining is None:
+            return UNVERIFIED
+        if remaining < min_keep_alive_seconds:
+            return KEEP_ALIVE_SHORT
     return None

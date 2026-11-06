@@ -373,11 +373,16 @@ class FakePorts:
         self._call("intercept_summary")
         return {"format": "intercept", "total": 0}
 
-    def local_serving(self, phase):
+    def local_serving(self, phase, keep_alive_seconds):
         self._call(f"local_serving:{phase}")
+        self.keep_alive_seen = keep_alive_seconds
         observed = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768, "size": 100,
-                    "size_vram": 100, "quantization_level": "Q4", "other_models_loaded": 0}
+                    "size_vram": 100, "quantization_level": "Q4", "other_models_loaded": 0,
+                    "keep_alive_remaining_seconds": keep_alive_seconds}
         return observed | self.serving.get(phase, {})
+
+    def local_unload(self):
+        self._call("local_unload")
 
     def sign(self, payload):
         self.sign_calls += 1
@@ -1289,6 +1294,14 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
             local[side]["sampling"] = dict(LOCAL_SAMPLING)
         spec = build_spec(config, plan_run(config, local, "ours", "ours-1"), local, "t" * 64, "c", 0)
         self.assertEqual(spec.llm_serving, {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768})
+        # 시간 예산보다 짧으면 요청 공백 동안 모델이 내려갈 수 있다. 예산이 늘면 같이 늘어야 한다.
+        declared = local["ours"]["time_budget_seconds"]
+        self.assertGreater(spec.llm_keep_alive_seconds, declared)
+        longer = copy.deepcopy(local)
+        for side in ("baseline", "ours"):
+            longer[side]["time_budget_seconds"] = declared + 100
+        self.assertEqual(build_spec(config, plan_run(config, longer, "ours", "ours-1"), longer, "t" * 64, "c", 0)
+                         .llm_keep_alive_seconds, spec.llm_keep_alive_seconds + 100)
 
     def test_local_serving_reads_the_fixed_ip_and_loads_only_before_the_run(self):
         config = parse_runner_config(runner_config())
@@ -1299,11 +1312,15 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         ports = DockerPorts(config, plan_run(config, local, "ours", "ours-1"), None, docker=None, findings=dict,
                             start=lambda: "1", settings=dict)
         with patch.object(runner, "read_serving", return_value={"x": 1}) as read:
-            self.assertEqual(ports.local_serving("pre"), {"x": 1})
-            ports.local_serving("post")
+            self.assertEqual(ports.local_serving("pre", 900), {"x": 1})
+            ports.local_serving("post", 900)
         timeout = config.run["llm_load_timeout_seconds"]
-        self.assertEqual(read.call_args_list[0].args, ("172.17.0.1", 11434, "example-model:fixed-tag", timeout))
-        self.assertEqual([call.kwargs["load"] for call in read.call_args_list], [True, False])
+        target = ("172.17.0.1", 11434, "example-model:fixed-tag", timeout)
+        self.assertEqual(read.call_args_list[0].args, target)
+        self.assertEqual([call.kwargs["keep_alive_seconds"] for call in read.call_args_list], [900, None])
+        with patch.object(runner, "unload_model") as unload:
+            ports.local_unload()
+        unload.assert_called_once_with(*target)
 
     def test_scoreboard_passes_the_configured_observer_format(self):
         for observer_format, opaque in (("challenge_scoreboard", False), ("opaque", True)):
@@ -1549,19 +1566,24 @@ class TestCommandLine(unittest.TestCase):
 
 
 SERVING = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768}
+KEEP_ALIVE = 900
+
+
+def serving_spec():
+    return dataclasses.replace(make_spec(), llm_serving=dict(SERVING), llm_keep_alive_seconds=KEEP_ALIVE)
 
 
 def serving_run(**serving):
-    spec = dataclasses.replace(make_spec(), llm_serving=dict(SERVING))
-    return run(mutate=lambda ports, meter, clock: ports.serving.update(serving), spec=spec)
+    return run(mutate=lambda ports, meter, clock: ports.serving.update(serving), spec=serving_spec())
 
 
 class TestLocalServing(unittest.TestCase):
     def test_api_never_reads_the_local_server(self):
         result, ports, *_ = run()
         self.assertEqual(result["status"], COMPLETE)
-        self.assertFalse([call for call in ports.calls if call.startswith("local_serving")])
+        self.assertFalse([call for call in ports.calls if call.startswith("local_")])
         self.assertIsNone(result["llm_serving"])
+        self.assertIsNone(result["llm_unloaded"])
 
     def test_reads_before_compose_up_and_after_the_llm_marker(self):
         result, ports, _, evidence = serving_run()
@@ -1589,9 +1611,38 @@ class TestLocalServing(unittest.TestCase):
 
     def test_read_failure_is_its_own_reason(self):
         def fail(ports, meter, clock):
-            ports.local_serving = lambda phase: (_ for _ in ()).throw(ValueError("x"))
-        result, *_ = run(mutate=fail, spec=dataclasses.replace(make_spec(), llm_serving=dict(SERVING)))
+            ports.local_serving = lambda phase, keep_alive: (_ for _ in ()).throw(ValueError("x"))
+        result, *_ = run(mutate=fail, spec=serving_spec())
         self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_read_failed"]))
+
+    def test_short_keep_alive_before_the_run_stops_before_compose_up(self):
+        result, ports, *_ = serving_run(pre={"keep_alive_remaining_seconds": KEEP_ALIVE - runner.KEEP_ALIVE_SLACK_SECONDS - 1})
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_keep_alive_short"]))
+        self.assertNotIn("up", ports.calls)
+
+    def test_keep_alive_is_not_judged_after_the_run(self):
+        result, *_ = serving_run(post={"keep_alive_remaining_seconds": 1})
+        self.assertEqual(result["status"], COMPLETE)
+
+    def test_requested_keep_alive_reaches_the_port(self):
+        _, ports, *_ = serving_run()
+        self.assertEqual(ports.keep_alive_seen, KEEP_ALIVE)
+
+    def test_model_is_unloaded_after_down_on_completion_and_on_failure(self):
+        for label, serving in (("complete", {}), ("failed", {"pre": {"context_length": 4096}})):
+            with self.subTest(label):
+                result, ports, *_ = serving_run(**serving)
+                self.assertTrue(result["llm_unloaded"])
+                self.assertEqual(ports.calls.count("local_unload"), 1)
+                if "down" in ports.calls:
+                    self.assertGreater(ports.calls.index("local_unload"), ports.calls.index("down"))
+
+    def test_unload_failure_is_recorded_but_keeps_the_run(self):
+        def fail(ports, meter, clock):
+            ports.local_unload = lambda: (_ for _ in ()).throw(ValueError("x"))
+        result, *_ = run(mutate=fail, spec=serving_spec())
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertIs(result["llm_unloaded"], False)
 
 
 class TestSignatureKey(unittest.TestCase):
