@@ -71,3 +71,4 @@ baseline은 원본 프롬프트 그대로 둔다. 개선판의 언어 변경은 
 - **SDK 문자열.** `norma`에도 한자 문자열 57개가 있다. 셸 도구(`NewShell*`)는 엔진이 쓰지 않지만, 백그라운드 작업 알림(`tool/task.go`)과 `noa/archive.go`는 모델까지 갈 수 있다. SDK를 올릴지, 끌지, 감쌀지 정한다.
 - **이미 심긴 프롬프트.** `seedPrompts`는 비어 있을 때만 넣는다. 기존 설치의 중국어 프롬프트는 `Server.reseed*Prompt`로 올릴 수 있는지 2단계에서 확인한다. 평가 회차는 매번 새 DB라 영향이 없다.
 - **활동 표시 필드.** `purpose`와 활동 표시 계약은 UI 디자인이 정해진 뒤에 한다.
+- **언어 전환 호출부.** 표시 언어는 한국어로 고정했고 카탈로그는 지웠다. `trMsg`·`logT`·`config.T`·`SetCurrentLanguage`·`notify.SetLanguageResolver`와 `output_language` API, 웹의 언어 선택은 아직 남아 있으며 별도 PR로 지운다. `agent/outputlang.go`는 #264 뒤에 줄인다.
