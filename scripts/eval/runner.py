@@ -56,8 +56,8 @@ from runner_evidence import (  # noqa: E402
     e2_stub_counts, forwarded_count, read_private_json, sequence_complete,
 )
 from attempt_reconcile import reconcile  # noqa: E402
-from runner_state import copy_sqlite, discard_copy  # noqa: E402
-from state_diff import RUN_KEY_BYTES, diff as state_difference, snapshot as state_snapshot  # noqa: E402
+from runner_state import copy_sqlite, discard_copy, runtime_fingerprints  # noqa: E402
+from state_diff import RUN_KEY_BYTES, diff as state_difference, runtime_diff, snapshot as state_snapshot  # noqa: E402
 from runner_llm import judge_llm  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
 from runner_record import (  # noqa: E402
@@ -124,6 +124,7 @@ class RunPorts(Protocol):
     def seal_gateway(self, gateway_container_id: str) -> None: ...
     def tmpfs_usage(self, phase: str, snapshot: dict) -> dict: ...
     def state_copy(self, phase: str, snapshot: dict) -> Path: ...
+    def state_trees(self, phase: str, snapshot: dict, key: bytes) -> dict: ...
     def findings(self) -> dict: ...
     def sign(self, payload: dict) -> dict: ...
 
@@ -176,6 +177,8 @@ class RunSpec:
     observer_readonly_ref: str
     # 상태 차이(프로토콜 §8.2)의 해결 신호 테이블. None이면 상태 사본을 뜨지 않는다(러너 설정 state=null).
     state_signal_tables: frozenset[str] | None = None
+    # 상태 차이로 비교할 런타임 디렉터리. 비어 있으면 파일 사본을 뜨지 않는다.
+    state_runtime_roots: tuple[str, ...] = ()
 
 
 class WatchHandle(Protocol):
@@ -206,6 +209,7 @@ class _State:
     # 상태 차이: 회차 키(메모리에만)와 pre 사본 지문. 사본 파일은 지문을 뜬 즉시 지운다.
     state_key: bytes | None = None
     state_pre: dict | None = None
+    state_trees_pre: dict = field(default_factory=dict)
 
 
 def _stamp(clock: Clock) -> str:
@@ -379,6 +383,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         state.state_key = os.urandom(RUN_KEY_BYTES)
         state.state_pre = _step(state, "state_copy_failed",
                                 lambda: _state_fingerprint(ports, state.state_key, "pre", pre))
+        if spec.state_runtime_roots:
+            state.state_trees_pre = _step(state, "state_copy_failed",
+                                          lambda: ports.state_trees("pre", pre, state.state_key))
     # 격리 구간은 pre 관측 직전부터 post 관측 완료까지다. 그 동안 호스트 리슨을 주기적으로 보고, 끝나면 데몬 이벤트를 받는다.
     window_start = clock.now()
     state.events = _step(state, "window_events_failed", lambda: ports.start_events(
@@ -446,10 +453,16 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         # post 사본도 구간이 닫힌 뒤에 뜬다. 값 없이 건수·정수 id·이름만 근거로 남긴다(§8.2).
         post_state = _step(state, "state_copy_failed",
                            lambda: _state_fingerprint(ports, state.state_key, "post", post))
+        post_trees = {}
+        if spec.state_runtime_roots:
+            post_trees = _step(state, "state_copy_failed", lambda: ports.state_trees("post", post, state.state_key))
         difference = _step(state, "state_diff_failed",
                            lambda: state_difference(state.state_pre, post_state, spec.state_signal_tables))
-        _step(state, "evidence_write_failed",
-              lambda: evidence.write_json(STATE_DIFF_NAME, dict(difference, format=STATE_DIFF_FORMAT)))
+        runtime = _step(state, "state_diff_failed", lambda: runtime_diff(state.state_trees_pre, post_trees))
+        # content_changed는 SQLite 쪽만이다. 전체 변화 여부는 state_changed로 본다.
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(STATE_DIFF_NAME, dict(
+            difference, **runtime, format=STATE_DIFF_FORMAT,
+            state_changed=difference["content_changed"] or runtime["runtime_changed"])))
 
     observer = _step(state, "meter_read_failed", meter.observer_rows)
     if len(observer) != state.observer_calls or any(row["decision"] != "registered" for row in observer):
@@ -792,6 +805,11 @@ class DockerPorts:
         return copy_sqlite(self.docker, snapshot["services"][TARGET_SERVICE]["id"], self.config.state["sqlite_path"],
                            dest, self.config.state["max_copy_bytes"])
 
+    def state_trees(self, phase: str, snapshot: dict, key: bytes) -> dict:
+        return runtime_fingerprints(self.docker, snapshot["services"][TARGET_SERVICE]["id"],
+                                    self.config.state["runtime_roots"], self.config.state["max_copy_bytes"], key,
+                                    required=phase == "pre")
+
     def findings(self) -> dict:
         return self._findings()
 
@@ -826,7 +844,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
         target_origin=declared["target_origin"], observer_path=config.observer_path,
         observer_readonly_ref=config.observer_readonly_ref,
-        state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]))
+        state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
+        state_runtime_roots=() if config.state is None else config.state["runtime_roots"])
 
 
 def main(argv: list[str] | None = None) -> int:

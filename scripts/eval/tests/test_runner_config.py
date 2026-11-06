@@ -307,7 +307,8 @@ class TestParseRunnerConfig(unittest.TestCase):
             self.assertEqual(load_runner_config(path).observer_path, "/api/records")
 
 
-STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 67108864}
+STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 67108864,
+         "runtime_roots": ["/app/ftp", "/app/uploads"]}
 
 
 class TestStateDiff(unittest.TestCase):
@@ -315,7 +316,9 @@ class TestStateDiff(unittest.TestCase):
         self.assertIsNone(parse_runner_config(runner_config()).state)
         self.assertEqual(parse_runner_config(runner_config() | {"state": STATE}).state,
                          {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ("Challenges",),
-                          "max_copy_bytes": 67108864})
+                          "max_copy_bytes": 67108864, "runtime_roots": ("/app/ftp", "/app/uploads")})
+        self.assertEqual(parse_runner_config(runner_config() | {"state": dict(STATE, runtime_roots=[])}).state[
+            "runtime_roots"], ())
         self.assertEqual(parse_runner_config(runner_config() | {"state": dict(STATE, signal_tables=[])}).state[
             "signal_tables"], ())
         for payload, code in (
@@ -337,7 +340,19 @@ class TestStateDiff(unittest.TestCase):
                 (runner_config() | {"state": dict(STATE, max_copy_bytes=0)}, "config.state.max_copy_bytes: INVALID"),
                 (runner_config() | {"state": dict(STATE, max_copy_bytes=(1 << 30) + 1)},
                  "config.state.max_copy_bytes: INVALID"),
-                (runner_config() | {"state": dict(STATE, max_copy_bytes=True)}, "config.state.max_copy_bytes: INVALID")):
+                (runner_config() | {"state": dict(STATE, max_copy_bytes=True)}, "config.state.max_copy_bytes: INVALID"),
+                (runner_config() | {"state": {k: v for k, v in STATE.items() if k != "runtime_roots"}},
+                 "config.state.runtime_roots: MISSING"),
+                (runner_config() | {"state": dict(STATE, runtime_roots="/app/ftp")}, "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=["app/ftp"])}, "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=["/app/../ftp"])},
+                 "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=["/app/ftp", "/app/ftp"])},
+                 "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=["/app/ftp", "/app/ftp/sub"])},
+                 "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=[f"/r{i}" for i in range(17)])},
+                 "config.state.runtime_roots: INVALID")):
             with self.subTest(code=code, payload=payload.get("state")), self.assertRaises(RunnerConfigError) as caught:
                 parse_runner_config(payload)
             self.assertIn(code, caught.exception.errors)

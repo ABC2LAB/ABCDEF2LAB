@@ -201,6 +201,8 @@ class FakePorts:
         self.state_dir = None
         self.state_rows = {"pre": [(1, "a")], "post": [(1, "a"), (2, "b")]}
         self.state_copies = []
+        self.tree_keys = []
+        self.state_tree_files = {"pre": {"ftp": b"d"}, "post": {"ftp": b"d", "ftp/order": b"f"}}
         self.sign_calls = 0
         self.sign_fail_at = None
         self.watch_stops = 0
@@ -339,6 +341,11 @@ class FakePorts:
         self.state_copies.append(path)
         return path
 
+    def state_trees(self, phase, snapshot, key):
+        self._call(f"trees:{phase}")
+        self.tree_keys.append(key)
+        return {"/app/ftp": self.state_tree_files[phase]}
+
     def findings(self):
         self._call("findings")
         return {"items": 0}
@@ -373,7 +380,8 @@ FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "liste
               "events:stop", "tmpfs:post", "findings", "down", "sign", "sign"]
 
 
-STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 1 << 20}
+STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 1 << 20,
+         "runtime_roots": ["/app/ftp"]}
 
 
 class TestStateDiff(unittest.TestCase):
@@ -398,7 +406,9 @@ class TestStateDiff(unittest.TestCase):
         self.assertEqual(result["status"], COMPLETE)
         order = list(FULL_ORDER)
         order.insert(order.index("wait_ready") + 1, "state:pre")
+        order.insert(order.index("state:pre") + 1, "trees:pre")
         order.insert(order.index("tmpfs:post") + 1, "state:post")
+        order.insert(order.index("state:post") + 1, "trees:post")
         self.assertEqual(ports.calls, order)
         diff = evidence.files["state-diff.json"]
         self.assertEqual(diff["format"], "abc2lab-state-diff-v1")
@@ -409,6 +419,44 @@ class TestStateDiff(unittest.TestCase):
         self.assertNotIn('"b"', json.dumps(diff))
         self.assertEqual([p.exists() for p in ports.state_copies], [False, False])
         self.assertEqual(os.listdir(self.dir), [])
+
+    def test_runtime_files_join_the_difference_and_share_the_run_key(self):
+        result, ports, meter, evidence = self.run_state()
+        diff = evidence.files["state-diff.json"]
+        self.assertEqual(diff["runtime"]["/app/ftp"]["added"], 1)
+        self.assertEqual((diff["runtime_changed"], diff["state_changed"]), (True, True))
+        self.assertEqual(len(set(ports.tree_keys)), 1)
+
+    def test_state_changed_follows_either_side(self):
+        same_trees = lambda ports: ports.state_tree_files.update(post=ports.state_tree_files["pre"])
+        same_rows = lambda ports: ports.state_rows.update(post=ports.state_rows["pre"])
+        for mutate, content, runtime in ((same_trees, True, False), (same_rows, False, True)):
+            with self.subTest(content=content, runtime=runtime):
+                diff = self.run_state(mutate)[3].files["state-diff.json"]
+                self.assertEqual((diff["content_changed"], diff["runtime_changed"], diff["state_changed"]),
+                                 (content, runtime, True))
+        def neither(ports):
+            same_trees(ports)
+            same_rows(ports)
+        diff = self.run_state(neither)[3].files["state-diff.json"]
+        self.assertEqual((diff["content_changed"], diff["runtime_changed"], diff["state_changed"]),
+                         (False, False, False))
+
+    def test_empty_runtime_roots_take_no_tree_copy(self):
+        def mutate(ports, meter, clock):
+            ports.state_dir = self.dir
+        result, ports, meter, evidence = run(mutate=mutate, spec=make_spec(state=dict(STATE, runtime_roots=[])))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertFalse(any(call.startswith("trees:") for call in ports.calls))
+        self.assertEqual(evidence.files["state-diff.json"]["runtime"], {})
+
+    def test_tree_failure_invalidates_the_run(self):
+        for phase in ("pre", "post"):
+            with self.subTest(phase=phase):
+                result, ports, meter, evidence = self.run_state(
+                    lambda ports, p=phase: ports.fail.update({f"trees:{p}": DockerError("docker_copy_failed")}))
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["state_copy_failed"]))
+                self.assertIn("down", ports.calls)
 
     def test_no_state_block_takes_no_copy(self):
         result, ports, meter, evidence = run()
@@ -1182,6 +1230,24 @@ class TestDockerPortsStateCopy(unittest.TestCase):
             self.assertEqual(oct(os.stat(directory.state / "pre").st_mode & 0o777), "0o700")
             with self.assertRaises(FileExistsError):  # 같은 단계 디렉터리를 다시 쓰지 않는다
                 ports.state_copy("pre", snapshot)
+
+
+class TestDockerPortsStateTrees(unittest.TestCase):
+    def test_required_only_before_the_run_and_uses_the_target_container(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "runs")
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            config = parse_runner_config(runner_config() | {"runs_root": str(root), "state": STATE})
+            plan = plan_run(config, configuration(), "ours", "ours-1")
+            ports = DockerPorts(config, plan, create_run_directory(root, "ours-1"), docker="docker", findings=dict,
+                                start=lambda: "1", settings=dict)
+            snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
+            for phase, required in (("pre", True), ("post", False)):
+                with self.subTest(phase=phase), patch.object(runner, "runtime_fingerprints", return_value={}) as call:
+                    ports.state_trees(phase, snapshot, b"k")
+                    self.assertEqual(call.call_args[0], ("docker", "3" * 64, ("/app/ftp",), 1 << 20, b"k"))
+                    self.assertEqual(call.call_args[1], {"required": required})
 
 
 class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
