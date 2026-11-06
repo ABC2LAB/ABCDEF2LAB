@@ -952,7 +952,7 @@
           <div class="isec">
             <h3>이 점검에 적용되는 안전 정책</h3>
             <ul class="policy">
-              <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><div>허용 목록 주소만 요청<small id="pTarget">shop.example.com · 검증됨</small></div></li>
+              <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><div>허용 목록 주소만 요청<small id="pTarget">shop.example.com · 허용 목록(예시)</small></div></li>
               <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><div>데이터를 바꾸는 요청<small id="pSend">승인한 요청만 보냄</small></div></li>
               <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><div>제외 경로는 요청 안 함<small id="pExcl">전역 3개 (/admin/delete* 등)</small></div></li>
               <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg><div>모든 요청과 승인 결정 기록<small>감사 로그 · 운영자는 지울 수 없음</small></div></li>
@@ -1199,7 +1199,7 @@
             </div>
             <div role="tabpanel" id="rp-ev" aria-labelledby="rtab-ev" hidden>
               <div style="display:flex;flex-direction:column;gap:14px">
-                <p class="help">요청과 응답은 가려서 저장합니다(쿠키, 토큰, 비밀번호는 [REDACTED]). 소유 확인에는 개인정보 대신 표식(canary)을 씁니다.</p>
+                <p class="help">실제 연동 시에는 요청과 응답을 가려서 저장하도록(쿠키, 토큰, 비밀번호는 [REDACTED]) 구현·검증해야 하고, 소유 확인에는 개인정보 대신 표식(canary)을 쓰도록 설계합니다. 이 시안에는 해당 저장 기능이 없습니다.</p>
                 <ul class="evi">
                   <li><code>evidence/order-idor</code><span>요청·응답 2건</span><span class="tag in">canary 일치</span></li>
                   <li><code>evidence/admin-stats</code><span>비로그인 응답 1건 · 대조군 1건</span></li>
@@ -1425,7 +1425,7 @@
     url.setAttribute('aria-invalid', st.kind==='bad' && url.value.trim() ? 'true' : 'false');
     if(st.kind==='bad') line.innerHTML = url.value.trim() ? '<span class="err">주소 형식을 확인하세요. 예: https://shop.example.com</span>' : '<span class="err">점검할 사이트 주소를 입력하세요.</span>';
     else if(st.kind==='int') line.innerHTML='<span class="pill ok">내부 주소</span><span class="help">소유 확인 없이 바로 점검할 수 있습니다</span>';
-    else if(st.kind==='allow') line.innerHTML='<span class="pill ok">'+(VERIFIED[st.url.hostname]?'허용 · 예시 통과(시안)':'허용 목록 · 검증됨')+'</span><span class="help">'+(VERIFIED[st.url.hostname]?'시안이라 실제 DNS 조회 없이 통과했습니다':'설정 › 통제 정책에서 관리합니다')+'</span>';
+    else if(st.kind==='allow') line.innerHTML='<span class="pill ok">'+(VERIFIED[st.url.hostname]?'허용 · 예시 통과(시안)':'허용 목록 · 예시')+'</span><span class="help">'+(VERIFIED[st.url.hostname]?'시안이라 실제 DNS 조회 없이 통과했습니다':'설정 › 통제 정책에서 관리합니다')+'</span>';
     else line.innerHTML='<span class="pill wait">소유 확인 필요</span><span class="help">허용 목록에 없는 외부 주소입니다</span>';
     vbox.hidden = st.kind!=='ext';
     if(st.kind==='ext'){ var h=st.url.hostname; if(!tokenFor[h]) tokenFor[h]='abc2lab-verify='+Math.random().toString(16).slice(2,10)+Math.random().toString(16).slice(2,8);
@@ -1448,7 +1448,7 @@
     $('#sDepth').textContent = depth+' · 워커 '+$('#nWorkers').value;
     $('#sGoal').textContent = goals.length ? goals.join(', ') : '기본 목표';
     $('#sSend').textContent = send==='ap' ? '승인 후 전송' : '전체 허용 · 시험환경 전용';
-    $('#pTarget').textContent = st.url ? st.url.hostname+(st.kind==='int'?' · 내부 주소':st.kind==='allow'?(VERIFIED[st.url.hostname]?' · 예시 통과(시안)':' · 검증됨'):' · 소유 확인 필요') : '주소 없음';
+    $('#pTarget').textContent = st.url ? st.url.hostname+(st.kind==='int'?' · 내부 주소':st.kind==='allow'?(VERIFIED[st.url.hostname]?' · 예시 통과(시안)':' · 허용 목록(예시)'):' · 소유 확인 필요') : '주소 없음';
     $('#pSend').textContent = send==='ap' ? '승인한 요청만 보냄' : '승인 없이 보냄 · 시험환경 확인 필요';
     var extra=$('#nExcl').value.split('\n').map(function(s){ return s.trim(); }).filter(Boolean).length;
     $('#pExcl').textContent = '전역 3개 (/admin/delete* 등)'+(extra?' + 이 점검 '+extra+'개':'');
@@ -1711,7 +1711,7 @@
     return '<span class="tag in">자동 포함</span>'; }
   function renderScope(){
     var on=EP.filter(function(e){ return e.on; }), ap=on.filter(function(e){ return e.chg; }).length;
-    $('#sCount').innerHTML='<span>엔드포인트<b>'+EP.length+'</b></span><span>포함<b>'+on.length+'</b></span><span>제외<b>'+(EP.length-on.length)+'</b></span><span class="ap">승인 필요<b>'+ap+'</b></span><span>로그인 영역<b style="font-family:var(--sans);font-size:13px">확인됨</b></span>';
+    $('#sCount').innerHTML='<span>엔드포인트<b>'+EP.length+'</b></span><span>포함<b>'+on.length+'</b></span><span>제외<b>'+(EP.length-on.length)+'</b></span><span class="ap">승인 필요<b>'+ap+'</b></span><span>로그인 영역<b style="font-family:var(--sans);font-size:13px">예시</b></span>';
     $('#sFilters').innerHTML=FL.map(function(f){ var c=EP.filter(f[2]).length; return '<button class="fchip" type="button" data-sf="'+f[0]+'" aria-pressed="'+(sFilter===f[0])+'">'+f[1]+'<span class="c">'+c+'</span></button>'; }).join('');
     var fn=FL.filter(function(f){ return f[0]===sFilter; })[0][2], q=sQ.toLowerCase();
     var html=SG.map(function(g){ var rows=EP.filter(function(e){ return e.g===g && fn(e) && (!q || (e.m+' '+e.p+' '+e.d).toLowerCase().indexOf(q)>=0); });
@@ -1987,7 +1987,7 @@
         '<tr><td>계정 A<small>주문 소유자</small></td><td><span class="sc s2">200</span><small>본인 주문</small></td><td>정상</td></tr>'+
         '<tr><td>계정 B<small>관계없는 사용자</small></td><td><span class="sc s2">200</span><small>A의 표식 노출</small></td><td><span class="ac vu">취약</span></td></tr>'+
         '<tr><td>비로그인<small>대조군</small></td><td><span class="sc s3">302</span><small>로그인으로 이동</small></td><td>정상 차단</td></tr></tbody></table>');
-      h+=isec('증거 · 가려서 저장','<pre class="code"><span class="cm"># 계정 B의 요청 (A의 주문)</span>\nGET /api/orders/1012 HTTP/1.1\nHost: '+host+'\nCookie: session=<span class="rd">[REDACTED]</span>\n\n<span class="cm"># 응답: A 주문 전용 표식 포함</span>\nHTTP/1.1 200 OK\n{\n  "order_id": 1012,\n  "buyer_note": "<span class="hl">ABC2LAB-CANARY-7f3a</span>",\n  "address": "<span class="rd">[REDACTED]</span>"\n}</pre><p class="help">실제 값 대신 A 주문 전용 표식이 B의 응답에서 보였습니다. 주소와 개인정보는 가려서 저장하지 않습니다.</p>');
+      h+=isec('증거 · 예시(가림 표시)','<pre class="code"><span class="cm"># 계정 B의 요청 (A의 주문)</span>\nGET /api/orders/1012 HTTP/1.1\nHost: '+host+'\nCookie: session=<span class="rd">[REDACTED]</span>\n\n<span class="cm"># 응답: A 주문 전용 표식 포함</span>\nHTTP/1.1 200 OK\n{\n  "order_id": 1012,\n  "buyer_note": "<span class="hl">ABC2LAB-CANARY-7f3a</span>",\n  "address": "<span class="rd">[REDACTED]</span>"\n}</pre><p class="help">실제 값 대신 A 주문 전용 표식이 B의 응답에서 보였습니다. 주소와 개인정보는 가려서 저장하지 않습니다.</p>');
     } else {
       h+=isec('증거','<p>'+f.ev+'</p>');
     }
