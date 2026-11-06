@@ -172,3 +172,21 @@ describe("report asset graph tab", () => {
     expect(screen.queryByText(/묶음 15개만 보는 중/)).toBeNull();
   });
 });
+
+describe("report coverage tab → full coverage", () => {
+  it("'전체 커버리지 열기' 버튼이 go('coverage')로 이동한다", async () => {
+    const go = vi.fn();
+    render(
+      <NavContext.Provider value={{ screen: "report", go }}>
+        <SelectionContext.Provider
+          value={{ taskId: "task-1", tasksVersion: 0, selectTask: vi.fn(), refreshTasks: vi.fn() }}
+        >
+          <ReportScreen />
+        </SelectionContext.Provider>
+      </NavContext.Provider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "커버리지" }));
+    fireEvent.click(await screen.findByRole("button", { name: /전체 커버리지 열기/ }));
+    expect(go).toHaveBeenCalledWith("coverage");
+  });
+});

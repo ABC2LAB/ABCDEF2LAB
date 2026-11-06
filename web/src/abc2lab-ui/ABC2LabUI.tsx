@@ -8,6 +8,7 @@ import { isScreenId, NavContext, type NavValue, type ScreenId } from "./nav";
 import AccessMapScreen from "./screens/AccessMapScreen";
 import ApprovalScreen from "./screens/ApprovalScreen";
 import AuditScreen from "./screens/AuditScreen";
+import CoverageScreen from "./screens/CoverageScreen";
 import DashboardScreen from "./screens/DashboardScreen";
 import E2FlowScreen from "./screens/E2FlowScreen";
 import EntryScreen from "./screens/EntryScreen";
@@ -132,6 +133,7 @@ export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true
             <AuditScreen />
             <AccessMapScreen />
             <E2FlowScreen />
+            <CoverageScreen />
             <TokensScreen />
           </div>
         </ApprovalContext.Provider>

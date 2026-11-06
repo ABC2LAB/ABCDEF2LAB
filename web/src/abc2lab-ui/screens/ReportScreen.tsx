@@ -336,7 +336,7 @@ export default function ReportScreen() {
               setOpenRow={setOpenRow}
             />
           )}
-          {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} />}
+          {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} go={go} />}
           {tab === "map" && <MapPanel taskId={taskId} />}
           {tab === "asset" && <AssetGraphPanel taskId={taskId} findings={findings} onOpenFinding={openFinding} />}
           {tab === "ev" && <EvidencePanel go={go} />}
@@ -835,10 +835,12 @@ function CoveragePanel({
   cov,
   loading,
   error,
+  go,
 }: {
   cov: EngineCoverage | null | undefined;
   loading: boolean;
   error: string | null;
+  go: (s: "coverage") => void;
 }) {
   let content: ReactNode;
   if (loading) content = <p style={bodyText}>불러오는 중…</p>;
@@ -866,6 +868,9 @@ function CoveragePanel({
           검사 커버리지 <Sub>· 범위 내 자산 대비 실제 탐색</Sub>
         </h3>
         {content}
+        <button className="btn" type="button" style={{ marginTop: 14 }} onClick={() => go("coverage")}>
+          전체 커버리지 열기 →
+        </button>
       </div>
     </div>
   );
