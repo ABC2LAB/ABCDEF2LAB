@@ -227,20 +227,20 @@ func proxyEnv(proxyAddr, caCert string) []string {
 // prompt, seeded into agent_prompts. The trafficTool block and the 中间产物输出规约
 // are NOT here — they are code-owned and appended by workerSystem after rendering
 // (段 [B]/[C]), so editing the DB body can never drop them.
-const workerDefaultTmpl = `你是一个网络安全平台授权渗透测试系统的"执行者"(work agent)。你领到【一条意图】(一句话探索方向)，唯一职责：**完成这一条意图、把发现写回知识图谱、然后停止返回。**
+const workerDefaultTmpl = `You are the "executor" (work agent) of an authorized penetration testing system on a cybersecurity platform. You receive [one intent] (a one-sentence exploration direction). Your only job: **complete this one intent, write your findings back to the knowledge graph, then stop and return.**
 
-**边界（红线）**：
-1. **只做你领到的这一条意图**。**探本意图时若瞥见本意图之外值得深挖的线索**（报错泄露的路径、可能与其它资产联动的点、疑似另一条利用链的入口），**在 fact 的 summary 里点一句交给规划者**。
-2. 初次受阻（payload 被过滤 / 404 / 注入无回显）不代表已探透——把本意图的所有绕过手段走完再输出结论；
-3. 只在授权范围内操作。系统提示顶部若附【操作约束】，那是最高优先级红线：每条命令/探测执行前先自检，违反即不做（哪怕它落在你领到的意图里）。
+**Boundaries (red lines)**:
+1. **Do only the one intent you received.** **If you notice a lead worth digging into outside this intent while exploring** (a path leaked in an error, a point that may link with other assets, an entry that looks like another exploit chain), **mention it in one line in the fact's summary for the planner**.
+2. A first obstacle (payload filtered, 404, injection with no echo) doesn't mean the direction is exhausted. Try every bypass for this intent before writing a conclusion.
+3. Operate only within the authorized scope. If [operational constraints] appear at the top of the system prompt, they are the highest-priority red line: check each command or probe against them first, and if it violates them, don't do it (even if it falls within your intent).
 
-**边发现边写回**（写进图才算数，脑子/文字里的不算；每得一个结果立刻写，别攒到最后被步数耗尽丢掉）。三种写回，别串图：
-- **新资产/资源 → insert_assets（资产图）**：子域 / service / endpoint / 指纹 / 凭据 等一切资产【本身】。**这里只登记资产；探索结论/判断不写这里，用 record_fact。**
-- **探索结论/事实 → record_fact（探索图，传 intent_id）**：都用它。**多个观察汇总成【一条】事实**（summary 一句总结 + detail写对总结的拓展，依靠真实的执行过程），不要一个属性一条、一意图通常只一条，拆碎会让图谱无限膨胀——**默认就写一条，能并进 detail 的都并进去**；仅当确有【彼此完全独立、无法归并】的结论时才用 facts 数组分条，这是极少数例外，不是常规。**只写增量**：只记这次【新得到】的，别把已有事实换措辞重记（只印证已有、无新增就不必记）。**只写真实看到的**：给 evidence（一行：命令+最能证明的一两行输出，简洁，细节在 detail）、标 confidence（observed=直接看到 / inferred=据现象推断）。
-- **确认漏洞 → report_finding（探索图，含 PoC，传 intent_id）**：**只有你本次真实触发过、拿到可复现证据（请求/响应或命令输出）才用**。严禁把"版本/指纹匹配到 CVE""参数看起来可注入""外部漏洞库/更新日志/代码 diff 推断"当已确认，也不要用查 CVE 库或对比补丁版本替代实际触发。触发不了但有嫌疑 → 用 record_fact 记一条 inferred 事实（嫌疑点+为何未触发）交规划者，别硬记成 finding。
+**Write back as you find** (only what is in the graph counts; what is in your head or text doesn't. Write each result right away; don't save it until the end, where running out of steps loses it). There are three kinds of write-back; don't mix up the graphs:
+- **New assets or resources → insert_assets (asset graph)**: subdomains, services, endpoints, fingerprints, credentials and every other asset [itself]. **Register only assets here; exploration conclusions and judgments go to record_fact.**
+- **Exploration conclusions and facts → record_fact (exploration graph, pass intent_id)**: use it for all of these. **Combine several observations into [one] fact** (summary is a one-sentence conclusion; detail expands on it, based on what actually ran). Don't write one fact per attribute; one intent usually has one fact, and splitting it makes the graph grow without limit. **Write one by default and merge whatever fits into detail.** Use the facts array to split only when there are [fully independent conclusions that can't be merged]; this is a rare exception, not the norm. **Write only what is new**: record only what you [newly obtained] this time. Don't re-record existing facts in other words (if you only confirmed an existing fact with nothing new, don't record it). **Write only what you actually saw**: give evidence (one line: the command plus the one or two output lines that best prove it; keep it short, details go in detail) and mark confidence (observed = seen directly, inferred = deduced from behavior).
+- **Confirmed vulnerabilities → report_finding (exploration graph, with PoC, pass intent_id)**: **use it only when you actually triggered the issue this run and have reproducible evidence (request/response or command output)**. Never treat "version or fingerprint matches a CVE", "the parameter looks injectable" or inferences from external vulnerability databases, changelogs or code diffs as confirmed, and don't replace actually triggering it with CVE lookups or patch version comparisons. If you can't trigger it but suspect it → use record_fact to record an inferred fact (the suspicious point and why it didn't trigger) for the planner. Don't force it into a finding.
 
 
-完成本意图后用一句话总结你做了什么、写回了哪些事实。`
+When this intent is complete, summarize in one sentence what you did and which facts you wrote back.`
 
 // workerTrafficBlock is 段 [B]: the traffic-tool note, code-injected only when
 // traffic capture (recording) is on — i.e. the traffic_* tools actually exist.
@@ -251,21 +251,21 @@ func workerTrafficBlock(recording bool) string {
 	if !recording {
 		return ""
 	}
-	return "\n\n**流量工具**：\n- traffic_search / traffic_get / traffic_blob：回看响应、找已访问过的资源，**先查流量、不要重复 curl 同一 URL**。traffic_search **必须指定 host**、默认只回 3 条极轻量索引(id/method/url/status/resp_len，无响应内容)，需要更多显式调大 limit；可用 body_contains 在请求/响应正文里做全文搜索(至少 3 字符，支持子串和中文，如找密码/密钥/报错/内网地址)；要看某条原文用 traffic_get(id)，其中超大正文显示为 @blob sha256:<hash>，用 traffic_blob(hash) 分段取全文。"
+	return "\n\n**Traffic tools**:\n- traffic_search / traffic_get / traffic_blob: review responses and find resources already visited. **Check traffic first; don't curl the same URL again.** traffic_search **requires host** and by default returns only 3 very light index rows (id/method/url/status/resp_len, no response content); raise limit explicitly when you need more. Use body_contains for full-text search in request and response bodies (at least 3 characters, substrings and non-ASCII text are supported; for example, to find passwords, keys, errors or internal addresses). To see an exchange in full use traffic_get(id); very large bodies appear as @blob sha256:<hash>, which traffic_blob(hash) reads in segments."
 }
 
 // artifactSpec is 段 [C]: the code-owned, non-editable tail appended to every
 // pentest agent's prompt — intermediate artifacts must land in the shared work
 // dir, never /tmp. Guaranteed present regardless of how the DB body is edited.
 func artifactSpec(dir string) string {
-	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本任务工作目录 " + dir + "**（相对路径即写在这里，也可用该绝对路径）——**不要写 /tmp、不要用其它绝对路径**。"
+	return "\n\n**Rule for intermediate artifacts**: scripts, payloads, captured response bodies, temporary data and all other intermediate artifacts **must go in this task's working directory " + dir + "** (relative paths land here; you may also use this absolute path). **Don't write to /tmp or use other absolute paths.**"
 }
 
 // workerArtifactSpec is the worker's 段 [C]: its per-intent run dir is pre-created
 // by the engine (ensureRunDir), so it just writes relative paths there — no manual
 // mkdir, no cross-worker name collisions.
 func workerArtifactSpec(runDir string) string {
-	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本次意图的专属工作目录 " + runDir + "**（已自动建好，直接用相对路径写在这里即可，无需再手动建目录）——**不要写 /tmp、不要用其它绝对路径**。"
+	return "\n\n**Rule for intermediate artifacts**: scripts, payloads, captured response bodies, temporary data and all other intermediate artifacts **must go in this intent's own working directory " + runDir + "** (it already exists; just use relative paths, no need to create it). **Don't write to /tmp or use other absolute paths.**"
 }
 
 // ensureRunDir builds and creates an agent's working directory under base:
@@ -314,7 +314,7 @@ func intentAssetIDs(intent *db.Node) []int64 {
 }
 
 func renderIntentTask(intent *db.Node) string {
-	return fmt.Sprintf("\n\n【你领到的意图（本次唯一任务：只做这一条、只产生事实、做完即停）】：\n%s\n意图 id: %d（写回 record_fact / report_finding 时传它）", string(intent.Payload), intent.ID)
+	return fmt.Sprintf("\n\n[Your intent (your only task this run: do this one, produce facts only, stop when done)]:\n%s\nIntent id: %d (pass it to record_fact / report_finding when writing back)", string(intent.Payload), intent.ID)
 }
 
 // renderWorkerGraphOverview folds the global situational snapshot into the worker's
@@ -331,9 +331,9 @@ func renderWorkerGraphOverview(data map[string]any) string {
 	if err != nil {
 		return "" // fall back silently: the worker just won't have the global context
 	}
-	return "\n\n【全局探索态势（只读，帮你把自己这条意图放进大局看）】：\n" +
-		"下面是整个任务当前的探索概况。用途有两个：一是知道别人已发现什么，别重复；二是让你探自己这条意图时，能联想到它和全局的关系。\n" +
-		"**发散是好事**：探本意图时尽管深想、多联想。唯一的界线是——别真的动手去执行别的意图（那是别的 worker 的事，由规划者调度）。但凡你联想到有价值的线索（跨资产的联动、疑似另一条利用链的入口、全局层面的可疑点），**务必写进 fact 交规划者**——这是你重要的产出，不是可有可无。宁可多报一条让规划者判断，也别自己咽下去。\n" +
+	return "\n\n[Global exploration situation (read-only, to help you see your intent in the big picture)]:\n" +
+		"Below is the current exploration overview of the whole task. It has two uses: to know what others already found so you don't repeat it, and to help you connect your intent to the whole while exploring.\n" +
+		"**Thinking broadly is good**: think deep and make connections while exploring your intent. The only line is: don't actually execute other intents (that is other workers' job, scheduled by the planner). Whenever you connect to a valuable lead (a link across assets, an entry that looks like another exploit chain, something suspicious at the global level), **be sure to write it in a fact for the planner**. This is an important output, not an optional one. Better to report one too many for the planner to judge than to keep it to yourself.\n" +
 		string(b)
 }
 
@@ -415,7 +415,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		if ids := intentAssetIDs(intent); len(ids) > 0 {
 			if assets, err := as.GetByIDs(ids); err == nil && len(assets) > 0 {
 				if b, err := json.Marshal(assets); err == nil {
-					sysBody += "\n\n本意图 asset_ids 对应的目标资产：\n" + string(b)
+					sysBody += "\n\nTarget assets for this intent's asset_ids:\n" + string(b)
 				}
 				// 意图明确针对的这些资产 → 自动纳入任务测试范围（与 insertAssets 同一套
 				// 保守粒度）。upsertTaskScope 的 ON CONFLICT DO NOTHING + uq_task_scope
@@ -429,7 +429,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 			}
 		}
 	}
-	sysBody += "\n\n开始执行上面这条意图：只做它、只产生事实、assets、finding、做完即停。"
+	sysBody += "\n\nStart executing the intent above: do only it, produce only facts, assets and findings, and stop when done."
 	system, boundary := deferredSystem(sysBody, def)
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
 	tc := taskClockFrom(ctx)
@@ -499,7 +499,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// overview 罕见地 marshal 失败为空时，回退一句启动词，避免首轮出现空 user 消息。
 	input := overview
 	if strings.TrimSpace(input) == "" {
-		input = "开始执行 system 里领到的意图：只做它、只产生事实、assets、finding、做完即停。"
+		input = "Start executing the intent you received in the system prompt: do only it, produce only facts, assets and findings, and stop when done."
 	}
 
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
@@ -519,20 +519,20 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		alreadyRecorded = requestID != "" && hasWorkerChatMessage(s.Messages(), requestID)
 		if len(s.Messages()) > 0 && message == "" {
 			seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
-			input = "继续执行。"
+			input = "Continue executing."
 		} else if len(s.Messages()) > 0 {
 			seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
 		}
 	}
 	if message != "" {
 		if alreadyRecorded {
-			input = "继续执行上一次人工对话输入的新意图。不要重复已经完成的动作。"
+			input = "Continue executing the new intent from the last human chat input. Don't repeat actions already completed."
 		} else if len(s.Messages()) > 0 {
-			input = workerChatMarker(requestID) + "\n【人工对话输入的新意图】\n" + message +
-				"\n\n请立即按这条人工输入执行，完成后再根据上下文决定原任务是否需要继续。"
+			input = workerChatMarker(requestID) + "\n[New intent from human chat input]\n" + message +
+				"\n\nExecute this human input right away. When done, decide from context whether the original task should continue."
 		} else {
-			input += "\n\n" + workerChatMarker(requestID) + "\n【人工对话输入的新意图】\n" + message +
-				"\n\n请优先执行这条人工输入。"
+			input += "\n\n" + workerChatMarker(requestID) + "\n[New intent from human chat input]\n" + message +
+				"\n\nExecute this human input first."
 		}
 	}
 

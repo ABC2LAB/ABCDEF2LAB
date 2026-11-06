@@ -26,15 +26,15 @@ type GoalsVars struct{ EngagementDescription, DataDir, Now string }
 // elapsed time (e.g. a timed benchmark's "last N hours" window).
 func nowStr() string { return time.Now().Format("2006-01-02 15:04:05 MST") }
 
-// renderSystem returns the rendered system-prompt BODY (段 [A]) for agentKey.
+// renderSystem returns the rendered system-prompt BODY for agentKey.
 // Precedence: the DB-stored template (if any) over the built-in default template
 // (def). BOTH are Go templates now — the built-in default is seeded into the DB
 // verbatim, so the two paths render identically until a user edits the prompt.
 // Rendering always runs (def used to be pre-substituted plain text; it is now a
 // {{.Var}} template like the DB one). On any render error we fall back to the
 // default template, then to the raw default string — an agent never starts with a
-// half-rendered prompt. Callers append the code-owned tail (trafficTool / 中间产物
-// 输出规约) AFTER this, so those can't be edited away via the DB body.
+// half-rendered prompt. Callers append the code-owned tail (trafficTool / artifact
+// rule) AFTER this, so those can't be edited away via the DB body.
 func renderSystem(ctx context.Context, agentKey, def string, vars any) string {
 	tmpl := def
 	if h := RuntimeHooksFrom(ctx).PromptOverride; h != nil {
@@ -52,42 +52,21 @@ func renderSystem(ctx context.Context, agentKey, def string, vars any) string {
 	return def
 }
 
-// langDirective is the output-language tail: a code-owned segment
-// appended AFTER the rendered body and the artifact/traffic tails on every
-// user-facing agent role, so a DB-edited prompt body can never drop it — the same
-// guarantee artifactSpec gives. It does NOT translate the agent "brain": the
-// benchmarked Chinese reasoning body (段 [A]) stays verbatim. It only constrains
-// the LANGUAGE of what the agent SHOWS to the user. Written in Chinese so it stays
-// in the body's language (keeping the model's reasoning register stable) while
-// forcing the chosen display language — this is the localization approach:
-// preserve behavior, localize the surface the user reads. Raw technical strings
-// (commands, payloads, code, URLs, log/response excerpts) are explicitly kept
-// verbatim so evidence and reproduction steps are not mangled by translation.
+// langDirective 는 표시 언어 꼬리말이다. 렌더된 본문과 산출물·트래픽 꼬리말 뒤에 코드가 직접
+// 붙이므로 DB에서 본문을 고쳐도 빠지지 않는다. 지시문은 영어이고, 사용자에게 보이는 글의 언어만
+// 정한다. 명령·payload·코드·URL·로그와 응답 일부는 번역하지 않아야 근거와 재현 절차가 유지된다.
 //
-// Two anti-drift clauses were added after the end-to-end run (L1): live models
-// leaked (1) Chinese into the planner's situation summary — mirroring the Chinese
-// brain body (段 [A]) — and (2) the target app/evidence language into
-// report_finding's structured fields. The directive names the planner situation
-// summary as a user-facing field and forbids mirroring BOTH the Chinese
-// instruction language AND the target/material language in the display fields.
+// 실제 회차에서 모델이 상황 요약과 report_finding 필드에 지시문 언어나 대상 언어를 그대로
+// 옮긴 적이 있어서, 상황 요약을 표시 필드로 지명하고 두 언어를 따라 쓰지 말라고 적는다.
 //
-// The display language is a parameter (code = "en"/"ko"/"zh"/"es"): the directive
-// stays in Chinese but the "write in <language>" token is swapped per target. When
-// the display language IS Chinese ("zh"), Chinese output is the goal, so the
-// "never emit Chinese to the user" clause is replaced by one that simply affirms
-// Chinese display and still forbids mirroring the target/material language.
+// 표시 언어는 매개변수다(code = "en"/"ko"/"zh"/"es"/"ja"). 언어 이름만 바뀐다.
 func langDirective(code string) string {
 	phrase := langPhrase[code]
 	bare := langBare[code]
 	if phrase == "" || bare == "" {
 		phrase, bare = langPhrase[defaultOutputLang], langBare[defaultOutputLang]
 	}
-	if code == "zh" {
-		// 표시 언어 자체가 중국어이므로 "중국어를 사용자에게 내보내지 말라"는 절은 없다.
-		// 대신 중국어 표시를 확정하고, 대상/자료 언어 미러링 금지와 원문 보존은 유지한다.
-		return fmt.Sprintf("\n\n**输出语言规约（本地化·最高优先级，不可被提示词正文覆盖）**：所有【展示给用户】的自然语言文字一律用【%s】书写——包括 record_fact 的 summary/detail、report_finding 的标题/描述/结论/修复建议、规划者(planner)的态势/情况总结、最终那一句话总结、以及对用户的聊天回复。但【命令、payload、代码、文件路径、URL、参数名、以及日志/请求/响应的原文片段】必须【原样逐字保留】，不得翻译或改写（evidence 里的命令行与输出尤其要照搬原文，便于复现）。**即使目标系统、它的页面、证据、日志或任何参考资料是英文或别的语言，面向用户的自然语言字段（标题/描述/结论/修复建议/总结/态势总结）仍必须用%s书写——不要镜像或照抄目标或资料的语言来写这些展示字段；只有上面列出的原文技术片段才保持原样。** 一句话：内部推理不限，但凡落到用户能看到的正文，必须全是%s（技术原文片段除外）。", phrase, bare, bare)
-	}
-	return fmt.Sprintf("\n\n**输出语言规约（本地化·最高优先级，不可被提示词正文覆盖）**：所有【展示给用户】的自然语言文字一律用【%s】书写——包括 record_fact 的 summary/detail、report_finding 的标题/描述/结论/修复建议、规划者(planner)的态势/情况总结、最终那一句话总结、以及对用户的聊天回复。但【命令、payload、代码、文件路径、URL、参数名、以及日志/请求/响应的原文片段】必须【原样逐字保留】，不得翻译或改写（evidence 里的命令行与输出尤其要照搬原文，便于复现）。**即使上面的系统/角色指令本身是用中文写的，也绝不能把中文输出给用户——面向用户的展示语言只有%s，不要让任何中文句子出现在用户可见的文字里。** **即使目标系统、它的页面、证据、日志或任何参考资料是英文、中文或别的语言，面向用户的自然语言字段（标题/描述/结论/修复建议/总结/态势总结）仍必须用%s书写——不要镜像或照抄目标或资料的语言来写这些展示字段；只有上面列出的原文技术片段才保持原样。** **你的分析/规划/思考用中文进行没关系，但那是【不可见的内部推理】，绝不能作为正文输出：给用户的可见回复从第一个字起就必须是%s，不要在前面垫一段中文的思考、说明或「我先怎样怎样」的铺垫；连澄清提问、缺少参数、「无法继续」之类的说明也一律直接用%s写。** 一句话：内部怎么想不限，但凡落到用户能看到的正文，必须全是%s（技术原文片段除外）。", phrase, bare, bare, bare, bare, bare)
+	return fmt.Sprintf("\n\n**Output language rule (localization, highest priority; the prompt body can't override it)**: all natural-language text [shown to the user] must be written in [%s]. That includes record_fact summary and detail, report_finding title, description, conclusion and remediation, the planner's situation summary, the final one-sentence summary, and chat replies to the user. But [commands, payloads, code, file paths, URLs, parameter names, and verbatim fragments of logs, requests and responses] must be [kept exactly as they are], not translated or rewritten (keep command lines and output in evidence verbatim so they can be reproduced). **Even though the system and role instructions above are written in English, user-facing text must be in %s only; don't let sentences in another language appear in user-visible text.** **Even if the target system, its pages, evidence, logs or any reference material are in English, Chinese or another language, user-facing natural-language fields (title, description, conclusion, remediation, summary, situation summary) must still be in %s. Don't mirror or copy the language of the target or material in these fields; only the verbatim technical fragments listed above stay as they are.** **You may analyze and plan in any language, but that is [invisible internal reasoning] and must never appear as body text: the visible reply must be in %s from the first character. Don't lead with analysis, explanation or \"first I will...\" in another language. Clarifying questions, missing parameter notes and \"can't continue\" messages are also written directly in %s.** In short: think however you like internally, but everything that lands in user-visible text must be in %s (except verbatim technical fragments).", phrase, bare, bare, bare, bare, bare)
 }
 
 func renderTmpl(tmpl string, vars any) (string, error) {
