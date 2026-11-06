@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	ErrEvidenceConflict = errors.New("流量证据已变更，请刷新后重试")
-	ErrFindingNotFound  = errors.New("漏洞不存在")
-	ErrEvidenceNotFound = errors.New("流量证据不存在")
+	ErrEvidenceConflict = errors.New("traffic evidence changed; refresh and retry")
+	ErrFindingNotFound  = errors.New("finding not found")
+	ErrEvidenceNotFound = errors.New("traffic evidence not found")
 )
 
 // This lock covers the evidence filesystem as well as its SQL references. All
