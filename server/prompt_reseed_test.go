@@ -35,7 +35,7 @@ func clearSetting(t *testing.T, pg *db.DB, key string) {
 func TestReseedBuiltinPromptsReplacesOldBodyOnce(t *testing.T) {
 	s, pg := newPromptReseedServer(t)
 	seedPrompts(pg)
-	const oldBody = "OLD PROMPT BODY"
+	const oldBody = legacyPlannerPromptFixture
 	a, err := pg.GetAgentByKey("planner")
 	if err != nil || a == nil {
 		t.Fatalf("planner agent: %v, %v", a, err)
@@ -110,14 +110,33 @@ func TestReseedBuiltinPromptsSkipsCurrentDefault(t *testing.T) {
 	}
 }
 
-// 한자가 든 옛 문구만 바뀌고, 운영자가 다른 언어로 고친 문구는 그대로여야 한다.
-func TestUpgradeReporterTriggerMessageReplacesHanOnly(t *testing.T) {
+// 정확한 옛 기본값만 바뀌고, 사용자 문구와 다른 도구의 트리거는 그대로여야 한다.
+func TestUpgradeReporterTriggerMessageReplacesKnownDefaultsOnly(t *testing.T) {
 	s, pg := newPromptReseedServer(t)
 	const edited = "운영자가 고친 문구"
 	legacy, err := pg.CreateTrigger(&db.AgentTrigger{AgentKey: "reporter", Enabled: false, OnToolCall: true,
-		ToolNames: []string{"report_finding"}, ToolCallMessage: "漏洞已登记"})
+		ToolNames: []string{"report_finding"}, ToolCallMessage: legacyReporterTriggerFixtures[0]})
 	if err != nil {
 		t.Fatal(err)
+	}
+	type preservedTrigger struct {
+		id      int64
+		message string
+	}
+	var preserved []preservedTrigger
+	for _, input := range []struct {
+		message string
+		tools   []string
+	}{
+		{"漏洞已登记", []string{"report_finding"}},
+		{legacyReporterTriggerFixtures[1], []string{"other_tool"}},
+	} {
+		row, err := pg.CreateTrigger(&db.AgentTrigger{AgentKey: "reporter", Enabled: false, OnToolCall: true, ToolNames: input.tools, ToolCallMessage: input.message})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = pg.DeleteTrigger(row.ID) })
+		preserved = append(preserved, preservedTrigger{row.ID, input.message})
 	}
 	custom, err := pg.CreateTrigger(&db.AgentTrigger{AgentKey: "reporter", Enabled: false, OnToolCall: true,
 		ToolNames: []string{"report_finding"}, ToolCallMessage: edited})
@@ -141,6 +160,62 @@ func TestUpgradeReporterTriggerMessageReplacesHanOnly(t *testing.T) {
 	}
 	if got[custom.ID] != edited {
 		t.Fatalf("edited message changed: %q", got[custom.ID])
+	}
+	for _, row := range preserved {
+		if got[row.id] != row.message {
+			t.Fatalf("custom or unrelated trigger %d changed", row.id)
+		}
+	}
+}
+
+func TestReseedBuiltinPromptsPreservesCustomCurrentBody(t *testing.T) {
+	s, pg := newPromptReseedServer(t)
+	seedPrompts(pg)
+	a, err := pg.GetAgentByKey("planner")
+	if err != nil || a == nil {
+		t.Fatalf("planner: %v", err)
+	}
+	previous, err := pg.CurrentPrompt(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := pg.SavePrompt(a.ID, previous, "restore test fixture", "test"); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, body := range []string{"OLD PROMPT BODY", "운영자가 저장한 프롬프트", "用户自定义提示"} {
+		if _, err := pg.SavePrompt(a.ID, body, "test", "test"); err != nil {
+			t.Fatal(err)
+		}
+		before, err := pg.ListPromptVersions(a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clearSetting(t, pg, "builtin_prompts_english_v1")
+		s.reseedBuiltinPrompts()
+		cur, err := pg.CurrentPrompt(a.ID)
+		if err != nil || cur != body {
+			t.Fatalf("custom current changed: %q err=%v", cur, err)
+		}
+		after, err := pg.ListPromptVersions(a.ID)
+		if err != nil || len(after) != len(before) {
+			t.Fatal("custom prompt created a replacement version")
+		}
+	}
+}
+
+func TestLegacyPromptAndTriggerIdentity(t *testing.T) {
+	if !isLegacyPromptDefault("planner", legacyPlannerPromptFixture) || isLegacyPromptDefault("worker", legacyPlannerPromptFixture) || isLegacyPromptDefault("planner", "OLD PROMPT BODY") {
+		t.Fatal("legacy prompt identity mismatch")
+	}
+	for _, value := range legacyReporterTriggerFixtures {
+		if !isLegacyReporterTrigger(value) || isLegacyReporterTrigger(value+" ") {
+			t.Fatal("legacy trigger match is not exact")
+		}
+	}
+	if isLegacyReporterTrigger("漏洞已登记") {
+		t.Fatal("custom Han trigger was considered a default")
 	}
 }
 
