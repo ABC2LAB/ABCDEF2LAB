@@ -60,6 +60,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
 | `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null). baseline 회차는 compose 값이 같이 넘어가도 엔진이 읽지 않으므로 선언값도 null이다 |
 | `e2.ours_mode` | 개선 후 회차의 E② 자리(프로토콜 §2 개선 후의 E② 배치). `none` = E² 없음(엔진 → 계측기), `stub` = 통과 전용 가짜 E²(`deploy/eval/compose.e2-stub.yaml`, 계측기 `-role=e2-stub`)를 엔진과 계측기 사이에 둔다. baseline 회차에는 적용하지 않는다(원본에는 E²가 없다). `stub` 회차는 망·부정 연결 점검·계측기 시도 ID 대조를 세우는 fixture이며 통제를 증명하지 않으므로 시범·공식·제품 결과에 쓰지 않는다. 결과·기록에 `e2_mode`가 서명되고, `session_runs.py`·`score.py`는 `--allow-fixture-e2` 없이는 stub 회차를 거부한다. 제품 E²가 들어오면 값이 하나 늘어난다 |
+| `engine_rules` | 원본 ② 규칙 파일의 절대 경로 또는 `null`(프로토콜 §8.1, 형식은 [engine-rules.md](./engine-rules.md)). 원본 회차에만 쓴다. 조건마다 설정 파일을 따로 둔다 |
 | `state` | 상태 차이(프로토콜 §8.1·§8.2) 설정. `null`이면 사본을 뜨지 않는다. 객체면 `sqlite_path`(대상 컨테이너 안 SQLite 절대 경로), `signal_tables`(같은 DB에 있는 해결 기록 등 신호 테이블 이름 목록, 상태 차이 판정에서 빼고 건수만 따로), `max_copy_bytes`(사본 하나의 상한), `runtime_roots`(비교할 런타임 디렉터리 절대 경로 목록, 겹치면 거부, 비어도 됨. 각 루트는 실제 디렉터리여야 하고 링크·정규 파일이면 pre에서 무효. 루트 안의 링크는 링크 자체만 비교하고 링크 대상은 보지 않음), `memory`(메모리 저장 읽기, `null`이면 안 읽음. 객체면 `paths`·`count_field`·`max_body_bytes`·`timeout_ms`)를 정확히 받는다. 앱별 값은 여기서만 받는다(Juice Shop v15: `/juice-shop/data/juiceshop.sqlite`, `["Challenges"]`, 주문 PDF가 쌓이는 `/juice-shop/ftp`와 업로드 디렉터리). 요청이나 기동만으로 바뀌는 디렉터리(접근 로그 `logs`, 기동 때 만드는 `i18n`)는 넣지 않는다. `memory.paths`에는 부작용 없음을 확인한 비로그인 GET만 넣는다. 응답의 `count_field` 배열 길이와 본문 지문을 비교한다. Juice Shop v15는 상품별 리뷰 경로가 해당하고(2회 읽기 동일·해결 신호 변화 0 확인), 주문 목록은 비로그인·일반 계정으로 읽을 수 없어(403·500) 주문은 런타임 디렉터리의 PDF 차이로만 본다. 양쪽 회차에 같게 적용한다. pre 사본은 대상 준비 확인 뒤·구간 시작 전에, post 사본은 구간이 닫히고 tmpfs를 잰 뒤에 뜬다(대상 `docker pause`가 Docker 이벤트를 만들기 때문). SQLite 사본은 회차 키(메모리에만)로 행 지문을 뜬 즉시 지우고, 런타임 디렉터리는 호스트에 파일을 만들지 않고 tar에서 바로 지문을 뜬다. 메모리 읽기는 계측기 이미지의 `state-read` 역할을 대상 netns에서 1회 실행한다(구간 밖, loopback만, 권한·마운트 없음). 등록 관측 front를 거치지 않으므로 관측 로그 대조와 섞이지 않는다 |
 | `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data,min_free}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한과 구간 종료 뒤 남아야 할 최소 공간(두 상한보다 작아야 함), DB healthcheck. `tmpfs` 세 값은 사전검사 `run_storage`(프로파일 v3 환경 지문 입력)와 글자 그대로 같아야 시작한다 |
 | `llm_gateway.generation_path` | api: generation 조회 경로(예: OpenRouter `/api/v1/generation`) |
@@ -94,6 +95,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 [pre]    망·publish·이미지·호스트 조건 점검 → 부정 연결 점검 → tmpfs 마운트 ID·사용량(구간 전) → 대상 준비 → 구간 감시 시작 → pre 스코어보드
          계측기 전달 건수 == 0
 [작업]   새로 로그인 → 실행 설정 스냅샷(GET /api/settings·/api/llm, 프록시는 설정 여부로) → workers·엔진 LLM 모델·프록시 대조
+         → (engine_rules가 있으면) 규칙 등록·다시 읽어 대조 → engine-rules.json
          → engine-settings.json → POST /api/tasks(설정의 task, 생성=기동) → task.json
          요청 예산 또는 시간 예산까지 폴링 → 계측기 seal → drain 확인(유예가 지나도 열린 요청은 계측기가 취소·건수 기록)
          → 취소가 있었으면 정착 대기
@@ -119,6 +121,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   pre-probe.cid    post-probe.cid     docker --cidfile이 쓴 probe 컨테이너 ID(구간 감시 허용 목록)
   meter-summary.json  llm-summary.json
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
+  engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장·전체 규칙 해시, 적용 도구 목록(규칙 본문 없음)
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 그 SHA-256은 서명 근거 `run_conditions`에
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
@@ -185,6 +188,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `project_exists` | 같은 project가 이미 있음(이 러너 것이 아니므로 up·down 모두 안 함) |
 | `project_check_failed`, `image_id_failed`, `image_id_mismatch` | 사전 조회 실패, 로컬 이미지가 설정의 내용 ID와 다름 |
 | `host_spec_failed` | 머신 사양을 읽지 못함(`/proc/cpuinfo` 모델명·`/proc/meminfo` MemTotal·`/etc/machine-id`·Docker 버전) |
+| `engine_rules_failed` | 원본 ② 규칙 등록 실패(엔진이 거부, 정규식 오류 포함), 내장 규칙과 이름 충돌, 또는 다시 읽은 규칙·도구 목록이 파일과 다름. 작업을 시작하지 않는다 |
 | `engine_settings_failed`, `engine_settings_mismatch` | 실행 설정 조회 실패·형식 오류, 또는 workers가 선언 `worker_count`와 다름·엔진 LLM 모델이 선언과 다름·프록시가 설정됨(송신 경로가 계측기·게이트웨이 밖으로 바뀜) |
 | `compose_up_failed` | 기동 실패(down은 실행) |
 | `{pre,post}_facts_failed`, `{pre,post}_host_listeners_failed` | docker·/proc 사실 수집 실패 |
@@ -247,6 +251,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 - **상태 차이(11/05, 설정 `state` 켬, baseline e53a79f):** 완료·서명. 구간 이벤트 148건 중 pause/unpause 0건(pre 사본은 구간 전 lookback, post 사본은 이벤트 스트림을 닫은 뒤), 경계 위반 0, `state/pre`·`state/post` 빈 디렉터리, `state-diff.json`이 서명 결과 근거 목록에 있음. 가짜 LLM이라 차이 0(테이블 18, 신호 `Challenges` 102→102).
 - **상태 차이 세 갈래(11/06, 설정 `state`에 런타임 루트 3개·메모리 경로 5개, baseline e53a79f):** 완료·서명, 경계 위반 0. 구간 이벤트 71건 중 외부 부착 0·회차 컨테이너 재시작 0(1회용 읽기 컨테이너는 구간 전 lookback과 이벤트 스트림을 닫은 뒤에만 돈다). `state/pre`·`state/post` 파일 0개, 회차 디렉터리 전체에 메모리 경로 문자열 0건. 가짜 LLM이라 차이 0(읽기 5, 건수 4→4). 변화 감지는 1회용 Juice Shop에서 같은 코드로 따로 봤다: 같은 상태끼리 차이 0, 리뷰 1건 쓴 뒤 `changed 1`·건수 2→3.
+- **원본 ② 규칙 주입(11/06, baseline e53a79f):** 합성 규칙 2개를 넣은 회차가 완료·서명됐다(내장 20개 중 19개 켜짐, 다시 읽기 대조 통과, 외부 부착 0·재시작 0). 규칙이 없는 회차는 규칙 API를 부르지 않았고, 엔진이 거부하는 정규식은 작업 생성 전에 무효(`engine_rules_failed`)가 됐다. 가짜 LLM이라 규칙이 실제 도구 호출을 막는지는 못 봤다.
 - **시연 A 표(11/06, `control_demo.py`):** 실제 러너 회차 2개(조건 이름만 다름, 가짜 LLM)로 표를 만들었다. 서명·근거 해시 통과, 격리 증명 없는 회차 0, 전달 0이라 메서드 칸이 모두 0이고 E² 없는 회차의 거부 칸은 `—`다. 메서드별 건수는 실제 계측기 로그로 따로 봤다(loopback 임시 서버로 10건 전달, `get`·임의 토큰은 그 밖의 메서드로 2건, 토큰 문자열 미출력).
 - **완료 회차 1회(서명됨):** pre/post 망·publish·이미지·호스트 조건 위반 0, 부정 연결 13개 경로 모두 기대 종류, 관측 요청 3건 =
   러너 호출 수, 작업 생성(요청 본문 해시 기록), 시간 예산 종료, LLM 게이트웨이 2건 전달·seal 뒤 거부 0, findings 0건, 정리 후
