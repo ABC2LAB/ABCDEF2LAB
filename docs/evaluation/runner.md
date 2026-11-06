@@ -254,7 +254,7 @@ API 키 없이 실제 엔진을 끝까지 돌릴 때 쓴다. 판단하는 모델
   {"model": "<선언한 모델>", "intent_summary": "<의도 설명>", "commands": ["curl ...", "curl ..."]}
   python3 -I -B scripts/eval/scripted_llm.py --host <LLM 고정 IP> --port <포트> --plan <계획 JSON> [--stats <통계 파일>]
   ```
-- `scripts/eval/canary_scan.py`: 회차 디렉터리에 합성 토큰 원문이 남았는지 본다. 출력은 건수와 걸린 파일 경로뿐이다. 없음 0, 있음 1, 입력 오류·읽기 실패 2로 끝난다.
+- `scripts/eval/canary_scan.py`: 회차 디렉터리에 합성 토큰 원문이 남았는지 본다. 파일 내용, 파일·디렉터리 이름, 심볼릭 링크 대상을 본다. 출력은 건수와 걸린 경로뿐이고 경로 안의 값은 가린다. 없음 0, 있음 1, 입력 오류·읽기 실패·들어가지 못한 디렉터리는 2로 끝난다.
   ```
   python3 -I -B scripts/eval/canary_scan.py <회차 디렉터리> --canary <합성 값>
   ```
