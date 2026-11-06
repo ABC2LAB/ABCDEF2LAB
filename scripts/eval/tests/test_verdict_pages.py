@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -11,11 +12,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collect import parse_scan_payload  # noqa: E402
+from e3_canonical import canonical_sha256  # noqa: E402
 from verdict_pages import ExportContext, VerdictPagesError, merge_verdict_pages  # noqa: E402
 
 CONTEXT = ExportContext(task_id=17, run_id="run-1", model_tag="model-1", reset_generation="reset-1",
                         export_ref="export-1", limit=2)
 SECRET_LIKE = "synthetic-record-value-7f3a"
+AUTO_DIGEST = "auto"
+PROPOSAL = Path(__file__).resolve().parents[3] / "docs/contracts/verdict-record-page-api-proposal.md"
 
 
 def record(record_id=101, value="confirmed", **changes):
@@ -29,18 +33,32 @@ def record(record_id=101, value="confirmed", **changes):
 
 
 def check(record_id=101, status="verified", reasons=()):
-    return {"record_id": record_id, "issuance_ref": f"issuance-{record_id}", "payload_sha256": "a" * 64,
+    return {"record_id": record_id, "issuance_ref": f"issuance-{record_id}", "payload_sha256": AUTO_DIGEST,
             "kg_snapshot_ref": "snapshot-1", "status": status, "reason_codes": list(reasons)}
 
 
 def page(records=(), checks=None, next_cursor=None, total=None, **changes):
     records = list(records)
-    checks = [check(row["id"]) for row in records] if checks is None else list(checks)
+    checks = [check(row["id"]) for row in records] if checks is None else [dict(item) for item in checks]
+    # 시험은 정상 해시에서 출발한다. 값을 직접 준 경우에만 그대로 둔다.
+    by_id = {row.get("id"): row for row in records if isinstance(row, dict)}
+    for item in checks:
+        if item.get("payload_sha256") == AUTO_DIGEST:
+            source = by_id.get(item["record_id"])
+            item["payload_sha256"] = "a" * 64 if source is None else _digest(source)
     base = {"schema_version": 1, "task_id": 17, "run_id": "run-1", "model_tag": "model-1", "reset_generation": "reset-1",
             "purpose": "initial", "export_ref": "export-1", "collection_status": "complete",
             "total": len(records) if total is None else total, "limit": 2, "next_cursor": next_cursor,
             "manual_confirmation_count": 0, "records": records, "record_checks": checks}
     return base | changes
+
+
+def _digest(row):
+    # 합성 입력에는 정본으로 표현 못 하는 값도 일부러 넣는다. 그런 행은 어댑터가 거부하는지 본다.
+    try:
+        return canonical_sha256({key: value for key, value in row.items() if key != "finding_id"})
+    except ValueError:
+        return "a" * 64
 
 
 def two_pages():
@@ -96,11 +114,52 @@ class TestMerge(unittest.TestCase):
 
     def test_summary_has_counts_only(self):
         source = [page([record(101)], [check(101, "undecidable", ["b_reason", "a_reason"])], manual_confirmation_count=4)]
-        summary = merge_verdict_pages(source, CONTEXT).summary("export-1")
+        summary = merge_verdict_pages(source, CONTEXT).summary()
         self.assertEqual(summary, {"format": "abc2lab-eval-verdict-export-v1", "export_ref": "export-1", "total": 1, "page_count": 1,
                                    "manual_confirmation_count": 4, "verified": 0, "converted": 1,
                                    "converted_reasons": {"a_reason": 1, "b_reason": 1}})
         self.assertNotIn("records", summary)
+
+    def test_summary_reports_the_export_it_verified(self):
+        other = ExportContext(task_id=17, run_id="run-1", model_tag="model-1", reset_generation="reset-1",
+                              export_ref="export-2", limit=2)
+        result = merge_verdict_pages([page([record(101)], export_ref="export-2")], other)
+        self.assertEqual((result.export_ref, result.summary()["export_ref"]), ("export-2", "export-2"))
+
+    def test_proposal_example_page_passes_with_its_real_digest(self):
+        # 제안 문서 §4의 예시 해시는 실제 정본 해시다. 문서와 검증기가 어긋나면 여기서 잡힌다.
+        text = PROPOSAL.read_text(encoding="utf-8")
+        example = next(json.loads(block) for block in re.findall(r"```json\n(.*?)\n```", text, re.S)
+                       if '"records": [\n    {' in block)
+        context = ExportContext(task_id=example["task_id"], run_id=example["run_id"], model_tag=example["model_tag"],
+                                reset_generation=example["reset_generation"], export_ref=example["export_ref"],
+                                limit=example["limit"])
+        self.assertEqual(merge_verdict_pages([example], context).verified, 1)
+
+    def test_changed_row_fails_the_digest_for_either_check_status(self):
+        for status, reasons in (("verified", ()), ("undecidable", ("kg_snapshot_unavailable",))):
+            with self.subTest(status=status):
+                pinned = check(101, status, reasons) | {"payload_sha256": _digest(record(101))}
+                self.assertEqual(merge_verdict_pages([page([record(101)], [pinned])], CONTEXT).total, 1)
+                self.rejected([page([record(101, case_ref="other-case")], [pinned])], "CHECK_DIGEST_MISMATCH")
+
+    def test_only_finding_id_may_change_without_the_digest(self):
+        pinned = check(101) | {"payload_sha256": _digest(record(101))}
+        self.assertEqual(merge_verdict_pages([page([record(101, finding_id=55)], [pinned])], CONTEXT).total, 1)
+
+    def test_row_that_cannot_be_canonical_is_rejected(self):
+        self.rejected([page([record(101, score=0.5)])], "RECORD_NOT_CANONICAL")
+
+    def test_broken_original_does_not_hide_behind_an_undecidable_check(self):
+        # 재확인이 undecidable이어도 원본이 깨졌으면 정상 KG 부재가 아니다.
+        undecidable = ["kg_snapshot_unavailable"]
+        for label, broken in (("모르는 값", record(101, oracle_value="not-a-verdict")),
+                              ("판정 불일치", record(101, vuln_verdict="suspected")),
+                              ("allowed인데 값 있음", record(101, "allowed", vuln_verdict="allowed")),
+                              ("다른 reset", record(101, reset_generation="reset-2")),
+                              ("계약 밖 필드", record(101, challenge="x"))):
+            with self.subTest(label):
+                self.rejected([page([broken], [check(101, "undecidable", undecidable)])], "RECORD_INVALID")
 
     def test_manual_count_stays_out_of_the_records(self):
         result = merge_verdict_pages([page([record(101)], manual_confirmation_count=9)], CONTEXT)
@@ -176,6 +235,7 @@ class TestMerge(unittest.TestCase):
         self.rejected(changed(extra=1), "CHECK_FIELDS")
         self.rejected(changed(payload_sha256="A" * 64), "CHECK_DIGEST")
         self.rejected(changed(payload_sha256=None), "CHECK_DIGEST")
+        self.rejected(changed(payload_sha256="b" * 64), "CHECK_DIGEST_MISMATCH")
         self.rejected(changed(issuance_ref=""), "CHECK_REF")
         self.rejected(changed(kg_snapshot_ref=None), "CHECK_REF")
         self.rejected(changed(record_id=True), "CHECK_ID")
