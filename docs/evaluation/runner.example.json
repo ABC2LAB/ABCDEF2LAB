@@ -34,6 +34,7 @@
  "observer_path": "/api/Challenges",
  "observer_readonly_ref": "docs/evaluation/profiles/evidence/observer-readonly-juice-shop-15.0.0-20261104.json",
  "e2": {"ours_mode": "none"},
+ "engine_rules": null,
  "state": null,
  "engine": {
   "llm_provider": "openai",

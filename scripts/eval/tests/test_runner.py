@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import json
 import os
@@ -164,6 +165,7 @@ class FakeEvidence:
 
 class FakePorts:
     def __init__(self, spec):
+        self.rules_sha256 = None
         self.spec = spec
         self.calls = []
         self.fail = {}
@@ -282,6 +284,11 @@ class FakePorts:
     def engine_settings(self):
         self._call("engine_settings")
         return copy.deepcopy(self.settings)
+
+    def apply_engine_rules(self):
+        self._call("apply_engine_rules")
+        return {"format": "rules-evidence", "file_sha256": self.rules_sha256 or self.spec.engine_rules_sha256,
+                "injected": 2, "seeded": 25}
 
     def start_task(self):
         self._call("start_task")
@@ -822,6 +829,34 @@ class TestFailures(unittest.TestCase):
         self.assertEqual((drain["grace_seconds"], drain["settle_seconds"], drain["forced_cancelled"],
                           drain["settle_applied_seconds"]), (30, 2, 1, 2))
         self.assertEqual(evidence.files["run-record.json"]["total_requests"], 2)
+
+    def test_runs_without_rules_make_no_rule_call(self):
+        result, ports, _, evidence = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("apply_engine_rules", ports.calls)
+        self.assertNotIn("engine-rules.json", evidence.files)
+        self.assertIsNone(result["engine_rules"])
+        self.assertIsNone(result["run_conditions"]["engine_rules_sha256"])
+
+    def test_rules_go_in_before_the_settings_snapshot_and_are_recorded(self):
+        spec = dataclasses.replace(make_spec(), engine_rules_sha256="a" * 64)
+        result, ports, _, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        rules_at = ports.calls.index("apply_engine_rules")
+        self.assertEqual(ports.calls[rules_at - 1:rules_at + 2], ["scoreboard:pre", "apply_engine_rules", "engine_settings"])
+        self.assertEqual(evidence.files["engine-rules.json"]["file_sha256"], "a" * 64)
+        self.assertEqual(result["engine_rules"], evidence.files["engine-rules.json"])
+        self.assertEqual(result["run_conditions"]["engine_rules_sha256"], "a" * 64)
+
+    def test_rule_failure_or_other_file_invalidates_the_run_before_the_task(self):
+        spec = dataclasses.replace(make_spec(), engine_rules_sha256="a" * 64)
+        for label, mutate in (("failed", failing("apply_engine_rules")),
+                              ("other_file", lambda p, m, c: setattr(p, "rules_sha256", "b" * 64))):
+            with self.subTest(label):
+                result, ports, _, evidence = run(mutate, spec=spec)
+                self.assert_invalid(result, ports, evidence, "engine_rules_failed")
+                self.assertNotIn("start_task", ports.calls)
+                self.assertNotIn("engine-rules.json", evidence.files)
 
     def test_run_conditions_are_recorded_and_signed(self):
         result, ports, _, evidence = run()

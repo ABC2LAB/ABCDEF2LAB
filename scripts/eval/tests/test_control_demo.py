@@ -75,7 +75,7 @@ class Root:
         self.minute = 0
 
     def run(self, repeat=0, side="baseline", condition="원본 ①", counts=None, state=..., solved=0, e2_mode="none",
-            proof=None, evidence=None, task=TASK, model=MODEL, meter=None) -> Path:
+            proof=None, evidence=None, task=TASK, model=MODEL, meter=None, rules=None) -> Path:
         self.minute += 1
         run_id = f"{side}-20261106t00{self.minute:02d}00z-0000000a"
         directory = self.path / run_id
@@ -97,7 +97,7 @@ class Root:
             if meter is None else meter
         result = {"format": RESULT_FORMAT, "run_id": run_id, "side": side, "status": "complete",
                   "started_at": f"2026-11-06T00:{self.minute:02d}:00Z", "task_request_sha256": task,
-                  "e2_mode": e2_mode, "meter": summary, "evidence": hashes}
+                  "e2_mode": e2_mode, "meter": summary, "evidence": hashes, "engine_rules": rules}
         (directory / "runner-result.json").write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
         record = dict(CONTEXT, run_id=run_id, model_tag=model, engine=side, condition=condition, repeat_index=repeat,
                       isolation_proof=proof,
@@ -419,6 +419,51 @@ class TestRefusals(Case):
                                   ({"condition": "원본 ①"}, "같은 조건 이름")):
             with self.subTest(expected), self.assertRaisesRegex(DemoError, expected):
                 check_columns(two(**options))
+
+
+class TestRules(Case):
+    RULES = {"file_sha256": "ab" * 32, "injected": 3, "seeded": 25, "allow_over_seeded": 0}
+
+    def test_rule_file_row_shows_the_hash_prefix_and_count(self):
+        plain, ruled = self.root("plain"), self.root("ruled")
+        plain.run()
+        ruled.run(condition="원본 ②", rules=self.RULES)
+        table = self.table(plain, ruled)
+        self.assertEqual(table["원본 규칙 파일(sha256 앞부분)"], ["없음", "abababababab (주입 3)"])
+        self.assertEqual(table["내장 통제를 앞지를 수 있는 파일 allow(기대 0)"], ["—", "0 (0)"])
+
+    def test_allow_ahead_of_seeded_is_shown_and_noted(self):
+        plain, clean, ahead = self.root("plain"), self.root("clean"), self.root("ahead")
+        plain.run()
+        clean.run(condition="원본 ②", rules=self.RULES)
+        self.assertNotIn("앞지를 수 있는 파일 allow가 있는 열", render_table(
+            [read_column(plain.path, KEY), read_column(clean.path, KEY)]))
+        ahead.run(condition="원본 ②-b", rules=dict(self.RULES, allow_over_seeded=2))
+        column = read_column(ahead.path, KEY)
+        self.assertEqual(rows(render_table([column]))["내장 통제를 앞지를 수 있는 파일 allow(기대 0)"], ["2 (2)"])
+        self.assertIn("`원본 ① + 파일 규칙`으로만 읽을 수 없다", render_table([column]))
+
+    def test_one_column_is_one_rule_file(self):
+        for label, other in (("other_file", dict(self.RULES, file_sha256="cd" * 32)), ("no_rules", None)):
+            with self.subTest(label):
+                one = self.root(label)
+                one.run(repeat=0, rules=self.RULES)
+                one.run(repeat=1, rules=other)
+                with self.assertRaisesRegex(DemoError, "규칙 파일이 섞임"):
+                    read_column(one.path, KEY)
+
+    def test_rule_record_format_is_checked(self):
+        good = {"file_sha256": "a", "injected": 1, "seeded": 1, "allow_over_seeded": 0}
+        without_allow = {"file_sha256": "a", "injected": 1, "seeded": 1}
+        cases = {"not_object": "x", "hash": dict(good, file_sha256=1), "injected": dict(good, injected=-1),
+                 "seeded": dict(good, seeded=True), "allow": dict(good, allow_over_seeded=-1),
+                 "allow_missing": without_allow}
+        for label, rules in cases.items():
+            with self.subTest(label):
+                one = self.root(label)
+                one.run(rules=rules)
+                with self.assertRaisesRegex(DemoError, "규칙 적용 기록 형식 오류"):
+                    read_column(one.path, KEY)
 
 
 class TestMain(Case):

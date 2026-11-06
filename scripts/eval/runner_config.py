@@ -28,6 +28,7 @@ CONFIG_VERSION = 1
 SIDES = ("baseline", "ours")
 # 엔진 LLM 정책 스위치(ARTEX_LLM_POLICY_MODE, #125)가 있는 쪽. baseline(e53a79f)에는 없다.
 POLICY_SWITCH_SIDE = "ours"
+BASELINE_SIDE = "baseline"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_COMMON = REPO_ROOT / "deploy" / "engine-isolated" / "compose.yaml"
 COMPOSE_LOCAL_LLM = REPO_ROOT / "deploy" / "engine-isolated" / "compose.local-llm.yaml"
@@ -133,7 +134,7 @@ MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
-               "observer_readonly_ref", "e2", "state")
+               "observer_readonly_ref", "e2", "state", "engine_rules")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -215,6 +216,8 @@ class RunnerConfig:
     e2_ours_mode: str
     # 상태 차이 설정(_STATE_FIELDS) 또는 None(끔). 양쪽 회차에 같게 적용한다.
     state: dict | None
+    # 원본 ② 규칙 파일 경로 또는 None(프로토콜 §8.1). 원본 회차에만 쓴다. 조건마다 설정 파일을 따로 둔다.
+    engine_rules: str | None
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -344,6 +347,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     if "llm_policy_mode" in engine and engine["llm_policy_mode"] not in _LLM_POLICY_MODES:
         errors.append("config.engine.llm_policy_mode: UNSUPPORTED")
     e2 = _exact(top.get("e2"), ("ours_mode",), "config.e2", errors) if "e2" in top else {}
+    if "engine_rules" in top and top["engine_rules"] is not None and not _absolute_path(top["engine_rules"]):
+        errors.append("config.engine_rules: EXPECTED_ABSOLUTE_PATH")
     if "ours_mode" in e2 and e2["ours_mode"] not in E2_MODES:
         errors.append("config.e2.ours_mode: UNSUPPORTED")
     state = _state(top.get("state"), errors) if "state" in top else None
@@ -447,7 +452,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         llm_gateway={name: gateway[name] for name in _GATEWAY_FIELDS},
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},
-        observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], state=state)
+        observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], state=state,
+        engine_rules=top["engine_rules"])
 
 
 def _state(raw: object, errors: list[str]) -> dict | None:
@@ -581,6 +587,9 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         check_preflight(preflight)
     except PreflightError as exc:
         raise RunnerConfigError(["preflight: " + error for error in exc.errors]) from None
+    # 원본 ②의 규칙은 원본 자체 기능이다. 개선 후의 통제는 E② 자리로만 다룬다(프로토콜 §8.1).
+    if config.engine_rules is not None and side != BASELINE_SIDE:
+        raise RunnerConfigError(["config.engine_rules: BASELINE_ONLY"])
     declared = preflight[side]
     llm = dict(declared["llm"])
     origin = urlsplit(declared["target_origin"])

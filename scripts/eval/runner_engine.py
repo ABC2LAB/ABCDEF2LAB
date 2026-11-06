@@ -43,6 +43,22 @@ MAX_LOGIN_RESPONSE_BYTES = 64 * 1024
 MAX_PASSWORD_LENGTH = 1024
 FINDINGS_FORMAT = "abc2lab-eval-runner-findings-v1"
 MAX_TASK_RESPONSE_BYTES = 1024 * 1024
+INTERCEPT_RULES_PATH = "/api/intercept/rules"
+INTERCEPT_TOOLS_PATH = "/api/intercept/tool-config"
+RULES_FORMAT = "abc2lab.engine-intercept-rules/v1"
+RULES_EVIDENCE_FORMAT = "abc2lab-eval-engine-rules-v1"
+MAX_RULES_FILE_BYTES = 1024 * 1024
+MAX_RULES = 512
+MAX_RULES_RESPONSE_BYTES = 4 * 1024 * 1024
+_RULES_FILE_FIELDS = {"format", "enabled_tools", "rules"}
+_RULE_FIELDS = ("name", "priority", "match_target", "match_type", "pattern", "action", "message")
+_RULE_TARGETS = ("tool_name", "tool_input")
+_RULE_TYPES = ("string", "regex")
+# ask는 사람이 답해야 끝나므로 자동 회차에 쓸 수 없다.
+_RULE_ACTIONS = ("allow", "deny")
+RULE_TIMEOUT_SECONDS = 60
+RULE_TIMEOUT_ACTION = "deny"
+_RULE_VIEW_FIELDS = (*_RULE_FIELDS, "enabled", "timeout_enabled", "timeout_seconds", "timeout_action")
 _TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+=*\Z")
 # 엔진 작업 ID(server/manager.go가 int64를 10진 문자열로 낸다).
 _TASK_ID = re.compile(r"[1-9][0-9]{0,18}\Z")
@@ -81,6 +97,16 @@ def _post(port: int, path: str, body: bytes, headers: dict, timeout: float, limi
     with closing(http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)) as connection:
         connection.set_debuglevel(0)
         connection.request("POST", path, body=body, headers={
+            "Content-Type": "application/json", "Accept": "application/json", "Connection": "close", **headers})
+        with closing(connection.getresponse()) as response:
+            return response.status, response.read(limit + 1)
+
+
+def _put(port: int, path: str, body: bytes, headers: dict, timeout: float, limit: int) -> tuple[int, bytes]:
+    """루프백 엔진 API에 PUT 한 번. _post와 같은 연결 규칙이다."""
+    with closing(http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)) as connection:
+        connection.set_debuglevel(0)
+        connection.request("PUT", path, body=body, headers={
             "Content-Type": "application/json", "Accept": "application/json", "Connection": "close", **headers})
         with closing(connection.getresponse()) as response:
             return response.status, response.read(limit + 1)
@@ -204,6 +230,152 @@ def start_task(port: int, secret: AdminSecret, request: TaskRequest, timeout: fl
     if not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id):
         raise EngineAPIError("task_create_response_invalid")
     return task_id
+
+
+@dataclass(frozen=True)
+class EngineRules:
+    """원본 ② 규칙 파일(프로토콜 §8.1). 내용은 규칙 담당이 챌린지 목록을 보지 않고 쓰고, 러너는 형식만 본다."""
+    sha256: str
+    rules: tuple[dict, ...]
+    enabled_tools: tuple[str, ...] | None  # None이면 엔진 기본 도구 목록을 그대로 둔다
+
+
+def load_engine_rules(path: str | Path) -> EngineRules:
+    """규칙 파일을 읽어 형식을 검사한다. 정규식 문법은 엔진(RE2)이 등록 때 본다."""
+    try:
+        with open(path, "rb") as source:
+            data = source.read(MAX_RULES_FILE_BYTES + 1)
+    except OSError:
+        raise EngineAPIError("engine_rules_file_unreadable") from None
+    try:
+        if len(data) > MAX_RULES_FILE_BYTES:
+            raise ValueError
+        payload = json.loads(data.decode("utf-8"), object_pairs_hook=_settings_object)
+    except (UnicodeError, ValueError):
+        raise EngineAPIError("engine_rules_file_invalid") from None
+    if (not isinstance(payload, dict) or set(payload) != _RULES_FILE_FIELDS or payload["format"] != RULES_FORMAT
+            or not _rules_valid(payload["rules"]) or not _tools_valid(payload["enabled_tools"])):
+        raise EngineAPIError("engine_rules_file_invalid")
+    tools = payload["enabled_tools"]
+    return EngineRules(hashlib.sha256(data).hexdigest(), tuple(payload["rules"]), None if tools is None else tuple(tools))
+
+
+def _rule_valid(rule: object) -> bool:
+    return (isinstance(rule, dict) and set(rule) == set(_RULE_FIELDS)
+            and isinstance(rule["name"], str) and bool(rule["name"]) and type(rule["priority"]) is int
+            and rule["match_target"] in _RULE_TARGETS and rule["match_type"] in _RULE_TYPES
+            and isinstance(rule["pattern"], str) and bool(rule["pattern"]) and rule["action"] in _RULE_ACTIONS
+            and isinstance(rule["message"], str))
+
+
+def _rules_valid(rules: object) -> bool:
+    if not isinstance(rules, list) or not 0 < len(rules) <= MAX_RULES or not all(_rule_valid(rule) for rule in rules):
+        return False
+    return len({rule["name"] for rule in rules}) == len(rules)  # 등록 뒤 이름으로 맞춰 본다
+
+
+def _tools_valid(tools: object) -> bool:
+    if tools is None:
+        return True
+    return (isinstance(tools, list) and bool(tools) and all(isinstance(tool, str) and bool(tool) for tool in tools)
+            and len(set(tools)) == len(tools))
+
+
+def _rule_view(rule: object) -> dict:
+    """비교·해시에 쓰는 규칙 내용. 엔진이 매기는 id·시각은 뺀다. 모르는 형태면 멈춘다."""
+    if not isinstance(rule, dict) or any(field not in rule for field in _RULE_VIEW_FIELDS):
+        raise EngineAPIError("engine_rules_response_invalid")
+    return {field: rule[field] for field in _RULE_VIEW_FIELDS}
+
+
+def _engine_json(status_data: tuple[int, bytes], expected: int, limit: int) -> object:
+    status, data = status_data
+    if status != expected:
+        raise EngineAPIError(f"engine_rules_http_{status}")
+    try:
+        if len(data) > limit:
+            raise ValueError
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        raise EngineAPIError("engine_rules_response_invalid") from None
+
+
+def _active_rules(port: int, headers: dict, timeout: float) -> list[dict]:
+    payload = _engine_json(_get(port, INTERCEPT_RULES_PATH, headers, timeout, MAX_RULES_RESPONSE_BYTES), 200,
+                           MAX_RULES_RESPONSE_BYTES)
+    if not isinstance(payload, dict) or not isinstance(payload.get("rules"), list):
+        raise EngineAPIError("engine_rules_response_invalid")
+    return [_rule_view(rule) for rule in payload["rules"]]
+
+
+def _active_tools(port: int, headers: dict, timeout: float) -> list[str]:
+    payload = _engine_json(_get(port, INTERCEPT_TOOLS_PATH, headers, timeout, MAX_RULES_RESPONSE_BYTES), 200,
+                           MAX_RULES_RESPONSE_BYTES)
+    tools = payload.get("enabled_tools") if isinstance(payload, dict) else None
+    if not isinstance(tools, list) or not all(isinstance(tool, str) for tool in tools):
+        raise EngineAPIError("engine_rules_response_invalid")
+    return tools
+
+
+def _rule_body(rule: dict) -> dict:
+    # 사람이 답해야 하는 ask와 시간 제한은 자동 회차에서 쓰지 않는다. 꺼져 있어 쓰이지 않는 값은 내장 규칙과 같게 둔다.
+    return dict(rule, enabled=True, timeout_enabled=False, timeout_seconds=RULE_TIMEOUT_SECONDS,
+                timeout_action=RULE_TIMEOUT_ACTION)
+
+
+def apply_engine_rules(port: int, secret: AdminSecret, rules: EngineRules, timeout: float) -> dict:
+    """새 엔진 DB에 규칙을 넣고 다시 읽어 그대로인지 확인한다. 실패해도 다시 보내지 않는다(회차 무효).
+
+    원본 ②는 원본 ① 기본 설정에 규칙을 더한 것이다. 그래서 내장 규칙을 건드리지 않고, 규칙을 타는 도구를 줄이는 파일은
+    아무것도 쓰기 전에 거부한다. 앞서는 allow는 예외가 필요할 수 있어 막지 않고 건수를 근거에 남긴다.
+    """
+    token = login(port, secret, timeout)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        seeded = _active_rules(port, headers, timeout)
+        if {rule["name"] for rule in seeded} & {rule["name"] for rule in rules.rules}:
+            raise EngineAPIError("engine_rules_name_collision")
+        tools_before = _active_tools(port, headers, timeout)
+        if rules.enabled_tools is not None and not set(tools_before) <= set(rules.enabled_tools):
+            raise EngineAPIError("engine_rules_tools_narrowed")
+        for rule in rules.rules:
+            _engine_json(_post(port, INTERCEPT_RULES_PATH, json.dumps(_rule_body(rule)).encode("utf-8"), headers, timeout,
+                               MAX_RULES_RESPONSE_BYTES), 200, MAX_RULES_RESPONSE_BYTES)
+        if rules.enabled_tools is not None:
+            body = json.dumps({"enabled_tools": list(rules.enabled_tools)}).encode("utf-8")
+            _engine_json(_put(port, INTERCEPT_TOOLS_PATH, body, headers, timeout, MAX_RULES_RESPONSE_BYTES), 200,
+                         MAX_RULES_RESPONSE_BYTES)
+        active = _active_rules(port, headers, timeout)
+        tools = _active_tools(port, headers, timeout)
+    except (OSError, http.client.HTTPException, ValueError, OverflowError):
+        raise EngineAPIError("engine_rules_unreachable") from None
+    expected = seeded + [_rule_body(rule) for rule in rules.rules]
+    if (_rules_sorted(active) != _rules_sorted(expected)
+            or (rules.enabled_tools is not None and tools != list(rules.enabled_tools))):
+        raise EngineAPIError("engine_rules_not_applied")
+    return {"format": RULES_EVIDENCE_FORMAT, "file_sha256": rules.sha256, "injected": len(rules.rules),
+            "seeded": len(seeded), "seeded_enabled": sum(1 for rule in seeded if rule["enabled"] is True),
+            "seeded_sha256": _rules_sha256(seeded), "active_sha256": _rules_sha256(active), "tools_before": tools_before,
+            "enabled_tools": tools, "allow_over_seeded": _allow_over_seeded(rules.rules, seeded)}
+
+
+def _allow_over_seeded(rules: tuple[dict, ...], seeded: list[dict]) -> int:
+    """켜진 내장 통제(deny·ask) 중 하나라도 앞지를 수 있는 파일 allow 수. 패턴이 실제로 겹치는지는 보지 않는다.
+
+    엔진은 priority가 큰 규칙부터, 같으면 먼저 등록한 규칙부터 본다. 내장 규칙이 먼저 등록되므로 같은 priority는 앞지르지 못한다.
+    """
+    controls = [rule["priority"] for rule in seeded if rule["enabled"] is True and rule["action"] != "allow"]
+    if not controls:
+        return 0
+    return sum(1 for rule in rules if rule["action"] == "allow" and rule["priority"] > min(controls))
+
+
+def _rules_sorted(rules: list[dict]) -> list[str]:
+    return sorted(json.dumps(rule, sort_keys=True, ensure_ascii=False) for rule in rules)
+
+
+def _rules_sha256(rules: list[dict]) -> str:
+    return hashlib.sha256("\n".join(_rules_sorted(rules)).encode("utf-8")).hexdigest()
 
 
 def _unique_object(pairs):
