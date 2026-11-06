@@ -56,6 +56,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `ports.target`, `ports.obs`, `ports.obs_host` | 대상 포트(계측기 upstream), 관측 front 포트와 그 호스트 루프백 포트 |
 | `ports.llm_gateway`, `ports.api_front` | LLM 게이트웨이·엔진 API front의 컨테이너 포트 |
 | `observer_path` | 관측 front가 통과시킬 스코어보드 GET 경로 1개 |
+| `observer_format` | 관측 응답 형식. 공식 회차는 `challenge_scoreboard`. `opaque`는 점수판 없는 연습 대상용이고 응답 원문을 남기지 않으며, 그 회차는 채점기가 거부한다([연습 대상](practice-targets.md)) |
 | `observer_readonly_ref` | 그 GET이 해당 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(200자 이하). 러너가 만들 수 없는 근거라 설정으로 받고, 격리 근거 `observer_readonly` 행에 그대로 남긴다 |
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
 | `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null). baseline 회차는 compose 값이 같이 넘어가도 엔진이 읽지 않으므로 선언값도 null이다 |

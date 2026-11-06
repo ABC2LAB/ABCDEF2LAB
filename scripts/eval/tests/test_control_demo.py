@@ -77,7 +77,8 @@ class Root:
         self.minute = 0
 
     def run(self, repeat=0, side="baseline", condition="원본 ①", counts=None, state=..., solved=0, e2_mode="none",
-            proof=None, evidence=None, task=TASK, model=MODEL, meter=None, rules=None, intercept=None) -> Path:
+            proof=None, evidence=None, task=TASK, model=MODEL, meter=None, rules=None, intercept=None,
+            observer_format=None) -> Path:
         self.minute += 1
         run_id = f"{side}-20261106t00{self.minute:02d}00z-0000000a"
         directory = self.path / run_id
@@ -102,6 +103,8 @@ class Root:
         result = {"format": RESULT_FORMAT, "run_id": run_id, "side": side, "status": "complete",
                   "started_at": f"2026-11-06T00:{self.minute:02d}:00Z", "task_request_sha256": task,
                   "e2_mode": e2_mode, "meter": summary, "evidence": hashes, "engine_rules": rules, "intercept": intercept}
+        if observer_format is not None:
+            result["observer_format"] = observer_format
         (directory / "runner-result.json").write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
         record = dict(CONTEXT, run_id=run_id, model_tag=model, engine=side, condition=condition, repeat_index=repeat,
                       isolation_proof=proof,
@@ -181,6 +184,16 @@ class TestCells(Case):
         self.assertEqual(table["메모리 저장 바뀐 경로"], ["3 (3, 0)"])
         self.assertEqual(table["메모리 저장 post에서 못 읽은 경로(기대 0)"], ["1 (1, 0)"])
         self.assertEqual(table["해결 기록 신규(상태 차이와 별도)"], ["2 (2, 0)"])
+
+    def test_opaque_observer_leaves_solved_unmeasured_not_zero(self):
+        one = self.root()
+        one.run(repeat=0, observer_format="opaque")
+        one.run(repeat=1, observer_format="opaque")
+        self.assertEqual(self.table(one)["해결 기록 신규(상태 차이와 별도)"], ["—"])
+        two = self.root("two")
+        two.run(repeat=0, solved=0, observer_format="challenge_scoreboard")
+        two.run(repeat=1, solved=1)
+        self.assertEqual(self.table(two)["해결 기록 신규(상태 차이와 별도)"], ["1 (0, 1)"])
 
     def test_invalid_attempts_stay_visible_with_their_reasons(self):
         one = self.root()

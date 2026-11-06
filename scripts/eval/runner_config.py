@@ -126,13 +126,17 @@ _LLM_POLICY_MODES = ("external",)
 # 제품 E²가 들어오면 값이 하나 늘어난다. baseline은 항상 none이다(원본에는 E²가 없다).
 E2_NONE, E2_STUB = "none", "stub"
 E2_MODES = (E2_NONE, E2_STUB)
+# 관측 경로 응답 형식. opaque는 점수판 없는 연습 대상용이고 그 회차는 채점기가 거부한다(docs/evaluation/practice-targets.md).
+OBSERVER_SCOREBOARD = "challenge_scoreboard"
+OBSERVER_OPAQUE = "opaque"
+OBSERVER_FORMATS = (OBSERVER_SCOREBOARD, OBSERVER_OPAQUE)
 _IMAGE_ROLES = ("engine_baseline", "engine_ours", "engine_db", "meter")
 _PORTS = ("engine_api_host", "engine_container", "target", "obs", "obs_host", "llm_gateway", "api_front")
 # expected_provider_name: generation 조회가 돌려주는 응답 제공자 표시 이름(고정 slug와 짝, 팀이 정함).
 _GATEWAY_FIELDS = ("generation_path", "verify_attempts", "verify_interval_seconds", "ca_bundle", "expected_provider_name")
 MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
-               "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
+               "observer_path", "observer_format", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
                "observer_readonly_ref", "e2", "state", "engine_rules")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
@@ -191,6 +195,7 @@ class RunnerConfig:
     target_image_id: str
     ports: dict[str, int]
     observer_path: str
+    observer_format: str
     llm_provider: str
     llm_stream: bool
     llm_policy_mode: str
@@ -338,6 +343,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
             errors.append("config.ports: HOST_PORT_CONFLICT")
     if "observer_path" in top and not _observer_path(top["observer_path"]):
         errors.append("config.observer_path: INVALID")
+    if "observer_format" in top and top["observer_format"] not in OBSERVER_FORMATS:
+        errors.append("config.observer_format: INVALID")
     engine = (_exact(top.get("engine"), ("llm_provider", "llm_stream", "llm_policy_mode"), "config.engine", errors)
               if "engine" in top else {})
     if "llm_provider" in engine and engine["llm_provider"] not in _LLM_PROVIDERS:
@@ -442,6 +449,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     return RunnerConfig(
         runs_root=Path(top["runs_root"]), secrets_env_file=Path(top["secrets_env_file"]), images=images,
         target_image_id=top["target_image_id"], ports=dict(ports), observer_path=top["observer_path"],
+        observer_format=top["observer_format"],
         llm_provider=engine["llm_provider"], llm_stream=engine["llm_stream"], llm_policy_mode=engine["llm_policy_mode"],
         engine_db_user=db["user"], engine_db_name=db["name"],
         tmpfs_engine_db=tmpfs["engine_db"], tmpfs_engine_data=tmpfs["engine_data"], tmpfs_min_free=tmpfs["min_free"],

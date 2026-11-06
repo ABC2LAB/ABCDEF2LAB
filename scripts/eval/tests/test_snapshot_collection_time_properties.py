@@ -283,8 +283,8 @@ class TestSnapshotCollectionTimeProperties(unittest.TestCase):
         received = datetime(2026, 5, 1, 0, 0, 1, tzinfo=timezone.utc)
         original = snapshot_collector.write_snapshot
 
-        def wrong_phase(root, phase, raw, context, *, max_bytes):
-            return original(root, "post" if phase == "pre" else "pre", raw, context, max_bytes=max_bytes)
+        def wrong_phase(root, phase, raw, context, *, max_bytes, opaque=False):
+            return original(root, "post" if phase == "pre" else "pre", raw, context, max_bytes=max_bytes, opaque=opaque)
 
         baseline = self.run_capture(requested, received, phase="pre")
         self.assert_artifacts(baseline, self.root, "pre", requested, received, self.raw,

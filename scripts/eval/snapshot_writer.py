@@ -34,6 +34,9 @@ class SnapshotContext:
     execution_id: str
 
 
+OPAQUE_OBSERVATION_FORMAT = "abc2lab.observer-opaque/v1"
+
+
 @dataclass(frozen=True)
 class SnapshotArtifacts:
     raw: dict
@@ -101,7 +104,7 @@ def _write_file(directory: int, name: str, data: bytes, created_files: list[str]
 
 
 def write_snapshot(run_directory: str | Path, phase: str, raw: bytes, context: SnapshotContext,
-                   *, max_bytes: int) -> SnapshotArtifacts:
+                   *, max_bytes: int, opaque: bool = False) -> SnapshotArtifacts:
     """새 phase 디렉터리에 두 파일을 완성한 뒤 descriptor를 반환한다. 기존 자료는 거부한다.
 
     raw는 비민감 챌린지 응답 body만 받는다. max_bytes는 수집기 설정으로 명시한다.
@@ -122,10 +125,17 @@ def write_snapshot(run_directory: str | Path, phase: str, raw: bytes, context: S
         raise SnapshotWriteError("max_bytes는 양의 정수여야 함")
     if not isinstance(raw, bytes) or not raw or len(raw) > max_bytes:
         raise SnapshotWriteError("원본 bytes 부재/크기 상한 초과")
-    try:
-        solved = _validate_raw(raw)
-    except SnapshotError as exc:
-        raise SnapshotWriteError("원본 챌린지 구조/GT key 검증 실패") from None
+    if opaque:
+        # 점수판 없는 연습 대상. 응답은 앱 데이터일 수 있어 원문을 남기지 않고 지문만 둔다.
+        # solved가 비어 있어 채점기는 GT key 검증에서 거부한다(run_record._snapshot). 공식 표로 못 간다.
+        solved = {}
+        raw = json.dumps({"format": OPAQUE_OBSERVATION_FORMAT, "sha256": hashlib.sha256(raw).hexdigest(),
+                          "bytes": len(raw)}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    else:
+        try:
+            solved = _validate_raw(raw)
+        except SnapshotError:
+            raise SnapshotWriteError("원본 챌린지 구조/GT key 검증 실패") from None
     envelope = dict(metadata, phase=phase, solved=solved)
     try:
         normalized = json.dumps(envelope, ensure_ascii=False, sort_keys=True,
