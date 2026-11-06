@@ -57,7 +57,7 @@
             "techniqueID": "T1059",
             "tactic": "execution",
             "score": 100,
-            "comment": "ARTEX platform-guard control marker written to the audit log on a blocked tool call. sigma/artex_guard_audit_framing.yml; behaviour via sigma/correlation/artex_guard_block_burst.yml and artex_guard_marker_then_destructive.yml. Forensic/host-side. Defense guide section 2 (operator view), 4.2.",
+            "comment": "Current and historical ARTEX platform-control framing in blocked tool-result/session artifacts; current audit rows need not contain the marker. sigma/artex_guard_audit_framing.yml; behaviour via sigma/correlation/artex_guard_block_burst.yml and artex_guard_marker_then_destructive.yml. Forensic/host-side. Defense guide section 2 (operator view), 4.2.",
             "enabled": true,
             "showSubtechniques": false
         },

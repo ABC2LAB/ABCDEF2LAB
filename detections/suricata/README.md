@@ -44,8 +44,8 @@ under [`../sigma/`](../sigma/); the defense guide ([Korean reference](../../docs
   signal is behaviour — rate and breadth — which is why sid 1000002 (and the Sigma correlation layer) key on
   velocity, and why pure web multi-stage detection needs base rules specific to your environment.
 - **Deliberately omitted.** The self-update User-Agent `artex-selfupdate` travels over HTTPS to GitHub and is
-  not network-observable (TLS SNI alone is too common to alert on). The audit-control marker is an
-  operator-side log artifact, not target-facing traffic — detect it with
+  not network-observable (TLS SNI alone is too common to alert on). Current and historical guard framing markers are
+  retained tool-result/session artifacts, not target-facing traffic — detect it with
   [`../sigma/artex_guard_audit_framing.yml`](../sigma/artex_guard_audit_framing.yml). The server port `:8787`
   and recording proxy `127.0.0.1:8788` (`cmd/artex/main.go`) are host-forensic (`ss`/`netstat`), not a
   network signature.
