@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
 )
@@ -20,7 +22,7 @@ func TestReasonHintCoversEveryTerminalReason(t *testing.T) {
 		harness.ReasonMaxTurns, harness.ReasonTimeout,
 	}
 	for _, reason := range all {
-		if strings.TrimSpace(reasonHint[reason]) == "" {
+		if strings.TrimSpace(terminalEnglish.hints[reason]) == "" || strings.TrimSpace(terminalKorean.hints[reason]) == "" {
 			t.Errorf("terminal reason %q has no explanation", reason)
 		}
 	}
@@ -73,13 +75,21 @@ func TestTerminalTextAbortedNamesCauseAndHangingTool(t *testing.T) {
 		Turns:  7,
 		Usage:  llm.Usage{InputTokens: 1200, OutputTokens: 340},
 	}
-	summary, detail := terminalText(ctx, term, trace)
-	if !strings.Contains(summary, "规划者") || strings.Contains(summary, "\n") {
-		t.Fatalf("unexpected summary: %q", summary)
+	record := terminalText(ctx, term, trace)
+	if !strings.Contains(record.Summary, "killed_by_planner") || strings.Contains(record.Summary, "\n") {
+		t.Fatalf("unexpected summary: %q", record.Summary)
 	}
-	for _, want := range []string{"killed_by_planner", "aborted_tools", "7 轮", "Bash", "未返回结果", "1200"} {
-		if !strings.Contains(detail, want) {
-			t.Errorf("detail missing %q:\n%s", want, detail)
+	for _, want := range []string{"killed_by_planner", "aborted_tools", "7 model turns", "Bash", "no result returned", "1200"} {
+		if !strings.Contains(record.Detail, want) {
+			t.Errorf("detail missing %q:\n%s", want, record.Detail)
+		}
+	}
+	if !strings.Contains(record.DisplaySummary, "Planner가 이 의도를 종료함") || strings.Contains(record.DisplaySummary, "\n") {
+		t.Fatalf("unexpected display summary: %q", record.DisplaySummary)
+	}
+	for _, want := range []string{"killed_by_planner", "aborted_tools", "7", "Bash", "결과 못 받음", "1200"} {
+		if !strings.Contains(record.DisplayDetail, want) {
+			t.Errorf("display detail missing %q:\n%s", want, record.DisplayDetail)
 		}
 	}
 }
@@ -87,27 +97,28 @@ func TestTerminalTextAbortedNamesCauseAndHangingTool(t *testing.T) {
 func TestTerminalTextDirectContextCancellationKeepsCause(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(AbortChatStoppedByUser)
-	summary, detail := terminalText(ctx, &harness.Terminal{Err: context.Canceled}, &runTrace{startedAt: time.Now()})
-	if !strings.Contains(summary, "用户停止") || !strings.Contains(detail, "chat_stopped_by_user") {
-		t.Fatalf("direct context cancellation lost cause: %q\n%s", summary, detail)
+	record := terminalText(ctx, &harness.Terminal{Err: context.Canceled}, &runTrace{startedAt: time.Now()})
+	if !strings.Contains(record.DisplaySummary, "사용자가 이번 대화를 멈춤") || !strings.Contains(record.Detail, "chat_stopped_by_user") {
+		t.Fatalf("direct context cancellation lost cause: %q\n%s", record.DisplaySummary, record.Detail)
 	}
-	if !strings.Contains(detail, "context_canceled") {
-		t.Fatalf("missing synthesized terminal label: %s", detail)
+	if !strings.Contains(record.Detail, "context_canceled") {
+		t.Fatalf("missing synthesized terminal label: %s", record.Detail)
 	}
 }
 
 func TestTerminalTextAbortedPreservesPartialOutput(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(AbortPausedByUser)
-	summary, detail := terminalText(ctx, &harness.Terminal{
+	const partial = "already generated partial answer"
+	record := terminalText(ctx, &harness.Terminal{
 		Reason: harness.ReasonAbortedStreaming,
-		Text:   "已经生成的半段回答",
+		Text:   partial,
 	}, &runTrace{startedAt: time.Now()})
-	if !strings.Contains(summary, "用户暂停") {
-		t.Fatalf("abort summary lost cause: %q", summary)
+	if !strings.Contains(record.DisplaySummary, "사용자가 작업을 일시정지함") {
+		t.Fatalf("abort summary lost cause: %q", record.DisplaySummary)
 	}
-	if !strings.Contains(detail, "已经生成的半段回答") {
-		t.Fatalf("abort detail lost partial output: %s", detail)
+	if !strings.Contains(record.Detail, partial) || !strings.Contains(record.DisplayDetail, partial) {
+		t.Fatalf("abort detail lost partial output: %s", record.Detail)
 	}
 }
 
@@ -117,23 +128,78 @@ func TestTerminalTextCompletedToolNotBlamed(t *testing.T) {
 	trace := &runTrace{startedAt: time.Now()}
 	trace.start("tu_1", "Read", `{"path":"/etc/hosts"}`)
 	trace.done("tu_1")
-	_, detail := terminalText(ctx, &harness.Terminal{Reason: harness.ReasonAbortedStreaming}, trace)
-	if strings.Contains(detail, "未返回结果") || !strings.Contains(detail, "已正常返回") {
-		t.Fatalf("completed tool was blamed:\n%s", detail)
+	record := terminalText(ctx, &harness.Terminal{Reason: harness.ReasonAbortedStreaming}, trace)
+	if strings.Contains(record.Detail, "no result returned") || !strings.Contains(record.Detail, "returned normally") {
+		t.Fatalf("completed tool was blamed:\n%s", record.Detail)
+	}
+	if strings.Contains(record.DisplayDetail, "결과 못 받음") || !strings.Contains(record.DisplayDetail, "정상 반환") {
+		t.Fatalf("completed tool was blamed on screen:\n%s", record.DisplayDetail)
 	}
 }
 
 func TestTerminalTextNonAbortReasons(t *testing.T) {
 	trace := &runTrace{startedAt: time.Now()}
-	summary, _ := terminalText(context.Background(), &harness.Terminal{Reason: harness.ReasonMaxTurns}, trace)
-	if !strings.Contains(summary, "运行预算上限") || strings.Contains(summary, "中断") {
-		t.Fatalf("unexpected max_turns summary: %q", summary)
+	record := terminalText(context.Background(), &harness.Terminal{Reason: harness.ReasonMaxTurns}, trace)
+	if !strings.Contains(record.Summary, "run budget limit") || strings.Contains(record.Summary, "interrupted") {
+		t.Fatalf("unexpected max_turns summary: %q", record.Summary)
 	}
-	summary, detail := terminalText(context.Background(), &harness.Terminal{
+	if !strings.Contains(record.DisplaySummary, "실행 예산 상한") || strings.Contains(record.DisplaySummary, "중단") {
+		t.Fatalf("unexpected max_turns display summary: %q", record.DisplaySummary)
+	}
+	record = terminalText(context.Background(), &harness.Terminal{
 		Reason: harness.ReasonModelError, Err: errors.New("429 rate limited"),
 	}, trace)
-	if !strings.Contains(summary, "model_error") || !strings.Contains(detail, "429 rate limited") {
-		t.Fatalf("model_error detail incomplete: %q\n%s", summary, detail)
+	if !strings.Contains(record.Summary, "model_error") || !strings.Contains(record.Detail, "429 rate limited") {
+		t.Fatalf("model_error detail incomplete: %q\n%s", record.Summary, record.Detail)
+	}
+}
+
+// 모델이 읽는 글은 영어, 사람이 보는 글은 한국어이고, 코드와 enum 값은 어느 쪽에서도 그대로여야 한다.
+func TestTerminalTextLanguagePerReader(t *testing.T) {
+	for _, reason := range []harness.TerminalReason{
+		harness.ReasonCompleted, harness.ReasonMaxTurns, harness.ReasonTimeout, harness.ReasonModelError,
+		harness.ReasonBlockingLimit, harness.ReasonPromptTooLong, harness.ReasonImageError,
+		harness.ReasonStopHookPrevented, harness.ReasonHookStopped, harness.ReasonAbortedStreaming, harness.ReasonAbortedTools,
+	} {
+		for _, words := range []terminalWords{terminalEnglish, terminalKorean} {
+			if words.hints[reason] == "" {
+				t.Errorf("%s: missing hint", reason)
+			}
+		}
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(AbortGoalMet)
+		trace := &runTrace{startedAt: time.Now()}
+		trace.start("tu_1", "Bash", "{}")
+		record := terminalText(ctx, &harness.Terminal{Reason: reason, Turns: 2, Usage: llm.Usage{InputTokens: 1}}, trace)
+		english := record.Summary + record.Detail
+		if strings.IndexFunc(english, func(r rune) bool { return unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hangul, r) }) >= 0 {
+			t.Errorf("%s: model text must be English:\n%s", reason, english)
+		}
+		display := record.DisplaySummary + record.DisplayDetail
+		if strings.IndexFunc(display, func(r rune) bool { return unicode.Is(unicode.Han, r) }) >= 0 ||
+			strings.IndexFunc(display, func(r rune) bool { return unicode.Is(unicode.Hangul, r) }) < 0 {
+			t.Errorf("%s: display text must be Korean:\n%s", reason, display)
+		}
+		if !strings.Contains(record.Detail, string(reason)) || !strings.Contains(record.DisplayDetail, string(reason)) {
+			t.Errorf("%s: terminal label must stay in both languages", reason)
+		}
+	}
+}
+
+func TestTerminalRecordActivityCarriesDisplayText(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(AbortGoalMet)
+	got := terminalText(ctx, &harness.Terminal{Reason: harness.ReasonAbortedTools}, &runTrace{startedAt: time.Now()}).
+		activity(db.Activity{Kind: "result", IsError: true})
+	if !got.IsError || got.Kind != "result" {
+		t.Fatalf("base fields lost: %+v", got)
+	}
+	if !strings.Contains(got.Summary, "goal_met") || strings.Contains(got.Detail, "Planner가") {
+		t.Fatalf("stored text must be the model text: %+v", got)
+	}
+	shown := got.ForDisplay()
+	if !strings.Contains(shown.Summary, "Planner가 작업 목표 달성으로 판정함") || !strings.Contains(shown.Detail, "Planner가") || shown.Metadata != nil {
+		t.Fatalf("display text not applied: %+v", shown)
 	}
 }
 
@@ -154,6 +220,10 @@ func TestAbortCausesAreWellFormed(t *testing.T) {
 			t.Errorf("%s has invalid short text: %q", abort.Code, abort.Short)
 		case utf8.RuneCountInString(abort.Text) <= utf8.RuneCountInString(abort.Short):
 			t.Errorf("%s detail must be longer than short text", abort.Code)
+		case abort.ModelText == "" || strings.IndexFunc(abort.ModelText, func(r rune) bool { return r > unicode.MaxASCII }) >= 0:
+			t.Errorf("%s model text must be non-empty ASCII: %q", abort.Code, abort.ModelText)
+		case strings.IndexFunc(abort.Short+abort.Text, func(r rune) bool { return unicode.Is(unicode.Han, r) }) >= 0:
+			t.Errorf("%s display text must not contain Han", abort.Code)
 		}
 		seen[abort.Code] = true
 	}
