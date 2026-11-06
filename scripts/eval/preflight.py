@@ -17,6 +17,8 @@ MAX_URL_LENGTH = 512
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 # 엔진 압축 기준 창(K 토큰). profile_fingerprint와 같은 범위(엔진 agent/provider.go가 이 범위로 자른다).
 MIN_CONTEXT_WINDOW_K, MAX_CONTEXT_WINDOW_K = 32, 1000
+# 모델이 어디에 올라가야 하는가. gpu는 전부 GPU에 올라가 있어야 하고, any는 개발용 CPU 회차다(러너가 서버 값으로 대조).
+LOCAL_PLACEMENTS = ("gpu", "any")
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 _REFERENCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9./:_-]*\Z")
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
@@ -61,7 +63,8 @@ MAX_PENALTY = 2
 _LLM_FIELDS = {
     "api": ("backend", "base_url", "model", "provider", "fallbacks"),
     # 태그만으로는 고정이 아니다. 가중치 digest·서버가 할당한 컨텍스트·서버 버전을 함께 선언한다(러너가 실제 값과 대조).
-    "local": ("backend", "base_url", "model", "hostname", "host_ip", "model_digest", "context_length", "server_version"),
+    "local": ("backend", "base_url", "model", "hostname", "host_ip", "model_digest", "context_length", "server_version",
+              "placement"),
 }
 _MODEL_DIGEST = re.compile(r"[0-9a-f]{64}")
 _SERVER_VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
@@ -172,7 +175,8 @@ def _llm(value: object) -> bool:
             and any(address in network for network in _LOCAL_NETWORKS)
             and isinstance(value["model_digest"], str) and bool(_MODEL_DIGEST.fullmatch(value["model_digest"]))
             and type(value["context_length"]) is int and 1 <= value["context_length"] <= MAX_CONTEXT_LENGTH
-            and isinstance(value["server_version"], str) and bool(_SERVER_VERSION.fullmatch(value["server_version"])))
+            and isinstance(value["server_version"], str) and bool(_SERVER_VERSION.fullmatch(value["server_version"]))
+            and value["placement"] in LOCAL_PLACEMENTS)
 
 
 def _number(value: object, *, positive: bool) -> bool:

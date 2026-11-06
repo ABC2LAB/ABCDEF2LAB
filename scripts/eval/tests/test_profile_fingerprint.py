@@ -30,7 +30,7 @@ def api_llm():
 
 def local_llm():
     return {"backend": "local", "base_url": "http://llm-host:11434/v1", "model": "example-model:fixed-tag",
-            "hostname": "llm-host", "host_ip": "172.17.0.1", "model_digest": "a" * 64, "context_length": 32768, "server_version": "0.32.6"}
+            "hostname": "llm-host", "host_ip": "172.17.0.1", "model_digest": "a" * 64, "context_length": 32768, "server_version": "0.32.6", "placement": "any"}
 
 
 LOCAL_SAMPLING = {"top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0.25}
@@ -199,6 +199,7 @@ class TestProfileFingerprint(unittest.TestCase):
             "local.host_ip": (local_llm(), {"host_ip": "10.0.0.5"}),
             "local.model_digest": (local_llm(), {"model_digest": "b" * 64}),
             "local.context_length": (local_llm(), {"context_length": 65536}),
+            "local.placement": (local_llm(), {"placement": "gpu"}),
             "local.server_version": (local_llm(), {"server_version": "0.33.0"}),
         }
         for name, (base, change) in cases.items():
@@ -365,6 +366,7 @@ class TestProfileFingerprint(unittest.TestCase):
                       api_llm() | {"model": "example-model"}, api_llm() | {"hostname": "llm-host"},
                       local_llm() | {"host_ip": "127.0.0.1"}, local_llm() | {"host_ip": "203.0.113.5"},
                       local_llm() | {"model_digest": "A" * 64}, local_llm() | {"model_digest": "a" * 63},
+                      local_llm() | {"placement": "cpu"}, local_llm() | {"placement": None},
                       local_llm() | {"context_length": 0}, local_llm() | {"context_length": True},
                       local_llm() | {"context_length": 5 * 1024 * 1024}, local_llm() | {"server_version": "latest"},
                       {k: v for k, v in local_llm().items() if k != "context_length"},

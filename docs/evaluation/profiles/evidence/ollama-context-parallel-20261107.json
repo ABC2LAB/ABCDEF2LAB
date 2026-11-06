@@ -1,0 +1,28 @@
+{
+  "format": "ollama-context-parallel-v1",
+  "measured_at": "2026-11-07",
+  "server": {"name": "ollama", "version": "0.32.6", "backend": "cpu"},
+  "model": "qwen2.5:1.5b",
+  "method": "임시 서버를 OLLAMA_CONTEXT_LENGTH·OLLAMA_NUM_PARALLEL로 띄우고 /api/ps를 읽는다. 잘림은 /v1/chat/completions에 합성 낱말을 길이별로 보내 usage.prompt_tokens로 본다.",
+  "truncation": {
+    "settings": {"OLLAMA_CONTEXT_LENGTH": 2048, "OLLAMA_NUM_PARALLEL": 2},
+    "reported_context_length": 2048,
+    "rows": [
+      {"words": 500, "prompt_tokens": 530},
+      {"words": 1500, "prompt_tokens": 1530},
+      {"words": 3000, "prompt_tokens": 1026},
+      {"words": 6000, "prompt_tokens": 1026}
+    ],
+    "finding": "넘친 입력은 HTTP 오류 없이 잘린다. 잘린 뒤 평가 토큰은 컨텍스트의 절반쯤이다. 슬롯 2개에서 1530이 그대로 들어가므로 보고된 context_length는 합계가 아니라 요청 하나의 상한이다."
+  },
+  "size_by_parallel": {
+    "settings": {"OLLAMA_CONTEXT_LENGTH": 8192},
+    "rows": [
+      {"OLLAMA_NUM_PARALLEL": 1, "context_length": 8192, "size": 1367647190},
+      {"OLLAMA_NUM_PARALLEL": 2, "context_length": 8192, "size": 1603136388},
+      {"OLLAMA_NUM_PARALLEL": 4, "context_length": 8192, "size": 2074114784}
+    ],
+    "finding": "슬롯을 늘려도 context_length는 그대로이고 메모리만 슬롯 수에 비례해 늘어난다. 슬롯 수는 /api/ps에 없어서 size로만 간접 확인된다."
+  },
+  "limits": "CPU·소형 모델 실측이다. GPU·35B 모델과 다른 서버 버전에서 같은 값이 나온다고 주장하지 않는다."
+}

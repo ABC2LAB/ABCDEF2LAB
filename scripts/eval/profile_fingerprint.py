@@ -17,6 +17,8 @@ from urllib.parse import urlsplit
 FORMAT = "abc2lab-eval-profile-v6"
 # 엔진 압축 기준 창(K 토큰). 엔진이 이 범위로 잘라 쓰므로(agent/provider.go) 범위 밖 선언은 적용값과 달라진다.
 MIN_CONTEXT_WINDOW_K, MAX_CONTEXT_WINDOW_K = 32, 1000
+# 모델이 어디에 올라가야 하는가. gpu는 전부 GPU에 올라가 있어야 하고, any는 개발용 CPU 회차다(러너가 서버 값으로 대조).
+LOCAL_PLACEMENTS = ("gpu", "any")
 PROFILE_VERSION = 5
 MAX_INPUT_BYTES = 64 * 1024
 MAX_PATH_LENGTH = 512
@@ -66,7 +68,8 @@ MAX_PENALTY = 2
 _LLM_FIELDS = {
     "api": ("backend", "base_url", "model", "provider", "fallbacks"),
     # 태그만으로는 고정이 아니다. 가중치 digest·서버가 할당한 컨텍스트·서버 버전을 함께 선언한다(러너가 실제 값과 대조).
-    "local": ("backend", "base_url", "model", "hostname", "host_ip", "model_digest", "context_length", "server_version"),
+    "local": ("backend", "base_url", "model", "hostname", "host_ip", "model_digest", "context_length", "server_version",
+              "placement"),
 }
 _MODEL_DIGEST = re.compile(r"[0-9a-f]{64}")
 _SERVER_VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
@@ -245,7 +248,8 @@ def _llm(value: object) -> bool:
             and any(address in network for network in _LOCAL_NETWORKS)
             and isinstance(value["model_digest"], str) and bool(_MODEL_DIGEST.fullmatch(value["model_digest"]))
             and type(value["context_length"]) is int and 1 <= value["context_length"] <= MAX_CONTEXT_LENGTH
-            and isinstance(value["server_version"], str) and bool(_SERVER_VERSION.fullmatch(value["server_version"])))
+            and isinstance(value["server_version"], str) and bool(_SERVER_VERSION.fullmatch(value["server_version"]))
+            and value["placement"] in LOCAL_PLACEMENTS)
 
 
 def _path(value: object) -> str:

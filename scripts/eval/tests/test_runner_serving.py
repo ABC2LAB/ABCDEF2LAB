@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import subprocess
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
@@ -12,12 +13,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from runner_serving import (KEEP_ALIVE_SHORT, MAX_RESPONSE_BYTES, MISMATCH, UNVERIFIED, ServingError,  # noqa: E402
-                            judge_serving, read_serving, unload_model)
+from runner_serving import (GPU_APPS_COMMAND, KEEP_ALIVE_SHORT, MAX_RESPONSE_BYTES, MIB, MISMATCH, UNVERIFIED,  # noqa: E402
+                            ServingError, judge_serving, parse_gpu_apps_memory, read_gpu_used_bytes, read_serving,
+                            unload_model)
 
 MODEL = "example-model:fixed-tag"
 DIGEST = "a" * 64
-DECLARED = {"server_version": "0.32.6", "model_digest": DIGEST, "context_length": 32768}
+DECLARED = {"server_version": "0.32.6", "model_digest": DIGEST, "context_length": 32768, "placement": "any"}
+ON_GPU = dict(DECLARED, placement="gpu")
 NOW = datetime(2026, 11, 6, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -126,8 +129,53 @@ class TestRead(Case):
 
 class TestJudge(unittest.TestCase):
     def observed(self, **change):
-        return dict(DECLARED, size=1, size_vram=0, quantization_level=None, other_models_loaded=3,
+        return dict(DECLARED, size=1, size_vram=0, gpu_used_bytes=None, quantization_level=None, other_models_loaded=0,
                     keep_alive_remaining_seconds=100) | change
+
+    def test_gpu_placement_needs_the_whole_model_in_gpu_memory(self):
+        # gpu_used_bytes 경계: 90이 하한이다(size_vram 100의 0.9배).
+        cases = [({"size": 100, "size_vram": 100, "gpu_used_bytes": 100}, None),
+                 ({"size": 100, "size_vram": 100, "gpu_used_bytes": 90}, None),
+                 ({"size": 100, "size_vram": 100, "gpu_used_bytes": 500}, None),
+                 ({"size": 100, "size_vram": 100, "gpu_used_bytes": 89}, "llm_serving_not_on_gpu"),
+                 # 서버가 전량 GPU라고 해도 GPU 쪽에 없으면 파일 크기 대체값일 수 있다.
+                 ({"size": 100, "size_vram": 100, "gpu_used_bytes": 0}, "llm_serving_not_on_gpu"),
+                 ({"size": 100, "size_vram": 100, "gpu_used_bytes": None}, "llm_serving_unverified"),
+                 ({"size": 100, "size_vram": 101, "gpu_used_bytes": 200}, "llm_serving_unverified"),
+                 ({"size": 100, "size_vram": 99, "gpu_used_bytes": 99}, "llm_serving_not_on_gpu"),
+                 ({"size": 100, "size_vram": 0, "gpu_used_bytes": 0}, "llm_serving_not_on_gpu"),
+                 ({"size": None, "size_vram": 100, "gpu_used_bytes": 100}, "llm_serving_unverified"),
+                 ({"size": 100, "size_vram": None, "gpu_used_bytes": 100}, "llm_serving_unverified"),
+                 ({"size": 0, "size_vram": 0, "gpu_used_bytes": 0}, "llm_serving_unverified"),
+                 # 다른 모델의 메모리가 GPU 합계에 들어가 파일 크기 대체값을 통과시킬 수 있다.
+                 ({"size": 100, "size_vram": 100, "gpu_used_bytes": 100, "other_models_loaded": 1}, "llm_serving_unverified"),
+                 ({"size": 100, "size_vram": 100, "gpu_used_bytes": 500, "other_models_loaded": 3}, "llm_serving_unverified")]
+        for change, reason in cases:
+            with self.subTest(change=change):
+                self.assertEqual(judge_serving(self.observed(**change), ON_GPU), reason)
+
+    def test_gpu_apps_memory_reading(self):
+        for text, expected in (("", 0), ("\n", 0), ("100\n", 100 * MIB), ("100\n 200 \n", 300 * MIB), ("[N/A]\n", None),
+                               ("100\n[N/A]\n", None), ("-1\n", None), ("1.5\n", None), ("٣\n", None)):
+            with self.subTest(text=text):
+                self.assertEqual(parse_gpu_apps_memory(text), expected)
+
+    def test_gpu_read_failures_are_unknown_not_zero(self):
+        def raises(error):
+            def run(command):
+                raise error
+            return run
+        for error in (FileNotFoundError(), subprocess.TimeoutExpired("x", 1), subprocess.CalledProcessError(9, "x")):
+            with self.subTest(error=type(error).__name__):
+                self.assertIsNone(read_gpu_used_bytes(raises(error)))
+        seen = []
+        self.assertEqual(read_gpu_used_bytes(lambda command: seen.append(command) or "7\n"), 7 * MIB)
+        self.assertEqual(seen, [GPU_APPS_COMMAND])
+
+    def test_any_placement_does_not_judge_gpu_memory(self):
+        self.assertIsNone(judge_serving(self.observed(size=100, size_vram=0), DECLARED))
+        self.assertIsNone(judge_serving(self.observed(size=None, size_vram=None), DECLARED))
+        self.assertIsNone(judge_serving(self.observed(other_models_loaded=3), DECLARED))
 
     def test_same_values_pass_and_recorded_fields_are_not_judged(self):
         self.assertIsNone(judge_serving(self.observed(), DECLARED))

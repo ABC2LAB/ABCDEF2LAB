@@ -5,7 +5,7 @@
 
 > **11/05 결정(프로토콜 §6 측정 흐름):** 공식 비교 수치는 파이프라인이 완성된 뒤 비교 시점에 GPU 로컬로 원본·개선 후를 같은 세션에서 잰 회차만 쓴다.
 > 이 문서의 OpenRouter(API) 절차는 **API 개발 측정** 세션용이며, API 회차 수치를 공식 비교표에 넣지 않는다. GPU 로컬 공식 세션은 같은 순서·도구를 쓰되
-> GPU 프로파일·서빙 서버 준비를 비교 시점에 이 문서에 추가한다(후속).
+> GPU 프로파일·서빙 서버 준비는 [8절](#8-gpu-로컬-세션-준비초안)에 초안이 있고, 업체·사양을 정하는 비교 시점에 값을 채운다.
 
 ## 1. 역할
 
@@ -172,3 +172,68 @@ python3 -I -B scripts/eval/score.py /srv/abc2lab-eval/official-<날짜>/manifest
 - runs_root(서명된 회차 기록·근거 파일)와 manifest·채점 출력을 레포 밖에 그대로 보관하고, 디렉터리별 SHA-256 목록을 함께 둔다. **레포에 커밋하지 않는다**(절대 규칙 2).
 - 러너 서명 키는 채점 재현에 필요하므로 회차 기록과 **다른 곳**에 보관한다.
 - 세션 기록(날짜, 제공자 재조회 응답 sha256, 이미지 ID, 태그 커밋, **도구 출처 커밋과 `tools-frozen` 확인**, 집계 출력)을 결과 문서에 옮긴다.
+
+## 8. GPU 로컬 세션 준비(초안)
+
+**상태: 초안.** 실제 GPU와 35B 모델로 돌린 적이 없다. 소형 모델·CPU 실측([근거](profiles/evidence/ollama-context-parallel-20261107.json), [러너 문서](runner.md) "스모크 실측")으로 절차만 맞췄다. 업체·사양을 정하면 빈칸을 채우고 시범으로 확인한다. 서빙 서버는 지금 러너가 읽을 수 있는 Ollama 기준이다.
+
+### 정할 값
+
+| 값 | 어디에 | 정하는 법 |
+|---|---|---|
+| 모델 태그·digest | 프로파일 `llm.model`·`llm.model_digest` | 프로토콜 §6의 Qwen3.5 35B-A3B. 정확한 양자화 태그는 그 GPU에 전부 올라가는 것으로 고르고, digest는 적재 뒤 `/api/ps`에서 옮긴다. 추측해서 적지 않는다 |
+| 서버 버전 | `llm.server_version` | `/api/version` 값. 세션 동안 바꾸지 않는다 |
+| 컨텍스트 | `llm.context_length`, 서버 `OLLAMA_CONTEXT_LENGTH` | 긴 회차에서 입력이 잘리지 않을 만큼. 넘친 입력은 오류 없이 절반쯤으로 잘린다 |
+| 압축 기준 창 | `context_window_k` | ×1000이 `context_length` 이하. 사전검사가 넘으면 거부한다 |
+| 동시 요청 슬롯 | 서버 `OLLAMA_NUM_PARALLEL` | `worker_count`에 Planner를 더한 수 이상을 기본으로 하고, 시범의 게이트웨이 행으로 실제 동시 요청 수를 확인한다. 모자라면 요청이 줄을 서서 시간 예산을 쓴다 |
+| worker 수 | `worker_count` | 러너가 양쪽에 같은 값을 넣는다 |
+| 위치 | `llm.placement` | `gpu` |
+
+메모리는 슬롯 수에 비례해 늘고 `context_length`는 요청 하나의 상한이다. 그래서 컨텍스트와 슬롯을 함께 정한 뒤 `size`와 VRAM을 재서 전부 올라가는지 본다. 안 올라가면 양자화·컨텍스트·슬롯 중 하나를 줄인다. 값을 바꾸면 양쪽 회차를 처음부터 다시 돈다.
+
+### 서버 띄우기
+
+컨테이너가 닿는 고정 IP에만 바인딩한다. `0.0.0.0`은 러너 호스트 점검에 걸린다. 값은 위 표에서 정한 것을 넣는다.
+
+```bash
+OLLAMA_HOST=<docker0 IP>:<포트> OLLAMA_CONTEXT_LENGTH=<컨텍스트> OLLAMA_NUM_PARALLEL=<슬롯> OLLAMA_MAX_LOADED_MODELS=1 ollama serve
+```
+
+유지 기간은 환경 변수로 주지 않는다. 러너가 적재할 때 회차 길이만큼 주고 작업 생성 직전에 다시 주며, 회차 뒤에 내린다.
+
+### 선언 확인
+
+적재한 뒤 서버 값을 읽어 프로파일에 옮기고, 전부 GPU에 있는지 본다.
+
+```bash
+curl -s http://<docker0 IP>:<포트>/api/generate -d '{"model":"<태그>","stream":false,"keep_alive":"300s"}'
+curl -s http://<docker0 IP>:<포트>/api/version
+curl -s http://<docker0 IP>:<포트>/api/ps   # digest, context_length, size, size_vram
+```
+
+`size_vram`이 `size`보다 작으면 일부가 CPU에 있는 것이다. 그 상태로는 회차가 `llm_serving_not_on_gpu`로 무효가 된다.
+
+**서버 값만으로는 GPU 적재를 증명하지 못한다.** Ollama는 버퍼 통계가 없으면 모델 파일 크기를 `size`·`size_vram` 양쪽에 넣는다(v0.32.6 `llm/llama_server.go` `MemorySize`). 그래서 `placement`가 `gpu`이면 러너가 `/api/ps`와 따로 `nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits`를 읽어 `size_vram`의 90% 이상인지 본다. 값은 `llm-serving.json`의 `gpu_used_bytes`에 남는다.
+
+- **지원 범위:** `nvidia-smi`가 프로세스별 메모리를 내주는 NVIDIA GPU만이다. 다른 backend나 `[N/A]`이면 `llm_serving_unverified`로 공식 회차를 만들지 않는다.
+- **90%는 실제 GPU로 맞춘 값이 아니다.** 시범에서 `gpu_used_bytes`와 `size_vram`을 비교해 확인한다. 값을 바꾸면 양쪽 회차를 처음부터 다시 돈다.
+- **모든 compute 프로세스의 합이다.** 다른 GPU 작업이 있으면 부풀어서 이 검사가 뚫린다. `/api/ps`에 다른 모델이 보이면 러너가 `llm_serving_unverified`로 막지만, Ollama 밖의 GPU 프로세스는 구분하지 못한다. 그래서 아래 세션 점검을 지킨다.
+
+프로파일은 `official-35b.json`을 복사해 `environment`만 바꾼다. local의 `sampling`은 서버가 적용하는 세 값뿐이다(프로토콜 §6).
+
+```json
+{
+  "llm": {"backend": "local", "base_url": "http://<호스트 이름>:<포트>/v1", "model": "<태그>", "hostname": "<호스트 이름>",
+          "host_ip": "<docker0 IP>", "model_digest": "<digest>", "context_length": 0, "server_version": "<버전>", "placement": "gpu"},
+  "sampling": {"top_p": 0.95, "presence_penalty": 1.5, "frequency_penalty": 0.0},
+  "context_window_k": 0,
+  "worker_count": 0
+}
+```
+
+### 세션 점검
+
+- **API 절차와 다른 점:** 3절 제공자 재조회와 API 키가 필요 없다. 비밀 파일에는 관리자·DB 비밀번호만 둔다. 4·5·6절은 같다.
+- **기록할 것:** GPU 모델·VRAM·드라이버 버전, 서버 환경 변수, 양자화 태그. 러너 기록에 없는 값이라 세션 기록에 직접 남긴다.
+- **세션 중 서버를 재시작하지 않는다.** 슬롯 수는 `/api/ps`에 없어서 러너가 대조하지 못한다. 회차마다 `llm-serving.json`의 `size`가 같은지 보고, 다르면 설정이 바뀐 것으로 보고 원인을 확인한다.
+- **다른 GPU 작업을 같이 돌리지 않는다.** 메모리가 밀리면 무효로 끝나고, 무효 규칙은 프로토콜 §5.1을 따른다.

@@ -27,7 +27,7 @@ LOCAL_SAMPLING = {"top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0
 
 def local_llm():
     return {"backend": "local", "base_url": "http://llm-host:11434/v1", "model": "example-model:fixed-tag",
-            "hostname": "llm-host", "host_ip": "172.17.0.1", "model_digest": "a" * 64, "context_length": 32768, "server_version": "0.32.6"}
+            "hostname": "llm-host", "host_ip": "172.17.0.1", "model_digest": "a" * 64, "context_length": 32768, "server_version": "0.32.6", "placement": "any"}
 
 
 def configuration():
@@ -286,6 +286,8 @@ class TestCheckPreflight(unittest.TestCase):
             local_llm() | {"model_digest": "a" * 63},
             local_llm() | {"model_digest": 1},
             local_llm() | {"context_length": 0},
+            local_llm() | {"placement": "cpu"}, local_llm() | {"placement": None}, local_llm() | {"placement": True},
+            {k: v for k, v in local_llm().items() if k != "placement"},
             local_llm() | {"context_length": 5 * 1024 * 1024},
             local_llm() | {"context_length": True},
             local_llm() | {"context_length": "32768"},
