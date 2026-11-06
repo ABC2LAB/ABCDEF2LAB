@@ -276,6 +276,10 @@ def e2_mode(receipt: dict, evidence: object) -> str:
     return row["mode"]
 
 
+def _matches(pattern: re.Pattern, value: object) -> bool:
+    return isinstance(value, str) and bool(pattern.fullmatch(value))
+
+
 def e2_product_row(receipt: dict, evidence: object) -> dict | None:
     """제품 E② 수집 결과 행(연결 제안 §4.3). product 회차에만 정확히 한 행 있고, 제품 실패도 유효 회차다."""
     mode = e2_mode(receipt, evidence)
@@ -285,8 +289,8 @@ def e2_product_row(receipt: dict, evidence: object) -> dict | None:
             raise IsolationError("isolation_evidence.e2_product: 제품 E² 회차에만 있음")
         return None
     row = _one(_rows(evidence, receipt), "e2_product")
-    if (not _E2_SHA256.fullmatch(str(row["config_sha256"])) or not _E2_SHA256.fullmatch(str(row["policy_fingerprint_sha256"]))
-            or not _E2_IMAGE_ID.fullmatch(str(row["image_id"]))):
+    if (not _matches(_E2_SHA256, row["config_sha256"]) or not _matches(_E2_SHA256, row["policy_fingerprint_sha256"])
+            or not _matches(_E2_IMAGE_ID, row["image_id"])):
         raise IsolationError("isolation_evidence.e2_product: 대조 값 형식 오류")
     close, outcome, reason = row["close_state"], row["collection_outcome"], row["collection_reason"]
     if close not in E2_CLOSE_STATES or outcome not in E2_COLLECTION_OUTCOMES:

@@ -282,6 +282,9 @@ class TestRejectedV11(_V11):
                  # 합이 1이면 True도 합과 같아 보인다.
                  ({"attempts": True, "decisions": {"allowed": 1, "denied": 0, "unsupported": 0}}, "결정 건수 형식 오류"),
                  ({"config_sha256": "x"}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": None}, "대조 값 형식 오류"),
+                 # 숫자는 문자열로 바꾸면 hex처럼 보인다.
+                 ({"policy_fingerprint_sha256": int("2" * 64)}, "대조 값 형식 오류"), ({"config_sha256": int("1" * 64)}, "대조 값 형식 오류"),
+                 ({"policy_fingerprint_sha256": ["2" * 64]}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": "A" * 64}, "대조 값 형식 오류"),
                  ({"image_id": "abc"}, "대조 값 형식 오류"), ({"image_id": "4" * 64}, "대조 값 형식 오류"), ({"image_id": None}, "대조 값 형식 오류"))
         for index, (changes, pattern) in enumerate(cases):
             with self.subTest(changes=changes):
