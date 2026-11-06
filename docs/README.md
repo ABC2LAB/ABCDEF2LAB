@@ -7,6 +7,7 @@
 
 - [프로젝트 목표와 현재 상태](../README.md)
 - [로컬 개발·소스 빌드](local-dev-ko.md)
+- [외부 LLM 사용 진단 사전 공지·승인 양식](external-llm-notice-ko.md)
 - [기여와 검증 절차](../CONTRIBUTING.md)
 - [유지보수와 통합 확인](../MAINTAINING.md)
 - [보안 문제 신고](../SECURITY.md)
