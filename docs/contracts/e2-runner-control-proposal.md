@@ -11,6 +11,7 @@
 - **인증:** 경로 접근 제한과 `SO_PEERCRED`를 쓴다. 양쪽 모두 상대 uid가 `EVAL_RUNNER_UID`인지 확인한다. 별도 토큰은 두지 않는다. 엔진·도구는 uid가 다르고 이 mount가 없다는 §2.3 배치 음성 시험이 전제다.
 - **인증 범위:** 평가 배치에서 엔진·도구를 막는 장치다. 같은 uid로 도는 다른 호스트 프로세스는 구분하지 못한다. 그래서 프로토콜 §2의 전용 호스트 운영 조건이 함께 있어야 하고, 평가 밖에서 쓰려면 별도 역할 uid나 회차 자격이 필요하다.
 - **환경:** bind mount된 socket을 쓸 수 없는 환경은 시작을 거부한다.
+- **시한:** 러너는 단계 전체 시한을 연결·보내기·받기마다 남은 시간으로 적용한다. 조금씩 오는 답이 시한을 늘리지 못하고, 시한 뒤 도착한 답은 받지 않는다.
 - **재시도와 조회:** `ready`·`head`·`close_status`는 상태 변화 없이 **현재 상태를 돌려주는 조회**라서, 같은 요청에도 답이 `starting`→`service_ready`, `closing`→`complete`처럼 바뀐다. 상태를 바꾸는 요청은 `bind`와 `close`뿐이고 둘 다 멱등이다. 같은 값의 `bind`는 같은 답을 돌려주고, 다른 값은 `error`다. 같은 `close_request_ref`의 `close`를 다시 보내도 종료 절차는 한 번만 돌고 답도 같다. 연결이 끊기면 러너는 같은 값으로만 다시 묻는다.
 
 ## 2. 메시지
@@ -31,7 +32,13 @@
 - `checkpoint`는 `{"sequence": 0 이상의 정수, "mac": 소문자 hex 64자}`이고 없으면 `null`이다.
 - `state=service_ready`이면 `config_sha256`·`header_mode`·`policy_fingerprint_sha256`이 전부 있어야 한다. `starting`·`failed`이면 `null`이다.
 - `state=complete`이면 `execution_ref`·`manifest_sha256`·`checkpoint`가 전부 있어야 하고, 응답은 manifest를 원자적으로 게시한 뒤에만 나간다(§4.2의 4번).
-- `reason`과 `code`는 고정 어휘이고 원문 오류·경로·값을 담지 않는다. 비밀값·요청 내용을 담는 필드는 없다.
+- `reason`과 `code`는 아래 고정 어휘이고 원문 오류·경로·값을 담지 않는다. 비밀값·요청 내용을 담는 필드는 없다. 어휘 밖 값이 오면 러너는 값을 옮기지 않고 형식 오류로 처리한다.
+
+| 필드 | 어휘 |
+|---|---|
+| `ready.reason` | `config_rejected`, `policy_rejected`, `audit_unavailable`, `startup_failed` |
+| `close_status.reason` | `e2proxy.Reason` 값 전부, `drain_timeout`, `audit_incomplete`, `publish_failed` |
+| `error.code` | `other_run`, `bad_request`, `not_ready`, `bind_conflict`, `close_ref_conflict`, `closed`, `unavailable` |
 
 ## 3. 러너 동작
 
