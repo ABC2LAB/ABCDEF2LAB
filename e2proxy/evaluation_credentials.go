@@ -14,7 +14,12 @@ type EvaluationCallerContext struct {
 	TargetKind string `json:"target_kind"`
 }
 
-const EvaluationPublicPractice = "public_practice"
+const (
+	EvaluationPublicPractice = "public_practice"
+	// 신뢰 host와 회차 기록이 같은 백엔드 식별값을 사용하도록 고정한다.
+	EvaluationLLMBackendLocal = "local"
+	EvaluationLLMBackendAPI   = "api"
+)
 
 func cloneEvaluationCallerContext(value *EvaluationCallerContext) *EvaluationCallerContext {
 	if value == nil {
@@ -33,7 +38,7 @@ func validateEvaluationCallerContext(cfg Config) (*EvaluationCallerContext, erro
 	}
 	value := cfg.Evaluation
 	if value == nil || value.RunRef != cfg.Scope.RunRef || value.TargetKind != EvaluationPublicPractice ||
-		(value.LLMBackend != "local" && value.LLMBackend != "api") {
+		(value.LLMBackend != EvaluationLLMBackendLocal && value.LLMBackend != EvaluationLLMBackendAPI) {
 		return nil, ErrConfig
 	}
 	return cloneEvaluationCallerContext(value), nil

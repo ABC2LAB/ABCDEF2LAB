@@ -13,7 +13,7 @@
 | 필드 | 검사 |
 |---|---|
 | `run_ref` | 기존 승인 Scope.RunRef와 정확히 같음 |
-| `llm_backend` | `local` 또는 `api` |
+| `llm_backend` | `EvaluationLLMBackendLocal`(`local`) 또는 `EvaluationLLMBackendAPI`(`api`) |
 | `target_kind` | `public_practice` |
 
 이는 신뢰 host의 **선언**이며 공개 연습 대상·승인·격리·tmpfs·삭제를
@@ -60,4 +60,6 @@ Set-Cookie 등 자격 응답의 전체 보류/unknown 한도는 그대로다.
 근거: [평가 프로토콜 `2](../evaluation/evaluation-protocol.md#2-평가-대상-고정),
 [전달 지원 범위](e2-proxy-transfer-scope.md),
 [DLP 경계](dlp-projection.md). 외부 LLM 정책은 병합된 #254의 사전 공지·승인을
-따르며, 미병합 #257의 모델·보고서 문서를 채택하거나 변경하지 않는다.
+따른다. 로컬 모델 도입 방향은 병합된 #257을 반영한
+[LLM 도입·개선 계획](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/llm-adoption-and-improvement-plan.md)을 따르며, 이 코어가 모델을 선택하거나
+실행·서빙 검증을 대신하지 않는다.
