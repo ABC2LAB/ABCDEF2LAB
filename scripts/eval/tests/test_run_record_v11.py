@@ -259,6 +259,14 @@ class TestRejectedV11(_V11):
         # 스트리밍은 bool만 받는다(1·"true"를 true로 읽지 않음). 행에서 빠져도 거부.
         self.reject("run_conditions", "r11", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(llm_stream=1))
         self.reject("run_conditions", "r12", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("llm_stream"))
+        # 규칙 파일 해시는 없으면 null, 있으면 64자 hex다. 행에서 빠져도 거부.
+        self.reject("run_conditions", "r13", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            engine_rules_sha256="x"))
+        self.reject("run_conditions", "r14", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop(
+            "engine_rules_sha256"))
+        ruled = self.inputs(self.v11("rul", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            engine_rules_sha256="a" * 64)))
+        self.assertIn("a" * 64, ruled.run_conditions)
 
     def test_iw12_drain_times_are_checked_against_the_window(self):
         # fixture: 봉인 00:08, drain 완료 00:09, timeline drained 00:09, post 00:10 — 경계값(같은 시각)은 통과
@@ -472,7 +480,8 @@ class TestComparison(_V11):
                    "적용 샘플링": lambda row: row["sampling"].update(temperature=0.7),
                    "머신 사양": lambda row: row["host"].update(memory_kib=1),
                    "머신": lambda row: row.update(machine_id_sha256="0" * 64),
-                   "LLM 스트리밍": lambda row: row.update(llm_stream=False)}
+                   "LLM 스트리밍": lambda row: row.update(llm_stream=False),
+                   "엔진 규칙 파일": lambda row: row.update(engine_rules_sha256="a" * 64)}
         for index, (label, change) in enumerate(changes.items()):
             with self.subTest(label=label):
                 other = self.v11(f"m{index}", repeat_index=1,
