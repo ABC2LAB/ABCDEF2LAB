@@ -75,7 +75,7 @@ const (
 	errNotifyDigestRange   = "요약 주기는 1~1440분 사이여야 합니다"
 
 	// 사용자 대면 출력 언어 설정 (putSettings)
-	errOutputLanguageInvalid = "지원하지 않는 언어입니다(en·ko·zh·es·ja 중 하나여야 합니다)"
+	errOutputLanguageInvalid = "지원하지 않는 언어입니다(ko만 지원합니다)"
 
 	// 메인 에이전트 대화·세션 (newMainSession / chat)
 	errTaskDeletingNewSession = "작업을 삭제하는 중이라 새 세션을 만들 수 없습니다"
@@ -3506,8 +3506,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		NotifyEnabled    *bool   `json:"notify_enabled"`
 		NotifyBaseURL    *string `json:"notify_public_base_url"`
 		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
-		// 사용자 대면 출력 언어(en/ko/zh/es/ja). 에이전트 훅이 매 턴 읽으므로 즉시 적용되고
-		// 에이전트를 다시 생성할 필요가 없다. null=변경 안 함.
+		// 표시 언어는 ko만 지원한다. null이면 기존 설정을 유지한다.
 		OutputLanguage *string `json:"output_language"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -3534,8 +3533,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.OutputLanguage != nil {
-		// 지원 언어("en"/"ko"/"zh"/"es")만 받는다. 에이전트 훅이 매 턴 읽으므로 즉시
-		// 적용되고 에이전트를 다시 생성할 필요가 없다.
+		// 저장 전에 ko 단일 언어 계약을 검사한다.
 		lang := config.NormalizeLanguage(*req.OutputLanguage)
 		if lang == "" {
 			writeErr(w, 400, errOutputLanguageInvalid)

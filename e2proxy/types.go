@@ -57,6 +57,8 @@ type HeaderMode string
 
 const (
 	HeaderPreserve HeaderMode = "preserve"
+	// Evaluation-only caller credentials; requires a matching Evaluation context.
+	HeaderEvaluationCallerPassthrough HeaderMode = "evaluation_caller_passthrough"
 	// This opt-in host seam is a Draft proposal, not an adopted general-mode
 	// contract or an authorization to activate protected session injection.
 	HeaderProtectedSessionProposal HeaderMode = "protected_session_proposal"
@@ -88,6 +90,7 @@ type Limits struct {
 	MaxUnknown     uint64
 }
 type Config struct {
+	Evaluation     *EvaluationCallerContext
 	HeaderMode     HeaderMode
 	Scope          transmit.Scope
 	IntentID       int64
@@ -146,18 +149,19 @@ type Counts struct {
 	Calls            int    `json:"calls"`
 }
 type ExecutionView struct {
-	HeaderMode     HeaderMode     `json:"header_mode"`
-	IntentIDs      []int64        `json:"intent_ids"`
-	Version        string         `json:"version"`
-	Scope          transmit.Scope `json:"scope"`
-	IntentID       int64          `json:"intent_id"`
-	OwnerRef       string         `json:"owner_ref"`
-	PolicyRevision string         `json:"policy_revision"`
-	State          string         `json:"state"`
-	ExpiresAt      time.Time      `json:"expires_at"`
-	Counts         Counts         `json:"counts"`
-	Reason         Reason         `json:"reason"`
-	AuditComplete  bool           `json:"audit_complete"`
+	Evaluation     *EvaluationCallerContext `json:"evaluation,omitempty"`
+	HeaderMode     HeaderMode               `json:"header_mode"`
+	IntentIDs      []int64                  `json:"intent_ids"`
+	Version        string                   `json:"version"`
+	Scope          transmit.Scope           `json:"scope"`
+	IntentID       int64                    `json:"intent_id"`
+	OwnerRef       string                   `json:"owner_ref"`
+	PolicyRevision string                   `json:"policy_revision"`
+	State          string                   `json:"state"`
+	ExpiresAt      time.Time                `json:"expires_at"`
+	Counts         Counts                   `json:"counts"`
+	Reason         Reason                   `json:"reason"`
+	AuditComplete  bool                     `json:"audit_complete"`
 }
 type RuleView struct {
 	Ref          string   `json:"ref"`
@@ -165,14 +169,15 @@ type RuleView struct {
 	PathScopeRef string   `json:"path_scope_ref"`
 }
 type PolicyView struct {
-	HeaderMode        HeaderMode `json:"header_mode"`
-	BudgetRef         string     `json:"budget_ref"`
-	RemainingRequests uint64     `json:"remaining_requests"`
-	BudgetAvailable   bool       `json:"budget_available"`
-	Version           string     `json:"version"`
-	PolicyRevision    string     `json:"policy_revision"`
-	ExpiresAt         time.Time  `json:"expires_at"`
-	Rules             []RuleView `json:"rules"`
+	Evaluation        *EvaluationCallerContext `json:"evaluation,omitempty"`
+	HeaderMode        HeaderMode               `json:"header_mode"`
+	BudgetRef         string                   `json:"budget_ref"`
+	RemainingRequests uint64                   `json:"remaining_requests"`
+	BudgetAvailable   bool                     `json:"budget_available"`
+	Version           string                   `json:"version"`
+	PolicyRevision    string                   `json:"policy_revision"`
+	ExpiresAt         time.Time                `json:"expires_at"`
+	Rules             []RuleView               `json:"rules"`
 }
 type CallResult struct {
 	IntentID      int64  `json:"intent_id"`

@@ -11,19 +11,19 @@ import (
 
 func TestSetCurrentLanguageAllowsReentrantReplacement(t *testing.T) {
 	if os.Getenv("ARTEX_REENTRANT_LANGUAGE_CHILD") == "1" {
-		replacement := func() string { return "en" }
+		replacement := func() string { return "ko" }
 		SetCurrentLanguage(func() string {
 			previous := SetCurrentLanguage(replacement)
 			if previous == nil {
 				t.Error("reentrant replacement lost the active resolver")
 			}
-			return "en"
+			return "ko"
 		})
-		if got := ActiveLanguage(); got != "en" {
-			t.Fatalf("ActiveLanguage() = %q, want en", got)
+		if got := ActiveLanguage(); got != "ko" {
+			t.Fatalf("ActiveLanguage() = %q, want ko", got)
 		}
-		if got := ActiveLanguage(); got != "en" {
-			t.Fatalf("ActiveLanguage() after replacement = %q, want en", got)
+		if got := ActiveLanguage(); got != "ko" {
+			t.Fatalf("ActiveLanguage() after replacement = %q, want ko", got)
 		}
 		return
 	}
