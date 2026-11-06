@@ -202,6 +202,9 @@ class FakePorts:
         self.state_rows = {"pre": [(1, "a")], "post": [(1, "a"), (2, "b")]}
         self.state_copies = []
         self.tree_keys = []
+        self.memory_keys = []
+        self.state_memory_reads = {"pre": {"readable": True, "count": 1, "fingerprint": b"a"},
+                                   "post": {"readable": True, "count": 2, "fingerprint": b"b"}}
         self.state_tree_files = {"pre": {"ftp": b"d"}, "post": {"ftp": b"d", "ftp/order": b"f"}}
         self.sign_calls = 0
         self.sign_fail_at = None
@@ -346,6 +349,11 @@ class FakePorts:
         self.tree_keys.append(key)
         return {"/app/ftp": self.state_tree_files[phase]}
 
+    def state_memory(self, phase, snapshot, key):
+        self._call(f"memory:{phase}")
+        self.memory_keys.append(key)
+        return [dict(self.state_memory_reads[phase])]
+
     def findings(self):
         self._call("findings")
         return {"items": 0}
@@ -381,7 +389,8 @@ FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "liste
 
 
 STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 1 << 20,
-         "runtime_roots": ["/app/ftp"]}
+         "runtime_roots": ["/app/ftp"],
+         "memory": {"paths": ["/api/a/1"], "count_field": "data", "max_body_bytes": 4096, "timeout_ms": 1000}}
 
 
 class TestStateDiff(unittest.TestCase):
@@ -407,8 +416,10 @@ class TestStateDiff(unittest.TestCase):
         order = list(FULL_ORDER)
         order.insert(order.index("wait_ready") + 1, "state:pre")
         order.insert(order.index("state:pre") + 1, "trees:pre")
+        order.insert(order.index("trees:pre") + 1, "memory:pre")
         order.insert(order.index("tmpfs:post") + 1, "state:post")
         order.insert(order.index("state:post") + 1, "trees:post")
+        order.insert(order.index("trees:post") + 1, "memory:post")
         self.assertEqual(ports.calls, order)
         diff = evidence.files["state-diff.json"]
         self.assertEqual(diff["format"], "abc2lab-state-diff-v1")
@@ -425,22 +436,25 @@ class TestStateDiff(unittest.TestCase):
         diff = evidence.files["state-diff.json"]
         self.assertEqual(diff["runtime"]["/app/ftp"]["added"], 1)
         self.assertEqual((diff["runtime_changed"], diff["state_changed"]), (True, True))
-        self.assertEqual(len(set(ports.tree_keys)), 1)
+        self.assertEqual(diff["memory"], {"reads": 1, "count_pre": 1, "count_post": 2, "changed": 1,
+                                          "unreadable_post": 0})
+        self.assertEqual(len(set(ports.tree_keys + ports.memory_keys)), 1)
 
     def test_state_changed_follows_either_side(self):
         same_trees = lambda ports: ports.state_tree_files.update(post=ports.state_tree_files["pre"])
         same_rows = lambda ports: ports.state_rows.update(post=ports.state_rows["pre"])
-        for mutate, content, runtime in ((same_trees, True, False), (same_rows, False, True)):
-            with self.subTest(content=content, runtime=runtime):
-                diff = self.run_state(mutate)[3].files["state-diff.json"]
-                self.assertEqual((diff["content_changed"], diff["runtime_changed"], diff["state_changed"]),
-                                 (content, runtime, True))
-        def neither(ports):
-            same_trees(ports)
-            same_rows(ports)
-        diff = self.run_state(neither)[3].files["state-diff.json"]
-        self.assertEqual((diff["content_changed"], diff["runtime_changed"], diff["state_changed"]),
-                         (False, False, False))
+        same_memory = lambda ports: ports.state_memory_reads.update(post=ports.state_memory_reads["pre"])
+        for keep, content, runtime, memory in (((same_trees, same_memory), True, False, False),
+                                               ((same_rows, same_memory), False, True, False),
+                                               ((same_rows, same_trees), False, False, True)):
+            with self.subTest(content=content, runtime=runtime, memory=memory):
+                diff = self.run_state(lambda ports, k=keep: [m(ports) for m in k])[3].files["state-diff.json"]
+                self.assertEqual((diff["content_changed"], diff["runtime_changed"], diff["memory_changed"],
+                                  diff["state_changed"]), (content, runtime, memory, True))
+        diff = self.run_state(lambda ports: [m(ports) for m in (same_rows, same_trees, same_memory)])[3].files[
+            "state-diff.json"]
+        self.assertEqual((diff["content_changed"], diff["runtime_changed"], diff["memory_changed"],
+                          diff["state_changed"]), (False, False, False, False))
 
     def test_empty_runtime_roots_take_no_tree_copy(self):
         def mutate(ports, meter, clock):
@@ -450,13 +464,21 @@ class TestStateDiff(unittest.TestCase):
         self.assertFalse(any(call.startswith("trees:") for call in ports.calls))
         self.assertEqual(evidence.files["state-diff.json"]["runtime"], {})
 
-    def test_tree_failure_invalidates_the_run(self):
-        for phase in ("pre", "post"):
-            with self.subTest(phase=phase):
+    def test_tree_or_memory_failure_invalidates_the_run(self):
+        for call in ("trees:pre", "trees:post", "memory:pre", "memory:post"):
+            with self.subTest(call=call):
                 result, ports, meter, evidence = self.run_state(
-                    lambda ports, p=phase: ports.fail.update({f"trees:{p}": DockerError("docker_copy_failed")}))
+                    lambda ports, c=call: ports.fail.update({c: DockerError("docker_copy_failed")}))
                 self.assertEqual((result["status"], result["reasons"]), (INVALID, ["state_copy_failed"]))
                 self.assertIn("down", ports.calls)
+
+    def test_null_memory_takes_no_read(self):
+        def mutate(ports, meter, clock):
+            ports.state_dir = self.dir
+        result, ports, meter, evidence = run(mutate=mutate, spec=make_spec(state=dict(STATE, memory=None)))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertFalse(any(call.startswith("memory:") for call in ports.calls))
+        self.assertEqual(evidence.files["state-diff.json"]["memory"]["reads"], 0)
 
     def test_no_state_block_takes_no_copy(self):
         result, ports, meter, evidence = run()
@@ -1230,6 +1252,26 @@ class TestDockerPortsStateCopy(unittest.TestCase):
             self.assertEqual(oct(os.stat(directory.state / "pre").st_mode & 0o777), "0o700")
             with self.assertRaises(FileExistsError):  # 같은 단계 디렉터리를 다시 쓰지 않는다
                 ports.state_copy("pre", snapshot)
+
+
+class TestDockerPortsStateMemory(unittest.TestCase):
+    def test_uses_the_meter_image_target_port_and_required_only_before_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "runs")
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            config = parse_runner_config(runner_config() | {"runs_root": str(root), "state": STATE})
+            plan = plan_run(config, configuration(), "ours", "ours-1")
+            ports = DockerPorts(config, plan, create_run_directory(root, "ours-1"), docker="docker", findings=dict,
+                                start=lambda: "1", settings=dict)
+            snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
+            for phase, required in (("pre", True), ("post", False)):
+                with self.subTest(phase=phase), patch.object(runner, "memory_fingerprints", return_value=[]) as call:
+                    ports.state_memory(phase, snapshot, b"k")
+                    self.assertEqual(call.call_args[0], ("docker", config.images["meter"].id, "3" * 64,
+                                                         config.state["memory"], config.ports["target"], os.geteuid(),
+                                                         os.getegid(), b"k"))
+                    self.assertEqual(call.call_args[1], {"required": required})
 
 
 class TestDockerPortsStateTrees(unittest.TestCase):
