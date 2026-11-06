@@ -7,6 +7,8 @@ import {
   displayVerdict,
   type FindingRecord,
   getFinding,
+  getFindingHeld,
+  heldBeforeSend,
   missingEvidence,
   ORACLE_BADGE,
   type Signal,
@@ -149,6 +151,31 @@ describe("displayComparisonRow (행 취약 보수 하향)", () => {
     expect(displayComparisonRow("undecidable", "ok")).toBe("ok");
     expect(displayComparisonRow("undecidable", "und")).toBe("und");
     expect(displayComparisonRow("undecidable", "sus")).toBe("sus");
+  });
+});
+
+describe("heldBeforeSend", () => {
+  it("held_pre_send·none 은 true(미실행)", () => {
+    expect(heldBeforeSend(rec({ transmission: "held_pre_send" }))).toBe(true);
+    expect(heldBeforeSend(rec({ transmission: "none" }))).toBe(true);
+  });
+  it("sent·unknown·미지정은 false", () => {
+    expect(heldBeforeSend(rec({ transmission: "sent" }))).toBe(false);
+    expect(heldBeforeSend(rec({ transmission: "unknown" }))).toBe(false);
+    expect(heldBeforeSend(rec())).toBe(false);
+  });
+});
+
+describe("getFindingHeld mock (상태변경·E² 송신전 차단)", () => {
+  it("undecidable·전송 held·canary 없음·신호 전부 unknown → 취약 주장 불가", async () => {
+    const r = await getFindingHeld(null);
+    expect(r.oracleValue).toBe("undecidable");
+    expect(r.transmission).toBe("held_pre_send");
+    expect(r.stateChanging).toBe(true);
+    expect(r.canaryFields).toEqual([]);
+    expect(heldBeforeSend(r)).toBe(true);
+    expect(displayVerdict(r)).toBe("undecidable");
+    expect(dataAccessProven(r)).toBe(false);
   });
 });
 
