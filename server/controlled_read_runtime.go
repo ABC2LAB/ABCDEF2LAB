@@ -18,6 +18,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/idor"
+	"github.com/Autumn-27/artex/kgfixture"
 	"github.com/Autumn-27/artex/taskmode"
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/Autumn-27/artex/transmit/auditlog"
@@ -268,6 +269,9 @@ type controlledReadLease struct {
 	observed     bool
 	denied       bool
 	verification *controlledReadVerificationState
+	fixture      *kgfixture.Snapshot
+	config       *ControlledReadConfigHandle
+	revokeConfig func()
 }
 
 // prepareControlledRead is invoked once per runIntent, outside model retries.
@@ -316,7 +320,7 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 	r.mu.Unlock()
 	defer clear(spec.Key)
 	release := func() { r.mu.Lock(); delete(r.active, key); r.mu.Unlock() }
-	if spec.TaskID != task.ID || spec.IntentID != intent.ID {
+	if spec.TaskID != task.ID || spec.IntentID != intent.ID || spec.fixture != nil && spec.fixture.Err() != nil {
 		release()
 		return ctx, nil, errControlledReadUnavailable
 	}
@@ -365,7 +369,7 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 		published.drain.bind(tx)
 	}
 	lease := &controlledReadLease{tx: tx, journal: journal, recorder: recorder, store: r.store, scope: scope,
-		timeout: cfg.RequestTimeout, runtime: r, work: key, sessions: make(map[string]idor.AccountRef)}
+		timeout: cfg.RequestTimeout, runtime: r, work: key, sessions: make(map[string]idor.AccountRef), fixture: spec.fixture}
 	for _, session := range cfg.Sessions {
 		lease.sessions[session.Account.Label] = session.Account
 		lease.accounts = append(lease.accounts, session.Account.Label)
@@ -381,6 +385,15 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 		return ctx, nil, errControlledReadUnavailable
 	}
 	if verificationHost != nil {
+		// Both consumers copy this exact private execution cfg. No handle is
+		// published before HTTP initialization and the task binding succeed.
+		config, revoke, err := newControlledReadConfigHandle(httpCtx, taskID, intent.ID, cfg)
+		if err != nil {
+			lease.close()
+			return ctx, nil, errControlledReadUnavailable
+		}
+		config.state.fixture = spec.fixture // not exposed until the complete lease is published
+		lease.config, lease.revokeConfig = config, revoke
 		lease.verification = &controlledReadVerificationState{host: verificationHost, runCtx: ctx, taskID: taskID, intentID: intent.ID}
 	}
 	ctx = agent.WithControlledReadExecution(ctx, agent.ControlledReadExecution{
@@ -425,6 +438,16 @@ func (r *controlledCheckpointRecorder) Record(ctx context.Context, event transmi
 
 func (l *controlledReadLease) close(disposition ...bool) error {
 	l.once.Do(func() {
+		// Captured KG remains available to existing finalization until it returns.
+		// Fresh handle queries are closed below before draining transmission.
+		if l.fixture != nil {
+			defer l.fixture.Invalidate()
+		}
+		// Deny fresh metadata lookups before waiting for transmission drain.
+		// Existing finalization uses its collected context, not this handle.
+		if l.revokeConfig != nil {
+			l.revokeConfig()
+		}
 		if l.recorder.published == nil {
 			l.tx.StopAndWait()
 		} else if !l.recorder.published.drain.stopAndWait(l.tx) {

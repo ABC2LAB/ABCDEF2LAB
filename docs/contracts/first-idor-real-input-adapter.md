@@ -12,7 +12,8 @@
 
 ## C가 호출하는 기존 타입 경계
 
-`BindControlledReadRealInputs(ctx, request, expected, approved, kg, source)`는 다음을 대조한다.
+실행 Resolver는 `request.BindRealInputs(ctx, expected, kg, source)`를 사용한다. 이 경로는 실제
+E② 실행에 결속된 private handle의 최신 투영만 내부 어댑터에 전달하며 다음을 대조한다.
 
 - 실제 요청 task/intent와 `evidencebind.Context`, 실행별 `transmit.Config.Scope`의 정확한 일치.
 - 서로 다른 A/B의 등록 AccountRef 전체, session handle의 비모호성, 현재 session/config 만료.
@@ -26,8 +27,8 @@ E② Config**여야 한다. request의 RunRef를 임의 Config에 복사하거�
 
 ```go
 // 인증된 실제 공급자의 조회를 성공한 뒤, C의 기존 FindingResolver 안에서 호출한다.
-// request는 실제 서버 실행 요청, expected/config는 그 실행의 신뢰 자료다.
-plan, err := server.BindControlledReadRealInputs(ctx, request, expected, config, kg, source)
+// request는 실제 서버 실행 요청이며 expected는 그 실행의 신뢰 자료다.
+plan, err := request.BindRealInputs(ctx, expected, kg, source)
 return plan, err
 ```
 
@@ -38,10 +39,13 @@ return plan, err
 
 ## 최종 조립에 남기는 지점
 
-현재 Resolver 요청은 task/intent/scope/account/resource만 가진다. C는 실제 승인된 E② snapshot과
-같은 실행별 Config를 얻는 보호된 조회를 제공해야 한다. `controlled_read_verification.go`의
-실제 resolver 호출 시점과 `controlled_read_runtime.go`의 실행 scope 생성/승인 snapshot을
-대조해야 하며, 이 단위는 기존 파일에 새 lookup이나 lifecycle hook을 추가하지 않는다.
+Resolver 요청은 task/intent/scope/account/resource와 실제 runtime이 발행한 private handle을 가진다.
+`ConfigView`와 `BindRealInputs`는 같은 실행 snapshot을 사용하며 최초 성공한 View가 요청을 pin한다.
+뒤의 Bind가 거부되더라도 pin은 유지한다. Bind는 순수 어댑터 반환 뒤 close·life 취소·등록 만료를
+다시 검사하며, 실제 전송의 철회·예산·감사 장벽은 E②가 각 송신에서 별도로 집행한다.
+공개 `BindControlledReadRealInputs`는 값의 일관성만 검사하는 기존 저수준 어댑터로 남으며,
+호출자가 만든 Config로 runtime 출처를 대신하는 경로가 아니다.
+실제 KG·Source·계정·승인 권위의 확보와 C 최종 조립은 여전히 후속이다.
 
 첫 회차의 **EvalRunID는 비어 있어야 한다.** 그 필드는 `e3record.Source`에 있으므로 C의 실제
 Source 공급/최종 조립에서 비평가 문맥을 확인해야 한다. 이 어댑터는 Source를 조기에 호출하거나

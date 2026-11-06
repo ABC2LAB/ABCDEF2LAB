@@ -1,0 +1,67 @@
+# E② B boundary template. C must supply the two separate process images and
+# a protected per-run Unix socket volume before this can be started.
+# The target must be attached to a C-created INTERNAL bridge with isolated
+# gateway modes for both IPv4 and IPv6; verify_runtime.py checks these options.
+services:
+  tool:
+    image: ${E2_TOOL_IMAGE:?set a reviewed tool-process image}
+    labels:
+      org.abc2lab.e2.run: ${E2_RUN_REF:?set a C-verified nonsecret run reference}
+      org.abc2lab.e2.role: tool
+    user: "${E2_TOOL_UID:?set tool uid}:${E2_TOOL_GID:?set tool gid}"
+    network_mode: none
+    read_only: true
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    privileged: false
+    pids_limit: 128
+    ipc: private
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      NO_PROXY: ""
+      no_proxy: ""
+    volumes:
+      - type: volume
+        source: channel
+        target: /run/e2-channel
+        read_only: true
+
+  sender:
+    image: ${E2_SENDER_IMAGE:?set the reviewed A service image}
+    labels:
+      org.abc2lab.e2.run: ${E2_RUN_REF:?set a C-verified nonsecret run reference}
+      org.abc2lab.e2.role: sender
+    user: "${E2_SENDER_UID:?set sender uid}:${E2_SENDER_GID:?set sender gid}"
+    networks: [registered_target]
+    read_only: true
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    privileged: false
+    pids_limit: 128
+    ipc: private
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    volumes:
+      - type: volume
+        source: channel
+        target: /run/e2-channel
+        read_only: false
+
+networks:
+  registered_target:
+    external: true
+    name: ${E2_TARGET_NETWORK:?set an operator-created internal target network}
+
+volumes:
+  channel:
+    external: true
+    name: ${E2_CHANNEL_VOLUME:?set a C-prepared per-run channel volume}

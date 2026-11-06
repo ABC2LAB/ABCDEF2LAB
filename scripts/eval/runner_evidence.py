@@ -32,6 +32,14 @@ ENGINE_RESPONSE = frozenset({"none", "headers", "complete", "interrupted"})
 ATTEMPT_STATES = frozenset({"absent", "valid", "invalid", "multiple"})
 _ATTEMPT_ID = re.compile(r"[0-9a-f]{32}\Z")
 _OBSERVER_ROW = frozenset({"seq", "decision", "method", "status", "started_at", "completed_at", "response_bytes"})
+# 통과 전용 가짜 E²(cmd/eval-meter e2stub.go)의 결정 행. 보내기 전에 쓰고, 경로·헤더·본문은 없다.
+E2_STUB_LOG = "e2-stub-decisions.jsonl"
+_E2_STUB_ROW = frozenset({"seq", "fixture", "decision", "attempt_id", "caller_attempt", "method", "decided_at"})
+# allowed만 대상 쪽으로 보낸다. unsupported(Upgrade·CONNECT)와 unavailable(ID 발급 실패)은 보내지 않는다.
+E2_STUB_DECISIONS = ("allowed", "unsupported", "unavailable")
+# 결정 행의 메서드(HTTP token, RFC 9110)와 시각(cmd/eval-meter stamp: RFC 3339 UTC, 소수 초 9자리까지).
+_HTTP_METHOD = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32}\Z")
+_STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z\Z")
 
 
 # 계측기(cmd/eval-meter engineMeter)가 대상에 전달한 행 종류. upgrade(WebSocket 등)는 완료 행이 "stream"이고
@@ -40,6 +48,14 @@ FORWARDED_KINDS = frozenset({"request", "stream"})
 ENGINE_KINDS = FORWARDED_KINDS | {"rejected"}
 # 봉인 뒤 유예(-drain-grace)가 지나 계측기가 대상 쪽으로 취소한 요청 행의 outcome. 건수는 drained 마커와 같아야 한다.
 FORCED_CANCELLED_OUTCOME = "forced_cancelled"
+COUNTED_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+OTHER_METHOD = "OTHER"
+
+
+def e2_stub_counts(rows: list[dict]) -> dict:
+    """검사한 가짜 E² 결정 행의 결정별 건수(격리 근거 e2_placement 행)."""
+    return {"decision_rows": len(rows),
+            **{decision: sum(1 for row in rows if row["decision"] == decision) for decision in E2_STUB_DECISIONS}}
 
 
 def forwarded_count(rows: list[dict]) -> int:
@@ -47,6 +63,21 @@ def forwarded_count(rows: list[dict]) -> int:
     if any(row.get("kind") not in ENGINE_KINDS for row in rows):
         raise EvidenceError("meter_log_invalid")
     return sum(1 for row in rows if row["kind"] in FORWARDED_KINDS)
+
+
+def forwarded_by_method(rows: list[dict]) -> dict[str, int]:
+    """전달 요청의 메서드별 건수(프로토콜 §8.1). 합은 forwarded_count와 같다.
+
+    표로 나가는 값이라 메서드 토큰을 그대로 옮기지 않고 닫힌 목록으로 센다. 목록 밖(소문자 포함)은 OTHER_METHOD다.
+    """
+    counts = dict.fromkeys((*COUNTED_METHODS, OTHER_METHOD), 0)
+    for row in rows:
+        if row.get("kind") not in ENGINE_KINDS:
+            raise EvidenceError("meter_log_invalid")
+        if row["kind"] in FORWARDED_KINDS:
+            method = row.get("method")
+            counts[method if method in COUNTED_METHODS else OTHER_METHOD] += 1
+    return counts
 
 
 class EvidenceError(RuntimeError):
@@ -181,10 +212,11 @@ def sequence_complete(rows: list[dict]) -> bool:
 
 
 class MeterFiles:
-    """계측기 bind 디렉터리 읽기. 러너는 쓰지 않는다."""
+    """계측기 bind 디렉터리 읽기. 러너는 쓰지 않는다. e2_path는 가짜 E²의 따로 둔 bind 디렉터리다."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, e2_path: Path | None = None):
         self.path = path
+        self.e2_path = e2_path
 
     def engine_rows(self) -> list[dict]:
         rows = _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW)
@@ -198,6 +230,37 @@ class MeterFiles:
 
     def observer_rows(self) -> list[dict]:
         return _rows(_read_owned(self.path, OBSERVER_LOG), _OBSERVER_ROW)
+
+    def e2_stub_rows(self) -> list[dict]:
+        """가짜 E² 결정 행. fixture 표식이어야 하고, ID는 발급된 결정에만 있으며 겹치지 않는다.
+
+        파일이 없으면(가짜 E²가 뜨지 않음) 회차 근거가 없는 것이다.
+        """
+        data = None if self.e2_path is None else _read_owned(self.e2_path, E2_STUB_LOG)
+        if data is None:
+            raise EvidenceError("e2_stub_log_missing")
+        # drain 뒤의 최종 읽기다. 진행 중 로그와 달리 개행으로 끝나지 않은 꼬리는 잘린 기록이므로 거부한다
+        # (_rows는 쓰는 중인 마지막 줄을 버리므로 그대로 쓰면 잘린 행을 빼고 센다, #209 리뷰).
+        if data and not data.endswith(b"\n"):
+            raise EvidenceError("e2_stub_log_invalid")
+        rows = _rows(data, _E2_STUB_ROW)
+        if not sequence_complete(rows):
+            raise EvidenceError("e2_stub_log_invalid")
+        ids = []
+        for row in rows:
+            issued = row["decision"] != "unavailable"
+            attempt = row["attempt_id"]
+            if (row["fixture"] is not True or row["decision"] not in E2_STUB_DECISIONS
+                    or type(row["caller_attempt"]) is not bool or not isinstance(attempt, str)
+                    or not isinstance(row["method"], str) or not _HTTP_METHOD.match(row["method"])
+                    or not isinstance(row["decided_at"], str) or not _STAMP.match(row["decided_at"])
+                    or bool(_ATTEMPT_ID.fullmatch(attempt)) != issued or (not issued and attempt != "")):
+                raise EvidenceError("e2_stub_log_invalid")
+            if issued:
+                ids.append(attempt)
+        if len(ids) != len(set(ids)):
+            raise EvidenceError("e2_stub_log_invalid")
+        return rows
 
     def marker(self, name: str) -> dict | None:
         if name not in (SEALED_MARKER, DRAINED_MARKER, TERMINATED_MARKER):

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/idor"
+	"github.com/Autumn-27/artex/kgfixture"
 	"github.com/Autumn-27/artex/oracle"
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/Autumn-27/artex/transmit/auditlog"
@@ -56,9 +57,13 @@ type controlledReadSpec struct {
 	HTTP      transmit.Config
 	KeyRef    string
 	Key       []byte `json:"-"`
+	fixture   *kgfixture.Snapshot
 }
 
-type controlledReadStore struct{ snapshotDir, stateDir string }
+type controlledReadStore struct {
+	snapshotDir, stateDir string
+	fixtureRegistries     map[string]string // copied at bootstrap; immutable thereafter
+}
 
 var safeSnapshotRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$`)
 var safeRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$`)
@@ -344,7 +349,12 @@ func (s *controlledReadStore) load(taskID string, intentID int64, snapshotRef st
 		resourceRefs[x.Ref] = true
 		cfg.Resources = append(cfg.Resources, transmit.Resource{Ref: x.Ref, URL: x.URL, ApprovalRef: x.ApprovalRef, ReadOnly: x.ReadOnly, Accounts: append([]string(nil), x.Accounts...), View: x.View})
 	}
-	return controlledReadSpec{TaskID: taskID, IntentID: intentID, CaseRef: in.CaseRef, ResetRef: in.ResetRef, PolicyRef: in.PolicyRef, HTTP: cfg, KeyRef: in.KeyRef, Key: key}, nil
+	out = controlledReadSpec{TaskID: taskID, IntentID: intentID, CaseRef: in.CaseRef, ResetRef: in.ResetRef, PolicyRef: in.PolicyRef, HTTP: cfg, KeyRef: in.KeyRef, Key: key}
+	if err := s.bindFixtureRegistry(&out, snapshotRef); err != nil {
+		clear(key)
+		return controlledReadSpec{}, err
+	}
+	return out, nil
 }
 
 func (s *controlledReadStore) saveCheckpoint(ctx context.Context, cp auditlog.Checkpoint) error {

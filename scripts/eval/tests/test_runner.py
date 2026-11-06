@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -33,11 +35,15 @@ from test_runner_llm import generation as llm_generation
 from test_runner_llm import marker as llm_marker
 
 ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "eval-meter": "meter", "eval-obs": "meter",
-           "eval-llm-gw": "meter", "eval-api": "meter"}
+           "eval-llm-gw": "meter", "eval-api": "meter", "eval-e2": "meter"}
 
 
-def make_spec(side="ours", min_free=None, stream=None):
+def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None):
     preflight, payload = configuration(), runner_config()
+    if state is not None:
+        payload["state"] = state
+    if e2 is not None:
+        payload["e2"]["ours_mode"] = e2
     if stream is not None:
         payload["engine"]["llm_stream"] = stream
     if min_free is not None:  # 하한은 러너 설정과 사전검사 선언(환경 지문 입력)에 같이 바꿔야 한다
@@ -78,6 +84,13 @@ class FakeMeter:
         self.observer_extra = 0
         self.rows_override = None
         self.drained_forwarded = None
+        # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
+        # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
+        self.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
+                        {"seq": 2, "decision": "allowed", "attempt_id": "b" * 32},
+                        {"seq": 3, "decision": "unsupported", "attempt_id": "c" * 32}]
+        self.e2_error = None
+        self.e2_reads = 0
 
     def _forwarded(self):
         return self.pre_forwarded if not self.ports.started else min(self.polls * self.per_poll, 10**6)
@@ -87,13 +100,26 @@ class FakeMeter:
             self.polls += 1
         return self._forwarded()
 
+    def e2_stub_rows(self):
+        self.e2_reads += 1
+        if self.e2_error:
+            raise self.e2_error
+        return [dict(row) for row in self.e2_rows]
+
     def engine_rows(self):
         if self.rows_override is not None:
             return self.rows_override
         n = self._forwarded()
-        return [{"seq": i, "kind": "request", "outcome": "completed"} for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal"},
-                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal"}]
+        # E² 회차면 앞 두 요청이 E²가 붙인 시도 ID를 가진다(나머지는 통과 전용 가짜가 아닌 이상 생기지 않지만, 여기선 단순화).
+        stub = "eval-e2" in self.ports.spec.expected.services
+        ids = [row["attempt_id"] for row in self.e2_rows if row["decision"] == "allowed"] if stub else []
+
+        def attempt(i):
+            return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
+                    else {"attempt_id_state": "absent", "attempt_id": ""})
+        return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", **attempt(i)} for i in range(1, n + 1)] + \
+               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 1)},
+                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 2)}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -139,6 +165,7 @@ class FakeEvidence:
 
 class FakePorts:
     def __init__(self, spec):
+        self.rules_sha256 = None
         self.spec = spec
         self.calls = []
         self.fail = {}
@@ -146,6 +173,7 @@ class FakePorts:
         self.on_start = None
         self.ready_calls = 1
         self.post_world = None
+        self.world_stub = None
         self.probe_status = {"pre": PASS, "post": PASS}
         # 구간 전(pre)·후(post) 측정. 마운트 ID가 같아야 같은 회차 저장소를 잰 것이다.
         self.tmpfs_pre = {name: {"mount_id": mount_id, "size_bytes": 512 * MIB, "used_bytes": 0,
@@ -171,6 +199,15 @@ class FakePorts:
         self.settings = {"settings": {"workers": spec.worker_count, "web_search_proxy_set": False,
                                       "global_proxy_set": False, "llm_pool_enabled": False},
                          "llm": {"model": spec.model_tag, "proxy_set": False, "reasoning_effort": ""}}
+        # 상태 차이 사본: 단계별 SQLite 행. state_dir는 시험이 정한다(설정 state가 있는 회차만 부른다).
+        self.state_dir = None
+        self.state_rows = {"pre": [(1, "a")], "post": [(1, "a"), (2, "b")]}
+        self.state_copies = []
+        self.tree_keys = []
+        self.memory_keys = []
+        self.state_memory_reads = {"pre": {"readable": True, "count": 1, "fingerprint": b"a"},
+                                   "post": {"readable": True, "count": 2, "fingerprint": b"b"}}
+        self.state_tree_files = {"pre": {"ftp": b"d"}, "post": {"ftp": b"d", "ftp/order": b"f"}}
         self.sign_calls = 0
         self.sign_fail_at = None
         self.watch_stops = 0
@@ -182,7 +219,9 @@ class FakePorts:
             raise self.fail[name]
 
     def world(self):
-        networks, containers = raw_world()
+        # 기대 구성이 E²를 가지면(개선 후 + 가짜 E²) 그 구성의 세계를 만든다. 고장 주입은 world_stub으로 뒤집는다.
+        stub = self.world_stub if self.world_stub is not None else "eval-e2" in self.spec.expected.services
+        networks, containers = raw_world(stub)
         for container in containers:
             container["image"] = self.spec.image_ids[ROLE_OF[container["service"]]]
         return networks, containers
@@ -246,6 +285,11 @@ class FakePorts:
         self._call("engine_settings")
         return copy.deepcopy(self.settings)
 
+    def apply_engine_rules(self):
+        self._call("apply_engine_rules")
+        return {"format": "rules-evidence", "file_sha256": self.rules_sha256 or self.spec.engine_rules_sha256,
+                "injected": 2, "seeded": 25}
+
     def start_task(self):
         self._call("start_task")
         if self.on_start:
@@ -294,6 +338,29 @@ class FakePorts:
             raise self.tmpfs_error
         return copy.deepcopy(self.tmpfs)
 
+    def state_copy(self, phase, snapshot):
+        self._call(f"state:{phase}")
+        path = Path(self.state_dir) / f"{phase}.sqlite"
+        conn = sqlite3.connect(path)
+        conn.executescript("CREATE TABLE Items (id INTEGER PRIMARY KEY, v TEXT);"
+                           "CREATE TABLE Challenges (id INTEGER PRIMARY KEY, solved INTEGER);")
+        conn.executemany("INSERT INTO Items VALUES (?, ?)", self.state_rows[phase])
+        conn.execute("INSERT INTO Challenges VALUES (1, ?)", (1 if phase == "post" else 0,))
+        conn.commit()
+        conn.close()
+        self.state_copies.append(path)
+        return path
+
+    def state_trees(self, phase, snapshot, key):
+        self._call(f"trees:{phase}")
+        self.tree_keys.append(key)
+        return {"/app/ftp": self.state_tree_files[phase]}
+
+    def state_memory(self, phase, snapshot, key):
+        self._call(f"memory:{phase}")
+        self.memory_keys.append(key)
+        return [dict(self.state_memory_reads[phase])]
+
     def findings(self):
         self._call("findings")
         return {"items": 0}
@@ -326,6 +393,133 @@ FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "liste
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "down", "sign", "sign"]
+
+
+STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 1 << 20,
+         "runtime_roots": ["/app/ftp"],
+         "memory": {"paths": ["/api/a/1"], "count_field": "data", "max_body_bytes": 4096, "timeout_ms": 1000}}
+
+
+class TestStateDiff(unittest.TestCase):
+    """상태 차이(프로토콜 §8.2): pre 사본은 구간 시작 전, post 사본은 구간이 닫힌 뒤. 사본은 지문을 뜨고 바로 지운다."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_state(self, extra=None):
+        def mutate(ports, meter, clock):
+            ports.state_dir = self.dir
+            if extra:
+                extra(ports)
+        return run(mutate=mutate, spec=make_spec(state=STATE))
+
+    def test_copies_sit_outside_the_window_and_leave_only_counts(self):
+        result, ports, meter, evidence = self.run_state()
+        self.assertEqual(result["status"], COMPLETE)
+        order = list(FULL_ORDER)
+        order.insert(order.index("wait_ready") + 1, "state:pre")
+        order.insert(order.index("state:pre") + 1, "trees:pre")
+        order.insert(order.index("trees:pre") + 1, "memory:pre")
+        order.insert(order.index("tmpfs:post") + 1, "state:post")
+        order.insert(order.index("state:post") + 1, "trees:post")
+        order.insert(order.index("trees:post") + 1, "memory:post")
+        self.assertEqual(ports.calls, order)
+        diff = evidence.files["state-diff.json"]
+        self.assertEqual(diff["format"], "abc2lab-state-diff-v1")
+        self.assertEqual((diff["tables"]["Items"]["added_ids"], diff["changed_tables"]), ([2], ["Items"]))
+        # 해결 기록 테이블은 상태 차이가 아니라 신호로 따로 센다.
+        self.assertNotIn("Challenges", diff["tables"])
+        self.assertEqual(diff["signals"]["Challenges"]["changed"], 1)
+        self.assertNotIn('"b"', json.dumps(diff))
+        self.assertEqual([p.exists() for p in ports.state_copies], [False, False])
+        self.assertEqual(os.listdir(self.dir), [])
+
+    def test_runtime_files_join_the_difference_and_share_the_run_key(self):
+        result, ports, meter, evidence = self.run_state()
+        diff = evidence.files["state-diff.json"]
+        self.assertEqual(diff["runtime"]["/app/ftp"]["added"], 1)
+        self.assertEqual((diff["runtime_changed"], diff["state_changed"]), (True, True))
+        self.assertEqual(diff["memory"], {"reads": 1, "count_pre": 1, "count_post": 2, "changed": 1,
+                                          "unreadable_post": 0})
+        self.assertEqual(len(set(ports.tree_keys + ports.memory_keys)), 1)
+
+    def test_state_changed_follows_either_side(self):
+        same_trees = lambda ports: ports.state_tree_files.update(post=ports.state_tree_files["pre"])
+        same_rows = lambda ports: ports.state_rows.update(post=ports.state_rows["pre"])
+        same_memory = lambda ports: ports.state_memory_reads.update(post=ports.state_memory_reads["pre"])
+        for keep, content, runtime, memory in (((same_trees, same_memory), True, False, False),
+                                               ((same_rows, same_memory), False, True, False),
+                                               ((same_rows, same_trees), False, False, True)):
+            with self.subTest(content=content, runtime=runtime, memory=memory):
+                diff = self.run_state(lambda ports, k=keep: [m(ports) for m in k])[3].files["state-diff.json"]
+                self.assertEqual((diff["content_changed"], diff["runtime_changed"], diff["memory_changed"],
+                                  diff["state_changed"]), (content, runtime, memory, True))
+        diff = self.run_state(lambda ports: [m(ports) for m in (same_rows, same_trees, same_memory)])[3].files[
+            "state-diff.json"]
+        self.assertEqual((diff["content_changed"], diff["runtime_changed"], diff["memory_changed"],
+                          diff["state_changed"]), (False, False, False, False))
+
+    def test_empty_runtime_roots_take_no_tree_copy(self):
+        def mutate(ports, meter, clock):
+            ports.state_dir = self.dir
+        result, ports, meter, evidence = run(mutate=mutate, spec=make_spec(state=dict(STATE, runtime_roots=[])))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertFalse(any(call.startswith("trees:") for call in ports.calls))
+        self.assertEqual(evidence.files["state-diff.json"]["runtime"], {})
+
+    def test_tree_or_memory_failure_invalidates_the_run(self):
+        for call in ("trees:pre", "trees:post", "memory:pre", "memory:post"):
+            with self.subTest(call=call):
+                result, ports, meter, evidence = self.run_state(
+                    lambda ports, c=call: ports.fail.update({c: DockerError("docker_copy_failed")}))
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["state_copy_failed"]))
+                self.assertIn("down", ports.calls)
+
+    def test_null_memory_takes_no_read(self):
+        def mutate(ports, meter, clock):
+            ports.state_dir = self.dir
+        result, ports, meter, evidence = run(mutate=mutate, spec=make_spec(state=dict(STATE, memory=None)))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertFalse(any(call.startswith("memory:") for call in ports.calls))
+        self.assertEqual(evidence.files["state-diff.json"]["memory"]["reads"], 0)
+
+    def test_no_state_block_takes_no_copy(self):
+        result, ports, meter, evidence = run()
+        self.assertEqual((result["status"], ports.state_copies), (COMPLETE, []))
+        self.assertNotIn("state-diff.json", evidence.files)
+
+    def test_copy_failure_invalidates_the_run_and_still_goes_down(self):
+        for phase in ("pre", "post"):
+            with self.subTest(phase=phase):
+                result, ports, meter, evidence = self.run_state(
+                    lambda ports, p=phase: ports.fail.update({f"state:{p}": DockerError("docker_pause_failed")}))
+                self.assertEqual((result["status"], result["reasons"], result["failed_step"]),
+                                 (INVALID, ["state_copy_failed"], "state_copy_failed"))
+                self.assertIn("down", ports.calls)
+                self.assertNotIn("state-diff.json", evidence.files)
+
+    def test_unreadable_copy_is_discarded_and_invalidates(self):
+        def broken(ports):
+            original = ports.state_copy
+
+            def write_garbage(phase, snapshot):
+                path = original(phase, snapshot)
+                path.write_bytes(b"not a database" * 100)
+                return path
+            ports.state_copy = write_garbage
+        result, ports, meter, evidence = self.run_state(broken)
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["state_copy_failed"]))
+        self.assertEqual(os.listdir(self.dir), [])
+
+    def test_pre_and_post_use_the_same_run_key(self):
+        # 키가 회차 안에서 바뀌면 같은 행도 전부 '변경'으로 보인다.
+        result, ports, meter, evidence = self.run_state(
+            lambda ports: ports.state_rows.update(post=[(1, "a")]))
+        self.assertEqual(evidence.files["state-diff.json"]["changed_tables"], [])
 
 
 class TestCompleteRun(unittest.TestCase):
@@ -434,6 +628,9 @@ class TestCompleteRun(unittest.TestCase):
                           summary["over_budget"]), ("request_budget", 105, 100, 5))
         self.assertEqual(summary["rejected_after_seal"], 2)
         self.assertEqual(result["meter"], summary)
+        # 표로 나가는 메서드별 건수는 계측기 행에서 세고 전달 수와 맞아야 한다(프로토콜 §8.1)
+        self.assertEqual(sum(summary["forwarded_by_method"].values()), summary["forwarded_requests"])
+        self.assertEqual(summary["forwarded_by_method"]["GET"], 105)
 
     def test_time_budget_stop(self):
         result, _, meter, evidence = run(lambda p, m, c: setattr(m, "per_poll", 0))
@@ -445,6 +642,57 @@ class TestCompleteRun(unittest.TestCase):
 
 def failing(code_or_name, error=None):
     return lambda p, m, c: p.fail.__setitem__(code_or_name, error or RuntimeError("boom /secret/path"))
+
+
+class TestE2Slot(unittest.TestCase):
+    """개선 후 + 가짜 E² 회차: 망 점검이 E² 배치를 기대하고, E² 컨테이너 이미지도 대조한다."""
+
+    def test_stub_run_completes_with_the_e2_layout(self):
+        result, ports, meter, evidence = run(spec=make_spec(e2="stub"))
+        self.assertEqual(result["status"], COMPLETE)
+        snapshot = evidence.files["pre-checks.json"]["snapshot"]
+        self.assertEqual(set(snapshot["networks"]["e2_net"]["members"]), {"eval-e2", "eval-meter"})
+        self.assertNotIn("eval-meter", snapshot["networks"]["engine_net"]["members"])
+        placement = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "e2_placement"]
+        self.assertEqual([{k: v for k, v in r.items() if k not in ("kind", "seq", "at")} for r in placement],
+                         [{"mode": "stub", "decision_rows": 3, "allowed": 2, "unsupported": 1, "unavailable": 0}])
+        self.assertEqual(meter.e2_reads, 1)
+        self.assertEqual(result["e2_mode"], "stub")  # 서명된 결과에 남는다(세션·채점이 거부할 근거)
+        recon = evidence.files["attempt-reconciliation.json"]
+        # 허용 2건은 계측기에 관측, 미지원 1건은 미관측. 나머지 계측기 행은 ID가 없다(이 가짜 세계의 단순화).
+        self.assertEqual((recon["cells"]["allowed_observed"], recon["cells"]["denied_unobserved"], recon["fixture"]),
+                         (2, 1, True))
+        self.assertTrue(recon["positive_evidence"])
+        # 같은 건수가 서명 근거 행으로도 들어간다(채점기 통제 검증 표의 입력). 시도 ID는 없다.
+        rows = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "attempt_reconciliation"]
+        self.assertEqual([{k: v for k, v in r.items() if k not in ("kind", "seq", "at")} for r in rows],
+                         [{k: v for k, v in recon.items() if k != "fixture"}])
+
+    def test_run_without_e2_records_none_and_never_reads_a_stub_log(self):
+        result, ports, meter, evidence = run()
+        placement = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "e2_placement"]
+        self.assertEqual((placement[0]["mode"], placement[0]["decision_rows"], meter.e2_reads), ("none", None, 0))
+        rows = evidence.files["isolation-evidence.json"]["rows"]
+        self.assertFalse(any(r["kind"] == "attempt_reconciliation" for r in rows))
+        self.assertNotIn("attempt-reconciliation.json", evidence.files)
+        self.assertEqual(result["e2_mode"], "none")
+
+    def test_unreadable_stub_log_invalidates_the_run(self):
+        from runner_evidence import EvidenceError
+        result, ports, _, evidence = run(lambda p, m, c: setattr(m, "e2_error", EvidenceError("e2_stub_log_invalid")),
+                                         spec=make_spec(e2="stub"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_stub_log_invalid"]))
+
+    def test_stub_expectation_rejects_a_world_without_the_e2(self):
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "world_stub", False), spec=make_spec(e2="stub"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["pre_topology_violation"]))
+
+    def test_e2_container_image_is_checked(self):
+        def swap(networks, containers):
+            next(c for c in containers if c["service"] == "eval-e2")["image"] = "sha256:" + "f" * 64
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "post_world", swap), spec=make_spec(e2="stub"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["post_topology_violation"]))
+        self.assertIn("service.eval-e2: IMAGE_MISMATCH", evidence.files["post-checks.json"]["image_violations"])
 
 
 class TestFailures(unittest.TestCase):
@@ -581,6 +829,34 @@ class TestFailures(unittest.TestCase):
         self.assertEqual((drain["grace_seconds"], drain["settle_seconds"], drain["forced_cancelled"],
                           drain["settle_applied_seconds"]), (30, 2, 1, 2))
         self.assertEqual(evidence.files["run-record.json"]["total_requests"], 2)
+
+    def test_runs_without_rules_make_no_rule_call(self):
+        result, ports, _, evidence = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("apply_engine_rules", ports.calls)
+        self.assertNotIn("engine-rules.json", evidence.files)
+        self.assertIsNone(result["engine_rules"])
+        self.assertIsNone(result["run_conditions"]["engine_rules_sha256"])
+
+    def test_rules_go_in_before_the_settings_snapshot_and_are_recorded(self):
+        spec = dataclasses.replace(make_spec(), engine_rules_sha256="a" * 64)
+        result, ports, _, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        rules_at = ports.calls.index("apply_engine_rules")
+        self.assertEqual(ports.calls[rules_at - 1:rules_at + 2], ["scoreboard:pre", "apply_engine_rules", "engine_settings"])
+        self.assertEqual(evidence.files["engine-rules.json"]["file_sha256"], "a" * 64)
+        self.assertEqual(result["engine_rules"], evidence.files["engine-rules.json"])
+        self.assertEqual(result["run_conditions"]["engine_rules_sha256"], "a" * 64)
+
+    def test_rule_failure_or_other_file_invalidates_the_run_before_the_task(self):
+        spec = dataclasses.replace(make_spec(), engine_rules_sha256="a" * 64)
+        for label, mutate in (("failed", failing("apply_engine_rules")),
+                              ("other_file", lambda p, m, c: setattr(p, "rules_sha256", "b" * 64))):
+            with self.subTest(label):
+                result, ports, _, evidence = run(mutate, spec=spec)
+                self.assert_invalid(result, ports, evidence, "engine_rules_failed")
+                self.assertNotIn("start_task", ports.calls)
+                self.assertNotIn("engine-rules.json", evidence.files)
 
     def test_run_conditions_are_recorded_and_signed(self):
         result, ports, _, evidence = run()
@@ -993,6 +1269,65 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
             self.assertEqual((run_directory, phase), (directory.run, "pre"))
             self.assertEqual(endpoint.origin, "http://127.0.0.1:18081")
             self.assertFalse(str(run_directory).startswith(str(directory.meter)))
+
+
+class TestDockerPortsStateCopy(unittest.TestCase):
+    def test_state_copy_uses_the_target_container_and_a_fresh_private_phase_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "runs")
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            config = parse_runner_config(runner_config() | {"runs_root": str(root), "state": STATE})
+            plan = plan_run(config, configuration(), "ours", "ours-1")
+            directory = create_run_directory(root, "ours-1")
+            ports = DockerPorts(config, plan, directory, docker="docker", findings=dict, start=lambda: "1",
+                                settings=dict)
+            snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
+            with patch.object(runner, "copy_sqlite", return_value=Path("copy")) as copy_call:
+                self.assertEqual(ports.state_copy("pre", snapshot), Path("copy"))
+            self.assertEqual(copy_call.call_args[0],
+                             ("docker", "3" * 64, "/app/data/target.sqlite", directory.state / "pre", 1 << 20))
+            self.assertEqual(oct(os.stat(directory.state / "pre").st_mode & 0o777), "0o700")
+            with self.assertRaises(FileExistsError):  # 같은 단계 디렉터리를 다시 쓰지 않는다
+                ports.state_copy("pre", snapshot)
+
+
+class TestDockerPortsStateMemory(unittest.TestCase):
+    def test_uses_the_meter_image_target_port_and_required_only_before_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "runs")
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            config = parse_runner_config(runner_config() | {"runs_root": str(root), "state": STATE})
+            plan = plan_run(config, configuration(), "ours", "ours-1")
+            ports = DockerPorts(config, plan, create_run_directory(root, "ours-1"), docker="docker", findings=dict,
+                                start=lambda: "1", settings=dict)
+            snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
+            for phase, required in (("pre", True), ("post", False)):
+                with self.subTest(phase=phase), patch.object(runner, "memory_fingerprints", return_value=[]) as call:
+                    ports.state_memory(phase, snapshot, b"k")
+                    self.assertEqual(call.call_args[0], ("docker", config.images["meter"].id, "3" * 64,
+                                                         config.state["memory"], config.ports["target"], os.geteuid(),
+                                                         os.getegid(), b"k"))
+                    self.assertEqual(call.call_args[1], {"required": required})
+
+
+class TestDockerPortsStateTrees(unittest.TestCase):
+    def test_required_only_before_the_run_and_uses_the_target_container(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "runs")
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            config = parse_runner_config(runner_config() | {"runs_root": str(root), "state": STATE})
+            plan = plan_run(config, configuration(), "ours", "ours-1")
+            ports = DockerPorts(config, plan, create_run_directory(root, "ours-1"), docker="docker", findings=dict,
+                                start=lambda: "1", settings=dict)
+            snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
+            for phase, required in (("pre", True), ("post", False)):
+                with self.subTest(phase=phase), patch.object(runner, "runtime_fingerprints", return_value={}) as call:
+                    ports.state_trees(phase, snapshot, b"k")
+                    self.assertEqual(call.call_args[0], ("docker", "3" * 64, ("/app/ftp",), 1 << 20, b"k"))
+                    self.assertEqual(call.call_args[1], {"required": required})
 
 
 class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):

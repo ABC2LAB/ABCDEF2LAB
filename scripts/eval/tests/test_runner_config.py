@@ -16,7 +16,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH,
+    COMPOSE_COMMON, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_DATA_PATH,
+    ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
     MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
     compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
     new_run_id, parse_runner_config, plan_run,
@@ -57,6 +58,9 @@ def runner_config() -> dict:
         "findings": {"vocabulary_path": "/srv/eval/vocabulary.json", "page_size": 100, "timeout_seconds": 30,
                      "max_page_bytes": 1048576, "max_total_bytes": 8388608, "max_pages": 100},
         "observer_readonly_ref": "verify:juice-shop-15.0.0:get-api-challenges",
+        "e2": {"ours_mode": "none"},
+        "state": None,
+        "engine_rules": None,
         "task": {"description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.\n로그인 계정은 엔진 설정을 쓴다.",
                  "goal": "다른 사용자의 자원에 접근되는지 확인한다", "timeout_seconds": 1200,
                  "plan_heartbeat_seconds": 600, "seed_first_intent": False, "coverage_enabled": True},
@@ -304,6 +308,117 @@ class TestParseRunnerConfig(unittest.TestCase):
             self.assertEqual(load_runner_config(path).observer_path, "/api/records")
 
 
+STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 67108864,
+         "runtime_roots": ["/app/ftp", "/app/uploads"],
+         "memory": {"paths": ["/api/a/1", "/api/a/2"], "count_field": "data", "max_body_bytes": 1048576,
+                    "timeout_ms": 5000}}
+
+
+class TestStateDiff(unittest.TestCase):
+    def test_state_block_is_required_null_or_closed(self):
+        self.assertIsNone(parse_runner_config(runner_config()).state)
+        self.assertEqual(parse_runner_config(runner_config() | {"state": STATE}).state,
+                         {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ("Challenges",),
+                          "max_copy_bytes": 67108864, "runtime_roots": ("/app/ftp", "/app/uploads"),
+                          "memory": {"paths": ("/api/a/1", "/api/a/2"), "count_field": "data",
+                                     "max_body_bytes": 1048576, "timeout_ms": 5000}})
+        self.assertIsNone(parse_runner_config(runner_config() | {"state": dict(STATE, memory=None)}).state["memory"])
+        self.assertEqual(parse_runner_config(runner_config() | {"state": dict(STATE, runtime_roots=[])}).state[
+            "runtime_roots"], ())
+        self.assertEqual(parse_runner_config(runner_config() | {"state": dict(STATE, signal_tables=[])}).state[
+            "signal_tables"], ())
+        for payload, code in (
+                ({k: v for k, v in runner_config().items() if k != "state"}, "config.state: MISSING"),
+                (runner_config() | {"state": "on"}, "config.state: EXPECTED_OBJECT"),
+                (runner_config() | {"state": dict(STATE, extra=1)}, "config.state: UNKNOWN_FIELDS"),
+                (runner_config() | {"state": {k: v for k, v in STATE.items() if k != "max_copy_bytes"}},
+                 "config.state.max_copy_bytes: MISSING"),
+                (runner_config() | {"state": dict(STATE, sqlite_path="data/target.sqlite")},
+                 "config.state.sqlite_path: INVALID"),
+                (runner_config() | {"state": dict(STATE, sqlite_path="/app/../etc/target.sqlite")},
+                 "config.state.sqlite_path: INVALID"),
+                (runner_config() | {"state": dict(STATE, signal_tables="Challenges")}, "config.state.signal_tables: INVALID"),
+                (runner_config() | {"state": dict(STATE, signal_tables=["A", "A"])}, "config.state.signal_tables: INVALID"),
+                (runner_config() | {"state": dict(STATE, signal_tables=["x y"])}, "config.state.signal_tables: INVALID"),
+                (runner_config() | {"state": dict(STATE, signal_tables=[1])}, "config.state.signal_tables: INVALID"),
+                (runner_config() | {"state": dict(STATE, signal_tables=[f"T{i}" for i in range(33)])},
+                 "config.state.signal_tables: INVALID"),
+                (runner_config() | {"state": dict(STATE, max_copy_bytes=0)}, "config.state.max_copy_bytes: INVALID"),
+                (runner_config() | {"state": dict(STATE, max_copy_bytes=(1 << 30) + 1)},
+                 "config.state.max_copy_bytes: INVALID"),
+                (runner_config() | {"state": dict(STATE, max_copy_bytes=True)}, "config.state.max_copy_bytes: INVALID"),
+                (runner_config() | {"state": {k: v for k, v in STATE.items() if k != "runtime_roots"}},
+                 "config.state.runtime_roots: MISSING"),
+                (runner_config() | {"state": dict(STATE, runtime_roots="/app/ftp")}, "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=["app/ftp"])}, "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=["/app/../ftp"])},
+                 "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=["/app/ftp", "/app/ftp"])},
+                 "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=["/app/ftp", "/app/ftp/sub"])},
+                 "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": dict(STATE, runtime_roots=[f"/r{i}" for i in range(17)])},
+                 "config.state.runtime_roots: INVALID"),
+                (runner_config() | {"state": {k: v for k, v in STATE.items() if k != "memory"}},
+                 "config.state.memory: MISSING"),
+                (runner_config() | {"state": dict(STATE, memory="on")}, "config.state.memory: EXPECTED_OBJECT"),
+                (runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], extra=1))},
+                 "config.state.memory: UNKNOWN_FIELDS"),
+                (runner_config() | {"state": dict(STATE, memory={k: v for k, v in STATE["memory"].items() if k != "paths"})},
+                 "config.state.memory.paths: MISSING"),
+                *((runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], paths=paths))},
+                   "config.state.memory.paths: INVALID")
+                  for paths in ([], "/a", ["a"], ["/a?x=1"], ["/a/../b"], ["/a", "/a"], [1],
+                                [f"/p{i}" for i in range(257)], ["/" + "x" * 33000])),
+                *((runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], count_field=field))},
+                   "config.state.memory.count_field: INVALID") for field in ("", "a b", 1)),
+                *((runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], max_body_bytes=value))},
+                   "config.state.memory.max_body_bytes: INVALID") for value in (0, (16 << 20) + 1, True)),
+                *((runner_config() | {"state": dict(STATE, memory=dict(STATE["memory"], timeout_ms=value))},
+                   "config.state.memory.timeout_ms: INVALID") for value in (0, 600001, True))):
+            with self.subTest(code=code, payload=payload.get("state")), self.assertRaises(RunnerConfigError) as caught:
+                parse_runner_config(payload)
+            self.assertIn(code, caught.exception.errors)
+
+
+class TestE2Mode(unittest.TestCase):
+    def test_e2_block_is_required_and_closed(self):
+        for payload, code in (
+                ({k: v for k, v in runner_config().items() if k != "e2"}, "config.e2: MISSING"),
+                (runner_config() | {"e2": {"ours_mode": "product"}}, "config.e2.ours_mode: UNSUPPORTED"),
+                (runner_config() | {"e2": {"ours_mode": ""}}, "config.e2.ours_mode: UNSUPPORTED"),
+                (runner_config() | {"e2": {}}, "config.e2.ours_mode: MISSING"),
+                (runner_config() | {"e2": {"ours_mode": "stub", "port": 1}}, "config.e2: UNKNOWN_FIELDS"),
+                (runner_config() | {"e2": "stub"}, "config.e2: EXPECTED_OBJECT")):
+            with self.subTest(code=code), self.assertRaises(RunnerConfigError) as caught:
+                parse_runner_config(payload)
+            self.assertIn(code, caught.exception.errors)
+
+    def test_stub_adds_the_overlay_to_the_ours_side_only(self):
+        config = parse_runner_config(runner_config() | {"e2": {"ours_mode": "stub"}})
+        ours = plan_run(config, configuration(), "ours", "ours-1")
+        baseline = plan_run(config, configuration(), "baseline", "baseline-1")
+        self.assertEqual((ours.e2_mode, ours.compose_files[-1]), ("stub", COMPOSE_E2_STUB))
+        self.assertEqual(baseline.e2_mode, "none")
+        self.assertNotIn(COMPOSE_E2_STUB, baseline.compose_files)
+        # E²가 있어도 엔진이 보내는 이름·작업 문구는 그대로다(작업 요청 해시가 baseline과 같다).
+        self.assertEqual(ours.meter_port, baseline.meter_port)
+        none = plan_run(parse_runner_config(runner_config()), configuration(), "ours", "ours-2")
+        self.assertEqual((none.e2_mode, none.compose_files), ("none", (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_EVAL)))
+
+    def test_overlay_names_match_the_runner_constants(self):
+        text = _yaml_without_comments(COMPOSE_E2_STUB.read_text(encoding="utf-8"))
+        self.assertEqual(compose_services(COMPOSE_E2_STUB), {E2_SERVICE, METER_SERVICE})
+        self.assertIn(f"aliases: [{METER_SERVICE}]", text)  # 엔진은 계측기 이름으로 E²에 닿는다
+        self.assertIn(f"aliases: [{METER_UPSTREAM_ALIAS}]", text)
+        self.assertIn(f"-upstream=http://{METER_UPSTREAM_ALIAS}:${{EVAL_METER_PORT:?}}", text)
+        self.assertIn("-role=e2-stub", text)
+        self.assertIn("networks: !override", text)  # 계측기를 엔진 망에서 빼는 줄
+        # E²는 따로 둔 증거 디렉터리에만 쓴다. 계측기 증거(meter/) 경로를 마운트하지 않는다.
+        self.assertIn("- ${EVAL_E2_EVIDENCE_DIR:?}:/evidence", text)
+        self.assertNotIn("EVAL_EVIDENCE_DIR", text)
+
+
 class TestPlanRun(unittest.TestCase):
     def setUp(self):
         self.config = parse_runner_config(runner_config())
@@ -452,17 +567,18 @@ class TestRunDirectory(unittest.TestCase):
 
     def test_creates_private_run_and_meter_directories(self):
         directory = create_run_directory(self.root, "ours-1")
-        for path in (directory.run, directory.meter, directory.llm):
+        for path in (directory.run, directory.meter, directory.llm, directory.e2, directory.state):
             info = os.lstat(path)
             self.assertTrue(stat.S_ISDIR(info.st_mode))
             self.assertEqual(stat.S_IMODE(info.st_mode), 0o700)
             self.assertEqual(info.st_uid, os.geteuid())
         self.assertEqual(directory.meter.parent, directory.run)
+        self.assertNotEqual(directory.e2, directory.meter)  # E² 증거는 계측기 증거와 다른 bind 디렉터리
 
     def test_mode_is_exact_even_when_umask_strips_owner_bits(self):
         os.umask(0o277)
         directory = create_run_directory(self.root, "ours-1")
-        for path in (directory.run, directory.meter, directory.llm):
+        for path in (directory.run, directory.meter, directory.llm, directory.e2, directory.state):
             self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o700)
 
     def test_existing_run_directory_rejected(self):
@@ -554,6 +670,11 @@ class TestComposeContract(unittest.TestCase):
                     preflight[side]["llm"] = llm
             plan = plan_run(config, preflight, "ours", f"ours-{backend}")
             env = compose_environment(plan, create_run_directory(self.root, f"ours-{backend}"))
+            stub = plan_run(parse_runner_config(runner_config() | {"e2": {"ours_mode": "stub"}}), preflight, "ours",
+                            f"stub-{backend}")
+            stub_env = compose_environment(stub, create_run_directory(self.root, f"stub-{backend}"))
+            with self.subTest(backend=backend, e2="stub"):
+                self.assertEqual(compose_variables(stub.compose_files), set(stub_env) | secret_env_names(backend))
             with self.subTest(backend=backend):
                 self.assertEqual(set(env) & SECRET_ENV_NAMES, set())
                 self.assertEqual(compose_variables(plan.compose_files), set(env) | secret_env_names(backend))
@@ -579,7 +700,7 @@ class TestComposeContract(unittest.TestCase):
                 self.assertIn(f"- {path}:size=${{{size_var}:?}}", text)
 
     def test_every_compose_file_is_covered(self):
-        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL}
+        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB}
         on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
         on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
         self.assertEqual(on_disk, files)
@@ -592,13 +713,13 @@ class TestComposeContract(unittest.TestCase):
 
     def test_no_restart_policy_anywhere(self):
         # 회차 중 자동 재시작은 계측기 카운터·대상 상태·엔진 tmpfs를 조용히 초기화한다. 기본값(no)에 맡긴다.
-        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB):
             text = _yaml_without_comments(Path(path).read_text(encoding="utf-8"))
             with self.subTest(path=path.name):
                 self.assertNotRegex(text, r"(?m)^\s*restart\s*:")
 
     def test_every_publish_is_loopback_only(self):
-        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB):
             lines = _yaml_without_comments(Path(path).read_text(encoding="utf-8")).splitlines()
             entries = []
             for index, line in enumerate(lines):
