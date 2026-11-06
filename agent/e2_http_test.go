@@ -540,8 +540,14 @@ func TestE2HTTPSharedControlAllowsOnlyFirstAlternativeAndOtherIntent(t *testing.
 	}
 	result.Trusted.Classification = "completed"
 	control.finish(alternative, result, false)
-	if _, view, err := control.reserve(snapshot, intent, "curl third-action"); !errors.Is(err, ErrE2HTTPBlocked) || view.Decision != "intent_replan_exhausted" {
-		t.Fatalf("third alternative=%+v error=%v", view, err)
+	third, _, err := control.reserve(snapshot, intent, "curl third-action")
+	if err != nil {
+		t.Fatalf("successful alternative closed intent: %v", err)
+	}
+	result.Trusted.Classification = "policy_not_executed"
+	control.finish(third, result, false)
+	if _, view, err := control.reserve(snapshot, intent, "curl fourth-action"); !errors.Is(err, ErrE2HTTPBlocked) || view.Decision != "intent_replan_exhausted" {
+		t.Fatalf("second policy alternative=%+v error=%v", view, err)
 	}
 	other, _, err := control.reserve(snapshot, json.RawMessage(`{"summary":"another allowed intent"}`), "curl other-allowed")
 	if err != nil {
@@ -549,6 +555,57 @@ func TestE2HTTPSharedControlAllowsOnlyFirstAlternativeAndOtherIntent(t *testing.
 	}
 	control.finish(other, result, false)
 }
+func TestE2HTTPSharedControlToolFailuresDoNotSpendPolicyReplan(t *testing.T) {
+	execution, _, _ := e2WorkerFixture(t)
+	control, err := NewE2HTTPControl("7", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := execution.Snapshot()
+	intent := json.RawMessage(`{"summary":"ordinary command failure"}`)
+	result := completedE2WorkerResult()
+	result.Trusted.Execution = snapshot
+	for _, classification := range []string{"tool_failure", "transient_failure", "forward_not_attempted"} {
+		ticket, view, err := control.reserve(snapshot, intent, "curl -f check")
+		if err != nil || view.AlternativeUsed {
+			t.Fatalf("classification=%s reserve=%+v error=%v", classification, view, err)
+		}
+		result.Trusted.Classification = classification
+		control.finish(ticket, result, false)
+	}
+	ticket, view, err := control.reserve(snapshot, intent, "curl -f check")
+	if err != nil || view.AlternativeUsed || view.Calls != 4 {
+		t.Fatalf("ordinary tool failure consumed replan quota: view=%+v error=%v", view, err)
+	}
+	result.Trusted.Classification = "completed"
+	control.finish(ticket, result, false)
+	if _, view, err := control.reserve(snapshot, intent, "curl next permitted action"); err != nil || view.AlternativeUsed || view.Calls != 5 {
+		t.Fatalf("successful work closed intent: view=%+v error=%v", view, err)
+	}
+}
+
+func TestE2HTTPSharedControlRunnerErrorKeepsReplayBlocked(t *testing.T) {
+	execution, _, _ := e2WorkerFixture(t)
+	control, err := NewE2HTTPControl("7", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := execution.Snapshot()
+	intent := json.RawMessage(`{"summary":"runner error"}`)
+	ticket, _, err := control.reserve(snapshot, intent, "curl uncertain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := completedE2WorkerResult()
+	result.Trusted.Execution = snapshot
+	result.Trusted.Classification = "tool_failure"
+	control.finish(ticket, result, true)
+	otherIntent := json.RawMessage(`{"summary":"different intent"}`)
+	if _, view, err := control.reserve(snapshot, otherIntent, "curl uncertain"); !errors.Is(err, ErrE2HTTPBlocked) || view.Decision != "same_action_not_retried" {
+		t.Fatalf("runner error replay=%+v error=%v", view, err)
+	}
+}
+
 func TestE2HTTPSharedControlTotalBudgetDoesNotRenewForNewCallsOrIntents(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
 	control, err := NewE2HTTPControl("7", 2)
@@ -658,8 +715,9 @@ func TestE2HTTPLastProgramClassificationOutranksModelDone(t *testing.T) {
 		"unsupported":           ErrE2HTTPUnsupported,
 		"partial_unsupported":   ErrE2HTTPUnsupported,
 		"transient_failure":     ErrE2HTTPTransient,
+		"forward_not_attempted": ErrE2HTTPTransient,
 		"isolation_unavailable": ErrE2HTTPUnavailable,
-		"tool_failure":          ErrE2HTTPWorker,
+		"tool_failure":          nil,
 		"terminated":            ErrE2HTTPBlocked,
 	}
 	for classification, want := range cases {

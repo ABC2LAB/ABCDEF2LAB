@@ -465,12 +465,12 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 		return reason, counts, ErrE2HTTPWorker
 	}
 	switch last {
-	case "completed":
+	case "completed", "tool_failure":
 	case "policy_not_executed", "partial_policy_denial":
 		return reason, counts, ErrE2HTTPPolicyLimited
 	case "unsupported", "partial_unsupported":
 		return reason, counts, ErrE2HTTPUnsupported
-	case "transient_failure":
+	case "transient_failure", "forward_not_attempted":
 		return reason, counts, ErrE2HTTPTransient
 	case "isolation_unavailable":
 		return reason, counts, ErrE2HTTPUnavailable
@@ -510,7 +510,7 @@ type e2HTTPAction struct {
 	callRef  string
 	ordinal  int
 }
-type e2HTTPIntentState struct{ failed, alternativeUsed, closed, inflight bool }
+type e2HTTPIntentState struct{ policyFailed, alternativeUsed, closed, inflight bool }
 type e2HTTPTicket struct {
 	action, intent [32]byte
 	alternative    bool
@@ -591,10 +591,10 @@ func (c *E2HTTPControl) reserve(snapshot e2proxy.ExecutionView, intent json.RawM
 	if state.inflight {
 		return refuse("intent_call_inflight", "")
 	}
-	if state.closed || state.failed && state.alternativeUsed {
+	if state.closed || state.policyFailed && state.alternativeUsed {
 		return refuse("intent_replan_exhausted", "")
 	}
-	alternative := state.failed
+	alternative := state.policyFailed
 	if alternative {
 		state.alternativeUsed = true
 	}
@@ -616,13 +616,22 @@ func (c *E2HTTPControl) finish(ticket e2HTTPTicket, result e2runner.Result, runF
 	state.inflight = false
 	classification := result.Trusted.Classification
 	negative := runFailed || classification != "completed" || !result.Trusted.Final || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
-	if negative {
-		state.failed = true
-		c.actions[ticket.action] = e2HTTPAction{callRef: result.Trusted.Call.CallRef, ordinal: ticket.ordinal}
-	} else {
+	policyFailure := classification == "policy_not_executed" || classification == "partial_policy_denial" || classification == "unsupported" || classification == "partial_unsupported"
+	incomplete := classification == "result_unknown" || !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
+	retryableToolOutcome := !runFailed && (classification == "tool_failure" || classification == "transient_failure" || classification == "forward_not_attempted")
+	if !negative || retryableToolOutcome && !incomplete {
+		// Ordinary tool failures use the shared call budget, not policy replan quota.
 		delete(c.actions, ticket.action)
+	} else {
+		// Denied or uncertain actions remain blocked across new intent IDs.
+		c.actions[ticket.action] = e2HTTPAction{callRef: result.Trusted.Call.CallRef, ordinal: ticket.ordinal}
 	}
-	if ticket.alternative || classification == "result_unknown" || !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete {
+	if policyFailure {
+		state.policyFailed = true
+	} else if ticket.alternative && !negative {
+		state.policyFailed = false
+	}
+	if incomplete {
 		state.closed = true
 	}
 	decision := "completed"
@@ -645,8 +654,8 @@ target requests, execute shell commands, widen policy, create findings, or
 declare unsupported evidence a confirmed result. Worker policy refusal,
 unsupported path, transient failure, unknown outcome, and incomplete closure
 are separate program states. A refused identical action is never retried;
-at most one different alternative follows a failure of the same canonical
-intent, within the shared task limits. A new intent/call does not renew limits.
+at most one different alternative follows a policy refusal of the same
+canonical intent, within the shared task limits. A new intent/call does not renew limits.
 Describe policy-limited or incomplete work without claiming no vulnerabilities.`
 
 func constrainE2HTTPPlannerOptions(ctx context.Context, opts *agentcore.Options) error {
