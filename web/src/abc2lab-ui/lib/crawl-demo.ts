@@ -185,3 +185,25 @@ export const CRAWL_EVENTS: CrawlEvent[] = LINES.map(([kind, m, p, status, note, 
 export function isLockedPath(p: string): boolean {
   return p.startsWith("/admin/delete");
 }
+
+/** 범위 확인에서 기본으로 빠지는 경로와 사유 — ScopeScreen 의 off 와 같다 */
+export const CRAWL_EXCLUDED: Record<string, string> = {
+  "GET /api/logout": "세션이 끊김",
+  "POST /api/password/reset": "메일 발송",
+  "DELETE /api/cart/{id}": "삭제 요청",
+};
+
+/** get 조회 · login 테스트 계정 로그인 · ap 승인 후 전송 · off 제외 예정 · lock 전역 제외 */
+export type CrawlPathKind = "get" | "login" | "ap" | "off" | "lock";
+
+/**
+ * 경로 분류 — 범위 확인과 같은 기준(crawl-screen.test 가 대조).
+ * 데이터를 바꾸는 경로(GET 외) 중 로그인 · 제외 예정 · 전역 제외를 뺀 나머지는 보내기 전에 승인이 필요하다('승인 후 전송').
+ */
+export function crawlPathKind(m: CrawlMethod, p: string): CrawlPathKind {
+  if (isLockedPath(p)) return "lock";
+  if (CRAWL_EXCLUDED[`${m} ${p}`]) return "off";
+  if (m === "GET") return "get";
+  if (m === "POST" && p === "/api/login") return "login";
+  return "ap";
+}

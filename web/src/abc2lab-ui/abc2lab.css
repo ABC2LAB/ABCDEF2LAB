@@ -3953,18 +3953,15 @@ h1.big {
   background: var(--warn-weak);
   border-color: transparent;
 }
-.cr-leg {
+/* 범례: 제목 아래 한 줄 */
+.cr-tleg {
   display: flex;
   gap: 6px 8px;
   flex-wrap: wrap;
   align-items: center;
-  margin-left: auto;
+  margin: -2px 0 10px;
   font-size: 12px;
   color: var(--muted);
-}
-.cr-leg .dtag,
-.cr-leg .cr-st {
-  margin-left: 4px;
 }
 /* 탐색 기록: 최신 줄이 위, 넘치면 안에서만 스크롤 */
 .cr-log {
@@ -4117,9 +4114,45 @@ h1.big {
   background: var(--soft);
   border-radius: 3px;
 }
-.cr-chip.lock {
+.cr-chip.lock,
+.cr-chip.off {
   color: var(--muted);
   border-style: dashed;
+}
+/* 보내기 전에 승인이 필요한 경로 — 범위 확인의 '승인 후 전송'과 같은 기준 · 같은 주황 */
+.cr-chip.ap {
+  border-color: var(--warn-border);
+}
+.cr-apb,
+.cr-xb {
+  flex: none;
+  padding: 0 5px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 3px;
+}
+.cr-apb {
+  font-weight: 700;
+  color: var(--warn);
+  background: var(--warn-weak);
+}
+.cr-xb {
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px dashed var(--line-2);
+}
+.cr-gap {
+  margin-left: auto;
+  padding: 1px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--warn);
+  background: var(--warn-weak);
+  border-radius: 4px;
+}
+.cr-gap + .cr-gn {
+  margin-left: 8px;
 }
 .cr-chip.new {
   border-color: var(--teal);

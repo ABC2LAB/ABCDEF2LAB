@@ -5,13 +5,14 @@ import { Screen } from "../components/Screen";
 import { MockBanner } from "../components/ui";
 import {
   CRAWL_EVENTS,
+  CRAWL_EXCLUDED,
   CRAWL_GROUP_LABEL,
   CRAWL_START_SEC,
   CRAWL_TOTAL_MS,
   type CrawlEvent,
   type CrawlGroup,
   type CrawlPath,
-  isLockedPath,
+  crawlPathKind,
 } from "../lib/crawl-demo";
 import { cx } from "../lib/cx";
 import { useNav } from "../nav";
@@ -39,6 +40,12 @@ const AT_MS = (() => {
 const secAt = (i: number) => Math.floor(AT_MS[i] / 1000);
 /** 예시 기록 줄 수 */
 const TOTAL = CRAWL_EVENTS.length;
+/** 찾은 경로 칩에 마우스를 올렸을 때 붙는 설명 */
+const CHIP_NOTE: Partial<Record<ReturnType<typeof crawlPathKind>, string>> = {
+  ap: " · 보내기 전에 승인 필요",
+  off: " · 제외 예정",
+  lock: " · 전역 제외 규칙이라 요청하지 않음",
+};
 /** 새로 찾은 경로를 강조해 두는 줄 수 */
 const NEW_SPAN = 2;
 
@@ -147,6 +154,8 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
   const known = stats.sent + stats.queue;
   const pct = known ? Math.round((stats.sent / known) * 100) : 0;
   const reads = stats.found.filter((f) => f.m === "GET").length;
+  // 보내기 전에 승인이 필요한 경로(범위 확인의 '승인 후 전송'과 같은 기준)
+  const approvals = stats.found.filter((f) => crawlPathKind(f.m, f.p) === "ap").length;
   const paused = state.paused && !done;
   const rows = CRAWL_EVENTS.slice(0, state.step)
     .map((e, i) => ({ e, i }))
@@ -165,10 +174,16 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
       방문 대기 <b>{stats.queue}</b>
     </>
   );
+  const apSum = (
+    <>
+      승인 후 전송 <b>{approvals}</b>
+    </>
+  );
   if (done) tail = stats.logins > 0 ? "로그인 영역 확인됨" : "로그인 영역 없음";
 
   let pol = "새 경로가 더 나오지 않으면 탐색을 마치고 범위 확인으로 넘어갑니다";
-  if (done) pol = "탐색을 마쳤습니다. 범위 확인에서 점검할 경로를 고르세요.";
+  if (done)
+    pol = "탐색을 마쳤습니다. 범위 확인에서 점검할 경로를 고르세요. 승인 후 전송 경로는 보낼 때마다 승인을 받습니다.";
   else if (paused) pol = "일시정지 중입니다. 다시 시작하면 남은 링크부터 이어서 탐색합니다.";
 
   return (
@@ -229,7 +244,8 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
 
           <div style={{ fontSize: 14, color: "var(--muted)", marginBottom: 4 }}>
             방문 <strong style={{ color: "var(--fg)" }}>{stats.sent}</strong> / 알려진 링크{" "}
-            <strong style={{ color: "var(--fg)" }}>{known}</strong> · 경과 {elapsed(stats.sec)}
+            <strong style={{ color: "var(--fg)" }}>{known}</strong> · 방문 대기{" "}
+            <strong style={{ color: "var(--fg)" }}>{stats.queue}</strong> · 경과 {elapsed(stats.sec)}
           </div>
           <div
             className="bar"
@@ -255,15 +271,15 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
               <div className="v">{stats.sent}</div>
               <div className="sub">{stats.logins ? `로그인 ${stats.logins}회 포함` : "GET만 보냄"}</div>
             </div>
+            <div className={cx("tile", approvals > 0 && "attn-warn")}>
+              <div className="k">승인 후 전송</div>
+              <div className="v">{approvals}</div>
+              <div className="sub">데이터를 바꾸는 경로 · 보내기 전에 승인</div>
+            </div>
             <div className="tile">
               <div className="k">요청 안 함</div>
               <div className="v">{stats.skip}</div>
               <div className="sub">규칙으로 막은 링크</div>
-            </div>
-            <div className="tile">
-              <div className="k">방문 대기</div>
-              <div className="v">{stats.queue}</div>
-              <div className="sub">아직 열지 않은 링크</div>
             </div>
           </div>
 
@@ -293,11 +309,12 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
             <section className="cr-logw" aria-labelledby="cr-log-h">
               <div className="cr-h">
                 <h3 id="cr-log-h">탐색 기록</h3>
-                <span className="cr-leg">
-                  <span className="cr-st s2">200</span>보낸 요청의 응답
-                  <span className="dtag ex">기록만</span>보내지 않음
-                  <span className="dtag out">요청 안 함</span>규칙으로 막음
-                </span>
+              </div>
+              <div className="cr-tleg">
+                <span className="cr-st s2">200</span>보낸 요청
+                <span className="dtag ap">승인 후 전송</span>보내기 전 승인
+                <span className="dtag ex">제외 예정</span>보내지 않음
+                <span className="dtag out">요청 안 함</span>규칙으로 막음
               </div>
               <div className="cr-log">
                 {rows.map(({ e, i }) => (
@@ -311,10 +328,15 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
                   찾은 경로 <span className="cnt">{stats.found.length}</span>
                 </h3>
               </div>
+              <div className="cr-tleg">
+                <span className="cr-apb">승인</span>보내기 전에 승인 필요
+                <span className="cr-xb">제외</span>보내지 않을 경로
+              </div>
               <div className="cr-tree" ref={treeRef}>
                 {groups.length === 0 && <div className="cr-empty">아직 찾은 경로가 없습니다.</div>}
                 {groups.map(({ g, items }) => {
                   const isOpen = state.open.includes(g);
+                  const groupApprovals = items.filter((f) => crawlPathKind(f.m, f.p) === "ap").length;
                   return (
                     <div key={g} className={cx("cr-g", isOpen && "open")}>
                       <button
@@ -325,6 +347,7 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
                         onClick={() => toggleGroup(g)}
                       >
                         <span className="cr-gt">{CRAWL_GROUP_LABEL[g]}</span>
+                        {groupApprovals > 0 && <span className="cr-gap">승인 {groupApprovals}</span>}
                         <span className="cr-gn">{items.length}</span>
                         <span className="cr-chev" aria-hidden="true">
                           ▾
@@ -336,7 +359,7 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
                         className={cx("cr-ps", !isOpen && more.split(",").includes(g) && "more")}
                       >
                         {items.map((f) => {
-                          const lock = isLockedPath(f.p);
+                          const kind = crawlPathKind(f.m, f.p);
                           return (
                             <span
                               key={`${f.m} ${f.p}`}
@@ -344,12 +367,13 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
                                 "cr-chip",
                                 methodClass(f.m),
                                 state.step - 1 - f.at < NEW_SPAN && "new",
-                                lock && "lock",
+                                (kind === "ap" || kind === "off" || kind === "lock") && kind,
                               )}
-                              title={`${f.m} ${f.p}${lock ? " · 전역 제외 규칙이라 요청하지 않음" : ""}`}
+                              title={`${f.m} ${f.p}${CHIP_NOTE[kind] ?? ""}${kind === "off" ? `(${CRAWL_EXCLUDED[`${f.m} ${f.p}`]})` : ""}`}
                             >
                               <i>{f.m}</i>
                               {f.p}
+                              {kind === "ap" && <b className="cr-apb">승인</b>}
                             </span>
                           );
                         })}
@@ -365,7 +389,7 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
           <div className="scope-bar">
             <div className="sb-sum">
               <div className="sb-n">
-                찾은 경로 <b>{stats.found.length}</b> · {tail}
+                찾은 경로 <b>{stats.found.length}</b> · {apSum} · {tail}
               </div>
               <div className="sb-pol" role="status">
                 {pol}
@@ -440,7 +464,10 @@ function slideIn(el: HTMLElement) {
     });
 }
 
-/** 탐색 기록 한 줄 — 보낸 요청은 응답 코드, 찾기만 한 경로는 '기록만', 규칙에 막힌 링크는 '요청 안 함' */
+/**
+ * 탐색 기록 한 줄 — 보낸 요청은 응답 코드, 찾기만 한 경로는 앞으로의 처리('승인 후 전송' 또는 '제외 예정'),
+ * 규칙에 막힌 링크는 '요청 안 함'
+ */
 function LogRow({ e, at, host }: { e: CrawlEvent; at: number; host: string }) {
   const ref = useRef<HTMLDivElement>(null);
   // 처음 그려질 때 한 번만(줄은 다시 마운트되지 않는다) — 그리기 전에 높이를 0으로 잡아 깜빡임이 없다
@@ -459,7 +486,13 @@ function LogRow({ e, at, host }: { e: CrawlEvent; at: number; host: string }) {
   const note = n > 0 && (e.kind === "req" || e.kind === "login") ? `${e.note} · 새 경로 ${n}` : e.note;
   const st = e.status ?? 0;
   let tag = <span className={cx("cr-st", st >= 200 && st < 300 && "s2", st >= 400 && "s4")}>{e.status}</span>;
-  if (e.kind === "rec") tag = <span className="dtag ex">기록만</span>;
+  if (e.kind === "rec")
+    tag =
+      e.m && e.p && crawlPathKind(e.m, e.p) === "ap" ? (
+        <span className="dtag ap">승인 후 전송</span>
+      ) : (
+        <span className="dtag ex">제외 예정</span>
+      );
   if (e.kind === "skip") tag = <span className="dtag out">요청 안 함</span>;
   return (
     <div ref={ref} className="cr-row">

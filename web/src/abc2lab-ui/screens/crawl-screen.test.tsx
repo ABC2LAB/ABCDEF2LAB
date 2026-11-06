@@ -4,7 +4,7 @@ import { StrictMode, useState } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CRAWL_EVENTS } from "../lib/crawl-demo";
+import { CRAWL_EVENTS, crawlPathKind } from "../lib/crawl-demo";
 import { NavContext, type ScreenId } from "../nav";
 import CrawlScreen from "./CrawlScreen";
 import JobScreen from "./JobScreen";
@@ -73,7 +73,21 @@ describe("자산 탐색 (시안)", () => {
     expect(tile("보낸 요청").querySelector(".v")).toHaveTextContent("40");
     expect(tile("보낸 요청").querySelector(".sub")).toHaveTextContent("로그인 2회 포함");
     expect(tile("요청 안 함").querySelector(".v")).toHaveTextContent("3");
-    expect(tile("방문 대기").querySelector(".v")).toHaveTextContent("0");
+    // 보내기 전에 승인이 필요한 경로 — 범위 확인의 '승인 후 전송 10'과 같다
+    expect(tile("승인 후 전송").querySelector(".v")).toHaveTextContent("10");
+    expect(tile("승인 후 전송")).toHaveClass("attn-warn");
+    expect(crawl().querySelector(".scope-bar .sb-n")).toHaveTextContent(
+      "찾은 경로 37 · 승인 후 전송 10 · 로그인 영역 확인됨",
+    );
+    // 기록: 폼·버튼에서 찾은 경로 10줄 = 승인 후 전송 8 + 제외 예정 2, 규칙에 막힌 링크 3
+    expect(crawl().querySelectorAll(".cr-log .dtag.ap")).toHaveLength(8);
+    expect(crawl().querySelectorAll(".cr-log .dtag.ex")).toHaveLength(2);
+    expect(crawl().querySelectorAll(".cr-log .dtag.out")).toHaveLength(3);
+    // 찾은 경로: 승인 표시 10개, 제외(점선) 4개, 묶음 머리에 묶음별 승인 수
+    expect(crawl().querySelectorAll(".cr-chip.ap .cr-apb")).toHaveLength(10);
+    expect(crawl().querySelectorAll(".cr-chip.off, .cr-chip.lock")).toHaveLength(4);
+    const orderGroup = [...crawl().querySelectorAll(".cr-g")].find((g) => g.textContent?.includes("장바구니·주문"));
+    expect(orderGroup?.querySelector(".cr-gap")).toHaveTextContent("승인 3");
     expect(screen.getByRole("progressbar", { name: "탐색 진행" })).toHaveAttribute("aria-valuenow", "100");
     expect(screen.getByText("⏸ 탐색 완료 · 확인 대기")).toBeVisible();
     expect(screen.queryByRole("button", { name: "일시정지" })).toBeNull();
@@ -129,19 +143,35 @@ describe("자산 탐색 (시안)", () => {
     expect(rows()).toBe(3);
   });
 
-  it("finds exactly the 37 paths that the 범위 확인 mockup lists", () => {
+  it("finds exactly the 37 paths that the 범위 확인 mockup lists, with the same approval split", () => {
     // vitest 는 web/ 에서 돈다(저장소 루트에서 돌려도 찾게 둘 다 본다)
     const rel = "src/abc2lab-ui/screens/ScopeScreen.tsx";
     const file = [resolve(process.cwd(), rel), resolve(process.cwd(), "web", rel)].find((f) => existsSync(f)) ?? rel;
     const src = readFileSync(file, "utf8");
     const block = src.slice(src.indexOf("const EP: Endpoint[] = ["));
-    const scope = [...block.slice(0, block.indexOf("\n];")).matchAll(/g: "(\w+)",\s*m: "(\w+)",\s*p: "([^"]+)"/g)].map(
+    const list = block.slice(0, block.indexOf("\n];"));
+    const scope = [...list.matchAll(/g: "(\w+)",\s*m: "(\w+)",\s*p: "([^"]+)"/g)].map(
       ([, g, m, p]) => `${m} ${p} ${g}`,
     );
     const found = CRAWL_EVENTS.flatMap((e) => e.found.map((f) => `${f.m} ${f.p} ${f.g}`));
     expect(scope).toHaveLength(37);
     expect(new Set(found).size).toBe(found.length);
     expect([...found].sort()).toEqual([...scope].sort());
+
+    // 범위 확인의 '승인 후 전송' = GET 이 아니고 로그인 · 제외(off) · 전역 제외(lock)가 아닌 경로
+    const scopeApprovals = list
+      .split(/\n {2}\{/)
+      .slice(1)
+      .filter((chunk) => !/m: "GET"/.test(chunk) && !/login: true|off: "|lock: "/.test(chunk))
+      .map((chunk) => {
+        const [, m, p] = chunk.match(/m: "(\w+)",\s*p: "([^"]+)"/) ?? [];
+        return `${m} ${p}`;
+      });
+    const crawlApprovals = CRAWL_EVENTS.flatMap((e) => e.found)
+      .filter((f) => crawlPathKind(f.m, f.p) === "ap")
+      .map((f) => `${f.m} ${f.p}`);
+    expect(scopeApprovals).toHaveLength(10);
+    expect([...crawlApprovals].sort()).toEqual([...scopeApprovals].sort());
   });
 
   it("slides each new line open while the screen is shown, but not while it is hidden", async () => {
