@@ -9,6 +9,7 @@
 | `evidence/qwen3.6-35b-a3b-model-card-*.json` | 샘플링 고정값의 근거: 모델 공식 카드 커밋·README SHA-256·권장 샘플링 원문·고른 모드와 이유·고정 제공자의 파라미터 지원 |
 | `evidence/openrouter-endpoint-params-*.json` | 고정 엔드포인트의 지원 파라미터 목록(게이트웨이가 `require_parameters:true`로 넣는 일곱 값이 모두 있어야 함) |
 | `evidence/ollama-openai-sampling-*.json` | 로컬 서버의 OpenAI 호환 경로가 어떤 샘플링 값을 실제로 적용하는지 잰 결과. local 프로파일의 `sampling` 묶음 근거 |
+| `evidence/ollama-keep-alive-*.json` | 적재 때 준 유지 기간이 OpenAI 호환 요청에도 이어지고, 기본 유지 기간을 넘는 공백 뒤에도 모델이 남는다는 실측 |
 | `evidence/observer-readonly-*.json` | 관측 front의 스코어보드 GET이 대상 해결 상태를 바꾸지 않는다는 근거(러너 `observer_readonly_ref`) |
 
 지문 확인:
