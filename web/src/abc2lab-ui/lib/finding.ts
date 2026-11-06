@@ -150,6 +150,15 @@ export function displayVerdict(r: FindingRecord): OracleValue {
   return r.oracleValue;
 }
 
+/**
+ * 비교 행의 **표시** 판정 — 화면 전체 판정(`displayVerdict`)이 확정이 아니면 행의 `vuln` 도 보수적으로
+ * `und`(판단 불가)로 내린다. 상단 배지는 '판단 불가'인데 표에만 '취약'이 남는 모순을 막는다(절대규칙 5).
+ * 다른 행 상태(ok·sus·und·na)는 과장이 아니므로 그대로 둔다.
+ */
+export function displayComparisonRow(verdict: OracleValue, row: ComparisonRow["row"]): ComparisonRow["row"] {
+  return verdict !== "confirmed" && row === "vuln" ? "und" : row;
+}
+
 // ── verdict-record §2 shape 예시. 수평 IDOR CONFIRMED 1건.
 //    canary 는 **필드명만**(값 금지), 요청은 논리 resource_ref(raw URL 아님).
 const now = Date.UTC(2026, 10, 6, 4, 30, 0);

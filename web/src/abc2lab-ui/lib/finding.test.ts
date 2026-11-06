@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   confirmedEvidenceComplete,
   dataAccessProven,
+  displayComparisonRow,
   displayVerdict,
   type FindingRecord,
   getFinding,
@@ -130,6 +131,24 @@ describe("dataAccessProven", () => {
     expect(dataAccessProven(rec({ signals: { ...rec().signals, sameResource: "unknown" } }))).toBe(false);
     expect(dataAccessProven(rec({ signals: { ...rec().signals, ownerNormalData: "unknown" } }))).toBe(false);
     expect(dataAccessProven(rec({ signals: { ...rec().signals, crossNormalData: "no" } }))).toBe(false);
+  });
+});
+
+describe("displayComparisonRow (행 취약 보수 하향)", () => {
+  it("화면 판정이 confirmed 가 아니면 행의 vuln 은 und 로 내린다", () => {
+    expect(displayComparisonRow("undecidable", "vuln")).toBe("und");
+    expect(displayComparisonRow("suspected", "vuln")).toBe("und");
+    expect(displayComparisonRow("allowed", "vuln")).toBe("und");
+  });
+
+  it("confirmed 면 vuln 그대로", () => {
+    expect(displayComparisonRow("confirmed", "vuln")).toBe("vuln");
+  });
+
+  it("vuln 이 아닌 행(ok·und·sus·na)은 판정과 무관하게 그대로", () => {
+    expect(displayComparisonRow("undecidable", "ok")).toBe("ok");
+    expect(displayComparisonRow("undecidable", "und")).toBe("und");
+    expect(displayComparisonRow("undecidable", "sus")).toBe("sus");
   });
 });
 

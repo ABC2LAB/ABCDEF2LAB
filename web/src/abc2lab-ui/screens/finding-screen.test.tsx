@@ -149,4 +149,23 @@ describe("FindingDetail — 불일치 레코드 보수 표시", () => {
     expect(text).toContain("단정하지 않아요");
     expect(text).not.toContain("응답 필드에 그대로 나타났");
   });
+
+  // 화면 판정이 확정이 아니면 비교 표의 'vuln' 행도 보수적으로 '판단 불가'로.
+  it("화면 판정 불가인데 comparison 에 vuln 행이 있으면 표에 '취약'이 남지 않는다", () => {
+    const { container } = render(
+      <FindingDetail
+        record={rec({
+          oracleValue: "undecidable",
+          vulnVerdict: "undecidable",
+          comparison: [
+            { label: "B", roleNote: "무관한 사용자", resourceRef: "basket:x", observation: "교차 요청", row: "vuln" },
+          ],
+        })}
+      />,
+    );
+    const table = container.querySelector("table.cmp") as HTMLElement;
+    expect(within(table).queryByText("취약")).toBeNull(); // 표에 '취약' 없음
+    expect(within(table).getAllByText("판단 불가").length).toBeGreaterThan(0); // 행은 보수 하향
+    expect(container.textContent ?? "").toMatch(/표의 '취약' 행은 보수적으로/); // 보수 안내
+  });
 });

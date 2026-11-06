@@ -8,6 +8,7 @@ import {
   COMPARISON_SIGNALS,
   type ComparisonRow,
   dataAccessProven,
+  displayComparisonRow,
   displayVerdict,
   type FindingRecord,
   getFinding,
@@ -151,11 +152,13 @@ export function FindingDetail({ record }: { record: FindingRecord }) {
             </thead>
             <tbody>
               {record.comparison.map((rowData) => {
-                const cell = ROW_CELL[rowData.row];
+                // 화면 판정이 확정이 아니면 행의 'vuln' 도 보수적으로 '판단 불가'로(상단 배지와 일관).
+                const shownRow = displayComparisonRow(display, rowData.row);
+                const cell = ROW_CELL[shownRow];
                 return (
                   <tr
                     key={rowData.label}
-                    style={rowData.row === "vuln" ? { background: "var(--danger-weak)" } : undefined}
+                    style={shownRow === "vuln" ? { background: "var(--danger-weak)" } : undefined}
                   >
                     <td>
                       <strong>{rowData.label}</strong>
@@ -177,6 +180,12 @@ export function FindingDetail({ record }: { record: FindingRecord }) {
             </tbody>
           </table>
         </div>
+        {display !== "confirmed" && record.comparison.some((c) => c.row === "vuln") && (
+          <div className="hint">
+            화면 판정이 <Strong>{dbadge.label}</Strong>라, 표의 '취약' 행은 보수적으로 <Strong>판단 불가</Strong>로
+            표시했어요(상단 판정과 일관 — 증거 불완비).
+          </div>
+        )}
       </div>
 
       <div className="card">
