@@ -46,7 +46,7 @@ _ROW_FIELDS = {
     "verdict_collection": {"status", "reason"},
     "e2_product": {"close_state", "close_reason", "collection_outcome", "collection_reason", "rows", "attempts", "decisions",
                    "attempts_without_result", "allowed_not_sent", "checkpoint_sequence", "config_sha256", "policy_fingerprint_sha256",
-                   "manifest_sha256"},
+                   "manifest_sha256", "image_id"},
     "attempt_reconciliation": {"cells", "allowed_responded", "meter_attempt_reused", "blocked_reached", "unrecorded_reached",
                                "positive_evidence", "control_claim_withheld"},
 }
@@ -57,6 +57,8 @@ _E2_COUNTS = ("decision_rows", "allowed", "unsupported", "unavailable")
 E2_CLOSE_STATES = ("complete", "incomplete", "no_execution", "unavailable")
 E2_COLLECTION_OUTCOMES = ("complete", "product_failure", "no_execution")
 E2_DECISION_NAMES = ("allowed", "denied", "unsupported")
+_E2_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_E2_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # 시도별 대조 다섯 칸(평가 프로토콜 §8.3). 러너 대조 코드와 따로 계약대로 다시 확인한다.
 RECONCILE_CELLS = ("allowed_observed", "allowed_unobserved", "denied_unobserved", "denied_observed",
                    "unrecorded_observed")
@@ -274,6 +276,10 @@ def e2_mode(receipt: dict, evidence: object) -> str:
     return row["mode"]
 
 
+def _matches(pattern: re.Pattern, value: object) -> bool:
+    return isinstance(value, str) and bool(pattern.fullmatch(value))
+
+
 def e2_product_row(receipt: dict, evidence: object) -> dict | None:
     """제품 E② 수집 결과 행(연결 제안 §4.3). product 회차에만 정확히 한 행 있고, 제품 실패도 유효 회차다."""
     mode = e2_mode(receipt, evidence)
@@ -283,6 +289,9 @@ def e2_product_row(receipt: dict, evidence: object) -> dict | None:
             raise IsolationError("isolation_evidence.e2_product: 제품 E² 회차에만 있음")
         return None
     row = _one(_rows(evidence, receipt), "e2_product")
+    if (not _matches(_E2_SHA256, row["config_sha256"]) or not _matches(_E2_SHA256, row["policy_fingerprint_sha256"])
+            or not _matches(_E2_IMAGE_ID, row["image_id"])):
+        raise IsolationError("isolation_evidence.e2_product: 대조 값 형식 오류")
     close, outcome, reason = row["close_state"], row["collection_outcome"], row["collection_reason"]
     if close not in E2_CLOSE_STATES or outcome not in E2_COLLECTION_OUTCOMES:
         raise IsolationError("isolation_evidence.e2_product: 상태 형식 오류")
@@ -330,6 +339,12 @@ def verdict_collection(receipt: dict, evidence: object, records: object) -> None
 
 def _count(value: object) -> bool:
     return type(value) is int and value >= 0
+
+
+def e2_identity(receipt: dict, evidence: object) -> tuple[str, str] | None:
+    """제품 E² 회차의 (정책 지문, 이미지 ID). 채점기가 조건 하나 안에서 같은지 대조한다(프로토콜 §2)."""
+    row = e2_product_row(receipt, evidence)
+    return None if row is None else (row["policy_fingerprint_sha256"], row["image_id"])
 
 
 def _reconcile_totals(mode: str, rows: dict[str, list[dict]], receipt: dict, evidence: object) -> tuple[int, int]:

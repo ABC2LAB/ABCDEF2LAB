@@ -146,7 +146,10 @@ cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runne
 | `engine_settings_mismatch` | 엔진 기본 workers·모델이 선언과 다른지, 프록시 설정 |
 | `llm_*`(제공자·fallback·sampling·미검증) | 3절 3번 재조회. 제공자 쪽 문제면 세션을 멈춘다 |
 | `drain_timeout`, `seal_failed`, `tmpfs_full` | 같은 칸 재실행. 반복되면 원인 수정 |
+| `e2_<코드>`(`policy_fingerprint_sha256_mismatch`, `service_ready_timeout` 등) | 동결 지문·설정·E² 이미지. 값을 고쳐 통과시키지 않고 무엇이 달라졌는지부터 본다 |
 | `interrupted` | 같은 칸 재실행 |
+
+**제품 E②가 있는 개선 후 회차:** 제품 실패(`e2_product.collection_outcome=product_failure`)는 무효가 아니다. 다시 돌리지 않고 그대로 세며 통제 주장만 보류된다(연결 제안 §4.3). 다시 돌리면 실패를 지우는 셈이다. 정책 입력·동결 지문·E² 이미지는 태그 커밋 기준으로 고정하고, 세션 중에 바꾸지 않는다. 조건 안에서 지문이나 이미지가 다르면 채점기가 비교를 중단한다.
 
 ## 6. 집계·채점
 
