@@ -3203,10 +3203,7 @@ func (s *Server) activityDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"detail": d})
 }
 
-// taskActivityDetail keeps the legacy local-task behavior (including thinking
-// rows), while inherited details are restricted to terminal worker intents.
-// This prevents a guessed global activity id from exposing source planner/main
-// or in-flight transcripts.
+// 표시 상세도 저장된 추론을 제외하며, 소스 작업은 종료된 worker 의도만 조회한다.
 func taskActivityDetail(t *Task, seq int64) (string, error) {
 	return t.Store.ActivityDisplayDetailWithSources(seq)
 }

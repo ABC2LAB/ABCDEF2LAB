@@ -1802,7 +1802,7 @@ RETURNING seq, created_at`, s.expID).Scan(&m.Seq, &m.CreatedAt)
 // ActivityDisplayDetail 은 사람에게 보일 상세를 돌려준다. 화면용 글이 없는 행은 저장된 상세 그대로다.
 func (s *ExplorationStore) ActivityDisplayDetail(id int64) (string, error) {
 	var d sql.NullString
-	err := s.db.QueryRow(`SELECT COALESCE(NULLIF(metadata->>'display_detail',''), detail) FROM activity WHERE id=$1 AND exploration_id=$2`, id, s.expID).Scan(&d)
+	err := s.db.QueryRow(`SELECT COALESCE(NULLIF(metadata->>'display_detail',''), detail) FROM activity WHERE id=$1 AND exploration_id=$2 AND kind IS DISTINCT FROM 'thinking'`, id, s.expID).Scan(&d)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
