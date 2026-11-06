@@ -126,7 +126,7 @@ export default function JobScreen({ target, onStart }: { target: Target; onStart
             </div>
             <div className="srow">
               <div className="k">모델</div>
-              <div className="v">qwen2.5:32b</div>
+              <div className="v">qwen/qwen3.6-35b-a3b</div>
             </div>
             <div className="hr" style={{ margin: "14px 0" }} />
             <div className="srow">

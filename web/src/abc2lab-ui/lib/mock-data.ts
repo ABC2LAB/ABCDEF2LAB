@@ -499,7 +499,7 @@ function tokenUsage() {
 
 const LLM = {
   provider: "openai",
-  model: "qwen3.6-35b-a3b (예시)",
+  model: "qwen/qwen3.6-35b-a3b (예시)",
   base_url: "http://llm.internal/v1",
   configured: true,
   key_set: false,

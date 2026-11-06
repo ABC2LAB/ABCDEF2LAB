@@ -22,6 +22,7 @@ import {
   listTasks,
 } from "../lib/engine";
 import { useSelection } from "../lib/selection";
+import { zhToKo } from "../lib/zh-ko";
 import { useNav } from "../nav";
 import type { Severity, Target } from "../types";
 
@@ -123,7 +124,7 @@ function LiveDetailModal({
         <span className={`rdot ${actDot(e)}`} />
         <span className="rx">
           {e.worker ? `${e.worker} · ` : ""}
-          {e.summary || e.kind}
+          {zhToKo(e.summary) || e.kind}
         </span>
       </div>
     ));
