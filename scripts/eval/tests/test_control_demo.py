@@ -75,7 +75,7 @@ class Root:
         self.minute = 0
 
     def run(self, repeat=0, side="baseline", condition="원본 ①", counts=None, state=..., solved=0, e2_mode="none",
-            proof=None, evidence=None, task=TASK, model=MODEL, meter=None, rules=None) -> Path:
+            proof=None, evidence=None, task=TASK, model=MODEL, meter=None, rules=None, intercept=None) -> Path:
         self.minute += 1
         run_id = f"{side}-20261106t00{self.minute:02d}00z-0000000a"
         directory = self.path / run_id
@@ -97,7 +97,7 @@ class Root:
             if meter is None else meter
         result = {"format": RESULT_FORMAT, "run_id": run_id, "side": side, "status": "complete",
                   "started_at": f"2026-11-06T00:{self.minute:02d}:00Z", "task_request_sha256": task,
-                  "e2_mode": e2_mode, "meter": summary, "evidence": hashes, "engine_rules": rules}
+                  "e2_mode": e2_mode, "meter": summary, "evidence": hashes, "engine_rules": rules, "intercept": intercept}
         (directory / "runner-result.json").write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
         record = dict(CONTEXT, run_id=run_id, model_tag=model, engine=side, condition=condition, repeat_index=repeat,
                       isolation_proof=proof,
@@ -464,6 +464,64 @@ class TestRules(Case):
                 one.run(rules=rules)
                 with self.assertRaisesRegex(DemoError, "규칙 적용 기록 형식 오류"):
                     read_column(one.path, KEY)
+
+
+def intercept(file_rule=0, seeded_rule=0, model=0, other=0, tools=None, pending=0, timeout=0, allowed=0):
+    denied = file_rule + seeded_rule + model + other
+    return {"format": "x", "total": denied + pending + timeout + allowed,
+            "by_status": {"allowed": allowed, "denied": denied, "pending": pending, "timeout": timeout},
+            "denied_by_origin": {"file_rule": file_rule, "seeded_rule": seeded_rule, "model": model, "other": other},
+            "denied_by_tool": {"Bash": denied} if tools is None and denied else (tools or {})}
+
+
+class TestIntercept(Case):
+    def test_rows_show_who_blocked_what_per_run(self):
+        one = self.root()
+        one.run(repeat=0, intercept=intercept(file_rule=2, seeded_rule=1, model=1, other=1, pending=1, timeout=2,
+                                              tools={"Bash": 4, "WebFetch": 1}))
+        one.run(repeat=1, intercept=intercept(seeded_rule=3, allowed=9))
+        table = self.table(one)
+        self.assertEqual(table["규칙이 막은 도구 호출: 파일 규칙"], ["2 (2, 0)"])
+        self.assertEqual(table["규칙이 막은 도구 호출: 내장 규칙"], ["4 (1, 3)"])
+        self.assertEqual(table["규칙이 막은 도구 호출: 모델 판정·그 밖"], ["2 (2, 0)"])
+        self.assertEqual(table["규칙 승인 대기·시간 초과(기대 0)"], ["3 (3, 0)"])
+        self.assertEqual(table["규칙이 막은 도구별 합계"], ["Bash 7, WebFetch 1"])
+
+    def test_measured_zero_and_not_measured_differ(self):
+        measured, absent = self.root("measured"), self.root("absent")
+        measured.run(intercept=intercept())
+        absent.run(condition="원본 ②")
+        table = self.table(measured, absent)
+        self.assertEqual(table["규칙이 막은 도구 호출: 파일 규칙"], ["0 (0)", "—"])
+        self.assertEqual(table["규칙 승인 대기·시간 초과(기대 0)"], ["0 (0)", "—"])
+        self.assertEqual(table["규칙이 막은 도구별 합계"], ["없음", "—"])
+
+    def test_record_format_is_checked(self):
+        good = intercept(file_rule=1)
+        cases = {"not_object": "x",
+                 "origin_missing": {k: v for k, v in good.items() if k != "denied_by_origin"},
+                 "origin_key": dict(good, denied_by_origin=dict(good["denied_by_origin"], extra=0)),
+                 # 합은 맞고 값만 틀린 경우라야 값 검사를 본다
+                 "origin_value": dict(good, denied_by_origin=dict(good["denied_by_origin"], file_rule=-1, seeded_rule=2)),
+                 "status_missing": {k: v for k, v in good.items() if k != "by_status"},
+                 "status_key_missing": dict(good, by_status={"denied": 1}),
+                 "status_value": dict(good, by_status=dict(good["by_status"], allowed=True)),
+                 "status_extra": dict(good, by_status=dict(good["by_status"], other=0)),
+                 "tools_missing": {k: v for k, v in good.items() if k != "denied_by_tool"},
+                 "tools_value": dict(good, denied_by_tool={"Bash": "1"}),
+                 "tools_sum": dict(good, denied_by_tool={"Bash": 2}),
+                 "origin_sum": dict(good, denied_by_origin=dict(good["denied_by_origin"], seeded_rule=1))}
+        for label, summary in cases.items():
+            with self.subTest(label):
+                one = self.root(label)
+                one.run(intercept=summary)
+                with self.assertRaisesRegex(DemoError, "규칙 차단 기록 형식 오류"):
+                    read_column(one.path, KEY)
+
+    def test_note_says_what_the_rows_cannot_tell(self):
+        one = self.root()
+        one.run(intercept=intercept())
+        self.assertIn("규칙에 안 맞아 안 보낸 것인지는 이 표로 구분되지 않는다", render_table([read_column(one.path, KEY)]))
 
 
 class TestMain(Case):

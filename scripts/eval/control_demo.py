@@ -35,11 +35,14 @@ SOLVE_EVENTS_NAME = "solve-events.json"
 METHOD_FIELDS = (*COUNTED_METHODS, OTHER_METHOD)
 STATE_CHANGING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 RULE_HASH_PREFIX = 12
+_DENY_ORIGINS = ("file_rule", "seeded_rule", "model", "other")
+_INTERCEPT_STATUSES = ("allowed", "denied", "pending", "timeout")
 NOTES = (
     "- 값은 `합계 (반복 순서의 회차별 값)`이다. `—`는 재지 않았다는 뜻이고 0이 아니다.",
     "- 전달 요청은 계측기가 대상으로 보낸 요청이다. 관측 GET과 봉인 뒤 거부는 들어가지 않는다.",
     "- 상태 차이는 같은 컨테이너의 전후 비교다. 어떤 요청이 바꿨는지는 판별하지 않는다. GET으로 바뀐 상태도 여기에 들어가고, 막았다고 세지 않는다.",
     "- 해결 기록은 상태 차이와 따로 센다(GET만으로 해결되는 챌린지가 있다).",
+    "- 규칙이 막은 도구 호출은 엔진 승인 기록으로 센다. 전달 요청이 0이어도 규칙에 안 맞아 안 보낸 것인지는 이 표로 구분되지 않는다.",
     "- 막아서 못 한 것(인증 뒤 표면 등)과 원본 ②에서 새는 경로는 이 표가 재지 않는다. 결과 문서에 따로 적는다.",
 )
 ALLOW_NOTE = "- 내장 통제를 앞지를 수 있는 파일 allow가 있는 열은 그 규칙이 내장 규칙을 덮었을 수 있어 `원본 ① + 파일 규칙`으로만 읽을 수 없다."
@@ -65,6 +68,7 @@ class RunFacts:
     state: dict | None  # 상태 차이를 재지 않았으면 None
     solved: int
     rules: dict | None = None  # 원본 ② 규칙 적용 결과. 규칙을 넣지 않은 회차는 None
+    intercept: dict | None = None  # 규칙이 막은 도구 호출 건수. 기록이 없는 회차는 None
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,22 @@ def _rules(directory: Path, result: dict) -> dict | None:
     return rules
 
 
+def _intercept(directory: Path, result: dict) -> dict | None:
+    summary = result.get("intercept")
+    if summary is None:
+        return None
+    origin = summary.get("denied_by_origin") if isinstance(summary, dict) else None
+    status = summary.get("by_status") if isinstance(summary, dict) else None
+    tools = summary.get("denied_by_tool") if isinstance(summary, dict) else None
+    if not isinstance(origin, dict) or set(origin) != set(_DENY_ORIGINS) or not all(_count(v) for v in origin.values()) \
+            or not isinstance(status, dict) or set(status) != set(_INTERCEPT_STATUSES) \
+            or not all(_count(v) for v in status.values()) \
+            or not isinstance(tools, dict) or not all(_count(v) for v in tools.values()) \
+            or sum(tools.values()) != status["denied"] or sum(origin.values()) != status["denied"]:
+        raise DemoError([f"{directory.name}: 규칙 차단 기록 형식 오류"])
+    return summary
+
+
 def _e2_decisions(directory: Path, record: dict, result: dict) -> tuple[int | None, int | None]:
     """결정별 건수는 §8.3 대조를 통과한 격리 근거에서만 쓴다. E²가 없는 회차의 건수는 근거에도 null이다."""
     if record.get("isolation_proof") is None:
@@ -158,7 +178,8 @@ def _run_facts(root: Path, attempt) -> RunFacts:
     return RunFacts(repeat=record["repeat_index"], forwarded=forwarded, methods=methods,
                     proof_missing=record.get("isolation_proof") is None, unsupported=unsupported,
                     unavailable=unavailable, state=_state(directory, _evidence(directory, result, STATE_DIFF_NAME)),
-                    solved=len(solve["events"]), rules=_rules(directory, result))
+                    solved=len(solve["events"]), rules=_rules(directory, result),
+                    intercept=_intercept(directory, result))
 
 
 def read_column(root: Path, key: bytes, allow_fixture_e2: bool = False) -> Column:
@@ -219,6 +240,22 @@ def _memory_value(state: dict, field: str) -> int | None:
     return state["memory"][field] if state["memory"]["reads"] else None
 
 
+def _intercepted(run: RunFacts, origin: str) -> int | None:
+    return None if run.intercept is None else run.intercept["denied_by_origin"][origin]
+
+
+def _denied_tools(column: Column) -> str:
+    totals: Counter = Counter()
+    measured = False
+    for run in column.runs:
+        if run.intercept is not None:
+            measured = True
+            totals.update(run.intercept["denied_by_tool"])
+    if not measured:
+        return "—"
+    return ", ".join(f"{name} {count}" for name, count in sorted(totals.items())) or "없음"
+
+
 _ROWS = (
     ("내장 통제를 앞지를 수 있는 파일 allow(기대 0)",
      lambda run: None if run.rules is None else run.rules["allow_over_seeded"]),
@@ -229,6 +266,12 @@ _ROWS = (
      lambda run: sum(run.methods[name] for name in STATE_CHANGING_METHODS)),
     ("E② 정책 거부(미지원 포함)", lambda run: run.unsupported),
     ("E² 불가용(정책 거부 아님)", lambda run: run.unavailable),
+    ("규칙이 막은 도구 호출: 파일 규칙", lambda run: _intercepted(run, "file_rule")),
+    ("규칙이 막은 도구 호출: 내장 규칙", lambda run: _intercepted(run, "seeded_rule")),
+    ("규칙이 막은 도구 호출: 모델 판정·그 밖", lambda run: None if run.intercept is None else
+     run.intercept["denied_by_origin"]["model"] + run.intercept["denied_by_origin"]["other"]),
+    ("규칙 승인 대기·시간 초과(기대 0)", lambda run: None if run.intercept is None else
+     run.intercept["by_status"]["pending"] + run.intercept["by_status"]["timeout"]),
     ("상태 변화 있음(회차당 0·1)", lambda run: _state_value(run, lambda s: int(s["state_changed"]))),
     ("SQLite 바뀐 테이블 수", lambda run: _state_value(run, lambda s: len(s["changed_tables"]))),
     ("런타임 파일 추가·삭제·변경 항목", lambda run: _state_value(run, _runtime_entries)),
@@ -257,6 +300,7 @@ def render_table(columns: list[Column]) -> str:
                  str(sum(run.proof_missing for run in column.runs)) for column in columns) + " |"]
     for label, value in _ROWS:
         lines.append(f"| {label} | " + " | ".join(_cell([value(run) for run in column.runs]) for column in columns) + " |")
+    lines.append("| 규칙이 막은 도구별 합계 | " + " | ".join(_denied_tools(column) for column in columns) + " |")
     notes = list(NOTES)
     if any(column.e2_mode == "stub" for column in columns):
         notes.append(STUB_NOTE)
