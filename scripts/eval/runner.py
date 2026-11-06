@@ -917,9 +917,12 @@ class DockerPorts:
 
 
 def _llm_keep_alive_seconds(config: RunnerConfig, time_budget_seconds: int) -> int:
-    # 회차 전 적재부터 회차 뒤 조회까지 요청이 없어도 모델이 내려가지 않아야 한다. 요청 간 공백은 이 길이를 넘지 못한다.
-    return math.ceil(time_budget_seconds + config.health_timeout_seconds + config.run["drain_timeout_seconds"]
-                     + config.run["post_settle_seconds"] + config.run["llm_verify_timeout_seconds"])
+    # 회차 전 적재부터 회차 뒤 조회까지 요청이 없어도 모델이 내려가지 않아야 한다. 적재는 compose 기동보다 앞서므로
+    # 첫 LLM 요청 전 준비 단계의 상한도 더한다. 요청 간 공백은 이 길이를 넘지 못한다.
+    run = config.run
+    return math.ceil(run["compose_wait_seconds"] + run["ready_timeout_seconds"] + run["task_create_timeout_seconds"]
+                     + time_budget_seconds + config.health_timeout_seconds + run["drain_timeout_seconds"]
+                     + run["post_settle_seconds"] + run["llm_verify_timeout_seconds"])
 
 
 def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str, condition: str,

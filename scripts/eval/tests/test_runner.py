@@ -1303,6 +1303,21 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         self.assertEqual(build_spec(config, plan_run(config, longer, "ours", "ours-1"), longer, "t" * 64, "c", 0)
                          .llm_keep_alive_seconds, spec.llm_keep_alive_seconds + 100)
 
+    def test_keep_alive_covers_each_step_between_the_load_and_the_last_read(self):
+        # 적재는 compose 기동보다 앞선다. 준비 단계가 길어도 첫 LLM 요청 전에 모델이 내려가면 안 된다.
+        base = parse_runner_config(runner_config())
+        before = runner._llm_keep_alive_seconds(base, 60)
+        for name in ("compose_wait_seconds", "ready_timeout_seconds", "task_create_timeout_seconds",
+                     "drain_timeout_seconds", "post_settle_seconds", "llm_verify_timeout_seconds"):
+            with self.subTest(name):
+                changed = copy.deepcopy(base)
+                changed.run[name] += 7
+                self.assertEqual(runner._llm_keep_alive_seconds(changed, 60), before + 7)
+        # 동찬 지적의 예: 예시 설정에서 준비 단계 상한만 510초인 경우에도 시간 예산을 더한 만큼 남아야 한다.
+        slow = copy.deepcopy(base)
+        slow.run.update(compose_wait_seconds=300, ready_timeout_seconds=180, task_create_timeout_seconds=30)
+        self.assertGreater(runner._llm_keep_alive_seconds(slow, 60), 510 + 60)
+
     def test_local_serving_reads_the_fixed_ip_and_loads_only_before_the_run(self):
         config = parse_runner_config(runner_config())
         local = configuration()

@@ -71,7 +71,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `host_listen_allowlist` | loopback 밖 호스트 리슨 중 허용할 것. `{"address", "port", "reason"}`, 특정 주소만(0.0.0.0·`::`·loopback 불가), 근거 필수. 기본은 빈 목록 |
 | `run.*` | compose 대기, down 시한, 대상 준비, 예산 폴링 간격, drain 시한, 스냅샷 시한·크기, LLM 검증 대기(초) |
 | `run.task_create_timeout_seconds` | 작업 생성(로그인 + `POST /api/tasks`) 연결·읽기 시한(초) |
-| `run.llm_load_timeout_seconds` | local 서버의 모델 적재·조회 시한(초). 회차 전에 모델을 적재해 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 한다. 적재할 때 회차 길이(시간 예산 + 상태 확인·drain·정착·LLM 검증 시한)만큼 유지 기간을 주고, compose를 내린 뒤 모델을 내린다. 다음 회차도 같은 상태에서 시작한다. 내리기 결과는 결과 기록의 `llm_unloaded`에 남기고, 실패해도 그 회차를 무효로 돌리지 않는다 |
+| `run.llm_load_timeout_seconds` | local 서버의 모델 적재·조회 시한(초). 회차 전에 모델을 적재해 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 한다. 적재할 때 회차 길이(compose 기동·준비·작업 생성 시한 + 시간 예산 + 상태 확인·drain·정착·LLM 검증 시한)만큼 유지 기간을 주고, compose를 내린 뒤 모델을 내린다. 다음 회차도 같은 상태에서 시작한다. 내리기 결과는 결과 기록의 `llm_unloaded`에 남기고, 실패해도 그 회차를 무효로 돌리지 않는다 |
 | `run.drain_grace_seconds`, `run.post_settle_seconds` | 봉인 뒤 계측기가 진행 요청을 기다리는 유예(1~600초, `drain_timeout_seconds`보다 짧아야 함 — 계측기 `-drain-grace`로 넘김)와, 유예가 지나 취소한 요청이 있을 때 post 전 정착 대기(1~3600초). 둘 다 비교 조건이라 사전검사 `run_drain`의 `grace_seconds`·`settle_seconds`와 정확히 같아야 회차가 시작됨(`preflight.<side>.run_drain: CONFIG_MISMATCH`) |
 | `run.host_watch_interval_seconds`, `run.host_watch_max_gap_seconds` | 구간 중 호스트 리슨 확인 간격과 허용 최대 공백(초). 공백 상한은 간격보다 커야 한다 |
 | `task.{description,goal}` | 엔진 작업 설명·목표(각 4000자 이하, 줄바꿈 외 제어 문자 불가). 대상은 회차 대상 origin 하나만 적는다(아래) |
