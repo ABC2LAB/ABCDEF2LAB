@@ -24,10 +24,13 @@ def generation(gen_id, provider=NAME, attempts=None, status="verified"):
             "attempts": attempts if status == "verified" else []}
 
 
+NO_ENDS = {"client_closed_after_done": 0, "client_closed_before_done": 0, "upstream_cut_after_done": 0, "upstream_cut_before_done": 0}
+
+
 def marker(**overrides):
     base = {"role": "llm-gateway", "backend": "api", "provider": SLUG, "sampling": dict(SAMPLING),
             "sealed_at": "a", "drained_at": "b",
-            "verified_at": "c", "forwarded_requests": 3, "upstream_errors": 0, "rejected_requests": 0,
+            "verified_at": "c", "forwarded_requests": 3, "upstream_errors": 0, "upstream_error_ends": dict(NO_ENDS), "rejected_requests": 0,
             "rejected_after_seal": 1, "cancelled_by_seal": 0, "responses_without_generation_id": 0,
             "generations": [generation("gen-1"), generation("gen-2")], "log_complete": True}
     return base | overrides
@@ -157,6 +160,13 @@ class TestJudgeLocal(unittest.TestCase):
 
 
 class TestMarkerShape(unittest.TestCase):
+    def test_unfinished_stream_ends_are_reported_and_do_not_decide_validity(self):
+        ends = NO_ENDS | {"client_closed_after_done": 2, "upstream_cut_before_done": 1}
+        reasons, summary = judge_llm(marker(upstream_errors=3, upstream_error_ends=ends), "api", SLUG, NAME, SAMPLING)
+        self.assertEqual(reasons, [])
+        self.assertEqual((summary["upstream_errors"], summary["upstream_error_ends"]), (3, ends))
+        self.assertEqual(list(summary["upstream_error_ends"]), sorted(ends))
+
     def test_contract_shape_enforced(self):
         bad = []
         m = marker()
@@ -165,6 +175,17 @@ class TestMarkerShape(unittest.TestCase):
         m = marker()
         del m["upstream_errors"]
         bad.append(m)
+        m = marker()
+        del m["upstream_error_ends"]
+        bad.append(m)
+        bad.append(marker(upstream_error_ends=None))
+        bad.append(marker(upstream_error_ends={}))
+        bad.append(marker(upstream_error_ends=NO_ENDS | {"other": 0}))
+        bad.append(marker(upstream_error_ends=NO_ENDS | {"upstream_cut_after_done": -1}))
+        bad.append(marker(upstream_error_ends=NO_ENDS | {"upstream_cut_after_done": True}))
+        # 합이 upstream_errors와 달라도 구조 위반이다.
+        bad.append(marker(upstream_errors=1))
+        bad.append(marker(upstream_error_ends=NO_ENDS | {"client_closed_after_done": 1}))
         bad.append(marker(log_complete="true"))
         bad.append(marker(forwarded_requests=-1))
         bad.append(marker(cancelled_by_seal=True))

@@ -90,6 +90,24 @@ func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if bytes.Contains(body, []byte(`"broken"`)) {
 			panic(http.ErrAbortHandler) // drop the connection without an answer
 		}
+		if bytes.Contains(body, []byte(`"done-then-hold"`)) {
+			// 종료 이벤트까지 보내고 연결은 닫지 않는다. 엔진이 먼저 닫으면 EOF를 못 읽는다.
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"id\":\"gen-partial\",\"choices\":[]}\n\ndata: [DONE]\n\n")
+			w.(http.Flusher).Flush()
+			p.slowStarted <- struct{}{}
+			<-r.Context().Done()
+			return
+		}
+		if bytes.Contains(body, []byte(`"cut-after-done"`)) || bytes.Contains(body, []byte(`"cut-before-done"`)) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"id\":\"gen-partial\",\"choices\":[]}\n\n")
+			if bytes.Contains(body, []byte(`"cut-after-done"`)) {
+				_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			}
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler)
+		}
 		p.mu.Lock()
 		p.next++
 		id := fmt.Sprintf("gen-%d", p.next)
@@ -628,6 +646,209 @@ func TestGatewayUpstreamFailureIsCountedSeparately(t *testing.T) {
 	if marker.UpstreamErrors != 1 || marker.Forwarded != 0 || marker.CancelledBySeal != 0 || marker.MissingIDs != 0 {
 		t.Fatalf("marker %+v", marker)
 	}
+}
+
+func TestUnfinishedEndNames(t *testing.T) {
+	cases := []struct {
+		clientClosed, doneSeen bool
+		want                   string
+	}{
+		{true, true, "client_closed_after_done"},
+		{true, false, "client_closed_before_done"},
+		{false, true, "upstream_cut_after_done"},
+		{false, false, "upstream_cut_before_done"},
+	}
+	for _, tc := range cases {
+		if got := unfinishedEnd(tc.clientClosed, tc.doneSeen); got != tc.want {
+			t.Fatalf("unfinishedEnd(%v,%v) = %s, want %s", tc.clientClosed, tc.doneSeen, got, tc.want)
+		}
+	}
+}
+
+// 엔진이 먼저 닫은 스트림과 위쪽에서 끊긴 스트림을 같은 upstream_error로 뭉치지 않는다.
+func TestGatewaySeparatesWhoEndedAnUnfinishedStream(t *testing.T) {
+	stream := func(t *testing.T, h *gatewayHarness, model string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, h.front.URL+chatPath, strings.NewReader(`{"model":"`+model+`","stream":true}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := h.front.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	readUntil := func(t *testing.T, resp *http.Response, want string) {
+		t.Helper()
+		var got []byte
+		chunk := make([]byte, 64)
+		for !strings.Contains(string(got), want) {
+			n, err := resp.Body.Read(chunk)
+			got = append(got, chunk[:n]...)
+			if err != nil {
+				t.Fatalf("read %q before %q: %v", got, want, err)
+			}
+		}
+	}
+	cases := []struct {
+		name, model, want string
+		exercise          func(t *testing.T, h *gatewayHarness, resp *http.Response)
+	}{
+		{"engine read to the terminal event and closed", "done-then-hold", endClientClosedAfterDone,
+			func(t *testing.T, h *gatewayHarness, resp *http.Response) {
+				<-h.provider.slowStarted
+				readUntil(t, resp, "[DONE]")
+				resp.Body.Close()
+			}},
+		{"engine closed before the terminal event", "partial", endClientClosedBeforeDone,
+			func(t *testing.T, h *gatewayHarness, resp *http.Response) {
+				<-h.provider.slowStarted
+				readUntil(t, resp, "gen-partial")
+				resp.Body.Close()
+			}},
+		{"connection dropped after the terminal event", "cut-after-done", endUpstreamCutAfterDone,
+			func(_ *testing.T, _ *gatewayHarness, resp *http.Response) {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}},
+		{"connection dropped before the terminal event", "cut-before-done", endUpstreamCutBeforeDone,
+			func(_ *testing.T, _ *gatewayHarness, resp *http.Response) {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, backendAPI)
+			h.provider.lookups["gen-partial"] = []int{http.StatusOK}
+			tc.exercise(t, h, stream(t, h, tc.model))
+			rows := h.waitRows(t, 1)
+			if rows[0].Decision != "upstream_error" || rows[0].UnfinishedEnd != tc.want || rows[0].GenerationID != "gen-partial" {
+				t.Fatalf("rows %+v", rows)
+			}
+			marker := h.sealAndWait(t)
+			want := map[string]uint64{endClientClosedAfterDone: 0, endClientClosedBeforeDone: 0, endUpstreamCutAfterDone: 0, endUpstreamCutBeforeDone: 0}
+			want[tc.want] = 1
+			if marker.UpstreamErrors != 1 || !reflect.DeepEqual(marker.UpstreamEnds, want) {
+				t.Fatalf("marker %+v", marker)
+			}
+		})
+	}
+}
+
+// 정상 완료와 봉인 취소는 종료 모양을 세지 않는다.
+func TestGatewayFinishedAndSealedRowsHaveNoUnfinishedEnd(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.provider.lookups["gen-1"] = []int{http.StatusOK}
+	h.provider.lookups["gen-partial"] = []int{http.StatusOK}
+	if resp, _ := h.post(t, chatPath, "application/json", `{"model":"m","stream":true}`, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	req, err := http.NewRequest(http.MethodPost, h.front.URL+chatPath, strings.NewReader(`{"model":"partial","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.front.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	<-h.provider.slowStarted
+	marker := h.sealAndWait(t)
+	if marker.Forwarded != 1 || marker.CancelledBySeal != 1 || marker.UpstreamErrors != 0 {
+		t.Fatalf("marker %+v", marker)
+	}
+	for name, count := range marker.UpstreamEnds {
+		if count != 0 {
+			t.Fatalf("%s counted %d", name, count)
+		}
+	}
+	for _, row := range h.waitRows(t, 2) {
+		if row.UnfinishedEnd != "" {
+			t.Fatalf("row %+v", row)
+		}
+	}
+}
+
+func TestStatusRecorderRemembersFailedWrite(t *testing.T) {
+	rec := &statusRecorder{ResponseWriter: failingWriter{httptest.NewRecorder()}}
+	if _, err := rec.Write([]byte("x")); err == nil || !rec.writeFailed {
+		t.Fatalf("writeFailed %v, err %v", rec.writeFailed, err)
+	}
+	ok := &statusRecorder{ResponseWriter: httptest.NewRecorder()}
+	if _, err := ok.Write([]byte("x")); err != nil || ok.writeFailed {
+		t.Fatalf("writeFailed %v, err %v", ok.writeFailed, err)
+	}
+}
+
+// 호출자에게 쓰기가 실패하면 context 취소가 아직 안 왔어도 호출자가 먼저 닫은 것으로 센다.
+func TestGatewayCountsFailedWriteAsClientClosed(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.provider.lookups["gen-partial"] = []int{http.StatusOK}
+	req := httptest.NewRequest(http.MethodPost, chatPath, strings.NewReader(`{"model":"partial","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.g.ServeHTTP(failingWriter{httptest.NewRecorder()}, req)
+	<-h.provider.slowStarted
+	rows := h.waitRows(t, 1)
+	if rows[0].Decision != "upstream_error" || rows[0].UnfinishedEnd != endClientClosedBeforeDone {
+		t.Fatalf("rows %+v", rows)
+	}
+}
+
+type failingWriter struct{ http.ResponseWriter }
+
+func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestDoneScanFindsOnlyTheTerminalLine(t *testing.T) {
+	scan := func(stream bool, chunks ...string) bool {
+		s := &idScanner{ReadCloser: io.NopCloser(&chunkReader{chunks: chunks}), stream: stream}
+		_, _ = io.Copy(io.Discard, s)
+		return s.done
+	}
+	found := map[string][]string{
+		"whole":            {"data: {}\n\ndata: [DONE]\n\n"},
+		"no space":         {"data: {}\n\ndata:[DONE]\n\n"},
+		"crlf":             {"data: {}\r\n\r\ndata: [DONE]\r\n\r\n"},
+		"split":            {"data: {}\n\nda", "ta: [DO", "NE]", "\n\n"},
+		"split at newline": {"data: {}\n", "\n", "data: [DONE]\r", "\n"},
+		"one byte a time":  strings.Split("data: {}\n\ndata: [DONE]\r\n", ""),
+		"first line":       {"data: [DONE]\n"},
+	}
+	for name, chunks := range found {
+		if !scan(true, chunks...) {
+			t.Errorf("%s: not found", name)
+		}
+	}
+	missed := map[string][]string{
+		"none":             {"data: {}\n\n"},
+		"unterminated":     {"data: {}\n\ndata: [DONE]"},
+		"inside json":      {"data: {\"x\":\"data: [DONE]\"}\n\n"},
+		"escaped newline":  {"data: {\"x\":\"\\ndata: [DONE]\\n\"}\n\n"},
+		"not at line head": {"xdata: [DONE]\n"},
+		"other field":      {"event: [DONE]\n"},
+	}
+	for name, chunks := range missed {
+		if scan(true, chunks...) {
+			t.Errorf("%s: found", name)
+		}
+	}
+	if scan(false, "data: [DONE]\n") {
+		t.Error("non-stream answer counted a terminal event")
+	}
+}
+
+type chunkReader struct{ chunks []string }
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.chunks[0])
+	r.chunks = r.chunks[1:]
+	return n, nil
 }
 
 func TestGenerationIDScanning(t *testing.T) {
