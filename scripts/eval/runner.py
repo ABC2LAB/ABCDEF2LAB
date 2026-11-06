@@ -53,7 +53,7 @@ from runner_engine import (  # noqa: E402
 )
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, FORCED_CANCELLED_OUTCOME, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
-    e2_stub_counts, forwarded_count, read_private_json, sequence_complete,
+    e2_stub_counts, forwarded_by_method, forwarded_count, read_private_json, sequence_complete,
 )
 from attempt_reconcile import reconcile  # noqa: E402
 from runner_state import copy_sqlite, discard_copy, memory_fingerprints, runtime_fingerprints  # noqa: E402
@@ -492,7 +492,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
         "stop_reason": stop_reason, "forwarded_at_stop": forwarded_at_stop,
         "sealed_at": sealed.get("sealed_at"), "drained_at": drained.get("drained_at"),
-        "forwarded_requests": forwarded, "request_budget": spec.request_budget,
+        "forwarded_requests": forwarded, "forwarded_by_method": forwarded_by_method(rows),
+        "request_budget": spec.request_budget,
         # 폴링 뒤 seal이라 넘칠 수 있다. 정확 준수를 주장하지 않고 초과분을 그대로 남긴다.
         "over_budget": max(0, forwarded - spec.request_budget),
         "rejected_after_seal": drained.get("rejected_after_seal"),

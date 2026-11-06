@@ -116,7 +116,7 @@ class FakeMeter:
         def attempt(i):
             return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
                     else {"attempt_id_state": "absent", "attempt_id": ""})
-        return [{"seq": i, "kind": "request", "outcome": "completed", **attempt(i)} for i in range(1, n + 1)] + \
+        return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", **attempt(i)} for i in range(1, n + 1)] + \
                [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 1)},
                 {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 2)}]
 
@@ -621,6 +621,9 @@ class TestCompleteRun(unittest.TestCase):
                           summary["over_budget"]), ("request_budget", 105, 100, 5))
         self.assertEqual(summary["rejected_after_seal"], 2)
         self.assertEqual(result["meter"], summary)
+        # 표로 나가는 메서드별 건수는 계측기 행에서 세고 전달 수와 맞아야 한다(프로토콜 §8.1)
+        self.assertEqual(sum(summary["forwarded_by_method"].values()), summary["forwarded_requests"])
+        self.assertEqual(summary["forwarded_by_method"]["GET"], 105)
 
     def test_time_budget_stop(self):
         result, _, meter, evidence = run(lambda p, m, c: setattr(m, "per_poll", 0))

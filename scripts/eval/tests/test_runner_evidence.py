@@ -15,7 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
     ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_VERIFIED_MARKER,
-    OBSERVER_LOG, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_count, sequence_complete,
+    OBSERVER_LOG, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_by_method, forwarded_count,
+    sequence_complete,
 )
 
 
@@ -173,6 +174,19 @@ class TestMeterFiles(unittest.TestCase):
         self.write(ENGINE_LOG, "".join(json.dumps(r) + "\n" for r in lines) + partial)
         self.assertEqual(self.meter.forwarded(), 2)
         self.assertTrue(sequence_complete(self.meter.engine_rows()))
+
+    def test_method_counts_use_a_closed_list_and_add_up_to_forwarded(self):
+        def row(seq, kind, method):
+            return dict(engine_row(seq, kind), method=method)
+        rows = [row(1, "request", "GET"), row(2, "request", "POST"), row(3, "stream", "GET"), row(4, "request", "get"),
+                row(5, "request", "SECRETTOKEN"), row(6, "rejected", "DELETE"), row(7, "request", "OPTIONS")]
+        counts = forwarded_by_method(rows)
+        self.assertEqual(counts, {"GET": 2, "HEAD": 0, "POST": 1, "PUT": 0, "PATCH": 0, "DELETE": 0, "OPTIONS": 1,
+                                  "OTHER": 2})
+        self.assertEqual(sum(counts.values()), forwarded_count(rows))
+        self.assertNotIn("SECRETTOKEN", json.dumps(counts))
+        with self.assertRaisesRegex(EvidenceError, "meter_log_invalid"):
+            forwarded_by_method([row(1, "upgrade", "GET")])
 
     def test_upgraded_streams_count_as_forwarded(self):
         # 동찬 #126 리뷰: 계측기는 upgrade도 전달로 세고 완료 행을 kind=stream으로 쓴다.
