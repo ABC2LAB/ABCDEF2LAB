@@ -100,7 +100,7 @@ export function FindingUndDetail({ record }: { record: FindingRecord }) {
         <div className="hint">
           {allUnknown ? (
             <>
-              세 체크·6 비교신호가 모두 <Strong>불명</Strong>이에요(실행 안 됨).{" "}
+              세 체크·6 비교신호가 모두 <Strong>불명</Strong>이에요({notSent ? "실행 안 됨" : "응답·계측 근거 없음"}).{" "}
             </>
           ) : (
             <>충족된 신호는 아래 통제변수의 신호 상태로 확인하세요. </>

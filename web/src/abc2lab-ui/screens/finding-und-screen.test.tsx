@@ -98,6 +98,15 @@ describe("FindingUndDetail — E² 송신 전 차단 판단 불가", () => {
     expect(text).not.toContain("정상 대조(소유자 정상 응답)도 아직 확인되지 않았어요");
     expect(text).toContain("가정하지 않아요"); // GET 상태변경 원칙문은 유지
   });
+
+  // 이동찬 리뷰(#250): allUnknown 이어도 transmission=sent 면 '실행 안 됨'으로 단정하지 않는다(근거 없음 ≠ 미실행).
+  it("모두 불명 + transmission=sent 면 '실행 안 됨'이 아니라 '근거 없음'으로 표시한다", () => {
+    const { container } = render(<FindingUndDetail record={heldRec({ transmission: "sent" })} />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("모두");
+    expect(text).toContain("응답·계측 근거 없음");
+    expect(text).not.toContain("실행 안 됨");
+  });
 });
 
 describe("FindingUndScreen", () => {
