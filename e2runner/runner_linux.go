@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -21,28 +22,39 @@ import (
 	"github.com/Autumn-27/artex/e2sandbox"
 )
 
-const maxCommandBytes = 1 << 20
-const maxOutputBytes = 4 << 20
+const (
+	maxCommandBytes         = 1 << 20
+	maxOutputBytes          = 4 << 20
+	maxRunnerCommandTimeout = time.Hour
+	maxRunnerDrainTimeout   = 2 * time.Minute
+	maxCACertificateBytes   = 1 << 20
+)
+
+// Linux sockaddr_un.sun_path is 108 bytes including its terminating NUL.
+// Keep one extra byte of headroom for the pathname representation passed by Go.
+const maxUnixSocketPathBytes = 106
 
 type Runner struct{ *runnerState }
 
 type runnerState struct {
-	cfg          Config
-	mu           sync.Mutex
-	stopped      bool
-	active       map[string]*runningCall
-	callGate     chan struct{}
-	stop         chan struct{}
-	stopOnce     sync.Once
-	draining     bool
-	drainGate    chan struct{}
-	intentDrains map[int64]*intentDrainState
+	cfg           Config
+	caCertificate []byte
+	mu            sync.Mutex
+	stopped       bool
+	active        map[string]*runningCall
+	callGate      chan struct{}
+	stop          chan struct{}
+	stopOnce      sync.Once
+	draining      bool
+	drainGate     chan struct{}
+	intentDrains  map[int64]*intentDrainState
 }
 
 type intentDrainState struct {
-	gate   chan struct{}
-	active bool
-	fenced bool
+	gate       chan struct{}
+	active     bool
+	fenced     bool
+	generation uint64
 }
 
 type runningCall struct {
@@ -66,8 +78,8 @@ type runningCall struct {
 }
 
 func New(cfg Config) (*Runner, error) {
-	if cfg.Execution == nil || cfg.CommandTimeout <= 0 || cfg.CommandTimeout > time.Hour ||
-		cfg.DrainTimeout <= 0 || cfg.DrainTimeout > 2*time.Minute || cfg.OutputLimit <= 0 || cfg.OutputLimit > maxOutputBytes ||
+	if cfg.Execution == nil || cfg.CommandTimeout <= 0 || cfg.CommandTimeout > maxRunnerCommandTimeout ||
+		cfg.DrainTimeout <= 0 || cfg.DrainTimeout > maxRunnerDrainTimeout || cfg.OutputLimit <= 0 || cfg.OutputLimit > maxOutputBytes ||
 		e2proxy.ValidateProxyConfig(cfg.Proxy) != nil || !trustedPath(cfg.RootDir, true) || !trustedPath(cfg.Helper, false) ||
 		!trustedPath(cfg.CACert, false) {
 		return nil, ErrConfig
@@ -78,9 +90,9 @@ func New(cfg Config) (*Runner, error) {
 	if err != nil {
 		return nil, ErrConfig
 	}
-	data, readErr := io.ReadAll(io.LimitReader(f, 1<<20))
+	data, readErr := io.ReadAll(io.LimitReader(f, maxCACertificateBytes))
 	closeErr := f.Close()
-	if readErr != nil || closeErr != nil || len(data) >= 1<<20 || len(cfg.Proxy.CA.Certificate) == 0 {
+	if readErr != nil || closeErr != nil || len(data) >= maxCACertificateBytes || len(cfg.Proxy.CA.Certificate) == 0 {
 		return nil, ErrConfig
 	}
 	block, rest := pem.Decode(data)
@@ -92,10 +104,10 @@ func New(cfg Config) (*Runner, error) {
 	if err != nil || st.Mode().Perm()&0111 == 0 {
 		return nil, ErrConfig
 	}
-	if len(cfg.RootDir)+len("/call-0123456789/proxy.sock") > 106 {
+	if len(cfg.RootDir)+len("/call-0123456789/proxy.sock") > maxUnixSocketPathBytes {
 		return nil, ErrConfig
 	}
-	return &Runner{runnerState: &runnerState{cfg: cfg, active: make(map[string]*runningCall), callGate: make(chan struct{}, 1), stop: make(chan struct{}), drainGate: make(chan struct{}, 1), intentDrains: make(map[int64]*intentDrainState)}}, nil
+	return &Runner{runnerState: &runnerState{cfg: cfg, caCertificate: pem.EncodeToMemory(block), active: make(map[string]*runningCall), callGate: make(chan struct{}, 1), stop: make(chan struct{}), drainGate: make(chan struct{}, 1), intentDrains: make(map[int64]*intentDrainState)}}, nil
 }
 
 func trustedPath(path string, directory bool) bool {
@@ -146,6 +158,7 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 		return Result{}, ErrUnavailable
 	}
 	r.mu.Lock()
+	admissionGeneration := r.intentGenerationLocked(intentID)
 	temporarilyBlocked := r.stopped || r.draining || r.intentFencedLocked(intentID)
 	r.mu.Unlock()
 	if temporarilyBlocked {
@@ -170,7 +183,7 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 		}
 	}()
 	r.mu.Lock()
-	stopped := r.stopped || r.draining || r.intentFencedLocked(intentID)
+	stopped := r.stopped || r.draining || r.intentFencedLocked(intentID) || r.intentGenerationLocked(intentID) != admissionGeneration
 	r.mu.Unlock()
 	if stopped {
 		return Result{}, ErrUnavailable
@@ -184,7 +197,7 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	// Publish admission atomically with Close's snapshot, so Close cannot
 	// release execution resources while an unregistered call is being created.
 	r.mu.Lock()
-	if r.stopped || r.draining || r.intentFencedLocked(intentID) {
+	if r.stopped || r.draining || r.intentFencedLocked(intentID) || r.intentGenerationLocked(intentID) != admissionGeneration {
 		r.mu.Unlock()
 		return Result{}, ErrUnavailable
 	}
@@ -252,6 +265,16 @@ func (s *runningCall) initialize(ctx context.Context, command string) error {
 	if os.Mkdir(workspace, 0700) != nil {
 		return ErrUnavailable
 	}
+	caPath := filepath.Join(dir, "ca.pem")
+	caFile, err := os.OpenFile(caPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return ErrUnavailable
+	}
+	written, writeErr := caFile.Write(s.owner.caCertificate)
+	closeErr := caFile.Close()
+	if writeErr != nil || closeErr != nil || written != len(s.owner.caCertificate) {
+		return ErrUnavailable
+	}
 	socket := filepath.Join(dir, "proxy.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
 	if err != nil {
@@ -263,7 +286,7 @@ func (s *runningCall) initialize(ctx context.Context, command string) error {
 		return ErrUnavailable
 	}
 	process, err := e2sandbox.Launch(s.call.Context(), e2sandbox.Config{
-		Helper: s.owner.cfg.Helper, Workspace: workspace, ProxySocket: socket, CACert: s.owner.cfg.CACert,
+		Helper: s.owner.cfg.Helper, Workspace: workspace, ProxySocket: socket, CACert: caPath,
 		Command: command, Timeout: s.owner.cfg.CommandTimeout, DrainTimeout: s.owner.cfg.DrainTimeout,
 		OutputLimit: s.owner.cfg.OutputLimit,
 	})
@@ -311,7 +334,9 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 		processResult, err := s.process.Wait(ctx)
 		trusted.ProcessBashExited = processResult.BashExited
 		trusted.ProcessDrained = err == nil && processResult.Drained
-		trusted.ExitCode = processResult.ExitCode
+		if trusted.ProcessBashExited && trusted.ProcessDrained {
+			trusted.ExitCode = processResult.ExitCode
+		}
 		trusted.OutputTruncated = processResult.OutputTruncated
 		output = processResult.Output
 		processClosed = trusted.ProcessDrained
@@ -329,8 +354,16 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 				proxyClosed = false
 			}
 		}
+		if proxyClosed && s.serveErr != nil {
+			proxyClosed = false
+			s.setTermination("proxy_unavailable")
+		}
 	} else if s.listener != nil {
-		_ = s.listener.Close()
+		closeErr := s.listener.Close()
+		proxyClosed = closeErr == nil || errors.Is(closeErr, net.ErrClosed)
+		if !proxyClosed {
+			s.setTermination("proxy_unavailable")
+		}
 	}
 	trusted.ProxyDrained = proxyClosed && s.proxy != nil
 	if processClosed && proxyClosed {
@@ -374,6 +407,9 @@ func (s *runningCall) classification(trusted TrustedResult) string {
 		return "result_unknown"
 	}
 	counts := trusted.Call.Counts
+	if counts.Allowed > counts.ForwardAttempted {
+		return ClassificationForwardNotAttempted
+	}
 	if counts.ForwardAttempted == 0 && counts.Denied > 0 {
 		return "policy_not_executed"
 	}
@@ -465,9 +501,8 @@ func (r *Runner) Drain(ctx context.Context) error {
 	return nil
 }
 
-// DrainIntent joins only this intent's admitted work. Another intent may
-// begin when the shared physical Bash slot becomes free; this operation must
-// neither cancel it nor turn a per-intent finish into an execution-wide stop.
+// DrainIntent fences new and already-queued calls for this intent, then joins
+// its admitted work. Another intent may use the shared Bash slot independently.
 func (r *Runner) DrainIntent(ctx context.Context, intentID int64) error {
 	if r == nil || r.runnerState == nil || ctx == nil || intentID <= 0 || !r.cfg.Execution.HasIntent(intentID) {
 		return ErrConfig
@@ -485,6 +520,14 @@ func (r *Runner) DrainIntent(ctx context.Context, intentID int64) error {
 		return ErrIncomplete
 	}
 	r.mu.Lock()
+	if scope.generation == ^uint64(0) {
+		scope.active = true
+		scope.fenced = true
+		r.mu.Unlock()
+		defer func() { r.mu.Lock(); scope.active = false; r.mu.Unlock(); <-scope.gate }()
+		return ErrIncomplete
+	}
+	scope.generation++
 	scope.active = true
 	scope.fenced = true
 	states := make([]*runningCall, 0, len(r.active))
@@ -521,6 +564,14 @@ func (r *Runner) DrainIntent(ctx context.Context, intentID int64) error {
 func (r *Runner) intentFencedLocked(intentID int64) bool {
 	state := r.intentDrains[intentID]
 	return state != nil && state.fenced
+}
+
+func (r *Runner) intentGenerationLocked(intentID int64) uint64 {
+	state := r.intentDrains[intentID]
+	if state == nil {
+		return 0
+	}
+	return state.generation
 }
 
 // Close permanently fences this Runner, including queued calls. It blocks

@@ -16,6 +16,9 @@ var (
 	ErrIncomplete  = errors.New("e2runner: call finalization incomplete")
 )
 
+// ClassificationForwardNotAttempted marks allowed policy intent that never reached a forward attempt.
+const ClassificationForwardNotAttempted = "forward_not_attempted"
+
 type Config struct {
 	Execution      *e2proxy.Execution
 	Helper         string

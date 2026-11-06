@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -94,6 +95,10 @@ type runnerFixture struct {
 }
 
 func newRunnerFixture(t *testing.T, base, helper, target string, roots *x509.CertPool) *runnerFixture {
+	return newRunnerFixtureWithRecorder(t, base, helper, target, roots, nil, true)
+}
+
+func newRunnerFixtureWithRecorder(t *testing.T, base, helper, target string, roots *x509.CertPool, decorate func(e2proxy.Recorder) e2proxy.Recorder, cleanupRunner bool) *runnerFixture {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -147,10 +152,14 @@ func newRunnerFixture(t *testing.T, base, helper, target string, roots *x509.Cer
 		t.Fatal(err)
 	}
 	scope := transmit.Scope{TaskRef: grantKey.TaskRef, RunRef: "run_runner", CaseRef: "case_runner", ResetRef: binding.ResetRef, PolicyRef: binding.PolicyRef}
+	var recorder e2proxy.Recorder = journal
+	if decorate != nil {
+		recorder = decorate(recorder)
+	}
 	execution, err := e2proxy.NewExecution(t.Context(), e2proxy.Config{
 		HeaderMode: e2proxy.HeaderProtectedSessionProposal,
 		Scope:      scope, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision_runner", AccountRef: "account_runner", SessionRef: "session_runner",
-		ExpiresAt: now.Add(time.Minute), RootCAs: roots, Recorder: journal,
+		ExpiresAt: now.Add(time.Minute), RootCAs: roots, Recorder: recorder,
 		Rules: []e2proxy.Rule{{Ref: "rule_runner", Origin: u.Scheme + "://" + u.Host,
 			ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed", PathScopeRef: "path_runner",
 			Methods: []string{"GET"}, CredentialHeaders: http.Header{"Authorization": {"Bearer runner-session-secret"}}}},
@@ -169,17 +178,87 @@ func newRunnerFixture(t *testing.T, base, helper, target string, roots *x509.Cer
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := runner.Close(ctx); err != nil {
-			t.Error("runner left incomplete resources")
-		}
-		if err := execution.Stop(ctx); err != nil {
-			t.Error("execution stop audit failed")
-		}
-	})
+	if cleanupRunner {
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := runner.Close(ctx); err != nil {
+				t.Error("runner left incomplete resources")
+			}
+			if err := execution.Stop(ctx); err != nil {
+				t.Error("execution stop audit failed")
+			}
+		})
+	}
 	return &runnerFixture{runner: runner, execution: execution, cfg: cfg, journal: journal, ledger: ledger, budgetKey: grantKey, budgetBinding: binding}
+}
+
+type runnerStageFailureRecorder struct {
+	next  e2proxy.Recorder
+	stage string
+}
+
+func (r runnerStageFailureRecorder) Record(ctx context.Context, event e2proxy.Event) error {
+	if event.Stage == r.stage {
+		return errors.New("synthetic audit failure")
+	}
+	return r.next.Record(ctx, event)
+}
+
+type runnerStageDelayRecorder struct {
+	next  e2proxy.Recorder
+	stage string
+	delay time.Duration
+}
+
+func (r runnerStageDelayRecorder) Record(ctx context.Context, event e2proxy.Event) error {
+	if event.Stage == r.stage {
+		timer := time.NewTimer(r.delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return r.next.Record(ctx, event)
+}
+
+type observedDoneContext struct {
+	context.Context
+	observed chan struct{}
+}
+
+func (c *observedDoneContext) Done() <-chan struct{} {
+	select {
+	case c.observed <- struct{}{}:
+	default:
+	}
+	return c.Context.Done()
+}
+
+func waitForRunningCall(t *testing.T, runner *Runner) *runningCall {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		runner.mu.Lock()
+		var state *runningCall
+		for _, candidate := range runner.active {
+			state = candidate
+			break
+		}
+		runner.mu.Unlock()
+		if state != nil {
+			select {
+			case <-state.ready:
+				return state
+			case <-time.After(time.Millisecond):
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("runner call did not finish initialization")
+	return nil
 }
 
 func TestRunnerActualHTTPHTTPSAndDenial(t *testing.T) {
@@ -323,11 +402,463 @@ func TestRunnerRejectsChangedPublicTrustAnchor(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("configuration test sent traffic") }))
 	defer target.Close()
 	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
-	if err := os.WriteFile(fixture.cfg.CACert, []byte("-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----\n"), 0600); err != nil {
+	original, err := os.ReadFile(fixture.cfg.CACert)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(fixture.cfg); !errors.Is(err, ErrConfig) {
-		t.Fatal("private or mismatched trust material entered the tool")
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCA := &x509.Certificate{SerialNumber: big.NewInt(100), Subject: pkix.Name{CommonName: "different runner root"}, IsCA: true,
+		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour)}
+	otherDER, err := x509.CreateCertificate(rand.Reader, otherCA, otherCA, otherKey.Public(), otherKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(fixture.cfg.Proxy.CA.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})
+	cases := map[string][]byte{
+		"different valid certificate":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: otherDER}),
+		"valid private key":            privatePEM,
+		"certificate plus private key": append(append([]byte(nil), original...), privatePEM...),
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(fixture.cfg.CACert, content, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := New(fixture.cfg); !errors.Is(err, ErrConfig) {
+				t.Fatal("changed or private trust material entered the tool")
+			}
+			if err := os.WriteFile(fixture.cfg.CACert, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRunnerPublicCACertificateSnapshotExcludesLaterPrivateKey(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	original, err := os.ReadFile(fixture.cfg.CACert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(fixture.cfg.Proxy.CA.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := append(append([]byte(nil), original...), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})...)
+	if err = os.WriteFile(fixture.cfg.CACert, combined, 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.runner.Run(t.Context(), "cat /run/e2/ca.pem")
+	if err != nil || !strings.Contains(result.ToolOutput, "-----BEGIN CERTIFICATE-----") || strings.Contains(result.ToolOutput, "PRIVATE KEY") {
+		t.Fatal("CA path replacement exposed private key material to Bash")
+	}
+}
+
+func TestRunnerRejectsUnsafeConfigurationBounds(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	config := fixture.cfg
+	config.CommandTimeout = maxRunnerCommandTimeout + time.Nanosecond
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("command timeout upper bound was not enforced")
+	}
+	config = fixture.cfg
+	config.DrainTimeout = maxRunnerDrainTimeout + time.Nanosecond
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("drain timeout upper bound was not enforced")
+	}
+	config = fixture.cfg
+	config.OutputLimit = maxOutputBytes + 1
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("output bound was not enforced")
+	}
+	config = fixture.cfg
+	if err := os.Chmod(config.RootDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("unprotected root directory was accepted")
+	}
+	if err := os.Chmod(config.RootDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(config.CACert, 0620); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("group-writable CA file was accepted")
+	}
+	if err := os.Chmod(config.CACert, 0600); err != nil {
+		t.Fatal(err)
+	}
+	rootLink := filepath.Join(base, "root-link")
+	if err := os.Symlink(config.RootDir, rootLink); err != nil {
+		t.Fatal(err)
+	}
+	config.RootDir = rootLink
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("symlinked root directory was accepted")
+	}
+	config = fixture.cfg
+	helperLink := filepath.Join(base, "helper-link")
+	if err := os.Symlink(config.Helper, helperLink); err != nil {
+		t.Fatal(err)
+	}
+	config.Helper = helperLink
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("symlinked helper was accepted")
+	}
+	config = fixture.cfg
+	caLink := filepath.Join(base, "ca-link")
+	if err := os.Symlink(config.CACert, caLink); err != nil {
+		t.Fatal(err)
+	}
+	config.CACert = caLink
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("symlinked CA file was accepted")
+	}
+	config = fixture.cfg
+	original, err := os.ReadFile(config.CACert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversizedCA := make([]byte, maxCACertificateBytes+1)
+	if err := os.WriteFile(config.CACert, oversizedCA, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("oversized CA input was accepted")
+	}
+	if err := os.WriteFile(config.CACert, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	longRoot := filepath.Join(base, strings.Repeat("r", maxUnixSocketPathBytes))
+	if err := os.Mkdir(longRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	config = fixture.cfg
+	config.RootDir = longRoot
+	if _, err := New(config); !errors.Is(err, ErrConfig) {
+		t.Fatal("Unix socket path bound was not enforced")
+	}
+}
+
+func TestRunnerRejectsInvalidCommandsBeforeCallAdmission(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	for _, command := range []string{"printf\x00invalid", strings.Repeat("x", maxCommandBytes+1)} {
+		if _, err := fixture.runner.Run(t.Context(), command); !errors.Is(err, ErrConfig) {
+			t.Fatal("invalid or over-limit command was admitted")
+		}
+	}
+	if len(fixture.execution.Calls()) != 0 {
+		t.Fatal("invalid command created an audited call")
+	}
+}
+
+func TestRunnerClassificationTable(t *testing.T) {
+	cases := []struct {
+		name    string
+		state   *runningCall
+		trusted TrustedResult
+		want    string
+	}{
+		{name: "isolation unavailable", state: &runningCall{initFailed: true}, want: "isolation_unavailable"},
+		{name: "incomplete", state: &runningCall{}, trusted: TrustedResult{}, want: "result_unknown"},
+		{name: "audit unknown", state: &runningCall{}, trusted: TrustedResult{Final: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Unknown: 1}}}, want: "result_unknown"},
+		{name: "allowed but not forwarded", state: &runningCall{}, trusted: TrustedResult{Final: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Allowed: 1}}}, want: ClassificationForwardNotAttempted},
+		{name: "policy only", state: &runningCall{}, trusted: TrustedResult{Final: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Denied: 1}}}, want: "policy_not_executed"},
+		{name: "unsupported only", state: &runningCall{}, trusted: TrustedResult{Final: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Unsupported: 1}}}, want: "unsupported"},
+		{name: "proxy unavailable", state: &runningCall{termination: "proxy_unavailable"}, trusted: TrustedResult{Final: true}, want: "transient_failure"},
+		{name: "timeout", state: &runningCall{termination: "timeout"}, trusted: TrustedResult{Final: true}, want: "transient_failure"},
+		{name: "process not exited", state: &runningCall{}, trusted: TrustedResult{Final: true}, want: "terminated"},
+		{name: "tool failure", state: &runningCall{}, trusted: TrustedResult{Final: true, ProcessBashExited: true, ExitCode: 7}, want: "tool_failure"},
+		{name: "partial policy denial", state: &runningCall{}, trusted: TrustedResult{Final: true, ProcessBashExited: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Denied: 1, ForwardAttempted: 1}}}, want: "partial_policy_denial"},
+		{name: "partial unsupported", state: &runningCall{}, trusted: TrustedResult{Final: true, ProcessBashExited: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Unsupported: 1, ForwardAttempted: 1}}}, want: "partial_unsupported"},
+		{name: "completed", state: &runningCall{}, trusted: TrustedResult{Final: true, ProcessBashExited: true, ExitCode: 0, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Allowed: 1, ForwardAttempted: 1, Responses: 1}}}, want: "completed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.state.classification(tc.trusted); got != tc.want {
+				t.Fatalf("classification=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunnerDelayedIntentACKCannotBecomeCompletedWithoutForward(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		io.WriteString(w, "unexpected")
+	}))
+	defer target.Close()
+	fixture := newRunnerFixtureWithRecorder(t, base, helper, target.URL, nil, func(next e2proxy.Recorder) e2proxy.Recorder {
+		return runnerStageDelayRecorder{next: next, stage: "intent", delay: 350 * time.Millisecond}
+	}, true)
+	fixture.runner.cfg.Proxy.HeaderTimeout = 80 * time.Millisecond
+	fixture.runner.cfg.Proxy.RequestTimeout = 120 * time.Millisecond
+	result, err := fixture.runner.Run(t.Context(), "curl --silent --show-error --max-time 2 '"+target.URL+"/allowed' >/dev/null 2>&1; exit 0")
+	counts := result.Trusted.Call.Counts
+	if err != nil || !result.Trusted.Final || !result.Trusted.Call.AuditComplete || counts.Allowed != 1 ||
+		counts.ForwardAttempted != 0 || received.Load() != 0 || result.Trusted.Classification != ClassificationForwardNotAttempted {
+		t.Fatalf("delayed ACK escaped classification: err=%v final=%t allowed=%d forward=%d received=%d class=%s", err, result.Trusted.Final, counts.Allowed, counts.ForwardAttempted, received.Load(), result.Trusted.Classification)
+	}
+}
+
+func TestRunnerDrainIntentRejectsPreviouslyQueuedSameIntent(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		io.WriteString(w, "ok")
+	}))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	firstDone := make(chan Result, 1)
+	go func() {
+		result, _ := fixture.runner.RunForIntent(t.Context(), 1, "sleep 5")
+		firstDone <- result
+	}()
+	waitForRunningCall(t, fixture.runner)
+	queuedContext := &observedDoneContext{Context: t.Context(), observed: make(chan struct{}, 1)}
+	queuedDone := make(chan error, 1)
+	go func() {
+		_, err := fixture.runner.RunForIntent(queuedContext, 1, "curl --silent --max-time 2 '"+target.URL+"/allowed'")
+		queuedDone <- err
+	}()
+	select {
+	case <-queuedContext.observed:
+	case <-time.After(time.Second):
+		t.Fatal("second same-intent call did not enter the slot wait")
+	}
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- fixture.runner.DrainIntent(t.Context(), 1) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		fixture.runner.mu.Lock()
+		state := fixture.runner.intentDrains[1]
+		fenced := state != nil && state.fenced
+		fixture.runner.mu.Unlock()
+		if fenced {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("intent drain did not fence queued calls")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-drainDone:
+		if err != nil {
+			t.Fatalf("intent drain failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("intent drain did not finish")
+	}
+	select {
+	case first := <-firstDone:
+		if !first.Trusted.Final {
+			t.Fatal("drained first call did not finalize")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first call did not finish")
+	}
+	select {
+	case err := <-queuedDone:
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("pre-drain queued call was not refused: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued call did not return after the drain")
+	}
+	if received.Load() != 0 || len(fixture.execution.Calls()) != 1 {
+		t.Fatal("stale same-intent work reached the target or acquired a call")
+	}
+}
+
+func TestRunnerProxyDeathIsTransientFailure(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	caller, cancel := context.WithCancel(t.Context())
+	done := make(chan Result, 1)
+	go func() {
+		result, _ := fixture.runner.Run(caller, "sleep 10")
+		done <- result
+	}()
+	state := waitForRunningCall(t, fixture.runner)
+	if err := state.listener.Close(); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		cancel()
+		if !result.Trusted.Final || result.Trusted.Classification != "transient_failure" {
+			t.Fatal("proxy listener death was not reported as a transient failure")
+		}
+	case <-time.After(6 * time.Second):
+		cancel()
+		t.Fatal("runner did not observe proxy listener death")
+	}
+}
+
+func TestRunnerServeErrorRetainsProtectedState(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+	fixture := newRunnerFixtureWithRecorder(t, base, helper, target.URL, nil, nil, false)
+	caller, cancel := context.WithCancel(t.Context())
+	done := make(chan Result, 1)
+	go func() {
+		result, _ := fixture.runner.Run(caller, "sleep 10")
+		done <- result
+	}()
+	state := waitForRunningCall(t, fixture.runner)
+	t.Cleanup(func() {
+		if state.process != nil {
+			if err := state.process.Close(); err != nil {
+				t.Error("test process cleanup failed")
+			}
+		}
+	})
+	if err := state.listener.SetDeadline(time.Now().Add(-time.Second)); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		cancel()
+		entries, readErr := os.ReadDir(fixture.cfg.RootDir)
+		if !result.Trusted.ProcessDrained || result.Trusted.ProxyDrained || result.Trusted.Final ||
+			readErr != nil || len(entries) != 1 || len(fixture.runner.callGate) != 1 {
+			t.Fatal("unexpected ServeUnix error released unverified proxy state")
+		}
+		if state.serveErr == nil {
+			t.Fatal("ServeUnix error was discarded")
+		}
+	case <-time.After(6 * time.Second):
+		cancel()
+		t.Fatal("runner did not observe ServeUnix error")
+	}
+}
+
+func TestRunnerPeerVerificationRejectsHostProcess(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		io.WriteString(w, "unexpected")
+	}))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	caller, cancel := context.WithCancel(t.Context())
+	done := make(chan Result, 1)
+	go func() {
+		result, _ := fixture.runner.Run(caller, "sleep 10")
+		done <- result
+	}()
+	state := waitForRunningCall(t, fixture.runner)
+	conn, err := net.DialTimeout("unix", state.listener.Addr().String(), time.Second)
+	if err != nil {
+		cancel()
+		t.Fatal("could not connect to the isolated proxy socket")
+	}
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	_, _ = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", target.URL+"/allowed", strings.TrimPrefix(target.URL, "http://"))
+	_ = conn.Close()
+	time.Sleep(250 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("runner did not stop after caller cancellation")
+	}
+	if received.Load() != 0 {
+		t.Fatal("host process bypassed the sandbox peer verifier")
+	}
+}
+
+func TestRunnerCanceledCallerStillFinalizesAudit(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	caller, cancel := context.WithCancel(t.Context())
+	done := make(chan Result, 1)
+	go func() {
+		result, _ := fixture.runner.Run(caller, "sleep 10")
+		done <- result
+	}()
+	waitForRunningCall(t, fixture.runner)
+	cancel()
+	select {
+	case result := <-done:
+		if !result.Trusted.Final || !result.Trusted.Call.AuditComplete || result.Trusted.Execution.Reason == e2proxy.AuditFailed {
+			t.Fatal("caller cancellation poisoned final audit or retained live resources")
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("canceled caller did not complete cleanup")
+	}
+}
+
+func TestRunnerAuditFailureRetainsSlotAndRoot(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+	fixture := newRunnerFixtureWithRecorder(t, base, helper, target.URL, nil, func(next e2proxy.Recorder) e2proxy.Recorder {
+		return runnerStageFailureRecorder{next: next, stage: "call_closed"}
+	}, false)
+	result, err := fixture.runner.Run(t.Context(), "printf ok")
+	entries, readErr := os.ReadDir(fixture.cfg.RootDir)
+	if !errors.Is(err, ErrIncomplete) || readErr != nil || len(entries) != 1 || len(fixture.runner.callGate) != 1 ||
+		result.Trusted.Final || result.Trusted.Call.AuditComplete || result.Trusted.Execution.Reason != e2proxy.AuditFailed {
+		t.Fatal("audit failure did not fail closed with the call slot and root retained")
+	}
+	fixture.runner.mu.Lock()
+	var state *runningCall
+	for _, candidate := range fixture.runner.active {
+		state = candidate
+	}
+	fixture.runner.mu.Unlock()
+	if state != nil {
+		t.Cleanup(func() {
+			if state.process != nil {
+				if err := state.process.Close(); err != nil {
+					t.Error("test process cleanup failed")
+				}
+			}
+		})
+	}
+	if state == nil || !result.Trusted.ProcessDrained {
+		t.Fatal("audit failure did not leave a drained call for the owner to retain")
 	}
 }
 

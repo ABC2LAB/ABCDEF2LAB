@@ -247,7 +247,7 @@ func (e *Execution) RegisterIntent(ctx context.Context, id int64) error {
 	revision := e.cfg.PolicyRevision
 	receipt := Receipt{Version: Version, Scope: e.cfg.Scope, IntentID: id, PolicyRevision: revision, Reason: Complete, NotSent: true}
 	e.mu.Unlock()
-	if err := e.record(ctx, Event{Stage: "control", Receipt: receipt}); err != nil {
+	if err := e.recordBounded(ctx, Event{Stage: "control", Receipt: receipt}); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -388,6 +388,17 @@ func (e *Execution) record(ctx context.Context, ev Event) error {
 	return nil
 }
 
+// recordBounded persists control and completion events independently from
+// caller cancellation while retaining a finite write deadline.
+func (e *Execution) recordBounded(ctx context.Context, ev Event) error {
+	if ctx == nil {
+		return ErrConfig
+	}
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), e.cfg.Limits.RequestTimeout)
+	defer cancel()
+	return e.record(auditCtx, ev)
+}
+
 func (e *Execution) Stop(ctx context.Context) error   { return e.stop(ctx, Closed) }
 func (e *Execution) Revoke(ctx context.Context) error { return e.stop(ctx, Revoked) }
 func (e *Execution) stop(ctx context.Context, reason Reason) error {
@@ -427,7 +438,7 @@ func (e *Execution) stop(ctx context.Context, reason Reason) error {
 	done := e.stopDone
 	r := Receipt{Version: Version, Scope: e.cfg.Scope, PolicyRevision: e.cfg.PolicyRevision, Reason: reason, NotSent: true}
 	e.mu.Unlock()
-	err := e.record(ctx, Event{Stage: "control", Receipt: r})
+	err := e.recordBounded(ctx, Event{Stage: "control", Receipt: r})
 	e.mu.Lock()
 	e.stopErr = err
 	close(done)
@@ -502,7 +513,7 @@ func (e *Execution) Restrict(ctx context.Context, in Restriction) error {
 	e.cfg.PolicyRevision = in.PolicyRevision
 	r := Receipt{Version: Version, Scope: e.cfg.Scope, PolicyRevision: e.cfg.PolicyRevision, Reason: PolicyDenied, NotSent: true}
 	e.mu.Unlock()
-	err := e.record(ctx, Event{Stage: "control", Receipt: r})
+	err := e.recordBounded(ctx, Event{Stage: "control", Receipt: r})
 	e.mu.Lock()
 	if err == nil {
 		e.controlPending = false
@@ -535,7 +546,7 @@ func (c *Call) Close(ctx context.Context) (CallResult, error) {
 		c.e.mu.Lock()
 		r := Receipt{Version: Version, Scope: c.e.cfg.Scope, IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, PolicyRevision: c.e.cfg.PolicyRevision, Reason: c.reason, NotSent: true}
 		c.e.mu.Unlock()
-		if err := c.e.record(ctx, Event{Stage: "call_closed", Receipt: r}); err != nil {
+		if err := c.e.recordBounded(ctx, Event{Stage: "call_closed", Receipt: r}); err != nil {
 			return c.Result(), err
 		}
 		c.e.mu.Lock()
@@ -715,11 +726,7 @@ func (c *Call) start(method string) (Receipt, error) {
 }
 func (c *Call) finish(ctx context.Context, r Receipt) (Receipt, error) {
 	r.At = time.Now().UTC()
-	// Result persistence uses its own bounded context: canceled tool/network work
-	// must still leave a result record, without an abandoned writer goroutine.
-	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.e.cfg.Limits.RequestTimeout)
-	defer cancel()
-	err := c.e.record(auditCtx, Event{Stage: "result", Receipt: r})
+	err := c.e.recordBounded(ctx, Event{Stage: "result", Receipt: r})
 	r.AuditComplete = err == nil && r.Reason != AuditFailed
 	e := c.e
 	e.mu.Lock()
@@ -929,11 +936,9 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Reason = reason
 		return finish(nil, ErrDenied)
 	}
-	// Once reserved, the intent ACK has its own bounded persistence context,
-	// just like the result. Caller cancellation never abandons an audit write.
-	intentCtx, intentCancel := context.WithTimeout(context.WithoutCancel(ctx), e.cfg.Limits.RequestTimeout)
-	err = e.record(intentCtx, Event{Stage: "intent", Receipt: r})
-	intentCancel()
+	// Once reserved, the intent ACK has a bounded persistence context, just like
+	// the result. Caller cancellation never abandons an audit write.
+	err = e.recordBounded(ctx, Event{Stage: "intent", Receipt: r})
 	if err != nil {
 		r.Decision = "denied"
 		r.Reason = AuditFailed
