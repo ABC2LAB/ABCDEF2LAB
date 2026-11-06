@@ -164,6 +164,36 @@ func TestBuildOrdersByReverseSequenceAndSkipsUntouched(t *testing.T) {
 	}
 }
 
+func TestBuildPlansOneDeletePerResource(t *testing.T) {
+	first, second, other := post(201, "/api/things/7", ""), post(201, "/api/things/7", ""), post(201, "/api/things/8", "")
+	first.AttemptID, first.Sequence = "a1", 1
+	second.AttemptID, second.Sequence = "a2", 2
+	other.AttemptID, other.Sequence = "a3", 3
+	rules := testRules()
+	rules.TableByPath["/api/others"] = "Others"
+	otherTable := post(201, "/api/others/7", "")
+	otherTable.AttemptID, otherTable.Sequence, otherTable.RawTarget = "a4", 4, "/api/others"
+	steps, err := Build([]Record{first, second, other, otherTable}, rules,
+		measured(map[string]TableDiff{"Things": {Added: []int64{7, 8}}, "Others": {Added: []int64{7}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Step{}
+	for _, step := range steps {
+		got[step.AttemptID] = step
+	}
+	if got["a2"].Action != ActionDelete || got["a2"].DeletePath != "/api/things/7" {
+		t.Fatalf("나중 시도가 지워야 함: %+v", got["a2"])
+	}
+	if merged := got["a1"]; merged.Action != ActionMerged || merged.Reason != ReasonSameResource || merged.DeletePath != "" || merged.ID != 7 {
+		t.Fatalf("앞 시도는 합쳐야 함: %+v", merged)
+	}
+	// 번호가 같아도 테이블이 다르면 다른 자원이다.
+	if got["a3"].Action != ActionDelete || got["a4"].Action != ActionDelete {
+		t.Fatalf("다른 자원을 합침: %+v %+v", got["a3"], got["a4"])
+	}
+}
+
 func TestBuildRejectsAmbiguousAttempts(t *testing.T) {
 	blank, one, sameAttempt, sameSequence := post(201, "", ""), post(201, "", ""), post(201, "", ""), post(201, "", "")
 	blank.AttemptID = ""

@@ -195,6 +195,8 @@ const (
 	ActionDelete     Action = "delete"
 	ActionRecordOnly Action = "record_only"
 	ActionUndecided  Action = "undecidable"
+	// ActionMerged는 같은 자원을 돌려준 다른 시도에 합친 줄이다. 지우지 않고 자원 단위 칸에도 세지 않는다.
+	ActionMerged Action = "merged"
 )
 
 // Reason은 공유 기록에 남겨도 되는 고정 사유다. 경로·id 원문을 담지 않는다.
@@ -209,6 +211,7 @@ const (
 	ReasonAddedUnknown    Reason = "added_ids_unavailable"
 	ReasonNotInAdded      Reason = "not_in_added_ids"
 	ReasonDiffUnavailable Reason = "state_diff_unavailable"
+	ReasonSameResource    Reason = "same_resource_as_later_attempt"
 )
 
 // Step은 계획의 한 줄이다. 삭제가 아니면 DeletePath를 비운다.
@@ -245,7 +248,30 @@ func Build(records []Record, rules Rules, diff StateDiff) ([]Step, error) {
 		steps = append(steps, confirm(record, classification, rules, diff))
 	}
 	sort.Slice(steps, func(i, j int) bool { return steps[i].Sequence > steps[j].Sequence })
+	mergeSameResource(steps)
 	return steps, nil
+}
+
+// mergeSameResource는 같은 (테이블, id)를 한 번만 지우게 한다. 칸은 자원 단위라 두 번 세면 분모가 부푼다.
+// 역순으로 먼저 오는 시도를 남긴다. 이미 지운 뒤의 두 번째 삭제는 다른 응답을 받아 결과만 흐린다.
+func mergeSameResource(steps []Step) {
+	type resource struct {
+		table string
+		id    int64
+	}
+	kept := make(map[resource]bool, len(steps))
+	for index := range steps {
+		step := &steps[index]
+		if step.Action != ActionDelete {
+			continue
+		}
+		key := resource{step.Table, step.ID}
+		if kept[key] {
+			step.Action, step.Reason, step.DeletePath = ActionMerged, ReasonSameResource, ""
+			continue
+		}
+		kept[key] = true
+	}
 }
 
 // confirm은 §4 "지우기 전 근거"다. 2xx 응답·사전 GET·1회 승인은 신규 생성의 근거가 아니다. 기존 자원을 갱신하고 그 id를
@@ -300,7 +326,8 @@ func containsID(values []int64, value int64) bool {
 	return false
 }
 
-// SharedStep은 러너에 넘기는 비민감 투영이다. 경로·Location·본문 id 원문은 없다. ID는 상태 차이에 이미 있는 정수 키이고 못 정했으면 null이다.
+// SharedStep은 신뢰 경로로 러너에 넘기는 칸 판정 입력이다. 경로·Location·본문 id 원문은 없다. ID는 상태 차이에 이미 있는 정수 키이고
+// 못 정했으면 null이다. 테이블 이름과 id가 있으므로 공유 근거에는 이 행을 그대로 싣지 않고 칸 건수만 싣는다.
 type SharedStep struct {
 	AttemptID string `json:"attempt_id"`
 	Sequence  uint64 `json:"sequence"`

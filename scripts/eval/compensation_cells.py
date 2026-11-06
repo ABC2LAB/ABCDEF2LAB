@@ -2,16 +2,20 @@
 
 네트워크를 부르지 않는 순수 코드다. 계획은 E② 쪽 Go 코드(compensation 패키지)의 공유 투영이고, 상태 차이는 state_diff 출력이다.
 사전·사후 GET 결과는 입력이 아니다. 칸은 상태 차이가 정한다. 판단불가를 복구됨이나 놓침으로 옮기지 않는다(절대규칙 5).
-결과에는 건수와 테이블 이름만 넣는다.
+칸은 자원 단위다. 같은 자원의 삭제가 둘이면 입력 오류이고, 합쳐진 시도(merged)는 칸에 세지 않는다.
+결과에는 건수와 테이블 이름만 넣는다. 입력 계획에는 테이블·id가 있으니 공유 근거에는 결과만 싣는다.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Sequence
 
 CELLS_FORMAT = "abc2lab-eval-compensation-cells-v1"
-ACTION_DELETE, ACTION_RECORD_ONLY, ACTION_UNDECIDED = "delete", "record_only", "undecidable"
-_ACTIONS = (ACTION_DELETE, ACTION_RECORD_ONLY, ACTION_UNDECIDED)
+ACTION_DELETE, ACTION_RECORD_ONLY, ACTION_UNDECIDED, ACTION_MERGED = "delete", "record_only", "undecidable", "merged"
+_ACTIONS = (ACTION_DELETE, ACTION_RECORD_ONLY, ACTION_UNDECIDED, ACTION_MERGED)
+_CLASSES = ("record_only", "create_strong", "create_weak")
+_REASON = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _STEP_FIELDS = frozenset({"attempt_id", "sequence", "class", "action", "reason", "table", "id"})
 
 
@@ -26,7 +30,7 @@ def _fail(code: str) -> None:
 def _check_steps(steps: object) -> None:
     if not isinstance(steps, Sequence) or isinstance(steps, (str, bytes)):
         _fail("STEPS_INVALID")
-    attempts = set()
+    attempts, deletes, merged = set(), set(), set()
     for step in steps:
         if not isinstance(step, dict) or set(step) != _STEP_FIELDS:
             _fail("STEP_FIELDS")
@@ -35,11 +39,25 @@ def _check_steps(steps: object) -> None:
         attempts.add(step["attempt_id"])
         if step["action"] not in _ACTIONS or not isinstance(step["table"], str):
             _fail("STEP_ACTION")
+        if step["class"] not in _CLASSES:
+            _fail("STEP_CLASS")
+        if not isinstance(step["reason"], str) or not _REASON.fullmatch(step["reason"]):
+            _fail("STEP_REASON")
+        if type(step["sequence"]) is not int or step["sequence"] < 0:
+            _fail("STEP_SEQUENCE")
         row_id = step["id"]
         if row_id is not None and (type(row_id) is not int or row_id <= 0):
             _fail("STEP_ID")
-        if step["action"] == ACTION_DELETE and (row_id is None or not step["table"]):
+        if step["action"] in (ACTION_DELETE, ACTION_MERGED) and (row_id is None or not step["table"]):
             _fail("STEP_DELETE_TARGET")
+        if step["action"] == ACTION_DELETE:
+            if (step["table"], row_id) in deletes:
+                _fail("STEP_DUPLICATE_RESOURCE")
+            deletes.add((step["table"], row_id))
+        elif step["action"] == ACTION_MERGED:
+            merged.add((step["table"], row_id))
+    if not merged <= deletes:
+        _fail("STEP_MERGED_WITHOUT_DELETE")
 
 
 def _table(diff: dict, name: str) -> dict | None:
@@ -72,13 +90,16 @@ def judge_cells(steps: Sequence[dict], attempted: Collection[str], before: dict 
     cells = {"recovered": 0, "recovery_failed": 0, "record_only": 0, "missed": 0, "undecidable": 0, "existing_deleted": 0}
     measured = before is not None and after is not None
     linked, unidentified = set(), set()
+    merged_attempts = 0
     for step in steps:
         if step["table"]:
             if step["id"] is None:
                 unidentified.add(step["table"])
             else:
                 linked.add((step["table"], step["id"]))
-        if step["action"] == ACTION_RECORD_ONLY:
+        if step["action"] == ACTION_MERGED:
+            merged_attempts += 1
+        elif step["action"] == ACTION_RECORD_ONLY:
             # 기록만은 쓰기를 그대로 둔 것이라 상태 차이가 없어도 칸이 정해진다.
             cells["record_only"] += 1
         elif not measured or step["action"] == ACTION_UNDECIDED or step["attempt_id"] not in attempted:
@@ -92,7 +113,7 @@ def judge_cells(steps: Sequence[dict], attempted: Collection[str], before: dict 
             else:
                 cells[cell] += 1
     result = {"format": CELLS_FORMAT, "measured": measured, **cells,
-              "recovery_denominator": cells["recovered"] + cells["recovery_failed"],
+              "recovery_denominator": cells["recovered"] + cells["recovery_failed"], "merged_attempts": merged_attempts,
               "changed_rows": None, "removed_rows": None, "sequence_changed_tables": None}
     if not measured:
         return result

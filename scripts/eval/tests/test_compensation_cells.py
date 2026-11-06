@@ -114,14 +114,36 @@ class TestCells(unittest.TestCase):
         result = judge_cells([step()], ["a1"], diff(Things=table(added=[7])), diff(Things=table()))
         self.assertNotIn("7", [str(v) for v in result.values()])
         self.assertEqual(set(result), {"format", "measured", "recovered", "recovery_failed", "record_only", "missed", "undecidable",
-                                       "existing_deleted", "recovery_denominator", "changed_rows", "removed_rows",
+                                       "existing_deleted", "recovery_denominator", "merged_attempts", "changed_rows", "removed_rows",
                                        "sequence_changed_tables"})
+
+    def test_merged_attempt_is_not_a_second_resource(self):
+        steps = [step("a2"), step("a1", "merged")]
+        result = judge_cells(steps, ["a2"], diff(Things=table(added=[7])), diff(Things=table()))
+        self.assertEqual((result["recovered"], result["recovery_denominator"], result["undecidable"], result["merged_attempts"]),
+                         (1, 1, 0, 1))
+        # 합쳐진 시도의 행은 연결된 행이다. 놓침으로 세지 않는다.
+        kept = judge_cells(steps, ["a2"], diff(Things=table(added=[7])), diff(Things=table(added=[7])))
+        self.assertEqual((kept["recovery_failed"], kept["missed"], kept["merged_attempts"]), (1, 0, 1))
+        # 삭제를 보내지 못했을 때도 자원 하나다.
+        unsent = judge_cells(steps, [], diff(Things=table(added=[7])), diff(Things=table(added=[7])))
+        self.assertEqual((unsent["undecidable"], unsent["recovery_denominator"]), (1, 0))
+
+    def test_merged_attempt_cannot_be_sent(self):
+        with self.assertRaises(CompensationCellsError):
+            judge_cells([step("a2"), step("a1", "merged")], ["a1"], diff(), diff())
 
     def test_malformed_plans_are_rejected(self):
         cases = [("x", "STEPS_INVALID"), ([1], "STEP_FIELDS"), ([step() | {"raw_target": "/a"}], "STEP_FIELDS"),
                  ([step(attempt="")], "STEP_ATTEMPT"), ([step(), step()], "STEP_ATTEMPT"),
                  ([step(action="other")], "STEP_ACTION"), ([step(row_id=0)], "STEP_ID"), ([step(row_id=True)], "STEP_ID"),
-                 ([step(row_id=None)], "STEP_DELETE_TARGET"), ([step(table_name="")], "STEP_DELETE_TARGET")]
+                 ([step(row_id=None)], "STEP_DELETE_TARGET"), ([step(table_name="")], "STEP_DELETE_TARGET"),
+                 ([step("a1", "merged", row_id=None)], "STEP_DELETE_TARGET"),
+                 ([step("a1"), step("a2")], "STEP_DUPLICATE_RESOURCE"),
+                 ([step("a1", "merged")], "STEP_MERGED_WITHOUT_DELETE"),
+                 ([step() | {"class": "none"}], "STEP_CLASS"), ([step() | {"class": None}], "STEP_CLASS"),
+                 ([step() | {"reason": "Not Fixed"}], "STEP_REASON"), ([step() | {"reason": 1}], "STEP_REASON"),
+                 ([step() | {"sequence": -1}], "STEP_SEQUENCE"), ([step() | {"sequence": True}], "STEP_SEQUENCE")]
         for steps, code in cases:
             with self.subTest(code=code, steps=steps):
                 with self.assertRaises(CompensationCellsError) as caught:
