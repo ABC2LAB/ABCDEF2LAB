@@ -51,7 +51,7 @@ from runner_config import (  # noqa: E402
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from runner_engine import (  # noqa: E402
-    AdminSecret, EngineAPIError, apply_engine_rules, collect_findings, engine_settings, intercept_summary, load_engine_rules,
+    AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
@@ -86,6 +86,8 @@ RESULT_NAME = "runner-result.json"
 RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
 # 상태 차이 근거(프로토콜 §8.2, 러너 설정 state가 있을 때만). 건수·정수 id·테이블·열 이름·seq 값만 담는다.
 STATE_DIFF_NAME = "state-diff.json"
+# 엔진 LLM 키 자리값. compose의 OPENAI_API_KEY와 같다. 진짜 키는 게이트웨이만 갖는다(비밀 아님).
+ENGINE_LLM_PLACEHOLDER_KEY = "gateway-holds-the-key"
 SERVING_NAME = "llm-serving.json"
 # 작업 생성 직전 재적재 단계. 회차 전 적재와 같은 판정을 받는다.
 SERVING_TASK_START = "task_start"
@@ -125,6 +127,7 @@ class RunPorts(Protocol):
     def probe(self, phase: str, snapshot: dict) -> ProbeOutcome: ...
     def wait_ready(self) -> int: ...
     def scoreboard(self, phase: str, snapshot: dict) -> dict: ...
+    def apply_engine_settings(self) -> None: ...
     def engine_settings(self) -> dict: ...
     def apply_engine_rules(self) -> dict: ...
     def host_spec(self) -> dict: ...
@@ -180,6 +183,7 @@ class RunSpec:
     llm_stream: bool
     tmpfs_min_free_bytes: int
     worker_count: int
+    context_window_k: int
     condition: str
     repeat_index: int
     # 개선 후 회차의 E② 자리(runner_config E2_MODES). baseline은 항상 none이다.
@@ -444,6 +448,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     pre_forwarded = _step(state, "meter_read_failed", meter.forwarded)
     if pre_forwarded != 0:
         raise RunFailure("pre_requests_nonzero")  # 작업 시작 전에 엔진이 대상으로 보냈다
+    # 압축 기준 창·worker 수는 기본값에 맡기지 않고 양쪽에 같은 값을 넣는다(프로토콜 §6).
+    _step(state, "engine_settings_apply_failed", ports.apply_engine_settings)
     # 작업 생성 전 실행 설정 전체. 선언과 다르거나 송신 경로를 바꾸는 값이 있으면 그 회차는 같은 조건이 아니다.
     if spec.engine_rules_sha256 is not None:
         # 원본 ② 규칙(프로토콜 §8.1). 실행 설정 스냅샷보다 먼저 넣어 스냅샷이 작업 직전 상태가 되게 한다.
@@ -762,7 +768,10 @@ def _settings_match(settings: object, spec: RunSpec) -> bool:
     engine, llm = settings["settings"], settings["llm"]
     proxies = [part[name] for part, names in ((engine, _PROXY_SET["settings"]), (llm, _PROXY_SET["llm"]))
                for name in names]
+    # reasoning_effort·thinking_type은 비어 있어야 요청에 안 나간다(샘플링 근거의 전제).
     return (type(engine.get("workers")) is int and engine["workers"] == spec.worker_count
+            and type(llm.get("context_window_k")) is int and llm["context_window_k"] == spec.context_window_k
+            and llm.get("reasoning_effort") == "" and llm.get("thinking_type") == ""
             and llm.get("model") == spec.model_tag and all(value is False for value in proxies))
 
 
@@ -777,10 +786,11 @@ def _read_text(path: str) -> str | None:
 class DockerPorts:
     def __init__(self, config: RunnerConfig, plan: RunPlan, directory: RunDirectory, docker: Docker,
                  findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict],
-                 rules: Callable[[], dict] | None = None, intercepted: Callable[[], dict] | None = None):
+                 rules: Callable[[], dict] | None = None, intercepted: Callable[[], dict] | None = None,
+                 apply_settings: Callable[[], None] | None = None):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
         self._findings, self._start, self._settings, self._rules = findings, start, settings, rules
-        self._intercepted = intercepted
+        self._intercepted, self._apply_settings = intercepted, apply_settings
         self.base_args = compose_base_args(plan)
         self.obs_origin = f"http://127.0.0.1:{config.ports['obs_host']}"
 
@@ -848,6 +858,9 @@ class DockerPorts:
         return {"raw": collected.artifacts.raw, "normalized": collected.artifacts.normalized,
                 "requested_at": collected.requested_at, "received_at": collected.received_at,
                 "solved": normalized["solved"]}
+
+    def apply_engine_settings(self) -> None:
+        self._apply_settings()
 
     def engine_settings(self) -> dict:
         return self._settings()
@@ -959,6 +972,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_policy_mode=config.llm_policy_mode if plan.side == POLICY_SWITCH_SIDE else None,
         llm_stream=config.llm_stream,
         tmpfs_min_free_bytes=config.tmpfs_min_free_bytes, worker_count=declared["worker_count"],
+        context_window_k=declared["context_window_k"],
         condition=condition, repeat_index=repeat_index, e2_mode=plan.e2_mode, model_tag=plan.llm["model"],
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
         target_origin=declared["target_origin"], observer_path=config.observer_path,
@@ -1014,6 +1028,13 @@ def main(argv: list[str] | None = None) -> int:
     def settings() -> dict:
         return engine_settings(config.ports["engine_api_host"], secret, config.run["task_create_timeout_seconds"])
 
+    def apply_settings() -> None:
+        declared = preflight[plan.side]
+        apply_engine_settings(config.ports["engine_api_host"], secret, EngineLLMProfile(
+            config.llm_provider, declared["llm"]["model"], plan.compose_env["ARTEX_LLM_BASE_URL"], ENGINE_LLM_PLACEHOLDER_KEY,
+            declared["context_window_k"], config.llm_stream), declared["worker_count"],
+            config.run["task_create_timeout_seconds"])
+
     def apply_rules() -> dict:
         return apply_engine_rules(config.ports["engine_api_host"], secret, rules, config.run["task_create_timeout_seconds"])
 
@@ -1021,7 +1042,8 @@ def main(argv: list[str] | None = None) -> int:
         names = frozenset() if rules is None else frozenset(rule["name"] for rule in rules.rules)
         return intercept_summary(config.ports["engine_api_host"], secret, names, config.findings["timeout_seconds"])
 
-    ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules, intercepted)
+    ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules, intercepted,
+                        apply_settings)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
                                     None if rules is None else rules.sha256), ports, MeterFiles(directory.meter, directory.e2),

@@ -59,7 +59,7 @@ def profile():
         "environment": {
             "network_mode": "dedicated_network", "llm": api_llm(),
             "temperature": 0, "seed": 42, "target_image": "example/target:15.0.0",
-            "worker_count": 1, "time_budget_seconds": 1200, "request_budget": 100,
+            "worker_count": 1, "context_window_k": 32, "time_budget_seconds": 1200, "request_budget": 100,
             "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
             "run_drain": {"grace_seconds": 30, "settle_seconds": 2},
             "sampling": {"top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0},
@@ -76,13 +76,13 @@ class TestProfileFingerprint(unittest.TestCase):
         self.assertIn(expected, str(caught.exception))
         self.assertNotIn("SYNTHETIC-PRIVATE", str(caught.exception))
 
-    def test_v5_fixed_canonical_vectors(self):
-        # v5: 환경에 sampling(temperature·seed 외 샘플링)이 들어가고 format 문자열이 바뀌어 세 지문 모두 v4와 다르다.
+    def test_v6_fixed_canonical_vectors(self):
+        # v6: 환경에 context_window_k가 들어가고 format 문자열이 바뀌어 세 지문 모두 v5와 다르다.
         self.assertEqual(asdict(generate_fingerprints(profile())), {
-            "format": "abc2lab-eval-profile-v5",
-            "fixture_fingerprint": "bc53151aaa406af7b68e982faf4db5c6c9f87d35b1816eaa1fce74c09a9ebafa",
-            "environment_fingerprint": "965b17f4676092e41c6863077e8b041fe0db9836754b2f805d3cf81b753d6314",
-            "scope_fingerprint": "c846c05f7fd6fada0eecc0239ecc35f295c01e9bfe22c3b5b691d853b244743c",
+            "format": "abc2lab-eval-profile-v6",
+            "fixture_fingerprint": "71361e6c23dc6b8dd79b2b05a215bb37914fa67f08dfc7c72f41b10ce6025766",
+            "environment_fingerprint": "368701e3c458f026c9942efee20c8740f8ab79eb607ed57eac30620d1272634d",
+            "scope_fingerprint": "b277c8844f50f6158cb61a7e3bd3f1d0b1b7ddd5a07d31b0aa8497d178e5191d",
         })
 
     def test_digest_fields_fit_current_preflight_without_changing_source_pins(self):
@@ -142,7 +142,7 @@ class TestProfileFingerprint(unittest.TestCase):
         expected = generate_fingerprints(profile())
         changes = {"llm": api_llm() | {"provider": "other-provider"},
                    "temperature": 0.25, "seed": 43, "target_image": "example/target:16.0.0",
-                   "worker_count": 2, "time_budget_seconds": 600, "request_budget": 101,
+                   "worker_count": 2, "context_window_k": 64, "time_budget_seconds": 600, "request_budget": 101,
                    # tmpfs 하한이 다르면 같은 측정값으로도 완료·무효가 갈린다(#140 리뷰) → 환경 지문이 달라야 한다.
                    "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"},
                    # 봉인 뒤 유예·정착 대기는 post 관측 시점과 취소 여부를 바꾼다(#153 리뷰) → 환경 지문이 달라야 한다.
@@ -167,6 +167,25 @@ class TestProfileFingerprint(unittest.TestCase):
             use_llm(payload, llm)
             self.assertNotEqual(expected.environment_fingerprint, generate_fingerprints(payload).environment_fingerprint)
 
+    def test_context_window_stays_in_the_engine_range_and_under_the_server(self):
+        for value in (None, True, "32", 31, 1001, 32.0, 0, -1):
+            with self.subTest(value=value):
+                payload = profile()
+                payload["environment"]["context_window_k"] = value
+                with self.assertRaisesRegex(ProfileError, "environment.context_window_k: INVALID_CONTEXT_WINDOW"):
+                    generate_fingerprints(payload)
+        local = profile()
+        local["environment"]["llm"] = local_llm() | {"context_length": 64000}
+        local["environment"]["sampling"] = {"top_p": 0.95, "presence_penalty": 1.5, "frequency_penalty": 0.0}
+        local["environment"]["context_window_k"] = 64  # 경계: 서버 컨텍스트와 정확히 같으면 통과
+        generate_fingerprints(local)
+        local["environment"]["context_window_k"] = 65
+        with self.assertRaisesRegex(ProfileError, "environment.context_window_k: ABOVE_SERVER_CONTEXT"):
+            generate_fingerprints(local)
+        api = profile()
+        api["environment"]["context_window_k"] = 1000  # API는 서버 컨텍스트 선언이 없다
+        generate_fingerprints(api)
+
     def test_each_llm_subfield_changes_only_environment_digest(self):
         # llm 객체가 한 값으로 묶여 비교되더라도, 하위 필드 하나하나가 지문에 들어가야 한다.
         cases = {
@@ -179,7 +198,7 @@ class TestProfileFingerprint(unittest.TestCase):
             "local.hostname": (local_llm(), {"hostname": "other-llm", "base_url": "http://other-llm:11434/v1"}),
             "local.host_ip": (local_llm(), {"host_ip": "10.0.0.5"}),
             "local.model_digest": (local_llm(), {"model_digest": "b" * 64}),
-            "local.context_length": (local_llm(), {"context_length": 16384}),
+            "local.context_length": (local_llm(), {"context_length": 65536}),
             "local.server_version": (local_llm(), {"server_version": "0.33.0"}),
         }
         for name, (base, change) in cases.items():

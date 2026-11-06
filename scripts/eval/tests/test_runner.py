@@ -202,7 +202,8 @@ class FakePorts:
         # 엔진 설정 응답(runner_engine이 프록시를 설정 여부로 바꾼 뒤): 선언 worker_count·모델과 같고 프록시 없음.
         self.settings = {"settings": {"workers": spec.worker_count, "web_search_proxy_set": False,
                                       "global_proxy_set": False, "llm_pool_enabled": False},
-                         "llm": {"model": spec.model_tag, "proxy_set": False, "reasoning_effort": ""}}
+                         "llm": {"model": spec.model_tag, "proxy_set": False, "reasoning_effort": "", "thinking_type": "",
+                                 "context_window_k": spec.context_window_k}}
         # 상태 차이 사본: 단계별 SQLite 행. state_dir는 시험이 정한다(설정 state가 있는 회차만 부른다).
         self.state_dir = None
         self.state_rows = {"pre": [(1, "a")], "post": [(1, "a"), (2, "b")]}
@@ -284,6 +285,9 @@ class FakePorts:
     def host_spec(self):
         self._call("host_spec")
         return dict(self.host)
+
+    def apply_engine_settings(self):
+        self._call("apply_engine_settings")
 
     def engine_settings(self):
         self._call("engine_settings")
@@ -409,7 +413,7 @@ def run(mutate=None, mutate_gateway=None, spec=None):
 
 
 FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
-              "wait_ready", "events:start", "watch:start", "scoreboard:pre", "engine_settings", "start_task", "seal",
+              "wait_ready", "events:start", "watch:start", "scoreboard:pre", "apply_engine_settings", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
 
@@ -748,6 +752,7 @@ class TestFailures(unittest.TestCase):
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
             ("tmpfs:pre", "pre_tmpfs_measure_failed"), ("tmpfs:post", "tmpfs_measure_failed"),
             ("findings", "findings_failed"), ("intercept_summary", "intercept_summary_failed"),
+            ("apply_engine_settings", "engine_settings_apply_failed"),
             ("engine_settings", "engine_settings_failed"),
         ]
         for name, reason in cases:
@@ -870,7 +875,7 @@ class TestFailures(unittest.TestCase):
         result, ports, _, evidence = run(spec=spec)
         self.assertEqual(result["status"], COMPLETE)
         rules_at = ports.calls.index("apply_engine_rules")
-        self.assertEqual(ports.calls[rules_at - 1:rules_at + 2], ["scoreboard:pre", "apply_engine_rules", "engine_settings"])
+        self.assertEqual(ports.calls[rules_at - 1:rules_at + 2], ["apply_engine_settings", "apply_engine_rules", "engine_settings"])
         self.assertEqual(evidence.files["engine-rules.json"]["file_sha256"], "a" * 64)
         self.assertEqual(result["engine_rules"], evidence.files["engine-rules.json"])
         self.assertEqual(result["run_conditions"]["engine_rules_sha256"], "a" * 64)
@@ -920,12 +925,34 @@ class TestFailures(unittest.TestCase):
                    "web search proxy": lambda s: s["settings"].update(web_search_proxy_set=True),
                    "llm proxy": lambda s: s["llm"].update(proxy_set=True),
                    "model": lambda s: s["llm"].update(model="other/model"),
+                   "context window": lambda s: s["llm"].update(context_window_k=s["llm"]["context_window_k"] + 1),
+                   "context window unset": lambda s: s["llm"].update(context_window_k=0),
+                   "context window type": lambda s: s["llm"].update(context_window_k=str(s["llm"]["context_window_k"])),
+                   "reasoning effort": lambda s: s["llm"].update(reasoning_effort="high"),
+                   "thinking type": lambda s: s["llm"].update(thinking_type="disabled"),
+                   "reasoning missing": lambda s: s["llm"].pop("reasoning_effort"),
+                   "thinking missing": lambda s: s["llm"].pop("thinking_type"),
                    "missing part": lambda s: s.pop("llm")}
         for label, change in changes.items():
             with self.subTest(label=label):
                 result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.settings))
                 self.assert_invalid(result, ports, evidence, "engine_settings_mismatch")
                 self.assertNotIn("start_task", ports.calls)
+
+    def test_settings_go_in_before_the_snapshot_that_checks_them(self):
+        result, ports, *_ = run()
+        self.assertEqual(result["status"], COMPLETE)
+        applied = ports.calls.index("apply_engine_settings")
+        self.assertLess(ports.calls.index("scoreboard:pre"), applied)
+        self.assertLess(applied, ports.calls.index("engine_settings"))
+        self.assertLess(ports.calls.index("engine_settings"), ports.calls.index("start_task"))
+
+    def test_settings_failure_invalidates_before_the_task(self):
+        def fail(ports, meter, clock):
+            ports.apply_engine_settings = lambda: (_ for _ in ()).throw(EngineAPIError("engine_settings_apply_http_500"))
+        result, ports, _, evidence = run(mutate=fail)
+        self.assert_invalid(result, ports, evidence, "engine_settings_apply_failed")
+        self.assertNotIn("start_task", ports.calls)
 
     def test_host_spec_must_be_complete(self):
         for label, change in {"missing": lambda h: h.pop("kernel"), "empty model": lambda h: h.update(cpu_model=""),

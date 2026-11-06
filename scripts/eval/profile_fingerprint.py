@@ -14,7 +14,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-FORMAT = "abc2lab-eval-profile-v5"
+FORMAT = "abc2lab-eval-profile-v6"
+# 엔진 압축 기준 창(K 토큰). 엔진이 이 범위로 잘라 쓰므로(agent/provider.go) 범위 밖 선언은 적용값과 달라진다.
+MIN_CONTEXT_WINDOW_K, MAX_CONTEXT_WINDOW_K = 32, 1000
 PROFILE_VERSION = 5
 MAX_INPUT_BYTES = 64 * 1024
 MAX_PATH_LENGTH = 512
@@ -395,7 +397,8 @@ def _sampling(raw: object) -> dict:
 
 def _environment(raw: object) -> dict:
     raw = _object(raw, ("network_mode", "llm", "temperature", "sampling", "seed", "target_image",
-                        "worker_count", "time_budget_seconds", "request_budget", "run_storage", "run_drain"),
+                        "worker_count", "context_window_k", "time_budget_seconds", "request_budget", "run_storage",
+                        "run_drain"),
                   "environment")
     if raw["network_mode"] not in _NETWORK_MODES:
         _fail("environment.network_mode", "UNSUPPORTED_NETWORK_MODE")
@@ -405,6 +408,12 @@ def _environment(raw: object) -> dict:
         _fail("environment.run_storage", "INVALID_RUN_STORAGE")
     if not _run_drain(raw["run_drain"]):
         _fail("environment.run_drain", "INVALID_RUN_DRAIN")
+    window = raw["context_window_k"]
+    if type(window) is not int or not MIN_CONTEXT_WINDOW_K <= window <= MAX_CONTEXT_WINDOW_K:
+        _fail("environment.context_window_k", "INVALID_CONTEXT_WINDOW")
+    # 로컬 서버는 넘친 입력을 오류 없이 잘라낸다. 엔진이 압축하기 전에 잘리면 안 된다.
+    if raw["llm"]["backend"] == "local" and window * 1000 > raw["llm"]["context_length"]:
+        _fail("environment.context_window_k", "ABOVE_SERVER_CONTEXT")
     return {
         "network_mode": raw["network_mode"],
         # API 고정 조건(모델·제공자·fallback)과 로컬 고정 IP가 모두 환경 지문에 들어간다.
@@ -415,6 +424,7 @@ def _environment(raw: object) -> dict:
         "seed": _integer(raw["seed"], "environment.seed", zero=True),
         "target_image": _reference(raw["target_image"], "environment.target_image", image=True),
         "worker_count": _integer(raw["worker_count"], "environment.worker_count"),
+        "context_window_k": window,
         "time_budget_seconds": _number(raw["time_budget_seconds"], "environment.time_budget_seconds", positive=True),
         "request_budget": _integer(raw["request_budget"], "environment.request_budget"),
         "run_storage": dict(raw["run_storage"]),
