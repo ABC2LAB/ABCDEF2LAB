@@ -2,7 +2,7 @@
 
 실행(조회 응답은 새 빈 디렉터리에 받고, 그 디렉터리에서 코드를 실행하지 않는다):
   D=$(mktemp -d) && curl -sS --max-time 20 -o "$D/endpoints.json" \\
-    https://openrouter.ai/api/v1/models/qwen/qwen3.6-35b-a3b/endpoints
+    https://openrouter.ai/api/v1/models/qwen/qwen3.5-35b-a3b/endpoints
   python3 -I -B scripts/eval/provider_recheck.py "$D/endpoints.json"
 
 통과 조건: 응답 모델이 공식 프로파일 모델이고, 고정 slug가 엔드포인트 하나에만 매칭되며(접두 매칭 규칙), 그 엔드포인트의
@@ -21,8 +21,8 @@ from pathlib import Path
 
 DOCS = Path(__file__).resolve().parents[2] / "docs/evaluation/profiles"
 PROFILE = DOCS / "official-35b.json"
-ENDPOINTS_EVIDENCE = DOCS / "evidence/openrouter-endpoints-qwen3.6-35b-a3b-20261104.json"
-PARAMS_EVIDENCE = DOCS / "evidence/openrouter-endpoint-params-qwen3.6-35b-a3b-20261104.json"
+ENDPOINTS_EVIDENCE = DOCS / "evidence/openrouter-endpoints-qwen3.5-35b-a3b-20261106.json"
+PARAMS_EVIDENCE = DOCS / "evidence/openrouter-endpoint-params-qwen3.5-35b-a3b-20261106.json"
 MAX_RESPONSE_BYTES = 4 << 20
 
 
