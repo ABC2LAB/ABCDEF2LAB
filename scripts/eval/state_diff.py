@@ -26,7 +26,10 @@
 런타임 파일은 설정한 디렉터리의 tar를 받아 항목별 지문(종류·권한·소유자·내용, 시각 제외)으로 맞댄다. 결과에는 그 디렉터리의
 항목 수와 추가·삭제·변경 건수만 낸다. 파일 이름에 사용자 값이 들어갈 수 있어(주문 번호 등) 항목 경로는 내보내지 않는다.
 
-이 결과는 '관측 가능한 대상 상태의 변화'일 뿐이다. 메모리 저장(리뷰·주문)과 외부 호출은 여기서 보지 않는다.
+메모리 저장은 등록한 읽기 경로의 응답을 경로별 지문과 건수로 맞댄다. 결과에는 합계와 변한 경로 수만 낸다. 등록한 경로 밖의 메모리
+상태(읽을 수 없는 주문 내용 등)와 외부 호출은 보지 않으며 주장하지도 않는다.
+
+이 결과는 '관측 가능한 대상 상태의 변화'일 뿐이다.
 """
 
 from __future__ import annotations
@@ -255,3 +258,23 @@ def runtime_diff(pre: dict[str, dict[str, bytes]], post: dict[str, dict[str, byt
     return {"runtime": roots,
             "runtime_changed": any(r["added"] or r["removed"] or r["changed"] or r["missing_post"]
                                    for r in roots.values())}
+
+
+def digest_fingerprint(digest: str, key: bytes) -> bytes:
+    """읽기 응답 다이제스트의 회차 키 지문. 다이제스트 자체는 남기지 않는다(값이 적은 응답을 거꾸로 맞출 수 있다)."""
+    if not isinstance(key, bytes) or len(key) != RUN_KEY_BYTES:
+        raise StateDiffError("state_run_key_invalid")
+    return _fingerprint(key, (digest,))
+
+
+def memory_diff(pre: list[dict], post: list[dict]) -> dict:
+    """등록 읽기 경로별(같은 순서) 건수·지문 차이. post에서 못 읽은 경로는 변화로 센다(검사 못 한 것을 '그대로'로 두지 않는다)."""
+    if len(pre) != len(post) or not all(entry["readable"] for entry in pre):
+        raise StateDiffError("state_memory_mismatch")
+    readable = [(a, b) for a, b in zip(pre, post) if b["readable"]]
+    changed = sum(1 for a, b in readable if a["fingerprint"] != b["fingerprint"])
+    unreadable = len(post) - len(readable)
+    return {"memory": {"reads": len(pre), "count_pre": sum(entry["count"] for entry in pre),
+                       "count_post": sum(b["count"] for _, b in readable),
+                       "changed": changed, "unreadable_post": unreadable},
+            "memory_changed": changed > 0 or unreadable > 0}
