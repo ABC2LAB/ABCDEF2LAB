@@ -260,8 +260,9 @@ class TestMerge(unittest.TestCase):
                 self.rejected([page([record(101, **changes)])], "RECORD_INVALID")
 
     def test_traceback_does_not_show_record_values(self):
+        # 채점기 오류 문구는 잘못된 값을 그대로 담는다. token 필드 오류에는 값이 없어 이 시험에 쓸 수 없다.
         with self.assertRaises(VerdictPagesError) as caught:
-            merge_verdict_pages([page([record(101, token=SECRET_LIKE)])], CONTEXT)
+            merge_verdict_pages([page([record(101, oracle_value=SECRET_LIKE)])], CONTEXT)
         self.assertNotIn(SECRET_LIKE, "".join(traceback.format_exception(caught.exception)))
 
     def test_errors_never_carry_input_values(self):

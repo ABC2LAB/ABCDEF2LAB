@@ -195,7 +195,7 @@ class TestCollect(unittest.TestCase):
 
     def test_page_errors_do_not_show_record_values_in_the_traceback(self):
         leaked = "synthetic-record-value-7f3a"
-        fake = self.server({None: (200, body(page([record(101, token=leaked)])))})
+        fake = self.server({None: (200, body(page([record(101, oracle_value=leaked)])))})
         with self.assertRaises(VerdictCollectError) as caught:
             self.collect(fake)
         self.assertNotIn(leaked, "".join(traceback.format_exception(caught.exception)))
