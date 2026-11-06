@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
+from e2_export import E2_HEADER_MODES
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
 from runner_docker import container_file_ok
 
@@ -36,13 +37,14 @@ COMPOSE_LLM_API = REPO_ROOT / "deploy" / "engine-isolated" / "compose.llm-api.ya
 COMPOSE_EVAL = REPO_ROOT / "deploy" / "eval" / "compose.eval.yaml"
 # 개선 후 회차의 E② 자리에 통과 전용 가짜 E²를 둔다(e2.ours_mode=stub일 때만, compose.eval.yaml 다음).
 COMPOSE_E2_STUB = REPO_ROOT / "deploy" / "eval" / "compose.e2-stub.yaml"
-# 제품 E² 자리. 러너 연결 전이라 아직 어떤 회차에도 붙지 않는다.
 COMPOSE_E2_PRODUCT = REPO_ROOT / "deploy" / "eval" / "compose.e2-product.yaml"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
 LLM_DIR_NAME = "llm"
 # 가짜 E²(e2.ours_mode=stub) 결정 행 디렉터리. 계측기 증거와 분리해 E²가 독립 계측 로그·seal 파일에 쓸 수 없게 한다.
 E2_DIR_NAME = "e2"
+# 제품 E②: 준비(읽기 전용 mount), 제어 socket, 러너 전용 수집 사본. 사본은 E²에 mount하지 않는다.
+E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME = "e2-config", "e2-control", "e2-copy"
 # 상태 차이 사본(대상 SQLite) 디렉터리. 사본은 지문을 뜬 즉시 지운다(값이 든 파일을 남기지 않음).
 STATE_DIR_NAME = "state"
 # 상태 차이(프로토콜 §8.2) 설정. null이면 사본을 뜨지 않는다. 앱별 값(DB 경로·해결 신호 테이블)은 여기서만 받는다.
@@ -125,9 +127,9 @@ _LLM_PROVIDERS = ("openai",)
 # 외부 송신 차단 음성 시험용이며 러너가 manifest·profile을 준비하지 않는다. baseline(e53a79f)은 이 스위치가 없다.
 _LLM_POLICY_MODES = ("external",)
 # 개선 후 회차의 E② 자리. none = E² 없음(엔진 → 계측기), stub = 통과 전용 가짜 E²(fixture, 공식 결과 아님).
-# 제품 E²가 들어오면 값이 하나 늘어난다. baseline은 항상 none이다(원본에는 E²가 없다).
-E2_NONE, E2_STUB = "none", "stub"
-E2_MODES = (E2_NONE, E2_STUB)
+# product = 제품 E²(제어 채널 제안). baseline은 항상 none이다(원본에는 E²가 없다).
+E2_NONE, E2_STUB, E2_PRODUCT = "none", "stub", "product"
+E2_MODES = (E2_NONE, E2_STUB, E2_PRODUCT)
 # 관측 경로 응답 형식. opaque는 점수판 없는 연습 대상용이고 그 회차는 채점기가 거부한다(docs/evaluation/practice-targets.md).
 OBSERVER_SCOREBOARD = "challenge_scoreboard"
 OBSERVER_OPAQUE = "opaque"
@@ -145,6 +147,10 @@ _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_ima
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
 MAX_FINDINGS_PAGES = 10_000
+# 제품 E② 설정. 지문은 시범 전에 동결한 값이고 러너는 이 값과 대조만 한다(연결 제안 §4.1).
+_E2_PRODUCT_FIELDS = ("image", "policy_path", "policy_fingerprint_sha256", "header_mode", "ready_timeout_seconds", "close_ack_timeout_seconds",
+                      "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds", "verify_tool", "verify_timeout_seconds")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 # 개선 후 판정 export 수집 한도(null이면 수집 안 함). findings 한도와 따로 둔다.
 _VERDICT_LIMIT_FIELDS = ("page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 _VERDICT_FIELDS = _VERDICT_LIMIT_FIELDS + ("ready_wait_seconds", "ready_poll_seconds")
@@ -225,6 +231,8 @@ class RunnerConfig:
     observer_readonly_ref: str
     # 개선 후 회차의 E② 자리(E2_MODES). baseline 회차에는 쓰지 않는다.
     e2_ours_mode: str
+    # ours_mode=product일 때만 있는 제품 E² 설정(_E2_PRODUCT_FIELDS). image는 Image다.
+    e2_product: dict | None
     # 상태 차이 설정(_STATE_FIELDS) 또는 None(끔). 양쪽 회차에 같게 적용한다.
     state: dict | None
     # 원본 ② 규칙 파일 경로 또는 None(프로토콜 §8.1). 원본 회차에만 쓴다. 조건마다 설정 파일을 따로 둔다.
@@ -269,6 +277,9 @@ class RunDirectory:
     llm: Path
     e2: Path
     state: Path
+    e2_config: Path
+    e2_control: Path
+    e2_copy: Path
 
 
 def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
@@ -361,7 +372,9 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         errors.append("config.engine.llm_stream: EXPECTED_BOOL")
     if "llm_policy_mode" in engine and engine["llm_policy_mode"] not in _LLM_POLICY_MODES:
         errors.append("config.engine.llm_policy_mode: UNSUPPORTED")
-    e2 = _exact(top.get("e2"), ("ours_mode",), "config.e2", errors) if "e2" in top else {}
+    e2_names = ("ours_mode",) + (_E2_PRODUCT_FIELDS if isinstance(top.get("e2"), dict) and top["e2"].get("ours_mode") == E2_PRODUCT else ())
+    e2 = _exact(top.get("e2"), e2_names, "config.e2", errors) if "e2" in top else {}
+    e2_product = _e2_product(e2, errors) if e2.get("ours_mode") == E2_PRODUCT else None
     if "engine_rules" in top and top["engine_rules"] is not None and not _absolute_path(top["engine_rules"]):
         errors.append("config.engine_rules: EXPECTED_ABSOLUTE_PATH")
     if "ours_mode" in e2 and e2["ours_mode"] not in E2_MODES:
@@ -469,8 +482,28 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         llm_gateway={name: gateway[name] for name in _GATEWAY_FIELDS},
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},
-        observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], state=state,
+        observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], e2_product=e2_product, state=state,
         engine_rules=top["engine_rules"], verdict_export=verdict_export)
+
+
+def _e2_product(block: dict, errors: list[str]) -> dict | None:
+    """제품 E② 설정. 시한은 실행 예산과 따로 기록하는 값이라 전부 명시한다."""
+    image = _image(block["image"], "config.e2.image", errors) if "image" in block else None
+    for name in ("policy_path", "verify_tool"):
+        if name in block and not _absolute_path(block[name]):
+            errors.append(f"config.e2.{name}: EXPECTED_ABSOLUTE_PATH")
+    if "policy_fingerprint_sha256" in block and not (isinstance(block["policy_fingerprint_sha256"], str)
+                                                     and _SHA256_HEX.fullmatch(block["policy_fingerprint_sha256"])):
+        errors.append("config.e2.policy_fingerprint_sha256: INVALID")
+    if "header_mode" in block and not (isinstance(block["header_mode"], str) and block["header_mode"] in E2_HEADER_MODES):
+        errors.append("config.e2.header_mode: UNSUPPORTED")
+    for name in ("ready_timeout_seconds", "close_ack_timeout_seconds", "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds",
+                 "verify_timeout_seconds"):
+        if name in block and not _int(block[name], 1, MAX_RUN_SECONDS):
+            errors.append(f"config.e2.{name}: INVALID")
+    if image is None or any(name not in block for name in _E2_PRODUCT_FIELDS):
+        return None
+    return {name: block[name] for name in _E2_PRODUCT_FIELDS} | {"image": image}
 
 
 def _verdict_export(raw: object, errors: list[str]) -> dict | None:
@@ -644,6 +677,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     e2_mode = config.e2_ours_mode if side == POLICY_SWITCH_SIDE else E2_NONE
     if e2_mode == E2_STUB:
         files.append(COMPOSE_E2_STUB)
+    elif e2_mode == E2_PRODUCT:
+        files.append(COMPOSE_E2_PRODUCT)
     env = {
         "EVAL_ENGINE_IMAGE": engine_image.ref,
         "EVAL_ENGINE_DB_IMAGE": config.images["engine_db"].ref,
@@ -686,6 +721,9 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         env["EVAL_LLM_HOST_IP"] = llm["host_ip"]
     images = {"engine": engine_image, "engine_db": config.images["engine_db"],
               "target": target_image, "meter": config.images["meter"]}
+    if e2_mode == E2_PRODUCT:
+        images["e2"] = config.e2_product["image"]
+        env["EVAL_E2_IMAGE"] = config.e2_product["image"].ref
     return RunPlan(side=side, run_id=run_id, project=f"eval-{run_id}", source_sha=declared["source_sha"],
                    llm=llm, target_image=target_image, engine_image=engine_image, images=images,
                    meter_port=origin.port, compose_files=tuple(files),
@@ -718,7 +756,7 @@ def _make_private_child(parent_fd: int, name: str) -> int:
     return fd
 
 
-def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
+def create_run_directory(runs_root: Path, run_id: str, e2_mode: str = E2_NONE) -> RunDirectory:
     """회차 디렉터리와 계측기 bind 디렉터리를 러너 uid·0700으로 먼저 만든다.
 
     Docker가 없는 bind 경로를 자동 생성하면 root·0755가 되어 계측기가 거부하므로, 반드시 up 전에 만든다.
@@ -739,6 +777,9 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
             os.close(_make_private_child(run_fd, LLM_DIR_NAME))
             os.close(_make_private_child(run_fd, E2_DIR_NAME))
             os.close(_make_private_child(run_fd, STATE_DIR_NAME))
+            if e2_mode == E2_PRODUCT:
+                for name in (E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME):
+                    os.close(_make_private_child(run_fd, name))
         finally:
             os.close(run_fd)
     except FileExistsError:
@@ -749,15 +790,19 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
         os.close(root_fd)
     run = runs_root / run_id
     return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME, e2=run / E2_DIR_NAME,
-                        state=run / STATE_DIR_NAME)
+                        state=run / STATE_DIR_NAME, e2_config=run / E2_CONFIG_DIR_NAME, e2_control=run / E2_CONTROL_DIR_NAME,
+                        e2_copy=run / E2_COPY_DIR_NAME)
 
 
 def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str]:
     env = dict(plan.compose_env)
     env["EVAL_EVIDENCE_DIR"] = str(directory.meter)
     env["EVAL_LLM_EVIDENCE_DIR"] = str(directory.llm)
-    if plan.e2_mode == E2_STUB:
+    if plan.e2_mode in (E2_STUB, E2_PRODUCT):
         env["EVAL_E2_EVIDENCE_DIR"] = str(directory.e2)
+    if plan.e2_mode == E2_PRODUCT:
+        env["EVAL_E2_CONFIG_DIR"] = str(directory.e2_config)
+        env["EVAL_E2_CONTROL_DIR"] = str(directory.e2_control)
     env["EVAL_RUNNER_UID"] = str(os.geteuid())
     env["EVAL_RUNNER_GID"] = str(os.getegid())
     return env

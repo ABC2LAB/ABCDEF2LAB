@@ -20,7 +20,7 @@ from typing import Callable, Iterable, Mapping
 from urllib.parse import urlsplit
 
 from runner_config import (
-    API_FRONT_SERVICE, E2_NET, E2_NONE, E2_SERVICE, E2_STUB, ENGINE_API_NET, ENGINE_DB_SERVICE, ENGINE_NET,
+    API_FRONT_SERVICE, E2_NET, E2_NONE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_API_NET, ENGINE_DB_SERVICE, ENGINE_NET,
     ENGINE_SERVICE, LLM_EGRESS_NET, LLM_GW_SERVICE, METER_SERVICE, OBS_NET, OBS_SERVICE, TARGET_NET, TARGET_SERVICE,
     RunnerConfig, RunPlan,
 )
@@ -118,10 +118,11 @@ def expected_topology(config: RunnerConfig, plan: RunPlan) -> ExpectedTopology:
     """
     if plan.llm["backend"] not in ("api", "local"):
         raise CheckInputError("llm_backend_unsupported")
-    if plan.e2_mode not in (E2_NONE, E2_STUB):
+    if plan.e2_mode not in (E2_NONE, E2_STUB, E2_PRODUCT):
         raise CheckInputError("e2_mode_unsupported")
     ports = config.ports
-    front = E2_SERVICE if plan.e2_mode == E2_STUB else METER_SERVICE
+    # 제품 E²의 망 배치는 가짜 E²와 같다(compose.e2-product.yaml).
+    front = METER_SERVICE if plan.e2_mode == E2_NONE else E2_SERVICE
     networks = {
         ENGINE_NET: NetworkExpectation(True, frozenset({ENGINE_SERVICE, ENGINE_DB_SERVICE, front,
                                                         LLM_GW_SERVICE, API_FRONT_SERVICE})),
@@ -139,7 +140,7 @@ def expected_topology(config: RunnerConfig, plan: RunPlan) -> ExpectedTopology:
         API_FRONT_SERVICE: frozenset({Binding(f"{ports['api_front']}/tcp", LOOPBACK_V4, ports["engine_api_host"])}),
         OBS_SERVICE: frozenset({Binding(f"{ports['obs']}/tcp", LOOPBACK_V4, ports["obs_host"])}),
     }
-    if plan.e2_mode == E2_STUB:
+    if plan.e2_mode != E2_NONE:
         networks[E2_NET] = NetworkExpectation(True, frozenset({E2_SERVICE, METER_SERVICE}))
         publishes[E2_SERVICE] = frozenset()
     return ExpectedTopology(networks=networks, publishes=publishes)

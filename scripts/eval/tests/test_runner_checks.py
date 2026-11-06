@@ -217,6 +217,13 @@ class TestExpectations(unittest.TestCase):
 class TestE2Slot(unittest.TestCase):
     """개선 후의 E② 자리(프로토콜 §2): 엔진 → E² → 계측기 → 대상, 엔진 → 계측기 직통 없음."""
 
+    def test_product_has_the_same_placement_as_the_stub(self):
+        import dataclasses
+        for backend in ("api", "local"):
+            with self.subTest(backend=backend):
+                config, stub = plan_for(backend, e2="stub")
+                self.assertEqual(expected_topology(config, dataclasses.replace(stub, e2_mode="product")), expected_topology(config, stub))
+
     def test_stub_takes_the_meter_slot_on_the_engine_net(self):
         config, plan = plan_for(e2="stub")
         expected = expected_topology(config, plan)
@@ -239,7 +246,7 @@ class TestE2Slot(unittest.TestCase):
         import dataclasses
         config, plan = plan_for()
         with self.assertRaises(CheckInputError):
-            expected_topology(config, dataclasses.replace(plan, e2_mode="product"))
+            expected_topology(config, dataclasses.replace(plan, e2_mode="other"))
 
     def test_stub_world_passes_and_a_direct_meter_path_is_caught(self):
         config, plan = plan_for(e2="stub")

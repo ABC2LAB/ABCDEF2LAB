@@ -101,10 +101,16 @@ class TestExpectations(unittest.TestCase):
                 {"dns:eval-ours-1-eval-meter-1", "dns:444444444444", "dns:eval-meter-upstream"}}
         self.assertEqual(stub, base)
 
+    def test_product_probes_like_the_stub(self):
+        import dataclasses
+        stub = dataclasses.replace(make_plan(), e2_mode="stub")
+        product = dataclasses.replace(make_plan(), e2_mode="product")
+        self.assertEqual(probe_expectations(product, make_snapshot()), probe_expectations(stub, make_snapshot()))
+
     def test_unknown_e2_mode_is_refused(self):
         import dataclasses
         with self.assertRaises(ProbeSetupError):
-            probe_expectations(dataclasses.replace(make_plan(), e2_mode="product"), make_snapshot())
+            probe_expectations(dataclasses.replace(make_plan(), e2_mode="other"), make_snapshot())
 
     def test_api_paths_from_snapshot_and_backend(self):
         expectations = probe_expectations(make_plan(), make_snapshot())

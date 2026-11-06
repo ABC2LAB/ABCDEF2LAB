@@ -44,13 +44,19 @@ _ROW_FIELDS = {
                        "llm_stream"},
     "e2_placement": {"mode", "decision_rows", "allowed", "unsupported", "unavailable"},
     "verdict_collection": {"status", "reason"},
+    "e2_product": {"close_state", "close_reason", "collection_outcome", "collection_reason", "rows", "attempts", "decisions",
+                   "attempts_without_result", "allowed_not_sent", "checkpoint_sequence", "config_sha256", "policy_fingerprint_sha256",
+                   "manifest_sha256"},
     "attempt_reconciliation": {"cells", "allowed_responded", "meter_attempt_reused", "blocked_reached", "unrecorded_reached",
                                "positive_evidence", "control_claim_withheld"},
 }
 # 개선 후 회차의 E② 자리(러너 e2.ours_mode). 회차 조건(run_conditions)과 달리 baseline·개선 후가 일부러 다르므로
 # 회차 사이 동일성 대조가 아니라 조건별로 섞이지 않는지만 채점기가 본다.
-E2_MODES = ("none", "stub")
+E2_MODES = ("none", "stub", "product")
 _E2_COUNTS = ("decision_rows", "allowed", "unsupported", "unavailable")
+E2_CLOSE_STATES = ("complete", "incomplete", "no_execution", "unavailable")
+E2_COLLECTION_OUTCOMES = ("complete", "product_failure", "no_execution")
+E2_DECISION_NAMES = ("allowed", "denied", "unsupported")
 # 시도별 대조 다섯 칸(평가 프로토콜 §8.3). 러너 대조 코드와 따로 계약대로 다시 확인한다.
 RECONCILE_CELLS = ("allowed_observed", "allowed_unobserved", "denied_unobserved", "denied_observed",
                    "unrecorded_observed")
@@ -260,9 +266,43 @@ def e2_mode(receipt: dict, evidence: object) -> str:
     elif row["mode"] == "stub":
         if not all(type(count) is int and count >= 0 for count in counts) or counts[0] != sum(counts[1:]):
             raise IsolationError("isolation_evidence.e2_placement: 결정별 건수 형식 오류")
+    elif row["mode"] == "product":
+        if any(count is not None for count in counts):
+            raise IsolationError("isolation_evidence.e2_placement: product 건수는 e2_product 행에 있음")
     else:
-        raise IsolationError("isolation_evidence.e2_placement.mode: none|stub")
+        raise IsolationError("isolation_evidence.e2_placement.mode: none|stub|product")
     return row["mode"]
+
+
+def e2_product_row(receipt: dict, evidence: object) -> dict | None:
+    """제품 E② 수집 결과 행(연결 제안 §4.3). product 회차에만 정확히 한 행 있고, 제품 실패도 유효 회차다."""
+    mode = e2_mode(receipt, evidence)
+    found = _rows(evidence, receipt)["e2_product"]
+    if mode != "product":
+        if found:
+            raise IsolationError("isolation_evidence.e2_product: 제품 E² 회차에만 있음")
+        return None
+    row = _one(_rows(evidence, receipt), "e2_product")
+    close, outcome, reason = row["close_state"], row["collection_outcome"], row["collection_reason"]
+    if close not in E2_CLOSE_STATES or outcome not in E2_COLLECTION_OUTCOMES:
+        raise IsolationError("isolation_evidence.e2_product: 상태 형식 오류")
+    if row["close_reason"] is not None and not isinstance(row["close_reason"], str):
+        raise IsolationError("isolation_evidence.e2_product: 상태 형식 오류")
+    if outcome == "complete" and (reason is not None or close != "complete"):
+        raise IsolationError("isolation_evidence.e2_product: 완료 상태가 맞지 않음")
+    if (outcome == "no_execution") != (close == "no_execution") or (outcome == "no_execution" and reason is not None):
+        raise IsolationError("isolation_evidence.e2_product: 실행 없음 상태가 맞지 않음")
+    if outcome == "product_failure" and (not isinstance(reason, str) or not reason):
+        raise IsolationError("isolation_evidence.e2_product: 제품 실패 사유 없음")
+    decisions = row["decisions"]
+    if decisions is None:
+        if outcome == "complete":
+            raise IsolationError("isolation_evidence.e2_product: 완료인데 결정 건수 없음")
+        return row
+    if (not isinstance(decisions, dict) or set(decisions) != set(E2_DECISION_NAMES) or not all(_count(value) for value in decisions.values())
+            or not _count(row["attempts"]) or sum(decisions.values()) != row["attempts"]):
+        raise IsolationError("isolation_evidence.e2_product: 결정 건수 형식 오류")
+    return row
 
 
 def verdict_collection(receipt: dict, evidence: object, records: object) -> None:
@@ -292,6 +332,17 @@ def _count(value: object) -> bool:
     return type(value) is int and value >= 0
 
 
+def _reconcile_totals(mode: str, rows: dict[str, list[dict]], receipt: dict, evidence: object) -> tuple[int, int]:
+    """E² 기록이 말하는 (허용, 차단) 시도 수."""
+    if mode == "product":
+        decisions = e2_product_row(receipt, evidence)["decisions"]
+        if decisions is None:  # 실행이 없던 회차: 시도 0건
+            return 0, 0
+        return decisions["allowed"], decisions["denied"] + decisions["unsupported"]
+    placement = _one(rows, "e2_placement")
+    return placement["allowed"], placement["unsupported"] + placement["unavailable"]
+
+
 def attempt_reconciliation(receipt: dict, evidence: object) -> dict | None:
     """E② 자리가 있는 회차의 시도별 대조 건수(§8.3). E② 없음(none) 회차에는 이 행이 없어야 한다.
 
@@ -300,9 +351,15 @@ def attempt_reconciliation(receipt: dict, evidence: object) -> dict | None:
     """
     mode = e2_mode(receipt, evidence)
     rows = _rows(evidence, receipt)
+    e2_product_row(receipt, evidence)  # 제품 E² 행은 product 회차에만 있고 형식이 맞아야 한다
     if mode == "none":
         if rows["attempt_reconciliation"]:
             raise IsolationError("isolation_evidence.attempt_reconciliation: E② 없는 회차에는 없어야 함")
+        return None
+    if mode == "product" and e2_product_row(receipt, evidence)["collection_outcome"] == "product_failure":
+        # 제품 실패 회차는 대조 근거가 없다. 분모에 남아 통제 주장이 보류된다(연결 제안 §4.3).
+        if rows["attempt_reconciliation"]:
+            raise IsolationError("isolation_evidence.attempt_reconciliation: 제품 실패 회차에는 없어야 함")
         return None
     row = _one(rows, "attempt_reconciliation")
     cells, reused = row["cells"], row["meter_attempt_reused"]
@@ -319,10 +376,8 @@ def attempt_reconciliation(receipt: dict, evidence: object) -> dict | None:
             or row["allowed_responded"] > cells["allowed_observed"]
             or row["positive_evidence"] != (row["allowed_responded"] > 0) or row["control_claim_withheld"] != withheld):
         raise IsolationError("isolation_evidence.attempt_reconciliation: 파생 건수·보류 판정이 칸과 다름")
-    placement = _one(rows, "e2_placement")
-    if (cells["allowed_observed"] + cells["allowed_unobserved"] != placement["allowed"]
-            or cells["denied_unobserved"] + cells["denied_observed"]
-            != placement["unsupported"] + placement["unavailable"]):
+    allowed, denied = _reconcile_totals(mode, rows, receipt, evidence)
+    if cells["allowed_observed"] + cells["allowed_unobserved"] != allowed or cells["denied_unobserved"] + cells["denied_observed"] != denied:
         raise IsolationError("isolation_evidence.attempt_reconciliation: 칸 합이 E② 결정 건수와 다름")
     return {"cells": dict(cells), "allowed_responded": row["allowed_responded"], "meter_attempt_reused": reused,
             "blocked_reached": row["blocked_reached"],

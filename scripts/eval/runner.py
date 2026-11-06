@@ -45,7 +45,7 @@ from runner_checks import (  # noqa: E402
     network_snapshot, parse_container, parse_network, policy_sha256, read_host_listeners,
 )
 from runner_config import (  # noqa: E402
-    API_FRONT_SERVICE, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
+    API_FRONT_SERVICE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
     METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
@@ -59,6 +59,10 @@ from runner_evidence import (  # noqa: E402
     e2_stub_counts, forwarded_by_method, forwarded_count, read_private_json, sequence_complete,
 )
 from attempt_reconcile import reconcile  # noqa: E402
+from e2_collect import OUTCOME_COMPLETE, OUTCOME_PRODUCT_FAILURE, E2Collection, E2CollectionInvalid  # noqa: E402
+from e2_control import CLOSE_NO_EXECUTION, CLOSE_UNAVAILABLE, CloseResult, E2ControlError  # noqa: E402
+from e2_link import E2Link, E2LinkPaths  # noqa: E402
+from e2_prepare import E2PrepareError  # noqa: E402
 from verdict_collector import (  # noqa: E402
     CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady, VerdictIntegrityError, collect_verdict_export,
 )
@@ -94,6 +98,8 @@ STATE_DIFF_NAME = "state-diff.json"
 # 엔진 LLM 키 자리값. compose의 OPENAI_API_KEY와 같다. 진짜 키는 게이트웨이만 갖는다(비밀 아님).
 ENGINE_LLM_PLACEHOLDER_KEY = "gateway-holds-the-key"
 SERVING_NAME = "llm-serving.json"
+E2_OUTCOME_NO_EXECUTION = "no_execution"
+E2_DECISION_NAMES = ("allowed", "denied", "unsupported")
 VERDICT_STATUS_NAME = "verdict-export.json"
 VERDICT_PAGES_NAME = "verdict-pages.json"
 VERDICT_RECORDS_NAME = "verdict-records.json"
@@ -110,6 +116,14 @@ COMPLETE, INVALID = "complete", "invalid"
 # 회차에 없는 서비스(baseline의 E²)는 대조하지 않는다. 있어야 하는지는 망 구성 점검이 따로 본다.
 _IMAGE_SERVICES = {"engine": (ENGINE_SERVICE,), "engine_db": (ENGINE_DB_SERVICE,), "target": (TARGET_SERVICE,),
                    "meter": (METER_SERVICE, OBS_SERVICE, LLM_GW_SERVICE, API_FRONT_SERVICE, E2_SERVICE)}
+
+
+def _image_services(e2_mode: str) -> dict[str, tuple[str, ...]]:
+    if e2_mode != E2_PRODUCT:
+        return _IMAGE_SERVICES
+    # 제품 E²는 자기 이미지를 쓴다. 가짜 E²만 계측기 이미지의 역할이다.
+    meter = tuple(service for service in _IMAGE_SERVICES["meter"] if service != E2_SERVICE)
+    return {**_IMAGE_SERVICES, "meter": meter, "e2": (E2_SERVICE,)}
 
 
 class RunFailure(Exception):
@@ -153,6 +167,10 @@ class RunPorts(Protocol):
     def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list: ...
     def findings(self) -> dict: ...
     def intercept_summary(self) -> dict: ...
+    def e2_service_ready(self) -> dict: ...
+    def e2_bind(self, reset_generation: str) -> None: ...
+    def e2_close(self) -> CloseResult: ...
+    def e2_collect(self, close: CloseResult, task_id: str, reset_generation: str) -> E2Collection: ...
     def verdict_export(self, task_id: str, context: RecordContext) -> CollectedExport: ...
     def local_serving(self, phase: str, keep_alive_seconds: int) -> dict: ...
     def local_unload(self) -> None: ...
@@ -232,6 +250,7 @@ class EventsHandle(Protocol):
 
 @dataclass
 class _State:
+    e2_service: dict = field(default_factory=dict)
     up_attempted: bool = False
     serving: dict = field(default_factory=dict)
     llm_load_attempted: bool = False
@@ -335,7 +354,7 @@ def _check_phase(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase:
     host = (check_other_publishes(spec.project, running) + check_namespace_sharing(containers, running)
             + check_host_listeners(listeners, spec.allowed_listens))
     snapshot = network_snapshot(facts.daemon, spec.project, networks, containers)
-    images = sorted(f"service.{service}: IMAGE_MISMATCH" for role, services in _IMAGE_SERVICES.items()
+    images = sorted(f"service.{service}: IMAGE_MISMATCH" for role, services in _image_services(spec.e2_mode).items()
                     for service in services if service in spec.expected.services
                     if snapshot["services"].get(service, {}).get("image") != spec.image_ids[role])
     _step(state, "evidence_write_failed", lambda: evidence.write_json(f"{phase}-checks.json", {
@@ -483,6 +502,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         # 유지 기간을 다시 주고 남은 시간을 확인한다. 그 사이 내려갔으면 여기서 적재되어 시간 예산에 섞이지 않는다.
         _check_serving(spec, ports, evidence, state, SERVING_TASK_START)
 
+    if spec.e2_mode == E2_PRODUCT:
+        # 대상 송신 권한이 아니라 서비스 상태와 회차 값 대조다. 어긋나면 POST 전에 시작을 거부한다.
+        state.e2_service = _e2_step(state, "e2_service_not_ready", ports.e2_service_ready)
+        _step(state, "evidence_write_failed", lambda: evidence.write_json("e2-service-ready.json", state.e2_service))
+        _e2_step(state, "e2_bind_failed", lambda: ports.e2_bind(pre["services"][TARGET_SERVICE]["id"]))
+
     # 예산 시계는 생성 요청 직전부터 잰다(엔진은 생성과 동시에 기동하므로 요청 지연도 예산에 넣는다).
     requested_at, started = _stamp(clock), clock.monotonic()
     task_id = _step(state, "task_start_failed", ports.start_task)
@@ -492,6 +517,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "requested_at": requested_at, "created_at": created_at}))
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started)
     stopped_at = _stamp(clock)
+    # E²가 허용한 진행 요청이 봉인된 계측기에서 끊기지 않도록 E²를 먼저 닫는다(연결 제안 §4.3). 시한이 있고 실패해도 넘어간다.
+    e2_close = None if spec.e2_mode != E2_PRODUCT else _step(state, "e2_close_failed", ports.e2_close)
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER_SERVICE]["id"]))
     engine_end_at = _stamp(clock)
     drained = _wait_drained(spec, meter, clock, state)
@@ -586,6 +613,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         reconciliation = _step(state, "e2_stub_log_invalid", lambda: reconcile(decisions, rows))
         _step(state, "evidence_write_failed",
               lambda: evidence.write_json("attempt-reconciliation.json", dict(reconciliation, fixture=True)))
+    e2_product = None
+    if spec.e2_mode == E2_PRODUCT:
+        e2_product, reconciliation = _collect_e2(ports, evidence, state, e2_close, task_id, pre["services"][TARGET_SERVICE]["id"], rows)
     verified = _wait_llm_verified(spec, gateway, clock, state)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
         verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling))
@@ -617,7 +647,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
-        reconciliation, records, verdict_row))
+        reconciliation, records, verdict_row, e2_product))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
@@ -627,6 +657,53 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                      "window": {"host_watch": window["host_watch"], "events": {
                          key: window["docker_events"][key] for key in ("event_count", "kinds", "complete")}},
                      "daemon": pre["daemon"], "scoreboards": {"pre": pre_board, "post": post_board}}
+
+
+def _e2_step(state: _State, code: str, action: Callable):
+    """제어 채널·수집의 고정 코드를 회차 사유로 그대로 올린다. 그 밖의 예외는 그 단계의 사유다."""
+    def run():
+        try:
+            return action()
+        except (E2ControlError, E2CollectionInvalid) as exc:
+            raise RunFailure("e2_" + exc.code) from None
+    return _step(state, code, run)
+
+
+def _collect_e2(ports: RunPorts, evidence, state: _State, close: CloseResult, task_id: str, target_id: str,
+                rows: list[dict]) -> tuple[dict, dict | None]:
+    """제품 E② 결과를 모은다(연결 제안 §4.3). (서명할 행, 시도별 대조). 제품 실패는 회차를 유효로 두고 대조 근거만 없다.
+
+    기술적 무효(회차 값·지문 불일치, 러너 쪽 수집 장애)는 RunFailure로 올린다. 없는 결과를 차단 0건으로 채우지 않는다.
+    """
+    collection = None
+    if close.state == CLOSE_NO_EXECUTION:
+        outcome, reason = E2_OUTCOME_NO_EXECUTION, None
+    elif close.state == CLOSE_UNAVAILABLE:
+        outcome, reason = OUTCOME_PRODUCT_FAILURE, close.reason
+    else:
+        collection = _e2_step(state, "e2_collect_failed", lambda: ports.e2_collect(close, task_id, target_id))
+        outcome, reason = collection.outcome, collection.reason or None
+    export = None if collection is None else collection.export
+    summary = None if export is None else export.summary()
+    decided = None
+    if summary is not None:
+        decided = {name: summary["decisions"].get(name, 0) for name in E2_DECISION_NAMES}
+    row = {"close_state": close.state, "close_reason": close.reason, "collection_outcome": outcome, "collection_reason": reason,
+           "rows": None if summary is None else summary["rows"], "attempts": None if summary is None else summary["attempts"], "decisions": decided,
+           "attempts_without_result": None if summary is None else summary["attempts_without_result"],
+           "allowed_not_sent": None if summary is None else summary["allowed_not_sent"],
+           "checkpoint_sequence": None if collection is None or collection.checkpoint is None else collection.checkpoint["sequence"],
+           "config_sha256": state.e2_service["config_sha256"], "policy_fingerprint_sha256": state.e2_service["policy_fingerprint_sha256"],
+           "manifest_sha256": close.manifest_sha256}
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("e2-collection.json", {
+        "close": {"state": close.state, "reason": close.reason, "admission_closed": close.admission_closed, "execution_ref": close.execution_ref},
+        "collection": None if collection is None else collection.evidence(), "outcome": outcome, "reason": reason}))
+    reconciliation = None
+    if outcome in (OUTCOME_COMPLETE, E2_OUTCOME_NO_EXECUTION):
+        decisions = [] if export is None else list(export.decisions)
+        reconciliation = _step(state, "e2_reconcile_failed", lambda: reconcile(decisions, rows))
+        _step(state, "evidence_write_failed", lambda: evidence.write_json("attempt-reconciliation.json", reconciliation))
+    return row, reconciliation
 
 
 def _record_context(spec: RunSpec, pre: dict) -> RecordContext:
@@ -682,7 +759,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
                   pre_solved: dict, post_solved: dict, steps: dict, window: dict, observer: list, ready_calls: int,
                   meter_summary: dict, drained: dict, engine_rows: int, pre_checked_at: str,
                   post_check_at: str, conditions: dict, e2: dict, reconciliation: dict | None, records: dict | None,
-                  verdict_row: dict | None) -> dict:
+                  verdict_row: dict | None, e2_product: dict | None) -> dict:
     """v1.1 러너 기록(서명 전)과 그 근거 파일 둘(격리 근거·해결 이벤트)을 만든다. 서명은 down 뒤."""
     context = _record_context(spec, pre)
     boundary_ref, host_ref = "compose:" + spec.project, "host-condition:" + spec.run_id
@@ -696,7 +773,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
         boundary_ref=boundary_ref, policy=policy, steps=steps, observer_rows=observer, ready_calls=ready_calls,
         observer_path_ref=get_ref, readonly_ref=spec.observer_readonly_ref, meter=meter_summary,
         drained=drained, engine_rows=engine_rows, conditions=conditions, e2=e2, reconciliation=reconciliation,
-        verdict_collection=verdict_row)
+        verdict_collection=verdict_row, e2_product=e2_product)
     evidence.write_json("isolation-evidence.json", isolation_evidence(context, rows))
     evidence_sha, evidence_size = evidence.describe("isolation-evidence.json")
     in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
@@ -854,10 +931,10 @@ class DockerPorts:
                  findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict],
                  rules: Callable[[], dict] | None = None, intercepted: Callable[[], dict] | None = None,
                  apply_settings: Callable[[], None] | None = None,
-                 verdicts: Callable[[str, RecordContext], CollectedExport] | None = None):
+                 verdicts: Callable[[str, RecordContext], CollectedExport] | None = None, e2_link: E2Link | None = None):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
         self._findings, self._start, self._settings, self._rules = findings, start, settings, rules
-        self._intercepted, self._apply_settings, self._verdicts = intercepted, apply_settings, verdicts
+        self._intercepted, self._apply_settings, self._verdicts, self._e2 = intercepted, apply_settings, verdicts, e2_link
         self.base_args = compose_base_args(plan)
         self.obs_origin = f"http://127.0.0.1:{config.ports['obs_host']}"
 
@@ -988,6 +1065,18 @@ class DockerPorts:
     def verdict_export(self, task_id: str, context: RecordContext) -> CollectedExport:
         return self._verdicts(task_id, context)
 
+    def e2_service_ready(self) -> dict:
+        return self._e2.service_ready()
+
+    def e2_bind(self, reset_generation: str) -> None:
+        self._e2.bind(reset_generation)
+
+    def e2_close(self) -> CloseResult:
+        return self._e2.close()
+
+    def e2_collect(self, close: CloseResult, task_id: str, reset_generation: str) -> E2Collection:
+        return self._e2.collect(close, task_id, reset_generation)
+
     def intercept_summary(self) -> dict:
         return self._intercepted()
 
@@ -1015,7 +1104,9 @@ def _llm_keep_alive_seconds(config: RunnerConfig, time_budget_seconds: int) -> i
     run = config.run
     return math.ceil(run["compose_wait_seconds"] + run["ready_timeout_seconds"] + run["task_create_timeout_seconds"]
                      + time_budget_seconds + config.health_timeout_seconds + run["drain_timeout_seconds"]
-                     + run["post_settle_seconds"] + run["snapshot_timeout_seconds"] + run["llm_verify_timeout_seconds"])
+                     + run["post_settle_seconds"] + run["snapshot_timeout_seconds"] + run["llm_verify_timeout_seconds"]
+                     # 제품 E² 종료 대기도 회차 안이다. 양쪽 회차에 같은 값을 쓰려고 설정 기준으로 더한다.
+                     + (0 if config.e2_product is None else config.e2_product["close_ack_timeout_seconds"] + config.e2_product["close_timeout_seconds"]))
 
 
 def verdict_limits(block: dict) -> CollectLimits:
@@ -1088,11 +1179,15 @@ def main(argv: list[str] | None = None) -> int:
         rules = None if config.engine_rules is None else load_engine_rules(config.engine_rules)
         # 설정이 통과한 뒤에만 묻는다. 비밀번호는 이 프로세스 메모리에만 있고 어디에도 쓰지 않는다.
         secret = AdminSecret(getpass.getpass("엔진 관리자 비밀번호(화면에 표시되지 않음): "))
-        directory = create_run_directory(config.runs_root, plan.run_id)
+        directory = create_run_directory(config.runs_root, plan.run_id, plan.e2_mode)
+        e2_link = None
+        if plan.e2_mode == E2_PRODUCT:
+            e2_link = E2Link(config.e2_product, E2LinkPaths(directory.e2_config, directory.e2, directory.e2_control, directory.e2_copy),
+                             plan.run_id, plan.llm["model"], plan.llm["backend"], plan.meter_port)
     except (RunnerConfigError, PreflightError) as exc:
         print("\n".join(getattr(exc, "errors", ["config: INVALID"])), file=sys.stderr)
         return 2
-    except EngineAPIError as exc:
+    except (EngineAPIError, E2PrepareError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     docker = Docker(run_docker, client_environment(os.environ, compose_environment(plan, directory)),
@@ -1128,7 +1223,7 @@ def main(argv: list[str] | None = None) -> int:
                                       limits=verdict_limits(config.verdict_export))
 
     ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules, intercepted,
-                        apply_settings, verdicts)
+                        apply_settings, verdicts, e2_link)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
                                     None if rules is None else rules.sha256), ports, MeterFiles(directory.meter, directory.e2),
