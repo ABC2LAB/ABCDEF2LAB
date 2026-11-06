@@ -17,7 +17,7 @@ from run_record import RunRecordError, load_run_inputs
 from runner_checks import policy_sha256
 from runner_record import _network_snapshot
 from score import ComparabilityError, build_report, score_run
-from run_fixture_v11 import make_v11, snapshot
+from run_fixture_v11 import E2_STUB_PLACEMENT, STUB_RECONCILIATION, make_v11, snapshot
 from test_score import _RunDir, _record
 
 KEY = "basketAccessChallenge"
@@ -174,6 +174,72 @@ class TestRejectedV11(_V11):
             forced_cancelled=1, settle_applied_seconds=2)))
         self.assertEqual((cut.version, cut.drain_policy), ("1.1", (30, 2)))
 
+    def test_e2_placement_row_is_required_and_typed(self):
+        self.assertEqual(self.inputs(self.v11("en")).e2_mode, "none")
+        self.assertEqual(self.inputs(self.v11("es", e2=E2_STUB_PLACEMENT)).e2_mode, "stub")
+        self.reject("e2_placement", "e0", tamper_rows=lambda rows: drop(rows, row_of(rows, "e2_placement")))
+        bad = [{"mode": "product"}, {"decision_rows": 0}, {"mode": "stub"},
+               {"mode": "stub", "decision_rows": 1, "allowed": 1, "unsupported": 0, "unavailable": 1},
+               {"mode": "stub", "decision_rows": 0, "allowed": 0, "unsupported": 0, "unavailable": -1},
+               {"mode": "stub", "decision_rows": True, "allowed": 1, "unsupported": 0, "unavailable": 0}]
+        for index, change in enumerate(bad):
+            self.reject("e2_placement", f"e{index + 1}",
+                        tamper_rows=lambda rows, c=change: row_of(rows, "e2_placement").update(c))
+
+    def test_attempt_reconciliation_row_follows_the_e2_placement(self):
+        self.assertIsNone(self.inputs(self.v11("rn")).attempt_reconciliation)
+        self.assertEqual(self.inputs(self.v11("rs", e2=E2_STUB_PLACEMENT)).attempt_reconciliation, STUB_RECONCILIATION)
+        self.reject("E② 없는 회차에는 없어야", "r0", reconciliation=STUB_RECONCILIATION)
+        self.reject("attempt_reconciliation: 정확히 한 행", "r1", e2=E2_STUB_PLACEMENT,
+                    tamper_rows=lambda rows: drop(rows, row_of(rows, "attempt_reconciliation")))
+
+    def test_attempt_reconciliation_counts_are_typed(self):
+        cells = STUB_RECONCILIATION["cells"]
+        bad = [{"cells": {k: v for k, v in cells.items() if k != "denied_observed"}},
+               {"cells": dict(cells, extra=0)},
+               {"cells": dict(cells, denied_observed=-1)},
+               {"cells": dict(cells, allowed_observed=True, allowed_unobserved=3)},
+               {"cells": list(cells.values())},
+               {"meter_attempt_reused": -1}, {"blocked_reached": "0"}, {"unrecorded_reached": None},
+               {"positive_evidence": 1}, {"control_claim_withheld": 0}]
+        for index, change in enumerate(bad):
+            with self.subTest(change=change):
+                self.reject("attempt_reconciliation: 건수 형식 오류", f"t{index}", e2=E2_STUB_PLACEMENT,
+                            reconciliation=dict(STUB_RECONCILIATION, **change))
+
+    def test_attempt_reconciliation_derived_counts_follow_the_cells(self):
+        cells = STUB_RECONCILIATION["cells"]
+        # 바꾼 칸마다 다른 파생 값은 맞춰 두고 한 값만 틀리게 해서, 파생 규칙 항 하나씩만 걸리게 한다.
+        bad = [{"blocked_reached": 1}, {"unrecorded_reached": 1}, {"positive_evidence": False},
+               {"control_claim_withheld": True},
+               {"meter_attempt_reused": 1},
+               {"cells": dict(cells, allowed_observed=0, allowed_unobserved=4), "positive_evidence": False},
+               {"cells": dict(cells, denied_observed=1, denied_unobserved=0), "blocked_reached": 1},
+               {"cells": dict(cells, unrecorded_observed=1), "unrecorded_reached": 1}]
+        for index, change in enumerate(bad):
+            with self.subTest(change=change):
+                self.reject("파생 건수·보류 판정이 칸과 다름", f"d{index}", e2=E2_STUB_PLACEMENT,
+                            reconciliation=dict(STUB_RECONCILIATION, **change))
+
+    def test_attempt_reconciliation_cells_add_up_to_the_e2_decisions(self):
+        cells = STUB_RECONCILIATION["cells"]
+        for index, change in enumerate(({"allowed_unobserved": 1}, {"denied_unobserved": 2},
+                                        {"allowed_observed": 3, "allowed_unobserved": 0})):
+            with self.subTest(change=change):
+                self.reject("칸 합이 E② 결정 건수와 다름", f"s{index}", e2=E2_STUB_PLACEMENT,
+                            reconciliation=dict(STUB_RECONCILIATION, cells=dict(cells, **change)))
+        # 차단 쪽 합에는 미지원·사용 불가가 둘 다 들어간다.
+        unavailable = dict(E2_STUB_PLACEMENT, unsupported=0, unavailable=1)
+        self.assertEqual(self.inputs(self.v11("su", e2=unavailable)).attempt_reconciliation, STUB_RECONCILIATION)
+
+    def test_bad_cells_are_recorded_not_rejected(self):
+        # 차단 후 도달·기록 없이 도달은 회차 오류가 아니다. 성능표에서 빼지 않고 통제 주장만 보류한다(§8.3).
+        reached = dict(STUB_RECONCILIATION, blocked_reached=1, unrecorded_reached=2, control_claim_withheld=True,
+                       cells=dict(STUB_RECONCILIATION["cells"], denied_observed=1, denied_unobserved=0,
+                                  unrecorded_observed=2))
+        got = self.inputs(self.v11("bc", e2=E2_STUB_PLACEMENT, reconciliation=reached)).attempt_reconciliation
+        self.assertEqual(got, reached)
+
     def test_run_conditions_row_is_required_and_typed(self):
         self.reject("run_conditions", "r0", tamper_rows=lambda rows: drop(rows, row_of(rows, "run_conditions")))
         cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "workers": 0,
@@ -193,6 +259,14 @@ class TestRejectedV11(_V11):
         # 스트리밍은 bool만 받는다(1·"true"를 true로 읽지 않음). 행에서 빠져도 거부.
         self.reject("run_conditions", "r11", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(llm_stream=1))
         self.reject("run_conditions", "r12", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("llm_stream"))
+        # 규칙 파일 해시는 없으면 null, 있으면 64자 hex다. 행에서 빠져도 거부.
+        self.reject("run_conditions", "r13", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            engine_rules_sha256="x"))
+        self.reject("run_conditions", "r14", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop(
+            "engine_rules_sha256"))
+        ruled = self.inputs(self.v11("rul", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            engine_rules_sha256="a" * 64)))
+        self.assertIn("a" * 64, ruled.run_conditions)
 
     def test_iw12_drain_times_are_checked_against_the_window(self):
         # fixture: 봉인 00:08, drain 완료 00:09, timeline drained 00:09, post 00:10 — 경계값(같은 시각)은 통과
@@ -332,6 +406,72 @@ class TestComparison(_V11):
             forced_cancelled=1, settle_applied_seconds=2))
         build_report(self.load([self.v11("c0"), cut]), self.correlate, self.correlatable, runner_key=self.runner_key)
 
+    def test_e2_mode_mixed_within_a_condition_is_not_compared(self):
+        none, stub = self.v11("e1"), self.v11("e2", repeat_index=1, e2=E2_STUB_PLACEMENT)
+        with self.assertRaisesRegex(ComparabilityError, "E② 자리 혼합"):
+            build_report(self.load([none, stub]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_stub_runs_are_refused_unless_allowed_then_flagged(self):
+        with self.assertRaisesRegex(ComparabilityError, "가짜 E② 회차"):
+            build_report(self.load([self.v11("s1", e2=E2_STUB_PLACEMENT),
+                                    self.v11("s2", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
+                         self.correlate, self.correlatable, runner_key=self.runner_key)
+        report = build_report(self.load([self.v11("s3", e2=E2_STUB_PLACEMENT),
+                                         self.v11("s4", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
+        self.assertTrue(any("가짜 E②" in w for w in report.warnings), report.warnings)
+        plain = build_report(self.load([self.v11("p1"), self.v11("p2", repeat_index=1)]), self.correlate,
+                             self.correlatable, runner_key=self.runner_key)
+        self.assertFalse(any("가짜 E②" in w for w in plain.warnings))
+
+    def test_control_table_sums_each_row_per_condition(self):
+        # 행마다 합계가 서로 다르고(행이 뒤바뀌면 드러남) 두 회차 값이 둘 다 0이 아닌 행이 있다(합 대신 최댓값이면 드러남).
+        clean = dict(STUB_RECONCILIATION, cells=dict(STUB_RECONCILIATION["cells"], allowed_observed=3,
+                                                     allowed_unobserved=1))
+        bad = {"cells": {"allowed_observed": 0, "allowed_unobserved": 4, "denied_unobserved": 0, "denied_observed": 1,
+                         "unrecorded_observed": 2},
+               "meter_attempt_reused": 3, "blocked_reached": 1, "unrecorded_reached": 2, "positive_evidence": False,
+               "control_claim_withheld": True}
+        report = build_report(self.load([self.v11("c1", e2=E2_STUB_PLACEMENT, reconciliation=clean),
+                                         self.v11("c2", repeat_index=1, e2=E2_STUB_PLACEMENT, reconciliation=bad)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
+        table = report.text.split("### 개선 후 통제 검증 — 시도별 대조(프로토콜 §8.3)\n", 1)[1]
+        for line in ("| 항목 | 우리@test |", "| 회차 수 | 2 |", "| E② 자리 | stub |",
+                     "| 허용·관측됨 | 3 (3, 0) |", "| 허용·관측되지 않음 | 5 (1, 4) |", "| 차단·관측되지 않음 | 1 (1, 0) |",
+                     "| 차단 후 대상 도달(기대 0) | 1 (0, 1) |", "| E② 기록 없이 대상 도달(기대 0) | 2 (0, 2) |",
+                     "| 같은 시도 ID 재사용(기대 0) | 3 (0, 3) |", "| 허용 양성 근거 있는 회차 | 1/2 |",
+                     "| 통제 주장 | 보류(회차 1/2) — 가짜 E², 통제 증명 아님 |"):
+            self.assertIn(line + "\n", table)
+        self.assertIn("| 대조 근거 없는 회차(증명 없음, 기대 0) | 0 |\n", table)
+        self.assertIn("경고[통제 주장 보류] 우리@test: 회차 1/2 — 대조 근거 없는 회차 0, 차단 후 도달 1, "
+                      "기록 없이 도달 2, 재사용 3, 허용 양성 근거 없는 회차 1", "\n".join(report.warnings))
+
+    def test_run_without_reconciliation_evidence_holds_the_claim(self):
+        # 증명 없는 회차는 대조 근거가 없다. 표에서 빠지면 나머지 회차만으로 '조건 충족'이 되므로 분모에 남기고 보류로
+        # 센다(§8.3 미완 기록·미결속은 수용 보류, #225 리뷰). 성능표는 두 회차를 그대로 쓴다.
+        report = build_report(self.load([self.v11("u1", e2=E2_STUB_PLACEMENT, total_requests=5),
+                                         self.v11("u2", repeat_index=1, proof=False, e2=E2_STUB_PLACEMENT,
+                                                  total_requests=9)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
+        table = report.text.split("### 개선 후 통제 검증 — 시도별 대조(프로토콜 §8.3)\n", 1)[1]
+        for line in ("| 회차 수 | 2 |", "| 대조 근거 없는 회차(증명 없음, 기대 0) | 1 |", "| 허용·관측됨 | 4 (4, —) |",
+                     "| 허용 양성 근거 있는 회차 | 1/2 |", "| 통제 주장 | 보류(회차 1/2) — 가짜 E², 통제 증명 아님 |"):
+            self.assertIn(line + "\n", table)
+        self.assertIn("경고[통제 주장 보류] 우리@test: 회차 1/2 — 대조 근거 없는 회차 1,", "\n".join(report.warnings))
+        matrix = report.text.split("### 개선 후 통제 검증", 1)[0]
+        self.assertIn("| 7 ± 2.82843 |", matrix)  # 총 요청 수 5·9 두 회차 평균 ± SD
+
+    def test_control_table_only_for_conditions_with_e2(self):
+        clean = build_report(self.load([self.v11("k1", e2=E2_STUB_PLACEMENT),
+                                        self.v11("k2", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
+                             self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
+        self.assertIn("| 통제 주장 | 조건 충족 — 가짜 E², 통제 증명 아님 |\n", clean.text)
+        self.assertFalse(any("통제 주장 보류" in w for w in clean.warnings))
+        # E² 자리가 없는 조건(baseline·E² 없음)에는 대조를 적용하지 않는다(§8.3 첫 문장). 표도 내지 않는다.
+        plain = build_report(self.load([self.v11("k3"), self.v11("k4", repeat_index=1)]), self.correlate,
+                             self.correlatable, runner_key=self.runner_key)
+        self.assertNotIn("통제 검증", plain.text)
+
     def test_runs_with_different_run_conditions_are_not_compared(self):
         # 엔진 실행 설정·게이트웨이가 넣은 샘플링·머신 사양·머신이 하나라도 다르면 같은 조건이 아니다(§5.1·§6).
         build_report(self.load([self.v11("k1"), self.v11("k2", repeat_index=1)]), self.correlate, self.correlatable,
@@ -340,7 +480,8 @@ class TestComparison(_V11):
                    "적용 샘플링": lambda row: row["sampling"].update(temperature=0.7),
                    "머신 사양": lambda row: row["host"].update(memory_kib=1),
                    "머신": lambda row: row.update(machine_id_sha256="0" * 64),
-                   "LLM 스트리밍": lambda row: row.update(llm_stream=False)}
+                   "LLM 스트리밍": lambda row: row.update(llm_stream=False),
+                   "엔진 규칙 파일": lambda row: row.update(engine_rules_sha256="a" * 64)}
         for index, (label, change) in enumerate(changes.items()):
             with self.subTest(label=label):
                 other = self.v11(f"m{index}", repeat_index=1,

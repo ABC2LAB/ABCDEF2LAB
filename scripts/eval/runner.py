@@ -43,17 +43,23 @@ from runner_checks import (  # noqa: E402
     network_snapshot, parse_container, parse_network, policy_sha256, read_host_listeners,
 )
 from runner_config import (  # noqa: E402
-    API_FRONT_SERVICE, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
+    API_FRONT_SERVICE, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
     METER_SERVICE, OBS_SERVICE, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from runner_engine import (  # noqa: E402
-    AdminSecret, EngineAPIError, collect_findings, engine_settings, load_vocabulary, start_task, task_request,
+    AdminSecret, EngineAPIError, apply_engine_rules, collect_findings, engine_settings, intercept_summary, load_engine_rules,
+    load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, FORCED_CANCELLED_OUTCOME, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
-    forwarded_count, read_private_json, sequence_complete,
+    e2_stub_counts, forwarded_by_method, forwarded_count, read_private_json, sequence_complete,
+)
+from attempt_reconcile import reconcile  # noqa: E402
+from runner_state import copy_sqlite, discard_copy, memory_fingerprints, runtime_fingerprints  # noqa: E402
+from state_diff import (  # noqa: E402
+    RUN_KEY_BYTES, diff as state_difference, memory_diff, runtime_diff, snapshot as state_snapshot,
 )
 from runner_llm import judge_llm  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
@@ -75,11 +81,15 @@ TMPFS_NOT_MEASURED = "not_measured"
 TMPFS_VOLUMES = ("engine_db", "engine_data")
 RESULT_NAME = "runner-result.json"
 RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
+# 상태 차이 근거(프로토콜 §8.2, 러너 설정 state가 있을 때만). 건수·정수 id·테이블·열 이름·seq 값만 담는다.
+STATE_DIFF_NAME = "state-diff.json"
+STATE_DIFF_FORMAT = "abc2lab-state-diff-v1"
 MAX_CONDITION_LENGTH = 100
 COMPLETE, INVALID = "complete", "invalid"
 # 이미지 역할 → 그 이미지를 쓰는 compose 서비스. 기동 후 컨테이너 이미지가 설정의 내용 ID와 같아야 한다.
+# 회차에 없는 서비스(baseline의 E²)는 대조하지 않는다. 있어야 하는지는 망 구성 점검이 따로 본다.
 _IMAGE_SERVICES = {"engine": (ENGINE_SERVICE,), "engine_db": (ENGINE_DB_SERVICE,), "target": (TARGET_SERVICE,),
-                   "meter": (METER_SERVICE, OBS_SERVICE, LLM_GW_SERVICE, API_FRONT_SERVICE)}
+                   "meter": (METER_SERVICE, OBS_SERVICE, LLM_GW_SERVICE, API_FRONT_SERVICE, E2_SERVICE)}
 
 
 class RunFailure(Exception):
@@ -109,6 +119,7 @@ class RunPorts(Protocol):
     def wait_ready(self) -> int: ...
     def scoreboard(self, phase: str, snapshot: dict) -> dict: ...
     def engine_settings(self) -> dict: ...
+    def apply_engine_rules(self) -> dict: ...
     def host_spec(self) -> dict: ...
     def start_task(self) -> str: ...
     def start_host_watch(self) -> "WatchHandle": ...
@@ -116,7 +127,11 @@ class RunPorts(Protocol):
     def seal(self, meter_container_id: str) -> None: ...
     def seal_gateway(self, gateway_container_id: str) -> None: ...
     def tmpfs_usage(self, phase: str, snapshot: dict) -> dict: ...
+    def state_copy(self, phase: str, snapshot: dict) -> Path: ...
+    def state_trees(self, phase: str, snapshot: dict, key: bytes) -> dict: ...
+    def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list: ...
     def findings(self) -> dict: ...
+    def intercept_summary(self) -> dict: ...
     def sign(self, payload: dict) -> dict: ...
 
 
@@ -158,12 +173,21 @@ class RunSpec:
     worker_count: int
     condition: str
     repeat_index: int
+    # 개선 후 회차의 E② 자리(runner_config E2_MODES). baseline은 항상 none이다.
+    e2_mode: str
     model_tag: str
     fixture_fingerprint: str
     environment_fingerprint: str
     target_origin: str
     observer_path: str
     observer_readonly_ref: str
+    # 상태 차이(프로토콜 §8.2)의 해결 신호 테이블. None이면 상태 사본을 뜨지 않는다(러너 설정 state=null).
+    state_signal_tables: frozenset[str] | None = None
+    # 상태 차이로 비교할 런타임 디렉터리. 비어 있으면 파일 사본을 뜨지 않는다.
+    state_runtime_roots: tuple[str, ...] = ()
+    # 메모리 저장 읽기를 할지(러너 설정 state.memory). 양쪽 회차에 같게 적용한다.
+    state_memory_enabled: bool = False
+    engine_rules_sha256: str | None = None  # 원본 ② 규칙 파일 해시. None이면 규칙을 넣지 않는다
 
 
 class WatchHandle(Protocol):
@@ -191,6 +215,13 @@ class _State:
     tmpfs_pre: dict | None = None
     host: dict | None = None
     engine_settings_sha256: str | None = None
+    # 상태 차이: 회차 키(메모리에만)와 pre 사본 지문. 사본 파일은 지문을 뜬 즉시 지운다.
+    state_key: bytes | None = None
+    state_pre: dict | None = None
+    state_trees_pre: dict = field(default_factory=dict)
+    engine_rules: dict | None = None
+    intercept: dict | None = None
+    state_memory_pre: list = field(default_factory=list)
 
 
 def _stamp(clock: Clock) -> str:
@@ -239,6 +270,14 @@ def _window(spec: RunSpec, evidence, state: _State, pre: dict, start: datetime, 
     return record
 
 
+def _state_fingerprint(ports: RunPorts, key: bytes, phase: str, snapshot: dict) -> dict:
+    copy = ports.state_copy(phase, snapshot)
+    try:
+        return state_snapshot(copy, key)
+    finally:
+        discard_copy(copy)
+
+
 def _step(state: _State, code: str, action: Callable):
     """port 호출의 예외를 그 단계의 고정 사유로 바꾼다. 원래 메시지(경로·값 가능)는 버린다."""
     state.step = code
@@ -262,7 +301,7 @@ def _check_phase(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase:
             + check_host_listeners(listeners, spec.allowed_listens))
     snapshot = network_snapshot(facts.daemon, spec.project, networks, containers)
     images = sorted(f"service.{service}: IMAGE_MISMATCH" for role, services in _IMAGE_SERVICES.items()
-                    for service in services
+                    for service in services if service in spec.expected.services
                     if snapshot["services"].get(service, {}).get("image") != spec.image_ids[role])
     _step(state, "evidence_write_failed", lambda: evidence.write_json(f"{phase}-checks.json", {
         "phase": phase, "snapshot": snapshot, "policy_sha256": policy_sha256(snapshot),
@@ -350,6 +389,18 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     ready_calls = _step(state, "target_not_ready", ports.wait_ready)
     state.observer_calls += ready_calls
     fixture_ready_at = _stamp(clock)  # 러너에는 준비 채널이 없다: 대상 준비 확인이 준비 봉인 시점
+    if spec.state_signal_tables is not None:
+        # 상태 차이 pre 사본(§8.2). 대상 pause가 Docker 이벤트를 만드므로 구간 시작 전에 뜬다(구간 시작 전 lookback
+        # 이벤트는 판정하지 않는다). 기동 쓰기는 대상 준비 확인 뒤라 끝났다고 본다.
+        state.state_key = os.urandom(RUN_KEY_BYTES)
+        state.state_pre = _step(state, "state_copy_failed",
+                                lambda: _state_fingerprint(ports, state.state_key, "pre", pre))
+        if spec.state_runtime_roots:
+            state.state_trees_pre = _step(state, "state_copy_failed",
+                                          lambda: ports.state_trees("pre", pre, state.state_key))
+        if spec.state_memory_enabled:
+            state.state_memory_pre = _step(state, "state_copy_failed",
+                                           lambda: ports.state_memory("pre", pre, state.state_key))
     # 격리 구간은 pre 관측 직전부터 post 관측 완료까지다. 그 동안 호스트 리슨을 주기적으로 보고, 끝나면 데몬 이벤트를 받는다.
     window_start = clock.now()
     state.events = _step(state, "window_events_failed", lambda: ports.start_events(
@@ -362,6 +413,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if pre_forwarded != 0:
         raise RunFailure("pre_requests_nonzero")  # 작업 시작 전에 엔진이 대상으로 보냈다
     # 작업 생성 전 실행 설정 전체. 선언과 다르거나 송신 경로를 바꾸는 값이 있으면 그 회차는 같은 조건이 아니다.
+    if spec.engine_rules_sha256 is not None:
+        # 원본 ② 규칙(프로토콜 §8.1). 실행 설정 스냅샷보다 먼저 넣어 스냅샷이 작업 직전 상태가 되게 한다.
+        state.engine_rules = _step(state, "engine_rules_failed", ports.apply_engine_rules)
+        if state.engine_rules.get("file_sha256") != spec.engine_rules_sha256:
+            raise RunFailure("engine_rules_failed")
+        _step(state, "evidence_write_failed", lambda: evidence.write_json("engine-rules.json", state.engine_rules))
     settings = _step(state, "engine_settings_failed", ports.engine_settings)
     if not _settings_match(settings, spec):
         raise RunFailure("engine_settings_mismatch")
@@ -413,6 +470,25 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure("tmpfs_mount_changed")
     if any(measured[name]["available_bytes"] < spec.tmpfs_min_free_bytes for name in TMPFS_VOLUMES):
         raise RunFailure("tmpfs_full")
+    if spec.state_signal_tables is not None:
+        # post 사본도 구간이 닫힌 뒤에 뜬다. 값 없이 건수·정수 id·이름만 근거로 남긴다(§8.2).
+        post_state = _step(state, "state_copy_failed",
+                           lambda: _state_fingerprint(ports, state.state_key, "post", post))
+        post_trees = {}
+        if spec.state_runtime_roots:
+            post_trees = _step(state, "state_copy_failed", lambda: ports.state_trees("post", post, state.state_key))
+        post_memory = []
+        if spec.state_memory_enabled:
+            post_memory = _step(state, "state_copy_failed", lambda: ports.state_memory("post", post, state.state_key))
+        difference = _step(state, "state_diff_failed",
+                           lambda: state_difference(state.state_pre, post_state, spec.state_signal_tables))
+        runtime = _step(state, "state_diff_failed", lambda: runtime_diff(state.state_trees_pre, post_trees))
+        memory = _step(state, "state_diff_failed", lambda: memory_diff(state.state_memory_pre, post_memory))
+        # content_changed는 SQLite 쪽만이다. 전체 변화 여부는 state_changed로 본다.
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(STATE_DIFF_NAME, dict(
+            difference, **runtime, **memory, format=STATE_DIFF_FORMAT,
+            state_changed=(difference["content_changed"] or runtime["runtime_changed"]
+                           or memory["memory_changed"]))))
 
     observer = _step(state, "meter_read_failed", meter.observer_rows)
     if len(observer) != state.observer_calls or any(row["decision"] != "registered" for row in observer):
@@ -428,7 +504,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
         "stop_reason": stop_reason, "forwarded_at_stop": forwarded_at_stop,
         "sealed_at": sealed.get("sealed_at"), "drained_at": drained.get("drained_at"),
-        "forwarded_requests": forwarded, "request_budget": spec.request_budget,
+        "forwarded_requests": forwarded, "forwarded_by_method": forwarded_by_method(rows),
+        "request_budget": spec.request_budget,
         # 폴링 뒤 seal이라 넘칠 수 있다. 정확 준수를 주장하지 않고 초과분을 그대로 남긴다.
         "over_budget": max(0, forwarded - spec.request_budget),
         "rejected_after_seal": drained.get("rejected_after_seal"),
@@ -441,6 +518,16 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "time_budget_seconds": spec.time_budget_seconds, "observer_requests": len(observer),
     }
     _step(state, "evidence_write_failed", lambda: evidence.write_json("meter-summary.json", meter_summary))
+    # E② 자리 기록. 가짜 E²면 결정 행 형식을 검사하고 결정별 건수를 남긴다(통제 증명이 아니라 배치 확인).
+    e2 = {"mode": spec.e2_mode, "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None}
+    reconciliation = None
+    if spec.e2_mode == E2_STUB:
+        decisions = _step(state, "e2_stub_log_invalid", meter.e2_stub_rows)
+        e2.update(e2_stub_counts(decisions))
+        # 시도별 대조(프로토콜 §8.3). 나쁜 칸이 나와도 회차를 무효로 하지 않는다(성능표에 포함, 통제 주장만 보류).
+        reconciliation = _step(state, "e2_stub_log_invalid", lambda: reconcile(decisions, rows))
+        _step(state, "evidence_write_failed",
+              lambda: evidence.write_json("attempt-reconciliation.json", dict(reconciliation, fixture=True)))
     verified = _wait_llm_verified(spec, gateway, clock, state)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
         verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling))
@@ -451,20 +538,25 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure(llm_reasons[0])
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
+    intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
+    state.intercept = intercepted
     steps = timeline({"fixture_ready": fixture_ready_at, "pre": pre_board["received_at"], "engine_start": requested_at,
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
     # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
     # 스트리밍은 엔진이 SSE와 비스트리밍 경로를 고르는 값이라 시간·응답 처리 조건이 달라진다(#174 리뷰). 선언값이다.
-    conditions = {"engine_settings_sha256": state.engine_settings_sha256, "workers": spec.worker_count,
+    conditions = {"engine_settings_sha256": state.engine_settings_sha256, "engine_rules_sha256": spec.engine_rules_sha256,
+                  "workers": spec.worker_count,
                   "llm_stream": spec.llm_stream,
                   "sampling": llm_summary["sampling_applied"],
                   "host": {key: value for key, value in state.host.items() if key != "machine_id_sha256"},
                   "machine_id_sha256": state.host["machine_id_sha256"]}
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
-        observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions))
+        observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
+        reconciliation))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
-                     "run_conditions": conditions,
+                     "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256,
                      # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline은 스위치가 없어 선언도 null.
                      "engine_llm_policy": {"declared": spec.llm_policy_mode, "observed": None},
@@ -476,7 +568,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
 def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict, pre_board: dict, post_board: dict,
                   pre_solved: dict, post_solved: dict, steps: dict, window: dict, observer: list, ready_calls: int,
                   meter_summary: dict, drained: dict, engine_rows: int, pre_checked_at: str,
-                  post_check_at: str, conditions: dict) -> dict:
+                  post_check_at: str, conditions: dict, e2: dict, reconciliation: dict | None) -> dict:
     """v1.1 러너 기록(서명 전)과 그 근거 파일 둘(격리 근거·해결 이벤트)을 만든다. 서명은 down 뒤."""
     context = RecordContext(run_id=spec.run_id, model_tag=spec.model_tag,
                             reset_generation=pre["services"][TARGET_SERVICE]["id"],
@@ -492,7 +584,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
         pre_listeners=state.listeners["pre"], post_listeners=state.listeners["post"], allowed=allowed,
         boundary_ref=boundary_ref, policy=policy, steps=steps, observer_rows=observer, ready_calls=ready_calls,
         observer_path_ref=get_ref, readonly_ref=spec.observer_readonly_ref, meter=meter_summary,
-        drained=drained, engine_rows=engine_rows, conditions=conditions)
+        drained=drained, engine_rows=engine_rows, conditions=conditions, e2=e2, reconciliation=reconciliation)
     evidence.write_json("isolation-evidence.json", isolation_evidence(context, rows))
     evidence_sha, evidence_size = evidence.describe("isolation-evidence.json")
     in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
@@ -553,6 +645,8 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
                 reasons.append("down_failed")
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
             "llm_backend": spec.llm_backend, "tmpfs_usage": state.tmpfs_usage,
+            # E② 자리. 완료 결과에서는 서명된다. 세션 집계·채점이 가짜 E² 회차를 공식 결과에서 뺄 근거다.
+            "e2_mode": spec.e2_mode,
             "started_at": started_at, "finished_at": _stamp(clock)}
     if not reasons and state.record is not None:
         # v1.1 러너 기록도 down까지 통과한 뒤에만 서명한다(엔진 감사 키와 별도인 러너 키).
@@ -634,9 +728,11 @@ def _read_text(path: str) -> str | None:
 
 class DockerPorts:
     def __init__(self, config: RunnerConfig, plan: RunPlan, directory: RunDirectory, docker: Docker,
-                 findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict]):
+                 findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict],
+                 rules: Callable[[], dict] | None = None, intercepted: Callable[[], dict] | None = None):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
-        self._findings, self._start, self._settings = findings, start, settings
+        self._findings, self._start, self._settings, self._rules = findings, start, settings, rules
+        self._intercepted = intercepted
         self.base_args = compose_base_args(plan)
         self.obs_origin = f"http://127.0.0.1:{config.ports['obs_host']}"
 
@@ -707,6 +803,9 @@ class DockerPorts:
     def engine_settings(self) -> dict:
         return self._settings()
 
+    def apply_engine_rules(self) -> dict:
+        return self._rules()
+
     def host_spec(self) -> dict:
         return read_host_spec(_read_text, self.docker.daemon().version, os.cpu_count(), platform.release())
 
@@ -734,8 +833,31 @@ class DockerPorts:
         (engine_data,) = self.docker.statfs(meter, services[ENGINE_SERVICE]["id"], [ENGINE_DATA_PATH])
         return {"engine_db": engine_db, "engine_data": engine_data}
 
+    def state_copy(self, phase: str, snapshot: dict) -> Path:
+        # 단계마다 새 0700 디렉터리. 사본 파일은 호출자가 지문을 뜬 즉시 지운다.
+        dest = self.directory.state / phase
+        os.mkdir(dest, 0o700)
+        os.chmod(dest, 0o700)
+        return copy_sqlite(self.docker, snapshot["services"][TARGET_SERVICE]["id"], self.config.state["sqlite_path"],
+                           dest, self.config.state["max_copy_bytes"])
+
+    def state_trees(self, phase: str, snapshot: dict, key: bytes) -> dict:
+        return runtime_fingerprints(self.docker, snapshot["services"][TARGET_SERVICE]["id"],
+                                    self.config.state["runtime_roots"], self.config.state["max_copy_bytes"], key,
+                                    required=phase == "pre")
+
+    def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list:
+        # 계측기 이미지의 state-read 역할이 대상 netns에서 읽는다(대상 안의 실행파일을 쓰지 않음).
+        return memory_fingerprints(self.docker, self.config.images["meter"].id,
+                                   snapshot["services"][TARGET_SERVICE]["id"], self.config.state["memory"],
+                                   self.config.ports["target"], os.geteuid(), os.getegid(), key,
+                                   required=phase == "pre")
+
     def findings(self) -> dict:
         return self._findings()
+
+    def intercept_summary(self) -> dict:
+        return self._intercepted()
 
     def sign(self, payload: dict) -> dict:
         # 키는 서명 직전에만 읽는다. 경로는 러너 설정(회차 디렉터리 밖)이며 compose·환경으로 넘기지 않는다.
@@ -743,7 +865,7 @@ class DockerPorts:
 
 
 def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str, condition: str,
-               repeat_index: int) -> RunSpec:
+               repeat_index: int, engine_rules_sha256: str | None = None) -> RunSpec:
     declared = preflight[plan.side]
     return RunSpec(
         run_id=plan.run_id, side=plan.side, project=plan.project, llm_backend=plan.llm["backend"],
@@ -764,10 +886,14 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_policy_mode=config.llm_policy_mode if plan.side == POLICY_SWITCH_SIDE else None,
         llm_stream=config.llm_stream,
         tmpfs_min_free_bytes=config.tmpfs_min_free_bytes, worker_count=declared["worker_count"],
-        condition=condition, repeat_index=repeat_index, model_tag=plan.llm["model"],
+        condition=condition, repeat_index=repeat_index, e2_mode=plan.e2_mode, model_tag=plan.llm["model"],
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
         target_origin=declared["target_origin"], observer_path=config.observer_path,
-        observer_readonly_ref=config.observer_readonly_ref)
+        observer_readonly_ref=config.observer_readonly_ref,
+        state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
+        state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
+        state_memory_enabled=config.state is not None and config.state["memory"] is not None,
+        engine_rules_sha256=engine_rules_sha256)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -792,6 +918,7 @@ def main(argv: list[str] | None = None) -> int:
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
         task = task_request(config.task, preflight[plan.side]["target_origin"])
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])
+        rules = None if config.engine_rules is None else load_engine_rules(config.engine_rules)
         # 설정이 통과한 뒤에만 묻는다. 비밀번호는 이 프로세스 메모리에만 있고 어디에도 쓰지 않는다.
         secret = AdminSecret(getpass.getpass("엔진 관리자 비밀번호(화면에 표시되지 않음): "))
         directory = create_run_directory(config.runs_root, plan.run_id)
@@ -814,9 +941,17 @@ def main(argv: list[str] | None = None) -> int:
     def settings() -> dict:
         return engine_settings(config.ports["engine_api_host"], secret, config.run["task_create_timeout_seconds"])
 
-    ports = DockerPorts(config, plan, directory, docker, findings, start, settings)
+    def apply_rules() -> dict:
+        return apply_engine_rules(config.ports["engine_api_host"], secret, rules, config.run["task_create_timeout_seconds"])
+
+    def intercepted() -> dict:
+        names = frozenset() if rules is None else frozenset(rule["name"] for rule in rules.rules)
+        return intercept_summary(config.ports["engine_api_host"], secret, names, config.findings["timeout_seconds"])
+
+    ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules, intercepted)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
-    result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat), ports, MeterFiles(directory.meter),
+    result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
+                                    None if rules is None else rules.sha256), ports, MeterFiles(directory.meter, directory.e2),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
     return 0 if result["status"] == COMPLETE else 1

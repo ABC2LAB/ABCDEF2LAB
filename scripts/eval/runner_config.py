@@ -22,19 +22,39 @@ from urllib.parse import urlsplit
 from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
+from runner_docker import container_file_ok
 
 CONFIG_VERSION = 1
 SIDES = ("baseline", "ours")
 # 엔진 LLM 정책 스위치(ARTEX_LLM_POLICY_MODE, #125)가 있는 쪽. baseline(e53a79f)에는 없다.
 POLICY_SWITCH_SIDE = "ours"
+BASELINE_SIDE = "baseline"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_COMMON = REPO_ROOT / "deploy" / "engine-isolated" / "compose.yaml"
 COMPOSE_LOCAL_LLM = REPO_ROOT / "deploy" / "engine-isolated" / "compose.local-llm.yaml"
 COMPOSE_LLM_API = REPO_ROOT / "deploy" / "engine-isolated" / "compose.llm-api.yaml"
 COMPOSE_EVAL = REPO_ROOT / "deploy" / "eval" / "compose.eval.yaml"
+# 개선 후 회차의 E② 자리에 통과 전용 가짜 E²를 둔다(e2.ours_mode=stub일 때만, compose.eval.yaml 다음).
+COMPOSE_E2_STUB = REPO_ROOT / "deploy" / "eval" / "compose.e2-stub.yaml"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
 LLM_DIR_NAME = "llm"
+# 가짜 E²(e2.ours_mode=stub) 결정 행 디렉터리. 계측기 증거와 분리해 E²가 독립 계측 로그·seal 파일에 쓸 수 없게 한다.
+E2_DIR_NAME = "e2"
+# 상태 차이 사본(대상 SQLite) 디렉터리. 사본은 지문을 뜬 즉시 지운다(값이 든 파일을 남기지 않음).
+STATE_DIR_NAME = "state"
+# 상태 차이(프로토콜 §8.2) 설정. null이면 사본을 뜨지 않는다. 앱별 값(DB 경로·해결 신호 테이블)은 여기서만 받는다.
+_STATE_FIELDS = ("sqlite_path", "signal_tables", "max_copy_bytes", "runtime_roots", "memory")
+MAX_RUNTIME_ROOTS = 16
+# 메모리 저장 읽기(null이면 안 읽음). 계측기 state-read 역할의 계획 한도와 같다(cmd/eval-meter/stateread.go).
+_MEMORY_FIELDS = ("paths", "count_field", "max_body_bytes", "timeout_ms")
+MAX_MEMORY_PATHS = 256
+MAX_MEMORY_BODY_BYTES = 16 << 20
+MAX_MEMORY_PLAN_BYTES = 64 << 10
+MAX_MEMORY_TIMEOUT_MS = 600_000
+MAX_STATE_COPY_BYTES = 1 << 30
+MAX_SIGNAL_TABLES = 32
+_TABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 # compose가 비밀 env 파일에서 직접 읽는 이름. 러너는 이 값을 만들지도 읽지도 않는다.
 # compose 파일의 나머지 ${VAR}는 전부 러너가 넘긴다(테스트로 집합 일치를 고정).
 _BASE_SECRETS = frozenset({"EVAL_ENGINE_ADMIN_PASSWORD", "EVAL_ENGINE_DB_PASSWORD"})
@@ -48,6 +68,10 @@ METER_SERVICE = "eval-meter"
 OBS_SERVICE = "eval-obs"
 LLM_GW_SERVICE = "eval-llm-gw"
 API_FRONT_SERVICE = "eval-api"
+# 가짜 E²(compose.e2-stub.yaml). engine_net에서 계측기 이름(METER_SERVICE)을 별칭으로 받는다.
+E2_SERVICE = "eval-e2"
+# 가짜 E²가 계측기에 닿는 별칭. eval-e2 자신이 METER_SERVICE 별칭을 가지므로 다른 이름이어야 한다.
+METER_UPSTREAM_ALIAS = "eval-meter-upstream"
 # 회차 메모리(tmpfs) 마운트 경로(deploy/eval/compose.eval.yaml과 같은 값, 테스트로 고정).
 ENGINE_DB_DATA_PATH = "/var/lib/postgresql/data"
 ENGINE_DATA_PATH = "/app/data"
@@ -56,6 +80,7 @@ TARGET_NET = "target_net"
 LLM_EGRESS_NET = "llm_egress_net"
 ENGINE_API_NET = "engine_api_net"
 OBS_NET = "obs_net"
+E2_NET = "e2_net"
 # 엔진의 OpenAI 형식 클라이언트가 base URL 뒤에 붙이는 경로(agent/provider.go). 게이트웨이는 이 경로만 받는다.
 CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 MAX_VERIFY_ATTEMPTS = 100
@@ -97,6 +122,10 @@ _LLM_PROVIDERS = ("openai",)
 # profile이 있어야 뜬다. 평가 회차는 LLM을 게이트웨이로만 내보내므로(망 격리) external만 받는다. local-only는 §6
 # 외부 송신 차단 음성 시험용이며 러너가 manifest·profile을 준비하지 않는다. baseline(e53a79f)은 이 스위치가 없다.
 _LLM_POLICY_MODES = ("external",)
+# 개선 후 회차의 E② 자리. none = E² 없음(엔진 → 계측기), stub = 통과 전용 가짜 E²(fixture, 공식 결과 아님).
+# 제품 E²가 들어오면 값이 하나 늘어난다. baseline은 항상 none이다(원본에는 E²가 없다).
+E2_NONE, E2_STUB = "none", "stub"
+E2_MODES = (E2_NONE, E2_STUB)
 _IMAGE_ROLES = ("engine_baseline", "engine_ours", "engine_db", "meter")
 _PORTS = ("engine_api_host", "engine_container", "target", "obs", "obs_host", "llm_gateway", "api_front")
 # expected_provider_name: generation 조회가 돌려주는 응답 제공자 표시 이름(고정 slug와 짝, 팀이 정함).
@@ -105,7 +134,7 @@ MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
-               "observer_readonly_ref")
+               "observer_readonly_ref", "e2", "state", "engine_rules")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -183,6 +212,12 @@ class RunnerConfig:
     findings: dict
     task: dict
     observer_readonly_ref: str
+    # 개선 후 회차의 E② 자리(E2_MODES). baseline 회차에는 쓰지 않는다.
+    e2_ours_mode: str
+    # 상태 차이 설정(_STATE_FIELDS) 또는 None(끔). 양쪽 회차에 같게 적용한다.
+    state: dict | None
+    # 원본 ② 규칙 파일 경로 또는 None(프로토콜 §8.1). 원본 회차에만 쓴다. 조건마다 설정 파일을 따로 둔다.
+    engine_rules: str | None
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -210,6 +245,8 @@ class RunPlan:
     compose_files: tuple[Path, ...]
     secrets_env_file: Path
     compose_env: dict[str, str]
+    # 이 회차의 E② 자리(E2_MODES). baseline은 항상 E2_NONE.
+    e2_mode: str
 
 
 @dataclass(frozen=True)
@@ -217,6 +254,8 @@ class RunDirectory:
     run: Path
     meter: Path
     llm: Path
+    e2: Path
+    state: Path
 
 
 def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
@@ -307,6 +346,12 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         errors.append("config.engine.llm_stream: EXPECTED_BOOL")
     if "llm_policy_mode" in engine and engine["llm_policy_mode"] not in _LLM_POLICY_MODES:
         errors.append("config.engine.llm_policy_mode: UNSUPPORTED")
+    e2 = _exact(top.get("e2"), ("ours_mode",), "config.e2", errors) if "e2" in top else {}
+    if "engine_rules" in top and top["engine_rules"] is not None and not _absolute_path(top["engine_rules"]):
+        errors.append("config.engine_rules: EXPECTED_ABSOLUTE_PATH")
+    if "ours_mode" in e2 and e2["ours_mode"] not in E2_MODES:
+        errors.append("config.e2.ours_mode: UNSUPPORTED")
+    state = _state(top.get("state"), errors) if "state" in top else None
     db = _exact(top.get("engine_db"), ("user", "name"), "config.engine_db", errors) if "engine_db" in top else {}
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
@@ -407,7 +452,57 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         llm_gateway={name: gateway[name] for name in _GATEWAY_FIELDS},
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},
-        observer_readonly_ref=top["observer_readonly_ref"])
+        observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], state=state,
+        engine_rules=top["engine_rules"])
+
+
+def _state(raw: object, errors: list[str]) -> dict | None:
+    if raw is None:
+        return None
+    state = _exact(raw, _STATE_FIELDS, "config.state", errors)
+    if "sqlite_path" in state and not container_file_ok(state["sqlite_path"]):
+        errors.append("config.state.sqlite_path: INVALID")
+    tables = state.get("signal_tables")
+    if "signal_tables" in state and not (
+            isinstance(tables, list) and len(tables) <= MAX_SIGNAL_TABLES and len(set(map(str, tables))) == len(tables)
+            and all(isinstance(t, str) and _TABLE_NAME.fullmatch(t) for t in tables)):
+        errors.append("config.state.signal_tables: INVALID")
+    if "max_copy_bytes" in state and not _int(state["max_copy_bytes"], 1, MAX_STATE_COPY_BYTES):
+        errors.append("config.state.max_copy_bytes: INVALID")
+    roots = state.get("runtime_roots")
+    # 겹치는 디렉터리는 같은 파일을 두 번 센다.
+    if "runtime_roots" in state and not (
+            isinstance(roots, list) and len(roots) <= MAX_RUNTIME_ROOTS and all(container_file_ok(r) for r in roots)
+            and len(set(roots)) == len(roots)
+            and not any(a != b and b.startswith(a + "/") for a in roots for b in roots)):
+        errors.append("config.state.runtime_roots: INVALID")
+    memory = _state_memory(state.get("memory"), errors) if "memory" in state else None
+    if set(state) != set(_STATE_FIELDS) or any(e.startswith("config.state") for e in errors):
+        return None
+    return {"sqlite_path": state["sqlite_path"], "signal_tables": tuple(tables),
+            "max_copy_bytes": state["max_copy_bytes"], "runtime_roots": tuple(roots), "memory": memory}
+
+
+def _state_memory(raw: object, errors: list[str]) -> dict | None:
+    if raw is None:
+        return None
+    memory = _exact(raw, _MEMORY_FIELDS, "config.state.memory", errors)
+    paths = memory.get("paths")
+    if "paths" in memory and not (
+            isinstance(paths, list) and 0 < len(paths) <= MAX_MEMORY_PATHS and all(_observer_path(p) for p in paths)
+            and len(set(paths)) == len(paths) and len(json.dumps(paths)) <= MAX_MEMORY_PLAN_BYTES // 2):
+        errors.append("config.state.memory.paths: INVALID")
+    field = memory.get("count_field")
+    if "count_field" in memory and not (isinstance(field, str) and _TABLE_NAME.fullmatch(field)):
+        errors.append("config.state.memory.count_field: INVALID")
+    if "max_body_bytes" in memory and not _int(memory["max_body_bytes"], 1, MAX_MEMORY_BODY_BYTES):
+        errors.append("config.state.memory.max_body_bytes: INVALID")
+    if "timeout_ms" in memory and not _int(memory["timeout_ms"], 1, MAX_MEMORY_TIMEOUT_MS):
+        errors.append("config.state.memory.timeout_ms: INVALID")
+    if set(memory) != set(_MEMORY_FIELDS) or any(e.startswith("config.state.memory") for e in errors):
+        return None
+    return {"paths": tuple(paths), "count_field": field, "max_body_bytes": memory["max_body_bytes"],
+            "timeout_ms": memory["timeout_ms"]}
 
 
 def _host_listen_allowlist(raw: object, errors: list[str]) -> tuple[HostListen, ...]:
@@ -492,6 +587,9 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         check_preflight(preflight)
     except PreflightError as exc:
         raise RunnerConfigError(["preflight: " + error for error in exc.errors]) from None
+    # 원본 ②의 규칙은 원본 자체 기능이다. 개선 후의 통제는 E② 자리로만 다룬다(프로토콜 §8.1).
+    if config.engine_rules is not None and side != BASELINE_SIDE:
+        raise RunnerConfigError(["config.engine_rules: BASELINE_ONLY"])
     declared = preflight[side]
     llm = dict(declared["llm"])
     origin = urlsplit(declared["target_origin"])
@@ -514,6 +612,9 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     base_path = upstream.path.rstrip("/")
     gateway_port = config.ports["llm_gateway"]
     files = [COMPOSE_COMMON, COMPOSE_LLM_API if llm["backend"] == "api" else COMPOSE_LOCAL_LLM, COMPOSE_EVAL]
+    e2_mode = config.e2_ours_mode if side == POLICY_SWITCH_SIDE else E2_NONE
+    if e2_mode == E2_STUB:
+        files.append(COMPOSE_E2_STUB)
     env = {
         "EVAL_ENGINE_IMAGE": engine_image.ref,
         "EVAL_ENGINE_DB_IMAGE": config.images["engine_db"].ref,
@@ -559,7 +660,7 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     return RunPlan(side=side, run_id=run_id, project=f"eval-{run_id}", source_sha=declared["source_sha"],
                    llm=llm, target_image=target_image, engine_image=engine_image, images=images,
                    meter_port=origin.port, compose_files=tuple(files),
-                   secrets_env_file=config.secrets_env_file, compose_env=env)
+                   secrets_env_file=config.secrets_env_file, compose_env=env, e2_mode=e2_mode)
 
 
 def gateway_sampling(declared: dict, side: str) -> str:
@@ -607,6 +708,8 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
         try:
             os.close(_make_private_child(run_fd, METER_DIR_NAME))
             os.close(_make_private_child(run_fd, LLM_DIR_NAME))
+            os.close(_make_private_child(run_fd, E2_DIR_NAME))
+            os.close(_make_private_child(run_fd, STATE_DIR_NAME))
         finally:
             os.close(run_fd)
     except FileExistsError:
@@ -616,17 +719,19 @@ def create_run_directory(runs_root: Path, run_id: str) -> RunDirectory:
     finally:
         os.close(root_fd)
     run = runs_root / run_id
-    return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME)
+    return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME, e2=run / E2_DIR_NAME,
+                        state=run / STATE_DIR_NAME)
 
 
 def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str]:
     env = dict(plan.compose_env)
     env["EVAL_EVIDENCE_DIR"] = str(directory.meter)
     env["EVAL_LLM_EVIDENCE_DIR"] = str(directory.llm)
+    if plan.e2_mode == E2_STUB:
+        env["EVAL_E2_EVIDENCE_DIR"] = str(directory.e2)
     env["EVAL_RUNNER_UID"] = str(os.geteuid())
     env["EVAL_RUNNER_GID"] = str(os.getegid())
     return env
-
 
 def secret_env_names(backend: str) -> frozenset[str]:
     """그 백엔드의 compose가 비밀 env 파일에서 읽는 이름. local에는 API 키가 없다."""
