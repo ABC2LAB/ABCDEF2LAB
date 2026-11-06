@@ -232,7 +232,8 @@ class TestRejectedV11(_V11):
     def _product_row(self, **changes):
         row = {"close_state": "complete", "close_reason": None, "collection_outcome": "complete", "collection_reason": None, "rows": 7, "attempts": 5,
                "decisions": {"allowed": 4, "denied": 1, "unsupported": 0}, "attempts_without_result": 0, "allowed_not_sent": 0, "checkpoint_sequence": 7,
-               "config_sha256": "1" * 64, "policy_fingerprint_sha256": "2" * 64, "manifest_sha256": "3" * 64} | changes
+               "config_sha256": "1" * 64, "policy_fingerprint_sha256": "2" * 64, "manifest_sha256": "3" * 64,
+               "image_id": "sha256:" + "4" * 64} | changes
 
         def add(rows):
             rows.append({"kind": "e2_product", "seq": len(rows) + 1, "at": rows[-1]["at"], **row})
@@ -279,10 +280,38 @@ class TestRejectedV11(_V11):
                  ({"decisions": {"allowed": 4, "denied": 1}}, "결정 건수 형식 오류"), ({"decisions": {"allowed": -1, "denied": 6, "unsupported": 0}}, "결정 건수 형식 오류"),
                  ({"attempts": 4}, "결정 건수 형식 오류"), ({"attempts": True}, "결정 건수 형식 오류"),
                  # 합이 1이면 True도 합과 같아 보인다.
-                 ({"attempts": True, "decisions": {"allowed": 1, "denied": 0, "unsupported": 0}}, "결정 건수 형식 오류"))
+                 ({"attempts": True, "decisions": {"allowed": 1, "denied": 0, "unsupported": 0}}, "결정 건수 형식 오류"),
+                 ({"config_sha256": "x"}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": None}, "대조 값 형식 오류"),
+                 ({"image_id": "abc"}, "대조 값 형식 오류"), ({"image_id": "4" * 64}, "대조 값 형식 오류"), ({"image_id": None}, "대조 값 형식 오류"))
         for index, (changes, pattern) in enumerate(cases):
             with self.subTest(changes=changes):
                 self.reject(pattern, f"w{index}", e2=self.PRODUCT, tamper_rows=self._product_row(**changes))
+
+    def _product_run(self, name, repeat=0, **changes):
+        return self.v11(name, repeat_index=repeat, e2=self.PRODUCT, tamper_rows=self._product_row(**changes))
+
+    def test_identity_is_read_only_from_product_runs(self):
+        self.assertEqual(self.inputs(self._product_run("i1")).e2_identity, ("2" * 64, "sha256:" + "4" * 64))
+        self.assertIsNone(self.inputs(self.v11("i2")).e2_identity)
+        self.assertIsNone(self.inputs(self.v11("i3", e2=E2_STUB_PLACEMENT)).e2_identity)
+
+    def test_one_condition_must_use_one_policy_and_image(self):
+        for index, changes in enumerate(({"policy_fingerprint_sha256": "5" * 64}, {"image_id": "sha256:" + "6" * 64})):
+            with self.subTest(changes=changes):
+                runs = [self._product_run(f"x{index}a"), self._product_run(f"x{index}b", 1, **changes)]
+                with self.assertRaisesRegex(ComparabilityError, "E② 정책 지문·이미지 불일치"):
+                    build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_other_conditions_may_use_another_policy(self):
+        # 대조는 조건 안에서만 한다.
+        runs = [self.v11("oa", condition="우리@a", e2=self.PRODUCT, tamper_rows=self._product_row()),
+                self.v11("ob", condition="우리@b", e2=self.PRODUCT, tamper_rows=self._product_row(policy_fingerprint_sha256="5" * 64))]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_same_policy_and_image_are_compared_together(self):
+        # 설정 digest는 회차 값이 들어가 회차마다 다르다. 대조하지 않는다.
+        runs = [self._product_run("sa"), self._product_run("sb", 1, config_sha256="7" * 64, manifest_sha256="8" * 64)]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
 
     def test_product_cells_must_add_up_to_its_decisions(self):
         self.reject("칸 합이 E② 결정 건수와 다름", "c1", e2=self.PRODUCT, tamper_rows=self._product_row(decisions={"allowed": 3, "denied": 2, "unsupported": 0}))

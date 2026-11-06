@@ -317,6 +317,7 @@ def build_report(
                                            "LLM 스트리밍": set(), "엔진 규칙 파일": set()}
     # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
     e2_modes: dict[str, set[str]] = {}
+    e2_identities: dict[str, set[tuple[str, str]]] = {}
     control: dict[str, list[dict | None]] = {}
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
@@ -357,6 +358,12 @@ def build_report(
             if len(modes) > 1:
                 raise ComparabilityError(f"E② 자리 혼합({m.condition}: {sorted(modes)}) — 조건 하나는 같은 E② 배치로만 "
                                          "집계(프로토콜 §2)")
+        # 같은 조건이면 같은 E²여야 한다. 정책이나 이미지가 회차마다 다르면 한 조건으로 묶어 평균 낼 수 없다.
+        if inputs.e2_identity is not None:
+            identities = e2_identities.setdefault(m.condition, set())
+            identities.add(inputs.e2_identity)
+            if len(identities) > 1:
+                raise ComparabilityError(f"E② 정책 지문·이미지 불일치({m.condition}) — 같은 정책·이미지끼리만 집계(프로토콜 §2)")
         # 증명 없는 회차는 대조 근거가 None이다. 조건의 분모에 남겨 보류로 센다(#225 리뷰).
         control.setdefault(m.condition, []).append(inputs.attempt_reconciliation)
         by_condition.setdefault(m.condition, []).append(scored.result)

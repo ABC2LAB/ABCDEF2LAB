@@ -535,6 +535,7 @@ class TestE2Product(unittest.TestCase):
                          ("complete", "complete", None, 3, 6, 6))
         self.assertEqual(row["decisions"], {"allowed": 2, "denied": 1, "unsupported": 0})
         self.assertEqual((row["config_sha256"], row["policy_fingerprint_sha256"], row["manifest_sha256"]), ("1" * 64, "f" * 64, E2_MANIFEST))
+        self.assertEqual(row["image_id"], E2_IMAGE_ID)
         self.assertEqual(evidence.files["e2-service-ready.json"]["state"], "service_ready")
         self.assertEqual(evidence.files["e2-collection.json"]["outcome"], "complete")
         cells = self.row(evidence, "attempt_reconciliation")[0]["cells"]

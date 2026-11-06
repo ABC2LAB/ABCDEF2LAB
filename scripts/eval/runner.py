@@ -615,7 +615,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
               lambda: evidence.write_json("attempt-reconciliation.json", dict(reconciliation, fixture=True)))
     e2_product = None
     if spec.e2_mode == E2_PRODUCT:
-        e2_product, reconciliation = _collect_e2(ports, evidence, state, e2_close, task_id, pre["services"][TARGET_SERVICE]["id"], rows)
+        e2_product, reconciliation = _collect_e2(ports, evidence, state, e2_close, task_id, pre["services"][TARGET_SERVICE]["id"], rows,
+                                                 spec.image_ids["e2"])
     verified = _wait_llm_verified(spec, gateway, clock, state)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
         verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling))
@@ -670,7 +671,7 @@ def _e2_step(state: _State, code: str, action: Callable):
 
 
 def _collect_e2(ports: RunPorts, evidence, state: _State, close: CloseResult, task_id: str, target_id: str,
-                rows: list[dict]) -> tuple[dict, dict | None]:
+                rows: list[dict], image_id: str) -> tuple[dict, dict | None]:
     """제품 E② 결과를 모은다(연결 제안 §4.3). (서명할 행, 시도별 대조). 제품 실패는 회차를 유효로 두고 대조 근거만 없다.
 
     기술적 무효(회차 값·지문 불일치, 러너 쪽 수집 장애)는 RunFailure로 올린다. 없는 결과를 차단 0건으로 채우지 않는다.
@@ -694,7 +695,7 @@ def _collect_e2(ports: RunPorts, evidence, state: _State, close: CloseResult, ta
            "allowed_not_sent": None if summary is None else summary["allowed_not_sent"],
            "checkpoint_sequence": None if collection is None or collection.checkpoint is None else collection.checkpoint["sequence"],
            "config_sha256": state.e2_service["config_sha256"], "policy_fingerprint_sha256": state.e2_service["policy_fingerprint_sha256"],
-           "manifest_sha256": close.manifest_sha256}
+           "manifest_sha256": close.manifest_sha256, "image_id": image_id}
     _step(state, "evidence_write_failed", lambda: evidence.write_json("e2-collection.json", {
         "close": {"state": close.state, "reason": close.reason, "admission_closed": close.admission_closed, "execution_ref": close.execution_ref},
         "collection": None if collection is None else collection.evidence(), "outcome": outcome, "reason": reason}))
