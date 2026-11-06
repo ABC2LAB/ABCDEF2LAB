@@ -179,6 +179,52 @@ class TestCanaryScan(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("unreadable: private.json", out)
 
+    def test_directory_that_cannot_be_entered_is_not_a_pass(self):
+        locked = self.root / "locked"
+        locked.mkdir()
+        (locked / "inner.txt").write_text(self.CANARY, encoding="utf-8")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        if os.access(locked, os.R_OK):
+            self.skipTest("이 환경은 권한 0 디렉터리도 읽는다")
+        code, out, _ = self.run_it(str(self.root))
+        self.assertEqual(code, 2)
+        self.assertIn("unreadable: locked", out)
+
+    def test_value_in_a_name_or_link_target_is_a_hit_and_stays_masked(self):
+        cases = {"file_name": lambda: (self.root / f"x-{self.CANARY}.json").write_text("{}", encoding="utf-8"),
+                 "directory_name": lambda: (self.root / f"d-{self.CANARY}").mkdir(),
+                 "link_name": lambda: (self.root / f"l-{self.CANARY}").symlink_to("a.json"),
+                 "link_target": lambda: (self.root / "link").symlink_to(f"/nonexistent/{self.CANARY}")}
+        for label, make in cases.items():
+            with self.subTest(label):
+                make()
+                code, out, _ = self.run_it(str(self.root))
+                self.assertEqual(code, 1)
+                self.assertIn("hits=1", out)
+                self.assertNotIn(self.CANARY, out)
+                for path in list(self.root.iterdir()):
+                    if path.name not in ("a.json", "meter"):
+                        path.rmdir() if path.is_dir() and not path.is_symlink() else path.unlink()
+
+    def test_name_and_content_in_one_file_count_once(self):
+        (self.root / f"x-{self.CANARY}.json").write_text(self.CANARY, encoding="utf-8")
+        code, out, _ = self.run_it(str(self.root))
+        self.assertEqual(code, 1)
+        self.assertIn("hits=1", out)
+        self.assertIn("hit: x-[CANARY].json", out)
+
+    def test_unreadable_path_output_is_masked(self):
+        target = self.root / f"p-{self.CANARY}.json"
+        target.write_text("{}", encoding="utf-8")
+        target.chmod(0)
+        self.addCleanup(target.chmod, 0o600)
+        if os.access(target, os.R_OK):
+            self.skipTest("이 환경은 권한 0 파일도 읽는다")
+        _, out, _ = self.run_it(str(self.root))
+        self.assertIn("unreadable: p-[CANARY].json", out)
+        self.assertNotIn(self.CANARY, out)
+
     def test_symlinks_are_not_followed(self):
         outside = self.root.parent / "outside.txt"
         outside.write_text(self.CANARY, encoding="utf-8")
