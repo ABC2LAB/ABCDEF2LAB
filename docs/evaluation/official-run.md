@@ -213,6 +213,12 @@ curl -s http://<docker0 IP>:<포트>/api/ps   # digest, context_length, size, si
 
 `size_vram`이 `size`보다 작으면 일부가 CPU에 있는 것이다. 그 상태로는 회차가 `llm_serving_not_on_gpu`로 무효가 된다.
 
+**서버 값만으로는 GPU 적재를 증명하지 못한다.** Ollama는 버퍼 통계가 없으면 모델 파일 크기를 `size`·`size_vram` 양쪽에 넣는다(v0.32.6 `llm/llama_server.go` `MemorySize`). 그래서 `placement`가 `gpu`이면 러너가 `/api/ps`와 따로 `nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits`를 읽어 `size_vram`의 90% 이상인지 본다. 값은 `llm-serving.json`의 `gpu_used_bytes`에 남는다.
+
+- **지원 범위:** `nvidia-smi`가 프로세스별 메모리를 내주는 NVIDIA GPU만이다. 다른 backend나 `[N/A]`이면 `llm_serving_unverified`로 공식 회차를 만들지 않는다.
+- **90%는 실제 GPU로 맞춘 값이 아니다.** 시범에서 `gpu_used_bytes`와 `size_vram`을 비교해 확인한다. 값을 바꾸면 양쪽 회차를 처음부터 다시 돈다.
+- **모든 compute 프로세스의 합이다.** 다른 GPU 작업이 있으면 부풀어서 이 검사가 뚫린다. 아래 세션 점검을 지킨다.
+
 프로파일은 `official-35b.json`을 복사해 `environment`만 바꾼다. local의 `sampling`은 서버가 적용하는 세 값뿐이다(프로토콜 §6).
 
 ```json
