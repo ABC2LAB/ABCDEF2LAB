@@ -17,7 +17,7 @@ import (
 // certificate for the read-only tool mount. It modifies no OS trust store.
 func NewExecutionCA(runRef string, expires time.Time) (tls.Certificate, []byte, error) {
 	now := time.Now()
-	if !validRef(runRef) || !now.Before(expires) || expires.Sub(now) > 24*time.Hour {
+	if !validRef(runRef) || !now.Before(expires) || expires.Sub(now) > maxExecutionCALifetime {
 		return tls.Certificate{}, nil, ErrConfig
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

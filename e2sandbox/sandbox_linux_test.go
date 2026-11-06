@@ -267,7 +267,7 @@ func TestSandboxJailSecretsAndPrivilegeEscape(t *testing.T) {
 	if os.WriteFile(marker, []byte("host-private-marker"), 0600) != nil {
 		t.Fatal("marker")
 	}
-	f.cfg.Command = "test ! -e " + marker + " && test ! -e /home && test ! -e /mnt && test ! -e /proc/self/fd/3 && test ! -e /proc/self/fd/7 && ! ( : </proc/1/mem ) && ! ( : </proc/1/environ ) && ! ( : </proc/1/fd/3 ) && ! unshare --user true && ! unshare --net true && ! mount -t tmpfs tmpfs /work && ! chroot /work true && grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/self/status"
+	f.cfg.Command = "test ! -e " + marker + " && test ! -e /home && test ! -e /mnt && for fd in 3 4 5 6 7 100 101; do test ! -e /proc/self/fd/$fd || exit 1; done && ! ( : </proc/1/mem ) && ! ( : </proc/1/environ ) && ! ( : </proc/1/fd/3 ) && ! unshare --user true && ! unshare --net true && ! mount -t tmpfs tmpfs /work && ! chroot /work true && grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/self/status"
 	r := f.run(t)
 	if r.ExitCode != 0 || !r.Drained || strings.Contains(string(r.Output), "host-private-marker") {
 		t.Fatalf("jail result=%+v", r)

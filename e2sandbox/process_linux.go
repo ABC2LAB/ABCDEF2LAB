@@ -28,6 +28,9 @@ const (
 	maxCommandBytes   = 1 << 20
 	maxOutputBytes    = 4 << 20
 	maxCABytes        = 1 << 20
+	maxDrainTimeout   = 2 * time.Minute
+	maxStatusBytes    = 4096
+	helperMaxProcs    = "GOMAXPROCS=2"
 )
 
 type helperConfig struct {
@@ -131,7 +134,7 @@ func openCapability(path string, mode uint32) (*os.File, error) {
 func validateConfig(cfg Config) (workspace, proxy, ca *os.File, err error) {
 	err = ErrConfig
 	if cfg.Command == "" || len(cfg.Command) > maxCommandBytes || strings.IndexByte(cfg.Command, 0) >= 0 ||
-		cfg.Timeout <= 0 || cfg.Timeout > time.Hour || cfg.DrainTimeout <= 0 || cfg.DrainTimeout > 2*time.Minute || cfg.OutputLimit < 1 || cfg.OutputLimit > maxOutputBytes ||
+		cfg.Timeout <= 0 || cfg.Timeout > maxCallTimeout || cfg.DrainTimeout <= 0 || cfg.DrainTimeout > maxDrainTimeout || cfg.OutputLimit < 1 || cfg.OutputLimit > maxOutputBytes ||
 		os.Getuid() == 0 || os.Getgid() == 0 {
 		return
 	}
@@ -223,7 +226,7 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 		uid: uint32(os.Getuid()), gid: uint32(os.Getgid()), cancel: cancel, result: Result{ExitCode: -1},
 		output: boundedOutput{limit: cfg.OutputLimit}}
 	cmd := exec.Command(cfg.Helper)
-	cmd.Env = []string{"GOMAXPROCS=2", "GOTELEMETRY=off"}
+	cmd.Env = []string{helperMaxProcs, "GOTELEMETRY=off"}
 	cmd.ExtraFiles = []*os.File{configRead, workspace, proxy, ca, statusWrite}
 	cmd.Stdout, cmd.Stderr = &p.output, &p.output
 	cmd.WaitDelay = cfg.DrainTimeout
@@ -354,7 +357,7 @@ func itoa(v int) string {
 func (p *Process) readStatus(f *os.File) {
 	defer f.Close()
 	defer close(p.statusDone)
-	dec := json.NewDecoder(io.LimitReader(f, 4096))
+	dec := json.NewDecoder(io.LimitReader(f, maxStatusBytes))
 	for {
 		var s helperStatus
 		if dec.Decode(&s) != nil {

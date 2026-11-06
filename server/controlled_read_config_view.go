@@ -10,6 +10,7 @@ import (
 	"github.com/Autumn-27/artex/e3record"
 	"github.com/Autumn-27/artex/evidencebind"
 	"github.com/Autumn-27/artex/idor"
+	"github.com/Autumn-27/artex/kgfixture"
 	"github.com/Autumn-27/artex/transmit"
 )
 
@@ -44,6 +45,7 @@ type controlledReadConfigState struct {
 	selected     bool
 	request      ControlledReadVerificationRequest
 	closed       bool
+	fixture      *kgfixture.Snapshot
 }
 
 // Formatting must not inspect the lifecycle context's private values.
@@ -54,8 +56,8 @@ func (ControlledReadConfigHandle) MarshalJSON() ([]byte, error) { return []byte(
 
 // Runtime integration must call this with the same privately held, immutable
 // cfg passed to NewHTTP, after assigning the actual execution Scope. It does
-// not load/validate configuration or authenticate its producer. No runtime call
-// is installed until the shared #151 changes are stable.
+// not load/validate configuration or authenticate its producer. The runtime
+// installs the handle only after the transmitter and task binding succeed.
 func newControlledReadConfigHandle(life context.Context, task, intent int64, cfg transmit.Config) (*ControlledReadConfigHandle, func(), error) {
 	if life == nil || life.Err() != nil || task <= 0 || intent <= 0 || cfg.Scope.TaskRef != strconv.FormatInt(task, 10) || cfg.Scope.RunRef == "" || len(cfg.Sessions) == 0 || cfg.ExpiresAt.IsZero() {
 		return nil, nil, ErrControlledFindingUnavailable
@@ -101,7 +103,8 @@ func cloneControlledReadConfigView(v ControlledReadConfigView) ControlledReadCon
 // View begins one metadata query. The first valid request pins the one case
 // selected by verification; other task/intent/scope/account/resource requests
 // are refused. Close/cancellation/earliest registered expiry deny new queries.
-// An already returned metadata copy must not be used as a live authority.
+// A successful View (including ConfigView) pins the request even if a later
+// Bind is refused. An already returned copy is not a live authority.
 func (h *ControlledReadConfigHandle) View(ctx context.Context, r ControlledReadVerificationRequest) (ControlledReadConfigView, error) {
 	if h == nil || h.state == nil || ctx == nil || ctx.Err() != nil {
 		return ControlledReadConfigView{}, ErrControlledFindingUnavailable
@@ -141,5 +144,23 @@ func (h *ControlledReadConfigHandle) Bind(ctx context.Context, r ControlledReadV
 	for _, r := range v.Resources {
 		cfg.Resources = append(cfg.Resources, transmit.Resource{Ref: r.Ref, ApprovalRef: r.ApprovalRef, ReadOnly: r.ReadOnly, Accounts: r.Accounts})
 	}
-	return BindControlledReadRealInputs(ctx, r, expected, cfg, kg, source)
+	plan, err := BindControlledReadRealInputs(ctx, r, expected, cfg, kg, source)
+	if err != nil {
+		return ControlledReadFindingPlan{}, err
+	}
+	if ctx.Err() != nil {
+		return ControlledReadFindingPlan{}, ErrControlledFindingUnavailable
+	}
+	// View's copy may outlive the runtime while the pure adapter runs. The
+	// final locked check orders a successful Bind before close/revocation.
+	s := h.state
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.life == nil || s.life.Err() != nil || !time.Now().Before(s.until) {
+		return ControlledReadFindingPlan{}, ErrControlledFindingUnavailable
+	}
+	if s.fixture != nil && !sameControlledReadFixture(kg, s.fixture) {
+		return ControlledReadFindingPlan{}, ErrControlledFindingUnavailable
+	}
+	return plan, nil
 }

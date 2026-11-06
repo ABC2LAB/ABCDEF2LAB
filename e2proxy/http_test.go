@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/Autumn-27/artex/transmit/budget"
@@ -164,7 +166,7 @@ func TestProxyCredentialsAndUntrustedCorrelationAreRemoved(t *testing.T) {
 		"Accept":              {"text/plain"},
 	}
 	header.Set(AttemptHeader, "forged-current-wire")
-	stripProxyHeaders(header)
+	stripHeaders(header)
 	if len(header) != 1 || header.Get("Accept") != "text/plain" {
 		t.Fatal("proxy or nominated header survived")
 	}
@@ -198,13 +200,13 @@ func proxyTestCall(t *testing.T, target string, roots *x509.CertPool) (*Executio
 		t.Fatal(err)
 	}
 	rec := &proxyTestRecorder{}
-	exec, err := NewExecution(t.Context(), Config{
+	exec, err := NewExecution(t.Context(), Config{HeaderMode: HeaderProtectedSessionProposal,
 		Scope:    transmit.Scope{TaskRef: key.TaskRef, RunRef: "run_proxy", CaseRef: "case_proxy", ResetRef: binding.ResetRef, PolicyRef: binding.PolicyRef},
 		IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision_proxy", AccountRef: "account_proxy", SessionRef: "session_proxy",
 		ExpiresAt: now.Add(time.Minute), RootCAs: roots, Recorder: rec,
 		Rules: []Rule{{Ref: "rule_proxy", Origin: u.Scheme + "://" + u.Host, ConnectIP: netip.MustParseAddr("127.0.0.1"),
 			PathPrefix: "/allowed", PathScopeRef: "path_proxy", Methods: []string{"GET", "POST"},
-			Headers: http.Header{"Authorization": {"Bearer session-secret"}}}},
+			CredentialHeaders: http.Header{"Authorization": {"Bearer session-secret"}}}},
 		Budget: transmit.CumulativeBudget{Ledger: ledger, Key: key, Binding: binding},
 		Limits: Limits{MaxAttempts: 100, MaxCalls: 8, MaxConcurrent: 8, MaxBodyBytes: 8192,
 			RequestTimeout: 2 * time.Second, CallTimeout: 30 * time.Second, MaxDenials: 20, MaxTransient: 20, MaxUnknown: 20},
@@ -239,18 +241,28 @@ func proxyTestListener(t *testing.T, call *Call) (*Proxy, string, *x509.CertPool
 	if err != nil {
 		t.Fatal(err)
 	}
-	served := make(chan error, 1)
-	go func() { served <- p.Serve(listener) }()
+	ready := make(chan struct{})
+	served := make(chan struct{})
+	var serveErr error
+	go func() { serveErr = p.Serve(&proxyReadyListener{Listener: listener, ready: ready}); close(served) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if err := p.Close(ctx); err != nil {
 			t.Error("proxy did not drain")
 		}
-		if err := <-served; err != nil {
+		<-served
+		if serveErr != nil {
 			t.Error("proxy accept failed")
 		}
 	})
+	select {
+	case <-ready:
+	case <-served:
+		t.Fatal("proxy stopped before entering Accept")
+	case <-time.After(3 * time.Second):
+		t.Fatal("proxy did not enter Accept")
+	}
 	return p, listener.Addr().String(), roots
 }
 func proxyTestClient(t *testing.T, addr string, roots *x509.CertPool) *http.Client {
@@ -282,8 +294,8 @@ func TestProxyRealHTTPAndHTTPSForwarding(t *testing.T) {
 				if !safeAttempt.MatchString(receivedID) || receivedID == "forged" {
 					t.Error("proxy did not assign a fresh attempt")
 				}
-				w.Header().Set("Set-Cookie", "session-secret")
-				io.WriteString(w, "response Bearer session-secret")
+				w.Header().Set("X-Public", "unchanged")
+				io.WriteString(w, "public original response")
 			}))
 			var targetRoots *x509.CertPool
 			if secured {
@@ -309,7 +321,7 @@ func TestProxyRealHTTPAndHTTPSForwarding(t *testing.T) {
 			}
 			body, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if err != nil || resp.StatusCode != 200 || !bytes.Contains(body, []byte("[REDACTED]")) || bytes.Contains(body, []byte("session-secret")) || resp.Header.Get("Set-Cookie") != "" {
+			if err != nil || resp.StatusCode != 200 || string(body) != "public original response" || resp.Header.Get("X-Public") != "unchanged" {
 				t.Fatal("response was not safely returned")
 			}
 			if received.Load() != 1 {
@@ -517,8 +529,12 @@ func TestProxyCloseDrainsIncompleteClientRequest(t *testing.T) {
 		t.Fatal("partial client prevented proxy drain")
 	}
 	conn.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err = conn.Read(make([]byte, 1)); err == nil {
-		t.Fatal("client connection remained open")
+	_, err = conn.Read(make([]byte, 1))
+	if deadline, ok := err.(net.Error); ok && deadline.Timeout() {
+		t.Fatal("read timeout is not evidence of connection closure")
+	}
+	if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatal("client did not observe EOF or a closed/reset connection")
 	}
 }
 
@@ -828,4 +844,15 @@ func TestProxyRawRequestPreservesHostAndRejectsMismatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+type proxyReadyListener struct {
+	net.Listener
+	once  sync.Once
+	ready chan struct{}
+}
+
+func (l *proxyReadyListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { close(l.ready) })
+	return l.Listener.Accept()
 }

@@ -36,15 +36,24 @@ func drainTestServer(t *testing.T, s *Server) {
 	if s == nil {
 		return
 	}
+	drainCtx, cancel := context.WithTimeout(context.Background(), testServerDrainTimeout)
+	defer cancel()
 	deadline := time.NewTimer(testServerDrainTimeout)
 	defer deadline.Stop()
+
+	// Close background admission and join reconciliation before stopping tasks:
+	// otherwise a queued startup job can recreate runtime state after StopTask.
+	if err := s.WaitBackground(drainCtx); err != nil {
+		t.Errorf("server background workers did not drain within %s: %v", testServerDrainTimeout, err)
+		return
+	}
 
 	// StopTask waits for every planner/worker/deadline routine and removes the
 	// runtime state.  Run the loop in one goroutine so a broken fixture cannot
 	// hold testing.T forever; normal cancellation completes well before the cap.
 	runtimesDone := make(chan struct{})
 	go func() {
-		if s.m != nil {
+		if s.m != nil && s.engine != nil {
 			for _, task := range s.m.List() {
 				if task != nil {
 					s.engine.StopTask(task.ID)

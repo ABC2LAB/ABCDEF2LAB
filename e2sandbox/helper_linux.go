@@ -21,6 +21,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	helperListenerFD     = 100
+	helperSealedConfigFD = 101
+	configEnvelopeBytes  = 4096
+	rootTmpfsOptions     = "mode=0755,size=32m"
+	maxRelayConnections  = 128
+	relayDialTimeout     = 3 * time.Second
+)
+
 // HelperMain is the trusted executable entry. It refuses execution outside
 // the fresh namespace init. No credential or approval is read from env/argv.
 func HelperMain() int {
@@ -37,7 +46,7 @@ func HelperMain() int {
 	enc := json.NewEncoder(status)
 	stage := "config"
 	fail := func() int { _ = enc.Encode(helperStatus{State: "setup_failed", Stage: stage}); return 2 }
-	dec := json.NewDecoder(io.LimitReader(input, maxCommandBytes+4096))
+	dec := json.NewDecoder(io.LimitReader(input, maxCommandBytes+configEnvelopeBytes))
 	var cfg helperConfig
 	var listener net.Listener
 	if len(os.Args) == 1 {
@@ -92,7 +101,7 @@ func HelperMain() int {
 		if _, err = unix.FcntlInt(configFile.Fd(), unix.F_ADD_SEALS, unix.F_SEAL_SEAL|unix.F_SEAL_SHRINK|unix.F_SEAL_GROW|unix.F_SEAL_WRITE); err != nil {
 			return fail()
 		}
-		if unix.Dup3(int(listenerFile.Fd()), 100, 0) != nil || unix.Dup3(memfd, 101, 0) != nil {
+		if unix.Dup3(int(listenerFile.Fd()), helperListenerFD, 0) != nil || unix.Dup3(memfd, helperSealedConfigFD, 0) != nil {
 			return fail()
 		}
 		listenerFile.Close()
@@ -108,7 +117,7 @@ func HelperMain() int {
 			return fail()
 		}
 		stage = "reexec"
-		if unix.Exec("/run/e2/helper", []string{"e2-bash-sandbox", "--isolated-stage"}, []string{"GOMAXPROCS=2", "GOTELEMETRY=off"}) != nil {
+		if unix.Exec("/run/e2/helper", []string{"e2-bash-sandbox", "--isolated-stage"}, []string{helperMaxProcs, "GOTELEMETRY=off"}) != nil {
 			return fail()
 		}
 		return 2
@@ -122,12 +131,12 @@ func HelperMain() int {
 	if unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0) != nil {
 		return fail()
 	}
-	inheritedConfig := os.NewFile(101, "isolated-config")
-	if json.NewDecoder(io.LimitReader(inheritedConfig, maxCommandBytes+4096)).Decode(&cfg) != nil {
+	inheritedConfig := os.NewFile(helperSealedConfigFD, "isolated-config")
+	if json.NewDecoder(io.LimitReader(inheritedConfig, maxCommandBytes+configEnvelopeBytes)).Decode(&cfg) != nil {
 		return fail()
 	}
 	inheritedConfig.Close()
-	inheritedListener := os.NewFile(100, "isolated-listener")
+	inheritedListener := os.NewFile(helperListenerFD, "isolated-listener")
 	var err error
 	listener, err = net.FileListener(inheritedListener)
 	inheritedListener.Close()
@@ -285,7 +294,7 @@ func setupJail(cfg helperConfig) error {
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
 		return jailError("root_path", ErrConfig)
 	}
-	if err := unix.Mount("tmpfs", root, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, "mode=0755,size=32m"); err != nil {
+	if err := unix.Mount("tmpfs", root, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, rootTmpfsOptions); err != nil {
 		return jailError("root_tmpfs", err)
 	}
 	for _, path := range []string{"usr/bin", "usr/lib", "usr/lib64", "bin", "lib", "lib64", "etc", "dev", "proc", "tmp", "work", "run/e2", ".oldroot"} {
@@ -493,7 +502,7 @@ func (r *socketRelay) start() {
 				return
 			}
 			r.mu.Lock()
-			if r.closed || len(r.conns) >= 128 {
+			if r.closed || len(r.conns) >= maxRelayConnections {
 				r.mu.Unlock()
 				c.Close()
 				continue
@@ -508,7 +517,7 @@ func (r *socketRelay) start() {
 func (r *socketRelay) forward(c net.Conn) {
 	defer r.pending.Done()
 	defer r.forget(c)
-	upstream, err := net.DialTimeout("unix", "/run/e2/proxy.sock", 3*time.Second)
+	upstream, err := net.DialTimeout("unix", "/run/e2/proxy.sock", relayDialTimeout)
 	if err != nil {
 		return
 	}

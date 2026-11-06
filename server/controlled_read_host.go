@@ -18,6 +18,10 @@ type ControlledReadHostOptions struct {
 	Mode                 ControlledTaskModeHost
 	Findings             ControlledReadFindingResolver
 	LocalLLMManifestPath string
+	// FixtureRegistries is a draft opt-in mapping from snapshot_ref to a registry
+	// basename inside the existing private snapshot directory. Nil preserves the
+	// compatibility path; a configured mapping never falls back on a missing ref.
+	FixtureRegistries map[string]string `json:"-"`
 }
 
 // NewWithControlledReadHost installs strict mode admission and verified-read
@@ -47,6 +51,10 @@ func newControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, k
 		options.Mode.RootPath == "" || options.Mode.RootAnchor == nil || options.Mode.CheckRoot == nil || options.Mode.CheckTaskQuiescent == nil {
 		return nil, ErrControlledReadHostConfiguration
 	}
+	registries, err := cloneControlledReadFixtureRegistries(options.FixtureRegistries)
+	if err != nil {
+		return nil, ErrControlledReadHostConfiguration
+	}
 	var resolver *llmpolicy.ProfileResolver
 	if options.LocalLLMManifestPath != "" {
 		var err error
@@ -56,6 +64,9 @@ func newControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, k
 		}
 	}
 	return newServerConfigured(ctx, m, skillDir, dataDir, keyDir, resolver, func(s *Server) error {
+		if err := s.configureControlledReadFixtureRegistries(registries); err != nil {
+			return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
+		}
 		if err := s.ConfigureControlledTaskMode(options.Mode); err != nil {
 			return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 		}

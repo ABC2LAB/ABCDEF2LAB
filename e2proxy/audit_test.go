@@ -3,13 +3,17 @@ package e2proxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -129,6 +133,7 @@ func TestJournalScopeCannotChange(t *testing.T) {
 	}
 	before := j.Checkpoint()
 	event := journalTestEvent()
+	event.Index = 2
 	event.Scope.RunRef = "other-run"
 	if err := j.Record(context.Background(), event); !errors.Is(err, ErrJournalEvent) {
 		t.Fatalf("scope changed: %v", err)
@@ -510,18 +515,19 @@ func (r brokenJournalReader) Read(p []byte) (int, error) {
 }
 
 func TestJournalRejectsOrdinalGapsAndLimitBeforeIO(t *testing.T) {
-	for _, seq := range []uint64{0, journalMaxEvents} {
+	for _, tc := range []struct{ sequence, index uint64 }{{0, 2}, {journalMaxEvents, journalMaxEvents + 1}} {
 		w := newJournalTestWriter()
 		j, err := newJournal(w, journalTestKey, time.Now().UTC())
 		if err != nil {
 			t.Fatal(err)
 		}
-		j.head.Sequence = seq
+		j.head.Sequence = tc.sequence
+		j.head.Scope = journalTestEvent().Scope
 		event := journalTestEvent()
-		event.Index = seq + 2
+		event.Index = tc.index
 		before := w.length()
 		if err := j.Record(context.Background(), event); !errors.Is(err, ErrJournalEvent) {
-			t.Fatalf("ordinal %d: %v", seq, err)
+			t.Fatalf("sequence %d index %d: %v", tc.sequence, tc.index, err)
 		}
 		if w.length() != before {
 			t.Fatal("rejected ordinal performed IO")
@@ -605,5 +611,139 @@ func TestJournalCallEventsRequireActualIntent(t *testing.T) {
 			}
 			j.Close()
 		}
+	}
+}
+
+// Both inputs are independently authentic under the same key. A record from a
+// different journal must still fail its predecessor binding, without an anchor
+// or a bad ordinal masking that check.
+func TestJournalVerificationRejectsSameKeyChainSplice(t *testing.T) {
+	makeJournal := func() ([]byte, JournalCheckpoint) {
+		t.Helper()
+		w := newJournalTestWriter()
+		j, err := newJournal(w, journalTestKey, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = j.Close() })
+		if err := j.Record(context.Background(), journalTestEvent()); err != nil {
+			t.Fatal(err)
+		}
+		data, head := w.bytes(), j.Checkpoint()
+		if _, err := VerifyJournal(context.Background(), bytes.NewReader(data), journalTestKey, head); err != nil {
+			t.Fatalf("positive journal: %v", err)
+		}
+		return data, head
+	}
+	first, firstHead := makeJournal()
+	second, secondHead := makeJournal()
+	if firstHead.JournalID == secondHead.JournalID {
+		t.Fatal("journal IDs unexpectedly match")
+	}
+	firstEnd := bytes.IndexByte(first, '\n') + 1
+	secondEnd := bytes.IndexByte(second, '\n') + 1
+	spliced := append(bytes.Clone(first[:firstEnd]), second[secondEnd:]...)
+	if _, err := VerifyJournal(context.Background(), bytes.NewReader(spliced), journalTestKey); !errors.Is(err, ErrJournalIntegrity) {
+		t.Fatalf("same-key chain splice: %v", err)
+	}
+}
+
+// Change a valid header field and retain a correctly shaped MAC. No event or
+// expected checkpoint is present, so only header authentication can reject it.
+func TestJournalVerificationAuthenticatesHeaderWithoutAnchor(t *testing.T) {
+	w := newJournalTestWriter()
+	j, err := newJournal(w, journalTestKey, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if _, err := VerifyJournal(context.Background(), bytes.NewReader(w.bytes()), journalTestKey); err != nil {
+		t.Fatalf("positive header: %v", err)
+	}
+	var line journalLine
+	if err := json.Unmarshal(bytes.TrimSpace(w.bytes()), &line); err != nil {
+		t.Fatal(err)
+	}
+	line.Header.CreatedAt = line.Header.CreatedAt.Add(time.Second)
+	tampered, err := encodeJournalLine(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyJournal(context.Background(), bytes.NewReader(tampered), journalTestKey); !errors.Is(err, ErrJournalIntegrity) {
+		t.Fatalf("changed authenticated header: %v", err)
+	}
+}
+
+// A canceled HTTP caller must not cancel its durable intent/result evidence.
+// It still consumes its admitted reservation; it does not poison future calls.
+func TestJournalExecutionCallerCancellationPreservesAudit(t *testing.T) {
+	w := newJournalTestWriter()
+	j, err := newJournal(w, journalTestKey, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = j.Close() })
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		_, _ = io.WriteString(w, "actual target")
+	}))
+	defer target.Close()
+	e, c := coreOpen(t, coreConfig(t, target.URL, j, 2))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	resp, receipt, err := c.Do(ctx, coreRequest(t, "GET", target.URL+"/allowed"))
+	if err == nil || resp != nil || errors.Is(err, ErrAudit) || !receipt.AuditComplete || receipt.Reason == AuditFailed || received.Load() != 0 {
+		t.Fatalf("canceled caller response=%v receipt=%+v error=%v received=%d", resp != nil, receipt, err, received.Load())
+	}
+	if j.Checkpoint().Sequence != 2 || e.Snapshot().Reason == AuditFailed {
+		t.Fatalf("canceled caller lost intent/result: head=%+v execution=%+v", j.Checkpoint(), e.Snapshot())
+	}
+	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 1 {
+		t.Fatalf("admitted reservation remaining=%d error=%v", remaining, err)
+	}
+	resp, receipt, err = c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if err != nil || resp == nil || !receipt.ResponseComplete || !receipt.AuditComplete || received.Load() != 1 {
+		t.Fatalf("later caller response=%v receipt=%+v error=%v received=%d", resp != nil, receipt, err, received.Load())
+	}
+	_ = resp.Body.Close()
+	if j.Checkpoint().Sequence != 4 {
+		t.Fatalf("later caller ordinal=%d", j.Checkpoint().Sequence)
+	}
+	if _, err := VerifyJournal(context.Background(), bytes.NewReader(w.bytes()), journalTestKey, j.Checkpoint()); err != nil {
+		t.Fatalf("actual execution journal: %v", err)
+	}
+}
+
+// A storage failure is different: no ACK means no committed event ordinal, no
+// subsequent recorder invocation, and no successful response released to caller.
+func TestJournalExecutionResultFailureLatchesWithoutOrdinalGap(t *testing.T) {
+	w := newJournalTestWriter()
+	j, err := newJournal(w, journalTestKey, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = j.Close() })
+	target := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		w.mu.Lock()
+		w.failSync = true
+		w.mu.Unlock()
+		_, _ = io.WriteString(rw, "actual target")
+	}))
+	defer target.Close()
+	e, c := coreOpen(t, coreConfig(t, target.URL, j, 2))
+	resp, receipt, err := c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if !errors.Is(err, ErrAudit) || resp != nil || receipt.AuditComplete || !receipt.ForwardAttempted || !receipt.ResponseReceived || e.Snapshot().Reason != AuditFailed {
+		t.Fatalf("result failure response=%v receipt=%+v error=%v", resp != nil, receipt, err)
+	}
+	if j.Checkpoint().Sequence != 1 || e.eventIndex != 1 || len(e.Events(0, 100)) != 1 {
+		t.Fatalf("unacknowledged event committed: head=%+v eventIndex=%d", j.Checkpoint(), e.eventIndex)
+	}
+	before := w.length()
+	if err := e.record(context.Background(), Event{Stage: "result", Receipt: receipt}); !errors.Is(err, ErrAudit) || w.length() != before {
+		t.Fatalf("failed execution retried recorder: error=%v bytes=%d->%d", err, before, w.length())
+	}
+	if _, err := VerifyJournal(context.Background(), bytes.NewReader(w.bytes()), journalTestKey, j.Checkpoint()); !errors.Is(err, ErrJournalIntegrity) {
+		t.Fatalf("unacknowledged tail accepted with confirmed head: %v", err)
 	}
 }

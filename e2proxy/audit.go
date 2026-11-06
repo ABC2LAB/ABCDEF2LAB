@@ -26,14 +26,17 @@ import (
 )
 
 const (
-	JournalVersion       = "e2-http-v1"
-	journalIDBytes       = 16
-	journalMinKeyBytes   = 32
-	journalMaxKeyBytes   = 4096
-	journalMaxLineBytes  = 16384
-	journalMaxBytes      = 256 << 20
-	journalMaxEvents     = 100000
-	journalMaxEmptyReads = 100
+	JournalVersion        = "e2-http-v1"
+	journalIDBytes        = 16
+	journalMinKeyBytes    = 32
+	journalMaxKeyBytes    = 4096
+	journalMaxLineBytes   = 16384
+	journalMaxBytes       = 256 << 20
+	journalMaxEvents      = 100000
+	journalMaxNameBytes   = 128
+	journalMaxRefBytes    = 128
+	journalMaxMethodBytes = 16
+	journalMaxEmptyReads  = 100
 )
 
 var (
@@ -47,7 +50,11 @@ var (
 	ErrJournalLimit     = errors.New("e2proxy: journal verification limit")
 )
 
-// JournalCheckpoint is a Sync-confirmed prefix. The host must retain it outside
+// JournalCheckpoint is a Sync-confirmed prefix, not a delivered Record ACK.
+// Cancellation after a successful Sync advances this prefix but poisons the
+// Journal and returns an error. Keep it distinct from Execution ACK ordinals and
+// AuditComplete; it cannot certify that the caller accepted the persisted event.
+// The host must retain it outside
 // the journal if rollback or truncation must be detected. It is not permission
 // to send and proves no key ownership, epoch, independent storage, or E3 result.
 type JournalCheckpoint struct {
@@ -400,7 +407,7 @@ func journalMAC(key []byte, domain string, value any) (string, error) {
 }
 
 func validJournalName(name string) bool {
-	if len(name) == 0 || len(name) > 128 || name == "." || name == ".." {
+	if len(name) == 0 || len(name) > journalMaxNameBytes || name == "." || name == ".." {
 		return false
 	}
 	for _, ch := range name {
@@ -412,7 +419,7 @@ func validJournalName(name string) bool {
 }
 
 func validJournalRef(ref string) bool {
-	if len(ref) == 0 || len(ref) > 128 || strings.Contains(ref, "://") {
+	if len(ref) == 0 || len(ref) > journalMaxRefBytes || strings.Contains(ref, "://") {
 		return false
 	}
 	for i, ch := range ref {
@@ -457,7 +464,7 @@ func validJournalEvent(event Event) bool {
 	}
 	switch event.Stage {
 	case "intent", "result":
-		if event.IntentID <= 0 || event.Sequence == 0 || !validJournalRef(event.CallRef) || !validJournalHex(event.AttemptID, 16) {
+		if event.IntentID <= 0 || event.Sequence == 0 || !validJournalRef(event.CallRef) || !validJournalHex(event.AttemptID, randomRefBytes) {
 			return false
 		}
 		if event.Decision != "allowed" && event.Decision != "denied" && event.Decision != "unsupported" {
@@ -483,7 +490,7 @@ func validJournalEvent(event Event) bool {
 	default:
 		return false
 	}
-	if len(event.Method) > 16 {
+	if len(event.Method) > journalMaxMethodBytes {
 		return false
 	}
 	for _, ch := range event.Method {

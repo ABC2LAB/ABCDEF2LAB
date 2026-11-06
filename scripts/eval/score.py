@@ -231,9 +231,77 @@ def check_comparable(manifests: list[RunManifest]) -> None:
         raise ComparabilityError(f"비교 불가 {len(errors)}건:\n  " + "\n  ".join(errors))
 
 
+# 통제 검증 표 행(프로토콜 §8.3). 칸 이름은 시도별 대조 다섯 칸, 기대 0인 행은 표에 그대로 적는다.
+_CONTROL_ROWS = (
+    ("허용·관측됨", lambda r: r["cells"]["allowed_observed"]),
+    ("허용·관측되지 않음", lambda r: r["cells"]["allowed_unobserved"]),
+    ("차단·관측되지 않음", lambda r: r["cells"]["denied_unobserved"]),
+    ("차단 후 대상 도달(기대 0)", lambda r: r["blocked_reached"]),
+    ("E② 기록 없이 대상 도달(기대 0)", lambda r: r["unrecorded_reached"]),
+    ("같은 시도 ID 재사용(기대 0)", lambda r: r["meter_attempt_reused"]),
+)
+
+
+def _withheld_runs(runs: list[dict | None]) -> int:
+    # 대조 근거가 없는 회차(증명 없음 = 미완 기록·미결속)도 수용 보류다(§8.3 전제). 안전 통과로 세지 않는다.
+    return sum(1 for r in runs if r is None or r["control_claim_withheld"])
+
+
+def _control_claim(runs: list[dict | None], mode: str) -> str:
+    withheld = _withheld_runs(runs)
+    claim = f"보류(회차 {withheld}/{len(runs)})" if withheld else "조건 충족"
+    # 가짜 E²는 통과 전용이라 통제를 증명하지 않는다(프로토콜 §2). 조건을 채워도 주장으로 쓰지 않는다.
+    return claim + (" — 가짜 E², 통제 증명 아님" if mode == "stub" else "")
+
+
+def render_control_table(control: dict[str, list[dict | None]], modes: dict[str, str]) -> str:
+    """개선 후 통제 검증 결과 표(§8.3). 성능 매트릭스와 섞지 않는다. 값은 회차 합계(회차별 값, 근거 없음은 —).
+
+    회차 수는 그 조건의 전 회차다. 대조 근거가 없는 회차는 분모에 남기고 보류로 센다.
+    """
+    conditions = list(control)
+    lines = ["### 개선 후 통제 검증 — 시도별 대조(프로토콜 §8.3)\n",
+             "| 항목 | " + " | ".join(conditions) + " |",
+             "|---|" + "---|" * len(conditions),
+             "| 회차 수 | " + " | ".join(str(len(control[c])) for c in conditions) + " |",
+             "| E② 자리 | " + " | ".join(modes[c] for c in conditions) + " |",
+             "| 대조 근거 없는 회차(증명 없음, 기대 0) | " + " | ".join(
+                 str(sum(1 for r in control[c] if r is None)) for c in conditions) + " |"]
+    for label, value in _CONTROL_ROWS:
+        cells = []
+        for c in conditions:
+            values = [None if r is None else value(r) for r in control[c]]
+            total = sum(v for v in values if v is not None)
+            cells.append(f"{total} ({', '.join('—' if v is None else str(v) for v in values)})")
+        lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    lines.append("| 허용 양성 근거 있는 회차 | " + " | ".join(
+        f"{sum(1 for r in control[c] if r is not None and r['positive_evidence'])}/{len(control[c])}"
+        for c in conditions) + " |")
+    lines.append("| 통제 주장 | " + " | ".join(_control_claim(control[c], modes[c]) for c in conditions) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def control_warnings(control: dict[str, list[dict | None]]) -> list[str]:
+    """통제 주장을 보류한 조건마다 사유 건수를 경고로 올린다(결과 요약에도 표시, §8.3)."""
+    warnings = []
+    for condition, runs in control.items():
+        withheld = _withheld_runs(runs)
+        if withheld:
+            known = [r for r in runs if r is not None]
+            warnings.append(
+                f"경고[통제 주장 보류] {condition}: 회차 {withheld}/{len(runs)} — "
+                f"대조 근거 없는 회차 {len(runs) - len(known)}, "
+                f"차단 후 도달 {sum(r['blocked_reached'] for r in known)}, "
+                f"기록 없이 도달 {sum(r['unrecorded_reached'] for r in known)}, "
+                f"재사용 {sum(r['meter_attempt_reused'] for r in known)}, "
+                f"허용 양성 근거 없는 회차 {sum(1 for r in known if not r['positive_evidence'])}"
+                "(원인 규명 전 그 조건의 통제 주장 보류, 성능표에서는 빼지 않음 — 프로토콜 §8.3)")
+    return warnings
+
+
 def build_report(
     manifests: list[RunManifest], correlate: Correlate, correlatable: frozenset[str],
-    *, runner_key: bytes | None = None,
+    *, runner_key: bytes | None = None, allow_fixture_e2: bool = False,
 ) -> Report:
     """전 회차를 채점해 코어 GT·BAC 두 표와 경고를 만든다. 행·경고 순서는 manifest 순서."""
     check_comparable(manifests)
@@ -246,6 +314,9 @@ def build_report(
     drain_policies: set[tuple[int, int]] = set()
     run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set(),
                                            "LLM 스트리밍": set()}
+    # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
+    e2_modes: dict[str, set[str]] = {}
+    control: dict[str, list[dict | None]] = {}
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs
@@ -279,9 +350,25 @@ def build_report(
                 if len(seen) > 1:
                     raise ComparabilityError(f"회차 조건 불일치({label}) — 같은 실행 설정·샘플링·머신끼리만 비교"
                                              "(프로토콜 §5.1·§6)")
+        if inputs.e2_mode is not None:
+            modes = e2_modes.setdefault(m.condition, set())
+            modes.add(inputs.e2_mode)
+            if len(modes) > 1:
+                raise ComparabilityError(f"E② 자리 혼합({m.condition}: {sorted(modes)}) — 조건 하나는 같은 E② 배치로만 "
+                                         "집계(프로토콜 §2)")
+        # 증명 없는 회차는 대조 근거가 None이다. 조건의 분모에 남겨 보류로 센다(#225 리뷰).
+        control.setdefault(m.condition, []).append(inputs.attempt_reconciliation)
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 
+    for condition, modes in e2_modes.items():
+        if "stub" in modes:
+            # 가짜 E² 회차는 시범·공식 결과가 아니다(프로토콜 §2). 배치 스모크를 확인할 때만 명시적으로 연다.
+            if not allow_fixture_e2:
+                raise ComparabilityError(f"가짜 E② 회차({condition}) — 공식 채점 대상 아님(프로토콜 §2), "
+                                         "배치 스모크 확인이면 --allow-fixture-e2")
+            warnings.append(f"경고[공식 비교 아님] {condition}: 통과 전용 가짜 E② 회차 — 배치·부정 연결 점검 확인용이며 "
+                            "통제를 증명하지 않음. 시범·공식·제품 결과에 쓰지 않음(프로토콜 §2)")
     if versions == {V1}:
         warnings.append("경고[공식 비교 아님] 러너 기록 v1(직접 관측 이벤트) — 합성 시험·과거 형식 회귀 검증용, "
                         "공식 비교표는 v1.1 isolated_window만(프로토콜 §4)")
@@ -289,6 +376,12 @@ def build_report(
     for basis_name, basis in (("코어 GT(인가 9)", core_gt()), ("BAC category(10)", bac_category())):
         rows = [aggregate_condition(c, repeats, basis) for c, repeats in by_condition.items()]
         sections.append(render_matrix(rows, basis_name))
+    # E② 자리를 서명 근거로 확인한 회차가 있는 조건만 표에 낸다. 조건 안에서 자리가 섞이면 위에서 이미 멈췄으므로
+    # 그런 조건의 None은 증명 없는 회차뿐이다. 확인한 회차가 하나도 없으면 E² 조건인지 알 수 없어 표에 넣지 않는다.
+    control = {c: runs for c, runs in control.items() if any(r is not None for r in runs)}
+    if control:
+        sections.append(render_control_table(control, {c: next(iter(e2_modes[c])) for c in control}))
+        warnings.extend(control_warnings(control))
     return Report("\n".join(sections), tuple(warnings))
 
 
@@ -310,11 +403,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("manifest", help="회차 manifest JSON")
     parser.add_argument("--runner-key-file", required=True, help="엔진 밖의 신뢰 러너 HMAC 키 파일(값 출력 금지)")
     parser.add_argument("--correlation", default=DEFAULT_PATH, help="평가 전용 GT 상관 JSON")
+    parser.add_argument("--allow-fixture-e2", action="store_true",
+                        help="가짜 E②(e2_mode=stub) 회차도 채점한다 — 배치 스모크 확인용, 공식 표에는 쓰지 않음")
     args = parser.parse_args(argv)
     try:
         table = load_correlation(args.correlation)
         report = build_report(load_manifests(args.manifest), table.correlate, table.operative,
-                              runner_key=read_runner_key(args.runner_key_file))
+                              runner_key=read_runner_key(args.runner_key_file),
+                              allow_fixture_e2=args.allow_fixture_e2)
     except _STOP_ERRORS as e:
         print(f"채점 중단: {e}", file=sys.stderr)
         return 2

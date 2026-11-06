@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -59,6 +60,7 @@ type Execution struct {
 	sending        int
 	transient      uint64
 	secrets        [][]byte
+	secretHeaders  map[string]struct{}
 }
 type Call struct {
 	ingressToken  [32]byte
@@ -81,7 +83,7 @@ type Call struct {
 
 func validRef(v string) bool { return safeRef.MatchString(v) && !strings.Contains(v, "://") }
 func randomRef(prefix string) (string, error) {
-	var b [16]byte
+	var b [randomRefBytes]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", ErrConfig
 	}
@@ -106,24 +108,35 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 		return nil, ErrConfig
 	}
 	l := cfg.Limits
-	if l.MaxAttempts == 0 || l.MaxAttempts > 40000 || l.MaxCalls <= 0 || l.MaxCalls > 1000 || l.MaxConcurrent <= 0 || l.MaxConcurrent > 100 ||
-		l.MaxBodyBytes <= 0 || l.MaxBodyBytes > 16<<20 || l.RequestTimeout <= 0 || l.RequestTimeout > 2*time.Minute ||
-		l.CallTimeout <= 0 || l.CallTimeout > time.Hour || l.MaxDenials == 0 || l.MaxTransient == 0 || l.MaxUnknown == 0 {
+	if l.MaxAttempts == 0 || l.MaxAttempts > maxExecutionAttempts || l.MaxCalls <= 0 || l.MaxCalls > maxExecutionCalls || l.MaxConcurrent <= 0 || l.MaxConcurrent > maxConcurrentRequests ||
+		l.MaxBodyBytes <= 0 || l.MaxBodyBytes > maxRequestBodyBytes || l.RequestTimeout <= 0 || l.RequestTimeout > maxRequestTimeout ||
+		l.CallTimeout <= 0 || l.CallTimeout > maxCallTimeout || l.MaxDenials == 0 || l.MaxTransient == 0 || l.MaxUnknown == 0 {
 		return nil, ErrConfig
 	}
 	rules, err := compileRules(cfg.Rules)
 	if err != nil {
 		return nil, err
 	}
+	if cfg.HeaderMode == "" {
+		cfg.HeaderMode = HeaderPreserve
+	}
+	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal {
+		return nil, ErrConfig
+	}
+	for _, rule := range rules {
+		if cfg.HeaderMode == HeaderPreserve && len(rule.CredentialHeaders) != 0 {
+			return nil, ErrConfig
+		}
+	}
 	cfg.Rules = nil
 	if cfg.RootCAs != nil {
 		cfg.RootCAs = cfg.RootCAs.Clone()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentGate: make(chan struct{}, 1)}, nil
+	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), secretHeaders: credentialHeaderNames(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentGate: make(chan struct{}, 1)}, nil
 }
 func compileRules(rules []Rule) ([]compiledRule, error) {
-	if len(rules) == 0 || len(rules) > 128 {
+	if len(rules) == 0 || len(rules) > maxExecutionRules {
 		return nil, ErrConfig
 	}
 	out := make([]compiledRule, 0, len(rules))
@@ -155,21 +168,11 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 			return nil, ErrConfig
 		}
 		r.Methods = append([]string(nil), r.Methods...)
-		r.Headers = r.Headers.Clone()
-		if !identityEncoding(r.Headers, "Accept-Encoding") {
-			return nil, ErrConfig
+		r, err = validateRuleHeaders(r)
+		if err != nil {
+			return nil, err
 		}
 		r.ConnectIP = r.ConnectIP.Unmap()
-		for k, vs := range r.Headers {
-			if k == "" || strings.ContainsAny(k, "\r\n") || reservedAttributionHeader(k) || strings.HasPrefix(strings.ToLower(k), "proxy-") || strings.EqualFold(k, "Host") || strings.EqualFold(k, "Connection") {
-				return nil, ErrConfig
-			}
-			for _, v := range vs {
-				if strings.ContainsAny(v, "\r\n") {
-					return nil, ErrConfig
-				}
-			}
-		}
 		u.Host = a
 		out = append(out, compiledRule{Rule: r, origin: u, authority: a, methods: m})
 	}
@@ -361,27 +364,30 @@ func (e *Execution) record(ctx context.Context, ev Event) error {
 	e.recordMu.Lock()
 	defer e.recordMu.Unlock()
 	e.mu.Lock()
-	e.eventIndex++
-	ev.Index = e.eventIndex
+	if e.auditFailed {
+		e.mu.Unlock()
+		return ErrAudit
+	}
+	ev.Index = e.eventIndex + 1
 	ev.At = time.Now().UTC()
-	priorFailure := e.auditFailed
 	e.mu.Unlock()
-	ev.AuditComplete = !priorFailure && ev.Reason != AuditFailed
+	ev.AuditComplete = ev.Reason != AuditFailed
 	err := e.cfg.Recorder.Record(ctx, ev)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err != nil {
-		ev.AuditComplete = false
 		e.auditFailed = true
 		e.stopReason = AuditFailed
 		e.cancel()
-	}
-	e.events = append(e.events, ev)
-	if err != nil {
 		return ErrAudit
 	}
+	// A failed candidate is not a normal event or a committed ordinal. The
+	// failure remains in the receipt/execution latch; recovery is not attempted.
+	e.eventIndex = ev.Index
+	e.events = append(e.events, ev)
 	return nil
 }
+
 func (e *Execution) Stop(ctx context.Context) error   { return e.stop(ctx, Closed) }
 func (e *Execution) Revoke(ctx context.Context) error { return e.stop(ctx, Revoked) }
 func (e *Execution) stop(ctx context.Context, reason Reason) error {
@@ -584,13 +590,13 @@ func (e *Execution) snapshotLocked(id int64) ExecutionView {
 		ids = append(ids, intent)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	return ExecutionView{Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
+	return ExecutionView{HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
 		State: state, ExpiresAt: e.cfg.ExpiresAt, Counts: e.counts, Reason: reason, AuditComplete: !e.auditFailed && e.cfg.Recorder != nil}
 }
 func (e *Execution) Policy() PolicyView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	v := PolicyView{Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
+	v := PolicyView{HeaderMode: e.cfg.HeaderMode, Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
 	for _, r := range e.rules {
 		v.Rules = append(v.Rules, RuleView{Ref: r.Ref, Methods: append([]string(nil), r.Methods...), PathScopeRef: r.PathScopeRef})
 	}
@@ -630,8 +636,8 @@ func (e *Execution) Calls() []CallResult {
 func (e *Execution) Events(after uint64, limit int) []Event {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if limit <= 0 || limit > 200 {
-		limit = 200
+	if limit <= 0 || limit > maxEventPageSize {
+		limit = maxEventPageSize
 	}
 	out := []Event{}
 	for _, ev := range e.events {
@@ -657,8 +663,8 @@ func (e *Execution) EventsForIntent(intentID int64, after uint64, limit int) []E
 	if _, registered := e.intents[intentID]; !registered {
 		return out
 	}
-	if limit <= 0 || limit > 200 {
-		limit = 200
+	if limit <= 0 || limit > maxEventPageSize {
+		limit = maxEventPageSize
 	}
 	for _, event := range e.events {
 		if event.IntentID == intentID && event.Index > after {
@@ -807,6 +813,19 @@ type guardedConn struct {
 	ob       *observed
 }
 
+// This constructor owns conn. Only an armed connection may become the
+// write-guarded capability returned to net/http's transport.
+func newDeadlineGuardedConn(conn net.Conn, call *Call, revision string, ob *observed) (net.Conn, error) {
+	if err := conn.SetDeadline(time.Now().Add(call.e.cfg.Limits.RequestTimeout)); err != nil {
+		if closeErr := conn.Close(); closeErr != nil {
+			// Fixed diagnostics only: transport errors may contain private peer details.
+			log.Print("[e2proxy] request_connection_close_failed after=deadline_unavailable")
+		}
+		return nil, ErrDenied
+	}
+	return &guardedConn{Conn: conn, c: call, revision: revision, ob: ob}, nil
+}
+
 func (g *guardedConn) Write(p []byte) (int, error) {
 	e := g.c.e
 	e.mu.Lock()
@@ -843,13 +862,14 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		copyReq.URL = &copyURL
 		req = copyReq
 	}
-	if req == nil || req.URL == nil || !supportedMethod(method) || req.ProtoMajor > 1 || req.Method == "CONNECT" || req.Header.Get("Upgrade") != "" || strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade") {
+	if req == nil || req.URL == nil || !supportedMethod(method) || req.ProtoMajor > 1 || req.ProtoMajor == 1 && req.ProtoMinor > 1 || req.Method == "CONNECT" || headerPresent(req.Header, "Upgrade") || headerPresent(req.Header, "Expect") || connectionUpgrade(req.Header) {
 		r.Decision = "unsupported"
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
 	}
 	requestHost, hostOK := preservedRequestHost(req)
-	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") {
+	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") ||
+		headerPresent(req.Header, "Authorization") || headerPresent(req.Header, "Cookie") {
 		r.Decision = "unsupported"
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
@@ -875,6 +895,11 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		return finish(nil, ErrDenied)
 	}
 	defer func() { e.mu.Lock(); e.sending--; e.mu.Unlock() }()
+	requestHeaders, headersOK := forwardRequestHeaders(req.Header, rule)
+	if !headersOK {
+		r.Decision, r.Reason = "unsupported", Unsupported
+		return finish(nil, ErrDenied)
+	}
 	// Consume the caller's bounded body before admission; it never reaches audit.
 	var body []byte
 	if req.Body != nil {
@@ -904,10 +929,19 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Reason = reason
 		return finish(nil, ErrDenied)
 	}
-	if err = e.record(ctx, Event{Stage: "intent", Receipt: r}); err != nil {
+	// Once reserved, the intent ACK has its own bounded persistence context,
+	// just like the result. Caller cancellation never abandons an audit write.
+	intentCtx, intentCancel := context.WithTimeout(context.WithoutCancel(ctx), e.cfg.Limits.RequestTimeout)
+	err = e.record(intentCtx, Event{Stage: "intent", Receipt: r})
+	intentCancel()
+	if err != nil {
 		r.Decision = "denied"
 		r.Reason = AuditFailed
 		return finish(nil, ErrAudit)
+	}
+	if ctx.Err() != nil {
+		r.Reason = Closed
+		return finish(nil, ErrClosed)
 	}
 	workCtx, cancel := context.WithTimeout(c.ctx, e.cfg.Limits.RequestTimeout)
 	defer cancel()
@@ -920,18 +954,16 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	out.Host = requestHost
 	out.RequestURI = ""
 	out.Close = true
-	out.Header = req.Header.Clone()
-	if out.Header == nil {
-		out.Header = make(http.Header)
-	}
-	stripHeaders(out.Header)
-	out.Header.Del("Authorization")
-	out.Header.Del("Cookie")
-	for k, vs := range rule.Headers {
+	out.Header = requestHeaders
+	for k, vs := range rule.CredentialHeaders {
 		out.Header[k] = append([]string(nil), vs...)
 	}
 	out.Header.Set(AttemptHeader, r.AttemptID)
-	out.Body = io.NopCloser(bytes.NewReader(body))
+	if len(body) == 0 {
+		out.Body = http.NoBody
+	} else {
+		out.Body = io.NopCloser(bytes.NewReader(body))
+	}
 	out.ContentLength = int64(len(body))
 	out.TransferEncoding = nil
 	out.Trailer = nil
@@ -960,8 +992,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		if derr != nil {
 			return nil, ErrDenied
 		}
-		_ = conn.SetDeadline(time.Now().Add(e.cfg.Limits.RequestTimeout))
-		return &guardedConn{Conn: conn, c: c, revision: revision, ob: ob}, nil
+		return newDeadlineGuardedConn(conn, c, revision, ob)
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -981,27 +1012,16 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, e.cfg.Limits.MaxBodyBytes+1))
 	closeErr := resp.Body.Close()
 	r.ResponseComplete = readErr == nil && closeErr == nil && int64(len(responseBody)) <= e.cfg.Limits.MaxBodyBytes
-	if !r.ResponseComplete || !identityEncoding(resp.Header, "Content-Encoding") {
+	if !r.ResponseComplete || !e.safeHTTPResponse(resp, responseBody) {
+		clear(responseBody)
 		r.Reason = Unknown
 		return finish(nil, ErrDenied)
 	}
-	stripHeaders(resp.Header)
-	resp.Header.Del("Set-Cookie")
-	resp.Header.Del("WWW-Authenticate")
-	resp.Header.Del("Authentication-Info")
-	responseBody = e.RedactOutput(responseBody)
-	for k, vs := range resp.Header {
-		for i, v := range vs {
-			vs[i] = string(e.RedactOutput([]byte(v)))
-		}
-		resp.Header[k] = vs
-	}
-	resp.Header.Del("Content-Length")
-	resp.ContentLength = int64(len(responseBody))
+	// Preserve the original representation and metadata. Only a minimal,
+	// nonsecret method context survives so HEAD retains its length semantics.
 	resp.Body = io.NopCloser(bytes.NewReader(responseBody))
 	resp.Close = true
-	resp.Request = nil
-	resp.Trailer = nil
+	resp.Request = &http.Request{Method: req.Method}
 	r.Reason = Complete
 	return finish(resp, nil)
 }
@@ -1042,7 +1062,7 @@ func credentialValues(rules []compiledRule) [][]byte {
 		}
 	}
 	for _, r := range rules {
-		for k, vs := range r.Headers {
+		for k, vs := range r.CredentialHeaders {
 			for _, v := range vs {
 				add(v)
 				switch strings.ToLower(k) {
@@ -1061,6 +1081,12 @@ func credentialValues(rules []compiledRule) [][]byte {
 						}
 					}
 				case "cookie":
+					// Include the standard effective value (notably quoted cookies)
+					// without changing the protected field sent to the target.
+					request := &http.Request{Header: http.Header{"Cookie": {v}}}
+					for _, cookie := range request.Cookies() {
+						add(cookie.Value)
+					}
 					for _, p := range strings.Split(v, ";") {
 						pair := strings.SplitN(strings.TrimSpace(p), "=", 2)
 						if len(pair) == 2 {
