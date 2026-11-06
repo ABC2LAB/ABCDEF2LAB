@@ -111,14 +111,14 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer journal.Close()
-			ledger, err := budget.New(budget.Limits{MaxApprovals: 1, MaxRequestsPerApproval: 4})
+			ledger, err := budget.New(budget.Limits{MaxApprovals: 1, MaxRequestsPerApproval: 5})
 			if err != nil {
 				t.Fatal(err)
 			}
 			now := time.Now()
 			key := budget.Key{TaskRef: "7", BudgetRef: "worker-budget"}
 			binding := budget.Binding{PolicyRef: "worker-policy", ResetRef: "worker-reset"}
-			if err := ledger.Register(budget.Grant{Key: key, Binding: binding, MaxRequests: 2, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(5 * time.Minute)}, now); err != nil {
+			if err := ledger.Register(budget.Grant{Key: key, Binding: binding, MaxRequests: 5, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(5 * time.Minute)}, now); err != nil {
 				t.Fatal(err)
 			}
 			execution, err := e2proxy.NewExecution(context.Background(), e2WorkerCredentialFixture(t, e2proxy.Config{
@@ -146,7 +146,7 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 					t.Errorf("actual runner drain failed: %v", err)
 				}
 			}()
-			control, err := NewE2HTTPControl("7", 3)
+			control, err := NewE2HTTPControl("7", 6)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -201,16 +201,40 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 			if last.result == nil || last.result.Trusted.Call.IntentID != 25 {
 				t.Fatal("new permitted intent lost program attribution")
 			}
+			allowedCommand := func(path string) string {
+				return "curl --silent --show-error --fail" + header + "'" + target.URL + path + "'"
+			}
+			// A: a permitted GET followed by a refused POST exits 22. The trusted
+			// denial must win over the shell exit in both Worker and control.
+			mixed := runStep(27, allowedCommand("/fixture/mixed")+" && "+deniedCommand, ErrE2HTTPPolicyLimited, 2)
+			if mixed.result == nil || mixed.result.Trusted.Classification != "partial_policy_denial" ||
+				mixed.result.Trusted.Call.Counts.Denied != 1 || mixed.result.Trusted.Call.Counts.ForwardAttempted != 1 ||
+				control.Snapshot().Decision != "partial_policy_denial" {
+				t.Fatalf("mixed command lost policy refusal: result=%+v control=%+v", mixed.result, control.Snapshot())
+			}
+			// B/C: a fully audited ordinary nonzero exit is not a policy refusal,
+			// and the same command may run under a new intent within the task cap.
+			nonzeroCommand := allowedCommand("/fixture/nonzero") + "; exit 3"
+			for _, intentID := range []int64{29, 30} {
+				failedTool := runStep(intentID, nonzeroCommand, nil, 2)
+				if failedTool.result == nil || failedTool.result.Trusted.Classification != "tool_failure" ||
+					failedTool.result.Trusted.ExitCode != 3 || failedTool.result.Trusted.Call.Counts.Denied != 0 {
+					t.Fatalf("ordinary shell exit became policy failure: intent=%d result=%+v", intentID, failedTool.result)
+				}
+			}
+			if control.Snapshot().Calls != 6 || control.Snapshot().Decision != "tool_failure" {
+				t.Fatalf("shared call control after ordinary failures=%+v", control.Snapshot())
+			}
 			runStep(26, "curl --silent --show-error --fail"+header+"'"+target.URL+"/fixture/extra'", ErrE2HTTPBlocked, 0)
 			result := last.result
 			if result.Trusted.Classification != "completed" || !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete {
 				t.Fatal("real call did not complete process/proxy/audit drain")
 			}
-			if received.Load() != 2 || badAuthentication.Load() || badAttempt.Load() || badMethod.Load() {
+			if received.Load() != 5 || badAuthentication.Load() || badAttempt.Load() || badMethod.Load() {
 				t.Fatalf("target observations received=%d authentication_bad=%v attempt_bad=%v method_bad=%v", received.Load(), badAuthentication.Load(), badAttempt.Load(), badMethod.Load())
 			}
 			counts := execution.Snapshot().Counts
-			if counts.Attempts != 3 || counts.Allowed != 2 || counts.Denied != 1 || counts.ForwardAttempted != 2 || counts.Responses != 2 || counts.Unknown != 0 || counts.Calls != 3 {
+			if counts.Attempts != 7 || counts.Allowed != 5 || counts.Denied != 2 || counts.ForwardAttempted != 5 || counts.Responses != 5 || counts.Unknown != 0 || counts.Calls != 6 {
 				t.Fatalf("actual trusted counts=%+v", counts)
 			}
 			if remaining, err := ledger.Remaining(key, binding, time.Now()); err != nil || remaining != 0 {
@@ -250,7 +274,7 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 					deniedBeforeSend = true
 				}
 			}
-			if !allowed[23] || !allowed[25] || !deniedBeforeSend {
+			if !allowed[23] || !allowed[25] || !allowed[27] || !allowed[29] || !allowed[30] || !deniedBeforeSend {
 				t.Fatal("actual intent/decision results were not bound to durable audit")
 			}
 		})

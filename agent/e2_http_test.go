@@ -237,6 +237,62 @@ func completedE2WorkerResult() e2runner.Result {
 	}
 }
 
+func TestE2HTTPPolicyCountsOutrankNonzeroExit(t *testing.T) {
+	result := completedE2WorkerResult()
+	result.Trusted.Execution.AuditComplete = true
+	result.Trusted.Classification = "tool_failure"
+	result.Trusted.ProcessBashExited = true
+	result.Trusted.ExitCode = 22
+	result.Trusted.Call.Counts.Denied = 1
+	result.Trusted.Call.Counts.ForwardAttempted = 1
+	if e2HTTPRunnerFailed(e2runner.ErrUnavailable, result) ||
+		e2HTTPPolicyClassification(result) != "partial_policy_denial" {
+		t.Fatal("a final mixed refusal was treated as an ordinary tool failure")
+	}
+	result.Trusted.Call.Counts.ForwardAttempted = 0
+	if got := e2HTTPPolicyClassification(result); got != "policy_not_executed" {
+		t.Fatalf("denied before transmission=%s", got)
+	}
+	result.Trusted.Call.Counts.Denied = 0
+	result.Trusted.Call.Counts.Unsupported = 1
+	if got := e2HTTPPolicyClassification(result); got != "unsupported" {
+		t.Fatalf("unsupported before transmission=%s", got)
+	}
+	result.Trusted.Call.Counts.Unknown = 1
+	if got := e2HTTPPolicyClassification(result); got != "tool_failure" {
+		t.Fatalf("unknown outcome was hidden by policy counts: %s", got)
+	}
+	result.Trusted.Call.Counts.Unknown = 0
+	result.Trusted.Call.Counts.Denied = 1
+	result.Trusted.Classification = "result_unknown"
+	if got := e2HTTPPolicyClassification(result); got != "result_unknown" {
+		t.Fatalf("explicit unknown was hidden by policy counts: %s", got)
+	}
+	result.Trusted.Call.AuditComplete = false
+	if !e2HTTPRunnerFailed(e2runner.ErrUnavailable, result) {
+		t.Fatal("incomplete audit was treated as an ordinary shell exit")
+	}
+}
+
+func TestE2HTTPBashNonzeroExitDoesNotBecomeRunnerFailure(t *testing.T) {
+	execution, _, _ := e2WorkerFixture(t)
+	state := &e2HTTPToolState{}
+	calls := 0
+	tool := e2WorkerBashTool(t, execution, func(context.Context, string) (e2runner.Result, error) {
+		calls++
+		result := completedE2WorkerResult()
+		result.Trusted.Classification = "tool_failure"
+		result.Trusted.ExitCode = 3
+		return result, e2runner.ErrUnavailable
+	}, time.Second, state)
+	for i := 0; i < 2; i++ {
+		result, err := tool.Call(context.Background(), json.RawMessage(`{"command":"echo fixture"}`), nil)
+		if err != nil || !result.IsError || state.runnerFailed || state.halted || calls != i+1 {
+			t.Fatalf("ordinary nonzero exit i=%d calls=%d state=%+v err=%v", i, calls, state, err)
+		}
+	}
+}
+
 func TestE2HTTPBashSeparatesUntrustedOutputAndProgramResult(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
 	called := 0

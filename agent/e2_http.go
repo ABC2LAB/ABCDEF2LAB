@@ -132,11 +132,50 @@ trusted evidence and storage pipeline. Do not claim overall diagnosis completion
 
 type e2HTTPRunFunc func(context.Context, string) (e2runner.Result, error)
 type e2HTTPToolState struct {
-	mu         sync.Mutex
-	halted     bool
-	unknown    bool
-	incomplete bool
-	last       string
+	mu           sync.Mutex
+	halted       bool
+	unknown      bool
+	incomplete   bool
+	runnerFailed bool
+	last         string
+}
+
+// A nonzero Bash exit is returned with ErrUnavailable by Runner even when the
+// trusted call is final. Other Runner errors cannot be treated as tool output.
+func e2HTTPRunnerFailed(runErr error, result e2runner.Result) bool {
+	if runErr == nil {
+		return false
+	}
+	t := result.Trusted
+	knownExit := t.Classification == "tool_failure" || t.Classification == "policy_not_executed" ||
+		t.Classification == "partial_policy_denial" || t.Classification == "unsupported" ||
+		t.Classification == "partial_unsupported"
+	return !(errors.Is(runErr, e2runner.ErrUnavailable) && knownExit && t.ProcessBashExited && t.ExitCode != 0 &&
+		t.Final && t.ProcessDrained && t.ProxyDrained && t.Call.AuditComplete && t.Execution.AuditComplete)
+}
+
+// The program-owned per-call counts take precedence over a nonzero shell exit.
+// Unknown or incomplete calls retain their original classification.
+func e2HTTPPolicyClassification(result e2runner.Result) string {
+	t := result.Trusted
+	c := t.Call.Counts
+	if t.Classification == "result_unknown" || !t.Final || !t.ProcessDrained || !t.ProxyDrained ||
+		!t.Call.AuditComplete || !t.Execution.AuditComplete || c.Unknown > 0 || t.Execution.Counts.Unknown > 0 {
+		return t.Classification
+	}
+	if c.Denied > 0 {
+		if c.ForwardAttempted > 0 {
+			return "partial_policy_denial"
+		}
+		return "policy_not_executed"
+	}
+	if c.Unsupported > 0 {
+		if c.ForwardAttempted > 0 {
+			return "partial_unsupported"
+		}
+		return "unsupported"
+	}
+	return t.Classification
 }
 
 // The injectable run function is private and used by deterministic adapter
@@ -192,24 +231,24 @@ func newE2HTTPBashTool(execution *e2proxy.Execution, run e2HTTPRunFunc, hostTime
 			callCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			result, runErr := run(callCtx, command)
-			if runErr != nil && result.Trusted.Classification == "completed" {
-				result.Trusted.Classification = "tool_failure"
-			}
-			state.outcome(result.Trusted.Classification)
 			// Refresh the real execution projection. A tool's stdout or a stale
 			// runner response cannot clear a concurrent stop/audit-failure latch.
 			result.Trusted.Execution = execution.SnapshotForIntent(actualIntentID)
+			runnerFailed := e2HTTPRunnerFailed(runErr, result)
+			result.Trusted.Classification = e2HTTPPolicyClassification(result)
+			state.outcome(result.Trusted.Classification)
 			result.ToolOutput = string(execution.RedactOutput([]byte(result.ToolOutput)))
 			unknown := result.Trusted.Classification == "result_unknown" || result.Trusted.Execution.Counts.Unknown > 0
 			incomplete := !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
-			if unknown || incomplete || result.Trusted.Classification == "terminated" || result.Trusted.Classification == "isolation_unavailable" {
+			if unknown || incomplete || runnerFailed || result.Trusted.Classification == "terminated" || result.Trusted.Classification == "isolation_unavailable" {
 				state.mu.Lock()
 				state.halted = true
 				state.unknown = state.unknown || unknown
 				state.incomplete = state.incomplete || incomplete
+				state.runnerFailed = state.runnerFailed || runnerFailed
 				state.mu.Unlock()
 			}
-			controlView = control.finish(ticket, result, runErr != nil)
+			controlView = control.finish(ticket, result, runnerFailed)
 			isError := runErr != nil || result.Trusted.Classification != "completed" || unknown || incomplete || result.Trusted.Execution.State != "active"
 			return encodeE2HTTPResult(result, isError, controlView), nil
 		},
@@ -447,6 +486,7 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 	state.mu.Lock()
 	unknown := state.unknown
 	incomplete := state.incomplete
+	runnerFailed := state.runnerFailed
 	last := state.last
 	state.mu.Unlock()
 	if unknown || snapshot.Counts.Unknown > 0 {
@@ -461,7 +501,7 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 	if ctx.Err() != nil {
 		return reason, counts, ctx.Err()
 	}
-	if runErr != nil {
+	if runErr != nil || runnerFailed {
 		return reason, counts, ErrE2HTTPWorker
 	}
 	switch last {
@@ -614,7 +654,7 @@ func (c *E2HTTPControl) finish(ticket e2HTTPTicket, result e2runner.Result, runF
 		return c.view
 	}
 	state.inflight = false
-	classification := result.Trusted.Classification
+	classification := e2HTTPPolicyClassification(result)
 	negative := runFailed || classification != "completed" || !result.Trusted.Final || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
 	policyFailure := classification == "policy_not_executed" || classification == "partial_policy_denial" || classification == "unsupported" || classification == "partial_unsupported"
 	incomplete := classification == "result_unknown" || !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
