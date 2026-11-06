@@ -775,7 +775,7 @@ func TestPauseTaskToolPersistsAndDequeuesTask(t *testing.T) {
 	}
 
 	s := newAdmissionTestServer(m, nil)
-	s.engine.Pause(task.ID, agent.Causef("queued_for_admission", "queued", "test queue barrier"))
+	s.engine.Pause(task.ID, agent.NewCause("queued_for_admission", "queued", "test queue barrier", "test queue barrier"))
 	input, err := json.Marshal(map[string]string{"task_id": task.ID})
 	if err != nil {
 		t.Fatal(err)

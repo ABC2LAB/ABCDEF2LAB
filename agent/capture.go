@@ -81,11 +81,11 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 		if err != nil {
 			flush()
 			if ctx.Err() != nil { // engine/user cancellation, not a provider failure
-				sum, detail := terminalText(ctx, &harness.Terminal{Reason: reason, Err: ctx.Err()}, lastTool)
-				rec(activityWithUsage(db.Activity{Kind: "result", Summary: firstLine(sum, 400), Detail: detail}, lastUsage))
+				record := terminalText(ctx, &harness.Terminal{Reason: reason, Err: ctx.Err()}, lastTool)
+				rec(activityWithUsage(record.activity(db.Activity{Kind: "result"}), lastUsage))
 				return finalText, reason, ctx.Err()
 			}
-			rec(activityWithUsage(db.Activity{Kind: "result", IsError: true, Summary: "실행 오류: " + err.Error(), Detail: err.Error()}, lastUsage))
+			rec(activityWithUsage(executionErrorActivity(err), lastUsage))
 			return finalText, reason, err
 		}
 		switch ev.Kind {
@@ -140,15 +140,15 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 					tkind = ""
 				}
 				flush() // flush any trailing thinking / non-final text
-				sum, detail := ev.Terminal.Text, ev.Terminal.Text
-				if sum == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
-					sum, detail = terminalText(ctx, ev.Terminal, lastTool)
+				result := db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
+					Summary: firstLine(ev.Terminal.Text, resultSummaryRunes), Detail: ev.Terminal.Text}
+				if ev.Terminal.Text == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
+					result = terminalText(ctx, ev.Terminal, lastTool).activity(result)
 				}
 				u := ev.Terminal.Usage // cumulative token usage for this session
-				rec(db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
-					Summary: firstLine(sum, 400), Detail: detail,
-					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,
-					CacheReadTokens: &u.CacheReadTokens, CacheWriteTokens: &u.CacheWriteTokens})
+				result.InputTokens, result.OutputTokens = &u.InputTokens, &u.OutputTokens
+				result.CacheReadTokens, result.CacheWriteTokens = &u.CacheReadTokens, &u.CacheWriteTokens
+				rec(result)
 				if ev.Terminal.Err != nil {
 					rerr = ev.Terminal.Err
 				}
@@ -183,6 +183,12 @@ func blocksText(blocks []llm.ContentBlock) string {
 		}
 	}
 	return b.String()
+}
+
+// executionErrorActivity 는 세션이 Terminal 이벤트 없이 오류로 끝난 경우의 결과 행이다.
+func executionErrorActivity(err error) db.Activity {
+	return db.Activity{Kind: "result", IsError: true, Summary: "Execution error: " + err.Error(), Detail: err.Error(),
+		Metadata: db.DisplayMetadata("실행 오류: "+err.Error(), err.Error())}
 }
 
 // firstLine returns a single-line, rune-capped preview for the summary column.

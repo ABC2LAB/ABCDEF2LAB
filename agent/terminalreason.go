@@ -6,8 +6,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/harness"
 )
+
+// resultSummaryRunes 는 결과 행 요약 칸의 글자 상한이다.
+const resultSummaryRunes = 400
 
 // runTrace retains the latest tool call so an interrupted run can identify the
 // operation that was still in flight.
@@ -30,23 +34,141 @@ func (t *runTrace) done(id string) {
 	}
 }
 
-var reasonHint = map[harness.TerminalReason]string{
-	harness.ReasonCompleted:         "模型正常结束了本轮，但没有留下文字总结；事实和资产以本轮工具调用记录为准",
-	harness.ReasonMaxTurns:          "达到步数上限(MaxTurns)：SDK 已执行收尾并写回事实和资产，意图会标记为 exhausted，供规划者换方向继续，而不是作为失败处理",
-	harness.ReasonTimeout:           "达到单次运行的墙钟预算(MaxDuration)：到点会打断在跑的工具并就地进收尾，把已识别的事实和资产写回，意图会标记为 exhausted",
-	harness.ReasonModelError:        "模型或 API 调用失败（网络、鉴权、限流、供应商 5xx 等），重试用尽后意图标记为 blocked——传输层故障导致这条意图基本没真正探成；查其执行过程（get_worker_trace）后再决定重派或换法",
-	harness.ReasonBlockingLimit:     "上下文长度达到硬上限，请求在发出前被拦截；应收窄意图粒度或压缩工具返回",
-	harness.ReasonPromptTooLong:     "提示词过长且上下文压缩重试已经用尽，无法继续执行",
-	harness.ReasonImageError:        "当前模型不支持本轮多模态内容；请切换支持视觉的模型或避免工具返回图片",
-	harness.ReasonStopHookPrevented: "Stop 钩子阻止本轮结束，随后未能继续；请检查任务 Guard 规则是否过严",
-	harness.ReasonHookStopped:       "工具或钩子主动停止继续执行，例如越界目标或禁用命令；请检查最后一条 tool_result 的拦截说明",
-	harness.ReasonAbortedStreaming:  "运行在模型输出流式生成阶段被取消",
-	harness.ReasonAbortedTools:      "运行在工具执行阶段被取消",
+// terminalWords 는 종료 결과 한 벌의 문구다. 모델은 영어로, 사람은 한국어로 읽는다.
+type terminalWords struct {
+	hints           map[harness.TerminalReason]string
+	hintRunes       int // 요약에 넣는 설명의 글자 상한. 같은 내용이어도 언어마다 글자 수가 다르다
+	hintNoTerminal  string
+	hintUnknown     string
+	stageDefault    string
+	stageStreaming  string
+	stageTools      string
+	abortedSummary  string // 원인, 단계, 진행
+	budgetSummary   string // 종료 상태, 진행
+	noTextSummary   string // 종료 상태, 설명
+	reasonLine      string
+	abortLine       string
+	noAbortLine     string
+	errLine         string
+	partialLine     string
+	turnsLine       string
+	elapsedLine     string
+	tokensLine      string
+	noToolLine      string
+	pendingToolLine string
+	lastToolLine    string
+	turnsUnit       string
+	progressPrefix  string
+	unknownAbort    string
+	abortName       func(*AbortCause) string
+	abortText       func(*AbortCause) string
+}
+
+var terminalEnglish = terminalWords{
+	hints: map[harness.TerminalReason]string{
+		harness.ReasonCompleted:         "The model finished this round normally but left no text summary; rely on this round's tool call records for facts and assets",
+		harness.ReasonMaxTurns:          "Reached the step limit (MaxTurns): the SDK ran the wrap-up and wrote back facts and assets; the intent is marked exhausted so the planner can change direction, and it isn't treated as a failure",
+		harness.ReasonTimeout:           "Reached the wall-clock budget of this run (MaxDuration): at that point the running tool is interrupted and wrap-up starts on the spot, writing back the facts and assets identified; the intent is marked exhausted",
+		harness.ReasonModelError:        "The model or API call failed (network, auth, rate limit, provider 5xx and so on); after retries ran out the intent is marked blocked. A transport failure means this intent was barely explored; check its execution with get_worker_trace before deciding to dispatch it again or change approach",
+		harness.ReasonBlockingLimit:     "Context length reached the hard limit and the request was blocked before sending; narrow the intent or compress tool output",
+		harness.ReasonPromptTooLong:     "The prompt is too long and the context compaction retries ran out, so the run can't continue",
+		harness.ReasonImageError:        "The current model doesn't support this round's multimodal content; switch to a model that supports vision or avoid tools that return images",
+		harness.ReasonStopHookPrevented: "A Stop hook prevented this round from ending and the run then couldn't continue; check whether the task Guard rules are too strict",
+		harness.ReasonHookStopped:       "A tool or hook actively stopped further execution, for example an out-of-scope target or a prohibited command; check the block note in the last tool_result",
+		harness.ReasonAbortedStreaming:  "The run was cancelled while the model output was streaming",
+		harness.ReasonAbortedTools:      "The run was cancelled during tool execution",
+	},
+	hintRunes:       200,
+	hintNoTerminal:  "The run's context was cancelled, but the lower layer produced no Terminal event",
+	hintUnknown:     "Unknown terminal state; the harness may have added a TerminalReason, so reasonHint needs an entry",
+	stageDefault:    "execution",
+	stageStreaming:  "model output",
+	stageTools:      "tool execution",
+	abortedSummary:  "(Run interrupted: %s; stopped during %s%s; not finished)",
+	budgetSummary:   "(Reached the run budget limit (%s); wrapped up and wrote back facts%s; no text summary this time)",
+	noTextSummary:   "(No text summary, terminal state %s: %s)",
+	reasonLine:      "- **Terminal state**: `%s` - %s\n",
+	abortLine:       "- **Interruption cause** (`%s`): %s\n",
+	noAbortLine:     "- **Interruption cause**: unavailable; the cancelling side may not have attached a named cause through context.WithCancelCause\n",
+	errLine:         "- **Underlying error**: `%v`\n",
+	partialLine:     "- **Partial output generated before the cancellation**:\n\n",
+	turnsLine:       "- **Executed**: %d model turns\n",
+	elapsedLine:     "- **Run time**: %s\n",
+	tokensLine:      "- **Cumulative tokens**: input %d / output %d / cache read %d / cache write %d\n",
+	noToolLine:      "- **Tool calls**: the run ended before making any tool call\n",
+	pendingToolLine: "- **Tool running at the interruption**: `%s` (running for %s, **no result returned**)\n\n  ```json\n  %s\n  ```\n",
+	lastToolLine:    "- **Last tool before the interruption**: `%s` (returned normally)\n",
+	turnsUnit:       "%d turns",
+	progressPrefix:  ", ran for ",
+	unknownAbort:    "cause unavailable",
+	abortName:       func(c *AbortCause) string { return c.Code },
+	abortText:       func(c *AbortCause) string { return c.ModelText },
+}
+
+var terminalKorean = terminalWords{
+	hints: map[harness.TerminalReason]string{
+		harness.ReasonCompleted:         "모델이 이번 라운드를 정상 종료했지만 글 요약을 남기지 않았다. 사실과 자산은 이번 도구 호출 기록을 기준으로 본다",
+		harness.ReasonMaxTurns:          "단계 상한(MaxTurns)에 도달했다. SDK가 마무리해 사실과 자산을 기록했고, 의도는 exhausted로 표시해 Planner가 방향을 바꾸게 한다. 실패로 다루지 않는다",
+		harness.ReasonTimeout:           "이번 실행의 벽시계 예산(MaxDuration)에 도달했다. 실행 중인 도구를 끊고 바로 마무리해 찾은 사실과 자산을 기록했으며, 의도는 exhausted로 표시한다",
+		harness.ReasonModelError:        "모델이나 API 호출이 실패했다(네트워크, 인증, 호출 제한, 제공자 5xx 등). 재시도를 다 써서 의도를 blocked로 표시했고, 전송 장애라 이 의도는 거의 탐색되지 않았다. 실행 과정(get_worker_trace)을 본 뒤 다시 보낼지 방법을 바꿀지 정한다",
+		harness.ReasonBlockingLimit:     "컨텍스트 길이가 하드 상한에 도달해 요청을 보내기 전에 막았다. 의도 범위를 좁히거나 도구 출력을 줄여야 한다",
+		harness.ReasonPromptTooLong:     "프롬프트가 너무 길고 컨텍스트 압축 재시도도 다 써서 계속할 수 없다",
+		harness.ReasonImageError:        "현재 모델은 이번 라운드의 멀티모달 내용을 지원하지 않는다. 시각을 지원하는 모델로 바꾸거나 이미지를 돌려주는 도구를 피한다",
+		harness.ReasonStopHookPrevented: "Stop 훅이 이번 라운드 종료를 막았고 그 뒤 계속하지 못했다. 작업 Guard 규칙이 너무 엄격한지 확인한다",
+		harness.ReasonHookStopped:       "도구나 훅이 실행을 멈췄다. 범위 밖 대상이나 금지 명령이 그런 경우다. 마지막 tool_result의 차단 설명을 확인한다",
+		harness.ReasonAbortedStreaming:  "모델 출력을 받는 중에 실행이 취소됐다",
+		harness.ReasonAbortedTools:      "도구 실행 중에 실행이 취소됐다",
+	},
+	hintRunes:       120,
+	hintNoTerminal:  "실행 context가 취소됐지만 하위 계층이 Terminal 이벤트를 만들지 않았다",
+	hintUnknown:     "알 수 없는 종료 상태다. harness에 TerminalReason이 추가됐을 수 있으니 reasonHint를 보충한다",
+	stageDefault:    "실행 중",
+	stageStreaming:  "모델 출력 단계",
+	stageTools:      "도구 실행 단계",
+	abortedSummary:  "(실행 중단: %s. %s에 멈춤%s, 끝나지 않음)",
+	budgetSummary:   "(실행 예산 상한 도달(%s). 마무리해 사실을 기록함%s. 이번에는 글 요약 없음)",
+	noTextSummary:   "(글 요약 없음, 종료 상태 %s: %s)",
+	reasonLine:      "- **종료 상태**: `%s` - %s\n",
+	abortLine:       "- **중단 원인** (`%s`): %s\n",
+	noAbortLine:     "- **중단 원인**: 알 수 없다. 취소한 쪽이 context.WithCancelCause로 원인을 붙이지 않았을 수 있다\n",
+	errLine:         "- **내부 오류**: `%v`\n",
+	partialLine:     "- **취소 전에 만든 일부 출력**:\n\n",
+	turnsLine:       "- **실행한 모델 턴**: %d\n",
+	elapsedLine:     "- **이번 실행 시간**: %s\n",
+	tokensLine:      "- **누적 토큰**: 입력 %d / 출력 %d / 캐시 읽기 %d / 캐시 쓰기 %d\n",
+	noToolLine:      "- **도구 호출**: 도구를 호출하기 전에 실행이 끝났다\n",
+	pendingToolLine: "- **중단 때 실행 중이던 도구**: `%s` (%s 실행, **결과 못 받음**)\n\n  ```json\n  %s\n  ```\n",
+	lastToolLine:    "- **중단 전 마지막 도구**: `%s` (정상 반환)\n",
+	turnsUnit:       "%d턴",
+	progressPrefix:  ", 실행 ",
+	unknownAbort:    "취소 원인을 알 수 없음",
+	abortName:       func(c *AbortCause) string { return c.Short },
+	abortText:       func(c *AbortCause) string { return c.Text },
+}
+
+// terminalRecord 는 글 요약 없이 끝난 실행의 결과 행이다. Summary·Detail 은 모델이 읽는 영어로 저장하고,
+// 화면용 한국어는 metadata 에 둔다. 모델이 읽는 경로는 여러 곳이지만 화면 경계는 db.Activity.ForDisplay 하나다.
+type terminalRecord struct {
+	Summary, Detail, DisplaySummary, DisplayDetail string
 }
 
 // terminalText renders a terminal event with no final text into a compact summary
-// and a Markdown detail block.
-func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (string, string) {
+// and a Markdown detail block, in both languages.
+func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) terminalRecord {
+	summary, detail := renderTerminal(terminalEnglish, ctx, term, tr)
+	displaySummary, displayDetail := renderTerminal(terminalKorean, ctx, term, tr)
+	return terminalRecord{Summary: summary, Detail: detail, DisplaySummary: displaySummary, DisplayDetail: displayDetail}
+}
+
+// activity 는 결과 행의 글과 metadata 를 채운다. 목록 칸에 맞게 요약 길이는 호출 쪽 규칙과 같게 자른다.
+func (r terminalRecord) activity(base db.Activity) db.Activity {
+	base.Summary = firstLine(r.Summary, resultSummaryRunes)
+	base.Detail = r.Detail
+	base.Metadata = db.DisplayMetadata(firstLine(r.DisplaySummary, resultSummaryRunes), r.DisplayDetail)
+	return base
+}
+
+func renderTerminal(w terminalWords, ctx context.Context, term *harness.Terminal, tr *runTrace) (string, string) {
 	reason := term.Reason
 	aborted := reason == harness.ReasonAbortedStreaming || reason == harness.ReasonAbortedTools
 	// Prompt may return ctx.Err directly without a terminal event. Preserve the
@@ -54,66 +176,62 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 	if reason == "" && ctx.Err() != nil {
 		aborted = true
 	}
+	abort := abortCauseOf(ctx)
 
 	var sum string
 	if aborted {
-		_, short, _, ok := AbortReason(ctx)
-		if !ok {
-			short = "未能取得取消原因"
+		name := w.unknownAbort
+		if abort != nil {
+			name = w.abortName(abort)
 		}
-		stage := "执行过程中"
+		stage := w.stageDefault
 		switch reason {
 		case harness.ReasonAbortedStreaming:
-			stage = "模型输出阶段"
+			stage = w.stageStreaming
 		case harness.ReasonAbortedTools:
-			stage = "工具执行阶段"
+			stage = w.stageTools
 		}
-		sum = "（运行被中断：" + short + "；停在" + stage + progressSuffix(term, tr) + "，未完成）"
+		sum = fmt.Sprintf(w.abortedSummary, name, stage, progressSuffix(w, term, tr))
 	} else if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
-		sum = "（达到运行预算上限(" + string(reason) + ")，已收尾写回事实" + progressSuffix(term, tr) + "；本次无文字总结）"
+		sum = fmt.Sprintf(w.budgetSummary, string(reason), progressSuffix(w, term, tr))
 	} else {
-		hint := terminalReasonHint(reason)
-		sum = "（无文字总结，终态 " + terminalReasonLabel(reason) + "：" + firstLine(hint, 80) + "）"
+		sum = fmt.Sprintf(w.noTextSummary, terminalReasonLabel(reason), firstLine(terminalReasonHint(w, reason), w.hintRunes))
 	}
 
 	var b strings.Builder
 	b.WriteString(sum)
 	b.WriteString("\n\n")
-	displayReason := terminalReasonLabel(reason)
-	fmt.Fprintf(&b, "- **终态**: `%s` - %s\n", displayReason, terminalReasonHint(reason))
+	fmt.Fprintf(&b, w.reasonLine, terminalReasonLabel(reason), terminalReasonHint(w, reason))
 	if aborted {
-		code, _, why, ok := AbortReason(ctx)
-		if ok {
-			fmt.Fprintf(&b, "- **中断原因** (`%s`): %s\n", code, why)
+		if abort != nil {
+			fmt.Fprintf(&b, w.abortLine, abort.Code, w.abortText(abort))
 		} else {
-			b.WriteString("- **中断原因**: 无法取得；取消方可能没有通过 context.WithCancelCause 附加具名原因\n")
+			b.WriteString(w.noAbortLine)
 		}
 	}
 	if term.Err != nil {
-		fmt.Fprintf(&b, "- **底层错误**: `%v`\n", term.Err)
+		fmt.Fprintf(&b, w.errLine, term.Err)
 	}
 	if aborted && strings.TrimSpace(term.Text) != "" {
-		b.WriteString("- **取消前已生成的部分输出**:\n\n")
+		b.WriteString(w.partialLine)
 		b.WriteString(term.Text)
 		b.WriteString("\n\n")
 	}
 	if term.Turns > 0 {
-		fmt.Fprintf(&b, "- **已执行**: %d 轮模型回合\n", term.Turns)
+		fmt.Fprintf(&b, w.turnsLine, term.Turns)
 	}
 	if !tr.startedAt.IsZero() {
-		fmt.Fprintf(&b, "- **本次运行耗时**: %s\n", roundDur(time.Since(tr.startedAt)))
+		fmt.Fprintf(&b, w.elapsedLine, roundDur(time.Since(tr.startedAt)))
 	}
 	if u := term.Usage; u.InputTokens+u.OutputTokens+u.CacheReadTokens+u.CacheWriteTokens > 0 {
-		fmt.Fprintf(&b, "- **累计 token**: 输入 %d / 输出 %d / 缓存读 %d / 缓存写 %d\n",
-			u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
+		fmt.Fprintf(&b, w.tokensLine, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
 	}
 	if tr.name == "" {
-		b.WriteString("- **工具调用**: 本次运行还没有发出工具调用就结束了\n")
+		b.WriteString(w.noToolLine)
 	} else if tr.pending {
-		fmt.Fprintf(&b, "- **中断时正在执行的工具**: `%s`（已运行 %s，**未返回结果**）\n\n  ```json\n  %s\n  ```\n",
-			tr.name, roundDur(time.Since(tr.at)), firstLine(tr.input, 300))
+		fmt.Fprintf(&b, w.pendingToolLine, tr.name, roundDur(time.Since(tr.at)), firstLine(tr.input, 300))
 	} else {
-		fmt.Fprintf(&b, "- **中断前最后一个工具**: `%s`（已正常返回）\n", tr.name)
+		fmt.Fprintf(&b, w.lastToolLine, tr.name)
 	}
 	return sum, b.String()
 }
@@ -125,20 +243,20 @@ func terminalReasonLabel(reason harness.TerminalReason) string {
 	return string(reason)
 }
 
-func terminalReasonHint(reason harness.TerminalReason) string {
-	if hint := reasonHint[reason]; hint != "" {
+func terminalReasonHint(w terminalWords, reason harness.TerminalReason) string {
+	if hint := w.hints[reason]; hint != "" {
 		return hint
 	}
 	if reason == "" {
-		return "运行的 context 已取消，但底层没有产生 Terminal 事件"
+		return w.hintNoTerminal
 	}
-	return "未知终态；harness 可能新增了 TerminalReason，请补充 reasonHint"
+	return w.hintUnknown
 }
 
-func progressSuffix(term *harness.Terminal, tr *runTrace) string {
+func progressSuffix(w terminalWords, term *harness.Terminal, tr *runTrace) string {
 	var parts []string
 	if term.Turns > 0 {
-		parts = append(parts, fmt.Sprintf("%d 轮", term.Turns))
+		parts = append(parts, fmt.Sprintf(w.turnsUnit, term.Turns))
 	}
 	if !tr.startedAt.IsZero() {
 		parts = append(parts, roundDur(time.Since(tr.startedAt)))
@@ -146,7 +264,7 @@ func progressSuffix(term *harness.Terminal, tr *runTrace) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "，已运行 " + strings.Join(parts, " / ")
+	return w.progressPrefix + strings.Join(parts, " / ")
 }
 
 func roundDur(d time.Duration) string {
