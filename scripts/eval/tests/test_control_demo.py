@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from control_demo import DemoError, check_columns, main, read_column, render_table  # noqa: E402
 from run_record import sign_run_record  # noqa: E402
 from runner import RESULT_FORMAT, STATE_DIFF_FORMAT  # noqa: E402
+from runner_engine import INTERCEPT_SUMMARY_FORMAT  # noqa: E402
 from runner_evidence import COUNTED_METHODS, OTHER_METHOD  # noqa: E402
 from session_runs import SessionError  # noqa: E402
 
@@ -87,6 +88,8 @@ class Root:
             files["state-diff.json"] = state
         if evidence is not None:
             files["isolation-evidence.json"] = evidence
+        if intercept is not None:
+            files["intercept-summary.json"] = intercept
         hashes = {}
         for name, value in files.items():
             data = json.dumps(value).encode()
@@ -468,7 +471,7 @@ class TestRules(Case):
 
 def intercept(file_rule=0, seeded_rule=0, model=0, other=0, tools=None, pending=0, timeout=0, allowed=0):
     denied = file_rule + seeded_rule + model + other
-    return {"format": "x", "total": denied + pending + timeout + allowed,
+    return {"format": INTERCEPT_SUMMARY_FORMAT, "total": denied + pending + timeout + allowed,
             "by_status": {"allowed": allowed, "denied": denied, "pending": pending, "timeout": timeout},
             "denied_by_origin": {"file_rule": file_rule, "seeded_rule": seeded_rule, "model": model, "other": other},
             "denied_by_tool": {"Bash": denied} if tools is None and denied else (tools or {})}
@@ -510,13 +513,53 @@ class TestIntercept(Case):
                  "tools_missing": {k: v for k, v in good.items() if k != "denied_by_tool"},
                  "tools_value": dict(good, denied_by_tool={"Bash": "1"}),
                  "tools_sum": dict(good, denied_by_tool={"Bash": 2}),
-                 "origin_sum": dict(good, denied_by_origin=dict(good["denied_by_origin"], seeded_rule=1))}
+                 "origin_sum": dict(good, denied_by_origin=dict(good["denied_by_origin"], seeded_rule=1)),
+                 "format": dict(good, format="invalid"),
+                 "total_negative": dict(good, total=-1),
+                 "total_not_status_sum": dict(good, total=good["total"] + 1)}
         for label, summary in cases.items():
             with self.subTest(label):
                 one = self.root(label)
                 one.run(intercept=summary)
                 with self.assertRaisesRegex(DemoError, "규칙 차단 기록 형식 오류"):
                     read_column(one.path, KEY)
+
+    def test_signed_value_needs_its_evidence_file(self):
+        # 서명 결과에 값이 있어도 근거 파일이 없거나 다르면 측정값으로 쓰지 않는다
+        gone = self.root("gone")
+        directory = gone.run(intercept=intercept(file_rule=1))
+        (directory / "intercept-summary.json").unlink()
+        with self.assertRaisesRegex(DemoError, "읽지 못함"):
+            read_column(gone.path, KEY)
+
+        unlisted = self.root("unlisted")
+        directory = unlisted.run(intercept=intercept(file_rule=1))
+        path = directory / "runner-result.json"
+        result = json.loads(path.read_text(encoding="utf-8"))
+        result.pop("signature")
+        del result["evidence"]["intercept-summary.json"]
+        path.write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
+        with self.assertRaisesRegex(DemoError, "근거 파일과 다름"):
+            read_column(unlisted.path, KEY)
+
+        tampered = self.root("tampered")
+        directory = tampered.run(intercept=intercept(file_rule=1))
+        with open(directory / "intercept-summary.json", "a", encoding="utf-8") as out:
+            out.write(" ")
+        with self.assertRaisesRegex(DemoError, "해시 불일치"):
+            read_column(tampered.path, KEY)
+
+        differs = self.root("differs")
+        directory = differs.run(intercept=intercept(file_rule=1))
+        data = json.dumps(intercept(file_rule=5)).encode()
+        (directory / "intercept-summary.json").write_bytes(data)
+        path = directory / "runner-result.json"
+        result = json.loads(path.read_text(encoding="utf-8"))
+        result.pop("signature")
+        result["evidence"]["intercept-summary.json"] = hashlib.sha256(data).hexdigest()
+        path.write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
+        with self.assertRaisesRegex(DemoError, "근거 파일과 다름"):
+            read_column(differs.path, KEY)
 
     def test_note_says_what_the_rows_cannot_tell(self):
         one = self.root()

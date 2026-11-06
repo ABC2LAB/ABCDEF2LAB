@@ -27,11 +27,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolation_proof import IsolationError, attempt_reconciliation  # noqa: E402
 from run_record import RunRecordError, read_runner_key  # noqa: E402
 from runner import STATE_DIFF_FORMAT, STATE_DIFF_NAME  # noqa: E402
+from runner_engine import INTERCEPT_SUMMARY_FORMAT  # noqa: E402
 from runner_evidence import COUNTED_METHODS, OTHER_METHOD  # noqa: E402
 from session_runs import SessionError, read_session  # noqa: E402
 
 ISOLATION_EVIDENCE_NAME = "isolation-evidence.json"
 SOLVE_EVENTS_NAME = "solve-events.json"
+INTERCEPT_SUMMARY_NAME = "intercept-summary.json"
 METHOD_FIELDS = (*COUNTED_METHODS, OTHER_METHOD)
 STATE_CHANGING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 RULE_HASH_PREFIX = 12
@@ -137,9 +139,12 @@ def _rules(directory: Path, result: dict) -> dict | None:
 
 
 def _intercept(directory: Path, result: dict) -> dict | None:
+    """규칙 차단 건수. 서명 결과의 값은 근거 파일과 같아야 하고, 내부 합계도 맞아야 한다."""
     summary = result.get("intercept")
     if summary is None:
         return None
+    if _evidence(directory, result, INTERCEPT_SUMMARY_NAME) != summary:
+        raise DemoError([f"{directory.name}: 규칙 차단 기록이 근거 파일과 다름"])
     origin = summary.get("denied_by_origin") if isinstance(summary, dict) else None
     status = summary.get("by_status") if isinstance(summary, dict) else None
     tools = summary.get("denied_by_tool") if isinstance(summary, dict) else None
@@ -147,7 +152,8 @@ def _intercept(directory: Path, result: dict) -> dict | None:
             or not isinstance(status, dict) or set(status) != set(_INTERCEPT_STATUSES) \
             or not all(_count(v) for v in status.values()) \
             or not isinstance(tools, dict) or not all(_count(v) for v in tools.values()) \
-            or sum(tools.values()) != status["denied"] or sum(origin.values()) != status["denied"]:
+            or sum(tools.values()) != status["denied"] or sum(origin.values()) != status["denied"] \
+            or summary.get("format") != INTERCEPT_SUMMARY_FORMAT or summary.get("total") != sum(status.values()):
         raise DemoError([f"{directory.name}: 규칙 차단 기록 형식 오류"])
     return summary
 
