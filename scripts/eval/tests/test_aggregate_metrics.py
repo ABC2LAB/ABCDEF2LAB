@@ -104,7 +104,7 @@ class TestAggregateMetricsProperties(unittest.TestCase):
         self.assertEqual((original.zero_request_runs, original.measured_request_runs), (1, 2))
         self.assertEqual((ours.zero_request_runs, ours.measured_request_runs), (0, 2))
         rendered = aggregate.render_matrix([original, ours], "synthetic metrics")
-        self.assertIn("대상 요청 0 회차: 원본 1/2. 진단을 시작하지 못한 회차", rendered)
+        self.assertIn("대상 요청 0 회차: 원본 1/2. 대상 요청이 없던 회차", rendered)
         self.assertNotIn("우리 0/", rendered)
 
     def test_unmeasured_requests_are_not_zero_request_runs(self):

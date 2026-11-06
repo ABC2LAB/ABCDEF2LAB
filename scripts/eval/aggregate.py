@@ -221,6 +221,6 @@ def render_matrix(rows: list[ConditionAggregate], basis_name: str) -> str:
     table = header + "\n".join(lines) + "\n"
     zero = [f"{r.condition} {r.zero_request_runs}/{r.measured_request_runs}" for r in rows if r.zero_request_runs]
     if zero:
-        table += (f"\n대상 요청 0 회차: {', '.join(zero)}. 진단을 시작하지 못한 회차이므로 "
+        table += (f"\n대상 요청 0 회차: {', '.join(zero)}. 대상 요청이 없던 회차이므로 "
                   "요청 수·시간 감소를 효율 개선으로 읽지 않는다.\n")
     return table
