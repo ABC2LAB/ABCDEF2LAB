@@ -19,6 +19,7 @@ import calendar
 import getpass
 import hashlib
 import json
+import math
 import http.client
 import os
 import platform
@@ -30,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
+from urllib.parse import urlsplit
 
 # python3 -I(-P 포함)는 스크립트 디렉터리를 sys.path에 올리지 않는다(score.py와 같은 이유). 같은 디렉터리의
 # 평가 모듈(우리 코드)만 명시적으로 올린다 — cwd·사용자 site-packages는 계속 차단된다.
@@ -70,6 +72,7 @@ from runner_record import (  # noqa: E402
 from runner_window import (  # noqa: E402
     BackgroundWatch, HostWatch, events_reasons, judge_events, watch_reasons, watch_summary,
 )
+from runner_serving import KEEP_ALIVE_SLACK_SECONDS, judge_serving, read_serving, unload_model  # noqa: E402
 from snapshot_collector import SnapshotEndpoint, collect_snapshot  # noqa: E402
 from snapshot_writer import SnapshotContext  # noqa: E402
 
@@ -83,6 +86,10 @@ RESULT_NAME = "runner-result.json"
 RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
 # 상태 차이 근거(프로토콜 §8.2, 러너 설정 state가 있을 때만). 건수·정수 id·테이블·열 이름·seq 값만 담는다.
 STATE_DIFF_NAME = "state-diff.json"
+SERVING_NAME = "llm-serving.json"
+# 작업 생성 직전 재적재 단계. 회차 전 적재와 같은 판정을 받는다.
+SERVING_TASK_START = "task_start"
+SERVING_POST = "post"
 STATE_DIFF_FORMAT = "abc2lab-state-diff-v1"
 MAX_CONDITION_LENGTH = 100
 COMPLETE, INVALID = "complete", "invalid"
@@ -132,6 +139,8 @@ class RunPorts(Protocol):
     def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list: ...
     def findings(self) -> dict: ...
     def intercept_summary(self) -> dict: ...
+    def local_serving(self, phase: str, keep_alive_seconds: int) -> dict: ...
+    def local_unload(self) -> None: ...
     def sign(self, payload: dict) -> dict: ...
 
 
@@ -182,6 +191,9 @@ class RunSpec:
     observer_path: str
     observer_readonly_ref: str
     observer_format: str = OBSERVER_SCOREBOARD
+    # local 선언의 서버 버전·모델 digest·컨텍스트. api는 None.
+    llm_serving: dict | None = None
+    llm_keep_alive_seconds: int = 0
     # 상태 차이(프로토콜 §8.2)의 해결 신호 테이블. None이면 상태 사본을 뜨지 않는다(러너 설정 state=null).
     state_signal_tables: frozenset[str] | None = None
     # 상태 차이로 비교할 런타임 디렉터리. 비어 있으면 파일 사본을 뜨지 않는다.
@@ -202,6 +214,9 @@ class EventsHandle(Protocol):
 @dataclass
 class _State:
     up_attempted: bool = False
+    serving: dict = field(default_factory=dict)
+    llm_load_attempted: bool = False
+    llm_unloaded: bool | None = None
     observer_calls: int = 0
     summary: dict = field(default_factory=dict)
     step: str = "start"
@@ -365,6 +380,18 @@ def _wait_llm_verified(spec: RunSpec, gateway: GatewayFiles, clock: Clock, state
         clock.sleep(spec.poll_seconds)
 
 
+def _check_serving(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase: str) -> None:
+    """로컬 서버의 실제 조건을 선언과 대조한다. 어긋나면 그 회차는 같은 조건이 아니다."""
+    state.serving[phase] = _step(state, "llm_serving_read_failed",
+                                 lambda: ports.local_serving(phase, spec.llm_keep_alive_seconds))
+    minimum = None if phase == SERVING_POST else spec.llm_keep_alive_seconds - KEEP_ALIVE_SLACK_SECONDS
+    reason = judge_serving(state.serving[phase], spec.llm_serving, min_keep_alive_seconds=minimum)
+    if reason is not None or phase == SERVING_POST:
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(SERVING_NAME, state.serving))
+    if reason is not None:
+        raise RunFailure(reason)
+
+
 def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: GatewayFiles, evidence, clock: Clock,
                state: _State) -> None:
     if _step(state, "project_check_failed", ports.preexisting):
@@ -377,6 +404,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.host = _step(state, "host_spec_failed", ports.host_spec)
     if not _host_spec_ok(state.host):
         raise RunFailure("host_spec_failed")
+    if spec.llm_serving is not None:
+        state.llm_load_attempted = True
+        # 띄우기 전에 본다. 여기서 모델도 적재해 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 한다.
+        _check_serving(spec, ports, evidence, state, "pre")
     state.up_attempted = True
     _step(state, "compose_up_failed", ports.up)
 
@@ -425,6 +456,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure("engine_settings_mismatch")
     state.engine_settings_sha256 = canonical_sha256(settings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("engine-settings.json", settings))
+
+    if spec.llm_serving is not None:
+        # 준비 단계 길이는 설정 시한의 합으로 다 잡히지 않는다(docker 점검·상태 사본 등). 합을 늘려 가는 대신 작업 직전에
+        # 유지 기간을 다시 주고 남은 시간을 확인한다. 그 사이 내려갔으면 여기서 적재되어 시간 예산에 섞이지 않는다.
+        _check_serving(spec, ports, evidence, state, SERVING_TASK_START)
 
     # 예산 시계는 생성 요청 직전부터 잰다(엔진은 생성과 동시에 기동하므로 요청 지연도 예산에 넣는다).
     requested_at, started = _stamp(clock), clock.monotonic()
@@ -537,6 +573,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if llm_reasons:
         # 사유가 여럿이면 정렬 첫째를 회차 사유로, 전부는 llm-summary.json에 남는다.
         raise RunFailure(llm_reasons[0])
+    if spec.llm_serving is not None:
+        _check_serving(spec, ports, evidence, state, SERVING_POST)
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
@@ -559,6 +597,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
+                     "llm_serving": state.serving or None,
                      # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline은 스위치가 없어 선언도 null.
                      "engine_llm_policy": {"declared": spec.llm_policy_mode, "observed": None},
                      "window": {"host_watch": window["host_watch"], "events": {
@@ -644,8 +683,16 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
                 ports.down()
             except Exception:
                 reasons.append("down_failed")
+        if state.llm_load_attempted:
+            # 측정은 이미 끝났으므로 실패해도 회차를 무효로 돌리지 않는다. 다음 회차 시작 상태가 달라질 수 있어 기록한다.
+            try:
+                ports.local_unload()
+                state.llm_unloaded = True
+            except Exception:
+                state.llm_unloaded = False
+                print("llm_unload_failed", file=sys.stderr)
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
-            "llm_backend": spec.llm_backend, "tmpfs_usage": state.tmpfs_usage,
+            "llm_backend": spec.llm_backend, "tmpfs_usage": state.tmpfs_usage, "llm_unloaded": state.llm_unloaded,
             # E② 자리. 완료 결과에서는 서명된다. 세션 집계·채점이 가짜 E² 회차를 공식 결과에서 뺄 근거다.
             "e2_mode": spec.e2_mode,
             "started_at": started_at, "finished_at": _stamp(clock)}
@@ -861,9 +908,29 @@ class DockerPorts:
     def intercept_summary(self) -> dict:
         return self._intercepted()
 
+    def _local_server(self) -> tuple[str, int, str, float]:
+        llm = self.plan.llm
+        return (llm["host_ip"], urlsplit(llm["base_url"]).port or 80, llm["model"],
+                self.config.run["llm_load_timeout_seconds"])
+
+    def local_serving(self, phase: str, keep_alive_seconds: int) -> dict:
+        return read_serving(*self._local_server(), keep_alive_seconds=None if phase == SERVING_POST else keep_alive_seconds)
+
+    def local_unload(self) -> None:
+        unload_model(*self._local_server())
+
     def sign(self, payload: dict) -> dict:
         # 키는 서명 직전에만 읽는다. 경로는 러너 설정(회차 디렉터리 밖)이며 compose·환경으로 넘기지 않는다.
         return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
+
+
+def _llm_keep_alive_seconds(config: RunnerConfig, time_budget_seconds: int) -> int:
+    # 작업 직전 재적재(_run_steps)부터 회차 뒤 조회까지 요청이 없어도 모델이 내려가지 않아야 한다. 요청 간 공백은 이 길이를
+    # 넘지 못한다. compose 기동·준비 시한은 평소 재적재 없이 이어지게 하려고 더한다. 합이 모자란 준비 단계는 재적재가 받는다.
+    run = config.run
+    return math.ceil(run["compose_wait_seconds"] + run["ready_timeout_seconds"] + run["task_create_timeout_seconds"]
+                     + time_budget_seconds + config.health_timeout_seconds + run["drain_timeout_seconds"]
+                     + run["post_settle_seconds"] + run["snapshot_timeout_seconds"] + run["llm_verify_timeout_seconds"])
 
 
 def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str, condition: str,
@@ -879,6 +946,10 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_provider_slug=plan.llm.get("provider", ""),
         llm_provider_name=config.llm_gateway["expected_provider_name"],
         llm_sampling=json.loads(plan.compose_env["EVAL_LLM_SAMPLING"]),
+        llm_serving=(None if plan.llm["backend"] != "local" else
+                     {name: plan.llm[name] for name in ("server_version", "model_digest", "context_length")}),
+        llm_keep_alive_seconds=(0 if plan.llm["backend"] != "local" else
+                                _llm_keep_alive_seconds(config, declared["time_budget_seconds"])),
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_request_sha256=task_request_sha256,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],

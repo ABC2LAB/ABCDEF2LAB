@@ -44,7 +44,8 @@ def declaration() -> dict:
         "environment": {
             "network_mode": "dedicated_network",
             "llm": {"backend": "local", "base_url": "http://fixture-llm:11434/v1", "model": "fixture-model:fixed-tag",
-                    "hostname": "fixture-llm", "host_ip": "10.0.0.5"},
+                    "hostname": "fixture-llm", "host_ip": "10.0.0.5", "model_digest": "a" * 64,
+                    "context_length": 32768, "server_version": "0.32.6"},
             "temperature": 0, "seed": 11, "target_image": "fixture/image:1.0.0",
             "worker_count": 1, "time_budget_seconds": 60, "request_budget": 10,
             "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},

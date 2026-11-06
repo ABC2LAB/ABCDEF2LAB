@@ -168,6 +168,7 @@ class FakeEvidence:
 
 class FakePorts:
     def __init__(self, spec):
+        self.serving = {}
         self.rules_sha256 = None
         self.spec = spec
         self.calls = []
@@ -371,6 +372,17 @@ class FakePorts:
     def intercept_summary(self):
         self._call("intercept_summary")
         return {"format": "intercept", "total": 0}
+
+    def local_serving(self, phase, keep_alive_seconds):
+        self._call(f"local_serving:{phase}")
+        self.keep_alive_seen = keep_alive_seconds
+        observed = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768, "size": 100,
+                    "size_vram": 100, "quantization_level": "Q4", "other_models_loaded": 0,
+                    "keep_alive_remaining_seconds": keep_alive_seconds}
+        return observed | self.serving.get(phase, {})
+
+    def local_unload(self):
+        self._call("local_unload")
 
     def sign(self, payload):
         self.sign_calls += 1
@@ -1272,6 +1284,61 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         self.assertEqual(spec.llm_sampling, {"temperature": local_declared["ours"]["temperature"],
                                              **LOCAL_SAMPLING, "seed": local_declared["ours"]["seed"]})
 
+    def test_spec_expects_the_declared_serving_only_for_local(self):
+        config = parse_runner_config(runner_config())
+        api = configuration()
+        self.assertIsNone(build_spec(config, plan_run(config, api, "ours", "ours-1"), api, "t" * 64, "c", 0).llm_serving)
+        local = configuration()
+        for side in ("baseline", "ours"):
+            local[side]["llm"] = local_llm()
+            local[side]["sampling"] = dict(LOCAL_SAMPLING)
+        spec = build_spec(config, plan_run(config, local, "ours", "ours-1"), local, "t" * 64, "c", 0)
+        self.assertEqual(spec.llm_serving, {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768})
+        # 시간 예산보다 짧으면 요청 공백 동안 모델이 내려갈 수 있다. 예산이 늘면 같이 늘어야 한다.
+        declared = local["ours"]["time_budget_seconds"]
+        self.assertGreater(spec.llm_keep_alive_seconds, declared)
+        longer = copy.deepcopy(local)
+        for side in ("baseline", "ours"):
+            longer[side]["time_budget_seconds"] = declared + 100
+        self.assertEqual(build_spec(config, plan_run(config, longer, "ours", "ours-1"), longer, "t" * 64, "c", 0)
+                         .llm_keep_alive_seconds, spec.llm_keep_alive_seconds + 100)
+
+    def test_keep_alive_covers_each_step_between_the_load_and_the_last_read(self):
+        # 적재는 compose 기동보다 앞선다. 준비 단계가 길어도 첫 LLM 요청 전에 모델이 내려가면 안 된다.
+        base = parse_runner_config(runner_config())
+        before = runner._llm_keep_alive_seconds(base, 60)
+        for name in ("compose_wait_seconds", "ready_timeout_seconds", "task_create_timeout_seconds",
+                     "drain_timeout_seconds", "post_settle_seconds", "snapshot_timeout_seconds",
+                     "llm_verify_timeout_seconds"):
+            with self.subTest(name):
+                changed = copy.deepcopy(base)
+                changed.run[name] += 7
+                self.assertEqual(runner._llm_keep_alive_seconds(changed, 60), before + 7)
+        # 동찬 지적의 예: 예시 설정에서 준비 단계 상한만 510초인 경우에도 시간 예산을 더한 만큼 남아야 한다.
+        slow = copy.deepcopy(base)
+        slow.run.update(compose_wait_seconds=300, ready_timeout_seconds=180, task_create_timeout_seconds=30)
+        self.assertGreater(runner._llm_keep_alive_seconds(slow, 60), 510 + 60)
+
+    def test_local_serving_reads_the_fixed_ip_and_loads_only_before_the_run(self):
+        config = parse_runner_config(runner_config())
+        local = configuration()
+        for side in ("baseline", "ours"):
+            local[side]["llm"] = local_llm()
+            local[side]["sampling"] = dict(LOCAL_SAMPLING)
+        ports = DockerPorts(config, plan_run(config, local, "ours", "ours-1"), None, docker=None, findings=dict,
+                            start=lambda: "1", settings=dict)
+        with patch.object(runner, "read_serving", return_value={"x": 1}) as read:
+            self.assertEqual(ports.local_serving("pre", 900), {"x": 1})
+            ports.local_serving("task_start", 900)
+            ports.local_serving("post", 900)
+        timeout = config.run["llm_load_timeout_seconds"]
+        target = ("172.17.0.1", 11434, "example-model:fixed-tag", timeout)
+        self.assertEqual(read.call_args_list[0].args, target)
+        self.assertEqual([call.kwargs["keep_alive_seconds"] for call in read.call_args_list], [900, 900, None])
+        with patch.object(runner, "unload_model") as unload:
+            ports.local_unload()
+        unload.assert_called_once_with(*target)
+
     def test_scoreboard_passes_the_configured_observer_format(self):
         for observer_format, opaque in (("challenge_scoreboard", False), ("opaque", True)):
             with self.subTest(observer_format), tempfile.TemporaryDirectory() as temporary:
@@ -1513,6 +1580,133 @@ class TestCommandLine(unittest.TestCase):
                                   text=True, timeout=60, check=False)
         self.assertEqual(done.returncode, 0, done.stderr[-500:])
         self.assertIn("--side", done.stdout)
+
+
+SERVING = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768}
+KEEP_ALIVE = 900
+
+
+def serving_spec():
+    return dataclasses.replace(make_spec(), llm_serving=dict(SERVING), llm_keep_alive_seconds=KEEP_ALIVE)
+
+
+def serving_run(**serving):
+    return run(mutate=lambda ports, meter, clock: ports.serving.update(serving), spec=serving_spec())
+
+
+class TestLocalServing(unittest.TestCase):
+    def test_api_never_reads_the_local_server(self):
+        result, ports, *_ = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertFalse([call for call in ports.calls if call.startswith("local_")])
+        self.assertIsNone(result["llm_serving"])
+        self.assertIsNone(result["llm_unloaded"])
+
+    def test_reads_before_compose_up_and_after_the_llm_marker(self):
+        result, ports, _, evidence = serving_run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertLess(ports.calls.index("local_serving:pre"), ports.calls.index("up"))
+        self.assertGreater(ports.calls.index("local_serving:post"), ports.calls.index("seal_gateway"))
+        self.assertEqual(set(result["llm_serving"]), {"pre", "task_start", "post"})
+        self.assertEqual(evidence.files["llm-serving.json"]["post"]["model_digest"], "a" * 64)
+
+    def test_mismatch_before_the_run_stops_before_compose_up(self):
+        for change in ({"context_length": 4096}, {"model_digest": "b" * 64}, {"server_version": "0.33.0"}):
+            with self.subTest(change=change):
+                result, ports, _, evidence = serving_run(pre=change)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_mismatch"]))
+                self.assertNotIn("up", ports.calls)
+                self.assertIn("llm-serving.json", evidence.files)
+
+    def test_change_after_the_run_invalidates_it(self):
+        result, *_ = serving_run(post={"context_length": 4096})
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_mismatch"]))
+
+    def test_unloaded_model_after_the_run_is_unverified(self):
+        result, *_ = serving_run(post={"model_digest": None, "context_length": None})
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_unverified"]))
+
+    def test_read_failure_is_its_own_reason(self):
+        def fail(ports, meter, clock):
+            ports.local_serving = lambda phase, keep_alive: (_ for _ in ()).throw(ValueError("x"))
+        result, *_ = run(mutate=fail, spec=serving_spec())
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_read_failed"]))
+
+    def test_short_keep_alive_before_the_run_stops_before_compose_up(self):
+        result, ports, *_ = serving_run(pre={"keep_alive_remaining_seconds": KEEP_ALIVE - runner.KEEP_ALIVE_SLACK_SECONDS - 1})
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_keep_alive_short"]))
+        self.assertNotIn("up", ports.calls)
+
+    def test_keep_alive_is_renewed_right_before_the_task(self):
+        result, ports, *_ = serving_run()
+        self.assertEqual(result["status"], COMPLETE)
+        task_start = ports.calls.index("local_serving:task_start")
+        self.assertEqual(ports.calls[task_start + 1], "start_task")
+        self.assertLess(ports.calls.index("scoreboard:pre"), task_start)
+
+    def test_slow_pre_snapshot_cannot_expire_the_model_before_the_task(self):
+        # 동찬 지적의 경로: pre 스냅샷이 유지 기간보다 늦게 끝나도 첫 요청이 적재 시간을 치르면 안 된다.
+        # 서버의 만료 시각을 가짜 시계로 흉내 내서, 작업을 만드는 순간 모델이 살아 있는지 본다.
+        late = KEEP_ALIVE + 300
+        alive_at_start = []
+
+        def mutate(ports, meter, clock):
+            expires = {}
+            serve, board, start = ports.local_serving, ports.scoreboard, ports.start_task
+
+            def local_serving(phase, keep_alive):
+                if phase != "post":
+                    expires["at"] = clock.t + keep_alive
+                return serve(phase, keep_alive)
+
+            def scoreboard(phase, snapshot):
+                if phase == "pre":
+                    clock.t += late
+                return board(phase, snapshot)
+
+            def start_task():
+                alive_at_start.append(clock.t < expires["at"])
+                return start()
+
+            ports.local_serving, ports.scoreboard, ports.start_task = local_serving, scoreboard, start_task
+        result, *_ = run(mutate=mutate, spec=serving_spec())
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(alive_at_start, [True])
+
+    def test_failed_renewal_stops_before_the_task(self):
+        short = {"keep_alive_remaining_seconds": KEEP_ALIVE - runner.KEEP_ALIVE_SLACK_SECONDS - 1}
+        for label, change, reason in (("short", short, "llm_serving_keep_alive_short"),
+                                      ("digest", {"model_digest": "b" * 64}, "llm_serving_mismatch"),
+                                      ("unloaded", {"model_digest": None}, "llm_serving_unverified")):
+            with self.subTest(label):
+                result, ports, _, evidence = serving_run(task_start=change)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
+                self.assertNotIn("start_task", ports.calls)
+                self.assertIn("llm-serving.json", evidence.files)
+
+    def test_keep_alive_is_not_judged_after_the_run(self):
+        result, *_ = serving_run(post={"keep_alive_remaining_seconds": 1})
+        self.assertEqual(result["status"], COMPLETE)
+
+    def test_requested_keep_alive_reaches_the_port(self):
+        _, ports, *_ = serving_run()
+        self.assertEqual(ports.keep_alive_seen, KEEP_ALIVE)
+
+    def test_model_is_unloaded_after_down_on_completion_and_on_failure(self):
+        for label, serving in (("complete", {}), ("failed", {"pre": {"context_length": 4096}})):
+            with self.subTest(label):
+                result, ports, *_ = serving_run(**serving)
+                self.assertTrue(result["llm_unloaded"])
+                self.assertEqual(ports.calls.count("local_unload"), 1)
+                if "down" in ports.calls:
+                    self.assertGreater(ports.calls.index("local_unload"), ports.calls.index("down"))
+
+    def test_unload_failure_is_recorded_but_keeps_the_run(self):
+        def fail(ports, meter, clock):
+            ports.local_unload = lambda: (_ for _ in ()).throw(ValueError("x"))
+        result, *_ = run(mutate=fail, spec=serving_spec())
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertIs(result["llm_unloaded"], False)
 
 
 class TestSignatureKey(unittest.TestCase):

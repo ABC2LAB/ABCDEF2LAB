@@ -153,6 +153,7 @@ MAX_TASK_SECONDS = 24 * 3600
 # 회차 진행 시간·크기 값(초). 실패 시 재시도하지 않으므로 각 값이 그 단계의 유일한 기회다.
 _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_seconds", "budget_poll_seconds",
                "drain_timeout_seconds", "snapshot_timeout_seconds", "snapshot_max_bytes", "llm_verify_timeout_seconds",
+               "llm_load_timeout_seconds",
                "task_create_timeout_seconds", "host_watch_interval_seconds", "host_watch_max_gap_seconds",
                "drain_grace_seconds", "post_settle_seconds")
 MAX_RUN_SECONDS = 3600

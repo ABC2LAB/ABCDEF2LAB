@@ -30,7 +30,7 @@ def api_llm():
 
 def local_llm():
     return {"backend": "local", "base_url": "http://llm-host:11434/v1", "model": "example-model:fixed-tag",
-            "hostname": "llm-host", "host_ip": "172.17.0.1"}
+            "hostname": "llm-host", "host_ip": "172.17.0.1", "model_digest": "a" * 64, "context_length": 32768, "server_version": "0.32.6"}
 
 
 LOCAL_SAMPLING = {"top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0.25}
@@ -178,6 +178,9 @@ class TestProfileFingerprint(unittest.TestCase):
             # hostname은 base_url 호스트와 같아야 하므로 둘을 함께 바꾼다.
             "local.hostname": (local_llm(), {"hostname": "other-llm", "base_url": "http://other-llm:11434/v1"}),
             "local.host_ip": (local_llm(), {"host_ip": "10.0.0.5"}),
+            "local.model_digest": (local_llm(), {"model_digest": "b" * 64}),
+            "local.context_length": (local_llm(), {"context_length": 16384}),
+            "local.server_version": (local_llm(), {"server_version": "0.33.0"}),
         }
         for name, (base, change) in cases.items():
             with self.subTest(field=name):
@@ -342,6 +345,10 @@ class TestProfileFingerprint(unittest.TestCase):
         for value in (None, [], api_llm() | {"fallbacks": True}, api_llm() | {"base_url": "http://llm-api.example/v1"},
                       api_llm() | {"model": "example-model"}, api_llm() | {"hostname": "llm-host"},
                       local_llm() | {"host_ip": "127.0.0.1"}, local_llm() | {"host_ip": "203.0.113.5"},
+                      local_llm() | {"model_digest": "A" * 64}, local_llm() | {"model_digest": "a" * 63},
+                      local_llm() | {"context_length": 0}, local_llm() | {"context_length": True},
+                      local_llm() | {"context_length": 5 * 1024 * 1024}, local_llm() | {"server_version": "latest"},
+                      {k: v for k, v in local_llm().items() if k != "context_length"},
                       local_llm() | {"base_url": "http://other-host:11434/v1"}, api_llm() | {"backend": ["api"]},
                       api_llm() | {"model": "SYNTHETIC-PRIVATE/latest"}):
             payload = profile()

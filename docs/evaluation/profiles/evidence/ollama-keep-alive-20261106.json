@@ -1,0 +1,22 @@
+{
+  "format": "ollama-keep-alive-v1",
+  "measured_at": "2026-11-06",
+  "server": {"name": "ollama", "version": "0.32.6", "backend": "cpu"},
+  "docs": ["https://docs.ollama.com/faq"],
+  "method": "임시 서버 두 대를 OLLAMA_KEEP_ALIVE 없이 띄우고 소형 모델을 적재한다. 하나는 keep_alive 없이, 하나는 러너 경로(read_serving)로 420초를 주어 적재한다. 320초 동안 요청을 보내지 않은 뒤 /api/ps를 읽는다. 이어서 /v1/chat/completions를 한 번 호출하고 다시 읽은 뒤, keep_alive 0으로 내린다. 남은 시간은 /api/ps의 expires_at에서 구했다.",
+  "results": [
+    {"step": "keep_alive 없이 적재 직후", "loaded": true, "remaining_seconds": 299},
+    {"step": "keep_alive 없음, 320초 공백 뒤", "loaded": false, "remaining_seconds": null},
+    {"step": "keep_alive 420초로 적재 직후", "loaded": true, "remaining_seconds": 419},
+    {"step": "keep_alive 420초, 320초 공백 뒤", "loaded": true, "remaining_seconds": 99},
+    {"step": "/v1/chat/completions 호출 뒤", "loaded": true, "remaining_seconds": 419},
+    {"step": "keep_alive 0으로 내린 뒤", "loaded": false, "remaining_seconds": null}
+  ],
+  "env_setting_check": [
+    {"OLLAMA_KEEP_ALIVE": "미설정", "load_without_param_remaining_seconds": 298, "after_v1_call_seconds": 299},
+    {"OLLAMA_KEEP_ALIVE": "2h", "load_without_param_remaining_seconds": 7199, "after_v1_call_seconds": 7199},
+    {"OLLAMA_KEEP_ALIVE": "-1", "load_without_param_remaining_seconds": "2319년까지", "after_v1_call_seconds": "2319년까지"}
+  ],
+  "param_over_env": "OLLAMA_KEEP_ALIVE가 미설정·2h·-1일 때 모두, keep_alive 30m으로 적재하면 남은 시간이 1799초였고 /v1 호출 뒤에도 1799초였다.",
+  "limits": "이 서버 버전과 CPU 소형 모델에서 잰 값이다. 다른 버전은 다를 수 있으므로 러너는 적재 직후 남은 시간을 다시 확인한다. 회차 도중 재적재가 없었음을 직접 증명하지는 않는다."
+}
