@@ -112,30 +112,22 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	case "deny":
 		// 观测:deny 命中不阻塞审批,直接记一条 denied（历史/任务拦截页可见）。
 		g.interceptor.Log(ctx, intercept.ConvIDFromContext(ctx), dec, ev.ToolName, ev.Input, "denied")
-		return g.block(ev.ToolName, systemBlockMessage(dec.Message), "")
+		return g.blockDecision(ev.ToolName, dec)
 	case "allow":
 		// Record explicit rule and model approvals so review details remain auditable.
 		g.interceptor.Log(ctx, intercept.ConvIDFromContext(ctx), dec, ev.ToolName, ev.Input, "allowed")
 		return hook.Result{}
 	case "ask":
-		// F14 두뇌 보존 판단: 아래 두 차단 사유와 systemBlockMessage 프레이밍은 번역하지
-		// 않고 중국어 원문을 유지한다. 이 문자열은 g.block → hook.Result.Message 로 에이전트
-		// 에게 돌아가는 tool_result(펜테스트 에이전트가 차단을 표적 방어로 오인해 우회를
-		// 시도하지 않도록 유도하는 의도적 조종 문구, BRIEF 段[A] 성능 보존 대상)이다. 더구나
-		// ask 차단 경로는 deny 경로와 달리 Interceptor.Log 를 타지 않아, g.block → g.record 가
-		// 같은 프레이밍 전문을 감사 로그(GET /api/audit → entries[].reason)에도 그대로 싣는다.
-		// 즉 하나의 문자열이 에이전트 입력과 표시를 겸한다(F16 동형). 표시만 한국어로 떼어내려면
-		// g.block 이 두 문자열을 나르도록 구조를 바꿔야 하는데 고위험·저가치라 보류한다.
-		//
+		// 승인 실패도 모델용 영어 결과와 감사용 한국어 설명을 분리한다.
 		// If the worker context is already cancelled (task stopped / killed), block
 		// immediately without creating a pending record — avoids orphaned DB entries
 		// and makes execOne complete fast, reducing the race against drainSynthetic.
 		if ctx.Err() != nil {
-			return g.block(ev.ToolName, systemBlockMessage("工作已取消，平台安全管控阻止执行"), "")
+			return g.blockDecision(ev.ToolName, intercept.Decision{Message: "작업이 취소되어 실행을 차단했습니다", ModelMessage: "The task was canceled; execution is blocked (reason_code=task_canceled)."})
 		}
 		convID := intercept.ConvIDFromContext(ctx)
 		if !g.interceptor.HandleAsk(ctx, convID, dec, ev.ToolName, ev.Input) {
-			return g.block(ev.ToolName, systemBlockMessage("人工审批未通过（用户拒绝或审批超时）"), "")
+			return g.blockDecision(ev.ToolName, intercept.Decision{Message: "사람의 승인을 받지 못했습니다: " + dec.Message, ModelMessage: "Human approval was not granted (reason_code=approval_not_granted)."})
 		}
 		return hook.Result{}
 	}
@@ -195,6 +187,16 @@ func (g *Guard) Attributions() map[string]int {
 func (g *Guard) block(tool, reason, cmd string) hook.Result {
 	g.record(tool, "block", reason, cmd)
 	return hook.Result{Decision: "block", Message: reason}
+}
+
+// 감사에는 표시용 원문을 남기고, 모델에는 별도 결과가 있으면 그 값만 보낸다.
+func (g *Guard) blockDecision(tool string, dec intercept.Decision) hook.Result {
+	message := dec.ModelMessage
+	if message == "" {
+		message = dec.Message
+	}
+	g.record(tool, "block", dec.Message, "")
+	return hook.Result{Decision: "block", Message: systemBlockMessage(message)}
 }
 
 func (g *Guard) record(tool, action, reason, cmd string) {

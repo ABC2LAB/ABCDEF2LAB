@@ -72,6 +72,10 @@ Go 밖에는 `web/messages/zh.json`·`ja.json`, `web/src`, `skills/`, `db/schema
 
 baseline은 원본 프롬프트 그대로 둔다. 개선판의 언어 변경은 선언된 차이다([평가 프로토콜 §2](evaluation/evaluation-protocol.md#2-평가-대상-고정)). 결과는 개선판 전체의 효과로 보고, E②나 언어 변경 하나의 효과로 나누지 않는다.
 
+## 번역 계층 (8단계)
+
+표시 언어는 한국어로 고정했고 카탈로그는 지웠다. `trMsg`·`logT`·`config.T`·`SetCurrentLanguage`·`notify.SetLanguageResolver`와 `output_language` API, 웹의 언어 선택은 아직 남아 있으며 별도 PR로 지운다. `agent/outputlang.go`는 #264 뒤에 줄인다.
+
 ## 확인할 가설
 
 압축 전후에 언어가 섞이는 원인이 압축 지시라는 것은 가설이다. 실제 쓸 로컬 모델로 변경 전후를 비교해 확인한다.
@@ -99,3 +103,5 @@ transcript는 세션 재개에 쓰여서 끌 수 없다. 모델의 추론을 끄
 
 - **SDK 문자열.** `norma`에도 한자 문자열 57개가 있다. 셸 도구(`NewShell*`)는 엔진이 쓰지 않지만, 백그라운드 작업 알림(`tool/task.go`)과 `noa/archive.go`는 모델까지 갈 수 있다. SDK를 올릴지, 끌지, 감쌀지 정한다.
 - **활동 표시 필드.** `purpose`와 활동 표시 계약은 UI 디자인이 정해진 뒤에 한다.
+- **승인 기록 표식 `[模型]`.** `intercept`가 저장하는 값이고 `db`의 분류와 `web/src/components/approval-records.tsx`가 함께 읽는다. 옛 행도 읽어야 하므로 웹 담당자와 같이 바꾼다.
+- **가드 차단 문구.** `guard/guard.go`의 문구는 모델이 읽지만, 앞머리 표식을 `detections/`의 탐지 규칙과 지표도 쓴다. 표식을 바꿀지와 탐지 규칙을 어떻게 맞출지 정한 뒤 옮긴다.
