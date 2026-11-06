@@ -40,11 +40,11 @@ var wrapupTurnDefaults = map[string]int{
 
 const genericWrapupTurns = 10
 
-const plannerWrapUpDefault = "이번 계획 라운드의 단계 예산이 곧 소진됩니다. 다만 【이번 라운드】만 끝나는 것이며, 시스템은 이후에도 상황 변화에 따라 당신을 다시 깨워 계획을 이어가게 합니다. 작업 자체가 끝나는 것이 아니므로 여기서 전체 계획을 마무리 지을 필요는 없습니다. 이번 라운드에서 이미 명확히 판단한 결론은 실제로 반영하여 이번 라운드가 헛되지 않게 하되, 【마무리를 위해 억지로 의도를 지어내지는】 마십시오(이번 라운드에 의도가 0개인 것도 완전히 정상적인 결과입니다). (1) 【지금 바로 파견해야 할】 탐색 방향을 이미 판단했다면 add_intent 한 번으로 묶어서 제출합니다(이미 정한 것은 묵히지 말고 바로 보냅니다). (2) 어떤 발견이나 사실로 이미 달성이 증명된 목표는 prove_goal 로 met 표시합니다(빠뜨리지 마십시오). (3) 단계를 나눠야 하는 직렬 익스플로잇 체인을 식별했다면 TodoWrite 로 기록하여 다음에 깨어났을 때 이어서 파견할 수 있게 합니다. 다 끝냈으면 이번 라운드를 바로 종료하며, 요약 텍스트는 출력하지 않습니다."
+const plannerWrapUpDefault = "The step budget of this planning round is about to run out. Only [this round] ends, though: the system will wake you again as the situation changes so you can keep planning. The task itself isn't ending, so there is no need to wrap up the whole plan here. Act on the conclusions you have clearly reached this round so the round isn't wasted, but [don't make up intents just to wrap up] (zero intents in a round is a perfectly normal result). (1) If you have already judged exploration directions that [should be dispatched right now], submit them together in one add_intent call (don't sit on what you have decided; send it now). (2) Mark goals already proven met by a finding or fact with prove_goal (don't miss any). (3) If you have identified a serial exploit chain that must be split into steps, record it with TodoWrite so you can keep dispatching it when you wake next time. When you are done, end this round right away, and don't output summary text."
 
-const mainAgentWrapUpDefault = "단계 예산이 곧 소진되어 이번 상호작용이 끝나려 합니다. 더 이상 새로운 탐색이나 조작을 시작하지 마십시오. **한 문장짜리 순수 텍스트로만** 현재 진행 상황, 핵심 결론, 그리고 권장하는 다음 단계를 사용자에게 한국어로 요약하십시오."
+const mainAgentWrapUpDefault = "The step budget is about to run out and this interaction is about to end. Don't start any new exploration or operation. Summarize the current progress, key conclusions and the recommended next step for the user in Korean, **in one sentence of plain text only**."
 
-const genericWrapUpDefault = "예산 소진으로 곧 종료됩니다. 먼저 완료했지만 아직 저장하지 않은 결과를 기록한 뒤, **한 문장짜리 순수 텍스트로만** 무엇을 했고 어떤 핵심 결론을 얻었는지 한국어로 요약하십시오(이 한 문장이 이번 실행의 결과로 표시됩니다)."
+const genericWrapUpDefault = "This run is about to end because the budget is running out. First record results you finished but haven't saved, then summarize what you did and the key conclusions in Korean, **in one sentence of plain text only** (this sentence is shown as the result of this run)."
 
 // WrapupDefault returns the built-in default wrap-up prompt for an agent key —
 // used by the admin UI as the "restore default" value and empty-field placeholder.
@@ -101,7 +101,7 @@ func wrapupSettlement(ctx context.Context, agentKey string, disabledTools []stri
 // withWrapupLang 은 마무리 프롬프트 뒤에 출력 언어 지시(langDirective)를 덧붙인다.
 // 마무리 프롬프트는 시스템 프롬프트와 달리 langDirective 꼬리가 자동으로 붙지 않으므로,
 // 이렇게 직접 붙여야 사용자에게 보이는 마지막 한 문장 요약이 선택한 표시 언어를 따른다.
-// 마무리 산문 자체는 모델이 읽는 운영 지시문(한국어 유지)이고, 이 꼬리가 최고 우선순위로
+// 마무리 산문 자체는 모델이 읽는 운영 지시문(영어)이고, 이 꼬리가 최고 우선순위로
 // 사용자 노출 텍스트의 언어만 강제한다. 요약을 내지 않는 planner 계열에는 무해하다.
 // 기본 언어 ko 에서는 꼬리를 붙이지 않는다. 시스템 프롬프트의 langDirective 가 이미
 // 한국어 출력을 강제하고 있어, 기본 경로의 모델 입력을 이전 버전과 같게 둔다(벤치마크 드리프트 방지).
@@ -129,9 +129,9 @@ var taskTimeoutWrapupDefaults = map[string]string{
 	"planner": plannerTaskTimeoutDefault,
 }
 
-const workerTaskTimeoutDefault = "**전체 작업이 시간 제한 상한에 도달하여 곧 종료됩니다**(이번 run 의 예산이 아니라 탐색 전체가 끝나는 시점입니다). 이것이 마지막 기회입니다. (1) 이미 식별했지만 아직 기록하지 않은 내용을 【전부】 저장합니다. 새 자산은 insert_assets, 탐색 결론과 사실은 record_fact, 확인된 취약점은 report_finding 으로 기록합니다. (2) 더 이상 어떤 새 명령이나 탐지도 시작하지 마십시오. (3) **맨 마지막에 한 문장짜리 순수 텍스트로만** 이번 의도에서 얻은 핵심 결론을 한국어로 요약하십시오."
+const workerTaskTimeoutDefault = "**The whole task has reached its time limit and is about to end** (this is the end of the whole exploration, not the budget of this run). This is the last chance. (1) Save [everything] you have identified but not yet recorded: new assets with insert_assets, exploration conclusions and facts with record_fact, and confirmed vulnerabilities with report_finding. (2) Don't start any new command or probe. (3) **At the very end, in one sentence of plain text only**, summarize the key conclusion of this intent in Korean."
 
-const plannerTaskTimeoutDefault = "**전체 작업이 시간 제한 상한에 도달하여 곧 종료됩니다**(이번 라운드가 아니라 작업 전체가 종료됩니다). 현재까지의 【모든】 사실과 발견을 근거로 마지막 목표 판정을 수행하십시오. 증거로 달성이 증명된 목표는 prove_goal 로 met 표시합니다(빠뜨리지 마십시오). **더 이상 어떤 새 의도도 생성하지 마십시오**(지금 의도를 파견해도 더 이상 실행되지 않습니다). 판정을 마치면 바로 종료하며, 요약 텍스트는 출력하지 않습니다."
+const plannerTaskTimeoutDefault = "**The whole task has reached its time limit and is about to end** (the whole task ends, not just this round). Make the final goal judgment based on [all] facts and findings so far. Mark goals proven met by evidence with prove_goal (don't miss any). **Don't create any new intent** (intents dispatched now won't run anymore). End right after the judgment, and don't output summary text."
 
 // TaskTimeoutWrapupDefault 返回某 agent 的任务超时内置默认收尾词（供后台占位/恢复默认）。
 func TaskTimeoutWrapupDefault(agentKey string) string {

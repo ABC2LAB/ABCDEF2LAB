@@ -1,0 +1,26 @@
+package db
+
+// 실제 옛 기본값과 다른 Unicode 사용자 입력을 대조하는 시험 자료다.
+var legacyRuleFixtures = []struct{ Name, Pattern, Message string }{
+	{"[\u5185\u7f6e] \u9012\u5f52\u5f3a\u5236\u5220\u9664 rm -rf", "(?i)\\brm\\b.{0,80}(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*|--recursive|--no-preserve-root)", "\u7981\u6b62\u6267\u884c\u9012\u5f52\u5f3a\u5236\u5220\u9664\uff08rm -rf / rm --recursive\uff09\uff0c\u53ef\u80fd\u6c38\u4e45\u635f\u574f\u7cfb\u7edf\u6216\u9776\u673a\u73af\u5883"},
+	{"[\u5185\u7f6e] \u5220\u9664\u7cfb\u7edf\u5173\u952e\u76ee\u5f55", "\\brm\\b[^\"'\\n]{0,60}[\"'\\s](/|/etc|/bin|/usr|/boot|/var|/lib|/sys|/proc|/dev|/sbin|/root)", "\u7981\u6b62\u5220\u9664\u7cfb\u7edf\u5173\u952e\u8def\u5f84"},
+	{"[\u5185\u7f6e] \u78c1\u76d8\u683c\u5f0f\u5316 mkfs", "\\bmkfs\\b", "\u7981\u6b62\u683c\u5f0f\u5316\u78c1\u76d8\uff08mkfs\uff09"},
+	{"[\u5185\u7f6e] \u8986\u5199\u78c1\u76d8\u8bbe\u5907 dd", "\\bdd\\b[^|\\n]{0,100}\\bof=\\s*/dev/[a-zA-Z]", "\u7981\u6b62\u4f7f\u7528 dd \u8986\u5199\u78c1\u76d8\u8bbe\u5907"},
+	{"[\u5185\u7f6e] Fork \u70b8\u5f39", ":\\(\\)\\s*\\{[^}]*:\\|:", "\u7981\u6b62\u6267\u884c Fork \u70b8\u5f39"},
+	{"[\u5185\u7f6e] \u5173\u673a / \u91cd\u542f", "\\b(?:shutdown|reboot|halt|poweroff|init\\s+[06])\\b", "\u7981\u6b62\u6267\u884c\u5173\u673a\u6216\u91cd\u542f\u547d\u4ee4"},
+	{"[\u5185\u7f6e] \u6740\u6b7b\u5168\u90e8\u8fdb\u7a0b", "\\bkill\\s+-9\\s+-1\\b|\\bkillall\\s+-9\\b", "\u7981\u6b62 kill -9 -1 \u6216 killall -9\uff08\u6740\u6b7b\u6240\u6709\u8fdb\u7a0b\uff09"},
+	{"[\u5185\u7f6e] \u78c1\u76d8\u64e6\u9664 shred / wipe", "\\b(?:shred|wipe)\\b[^|\\n]{0,80}/dev/[a-zA-Z]", "\u7981\u6b62\u5bf9\u78c1\u76d8\u8bbe\u5907\u6267\u884c shred/wipe \u64e6\u9664"},
+	{"[\u5185\u7f6e] \u6e05\u7a7a\u9632\u706b\u5899\u89c4\u5219", "\\biptables\\s+(?:-F|--flush)\\b|\\bnft\\s+flush\\s+ruleset\\b", "\u7981\u6b62\u6e05\u7a7a\u9632\u706b\u5899\u89c4\u5219\uff08iptables -F / nft flush\uff09"},
+	{"[\u5185\u7f6e] SQL DROP DATABASE / TABLE / SCHEMA", "(?i)\\bDROP\\s+(?:DATABASE|TABLE|SCHEMA|INDEX|VIEW|TABLESPACE|USER|ROLE)\\b", "\u7981\u6b62\u6267\u884c DROP \u64cd\u4f5c\uff0c\u53ef\u80fd\u4e0d\u53ef\u9006\u5730\u9500\u6bc1\u6570\u636e\u5e93\u5bf9\u8c61"},
+	{"[\u5185\u7f6e] SQL TRUNCATE", "(?i)\\bTRUNCATE\\s+(?:TABLE\\s+)?\\w", "\u7981\u6b62\u6267\u884c TRUNCATE\uff0c\u53ef\u80fd\u6e05\u7a7a\u6570\u636e\u8868\u6240\u6709\u6570\u636e"},
+	{"[\u5185\u7f6e] MongoDB drop / dropDatabase", "(?i)\\.(?:dropDatabase|dropCollection|drop)\\s*\\(", "\u7981\u6b62\u6267\u884c MongoDB drop \u64cd\u4f5c"},
+	{"[\u5185\u7f6e] Redis FLUSHALL / FLUSHDB", "(?i)\\b(?:FLUSHALL|FLUSHDB)\\b", "\u7981\u6b62\u6267\u884c Redis FLUSHALL / FLUSHDB\uff0c\u53ef\u80fd\u6e05\u7a7a\u5168\u90e8\u7f13\u5b58\u6570\u636e"},
+	{"[\u5185\u7f6e] curl / wget \u53d1\u9001 DELETE \u8bf7\u6c42", "(?i)\\bcurl\\b[^|\\n&;\"]{0,300}(?:-X\\s*DELETE|--request\\s+DELETE|-XDELETE)|\\bwget\\b[^|\\n&;\"]{0,300}--method[=\\s]+DELETE", "\u7981\u6b62\u901a\u8fc7 curl/wget \u53d1\u9001 HTTP DELETE \u8bf7\u6c42\uff0c\u53ef\u80fd\u5220\u9664\u76ee\u6807\u7cfb\u7edf\u6570\u636e"},
+	{"[\u5185\u7f6e] Python HTTP \u5ba2\u6237\u7aef DELETE\uff08requests/httpx/aiohttp\uff09", "(?i)\\b(?:requests|httpx|aiohttp|urllib\\.request)\\.delete\\s*\\(|session\\.delete\\s*\\(|client\\.delete\\s*\\(", "\u7981\u6b62\u4f7f\u7528 Python HTTP \u5ba2\u6237\u7aef\u53d1\u9001 DELETE \u8bf7\u6c42"},
+	{"[\u5185\u7f6e] \u811a\u672c\u4e2d\u58f0\u660e HTTP DELETE \u65b9\u6cd5\uff08JS/\u901a\u7528\uff09", "(?i)axios\\.delete\\s*\\(|method\\s*[:=]\\s*['\"]DELETE['\"]", "\u7981\u6b62\u5728\u811a\u672c\u4e2d\u58f0\u660e\u5e76\u53d1\u9001 HTTP DELETE \u8bf7\u6c42"},
+	{"[\u5185\u7f6e] \u6279\u91cf\u6e05\u7a7a / \u6e05\u9664\u63a5\u53e3\u8def\u5f84", "(?i)/(?:clear|wipe|flush|purge|truncate|drop|destroy|factory[-_]reset|reset[-_]all)(?:[/?#\"'\\s]|$)", "\u7981\u6b62\u8c03\u7528\u6279\u91cf\u6e05\u7a7a\u6216\u9500\u6bc1\u7c7b\u63a5\u53e3\uff08/clear /wipe /flush /purge \u7b49\uff09"},
+	{"[\u5185\u7f6e] \u7834\u574f\u6027\u7cfb\u7edf\u547d\u4ee4", "(?i)\\b(rm\\s+-rf\\s+/|mkfs|dd\\s+if=|:\\(\\)\\s*\\{|shutdown|reboot|>\\s*/dev/sd)", "\u7834\u574f\u6027\u547d\u4ee4\u88ab\u62d2\u7edd\uff08rm -rf / / mkfs / dd / fork bomb / \u5173\u673a\u91cd\u542f / \u8986\u5199\u78c1\u76d8\u8bbe\u5907\uff09"},
+	{"[\u5185\u7f6e] \u6570\u636e\u5916\u6cc4\u7ba1\u9053", "(?i)(curl|wget|nc|ncat)\\b[^|]*\\b(\\|\\s*(curl|wget|nc))", "\u7591\u4f3c\u6570\u636e\u5916\u6cc4\u7ba1\u9053\u88ab\u62d2\u7edd\uff08\u547d\u4ee4\u8f93\u51fa\u7ecf curl/wget/nc \u5916\u4f20\uff09"},
+	{"[\u5185\u7f6e] \u5220\u9664\u7c7b\u63a5\u53e3\u8def\u5f84", "(?i)/(?:(?:delete|remove|unlink|erase|destroy)[-\\w]*|del)(?:[/?#\"'\\s]|$)", "\u7981\u6b62\u8c03\u7528\u5220\u9664\u7c7b\u63a5\u53e3\uff08/delete /remove /unlink /erase \u7b49\uff09\uff0c\u4e0d\u8bba\u4f7f\u7528\u54ea\u79cd HTTP \u65b9\u6cd5\u2014\u2014\u591a\u6570\u5e94\u7528\u7684\u5220\u9664\u63a5\u53e3\u7528 GET/POST \u5c31\u80fd\u89e6\u53d1\uff0c\u540c\u6837\u4f1a\u771f\u5b9e\u5220\u9664\u76ee\u6807\u6570\u636e"},
+}
+var legacyAssetNoteFixtures = []string{"[\u5185\u7f6e] \u653f\u5e9c\u7f51\u7ad9 (.gov)", "[\u5185\u7f6e] \u653f\u5e9c\u7f51\u7ad9 (.gov.cn)", "[\u5185\u7f6e] \u6559\u80b2\u7f51\u7ad9 (.edu)", "[\u5185\u7f6e] \u6559\u80b2\u7f51\u7ad9 (.edu.cn)"}

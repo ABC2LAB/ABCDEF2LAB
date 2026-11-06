@@ -58,9 +58,23 @@ Go 밖에는 `web/messages/zh.json`·`ja.json`, `web/src`, `skills/`, `db/schema
 | `server/platform_tools.go` | 52 | `Server.toolCreateCustomTool`, `Server.toolCreateMCP`, `Server.toolCreateSkill`, `Server.toolDeleteAssetsByHost`, `Server.toolUpdateCustomTool`, `Server.toolUpdateMCP`, `Server.toolUpdateSkillFile`, `customToolSchema`, `mcpSchema` |
 | `server/finding_workflow.go` | 12 | `Server.agentFindingTrafficAccess`, `Server.seedFindingWorkflowTools`, `Server.toolBindFindingTraffic` |
 
+## 종료 사유와 취소 원인 (4단계)
+
+코드와 enum 값(`AbortCause.Code`, `harness.TerminalReason`)은 그대로 둔다. 글 요약 없이 끝난 실행의 결과 행은 `summary`·`detail`에 모델이 읽는 영어를 저장하고, 화면용 한국어를 `metadata`의 `display_summary`·`display_detail`에 함께 둔다. 모델이 읽는 경로는 여러 곳이지만 화면 경계는 `db.Activity.ForDisplay`(API·SSE)와 상세 조회(`ActivityDisplayDetailWithSources`) 둘이기 때문이다. 대화 활동은 화면만 읽으므로 저장할 때 한국어로 바꾼다. 모델이 쓴 최종 답은 그대로 둔다.
+
+이 변경 전에 저장된 결과 행에는 화면용 글이 없어 옛 문구 그대로 보인다.
+
+## 이미 심긴 프롬프트
+
+`seedPrompts`는 비어 있을 때만 넣으므로 기존 설치에는 옛 프롬프트가 남는다. 기동 때 `Server.reseedBuiltinPrompts`가 내장 에이전트와 reporter 프롬프트를 한 번 현재 기본값으로 올린다. 새 버전을 덧붙이는 방식이라 운영자가 고친 이전 본문은 버전 기록에서 되찾는다. 트리거에는 버전 기록이 없어서 `Server.upgradeReporterTriggerMessage`는 한자가 든 문구만 바꾼다. 도구 설명도 처음 넣을 때만 쓰이고 모델은 DB 행을 받는다. 도구 행에도 버전 기록이 없어서 `Server.refreshHanToolDescriptions`가 설명이나 스키마에 한자가 있는 시스템 도구만 한 번 현재 기본값으로 올린다. 평가 회차는 매번 새 DB라 시드 값을 그대로 쓴다.
+
 ## 공식 비교
 
 baseline은 원본 프롬프트 그대로 둔다. 개선판의 언어 변경은 선언된 차이다([평가 프로토콜 §2](evaluation/evaluation-protocol.md#2-평가-대상-고정)). 결과는 개선판 전체의 효과로 보고, E②나 언어 변경 하나의 효과로 나누지 않는다.
+
+## 번역 계층 (8단계)
+
+표시 언어는 한국어로 고정했고 카탈로그는 지웠다. `trMsg`·`logT`·`config.T`·`SetCurrentLanguage`·`notify.SetLanguageResolver`와 `output_language` API, 웹의 언어 선택은 아직 남아 있으며 별도 PR로 지운다. `agent/outputlang.go`는 #264 뒤에 줄인다.
 
 ## 확인할 가설
 
@@ -88,5 +102,6 @@ transcript는 세션 재개에 쓰여서 끌 수 없다. 모델의 추론을 끄
 ## 열린 항목
 
 - **SDK 문자열.** `norma`에도 한자 문자열 57개가 있다. 셸 도구(`NewShell*`)는 엔진이 쓰지 않지만, 백그라운드 작업 알림(`tool/task.go`)과 `noa/archive.go`는 모델까지 갈 수 있다. SDK를 올릴지, 끌지, 감쌀지 정한다.
-- **이미 심긴 프롬프트.** `seedPrompts`는 비어 있을 때만 넣는다. 기존 설치의 중국어 프롬프트는 `Server.reseed*Prompt`로 올릴 수 있는지 2단계에서 확인한다. 평가 회차는 매번 새 DB라 영향이 없다.
 - **활동 표시 필드.** `purpose`와 활동 표시 계약은 UI 디자인이 정해진 뒤에 한다.
+- **승인 기록 표식 `[模型]`.** `intercept`가 저장하는 값이고 `db`의 분류와 `web/src/components/approval-records.tsx`가 함께 읽는다. 옛 행도 읽어야 하므로 웹 담당자와 같이 바꾼다.
+- **가드 차단 문구.** `guard/guard.go`의 문구는 모델이 읽지만, 앞머리 표식을 `detections/`의 탐지 규칙과 지표도 쓴다. 표식을 바꿀지와 탐지 규칙을 어떻게 맞출지 정한 뒤 옮긴다.

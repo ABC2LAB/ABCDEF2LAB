@@ -493,6 +493,7 @@ type ActivityDTO struct {
 }
 
 func activityDTO(a db.Activity) ActivityDTO {
+	a = a.ForDisplay()
 	intent := ""
 	if a.NodeID != nil {
 		intent = i64s(*a.NodeID)

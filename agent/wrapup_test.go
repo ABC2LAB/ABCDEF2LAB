@@ -4,19 +4,33 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+
+	"github.com/Autumn-27/artex/config"
+	"github.com/Autumn-27/norma/harness"
 )
 
-// A2: wrap-up / settlement 프롬프트 한국어화.
-//
-// 이 상수들은 run 또는 task 가 단계/시간 예산에 걸려 종료될 때 settlement 단계에서
-// 주입되어, 사용자에게 그대로 노출되는 최종 요약을 직접 지시한다. 따라서 (1) 한국어로
-// 작성되어야 하고, (2) 중국어(CJK 한자) 잔재가 없어야 하며, (3) 도구 이름과
-// "한 문장 순수 텍스트" 같은 지시 의미가 보존되어야 한다.
-//
-// DB 시드는 wrapup_prompt / task_timeout_wrapup_prompt 를 빈 문자열로 두고(db/db.go 의
-// builtin 에이전트 INSERT 는 이 컬럼을 채우지 않는다), 비어 있으면 이 상수로 떨어진다.
-// 즉 이 상수들이 wrap-up 문구의 유일한 원천이다.
-func TestWrapupPromptsLocalizedToKorean(t *testing.T) {
+// #272의 실제 설정 해석을 거쳐 운영 훅을 배선하면 옛 en 값도 영어 꼬리를 붙이지 않는다.
+func TestWrapupRuntimeWithKoreanOnlyConfiguration(t *testing.T) {
+	for _, stored := range []string{"en", "ko", "zh", "es", "ja"} {
+		t.Run(stored, func(t *testing.T) {
+			t.Setenv("ARTEX_LANG", stored)
+			ctx := WithRuntimeHooks(t.Context(), RuntimeHooks{OutputLanguage: config.Language})
+			for _, key := range []string{"worker", "planner", "mainagent", "unknown-agent"} {
+				settlement := wrapupSettlementForTask(ctx, key, nil, true)
+				if settlement.Prompt != WrapupDefault(key) {
+					t.Fatalf("%s: conflicting language directive appended", key)
+				}
+				if want := TaskTimeoutWrapupDefault(key); want != "" && settlement.PromptByReason[harness.ReasonTimeout] != want {
+					t.Fatalf("%s timeout: conflicting language directive appended", key)
+				}
+			}
+		})
+	}
+}
+
+// TestWrapupPromptsAreEnglish 는 마무리 지시문이 모델이 읽는 영어로 유지되는지 고정한다. 사람에게 보이는 마지막
+// 한 문장은 한국어로 쓰라고 지시해야 한다. DB 시드는 이 칸을 비워 두므로 이 상수들이 유일한 원천이다.
+func TestWrapupPromptsAreEnglish(t *testing.T) {
 	all := map[string]string{
 		"settleWrapUpPrompt":        settleWrapUpPrompt,
 		"plannerWrapUpDefault":      plannerWrapUpDefault,
@@ -25,23 +39,9 @@ func TestWrapupPromptsLocalizedToKorean(t *testing.T) {
 		"workerTaskTimeoutDefault":  workerTaskTimeoutDefault,
 		"plannerTaskTimeoutDefault": plannerTaskTimeoutDefault,
 	}
-
-	hasScript := func(s string, table *unicode.RangeTable) bool {
-		for _, r := range s {
-			if unicode.Is(table, r) {
-				return true
-			}
-		}
-		return false
-	}
-
 	for name, p := range all {
-		if !hasScript(p, unicode.Hangul) {
-			t.Errorf("%s: 한글이 전혀 없어 한국어화되지 않았다", name)
-		}
-		// 도구 이름은 ASCII, 한글은 Hangul 블록이라 번역이 끝났다면 CJK 한자가 하나도 없어야 한다.
-		if hasScript(p, unicode.Han) {
-			t.Errorf("%s: CJK 한자 잔재가 남아 번역이 미완이다: %q", name, p)
+		if strings.IndexFunc(p, func(r rune) bool { return unicode.Is(unicode.Hangul, r) || unicode.Is(unicode.Han, r) }) >= 0 {
+			t.Errorf("%s: 모델이 읽는 지시문에 영어 아닌 글자가 있다: %q", name, p)
 		}
 	}
 
@@ -56,11 +56,11 @@ func TestWrapupPromptsLocalizedToKorean(t *testing.T) {
 		}
 	}
 	mustContain("settleWrapUpPrompt", settleWrapUpPrompt,
-		"insert_assets", "record_fact", "report_finding", "한 문장", "순수 텍스트")
+		"insert_assets", "record_fact", "report_finding", "one sentence of plain text", "in Korean")
 	mustContain("workerTaskTimeoutDefault", workerTaskTimeoutDefault,
-		"insert_assets", "record_fact", "report_finding", "한 문장", "순수 텍스트")
-	mustContain("genericWrapUpDefault", genericWrapUpDefault, "한 문장", "순수 텍스트")
-	mustContain("mainAgentWrapUpDefault", mainAgentWrapUpDefault, "한 문장", "순수 텍스트")
+		"insert_assets", "record_fact", "report_finding", "one sentence of plain text", "in Korean")
+	mustContain("genericWrapUpDefault", genericWrapUpDefault, "one sentence of plain text", "in Korean")
+	mustContain("mainAgentWrapUpDefault", mainAgentWrapUpDefault, "one sentence of plain text", "in Korean")
 	// planner 는 요약 문장을 내지 않고(판정만 하고 종료) 의도·목표·할일 도구를 유지한다.
 	mustContain("plannerWrapUpDefault", plannerWrapUpDefault, "add_intent", "prove_goal", "TodoWrite")
 	mustContain("plannerTaskTimeoutDefault", plannerTaskTimeoutDefault, "prove_goal")

@@ -283,6 +283,20 @@ func (s *ExplorationStore) ActivityDetailWithSources(id int64) (string, error) {
 	return acts[0].Detail, nil
 }
 
+// ActivityDisplayDetailWithSources 는 API용 상세다. 접근 범위는 ActivityDetailWithSources 와 같고
+// 사람에게 보일 글을 돌려준다.
+func (s *ExplorationStore) ActivityDisplayDetailWithSources(id int64) (string, error) {
+	detail, err := s.ActivityDisplayDetail(id)
+	if err != nil || detail != "" {
+		return detail, err
+	}
+	acts, err := s.ActivityByIDsWithSources([]int64{id})
+	if err != nil || len(acts) == 0 {
+		return "", err
+	}
+	return acts[0].ForDisplay().Detail, nil
+}
+
 // ActivityTraceSearchWithSources performs the scoped worker-trace search used
 // by get_worker_trace. A node id resolves to at most one exploration because
 // exploration node ids are global.
