@@ -229,6 +229,17 @@ def tree_fingerprint(archive: bytes, key: bytes) -> dict[str, bytes]:
     return entries
 
 
+def require_directory_root(archive: bytes, root: str) -> None:
+    """요청한 루트가 tar 안에서 실제 디렉터리인지 확인한다. 루트가 링크나 정규 파일이면 대상 안의 변화를 보지 못하는데도 "변화 없음"으로 읽힌다."""
+    name = root.rsplit("/", 1)[-1]
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            if not any(member.name == name and member.isdir() for member in tar):
+                raise StateDiffError("state_tree_root_not_directory")
+    except (tarfile.TarError, OSError, EOFError):
+        raise StateDiffError("state_tree_invalid") from None
+
+
 def _tree_diff(before: dict[str, bytes], after: dict[str, bytes] | None) -> dict:
     current = {} if after is None else after
     return {"entries_pre": len(before), "entries_post": len(current), "missing_post": after is None,

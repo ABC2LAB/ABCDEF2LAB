@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from state_diff import (  # noqa: E402
-    RUN_KEY_BYTES, StateDiffError, diff, runtime_diff, snapshot, tree_fingerprint,
+    RUN_KEY_BYTES, StateDiffError, diff, require_directory_root, runtime_diff, snapshot, tree_fingerprint,
 )
 
 KEY = bytes(range(RUN_KEY_BYTES))
@@ -358,6 +358,17 @@ class TestRuntimeTrees(unittest.TestCase):
         for key in (KEY[:-1], "k" * RUN_KEY_BYTES):
             with self.assertRaisesRegex(StateDiffError, "state_run_key_invalid"):
                 tree_fingerprint(tree(("x", b"1")), key)
+
+    def test_directory_root_must_be_the_requested_entry_and_a_real_directory(self):
+        require_directory_root(tree(("ftp", None), ("ftp/a", b"1")), "/app/ftp")
+        for archive, label in ((tree(("ftp", b"link:/data/ftp")), "link"), (tree(("ftp", b"1")), "regular"),
+                               (tree(("other", None), ("ftp", b"1")), "another directory"),
+                               (tree(("nested/ftp", None)), "same name below another entry")):
+            with self.subTest(label=label), self.assertRaisesRegex(StateDiffError, "state_tree_root_not_directory"):
+                require_directory_root(archive, "/app/ftp")
+        for archive, label in ((b"not a tar" * 100, "garbage"), (b"", "empty")):
+            with self.subTest(label=label), self.assertRaisesRegex(StateDiffError, "state_tree_invalid"):
+                require_directory_root(archive, "/app/ftp")
 
     def test_fingerprints_depend_on_the_key_and_output_has_no_names_or_values(self):
         self.assertNotEqual(fp(("x", b"secret"))["x"], tree_fingerprint(tree(("x", b"secret")), bytes(RUN_KEY_BYTES))["x"])

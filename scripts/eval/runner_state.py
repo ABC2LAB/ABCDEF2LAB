@@ -21,7 +21,7 @@ import stat
 from pathlib import Path
 
 from runner_docker import DockerError
-from state_diff import tree_fingerprint
+from state_diff import require_directory_root, tree_fingerprint
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 _HEADER_BYTES = 100
@@ -93,6 +93,8 @@ def runtime_fingerprints(docker, container_id: str, roots: tuple[str, ...], max_
     """대상을 멈춘 채 설정한 런타임 디렉터리의 항목 지문을 뜬다. 파일은 호스트에 쓰지 않는다.
 
     required면(pre) 없는 디렉터리는 설정 오류로 멈춘다. post에서 없어진 디렉터리는 None으로 돌려준다(상태 변화로 센다).
+    required면 루트가 실제 디렉터리인지도 본다(링크·정규 파일이면 설정 오류). post에서 루트가 다른 종류로 바뀌었으면
+    막지 않는다. 항목 종류가 지문에 들어가서 변화로 집계된다.
     unpause는 성공·실패와 무관하게 부르고, 실패하면 그 오류가 우선이다.
     """
     docker.pause(container_id)
@@ -102,6 +104,8 @@ def runtime_fingerprints(docker, container_id: str, roots: tuple[str, ...], max_
             archive = docker.copy_archive(container_id, root, max_bytes)
             if archive is None and required:
                 raise StateCopyError("state_tree_missing")
+            if required:
+                require_directory_root(archive, root)
             trees[root] = None if archive is None else tree_fingerprint(archive, key)
     finally:
         docker.unpause(container_id)
