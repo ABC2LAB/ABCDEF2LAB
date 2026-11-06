@@ -38,6 +38,20 @@ const AT_MS = (() => {
 })();
 /** i번째 줄이 나온 시점의 경과 초 */
 const secAt = (i: number) => Math.floor(AT_MS[i] / 1000);
+/**
+ * i번째 줄까지 본 진행률(%). 진행률 = 방문 ÷ 알려진 링크인데, 새 링크를 한꺼번에 찾으면 분모가 커져
+ * 비율이 줄 수 있다(로그인 뒤 58%→49%, 관리자 스크립트 뒤 74%→66%). 지금까지의 최댓값을 써서 막대가 뒤로 가지 않게 한다.
+ */
+const PCT = (() => {
+  let sent = 0;
+  let max = 0;
+  return CRAWL_EVENTS.map((e) => {
+    if (e.kind === "req" || e.kind === "login") sent++;
+    const known = sent + e.queue;
+    max = Math.max(max, known ? Math.round((sent / known) * 100) : 0);
+    return max;
+  });
+})();
 /** 예시 기록 줄 수 */
 const TOTAL = CRAWL_EVENTS.length;
 /** 찾은 경로 칩에 마우스를 올렸을 때 붙는 설명 */
@@ -152,7 +166,7 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
   };
 
   const known = stats.sent + stats.queue;
-  const pct = known ? Math.round((stats.sent / known) * 100) : 0;
+  const pct = state.step > 0 ? PCT[state.step - 1] : 0;
   const reads = stats.found.filter((f) => f.m === "GET").length;
   // 보내기 전에 승인이 필요한 경로(범위 확인의 '승인 후 전송'과 같은 기준)
   const approvals = stats.found.filter((f) => crawlPathKind(f.m, f.p) === "ap").length;
@@ -248,7 +262,7 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
             <strong style={{ color: "var(--fg)" }}>{stats.queue}</strong> · 경과 {elapsed(stats.sec)}
           </div>
           <div
-            className="bar"
+            className="bar cr-bar"
             role="progressbar"
             aria-label="탐색 진행"
             aria-valuemin={0}

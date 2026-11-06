@@ -3874,6 +3874,10 @@ h1.big {
   border-radius: 3px;
   background: var(--warn);
 }
+/* 진행 막대는 늘어날 때 부드럽게(값은 뒤로 가지 않는다 — CrawlScreen 의 PCT) */
+.cr-bar > i {
+  transition: width 0.3s ease-out;
+}
 /* 탐색이 끝나기 전 [범위 확인]은 눌리지 않는 것이 보이게 */
 .cr-next:disabled {
   opacity: 0.55;
@@ -4169,6 +4173,9 @@ h1.big {
 @media (prefers-reduced-motion: reduce) {
   .cr-chip.new {
     animation: none;
+  }
+  .cr-bar > i {
+    transition: none;
   }
   .cr-chev {
     transition: none;

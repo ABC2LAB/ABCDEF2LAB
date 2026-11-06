@@ -101,6 +101,18 @@ describe("자산 탐색 (시안)", () => {
     expect(screen.getByRole("button", { name: "범위 확인" })).toBeEnabled();
   });
 
+  it("never moves the progress bar backwards, even when new links grow the known total", async () => {
+    render(<Harness start="crawl" />);
+    const bar = () => Number(screen.getByRole("progressbar", { name: "탐색 진행" }).getAttribute("aria-valuenow"));
+    const seen: number[] = [bar()];
+    for (let n = 0; n < CRAWL_EVENTS.length; n++) {
+      await tick(1);
+      seen.push(bar());
+    }
+    expect(seen.every((v, i) => i === 0 || v >= seen[i - 1])).toBe(true);
+    expect(seen[seen.length - 1]).toBe(100);
+  });
+
   it("stops adding lines while paused and picks up where it left off", async () => {
     render(<Harness start="job" />);
     fireEvent.click(screen.getByRole("button", { name: "점검 시작" }));
