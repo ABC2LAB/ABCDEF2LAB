@@ -20,9 +20,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from baseline_extract import MAX_VOCABULARY_BYTES, UPSTREAM_COMMIT
 from baseline_pages import BaselinePageMerge
 from runner_config import REPO_ROOT
+import runner  # noqa: E402
 from runner_engine import (
     _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
-    engine_settings, findings_record, load_vocabulary, login, start_task, task_request,
+    EngineLLMProfile, apply_engine_settings, engine_settings, findings_record, load_vocabulary, login, start_task,
+    task_request,
 )
 from test_runner_config import runner_config
 from test_baseline_extract import finding, vocabulary
@@ -53,6 +55,17 @@ TASK_SHAPES = {
     ("server/server.go", "func parseTarget("): "4fa3c05b1d4ac4d24a387df3dda6fb87e566f45e9f16f0a2b79fa5e3b47bb3ea",
     ("server/dto.go", "type TaskDTO struct"): "119a0e91764c1e1e9c3a7701e0d0ddb8d63be7d700faf389d160eefadca56163",
     ("server/auth.go", "func (s *Server) requireAuth("): "1a66aca5c409d1b827327f5b6524438522821a1ba759508ad9c704750e790ef0",
+    # 러너가 압축 기준 창을 넣는 경로(apply_engine_settings). baseline e53a79f와 같은 값을 직접 확인했다.
+    ("server/server_mgmt.go", "func (s *Server) pgSaveProfile("):
+        "bd1e80549787564149575354402cbc5ef17b23308d525a8be00e8633c7526d2e",
+    ("server/server_mgmt.go", "func (s *Server) pgActivateProfile("):
+        "636fcf4ea39ee15733a7d4cc224ff1553baefdad0f22f931a5e46850f089d85d",
+    ("server/server.go", "func (s *Server) loadLLMConfig("):
+        "35ce56195bf53dbe2e6fa456b8c3e384b3428b2ad8ccb697a8e78f13d8d733df",
+    ("server/server.go", "func (s *Server) getLLM("):
+        "3578d8622da0f87547261aea06ef17d3f46aa7215906fb122f8f8d3b53776436",
+    ("db/config.go", "type LLMProfile struct"):
+        "d94ed53b2203f42b0825da23763b92863794507bef5d3d97a0c47f1d8742a8b8",
 }
 TARGET = "http://eval-meter:8080"
 
@@ -126,10 +139,12 @@ class FakeEngine:
     """로그인 1개와 findings 페이지 조회만 하는 합성 엔진 API."""
 
     def __init__(self, items=None, login_status=200, login_body=None, task_status=201, task_body=None,
-                 settings=None):
+                 settings=None, apply=None):
         self.items = [finding()] if items is None else items
         # 실행 설정 GET 응답: 경로 → (status, 본문 bytes). 없으면 정상 응답.
         self.settings = settings or {}
+        # 실행 설정 쓰기 응답: 경로 → (status, 본문 bytes). 없으면 정상 응답.
+        self.apply = apply or {}
         self.login_status, self.login_body = login_status, login_body
         self.task_status, self.task_body = task_status, task_body
         self.requests = []
@@ -142,6 +157,9 @@ class FakeEngine:
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 engine.requests.append(("POST", self.path, dict(self.headers), body))
+                if self.path in ("/api/llm/profiles", "/api/llm/profiles/active"):
+                    self.apply_reply()
+                    return
                 if self.path == "/api/tasks" and engine.task_status is None:
                     self.close_connection = True  # 응답 없이 끊는다(생성 여부가 모호한 실패)
                     return
@@ -153,6 +171,22 @@ class FakeEngine:
                 else:
                     status = engine.login_status
                     payload = engine.login_body if engine.login_body is not None else json.dumps({"token": TOKEN}).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_PUT(self):
+                engine.requests.append(("PUT", self.path, dict(self.headers),
+                                        self.rfile.read(int(self.headers.get("Content-Length", "0")))))
+                self.apply_reply()
+
+            def apply_reply(self):
+                body = b'{"id": 7}' if self.path == "/api/llm/profiles" else b'{"ok": true}'
+                status, payload = engine.apply.get(self.path, (200, body))
+                if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+                    status = 401
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -418,6 +452,66 @@ class TestVocabulary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestApplyEngineSettings(unittest.TestCase):
+    PROFILE = EngineLLMProfile("openai", "example-org/example-model", "http://eval-llm-gw:8090/api/v1",
+                               "gateway-holds-the-key", 64, False)
+
+    def engine(self, **kwargs):
+        engine = FakeEngine(**kwargs)
+        self.addCleanup(engine.close)
+        return engine
+
+    def test_saves_activates_then_sets_workers_with_one_login(self):
+        engine = self.engine()
+        apply_engine_settings(engine.port, AdminSecret(PASSWORD), self.PROFILE, 2, 5)
+        self.assertEqual([(method, path) for method, path, _, _ in engine.requests],
+                         [("POST", "/api/auth/login"), ("POST", "/api/llm/profiles"),
+                          ("POST", "/api/llm/profiles/active"), ("PUT", "/api/settings")])
+        _, _, _, saved = engine.requests[1]
+        # 스트리밍 값을 그대로 넘겨야 한다. /api/llm 경로는 실행 중 설정을 스트리밍으로 되돌린다.
+        self.assertEqual(json.loads(saved), {"name": "default", "format": "openai", "model": "example-org/example-model",
+                                             "base_url": "http://eval-llm-gw:8090/api/v1", "api_key": "gateway-holds-the-key",
+                                             "context_window_k": 64, "streaming": False})
+        self.assertEqual(json.loads(engine.requests[2][3]), {"id": 7})
+        self.assertEqual(json.loads(engine.requests[3][3]), {"workers": 2})
+        for _, _, headers, body in engine.requests[1:]:
+            self.assertEqual(headers["Authorization"], f"Bearer {TOKEN}")
+            self.assertNotIn(PASSWORD.encode(), body)
+
+    def test_each_failure_has_a_fixed_code_and_stops_there(self):
+        cases = [
+            ({"/api/llm/profiles": (500, b"{}")}, "engine_settings_apply_http_500", 2),
+            ({"/api/llm/profiles": (200, b"not json")}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles": (200, b"[]")}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles": (200, b'{"id": 0}')}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles": (200, b'{"id": "7"}')}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles": (200, b'{"id": true}')}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles/active": (500, b"{}")}, "engine_settings_apply_http_500", 3),
+            ({"/api/settings": (400, b"{}")}, "engine_settings_apply_http_400", 4),
+        ]
+        for apply, code, requests in cases:
+            with self.subTest(code=code, apply=apply):
+                engine = self.engine(apply=apply)
+                with self.assertRaises(EngineAPIError) as caught:
+                    apply_engine_settings(engine.port, AdminSecret(PASSWORD), self.PROFILE, 2, 5)
+                self.assertEqual(str(caught.exception), code)
+                self.assertEqual(len(engine.requests), requests)
+                self.assertNotIn(PASSWORD, str(caught.exception))
+
+    def test_unreachable_engine_has_a_fixed_code(self):
+        engine = self.engine()
+        port = engine.port
+        engine.close()
+        self.doCleanups()
+        with self.assertRaises(EngineAPIError):
+            apply_engine_settings(port, AdminSecret(PASSWORD), self.PROFILE, 2, 1)
+
+    def test_placeholder_key_matches_compose(self):
+        # 엔진이 키를 지우면 LLM이 꺼지므로 같은 자리값을 넣는다. 진짜 키가 아니어야 한다.
+        compose = (Path(__file__).resolve().parents[3] / "deploy/engine-isolated/compose.yaml").read_text(encoding="utf-8")
+        self.assertIn(f"OPENAI_API_KEY: {runner.ENGINE_LLM_PLACEHOLDER_KEY}", compose)
 
 
 class TestEngineSettings(unittest.TestCase):

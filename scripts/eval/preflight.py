@@ -15,13 +15,15 @@ from urllib.parse import urlsplit
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_URL_LENGTH = 512
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
+# 엔진 압축 기준 창(K 토큰). profile_fingerprint와 같은 범위(엔진 agent/provider.go가 이 범위로 자른다).
+MIN_CONTEXT_WINDOW_K, MAX_CONTEXT_WINDOW_K = 32, 1000
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 _REFERENCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9./:_-]*\Z")
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 _PLACEHOLDER = re.compile(r"(?:^|[/:._-])(?:todo|tbd|changeme|placeholder)(?:$|[/:._-])", re.I)
 _SHARED = (
     "network_mode", "llm", "temperature", "sampling", "seed", "target_origin",
-    "worker_count", "time_budget_seconds", "request_budget", "run_storage", "run_drain",
+    "worker_count", "context_window_k", "time_budget_seconds", "request_budget", "run_storage", "run_drain",
     "fixture_fingerprint", "environment_fingerprint", "scope_fingerprint",
 )
 # 러너 v1은 전용 망 격리만 지원한다(평가 프로토콜 §2). 엔진은 계측기 origin으로만 대상에 닿는다.
@@ -250,6 +252,8 @@ def _valid(field: str, value: object) -> bool:
         return _number(value, positive=False)
     if field == "time_budget_seconds":
         return _number(value, positive=True)
+    if field == "context_window_k":
+        return type(value) is int and MIN_CONTEXT_WINDOW_K <= value <= MAX_CONTEXT_WINDOW_K
     return type(value) is int and value >= (0 if field == "seed" else 1)
 
 
@@ -293,6 +297,10 @@ def check_preflight(payload: object) -> None:
             expected = LOCAL_SAMPLING_FIELDS if config["llm"]["backend"] == "local" else SAMPLING_FIELDS
             if set(config["sampling"]) != set(expected):
                 errors.append(f"{label}.sampling: BACKEND_MISMATCH")
+        # 로컬 서버는 넘친 입력을 오류 없이 잘라낸다. 엔진이 압축하기 전에 잘리면 안 된다.
+        if ("llm" in valid and "context_window_k" in valid and config["llm"]["backend"] == "local"
+                and config["context_window_k"] * 1000 > config["llm"]["context_length"]):
+            errors.append(f"{label}.context_window_k: ABOVE_SERVER_CONTEXT")
     for field in _SHARED:
         if field in valid_baseline and field in valid_ours and baseline[field] != ours[field]:
             errors.append(f"comparison.{field}: MISMATCH")

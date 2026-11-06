@@ -47,7 +47,7 @@ def declaration() -> dict:
                     "hostname": "fixture-llm", "host_ip": "10.0.0.5", "model_digest": "a" * 64,
                     "context_length": 32768, "server_version": "0.32.6"},
             "temperature": 0, "seed": 11, "target_image": "fixture/image:1.0.0",
-            "worker_count": 1, "time_budget_seconds": 60, "request_budget": 10,
+            "worker_count": 1, "context_window_k": 32, "time_budget_seconds": 60, "request_budget": 10,
             "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
             "run_drain": {"grace_seconds": 30, "settle_seconds": 2},
             "sampling": {"top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0.25},

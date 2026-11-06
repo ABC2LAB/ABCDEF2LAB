@@ -24,7 +24,7 @@ from profile_fingerprint import ProfileError, _read_profile, generate_fingerprin
 SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
 # 프로파일 environment에서 사전검사 선언으로 그대로 옮기는 필드(이름 같음).
 ENVIRONMENT_FIELDS = ("target_image", "network_mode", "llm", "temperature", "sampling", "seed", "worker_count",
-                      "time_budget_seconds", "request_budget", "run_storage", "run_drain")
+                      "context_window_k", "time_budget_seconds", "request_budget", "run_storage", "run_drain")
 
 
 def build_preflight(profile_path: str | Path, baseline_sha: str, ours_sha: str) -> dict:
