@@ -153,7 +153,8 @@ class TestCollect(unittest.TestCase):
     def test_integrity_failures_are_told_apart_from_uncollected(self):
         """무결성 실패는 채점 중단이고, 진짜 미수집만 판단불가로 남는다(제안 §3·§6)."""
         good = (200, body(page([record(101)], next_cursor="c1", total=2)))
-        integrity = (({"freeze": (422, b"{}")}, None), ({"freeze": (200, b"not json")}, None), ({"freeze": (200, b"{}")}, None),
+        integrity = (({"freeze": (422, b"{}")}, None), ({"freeze": (400, b"{}")}, None), ({}, {None: good, "c1": (400, b"{}")}),
+                     ({"freeze": (200, b"not json")}, None), ({"freeze": (200, b"{}")}, None),
                      ({"freeze": (200, b'{"export_ref": "export-1", "export_ref": "x"}')}, None),
                      ({}, {None: good, "c1": (422, b"{}")}), ({}, {None: good, "c1": (200, b"[]")}),
                      ({}, {None: (200, body(page([record(101)], next_cursor=7, total=2)))}),

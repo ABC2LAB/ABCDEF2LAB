@@ -29,8 +29,9 @@ RECORDS_PATH = "/api/tasks/{task_id}/verdict-records"
 MAX_EXPORT_RESPONSE_BYTES = 64 * 1024
 _EXPORT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}\Z")
 # 제안 §6의 상태 코드. 응답 본문은 믿지 않고 읽지도 않는다.
-HTTP_INTEGRITY_FAILED = 422
-_READ_FAILURES = {400: "invalid_export_request", 401: "unauthorized", 403: "unauthorized", 404: "export_not_found",
+# 입력 오류와 무결성 실패는 채점을 멈춘다. 나머지는 미수집이다.
+_STOP_FAILURES = {400: "invalid_export_request", 422: "integrity_failed"}
+_READ_FAILURES = {401: "unauthorized", 403: "unauthorized", 404: "export_not_found",
                   409: "export_snapshot_unavailable", 503: "export_unavailable"}
 
 
@@ -61,7 +62,7 @@ class CollectedExport:
 
 
 class VerdictIntegrityError(VerdictCollectError):
-    """서버가 무결성 실패를 답했거나 응답이 계약과 어긋난다. 미수집이 아니므로 채점을 멈춘다(제안 §3·§6)."""
+    """서버가 무결성 실패·입력 오류를 답했거나 응답이 계약과 어긋난다. 미수집이 아니므로 채점을 멈춘다(제안 §3·§6)."""
 
 
 def _integrity(code: str) -> None:
@@ -107,8 +108,8 @@ def _freeze(port: int, task_id: int, run_id: str, headers: dict, limits: Collect
         _fail("FREEZE_UNREACHABLE")
     if status == 409:
         raise VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")
-    if status == HTTP_INTEGRITY_FAILED:
-        _integrity("FREEZE_INTEGRITY_FAILED")
+    if status in _STOP_FAILURES:
+        _integrity("FREEZE_" + _STOP_FAILURES[status].upper())
     if status not in (200, 201):
         _fail("FREEZE_" + _READ_FAILURES.get(status, f"http_{status}").upper())
     if len(data) > MAX_EXPORT_RESPONSE_BYTES:
@@ -134,8 +135,8 @@ def _fetch_pages(port: int, context: ExportContext, headers: dict, limits: Colle
             status, data = _get(port, target, headers, limits.timeout_seconds, limits.max_page_bytes)
         except (OSError, http.client.HTTPException, ValueError, OverflowError):
             _fail("PAGE_UNREACHABLE")
-        if status == HTTP_INTEGRITY_FAILED:
-            _integrity("PAGE_INTEGRITY_FAILED")
+        if status in _STOP_FAILURES:
+            _integrity("PAGE_" + _STOP_FAILURES[status].upper())
         if status != 200:
             _fail("PAGE_" + _READ_FAILURES.get(status, f"http_{status}").upper())
         if len(data) > limits.max_page_bytes:
