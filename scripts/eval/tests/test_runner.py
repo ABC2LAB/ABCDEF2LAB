@@ -1320,7 +1320,8 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
             local[side]["llm"] = local_llm()
             local[side]["sampling"] = dict(LOCAL_SAMPLING)
         spec = build_spec(config, plan_run(config, local, "ours", "ours-1"), local, "t" * 64, "c", 0)
-        self.assertEqual(spec.llm_serving, {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768})
+        self.assertEqual(spec.llm_serving, {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768,
+                                            "placement": "any"})
         # 시간 예산보다 짧으면 요청 공백 동안 모델이 내려갈 수 있다. 예산이 늘면 같이 늘어야 한다.
         declared = local["ours"]["time_budget_seconds"]
         self.assertGreater(spec.llm_keep_alive_seconds, declared)
@@ -1609,7 +1610,7 @@ class TestCommandLine(unittest.TestCase):
         self.assertIn("--side", done.stdout)
 
 
-SERVING = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768}
+SERVING = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768, "placement": "any"}
 KEEP_ALIVE = 900
 
 
@@ -1710,6 +1711,19 @@ class TestLocalServing(unittest.TestCase):
                 self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
                 self.assertNotIn("start_task", ports.calls)
                 self.assertIn("llm-serving.json", evidence.files)
+
+    def test_gpu_placement_is_judged_at_every_read(self):
+        spec = dataclasses.replace(serving_spec(), llm_serving=dict(SERVING, placement="gpu"))
+        def on_cpu(phase):
+            return lambda ports, meter, clock: ports.serving.update({phase: {"size": 100, "size_vram": 40}})
+        result, ports, *_ = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)  # 가짜 서버는 전부 GPU에 올라가 있다
+        for phase, stopped_before in (("pre", "up"), ("task_start", "start_task"), ("post", None)):
+            with self.subTest(phase=phase):
+                result, ports, *_ = run(mutate=on_cpu(phase), spec=spec)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_not_on_gpu"]))
+                if stopped_before is not None:
+                    self.assertNotIn(stopped_before, ports.calls)
 
     def test_keep_alive_is_not_judged_after_the_run(self):
         result, *_ = serving_run(post={"keep_alive_remaining_seconds": 1})

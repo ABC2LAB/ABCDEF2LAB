@@ -19,6 +19,8 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 UNVERIFIED = "llm_serving_unverified"
 MISMATCH = "llm_serving_mismatch"
 KEEP_ALIVE_SHORT = "llm_serving_keep_alive_short"
+NOT_ON_GPU = "llm_serving_not_on_gpu"
+PLACEMENT_GPU = "gpu"
 # 적재 완료와 /api/ps 조회 사이의 여유. 남은 시간이 이보다 더 줄었으면 서버가 요청한 유지 기간을 따르지 않은 것이다.
 KEEP_ALIVE_SLACK_SECONDS = 30
 _EXPIRES_AT = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})")
@@ -90,7 +92,7 @@ def read_serving(host: str, port: int, model: str, timeout: float, *, keep_alive
     return {"server_version": version, "model_digest": digest if isinstance(digest, str) else None,
             "context_length": _optional_int(entry.get("context_length")),
             "keep_alive_remaining_seconds": _remaining_seconds(entry.get("expires_at"), now()),
-            # CPU로 밀려났는지 볼 수 있게 남긴다. 판정에는 쓰지 않는다.
+            # CPU로 밀려났는지 본다. placement가 gpu일 때만 판정에 쓴다.
             "size": _optional_int(entry.get("size")), "size_vram": _optional_int(entry.get("size_vram")),
             "quantization_level": quantization if isinstance(quantization, str) else None,
             "other_models_loaded": len(models) - len(mine)}
@@ -109,6 +111,13 @@ def judge_serving(observed: dict, declared: dict, *, min_keep_alive_seconds: int
         return UNVERIFIED
     if any(observed[name] != declared[name] for name in ("server_version", "model_digest", "context_length")):
         return MISMATCH
+    # 모델 일부가 CPU로 밀려도 오류가 나지 않는다. 느려진 만큼 시간 예산 안의 진척이 줄어 한쪽만 그러면 비교가 깨진다.
+    if declared["placement"] == PLACEMENT_GPU:
+        size, in_gpu = observed["size"], observed["size_vram"]
+        if size is None or in_gpu is None or size <= 0:
+            return UNVERIFIED
+        if in_gpu < size:
+            return NOT_ON_GPU
     if min_keep_alive_seconds is not None:
         remaining = observed["keep_alive_remaining_seconds"]
         if remaining is None:

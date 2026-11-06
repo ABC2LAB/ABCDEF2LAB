@@ -960,7 +960,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_provider_name=config.llm_gateway["expected_provider_name"],
         llm_sampling=json.loads(plan.compose_env["EVAL_LLM_SAMPLING"]),
         llm_serving=(None if plan.llm["backend"] != "local" else
-                     {name: plan.llm[name] for name in ("server_version", "model_digest", "context_length")}),
+                     {name: plan.llm[name] for name in ("server_version", "model_digest", "context_length", "placement")}),
         llm_keep_alive_seconds=(0 if plan.llm["backend"] != "local" else
                                 _llm_keep_alive_seconds(config, declared["time_budget_seconds"])),
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],

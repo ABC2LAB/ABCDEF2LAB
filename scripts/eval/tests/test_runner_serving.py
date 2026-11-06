@@ -17,7 +17,8 @@ from runner_serving import (KEEP_ALIVE_SHORT, MAX_RESPONSE_BYTES, MISMATCH, UNVE
 
 MODEL = "example-model:fixed-tag"
 DIGEST = "a" * 64
-DECLARED = {"server_version": "0.32.6", "model_digest": DIGEST, "context_length": 32768}
+DECLARED = {"server_version": "0.32.6", "model_digest": DIGEST, "context_length": 32768, "placement": "any"}
+ON_GPU = dict(DECLARED, placement="gpu")
 NOW = datetime(2026, 11, 6, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -128,6 +129,19 @@ class TestJudge(unittest.TestCase):
     def observed(self, **change):
         return dict(DECLARED, size=1, size_vram=0, quantization_level=None, other_models_loaded=3,
                     keep_alive_remaining_seconds=100) | change
+
+    def test_gpu_placement_needs_the_whole_model_in_gpu_memory(self):
+        cases = [({"size": 100, "size_vram": 100}, None), ({"size": 100, "size_vram": 101}, None),
+                 ({"size": 100, "size_vram": 99}, "llm_serving_not_on_gpu"), ({"size": 100, "size_vram": 0}, "llm_serving_not_on_gpu"),
+                 ({"size": None, "size_vram": 100}, "llm_serving_unverified"), ({"size": 100, "size_vram": None}, "llm_serving_unverified"),
+                 ({"size": 0, "size_vram": 0}, "llm_serving_unverified")]
+        for change, reason in cases:
+            with self.subTest(change=change):
+                self.assertEqual(judge_serving(self.observed(**change), ON_GPU), reason)
+
+    def test_any_placement_does_not_judge_gpu_memory(self):
+        self.assertIsNone(judge_serving(self.observed(size=100, size_vram=0), DECLARED))
+        self.assertIsNone(judge_serving(self.observed(size=None, size_vram=None), DECLARED))
 
     def test_same_values_pass_and_recorded_fields_are_not_judged(self):
         self.assertIsNone(judge_serving(self.observed(), DECLARED))
