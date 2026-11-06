@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Brand } from "../components/Brand";
 import { Screen } from "../components/Screen";
@@ -400,11 +400,56 @@ function NowText({ e, host }: { e: CrawlEvent | undefined; host: string }) {
   );
 }
 
+/**
+ * 새 줄을 높이 0에서 제 높이로 펼친다 — 맨 위에 끼어들 때 아래 줄들이 한 번에 툭 밀리지 않고 미끄러지듯 내려간다.
+ * 들어온 줄은 잠깐 옅게 칠했다가 지운다. 화면이 숨겨져 있으면(다른 화면을 보는 중) 움직이지 않는다 —
+ * CSS 애니메이션이었다면 다시 돌아올 때 쌓인 줄이 한꺼번에 깜빡였을 것.
+ */
+/** 이미 펼친 줄 — 개발 모드(StrictMode)는 효과를 두 번 돌리는데, 두 번째가 높이 0을 재서 줄이 접힌 채 남지 않게 */
+const SLID = new WeakSet<HTMLElement>();
+function slideIn(el: HTMLElement) {
+  if (SLID.has(el)) return;
+  SLID.add(el);
+  if (typeof el.animate !== "function" || el.closest("[hidden]")) return;
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  const cs = getComputedStyle(el);
+  const tint = getComputedStyle(document.documentElement).getPropertyValue("--teal-weak").trim();
+  el.style.overflow = "hidden";
+  const open = el.animate(
+    [
+      { height: "0px", paddingTop: "0px", paddingBottom: "0px", borderTopWidth: "0px", opacity: 0 },
+      {
+        height: `${el.offsetHeight}px`,
+        paddingTop: cs.paddingTop,
+        paddingBottom: cs.paddingBottom,
+        borderTopWidth: cs.borderTopWidth,
+        opacity: 1,
+      },
+    ],
+    { duration: 260, easing: "cubic-bezier(.2,.7,.3,1)" },
+  );
+  const done = () => {
+    el.style.overflow = "";
+  };
+  open.onfinish = done;
+  open.oncancel = done;
+  if (tint)
+    el.animate([{ backgroundColor: tint }, { backgroundColor: cs.backgroundColor }], {
+      duration: 1400,
+      easing: "ease-out",
+    });
+}
+
 /** 탐색 기록 한 줄 — 보낸 요청은 응답 코드, 찾기만 한 경로는 '기록만', 규칙에 막힌 링크는 '요청 안 함' */
 function LogRow({ e, at, host }: { e: CrawlEvent; at: number; host: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // 처음 그려질 때 한 번만(줄은 다시 마운트되지 않는다) — 그리기 전에 높이를 0으로 잡아 깜빡임이 없다
+  useLayoutEffect(() => {
+    if (ref.current) slideIn(ref.current);
+  }, []);
   if (e.kind === "sys") {
     return (
-      <div className="cr-row cr-sys">
+      <div ref={ref} className="cr-row cr-sys">
         <span className="cr-t">{clock(at)}</span>
         <span className="cr-msg">{e.note || `대상 연결 확인 · ${host} 허용 목록에서 검증됨`}</span>
       </div>
@@ -417,7 +462,7 @@ function LogRow({ e, at, host }: { e: CrawlEvent; at: number; host: string }) {
   if (e.kind === "rec") tag = <span className="dtag ex">기록만</span>;
   if (e.kind === "skip") tag = <span className="dtag out">요청 안 함</span>;
   return (
-    <div className="cr-row">
+    <div ref={ref} className="cr-row">
       <span className="cr-t">{clock(at)}</span>
       <span className={cx("op-m", methodClass(e.m))}>{e.m}</span>
       <code className="cr-path">{e.p}</code>

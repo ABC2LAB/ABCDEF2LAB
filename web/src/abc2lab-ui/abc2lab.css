@@ -3981,7 +3981,6 @@ h1.big {
   padding: 9px 12px;
   border-top: 1px solid var(--line);
   font-size: 13px;
-  animation: crIn 0.35s ease-out;
 }
 .cr-row:first-child {
   border-top: none;
@@ -4135,7 +4134,6 @@ h1.big {
   border-radius: 6px;
 }
 @media (prefers-reduced-motion: reduce) {
-  .cr-row,
   .cr-chip.new {
     animation: none;
   }

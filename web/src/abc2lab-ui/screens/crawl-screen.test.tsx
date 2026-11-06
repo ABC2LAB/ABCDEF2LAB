@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,9 @@ function Harness({ start }: { start: ScreenId }) {
       <output data-testid="where">{screenId}</output>
       <button type="button" onClick={() => setScreen("crawl")}>
         자산 탐색으로 돌아가기
+      </button>
+      <button type="button" onClick={() => setScreen("dashboard")}>
+        다른 화면으로
       </button>
     </NavContext.Provider>
   );
@@ -139,5 +142,40 @@ describe("자산 탐색 (시안)", () => {
     expect(scope).toHaveLength(37);
     expect(new Set(found).size).toBe(found.length);
     expect([...found].sort()).toEqual([...scope].sort());
+  });
+
+  it("slides each new line open while the screen is shown, but not while it is hidden", async () => {
+    // jsdom 에는 Web Animations 가 없어서 펼치기 호출만 지켜본다
+    const animate = vi.fn(() => ({ onfinish: null, oncancel: null }));
+    Object.defineProperty(Element.prototype, "animate", { value: animate, configurable: true, writable: true });
+    const opens = () =>
+      animate.mock.calls.filter(
+        (call) => (call as unknown[])[0] && ((call as unknown[])[0] as Keyframe[])[0].height === "0px",
+      ).length;
+    try {
+      // 개발 모드처럼 효과가 두 번 돌아도 줄마다 한 번만 펼친다
+      render(
+        <StrictMode>
+          <Harness start="job" />
+        </StrictMode>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "점검 시작" }));
+      await tick(3);
+      expect(rows()).toBe(3);
+      expect(opens()).toBe(3);
+
+      // 다른 화면을 보는 동안 쌓이는 줄은 움직이지 않는다(돌아왔을 때 한꺼번에 깜빡이지 않게)
+      fireEvent.click(screen.getByRole("button", { name: "다른 화면으로" }));
+      await tick(4);
+      expect(rows()).toBe(7);
+      expect(opens()).toBe(3);
+
+      fireEvent.click(screen.getByRole("button", { name: "자산 탐색으로 돌아가기" }));
+      await tick(1);
+      expect(opens()).toBe(4);
+    } finally {
+      // jsdom 원래 상태(animate 없음)로 되돌린다
+      delete (Element.prototype as { animate?: unknown }).animate;
+    }
   });
 });
