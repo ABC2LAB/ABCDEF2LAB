@@ -22,7 +22,9 @@
 6. SQL `Issue`는 실제 호스트 scope를 요구한다. receipt의 operation·전체 scope·task/intent/exploration/mode·요청/증거 digest와 양의 bounded revision을 대조한다. Source A의 0이 아닌 revision도 같아야 한다.
 7. descriptor/SQL I/O 뒤 새 Source B가 audit/key/KG/신원/fixture 정본을 독립적으로 다시 읽는다. context·exploration/mode 및 0이 아닌 revision은 실제 receipt와 같아야 한다. B와 Prepare reader 반환 사이에 추가 외부 I/O는 없으며 기존 Prepare·최종 DB marker/mode 검사는 유지한다.
 
-Source는 읽는 순간의 정합성이다. A/B 비교가 lease·계정 인증·finding commit까지의 권한 수명을 만들지는 않는다. 실제 호스트의 기존 source/read 수명·복원 연속성 의무가 필요하다. HTTP drain은 해당 전송기만 다루며 legacy child·전체 task 종료를 증명하지 않는다.
+Source는 읽는 순간의 정합성이다. A/B 비교만으로 lease·계정 인증·finding commit까지의 권한 수명이 생기지 않는다. 실제 호스트의 `ControlledReadFinalizationScopeProvider`와 `RequireControlledReadFinalizationScope`로 감싼 Findings resolver를 strict 생성 전에 공급해야 한다. 이 hook은 Source A/descriptor/Issue/Source B·Prepare·DB save 반환까지 권위를 유지한다. `NewWithRevisionedDurableControlledReadHost` 자체는 finalization scope 요구를 자동 활성화하지 않으며 공식 회차·실배포 조립에서 명시적 strict 적용이 필수다. 실제 공급·복원 연속성 수용은 아직 후속이다.
+
+현재 host lease의 만료·회수는 신규 저장을 거부하는 축이다. [저장 게이트](./e3-storage-gate.md)의 관찰 시각에 따른 역사적 정책 유효성·오라클 판정을 소급 변경하지 않으며, 결과 불명인 commit을 미저장으로 바꾸지도 않는다. HTTP drain은 해당 전송기만 다루며 legacy child·전체 task 종료를 증명하지 않는다.
 
 ## 실패와 복구
 

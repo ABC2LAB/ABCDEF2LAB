@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import json
 import os
@@ -164,6 +165,7 @@ class FakeEvidence:
 
 class FakePorts:
     def __init__(self, spec):
+        self.rules_sha256 = None
         self.spec = spec
         self.calls = []
         self.fail = {}
@@ -283,6 +285,11 @@ class FakePorts:
         self._call("engine_settings")
         return copy.deepcopy(self.settings)
 
+    def apply_engine_rules(self):
+        self._call("apply_engine_rules")
+        return {"format": "rules-evidence", "file_sha256": self.rules_sha256 or self.spec.engine_rules_sha256,
+                "injected": 2, "seeded": 25}
+
     def start_task(self):
         self._call("start_task")
         if self.on_start:
@@ -358,6 +365,10 @@ class FakePorts:
         self._call("findings")
         return {"items": 0}
 
+    def intercept_summary(self):
+        self._call("intercept_summary")
+        return {"format": "intercept", "total": 0}
+
     def sign(self, payload):
         self.sign_calls += 1
         if self.sign_fail_at == self.sign_calls:
@@ -385,7 +396,7 @@ def run(mutate=None, mutate_gateway=None, spec=None):
 FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
-              "events:stop", "tmpfs:post", "findings", "down", "sign", "sign"]
+              "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
 
 
 STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 1 << 20,
@@ -525,7 +536,7 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(set(evidence.files), {"pre-checks.json", "pre-probe.json", "post-checks.json",
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
                                                "findings.json", "task.json", "window-watch.json",
-                                               "isolation-evidence.json", "solve-events.json", "run-record.json",
+                                               "isolation-evidence.json", "solve-events.json", "run-record.json", "intercept-summary.json",
                                                "engine-settings.json", RESULT_NAME})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
         self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
@@ -720,7 +731,8 @@ class TestFailures(unittest.TestCase):
             ("facts:post", "post_facts_failed"),
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
             ("tmpfs:pre", "pre_tmpfs_measure_failed"), ("tmpfs:post", "tmpfs_measure_failed"),
-            ("findings", "findings_failed"), ("engine_settings", "engine_settings_failed"),
+            ("findings", "findings_failed"), ("intercept_summary", "intercept_summary_failed"),
+            ("engine_settings", "engine_settings_failed"),
         ]
         for name, reason in cases:
             with self.subTest(step=name):
@@ -822,6 +834,40 @@ class TestFailures(unittest.TestCase):
         self.assertEqual((drain["grace_seconds"], drain["settle_seconds"], drain["forced_cancelled"],
                           drain["settle_applied_seconds"]), (30, 2, 1, 2))
         self.assertEqual(evidence.files["run-record.json"]["total_requests"], 2)
+
+    def test_intercept_summary_is_kept_as_signed_evidence(self):
+        result, _, _, evidence = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(evidence.files["intercept-summary.json"], {"format": "intercept", "total": 0})
+        self.assertEqual(result["intercept"], evidence.files["intercept-summary.json"])
+
+    def test_runs_without_rules_make_no_rule_call(self):
+        result, ports, _, evidence = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("apply_engine_rules", ports.calls)
+        self.assertNotIn("engine-rules.json", evidence.files)
+        self.assertIsNone(result["engine_rules"])
+        self.assertIsNone(result["run_conditions"]["engine_rules_sha256"])
+
+    def test_rules_go_in_before_the_settings_snapshot_and_are_recorded(self):
+        spec = dataclasses.replace(make_spec(), engine_rules_sha256="a" * 64)
+        result, ports, _, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        rules_at = ports.calls.index("apply_engine_rules")
+        self.assertEqual(ports.calls[rules_at - 1:rules_at + 2], ["scoreboard:pre", "apply_engine_rules", "engine_settings"])
+        self.assertEqual(evidence.files["engine-rules.json"]["file_sha256"], "a" * 64)
+        self.assertEqual(result["engine_rules"], evidence.files["engine-rules.json"])
+        self.assertEqual(result["run_conditions"]["engine_rules_sha256"], "a" * 64)
+
+    def test_rule_failure_or_other_file_invalidates_the_run_before_the_task(self):
+        spec = dataclasses.replace(make_spec(), engine_rules_sha256="a" * 64)
+        for label, mutate in (("failed", failing("apply_engine_rules")),
+                              ("other_file", lambda p, m, c: setattr(p, "rules_sha256", "b" * 64))):
+            with self.subTest(label):
+                result, ports, _, evidence = run(mutate, spec=spec)
+                self.assert_invalid(result, ports, evidence, "engine_rules_failed")
+                self.assertNotIn("start_task", ports.calls)
+                self.assertNotIn("engine-rules.json", evidence.files)
 
     def test_run_conditions_are_recorded_and_signed(self):
         result, ports, _, evidence = run()

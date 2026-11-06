@@ -49,7 +49,8 @@ from runner_config import (  # noqa: E402
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from runner_engine import (  # noqa: E402
-    AdminSecret, EngineAPIError, collect_findings, engine_settings, load_vocabulary, start_task, task_request,
+    AdminSecret, EngineAPIError, apply_engine_rules, collect_findings, engine_settings, intercept_summary, load_engine_rules,
+    load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, FORCED_CANCELLED_OUTCOME, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
@@ -118,6 +119,7 @@ class RunPorts(Protocol):
     def wait_ready(self) -> int: ...
     def scoreboard(self, phase: str, snapshot: dict) -> dict: ...
     def engine_settings(self) -> dict: ...
+    def apply_engine_rules(self) -> dict: ...
     def host_spec(self) -> dict: ...
     def start_task(self) -> str: ...
     def start_host_watch(self) -> "WatchHandle": ...
@@ -129,6 +131,7 @@ class RunPorts(Protocol):
     def state_trees(self, phase: str, snapshot: dict, key: bytes) -> dict: ...
     def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list: ...
     def findings(self) -> dict: ...
+    def intercept_summary(self) -> dict: ...
     def sign(self, payload: dict) -> dict: ...
 
 
@@ -184,6 +187,7 @@ class RunSpec:
     state_runtime_roots: tuple[str, ...] = ()
     # 메모리 저장 읽기를 할지(러너 설정 state.memory). 양쪽 회차에 같게 적용한다.
     state_memory_enabled: bool = False
+    engine_rules_sha256: str | None = None  # 원본 ② 규칙 파일 해시. None이면 규칙을 넣지 않는다
 
 
 class WatchHandle(Protocol):
@@ -215,6 +219,8 @@ class _State:
     state_key: bytes | None = None
     state_pre: dict | None = None
     state_trees_pre: dict = field(default_factory=dict)
+    engine_rules: dict | None = None
+    intercept: dict | None = None
     state_memory_pre: list = field(default_factory=list)
 
 
@@ -407,6 +413,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if pre_forwarded != 0:
         raise RunFailure("pre_requests_nonzero")  # 작업 시작 전에 엔진이 대상으로 보냈다
     # 작업 생성 전 실행 설정 전체. 선언과 다르거나 송신 경로를 바꾸는 값이 있으면 그 회차는 같은 조건이 아니다.
+    if spec.engine_rules_sha256 is not None:
+        # 원본 ② 규칙(프로토콜 §8.1). 실행 설정 스냅샷보다 먼저 넣어 스냅샷이 작업 직전 상태가 되게 한다.
+        state.engine_rules = _step(state, "engine_rules_failed", ports.apply_engine_rules)
+        if state.engine_rules.get("file_sha256") != spec.engine_rules_sha256:
+            raise RunFailure("engine_rules_failed")
+        _step(state, "evidence_write_failed", lambda: evidence.write_json("engine-rules.json", state.engine_rules))
     settings = _step(state, "engine_settings_failed", ports.engine_settings)
     if not _settings_match(settings, spec):
         raise RunFailure("engine_settings_mismatch")
@@ -526,11 +538,15 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure(llm_reasons[0])
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
+    intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
+    state.intercept = intercepted
     steps = timeline({"fixture_ready": fixture_ready_at, "pre": pre_board["received_at"], "engine_start": requested_at,
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
     # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
     # 스트리밍은 엔진이 SSE와 비스트리밍 경로를 고르는 값이라 시간·응답 처리 조건이 달라진다(#174 리뷰). 선언값이다.
-    conditions = {"engine_settings_sha256": state.engine_settings_sha256, "workers": spec.worker_count,
+    conditions = {"engine_settings_sha256": state.engine_settings_sha256, "engine_rules_sha256": spec.engine_rules_sha256,
+                  "workers": spec.worker_count,
                   "llm_stream": spec.llm_stream,
                   "sampling": llm_summary["sampling_applied"],
                   "host": {key: value for key, value in state.host.items() if key != "machine_id_sha256"},
@@ -540,7 +556,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
         reconciliation))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
-                     "run_conditions": conditions,
+                     "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256,
                      # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline은 스위치가 없어 선언도 null.
                      "engine_llm_policy": {"declared": spec.llm_policy_mode, "observed": None},
@@ -712,9 +728,11 @@ def _read_text(path: str) -> str | None:
 
 class DockerPorts:
     def __init__(self, config: RunnerConfig, plan: RunPlan, directory: RunDirectory, docker: Docker,
-                 findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict]):
+                 findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict],
+                 rules: Callable[[], dict] | None = None, intercepted: Callable[[], dict] | None = None):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
-        self._findings, self._start, self._settings = findings, start, settings
+        self._findings, self._start, self._settings, self._rules = findings, start, settings, rules
+        self._intercepted = intercepted
         self.base_args = compose_base_args(plan)
         self.obs_origin = f"http://127.0.0.1:{config.ports['obs_host']}"
 
@@ -785,6 +803,9 @@ class DockerPorts:
     def engine_settings(self) -> dict:
         return self._settings()
 
+    def apply_engine_rules(self) -> dict:
+        return self._rules()
+
     def host_spec(self) -> dict:
         return read_host_spec(_read_text, self.docker.daemon().version, os.cpu_count(), platform.release())
 
@@ -835,13 +856,16 @@ class DockerPorts:
     def findings(self) -> dict:
         return self._findings()
 
+    def intercept_summary(self) -> dict:
+        return self._intercepted()
+
     def sign(self, payload: dict) -> dict:
         # 키는 서명 직전에만 읽는다. 경로는 러너 설정(회차 디렉터리 밖)이며 compose·환경으로 넘기지 않는다.
         return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
 
 
 def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str, condition: str,
-               repeat_index: int) -> RunSpec:
+               repeat_index: int, engine_rules_sha256: str | None = None) -> RunSpec:
     declared = preflight[plan.side]
     return RunSpec(
         run_id=plan.run_id, side=plan.side, project=plan.project, llm_backend=plan.llm["backend"],
@@ -868,7 +892,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         observer_readonly_ref=config.observer_readonly_ref,
         state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
         state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
-        state_memory_enabled=config.state is not None and config.state["memory"] is not None)
+        state_memory_enabled=config.state is not None and config.state["memory"] is not None,
+        engine_rules_sha256=engine_rules_sha256)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -893,6 +918,7 @@ def main(argv: list[str] | None = None) -> int:
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
         task = task_request(config.task, preflight[plan.side]["target_origin"])
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])
+        rules = None if config.engine_rules is None else load_engine_rules(config.engine_rules)
         # 설정이 통과한 뒤에만 묻는다. 비밀번호는 이 프로세스 메모리에만 있고 어디에도 쓰지 않는다.
         secret = AdminSecret(getpass.getpass("엔진 관리자 비밀번호(화면에 표시되지 않음): "))
         directory = create_run_directory(config.runs_root, plan.run_id)
@@ -915,9 +941,17 @@ def main(argv: list[str] | None = None) -> int:
     def settings() -> dict:
         return engine_settings(config.ports["engine_api_host"], secret, config.run["task_create_timeout_seconds"])
 
-    ports = DockerPorts(config, plan, directory, docker, findings, start, settings)
+    def apply_rules() -> dict:
+        return apply_engine_rules(config.ports["engine_api_host"], secret, rules, config.run["task_create_timeout_seconds"])
+
+    def intercepted() -> dict:
+        names = frozenset() if rules is None else frozenset(rule["name"] for rule in rules.rules)
+        return intercept_summary(config.ports["engine_api_host"], secret, names, config.findings["timeout_seconds"])
+
+    ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules, intercepted)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
-    result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat), ports, MeterFiles(directory.meter, directory.e2),
+    result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
+                                    None if rules is None else rules.sha256), ports, MeterFiles(directory.meter, directory.e2),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
     return 0 if result["status"] == COMPLETE else 1

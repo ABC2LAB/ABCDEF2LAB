@@ -60,6 +60,7 @@ def runner_config() -> dict:
         "observer_readonly_ref": "verify:juice-shop-15.0.0:get-api-challenges",
         "e2": {"ours_mode": "none"},
         "state": None,
+        "engine_rules": None,
         "task": {"description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.\n로그인 계정은 엔진 설정을 쓴다.",
                  "goal": "다른 사용자의 자원에 접근되는지 확인한다", "timeout_seconds": 1200,
                  "plan_heartbeat_seconds": 600, "seed_first_intent": False, "coverage_enabled": True},

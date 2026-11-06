@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from control_demo import DemoError, check_columns, main, read_column, render_table  # noqa: E402
 from run_record import sign_run_record  # noqa: E402
 from runner import RESULT_FORMAT, STATE_DIFF_FORMAT  # noqa: E402
+from runner_engine import INTERCEPT_SUMMARY_FORMAT  # noqa: E402
 from runner_evidence import COUNTED_METHODS, OTHER_METHOD  # noqa: E402
 from session_runs import SessionError  # noqa: E402
 
@@ -75,7 +76,7 @@ class Root:
         self.minute = 0
 
     def run(self, repeat=0, side="baseline", condition="원본 ①", counts=None, state=..., solved=0, e2_mode="none",
-            proof=None, evidence=None, task=TASK, model=MODEL, meter=None) -> Path:
+            proof=None, evidence=None, task=TASK, model=MODEL, meter=None, rules=None, intercept=None) -> Path:
         self.minute += 1
         run_id = f"{side}-20261106t00{self.minute:02d}00z-0000000a"
         directory = self.path / run_id
@@ -87,6 +88,8 @@ class Root:
             files["state-diff.json"] = state
         if evidence is not None:
             files["isolation-evidence.json"] = evidence
+        if intercept is not None:
+            files["intercept-summary.json"] = intercept
         hashes = {}
         for name, value in files.items():
             data = json.dumps(value).encode()
@@ -97,7 +100,7 @@ class Root:
             if meter is None else meter
         result = {"format": RESULT_FORMAT, "run_id": run_id, "side": side, "status": "complete",
                   "started_at": f"2026-11-06T00:{self.minute:02d}:00Z", "task_request_sha256": task,
-                  "e2_mode": e2_mode, "meter": summary, "evidence": hashes}
+                  "e2_mode": e2_mode, "meter": summary, "evidence": hashes, "engine_rules": rules, "intercept": intercept}
         (directory / "runner-result.json").write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
         record = dict(CONTEXT, run_id=run_id, model_tag=model, engine=side, condition=condition, repeat_index=repeat,
                       isolation_proof=proof,
@@ -419,6 +422,149 @@ class TestRefusals(Case):
                                   ({"condition": "원본 ①"}, "같은 조건 이름")):
             with self.subTest(expected), self.assertRaisesRegex(DemoError, expected):
                 check_columns(two(**options))
+
+
+class TestRules(Case):
+    RULES = {"file_sha256": "ab" * 32, "injected": 3, "seeded": 25, "allow_over_seeded": 0}
+
+    def test_rule_file_row_shows_the_hash_prefix_and_count(self):
+        plain, ruled = self.root("plain"), self.root("ruled")
+        plain.run()
+        ruled.run(condition="원본 ②", rules=self.RULES)
+        table = self.table(plain, ruled)
+        self.assertEqual(table["원본 규칙 파일(sha256 앞부분)"], ["없음", "abababababab (주입 3)"])
+        self.assertEqual(table["내장 통제를 앞지를 수 있는 파일 allow(기대 0)"], ["—", "0 (0)"])
+
+    def test_allow_ahead_of_seeded_is_shown_and_noted(self):
+        plain, clean, ahead = self.root("plain"), self.root("clean"), self.root("ahead")
+        plain.run()
+        clean.run(condition="원본 ②", rules=self.RULES)
+        self.assertNotIn("앞지를 수 있는 파일 allow가 있는 열", render_table(
+            [read_column(plain.path, KEY), read_column(clean.path, KEY)]))
+        ahead.run(condition="원본 ②-b", rules=dict(self.RULES, allow_over_seeded=2))
+        column = read_column(ahead.path, KEY)
+        self.assertEqual(rows(render_table([column]))["내장 통제를 앞지를 수 있는 파일 allow(기대 0)"], ["2 (2)"])
+        self.assertIn("`원본 ① + 파일 규칙`으로만 읽을 수 없다", render_table([column]))
+
+    def test_one_column_is_one_rule_file(self):
+        for label, other in (("other_file", dict(self.RULES, file_sha256="cd" * 32)), ("no_rules", None)):
+            with self.subTest(label):
+                one = self.root(label)
+                one.run(repeat=0, rules=self.RULES)
+                one.run(repeat=1, rules=other)
+                with self.assertRaisesRegex(DemoError, "규칙 파일이 섞임"):
+                    read_column(one.path, KEY)
+
+    def test_rule_record_format_is_checked(self):
+        good = {"file_sha256": "a", "injected": 1, "seeded": 1, "allow_over_seeded": 0}
+        without_allow = {"file_sha256": "a", "injected": 1, "seeded": 1}
+        cases = {"not_object": "x", "hash": dict(good, file_sha256=1), "injected": dict(good, injected=-1),
+                 "seeded": dict(good, seeded=True), "allow": dict(good, allow_over_seeded=-1),
+                 "allow_missing": without_allow}
+        for label, rules in cases.items():
+            with self.subTest(label):
+                one = self.root(label)
+                one.run(rules=rules)
+                with self.assertRaisesRegex(DemoError, "규칙 적용 기록 형식 오류"):
+                    read_column(one.path, KEY)
+
+
+def intercept(file_rule=0, seeded_rule=0, model=0, other=0, tools=None, pending=0, timeout=0, allowed=0):
+    denied = file_rule + seeded_rule + model + other
+    return {"format": INTERCEPT_SUMMARY_FORMAT, "total": denied + pending + timeout + allowed,
+            "by_status": {"allowed": allowed, "denied": denied, "pending": pending, "timeout": timeout},
+            "denied_by_origin": {"file_rule": file_rule, "seeded_rule": seeded_rule, "model": model, "other": other},
+            "denied_by_tool": {"Bash": denied} if tools is None and denied else (tools or {})}
+
+
+class TestIntercept(Case):
+    def test_rows_show_who_blocked_what_per_run(self):
+        one = self.root()
+        one.run(repeat=0, intercept=intercept(file_rule=2, seeded_rule=1, model=1, other=1, pending=1, timeout=2,
+                                              tools={"Bash": 4, "WebFetch": 1}))
+        one.run(repeat=1, intercept=intercept(seeded_rule=3, allowed=9))
+        table = self.table(one)
+        self.assertEqual(table["규칙이 막은 도구 호출: 파일 규칙"], ["2 (2, 0)"])
+        self.assertEqual(table["규칙이 막은 도구 호출: 내장 규칙"], ["4 (1, 3)"])
+        self.assertEqual(table["규칙이 막은 도구 호출: 모델 판정·그 밖"], ["2 (2, 0)"])
+        self.assertEqual(table["규칙 승인 대기·시간 초과(기대 0)"], ["3 (3, 0)"])
+        self.assertEqual(table["규칙이 막은 도구별 합계"], ["Bash 7, WebFetch 1"])
+
+    def test_measured_zero_and_not_measured_differ(self):
+        measured, absent = self.root("measured"), self.root("absent")
+        measured.run(intercept=intercept())
+        absent.run(condition="원본 ②")
+        table = self.table(measured, absent)
+        self.assertEqual(table["규칙이 막은 도구 호출: 파일 규칙"], ["0 (0)", "—"])
+        self.assertEqual(table["규칙 승인 대기·시간 초과(기대 0)"], ["0 (0)", "—"])
+        self.assertEqual(table["규칙이 막은 도구별 합계"], ["없음", "—"])
+
+    def test_record_format_is_checked(self):
+        good = intercept(file_rule=1)
+        cases = {"not_object": "x",
+                 "origin_missing": {k: v for k, v in good.items() if k != "denied_by_origin"},
+                 "origin_key": dict(good, denied_by_origin=dict(good["denied_by_origin"], extra=0)),
+                 # 합은 맞고 값만 틀린 경우라야 값 검사를 본다
+                 "origin_value": dict(good, denied_by_origin=dict(good["denied_by_origin"], file_rule=-1, seeded_rule=2)),
+                 "status_missing": {k: v for k, v in good.items() if k != "by_status"},
+                 "status_key_missing": dict(good, by_status={"denied": 1}),
+                 "status_value": dict(good, by_status=dict(good["by_status"], allowed=True)),
+                 "status_extra": dict(good, by_status=dict(good["by_status"], other=0)),
+                 "tools_missing": {k: v for k, v in good.items() if k != "denied_by_tool"},
+                 "tools_value": dict(good, denied_by_tool={"Bash": "1"}),
+                 "tools_sum": dict(good, denied_by_tool={"Bash": 2}),
+                 "origin_sum": dict(good, denied_by_origin=dict(good["denied_by_origin"], seeded_rule=1)),
+                 "format": dict(good, format="invalid"),
+                 "total_negative": dict(good, total=-1),
+                 "total_not_status_sum": dict(good, total=good["total"] + 1)}
+        for label, summary in cases.items():
+            with self.subTest(label):
+                one = self.root(label)
+                one.run(intercept=summary)
+                with self.assertRaisesRegex(DemoError, "규칙 차단 기록 형식 오류"):
+                    read_column(one.path, KEY)
+
+    def test_signed_value_needs_its_evidence_file(self):
+        # 서명 결과에 값이 있어도 근거 파일이 없거나 다르면 측정값으로 쓰지 않는다
+        gone = self.root("gone")
+        directory = gone.run(intercept=intercept(file_rule=1))
+        (directory / "intercept-summary.json").unlink()
+        with self.assertRaisesRegex(DemoError, "읽지 못함"):
+            read_column(gone.path, KEY)
+
+        unlisted = self.root("unlisted")
+        directory = unlisted.run(intercept=intercept(file_rule=1))
+        path = directory / "runner-result.json"
+        result = json.loads(path.read_text(encoding="utf-8"))
+        result.pop("signature")
+        del result["evidence"]["intercept-summary.json"]
+        path.write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
+        with self.assertRaisesRegex(DemoError, "근거 파일과 다름"):
+            read_column(unlisted.path, KEY)
+
+        tampered = self.root("tampered")
+        directory = tampered.run(intercept=intercept(file_rule=1))
+        with open(directory / "intercept-summary.json", "a", encoding="utf-8") as out:
+            out.write(" ")
+        with self.assertRaisesRegex(DemoError, "해시 불일치"):
+            read_column(tampered.path, KEY)
+
+        differs = self.root("differs")
+        directory = differs.run(intercept=intercept(file_rule=1))
+        data = json.dumps(intercept(file_rule=5)).encode()
+        (directory / "intercept-summary.json").write_bytes(data)
+        path = directory / "runner-result.json"
+        result = json.loads(path.read_text(encoding="utf-8"))
+        result.pop("signature")
+        result["evidence"]["intercept-summary.json"] = hashlib.sha256(data).hexdigest()
+        path.write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
+        with self.assertRaisesRegex(DemoError, "근거 파일과 다름"):
+            read_column(differs.path, KEY)
+
+    def test_note_says_what_the_rows_cannot_tell(self):
+        one = self.root()
+        one.run(intercept=intercept())
+        self.assertIn("규칙에 안 맞아 안 보낸 것인지는 이 표로 구분되지 않는다", render_table([read_column(one.path, KEY)]))
 
 
 class TestMain(Case):
