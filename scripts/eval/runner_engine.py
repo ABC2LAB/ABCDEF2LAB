@@ -59,6 +59,14 @@ _RULE_ACTIONS = ("allow", "deny")
 RULE_TIMEOUT_SECONDS = 60
 RULE_TIMEOUT_ACTION = "deny"
 _RULE_VIEW_FIELDS = (*_RULE_FIELDS, "enabled", "timeout_enabled", "timeout_seconds", "timeout_action")
+INTERCEPT_HISTORY_PATH = "/api/intercept/history"
+INTERCEPT_SUMMARY_FORMAT = "abc2lab-eval-intercept-summary-v1"
+INTERCEPT_PAGE_SIZE = 100  # 원본 API가 받는 최대 쪽 크기
+MAX_INTERCEPT_PAGES = 1000
+MAX_INTERCEPT_PAGE_BYTES = 32 * 1024 * 1024  # 행마다 도구 입력 원문이 들어 있어 크다. 세기만 하고 버린다
+_INTERCEPT_STATUSES = ("allowed", "denied", "pending", "timeout")
+_INTERCEPT_TOOL = re.compile(r"[A-Za-z0-9_.:-]{1,64}\Z")
+OTHER_TOOL = "OTHER"
 _TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+=*\Z")
 # 엔진 작업 ID(server/manager.go가 int64를 10진 문자열로 낸다).
 _TASK_ID = re.compile(r"[1-9][0-9]{0,18}\Z")
@@ -368,6 +376,63 @@ def _allow_over_seeded(rules: tuple[dict, ...], seeded: list[dict]) -> int:
     if not controls:
         return 0
     return sum(1 for rule in rules if rule["action"] == "allow" and rule["priority"] > min(controls))
+
+
+def _count_intercept_row(row: object, file_rules: frozenset[str], summary: dict) -> None:
+    """기록 한 행을 센다. 도구 입력·사유 원문은 읽지 않는다."""
+    if not isinstance(row, dict) or row.get("status") not in _INTERCEPT_STATUSES:
+        raise EngineAPIError("engine_intercept_response_invalid")
+    summary["by_status"][row["status"]] += 1
+    if row["status"] != "denied":
+        return
+    source = row.get("decision_source")
+    if source == "rule":
+        origin = "file_rule" if row.get("rule_name") in file_rules else "seeded_rule"
+    else:
+        origin = "model" if source == "model" else "other"
+    summary["denied_by_origin"][origin] += 1
+    tool = row.get("tool_name")
+    name = tool if isinstance(tool, str) and _INTERCEPT_TOOL.fullmatch(tool) else OTHER_TOOL
+    summary["denied_by_tool"][name] = summary["denied_by_tool"].get(name, 0) + 1
+
+
+def intercept_summary(port: int, secret: AdminSecret, file_rules: frozenset[str], timeout: float) -> dict:
+    """규칙이 어떤 도구 호출을 막았는지 건수로 낸다(프로토콜 §8.1). 원본 ①·개선 후의 내장 규칙 차단도 같이 잡는다.
+
+    응답에는 도구 입력 원문이 들어 있지만 세기만 하고 남기지 않는다(절대규칙 2).
+    """
+    token = login(port, secret, timeout)
+    headers = {"Authorization": f"Bearer {token}"}
+    summary = {"format": INTERCEPT_SUMMARY_FORMAT, "total": 0, "by_status": dict.fromkeys(_INTERCEPT_STATUSES, 0),
+               "denied_by_origin": {"file_rule": 0, "seeded_rule": 0, "model": 0, "other": 0}, "denied_by_tool": {}}
+    seen = 0
+    for page in range(1, MAX_INTERCEPT_PAGES + 1):
+        path = f"{INTERCEPT_HISTORY_PATH}?page={page}&size={INTERCEPT_PAGE_SIZE}"
+        try:
+            status, data = _get(port, path, headers, timeout, MAX_INTERCEPT_PAGE_BYTES)
+        except (OSError, http.client.HTTPException, ValueError, OverflowError):
+            raise EngineAPIError("engine_intercept_unreachable") from None
+        if status != 200:
+            raise EngineAPIError(f"engine_intercept_http_{status}")
+        try:
+            if len(data) > MAX_INTERCEPT_PAGE_BYTES:
+                raise ValueError
+            payload = json.loads(data.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            raise EngineAPIError("engine_intercept_response_invalid") from None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        total = payload.get("total") if isinstance(payload, dict) else None
+        if not isinstance(items, list) or type(total) is not int or (not items and seen < total):
+            raise EngineAPIError("engine_intercept_response_invalid")
+        for row in items:
+            _count_intercept_row(row, file_rules, summary)
+        seen += len(items)
+        if seen > total:
+            raise EngineAPIError("engine_intercept_response_invalid")
+        if seen == total:
+            summary["total"] = total
+            return summary
+    raise EngineAPIError("engine_intercept_too_many")
 
 
 def _rules_sorted(rules: list[dict]) -> list[str]:
