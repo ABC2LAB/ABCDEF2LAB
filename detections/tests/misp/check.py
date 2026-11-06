@@ -209,16 +209,13 @@ elif not extra:
     ok("every MISP attribute corresponds to a CSV row")
 
 
-print("== 4/5  the non-ASCII guard marker is preserved verbatim ==")
-MARKER = "【ARTEX 平台管控·非目标防御】"
-csv_has = any(r["value"] == MARKER for r in csv_rows)
-misp_has = MARKER in actual_values
-if csv_has and misp_has:
-    ok("guard audit marker exported byte-for-byte")
-elif not csv_has:
-    bad("guard marker not found in the CSV (test assumption broke)")
-else:
-    bad("guard marker in the CSV but not exported to the MISP event")
+print("== 4/5  current and historical guard markers are preserved verbatim ==")
+for marker in ("[ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]", "【ARTEX 平台管控·非目标防御】"):
+    csv_has = any(r["value"] == marker for r in csv_rows)
+    if csv_has and marker in actual_values:
+        ok("guard marker exported byte-for-byte: %s" % marker)
+    else:
+        bad("guard marker missing from CSV or MISP event: %s" % marker)
 
 
 def paths_for_trigger(text, trigger):
