@@ -1,0 +1,39 @@
+{
+  "format": "abc2lab.kg-fixture-registry/v1",
+  "snapshot_id": "kgfx-juiceshop-s1",
+  "run_id": "prep-run-PLACEHOLDER",
+  "reset_generation": "reset-gen-PLACEHOLDER",
+  "generation_ref": "gen-PLACEHOLDER",
+  "instance_ref": "target-PLACEHOLDER",
+  "principals": [
+    { "label": "account-a" },
+    { "label": "account-b" }
+  ],
+  "resources": [
+    {
+      "resource_ref": "basket:a-owned-PLACEHOLDER",
+      "owner_ref": "account-a",
+      "policies": [
+        {
+          "evaluated_ref": "account-a",
+          "expected_access": "allow",
+          "sharing": "resolved_none",
+          "delegation": "resolved_none",
+          "valid_from": "2026-11-05T00:00:00Z",
+          "valid_until": "2026-11-06T00:00:00Z"
+        },
+        {
+          "evaluated_ref": "account-b",
+          "expected_access": "deny",
+          "sharing": "resolved_none",
+          "delegation": "resolved_none",
+          "valid_from": "2026-11-05T00:00:00Z",
+          "valid_until": "2026-11-06T00:00:00Z"
+        }
+      ],
+      "canaries": [
+        { "field": "PLACEHOLDER-field", "value": "kgfx-canary-PLACEHOLDER-1", "trivial": false }
+      ]
+    }
+  ]
+}
