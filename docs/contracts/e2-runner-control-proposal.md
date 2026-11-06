@@ -37,7 +37,7 @@
 | 작업 생성 전 | `ready`를 시한까지 물어 `service_ready`를 받고, 자기가 쓴 설정 파일 digest·선언한 전달 모드·동결 지문과 대조한다 | POST 전 시작 거부(기술적 무효) |
 | 작업 생성 뒤(선택) | `head`로 실행 결속·지문을 근거에 남긴다 | 지문·task 불일치는 기술적 무효, 응답 없음은 기록 |
 | 예산 종료 | 새 `close_request_ref`로 `close`를 보내고 `admission_closed=true`를 받은 뒤 `close_status`를 시한까지 반복해 묻는다 | 연결·시한 실패는 제품 실패로 기록하고 계측기 seal로 넘어간다(§4.3) |
-| 수집 | `state`·`checkpoint`를 수집기(#288)의 close ACK로 넘긴다. `manifest_sha256`을 사본과 대조한다 | §4.3 갈래를 따른다 |
+| 수집 | `state`·`checkpoint`를 [수집기](../../scripts/eval/e2_collect.py)의 close ACK로 넘긴다. `manifest_sha256`을 사본과 대조한다 | §4.3 갈래를 따른다 |
 
 이미지·uid·망은 E² 자기 신고로 받지 않고 러너가 Docker 쪽에서 직접 확인한다. 시한은 설정값(`e2.ready_timeout_seconds`, `e2.close_ack_timeout_seconds`, `e2.close_timeout_seconds`)이고 실행 예산과 따로 기록한다.
 
