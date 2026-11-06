@@ -71,7 +71,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `host_listen_allowlist` | loopback 밖 호스트 리슨 중 허용할 것. `{"address", "port", "reason"}`, 특정 주소만(0.0.0.0·`::`·loopback 불가), 근거 필수. 기본은 빈 목록 |
 | `run.*` | compose 대기, down 시한, 대상 준비, 예산 폴링 간격, drain 시한, 스냅샷 시한·크기, LLM 검증 대기(초) |
 | `run.task_create_timeout_seconds` | 작업 생성(로그인 + `POST /api/tasks`) 연결·읽기 시한(초) |
-| `run.llm_load_timeout_seconds` | local 서버의 모델 적재·조회 시한(초). 회차 전에 모델을 적재해 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 한다. 적재할 때 회차 길이(compose 기동·준비·작업 생성 시한 + 시간 예산 + 상태 확인·drain·정착·LLM 검증 시한)만큼 유지 기간을 주고, compose를 내린 뒤 모델을 내린다. 다음 회차도 같은 상태에서 시작한다. 내리기 결과는 결과 기록의 `llm_unloaded`에 남기고, 실패해도 그 회차를 무효로 돌리지 않는다 |
+| `run.llm_load_timeout_seconds` | local 서버의 모델 적재·조회 시한(초). 회차 전에 모델을 적재해 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 한다. 적재할 때 회차 길이(compose 기동·준비·작업 생성 시한 + 시간 예산 + 상태 확인·drain·정착·스냅샷·LLM 검증 시한)만큼 유지 기간을 주고, 작업 생성 직전에 같은 유지 기간으로 다시 적재·확인한다(준비 단계가 길어 그 사이 내려갔어도 적재 시간이 시간 예산에 섞이지 않는다). compose를 내린 뒤 모델을 내린다. 다음 회차도 같은 상태에서 시작한다. 내리기 결과는 결과 기록의 `llm_unloaded`에 남기고, 실패해도 그 회차를 무효로 돌리지 않는다 |
 | `run.drain_grace_seconds`, `run.post_settle_seconds` | 봉인 뒤 계측기가 진행 요청을 기다리는 유예(1~600초, `drain_timeout_seconds`보다 짧아야 함 — 계측기 `-drain-grace`로 넘김)와, 유예가 지나 취소한 요청이 있을 때 post 전 정착 대기(1~3600초). 둘 다 비교 조건이라 사전검사 `run_drain`의 `grace_seconds`·`settle_seconds`와 정확히 같아야 회차가 시작됨(`preflight.<side>.run_drain: CONFIG_MISMATCH`) |
 | `run.host_watch_interval_seconds`, `run.host_watch_max_gap_seconds` | 구간 중 호스트 리슨 확인 간격과 허용 최대 공백(초). 공백 상한은 간격보다 커야 한다 |
 | `task.{description,goal}` | 엔진 작업 설명·목표(각 4000자 이하, 줄바꿈 외 제어 문자 불가). 대상은 회차 대상 origin 하나만 적는다(아래) |
@@ -214,8 +214,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `llm_generation_unverified`, `llm_generation_unverifiable` | 조회 안 된 generation, generation ID 없는 응답 |
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
 | `llm_pin_mismatch`, `llm_backend_mismatch`, `llm_log_incomplete` | 게이트웨이가 다른 slug를 고정, 백엔드 구성이 섞임, 게이트웨이 기록 불완전 |
-| `llm_serving_mismatch`, `llm_serving_unverified`, `llm_serving_read_failed` | local 서버의 버전·모델 digest·컨텍스트가 선언과 다름, 모델이 적재돼 있지 않아 확인 못 함, 서버 응답을 읽지 못함. 회차 전(compose 전)과 게이트웨이 검증 뒤에 본다. 근거는 `llm-serving.json` |
-| `llm_serving_keep_alive_short` | 적재 직후 서버가 알려 준 남은 유지 시간이 요청한 값보다 짧음. 서버가 유지 기간을 따르지 않으면 회차 중 모델이 내려갈 수 있어 compose 전에 멈춘다 |
+| `llm_serving_mismatch`, `llm_serving_unverified`, `llm_serving_read_failed` | local 서버의 버전·모델 digest·컨텍스트가 선언과 다름, 모델이 적재돼 있지 않아 확인 못 함, 서버 응답을 읽지 못함. 회차 전(compose 전)·작업 생성 직전·게이트웨이 검증 뒤에 본다. 근거는 `llm-serving.json` |
+| `llm_serving_keep_alive_short` | 적재 직후 서버가 알려 준 남은 유지 시간이 요청한 값보다 짧음. 서버가 유지 기간을 따르지 않으면 회차 중 모델이 내려갈 수 있어 compose 전과 작업 생성 전에 멈춘다 |
 | `llm_sampling_mismatch` | 게이트웨이가 실제로 넣은 샘플링(검증 마커 `sampling`)이 선언(temperature·sampling·seed)과 다름. 키 묶음이 백엔드와 달라도 이 사유 |
 | `tmpfs_measure_failed` | 구간 종료 뒤 tmpfs 사용량을 읽지 못함(측정 컨테이너 실행·권한 실패, 커널 파일시스템 종류가 tmpfs 아님, 형식·크기가 맞지 않는 보고, 두 볼륨이 정확히 오지 않음). 결과의 `tmpfs_usage`는 `not_measured` |
 | `pre_tmpfs_measure_failed` | 구간 전 tmpfs 마운트 ID·사용량을 읽지 못함(사유는 `tmpfs_measure_failed`와 같음). 구간을 시작하지 않는다 |

@@ -1308,7 +1308,8 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         base = parse_runner_config(runner_config())
         before = runner._llm_keep_alive_seconds(base, 60)
         for name in ("compose_wait_seconds", "ready_timeout_seconds", "task_create_timeout_seconds",
-                     "drain_timeout_seconds", "post_settle_seconds", "llm_verify_timeout_seconds"):
+                     "drain_timeout_seconds", "post_settle_seconds", "snapshot_timeout_seconds",
+                     "llm_verify_timeout_seconds"):
             with self.subTest(name):
                 changed = copy.deepcopy(base)
                 changed.run[name] += 7
@@ -1328,11 +1329,12 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
                             start=lambda: "1", settings=dict)
         with patch.object(runner, "read_serving", return_value={"x": 1}) as read:
             self.assertEqual(ports.local_serving("pre", 900), {"x": 1})
+            ports.local_serving("task_start", 900)
             ports.local_serving("post", 900)
         timeout = config.run["llm_load_timeout_seconds"]
         target = ("172.17.0.1", 11434, "example-model:fixed-tag", timeout)
         self.assertEqual(read.call_args_list[0].args, target)
-        self.assertEqual([call.kwargs["keep_alive_seconds"] for call in read.call_args_list], [900, None])
+        self.assertEqual([call.kwargs["keep_alive_seconds"] for call in read.call_args_list], [900, 900, None])
         with patch.object(runner, "unload_model") as unload:
             ports.local_unload()
         unload.assert_called_once_with(*target)
@@ -1605,7 +1607,7 @@ class TestLocalServing(unittest.TestCase):
         self.assertEqual(result["status"], COMPLETE)
         self.assertLess(ports.calls.index("local_serving:pre"), ports.calls.index("up"))
         self.assertGreater(ports.calls.index("local_serving:post"), ports.calls.index("seal_gateway"))
-        self.assertEqual(set(result["llm_serving"]), {"pre", "post"})
+        self.assertEqual(set(result["llm_serving"]), {"pre", "task_start", "post"})
         self.assertEqual(evidence.files["llm-serving.json"]["post"]["model_digest"], "a" * 64)
 
     def test_mismatch_before_the_run_stops_before_compose_up(self):
@@ -1634,6 +1636,53 @@ class TestLocalServing(unittest.TestCase):
         result, ports, *_ = serving_run(pre={"keep_alive_remaining_seconds": KEEP_ALIVE - runner.KEEP_ALIVE_SLACK_SECONDS - 1})
         self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_keep_alive_short"]))
         self.assertNotIn("up", ports.calls)
+
+    def test_keep_alive_is_renewed_right_before_the_task(self):
+        result, ports, *_ = serving_run()
+        self.assertEqual(result["status"], COMPLETE)
+        task_start = ports.calls.index("local_serving:task_start")
+        self.assertEqual(ports.calls[task_start + 1], "start_task")
+        self.assertLess(ports.calls.index("scoreboard:pre"), task_start)
+
+    def test_slow_pre_snapshot_cannot_expire_the_model_before_the_task(self):
+        # 동찬 지적의 경로: pre 스냅샷이 유지 기간보다 늦게 끝나도 첫 요청이 적재 시간을 치르면 안 된다.
+        # 서버의 만료 시각을 가짜 시계로 흉내 내서, 작업을 만드는 순간 모델이 살아 있는지 본다.
+        late = KEEP_ALIVE + 300
+        alive_at_start = []
+
+        def mutate(ports, meter, clock):
+            expires = {}
+            serve, board, start = ports.local_serving, ports.scoreboard, ports.start_task
+
+            def local_serving(phase, keep_alive):
+                if phase != "post":
+                    expires["at"] = clock.t + keep_alive
+                return serve(phase, keep_alive)
+
+            def scoreboard(phase, snapshot):
+                if phase == "pre":
+                    clock.t += late
+                return board(phase, snapshot)
+
+            def start_task():
+                alive_at_start.append(clock.t < expires["at"])
+                return start()
+
+            ports.local_serving, ports.scoreboard, ports.start_task = local_serving, scoreboard, start_task
+        result, *_ = run(mutate=mutate, spec=serving_spec())
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(alive_at_start, [True])
+
+    def test_failed_renewal_stops_before_the_task(self):
+        short = {"keep_alive_remaining_seconds": KEEP_ALIVE - runner.KEEP_ALIVE_SLACK_SECONDS - 1}
+        for label, change, reason in (("short", short, "llm_serving_keep_alive_short"),
+                                      ("digest", {"model_digest": "b" * 64}, "llm_serving_mismatch"),
+                                      ("unloaded", {"model_digest": None}, "llm_serving_unverified")):
+            with self.subTest(label):
+                result, ports, _, evidence = serving_run(task_start=change)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
+                self.assertNotIn("start_task", ports.calls)
+                self.assertIn("llm-serving.json", evidence.files)
 
     def test_keep_alive_is_not_judged_after_the_run(self):
         result, *_ = serving_run(post={"keep_alive_remaining_seconds": 1})

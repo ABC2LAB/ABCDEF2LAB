@@ -87,6 +87,9 @@ RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
 # 상태 차이 근거(프로토콜 §8.2, 러너 설정 state가 있을 때만). 건수·정수 id·테이블·열 이름·seq 값만 담는다.
 STATE_DIFF_NAME = "state-diff.json"
 SERVING_NAME = "llm-serving.json"
+# 작업 생성 직전 재적재 단계. 회차 전 적재와 같은 판정을 받는다.
+SERVING_TASK_START = "task_start"
+SERVING_POST = "post"
 STATE_DIFF_FORMAT = "abc2lab-state-diff-v1"
 MAX_CONDITION_LENGTH = 100
 COMPLETE, INVALID = "complete", "invalid"
@@ -381,9 +384,9 @@ def _check_serving(spec: RunSpec, ports: RunPorts, evidence, state: _State, phas
     """로컬 서버의 실제 조건을 선언과 대조한다. 어긋나면 그 회차는 같은 조건이 아니다."""
     state.serving[phase] = _step(state, "llm_serving_read_failed",
                                  lambda: ports.local_serving(phase, spec.llm_keep_alive_seconds))
-    minimum = spec.llm_keep_alive_seconds - KEEP_ALIVE_SLACK_SECONDS if phase == "pre" else None
+    minimum = None if phase == SERVING_POST else spec.llm_keep_alive_seconds - KEEP_ALIVE_SLACK_SECONDS
     reason = judge_serving(state.serving[phase], spec.llm_serving, min_keep_alive_seconds=minimum)
-    if reason is not None or phase == "post":
+    if reason is not None or phase == SERVING_POST:
         _step(state, "evidence_write_failed", lambda: evidence.write_json(SERVING_NAME, state.serving))
     if reason is not None:
         raise RunFailure(reason)
@@ -453,6 +456,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure("engine_settings_mismatch")
     state.engine_settings_sha256 = canonical_sha256(settings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("engine-settings.json", settings))
+
+    if spec.llm_serving is not None:
+        # 준비 단계 길이는 설정 시한의 합으로 다 잡히지 않는다(docker 점검·상태 사본 등). 합을 늘려 가는 대신 작업 직전에
+        # 유지 기간을 다시 주고 남은 시간을 확인한다. 그 사이 내려갔으면 여기서 적재되어 시간 예산에 섞이지 않는다.
+        _check_serving(spec, ports, evidence, state, SERVING_TASK_START)
 
     # 예산 시계는 생성 요청 직전부터 잰다(엔진은 생성과 동시에 기동하므로 요청 지연도 예산에 넣는다).
     requested_at, started = _stamp(clock), clock.monotonic()
@@ -566,7 +574,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         # 사유가 여럿이면 정렬 첫째를 회차 사유로, 전부는 llm-summary.json에 남는다.
         raise RunFailure(llm_reasons[0])
     if spec.llm_serving is not None:
-        _check_serving(spec, ports, evidence, state, "post")
+        _check_serving(spec, ports, evidence, state, SERVING_POST)
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
@@ -906,7 +914,7 @@ class DockerPorts:
                 self.config.run["llm_load_timeout_seconds"])
 
     def local_serving(self, phase: str, keep_alive_seconds: int) -> dict:
-        return read_serving(*self._local_server(), keep_alive_seconds=keep_alive_seconds if phase == "pre" else None)
+        return read_serving(*self._local_server(), keep_alive_seconds=None if phase == SERVING_POST else keep_alive_seconds)
 
     def local_unload(self) -> None:
         unload_model(*self._local_server())
@@ -917,12 +925,12 @@ class DockerPorts:
 
 
 def _llm_keep_alive_seconds(config: RunnerConfig, time_budget_seconds: int) -> int:
-    # 회차 전 적재부터 회차 뒤 조회까지 요청이 없어도 모델이 내려가지 않아야 한다. 적재는 compose 기동보다 앞서므로
-    # 첫 LLM 요청 전 준비 단계의 상한도 더한다. 요청 간 공백은 이 길이를 넘지 못한다.
+    # 작업 직전 재적재(_run_steps)부터 회차 뒤 조회까지 요청이 없어도 모델이 내려가지 않아야 한다. 요청 간 공백은 이 길이를
+    # 넘지 못한다. compose 기동·준비 시한은 평소 재적재 없이 이어지게 하려고 더한다. 합이 모자란 준비 단계는 재적재가 받는다.
     run = config.run
     return math.ceil(run["compose_wait_seconds"] + run["ready_timeout_seconds"] + run["task_create_timeout_seconds"]
                      + time_budget_seconds + config.health_timeout_seconds + run["drain_timeout_seconds"]
-                     + run["post_settle_seconds"] + run["llm_verify_timeout_seconds"])
+                     + run["post_settle_seconds"] + run["snapshot_timeout_seconds"] + run["llm_verify_timeout_seconds"])
 
 
 def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str, condition: str,
