@@ -452,6 +452,10 @@ class Docker:
 
         probe와 같이 마운트·소켓·권한 없이 읽기 전용으로 돈다. 대상 netns의 loopback에만 닿는다. 구간 밖에서만 부른다(컨테이너 생성은
         Docker 이벤트를 만든다). 종료 코드가 0이 아니면 호출 실패다.
+
+        출력의 본문 해시는 러너가 회차 키로 HMAC하기 전 값이다. 응답 후보가 적으면 키 없이 대조할 수 있으므로
+        로그 드라이버로 내보내지 않는다(--rm은 종료 뒤 정리일 뿐이고 journald·syslog로 나간 건 지우지 못한다).
+        attach한 stdout은 로깅과 무관하게 러너로 온다.
         """
         if not _OBJECT_ID.fullmatch(target_container_id or ""):
             raise DockerError("docker_state_read_target_invalid")
@@ -459,7 +463,7 @@ class Docker:
             raise DockerError("docker_state_read_image_not_id")
         if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0:
             raise DockerError("docker_state_read_user_invalid")
-        return self.run(["run", "--rm", "-i", "--pull", "never",
+        return self.run(["run", "--rm", "-i", "--pull", "never", "--log-driver", "none",
                          "--network", f"container:{target_container_id}",
                          "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                          "--user", f"{uid}:{gid}", "--", image, "-role=state-read"],
