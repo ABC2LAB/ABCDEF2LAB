@@ -305,8 +305,8 @@ func TestExplorationDirectSourceReadView(t *testing.T) {
 	if detail, err := currentStore.ActivityDetailWithSources(currentPlannerStep); err != nil || detail != "current planner detail" {
 		t.Fatalf("local activity detail behavior changed: detail=%q err=%v", detail, err)
 	}
-	if detail, err := currentStore.ActivityDetailWithSources(currentThinkingStep); err != nil || detail != "current thinking detail" {
-		t.Fatalf("local thinking detail behavior changed: detail=%q err=%v", detail, err)
+	if detail, err := currentStore.ActivityDetailWithSources(currentThinkingStep); err != nil || detail != "" {
+		t.Fatalf("local thinking detail must stay hidden: detail=%q err=%v", detail, err)
 	}
 }
 

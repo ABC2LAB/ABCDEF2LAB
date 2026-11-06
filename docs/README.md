@@ -16,6 +16,7 @@
 ## 프로젝트 방향
 
 - [개발 계획·우선순위·역할 분담](development-plan.md)
+- [LLM 도입·개선·증거 기반 보고서 계획](llm-adoption-and-improvement-plan.md)
 - [엔진 개선 설계](engine-improvement-draft.md)
 - [엔진 언어 전환 계획](engine-language-migration.md)
 - [불편과 개선 대장](pain-points-to-improvements.md)

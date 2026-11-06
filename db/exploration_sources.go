@@ -267,8 +267,8 @@ func (s *ExplorationStore) ActivityListWithSources(nodeID, sinceID int64, limit 
 	return []Activity{}, sinceID, nil
 }
 
-// ActivityDetailWithSources keeps the legacy local-task lookup (including local
-// thinking rows), while inherited details are restricted to terminal worker
+// ActivityDetailWithSources keeps the local-task lookup (thinking rows from older
+// runs are not returned), while inherited details are restricted to terminal worker
 // intents. Source planner/main rows have no node id and must never become part of
 // inherited context.
 func (s *ExplorationStore) ActivityDetailWithSources(id int64) (string, error) {

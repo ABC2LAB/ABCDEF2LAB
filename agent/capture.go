@@ -113,7 +113,8 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 		case harness.KindText:
 			addDelta("text", ev.Text)
 		case harness.KindThinking:
-			addDelta("thinking", ev.Text)
+			// 내부 추론은 활동 기록에 남기지 않는다. 앞서 모은 글은 메시지 경계를 지키려고 먼저 내보낸다.
+			flush()
 		case harness.KindUsage:
 			// live cumulative token usage (per model turn). Emitted as a non-rendered
 			// "usage" activity carrying only the token fields; the UI uses the latest
