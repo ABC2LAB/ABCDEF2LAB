@@ -314,7 +314,7 @@ def build_report(
     versions: set[str] = set()
     drain_policies: set[tuple[int, int]] = set()
     run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set(),
-                                           "LLM 스트리밍": set(), "엔진 규칙 파일": set()}
+                                           "LLM 스트리밍": set(), "엔진 규칙 파일": set(), "도구 트리": set()}
     # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
     e2_modes: dict[str, set[str]] = {}
     e2_identities: dict[str, set[tuple[str, str]]] = {}

@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import runner
+from tool_tree import tree_sha256
 from runner import COMPLETE, INVALID, RESULT_NAME, Clock, DockerPorts, Facts, RunFailure, build_spec, verdict_limits, execute_run
 from runner_config import (
     COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, RunnerConfigError, compose_environment,
@@ -308,6 +310,10 @@ class FakePorts:
                 "received_at": f"2026-11-02T00:00:0{2 if phase == 'pre' else 9}+00:00",
                 "solved": dict(self.solved[phase])}
 
+    def tool_tree(self):
+        self._call("tool_tree")
+        return "7" * 64
+
     def host_spec(self):
         self._call("host_spec")
         return dict(self.host)
@@ -473,7 +479,7 @@ def run(mutate=None, mutate_gateway=None, spec=None):
     return result, ports, meter, evidence
 
 
-FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
+FULL_ORDER = ["preexisting", "image_ids", "tool_tree", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "apply_engine_settings", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
@@ -1238,6 +1244,7 @@ class TestFailures(unittest.TestCase):
         # 선언값이 아니라 게이트웨이가 마커에 남긴 적용값이 기록된다.
         self.assertEqual(conditions["sampling"], evidence.files["llm-summary.json"]["sampling_applied"])
         self.assertEqual(conditions["machine_id_sha256"], ports.host["machine_id_sha256"])
+        self.assertEqual(conditions["tool_tree_sha256"], "7" * 64)
         self.assertNotIn("machine_id_sha256", conditions["host"])
         row = next(r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "run_conditions")
         self.assertEqual({key: row[key] for key in conditions}, conditions)
@@ -1452,6 +1459,16 @@ class TestFailures(unittest.TestCase):
             p.image_ids = lambda: dict(p.spec.image_ids, target="sha256:" + "f" * 64)
         result, ports, _, evidence = run(other_image)
         self.assert_invalid(result, ports, evidence, "image_id_mismatch", down=False)
+
+    def test_tool_tree_failure_stops_before_compose_up(self):
+        def broken(p, m, c):
+            def fail():
+                p._call("tool_tree")
+                raise ValueError("/path/that/must/not/leak")
+            p.tool_tree = fail
+        result, ports, _, evidence = run(broken)
+        self.assert_invalid(result, ports, evidence, "tool_tree_failed", down=False)
+        self.assertNotIn("up", ports.calls)
 
     def test_running_container_image_must_match(self):
         def swap(networks, containers):
@@ -1806,6 +1823,24 @@ class TestDockerPortsStateCopy(unittest.TestCase):
             self.assertEqual(oct(os.stat(directory.state / "pre").st_mode & 0o777), "0o700")
             with self.assertRaises(FileExistsError):  # 같은 단계 디렉터리를 다시 쓰지 않는다
                 ports.state_copy("pre", snapshot)
+
+
+class TestDockerPortsToolTree(unittest.TestCase):
+    def test_hashes_the_engine_image_of_this_side(self):
+        tree = {"dpkg": {"curl": "7.88.1"}}
+        for side in ("baseline", "ours"):
+            with self.subTest(side), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp, "runs")
+                root.mkdir(mode=0o700)
+                os.chmod(root, 0o700)
+                config = parse_runner_config(runner_config() | {"runs_root": str(root)})
+                plan = plan_run(config, configuration(), side, f"{side}-1")
+                docker = SimpleNamespace(run_bounded=object())
+                ports = DockerPorts(config, plan, create_run_directory(root, f"{side}-1"), docker=docker,
+                                    findings=dict, start=lambda: "1", settings=dict)
+                with patch.object(runner, "collect_tree", return_value=tree) as collect:
+                    self.assertEqual(ports.tool_tree(), tree_sha256(tree))
+                self.assertEqual(collect.call_args[0], (config.images[f"engine_{side}"].id, docker.run_bounded))
 
 
 class TestDockerPortsStateMemory(unittest.TestCase):

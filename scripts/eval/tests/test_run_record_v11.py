@@ -394,7 +394,8 @@ class TestRejectedV11(_V11):
 
     def test_run_conditions_row_is_required_and_typed(self):
         self.reject("run_conditions", "r0", tamper_rows=lambda rows: drop(rows, row_of(rows, "run_conditions")))
-        cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "output_language": "KO", "workers": 0,
+        cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "output_language": "KO", "tool_tree_sha256": None,
+                 "workers": 0,
                  "sampling": {"temperature": 1.0}, "host": {"cpu_model": "x"}, "llm_stream": "true"}
         for index, (name, value) in enumerate(cases.items()):
             self.reject("run_conditions", f"r{index + 1}",
@@ -641,7 +642,8 @@ class TestComparison(_V11):
                    "머신 사양": lambda row: row["host"].update(memory_kib=1),
                    "머신": lambda row: row.update(machine_id_sha256="0" * 64),
                    "LLM 스트리밍": lambda row: row.update(llm_stream=False),
-                   "엔진 규칙 파일": lambda row: row.update(engine_rules_sha256="a" * 64)}
+                   "엔진 규칙 파일": lambda row: row.update(engine_rules_sha256="a" * 64),
+                   "도구 트리": lambda row: row.update(tool_tree_sha256="8" * 64)}
         for index, (label, change) in enumerate(changes.items()):
             with self.subTest(label=label):
                 other = self.v11(f"m{index}", repeat_index=1,

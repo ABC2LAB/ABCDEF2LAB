@@ -50,6 +50,7 @@ from runner_config import (  # noqa: E402
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
+from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from runner_engine import (  # noqa: E402
     AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, start_task, task_request,
@@ -155,6 +156,7 @@ class RunPorts(Protocol):
     def apply_engine_settings(self) -> None: ...
     def engine_settings(self) -> dict: ...
     def apply_engine_rules(self) -> dict: ...
+    def tool_tree(self) -> str: ...
     def host_spec(self) -> dict: ...
     def start_task(self) -> str: ...
     def start_host_watch(self) -> "WatchHandle": ...
@@ -268,6 +270,7 @@ class _State:
     tmpfs_usage: object = TMPFS_NOT_MEASURED
     tmpfs_pre: dict | None = None
     host: dict | None = None
+    tool_tree_sha256: str | None = None
     engine_settings_sha256: str | None = None
     output_language: str | None = None
     # 상태 차이: 회차 키(메모리에만)와 pre 사본 지문. 사본 파일은 지문을 뜬 즉시 지운다.
@@ -439,6 +442,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     found = _step(state, "image_id_failed", ports.image_ids)
     if found != spec.image_ids:
         raise RunFailure("image_id_mismatch")
+    # Dockerfile이 도구 버전을 고정하지 않아 이미지 ID로는 도구가 같은지 알 수 없다. 채점기가 대조한다(프로토콜 §2).
+    state.tool_tree_sha256 = _step(state, "tool_tree_failed", ports.tool_tree)
     # baseline·개선 후가 같은 머신에서 돌았는지 채점기가 대조한다(평가 프로토콜 §5.1).
     state.host = _step(state, "host_spec_failed", ports.host_spec)
     if not _host_spec_ok(state.host):
@@ -643,6 +648,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     # 스트리밍은 엔진이 SSE와 비스트리밍 경로를 고르는 값이라 시간·응답 처리 조건이 달라진다(#174 리뷰). 선언값이다.
     conditions = {"engine_settings_sha256": state.engine_settings_sha256, "engine_rules_sha256": spec.engine_rules_sha256,
                   "output_language": state.output_language,
+                  "tool_tree_sha256": state.tool_tree_sha256,
                   "workers": spec.worker_count,
                   "llm_stream": spec.llm_stream,
                   "sampling": llm_summary["sampling_applied"],
@@ -1025,6 +1031,9 @@ class DockerPorts:
 
     def apply_engine_rules(self) -> dict:
         return self._rules()
+
+    def tool_tree(self) -> str:
+        return tree_sha256(collect_tree(self.plan.engine_image.id, self.docker.run_bounded))
 
     def host_spec(self) -> dict:
         return read_host_spec(_read_text, self.docker.daemon().version, os.cpu_count(), platform.release())
