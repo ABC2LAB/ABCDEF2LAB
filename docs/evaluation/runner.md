@@ -286,6 +286,10 @@ API 키 없이 실제 엔진을 끝까지 돌릴 때 쓴다. 판단하는 모델
 - **회차 밖 컨테이너의 namespace 공유(11/03):** 구간 중 `docker run --network container:<대상>`(망 연결 이벤트 없음) →
   `window_boundary_changed`(회차 밖 컨테이너 create·start), 무효·미서명. 같은 날 정상 회차는 러너 post probe의 컨테이너 이벤트
   5건(create·attach·start·die·destroy)만 cidfile ID로 허용되고 완료·서명.
+- **api 백엔드 회차 1회(11/07, Qwen3.5, 서명됨):** 모델 `qwen/qwen3.5-35b-a3b`, 고정 제공자 slug `atlas-cloud/fp8`(기대 표시 이름 `AtlasCloud`), 개선 후 dev dfb5da0, E② 없음. 스모크라 예산을 줄였다(240초, 요청 100건). 약 3분 만에 요청 예산으로 멈춰 대상 요청 102건(GET 97, POST 5, 초과 2), 완료·서명.
+  - LLM 응답 200이 94건이고 generation 94건 전부 응답 제공자 `AtlasCloud`, 엔드포인트 1개, fallback 시도 0, 적용 샘플링은 선언과 같았다. 4xx는 0건이라 `require_parameters:true`로 거부된 요청이 없었다. `stop`을 지원 표시하지 않는 이 엔드포인트에서 실제로 요청이 수락됐다는 뜻이다.
+  - 200 중 7건은 응답을 끝까지 읽지 못했다(`upstream_error`, generation은 전부 검증됨). 이 기록으로는 제공자 끊김과 엔진 쪽 취소를 구분하지 못한다. 측정 세션에서 비율이 높게 유지되면 원인을 따로 본다.
+  - 봉인 뒤 엔진 재시도는 게이트웨이가 503으로 거부했고(78건), 봉인 때 끊긴 요청은 502 2건이다. 둘 다 제공자 오류가 아니다.
 - **api 백엔드 회차 1회(11/03, 서명됨):** 모델 `qwen/qwen3.6-35b-a3b`, 고정 제공자 slug `deepinfra`(기대 표시 이름 `DeepInfra`),
   fallback 끔, 개선 후 엔진(dev 9b06c05 빌드, 정책 모드 external), 예산 240초·요청 100건. 엔진이 요청 예산 100건을 약 2분 만에 써서
   그때 봉인했다(계측기 전달 100 = `total_requests`, 봉인 뒤 거부 0, drain 시 진행 0). LLM 게이트웨이는 응답 48건이 모두 generation
