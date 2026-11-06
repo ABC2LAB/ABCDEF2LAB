@@ -227,12 +227,16 @@ func (r runnerStageDelayRecorder) Record(ctx context.Context, event e2proxy.Even
 type observedDoneContext struct {
 	context.Context
 	observed chan struct{}
+	resume   <-chan struct{}
 }
 
 func (c *observedDoneContext) Done() <-chan struct{} {
 	select {
 	case c.observed <- struct{}{}:
 	default:
+	}
+	if c.resume != nil {
+		<-c.resume
 	}
 	return c.Context.Done()
 }
@@ -641,7 +645,18 @@ func TestRunnerDrainIntentRejectsPreviouslyQueuedSameIntent(t *testing.T) {
 		firstDone <- result
 	}()
 	waitForRunningCall(t, fixture.runner)
-	queuedContext := &observedDoneContext{Context: t.Context(), observed: make(chan struct{}, 1)}
+	// 일시적인 fenced 관찰 대신, drain이 끝난 뒤 이전 세대 대기자를 진행시킨다.
+	queuedBase, cancelQueued := context.WithCancel(t.Context())
+	resumeQueued := make(chan struct{})
+	defer func() {
+		cancelQueued()
+		select {
+		case <-resumeQueued:
+		default:
+			close(resumeQueued)
+		}
+	}()
+	queuedContext := &observedDoneContext{Context: queuedBase, observed: make(chan struct{}, 1), resume: resumeQueued}
 	queuedDone := make(chan error, 1)
 	go func() {
 		_, err := fixture.runner.RunForIntent(queuedContext, 1, "curl --silent --max-time 2 '"+target.URL+"/allowed'")
@@ -654,20 +669,6 @@ func TestRunnerDrainIntentRejectsPreviouslyQueuedSameIntent(t *testing.T) {
 	}
 	drainDone := make(chan error, 1)
 	go func() { drainDone <- fixture.runner.DrainIntent(t.Context(), 1) }()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		fixture.runner.mu.Lock()
-		state := fixture.runner.intentDrains[1]
-		fenced := state != nil && state.fenced
-		fixture.runner.mu.Unlock()
-		if fenced {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("intent drain did not fence queued calls")
-		}
-		time.Sleep(time.Millisecond)
-	}
 	select {
 	case err := <-drainDone:
 		if err != nil {
@@ -684,6 +685,7 @@ func TestRunnerDrainIntentRejectsPreviouslyQueuedSameIntent(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first call did not finish")
 	}
+	close(resumeQueued)
 	select {
 	case err := <-queuedDone:
 		if !errors.Is(err, ErrUnavailable) {
