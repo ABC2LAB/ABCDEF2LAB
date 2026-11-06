@@ -34,6 +34,7 @@ ISOLATION_EVIDENCE_NAME = "isolation-evidence.json"
 SOLVE_EVENTS_NAME = "solve-events.json"
 METHOD_FIELDS = (*COUNTED_METHODS, OTHER_METHOD)
 STATE_CHANGING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+RULE_HASH_PREFIX = 12
 NOTES = (
     "- 값은 `합계 (반복 순서의 회차별 값)`이다. `—`는 재지 않았다는 뜻이고 0이 아니다.",
     "- 전달 요청은 계측기가 대상으로 보낸 요청이다. 관측 GET과 봉인 뒤 거부는 들어가지 않는다.",
@@ -62,6 +63,7 @@ class RunFacts:
     unavailable: int | None  # E² 자체 불가용. 정책 거부와 다른 사건이라 따로 센다
     state: dict | None  # 상태 차이를 재지 않았으면 None
     solved: int
+    rules: dict | None = None  # 원본 ② 규칙 적용 결과. 규칙을 넣지 않은 회차는 None
 
 
 @dataclass(frozen=True)
@@ -119,6 +121,16 @@ def _state(directory: Path, payload: object) -> dict | None:
     return payload
 
 
+def _rules(directory: Path, result: dict) -> dict | None:
+    rules = result.get("engine_rules")
+    if rules is None:
+        return None
+    if not isinstance(rules, dict) or not isinstance(rules.get("file_sha256"), str) or not _count(rules.get("injected")) \
+            or not _count(rules.get("seeded")):
+        raise DemoError([f"{directory.name}: 규칙 적용 기록 형식 오류"])
+    return rules
+
+
 def _e2_decisions(directory: Path, record: dict, result: dict) -> tuple[int | None, int | None]:
     """결정별 건수는 §8.3 대조를 통과한 격리 근거에서만 쓴다. E²가 없는 회차의 건수는 근거에도 null이다."""
     if record.get("isolation_proof") is None:
@@ -145,7 +157,7 @@ def _run_facts(root: Path, attempt) -> RunFacts:
     return RunFacts(repeat=record["repeat_index"], forwarded=forwarded, methods=methods,
                     proof_missing=record.get("isolation_proof") is None, unsupported=unsupported,
                     unavailable=unavailable, state=_state(directory, _evidence(directory, result, STATE_DIFF_NAME)),
-                    solved=len(solve["events"]))
+                    solved=len(solve["events"]), rules=_rules(directory, result))
 
 
 def read_column(root: Path, key: bytes, allow_fixture_e2: bool = False) -> Column:
@@ -164,6 +176,9 @@ def read_column(root: Path, key: bytes, allow_fixture_e2: bool = False) -> Colum
     if len(models) != 1:
         raise DemoError([f"{root}: 한 열에 모델이 섞임 {models}"])
     runs = sorted((_run_facts(root, a) for a in complete), key=lambda run: run.repeat)
+    rule_files = {None if run.rules is None else run.rules["file_sha256"] for run in runs}
+    if len(rule_files) != 1:
+        raise DemoError([f"{root}: 한 열에 규칙 파일이 섞임"])
     invalid = Counter(a.reason for a in attempts if a.record is None)
     return Column(conditions[0], modes[0], tuple(runs), invalid, complete[0].task_sha256, models[0])
 
@@ -221,6 +236,10 @@ _ROWS = (
 
 
 def render_table(columns: list[Column]) -> str:
+    rule_cells = []
+    for column in columns:
+        rules = column.runs[0].rules
+        rule_cells.append("없음" if rules is None else f"{rules['file_sha256'][:RULE_HASH_PREFIX]} (주입 {rules['injected']})")
     lines = ["### 통제 효과 시연 A — 상태 변경 메서드 미승인(프로토콜 §8.1)\n",
              "| 항목 | " + " | ".join(column.condition for column in columns) + " |",
              "|---|" + "---|" * len(columns),
@@ -230,6 +249,7 @@ def render_table(columns: list[Column]) -> str:
                      " (" + ", ".join(f"{reason} {count}" for reason, count in sorted(column.invalid.items())) + ")"
                      if column.invalid else "") for column in columns) + " |",
              "| E② 자리 | " + " | ".join(column.e2_mode for column in columns) + " |",
+             "| 원본 규칙 파일(sha256 앞부분) | " + " | ".join(rule_cells) + " |",
              "| 격리 증명 없는 회차(기대 0) | " + " | ".join(
                  str(sum(run.proof_missing for run in column.runs)) for column in columns) + " |"]
     for label, value in _ROWS:

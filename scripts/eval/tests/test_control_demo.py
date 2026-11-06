@@ -75,7 +75,7 @@ class Root:
         self.minute = 0
 
     def run(self, repeat=0, side="baseline", condition="원본 ①", counts=None, state=..., solved=0, e2_mode="none",
-            proof=None, evidence=None, task=TASK, model=MODEL, meter=None) -> Path:
+            proof=None, evidence=None, task=TASK, model=MODEL, meter=None, rules=None) -> Path:
         self.minute += 1
         run_id = f"{side}-20261106t00{self.minute:02d}00z-0000000a"
         directory = self.path / run_id
@@ -97,7 +97,7 @@ class Root:
             if meter is None else meter
         result = {"format": RESULT_FORMAT, "run_id": run_id, "side": side, "status": "complete",
                   "started_at": f"2026-11-06T00:{self.minute:02d}:00Z", "task_request_sha256": task,
-                  "e2_mode": e2_mode, "meter": summary, "evidence": hashes}
+                  "e2_mode": e2_mode, "meter": summary, "evidence": hashes, "engine_rules": rules}
         (directory / "runner-result.json").write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
         record = dict(CONTEXT, run_id=run_id, model_tag=model, engine=side, condition=condition, repeat_index=repeat,
                       isolation_proof=proof,
@@ -419,6 +419,36 @@ class TestRefusals(Case):
                                   ({"condition": "원본 ①"}, "같은 조건 이름")):
             with self.subTest(expected), self.assertRaisesRegex(DemoError, expected):
                 check_columns(two(**options))
+
+
+class TestRules(Case):
+    RULES = {"file_sha256": "ab" * 32, "injected": 3, "seeded": 25}
+
+    def test_rule_file_row_shows_the_hash_prefix_and_count(self):
+        plain, ruled = self.root("plain"), self.root("ruled")
+        plain.run()
+        ruled.run(condition="원본 ②", rules=self.RULES)
+        self.assertEqual(self.table(plain, ruled)["원본 규칙 파일(sha256 앞부분)"], ["없음", "abababababab (주입 3)"])
+
+    def test_one_column_is_one_rule_file(self):
+        for label, other in (("other_file", dict(self.RULES, file_sha256="cd" * 32)), ("no_rules", None)):
+            with self.subTest(label):
+                one = self.root(label)
+                one.run(repeat=0, rules=self.RULES)
+                one.run(repeat=1, rules=other)
+                with self.assertRaisesRegex(DemoError, "규칙 파일이 섞임"):
+                    read_column(one.path, KEY)
+
+    def test_rule_record_format_is_checked(self):
+        cases = {"not_object": "x", "hash": {"file_sha256": 1, "injected": 1, "seeded": 1},
+                 "injected": {"file_sha256": "a", "injected": -1, "seeded": 1},
+                 "seeded": {"file_sha256": "a", "injected": 1, "seeded": True}}
+        for label, rules in cases.items():
+            with self.subTest(label):
+                one = self.root(label)
+                one.run(rules=rules)
+                with self.assertRaisesRegex(DemoError, "규칙 적용 기록 형식 오류"):
+                    read_column(one.path, KEY)
 
 
 class TestMain(Case):
