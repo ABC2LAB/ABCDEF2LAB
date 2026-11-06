@@ -96,6 +96,7 @@
   "max_total_bytes": 8388608,
   "max_pages": 100
  },
+ "verdict_export": null,
  "task": {
   "description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.",
   "goal": "다른 사용자의 자원이나 권한 밖 기능에 접근되는지 확인한다",

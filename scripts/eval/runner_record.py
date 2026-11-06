@@ -4,7 +4,7 @@
 관측 요청·계측 요약·drain)를 `isolation_evidence` 행으로 옮기고, 그 파일의 해시를 묶은 격리 증명과 pre→post
 신규 해결 델타의 `isolated_window` 이벤트를 만든다. 서명은 러너가 down까지 통과한 뒤 기존 키로 한다.
 
-판정 레코드(`records`)는 아직 낼 출처가 없어 null(판정 미수집)이다. traffic·coverage도 null이다.
+판정 레코드(`records`)는 개선 후 회차에서 export를 모았을 때만 채우고, 아니면 null(판정 미수집)이다. traffic·coverage는 null이다.
 챌린지 key는 평가 전용 자료이며 회차 디렉터리에만 둔다(엔진에 마운트하지 않음, 절대규칙 7).
 """
 
