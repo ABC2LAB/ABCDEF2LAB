@@ -4,7 +4,29 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+
+	"github.com/Autumn-27/artex/config"
+	"github.com/Autumn-27/norma/harness"
 )
+
+// #272의 실제 설정 해석을 거쳐 운영 훅을 배선하면 옛 en 값도 영어 꼬리를 붙이지 않는다.
+func TestWrapupRuntimeWithKoreanOnlyConfiguration(t *testing.T) {
+	for _, stored := range []string{"en", "ko", "zh", "es", "ja"} {
+		t.Run(stored, func(t *testing.T) {
+			t.Setenv("ARTEX_LANG", stored)
+			ctx := WithRuntimeHooks(t.Context(), RuntimeHooks{OutputLanguage: config.Language})
+			for _, key := range []string{"worker", "planner", "mainagent", "unknown-agent"} {
+				settlement := wrapupSettlementForTask(ctx, key, nil, true)
+				if settlement.Prompt != WrapupDefault(key) {
+					t.Fatalf("%s: conflicting language directive appended", key)
+				}
+				if want := TaskTimeoutWrapupDefault(key); want != "" && settlement.PromptByReason[harness.ReasonTimeout] != want {
+					t.Fatalf("%s timeout: conflicting language directive appended", key)
+				}
+			}
+		})
+	}
+}
 
 // TestWrapupPromptsAreEnglish 는 마무리 지시문이 모델이 읽는 영어로 유지되는지 고정한다. 사람에게 보이는 마지막
 // 한 문장은 한국어로 쓰라고 지시해야 한다. DB 시드는 이 칸을 비워 두므로 이 상수들이 유일한 원천이다.
