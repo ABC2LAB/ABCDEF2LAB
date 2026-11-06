@@ -144,4 +144,4 @@ A/B 세션의 비밀 전달 형식은 새로 만들지 않는다. [E② 서버 �
 4. snapshot JSON(자원·계정·승인·예산, 만료는 첫 회차 한도 이내)과 레지스트리를 같은 세대로 작성한다. 심은 canary의 같은 불변 묶음을 레지스트리 `canaries[]`와 snapshot `view`의 marker·응답 projection에 **똑같이** 넣는다. 세션이 snapshot 만료보다 먼저 만료되면 그 시각을 적용한다.
 5. 운영자가 snapshot을 등록하면(`POST /api/tasks/{id}/intents/{iid}/controlled-read`, `{"snapshot_ref": …}`) 서버가 host 설정으로 짝지은 레지스트리를 그때 동결하고 위 표로 대조한 뒤, 그 등록을 소비하는 실행에서 같은 handle을 쓴다.
 
-첫 회차는 EvalRunID 없이 돈다(비평가). 평가 회차에서 러너가 이 준비를 자동으로 하는 것은 후속이다.
+첫 회차는 EvalRunID 없이 돈다(비평가). 평가 회차에서 러너가 이 준비를 자동으로 하는 것은 후속이다. A/B 예시·담당·실패 처리는 [A/B 세션 준비](./ab-session-prep-stage1.md)에 있다.

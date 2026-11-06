@@ -1,0 +1,50 @@
+{
+  "task_id": "17",
+  "intent_id": 22,
+  "case_ref": "approved-read-PLACEHOLDER",
+  "reset_ref": "reset-gen-PLACEHOLDER",
+  "policy_ref": "operator-read-approval-PLACEHOLDER",
+  "origin": "http://approved-target.example:8080",
+  "connect_ip": "192.0.2.10",
+  "expires_at": "2026-11-05T01:00:00Z",
+  "max_requests": 2,
+  "min_interval_ms": 100,
+  "request_timeout_ms": 5000,
+  "max_body_bytes": 65536,
+  "key_ref": "audit-key-PLACEHOLDER",
+  "key_file": "audit.key",
+  "sessions": [
+    {
+      "label": "account-a",
+      "handle": "session-a-PLACEHOLDER",
+      "status": "verified",
+      "expires_at": "2026-11-05T01:00:00Z",
+      "header_files": { "Authorization": "account-a-session.secret" }
+    },
+    {
+      "label": "account-b",
+      "handle": "session-b-PLACEHOLDER",
+      "status": "verified",
+      "expires_at": "2026-11-05T01:00:00Z",
+      "header_files": { "Authorization": "account-b-session.secret" }
+    }
+  ],
+  "resources": [
+    {
+      "ref": "basket:a-owned-PLACEHOLDER",
+      "url": "http://approved-target.example:8080/resource-PLACEHOLDER/a-owned",
+      "approval_ref": "approved-read-PLACEHOLDER",
+      "read_only": true,
+      "accounts": ["account-a", "account-b"],
+      "view": {
+        "StatusPath": ["status-PLACEHOLDER"],
+        "NormalValue": "normal-PLACEHOLDER",
+        "ErrorValues": ["error-PLACEHOLDER"],
+        "DataPath": ["data-PLACEHOLDER"],
+        "Markers": [
+          { "Field": "PLACEHOLDER-field", "Value": "kgfx-canary-PLACEHOLDER-1", "Trivial": false }
+        ]
+      }
+    }
+  ]
+}
