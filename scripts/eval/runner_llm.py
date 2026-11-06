@@ -14,7 +14,8 @@ from __future__ import annotations
 _MARKER_FIELDS = frozenset({"role", "backend", "provider", "sampling", "sealed_at", "drained_at", "verified_at",
                             "forwarded_requests", "upstream_errors", "upstream_error_ends", "rejected_requests", "rejected_after_seal",
                             "cancelled_by_seal", "responses_without_generation_id", "generations", "log_complete"})
-# upstream_error 행이 멈춘 모양. 누가 먼저 닫았는지와 종료 이벤트 통과만 말하고, 끊긴 책임은 말하지 않는다.
+# upstream_error 행에서 게이트웨이가 관찰한 것. 호출자 쪽 취소·쓰기 실패와 위쪽 응답의 종료 줄 읽기만 말한다.
+# 엔진이 그 줄을 받았는지, 어느 쪽이 먼저 닫았는지, 끊긴 책임은 말하지 않는다.
 UPSTREAM_ENDS = frozenset({"client_closed_after_done", "client_closed_before_done", "upstream_cut_after_done", "upstream_cut_before_done"})
 _COUNTS = ("forwarded_requests", "upstream_errors", "rejected_requests", "rejected_after_seal", "cancelled_by_seal",
            "responses_without_generation_id")

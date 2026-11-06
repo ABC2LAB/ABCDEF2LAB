@@ -255,9 +255,9 @@ func (g *llmGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.proxy.ServeHTTP(rec, out)
 }
 
-// unfinishedEnd는 upstream_error 행이 어떻게 멈췄는지 적는다. 엔진이 [DONE]까지 읽고 닫은 스트림은
-// 실패한 응답이 아니라서 제공자 장애로 읽히면 안 된다. 누가 먼저 닫았는지와 종료 이벤트가 지나갔는지만
-// 말하고, 끊긴 책임이 누구에게 있는지는 말하지 않는다.
+// unfinishedEnd는 upstream_error 행에서 게이트웨이가 관찰한 두 가지를 적는다. 호출자 쪽 취소나 쓰기 실패를
+// 봤는지와, 위쪽 응답에서 종료 이벤트 줄을 읽었는지다. 종료 줄은 호출자에게 쓰기 전에 표시하므로 엔진이
+// 그 줄을 받았다는 뜻이 아니고, 어느 쪽이 먼저 닫았는지와 끊긴 책임도 말하지 않는다.
 func unfinishedEnd(clientClosed, doneSeen bool) string {
 	switch {
 	case clientClosed && doneSeen:
@@ -303,7 +303,7 @@ func (g *llmGateway) finish(seq uint64, cancelled bool, row *llmRow, rec *status
 			g.cancelledBySeal++
 		default:
 			g.upstreamErrors++
-			// 봉인 취소는 위 갈래로 빠지므로 여기서 cancelled는 엔진이 먼저 떠났다는 뜻이다.
+			// 봉인 취소는 위 갈래로 빠지므로 여기서 cancelled는 호출자 쪽 취소다.
 			row.UnfinishedEnd = unfinishedEnd(cancelled || rec.writeFailed, scan.done)
 			g.upstreamEnds[row.UnfinishedEnd]++
 		}
