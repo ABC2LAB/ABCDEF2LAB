@@ -290,7 +290,8 @@ API 키 없이 실제 엔진을 끝까지 돌릴 때 쓴다. 판단하는 모델
 - **회차 밖 컨테이너의 namespace 공유(11/03):** 구간 중 `docker run --network container:<대상>`(망 연결 이벤트 없음) →
   `window_boundary_changed`(회차 밖 컨테이너 create·start), 무효·미서명. 같은 날 정상 회차는 러너 post probe의 컨테이너 이벤트
   5건(create·attach·start·die·destroy)만 cidfile ID로 허용되고 완료·서명.
-- **실행 설정 적용 양쪽 1회(11/07):** baseline e53a79f와 개선 후 dfb5da0를 API로 각 1회 돌렸다(60초, 요청 20건, `atlas-cloud/fp8`). 작업 전에 넣은 `context_window_k` 200·workers 3이 양쪽 스냅샷에 그대로 나왔고, `reasoning_effort`·`thinking_type`은 비어 있었으며, 프로파일 저장·활성화 뒤에도 양쪽 회차가 완료·서명됐다. 스트리밍 끈 조건과 기본값이 아닌 창 크기는 실제 엔진으로 돌리지 않았다(시험은 요청 본문까지만 본다).
+- **실행 설정 적용 양쪽 1회(11/07):** baseline e53a79f와 개선 후 dfb5da0를 API로 각 1회 돌렸다(60초, 요청 20건, `atlas-cloud/fp8`). 작업 전에 넣은 `context_window_k` 200·workers 3이 양쪽 스냅샷에 그대로 나왔고, `reasoning_effort`·`thinking_type`은 비어 있었으며, 프로파일 저장·활성화 뒤에도 양쪽 회차가 완료·서명됐다. 스트리밍 끈 조건은 실제 엔진으로 돌리지 않았다(시험은 요청 본문까지만 본다).
+- **local 백엔드 회차 1회(11/07):** 임시 Ollama 0.32.6(`172.17.0.1:11435`, `context_length` 32768, CPU), `qwen2.5:1.5b`, 개선 후 dev 450cc71, 300초·요청 30건, `context_window_k` 32·workers 1로 완료·서명. 스냅샷에 넣은 값이 그대로 나왔다. 회차 전과 작업 생성 직전 모두 남은 유지 시간이 요청값 그대로(1272초)였고, 회차 뒤 조회도 digest·컨텍스트가 일치했으며(1250초) 모델을 내렸다. 작업 직전 재적재 요청은 실제 서버에서 동작을 확인했다. 그 사이 모델이 내려간 상황을 일부러 만들어 보지는 않았다. LLM 호출 2건·대상 요청 0건이라 작은 모델의 도구 호출은 이 회차로 확인되지 않고, baseline은 안 돌렸다.
 - **api 백엔드 회차 1회(11/03, 서명됨):** 모델 `qwen/qwen3.6-35b-a3b`, 고정 제공자 slug `deepinfra`(기대 표시 이름 `DeepInfra`),
   fallback 끔, 개선 후 엔진(dev 9b06c05 빌드, 정책 모드 external), 예산 240초·요청 100건. 엔진이 요청 예산 100건을 약 2분 만에 써서
   그때 봉인했다(계측기 전달 100 = `total_requests`, 봉인 뒤 거부 0, drain 시 진행 0). LLM 게이트웨이는 응답 48건이 모두 generation
