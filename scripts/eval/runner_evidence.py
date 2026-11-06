@@ -48,6 +48,8 @@ FORWARDED_KINDS = frozenset({"request", "stream"})
 ENGINE_KINDS = FORWARDED_KINDS | {"rejected"}
 # 봉인 뒤 유예(-drain-grace)가 지나 계측기가 대상 쪽으로 취소한 요청 행의 outcome. 건수는 drained 마커와 같아야 한다.
 FORCED_CANCELLED_OUTCOME = "forced_cancelled"
+COUNTED_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+OTHER_METHOD = "OTHER"
 
 
 def e2_stub_counts(rows: list[dict]) -> dict:
@@ -61,6 +63,21 @@ def forwarded_count(rows: list[dict]) -> int:
     if any(row.get("kind") not in ENGINE_KINDS for row in rows):
         raise EvidenceError("meter_log_invalid")
     return sum(1 for row in rows if row["kind"] in FORWARDED_KINDS)
+
+
+def forwarded_by_method(rows: list[dict]) -> dict[str, int]:
+    """전달 요청의 메서드별 건수(프로토콜 §8.1). 합은 forwarded_count와 같다.
+
+    표로 나가는 값이라 메서드 토큰을 그대로 옮기지 않고 닫힌 목록으로 센다. 목록 밖(소문자 포함)은 OTHER_METHOD다.
+    """
+    counts = dict.fromkeys((*COUNTED_METHODS, OTHER_METHOD), 0)
+    for row in rows:
+        if row.get("kind") not in ENGINE_KINDS:
+            raise EvidenceError("meter_log_invalid")
+        if row["kind"] in FORWARDED_KINDS:
+            method = row.get("method")
+            counts[method if method in COUNTED_METHODS else OTHER_METHOD] += 1
+    return counts
 
 
 class EvidenceError(RuntimeError):
