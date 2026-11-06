@@ -118,13 +118,13 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 			if err := ledger.Register(budget.Grant{Key: key, Binding: binding, MaxRequests: 2, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(5 * time.Minute)}, now); err != nil {
 				t.Fatal(err)
 			}
-			execution, err := e2proxy.NewExecution(context.Background(), e2proxy.Config{
+			execution, err := e2proxy.NewExecution(context.Background(), e2WorkerCredentialFixture(t, e2proxy.Config{
 				Scope:    transmit.Scope{TaskRef: "7", RunRef: "native-worker-" + scheme, CaseRef: "worker-case", ResetRef: "worker-reset", PolicyRef: "worker-policy"},
 				IntentID: 22, OwnerRef: "ARTEX", PolicyRevision: "worker-revision", AccountRef: "fixture-account", SessionRef: "fixture-session", ExpiresAt: now.Add(5 * time.Minute),
 				Rules:  []e2proxy.Rule{{Ref: "worker-rule", Origin: target.URL, ConnectIP: connectIP, PathPrefix: "/fixture", PathScopeRef: "worker-path", Methods: []string{"GET"}, Headers: http.Header{"Authorization": {"Bearer " + credential}}}},
 				Budget: transmit.CumulativeBudget{Ledger: ledger, Key: key, Binding: binding}, Recorder: journal, RootCAs: roots,
 				Limits: e2proxy.Limits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 4096, RequestTimeout: 2 * time.Second, CallTimeout: 8 * time.Second, MaxDenials: 4, MaxTransient: 2, MaxUnknown: 2},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
