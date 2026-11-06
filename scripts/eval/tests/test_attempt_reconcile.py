@@ -13,6 +13,7 @@ from attempt_reconcile import (  # noqa: E402
     ALLOWED_DECISIONS, CELLS, DENIED_DECISIONS, ReconcileError, reconcile,
     NO_RESPONSE, RESPONDED,
 )
+from e2_export import E2_DECISIONS  # noqa: E402
 from runner_evidence import ATTEMPT_STATES, E2_STUB_DECISIONS, ENGINE_RESPONSE  # noqa: E402
 
 A, B, C, D = ("a" * 32, "b" * 32, "c" * 32, "d" * 32)
@@ -35,6 +36,8 @@ class TestCells(unittest.TestCase):
         self.assertEqual(self.cells([decision(A)], [seen(A)])["allowed_observed"], 1)
         self.assertEqual(self.cells([decision(A)], [])["allowed_unobserved"], 1)
         self.assertEqual(self.cells([decision(A, "unsupported")], [])["denied_unobserved"], 1)
+        self.assertEqual(self.cells([decision(A, "denied")], [])["denied_unobserved"], 1)
+        self.assertEqual(self.cells([decision(A, "denied")], [seen(A)])["denied_observed"], 1)
         self.assertEqual(self.cells([decision("", "unavailable")], [])["denied_unobserved"], 1)
         self.assertEqual(self.cells([decision(A, "unsupported")], [seen(A)])["denied_observed"], 1)
         for row in (seen(), seen(state="invalid"), seen(state="multiple"), seen(B)):
@@ -130,7 +133,7 @@ class TestInputErrors(unittest.TestCase):
 class TestContract(unittest.TestCase):
     def test_decisions_and_states_match_the_readers(self):
         # 가짜 E² 결정 집합·계측기 시도 상태 집합과 어긋나면 대조가 조용히 틀린다.
-        self.assertEqual(ALLOWED_DECISIONS | DENIED_DECISIONS, frozenset(E2_STUB_DECISIONS))
+        self.assertEqual(ALLOWED_DECISIONS | DENIED_DECISIONS, frozenset(E2_STUB_DECISIONS) | E2_DECISIONS)
         self.assertEqual(ATTEMPT_STATES, frozenset({"valid", "absent", "invalid", "multiple"}))
 
     def test_result_carries_counts_only(self):

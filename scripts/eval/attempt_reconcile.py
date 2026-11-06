@@ -23,9 +23,10 @@ from __future__ import annotations
 
 from collections import Counter
 
-# E② 결정 중 대상 쪽으로 보낸 것. 가짜 E²는 allowed만 보내고 unsupported·unavailable은 보내지 않는다.
+# E② 결정 중 대상 쪽으로 보낸 것. allowed만 보내고 나머지는 보내지 않는다.
+# 제품 E②의 어휘는 allowed·denied·unsupported이고(e2_export), unavailable은 가짜 E²의 ID 발급 실패다.
 ALLOWED_DECISIONS = frozenset({"allowed"})
-DENIED_DECISIONS = frozenset({"unsupported", "unavailable"})
+DENIED_DECISIONS = frozenset({"denied", "unsupported", "unavailable"})
 CELLS = ("allowed_observed", "allowed_unobserved", "denied_unobserved", "denied_observed", "unrecorded_observed")
 # reconcile 결과 키. 러너가 이 키만 격리 근거 attempt_reconciliation 행에 옮긴다.
 RESULT_FIELDS = ("cells", "allowed_responded", "meter_attempt_reused", "blocked_reached", "unrecorded_reached",
