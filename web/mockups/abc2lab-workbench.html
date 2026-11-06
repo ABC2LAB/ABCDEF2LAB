@@ -60,7 +60,7 @@
   *{box-sizing:border-box}
   [hidden]{display:none!important}
   html,body{height:100%}
-  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;display:flex;flex-direction:column}
   h1,h2,h3{margin:0;font-weight:600;text-wrap:balance}
   p{margin:0}
   ul,ol{margin:0;padding:0}
@@ -73,7 +73,9 @@
   .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
   /* 앱 틀 */
-  .app{height:100%;display:grid;grid-template-columns:236px minmax(0,1fr)}
+  .app{flex:1;min-height:0;display:grid;grid-template-columns:236px minmax(0,1fr)}
+  .demobar{display:flex;gap:8px;align-items:center;justify-content:center;text-align:center;padding:7px 16px;background:var(--warn-bg);color:var(--warn);border-bottom:1px solid var(--warn-line);font-size:12.5px;font-weight:600;line-height:1.4}
+  .demobar .ic{width:15px;height:15px;flex:none}
   .work{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
   .view{flex:1;min-height:0;display:flex;flex-direction:column}
   .vh{flex:none;border-bottom:1px solid var(--rule);background:var(--bg);padding-block:14px;padding-left:28px;padding-right:max(28px,env(safe-area-inset-right,0px))}
@@ -720,6 +722,7 @@
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 7.8v.1"/></symbol>
 </svg>
 
+<div class="demobar" role="note"><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg><span>작동하지 않는 UI 시안입니다 — 모든 숫자·기록은 예시이며, 실제 점검·소유 확인·세션 저장을 수행하지 않습니다.</span></div>
 <div class="app">
   <!-- ===== 레일: 메뉴 · 점검 목록 · 운영 상태 ===== -->
   <aside class="rail" id="rail" aria-label="주 메뉴">
@@ -857,7 +860,7 @@
                 <div class="fsec-b" id="nForm2" hidden>
                   <div class="field"><label class="lbl" for="nSA">계정 A 세션</label><textarea class="inp" id="nSA" placeholder="Cookie: session=…"></textarea></div>
                   <div class="field"><label class="lbl" for="nSB">계정 B 세션 · 계정 사이 접근 점검용</label><textarea class="inp" id="nSB" placeholder="Cookie: session=…"></textarea></div>
-                  <p class="help">SSO, OTP, 토큰 기반 앱은 로그인된 세션 값을 붙여 넣으세요. 값은 가려서 저장하고 로그와 내보내기에 넣지 않습니다.</p>
+                  <p class="help">시안입니다 — 실제 세션 값·비밀번호를 넣지 말고 예시 값만 쓰세요. (실제 제품에서는 입력한 값을 가려 저장하고 로그·내보내기에서 제외합니다.)</p>
                 </div>
               </div>
             </div>
@@ -1139,13 +1142,14 @@
       <header class="vh">
         <div class="vh-top"><button class="icon-btn menu-btn" type="button" data-rail-open aria-label="메뉴 열기"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button><nav class="crumb" aria-label="위치"><a href="#dashboard">작업대</a><span class="sep">/</span><span>점검 기록</span><span class="sep">/</span><span class="host" id="rCrumbHost">blog.example.com</span></nav></div>
         <div class="vh-row">
-          <div class="vh-title"><h1 tabindex="-1" id="rTitle">blog.example.com 보고서</h1><span class="pill ok">점검 완료</span></div>
+          <div class="vh-title"><h1 tabindex="-1" id="rTitle">blog.example.com 보고서</h1><span class="pill ok" id="rPill">점검 완료</span></div>
           <div class="vh-acts"><button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>발견 상세</button></div>
         </div>
         <div class="vh-meta" id="rMeta"><span>시작 <b>10/25 14:03</b></span><span>소요 <b>28분</b></span><span>모델 <b>qwen/qwen3.6-35b-a3b · 로컬</b></span><span>커버리지 <b>91%</b></span></div>
       </header>
       <div class="vb">
         <div class="vm">
+          <div class="note warn" id="rExample" hidden><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg><div class="rex-t"></div></div>
           <div class="strip">
             <div class="cell"><div class="k">발견</div><div class="v">6</div><div class="sub">심각 1 · 높음 1 · 중간 3 · 낮음 1</div></div>
             <div class="cell"><div class="k">판정 확정</div><div class="v">3</div><div class="sub">증거 충분</div></div>
@@ -1421,7 +1425,7 @@
     url.setAttribute('aria-invalid', st.kind==='bad' && url.value.trim() ? 'true' : 'false');
     if(st.kind==='bad') line.innerHTML = url.value.trim() ? '<span class="err">주소 형식을 확인하세요. 예: https://shop.example.com</span>' : '<span class="err">점검할 사이트 주소를 입력하세요.</span>';
     else if(st.kind==='int') line.innerHTML='<span class="pill ok">내부 주소</span><span class="help">소유 확인 없이 바로 점검할 수 있습니다</span>';
-    else if(st.kind==='allow') line.innerHTML='<span class="pill ok">허용 목록 · 검증됨</span><span class="help">'+(VERIFIED[st.url.hostname]?'방금 DNS TXT로 소유를 확인했습니다':'설정 › 통제 정책에서 관리합니다')+'</span>';
+    else if(st.kind==='allow') line.innerHTML='<span class="pill ok">'+(VERIFIED[st.url.hostname]?'허용 · 예시 통과(시안)':'허용 목록 · 검증됨')+'</span><span class="help">'+(VERIFIED[st.url.hostname]?'시안이라 실제 DNS 조회 없이 통과했습니다':'설정 › 통제 정책에서 관리합니다')+'</span>';
     else line.innerHTML='<span class="pill wait">소유 확인 필요</span><span class="help">허용 목록에 없는 외부 주소입니다</span>';
     vbox.hidden = st.kind!=='ext';
     if(st.kind==='ext'){ var h=st.url.hostname; if(!tokenFor[h]) tokenFor[h]='abc2lab-verify='+Math.random().toString(16).slice(2,10)+Math.random().toString(16).slice(2,8);
@@ -1444,7 +1448,7 @@
     $('#sDepth').textContent = depth+' · 워커 '+$('#nWorkers').value;
     $('#sGoal').textContent = goals.length ? goals.join(', ') : '기본 목표';
     $('#sSend').textContent = send==='ap' ? '승인 후 전송' : '전체 허용 · 시험환경 전용';
-    $('#pTarget').textContent = st.url ? st.url.hostname+(st.kind==='int'?' · 내부 주소':st.kind==='allow'?' · 검증됨':' · 소유 확인 필요') : '주소 없음';
+    $('#pTarget').textContent = st.url ? st.url.hostname+(st.kind==='int'?' · 내부 주소':st.kind==='allow'?(VERIFIED[st.url.hostname]?' · 예시 통과(시안)':' · 검증됨'):' · 소유 확인 필요') : '주소 없음';
     $('#pSend').textContent = send==='ap' ? '승인한 요청만 보냄' : '승인 없이 보냄 · 시험환경 확인 필요';
     var extra=$('#nExcl').value.split('\n').map(function(s){ return s.trim(); }).filter(Boolean).length;
     $('#pExcl').textContent = '전역 3개 (/admin/delete* 등)'+(extra?' + 이 점검 '+extra+'개':'');
@@ -1459,8 +1463,8 @@
   $('#nForm').addEventListener('input', function(e){ if(e.target.id==='nName') nameTouched=true; nSync(); });
   $('#nForm').addEventListener('change', nSync);
   $('#nUrl').addEventListener('blur', function(){ var u=parseUrl(this.value); if(u && !/^[a-z][a-z0-9+.-]*:\/\//i.test(this.value.trim())){ this.value=u.origin; nSync(); } });
-  $('#vCheck').addEventListener('click', function(){ var st=hostState(); if(!st.url) return; var b=this, s=$('#vState'); b.disabled=true; s.textContent='확인 중 · 권한 네임서버에서 TXT 조회';
-    setTimeout(function(){ VERIFIED[st.url.hostname]=true; b.disabled=false; s.textContent='토큰은 1시간 동안 이 주소에만 유효합니다.'; nSync(); $('#nUrl').focus(); }, 1300); });
+  $('#vCheck').addEventListener('click', function(){ var st=hostState(); if(!st.url) return; var b=this, s=$('#vState'); b.disabled=true; s.textContent='시안 · 실제 DNS 조회는 하지 않습니다';
+    setTimeout(function(){ VERIFIED[st.url.hostname]=true; b.disabled=false; s.textContent='시안이라 실제 확인 없이 예시로 통과했습니다. 실제로는 DNS TXT 확인이 필요합니다.'; nSync(); $('#nUrl').focus(); }, 1300); });
   document.addEventListener('click', function(e){ var c=e.target.closest('[data-reuse]'); if(!c) return; nPrefill(c.getAttribute('data-reuse')); $('#nUrl').focus(); });
   function nPrefill(u){ $('#nUrl').value=u; nameTouched=false; nSync(); }
   function startScan(){ nSync(); if($('[data-start]').disabled) return; var st=hostState(); target=st.url.origin;
@@ -2159,9 +2163,14 @@
   var rHost='blog.example.com';
   var RMETA_BLOG=$('#rMeta').innerHTML;
   function setReportHost(kind){
+    var ex=$('#rExample'), pill=$('#rPill');
     if(kind==='live'){ rHost=curHost();
-      $('#rMeta').innerHTML='<span>시작 <b>오늘 '+hms(live.start).slice(0,5)+'</b></span><span>소요 <b>'+Math.round(LCUM[live.i])+'분</b></span><span>모델 <b>qwen/qwen3.6-35b-a3b · 로컬</b></span><span>커버리지 <b>91%</b></span>'+(live.ended&&!live.done?'<span>종료 시점까지의 결과</span>':''); }
-    else { rHost='blog.example.com'; $('#rMeta').innerHTML=RMETA_BLOG; }
+      var ended=live.ended&&!live.done;
+      // 시안: 아래 strip·발견 목록·그래프는 완료된 예시(blog) 고정값이라 방금 끝낸 점검의 실제 결과가 아니다. 커버리지도 예시 수치(91%)를 그대로 쓰지 않는다.
+      $('#rMeta').innerHTML='<span>시작 <b>오늘 '+hms(live.start).slice(0,5)+'</b></span><span>소요 <b>'+Math.round(LCUM[live.i])+'분</b></span><span>모델 <b>qwen/qwen3.6-35b-a3b · 로컬</b></span><span>커버리지 <b>예시</b></span>'+(ended?'<span>조기 종료 · 실제로는 종료 시점까지만 집계</span>':'');
+      if(pill){ pill.className=ended?'pill':'pill ok'; pill.textContent=ended?'종료됨':'점검 완료'; }
+      if(ex){ ex.hidden=false; ex.querySelector('.rex-t').textContent='방금 '+(ended?'종료':'완료')+'한 점검의 실제 결과가 아닙니다. 아래 발견·판정·커버리지·그래프는 완료된 예시 점검(blog.example.com)의 고정 샘플입니다'+(ended?'. 실제로 조기 종료하면 종료 시점까지 수집한 결과만, 커버리지도 그만큼만 집계됩니다.':'.'); } }
+    else { rHost='blog.example.com'; $('#rMeta').innerHTML=RMETA_BLOG; if(pill){ pill.className='pill ok'; pill.textContent='점검 완료'; } if(ex) ex.hidden=true; }
     $('#rCrumbHost').textContent=rHost; $('#rTitle').textContent=rHost+' 보고서';
     rMode='finding'; kgSel=null; renderKg(); renderReport(); }
   document.addEventListener('click', function(e){ var a=e.target.closest('[data-rhost]'); if(a) setReportHost(a.getAttribute('data-rhost')); });
