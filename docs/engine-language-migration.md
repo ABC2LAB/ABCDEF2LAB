@@ -72,6 +72,10 @@ Go 밖에는 `web/messages/zh.json`·`ja.json`, `web/src`, `skills/`, `db/schema
 
 baseline은 원본 프롬프트 그대로 둔다. 개선판의 언어 변경은 선언된 차이다([평가 프로토콜 §2](evaluation/evaluation-protocol.md#2-평가-대상-고정)). 결과는 개선판 전체의 효과로 보고, E②나 언어 변경 하나의 효과로 나누지 않는다.
 
+## 번역 계층 (8단계)
+
+표시 언어는 한국어로 고정했고 카탈로그는 지웠다. `trMsg`·`logT`·`config.T`·`SetCurrentLanguage`·`notify.SetLanguageResolver`와 `output_language` API, 웹의 언어 선택은 아직 남아 있으며 별도 PR로 지운다. `agent/outputlang.go`는 #264 뒤에 줄인다.
+
 ## 확인할 가설
 
 압축 전후에 언어가 섞이는 원인이 압축 지시라는 것은 가설이다. 실제 쓸 로컬 모델로 변경 전후를 비교해 확인한다.
