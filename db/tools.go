@@ -104,6 +104,16 @@ func (d *DB) RefreshToolDefaults(key, desc string, schema json.RawMessage) error
 	return err
 }
 
+// 각 칸이 조회 당시 값 그대로일 때만 갱신해 기동 중 사용자 편집도 보존한다.
+func (d *DB) RefreshToolLanguageDefaults(key, expectedDesc string, expectedSchema json.RawMessage, desc string, schema json.RawMessage, refreshDesc, refreshSchema bool) error {
+	_, err := d.Exec(`UPDATE tools SET
+description=CASE WHEN $6 AND description=$2 THEN $4 ELSE description END,
+schema=CASE WHEN $7 AND schema=$3::jsonb THEN $5::jsonb ELSE schema END,
+updated_at=now()
+WHERE key=$1 AND system AND (($6 AND description=$2) OR ($7 AND schema=$3::jsonb))`, key, expectedDesc, expectedSchema, desc, schema, refreshDesc, refreshSchema)
+	return err
+}
+
 func scanTool(rows interface{ Scan(...any) error }) (*Tool, error) {
 	var t Tool
 	var agents []byte

@@ -60,7 +60,7 @@ Go 밖에는 `web/messages/zh.json`·`ja.json`, `web/src`, `skills/`, `db/schema
 
 ## 이미 심긴 프롬프트
 
-`seedPrompts`는 비어 있을 때만 넣으므로 기존 설치에는 옛 프롬프트가 남는다. 기동 때 `Server.reseedBuiltinPrompts`가 내장 에이전트와 reporter 프롬프트를 한 번 현재 기본값으로 올린다. 새 버전을 덧붙이는 방식이라 운영자가 고친 이전 본문은 버전 기록에서 되찾는다. 트리거에는 버전 기록이 없어서 `Server.upgradeReporterTriggerMessage`는 한자가 든 문구만 바꾼다. 평가 회차는 매번 새 DB라 시드 값을 그대로 쓴다.
+`seedPrompts`는 비어 있을 때만 넣으므로 기존 설치에는 옛 프롬프트가 남는다. 기동 때 `Server.reseedBuiltinPrompts`가 내장 에이전트와 reporter 프롬프트를 한 번 현재 기본값으로 올린다. 새 버전을 덧붙이는 방식이라 운영자가 고친 이전 본문은 버전 기록에서 되찾는다. 트리거에는 버전 기록이 없어서 `Server.upgradeReporterTriggerMessage`는 한자가 든 문구만 바꾼다. 도구 설명도 처음 넣을 때만 쓰이고 모델은 DB 행을 받는다. 도구 행에도 버전 기록이 없어서 `Server.refreshHanToolDescriptions`가 설명이나 스키마에 한자가 있는 시스템 도구만 한 번 현재 기본값으로 올린다. 평가 회차는 매번 새 DB라 시드 값을 그대로 쓴다.
 
 ## 공식 비교
 
