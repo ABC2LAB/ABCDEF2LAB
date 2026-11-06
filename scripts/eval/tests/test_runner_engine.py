@@ -46,8 +46,9 @@ DTO_SHAPES = {
 # 개선 후가 같다(직접 확인한 값). 다르면 baseline·개선 후가 같은 요청으로 같은 일을 시작한다는 전제를 다시 본다.
 TASK_SHAPES = {
     ("server/server.go", "type createTaskReq struct"): "f07493c7ed7ca34b80af73f43b69b70207d61221e5fd2002f3cd514277b00f77",
+    # baseline과 다른 곳은 설명이 빈 요청의 기본 이름(언어 전환)뿐이다. 러너는 빈 설명을 거부하므로 회차에서 타지 않는다.
     ("server/server.go", "func (s *Server) createTask("):
-        "afa5623bfcd3de47848a84425a1bc6c873ba29f8e419b6c20872d2746f97115e",
+        "f05d1f004bc7c101827a08ffbe1d2b499e6b9547e748753d1ce8aa1aa3ea6f56",
     ("server/goals.go", "func (s *Server) launchTask("): "2a05e77a7e68b7aa3e5b94bce4bdc0e8e56416de1996c8f7d6a4ac8545e3e513",
     ("server/server.go", "func (s *Server) seed("): "7d0891d1bdcc78596ed2a3c8e40cd22b0be3866c78cc25962e948ed41430963a",
     ("server/server.go", "func parseTarget("): "4fa3c05b1d4ac4d24a387df3dda6fb87e566f45e9f16f0a2b79fa5e3b47bb3ea",
