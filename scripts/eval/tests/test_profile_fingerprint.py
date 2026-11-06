@@ -33,6 +33,16 @@ def local_llm():
             "hostname": "llm-host", "host_ip": "172.17.0.1"}
 
 
+LOCAL_SAMPLING = {"top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0.25}
+
+
+def use_llm(payload, llm):
+    """백엔드마다 샘플링 묶음이 달라서 llm과 함께 맞춘다."""
+    payload["environment"]["llm"] = llm
+    if llm["backend"] == "local":
+        payload["environment"]["sampling"] = dict(LOCAL_SAMPLING)
+
+
 def profile():
     return {
         "version": 5,
@@ -154,7 +164,7 @@ class TestProfileFingerprint(unittest.TestCase):
         for llm in (api_llm() | {"model": "example-org/other-model"},
                     api_llm() | {"base_url": "https://other-api.example/api/v1"}, local_llm()):
             payload = profile()
-            payload["environment"]["llm"] = llm
+            use_llm(payload, llm)
             self.assertNotEqual(expected.environment_fingerprint, generate_fingerprints(payload).environment_fingerprint)
 
     def test_each_llm_subfield_changes_only_environment_digest(self):
@@ -172,9 +182,9 @@ class TestProfileFingerprint(unittest.TestCase):
         for name, (base, change) in cases.items():
             with self.subTest(field=name):
                 payload = profile()
-                payload["environment"]["llm"] = base
+                use_llm(payload, base)
                 before = generate_fingerprints(payload)
-                payload["environment"]["llm"] = base | change
+                use_llm(payload, base | change)
                 after = generate_fingerprints(payload)
                 self.assertNotEqual(before.environment_fingerprint, after.environment_fingerprint)
                 self.assertEqual(before.fixture_fingerprint, after.fixture_fingerprint)
@@ -338,8 +348,33 @@ class TestProfileFingerprint(unittest.TestCase):
             payload["environment"]["llm"] = value
             self.reject(payload, "INVALID_LLM")
         payload = profile()
-        payload["environment"]["llm"] = local_llm()
+        use_llm(payload, local_llm())
         generate_fingerprints(payload)
+
+    def test_local_sampling_is_its_own_set_inside_the_environment_digest(self):
+        payload = profile()
+        use_llm(payload, local_llm())
+        before = generate_fingerprints(payload)
+        for field, value in (("top_p", 0.9), ("presence_penalty", 1.0), ("frequency_penalty", 1.0)):
+            changed = copy.deepcopy(payload)
+            changed["environment"]["sampling"][field] = value
+            after = generate_fingerprints(changed)
+            self.assertNotEqual(before.environment_fingerprint, after.environment_fingerprint, field)
+            self.assertEqual(before.fixture_fingerprint, after.fixture_fingerprint, field)
+            self.assertEqual(before.scope_fingerprint, after.scope_fingerprint, field)
+        api_set = profile()["environment"]["sampling"]
+        for sampling in (api_set, {}, {**LOCAL_SAMPLING, "top_k": 20},
+                         {k: v for k, v in LOCAL_SAMPLING.items() if k != "frequency_penalty"}):
+            wrong = copy.deepcopy(payload)
+            wrong["environment"]["sampling"] = sampling
+            self.reject(wrong, "INVALID_SAMPLING")
+        wrong = profile()
+        wrong["environment"]["sampling"] = dict(LOCAL_SAMPLING)
+        self.reject(wrong, "INVALID_SAMPLING")
+        for field, value in (("top_p", 0), ("top_p", 1.5), ("presence_penalty", 3), ("frequency_penalty", -3)):
+            wrong = copy.deepcopy(payload)
+            wrong["environment"]["sampling"][field] = value
+            self.reject(wrong, "INVALID_NUMBER")
 
     def test_run_storage_validation_does_not_drift(self):
         # tmpfs 크기·하한: 프로파일 지문·사전검사·러너 설정이 같은 값을 받아야 선언과 실제 compose·판정이 어긋나지 않는다.
@@ -400,6 +435,11 @@ class TestProfileFingerprint(unittest.TestCase):
         self.assertEqual((preflight.MAX_TOP_K, preflight.MAX_PENALTY, preflight.SAMPLING_FIELDS),
                          (profile_fingerprint.MAX_TOP_K, profile_fingerprint.MAX_PENALTY,
                           profile_fingerprint.SAMPLING_FIELDS))
+        self.assertEqual(preflight.LOCAL_SAMPLING_FIELDS, profile_fingerprint.LOCAL_SAMPLING_FIELDS)
+        # 게이트웨이가 local에 넣는 키는 선언의 세 값과 temperature·seed다.
+        struct = go[go.index("type localSamplingParams struct"):go.index("// parseLocalSampling")]
+        self.assertEqual(set(re.findall(r'json:"(\w+)"', struct)),
+                         {"temperature", "seed", *profile_fingerprint.LOCAL_SAMPLING_FIELDS})
         base = {"top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0}
         changes = {"top_p": (0, 0.0001, 1, 1.0001, -1, True, "0.9", None, float("nan")),
                    "top_k": (0, 1, 1000, 1001, 20.0, True, "20", -1),

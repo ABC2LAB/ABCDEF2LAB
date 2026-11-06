@@ -257,10 +257,17 @@ class TestRejectedV11(_V11):
             logical_cpus=True))
         self.reject("run_conditions", "r10", tamper_rows=lambda rows: row_of(rows, "run_conditions")["sampling"].update(
             seed="42"))
-        # local 백엔드는 샘플링을 넣지 않아 null이다.
+        # 예전 local 회차는 샘플링을 넣지 않아 null이다.
         local = self.inputs(self.v11("loc", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
             sampling=None)))
         self.assertEqual(local.version, "1.1")
+        # 지금 local은 자기 묶음을 쓴다. 두 묶음이 섞이면 거부한다.
+        applied = {"temperature": 1.0, "top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0.25, "seed": 42}
+        local = self.inputs(self.v11("loc2", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            sampling=dict(applied))))
+        self.assertEqual(local.version, "1.1")
+        self.reject("run_conditions", "mixed-sampling", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            sampling=dict(applied, top_k=20)))
         self.assertIsNotNone(self.inputs(self.v11("ok")).run_conditions)
         # 스트리밍은 bool만 받는다(1·"true"를 true로 읽지 않음). 행에서 빠져도 거부.
         self.reject("run_conditions", "r11", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(llm_stream=1))

@@ -878,7 +878,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         drain_grace_seconds=config.run["drain_grace_seconds"], post_settle_seconds=config.run["post_settle_seconds"],
         llm_provider_slug=plan.llm.get("provider", ""),
         llm_provider_name=config.llm_gateway["expected_provider_name"],
-        llm_sampling=(json.loads(plan.compose_env["EVAL_LLM_SAMPLING"]) if plan.llm["backend"] == "api" else None),
+        llm_sampling=json.loads(plan.compose_env["EVAL_LLM_SAMPLING"]),
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_request_sha256=task_request_sha256,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],

@@ -22,7 +22,7 @@ from runner_config import (
     compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
     new_run_id, parse_runner_config, plan_run,
 )
-from test_preflight import configuration, local_llm
+from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 
 
 def image(name: str, digit: str) -> dict:
@@ -498,6 +498,7 @@ class TestPlanRun(unittest.TestCase):
         preflight = configuration()
         for side in ("baseline", "ours"):
             preflight[side]["llm"] = local_llm()
+            preflight[side]["sampling"] = dict(LOCAL_SAMPLING)
         plan = plan_run(self.config, preflight, "baseline", "b")
         self.assertEqual(plan.compose_files, (COMPOSE_COMMON, COMPOSE_LOCAL_LLM, COMPOSE_EVAL))
         self.assertEqual(plan.compose_env["EVAL_LLM_HOSTNAME"], "llm-host")
@@ -671,6 +672,21 @@ class TestComposeContract(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_gateway_sampling_is_declared_values_for_each_backend(self):
+        config = parse_runner_config(runner_config())
+        api = plan_run(config, configuration(), "ours", "ours-api")
+        self.assertEqual(json.loads(api.compose_env["EVAL_LLM_SAMPLING"]),
+                         {"temperature": configuration()["ours"]["temperature"], **configuration()["ours"]["sampling"],
+                          "seed": configuration()["ours"]["seed"]})
+        preflight = configuration()
+        for side in ("baseline", "ours"):
+            preflight[side]["llm"] = local_llm()
+            preflight[side]["sampling"] = dict(LOCAL_SAMPLING)
+        local = plan_run(config, preflight, "ours", "ours-local")
+        self.assertEqual(json.loads(local.compose_env["EVAL_LLM_SAMPLING"]),
+                         {"temperature": preflight["ours"]["temperature"], **LOCAL_SAMPLING,
+                          "seed": preflight["ours"]["seed"]})
+
     def test_compose_variables_equal_runner_env_plus_secrets_per_backend(self):
         config = parse_runner_config(runner_config())
         for backend, llm in (("api", None), ("local", local_llm())):
@@ -678,6 +694,7 @@ class TestComposeContract(unittest.TestCase):
             if llm:
                 for side in ("baseline", "ours"):
                     preflight[side]["llm"] = llm
+                    preflight[side]["sampling"] = dict(LOCAL_SAMPLING)
             plan = plan_run(config, preflight, "ours", f"ours-{backend}")
             env = compose_environment(plan, create_run_directory(self.root, f"ours-{backend}"))
             stub = plan_run(parse_runner_config(runner_config() | {"e2": {"ours_mode": "stub"}}), preflight, "ours",

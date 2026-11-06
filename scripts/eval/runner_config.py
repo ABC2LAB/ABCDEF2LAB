@@ -652,10 +652,10 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "EVAL_LLM_GW_PORT": str(gateway_port),
         "EVAL_LLM_UPSTREAM": f"{upstream.scheme}://{upstream.netloc}",
         "EVAL_LLM_CHAT_PATH": base_path + CHAT_COMPLETIONS_SUFFIX,
+        "EVAL_LLM_SAMPLING": gateway_sampling(declared, side),
     }
     if llm["backend"] == "api":
         env["EVAL_LLM_PROVIDER"] = llm["provider"]
-        env["EVAL_LLM_SAMPLING"] = gateway_sampling(declared, side)
         env["EVAL_LLM_GENERATION_PATH"] = config.llm_gateway["generation_path"]
         env["EVAL_LLM_VERIFY_ATTEMPTS"] = str(config.llm_gateway["verify_attempts"])
         env["EVAL_LLM_VERIFY_INTERVAL"] = f"{config.llm_gateway['verify_interval_seconds']}s"

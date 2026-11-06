@@ -55,6 +55,9 @@ MAX_SETTLE_SECONDS = 3600
 # temperature·seed 외 샘플링 고정값. 엔진은 샘플링을 보내지 않아 평가 LLM 게이트웨이가 요청마다 넣는다(평가 프로토콜 §6).
 # 범위는 게이트웨이(cmd/eval-meter sampling.go)와 같다(drift 테스트).
 SAMPLING_FIELDS = ("top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty")
+# local은 로컬 서버의 OpenAI 호환 경로가 실제로 적용하는 값만 받는다. top_k·min_p·repetition_penalty는
+# 그 경로가 오류 없이 무시하므로 적으면 적용되지 않은 값을 기록하게 된다(profiles/evidence/ollama-openai-sampling).
+LOCAL_SAMPLING_FIELDS = ("top_p", "presence_penalty", "frequency_penalty")
 MAX_TOP_K = 1000
 MAX_PENALTY = 2
 # 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
@@ -352,6 +355,19 @@ def _bounded(value: object, path: str, low: int, high: int, *, low_open: bool) -
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+def _local_sampling(raw: object) -> dict:
+    """local의 temperature·seed 외 세 값. 사전검사와 같은 정의다."""
+    if not isinstance(raw, dict) or set(raw) != set(LOCAL_SAMPLING_FIELDS):
+        _fail("environment.sampling", "INVALID_SAMPLING")
+    return {
+        "top_p": _bounded(raw["top_p"], "environment.sampling.top_p", 0, 1, low_open=True),
+        "presence_penalty": _bounded(raw["presence_penalty"], "environment.sampling.presence_penalty",
+                                     -MAX_PENALTY, MAX_PENALTY, low_open=False),
+        "frequency_penalty": _bounded(raw["frequency_penalty"], "environment.sampling.frequency_penalty",
+                                      -MAX_PENALTY, MAX_PENALTY, low_open=False),
+    }
+
+
 def _sampling(raw: object) -> dict:
     """temperature·seed 외 다섯 값. 하나라도 빠지면 제공자 기본값으로 조용히 돌아가므로 정확히 다섯 키를 요구한다."""
     if not isinstance(raw, dict) or set(raw) != set(SAMPLING_FIELDS):
@@ -387,7 +403,8 @@ def _environment(raw: object) -> dict:
         # API 고정 조건(모델·제공자·fallback)과 로컬 고정 IP가 모두 환경 지문에 들어간다.
         "llm": dict(raw["llm"]),
         "temperature": _number(raw["temperature"], "environment.temperature", positive=False),
-        "sampling": _sampling(raw["sampling"]),
+        "sampling": (_local_sampling(raw["sampling"]) if raw["llm"]["backend"] == "local"
+                     else _sampling(raw["sampling"])),
         "seed": _integer(raw["seed"], "environment.seed", zero=True),
         "target_image": _reference(raw["target_image"], "environment.target_image", image=True),
         "worker_count": _integer(raw["worker_count"], "environment.worker_count"),

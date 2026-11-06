@@ -28,7 +28,7 @@ from runner_engine import task_request
 from runner_window import WatchSample
 from runner_docker import DockerError
 from runner_probe import PASS, ProbeOutcome
-from test_preflight import configuration
+from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 from test_runner_checks import DAEMON, raw_world
 from test_runner_config import _yaml_without_comments, runner_config
 from test_runner_llm import generation as llm_generation
@@ -1257,6 +1257,20 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         for name in ("OPENAI_API_KEY}", "ANTHROPIC_API_KEY", "${OPENAI_API_KEY"):
             self.assertEqual(self.services_referencing(name), set())
         self.assertEqual(self.services_referencing("EVAL_LLM_EVIDENCE_DIR"), {"eval-llm-gw"})
+
+    def test_spec_expects_the_declared_sampling_for_each_backend(self):
+        api_declared = configuration()
+        config = parse_runner_config(runner_config())
+        spec = build_spec(config, plan_run(config, api_declared, "ours", "ours-1"), api_declared, "t" * 64, "c", 0)
+        self.assertEqual(spec.llm_sampling, {"temperature": api_declared["ours"]["temperature"],
+                                             **api_declared["ours"]["sampling"], "seed": api_declared["ours"]["seed"]})
+        local_declared = configuration()
+        for side in ("baseline", "ours"):
+            local_declared[side]["llm"] = local_llm()
+            local_declared[side]["sampling"] = dict(LOCAL_SAMPLING)
+        spec = build_spec(config, plan_run(config, local_declared, "ours", "ours-1"), local_declared, "t" * 64, "c", 0)
+        self.assertEqual(spec.llm_sampling, {"temperature": local_declared["ours"]["temperature"],
+                                             **LOCAL_SAMPLING, "seed": local_declared["ours"]["seed"]})
 
     def test_scoreboard_passes_the_configured_observer_format(self):
         for observer_format, opaque in (("challenge_scoreboard", False), ("opaque", True)):
