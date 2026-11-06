@@ -385,8 +385,8 @@ class TestDockerStateRead(unittest.TestCase):
         executor = Exec(CommandResult(0, b"{}"))
         output = Docker(executor, {}, 1).state_read(IMAGE, CID, b"plan", 1000, 1001)
         self.assertEqual(output, b"{}")
-        self.assertEqual(executor.calls, [["run", "--rm", "-i", "--pull", "never", "--network", f"container:{CID}",
-                                           "--read-only", "--cap-drop", "ALL", "--security-opt",
+        self.assertEqual(executor.calls, [["run", "--rm", "-i", "--pull", "never", "--log-driver", "none",
+                                           "--network", f"container:{CID}", "--read-only", "--cap-drop", "ALL", "--security-opt",
                                            "no-new-privileges:true", "--user", "1000:1001", "--", IMAGE,
                                            "-role=state-read"]])
 
