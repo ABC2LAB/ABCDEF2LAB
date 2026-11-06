@@ -63,6 +63,10 @@ type ControlledReadFindingPlan struct {
 	Candidate idor.Candidate
 	KG        idor.PolicyResolver
 	Source    e3record.SourceReader
+	// Acquired after the completion/state claim and held across the entire
+	// revision Source A/descriptor/Issue/Source B, Prepare and save result.
+	FinalizationScope        ControlledReadFinalizationScopeProvider `json:"-"`
+	RequireFinalizationScope bool                                    `json:"-"`
 }
 
 type ControlledReadFindingResolver func(context.Context, ControlledReadVerificationRequest) (ControlledReadFindingPlan, error)
@@ -99,6 +103,9 @@ func (s *Server) configureControlledReadFindings(resolve ControlledReadFindingRe
 }
 
 func newControlledFindingCollector(pg *db.DB, markers db.TaskModeMarkerReader, request ControlledReadVerificationRequest, plan ControlledReadFindingPlan) (*controlledFindingCollector, error) {
+	if plan.RequireFinalizationScope && nilFinalizationValue(plan.FinalizationScope) {
+		return nil, ErrControlledFindingUnavailable
+	}
 	if pg == nil || markers == nil || plan.Source == nil || plan.KG == nil ||
 		request.TaskID <= 0 || request.IntentID <= 0 ||
 		plan.Expected.Scope != request.Scope || plan.Expected.IntentID != request.IntentID ||
@@ -271,10 +278,20 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 		c.saved = err == nil
 		c.mu.Unlock()
 	}()
+	// No collector mutex or database lock is held while acquiring, checking,
+	// or releasing the independently supplied host authority.
+	ctx, checkScope, releaseScope, scopeErr := c.acquireFinalizationScope(ctx)
+	if scopeErr != nil {
+		return controlledFindingSourceFailure{}
+	}
+	defer releaseScope()
 	// The independent metadata reader supplies genuine KG/fixture/identity and
 	// protected audit truth. The private collector supplies only what E2 observed.
 	var revisionErr error
 	reader := func(ctx context.Context, expected evidencebind.Context) (e3record.Source, error) {
+		if checkScope() != nil {
+			return e3record.Source{}, ErrControlledFindingUnavailable
+		}
 		var source e3record.Source
 		var err error
 		if c.revisions != nil {
@@ -286,7 +303,7 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 		} else {
 			source, err = c.plan.Source(ctx, expected)
 		}
-		if err != nil || source.FinalCheckpointDigest != checkpointDigest ||
+		if err != nil || checkScope() != nil || source.FinalCheckpointDigest != checkpointDigest ||
 			source.FinalCheckpointScope != evidence.FinalCheckpoint.Scope ||
 			source.FinalCheckpointSequence != evidence.FinalCheckpoint.Sequence ||
 			source.EvidenceDigest != ([sha256.Size]byte{}) && source.EvidenceDigest != digest ||
@@ -316,7 +333,7 @@ func (c *controlledFindingCollector) finalize(ctx context.Context, evidence Cont
 	}
 	c.prepared, c.operation, c.inputKey = true, snapshot.OperationKey, snapshot.InputDigest
 	c.mu.Unlock()
-	if c.save == nil {
+	if c.save == nil || checkScope() != nil {
 		return ErrControlledFindingUnavailable
 	}
 	if _, err := c.save(ctx, prepared, c.markers); err != nil {
