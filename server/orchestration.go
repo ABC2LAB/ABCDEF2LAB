@@ -549,8 +549,8 @@ func (s *Server) refreshBuiltinToolSchemas() {
 
 // refreshHanToolDescriptions 는 기존 DB에 남은 중국어 도구 설명을 코드 기본값으로 올린다. SeedTool 은
 // 처음 넣을 때만 쓰고 모델은 DB 행의 설명을 받으므로, 그대로 두면 기존 설치만 중국어 설명을 계속 읽는다.
-// 도구 행에는 버전 기록이 없어서, 설명이나 스키마에 한자가 있는 시스템 도구만 바꾸고 운영자가 다른
-// 언어로 고친 행은 그대로 둔다. 바인딩과 활성 여부는 RefreshToolDefaults 가 유지한다. 전부 성공해야
+// 도구 행에는 버전 기록이 없어서, 설명과 스키마를 칸별로 옛 기본값과 대조한다.
+// 사용자 편집·바인딩·활성 여부를 보존하며 전부 성공해야
 // 플래그를 세워 일시적인 오류는 다음 기동 때 다시 시도한다.
 func (s *Server) refreshHanToolDescriptions() {
 	const flag = "tool_descriptions_english_v1"
@@ -595,14 +595,27 @@ func (s *Server) refreshHanTool(key, desc string, inputSchema any) error {
 	if err != nil {
 		return err
 	}
-	if row == nil || !row.System || (!containsHan(row.Description) && !containsHan(string(row.Schema))) {
+	if row == nil || !row.System {
 		return nil
 	}
 	schema, err := json.Marshal(inputSchema)
 	if err != nil {
 		return err
 	}
-	if err := s.m.pg.RefreshToolDefaults(key, desc, schema); err != nil {
+	legacy, ok := legacyToolHashes[key]
+	if !ok {
+		return nil
+	}
+	schemaHash, err := legacySchemaHash(row.Schema)
+	if err != nil {
+		return err
+	}
+	refreshDesc := isLegacyToolDescription(key, row.Description)
+	refreshSchema := schemaHash == legacy.Schema
+	if !refreshDesc && !refreshSchema {
+		return nil
+	}
+	if err := s.m.pg.RefreshToolLanguageDefaults(key, row.Description, row.Schema, desc, schema, refreshDesc, refreshSchema); err != nil {
 		return err
 	}
 	log.Printf("[tools] %s 설명을 현재 기본값으로 갱신", key)
