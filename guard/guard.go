@@ -136,9 +136,10 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 
 // 대상의 방어로 오인하지 않도록 플랫폼의 실행 금지임을 모델에 명시한다.
 // 감사·승인 기록에는 표시용 원문을 남기고 tool_result에만 이 문구를 붙인다.
+// 사유의 문장부호를 바꾸지 않고 플랫폼 지시를 별도 줄로 구분한다.
 func systemBlockMessage(reason string) string {
 	return "[ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE] This call was blocked by the platform. " +
-		"Reason: " + reason + " This operation is prohibited."
+		"Reason: " + reason + "\nThis operation is prohibited."
 }
 
 var reBlocked = regexp.MustCompile(`(?i)\b(403|forbidden|waf|blocked|rate.?limit|429|captcha|denied)\b`)
