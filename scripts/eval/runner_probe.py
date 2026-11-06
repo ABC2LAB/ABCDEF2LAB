@@ -24,7 +24,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from runner_config import (
-    E2_NONE, E2_STUB, ENGINE_SERVICE, LLM_GW_SERVICE, METER_SERVICE, METER_UPSTREAM_ALIAS, OBS_SERVICE, TARGET_SERVICE,
+    E2_NONE, E2_PRODUCT, E2_STUB, ENGINE_SERVICE, LLM_GW_SERVICE, METER_SERVICE, METER_UPSTREAM_ALIAS, OBS_SERVICE, TARGET_SERVICE,
     RunPlan,
 )
 from runner_docker import Docker, DockerError
@@ -139,10 +139,11 @@ def probe_expectations(plan: RunPlan, snapshot: dict) -> tuple[PathExpectation, 
     else:
         raise ProbeSetupError("llm_backend_unsupported")
     gateway_port = int(plan.compose_env["EVAL_LLM_GW_PORT"])
-    if plan.e2_mode not in (E2_NONE, E2_STUB):
+    if plan.e2_mode not in (E2_NONE, E2_STUB, E2_PRODUCT):
         raise ProbeSetupError("e2_mode_unsupported")
     # 엔진이 대상에 보내는 이름(계측기 이름)은 같다. E²가 있으면 그 이름을 E²가 받는다(양성 대조).
-    front_id = "e2_front_tcp" if plan.e2_mode == E2_STUB else "meter_tcp"
+    # 제품 E²의 망 배치는 가짜 E²와 같아서 부정 연결 기대값도 같다.
+    front_id = "meter_tcp" if plan.e2_mode == E2_NONE else "e2_front_tcp"
     rows = [
         PathExpectation(front_id, TCP, _hostport(METER_SERVICE, plan.meter_port), POSITIVE, _CONNECTED),
         PathExpectation("llm_gateway_tcp", TCP, _hostport(LLM_GW_SERVICE, gateway_port), POSITIVE, _CONNECTED),
@@ -161,7 +162,7 @@ def probe_expectations(plan: RunPlan, snapshot: dict) -> tuple[PathExpectation, 
     for service in (TARGET_SERVICE, OBS_SERVICE):
         for name in _dns_names(snapshot, service):
             rows.append(PathExpectation(f"dns:{name}", DNS, name, NEGATIVE, _NO_NAME))
-    if plan.e2_mode == E2_STUB:
+    if plan.e2_mode != E2_NONE:
         # E²를 건너뛰고 실제 계측기에 닿는 경로가 없어야 한다(엔진 → 계측기 직통 없음, 프로토콜 §2).
         for address in _require(_addresses(snapshot, METER_SERVICE), "meter_address_unknown"):
             rows.append(PathExpectation(f"meter_ip:{_hostport(address, plan.meter_port)}", TCP,

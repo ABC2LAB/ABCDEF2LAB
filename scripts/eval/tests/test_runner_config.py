@@ -425,7 +425,7 @@ class TestE2Mode(unittest.TestCase):
     def test_e2_block_is_required_and_closed(self):
         for payload, code in (
                 ({k: v for k, v in runner_config().items() if k != "e2"}, "config.e2: MISSING"),
-                (runner_config() | {"e2": {"ours_mode": "product"}}, "config.e2.ours_mode: UNSUPPORTED"),
+                (runner_config() | {"e2": {"ours_mode": "other"}}, "config.e2.ours_mode: UNSUPPORTED"),
                 (runner_config() | {"e2": {"ours_mode": ""}}, "config.e2.ours_mode: UNSUPPORTED"),
                 (runner_config() | {"e2": {}}, "config.e2.ours_mode: MISSING"),
                 (runner_config() | {"e2": {"ours_mode": "stub", "port": 1}}, "config.e2: UNKNOWN_FIELDS"),
@@ -458,6 +458,83 @@ class TestE2Mode(unittest.TestCase):
         # E²는 따로 둔 증거 디렉터리에만 쓴다. 계측기 증거(meter/) 경로를 마운트하지 않는다.
         self.assertIn("- ${EVAL_E2_EVIDENCE_DIR:?}:/evidence", text)
         self.assertNotIn("EVAL_EVIDENCE_DIR", text)
+
+
+E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:test", "id": "sha256:" + "e" * 64}, "policy_path": "/srv/eval/e2-policy.json",
+                    "policy_fingerprint_sha256": "f" * 64, "header_mode": "evaluation_caller_passthrough", "ready_timeout_seconds": 30,
+                    "close_ack_timeout_seconds": 5, "close_timeout_seconds": 30, "poll_seconds": 1, "exchange_timeout_seconds": 5,
+                    "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30}
+
+
+class TestE2Product(unittest.TestCase):
+    def reject(self, block, code):
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(runner_config() | {"e2": block})
+        self.assertIn(code, caught.exception.errors)
+
+    def test_block_is_parsed_with_its_image(self):
+        config = parse_runner_config(runner_config() | {"e2": dict(E2_PRODUCT_BLOCK)})
+        self.assertEqual((config.e2_ours_mode, config.e2_product["image"].ref, config.e2_product["close_timeout_seconds"]),
+                         ("product", "abc2lab-eval-e2:test", 30))
+        self.assertIsNone(parse_runner_config(runner_config()).e2_product)
+
+    def test_fields_are_closed_and_only_for_product(self):
+        self.reject({"ours_mode": "none", "image": {}}, "config.e2: UNKNOWN_FIELDS")
+        self.reject({"ours_mode": "stub", "header_mode": "preserve"}, "config.e2: UNKNOWN_FIELDS")
+        self.reject(E2_PRODUCT_BLOCK | {"extra": 1}, "config.e2: UNKNOWN_FIELDS")
+        for name in E2_PRODUCT_BLOCK:
+            if name == "ours_mode":
+                continue
+            with self.subTest(name=name):
+                self.reject({key: value for key, value in E2_PRODUCT_BLOCK.items() if key != name}, f"config.e2.{name}: MISSING")
+
+    def test_bad_values(self):
+        for changes, code in (({"image": {"ref": "x", "id": "bad"}}, "config.e2.image.id: INVALID"), ({"policy_path": "relative.json"}, "config.e2.policy_path: EXPECTED_ABSOLUTE_PATH"),
+                              ({"verify_tool": "e2-audit-verify"}, "config.e2.verify_tool: EXPECTED_ABSOLUTE_PATH"),
+                              ({"policy_fingerprint_sha256": "x"}, "config.e2.policy_fingerprint_sha256: INVALID"), ({"policy_fingerprint_sha256": 7}, "config.e2.policy_fingerprint_sha256: INVALID"),
+                              ({"header_mode": "other"}, "config.e2.header_mode: UNSUPPORTED"), ({"header_mode": []}, "config.e2.header_mode: UNSUPPORTED"),
+                              ({"ready_timeout_seconds": 0}, "config.e2.ready_timeout_seconds: INVALID"), ({"close_ack_timeout_seconds": True}, "config.e2.close_ack_timeout_seconds: INVALID"),
+                              ({"close_timeout_seconds": "5"}, "config.e2.close_timeout_seconds: INVALID"), ({"poll_seconds": -1}, "config.e2.poll_seconds: INVALID"),
+                              ({"exchange_timeout_seconds": 0}, "config.e2.exchange_timeout_seconds: INVALID"), ({"verify_timeout_seconds": 0}, "config.e2.verify_timeout_seconds: INVALID")):
+            with self.subTest(changes=changes):
+                self.reject(E2_PRODUCT_BLOCK | changes, code)
+
+    def test_overlay_and_image_join_the_ours_plan_only(self):
+        config = parse_runner_config(runner_config() | {"e2": dict(E2_PRODUCT_BLOCK)})
+        ours = plan_run(config, configuration(), "ours", "ours-1")
+        baseline = plan_run(config, configuration(), "baseline", "baseline-1")
+        self.assertEqual((ours.e2_mode, ours.compose_files[-1]), ("product", COMPOSE_E2_PRODUCT))
+        self.assertEqual((ours.compose_env["EVAL_E2_IMAGE"], ours.images["e2"].id), ("abc2lab-eval-e2:test", "sha256:" + "e" * 64))
+        self.assertEqual(baseline.e2_mode, "none")
+        self.assertNotIn(COMPOSE_E2_PRODUCT, baseline.compose_files)
+        self.assertNotIn("EVAL_E2_IMAGE", baseline.compose_env)
+        self.assertNotIn("e2", baseline.images)
+
+    def test_run_directories_and_environment(self):
+        config = parse_runner_config(runner_config() | {"e2": dict(E2_PRODUCT_BLOCK)})
+        plan = plan_run(config, configuration(), "ours", "ours-1")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "runs"
+            root.mkdir(mode=0o700)
+            directory = create_run_directory(root, "ours-1", "product")
+            for path in (directory.e2, directory.e2_config, directory.e2_control, directory.e2_copy):
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o700, path)
+            env = compose_environment(plan, directory)
+            self.assertEqual((env["EVAL_E2_CONFIG_DIR"], env["EVAL_E2_CONTROL_DIR"], env["EVAL_E2_EVIDENCE_DIR"]),
+                             (str(directory.e2_config), str(directory.e2_control), str(directory.e2)))
+            # 수집 사본은 E²에 mount하지 않는다.
+            self.assertNotIn(str(directory.e2_copy), env.values())
+            other = create_run_directory(root, "ours-2")
+            self.assertFalse(other.e2_config.exists())
+
+    def test_overlay_variables_are_all_supplied(self):
+        config = parse_runner_config(runner_config() | {"e2": dict(E2_PRODUCT_BLOCK)})
+        plan = plan_run(config, configuration(), "ours", "ours-1")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "runs"
+            root.mkdir(mode=0o700)
+            env = compose_environment(plan, create_run_directory(root, "ours-1", "product"))
+        self.assertLessEqual(compose_variables([COMPOSE_E2_PRODUCT]), set(env))
 
 
 class TestPlanRun(unittest.TestCase):
