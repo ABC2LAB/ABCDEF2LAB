@@ -13,8 +13,8 @@
 ## carrier 적격 기준 (전부 충족해야 함)
 | # | 기준 | 근거 |
 |---|---|---|
-| C1 | 등록 조회 응답에 **E² `JSONViewRule.DataPath` 직속 문자열 필드**가 있다(중첩 아님) | transmit `JSONViewRule`·`idor.Marker.Field` |
-| C2 | 그 필드에 **무작위 비자명 sentinel**을 넣을 수 있다(`Trivial=false`) | kg-policy §3.1 |
+| C1 | 등록 조회 **정상 응답**이 모양을 만족: `StatusPath`가 **문자열**이고 그 값 = `NormalValue` + `DataPath`가 **비어있지 않은 JSON 객체** + 표식 넣을 **직속 문자열 필드**가 그 객체에 있음(중첩·배열 아님) | transmit `projection.go`(`status==NormalValue`·`DataPath`=map·직속 string) |
+| C2 | 심은 **무작위 비자명 sentinel**(`Trivial=false`)이 조회 응답의 그 필드에 **전체 값이 정확히 그대로** 돌아온다 — 감싸기·이스케이프·절단·부분 포함은 **불일치**(owner 자기조회로 verbatim 확인, 교차 아님) | kg-policy §3.1 · projection.go `field == marker.Value` |
 | C3 | sentinel이 **요청에서 반사되지 않는다**(저장된 A 데이터라서만 응답에 뜸) | idor-verifier-seam anti-reflection |
 | C4 | 자원이 **앱 인가모델상 계정별 사적**(owner A 소유, 교차 조회 **기대=deny**)이고, **id로 지정하는 조회 경로**가 있어 엔진이 교차 GET을 **시도**할 수 있다. 교차 GET이 실제 성공하는지(=취약 여부)는 **측정 항목이 아니다**(그게 1단계 판정 결과) — 그 결과로 후보를 거르지 않는다 | §1 수평·읽기 · 절대규칙 7 |
 | C5 | sentinel을 **조회경로와 분리된 준비 쓰기**로 심을 수 있다(가능하면 정상 앱 쓰기, DB 해킹 아님) | 절대규칙 6·§9 step3 |
