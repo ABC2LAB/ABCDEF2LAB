@@ -11,8 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from attempt_reconcile import (  # noqa: E402
     ALLOWED_DECISIONS, CELLS, DENIED_DECISIONS, ReconcileError, reconcile,
+    NO_RESPONSE, RESPONDED,
 )
-from runner_evidence import ATTEMPT_STATES, E2_STUB_DECISIONS  # noqa: E402
+from runner_evidence import ATTEMPT_STATES, E2_STUB_DECISIONS, ENGINE_RESPONSE  # noqa: E402
 
 A, B, C, D = ("a" * 32, "b" * 32, "c" * 32, "d" * 32)
 
@@ -21,9 +22,9 @@ def decision(attempt, kind="allowed"):
     return {"decision": kind, "attempt_id": attempt}
 
 
-def seen(attempt=None, state=None):
+def seen(attempt=None, state=None, response="complete"):
     state = state or ("valid" if attempt else "absent")
-    return {"attempt_id_state": state, "attempt_id": attempt or ""}
+    return {"attempt_id_state": state, "attempt_id": attempt or "", "response": response}
 
 
 class TestCells(unittest.TestCase):
@@ -59,6 +60,48 @@ class TestCells(unittest.TestCase):
     def test_reuse_is_counted_once_per_extra_receipt(self):
         result = reconcile([decision(A), decision(B)], [seen(A), seen(A), seen(A), seen(B)])
         self.assertEqual((result["meter_attempt_reused"], result["cells"]["allowed_observed"]), (2, 2))
+
+    def test_positive_evidence_needs_a_target_response_not_just_receipt(self):
+        # seal 뒤 거부·계측기 자체 502는 대상에 안 닿았다. 접수만으로 통제를 주장하지 않는다(§8.3, NE11)
+        result = reconcile([decision(A)], [seen(A, response="none")])
+        self.assertEqual(result["cells"]["allowed_observed"], 1)
+        self.assertEqual(result["allowed_responded"], 0)
+        self.assertFalse(result["positive_evidence"])
+        self.assertTrue(result["control_claim_withheld"])
+
+    def test_any_target_response_counts_once_per_attempt(self):
+        for response in ("headers", "complete", "interrupted"):
+            with self.subTest(response=response):
+                result = reconcile([decision(A)], [seen(A, response=response)])
+                self.assertEqual(result["allowed_responded"], 1)
+                self.assertTrue(result["positive_evidence"])
+                self.assertFalse(result["control_claim_withheld"])
+        repeated = reconcile([decision(A)], [seen(A), seen(A)])
+        self.assertEqual((repeated["allowed_responded"], repeated["meter_attempt_reused"]), (1, 1))
+
+    def test_only_allowed_attempts_are_positive_evidence(self):
+        blocked = reconcile([decision(A, "unsupported")], [seen(A)])
+        self.assertEqual(blocked["allowed_responded"], 0)
+        self.assertFalse(blocked["positive_evidence"])
+        unknown = reconcile([decision(A)], [seen(A, response="none"), seen(B)])
+        self.assertEqual(unknown["allowed_responded"], 0)
+        self.assertFalse(unknown["positive_evidence"])
+
+    def test_mixed_run_counts_only_responded_attempts(self):
+        result = reconcile([decision(A), decision(B)], [seen(A), seen(B, response="none")])
+        self.assertEqual((result["cells"]["allowed_observed"], result["allowed_responded"]), (2, 1))
+        self.assertTrue(result["positive_evidence"])
+
+    def test_unknown_response_value_is_refused(self):
+        for row in (seen(A, response="later"), {"attempt_id_state": "valid", "attempt_id": A}):
+            with self.subTest(row=row), self.assertRaisesRegex(ReconcileError, "response_unknown"):
+                reconcile([decision(A)], [row])
+        # 시도 ID를 특정 못 한 행은 응답을 보지 않고 기록 없음으로 센다
+        self.assertEqual(reconcile([decision(A)], [seen(A), {"attempt_id_state": "absent", "attempt_id": ""}])["cells"][
+            "unrecorded_observed"], 1)
+
+    def test_response_values_match_the_meter_vocabulary(self):
+        self.assertEqual(RESPONDED | {NO_RESPONSE}, ENGINE_RESPONSE)
 
     def test_all_blocked_is_not_positive_evidence_and_holds_the_claim(self):
         result = reconcile([decision(A, "unsupported"), decision("", "unavailable")], [])

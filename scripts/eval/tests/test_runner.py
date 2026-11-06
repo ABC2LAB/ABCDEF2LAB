@@ -117,9 +117,10 @@ class FakeMeter:
         def attempt(i):
             return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
                     else {"attempt_id_state": "absent", "attempt_id": ""})
-        return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", **attempt(i)} for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 1)},
-                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 2)}]
+        return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", "response": "complete", **attempt(i)}
+                for i in range(1, n + 1)] + \
+               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none", **attempt(n + 1)},
+                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none", **attempt(n + 2)}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
