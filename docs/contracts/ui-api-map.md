@@ -43,7 +43,7 @@
 | coverage | `lib/coverage.ts` `getCoverage(taskId)` | `CoverageData` | 커버리지 집계 API(검사계획+시도상태) | 보고서 "커버리지" 탭 → "전체 … 열기" |
 
 - **표현/데이터 분리**: `FindingDetail`·`FindingUndDetail`·`CoveragePanel`(presentational, record/data prop) ↔ 화면 wrapper(fetch). 레이아웃 재배치는 presentational만.
-- **fail-closed 규칙은 lib에**: `buildCellResolver`(kg)·`decisionClass`/`displayVerdict`/`dataAccessProven`/`displayComparisonRow`(finding)·`heldBeforeSend`/`notTransmitted`/`allEvidenceUnknown`(finding-und)·`coverageIssues`(coverage). getter 교체해도 이 규칙은 그대로 적용.
+- **fail-closed 규칙은 lib에**: `buildCellResolver`(kg)·`decisionClass`(e2flow)·`displayVerdict`/`dataAccessProven`/`displayComparisonRow`(finding)·`heldBeforeSend`/`notTransmitted`/`allEvidenceUnknown`(finding-und)·`coverageIssues`(coverage). getter 교체해도 이 규칙은 그대로 적용.
 - 교체 시 체크: 실 응답을 **목업 shape(타입)에 맞춰 매핑**하고, 마스킹(canary 값·raw URL·토큰 금지)·scope 결속(task/run/reset·policy_version)을 서버가 보장. 불일치는 fail-closed(unknown/경고)로 떨어지게 둔다.
 
 ## 데이터 모양 변환 (배선 시 주의)
