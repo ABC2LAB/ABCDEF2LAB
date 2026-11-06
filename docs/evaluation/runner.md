@@ -121,7 +121,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   pre-probe.cid    post-probe.cid     docker --cidfile이 쓴 probe 컨테이너 ID(구간 감시 허용 목록)
   meter-summary.json  llm-summary.json
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
-  engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장·전체 규칙 해시, 적용 도구 목록(규칙 본문 없음)
+  engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장 통제를 앞지를 수 있는 파일 allow 수, 내장·전체 규칙 해시, 적용 전후 도구 목록(규칙 본문 없음)
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 그 SHA-256은 서명 근거 `run_conditions`에
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
@@ -188,7 +188,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `project_exists` | 같은 project가 이미 있음(이 러너 것이 아니므로 up·down 모두 안 함) |
 | `project_check_failed`, `image_id_failed`, `image_id_mismatch` | 사전 조회 실패, 로컬 이미지가 설정의 내용 ID와 다름 |
 | `host_spec_failed` | 머신 사양을 읽지 못함(`/proc/cpuinfo` 모델명·`/proc/meminfo` MemTotal·`/etc/machine-id`·Docker 버전) |
-| `engine_rules_failed` | 원본 ② 규칙 등록 실패(엔진이 거부, 정규식 오류 포함), 내장 규칙과 이름 충돌, 또는 다시 읽은 규칙·도구 목록이 파일과 다름. 작업을 시작하지 않는다 |
+| `engine_rules_failed` | 원본 ② 규칙 등록 실패(엔진이 거부, 정규식 오류 포함), 내장 규칙과 이름 충돌, 규칙을 타는 도구를 줄이는 파일, 또는 다시 읽은 규칙·도구 목록이 파일과 다름. 작업을 시작하지 않는다 |
 | `engine_settings_failed`, `engine_settings_mismatch` | 실행 설정 조회 실패·형식 오류, 또는 workers가 선언 `worker_count`와 다름·엔진 LLM 모델이 선언과 다름·프록시가 설정됨(송신 경로가 계측기·게이트웨이 밖으로 바뀜) |
 | `compose_up_failed` | 기동 실패(down은 실행) |
 | `{pre,post}_facts_failed`, `{pre,post}_host_listeners_failed` | docker·/proc 사실 수집 실패 |
@@ -251,7 +251,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 - **상태 차이(11/05, 설정 `state` 켬, baseline e53a79f):** 완료·서명. 구간 이벤트 148건 중 pause/unpause 0건(pre 사본은 구간 전 lookback, post 사본은 이벤트 스트림을 닫은 뒤), 경계 위반 0, `state/pre`·`state/post` 빈 디렉터리, `state-diff.json`이 서명 결과 근거 목록에 있음. 가짜 LLM이라 차이 0(테이블 18, 신호 `Challenges` 102→102).
 - **상태 차이 세 갈래(11/06, 설정 `state`에 런타임 루트 3개·메모리 경로 5개, baseline e53a79f):** 완료·서명, 경계 위반 0. 구간 이벤트 71건 중 외부 부착 0·회차 컨테이너 재시작 0(1회용 읽기 컨테이너는 구간 전 lookback과 이벤트 스트림을 닫은 뒤에만 돈다). `state/pre`·`state/post` 파일 0개, 회차 디렉터리 전체에 메모리 경로 문자열 0건. 가짜 LLM이라 차이 0(읽기 5, 건수 4→4). 변화 감지는 1회용 Juice Shop에서 같은 코드로 따로 봤다: 같은 상태끼리 차이 0, 리뷰 1건 쓴 뒤 `changed 1`·건수 2→3.
-- **원본 ② 규칙 주입(11/06, baseline e53a79f):** 합성 규칙 2개를 넣은 회차가 완료·서명됐다(내장 20개 중 19개 켜짐, 다시 읽기 대조 통과, 외부 부착 0·재시작 0). 규칙이 없는 회차는 규칙 API를 부르지 않았고, 엔진이 거부하는 정규식은 작업 생성 전에 무효(`engine_rules_failed`)가 됐다. 가짜 LLM이라 규칙이 실제 도구 호출을 막는지는 못 봤다.
+- **원본 ② 규칙 주입(11/06, baseline e53a79f):** 합성 규칙 2개와 기본 목록 + 도구 1개를 넣은 회차가 완료·서명됐다(내장 20개 중 19개 켜짐, 다시 읽기 대조 통과, 앞지르는 allow 1 기록). 규칙이 없는 회차는 규칙 API를 부르지 않았고, 도구를 줄인 파일과 엔진이 거부하는 정규식은 작업 생성 전에 무효(`engine_rules_failed`)가 됐다. 가짜 LLM이라 규칙이 실제 도구 호출을 막는지는 못 봤다.
 - **시연 A 표(11/06, `control_demo.py`):** 실제 러너 회차 2개(조건 이름만 다름, 가짜 LLM)로 표를 만들었다. 서명·근거 해시 통과, 격리 증명 없는 회차 0, 전달 0이라 메서드 칸이 모두 0이고 E² 없는 회차의 거부 칸은 `—`다. 메서드별 건수는 실제 계측기 로그로 따로 봤다(loopback 임시 서버로 10건 전달, `get`·임의 토큰은 그 밖의 메서드로 2건, 토큰 문자열 미출력).
 - **완료 회차 1회(서명됨):** pre/post 망·publish·이미지·호스트 조건 위반 0, 부정 연결 13개 경로 모두 기대 종류, 관측 요청 3건 =
   러너 호출 수, 작업 생성(요청 본문 해시 기록), 시간 예산 종료, LLM 게이트웨이 2건 전달·seal 뒤 거부 0, findings 0건, 정리 후
