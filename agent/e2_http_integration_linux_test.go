@@ -77,7 +77,10 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 				idsMu.Unlock()
 				w.Header().Set("Content-Type", "text/plain")
 				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("owned target response; credential=" + credential))
+				// Credential echoes are withheld as Unknown by the protected proposal.
+				// This success path uses a nonsecret response; core and agent tests
+				// separately cover echo withholding and model-output redaction.
+				_, _ = w.Write([]byte("owned target response"))
 			})
 			var target *httptest.Server
 			var roots *x509.CertPool
