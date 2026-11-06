@@ -38,7 +38,7 @@ import (
 
 func runnerTestDirectory(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "e2r-test-")
+	dir, err := os.MkdirTemp("", "e2r-test-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,11 +148,12 @@ func newRunnerFixture(t *testing.T, base, helper, target string, roots *x509.Cer
 	}
 	scope := transmit.Scope{TaskRef: grantKey.TaskRef, RunRef: "run_runner", CaseRef: "case_runner", ResetRef: binding.ResetRef, PolicyRef: binding.PolicyRef}
 	execution, err := e2proxy.NewExecution(t.Context(), e2proxy.Config{
-		Scope: scope, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision_runner", AccountRef: "account_runner", SessionRef: "session_runner",
+		HeaderMode: e2proxy.HeaderProtectedSessionProposal,
+		Scope:      scope, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision_runner", AccountRef: "account_runner", SessionRef: "session_runner",
 		ExpiresAt: now.Add(time.Minute), RootCAs: roots, Recorder: journal,
 		Rules: []e2proxy.Rule{{Ref: "rule_runner", Origin: u.Scheme + "://" + u.Host,
 			ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed", PathScopeRef: "path_runner",
-			Methods: []string{"GET"}, Headers: http.Header{"Authorization": {"Bearer runner-session-secret"}}}},
+			Methods: []string{"GET"}, CredentialHeaders: http.Header{"Authorization": {"Bearer runner-session-secret"}}}},
 		Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: binding},
 		Limits: e2proxy.Limits{MaxAttempts: 100, MaxCalls: 10, MaxConcurrent: 8, MaxBodyBytes: 8192, RequestTimeout: 3 * time.Second,
 			CallTimeout: 20 * time.Second, MaxDenials: 20, MaxTransient: 20, MaxUnknown: 20},
@@ -184,7 +185,7 @@ func newRunnerFixture(t *testing.T, base, helper, target string, roots *x509.Cer
 func TestRunnerActualHTTPHTTPSAndDenial(t *testing.T) {
 	helperBase := runnerTestDirectory(t)
 	helper := runnerTestHelper(t, helperBase)
-	for _, name := range []string{"http", "https", "policy_denied"} {
+	for _, name := range []string{"http", "https", "policy_denied", "secret_response"} {
 		t.Run(name, func(t *testing.T) {
 			base := runnerTestDirectory(t)
 			var received atomic.Int64
@@ -198,7 +199,11 @@ func TestRunnerActualHTTPHTTPSAndDenial(t *testing.T) {
 				if decodeErr != nil || len(attemptID) != 32 || len(decodedID) != 16 || strings.ToLower(attemptID) != attemptID {
 					t.Error("attempt was not bound")
 				}
-				io.WriteString(w, "target-ok Bearer runner-session-secret")
+				if name == "secret_response" {
+					io.WriteString(w, "target-ok Bearer runner-session-secret")
+					return
+				}
+				io.WriteString(w, "target-ok")
 			}))
 			var roots *x509.CertPool
 			if name == "https" {
@@ -227,11 +232,19 @@ func TestRunnerActualHTTPHTTPSAndDenial(t *testing.T) {
 					result.Trusted.Call.Counts.Denied != 1 || result.Trusted.Call.Counts.ForwardAttempted != 0 {
 					t.Fatal("policy refusal became a target result")
 				}
+			} else if name == "secret_response" {
+				counts := result.Trusted.Call.Counts
+				if received.Load() != 1 || result.Trusted.Classification != "result_unknown" ||
+					counts.Allowed != 1 || counts.ForwardAttempted != 1 || counts.Responses != 1 || counts.Unknown != 1 || counts.Denied != 0 ||
+					strings.Contains(result.ToolOutput, "runner-session-secret") || strings.Contains(result.ToolOutput, "target-ok") ||
+					strings.Contains(result.ToolOutput, "[REDACTED]") {
+					t.Fatal("sensitive response was released, edited into success, or lost its sent/unknown evidence")
+				}
 			} else {
-				if received.Load() != 1 || !strings.Contains(result.ToolOutput, "target-ok") ||
+				if received.Load() != 1 || result.ToolOutput != "target-ok" ||
 					strings.Contains(result.ToolOutput, "runner-session-secret") ||
 					result.Trusted.Call.Counts.Responses != 1 || result.Trusted.Classification != "completed" {
-					t.Fatal("allowed request/response was not delivered and redacted")
+					t.Fatal("allowed request/response was not delivered unchanged")
 				}
 			}
 			entries, err := os.ReadDir(fixture.cfg.RootDir)
