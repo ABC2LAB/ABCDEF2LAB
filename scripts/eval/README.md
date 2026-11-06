@@ -47,6 +47,7 @@ manifest의 회차 항목:
 - `scoreboard.py`, `collect.py`: 정규화·판정 레코드 파싱. 채점은 해시 검증과 같은 바이트의 payload를 사용한다.
 - `score.py`, `aggregate.py`, `evidence.py`: 엔진 공통 판정·집계와 증거 확인.
 - `correlation.py`, `gt_correlation.json`, `ground_truth.py`: 평가 전용 상관·분모. 실제 type vocab 정렬은 후속이다.
+- `scripted_llm.py`·`canary_scan.py`: 스모크 도구. API 키 없이 정해진 명령으로 실제 엔진을 돌리고, 회차 디렉터리에 합성 토큰이 남았는지 본다. 사용법은 `docs/evaluation/runner.md` "스모크 도구".
 - `control_demo.py`: 통제 효과 시연 A 표(프로토콜 §8.1). 조건별 `runs_root` 하나가 열 하나고, 열 이름은 서명된 회차 기록의 조건 이름이다. 서명과 근거 파일 해시를 확인한 뒤 전달 요청의 메서드별 건수, E② 결정별 건수, 상태 차이, 해결 기록을 건수로만 낸다. 재지 않은 값은 `—`다. 막아서 못 한 것과 원본 ②에서 새는 경로는 재지 않으므로 결과 문서에 따로 적는다.
 - 원본 ② 규칙 주입: 러너 설정 `engine_rules`로 켠다. `runner_engine.py`가 파일을 검사하고 회차마다 새 엔진 DB에 넣은 뒤 다시 읽어 대조한다. 형식은 `docs/evaluation/engine-rules.md`.
 - `state_diff.py`: 같은 컨테이너 pre·post SQLite 사본의 상태 차이(프로토콜 §8.2). 회차 키로 HMAC한 행 지문으로 맞대고 건수·정수 id·테이블·열 이름·sqlite_sequence 값만 낸다. `runner_state.py`가 사본을 뜬다(대상 pause → 데몬 `docker cp` → unpause, WAL이면 `-wal` 동반, 쓰기 도중 저널이면 거부, 러너 0700 디렉터리에 0600). 런타임 디렉터리는 tar로 받아 항목별 지문으로 비교하고 건수만 낸다. 메모리 저장은 등록한 비로그인 GET을 계측기 `state-read` 역할로 대상 netns에서 읽어 건수·지문으로 비교한다.
