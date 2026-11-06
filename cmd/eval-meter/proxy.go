@@ -558,6 +558,7 @@ type statusRecorder struct {
 	bytes          int64
 	hijacked       bool
 	upstreamFailed bool
+	writeFailed    bool // 응답을 호출자에게 쓰지 못했다(호출자가 먼저 닫은 경우)
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -573,6 +574,9 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 	}
 	n, err := r.ResponseWriter.Write(p)
 	r.bytes += int64(n)
+	if err != nil {
+		r.writeFailed = true
+	}
 	return n, err
 }
 
