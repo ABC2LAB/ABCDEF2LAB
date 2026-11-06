@@ -34,14 +34,14 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 
 	// full plannerSystem path: DB body [A] is honored, then the code-owned tail
-	// [C] (中间产物输出规约) is ALWAYS appended — editing the body can't drop it.
+	// [C] (the artifact rule) is ALWAYS appended — editing the body can't drop it.
 	h.PromptOverride = func(k string) (string, bool) { return "PLANNER {{.Goal}}", true }
 	ctx = WithRuntimeHooks(ctx, h)
 	got := plannerSystem(ctx, "拿下X", "/data", "/data")
 	if !strings.HasPrefix(got, "PLANNER 拿下X") {
 		t.Fatalf("plannerSystem body not honored: %q", got)
 	}
-	if !strings.Contains(got, "中间产物输出规约") || !strings.Contains(got, "/data") {
+	if !strings.Contains(got, "Rule for intermediate artifacts") || !strings.Contains(got, "/data") {
 		t.Fatalf("plannerSystem missing code-owned artifact tail: %q", got)
 	}
 
@@ -64,7 +64,7 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	if strings.Contains(recording, "traffic_refs") {
 		t.Fatalf("worker bypassed shared optional evidence policy: %q", recording)
 	}
-	if !strings.Contains(recording, "中间产物输出规约") {
+	if !strings.Contains(recording, "Rule for intermediate artifacts") {
 		t.Fatalf("worker missing artifact tail: %q", recording)
 	}
 	// Egress proxy set but capture OFF (no CA): the ProxyAddr template branch still
