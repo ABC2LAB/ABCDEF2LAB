@@ -65,13 +65,14 @@ const (
 )
 
 const (
-	roleEngine   = "engine"
-	roleObserver = "observer"
-	roleProbe    = "probe"
-	roleGateway  = "llm-gateway"
-	roleAPIFront = "api-front"
-	roleStatfs   = "statfs"
-	roleE2Stub   = "e2-stub"
+	roleEngine    = "engine"
+	roleObserver  = "observer"
+	roleProbe     = "probe"
+	roleGateway   = "llm-gateway"
+	roleAPIFront  = "api-front"
+	roleStatfs    = "statfs"
+	roleE2Stub    = "e2-stub"
+	roleStateRead = "state-read"
 )
 
 // Bounds on the gateway's verification so a run cannot wait on it forever.
@@ -140,6 +141,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(stderr, invalidInput)
 		}
 		return runStatfs(stdin, stdout, stderr)
+	case roleStateRead:
+		if *listen != "" || *upstream != "" || *logDir != "" || *allowPath != "" {
+			return fail(stderr, invalidInput)
+		}
+		return runStateRead(stdin, stdout, stderr)
 	case roleAPIFront:
 		engine, ok := parseUpstream(*upstream)
 		if !ok || *listen == "" || *logDir != "" || *allowPath != "" {
