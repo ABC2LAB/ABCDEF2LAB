@@ -30,13 +30,19 @@ row records where it comes from and which rule (if any) is built on it.
 - **`perspective`** — `target` (observable in traffic *toward* a system ARTEX probes) or `forensic`
   (observable *on* a host where ARTEX ran or was relayed through). The defense guide keeps these apart on
   purpose; mixing them produces false conclusions.
-- **`source`** — the repository-relative source file(s) that emit the value, `;`-separated. This is the
+- **`source`** — the repository-relative source file(s) that emit the value, `;`-separated. Historical
+  indicators instead cite a provenance note with the original emitter and commit. This is the
   grounding: if an upstream re-sync changes the emitter, the indicator here must change with it.
 - **`rule`** — the detection rule(s) built on the exact value, `;`-separated, or empty for host-forensic
   indicators that are triaged directly rather than shipped as a (noisy) rule.
 - **`description`** — a one-line note, including the honest caveat where one applies.
 
 ## MISP event export
+
+The current English guard marker is `guard-result-marker`. The historical `guard-audit-marker`
+and its MISP UUID remain unchanged; its [provenance note](legacy_guard_marker.md) pins the old
+emitter. Both markers are detected. Current audit rows store display reasons separately and need
+not contain either marker; a hit does not prove a tool executed or reached a target.
 
 The same indicators ship as a ready-to-import [MISP](https://www.misp-project.org/) event,
 [`artex_indicators.misp.json`](artex_indicators.misp.json), so a defender running a MISP instance (or a

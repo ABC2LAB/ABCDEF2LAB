@@ -29,6 +29,15 @@ import (
 // ErrConfigurationUnavailable never includes stored patterns or DB diagnostics.
 var ErrConfigurationUnavailable = errors.New("통제 규칙 설정을 확인할 수 없어 실행을 차단했습니다")
 
+// 설정 오류는 내부 진단·표시 문구를 모델에 보내지 않고 동일한 거부로 처리한다.
+func ConfigurationUnavailableDecision() Decision {
+	return Decision{
+		Action: "deny", Message: ErrConfigurationUnavailable.Error(),
+		ModelMessage: "The platform control configuration is unavailable; execution is blocked (reason_code=configuration_unavailable).",
+		ReasonCode:   "configuration_unavailable",
+	}
+}
+
 // 사용자에게 노출되는 가로채기 판정·승인 메시지(한국어). judge 판정 결과·규칙 메시지는
 // 승인 기록(reason)·활동 스트림·409 응답으로 표시된다. 판정 프롬프트 본문은 모델이 읽는 영어이고,
 // [模型] 센티넬(decision_source 분류용 · UI 에서
@@ -558,7 +567,7 @@ func judgeActionLabel(action string) string {
 func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	rules, err := i.rules()
 	if err != nil {
-		return Decision{Action: "deny", Message: ErrConfigurationUnavailable.Error()}, true
+		return ConfigurationUnavailableDecision(), true
 	}
 	if len(rules) == 0 {
 		return Decision{}, false
@@ -571,6 +580,11 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 			}
 			configJSON, _ := json.Marshal(r.InterceptRule)
 			modelMessage, reasonCode := db.BuiltinRuleModelMessage(r.InterceptRule)
+			// 운영자가 쓴 메시지는 보존하고 프로그램의 기본 안내만 영어로 분리한다.
+			if r.Message == "" && (r.Action == "deny" || r.Action == "ask") {
+				reasonCode = "rule_" + r.Action
+				modelMessage = "The platform intercept rule returned " + r.Action + " (reason_code=" + reasonCode + ")."
+			}
 			return Decision{
 				RuleName: r.Name, ConfigDigest: digestInput(configJSON),
 				Action:         r.Action,
