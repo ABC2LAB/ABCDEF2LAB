@@ -34,6 +34,7 @@ _HEAD_STATES = frozenset({"no_execution", "running", "closing", "complete", "inc
 _COMMON = frozenset({"format", "type", "eval_run_id", "reservation_ref"})
 _RESPONSE_FIELDS = {
     "ready": frozenset({"state", "reason", "config_sha256", "header_mode", "evaluation", "policy_fingerprint_sha256"}),
+    "bind": frozenset({"reset_generation"}),
     "head": frozenset({"state", "execution_ref", "run_ref", "engine_task_id", "policy_fingerprint_sha256", "checkpoint"}),
     "close": frozenset({"close_request_ref", "execution_ref", "admission_closed"}),
     "close_status": frozenset({"state", "reason", "close_request_ref", "execution_ref", "manifest_sha256", "checkpoint"}),
@@ -251,6 +252,12 @@ class ControlChannel:
         response = self.ask("ready")
         _check_ready(response)
         return response
+
+    def bind(self, reset_generation: str) -> None:
+        """대상 컨테이너 ID를 넘긴다. compose 기동 뒤에야 나오므로 설정 파일에 넣을 수 없다."""
+        response = self.ask("bind", reset_generation=reset_generation)
+        if response["reset_generation"] != reset_generation:
+            _fail("bind_mismatch")
 
     def head(self) -> dict:
         response = self.ask("head")

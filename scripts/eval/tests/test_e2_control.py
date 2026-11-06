@@ -279,6 +279,18 @@ class TestReadyShape(ReplyCase):
                       (ready("failed", policy_fingerprint_sha256=SHA_B), "ready_fields_early")), self.channel().ready)
 
 
+class TestBind(ReplyCase):
+    def test_bind_sends_and_checks_the_value(self):
+        fake = self.serve(line(message("bind", reset_generation="target-1")))
+        self.assertIsNone(self.channel().bind("target-1"))
+        self.assertEqual(fake.requests[0]["reset_generation"], "target-1")
+
+    def test_bad_replies(self):
+        self.replies(((message("bind", reset_generation="other"), "bind_mismatch"), (message("bind"), "response_fields"),
+                      (message("bind", reset_generation="target-1", extra=1), "response_fields"),
+                      (message("error", code="bind_conflict"), "refused_bind_conflict")), lambda: self.channel().bind("target-1"))
+
+
 class TestHeadShape(ReplyCase):
     def test_states(self):
         for reply in (head(), head("closing"), head("complete"), head("incomplete", checkpoint=None), head("no_execution")):
