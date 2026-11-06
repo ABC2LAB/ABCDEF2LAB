@@ -216,7 +216,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
 | `llm_pin_mismatch`, `llm_backend_mismatch`, `llm_log_incomplete` | 게이트웨이가 다른 slug를 고정, 백엔드 구성이 섞임, 게이트웨이 기록 불완전 |
 | `llm_serving_mismatch`, `llm_serving_unverified`, `llm_serving_read_failed` | local 서버의 버전·모델 digest·컨텍스트가 선언과 다름, 모델이 적재돼 있지 않아 확인 못 함, 서버 응답을 읽지 못함. 회차 전(compose 전)·작업 생성 직전·게이트웨이 검증 뒤에 본다. 근거는 `llm-serving.json` |
-| `llm_serving_not_on_gpu` | 선언 `placement`가 `gpu`인데 서버가 알려 준 `size_vram`이 `size`보다 작음. 모델 일부가 CPU로 밀리면 오류 없이 느려져 시간 예산 안의 진척이 줄어든다. 회차 전·작업 생성 직전·게이트웨이 검증 뒤에 본다 |
+| `llm_serving_not_on_gpu` | 선언 `placement`가 `gpu`인데 서버의 `size_vram`이 `size`보다 작거나, `nvidia-smi`로 읽은 GPU 사용량이 `size_vram`의 90%보다 적음. 모델 일부가 CPU로 밀리면 오류 없이 느려져 시간 예산 안의 진척이 줄어든다. 서버 값이 불명(`size_vram`>`size`, `nvidia-smi` 없음·실패·`[N/A]`)이면 `llm_serving_unverified`다. 회차 전·작업 생성 직전·게이트웨이 검증 뒤에 본다 |
 | `llm_serving_keep_alive_short` | 적재 직후 서버가 알려 준 남은 유지 시간이 요청한 값보다 짧음. 서버가 유지 기간을 따르지 않으면 회차 중 모델이 내려갈 수 있어 compose 전과 작업 생성 전에 멈춘다 |
 | `llm_sampling_mismatch` | 게이트웨이가 실제로 넣은 샘플링(검증 마커 `sampling`)이 선언(temperature·sampling·seed)과 다름. 키 묶음이 백엔드와 달라도 이 사유 |
 | `tmpfs_measure_failed` | 구간 종료 뒤 tmpfs 사용량을 읽지 못함(측정 컨테이너 실행·권한 실패, 커널 파일시스템 종류가 tmpfs 아님, 형식·크기가 맞지 않는 보고, 두 볼륨이 정확히 오지 않음). 결과의 `tmpfs_usage`는 `not_measured` |

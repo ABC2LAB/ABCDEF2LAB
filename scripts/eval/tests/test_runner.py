@@ -381,7 +381,7 @@ class FakePorts:
         self._call(f"local_serving:{phase}")
         self.keep_alive_seen = keep_alive_seconds
         observed = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768, "size": 100,
-                    "size_vram": 100, "quantization_level": "Q4", "other_models_loaded": 0,
+                    "size_vram": 100, "gpu_used_bytes": 100, "quantization_level": "Q4", "other_models_loaded": 0,
                     "keep_alive_remaining_seconds": keep_alive_seconds}
         return observed | self.serving.get(phase, {})
 
@@ -1347,6 +1347,20 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         slow.run.update(compose_wait_seconds=300, ready_timeout_seconds=180, task_create_timeout_seconds=30)
         self.assertGreater(runner._llm_keep_alive_seconds(slow, 60), 510 + 60)
 
+    def test_gpu_placement_adds_the_gpu_side_reading_to_every_read(self):
+        config = parse_runner_config(runner_config())
+        local = configuration()
+        for side in ("baseline", "ours"):
+            local[side]["llm"] = local_llm() | {"placement": "gpu"}
+            local[side]["sampling"] = dict(LOCAL_SAMPLING)
+        ports = DockerPorts(config, plan_run(config, local, "ours", "ours-1"), None, docker=None, findings=dict,
+                            start=lambda: "1", settings=dict)
+        with patch.object(runner, "read_serving", return_value={"x": 1}), \
+                patch.object(runner, "read_gpu_used_bytes", return_value=7) as gpu:
+            for phase in ("pre", "task_start", "post"):
+                self.assertEqual(ports.local_serving(phase, 900), {"x": 1, "gpu_used_bytes": 7})
+        self.assertEqual(gpu.call_count, 3)
+
     def test_local_serving_reads_the_fixed_ip_and_loads_only_before_the_run(self):
         config = parse_runner_config(runner_config())
         local = configuration()
@@ -1356,7 +1370,10 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         ports = DockerPorts(config, plan_run(config, local, "ours", "ours-1"), None, docker=None, findings=dict,
                             start=lambda: "1", settings=dict)
         with patch.object(runner, "read_serving", return_value={"x": 1}) as read:
-            self.assertEqual(ports.local_serving("pre", 900), {"x": 1})
+            # 개발용 회차(placement any)는 GPU 도구를 부르지 않는다.
+            with patch.object(runner, "read_gpu_used_bytes") as gpu:
+                self.assertEqual(ports.local_serving("pre", 900), {"x": 1, "gpu_used_bytes": None})
+            gpu.assert_not_called()
             ports.local_serving("task_start", 900)
             ports.local_serving("post", 900)
         timeout = config.run["llm_load_timeout_seconds"]
@@ -1711,6 +1728,15 @@ class TestLocalServing(unittest.TestCase):
                 self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
                 self.assertNotIn("start_task", ports.calls)
                 self.assertIn("llm-serving.json", evidence.files)
+
+    def test_gpu_placement_needs_gpu_side_evidence_at_every_read(self):
+        spec = dataclasses.replace(serving_spec(), llm_serving=dict(SERVING, placement="gpu"))
+        for phase in ("pre", "task_start", "post"):
+            with self.subTest(phase=phase):
+                def no_reading(ports, meter, clock, phase=phase):
+                    ports.serving.update({phase: {"gpu_used_bytes": None}})
+                result, *_ = run(mutate=no_reading, spec=spec)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_unverified"]))
 
     def test_gpu_placement_is_judged_at_every_read(self):
         spec = dataclasses.replace(serving_spec(), llm_serving=dict(SERVING, placement="gpu"))

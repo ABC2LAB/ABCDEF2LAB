@@ -72,7 +72,9 @@ from runner_record import (  # noqa: E402
 from runner_window import (  # noqa: E402
     BackgroundWatch, HostWatch, events_reasons, judge_events, watch_reasons, watch_summary,
 )
-from runner_serving import KEEP_ALIVE_SLACK_SECONDS, judge_serving, read_serving, unload_model  # noqa: E402
+from runner_serving import (  # noqa: E402
+    KEEP_ALIVE_SLACK_SECONDS, PLACEMENT_GPU, judge_serving, read_gpu_used_bytes, read_serving, unload_model,
+)
 from snapshot_collector import SnapshotEndpoint, collect_snapshot  # noqa: E402
 from snapshot_writer import SnapshotContext  # noqa: E402
 
@@ -927,7 +929,9 @@ class DockerPorts:
                 self.config.run["llm_load_timeout_seconds"])
 
     def local_serving(self, phase: str, keep_alive_seconds: int) -> dict:
-        return read_serving(*self._local_server(), keep_alive_seconds=None if phase == SERVING_POST else keep_alive_seconds)
+        observed = read_serving(*self._local_server(), keep_alive_seconds=None if phase == SERVING_POST else keep_alive_seconds)
+        # 서버 보고와 따로 읽는 GPU 쪽 판독. gpu로 선언한 회차만 읽고, 개발용 CPU 회차는 도구가 없어도 된다.
+        return observed | {"gpu_used_bytes": read_gpu_used_bytes() if self.plan.llm["placement"] == PLACEMENT_GPU else None}
 
     def local_unload(self) -> None:
         unload_model(*self._local_server())

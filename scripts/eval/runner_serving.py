@@ -11,6 +11,7 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import subprocess
 from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timezone
@@ -21,6 +22,13 @@ MISMATCH = "llm_serving_mismatch"
 KEEP_ALIVE_SHORT = "llm_serving_keep_alive_short"
 NOT_ON_GPU = "llm_serving_not_on_gpu"
 PLACEMENT_GPU = "gpu"
+# 서버의 size_vram은 자기 보고다. 버퍼 통계가 없으면 모델 파일 크기로 채워 전량 GPU처럼 보일 수 있다(Ollama llm MemorySize).
+# 그래서 GPU 쪽 판독을 따로 받는다. 지원 backend는 nvidia-smi가 있는 NVIDIA뿐이고 그 밖은 확인 못 함으로 남긴다.
+GPU_APPS_COMMAND = ("nvidia-smi", "--query-compute-apps=used_memory", "--format=csv,noheader,nounits")
+GPU_READ_TIMEOUT_SECONDS = 10
+# 드라이버 집계와 서버 집계는 단위·반올림이 달라 정확히 같지 않다. 실제 GPU로 맞춘 값이 아니어서 시범에서 확인한다.
+GPU_ACCOUNTING_MIN_RATIO = 0.9
+MIB = 1024 * 1024
 # 적재 완료와 /api/ps 조회 사이의 여유. 남은 시간이 이보다 더 줄었으면 서버가 요청한 유지 기간을 따르지 않은 것이다.
 KEEP_ALIVE_SLACK_SECONDS = 30
 _EXPIRES_AT = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})")
@@ -98,6 +106,29 @@ def read_serving(host: str, port: int, model: str, timeout: float, *, keep_alive
             "other_models_loaded": len(models) - len(mine)}
 
 
+def parse_gpu_apps_memory(text: str) -> int | None:
+    """compute 프로세스들의 GPU 메모리 합(바이트). 프로세스가 없으면 0, 값을 못 읽으면(`[N/A]` 등) None이다."""
+    total = 0
+    for line in text.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        if not value.isascii() or not value.isdigit():
+            return None
+        total += int(value) * MIB
+    return total
+
+
+def read_gpu_used_bytes(run: Callable[[tuple[str, ...]], str] | None = None) -> int | None:
+    """GPU 쪽 판독. 도구가 없거나 실패하면 None이고, 호출자는 확인 못 함으로 처리한다."""
+    def default(command: tuple[str, ...]) -> str:
+        return subprocess.run(command, capture_output=True, text=True, timeout=GPU_READ_TIMEOUT_SECONDS, check=True).stdout
+    try:
+        return parse_gpu_apps_memory((run or default)(GPU_APPS_COMMAND))
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
+
+
 def unload_model(host: str, port: int, model: str, timeout: float) -> None:
     """모델을 내린다. 회차마다 같은 상태에서 시작하게 하고, 끝난 회차의 모델이 메모리에 남지 않게 한다."""
     if _request(host, port, "POST", "/api/generate", {"model": model, "stream": False, "keep_alive": 0},
@@ -113,10 +144,11 @@ def judge_serving(observed: dict, declared: dict, *, min_keep_alive_seconds: int
         return MISMATCH
     # 모델 일부가 CPU로 밀려도 오류가 나지 않는다. 느려진 만큼 시간 예산 안의 진척이 줄어 한쪽만 그러면 비교가 깨진다.
     if declared["placement"] == PLACEMENT_GPU:
-        size, in_gpu = observed["size"], observed["size_vram"]
-        if size is None or in_gpu is None or size <= 0:
+        size, in_gpu, gpu_used = observed["size"], observed["size_vram"], observed["gpu_used_bytes"]
+        # size_vram이 size보다 크면 Ollama CLI도 Unknown으로 본다.
+        if size is None or in_gpu is None or size <= 0 or in_gpu > size or gpu_used is None:
             return UNVERIFIED
-        if in_gpu < size:
+        if in_gpu < size or gpu_used < in_gpu * GPU_ACCOUNTING_MIN_RATIO:
             return NOT_ON_GPU
     if min_keep_alive_seconds is not None:
         remaining = observed["keep_alive_remaining_seconds"]
