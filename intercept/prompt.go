@@ -11,7 +11,7 @@ import (
 const maxVerdictCommentBytes = 2400
 
 // verdictComment 는 승인 화면에 보이는 설명의 형식이다. 세 칸이 모두 차 있어야 하고, 구분자 앞뒤 공백만 허용한다.
-var verdictComment = regexp.MustCompile(`(?s)^실제 동작:\s*\S.*?\s*;\s*성공 후 결과:\s*\S.*?\s*;\s*적중 규칙:\s*\S.*$`)
+var verdictComment = regexp.MustCompile(`(?s)^실제 동작[:：]\s*[^\s;；].*?\s*[;；]\s*성공 후 결과[:：]\s*[^\s;；].*?\s*[;；]\s*적중 규칙[:：]\s*[^\s;；].*$`)
 
 // The application owns the envelope contract, including for saved custom prompts.
 const JudgeContextBoundary = `# Review input boundary
@@ -138,6 +138,16 @@ Example: {"decision":"deny","comment":"실제 동작: 실제 업무 주문을 �
 type Verdict struct {
 	Action string // "allow" | "ask" | "deny" | "" (unparseable)
 	Reason string
+}
+
+// JudgeDecision은 화면용 원문과 모델용 영어 결과를 서로 다른 필드로 전달한다.
+func JudgeDecision(v Verdict, profileID int64) Decision {
+	code := "judge_" + v.Action
+	return Decision{
+		Action: v.Action, Message: v.Reason, ProfileID: profileID,
+		ReasonCode:   code,
+		ModelMessage: "The platform safety review returned " + v.Action + " (reason_code=" + code + ").",
+	}
 }
 
 // stripCodeFence unwraps a fenced reply (```json … ```) before strict parsing.

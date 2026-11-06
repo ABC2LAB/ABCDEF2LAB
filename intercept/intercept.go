@@ -341,6 +341,8 @@ type Decision struct {
 	ProfileID        int64
 	Action           string // "allow" | "deny" | "ask"
 	Message          string
+	ModelMessage     string // 모델에만 전달하는 영어 설명. 사용자 규칙은 비워 두면 Message를 쓴다.
+	ReasonCode       string // 표시 언어와 무관한 판정 식별값
 	RuleID           int64
 	TimeoutEnabled   bool
 	TimeoutSeconds   int
@@ -515,6 +517,9 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 		out = Decision{ProfileID: out.ProfileID, ModelFallback: true, Action: cfg.FailAction, Message: msgModelOutputUnparsable}
 	}
 	// A model verdict never carries a rule; keep RuleID 0 (→ NULL) for history.
+	model := JudgeDecision(Verdict{Action: out.Action}, out.ProfileID)
+	out.ModelMessage = model.ModelMessage
+	out.ReasonCode = model.ReasonCode
 	out.RuleID = 0
 	if len(modelInput) > 0 {
 		out.ModelInput = modelInput

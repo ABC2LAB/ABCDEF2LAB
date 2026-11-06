@@ -26,6 +26,9 @@ func TestParseVerdictToleratesSeparatorSpacing(t *testing.T) {
 		"실제 동작:파일 지우기;성공 후 결과:파일이 사라진다;적중 규칙:D4",
 		"실제 동작: 파일 지우기 ; 성공 후 결과: 파일이 사라진다 ; 적중 규칙: D4",
 		"실제 동작: 파일; 지우기; 성공 후 결과: 파일이 사라진다; 적중 규칙: D4",
+		"실제 동작: 파일 지우기；성공 후 결과: 파일이 사라진다；적중 규칙: D4",
+		"실제 동작： 파일 지우기; 성공 후 결과： 파일이 사라진다; 적중 규칙： D4",
+		"실제 동작： 파일 지우기； 성공 후 결과： 파일이 사라진다； 적중 규칙： D4",
 	} {
 		raw, _ := json.Marshal(map[string]string{"decision": "deny", "comment": comment})
 		if got := ParseVerdict(string(raw)); got.Action != "deny" || got.Reason != comment {
@@ -72,6 +75,7 @@ func TestParseVerdictRejectsIncompleteOrAmbiguousReplies(t *testing.T) {
 		`{"decision":"allow","comment":"성공 후 결과: 내용 반환; 실제 동작: 파일 읽기; 적중 규칙: A5"}`,
 		`{"decision":"allow","comment":"먼저 말하면 실제 동작: 파일 읽기; 성공 후 결과: 내용 반환; 적중 규칙: A5"}`,
 		`{"decision":"allow","comment":"실제 동작: ; 성공 후 결과: 내용 반환; 적중 규칙: A5"}`,
+		`{"decision":"deny","comment":"실제 동작: ;; 성공 후 결과: 내용 반환; 적중 규칙: D4"}`,
 		`{"decision":"allow","comment":"실제 동작: 파일 읽기; 성공 후 결과: ; 적중 규칙: A5"}`,
 		`{"decision":"allow","comment":"실제 동작: 파일 읽기; 성공 후 결과: 내용 반환; 적중 규칙:   "}`, "허용:ALLOW", "ASK:소유 불명",
 		`{"decision":"allow"}`, `{"decision":"approve","comment":"실제 동작: 읽기; 성공 후 결과: 내용 반환; 적중 규칙: A5"}`,
