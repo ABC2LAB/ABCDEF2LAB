@@ -63,10 +63,11 @@ class _ProductFailure(Exception):
 
 @dataclass(frozen=True)
 class CloseAck:
-    """인증된 제어 채널의 최종 close ACK. 러너가 보낸 close 참조와 E②가 고정한 head."""
+    """인증된 제어 채널의 최종 close ACK. 러너가 보낸 close 참조와 E②가 고정한 head·manifest."""
     close_request_ref: str
     sequence: int
     mac: str
+    manifest_sha256: str
 
 
 @dataclass(frozen=True)
@@ -216,7 +217,7 @@ def _parsed_checkpoint(data: bytes, manifest: dict) -> dict:
     return checkpoint
 
 
-def _check_close_ack(ack: CloseAck | None, manifest: dict, checkpoint: dict) -> None:
+def _check_close_ack(ack: CloseAck | None, manifest: dict, manifest_sha256: str, checkpoint: dict) -> None:
     """파일끼리 맞아도 과거 head일 수 있다. 최신성은 제어 채널의 ACK로만 확인한다."""
     if ack is None:
         raise _ProductFailure("close_ack_missing")
@@ -224,6 +225,8 @@ def _check_close_ack(ack: CloseAck | None, manifest: dict, checkpoint: dict) -> 
         raise _ProductFailure("close_request_mismatch")
     if (ack.sequence, ack.mac) != (checkpoint["Sequence"], checkpoint["MAC"]):
         raise _ProductFailure("close_ack_mismatch")
+    if ack.manifest_sha256 != manifest_sha256:
+        raise _ProductFailure("close_manifest_mismatch")
 
 
 def _verify_audit(run_verifier: RunVerifier, copies: _Copies, key_path: str, checkpoint: dict, rows: int) -> None:
@@ -267,7 +270,7 @@ class _Progress:
 def _collect(source: int, copies: _Copies, expected: E2Expectation, close_ack: CloseAck | None, key_path: str, run_verifier: RunVerifier,
              progress: _Progress) -> None:
     manifest_data = _read_file(source, MANIFEST_FILE, MAX_MANIFEST_BYTES, "manifest_missing")
-    copies.keep(MANIFEST_FILE, manifest_data)
+    manifest_sha256 = copies.keep(MANIFEST_FILE, manifest_data)
     manifest = _parsed_manifest(manifest_data, expected)
     attempts = _read_file(source, ATTEMPTS_FILE, MAX_JOURNAL_BYTES, "attempts_missing")
     copies.keep(ATTEMPTS_FILE, attempts)
@@ -283,7 +286,7 @@ def _collect(source: int, copies: _Copies, expected: E2Expectation, close_ack: C
     if copies.keep(_COPY_CHECKPOINT, checkpoint_data) != manifest["audit_checkpoint_sha256"]:
         raise _ProductFailure("checkpoint_digest_mismatch")
     checkpoint = _parsed_checkpoint(checkpoint_data, manifest)
-    _check_close_ack(close_ack, manifest, checkpoint)
+    _check_close_ack(close_ack, manifest, manifest_sha256, checkpoint)
     _verify_audit(run_verifier, copies, key_path, checkpoint, manifest["rows"])
     _check_projection(journal, attempts)
     progress.checkpoint = {"sequence": checkpoint["Sequence"], "mac": checkpoint["MAC"]}

@@ -53,7 +53,7 @@ class Fixture(unittest.TestCase):
         self.attempts = encode(self.rows)
         self.checkpoint = json.dumps(checkpoint_for()).encode()
         self.manifest = manifest_for(self.attempts, 6, 6, 3, audit_checkpoint_sha256=hashlib.sha256(self.checkpoint).hexdigest())
-        self.ack = CloseAck("close-1", 6, MAC)
+        self.ack_sequence = 6
         self.calls = []
         self.verifier_result = (0, json.dumps({"Checkpoint": checkpoint_for(), "Events": 6}).encode(), b"")
         self.publish()
@@ -77,8 +77,16 @@ class Fixture(unittest.TestCase):
         self.calls.append(args)
         return self.verifier_result
 
+    def current_ack(self):
+        """게시된 manifest를 고정한 정상 ACK."""
+        try:
+            digest = hashlib.sha256((self.source / "manifest.json").read_bytes()).hexdigest()
+        except OSError:
+            digest = "0" * 64  # 게시 실패 시험은 ACK까지 가지 않는다.
+        return CloseAck("close-1", self.ack_sequence, MAC, digest)
+
     def collect(self, ack="default", expected=EXPECTED):
-        return collect_e2_export(self.source, self.copy, expected, self.ack if ack == "default" else ack, "/private/run.key", self.verifier)
+        return collect_e2_export(self.source, self.copy, expected, self.current_ack() if ack == "default" else ack, "/private/run.key", self.verifier)
 
     def assert_product_failure(self, reason, **kwargs):
         result = self.collect(**kwargs)
@@ -111,15 +119,14 @@ class TestComplete(Fixture):
             # 검증 중 원본이 바뀌어도 사본과 읽어 둔 바이트로 대조한다.
             self.write("e2.audit", b"changed\n")
             return self.verifier_result
-        result = collect_e2_export(self.source, self.copy, EXPECTED, self.ack, "/private/run.key", swap_then_pass)
+        result = collect_e2_export(self.source, self.copy, EXPECTED, self.current_ack(), "/private/run.key", swap_then_pass)
         self.assertEqual(result.outcome, OUTCOME_COMPLETE)
         self.assertEqual((self.copy / "journal.jsonl").read_bytes(), journal_for(self.rows))
 
     def test_empty_journal_has_an_empty_head_scope(self):
-        self.rows, self.attempts = [], b""
+        self.rows, self.attempts, self.ack_sequence = [], b"", 0
         self.checkpoint = json.dumps(checkpoint_for(0, Scope={key: "" for key in SCOPE})).encode()
         self.manifest = manifest_for(b"", audit_checkpoint_sha256=hashlib.sha256(self.checkpoint).hexdigest())
-        self.ack = CloseAck("close-1", 0, MAC)
         self.verifier_result = (0, json.dumps({"Checkpoint": json.loads(self.checkpoint), "Events": 0}).encode(), b"")
         self.publish()
         self.assertEqual(self.collect().outcome, OUTCOME_COMPLETE)
@@ -170,8 +177,9 @@ class TestProductFailure(Fixture):
     def test_close_ack_lost_or_different_is_not_complete(self):
         self.assert_product_failure("close_ack_missing", ack=None)
         self.assertEqual(self.calls, [])
-        for ack, reason in ((CloseAck("close-2", 6, MAC), "close_request_mismatch"), (CloseAck("close-1", 5, MAC), "close_ack_mismatch"),
-                            (CloseAck("close-1", 6, "c" * 64), "close_ack_mismatch")):
+        digest = self.current_ack().manifest_sha256
+        for ack, reason in ((CloseAck("close-2", 6, MAC, digest), "close_request_mismatch"), (CloseAck("close-1", 5, MAC, digest), "close_ack_mismatch"),
+                            (CloseAck("close-1", 6, "c" * 64, digest), "close_ack_mismatch"), (CloseAck("close-1", 6, MAC, "d" * 64), "close_manifest_mismatch")):
             with self.subTest(ack=ack):
                 self.tearDown_copy()
                 self.assert_product_failure(reason, ack=ack)
@@ -270,7 +278,7 @@ class TestProductFailure(Fixture):
     def test_symlink_loop_in_the_export_path(self):
         loop = Path(self.temp.name) / "loop"
         loop.symlink_to(loop)
-        result = collect_e2_export(loop / "x", self.copy, EXPECTED, self.ack, "k", self.verifier)
+        result = collect_e2_export(loop / "x", self.copy, EXPECTED, self.current_ack(), "k", self.verifier)
         self.assertEqual((result.outcome, result.reason), (OUTCOME_PRODUCT_FAILURE, "export_untrusted"))
 
     def test_export_directory_shape(self):
@@ -279,11 +287,11 @@ class TestProductFailure(Fixture):
         os.chmod(self.source, 0o700)
         other = Path(self.temp.name) / "link"
         other.symlink_to(self.source)
-        with_link = collect_e2_export(other, self.copy, EXPECTED, self.ack, "k", self.verifier)
+        with_link = collect_e2_export(other, self.copy, EXPECTED, self.current_ack(), "k", self.verifier)
         self.assertEqual((with_link.outcome, with_link.reason), (OUTCOME_PRODUCT_FAILURE, "export_untrusted"))
         plain = Path(self.temp.name) / "plain"
         plain.write_bytes(b"")
-        as_file = collect_e2_export(plain, self.copy, EXPECTED, self.ack, "k", self.verifier)
+        as_file = collect_e2_export(plain, self.copy, EXPECTED, self.current_ack(), "k", self.verifier)
         self.assertEqual((as_file.outcome, as_file.reason), (OUTCOME_PRODUCT_FAILURE, "export_untrusted"))
 
     def test_evidence_records_the_failure(self):
@@ -344,7 +352,7 @@ class TestTechnicallyInvalid(Fixture):
         link = Path(self.temp.name) / "copy-link"
         link.symlink_to(self.copy)
         with self.assertRaises(E2CollectionInvalid) as caught:
-            collect_e2_export(self.source, link, EXPECTED, self.ack, "k", self.verifier)
+            collect_e2_export(self.source, link, EXPECTED, self.current_ack(), "k", self.verifier)
         self.assertEqual(caught.exception.code, "copy_dir_unavailable")
 
     def test_read_error_is_a_collection_failure(self):
@@ -389,7 +397,7 @@ class TestTechnicallyInvalid(Fixture):
         (self.copy / "manifest.json").unlink()
         missing = Path(self.temp.name) / "absent"
         with self.assertRaises(E2CollectionInvalid) as caught:
-            collect_e2_export(self.source, missing, EXPECTED, self.ack, "k", self.verifier)
+            collect_e2_export(self.source, missing, EXPECTED, self.current_ack(), "k", self.verifier)
         self.assertEqual(caught.exception.code, "copy_dir_unavailable")
 
     def test_unreadable_export_is_a_collection_failure(self):
