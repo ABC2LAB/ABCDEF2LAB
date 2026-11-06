@@ -6,6 +6,7 @@ import copy
 import json
 import re
 import sys
+import traceback
 import unittest
 from pathlib import Path
 
@@ -257,6 +258,11 @@ class TestMerge(unittest.TestCase):
                                ("no class", {"vuln_class": ""})):
             with self.subTest(label):
                 self.rejected([page([record(101, **changes)])], "RECORD_INVALID")
+
+    def test_traceback_does_not_show_record_values(self):
+        with self.assertRaises(VerdictPagesError) as caught:
+            merge_verdict_pages([page([record(101, token=SECRET_LIKE)])], CONTEXT)
+        self.assertNotIn(SECRET_LIKE, "".join(traceback.format_exception(caught.exception)))
 
     def test_errors_never_carry_input_values(self):
         for pages in ([page([record(101, token=SECRET_LIKE)])], [page([record(101)]) | {"run_id": SECRET_LIKE}]):

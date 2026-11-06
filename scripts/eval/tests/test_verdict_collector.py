@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import sys
 import threading
+import traceback
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import verdict_collector  # noqa: E402
 from runner_engine import AdminSecret, EngineAPIError  # noqa: E402
 from test_verdict_pages import check, page, record  # noqa: E402
 from verdict_collector import (  # noqa: E402
@@ -173,6 +177,28 @@ class TestCollect(unittest.TestCase):
         self.failed(self.server({None: (200, body(page([record(101, token=leaked)])))}), "verdict_pages: RECORD_INVALID")
         self.failed(self.server({None: (200, body(page([record(101)]) | {"run_id": leaked}))}), "verdict_pages: RUN_ID_MISMATCH")
         self.failed(self.server({None: (200, body(page([record(101)], total=2)))}), "verdict_pages: TOTAL_MISMATCH")
+
+    def test_transport_errors_do_not_show_raw_text_in_the_traceback(self):
+        marker = "synthetic-status-line-5e1b"
+        def transport_error(*_args, **_kwargs):
+            raise http.client.BadStatusLine(marker)
+        freeze_ok = (200, b'{"export_ref": "export-1"}')
+        for target, side_effect, code in (("_post", transport_error, "FREEZE_UNREACHABLE"), ("_get", transport_error, "PAGE_UNREACHABLE")):
+            with self.subTest(code=code):
+                fake = self.server(freeze=freeze_ok)
+                with patch.object(verdict_collector, target, side_effect=side_effect):
+                    with self.assertRaises(VerdictCollectError) as caught:
+                        collect_verdict_export(fake.port, AdminSecret(PASSWORD), limits=LIMITS, **RUN)
+                self.assertEqual(str(caught.exception), f"verdict_collect: {code}")
+                shown = "".join(traceback.format_exception(caught.exception))
+                self.assertNotIn(marker, shown)
+
+    def test_page_errors_do_not_show_record_values_in_the_traceback(self):
+        leaked = "synthetic-record-value-7f3a"
+        fake = self.server({None: (200, body(page([record(101, token=leaked)])))})
+        with self.assertRaises(VerdictCollectError) as caught:
+            self.collect(fake)
+        self.assertNotIn(leaked, "".join(traceback.format_exception(caught.exception)))
 
     def test_login_failure_is_not_a_verdict_result(self):
         fake = self.server(login_status=500)

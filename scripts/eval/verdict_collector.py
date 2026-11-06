@@ -60,7 +60,8 @@ class CollectedExport:
 
 
 def _fail(code: str) -> None:
-    raise VerdictCollectError("verdict_collect: " + code)
+    # except 안에서도 불린다. 전송 예외의 원문(status line 등)이 표시 traceback에 이어지지 않게 끊는다.
+    raise VerdictCollectError("verdict_collect: " + code) from None
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict:
