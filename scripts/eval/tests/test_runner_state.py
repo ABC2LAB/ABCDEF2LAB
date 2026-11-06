@@ -18,7 +18,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_docker import BoundedResult, CommandResult, Docker, DockerError, run_docker_bounded  # noqa: E402
-from runner_state import StateCopyError, copy_sqlite, discard_copy  # noqa: E402
+from runner_state import StateCopyError, copy_sqlite, discard_copy, runtime_fingerprints  # noqa: E402
 from state_diff import RUN_KEY_BYTES, snapshot  # noqa: E402
 
 CID = "c" * 64
@@ -55,6 +55,12 @@ class FakeDocker:
 
     def copy_out(self, cid, path, max_bytes):
         self.calls.append(("copy", path))
+        if path in self.failing:
+            raise DockerError("docker_copy_failed")
+        return self.files.get(path)
+
+    def copy_archive(self, cid, path, max_bytes):
+        self.calls.append(("archive", path, max_bytes))
         if path in self.failing:
             raise DockerError("docker_copy_failed")
         return self.files.get(path)
@@ -242,6 +248,68 @@ class Bounded:
 
 
 MISSING = b"Error response from daemon: Could not find the file /app/data/target.sqlite-journal in container c\n"
+
+
+class TestRuntimeFingerprints(unittest.TestCase):
+    KEY = bytes(RUN_KEY_BYTES)
+    ROOTS = ("/app/ftp", "/app/uploads")
+
+    def run_it(self, files, required=True, **fake):
+        docker = FakeDocker(files, **fake)
+        return docker, runtime_fingerprints(docker, CID, self.ROOTS, MAX, self.KEY, required=required)
+
+    def test_paused_around_every_root_and_returns_fingerprints_only(self):
+        ftp, uploads = tar_of(("ftp", b"f", b"a")), tar_of(("uploads", b"f", b"b"))
+        docker, trees = self.run_it({"/app/ftp": ftp, "/app/uploads": uploads})
+        self.assertEqual(docker.calls, [("pause", CID), ("archive", "/app/ftp", MAX), ("archive", "/app/uploads", MAX),
+                                        ("unpause", CID)])
+        self.assertEqual((sorted(trees), list(trees["/app/ftp"])), (["/app/ftp", "/app/uploads"], ["ftp"]))
+        self.assertEqual(len(trees["/app/ftp"]["ftp"]), 32)
+
+    def test_missing_root_stops_pre_and_is_recorded_after_the_run(self):
+        ftp = tar_of(("ftp", b"f", b"a"))
+        docker = FakeDocker({"/app/ftp": ftp})
+        with self.assertRaisesRegex(StateCopyError, "state_tree_missing"):
+            runtime_fingerprints(docker, CID, self.ROOTS, MAX, self.KEY, required=True)
+        self.assertEqual(docker.calls[-1], ("unpause", CID))
+        docker, trees = self.run_it({"/app/ftp": ftp}, required=False)
+        self.assertIsNone(trees["/app/uploads"])
+        self.assertEqual(docker.calls[-1], ("unpause", CID))
+
+    def test_copy_failure_is_not_a_missing_root_and_still_unpauses(self):
+        docker = FakeDocker({"/app/ftp": tar_of(("ftp", b"f", b"a"))}, failing=frozenset({"/app/uploads"}))
+        with self.assertRaisesRegex(DockerError, "docker_copy_failed"):
+            runtime_fingerprints(docker, CID, self.ROOTS, MAX, self.KEY, required=False)
+        self.assertEqual(docker.calls[-1], ("unpause", CID))
+
+    def test_unpause_failure_wins(self):
+        docker = FakeDocker({"/app/ftp": tar_of(("ftp", b"f", b"a")), "/app/uploads": tar_of(("uploads", b"f", b"b"))},
+                            unpause_fails=True)
+        with self.assertRaisesRegex(DockerError, "docker_unpause_failed"):
+            runtime_fingerprints(docker, CID, self.ROOTS, MAX, self.KEY, required=True)
+
+
+class TestDockerCopyArchive(unittest.TestCase):
+    def archive(self, stdout=b"", returncode=0, path="/app/ftp", max_bytes=MAX, diagnostic=b""):
+        bounded = Bounded(BoundedResult(returncode, stdout, diagnostic))
+        return Docker(Exec(CommandResult(0, b"")), {}, 1, bounded=bounded).copy_archive(CID, path, max_bytes), bounded.calls
+
+    def test_directory_archive_is_returned_as_is_within_the_exact_limit(self):
+        tar = tar_of(("ftp", b"d", b""), ("ftp/a", b"f", b"x"))
+        data, calls = self.archive(tar)
+        self.assertEqual((data, calls), (tar, [(["cp", f"{CID}:/app/ftp", "-"], MAX)]))
+
+    def test_only_a_daemon_missing_answer_is_absence(self):
+        self.assertIsNone(self.archive(returncode=1, diagnostic=MISSING)[0])
+        with self.assertRaisesRegex(DockerError, "docker_copy_failed"):
+            self.archive(returncode=1, diagnostic=b"permission denied")
+
+    def test_arguments_are_checked_before_calling_docker(self):
+        for path, max_bytes in (("app/ftp", MAX), ("/app/../ftp", MAX), ("/app/ftp", 0), ("/app/ftp", True)):
+            with self.subTest(path=path, max_bytes=max_bytes), self.assertRaisesRegex(DockerError, "docker_copy_invalid"):
+                self.archive(path=path, max_bytes=max_bytes)
+        with self.assertRaisesRegex(DockerError, "docker_copy_invalid"):
+            Docker(Exec(CommandResult(0, b"")), {}, 1).copy_archive("short", "/app/ftp", MAX)
 
 
 class TestDockerCopyOut(unittest.TestCase):

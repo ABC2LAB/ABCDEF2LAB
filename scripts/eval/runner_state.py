@@ -21,6 +21,7 @@ import stat
 from pathlib import Path
 
 from runner_docker import DockerError
+from state_diff import tree_fingerprint
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 _HEADER_BYTES = 100
@@ -85,6 +86,26 @@ def _copy_files(docker, container_id: str, path: str, max_bytes: int) -> dict[st
             raise StateCopyError("state_copy_wal_missing")
         files["-wal"] = wal
     return files
+
+
+def runtime_fingerprints(docker, container_id: str, roots: tuple[str, ...], max_bytes: int, key: bytes,
+                         *, required: bool) -> dict[str, dict[str, bytes] | None]:
+    """대상을 멈춘 채 설정한 런타임 디렉터리의 항목 지문을 뜬다. 파일은 호스트에 쓰지 않는다.
+
+    required면(pre) 없는 디렉터리는 설정 오류로 멈춘다. post에서 없어진 디렉터리는 None으로 돌려준다(상태 변화로 센다).
+    unpause는 성공·실패와 무관하게 부르고, 실패하면 그 오류가 우선이다.
+    """
+    docker.pause(container_id)
+    try:
+        trees: dict[str, dict[str, bytes] | None] = {}
+        for root in roots:
+            archive = docker.copy_archive(container_id, root, max_bytes)
+            if archive is None and required:
+                raise StateCopyError("state_tree_missing")
+            trees[root] = None if archive is None else tree_fingerprint(archive, key)
+    finally:
+        docker.unpause(container_id)
+    return trees
 
 
 def discard_copy(target: Path) -> None:
