@@ -46,6 +46,15 @@ OpenAI 호환 로컬 모델 서버의 **모델 식별자와 실제 BaseURL**을 
 Ollama를 호스트에서 실행하고 기본 포트를 쓰는 경우 BaseURL은 `http://127.0.0.1:11434/v1`입니다.
 모델 이름은 설치한 값으로 정하며 특정 모델의 적합성·성능을 이 문서에서 보장하지 않습니다.
 
+초기 로컬 기준 모델(검증 전)은 `Qwen/Qwen3.5-35B-A3B`이며, 모델 선정·개선 순서·장비 실측 기준은
+[LLM 도입·개선 계획](llm-adoption-and-improvement-plan.md)을 따릅니다. 아래 Ollama 주소 예시는
+이 모델의 설치·호환성·메모리 검증 결과가 아닙니다. 먼저 추론 환경을 검증하며 학습 GPU는 필수 준비물이 아닙니다.
+
+제품 바이너리의 기본은 [local-only 모드](contracts/local-llm-server-mode.md)입니다.
+검증된 `ARTEX_LLM_PIN_MANIFEST`와 pin에 일치하는 DB active profile이 필요하며,
+다음 환경변수 예시만으로 local-only provider가 활성화되지는 않습니다.
+실제 시작 설정·권한·profile 선택은 해당 계약을 확인하고, 연결 실패를 외부 API 자동 전환으로 복구하지 않습니다.
+
 ```bash
 export ARTEX_LLM_PROVIDER=openai
 read -rp '설치한 로컬 모델 식별자: ' ARTEX_LLM_MODEL
@@ -56,7 +65,7 @@ export ARTEX_LANG=ko
 ```
 
 `local-placeholder`는 인증을 요구하지 않는 소유 로컬 서버 예시입니다. 인증이 필요한 서버는 로컬 설정에 실제 키를 넣고 공유하지 않습니다.
-현재 환경변수 기반 `FromEnv()`는 키가 비어 있으면 LLM 설정을 활성화하지 않습니다. UI의 LLM profile 선택·설정도 함께 확인합니다.
+기존 환경변수 기반 `FromEnv()`는 키가 비어 있으면 LLM 설정을 활성화하지 않습니다. local-only의 실제 선택·실패 처리는 위 서버 모드 계약을 따릅니다.
 코드에서 `ARTEX_*` 이름을 사용하므로 문서에서도 같은 이름을 유지합니다.
 
 서버의 표시 언어는 한국어 하나입니다. `ARTEX_LANG`과 설정 파일의 `language`, 저장된 표시 언어 설정은 더 따르지 않습니다.
