@@ -17,6 +17,7 @@ _MARKER_FIELDS = frozenset({"role", "backend", "provider", "sampling", "sealed_a
 _COUNTS = ("forwarded_requests", "upstream_errors", "rejected_requests", "rejected_after_seal", "cancelled_by_seal",
            "responses_without_generation_id")
 SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty", "seed"})
+LOCAL_SAMPLING_KEYS = frozenset({"temperature", "top_p", "presence_penalty", "frequency_penalty", "seed"})
 
 
 class LLMMarkerError(ValueError):
@@ -27,7 +28,7 @@ def _check_shape(marker: object) -> None:
     if not isinstance(marker, dict) or set(marker) != _MARKER_FIELDS:
         raise LLMMarkerError("llm_marker_invalid")
     sampling = marker["sampling"]
-    if sampling is not None and (not isinstance(sampling, dict) or set(sampling) != SAMPLING_KEYS or any(
+    if sampling is not None and (not isinstance(sampling, dict) or set(sampling) not in (SAMPLING_KEYS, LOCAL_SAMPLING_KEYS) or any(
             type(value) not in (int, float) for value in sampling.values())):
         raise LLMMarkerError("llm_marker_invalid")
     if (type(marker["log_complete"]) is not bool or not isinstance(marker["generations"], list)
@@ -49,7 +50,7 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
               sampling: dict | None) -> tuple[list[str], dict]:
     """(사유 목록, 기록용 요약). 사유가 없어야 그 회차의 LLM 조건을 고정됐다고 말할 수 있다.
 
-    sampling은 선언에서 만든 기대 적용값(api)이고, local이면 None이다.
+    sampling은 선언에서 만든 기대 적용값이다. 백엔드마다 키 묶음이 다르다.
     """
     _check_shape(marker)
     reasons: set[str] = set()
@@ -57,7 +58,8 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
     # float로 바꾸지 않고 그대로 비교한다: 파이썬의 int·float 비교는 정확해서 2^53을 넘는 seed도 구분한다.
     applied = marker["sampling"]
     if (applied is None) != (sampling is None) or (
-            applied is not None and any(applied[key] != sampling[key] for key in SAMPLING_KEYS)):
+            applied is not None and (set(applied) != set(sampling)
+                                     or any(applied[key] != sampling[key] for key in sampling))):
         reasons.add("llm_sampling_mismatch")
     if marker["backend"] != backend:
         reasons.add("llm_backend_mismatch")

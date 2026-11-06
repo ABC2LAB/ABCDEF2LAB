@@ -18,7 +18,7 @@ from runner_probe import (
     INVALID, NEGATIVE, PASS, POSITIVE, VIOLATION, ProbeSetupError, evaluate_probe, probe_expectations, probe_plan,
     run_probe,
 )
-from test_preflight import configuration, local_llm
+from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 from test_runner_checks import DAEMON, PROJECT, SERVICE_IDS, by_key, by_service, facts, raw_world
 from test_runner_config import runner_config
 
@@ -28,6 +28,7 @@ def make_plan(backend="api", e2=None, **ports):
     if backend == "local":
         for side in ("baseline", "ours"):
             preflight[side]["llm"] = local_llm()
+            preflight[side]["sampling"] = dict(LOCAL_SAMPLING)
     payload = runner_config()
     payload["ports"].update(ports)
     if e2 is not None:

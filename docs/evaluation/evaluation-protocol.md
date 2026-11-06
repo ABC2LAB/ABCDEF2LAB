@@ -46,7 +46,7 @@
 
   - 망마다 internal 여부와 구성원이 위 표와 **정확히** 같아야 한다. publish는 관측 front·엔진 API front 두 개뿐이며 둘 다 `127.0.0.1`이어야 한다. Docker 서버는 28.0.0 이상이어야 한다(그 이전의 같은 L2 구간 접근 예외, [공식 포트 공개 문서](https://docs.docker.com/engine/network/port-publishing/#publishing-ports)). 망 ID·구성원·바인딩이 pre와 post 사이에 바뀌면 증명을 발행하지 않는다.
 - **LLM 연결** — LLM 백엔드는 설정값이다(§6: 평가는 외부 API 허용, 로컬 서버도 가능). 엔진은 LLM 게이트웨이에만 닿고, 게이트웨이가 LLM 출구 망으로 나간다(api: https API / local: 고정 IP의 로컬 서버). 두 백엔드가 같은 경로라, 로컬로 바꿀 때는 설정값만 바꾼다. LLM 호출은 계측기를 거치지 않으며 엔진 `total_requests`에 넣지 않는다.
-  - 게이트웨이는 등록된 경로의 POST만 받는다. api 백엔드에서는 요청마다 제공자 고정(`provider.order`=전체 slug, `allow_fallbacks:false`, `require_parameters:true`)을 넣고(엔진이 `provider`를 보내면 거부) 회차 뒤 generation 조회로 응답 제공자와 fallback 시도를 확인한다(§6). local 백엔드에서는 요청을 고치지 않는다. 리다이렉트를 따르지 않고 환경 프록시를 쓰지 않으며 upstream 호스트 외에는 연결하지 않는다. 기록은 순번·상태·시각·바이트·generation ID뿐이고 본문·헤더는 남기지 않는다.
+  - 게이트웨이는 등록된 경로의 POST만 받는다. api 백엔드에서는 요청마다 제공자 고정(`provider.order`=전체 slug, `allow_fallbacks:false`, `require_parameters:true`)을 넣고(엔진이 `provider`를 보내면 거부) 회차 뒤 generation 조회로 응답 제공자와 fallback 시도를 확인한다(§6). local 백엔드에서는 샘플링 값만 넣고 나머지 본문은 그대로 보낸다. 리다이렉트를 따르지 않고 환경 프록시를 쓰지 않으며 upstream 호스트 외에는 연결하지 않는다. 기록은 순번·상태·시각·바이트·generation ID뿐이고 본문·헤더는 남기지 않는다.
   - API 키는 비밀 env 파일에서 게이트웨이 컨테이너 환경으로만 넣고, 엔진에는 자리값만 준다. 회차 기록·격리 근거·로그·manifest에는 이름만 남기고 값은 남기지 않는다(절대규칙 2).
   - 같은 머신의 로컬 서버를 쓸 때는 회차와 무관한 고정 IP(`EVAL_LLM_HOST_IP`, 값은 사전검사 선언, 게이트웨이의 compose `extra_hosts`로 주입)로 연결하고 `0.0.0.0` 공개는 쓰지 않는다. compose의 `host-gateway`는 쓰지 않는다. 이 값은 Docker 엔진마다 다른 주소로 풀린다(예: Docker Desktop은 Windows 쪽 주소).
   - 러너는 Docker 데몬의 신원(플랫폼·서버 버전)을 기록하고, 회차 중 바뀌면 증명을 발행하지 않는다.
@@ -314,7 +314,7 @@
   - GPU 클라우드 업체·사양·예산과 GPU 로컬 프로파일은 그 비교 시점에 정해, 시범 회차 전에 커밋하고 공식 회차 전에 태그로 고정한다(§5.1). 시범과 예산 1회 조정도 그 GPU 프로파일로 한다. 지금의 [공식 프로파일](profiles/official-35b.json)은 API 기준이라 개발 측정 프로파일로 쓴다.
   - API와 GPU가 비슷한지는 따로 검증하지 않는다. 그래서 아래 API 고정값과 API 회차는 **개발 측정용**이고, API 수치를 공식 비교나 로컬 성능으로 옮기지 않는다.
   - 개발 중 개선 반복은 Juice Shop 결과를 보고 하지 않는다(절대규칙 7, 시험에 맞춘 개선 방지). 반복 대상은 VAmPI이고 다른 연습 환경이 생기면 추가한다. API 측정 머신은 최민준 개발 머신이다.
-  - 같은 조건이 되려면 local 백엔드에서도 게이트웨이가 샘플링 값을 넣어야 한다. 지금 게이트웨이는 local 요청을 고치지 않으므로(§2) GPU 세션 전에 바꾼다(후속, 최민준).
+  - local 백엔드에서도 게이트웨이가 요청마다 샘플링 값을 넣는다(§2). 로컬 서버의 OpenAI 호환 경로가 적용하는 `temperature`·`top_p`·`seed`·`presence_penalty`·`frequency_penalty`만 받는다. `top_k`·`min_p`·`repetition_penalty`는 그 경로가 오류 없이 무시하므로 선언하지 않는다([실측 근거](profiles/evidence/ollama-openai-sampling-20261106.json)). 필요하면 서빙 설정으로 고정한다.
 - **API 백엔드의 고정 조건(개발 측정)** — baseline·개선 후 동일하게 맞추고 회차마다 기록한다.
   - 같은 모델 식별자: 제공자 문자열을 그대로 쓴다(예: OpenRouter 모델 ID).
   - 같은 서빙 제공자: 자동 전환(fallback)을 끈다. 같은 모델 이름이라도 제공자마다 정밀도(양자화)·설정이 다를 수 있다. 엔진 요청 옵션이나 API 계정 설정 중 baseline·개선 후 모두에 같은 방식으로 적용되는 것으로 고정한다.

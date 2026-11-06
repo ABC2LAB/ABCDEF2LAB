@@ -22,6 +22,9 @@ def api_llm():
             "provider": "example-provider", "fallbacks": False}
 
 
+LOCAL_SAMPLING = {"top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0.25}
+
+
 def local_llm():
     return {"backend": "local", "base_url": "http://llm-host:11434/v1", "model": "example-model:fixed-tag",
             "hostname": "llm-host", "host_ip": "172.17.0.1"}
@@ -289,9 +292,32 @@ class TestCheckPreflight(unittest.TestCase):
         payload = configuration()
         for section in ("baseline", "ours"):
             payload[section]["llm"] = local_llm()
+            payload[section]["sampling"] = dict(LOCAL_SAMPLING)
         check_preflight(payload)
         payload["ours"]["llm"] = local_llm() | {"host_ip": "fd00::1"}
         self.reject(payload, "comparison.llm: MISMATCH")
+
+    def test_sampling_set_must_match_the_backend(self):
+        api_set = configuration()["ours"]["sampling"]
+        local = configuration()
+        for section in ("baseline", "ours"):
+            local[section]["llm"] = local_llm()
+            local[section]["sampling"] = dict(LOCAL_SAMPLING)
+        check_preflight(local)
+        wrong = copy.deepcopy(local)
+        wrong["ours"]["sampling"] = dict(api_set)
+        self.reject(wrong, "ours.sampling: BACKEND_MISMATCH")
+        wrong = configuration()
+        wrong["baseline"]["sampling"] = dict(LOCAL_SAMPLING)
+        self.reject(wrong, "baseline.sampling: BACKEND_MISMATCH")
+        for sampling in ({}, {**LOCAL_SAMPLING, "top_k": 20},
+                         {k: v for k, v in LOCAL_SAMPLING.items() if k != "top_p"},
+                         {**LOCAL_SAMPLING, "top_p": 0}, {**LOCAL_SAMPLING, "top_p": 1.5},
+                         {**LOCAL_SAMPLING, "presence_penalty": 3}, {**LOCAL_SAMPLING, "frequency_penalty": -3},
+                         {**LOCAL_SAMPLING, "frequency_penalty": "1"}):
+            wrong = copy.deepcopy(local)
+            wrong["ours"]["sampling"] = sampling
+            self.reject(wrong, "ours.sampling: INVALID")
 
     def test_each_url_guard_rejects_on_its_own(self):
         # 다른 검사에 먼저 걸리지 않게, 해당 가드 하나만 어기는 입력을 쓴다.
@@ -311,6 +337,7 @@ class TestCheckPreflight(unittest.TestCase):
         payload = configuration()
         for section in ("baseline", "ours"):
             payload[section]["llm"] = local_llm() | {"host_ip": "fd00::1"}
+            payload[section]["sampling"] = dict(LOCAL_SAMPLING)
         check_preflight(payload)
 
     def test_backend_kind_must_match_between_baseline_and_ours(self):

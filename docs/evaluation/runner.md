@@ -213,7 +213,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `llm_generation_unverified`, `llm_generation_unverifiable` | 조회 안 된 generation, generation ID 없는 응답 |
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
 | `llm_pin_mismatch`, `llm_backend_mismatch`, `llm_log_incomplete` | 게이트웨이가 다른 slug를 고정, 백엔드 구성이 섞임, 게이트웨이 기록 불완전 |
-| `llm_sampling_mismatch` | 게이트웨이가 실제로 넣은 샘플링(검증 마커 `sampling`)이 선언(temperature·sampling·seed)과 다름. local 회차에 값이 있어도 이 사유 |
+| `llm_sampling_mismatch` | 게이트웨이가 실제로 넣은 샘플링(검증 마커 `sampling`)이 선언(temperature·sampling·seed)과 다름. 키 묶음이 백엔드와 달라도 이 사유 |
 | `tmpfs_measure_failed` | 구간 종료 뒤 tmpfs 사용량을 읽지 못함(측정 컨테이너 실행·권한 실패, 커널 파일시스템 종류가 tmpfs 아님, 형식·크기가 맞지 않는 보고, 두 볼륨이 정확히 오지 않음). 결과의 `tmpfs_usage`는 `not_measured` |
 | `pre_tmpfs_measure_failed` | 구간 전 tmpfs 마운트 ID·사용량을 읽지 못함(사유는 `tmpfs_measure_failed`와 같음). 구간을 시작하지 않는다 |
 | `tmpfs_mount_changed` | 구간 뒤 잰 tmpfs의 마운트 ID가 구간 전과 다름 — 같은 경로라도 다른 마운트(부모 경로 변경·symlink·다시 마운트)를 잰 것이라 회차 저장소의 근거가 아니다. 양쪽 값은 결과에 남는다 |
