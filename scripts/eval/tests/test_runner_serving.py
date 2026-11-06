@@ -129,7 +129,7 @@ class TestRead(Case):
 
 class TestJudge(unittest.TestCase):
     def observed(self, **change):
-        return dict(DECLARED, size=1, size_vram=0, gpu_used_bytes=None, quantization_level=None, other_models_loaded=3,
+        return dict(DECLARED, size=1, size_vram=0, gpu_used_bytes=None, quantization_level=None, other_models_loaded=0,
                     keep_alive_remaining_seconds=100) | change
 
     def test_gpu_placement_needs_the_whole_model_in_gpu_memory(self):
@@ -146,7 +146,10 @@ class TestJudge(unittest.TestCase):
                  ({"size": 100, "size_vram": 0, "gpu_used_bytes": 0}, "llm_serving_not_on_gpu"),
                  ({"size": None, "size_vram": 100, "gpu_used_bytes": 100}, "llm_serving_unverified"),
                  ({"size": 100, "size_vram": None, "gpu_used_bytes": 100}, "llm_serving_unverified"),
-                 ({"size": 0, "size_vram": 0, "gpu_used_bytes": 0}, "llm_serving_unverified")]
+                 ({"size": 0, "size_vram": 0, "gpu_used_bytes": 0}, "llm_serving_unverified"),
+                 # 다른 모델의 메모리가 GPU 합계에 들어가 파일 크기 대체값을 통과시킬 수 있다.
+                 ({"size": 100, "size_vram": 100, "gpu_used_bytes": 100, "other_models_loaded": 1}, "llm_serving_unverified"),
+                 ({"size": 100, "size_vram": 100, "gpu_used_bytes": 500, "other_models_loaded": 3}, "llm_serving_unverified")]
         for change, reason in cases:
             with self.subTest(change=change):
                 self.assertEqual(judge_serving(self.observed(**change), ON_GPU), reason)
@@ -172,6 +175,7 @@ class TestJudge(unittest.TestCase):
     def test_any_placement_does_not_judge_gpu_memory(self):
         self.assertIsNone(judge_serving(self.observed(size=100, size_vram=0), DECLARED))
         self.assertIsNone(judge_serving(self.observed(size=None, size_vram=None), DECLARED))
+        self.assertIsNone(judge_serving(self.observed(other_models_loaded=3), DECLARED))
 
     def test_same_values_pass_and_recorded_fields_are_not_judged(self):
         self.assertIsNone(judge_serving(self.observed(), DECLARED))

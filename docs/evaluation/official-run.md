@@ -217,7 +217,7 @@ curl -s http://<docker0 IP>:<포트>/api/ps   # digest, context_length, size, si
 
 - **지원 범위:** `nvidia-smi`가 프로세스별 메모리를 내주는 NVIDIA GPU만이다. 다른 backend나 `[N/A]`이면 `llm_serving_unverified`로 공식 회차를 만들지 않는다.
 - **90%는 실제 GPU로 맞춘 값이 아니다.** 시범에서 `gpu_used_bytes`와 `size_vram`을 비교해 확인한다. 값을 바꾸면 양쪽 회차를 처음부터 다시 돈다.
-- **모든 compute 프로세스의 합이다.** 다른 GPU 작업이 있으면 부풀어서 이 검사가 뚫린다. 아래 세션 점검을 지킨다.
+- **모든 compute 프로세스의 합이다.** 다른 GPU 작업이 있으면 부풀어서 이 검사가 뚫린다. `/api/ps`에 다른 모델이 보이면 러너가 `llm_serving_unverified`로 막지만, Ollama 밖의 GPU 프로세스는 구분하지 못한다. 그래서 아래 세션 점검을 지킨다.
 
 프로파일은 `official-35b.json`을 복사해 `environment`만 바꾼다. local의 `sampling`은 서버가 적용하는 세 값뿐이다(프로토콜 §6).
 

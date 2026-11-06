@@ -148,6 +148,9 @@ def judge_serving(observed: dict, declared: dict, *, min_keep_alive_seconds: int
         # size_vram이 size보다 크면 Ollama CLI도 Unknown으로 본다.
         if size is None or in_gpu is None or size <= 0 or in_gpu > size or gpu_used is None:
             return UNVERIFIED
+        # GPU 판독은 프로세스 합계다. 다른 모델이 떠 있으면 그 메모리로 이 모델의 적재를 대신할 수 있다.
+        if observed["other_models_loaded"] > 0:
+            return UNVERIFIED
         if in_gpu < size or gpu_used < in_gpu * GPU_ACCOUNTING_MIN_RATIO:
             return NOT_ON_GPU
     if min_keep_alive_seconds is not None:
