@@ -1510,10 +1510,10 @@ func (s *ExplorationStore) ActivityList(nodeID *int64, sinceID int64, limit int)
 	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
 	if nodeID != nil {
 		rows, err = s.db.Query(`SELECT `+cols+`
-FROM activity WHERE exploration_id=$1 AND node_id=$2 AND id>$3 ORDER BY id LIMIT $4`, s.expID, *nodeID, sinceID, limit)
+FROM activity WHERE exploration_id=$1 AND node_id=$2 AND id>$3 AND kind IS DISTINCT FROM 'thinking' ORDER BY id LIMIT $4`, s.expID, *nodeID, sinceID, limit)
 	} else {
 		rows, err = s.db.Query(`SELECT `+cols+`
-FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, sinceID, limit)
+FROM activity WHERE exploration_id=$1 AND id>$2 AND kind IS DISTINCT FROM 'thinking' ORDER BY id LIMIT $3`, s.expID, sinceID, limit)
 	}
 	if err != nil {
 		return nil, sinceID, err
@@ -1626,7 +1626,7 @@ func (s *ExplorationStore) ActivityPage(f ActivitySessionFilter, before int64, l
 	limitArg := len(args) + 1
 	args = append(args, limit+1) // one extra row to detect older history
 	q := fmt.Sprintf(`SELECT `+cols+`
-FROM activity WHERE exploration_id=$1%s AND ($%d <= 0 OR id < $%d)
+FROM activity WHERE exploration_id=$1%s AND kind IS DISTINCT FROM 'thinking' AND ($%d <= 0 OR id < $%d)
 ORDER BY id DESC LIMIT $%d`, cond, beforeArg, beforeArg, limitArg)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -1768,7 +1768,7 @@ RETURNING seq, created_at`, s.expID).Scan(&m.Seq, &m.CreatedAt)
 // ActivityDetail lazily returns the full detail blob for one step.
 func (s *ExplorationStore) ActivityDetail(id int64) (string, error) {
 	var d sql.NullString
-	err := s.db.QueryRow(`SELECT detail FROM activity WHERE id=$1 AND exploration_id=$2`, id, s.expID).Scan(&d)
+	err := s.db.QueryRow(`SELECT detail FROM activity WHERE id=$1 AND exploration_id=$2 AND kind IS DISTINCT FROM 'thinking'`, id, s.expID).Scan(&d)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

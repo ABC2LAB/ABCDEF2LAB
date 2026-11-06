@@ -120,11 +120,15 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 	if cfg.HeaderMode == "" {
 		cfg.HeaderMode = HeaderPreserve
 	}
-	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal {
+	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal && cfg.HeaderMode != HeaderEvaluationCallerPassthrough {
 		return nil, ErrConfig
 	}
+	cfg.Evaluation, err = validateEvaluationCallerContext(cfg)
+	if err != nil {
+		return nil, err
+	}
 	for _, rule := range rules {
-		if cfg.HeaderMode == HeaderPreserve && len(rule.CredentialHeaders) != 0 {
+		if cfg.HeaderMode != HeaderProtectedSessionProposal && len(rule.CredentialHeaders) != 0 {
 			return nil, ErrConfig
 		}
 	}
@@ -601,13 +605,13 @@ func (e *Execution) snapshotLocked(id int64) ExecutionView {
 		ids = append(ids, intent)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	return ExecutionView{HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
+	return ExecutionView{Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
 		State: state, ExpiresAt: e.cfg.ExpiresAt, Counts: e.counts, Reason: reason, AuditComplete: !e.auditFailed && e.cfg.Recorder != nil}
 }
 func (e *Execution) Policy() PolicyView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	v := PolicyView{HeaderMode: e.cfg.HeaderMode, Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
+	v := PolicyView{Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
 	for _, r := range e.rules {
 		v.Rules = append(v.Rules, RuleView{Ref: r.Ref, Methods: append([]string(nil), r.Methods...), PathScopeRef: r.PathScopeRef})
 	}
@@ -874,14 +878,13 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
 	}
+	e := c.e
 	requestHost, hostOK := preservedRequestHost(req)
-	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") ||
-		headerPresent(req.Header, "Authorization") || headerPresent(req.Header, "Cookie") {
+	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") || !e.callerCredentialsAllowed(req.Header) {
 		r.Decision = "unsupported"
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
 	}
-	e := c.e
 	e.mu.Lock()
 	reason := c.blockedLocked()
 	rule, ok := e.matchLocked(req)
