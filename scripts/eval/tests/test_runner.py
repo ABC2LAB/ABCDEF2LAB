@@ -224,7 +224,7 @@ class FakePorts:
         self.host = {"cpu_model": "Example CPU", "logical_cpus": 8, "memory_kib": 16 * 1024 * 1024,
                      "kernel": "6.0.0-example", "docker_server_version": "29.1.3", "machine_id_sha256": "c" * 64}
         # 엔진 설정 응답(runner_engine이 프록시를 설정 여부로 바꾼 뒤): 선언 worker_count·모델과 같고 프록시 없음.
-        self.settings = {"settings": {"workers": spec.worker_count, "web_search_proxy_set": False,
+        self.settings = {"settings": {"workers": spec.worker_count, "output_language": "ko", "web_search_proxy_set": False,
                                       "global_proxy_set": False, "llm_pool_enabled": False},
                          "llm": {"model": spec.model_tag, "proxy_set": False, "reasoning_effort": "", "thinking_type": "",
                                  "context_window_k": spec.context_window_k}}
@@ -1228,7 +1228,11 @@ class TestFailures(unittest.TestCase):
         conditions = result["run_conditions"]
         settings = evidence.files["engine-settings.json"]
         self.assertEqual(settings, ports.settings)
-        self.assertEqual(conditions["engine_settings_sha256"], runner.canonical_sha256(settings))
+        comparable = copy.deepcopy(settings)
+        del comparable["settings"]["output_language"]
+        self.assertEqual(conditions["engine_settings_sha256"], runner.canonical_sha256(comparable))
+        self.assertEqual(conditions["output_language"], "ko")
+        self.assertEqual(settings["settings"]["output_language"], "ko")  # 근거 파일에는 그대로 남는다
         self.assertEqual(conditions["workers"], ports.spec.worker_count)
         self.assertIs(conditions["llm_stream"], ports.spec.llm_stream)
         # 선언값이 아니라 게이트웨이가 마커에 남긴 적용값이 기록된다.
@@ -1269,6 +1273,27 @@ class TestFailures(unittest.TestCase):
             with self.subTest(label=label):
                 result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.settings))
                 self.assert_invalid(result, ports, evidence, "engine_settings_mismatch")
+                self.assertNotIn("start_task", ports.calls)
+
+    def test_output_language_stays_out_of_the_settings_hash_and_nothing_else_does(self):
+        def conditions(change):
+            result, *_ = run(lambda p, m, c, f=change: f(p.settings))
+            self.assertEqual(result["status"], COMPLETE)
+            return result["run_conditions"]
+        korean = conditions(lambda s: None)
+        english = conditions(lambda s: s["settings"].update(output_language="en"))
+        self.assertEqual(english["output_language"], "en")
+        self.assertEqual(english["engine_settings_sha256"], korean["engine_settings_sha256"])
+        other = conditions(lambda s: s["settings"].update(llm_record=True))
+        self.assertNotEqual(other["engine_settings_sha256"], korean["engine_settings_sha256"])
+
+    def test_missing_or_malformed_output_language_invalidates_before_the_task(self):
+        changes = {"없음": lambda s: s["settings"].pop("output_language"),
+                   "문자열 아님": lambda s: s["settings"].update(output_language=1)}
+        for label, change in changes.items():
+            with self.subTest(label=label):
+                result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.settings))
+                self.assert_invalid(result, ports, evidence, "engine_settings_failed")
                 self.assertNotIn("start_task", ports.calls)
 
     def test_settings_go_in_before_the_snapshot_that_checks_them(self):

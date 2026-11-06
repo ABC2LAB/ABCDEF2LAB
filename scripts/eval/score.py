@@ -318,6 +318,8 @@ def build_report(
     # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
     e2_modes: dict[str, set[str]] = {}
     e2_identities: dict[str, set[tuple[str, str]]] = {}
+    # 표시 언어도 baseline·개선 후가 일부러 다르다(프로토콜 §2). 조건 하나 안에서만 같아야 한다.
+    output_languages: dict[str, set[str]] = {}
     control: dict[str, list[dict | None]] = {}
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
@@ -359,6 +361,12 @@ def build_report(
                 raise ComparabilityError(f"E② 자리 혼합({m.condition}: {sorted(modes)}) — 조건 하나는 같은 E② 배치로만 "
                                          "집계(프로토콜 §2)")
         # 같은 조건이면 같은 E²여야 한다. 정책이나 이미지가 회차마다 다르면 한 조건으로 묶어 평균 낼 수 없다.
+        if inputs.output_language is not None:
+            languages = output_languages.setdefault(m.condition, set())
+            languages.add(inputs.output_language)
+            if len(languages) > 1:
+                raise ComparabilityError(f"표시 언어 혼합({m.condition}: {sorted(languages)}) — 조건 하나는 같은 언어로만 "
+                                         "집계(프로토콜 §2)")
         if inputs.e2_identity is not None:
             identities = e2_identities.setdefault(m.condition, set())
             identities.add(inputs.e2_identity)

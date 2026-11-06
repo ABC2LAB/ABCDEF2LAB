@@ -19,6 +19,7 @@ ALLOWED_ACTORS = frozenset({"engine", "observer"})
 # 양성 대조는 연결 성공, 부정 경로는 실패가 기대값이다.
 _PROBE_EXPECTED = {"positive": "success", "negative": "fail"}
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+_OUTPUT_LANGUAGE = re.compile(r"[a-z]{2,3}\Z")
 _PROOF_FIELDS = frozenset(_CONTEXT) | {"proof_id", "window", "snapshots", "network", "host",
                                        "enforcement_evidence_sha256", "preparation", "observer"}
 _ROW_FIELDS = {
@@ -40,8 +41,8 @@ _ROW_FIELDS = {
                              "sequence_complete"},
     "drain": {"engine_end", "sealed_at", "drained_at", "inflight", "grace_seconds", "settle_seconds",
               "forced_cancelled", "settle_applied_seconds"},
-    "run_conditions": {"engine_settings_sha256", "engine_rules_sha256", "workers", "sampling", "host", "machine_id_sha256",
-                       "llm_stream"},
+    "run_conditions": {"engine_settings_sha256", "engine_rules_sha256", "output_language", "workers", "sampling", "host",
+                       "machine_id_sha256", "llm_stream"},
     "e2_placement": {"mode", "decision_rows", "allowed", "unsupported", "unavailable"},
     "verdict_collection": {"status", "reason"},
     "e2_product": {"close_state", "close_reason", "collection_outcome", "collection_reason", "rows", "attempts", "decisions",
@@ -243,6 +244,8 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     _hex(row["machine_id_sha256"], "isolation_evidence.run_conditions.machine_id_sha256")
     if row["engine_rules_sha256"] is not None:
         _hex(row["engine_rules_sha256"], "isolation_evidence.run_conditions.engine_rules_sha256")
+    if not isinstance(row["output_language"], str) or not _OUTPUT_LANGUAGE.fullmatch(row["output_language"]):
+        raise IsolationError("isolation_evidence.run_conditions.output_language: 언어 코드 형식 오류")
     _int(row["workers"], "isolation_evidence.run_conditions.workers", low=1)
     if type(row["llm_stream"]) is not bool:
         raise IsolationError("isolation_evidence.run_conditions.llm_stream: bool")
@@ -405,6 +408,11 @@ def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str,
     row = _one(_rows(evidence, receipt), "run_conditions")
     return (row["engine_settings_sha256"], canonical_sha256(row["sampling"]), canonical_sha256(row["host"]),
             row["machine_id_sha256"], "true" if row["llm_stream"] else "false", row["engine_rules_sha256"] or "없음")
+
+
+def output_language(receipt: dict, evidence: object) -> str:
+    """check_isolation을 통과한 근거의 표시 언어. 채점기가 조건 하나 안에서 같은지 대조한다(프로토콜 §2)."""
+    return _one(_rows(evidence, receipt), "run_conditions")["output_language"]
 
 
 def drain_policy(receipt: dict, evidence: object) -> tuple[int, int]:
