@@ -59,3 +59,9 @@ docker build -f deploy/eval/practice/vampi.Dockerfile -t abc2lab-practice-vampi:
 - 회차가 끝난 뒤 남은 컨테이너와 회차 망은 0개였다.
 - 이 기록으로 `score.py`를 돌리면 "스냅샷에 GT 챌린지 key 누락"으로 exit 2가 된다.
 - `control_demo.py`는 해결 기록 행을 `—`로 표시한다.
+
+같은 날 실제 Ollama 모델로도 baseline을 1회 돌렸다. `granite3.1-moe:1b`를 CPU로 서빙했고(`OLLAMA_CONTEXT_LENGTH=16384`), 시간 예산은 720초였다.
+
+- 게이트웨이의 실제 로컬 서버 전달, 스트리밍 응답, seal·drain, 결과 서명까지 통과했다. Ollama 로그의 프롬프트 잘림 경고는 0건이었다.
+- 끝난 LLM 호출은 2건(49초, 4분 36초)이었다. 대상 요청은 0건으로 시간 예산에 닿아 끝났다.
+- 그래서 도구 호출이 이어지는지는 확인하지 못했다. CPU 서빙으로는 이 시험을 할 수 없고 GPU가 필요하다.
