@@ -17,6 +17,7 @@ export const SCREENS = [
   "audit",
   "access-map",
   "e2-flow",
+  "coverage",
   "tokens",
 ] as const;
 
