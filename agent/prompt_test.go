@@ -90,43 +90,35 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 // (Chinese) directive, so finding one means the output-language mandate names that
 // language. Used by the directive and role-append tests below.
 var langMarker = map[string]string{
-	"ko": "한국어",
+	"ko": "Korean",
 	"en": "English",
-	"zh": "简体中文",
-	"es": "Español",
-	"ja": "日本語",
+	"zh": "Simplified Chinese",
+	"es": "Spanish",
+	"ja": "Japanese",
 }
 
-// TestLangDirectiveLocalized pins the output-language tail across all
-// four display languages: each language's directive names that language, preserves
-// raw technical strings, forbids mirroring the target/material language, and names
-// the planner situation summary. For every non-Chinese display language the "never
-// emit Chinese to the user" clause is present; for Chinese it is absent (Chinese
-// output is the goal there).
+// TestLangDirectiveLocalized 는 표시 언어마다 지시문이 그 언어를 지명하고, 기술 원문 보존,
+// 대상·자료 언어 모방 금지, planner 상황 요약 포함, 내부 추론 비노출을 유지하는지 고정한다.
 func TestLangDirectiveLocalized(t *testing.T) {
 	for _, code := range SupportedOutputLangs {
 		dir := langDirective(code)
 		if !strings.Contains(dir, langMarker[code]) {
 			t.Fatalf("%s: langDirective must name the display language (%q), got %q", code, langMarker[code], dir)
 		}
-		if !strings.Contains(dir, "payload") || !strings.Contains(dir, "原样逐字保留") {
+		if !strings.Contains(dir, "payloads") || !strings.Contains(dir, "kept exactly as they are") {
 			t.Fatalf("%s: langDirective must keep commands/payloads verbatim, got %q", code, dir)
 		}
-		if !strings.Contains(dir, "不要镜像或照抄目标") {
+		if !strings.Contains(dir, "Don't mirror or copy the language of the target or material") {
 			t.Fatalf("%s: langDirective must forbid mirroring the target/material language, got %q", code, dir)
 		}
-		if !strings.Contains(dir, "态势") {
+		if !strings.Contains(dir, "planner's situation summary") {
 			t.Fatalf("%s: langDirective must name the planner situation summary as user-facing, got %q", code, dir)
 		}
-		// The anti-Chinese-leak clause applies to every non-Chinese display
-		// language (planner situation-summary drift). When the display language IS
-		// Chinese, Chinese output is correct, so the clause must be absent.
-		hasNoZhClause := strings.Contains(dir, "也绝不能把中文输出给用户")
-		if code == "zh" && hasNoZhClause {
-			t.Fatalf("zh: directive must NOT forbid Chinese output when the display language is Chinese, got %q", dir)
+		if !strings.Contains(dir, "invisible internal reasoning") {
+			t.Fatalf("%s: langDirective must keep internal reasoning out of the visible reply, got %q", code, dir)
 		}
-		if code != "zh" && !hasNoZhClause {
-			t.Fatalf("%s: langDirective must forbid leaking Chinese to the user, got %q", code, dir)
+		if hasHan(dir) {
+			t.Fatalf("%s: langDirective must not contain Han characters, got %q", code, dir)
 		}
 	}
 }
