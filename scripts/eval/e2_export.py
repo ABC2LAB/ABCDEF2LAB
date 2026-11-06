@@ -61,9 +61,13 @@ MAX_INT = (1 << 63) - 1
 class E2ExportError(ValueError):
     """고정 코드만 담는다."""
 
+    def __init__(self, code: str):
+        super().__init__("e2_export: " + code)
+        self.code = code
+
 
 def _fail(code: str) -> None:
-    raise E2ExportError("e2_export: " + code) from None
+    raise E2ExportError(code) from None
 
 
 @dataclass(frozen=True)
@@ -114,7 +118,8 @@ def _reject_constant(_value: str) -> None:
     _fail("JSON_INVALID")
 
 
-def _object(data: bytes) -> dict:
+def strict_object(data: bytes) -> dict:
+    """중복 키·NaN·깨진 UTF-8을 거부하는 JSON 객체 해석."""
     try:
         value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
     except (UnicodeError, ValueError, RecursionError) as exc:
@@ -166,7 +171,7 @@ def _check_expectation(expected: E2Expectation) -> None:
 def parse_manifest(data: bytes, expected: E2Expectation) -> dict:
     """형식과 러너가 아는 값을 대조한다. 다르면 설정 위반이다(프로토콜 §2). 파일 이름은 실행 디렉터리 안의 한 단계만 받는다."""
     _check_expectation(expected)
-    manifest = _object(data)
+    manifest = strict_object(data)
     if not _REQUIRED_MANIFEST <= set(manifest) or set(manifest) - _MANIFEST_FIELDS:
         _fail("MANIFEST_FIELDS")
     if manifest["format"] != MANIFEST_FORMAT:
@@ -261,7 +266,7 @@ def _check_observation(row: dict) -> None:
 
 
 def _row(line: bytes, manifest: dict) -> dict:
-    row = _object(line)
+    row = strict_object(line)
     keys = set(row)
     if not _REQUIRED_ROW <= keys or keys - _REQUIRED_ROW - _OPTIONAL_ROW:
         _fail("ROW_FIELDS")
