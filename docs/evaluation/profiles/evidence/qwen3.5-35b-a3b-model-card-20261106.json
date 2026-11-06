@@ -1,0 +1,83 @@
+{
+  "purpose": "공식 비교 샘플링 고정 근거(평가 프로토콜 §6). 모델 공식 카드의 권장 샘플링을 따른다.",
+  "source": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B (README.md, Best Practices)",
+  "model_card_commit": "59d61f3ce65a6d9863b86d2e96597125219dc754",
+  "model_card_last_modified": "2026-04-24T02:38:38.000Z",
+  "readme_sha256": "71c3bbc2eadadd5980bbdbb15df958c27d42ede24821015602a021109aacf492",
+  "fetched_at": "2026-11-06",
+  "recommended": {
+    "thinking_general": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repetition_penalty": 1.0
+    },
+    "thinking_precise_coding": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "instruct_general": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repetition_penalty": 1.0
+    },
+    "instruct_reasoning_usage": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repetition_penalty": 1.0
+    },
+    "instruct_reasoning_best_practices": {
+      "temperature": 1.0,
+      "top_p": 1.0,
+      "top_k": 40,
+      "min_p": 0.0,
+      "presence_penalty": 2.0,
+      "repetition_penalty": 1.0
+    }
+  },
+  "quoted_lines": [
+    "> We recommend using the following set of sampling parameters for generation",
+    "> - Thinking mode for general tasks: `temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0`",
+    "> - Thinking mode for precise coding tasks (e.g. WebDev): `temperature=0.6, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=0.0, repetition_penalty=1.0`",
+    "> - Instruct (or non-thinking) mode for general tasks: `temperature=0.7, top_p=0.8, top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0`",
+    "> - Instruct (or non-thinking) mode for reasoning tasks: `temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0`",
+    "> Please note that the support for sampling parameters varies according to inference frameworks.",
+    "> Qwen3.5 models operate in thinking mode by default, generating thinking content signified by `<think>\\n...</think>\\n\\n` before producing the final responses.",
+    "       `temperature=1.0`, `top_p=1.0`, `top_k=40`, `min_p=0.0`, `presence_penalty=2.0`, `repetition_penalty=1.0`",
+    "   - For supported frameworks, you can adjust the `presence_penalty` parameter between 0 and 2 to reduce endless repetitions. However, using a higher value may occasionally result in language mixing and a slight decrease in model performance."
+  ],
+  "card_inconsistency": "instruct(non-thinking) 추론 작업 값은 카드 두 곳이 다르다(사용법 절과 Best Practices). 쓰지 않는 모드이고, 고른 thinking 일반 작업 값은 두 곳이 같다.",
+  "greedy_statement": "이 카드에는 greedy(temperature 0) 사용 금지 문구가 없다. 권장 샘플링 표는 있으므로 그 값을 쓴다.",
+  "chosen_mode": "thinking_general",
+  "chosen_reason": "모델 기본이 thinking 모드이고 엔진(baseline·개선 후)은 thinking을 끄지 않는다(LLM 설정 reasoning_effort는 새 엔진 DB에서 빈 값이라 요청에 넣지 않음). 침투 시험 에이전트는 '정밀 코딩(WebDev)'이 아니라 일반 작업이다. 값은 Qwen3.6 카드의 같은 모드와 같다.",
+  "chosen": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "repetition_penalty": 1.0
+  },
+  "seed": 42,
+  "provider_supports": {
+    "temperature": true,
+    "top_p": true,
+    "top_k": true,
+    "min_p": true,
+    "presence_penalty": true,
+    "repetition_penalty": true,
+    "seed": true
+  }
+}

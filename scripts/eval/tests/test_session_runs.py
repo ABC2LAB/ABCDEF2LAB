@@ -53,7 +53,7 @@ class Session:
         self._result(directory, side, minute, status="complete", task_request_sha256=task.replace("t", "a"),
                      e2_mode=e2_mode)
         record = {"run_id": directory.name, "engine": side, "condition": condition or CONDITION[side],
-                  "repeat_index": repeat, "model_tag": "qwen/qwen3.6-35b-a3b", "reset_generation": "r" * 64,
+                  "repeat_index": repeat, "model_tag": "qwen/qwen3.5-35b-a3b", "reset_generation": "r" * 64,
                   "total_requests": total_requests, "blocked_attempts": None, "elapsed_seconds": 1200.5,
                   "artifacts": {"pre": {"path": "pre/normalized.json"}, "post": {"path": "post/normalized.json"},
                                 "records": None}}

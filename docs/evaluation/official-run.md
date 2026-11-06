@@ -65,11 +65,11 @@
 
    ```bash
    D=$(mktemp -d) && curl -sS --max-time 20 -o "$D/endpoints.json" \
-     https://openrouter.ai/api/v1/models/qwen/qwen3.6-35b-a3b/endpoints
+     https://openrouter.ai/api/v1/models/qwen/qwen3.5-35b-a3b/endpoints
    cd "$T" && python3 -I -B scripts/eval/provider_recheck.py "$D/endpoints.json"
    ```
 
-   샘플링 7개와 엔진이 보내는 파라미터(`tools`·`max_tokens`·`stop`)가 모두 지원 목록에 있어야 한다(게이트웨이가
+   샘플링 7개와 엔진이 보내는 파라미터(`tools`·`max_tokens`)가 모두 지원 목록에 있어야 한다(게이트웨이가
    `require_parameters:true`를 넣는다). 종료 코드 0이면 출력의 응답 sha256을 세션 기록에 남긴다. 1이면 무엇이 달라졌는지 stderr에 나온다. **그 세션은 시작하지 않고** 팀에 알린다.
 
 ## 4. 입력 준비 (세션 전 1회)
