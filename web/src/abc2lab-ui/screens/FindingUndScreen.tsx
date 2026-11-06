@@ -38,6 +38,7 @@ export function FindingUndDetail({ record }: { record: FindingRecord }) {
   const held = heldBeforeSend(record); // E² 송신 전 차단(held_pre_send) 에만 true
   const notSent = notTransmitted(record); // held_pre_send | none (전송·응답 없음)
   const allUnknown = allEvidenceUnknown(record); // 세 체크·6 신호 전부 unknown 일 때만 "모두 불명"
+  const normalCollected = record.signals.ownerNormalData === "yes"; // 정상 대조(소유자 정상 응답) 수집됐나
   const missing = missingEvidence(record);
 
   return (
@@ -104,7 +105,8 @@ export function FindingUndDetail({ record }: { record: FindingRecord }) {
           ) : (
             <>충족된 신호는 아래 통제변수의 신호 상태로 확인하세요. </>
           )}
-          GET이라도 상태 변경이 없다고 가정하지 않고, 정상 대조도 같은 이유로 미수집이에요.
+          GET이라도 상태 변경이 없다고 가정하지 않아요.
+          {!normalCollected && " 정상 대조(소유자 정상 응답)도 아직 확인되지 않았어요."}
         </div>
       </div>
 

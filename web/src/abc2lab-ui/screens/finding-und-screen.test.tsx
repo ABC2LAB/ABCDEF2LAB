@@ -86,6 +86,18 @@ describe("FindingUndDetail — E² 송신 전 차단 판단 불가", () => {
     expect(text).not.toContain("보내기 전에 막아뒀어요"); // E² 차단 단정 없음
     expect(text).not.toContain("승인 대기"); // 승인 대기 단정 없음
   });
+
+  // 이동찬 리뷰(#250): 정상 대조 신호가 수집됐으면 '미수집/미확인'을 단정하지 않는다.
+  it("ownerNormalData=yes(수집됨)이면 '정상 대조 미확인'을 말하지 않는다", () => {
+    const { container } = render(
+      <FindingUndDetail
+        record={heldRec({ transmission: "sent", signals: { ...heldRec().signals, ownerNormalData: "yes" } })}
+      />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("정상 대조(소유자 정상 응답)도 아직 확인되지 않았어요");
+    expect(text).toContain("가정하지 않아요"); // GET 상태변경 원칙문은 유지
+  });
 });
 
 describe("FindingUndScreen", () => {
