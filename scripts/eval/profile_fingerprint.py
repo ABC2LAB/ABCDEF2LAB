@@ -63,8 +63,12 @@ MAX_PENALTY = 2
 # 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
 _LLM_FIELDS = {
     "api": ("backend", "base_url", "model", "provider", "fallbacks"),
-    "local": ("backend", "base_url", "model", "hostname", "host_ip"),
+    # 태그만으로는 고정이 아니다. 가중치 digest·서버가 할당한 컨텍스트·서버 버전을 함께 선언한다(러너가 실제 값과 대조).
+    "local": ("backend", "base_url", "model", "hostname", "host_ip", "model_digest", "context_length", "server_version"),
 }
+_MODEL_DIGEST = re.compile(r"[0-9a-f]{64}")
+_SERVER_VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
+MAX_CONTEXT_LENGTH = 4 * 1024 * 1024
 
 
 class ProfileError(ValueError):
@@ -236,7 +240,10 @@ def _llm(value: object) -> bool:
         address = None
     return (_service_name(value["hostname"]) and parsed.hostname == value["hostname"]
             and _tagged_reference(value["model"]) and address is not None and host_ip == str(address)
-            and any(address in network for network in _LOCAL_NETWORKS))
+            and any(address in network for network in _LOCAL_NETWORKS)
+            and isinstance(value["model_digest"], str) and bool(_MODEL_DIGEST.fullmatch(value["model_digest"]))
+            and type(value["context_length"]) is int and 1 <= value["context_length"] <= MAX_CONTEXT_LENGTH
+            and isinstance(value["server_version"], str) and bool(_SERVER_VERSION.fullmatch(value["server_version"])))
 
 
 def _path(value: object) -> str:

@@ -27,7 +27,7 @@ LOCAL_SAMPLING = {"top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0
 
 def local_llm():
     return {"backend": "local", "base_url": "http://llm-host:11434/v1", "model": "example-model:fixed-tag",
-            "hostname": "llm-host", "host_ip": "172.17.0.1"}
+            "hostname": "llm-host", "host_ip": "172.17.0.1", "model_digest": "a" * 64, "context_length": 32768, "server_version": "0.32.6"}
 
 
 def configuration():
@@ -282,6 +282,18 @@ class TestCheckPreflight(unittest.TestCase):
             local_llm() | {"model": "example-model:latest"},
             local_llm() | {"model": "example-model"},
             local_llm() | {"provider": "example-provider"},
+            local_llm() | {"model_digest": "A" * 64},
+            local_llm() | {"model_digest": "a" * 63},
+            local_llm() | {"model_digest": 1},
+            local_llm() | {"context_length": 0},
+            local_llm() | {"context_length": 5 * 1024 * 1024},
+            local_llm() | {"context_length": True},
+            local_llm() | {"context_length": "32768"},
+            local_llm() | {"server_version": "latest"},
+            local_llm() | {"server_version": 1},
+            {key: value for key, value in local_llm().items() if key != "model_digest"},
+            {key: value for key, value in local_llm().items() if key != "context_length"},
+            {key: value for key, value in local_llm().items() if key != "server_version"},
             {key: value for key, value in local_llm().items() if key != "host_ip"},
         ]
         for value in invalid:

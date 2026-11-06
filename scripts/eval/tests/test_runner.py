@@ -168,6 +168,7 @@ class FakeEvidence:
 
 class FakePorts:
     def __init__(self, spec):
+        self.serving = {}
         self.rules_sha256 = None
         self.spec = spec
         self.calls = []
@@ -371,6 +372,12 @@ class FakePorts:
     def intercept_summary(self):
         self._call("intercept_summary")
         return {"format": "intercept", "total": 0}
+
+    def local_serving(self, phase):
+        self._call(f"local_serving:{phase}")
+        observed = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768, "size": 100,
+                    "size_vram": 100, "quantization_level": "Q4", "other_models_loaded": 0}
+        return observed | self.serving.get(phase, {})
 
     def sign(self, payload):
         self.sign_calls += 1
@@ -1272,6 +1279,32 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         self.assertEqual(spec.llm_sampling, {"temperature": local_declared["ours"]["temperature"],
                                              **LOCAL_SAMPLING, "seed": local_declared["ours"]["seed"]})
 
+    def test_spec_expects_the_declared_serving_only_for_local(self):
+        config = parse_runner_config(runner_config())
+        api = configuration()
+        self.assertIsNone(build_spec(config, plan_run(config, api, "ours", "ours-1"), api, "t" * 64, "c", 0).llm_serving)
+        local = configuration()
+        for side in ("baseline", "ours"):
+            local[side]["llm"] = local_llm()
+            local[side]["sampling"] = dict(LOCAL_SAMPLING)
+        spec = build_spec(config, plan_run(config, local, "ours", "ours-1"), local, "t" * 64, "c", 0)
+        self.assertEqual(spec.llm_serving, {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768})
+
+    def test_local_serving_reads_the_fixed_ip_and_loads_only_before_the_run(self):
+        config = parse_runner_config(runner_config())
+        local = configuration()
+        for side in ("baseline", "ours"):
+            local[side]["llm"] = local_llm()
+            local[side]["sampling"] = dict(LOCAL_SAMPLING)
+        ports = DockerPorts(config, plan_run(config, local, "ours", "ours-1"), None, docker=None, findings=dict,
+                            start=lambda: "1", settings=dict)
+        with patch.object(runner, "read_serving", return_value={"x": 1}) as read:
+            self.assertEqual(ports.local_serving("pre"), {"x": 1})
+            ports.local_serving("post")
+        timeout = config.run["llm_load_timeout_seconds"]
+        self.assertEqual(read.call_args_list[0].args, ("172.17.0.1", 11434, "example-model:fixed-tag", timeout))
+        self.assertEqual([call.kwargs["load"] for call in read.call_args_list], [True, False])
+
     def test_scoreboard_passes_the_configured_observer_format(self):
         for observer_format, opaque in (("challenge_scoreboard", False), ("opaque", True)):
             with self.subTest(observer_format), tempfile.TemporaryDirectory() as temporary:
@@ -1513,6 +1546,52 @@ class TestCommandLine(unittest.TestCase):
                                   text=True, timeout=60, check=False)
         self.assertEqual(done.returncode, 0, done.stderr[-500:])
         self.assertIn("--side", done.stdout)
+
+
+SERVING = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768}
+
+
+def serving_run(**serving):
+    spec = dataclasses.replace(make_spec(), llm_serving=dict(SERVING))
+    return run(mutate=lambda ports, meter, clock: ports.serving.update(serving), spec=spec)
+
+
+class TestLocalServing(unittest.TestCase):
+    def test_api_never_reads_the_local_server(self):
+        result, ports, *_ = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertFalse([call for call in ports.calls if call.startswith("local_serving")])
+        self.assertIsNone(result["llm_serving"])
+
+    def test_reads_before_compose_up_and_after_the_llm_marker(self):
+        result, ports, _, evidence = serving_run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertLess(ports.calls.index("local_serving:pre"), ports.calls.index("up"))
+        self.assertGreater(ports.calls.index("local_serving:post"), ports.calls.index("seal_gateway"))
+        self.assertEqual(set(result["llm_serving"]), {"pre", "post"})
+        self.assertEqual(evidence.files["llm-serving.json"]["post"]["model_digest"], "a" * 64)
+
+    def test_mismatch_before_the_run_stops_before_compose_up(self):
+        for change in ({"context_length": 4096}, {"model_digest": "b" * 64}, {"server_version": "0.33.0"}):
+            with self.subTest(change=change):
+                result, ports, _, evidence = serving_run(pre=change)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_mismatch"]))
+                self.assertNotIn("up", ports.calls)
+                self.assertIn("llm-serving.json", evidence.files)
+
+    def test_change_after_the_run_invalidates_it(self):
+        result, *_ = serving_run(post={"context_length": 4096})
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_mismatch"]))
+
+    def test_unloaded_model_after_the_run_is_unverified(self):
+        result, *_ = serving_run(post={"model_digest": None, "context_length": None})
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_unverified"]))
+
+    def test_read_failure_is_its_own_reason(self):
+        def fail(ports, meter, clock):
+            ports.local_serving = lambda phase: (_ for _ in ()).throw(ValueError("x"))
+        result, *_ = run(mutate=fail, spec=dataclasses.replace(make_spec(), llm_serving=dict(SERVING)))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_read_failed"]))
 
 
 class TestSignatureKey(unittest.TestCase):

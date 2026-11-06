@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
+from urllib.parse import urlsplit
 
 # python3 -I(-P 포함)는 스크립트 디렉터리를 sys.path에 올리지 않는다(score.py와 같은 이유). 같은 디렉터리의
 # 평가 모듈(우리 코드)만 명시적으로 올린다 — cwd·사용자 site-packages는 계속 차단된다.
@@ -70,6 +71,7 @@ from runner_record import (  # noqa: E402
 from runner_window import (  # noqa: E402
     BackgroundWatch, HostWatch, events_reasons, judge_events, watch_reasons, watch_summary,
 )
+from runner_serving import judge_serving, read_serving  # noqa: E402
 from snapshot_collector import SnapshotEndpoint, collect_snapshot  # noqa: E402
 from snapshot_writer import SnapshotContext  # noqa: E402
 
@@ -83,6 +85,7 @@ RESULT_NAME = "runner-result.json"
 RECORD_NAME = "run-record.json"  # v1.1 러너 기록(채점기 입력)
 # 상태 차이 근거(프로토콜 §8.2, 러너 설정 state가 있을 때만). 건수·정수 id·테이블·열 이름·seq 값만 담는다.
 STATE_DIFF_NAME = "state-diff.json"
+SERVING_NAME = "llm-serving.json"
 STATE_DIFF_FORMAT = "abc2lab-state-diff-v1"
 MAX_CONDITION_LENGTH = 100
 COMPLETE, INVALID = "complete", "invalid"
@@ -132,6 +135,7 @@ class RunPorts(Protocol):
     def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list: ...
     def findings(self) -> dict: ...
     def intercept_summary(self) -> dict: ...
+    def local_serving(self, phase: str) -> dict: ...
     def sign(self, payload: dict) -> dict: ...
 
 
@@ -182,6 +186,8 @@ class RunSpec:
     observer_path: str
     observer_readonly_ref: str
     observer_format: str = OBSERVER_SCOREBOARD
+    # local 선언의 서버 버전·모델 digest·컨텍스트. api는 None.
+    llm_serving: dict | None = None
     # 상태 차이(프로토콜 §8.2)의 해결 신호 테이블. None이면 상태 사본을 뜨지 않는다(러너 설정 state=null).
     state_signal_tables: frozenset[str] | None = None
     # 상태 차이로 비교할 런타임 디렉터리. 비어 있으면 파일 사본을 뜨지 않는다.
@@ -202,6 +208,7 @@ class EventsHandle(Protocol):
 @dataclass
 class _State:
     up_attempted: bool = False
+    serving: dict = field(default_factory=dict)
     observer_calls: int = 0
     summary: dict = field(default_factory=dict)
     step: str = "start"
@@ -365,6 +372,16 @@ def _wait_llm_verified(spec: RunSpec, gateway: GatewayFiles, clock: Clock, state
         clock.sleep(spec.poll_seconds)
 
 
+def _check_serving(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase: str) -> None:
+    """로컬 서버의 실제 조건을 선언과 대조한다. 어긋나면 그 회차는 같은 조건이 아니다."""
+    state.serving[phase] = _step(state, "llm_serving_read_failed", lambda: ports.local_serving(phase))
+    reason = judge_serving(state.serving[phase], spec.llm_serving)
+    if reason is not None or phase == "post":
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(SERVING_NAME, state.serving))
+    if reason is not None:
+        raise RunFailure(reason)
+
+
 def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: GatewayFiles, evidence, clock: Clock,
                state: _State) -> None:
     if _step(state, "project_check_failed", ports.preexisting):
@@ -377,6 +394,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.host = _step(state, "host_spec_failed", ports.host_spec)
     if not _host_spec_ok(state.host):
         raise RunFailure("host_spec_failed")
+    if spec.llm_serving is not None:
+        # 띄우기 전에 본다. 여기서 모델도 적재해 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 한다.
+        _check_serving(spec, ports, evidence, state, "pre")
     state.up_attempted = True
     _step(state, "compose_up_failed", ports.up)
 
@@ -537,6 +557,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if llm_reasons:
         # 사유가 여럿이면 정렬 첫째를 회차 사유로, 전부는 llm-summary.json에 남는다.
         raise RunFailure(llm_reasons[0])
+    if spec.llm_serving is not None:
+        _check_serving(spec, ports, evidence, state, "post")
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
@@ -559,6 +581,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
+                     "llm_serving": state.serving or None,
                      # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline은 스위치가 없어 선언도 null.
                      "engine_llm_policy": {"declared": spec.llm_policy_mode, "observed": None},
                      "window": {"host_watch": window["host_watch"], "events": {
@@ -861,6 +884,11 @@ class DockerPorts:
     def intercept_summary(self) -> dict:
         return self._intercepted()
 
+    def local_serving(self, phase: str) -> dict:
+        llm = self.plan.llm
+        return read_serving(llm["host_ip"], urlsplit(llm["base_url"]).port or 80, llm["model"],
+                            self.config.run["llm_load_timeout_seconds"], load=phase == "pre")
+
     def sign(self, payload: dict) -> dict:
         # 키는 서명 직전에만 읽는다. 경로는 러너 설정(회차 디렉터리 밖)이며 compose·환경으로 넘기지 않는다.
         return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
@@ -879,6 +907,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_provider_slug=plan.llm.get("provider", ""),
         llm_provider_name=config.llm_gateway["expected_provider_name"],
         llm_sampling=json.loads(plan.compose_env["EVAL_LLM_SAMPLING"]),
+        llm_serving=(None if plan.llm["backend"] != "local" else
+                     {name: plan.llm[name] for name in ("server_version", "model_digest", "context_length")}),
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_request_sha256=task_request_sha256,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],

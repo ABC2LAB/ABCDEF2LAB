@@ -74,6 +74,7 @@
   "snapshot_timeout_seconds": 30,
   "snapshot_max_bytes": 4194304,
   "llm_verify_timeout_seconds": 300,
+  "llm_load_timeout_seconds": 600,
   "task_create_timeout_seconds": 30,
   "host_watch_interval_seconds": 2,
   "host_watch_max_gap_seconds": 15,
