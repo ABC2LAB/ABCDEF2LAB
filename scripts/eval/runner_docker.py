@@ -447,6 +447,24 @@ class Docker:
                           stdin=plan, code="docker_probe_failed")
         return output, _read_cidfile(cidfile)
 
+    def state_read(self, image: str, target_container_id: str, plan: bytes, uid: int, gid: int) -> bytes:
+        """대상 컨테이너의 네트워크 namespace에서 계측기 이미지(내용 ID)의 state-read 역할을 1회 실행한다.
+
+        probe와 같이 마운트·소켓·권한 없이 읽기 전용으로 돈다. 대상 netns의 loopback에만 닿는다. 구간 밖에서만 부른다(컨테이너 생성은
+        Docker 이벤트를 만든다). 종료 코드가 0이 아니면 호출 실패다.
+        """
+        if not _OBJECT_ID.fullmatch(target_container_id or ""):
+            raise DockerError("docker_state_read_target_invalid")
+        if not isinstance(image, str) or not _IMAGE_ID.fullmatch(image):
+            raise DockerError("docker_state_read_image_not_id")
+        if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0:
+            raise DockerError("docker_state_read_user_invalid")
+        return self.run(["run", "--rm", "-i", "--pull", "never",
+                         "--network", f"container:{target_container_id}",
+                         "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                         "--user", f"{uid}:{gid}", "--", image, "-role=state-read"],
+                        stdin=plan, code="docker_state_read_failed")
+
     def statfs(self, image: str, container_id: str, mount_paths: Sequence[str]) -> list[dict]:
         """대상 컨테이너의 tmpfs 마운트를 대상 밖에서 잰다. 구간 감시가 끝난 뒤에만 부른다(새 컨테이너 시작은 구간 위반).
 

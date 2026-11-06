@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import io
+import json
 import os
 import sqlite3
 import stat
@@ -18,7 +19,9 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_docker import BoundedResult, CommandResult, Docker, DockerError, run_docker_bounded  # noqa: E402
-from runner_state import StateCopyError, copy_sqlite, discard_copy, runtime_fingerprints  # noqa: E402
+from runner_state import (  # noqa: E402
+    StateCopyError, copy_sqlite, discard_copy, memory_fingerprints, runtime_fingerprints,
+)
 from state_diff import RUN_KEY_BYTES, StateDiffError, runtime_diff, snapshot  # noqa: E402
 
 CID = "c" * 64
@@ -310,6 +313,93 @@ class TestRuntimeFingerprints(unittest.TestCase):
         self.assertTrue(result["runtime_changed"])
         self.assertEqual({k: result["runtime"]["/app/ftp"][k] for k in ("removed", "changed", "missing_post")},
                          {"removed": 1, "changed": 1, "missing_post": False})
+
+
+IMAGE = "sha256:" + "a" * 64
+MEMORY = {"paths": ("/api/a/1", "/api/a/2"), "count_field": "data", "max_body_bytes": 4096, "timeout_ms": 1000}
+A64, B64 = "a" * 64, "b" * 64
+
+
+def ok(count=1, digest=A64):
+    return {"code": "ok", "status": 200, "count": count, "sha256": digest}
+
+
+class FakeReader:
+    def __init__(self, stdout):
+        self.stdout, self.calls = stdout, []
+
+    def state_read(self, image, container_id, plan, uid, gid):
+        self.calls.append((image, container_id, json.loads(plan), uid, gid))
+        return self.stdout
+
+
+class TestMemoryFingerprints(unittest.TestCase):
+    KEY = bytes(RUN_KEY_BYTES)
+
+    def read(self, results, required=True, raw=None):
+        reader = FakeReader(raw if raw is not None else json.dumps({"results": results}).encode())
+        return reader, memory_fingerprints(reader, IMAGE, CID, MEMORY, 3000, 1000, 1000, self.KEY, required=required)
+
+    def test_plan_and_entries(self):
+        reader, entries = self.read([ok(2), ok(0, B64)])
+        self.assertEqual(reader.calls, [(IMAGE, CID, {"port": 3000, "timeout_ms": 1000, "max_body_bytes": 4096,
+                                                      "count_field": "data", "paths": ["/api/a/1", "/api/a/2"]},
+                                         1000, 1000)])
+        self.assertEqual([(e["readable"], e["count"]) for e in entries], [(True, 2), (True, 0)])
+        self.assertNotEqual(entries[0]["fingerprint"], entries[1]["fingerprint"])
+        self.assertNotIn(A64, repr(entries))
+
+    def test_unread_path_stops_pre_and_is_marked_after_the_run(self):
+        failed = [ok(), {"code": "status", "status": 404, "count": None, "sha256": ""}]
+        for result in (failed[1], {"code": "transport", "status": 0, "count": None, "sha256": ""},
+                       {"code": "too_large", "status": 200, "count": None, "sha256": ""},
+                       {"code": "not_counted", "status": 200, "count": None, "sha256": A64}):
+            with self.subTest(code=result["code"]):
+                with self.assertRaisesRegex(StateCopyError, "state_memory_unreadable"):
+                    self.read([ok(), result])
+                _, entries = self.read([ok(), result], required=False)
+                self.assertEqual(entries[1], {"readable": False, "count": None, "fingerprint": None})
+
+    def test_output_outside_the_contract_is_refused(self):
+        for raw in (b"not json", b"\xff", b"[]", b'{"results":{}}', json.dumps({"results": [ok(), ok()], "x": 1}).encode(), b'{"results":[]}',
+                    json.dumps({"results": [ok()]}).encode()):
+            with self.subTest(raw=raw[:20]), self.assertRaisesRegex(StateCopyError, "state_memory_output_invalid"):
+                self.read(None, raw=raw)
+        bad_results = [
+            "x", dict(ok(), extra=1), {k: v for k, v in ok().items() if k != "status"}, dict(ok(), status="200"),
+            dict(ok(), code="weird"), {"code": "weird", "status": 200, "count": None, "sha256": ""},
+            dict(ok(), count=None), dict(ok(), count=-1), dict(ok(), count=True),
+            dict(ok(), sha256=""), dict(ok(), sha256="A" * 64), dict(ok(), sha256=1),
+            {"code": "not_counted", "status": 200, "count": 1, "sha256": A64},
+            {"code": "not_counted", "status": 200, "count": None, "sha256": ""},
+            {"code": "status", "status": 404, "count": 1, "sha256": ""},
+            {"code": "status", "status": 404, "count": None, "sha256": A64},
+        ]
+        for result in bad_results:
+            with self.subTest(result=result), self.assertRaisesRegex(StateCopyError, "state_memory_output_invalid"):
+                self.read([ok(), result], required=False)
+
+
+class TestDockerStateRead(unittest.TestCase):
+    def test_runs_hardened_in_the_target_namespace(self):
+        executor = Exec(CommandResult(0, b"{}"))
+        output = Docker(executor, {}, 1).state_read(IMAGE, CID, b"plan", 1000, 1001)
+        self.assertEqual(output, b"{}")
+        self.assertEqual(executor.calls, [["run", "--rm", "-i", "--pull", "never", "--network", f"container:{CID}",
+                                           "--read-only", "--cap-drop", "ALL", "--security-opt",
+                                           "no-new-privileges:true", "--user", "1000:1001", "--", IMAGE,
+                                           "-role=state-read"]])
+
+    def test_arguments_and_failure(self):
+        docker = Docker(Exec(CommandResult(0, b"")), {}, 1)
+        for args, code in (((IMAGE, "short", b"", 1, 1), "docker_state_read_target_invalid"),
+                           (("name:tag", CID, b"", 1, 1), "docker_state_read_image_not_id"),
+                           ((IMAGE, CID, b"", -1, 1), "docker_state_read_user_invalid"),
+                           ((IMAGE, CID, b"", 1, True), "docker_state_read_user_invalid")):
+            with self.subTest(code=code), self.assertRaisesRegex(DockerError, code):
+                docker.state_read(*args)
+        with self.assertRaisesRegex(DockerError, "docker_state_read_failed"):
+            Docker(Exec(CommandResult(1, b"")), {}, 1).state_read(IMAGE, CID, b"", 1, 1)
 
 
 class TestDockerCopyArchive(unittest.TestCase):
