@@ -18,7 +18,7 @@ from runner_checks import (
 )
 from runner_config import COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LOCAL_LLM, parse_runner_config, plan_run
 from runner_docker import DaemonIdentity
-from test_preflight import configuration, local_llm
+from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 from test_runner_config import _yaml_without_comments, runner_config
 
 PROJECT = "eval-ours-1"
@@ -44,6 +44,7 @@ def plan_for(backend="api", e2=None, side="ours"):
     if backend == "local":
         for name in ("baseline", "ours"):
             preflight[name]["llm"] = local_llm()
+            preflight[name]["sampling"] = dict(LOCAL_SAMPLING)
     payload = runner_config()
     if e2 is not None:
         payload["e2"]["ours_mode"] = e2

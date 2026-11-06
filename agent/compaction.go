@@ -80,17 +80,17 @@ func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore)
 		return
 	}
 	if !c.tryStart(ts.ID()) {
-		return // already running, or within cooldown —派生态最终一致，下轮再压
+		return // 이미 실행 중이거나 쿨다운 안이다. 파생 상태라 결국 일치하므로 다음 라운드에 다시 압축한다
 	}
 	go func() {
 		defer c.finish(ts.ID())
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.maxDur)
 		defer cancel()
-		// 压缩是裸 provider 调用（compress 里直接 prov.Complete），不经过 agentcore
-		// 的会话循环，所以 ctx 上没有 session id；按 session-id 头做提示缓存/粘性
-		// 路由的网关（opencode zen 缺 x-opencode-session 直接 400）就收不到该头。
-		// 这里补一个按探索稳定的 id：同一探索的所有压缩请求共享它，既能带上头，
-		// 也让 llmrec 能把这次调用的 token 归因回该探索（此前记不到）。
+		// 압축은 provider를 직접 부른다(compress의 prov.Complete). agentcore 세션 루프를 거치지 않아
+		// ctx에 session id가 없다. session-id 헤더로 프롬프트 캐시·고정 라우팅을 하는 게이트웨이
+		// (opencode zen은 x-opencode-session이 없으면 바로 400)는 이 헤더를 받지 못한다.
+		// 그래서 탐색마다 고정된 id를 넣는다. 같은 탐색의 압축 요청이 이 id를 함께 쓰므로 헤더도 붙고,
+		// llmrec이 이 호출의 토큰을 그 탐색으로 귀속할 수 있다.
 		bg = transcript.WithSessionID(bg, fmt.Sprintf("exp%d-compactor", ts.ID()))
 		if needMajor {
 			c.major(bg, ts)
@@ -188,7 +188,7 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 }
 
 // major re-derives the whole grouping from source over ALL eligible-cold nodes
-// (§5.1 回源重压), then reconciles against the active digests by signature:
+// (§5.1 원본에서 다시 압축), then reconciles against the active digests by signature:
 // unchanged blocks keep their digest (no LLM), stale digests are superseded, and
 // new/changed blocks are compressed afresh. This is where tiered fragments of one
 // direction merge and where "later became connected" blocks unify (§5.2).
@@ -281,7 +281,7 @@ func (c *Compactor) foldBlock(ctx context.Context, ts *db.ExplorationStore, g *c
 	}
 }
 
-// generationFor computes a digest's重摘代次 (§1): 1 for a fresh fold; for a major
+// generationFor computes a digest's 재요약 세대 (§1): 1 for a fresh fold; for a major
 // merge, max(generation) over the active digests that overlap this block's
 // members, +1.
 func (c *Compactor) generationFor(b block, active []*db.Node) int {
@@ -455,14 +455,14 @@ func nodeConfidence(n *db.Node) string {
 // buildCompressionInput renders the connected sub-graph for the §4 prompt:
 // member nodes (summary + id + kind + state + confidence), the internal blood
 // edges among members, and — for a §3.1 shared-parent group — the anchor parents
-// as context ("共同父 #p"), which are NOT members.
+// as context (common parent #p), which are NOT members.
 func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) string {
 	memberSet := make(map[int64]bool, len(b.Members))
 	for _, m := range b.Members {
 		memberSet[m] = true
 	}
 	var sb strings.Builder
-	sb.WriteString("【成员节点（要压缩的）】：\n")
+	sb.WriteString("Member nodes (to compress):\n")
 	for _, m := range b.Members {
 		n := nodeByID[m]
 		kind := "fact"
@@ -485,18 +485,18 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 	for _, m := range b.Members {
 		for _, to := range g.children[m] {
 			if memberSet[to] {
-				edgeLines = append(edgeLines, fmt.Sprintf("- #%d 产出/派生→ #%d", m, to))
+				edgeLines = append(edgeLines, fmt.Sprintf("- #%d produced or derived -> #%d", m, to))
 			}
 		}
 	}
 	if len(edgeLines) > 0 {
-		sb.WriteString("\n【成员之间的血缘边（父→子）】：\n")
+		sb.WriteString("\nLineage edges among members (parent -> child):\n")
 		sort.Strings(edgeLines)
 		sb.WriteString(strings.Join(edgeLines, "\n"))
 		sb.WriteByte('\n')
 	}
 	if len(b.Anchors) > 0 {
-		sb.WriteString("\n【共同父 / 上下文锚（不是成员，只用于理解这些结果从哪个意图探出）】：\n")
+		sb.WriteString("\nCommon parent / context anchors (not members; only to understand which intent these results came from):\n")
 		for _, a := range b.Anchors {
 			n := nodeByID[a]
 			state := ""
@@ -530,19 +530,19 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 }
 
 // compressionSystemPrompt is the §4 body prompt.
-const compressionSystemPrompt = `你在压缩一组【彼此关联】的探索节点，产出一段综合结论(body)，供规划者快速掌握"这一片已经探明了什么"。
+const compressionSystemPrompt = `You are compressing a group of related exploration nodes into one synthesized conclusion (the body), so the planner can quickly grasp what this area has already established.
 
-输入是一个连通子图：
-- 节点：每条是一个意图或事实的 summary（一句话），带 id、类型(intent/fact)、state、confidence(若有)。
-- 关系：节点之间的血缘边（A 派生自 B / A 产出 B），说明它们如何串联。
-- 若节点间没有直接血缘边、但同属一个上游意图（会另给出该上游意图作为"共同父 #p"），则按"这个意图（#p）探到了什么"来综合它们——共同父只是上下文锚、不是要压缩的成员。
+The input is a connected subgraph:
+- Nodes: each is the one-line summary of an intent or fact, with its id, type (intent/fact), state and confidence (if any).
+- Relations: lineage edges between nodes (A derived from B / A produced B), showing how they connect.
+- If nodes have no direct lineage edge but share one upstream intent (given separately as a common parent #p), synthesize them as what intent #p found. The common parent is only a context anchor, not a member to compress.
 
-据此写一段 body：
-1. 综合、不罗列：顺着关系把因果串起来（哪个事实催生哪个意图、哪条意图产出了哪个结论），讲成"这一片探索得出了什么"，不要把每条 summary 抄一遍。
-2. 保留区分度：彼此不同的结论分别说清，别揉成一句笼统的话。
-3. 保留证据强度：带 confidence 的结论标出 observed / inferred；inferred 的否定/存疑结论要点明它只是推断、可复核，别写成定论。
-4. 带上 id：每条结论后标注来源节点 id（如"…（#12,#28）"），让规划者能按 id 还原原节点。
-5. 正向陈述、只写输入里有的：不脑补、不引入输入中没有的判断。
-6. 长度随内容自适应：结论少就短，多且互不相同就写够——但整体显著短于所有输入 summary 的总和。
+Write the body from this:
+1. Synthesize, don't list: follow the relations to connect cause and effect (which fact led to which intent, which intent produced which conclusion) and say what this area of exploration established. Don't copy each summary.
+2. Keep distinctions: state distinct conclusions separately. Don't merge them into one vague sentence.
+3. Keep evidence strength: mark conclusions that carry a confidence as observed or inferred. Say that an inferred negative or doubtful conclusion is only an inference that can be rechecked. Don't state it as settled.
+4. Cite ids: after each conclusion, note its source node ids (for example "... (#12, #28)") so the planner can restore the original nodes by id.
+5. State only what the input says: don't guess or add judgments that aren't in the input.
+6. Fit the length to the content: short when there are few conclusions, long enough when there are many distinct ones, but clearly shorter than all input summaries combined.
 
-只输出 body 正文本身。`
+Write the body in English. Keep identifiers, paths and quoted values exactly as they appear in the input. Output only the body text.`

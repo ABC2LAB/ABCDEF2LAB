@@ -357,7 +357,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
 	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
 	// runs in a detached goroutine so it never adds latency to this round.
-	p.compactor.OnPlannerRound(ctx, ts)
+	if !isE2HTTPPlanning(ctx) {
+		p.compactor.OnPlannerRound(ctx, ts)
+	}
 	tsx := NewToolSet(ts, "planner")
 	tsx.SetFindingRecorder(p.findingRecorder)
 	if as != nil {
@@ -372,9 +374,19 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	// 资产覆盖度功能关闭时剔除 add_task_scope/list_untested_assets（不入 prompt）。
-	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
+	base := tsx.DropCoverageTools(tsx.PlannerTools())
+	if !isE2HTTPPlanning(ctx) {
+		base = append(base, actool.DefaultTools()...)
+	}
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
-	tools, def, cleanup := AugmentTools(ctx, "planner", base)
+	var tools []actool.CoreTool
+	var def DeferredInfo
+	cleanup := func() {}
+	if isE2HTTPPlanning(ctx) {
+		tools = e2HTTPPlannerTools(base)
+	} else {
+		tools, def, cleanup = AugmentTools(ctx, "planner", base)
+	}
 	defer cleanup()
 	// 关键态势（刚完成的意图 + 预取的完整图）改放【本轮 user 输入】(见下方 input)，system
 	// 只留静态规划正文。move-out 让 system 每轮稳定、更利于缓存；代价是若单轮变长，态势可能
@@ -438,13 +450,21 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		NonStreaming: p.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    p.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
 	}
-	if p.tx != nil { // persist raw LLM conversation; one accumulating file per task's planner
+	if isE2HTTPPlanning(ctx) {
+		if e2Err := constrainE2HTTPPlannerOptions(ctx, &opts); e2Err != nil {
+			return false, "e2_http_planning_blocked", e2Err
+		}
+	}
+
+	if p.tx != nil && !isE2HTTPPlanning(ctx) { // E2 never resumes a legacy planner transcript
 		opts.Transcript = p.tx
 		opts.SessionID = fmt.Sprintf("exp%d-planner", ts.ID())
 	}
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	noaSession := fmt.Sprintf("exp%d-planner", ts.ID())
-	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
+	if !isE2HTTPPlanning(ctx) {
+		enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
+	}
 	// 态势（刚完成的意图 + 完整图）现在拼进本轮 user 输入（见下方 input）。user 里还有
 	// 指令 + 跨唤醒待办（todo 是模型自己的规划便签，可再生，放 user 即可）。
 	// 开场白按「本轮有无具体变动」分两种：有变动 → 指向下方【实际变动】块；无变动
@@ -458,8 +478,15 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
 		}
 	}
+	todoText := ""
+	if opts.Todos != nil {
+		todoText = renderPlannerTodos(opts.Todos.List())
+	}
 	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。**硬底线：只要目标尚未达成、且当前没有任何 open 或 running 意图（frontier_open=0 且 running_intents 为空），本轮就必须产出至少一个向目标推进的意图——此时没有在跑的 work 可等、也没有在排队的方向，产出 0 意图=任务停摆。仅当已有 open/running 意图在推进、或目标已达成时，本轮才可以不产出新意图。**" +
-		renderPlannerTodos(opts.Todos.List())
+		todoText
+	if isE2HTTPPlanning(ctx) {
+		input = "Use the current graph and trusted worker status to plan within the existing approval. Zero new intents is valid when policy, evidence, or the remaining budget prevents useful work. A new intent does not reset call, retry, approval, expiry, revocation, or task limits.\n" + situational
+	}
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。
 	_, _, err = captureRun(ctx, opts, input,

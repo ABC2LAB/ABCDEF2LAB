@@ -58,6 +58,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `ports.target`, `ports.obs`, `ports.obs_host` | 대상 포트(계측기 upstream), 관측 front 포트와 그 호스트 루프백 포트 |
 | `ports.llm_gateway`, `ports.api_front` | LLM 게이트웨이·엔진 API front의 컨테이너 포트 |
 | `observer_path` | 관측 front가 통과시킬 스코어보드 GET 경로 1개 |
+| `observer_format` | 관측 응답 형식. 공식 회차는 `challenge_scoreboard`. `opaque`는 점수판 없는 연습 대상용이고 응답 원문을 남기지 않으며, 그 회차는 채점기가 거부한다([연습 대상](practice-targets.md)) |
 | `observer_readonly_ref` | 그 GET이 해당 대상 버전에서 상태를 바꾸지 않음을 확인한 별도 기록의 참조(200자 이하). 러너가 만들 수 없는 근거라 설정으로 받고, 격리 근거 `observer_readonly` 행에 그대로 남긴다 |
 | `engine.llm_provider`, `engine.llm_stream` | `openai`만(게이트웨이가 chat completions만 받음), 스트리밍 여부 |
 | `engine.llm_policy_mode` | 엔진 LLM 정책 모드(`ARTEX_LLM_POLICY_MODE`, #125). `external`만 받는다: 평가는 LLM을 게이트웨이로만 내보내고, 엔진 기본값 local-only는 운영자 manifest·DB profile 준비가 필요해 §6 음성 시험에서 따로 쓴다. baseline(e53a79f)에는 이 스위치가 없다. 결과 기록에 선언값만 남는다(엔진이 현재 모드를 드러내지 않아 관측값 null). baseline 회차는 compose 값이 같이 넘어가도 엔진이 읽지 않으므로 선언값도 null이다 |
@@ -214,7 +215,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `llm_generation_unverified`, `llm_generation_unverifiable` | 조회 안 된 generation, generation ID 없는 응답 |
 | `llm_provider_mismatch`, `llm_fallback_attempted`, `llm_fallback_unverifiable` | 응답 제공자가 기대와 다름, 응답한 제공자와 다른 제공자로 간 시도, 시도 목록이 비어 확인 불가 |
 | `llm_pin_mismatch`, `llm_backend_mismatch`, `llm_log_incomplete` | 게이트웨이가 다른 slug를 고정, 백엔드 구성이 섞임, 게이트웨이 기록 불완전 |
-| `llm_sampling_mismatch` | 게이트웨이가 실제로 넣은 샘플링(검증 마커 `sampling`)이 선언(temperature·sampling·seed)과 다름. local 회차에 값이 있어도 이 사유 |
+| `llm_sampling_mismatch` | 게이트웨이가 실제로 넣은 샘플링(검증 마커 `sampling`)이 선언(temperature·sampling·seed)과 다름. 키 묶음이 백엔드와 달라도 이 사유 |
 | `tmpfs_measure_failed` | 구간 종료 뒤 tmpfs 사용량을 읽지 못함(측정 컨테이너 실행·권한 실패, 커널 파일시스템 종류가 tmpfs 아님, 형식·크기가 맞지 않는 보고, 두 볼륨이 정확히 오지 않음). 결과의 `tmpfs_usage`는 `not_measured` |
 | `pre_tmpfs_measure_failed` | 구간 전 tmpfs 마운트 ID·사용량을 읽지 못함(사유는 `tmpfs_measure_failed`와 같음). 구간을 시작하지 않는다 |
 | `tmpfs_mount_changed` | 구간 뒤 잰 tmpfs의 마운트 ID가 구간 전과 다름 — 같은 경로라도 다른 마운트(부모 경로 변경·symlink·다시 마운트)를 잰 것이라 회차 저장소의 근거가 아니다. 양쪽 값은 결과에 남는다 |

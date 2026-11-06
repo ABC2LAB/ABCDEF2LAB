@@ -108,7 +108,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	allowPath := flags.String("allow-path", "", "observer: the single registered GET path; llm-gateway: the chat completions path")
 	backend := flags.String("backend", "", "llm-gateway: api or local")
 	provider := flags.String("provider", "", "llm-gateway api: full provider slug to pin")
-	sampling := flags.String("sampling", "", "llm-gateway api: JSON object of sampling parameters to pin")
+	sampling := flags.String("sampling", "", "llm-gateway: JSON object of sampling parameters to pin (each backend has its own keys)")
 	generationPath := flags.String("generation-path", "", "llm-gateway api: generation stats path")
 	verifyAttempts := flags.Int("verify-attempts", 0, "llm-gateway api: lookups per generation id")
 	verifyInterval := flags.Duration("verify-interval", 0, "llm-gateway api: wait between lookups")
@@ -305,9 +305,8 @@ func parseUpstream(raw string) (*url.URL, bool) {
 
 // gatewayFromFlags checks the per-backend rules: api talks https to the
 // provider and must pin the provider and sampling and verify; local talks http
-// to a fixed address on the host and must carry no key, so the API key can
-// never reach a local server. Sampling is not pinned for local yet, so local
-// refuses the flag rather than pretending to apply it.
+// to a fixed address on the host, must pin the sampling that server applies and
+// must carry no key, so the API key can never reach a local server.
 func gatewayFromFlags(backend, upstream, allowPath, provider, sampling, generationPath string, attempts int,
 	interval time.Duration, key string) (gatewayConfig, bool) {
 	cfg := gatewayConfig{backend: backend, allowPath: allowPath, provider: provider, generationPath: generationPath,
@@ -319,13 +318,19 @@ func gatewayFromFlags(backend, upstream, allowPath, provider, sampling, generati
 	case backendAPI:
 		cfg.upstream = parseGatewayUpstream(upstream, "https")
 		params, pinned := parseSampling(sampling)
-		cfg.sampling = params
+		if pinned {
+			cfg.sampling = params
+		}
 		return cfg, cfg.upstream != nil && providerSlugRe.MatchString(provider) && pinned && validAllowPath(generationPath) &&
 			attempts >= 1 && attempts <= maxVerifyAttempts && interval > 0 && interval <= maxVerifyInterval &&
 			validKey(key)
 	case backendLocal:
 		cfg.upstream = parseGatewayUpstream(upstream, "http")
-		return cfg, cfg.upstream != nil && provider == "" && sampling == "" && generationPath == "" && attempts == 0 &&
+		params, pinned := parseLocalSampling(sampling)
+		if pinned {
+			cfg.sampling = params
+		}
+		return cfg, cfg.upstream != nil && provider == "" && pinned && generationPath == "" && attempts == 0 &&
 			interval == 0 && key == ""
 	}
 	return cfg, false

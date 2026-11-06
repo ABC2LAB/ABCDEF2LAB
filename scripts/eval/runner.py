@@ -44,7 +44,7 @@ from runner_checks import (  # noqa: E402
 )
 from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
-    METER_SERVICE, OBS_SERVICE, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
+    METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
@@ -181,6 +181,7 @@ class RunSpec:
     target_origin: str
     observer_path: str
     observer_readonly_ref: str
+    observer_format: str = OBSERVER_SCOREBOARD
     # 상태 차이(프로토콜 §8.2)의 해결 신호 테이블. None이면 상태 사본을 뜨지 않는다(러너 설정 state=null).
     state_signal_tables: frozenset[str] | None = None
     # 상태 차이로 비교할 런타임 디렉터리. 비어 있으면 파일 사본을 뜨지 않는다.
@@ -557,7 +558,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         reconciliation))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
-                     "task_request_sha256": spec.task_request_sha256,
+                     "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
                      # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline은 스위치가 없어 선언도 null.
                      "engine_llm_policy": {"declared": spec.llm_policy_mode, "observed": None},
                      "window": {"host_watch": window["host_watch"], "events": {
@@ -791,7 +792,8 @@ class DockerPorts:
                                   execution_id=snapshot["services"][ENGINE_SERVICE]["id"])
         endpoint = SnapshotEndpoint(self.obs_origin, self.config.observer_path,
                                     self.config.run["snapshot_timeout_seconds"], self.config.run["snapshot_max_bytes"])
-        collected = collect_snapshot(endpoint, self.directory.run, phase, context)
+        collected = collect_snapshot(endpoint, self.directory.run, phase, context,
+                                     opaque=self.config.observer_format == OBSERVER_OPAQUE)
         # 해결 상태 맵(평가 전용 key)은 v1.1 이벤트 발행에만 쓰고 결과 요약에는 넣지 않는다.
         normalized = read_private_json(self.directory.run / phase, "normalized.json")
         if not isinstance(normalized, dict) or not isinstance(normalized.get("solved"), dict):
@@ -876,7 +878,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         drain_grace_seconds=config.run["drain_grace_seconds"], post_settle_seconds=config.run["post_settle_seconds"],
         llm_provider_slug=plan.llm.get("provider", ""),
         llm_provider_name=config.llm_gateway["expected_provider_name"],
-        llm_sampling=(json.loads(plan.compose_env["EVAL_LLM_SAMPLING"]) if plan.llm["backend"] == "api" else None),
+        llm_sampling=json.loads(plan.compose_env["EVAL_LLM_SAMPLING"]),
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_request_sha256=task_request_sha256,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
@@ -889,7 +891,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         condition=condition, repeat_index=repeat_index, e2_mode=plan.e2_mode, model_tag=plan.llm["model"],
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
         target_origin=declared["target_origin"], observer_path=config.observer_path,
-        observer_readonly_ref=config.observer_readonly_ref,
+        observer_readonly_ref=config.observer_readonly_ref, observer_format=config.observer_format,
         state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
         state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
         state_memory_enabled=config.state is not None and config.state["memory"] is not None,

@@ -50,6 +50,9 @@ MAX_SETTLE_SECONDS = 3600
 # temperature·seed 외 샘플링 고정값. 엔진은 샘플링을 보내지 않아 평가 LLM 게이트웨이가 요청마다 넣는다(평가 프로토콜 §6).
 # 범위는 게이트웨이(cmd/eval-meter sampling.go)와 같다(drift 테스트). 프로파일 지문과 같은 정의.
 SAMPLING_FIELDS = ("top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty")
+# local은 로컬 서버의 OpenAI 호환 경로가 실제로 적용하는 값만 받는다. top_k·min_p·repetition_penalty는
+# 그 경로가 오류 없이 무시하므로 적으면 적용되지 않은 값을 기록하게 된다(profiles/evidence/ollama-openai-sampling).
+LOCAL_SAMPLING_FIELDS = ("top_p", "presence_penalty", "frequency_penalty")
 MAX_TOP_K = 1000
 MAX_PENALTY = 2
 # 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
@@ -202,8 +205,14 @@ def _bounded(value: object, low: int, high: int, *, low_open: bool) -> bool:
 
 
 def _sampling(value: object) -> bool:
-    """temperature·seed 외 다섯 값이 정확히 있고 게이트웨이가 받는 범위 안이어야 한다."""
-    if not isinstance(value, dict) or set(value) != set(SAMPLING_FIELDS):
+    """temperature·seed 외 값이 한 백엔드의 묶음과 정확히 같고 게이트웨이가 받는 범위 안이어야 한다."""
+    if not isinstance(value, dict):
+        return False
+    if set(value) == set(LOCAL_SAMPLING_FIELDS):
+        return (_bounded(value["top_p"], 0, 1, low_open=True)
+                and _bounded(value["presence_penalty"], -MAX_PENALTY, MAX_PENALTY, low_open=False)
+                and _bounded(value["frequency_penalty"], -MAX_PENALTY, MAX_PENALTY, low_open=False))
+    if set(value) != set(SAMPLING_FIELDS):
         return False
     return (type(value["top_k"]) is int and 1 <= value["top_k"] <= MAX_TOP_K
             and _bounded(value["top_p"], 0, 1, low_open=True) and _bounded(value["min_p"], 0, 1, low_open=False)
@@ -272,6 +281,11 @@ def check_preflight(payload: object) -> None:
         if "target_image" in valid_pins and "target_image" in valid:
             if pins["target_image"] != config["target_image"]:
                 errors.append(f"{label}.target_image: PIN_MISMATCH")
+        # 묶음과 백엔드가 어긋나면 게이트웨이가 시작하지 않는다. 회차 전에 거부한다.
+        if "llm" in valid and "sampling" in valid:
+            expected = LOCAL_SAMPLING_FIELDS if config["llm"]["backend"] == "local" else SAMPLING_FIELDS
+            if set(config["sampling"]) != set(expected):
+                errors.append(f"{label}.sampling: BACKEND_MISMATCH")
     for field in _SHARED:
         if field in valid_baseline and field in valid_ours and baseline[field] != ours[field]:
             errors.append(f"comparison.{field}: MISMATCH")

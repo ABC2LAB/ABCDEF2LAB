@@ -98,6 +98,20 @@ class TestAggregateMetricsProperties(unittest.TestCase):
         for stat in (single.elapsed_seconds, single.total_requests, single.blocked_attempts):
             self.assert_stat(stat, mean=0.0, stdev=None, n=1, rendered="0 (n=1)")
 
+    def test_zero_request_runs_are_noted_under_the_table_per_condition(self):
+        original = self.aggregate([(1.0, 0, 0), (2.0, 5, 0), (3.0, None, 0)], condition="원본")
+        ours = self.aggregate([(1.0, 7, 0), (2.0, 8, 0)], condition="우리")
+        self.assertEqual((original.zero_request_runs, original.measured_request_runs), (1, 2))
+        self.assertEqual((ours.zero_request_runs, ours.measured_request_runs), (0, 2))
+        rendered = aggregate.render_matrix([original, ours], "synthetic metrics")
+        self.assertIn("대상 요청 0 회차: 원본 1/2. 대상 요청이 없던 회차", rendered)
+        self.assertNotIn("우리 0/", rendered)
+
+    def test_unmeasured_requests_are_not_zero_request_runs(self):
+        row = self.aggregate([(1.0, None, 0), (2.0, None, 0)], condition="원본")
+        self.assertEqual((row.zero_request_runs, row.measured_request_runs), (0, 0))
+        self.assertNotIn("대상 요청 0 회차", aggregate.render_matrix([row], "synthetic metrics"))
+
     def test_render_matrix_preserves_condition_order_and_measurement_columns(self):
         first = self.aggregate(((0.0, 0, 0), (10.0, 100, 5)), condition="first")
         second = self.aggregate(((None, 2, None),), condition="second")

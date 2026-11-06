@@ -53,10 +53,10 @@ type gatewayConfig struct {
 	backend        string
 	upstream       *url.URL
 	allowPath      string
-	provider       string          // api: full provider slug pinned on every request
-	sampling       *samplingParams // api: sampling parameters pinned on every request
-	generationPath string          // api: generation stats endpoint used to verify the pin
-	key            string          // api only; never written anywhere
+	provider       string      // api: full provider slug pinned on every request
+	sampling       samplingPin // sampling parameters pinned on every request
+	generationPath string      // api: generation stats endpoint used to verify the pin
+	key            string      // api only; never written anywhere
 	verifyAttempts int
 	verifyInterval time.Duration
 }
@@ -94,7 +94,7 @@ type verifiedMarker struct {
 	Role              string             `json:"role"`
 	Backend           string             `json:"backend"`
 	Provider          string             `json:"provider"`
-	Sampling          *samplingParams    `json:"sampling"` // applied values; null for local
+	Sampling          any                `json:"sampling"` // applied values; each backend has its own set
 	SealedAt          string             `json:"sealed_at"`
 	DrainedAt         string             `json:"drained_at"`
 	VerifiedAt        string             `json:"verified_at"`
@@ -292,7 +292,8 @@ func (g *llmGateway) finish(seq uint64, cancelled bool, row *llmRow, rec *status
 }
 
 // prepare admits only the registered chat-completions POST with a single JSON
-// object body. api pins the provider; local forwards the body byte for byte.
+// object body. api pins the provider and sampling; local pins sampling only.
+// Everything else in the engine's body reaches the upstream byte for byte.
 func (g *llmGateway) prepare(r *http.Request) ([]byte, int, string) {
 	if r.Method != http.MethodPost {
 		return nil, http.StatusForbidden, "method"
@@ -315,7 +316,7 @@ func (g *llmGateway) prepare(r *http.Request) ([]byte, int, string) {
 		return nil, http.StatusBadRequest, "body"
 	}
 	if g.cfg.backend == backendLocal {
-		return body, 0, ""
+		return insertMembers(body, open, g.cfg.sampling.fields()), 0, ""
 	}
 	return pinRequest(body, open, g.cfg.provider, g.cfg.sampling), 0, ""
 }
@@ -357,7 +358,7 @@ func checkObject(body []byte) (int, error) {
 // pinned provider does not support a parameter in it; without it the router
 // drops that parameter silently, and the applied values in the verified marker
 // would no longer be what the provider used.
-func pinRequest(body []byte, open int, slug string, sampling *samplingParams) []byte {
+func pinRequest(body []byte, open int, slug string, sampling samplingPin) []byte {
 	pin, _ := json.Marshal(struct {
 		Order             []string `json:"order"`
 		AllowFallbacks    bool     `json:"allow_fallbacks"`
@@ -368,6 +369,11 @@ func pinRequest(body []byte, open int, slug string, sampling *samplingParams) []
 		field = append(sampling.fields(), ',')
 	}
 	field = append(append(field, `"provider":`...), pin...)
+	return insertMembers(body, open, field)
+}
+
+// insertMembers adds object members right after the opening brace.
+func insertMembers(body []byte, open int, field []byte) []byte {
 	rest := bytes.TrimLeft(body[open+1:], " \t\r\n")
 	if len(rest) == 0 || rest[0] != '}' {
 		field = append(field, ',')

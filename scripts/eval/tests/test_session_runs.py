@@ -48,13 +48,13 @@ class Session:
         write(directory / "runner-result.json", result, signed=fields.get("status") == "complete")
 
     def complete(self, side: str, minute: int, repeat: int, condition: str | None = None,
-                 task: str = "t" * 64, e2_mode: object = "none") -> Path:
+                 task: str = "t" * 64, e2_mode: object = "none", total_requests: object = 400) -> Path:
         directory = self._dir(side, minute)
         self._result(directory, side, minute, status="complete", task_request_sha256=task.replace("t", "a"),
                      e2_mode=e2_mode)
         record = {"run_id": directory.name, "engine": side, "condition": condition or CONDITION[side],
                   "repeat_index": repeat, "model_tag": "qwen/qwen3.6-35b-a3b", "reset_generation": "r" * 64,
-                  "total_requests": 400, "blocked_attempts": None, "elapsed_seconds": 1200.5,
+                  "total_requests": total_requests, "blocked_attempts": None, "elapsed_seconds": 1200.5,
                   "artifacts": {"pre": {"path": "pre/normalized.json"}, "post": {"path": "post/normalized.json"},
                                 "records": None}}
         write(directory / "run-record.json", record, signed=True)
@@ -125,6 +125,16 @@ class TestTally(SessionCase):
         self.assertIn("| baseline | 원본@35b | 3 | 3 | 0 | 0% | — |", lines)
         self.assertIn("| ours | 우리@35b | 3 | 3 | 0 | 0% | — |", lines)
         self.assertIn("유효 순서: B O O B B O (기대 B O O B B O: 일치)", lines)
+
+    def test_zero_request_runs_stay_valid_and_warn_per_side(self):
+        self.s.complete("baseline", 1, 0, total_requests=0)
+        self.s.complete("ours", 2, 0, total_requests=None)
+        self.s.complete("ours", 3, 1, total_requests=5)
+        lines, warnings = tally(read_session(self.root, KEY), 1)
+        self.assertIn("| baseline | 원본@35b | 1 | 1 | 0 | 0% | — |", lines)
+        zero = [w for w in warnings if w.startswith("경고[대상 요청 0]")]
+        self.assertEqual(len(zero), 1)
+        self.assertIn("baseline: 유효 회차 1개", zero[0])
 
     def test_invalid_attempts_are_counted_per_side_with_their_first_reason(self):
         self.s.complete("baseline", 0, 0)

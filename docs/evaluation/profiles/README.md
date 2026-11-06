@@ -10,6 +10,7 @@
 | `evidence/openrouter-endpoints-*.json` | 고정 제공자 slug가 엔드포인트 하나·정밀도 하나에만 매칭됐다는 조회 근거(조회 시각·원문 응답 SHA-256 포함) |
 | `evidence/qwen3.6-35b-a3b-model-card-*.json` | 샘플링 고정값의 근거: 모델 공식 카드 커밋·README SHA-256·권장 샘플링 원문·고른 모드와 이유·고정 제공자의 파라미터 지원 |
 | `evidence/openrouter-endpoint-params-*.json` | 고정 엔드포인트의 지원 파라미터 목록(게이트웨이가 `require_parameters:true`로 넣는 일곱 값이 모두 있어야 함) |
+| `evidence/ollama-openai-sampling-*.json` | 로컬 서버의 OpenAI 호환 경로가 어떤 샘플링 값을 실제로 적용하는지 잰 결과. local 프로파일의 `sampling` 묶음 근거 |
 | `evidence/observer-readonly-*.json` | 관측 front의 스코어보드 GET이 대상 해결 상태를 바꾸지 않는다는 근거(러너 `observer_readonly_ref`) |
 
 과거 API 프로파일의 지문 확인(로컬 공식 준비 완료 검사가 아님):

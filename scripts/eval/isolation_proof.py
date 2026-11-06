@@ -224,6 +224,7 @@ def check_isolation(receipt: dict, steps: dict[str, tuple[datetime, int]], artif
 
 
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty", "seed"})
+_LOCAL_SAMPLING_KEYS = frozenset({"temperature", "top_p", "presence_penalty", "frequency_penalty", "seed"})
 _HOST_KEYS = {"cpu_model": str, "logical_cpus": int, "memory_kib": int, "kernel": str, "docker_server_version": str}
 
 
@@ -237,9 +238,9 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     if type(row["llm_stream"]) is not bool:
         raise IsolationError("isolation_evidence.run_conditions.llm_stream: bool")
     sampling = row["sampling"]
-    if sampling is not None and (not isinstance(sampling, dict) or set(sampling) != _SAMPLING_KEYS or any(
+    if sampling is not None and (not isinstance(sampling, dict) or set(sampling) not in (_SAMPLING_KEYS, _LOCAL_SAMPLING_KEYS) or any(
             type(value) not in (int, float) for value in sampling.values())):
-        raise IsolationError("isolation_evidence.run_conditions.sampling: 일곱 키의 숫자 또는 null")
+        raise IsolationError("isolation_evidence.run_conditions.sampling: 백엔드별 키의 숫자 또는 null")
     host = row["host"]
     if not isinstance(host, dict) or set(host) != set(_HOST_KEYS) or any(
             type(host[name]) is not kind or (kind is str and not host[name]) or (kind is int and host[name] < 1)
