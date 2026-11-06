@@ -570,10 +570,13 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 				msg = defaultMessage(r.Action, r.Name)
 			}
 			configJSON, _ := json.Marshal(r.InterceptRule)
+			modelMessage, reasonCode := db.BuiltinRuleModelMessage(r.InterceptRule)
 			return Decision{
 				RuleName: r.Name, ConfigDigest: digestInput(configJSON),
 				Action:         r.Action,
 				Message:        msg,
+				ModelMessage:   modelMessage,
+				ReasonCode:     reasonCode,
 				RuleID:         r.ID,
 				TimeoutEnabled: r.TimeoutEnabled,
 				TimeoutSeconds: r.TimeoutSeconds,

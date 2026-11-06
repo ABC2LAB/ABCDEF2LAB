@@ -541,40 +541,34 @@ var defaultInterceptRules = []interceptRuleSeed{
 	},
 }
 
-// hanPattern 은 Postgres 정규식의 한자 범위다. 코드에 한자를 쓰지 않으려고 유니코드 이스케이프로 적는다.
-const hanPattern = `U&'[\4E00-\9FFF]'`
-
-// refreshBuiltinRuleText 는 기존 DB에 남은 내장 규칙의 중국어 이름·설명을 현재 문구로 올린다. 시드는 처음 한 번만
-// 넣으므로 그대로 두면 기존 설치에는 옛 문구가 남는다. 규칙 행에는 버전 기록이 없어서, 패턴이 같고 한자가 남은 행만
-// 바꾼다. 운영자가 다른 언어로 고친 글과 활성 여부·우선순위는 그대로다. 전부 성공해야 플래그를 세운다.
+// 알려진 옛 기본값과 현재 기본값만 가진 규칙의 문구를 갱신한다. 사용자 편집이
+// 하나라도 있으면 행 전체를 보존한다. 활성 여부·우선순위·패턴은 바꾸지 않는다.
 func (d *DB) refreshBuiltinRuleText() error {
 	const flag = "builtin_rule_text_korean_v1"
-	if v, _, _ := d.GetSetting(flag); v == "done" {
-		return nil
-	}
-	updateRule := func(name, pattern, message string) error {
-		_, err := d.Exec(`UPDATE intercept_rules SET
-  name = CASE WHEN name ~ `+hanPattern+` THEN $1 ELSE name END,
-  message = CASE WHEN message ~ `+hanPattern+` THEN $3 ELSE message END
-WHERE pattern = $2 AND (name ~ `+hanPattern+` OR message ~ `+hanPattern+`)`, name, pattern, message)
+	v, _, err := d.GetSetting(flag)
+	if err != nil {
 		return err
 	}
-	for _, r := range defaultInterceptRules {
-		if err := updateRule(r.name, r.pattern, r.message); err != nil {
+	if v == "done" {
+		return nil
+	}
+	for _, r := range builtinRuleTextSeeds() {
+		old, ok := legacyRuleTextHashes[r.pattern]
+		if !ok {
+			return fmt.Errorf("내장 규칙 기본값 대조 누락")
+		}
+		_, err := d.Exec(`UPDATE intercept_rules SET name=$1,message=$3
+WHERE pattern=$2 AND match_target=$6 AND match_type=$7 AND action=$8
+AND (name=$1 OR encode(sha256(convert_to(name,'UTF8')),'hex')=$4)
+AND (message=$3 OR encode(sha256(convert_to(message,'UTF8')),'hex')=$5)`, r.name, r.pattern, r.message, old.Name, old.Message, r.target, r.typ, r.action)
+		if err != nil {
 			return fmt.Errorf("rule %q: %w", r.name, err)
 		}
-	}
-	for _, r := range defaultInterceptRulesV2 {
-		if err := updateRule(r.name, r.pattern, r.message); err != nil {
-			return fmt.Errorf("rule %q: %w", r.name, err)
-		}
-	}
-	if err := updateRule(deleteEndpointRuleName, deleteEndpointPathPattern, deleteEndpointRuleMessage); err != nil {
-		return fmt.Errorf("rule %q: %w", deleteEndpointRuleName, err)
 	}
 	for _, r := range defaultAssetInterceptRules {
 		if _, err := d.Exec(`UPDATE asset_intercept_rules SET note = $1
-WHERE kind = $2 AND pattern = $3 AND note ~ `+hanPattern, r.note, r.kind, r.pattern); err != nil {
+WHERE kind = $2 AND pattern = $3 AND builtin
+AND encode(sha256(convert_to(note,'UTF8')),'hex')=$4`, r.note, r.kind, r.pattern, legacyAssetNoteHashes[r.kind+"\x00"+r.pattern]); err != nil {
 			return fmt.Errorf("asset rule %q: %w", r.pattern, err)
 		}
 	}

@@ -51,13 +51,13 @@ func TestRefreshBuiltinRuleText(t *testing.T) {
 	// 복원 Cleanup 뒤에 닫히도록 먼저 등록한다.
 	t.Cleanup(func() { d.Close() })
 	oldRule, editedRule, oldAsset := defaultInterceptRules[0], defaultInterceptRules[1], defaultAssetInterceptRules[0]
-	if _, err := d.Exec(`UPDATE intercept_rules SET name=$1, message=$2, enabled=false, priority=7 WHERE pattern=$3`, "[内置] 旧规则", "禁止旧操作", oldRule.pattern); err != nil {
+	if _, err := d.Exec(`UPDATE intercept_rules SET name=$1, message=$2, enabled=false, priority=7 WHERE pattern=$3`, legacyRuleFixtures[0].Name, legacyRuleFixtures[0].Message, oldRule.pattern); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Exec(`UPDATE intercept_rules SET name=$1, message=$2 WHERE pattern=$3`, "운영자 규칙", "운영자 설명", editedRule.pattern); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`UPDATE asset_intercept_rules SET note=$1 WHERE kind=$2 AND pattern=$3`, "[内置] 旧说明", oldAsset.kind, oldAsset.pattern); err != nil {
+	if _, err := d.Exec(`UPDATE asset_intercept_rules SET note=$1 WHERE kind=$2 AND pattern=$3`, legacyAssetNoteFixtures[0], oldAsset.kind, oldAsset.pattern); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -116,7 +116,7 @@ func TestRefreshBuiltinRuleText(t *testing.T) {
 	}
 }
 
-// 이름과 설명은 칸마다 따로 본다. 운영자가 한쪽만 고쳐도 그 칸은 그대로여야 한다.
+// 운영자가 한쪽만 고쳐도 소유권을 확정할 수 없으므로 행 전체를 보존한다.
 func TestRefreshBuiltinRuleTextPerField(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
@@ -152,13 +152,13 @@ func TestRefreshBuiltinRuleTextPerField(t *testing.T) {
 	if err := d.QueryRow(`SELECT name, message FROM intercept_rules WHERE pattern=$1`, nameEdited.pattern).Scan(&name, &message); err != nil {
 		t.Fatal(err)
 	}
-	if name != "운영자 이름" || message != nameEdited.message {
+	if name != "운영자 이름" || message != "禁止旧操作" {
 		t.Fatalf("name edit: name=%q message=%q", name, message)
 	}
 	if err := d.QueryRow(`SELECT name, message FROM intercept_rules WHERE pattern=$1`, messageEdited.pattern).Scan(&name, &message); err != nil {
 		t.Fatal(err)
 	}
-	if name != messageEdited.name || message != "운영자 설명" {
+	if name != "[内置] 旧规则" || message != "운영자 설명" {
 		t.Fatalf("message edit: name=%q message=%q", name, message)
 	}
 }
@@ -172,7 +172,7 @@ func TestBuiltinRuleTextRefreshRunsOnOpen(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Close() })
 	rule := defaultInterceptRules[4]
-	if _, err := d.Exec(`UPDATE intercept_rules SET message=$1 WHERE pattern=$2`, "禁止旧操作", rule.pattern); err != nil {
+	if _, err := d.Exec(`UPDATE intercept_rules SET message=$1 WHERE pattern=$2`, legacyRuleFixtures[4].Message, rule.pattern); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
