@@ -192,7 +192,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `project_check_failed`, `image_id_failed`, `image_id_mismatch` | 사전 조회 실패, 로컬 이미지가 설정의 내용 ID와 다름 |
 | `host_spec_failed` | 머신 사양을 읽지 못함(`/proc/cpuinfo` 모델명·`/proc/meminfo` MemTotal·`/etc/machine-id`·Docker 버전) |
 | `engine_rules_failed` | 원본 ② 규칙 등록 실패(엔진이 거부, 정규식 오류 포함), 내장 규칙과 이름 충돌, 규칙을 타는 도구를 줄이는 파일, 또는 다시 읽은 규칙·도구 목록이 파일과 다름. 작업을 시작하지 않는다 |
-| `engine_settings_failed`, `engine_settings_mismatch` | 실행 설정 조회 실패·형식 오류, 또는 workers가 선언 `worker_count`와 다름·엔진 LLM 모델이 선언과 다름·프록시가 설정됨(송신 경로가 계측기·게이트웨이 밖으로 바뀜) |
+| `engine_settings_apply_failed` | 작업 전에 압축 기준 창·worker 수를 엔진에 넣지 못함(프로파일 저장·활성화·설정 쓰기 중 하나가 실패) |
+| `engine_settings_failed`, `engine_settings_mismatch` | 실행 설정 조회 실패·형식 오류, 또는 workers·`context_window_k`가 선언과 다름·`reasoning_effort`·`thinking_type`이 비어 있지 않음·엔진 LLM 모델이 선언과 다름·프록시가 설정됨(송신 경로가 계측기·게이트웨이 밖으로 바뀜) |
 | `compose_up_failed` | 기동 실패(down은 실행) |
 | `{pre,post}_facts_failed`, `{pre,post}_host_listeners_failed` | docker·/proc 사실 수집 실패 |
 | `{pre,post}_topology_violation` | 망·구성원·publish·이미지가 기대 구성과 다름 |
@@ -300,6 +301,8 @@ API 키 없이 실제 엔진을 끝까지 돌릴 때 쓴다. 판단하는 모델
   `provider_responses`는 generation마다 1건(엔드포인트 ID 1종, 상태 200×45·499×3 — 499는 봉인으로 끊긴 요청), fallback 시도 0.
   부정 연결 13개 경로·구간 감시(호스트 리슨 표본 62, 최대 공백 2.0초, 데몬 이벤트 경계 변경 0) 통과. 구간 안 신규 해결 3건이
   `isolated_window`로 귀속됐고 findings 1건, 채점은 판정 미수집이라 코어 GT 9개 전부 판단불가. API 키는 비밀 env 파일로만 넘겼다.
+- **실행 설정 적용 양쪽 1회(11/07):** baseline e53a79f와 개선 후 dfb5da0를 API로 각 1회 돌렸다(60초, 요청 20건, `atlas-cloud/fp8`). 작업 전에 넣은 `context_window_k` 200·workers 3이 양쪽 스냅샷에 그대로 나왔고, `reasoning_effort`·`thinking_type`은 비어 있었으며, 프로파일 저장·활성화 뒤에도 양쪽 회차가 완료·서명됐다. 스트리밍 끈 조건은 실제 엔진으로 돌리지 않았다(시험은 요청 본문까지만 본다).
+- **local 백엔드 회차 1회(11/07):** 임시 Ollama 0.32.6(`172.17.0.1:11435`, `context_length` 32768, CPU), `qwen2.5:1.5b`, 개선 후 dev 450cc71, 300초·요청 30건, `context_window_k` 32·workers 1로 완료·서명. 스냅샷에 넣은 값이 그대로 나왔다. 회차 전과 작업 생성 직전 모두 남은 유지 시간이 요청값 그대로(1272초)였고, 회차 뒤 조회도 digest·컨텍스트가 일치했으며(1250초) 모델을 내렸다. 작업 직전 재적재 요청은 실제 서버에서 동작을 확인했다. 그 사이 모델이 내려간 상황을 일부러 만들어 보지는 않았다. LLM 호출 2건·대상 요청 0건이라 작은 모델의 도구 호출은 이 회차로 확인되지 않고, baseline은 안 돌렸다.
 - **tmpfs 사용량 측정(11/03):** local 백엔드 완료·서명 회차에서 구간 종료 뒤 `df -P -k`로 엔진 DB tmpfs 1 GiB 중 약 50 MiB,
   엔진 데이터 tmpfs 512 MiB 중 약 0.2 MiB 사용(남은 공간 하한 8 MiB 통과). 두 이미지(엔진: GNU coreutils, postgres:16-alpine:
   busybox) 모두 같은 `df -P -k` 머리줄을 냈고, 측정 exec는 구간 밖이라 구간 경계 변경 0.

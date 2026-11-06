@@ -36,6 +36,7 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
     "seed": 42,
     "target_origin": "http://eval-meter:8080",
     "worker_count": 1,
+    "context_window_k": 32,
     "time_budget_seconds": 1200,
     "request_budget": 100,
     "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
@@ -60,6 +61,7 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
     "seed": 42,
     "target_origin": "http://eval-meter:8080",
     "worker_count": 1,
+    "context_window_k": 32,
     "time_budget_seconds": 1200,
     "request_budget": 100,
     "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
@@ -87,6 +89,7 @@ python3 -I -B scripts/eval/preflight.py /private/evaluation/preflight.json
 | `llm`(local) | `backend:"local"`, `base_url`(호스트가 `hostname`과 같음), `model`(`name:tag`, `latest` 거부), `hostname`(DNS label), `model_digest`(소문자 hex 64자), `context_length`(1 이상 정수, 서버가 할당한 값), `server_version`(`x.y.z`), `host_ip`(정규 표기의 사설 IP — `llmpolicy` 사설 대역 중 loopback(127/8·::1)을 제외한 10/8·172.16/12·192.168/16·fc00::/7. 컨테이너에서 호스트 loopback으로는 닿지 않으므로 제외) |
 | `temperature` / `seed` | 전자는 0 이상 유한수, 후자는 0 이상 정수. null·bool·암묵적 기본값 금지 |
 | `worker_count` / `request_budget` | 1 이상 정수 |
+| `context_window_k` | 32~1000 정수(엔진 압축 기준 창, K 토큰). local은 ×1000이 `llm.context_length` 이하여야 한다(`ABOVE_SERVER_CONTEXT`) |
 | `time_budget_seconds` | 양의 유한수 |
 | `run_storage` | 회차 메모리 조건 `{engine_db_tmpfs, engine_data_tmpfs, tmpfs_min_free}` — compose tmpfs size 표기, 하한은 두 크기보다 작아야 함. 프로파일 지문 v5의 환경 입력과 같은 객체이고 러너 설정 `tmpfs`와 정확히 같아야 회차가 시작됨 |
 | `sampling` | temperature·seed 외 샘플링. api는 `{top_p, top_k, min_p, presence_penalty, repetition_penalty}`, local은 `{top_p, presence_penalty, frequency_penalty}`(로컬 서버가 실제로 적용하는 값만, 평가 프로토콜 §6). 묶음이 백엔드와 다르면 `BACKEND_MISMATCH`로 거부한다. 게이트웨이가 요청마다 넣는 값이라 범위가 게이트웨이와 같다(top_p (0,1], top_k 1~1000 정수, min_p [0,1], presence_penalty·frequency_penalty [−2,2], repetition_penalty (0,2]). 프로파일 지문 v5의 환경 입력과 같은 객체. 러너는 temperature가 게이트웨이 상한 2를 넘으면 회차를 만들지 않는다 |
