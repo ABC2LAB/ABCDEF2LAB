@@ -172,9 +172,12 @@ def _e2_decisions(directory: Path, record: dict, result: dict) -> tuple[int | No
     if placement["mode"] != result["e2_mode"]:
         raise DemoError([f"{directory.name}: 서명 결과와 격리 근거의 E② 자리가 다름"])
     if placement["mode"] == "product":
-        # 제품 E²는 불가용을 결정으로 내지 않는다. 결과를 못 모은 회차는 건수가 없다.
-        decisions = e2_product_row(record, evidence)["decisions"]
-        return (None, None) if decisions is None else (decisions["denied"] + decisions["unsupported"], None)
+        # 제품 E²는 불가용을 결정으로 내지 않는다. 완료·검증된 수집만 건수를 낸다.
+        # 제품 실패 회차에 남은 부분 건수는 기록용이고 통제 수치로 표에 싣지 않는다(연결 제안 §4.3).
+        row = e2_product_row(record, evidence)
+        if row["collection_outcome"] != "complete":
+            return None, None
+        return row["decisions"]["denied"] + row["decisions"]["unsupported"], None
     return placement["unsupported"], placement["unavailable"]
 
 

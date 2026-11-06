@@ -297,6 +297,18 @@ class TestE2(Case):
         self.assertEqual(table["E② 정책 거부(미지원 포함)"], ["4 (4)"])
         self.assertEqual(table["E² 불가용(정책 거부 아님)"], ["—"])
 
+    def test_partial_counts_of_a_product_failure_are_not_shown(self):
+        one = self.root()
+        evidence = product_evidence("placeholder", None)
+        row = next(row for row in evidence["rows"] if row["kind"] == "e2_product")
+        # 수집기가 시도 행을 읽은 뒤 감사 미완료로 실패한 회차다.
+        row.update(close_state="incomplete", close_reason="audit_failed", collection_reason="export_incomplete", attempts=4,
+                   decisions={"allowed": 0, "denied": 4, "unsupported": 0})
+        self.rebind(one.run(side="ours", condition="개선 후", e2_mode="product", proof={"proof_id": "p0"}, evidence=evidence), one)
+        table = self.table(one)
+        self.assertEqual(table["E② 정책 거부(미지원 포함)"], ["—"])
+        self.assertEqual(table["E² 불가용(정책 거부 아님)"], ["—"])
+
     def test_product_failure_has_no_counts_rather_than_zero(self):
         one = self.root()
         self.run_with_product(one, None)
