@@ -32,7 +32,7 @@
 - `sharing`·`delegation`=`resolved_none`: 공유·위임 **없음을 해소함**(§3). 모르면 `resolved_none`이 아니라 `unknown`. 실제 값 채울 때 공유/위임 상태를 확인 못 하면 `unknown`.
 - `trivial: false`: canary가 **의도적으로 심은 비자명 sentinel**이라는 전제. 확신 없으면 `true`(§3.1). false면 반드시 비추측 값으로 심는다.
 
-## 열린 항목 3개 — 정렬 결과 (상세 = alignment 메모)
+## 열린 항목 3개 — 정렬 결과
 1. **`resource_ref` type.** type:id·마지막 콜론 규약 (a)마지막콜론 보존 (b)표시이름=UI전용 (c)`user`≠소유축 → **이경준 사후 승인(resource-ref-types-proposal §5-2 닫힘)**. 내 AccessMap은 셀 키를 **전체 ref**(`KgResource.id`)로, label은 표시용. **1단계 수평·읽기 type은 앱의 정상 인가모델 + canary 심기가능성으로만 고른다**(판정·GT는 선택 입력 아님). `basket`은 사용자 소유·수평 조회 자원이라 인가모델엔 맞고(이동찬 E² 등록 기준 동의) 스켈레톤 예시로 씀 — 심기가능성은 아래 canary carrier에서 미결이라 최종 type은 거기서 정해진다. **GT 상관 가능 여부는 레지스트리를 고정한 뒤 평가 쪽(최민준)이 별도 판단하고, 그 결과로 등록할 자원을 거르지 않는다**(판정 담당은 내용 선택에 참여하지 않음 — `:14`·§8 #2). 스켈레톤·레지스트리엔 GT 키·상관 데이터 없음.
 2. **canary `field`**: 내가 고르는 값이 아니라 **규칙** — `idor.Marker.Field` = E² `JSONViewRule.DataPath` **직속 필드명**(view당 유일), 레지스트리↔E² view **정확히 같은 집합**, 같은 prep에서 공동작성(불일치=송신 전 `canary_mismatch`). 규칙은 기존 계약으로 닫힘. **스켈레톤은 합성 placeholder**(field·value), 실제 값은 prep.
 3. **자원 개수**: 1단계 = **자원 1개(A 소유)** 확정(§1·"칸 하나짜리"). 대칭 확장은 선택.
