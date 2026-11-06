@@ -28,7 +28,7 @@ from runner_config import (
 from runner_engine import EngineAPIError, task_request
 from runner_window import WatchSample
 from test_verdict_pages import CONTEXT as VERDICT_CONTEXT, two_pages
-from verdict_collector import CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady
+from verdict_collector import CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady, VerdictIntegrityError
 from verdict_pages import merge_verdict_pages
 from runner_docker import DockerError
 from runner_probe import PASS, ProbeOutcome
@@ -70,12 +70,14 @@ PROBE_IDS = {"pre": "a1" * 32, "post": "b2" * 32}
 class FakeClock:
     def __init__(self):
         self.t = 0.0
+        self.sleeps = []
 
     def clock(self):
         return Clock(lambda: datetime(2026, 11, 2, tzinfo=timezone.utc) + timedelta(seconds=self.t),
                      lambda: self.t, self.sleep)
 
     def sleep(self, seconds):
+        self.sleeps.append(seconds)
         self.t += seconds
 
 
@@ -175,7 +177,8 @@ class FakeEvidence:
 class FakePorts:
     def __init__(self, spec):
         self.serving = {}
-        self.verdict_results, self.verdict_args = [], []
+        self.verdict_results, self.verdict_args, self.verdict_times = [], [], []
+        self.fake_clock, self.verdict_call_seconds = None, 0
         self.rules_sha256 = None
         self.spec = spec
         self.calls = []
@@ -383,6 +386,10 @@ class FakePorts:
     def verdict_export(self, task_id, context):
         self._call("verdict_export")
         self.verdict_args.append((task_id, context))
+        clock = self.fake_clock
+        if clock is not None:
+            self.verdict_times.append(clock.t)
+            clock.t += self.verdict_call_seconds
         result = self.verdict_results.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -446,8 +453,8 @@ class TestVerdictExport(unittest.TestCase):
     """개선 후 판정 export(#278 §7). 못 모으면 records=null이고 회차는 유효하다."""
 
     def run_with(self, *results, side="ours"):
-        def mutate(ports, _meter, _clock):
-            ports.verdict_results = list(results)
+        def mutate(ports, _meter, clock):
+            ports.verdict_results, ports.fake_clock = list(results), clock
         return run(mutate=mutate, spec=make_spec(side=side, verdict=VERDICT_BLOCK))
 
     def status(self, evidence):
@@ -500,12 +507,45 @@ class TestVerdictExport(unittest.TestCase):
         not_ready = VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")
         result, ports, _meter, evidence = self.run_with(*[not_ready] * 20)
         self.assertEqual(result["status"], "complete")
-        # 시한 10초·간격 4초: 0·4·8·12초에 묻는다. 시한을 넘긴 뒤 한 번 더 묻지 않는다.
-        self.assertEqual(ports.calls.count("verdict_export"), 4)
+        # 시한 10초·간격 4초: 0·4·8초에 묻고, 남은 2초만 기다린 뒤 시한에는 새 요청을 안 보낸다.
+        self.assertEqual(ports.calls.count("verdict_export"), 3)
+        self.assertEqual(ports.verdict_times, [ports.verdict_times[0] + offset for offset in (0, 4, 8)])
+        self.assertEqual(ports.fake_clock.sleeps[-3:], [4, 4, 2])
         self.assertEqual(self.status(evidence), {"format": "abc2lab-eval-verdict-collection-v1", "status": "not_collected",
                                                  "reason": "verdict_collect: EXPORT_NOT_READY", "export": None, "pages_sha256": None})
         self.assertIsNone(evidence.files["run-record.json"]["artifacts"]["records"])
         self.assertNotIn("verdict-records.json", evidence.files)
+
+    def test_a_slow_answer_past_the_deadline_is_not_asked_again(self):
+        def mutate(ports, _meter, clock):
+            ports.verdict_results = [VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")] * 5
+            ports.verdict_call_seconds, ports.fake_clock = 11, clock
+        result, ports, _meter, evidence = run(mutate=mutate, spec=make_spec(verdict=VERDICT_BLOCK))
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        self.assertEqual((result["status"], evidence.files["verdict-export.json"]["status"]), (COMPLETE, "not_collected"))
+        # 시한이 지났으면 음수로 자지 않는다(실제 time.sleep은 음수에 ValueError).
+        self.assertEqual(ports.fake_clock.sleeps[-1], 0)
+
+    def test_integrity_failure_is_signed_as_a_stop_and_keeps_the_run(self):
+        result, ports, _meter, evidence = self.run_with(VerdictIntegrityError("verdict_collect: PAGE_INTEGRITY_FAILED"))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        self.assertEqual(self.status(evidence)["status"], "integrity_failed")
+        self.assertEqual(self.status(evidence)["reason"], "verdict_collect: PAGE_INTEGRITY_FAILED")
+        self.assertIsNone(evidence.files["run-record.json"]["artifacts"]["records"])
+        rows = [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "verdict_collection"]
+        self.assertEqual([(row["status"], row["reason"]) for row in rows], [("integrity_failed", "verdict_collect: PAGE_INTEGRITY_FAILED")])
+
+    def test_collection_state_is_signed_for_the_scorer(self):
+        for results, status, reason in (((collected_export(),), "collected", None),
+                                        ((VerdictCollectError("verdict_collect: FREEZE_EXPORT_NOT_FOUND"),), "not_collected",
+                                         "verdict_collect: FREEZE_EXPORT_NOT_FOUND")):
+            with self.subTest(status=status):
+                _result, _ports, _meter, evidence = self.run_with(*results)
+                rows = [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "verdict_collection"]
+                self.assertEqual([(row["status"], row["reason"]) for row in rows], [(status, reason)])
+        _result, _ports, _meter, evidence = run()
+        self.assertEqual([row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "verdict_collection"], [])
 
     def test_other_failures_are_not_retried(self):
         result, ports, _meter, evidence = self.run_with(VerdictCollectError("verdict_collect: FREEZE_EXPORT_NOT_FOUND"))

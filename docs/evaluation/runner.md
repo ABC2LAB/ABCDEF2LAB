@@ -235,10 +235,12 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 `llm-summary.json`에는 LLM 사유가 전부 남고, 결과 기록의 사유는 그중 정렬 첫째다.
 
-**판정 export:** 설정 `verdict_export`가 null이면 수집하지 않는다. 값이 있으면 개선 후 회차에서만 findings 다음, down 전에 [판정 페이지 제안](../contracts/verdict-record-page-api-proposal.md)대로 동결하고 전체 페이지를 모은다. 동결이 준비 전(409)이면 `ready_wait_seconds`까지 `ready_poll_seconds` 간격으로 다시 묻는다.
+**판정 export:** 설정 `verdict_export`가 null이면 수집하지 않는다. 값이 있으면 개선 후 회차에서만 findings 다음, down 전에 [판정 페이지 제안](../contracts/verdict-record-page-api-proposal.md)대로 동결하고 전체 페이지를 모은다. 동결이 준비 전(409)이면 `ready_poll_seconds` 간격으로 다시 묻고, `ready_wait_seconds`를 넘기면 새 요청을 보내지 않는다.
 
 - 다 맞으면 `verdict-pages.json`(원본 페이지)·`verdict-records.json`(채점 입력)·`verdict-export.json`을 남기고 `artifacts.records`가 채점 입력을 가리킨다.
-- 못 모으면 `verdict-export.json`에 `status=not_collected`와 고정 사유만 남기고 `artifacts.records`는 null(판정 미수집)이다. **회차를 무효로 만들지 않는다.** 해결 귀속은 판정과 따로 유효하고, 판정 칸은 판단불가로 나온다. 부분 수집은 채점 입력으로 쓰지 않는다.
+- **미수집**(시한 초과·미구현·인증·서버 장애·연결 불가·수집 상한): `status=not_collected`와 고정 사유를 남기고 `artifacts.records`는 null이다. 회차는 유효하고 판정 칸은 판단불가로 나온다.
+- **무결성 실패**(HTTP 422, 페이지 digest·회차·모델·리셋·구조 검증 실패): `status=integrity_failed`다. 회차와 해결 귀속 근거는 서명해서 보존하되, 격리 근거의 `verdict_collection` 행을 보고 채점기가 표를 멈춘다. 판단불가로 숨기지 않는다.
+- 부분 수집은 어느 쪽이든 채점 입력으로 쓰지 않는다.
 - baseline은 설정과 무관하게 수집하지 않는다. baseline 레코드는 A5 어댑터 몫이다.
 
 ## 아직 안 된 것

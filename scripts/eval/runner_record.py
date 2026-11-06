@@ -96,7 +96,8 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
                   post_probe: list, host_ref: str, pre_listeners: list[str], post_listeners: list[str],
                   allowed: list[dict], boundary_ref: str, policy: str, steps: dict, observer_rows: list[dict],
                   ready_calls: int, observer_path_ref: str, readonly_ref: str, meter: dict, drained: dict,
-                  engine_rows: int, conditions: dict, e2: dict, reconciliation: dict | None = None) -> list[dict]:
+                  engine_rows: int, conditions: dict, e2: dict, reconciliation: dict | None = None,
+                  verdict_collection: dict | None = None) -> list[dict]:
     """러너가 확인한 근거를 §3.1 행으로 옮긴다. seq는 이 함수가 붙인다."""
     network_ids = sorted(n["id"] for n in pre["networks"].values())
     rows: list[dict] = [
@@ -134,6 +135,9 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
         # 시도별 대조(프로토콜 §8.3) 건수. 서명 근거에 넣어 채점기가 통제 검증 표를 만든다. 시도 ID는 넣지 않는다.
         rows.append({"kind": "attempt_reconciliation", "at": steps["drained"]["at"],
                      **{field: reconciliation[field] for field in RESULT_FIELDS}})
+    if verdict_collection is not None:
+        # 판정 export 수집 상태. 무결성 실패면 채점기가 표를 멈춘다(run-record-v1.1 §3.1).
+        rows.append({"kind": "verdict_collection", "at": steps["drained"]["at"], **verdict_collection})
     rows += [
         _network_snapshot("post", post_check_at, post),
         _host_condition("post", post_check_at, host_ref, post, post_listeners, allowed),

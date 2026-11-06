@@ -22,7 +22,7 @@ from collect import VerdictRecord
 from ground_truth import bac_category, core_gt
 from isolation_proof import (
     IsolationError, attempt_reconciliation, check_isolated_events, check_isolation, check_unproven_events,
-    drain_policy, e2_mode, run_conditions,
+    drain_policy, e2_mode, run_conditions, verdict_collection,
 )
 from manifest import RunManifest
 from scoreboard import SnapshotError, normalize_challenges, require_basis_keys
@@ -404,6 +404,7 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
             conditions = run_conditions(receipt, loaded["isolation_evidence"])
             e2 = e2_mode(receipt, loaded["isolation_evidence"])
             reconciled = attempt_reconciliation(receipt, loaded["isolation_evidence"])
+            verdict_collection(receipt, loaded["isolation_evidence"], loaded["records"])
     except IsolationError as exc:
         raise RunRecordError(str(exc)) from None
     return RunInputs(pre, post, loaded["records"], traffic,

@@ -60,7 +60,7 @@ from runner_evidence import (  # noqa: E402
 )
 from attempt_reconcile import reconcile  # noqa: E402
 from verdict_collector import (  # noqa: E402
-    CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady, collect_verdict_export,
+    CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady, VerdictIntegrityError, collect_verdict_export,
 )
 from runner_state import copy_sqlite, discard_copy, memory_fingerprints, runtime_fingerprints  # noqa: E402
 from state_diff import (  # noqa: E402
@@ -99,6 +99,7 @@ VERDICT_PAGES_NAME = "verdict-pages.json"
 VERDICT_RECORDS_NAME = "verdict-records.json"
 VERDICT_STATUS_FORMAT = "abc2lab-eval-verdict-collection-v1"
 VERDICT_ENGINE_API_FAILED = "verdict_collect: ENGINE_API_FAILED"
+VERDICT_COLLECTED, VERDICT_NOT_COLLECTED, VERDICT_INTEGRITY_FAILED = "collected", "not_collected", "integrity_failed"
 # 작업 생성 직전 재적재 단계. 회차 전 적재와 같은 판정을 받는다.
 SERVING_TASK_START = "task_start"
 SERVING_POST = "post"
@@ -600,8 +601,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
     state.intercept = intercepted
-    records = None if spec.verdict_wait_seconds is None else _collect_verdicts(
-        spec, ports, evidence, state, clock, task_id, _record_context(spec, pre))
+    records, verdict_row = None, None
+    if spec.verdict_wait_seconds is not None:
+        records, verdict_row = _collect_verdicts(spec, ports, evidence, state, clock, task_id, _record_context(spec, pre))
     steps = timeline({"fixture_ready": fixture_ready_at, "pre": pre_board["received_at"], "engine_start": requested_at,
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
     # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
@@ -615,7 +617,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
-        reconciliation, records))
+        reconciliation, records, verdict_row))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
@@ -634,44 +636,53 @@ def _record_context(spec: RunSpec, pre: dict) -> RecordContext:
                          execution_id=pre["services"][ENGINE_SERVICE]["id"])
 
 
-def _collect_verdicts(spec: RunSpec, ports: RunPorts, evidence, state: _State, clock: Clock, task_id: str,
-                      context: RecordContext) -> dict | None:
-    """판정 export를 모은다. 못 모으면 records=null(판정 미수집)이고 사유를 서명 근거에 남긴다.
-
-    회차를 무효로 만들지 않는다. 해결 귀속은 판정과 따로 유효하고 판정 칸은 판단불가로 나온다(프로토콜 §4).
-    부분 수집을 판정 입력으로 쓰지 않는다. 수집기는 끝까지 맞은 export만 돌려준다.
-    """
+def _ask_for_verdicts(spec: RunSpec, ports: RunPorts, clock: Clock, task_id: str,
+                      context: RecordContext) -> tuple[CollectedExport | None, str, str | None]:
+    """(수집 결과, 상태, 사유). 시한 뒤에는 새 동결 요청을 보내지 않는다."""
     deadline = clock.monotonic() + spec.verdict_wait_seconds
-    collected, reason = None, None
-    while collected is None and reason is None:
+    while True:
         try:
-            collected = ports.verdict_export(task_id, context)
+            return ports.verdict_export(task_id, context), VERDICT_COLLECTED, None
         except VerdictExportNotReady as exc:
+            clock.sleep(min(spec.verdict_poll_seconds, max(0, deadline - clock.monotonic())))
             if clock.monotonic() >= deadline:
-                reason = str(exc)
-            else:
-                clock.sleep(spec.verdict_poll_seconds)
+                return None, VERDICT_NOT_COLLECTED, str(exc)
+        except VerdictIntegrityError as exc:
+            return None, VERDICT_INTEGRITY_FAILED, str(exc)
         except VerdictCollectError as exc:
-            reason = str(exc)
+            return None, VERDICT_NOT_COLLECTED, str(exc)
         except EngineAPIError:
-            reason = VERDICT_ENGINE_API_FAILED
+            return None, VERDICT_NOT_COLLECTED, VERDICT_ENGINE_API_FAILED
+
+
+def _collect_verdicts(spec: RunSpec, ports: RunPorts, evidence, state: _State, clock: Clock, task_id: str,
+                      context: RecordContext) -> tuple[dict | None, dict]:
+    """판정 export를 모아 (records 설명자, 서명할 수집 상태)를 돌려준다. 회차를 무효로 만들지 않는다.
+
+    진짜 미수집(준비 전 시한 초과·미구현·연결 불가)은 records=null이고 판정 칸이 판단불가로 나온다.
+    무결성 실패는 판단불가로 숨기면 안 되므로 상태를 서명해 채점기가 표를 멈추게 한다(판정 페이지 제안 §3·§6).
+    해결 귀속 근거는 어느 쪽이든 보존한다. 부분 수집은 채점 입력으로 쓰지 않는다.
+    """
+    collected, status, reason = _ask_for_verdicts(spec, ports, clock, task_id, context)
+    row = {"status": status, "reason": reason}
     if collected is None:
         _step(state, "evidence_write_failed", lambda: evidence.write_json(VERDICT_STATUS_NAME, {
-            "format": VERDICT_STATUS_FORMAT, "status": "not_collected", "reason": reason, "export": None, "pages_sha256": None}))
-        return None
+            "format": VERDICT_STATUS_FORMAT, **row, "export": None, "pages_sha256": None}))
+        return None, row
     _step(state, "evidence_write_failed", lambda: evidence.write_json(VERDICT_PAGES_NAME, {"pages": list(collected.pages)}))
     _step(state, "evidence_write_failed", lambda: evidence.write_json(VERDICT_RECORDS_NAME, collected.export.envelope))
     _step(state, "evidence_write_failed", lambda: evidence.write_json(VERDICT_STATUS_NAME, {
-        "format": VERDICT_STATUS_FORMAT, "status": "collected", "reason": None, "export": collected.export.summary(),
+        "format": VERDICT_STATUS_FORMAT, **row, "export": collected.export.summary(),
         "pages_sha256": evidence.describe(VERDICT_PAGES_NAME)[0]}))
     sha256, size = evidence.describe(VERDICT_RECORDS_NAME)
-    return descriptor(context, VERDICT_RECORDS_NAME, sha256, size, "engine")
+    return descriptor(context, VERDICT_RECORDS_NAME, sha256, size, "engine"), row
 
 
 def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict, pre_board: dict, post_board: dict,
                   pre_solved: dict, post_solved: dict, steps: dict, window: dict, observer: list, ready_calls: int,
                   meter_summary: dict, drained: dict, engine_rows: int, pre_checked_at: str,
-                  post_check_at: str, conditions: dict, e2: dict, reconciliation: dict | None, records: dict | None) -> dict:
+                  post_check_at: str, conditions: dict, e2: dict, reconciliation: dict | None, records: dict | None,
+                  verdict_row: dict | None) -> dict:
     """v1.1 러너 기록(서명 전)과 그 근거 파일 둘(격리 근거·해결 이벤트)을 만든다. 서명은 down 뒤."""
     context = _record_context(spec, pre)
     boundary_ref, host_ref = "compose:" + spec.project, "host-condition:" + spec.run_id
@@ -684,7 +695,8 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
         pre_listeners=state.listeners["pre"], post_listeners=state.listeners["post"], allowed=allowed,
         boundary_ref=boundary_ref, policy=policy, steps=steps, observer_rows=observer, ready_calls=ready_calls,
         observer_path_ref=get_ref, readonly_ref=spec.observer_readonly_ref, meter=meter_summary,
-        drained=drained, engine_rows=engine_rows, conditions=conditions, e2=e2, reconciliation=reconciliation)
+        drained=drained, engine_rows=engine_rows, conditions=conditions, e2=e2, reconciliation=reconciliation,
+        verdict_collection=verdict_row)
     evidence.write_json("isolation-evidence.json", isolation_evidence(context, rows))
     evidence_sha, evidence_size = evidence.describe("isolation-evidence.json")
     in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
