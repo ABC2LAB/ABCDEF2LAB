@@ -106,10 +106,8 @@ CA_RELPATH = os.path.join("_ca", "mitmproxy-ca-cert.pem")
 INDEX_RELPATH = os.path.join("_index", "index.sqlite")
 BLOBS_RELDIR = "_blobs"
 
-# Log markers. The guard marker is the original (untranslated) framing string the
-# platform guard writes to the audit log on a blocked tool call (guard/guard.go);
-# it is kept verbatim here because that is the exact byte sequence a responder
-# greps for, and translating it would stop the match.
+# 현재 차단 결과와 과거 기록을 모두 찾도록 두 표식을 유지한다.
+# 현재 감사 행에는 표시용 사유만 저장되므로 표식이 없을 수 있다.
 LOG_MARKERS = [
     {
         "value": "artex-enrich/1.0",
@@ -127,10 +125,17 @@ LOG_MARKERS = [
     },
     {
         "value": "【ARTEX 平台管控·非目标防御】",
-        "title": "platform-guard audit-log framing marker",
-        "source": "guard/guard.go",
+        "title": "historical platform-guard framing marker",
+        "source": "detections/indicators/legacy_guard_marker.md",
         "severity": "high",
         "caveat": "Also appears in logs that merely quote this defense guide or the ARTEX source.",
+    },
+    {
+        "value": "[ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]",
+        "title": "platform-guard model-result framing marker",
+        "source": "guard/guard.go",
+        "severity": "high",
+        "caveat": "May occur in quoted documentation; current audit rows need not contain this model-result marker.",
     },
 ]
 
@@ -769,6 +774,13 @@ def self_test():
             f.write("a normal line with no markers\n")
         lf, _ = scan_logs([logpath], [])
         check("logs: all three markers fire", len(lf) == 3)
+
+        # 새 표식과 과거 표식을 각각 확인해 한쪽만 탐지하는 회귀를 막는다.
+        for marker in LOG_MARKERS[2:]:
+            with open(logpath, "w", encoding="utf-8") as f:
+                f.write("blocked: " + marker["value"] + " This operation is prohibited.\n")
+            findings, skipped = scan_logs([logpath], [])
+            check("logs: " + marker["title"], len(findings) == 1 and findings[0].title == "ARTEX " + marker["title"] + " in log" and skipped == [])
 
         # 3b. rotated (compressed) logs under a --log-dir are scanned too, not
         # silently skipped. A responder pointing at /var/log/artex expects the
