@@ -195,7 +195,7 @@ const (
 	ActionDelete     Action = "delete"
 	ActionRecordOnly Action = "record_only"
 	ActionUndecided  Action = "undecidable"
-	// ActionMerged는 같은 자원을 돌려준 다른 시도에 합친 줄이다. 지우지 않고 자원 단위 칸에도 세지 않는다.
+	// ActionMerged는 같은 자원의 다른 시도에 합친 줄이다. 지우지 않고 자원 단위 칸에도 세지 않는다.
 	ActionMerged Action = "merged"
 )
 
@@ -252,8 +252,9 @@ func Build(records []Record, rules Rules, diff StateDiff) ([]Step, error) {
 	return steps, nil
 }
 
-// mergeSameResource는 같은 (테이블, id)를 한 번만 지우게 한다. 칸은 자원 단위라 두 번 세면 분모가 부푼다.
-// 역순으로 먼저 오는 시도를 남긴다. 이미 지운 뒤의 두 번째 삭제는 다른 응답을 받아 결과만 흐린다.
+// mergeSameResource는 같은 (테이블, id)를 한 줄로 남긴다. 칸은 자원 단위라 두 번 세면 칸과 분모가 부푼다.
+// 역순으로 먼저 오는 시도가 대표이고 그 결론은 그대로 둔다. 삭제가 아닌 대표를 삭제로 올리지 않는다.
+// id를 못 정한 기록은 같은 자원이라고 볼 수 없어 합치지 않는다.
 func mergeSameResource(steps []Step) {
 	type resource struct {
 		table string
@@ -262,7 +263,7 @@ func mergeSameResource(steps []Step) {
 	kept := make(map[resource]bool, len(steps))
 	for index := range steps {
 		step := &steps[index]
-		if step.Action != ActionDelete {
+		if step.Table == "" || step.ID <= 0 {
 			continue
 		}
 		key := resource{step.Table, step.ID}

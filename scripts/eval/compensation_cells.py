@@ -2,7 +2,7 @@
 
 네트워크를 부르지 않는 순수 코드다. 계획은 E② 쪽 Go 코드(compensation 패키지)의 공유 투영이고, 상태 차이는 state_diff 출력이다.
 사전·사후 GET 결과는 입력이 아니다. 칸은 상태 차이가 정한다. 판단불가를 복구됨이나 놓침으로 옮기지 않는다(절대규칙 5).
-칸은 자원 단위다. 같은 자원의 삭제가 둘이면 입력 오류이고, 합쳐진 시도(merged)는 칸에 세지 않는다.
+칸은 자원 단위다. id가 있는 같은 자원의 대표 줄이 둘이면 입력 오류이고, 합쳐진 시도(merged)는 칸에 세지 않는다.
 결과에는 건수와 테이블 이름만 넣는다. 입력 계획에는 테이블·id가 있으니 공유 근거에는 결과만 싣는다.
 """
 
@@ -30,7 +30,7 @@ def _fail(code: str) -> None:
 def _check_steps(steps: object) -> None:
     if not isinstance(steps, Sequence) or isinstance(steps, (str, bytes)):
         _fail("STEPS_INVALID")
-    attempts, deletes, merged = set(), set(), set()
+    attempts, representatives, merged = set(), set(), set()
     for step in steps:
         if not isinstance(step, dict) or set(step) != _STEP_FIELDS:
             _fail("STEP_FIELDS")
@@ -50,14 +50,14 @@ def _check_steps(steps: object) -> None:
             _fail("STEP_ID")
         if step["action"] in (ACTION_DELETE, ACTION_MERGED) and (row_id is None or not step["table"]):
             _fail("STEP_DELETE_TARGET")
-        if step["action"] == ACTION_DELETE:
-            if (step["table"], row_id) in deletes:
-                _fail("STEP_DUPLICATE_RESOURCE")
-            deletes.add((step["table"], row_id))
-        elif step["action"] == ACTION_MERGED:
+        if step["action"] == ACTION_MERGED:
             merged.add((step["table"], row_id))
-    if not merged <= deletes:
-        _fail("STEP_MERGED_WITHOUT_DELETE")
+        elif row_id is not None and step["table"]:
+            if (step["table"], row_id) in representatives:
+                _fail("STEP_DUPLICATE_RESOURCE")
+            representatives.add((step["table"], row_id))
+    if not merged <= representatives:
+        _fail("STEP_MERGED_WITHOUT_REPRESENTATIVE")
 
 
 def _table(diff: dict, name: str) -> dict | None:

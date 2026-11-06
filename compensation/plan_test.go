@@ -194,6 +194,45 @@ func TestBuildPlansOneDeletePerResource(t *testing.T) {
 	}
 }
 
+func TestBuildMergesSameResourceForEveryAction(t *testing.T) {
+	first, second := post(201, "/api/things/7", ""), post(201, "/api/things/7", "")
+	first.AttemptID, first.Sequence = "a1", 1
+	second.AttemptID, second.Sequence = "a2", 2
+	cases := []struct {
+		name   string
+		diff   StateDiff
+		action Action
+	}{
+		{"기존 자원 변경", measured(map[string]TableDiff{"Things": {Added: []int64{}, Changed: []int64{7}}}), ActionRecordOnly},
+		{"added 못 잼", measured(map[string]TableDiff{"Things": {}}), ActionUndecided},
+		{"before에 없음", measured(map[string]TableDiff{"Things": {Added: []int64{}}}), ActionUndecided},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			steps, err := Build([]Record{first, second}, testRules(), c.diff)
+			if err != nil || len(steps) != 2 {
+				t.Fatalf("steps=%d err=%v", len(steps), err)
+			}
+			// 대표의 결론은 그대로이고 삭제로 올라가지 않는다.
+			if steps[0].AttemptID != "a2" || steps[0].Action != c.action || steps[0].DeletePath != "" {
+				t.Fatalf("대표 %+v", steps[0])
+			}
+			if steps[1].AttemptID != "a1" || steps[1].Action != ActionMerged || steps[1].DeletePath != "" {
+				t.Fatalf("합친 줄 %+v", steps[1])
+			}
+		})
+	}
+	t.Run("id를 못 정하면 합치지 않음", func(t *testing.T) {
+		a, b := post(200, "", ""), post(200, "", "")
+		a.AttemptID, a.Sequence = "a1", 1
+		b.AttemptID, b.Sequence = "a2", 2
+		steps, err := Build([]Record{a, b}, testRules(), measured(map[string]TableDiff{"Things": {Added: []int64{}}}))
+		if err != nil || len(steps) != 2 || steps[0].Action != ActionRecordOnly || steps[1].Action != ActionRecordOnly {
+			t.Fatalf("steps=%+v err=%v", steps, err)
+		}
+	})
+}
+
 func TestBuildRejectsAmbiguousAttempts(t *testing.T) {
 	blank, one, sameAttempt, sameSequence := post(201, "", ""), post(201, "", ""), post(201, "", ""), post(201, "", "")
 	blank.AttemptID = ""

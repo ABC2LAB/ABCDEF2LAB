@@ -58,7 +58,7 @@ class TestCells(unittest.TestCase):
     def test_cp18_unmeasured_run_is_all_undecidable(self):
         for before, after in ((None, None), (diff(), None), (None, diff())):
             with self.subTest(before=before, after=after):
-                result = judge_cells([step(), step("a2", "undecidable")], [], before, after)
+                result = judge_cells([step(), step("a2", "undecidable", row_id=8)], [], before, after)
                 self.assertEqual((result["undecidable"], result["measured"], result["missed"]), (2, False, 0))
                 self.assertEqual((result["recovered"], result["changed_rows"], result["sequence_changed_tables"]), (0, None, None))
 
@@ -129,6 +129,18 @@ class TestCells(unittest.TestCase):
         unsent = judge_cells(steps, [], diff(Things=table(added=[7])), diff(Things=table(added=[7])))
         self.assertEqual((unsent["undecidable"], unsent["recovery_denominator"]), (1, 0))
 
+    def test_merged_attempt_counts_once_for_every_representative_action(self):
+        before, after = diff(Things=table(changed=[7])), diff(Things=table(changed=[7]))
+        recorded = judge_cells([step("a2", "record_only"), step("a1", "merged")], [], before, after)
+        self.assertEqual((recorded["record_only"], recorded["merged_attempts"], recorded["changed_rows"]), (1, 1, 1))
+        unkeyed = diff(Things=table(keyed=False))
+        undecided = judge_cells([step("a2", "undecidable"), step("a1", "merged")], [], unkeyed, unkeyed)
+        self.assertEqual((undecided["undecidable"], undecided["merged_attempts"]), (1, 1))
+
+    def test_rows_without_an_id_are_not_the_same_resource(self):
+        rows = [step("a1", "record_only", row_id=None), step("a2", "record_only", row_id=None)]
+        self.assertEqual(judge_cells(rows, [], diff(Things=table()), diff(Things=table()))["record_only"], 2)
+
     def test_merged_attempt_cannot_be_sent(self):
         with self.assertRaises(CompensationCellsError):
             judge_cells([step("a2"), step("a1", "merged")], ["a1"], diff(), diff())
@@ -140,7 +152,9 @@ class TestCells(unittest.TestCase):
                  ([step(row_id=None)], "STEP_DELETE_TARGET"), ([step(table_name="")], "STEP_DELETE_TARGET"),
                  ([step("a1", "merged", row_id=None)], "STEP_DELETE_TARGET"),
                  ([step("a1"), step("a2")], "STEP_DUPLICATE_RESOURCE"),
-                 ([step("a1", "merged")], "STEP_MERGED_WITHOUT_DELETE"),
+                 ([step("a1", "record_only"), step("a2", "record_only")], "STEP_DUPLICATE_RESOURCE"),
+                 ([step("a1", "undecidable"), step("a2", "record_only")], "STEP_DUPLICATE_RESOURCE"),
+                 ([step("a1", "merged")], "STEP_MERGED_WITHOUT_REPRESENTATIVE"),
                  ([step() | {"class": "none"}], "STEP_CLASS"), ([step() | {"class": None}], "STEP_CLASS"),
                  ([step() | {"reason": "Not Fixed"}], "STEP_REASON"), ([step() | {"reason": 1}], "STEP_REASON"),
                  ([step() | {"sequence": -1}], "STEP_SEQUENCE"), ([step() | {"sequence": True}], "STEP_SEQUENCE")]
