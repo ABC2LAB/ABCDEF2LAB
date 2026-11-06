@@ -6,7 +6,9 @@
 
 - 채점 입력은 run_id·model_tag·reset_generation·records 네 필드뿐이다. 재확인 결과와 변환 건수는 넣지 않고 summary로 낸다.
 - 원본 페이지는 호출자가 서명 근거로 보존한다. 입력을 고치지 않는다.
-- 재확인이 undecidable인 행은 채점 사본에서 판단불가로 바꾼다. 원값을 그대로 채점하는 경로는 없다.
+- 원본 행을 먼저 검증한다. 재확인이 undecidable인 행은 그 뒤 채점 사본에서만 판단불가로 바꾼다. 깨진 행을 판단불가로 숨기지 않고,
+  원값을 그대로 채점하는 경로도 없다.
+- 행과 payload_sha256의 정본 대응을 다시 계산해 본다(finding_id만 제외). 서버의 저장 정본 검증을 대신하지는 않는다.
 - GT 상관을 하지 않는다(절대규칙 7). 형식 검사에 넘기는 상관 함수는 항상 None이다.
 """
 
@@ -26,6 +28,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from collect import ScanOutputError, parse_scan_payload  # noqa: E402
+from e3_canonical import CanonicalError, canonical_sha256  # noqa: E402
 
 SUMMARY_FORMAT = "abc2lab-eval-verdict-export-v1"
 SCHEMA_VERSION = 1
@@ -60,6 +63,7 @@ class ExportContext:
 
 @dataclass(frozen=True)
 class VerdictExport:
+    export_ref: str
     envelope: dict
     total: int
     page_count: int
@@ -68,9 +72,9 @@ class VerdictExport:
     converted: int
     converted_reasons: tuple[tuple[str, int], ...]
 
-    def summary(self, export_ref: str) -> dict:
+    def summary(self) -> dict:
         """서명 근거에 넣을 비민감 요약. 레코드는 없다. 수동 건수는 자동 판정 지표와 따로 둔다."""
-        return {"format": SUMMARY_FORMAT, "export_ref": export_ref, "total": self.total, "page_count": self.page_count,
+        return {"format": SUMMARY_FORMAT, "export_ref": self.export_ref, "total": self.total, "page_count": self.page_count,
                 "manual_confirmation_count": self.manual_confirmation_count, "verified": self.verified,
                 "converted": self.converted, "converted_reasons": dict(self.converted_reasons)}
 
@@ -143,6 +147,26 @@ def _check_pair(page: dict, limit: int) -> dict[int, dict]:
     return by_id
 
 
+def _check_digest(record: dict, check: dict) -> None:
+    """변경 가능한 finding_id만 빼고 정본 해시를 맞춘다. 전달 중 바뀐 행을 정상 판정으로 받지 않는다."""
+    try:
+        digest = canonical_sha256({key: value for key, value in record.items() if key != "finding_id"})
+    except CanonicalError:
+        _fail("RECORD_NOT_CANONICAL")
+    if digest != check["payload_sha256"]:
+        _fail("CHECK_DIGEST_MISMATCH")
+
+
+def _parse_records(records: list[dict], context: ExportContext) -> None:
+    """채점기가 뒤에 거부할 행을 지금 거른다. 상관은 하지 않는다."""
+    envelope = {"run_id": context.run_id, "model_tag": context.model_tag, "reset_generation": context.reset_generation,
+                "records": records}
+    try:
+        parse_scan_payload(envelope, lambda _record: None, manifest=context)
+    except ScanOutputError:
+        _fail("RECORD_INVALID")
+
+
 def _scoring_copy(record: dict, check: dict) -> dict:
     row = copy.deepcopy(record)
     if check["status"] == CHECK_UNDECIDABLE:
@@ -160,7 +184,8 @@ def merge_verdict_pages(pages: Sequence[object], context: ExportContext) -> Verd
         _fail("PAGE_INVALID")
     seen_ids: set[int] = set()
     seen_cursors: set[str] = set()
-    rows: list[dict] = []
+    originals: list[dict] = []
+    checks_by_id: dict[int, dict] = {}
     reasons: Counter[str] = Counter()
     verified = converted = 0
     for index, page in enumerate(pages):
@@ -190,20 +215,21 @@ def merge_verdict_pages(pages: Sequence[object], context: ExportContext) -> Verd
                 _fail("DUPLICATE_RECORD")
             seen_ids.add(record_id)
             check = checks[record_id]
-            rows.append(_scoring_copy(record, check))
+            _check_digest(record, check)
+            originals.append(record)
+            checks_by_id[record_id] = check
             if check["status"] == CHECK_UNDECIDABLE:
                 converted += 1
                 reasons.update(check["reason_codes"])
             else:
                 verified += 1
-    if len(rows) != first["total"]:
+    if len(originals) != first["total"]:
         _fail("TOTAL_MISMATCH")
+    # 원본을 먼저 본다. 사본만 보면 깨진 행이 재확인 undecidable 뒤에 숨어 정상 판단불가로 지나간다.
+    _parse_records(originals, context)
+    rows = [_scoring_copy(record, checks_by_id[record["id"]]) for record in originals]
+    _parse_records(rows, context)
     envelope = {"run_id": context.run_id, "model_tag": context.model_tag, "reset_generation": context.reset_generation,
                 "records": rows}
-    try:
-        # 채점기가 뒤에 거부할 행을 지금 거른다. 상관은 하지 않는다.
-        parse_scan_payload(envelope, lambda _record: None, manifest=context)
-    except ScanOutputError:
-        _fail("RECORD_INVALID")
-    return VerdictExport(envelope, len(rows), len(pages), first["manual_confirmation_count"], verified, converted,
+    return VerdictExport(context.export_ref, envelope, len(rows), len(pages), first["manual_confirmation_count"], verified, converted,
                          tuple(sorted(reasons.items())))
