@@ -16,7 +16,7 @@ func TestBuiltinPromptsHaveNoHan(t *testing.T) {
 	for key, body := range BuiltinPromptSeeds() {
 		prompts[key] = body
 	}
-	for _, code := range SupportedOutputLangs {
+	for _, code := range []string{"ko", "en", "zh", "es", "ja", "fr", ""} {
 		prompts["lang_"+code] = langDirective(code)
 	}
 	for name, body := range prompts {

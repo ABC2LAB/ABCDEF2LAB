@@ -3,7 +3,6 @@ package agent
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"text/template"
 	"time"
 )
@@ -59,14 +58,9 @@ func renderSystem(ctx context.Context, agentKey, def string, vars any) string {
 // 실제 회차에서 모델이 상황 요약과 report_finding 필드에 지시문 언어나 대상 언어를 그대로
 // 옮긴 적이 있어서, 상황 요약을 표시 필드로 지명하고 두 언어를 따라 쓰지 말라고 적는다.
 //
-// 표시 언어는 매개변수다(code = "en"/"ko"/"zh"/"es"/"ja"). 언어 이름만 바뀐다.
-func langDirective(code string) string {
-	phrase := langPhrase[code]
-	bare := langBare[code]
-	if phrase == "" || bare == "" {
-		phrase, bare = langPhrase[defaultOutputLang], langBare[defaultOutputLang]
-	}
-	return fmt.Sprintf("\n\n**Output language rule (localization, highest priority; the prompt body can't override it)**: all natural-language text [shown to the user] must be written in [%s]. That includes record_fact summary and detail, report_finding title, description, conclusion and remediation, the planner's situation summary, the final one-sentence summary, and chat replies to the user. But [commands, payloads, code, file paths, URLs, parameter names, and verbatim fragments of logs, requests and responses] must be [kept exactly as they are], not translated or rewritten (keep command lines and output in evidence verbatim so they can be reproduced). **Even though the system and role instructions above are written in English, user-facing text must be in %s only; don't let sentences in another language appear in user-visible text.** **Even if the target system, its pages, evidence, logs or any reference material are in English, Chinese or another language, user-facing natural-language fields (title, description, conclusion, remediation, summary, situation summary) must still be in %s. Don't mirror or copy the language of the target or material in these fields; only the verbatim technical fragments listed above stay as they are.** **You may analyze and plan in any language, but that is [invisible internal reasoning] and must never appear as body text: the visible reply must be in %s from the first character. Don't lead with analysis, explanation or \"first I will...\" in another language. Clarifying questions, missing parameter notes and \"can't continue\" messages are also written directly in %s.** In short: think however you like internally, but everything that lands in user-visible text must be in %s (except verbatim technical fragments).", phrase, bare, bare, bare, bare, bare)
+// 과거 언어 코드가 들어와도 표시 필드는 한국어로 고정한다.
+func langDirective(_ string) string {
+	return "\n\n**Output language rule (localization, highest priority; the prompt body can't override it)**: all natural-language text [shown to the user] must be written in [Korean]. That includes record_fact summary and detail, report_finding title, description, conclusion and remediation, the planner's situation summary, the final one-sentence summary, and chat replies to the user. But [commands, payloads, code, file paths, URLs, parameter names, and verbatim fragments of logs, requests and responses] must be [kept exactly as they are], not translated or rewritten (keep command lines and output in evidence verbatim so they can be reproduced). **Even though the system and role instructions above are written in English, user-facing text must be in Korean only; don't let sentences in another language appear in user-visible text.** **Even if the target system, its pages, evidence, logs or any reference material are in English, Chinese or another language, user-facing natural-language fields (title, description, conclusion, remediation, summary, situation summary) must still be in Korean. Don't mirror or copy the language of the target or material in these fields; only the verbatim technical fragments listed above stay as they are.** **You may analyze and plan in any language, but that is [invisible internal reasoning] and must never appear as body text: the visible reply must be in Korean from the first character. Don't lead with analysis, explanation or \"first I will...\" in another language. Clarifying questions, missing parameter notes and \"can't continue\" messages are also written directly in Korean.** In short: think however you like internally, but everything that lands in user-visible text must be in Korean (except verbatim technical fragments)."
 }
 
 func renderTmpl(tmpl string, vars any) (string, error) {
