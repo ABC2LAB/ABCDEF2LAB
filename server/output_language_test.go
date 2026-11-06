@@ -6,10 +6,35 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/config"
 )
+
+// DB 상태와 무관하게 지원하지 않는 언어의 오류 본문 계약을 확인한다.
+func TestOutputLanguageUnsupportedResponseExplainsKoreanOnly(t *testing.T) {
+	for _, language := range []string{"en", "zh", "es", "ja", "fr"} {
+		t.Run(language, func(t *testing.T) {
+			s := &Server{}
+			req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(`{"output_language":"`+language+`"}`))
+			rec := httptest.NewRecorder()
+			s.putSettings(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error != "지원하지 않는 언어입니다(ko만 지원합니다)" {
+				t.Fatalf("error=%q, want ko-only explanation", body.Error)
+			}
+		})
+	}
+}
 
 // TestOutputLanguageCacheFollowsSettings pins that the cached output language
 // (read by every writeErr and label) is refreshed by PUT /api/settings, so a
