@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -627,7 +628,7 @@ func (s *Server) unbindGoalMetDefault() {
 
 // reseedBuiltinPrompts 는 기존 DB의 내장 에이전트 프롬프트를 현재 코드 기본값으로 올린다.
 // SeedPromptIfEmpty 는 비어 있을 때만 넣으므로 기존 설치에는 옛 중국어 본문이 남는다. 새 버전을
-// 덧붙여 전환하므로 이전 본문(운영자가 고친 것 포함)은 버전 기록에서 되찾을 수 있다. 전부 성공해야
+// 덧붙여 전환하되 알려진 옛 기본값만 교체하고 운영자가 편집한 현재 본문은 보존한다. 전부 성공해야
 // 플래그를 세운다. 일시적인 DB 오류로 옛 프롬프트에 머물지 않고 다음 기동 때 다시 시도하기 위해서다.
 func (s *Server) reseedBuiltinPrompts() {
 	const flag = "builtin_prompts_english_v1"
@@ -656,7 +657,7 @@ func (s *Server) reseedBuiltinPrompts() {
 	}
 }
 
-// reseedPrompt 는 에이전트 한 개의 현재 프롬프트가 기본값과 다르면 새 버전으로 기본값을 넣는다.
+// reseedPrompt 는 알려진 옛 기본값과 정확히 같을 때만 새 기본값 버전을 넣는다.
 // 에이전트 행이 없으면 할 일이 없다. 나중에 만들어질 때 최신 기본값으로 심긴다.
 func (s *Server) reseedPrompt(key, tmpl string) error {
 	a, err := s.m.pg.GetAgentByKey(key)
@@ -671,6 +672,10 @@ func (s *Server) reseedPrompt(key, tmpl string) error {
 		return err
 	}
 	if cur == tmpl {
+		return nil
+	}
+	if !isLegacyPromptDefault(key, cur) {
+		log.Printf("[prompts] %s 사용자 프롬프트 유지", key)
 		return nil
 	}
 	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
@@ -693,7 +698,7 @@ const reporterToolCallMessage = "A vulnerability was just registered above with 
 
 // upgradeReporterTriggerMessage 는 기존 DB의 reporter 트리거 문구를 영어로 올린다. seedReporterAgent
 // 는 플래그로 막혀 있고 새로 만들 때만 트리거를 쓰므로 기존 설치에는 옛 문구가 남는다. 트리거 행에는
-// 버전 기록이 없어서, 한자가 든 문구만 바꾸고 운영자가 다른 언어로 고친 문구는 그대로 둔다.
+// 버전 기록이 없어서, report_finding 트리거의 알려진 옛 기본값만 정확히 대조한다.
 // 전부 성공해야 플래그를 세운다.
 func (s *Server) upgradeReporterTriggerMessage() {
 	const flag = "reporter_trigger_english_v1"
@@ -711,7 +716,13 @@ func (s *Server) upgradeReporterTriggerMessage() {
 		return
 	}
 	for _, t := range triggers {
-		if !t.OnToolCall || !containsHan(t.ToolCallMessage) {
+		if !t.OnToolCall {
+			continue
+		}
+		if !slices.Contains(t.ToolNames, "report_finding") || !isLegacyReporterTrigger(t.ToolCallMessage) {
+			if containsHan(t.ToolCallMessage) {
+				log.Printf("[reporter] 수동 확인이 필요한 트리거 %d", t.ID)
+			}
 			continue
 		}
 		t.ToolCallMessage = reporterToolCallMessage

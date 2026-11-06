@@ -190,3 +190,21 @@ describe("report coverage tab → full coverage", () => {
     expect(go).toHaveBeenCalledWith("coverage");
   });
 });
+
+describe("report access map tab → full map", () => {
+  it("'전체 접근통제 지도 열기' 버튼이 go('access-map')로 이동한다", async () => {
+    const go = vi.fn();
+    render(
+      <NavContext.Provider value={{ screen: "report", go }}>
+        <SelectionContext.Provider
+          value={{ taskId: "task-1", tasksVersion: 0, selectTask: vi.fn(), refreshTasks: vi.fn() }}
+        >
+          <ReportScreen />
+        </SelectionContext.Provider>
+      </NavContext.Provider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "접근통제 지도" }));
+    fireEvent.click(await screen.findByRole("button", { name: /전체 접근통제 지도 열기/ }));
+    expect(go).toHaveBeenCalledWith("access-map");
+  });
+});
