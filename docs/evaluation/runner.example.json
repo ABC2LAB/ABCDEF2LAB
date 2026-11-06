@@ -85,7 +85,7 @@
   "verify_attempts": 5,
   "verify_interval_seconds": 2,
   "ca_bundle": "/etc/ssl/certs/ca-certificates.crt",
-  "expected_provider_name": "DeepInfra"
+  "expected_provider_name": "AtlasCloud"
  },
  "findings": {
   "vocabulary_path": "/srv/abc2lab-eval/vocabulary.json",
