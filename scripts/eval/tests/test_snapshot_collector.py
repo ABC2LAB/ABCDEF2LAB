@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import http.client
 import os
@@ -19,7 +20,10 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ground_truth import bac_category, core_gt
+from run_record import _snapshot as run_record_snapshot
+from scoreboard import SnapshotError
 from snapshot_collector import SnapshotCollectionError, SnapshotEndpoint, collect_snapshot
+from snapshot_writer import OPAQUE_OBSERVATION_FORMAT
 from snapshot_writer import SnapshotContext
 
 LIMIT = 1024 * 1024
@@ -82,6 +86,41 @@ class TestSnapshotCollector(unittest.TestCase):
 
         self.addCleanup(stop)
         return f"http://127.0.0.1:{server.server_port}", state
+
+    def test_opaque_observation_keeps_only_a_digest_and_is_not_scorable(self):
+        body = b"<html>opaque-canary-7f3a</html>"
+        self.state.update(body=body, headers={"Content-Type": "text/html"})
+        collected = collect_snapshot(self.config, self.root, "pre", self.context, opaque=True)
+        stored = (self.root / "pre" / "raw.json").read_bytes()
+        self.assertNotIn(b"opaque-canary-7f3a", stored)
+        self.assertEqual(json.loads(stored), {"format": OPAQUE_OBSERVATION_FORMAT, "bytes": len(body),
+                                              "sha256": hashlib.sha256(body).hexdigest()})
+        self.assertEqual(collected.artifacts.raw["sha256"], hashlib.sha256(stored).hexdigest())
+        normalized = json.loads((self.root / "pre" / "normalized.json").read_text())
+        self.assertEqual(normalized["solved"], {})
+        self.assertNotIn(b"opaque-canary-7f3a", (self.root / "pre" / "normalized.json").read_bytes())
+        self.assertEqual(self.state["requests"][0][2]["Accept"], "*/*")
+        # 채점기 입구가 GT key 부재로 거부한다. 빈 해결 맵이 '해결 없음'으로 읽히지 않는다.
+        receipt = {key: normalized[key] for key in ("run_id", "model_tag", "reset_generation", "instance_id",
+                                                    "execution_id")}
+        with self.assertRaises(SnapshotError):
+            run_record_snapshot(normalized, receipt, "pre")
+
+    def test_opaque_observation_still_requires_a_successful_response(self):
+        self.state.update(status=500, headers={"Content-Type": "text/html"})
+        with self.assertRaises(SnapshotCollectionError):
+            collect_snapshot(self.config, self.root, "pre", self.context, opaque=True)
+        self.assertFalse((self.root / "pre").exists())
+
+    def test_default_observation_still_asks_for_json(self):
+        self.collect()
+        self.assertEqual(self.state["requests"][0][2]["Accept"], "application/json")
+
+    def test_default_observation_rejects_a_non_scoreboard_response(self):
+        self.state.update(body=b"<html></html>", headers={"Content-Type": "text/html"})
+        self.assert_failure()
+        self.state.update(body=b'{"message":"home"}', headers={})
+        self.assert_failure()
 
     def collect(self, config=None, phase="pre", context=None, root=None):
         return collect_snapshot(config or self.config, self.root if root is None else root,

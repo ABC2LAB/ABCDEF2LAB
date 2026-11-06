@@ -38,7 +38,7 @@ E2_STUB_PLACEMENT = {"mode": "stub", "decision_rows": 5, "allowed": 4, "unsuppor
 STUB_RECONCILIATION = {"cells": {"allowed_observed": 4, "allowed_unobserved": 0, "denied_unobserved": 1,
                                  "denied_observed": 0, "unrecorded_observed": 0},
                        "meter_attempt_reused": 0, "blocked_reached": 0, "unrecorded_reached": 0,
-                       "positive_evidence": True, "control_claim_withheld": False}
+                       "positive_evidence": True, "control_claim_withheld": False, "allowed_responded": 4}
 
 def snapshot(name: str) -> dict:
     """runner_checks.network_snapshot 모양의 합성 망 스냅샷(엔진·계측기·대상·관측 front)."""

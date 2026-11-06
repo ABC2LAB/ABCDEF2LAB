@@ -234,6 +234,7 @@ def check_comparable(manifests: list[RunManifest]) -> None:
 # 통제 검증 표 행(프로토콜 §8.3). 칸 이름은 시도별 대조 다섯 칸, 기대 0인 행은 표에 그대로 적는다.
 _CONTROL_ROWS = (
     ("허용·관측됨", lambda r: r["cells"]["allowed_observed"]),
+    ("허용·대상 응답 수신(허용 양성 근거)", lambda r: r["allowed_responded"]),
     ("허용·관측되지 않음", lambda r: r["cells"]["allowed_unobserved"]),
     ("차단·관측되지 않음", lambda r: r["cells"]["denied_unobserved"]),
     ("차단 후 대상 도달(기대 0)", lambda r: r["blocked_reached"]),

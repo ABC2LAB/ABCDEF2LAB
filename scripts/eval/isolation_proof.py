@@ -43,7 +43,7 @@ _ROW_FIELDS = {
     "run_conditions": {"engine_settings_sha256", "engine_rules_sha256", "workers", "sampling", "host", "machine_id_sha256",
                        "llm_stream"},
     "e2_placement": {"mode", "decision_rows", "allowed", "unsupported", "unavailable"},
-    "attempt_reconciliation": {"cells", "meter_attempt_reused", "blocked_reached", "unrecorded_reached",
+    "attempt_reconciliation": {"cells", "allowed_responded", "meter_attempt_reused", "blocked_reached", "unrecorded_reached",
                                "positive_evidence", "control_claim_withheld"},
 }
 # 개선 후 회차의 E② 자리(러너 e2.ours_mode). 회차 조건(run_conditions)과 달리 baseline·개선 후가 일부러 다르므로
@@ -283,21 +283,24 @@ def attempt_reconciliation(receipt: dict, evidence: object) -> dict | None:
     cells, reused = row["cells"], row["meter_attempt_reused"]
     if (not isinstance(cells, dict) or set(cells) != set(RECONCILE_CELLS)
             or not all(_count(cells[cell]) for cell in RECONCILE_CELLS)
-            or not all(_count(row[key]) for key in ("meter_attempt_reused", "blocked_reached", "unrecorded_reached"))
+            or not all(_count(row[key]) for key in ("allowed_responded", "meter_attempt_reused", "blocked_reached",
+                                                    "unrecorded_reached"))
             or type(row["positive_evidence"]) is not bool or type(row["control_claim_withheld"]) is not bool):
         raise IsolationError("isolation_evidence.attempt_reconciliation: 건수 형식 오류")
     # 나쁜 칸·재사용이 있거나 허용 양성 근거가 없으면(전부 막아 0) 통제 주장을 보류한다.
     withheld = (cells["denied_observed"] > 0 or cells["unrecorded_observed"] > 0 or reused > 0
-                or cells["allowed_observed"] == 0)
+                or row["allowed_responded"] == 0)
     if (row["blocked_reached"] != cells["denied_observed"] or row["unrecorded_reached"] != cells["unrecorded_observed"]
-            or row["positive_evidence"] != (cells["allowed_observed"] > 0) or row["control_claim_withheld"] != withheld):
+            or row["allowed_responded"] > cells["allowed_observed"]
+            or row["positive_evidence"] != (row["allowed_responded"] > 0) or row["control_claim_withheld"] != withheld):
         raise IsolationError("isolation_evidence.attempt_reconciliation: 파생 건수·보류 판정이 칸과 다름")
     placement = _one(rows, "e2_placement")
     if (cells["allowed_observed"] + cells["allowed_unobserved"] != placement["allowed"]
             or cells["denied_unobserved"] + cells["denied_observed"]
             != placement["unsupported"] + placement["unavailable"]):
         raise IsolationError("isolation_evidence.attempt_reconciliation: 칸 합이 E② 결정 건수와 다름")
-    return {"cells": dict(cells), "meter_attempt_reused": reused, "blocked_reached": row["blocked_reached"],
+    return {"cells": dict(cells), "allowed_responded": row["allowed_responded"], "meter_attempt_reused": reused,
+            "blocked_reached": row["blocked_reached"],
             "unrecorded_reached": row["unrecorded_reached"], "positive_evidence": row["positive_evidence"],
             "control_claim_withheld": withheld}
 

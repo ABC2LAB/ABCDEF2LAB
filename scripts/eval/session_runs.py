@@ -212,6 +212,9 @@ def tally(attempts: list[Attempt], repeats: int) -> tuple[list[str], list[str]]:
             warnings.append(f"경고[시도 상한] {side}: 시도 {len(mine)}회 > 2N({2 * repeats}) — 더 돌리지 말고 원인부터 고친다")
         if len(valid) < repeats:
             warnings.append(f"경고[유효 부족] {side}: 유효 {len(valid)}회 < N({repeats}) — 결과는 미완")
+        zero = sum(1 for a in valid if a.record.get("total_requests") == 0)
+        if zero:
+            warnings.append(f"경고[대상 요청 0] {side}: 유효 회차 {zero}개가 대상 요청 없이 끝남 — 원인을 결과 문서에 적는다")
     marks = " ".join(SIDE_LETTER[a.side] + ("✓" if a.status == COMPLETE else "✗") for a in attempts)
     lines.append(f"시도 순서(시작 시각): {marks or '—'}")
     valid_order = [SIDE_LETTER[a.side] for a in attempts if a.status == COMPLETE]
