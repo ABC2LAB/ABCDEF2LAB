@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
 import sqlite3
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from state_diff import RUN_KEY_BYTES, StateDiffError, diff, snapshot  # noqa: E402
+from state_diff import (  # noqa: E402
+    RUN_KEY_BYTES, StateDiffError, diff, runtime_diff, snapshot, tree_fingerprint,
+)
 
 KEY = bytes(range(RUN_KEY_BYTES))
 SECRET = "hunter2-card-4111111111111111"
@@ -267,6 +271,100 @@ class TestNoValues(_Db):
         result = diff(self.pre, other)
         self.assertIn(["table", "Users"], result["schema_objects"]["changed"])
         self.assertTrue(result["tables"]["Users"]["schema_changed"])
+
+
+def tree(*members) -> bytes:
+    """(이름, 내용). 내용이 None이면 디렉터리, 'link:' 접두면 심볼릭 링크. 끝의 dict는 TarInfo 속성 덮어쓰기."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as archive:
+        for name, body, *rest in members:
+            info = tarfile.TarInfo(name)
+            for attribute, value in (rest[0] if rest else {}).items():
+                setattr(info, attribute, value)
+            if body is None:
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+            elif body.startswith(b"link:"):
+                info.type, info.linkname = tarfile.SYMTYPE, body[5:].decode()
+                archive.addfile(info)
+            else:
+                info.size = len(body)
+                archive.addfile(info, io.BytesIO(body))
+    return out.getvalue()
+
+
+def fp(*members):
+    return tree_fingerprint(tree(*members), KEY)
+
+
+BASE = (("ftp", None), ("ftp/a.md", b"one"), ("ftp/b.md", b"two"))
+
+
+class TestRuntimeTrees(unittest.TestCase):
+    def compare(self, *post):
+        return runtime_diff({"/app/ftp": fp(*BASE)}, {"/app/ftp": fp(*post)})
+
+    def test_same_tree_has_no_difference(self):
+        result = self.compare(*BASE)
+        self.assertFalse(result["runtime_changed"])
+        self.assertEqual(result["runtime"]["/app/ftp"], {"entries_pre": 3, "entries_post": 3, "missing_post": False,
+                                                         "added": 0, "removed": 0, "changed": 0})
+
+    def test_added_removed_and_changed_are_each_counted_and_flagged(self):
+        for post, field, count in (((*BASE, ("ftp/order.pdf", b"x")), "added", 1),
+                                   (BASE[:2], "removed", 1),
+                                   ((BASE[0], BASE[1], ("ftp/b.md", b"TWO")), "changed", 1)):
+            with self.subTest(field=field):
+                result = self.compare(*post)
+                self.assertEqual(result["runtime"]["/app/ftp"][field], count)
+                self.assertTrue(result["runtime_changed"])
+
+    def test_metadata_except_time_changes_the_fingerprint(self):
+        for attributes, label in (({"mode": 0o600}, "mode"), ({"uid": 7}, "uid"), ({"gid": 7}, "gid")):
+            with self.subTest(label=label):
+                result = self.compare(BASE[0], BASE[1], ("ftp/b.md", b"two", attributes))
+                self.assertEqual(result["runtime"]["/app/ftp"]["changed"], 1)
+        # 내용이 그대로면 시각만 바뀐 건 상태 차이가 아니다.
+        touched = self.compare(BASE[0], BASE[1], ("ftp/b.md", b"two", {"mtime": 1234567}))
+        self.assertFalse(touched["runtime_changed"])
+
+    def test_kind_and_link_target_change_the_fingerprint(self):
+        self.assertEqual(self.compare(BASE[0], BASE[1], ("ftp/b.md", b"link:two"))["runtime"]["/app/ftp"]["changed"], 1)
+        links = runtime_diff({"/r": fp(("l", b"link:x"))}, {"/r": fp(("l", b"link:y"))})
+        self.assertEqual(links["runtime"]["/r"]["changed"], 1)
+
+    def test_root_gone_after_the_run_counts_every_entry_as_removed(self):
+        result = runtime_diff({"/app/ftp": fp(*BASE)}, {"/app/ftp": None})
+        self.assertEqual(result["runtime"]["/app/ftp"], {"entries_pre": 3, "entries_post": 0, "missing_post": True,
+                                                         "added": 0, "removed": 3, "changed": 0})
+        self.assertTrue(result["runtime_changed"])
+        # 원래 비어 있던 일은 없다(tar에 디렉터리 항목이 있다). 그래도 사라짐 자체가 변화인지 단독으로 본다.
+        self.assertTrue(runtime_diff({"/r": {}}, {"/r": None})["runtime_changed"])
+
+    def test_roots_must_match_and_pre_cannot_be_missing(self):
+        for pre, post in (({"/a": {}}, {"/b": {}}), ({"/a": {}}, {}), ({}, {"/a": {}}), ({"/a": None}, {"/a": {}})):
+            with self.subTest(pre=pre, post=post), self.assertRaisesRegex(StateDiffError, "state_runtime_roots_mismatch"):
+                runtime_diff(pre, post)
+        self.assertEqual(runtime_diff({}, {}), {"runtime": {}, "runtime_changed": False})
+
+    def test_bad_archives_stop_with_a_fixed_code(self):
+        duplicate = tree(("x", b"1"), ("x", b"2"))
+        whole = tree(("x", b"0123456789" * 200))
+        truncated = whole[:600]  # 헤더는 온전하고 내용이 잘린 tar
+        for archive, label in ((duplicate, "duplicate"), (truncated, "truncated"), (b"not a tar" * 100, "garbage"),
+                               (b"", "empty"), (tree(), "no entries")):
+            with self.subTest(label=label), self.assertRaisesRegex(StateDiffError, "state_tree_invalid"):
+                tree_fingerprint(archive, KEY)
+        for key in (KEY[:-1], "k" * RUN_KEY_BYTES):
+            with self.assertRaisesRegex(StateDiffError, "state_run_key_invalid"):
+                tree_fingerprint(tree(("x", b"1")), key)
+
+    def test_fingerprints_depend_on_the_key_and_output_has_no_names_or_values(self):
+        self.assertNotEqual(fp(("x", b"secret"))["x"], tree_fingerprint(tree(("x", b"secret")), bytes(RUN_KEY_BYTES))["x"])
+        pre = {"/app/ftp": fp(("ftp/order_77.pdf", b"secret-body"))}
+        text = json.dumps(runtime_diff(pre, {"/app/ftp": fp(("ftp/order_88.pdf", b"secret-body-2"))}))
+        for leaked in ("order_77", "order_88", "secret", pre["/app/ftp"]["ftp/order_77.pdf"].hex()):
+            self.assertNotIn(leaked, text)
 
 
 if __name__ == "__main__":
