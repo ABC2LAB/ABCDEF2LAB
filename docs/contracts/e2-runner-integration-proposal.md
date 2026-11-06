@@ -2,9 +2,9 @@
 
 2026-11-07 · 이동찬 · **팀 검토용 제안. 새 전달 형식·서버 준비/시작 API는 미구현이며 운영 비활성이다.**
 
-기준 소스는 `dev` `1e185a1e917caa0618bc017078b16bfab31604b0`다. 이 문서는 E②가 러너에 넘길 비민감 결과와 마감 근거, IDOR 준비 자료의 실행 결속, 판정 export의 호출 순서를 검토하기 위한 서버 측 초안이다. 기존 wire·평가 프로토콜·판정 계약을 자동으로 개정하지 않는다.
+기준 소스는 `dev` `d28f7f3fa2db05f939aff349b3237f256f834e36`다. 이 문서는 E②가 러너에 넘길 비민감 결과와 마감 근거, IDOR 준비 자료의 실행 결속, 판정 export의 호출 순서를 검토하기 위한 서버 측 초안이다. 기존 wire·평가 프로토콜·판정 계약을 자동으로 개정하지 않는다.
 
-[#275](https://github.com/ABC2LAB/ABCDEF2LAB/pull/275)의 [A/B 준비 절차](https://github.com/ABC2LAB/ABCDEF2LAB/blob/f1c24c11ba04ed06be6f5342f5993fcba1e2db0f/docs/contracts/ab-session-prep-stage1.md)는 **미병합 초안**으로 참조한다. 그 초안의 범위는 `EvalRunID`가 없는 비평가 통합 회차다. 아래 평가용 결속 제안을 #275에 이미 구현되거나 합의된 기능으로 해석하지 않는다.
+병합된 [#275](https://github.com/ABC2LAB/ABCDEF2LAB/pull/275)의 [A/B 준비 절차](./ab-session-prep-stage1.md)를 참조한다. 그 문서의 범위는 `EvalRunID`가 없는 비평가 통합 회차이며, 열린 항목 2의 평가용 결속은 후속 검토안이다. #275 병합을 아래 평가용 서버 경계의 구현·활성화나 세부 계약 확정으로 해석하지 않는다.
 
 ## 1. 기준·담당·현재 상태
 
