@@ -365,6 +365,10 @@ class FakePorts:
         self._call("findings")
         return {"items": 0}
 
+    def intercept_summary(self):
+        self._call("intercept_summary")
+        return {"format": "intercept", "total": 0}
+
     def sign(self, payload):
         self.sign_calls += 1
         if self.sign_fail_at == self.sign_calls:
@@ -392,7 +396,7 @@ def run(mutate=None, mutate_gateway=None, spec=None):
 FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
-              "events:stop", "tmpfs:post", "findings", "down", "sign", "sign"]
+              "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
 
 
 STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 1 << 20,
@@ -532,7 +536,7 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(set(evidence.files), {"pre-checks.json", "pre-probe.json", "post-checks.json",
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
                                                "findings.json", "task.json", "window-watch.json",
-                                               "isolation-evidence.json", "solve-events.json", "run-record.json",
+                                               "isolation-evidence.json", "solve-events.json", "run-record.json", "intercept-summary.json",
                                                "engine-settings.json", RESULT_NAME})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
         self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
@@ -727,7 +731,8 @@ class TestFailures(unittest.TestCase):
             ("facts:post", "post_facts_failed"),
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
             ("tmpfs:pre", "pre_tmpfs_measure_failed"), ("tmpfs:post", "tmpfs_measure_failed"),
-            ("findings", "findings_failed"), ("engine_settings", "engine_settings_failed"),
+            ("findings", "findings_failed"), ("intercept_summary", "intercept_summary_failed"),
+            ("engine_settings", "engine_settings_failed"),
         ]
         for name, reason in cases:
             with self.subTest(step=name):
@@ -829,6 +834,12 @@ class TestFailures(unittest.TestCase):
         self.assertEqual((drain["grace_seconds"], drain["settle_seconds"], drain["forced_cancelled"],
                           drain["settle_applied_seconds"]), (30, 2, 1, 2))
         self.assertEqual(evidence.files["run-record.json"]["total_requests"], 2)
+
+    def test_intercept_summary_is_kept_as_signed_evidence(self):
+        result, _, _, evidence = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(evidence.files["intercept-summary.json"], {"format": "intercept", "total": 0})
+        self.assertEqual(result["intercept"], evidence.files["intercept-summary.json"])
 
     def test_runs_without_rules_make_no_rule_call(self):
         result, ports, _, evidence = run()

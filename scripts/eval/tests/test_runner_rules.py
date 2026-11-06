@@ -11,13 +11,15 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import RunnerConfigError, parse_runner_config, plan_run  # noqa: E402
 from runner_engine import (  # noqa: E402
     MAX_RULES, MAX_RULES_FILE_BYTES, MAX_RULES_RESPONSE_BYTES, RULES_EVIDENCE_FORMAT, RULES_FORMAT, AdminSecret, EngineAPIError, apply_engine_rules,
-    load_engine_rules,
+    intercept_summary, load_engine_rules,
 )
 from test_preflight import configuration  # noqa: E402
 from test_runner_config import runner_config  # noqa: E402
@@ -305,6 +307,121 @@ class TestApply(FileCase):
     def test_oversized_engine_reply_is_refused(self):
         with self.assertRaisesRegex(EngineAPIError, "engine_rules_response_invalid"):
             self.apply(list_body=b'{"rules": []}' + b" " * MAX_RULES_RESPONSE_BYTES)
+
+
+def history_row(status="denied", source="rule", rule_name="block-post", tool="Bash"):
+    return {"id": 1, "rule_id": 7, "conversation_id": None, "task_id": "1", "agent_name": "w", "tool_name": tool,
+            "tool_input": {"command": "SECRET-TOOL-INPUT"}, "status": status, "decision_source": source,
+            "reason": "SECRET-REASON", "decided_at": None, "created_at": "t", "conv_title": "SECRET-TITLE",
+            "conv_agent_key": "k", "rule_name": rule_name}
+
+
+class FakeHistory:
+    """승인 기록 API. 쪽 크기를 지켜 나눠 준다."""
+
+    def __init__(self, rows, status=200, body=None, total=None, page_limit=None):
+        self.requests = []
+        history = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                return
+
+            def reply(self, code, data):
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                self.reply(200, json.dumps({"token": TOKEN}).encode())
+
+            def do_GET(self):
+                query = parse_qs(urlsplit(self.path).query)
+                page, size = int(query["page"][0]), int(query["size"][0])
+                history.requests.append((urlsplit(self.path).path, page, size, self.headers.get("Authorization")))
+                if body is not None:
+                    self.reply(status, body)
+                    return
+                chunk = rows[(page - 1) * size:page * size]
+                self.reply(status, json.dumps({"items": chunk, "total": len(rows) if total is None else total,
+                                               "page": page, "page_size": size}).encode())
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class TestInterceptSummary(unittest.TestCase):
+    def summarize(self, rows, file_rules=("block-post",), **options):
+        history = FakeHistory(rows, **options)
+        self.addCleanup(history.close)
+        return history, intercept_summary(history.port, AdminSecret(PASSWORD), frozenset(file_rules), 5)
+
+    def test_counts_by_origin_status_and_tool(self):
+        rows = [history_row(), history_row(tool="WebFetch"), history_row(rule_name="seeded-delete"),
+                history_row(source="model", rule_name=""), history_row(source="unknown", rule_name=""),
+                history_row(status="allowed"), history_row(status="pending"), history_row(status="timeout")]
+        history, summary = self.summarize(rows)
+        self.assertEqual(summary["total"], 8)
+        self.assertEqual(summary["by_status"], {"allowed": 1, "denied": 5, "pending": 1, "timeout": 1})
+        self.assertEqual(summary["denied_by_origin"], {"file_rule": 2, "seeded_rule": 1, "model": 1, "other": 1})
+        self.assertEqual(summary["denied_by_tool"], {"Bash": 4, "WebFetch": 1})
+        self.assertEqual(history.requests, [("/api/intercept/history", 1, 100, f"Bearer {TOKEN}")])
+
+    def test_every_page_is_read(self):
+        rows = [history_row() for _ in range(205)]
+        history, summary = self.summarize(rows)
+        self.assertEqual([request[1] for request in history.requests], [1, 2, 3])
+        self.assertEqual((summary["total"], summary["denied_by_tool"]), (205, {"Bash": 205}))
+
+    def test_no_rows_is_a_measured_zero(self):
+        _, summary = self.summarize([])
+        self.assertEqual((summary["total"], summary["denied_by_tool"]), (0, {}))
+
+    def test_tool_input_and_reasons_never_reach_the_summary(self):
+        _, summary = self.summarize([history_row(), history_row(tool="bad tool name/\n")])
+        text = json.dumps(summary)
+        self.assertNotIn("SECRET", text)
+        self.assertNotIn("bad tool", text)
+        self.assertEqual(summary["denied_by_tool"], {"Bash": 1, "OTHER": 1})
+
+    def test_without_file_rules_every_rule_denial_is_seeded(self):
+        _, summary = self.summarize([history_row()], file_rules=())
+        self.assertEqual(summary["denied_by_origin"]["seeded_rule"], 1)
+
+    def test_engine_failures_have_fixed_codes(self):
+        cases = (({"status": 500}, "engine_intercept_http_500"),
+                 ({"body": b"not json"}, "engine_intercept_response_invalid"),
+                 ({"body": b"[]"}, "engine_intercept_response_invalid"),
+                 ({"body": b'{"items": {}, "total": 0}'}, "engine_intercept_response_invalid"),
+                 ({"body": b'{"items": [], "total": "0"}'}, "engine_intercept_response_invalid"),
+                 ({"body": b'{"items": [], "total": -1}'}, "engine_intercept_response_invalid"),
+                 ({"body": b'{"items": [], "total": 3}'}, "engine_intercept_response_invalid"),
+                 ({"body": b'{"items": ["x"], "total": 1}'}, "engine_intercept_response_invalid"),
+                 ({"body": json.dumps({"items": [history_row(status="new")], "total": 1}).encode()},
+                  "engine_intercept_response_invalid"),
+                 ({"body": json.dumps({"items": [history_row()], "total": 0}).encode()},
+                  "engine_intercept_response_invalid"))
+        for options, code in cases:
+            with self.subTest(code=code, options=str(options)[:40]), self.assertRaisesRegex(EngineAPIError, code):
+                self.summarize([], **options)
+
+    def test_page_limit_stops_instead_of_undercounting(self):
+        with patch("runner_engine.MAX_INTERCEPT_PAGES", 2), self.assertRaisesRegex(EngineAPIError, "engine_intercept_too_many"):
+            self.summarize([history_row() for _ in range(201)])
+
+    def test_oversized_page_is_refused(self):
+        body = b'{"items": [], "total": 0}' + b" " * 64
+        with patch("runner_engine.MAX_INTERCEPT_PAGE_BYTES", 32), self.assertRaisesRegex(
+                EngineAPIError, "engine_intercept_response_invalid"):
+            self.summarize([], body=body)
 
 
 class TestConfig(unittest.TestCase):

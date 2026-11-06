@@ -49,8 +49,8 @@ from runner_config import (  # noqa: E402
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from runner_engine import (  # noqa: E402
-    AdminSecret, EngineAPIError, apply_engine_rules, collect_findings, engine_settings, load_engine_rules, load_vocabulary,
-    start_task, task_request,
+    AdminSecret, EngineAPIError, apply_engine_rules, collect_findings, engine_settings, intercept_summary, load_engine_rules,
+    load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, FORCED_CANCELLED_OUTCOME, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
@@ -131,6 +131,7 @@ class RunPorts(Protocol):
     def state_trees(self, phase: str, snapshot: dict, key: bytes) -> dict: ...
     def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list: ...
     def findings(self) -> dict: ...
+    def intercept_summary(self) -> dict: ...
     def sign(self, payload: dict) -> dict: ...
 
 
@@ -219,6 +220,7 @@ class _State:
     state_pre: dict | None = None
     state_trees_pre: dict = field(default_factory=dict)
     engine_rules: dict | None = None
+    intercept: dict | None = None
     state_memory_pre: list = field(default_factory=list)
 
 
@@ -536,6 +538,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure(llm_reasons[0])
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
+    intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
+    state.intercept = intercepted
     steps = timeline({"fixture_ready": fixture_ready_at, "pre": pre_board["received_at"], "engine_start": requested_at,
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
     # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
@@ -551,7 +556,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
         reconciliation))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
-                     "run_conditions": conditions, "engine_rules": state.engine_rules,
+                     "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256,
                      # 엔진이 현재 모드를 드러내지 않아 관측값은 없다(선언만). baseline은 스위치가 없어 선언도 null.
                      "engine_llm_policy": {"declared": spec.llm_policy_mode, "observed": None},
@@ -724,9 +729,10 @@ def _read_text(path: str) -> str | None:
 class DockerPorts:
     def __init__(self, config: RunnerConfig, plan: RunPlan, directory: RunDirectory, docker: Docker,
                  findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict],
-                 rules: Callable[[], dict] | None = None):
+                 rules: Callable[[], dict] | None = None, intercepted: Callable[[], dict] | None = None):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
         self._findings, self._start, self._settings, self._rules = findings, start, settings, rules
+        self._intercepted = intercepted
         self.base_args = compose_base_args(plan)
         self.obs_origin = f"http://127.0.0.1:{config.ports['obs_host']}"
 
@@ -850,6 +856,9 @@ class DockerPorts:
     def findings(self) -> dict:
         return self._findings()
 
+    def intercept_summary(self) -> dict:
+        return self._intercepted()
+
     def sign(self, payload: dict) -> dict:
         # 키는 서명 직전에만 읽는다. 경로는 러너 설정(회차 디렉터리 밖)이며 compose·환경으로 넘기지 않는다.
         return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
@@ -935,7 +944,11 @@ def main(argv: list[str] | None = None) -> int:
     def apply_rules() -> dict:
         return apply_engine_rules(config.ports["engine_api_host"], secret, rules, config.run["task_create_timeout_seconds"])
 
-    ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules)
+    def intercepted() -> dict:
+        names = frozenset() if rules is None else frozenset(rule["name"] for rule in rules.rules)
+        return intercept_summary(config.ports["engine_api_host"], secret, names, config.findings["timeout_seconds"])
+
+    ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules, intercepted)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
                                     None if rules is None else rules.sha256), ports, MeterFiles(directory.meter, directory.e2),
