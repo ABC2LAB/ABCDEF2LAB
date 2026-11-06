@@ -140,7 +140,7 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
     # 서명된 E② 자리. 가짜 E²(stub) 회차는 배치 확인용이라 시범·공식 세션 집계에 넣지 않는다(프로토콜 §2).
     e2_mode = result.get("e2_mode")
     if e2_mode not in E2_MODES:
-        errors.append(f"{directory.name}: 완료 결과의 e2_mode가 none|stub이 아님")
+        errors.append(f"{directory.name}: 완료 결과의 e2_mode가 none|stub|product가 아님")
         return None
     if e2_mode == "stub" and not allow_fixture_e2:
         errors.append(f"{directory.name}: 가짜 E② 회차(e2_mode=stub)는 세션 집계에 넣지 않음 — 배치 확인용(프로토콜 §2), "

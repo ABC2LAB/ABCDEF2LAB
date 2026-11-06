@@ -99,8 +99,13 @@ class TestFixtureE2(SessionCase):
         self.assertTrue(any("e2_mode=stub" in e for e in caught.exception.errors), caught.exception.errors)
         self.assertEqual(len(read_session(self.root, KEY, allow_fixture_e2=True)), 2)
 
+    def test_product_runs_count_without_the_fixture_flag(self):
+        self.s.complete("baseline", 1, 0)
+        self.s.complete("ours", 2, 0, e2_mode="product")
+        self.assertEqual(len(read_session(self.root, KEY)), 2)
+
     def test_missing_or_unknown_e2_mode_is_refused(self):
-        for minute, value in enumerate((None, "product", "")):
+        for minute, value in enumerate((None, "other", "")):
             with self.subTest(value=value):
                 directory = self.s.complete("ours", minute, minute, e2_mode=value)
                 with self.assertRaises(SessionError) as caught:

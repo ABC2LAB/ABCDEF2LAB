@@ -62,6 +62,25 @@ def reconciliation_evidence(run_id: str, unsupported: int, unavailable: int, all
     ])
 
 
+def product_evidence(run_id: str, decisions: dict | None, allowed: int = 1) -> dict:
+    """제품 E② 회차 근거. decisions가 None이면 결과를 못 모은 제품 실패다."""
+    base = dict(CONTEXT, run_id=run_id)
+    product = {"kind": "e2_product", "seq": 2, "at": "2026-11-06T00:00:00Z", "close_reason": None, "rows": None, "attempts_without_result": 0,
+               "allowed_not_sent": 0, "checkpoint_sequence": None, "config_sha256": "1" * 64, "policy_fingerprint_sha256": "2" * 64, "manifest_sha256": None}
+    rows = [{"kind": "e2_placement", "seq": 1, "at": "2026-11-06T00:00:00Z", "mode": "product", "decision_rows": None,
+             "allowed": None, "unsupported": None, "unavailable": None}]
+    if decisions is None:
+        rows.append(product | {"close_state": "unavailable", "close_reason": "close_timeout", "collection_outcome": "product_failure",
+                               "collection_reason": "close_timeout", "attempts": None, "decisions": None})
+        return dict(base, phase="engine", format="abc2lab-isolation-evidence-v1", rows=rows)
+    rows.append(product | {"close_state": "complete", "collection_outcome": "complete", "collection_reason": None, "attempts": sum(decisions.values()), "decisions": decisions})
+    blocked = decisions["denied"] + decisions["unsupported"]
+    cells = {"allowed_observed": decisions["allowed"], "allowed_unobserved": 0, "denied_unobserved": blocked, "denied_observed": 0, "unrecorded_observed": 0}
+    rows.append({"kind": "attempt_reconciliation", "seq": 3, "at": "2026-11-06T00:00:00Z", "cells": cells, "allowed_responded": allowed, "meter_attempt_reused": 0,
+                 "blocked_reached": 0, "unrecorded_reached": 0, "positive_evidence": allowed > 0, "control_claim_withheld": allowed == 0})
+    return dict(base, phase="engine", format="abc2lab-isolation-evidence-v1", rows=rows)
+
+
 def no_e2_evidence() -> dict:
     return dict(CONTEXT, phase="engine", format="abc2lab-isolation-evidence-v1", rows=[
         {"kind": "e2_placement", "seq": 1, "at": "2026-11-06T00:00:00Z", "mode": "none", "decision_rows": None,
@@ -265,6 +284,24 @@ class TestE2(Case):
         result["evidence"]["isolation-evidence.json"] = hashlib.sha256(data).hexdigest()
         result_path.write_text(json.dumps(sign_run_record(result, KEY)), encoding="utf-8")
         return directory
+
+    def run_with_product(self, root: Root, decisions: dict | None, repeat=0) -> Path:
+        directory = root.run(repeat=repeat, side="ours", condition="개선 후", e2_mode="product", proof={"proof_id": f"p{repeat}"},
+                             evidence=product_evidence("placeholder", decisions))
+        return self.rebind(directory, root)
+
+    def test_product_blocks_count_denied_and_unsupported_without_a_flag(self):
+        one = self.root()
+        self.run_with_product(one, {"allowed": 1, "denied": 3, "unsupported": 1})
+        table = self.table(one)
+        self.assertEqual(table["E② 정책 거부(미지원 포함)"], ["4 (4)"])
+        self.assertEqual(table["E² 불가용(정책 거부 아님)"], ["—"])
+
+    def test_product_failure_has_no_counts_rather_than_zero(self):
+        one = self.root()
+        self.run_with_product(one, None)
+        table = self.table(one)
+        self.assertEqual(table["E② 정책 거부(미지원 포함)"], ["—"])
 
     def test_denials_and_unavailable_are_separate_rows_from_the_placement(self):
         one = self.root()

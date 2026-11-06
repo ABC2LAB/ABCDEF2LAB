@@ -178,7 +178,7 @@ class TestRejectedV11(_V11):
         self.assertEqual(self.inputs(self.v11("en")).e2_mode, "none")
         self.assertEqual(self.inputs(self.v11("es", e2=E2_STUB_PLACEMENT)).e2_mode, "stub")
         self.reject("e2_placement", "e0", tamper_rows=lambda rows: drop(rows, row_of(rows, "e2_placement")))
-        bad = [{"mode": "product"}, {"decision_rows": 0}, {"mode": "stub"},
+        bad = [{"mode": "other"}, {"decision_rows": 0}, {"mode": "stub"}, {"mode": "product", "decision_rows": 0},
                {"mode": "stub", "decision_rows": 1, "allowed": 1, "unsupported": 0, "unavailable": 1},
                {"mode": "stub", "decision_rows": 0, "allowed": 0, "unsupported": 0, "unavailable": -1},
                {"mode": "stub", "decision_rows": True, "allowed": 1, "unsupported": 0, "unavailable": 0}]
@@ -226,6 +226,69 @@ class TestRejectedV11(_V11):
             self._verdict_row("not_collected", "a")(rows)
             self._verdict_row("not_collected", "a")(rows)
         self.reject("행은 하나", "v8", tamper_rows=twice)
+
+    PRODUCT = {"mode": "product", "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None}
+
+    def _product_row(self, **changes):
+        row = {"close_state": "complete", "close_reason": None, "collection_outcome": "complete", "collection_reason": None, "rows": 7, "attempts": 5,
+               "decisions": {"allowed": 4, "denied": 1, "unsupported": 0}, "attempts_without_result": 0, "allowed_not_sent": 0, "checkpoint_sequence": 7,
+               "config_sha256": "1" * 64, "policy_fingerprint_sha256": "2" * 64, "manifest_sha256": "3" * 64} | changes
+
+        def add(rows):
+            rows.append({"kind": "e2_product", "seq": len(rows) + 1, "at": rows[-1]["at"], **row})
+        return add
+
+    def test_product_run_uses_its_own_decision_counts(self):
+        inputs = self.inputs(self.v11("p1", e2=self.PRODUCT, tamper_rows=self._product_row()))
+        self.assertEqual((inputs.e2_mode, inputs.attempt_reconciliation), ("product", STUB_RECONCILIATION))
+
+    def test_product_failure_has_no_reconciliation_and_stays_a_run(self):
+        def failed(rows):
+            drop(rows, row_of(rows, "attempt_reconciliation"))
+            self._product_row(close_state="unavailable", close_reason="close_timeout", collection_outcome="product_failure", collection_reason="close_timeout",
+                              rows=None, attempts=None, decisions=None, checkpoint_sequence=None, manifest_sha256=None)(rows)
+        inputs = self.inputs(self.v11("p2", e2=self.PRODUCT, tamper_rows=failed))
+        self.assertEqual((inputs.e2_mode, inputs.attempt_reconciliation), ("product", None))
+        self.reject("제품 실패 회차에는 없어야", "p3", e2=self.PRODUCT, tamper_rows=self._product_row(
+            close_state="unavailable", collection_outcome="product_failure", collection_reason="close_timeout", decisions=None, attempts=None))
+
+    def test_no_execution_reconciles_against_zero_decisions(self):
+        zero = {"cells": {"allowed_observed": 0, "allowed_unobserved": 0, "denied_unobserved": 0, "denied_observed": 0, "unrecorded_observed": 2},
+                "meter_attempt_reused": 0, "blocked_reached": 0, "unrecorded_reached": 2, "positive_evidence": False, "control_claim_withheld": True,
+                "allowed_responded": 0}
+        row = self._product_row(close_state="no_execution", collection_outcome="no_execution", rows=None, attempts=None, decisions=None, checkpoint_sequence=None, manifest_sha256=None)
+        inputs = self.inputs(self.v11("p4", e2=self.PRODUCT, reconciliation=zero, tamper_rows=row))
+        self.assertEqual(inputs.attempt_reconciliation["unrecorded_reached"], 2)
+        self.assertTrue(inputs.attempt_reconciliation["control_claim_withheld"])
+
+    def test_product_row_must_exist_only_on_product_runs_and_be_consistent(self):
+        self.reject("e2_product: 정확히 한 행", "q0", e2=self.PRODUCT)
+        self.reject("e2_product: 제품 E² 회차에만", "q1", tamper_rows=self._product_row())
+        self.reject("e2_product: 제품 E² 회차에만", "q2", e2=E2_STUB_PLACEMENT, tamper_rows=self._product_row())
+        def twice(rows):
+            self._product_row()(rows)
+            self._product_row()(rows)
+        self.reject("e2_product: 정확히 한 행", "q3", e2=self.PRODUCT, tamper_rows=twice)
+        cases = (({"close_state": "other"}, "상태 형식 오류"), ({"collection_outcome": "other"}, "상태 형식 오류"), ({"close_reason": 7}, "상태 형식 오류"),
+                 ({"collection_reason": "x"}, "완료 상태가 맞지 않음"), ({"close_state": "incomplete"}, "완료 상태가 맞지 않음"),
+                 ({"close_state": "no_execution"}, "완료 상태가 맞지 않음"), ({"collection_outcome": "no_execution"}, "실행 없음 상태가 맞지 않음"),
+                 ({"close_state": "no_execution", "collection_outcome": "no_execution", "collection_reason": "x"}, "실행 없음 상태가 맞지 않음"),
+                 ({"collection_outcome": "product_failure"}, "제품 실패 사유 없음"), ({"collection_outcome": "product_failure", "collection_reason": ""}, "제품 실패 사유 없음"),
+                 ({"collection_outcome": "product_failure", "collection_reason": 7}, "제품 실패 사유 없음"),
+                 ({"decisions": None}, "완료인데 결정 건수 없음"), ({"decisions": {}}, "결정 건수 형식 오류"), ({"decisions": 7}, "결정 건수 형식 오류"),
+                 ({"decisions": {"allowed": 4, "denied": 1}}, "결정 건수 형식 오류"), ({"decisions": {"allowed": -1, "denied": 6, "unsupported": 0}}, "결정 건수 형식 오류"),
+                 ({"attempts": 4}, "결정 건수 형식 오류"), ({"attempts": True}, "결정 건수 형식 오류"),
+                 # 합이 1이면 True도 합과 같아 보인다.
+                 ({"attempts": True, "decisions": {"allowed": 1, "denied": 0, "unsupported": 0}}, "결정 건수 형식 오류"))
+        for index, (changes, pattern) in enumerate(cases):
+            with self.subTest(changes=changes):
+                self.reject(pattern, f"w{index}", e2=self.PRODUCT, tamper_rows=self._product_row(**changes))
+
+    def test_product_cells_must_add_up_to_its_decisions(self):
+        self.reject("칸 합이 E② 결정 건수와 다름", "c1", e2=self.PRODUCT, tamper_rows=self._product_row(decisions={"allowed": 3, "denied": 2, "unsupported": 0}))
+        # 차단은 denied와 unsupported를 합쳐서 본다.
+        inputs = self.inputs(self.v11("c2", e2=self.PRODUCT, tamper_rows=self._product_row(decisions={"allowed": 4, "denied": 0, "unsupported": 1})))
+        self.assertEqual(inputs.e2_mode, "product")
 
     def test_attempt_reconciliation_row_follows_the_e2_placement(self):
         self.assertIsNone(self.inputs(self.v11("rn")).attempt_reconciliation)

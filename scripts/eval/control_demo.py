@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from isolation_proof import IsolationError, attempt_reconciliation  # noqa: E402
+from isolation_proof import IsolationError, attempt_reconciliation, e2_product_row  # noqa: E402
 from run_record import RunRecordError, read_runner_key  # noqa: E402
 from runner import STATE_DIFF_FORMAT, STATE_DIFF_NAME  # noqa: E402
 from runner_config import OBSERVER_OPAQUE  # noqa: E402
@@ -171,6 +171,10 @@ def _e2_decisions(directory: Path, record: dict, result: dict) -> tuple[int | No
     placement = next(row for row in evidence["rows"] if row["kind"] == "e2_placement")
     if placement["mode"] != result["e2_mode"]:
         raise DemoError([f"{directory.name}: 서명 결과와 격리 근거의 E② 자리가 다름"])
+    if placement["mode"] == "product":
+        # 제품 E²는 불가용을 결정으로 내지 않는다. 결과를 못 모은 회차는 건수가 없다.
+        decisions = e2_product_row(record, evidence)["decisions"]
+        return (None, None) if decisions is None else (decisions["denied"] + decisions["unsupported"], None)
     return placement["unsupported"], placement["unavailable"]
 
 
