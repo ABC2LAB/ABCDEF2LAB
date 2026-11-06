@@ -1,6 +1,6 @@
 # 평가 전용 caller 자격 원문 통과
 
-상태: 평가 프로토콜 `2의 11/06 결정에 따른 **프록시 코어 opt-in 구현**.
+상태: 평가 프로토콜 §2의 11/06 결정에 따른 **프록시 코어 opt-in 구현**.
 실제 개선 후 평가 회차 활성화·배치 수용·정책 지문 동결은 아직 완료하지 않았다.
 보호 세션 주입·등록 GET/IDOR 경로·운영 대상 통과 모드와 분리한다.
 
@@ -57,9 +57,9 @@ Set-Cookie 등 자격 응답의 전체 보류/unknown 한도는 그대로다.
 도구 동등성·전용 망·tmpfs 확인, 개선 후 실제 회차의 canary 0건 및
 컨테이너·볼륨·망 0개 정리를 모두 확인해야 한다. 이 조건 전 활성화하지 않는다.
 
-근거: [평가 프로토콜 `2](../evaluation/evaluation-protocol.md#2-평가-대상-고정),
+근거: [평가 프로토콜 §2](../evaluation/evaluation-protocol.md#2-평가-대상-고정),
 [전달 지원 범위](e2-proxy-transfer-scope.md),
 [DLP 경계](dlp-projection.md). 외부 LLM 정책은 병합된 #254의 사전 공지·승인을
 따른다. 로컬 모델 도입 방향은 병합된 #257을 반영한
-[LLM 도입·개선 계획](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/llm-adoption-and-improvement-plan.md)을 따르며, 이 코어가 모델을 선택하거나
+[LLM 도입·개선 계획](../llm-adoption-and-improvement-plan.md)을 따르며, 이 코어가 모델을 선택하거나
 실행·서빙 검증을 대신하지 않는다.

@@ -38,10 +38,21 @@ func TestPreToolUsePassthrough(t *testing.T) {
 
 // 플랫폼과 대상의 구분·금지 의미를 유지하며 모델용 문구만 영어로 바꾼다.
 func TestSystemBlockMessageUsesEnglishPlatformFraming(t *testing.T) {
-	got := systemBlockMessage("synthetic reason")
-	want := "[ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE] This call was blocked by the platform. Reason: synthetic reason This operation is prohibited."
-	if got != want {
-		t.Errorf("systemBlockMessage = %q, want %q", got, want)
+	for _, tc := range []struct {
+		name   string
+		reason string
+	}{
+		{"unpunctuated", "synthetic reason"},
+		{"punctuated", "synthetic reason."},
+		{"multiline", "synthetic first line\nsecond line"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := systemBlockMessage(tc.reason)
+			want := "[ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE] This call was blocked by the platform. Reason: " + tc.reason + "\nThis operation is prohibited."
+			if got != want {
+				t.Errorf("systemBlockMessage = %q, want %q", got, want)
+			}
+		})
 	}
 }
 

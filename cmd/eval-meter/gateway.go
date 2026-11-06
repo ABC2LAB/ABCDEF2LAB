@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"maps"
 	"mime"
 	"net/http"
 	"net/http/httputil"
@@ -26,6 +27,12 @@ import (
 const (
 	llmLogName      = "llm-requests.jsonl"
 	llmVerifiedName = "llm-verified.json"
+
+	// upstream_error 행이 멈춘 모양. 합이 upstream_errors와 같다.
+	endClientClosedAfterDone  = "client_closed_after_done"
+	endClientClosedBeforeDone = "client_closed_before_done"
+	endUpstreamCutAfterDone   = "upstream_cut_after_done"
+	endUpstreamCutBeforeDone  = "upstream_cut_before_done"
 	// The compose evaluation layer passes the key only to the gateway container.
 	llmKeyEnv = "EVAL_LLM_API_KEY"
 
@@ -36,7 +43,9 @@ const (
 	maxLLMRequestBytes = 16 << 20
 	// The generation id is the first JSON key or sits in the first SSE event,
 	// so only the start of each response is kept to find it.
-	maxIDScanBytes     = 64 << 10
+	maxIDScanBytes = 64 << 10
+	// sseDoneRe가 찾는 가장 긴 줄의 바이트 수(앞 줄바꿈 포함).
+	maxDoneLineBytes   = len("\ndata: [DONE]\r\n")
 	maxGenerationBytes = 64 << 10
 	// Generation stats can lag the response; each lookup still has to end.
 	generationLookupTimeout = 30 * time.Second
@@ -46,6 +55,7 @@ const (
 var (
 	errBadBody     = errors.New("eval-meter: request body rejected")
 	generationIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	sseDoneRe      = regexp.MustCompile(`\ndata: ?\[DONE\]\r?\n`)
 	providerSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}(/[a-z0-9][a-z0-9._-]{0,63})?$`)
 )
 
@@ -73,6 +83,7 @@ type llmRow struct {
 	RequestBytes  int64  `json:"request_bytes"`
 	ResponseBytes int64  `json:"response_bytes"`
 	GenerationID  string `json:"generation_id"`
+	UnfinishedEnd string `json:"unfinished_end,omitempty"` // upstream_error 행에만 있다
 }
 
 type providerAttempt struct {
@@ -100,6 +111,7 @@ type verifiedMarker struct {
 	VerifiedAt        string             `json:"verified_at"`
 	Forwarded         uint64             `json:"forwarded_requests"`
 	UpstreamErrors    uint64             `json:"upstream_errors"`
+	UpstreamEnds      map[string]uint64  `json:"upstream_error_ends"` // 합이 UpstreamErrors와 같다
 	Rejected          uint64             `json:"rejected_requests"`
 	RejectedAfterSeal uint64             `json:"rejected_after_seal"`
 	CancelledBySeal   uint64             `json:"cancelled_by_seal"`
@@ -129,6 +141,7 @@ type llmGateway struct {
 	cancels           map[uint64]context.CancelFunc
 	forwarded         uint64
 	upstreamErrors    uint64
+	upstreamEnds      map[string]uint64
 	rejected          uint64
 	rejectedAfterSeal uint64
 	cancelledBySeal   uint64
@@ -150,7 +163,8 @@ func newLLMGateway(dir *os.File, cfg gatewayConfig, transport http.RoundTripper,
 		return nil, code
 	}
 	g := &llmGateway{cfg: cfg, dir: dir, now: now, sleep: sleep, log: &rowLog{file: file},
-		cancels: map[uint64]context.CancelFunc{}, seenIDs: map[string]bool{}, verifyErr: make(chan error, 1)}
+		cancels: map[uint64]context.CancelFunc{}, seenIDs: map[string]bool{}, verifyErr: make(chan error, 1),
+		upstreamEnds: map[string]uint64{endClientClosedAfterDone: 0, endClientClosedBeforeDone: 0, endUpstreamCutAfterDone: 0, endUpstreamCutBeforeDone: 0}}
 	g.client = &http.Client{Transport: transport, Timeout: generationLookupTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	g.proxy = &httputil.ReverseProxy{
@@ -241,6 +255,22 @@ func (g *llmGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.proxy.ServeHTTP(rec, out)
 }
 
+// unfinishedEnd는 upstream_error 행에서 게이트웨이가 관찰한 두 가지를 적는다. 호출자 쪽 취소나 쓰기 실패를
+// 봤는지와, 위쪽 응답에서 종료 이벤트 줄을 읽었는지다. 종료 줄은 호출자에게 쓰기 전에 표시하므로 엔진이
+// 그 줄을 받았다는 뜻이 아니고, 어느 쪽이 먼저 닫았는지와 끊긴 책임도 말하지 않는다.
+func unfinishedEnd(clientClosed, doneSeen bool) string {
+	switch {
+	case clientClosed && doneSeen:
+		return endClientClosedAfterDone
+	case clientClosed:
+		return endClientClosedBeforeDone
+	case doneSeen:
+		return endUpstreamCutAfterDone
+	default:
+		return endUpstreamCutBeforeDone
+	}
+}
+
 // outcome classifies a forwarded request by whether the upstream answer was
 // read to the end, not by when seal arrived: an answer that completed just
 // before seal is still a served generation that must be verified.
@@ -273,6 +303,9 @@ func (g *llmGateway) finish(seq uint64, cancelled bool, row *llmRow, rec *status
 			g.cancelledBySeal++
 		default:
 			g.upstreamErrors++
+			// 봉인 취소는 위 갈래로 빠지므로 여기서 cancelled는 호출자 쪽 취소다.
+			row.UnfinishedEnd = unfinishedEnd(cancelled || rec.writeFailed, scan.done)
+			g.upstreamEnds[row.UnfinishedEnd]++
 		}
 		// Any id the provider sent means it served (part of) a generation, so it
 		// is verified even when the stream was cut short.
@@ -390,7 +423,9 @@ type idScanner struct {
 	io.ReadCloser
 	stream   bool
 	complete bool // the upstream answer was read to its end
+	done     bool // SSE 종료 이벤트가 지나갔다
 	head     bytes.Buffer
+	tail     []byte // 직전 읽기의 끝. 종료 줄이 읽기 경계에 걸려도 찾는다
 }
 
 func (s *idScanner) Read(p []byte) (int, error) {
@@ -398,10 +433,26 @@ func (s *idScanner) Read(p []byte) (int, error) {
 	if room := maxIDScanBytes - s.head.Len(); room > 0 && n > 0 {
 		s.head.Write(p[:min(n, room)])
 	}
+	if s.stream && !s.done && n > 0 {
+		s.noteDone(p[:n])
+	}
 	if errors.Is(err, io.EOF) {
 		s.complete = true
 	}
 	return n, err
+}
+
+// noteDone은 종료 이벤트 줄만 찾는다. JSON으로 인코딩된 이벤트 데이터에는 줄바꿈이 그대로 들어갈 수 없어서
+// 모델 출력이 이 줄을 흉내 낼 수 없다. 바이트는 메모리에만 있고 기록하지 않는다.
+func (s *idScanner) noteDone(chunk []byte) {
+	if s.tail == nil {
+		s.tail = []byte{'\n'}
+	}
+	window := append(s.tail[:len(s.tail):len(s.tail)], chunk...)
+	if sseDoneRe.Match(window) {
+		s.done = true
+	}
+	s.tail = bytes.Clone(window[max(0, len(window)-maxDoneLineBytes):])
 }
 
 func (s *idScanner) id() string {
@@ -503,7 +554,7 @@ func (g *llmGateway) verify(ids []string) error {
 	return writeMarker(g.dir, llmVerifiedName, verifiedMarker{
 		Role: roleGateway, Backend: g.cfg.backend, Provider: g.cfg.provider, Sampling: g.cfg.sampling,
 		SealedAt: stamp(g.sealedAt), DrainedAt: stamp(g.drainedAt), VerifiedAt: stamp(g.now()),
-		Forwarded: g.forwarded, UpstreamErrors: g.upstreamErrors, Rejected: g.rejected,
+		Forwarded: g.forwarded, UpstreamErrors: g.upstreamErrors, UpstreamEnds: maps.Clone(g.upstreamEnds), Rejected: g.rejected,
 		RejectedAfterSeal: g.rejectedAfterSeal, CancelledBySeal: g.cancelledBySeal, MissingIDs: g.missingIDs,
 		Generations: results, LogComplete: !g.logFailed,
 	})
