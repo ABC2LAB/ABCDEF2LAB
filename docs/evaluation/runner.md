@@ -128,6 +128,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 그 SHA-256은 서명 근거 `run_conditions`에
   window-watch.json              구간 감시 요약(호스트 리슨 표본 수·최대 공백·위반, 데몬 이벤트 종류별 건수·경계 변경·완결성)
   findings.json                  원본 수집기·추출기의 비민감 투영(아래)
+  verdict-export.json            설정 `verdict_export`가 있는 개선 후 회차만: 수집 상태·사유·요약(아래). 모았으면 verdict-pages.json·verdict-records.json도
   attempt-reconciliation.json    e2.ours_mode=stub 회차만: 가짜 E² 결정 행 × 계측기 접수 행 시도별 대조(프로토콜 §8.3 다섯 칸·대상 응답 수신·차단 후 도달·기록 없이 도달·ID 재사용·허용 양성 근거, 건수만, fixture=true). 통제 주장은 `control_claim_withheld=false`일 때만이고, 이 값은 허용 양성 근거가 없을 때도 true다. 같은 건수가 서명 근거(`isolation-evidence.json`의 `attempt_reconciliation` 행)에도 들어가고, 채점기는 그 행으로 통제 검증 표를 만든다
   state-diff.json                설정 `state`가 있을 때만: 같은 컨테이너 pre·post SQLite 상태 차이(테이블별 행 수·추가·삭제·변경 건수·정수 id, 열 구성 변경, 테이블·인덱스·트리거·뷰 정의 변화 `schema_objects`(종류·이름만), sqlite_sequence 변화, 신호 테이블은 `signals`에 따로), 런타임 디렉터리별 항목 수·추가·삭제·변경 건수(`runtime`, 항목 경로 없음), 메모리 읽기 합계·변한 경로 수·post에서 못 읽은 경로 수(`memory`, 본문·경로 없음). `content_changed`는 SQLite 쪽만이고 전체 변화 여부는 `state_changed`로 본다. 값·지문·경로 없음. `state/pre`·`state/post` 디렉터리는 비어 있어야 정상이다(사본을 지운 뒤)
   isolation-evidence.json        격리 근거 행(러너 기록 v1.1 §3.1 형식, 완료 회차만)
@@ -234,11 +235,19 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 `llm-summary.json`에는 LLM 사유가 전부 남고, 결과 기록의 사유는 그중 정렬 첫째다.
 
+**판정 export:** 설정 `verdict_export`가 null이면 수집하지 않는다. 값이 있으면 개선 후 회차에서만 findings 다음, down 전에 [판정 페이지 제안](../contracts/verdict-record-page-api-proposal.md)대로 동결하고 전체 페이지를 모은다. 동결이 준비 전(409)이면 `ready_poll_seconds` 간격으로 다시 묻고, `ready_wait_seconds`를 넘기면 새 요청을 보내지 않는다.
+
+- 다 맞으면 `verdict-pages.json`(원본 페이지)·`verdict-records.json`(채점 입력)·`verdict-export.json`을 남기고 `artifacts.records`가 채점 입력을 가리킨다.
+- **미수집**(시한 초과·미구현·인증·서버 장애·이전 export 유실·연결 불가·수집 상한): `status=not_collected`와 고정 사유를 남기고 `artifacts.records`는 null이다. 회차는 유효하고 판정 칸은 판단불가로 나온다.
+- **무결성 실패·입력 오류**(HTTP 422·400, 페이지 digest·회차·모델·리셋·구조 검증 실패): `status=integrity_failed`다. 회차와 해결 귀속 근거는 서명해서 보존하되, 격리 근거의 `verdict_collection` 행을 보고 채점기가 표를 멈춘다. 판단불가로 숨기지 않는다.
+- 부분 수집은 어느 쪽이든 채점 입력으로 쓰지 않는다.
+- baseline은 설정과 무관하게 수집하지 않는다. baseline 레코드는 A5 어댑터 몫이다.
+
 `llm-summary.json`의 `upstream_error_ends`는 `upstream_errors`를 멈춘 모양으로 나눈 값이고 합이 같다. 네 값은 `client_closed_after_done`·`client_closed_before_done`·`upstream_cut_after_done`·`upstream_cut_before_done`이다. `client_closed`는 게이트웨이가 호출자 쪽 취소나 쓰기 실패를 관찰했다는 뜻이고, `after_done`은 위쪽 응답에서 SSE 종료 줄을 읽었다는 뜻이다. 종료 줄은 호출자에게 쓰기 전에 표시한다. 그래서 엔진이 그 줄을 받았는지, 어느 쪽이 먼저 닫았는지, 끊긴 책임은 말하지 않는다. 회차 유효성에는 쓰지 않고 기록만 한다. 본문은 메모리에서 종료 줄을 찾는 데만 쓰고 저장하지 않는다.
 
 ## 아직 안 된 것
 
-- **개선 후 판정 레코드:** findings만 수집한다. 구조화 판정 레코드는 물리 형식(#18) 결정 후 추가 신호로 붙인다.
+- **개선 후 판정 레코드:** 러너 쪽 수집은 붙어 있다(위 판정 export). 서버의 동결 API와 사전 회차 등록이 아직 없어서 지금은 켜도 `not_collected`로 끝난다.
 - **tmpfs 사용량 측정 방법:** 엔진 안의 `df`나 `PATH`는 엔진 도구(Bash·Write 등)가 바꿀 수 있어 믿지 않는다(#140 리뷰). 러너가 계측기 이미지(내용 ID)를
   망 없이·읽기 전용·pull 없이 띄워 대상 컨테이너의 PID namespace에 붙인다. 측정 역할은 대상의 `/proc/1/mountinfo`에서 마운트 지점이 정확히 그
   경로인 tmpfs를 찾고, `/proc/1/root/<마운트>`를 마지막 symlink를 따르지 않고 한 번 연 뒤 그 객체의 마운트 ID(statx)가 mountinfo의 ID와 같을 때만
@@ -293,6 +302,7 @@ API 키 없이 실제 엔진을 끝까지 돌릴 때 쓴다. 판단하는 모델
 - **회차 밖 컨테이너의 namespace 공유(11/03):** 구간 중 `docker run --network container:<대상>`(망 연결 이벤트 없음) →
   `window_boundary_changed`(회차 밖 컨테이너 create·start), 무효·미서명. 같은 날 정상 회차는 러너 post probe의 컨테이너 이벤트
   5건(create·attach·start·die·destroy)만 cidfile ID로 허용되고 완료·서명.
+- **generation 통계 지연(11/07):** `verify_attempts` 5·간격 2초 회차 하나가 `llm_generation_unverified`로 무효였다. 봉인 3초 전에 끝난 generation 1건의 통계가 재시도 안에 안 나왔다(35건 중 34건은 검증). 15번으로 늘린 다음 회차는 43건 전부 검증됐다. 재시도는 통계가 없을 때만 돌아서 정상 회차 시간은 늘지 않는다. 예시 값을 15로 올렸다. api 백엔드에만 해당한다.
 - **끝까지 못 읽은 스트림의 종료 모양(11/07, api 3회차, 서명됨):** 위와 같은 모델·제공자, 개선 후 dev af10d00(계측기만 이 분류를 넣어 빌드), E② 없음, 회차당 240초·요청 100건. 응답한 요청 326건(generation 326, 전부 `AtlasCloud`)에서 `upstream_error`가 9건(회차별 2·5·2)이었고 **9건 전부 `client_closed_after_done`**이었다. 게이트웨이가 위쪽 응답에서 종료 줄을 읽었고 호출자 쪽 취소나 쓰기 실패를 관찰했다는 뜻이다. 엔진이 그 줄을 실제로 받았는지는 이 계측으로 알 수 없다. `upstream_cut_*`과 `client_closed_before_done`은 0건이다. 이 표본에서 앞의 비율을 제공자 실패로 볼 근거는 없다. 다른 제공자·로컬 서버·더 긴 회차는 재지 않았다.
 - **api 백엔드 회차 1회(11/07, Qwen3.5, 서명됨):** 모델 `qwen/qwen3.5-35b-a3b`, 고정 제공자 slug `atlas-cloud/fp8`(기대 표시 이름 `AtlasCloud`), 개선 후 dev dfb5da0, E② 없음. 스모크라 예산을 줄였다(240초, 요청 100건). 약 3분 만에 요청 예산으로 멈춰 대상 요청 102건(GET 97, POST 5, 초과 2), 완료·서명.
   - LLM 응답 200이 94건이고 generation 94건 전부 응답 제공자 `AtlasCloud`, 엔드포인트 1개, fallback 시도 0, 적용 샘플링은 선언과 같았다. 4xx는 0건이라 `require_parameters:true`로 거부된 요청이 없었다. `stop`을 지원 표시하지 않는 이 엔드포인트에서 실제로 요청이 수락됐다는 뜻이다.

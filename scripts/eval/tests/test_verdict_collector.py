@@ -20,6 +20,7 @@ import verdict_collector  # noqa: E402
 from runner_engine import AdminSecret, EngineAPIError  # noqa: E402
 from test_verdict_pages import check, page, record  # noqa: E402
 from verdict_collector import (  # noqa: E402
+    VerdictIntegrityError,
     CollectLimits, VerdictCollectError, VerdictExportNotReady, collect_verdict_export,
 )
 
@@ -148,6 +149,36 @@ class TestCollect(unittest.TestCase):
                             ((200, b'{"total": NaN}'), "RESPONSE_INVALID")):
             with self.subTest(code=code):
                 self.failed(self.server({None: first, "c1": reply}), f"verdict_collect: {code}")
+
+    def test_integrity_failures_are_told_apart_from_uncollected(self):
+        """무결성 실패는 채점 중단이고, 진짜 미수집만 판단불가로 남는다(제안 §3·§6)."""
+        good = (200, body(page([record(101)], next_cursor="c1", total=2)))
+        integrity = (({"freeze": (422, b"{}")}, None), ({"freeze": (400, b"{}")}, None), ({}, {None: good, "c1": (400, b"{}")}),
+                     ({"freeze": (200, b"not json")}, None), ({"freeze": (200, b"{}")}, None),
+                     ({"freeze": (200, b'{"export_ref": "export-1", "export_ref": "x"}')}, None),
+                     ({}, {None: good, "c1": (422, b"{}")}), ({}, {None: good, "c1": (200, b"[]")}),
+                     ({}, {None: (200, body(page([record(101)], next_cursor=7, total=2)))}),
+                     ({}, {None: good, "c1": (200, body(page([record(102)], next_cursor="c1", total=2)))}),
+                     ({}, {None: (200, body(page([record(101)], total=9)))}),
+                     ({}, {None: (200, body(page([record(101)], run_id="other")))}),
+                     ({}, {None: (200, body(page([record(101, oracle_value="other")])))}))
+        for kwargs, pages in integrity:
+            with self.subTest(kwargs=kwargs, pages=None if pages is None else list(pages)):
+                with self.assertRaises(VerdictIntegrityError) as caught:
+                    self.collect(self.server(pages, **kwargs))
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertTrue(caught.exception.__suppress_context__)
+        uncollected = (({"freeze": (404, b"{}")}, None), ({"freeze": (503, b"{}")}, None), ({"freeze": (401, b"{}")}, None),
+                       ({"freeze": (500, b"{}")}, None), ({}, {None: good, "c1": (503, b"{}")}), ({}, {None: good, "c1": (409, b"{}")}),
+                       ({}, {None: good, "c1": (404, b"{}")}))
+        for kwargs, pages in uncollected:
+            with self.subTest(kwargs=kwargs, pages=None if pages is None else list(pages)):
+                with self.assertRaises(VerdictCollectError) as caught:
+                    self.collect(self.server(pages, **kwargs))
+                self.assertNotIsInstance(caught.exception, VerdictIntegrityError)
+        with self.assertRaises(VerdictExportNotReady) as caught:
+            self.collect(self.server(freeze=(409, b"{}")))
+        self.assertNotIsInstance(caught.exception, VerdictIntegrityError)
 
     def test_limits_stop_collection(self):
         pages = {None: (200, body(page([record(101)], next_cursor="c1", total=3))),

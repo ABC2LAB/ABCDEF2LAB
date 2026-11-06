@@ -17,15 +17,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import runner
-from runner import COMPLETE, INVALID, RESULT_NAME, Clock, DockerPorts, Facts, RunFailure, build_spec, execute_run
+from runner import COMPLETE, INVALID, RESULT_NAME, Clock, DockerPorts, Facts, RunFailure, build_spec, verdict_limits, execute_run
 from runner_config import (
     COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, RunnerConfigError, compose_environment,
     create_run_directory, parse_runner_config, plan_run,
 )
-from runner_engine import task_request
+from runner_engine import EngineAPIError, task_request
 from runner_window import WatchSample
+from test_verdict_pages import CONTEXT as VERDICT_CONTEXT, two_pages
+from verdict_collector import CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady, VerdictIntegrityError
+from verdict_pages import merge_verdict_pages
 from runner_docker import DockerError
 from runner_probe import PASS, ProbeOutcome
 from test_preflight import LOCAL_SAMPLING, configuration, local_llm
@@ -38,8 +42,10 @@ ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "ev
            "eval-llm-gw": "meter", "eval-api": "meter", "eval-e2": "meter"}
 
 
-def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None):
+def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None):
     preflight, payload = configuration(), runner_config()
+    if verdict is not None:
+        payload["verdict_export"] = verdict
     if state is not None:
         payload["state"] = state
     if e2 is not None:
@@ -64,12 +70,14 @@ PROBE_IDS = {"pre": "a1" * 32, "post": "b2" * 32}
 class FakeClock:
     def __init__(self):
         self.t = 0.0
+        self.sleeps = []
 
     def clock(self):
         return Clock(lambda: datetime(2026, 11, 2, tzinfo=timezone.utc) + timedelta(seconds=self.t),
                      lambda: self.t, self.sleep)
 
     def sleep(self, seconds):
+        self.sleeps.append(seconds)
         self.t += seconds
 
 
@@ -169,6 +177,8 @@ class FakeEvidence:
 class FakePorts:
     def __init__(self, spec):
         self.serving = {}
+        self.verdict_results, self.verdict_args, self.verdict_times = [], [], []
+        self.fake_clock, self.verdict_call_seconds = None, 0
         self.rules_sha256 = None
         self.spec = spec
         self.calls = []
@@ -373,6 +383,18 @@ class FakePorts:
         self._call("findings")
         return {"items": 0}
 
+    def verdict_export(self, task_id, context):
+        self._call("verdict_export")
+        self.verdict_args.append((task_id, context))
+        clock = self.fake_clock
+        if clock is not None:
+            self.verdict_times.append(clock.t)
+            clock.t += self.verdict_call_seconds
+        result = self.verdict_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
     def intercept_summary(self):
         self._call("intercept_summary")
         return {"format": "intercept", "total": 0}
@@ -416,6 +438,142 @@ FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "liste
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "apply_engine_settings", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
+
+
+VERDICT_BLOCK = {"page_size": 100, "timeout_seconds": 30, "max_page_bytes": 1 << 20, "max_total_bytes": 8 << 20, "max_pages": 10,
+                 "ready_wait_seconds": 10, "ready_poll_seconds": 4}
+
+
+def collected_export():
+    pages = two_pages()
+    return CollectedExport(VERDICT_CONTEXT.export_ref, pages, merge_verdict_pages(pages, VERDICT_CONTEXT))
+
+
+class TestVerdictExport(unittest.TestCase):
+    """개선 후 판정 export(#278 §7). 못 모으면 records=null이고 회차는 유효하다."""
+
+    def run_with(self, *results, side="ours"):
+        def mutate(ports, _meter, clock):
+            ports.verdict_results, ports.fake_clock = list(results), clock
+        return run(mutate=mutate, spec=make_spec(side=side, verdict=VERDICT_BLOCK))
+
+    def status(self, evidence):
+        return evidence.files["verdict-export.json"]
+
+    def test_off_when_the_config_is_null(self):
+        result, ports, _meter, evidence = run()
+        self.assertEqual(result["status"], "complete")
+        self.assertNotIn("verdict_export", ports.calls)
+        self.assertNotIn("verdict-export.json", evidence.files)
+        self.assertIsNone(evidence.files["run-record.json"]["artifacts"]["records"])
+
+    def test_baseline_never_collects(self):
+        self.assertIsNone(make_spec(side="baseline", verdict=VERDICT_BLOCK).verdict_wait_seconds)
+        self.assertEqual(make_spec(side="ours", verdict=VERDICT_BLOCK).verdict_wait_seconds, 10)
+        self.assertIsNone(make_spec(side="ours").verdict_wait_seconds)
+
+    def test_collected_export_becomes_the_records_artifact(self):
+        export = collected_export()
+        result, ports, _meter, evidence = self.run_with(export)
+        self.assertEqual(result["status"], "complete")
+        # 엔진 API가 살아 있을 때 모은다. down보다 앞이고 findings 수집 뒤다.
+        self.assertLess(ports.calls.index("intercept_summary"), ports.calls.index("verdict_export"))
+        self.assertLess(ports.calls.index("verdict_export"), ports.calls.index("down"))
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        record = evidence.files["run-record.json"]
+        self.assertEqual(record["artifacts"]["records"]["path"], "verdict-records.json")
+        self.assertEqual(record["artifacts"]["records"]["sha256"], "h-verdict-records.json")
+        self.assertEqual(record["artifacts"]["records"]["phase"], "engine")
+        self.assertEqual(evidence.files["verdict-records.json"], export.export.envelope)
+        self.assertEqual(evidence.files["verdict-pages.json"], {"pages": list(export.pages)})
+        self.assertEqual(self.status(evidence), {"format": "abc2lab-eval-verdict-collection-v1", "status": "collected", "reason": None,
+                                                 "export": export.export.summary(), "pages_sha256": "h-verdict-pages.json"})
+        task_id, context = ports.verdict_args[0]
+        self.assertEqual(task_id, "17")
+        self.assertEqual((context.run_id, context.model_tag, context.reset_generation),
+                         (record["run_id"], record["model_tag"], record["reset_generation"]))
+        # 리셋 세대는 대상 컨테이너다. 엔진 컨테이너로 바뀌면 재시작이 세대 변경으로 안 잡힌다.
+        self.assertEqual(context.reset_generation, record["instance_id"])
+        self.assertNotEqual(context.reset_generation, record["execution_id"])
+
+    def test_not_ready_is_retried_until_collected(self):
+        not_ready = VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")
+        result, ports, _meter, evidence = self.run_with(not_ready, collected_export())
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(ports.calls.count("verdict_export"), 2)
+        self.assertEqual(self.status(evidence)["status"], "collected")
+
+    def test_not_ready_past_the_deadline_is_not_collected_and_the_run_stays_valid(self):
+        not_ready = VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")
+        result, ports, _meter, evidence = self.run_with(*[not_ready] * 20)
+        self.assertEqual(result["status"], "complete")
+        # 시한 10초·간격 4초: 0·4·8초에 묻고, 남은 2초만 기다린 뒤 시한에는 새 요청을 안 보낸다.
+        self.assertEqual(ports.calls.count("verdict_export"), 3)
+        self.assertEqual(ports.verdict_times, [ports.verdict_times[0] + offset for offset in (0, 4, 8)])
+        self.assertEqual(ports.fake_clock.sleeps[-3:], [4, 4, 2])
+        self.assertEqual(self.status(evidence), {"format": "abc2lab-eval-verdict-collection-v1", "status": "not_collected",
+                                                 "reason": "verdict_collect: EXPORT_NOT_READY", "export": None, "pages_sha256": None})
+        self.assertIsNone(evidence.files["run-record.json"]["artifacts"]["records"])
+        self.assertNotIn("verdict-records.json", evidence.files)
+
+    def test_a_slow_answer_past_the_deadline_is_not_asked_again(self):
+        def mutate(ports, _meter, clock):
+            ports.verdict_results = [VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")] * 5
+            ports.verdict_call_seconds, ports.fake_clock = 11, clock
+        result, ports, _meter, evidence = run(mutate=mutate, spec=make_spec(verdict=VERDICT_BLOCK))
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        self.assertEqual((result["status"], evidence.files["verdict-export.json"]["status"]), (COMPLETE, "not_collected"))
+        # 시한이 지났으면 음수로 자지 않는다(실제 time.sleep은 음수에 ValueError).
+        self.assertEqual(ports.fake_clock.sleeps[-1], 0)
+
+    def test_integrity_failure_is_signed_as_a_stop_and_keeps_the_run(self):
+        result, ports, _meter, evidence = self.run_with(VerdictIntegrityError("verdict_collect: PAGE_INTEGRITY_FAILED"))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        self.assertEqual(self.status(evidence)["status"], "integrity_failed")
+        self.assertEqual(self.status(evidence)["reason"], "verdict_collect: PAGE_INTEGRITY_FAILED")
+        self.assertIsNone(evidence.files["run-record.json"]["artifacts"]["records"])
+        rows = [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "verdict_collection"]
+        self.assertEqual([(row["status"], row["reason"]) for row in rows], [("integrity_failed", "verdict_collect: PAGE_INTEGRITY_FAILED")])
+
+    def test_collection_state_is_signed_for_the_scorer(self):
+        for results, status, reason in (((collected_export(),), "collected", None),
+                                        ((VerdictCollectError("verdict_collect: FREEZE_EXPORT_NOT_FOUND"),), "not_collected",
+                                         "verdict_collect: FREEZE_EXPORT_NOT_FOUND")):
+            with self.subTest(status=status):
+                _result, _ports, _meter, evidence = self.run_with(*results)
+                rows = [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "verdict_collection"]
+                self.assertEqual([(row["status"], row["reason"]) for row in rows], [(status, reason)])
+        _result, _ports, _meter, evidence = run()
+        self.assertEqual([row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "verdict_collection"], [])
+
+    def test_other_failures_are_not_retried(self):
+        result, ports, _meter, evidence = self.run_with(VerdictCollectError("verdict_collect: FREEZE_EXPORT_NOT_FOUND"))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        self.assertEqual(self.status(evidence)["reason"], "verdict_collect: FREEZE_EXPORT_NOT_FOUND")
+
+    def test_engine_api_failure_keeps_only_a_fixed_reason(self):
+        result, _ports, _meter, evidence = self.run_with(EngineAPIError("synthetic-value-41c2"))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(self.status(evidence)["reason"], "verdict_collect: ENGINE_API_FAILED")
+        self.assertNotIn("synthetic-value-41c2", json.dumps(evidence.files))
+
+    def test_failed_write_of_the_status_invalidates_the_run(self):
+        class Failing(FakeEvidence):
+            def write_json(self, name, payload):
+                if name == "verdict-export.json":
+                    raise OSError("synthetic")
+                return super().write_json(name, payload)
+        spec = make_spec(verdict=VERDICT_BLOCK)
+        ports = FakePorts(spec)
+        ports.verdict_results = [VerdictCollectError("verdict_collect: X")]
+        result = execute_run(spec, ports, FakeMeter(ports), FakeGateway(ports), Failing(), FakeClock().clock())
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["evidence_write_failed"]))
+
+    def test_limits_come_from_the_config_block(self):
+        self.assertEqual(verdict_limits(VERDICT_BLOCK), CollectLimits(page_size=100, timeout_seconds=30, max_page_bytes=1 << 20,
+                                                                     max_total_bytes=8 << 20, max_pages=10))
 
 
 STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 1 << 20,

@@ -29,8 +29,10 @@ RECORDS_PATH = "/api/tasks/{task_id}/verdict-records"
 MAX_EXPORT_RESPONSE_BYTES = 64 * 1024
 _EXPORT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}\Z")
 # 제안 §6의 상태 코드. 응답 본문은 믿지 않고 읽지도 않는다.
-_READ_FAILURES = {400: "invalid_export_request", 401: "unauthorized", 403: "unauthorized", 404: "export_not_found",
-                  409: "export_snapshot_unavailable", 422: "integrity_failed", 503: "export_unavailable"}
+# 입력 오류와 무결성 실패는 채점을 멈춘다. 나머지는 미수집이다.
+_STOP_FAILURES = {400: "invalid_export_request", 422: "integrity_failed"}
+_READ_FAILURES = {401: "unauthorized", 403: "unauthorized", 404: "export_not_found",
+                  409: "export_snapshot_unavailable", 503: "export_unavailable"}
 
 
 class VerdictCollectError(ValueError):
@@ -59,6 +61,14 @@ class CollectedExport:
     export: VerdictExport
 
 
+class VerdictIntegrityError(VerdictCollectError):
+    """서버가 무결성 실패·입력 오류를 답했거나 응답이 계약과 어긋난다. 미수집이 아니므로 채점을 멈춘다(제안 §3·§6)."""
+
+
+def _integrity(code: str) -> None:
+    raise VerdictIntegrityError("verdict_collect: " + code) from None
+
+
 def _fail(code: str) -> None:
     # except 안에서도 불린다. 전송 예외의 원문(status line 등)이 표시 traceback에 이어지지 않게 끊는다.
     raise VerdictCollectError("verdict_collect: " + code) from None
@@ -68,13 +78,13 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict:
     result = {}
     for key, value in pairs:
         if key in result:
-            _fail("DUPLICATE_KEY")
+            _integrity("DUPLICATE_KEY")
         result[key] = value
     return result
 
 
 def _reject_constant(_value: str) -> None:
-    _fail("RESPONSE_INVALID")
+    _integrity("RESPONSE_INVALID")
 
 
 def _json_object(data: bytes) -> dict:
@@ -83,9 +93,9 @@ def _json_object(data: bytes) -> dict:
     except (UnicodeError, ValueError, RecursionError) as exc:
         if isinstance(exc, VerdictCollectError):
             raise
-        _fail("RESPONSE_INVALID")
+        _integrity("RESPONSE_INVALID")
     if not isinstance(value, dict):
-        _fail("RESPONSE_INVALID")
+        _integrity("RESPONSE_INVALID")
     return value
 
 
@@ -98,13 +108,15 @@ def _freeze(port: int, task_id: int, run_id: str, headers: dict, limits: Collect
         _fail("FREEZE_UNREACHABLE")
     if status == 409:
         raise VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")
+    if status in _STOP_FAILURES:
+        _integrity("FREEZE_" + _STOP_FAILURES[status].upper())
     if status not in (200, 201):
         _fail("FREEZE_" + _READ_FAILURES.get(status, f"http_{status}").upper())
     if len(data) > MAX_EXPORT_RESPONSE_BYTES:
         _fail("RESPONSE_TOO_LARGE")
     export_ref = _json_object(data).get("export_ref")
     if not isinstance(export_ref, str) or not _EXPORT_REF.fullmatch(export_ref):
-        _fail("EXPORT_REF_INVALID")
+        _integrity("EXPORT_REF_INVALID")
     return export_ref
 
 
@@ -123,6 +135,8 @@ def _fetch_pages(port: int, context: ExportContext, headers: dict, limits: Colle
             status, data = _get(port, target, headers, limits.timeout_seconds, limits.max_page_bytes)
         except (OSError, http.client.HTTPException, ValueError, OverflowError):
             _fail("PAGE_UNREACHABLE")
+        if status in _STOP_FAILURES:
+            _integrity("PAGE_" + _STOP_FAILURES[status].upper())
         if status != 200:
             _fail("PAGE_" + _READ_FAILURES.get(status, f"http_{status}").upper())
         if len(data) > limits.max_page_bytes:
@@ -136,10 +150,10 @@ def _fetch_pages(port: int, context: ExportContext, headers: dict, limits: Colle
         if cursor is None:
             return tuple(pages)
         if not isinstance(cursor, str) or not cursor:
-            _fail("CURSOR_INVALID")
+            _integrity("CURSOR_INVALID")
         # 순환하면 상한까지 헛돌지 않고 바로 멈춘다.
         if cursor in seen_cursors:
-            _fail("CURSOR_CYCLE")
+            _integrity("CURSOR_CYCLE")
         seen_cursors.add(cursor)
 
 
@@ -156,5 +170,5 @@ def collect_verdict_export(port: int, secret: AdminSecret, *, task_id: int, run_
         export = merge_verdict_pages(pages, context)
     except VerdictPagesError as exc:
         # 코드만 옮긴다. 원인 체인에 레코드 값이 남지 않게 한다.
-        raise VerdictCollectError(str(exc)) from None
+        raise VerdictIntegrityError(str(exc)) from None
     return CollectedExport(export_ref, pages, export)

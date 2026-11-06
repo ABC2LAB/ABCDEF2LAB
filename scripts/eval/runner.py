@@ -59,6 +59,9 @@ from runner_evidence import (  # noqa: E402
     e2_stub_counts, forwarded_by_method, forwarded_count, read_private_json, sequence_complete,
 )
 from attempt_reconcile import reconcile  # noqa: E402
+from verdict_collector import (  # noqa: E402
+    CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady, VerdictIntegrityError, collect_verdict_export,
+)
 from runner_state import copy_sqlite, discard_copy, memory_fingerprints, runtime_fingerprints  # noqa: E402
 from state_diff import (  # noqa: E402
     RUN_KEY_BYTES, diff as state_difference, memory_diff, runtime_diff, snapshot as state_snapshot,
@@ -91,6 +94,12 @@ STATE_DIFF_NAME = "state-diff.json"
 # 엔진 LLM 키 자리값. compose의 OPENAI_API_KEY와 같다. 진짜 키는 게이트웨이만 갖는다(비밀 아님).
 ENGINE_LLM_PLACEHOLDER_KEY = "gateway-holds-the-key"
 SERVING_NAME = "llm-serving.json"
+VERDICT_STATUS_NAME = "verdict-export.json"
+VERDICT_PAGES_NAME = "verdict-pages.json"
+VERDICT_RECORDS_NAME = "verdict-records.json"
+VERDICT_STATUS_FORMAT = "abc2lab-eval-verdict-collection-v1"
+VERDICT_ENGINE_API_FAILED = "verdict_collect: ENGINE_API_FAILED"
+VERDICT_COLLECTED, VERDICT_NOT_COLLECTED, VERDICT_INTEGRITY_FAILED = "collected", "not_collected", "integrity_failed"
 # 작업 생성 직전 재적재 단계. 회차 전 적재와 같은 판정을 받는다.
 SERVING_TASK_START = "task_start"
 SERVING_POST = "post"
@@ -144,6 +153,7 @@ class RunPorts(Protocol):
     def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list: ...
     def findings(self) -> dict: ...
     def intercept_summary(self) -> dict: ...
+    def verdict_export(self, task_id: str, context: RecordContext) -> CollectedExport: ...
     def local_serving(self, phase: str, keep_alive_seconds: int) -> dict: ...
     def local_unload(self) -> None: ...
     def sign(self, payload: dict) -> dict: ...
@@ -197,6 +207,9 @@ class RunSpec:
     observer_path: str
     observer_readonly_ref: str
     observer_format: str = OBSERVER_SCOREBOARD
+    # 판정 export를 기다리는 시한·간격. None이면 수집 안 함(baseline·설정 null).
+    verdict_wait_seconds: float | None = None
+    verdict_poll_seconds: float = 0
     # local 선언의 서버 버전·모델 digest·컨텍스트. api는 None.
     llm_serving: dict | None = None
     llm_keep_alive_seconds: int = 0
@@ -588,6 +601,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
     state.intercept = intercepted
+    records, verdict_row = None, None
+    if spec.verdict_wait_seconds is not None:
+        records, verdict_row = _collect_verdicts(spec, ports, evidence, state, clock, task_id, _record_context(spec, pre))
     steps = timeline({"fixture_ready": fixture_ready_at, "pre": pre_board["received_at"], "engine_start": requested_at,
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
     # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
@@ -601,7 +617,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
-        reconciliation))
+        reconciliation, records, verdict_row))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
@@ -613,15 +629,62 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                      "daemon": pre["daemon"], "scoreboards": {"pre": pre_board, "post": post_board}}
 
 
+def _record_context(spec: RunSpec, pre: dict) -> RecordContext:
+    return RecordContext(run_id=spec.run_id, model_tag=spec.model_tag,
+                         reset_generation=pre["services"][TARGET_SERVICE]["id"],
+                         instance_id=pre["services"][TARGET_SERVICE]["id"],
+                         execution_id=pre["services"][ENGINE_SERVICE]["id"])
+
+
+def _ask_for_verdicts(spec: RunSpec, ports: RunPorts, clock: Clock, task_id: str,
+                      context: RecordContext) -> tuple[CollectedExport | None, str, str | None]:
+    """(수집 결과, 상태, 사유). 시한 뒤에는 새 동결 요청을 보내지 않는다."""
+    deadline = clock.monotonic() + spec.verdict_wait_seconds
+    while True:
+        try:
+            return ports.verdict_export(task_id, context), VERDICT_COLLECTED, None
+        except VerdictExportNotReady as exc:
+            clock.sleep(min(spec.verdict_poll_seconds, max(0, deadline - clock.monotonic())))
+            if clock.monotonic() >= deadline:
+                return None, VERDICT_NOT_COLLECTED, str(exc)
+        except VerdictIntegrityError as exc:
+            return None, VERDICT_INTEGRITY_FAILED, str(exc)
+        except VerdictCollectError as exc:
+            return None, VERDICT_NOT_COLLECTED, str(exc)
+        except EngineAPIError:
+            return None, VERDICT_NOT_COLLECTED, VERDICT_ENGINE_API_FAILED
+
+
+def _collect_verdicts(spec: RunSpec, ports: RunPorts, evidence, state: _State, clock: Clock, task_id: str,
+                      context: RecordContext) -> tuple[dict | None, dict]:
+    """판정 export를 모아 (records 설명자, 서명할 수집 상태)를 돌려준다. 회차를 무효로 만들지 않는다.
+
+    진짜 미수집(준비 전 시한 초과·미구현·연결 불가)은 records=null이고 판정 칸이 판단불가로 나온다.
+    무결성 실패는 판단불가로 숨기면 안 되므로 상태를 서명해 채점기가 표를 멈추게 한다(판정 페이지 제안 §3·§6).
+    해결 귀속 근거는 어느 쪽이든 보존한다. 부분 수집은 채점 입력으로 쓰지 않는다.
+    """
+    collected, status, reason = _ask_for_verdicts(spec, ports, clock, task_id, context)
+    row = {"status": status, "reason": reason}
+    if collected is None:
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(VERDICT_STATUS_NAME, {
+            "format": VERDICT_STATUS_FORMAT, **row, "export": None, "pages_sha256": None}))
+        return None, row
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(VERDICT_PAGES_NAME, {"pages": list(collected.pages)}))
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(VERDICT_RECORDS_NAME, collected.export.envelope))
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(VERDICT_STATUS_NAME, {
+        "format": VERDICT_STATUS_FORMAT, **row, "export": collected.export.summary(),
+        "pages_sha256": evidence.describe(VERDICT_PAGES_NAME)[0]}))
+    sha256, size = evidence.describe(VERDICT_RECORDS_NAME)
+    return descriptor(context, VERDICT_RECORDS_NAME, sha256, size, "engine"), row
+
+
 def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict, pre_board: dict, post_board: dict,
                   pre_solved: dict, post_solved: dict, steps: dict, window: dict, observer: list, ready_calls: int,
                   meter_summary: dict, drained: dict, engine_rows: int, pre_checked_at: str,
-                  post_check_at: str, conditions: dict, e2: dict, reconciliation: dict | None) -> dict:
+                  post_check_at: str, conditions: dict, e2: dict, reconciliation: dict | None, records: dict | None,
+                  verdict_row: dict | None) -> dict:
     """v1.1 러너 기록(서명 전)과 그 근거 파일 둘(격리 근거·해결 이벤트)을 만든다. 서명은 down 뒤."""
-    context = RecordContext(run_id=spec.run_id, model_tag=spec.model_tag,
-                            reset_generation=pre["services"][TARGET_SERVICE]["id"],
-                            instance_id=pre["services"][TARGET_SERVICE]["id"],
-                            execution_id=pre["services"][ENGINE_SERVICE]["id"])
+    context = _record_context(spec, pre)
     boundary_ref, host_ref = "compose:" + spec.project, "host-condition:" + spec.run_id
     get_ref = path_ref(spec.observer_path)
     policy = policy_sha256(pre)
@@ -632,7 +695,8 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
         pre_listeners=state.listeners["pre"], post_listeners=state.listeners["post"], allowed=allowed,
         boundary_ref=boundary_ref, policy=policy, steps=steps, observer_rows=observer, ready_calls=ready_calls,
         observer_path_ref=get_ref, readonly_ref=spec.observer_readonly_ref, meter=meter_summary,
-        drained=drained, engine_rows=engine_rows, conditions=conditions, e2=e2, reconciliation=reconciliation)
+        drained=drained, engine_rows=engine_rows, conditions=conditions, e2=e2, reconciliation=reconciliation,
+        verdict_collection=verdict_row)
     evidence.write_json("isolation-evidence.json", isolation_evidence(context, rows))
     evidence_sha, evidence_size = evidence.describe("isolation-evidence.json")
     in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
@@ -645,7 +709,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
     artifacts = {
         "pre_raw": pre_board["raw"], "pre": pre_board["normalized"],
         "post_raw": post_board["raw"], "post": post_board["normalized"],
-        "records": None, "traffic": None, "coverage": None,  # 판정 미수집(run-record-v1.1 §3)
+        "records": records, "traffic": None, "coverage": None,  # records=None은 판정 미수집(run-record-v1.1 §3)
         "solve_events": descriptor(context, "solve-events.json", events_sha, events_size, "engine"),
         "isolation_evidence": descriptor(context, "isolation-evidence.json", evidence_sha, evidence_size, "engine"),
     }
@@ -789,10 +853,11 @@ class DockerPorts:
     def __init__(self, config: RunnerConfig, plan: RunPlan, directory: RunDirectory, docker: Docker,
                  findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict],
                  rules: Callable[[], dict] | None = None, intercepted: Callable[[], dict] | None = None,
-                 apply_settings: Callable[[], None] | None = None):
+                 apply_settings: Callable[[], None] | None = None,
+                 verdicts: Callable[[str, RecordContext], CollectedExport] | None = None):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
         self._findings, self._start, self._settings, self._rules = findings, start, settings, rules
-        self._intercepted, self._apply_settings = intercepted, apply_settings
+        self._intercepted, self._apply_settings, self._verdicts = intercepted, apply_settings, verdicts
         self.base_args = compose_base_args(plan)
         self.obs_origin = f"http://127.0.0.1:{config.ports['obs_host']}"
 
@@ -920,6 +985,9 @@ class DockerPorts:
     def findings(self) -> dict:
         return self._findings()
 
+    def verdict_export(self, task_id: str, context: RecordContext) -> CollectedExport:
+        return self._verdicts(task_id, context)
+
     def intercept_summary(self) -> dict:
         return self._intercepted()
 
@@ -948,6 +1016,11 @@ def _llm_keep_alive_seconds(config: RunnerConfig, time_budget_seconds: int) -> i
     return math.ceil(run["compose_wait_seconds"] + run["ready_timeout_seconds"] + run["task_create_timeout_seconds"]
                      + time_budget_seconds + config.health_timeout_seconds + run["drain_timeout_seconds"]
                      + run["post_settle_seconds"] + run["snapshot_timeout_seconds"] + run["llm_verify_timeout_seconds"])
+
+
+def verdict_limits(block: dict) -> CollectLimits:
+    return CollectLimits(page_size=block["page_size"], timeout_seconds=block["timeout_seconds"], max_page_bytes=block["max_page_bytes"],
+                         max_total_bytes=block["max_total_bytes"], max_pages=block["max_pages"])
 
 
 def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str, condition: str,
@@ -981,6 +1054,9 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         fixture_fingerprint=declared["fixture_fingerprint"], environment_fingerprint=declared["environment_fingerprint"],
         target_origin=declared["target_origin"], observer_path=config.observer_path,
         observer_readonly_ref=config.observer_readonly_ref, observer_format=config.observer_format,
+        verdict_wait_seconds=(config.verdict_export["ready_wait_seconds"]
+                              if config.verdict_export is not None and plan.side == POLICY_SWITCH_SIDE else None),
+        verdict_poll_seconds=0 if config.verdict_export is None else config.verdict_export["ready_poll_seconds"],
         state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
         state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
         state_memory_enabled=config.state is not None and config.state["memory"] is not None,
@@ -1046,8 +1122,13 @@ def main(argv: list[str] | None = None) -> int:
         names = frozenset() if rules is None else frozenset(rule["name"] for rule in rules.rules)
         return intercept_summary(config.ports["engine_api_host"], secret, names, config.findings["timeout_seconds"])
 
+    def verdicts(task_id: str, context: RecordContext) -> CollectedExport:
+        return collect_verdict_export(config.ports["engine_api_host"], secret, task_id=int(task_id), run_id=context.run_id,
+                                      model_tag=context.model_tag, reset_generation=context.reset_generation,
+                                      limits=verdict_limits(config.verdict_export))
+
     ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules, intercepted,
-                        apply_settings)
+                        apply_settings, verdicts)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
                                     None if rules is None else rules.sha256), ports, MeterFiles(directory.meter, directory.e2),
