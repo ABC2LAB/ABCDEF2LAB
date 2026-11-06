@@ -8,6 +8,8 @@
 
 평가 규칙의 정본은 [평가 프로토콜](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/evaluation/evaluation-protocol.md), 개발 우선순위와 역할의 정본은 [개발 계획](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/development-plan.md)이다. 초안과 현행 계약이 다르면 계약 변경을 검토한 뒤 적용한다.
 
+**2026-11-06 모델 선정 갱신:** 운영 기본과 공식 비교는 OpenAI gpt-oss-20b / Ollama(`gpt-oss:20b`)로 정한다. 중국 개발사 모델은 신규 기본 선택에서 제외한다. 모델 선정과 실제 충분성·성능·도구 호출 검증은 구분하며, 상세 조건과 미확정 준비는 [평가 프로토콜 §6](evaluation-protocol.md#6-모델환경-핀)을 따른다. 첫 로컬 기준 회차에는 RAG·파인튜닝을 추가하지 않는다. 이 갱신은 앞의 11/04·11/05 기록 중 모델·개발 경로 선택을 대체하며, 다른 구현·PR 상태 기록의 확인 시점을 갱신하지 않는다.
+
 ## 평가 목적과 주장 범위
 
 | 구분 | 입력과 실행 | 주요 산출물 | 주장 범위 |
@@ -18,9 +20,9 @@
 
 공식 비교는 여러 변경을 합친 엔진 전체 비교다. 별도 분리 실험 없이 결과를 E②나 E③ 하나의 효과로 귀속하지 않는다.
 
-현재 `official-35b.json`은 API 개발·탐색 측정 프로파일이며, 계정과 자원을 제공하지 않는 `anonymous` 준비 조건을 사용한다. GPU 공식 프로파일은 공식 비교 시점에 별도로 작성·고정한다. 현재 API 프로파일의 익명 조건은 엔진이 실행 중 스스로 회원가입·로그인을 시도하지 못하게 한다는 뜻은 아니다. 원본이 스스로 IDOR 챌린지를 해결하면 현행 프로토콜에 따라 해결 수에 포함한다. 수동 A/B fixture를 사용하는 기능 시연 결과는 익명 비교표에 합산하지 않는다.
+보존 중인 `official-35b.json`은 과거 Qwen/OpenRouter API 개발·탐색 측정 프로파일이며, 계정과 자원을 제공하지 않는 `anonymous` 준비 조건을 사용한다. 새 gpt-oss-20b 로컬 공식 프로파일은 실제 설정과 근거 확보 뒤 별도로 작성·고정한다. 비교의 익명 초기 조건과 IDOR 기능 시연의 수동 A/B fixture는 계속 분리한다. 익명 조건은 엔진이 실행 중 스스로 회원가입·로그인을 시도하지 못하게 한다는 뜻은 아니다. 원본이 스스로 IDOR 챌린지를 해결하면 현행 프로토콜에 따라 해결 수에 포함한다. 수동 A/B fixture를 사용하는 기능 시연 결과는 익명 비교표에 합산하지 않는다.
 
-Juice Shop은 이미 개발·스모크에 사용한 **고정 평가 대상**이다. 처음 보는 holdout으로 표현하지 않는다. 임의 앱에 대한 일반화는 추후 독립적인 여러 앱에서 확인한다. [현재 API 개발 프로파일](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/profiles/official-35b.json). GPU 공식 프로파일은 비교 시점에 별도 작성한다.
+Juice Shop은 이미 개발·스모크에 사용한 **고정 평가 대상**이다. 처음 보는 holdout으로 표현하지 않는다. 임의 앱에 대한 일반화는 추후 독립적인 여러 앱에서 확인한다. [과거 API 개발 프로파일](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/profiles/official-35b.json)은 이력으로 보존한다. GPU 로컬 공식 프로파일은 gpt-oss-20b의 실제 배치·설정 검증 뒤 별도 작성한다.
 
 ## 결정 상태와 구현 기준
 
@@ -228,7 +230,7 @@ RootAnchor는 장기 handle과 검증된 배치에 결속한다. 새 경로를 �
 
 API는 개발·탐색과 실행 절차 점검에만 사용한다. **12월 18일 발표용 최종 정량 비교는 우리가 관리하는 GPU 환경에서 원본·개선본을 같은 조건으로 반복 측정하는 것을 필수로 한다.** GPU에서 실행만 시연하고 API 수치를 최종 성능으로 대체하지 않는다. API 결과는 해당 백엔드의 개발 측정으로 구분해 보고한다. 측정 흐름·GPU 공식 조건·예산은 [평가 프로토콜 §6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/evaluation/evaluation-protocol.md#6-모델환경-핀)을 따른다.
 
-채택한 흐름은 API로 개발 측정과 개발 smoke를 진행하고, 엔진 버전을 고정한 뒤 GPU에서 원본·개선본을 모두 공식 측정하는 것이다. GPU 공식 프로파일·시범·예산 1회 조정은 비교 시점에 별도로 고정한다. 초기 GPU 점검은 모델 적재와 자원 한계 확인에 사용하며, 공식 비교는 [평가 프로토콜 §5.1·§6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/evaluation/evaluation-protocol.md#51-공식-회차-사전-고정-규칙)을 따른다.
+11/06 갱신한 흐름은 로컬 개발·smoke를 우선하고, 엔진 버전을 고정한 뒤 GPU의 gpt-oss-20b로 원본·개선본을 모두 공식 측정하는 것이다. API는 공개 연습 대상에서 명시적으로 선택한 개발 참고 경로로만 둔다. GPU 공식 프로파일·시범·예산 1회 조정은 실제 배치·설정 확인 뒤 별도로 고정한다. 초기 GPU 점검은 모델 적재·연속 도구 호출·자원 한계 확인에 사용하며, 공식 비교는 [평가 프로토콜 §5.1·§6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/evaluation/evaluation-protocol.md#51-공식-회차-사전-고정-규칙)을 따른다.
 
 여기서 로컬 모델 실측은 우리가 관리하는 GPU 클라우드 인스턴스 안에 모델 서버를 두고 외부 모델 API를 사용하지 않는 실행을 포함한다. 이 결과를 모든 온프레미스 하드웨어의 성능으로 일반화하지 않는다. 완전 로컬 모드의 외부 연결 차단은 별도 수용시험으로 확인한다. GPU 회차는 local backend·실제 모델 endpoint·checkpoint와 tokenizer revision·sampling·context·자원 제한을 별도 프로파일로 고정한다. 현재 API용 프로파일을 그대로 GPU 프로파일이라고 부르지 않으며, 공통 작업·GT·예산·귀속 규칙은 유지한다. 필요한 도구·프로파일 변경은 평가 계약의 담당 검토 후 적용한다.
 
@@ -354,7 +356,7 @@ CSRF·다단계 로그인·OAuth/SSO·2FA·CAPTCHA·SPA별 처리는 지원 템�
 | 판정 자료 보존 | 정리 전 export·증거·coverage 확인 | 민준·동찬·경준 | 재채점을 약속하기 전에 수집 경로 확인 |
 | 전체 실험 비용 | CPU·GPU·API·저장·트래픽 견적 비교 후 총상한 결정 | 동찬·민준 | 11월 4일 선택 반영. 실제 금액·크레딧·사용 시간 확인 |
 | 평가 머신 | 전용 Linux 인스턴스 우선 검토 | 동찬·민준, 실행 지원 담당 | 견적과 GPU 요구를 대조해 제공자·사양·자원·시간 확정 |
-| API·GPU 운영 | API는 개발 측정·smoke, 발표용 최종 비교는 비교 시점에 고정한 GPU 프로파일로 원본·개선본 반복 측정 | 민준·동찬 | 프로토콜 §6에 따름. GPU 사양·실측 일정 확인 |
+| API·GPU 운영 | 로컬 개발 우선, API는 공개 연습 대상 개발 참고. 최종 비교는 동일 GPU의 gpt-oss-20b / Ollama로 원본·개선본 반복 측정 | 민준·동찬 | 11/06 모델 선정 반영. 프로토콜 §6에 따라 실제 설정·프로파일·일정 확인 |
 | 반복·예산 | 프로토콜 §5.1의 시범·반복·예산 규칙 | 민준·동찬 | 시범 후 프로토콜에 따라 최종 예산 고정 |
 | API↔GPU 동등성 | 하지 않음(11/05, [프로토콜 §6](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/evaluation/evaluation-protocol.md#6-모델환경-핀)) | 민준·동찬 | API 개발 측정과 GPU 공식 비교를 독립 보고 |
 | 연습용 대상 | GT와 분리한 VAmPI 사용, 추가 환경은 별도 확인 | 민준 및 개발 담당 | 프로토콜 §6 기준, Juice Shop 변경 이력 기록 |
@@ -380,7 +382,7 @@ IDOR 시연에서는 “등록한 A/B와 자원에 대해 기대 권한·신원�
 
 - [개발 계획과 역할](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/development-plan.md).
 
-- [평가 프로토콜](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/evaluation/evaluation-protocol.md)과 [현재 API 개발 프로파일](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/profiles/official-35b.json) (GPU 공식 프로파일은 비교 시점에 별도 고정).
+- [평가 프로토콜](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/evaluation/evaluation-protocol.md)과 [과거 API 개발 프로파일](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/profiles/official-35b.json) (gpt-oss-20b GPU 로컬 공식 프로파일은 실제 배치·설정 확인 뒤 별도 고정).
 
 - [러너 안내](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/runner.md), [run-record v1.1](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/run-record-v1.1.md), [HMAC 서명 신뢰 경계](https://github.com/ABC2LAB/ABCDEF2LAB/blob/a8f0ed0fdc98fe0a365f1409caba96f746c178fc/docs/evaluation/run-record.md).
 
