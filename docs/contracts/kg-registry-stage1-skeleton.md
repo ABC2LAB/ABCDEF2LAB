@@ -33,7 +33,7 @@
 - `trivial: false`: canary가 **의도적으로 심은 비자명 sentinel**이라는 전제. 확신 없으면 `true`(§3.1). false면 반드시 비추측 값으로 심는다.
 
 ## 열린 항목 3개 — 정렬 결과 (상세 = alignment 메모)
-1. **`resource_ref` type = `basket` 확정.** type:id·마지막 콜론 규약 (a)마지막콜론 보존 (b)표시이름=UI전용 (c)`user`≠소유축 → **이경준 사후 승인(resource-ref-types-proposal §5-2 닫힘)**. 내 AccessMap은 셀 키를 **전체 ref**(`KgResource.id`)로, label은 표시용. 1단계 수평·읽기 type=`basket`: **이동찬 동의**(E² 등록 기준), **최민준 조건부 OK**(비변경 조회로 좁히면 단일 GT 1개, Juice Shop v15 실측). 상관(`gt_correlation.json`) 활성화는 basket 레코드 실측 후 **최민준 별도 PR** — 스켈레톤·레지스트리엔 GT 키 안 들어감.
+1. **`resource_ref` type = `basket` 확정.** type:id·마지막 콜론 규약 (a)마지막콜론 보존 (b)표시이름=UI전용 (c)`user`≠소유축 → **이경준 사후 승인(resource-ref-types-proposal §5-2 닫힘)**. 내 AccessMap은 셀 키를 **전체 ref**(`KgResource.id`)로, label은 표시용. 1단계 수평·읽기 type=`basket`: **이동찬 동의**(E² 등록 기준), **최민준 조건부 OK**(비변경 조회로 좁히면 단일 GT 1개, Juice Shop v15 실측). 평가 상관 활성화(`scripts/eval/` 안)는 basket 레코드 실측 후 **최민준 별도 PR** — 스켈레톤·레지스트리엔 GT 키·상관 데이터 안 들어감.
 2. **canary `field`**: 내가 고르는 값이 아니라 **규칙** — `idor.Marker.Field` = E² `JSONViewRule.DataPath` **직속 필드명**(view당 유일), 레지스트리↔E² view **정확히 같은 집합**, 같은 prep에서 공동작성(불일치=송신 전 `canary_mismatch`). 규칙은 기존 계약으로 닫힘. **스켈레톤은 합성 placeholder**(field·value), 실제 값은 prep.
 3. **자원 개수**: 1단계 = **자원 1개(A 소유)** 확정(§1·"칸 하나짜리"). 대칭 확장은 선택.
 
