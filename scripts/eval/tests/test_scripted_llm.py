@@ -195,7 +195,9 @@ class TestCanaryScan(unittest.TestCase):
         cases = {"file_name": lambda: (self.root / f"x-{self.CANARY}.json").write_text("{}", encoding="utf-8"),
                  "directory_name": lambda: (self.root / f"d-{self.CANARY}").mkdir(),
                  "link_name": lambda: (self.root / f"l-{self.CANARY}").symlink_to("a.json"),
-                 "link_target": lambda: (self.root / "link").symlink_to(f"/nonexistent/{self.CANARY}")}
+                 "link_target": lambda: (self.root / "link").symlink_to(f"/nonexistent/{self.CANARY}"),
+                 "directory_link_name": lambda: (self.root / f"dl-{self.CANARY}").symlink_to(self.root / "meter"),
+                 "directory_link_target": lambda: (self.root / "dl").symlink_to(self.named_outside())}
         for label, make in cases.items():
             with self.subTest(label):
                 make()
@@ -206,6 +208,20 @@ class TestCanaryScan(unittest.TestCase):
                 for path in list(self.root.iterdir()):
                     if path.name not in ("a.json", "meter"):
                         path.rmdir() if path.is_dir() and not path.is_symlink() else path.unlink()
+
+    def named_outside(self) -> Path:
+        outside = self.root.parent / f"outside-{self.CANARY}"
+        outside.mkdir(exist_ok=True)
+        return outside
+
+    def test_directory_links_are_not_entered(self):
+        # 링크 대상 경로에 값이 없으면 그 안의 파일은 회차 디렉터리 밖이므로 보지 않는다
+        outside = self.root.parent / "outside"
+        outside.mkdir()
+        (outside / "inner.txt").write_text(self.CANARY, encoding="utf-8")
+        (self.root / "linked").symlink_to(outside)
+        code, out, _ = self.run_it(str(self.root))
+        self.assertEqual((code, out.strip()), (0, "files=1 hits=0 unreadable=0"))
 
     def test_name_and_content_in_one_file_count_once(self):
         (self.root / f"x-{self.CANARY}.json").write_text(self.CANARY, encoding="utf-8")

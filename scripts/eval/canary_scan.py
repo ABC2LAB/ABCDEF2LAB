@@ -32,23 +32,29 @@ def scan(root: Path, canary: str) -> tuple[int, list[str], list[str]]:
         # 지나치면 그 아래 파일을 안 보고 0건으로 끝난다
         unreadable.append(shown(error.filename))
 
+    def check_link(path: Path, named: bool) -> None:
+        # 따라가지 않는다. 링크 자체(이름·대상)만 본다. 디렉터리를 가리키는 링크는 os.walk가 directories로 준다
+        try:
+            pointed = token in os.fsencode(os.readlink(path))
+        except OSError:
+            unreadable.append(shown(path))
+            return
+        if named or pointed:
+            hits.append(shown(path))
+
     for base, directories, names in os.walk(root, followlinks=False, onerror=walk_failed):
         directories.sort()
         for name in directories:
-            if canary in name:
-                hits.append(shown(Path(base, name)))
+            path = Path(base, name)
+            if path.is_symlink():
+                check_link(path, canary in name)
+            elif canary in name:
+                hits.append(shown(path))
         for name in sorted(names):
             path = Path(base, name)
             named = canary in name
             if path.is_symlink():
-                # 따라가지 않는다. 링크 자체(이름·대상)만 본다
-                try:
-                    pointed = token in os.fsencode(os.readlink(path))
-                except OSError:
-                    unreadable.append(shown(path))
-                    continue
-                if named or pointed:
-                    hits.append(shown(path))
+                check_link(path, named)
                 continue
             try:
                 data = path.read_bytes()
