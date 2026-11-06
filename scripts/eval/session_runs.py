@@ -63,6 +63,7 @@ class Attempt:
     reason: str | None  # 무효의 첫 사유(러너 결과의 정렬 첫째)
     record: dict | None  # 완료 회차의 run-record.json
     task_sha256: str | None = None  # 완료 회차의 작업 생성 요청 본문 해시(러너 결과, 서명됨)
+    result: dict | None = None  # 완료 회차의 서명 검증한 runner-result.json
 
 
 def expected_order(repeats: int) -> list[str]:
@@ -166,7 +167,7 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
             for phase in ("pre", "post")):
         errors.append(f"{directory.name}: {RECORD_NAME}에 pre·post 스냅샷 경로가 없음")
         return None
-    return Attempt(directory.name, side, started, COMPLETE, None, record, task_sha256)
+    return Attempt(directory.name, side, started, COMPLETE, None, record, task_sha256, result)
 
 
 def read_session(runs_root: Path, key: bytes, allow_fixture_e2: bool = False) -> list[Attempt]:
