@@ -31,7 +31,7 @@
 
 [공통 계약 §7.1](./e2-network-enforcement.md#71-제품-일반-http-정책-모드와-공식-정책-인스턴스-제안운영-비활성)의 일반 HTTP 모드와 [등록 GET 전송기](./e2-http-transmitter.md)를 분리한다. 대상 origin·메서드·경로 범위·IP·승인·예산·만료·중지는 신뢰 host가 공급하고 E②가 각 지원 송신 전에 검사한다. 메서드 허용을 앱의 비변경성 증명으로 사용하지 않는다.
 
-HTTP 비교에 적용할 정책은 해당 [공식 프로파일](../evaluation/profiles/official-35b.json)에서 고정하며 값을 코드에 복제하지 않는다. HTTPS 검사·실행별 CA·대상 인증서 검증·검사 실패 거부는 별도 제품 수용을 따른다. HTTP 수용으로 HTTPS 수용을 대신하지 않는다. 무검사 터널·우회 출구·미지원 경로의 처리도 공통 계약의 경로별 수용으로 확인한다.
+HTTP 개발 측정의 정책은 현재 [API 개발 프로파일](../evaluation/profiles/official-35b.json)에서 고정하며 값을 코드에 복제하지 않는다. 파일명과 달리 이 파일은 현재 GPU 공식 프로파일이 아니다. 공식 GPU 프로파일은 평가 프로토콜 §6에 따라 비교 시점에 별도 커밋·고정한다. HTTPS 검사·실행별 CA·대상 인증서 검증·검사 실패 거부는 별도 제품 수용을 따른다. HTTP 수용으로 HTTPS 수용을 대신하지 않는다. 무검사 터널·우회 출구·미지원 경로의 처리도 공통 계약의 경로별 수용으로 확인한다.
 
 요청/응답 보존·자격 처리의 현재 한계는 [전달 범위](./e2-proxy-transfer-scope.md)와 [평가 전용 caller 자격](./e2-evaluation-caller-credentials.md)을 따른다. 이 초안이 보호 세션 후보 모드·평가 특례를 기본 경로에 설치하거나 승인하지 않는다.
 
@@ -49,7 +49,33 @@ HTTP 비교에 적용할 정책은 해당 [공식 프로파일](../evaluation/pr
 
 하나의 도구 호출은 E② 시도 **0건·1건·여러 건**을 가질 수 있다. 재시도·리다이렉트의 지원 여부는 각 모드 계약에 따르고, 지원되는 새 송신은 새 시도와 현재 gate를 거친다. 미결속은 별도 상태로 보존한다.
 
-`X-ABC2LAB-E2-Attempt`는 E②가 발급한 무작위 128비트 소문자 hex 32자를 쓴다. 호출자 값은 신뢰하지 않고 교체하며, 계측기는 유효 ID를 기록한 뒤 대상 전달 전에 제거한다. 형식 유효성은 출처 인증이 아니고, 실행·시도·정책 결속과 중복/재사용은 마감 후 대조한다. ID 누락·오류 행도 계측 총량에서 제거하지 않는다.
+일반 HTTP `e2proxy` 경로의 `X-ABC2LAB-E2-Attempt`는 E②가 발급한 무작위 128비트 소문자 hex 32자를 쓴다. 호출자 값은 신뢰하지 않고 교체하며, 계측기는 유효 ID를 기록한 뒤 대상 전달 전에 제거한다. 형식 유효성은 출처 인증이 아니고, 실행·시도·정책 결속과 중복/재사용은 마감 후 대조한다. ID 누락·오류 행도 계측 총량에서 제거하지 않는다. 등록 GET의 기존 `Receipt.Attempt`/sequence 체계를 이 헤더 계약으로 바꾸지 않는다.
+
+### 2.3 제품 E② 기동 형태 제안
+
+제품 E②는 [가짜 E② overlay](../../deploy/eval/compose.e2-stub.yaml)의 **위치**를 대체하는 별도 `eval-e2` 서비스로 제안한다. stub 바이너리를 제품 구현으로 이름만 바꾸지 않는다. 아래 배치·제어 프로토콜과 실제 제품 entrypoint는 미구현이며, compose·러너 변경은 담당자 구현 PR로 검토한다.
+
+| 준비 항목 | 제안 |
+| --- | --- |
+| 이미지 | 제품 E② entrypoint를 포함한 소스 빌드 이미지 digest를 회차 전에 고정. 기존 `EVAL_METER_IMAGE`의 `e2-stub` 역할을 사용하지 않음 |
+| 망·대상 포트 | `eval-e2`는 `engine_net`·`e2_net`에만 참여. `engine_net`의 대상 별칭 `eval-meter`는 E②가 받고, 실제 계측기는 `e2_net`의 `eval-meter-upstream`으로 분리. 대상 포트는 기존 러너 설정을 사용하고 호스트에 publish하지 않음 |
+| UID·권한 | 초기안은 E②에 기존 overlay의 `EVAL_RUNNER_UID/GID`(비root)를 쓰고 engine/도구 UID와 분리. runner 준비/결과 디렉터리의 실제 소유·mount를 대조하고 read-only rootfs·cap_drop·no-new-privileges 적용. host UID가 같아도 runner 서명 키 등 다른 host 경로는 mount하지 않으며 실제 namespace와 파일 접근 음성 시험 필요 |
+| 설정·키 | 회차별 runner 소유 `0700` 준비 디렉터리의 `0600` 불변 설정·감사 키를 E②에 읽기 전용 mount. 감사 키·서명 키·Docker socket을 engine/도구에 주지 않음. E②에 러너 서명 키도 주지 않음 |
+| 결과 | 별도의 runner 소유 `0700` 디렉터리를 E②의 `/evidence`에 쓰기 가능 mount. 계측기 근거 디렉터리와 분리하며 engine에는 mount하지 않음 |
+| runner 제어 | runner와 E②만 접근하는 별도 `0700` 디렉터리의 Unix 제어 socket 제안. ready·현재 head·close 요청/ACK를 인증된 회차에 결속. Docker exec/컨테이너 재기동으로 제어하지 않음 |
+| 호출 제어 | 신뢰 engine launcher↔E②의 별도 mTLS 제어 listener 제안. 포트·서버/클라이언트 identity는 설정에 고정하고 공개하지 않음. launcher 자격은 도구 UID/mount namespace에서 읽을 수 없어야 하며, 도구의 데이터 프록시 접점으로 제어 RPC를 받지 않음 |
+
+호출 제어는 실제 실행·task/intent·정책에 묶인 OpenCall/CloseCall의 typed 요청으로 `command_ref`와 E② 발급 `call_ref`를 연결한다. 이 이름은 새 버전 제어 프로토콜의 후보이지 기존 registered-read ACK 확장이 아니다. 임의 caller가 두 참조를 선택·재사용하거나 raw 요청·명령을 제어 RPC에 넣지 못하게 한다.
+
+준비 완료 신호는 단순 listen 성공과 구분한다. `service_ready`는 이미지·UID·설정 digest·header mode·회차·감사 키/출력 경로·제어 identity의 일치를 runner가 대조한 서비스 상태이며 아직 대상 송신 권한은 없다. `execution_ready`는 실제 task·양수 intent와 승인·Ledger·정책·감사 기록을 갖춘 `NewExecution`이 준비된 상태다. `call_ready`는 각 실제 `command_ref`에 대해 OpenCall이 발급한 새 `call_ref`까지 결속된 상태다. 앞 단계로 뒤 단계의 권한을 대신하지 않으며, 도구 호출은 매번 해당 call 준비 성공 뒤에만 기동한다.
+
+### 2.4 일반 HTTP 서비스 선기동과 실제 task 결속
+
+runner는 작업 생성 전에 별도 불투명 `reservation_ref`를 준비하되, 이를 `Scope.TaskRef`나 `Budget.Key.TaskRef`로 쓰지 않는다. **TaskRef는 실제 생성된 서버 task ID로 유지**하고 `server task.ID == Scope.TaskRef == Budget.Key.TaskRef`를 검사한다. 평가 run·reservation·실제 task·E② RunRef의 대응은 manifest에 구분해 남긴다. 참조 예약은 승인·예산 발급 권한이 아니고, 실제 task에 대해 검증된 신뢰 발급자의 Ledger grant와 기존 BudgetAuthority/BindRun 검사가 별도로 필요하다.
+
+E② 서비스는 POST 전에 `service_ready`가 될 수 있지만 코어 `NewExecution`의 양수 `IntentID` 검사는 유지한다. 신뢰 서버는 아래 §7의 사전 회차 등록을 실제 task 생성에 1회 소비하고 launch 전에 task 매핑을 게시한다. 이후 Planner의 실제 intent가 생기면 신뢰 launcher가 해당 intent의 권한·결속을 검사해 execution을 준비한다. 추가 intent는 기존 `RegisterIntent` 등 인증된 경계를 통과한 것만 claim/실행 가능하게 하며, 한 intent의 성공으로 다른 intent 전체를 허용하지 않는다. 예시용 양수 intent나 0/wildcard를 미리 넣지 않는다.
+
+각 실제 도구 호출마다 `command_ref`를 확인해 `BeginCallForIntent`에 대응하는 OpenCall을 수행한 뒤 그 호출만 기동한다. 새 task 매핑이 없는 요청·미등록 intent·만료/회수·control 채널 오류는 거부한다. 서버 초기 설정·실제 BudgetAuthority와의 연결·다중 intent의 공유 Ledger 수명은 후속 구현의 수용 조건이다. 서비스 선기동은 task/intent 없는 Execution 생성과 다르므로 기존 TaskRef 의미를 회차 ID로 바꿀 필요가 없다. 실제 task 결속·NewExecution·intent/call 등록 비용은 기존 POST 직전부터의 실행 예산 안에 포함한다.
 
 ## 3. 결과·사유 어휘와 소비
 
@@ -92,9 +118,37 @@ E② 내부 결과는 인증된 서버 경계에서만 받는다. Bash stdout·�
 
 공유 투영에는 **원문 URL·경로·쿼리·헤더 값·본문·명령·자격·canary 값·원시 오류**를 넣지 않는다. 허용할 논리 정보는 실행/호출/시도 참조, 메서드, 비민감 계정 라벨, 정책/규칙 참조, 결정·고정 사유, 관측 비트·시각·건수다. 현행 Receipt에 없는 라벨·정책 지문은 인증된 서버 결속에서만 얻으며 새 export에서의 필드명·공개 범위를 별도로 합의한다. 동적 경로를 추정한 라벨이나 자원 ID로 원문을 우회 공개하지 않는다.
 
-기존 감사 정본은 따로 보존한다. 감사 `Event.index`는 행 순서이고 `Receipt.sequence`는 시도 순서다. 같은 시도의 intent/result에 sequence가 반복되는 것은 정상이며, 두 순번을 서로 바꿔 검증하거나 단계 행 수를 요청 수로 세지 않는다. 투영의 digest·순번·행 수만으로 진위·최신성을 증명하지 않는다. 러너는 인증된 게시 주체와 현재 신뢰 상태, 정본 참조·최종 head, 투영과 정본의 대응을 검증해야 한다. manifest 서명/MAC·키 공급·회수·러너 검증 방식도 기존 감사 담당과 합의할 열린 항목이다. 미합의 상태의 무서명 파일을 공식 수용하지 않는다.
+기존 감사 정본은 따로 보존한다. 감사 `Event.index`는 행 순서이고 `Receipt.sequence`는 시도 순서다. 같은 시도의 intent/result에 sequence가 반복되는 것은 정상이며, 두 순번을 서로 바꿔 검증하거나 단계 행 수를 요청 수로 세지 않는다. 투영의 digest·순번·행 수만으로 진위·최신성을 증명하지 않는다. 러너는 인증된 게시 주체와 현재 신뢰 상태, 정본 참조·최종 head, 투영과 정본의 대응을 검증해야 한다. 아래 평가용 검증안은 manifest 독립 서명 대신 회차 전용 감사 키·인증된 최신 close ACK·runner 서명으로 결속하는 제안이며, 그 경계가 미구현인 임의 파일은 공식 수용하지 않는다.
 
 러너가 자기 회차의 서명 근거 경로에 수집 사본을 저장하는 위치·상한·재시도는 러너 담당이 정한다. E② 게시 파일 경로를 모델 입력이나 기존 HTTP 조회 쿼리로 받지 않는다. 세션·키 등 비밀 파일의 원문이나 digest를 공유 manifest에 복사하지 않고, 필요한 불투명 version 참조만 검토한다.
+
+러너 소비자가 구현할 **후보 필드 집합**은 다음으로 구체화한다. 아래 행·manifest의 실제 encoder/strict parser는 새 구현이며 현재 runner wire로 주장하지 않는다.
+
+| 산출물 | 후보 필드·검증 |
+| --- | --- |
+| 단계 행 | 현재 `e2proxy.Event`의 `version`, `scope`, `intent_id`, `call_ref`, `command_ref`, `attempt_id`, `sequence`, `policy_revision`, `index`, `stage`, `decision`, `reason`, `method`, `at`, 관측 비트 `forward_attempted`·`request_written`·`response_received`·`response_complete`·`not_sent`, `audit_complete`, 선택적 `rule_ref`·`status_code`. scope의 키 표기는 기존 Go 타입 직렬화를 보존 |
+| manifest 형식 | `format=abc2lab.e2-runner-manifest/v1` 후보. unknown/중복 키·다른 버전·다른 회차·불완전 파일을 거부 |
+| 회차/실행 | `run_ref`는 E② `Scope.RunRef`. 별도의 `eval_run_id`, `model_tag`, `reset_generation`, `reservation_ref`, `engine_task_id`, `scope`, `policy_revision`, `policy_fingerprint_sha256`를 runner 선언·서버 1회 결속·검증한 감사 scope와 대조. scope/예산의 TaskRef는 실제 task ID |
+| 전달 모드 | `header_mode`와 `evaluation` 아래 [`EvaluationCallerContext`](../../e2proxy/evaluation_credentials.go)의 `run_ref`, `llm_backend`, `target_kind`를 이름 그대로 보존. 일반 모드에서 evaluation 없음과 빈 선언은 다르게 취급 |
+| 파일/마감 | `state=complete|incomplete`, `attempts_file`, `attempts_sha256`, `rows`, `last_event_index`, `last_attempt_sequence`, `audit_journal_file`, `audit_checkpoint_file`, `audit_checkpoint_sha256`, `close_request_ref`. 경로는 해당 실행 아래 고정 상대 이름만 허용하고 링크/경로 이동을 거부 |
+
+단계 행의 **합성 예시 한 줄**이다. 실제 인증 journal이나 전송 결과가 아니며, MAC을 포함하는 감사 정본은 별도 보존한다. `scope`의 대문자 키는 기존 `transmit.Scope`의 JSON 형식이다.
+
+```json
+{"index":2,"stage":"result","intent_id":22,"version":"e2-http-v1","scope":{"TaskRef":"17","CaseRef":"case-example","ResetRef":"reset-example","PolicyRef":"policy-example","RunRef":"run-example"},"call_ref":"call_00112233445566778899aabbccddeeff","command_ref":"tool-call-example","attempt_id":"00112233445566778899aabbccddeeff","policy_revision":"policy-revision-example","rule_ref":"rule-example","sequence":1,"method":"GET","decision":"allowed","reason":"complete","forward_attempted":true,"request_written":true,"response_received":true,"response_complete":true,"not_sent":false,"audit_complete":true,"status_code":200,"at":"2026-11-07T00:00:00Z"}
+```
+
+같은 시도의 intent/result는 `attempt_id`·sequence가 같고 `index`·stage가 다르며 각각의 `at`을 보존한다. 시각이 같거나 시계가 역행해도 단계 시각으로 감사 순번을 재정렬하지 않는다. 시도 전 거절/관리 행의 빈 decision·없는 ID는 시도별 대조에 억지로 넣지 않고 별도 건수로 센다. envelope의 버전·scope·정책 결속은 모든 행에서 대조한다.
+
+`header_mode`와 세 선언값은 E②의 실제 `Snapshot()`/`Policy()`에서 동결한 값으로 내보내고, runner가 기동 입력과 일치하는지 확인해 서명 회차 기록에 보존한다. `evaluation.run_ref == scope.RunRef`를 확인하며 평가 `eval_run_id`를 그 자리에 넣지 않는다. 불일치는 설정 위반으로 시작 거부 또는 기술적 무효다. 단순 설정 파일 복사나 manifest 자기 선언으로 실제 모드 적용을 증명하지 않는다. 이 수집·대조는 러너 담당이 구현한다.
+
+**평가용 키/마감 검증 제안:** runner는 회차마다 새 32바이트 감사 키를 만들고 E②에만 읽기 전용 mount하며, 운영 키와 섞지 않는다. runner는 종료 뒤 자체 보호 경로의 키로 [`e2-audit-verify`](./e2-audit-verification-cli.md)의 `--journal-format e2-http-v1 --journal … --checkpoint … --key-file …`를 실행해 종료 코드 0과 완전한 `JournalSummary`를 확인한다. `--timeline`은 일반 HTTP에서 지원하지 않으므로 시도 행 수집기로 사용하지 않는다.
+
+성공 검증의 실제 `JournalCheckpoint` 필드 `Version`·`JournalID`·`Sequence`·`MAC`·`Scope`를 원래 실행과 대조한다. 최종 head는 이 checkpoint의 `(Sequence, MAC)`으로 식별하며, 인증된 runner 제어 채널의 최종 close ACK가 고정한 최신 checkpoint와 같아야 한다. 이 checkpoint에는 `PolicyRevision`·`KeyRef`·`Index`·`Closed` 필드가 없다. 정책 revision·키 version·ACK 전달 성공·호출 종료는 각 원래의 신뢰 경계에서 별도로 확인하며 checkpoint 일치로 대신하지 않는다.
+
+E②가 임의로 제공한 과거 checkpoint와 journal의 일치만으로 최신성을 인정하지 않는다. 투영 행은 검증된 정본 Event와 빠짐없이 대조하고, manifest의 파일 digest·행 수·마감도 검사한다. 이후 runner가 이 검증 결과와 정확한 manifest/파일 digest를 자기 서명 근거에 결속한다.
+
+이 안은 manifest 파일에 독립 HMAC을 새로 요구하는 대신, 회차 전용 키·검증된 정본·인증된 최신 close ACK·engine이 쓰지 못하는 산출물 경계와 runner 서명을 함께 요구한다. 제어 인증/최신 head 고정이 구현되지 않았거나 engine이 키·결과에 접근할 수 있으면 공식 수용하지 않는다. 검증 키를 runner가 보유한다는 사실과 E②의 정책 승인 발급 권한은 별개다.
 
 ### 4.2 끝까지 기록됐다는 표시
 
@@ -113,6 +167,14 @@ E② 생산/감사 장애는 유효한 배치에서 발생한 **제품 실패**�
 
 독립 계측과의 대조는 평가 프로토콜 §8.3의 다섯 행을 그대로 따른다. E②의 차단 기록과 계측 접수/송신/응답을 단계별로 비교하고, 마감 전 미결속을 즉시 우회로 단정하지 않는다. baseline에는 제품 E② ID·export를 요구하지 않는다.
 
+### 4.3 runner 종료 순서와 제어 신호 제안
+
+실제 E② 모드의 정상 종료 후보 순서는 **예산 종료 → runner의 E② close 요청 → E② 신규 admission 닫기·대상 요청/호출 drain·감사 마감·complete 게시 → 계측기 seal/drain → 필요 정착 대기 → post**다. E②가 허용한 진행 요청이 먼저 봉인된 계측기에서 503으로 끊기지 않도록 E②를 먼저 닫는다. 기존 none/stub 러너 동작을 이 문서로 변경하지 않는다.
+
+runner는 §2.3의 전용 제어 socket에 회차·execution·고유 `close_request_ref`를 넣은 typed close 요청을 보낸다. ACK는 같은 결속과 신규 admission 폐쇄 여부를 확인하고, 최종 close ACK/manifest는 그 참조·감사 head와 연결한다. engine/도구의 공개 HTTP나 모델 출력으로 close·complete를 선언하지 않는다. ACK 대기는 설정한 별도 유한 시한이며 메트릭의 실행 예산과 구분해 기록한다.
+
+시한 초과·연결/ACK 유실·`incomplete`이면 E② 제품 실패와 미완료를 보존하고 성공 마감을 만들지 않는다. runner는 추가 실행을 허용하지 않고 supervisor에 admission 폐쇄/종료를 요구하며, 무한히 E② 마감을 기다리지 않고 계측기 seal/drain과 실패 시 post 수집으로 넘어간다. 이 실패 순서에서 취소·늦은 응답·부분 송신을 보존하며 독립 격리/관측 요건을 충족한 부분만 사용한다. 실제 제어·종료 보장을 입증하지 못하면 안전한 완결 회차로 서명하지 않는다.
+
 ## 5. #275 열린 항목 2: 준비와 실행 ID의 결속
 
 ### 5.1 현재 사실과 유지할 검사
@@ -123,7 +185,7 @@ E② 생산/감사 장애는 유효한 배치에서 발생한 **제품 실패**�
 
 또한 현재 일반 Planner에는 제한된 Bash probe가 있고 실행 중인 task의 Worker는 intent를 claim할 수 있는 반면, controlled task는 Planner 자체를 건너뛴다. 따라서 기존 pause/controlled 플래그 조합이 아래 `awaiting_binding`을 구현한다고 보지 않는다. Planner의 의도 생성만 허용하고 대상 송신·Worker 실행을 막는 별도 admission 경계와 수용시험이 필요하다.
 
-#275의 비평가 준비 절차는 이 초안과 분리해 검토할 수 있다. 평가용 선동결은 아래 서버 측 후속 설계이며, 현재 loader·runner에 구현된 동작이 아니다.
+#275의 비평가 준비 절차는 이 초안과 분리해 소비한다. [평가 담당 리뷰](https://github.com/ABC2LAB/ABCDEF2LAB/pull/278#pullrequestreview-5802842983)에 따라 **현재 공식 비교는 아래 IDOR 준비/결속 경로를 쓰지 않는다.** 현행 프로파일 fixture는 익명이며 첫 비교는 IDOR 개선 효과를 주장하지 않는다. IDOR 기능 수용은 #275의 비평가 경로로 진행하고, 아래 상태 전이는 12/18 필수 구현이나 공식 비교 선행 조건으로 추가하지 않는다. 일반 HTTP 서비스의 선기동/실제 task 매핑(§2.3–§2.4)은 별도 문제다.
 
 ### 5.2 제안 상태 전이
 
@@ -172,11 +234,17 @@ E② 생산/감사 장애는 유효한 배치에서 발생한 **제품 실패**�
 [판정 페이지 응답 제안](./verdict-record-page-api-proposal.md)의 wire·오류·KG 실패·수동 확인 분리는 그대로 따른다. 서버 동결/manifest는 이동찬, 러너 adapter는 최민준이다. 여기의 순서는 기존 구현의 존재나 새 endpoint 활성화를 뜻하지 않는다.
 
 1. 계측기 seal·대상 요청 drain·관측 구간 종료와 별도로, 신뢰 서버가 해당 회차의 판정 writer·issuance/link transaction 종료를 확인한다. E② 결과 파일 마감만으로 DB writer 종료를 추정하지 않는다.
-2. 신뢰 러너 회차의 `run_id`·`model_tag`·`reset_generation`과 실제 task의 불변 결속·조회 권한을 대조한다. 준비 `run_id`·E② RunRef로 대신하거나 GET에서 등록/재결속하지 않는다. 작업 생성 시 결속 필드/권한의 구현은 별도 선행 조건이다.
+2. 신뢰 러너 회차의 `run_id`·`model_tag`·`reset_generation`과 실제 task의 불변 결속·조회 권한을 대조한다. 준비 `run_id`·E② RunRef로 대신하거나 GET에서 등록/재결속하지 않는다. 아래 사전 신뢰 등록은 후속 서버 구현이며 기존 `POST /api/tasks` 본문에 회차별 필드를 추가하지 않는다.
 3. 제안된 명시 동결 `POST /api/tasks/{task_id}/verdict-exports`로 정확한 최초 판정 집합·link projection·총건수·재확인 결과를 고정하고 `export_ref`를 발급한다. `MAX(id)` 하나로 집합 동결을 대체하지 않는다.
 4. 모든 페이지에 같은 task/run/purpose/export/limit을 사용한다. 마지막 `next_cursor=null`, 중복 없는 누적 건수=`total`, 회차 메타·수동 건수·재확인 상태 일치를 검증한 뒤 envelope를 게시한다. 부분 수집을 정상 판정 입력으로 서명하지 않는다.
 
 서버 `collection_status=complete`는 export 집합 준비 완료이고 러너의 전체 수집 완료와 다르다. `manual_confirmation_count`는 자동 판정/§5 성능 수치와 분리한다. 미구현·미수집·명시적 0건·무결성 실패를 구분하며 원문 findings 다운로드로 판정 export를 대체하지 않는다.
+
+**사전 회차 등록안:** compose 기동 뒤 작업 생성 전에, 개선 후 서버에 인증된 runner 전용 경로로 `run_id`·`model_tag`·`reset_generation`과 reservation_ref·정책 결속을 한 번 등록한다. 새 API/IPC의 위치·인증은 구현 검토 대상이며 일반 task 생성 본문·쿼리·모델 도구로 등록하지 않는다. 공개 참조만으로 등록 권한을 만들지 않는다.
+
+서버는 인증된 runner identity·서버 인스턴스·만료와 별도 비밀 단회 capability에 묶인 **다음 한 task**에서 이 등록을 transaction/CAS로 소비하고, 실제 task ID와의 불변 대응을 `launchTask` 전에 확립한다. runner는 POST 직전에 새로 로그인하므로 JWT 사용자 이름만으로 연결을 추정하지 않는다. capability는 기존 본문 밖의 보호 제어 문맥으로 전달하며 값은 모델·로그·공유 manifest에 넣지 않는다. 해당 전달 경계/인증이 구현되기 전에는 이 안을 활성화하지 않는다. 회차마다 DB가 새것이라는 조건만으로 다른 caller의 선점·동시 생성을 허용하지 않는다. 두 번째 생성/다른 caller·미등록·만료·세대 불일치·결속 저장 불명은 실행하지 않는다. 재시작은 검증된 저장 연속성이 없으면 대기 등록을 폐기하고 다시 인증받는다.
+
+baseline·개선 후 모두 기존 여섯 task 필드의 같은 정규 본문과 `task_request_sha256`을 유지한다. 사전 등록의 비민감 값·인증된 소비 결과·설정 digest는 별도 runner 서명 근거에 넣는다. 이 서버 경계와 수집기는 미구현이며, POST 본문을 유지해도 실제 기동·계측·시간 조건의 검증은 생략하지 않는다.
 
 ## 8. 쓰기·보상 후속 경계
 

@@ -26,7 +26,7 @@ Accept: application/json
 
 기존 `/api` 인증이 필요하다. 예시는 인증 헤더 값을 생략했다. task 경로와 `run_id`는 검색 조건이지 발급 출처나 조회 권한의 증명이 아니다. 구현할 서버는 task와 신뢰 러너 회차의 등록 결속 및 조회 권한을 대조한다. **이 GET으로 run_id를 등록·재결속하지 않는다.**
 
-**회차 결속 권장안 — 별도 구현 선행 조건:** 러너가 작업 생성 `POST /api/tasks` 본문에 비민감 `run_id`·`model_tag`·`reset_generation`을 넣고 서버가 task 생성 시 한 번만 불변 결속하며 이후 재결속을 거부한다. 출처는 러너 회차의 `run_id`, 사전검사 `llm.model`, 현재 대상 컨테이너 ID인 `reset_generation`이다. 러너는 실제 세 필드가 포함된 요청 본문의 SHA-256을 기존 `task.json` 기록 경로로 서명 근거에 결속해야 한다. 현재 작업 생성 필드·서버 등록·러너 배선은 미구현이며, 이 값만으로 비신뢰 caller에 조회·발급 권한이나 검사 실행 승인을 부여하지 않는다.
+**회차 결속 권장안 — 별도 구현 선행 조건:** runner는 compose 기동 뒤 작업 생성 전에 인증된 서버 전용 경로로 비민감 `run_id`·`model_tag`·`reset_generation`을 한 번 등록하고, 서버는 runner identity·서버 인스턴스·만료·비밀 단회 capability로 결속한 다음 한 task 생성에 이를 원자적으로 소비해 launch 전에 불변 결속한다. POST 직전 새 로그인과 단일 사용자 이름만으로 이 연결을 추정하지 않으며 capability는 기존 본문 밖의 보호 제어 문맥으로 전달한다. 출처는 러너 회차의 `run_id`, 사전검사 `llm.model`, 현재 대상 컨테이너 ID인 `reset_generation`이다. 기존 `POST /api/tasks` 여섯 필드 본문은 바꾸지 않는다. 회차별 값을 본문에 넣으면 세션의 동일 `task_request_sha256`과 baseline 동일 본문 조건을 깨므로, 등록·소비 근거는 별도 서명 기록에 결속한다([서버–러너 후속안 §7](./e2-runner-integration-proposal.md#7-141-서버-동결과-러너-수집)). 전용 경로·권한·불변 결속·실패 수용·러너 배선은 미구현이며, 새 DB라는 조건만으로 다른 caller 선점·재결속을 허용하지 않는다. 이 값만으로 비신뢰 caller에 조회·발급 권한이나 검사 실행 승인을 부여하지 않는다.
 
 응답·export manifest·오류 본문에는 GT 챌린지 키·매핑·평가 정답을 넣지 않는다. 사람이 type 후보를 검토할 때 참고한 평가 자료도 runtime payload로 전달하지 않는다.
 
