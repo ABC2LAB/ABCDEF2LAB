@@ -336,8 +336,8 @@ export default function ReportScreen() {
               setOpenRow={setOpenRow}
             />
           )}
-          {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} />}
-          {tab === "map" && <MapPanel taskId={taskId} />}
+          {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} go={go} />}
+          {tab === "map" && <MapPanel taskId={taskId} go={go} />}
           {tab === "asset" && <AssetGraphPanel taskId={taskId} findings={findings} onOpenFinding={openFinding} />}
           {tab === "ev" && <EvidencePanel go={go} />}
         </div>
@@ -835,10 +835,12 @@ function CoveragePanel({
   cov,
   loading,
   error,
+  go,
 }: {
   cov: EngineCoverage | null | undefined;
   loading: boolean;
   error: string | null;
+  go: (s: "coverage") => void;
 }) {
   let content: ReactNode;
   if (loading) content = <p style={bodyText}>불러오는 중…</p>;
@@ -866,6 +868,9 @@ function CoveragePanel({
           검사 커버리지 <Sub>· 범위 내 자산 대비 실제 탐색</Sub>
         </h3>
         {content}
+        <button className="btn" type="button" style={{ marginTop: 14 }} onClick={() => go("coverage")}>
+          전체 커버리지 열기 →
+        </button>
       </div>
     </div>
   );
@@ -897,7 +902,7 @@ const LEG_DOT: Record<AccessDecision, CSSProperties> = {
 const MAP_LEGEND_BASE: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "untested"];
 const MAP_LEGEND_EXTRA: AccessDecision[] = ["suspected", "unknown", "blank"];
 
-function MapPanel({ taskId }: { taskId: string }) {
+function MapPanel({ taskId, go }: { taskId: string; go: (s: "access-map") => void }) {
   const { data, loading, error } = useApiResource(() => getAccessMap(taskId), [taskId]);
   // 전체 지도와 동일한 fail-closed 규칙(중복·미반환 처리)을 공유 리졸버로 적용(kg §4.2(7)).
   const resolve = useMemo(() => buildCellResolver(data?.cells ?? []), [data]);
@@ -971,6 +976,9 @@ function MapPanel({ taskId }: { taskId: string }) {
         </p>
         {data?.mock && <p className="map-mock">예시 데이터예요. 소유·권한 KG 연동 후 실제 결과로 채워져요.</p>}
         {content}
+        <button className="btn" type="button" style={{ marginTop: 14 }} onClick={() => go("access-map")}>
+          전체 접근통제 지도 열기 →
+        </button>
       </div>
     </div>
   );
