@@ -24,7 +24,7 @@ export type CrawlEvent = {
   found: CrawlPath[];
   /** 이 줄 뒤의 방문 대기 링크 수 */
   queue: number;
-  /** 이 줄에 걸린 시간(초) — 화면의 시각 · 경과 표시용 */
+  /** 이 줄에 걸린 시간의 비중(예시 초) — 전체 재생 시간(CRAWL_TOTAL_MS)을 이 비율로 나눠 쓴다 */
   sec: number;
 };
 
@@ -38,8 +38,11 @@ export const CRAWL_GROUP_LABEL: Record<CrawlGroup, string> = {
   admin: "관리자",
 };
 
-/** 다음 줄까지 기다리는 시간(ms) — 시안이라 실제보다 빠르게 돈다(전체 약 25초) */
-export const CRAWL_WAIT_MS: Record<CrawlKind, number> = { sys: 800, req: 430, login: 800, rec: 340, skip: 600 };
+/**
+ * 처음부터 끝까지 재생하는 시간(ms). 화면의 시각 · 경과도 이 시간으로 계산해서 실제로 흐른 시간과 같다.
+ * 시안이라 실제 탐색보다 훨씬 짧게 둔다.
+ */
+export const CRAWL_TOTAL_MS = 10_000;
 
 /** 첫 줄의 시각 10:42:05 (하루 기준 초) */
 export const CRAWL_START_SEC = 10 * 3600 + 42 * 60 + 5;

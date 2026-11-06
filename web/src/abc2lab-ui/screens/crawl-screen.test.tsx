@@ -29,7 +29,7 @@ function Harness({ start }: { start: ScreenId }) {
   );
 }
 
-/** 가장 긴 대기(800ms)보다 길게 — 한 번에 한 줄씩 진행된다 */
+/** 가장 긴 줄 대기보다 길게 — 한 번에 한 줄씩 진행된다 */
 async function tick(times = 1) {
   for (let n = 0; n < times; n++) {
     await act(async () => {

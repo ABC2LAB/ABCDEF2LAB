@@ -7,7 +7,7 @@ import {
   CRAWL_EVENTS,
   CRAWL_GROUP_LABEL,
   CRAWL_START_SEC,
-  CRAWL_WAIT_MS,
+  CRAWL_TOTAL_MS,
   type CrawlEvent,
   type CrawlGroup,
   type CrawlPath,
@@ -23,15 +23,22 @@ import type { Target } from "../types";
  */
 
 const PIPELINE = ["자산 탐색", "범위 확인", "점검 계획", "취약점 점검", "검증", "마무리", "보고서"];
-/** 각 줄까지의 누적 초 — 기록의 시각과 경과 시간 */
-const AT = CRAWL_EVENTS.reduce<number[]>((acc, e) => {
-  acc.push((acc[acc.length - 1] ?? 0) + e.sec);
-  return acc;
-}, []);
+/**
+ * 각 줄이 나오는 시각(시작부터 ms). 줄별 비중(sec)대로 CRAWL_TOTAL_MS 를 나눈다.
+ * 재생 대기와 화면의 시각 · 경과가 이 값 하나를 같이 써서, 경과가 실제로 흐른 시간과 어긋나지 않는다.
+ */
+const AT_MS = (() => {
+  const weight = CRAWL_EVENTS.reduce((sum, e) => sum + e.sec, 0);
+  let acc = 0;
+  return CRAWL_EVENTS.map((e) => {
+    acc += e.sec;
+    return Math.round((acc / weight) * CRAWL_TOTAL_MS);
+  });
+})();
+/** i번째 줄이 나온 시점의 경과 초 */
+const secAt = (i: number) => Math.floor(AT_MS[i] / 1000);
 /** 예시 기록 줄 수 */
 const TOTAL = CRAWL_EVENTS.length;
-/** 시작하고 첫 줄이 나오기까지(ms) */
-const FIRST_WAIT_MS = 500;
 /** 새로 찾은 경로를 강조해 두는 줄 수 */
 const NEW_SPAN = 2;
 
@@ -77,7 +84,7 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
   // 한 줄씩 진행 — 숨겨져도 계속 돈다(엔진 점검처럼). 일시정지 · 취소 · 끝나면 멈춘다
   useEffect(() => {
     if (!state.started || state.paused || state.cancelled || state.step >= TOTAL) return;
-    const wait = state.step === 0 ? FIRST_WAIT_MS : CRAWL_WAIT_MS[CRAWL_EVENTS[state.step].kind];
+    const wait = AT_MS[state.step] - (state.step > 0 ? AT_MS[state.step - 1] : 0);
     const id = window.setTimeout(() => setState((s) => ({ ...s, step: s.step + 1 })), wait);
     return () => window.clearTimeout(id);
   }, [state.started, state.paused, state.cancelled, state.step]);
@@ -94,7 +101,7 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
       for (const f of e.found) found.push({ ...f, at: i });
     });
     const last = state.step > 0 ? CRAWL_EVENTS[state.step - 1] : undefined;
-    return { sent, logins, skip, found, last, queue: last?.queue ?? 0, sec: last ? AT[state.step - 1] : 0 };
+    return { sent, logins, skip, found, last, queue: last?.queue ?? 0, sec: last ? secAt(state.step - 1) : 0 };
   }, [state.step]);
 
   // 찾은 경로 묶음: 처음 나온 순서대로, 묶음 안은 최신 경로가 앞
@@ -294,7 +301,7 @@ export default function CrawlScreen({ target, run }: { target: Target; run: numb
               </div>
               <div className="cr-log">
                 {rows.map(({ e, i }) => (
-                  <LogRow key={i} e={e} at={AT[i]} host={target.host} />
+                  <LogRow key={i} e={e} at={secAt(i)} host={target.host} />
                 ))}
               </div>
             </section>
