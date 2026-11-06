@@ -115,7 +115,7 @@ shared/delegated는 bool이다. temperature는 0 이상 유한수, 시간 예산
 }
 ```
 
-해시 버전이나 정규화 규칙을 임의로 섞지 않는다. v1 프로파일(로컬 loopback 전제)·v2(`run_storage` 없음)·v3(`run_drain` 없음)·v4(`sampling` 없음)·v5(`context_window_k` 없음)는 v6와 섞어 비교하지 않으며 CLI가 거부한다. 다른 구현에서 만들면 위 벡터가 일치해야 한다.
+해시 버전이나 정규화 규칙을 임의로 섞지 않는다. 입력 파일의 `version`(지금 5)과 지문 `format` 세대(지금 v6)는 별개 번호다. 입력 `version`은 그대로 5이고, `context_window_k`가 들어오면서 지문 세대만 v6로 올랐다. 지문 세대 v1(로컬 loopback 전제)·v2(`run_storage` 없음)·v3(`run_drain` 없음)·v4(`sampling` 없음)·v5(`context_window_k` 없음)의 값은 v6와 섞어 비교하지 않는다. 그 시절 선언은 필수 필드가 없어 CLI가 거부한다. 다른 구현에서 만들면 위 벡터가 일치해야 한다.
 중복 JSON key·비유한수·잘못된 UTF-8/JSON·과대 파일은 거부한다. 오류 메시지는 입력값을 담지 않는다.
 
 ## 연결과 검증 범위
