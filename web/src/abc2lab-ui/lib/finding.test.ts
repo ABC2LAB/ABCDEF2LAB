@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  allEvidenceUnknown,
   confirmedEvidenceComplete,
   dataAccessProven,
   displayComparisonRow,
   displayVerdict,
   type FindingRecord,
   getFinding,
+  getFindingHeld,
+  heldBeforeSend,
   missingEvidence,
+  notTransmitted,
   ORACLE_BADGE,
   type Signal,
 } from "./finding";
@@ -149,6 +153,79 @@ describe("displayComparisonRow (행 취약 보수 하향)", () => {
     expect(displayComparisonRow("undecidable", "ok")).toBe("ok");
     expect(displayComparisonRow("undecidable", "und")).toBe("und");
     expect(displayComparisonRow("undecidable", "sus")).toBe("sus");
+  });
+});
+
+describe("heldBeforeSend (E² 차단 전용)", () => {
+  it("held_pre_send 만 true — none/sent/unknown/미지정은 false(none≠E² 차단)", () => {
+    expect(heldBeforeSend(rec({ transmission: "held_pre_send" }))).toBe(true);
+    expect(heldBeforeSend(rec({ transmission: "none" }))).toBe(false);
+    expect(heldBeforeSend(rec({ transmission: "sent" }))).toBe(false);
+    expect(heldBeforeSend(rec({ transmission: "unknown" }))).toBe(false);
+    expect(heldBeforeSend(rec())).toBe(false);
+  });
+});
+
+describe("notTransmitted", () => {
+  it("held_pre_send·none 은 true(전송·응답 없음), sent/unknown/미지정은 false", () => {
+    expect(notTransmitted(rec({ transmission: "held_pre_send" }))).toBe(true);
+    expect(notTransmitted(rec({ transmission: "none" }))).toBe(true);
+    expect(notTransmitted(rec({ transmission: "sent" }))).toBe(false);
+    expect(notTransmitted(rec({ transmission: "unknown" }))).toBe(false);
+    expect(notTransmitted(rec())).toBe(false);
+  });
+});
+
+describe("allEvidenceUnknown", () => {
+  it("세 체크·6 신호 전부 unknown 이면 true", () => {
+    const u: Signal = "unknown";
+    expect(
+      allEvidenceUnknown(
+        rec({
+          checks: { policy: u, identity: u, data: u },
+          signals: {
+            sameResource: u,
+            ownerNormalData: u,
+            crossNormalData: u,
+            nontrivialDataMatch: u,
+            reflectionExcluded: u,
+            templateExcluded: u,
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("하나라도 yes/no 면 false(혼합 신호)", () => {
+    const u: Signal = "unknown";
+    expect(
+      allEvidenceUnknown(
+        rec({
+          checks: { policy: "yes", identity: u, data: u },
+          signals: {
+            sameResource: u,
+            ownerNormalData: u,
+            crossNormalData: u,
+            nontrivialDataMatch: u,
+            reflectionExcluded: u,
+            templateExcluded: u,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("getFindingHeld mock (상태변경·E² 송신전 차단)", () => {
+  it("undecidable·전송 held·canary 없음·신호 전부 unknown → 취약 주장 불가", async () => {
+    const r = await getFindingHeld(null);
+    expect(r.oracleValue).toBe("undecidable");
+    expect(r.transmission).toBe("held_pre_send");
+    expect(r.stateChanging).toBe(true);
+    expect(r.canaryFields).toEqual([]);
+    expect(heldBeforeSend(r)).toBe(true);
+    expect(displayVerdict(r)).toBe("undecidable");
+    expect(dataAccessProven(r)).toBe(false);
   });
 });
 

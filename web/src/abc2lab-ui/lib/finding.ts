@@ -99,9 +99,39 @@ export type FindingRecord = {
   };
   trafficEvidenceRefs: string[];
 
+  /** 이 검사가 **확인하려던 것**(비민감 설명). 상태변경·판단불가 서사에서 표시. */
+  intent?: string;
+  /** 상태를 바꾸는 요청인가(수평 읽기 1단계 밖 — destructive-last, 승인/격리 필요). */
+  stateChanging?: boolean;
+  /** 대상에 실제 전송됐나. `held_pre_send`=E²가 송신 전 차단(미실행) → 증거 없음 → 판단 불가. */
+  transmission?: "sent" | "held_pre_send" | "none" | "unknown";
+
   /** true = 예시 데이터(실 레코드 아님). */
   mock: boolean;
 };
+
+/**
+ * **E²가 송신 전에 차단**했나 — `held_pre_send` 에만 해당. `none`(그냥 전송 없음)은 E² 차단 근거가 아니다.
+ * "E²가 막았다·승인 대기" 서사는 이 값에만 연결한다(거짓 차단 사유 방지).
+ */
+export function heldBeforeSend(r: FindingRecord): boolean {
+  return r.transmission === "held_pre_send";
+}
+
+/** 대상에 실제로 전송되지 않았나(E² 차단이든 미시도든) — "전송·응답 없음 → 증거 없음"의 중립 근거. */
+export function notTransmitted(r: FindingRecord): boolean {
+  return r.transmission === "held_pre_send" || r.transmission === "none";
+}
+
+/** 세 체크·6 비교 신호가 **전부 unknown** 인가(완전 미실행). "모두 불명" 문구는 이 때만 쓴다. */
+export function allEvidenceUnknown(r: FindingRecord): boolean {
+  return (
+    r.checks.policy === "unknown" &&
+    r.checks.identity === "unknown" &&
+    r.checks.data === "unknown" &&
+    COMPARISON_SIGNALS.every((s) => r.signals[s.key] === "unknown")
+  );
+}
 
 /**
  * CONFIRMED 증거 3조건이 모두 모였는지(§4 · 세 체크 + 비자명 표식 + 반사·템플릿 배제).
@@ -226,4 +256,53 @@ const MOCK_FINDING: FindingRecord = {
  */
 export async function getFinding(_findingId: string | null): Promise<FindingRecord> {
   return MOCK_FINDING;
+}
+
+// ── E²가 송신 전에 차단한 상태변경 후보 → 미실행 → 증거 없음 → UNDECIDABLE.
+//    수평 읽기 1단계 밖(상태변경)이라 승인·격리 시험환경 필요(destructive-last, 절대규칙 6).
+const MOCK_FINDING_HELD: FindingRecord = {
+  id: "ov-0002",
+  title: "상태 변경 요청이 막히는지 미확인",
+  severity: "medium",
+  axis: "horizontal",
+  vulnClass: "비즈니스 로직 · 상태 변경",
+  resourceRef: "checkout:a-session-0001",
+  oracleValue: "undecidable",
+  vulnVerdict: "undecidable",
+  accessPolicyResult: "판정_불가",
+  // 실행 안 됨 → 세 체크·6 신호 모두 unknown(모름을 아님/없음으로 접지 않음).
+  checks: { policy: "unknown", identity: "unknown", data: "unknown" },
+  reasonCodes: ["e2_blocked_pre_send", "state_change_not_executed"],
+  signals: {
+    sameResource: "unknown",
+    ownerNormalData: "unknown",
+    crossNormalData: "unknown",
+    nontrivialDataMatch: "unknown",
+    reflectionExcluded: "unknown",
+    templateExcluded: "unknown",
+  },
+  canaryFields: [],
+  comparison: [], // 전송이 없어 응답 비교 자체가 없음
+  subjects: { ownerRef: "계정 A", evaluatedRef: "계정 B", ownerStatus: "verified", evaluatedStatus: "verified" },
+  control: {
+    policyVersion: "kg-fixture/v1:kgfx-juiceshop-s1:<digest>",
+    resetGeneration: "reset-gen-1",
+    observedAt: Date.UTC(2026, 10, 6, 5, 0, 0),
+    modelTag: "openai/qwen3.6-35b-a3b",
+    hintMatchesCanonical: true,
+    expectedAccess: "deny",
+  },
+  trafficEvidenceRefs: [],
+  intent: "결제 단계에서 금액을 낮춰 보내 주문이 그대로 생성되는지",
+  stateChanging: true,
+  transmission: "held_pre_send",
+  mock: true,
+};
+
+/**
+ * 상태변경 후보(E² 송신 전 차단 → 판단 불가) 상세 조회.
+ * TODO(이경준): 실 레코드 연동 시 getFinding 과 같은 API 로 통합(판정값·transmission 으로 분기).
+ */
+export async function getFindingHeld(_findingId: string | null): Promise<FindingRecord> {
+  return MOCK_FINDING_HELD;
 }
