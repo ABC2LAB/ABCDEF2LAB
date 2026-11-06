@@ -80,7 +80,8 @@ class VerdictExport:
 
 
 def _fail(code: str) -> None:
-    raise VerdictPagesError("verdict_pages: " + code)
+    # except 안에서도 불린다. 채점기 오류 문구에는 레코드 값이 들어 있어 표시 traceback에 이어지지 않게 끊는다.
+    raise VerdictPagesError("verdict_pages: " + code) from None
 
 
 def _count(value: object) -> bool:
