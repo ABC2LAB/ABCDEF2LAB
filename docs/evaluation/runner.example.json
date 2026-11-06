@@ -32,6 +32,7 @@
   "api_front": 8091
  },
  "observer_path": "/api/Challenges",
+ "observer_format": "challenge_scoreboard",
  "observer_readonly_ref": "docs/evaluation/profiles/evidence/observer-readonly-juice-shop-15.0.0-20261104.json",
  "e2": {"ours_mode": "none"},
  "engine_rules": null,

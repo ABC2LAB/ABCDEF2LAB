@@ -38,7 +38,7 @@ ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "ev
            "eval-llm-gw": "meter", "eval-api": "meter", "eval-e2": "meter"}
 
 
-def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None):
+def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None):
     preflight, payload = configuration(), runner_config()
     if state is not None:
         payload["state"] = state
@@ -46,6 +46,8 @@ def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None):
         payload["e2"]["ours_mode"] = e2
     if stream is not None:
         payload["engine"]["llm_stream"] = stream
+    if observer_format is not None:
+        payload["observer_format"] = observer_format
     if min_free is not None:  # 하한은 러너 설정과 사전검사 선언(환경 지문 입력)에 같이 바꿔야 한다
         payload["tmpfs"]["min_free"] = min_free
         for name in ("baseline", "ours"):
@@ -552,6 +554,7 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual((task["format"], task["request_sha256"], task["task_id"]),
                          ("abc2lab-eval-runner-task-v1", "t" * 64, "17"))
         self.assertEqual(result["task_request_sha256"], "t" * 64)
+        self.assertEqual(result["observer_format"], "challenge_scoreboard")
         # 엔진 LLM 정책 모드는 선언값만 남는다(엔진이 드러내지 않음 → 관측 null).
         self.assertEqual(result["engine_llm_policy"], {"declared": "external", "observed": None})
         # baseline(e53a79f)에는 스위치가 없어 같은 compose 값이 넘어가도 선언하지 않는다(#133 리뷰).
@@ -1254,6 +1257,24 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
         for name in ("OPENAI_API_KEY}", "ANTHROPIC_API_KEY", "${OPENAI_API_KEY"):
             self.assertEqual(self.services_referencing(name), set())
         self.assertEqual(self.services_referencing("EVAL_LLM_EVIDENCE_DIR"), {"eval-llm-gw"})
+
+    def test_scoreboard_passes_the_configured_observer_format(self):
+        for observer_format, opaque in (("challenge_scoreboard", False), ("opaque", True)):
+            with self.subTest(observer_format), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "runs"
+                root.mkdir(mode=0o700)
+                os.chmod(root, 0o700)
+                config = parse_runner_config(runner_config() | {"runs_root": str(root), "observer_format": observer_format})
+                plan = plan_run(config, configuration(), "ours", "ours-1")
+                directory = create_run_directory(root, "ours-1")
+                ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1", settings=dict)
+                snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
+                with patch.object(runner, "collect_snapshot") as collect, \
+                        patch.object(runner, "read_private_json", return_value={"solved": {}}):
+                    ports.scoreboard("pre", snapshot)
+                self.assertIs(collect.call_args.kwargs["opaque"], opaque)
+                spec = build_spec(config, plan, configuration(), "t" * 64, "c", 0)
+                self.assertEqual(spec.observer_format, observer_format)
 
     def test_meter_mount_is_a_subdirectory_apart_from_scoreboards(self):
         with tempfile.TemporaryDirectory() as tmp:

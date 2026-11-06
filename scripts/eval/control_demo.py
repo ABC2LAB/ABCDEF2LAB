@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolation_proof import IsolationError, attempt_reconciliation  # noqa: E402
 from run_record import RunRecordError, read_runner_key  # noqa: E402
 from runner import STATE_DIFF_FORMAT, STATE_DIFF_NAME  # noqa: E402
+from runner_config import OBSERVER_OPAQUE  # noqa: E402
 from runner_engine import INTERCEPT_SUMMARY_FORMAT  # noqa: E402
 from runner_evidence import COUNTED_METHODS, OTHER_METHOD  # noqa: E402
 from session_runs import SessionError, read_session  # noqa: E402
@@ -68,7 +69,7 @@ class RunFacts:
     unsupported: int | None  # E② 정책 거부(미지원 포함). E²가 없거나 대조 근거가 없으면 None
     unavailable: int | None  # E² 자체 불가용. 정책 거부와 다른 사건이라 따로 센다
     state: dict | None  # 상태 차이를 재지 않았으면 None
-    solved: int
+    solved: int | None  # 점수판 없는 회차(opaque)는 재지 않은 값이다
     rules: dict | None = None  # 원본 ② 규칙 적용 결과. 규칙을 넣지 않은 회차는 None
     intercept: dict | None = None  # 규칙이 막은 도구 호출 건수. 기록이 없는 회차는 None
 
@@ -184,7 +185,8 @@ def _run_facts(root: Path, attempt) -> RunFacts:
     return RunFacts(repeat=record["repeat_index"], forwarded=forwarded, methods=methods,
                     proof_missing=record.get("isolation_proof") is None, unsupported=unsupported,
                     unavailable=unavailable, state=_state(directory, _evidence(directory, result, STATE_DIFF_NAME)),
-                    solved=len(solve["events"]), rules=_rules(directory, result),
+                    solved=None if result.get("observer_format") == OBSERVER_OPAQUE else len(solve["events"]),
+                    rules=_rules(directory, result),
                     intercept=_intercept(directory, result))
 
 

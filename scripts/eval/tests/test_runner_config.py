@@ -40,6 +40,7 @@ def runner_config() -> dict:
         "ports": {"engine_api_host": 18787, "engine_container": 8787, "target": 3000, "obs": 8081, "obs_host": 18081,
                   "llm_gateway": 8090, "api_front": 8091},
         "observer_path": "/api/records",
+        "observer_format": "challenge_scoreboard",
         "engine": {"llm_provider": "openai", "llm_stream": True, "llm_policy_mode": "external"},
         "engine_db": {"user": "artex", "name": "artex"},
         "tmpfs": {"engine_db": "1g", "engine_data": "512m", "min_free": "16m"},
@@ -155,6 +156,15 @@ class TestParseRunnerConfig(unittest.TestCase):
         payload = runner_config()
         payload["ports"]["obs_host"] = payload["ports"]["engine_api_host"]
         self.reject(payload, "config.ports: HOST_PORT_CONFLICT")
+
+    def test_observer_format_is_explicit_and_closed(self):
+        payload = runner_config()
+        del payload["observer_format"]
+        self.reject(payload, "config.observer_format: MISSING")
+        for value in ("", "none", "OPAQUE", None, 1):
+            self.reject(runner_config() | {"observer_format": value}, "config.observer_format: INVALID")
+        for value in ("challenge_scoreboard", "opaque"):
+            self.assertEqual(parse_runner_config(runner_config() | {"observer_format": value}).observer_format, value)
 
     def test_observer_path_follows_meter_rule(self):
         for value in ("api/x", "/a?b", "/a#b", "/a%2f", "/a\\b", "/a b", "//a", "/a/../b", "/a/./b", "/é", ""):
