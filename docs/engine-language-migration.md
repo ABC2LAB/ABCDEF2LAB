@@ -58,6 +58,10 @@ Go 밖에는 `web/messages/zh.json`·`ja.json`, `web/src`, `skills/`, `db/schema
 | `server/platform_tools.go` | 52 | `Server.toolCreateCustomTool`, `Server.toolCreateMCP`, `Server.toolCreateSkill`, `Server.toolDeleteAssetsByHost`, `Server.toolUpdateCustomTool`, `Server.toolUpdateMCP`, `Server.toolUpdateSkillFile`, `customToolSchema`, `mcpSchema` |
 | `server/finding_workflow.go` | 12 | `Server.agentFindingTrafficAccess`, `Server.seedFindingWorkflowTools`, `Server.toolBindFindingTraffic` |
 
+## 이미 심긴 프롬프트
+
+`seedPrompts`는 비어 있을 때만 넣으므로 기존 설치에는 옛 프롬프트가 남는다. 기동 때 `Server.reseedBuiltinPrompts`가 내장 에이전트와 reporter 프롬프트를 한 번 현재 기본값으로 올린다. 새 버전을 덧붙이는 방식이라 운영자가 고친 이전 본문은 버전 기록에서 되찾는다. 트리거에는 버전 기록이 없어서 `Server.upgradeReporterTriggerMessage`는 한자가 든 문구만 바꾼다. 평가 회차는 매번 새 DB라 시드 값을 그대로 쓴다.
+
 ## 공식 비교
 
 baseline은 원본 프롬프트 그대로 둔다. 개선판의 언어 변경은 선언된 차이다([평가 프로토콜 §2](evaluation/evaluation-protocol.md#2-평가-대상-고정)). 결과는 개선판 전체의 효과로 보고, E②나 언어 변경 하나의 효과로 나누지 않는다.
@@ -69,5 +73,4 @@ baseline은 원본 프롬프트 그대로 둔다. 개선판의 언어 변경은 
 ## 열린 항목
 
 - **SDK 문자열.** `norma`에도 한자 문자열 57개가 있다. 셸 도구(`NewShell*`)는 엔진이 쓰지 않지만, 백그라운드 작업 알림(`tool/task.go`)과 `noa/archive.go`는 모델까지 갈 수 있다. SDK를 올릴지, 끌지, 감쌀지 정한다.
-- **이미 심긴 프롬프트.** `seedPrompts`는 비어 있을 때만 넣는다. 기존 설치의 중국어 프롬프트는 `Server.reseed*Prompt`로 올릴 수 있는지 2단계에서 확인한다. 평가 회차는 매번 새 DB라 영향이 없다.
 - **활동 표시 필드.** `purpose`와 활동 표시 계약은 UI 디자인이 정해진 뒤에 한다.
