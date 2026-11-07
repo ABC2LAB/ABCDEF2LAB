@@ -17,6 +17,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import aggregate
+from ground_truth import bac_category, core_gt
 
 _EMPTY_BASIS = ()
 _PROFILES = (
@@ -174,6 +175,34 @@ class TestAggregateMetricsProperties(unittest.TestCase):
             actual = self.aggregate(_PROFILES)
             with self.assertRaises(AssertionError):
                 self.assert_stat(actual.elapsed_seconds, mean=10.0, stdev=10.0, n=3, rendered="10 ± 10")
+
+
+class TestPrimaryMetric(unittest.TestCase):
+    CORE = core_gt()
+    BAC = bac_category()
+    BASES = (("코어", CORE), ("BAC", BAC))
+
+    def repeat(self, solved, known=True):
+        return aggregate.RepeatResult("ours", None, 1, engine_solved=frozenset(solved), attribution_known=known)
+
+    def test_counts_only_keys_of_each_basis(self):
+        core_only = next(c.key for c in self.CORE if c.key not in {b.key for b in self.BAC})
+        bac_only = next(c.key for c in self.BAC if c.key not in {b.key for b in self.CORE})
+        repeats = [self.repeat({core_only, "outside_every_basis"}), self.repeat({core_only, bac_only})]
+        self.assertEqual(aggregate.engine_attributed_stat(repeats, self.CORE).render(), "1 ± 0")
+        self.assertEqual(aggregate.engine_attributed_stat(repeats, self.BAC).render(), "0.5 ± 0.707107")
+
+    def test_real_zero_stays_zero_and_unknown_is_not_zero(self):
+        self.assertEqual(aggregate.engine_attributed_stat([self.repeat(())], self.CORE).render(), "0 (n=1)")
+        mixed = [self.repeat(()), self.repeat((), known=False)]
+        self.assertEqual(aggregate.engine_attributed_stat(mixed, self.CORE).render(), "—")
+
+    def test_table_has_a_row_per_condition_and_counts_unknown_runs(self):
+        table = aggregate.render_primary_metric(
+            {"baseline": [self.repeat(())], "ours": [self.repeat(()), self.repeat((), known=False)]}, self.BASES)
+        self.assertIn("| 조건 | 회차 수 | 코어 | BAC | 귀속 미확인 회차 |", table)
+        self.assertIn("| baseline | 1 | 0 (n=1) | 0 (n=1) | 0 |", table)
+        self.assertIn("| ours | 2 | — | — | 1 |", table)
 
 
 if __name__ == "__main__":

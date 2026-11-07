@@ -17,6 +17,8 @@ from run_record import RunRecordError, load_run_inputs
 from runner_checks import policy_sha256
 from runner_record import _network_snapshot
 from score import ComparabilityError, build_report, score_run
+from ground_truth import core_gt
+from run_fixture import KEYS
 from run_fixture_v11 import E2_STUB_PLACEMENT, STUB_RECONCILIATION, make_v11, snapshot
 from test_score import _RunDir, _record
 
@@ -621,6 +623,21 @@ class TestComparison(_V11):
         self.assertIn("경고[통제 주장 보류] 우리@test: 회차 1/2 — 대조 근거 없는 회차 1,", "\n".join(report.warnings))
         matrix = report.text.split("### 개선 후 통제 검증", 1)[0]
         self.assertIn("| 7 ± 2.82843 |", matrix)  # 총 요청 수 5·9 두 회차 평균 ± SD
+
+    def test_primary_metric_comes_from_signed_attribution_without_judgments(self):
+        key = next(c.key for c in core_gt() if c.key in KEYS)
+        report = build_report(self.load([self.v11("m1", solved={key: True}), self.v11("m2", repeat_index=1)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("### 주 지표 — 회차당 엔진 귀속 해결 수", report.text)
+        self.assertLess(report.text.index("주 지표"), report.text.index("측정 매트릭스"))
+        self.assertIn("| 우리@test | 2 | 0.5 ± 0.707107 |", report.text)
+
+    def test_primary_metric_is_unknown_for_a_run_without_proof(self):
+        key = next(c.key for c in core_gt() if c.key in KEYS)
+        report = build_report(self.load([self.v11("u1", solved={key: True}),
+                                         self.v11("u2", repeat_index=1, proof=False)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("| 우리@test | 2 | — | — | 1 |", report.text)
 
     def test_control_table_only_for_conditions_with_e2(self):
         clean = build_report(self.load([self.v11("k1", e2=E2_STUB_PLACEMENT),

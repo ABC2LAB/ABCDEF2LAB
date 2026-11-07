@@ -27,7 +27,7 @@ from typing import NamedTuple
 # 평가 모듈(우리 코드)만 명시적으로 올린다 — cwd·사용자 site-packages는 계속 차단된다.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from aggregate import RepeatResult, ScanVerdict, aggregate_condition, render_matrix  # noqa: E402
+from aggregate import RepeatResult, ScanVerdict, aggregate_condition, render_matrix, render_primary_metric  # noqa: E402
 from collect import ScanOutputError, ScanParseResult, VerdictRecord, parse_scan_payload  # noqa: E402
 from correlation import DEFAULT_PATH, CorrelationError, load_correlation  # noqa: E402
 from evidence import TrafficIndex, challenge_has_evidence, dangling_refs  # noqa: E402
@@ -99,6 +99,7 @@ def assemble_repeat(
     covered: frozenset[str] | None,
     correlatable: frozenset[str] | None,
     *, pre_solved: dict[str, bool] | None = None, engine_solved: frozenset[str] = frozenset(),
+    attribution_known: bool = True,
 ) -> RepeatResult:
     """정규화된 판정·해결상태·증거·커버리지·상관 가능 여부 → RepeatResult. 엔진을 보지 않는다."""
     return RepeatResult(
@@ -114,6 +115,7 @@ def assemble_repeat(
         correlatable=correlatable,
         pre_solved=dict(pre_solved or {}),
         engine_solved=engine_solved,
+        attribution_known=attribution_known,
     )
 
 
@@ -167,7 +169,8 @@ def score_run(
         parsed = _uncollected_verdicts()
     evidence_ok = confirmed_evidence(parsed, inputs.traffic, correlate)
     result = assemble_repeat(manifest, parsed, inputs.post, evidence_ok, inputs.covered, correlatable,
-                             pre_solved=inputs.pre, engine_solved=inputs.engine_solved)
+                             pre_solved=inputs.pre, engine_solved=inputs.engine_solved,
+                             attribution_known=inputs.version != V11 or inputs.proof_id is not None)
     warnings = list(repeat_warnings(manifest, parsed, inputs.traffic))
     if not inputs.judgments_collected:
         warnings.append(f"경고[판정 미수집] {run}: v1.1 records=null — GT 판정 전부 판단불가(미탐·오탐·확정 0), "
@@ -388,8 +391,9 @@ def build_report(
     if versions == {V1}:
         warnings.append("경고[공식 비교 아님] 러너 기록 v1(직접 관측 이벤트) — 합성 시험·과거 형식 회귀 검증용, "
                         "공식 비교표는 v1.1 isolated_window만(프로토콜 §4)")
-    sections = [f"모델 태그: {manifests[0].model_tag}\n"]
-    for basis_name, basis in (("코어 GT(인가 9)", core_gt()), ("BAC category(10)", bac_category())):
+    bases = (("코어 GT(인가 9)", core_gt()), ("BAC category(10)", bac_category()))
+    sections = [f"모델 태그: {manifests[0].model_tag}\n", render_primary_metric(by_condition, bases)]
+    for basis_name, basis in bases:
         rows = [aggregate_condition(c, repeats, basis) for c, repeats in by_condition.items()]
         sections.append(render_matrix(rows, basis_name))
     # E② 자리를 서명 근거로 확인한 회차가 있는 조건만 표에 낸다. 조건 안에서 자리가 섞이면 위에서 이미 멈췄으므로
