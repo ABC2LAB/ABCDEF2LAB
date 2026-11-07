@@ -24,6 +24,7 @@ import http.client
 import os
 import platform
 import re
+import shutil
 import sys
 import time
 from contextlib import closing
@@ -1179,6 +1180,16 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         engine_rules_sha256=engine_rules_sha256)
 
 
+def _remove_unstarted_run(directory: RunDirectory | None) -> None:
+    """시작 전 실패(exit 2)는 시도가 아니다. 디렉터리가 남으면 세션 집계가 무효 시도로 센다(official-run.md 5절)."""
+    if directory is None:
+        return
+    try:
+        shutil.rmtree(directory.run)
+    except OSError:
+        print(f"run_directory: REMOVE_FAILED {directory.run.name} — 집계 전에 직접 지워야 한다", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="평가 회차 1회 실행(자동 재시도 없음)")
     parser.add_argument("--config", required=True)
@@ -1195,6 +1206,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.repeat < 0:
         print("repeat: INVALID", file=sys.stderr)
         return 2
+    directory = None
     try:
         config = load_runner_config(args.config)
         preflight = load_preflight(args.preflight)
@@ -1214,6 +1226,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except (EngineAPIError, E2PrepareError) as exc:
         print(str(exc), file=sys.stderr)
+        _remove_unstarted_run(directory)
         return 2
     docker = Docker(run_docker, client_environment(os.environ, compose_environment(plan, directory)),
                     config.docker_timeout_seconds)

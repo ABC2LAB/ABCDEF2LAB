@@ -74,6 +74,8 @@
 
 ## 4. 입력 준비 (세션 전 1회)
 
+세션 디렉터리를 먼저 정한다. 시범은 `SESSION=/srv/abc2lab-eval/pilot`, 공식은 `SESSION=/srv/abc2lab-eval/official-<날짜>`이고 0700으로 만든다. 아래 출력 파일은 덮어쓰기가 거부되므로 세션마다 여기에 둔다.
+
 레포 밖에 러너 uid 소유 0700 디렉터리를 만든다(예: `/srv/abc2lab-eval`, 키는 `/srv/abc2lab-eval-keys`). 회차 결과·로그·키는 레포에 넣지 않는다.
 
 1. **이미지 빌드:** 엔진·계측기는 3절 0번의 동결 작업 트리(`$W/baseline`·`$W/ours`)에서 빌드한다. 웹 UI는 넣지 않는다(양쪽 같음, 평가는 API만 쓴다).
@@ -95,10 +97,10 @@
 
    ```bash
    cd "$T" && python3 -I -B scripts/eval/tool_tree.py --baseline "abc2lab-eval-engine:baseline-${BASE:0:12}" \
-     --ours "abc2lab-eval-engine:ours-${OURS:0:12}" --out /srv/abc2lab-eval/tool-tree.json
+     --ours "abc2lab-eval-engine:ours-${OURS:0:12}" --out "$SESSION/tool-tree.json"
    ```
 
-   종료 코드 1(다름)이면 회차를 돌리지 않는다. `docker builder prune -f`로 빌드 캐시를 비우고 두 엔진을 위 명령으로 다시 빌드한 뒤, 이미지 ID를 새로 적는다. 대조를 건너뛰어도 채점기가 `tool_tree_sha256` 차이를 보고 채점을 멈춘다. 다만 그때는 돌린 회차를 못 쓴다.
+   종료 코드 1(다름)이면 회차를 돌리지 않는다. `docker builder prune -f`로 빌드 캐시를 비우고 두 엔진을 위 명령으로 다시 빌드한 뒤, 이미지 ID를 새로 적는다. 다시 대조할 때는 `--out`에 새 이름(`tool-tree-2.json`)을 줘서 앞 결과를 남긴다. 대조를 건너뛰어도 채점기가 `tool_tree_sha256` 차이를 보고 채점을 멈춘다. 다만 그때는 돌린 회차를 못 쓴다.
 
 2. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 `<…>` 자리(태그·내용 ID)와 경로만 채운다. 그 밖의 값은 바꾸지 않는다.
    `runs_root`는 **세션마다 새 디렉터리**로 둔다(시범: `…/pilot/runs`, 공식: `…/official-<날짜>/runs`, 0700). 6절 집계는 runs_root 하나를 한 세션으로 본다.
@@ -106,10 +108,10 @@
 
    ```bash
    cd "$T" && python3 -I -B scripts/eval/official_preflight.py docs/evaluation/profiles/official-35b.json \
-     --baseline-sha "$BASE" --ours-sha "$OURS" --out /srv/abc2lab-eval/preflight.json
+     --baseline-sha "$BASE" --ours-sha "$OURS" --out "$SESSION/preflight.json"
    ```
 
-   시범과 공식은 ours 커밋이 다르므로 선언 파일도 따로 만든다(덮어쓰기는 거부된다).
+   시범과 공식은 ours 커밋이 다르므로 선언 파일도 세션 디렉터리마다 따로 만든다(덮어쓰기는 거부된다).
 
 4. **비밀 env 파일:** `deploy/eval/eval.secrets.env.example`을 `/srv/abc2lab-eval/eval.secrets.env`로 복사하고 0600으로 둔다. 관리자·DB 비밀번호는
    무작위로 만든다. **API 키는 본인 터미널에서만 넣는다**(채팅·명령 인자·셸 기록에 남기지 않는다):
@@ -127,7 +129,7 @@
 한 회차:
 
 ```bash
-cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --preflight /srv/abc2lab-eval/preflight.json \
+cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --preflight "$SESSION/preflight.json" \
   --side baseline --condition "원본@35b" --repeat 0      # 개선 후는 --side ours --condition "우리@35b"
 ```
 
