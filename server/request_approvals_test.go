@@ -373,3 +373,46 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestApprovalCancelledBindingIsNotStorageFailure(t *testing.T) {
+	run, cancel := context.WithCancel(t.Context())
+	service := newRequestApprovalService(approvalFailStore{})
+	if err := service.bind(run, 1, "ARTEX", "run", []E2HTTPFileRule{{Ref: "rule"}}); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	proposal := e2proxy.RequestApprovalProposal{OwnerRef: "ARTEX", ExpiresAt: time.Now().Add(time.Minute), Receipt: e2proxy.Receipt{Scope: transmit.Scope{TaskRef: "1", RunRef: "run"}, RuleRef: "rule", AttemptID: "attempt"}}
+	if allowed, err := service.AwaitRequestApproval(t.Context(), proposal); allowed || err != nil {
+		t.Fatal("valid cancelled binding became storage failure", allowed, err)
+	}
+	proposal.Receipt.Scope.RunRef = "other"
+	if _, err := service.AwaitRequestApproval(t.Context(), proposal); err == nil {
+		t.Fatal("cancelled binding masked wrong run")
+	}
+}
+
+func TestRequestApprovalInitialLifecycleDoesNotPersist(t *testing.T) {
+	for _, scenario := range []string{"cancel", "expire"} {
+		t.Run(scenario, func(t *testing.T) {
+			service := newRequestApprovalService(approvalFailStore{})
+			if err := service.bind(t.Context(), 1, "ARTEX", "run", []E2HTTPFileRule{{Ref: "rule"}}); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			proposal := e2proxy.RequestApprovalProposal{OwnerRef: "ARTEX", ExpiresAt: time.Now().Add(time.Minute), Receipt: e2proxy.Receipt{Scope: transmit.Scope{TaskRef: "1", RunRef: "run"}, RuleRef: "rule", AttemptID: "attempt"}}
+			if scenario == "cancel" {
+				cancel()
+			} else {
+				proposal.ExpiresAt = time.Now().Add(-time.Second)
+			}
+			if allowed, err := service.AwaitRequestApproval(ctx, proposal); allowed || err != nil {
+				t.Fatal("normal lifecycle became infrastructure failure", allowed, err)
+			}
+			proposal.Receipt.Scope.RunRef = "other"
+			if _, err := service.AwaitRequestApproval(ctx, proposal); err == nil {
+				t.Fatal("lifecycle masked wrong run")
+			}
+		})
+	}
+}

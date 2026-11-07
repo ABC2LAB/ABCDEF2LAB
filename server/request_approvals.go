@@ -124,15 +124,16 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 	if err != nil || ctx == nil || p.OwnerRef != "ARTEX" {
 		return false, errRequestApproval
 	}
-	if ctx.Err() != nil || !time.Now().Before(p.ExpiresAt) {
-		return false, nil
-	}
 	s.mu.Lock()
 	binding, ok := s.bindings[task]
 	rule, ruleOK := binding.rules[p.Receipt.RuleRef]
-	if !ok || !ruleOK || binding.ctx.Err() != nil || binding.run != p.Receipt.Scope.RunRef || s.waiters[p.Receipt.AttemptID] != nil {
+	if !ok || !ruleOK || binding.run != p.Receipt.Scope.RunRef || s.waiters[p.Receipt.AttemptID] != nil {
 		s.mu.Unlock()
 		return false, errRequestApproval
+	}
+	if ctx.Err() != nil || binding.ctx.Err() != nil || !time.Now().Before(p.ExpiresAt) {
+		s.mu.Unlock()
+		return false, nil
 	}
 	origin, path, preview, err := approvalPreview(p, rule)
 	if err != nil {
