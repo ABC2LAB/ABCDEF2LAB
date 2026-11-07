@@ -202,9 +202,9 @@ def descriptor(context: RecordContext, path: str, sha256: str, size: int, phase:
 
 def run_record(context: RecordContext, *, engine: str, condition: str, repeat_index: int, total_requests: int,
                fixture_fingerprint: str, environment_fingerprint: str, steps: dict, artifacts: dict,
-               proof: dict) -> dict:
+               proof: dict, blocked_attempts: int | None = None) -> dict:
     """서명 전 v1.1 기록. 확정까지 시간(elapsed_seconds)은 독립 측정이 없어 null, 차단 시도 수도 null."""
     return dict(context.fields(), version=RUN_RECORD_VERSION, engine=engine, condition=condition,
-                repeat_index=repeat_index, elapsed_seconds=None, total_requests=total_requests, blocked_attempts=None,
+                repeat_index=repeat_index, elapsed_seconds=None, total_requests=total_requests, blocked_attempts=blocked_attempts,
                 fixture_fingerprint=fixture_fingerprint, environment_fingerprint=environment_fingerprint,
                 requests_drained=True, timeline=steps, artifacts=artifacts, isolation_proof=proof)

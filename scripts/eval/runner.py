@@ -766,6 +766,13 @@ def _collect_verdicts(spec: RunSpec, ports: RunPorts, evidence, state: _State, c
     return descriptor(context, VERDICT_RECORDS_NAME, sha256, size, "engine"), row
 
 
+def _blocked_attempts(reconciliation: dict | None) -> int | None:
+    """E²가 막은 시도 수(프로토콜 §5). 대조 근거가 없으면(E² 없음·제품 실패) 모르므로 0이 아니라 None이다."""
+    if reconciliation is None:
+        return None
+    return reconciliation["cells"]["denied_unobserved"] + reconciliation["cells"]["denied_observed"]
+
+
 def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict, pre_board: dict, post_board: dict,
                   pre_solved: dict, post_solved: dict, steps: dict, window: dict, observer: list, ready_calls: int,
                   meter_summary: dict, drained: dict, engine_rows: int, pre_checked_at: str,
@@ -805,7 +812,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
                       total_requests=meter_summary["forwarded_requests"],
                       fixture_fingerprint=spec.fixture_fingerprint,
                       environment_fingerprint=spec.environment_fingerprint, steps=steps, artifacts=artifacts,
-                      proof=proof)
+                      proof=proof, blocked_attempts=_blocked_attempts(reconciliation))
 
 
 def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: GatewayFiles, evidence,
