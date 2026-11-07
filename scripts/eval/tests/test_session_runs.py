@@ -143,6 +143,19 @@ class TestAuxiliary(SessionCase):
         lines = auxiliary(read_session(self.root, KEY))
         self.assertIn("| baseline | 2 | time_budget 1, 미기록 1 | — | — |", lines)
 
+    def test_a_boolean_overrun_is_not_a_number(self):
+        self._run("baseline", 0, 0, "time_budget", True, 10)
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| baseline | 1 | time_budget 1 | — | 10 (n=1) |", lines)
+
+    def test_the_command_prints_the_table(self):
+        self._run("baseline", 0, 0, "time_budget", 0, 10)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main([str(self.root), "--repeats", "3", "--runner-key-file", str(self.key_file)]), 0)
+        self.assertIn("보조 지표(프로토콜 §5", out.getvalue())
+        self.assertIn("| baseline | 1 | time_budget 1 | 0 (n=1) | 10 (n=1) |", out.getvalue())
+
     def test_invalid_attempts_stay_out_and_an_empty_side_shows_dashes(self):
         self._run("ours", 0, 0, "time_budget", 0, 10)
         self.s.invalid("ours", 1, "probe_failed")
