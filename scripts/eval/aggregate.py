@@ -98,6 +98,7 @@ class RepeatResult:
     correlatable: frozenset[str] | None = None  # GT 상관 type이 있는 챌린지. None = 정보 없음(상관 불가로 봄)
     pre_solved: dict[str, bool] = field(default_factory=dict)  # 누락은 pre 확인 불가
     engine_solved: frozenset[str] = frozenset()  # 독립 러너의 직접 해결 이벤트로 확인한 항목
+    attribution_known: bool = True  # False면 격리 증명이 없어 귀속을 확인 못 한 회차(0건이 아니라 미측정)
     blocked_attempts: int | None = None  # E² 차단 시도 수 — 총 요청 수와 별도 지표(§5), 미측정 None
 
 
@@ -201,6 +202,26 @@ def aggregate_condition(
         zero_request_runs=sum(1 for r in repeats if r.total_requests == 0),
         measured_request_runs=sum(1 for r in repeats if r.total_requests is not None),
     )
+
+
+def engine_attributed_stat(repeats: list[RepeatResult], basis: tuple[Challenge, ...]) -> Stat:
+    """회차당 엔진 귀속 해결 수(§5 주 지표). 귀속을 확인 못 한 회차가 있으면 "—"다. 0으로 세면 해결 없음으로 읽힌다."""
+    keys = {ch.key for ch in basis}
+    return _optional_stat([len(r.engine_solved & keys) if r.attribution_known else None for r in repeats])
+
+
+def render_primary_metric(by_condition: dict[str, list[RepeatResult]],
+                          bases: tuple[tuple[str, tuple[Challenge, ...]], ...]) -> str:
+    """§5 주 지표 표. 값은 평균 ± 표본 표준편차(SD). 판정 칸과 달리 판정 레코드 없이도 나온다."""
+    names = [name for name, _ in bases]
+    lines = ["### 주 지표 — 회차당 엔진 귀속 해결 수\n",
+             "| 조건 | 회차 수 | " + " | ".join(names) + " | 귀속 미확인 회차 |",
+             "|---|---|" + "---|" * len(names) + "---|"]
+    for condition, repeats in by_condition.items():
+        cells = [engine_attributed_stat(repeats, basis).render() for _, basis in bases]
+        unknown = sum(1 for r in repeats if not r.attribution_known)
+        lines.append(f"| {condition} | {len(repeats)} | " + " | ".join(cells) + f" | {unknown} |")
+    return "\n".join(lines) + "\n"
 
 
 def render_matrix(rows: list[ConditionAggregate], basis_name: str) -> str:
