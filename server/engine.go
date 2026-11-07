@@ -107,10 +107,13 @@ func retryableWorkerModelError(reason harness.TerminalReason, err error) bool {
 // (re)installed at runtime (LLM configured from the UI); the loops always run
 // but idle until an LLM is set.
 type Engine struct {
-	m               *Manager
-	debounce        time.Duration
-	controlledReads *controlledReadRuntime // installed by Server before any task starts
-	controlledIdle  func(*Task)            // parks a drained controlled task
+	m                       *Manager
+	debounce                time.Duration
+	controlledReads         *controlledReadRuntime // installed by Server before any task starts
+	e2HTTP                  *E2HTTPRuntime         // 일반 HTTP는 등록 GET의 상태·승인과 분리한다.
+	firstDiagnosis          bool
+	firstDiagnosisAdmission func(*Task) error
+	controlledIdle          func(*Task) // parks a drained controlled task
 
 	bc *Broadcaster // live activity pub/sub (SSE)
 
@@ -317,6 +320,9 @@ func (e *Engine) StopTask(taskID string) {
 // planner.Plan / worker.Execute), if present. Shared by Pause and the settle
 // sequence's hard-drain backstop.
 func (e *Engine) cancelExec(taskID string, cause error) {
+	if e.e2HTTP != nil {
+		_ = e.e2HTTP.FenceTask(taskID)
+	}
 	// A task cancellation and controlled completion cannot pass one another's
 	// execution decision unnoticed. No registry/DB work is performed here.
 	e.workMu.Lock()
@@ -810,6 +816,12 @@ func (e *Engine) withRuntimeHooks(ctx context.Context) context.Context {
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
+	if t == nil || (e.firstDiagnosis && (e.firstDiagnosisAdmission == nil || e.firstDiagnosisAdmission(t) != nil)) {
+		return
+	}
+	if e.e2HTTP != nil && e.e2HTTP.AdmitTask(ctx, t) != nil {
+		return
+	}
 	ctx = e.withRuntimeHooks(ctx)
 	workers := e.m.Workers()
 	e.deleteMu.RLock()
@@ -934,6 +946,18 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
 		if ectx.Err() != nil || e.IsDeleting(t.ID) {
 			return
+		}
+		if e.e2HTTP != nil {
+			var bindingErr error
+			ectx, bindingErr = e.e2HTTP.PreparePlanning(ectx, t)
+			if errors.Is(bindingErr, ErrE2HTTPBusy) {
+				return
+			}
+			if bindingErr != nil {
+				_ = e.m.SetTaskStatus(t.ID, "failed")
+				e.cancelExec(t.ID, bindingErr)
+				return
+			}
 		}
 		log.Printf("[planner] task %s 계획 중...(%s 트리거)", t.ID, src)
 		// round marker: each Plan() is one planner round; emit a boundary so the
@@ -1079,7 +1103,14 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	workCtx = intercept.WithTaskContext(workCtx, t.ID, label, taskEmit)
 	// Acquire once for this whole work, including provider retries. A controlled
 	// tombstone without a fresh server registration must never use legacy tools.
-	workCtx, finishControlled, controlledErr := e.prepareControlledRead(workCtx, t, intent)
+	var finishControlled func(...bool) error
+	var finishHTTP func() error
+	var controlledErr error
+	if e.e2HTTP != nil {
+		workCtx, finishHTTP, controlledErr = e.e2HTTP.PrepareWork(workCtx, t, intent)
+	} else {
+		workCtx, finishControlled, controlledErr = e.prepareControlledRead(workCtx, t, intent)
+	}
 	// nudges 有意建在 model_error 重跑循环之外:空转续跑的上限是「这条意图」的总量，
 	// 重跑一轮不该把额度清零重来。
 	hooks := steerHooks{
@@ -1125,6 +1156,13 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		e.EndLLMCall(t.ID)
 	}
 	var finalizeErr error
+	if finishHTTP != nil {
+		finalizeErr = finishHTTP()
+		if finalizeErr != nil {
+			err = errors.Join(err, finalizeErr)
+			reason = harness.ReasonHookStopped
+		}
+	}
 	if finishControlled != nil {
 		completed := err == nil && reason == harness.ReasonCompleted && workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.IsDeleting(t.ID)
 		finalizeErr = finishControlled(completed)

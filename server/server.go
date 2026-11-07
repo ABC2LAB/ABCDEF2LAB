@@ -113,15 +113,20 @@ const (
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	backgroundMu      sync.Mutex
-	backgroundWG      sync.WaitGroup
-	backgroundClosing bool
-	backgroundDone    chan struct{}
-	m                 *Manager
-	engine            *Engine
-	ctx               context.Context
-	runtimeHooks      agent.RuntimeHooks         // immutable callbacks owned by this server
-	localResolver     *llmpolicy.ProfileResolver // nil only in explicit external/legacy mode
+	backgroundMu                   sync.Mutex
+	backgroundWG                   sync.WaitGroup
+	backgroundClosing              bool
+	backgroundDone                 chan struct{}
+	m                              *Manager
+	engine                         *Engine
+	ctx                            context.Context
+	runtimeHooks                   agent.RuntimeHooks         // immutable callbacks owned by this server
+	localResolver                  *llmpolicy.ProfileResolver // nil only in explicit external/legacy mode
+	firstDiagnosisPreparation      bool
+	firstModelMu                   sync.RWMutex
+	firstModel                     *firstDiagnosisModelPin
+	firstDiagnosisAdmissionStopped atomic.Bool
+	firstDiagnosis                 bool // 첫 기동에서는 복구·예약·비지원 도구 경로를 자동으로 열지 않는다.
 
 	skillDir string // root directory for skill subdirectories
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
@@ -247,8 +252,26 @@ func newServer(ctx context.Context, m *Manager, skillDir string, dataDir string,
 	return s
 }
 
+type serverStartupOptions struct {
+	existingAuthOnly     bool
+	assemblyStore        *controlledReadStore
+	noAutomaticAdmission bool
+	e2HTTP               *E2HTTPRuntime
+	preparationOnly      bool
+}
+
 func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, localResolver *llmpolicy.ProfileResolver, bootstrap func(*Server) error) (*Server, error) {
-	key, err := loadOrCreateJWTKey(keyDir, dataDir)
+	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, localResolver, serverStartupOptions{}, bootstrap)
+}
+
+func newServerConfiguredWithOptions(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, localResolver *llmpolicy.ProfileResolver, startup serverStartupOptions, bootstrap func(*Server) error) (*Server, error) {
+	var key []byte
+	var err error
+	if startup.existingAuthOnly {
+		key, err = readControlledReadAssemblyJWTKey(keyDir, dataDir)
+	} else {
+		key, err = loadOrCreateJWTKey(keyDir, dataDir)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("[auth] JWT key: %w", err)
 	}
@@ -260,8 +283,29 @@ func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataD
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	// First-run protection: cache the password hash and, while none is set, issue
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
-	s.bootstrapAuth()
-	if err := s.initControlledReads(keyDir, dataDir); err != nil {
+	s.firstDiagnosis = startup.noAutomaticAdmission
+	s.firstDiagnosisPreparation = startup.preparationOnly
+	s.engine.firstDiagnosis = s.firstDiagnosis
+	if startup.existingAuthOnly {
+		if err := s.bootstrapFirstDiagnosisAuth(); err != nil {
+			return nil, err
+		}
+	} else {
+		s.bootstrapAuth()
+	}
+	if startup.preparationOnly {
+		if startup.e2HTTP != nil || startup.assemblyStore != nil {
+			return nil, ErrControlledReadHostConfiguration
+		}
+	} else if startup.e2HTTP != nil {
+		if startup.assemblyStore != nil {
+			return nil, ErrControlledReadHostConfiguration
+		}
+		s.engine.e2HTTP = startup.e2HTTP
+	} else if startup.assemblyStore != nil {
+		s.engine.controlledReads = newControlledReadRuntime(startup.assemblyStore)
+		context.AfterFunc(s.ctx, s.engine.controlledReads.discardAll)
+	} else if err := s.initControlledReads(keyDir, dataDir); err != nil {
 		return nil, fmt.Errorf("[E2] private execution store unavailable; server startup stopped: %w", err)
 	}
 	if bootstrap != nil {
@@ -274,7 +318,9 @@ func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataD
 	s.runtimeHooks = s.buildRuntimeHooks()
 	s.ctx = agent.WithRuntimeHooks(s.ctx, s.runtimeHooks)
 	s.engine.runtimeHooks = &s.runtimeHooks
-	s.initSideQuestions()
+	if !startup.noAutomaticAdmission {
+		s.initSideQuestions()
+	}
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
 	s.applyRetryPolicy()
@@ -302,29 +348,31 @@ func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataD
 		// synchronized. Agent prompts and tools use the server-owned bundle.
 		config.SetCurrentLanguage(s.outputLanguage)
 		notify.SetLanguageResolver(s.outputLanguage)
-		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
-		s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
-		if err := s.seedFindingRetester(); err != nil {
-			log.Printf("[retester] seed: %v", err)
+		if !startup.noAutomaticAdmission {
+			seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
+			s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
+			if err := s.seedFindingRetester(); err != nil {
+				log.Printf("[retester] seed: %v", err)
+			}
+			s.startBackground(func() { s.evidenceStore().RunGC(s.ctx) })
+			s.seedPythonInterpreter()                                // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
+			s.startBackground(func() { newScheduler(s).Run(s.ctx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+			// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
+			// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
+			// 통합 테스트는 stepRealtime·stepDigest 를 직접 호출해 분배를 결정론적으로
+			// 검증하므로, 이 환경 변수로 백그라운드 루프만 끌 수 있다(미설정이 기본).
+			if os.Getenv(notifyBackgroundDisabledEnv) == "" {
+				s.startBackground(func() { newNotifier(s).Run(s.ctx) })
+			} else {
+				// 핵심 기능(취약점 IM 알림 전송)을 끄는 분기라 시작 로그를 남긴다. 이 변수는
+				// 통합 테스트 전용이므로, 운영에서 켜져 있으면 실수나 환경 상속을 의심할 단서가 된다.
+				log.Printf(logT("[notify] 백그라운드 알림 전송 루프가 %s 로 꺼졌습니다(테스트 전용) — 취약점 IM 알림이 전송되지 않습니다"), notifyBackgroundDisabledEnv)
+			}
+			// Fill the tool cache for any enabled MCP that has none yet (notably the
+			// seeded browser MCP on first run). Async so it never blocks startup.
+			s.startBackground(s.discoverEmptyMCPsOnStartup)
+			logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 		}
-		s.startBackground(func() { s.evidenceStore().RunGC(s.ctx) })
-		s.seedPythonInterpreter()                                // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
-		s.startBackground(func() { newScheduler(s).Run(s.ctx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
-		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
-		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
-		// 통합 테스트는 stepRealtime·stepDigest 를 직접 호출해 분배를 결정론적으로
-		// 검증하므로, 이 환경 변수로 백그라운드 루프만 끌 수 있다(미설정이 기본).
-		if os.Getenv(notifyBackgroundDisabledEnv) == "" {
-			s.startBackground(func() { newNotifier(s).Run(s.ctx) })
-		} else {
-			// 핵심 기능(취약점 IM 알림 전송)을 끄는 분기라 시작 로그를 남긴다. 이 변수는
-			// 통합 테스트 전용이므로, 운영에서 켜져 있으면 실수나 환경 상속을 의심할 단서가 된다.
-			log.Printf(logT("[notify] 백그라운드 알림 전송 루프가 %s 로 꺼졌습니다(테스트 전용) — 취약점 IM 알림이 전송되지 않습니다"), notifyBackgroundDisabledEnv)
-		}
-		// Fill the tool cache for any enabled MCP that has none yet (notably the
-		// seeded browser MCP on first run). Async so it never blocks startup.
-		s.startBackground(s.discoverEmptyMCPsOnStartup)
-		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 	}
 	// precedence: persisted DB config > env.
 	if cfg, ok := s.loadLLMConfig(); ok {
@@ -342,9 +390,26 @@ func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataD
 	} else {
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
 	}
-	s.restoreTaskRuntimes()
-	s.startBackground(s.reconcileConcurrency)
-	s.startTaskArchiveWorker()
+	if startup.noAutomaticAdmission {
+		if len(m.List()) == 0 {
+			m.LoadExisting()
+		}
+		for _, task := range m.List() {
+			state := task.lifecycleSnapshot()
+			if isTerminalStatus(state.Status) {
+				continue
+			}
+			// 다른 실행을 자동 복원하거나 DB 상태를 덮어쓰지 않는다.
+			if !state.Paused || state.Queued {
+				return nil, ErrControlledReadHostConfiguration
+			}
+			s.engine.paused.Store(task.ID, true)
+		}
+	} else {
+		s.restoreTaskRuntimes()
+		s.startBackground(s.reconcileConcurrency)
+		s.startTaskArchiveWorker()
+	}
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	return s, nil
 }
@@ -1081,7 +1146,11 @@ func (s *Server) Handler() http.Handler {
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
 	// frontend (public — auth is enforced client-side and on the API). With the
 	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := cors(s.requireAuth(mux))
+	var apiRoutes http.Handler = mux
+	if s.firstDiagnosis {
+		apiRoutes = s.firstDiagnosisRoutes(mux)
+	}
+	api := cors(s.requireAuth(apiRoutes))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())

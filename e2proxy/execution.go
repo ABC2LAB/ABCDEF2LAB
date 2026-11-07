@@ -107,31 +107,12 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 	if _, err := cfg.Budget.Ledger.Remaining(cfg.Budget.Key, cfg.Budget.Binding, time.Now()); err != nil {
 		return nil, ErrConfig
 	}
-	l := cfg.Limits
-	if l.MaxAttempts == 0 || l.MaxAttempts > maxExecutionAttempts || l.MaxCalls <= 0 || l.MaxCalls > maxExecutionCalls || l.MaxConcurrent <= 0 || l.MaxConcurrent > maxConcurrentRequests ||
-		l.MaxBodyBytes <= 0 || l.MaxBodyBytes > maxRequestBodyBytes || l.RequestTimeout <= 0 || l.RequestTimeout > maxRequestTimeout ||
-		l.CallTimeout <= 0 || l.CallTimeout > maxCallTimeout || l.MaxDenials == 0 || l.MaxTransient == 0 || l.MaxUnknown == 0 {
-		return nil, ErrConfig
-	}
-	rules, err := compileRules(cfg.Rules)
+	rules, mode, evaluation, err := compilePolicyTemplate(cfg)
 	if err != nil {
 		return nil, err
 	}
-	if cfg.HeaderMode == "" {
-		cfg.HeaderMode = HeaderPreserve
-	}
-	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal && cfg.HeaderMode != HeaderEvaluationCallerPassthrough {
-		return nil, ErrConfig
-	}
-	cfg.Evaluation, err = validateEvaluationCallerContext(cfg)
-	if err != nil {
-		return nil, err
-	}
-	for _, rule := range rules {
-		if cfg.HeaderMode != HeaderProtectedSessionProposal && len(rule.CredentialHeaders) != 0 {
-			return nil, ErrConfig
-		}
-	}
+	cfg.HeaderMode = mode
+	cfg.Evaluation = evaluation
 	cfg.Rules = nil
 	if cfg.RootCAs != nil {
 		cfg.RootCAs = cfg.RootCAs.Clone()
@@ -1209,4 +1190,40 @@ func identityEncoding(headers http.Header, field string) bool {
 		}
 	}
 	return values <= 1
+}
+
+// ValidatePolicyTemplate은 정적 규칙·한도·헤더 모드만 검사한다.
+// 실제 task/intent/예산/권위의 수용 또는 실행 생성은 하지 않으며 NewExecution 검사를 대체하지 않는다.
+func ValidatePolicyTemplate(cfg Config) error {
+	_, _, _, err := compilePolicyTemplate(cfg)
+	return err
+}
+
+func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationCallerContext, error) {
+	l := cfg.Limits
+	if l.MaxAttempts == 0 || l.MaxAttempts > maxExecutionAttempts || l.MaxCalls <= 0 || l.MaxCalls > maxExecutionCalls || l.MaxConcurrent <= 0 || l.MaxConcurrent > maxConcurrentRequests ||
+		l.MaxBodyBytes <= 0 || l.MaxBodyBytes > maxRequestBodyBytes || l.RequestTimeout <= 0 || l.RequestTimeout > maxRequestTimeout ||
+		l.CallTimeout <= 0 || l.CallTimeout > maxCallTimeout || l.MaxDenials == 0 || l.MaxTransient == 0 || l.MaxUnknown == 0 {
+		return nil, "", nil, ErrConfig
+	}
+	rules, err := compileRules(cfg.Rules)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if cfg.HeaderMode == "" {
+		cfg.HeaderMode = HeaderPreserve
+	}
+	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal && cfg.HeaderMode != HeaderEvaluationCallerPassthrough {
+		return nil, "", nil, ErrConfig
+	}
+	cfg.Evaluation, err = validateEvaluationCallerContext(cfg)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	for _, rule := range rules {
+		if cfg.HeaderMode != HeaderProtectedSessionProposal && len(rule.CredentialHeaders) != 0 {
+			return nil, "", nil, ErrConfig
+		}
+	}
+	return rules, cfg.HeaderMode, cfg.Evaluation, nil
 }

@@ -65,6 +65,15 @@ func (s *Server) startTaskEngine(t *Task) {
 		return
 	}
 	ctx := s.engine.execContextFor(s.ctx, t.ID)
+	if s.engine.e2HTTP != nil {
+		var err error
+		ctx, err = s.engine.e2HTTP.PreparePlanning(ctx, t)
+		if err != nil {
+			_ = s.m.SetTaskStatus(t.ID, "failed")
+			s.engine.cancelExec(t.ID, err)
+			return
+		}
+	}
 	if ctx.Err() != nil || s.engine.IsDeleting(t.ID) {
 		return
 	}
@@ -146,6 +155,14 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	current, exists := s.m.Task(t.ID)
 	if !exists || current != t || s.engine.IsDeleting(t.ID) {
 		return false, fmt.Errorf("task is being deleted")
+	}
+	if s.firstDiagnosis {
+		if s.firstDiagnosisPreparation || s.firstDiagnosisAdmissionStopped.Load() || s.engine.firstDiagnosisAdmission == nil || s.engine.firstDiagnosisAdmission(t) != nil {
+			return false, ErrControlledReadHostConfiguration
+		}
+	}
+	if s.engine.e2HTTP != nil && s.engine.e2HTTP.AdmitTask(s.ctx, t) != nil {
+		return false, ErrE2HTTPHost
 	}
 	if !s.engine.beginTaskOperation(t.ID) {
 		return false, fmt.Errorf("task is being deleted")
