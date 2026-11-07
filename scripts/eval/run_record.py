@@ -22,7 +22,7 @@ from collect import VerdictRecord
 from ground_truth import bac_category, core_gt
 from isolation_proof import (
     IsolationError, attempt_reconciliation, check_isolated_events, check_isolation, check_unproven_events,
-    drain_policy, e2_identity, e2_mode, output_language, run_conditions, verdict_collection,
+    drain_policy, e2_collection_outcome, e2_identity, e2_mode, output_language, run_conditions, verdict_collection,
 )
 from manifest import RunManifest
 from scoreboard import SnapshotError, normalize_challenges, require_basis_keys
@@ -59,6 +59,7 @@ class RunInputs:
     output_language: str | None = None  # v1.1 격리 근거의 표시 언어. 조건 사이에서는 일부러 다르다(프로토콜 §2)
     e2_mode: str | None = None  # v1.1 격리 근거의 E② 자리(none|stub|product). 증명이 없으면 None
     e2_identity: tuple[str, str] | None = None  # 제품 E² 회차의 (정책 지문, 이미지 ID). 그 밖에는 None
+    e2_outcome: str | None = None  # 제품 E² 회차의 수집 결과. 그 밖에는 None
     attempt_reconciliation: dict | None = None  # E② 자리가 있는 회차의 시도별 대조 건수(§8.3). none·증명 없음이면 None
 
 
@@ -397,7 +398,7 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
     try:
         if proof is None:
             check_unproven_events(rows("solve_events", "events"))
-            language = None
+            language, outcome = None, None
             engine_solved, proof_id, policy, conditions, e2, reconciled, identity = frozenset(), None, None, None, None, None, None
         else:
             proof = check_isolation(receipt, steps, artifacts, proof, loaded["isolation_evidence"])
@@ -408,6 +409,7 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
             language = output_language(receipt, loaded["isolation_evidence"])
             e2 = e2_mode(receipt, loaded["isolation_evidence"])
             identity = e2_identity(receipt, loaded["isolation_evidence"])
+            outcome = e2_collection_outcome(receipt, loaded["isolation_evidence"])
             reconciled = attempt_reconciliation(receipt, loaded["isolation_evidence"])
             verdict_collection(receipt, loaded["isolation_evidence"], loaded["records"])
     except IsolationError as exc:
@@ -417,4 +419,4 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
                      receipt["execution_id"], receipt["fixture_fingerprint"], receipt["environment_fingerprint"],
                      version=V11, judgments_collected=loaded["records"] is not None, proof_id=proof_id,
                      drain_policy=policy, run_conditions=conditions, output_language=language, e2_mode=e2,
-                     attempt_reconciliation=reconciled, e2_identity=identity)
+                     attempt_reconciliation=reconciled, e2_identity=identity, e2_outcome=outcome)

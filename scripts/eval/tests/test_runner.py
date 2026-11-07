@@ -1998,6 +1998,37 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                 self.assertEqual(err.getvalue().strip(), code)
                 self.assertEqual(list(root.iterdir()), [])
 
+    def _e2_preparation_failure(self, tmp):
+        def product_with_missing_policy(payload):
+            payload["e2"] = dict(E2_PRODUCT_BLOCK, policy_path=str(Path(tmp, "missing-policy.json")))
+        return self.inputs(tmp, product_with_missing_policy)
+
+    def test_e2_preparation_failure_leaves_no_run_directory(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            root, argv = self._e2_preparation_failure(tmp)
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass", return_value="not-a-real-password"), contextlib.redirect_stderr(err):
+                self.assertEqual(runner.main(argv), 2)
+            self.assertIn("policy_unavailable", err.getvalue())
+            self.assertEqual(list(root.iterdir()), [])  # 시도로 세지 않는다(exit 2)
+
+    def test_a_directory_that_cannot_be_removed_is_named_for_the_operator(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            root, argv = self._e2_preparation_failure(tmp)
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass", return_value="not-a-real-password"), \
+                    patch.object(runner.shutil, "rmtree", side_effect=OSError("/secret/path")), \
+                    contextlib.redirect_stderr(err):
+                self.assertEqual(runner.main(argv), 2)
+            left = [path.name for path in root.iterdir()]
+            self.assertEqual(len(left), 1)
+            self.assertIn(f"REMOVE_FAILED {left[0]}", err.getvalue())
+            self.assertNotIn("/secret/path", err.getvalue())
+
     def test_bad_inputs_stop_before_asking_or_creating_a_run(self):
         import contextlib
         import io

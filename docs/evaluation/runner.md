@@ -96,8 +96,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 [기동]   compose up(--pull never, --no-build, --wait)
 [pre]    망·publish·이미지·호스트 조건 점검 → 부정 연결 점검 → tmpfs 마운트 ID·사용량(구간 전) → 대상 준비 → 구간 감시 시작 → pre 스코어보드
          계측기 전달 건수 == 0
-[작업]   새로 로그인 → 실행 설정 스냅샷(GET /api/settings·/api/llm, 프록시는 설정 여부로) → workers·엔진 LLM 모델·프록시 대조
-         → (engine_rules가 있으면) 규칙 등록·다시 읽어 대조 → engine-rules.json
+[작업]   새로 로그인 → workers·압축 기준 창 적용 → (engine_rules가 있으면) 규칙 등록·다시 읽어 대조 → engine-rules.json
+         → 실행 설정 스냅샷(GET /api/settings·/api/llm, 프록시는 설정 여부로) → workers·엔진 LLM 모델·프록시 대조
          → engine-settings.json → POST /api/tasks(설정의 task, 생성=기동) → task.json
          요청 예산 또는 시간 예산까지 폴링 → 계측기 seal → drain 확인(유예가 지나도 열린 요청은 계측기가 취소·건수 기록)
          → 취소가 있었으면 정착 대기
