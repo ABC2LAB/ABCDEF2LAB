@@ -8,6 +8,8 @@ import {
   useState,
 } from "react";
 
+import { DiagnosticDownload } from "../components/DiagnosticDownload";
+import { RemediationPanel } from "../components/RemediationPanel";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { Strong, Sub } from "../components/ui";
@@ -16,11 +18,11 @@ import { type EngineCoverage, type EngineFinding, getCoverage, getTask, listTask
 import { type AccessDecision, buildCellResolver, DECISION_CELL, DECISION_LABEL, getAccessMap } from "../lib/kg";
 import { useSelection } from "../lib/selection";
 import { canonicalVulnClass } from "../lib/vulnclass";
-import { useGo } from "../nav";
+import { useGo, useNav } from "../nav";
 import type { Severity } from "../types";
 import AssetGraphPanel from "./AssetGraphPanel";
 
-type Tab = "sum" | "list" | "cov" | "map" | "asset" | "ev";
+type Tab = "sum" | "list" | "cov" | "map" | "asset" | "ev" | "remediation";
 type DimKey = "sev" | "type";
 type Kind = "bar" | "share" | "table";
 
@@ -78,7 +80,6 @@ const STATUS_LABEL: Record<string, string> = {
   timeout: "시간초과",
 };
 
-const btnSm = { padding: "9px 14px", fontSize: 14 } as const;
 const bodyText: CSSProperties = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 };
 const subH: CSSProperties = { fontWeight: 500, color: "var(--muted)", fontSize: 13 };
 
@@ -123,6 +124,7 @@ function CoverageBar({
 /** ===== 보고서 ===== */
 export default function ReportScreen() {
   const go = useGo();
+  const nav = useNav();
   const { taskId, tasksVersion } = useSelection();
   const [tab, setTab] = useState<Tab>("sum");
   const [openRow, setOpenRow] = useState<string | null>(null);
@@ -237,17 +239,11 @@ export default function ReportScreen() {
                 {reportLead}
               </p>
             </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 6 }}>내보내기</div>
-              <div className="row" style={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
-                {/* TODO(이경준): GET /api/report 연결 — 지금은 비활성 */}
-                {["HTML", "PDF", "JSON"].map((f) => (
-                  <button key={f} className="btn" type="button" style={btnSm} disabled>
-                    {f}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <DiagnosticDownload
+              key={taskId}
+              taskId={taskId}
+              enabled={nav.screen === "report" && !taskRes.loading && !taskRes.error && task?.id === taskId}
+            />
           </div>
 
           {/* === 요약 타일 (위험도 4단) === */}
@@ -300,6 +296,7 @@ export default function ReportScreen() {
               [
                 ["sum", "요약"],
                 ["list", "발견 목록"],
+                ["remediation", "상세 · 수정 프롬프트"],
                 ["cov", "커버리지"],
                 ["map", "접근통제 지도"],
                 ["asset", "자산 그래프"],
@@ -340,6 +337,7 @@ export default function ReportScreen() {
           {tab === "map" && <MapPanel taskId={taskId} go={go} />}
           {tab === "asset" && <AssetGraphPanel taskId={taskId} findings={findings} onOpenFinding={openFinding} />}
           {tab === "ev" && <EvidencePanel go={go} />}
+          {tab === "remediation" && <RemediationPanel key={taskId} taskId={taskId} active={nav.screen === "report"} />}
         </div>
       </div>
     </Screen>
