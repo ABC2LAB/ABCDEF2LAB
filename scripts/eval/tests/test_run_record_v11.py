@@ -298,6 +298,16 @@ class TestRejectedV11(_V11):
         self.assertIsNone(self.inputs(self.v11("i2")).e2_identity)
         self.assertIsNone(self.inputs(self.v11("i3", e2=E2_STUB_PLACEMENT)).e2_identity)
 
+    def test_output_language_may_differ_between_conditions_only(self):
+        english = lambda rows: row_of(rows, "run_conditions").update(output_language="en")
+        self.assertEqual(self.inputs(self.v11("l0")).output_language, "ko")
+        other = self.v11("l1", condition="baseline", engine="baseline", tamper_rows=english)
+        build_report(self.load([self.v11("l2"), other]), self.correlate, self.correlatable,
+                     runner_key=self.runner_key)
+        mixed = [self.v11("l3"), self.v11("l4", repeat_index=1, tamper_rows=english)]
+        with self.assertRaisesRegex(ComparabilityError, "표시 언어 혼합"):
+            build_report(self.load(mixed), self.correlate, self.correlatable, runner_key=self.runner_key)
+
     def test_one_condition_must_use_one_policy_and_image(self):
         for index, changes in enumerate(({"policy_fingerprint_sha256": "5" * 64}, {"image_id": "sha256:" + "6" * 64})):
             with self.subTest(changes=changes):
@@ -384,11 +394,12 @@ class TestRejectedV11(_V11):
 
     def test_run_conditions_row_is_required_and_typed(self):
         self.reject("run_conditions", "r0", tamper_rows=lambda rows: drop(rows, row_of(rows, "run_conditions")))
-        cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "workers": 0,
+        cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "output_language": "KO", "workers": 0,
                  "sampling": {"temperature": 1.0}, "host": {"cpu_model": "x"}, "llm_stream": "true"}
         for index, (name, value) in enumerate(cases.items()):
             self.reject("run_conditions", f"r{index + 1}",
                         tamper_rows=lambda rows, n=name, v=value: row_of(rows, "run_conditions").update({n: v}))
+        self.reject("run_conditions", "r20", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(output_language=1))
         self.reject("run_conditions", "r9", tamper_rows=lambda rows: row_of(rows, "run_conditions")["host"].update(
             logical_cpus=True))
         self.reject("run_conditions", "r10", tamper_rows=lambda rows: row_of(rows, "run_conditions")["sampling"].update(

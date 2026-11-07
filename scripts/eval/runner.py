@@ -49,6 +49,7 @@ from runner_config import (  # noqa: E402
     METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
+from isolation_proof import valid_output_language  # noqa: E402
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from runner_engine import (  # noqa: E402
     AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, engine_settings, intercept_summary, load_engine_rules,
@@ -269,6 +270,7 @@ class _State:
     tmpfs_pre: dict | None = None
     host: dict | None = None
     engine_settings_sha256: str | None = None
+    output_language: str | None = None
     # 상태 차이: 회차 키(메모리에만)와 pre 사본 지문. 사본 파일은 지문을 뜬 즉시 지운다.
     state_key: bytes | None = None
     state_pre: dict | None = None
@@ -494,7 +496,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     settings = _step(state, "engine_settings_failed", ports.engine_settings)
     if not _settings_match(settings, spec):
         raise RunFailure("engine_settings_mismatch")
-    state.engine_settings_sha256 = canonical_sha256(settings)
+    comparable, state.output_language = _step(state, "engine_settings_failed", lambda: split_output_language(settings))
+    state.engine_settings_sha256 = canonical_sha256(comparable)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("engine-settings.json", settings))
 
     if spec.llm_serving is not None:
@@ -640,6 +643,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
     # 스트리밍은 엔진이 SSE와 비스트리밍 경로를 고르는 값이라 시간·응답 처리 조건이 달라진다(#174 리뷰). 선언값이다.
     conditions = {"engine_settings_sha256": state.engine_settings_sha256, "engine_rules_sha256": spec.engine_rules_sha256,
+                  "output_language": state.output_language,
                   "workers": spec.worker_count,
                   "llm_stream": spec.llm_stream,
                   "sampling": llm_summary["sampling_applied"],
@@ -903,6 +907,17 @@ def _host_spec_ok(host: object) -> bool:
                     for name in ("cpu_model", "kernel", "docker_server_version"))
             and all(type(host[name]) is int and host[name] >= 1 for name in ("logical_cpus", "memory_kib"))
             and isinstance(host["machine_id_sha256"], str) and bool(_HEX64.fullmatch(host["machine_id_sha256"])))
+
+
+def split_output_language(settings: dict) -> tuple[dict, str]:
+    """(표시 언어를 뺀 스냅샷, 표시 언어). 언어는 baseline·개선 후가 일부러 다르다(프로토콜 §2 선언된 차이)."""
+    section = settings["settings"]
+    language = section["output_language"]
+    # 형식이 틀리면 회차를 끝까지 돌려도 채점기가 거부한다. 실행 비용을 쓰기 전에 멈춘다(#302 리뷰).
+    if not valid_output_language(language):
+        raise ValueError("output_language")
+    rest = {name: value for name, value in section.items() if name != "output_language"}
+    return {**settings, "settings": rest}, language
 
 
 def _settings_match(settings: object, spec: RunSpec) -> bool:
