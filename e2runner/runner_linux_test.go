@@ -156,7 +156,7 @@ func newRunnerFixtureWithRecorder(t *testing.T, base, helper, target string, roo
 	if decorate != nil {
 		recorder = decorate(recorder)
 	}
-	execution, err := e2proxy.NewExecution(t.Context(), e2proxy.Config{
+	execution, err := e2proxy.NewExecution(t.Context(), e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 		HeaderMode: e2proxy.HeaderProtectedSessionProposal,
 		Scope:      scope, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision_runner", AccountRef: "account_runner", SessionRef: "session_runner",
 		ExpiresAt: now.Add(time.Minute), RootCAs: roots, Recorder: recorder,
