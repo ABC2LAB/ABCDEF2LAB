@@ -120,12 +120,15 @@ func TestDiagnosticRemediationLegacyReportStale(t *testing.T) {
 	}
 	defer d.Exec("DELETE FROM findings WHERE id=$1", id)
 	entry := fmt.Sprintf("finding-%d", id)
-	if _, err := d.Exec("UPDATE findings SET status='confirmed' WHERE id=$1", id); err != nil {
+	if _, err := d.Exec("UPDATE findings SET status='confirmed',summary='Different account can read order fields' WHERE id=$1", id); err != nil {
 		t.Fatal(err)
 	}
 	source, err := LoadDiagnosticRemediationSource(context.Background(), d.DB, task.ID, entry)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(source.Context.Observations) < 1 || source.Context.Observations[0].Source != "inferred" || source.Context.Observations[0].Observation != "Different account can read order fields" {
+		t.Fatal("stored finding interpretation lost or promoted")
 	}
 	if source.Status != "review" || source.EvidenceVersion != "0" {
 		t.Fatal("triage promoted or evidence version invented")
@@ -133,6 +136,9 @@ func TestDiagnosticRemediationLegacyReportStale(t *testing.T) {
 	record, err := d.SaveDiagnosticRemediation(context.Background(), task.ID, entry, source.SourceDigest, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(record.Bundle.AIPrompt, "Different account can read order fields") {
+		t.Fatal("legacy finding summary missing from independent prompt")
 	}
 	before, _ := json.Marshal(source)
 	after, err := LoadDiagnosticRemediationSource(context.Background(), d.DB, task.ID, entry)

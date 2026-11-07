@@ -145,12 +145,15 @@ func loadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 			return in, ErrDiagnosticRemediation
 		}
 		var findingSource struct {
+			Summary  string  `json:"summary"`
 			AssetIDs []int64 `json:"asset_ids"`
 			NodeID   int64   `json:"node_id"`
 		}
 		if json.Unmarshal([]byte(raw), &findingSource) != nil {
 			return in, ErrDiagnosticRemediation
 		}
+		interpretation := remediation.NormalizeContext(remediation.Context{Source: "inferred", Observation: findingSource.Summary})
+		in.Context.Observations = append(in.Context.Observations, remediation.ContextObservation{Source: "inferred", Observation: interpretation.Observation, EvidenceRef: entryID, StepID: "finding-interpretation"})
 		linkedAssets = findingSource.AssetIDs
 		anchorID = findingSource.NodeID
 		in.VulnClass = diagnosticVulnClass(vulnclass)
