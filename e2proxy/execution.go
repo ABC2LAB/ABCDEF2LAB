@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -709,6 +710,21 @@ func (c *Call) start(method string) (Receipt, error) {
 	e.counts.Attempts++
 	return r, nil
 }
+
+// 기록을 먼저 마친 정상 요청도 다른 요청의 실패 고정을 덮어쓰면 안 된다.
+// 호출자는 execution 잠금을 보유한다.
+func (c *Call) preserveOutcomeLocked(r Receipt, err error) {
+	e := c.e
+	c.reason = r.Reason
+	if err != nil || r.Reason == AuditFailed || e.auditFailed {
+		e.auditFailed = true
+		e.stopReason = AuditFailed
+		e.cancel()
+		c.auditComplete = false
+		c.reason = AuditFailed
+	}
+}
+
 func (c *Call) finish(ctx context.Context, r Receipt) (Receipt, error) {
 	r.At = time.Now().UTC()
 	err := c.e.recordBounded(ctx, Event{Stage: "result", Receipt: r})
@@ -737,11 +753,7 @@ func (c *Call) finish(ctx context.Context, r Receipt) (Receipt, error) {
 	}
 	add(&c.counts)
 	add(&e.counts)
-	c.reason = r.Reason
-	if err != nil {
-		c.auditComplete = false
-		c.reason = AuditFailed
-	}
+	c.preserveOutcomeLocked(r, err)
 	c.active--
 	if c.active == 0 {
 		close(c.idle)
@@ -918,7 +930,11 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		canceled := approvalCtx.Err() != nil || ctx.Err() != nil
 		stopApproval()
 		cancelApproval()
-		if approvalErr != nil || !allowed || canceled {
+		if approvalErr != nil && !(canceled && (errors.Is(approvalErr, context.Canceled) || errors.Is(approvalErr, context.DeadlineExceeded))) {
+			r.Decision, r.Reason = "denied", AuditFailed
+			return finish(nil, ErrAudit)
+		}
+		if !allowed || canceled {
 			r.Decision, r.Reason = "denied", PolicyDenied
 			if canceled {
 				r.Reason = Closed

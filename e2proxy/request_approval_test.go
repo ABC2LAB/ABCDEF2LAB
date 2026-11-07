@@ -295,3 +295,96 @@ func TestRequestApprovalModesPreserveBoundedUsefulDispatch(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestApprovalOperationalFailureLatchesExecution(t *testing.T) {
+	for _, allowed := range []bool{false, true} {
+		t.Run(fmt.Sprint(allowed), func(t *testing.T) {
+			var hits, approvals atomic.Int64
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); io.WriteString(w, "ok") }))
+			defer target.Close()
+			cfg := coreConfig(t, target.URL, &coreRecorder{}, 4)
+			cfg.ApprovalMode = ApprovalConfirmEveryRequest
+			cfg.RequestApproval = requestApprovalFunc(func(context.Context, RequestApprovalProposal) (bool, error) {
+				if approvals.Add(1) == 1 {
+					return allowed, errors.New("approval storage unavailable")
+				}
+				return true, nil
+			})
+			e, c := coreOpen(t, cfg)
+			_, receipt, err := c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+			if !errors.Is(err, ErrAudit) || receipt.Reason != AuditFailed || receipt.AuditComplete || !receipt.NotSent || hits.Load() != 0 {
+				t.Fatalf("operational error became ordinary denial: %+v, err=%v, receipts=%d", receipt, err, hits.Load())
+			}
+			if view := e.Snapshot(); view.AuditComplete || view.Reason != AuditFailed {
+				t.Fatalf("failure not latched in execution: %+v", view)
+			}
+			if result := c.Result(); result.AuditComplete || result.Reason != AuditFailed {
+				t.Fatalf("failure not latched in call: %+v", result)
+			}
+			_, later, laterErr := c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+			if laterErr == nil || !later.NotSent || hits.Load() != 0 || approvals.Load() != 1 {
+				t.Fatalf("later approval bypassed failure: %+v, receipts=%d approvals=%d", later, hits.Load(), approvals.Load())
+			}
+			if _, err := e.BeginCall(context.Background(), "later-command"); err == nil {
+				t.Fatal("new call reopened failed execution")
+			}
+			if e.Snapshot().AuditComplete || c.Result().AuditComplete {
+				t.Fatal("later request erased failure")
+			}
+		})
+	}
+}
+
+func TestRequestApprovalNormalDenialStillAllowsAlternative(t *testing.T) {
+	var hits, approvals atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); io.WriteString(w, "ok") }))
+	defer target.Close()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 4)
+	cfg.ApprovalMode = ApprovalConfirmEveryRequest
+	cfg.RequestApproval = requestApprovalFunc(func(context.Context, RequestApprovalProposal) (bool, error) { return approvals.Add(1) > 1, nil })
+	e, c := coreOpen(t, cfg)
+	_, denied, err := c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if !errors.Is(err, ErrDenied) || denied.Reason != PolicyDenied || !denied.AuditComplete || hits.Load() != 0 {
+		t.Fatalf("normal denial misclassified: %+v", denied)
+	}
+	_, allowed, err := c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if err != nil || !allowed.ResponseComplete || hits.Load() != 1 || !e.Snapshot().AuditComplete {
+		t.Fatalf("allowed alternative blocked: %+v, receipts=%d", allowed, hits.Load())
+	}
+}
+
+func TestRequestApprovalCallerCancellationIsNotOperationalFailure(t *testing.T) {
+	var hits atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	defer target.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 4)
+	cfg.ApprovalMode = ApprovalConfirmEveryRequest
+	cfg.RequestApproval = requestApprovalFunc(func(wait context.Context, _ RequestApprovalProposal) (bool, error) {
+		cancel()
+		<-wait.Done()
+		return false, wait.Err()
+	})
+	e, c := coreOpen(t, cfg)
+	_, receipt, err := c.Do(ctx, coreRequest(t, "GET", target.URL+"/allowed"))
+	if !errors.Is(err, ErrDenied) || receipt.Reason != Closed || !receipt.NotSent || hits.Load() != 0 || !e.Snapshot().AuditComplete {
+		t.Fatalf("caller cancellation misclassified: %+v, err=%v", receipt, err)
+	}
+}
+
+func TestRequestApprovalRecordedSuccessCannotEraseConcurrentFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e := &Execution{ctx: ctx, cancel: cancel}
+	c := &Call{e: e, auditComplete: true}
+	e.mu.Lock()
+	// 정상 요청은 이미 기록을 마쳤다(err=nil). 잠금 획득 전 다른 요청이 실패했다.
+	c.preserveOutcomeLocked(Receipt{Reason: AuditFailed}, nil)
+	c.preserveOutcomeLocked(Receipt{Reason: Complete}, nil)
+	if !e.auditFailed || c.auditComplete || c.reason != AuditFailed || e.stopReason != AuditFailed || ctx.Err() == nil {
+		e.mu.Unlock()
+		t.Fatal("recorded success erased concurrent operational failure")
+	}
+	e.mu.Unlock()
+}
