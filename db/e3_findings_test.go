@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -182,8 +183,20 @@ func TestControlledFindingAtomicIdempotencyAndRead(t *testing.T) {
 		t.Fatal("canonical verdict read changed")
 	}
 	finding, err := d.GetFinding(first.FindingID)
-	if err != nil || finding.Status != FindingPending || finding.EvidenceVersion != 1 {
+	if err != nil || finding.Status != FindingPending || finding.EvidenceVersion != 1 || finding.ReportEvidenceVersion != 1 {
 		t.Fatal("triage/evidence semantics", err)
+	}
+	expectedReport, reportErr := controlledFindingReport(snapshot, first)
+	if reportErr != nil || finding.Report != expectedReport {
+		t.Fatal("persisted report differs after duplicate saves", reportErr)
+	}
+	for _, text := range []string{"## 사전 조건", "GET 시도 1", "GET 시도 2", "응답 상태 200", "Evidence.Owner", "Evidence.Cross", "## 수정 권고", "## 수정 후 재검증", "스크린샷과 요청·응답 증거 화면은 생성하지 않았습니다", fmt.Sprintf("manifest #%d", first.ManifestID)} {
+		if !strings.Contains(finding.Report, text) {
+			t.Fatalf("missing report section: %s", text)
+		}
+	}
+	if strings.Contains(finding.Report, "session-a") || strings.Contains(finding.Report, "session-b") || strings.Contains(finding.Report, "synthetic:document:one") {
+		t.Fatal("private reference copied into report")
 	}
 	changed := f.source
 	changed.Severity = "medium"
@@ -415,4 +428,44 @@ func TestControlledFindingFactStateDoesNotAcquireEvidenceLock(t *testing.T) {
 		<-done
 		t.Fatal("ordinary fact state mutation acquired finding evidence lock")
 	}
+}
+
+func TestControlledFindingReportRejectsInvalidEvidence(t *testing.T) {
+	d := e3TestDB(t)
+	f := e3FixtureFor(t, d, oracle.Confirmed, true)
+	snapshot, _ := f.prepared.Snapshot()
+	result := ControlledFindingResult{ManifestID: 1, VerdictID: 2, IssuanceID: 3, Value: oracle.Confirmed}
+	good, err := controlledFindingReport(snapshot, result)
+	if err != nil || good == "" {
+		t.Fatal("valid confirmed report rejected", err)
+	}
+	t.Run("manifest digest", func(t *testing.T) {
+		bad := snapshot
+		bad.Manifest = append([]byte(nil), snapshot.Manifest...)
+		bad.Manifest[0] ^= 1
+		if text, err := controlledFindingReport(bad, result); err == nil || text != "" {
+			t.Fatal("corrupt evidence accepted")
+		}
+	})
+	t.Run("context", func(t *testing.T) {
+		bad := snapshot
+		bad.Source.Expected.IntentID++
+		if text, err := controlledFindingReport(bad, result); err == nil || text != "" {
+			t.Fatal("wrong intent accepted")
+		}
+	})
+	for _, verdict := range []oracle.VerdictValue{oracle.Allowed, oracle.Suspected, oracle.Undecidable} {
+		t.Run(string(verdict), func(t *testing.T) {
+			bad := snapshot
+			bad.Value = verdict
+			if text, err := controlledFindingReport(bad, result); err == nil || text != "" {
+				t.Fatal("unconfirmed report accepted")
+			}
+		})
+	}
+	t.Run("no persisted references", func(t *testing.T) {
+		if text, err := controlledFindingReport(snapshot, ControlledFindingResult{Value: oracle.Confirmed}); err == nil || text != "" {
+			t.Fatal("missing references accepted")
+		}
+	})
 }
