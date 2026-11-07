@@ -201,7 +201,7 @@ it("keeps refresh failure distinct from generation success", async () => {
   vi.mocked(api.readRemediation).mockRejectedValue(new Error("offline"));
   fireEvent.click(screen.getByText("수정 제안 생성·저장"));
   await screen.findByText(/상세 범위 또는 저장 증거/);
-  expect(screen.queryByText(/저장된 수정 제안을 다시 조회했어요/)).toBeNull();
+  expect(screen.queryByText(/저장된 실제 수정 실행형 프롬프트를 다시 조회했어요/)).toBeNull();
 });
 it("ignores a delayed internal refresh after switching to shared", async () => {
   await internal();
@@ -274,4 +274,119 @@ it("does not submit edited context after its review checkbox is cleared", async 
   fireEvent.click(screen.getByText("수정 제안 생성·저장"));
   await waitFor(() => expect(api.generateRemediation).toHaveBeenCalledOnce());
   expect(vi.mocked(api.generateRemediation).mock.calls[0][4]).toBeUndefined();
+});
+
+it("shows original provenance and conflicts while keeping automatic context out of the manual form", async () => {
+  const original: api.RemediationContext = {
+    component: "orders-api",
+    source: "observed",
+    observation: "Original observed response",
+    observations: [
+      {
+        source: "observed",
+        observation: "Original observed response",
+        evidence_ref: "evidence-1",
+        run_id: "run-1",
+        call_id: "call-1",
+        step_id: "step-1",
+        truncated: true,
+      },
+      {
+        source: "inferred",
+        observation: "Analyzer hypothesis",
+        evidence_ref: "evidence-2",
+        step_id: "step-2",
+        depends_on: ["step-1"],
+      },
+    ],
+    observations_truncated: true,
+  };
+  const technologies: api.Technology[] = [
+    {
+      kind: "language",
+      name: "Go",
+      version: "1.26",
+      component: "orders-api",
+      component_role: "backend",
+      source: "observed",
+      confidence: "observed",
+      evidence_ref: "evidence-1",
+    },
+    {
+      kind: "language",
+      name: "Elixir",
+      version: "1.17",
+      component: "orders-api",
+      component_role: "backend",
+      source: "inferred",
+      confidence: "inferred",
+    },
+  ];
+  vi.mocked(api.readRemediation).mockImplementation(async (_task, audience) => ({
+    task_id: 42,
+    entries: [
+      audience === "internal"
+        ? {
+            ...entry,
+            context: original,
+            technologies,
+            record: {
+              ...record,
+              bundle: { ...bundle, context: original, technologies, missing_context_fields: ["prerequisites"] },
+            },
+          }
+        : shared,
+    ],
+  }));
+  await internal();
+  expect(screen.getByLabelText("실제 관찰의 비민감 요약")).toHaveValue("");
+  expect(screen.getByLabelText("근거와 대조한 비민감 맥락을 이 수정안에 포함")).not.toBeChecked();
+  expect(document.body.textContent).toContain("실행 관측");
+  expect(document.body.textContent).toContain("모델·분석기 추정");
+  expect(document.body.textContent).toContain("기술 상충 가능·대조 필요");
+  expect(document.body.textContent).toContain("step-1");
+  expect(document.body.textContent).toContain("관측 또는 기술 목록이 잘렸습니다");
+  expect(document.body.textContent).toContain("보완이 필요한 맥락");
+  expect(document.body.textContent).toContain("기본 작업 방식: 실제 수정 실행형");
+  fireEvent.click(screen.getByText("수정 제안 생성·저장"));
+  await waitFor(() => expect(api.generateRemediation).toHaveBeenCalledOnce());
+  expect(vi.mocked(api.generateRemediation).mock.calls[0][2]).toEqual([]);
+  expect(vi.mocked(api.generateRemediation).mock.calls[0][4]).toBeUndefined();
+});
+it("preserves only saved manual supplements in the form and displays their conflict with the original", async () => {
+  const context: api.RemediationContext = {
+    source: "user_provided",
+    observation: "Manual correction",
+    observations: [{ source: "observed", observation: "Original result" }],
+  };
+  vi.mocked(api.readRemediation).mockImplementation(async (_task, audience) => ({
+    task_id: 42,
+    entries: [audience === "internal" ? { ...entry, record: { ...record, bundle: { ...bundle, context } } } : shared],
+  }));
+  await internal();
+  expect(screen.getByLabelText("실제 관찰의 비민감 요약")).toHaveValue("Manual correction");
+  expect(document.body.textContent).toContain("사용자 보완과 원본 상충 가능");
+  fireEvent.click(screen.getByText("수정 제안 생성·저장"));
+  await waitFor(() => expect(api.generateRemediation).toHaveBeenCalledOnce());
+  expect(vi.mocked(api.generateRemediation).mock.calls[0][4]?.observations).toBeUndefined();
+});
+it("rejects accidentally disclosed original technologies in a shared response", async () => {
+  vi.mocked(api.readRemediation).mockResolvedValue({
+    task_id: 42,
+    entries: [
+      { ...shared, technologies: [{ kind: "language", name: "private-stack", version: "", confidence: "observed" }] },
+    ],
+  });
+  render(<RemediationPanel taskId="42" active />);
+  await screen.findByText(/상세 범위 또는 저장 증거/);
+  expect(document.body.textContent).not.toContain("private-stack");
+});
+
+it("preserves nonnumeric version labels for server normalization instead of silently clearing them", async () => {
+  await internal();
+  fireEvent.change(screen.getByLabelText("언어"), { target: { value: "Rust" } });
+  fireEvent.change(screen.getByLabelText("language 버전"), { target: { value: "v1.82-beta" } });
+  fireEvent.click(screen.getByText("수정 제안 생성·저장"));
+  await waitFor(() => expect(api.generateRemediation).toHaveBeenCalledOnce());
+  expect(vi.mocked(api.generateRemediation).mock.calls[0][2][0].version).toBe("v1.82-beta");
 });

@@ -63,22 +63,24 @@ type Execution struct {
 	secretHeaders  map[string]struct{}
 }
 type Call struct {
-	ingressToken  [32]byte
-	e             *Execution
-	ctx           context.Context
-	cancel        context.CancelFunc
-	ref           string
-	commandRef    string
-	intentID      int64
-	expires       time.Time
-	closing       bool
-	finalized     bool
-	active        int
-	idle          chan struct{}
-	counts        Counts
-	auditComplete bool
-	reason        Reason
-	closeGate     chan struct{}
+	diagnostics          []HTTPObservation
+	diagnosticsTruncated bool
+	ingressToken         [32]byte
+	e                    *Execution
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	ref                  string
+	commandRef           string
+	intentID             int64
+	expires              time.Time
+	closing              bool
+	finalized            bool
+	active               int
+	idle                 chan struct{}
+	counts               Counts
+	auditComplete        bool
+	reason               Reason
+	closeGate            chan struct{}
 }
 
 func validRef(v string) bool { return safeRef.MatchString(v) && !strings.Contains(v, "://") }
@@ -569,7 +571,7 @@ func (c *Call) resultLocked() CallResult {
 	if c.finalized {
 		state = "closed"
 	}
-	return CallResult{IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, State: state, Counts: c.counts, AuditComplete: c.auditComplete && !c.e.auditFailed, Final: c.finalized, Reason: c.reason}
+	return CallResult{Observations: cloneHTTPObservations(c.diagnostics), ObservationsTruncated: c.diagnosticsTruncated, IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, State: state, Counts: c.counts, AuditComplete: c.auditComplete && !c.e.auditFailed, Final: c.finalized, Reason: c.reason}
 }
 
 // Snapshot uses the original approval anchor. Counts remain execution-wide;
@@ -728,10 +730,13 @@ func (c *Call) start(method string) (Receipt, error) {
 	e.counts.Attempts++
 	return r, nil
 }
-func (c *Call) finish(ctx context.Context, r Receipt) (Receipt, error) {
+func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) (Receipt, error) {
 	r.At = time.Now().UTC()
 	err := c.e.recordBounded(ctx, Event{Stage: "result", Receipt: r})
 	r.AuditComplete = err == nil && r.Reason != AuditFailed
+	for _, capture := range observe {
+		capture(r)
+	}
 	e := c.e
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -860,7 +865,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		return nil, r, err
 	}
 	finish := func(resp *http.Response, cause error) (*http.Response, Receipt, error) {
-		rr, aerr := c.finish(ctx, r)
+		rr, aerr := c.finish(ctx, r, func(rr Receipt) { c.observeHTTP(req, resp, rr) })
 		if aerr != nil {
 			return nil, rr, aerr
 		}

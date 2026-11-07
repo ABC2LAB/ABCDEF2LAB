@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/remediation"
 )
 
@@ -275,7 +278,7 @@ func TestDiagnosticRemediationContextBoundAndScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Source.Context.Source != "user_provided" || first.Source.Context != first.Bundle.Context || first.Bundle.Context.Endpoint != custom.Endpoint {
+	if first.Source.Context.Source != "user_provided" || !reflect.DeepEqual(first.Source.Context, first.Bundle.Context) || first.Bundle.Context.Endpoint != custom.Endpoint {
 		t.Fatal("context lost or promoted")
 	}
 	records, err := ListDiagnosticRemediationRecords(context.Background(), d.DB, task.ID, 10)
@@ -313,5 +316,149 @@ func TestDiagnosticRemediationContextBoundAndScoped(t *testing.T) {
 	}
 	if _, err := ListDiagnosticRemediationRecords(context.Background(), d.DB, task.ID, 10); err == nil {
 		t.Fatal("stored context tampering accepted")
+	}
+}
+
+func TestDiagnosticRemediationAssetScopeAndLock(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	task, err := d.CreateTask("synthetic asset context", "no target", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec("DELETE FROM tasks WHERE id=$1", task.ID)
+	defer d.Exec("DELETE FROM explorations WHERE id=$1", task.ExplorationID)
+	other, err := d.CreateTask("foreign context", "no target", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec("DELETE FROM tasks WHERE id=$1", other.ID)
+	defer d.Exec("DELETE FROM explorations WHERE id=$1", other.ExplorationID)
+	store := d.Exploration(task.ExplorationID)
+	intent, err := store.AddIntent(map[string]any{"summary": "synthetic"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{}
+	for i := 0; i < 32; i++ {
+		names = append(names, fmt.Sprintf("Tech%d", i))
+	}
+	asset, err := d.Assets().UpsertHTTPService(UpsertHTTPServiceReq{URL: fmt.Sprintf("http://asset-%d.invalid", task.ID), TaskID: task.ID, Technologies: names})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec("DELETE FROM assets WHERE id=$1", asset)
+	foreign, err := d.Assets().UpsertHTTPService(UpsertHTTPServiceReq{URL: fmt.Sprintf("http://foreign-%d.invalid", other.ID), TaskID: other.ID, Technologies: []string{"ForeignTech"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec("DELETE FROM assets WHERE id=$1", foreign)
+	if err := store.Anchor(intent, asset); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Anchor(intent, foreign); err != nil {
+		t.Fatal(err)
+	}
+	c := syntheticDiagnosticCandidate(task.ID, intent, "asset-call")
+	id, err := store.RecordDiagnosticCandidate(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := fmt.Sprintf("candidate-%d", id)
+	source, err := LoadDiagnosticRemediationSource(context.Background(), d.DB, task.ID, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.Technologies) != 32 {
+		t.Fatalf("technology count %d", len(source.Technologies))
+	}
+	for _, tech := range source.Technologies {
+		if tech.Name == "ForeignTech" || tech.Source != "inferred" {
+			t.Fatal("foreign or falsely observed asset")
+		}
+	}
+	record, err := d.SaveDiagnosticRemediation(context.Background(), task.ID, entry, source.SourceDigest, []remediation.Technology{{Name: "UserTech", Kind: "language", Source: "user_provided"}})
+	if err != nil || len(record.Bundle.Technologies) != 33 {
+		t.Fatalf("manual+observed capacity %v", err)
+	}
+	tx, err := d.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var locked int64
+	if err := tx.QueryRow("SELECT id FROM tasks WHERE id=$1 FOR UPDATE", task.ID).Scan(&locked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDiagnosticRemediationSource(context.Background(), tx, task.ID, entry, true); err != nil {
+		t.Fatal(err)
+	}
+	blocked, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	_, err = d.ExecContext(blocked, "UPDATE assets SET technologies=ARRAY['ChangedTech'] WHERE id=$1", asset)
+	cancel()
+	if err == nil {
+		t.Fatal("asset changed during source save lock")
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec("UPDATE assets SET technologies=ARRAY['ChangedTech'] WHERE id=$1", asset); err != nil {
+		t.Fatal(err)
+	}
+	current, err := LoadDiagnosticRemediationSource(context.Background(), d.DB, task.ID, entry)
+	if err != nil || current.SourceDigest == source.SourceDigest {
+		t.Fatal("asset source version unchanged")
+	}
+	records, err := ListDiagnosticRemediationRecords(context.Background(), d.DB, task.ID, 10)
+	if err != nil || len(records) != 1 || !records[0].Stale || records[0].Bundle.AIPrompt != "" {
+		t.Fatalf("changed fingerprint not stale %v", err)
+	}
+}
+
+func TestDiagnosticObservedBoundedActualOrder(t *testing.T) {
+	c := syntheticDiagnosticCandidate(1, 2, "primary")
+	makeEvidence := func(ref string, start, count int) json.RawMessage {
+		base := syntheticDiagnosticCandidate(1, 2, ref)
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(base.Evidence), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		trusted := envelope["trusted"].(map[string]any)
+		call := trusted["call"].(map[string]any)
+		obs := []e2proxy.HTTPObservation{}
+		for n := start; n < start+count; n++ {
+			obs = append(obs, e2proxy.HTTPObservation{Sequence: uint64(n), AttemptRef: fmt.Sprintf("ref-%d", n), Method: "GET", Endpoint: "/orders/{resource}", RuleRef: "orders", ObservedAt: base.ObservedAt, Technologies: []e2proxy.HTTPTechnology{{Name: "Caddy", Header: "Server"}, {Name: "Phoenix", Header: "X-Powered-By"}}})
+		}
+		call["observations"] = obs
+		raw, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	var envelope map[string]json.RawMessage
+	json.Unmarshal(makeEvidence("primary", 1, 1), &envelope)
+	related, _ := json.Marshal([]json.RawMessage{makeEvidence("later-call", 2, 32)})
+	envelope["related_calls"] = related
+	raw, _ := json.Marshal(envelope)
+	c.Evidence = string(raw)
+	c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	var in remediation.Input
+	if err := diagnosticObservedContext(&in, c); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Context.Observations) != 32 || !in.Context.ObservationsTruncated || in.Context.Observations[0].StepID != "attempt-1" || in.Context.Observations[31].StepID != "attempt-32" || len(in.Technologies) != 2 {
+		t.Fatalf("bounded order incorrect %+v", in)
+	}
+	for _, tech := range in.Technologies {
+		if tech.ComponentRole != "unknown" {
+			t.Fatal("header promoted to component implementation")
+		}
 	}
 }

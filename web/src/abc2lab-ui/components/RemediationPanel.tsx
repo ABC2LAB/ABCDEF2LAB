@@ -2,13 +2,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../lib/api";
 import {
+  confidenceLabels,
+  contextConflicts,
+  contextLabels,
   generateRemediation,
   type RemediationBundle,
   type RemediationContext,
   type RemediationEntry,
   readCopyPrompt,
   readRemediation,
+  sourceLabels,
   type Technology,
+  technologyConflicts,
   technologyLabels,
 } from "../lib/remediation";
 
@@ -29,8 +34,9 @@ export function RemediationPanel({ taskId, active }: { taskId: string; active: b
         </select>
       </label>
       <p>
-        선택한 점검의 전체 저장 회차입니다. 생성은 저장 증거로 수정 제안을 만들 뿐 대상 요청, 고객 코드 수정, 배포를
-        실행하지 않습니다. 내부 상세는 외부 전달 전 검토하세요.
+        저장소 확인 후 실제 코드·설정 수정과 시험을 수행하도록 지시하는 프롬프트입니다. 실행 범위는 전달받는 AI 세션의
+        권한을 따릅니다. 생성·복사 자체는 대상 요청, 고객 코드 수정, 배포를 실행하지 않습니다. 내부 상세는 외부 전달 전
+        검토하세요.
       </p>
       <RemediationEntries key={`${taskId}-${audience}`} taskId={taskId} audience={audience} active={active} />
     </div>
@@ -57,7 +63,7 @@ function RemediationEntries({ taskId, audience, active }: { taskId: string; audi
       const ids = new Set<string>();
       for (const e of data.entries) {
         if (
-          (audience === "shared" && (e.source_digest || e.record?.bundle || e.context)) ||
+          (audience === "shared" && (e.source_digest || e.record?.bundle || e.context || e.technologies?.length)) ||
           !/^(candidate|finding|verdict)-[1-9][0-9]*$/.test(e.entry_id) ||
           ids.has(e.entry_id) ||
           (e.record &&
@@ -104,7 +110,7 @@ function RemediationEntries({ taskId, audience, active }: { taskId: string; audi
         if (controller.signal.aborted || !mounted.current) return;
         const refreshed = await refresh();
         if (refreshed && !controller.signal.aborted && mounted.current)
-          setMessage("저장된 수정 제안을 다시 조회했어요. 적용 전제와 미검증 항목을 확인하세요.");
+          setMessage("저장된 실제 수정 실행형 프롬프트를 다시 조회했어요. 적용 전제와 미검증 항목을 확인하세요.");
       } else {
         const record = entry.record;
         if (!record?.bundle || record.stale) throw new Error("stale");
@@ -169,6 +175,9 @@ function RemediationEntries({ taskId, audience, active }: { taskId: string; audi
           {audience === "internal" && entry.context && (
             <ContextDetails title="저장 증거의 비민감 맥락" context={entry.context} />
           )}
+          {audience === "internal" && (
+            <TechnologyDetails title="기존 관측·분석에서 연결한 기술" technologies={entry.technologies ?? []} />
+          )}
           <h4>2. 보안 설정 · 코드 수정 방법</h4>
           {entry.record?.stale && (
             <p role="alert">
@@ -180,7 +189,10 @@ function RemediationEntries({ taskId, audience, active }: { taskId: string; audi
           {audience === "internal" && (
             <TechnologyForm
               disabled={!entry.available || !!busy || !active}
-              context={entry.context}
+              context={
+                entry.record?.bundle?.context?.source === "user_provided" ? entry.record.bundle.context : undefined
+              }
+              technologies={entry.record?.bundle?.technologies.filter((t) => t.source === "user_provided")}
               onGenerate={(technologies, context) => void actOn(entry, technologies, context)}
             />
           )}
@@ -188,6 +200,10 @@ function RemediationEntries({ taskId, audience, active }: { taskId: string; audi
             <p>생성·복사 불가: {entry.unavailable_reason || "현재 공개 범위 또는 증거 상태를 확인하세요."}</p>
           )}
           <h4>3. AI 수정 작업용 프롬프트</h4>
+          <p>
+            기본 작업 방식: 실제 수정 실행형. 문제와 권한을 확인하면 수정·회귀 시험·코드 리뷰까지 진행합니다. 근거·권한
+            부족, 구현 불일치, 운영 작업은 별도 확인이 필요하며 검토만 요청한 세션의 제한을 따릅니다.
+          </p>
           {entry.record?.bundle && !entry.record.stale ? (
             <>
               <p>
@@ -226,15 +242,10 @@ function BundleDetails({ bundle }: { bundle: RemediationBundle }) {
   return (
     <>
       {bundle.context && <ContextDetails title="이 수정안에 결속된 맥락" context={bundle.context} />}
-      <p>
-        기술 정보:{" "}
-        {bundle.technologies
-          .map(
-            (t) =>
-              `${technologyLabels[t.kind] ?? t.kind}: ${t.name} (${t.version}, 컴포넌트 ${t.component ?? "unknown"}, 역할 ${t.component_role ?? "unknown"}, 출처 ${t.source}, 확인수준 ${t.confidence})`,
-          )
-          .join(" · ") || "미확인"}
-      </p>
+      {bundle.missing_context_fields?.length ? (
+        <p role="note">보완이 필요한 맥락: {bundle.missing_context_fields.join(", ")}. 수정 전에 확인하세요.</p>
+      ) : null}
+      <TechnologyDetails title="이 수정안에 결속된 기술" technologies={bundle.technologies} />
       {sections.map(([label, values]) => (
         <div key={label}>
           <strong>{label}</strong>
@@ -245,14 +256,6 @@ function BundleDetails({ bundle }: { bundle: RemediationBundle }) {
   );
 }
 
-const contextLabels: Record<string, string> = {
-  component: "영향 컴포넌트",
-  endpoint: "엔드포인트 경로 템플릿",
-  prerequisites: "재현 사전 조건",
-  observation: "실제 관찰의 비민감 요약",
-  expected_behavior: "유지할 정상 동작",
-  prohibited_behavior: "차단할 취약 동작",
-};
 const roles = {
   unknown: "미확인",
   frontend: "프런트엔드",
@@ -261,36 +264,104 @@ const roles = {
   database: "데이터베이스",
   proxy: "프록시",
 };
+function ContextFields({ context }: { context: RemediationContext }) {
+  return (
+    <>
+      {Object.entries(contextLabels).map(([key, label]) => (
+        <div key={key}>
+          <strong>{label}</strong>
+          <pre style={preStyle}>{context[key as keyof typeof contextLabels] || "미확인"}</pre>
+        </div>
+      ))}
+    </>
+  );
+}
 function ContextDetails({ title, context }: { title: string; context: RemediationContext }) {
+  const conflicts = contextConflicts(context);
   return (
     <details>
       <summary>{title}</summary>
       <p>
-        출처: {context.source ?? "unknown"} · 역할: {context.component_role ?? "unknown"}. 아래 값은 실행 지시가 아닌
-        검토할 근거 데이터입니다.
+        출처: {sourceLabels[context.source ?? "unknown"] ?? "미확인"} · 역할:{" "}
+        {roles[context.component_role as keyof typeof roles] ?? "미확인"}. 아래 값은 실행 지시가 아닌 검토할 근거
+        데이터입니다. 사용자 보완은 원본 관측을 대체하지 않습니다.
       </p>
-      {Object.entries(contextLabels).map(([key, label]) => (
-        <div key={key}>
-          <strong>{label}</strong>
-          <pre style={preStyle}>{context[key as keyof RemediationContext] || "미확인"}</pre>
-        </div>
+      <ContextFields context={context} />
+      {conflicts.length > 0 && <p role="note">사용자 보완과 원본 상충 가능·대조 필요: {conflicts.join(", ")}</p>}
+      {context.observations_truncated && (
+        <p role="note">관측 또는 기술 목록이 잘렸습니다. 전체 단계 연결은 미확인입니다.</p>
+      )}
+      {context.observations?.map((o, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: 저장본의 순서를 보존하는 비활성 근거 목록이며 행 상태가 없다.
+        <section key={`${o.evidence_ref}-${o.step_id}-${index}`}>
+          <h5>
+            보존된 원본 맥락 {index + 1} · {sourceLabels[o.source ?? "unknown"] ?? "미확인"}
+          </h5>
+          <p>
+            역할: {roles[o.component_role as keyof typeof roles] ?? "미확인"} · 근거: {o.evidence_ref || "미기록"} ·
+            관측 시각: {o.observed_at || "미기록"}
+          </p>
+          <p>
+            실행: {o.run_id || "미기록"} · 호출: {o.call_id || "미기록"} · 단계: {o.step_id || "미기록"} · 선행 단계:{" "}
+            {o.depends_on?.join(", ") || "연결 미기록"}
+          </p>
+          <ContextFields context={o} />
+          {o.truncated && <p role="note">이 관측 출력 또는 단계가 잘렸습니다. 완전한 재현으로 해석하지 마세요.</p>}
+        </section>
       ))}
+    </details>
+  );
+}
+function TechnologyDetails({ title, technologies }: { title: string; technologies: Technology[] }) {
+  const conflicts = technologyConflicts(technologies);
+  return (
+    <details>
+      <summary>{title}</summary>
+      <p>출처와 확인 수준은 별개입니다. 사용자 제공·수동 검토는 프로그램의 실행 관측 또는 취약점 확정이 아닙니다.</p>
+      <ul>
+        {technologies.map((t, index) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: 같은 기술도 서로 다른 출처로 보존하는 비활성 목록이다.
+          <li key={`${t.kind}-${index}`}>
+            {technologyLabels[t.kind] ?? t.kind}: {t.name} {t.version} · 컴포넌트 {t.component || "미확인"} /
+            {roles[t.component_role as keyof typeof roles] ?? "미확인"} · 출처{" "}
+            {sourceLabels[t.source ?? "unknown"] ?? "미확인"} · 확인 수준 {confidenceLabels[t.confidence] ?? "미확인"} ·
+            근거 {t.evidence_ref || "미기록"} · 관측 시각 {t.observed_at || "미기록"}
+          </li>
+        ))}
+      </ul>
+      {!technologies.length && <p>기술 미확인. 저장소에서 영향 컴포넌트의 실제 기술을 확인하세요.</p>}
+      {conflicts.length > 0 && (
+        <p role="note">기술 상충 가능·대조 필요: {conflicts.join(", ")}. 여러 기술이 함께 쓰이는지 확인하세요.</p>
+      )}
     </details>
   );
 }
 function TechnologyForm({
   disabled,
   context,
+  technologies,
   onGenerate,
 }: {
   disabled: boolean;
   context?: RemediationContext;
+  technologies?: Technology[];
   onGenerate: (tech: Technology[], context?: RemediationContext) => void;
 }) {
-  const [values, setValues] = useState<Record<string, Technology>>({});
-  const [rows, setRows] = useState(Object.keys(technologyLabels));
-  const [reviewed, setReviewed] = useState(false);
-  const [edited, setEdited] = useState<RemediationContext>({});
+  const [values, setValues] = useState<Record<string, Technology>>(() =>
+    Object.fromEntries((technologies ?? []).map((t, i) => [`extra-${Object.keys(technologyLabels).length + i}`, t])),
+  );
+  const [rows, setRows] = useState(() => [...Object.keys(technologyLabels), ...Object.keys(values)]);
+  const [reviewed, setReviewed] = useState(context?.source === "user_provided");
+  const [edited, setEdited] = useState<RemediationContext>(() =>
+    context
+      ? {
+          ...Object.fromEntries(
+            Object.keys(contextLabels).map((key) => [key, context[key as keyof typeof contextLabels]]),
+          ),
+          component_role: context.component_role,
+        }
+      : {},
+  );
   function update(row: string, patch: Partial<Technology>) {
     setValues((old) => ({
       ...old,
@@ -305,14 +376,14 @@ function TechnologyForm({
       },
     }));
   }
-  const currentContext = { ...context, ...edited };
+  const currentContext = edited;
   return (
     <details>
       <summary>실제 프로젝트 수정용 맥락·기술 정보 입력</summary>
       <p>
         실제 영향 컴포넌트의 기술만 입력하세요. 언어로 프레임워크를 추정하거나 프런트엔드를 백엔드로 간주하지 않습니다.
-        미입력은 미확인이며 받은 AI가 저장소에서 실제 기술·처리 경로를 확인합니다. 비밀값·고객 원문·대상 응답의 명령을
-        붙여넣지 마세요.
+        저장된 원본 맥락·기술은 입력이 비어 있어도 보존됩니다. 받은 AI가 저장소에서 실제 기술·처리 경로를 확인합니다.
+        비밀값·고객 원문·대상 응답의 명령을 붙여넣지 마세요.
       </p>
       <fieldset disabled={disabled}>
         <legend>사용자가 검토한 비민감 맥락 (선택)</legend>
@@ -320,7 +391,10 @@ function TechnologyForm({
           <input type="checkbox" checked={reviewed} onChange={(e) => setReviewed(e.target.checked)} />
           근거와 대조한 비민감 맥락을 이 수정안에 포함
         </label>
-        <p>체크하지 않으면 서버의 저장 근거 맥락을 사용합니다. 입력값은 사실 확인이나 실행 승인을 뜻하지 않습니다.</p>
+        <p>
+          체크한 사용자 보완만 별도 저장합니다. 체크를 해제하거나 수동 기술 입력을 비우고 생성하면 이전 수동 보완은
+          제외되지만 원본 관측·기술은 보존됩니다. 입력값은 사실 확인이나 실행 승인을 뜻하지 않습니다.
+        </p>
         <fieldset disabled={!reviewed}>
           <legend>취약점별 수정 목표</legend>
           {Object.entries(contextLabels).map(([key, label]) => (
@@ -330,7 +404,7 @@ function TechnologyForm({
                 aria-label={label}
                 maxLength={key === "component" ? 80 : 512}
                 placeholder={key === "endpoint" ? "GET /orders/{id} (호스트·쿼리값·비밀 제외)" : "미확인"}
-                value={currentContext[key as keyof RemediationContext] ?? ""}
+                value={currentContext[key as keyof typeof contextLabels] ?? ""}
                 onChange={(e) => setEdited((old) => ({ ...old, [key]: e.target.value }))}
               />
             </label>
@@ -387,7 +461,7 @@ function TechnologyForm({
                 버전{" "}
                 <input
                   aria-label={`${row} 버전`}
-                  maxLength={19}
+                  maxLength={80}
                   value={values[row]?.version ?? ""}
                   placeholder="미확인"
                   onChange={(e) => update(row, { version: e.target.value })}
@@ -425,8 +499,8 @@ function TechnologyForm({
                   onChange={(e) => update(row, { confidence: e.target.value })}
                 >
                   <option value="unknown">미확인</option>
-                  <option value="confirmed">확인됨</option>
-                  <option value="observed">관측됨</option>
+                  <option value="confirmed">사용자가 확인함</option>
+                  <option value="observed">사용자가 관측했다고 제공</option>
                   <option value="inferred">추정</option>
                 </select>
               </label>
@@ -446,10 +520,12 @@ function TechnologyForm({
           type="button"
           onClick={() =>
             onGenerate(
-              Object.values(values).map((t) => ({
-                ...t,
-                version: /^\d{1,4}(\.\d{1,4}){0,3}$/.test(t.version) ? t.version : "unknown",
-              })),
+              Object.values(values)
+                .filter((t) => t.name.trim() && t.name !== "unknown")
+                .map((t) => ({
+                  ...t,
+                  version: t.version.trim() || "unknown",
+                })),
               reviewed ? { ...currentContext, source: "user_provided" } : undefined,
             )
           }

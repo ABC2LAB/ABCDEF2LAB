@@ -76,6 +76,44 @@ func TestDiagnosticCandidatePostgres(t *testing.T) {
 	if err != nil || len(other) != 0 {
 		t.Fatalf("cross task leak %v", err)
 	}
+	linked := c
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(c.Evidence), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	related := syntheticDiagnosticCandidate(task.ID, intent, "call-related")
+	envelope["related_calls"], err = json.Marshal([]json.RawMessage{json.RawMessage(related.Evidence)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawLinked, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked.Evidence = string(rawLinked)
+	linked.EvidenceDigest = DiagnosticEvidenceDigest(linked.Evidence)
+	linkedID, err := s.RecordDiagnosticCandidate(context.Background(), linked)
+	if err != nil || linkedID == id {
+		t.Fatalf("changed linked evidence silently reused %v", err)
+	}
+	retryID, err := s.RecordDiagnosticCandidate(context.Background(), linked)
+	if err != nil || retryID != linkedID {
+		t.Fatalf("linked evidence not idempotent %v", err)
+	}
+	foreign := syntheticDiagnosticCandidate(task.ID+1, intent, "foreign-related")
+	envelope["related_calls"], err = json.Marshal([]json.RawMessage{json.RawMessage(foreign.Evidence)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawLinked, err = json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked.Evidence = string(rawLinked)
+	linked.EvidenceDigest = DiagnosticEvidenceDigest(linked.Evidence)
+	if linked.Validate() == nil {
+		t.Fatal("foreign related call accepted")
+	}
 	c.TaskID++
 	if _, err := s.RecordDiagnosticCandidate(context.Background(), c); err == nil {
 		t.Fatal("cross task accepted")

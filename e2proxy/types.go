@@ -180,12 +180,14 @@ type PolicyView struct {
 	Rules             []RuleView               `json:"rules"`
 }
 type CallResult struct {
-	IntentID      int64  `json:"intent_id"`
-	CallRef       string `json:"call_ref"`
-	CommandRef    string `json:"command_ref"`
-	State         string `json:"state"`
-	Counts        Counts `json:"counts"`
-	AuditComplete bool   `json:"audit_complete"`
-	Final         bool   `json:"final"`
-	Reason        Reason `json:"reason"`
+	Observations          []HTTPObservation `json:"observations,omitempty"`
+	ObservationsTruncated bool              `json:"observations_truncated,omitempty"`
+	IntentID              int64             `json:"intent_id"`
+	CallRef               string            `json:"call_ref"`
+	CommandRef            string            `json:"command_ref"`
+	State                 string            `json:"state"`
+	Counts                Counts            `json:"counts"`
+	AuditComplete         bool              `json:"audit_complete"`
+	Final                 bool              `json:"final"`
+	Reason                Reason            `json:"reason"`
 }

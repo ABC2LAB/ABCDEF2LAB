@@ -69,7 +69,7 @@ func diagnosticVulnClass(s string) string {
 	case "session_cookie", "session cookie":
 		return "session_cookie"
 	default:
-		return "unknown"
+		return s
 	}
 }
 func diagnosticExecutionOutcome(s string) string {
@@ -86,12 +86,17 @@ func diagnosticExecutionOutcome(s string) string {
 // LoadDiagnosticRemediationSource는 모델·HTTP 입력의 상태와 버전 대신 실제 저장 원본을 사용한다.
 // 원문은 hash 계산에만 쓰고 생성기에 넘기지 않는다.
 func LoadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediationQueryer, taskID int64, entryID string) (remediation.Input, error) {
+	return loadDiagnosticRemediationSource(ctx, q, taskID, entryID, false)
+}
+func loadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediationQueryer, taskID int64, entryID string, lock bool) (remediation.Input, error) {
 	in := remediation.Input{FindingID: entryID, Status: "review", VulnClass: "unknown"}
 	kind, id, err := diagnosticEntryID(entryID)
 	if err != nil || taskID <= 0 {
 		return in, ErrDiagnosticRemediation
 	}
 	var raw string
+	var anchorID int64
+	var linkedAssets []int64
 	switch kind {
 	case "candidate":
 		err = q.QueryRowContext(ctx, `SELECT n.payload::text FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.id=$2 AND n.kind='fact' AND n.origin=$3 AND octet_length(n.payload::text)<=$4`, taskID, id, diagnosticCandidateOrigin, diagnosticRemediationByteLimit).Scan(&raw)
@@ -105,6 +110,17 @@ func LoadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 			return in, ErrDiagnosticRemediation
 		}
 		c := p.Candidate
+		anchorID = c.IntentID
+		if err := diagnosticObservedContext(&in, c); err != nil {
+			return in, err
+		}
+		// 모델 해석은 자동 관측으로 승격하지 않고 별도 inferred 행에만 보존한다.
+		interpretation := remediation.NormalizeContext(remediation.Context{Source: "inferred", Observation: c.Summary})
+		if len(in.Context.Observations) < 32 {
+			in.Context.Observations = append(in.Context.Observations, remediation.ContextObservation{Source: "inferred", Observation: interpretation.Observation, EvidenceRef: entryID, RunID: c.RunRef, CallID: c.CallRef, StepID: "candidate-interpretation"})
+		} else {
+			in.Context.ObservationsTruncated = true
+		}
 		in.VulnClass = diagnosticVulnClass(c.VulnClass)
 		in.Status = diagnosticExecutionOutcome(c.Classification)
 		in.EvidenceVersion = strconv.FormatInt(c.EvidenceVersion, 10)
@@ -128,6 +144,15 @@ func LoadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 		if evidenceVersion < 0 || reportVersion < -1 {
 			return in, ErrDiagnosticRemediation
 		}
+		var findingSource struct {
+			AssetIDs []int64 `json:"asset_ids"`
+			NodeID   int64   `json:"node_id"`
+		}
+		if json.Unmarshal([]byte(raw), &findingSource) != nil {
+			return in, ErrDiagnosticRemediation
+		}
+		linkedAssets = findingSource.AssetIDs
+		anchorID = findingSource.NodeID
 		in.VulnClass = diagnosticVulnClass(vulnclass)
 		in.EvidenceVersion = strconv.FormatInt(evidenceVersion, 10)
 		in.EvidenceDigest = DiagnosticEvidenceDigest(evidence)
@@ -175,7 +200,19 @@ func LoadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 	}
 	// 자유 Bash 출력·모델 요약에서 위치나 재현 조건을 추측하지 않는다.
 	// 판정과 실행 분류만 프로그램 소유 문구로 요약하고 없는 맥락은 미확인으로 둔다.
-	in.Context = remediation.NormalizeContext(remediation.Context{Source: "observed", ComponentRole: "unknown", Observation: diagnosticObservationSummary(kind, in.Status)})
+	in.Context.Source = "observed"
+	in.Context.Observation = diagnosticObservationSummary(kind, in.Status)
+	if len(in.Context.Observations) < 32 {
+		in.Context.Observations = append(in.Context.Observations, remediation.ContextObservation{Source: "observed", Observation: in.Context.Observation, EvidenceRef: entryID, StepID: "stored-state"})
+	} else {
+		in.Context.ObservationsTruncated = true
+	}
+	in.Context = remediation.NormalizeContext(in.Context)
+	assetDigest, err := diagnosticLinkedTechnologies(ctx, q, taskID, anchorID, linkedAssets, &in, lock)
+	if err != nil {
+		return in, err
+	}
+	in.SourceDigest = diagnosticSourceHash([]any{in.SourceDigest, assetDigest})
 	in.ReportVersion = "sha256:" + in.SourceDigest
 	return in, nil
 }
@@ -188,11 +225,11 @@ func (d *DB) SaveDiagnosticRemediation(ctx context.Context, taskID int64, entryI
 	if err != nil || taskID <= 0 || len(contexts) > 1 {
 		return out, ErrDiagnosticRemediation
 	}
-	if len(contexts) == 1 && contexts[0].Source != "user_provided" {
+	if len(contexts) == 1 && (contexts[0].Source != "user_provided" || len(contexts[0].Observations) != 0 || contexts[0].ObservationsTruncated) {
 		return out, ErrDiagnosticRemediation
 	}
 	for _, t := range technologies {
-		if t.Source != "user_provided" && t.Source != "unknown" {
+		if (t.Source != "user_provided" && t.Source != "unknown") || t.EvidenceRef != "" || t.ObservedAt != "" {
 			return out, ErrDiagnosticRemediation
 		}
 	}
@@ -223,16 +260,20 @@ func (d *DB) SaveDiagnosticRemediation(ctx context.Context, taskID int64, entryI
 	if err != nil {
 		return out, err
 	}
-	source, err := LoadDiagnosticRemediationSource(ctx, tx, taskID, entryID)
+	source, err := loadDiagnosticRemediationSource(ctx, tx, taskID, entryID, true)
 	if err != nil {
 		return out, err
 	}
 	if expectedSourceDigest == "" || source.SourceDigest != expectedSourceDigest {
 		return out, ErrDiagnosticRemediationStale
 	}
-	source.Technologies = append([]remediation.Technology(nil), technologies...)
+	source.Technologies = append(source.Technologies, technologies...)
 	if len(contexts) == 1 {
+		observed := source.Context.Observations
+		truncated := source.Context.ObservationsTruncated
 		source.Context = remediation.NormalizeContext(contexts[0])
+		source.Context.Observations = observed
+		source.Context.ObservationsTruncated = truncated
 	}
 	bundle, err := remediation.Build(source)
 	if err != nil {
@@ -350,9 +391,15 @@ func listDiagnosticRemediationRecords(ctx context.Context, q DiagnosticRemediati
 			if err != nil {
 				return nil, err
 			}
-			current.Technologies = out[i].Source.Technologies
+			for _, technology := range out[i].Source.Technologies {
+				if technology.Source == "user_provided" || technology.Source == "unknown" {
+					current.Technologies = append(current.Technologies, technology)
+				}
+			}
 			if out[i].Source.Context.Source == "user_provided" {
+				observed, truncated := current.Context.Observations, current.Context.ObservationsTruncated
 				current.Context = out[i].Source.Context
+				current.Context.Observations, current.Context.ObservationsTruncated = observed, truncated
 			}
 			out[i].Stale = out[i].Stale || remediation.IsStale(out[i].Bundle, current)
 			if out[i].Stale {

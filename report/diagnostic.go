@@ -149,7 +149,75 @@ func DiagnosticHTML(in DiagnosticReport) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-var diagnosticTemplate = template.Must(template.New("diagnostic").Parse(`<!doctype html>
+func remediationSourceLabel(source string) string {
+	switch source {
+	case "observed":
+		return "실행 관측"
+	case "inferred":
+		return "모델·분석기 추정"
+	case "user_provided":
+		return "사용자 제공·수동 검토"
+	default:
+		return "미확인"
+	}
+}
+func remediationKnown(value string) bool {
+	return value != "" && value != "unknown" && !strings.HasPrefix(value, "미확인")
+}
+func remediationContextConflicts(c remediation.Context) []string {
+	if c.Source != "user_provided" {
+		return nil
+	}
+	labels := []string{"영향 컴포넌트", "엔드포인트 경로 템플릿", "재현 사전 조건", "실제 관찰의 비민감 요약", "유지할 정상 동작", "차단할 취약 동작"}
+	values := []string{c.Component, c.Endpoint, c.Prerequisites, c.Observation, c.ExpectedBehavior, c.ProhibitedBehavior}
+	conflicts := []string{}
+	for i, value := range values {
+		if !remediationKnown(value) {
+			continue
+		}
+		for _, o := range c.Observations {
+			original := []string{o.Component, o.Endpoint, o.Prerequisites, o.Observation, o.ExpectedBehavior, o.ProhibitedBehavior}[i]
+			if remediationKnown(original) && original != value {
+				conflicts = append(conflicts, labels[i])
+				break
+			}
+		}
+	}
+	return conflicts
+}
+func remediationTechnologyConflicts(technologies []remediation.Technology) []string {
+	groups := map[string]map[string]bool{}
+	order := []string{}
+	for _, t := range technologies {
+		if !remediationKnown(t.Component) || !remediationKnown(t.Name) {
+			continue
+		}
+		key := t.Component + " / " + t.ComponentRole + " / " + t.Kind
+		if groups[key] == nil {
+			groups[key] = map[string]bool{}
+			order = append(order, key)
+		}
+		value := t.Name
+		if remediationKnown(t.Version) {
+			value += " " + t.Version
+		}
+		groups[key][value] = true
+	}
+	conflicts := []string{}
+	for _, key := range order {
+		if len(groups[key]) > 1 {
+			conflicts = append(conflicts, key)
+		}
+	}
+	return conflicts
+}
+
+var diagnosticTemplate = template.Must(template.New("diagnostic").Funcs(template.FuncMap{
+	"sourceLabel":         remediationSourceLabel,
+	"join":                strings.Join,
+	"contextConflicts":    remediationContextConflicts,
+	"technologyConflicts": remediationTechnologyConflicts,
+}).Parse(`<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <title>진단 종합 보고서</title><style>
@@ -190,8 +258,19 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{with .RemediationBundle}}
 <h4>기술 맞춤형 보안 설정·코드 조치</h4>
 <p>조치 버전 {{.RemediationVersion}} · 입력 {{.InputDigest}} · 보고서 {{.ReportVersion}} · 증거 버전 {{.EvidenceVersion}} · 기술 정보 {{.TechnologyDigest}}</p>
-<h5>수정 작업의 독립 맥락</h5><p>출처 {{.Context.Source}} · 컴포넌트 {{.Context.Component}} · 역할 {{.Context.ComponentRole}}</p><dl><dt>기능·엔드포인트</dt><dd>{{.Context.Endpoint}}</dd><dt>재현 사전 조건</dt><dd>{{.Context.Prerequisites}}</dd><dt>실제 관찰의 비민감 요약</dt><dd>{{.Context.Observation}}</dd><dt>유지할 정상 동작</dt><dd>{{.Context.ExpectedBehavior}}</dd><dt>차단할 취약 동작</dt><dd>{{.Context.ProhibitedBehavior}}</dd></dl><p>사용자 제공 요약은 자동 검증된 관찰이 아닙니다. 미확인 항목은 저장소와 승인된 근거에서 먼저 확인하세요.</p>
-<ul>{{range .Technologies}}<li>{{.Kind}}: {{.Name}} {{.Version}} · 컴포넌트 {{.Component}} / {{.ComponentRole}} · 출처 {{.Source}} · 확인 수준 {{.Confidence}}</li>{{else}}<li>기술 스택 미확인. 실제 저장소에서 추가 확인하세요.</li>{{end}}</ul>
+<h5>수정 작업의 독립 맥락</h5><p>출처 {{sourceLabel .Context.Source}} · 컴포넌트 {{.Context.Component}} · 역할 {{.Context.ComponentRole}}</p><dl><dt>기능·엔드포인트</dt><dd>{{.Context.Endpoint}}</dd><dt>재현 사전 조건</dt><dd>{{.Context.Prerequisites}}</dd><dt>실제 관찰의 비민감 요약</dt><dd>{{.Context.Observation}}</dd><dt>유지할 정상 동작</dt><dd>{{.Context.ExpectedBehavior}}</dd><dt>차단할 취약 동작</dt><dd>{{.Context.ProhibitedBehavior}}</dd></dl><p>사용자 제공 요약은 자동 검증된 관찰이 아닙니다. 미확인 항목은 저장소와 승인된 근거에서 먼저 확인하세요.</p>
+{{with contextConflicts .Context}}<p>사용자 보완과 원본 상충 가능·대조 필요: {{join . ", "}}</p>{{end}}
+{{if .Context.ObservationsTruncated}}<p>관측 또는 기술 목록이 잘렸습니다. 전체 단계 연결은 미확인입니다.</p>{{end}}
+{{range .Context.Observations}}<h5>보존된 원본 맥락 · {{sourceLabel .Source}}</h5>
+<p>근거 {{.EvidenceRef}} · 관측 시각 {{.ObservedAt}} · 실행 {{.RunID}} · 호출 {{.CallID}} · 단계 {{.StepID}} · 선행 단계 {{join .DependsOn ", "}}</p>
+<dl><dt>컴포넌트 / 역할</dt><dd>{{.Component}} / {{.ComponentRole}}</dd><dt>기능·엔드포인트</dt><dd>{{.Endpoint}}</dd>
+<dt>재현 전제</dt><dd>{{.Prerequisites}}</dd><dt>관측·추정 내용</dt><dd>{{.Observation}}</dd>
+<dt>유지할 정상 동작</dt><dd>{{.ExpectedBehavior}}</dd><dt>차단할 취약 동작</dt><dd>{{.ProhibitedBehavior}}</dd></dl>
+{{if .Truncated}}<p>이 관측 출력 또는 단계가 잘렸습니다. 완전한 재현으로 해석하지 마세요.</p>{{end}}{{end}}
+{{with .MissingContextFields}}<p>보완이 필요한 맥락: {{join . ", "}}. 수정 전에 확인하세요.</p>{{end}}
+<ul>{{range .Technologies}}<li>{{.Kind}}: {{.Name}} {{.Version}} · 컴포넌트 {{.Component}} / {{.ComponentRole}} · 출처 {{sourceLabel .Source}} · 확인 수준 {{.Confidence}} · 근거 {{.EvidenceRef}} · 관측 시각 {{.ObservedAt}}</li>{{else}}<li>기술 스택 미확인. 실제 저장소에서 추가 확인하세요.</li>{{end}}</ul>
+<p>출처와 확인 수준은 별개입니다. 사용자 제공·수동 검토는 프로그램의 실행 관측 또는 취약점 확정이 아닙니다.</p>
+{{with technologyConflicts .Technologies}}<p>기술 상충 가능·대조 필요: {{join . ", "}}. 여러 기술이 함께 쓰이는지 확인하세요.</p>{{end}}
 <h5>수정해야 할 보안 조건</h5><ul>{{range .SecurityCondition}}<li>{{.}}</li>{{end}}</ul>
 <h5>즉시 완화책</h5><ul>{{range .ImmediateMitigation}}<li>{{.}}</li>{{end}}</ul>
 <h5>근본 수정</h5><ul>{{range .RootFix}}<li>{{.}}</li>{{end}}</ul>
@@ -200,8 +279,10 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <h5>적용 전제·정상 기능 영향</h5><ul>{{range .Assumptions}}<li>{{.}}</li>{{end}}</ul>
 <h5>수정 후 검증·회귀 시험</h5><ul>{{range .Verification}}<li>{{.}}</li>{{end}}</ul>
 <h5>남은 위험·확인 사항</h5><ul>{{range .ResidualRisk}}<li>{{.}}</li>{{end}}</ul>
-<h4>AI 수정 작업용 프롬프트</h4><pre>{{.AIPrompt}}</pre>
-<p>자동 실행 명령이 아닙니다. 복사하여 전달하더라도 원격 push·PR·배포·운영 재현 권한은 별도 허용이 필요합니다.</p>
+<h4>AI 수정 작업용 프롬프트</h4>
+<p>기본 작업 방식: 실제 수정 실행형. 저장소 확인 후 실제 코드·설정 수정과 시험을 수행하도록 지시하는 프롬프트입니다. 실행 범위는 전달받는 AI 세션의 권한을 따릅니다.</p><pre>{{.AIPrompt}}</pre>
+<p>생성·복사 자체는 고객 코드를 실행하거나 수정하지 않습니다. 근거·권한 부족, 구현 불일치와 운영 작업은 별도 확인이 필요합니다.
+고객이 검토만 요청한 세션의 제한을 따르며, 원격 push·PR·배포·운영 재현 권한은 이 보고서가 부여하지 않습니다.</p>
 {{else}}{{if not .RemediationStale}}<p>이 출력에 유효한 저장 조치·AI 프롬프트가 없습니다. 내부 상세에서 명시적으로 생성하거나 현재 버전을 확인하세요.</p>{{end}}{{end}}
 <p>모델 제안과 검증된 원인은 별개입니다. 서버 소스 위치·실제 영향 확대는 확인되지 않았습니다.
 수정 후 재검증은 이 보고서 생성으로 수행되지 않습니다. 별도 승인된 실행에서 사전 조건·예상 결과·실제 결과를 대조하세요.</p>

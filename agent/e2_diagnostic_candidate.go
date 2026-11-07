@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -81,11 +82,12 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 		Name:        "submit_diagnostic_candidate",
 		Description: "Preserve a potential vulnerability for manual review using an actual Bash call_ref from this intent. This tool cannot confirm a vulnerability, change approval, send requests, or invent evidence. Display text must be Korean.",
 		Schema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-			"call_ref":    map[string]any{"type": "string", "maxLength": 256},
-			"vulnclass":   map[string]any{"type": "string", "maxLength": 128},
-			"name":        map[string]any{"type": "string", "maxLength": 512},
-			"summary":     map[string]any{"type": "string", "maxLength": 8192},
-			"remediation": map[string]any{"type": "string", "maxLength": 8192},
+			"related_call_refs": map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 256}},
+			"call_ref":          map[string]any{"type": "string", "maxLength": 256},
+			"vulnclass":         map[string]any{"type": "string", "maxLength": 128},
+			"name":              map[string]any{"type": "string", "maxLength": 512},
+			"summary":           map[string]any{"type": "string", "maxLength": 8192},
+			"remediation":       map[string]any{"type": "string", "maxLength": 8192},
 		}, "required": []string{"call_ref", "vulnclass", "name", "summary"}},
 		Concurrent: func(json.RawMessage) bool { return false },
 		Run: func(ctx context.Context, input json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
@@ -99,11 +101,12 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				return actool.Errorf("diagnostic_candidate_unavailable"), nil
 			}
 			var in struct {
-				CallRef     string `json:"call_ref"`
-				VulnClass   string `json:"vulnclass"`
-				Name        string `json:"name"`
-				Summary     string `json:"summary"`
-				Remediation string `json:"remediation"`
+				RelatedCallRefs []string `json:"related_call_refs"`
+				CallRef         string   `json:"call_ref"`
+				VulnClass       string   `json:"vulnclass"`
+				Name            string   `json:"name"`
+				Summary         string   `json:"summary"`
+				Remediation     string   `json:"remediation"`
 			}
 			decoder := json.NewDecoder(bytes.NewReader(input))
 			decoder.DisallowUnknownFields()
@@ -115,9 +118,40 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 			}
 			state.mu.Lock()
 			observed, ok := state.observations[in.CallRef]
+			var related []json.RawMessage
+			seen := map[string]bool{in.CallRef: true}
+			if len(in.RelatedCallRefs) > 8 {
+				ok = false
+			}
+			sort.Strings(in.RelatedCallRefs)
+			for _, ref := range in.RelatedCallRefs {
+				other, found := state.observations[ref]
+				if !found || seen[ref] {
+					ok = false
+					break
+				}
+				seen[ref] = true
+				related = append(related, json.RawMessage(other.Evidence))
+			}
 			state.mu.Unlock()
 			if !ok {
 				return actool.Errorf("diagnostic_candidate_observation_not_found"), nil
+			}
+			if len(related) > 0 {
+				var envelope map[string]json.RawMessage
+				if json.Unmarshal([]byte(observed.Evidence), &envelope) != nil {
+					return actool.Errorf("diagnostic_candidate_observation_invalid"), nil
+				}
+				rawRelated, err := json.Marshal(related)
+				if err != nil {
+					return actool.Errorf("diagnostic_candidate_observation_invalid"), nil
+				}
+				envelope["related_calls"] = rawRelated
+				combined, err := json.Marshal(envelope)
+				if err != nil || len(combined) > 256<<10 {
+					return actool.Errorf("diagnostic_candidate_evidence_too_large"), nil
+				}
+				observed.Evidence = string(combined)
 			}
 			redact := func(s string) string { return dlp.DiagnosticText(string(execution.RedactOutput([]byte(s)))) }
 			candidate := db.DiagnosticCandidate{
