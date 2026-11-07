@@ -238,13 +238,18 @@ _LOCAL_SAMPLING_KEYS = frozenset({"temperature", "top_p", "presence_penalty", "f
 _HOST_KEYS = {"cpu_model": str, "logical_cpus": int, "memory_kib": int, "kernel": str, "docker_server_version": str}
 
 
+def valid_output_language(value: object) -> bool:
+    """러너가 작업 전에, 채점기가 기록을 읽을 때 같은 규칙으로 본다."""
+    return isinstance(value, str) and _OUTPUT_LANGUAGE.fullmatch(value) is not None
+
+
 def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     row = _one(rows, "run_conditions")
     _hex(row["engine_settings_sha256"], "isolation_evidence.run_conditions.engine_settings_sha256")
     _hex(row["machine_id_sha256"], "isolation_evidence.run_conditions.machine_id_sha256")
     if row["engine_rules_sha256"] is not None:
         _hex(row["engine_rules_sha256"], "isolation_evidence.run_conditions.engine_rules_sha256")
-    if not isinstance(row["output_language"], str) or not _OUTPUT_LANGUAGE.fullmatch(row["output_language"]):
+    if not valid_output_language(row["output_language"]):
         raise IsolationError("isolation_evidence.run_conditions.output_language: 언어 코드 형식 오류")
     _int(row["workers"], "isolation_evidence.run_conditions.workers", low=1)
     if type(row["llm_stream"]) is not bool:
