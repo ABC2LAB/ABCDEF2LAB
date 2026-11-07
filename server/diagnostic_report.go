@@ -220,6 +220,9 @@ func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time
 		return out, err
 	}
 	rows.Close()
+	if err := attachDiagnosticRemediations(ctx, tx, taskID, &out); err != nil {
+		return out, err
+	}
 	return out, nil
 }
 func equalDigest(a, b []byte) bool {

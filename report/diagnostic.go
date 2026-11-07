@@ -2,10 +2,13 @@ package report
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"github.com/Autumn-27/artex/dlp"
+	"github.com/Autumn-27/artex/remediation"
 	"html/template"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -31,6 +34,11 @@ type DiagnosticEntry struct {
 	Digest                                                    string
 	ObservedAt                                                time.Time
 	Report                                                    string
+	RemediationArtifactID                                     int64
+	RemediationCreatedAt                                      time.Time
+	RemediationStale                                          bool
+	RemediationBundle                                         *remediation.Bundle
+	RemediationSource                                         *remediation.Input
 	Stale, Truncated                                          bool
 }
 
@@ -101,7 +109,22 @@ func DiagnosticHTML(in DiagnosticReport) ([]byte, error) {
 				in.ByType[e.VulnClass]++
 			}
 		}
+		if e.RemediationBundle != nil {
+			if e.RemediationSource == nil || e.RemediationStale || e.RemediationBundle.FindingID != e.ID || e.RemediationBundle.EvidenceVersion != strconv.FormatInt(e.EvidenceVersion, 10) || remediation.IsStale(*e.RemediationBundle, *e.RemediationSource) {
+				return nil, ErrExportBlocked
+			}
+			raw, err := json.Marshal(e.RemediationBundle)
+			if err != nil {
+				return nil, ErrExportBlocked
+			}
+			size += len(raw)
+			if size > MaxDiagnosticReportBytes {
+				return nil, ErrExportBlocked
+			}
+		}
 		if in.Shared {
+			e.RemediationBundle = nil
+			e.RemediationSource = nil
 			e.Status = "[REDACTED]"
 			if e.Severity != "critical" && e.Severity != "high" && e.Severity != "medium" && e.Severity != "low" && e.Severity != "info" {
 				e.Severity = "미평가"
@@ -162,7 +185,23 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <h4>실제 관찰 증거</h4><pre>{{if .Evidence}}{{.Evidence}}{{else}}추가 증거 본문 미기록{{end}}</pre>
 <p>위 자료는 저장된 도구 출력 또는 증거 설명입니다. 실제 웹페이지 캡처가 아니며, 요청·응답 전문이나 실행 단계가 없으면 재현 완료로 해석하지 마세요.
 스크린샷 부재는 결과 누락 사유가 아닙니다. 임의 HTML과 외부 링크는 실행되지 않습니다.</p>
-<h4>수정 권고 · 후속 검증</h4><pre>{{if .Remediation}}{{.Remediation}}{{else}}유형·관찰·대상 기술에 맞는 수정 방안 검토가 필요합니다.{{end}}</pre>
+<h4>저장된 수정 제안 · 후속 검증</h4><pre>{{if .Remediation}}{{.Remediation}}{{else}}유형·관찰·대상 기술에 맞는 수정 방안 검토가 필요합니다.{{end}}</pre>
+{{if .RemediationStale}}<p>저장 조치와 프롬프트의 근거 또는 생성기 버전이 바뀌었습니다. 오래된 프롬프트는 출력하지 않습니다. 다시 생성하세요.</p>{{end}}
+{{with .RemediationBundle}}
+<h4>기술 맞춤형 보안 설정·코드 조치</h4>
+<p>조치 버전 {{.RemediationVersion}} · 입력 {{.InputDigest}} · 보고서 {{.ReportVersion}} · 증거 버전 {{.EvidenceVersion}} · 기술 정보 {{.TechnologyDigest}}</p>
+<ul>{{range .Technologies}}<li>{{.Kind}}: {{.Name}} {{.Version}} · 출처 {{.Source}} · 확인 수준 {{.Confidence}}</li>{{else}}<li>기술 스택 미확인. 실제 저장소에서 추가 확인하세요.</li>{{end}}</ul>
+<h5>수정해야 할 보안 조건</h5><ul>{{range .SecurityCondition}}<li>{{.}}</li>{{end}}</ul>
+<h5>즉시 완화책</h5><ul>{{range .ImmediateMitigation}}<li>{{.}}</li>{{end}}</ul>
+<h5>근본 수정</h5><ul>{{range .RootFix}}<li>{{.}}</li>{{end}}</ul>
+<h5>설정 변경</h5><ul>{{range .Configuration}}<li>{{.}}</li>{{end}}</ul>
+<h5>조건부 코드 예시</h5>{{range .CodeExample}}<pre>{{.}}</pre>{{end}}
+<h5>적용 전제·정상 기능 영향</h5><ul>{{range .Assumptions}}<li>{{.}}</li>{{end}}</ul>
+<h5>수정 후 검증·회귀 시험</h5><ul>{{range .Verification}}<li>{{.}}</li>{{end}}</ul>
+<h5>남은 위험·확인 사항</h5><ul>{{range .ResidualRisk}}<li>{{.}}</li>{{end}}</ul>
+<h4>AI 수정 작업용 프롬프트</h4><pre>{{.AIPrompt}}</pre>
+<p>자동 실행 명령이 아닙니다. 복사하여 전달하더라도 원격 push·PR·배포·운영 재현 권한은 별도 허용이 필요합니다.</p>
+{{else}}{{if not .RemediationStale}}<p>이 출력에 유효한 저장 조치·AI 프롬프트가 없습니다. 내부 상세에서 명시적으로 생성하거나 현재 버전을 확인하세요.</p>{{end}}{{end}}
 <p>모델 제안과 검증된 원인은 별개입니다. 서버 소스 위치·실제 영향 확대는 확인되지 않았습니다.
 수정 후 재검증은 이 보고서 생성으로 수행되지 않습니다. 별도 승인된 실행에서 사전 조건·예상 결과·실제 결과를 대조하세요.</p>
 </article>{{else}}<p>선택 범위에 저장된 결과가 없습니다. 안전 또는 검사 완료를 뜻하지 않습니다.</p>{{end}}

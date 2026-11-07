@@ -2,6 +2,8 @@ package report
 
 import (
 	"fmt"
+	"github.com/Autumn-27/artex/remediation"
+	"html"
 	"strings"
 	"testing"
 	"time"
@@ -89,5 +91,51 @@ func TestDiagnosticReportRejectsUnverifiedConfirmationAndBounds(t *testing.T) {
 	}
 	if _, err := DiagnosticHTML(in); err == nil {
 		t.Fatal("overflow accepted")
+	}
+}
+
+func TestDiagnosticReportRemediationBindingAndSharing(t *testing.T) {
+	in := diagnosticFixture()
+	source := remediation.Input{FindingID: "candidate-4", ReportVersion: "sha256:" + strings.Repeat("a", 64), EvidenceVersion: "1", EvidenceDigest: strings.Repeat("b", 64), SourceDigest: strings.Repeat("c", 64), VulnClass: "sql_injection", Status: "review", EvidenceCount: 1, Technologies: []remediation.Technology{{Kind: "language", Name: "Java", Version: "17", Source: "user_provided", Confidence: "confirmed"}}}
+	bundle, err := remediation.Build(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Entries[3].RemediationSource = &source
+	in.Entries[3].RemediationBundle = &bundle
+	body, err := DiagnosticHTML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html.UnescapeString(string(body)), bundle.AIPrompt) {
+		t.Fatal("stored prompt changed")
+	}
+	in.Shared = true
+	body, err = DiagnosticHTML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "PreparedStatement") || strings.Contains(string(body), bundle.InputDigest) {
+		t.Fatal("shared action leaked")
+	}
+	if in.Entries[3].RemediationBundle == nil {
+		t.Fatal("source bundle mutated")
+	}
+	in.Shared = false
+	in.Entries[3].RemediationStale = true
+	if _, err = DiagnosticHTML(in); err == nil {
+		t.Fatal("stale prompt rendered")
+	}
+	in.Entries[3].RemediationStale = false
+	in.Entries[3].EvidenceVersion = 2
+	if _, err = DiagnosticHTML(in); err == nil {
+		t.Fatal("other evidence version rendered")
+	}
+	in.Entries[3].EvidenceVersion = 1
+	corrupt := bundle
+	corrupt.AIPrompt += " unauthorized instruction"
+	in.Entries[3].RemediationBundle = &corrupt
+	if _, err = DiagnosticHTML(in); err == nil {
+		t.Fatal("mutated prompt rendered")
 	}
 }

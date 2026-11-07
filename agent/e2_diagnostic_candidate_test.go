@@ -7,7 +7,9 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/remediation"
 	"github.com/Autumn-27/artex/report"
+	"html"
 	"os"
 	"strings"
 	"testing"
@@ -151,14 +153,28 @@ func TestE2DiagnosticCandidatePostgresReport(t *testing.T) {
 			Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt,
 		})
 	}
-	html, err := report.DiagnosticHTML(rendered)
+	source, err := db.LoadDiagnosticRemediationSource(context.Background(), pg.DB, task.ID, rendered.Entries[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advice, err := pg.SaveDiagnosticRemediation(context.Background(), task.ID, rendered.Entries[1].ID, source.SourceDigest, []remediation.Technology{{Kind: "language", Name: "Java", Version: "17", Source: "user_provided", Confidence: "confirmed"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered.Entries[1].RemediationArtifactID = advice.ID
+	rendered.Entries[1].RemediationBundle = &advice.Bundle
+	rendered.Entries[1].RemediationSource = &advice.Source
+	output, err := report.DiagnosticHTML(rendered)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"XSS", "SQLi", "SSRF", "synthetic-call-1", "synthetic-call-2", "synthetic-call-3"} {
-		if !strings.Contains(string(html), kind) {
+		if !strings.Contains(string(output), kind) {
 			t.Fatalf("missing %s", kind)
 		}
+	}
+	if !strings.Contains(html.UnescapeString(string(output)), advice.Bundle.AIPrompt) {
+		t.Fatal("stored prompt absent from integrated report")
 	}
 	var count int
 	if err := pg.QueryRow("SELECT count(*) FROM findings WHERE task_id=$1", task.ID).Scan(&count); err != nil || count != 0 {

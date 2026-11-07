@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { DiagnosticDownload } from "../components/DiagnosticDownload";
+import { RemediationPanel } from "../components/RemediationPanel";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { Strong, Sub } from "../components/ui";
@@ -21,7 +22,7 @@ import { useGo, useNav } from "../nav";
 import type { Severity } from "../types";
 import AssetGraphPanel from "./AssetGraphPanel";
 
-type Tab = "sum" | "list" | "cov" | "map" | "asset" | "ev";
+type Tab = "sum" | "list" | "cov" | "map" | "asset" | "ev" | "remediation";
 type DimKey = "sev" | "type";
 type Kind = "bar" | "share" | "table";
 
@@ -295,6 +296,7 @@ export default function ReportScreen() {
               [
                 ["sum", "요약"],
                 ["list", "발견 목록"],
+                ["remediation", "상세 · 수정 프롬프트"],
                 ["cov", "커버리지"],
                 ["map", "접근통제 지도"],
                 ["asset", "자산 그래프"],
@@ -335,6 +337,7 @@ export default function ReportScreen() {
           {tab === "map" && <MapPanel taskId={taskId} go={go} />}
           {tab === "asset" && <AssetGraphPanel taskId={taskId} findings={findings} onOpenFinding={openFinding} />}
           {tab === "ev" && <EvidencePanel go={go} />}
+          {tab === "remediation" && <RemediationPanel key={taskId} taskId={taskId} active={nav.screen === "report"} />}
         </div>
       </div>
     </Screen>
