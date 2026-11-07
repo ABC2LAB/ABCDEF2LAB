@@ -84,7 +84,7 @@ func e2WorkerFixture(t *testing.T) (*e2proxy.Execution, *e2runner.Runner, E2HTTP
 	if err := ledger.Register(budget.Grant{Key: key, Binding: binding, MaxRequests: 10, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}, now); err != nil {
 		t.Fatal(err)
 	}
-	execution, err := e2proxy.NewExecution(context.Background(), e2WorkerCredentialFixture(t, e2proxy.Config{
+	execution, err := e2proxy.NewExecution(context.Background(), e2WorkerCredentialFixture(t, e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 		Scope:    transmit.Scope{TaskRef: "7", RunRef: "worker-run-1", CaseRef: "case-1", ResetRef: "reset-1", PolicyRef: "policy-1"},
 		IntentID: 22, OwnerRef: "ARTEX", PolicyRevision: "revision-1", AccountRef: "account-1", SessionRef: "session-1", ExpiresAt: now.Add(time.Hour),
 		Rules:  []e2proxy.Rule{{Ref: "rule-1", Origin: "http://example.invalid", ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/", PathScopeRef: "path-1", Methods: []string{"GET"}, Headers: http.Header{"Authorization": {"Bearer keep-secret"}}}},
