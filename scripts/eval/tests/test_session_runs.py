@@ -17,7 +17,7 @@ from manifest import load_manifests  # noqa: E402
 from run_record import sign_run_record  # noqa: E402
 from runner import RESULT_FORMAT  # noqa: E402
 from session_runs import (  # noqa: E402
-    RESULT_MISSING, SessionError, build_manifest, expected_order, main, read_session, tally,
+    RESULT_MISSING, SessionError, auxiliary, build_manifest, expected_order, main, read_session, tally,
 )
 
 CONDITION = {"baseline": "원본@35b", "ours": "우리@35b"}
@@ -114,6 +114,41 @@ class TestFixtureE2(SessionCase):
                 for child in directory.iterdir():
                     child.unlink()
                 directory.rmdir()
+
+
+class TestAuxiliary(SessionCase):
+    def _run(self, side, minute, repeat, stop, over, seconds):
+        directory = self.s.complete(side, minute, repeat)
+        result = json.loads((directory / "runner-result.json").read_text(encoding="utf-8"))
+        result.pop("signature")
+        result["meter"] = {"stop_reason": stop, "over_budget": over}
+        write(directory / "runner-result.json", result, signed=True)
+        record = json.loads((directory / "run-record.json").read_text(encoding="utf-8"))
+        record.pop("signature")
+        record["timeline"] = {"engine_start": {"at": "2026-11-10T10:00:00.000000000Z"},
+                              "engine_end": {"at": f"2026-11-10T10:00:{seconds:02d}.000000000Z"}}
+        write(directory / "run-record.json", record, signed=True)
+
+    def test_each_side_gets_its_stop_reasons_overrun_and_duration(self):
+        self._run("baseline", 0, 0, "time_budget", 0, 10)
+        self._run("baseline", 1, 1, "request_budget", 2, 20)
+        self._run("ours", 2, 0, "time_budget", 1, 30)
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| baseline | 2 | request_budget 1, time_budget 1 | 1 ± 1.41421 | 15 ± 7.07107 |", lines)
+        self.assertIn("| ours | 1 | time_budget 1 | 1 (n=1) | 30 (n=1) |", lines)
+
+    def test_missing_values_are_not_counted_as_zero(self):
+        self._run("baseline", 0, 0, "time_budget", 0, 10)
+        self.s.complete("baseline", 1, 1)  # meter·timeline 없음
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| baseline | 2 | time_budget 1, 미기록 1 | — | — |", lines)
+
+    def test_invalid_attempts_stay_out_and_an_empty_side_shows_dashes(self):
+        self._run("ours", 0, 0, "time_budget", 0, 10)
+        self.s.invalid("ours", 1, "probe_failed")
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| ours | 1 | time_budget 1 | 0 (n=1) | 10 (n=1) |", lines)
+        self.assertIn("| baseline | 0 | — | — | — |", lines)
 
 
 class TestOrder(unittest.TestCase):
