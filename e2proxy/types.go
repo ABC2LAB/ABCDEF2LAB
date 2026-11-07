@@ -90,6 +90,7 @@ type Limits struct {
 	MaxUnknown     uint64
 }
 type Config struct {
+	ApprovalMode ApprovalMode
 	// RequestApproval은 운영 비활성인 요청별 확인 경계다. 호스트가 명시적으로 연결한다.
 	RequestApproval RequestApprovalGate `json:"-"`
 	Evaluation      *EvaluationCallerContext
@@ -151,6 +152,7 @@ type Counts struct {
 	Calls            int    `json:"calls"`
 }
 type ExecutionView struct {
+	ApprovalMode   ApprovalMode             `json:"approval_mode"`
 	Evaluation     *EvaluationCallerContext `json:"evaluation,omitempty"`
 	HeaderMode     HeaderMode               `json:"header_mode"`
 	IntentIDs      []int64                  `json:"intent_ids"`
@@ -171,6 +173,7 @@ type RuleView struct {
 	PathScopeRef string   `json:"path_scope_ref"`
 }
 type PolicyView struct {
+	ApprovalMode      ApprovalMode             `json:"approval_mode"`
 	Evaluation        *EvaluationCallerContext `json:"evaluation,omitempty"`
 	HeaderMode        HeaderMode               `json:"header_mode"`
 	BudgetRef         string                   `json:"budget_ref"`

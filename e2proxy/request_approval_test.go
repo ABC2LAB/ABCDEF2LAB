@@ -38,6 +38,7 @@ func TestRequestApprovalHoldAndSingleDispatch(t *testing.T) {
 	cfg := coreConfig(t, target.URL, &coreRecorder{}, 4)
 	cfg.Rules[0].Methods = []string{"POST"}
 	cfg.Limits.RequestTimeout = 100 * time.Millisecond
+	cfg.ApprovalMode = ApprovalConfirmEveryRequest
 	cfg.RequestApproval = requestApprovalFunc(func(ctx context.Context, p RequestApprovalProposal) (bool, error) {
 		proposed <- p
 		select {
@@ -100,6 +101,7 @@ func TestRequestApprovalDenialsNeverReachTarget(t *testing.T) {
 			}
 			entered := make(chan struct{})
 			release := make(chan struct{})
+			cfg.ApprovalMode = ApprovalConfirmEveryRequest
 			cfg.RequestApproval = requestApprovalFunc(func(ctx context.Context, p RequestApprovalProposal) (bool, error) {
 				close(entered)
 				<-release
@@ -170,6 +172,7 @@ func TestRequestApprovalWaitEndsWithCallContext(t *testing.T) {
 				cfg.Limits.CallTimeout = 50 * time.Millisecond
 			}
 			entered := make(chan struct{})
+			cfg.ApprovalMode = ApprovalConfirmEveryRequest
 			cfg.RequestApproval = requestApprovalFunc(func(ctx context.Context, p RequestApprovalProposal) (bool, error) {
 				close(entered)
 				<-ctx.Done()
@@ -212,6 +215,7 @@ func TestRequestApprovalExcludesProtectedCredentialValues(t *testing.T) {
 	cfg := coreConfig(t, target.URL, &coreRecorder{}, 1)
 	cfg.HeaderMode = HeaderProtectedSessionProposal
 	cfg.Rules[0].CredentialHeaders = http.Header{"X-Session": {"fixture-private-session"}}
+	cfg.ApprovalMode = ApprovalConfirmEveryRequest
 	cfg.RequestApproval = requestApprovalFunc(func(ctx context.Context, p RequestApprovalProposal) (bool, error) {
 		if headerPresent(p.Headers, "X-Session") || strings.Contains(p.URL+string(p.Body)+fmt.Sprint(p.Headers), "fixture-private-session") {
 			t.Error("protected credential exposed to approval")
@@ -223,5 +227,71 @@ func TestRequestApprovalExcludesProtectedCredentialValues(t *testing.T) {
 	_, r, err := c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
 	if err != nil || !r.ResponseComplete || hits.Load() != 1 {
 		t.Fatalf("approved credential request %+v %v", r, err)
+	}
+}
+
+func TestRequestApprovalModeRejectsMissingAndConflictingConfiguration(t *testing.T) {
+	var hits atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	defer target.Close()
+	var typedNil requestApprovalFunc
+	allow := requestApprovalFunc(func(context.Context, RequestApprovalProposal) (bool, error) { return true, nil })
+	for _, tc := range []struct {
+		name string
+		mode ApprovalMode
+		gate RequestApprovalGate
+	}{
+		{"missing", "", nil},
+		{"missing-with-gate", "", allow},
+		{"unknown", "unknown", allow},
+		{"confirmation-without-gate", ApprovalConfirmEveryRequest, nil},
+		{"confirmation-with-typed-nil", ApprovalConfirmEveryRequest, typedNil},
+		{"automatic-with-gate", ApprovalPreauthorizedScope, allow},
+		{"automatic-with-typed-nil", ApprovalPreauthorizedScope, typedNil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := coreConfig(t, target.URL, &coreRecorder{}, 4)
+			cfg.ApprovalMode, cfg.RequestApproval = tc.mode, tc.gate
+			e, err := NewExecution(context.Background(), cfg)
+			if !errors.Is(err, ErrConfig) || e != nil {
+				t.Fatal("invalid approval configuration accepted")
+			}
+			if hits.Load() != 0 {
+				t.Fatal("target received request on configuration failure")
+			}
+		})
+	}
+}
+
+func TestRequestApprovalModesPreserveBoundedUsefulDispatch(t *testing.T) {
+	for _, mode := range []ApprovalMode{ApprovalConfirmEveryRequest, ApprovalPreauthorizedScope} {
+		t.Run(string(mode), func(t *testing.T) {
+			var hits, approvals atomic.Int64
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); io.WriteString(w, "ok") }))
+			defer target.Close()
+			cfg := coreConfig(t, target.URL, &coreRecorder{}, 4)
+			cfg.ApprovalMode = mode
+			if mode == ApprovalConfirmEveryRequest {
+				cfg.RequestApproval = requestApprovalFunc(func(context.Context, RequestApprovalProposal) (bool, error) { approvals.Add(1); return true, nil })
+			}
+			e, c := coreOpen(t, cfg)
+			if e.Policy().ApprovalMode != mode || e.Snapshot().ApprovalMode != mode {
+				t.Fatal("selected mode missing from host views")
+			}
+			_, receipt, _ := c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+			if !receipt.ResponseComplete || hits.Load() != 1 {
+				t.Fatalf("normal allowed request failed: %+v, receipts=%d", receipt, hits.Load())
+			}
+			_, denied, _ := c.Do(context.Background(), coreRequest(t, "POST", target.URL+"/allowed"))
+			if !denied.NotSent || hits.Load() != 1 {
+				t.Fatalf("scope was widened: %+v, receipts=%d", denied, hits.Load())
+			}
+			if mode == ApprovalPreauthorizedScope && approvals.Load() != 0 {
+				t.Fatal("automatic mode invoked confirmation")
+			}
+			if mode == ApprovalConfirmEveryRequest && approvals.Load() == 0 {
+				t.Fatal("confirmation bypassed")
+			}
+		})
 	}
 }
