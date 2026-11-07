@@ -22,7 +22,7 @@ from collect import VerdictRecord
 from ground_truth import bac_category, core_gt
 from isolation_proof import (
     IsolationError, attempt_reconciliation, check_isolated_events, check_isolation, check_unproven_events,
-    drain_policy, e2_collection_outcome, e2_identity, e2_mode, output_language, run_conditions, verdict_collection,
+    blocked_attempts, drain_policy, e2_collection_outcome, e2_identity, e2_mode, output_language, run_conditions, verdict_collection,
 )
 from manifest import RunManifest
 from scoreboard import SnapshotError, normalize_challenges, require_basis_keys
@@ -414,6 +414,9 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
             verdict_collection(receipt, loaded["isolation_evidence"], loaded["records"])
     except IsolationError as exc:
         raise RunRecordError(str(exc)) from None
+    # 표의 차단 시도 수는 이 값이다. 서명만 믿지 않고 검증한 대조 근거와 맞춘다(#308 리뷰).
+    if receipt["blocked_attempts"] != blocked_attempts(reconciled):
+        raise RunRecordError("러너 기록 blocked_attempts가 E② 대조 근거와 다름")
     return RunInputs(pre, post, loaded["records"], traffic,
                      None if covered is None else frozenset(covered), engine_solved,
                      receipt["execution_id"], receipt["fixture_fingerprint"], receipt["environment_fingerprint"],

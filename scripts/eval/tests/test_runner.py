@@ -547,6 +547,7 @@ class TestE2Product(unittest.TestCase):
         cells = self.row(evidence, "attempt_reconciliation")[0]["cells"]
         self.assertEqual((cells["allowed_observed"], cells["denied_unobserved"], cells["denied_observed"]), (2, 1, 0))
         self.assertNotIn("fixture", evidence.files["attempt-reconciliation.json"])
+        self.assertEqual(record["blocked_attempts"], 1)
 
     def test_baseline_never_has_the_e2(self):
         self.assertEqual(make_spec(side="baseline", e2="product").e2_mode, "none")
@@ -576,6 +577,7 @@ class TestE2Product(unittest.TestCase):
                          ("unavailable", "product_failure", "close_timeout", None, None))
         self.assertEqual(self.row(evidence, "attempt_reconciliation"), [])
         self.assertNotIn("attempt-reconciliation.json", evidence.files)
+        self.assertIsNone(evidence.files["run-record.json"]["blocked_attempts"])
 
     def test_incomplete_export_is_a_product_failure_with_counts_kept(self):
         def mutate(ports):
@@ -612,6 +614,13 @@ class TestE2Product(unittest.TestCase):
         # 실행이 없다는데 계측기에 요청이 있으면 기록 없이 도달한 것으로 센다.
         cells = self.row(evidence, "attempt_reconciliation")[0]["cells"]
         self.assertEqual((cells["allowed_observed"], cells["denied_unobserved"]), (0, 0))
+        self.assertEqual(evidence.files["run-record.json"]["blocked_attempts"], 0)
+
+    def test_blocked_attempts_counts_both_denied_cells_and_stays_unknown_without_evidence(self):
+        cells = {"denied_unobserved": 3, "denied_observed": 4}
+        self.assertEqual(runner.blocked_attempts({"cells": cells}), 7)
+        self.assertEqual(runner.blocked_attempts({"cells": {"denied_unobserved": 0, "denied_observed": 0}}), 0)
+        self.assertIsNone(runner.blocked_attempts(None))
 
     def test_keep_alive_includes_the_close_wait_on_both_sides(self):
         payload = runner_config()

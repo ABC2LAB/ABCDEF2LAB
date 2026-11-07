@@ -358,6 +358,13 @@ def e2_identity(receipt: dict, evidence: object) -> tuple[str, str] | None:
     return None if row is None else (row["policy_fingerprint_sha256"], row["image_id"])
 
 
+def blocked_attempts(reconciled: dict | None) -> int | None:
+    """E²가 막은 시도 수(프로토콜 §5). 대조 근거가 없으면(E² 없음·제품 실패·증명 없음) 모르므로 0이 아니라 None이다."""
+    if reconciled is None:
+        return None
+    return reconciled["cells"]["denied_unobserved"] + reconciled["cells"]["denied_observed"]
+
+
 def e2_collection_outcome(receipt: dict, evidence: object) -> str | None:
     """제품 E² 회차의 수집 결과(complete·no_execution·product_failure). 그 밖에는 None."""
     row = e2_product_row(receipt, evidence)
