@@ -131,3 +131,24 @@ func TestE2HTTPPromptReachesActualWorkerSession(t *testing.T) {
 		t.Fatal("extra tools reopened")
 	}
 }
+
+func TestE2HTTPPromptActivityEncodingFailureSkipsActivity(t *testing.T) {
+	var activities []db.Activity
+	var stages []string
+	emit := func(activity db.Activity) { activities = append(activities, activity) }
+	report := func(stage string) { stages = append(stages, stage) }
+
+	emitE2HTTPPromptActivity(emit, report, 22, "worker", make(chan int))
+	if len(activities) != 0 || len(stages) != 1 || stages[0] != "e2_http_prompt_activity_encode_failed" {
+		t.Fatalf("failed encoding emitted activity or unsafe log: activities=%d stages=%v", len(activities), stages)
+	}
+
+	emitE2HTTPPromptActivity(emit, report, 22, "worker", e2HTTPPromptInfo{Source: "builtin"})
+	if len(activities) != 1 || len(stages) != 1 {
+		t.Fatalf("valid encoding was not emitted: activities=%d stages=%v", len(activities), stages)
+	}
+	var info e2HTTPPromptInfo
+	if err := json.Unmarshal([]byte(activities[0].Detail), &info); err != nil || info.Source != "builtin" {
+		t.Fatalf("invalid activity detail: %v", err)
+	}
+}
