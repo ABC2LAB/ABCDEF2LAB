@@ -57,7 +57,8 @@ _ROW_FIELDS = {
 E2_MODES = ("none", "stub", "product")
 _E2_COUNTS = ("decision_rows", "allowed", "unsupported", "unavailable")
 E2_CLOSE_STATES = ("complete", "incomplete", "no_execution", "unavailable")
-E2_COLLECTION_OUTCOMES = ("complete", "product_failure", "no_execution")
+E2_PRODUCT_FAILURE = "product_failure"
+E2_COLLECTION_OUTCOMES = ("complete", E2_PRODUCT_FAILURE, "no_execution")
 E2_DECISION_NAMES = ("allowed", "denied", "unsupported")
 _E2_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _E2_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -357,6 +358,12 @@ def e2_identity(receipt: dict, evidence: object) -> tuple[str, str] | None:
     return None if row is None else (row["policy_fingerprint_sha256"], row["image_id"])
 
 
+def e2_collection_outcome(receipt: dict, evidence: object) -> str | None:
+    """제품 E² 회차의 수집 결과(complete·no_execution·product_failure). 그 밖에는 None."""
+    row = e2_product_row(receipt, evidence)
+    return None if row is None else row["collection_outcome"]
+
+
 def _reconcile_totals(mode: str, rows: dict[str, list[dict]], receipt: dict, evidence: object) -> tuple[int, int]:
     """E² 기록이 말하는 (허용, 차단) 시도 수."""
     if mode == "product":
@@ -381,7 +388,7 @@ def attempt_reconciliation(receipt: dict, evidence: object) -> dict | None:
         if rows["attempt_reconciliation"]:
             raise IsolationError("isolation_evidence.attempt_reconciliation: E② 없는 회차에는 없어야 함")
         return None
-    if mode == "product" and e2_product_row(receipt, evidence)["collection_outcome"] == "product_failure":
+    if mode == "product" and e2_product_row(receipt, evidence)["collection_outcome"] == E2_PRODUCT_FAILURE:
         # 제품 실패 회차는 대조 근거가 없다. 분모에 남아 통제 주장이 보류된다(연결 제안 §4.3).
         if rows["attempt_reconciliation"]:
             raise IsolationError("isolation_evidence.attempt_reconciliation: 제품 실패 회차에는 없어야 함")

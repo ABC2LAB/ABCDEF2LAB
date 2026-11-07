@@ -245,6 +245,34 @@ class TestRejectedV11(_V11):
         inputs = self.inputs(self.v11("p1", e2=self.PRODUCT, tamper_rows=self._product_row()))
         self.assertEqual((inputs.e2_mode, inputs.attempt_reconciliation), ("product", STUB_RECONCILIATION))
 
+    def _failed_product(self, rows):
+        drop(rows, row_of(rows, "attempt_reconciliation"))
+        self._product_row(close_state="unavailable", close_reason="close_timeout", collection_outcome="product_failure",
+                          collection_reason="close_timeout", rows=None, attempts=None, decisions=None,
+                          checkpoint_sequence=None, manifest_sha256=None)(rows)
+
+    def test_conditions_with_only_product_failures_keep_the_table_and_the_warning(self):
+        runs = [self.v11(f"f{i}", repeat_index=i, e2=self.PRODUCT, tamper_rows=self._failed_product) for i in range(3)]
+        report = build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("| E② 자리 | product |", report.text)
+        self.assertIn("| 회차 수 | 3 |", report.text)
+        self.assertIn("| 제품 실패 회차(무효 아님, 기대 0) | 3 |", report.text)
+        self.assertIn("| 통제 주장 | 보류(회차 3/3) |", report.text)
+        warning = next(w for w in report.warnings if "통제 주장 보류" in w)
+        self.assertIn("대조 근거 없는 회차 3(제품 실패 3)", warning)
+
+    def test_product_failure_count_is_per_condition_and_excludes_complete_runs(self):
+        runs = [self.v11("g0", e2=self.PRODUCT, tamper_rows=self._product_row()),
+                self.v11("g1", repeat_index=1, e2=self.PRODUCT, tamper_rows=self._failed_product)]
+        report = build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("| 제품 실패 회차(무효 아님, 기대 0) | 1 |", report.text)
+        self.assertIn("| 통제 주장 | 보류(회차 1/2) |", report.text)
+
+    def test_runs_without_e2_stay_out_of_the_control_table(self):
+        report = build_report(self.load([self.v11("h0"), self.v11("h1", repeat_index=1)]), self.correlate,
+                              self.correlatable, runner_key=self.runner_key)
+        self.assertNotIn("통제 검증", report.text)
+
     def test_product_failure_has_no_reconciliation_and_stays_a_run(self):
         def failed(rows):
             drop(rows, row_of(rows, "attempt_reconciliation"))
