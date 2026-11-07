@@ -12,12 +12,19 @@ func CheckFirstDiagnosisRuntimeDatabase(ctx context.Context, pool *sql.DB) error
 	return checkFirstDiagnosisRuntimeDatabase(ctx, pool, true)
 }
 
-// 일반 HTTP는 등록 조회의 KG·E③ 저장 테이블을 추가 필수 조건으로 만들지 않는다.
+// 일반 HTTP도 저장 보고서를 읽지만 등록 조회의 KG·E③ 판정 INSERT 권한은 요구하지 않는다.
 func CheckFirstDiagnosisHTTPRuntimeDatabase(ctx context.Context, pool *sql.DB) error {
 	return checkFirstDiagnosisRuntimeDatabase(ctx, pool, false)
 }
 
+// 저장보고서 경로는 실행·모델·판정 발급 권한 없이 기존 결과와 조치 저장만 사용한다.
+func CheckFirstDiagnosisReportDatabase(ctx context.Context, pool *sql.DB) error {
+	return checkFirstDiagnosisDatabase(ctx, pool, false, true)
+}
 func checkFirstDiagnosisRuntimeDatabase(ctx context.Context, pool *sql.DB, registered bool) error {
+	return checkFirstDiagnosisDatabase(ctx, pool, registered, false)
+}
+func checkFirstDiagnosisDatabase(ctx context.Context, pool *sql.DB, registered, reportOnly bool) error {
 	if ctx == nil || ctx.Err() != nil || pool == nil {
 		return ErrControlledReadHostConfiguration
 	}
@@ -52,17 +59,29 @@ func checkFirstDiagnosisRuntimeDatabase(ctx context.Context, pool *sql.DB, regis
 	required := []struct{ name, privileges string }{
 		{"tasks", "SELECT,INSERT,UPDATE"}, {"explorations", "SELECT,INSERT,UPDATE"}, {"exploration_nodes", "SELECT,INSERT,UPDATE"},
 		{"task_llm_profiles", "SELECT,INSERT,UPDATE"}, {"activity", "SELECT,INSERT"}, {"exploration_edges", "SELECT,INSERT"}, {"findings", "SELECT,INSERT,UPDATE"},
-		{"llm_profiles", "SELECT"}, {"intercept_rules", "SELECT"}, {"settings", "SELECT"}, {"agents", "SELECT"}, {"agent_prompts", "SELECT"}, {"task_categories", "SELECT"}, {"task_relations", "SELECT"}, {"task_scope", "SELECT,INSERT"}, {"task_constraints", "SELECT,INSERT"},
+		{"task_archives", "SELECT"}, {"llm_profiles", "SELECT"}, {"intercept_rules", "SELECT"}, {"settings", "SELECT"}, {"agents", "SELECT"}, {"agent_prompts", "SELECT"}, {"task_categories", "SELECT"}, {"task_relations", "SELECT"}, {"task_scope", "SELECT,INSERT"}, {"task_constraints", "SELECT,INSERT"},
 		// 원본 목표 분해·Planner의 실제 자산 조회/참조 경로에 필요한 읽기와 anchor만 허용한다.
 		{"assets", "SELECT"}, {"companies", "SELECT"}, {"company_scope", "SELECT"}, {"task_asset_links", "SELECT"},
 		{"asset_intercept_rules", "SELECT"}, {"task_intercept_rules", "SELECT"}, {"exploration_anchors", "SELECT,INSERT"},
+		// 보고서·조치의 기존 조회는 판정 유무와 관계없이 이 테이블을 함께 읽는다.
+		{"e3_evidence_manifests", "SELECT"}, {"e3_oracle_verdicts", "SELECT"},
+		{"e3_verdict_issuances", "SELECT"}, {"e3_verdict_links", "SELECT"},
 	}
 	if registered {
-		required = append(required, []struct{ name, privileges string }{{"audit_checkpoint_epochs", "SELECT"}, {"task_archives", "SELECT"}, {"task_control_modes", "SELECT,INSERT,UPDATE"}, {"traffic_evidence_snapshots", "SELECT,INSERT"}, {"finding_traffic_bindings", "SELECT,INSERT"},
+		required = append(required, []struct{ name, privileges string }{{"audit_checkpoint_epochs", "SELECT"}, {"task_control_modes", "SELECT,INSERT,UPDATE"}, {"traffic_evidence_snapshots", "SELECT,INSERT"}, {"finding_traffic_bindings", "SELECT,INSERT"},
 			{"e3_evidence_manifests", "SELECT,INSERT"}, {"e3_oracle_verdicts", "SELECT,INSERT"},
 			{"e3_verdict_issuances", "SELECT,INSERT"}, {"e3_verdict_links", "SELECT,INSERT"},
 			{"evidence_revision_initials", "SELECT,INSERT"}, {"evidence_revision_operations", "SELECT,INSERT"},
 			{"audit_checkpoint_history", "SELECT"}, {"audit_checkpoint_heads", "SELECT"}, {"audit_checkpoint_operations", "SELECT"}}...)
+	}
+	if reportOnly {
+		required = []struct{ name, privileges string }{
+			{"tasks", "SELECT"}, {"task_archives", "SELECT"}, {"findings", "SELECT"},
+			{"exploration_nodes", "SELECT,INSERT"}, {"settings", "SELECT"},
+			{"assets", "SELECT"}, {"task_asset_links", "SELECT"}, {"exploration_anchors", "SELECT"},
+			{"e3_evidence_manifests", "SELECT"}, {"e3_oracle_verdicts", "SELECT"},
+			{"e3_verdict_issuances", "SELECT"}, {"e3_verdict_links", "SELECT"},
+		}
 	}
 	for _, relation := range required {
 		var ordinary bool
@@ -90,22 +109,50 @@ func checkFirstDiagnosisRuntimeDatabase(ctx context.Context, pool *sql.DB, regis
 
 	// scoped 자산 SQL이 호출하는 기존 helper의 실제 실행 권한도 기동 전에 확인한다.
 	var assetHelper bool
-	if tx.QueryRowContext(ctx, `SELECT CASE WHEN to_regprocedure('try_inet(text)') IS NULL THEN false ELSE has_function_privilege(current_user,to_regprocedure('try_inet(text)'),'EXECUTE') END`).Scan(&assetHelper) != nil || !assetHelper {
+	if !reportOnly && (tx.QueryRowContext(ctx, `SELECT CASE WHEN to_regprocedure('try_inet(text)') IS NULL THEN false ELSE has_function_privilege(current_user,to_regprocedure('try_inet(text)'),'EXECUTE') END`).Scan(&assetHelper) != nil || !assetHelper) {
 		return ErrControlledReadHostConfiguration
 	}
-	if registered {
-		for _, name := range []string{"e3_evidence_manifests", "e3_verdict_issuances"} {
+	if reportOnly {
+		// 기존 runtime의 넓은 쓰기를 새로 요구하지 않고 원본 id의 행 잠금만 확인한다.
+		for _, name := range []string{"tasks", "exploration_nodes", "findings"} {
 			var lockable bool
-			if tx.QueryRowContext(ctx, `SELECT has_column_privilege(current_user,to_regclass($1),'id','UPDATE') AND NOT has_table_privilege(current_user,to_regclass($1),'UPDATE,DELETE,TRUNCATE,TRIGGER')`, name).Scan(&lockable) != nil || !lockable {
+			if tx.QueryRowContext(ctx, `SELECT has_column_privilege(current_user,to_regclass($1),'id','UPDATE')`, name).Scan(&lockable) != nil || !lockable {
 				return ErrControlledReadHostConfiguration
 			}
-			// 기존 immutable trigger를 실제로 유지한 경우만 행 잠금용 id 열 권한을 수용한다.
-			var protected bool
-			if tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang
+		}
+	}
+	// 조치 원본·자산 결속을 잠그는 데 필요한 열만 허용한다. 제품은 이 열을 갱신하지 않는다.
+	lockColumns := []struct {
+		name, column string
+		immutable    bool
+	}{
+		{"e3_verdict_issuances", "id", true},
+		{"assets", "id", false},
+		{"task_asset_links", "task_id", false},
+		{"exploration_anchors", "node_id", false},
+	}
+	if registered {
+		lockColumns = append(lockColumns, struct {
+			name, column string
+			immutable    bool
+		}{"e3_evidence_manifests", "id", true})
+	}
+	for _, relation := range lockColumns {
+		name := relation.name
+		var lockable bool
+		if tx.QueryRowContext(ctx, `SELECT has_column_privilege(current_user,to_regclass($1),$2,'UPDATE') AND NOT has_table_privilege(current_user,to_regclass($1),'UPDATE,DELETE,TRUNCATE,TRIGGER')
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND a.attname<>$2 AND has_column_privilege(current_user,a.attrelid,a.attnum,'UPDATE'))`, name, relation.column).Scan(&lockable) != nil || !lockable {
+			return ErrControlledReadHostConfiguration
+		}
+		if !relation.immutable {
+			continue
+		}
+		// 기존 immutable trigger를 실제로 유지한 경우만 행 잠금용 id 열 권한을 수용한다.
+		var protected bool
+		if tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang
     WHERE t.tgrelid=to_regclass($1) AND NOT t.tgisinternal AND t.tgenabled IN ('O','A') AND (t.tgtype::int & 27)=27 AND p.proname='guard_e3_immutable' AND n.nspname=$2 AND NOT p.prosecdef AND l.lanname='plpgsql'
     AND regexp_replace(p.prosrc,'[[:space:]]','','g')=$3)`, name, schema, "BEGINRAISEEXCEPTION'e3_immutable_record'USINGERRCODE='23514';END;").Scan(&protected) != nil || !protected {
-				return ErrControlledReadHostConfiguration
-			}
+			return ErrControlledReadHostConfiguration
 		}
 	}
 	if ctx.Err() != nil || tx.Commit() != nil {

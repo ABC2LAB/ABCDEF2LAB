@@ -26,7 +26,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func firstDiagnosisSupervisorConstructorClose(t *testing.T, manager *Manager, installer *pgdb.DB, task *Task) {
+func firstDiagnosisSupervisorConstructorClose(t *testing.T, manager *Manager, installer *pgdb.DB, task *Task, checks ...func(*FirstDiagnosisHTTPRuntime)) {
 	t.Helper()
 	if os.Geteuid() == 0 {
 		t.Skip("M01 실제 비특권 운영자 UID가 필요함")
@@ -74,6 +74,9 @@ func firstDiagnosisSupervisorConstructorClose(t *testing.T, manager *Manager, in
 	}()
 	if runtime.server == nil || supervisor.server != runtime.server || !runtime.server.firstDiagnosis || runtime.server.firstDiagnosisPreparation {
 		t.Fatal("실제 production 서버가 감독자와 결속되지 않음")
+	}
+	for _, check := range checks {
+		check(runtime)
 	}
 	if err := supervisor.AuthorizeExecution(ctx, transmit.Scope{RunRef: policy.RunRef, ResetRef: policy.ResetRef, PolicyRef: policy.PolicyRef, CaseRef: policy.CaseRef, TaskRef: task.ID}, 1); err == nil {
 		t.Fatal("실행 admission 이전에 E② 실행 권한을 발급함")

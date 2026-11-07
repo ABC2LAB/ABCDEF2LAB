@@ -527,6 +527,7 @@ func (r *E2HTTPRuntime) PolicyMetadata() E2HTTPPolicyMetadata {
 }
 
 func e2HTTPCloneTrusted(value e2runner.TrustedResult) e2runner.TrustedResult {
+	value.Call = e2proxy.CloneCallResult(value.Call)
 	value.Execution.IntentIDs = append([]int64(nil), value.Execution.IntentIDs...)
 	value.Execution.Evaluation = e2HTTPCloneEvaluation(value.Execution.Evaluation)
 	return value
@@ -548,7 +549,7 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 			valid := trusted.Version == e2proxy.Version && trusted.Execution.Scope == view.Scope && view.Scope.TaskRef == t.id && trusted.Execution.PolicyRevision == view.PolicyRevision && trusted.Execution.HeaderMode == view.HeaderMode && trusted.Execution.IntentID == intentID && trusted.Call.IntentID == intentID && execution.HasIntent(intentID)
 			found := false
 			for _, call := range execution.Calls() {
-				if call == trusted.Call {
+				if e2proxy.EqualCallResults(call, trusted.Call) {
 					found = true
 					break
 				}
@@ -572,7 +573,7 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 				t.mu.Unlock()
 			}
 		}
-	} else if trusted.Call != (e2proxy.CallResult{}) || trusted.Final || trusted.ProcessBashExited || trusted.ProcessDrained || trusted.ProxyDrained {
+	} else if !e2proxy.EqualCallResults(trusted.Call, e2proxy.CallResult{}) || trusted.Final || trusted.ProcessBashExited || trusted.ProcessDrained || trusted.ProxyDrained {
 		recordErr = ErrE2HTTPHost
 	}
 	var observerErr error

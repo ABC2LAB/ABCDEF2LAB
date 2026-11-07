@@ -566,7 +566,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		}
 	}
 	for _, call := range calls {
-		if observed[call.CallRef] != call || !call.Final || !call.AuditComplete || call.Counts.Unknown != 0 {
+		if !e2proxy.EqualCallResults(observed[call.CallRef], call) || !call.Final || !call.AuditComplete || call.Counts.Unknown != 0 {
 			return false, ErrFirstDiagnosisSupervisor
 		}
 		intent, err := task.Store.GetNode(call.IntentID)

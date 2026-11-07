@@ -278,7 +278,7 @@ func (p *Publisher) ObserveResult(ctx context.Context, result e2runner.Result) e
 	}
 	trusted := result.Trusted
 	if trusted.Call.CallRef == "" {
-		if trusted.Call == (e2proxy.CallResult{}) && !trusted.Final && !trusted.ProcessBashExited && !trusted.ProcessDrained && !trusted.ProxyDrained {
+		if sameCallResult(trusted.Call, e2proxy.CallResult{}) && !trusted.Final && !trusted.ProcessBashExited && !trusted.ProcessDrained && !trusted.ProxyDrained {
 			return nil
 		}
 		return ErrAudit
@@ -289,7 +289,7 @@ func (p *Publisher) ObserveResult(ctx context.Context, result e2runner.Result) e
 		trusted.ProcessBashExited && trusted.ProcessDrained && trusted.ProxyDrained
 	found := false
 	for _, call := range p.cfg.Execution.Calls() {
-		if call.CallRef == trusted.Call.CallRef && call == trusted.Call {
+		if call.CallRef == trusted.Call.CallRef && sameCallResult(call, trusted.Call) {
 			found = true
 			break
 		}
@@ -334,3 +334,8 @@ func (p *Publisher) Dispose() {
 }
 func (*Publisher) String() string   { return "e2export.Publisher[private]" }
 func (*Publisher) GoString() string { return "e2export.Publisher[private]" }
+
+// 관측/기술 slice까지 비교해 감사 마감 뒤 바뀐 진단 projection을 받아들이지 않는다.
+func sameCallResult(left, right e2proxy.CallResult) bool {
+	return e2proxy.EqualCallResults(left, right)
+}

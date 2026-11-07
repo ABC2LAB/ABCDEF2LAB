@@ -2,14 +2,17 @@ package server
 
 import (
 	"context"
+	"mime"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync/atomic"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"golang.org/x/crypto/bcrypt"
-	"net/http"
-	"strconv"
-	"strings"
-	"sync/atomic"
 )
 
 // 첫 기동은 설치자가 준비한 인증만 사용하며 새 설정 토큰이나 비밀번호를 만들지 않는다.
@@ -61,12 +64,12 @@ func NewFirstDiagnosisPreparationServer(ctx context.Context, m *Manager, skillDi
 // 첫 회차의 실행은 신뢰한 로컬 감독자만 시작한다. 채팅·MCP·수정 API로 우회할 수 없다.
 func (s *Server) firstDiagnosisRoutes(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		allowed := false
+		allowed := s.firstDiagnosisReportRoute(r)
 		if r.Method == http.MethodPost && r.URL.Path == "/api/auth/login" {
 			allowed = true
 		}
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
-			allowed = firstDiagnosisReadRoute(r.URL.Path)
+			allowed = allowed || firstDiagnosisReadRoute(r.URL.Path)
 		}
 		if s.firstDiagnosisPreparation || !allowed {
 			writeErr(w, http.StatusForbidden, "첫 진단 전용 서버에서는 이 작업을 사용할 수 없습니다")
@@ -141,4 +144,55 @@ func firstDiagnosisReadRoute(path string) bool {
 		return numericID.MatchString(parts[0]) && (len(parts) == 1 || len(parts) == 2 && parts[1] == "lineage")
 	}
 	return false
+}
+
+// 보고서만 기존 생성기와 저장소로 연결한다. 모델 또는 대상 실행 admission은 열지 않는다.
+// task는 신뢰한 기동 과정에서 고정한 동일 결속만 사용하며 중복 query도 거부한다.
+func (s *Server) firstDiagnosisReportRoute(r *http.Request) bool {
+	number, ok := firstDiagnosisReportRequestTask(r)
+	if !ok {
+		return false
+	}
+	s.firstModelMu.RLock()
+	defer s.firstModelMu.RUnlock()
+	return s.firstModel != nil && s.firstModel.TaskNumber == number && s.firstModel.TaskID == strconv.FormatInt(number, 10) && s.firstModel.ExplorationID > 0
+}
+
+func firstDiagnosisReportRequestTask(r *http.Request) (int64, bool) {
+	switch r.URL.Path {
+	case "/api/report/diagnostic", "/api/report/diagnostic/remediation/prompt":
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			return 0, false
+		}
+	case "/api/report/diagnostic/remediation":
+		if r.Method == http.MethodPost {
+			// 쿠키·query token만으로 생기는 교차 출처 쓰기를 새로 열지 않는다.
+			auth := r.Header.Get("Authorization")
+			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if !strings.HasPrefix(auth, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == "" || err != nil || mediaType != "application/json" {
+				return 0, false
+			}
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodPost {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	// URL.Query는 잘못된 escape를 조용히 버리므로 폐쇄 파서를 사용한다.
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil || len(query["task"]) != 1 {
+		return 0, false
+	}
+	for _, values := range query {
+		if len(values) != 1 {
+			return 0, false
+		}
+	}
+	task := query.Get("task")
+	number, err := strconv.ParseInt(task, 10, 64)
+	if err != nil || number <= 0 || strconv.FormatInt(number, 10) != task {
+		return 0, false
+	}
+	return number, true
 }

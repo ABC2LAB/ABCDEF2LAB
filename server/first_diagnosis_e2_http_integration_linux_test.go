@@ -428,7 +428,7 @@ func TestFirstDiagnosisE2ProductionRuntimeNativeAcceptance(t *testing.T) {
 			}
 			results := runtime.Results(task.ID)
 			calls := execution.Calls()
-			if len(results) != 1 || len(calls) != 1 || results[0].Call != calls[0] || !results[0].Final || results[0].Execution.Scope.TaskRef != task.ID || results[0].Call.IntentID != intent.ID {
+			if len(results) != 1 || len(calls) != 1 || !e2proxy.EqualCallResults(results[0].Call, calls[0]) || !results[0].Final || results[0].Execution.Scope.TaskRef != task.ID || results[0].Call.IntentID != intent.ID {
 				t.Fatal("실제 Runner observer가 같은 실행·intent·call의 프로그램 결과를 보존하지 못함")
 			}
 			if mode == "allowed" {

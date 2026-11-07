@@ -119,6 +119,10 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 		exec("GRANT SELECT ON TABLE " + ident(name) + " TO " + ident(role))
 	}
 	exec("GRANT UPDATE(id) ON TABLE e3_evidence_manifests,e3_verdict_issuances TO " + ident(role))
+	exec("GRANT UPDATE(id) ON assets TO " + ident(role))
+	exec("GRANT UPDATE(task_id) ON task_asset_links TO " + ident(role))
+	exec("GRANT UPDATE(node_id) ON exploration_anchors TO " + ident(role))
+
 	exec("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO " + ident(role))
 	t.Run("runtime-login-positive", func(t *testing.T) {
 		if err := CheckFirstDiagnosisRuntimeDatabase(ctx, runtimePool); err != nil {
