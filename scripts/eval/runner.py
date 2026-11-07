@@ -49,6 +49,7 @@ from runner_config import (  # noqa: E402
     METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
+from isolation_proof import valid_output_language  # noqa: E402
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from runner_engine import (  # noqa: E402
@@ -918,7 +919,8 @@ def split_output_language(settings: dict) -> tuple[dict, str]:
     """(표시 언어를 뺀 스냅샷, 표시 언어). 언어는 baseline·개선 후가 일부러 다르다(프로토콜 §2 선언된 차이)."""
     section = settings["settings"]
     language = section["output_language"]
-    if not isinstance(language, str):
+    # 형식이 틀리면 회차를 끝까지 돌려도 채점기가 거부한다. 실행 비용을 쓰기 전에 멈춘다(#302 리뷰).
+    if not valid_output_language(language):
         raise ValueError("output_language")
     rest = {name: value for name, value in section.items() if name != "output_language"}
     return {**settings, "settings": rest}, language

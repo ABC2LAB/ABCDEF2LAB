@@ -1296,7 +1296,10 @@ class TestFailures(unittest.TestCase):
 
     def test_missing_or_malformed_output_language_invalidates_before_the_task(self):
         changes = {"없음": lambda s: s["settings"].pop("output_language"),
-                   "문자열 아님": lambda s: s["settings"].update(output_language=1)}
+                   "문자열 아님": lambda s: s["settings"].update(output_language=1),
+                   "대문자": lambda s: s["settings"].update(output_language="KO"),
+                   "빈 문자열": lambda s: s["settings"].update(output_language=""),
+                   "지역 표기": lambda s: s["settings"].update(output_language="ko-KR")}
         for label, change in changes.items():
             with self.subTest(label=label):
                 result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.settings))
