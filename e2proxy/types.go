@@ -90,20 +90,22 @@ type Limits struct {
 	MaxUnknown     uint64
 }
 type Config struct {
-	Evaluation     *EvaluationCallerContext
-	HeaderMode     HeaderMode
-	Scope          transmit.Scope
-	IntentID       int64
-	OwnerRef       string
-	PolicyRevision string
-	AccountRef     string
-	SessionRef     string
-	ExpiresAt      time.Time
-	Rules          []Rule
-	Budget         transmit.CumulativeBudget `json:"-"`
-	Recorder       Recorder                  `json:"-"`
-	RootCAs        *x509.CertPool            `json:"-"`
-	Limits         Limits
+	// RequestApproval은 운영 비활성인 요청별 확인 경계다. 호스트가 명시적으로 연결한다.
+	RequestApproval RequestApprovalGate `json:"-"`
+	Evaluation      *EvaluationCallerContext
+	HeaderMode      HeaderMode
+	Scope           transmit.Scope
+	IntentID        int64
+	OwnerRef        string
+	PolicyRevision  string
+	AccountRef      string
+	SessionRef      string
+	ExpiresAt       time.Time
+	Rules           []Rule
+	Budget          transmit.CumulativeBudget `json:"-"`
+	Recorder        Recorder                  `json:"-"`
+	RootCAs         *x509.CertPool            `json:"-"`
+	Limits          Limits
 }
 type Restriction struct {
 	PolicyRevision string    `json:"policy_revision"`

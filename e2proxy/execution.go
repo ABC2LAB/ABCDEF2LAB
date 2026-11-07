@@ -853,6 +853,8 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	method := ""
 	if req != nil {
+		// 대기 중 호출자가 URL·헤더를 바꿔 승인 내용과 송신을 분리하지 못한다.
+		req = req.Clone(ctx)
 		method = req.Method
 	}
 	r, err := c.start(method)
@@ -922,6 +924,27 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	r.RuleRef = rule.Ref
 	r.PolicyRevision = revision
+	if e.cfg.RequestApproval != nil {
+		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
+		stopApproval := context.AfterFunc(ctx, cancelApproval)
+		proposal := RequestApprovalProposal{
+			Receipt: r, OwnerRef: e.cfg.OwnerRef, AccountRef: e.cfg.AccountRef, SessionRef: e.cfg.SessionRef,
+			ExpiresAt: c.expires, Method: method, URL: req.URL.String(), Host: requestHost,
+			Headers: requestHeaders.Clone(), Body: bytes.Clone(body),
+		}
+		// 보호 자격 원문은 승인 소비자에게 전달하지 않는다. 참조만 결속한다.
+		allowed, approvalErr := e.cfg.RequestApproval.AwaitRequestApproval(approvalCtx, proposal)
+		canceled := approvalCtx.Err() != nil || ctx.Err() != nil
+		stopApproval()
+		cancelApproval()
+		if approvalErr != nil || !allowed || canceled {
+			r.Decision, r.Reason = "denied", PolicyDenied
+			if canceled {
+				r.Reason = Closed
+			}
+			return finish(nil, ErrDenied)
+		}
+	}
 	r.Decision = "allowed"
 	e.mu.Lock()
 	reason = c.blockedLocked()
