@@ -19,6 +19,7 @@ ALLOWED_ACTORS = frozenset({"engine", "observer"})
 # 양성 대조는 연결 성공, 부정 경로는 실패가 기대값이다.
 _PROBE_EXPECTED = {"positive": "success", "negative": "fail"}
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+_OUTPUT_LANGUAGE = re.compile(r"[a-z]{2,3}\Z")
 _PROOF_FIELDS = frozenset(_CONTEXT) | {"proof_id", "window", "snapshots", "network", "host",
                                        "enforcement_evidence_sha256", "preparation", "observer"}
 _ROW_FIELDS = {
@@ -40,8 +41,9 @@ _ROW_FIELDS = {
                              "sequence_complete"},
     "drain": {"engine_end", "sealed_at", "drained_at", "inflight", "grace_seconds", "settle_seconds",
               "forced_cancelled", "settle_applied_seconds"},
-    "run_conditions": {"engine_settings_sha256", "engine_rules_sha256", "workers", "sampling", "host", "machine_id_sha256",
-                       "llm_stream"},
+    "run_conditions": {"engine_settings_sha256", "engine_rules_sha256", "output_language", "tool_tree_sha256", "workers",
+                       "sampling", "host",
+                       "machine_id_sha256", "llm_stream"},
     "e2_placement": {"mode", "decision_rows", "allowed", "unsupported", "unavailable"},
     "verdict_collection": {"status", "reason"},
     "e2_product": {"close_state", "close_reason", "collection_outcome", "collection_reason", "rows", "attempts", "decisions",
@@ -55,7 +57,8 @@ _ROW_FIELDS = {
 E2_MODES = ("none", "stub", "product")
 _E2_COUNTS = ("decision_rows", "allowed", "unsupported", "unavailable")
 E2_CLOSE_STATES = ("complete", "incomplete", "no_execution", "unavailable")
-E2_COLLECTION_OUTCOMES = ("complete", "product_failure", "no_execution")
+E2_PRODUCT_FAILURE = "product_failure"
+E2_COLLECTION_OUTCOMES = ("complete", E2_PRODUCT_FAILURE, "no_execution")
 E2_DECISION_NAMES = ("allowed", "denied", "unsupported")
 _E2_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _E2_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -237,12 +240,20 @@ _LOCAL_SAMPLING_KEYS = frozenset({"temperature", "top_p", "presence_penalty", "f
 _HOST_KEYS = {"cpu_model": str, "logical_cpus": int, "memory_kib": int, "kernel": str, "docker_server_version": str}
 
 
+def valid_output_language(value: object) -> bool:
+    """러너가 작업 전에, 채점기가 기록을 읽을 때 같은 규칙으로 본다."""
+    return isinstance(value, str) and _OUTPUT_LANGUAGE.fullmatch(value) is not None
+
+
 def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     row = _one(rows, "run_conditions")
     _hex(row["engine_settings_sha256"], "isolation_evidence.run_conditions.engine_settings_sha256")
     _hex(row["machine_id_sha256"], "isolation_evidence.run_conditions.machine_id_sha256")
+    _hex(row["tool_tree_sha256"], "isolation_evidence.run_conditions.tool_tree_sha256")
     if row["engine_rules_sha256"] is not None:
         _hex(row["engine_rules_sha256"], "isolation_evidence.run_conditions.engine_rules_sha256")
+    if not valid_output_language(row["output_language"]):
+        raise IsolationError("isolation_evidence.run_conditions.output_language: 언어 코드 형식 오류")
     _int(row["workers"], "isolation_evidence.run_conditions.workers", low=1)
     if type(row["llm_stream"]) is not bool:
         raise IsolationError("isolation_evidence.run_conditions.llm_stream: bool")
@@ -347,6 +358,12 @@ def e2_identity(receipt: dict, evidence: object) -> tuple[str, str] | None:
     return None if row is None else (row["policy_fingerprint_sha256"], row["image_id"])
 
 
+def e2_collection_outcome(receipt: dict, evidence: object) -> str | None:
+    """제품 E² 회차의 수집 결과(complete·no_execution·product_failure). 그 밖에는 None."""
+    row = e2_product_row(receipt, evidence)
+    return None if row is None else row["collection_outcome"]
+
+
 def _reconcile_totals(mode: str, rows: dict[str, list[dict]], receipt: dict, evidence: object) -> tuple[int, int]:
     """E² 기록이 말하는 (허용, 차단) 시도 수."""
     if mode == "product":
@@ -371,7 +388,7 @@ def attempt_reconciliation(receipt: dict, evidence: object) -> dict | None:
         if rows["attempt_reconciliation"]:
             raise IsolationError("isolation_evidence.attempt_reconciliation: E② 없는 회차에는 없어야 함")
         return None
-    if mode == "product" and e2_product_row(receipt, evidence)["collection_outcome"] == "product_failure":
+    if mode == "product" and e2_product_row(receipt, evidence)["collection_outcome"] == E2_PRODUCT_FAILURE:
         # 제품 실패 회차는 대조 근거가 없다. 분모에 남아 통제 주장이 보류된다(연결 제안 §4.3).
         if rows["attempt_reconciliation"]:
             raise IsolationError("isolation_evidence.attempt_reconciliation: 제품 실패 회차에는 없어야 함")
@@ -400,11 +417,17 @@ def attempt_reconciliation(receipt: dict, evidence: object) -> dict | None:
             "control_claim_withheld": withheld}
 
 
-def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str, str, str]:
+def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str, str, str, str]:
     """check_isolation을 통과한 근거의 실행 조건. 채점기가 회차 사이 같은지 대조한다(평가 프로토콜 §5.1·§6)."""
     row = _one(_rows(evidence, receipt), "run_conditions")
     return (row["engine_settings_sha256"], canonical_sha256(row["sampling"]), canonical_sha256(row["host"]),
-            row["machine_id_sha256"], "true" if row["llm_stream"] else "false", row["engine_rules_sha256"] or "없음")
+            row["machine_id_sha256"], "true" if row["llm_stream"] else "false", row["engine_rules_sha256"] or "없음",
+            row["tool_tree_sha256"])
+
+
+def output_language(receipt: dict, evidence: object) -> str:
+    """check_isolation을 통과한 근거의 표시 언어. 채점기가 조건 하나 안에서 같은지 대조한다(프로토콜 §2)."""
+    return _one(_rows(evidence, receipt), "run_conditions")["output_language"]
 
 
 def drain_policy(receipt: dict, evidence: object) -> tuple[int, int]:

@@ -17,6 +17,8 @@ from run_record import RunRecordError, load_run_inputs
 from runner_checks import policy_sha256
 from runner_record import _network_snapshot
 from score import ComparabilityError, build_report, score_run
+from ground_truth import core_gt
+from run_fixture import KEYS
 from run_fixture_v11 import E2_STUB_PLACEMENT, STUB_RECONCILIATION, make_v11, snapshot
 from test_score import _RunDir, _record
 
@@ -243,6 +245,34 @@ class TestRejectedV11(_V11):
         inputs = self.inputs(self.v11("p1", e2=self.PRODUCT, tamper_rows=self._product_row()))
         self.assertEqual((inputs.e2_mode, inputs.attempt_reconciliation), ("product", STUB_RECONCILIATION))
 
+    def _failed_product(self, rows):
+        drop(rows, row_of(rows, "attempt_reconciliation"))
+        self._product_row(close_state="unavailable", close_reason="close_timeout", collection_outcome="product_failure",
+                          collection_reason="close_timeout", rows=None, attempts=None, decisions=None,
+                          checkpoint_sequence=None, manifest_sha256=None)(rows)
+
+    def test_conditions_with_only_product_failures_keep_the_table_and_the_warning(self):
+        runs = [self.v11(f"f{i}", repeat_index=i, e2=self.PRODUCT, tamper_rows=self._failed_product) for i in range(3)]
+        report = build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("| E② 자리 | product |", report.text)
+        self.assertIn("| 회차 수 | 3 |", report.text)
+        self.assertIn("| 제품 실패 회차(무효 아님, 기대 0) | 3 |", report.text)
+        self.assertIn("| 통제 주장 | 보류(회차 3/3) |", report.text)
+        warning = next(w for w in report.warnings if "통제 주장 보류" in w)
+        self.assertIn("대조 근거 없는 회차 3(제품 실패 3)", warning)
+
+    def test_product_failure_count_is_per_condition_and_excludes_complete_runs(self):
+        runs = [self.v11("g0", e2=self.PRODUCT, tamper_rows=self._product_row()),
+                self.v11("g1", repeat_index=1, e2=self.PRODUCT, tamper_rows=self._failed_product)]
+        report = build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("| 제품 실패 회차(무효 아님, 기대 0) | 1 |", report.text)
+        self.assertIn("| 통제 주장 | 보류(회차 1/2) |", report.text)
+
+    def test_runs_without_e2_stay_out_of_the_control_table(self):
+        report = build_report(self.load([self.v11("h0"), self.v11("h1", repeat_index=1)]), self.correlate,
+                              self.correlatable, runner_key=self.runner_key)
+        self.assertNotIn("통제 검증", report.text)
+
     def test_product_failure_has_no_reconciliation_and_stays_a_run(self):
         def failed(rows):
             drop(rows, row_of(rows, "attempt_reconciliation"))
@@ -297,6 +327,16 @@ class TestRejectedV11(_V11):
         self.assertEqual(self.inputs(self._product_run("i1")).e2_identity, ("2" * 64, "sha256:" + "4" * 64))
         self.assertIsNone(self.inputs(self.v11("i2")).e2_identity)
         self.assertIsNone(self.inputs(self.v11("i3", e2=E2_STUB_PLACEMENT)).e2_identity)
+
+    def test_output_language_may_differ_between_conditions_only(self):
+        english = lambda rows: row_of(rows, "run_conditions").update(output_language="en")
+        self.assertEqual(self.inputs(self.v11("l0")).output_language, "ko")
+        other = self.v11("l1", condition="baseline", engine="baseline", tamper_rows=english)
+        build_report(self.load([self.v11("l2"), other]), self.correlate, self.correlatable,
+                     runner_key=self.runner_key)
+        mixed = [self.v11("l3"), self.v11("l4", repeat_index=1, tamper_rows=english)]
+        with self.assertRaisesRegex(ComparabilityError, "표시 언어 혼합"):
+            build_report(self.load(mixed), self.correlate, self.correlatable, runner_key=self.runner_key)
 
     def test_one_condition_must_use_one_policy_and_image(self):
         for index, changes in enumerate(({"policy_fingerprint_sha256": "5" * 64}, {"image_id": "sha256:" + "6" * 64})):
@@ -384,11 +424,13 @@ class TestRejectedV11(_V11):
 
     def test_run_conditions_row_is_required_and_typed(self):
         self.reject("run_conditions", "r0", tamper_rows=lambda rows: drop(rows, row_of(rows, "run_conditions")))
-        cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "workers": 0,
+        cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "output_language": "KO", "tool_tree_sha256": None,
+                 "workers": 0,
                  "sampling": {"temperature": 1.0}, "host": {"cpu_model": "x"}, "llm_stream": "true"}
         for index, (name, value) in enumerate(cases.items()):
             self.reject("run_conditions", f"r{index + 1}",
                         tamper_rows=lambda rows, n=name, v=value: row_of(rows, "run_conditions").update({n: v}))
+        self.reject("run_conditions", "r20", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(output_language=1))
         self.reject("run_conditions", "r9", tamper_rows=lambda rows: row_of(rows, "run_conditions")["host"].update(
             logical_cpus=True))
         self.reject("run_conditions", "r10", tamper_rows=lambda rows: row_of(rows, "run_conditions")["sampling"].update(
@@ -610,6 +652,21 @@ class TestComparison(_V11):
         matrix = report.text.split("### 개선 후 통제 검증", 1)[0]
         self.assertIn("| 7 ± 2.82843 |", matrix)  # 총 요청 수 5·9 두 회차 평균 ± SD
 
+    def test_primary_metric_comes_from_signed_attribution_without_judgments(self):
+        key = next(c.key for c in core_gt() if c.key in KEYS)
+        report = build_report(self.load([self.v11("m1", solved={key: True}), self.v11("m2", repeat_index=1)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("### 주 지표 — 회차당 엔진 귀속 해결 수", report.text)
+        self.assertLess(report.text.index("주 지표"), report.text.index("측정 매트릭스"))
+        self.assertIn("| 우리@test | 2 | 0.5 ± 0.707107 |", report.text)
+
+    def test_primary_metric_is_unknown_for_a_run_without_proof(self):
+        key = next(c.key for c in core_gt() if c.key in KEYS)
+        report = build_report(self.load([self.v11("u1", solved={key: True}),
+                                         self.v11("u2", repeat_index=1, proof=False)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("| 우리@test | 2 | — | — | 1 |", report.text)
+
     def test_control_table_only_for_conditions_with_e2(self):
         clean = build_report(self.load([self.v11("k1", e2=E2_STUB_PLACEMENT),
                                         self.v11("k2", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
@@ -630,7 +687,8 @@ class TestComparison(_V11):
                    "머신 사양": lambda row: row["host"].update(memory_kib=1),
                    "머신": lambda row: row.update(machine_id_sha256="0" * 64),
                    "LLM 스트리밍": lambda row: row.update(llm_stream=False),
-                   "엔진 규칙 파일": lambda row: row.update(engine_rules_sha256="a" * 64)}
+                   "엔진 규칙 파일": lambda row: row.update(engine_rules_sha256="a" * 64),
+                   "도구 트리": lambda row: row.update(tool_tree_sha256="8" * 64)}
         for index, (label, change) in enumerate(changes.items()):
             with self.subTest(label=label):
                 other = self.v11(f"m{index}", repeat_index=1,

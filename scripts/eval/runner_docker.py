@@ -304,6 +304,10 @@ class Docker:
             raise DockerError(code + "_output_too_large")
         return result.stdout
 
+    def run_bounded(self, args: Sequence[str], timeout: float, max_stdout: int) -> BoundedResult:
+        """호출마다 시한·출력 상한을 정하는 실행. 큰 출력이 정상인 호출에 쓴다. 종료 코드는 호출자가 본다."""
+        return self._bounded(list(args), self._env, timeout, max_stdout)
+
     def json(self, args: Sequence[str], *, stdin: bytes | None = None, code: str) -> object:
         out = self.run(args, stdin=stdin, code=code)
         try:

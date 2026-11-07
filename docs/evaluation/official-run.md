@@ -74,6 +74,8 @@
 
 ## 4. 입력 준비 (세션 전 1회)
 
+세션 디렉터리를 먼저 정한다. 시범은 `SESSION=/srv/abc2lab-eval/pilot`, 공식은 `SESSION=/srv/abc2lab-eval/official-<날짜>`이고 0700으로 만든다. 아래 출력 파일은 덮어쓰기가 거부되므로 세션마다 여기에 둔다.
+
 레포 밖에 러너 uid 소유 0700 디렉터리를 만든다(예: `/srv/abc2lab-eval`, 키는 `/srv/abc2lab-eval-keys`). 회차 결과·로그·키는 레포에 넣지 않는다.
 
 1. **이미지 빌드:** 엔진·계측기는 3절 0번의 동결 작업 트리(`$W/baseline`·`$W/ours`)에서 빌드한다. 웹 UI는 넣지 않는다(양쪽 같음, 평가는 API만 쓴다).
@@ -91,16 +93,25 @@
    docker image inspect --format '{{.Id}}' <위 태그 4개>   # runner.json images.*.id에 넣는다
    ```
 
+   **도구 트리 대조:** 루트 Dockerfile이 베이스 이미지·apt·npm `@latest`를 고정하지 않아, 빌드 시점이 다르면 도구가 달라진다(프로토콜 §2). 그래서 위처럼 두 엔진을 연달아 빌드한다. 두 번째 빌드가 첫 번째의 층을 캐시로 쓰면 `/app` 앞까지 같아진다. 회차 전에 대조한다.
+
+   ```bash
+   cd "$T" && python3 -I -B scripts/eval/tool_tree.py --baseline "abc2lab-eval-engine:baseline-${BASE:0:12}" \
+     --ours "abc2lab-eval-engine:ours-${OURS:0:12}" --out "$SESSION/tool-tree.json"
+   ```
+
+   종료 코드 1(다름)이면 회차를 돌리지 않는다. `docker builder prune -f`로 빌드 캐시를 비우고 두 엔진을 위 명령으로 다시 빌드한 뒤, 이미지 ID를 새로 적는다. 다시 대조할 때는 `--out`에 새 이름(`tool-tree-2.json`)을 줘서 앞 결과를 남긴다. 대조를 건너뛰어도 채점기가 `tool_tree_sha256` 차이를 보고 채점을 멈춘다. 다만 그때는 돌린 회차를 못 쓴다.
+
 2. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 `<…>` 자리(태그·내용 ID)와 경로만 채운다. 그 밖의 값은 바꾸지 않는다.
    `runs_root`는 **세션마다 새 디렉터리**로 둔다(시범: `…/pilot/runs`, 공식: `…/official-<날짜>/runs`, 0700). 6절 집계는 runs_root 하나를 한 세션으로 본다.
 3. **사전검사 선언:** 손으로 쓰지 않고 공식 프로파일에서 만든다(사전검사는 양쪽이 서로 같은지만 보므로, 같은 오타는 못 잡는다).
 
    ```bash
    cd "$T" && python3 -I -B scripts/eval/official_preflight.py docs/evaluation/profiles/official-35b.json \
-     --baseline-sha "$BASE" --ours-sha "$OURS" --out /srv/abc2lab-eval/preflight.json
+     --baseline-sha "$BASE" --ours-sha "$OURS" --out "$SESSION/preflight.json"
    ```
 
-   시범과 공식은 ours 커밋이 다르므로 선언 파일도 따로 만든다(덮어쓰기는 거부된다).
+   시범과 공식은 ours 커밋이 다르므로 선언 파일도 세션 디렉터리마다 따로 만든다(덮어쓰기는 거부된다).
 
 4. **비밀 env 파일:** `deploy/eval/eval.secrets.env.example`을 `/srv/abc2lab-eval/eval.secrets.env`로 복사하고 0600으로 둔다. 관리자·DB 비밀번호는
    무작위로 만든다. **API 키는 본인 터미널에서만 넣는다**(채팅·명령 인자·셸 기록에 남기지 않는다):
@@ -118,7 +129,7 @@
 한 회차:
 
 ```bash
-cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --preflight /srv/abc2lab-eval/preflight.json \
+cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --preflight "$SESSION/preflight.json" \
   --side baseline --condition "원본@35b" --repeat 0      # 개선 후는 --side ours --condition "우리@35b"
 ```
 
@@ -167,14 +178,14 @@ python3 -I -B scripts/eval/score.py /srv/abc2lab-eval/official-<날짜>/manifest
   2N 초과·유효 부족·순서 어긋남은 `경고[…]`로 알린다. 서명 불일치, 형식이 틀린 결과, 쪽 안의 조건 이름 섞임, 같은 `--repeat`의
   완료 중복, 작업 요청 해시 불일치는 집계를 멈춘다. manifest에는 완료(서명) 회차만 들어간다.
 - 결과 표에는 §5.1대로 조건별 시도 수·유효 수·무효 사유별 수를 함께 싣는다. 무효율은 쪽별로 따로 쓴다.
-- 주 지표는 회차당 엔진 귀속 해결 수(코어 GT 9·BAC 10), 평균 ± SD다(API 개발 측정, 이후 GPU 공식 비교 공통. API 수치는 공식 비교표에 넣지 않는다). 판정 칸은 판정 레코드가 붙을 때까지 판단불가(판정 미수집)이며,
+- 주 지표는 회차당 엔진 귀속 해결 수(코어 GT 9·BAC 10), 평균 ± SD다. `score.py` 출력의 첫 표다. 격리 증명이 없는 회차가 있으면 그 칸은 0이 아니라 `—`다(API 개발 측정, 이후 GPU 공식 비교 공통. API 수치는 공식 비교표에 넣지 않는다). 판정 칸은 판정 레코드가 붙을 때까지 판단불가(판정 미수집)이며,
   붙으면 같은 서명 회차 묶음으로 다시 채점한다(§5.1). 익명 fixture라 IDOR 개선 효과는 주장하지 않는다.
 
 ## 7. 보관
 
 - runs_root(서명된 회차 기록·근거 파일)와 manifest·채점 출력을 레포 밖에 그대로 보관하고, 디렉터리별 SHA-256 목록을 함께 둔다. **레포에 커밋하지 않는다**(절대 규칙 2).
 - 러너 서명 키는 채점 재현에 필요하므로 회차 기록과 **다른 곳**에 보관한다.
-- 세션 기록(날짜, 제공자 재조회 응답 sha256, 이미지 ID, 태그 커밋, **도구 출처 커밋과 `tools-frozen` 확인**, 집계 출력)을 결과 문서에 옮긴다.
+- 세션 기록(날짜, 제공자 재조회 응답 sha256, 이미지 ID, `tool-tree.json`, 태그 커밋, **도구 출처 커밋과 `tools-frozen` 확인**, 집계 출력)을 결과 문서에 옮긴다.
 
 ## 8. GPU 로컬 세션 준비(초안)
 

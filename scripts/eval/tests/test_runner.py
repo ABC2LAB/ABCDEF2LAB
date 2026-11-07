@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import runner
+from tool_tree import tree_sha256
 from runner import COMPLETE, INVALID, RESULT_NAME, Clock, DockerPorts, Facts, RunFailure, build_spec, verdict_limits, execute_run
 from runner_config import (
     COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, RunnerConfigError, compose_environment,
@@ -224,7 +226,7 @@ class FakePorts:
         self.host = {"cpu_model": "Example CPU", "logical_cpus": 8, "memory_kib": 16 * 1024 * 1024,
                      "kernel": "6.0.0-example", "docker_server_version": "29.1.3", "machine_id_sha256": "c" * 64}
         # 엔진 설정 응답(runner_engine이 프록시를 설정 여부로 바꾼 뒤): 선언 worker_count·모델과 같고 프록시 없음.
-        self.settings = {"settings": {"workers": spec.worker_count, "web_search_proxy_set": False,
+        self.settings = {"settings": {"workers": spec.worker_count, "output_language": "ko", "web_search_proxy_set": False,
                                       "global_proxy_set": False, "llm_pool_enabled": False},
                          "llm": {"model": spec.model_tag, "proxy_set": False, "reasoning_effort": "", "thinking_type": "",
                                  "context_window_k": spec.context_window_k}}
@@ -307,6 +309,10 @@ class FakePorts:
                 "requested_at": f"2026-11-02T00:00:0{1 if phase == 'pre' else 8}+00:00",
                 "received_at": f"2026-11-02T00:00:0{2 if phase == 'pre' else 9}+00:00",
                 "solved": dict(self.solved[phase])}
+
+    def tool_tree(self):
+        self._call("tool_tree")
+        return "7" * 64
 
     def host_spec(self):
         self._call("host_spec")
@@ -473,7 +479,7 @@ def run(mutate=None, mutate_gateway=None, spec=None):
     return result, ports, meter, evidence
 
 
-FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
+FULL_ORDER = ["preexisting", "image_ids", "tool_tree", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "apply_engine_settings", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
@@ -1228,12 +1234,17 @@ class TestFailures(unittest.TestCase):
         conditions = result["run_conditions"]
         settings = evidence.files["engine-settings.json"]
         self.assertEqual(settings, ports.settings)
-        self.assertEqual(conditions["engine_settings_sha256"], runner.canonical_sha256(settings))
+        comparable = copy.deepcopy(settings)
+        del comparable["settings"]["output_language"]
+        self.assertEqual(conditions["engine_settings_sha256"], runner.canonical_sha256(comparable))
+        self.assertEqual(conditions["output_language"], "ko")
+        self.assertEqual(settings["settings"]["output_language"], "ko")  # 근거 파일에는 그대로 남는다
         self.assertEqual(conditions["workers"], ports.spec.worker_count)
         self.assertIs(conditions["llm_stream"], ports.spec.llm_stream)
         # 선언값이 아니라 게이트웨이가 마커에 남긴 적용값이 기록된다.
         self.assertEqual(conditions["sampling"], evidence.files["llm-summary.json"]["sampling_applied"])
         self.assertEqual(conditions["machine_id_sha256"], ports.host["machine_id_sha256"])
+        self.assertEqual(conditions["tool_tree_sha256"], "7" * 64)
         self.assertNotIn("machine_id_sha256", conditions["host"])
         row = next(r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "run_conditions")
         self.assertEqual({key: row[key] for key in conditions}, conditions)
@@ -1269,6 +1280,30 @@ class TestFailures(unittest.TestCase):
             with self.subTest(label=label):
                 result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.settings))
                 self.assert_invalid(result, ports, evidence, "engine_settings_mismatch")
+                self.assertNotIn("start_task", ports.calls)
+
+    def test_output_language_stays_out_of_the_settings_hash_and_nothing_else_does(self):
+        def conditions(change):
+            result, *_ = run(lambda p, m, c, f=change: f(p.settings))
+            self.assertEqual(result["status"], COMPLETE)
+            return result["run_conditions"]
+        korean = conditions(lambda s: None)
+        english = conditions(lambda s: s["settings"].update(output_language="en"))
+        self.assertEqual(english["output_language"], "en")
+        self.assertEqual(english["engine_settings_sha256"], korean["engine_settings_sha256"])
+        other = conditions(lambda s: s["settings"].update(llm_record=True))
+        self.assertNotEqual(other["engine_settings_sha256"], korean["engine_settings_sha256"])
+
+    def test_missing_or_malformed_output_language_invalidates_before_the_task(self):
+        changes = {"없음": lambda s: s["settings"].pop("output_language"),
+                   "문자열 아님": lambda s: s["settings"].update(output_language=1),
+                   "대문자": lambda s: s["settings"].update(output_language="KO"),
+                   "빈 문자열": lambda s: s["settings"].update(output_language=""),
+                   "지역 표기": lambda s: s["settings"].update(output_language="ko-KR")}
+        for label, change in changes.items():
+            with self.subTest(label=label):
+                result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.settings))
+                self.assert_invalid(result, ports, evidence, "engine_settings_failed")
                 self.assertNotIn("start_task", ports.calls)
 
     def test_settings_go_in_before_the_snapshot_that_checks_them(self):
@@ -1427,6 +1462,16 @@ class TestFailures(unittest.TestCase):
             p.image_ids = lambda: dict(p.spec.image_ids, target="sha256:" + "f" * 64)
         result, ports, _, evidence = run(other_image)
         self.assert_invalid(result, ports, evidence, "image_id_mismatch", down=False)
+
+    def test_tool_tree_failure_stops_before_compose_up(self):
+        def broken(p, m, c):
+            def fail():
+                p._call("tool_tree")
+                raise ValueError("/path/that/must/not/leak")
+            p.tool_tree = fail
+        result, ports, _, evidence = run(broken)
+        self.assert_invalid(result, ports, evidence, "tool_tree_failed", down=False)
+        self.assertNotIn("up", ports.calls)
 
     def test_running_container_image_must_match(self):
         def swap(networks, containers):
@@ -1783,6 +1828,24 @@ class TestDockerPortsStateCopy(unittest.TestCase):
                 ports.state_copy("pre", snapshot)
 
 
+class TestDockerPortsToolTree(unittest.TestCase):
+    def test_hashes_the_engine_image_of_this_side(self):
+        tree = {"dpkg": {"curl": "7.88.1"}}
+        for side in ("baseline", "ours"):
+            with self.subTest(side), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp, "runs")
+                root.mkdir(mode=0o700)
+                os.chmod(root, 0o700)
+                config = parse_runner_config(runner_config() | {"runs_root": str(root)})
+                plan = plan_run(config, configuration(), side, f"{side}-1")
+                docker = SimpleNamespace(run_bounded=object())
+                ports = DockerPorts(config, plan, create_run_directory(root, f"{side}-1"), docker=docker,
+                                    findings=dict, start=lambda: "1", settings=dict)
+                with patch.object(runner, "collect_tree", return_value=tree) as collect:
+                    self.assertEqual(ports.tool_tree(), tree_sha256(tree))
+                self.assertEqual(collect.call_args[0], (config.images[f"engine_{side}"].id, docker.run_bounded))
+
+
 class TestDockerPortsStateMemory(unittest.TestCase):
     def test_uses_the_meter_image_target_port_and_required_only_before_the_run(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1925,6 +1988,37 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                 ask.assert_not_called()
                 self.assertEqual(err.getvalue().strip(), code)
                 self.assertEqual(list(root.iterdir()), [])
+
+    def _e2_preparation_failure(self, tmp):
+        def product_with_missing_policy(payload):
+            payload["e2"] = dict(E2_PRODUCT_BLOCK, policy_path=str(Path(tmp, "missing-policy.json")))
+        return self.inputs(tmp, product_with_missing_policy)
+
+    def test_e2_preparation_failure_leaves_no_run_directory(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            root, argv = self._e2_preparation_failure(tmp)
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass", return_value="not-a-real-password"), contextlib.redirect_stderr(err):
+                self.assertEqual(runner.main(argv), 2)
+            self.assertIn("policy_unavailable", err.getvalue())
+            self.assertEqual(list(root.iterdir()), [])  # 시도로 세지 않는다(exit 2)
+
+    def test_a_directory_that_cannot_be_removed_is_named_for_the_operator(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            root, argv = self._e2_preparation_failure(tmp)
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass", return_value="not-a-real-password"), \
+                    patch.object(runner.shutil, "rmtree", side_effect=OSError("/secret/path")), \
+                    contextlib.redirect_stderr(err):
+                self.assertEqual(runner.main(argv), 2)
+            left = [path.name for path in root.iterdir()]
+            self.assertEqual(len(left), 1)
+            self.assertIn(f"REMOVE_FAILED {left[0]}", err.getvalue())
+            self.assertNotIn("/secret/path", err.getvalue())
 
     def test_bad_inputs_stop_before_asking_or_creating_a_run(self):
         import contextlib

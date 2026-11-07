@@ -27,7 +27,7 @@ from typing import NamedTuple
 # 평가 모듈(우리 코드)만 명시적으로 올린다 — cwd·사용자 site-packages는 계속 차단된다.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from aggregate import RepeatResult, ScanVerdict, aggregate_condition, render_matrix  # noqa: E402
+from aggregate import RepeatResult, ScanVerdict, aggregate_condition, render_matrix, render_primary_metric  # noqa: E402
 from collect import ScanOutputError, ScanParseResult, VerdictRecord, parse_scan_payload  # noqa: E402
 from correlation import DEFAULT_PATH, CorrelationError, load_correlation  # noqa: E402
 from evidence import TrafficIndex, challenge_has_evidence, dangling_refs  # noqa: E402
@@ -35,6 +35,7 @@ from ground_truth import bac_category, core_gt  # noqa: E402
 from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa: E402
 from scoreboard import SnapshotError  # noqa: E402
 
+from isolation_proof import E2_PRODUCT_FAILURE  # noqa: E402
 from run_record import V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key  # noqa: E402
 
 Correlate = Callable[[VerdictRecord], str | None]
@@ -99,6 +100,7 @@ def assemble_repeat(
     covered: frozenset[str] | None,
     correlatable: frozenset[str] | None,
     *, pre_solved: dict[str, bool] | None = None, engine_solved: frozenset[str] = frozenset(),
+    attribution_known: bool = True,
 ) -> RepeatResult:
     """정규화된 판정·해결상태·증거·커버리지·상관 가능 여부 → RepeatResult. 엔진을 보지 않는다."""
     return RepeatResult(
@@ -114,6 +116,7 @@ def assemble_repeat(
         correlatable=correlatable,
         pre_solved=dict(pre_solved or {}),
         engine_solved=engine_solved,
+        attribution_known=attribution_known,
     )
 
 
@@ -167,7 +170,8 @@ def score_run(
         parsed = _uncollected_verdicts()
     evidence_ok = confirmed_evidence(parsed, inputs.traffic, correlate)
     result = assemble_repeat(manifest, parsed, inputs.post, evidence_ok, inputs.covered, correlatable,
-                             pre_solved=inputs.pre, engine_solved=inputs.engine_solved)
+                             pre_solved=inputs.pre, engine_solved=inputs.engine_solved,
+                             attribution_known=inputs.version != V11 or inputs.proof_id is not None)
     warnings = list(repeat_warnings(manifest, parsed, inputs.traffic))
     if not inputs.judgments_collected:
         warnings.append(f"경고[판정 미수집] {run}: v1.1 records=null — GT 판정 전부 판단불가(미탐·오탐·확정 0), "
@@ -255,7 +259,8 @@ def _control_claim(runs: list[dict | None], mode: str) -> str:
     return claim + (" — 가짜 E², 통제 증명 아님" if mode == "stub" else "")
 
 
-def render_control_table(control: dict[str, list[dict | None]], modes: dict[str, str]) -> str:
+def render_control_table(control: dict[str, list[dict | None]], modes: dict[str, str],
+                         product_failures: dict[str, int]) -> str:
     """개선 후 통제 검증 결과 표(§8.3). 성능 매트릭스와 섞지 않는다. 값은 회차 합계(회차별 값, 근거 없음은 —).
 
     회차 수는 그 조건의 전 회차다. 대조 근거가 없는 회차는 분모에 남기고 보류로 센다.
@@ -267,7 +272,10 @@ def render_control_table(control: dict[str, list[dict | None]], modes: dict[str,
              "| 회차 수 | " + " | ".join(str(len(control[c])) for c in conditions) + " |",
              "| E② 자리 | " + " | ".join(modes[c] for c in conditions) + " |",
              "| 대조 근거 없는 회차(증명 없음, 기대 0) | " + " | ".join(
-                 str(sum(1 for r in control[c] if r is None)) for c in conditions) + " |"]
+                 str(sum(1 for r in control[c] if r is None)) for c in conditions) + " |",
+             # 무효가 아니라 그대로 세는 회차다. 무효율과 따로 싣는다(프로토콜 §2).
+             "| 제품 실패 회차(무효 아님, 기대 0) | " + " | ".join(
+                 str(product_failures.get(c, 0)) for c in conditions) + " |"]
     for label, value in _CONTROL_ROWS:
         cells = []
         for c in conditions:
@@ -282,16 +290,18 @@ def render_control_table(control: dict[str, list[dict | None]], modes: dict[str,
     return "\n".join(lines) + "\n"
 
 
-def control_warnings(control: dict[str, list[dict | None]]) -> list[str]:
+def control_warnings(control: dict[str, list[dict | None]], product_failures: dict[str, int]) -> list[str]:
     """통제 주장을 보류한 조건마다 사유 건수를 경고로 올린다(결과 요약에도 표시, §8.3)."""
     warnings = []
     for condition, runs in control.items():
         withheld = _withheld_runs(runs)
         if withheld:
             known = [r for r in runs if r is not None]
+            failures = product_failures.get(condition, 0)
+            failed = f"(제품 실패 {failures})" if failures else ""
             warnings.append(
                 f"경고[통제 주장 보류] {condition}: 회차 {withheld}/{len(runs)} — "
-                f"대조 근거 없는 회차 {len(runs) - len(known)}, "
+                f"대조 근거 없는 회차 {len(runs) - len(known)}{failed}, "
                 f"차단 후 도달 {sum(r['blocked_reached'] for r in known)}, "
                 f"기록 없이 도달 {sum(r['unrecorded_reached'] for r in known)}, "
                 f"재사용 {sum(r['meter_attempt_reused'] for r in known)}, "
@@ -314,11 +324,14 @@ def build_report(
     versions: set[str] = set()
     drain_policies: set[tuple[int, int]] = set()
     run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set(),
-                                           "LLM 스트리밍": set(), "엔진 규칙 파일": set()}
+                                           "LLM 스트리밍": set(), "엔진 규칙 파일": set(), "도구 트리": set()}
     # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
     e2_modes: dict[str, set[str]] = {}
     e2_identities: dict[str, set[tuple[str, str]]] = {}
+    # 표시 언어도 baseline·개선 후가 일부러 다르다(프로토콜 §2). 조건 하나 안에서만 같아야 한다.
+    output_languages: dict[str, set[str]] = {}
     control: dict[str, list[dict | None]] = {}
+    product_failures: dict[str, int] = {}
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs
@@ -359,6 +372,12 @@ def build_report(
                 raise ComparabilityError(f"E② 자리 혼합({m.condition}: {sorted(modes)}) — 조건 하나는 같은 E② 배치로만 "
                                          "집계(프로토콜 §2)")
         # 같은 조건이면 같은 E²여야 한다. 정책이나 이미지가 회차마다 다르면 한 조건으로 묶어 평균 낼 수 없다.
+        if inputs.output_language is not None:
+            languages = output_languages.setdefault(m.condition, set())
+            languages.add(inputs.output_language)
+            if len(languages) > 1:
+                raise ComparabilityError(f"표시 언어 혼합({m.condition}: {sorted(languages)}) — 조건 하나는 같은 언어로만 "
+                                         "집계(프로토콜 §2)")
         if inputs.e2_identity is not None:
             identities = e2_identities.setdefault(m.condition, set())
             identities.add(inputs.e2_identity)
@@ -366,6 +385,8 @@ def build_report(
                 raise ComparabilityError(f"E② 정책 지문·이미지 불일치({m.condition}) — 같은 정책·이미지끼리만 집계(프로토콜 §2)")
         # 증명 없는 회차는 대조 근거가 None이다. 조건의 분모에 남겨 보류로 센다(#225 리뷰).
         control.setdefault(m.condition, []).append(inputs.attempt_reconciliation)
+        product_failures[m.condition] = (product_failures.get(m.condition, 0)
+                                         + (inputs.e2_outcome == E2_PRODUCT_FAILURE))
         by_condition.setdefault(m.condition, []).append(scored.result)
         warnings.extend(scored.warnings)
 
@@ -380,16 +401,18 @@ def build_report(
     if versions == {V1}:
         warnings.append("경고[공식 비교 아님] 러너 기록 v1(직접 관측 이벤트) — 합성 시험·과거 형식 회귀 검증용, "
                         "공식 비교표는 v1.1 isolated_window만(프로토콜 §4)")
-    sections = [f"모델 태그: {manifests[0].model_tag}\n"]
-    for basis_name, basis in (("코어 GT(인가 9)", core_gt()), ("BAC category(10)", bac_category())):
+    bases = (("코어 GT(인가 9)", core_gt()), ("BAC category(10)", bac_category()))
+    sections = [f"모델 태그: {manifests[0].model_tag}\n", render_primary_metric(by_condition, bases)]
+    for basis_name, basis in bases:
         rows = [aggregate_condition(c, repeats, basis) for c, repeats in by_condition.items()]
         sections.append(render_matrix(rows, basis_name))
-    # E② 자리를 서명 근거로 확인한 회차가 있는 조건만 표에 낸다. 조건 안에서 자리가 섞이면 위에서 이미 멈췄으므로
-    # 그런 조건의 None은 증명 없는 회차뿐이다. 확인한 회차가 하나도 없으면 E² 조건인지 알 수 없어 표에 넣지 않는다.
-    control = {c: runs for c, runs in control.items() if any(r is not None for r in runs)}
+    # E② 자리를 서명 근거로 확인한 조건만 표에 낸다. 제품 실패만 있는 조건은 대조 근거가 하나도 없지만 자리가
+    # product로 확인된다. 여기서 빠지면 통제 주장을 보류했다는 사실까지 결과에서 사라진다(프로토콜 §2).
+    control = {c: runs for c, runs in control.items()
+               if any(r is not None for r in runs) or e2_modes.get(c, set()) - {"none"}}
     if control:
-        sections.append(render_control_table(control, {c: next(iter(e2_modes[c])) for c in control}))
-        warnings.extend(control_warnings(control))
+        sections.append(render_control_table(control, {c: next(iter(e2_modes[c])) for c in control}, product_failures))
+        warnings.extend(control_warnings(control, product_failures))
     return Report("\n".join(sections), tuple(warnings))
 
 
