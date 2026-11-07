@@ -92,7 +92,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 ## 회차 순서
 
 ```
-[up 전]  project 이름 중복 없음 → 이미지 내용 ID 확인 → 머신 사양(CPU·논리 CPU·메모리·커널·Docker 버전·머신 ID 해시) → 회차 디렉터리(0700) 생성
+[up 전]  project 이름 중복 없음 → 이미지 내용 ID 확인 → 엔진 도구 트리 해시 → 머신 사양(CPU·논리 CPU·메모리·커널·Docker 버전·머신 ID 해시) → 회차 디렉터리(0700) 생성
 [기동]   compose up(--pull never, --no-build, --wait)
 [pre]    망·publish·이미지·호스트 조건 점검 → 부정 연결 점검 → tmpfs 마운트 ID·사용량(구간 전) → 대상 준비 → 구간 감시 시작 → pre 스코어보드
          계측기 전달 건수 == 0
@@ -193,6 +193,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 |---|---|
 | `project_exists` | 같은 project가 이미 있음(이 러너 것이 아니므로 up·down 모두 안 함) |
 | `project_check_failed`, `image_id_failed`, `image_id_mismatch` | 사전 조회 실패, 로컬 이미지가 설정의 내용 ID와 다름 |
+| `tool_tree_failed` | 엔진 이미지의 도구 트리를 읽지 못함(망 없는 1회용 컨테이너, `tool_tree.py`) |
 | `host_spec_failed` | 머신 사양을 읽지 못함(`/proc/cpuinfo` 모델명·`/proc/meminfo` MemTotal·`/etc/machine-id`·Docker 버전) |
 | `engine_rules_failed` | 원본 ② 규칙 등록 실패(엔진이 거부, 정규식 오류 포함), 내장 규칙과 이름 충돌, 규칙을 타는 도구를 줄이는 파일, 또는 다시 읽은 규칙·도구 목록이 파일과 다름. 작업을 시작하지 않는다 |
 | `engine_settings_apply_failed` | 작업 전에 압축 기준 창·worker 수를 엔진에 넣지 못함(프로파일 저장·활성화·설정 쓰기 중 하나가 실패) |

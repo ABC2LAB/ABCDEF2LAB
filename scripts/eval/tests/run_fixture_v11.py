@@ -30,7 +30,8 @@ CONDITIONS = {"engine_settings_sha256": "e" * 64, "workers": 3, "llm_stream": Tr
                            "repetition_penalty": 1.0, "seed": 42},
               "host": {"cpu_model": "Example CPU", "logical_cpus": 8, "memory_kib": 16777216, "kernel": "6.0.0",
                        "docker_server_version": "29.1.3"},
-              "machine_id_sha256": "d" * 64, "engine_rules_sha256": None, "output_language": "ko"}
+              "machine_id_sha256": "d" * 64, "engine_rules_sha256": None, "output_language": "ko",
+              "tool_tree_sha256": "7" * 64}
 # E② 자리 행. 기본은 E² 없음(none, 건수 없음). 가짜 E² 회차는 e2=E2_STUB_PLACEMENT로 바꾼다.
 E2_NONE_PLACEMENT = {"mode": "none", "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None}
 E2_STUB_PLACEMENT = {"mode": "stub", "decision_rows": 5, "allowed": 4, "unsupported": 1, "unavailable": 0}

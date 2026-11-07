@@ -41,7 +41,8 @@ _ROW_FIELDS = {
                              "sequence_complete"},
     "drain": {"engine_end", "sealed_at", "drained_at", "inflight", "grace_seconds", "settle_seconds",
               "forced_cancelled", "settle_applied_seconds"},
-    "run_conditions": {"engine_settings_sha256", "engine_rules_sha256", "output_language", "workers", "sampling", "host",
+    "run_conditions": {"engine_settings_sha256", "engine_rules_sha256", "output_language", "tool_tree_sha256", "workers",
+                       "sampling", "host",
                        "machine_id_sha256", "llm_stream"},
     "e2_placement": {"mode", "decision_rows", "allowed", "unsupported", "unavailable"},
     "verdict_collection": {"status", "reason"},
@@ -247,6 +248,7 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     row = _one(rows, "run_conditions")
     _hex(row["engine_settings_sha256"], "isolation_evidence.run_conditions.engine_settings_sha256")
     _hex(row["machine_id_sha256"], "isolation_evidence.run_conditions.machine_id_sha256")
+    _hex(row["tool_tree_sha256"], "isolation_evidence.run_conditions.tool_tree_sha256")
     if row["engine_rules_sha256"] is not None:
         _hex(row["engine_rules_sha256"], "isolation_evidence.run_conditions.engine_rules_sha256")
     if not valid_output_language(row["output_language"]):
@@ -408,11 +410,12 @@ def attempt_reconciliation(receipt: dict, evidence: object) -> dict | None:
             "control_claim_withheld": withheld}
 
 
-def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str, str, str]:
+def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str, str, str, str]:
     """check_isolation을 통과한 근거의 실행 조건. 채점기가 회차 사이 같은지 대조한다(평가 프로토콜 §5.1·§6)."""
     row = _one(_rows(evidence, receipt), "run_conditions")
     return (row["engine_settings_sha256"], canonical_sha256(row["sampling"]), canonical_sha256(row["host"]),
-            row["machine_id_sha256"], "true" if row["llm_stream"] else "false", row["engine_rules_sha256"] or "없음")
+            row["machine_id_sha256"], "true" if row["llm_stream"] else "false", row["engine_rules_sha256"] or "없음",
+            row["tool_tree_sha256"])
 
 
 def output_language(receipt: dict, evidence: object) -> str:

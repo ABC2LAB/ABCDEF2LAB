@@ -91,6 +91,15 @@
    docker image inspect --format '{{.Id}}' <위 태그 4개>   # runner.json images.*.id에 넣는다
    ```
 
+   **도구 트리 대조:** 루트 Dockerfile이 베이스 이미지·apt·npm `@latest`를 고정하지 않아, 빌드 시점이 다르면 도구가 달라진다(프로토콜 §2). 그래서 위처럼 두 엔진을 연달아 빌드한다. 두 번째 빌드가 첫 번째의 층을 캐시로 쓰면 `/app` 앞까지 같아진다. 회차 전에 대조한다.
+
+   ```bash
+   cd "$T" && python3 -I -B scripts/eval/tool_tree.py --baseline "abc2lab-eval-engine:baseline-${BASE:0:12}" \
+     --ours "abc2lab-eval-engine:ours-${OURS:0:12}" --out /srv/abc2lab-eval/tool-tree.json
+   ```
+
+   종료 코드 1(다름)이면 회차를 돌리지 않는다. `docker builder prune -f`로 빌드 캐시를 비우고 두 엔진을 위 명령으로 다시 빌드한 뒤, 이미지 ID를 새로 적는다. 대조를 건너뛰어도 채점기가 `tool_tree_sha256` 차이를 보고 채점을 멈춘다. 다만 그때는 돌린 회차를 못 쓴다.
+
 2. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 `<…>` 자리(태그·내용 ID)와 경로만 채운다. 그 밖의 값은 바꾸지 않는다.
    `runs_root`는 **세션마다 새 디렉터리**로 둔다(시범: `…/pilot/runs`, 공식: `…/official-<날짜>/runs`, 0700). 6절 집계는 runs_root 하나를 한 세션으로 본다.
 3. **사전검사 선언:** 손으로 쓰지 않고 공식 프로파일에서 만든다(사전검사는 양쪽이 서로 같은지만 보므로, 같은 오타는 못 잡는다).
@@ -174,7 +183,7 @@ python3 -I -B scripts/eval/score.py /srv/abc2lab-eval/official-<날짜>/manifest
 
 - runs_root(서명된 회차 기록·근거 파일)와 manifest·채점 출력을 레포 밖에 그대로 보관하고, 디렉터리별 SHA-256 목록을 함께 둔다. **레포에 커밋하지 않는다**(절대 규칙 2).
 - 러너 서명 키는 채점 재현에 필요하므로 회차 기록과 **다른 곳**에 보관한다.
-- 세션 기록(날짜, 제공자 재조회 응답 sha256, 이미지 ID, 태그 커밋, **도구 출처 커밋과 `tools-frozen` 확인**, 집계 출력)을 결과 문서에 옮긴다.
+- 세션 기록(날짜, 제공자 재조회 응답 sha256, 이미지 ID, `tool-tree.json`, 태그 커밋, **도구 출처 커밋과 `tools-frozen` 확인**, 집계 출력)을 결과 문서에 옮긴다.
 
 ## 8. GPU 로컬 세션 준비(초안)
 
