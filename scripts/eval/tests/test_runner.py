@@ -618,9 +618,9 @@ class TestE2Product(unittest.TestCase):
 
     def test_blocked_attempts_counts_both_denied_cells_and_stays_unknown_without_evidence(self):
         cells = {"denied_unobserved": 3, "denied_observed": 4}
-        self.assertEqual(runner._blocked_attempts({"cells": cells}), 7)
-        self.assertEqual(runner._blocked_attempts({"cells": {"denied_unobserved": 0, "denied_observed": 0}}), 0)
-        self.assertIsNone(runner._blocked_attempts(None))
+        self.assertEqual(runner.blocked_attempts({"cells": cells}), 7)
+        self.assertEqual(runner.blocked_attempts({"cells": {"denied_unobserved": 0, "denied_observed": 0}}), 0)
+        self.assertIsNone(runner.blocked_attempts(None))
 
     def test_keep_alive_includes_the_close_wait_on_both_sides(self):
         payload = runner_config()
