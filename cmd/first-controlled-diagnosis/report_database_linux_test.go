@@ -26,11 +26,12 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/remediation"
+	"github.com/Autumn-27/artex/server"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
-// 전용 DB 안의 임의 schema/LOGIN만 만든다. 공용 DB 설정·다른 fixture는 바꾸지 않는다.
+// 매번 만든 임의 DB/schema/LOGIN만 사용한다. 제공된 DB와 다른 fixture의 PUBLIC 권한은 바꾸지 않는다.
 func TestReportCommandOwnedPostgres(t *testing.T) {
 	dsn := os.Getenv("ARTEX_FIRST_DIAGNOSIS_TEST_DSN")
 	if dsn == "" {
@@ -49,6 +50,10 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 			t.Error("소유 DB 마감 실패")
 		}
 	})
+	var sourceDatabase, sourceACL string
+	if admin.QueryRowContext(ctx, "SELECT datname,COALESCE(datacl::text,'') FROM pg_database WHERE datname=current_database()").Scan(&sourceDatabase, &sourceACL) != nil {
+		t.Fatal("제공된 DB 권한 확인 실패")
+	}
 	exec := func(pool *sql.DB, query string, args ...any) {
 		t.Helper()
 		if _, err := pool.ExecContext(ctx, query, args...); err != nil {
@@ -61,17 +66,52 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 	}
 	suffix := hex.EncodeToString(random)
 	schema, role := "report_cli_"+suffix, "report_rt_"+suffix
+	databaseName := "report_db_" + suffix
 	ident := func(name string) string { return pgx.Identifier{name}.Sanitize() }
-	exec(admin, "CREATE SCHEMA "+ident(schema))
-	t.Cleanup(func() {
-		if _, err := admin.ExecContext(context.Background(), "DROP SCHEMA "+ident(schema)+" CASCADE"); err != nil {
-			t.Error("소유 schema 마감 실패")
-		}
-	})
 	u, err := url.Parse(dsn)
 	if err != nil || u.Scheme != "postgres" && u.Scheme != "postgresql" {
 		t.Fatal("URL DSN 필요")
 	}
+	exec(admin, "CREATE DATABASE "+ident(databaseName)+" TEMPLATE template0")
+	t.Cleanup(func() {
+		if _, err := admin.ExecContext(context.Background(), "DROP DATABASE "+ident(databaseName)); err != nil {
+			t.Error("소유 DB 마감 실패")
+		}
+	})
+	u.Path = "/" + databaseName
+	u.RawPath = ""
+	databaseQuery := u.Query()
+	databaseQuery.Del("database")
+	databaseQuery.Del("dbname")
+	u.RawQuery = databaseQuery.Encode()
+	ownedAdmin, err := sql.Open("pgx", u.String())
+	if err != nil {
+		t.Fatal("새 소유 DB 연결 실패")
+	}
+	t.Cleanup(func() {
+		if ownedAdmin.Close() != nil {
+			t.Error("소유 설치 pool 마감 실패")
+		}
+	})
+	var actualDatabase string
+	if ownedAdmin.QueryRowContext(ctx, "SELECT current_database()").Scan(&actualDatabase) != nil || actualDatabase != databaseName || actualDatabase == sourceDatabase {
+		t.Fatal("설치 연결이 새 소유 DB와 다릅니다")
+	}
+	var publicTemp bool
+	if ownedAdmin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_database d,
+        aclexplode(COALESCE(d.datacl,acldefault('d',d.datdba))) a
+        WHERE d.datname=current_database() AND a.grantee=0 AND a.privilege_type='TEMPORARY')`).Scan(&publicTemp) != nil {
+		t.Fatal("새 DB 기본 TEMP 권한 확인 실패")
+	}
+	t.Logf("새 소유 DB의 PUBLIC TEMP=%t", publicTemp)
+	// PostgreSQL 기본 PUBLIC TEMP는 운영 guard와 맞지 않는다. 방금 만든 DB에서만 회수한다.
+	exec(ownedAdmin, "REVOKE CREATE,TEMP ON DATABASE "+ident(databaseName)+" FROM PUBLIC")
+	exec(ownedAdmin, "CREATE SCHEMA "+ident(schema))
+	t.Cleanup(func() {
+		if _, err := ownedAdmin.ExecContext(context.Background(), "DROP SCHEMA "+ident(schema)+" CASCADE"); err != nil {
+			t.Error("소유 schema 마감 실패")
+		}
+	})
 	q := u.Query()
 	q.Set("search_path", schema)
 	u.RawQuery = q.Encode()
@@ -86,14 +126,14 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 	})
 	exec(admin, "CREATE ROLE "+ident(role)+" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '"+suffix+"'")
 	t.Cleanup(func() {
-		if _, err := admin.ExecContext(context.Background(), "DROP OWNED BY "+ident(role)); err != nil {
+		if _, err := ownedAdmin.ExecContext(context.Background(), "DROP OWNED BY "+ident(role)); err != nil {
 			t.Error("소유 role 권한 정리 실패")
 		}
 		if _, err := admin.ExecContext(context.Background(), "DROP ROLE "+ident(role)); err != nil {
 			t.Error("소유 role 정리 실패")
 		}
 	})
-	exec(admin, "GRANT USAGE ON SCHEMA "+ident(schema)+" TO "+ident(role))
+	exec(ownedAdmin, "GRANT USAGE ON SCHEMA "+ident(schema)+" TO "+ident(role))
 	for _, table := range []string{"tasks", "task_archives", "findings", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
 		exec(installer.DB, "GRANT SELECT ON "+ident(table)+" TO "+ident(role))
 	}
@@ -160,9 +200,25 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 			t.Error("검사 pool 마감 실패")
 		}
 	})
-	var currentRole, sessionRole string
-	if pool.QueryRowContext(ctx, "SELECT current_user,session_user").Scan(&currentRole, &sessionRole) != nil || currentRole != role || sessionRole != role {
+	var currentRole, sessionRole, runtimeDatabase string
+	if pool.QueryRowContext(ctx, "SELECT current_user,session_user,current_database()").Scan(&currentRole, &sessionRole, &runtimeDatabase) != nil || currentRole != role || sessionRole != role || runtimeDatabase != databaseName {
 		t.Fatal("보고서 연결이 생성한 최소 LOGIN 역할과 다릅니다")
+	}
+	if server.CheckFirstDiagnosisReportDatabase(ctx, pool) != nil {
+		t.Fatal("분리한 DB의 최소 보고서 역할 검증 실패")
+	}
+	// 기존 실패의 원인을 같은 최소 LOGIN에 재현하고 실제 production guard의 거부를 확인한다.
+	exec(ownedAdmin, "GRANT TEMP ON DATABASE "+ident(databaseName)+" TO "+ident(role))
+	var hasTemp bool
+	if pool.QueryRowContext(ctx, "SELECT has_database_privilege(current_user,current_database(),'TEMP')").Scan(&hasTemp) != nil || !hasTemp {
+		t.Fatal("소유 DB TEMP 음성 fixture 실패")
+	}
+	if server.CheckFirstDiagnosisReportDatabase(ctx, pool) == nil {
+		t.Fatal("TEMP 생성권한을 가진 보고서 role이 허용되었습니다")
+	}
+	exec(ownedAdmin, "REVOKE TEMP ON DATABASE "+ident(databaseName)+" FROM "+ident(role))
+	if server.CheckFirstDiagnosisReportDatabase(ctx, pool) != nil {
+		t.Fatal("TEMP 회수 뒤 최소 보고서 역할 복구 실패")
 	}
 	for _, table := range []string{"llm_profiles", "task_llm_profiles", "task_control_modes"} {
 		if _, err := pool.ExecContext(ctx, "SELECT * FROM "+ident(table)+" LIMIT 0"); err == nil {
@@ -325,6 +381,10 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 	before.Counts["exploration_nodes"]++
 	if !reflect.DeepEqual(before.Counts, after.Counts) {
 		t.Fatal("보고서 CLI가 조치 1행 외의 seed/모델/agent/저장 행을 변경했습니다")
+	}
+	var sourceAfter, aclAfter string
+	if admin.QueryRowContext(ctx, "SELECT datname,COALESCE(datacl::text,'') FROM pg_database WHERE datname=current_database()").Scan(&sourceAfter, &aclAfter) != nil || sourceAfter != sourceDatabase || aclAfter != sourceACL {
+		t.Fatal("제공된 DB의 identity/권한이 변경되었습니다")
 	}
 	if modelRequests.Load() != 0 {
 		t.Fatal("보고서 CLI가 모델/대상에 요청했습니다")
