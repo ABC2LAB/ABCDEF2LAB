@@ -168,6 +168,59 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 		}
 		t.Run("actual-constructor-close-no-execution", func(t *testing.T) { firstDiagnosisSupervisorConstructorClose(t, manager, installer, task) })
 		t.Run("actual-engine-worker-audit-close-goal-open", func(t *testing.T) { firstDiagnosisSupervisorEngineRun(t, manager, installer, task, "allowed") })
+		t.Run("actual-engine-tool-failure-is-not-close-failure", func(t *testing.T) {
+			failedTool, err := manager.CreateTask("Owned tool failure fixture", "Record a nonzero command without losing the audit", nil, 60, 60)
+			if err != nil || failedTool == nil {
+				t.Fatal("독립 도구 실패 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", failedTool.ID); err != nil {
+				t.Fatal("도구 실패 task 준비 상태 저장 실패")
+			}
+			failedTool.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := failedTool.Store.AddIntent(map[string]any{"summary": "Exercise a nonzero owned command"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 도구 실패 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, failedTool, "tool-failure")
+		})
+		t.Run("actual-engine-planner-before-intent-no-legacy-send", func(t *testing.T) {
+			plannerOnly, err := manager.CreateTask("Owned planner-only fixture", "Require controlled planning before any intent", nil, 60, 60)
+			if err != nil || plannerOnly == nil {
+				t.Fatal("독립 Planner task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", plannerOnly.ID); err != nil {
+				t.Fatal("Planner task 준비 상태 저장 실패")
+			}
+			plannerOnly.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, plannerOnly, "planner-only")
+		})
+		t.Run("actual-engine-preparation-failure-no-fallback", func(t *testing.T) {
+			prepareFail, err := manager.CreateTask("Owned preparation failure fixture", "Reject work before model tool execution", nil, 60, 60)
+			if err != nil || prepareFail == nil {
+				t.Fatal("독립 준비 거부 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", prepareFail.ID); err != nil {
+				t.Fatal("준비 거부 task 준비 상태 저장 실패")
+			}
+			prepareFail.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := prepareFail.Store.AddIntent(map[string]any{"summary": "Reject this work before model execution"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 준비 거부 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, prepareFail, "prepare-fail")
+		})
+		t.Run("actual-engine-audit-close-failure-is-not-success", func(t *testing.T) {
+			closeFail, err := manager.CreateTask("Owned audit-close failure fixture", "Keep closure failure distinct from a command result", nil, 60, 60)
+			if err != nil || closeFail == nil {
+				t.Fatal("독립 감사 마감 실패 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", closeFail.ID); err != nil {
+				t.Fatal("감사 마감 실패 task 준비 상태 저장 실패")
+			}
+			closeFail.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := closeFail.Store.AddIntent(map[string]any{"summary": "Exercise audit close failure"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 감사 마감 실패 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, closeFail, "close-fail")
+		})
 		t.Run("actual-engine-policy-denial-no-fallback", func(t *testing.T) {
 			denied, err := manager.CreateTask("Owned denied engine fixture", "Preserve a policy denial", nil, 60, 60)
 			if err != nil || denied == nil {

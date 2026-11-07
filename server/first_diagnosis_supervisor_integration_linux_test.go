@@ -21,6 +21,7 @@ import (
 
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/transmit"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/sys/unix"
 )
@@ -41,7 +42,7 @@ func firstDiagnosisSupervisorConstructorClose(t *testing.T, manager *Manager, in
 		t.Fatal("명시한 fixture task의 준비 상태 저장 실패")
 	}
 	task.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true; state.Queued = false })
-	cfg, grant, _ := e2HostPolicyFixture(t)
+	cfg, grant, policy := e2HostPolicyFixture(t)
 	grant.TaskID = mustFirstDiagnosisTaskNumber(task.ID)
 	grant.ExplorationID = task.ExpID
 	e2HostWriteApproval(t, cfg, grant)
@@ -73,6 +74,9 @@ func firstDiagnosisSupervisorConstructorClose(t *testing.T, manager *Manager, in
 	}()
 	if runtime.server == nil || supervisor.server != runtime.server || !runtime.server.firstDiagnosis || runtime.server.firstDiagnosisPreparation {
 		t.Fatal("실제 production 서버가 감독자와 결속되지 않음")
+	}
+	if err := supervisor.AuthorizeExecution(ctx, transmit.Scope{RunRef: policy.RunRef, ResetRef: policy.ResetRef, PolicyRef: policy.PolicyRef, CaseRef: policy.CaseRef, TaskRef: task.ID}, 1); err == nil {
+		t.Fatal("실행 admission 이전에 E② 실행 권한을 발급함")
 	}
 	if err := supervisor.Attach(runtime.server); !errors.Is(err, ErrFirstDiagnosisSupervisor) {
 		t.Fatal("중복 Attach가 수용됨")
@@ -216,10 +220,30 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if err != nil || runtime == nil {
 		t.Fatal("실제 production HTTP 기동 실패")
 	}
+	if mode == "prepare-fail" {
+		runtime.host.runtime.options.AuthorizeIntent = func(context.Context, E2HTTPRequest) error { return ErrE2HTTPHost }
+	}
+	if mode == "close-fail" {
+		acquire := runtime.host.runtime.options.Acquire
+		runtime.host.runtime.options.Acquire = func(ctx context.Context, request E2HTTPRequest) (E2HTTPRunOptions, error) {
+			options, err := acquire(ctx, request)
+			if err != nil {
+				return options, err
+			}
+			release := options.Release
+			options.Release = func(ctx context.Context) error {
+				if release == nil {
+					return ErrE2HTTPClosure
+				}
+				return errors.Join(release(ctx), ErrE2HTTPClosure)
+			}
+			return options, nil
+		}
+	}
 	defer func() {
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		if err := runtime.Close(closeCtx); err != nil && !((mode == "denied" || mode == "cancel") && errors.Is(err, ErrFirstDiagnosisOutcome)) {
+		if err := runtime.Close(closeCtx); err != nil && !((mode == "denied" || mode == "cancel" || mode == "prepare-fail" || mode == "planner-only") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
 			t.Error("실제 Engine 경로 최종 종료 실패")
 		}
 
@@ -233,7 +257,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		path = "/forbidden"
 	}
 	provider := &firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 5 " + target.URL + path}
-	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}}
+	if mode == "tool-failure" {
+		provider.command += " | grep -q never-present-owned-fixture"
+	}
+	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}, textOnly: mode != "planner-only"}
 	// 실제 taskLLMRuntime.current의 role/model guard를 유지하고 profile cache의 모델만 대체한다.
 	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: provider, planner: plannerProvider})
 	var runErr error
@@ -253,8 +280,27 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		case <-ctx.Done():
 			t.Fatal("실제 Supervisor Run 취소가 반환하지 않음")
 		}
+	} else if mode == "planner-only" {
+		short, stopRun := context.WithTimeout(ctx, 4*time.Second)
+		runErr = supervisor.Run(short, task.ID, 0, "")
+		stopRun()
 	} else {
 		runErr = supervisor.Run(ctx, task.ID, 0, "")
+	}
+	if mode == "planner-only" || mode == "prepare-fail" {
+		if runErr == nil || hits.Load() != 0 || provider.calls != 0 {
+			t.Fatal("Planner 또는 준비 실패가 통제 밖 대상 송신으로 이어짐")
+		}
+		if mode == "planner-only" && plannerProvider.calls == 0 {
+			t.Fatal("intent 없는 시작에서 원본 Planner 경로를 거치지 않음")
+		}
+		return
+	}
+	if mode == "close-fail" {
+		if runErr == nil || hits.Load() != 1 || plannerProvider.calls == 0 {
+			t.Fatal("감사 자원 해제 실패를 실행 성공으로 수용함")
+		}
+		return
 	}
 	if mode == "cancel" {
 		if runErr == nil || !errors.Is(runErr, context.Canceled) {
@@ -288,6 +334,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		if hits.Load() != 1 {
 			t.Fatal("취소 뒤 새 대상 송신이 발생함")
+		}
+		var intentState, blockedReason string
+		if err := installer.QueryRowContext(closeCtx, "SELECT state,blocked_reason FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&intentState, &blockedReason); err != nil || intentState != "blocked" || blockedReason != "e2_http_result_unknown" {
+			t.Fatal("전송 불명 intent를 재실행 가능한 open으로 보존함")
 		}
 		return
 	}
@@ -333,7 +383,14 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		t.Fatalf("실제 production 실행 마감 실패: target=%d worker_provider_calls=%d planner_provider_calls=%d active_intent=%v execution=%v task_status=%s paused=%v classification=%s call_reason=%s attempts=%d unknown=%d", hits.Load(), provider.calls, plannerProvider.calls, active, view != nil, task.lifecycleSnapshot().Status, task.lifecycleSnapshot().Paused, classification, callReason, attempts, unknown)
 	}
-	if hits.Load() != 1 || provider.result == nil || !provider.result.Trusted.Final || provider.result.Trusted.Classification != "completed" {
+	if plannerProvider.calls == 0 {
+		t.Fatal("Worker 완료 뒤 원본 Planner 재계획 전에 감독자가 마감함")
+	}
+	expectedClass := "completed"
+	if mode == "tool-failure" {
+		expectedClass = "tool_failure"
+	}
+	if hits.Load() != 1 || provider.result == nil || !provider.result.Trusted.Final || provider.result.Trusted.Classification != expectedClass {
 		t.Fatal("실제 소유 대상 도달과 native 프로그램 결과를 확인하지 못함")
 	}
 	if provider.leaked || provider.unsupportedTool || plannerProvider.outboundToolExposed || plannerProvider.leaked {
@@ -349,7 +406,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		t.Fatal("동일 실행의 실제 HTTP call을 보존하지 못함")
 	}
 	results := runtime.host.Runtime().Results(task.ID)
-	if len(results) != 1 || !results[0].Final || results[0].Classification != "completed" || results[0].Call.Reason != e2proxy.Complete {
+	if len(results) != 1 || !results[0].Final || results[0].Classification != expectedClass || results[0].Call.Reason != e2proxy.Complete {
 		t.Fatal("실제 trusted result 마감 근거가 보존되지 않음")
 	}
 	closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)

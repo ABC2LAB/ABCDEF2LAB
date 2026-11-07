@@ -479,6 +479,29 @@ func TestE2HostProviderProductionFactoryUsesProtectedOperatorInputs(t *testing.T
 		t.Fatal("host close retained unacquired key authority")
 	}
 }
+func TestFirstDiagnosisHTTPHostRejectsEvaluationCallerPassthrough(t *testing.T) {
+	cfg, grant, policy := e2HostPolicyFixture(t)
+	policy.HeaderMode = e2proxy.HeaderEvaluationCallerPassthrough
+	policy.Evaluation = &e2proxy.EvaluationCallerContext{
+		RunRef: policy.RunRef, LLMBackend: "local", TargetKind: e2proxy.EvaluationPublicPractice,
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0600) != nil {
+		t.Fatal("평가 caller 시험 정책 저장 실패")
+	}
+	digest := sha256.Sum256(raw)
+	grant.PolicySHA256 = hex.EncodeToString(digest[:])
+	e2HostWriteApproval(t, cfg, grant)
+	supervisor := &e2HostTestSupervisor{}
+	supervisor.quiescent.Store(true)
+	if host, err := NewFirstDiagnosisHTTPHost(t.Context(), cfg, supervisor); host != nil || !errors.Is(err, ErrFirstDiagnosisHTTPHost) {
+		if host != nil {
+			_ = host.Close(t.Context())
+		}
+		t.Fatal("비평가 호스트가 평가 caller 원문 전달 모드를 수용함")
+	}
+}
+
 func TestE2HostProviderProductionFactoryRejectsMissingOrChangedPrivateMaterial(t *testing.T) {
 	for _, mode := range []string{"ca", "key", "audit", "policy-window"} {
 		t.Run(mode, func(t *testing.T) {

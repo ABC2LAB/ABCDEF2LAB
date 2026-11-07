@@ -107,6 +107,12 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 		_ = authority.close()
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
+	// 비평가 M01은 평가 전용 caller 원문 전달 권한을 받지 않는다.
+	if options.HeaderMode == e2proxy.HeaderEvaluationCallerPassthrough {
+		authority.revoke()
+		_ = authority.close()
+		return nil, ErrFirstDiagnosisHTTPHost
+	}
 	h.expected = options.Expected
 	// 정책의 유효 기간은 운영자 승인 구간을 벗어나지 않아야 한다.
 	raw, err := privateinput.ReadFile(cfg.PolicyFile, 256<<10)

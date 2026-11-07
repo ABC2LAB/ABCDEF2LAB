@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log"
 	"strconv"
 	"sync"
 	"time"
@@ -370,6 +371,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		s.mu.Unlock()
 		return ErrFirstDiagnosisSupervisor
 	}
+	stage := "admission"
 	s.running = true
 	s.runStarted = true
 	s.permit = taskID
@@ -379,6 +381,9 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	s.operations.Add(1)
 	s.mu.Unlock()
 	defer func() {
+		if err != nil {
+			log.Printf("[first-diagnosis] task %s 단계 %s 실패", taskID, stage)
+		}
 		s.mu.Lock()
 		s.running = false
 		s.admissionGranted = false
@@ -394,14 +399,17 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	defer cancel()
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer stop()
+	stage = "task"
 	task, err := s.task(run, taskID, false)
 	if err != nil {
 		return err
 	}
 	number := mustFirstDiagnosisTaskNumber(taskID)
+	stage = "quiescence"
 	if err = s.CheckTaskQuiescent(run, number); err != nil {
 		return err
 	}
+	stage = "model"
 	if err := server.bindFirstDiagnosisModel(run, task); err != nil {
 		return firstDiagnosisFailure(err)
 	}
@@ -431,10 +439,12 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	s.mu.Lock()
 	s.admissionGranted = true
 	s.mu.Unlock()
+	stage = "admission"
 	queued, admissionErr := server.admitPausedTask(task)
 	if admissionErr != nil || queued {
 		return ErrFirstDiagnosisSupervisor
 	}
+	stage = "execution"
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -467,14 +477,17 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			s.admissionGranted = false
 			s.mu.Unlock()
 			if !registered {
+				stage = "fence"
 				if err = server.engine.e2HTTP.FenceTask(taskID); err != nil {
 					return firstDiagnosisFailure(err)
 				}
 			}
+			stage = "drain"
 			if err = s.drainTask(run, server, task); err != nil {
 				return err
 			}
 			if registered {
+				stage = "registered-result"
 				if err = s.checkRegisteredResult(run, task, intentID); err != nil {
 					return err
 				}
@@ -483,6 +496,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 				if completionErr != nil || !ready {
 					return ErrFirstDiagnosisSupervisor
 				}
+				stage = "audit-close"
 				if err = server.engine.e2HTTP.CloseTask(run, taskID); err != nil {
 					return firstDiagnosisFailure(err)
 				}
@@ -510,6 +524,9 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	if active > 0 {
 		return false, nil
 	}
+	if task.firstDiagnosisWorkSeq.Load() == 0 || task.firstDiagnosisPlannedSeq.Load() < task.firstDiagnosisWorkSeq.Load() {
+		return false, nil
+	}
 	if done == 0 {
 		if db.IsTerminal(task.lifecycleSnapshot().Status) {
 			return false, ErrFirstDiagnosisSupervisor
@@ -530,7 +547,8 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	}
 	observed := make(map[string]bool, len(results))
 	for _, result := range results {
-		if !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessBashExited || !result.ProcessDrained || !result.ProxyDrained || result.ExitCode != 0 || result.Classification != "completed" || result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef] {
+		validToolOutcome := (result.ExitCode == 0 && result.Classification == "completed") || (result.ExitCode != 0 && result.Classification == "tool_failure")
+		if !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessBashExited || !result.ProcessDrained || !result.ProxyDrained || !validToolOutcome || result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef] {
 			return false, ErrFirstDiagnosisSupervisor
 		}
 		observed[result.Call.CallRef] = true

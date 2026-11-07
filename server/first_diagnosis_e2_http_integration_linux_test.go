@@ -189,6 +189,7 @@ func (p *firstDiagnosisE2Provider) Complete(_ context.Context, request llm.Compl
 type firstDiagnosisPlannerProbeProvider struct {
 	firstDiagnosisE2Provider
 	outboundToolExposed bool
+	textOnly            bool
 }
 
 func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
@@ -197,6 +198,10 @@ func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, reque
 		case "Bash", "WebFetch", "WebSearch", "Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep":
 			p.outboundToolExposed = true
 		}
+	}
+	if p.textOnly {
+		p.calls++
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("No further authorized actions in this owned fixture.")}}, "end_turn", llm.Usage{}, nil
 	}
 	return p.firstDiagnosisE2Provider.Complete(ctx, request)
 }

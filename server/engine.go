@@ -968,9 +968,13 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// coalesces a burst; empty for time/heartbeat wakes).
 		triggers := t.drainTriggers()
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
+		workSeq := t.firstDiagnosisWorkSeq.Load()
 		e.BeginLLMCall(t.ID)
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 		e.EndLLMCall(t.ID)
+		if e.firstDiagnosis && err == nil && !met && ectx.Err() == nil {
+			t.firstDiagnosisPlannedSeq.Store(workSeq)
+		}
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 계획 오류: %v", t.ID, err)
@@ -1125,6 +1129,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	var wrote agent.WriteCounts
 	var err error
 	if controlledErr != nil {
+		if e.e2HTTP != nil && !errors.Is(controlledErr, ErrE2HTTPBusy) {
+			log.Printf("[E2] task %s 의도 #%d 작업 준비 거부", t.ID, intent.ID)
+		}
 		reason, err = harness.ReasonHookStopped, controlledErr
 	} else {
 		e.BeginLLMCall(t.ID)
@@ -1159,6 +1166,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	if finishHTTP != nil {
 		finalizeErr = finishHTTP()
 		if finalizeErr != nil {
+			log.Printf("[E2] task %s 의도 #%d HTTP 감사 마감 실패", t.ID, intent.ID)
 			err = errors.Join(err, finalizeErr)
 			reason = harness.ReasonHookStopped
 		}
@@ -1198,6 +1206,17 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// cancel. The controller still needs the persisted state and cleanup result.
 	var controlErr error
 	defer func() { completeWork(controlErr) }()
+	// 전송 불명은 재개 가능한 open/paused가 아니다. 감사 상태와 함께 그래프에도 고정한다.
+	if e.e2HTTP != nil && errors.Is(err, agent.ErrE2HTTPUnknown) {
+		controlErr = t.Store.SetIntentBlockedReason(intent.ID, "e2_http_result_unknown")
+		if controlErr != nil {
+			log.Printf("[E2] task %s 의도 #%d 전송 불명 상태 저장 실패", t.ID, intent.ID)
+		} else {
+			log.Printf("[E2] task %s 의도 #%d 전송 결과 불명으로 차단", t.ID, intent.ID)
+		}
+		e.touch(t.ID)
+		return true
+	}
 	if action == "pause" {
 		controlErr = errors.Join(controlErr, transitionIntentState(t.Store, intent.ID, "running", "paused"))
 		if controlErr != nil {
@@ -1285,6 +1304,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	log.Printf("[worker %s] task %s 의도 #%d 종료: %s (기록 %s)", name, t.ID, intent.ID, state, wrote)
 	e.touch(t.ID)
+	if e.firstDiagnosis {
+		t.firstDiagnosisWorkSeq.Add(1)
+	}
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true
 }

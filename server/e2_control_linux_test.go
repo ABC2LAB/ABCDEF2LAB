@@ -13,10 +13,24 @@ import (
 	"time"
 )
 
+func e2ControlPrivateTestDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "e2ctl-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
+	return dir
+}
+
 func TestE2ControlRejectsEmbeddedRoleAndMissingBoundary(t *testing.T) {
 	_, b := newE2ControlStateFixture(t)
 	uid := uint32(os.Geteuid())
-	opts := E2ControlOptions{ControlDirectory: t.TempDir(), EvalRunID: "eval_one", ReservationRef: "reservation_one", RunnerUID: uid, EngineUID: uid, ToolsUID: uid, EvaluationDeployment: true, IOTimeout: time.Second, CloseTimeout: time.Second, MaxConnections: 2, Backend: b}
+	opts := E2ControlOptions{ControlDirectory: e2ControlPrivateTestDir(t), EvalRunID: "eval_one", ReservationRef: "reservation_one", RunnerUID: uid, EngineUID: uid, ToolsUID: uid, EvaluationDeployment: true, IOTimeout: time.Second, CloseTimeout: time.Second, MaxConnections: 2, Backend: b}
 	if _, err := StartE2ControlService(t.Context(), opts); err == nil {
 		t.Fatal("같은 실제 UID의 embedded 구성을 평가 격리로 승격")
 	}
