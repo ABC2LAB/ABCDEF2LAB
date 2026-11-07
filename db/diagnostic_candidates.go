@@ -68,6 +68,7 @@ func (c DiagnosticCandidate) Validate() error {
 		return ErrDiagnosticCandidate
 	}
 	var evidence struct {
+		Related []json.RawMessage `json:"related_calls"`
 		Trusted struct {
 			Classification string `json:"classification"`
 			Execution      struct {
@@ -94,6 +95,35 @@ func (c DiagnosticCandidate) Validate() error {
 		evidence.Trusted.OutputTruncated != c.OutputTruncated {
 		return ErrDiagnosticCandidate
 	}
+	if len(evidence.Related) > 8 {
+		return ErrDiagnosticCandidate
+	}
+	seen := map[string]bool{c.CallRef: true}
+	for _, raw := range evidence.Related {
+		var other struct {
+			Related []json.RawMessage `json:"related_calls"`
+			Trusted struct {
+				Classification  string `json:"classification"`
+				OutputTruncated bool   `json:"output_truncated"`
+				Call            struct {
+					CallRef string `json:"call_ref"`
+				} `json:"call"`
+			} `json:"trusted"`
+		}
+		if json.Unmarshal(raw, &other) != nil || len(other.Related) > 0 || seen[other.Trusted.Call.CallRef] {
+			return ErrDiagnosticCandidate
+		}
+		seen[other.Trusted.Call.CallRef] = true
+		copy := c
+		copy.Evidence = string(raw)
+		copy.EvidenceDigest = DiagnosticEvidenceDigest(copy.Evidence)
+		copy.CallRef = other.Trusted.Call.CallRef
+		copy.Classification = other.Trusted.Classification
+		copy.OutputTruncated = other.Trusted.OutputTruncated
+		if copy.Validate() != nil {
+			return ErrDiagnosticCandidate
+		}
+	}
 	return nil
 }
 
@@ -118,7 +148,7 @@ func (s *ExplorationStore) RecordDiagnosticCandidate(ctx context.Context, c Diag
 	}
 	// 같은 call/type/name 제출은 기존 후보를 반환한다. 다른 관찰과 이름만으로 합치지 않는다.
 	var existing int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND origin=$2 AND payload->'diagnostic_candidate_v1'->>'run_ref'=$3 AND payload->'diagnostic_candidate_v1'->>'call_ref'=$4 AND payload->'diagnostic_candidate_v1'->>'vulnclass'=$5 AND payload->'diagnostic_candidate_v1'->>'name'=$6 AND payload->'diagnostic_candidate_v1'->>'intent_id'=$7 ORDER BY id LIMIT 1`, s.expID, diagnosticCandidateOrigin, c.RunRef, c.CallRef, c.VulnClass, c.Name, strconv.FormatInt(c.IntentID, 10)).Scan(&existing)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND origin=$2 AND payload->'diagnostic_candidate_v1'->>'run_ref'=$3 AND payload->'diagnostic_candidate_v1'->>'call_ref'=$4 AND payload->'diagnostic_candidate_v1'->>'vulnclass'=$5 AND payload->'diagnostic_candidate_v1'->>'name'=$6 AND payload->'diagnostic_candidate_v1'->>'intent_id'=$7 AND payload->'diagnostic_candidate_v1'->>'evidence_digest'=$8 ORDER BY id LIMIT 1`, s.expID, diagnosticCandidateOrigin, c.RunRef, c.CallRef, c.VulnClass, c.Name, strconv.FormatInt(c.IntentID, 10), c.EvidenceDigest).Scan(&existing)
 	if err == nil {
 		return existing, tx.Commit()
 	}

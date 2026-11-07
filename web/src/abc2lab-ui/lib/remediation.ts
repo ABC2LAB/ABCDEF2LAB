@@ -8,6 +8,8 @@ export type Technology = {
   source?: string;
   component?: string;
   component_role?: string;
+  evidence_ref?: string;
+  observed_at?: string;
 };
 export type RemediationContext = {
   component?: string;
@@ -18,8 +20,20 @@ export type RemediationContext = {
   expected_behavior?: string;
   prohibited_behavior?: string;
   source?: string;
+  observations?: ContextObservation[];
+  observations_truncated?: boolean;
+};
+export type ContextObservation = Omit<RemediationContext, "observations" | "observations_truncated"> & {
+  evidence_ref?: string;
+  observed_at?: string;
+  run_id?: string;
+  call_id?: string;
+  step_id?: string;
+  depends_on?: string[];
+  truncated?: boolean;
 };
 export type RemediationBundle = {
+  missing_context_fields?: string[];
   context?: RemediationContext;
   finding_id: string;
   input_digest: string;
@@ -41,6 +55,7 @@ export type RemediationBundle = {
 export type RemediationRecord = { id: number; entry_id: string; stale: boolean; bundle?: RemediationBundle };
 export type RemediationEntry = {
   context?: RemediationContext;
+  technologies?: Technology[];
   entry_id: string;
   title: string;
   outcome: string;
@@ -73,7 +88,19 @@ export function generateRemediation(
       entry_id: entry.entry_id,
       expected_source_digest: entry.source_digest,
       technologies,
-      ...(context ? { context } : {}),
+      ...(context
+        ? {
+            context: {
+              ...Object.fromEntries(
+                Object.keys(contextLabels)
+                  .filter((key) => context[key as keyof typeof contextLabels] !== undefined)
+                  .map((key) => [key, context[key as keyof typeof contextLabels]]),
+              ),
+              ...(context.component_role !== undefined ? { component_role: context.component_role } : {}),
+              source: "user_provided",
+            },
+          }
+        : {}),
     }),
   });
 }
@@ -94,3 +121,45 @@ export const technologyLabels: Record<string, string> = {
   authentication: "인증",
   deployment: "배포 조건",
 };
+
+// 출처와 확인 수준은 별개다. 수동 확인을 프로그램 관측으로 표시하지 않는다.
+export const sourceLabels: Record<string, string> = {
+  observed: "실행 관측",
+  inferred: "모델·분석기 추정",
+  user_provided: "사용자 제공·수동 검토",
+  unknown: "미확인",
+};
+export const confidenceLabels: Record<string, string> = {
+  confirmed: "제공자가 확인했다고 표시",
+  observed: "관측했다고 표시",
+  inferred: "추정",
+  unknown: "미확인",
+};
+export const contextLabels = {
+  component: "영향 컴포넌트",
+  endpoint: "엔드포인트 경로 템플릿",
+  prerequisites: "재현 사전 조건",
+  observation: "실제 관찰의 비민감 요약",
+  expected_behavior: "유지할 정상 동작",
+  prohibited_behavior: "차단할 취약 동작",
+};
+function known(value?: string) {
+  return !!value && value !== "unknown" && !value.startsWith("미확인");
+}
+export function contextConflicts(context: RemediationContext) {
+  if (context.source !== "user_provided") return [];
+  return (Object.keys(contextLabels) as (keyof typeof contextLabels)[])
+    .filter((key) => known(context[key]) && context.observations?.some((o) => known(o[key]) && o[key] !== context[key]))
+    .map((key) => contextLabels[key]);
+}
+export function technologyConflicts(technologies: Technology[]) {
+  const groups = new Map<string, Set<string>>();
+  for (const t of technologies) {
+    if (!known(t.component) || !known(t.name)) continue;
+    const key = `${t.component} / ${t.component_role ?? "unknown"} / ${technologyLabels[t.kind] ?? t.kind}`;
+    const values = groups.get(key) ?? new Set<string>();
+    values.add(`${t.name} ${known(t.version) ? t.version : ""}`.trim());
+    groups.set(key, values);
+  }
+  return [...groups].filter(([, values]) => values.size > 1).map(([key]) => key);
+}

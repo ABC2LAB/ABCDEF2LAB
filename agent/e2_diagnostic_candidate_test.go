@@ -10,6 +10,9 @@ import (
 	"github.com/Autumn-27/artex/remediation"
 	"github.com/Autumn-27/artex/report"
 	"html"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -202,5 +205,104 @@ func TestE2DiagnosticCandidateLargeObservation(t *testing.T) {
 	c := store.candidates[0]
 	if !c.OutputTruncated || len(c.Evidence) > 256<<10 || c.Validate() != nil {
 		t.Fatal("truncation boundary invalid")
+	}
+}
+
+// 실제 통제 HTTP → trusted call → 후보 → 현재 source → 저장 prompt까지의 합성 통합이다.
+// 모델 및 Bash namespace 기동은 이 시험에서 수행하지 않는다.
+func TestDiagnosticActualHTTPContextPipeline(t *testing.T) {
+	dsn := os.Getenv("ARTEX_PG_DSN")
+	if dsn == "" {
+		t.Skip("synthetic PostgreSQL not configured")
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	task, err := pg.CreateTask("synthetic actual HTTP", "synthetic only", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Exec("DELETE FROM tasks WHERE id=$1", task.ID)
+	defer pg.Exec("DELETE FROM explorations WHERE id=$1", task.ExplorationID)
+	store := pg.Exploration(task.ExplorationID)
+	intent, err := store.AddIntent(map[string]any{"summary": "synthetic actual"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Server", "Caddy/2.8")
+		w.Header().Set("X-Powered-By", "Phoenix/1.7")
+		w.Write([]byte("synthetic response"))
+	}))
+	defer target.Close()
+	execution, _, binding := e2WorkerFixtureTarget(t, target.URL, "/orders", task.ID, intent)
+	state := &e2HTTPToolState{}
+	run := func(ctx context.Context, _ string) (e2runner.Result, error) {
+		call, err := execution.BeginCall(ctx, "synthetic-command")
+		if err != nil {
+			return e2runner.Result{}, err
+		}
+		req, _ := http.NewRequest("GET", target.URL+"/orders/private-customer?token=synthetic-private", nil)
+		resp, _, err := call.Do(ctx, req)
+		if err != nil {
+			return e2runner.Result{}, err
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		result, err := call.Close(ctx)
+		return e2runner.Result{ToolOutput: "untrusted summary", Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Execution: execution.SnapshotForIntent(intent), Call: result, ProcessBashExited: true, ProcessDrained: true, ProxyDrained: true, Final: true, Classification: "completed"}}, err
+	}
+	bash := newE2HTTPBashTool(execution, run, time.Second, state, binding.Control, json.RawMessage(`{"summary":"synthetic"}`), intent)
+	if result, err := bash.Call(context.Background(), json.RawMessage(`{"command":"synthetic adapter"}`), nil); err != nil || result.IsError {
+		t.Fatalf("controlled observation %v %s", err, result.Flatten())
+	}
+	if result, err := bash.Call(context.Background(), json.RawMessage(`{"command":"synthetic second adapter"}`), nil); err != nil || result.IsError {
+		t.Fatalf("second observation %v", err)
+	}
+	calls := execution.Calls()
+	if len(calls) != 2 || len(calls[0].Observations) != 1 || hits != 2 {
+		t.Fatal("actual HTTP observation missing")
+	}
+	submit := newE2DiagnosticCandidateTool(store, binding, state)
+	input, _ := json.Marshal(map[string]any{"call_ref": calls[1].CallRef, "related_call_refs": []string{calls[0].CallRef}, "vulnclass": "business_logic", "name": "합성 후보", "summary": "모델의 비신뢰 해석"})
+	if result, err := submit.Call(context.Background(), input, nil); err != nil || result.IsError {
+		t.Fatalf("candidate %v %s", err, result.Flatten())
+	}
+	candidates, err := store.ListDiagnosticCandidates(task.ID, binding.RunRef, 10)
+	if err != nil || len(candidates) != 1 {
+		t.Fatal(err)
+	}
+	entry := fmt.Sprintf("candidate-%d", candidates[0].ID)
+	source, err := db.LoadDiagnosticRemediationSource(context.Background(), pg.DB, task.ID, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.Context.Observations) != 4 || len(source.Technologies) != 2 || source.Context.Observations[0].Endpoint != "GET /orders/{resource}" || source.VulnClass != "business_logic" {
+		t.Fatalf("context lost: %+v", source)
+	}
+	record, err := pg.SaveDiagnosticRemediation(context.Background(), task.ID, entry, source.SourceDigest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"/orders/{resource}", "Phoenix", "Caddy", "business_logic", "HTTP 상태=200"} {
+		if !strings.Contains(record.Bundle.AIPrompt, want) {
+			t.Fatalf("missing %s", want)
+		}
+	}
+	for _, secret := range []string{"synthetic-private", "private-customer", "Set-Cookie", "untrusted summary"} {
+		if strings.Contains(record.Bundle.AIPrompt, secret) {
+			t.Fatalf("raw material propagated %s", secret)
+		}
+	}
+	if record.Source.Status != "review" || hits != 2 {
+		t.Fatal("HTTP success promoted or generation sent new request")
+	}
+	records, err := db.ListDiagnosticRemediationRecords(context.Background(), pg.DB, task.ID, 10)
+	if err != nil || len(records) != 1 || records[0].Stale {
+		t.Fatalf("current observed source stale %v", err)
 	}
 }

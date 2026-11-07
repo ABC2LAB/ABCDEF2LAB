@@ -25,6 +25,7 @@ type diagnosticRemediationDTO struct {
 }
 type diagnosticRemediationEntryDTO struct {
 	Context           *remediation.Context      `json:"context,omitempty"`
+	Technologies      []remediation.Technology  `json:"technologies,omitempty"`
 	EntryID           string                    `json:"entry_id"`
 	Title             string                    `json:"title"`
 	Outcome           string                    `json:"outcome"`
@@ -149,7 +150,11 @@ func (s *Server) listDiagnosticRemediation(w http.ResponseWriter, r *http.Reques
 			dto.SourceDigest = source.SourceDigest
 			dto.ReportVersion = source.ReportVersion
 			dto.EvidenceDigest = source.EvidenceDigest
-			_, buildErr := remediation.Build(source)
+			preview, buildErr := remediation.Build(source)
+			if buildErr == nil {
+				dto.Technologies = preview.Technologies
+				dto.Context = &preview.Context
+			}
 			dto.Available = buildErr == nil
 			dto.UnavailableReason = ""
 			if !dto.Available {
@@ -206,10 +211,15 @@ func (s *Server) createDiagnosticRemediation(w http.ResponseWriter, r *http.Requ
 	}
 	for i := range input.Technologies {
 		input.Technologies[i].Source = "user_provided"
+		input.Technologies[i].EvidenceRef = ""
+		input.Technologies[i].ObservedAt = ""
 	}
 	var contexts []remediation.Context
 	if input.Context != nil {
+		// 관측 출처와 단계 귀속은 저장 원본만 발급한다. 사용자 보완은 상단 문자열만 받는다.
 		input.Context.Source = "user_provided"
+		input.Context.Observations = nil
+		input.Context.ObservationsTruncated = false
 		contexts = append(contexts, *input.Context)
 	}
 	record, err := s.m.pg.SaveDiagnosticRemediation(r.Context(), taskID, input.EntryID, input.ExpectedSourceDigest, input.Technologies, contexts...)

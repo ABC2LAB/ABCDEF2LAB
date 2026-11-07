@@ -60,6 +60,9 @@ func e2WorkerCredentialFixture(t *testing.T, cfg e2proxy.Config) e2proxy.Config 
 }
 
 func e2WorkerFixture(t *testing.T, ids ...int64) (*e2proxy.Execution, *e2runner.Runner, E2HTTPExecution) {
+	return e2WorkerFixtureTarget(t, "http://example.invalid", "/", ids...)
+}
+func e2WorkerFixtureTarget(t *testing.T, origin, prefix string, ids ...int64) (*e2proxy.Execution, *e2runner.Runner, E2HTTPExecution) {
 	t.Helper()
 	taskID, intentID := int64(7), int64(22)
 	if len(ids) == 2 {
@@ -92,7 +95,7 @@ func e2WorkerFixture(t *testing.T, ids ...int64) (*e2proxy.Execution, *e2runner.
 	execution, err := e2proxy.NewExecution(context.Background(), e2WorkerCredentialFixture(t, e2proxy.Config{
 		Scope:    transmit.Scope{TaskRef: taskRef, RunRef: "worker-run-1", CaseRef: "case-1", ResetRef: "reset-1", PolicyRef: "policy-1"},
 		IntentID: intentID, OwnerRef: "ARTEX", PolicyRevision: "revision-1", AccountRef: "account-1", SessionRef: "session-1", ExpiresAt: now.Add(time.Hour),
-		Rules:  []e2proxy.Rule{{Ref: "rule-1", Origin: "http://example.invalid", ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/", PathScopeRef: "path-1", Methods: []string{"GET"}, Headers: http.Header{"Authorization": {"Bearer keep-secret"}}}},
+		Rules:  []e2proxy.Rule{{Ref: "rule-1", Origin: origin, ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: prefix, PathScopeRef: "path-1", Methods: []string{"GET"}, Headers: http.Header{"Authorization": {"Bearer keep-secret"}}}},
 		Budget: transmit.CumulativeBudget{Ledger: ledger, Key: key, Binding: binding}, Recorder: journal,
 		Limits: e2proxy.Limits{MaxAttempts: 20, MaxCalls: 10, MaxConcurrent: 2, MaxBodyBytes: 4096, RequestTimeout: time.Second, CallTimeout: 2 * time.Second, MaxDenials: 4, MaxTransient: 4, MaxUnknown: 4},
 	}))

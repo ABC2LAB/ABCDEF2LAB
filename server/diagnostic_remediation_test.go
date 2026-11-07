@@ -106,7 +106,7 @@ func TestDiagnosticRemediationAPIStoredCopyAndExport(t *testing.T) {
 		t.Fatal("section order")
 	}
 	shared := list(false)
-	if shared.SourceDigest != "" || shared.Available || shared.Record == nil || shared.Record.Bundle != nil {
+	if shared.SourceDigest != "" || shared.Context != nil || len(shared.Technologies) > 0 || shared.Available || shared.Record == nil || shared.Record.Bundle != nil {
 		t.Fatal("shared raw bundle leaked")
 	}
 	shareHTML := req("GET", fmt.Sprintf("/api/report/diagnostic?task=%d&download=1", tid), "")
@@ -255,7 +255,7 @@ func TestDiagnosticRemediationContextAPI(t *testing.T) {
 	if err = json.Unmarshal(w.Body.Bytes(), &record); err != nil {
 		t.Fatal(err)
 	}
-	if record.Bundle == nil || record.Bundle.Context.Source != "user_provided" {
+	if record.Bundle == nil || record.Bundle.Context.Source != "user_provided" || len(record.Bundle.Context.Observations) == 0 {
 		t.Fatal("context provenance escalated")
 	}
 	for _, want := range []string{"order-service", "GET /orders/{id}", "다른 사용자 주문이 반환됨", "본인 주문 조회 유지", "Elixir", "Phoenix"} {
@@ -280,5 +280,71 @@ func TestDiagnosticRemediationContextAPI(t *testing.T) {
 	oldCopy := fmt.Sprintf("/api/report/diagnostic/remediation/prompt?task=%d&audience=internal&entry=%s&record=%d&digest=%s", tid, entry, record.ID, record.Bundle.InputDigest)
 	if w = req("GET", oldCopy, ""); w.Code != 409 {
 		t.Fatal("old context copy accepted")
+	}
+}
+
+func TestDiagnosticRemediationAPIManualProvenanceCannotReplaceOriginal(t *testing.T) {
+	s, f, req := trafficEvidenceServer(t)
+	finding, err := s.m.pg.GetFinding(f.FindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tid := *finding.TaskID
+	id := diagnosticServerCandidate(t, s, tid, "completed")
+	entry := fmt.Sprintf("candidate-%d", id)
+	source, err := db.LoadDiagnosticRemediationSource(t.Context(), s.m.pg, tid, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := source.Context.Observations
+	if len(original) == 0 {
+		t.Fatal("original inferred summary missing")
+	}
+	input := map[string]any{
+		"entry_id": entry, "expected_source_digest": source.SourceDigest,
+		"technologies": []remediation.Technology{{Kind: "language", Name: "Elixir", Confidence: "confirmed", Source: "observed", EvidenceRef: "spoof-evidence", ObservedAt: "2026-11-07T00:00:00Z"}},
+		"context":      remediation.Context{Source: "observed", Observation: "Manual correction", Observations: []remediation.ContextObservation{{Source: "observed", Observation: "Spoofed original", EvidenceRef: "spoof-evidence"}}, ObservationsTruncated: true},
+	}
+	raw, _ := json.Marshal(input)
+	base := fmt.Sprintf("/api/report/diagnostic/remediation?task=%d&audience=internal", tid)
+	response := req("POST", base, string(raw))
+	if response.Code != 200 {
+		t.Fatalf("create=%d", response.Code)
+	}
+	var record diagnosticRemediationDTO
+	if err = json.Unmarshal(response.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Bundle == nil || record.Bundle.Context.Source != "user_provided" || record.Bundle.Context.Observation != "Manual correction" {
+		t.Fatal("manual context absent")
+	}
+	got := record.Bundle.Context.Observations
+	if len(got) != len(original) || got[0].Source != original[0].Source || got[0].Observation != original[0].Observation || got[0].EvidenceRef != original[0].EvidenceRef {
+		t.Fatal("original provenance overwritten")
+	}
+	for _, tech := range record.Bundle.Technologies {
+		if tech.Source != "user_provided" || tech.EvidenceRef != "" || tech.ObservedAt != "" {
+			t.Fatal("manual technology acquired observation credentials")
+		}
+	}
+	if strings.Contains(record.Bundle.AIPrompt, "Spoofed original") || strings.Contains(record.Bundle.AIPrompt, "spoof-evidence") {
+		t.Fatal("spoofed provenance escaped")
+	}
+	export := req("GET", fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal", tid), "")
+	if export.Code != 200 || !strings.Contains(html.UnescapeString(export.Body.String()), record.Bundle.AIPrompt) {
+		t.Fatal("export differs")
+	}
+	input["context"] = nil
+	input["technologies"] = []any{}
+	raw, _ = json.Marshal(input)
+	response = req("POST", base, string(raw))
+	if response.Code != 200 {
+		t.Fatalf("empty create=%d", response.Code)
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Bundle.Context.Source == "user_provided" || len(record.Bundle.Context.Observations) != len(original) {
+		t.Fatal("empty supplement lost original or retained old manual input")
 	}
 }
