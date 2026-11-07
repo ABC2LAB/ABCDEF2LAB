@@ -156,6 +156,8 @@ func (p *firstDiagnosisE2Provider) Complete(_ context.Context, request llm.Compl
 	for _, tool := range request.Tools {
 		switch tool.Name {
 		case "Bash", "graph_overview", "list_facts", "node_detail", "get_worker_output", "list_goals", "record_fact":
+		case "submit_diagnostic_candidate":
+			// 같은 intent의 실제 관찰만 저장하는 로컬 도구이며 송신 권한을 늘리지 않는다.
 		default:
 			p.unsupportedTool = true
 		}
@@ -184,6 +186,47 @@ func (p *firstDiagnosisE2Provider) Complete(_ context.Context, request llm.Compl
 		}
 	}
 	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("The owned fixture step is complete.")}}, "end_turn", llm.Usage{}, nil
+}
+
+func TestFirstDiagnosisE2ProviderToolBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		unsupported bool
+	}{
+		{name: "Bash"},
+		{name: "graph_overview"},
+		{name: "list_facts"},
+		{name: "node_detail"},
+		{name: "get_worker_output"},
+		{name: "list_goals"},
+		{name: "record_fact"},
+		{name: "submit_diagnostic_candidate"},
+		{name: "WebFetch", unsupported: true},
+		{name: "WebSearch", unsupported: true},
+		{name: "Read", unsupported: true},
+		{name: "Write", unsupported: true},
+		{name: "Edit", unsupported: true},
+		{name: "MultiEdit", unsupported: true},
+		{name: "LS", unsupported: true},
+		{name: "Glob", unsupported: true},
+		{name: "Grep", unsupported: true},
+		{name: "create_finding", unsupported: true},
+		{name: "submit_diagnostic_candidate_extra", unsupported: true},
+		{name: "unknown_tool", unsupported: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &firstDiagnosisE2Provider{}
+			_, _, _, err := provider.Complete(t.Context(), llm.CompletionRequest{
+				Tools: []llm.ToolSchema{{Name: tc.name}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if provider.unsupportedTool != tc.unsupported {
+				t.Fatalf("fixture tool boundary: %s unsupported=%v, want %v", tc.name, provider.unsupportedTool, tc.unsupported)
+			}
+		})
+	}
 }
 
 type firstDiagnosisPlannerProbeProvider struct {

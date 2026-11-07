@@ -146,14 +146,23 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 	if os.WriteFile(filepath.Join(c.KeyDir, "jwt.key"), bytes.Repeat([]byte("s"), 32), 0600) != nil {
 		t.Fatal("기존 JWT fixture 실패")
 	}
-	u.User = url.UserPassword(role, suffix)
-	if os.WriteFile(c.RuntimeDSNFile, []byte(u.String()), 0600) != nil {
+	runtimeDSN := reportCLIRuntimeDSN(u, role, suffix)
+	if os.WriteFile(c.RuntimeDSNFile, []byte(runtimeDSN), 0600) != nil {
 		t.Fatal("런타임 DSN fixture 실패")
 	}
 	// 실제 보고서 LOGIN에는 모델·실행 테이블의 읽기 권한조차 없다.
 	pool, err := openLaunchDatabase(ctx, c.RuntimeDSNFile)
 	if err != nil {
 		t.Fatal("최소 role 연결 실패")
+	}
+	t.Cleanup(func() {
+		if pool.Close() != nil {
+			t.Error("검사 pool 마감 실패")
+		}
+	})
+	var currentRole, sessionRole string
+	if pool.QueryRowContext(ctx, "SELECT current_user,session_user").Scan(&currentRole, &sessionRole) != nil || currentRole != role || sessionRole != role {
+		t.Fatal("보고서 연결이 생성한 최소 LOGIN 역할과 다릅니다")
 	}
 	for _, table := range []string{"llm_profiles", "task_llm_profiles", "task_control_modes"} {
 		if _, err := pool.ExecContext(ctx, "SELECT * FROM "+ident(table)+" LIMIT 0"); err == nil {
@@ -375,4 +384,49 @@ func reportCLIStoredState(t *testing.T, pool *sql.DB, schema string, taskID int6
 		}
 	}
 	return state
+}
+
+// pgx는 URL userinfo보다 query의 user/password를 우선하므로 설치자 신원을 둘 다 제거한다.
+func reportCLIRuntimeDSN(installer *url.URL, role, password string) string {
+	runtime := *installer
+	query := runtime.Query()
+	query.Del("user")
+	query.Del("password")
+	runtime.RawQuery = query.Encode()
+	runtime.User = url.UserPassword(role, password)
+	return runtime.String()
+}
+
+func TestReportCLIRuntimeDSNUsesIsolatedRole(t *testing.T) {
+	for _, tc := range []struct{ name, dsn, host string }{
+		{"userinfo", "postgres://installer:old-password@127.0.0.1:55439/owned?sslmode=disable&search_path=owned_schema", "127.0.0.1"},
+		{"ci-query", "postgres:///owned?host=/tmp/owned-ci-socket&user=installer&password=old-password&sslmode=disable&search_path=owned_schema", "/tmp/owned-ci-socket"},
+		{"mixed", "postgres://other:other-password@127.0.0.1:55439/owned?user=installer&user=duplicate&password=old-password&sslmode=disable&search_path=owned_schema", "127.0.0.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installer, err := url.Parse(tc.dsn)
+			if err != nil {
+				t.Fatal("합성 DSN 파싱 실패")
+			}
+			original := installer.String()
+			runtimeDSN := reportCLIRuntimeDSN(installer, "isolated_report_role", "isolated-password")
+			cfg, err := pgx.ParseConfig(runtimeDSN)
+			if err != nil {
+				t.Fatal("런타임 DSN 파싱 실패")
+			}
+			if cfg.User != "isolated_report_role" || cfg.Password != "isolated-password" {
+				t.Fatal("설치자 credential이 런타임 역할을 덮어썼습니다")
+			}
+			if cfg.Host != tc.host || cfg.Database != "owned" || cfg.RuntimeParams["search_path"] != "owned_schema" {
+				t.Fatal("소유 DB/소켓/schema 결속이 변경되었습니다")
+			}
+			runtime, err := url.Parse(runtimeDSN)
+			if err != nil || runtime.Query().Has("user") || runtime.Query().Has("password") {
+				t.Fatal("query credential이 남았습니다")
+			}
+			if installer.String() != original {
+				t.Fatal("설치자 DSN이 변경되었습니다")
+			}
+		})
+	}
 }
