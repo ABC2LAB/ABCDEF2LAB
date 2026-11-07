@@ -31,6 +31,8 @@ type ControlledReadPublisherRequest struct {
 	Filename string         `json:"-"`
 }
 type ControlledReadPublisherPlan struct {
+	// 실제 호스트가 결속한 별도 체크포인트 SQL 권위이며 HTTP/모델 입력으로 받지 않는다.
+	Database     *sql.DB                  `json:"-"`
 	Host         auditcheckpoint.Host     `json:"-"`
 	Epoch        auditcheckpoint.Epoch    `json:"-"`
 	PublisherRef string                   `json:"-"`
@@ -218,7 +220,11 @@ func (r *controlledReadRuntime) openPublishedJournal(ctx context.Context, config
 	}()
 	drain := &controlledHTTPDrain{scope: scope}
 	host := &controlledCheckpointHost{real: plan.Host, epoch: plan.Epoch, scope: scope, keyRef: spec.KeyRef, publisher: plan.PublisherRef, drain: drain}
-	store, err := auditcheckpoint.New(config.db, host, plan.Limits)
+	checkpointDB := config.db
+	if plan.Database != nil {
+		checkpointDB = plan.Database
+	}
+	store, err := auditcheckpoint.New(checkpointDB, host, plan.Limits)
 	if err != nil {
 		return nil, controlledPublisherFailure("store")
 	}

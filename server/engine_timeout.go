@@ -234,6 +234,10 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 const timeoutFinalRoundSummaryFmt = "작업 시간 초과 마무리·최종 판정(%d차)"
 
 func (e *Engine) runFinalPlannerRound(ctx context.Context, t *Task) (met bool) {
+	// 회수·만료 이후 독립 Planner 문맥으로 대상 도구를 다시 열지 않는다.
+	if t == nil || e.e2HTTP != nil || e.firstDiagnosis {
+		return false
+	}
 	if e.controlledTask(t.ID) {
 		return false
 	}

@@ -182,6 +182,7 @@ func (e *Engine) registerControlledReadMode(ctx context.Context, task *Task, int
 			r.mu.Unlock()
 		}
 	}()
+	ctx = firstDiagnosisRegistrationContext(ctx, task.ID)
 	if r.mode.host.CheckRoot(ctx) != nil || r.mode.host.CheckTaskQuiescent(ctx, taskID) != nil {
 		return errControlledReadUnavailable
 	}

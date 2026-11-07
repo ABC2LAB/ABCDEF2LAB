@@ -107,10 +107,13 @@ func retryableWorkerModelError(reason harness.TerminalReason, err error) bool {
 // (re)installed at runtime (LLM configured from the UI); the loops always run
 // but idle until an LLM is set.
 type Engine struct {
-	m               *Manager
-	debounce        time.Duration
-	controlledReads *controlledReadRuntime // installed by Server before any task starts
-	controlledIdle  func(*Task)            // parks a drained controlled task
+	m                       *Manager
+	debounce                time.Duration
+	controlledReads         *controlledReadRuntime // installed by Server before any task starts
+	e2HTTP                  *E2HTTPRuntime         // 일반 HTTP는 등록 GET의 상태·승인과 분리한다.
+	firstDiagnosis          bool
+	firstDiagnosisAdmission func(*Task) error
+	controlledIdle          func(*Task) // parks a drained controlled task
 
 	bc *Broadcaster // live activity pub/sub (SSE)
 
@@ -317,6 +320,9 @@ func (e *Engine) StopTask(taskID string) {
 // planner.Plan / worker.Execute), if present. Shared by Pause and the settle
 // sequence's hard-drain backstop.
 func (e *Engine) cancelExec(taskID string, cause error) {
+	if e.e2HTTP != nil {
+		_ = e.e2HTTP.FenceTask(taskID)
+	}
 	// A task cancellation and controlled completion cannot pass one another's
 	// execution decision unnoticed. No registry/DB work is performed here.
 	e.workMu.Lock()
@@ -810,6 +816,12 @@ func (e *Engine) withRuntimeHooks(ctx context.Context) context.Context {
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
+	if t == nil || (e.firstDiagnosis && (e.firstDiagnosisAdmission == nil || e.firstDiagnosisAdmission(t) != nil)) {
+		return
+	}
+	if e.e2HTTP != nil && e.e2HTTP.AdmitTask(ctx, t) != nil {
+		return
+	}
 	ctx = e.withRuntimeHooks(ctx)
 	workers := e.m.Workers()
 	e.deleteMu.RLock()
@@ -935,6 +947,18 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if ectx.Err() != nil || e.IsDeleting(t.ID) {
 			return
 		}
+		if e.e2HTTP != nil {
+			var bindingErr error
+			ectx, bindingErr = e.e2HTTP.PreparePlanning(ectx, t)
+			if errors.Is(bindingErr, ErrE2HTTPBusy) {
+				return
+			}
+			if bindingErr != nil {
+				_ = e.m.SetTaskStatus(t.ID, "failed")
+				e.cancelExec(t.ID, bindingErr)
+				return
+			}
+		}
 		log.Printf("[planner] task %s 계획 중...(%s 트리거)", t.ID, src)
 		// round marker: each Plan() is one planner round; emit a boundary so the
 		// UI can separate rounds in the transcript (kind='round').
@@ -944,9 +968,13 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// coalesces a burst; empty for time/heartbeat wakes).
 		triggers := t.drainTriggers()
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
+		workSeq := t.firstDiagnosisWorkSeq.Load()
 		e.BeginLLMCall(t.ID)
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 		e.EndLLMCall(t.ID)
+		if e.firstDiagnosis && err == nil && !met && ectx.Err() == nil {
+			t.firstDiagnosisPlannedSeq.Store(workSeq)
+		}
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 계획 오류: %v", t.ID, err)
@@ -1079,7 +1107,14 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	workCtx = intercept.WithTaskContext(workCtx, t.ID, label, taskEmit)
 	// Acquire once for this whole work, including provider retries. A controlled
 	// tombstone without a fresh server registration must never use legacy tools.
-	workCtx, finishControlled, controlledErr := e.prepareControlledRead(workCtx, t, intent)
+	var finishControlled func(...bool) error
+	var finishHTTP func() error
+	var controlledErr error
+	if e.e2HTTP != nil {
+		workCtx, finishHTTP, controlledErr = e.e2HTTP.PrepareWork(workCtx, t, intent)
+	} else {
+		workCtx, finishControlled, controlledErr = e.prepareControlledRead(workCtx, t, intent)
+	}
 	// nudges 有意建在 model_error 重跑循环之外:空转续跑的上限是「这条意图」的总量，
 	// 重跑一轮不该把额度清零重来。
 	hooks := steerHooks{
@@ -1094,6 +1129,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	var wrote agent.WriteCounts
 	var err error
 	if controlledErr != nil {
+		if e.e2HTTP != nil && !errors.Is(controlledErr, ErrE2HTTPBusy) {
+			log.Printf("[E2] task %s 의도 #%d 작업 준비 거부", t.ID, intent.ID)
+		}
 		reason, err = harness.ReasonHookStopped, controlledErr
 	} else {
 		e.BeginLLMCall(t.ID)
@@ -1125,6 +1163,14 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		e.EndLLMCall(t.ID)
 	}
 	var finalizeErr error
+	if finishHTTP != nil {
+		finalizeErr = finishHTTP()
+		if finalizeErr != nil {
+			log.Printf("[E2] task %s 의도 #%d HTTP 감사 마감 실패", t.ID, intent.ID)
+			err = errors.Join(err, finalizeErr)
+			reason = harness.ReasonHookStopped
+		}
+	}
 	if finishControlled != nil {
 		completed := err == nil && reason == harness.ReasonCompleted && workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.IsDeleting(t.ID)
 		finalizeErr = finishControlled(completed)
@@ -1160,6 +1206,17 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// cancel. The controller still needs the persisted state and cleanup result.
 	var controlErr error
 	defer func() { completeWork(controlErr) }()
+	// 전송 불명은 재개 가능한 open/paused가 아니다. 감사 상태와 함께 그래프에도 고정한다.
+	if e.e2HTTP != nil && errors.Is(err, agent.ErrE2HTTPUnknown) {
+		controlErr = t.Store.SetIntentBlockedReason(intent.ID, "e2_http_result_unknown")
+		if controlErr != nil {
+			log.Printf("[E2] task %s 의도 #%d 전송 불명 상태 저장 실패", t.ID, intent.ID)
+		} else {
+			log.Printf("[E2] task %s 의도 #%d 전송 결과 불명으로 차단", t.ID, intent.ID)
+		}
+		e.touch(t.ID)
+		return true
+	}
 	if action == "pause" {
 		controlErr = errors.Join(controlErr, transitionIntentState(t.Store, intent.ID, "running", "paused"))
 		if controlErr != nil {
@@ -1238,7 +1295,16 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		state = "exhausted"
 		log.Printf("[worker %s] intent %d 실행 시간 초과(exhausted), 마무리 뒤 기록 %s", name, intent.ID, wrote)
 	}
-	if state == "blocked" && isTaskLLMChainExhausted(err) {
+	if state == "blocked" && e.e2HTTP != nil && (errors.Is(err, agent.ErrE2HTTPPolicyLimited) || errors.Is(err, agent.ErrE2HTTPUnsupported)) {
+		// 프로그램이 확인한 미실행 사유를 보존한다. 일반 blocked나 결과 불명과 섞지 않는다.
+		blockedReason := "e2_http_policy_limited"
+		if errors.Is(err, agent.ErrE2HTTPUnsupported) {
+			blockedReason = "e2_http_unsupported"
+		}
+		if stateErr := t.Store.SetIntentBlockedReason(intent.ID, blockedReason); stateErr != nil {
+			log.Printf("[E2] task %s 의도 #%d 제한 사유 저장 실패: %v", t.ID, intent.ID, stateErr)
+		}
+	} else if state == "blocked" && isTaskLLMChainExhausted(err) {
 		_ = t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota)
 	} else {
 		if stateErr := transitionIntentState(t.Store, intent.ID, "running", state); stateErr != nil {
@@ -1247,6 +1313,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	log.Printf("[worker %s] task %s 의도 #%d 종료: %s (기록 %s)", name, t.ID, intent.ID, state, wrote)
 	e.touch(t.ID)
+	if e.firstDiagnosis {
+		t.firstDiagnosisWorkSeq.Add(1)
+	}
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true
 }

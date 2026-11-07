@@ -150,6 +150,18 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			var observedMu sync.Mutex
+			var observed []e2runner.TrustedResult
+			var observerSawOutput atomic.Bool
+			observe := func(_ context.Context, result e2runner.Result) error {
+				if result.ToolOutput != "" {
+					observerSawOutput.Store(true)
+				}
+				observedMu.Lock()
+				defer observedMu.Unlock()
+				observed = append(observed, result.Trusted)
+				return nil
+			}
 			var providers []*e2ActualWorkerProvider
 			var activities []db.Activity
 			runStep := func(intentID int64, command string, expected error, modelCalls int) *e2ActualWorkerProvider {
@@ -165,7 +177,7 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 				worker.SetNonStreaming(func() bool { return true })
 				ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 				defer cancel()
-				ctx = WithE2HTTPExecution(ctx, E2HTTPExecution{Runner: runner, Control: control, TaskID: 7, IntentID: intentID, TaskRef: "7", RunRef: "native-worker-" + scheme, MaxTurns: 3, MaxDuration: 10 * time.Second})
+				ctx = WithE2HTTPExecution(ctx, E2HTTPExecution{Runner: runner, Control: control, TaskID: 7, IntentID: intentID, TaskRef: "7", RunRef: "native-worker-" + scheme, MaxTurns: 3, MaxDuration: 10 * time.Second, ObserveResult: observe})
 				payload, _ := json.Marshal(map[string]string{"summary": "owned fixture intent " + strconv.FormatInt(intentID, 10)})
 				intent := &db.Node{ID: intentID, Kind: db.KindIntent, Payload: payload}
 				_, writes, runErr := worker.Execute(ctx, "worker", 7, nil, nil, intent, nil, func(a db.Activity) { activities = append(activities, a) }, nil, nil)
@@ -233,6 +245,16 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 			if received.Load() != 5 || badAuthentication.Load() || badAttempt.Load() || badMethod.Load() {
 				t.Fatalf("target observations received=%d authentication_bad=%v attempt_bad=%v method_bad=%v", received.Load(), badAuthentication.Load(), badAttempt.Load(), badMethod.Load())
 			}
+			observedMu.Lock()
+			if len(observed) != 6 || observerSawOutput.Load() {
+				t.Fatalf("actual result observer count=%d output_seen=%v", len(observed), observerSawOutput.Load())
+			}
+			for _, trusted := range observed {
+				if trusted.Call.CallRef == "" || trusted.Execution.Scope.TaskRef != "7" || trusted.Call.IntentID == 24 || trusted.Call.IntentID == 26 || !trusted.Final || !trusted.ProcessBashExited || !trusted.ProcessDrained || !trusted.ProxyDrained || !trusted.Call.AuditComplete {
+					t.Fatal("observer did not receive an actual final runner result")
+				}
+			}
+			observedMu.Unlock()
 			counts := execution.Snapshot().Counts
 			if counts.Attempts != 7 || counts.Allowed != 5 || counts.Denied != 2 || counts.ForwardAttempted != 5 || counts.Responses != 5 || counts.Unknown != 0 || counts.Calls != 6 {
 				t.Fatalf("actual trusted counts=%+v", counts)

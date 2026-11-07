@@ -51,14 +51,15 @@ var (
 // one is not guessed from the other or accepted merely for matching a format.
 // Reusing a Runner preserves its execution's approval, counters, and stop latch.
 type E2HTTPExecution struct {
-	Runner      *e2runner.Runner
-	Control     *E2HTTPControl
-	TaskID      int64
-	IntentID    int64
-	TaskRef     string
-	RunRef      string
-	MaxTurns    int
-	MaxDuration time.Duration
+	ObserveResult func(context.Context, e2runner.Result) error
+	Runner        *e2runner.Runner
+	Control       *E2HTTPControl
+	TaskID        int64
+	IntentID      int64
+	TaskRef       string
+	RunRef        string
+	MaxTurns      int
+	MaxDuration   time.Duration
 }
 
 type e2HTTPExecutionKey struct{}
@@ -427,7 +428,8 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID})
 	state := &e2HTTPToolState{}
 	runForIntent := func(runCtx context.Context, command string) (e2runner.Result, error) {
-		return binding.Runner.RunForIntent(runCtx, binding.IntentID, command)
+		result, runErr := binding.Runner.RunForIntent(runCtx, binding.IntentID, command)
+		return observeE2HTTPBoundResult(runCtx, binding.ObserveResult, result, runErr)
 	}
 	tools := []actool.CoreTool{newE2HTTPBashTool(execution, runForIntent, duration, state, binding.Control, intent.Payload, binding.IntentID)}
 	var toolset *ToolSet
@@ -745,4 +747,17 @@ func (s *e2HTTPToolState) outcome(classification string) {
 	s.mu.Lock()
 	s.last = classification
 	s.mu.Unlock()
+}
+
+// exporter는 실제 신뢰 결과만 관찰하며 원문 도구 출력과 observer 오류를 노출하지 않는다.
+func observeE2HTTPBoundResult(ctx context.Context, observer func(context.Context, e2runner.Result) error, result e2runner.Result, runErr error) (e2runner.Result, error) {
+	if observer == nil {
+		return result, runErr
+	}
+	observed := result
+	observed.ToolOutput = ""
+	if observer(ctx, observed) != nil {
+		return result, errors.Join(runErr, ErrE2HTTPIncomplete)
+	}
+	return result, runErr
 }

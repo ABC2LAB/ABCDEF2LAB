@@ -21,3 +21,5 @@ func (*Runner) RunForIntent(context.Context, int64, string) (Result, error) {
 func (*Runner) Drain(context.Context) error { return ErrUnavailable }
 
 func (*Runner) DrainIntent(context.Context, int64) error { return ErrUnavailable }
+
+func ValidateRootDirLayout(string) error { return ErrUnavailable }

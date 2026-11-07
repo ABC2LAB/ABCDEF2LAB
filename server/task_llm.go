@@ -122,6 +122,19 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 	r.s.syncTaskLLMState(pt)
 	t, _ := r.s.m.Task(r.taskID)
 	sel := taskLLMSelection{task: t, revision: pt.LLMChainRevision}
+	if r.s.firstDiagnosis {
+		id, bindingErr := r.s.firstDiagnosisProfileID(r.s.ctx, t)
+		if bindingErr != nil {
+			return sel, ErrFirstDiagnosisModel
+		}
+		// 검증 뒤 역할을 다시 고르지 않는다. DB 변경 경합도 다른 profile 송신으로 이어지지 않는다.
+		prov, cfg, ok := r.s.providerForProfile(id)
+		if !ok {
+			return sel, ErrFirstDiagnosisModel
+		}
+		sel.profileID, sel.provider, sel.retry = id, &firstDiagnosisModelProvider{server: r.s, task: t, profileID: id, config: cfg, inner: prov}, cfg.Retry
+		return sel, nil
+	}
 	if prov, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		sel.provider, sel.retry = prov, cfg.Retry
 		return sel, nil
@@ -152,6 +165,15 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 // the caller. If failover switches profiles, the change takes effect on the next
 // agent run (a fresh Session is built per run in captureRun).
 func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
+	if r.s.firstDiagnosis {
+		task, _ := r.s.m.Task(r.taskID)
+		id, err := r.s.firstDiagnosisProfileID(r.s.ctx, task)
+		if err != nil {
+			return agent.Config{}, false
+		}
+		_, cfg, ok := r.s.providerForProfile(id)
+		return cfg, ok
+	}
 	taskNum, err := parseTaskID(r.taskID)
 	if err != nil {
 		return agent.Config{}, false
@@ -454,6 +476,10 @@ func isRetryableStreamError(err error) bool {
 // CompactionWindow mirrors current()'s precedence so the context window always
 // matches the provider the role will actually stream on.
 func (r *taskLLMRuntime) CompactionWindow() int {
+	if r.s.firstDiagnosis {
+		cfg, _ := r.activeCfg()
+		return cfg.CompactionWindow()
+	}
 	if _, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		return cfg.CompactionWindow()
 	}
@@ -542,6 +568,14 @@ func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
 func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 	if t == nil || len(agentKeys) == 0 {
 		return false
+	}
+	if s.firstDiagnosis {
+		id, err := s.firstDiagnosisProfileID(s.ctx, t)
+		if err != nil {
+			return false
+		}
+		_, _, ok := s.providerForProfile(id)
+		return ok
 	}
 	state := t.llmStateSnapshot()
 	unboundReady := false
