@@ -1,7 +1,26 @@
 import { apiFetch } from "./api";
 
-export type Technology = { kind: string; name: string; version: string; confidence: string; source?: string };
+export type Technology = {
+  kind: string;
+  name: string;
+  version: string;
+  confidence: string;
+  source?: string;
+  component?: string;
+  component_role?: string;
+};
+export type RemediationContext = {
+  component?: string;
+  component_role?: string;
+  endpoint?: string;
+  prerequisites?: string;
+  observation?: string;
+  expected_behavior?: string;
+  prohibited_behavior?: string;
+  source?: string;
+};
 export type RemediationBundle = {
+  context?: RemediationContext;
   finding_id: string;
   input_digest: string;
   source_digest: string;
@@ -21,6 +40,7 @@ export type RemediationBundle = {
 };
 export type RemediationRecord = { id: number; entry_id: string; stale: boolean; bundle?: RemediationBundle };
 export type RemediationEntry = {
+  context?: RemediationContext;
   entry_id: string;
   title: string;
   outcome: string;
@@ -44,11 +64,17 @@ export function generateRemediation(
   entry: RemediationEntry,
   technologies: Technology[],
   signal: AbortSignal,
+  context?: RemediationContext,
 ) {
   return apiFetch<RemediationRecord>(`${base}?${new URLSearchParams({ task, audience: "internal" })}`, {
     method: "POST",
     signal,
-    body: JSON.stringify({ entry_id: entry.entry_id, expected_source_digest: entry.source_digest, technologies }),
+    body: JSON.stringify({
+      entry_id: entry.entry_id,
+      expected_source_digest: entry.source_digest,
+      technologies,
+      ...(context ? { context } : {}),
+    }),
   });
 }
 export function readCopyPrompt(task: string, entry: RemediationEntry, signal: AbortSignal) {
@@ -59,15 +85,6 @@ export function readCopyPrompt(task: string, entry: RemediationEntry, signal: Ab
     { signal, cache: "no-store" },
   );
 }
-export const technologyOptions: Record<string, readonly string[]> = {
-  language: ["Java", "Python", "JavaScript", "TypeScript", "Go", "PHP", "Ruby", "C#"],
-  framework: ["Spring", "Django", "Flask", "FastAPI", "Express", "ASP.NET Core"],
-  database: ["PostgreSQL", "MySQL", "SQLite", "SQL Server", "MongoDB"],
-  orm: ["Hibernate", "SQLAlchemy", "Django ORM", "Prisma"],
-  server: ["nginx", "Apache", "IIS"],
-  authentication: ["session", "JWT", "OAuth2", "OIDC"],
-  deployment: ["container", "serverless", "virtual-machine"],
-};
 export const technologyLabels: Record<string, string> = {
   language: "언어",
   framework: "프레임워크",

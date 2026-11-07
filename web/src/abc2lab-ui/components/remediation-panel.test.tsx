@@ -96,8 +96,8 @@ it("only generates on click and sends explicit technology without inferring a fr
   await internal();
   expect(api.generateRemediation).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText("언어"), { target: { value: "Java" } });
-  fireEvent.change(screen.getByLabelText("언어 버전"), { target: { value: "17" } });
-  fireEvent.change(screen.getByLabelText("언어 확인 수준"), { target: { value: "confirmed" } });
+  fireEvent.change(screen.getByLabelText("language 버전"), { target: { value: "17" } });
+  fireEvent.change(screen.getByLabelText("language 확인 수준"), { target: { value: "confirmed" } });
   fireEvent.click(screen.getByText("수정 제안 생성·저장"));
   await waitFor(() => expect(api.generateRemediation).toHaveBeenCalledOnce());
   expect(vi.mocked(api.generateRemediation).mock.calls[0][2]).toEqual([
@@ -217,4 +217,61 @@ it("ignores a delayed internal refresh after switching to shared", async () => {
   fireEvent.change(screen.getByLabelText("상세 공개 범위"), { target: { value: "shared" } });
   await act(async () => resolve({ task_id: 42, entries: [entry] }));
   expect(screen.queryByText(bundle.ai_prompt)).toBeNull();
+});
+
+it("accepts the actual stack outside an enumerated language list and preserves component roles", async () => {
+  await internal();
+  fireEvent.change(screen.getByLabelText("언어"), { target: { value: "Elixir" } });
+  fireEvent.change(screen.getByLabelText("language 컴포넌트"), { target: { value: "orders-api" } });
+  fireEvent.change(screen.getByLabelText("language 역할"), { target: { value: "backend" } });
+  fireEvent.change(screen.getByLabelText("language 확인 수준"), { target: { value: "observed" } });
+  fireEvent.click(screen.getByText("다른 컴포넌트 기술 추가"));
+  fireEvent.change(screen.getByLabelText("추가 기술 이름 extra-7"), { target: { value: "TypeScript" } });
+  fireEvent.change(screen.getByLabelText("extra-7 역할"), { target: { value: "frontend" } });
+  fireEvent.click(screen.getByText("수정 제안 생성·저장"));
+  await waitFor(() => expect(api.generateRemediation).toHaveBeenCalledOnce());
+  expect(vi.mocked(api.generateRemediation).mock.calls[0][2]).toEqual([
+    {
+      kind: "language",
+      name: "Elixir",
+      version: "unknown",
+      confidence: "observed",
+      component: "orders-api",
+      component_role: "backend",
+    },
+    { kind: "language", name: "TypeScript", version: "unknown", confidence: "unknown", component_role: "frontend" },
+  ]);
+});
+it("only includes explicitly reviewed context and binds endpoint, observed behavior and both goals", async () => {
+  await internal();
+  fireEvent.click(screen.getByLabelText("근거와 대조한 비민감 맥락을 이 수정안에 포함"));
+  fireEvent.change(screen.getByLabelText("영향 컴포넌트"), { target: { value: "orders-api" } });
+  fireEvent.change(screen.getByLabelText("영향 컴포넌트 역할"), { target: { value: "backend" } });
+  fireEvent.change(screen.getByLabelText("엔드포인트 경로 템플릿"), { target: { value: "GET /orders/{id}" } });
+  fireEvent.change(screen.getByLabelText("재현 사전 조건"), { target: { value: "two test accounts" } });
+  fireEvent.change(screen.getByLabelText("실제 관찰의 비민감 요약"), { target: { value: "other account sees order" } });
+  fireEvent.change(screen.getByLabelText("유지할 정상 동작"), { target: { value: "owner reads order" } });
+  fireEvent.change(screen.getByLabelText("차단할 취약 동작"), { target: { value: "non-owner cannot read order" } });
+  fireEvent.click(screen.getByText("수정 제안 생성·저장"));
+  await waitFor(() => expect(api.generateRemediation).toHaveBeenCalledOnce());
+  expect(vi.mocked(api.generateRemediation).mock.calls[0][4]).toEqual({
+    component: "orders-api",
+    component_role: "backend",
+    endpoint: "GET /orders/{id}",
+    prerequisites: "two test accounts",
+    observation: "other account sees order",
+    expected_behavior: "owner reads order",
+    prohibited_behavior: "non-owner cannot read order",
+    source: "user_provided",
+  });
+});
+it("does not submit edited context after its review checkbox is cleared", async () => {
+  await internal();
+  const checkbox = screen.getByLabelText("근거와 대조한 비민감 맥락을 이 수정안에 포함");
+  fireEvent.click(checkbox);
+  fireEvent.change(screen.getByLabelText("실제 관찰의 비민감 요약"), { target: { value: "review me" } });
+  fireEvent.click(checkbox);
+  fireEvent.click(screen.getByText("수정 제안 생성·저장"));
+  await waitFor(() => expect(api.generateRemediation).toHaveBeenCalledOnce());
+  expect(vi.mocked(api.generateRemediation).mock.calls[0][4]).toBeUndefined();
 });

@@ -23,18 +23,40 @@ invent revision one or treat zero as confirmed, even with a positive count.
 Technologies must come from authorized structured inputs. Source and Confidence
 are enums, not free text, and are not proof of trust. In particular, model text
 cannot claim user_provided or confirmed: the caller must determine those labels.
-Do not infer frameworks from languages. Recognized names remain marked with
-their supplied confidence; only observed/confirmed Java/Python from observed or
-user-provided sources select conditional language examples. Unknown versions
+Do not infer frameworks from languages. Supplied names remain marked with
+their supplied confidence and component role. Unknown versions
 remain unknown. No external documentation references are generated.
 
-Only safe categorical metadata and digests enter the copyable prompt. Raw
-evidence, URLs, actual file paths, snippets, response text, names, and secrets
-are deliberately not accepted. The summary states the evidence count, outcome,
-type, and missing protected details. This is **not a complete reproduction
-transcript**. The report must render the actual evidence and reproduction
-details separately under its existing disclosure policy; an external coding
-AI may need an authorized nonsensitive copy of those details.
+Context adds a bounded, explicitly nonsensitive summary of the affected
+component, endpoint route template, prerequisites, observation, expected normal
+behavior and prohibited behavior. The caller supplies selected structured facts
+or an explicitly user-reviewed summary, never raw Bash/model output, responses,
+logs or customer records. NormalizeContext redacts credential-like fields,
+URLs, controls and recognized instruction-like text by replacing the entire
+field with an explicit unknown marker. Endpoint query/fragment/encoding and
+authority syntax are rejected; actual customer identifiers must already be
+replaced with route placeholders by the caller. Arbitrary secret detection is
+not claimed. Caller credential/disclosure policy remains mandatory.
+
+Context and technology metadata are JSON-quoted in a separate untrusted-data
+section, never concatenated into the trusted work steps. Unknown details remain
+explicit, not invented. Source=user_provided must be set by the authenticated
+caller; it is not evidence of observation. Component and ComponentRole bind
+technology assertions to the affected service; the prompt instructs the coding
+AI to trace that actual service and never mistake frontend technology for its
+backend. Source/evidence/report/technology/context changes invalidate a bundle.
+
+Technology names are bounded labels, not a predefined language chooser. Elixir,
+Phoenix and other actual supplied technologies are preserved with provenance.
+No Java/Python-specific examples are selected. The coding AI must locate the
+actual request path, verify implementation and versions, then apply a minimal
+project-native fix within that session's permissions and report regression
+results. No customer filenames, functions or architecture are invented.
+
+This is **not a complete reproduction transcript**. Missing protected details
+must be obtained through an authorized nonsensitive source; a missing relevant
+code path or inconsistent evidence requires reporting the gap, not a guessed
+patch.
 
 ## Persistence and presentation
 
@@ -52,16 +74,17 @@ Store/render order: evidence, actions, AI prompt.
 
 Build rejects invalid identifiers/digests/counts/provenance kinds. It replaces
 unknown categorical values with unknown rather than echoing arbitrary input.
-No regex is claimed to discover every possible secret. Safety comes from
-excluding free text, not trying to recognize all malicious instructions.
+No regex is claimed to discover every possible secret. Safety depends on excluding raw evidence, accepting only reviewed bounded
+nonsensitive summaries as untrusted data, and enforcing the recipient
+instruction boundary; regex filtering alone is not an injection defense.
 
 ## Verification
 
 go test -race ./remediation
 go vet ./remediation
 
-Synthetic tests cover language-specific conditional guidance, missing
-frameworks, mismatch instructions, configuration/code families, nonconfirmed
+Synthetic tests cover project-specific component context, open technology
+labels, missing frameworks, mismatch instructions, configuration/code families, nonconfirmed
 outcomes, hostile fields, changed versions and modified stored prompts.
 These are builder tests, not database/UI/export integration or actual target
 remediation tests.

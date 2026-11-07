@@ -39,3 +39,14 @@ it("refuses stale records before any request", () => {
   ).toThrow("stale");
   expect(apiFetch).not.toHaveBeenCalled();
 });
+
+it("sends reviewed context in the CAS body, never the query", async () => {
+  const signal = new AbortController().signal;
+  const context = { component: "orders-api", endpoint: "GET /orders/{id}", source: "user_provided" };
+  await generateRemediation("42", entry, [], signal, context);
+  expect(apiFetch).toHaveBeenLastCalledWith("/api/report/diagnostic/remediation?task=42&audience=internal", {
+    signal,
+    method: "POST",
+    body: JSON.stringify({ entry_id: "finding-1", expected_source_digest: "source", technologies: [], context }),
+  });
+});

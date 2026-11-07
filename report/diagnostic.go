@@ -190,7 +190,8 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{with .RemediationBundle}}
 <h4>기술 맞춤형 보안 설정·코드 조치</h4>
 <p>조치 버전 {{.RemediationVersion}} · 입력 {{.InputDigest}} · 보고서 {{.ReportVersion}} · 증거 버전 {{.EvidenceVersion}} · 기술 정보 {{.TechnologyDigest}}</p>
-<ul>{{range .Technologies}}<li>{{.Kind}}: {{.Name}} {{.Version}} · 출처 {{.Source}} · 확인 수준 {{.Confidence}}</li>{{else}}<li>기술 스택 미확인. 실제 저장소에서 추가 확인하세요.</li>{{end}}</ul>
+<h5>수정 작업의 독립 맥락</h5><p>출처 {{.Context.Source}} · 컴포넌트 {{.Context.Component}} · 역할 {{.Context.ComponentRole}}</p><dl><dt>기능·엔드포인트</dt><dd>{{.Context.Endpoint}}</dd><dt>재현 사전 조건</dt><dd>{{.Context.Prerequisites}}</dd><dt>실제 관찰의 비민감 요약</dt><dd>{{.Context.Observation}}</dd><dt>유지할 정상 동작</dt><dd>{{.Context.ExpectedBehavior}}</dd><dt>차단할 취약 동작</dt><dd>{{.Context.ProhibitedBehavior}}</dd></dl><p>사용자 제공 요약은 자동 검증된 관찰이 아닙니다. 미확인 항목은 저장소와 승인된 근거에서 먼저 확인하세요.</p>
+<ul>{{range .Technologies}}<li>{{.Kind}}: {{.Name}} {{.Version}} · 컴포넌트 {{.Component}} / {{.ComponentRole}} · 출처 {{.Source}} · 확인 수준 {{.Confidence}}</li>{{else}}<li>기술 스택 미확인. 실제 저장소에서 추가 확인하세요.</li>{{end}}</ul>
 <h5>수정해야 할 보안 조건</h5><ul>{{range .SecurityCondition}}<li>{{.}}</li>{{end}}</ul>
 <h5>즉시 완화책</h5><ul>{{range .ImmediateMitigation}}<li>{{.}}</li>{{end}}</ul>
 <h5>근본 수정</h5><ul>{{range .RootFix}}<li>{{.}}</li>{{end}}</ul>

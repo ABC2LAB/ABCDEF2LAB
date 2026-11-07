@@ -157,7 +157,7 @@ func TestE2DiagnosticCandidatePostgresReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	advice, err := pg.SaveDiagnosticRemediation(context.Background(), task.ID, rendered.Entries[1].ID, source.SourceDigest, []remediation.Technology{{Kind: "language", Name: "Java", Version: "17", Source: "user_provided", Confidence: "confirmed"}})
+	advice, err := pg.SaveDiagnosticRemediation(context.Background(), task.ID, rendered.Entries[1].ID, source.SourceDigest, []remediation.Technology{{Kind: "language", Name: "Elixir", Version: "1.18", Source: "user_provided", Confidence: "confirmed", Component: "search-service", ComponentRole: "backend"}}, remediation.Context{Component: "search-service", ComponentRole: "backend", Source: "user_provided", Endpoint: "GET /search/{term}", Prerequisites: "Authenticated synthetic test account", Observation: "Synthetic search behavior requires validation", ExpectedBehavior: "Normal searches return matching results", ProhibitedBehavior: "Search text must not become SQL structure"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +172,9 @@ func TestE2DiagnosticCandidatePostgresReport(t *testing.T) {
 		if !strings.Contains(string(output), kind) {
 			t.Fatalf("missing %s", kind)
 		}
+	}
+	if !strings.Contains(advice.Bundle.AIPrompt, "GET /search/{term}") || !strings.Contains(advice.Bundle.AIPrompt, "Elixir") {
+		t.Fatal("independent project context absent")
 	}
 	if !strings.Contains(html.UnescapeString(string(output)), advice.Bundle.AIPrompt) {
 		t.Fatal("stored prompt absent from integrated report")

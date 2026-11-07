@@ -24,6 +24,7 @@ type diagnosticRemediationDTO struct {
 	Bundle    *remediation.Bundle `json:"bundle,omitempty"`
 }
 type diagnosticRemediationEntryDTO struct {
+	Context           *remediation.Context      `json:"context,omitempty"`
 	EntryID           string                    `json:"entry_id"`
 	Title             string                    `json:"title"`
 	Outcome           string                    `json:"outcome"`
@@ -143,6 +144,8 @@ func (s *Server) listDiagnosticRemediation(w http.ResponseWriter, r *http.Reques
 				remediationError(w, loadErr)
 				return
 			}
+			context := source.Context
+			dto.Context = &context
 			dto.SourceDigest = source.SourceDigest
 			dto.ReportVersion = source.ReportVersion
 			dto.EvidenceDigest = source.EvidenceDigest
@@ -188,6 +191,7 @@ func (s *Server) createDiagnosticRemediation(w http.ResponseWriter, r *http.Requ
 		EntryID              string                   `json:"entry_id"`
 		ExpectedSourceDigest string                   `json:"expected_source_digest"`
 		Technologies         []remediation.Technology `json:"technologies"`
+		Context              *remediation.Context     `json:"context"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10))
 	dec.DisallowUnknownFields()
@@ -203,7 +207,12 @@ func (s *Server) createDiagnosticRemediation(w http.ResponseWriter, r *http.Requ
 	for i := range input.Technologies {
 		input.Technologies[i].Source = "user_provided"
 	}
-	record, err := s.m.pg.SaveDiagnosticRemediation(r.Context(), taskID, input.EntryID, input.ExpectedSourceDigest, input.Technologies)
+	var contexts []remediation.Context
+	if input.Context != nil {
+		input.Context.Source = "user_provided"
+		contexts = append(contexts, *input.Context)
+	}
+	record, err := s.m.pg.SaveDiagnosticRemediation(r.Context(), taskID, input.EntryID, input.ExpectedSourceDigest, input.Technologies, contexts...)
 	if err != nil {
 		remediationError(w, err)
 		return

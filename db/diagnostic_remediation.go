@@ -173,16 +173,22 @@ func LoadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 		}
 		in.SourceDigest = diagnosticSourceHash([]any{taskID, entryID, json.RawMessage(raw), value, digest, payloadDigest})
 	}
+	// 자유 Bash 출력·모델 요약에서 위치나 재현 조건을 추측하지 않는다.
+	// 판정과 실행 분류만 프로그램 소유 문구로 요약하고 없는 맥락은 미확인으로 둔다.
+	in.Context = remediation.NormalizeContext(remediation.Context{Source: "observed", ComponentRole: "unknown", Observation: diagnosticObservationSummary(kind, in.Status)})
 	in.ReportVersion = "sha256:" + in.SourceDigest
 	return in, nil
 }
 
 // SaveDiagnosticRemediation는 기존 보고서·E③ 판정·finding 상태를 수정하지 않는다.
 // 명시적 사용자 기술 입력은 user_provided로만 수용하며 관측/모델 출처로 승격하지 않는다.
-func (d *DB) SaveDiagnosticRemediation(ctx context.Context, taskID int64, entryID, expectedSourceDigest string, technologies []remediation.Technology) (DiagnosticRemediationRecord, error) {
+func (d *DB) SaveDiagnosticRemediation(ctx context.Context, taskID int64, entryID, expectedSourceDigest string, technologies []remediation.Technology, contexts ...remediation.Context) (DiagnosticRemediationRecord, error) {
 	var out DiagnosticRemediationRecord
 	kind, id, err := diagnosticEntryID(entryID)
-	if err != nil || taskID <= 0 {
+	if err != nil || taskID <= 0 || len(contexts) > 1 {
+		return out, ErrDiagnosticRemediation
+	}
+	if len(contexts) == 1 && contexts[0].Source != "user_provided" {
 		return out, ErrDiagnosticRemediation
 	}
 	for _, t := range technologies {
@@ -225,11 +231,15 @@ func (d *DB) SaveDiagnosticRemediation(ctx context.Context, taskID int64, entryI
 		return out, ErrDiagnosticRemediationStale
 	}
 	source.Technologies = append([]remediation.Technology(nil), technologies...)
+	if len(contexts) == 1 {
+		source.Context = remediation.NormalizeContext(contexts[0])
+	}
 	bundle, err := remediation.Build(source)
 	if err != nil {
 		return out, err
 	}
 	source.Technologies = append([]remediation.Technology(nil), bundle.Technologies...)
+	source.Context = bundle.Context
 	records, err := listDiagnosticRemediationRecords(ctx, tx, taskID, entryID, 1, false)
 	if err != nil {
 		return out, err
@@ -307,6 +317,7 @@ func listDiagnosticRemediationRecords(ctx context.Context, q DiagnosticRemediati
 			return nil, ErrDiagnosticRemediation
 		}
 		r.Source.Technologies = append([]remediation.Technology(nil), expected.Technologies...)
+		r.Source.Context = expected.Context
 		if r.Bundle.RemediationVersion != remediation.GeneratorVersion {
 			// 이전 생성기의 본문을 현재 유효한 작업 지시로 내보내지 않는다.
 			// 자동 재생성/쓰기는 하지 않고 명시적 재생성을 기다린다.
@@ -340,6 +351,9 @@ func listDiagnosticRemediationRecords(ctx context.Context, q DiagnosticRemediati
 				return nil, err
 			}
 			current.Technologies = out[i].Source.Technologies
+			if out[i].Source.Context.Source == "user_provided" {
+				current.Context = out[i].Source.Context
+			}
 			out[i].Stale = out[i].Stale || remediation.IsStale(out[i].Bundle, current)
 			if out[i].Stale {
 				out[i].Bundle = remediation.Bundle{FindingID: out[i].EntryID}
@@ -362,4 +376,21 @@ func GetDiagnosticRemediationRecord(ctx context.Context, q DiagnosticRemediation
 		return nil, nil
 	}
 	return &records[0], nil
+}
+
+// diagnosticObservationSummary는 검증된 저장 상태만 요약하며 취약 동작을 새로 단정하지 않는다.
+func diagnosticObservationSummary(kind, status string) string {
+	if status == "confirmed" && kind == "finding" {
+		return "서버에 저장된 E③ 판정과 근거 버전 결속이 유효하여 취약점 확정 상태이다. 구체적인 요청 위치와 재현 사전 조건은 이 구조화 기록에 없다."
+	}
+	switch status {
+	case "not_executed":
+		return "저장된 실행 분류는 미실행이다. 대상의 취약 동작을 관찰했다고 주장할 수 없다."
+	case "unknown":
+		return "저장된 결과는 판단불가이다. 취약 동작과 재현 성공 여부는 확인되지 않았다."
+	case "negative":
+		return "저장된 판정은 허용된 동작이다. 취약점 확정이나 수정 완료를 의미하지 않는다."
+	default:
+		return "실제 도구 관찰 또는 저장된 근거에 연결된 검토 대상이다. 취약 동작의 성공과 확정 판정은 아직 검증되지 않았다."
+	}
 }
