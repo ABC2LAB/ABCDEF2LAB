@@ -403,6 +403,12 @@ func (s *runningCall) classification(trusted TrustedResult) string {
 	if s.initFailed {
 		return "isolation_unavailable"
 	}
+	if trusted.Call.Reason == e2proxy.AuditFailed || trusted.Execution.Reason == e2proxy.AuditFailed {
+		if trusted.Call.Counts.ForwardAttempted == 0 && trusted.Execution.Counts.ForwardAttempted == 0 && trusted.Call.Counts.Unknown == 0 && trusted.Execution.Counts.Unknown == 0 {
+			return "transient_failure"
+		}
+		return "result_unknown"
+	}
 	if !trusted.Final || trusted.Call.Counts.Unknown > 0 {
 		return "result_unknown"
 	}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/Autumn-27/artex/transmit/budget"
 	"github.com/golang-jwt/jwt/v5"
@@ -59,6 +60,22 @@ func (s approvalResultFailStore) SwapRequestApproval(ctx context.Context, a db.R
 	return s.requestApprovalStore.SwapRequestApproval(ctx, a, fresh)
 }
 
+type approvalCASFailStore struct {
+	requestApprovalStore
+	consume bool
+	late    bool
+}
+
+func (s approvalCASFailStore) SwapRequestApproval(ctx context.Context, a db.RequestApproval, fresh bool) error {
+	if fresh && a.Consumed == s.consume {
+		if s.late {
+			time.Sleep(time.Until(a.ExpiresAt) + 10*time.Millisecond)
+		}
+		return errors.New("synthetic CAS persistence failure")
+	}
+	return s.requestApprovalStore.SwapRequestApproval(ctx, a, fresh)
+}
+
 type approvalFailStore struct{ requestApprovalStore }
 
 func (approvalFailStore) InsertRequestApproval(context.Context, db.RequestApproval) error {
@@ -89,7 +106,7 @@ func approvalTestDB(t *testing.T) *db.DB {
 }
 func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 	d := approvalTestDB(t)
-	for _, scenario := range []string{"allow", "deny", "expire", "cancel", "stop", "revoke", "policy", "budget", "audit", "store-failure", "unknown", "result-store-failure", "upstream-result-failure"} {
+	for _, scenario := range []string{"allow", "deny", "expire", "cancel", "stop", "revoke", "policy", "budget", "audit", "store-failure", "decision-store-failure", "consume-store-failure", "decision-store-expired", "consume-store-expired", "unknown", "result-store-failure", "upstream-result-failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			task, err := d.CreateTask("synthetic approval", "synthetic", nil, 0, 300)
 			if err != nil {
@@ -136,7 +153,7 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 			}
 			u, _ := url.Parse(target.URL)
 			cfg := e2proxy.Config{ApprovalMode: e2proxy.ApprovalConfirmEveryRequest, RequestApproval: service, Scope: transmit.Scope{TaskRef: taskRef, RunRef: "run", CaseRef: "case", ResetRef: "reset", PolicyRef: "policy"}, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision", AccountRef: "account", SessionRef: "protected-session", ExpiresAt: now.Add(time.Minute), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: key, Binding: binding}, Recorder: recorder, Rules: []e2proxy.Rule{{Ref: "rule", Origin: u.Scheme + "://" + u.Host, ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed", PathScopeRef: "path", Methods: []string{"POST"}}}, Limits: e2proxy.Limits{MaxAttempts: 8, MaxCalls: 2, MaxConcurrent: 1, MaxBodyBytes: 1024, RequestTimeout: time.Second, CallTimeout: 3 * time.Second, MaxDenials: 8, MaxTransient: 8, MaxUnknown: 8}}
-			if scenario == "expire" {
+			if scenario == "expire" || strings.HasSuffix(scenario, "store-expired") {
 				cfg.Limits.CallTimeout = 250 * time.Millisecond
 			}
 			execution, err := e2proxy.NewExecution(run, cfg)
@@ -153,7 +170,20 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 			go func() { _, receipt, _ := call.Do(run, request); done <- receipt }()
 			if scenario == "store-failure" {
 				select {
-				case <-done:
+				case receipt := <-done:
+					if receipt.Reason != e2proxy.AuditFailed || receipt.AuditComplete {
+						t.Fatal("storage error became normal denial", receipt)
+					}
+					snapshot := execution.Snapshot()
+					if snapshot.AuditComplete || snapshot.Reason != e2proxy.AuditFailed {
+						t.Fatal("missing execution failure latch", snapshot)
+					}
+					if firstDiagnosisClosedToolOutcome(e2runner.TrustedResult{Classification: "transient_failure", Execution: snapshot, Call: e2proxy.CallResult{Reason: receipt.Reason}}) {
+						t.Fatal("storage failure closed as normal outcome")
+					}
+					if _, err := execution.BeginCall(run, "later"); err == nil {
+						t.Fatal("audit failure admitted later call")
+					}
 				case <-time.After(2 * time.Second):
 					t.Fatal("store failure did not return")
 				}
@@ -266,6 +296,14 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 				}
 			case "audit":
 				recorder.fail.Store(true)
+			case "decision-store-failure":
+				service.store = approvalCASFailStore{requestApprovalStore: d, consume: false}
+			case "consume-store-failure":
+				service.store = approvalCASFailStore{requestApprovalStore: d, consume: true}
+			case "decision-store-expired":
+				service.store = approvalCASFailStore{requestApprovalStore: d, consume: false, late: true}
+			case "consume-store-expired":
+				service.store = approvalCASFailStore{requestApprovalStore: d, consume: true, late: true}
 			case "result-store-failure":
 				service.store = approvalResultFailStore{d}
 			case "upstream-result-failure":
@@ -278,7 +316,21 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 				}
 			}
 			select {
-			case <-done:
+			case receipt := <-done:
+				if scenario == "decision-store-failure" || scenario == "consume-store-failure" || strings.HasSuffix(scenario, "store-expired") {
+					if receipt.Reason != e2proxy.AuditFailed || receipt.AuditComplete || execution.Snapshot().AuditComplete {
+						t.Fatal("CAS failure became normal denial", receipt)
+					}
+					if firstDiagnosisClosedToolOutcome(e2runner.TrustedResult{Classification: "transient_failure", Execution: execution.Snapshot(), Call: e2proxy.CallResult{Reason: receipt.Reason}}) {
+						t.Fatal("CAS failure closed normally")
+					}
+					if _, err := execution.BeginCall(run, "later"); err == nil {
+						t.Fatal("CAS failure admitted later call")
+					}
+				}
+				if scenario == "deny" && (receipt.Reason != e2proxy.PolicyDenied || !receipt.AuditComplete) {
+					t.Fatal("normal denial became infrastructure failure", receipt)
+				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("request waiter did not finish")
 			}

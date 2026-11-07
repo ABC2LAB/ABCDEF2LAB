@@ -33,6 +33,7 @@ type requestApprovalStore interface {
 type requestApprovalWaiter struct {
 	ctx      context.Context
 	decision chan struct{}
+	failed   bool
 }
 type requestApprovalBinding struct {
 	execution *e2proxy.Execution
@@ -120,8 +121,11 @@ func approvalPreview(p e2proxy.RequestApprovalProposal, rule E2HTTPFileRule) (st
 }
 func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2proxy.RequestApprovalProposal) (bool, error) {
 	task, err := strconv.ParseInt(p.Receipt.Scope.TaskRef, 10, 64)
-	if err != nil || ctx == nil || ctx.Err() != nil || p.OwnerRef != "ARTEX" || !time.Now().Before(p.ExpiresAt) {
+	if err != nil || ctx == nil || p.OwnerRef != "ARTEX" {
 		return false, errRequestApproval
+	}
+	if ctx.Err() != nil || !time.Now().Before(p.ExpiresAt) {
+		return false, nil
 	}
 	s.mu.Lock()
 	binding, ok := s.bindings[task]
@@ -165,6 +169,9 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if waiter.failed {
+		return false, errRequestApproval
+	}
 	// 취소가 결정과 경합해도 확인 모드의 fallback allow는 없다.
 	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer persistCancel()
@@ -190,7 +197,10 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 	}
 	current.Consumed = true
 	current.ExecutionState = "awaiting_dispatch"
-	if s.store.SwapRequestApproval(ctx, current, true) != nil {
+	if err := s.store.SwapRequestApproval(ctx, current, true); err != nil {
+		if errors.Is(err, db.ErrRequestApprovalConflict) && !time.Now().Before(current.ExpiresAt) {
+			return false, nil
+		}
 		return false, errRequestApproval
 	}
 	return true, nil
@@ -202,7 +212,7 @@ func (s *RequestApprovalService) authorized(task int64, owner string) bool {
 func (s *RequestApprovalService) decorate(a db.RequestApproval) db.RequestApproval {
 	b, bok := s.bindings[a.TaskID]
 	w := s.waiters[a.ID]
-	a.Live = bok && b.ctx.Err() == nil && b.run == a.RunRef && w != nil && (w.ctx.Err() == nil || a.Consumed)
+	a.Live = bok && b.ctx.Err() == nil && b.run == a.RunRef && w != nil && !w.failed && (w.ctx.Err() == nil || a.Consumed)
 	// 결과 저장/감사 실패로 경계가 닫혔다면 남은 dispatch 상태는 성공이나 대기가 아니다.
 	if b.execution != nil && b.execution.Snapshot().Reason == e2proxy.AuditFailed {
 		a.Live = false
@@ -271,6 +281,8 @@ func (s *RequestApprovalService) decide(ctx context.Context, task int64, owner, 
 	a.Live = false
 	a.CanDecide = false
 	if err = s.store.SwapRequestApproval(ctx, a, true); err != nil {
+		s.waiters[id].failed = !errors.Is(err, db.ErrRequestApprovalConflict) || time.Now().Before(a.ExpiresAt)
+		close(s.waiters[id].decision)
 		return a, err
 	}
 	close(s.waiters[id].decision)
