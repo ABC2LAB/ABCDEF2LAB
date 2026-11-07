@@ -13,7 +13,7 @@ import (
 )
 
 func policyFixture() (e2proxy.Config, PolicyBehavior) {
-	return e2proxy.Config{Scope: transmit.Scope{RunRef: "run-fixture"}, HeaderMode: e2proxy.HeaderPreserve, Rules: []e2proxy.Rule{{Ref: "rule-first", PathScopeRef: "scope-first", Origin: "https://example.invalid", ConnectIP: netip.MustParseAddr("192.0.2.1"), PathPrefix: "/read", Methods: []string{"GET", "HEAD"}, Headers: http.Header{"X-Mode": []string{"read-only"}}}, {Ref: "rule-second", PathScopeRef: "scope-second", Origin: "https://example.invalid:443", ConnectIP: netip.MustParseAddr("192.0.2.2"), PathPrefix: "/read/private", Methods: []string{"GET"}}}, Limits: e2proxy.Limits{MaxAttempts: 20, MaxCalls: 10, MaxConcurrent: 2, MaxBodyBytes: 4096, RequestTimeout: time.Second, CallTimeout: time.Minute, MaxDenials: 3, MaxTransient: 3, MaxUnknown: 2}}, PolicyBehavior{MaxWorkerTurns: 5, MaxToolCalls: 10, WorkerTimeout: time.Minute, MaxPlannerRounds: 2, MaxIntentRuns: 1, DrainTimeout: time.Second, OutputLimit: 4096, ProxyHeaderTimeout: time.Second, ProxyRequestTimeout: time.Second, ProxyMaxHeaderBytes: 8192, ProxyMaxConnections: 4}
+	return e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope, Scope: transmit.Scope{RunRef: "run-fixture"}, HeaderMode: e2proxy.HeaderPreserve, Rules: []e2proxy.Rule{{Ref: "rule-first", PathScopeRef: "scope-first", Origin: "https://example.invalid", ConnectIP: netip.MustParseAddr("192.0.2.1"), PathPrefix: "/read", Methods: []string{"GET", "HEAD"}, Headers: http.Header{"X-Mode": []string{"read-only"}}}, {Ref: "rule-second", PathScopeRef: "scope-second", Origin: "https://example.invalid:443", ConnectIP: netip.MustParseAddr("192.0.2.2"), PathPrefix: "/read/private", Methods: []string{"GET"}}}, Limits: e2proxy.Limits{MaxAttempts: 20, MaxCalls: 10, MaxConcurrent: 2, MaxBodyBytes: 4096, RequestTimeout: time.Second, CallTimeout: time.Minute, MaxDenials: 3, MaxTransient: 3, MaxUnknown: 2}}, PolicyBehavior{MaxWorkerTurns: 5, MaxToolCalls: 10, WorkerTimeout: time.Minute, MaxPlannerRounds: 2, MaxIntentRuns: 1, DrainTimeout: time.Second, OutputLimit: 4096, ProxyHeaderTimeout: time.Second, ProxyRequestTimeout: time.Second, ProxyMaxHeaderBytes: 8192, ProxyMaxConnections: 4}
 }
 func policyDigest(t *testing.T, c e2proxy.Config, b PolicyBehavior) string {
 	t.Helper()
@@ -59,6 +59,7 @@ func TestPolicyFingerprintChangesEffectiveMeaning(t *testing.T) {
 	baseline, b := policyFixture()
 	expected := policyDigest(t, baseline, b)
 	cases := map[string]func(*e2proxy.Config, *PolicyBehavior){
+		"approval_mode":   func(c *e2proxy.Config, _ *PolicyBehavior) { c.ApprovalMode = e2proxy.ApprovalConfirmEveryRequest },
 		"rule_order":      func(c *e2proxy.Config, _ *PolicyBehavior) { c.Rules[0], c.Rules[1] = c.Rules[1], c.Rules[0] },
 		"path":            func(c *e2proxy.Config, _ *PolicyBehavior) { c.Rules[0].PathPrefix = "/different" },
 		"method":          func(c *e2proxy.Config, _ *PolicyBehavior) { c.Rules[0].Methods = []string{"GET"} },

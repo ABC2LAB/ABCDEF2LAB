@@ -68,6 +68,7 @@ func e2HTTPCloneEvaluation(value *e2proxy.EvaluationCallerContext) *e2proxy.Eval
 }
 
 type E2HTTPRuntimeOptions struct {
+	RequestApprovals        *RequestApprovalService
 	PolicyFingerprintSHA256 string
 	PolicyConfigSHA256      string
 	HeaderMode              e2proxy.HeaderMode

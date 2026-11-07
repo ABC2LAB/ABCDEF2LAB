@@ -54,9 +54,10 @@ func (FirstDiagnosisHTTPApproval) GoString() string {
 
 // 평가 제어 채널이 필요한 별도 배치만 관찰자를 명시적으로 연결한다.
 type FirstDiagnosisHTTPHooks struct {
-	ObserveEvent  func(context.Context, e2proxy.Event) error
-	ObserveResult func(context.Context, e2runner.Result) error
-	OnAcquire     func(context.Context, E2HTTPAcquired) error
+	RequestApprovals *RequestApprovalService
+	ObserveEvent     func(context.Context, e2proxy.Event) error
+	ObserveResult    func(context.Context, e2runner.Result) error
+	OnAcquire        func(context.Context, E2HTTPAcquired) error
 }
 
 func (FirstDiagnosisHTTPHooks) String() string   { return "server.FirstDiagnosisHTTPHooks[protected]" }
@@ -101,7 +102,7 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	if len(hooks) == 1 {
 		hook = hooks[0]
 	}
-	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire})
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{RequestApprovals: hook.RequestApprovals, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire})
 	if err != nil {
 		authority.revoke()
 		_ = authority.close()
