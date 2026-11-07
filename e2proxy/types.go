@@ -91,7 +91,7 @@ type Limits struct {
 }
 type Config struct {
 	ApprovalMode ApprovalMode
-	// RequestApproval은 운영 비활성인 요청별 확인 경계다. 호스트가 명시적으로 연결한다.
+	// RequestApproval은 호스트가 명시적으로 연결하는 요청별 확인 경계다.
 	RequestApproval RequestApprovalGate `json:"-"`
 	Evaluation      *EvaluationCallerContext
 	HeaderMode      HeaderMode

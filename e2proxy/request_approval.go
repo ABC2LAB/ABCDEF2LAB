@@ -15,7 +15,7 @@ import (
 // 명시적인 단회 허용에만 true를 반환해야 한다. timeout/fallback allow는 금지다.
 // 저장·권한 확인 실패는 오류 또는 false이며, ctx 종료를 반드시 준수한다.
 // 구현은 제안 원문을 공유 로그·LLM·일반 JSON에 보내지 않고 출력 정책을 적용한다.
-// 현재 서버·UI 어댑터는 없으므로 이 경계만으로 제품 승인 모드가 완성되지는 않는다.
+// 이 인터페이스만으로 저장·인증·화면을 제공하지 않는다. 서버 어댑터의 검증은 별도다.
 type RequestApprovalGate interface {
 	AwaitRequestApproval(context.Context, RequestApprovalProposal) (bool, error)
 }

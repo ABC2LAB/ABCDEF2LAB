@@ -57,6 +57,44 @@ go build -o /srv/first-diagnosis/bin/first-controlled-diagnosis ./cmd/first-cont
 
 일반 HTTP에는 등록 GET snapshot/KG/Receipt/E③ 권위를 필수로 넣지 않는다. 허용·거부·대상 응답·도구 오류·전송 불명을 구분하고, 통제 구성이 없으면 Planner/Worker가 무통제 Bash로 떨어지지 않는다. 격리 helper와 실제 namespace 검증이 필요하며 proxy 환경변수만으로 우회 차단을 주장하지 않는다.
 
+### 일반 HTTP 요청별 사용자 확인
+
+`policy.json`에는 `approval_mode`를 반드시 명시한다. `confirm_every_request`는 GET을 포함한 지원 요청을 전송 전에 각각 보류한다. `preauthorized_scope`는 이미 운영자가 승인한 정책 범위에서 자동 실행한다. 누락·알 수 없는 값, 확인 모드의 처리기 부재는 오류이며 자동 모드로 바뀌지 않는다. 이는 상태 변경 위험 자동 분류가 아니다.
+
+확인 모드는 현재 기존 단일 관리자 신원 `ARTEX`만 지원하므로 정책 `owner_ref`도 `ARTEX`여야 한다. 첫 기동이 기존 DB와 요청별 승인 서비스를 연결하고, factory가 실제 task/run을 결속한다. 다른 JWT subject나 task/run에는 조회·결정 권한을 주지 않는다. 다중 사용자 역할 체계를 새로 구현한 것은 아니다.
+
+다음은 **기존 전체 정책 안에 넣는 필드 예시**이며 실행 가능한 전체 설정이나 실제 승인 자료가 아니다.
+
+```json
+{
+  "approval_mode": "confirm_every_request",
+  "owner_ref": "ARTEX",
+  "rules": [{
+    "approval_display": {
+      "public_path": true,
+      "query_keys": ["page"],
+      "json_fields": ["action", "quantity"]
+    }
+  }]
+}
+```
+
+각 rule의 `approval_display`는 운영자가 공개해도 되는 입력을 검토하여 지정한다. `public_path`가 false면 승인된 path prefix 밖의 경로를 숨긴다. query와 JSON은 지정한 키만 보여주며 JSON은 단순 값만 지원한다. password/token/session 등 민감 키와 중첩 객체·배열은 공개하지 않는다. 헤더와 body 원문은 DB·UI에 저장하지 않는다. 공개 키로 지정된 값 자체가 비밀이 아닌지 운영자가 확인해야 하며 이 설정은 자동 민감정보 판별기가 아니다. 표시되지 않은 입력과 예상 영향이 있다는 안내를 유지한다. 판단 정보가 충분하지 않으면 허용하지 않는다.
+
+설치자는 기존 `db.Open` migration으로 `request_approvals` 테이블을 설치하고 해당 실행 역할에 SELECT/INSERT/UPDATE만 부여한다. 첫 실행 runtime은 DDL이나 grant를 수행하지 않는다. 저장 실패는 전송 허용이 아니다. private 요청 원문은 실행 메모리에만 보류하고 DB에는 요청 지문·회차/task/intent/call/attempt·계정/세션 참조·공개 projection·결정/소비/결과만 남긴다.
+
+기존 승인 화면의 요청별 HTTP 카드에서 실제 task를 선택해 보류 요청을 확인한다. API는 다음과 같고 기존 JWT middleware 안에 등록된다.
+
+- GET `/api/tasks/{id}/request-approvals`, GET `/api/tasks/{id}/request-approvals/{approvalID}`
+- POST `/api/tasks/{id}/request-approvals/{approvalID}/decision`: `{ "decision": "allow", "request_sha256": "상세에서 읽은 지문" }` 또는 `deny`
+- POST `/api/tasks/{id}/request-approvals/stop`: 현재 결속된 E② 전송 경계 중지. 실행 재개나 전체 변경 API를 열지 않는다.
+
+승인 API는 Authorization Bearer JWT의 HS256·현재 비밀번호 결속·만료·subject를 다시 검사한다. 쿠키/query token만으로 결정할 수 없어 ambient cookie에 의한 CSRF를 허용하지 않는다. 목록과 상세도 task binding을 요구하며 다른 task의 ID를 바꿔 접근할 수 없다. 서버가 이미 가진 task의 종료 상태와 live waiter/기한/지문을 확인하고 CAS로 단회 결정·소비한다. 중복·늦은 결정은 추가 송신을 만들지 않는다.
+
+`allowed`는 송신 성공이 아니다. 소비 이후에도 정책·예산·감사·TLS와 현재 실행 상태를 재검사한다. 결과는 `not_sent`, `awaiting_dispatch`, `dispatch_pending`, `completed`, `unknown`으로 분리한다. 서버가 재시작되면 과거 DB allowed/pending만으로 waiter를 복원하지 않으며, live 실행을 잃은 소비 기록의 미확정 결과는 unknown으로 조회한다. 네트워크 전체의 exactly-once를 보장하지 않는다. 현재 프로세스에 task 권한 결속이 없으면 재시작 후 과거 기록 조회도 열지 않는다. 이 단위의 UI/API 중지는 사용자 확인모드로 결속된 실행에 한정하며, 자동 모드의 사용자 중지 연결은 후속이다(현재 이 경로는 403).
+
+이 연결은 합성 PostgreSQL·인증 API·통제된 수신기로 검증한다. 실제 모델/연습 대상 회차·운영 공급·Bash 전체 배치·공식 성능 측정 완료를 뜻하지 않는다. UI 클릭 실기동 검증과 단위 렌더링 시험도 별도로 구분한다.
+
 ## 등록 GET
 
 공통 필드와 `mode`를 `registered_get`으로 바꾸고 `general_http` 대신 다음 객체를 둔다.
