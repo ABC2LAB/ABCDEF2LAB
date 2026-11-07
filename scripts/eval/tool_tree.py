@@ -5,7 +5,8 @@
 루트 Dockerfile은 베이스 이미지·apt 패키지·npm `@latest`를 고정하지 않는다. 그래서 Dockerfile이 같아도
 빌드 시점이 다르면 도구가 달라지고, 이미지 ID 기록만으로는 이 차이가 드러나지 않는다.
 
-대조 대상은 패키지 버전(dpkg·npm 전역·pip)과 실행 파일·설정 내용(PATH 디렉터리·/etc)이다.
+대조 대상은 패키지 버전(dpkg·npm 전역·pip)과 도구 경로(TREE_ROOTS) 아래 파일 내용·링크다. 버전과 PATH 링크가 같아도
+실제 코드가 다르면 드러나야 해서 패키지 파일까지 묶는다.
 /app(엔진 바이너리·기동 스크립트·skills)은 양쪽이 원래 다른 코드라 넣지 않는다.
 E② 격리 실행 안에서 보이는 트리는 제품 E²가 서버에 연결된 뒤 따로 잰다. 이 도구의 범위가 아니다.
 
@@ -19,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -41,13 +43,20 @@ _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FILE_LINE = re.compile(r"^([0-9a-f]{64})  (/\S.*)$")
 _PAIR_LINE = re.compile(r"^([^=\s]+)=+([^=\s].*)$")
 
-_SCANNED = "/usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /etc"
-# 앞 셋은 Docker가 컨테이너마다 넣는 파일이라 이미지 내용이 아니다.
-# 계정 파일은 도구 설정이 아니고 해시도 결과 파일에 남기지 않는다.
-_EXCLUDED = ("/etc/hostname", "/etc/hosts", "/etc/resolv.conf",
-             "/etc/shadow", "/etc/shadow-", "/etc/gshadow", "/etc/gshadow-")
-_NOT_IMAGE = " ".join(f"! -path {path}" for path in _EXCLUDED)
-_COLLECT_SCRIPT = f"""set -eu
+# 도구 코드가 실제로 있는 곳까지 내용으로 묶는다. PATH 링크가 가리키는 npm 패키지(/usr/lib/node_modules),
+# 공유 라이브러리(/usr/lib), 파이썬(/usr/local/lib), Playwright 브라우저(/root/.cache)가 여기 든다.
+# /var·/tmp는 실행 중 바뀌는 곳이고 /app은 양쪽이 원래 다르다.
+TREE_ROOTS = ("/usr", "/etc", "/opt", "/root/.cache", "/root/.bashrc", "/root/.profile")
+# Docker가 컨테이너마다 넣는 파일은 이미지 내용이 아니다. 계정 파일·개인 키는 도구 설정이 아니라서 읽지 않는다.
+EXCLUDED_PATHS = ("/etc/hostname", "/etc/hosts", "/etc/resolv.conf",
+                  "/etc/shadow", "/etc/shadow-", "/etc/gshadow", "/etc/gshadow-", "/etc/ssl/private/*")
+
+
+def collect_script(roots: Sequence[str] = TREE_ROOTS, excluded: Sequence[str] = EXCLUDED_PATHS) -> str:
+    """수집 셸 스크립트. 없는 경로는 건너뛴다. 한쪽에만 있으면 항목 차이로 드러난다."""
+    root_words = " ".join(shlex.quote(root) for root in roots)
+    not_excluded = " ".join(f"! -path {shlex.quote(path)}" for path in excluded)
+    return f"""set -eu
 export LC_ALL=C
 echo '{SECTION_MARK}dpkg'
 dpkg-query -W -f '${{binary:Package}}=${{Version}}\\n'
@@ -55,11 +64,17 @@ echo '{SECTION_MARK}npm_global'
 npm ls -g --depth=0 --json
 echo '{SECTION_MARK}pip'
 python3 -m pip list --format=freeze --disable-pip-version-check
+set --
+for root in {root_words}; do
+  if [ -e "$root" ]; then set -- "$@" "$root"; fi
+done
+[ "$#" -gt 0 ]
 echo '{SECTION_MARK}files'
-find {_SCANNED} -type f {_NOT_IMAGE} -exec sha256sum {{}} +
+find "$@" -type f {not_excluded} -exec sha256sum {{}} +
 echo '{SECTION_MARK}links'
-find {_SCANNED} -type l {_NOT_IMAGE} -printf '%p=%l\\n'
+find "$@" -type l {not_excluded} -printf '%p\\t%l\\n'
 """
+
 
 Tree = Mapping[str, Mapping[str, str]]
 DockerRun = Callable[[Sequence[str], float, int], BoundedResult]
@@ -103,8 +118,18 @@ def _parse_files(lines: Sequence[str]) -> dict[str, str]:
     return section
 
 
+def _parse_links(lines: Sequence[str]) -> dict[str, str]:
+    section: dict[str, str] = {}
+    for line in lines:
+        path, _, target = line.partition("\t")
+        if not path.startswith("/") or not target or "\t" in target:
+            raise ToolTreeError(f"형식 오류: {line[:80]}")
+        _put(section, path, target)
+    return section
+
+
 _PARSERS = {"dpkg": _parse_pairs, "npm_global": _parse_npm, "pip": _parse_pairs,
-            "files": _parse_files, "links": _parse_pairs}
+            "files": _parse_files, "links": _parse_links}
 
 
 def parse_tree(text: str) -> dict[str, dict[str, str]]:
@@ -157,7 +182,7 @@ def collect_tree(image_id: str, run: DockerRun) -> dict[str, dict[str, str]]:
         raise ToolTreeError(f"내용 ID가 아님: {image_id[:80]}")
     args = ["run", "--rm", "--pull", "never", "--network", "none", "--read-only", "--tmpfs", SCRATCH_TMPFS,
             "--env", f"npm_config_cache={SCRATCH_TMPFS}", "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges:true", "--entrypoint", "sh", image_id, "-c", _COLLECT_SCRIPT]
+            "--security-opt", "no-new-privileges:true", "--entrypoint", "sh", image_id, "-c", collect_script()]
     result = run(args, COLLECT_TIMEOUT_SECONDS, MAX_TREE_BYTES)
     if result.returncode != 0:
         raise ToolTreeError(f"수집 실패(exit {result.returncode}): {image_id}")
