@@ -245,6 +245,29 @@ class TestRejectedV11(_V11):
         inputs = self.inputs(self.v11("p1", e2=self.PRODUCT, tamper_rows=self._product_row()))
         self.assertEqual((inputs.e2_mode, inputs.attempt_reconciliation), ("product", STUB_RECONCILIATION))
 
+    def test_blocked_attempts_must_match_the_verified_reconciliation(self):
+        # 근거와 다른 값·근거가 있는데 없는 값·근거가 없는데 있는 값 모두 서명만으로 표에 오르지 않는다.
+        for name, kwargs in (("b0", {"e2": E2_STUB_PLACEMENT, "blocked_attempts": 99}),
+                             ("b1", {"e2": E2_STUB_PLACEMENT, "blocked_attempts": None}),
+                             ("b2", {"blocked_attempts": 1}),
+                             ("b3", {"proof": False, "blocked_attempts": 1}),
+                             ("b4", {"e2": self.PRODUCT, "tamper_rows": self._failed_product, "blocked_attempts": 0})):
+            with self.subTest(name):
+                self.reject("blocked_attempts", name, **kwargs)
+
+    def test_verified_blocked_attempts_reach_the_table(self):
+        denied = dict(STUB_RECONCILIATION, blocked_reached=1, positive_evidence=True, control_claim_withheld=True,
+                      cells=dict(STUB_RECONCILIATION["cells"], denied_unobserved=2, denied_observed=1))
+        # 두 칸을 합쳐 3건이 되게 E² 결정 건수도 맞춘다.
+        placement = dict(E2_STUB_PLACEMENT, decision_rows=E2_STUB_PLACEMENT["allowed"] + 3, unsupported=3)
+        run = self.v11("b5", e2=placement, reconciliation=denied)
+        self.assertEqual(run["blocked_attempts"], 3)
+        report = build_report(self.load([run]), self.correlate, self.correlatable, runner_key=self.runner_key,
+                              allow_fixture_e2=True)
+        self.assertIn("| 5 (n=1) | 3 (n=1) |", report.text)
+        self.assertIsNone(self.v11("b6")["blocked_attempts"])
+        self.inputs(self.v11("b7"))
+
     def _failed_product(self, rows):
         drop(rows, row_of(rows, "attempt_reconciliation"))
         self._product_row(close_state="unavailable", close_reason="close_timeout", collection_outcome="product_failure",

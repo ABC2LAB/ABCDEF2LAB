@@ -50,7 +50,7 @@ from runner_config import (  # noqa: E402
     METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
-from isolation_proof import valid_output_language  # noqa: E402
+from isolation_proof import blocked_attempts, valid_output_language  # noqa: E402
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from runner_engine import (  # noqa: E402
@@ -806,7 +806,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
                       total_requests=meter_summary["forwarded_requests"],
                       fixture_fingerprint=spec.fixture_fingerprint,
                       environment_fingerprint=spec.environment_fingerprint, steps=steps, artifacts=artifacts,
-                      proof=proof)
+                      proof=proof, blocked_attempts=blocked_attempts(reconciliation))
 
 
 def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: GatewayFiles, evidence,

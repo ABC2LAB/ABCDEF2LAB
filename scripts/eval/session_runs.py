@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from aggregate import _optional_stat as optional_stat  # noqa: E402
 from isolation_proof import E2_MODES  # noqa: E402
 from run_record import RunRecordError, read_runner_key, sign_run_record  # noqa: E402
 from runner import COMPLETE, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME  # noqa: E402
@@ -249,6 +250,31 @@ def build_manifest(runs_root: Path, attempts: list[Attempt]) -> dict:
     return {"runs": runs}
 
 
+def _engine_seconds(record: dict) -> float | None:
+    """서명된 기록의 작업 생성~엔진 종료 시간. 시각을 못 읽으면 None이고 표에서 "—"가 된다."""
+    try:
+        start = datetime.fromisoformat(record["timeline"]["engine_start"]["at"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(record["timeline"]["engine_end"]["at"].replace("Z", "+00:00"))
+        return (end - start).total_seconds()
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return None
+
+
+def auxiliary(attempts: list[Attempt]) -> list[str]:
+    """§5 보조 지표(유효 회차, 쪽별). 값이 빠진 회차는 0으로 세지 않아 그 칸이 "—"가 된다."""
+    lines = ["| 쪽 | 유효 회차 | 종료 사유 | 예산 초과분 | 구간 소요 시간(초) |", "|---|---|---|---|---|"]
+    for side in SIDES:
+        valid = [a for a in attempts if a.side == side and a.status == COMPLETE]
+        meters = [meter if isinstance(meter := a.result.get("meter"), dict) else {} for a in valid]
+        stops = Counter(str(meter.get("stop_reason", "미기록")) for meter in meters)
+        reasons = ", ".join(f"{reason} {count}" for reason, count in sorted(stops.items())) or "—"
+        over = [value if type(value := meter.get("over_budget")) is int else None for meter in meters]
+        seconds = [_engine_seconds(a.record) for a in valid]
+        lines.append(f"| {side} | {len(valid)} | {reasons} | {optional_stat(over).render()} "
+                     f"| {optional_stat(seconds).render()} |")
+    return lines
+
+
 def write_new(path: Path, payload: dict) -> None:
     """새 파일로만 쓴다(덮어쓰기 거부)."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
@@ -283,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     lines, warnings = tally(attempts, args.repeats)
     print("\n".join(lines))
+    print("\n".join(["", "보조 지표(프로토콜 §5, 효율 주장의 근거로 쓰지 않음):", *auxiliary(attempts)]))
     for warning in warnings:
         print(warning, file=sys.stderr)
     if args.manifest:
