@@ -86,6 +86,12 @@ export class ApiError extends Error {
 export async function apiFetch<T>(path: string, init: RequestInit = {}, retryAuth = true): Promise<T> {
   // 목업 빌드는 엔진에 요청하지 않는다(로그인도 하지 않음). 데이터는 이때만 불러온다.
   if (MOCK) return (await import("./mock-data")).mockFetch<T>(path, init);
+  const res = await authenticatedResponse(path, init, retryAuth);
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+async function authenticatedResponse(path: string, init: RequestInit, retryAuth: boolean): Promise<Response> {
   const t = await ensureToken();
   const headers = new Headers(init.headers);
   if (t) headers.set("Authorization", `Bearer ${t}`);
@@ -97,7 +103,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}, retryAut
     token = null;
     storeToken(null);
     loginInFlight = null;
-    return apiFetch<T>(path, init, false);
+    return authenticatedResponse(path, init, false);
   }
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
@@ -109,8 +115,18 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}, retryAut
     }
     throw new ApiError(res.status, message);
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return res;
+}
+
+/** Authenticated download; never put a bearer token in an href or query string. */
+export async function apiFetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  if (MOCK) throw new ApiError(503, "목업에서는 보고서를 내보낼 수 없습니다.");
+  const res = await authenticatedResponse(path, { ...init, cache: "no-store", redirect: "error" }, true);
+  if (!res.headers.get("Content-Type")?.toLowerCase().startsWith("text/html")) {
+    throw new ApiError(422, "보고서 응답 형식을 확인할 수 없습니다.");
+  }
+  // Download only. Do not navigate to or render the authenticated HTML in this origin.
+  return new Blob([await res.arrayBuffer()], { type: "application/octet-stream" });
 }
 
 /**
