@@ -117,12 +117,19 @@ GRANT SELECT, INSERT, UPDATE ON audit_checkpoint_heads TO host_authority_role;
 
 `service_ready`는 서버 준비이며 call/execution 준비나 판정 완료가 아니다. 일반 HTTP에서 호출·감사·종료가 확인돼도 기존 goal은 open, task는 paused로 남을 수 있다. 이는 제한된 실행의 마감이며 목표 충족·task done·E③ 판정 또는 공식 평가 완료가 아니다. 일반 모드 출력은 execution/closure와 `e3:NOT_APPLICABLE`을 사용한다. `run`의 최종 PASS는 실제 Run과 마감이 모두 확인된 경우에만 출력한다. 신규 admission 차단 → task/call/대상 drain → 소유 자식·터널·소켓 종료 확인 → 감사/저장 확인 → host/키/FD/SQL lease 반환 순서를 지킨다. drain·자식 종료가 불명하면 자원을 반환해 안전 종료로 꾸미지 않는다. 실제 drain이 확인된 뒤 남은 판정/저장 오류는 오류로 영구 보존하면서 안전하게 자원을 반환할 수 있다. timeout·감사 실패·저장 불명·취소를 성공 완료로 바꾸지 않는다.
 
+감사가 완결된 정상 정책 차단·미지원 경로는 실행 마감 실패와 구분한다. 일반 HTTP 감독자는 Planner의 후속 계획 세대를 기다리고, 최종 call·프로세스·프록시 drain 및 감사 결과를 대조한다. 정책/미지원 제한 intent는 기존 `blocked` 상태와 프로그램이 기록한 `e2_http_policy_limited` / `e2_http_unsupported` 사유로 남으며, 정상 마감이 이를 진단 성공이나 취약점 없음으로 바꾸지 않는다. 일부 요청만 허용된 호출도 실제 송신 건수와 제한 분류를 보존한다. 결과 불명·감사 실패·종료 미완료·근거 없는 blocked는 계속 실패다. 이 경로의 검증은 사전 정책 제한에 대한 것이며, 요청별 사용자 승인 API/UI 구현이나 사용자 거절의 end-to-end 수용을 대신하지 않는다.
+
 M01의 같은 운영자 UID 배치에는 평가 UDS 인증 전제를 확대하지 않는다. 이 CLI의 첫 비평가 실행은 평가 제어 채널을 자동 활성화하지 않으며 알 수 없는 control/eval 설정을 폐쇄 파서에서 거부한다. 같은 UID의 embedded 제어 채널을 독립 runner 인증으로 조합하지 않으며, 독립 runner UID/mount 인증을 갖춘 별도 배치의 typed 제어 어댑터가 필요하다. manifest 마감이나 공식 판정 export 전체를 완료했다고 주장하지 않는다.
 
 ## 실제 자료 요청과 검증 범위
 
-팀원에게 받아야 할 자료는 승인된 A/B 세션/carrier, KG registry와 같은 reset/generation의 snapshot, 실제 target instance/reset 근거, 실제 모델/profile과 local endpoint, 원본 Planner가 만든 task/intent에 대한 승인 참조다. 전체 VM·DB·키·marker를 함께 되돌리는 복원의 독립 antirollback 권위는 이 구현이 제공하지 않는다. 첫 M01 수용은 fresh-only 기동, 취소 후 이전 승인 재사용 거부, 동시 lease 거부에 한정된다. 실제 운영의 외부 root/backup 복원 경계 확인은 별도 설치자 자료와 수용이 필요하다.
+실제 자료는 모드별로 구분한다.
+- 공통: 실제 대상·실행 범위와 승인, 모델/profile·local endpoint, 기존 인증 자료와 분리된 DB 역할, 실제 task/intent 및 해당 회차의 target instance/reset 근거.
+- 일반 HTTP: 위 `policy.json` / `authority.json`에 필요한 승인·계정/세션·요청 예산, 격리 helper와 네트워크 경계, 보호된 CA/감사키/credential 자료. 등록 GET 전용 A/B carrier·KG registry·snapshot·LocalBinding은 공통 선행 조건이 아니다.
+- 등록 GET/IDOR: 승인된 A/B 세션/carrier, KG registry와 같은 reset/generation의 snapshot, RootTrust/LocalBinding·epoch anchor·키 mapping, E③ Source 및 저장 권위 자료가 추가로 필요하다.
 
-설치자는 M01 namespace·전용 보호 경로, 기존 JWT/로그인 자료, 별도 PostgreSQL 역할, 기존 키 mapping/epoch anchor와 제한된 권위 DSN을 공급한다. 이 자료의 제작이나 실제 대상/모델 회차 실행은 합성 시험 성공으로 대체하지 않는다.
+전체 VM·DB·키·marker를 함께 되돌리는 복원의 독립 antirollback 권위는 이 구현이 제공하지 않는다. 첫 M01 수용은 fresh-only 기동, 취소 후 이전 승인 재사용 거부, 동시 lease 거부에 한정된다. 실제 운영의 외부 root/backup 복원 경계 확인은 별도 설치자 자료와 수용이 필요하다.
+
+설치자는 선택한 모드의 M01 namespace·전용 보호 경로, 기존 JWT/로그인 자료와 별도 PostgreSQL 역할을 공급한다. 등록 GET은 기존 키 mapping/epoch anchor와 제한된 권위 DSN도 공급한다. 이 자료의 제작이나 실제 대상/모델 회차 실행은 합성 시험 성공으로 대체하지 않는다.
 
 owned loopback·synthetic provider·실제 PostgreSQL race 시험은 각각 검사한 경계만 증명한다. 실제 Juice Shop·실제 모델·같은 회차의 권한/세션/취소/저장 수용은 해당 자료로 별도 실행해야 한다. 제품 코드의 공급·기동·종료 구현이 남으면 그것을 팀원 자료 대기로 분류하지 않는다.

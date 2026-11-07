@@ -243,7 +243,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	defer func() {
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		if err := runtime.Close(closeCtx); err != nil && !((mode == "denied" || mode == "cancel" || mode == "prepare-fail" || mode == "planner-only") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
+		if err := runtime.Close(closeCtx); err != nil && !((mode == "cancel" || mode == "prepare-fail" || mode == "planner-only") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
 			t.Error("실제 Engine 경로 최종 종료 실패")
 		}
 
@@ -253,10 +253,16 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		t.Fatal("실제 미판정 목표 fixture 생성 실패")
 	}
 	path := "/allowed"
-	if mode == "denied" {
+	if mode == "denied" || mode == "partial-denied" {
 		path = "/forbidden"
 	}
 	provider := &firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 5 " + target.URL + path}
+	if mode == "partial-denied" {
+		provider.command += "; curl --silent --show-error --max-time 5 " + target.URL + "/allowed"
+	}
+	if mode == "unsupported" {
+		provider.command = "curl --silent --show-error --max-time 5 -X CONNECT " + target.URL + "/allowed"
+	}
 	if mode == "tool-failure" {
 		provider.command += " | grep -q never-present-owned-fixture"
 	}
@@ -341,19 +347,48 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
-	if mode == "denied" {
-		if runErr == nil {
-			t.Fatal("실제 범위 밖 정책 거부가 실행 마감 성공으로 바뀜")
+	if mode == "denied" || mode == "partial-denied" || mode == "unsupported" {
+		if runErr != nil || plannerProvider.calls == 0 {
+			t.Fatal("정상 정책 거부 뒤 재계획·감사 마감을 실패로 처리함")
+		}
+		// 제한 사유만 복사한 별도 intent에는 해당 call의 감사 근거가 없다.
+		unmatched, addErr := task.Store.AddIntent(map[string]any{"summary": "Owned unmatched limitation fixture"}, 1, nil, "system")
+		if addErr != nil || task.Store.SetIntentBlockedReason(unmatched, "e2_http_policy_limited") != nil {
+			t.Fatal("미결속 제한 fixture 생성 실패")
+		}
+		if ready, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
+			t.Fatal("call 감사 없는 제한 intent를 정상 마감으로 수용함")
+		}
+		if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, unmatched); err != nil {
+			t.Fatal("이 시험이 만든 미결속 intent 정리 실패")
+		}
+		if ready, err := supervisor.generalCompletion(ctx, runtime.server, task); err != nil || !ready {
+			t.Fatal("감사에 결속된 정상 제한을 마감 실패로 처리함")
 		}
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
 		closeErr := runtime.Close(closeCtx)
-		if !errors.Is(closeErr, ErrFirstDiagnosisOutcome) {
+		if closeErr != nil {
 			t.Fatal("실제 거부 결과를 보존하면서 안전한 자원 반환을 완료하지 못함")
 		}
 		results := runtime.host.Runtime().Results(task.ID)
-		if hits.Load() != 0 || len(results) != 1 || results[0].Classification != "policy_not_executed" || results[0].Call.Counts.Denied != 1 || !results[0].Final || !results[0].ProcessDrained || !results[0].ProxyDrained {
+		wantHits, wantClass, wantReason := int64(0), "policy_not_executed", "e2_http_policy_limited"
+		if mode == "partial-denied" {
+			wantHits, wantClass = 1, "partial_policy_denial"
+		}
+		if mode == "unsupported" {
+			wantClass, wantReason = "unsupported", "e2_http_unsupported"
+		}
+		if hits.Load() != wantHits || len(results) != 1 || results[0].Classification != wantClass || results[0].Call.Counts.Denied+results[0].Call.Counts.Unsupported != 1 || !results[0].Call.AuditComplete || results[0].Call.Counts.Unknown != 0 || !results[0].Final || !results[0].ProcessDrained || !results[0].ProxyDrained {
 			t.Fatal("실제 Engine 정책 거부에서 대상0·프로그램 분류·drain을 증명하지 못함")
+		}
+		var intentState, blockedReason string
+		if err := installer.QueryRowContext(closeCtx, "SELECT state,blocked_reason FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&intentState, &blockedReason); err != nil || intentState != "blocked" || blockedReason != wantReason {
+			t.Fatal("정상 마감이 진단 제한 사유를 지우거나 done으로 바꿈")
+		}
+		goal, err := task.Store.GetNode(goalID)
+		if err != nil || goal == nil || goal.State != "open" {
+			t.Fatal("실행 마감이 미판정 목표를 충족으로 바꿈")
 		}
 		lock, err := os.OpenFile(filepath.Join(cfg.AuthorityRoot, ".first-http.lock"), os.O_RDWR, 0)
 		if err != nil {
@@ -361,7 +396,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		defer lock.Close()
 		if unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB) != nil {
-			t.Fatal("거부 진단을 실패로 보존한 뒤 안전한 lease 반환이 누락됨")
+			t.Fatal("정책 제한 보존 뒤 안전한 lease 반환이 누락됨")
 		}
 		defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
 		if err := supervisor.Run(closeCtx, task.ID, 0, ""); !errors.Is(err, ErrFirstDiagnosisSupervisor) {

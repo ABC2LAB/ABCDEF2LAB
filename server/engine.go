@@ -1295,7 +1295,16 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		state = "exhausted"
 		log.Printf("[worker %s] intent %d 실행 시간 초과(exhausted), 마무리 뒤 기록 %s", name, intent.ID, wrote)
 	}
-	if state == "blocked" && isTaskLLMChainExhausted(err) {
+	if state == "blocked" && e.e2HTTP != nil && (errors.Is(err, agent.ErrE2HTTPPolicyLimited) || errors.Is(err, agent.ErrE2HTTPUnsupported)) {
+		// 프로그램이 확인한 미실행 사유를 보존한다. 일반 blocked나 결과 불명과 섞지 않는다.
+		blockedReason := "e2_http_policy_limited"
+		if errors.Is(err, agent.ErrE2HTTPUnsupported) {
+			blockedReason = "e2_http_unsupported"
+		}
+		if stateErr := t.Store.SetIntentBlockedReason(intent.ID, blockedReason); stateErr != nil {
+			log.Printf("[E2] task %s 의도 #%d 제한 사유 저장 실패: %v", t.ID, intent.ID, stateErr)
+		}
+	} else if state == "blocked" && isTaskLLMChainExhausted(err) {
 		_ = t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota)
 	} else {
 		if stateErr := transitionIntentState(t.Store, intent.ID, "running", state); stateErr != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/transmit"
 )
 
@@ -461,7 +462,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			intentState = latest.State
 		}
 		state := task.lifecycleSnapshot()
-		if intentState == "failed" || intentState == "blocked" || intentState == "timeout" || state.Status == "failed" || state.Status == "timeout" {
+		if (registered && (intentState == "failed" || intentState == "blocked" || intentState == "timeout")) || state.Status == "failed" || state.Status == "timeout" {
 			return ErrFirstDiagnosisSupervisor
 		}
 		terminal := registered && intentState == "done"
@@ -515,8 +516,8 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	var active, done, bad int
 	err := s.m.pg.QueryRowContext(ctx, `SELECT
  count(*) FILTER (WHERE state IN ('open','running')),
- count(*) FILTER (WHERE state='done'),
- count(*) FILTER (WHERE state NOT IN ('open','running','done'))
+ count(*) FILTER (WHERE state='done' OR (state='blocked' AND blocked_reason IN ('e2_http_policy_limited','e2_http_unsupported'))),
+ count(*) FILTER (WHERE state NOT IN ('open','running','done') AND NOT (state='blocked' AND blocked_reason IN ('e2_http_policy_limited','e2_http_unsupported')))
  FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'`, task.ExpID).Scan(&active, &done, &bad)
 	if err != nil || bad > 0 {
 		return false, ErrFirstDiagnosisSupervisor
@@ -545,24 +546,76 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	if len(results) != len(calls) {
 		return false, ErrFirstDiagnosisSupervisor
 	}
-	observed := make(map[string]bool, len(results))
+	observed := make(map[string]e2proxy.CallResult, len(results))
+	limited := make(map[int64]map[string]bool)
 	for _, result := range results {
-		validToolOutcome := (result.ExitCode == 0 && result.Classification == "completed") || (result.ExitCode != 0 && result.Classification == "tool_failure")
-		if !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessBashExited || !result.ProcessDrained || !result.ProxyDrained || !validToolOutcome || result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef] {
+		validToolOutcome := firstDiagnosisClosedToolOutcome(result)
+		if !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessBashExited || !result.ProcessDrained || !result.ProxyDrained || !validToolOutcome || result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef].CallRef != "" {
 			return false, ErrFirstDiagnosisSupervisor
 		}
-		observed[result.Call.CallRef] = true
+		observed[result.Call.CallRef] = result.Call
+		if result.Call.Counts.Denied > 0 || result.Call.Counts.Unsupported > 0 {
+			if limited[result.Call.IntentID] == nil {
+				limited[result.Call.IntentID] = make(map[string]bool)
+			}
+			reason := "e2_http_policy_limited"
+			if result.Call.Counts.Denied == 0 {
+				reason = "e2_http_unsupported"
+			}
+			limited[result.Call.IntentID][reason] = true
+		}
 	}
 	for _, call := range calls {
-		if !observed[call.CallRef] || !call.Final || !call.AuditComplete || call.Reason != e2proxy.Complete || call.Counts.Denied != 0 || call.Counts.Unsupported != 0 || call.Counts.Unknown != 0 {
+		if observed[call.CallRef] != call || !call.Final || !call.AuditComplete || call.Counts.Unknown != 0 {
 			return false, ErrFirstDiagnosisSupervisor
 		}
 		intent, err := task.Store.GetNode(call.IntentID)
-		if err != nil || intent == nil || intent.Kind != db.KindIntent || intent.State != "done" {
+		if err != nil || intent == nil || intent.Kind != db.KindIntent || (intent.State != "done" && !(intent.State == "blocked" && limited[intent.ID][intent.BlockedReason])) {
 			return false, ErrFirstDiagnosisSupervisor
 		}
 	}
+	var matchedBlocked int
+	for intentID := range limited {
+		intent, readErr := task.Store.GetNode(intentID)
+		if readErr != nil {
+			return false, ErrFirstDiagnosisSupervisor
+		}
+		if intent != nil && intent.State == "blocked" {
+			matchedBlocked++
+		}
+	}
+	var blocked int
+	if err := s.m.pg.QueryRowContext(ctx, "SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='blocked'", task.ExpID).Scan(&blocked); err != nil || blocked != matchedBlocked {
+		return false, ErrFirstDiagnosisSupervisor
+	}
 	return true, nil
+}
+
+// 감사가 닫힌 정책 제한은 진단 범위의 제한이다. 불명·미완료·알 수 없는 분류는 마감 실패다.
+func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
+	c := result.Call.Counts
+	if c.Unknown != 0 || result.Execution.Counts.Unknown != 0 || !result.Execution.AuditComplete {
+		return false
+	}
+	if result.Call.Reason != e2proxy.Complete && result.Call.Reason != e2proxy.PolicyDenied && result.Call.Reason != e2proxy.Unsupported {
+		return false
+	}
+	switch result.Classification {
+	case "completed":
+		return result.ExitCode == 0 && c.Denied == 0 && c.Unsupported == 0 && result.Call.Reason == e2proxy.Complete
+	case "tool_failure":
+		return result.ExitCode != 0 && c.Denied == 0 && c.Unsupported == 0 && result.Call.Reason == e2proxy.Complete
+	case "policy_not_executed":
+		return c.Denied > 0 && c.ForwardAttempted == 0
+	case "partial_policy_denial":
+		return c.Denied > 0 && c.ForwardAttempted > 0
+	case "unsupported":
+		return c.Denied == 0 && c.Unsupported > 0 && c.ForwardAttempted == 0
+	case "partial_unsupported":
+		return c.Denied == 0 && c.Unsupported > 0 && c.ForwardAttempted > 0
+	default:
+		return false
+	}
 }
 
 func (s *FirstDiagnosisSupervisor) drainTask(ctx context.Context, server *Server, task *Task) error {

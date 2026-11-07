@@ -221,20 +221,22 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, closeFail, "close-fail")
 		})
-		t.Run("actual-engine-policy-denial-no-fallback", func(t *testing.T) {
-			denied, err := manager.CreateTask("Owned denied engine fixture", "Preserve a policy denial", nil, 60, 60)
-			if err != nil || denied == nil {
-				t.Fatal("독립 거부 task 생성 실패")
-			}
-			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", denied.ID); err != nil {
-				t.Fatal("거부 task 준비 상태 저장 실패")
-			}
-			denied.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
-			if id, err := denied.Store.AddIntent(map[string]any{"summary": "Exercise a policy refusal"}, 1, nil, "system"); err != nil || id <= 0 {
-				t.Fatal("실제 거부 intent 생성 실패")
-			}
-			firstDiagnosisSupervisorEngineRun(t, manager, installer, denied, "denied")
-		})
+		for _, mode := range []string{"denied", "partial-denied", "unsupported"} {
+			t.Run("actual-engine-limitation-"+mode, func(t *testing.T) {
+				denied, err := manager.CreateTask("Owned denied engine fixture", "Preserve a policy denial", nil, 60, 60)
+				if err != nil || denied == nil {
+					t.Fatal("독립 거부 task 생성 실패")
+				}
+				if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", denied.ID); err != nil {
+					t.Fatal("거부 task 준비 상태 저장 실패")
+				}
+				denied.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+				if id, err := denied.Store.AddIntent(map[string]any{"summary": "Exercise a policy refusal"}, 1, nil, "system"); err != nil || id <= 0 {
+					t.Fatal("실제 거부 intent 생성 실패")
+				}
+				firstDiagnosisSupervisorEngineRun(t, manager, installer, denied, mode)
+			})
+		}
 		t.Run("actual-engine-cancel-drain-no-new-send", func(t *testing.T) {
 			cancelled, err := manager.CreateTask("Owned cancelled engine fixture", "Cancel an active owned request", nil, 60, 60)
 			if err != nil || cancelled == nil {
