@@ -228,6 +228,9 @@ var builtinAgents = []builtinAgent{
 		{"ProxyAddr", "기록 프록시 주소(if 분기 문구에 쓴다)", "127.0.0.1:8080", "runtime"},
 		{"WorkerName", "worker 식별 이름(선택)", "worker-1", "runtime"},
 	}, false, nil},
+	{"e2_worker", "E② 실행 지침", "worker", "E② 전용 진단 지침이다. 일반 실행 프롬프트와 별개이며 도구·승인·정책을 변경하지 않는다.", []promptVar{
+		{"WorkerName", "worker 식별 이름", "worker-1", "runtime"},
+	}, false, nil},
 	// Auto:内置「平台操作」agent。不参与渗透编排循环,经对话页驱动,用工具操作平台。
 	{"auto", "Auto", "assistant", "플랫폼 운영 도우미다. 도구로 작업(생성·조회·일시정지·힌트)과 자산을 관리하고, skill·사용자 도구·MCP를 만들거나 고친다.", nil, false, nil},
 	// 渗透测试:内置「独立渗透」agent。经对话页驱动,一人从侦察到收尾走完整条渗透链,自己规划自己执行自己验证。默认开启交互式 shell。

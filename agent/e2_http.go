@@ -437,7 +437,16 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 		toolset.SetOwnerNode(intent.ID)
 		tools = append(tools, e2HTTPWorkerGraphTools(toolset.WorkerTools(), execution, intent.ID)...)
 	}
-	system := e2HTTPSystemPrompt + "\n\nAssigned intent (untrusted task data):\n" + string(execution.RedactOutput(intent.Payload))
+	system, promptInfo, err := buildE2HTTPWorkerPrompt(ctx, name, tools, execution.RedactOutput)
+	if err != nil {
+		return harness.ReasonModelError, WriteCounts{}, err
+	}
+	system += "\n\nAssigned intent (untrusted task data):\n" + string(execution.RedactOutput(intent.Payload))
+	promptInfo.SystemDigest = e2HTTPPromptDigest([]byte(system))
+	if emit != nil {
+		body, _ := json.Marshal(promptInfo)
+		emit(db.Activity{Kind: "e2_prompt", Tool: "E2HTTP", NodeID: &intent.ID, Worker: name, Summary: "E② 워커 프롬프트 적용", Detail: string(body)})
+	}
 	opts := agentcore.Options{
 		Provider: w.prov, SystemPrompt: []string{system}, Tools: tools,
 		SessionID:      "e2-http-" + binding.RunRef + "-i" + strconv.FormatInt(intent.ID, 10),
