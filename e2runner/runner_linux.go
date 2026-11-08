@@ -104,7 +104,7 @@ func New(cfg Config) (*Runner, error) {
 	if err != nil || st.Mode().Perm()&0111 == 0 {
 		return nil, ErrConfig
 	}
-	if len(cfg.RootDir)+len("/call-0123456789/proxy.sock") > maxUnixSocketPathBytes {
+	if ValidateRootDirLayout(cfg.RootDir) != nil {
 		return nil, ErrConfig
 	}
 	return &Runner{runnerState: &runnerState{cfg: cfg, caCertificate: pem.EncodeToMemory(block), active: make(map[string]*runningCall), callGate: make(chan struct{}, 1), stop: make(chan struct{}), drainGate: make(chan struct{}, 1), intentDrains: make(map[int64]*intentDrainState)}}, nil
@@ -610,4 +610,13 @@ func (r *Runner) Execution() *e2proxy.Execution {
 		return nil
 	}
 	return r.cfg.Execution
+}
+
+// ValidateRootDirLayout은 아직 생성하지 않은 호출 디렉터리의 정적 OS 경로 제약만 검사한다.
+// 파일 접근·실행 생성·승인 발급은 하지 않으며 New의 실제 자원 검사를 대신하지 않는다.
+func ValidateRootDirLayout(root string) error {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || strings.ContainsRune(root, 0) || len(root)+len("/call-0123456789/proxy.sock") > maxUnixSocketPathBytes {
+		return ErrConfig
+	}
+	return nil
 }

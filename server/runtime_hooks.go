@@ -54,6 +54,6 @@ func (s *Server) buildRuntimeHooks() agent.RuntimeHooks {
 	}
 	hooks.OutputLanguage = s.outputLanguage
 	hooks.ToolAugment = wireAgentAugment(m.pg, s.skillDir, s.hostTools)
-	hooks.ToolResolve, hooks.FindingTrafficBindingEnabled = wireTools(m.pg, buildDomainReg(m.Assets()))
+	hooks.ToolResolve, hooks.FindingTrafficBindingEnabled = wireToolsConfigured(m.pg, buildDomainReg(m.Assets()), !s.firstDiagnosis)
 	return hooks
 }

@@ -210,26 +210,33 @@ func seedPrompts(pg *db.DB) {
 // flag and, if kept, wrapped so the model sees the DB-overridden description/schema
 // and缺省入参 get injected. MCP/skill/host tools have no row and pass through.
 func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) (resolve func(context.Context, string, []actool.CoreTool) []actool.CoreTool, findingPolicy func() bool) {
+	return wireToolsConfigured(pg, domainReg, true)
+}
+
+// 실행 역할은 설치자가 준비한 catalog를 읽기만 한다.
+func wireToolsConfigured(pg *db.DB, domainReg map[string]actool.CoreTool, seed bool) (resolve func(context.Context, string, []actool.CoreTool) []actool.CoreTool, findingPolicy func() bool) {
 	findingPolicy = func() bool { return pg.GetBool(settingAgentTrafficBinding, false) }
-	// Seed the built-in domain tools (first-insert only; DO NOTHING preserves edits).
-	// No startup prune: rows we didn't seed are left alone so future user-defined
-	// custom tools (system=false, added via the UI) survive restarts.
-	for _, s := range agent.BuiltinToolSeeds() {
-		schema, _ := json.Marshal(s.Schema)
-		agents, _ := json.Marshal(s.Agents)
-		if err := pg.SeedTool(s.Key, s.Desc, schema, agents); err != nil {
-			log.Printf("[tools] seed %s 실패: %v", s.Key, err)
+	if seed {
+		// Seed the built-in domain tools (first-insert only; DO NOTHING preserves edits).
+		// No startup prune: rows we didn't seed are left alone so future user-defined
+		// custom tools (system=false, added via the UI) survive restarts.
+		for _, s := range agent.BuiltinToolSeeds() {
+			schema, _ := json.Marshal(s.Schema)
+			agents, _ := json.Marshal(s.Agents)
+			if err := pg.SeedTool(s.Key, s.Desc, schema, agents); err != nil {
+				log.Printf("[tools] seed %s 실패: %v", s.Key, err)
+			}
 		}
-	}
-	// Seed the traffic host tools so they're bindable per-agent like built-ins.
-	// Default binding = worker (preserves prior behavior). Their runtime availability
-	// is still gated by the global capture switch (hostTools() returns them only when
-	// capture is on), so an off-capture binding simply never surfaces the tool.
-	trafficAgents, _ := json.Marshal([]string{"worker"})
-	for _, t := range traffic.SeedToolMetas() {
-		schema, _ := json.Marshal(t.InputSchema())
-		if err := pg.SeedTool(t.Name(), t.Description(), schema, trafficAgents); err != nil {
-			log.Printf("[tools] seed %s 실패: %v", t.Name(), err)
+		// Seed the traffic host tools so they're bindable per-agent like built-ins.
+		// Default binding = worker (preserves prior behavior). Their runtime availability
+		// is still gated by the global capture switch (hostTools() returns them only when
+		// capture is on), so an off-capture binding simply never surfaces the tool.
+		trafficAgents, _ := json.Marshal([]string{"worker"})
+		for _, t := range traffic.SeedToolMetas() {
+			schema, _ := json.Marshal(t.InputSchema())
+			if err := pg.SeedTool(t.Name(), t.Description(), schema, trafficAgents); err != nil {
+				log.Printf("[tools] seed %s 실패: %v", t.Name(), err)
+			}
 		}
 	}
 	// bashInteractiveShellNote is appended to Bash's description ONLY for agents whose
