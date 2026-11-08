@@ -81,7 +81,7 @@ func (s *Server) bindFirstDiagnosisModel(ctx context.Context, task *Task) error 
 		return nil
 	}
 	number, err := e2HTTPTaskIdentity(task)
-	if err != nil || ctx == nil || ctx.Err() != nil || s.m == nil || s.m.pg == nil || s.localResolver == nil || s.ctx == nil || s.ctx.Err() != nil {
+	if err != nil || ctx == nil || ctx.Err() != nil || s.m == nil || s.m.pg == nil || !s.hasModelPolicy() || s.ctx == nil || s.ctx.Err() != nil {
 		return ErrFirstDiagnosisModel
 	}
 	actual, err := readFirstDiagnosisModel(ctx, s.m.pg.DB, number)
@@ -108,7 +108,7 @@ func (s *Server) checkFirstDiagnosisModel(ctx context.Context, task *Task) error
 		return nil
 	}
 	number, err := e2HTTPTaskIdentity(task)
-	if err != nil || ctx == nil || ctx.Err() != nil || s.m == nil || s.m.pg == nil || s.localResolver == nil || s.ctx == nil || s.ctx.Err() != nil {
+	if err != nil || ctx == nil || ctx.Err() != nil || s.m == nil || s.m.pg == nil || !s.hasModelPolicy() || s.ctx == nil || s.ctx.Err() != nil {
 		return ErrFirstDiagnosisModel
 	}
 	s.firstModelMu.RLock()

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -123,6 +124,19 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	runPath := fmt.Sprintf("/api/tasks/%d/diagnosis-run", row.ID)
 	if w := request("GET", runPath, ""); w.Code != 404 {
 		t.Fatal("missing final outcome inferred", w.Code)
+	}
+
+	preparationUsage := llmpolicy.OpenRouterUsage{Requests: 1, InputTokens: 7, OutputTokens: 2, CostMicros: 3, Model: llmpolicy.OpenRouterModel, ApprovalRef: "synthetic-failed-preparation"}
+	if saveDiagnosisPreparationModelUsage(ctx, installer.DB, row.ID, preparationUsage, false) != nil {
+		t.Fatal("preparation usage persistence")
+	}
+	var preparationOnly struct {
+		Run         *requestApprovalRunState    `json:"run"`
+		Execution   string                      `json:"execution"`
+		Preparation []diagnosisModelPreparation `json:"model_preparation"`
+	}
+	if w := request("GET", runPath, ""); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &preparationOnly) != nil || preparationOnly.Run != nil || preparationOnly.Execution != "NOT_RUN" || len(preparationOnly.Preparation) != 1 || preparationOnly.Preparation[0].Succeeded {
+		t.Fatal("preparation-only readback inferred completed diagnosis", w.Code)
 	}
 	final := requestApprovalRunState{Phase: "closed", Outcome: "cancelled", RunRef: "synthetic-final-run", StopRequested: true, ContextCancelled: true, DrainComplete: true}
 	if saveDiagnosisRun(ctx, installer.DB, row.ID, final) != nil || saveDiagnosisRun(ctx, installer.DB, row.ID, final) != nil {

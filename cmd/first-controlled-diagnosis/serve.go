@@ -92,7 +92,7 @@ func startLaunch(ctx context.Context, c launchConfig) (*launchedDiagnosis, error
 	}
 	if c.Mode == "general_http" {
 		o := c.HTTP
-		httpRuntime, startErr := server.StartFirstDiagnosisHTTP(ctx, manager, server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: o.PolicyFile, AuthorityFile: o.AuthorityFile, AuthorityRoot: o.AuthorityRoot}, SkillDir: c.SkillDir, DataDir: c.DataDir, KeyDir: c.KeyDir, LocalLLMManifestPath: c.LocalLLMManifestPath, Supervisor: d.supervisor, Shutdown: d.supervisor.Shutdown(), CleanupTimeout: time.Duration(c.ShutdownTimeoutSeconds) * time.Second})
+		httpRuntime, startErr := server.StartFirstDiagnosisHTTP(ctx, manager, server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: o.PolicyFile, AuthorityFile: o.AuthorityFile, AuthorityRoot: o.AuthorityRoot}, SkillDir: c.SkillDir, DataDir: c.DataDir, KeyDir: c.KeyDir, LocalLLMManifestPath: c.LocalLLMManifestPath, ModelExecutionMode: c.ModelExecutionMode, OpenRouterManifestPath: c.OpenRouterManifestPath, Supervisor: d.supervisor, Shutdown: d.supervisor.Shutdown(), CleanupTimeout: time.Duration(c.ShutdownTimeoutSeconds) * time.Second})
 		err = startErr
 		if httpRuntime != nil {
 			d.runtime = httpRuntime
@@ -203,6 +203,11 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer, exec
 	defer cancel()
 	httpErr := httpServer.Shutdown(cleanup)
 	closeErr := d.Close(cleanup)
+	if usage := d.supervisor.ModelUsage(); usage != nil {
+		if json.NewEncoder(stdout).Encode(map[string]any{"model_usage": usage}) != nil {
+			runErr = errPreparation
+		}
+	}
 	if runErr != nil || httpErr != nil || closeErr != nil {
 		fmt.Fprintln(stderr, "진단 또는 마감의 성공을 확인할 수 없습니다")
 		return 1

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -56,7 +57,7 @@ func runPrepareIntents(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "실행 감독을 시작할 수 없습니다")
 		return 1
 	}
-	preparation, err := server.NewFirstDiagnosisPreparationServer(ctx, manager, c.SkillDir, c.DataDir, c.KeyDir, c.LocalLLMManifestPath)
+	preparation, err := server.NewFirstDiagnosisPreparationServerWithModel(ctx, manager, c.SkillDir, c.DataDir, c.KeyDir, c.modelOptions())
 	if err != nil {
 		manager.Close()
 		fmt.Fprintln(stderr, "계획 준비 서버를 만들 수 없습니다")
@@ -68,6 +69,11 @@ func runPrepareIntents(ctx context.Context, args []string, stdout, stderr io.Wri
 		return 1
 	}
 	operationErr := supervisor.PrepareIntents(ctx, *taskID)
+	if usage := supervisor.ModelUsage(); usage != nil {
+		if json.NewEncoder(stdout).Encode(map[string]any{"model_usage": usage}) != nil {
+			operationErr = errPreparation
+		}
+	}
 	var intentIDs []int64
 	if operationErr == nil {
 		rows, readErr := pool.QueryContext(ctx, `SELECT n.id FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE t.id=$1 AND n.kind='intent' AND n.state='open' ORDER BY n.id LIMIT 129`, id)
@@ -99,6 +105,9 @@ func runPrepareIntents(ctx context.Context, args []string, stdout, stderr io.Wri
 		if closeErr = phase(cleanup, preparation); closeErr != nil {
 			break
 		}
+	}
+	if persistErr := supervisor.PersistPreparationModelUsage(cleanup, *taskID, errors.Join(operationErr, closeErr)); persistErr != nil {
+		closeErr = errors.Join(closeErr, persistErr)
 	}
 	if closeErr == nil {
 		manager.Close()

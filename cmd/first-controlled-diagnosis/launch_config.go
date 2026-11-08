@@ -22,6 +22,8 @@ type launchConfig struct {
 	KeyDir                 string            `json:"key_dir"`
 	SkillDir               string            `json:"skill_dir"`
 	LocalLLMManifestPath   string            `json:"local_llm_manifest_path"`
+	ModelExecutionMode     string            `json:"model_execution_mode,omitempty"`
+	OpenRouterManifestPath string            `json:"openrouter_manifest_path,omitempty"`
 	ModelProfileID         int64             `json:"model_profile_id"`
 	ModelFormat            string            `json:"model_format"`
 	ModelBaseURL           string            `json:"model_base_url"`
@@ -56,7 +58,21 @@ func parseLaunchConfig(data []byte) (launchConfig, error) {
 	if len(data) == 0 || len(data) > maxLaunchBytes || !utf8.Valid(data) || decodeLaunchJSON(data, &c) != nil || c.Format != launchFormat || c.ModelProfileID <= 0 || c.ShutdownTimeoutSeconds < 1 || c.ShutdownTimeoutSeconds > 60 {
 		return launchConfig{}, errPreparation
 	}
-	paths := []string{c.DataDir, c.KeyDir, c.SkillDir, c.LocalLLMManifestPath, c.RuntimeDSNFile}
+	paths := []string{c.DataDir, c.KeyDir, c.SkillDir, c.RuntimeDSNFile}
+	switch c.ModelExecutionMode {
+	case "", "local_only":
+		if c.OpenRouterManifestPath != "" {
+			return launchConfig{}, errPreparation
+		}
+		paths = append(paths, c.LocalLLMManifestPath)
+	case "openrouter":
+		if c.Mode != "general_http" || c.LocalLLMManifestPath != "" || c.ModelFormat != "openai" || c.ModelBaseURL != "https://openrouter.ai/api/v1" || c.ModelRef != "qwen/qwen3.5-35b-a3b" {
+			return launchConfig{}, errPreparation
+		}
+		paths = append(paths, c.OpenRouterManifestPath)
+	default:
+		return launchConfig{}, errPreparation
+	}
 	if c.Mode == "registered_get" && c.Registered != nil && c.HTTP == nil {
 		r := c.Registered
 		paths = append(paths, r.AuthorityDSNFile, r.HostBindingFile, r.MetadataFile, r.SnapshotDir, r.StateDir)

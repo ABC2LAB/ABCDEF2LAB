@@ -519,7 +519,7 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 // callers cannot fall through. External mode honors llm_pool_bind_fallback.
 func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Config, bool) {
 	id, err := s.effectiveProfileForAgent(agentKey, nil)
-	if err != nil && s.localResolver != nil {
+	if err != nil && s.hasModelPolicy() {
 		return blockedLocalProvider{}, agent.Config{}, true
 	}
 	if id == nil {
@@ -527,7 +527,7 @@ func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Conf
 	}
 	prov, cfg, ok := s.providerForProfile(*id)
 	if !ok {
-		if s.localResolver != nil {
+		if s.hasModelPolicy() {
 			return blockedLocalProvider{}, agent.Config{}, true
 		}
 		return nil, agent.Config{}, false
@@ -545,7 +545,7 @@ func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
 	if !on || prov == nil {
 		return nil, agent.Config{}, false
 	}
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		active, err := s.m.pg.ActiveProfile()
 		if err != nil || active == nil {
 			return nil, agent.Config{}, false

@@ -16,6 +16,8 @@ type FirstDiagnosisHTTPStartOptions struct {
 	Host                      FirstDiagnosisHTTPHostConfig
 	SkillDir, DataDir, KeyDir string
 	LocalLLMManifestPath      string
+	ModelExecutionMode        string
+	OpenRouterManifestPath    string
 	Supervisor                FirstDiagnosisHTTPHostSupervisor
 	Hooks                     FirstDiagnosisHTTPHooks
 	Shutdown                  ControlledReadAssemblyShutdown
@@ -83,7 +85,11 @@ func firstDiagnosisHTTPTask(ctx context.Context, m *Manager, host *FirstDiagnosi
 }
 
 func StartFirstDiagnosisHTTP(ctx context.Context, manager *Manager, options FirstDiagnosisHTTPStartOptions) (*FirstDiagnosisHTTPRuntime, error) {
-	if ctx == nil || ctx.Err() != nil || manager == nil || manager.pg == nil || manager.pg.DB == nil || e2HTTPNil(options.Supervisor) || options.LocalLLMManifestPath == "" || options.CleanupTimeout <= 0 || options.CleanupTimeout > 2*time.Minute || options.Shutdown.BlockAdmission == nil || options.Shutdown.CancelAndDrain == nil || options.Shutdown.CheckResults == nil {
+	if ctx == nil || ctx.Err() != nil || manager == nil || manager.pg == nil || manager.pg.DB == nil || e2HTTPNil(options.Supervisor) || options.CleanupTimeout <= 0 || options.CleanupTimeout > 2*time.Minute || options.Shutdown.BlockAdmission == nil || options.Shutdown.CancelAndDrain == nil || options.Shutdown.CheckResults == nil {
+		return nil, ErrFirstDiagnosisHTTPHost
+	}
+	modelOptions := FirstDiagnosisModelOptions{Mode: options.ModelExecutionMode, LocalManifestPath: options.LocalLLMManifestPath, OpenRouterManifestPath: options.OpenRouterManifestPath}
+	if _, _, err := modelOptions.load(); err != nil {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
 	if privateinput.CheckDirectory(options.SkillDir, false) != nil || privateinput.CheckDirectory(options.DataDir, false) != nil || privateinput.CheckDirectory(options.KeyDir, true) != nil {
@@ -120,7 +126,7 @@ func StartFirstDiagnosisHTTP(ctx context.Context, manager *Manager, options Firs
 	if err != nil {
 		return fail()
 	}
-	r.server, err = NewWithE2HTTPRuntime(run, manager, options.SkillDir, options.DataDir, options.KeyDir, host.runtime, options.LocalLLMManifestPath)
+	r.server, err = newFirstDiagnosisHTTPServer(run, manager, options.SkillDir, options.DataDir, options.KeyDir, host.runtime, modelOptions)
 	if err != nil || run.Err() != nil || host.CheckRoot(run) != nil {
 		return fail()
 	}

@@ -122,7 +122,8 @@ type Server struct {
 	engine                         *Engine
 	ctx                            context.Context
 	runtimeHooks                   agent.RuntimeHooks         // immutable callbacks owned by this server
-	localResolver                  *llmpolicy.ProfileResolver // nil only in explicit external/legacy mode
+	localResolver                  *llmpolicy.ProfileResolver // 로컬 전용 정책은 외부 모드와 별도로 보존한다.
+	openRouterPolicy               *llmpolicy.OpenRouterPolicy
 	firstDiagnosisPreparation      bool
 	firstModelMu                   sync.RWMutex
 	firstModel                     *firstDiagnosisModelPin
@@ -254,6 +255,7 @@ func newServer(ctx context.Context, m *Manager, skillDir string, dataDir string,
 }
 
 type serverStartupOptions struct {
+	openRouterPolicy     *llmpolicy.OpenRouterPolicy
 	existingAuthOnly     bool
 	assemblyStore        *controlledReadStore
 	noAutomaticAdmission bool
@@ -266,6 +268,9 @@ func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataD
 }
 
 func newServerConfiguredWithOptions(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, localResolver *llmpolicy.ProfileResolver, startup serverStartupOptions, bootstrap func(*Server) error) (*Server, error) {
+	if startup.openRouterPolicy != nil && (localResolver != nil || !startup.existingAuthOnly || !startup.noAutomaticAdmission || startup.assemblyStore != nil) {
+		return nil, ErrFirstDiagnosisModel
+	}
 	var key []byte
 	var err error
 	if startup.existingAuthOnly {
@@ -276,7 +281,7 @@ func newServerConfiguredWithOptions(ctx context.Context, m *Manager, skillDir st
 	if err != nil {
 		return nil, fmt.Errorf("[auth] JWT key: %w", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, openRouterPolicy: startup.openRouterPolicy, chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
@@ -491,6 +496,10 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
+	if s.openRouterPolicy != nil {
+		// 불명 응답을 재전송하거나 프로필 전환으로 비용 상한을 초기화하지 않는다.
+		cfg.Retry = agent.RetryConfig{ConnectAttempts: -1, EmptyAttempts: -1, StreamAttempts: -1}
+	}
 	if cfg.APIKey == "" {
 		return cfg, false
 	}
@@ -586,7 +595,7 @@ func maxTokensResolver(cfg agent.Config) func() int {
 // the running engine as the GLOBAL active pair. Safe to call at runtime (UI configures LLM).
 func (s *Server) applyLLM(cfg agent.Config) error {
 	var prov llm.Provider
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		active, err := s.m.pg.ActiveProfile()
 		if err != nil || active == nil {
 			return ErrLocalLLMProfile
@@ -602,7 +611,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	}
 	// A persisted active profile must use the same cached provider as task chains
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
-	if s.localResolver == nil {
+	if !s.hasModelPolicy() {
 		if active, _ := s.m.pg.ActiveProfile(); active != nil {
 			if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
 				prov, _, _ = s.providerForProfile(active.ID)
@@ -610,7 +619,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 		}
 	}
 	if prov == nil {
-		if s.localResolver != nil {
+		if s.hasModelPolicy() {
 			return ErrLocalLLMProfile
 		}
 		var err error
@@ -683,6 +692,10 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
+	if s.openRouterPolicy != nil {
+		// 불명 응답을 재전송하거나 프로필 전환으로 비용 상한을 초기화하지 않는다.
+		cfg.Retry = agent.RetryConfig{ConnectAttempts: -1, EmptyAttempts: -1, StreamAttempts: -1}
+	}
 	if cfg.APIKey == "" {
 		return cfg, false
 	}
@@ -720,11 +733,11 @@ func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) (*int64
 // config was active.
 func (s *Server) resolveChatAgent(c *db.Conversation) *agent.ChatAgent {
 	effective, err := s.effectiveProfileForAgent(c.AgentKey, c.LLMProfileID)
-	if err != nil && s.localResolver != nil {
+	if err != nil && s.hasModelPolicy() {
 		return nil
 	}
 	ca := s.chatAgentRef()
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		if _, _, ok := s.globalProvider(); !ok {
 			ca = nil
 		}
@@ -732,7 +745,7 @@ func (s *Server) resolveChatAgent(c *db.Conversation) *agent.ChatAgent {
 	if effective != nil {
 		if pa := s.chatAgentForProfile(*effective); pa != nil {
 			ca = pa
-		} else if s.localResolver != nil {
+		} else if s.hasModelPolicy() {
 			return nil // invalid explicit binding cannot fall back to global
 		}
 	}
@@ -762,7 +775,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	s.provCacheMu.Lock()
 	if e := s.provByProfile[id]; e != nil {
 		s.provCacheMu.Unlock()
-		if s.localResolver != nil {
+		if s.hasModelPolicy() {
 			current, ok := s.loadProfileConfig(id)
 			if !ok || current != e.cfg {
 				return nil, agent.Config{}, false
@@ -782,7 +795,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 		return nil, agent.Config{}, false
 	}
 	// Wrap with recorder, tagged with this profile's name.
-	if p, _ := s.m.pg.ProfileByID(id); p != nil {
+	if p, _ := s.m.pg.ProfileByID(id); p != nil && s.openRouterPolicy == nil {
 		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
@@ -809,7 +822,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	cached := s.profChatAgents[id]
 	s.profMu.Unlock()
 	if cached != nil {
-		if s.localResolver == nil {
+		if !s.hasModelPolicy() {
 			return cached
 		}
 		if _, _, ok := s.providerForProfile(id); !ok {
@@ -1534,7 +1547,7 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 
 // setLLM configures the LLM at runtime. A blank api_key keeps the existing key.
 func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		writeErr(w, http.StatusForbidden, "로컬 전용 모드에서는 기본 LLM 설정 변경을 사용할 수 없습니다")
 		return
 	}
@@ -1597,7 +1610,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 
 // testLLM makes a real minimal completion to verify the config works.
 func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": trMsg(errLLMTestFailed), "latency_ms": 0})
 		return // the legacy probe constructs an unguarded provider
 	}

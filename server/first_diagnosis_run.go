@@ -11,16 +11,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 const diagnosisRunOrigin = "first_diagnosis_run_v1"
 
 type diagnosisRunRecord struct {
-	Version int                     `json:"version"`
-	TaskID  int64                   `json:"task_id"`
-	SavedAt time.Time               `json:"saved_at"`
-	Run     requestApprovalRunState `json:"run"`
+	Version          int                         `json:"version"`
+	TaskID           int64                       `json:"task_id"`
+	SavedAt          time.Time                   `json:"saved_at"`
+	Model            *llmpolicy.OpenRouterUsage  `json:"model,omitempty"`
+	ModelPreparation []diagnosisModelPreparation `json:"model_preparation,omitempty"`
+	Run              requestApprovalRunState     `json:"run"`
 }
 
 // PersistRunOutcome는 drain 뒤의 감독자 상태만 저장한다. 조회 서버는 이 상태로 실행 권한을 복구하지 않는다.
@@ -42,7 +45,7 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcome(ctx context.Context, closur
 	if closureErr != nil {
 		state.Phase, state.ClosureFailed, state.DrainComplete = "failed", true, false
 	}
-	return saveDiagnosisRun(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state)
+	return saveDiagnosisRunWithModel(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage())
 }
 
 func validDiagnosisRun(state requestApprovalRunState) bool {
@@ -67,6 +70,9 @@ func validDiagnosisRun(state requestApprovalRunState) bool {
 }
 
 func saveDiagnosisRun(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState) error {
+	return saveDiagnosisRunWithModel(ctx, pool, task, state, nil)
+}
+func saveDiagnosisRunWithModel(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState, model *llmpolicy.OpenRouterUsage) error {
 	if ctx == nil || pool == nil || task <= 0 || !validDiagnosisRun(state) {
 		return ErrFirstDiagnosisOutcome
 	}
@@ -95,7 +101,9 @@ func saveDiagnosisRun(ctx context.Context, pool *sql.DB, task int64, state reque
 		if marshalErr != nil {
 			return ErrFirstDiagnosisOutcome
 		}
-		if !bytes.Equal(a, b) {
+		modelA, errA := json.Marshal(model)
+		modelB, errB := json.Marshal(old.Model)
+		if !bytes.Equal(a, b) || errA != nil || errB != nil || !bytes.Equal(modelA, modelB) {
 			return ErrFirstDiagnosisOutcome
 		}
 		return tx.Commit()
@@ -103,7 +111,7 @@ func saveDiagnosisRun(ctx context.Context, pool *sql.DB, task int64, state reque
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ErrFirstDiagnosisOutcome
 	}
-	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state})
+	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state, Model: model})
 	if err != nil {
 		return ErrFirstDiagnosisOutcome
 	}
@@ -170,12 +178,27 @@ func (s *Server) serveDiagnosisRun(w http.ResponseWriter, r *http.Request, bound
 	var raw []byte
 	err = s.m.pg.QueryRowContext(ctx, `SELECT n.payload FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.kind='fact' AND n.state='confirmed' AND n.origin=$2 AND n.payload->>'task_id'=$3 ORDER BY n.id DESC LIMIT 1`, task, diagnosisRunOrigin, strconv.FormatInt(task, 10)).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
+		preparation, readErr := readDiagnosisPreparationUsage(ctx, s.m.pg.DB, task)
+		if readErr != nil {
+			writeErr(w, 503, "저장된 모델 사용량을 확인할 수 없습니다")
+			return
+		}
+		if len(preparation) > 0 {
+			// 유료 준비 실패를 실행 성공이나 완료 회차로 합성하지 않는다.
+			writeJSON(w, 200, map[string]any{"version": 1, "task_id": task, "run": nil, "execution": "NOT_RUN", "model_preparation": preparation})
+			return
+		}
 		writeErr(w, 404, "저장된 실행 종료 결과가 없습니다")
 		return
 	}
 	var result diagnosisRunRecord
 	if err != nil || json.Unmarshal(raw, &result) != nil || result.Version != 1 || result.TaskID != task || !validDiagnosisRun(result.Run) || result.SavedAt.IsZero() {
 		writeErr(w, 503, "저장된 실행 종료 결과를 확인할 수 없습니다")
+		return
+	}
+	result.ModelPreparation, err = readDiagnosisPreparationUsage(ctx, s.m.pg.DB, task)
+	if err != nil {
+		writeErr(w, 503, "저장된 모델 사용량을 확인할 수 없습니다")
 		return
 	}
 	writeJSON(w, 200, result)
