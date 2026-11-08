@@ -72,7 +72,7 @@ manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/
 4. 별도 실행 단계 manifest와 같은 task/profile 결속으로 `check --config ... --database` 후 `run --config ...`. 확인 모드와 사전 승인 모드는 기존 E② 정책에서 선택한다. 승인 전 수신0, 허용 요청, 거절 수신0, 중지 후 신규 송신0을 실측한다.
 5. 마감 후 기존 최소권한 `report --config ... --task-id ...`를 쓴다. report는 모델 manifest를 소비하거나 모델/대상 요청을 보내지 않는다.
 
-API·인증·상태·승인·중지·HTML·복사·stale 계약은 [기존 UI 인계표](first-diagnosis-launch.md#ui-인계-연결-계약)를 재사용한다. 새 임의 URL/명령 실행 API는 없다. 실제 API 서버 주소와 JWT 발급 대상은 설치자가 인계하며 이 문서의 loopback 예시는 실제 구동 서버가 아니다.
+API·인증·상태·승인·중지·HTML·복사·stale 계약은 [기존 UI 인계표](first-diagnosis-launch.md#ui-연결-계약-실행승인저장-결과)를 재사용한다. 새 임의 URL/명령 실행 API는 없다. 실제 API 서버 주소와 JWT 발급 대상은 설치자가 인계하며 이 문서의 loopback 예시는 실제 구동 서버가 아니다.
 
 `GET /api/tasks/{id}/diagnosis-run`의 저장 결과는 선택적 실행 `model` 집계와 영속화한 계획 단계 `model_preparation` 목록을 추가한다. 실패한 계획 단계도 별도로 저장한다. 실행 전 계획 기록만 있는 경우 `run:null`, `execution:NOT_RUN`을 반환하며 성공 회차를 합성하지 않는다. 기록이 전혀 없으면 기존404다. 기존 유효 `run` 상태 의미는 바꾸지 않는다. CLI는 실패 시에도 가능한 `model_usage` 집계를 출력한다. 요청 수·예약 토큰/금액·보고된 실제 토큰/비용·지연·provider를 구분하고, 계측이 불명인 실패를 비용0 또는 진단 성공으로 표시하지 않는다. 원문 prompt/키/응답을 model 집계에 저장하지 않는다.
 
