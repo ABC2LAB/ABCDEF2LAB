@@ -28,7 +28,7 @@ UI는 새 실행 명령이나 대상 URL을 제출하지 않는다. 첫 화면�
 - [#318](https://github.com/ABC2LAB/ABCDEF2LAB/pull/318) `c81f6c26a21b71419fa1385f8a7093ffb2390621`: 게이트웨이 시험의 취소 동기화.
 
 UI 개발 기준 브랜치는 `feature/dongchan-first-report-routes-20261107`이며,
-검증한 통합 구현은 `e476ace8f9880b6d2ee0af066a64de99718ec655`다.
+검증한 통합 구현은 `64121b38eb4269c6530a5b10c078645b353d2dc4`다.
 이 커밋의 제품 코드와 아래 계약을 기준으로 연결한다. 기준 SHA를 적는 후속 변경은 문서만 바꾸며,
 최종 게시 head와 CI는 [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)에서 확인한다.
 dev 병합 여부와 통합 브랜치 검증 상태를 구분한다.

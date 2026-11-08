@@ -2,7 +2,7 @@
 
 이 문서는 실행 전 인계·설치 준비용이다. 실제 진단을 시작하거나 권위를 발급하지 않는다. 이동찬의 환경·엔진 통합 준비와 공급자의 실제 자료를 구분한다. 개인 장비 조사·로컬 경로·세션·DSN·키·원본 감사 기록은 이 문서에 포함하지 않는다.
 
-현재 통합 구현 기준은 [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)의 `e476ace8f9880b6d2ee0af066a64de99718ec655`이며 [기동·API 문서](first-diagnosis-launch.md)를 재사용한다. 게시 전 결합한 dev `399da3ed4b71c0bc8b96ed7d6db487cc99d32ba1`에는 #304/#310/#312/#313/#318이 포함된다. 나머지 통합 기능의 최신 팀원 병합 여부는 별도로 확인한다. **실제로 사용할 승인된 정확 SHA의 CLI·검사 코드와 다시 대조**한다. 이 체크리스트는 실모델·실제 회차 수용, 팀원 병합 승인이나 신규 입력 형식 채택을 대신하지 않는다.
+현재 통합 구현 기준은 [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)의 `64121b38eb4269c6530a5b10c078645b353d2dc4`이며 [기동·API 문서](first-diagnosis-launch.md)를 재사용한다. 게시 전 결합한 dev `399da3ed4b71c0bc8b96ed7d6db487cc99d32ba1`에는 #304/#310/#312/#313/#318이 포함된다. 나머지 통합 기능의 최신 팀원 병합 여부는 별도로 확인한다. **실제로 사용할 승인된 정확 SHA의 CLI·검사 코드와 다시 대조**한다. 이 체크리스트는 실모델·실제 회차 수용, 팀원 병합 승인이나 신규 입력 형식 채택을 대신하지 않는다.
 
 ## 1. 준비 상태와 실행 경계
 
@@ -84,7 +84,7 @@
 
 종료 후 `report`는 별도 최소 역할을 사용하며 일반 runtime 권한을 복사하지 않는다. [기동 문서의 저장 보고서와 수정 프롬프트 절](first-diagnosis-launch.md#저장-보고서와-수정-프롬프트)의 정확한 SELECT·INSERT·sequence·잠금 열 목록을 따른다.
 
-정확 소스: [별도 authority 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/e476ace8f9880b6d2ee0af066a64de99718ec655/server/controlled_read_assembly_database_authority.go), [런타임 DB 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/e476ace8f9880b6d2ee0af066a64de99718ec655/server/controlled_read_assembly_database_role.go), [기동 check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/e476ace8f9880b6d2ee0af066a64de99718ec655/cmd/first-controlled-diagnosis/launch_check.go). 함수 `CheckFirstDiagnosisHTTPRuntimeDatabase` / `CheckFirstDiagnosisRuntimeDatabase`의 실제 정의와 호출을 따라 최신 목록을 대조한다. 시험 fixture의 fake credentials/roles를 운영 자료로 복사하지 않는다. 검사기는 모든 테이블의 가능한 과잉 권한이 전부 제거됐음을 보증하는 도구가 아니다.
+정확 소스: [별도 authority 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/server/controlled_read_assembly_database_authority.go), [런타임 DB 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/server/controlled_read_assembly_database_role.go), [기동 check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/launch_check.go). 함수 `CheckFirstDiagnosisHTTPRuntimeDatabase` / `CheckFirstDiagnosisRuntimeDatabase`의 실제 정의와 호출을 따라 최신 목록을 대조한다. 시험 fixture의 fake credentials/roles를 운영 자료로 복사하지 않는다. 검사기는 모든 테이블의 가능한 과잉 권한이 전부 제거됐음을 보증하는 도구가 아니다.
 
 ## 4. 실제 자료 인계 대장
 
@@ -135,7 +135,7 @@ carrier는 최신 [선정 계약](contracts/kg-canary-carrier-stage1.md)의 revi
 - helper 실배치·모델 추론·대상 health/reset·A/B 조회·감사/판정/저장 성공을 증명하지 않는다.
 - 실제 자료·접근 권한이 없거나 자리표시자가 남으면 강행하지 않는다. 원문 비밀이 없는 요약만 공유하고 상세 출력은 보호 경로에 보존한다.
 
-근거: [launch config parser](https://github.com/ABC2LAB/ABCDEF2LAB/blob/e476ace8f9880b6d2ee0af066a64de99718ec655/cmd/first-controlled-diagnosis/launch_config.go), [launch check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/e476ace8f9880b6d2ee0af066a64de99718ec655/cmd/first-controlled-diagnosis/launch_check.go), [CLI 분기](https://github.com/ABC2LAB/ABCDEF2LAB/blob/e476ace8f9880b6d2ee0af066a64de99718ec655/cmd/first-controlled-diagnosis/main.go).
+근거: [launch config parser](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/launch_config.go), [launch check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/launch_check.go), [CLI 분기](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/main.go).
 
 ## 6. 병합 후 실행 절차 (지금 실행하지 않음)
 
