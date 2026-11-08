@@ -73,10 +73,11 @@ func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.Unlock()
 	switch r.URL.Path {
 	case chatPath:
+		// 취소를 기다리는 합성 응답은 정상 EOF와 경쟁하지 않도록 연결을 중단한다.
 		if bytes.Contains(body, []byte(`"slow"`)) {
 			p.slowStarted <- struct{}{}
 			<-r.Context().Done()
-			return
+			panic(http.ErrAbortHandler)
 		}
 		if bytes.Contains(body, []byte(`"partial"`)) {
 			// One event with an id, then the provider keeps the stream open.
@@ -85,7 +86,7 @@ func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.(http.Flusher).Flush()
 			p.slowStarted <- struct{}{}
 			<-r.Context().Done()
-			return
+			panic(http.ErrAbortHandler)
 		}
 		if bytes.Contains(body, []byte(`"broken"`)) {
 			panic(http.ErrAbortHandler) // drop the connection without an answer
@@ -97,7 +98,7 @@ func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.(http.Flusher).Flush()
 			p.slowStarted <- struct{}{}
 			<-r.Context().Done()
-			return
+			panic(http.ErrAbortHandler)
 		}
 		if bytes.Contains(body, []byte(`"cut-after-done"`)) || bytes.Contains(body, []byte(`"cut-before-done"`)) {
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -746,6 +747,10 @@ func TestGatewayFinishedAndSealedRowsHaveNoUnfinishedEnd(t *testing.T) {
 	if resp, _ := h.post(t, chatPath, "application/json", `{"model":"m","stream":true}`, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
+	// 첫 요청의 완료 기록을 확정한 뒤 봉인 취소를 시작한다.
+	if rows := h.waitRows(t, 1); len(rows) != 1 || rows[0].Decision != "forwarded" {
+		t.Fatalf("첫 요청의 완료 기록이 다름: %+v", rows)
+	}
 	req, err := http.NewRequest(http.MethodPost, h.front.URL+chatPath, strings.NewReader(`{"model":"partial","stream":true}`))
 	if err != nil {
 		t.Fatal(err)
@@ -757,6 +762,15 @@ func TestGatewayFinishedAndSealedRowsHaveNoUnfinishedEnd(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	<-h.provider.slowStarted
+	// 취소 전에 첫 이벤트가 프록시를 지나온 것을 확인한다.
+	initialEvent := "data: {\"id\":\"gen-partial\",\"choices\":[]}\n\n"
+	first := make([]byte, len(initialEvent))
+	if _, err := io.ReadFull(resp.Body, first); err != nil {
+		t.Fatalf("첫 스트림 이벤트를 읽지 못함: %v", err)
+	}
+	if string(first) != initialEvent {
+		t.Fatalf("첫 스트림 이벤트가 다름: %q", first)
+	}
 	marker := h.sealAndWait(t)
 	if marker.Forwarded != 1 || marker.CancelledBySeal != 1 || marker.UpstreamErrors != 0 {
 		t.Fatalf("marker %+v", marker)
