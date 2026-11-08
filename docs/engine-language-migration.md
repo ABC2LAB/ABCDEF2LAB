@@ -107,3 +107,34 @@ transcript는 세션 재개에 쓰여서 끌 수 없다. 모델의 추론을 끄
 - **활동 표시 필드.** `purpose`와 활동 표시 계약은 UI 디자인이 정해진 뒤에 한다.
 - **승인 기록 표식 `[模型]`.** `intercept`가 저장하는 값이고 `db`의 분류와 `web/src/components/approval-records.tsx`가 함께 읽는다. 옛 행도 읽어야 하므로 웹 담당자와 같이 바꾼다.
 - **가드 차단 문구.** 모델용 차단 결과를 영어로 바꾸고, 설정 오류와 빈 규칙 메시지도 표시용 한국어와 분리한다. 운영자가 직접 쓴 규칙 메시지는 유지한다. 현재 표식은 `[ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]`이며, `detections/`는 [과거 표식](../detections/indicators/legacy_guard_marker.md)도 계속 탐지한다. 감사 행에는 표시용 사유를 별도로 남기므로 표식이 없을 수 있다. 합성 회귀와 실제 모델 검증은 구분한다.
+
+## E② Worker 진단 지침과 적용 식별
+
+일반 worker 프롬프트는 E② 실행에 적용하지 않는다. 일반 Worker의
+report_finding, 직접 파일·추가 도구 지시를 E②에 그대로 가져오지 않기 위해
+DB의 **E② 실행 지침**(e2_worker)을 별도로 편집한다. 기존 agent prompt
+버전 저장·현재 본문 조회·기본값 복원 경로를 사용하며 DB 스키마는 추가하지 않는다.
+기동 시 새 행과 기본 본문을 비어 있을 때만 심는다. 운영 DB 변경은 배포 작업이다.
+
+- 편집 가능한 부분: 가설·정상 대조·관찰·다음 검사 선택 등 진단 지침.
+  변수는 WorkerName, Now만 지원한다.
+- 코드 소유 부분: 고정 E② 통제 지시, 한국어 표시 규칙, 실제 도구 allowlist,
+  격리·승인·예산·감사 및 unknown 재시도 제한. 지침 편집으로 변경하지 않는다.
+- 각 Worker 실행 시작에 현재 e2_worker를 한 번 읽는다. 비어 있거나 조회할 수
+  없으면 기본값을 쓰며, 템플릿 오류는 builtin_invalid_override로 구별한다.
+  일반 prompt 조회 hook은 DB 오류와 없는 행을 구분하지 않으므로 builtin은
+  DB 조회 성공을 보장하는 값이 아니다.
+- 모델 호출 직전 e2_prompt 활동에 version=e2-worker-prompt/v1, key,
+  source, template_digest, guidance_digest, control_digest,
+  system_digest, tools_digest를 기록한다. digest는 SHA-256 내용 버전이며
+  DB의 숫자 버전 ID가 아니다. template/guidance는 보호된 비밀값을 가린 뒤
+  산출하고 system은 배정 intent를 포함한 실제 system 본문 기준이다.
+  tools는 실제 허용된 도구 이름·설명·prompt·입력 schema 기준이며
+  DB 도구 카탈로그를 편집했다고 E②에 적용됐다고 가정하지 않는다.
+- 원문 prompt·자격정보는 이 활동에 넣지 않는다. 활동은 적용 식별 관찰이며
+  E② 송신 감사의 대체물이 아니다. 활동 저장 실패의 durable 증명과 모델
+  제공자 내부 변환까지 증명하는 기능은 아니다.
+
+프롬프트 비교 실험은 source와 적용 digest를 함께 보존하고 동일 모델·샘플링·
+실행 조건에서 별도로 측정한다. 이 연결의 합성 시험 통과만으로 실모델 진단
+성능 개선, finding 저장, 보고서 완성 또는 사전 승인 UI 완성을 주장하지 않는다.

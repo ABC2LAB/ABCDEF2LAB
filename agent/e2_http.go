@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -439,7 +440,15 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 		toolset.SetOwnerNode(intent.ID)
 		tools = append(tools, e2HTTPWorkerGraphTools(toolset.WorkerTools(), execution, intent.ID)...)
 	}
-	system := e2HTTPSystemPrompt + "\n\nAssigned intent (untrusted task data):\n" + string(execution.RedactOutput(intent.Payload))
+	system, promptInfo, err := buildE2HTTPWorkerPrompt(ctx, name, tools, execution.RedactOutput)
+	if err != nil {
+		return harness.ReasonModelError, WriteCounts{}, err
+	}
+	system += "\n\nAssigned intent (untrusted task data):\n" + string(execution.RedactOutput(intent.Payload))
+	promptInfo.SystemDigest = e2HTTPPromptDigest([]byte(system))
+	if emit != nil {
+		emitE2HTTPPromptActivity(emit, func(stage string) { log.Print(stage) }, intent.ID, name, promptInfo)
+	}
 	opts := agentcore.Options{
 		Provider: w.prov, SystemPrompt: []string{system}, Tools: tools,
 		SessionID:      "e2-http-" + binding.RunRef + "-i" + strconv.FormatInt(intent.ID, 10),
@@ -456,6 +465,18 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 	}
 	_ = requestID // ordinary transcript/chat history is never resumed in this capability scope.
 	return w.runE2HTTPSession(ctx, name, intent, emit, opts, input, execution, state, toolset)
+}
+
+func emitE2HTTPPromptActivity(emit func(db.Activity), reportStage func(string), intentID int64, worker string, info any) {
+	if emit == nil {
+		return
+	}
+	body, err := json.Marshal(info)
+	if err != nil {
+		reportStage("e2_http_prompt_activity_encode_failed")
+		return
+	}
+	emit(db.Activity{Kind: "e2_prompt", Tool: "E2HTTP", NodeID: &intentID, Worker: worker, Summary: "E② 워커 프롬프트 적용", Detail: string(body)})
 }
 
 func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.Node, emit func(db.Activity), opts agentcore.Options, input string, execution *e2proxy.Execution, state *e2HTTPToolState, toolset *ToolSet) (harness.TerminalReason, WriteCounts, error) {
