@@ -1,5 +1,7 @@
 # KG 1단계 정본: fixture 레지스트리와 최소 resolver (계약 초안)
 
+> **단계 기록과 현재 구현:** 아래 서버 연결 전 표시는 registry 코어 도입 당시 단계입니다. 현재 opt-in [등록 KG 실행 결속](controlled-read-kg-fixture-binding-proposal.md)과 [최종 Source 결속](controlled-read-kg-source-binding-proposal.md)이 구현되어 있습니다. 실제 carrier·A/B 신원·운영 권위 확보나 일반 HTTP와 IDOR의 동일 실행 연결을 뜻하지 않으며, 입력·판정·범위 계약은 유지합니다.
+
 상태: **1단계 계약 · 로더·resolver 구현됨([`kgfixture`](../../kgfixture/registry.go)) · 서버 연결 전.** 2026-11-05 결정(kg-policy §6 Open #1의 이경준 제안 채택)에 따른 IDOR 1단계용 최소 KG 경계다.
 분담: 최소 resolver·레지스트리 형식 = 최민준, KG 계약 정합 리뷰 = 이경준, 서버 조립(`ControlledReadFindingResolver`) = 이동찬.
 이 문서는 [kg-policy](./kg-policy.md)·[canary fixture](./idor-canary-fixture.md)·[첫 IDOR 통합](./first-idor-integration.md)의 의미를 바꾸지 않고, 1단계에서 그 계약을 만족하는 **가장 작은 정본 reader**를 정한다.

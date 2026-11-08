@@ -1,5 +1,7 @@
 # 등록 조회와 KG fixture snapshot의 실행 결속 제안
 
+> **단계 기록과 현재 구현:** 아래 선행 미병합 표시는 opt-in 연결의 작성 당시 기록입니다. 현재 [최종 KG Source 결속](controlled-read-kg-source-binding-proposal.md)은 #214·#231·#232의 병합된 연결을 소비하며 [서버 코드](../../server/controlled_read_kg_fixture.go)에 등록 결속이 있습니다. 실제 운영 권위·실모델 수용과 일반 HTTP 통합 완료를 뜻하지 않습니다.
+
 상태: **opt-in 서버 조립 초안 구현**. 기존 [KG registry §9](./kg-fixture-registry.md#9-e②-private-snapshot과의-대응1단계-준비-순서)의 `Parse`·`CheckPairing`을 서버의 실제 등록/실행에 연결한다. 기본 서버나 일반 Bash 실행을 활성화하지 않으며 운영 권위·신원·승인을 발급하지 않는다.
 
 ## 범위와 선행

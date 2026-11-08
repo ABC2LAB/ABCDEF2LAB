@@ -6,8 +6,9 @@
 
 ## 첫 통합 진단의 고정 범위와 구현 기준
 
-이 통합은 일반 HTTP의 읽기 전용 소유 loopback 시험 대상과 원본 Planner/Worker,
-지원 Bash/E② 경로를 먼저 연결한다. 확인 모드는 실제 요청마다 허용/거절하고,
+첫 통합 진단은 승인된 읽기 전용 일반 HTTP 범위에서 원본 Planner/Worker와
+지원 Bash/E② 경로를 연결한다. 저장소의 통합 수용시험은 소유 loopback 시험 대상과
+결정적 합성 provider를 사용하며 실제 모델·연습 대상 진단 성공과 구분한다. 확인 모드는 실제 요청마다 허용/거절하고,
 자동 모드는 사전 승인 범위 안에서 실행하되 사용자 중지를 제공한다.
 일반 관찰은 검토 필요 후보로 저장하며 등록 GET/IDOR의 확정 finding으로 승격하지 않는다.
 등록 GET의 A/B·KG·snapshot 준비와 E③ 검증은 별도 경로로 유지한다.
@@ -18,10 +19,18 @@ UI는 새 실행 명령이나 대상 URL을 제출하지 않는다. 첫 화면�
 이번 범위에 HTTP 시작 버튼은 없으며 UI 작업자가 새 시작 API를 설계하는 후속 과제도 아니다.
 향후 HTTP 시작 기능은 별도 승인·설계 범위다. `serve`는 `run`의 선행 단계가 아니다.
 
-작업 시작 기준은 dev `2e096607bc387d8896c7623bcde5fa14cf04d596`와 아래 정확 head다.
-게시 전 dev `399da3ed4b71c0bc8b96ed7d6db487cc99d32ba1`를 다시 결합했다.
-이 dev 스냅샷에는 팀이 병합한 #304/#310/#312/#313/#318이 포함된다.
-#311/#314/#315/#316/#317은 이 통합 브랜치에서 함께 검증한다. 각 PR의 최신 병합 상태와 통합 검증을 구분한다.
+현재 실행·UI 연결 기준은 2026-11-08 확인한 `dev` `d2bfec57f34dae1c17b6026366e747f3a588750b`다.
+[#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)의 첫 진단 통합과
+[#323](https://github.com/ABC2LAB/ABCDEF2LAB/pull/323)의 OpenRouter 연결은 이 기준에 병합되어 있다.
+[#325](https://github.com/ABC2LAB/ABCDEF2LAB/pull/325)의 평가 러너 승인 모드 검사도 포함하지만
+비평가 CLI의 확인 모드와 평가 배치의 승인 조건은 서로 대체하지 않는다.
+
+### 통합 이력 (현재 checkout 지침 아님)
+
+아래 SHA는 병합 전 추적 기록이다. 당시 작업 시작 기준은 dev `2e096607bc387d8896c7623bcde5fa14cf04d596`와 아래 정확 head다.
+당시 게시 전 dev `399da3ed4b71c0bc8b96ed7d6db487cc99d32ba1`를 다시 결합했다.
+당시 dev 스냅샷에는 팀이 병합한 #304/#310/#312/#313/#318이 포함된다.
+#311/#314/#315/#316/#317은 당시 통합 브랜치에서 함께 검증했다. #314는 별도 병합 없이 닫혔지만 해당 구현은 #317을 통해 dev에 포함됐다.
 
 - [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317) `aa3ebf542fdf824cc9520dfda24895ed5f9520aa`: #304/#315/#316의 기동·후보·보고서·조치 연결 포함.
 - [#313](https://github.com/ABC2LAB/ABCDEF2LAB/pull/313) `c2f13795664f3213f4a648ff576170b4a5101900`: 최신 dev를 통해 등록 GET 확정 상세보고서를 별도 결합.
@@ -29,11 +38,11 @@ UI는 새 실행 명령이나 대상 URL을 제출하지 않는다. 첫 화면�
 - [#312](https://github.com/ABC2LAB/ABCDEF2LAB/pull/312) `726da9426f45333fec4d41987b9adf2c5265da7a`: E② Worker 지침 및 적용 내용 버전.
 - [#318](https://github.com/ABC2LAB/ABCDEF2LAB/pull/318) `c81f6c26a21b71419fa1385f8a7093ffb2390621`: 게이트웨이 시험의 취소 동기화.
 
-UI 개발 기준 브랜치는 `feature/dongchan-first-report-routes-20261107`이며,
-검증한 통합 구현은 `64121b38eb4269c6530a5b10c078645b353d2dc4`다.
-이 커밋의 제품 코드와 아래 계약을 기준으로 연결한다. 기준 SHA를 적는 후속 변경은 문서만 바꾸며,
-최종 게시 head와 CI는 [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)에서 확인한다.
-dev 병합 여부와 통합 브랜치 검증 상태를 구분한다.
+당시 UI 연결 검증 브랜치는 `feature/dongchan-first-report-routes-20261107`,
+검증 커밋은 `64121b38eb4269c6530a5b10c078645b353d2dc4`였다.
+현재 작업은 위 최신 dev에서 시작하며 이 과거 브랜치로 되돌아가지 않는다.
+
+### 구현과 수용 검증의 구분
 
 개발용 실제 모델의 endpoint·정확한 profile/manifest는 별도 설치 입력이다.
 이 통합의 결정적 합성 provider 시험을 실제 모델 연결·진단 능력 검증으로 세지 않는다.
@@ -85,7 +94,7 @@ go build -o /srv/first-diagnosis/bin/first-controlled-diagnosis ./cmd/first-cont
 /srv/first-diagnosis/bin/first-controlled-diagnosis prepare-intents   -config /srv/first-diagnosis/launch.json -task-id ACTUAL_TASK_ID
 ```
 
-`prepare-task` 출력은 실제 `task_id`·`exploration_id`뿐이다. `prepare-intents`는 명시적인 실제 모델 호출이다. 대상 도구를 차단한 원본 Planner가 실제 Store에 intent를 만들며 실행과 대상 요청을 시작하지 않는다. 임의 양수 intent나 미리 만든 seed intent를 실제 Planner 결과로 대체하지 않는다. 이 개발 검증에서는 실제 모델 호출을 실행하지 않는다. 성공 출력의 `intent_ids`는 실제 Store에 저장된 open intent의 비민감 ID다. 등록 GET 자료를 만드는 담당자는 이 실제 ID와 기존 결과를 확인해 snapshot·승인 입력에 참조한다.
+`prepare-task` 출력은 실제 `task_id`·`exploration_id`뿐이다. `prepare-intents`는 명시적인 실제 모델 호출이다. 대상 도구를 차단한 원본 Planner가 실제 Store에 intent를 만들며 실행과 대상 요청을 시작하지 않는다. 임의 양수 intent나 미리 만든 seed intent를 실제 Planner 결과로 대체하지 않는다. 명령과 합성 시험 근거만으로 실제 모델 호출을 실행했다고 기록하지 않는다. 성공 출력의 `intent_ids`는 실제 Store에 저장된 open intent의 비민감 ID다. 등록 GET 자료를 만드는 담당자는 이 실제 ID와 기존 결과를 확인해 snapshot·승인 입력에 참조한다.
 
 ## 일반 HTTP
 
@@ -211,6 +220,8 @@ M01의 같은 운영자 UID 배치에는 평가 UDS 인증 전제를 확대하�
 생성 POST는 명시적인 Bearer 인증과 application/json만 받으며 쿠키·query token만으로 저장할 수 없다.
 기본 공개 범위는 기존 공유 마스킹이며 담당자 상세는 `audience=internal`을 명시한다.
 이 API들은 모델·대상 요청, 로그인 재현, 실행 admission을 시작하지 않는다.
+수정 프롬프트는 고객의 개발용 AI가 실제 고객 저장소에서 코드 경로와 기술을 확인하고
+수정·테스트·리뷰하도록 지시하는 자료다. 언어별 예시 코드 목록이나 자동 패치 실행기가 아니다.
 고객 프롬프트를 생성·복사해도 고객 코드가 실행되거나 수정되지는 않는다.
 준비 서버·만료/닫힌 runtime, 채팅·재진단·수정 실행 API의 차단은 그대로다.
 실행 중 기존 웹 화면은 같은 공통 API를 사용한다. 실행 종료 후 아래 report 명령도 같은 서버 보고서 handler·생성기·저장 형식을 재사용한다.
@@ -270,7 +281,7 @@ GRANT UPDATE(node_id) ON exploration_anchors TO report_role;
 
 위 UPDATE는 PostgreSQL 행 잠금에 필요한 실제 열 권한이다. 데이터베이스 자체의 임의 SQL 실행 권한을 읽기 전용이라고 부르지 않는다. 제품의 노출된 report API는 원본 갱신 SQL을 실행하지 않으며 판정 추가, 모델 프로필 읽기, task 생성, 계정 변경 권한을 요구하지 않는다.
 
-저장 보고서 본체는 실제 첫 기동 경로인 #304와 공통 보고서/조치 본체 #316에 의존한다. 이번 통합은 #314의 요청별 승인 경로도 함께 포함한다. 각 선행 변경이 dev에 들어오기 전에는 문서 앞부분의 정확 head와 통합 branch의 ancestry를 유지해 검토한다.
+저장 보고서의 기동(#304)·공통 보고서/조치(#316)·요청별 승인(#314) 연결은 #317을 통해 현재 dev에 포함되어 있다. 위 과거 SHA는 구현 추적용이며 현재 실행 기준을 대신하지 않는다.
 
 ## 실제 자료 요청과 검증 범위
 
@@ -347,6 +358,9 @@ CLI는 실제 마감 뒤 기존 exploration 저장소에 프로그램 소유 종
 DB pool을 닫는다. 동일 결과 재저장은 같은 기록을 사용하며 다른 결과로 덮어쓰지 않는다.
 저장 실패를 최종 PASS로 출력하지 않는다. report 조회는 과거 승인·lease·모델·Worker를 복원하지 않는다.
 이 저장 상태 경로는 위 일반 HTTP 첫 사례 범위이며 등록 GET에 일반 HTTP 상태를 합성하지 않는다.
+OpenRouter의 계획 단계 기록만 있으면 `run:null`, `execution:NOT_RUN`과
+`model_preparation` 목록을 반환할 수 있다. 최종 종료 기록과 구분하며, 실행 `model` 및
+계획 단계 집계의 실패·예약량·실제 보고 사용량 해석은 [OpenRouter 안내](openrouter-first-diagnosis.md)를 따른다.
 
 ### 오류·재시도와 갱신
 
@@ -354,7 +368,7 @@ DB pool을 닫는다. 동일 결과 재저장은 같은 기록을 사용하며 �
 - 401: 인증을 갱신한다. 결정/중지 POST를 자동 재전송하지 말고 먼저 상태를 GET으로 확인한다.
 - 403: 해당 task/run/경로의 권한 또는 실행 가능 상태가 아니다. 다른 task ID로 대체하지 않는다.
 - 승인 결정 409: 중복·만료·취소·이미 소비된 결정 등이다. 최신 상세를 다시 읽는다. 늦은 허용으로 새 송신을 만들지 않는다.
-- 저장 종료 조회 404: 아직 유효한 최종 저장 기록이 없다. 서버 연결이 끊겼다는 이유만으로 완료를 표시하지 않는다.
+- 저장 종료 조회 404: 유효한 종료 기록도 계획 단계 모델 기록도 없다. 서버 연결이 끊겼다는 이유만으로 완료를 표시하지 않는다.
 - 조치/복사 409: 근거가 변경되어 stale이다. 목록을 새로 읽고 사용자가 명시적으로 재생성한다.
 - 422: 범위·자료·출력 한도 등 요청을 점검한다. 503/연결 오류는 저장·마감 결과가 불명일 수 있다. 불명 대상 요청을 자동 재전송하지 않는다.
 - `run` 종료로 진단 HTTP 서버가 닫히는 동안은 연결 종료를 표시한다. 운영자가 report 명령을 띄운 뒤 저장 종료·결과를 다시 조회한다. report 서버에 승인 결정/중지/재시작을 요청하지 않는다.

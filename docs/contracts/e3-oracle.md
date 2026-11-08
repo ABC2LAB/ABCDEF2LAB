@@ -1,5 +1,7 @@
 # E③ 오라클 스펙 v0.1 — 수평 IDOR (설계 계약 초안)
 
+> **현재 구현과의 구분 (2026-11-08):** 본문의 구현·시험 미작성 표기는 2026-10-27 설계 당시 상태다. 현재 순수 Go 판정과 회귀 시험은 [`oracle/`](../../oracle/)에 있으며, 최초 저장 연결은 [구현 경계](e3-initial-storage.md)를 따른다. 아래 판정 규칙·증거 요구는 유지하며, 일반 HTTP 후보를 이 오라클의 확정 판정으로 승격하지 않는다.
+
 작성: 2026-10-27 · 최민준 · 팀 검토용 초안
 상태: **설계 초안. Go 구현·테스트 미작성.**
 소스 스펙: `ABC2LAB/abc2lab-dast` 의 `packages/judge/src/abc2lab_judge/core/{oracle.py,model.py}` · `tests/test_oracle.py`.
