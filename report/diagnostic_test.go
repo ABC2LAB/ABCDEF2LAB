@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/Autumn-27/artex/remediation"
 	"html"
@@ -177,5 +178,33 @@ func TestDiagnosticReportPreservesProvenanceAndExecutionScope(t *testing.T) {
 		if strings.Contains(string(body), secret) {
 			t.Fatalf("shared leak %q", secret)
 		}
+	}
+}
+
+func TestDiagnosticBundleCopyRedactsEveryNestedString(t *testing.T) {
+	bundle := remediation.Bundle{AIPrompt: "Authorization: Bearer prompt-fixture-private", Context: remediation.Context{Observation: "password=observation-fixture-private", Observations: []remediation.ContextObservation{{Observation: "Authorization: Bearer step-fixture-private"}}}, SecurityCondition: []string{"password=condition-fixture-private"}, CodeExample: []string{"password=example-fixture-private"}, Technologies: []remediation.Technology{{Name: "person-fixture@example.invalid"}}}
+	raw, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean, err := diagnosticBundleCopy(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(clean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"prompt-fixture-private", "observation-fixture-private", "step-fixture-private", "condition-fixture-private", "example-fixture-private", "person-fixture@example.invalid"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("bundle leak %s", secret)
+		}
+	}
+	original, err := json.Marshal(bundle)
+	if err != nil || string(raw) != string(original) {
+		t.Fatal("source bundle mutated", err)
+	}
+	if _, err = diagnosticBundleCopy([]byte(`{"ai_prompt":"nul\u0000input"}`)); err == nil {
+		t.Fatal("NUL accepted")
 	}
 }

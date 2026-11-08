@@ -121,6 +121,11 @@ func DiagnosticHTML(in DiagnosticReport) ([]byte, error) {
 			if size > MaxDiagnosticReportBytes {
 				return nil, ErrExportBlocked
 			}
+			// 저장본 결속을 먼저 확인한 뒤 출력 사본만 가린다. 해시·원본은 바꾸지 않는다.
+			e.RemediationBundle, err = diagnosticBundleCopy(raw)
+			if err != nil {
+				return nil, ErrExportBlocked
+			}
 		}
 		if in.Shared {
 			e.RemediationBundle = nil
@@ -147,6 +152,54 @@ func DiagnosticHTML(in DiagnosticReport) ([]byte, error) {
 		return nil, ErrExportBlocked
 	}
 	return out.Bytes(), nil
+}
+
+// 닫힌 JSON 스키마의 중첩 문자열까지 검사해 새 자유필드도 백스톱에서 빠지지 않게 한다.
+func diagnosticBundleCopy(raw []byte) (*remediation.Bundle, error) {
+	var data any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+	var redact func(any) (any, error)
+	redact = func(value any) (any, error) {
+		switch v := value.(type) {
+		case string:
+			if !utf8.ValidString(v) || strings.ContainsRune(v, 0) {
+				return nil, ErrExportBlocked
+			}
+			return DiagnosticText(v), nil
+		case []any:
+			for i := range v {
+				item, err := redact(v[i])
+				if err != nil {
+					return nil, err
+				}
+				v[i] = item
+			}
+		case map[string]any:
+			for key := range v {
+				item, err := redact(v[key])
+				if err != nil {
+					return nil, err
+				}
+				v[key] = item
+			}
+		}
+		return value, nil
+	}
+	data, err := redact(data)
+	if err != nil {
+		return nil, err
+	}
+	clean, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	var bundle remediation.Bundle
+	if err := json.Unmarshal(clean, &bundle); err != nil {
+		return nil, err
+	}
+	return &bundle, nil
 }
 
 func remediationSourceLabel(source string) string {
