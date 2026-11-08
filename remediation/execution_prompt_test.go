@@ -58,25 +58,25 @@ func TestExecutionPromptScenarios(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, required := range []string{
-				"[작업 방식: 실제 수정 실행형]", "코드·설정을 실제로 수정하고 회귀 시험·코드 리뷰·필요한 보완까지 수행한 뒤",
-				"추가 승인 대기를 기본 단계로 만들지 마라", "현재 AI 환경의 권한·승인 규칙을 준수", "검토만 또는 수정 전 승인을 명시했다면",
-				"미확정 후보는 허용된 확인·시험부터", "관계를 확인하지 못했으면 해당 변경을 보류",
-				"권한이 없으면 해당 변경을 보류", "독립적으로 안전하고 현재 권한 안에서 가능한 확인·시험은 계속",
-				"운영 대상 재현·운영 DB 변경·원격 push·PR·배포는 고객이 해당 AI 세션에서 별도로 허용한 범위",
-				"리뷰 지적을 반영하고 관련 시험을 다시 실행", "수정 제안·실제 코드 변경·시험 통과·운영 반영을 구분",
+				"[Work mode: implement and verify the fix]", "implement the minimal code/configuration fix, run regression tests, review the patch",
+				"Do not make extra approval waits the default", "Respect the current AI environment's permission and approval rules", "explicitly requested review only or approval before edits",
+				"Verify unconfirmed candidates through authorized checks/tests first", "If that relationship is unverified, withhold the affected changes",
+				"If permission is missing, withhold the affected change", "Continue independent safe checks and tests within current permissions",
+				"Production reproduction, production DB changes, remote push, PRs and deployment require explicit authorization",
+				"Address review findings and rerun the relevant tests", "Distinguish proposed fixes, applied code changes, passing tests and production rollout",
 				"orders-api", "GET /orders/{order_id}", "Elixir", "Phoenix", "Account B", "The owner can read",
 			} {
 				if !strings.Contains(b.AIPrompt, required) {
 					t.Fatalf("missing semantics %q", required)
 				}
 			}
-			if b.RemediationVersion != "remediation-v4" || b.SchemaVersion != "3" || len(b.MissingContextFields) != 0 {
+			if b.RemediationVersion != "remediation-v5" || b.SchemaVersion != "4" || len(b.MissingContextFields) != 0 {
 				t.Fatal("version or completeness contract")
 			}
-			if tc.name == "unconfirmed_candidate" && !strings.Contains(b.AIPrompt, "확정 취약점이 아니다") {
+			if tc.name == "unconfirmed_candidate" && !strings.Contains(b.AIPrompt, "This is not a confirmed vulnerability") {
 				t.Fatal("candidate promoted")
 			}
-			if strings.Index(b.AIPrompt, "[작업 방식:") > strings.Index(b.AIPrompt, "[문제와 근거]") {
+			if strings.Index(b.AIPrompt, "[Work mode:") > strings.Index(b.AIPrompt, "[Issue and evidence]") {
 				t.Fatal("execution mode is not the default")
 			}
 			t.Log("Generated prompt for semantic review:\n" + b.AIPrompt)
@@ -102,7 +102,7 @@ func TestObservationProvenanceOrderAndSupplementSurvive(t *testing.T) {
 	if b.Context.Observations[0].StepID != "step-1" || b.Context.Observations[1].StepID != "step-2" || !reflect.DeepEqual(b.Context.Observations[1].DependsOn, []string{"step-1"}) {
 		t.Fatal("sequence/dependency lost")
 	}
-	if !strings.Contains(b.AIPrompt, "The user cannot reproduce") || !strings.Contains(b.AIPrompt, "other owner order fields") || !strings.Contains(b.AIPrompt, "상충하면 어느 쪽도 조용히 덮어쓰거나") {
+	if !strings.Contains(b.AIPrompt, "The user cannot reproduce") || !strings.Contains(b.AIPrompt, "other owner order fields") || !strings.Contains(b.AIPrompt, "When they conflict, do not silently overwrite either") {
 		t.Fatal("conflicting supplement hidden")
 	}
 	b.Context.Observations[1].DependsOn[0] = "mutated"
@@ -165,7 +165,7 @@ func TestTechnologyConflictAndProvenanceBoundToVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b.Technologies) != 5 || !strings.Contains(b.AIPrompt, "1.8-rc.1") || !strings.Contains(b.AIPrompt, ".NET") || !strings.Contains(b.AIPrompt, "상충하는 버전·기술·사용자 정보는 모두 유지") {
+	if len(b.Technologies) != 5 || !strings.Contains(b.AIPrompt, "1.8-rc.1") || !strings.Contains(b.AIPrompt, ".NET") || !strings.Contains(b.AIPrompt, "Preserve conflicting versions, technologies and user information") {
 		t.Fatal("technology conflict/component lost")
 	}
 	foundUTC := false
@@ -189,7 +189,7 @@ func TestUnsupportedClassRetainsOriginalContext(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if b.VulnClass != class || !strings.Contains(b.AIPrompt, class) || !strings.Contains(b.AIPrompt, "전용 해결책 템플릿이 없다") || !strings.Contains(b.AIPrompt, "orders-api") {
+		if b.VulnClass != class || !strings.Contains(b.AIPrompt, class) || !strings.Contains(b.AIPrompt, "No dedicated fix template exists") || !strings.Contains(b.AIPrompt, "orders-api") {
 			t.Fatal("unsupported type/context discarded")
 		}
 		in.VulnClass += "_changed"
@@ -235,7 +235,7 @@ func TestIncompleteContextIsNotPresentedAsComplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b.MissingContextFields) != 6 || !strings.Contains(b.AIPrompt, "[필수 맥락 부족]") || !strings.Contains(b.AIPrompt, "확인되지 않은 원인에 대한 변경만 보류") {
+	if len(b.MissingContextFields) != 6 || !strings.Contains(b.AIPrompt, "[Required context missing]") || !strings.Contains(b.AIPrompt, "withhold only changes whose cause remains unverified") {
 		t.Fatal("missing context hidden")
 	}
 	in.Context.Observations = []ContextObservation{{Endpoint: "GET /orders/{id}", Observation: "The response status was 200", Source: "observed"}}
@@ -243,7 +243,7 @@ func TestIncompleteContextIsNotPresentedAsComplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b.MissingContextFields) != 4 || !strings.Contains(b.AIPrompt, "HTTP 성공만으로 취약점이라고 단정하지 않는다") {
+	if len(b.MissingContextFields) != 4 || !strings.Contains(b.AIPrompt, "HTTP success alone does not prove a vulnerability") {
 		t.Fatal("sparse HTTP observation presented as sufficient")
 	}
 }
@@ -286,11 +286,45 @@ func TestAutomaticAndUserTechnologiesCoexist(t *testing.T) {
 	if len(b.Technologies) != 64 || counts["observed"] != 32 || counts["user_provided"] != 32 {
 		t.Fatal("automatic context prevented or overwrote user supplements")
 	}
-	if !strings.Contains(b.AIPrompt, "관측 또는 자동 기술 정보가 수집 상한을 넘어 일부 생략") || !strings.Contains(b.AIPrompt, `"observations_truncated":true`) {
+	if !strings.Contains(b.AIPrompt, "observations or automatic technology information exceeded collection limits") || !strings.Contains(b.AIPrompt, `"observations_truncated":true`) {
 		t.Fatal("automatic technology truncation was not explained")
 	}
 	in.Technologies = append(in.Technologies, in.Technologies[0])
 	if _, err := Build(in); err == nil {
 		t.Fatal("aggregate technology limit was not enforced")
+	}
+}
+
+func TestPromptInstructionsAreEnglishAndDisplayAdviceStaysKorean(t *testing.T) {
+	in := executionSample()
+	b, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := b.AIPrompt
+	for {
+		start := strings.Index(instructions, "JSON data begins]\n")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(instructions[start:], "[JSON data ends]")
+		if end < 0 {
+			t.Fatal("unterminated data boundary")
+		}
+		instructions = instructions[:start] + instructions[start+end+len("[JSON data ends]"):]
+	}
+	for _, r := range instructions {
+		if r >= 0xAC00 && r <= 0xD7A3 {
+			t.Fatal("Korean instruction in English-only fixture prompt")
+		}
+	}
+	if !strings.Contains(b.AIPrompt, "Report in Korean") || !strings.Contains(b.RootFix[0], "인증된") {
+		t.Fatal("display language boundary changed")
+	}
+	old := b
+	old.RemediationVersion = "remediation-v4"
+	old.SchemaVersion = "3"
+	if !IsStale(old, in) {
+		t.Fatal("old language/version silently reused")
 	}
 }

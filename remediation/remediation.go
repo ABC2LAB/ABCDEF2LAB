@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const GeneratorVersion = "remediation-v4"
+const GeneratorVersion = "remediation-v5"
 
 // 자동 관측 32개와 사용자 보완 32개의 출처를 함께 보존한다. HTTP 입력 상한은 별도다.
 const maxTechnologies = 64
@@ -152,7 +152,7 @@ func Build(input Input) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
-	b := Bundle{Context: in.Context, VulnClass: in.VulnClass, MissingContextFields: missingContextFields(in.Context), SchemaVersion: "3", InputDigest: inputDigest, FindingID: in.FindingID, ReportVersion: in.ReportVersion, EvidenceVersion: in.EvidenceVersion, EvidenceDigest: in.EvidenceDigest, SourceDigest: in.SourceDigest, RemediationVersion: GeneratorVersion, TechnologyDigest: technologyDigest, Technologies: in.Technologies}
+	b := Bundle{Context: in.Context, VulnClass: in.VulnClass, MissingContextFields: missingContextFields(in.Context), SchemaVersion: "4", InputDigest: inputDigest, FindingID: in.FindingID, ReportVersion: in.ReportVersion, EvidenceVersion: in.EvidenceVersion, EvidenceDigest: in.EvidenceDigest, SourceDigest: in.SourceDigest, RemediationVersion: GeneratorVersion, TechnologyDigest: technologyDigest, Technologies: in.Technologies}
 	b.SecurityCondition = []string{"관측 결과와 현재 저장소를 대조하여 아래 보안 조건의 위반 여부를 먼저 검증한다."}
 	b.ImmediateMitigation = []string{"영향 기능의 접근 범위를 승인된 사용자로 제한하고 감사한다. 임시 완화는 근본 수정이나 해결 완료가 아니다."}
 	b.Configuration = []string{"실제 배포 설정과 호환성을 확인한다. 설정만으로 코드 결함이 해결되었다고 판단하지 않는다."}

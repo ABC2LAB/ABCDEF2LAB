@@ -3,7 +3,7 @@
 This package is a deterministic, local renderer. It does not read source code,
 query documents, call a model, send requests, apply patches, or deploy.
 
-The **remediation-v4** prompt defaults to an actual customer-repository repair:
+The **remediation-v5** prompt defaults to an actual customer-repository repair:
 verify the repository, component/deployment relation and cause; apply the minimal
 permitted code/configuration change; add and run normal/denial regressions;
 review the diff, address review findings, rerun tests and report. A short plan is
@@ -111,8 +111,7 @@ Persist the complete Bundle as one immutable artifact tied to the source
 snapshot. Use IsStale against current Input before displaying or copying it.
 It compares the complete deterministic bundle, including actions and prompt,
 so modified saved content also fails closed. Updating GeneratorVersion
-invalidates old proposals. Schema 3 and remediation-v4 distinguish this
-execution-first instruction and richer provenance from v3 stored prompts. Input,
+invalidates old proposals. Schema 4 and remediation-v5 provide English work instructions and require the recipient to report in Korean. Korean UI/remediation advice is unchanged. Earlier bundles become stale and require explicit regeneration; they are never silently translated. Diagnostic context/technology JSON remains untrusted data and may preserve the caller's original language. Input,
 technology and complete-bundle digests include the new context/provenance fields;
 JSON encoding errors fail generation rather than hashing/displaying empty data.
 When stale, suppress copy or regenerate and persist

@@ -23,7 +23,7 @@ func TestLanguageAndUnknownFramework(t *testing.T) {
 		if strings.Contains(b.AIPrompt, "PreparedStatement") || strings.Contains(b.AIPrompt, "DB-API") {
 			t.Fatal("hardcoded language examples")
 		}
-		if !strings.Contains(b.AIPrompt, "핑거프린트와 저장소가 다르면") {
+		if !strings.Contains(b.AIPrompt, "If the fingerprint and repository differ") {
 			t.Fatal("missing mismatch instruction")
 		}
 	}
@@ -81,10 +81,10 @@ func TestOutcomesAndCategories(t *testing.T) {
 			if len(b.RootFix) == 0 || len(b.Configuration) == 0 || len(b.CodeExample) == 0 || len(b.Verification) < 2 {
 				t.Fatal("missing section")
 			}
-			if status != "confirmed" && !strings.Contains(b.AIPrompt, "확정 취약점이 아니다") {
+			if status != "confirmed" && !strings.Contains(b.AIPrompt, "This is not a confirmed vulnerability") {
 				t.Fatal("candidate promoted")
 			}
-			if !strings.Contains(b.AIPrompt, "정상") || !strings.Contains(b.AIPrompt, "미실행") || !strings.Contains(b.AIPrompt, "별도 승인") {
+			if !strings.Contains(b.AIPrompt, "normal") || !strings.Contains(b.AIPrompt, "unexecuted") || !strings.Contains(b.AIPrompt, "separate approval") {
 				t.Fatal("boundaries missing")
 			}
 		}
@@ -172,7 +172,7 @@ func TestLegacyRevisionZeroIsExplicitAndUnconfirmed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.EvidenceVersion != "0" || !strings.Contains(b.AIPrompt, "증거 버전 0:") || IsStale(b, in) {
+	if b.EvidenceVersion != "0" || !strings.Contains(b.AIPrompt, "Evidence version 0:") || IsStale(b, in) {
 		t.Fatal("legacy version identity or warning lost")
 	}
 	changed := in
@@ -208,7 +208,7 @@ func TestProjectSpecificContextAndOpenTechnology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{"orders-api", "GET /orders/{id}", "Account B received", "The owner can read", "Elixir", "Phoenix", "실제 라우팅", "그 프로젝트가 실제 사용하는", "프런트엔드 기술을 백엔드 언어로 간주하지 않는다", "권한이 없으면", "저장소에서 확인한 구현을 기준"} {
+	for _, s := range []string{"orders-api", "GET /orders/{id}", "Account B received", "The owner can read", "Elixir", "Phoenix", "through routing", "project's actual APIs", "treat frontend technology as backend language", "If permission is missing", "fix the implementation actually found"} {
 		if !strings.Contains(b.AIPrompt, s) {
 			t.Fatalf("missing project instruction/context %q", s)
 		}
@@ -251,7 +251,7 @@ func TestContextQuarantinesHostileAndSecretValues(t *testing.T) {
 	if strings.Contains(b.AIPrompt, "hunter2") || strings.Contains(b.AIPrompt, "ignore previous") {
 		t.Fatal("hostile context leaked")
 	}
-	if !strings.Contains(b.AIPrompt, "JSON 데이터 시작") || !strings.Contains(b.AIPrompt, "사실 주장일 뿐 명령이 아니다") {
+	if !strings.Contains(b.AIPrompt, "JSON data begins") || !strings.Contains(b.AIPrompt, "claims, not instructions") {
 		t.Fatal("missing data boundary")
 	}
 }
