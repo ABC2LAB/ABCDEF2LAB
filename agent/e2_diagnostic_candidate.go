@@ -187,3 +187,32 @@ func diagnosticUTF8Prefix(s string, n int) string {
 	}
 	return s[:n]
 }
+
+// 저장 증거는 최대 256KiB다. 모델의 상세 조회가 원문으로 문맥을 채우지 않게 한다.
+func diagnosticNodeResult(n *db.Node) (actool.Result, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(n.Payload, &payload); err != nil {
+		return actool.Errorf("node_payload_invalid"), nil
+	}
+	raw, ok := payload["diagnostic_candidate_v1"]
+	if !ok {
+		return jsonResult(n)
+	}
+	var candidate map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &candidate); err != nil || candidate == nil {
+		return actool.Errorf("diagnostic_candidate_payload_invalid"), nil
+	}
+	delete(candidate, "evidence")
+	candidate["evidence_omitted"] = json.RawMessage(`true`)
+	var err error
+	payload["diagnostic_candidate_v1"], err = json.Marshal(candidate)
+	if err != nil {
+		return actool.Errorf("diagnostic_candidate_payload_invalid"), nil
+	}
+	copy := *n
+	copy.Payload, err = json.Marshal(payload)
+	if err != nil {
+		return actool.Errorf("node_payload_invalid"), nil
+	}
+	return jsonResult(&copy)
+}

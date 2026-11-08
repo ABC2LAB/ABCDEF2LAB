@@ -306,3 +306,58 @@ func TestDiagnosticActualHTTPContextPipeline(t *testing.T) {
 		t.Fatalf("current observed source stale %v", err)
 	}
 }
+
+func TestE2DiagnosticCommandAndRemediationDLP(t *testing.T) {
+	execution, _, binding := e2WorkerFixture(t)
+	state := &e2HTTPToolState{}
+	state.observeDiagnostic(execution, 22, "printf synthetic\nAuthorization: Bearer command-fixture-private", e2runner.Result{Trusted: e2runner.TrustedResult{Execution: execution.SnapshotForIntent(22), Call: e2proxy.CallResult{IntentID: 22, CallRef: "actual"}, Classification: "completed"}})
+	if strings.Contains(state.observations["actual"].Evidence, "command-fixture-private") {
+		t.Fatal("command bypassed DLP")
+	}
+	store := &candidateMemoryStore{}
+	tool := newE2DiagnosticCandidateTool(store, binding, state)
+	input := `{"call_ref":"actual","vulnclass":"XSS","name":"후보","summary":"관찰","remediation":"Authorization: Bearer remedy-fixture-private"}`
+	r, err := tool.Call(t.Context(), json.RawMessage(input), nil)
+	if err != nil || r.IsError || len(store.candidates) != 1 {
+		t.Fatal("candidate missing", err)
+	}
+	if strings.Contains(store.candidates[0].Remediation, "remedy-fixture-private") {
+		t.Fatal("remediation bypassed DLP")
+	}
+	for _, suffix := range []string{` {}`, ` null`, ` []`, ` true`} {
+		r, err := tool.Call(t.Context(), json.RawMessage(input+suffix), nil)
+		if err != nil || !r.IsError || len(store.candidates) != 1 {
+			t.Fatal("trailing input accepted", err)
+		}
+	}
+}
+func TestE2DiagnosticObservationRejectsMismatchedIntents(t *testing.T) {
+	execution, _, _ := e2WorkerFixture(t)
+	for _, field := range []string{"execution", "call"} {
+		t.Run(field, func(t *testing.T) {
+			state := &e2HTTPToolState{}
+			result := e2runner.Result{Trusted: e2runner.TrustedResult{Execution: execution.SnapshotForIntent(22), Call: e2proxy.CallResult{IntentID: 22, CallRef: "actual"}, Classification: "completed"}}
+			if field == "execution" {
+				result.Trusted.Execution.IntentID = 23
+			} else {
+				result.Trusted.Call.IntentID = 23
+			}
+			state.observeDiagnostic(execution, 22, "synthetic", result)
+			if len(state.observations) != 0 {
+				t.Fatal("mismatched intent retained")
+			}
+		})
+	}
+}
+func TestDiagnosticNodeDetailOmitsEvidenceWithoutMutatingSource(t *testing.T) {
+	n := &db.Node{ID: 1, Kind: "fact", Payload: json.RawMessage(`{"summary":"candidate","diagnostic_candidate_v1":{"evidence":"large-fixture-secret","evidence_digest":"bound-digest","summary":"review"}}`)}
+	original := string(n.Payload)
+	result, err := diagnosticNodeResult(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Flatten()
+	if strings.Contains(text, "large-fixture-secret") || !strings.Contains(text, "evidence_omitted") || !strings.Contains(text, "bound-digest") || string(n.Payload) != original {
+		t.Fatal("node projection leaked evidence or changed source")
+	}
+}

@@ -211,3 +211,62 @@ func TestDiagnosticCandidateDatabaseScopeAndConcurrency(t *testing.T) {
 		}
 	}
 }
+
+func TestDiagnosticCandidateCallIntentMustMatchIndependently(t *testing.T) {
+	c := syntheticDiagnosticCandidate(1, 2, "actual")
+	c.Evidence = strings.Replace(c.Evidence, `"call_ref":"actual","intent_id":2`, `"call_ref":"actual","intent_id":3`, 1)
+	c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+	if c.Validate() == nil {
+		t.Fatal("foreign call intent accepted with correct execution intent")
+	}
+}
+func TestDiagnosticCandidateNodeKindAndSharedExplorationTask(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	a, err := d.CreateTask("synthetic kind", "fixture", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(a.ID)
+	b, err := d.CreateTask("synthetic same graph", "fixture", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(b.ID)
+	store := d.Exploration(a.ExplorationID)
+	intent, err := store.AddIntent(map[string]any{"summary": "synthetic"}, 5, nil, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := syntheticDiagnosticCandidate(a.ID, intent, "actual")
+
+	id, err := store.RecordDiagnosticCandidate(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := syntheticDiagnosticCandidate(b.ID, intent, "actual")
+	raw, err := json.Marshal(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{diagnostic_candidate_v1}',$1::jsonb) WHERE id=$2`, string(raw), id); err != nil {
+		t.Fatal(err)
+	}
+	// 동일 그래프 행에 내부적으로 유효한 타 task payload가 들어간 경우다.
+	if _, err = store.ListDiagnosticCandidates(a.ID, "", 100); err == nil {
+		t.Fatal("same-exploration foreign task payload leaked")
+	}
+
+	if _, err = d.Exec(`UPDATE exploration_nodes SET kind='fact',state='confirmed' WHERE id=$1`, intent); err != nil {
+		t.Fatal(err)
+	}
+	c.CallRef = "other"
+	c.Evidence = strings.ReplaceAll(c.Evidence, "actual", "other")
+	c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+	if _, err = store.RecordDiagnosticCandidate(t.Context(), c); err == nil {
+		t.Fatal("fact accepted as intent")
+	}
+}
