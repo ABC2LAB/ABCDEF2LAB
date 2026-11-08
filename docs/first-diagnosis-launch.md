@@ -17,11 +17,12 @@ UI는 새 실행 명령이나 대상 URL을 제출하지 않는다. 첫 화면�
 향후 HTTP 시작 기능은 별도 승인·설계 범위다. `serve`는 `run`의 선행 단계가 아니다.
 
 작업 시작 기준은 dev `2e096607bc387d8896c7623bcde5fa14cf04d596`와 아래 정확 head다.
-게시 전 dev `812eed1edade1f73ea93e6e4a1bfb4891d2b76d0`를 다시 결합했다.
-2026-11-08 확인 시 #304/#310/#312/#318은 팀 병합으로 dev에 들어갔고,
-#311/#313/#314/#315/#316/#317은 아직 미병합이다. 통합 검증과 dev 반영을 구분한다.
+게시 전 dev `399da3ed4b71c0bc8b96ed7d6db487cc99d32ba1`를 다시 결합했다.
+이 dev 스냅샷에는 팀이 병합한 #304/#310/#312/#313/#318이 포함된다.
+#311/#314/#315/#316/#317은 이 통합 브랜치에서 함께 검증한다. 각 PR의 최신 병합 상태와 통합 검증을 구분한다.
 
-- [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317) `aa3ebf542fdf824cc9520dfda24895ed5f9520aa`: #304/#313/#315/#316의 기동·후보·보고서·조치 연결 포함.
+- [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317) `aa3ebf542fdf824cc9520dfda24895ed5f9520aa`: #304/#315/#316의 기동·후보·보고서·조치 연결 포함.
+- [#313](https://github.com/ABC2LAB/ABCDEF2LAB/pull/313) `c2f13795664f3213f4a648ff576170b4a5101900`: 최신 dev를 통해 등록 GET 확정 상세보고서를 별도 결합.
 - [#314](https://github.com/ABC2LAB/ABCDEF2LAB/pull/314) `707ba1a1d812de3bb0078538fa63f8037523016d`: #304/#311의 요청별 승인 포함.
 - [#312](https://github.com/ABC2LAB/ABCDEF2LAB/pull/312) `726da9426f45333fec4d41987b9adf2c5265da7a`: E② Worker 지침 및 적용 내용 버전.
 - [#318](https://github.com/ABC2LAB/ABCDEF2LAB/pull/318) `c81f6c26a21b71419fa1385f8a7093ffb2390621`: 게이트웨이 시험의 취소 동기화.

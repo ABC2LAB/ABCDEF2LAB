@@ -175,6 +175,10 @@ WHERE i.operation_key=$1 FOR UPDATE OF i`, s.OperationKey[:]).
 }
 
 func insertControlledFinding(ctx context.Context, tx *sql.Tx, s e3record.Snapshot, out *ControlledFindingResult) error {
+	report, err := controlledFindingReport(s, *out)
+	if err != nil {
+		return err
+	}
 	const name = "Horizontal IDOR verified read"
 	evidence := fmt.Sprintf("E3 verdict:%d issuance:%d manifest:%d", out.VerdictID, out.IssuanceID, out.ManifestID)
 	payload, err := json.Marshal(map[string]any{"vulnclass": "IDOR", "name": name, "severity": s.Source.Severity,
@@ -193,10 +197,10 @@ VALUES($1,'finding',$2,9,'confirmed','e3') RETURNING id`, s.Source.ExplorationID
 	if err != nil {
 		return err
 	}
-	err = tx.QueryRowContext(ctx, `INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,status,evidence_version)
-VALUES($1,$2,'IDOR',$3,$4,$5,$6,'e3','[]'::jsonb,'pending',1) RETURNING id`,
+	err = tx.QueryRowContext(ctx, `INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,status,evidence_version,report,report_evidence_version)
+VALUES($1,$2,'IDOR',$3,$4,$5,$6,'e3','[]'::jsonb,'pending',1,$7,1) RETURNING id`,
 		s.TaskID, out.NodeID, name, s.Source.Severity,
-		"A controlled read produced a bound CONFIRMED oracle verdict.", evidence).Scan(&out.FindingID)
+		"A controlled read produced a bound CONFIRMED oracle verdict.", evidence, report).Scan(&out.FindingID)
 	if err != nil {
 		return err
 	}
