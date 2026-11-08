@@ -44,7 +44,7 @@ func TestRequestApprovalRunAdmissionStopBeforeAcquire(t *testing.T) {
 		t.Fatal("unsupported status", state)
 	}
 	service.finishStop(7, errors.New("synthetic closure failure"))
-	if state := service.runState(7); state.DrainComplete || !state.ClosureFailed {
+	if state := service.runState(7); state.Phase != "failed" || state.Outcome != "cancelled" || state.DrainComplete || !state.ClosureFailed {
 		t.Fatal("closure failure promoted")
 	}
 	service.finishStop(7, nil)

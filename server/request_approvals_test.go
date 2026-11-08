@@ -106,7 +106,7 @@ func approvalTestDB(t *testing.T) *db.DB {
 }
 func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 	d := approvalTestDB(t)
-	for _, scenario := range []string{"allow", "deny", "expire", "cancel", "stop", "revoke", "policy", "budget", "audit", "store-failure", "decision-store-failure", "consume-store-failure", "decision-store-expired", "consume-store-expired", "unknown", "result-store-failure", "upstream-result-failure"} {
+	for _, scenario := range []string{"allow", "ended-task", "deny", "expire", "cancel", "stop", "revoke", "policy", "budget", "audit", "store-failure", "decision-store-failure", "consume-store-failure", "decision-db-expired", "consume-db-expired", "decision-store-expired", "consume-store-expired", "unknown", "result-store-failure", "upstream-result-failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			task, err := d.CreateTask("synthetic approval", "synthetic", nil, 0, 300)
 			if err != nil {
@@ -261,6 +261,20 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 			if hits.Load() != 0 {
 				t.Fatal("invalid authorization sent request")
 			}
+
+			if scenario == "ended-task" {
+				if _, err := d.Exec(`UPDATE tasks SET status='done',completed_at=NOW() WHERE id=$1`, task.ID); err != nil {
+					t.Fatal(err)
+				}
+				view, err := service.get(t.Context(), task.ID, "ARTEX", pending.ID)
+				if err != nil || !view.CanDecide {
+					t.Fatal("fixture must retain live decidable binding", err)
+				}
+				if response := send("POST", path+"/decision", token, decision); response.Code != 403 {
+					t.Fatal("terminal task accepted decision", response.Code)
+				}
+				cancelRun()
+			}
 			switch scenario {
 			case "deny":
 				decision["decision"] = "deny"
@@ -296,6 +310,10 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 				}
 			case "audit":
 				recorder.fail.Store(true)
+			case "decision-db-expired":
+				service.store = approvalDBExpiredStore{d, false}
+			case "consume-db-expired":
+				service.store = approvalDBExpiredStore{d, true}
 			case "decision-store-failure":
 				service.store = approvalCASFailStore{requestApprovalStore: d, consume: false}
 			case "consume-store-failure":
@@ -310,6 +328,10 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 				recorder.resultFail.Store(true)
 			}
 			response := send("POST", path+"/decision", token, decision)
+			if scenario == "decision-db-expired" && response.Code != http.StatusConflict {
+				t.Fatalf("DB-expired decision was accepted: %d", response.Code)
+			}
+
 			if scenario == "allow" || scenario == "deny" || scenario == "policy" || scenario == "budget" || scenario == "audit" || scenario == "unknown" || scenario == "result-store-failure" || scenario == "upstream-result-failure" {
 				if response.Code != 200 {
 					t.Fatalf("decision failed: %d %s", response.Code, response.Body.String())
@@ -317,7 +339,7 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 			}
 			select {
 			case receipt := <-done:
-				if scenario == "decision-store-failure" || scenario == "consume-store-failure" || strings.HasSuffix(scenario, "store-expired") {
+				if scenario == "decision-store-failure" || scenario == "consume-store-failure" || strings.HasSuffix(scenario, "store-expired") || strings.HasSuffix(scenario, "db-expired") {
 					if receipt.Reason != e2proxy.AuditFailed || receipt.AuditComplete || execution.Snapshot().AuditComplete {
 						t.Fatal("CAS failure became normal denial", receipt)
 					}

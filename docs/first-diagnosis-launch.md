@@ -116,8 +116,9 @@ go build -o /srv/first-diagnosis/bin/first-controlled-diagnosis ./cmd/first-cont
 ```
 
 각 rule의 `approval_display`는 운영자가 공개해도 되는 입력을 검토하여 지정한다. `public_path`가 false면 승인된 path prefix 밖의 경로를 숨긴다. query와 JSON은 지정한 키만 보여주며 JSON은 단순 값만 지원한다. password/token/session 등 민감 키와 중첩 객체·배열은 공개하지 않는다. 헤더와 body 원문은 DB·UI에 저장하지 않는다. 공개 키로 지정된 값 자체가 비밀이 아닌지 운영자가 확인해야 하며 이 설정은 자동 민감정보 판별기가 아니다. 표시되지 않은 입력과 예상 영향이 있다는 안내를 유지한다. 판단 정보가 충분하지 않으면 허용하지 않는다.
+`input_preview` DTO는 위 서버 allowlist를 거친 비민감 공개 필드만 포함한다. UI는 이 값을 그대로 텍스트로 표시하므로 마스킹 책임은 서버에 있다. 운영자는 allowlist 값의 비민감성을 먼저 검토해야 하며 민감 키·중첩 값·비공개 경로와 원문 요청을 DTO에 추가하지 않는다.
 
-설치자는 기존 `db.Open` migration으로 `request_approvals` 테이블을 설치하고 해당 실행 역할에 SELECT/INSERT/UPDATE만 부여한다. 일반 HTTP 기동 검사는 세 권한을 각각 확인하며 누락을 첫 승인 요청 때까지 미루지 않는다. 등록 GET과 보고서 전용 역할에는 이 권한을 공통 필수 조건으로 추가하지 않는다. 첫 실행 runtime은 DDL이나 grant를 수행하지 않는다. 승인 생성·결정·소비 저장 실패는 전송 허용이 아니다. 이 운영 오류는 정상 사용자 거절과 달리 `AuditFailed`와 runner의 기존 `transient_failure`로 분류하며, 감사 실패 latch로 후속 전송과 정상 마감을 차단한다. 정상 거절·만료는 미전송 정책 제한을 유지한다. private 요청 원문은 실행 메모리에만 보류하고 DB에는 요청 지문·회차/task/intent/call/attempt·계정/세션 참조·공개 projection·결정/소비/결과만 남긴다.
+설치자는 기존 `db.Open` migration으로 `request_approvals` 테이블을 설치하고 해당 실행 역할에 SELECT/INSERT/UPDATE만 부여한다. 일반 HTTP 기동 검사는 세 권한을 각각 확인하며 누락을 첫 승인 요청 때까지 미루지 않는다. 등록 GET과 보고서 전용 역할에는 이 권한을 공통 필수 조건으로 추가하지 않는다. 첫 실행 runtime은 DDL이나 grant를 수행하지 않는다. 승인 생성·결정·소비 저장 실패는 전송 허용이 아니다. 이 운영 오류는 정상 사용자 거절과 달리 `AuditFailed`와 runner의 기존 `transient_failure`로 분류하며, 감사 실패 latch로 후속 전송과 정상 마감을 차단한다. 호출 문맥 취소로 Insert/소비 CAS가 실패하면 해당 취소를 보존하고 실행 전체의 감사 실패로 바꾸지 않는다. 취소와 경합한 별도 저장 장애는 계속 감사 실패다. 잠금을 점유하는 저장소 작업은 2초 제한을 적용한다. 정상 거절·만료는 미전송 정책 제한을 유지한다. private 요청 원문은 실행 메모리에만 보류하고 DB에는 요청 지문·회차/task/intent/call/attempt·계정/세션 참조·공개 projection·결정/소비/결과만 남긴다.
 
 기존 승인 화면의 요청별 HTTP 카드에서 실제 task를 선택해 보류 요청을 확인한다. API는 다음과 같고 기존 JWT middleware 안에 등록된다.
 

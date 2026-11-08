@@ -89,7 +89,7 @@ func TestRequestApprovalHoldAndSingleDispatch(t *testing.T) {
 }
 
 func TestRequestApprovalDenialsNeverReachTarget(t *testing.T) {
-	for _, scenario := range []string{"deny", "store-failure", "cancel", "stop", "revoke", "close", "expire", "policy", "budget", "audit"} {
+	for _, scenario := range []string{"deny", "store-failure", "cancel-store-failure", "cancel", "stop", "revoke", "close", "expire", "policy", "budget", "audit"} {
 		t.Run(scenario, func(t *testing.T) {
 			var hits atomic.Int64
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); io.WriteString(w, "ok") }))
@@ -105,7 +105,7 @@ func TestRequestApprovalDenialsNeverReachTarget(t *testing.T) {
 			cfg.RequestApproval = requestApprovalFunc(func(ctx context.Context, p RequestApprovalProposal) (bool, error) {
 				close(entered)
 				<-release
-				if scenario == "store-failure" {
+				if scenario == "store-failure" || scenario == "cancel-store-failure" {
 					return false, errors.New("private failure")
 				}
 				return scenario != "deny", nil
@@ -120,7 +120,7 @@ func TestRequestApprovalDenialsNeverReachTarget(t *testing.T) {
 				t.Fatal("sent while awaiting decision")
 			}
 			switch scenario {
-			case "cancel":
+			case "cancel", "cancel-store-failure":
 				cancel()
 			case "stop":
 				_ = e.Stop(context.Background())
@@ -146,6 +146,24 @@ func TestRequestApprovalDenialsNeverReachTarget(t *testing.T) {
 			if hits.Load() != 0 || !r.NotSent || r.ForwardAttempted || r.ResponseReceived {
 				t.Fatalf("unexpected transmission %+v hits=%d", r, hits.Load())
 			}
+			if scenario == "cancel-store-failure" && (r.Reason != AuditFailed || e.Snapshot().Reason != AuditFailed) {
+				t.Fatal("real storage error hidden by caller cancellation")
+			}
+			if scenario == "cancel" || scenario == "policy" {
+				remaining, err := cfg.Budget.Ledger.Remaining(cfg.Budget.Key, cfg.Budget.Binding, time.Now())
+				if err != nil || remaining != 1 {
+					t.Fatalf("denial reserved budget: %d %v", remaining, err)
+				}
+				for _, event := range rec.events {
+					if event.Stage == "intent" {
+						t.Fatal("denial recorded a transmission intent")
+					}
+				}
+				if scenario == "cancel" && r.Reason != Closed {
+					t.Fatalf("late allow reason=%s", r.Reason)
+				}
+			}
+
 		})
 	}
 }

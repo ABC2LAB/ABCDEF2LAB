@@ -18,6 +18,16 @@ import (
 
 var errRequestApproval = errors.New("request_approval_unavailable")
 
+const requestApprovalStoreTimeout = 2 * time.Second
+
+// 호출 취소만 보존한다. 취소와 경합한 실제 저장 장애는 감사 실패로 남긴다.
+func requestApprovalStoreError(ctx context.Context, err error) error {
+	if cause := ctx.Err(); cause != nil && errors.Is(err, cause) {
+		return cause
+	}
+	return errRequestApproval
+}
+
 // 표시 허용 필드는 서명된 호스트 정책으로만 지정한다. 모델 출력으로 만들지 않는다.
 type RequestApprovalDisplay struct {
 	PublicPath bool     `json:"public_path"`
@@ -164,9 +174,12 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 	digest := sha256.Sum256(raw)
 	clear(raw)
 	a := db.RequestApproval{ID: p.Receipt.AttemptID, TaskID: task, OwnerRef: p.OwnerRef, RunRef: p.Receipt.Scope.RunRef, IntentID: p.Receipt.IntentID, CallRef: p.Receipt.CallRef, AttemptID: p.Receipt.AttemptID, PolicyRevision: p.Receipt.PolicyRevision, AccountRef: p.AccountRef, SessionRef: p.SessionRef, RequestSHA256: hex.EncodeToString(digest[:]), Method: p.Method, TargetOrigin: origin, Path: path, InputPreview: preview, BodyBytes: len(p.Body), CreatedAt: time.Now().UTC(), ExpiresAt: p.ExpiresAt, State: "pending", ExecutionState: "not_sent"}
-	if err = s.store.InsertRequestApproval(ctx, a); err != nil {
+	insertCtx, insertCancel := context.WithTimeout(ctx, requestApprovalStoreTimeout)
+	err = s.store.InsertRequestApproval(insertCtx, a)
+	insertCancel()
+	if err != nil {
 		s.mu.Unlock()
-		return false, errRequestApproval
+		return false, requestApprovalStoreError(ctx, err)
 	}
 	waiter := &requestApprovalWaiter{ctx: ctx, decision: make(chan struct{})}
 	s.waiters[a.ID] = waiter
@@ -185,7 +198,7 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 		return false, errRequestApproval
 	}
 	// 취소가 결정과 경합해도 확인 모드의 fallback allow는 없다.
-	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), requestApprovalStoreTimeout)
 	defer persistCancel()
 	current, err := s.store.GetRequestApproval(persistCtx, task, p.OwnerRef, a.ID)
 	if err != nil {
@@ -209,11 +222,14 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 	}
 	current.Consumed = true
 	current.ExecutionState = "awaiting_dispatch"
-	if err := s.store.SwapRequestApproval(ctx, current, true); err != nil {
+	consumeCtx, consumeCancel := context.WithTimeout(ctx, requestApprovalStoreTimeout)
+	err = s.store.SwapRequestApproval(consumeCtx, current, true)
+	consumeCancel()
+	if err != nil {
 		if errors.Is(err, db.ErrRequestApprovalConflict) && !time.Now().Before(current.ExpiresAt) {
 			return false, nil
 		}
-		return false, errRequestApproval
+		return false, requestApprovalStoreError(ctx, err)
 	}
 	return true, nil
 }
@@ -243,6 +259,8 @@ func (s *RequestApprovalService) decorate(a db.RequestApproval) db.RequestApprov
 	return a
 }
 func (s *RequestApprovalService) list(ctx context.Context, task int64, owner string) ([]db.RequestApproval, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestApprovalStoreTimeout)
+	defer cancel()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.authorized(task, owner) {
@@ -258,6 +276,8 @@ func (s *RequestApprovalService) list(ctx context.Context, task int64, owner str
 	return rows, nil
 }
 func (s *RequestApprovalService) get(ctx context.Context, task int64, owner, id string) (db.RequestApproval, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestApprovalStoreTimeout)
+	defer cancel()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.authorized(task, owner) {
@@ -270,6 +290,8 @@ func (s *RequestApprovalService) get(ctx context.Context, task int64, owner, id 
 	return s.decorate(a), nil
 }
 func (s *RequestApprovalService) decide(ctx context.Context, task int64, owner, id, digest, decision string) (db.RequestApproval, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestApprovalStoreTimeout)
+	defer cancel()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.authorized(task, owner) {
@@ -301,6 +323,8 @@ func (s *RequestApprovalService) decide(ctx context.Context, task int64, owner, 
 	return s.decorate(a), nil
 }
 func (s *RequestApprovalService) observe(ctx context.Context, event e2proxy.Event) error {
+	ctx, cancel := context.WithTimeout(ctx, requestApprovalStoreTimeout)
+	defer cancel()
 	if event.AttemptID == "" || event.Stage != "intent" && event.Stage != "result" {
 		return nil
 	}
@@ -335,6 +359,11 @@ func (s *RequestApprovalService) observe(ctx context.Context, event e2proxy.Even
 	}
 	if err = s.store.SwapRequestApproval(ctx, a, false); err != nil {
 		return errRequestApproval
+	}
+	// 결과의 영속화 뒤에는 이 시도의 대기 문맥을 보존할 필요가 없다.
+	// 저장 실패 때는 남겨 두어 decorate가 결과 불명 상태를 계속 투영한다.
+	if event.Stage == "result" {
+		delete(s.waiters, event.AttemptID)
 	}
 	return nil
 }
