@@ -111,4 +111,3 @@ PG16 전용 개발 DB의 합성 fixture만 사용한다.
 실제 회차 전에는 호스트의 E② Collect/finalizer 연결, 신뢰 KG/harness/identity
 provider, 승인·공유 예산, 실제 계정 A/B 및 비민감 fixture, 최종 감사 checkpoint
 영속성과 결과 조회를 함께 확인해야 한다.
-
