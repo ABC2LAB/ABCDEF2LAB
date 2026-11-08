@@ -240,7 +240,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 **제품 E②(`e2.ours_mode=product`):** 개선 후 회차에서만 쓴다. 제품 entrypoint가 아직 없어서 합성 시험으로만 확인했다. 망 배치와 부정 연결 기대값은 가짜 E²와 같다. 설정은 `image`, `policy_path`, `policy_fingerprint_sha256`(시범 전 동결값), `header_mode`, 시한 다섯(`ready_timeout_seconds`, `close_ack_timeout_seconds`, `close_timeout_seconds`, `poll_seconds`, `exchange_timeout_seconds`), `verify_tool`, `verify_timeout_seconds`다.
 
-1. compose 전에 `e2-config/`에 설정·정책 사본·회차 감사 키를 쓴다([제어 채널 제안](../contracts/e2-runner-control-proposal.md) §4). 키 값은 파일로만 있다.
+1. compose 전에 `e2-config/`에 설정·정책 사본·회차 감사 키를 쓴다([제어 채널 제안](../contracts/e2-runner-control-proposal.md) §4). 키 값은 파일로만 있다. 정책의 `approval_mode`가 `preauthorized_scope`가 아니면 시작을 거부한다. 평가 회차에는 요청마다 승인할 사람이 없다.
 2. 작업 생성 전에 `ready`를 받아 설정 digest·전달 모드·평가 선언·동결 지문과 대조하고, `bind`로 대상 컨테이너 ID를 넘긴다. 어긋나면 POST 없이 `e2_<코드>`로 무효다.
 3. 예산이 끝나면 계측기보다 E²를 먼저 닫는다. 시한을 넘기면 기다리지 않고 계측기 seal로 넘어간다.
 4. 봉인 뒤 `e2/<execution_ref>`를 러너 전용 사본 `e2-copy/`로 옮겨 `e2-audit-verify`와 투영 행을 대조한다.
