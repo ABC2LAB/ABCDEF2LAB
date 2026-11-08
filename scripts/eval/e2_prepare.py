@@ -22,6 +22,8 @@ CONFIG_NAME, POLICY_NAME, KEY_NAME = "e2-config.json", "policy.json", "audit.key
 CONTAINER_EVIDENCE_DIR, CONTAINER_CONTROL_DIR = "/evidence", "/run/e2-control"
 AUDIT_KEY_BYTES = 32
 MAX_POLICY_BYTES = 1024 * 1024
+# 평가 회차에는 요청마다 승인할 사람이 없다. 확인 모드면 첫 요청에서 시한까지 멈춘다.
+EVAL_APPROVAL_MODE = "preauthorized_scope"
 _PRIVATE_DIR_MODE, _PRIVATE_FILE_MODE = 0o700, 0o600
 _REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}\Z")
 _REF_TOKEN_BYTES = 16
@@ -109,6 +111,16 @@ def _read_policy(source: Path) -> bytes:
     return data
 
 
+def _check_approval_mode(policy: bytes) -> None:
+    """정책 원문은 그대로 복사한다. 여기서는 승인 모드만 본다."""
+    try:
+        document = json.loads(policy)
+    except (ValueError, RecursionError):
+        _fail("policy_invalid")
+    if not isinstance(document, dict) or document.get("approval_mode") != EVAL_APPROVAL_MODE:
+        _fail("policy_approval_mode")
+
+
 def _open_private_dir(directory: Path) -> int:
     try:
         fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -142,6 +154,7 @@ def prepare_e2_config(directory: Path, values: E2RunValues, policy_source: Path)
     """설정·정책·키를 쓰고 러너가 대조할 값을 돌려준다. `config_sha256`은 쓴 설정 파일의 정확한 바이트 digest다."""
     _check_values(values)
     policy = _read_policy(policy_source)
+    _check_approval_mode(policy)
     reservation_ref = new_reference("reservation")
     config = {"format": CONFIG_FORMAT, "eval_run_id": values.eval_run_id, "reservation_ref": reservation_ref, "model_tag": values.model_tag,
               "header_mode": values.header_mode, "evaluation": values.evaluation, "policy_file": POLICY_NAME, "audit_key_file": KEY_NAME,

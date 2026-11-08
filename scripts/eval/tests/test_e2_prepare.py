@@ -23,7 +23,7 @@ OVERLAY = ROOT / "deploy/eval/compose.e2-product.yaml"
 EVALUATION = {"llm_backend": "api", "target_kind": "public_practice"}
 VALUES = E2RunValues(eval_run_id="eval-run-1", model_tag="qwen/qwen3.5-35b-a3b", header_mode="evaluation_caller_passthrough",
                      evaluation=EVALUATION, port=8080)
-POLICY = b'{"rules": ["synthetic"]}\n'
+POLICY = b'{"approval_mode": "preauthorized_scope", "rules": ["synthetic"]}\n'
 
 
 class Case(unittest.TestCase):
@@ -137,9 +137,22 @@ class TestRejected(Case):
         self.rejected("policy_too_large", policy=large)
         self.nothing_written()
 
+    def test_policy_must_preauthorize_requests(self):
+        for name, data, code in (("confirm", b'{"approval_mode": "confirm_every_request"}', "policy_approval_mode"),
+                                 ("missing", b'{"rules": []}', "policy_approval_mode"),
+                                 ("not-string", b'{"approval_mode": 1}', "policy_approval_mode"),
+                                 ("array", b'["preauthorized_scope"]', "policy_approval_mode"),
+                                 ("not-json", b"not json", "policy_invalid"),
+                                 ("not-utf8", b"\xff", "policy_invalid"),
+                                 ("deep", b"[" * 100000, "policy_invalid")):
+            with self.subTest(name):
+                source = self.temp / f"{name}.json"
+                source.write_bytes(data)
+                self.rejected(code, policy=source)
+
     def test_largest_policy_is_accepted(self):
         exact = self.temp / "exact.json"
-        exact.write_bytes(b" " * MAX_POLICY_BYTES)
+        exact.write_bytes(POLICY + b" " * (MAX_POLICY_BYTES - len(POLICY)))
         self.prepare(policy=exact)
         self.assertEqual(len((self.directory / POLICY_NAME).read_bytes()), MAX_POLICY_BYTES)
 

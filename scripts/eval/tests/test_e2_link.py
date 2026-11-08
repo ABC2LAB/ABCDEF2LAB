@@ -35,7 +35,7 @@ class Case(unittest.TestCase):
         for path in (self.paths.config, self.paths.evidence, self.paths.control, self.paths.copy):
             path.mkdir(mode=0o700)
         self.policy = base / "policy.json"
-        self.policy.write_bytes(b"{}\n")
+        self.policy.write_bytes(b'{"approval_mode": "preauthorized_scope"}\n')
 
     def link(self, **changes):
         return E2Link(product(policy_path=str(self.policy), **changes), self.paths, "eval-run-1", "model-1", "api", 8080)
