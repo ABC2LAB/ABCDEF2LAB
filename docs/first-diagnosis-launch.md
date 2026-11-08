@@ -24,6 +24,12 @@ UI는 새 실행 명령이나 대상 URL을 제출하지 않는다. 첫 화면�
 - [#312](https://github.com/ABC2LAB/ABCDEF2LAB/pull/312) `726da9426f45333fec4d41987b9adf2c5265da7a`: E② Worker 지침 및 적용 내용 버전.
 - [#318](https://github.com/ABC2LAB/ABCDEF2LAB/pull/318) `c81f6c26a21b71419fa1385f8a7093ffb2390621`: 게이트웨이 시험의 취소 동기화.
 
+UI 개발 기준 브랜치는 `feature/dongchan-first-report-routes-20261107`이며,
+검증한 통합 구현은 `e476ace8f9880b6d2ee0af066a64de99718ec655`다.
+이 커밋의 제품 코드와 아래 계약을 기준으로 연결한다. 기준 SHA를 적는 후속 변경은 문서만 바꾸며,
+최종 게시 head와 CI는 [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)에서 확인한다.
+dev 병합 여부와 통합 브랜치 검증 상태를 구분한다.
+
 개발용 실제 모델의 endpoint·정확한 profile/manifest는 별도 설치 입력이다.
 이 통합의 결정적 합성 provider 시험을 실제 모델 연결·진단 능력 검증으로 세지 않는다.
 실제 모델·보호된 실행 설정·대상 승인 회차가 확인되지 않으면 **UI 연결만 남았다고 판정하지 않는다**.
