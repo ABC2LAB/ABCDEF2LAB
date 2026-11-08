@@ -30,6 +30,13 @@ func NewWithLocalLLM(ctx context.Context, m *Manager, skillDir, dataDir, keyDir,
 // resolution into the guarded provider factory. The selected profile ID comes
 // from the trusted DB lookup, never from a model or the manifest itself.
 func (s *Server) newProfileProvider(id int64, cfg agent.Config) (llm.Provider, error) {
+	if s.openRouterPolicy != nil {
+		policy, err := s.openRouterPolicy.Resolve(llmpolicy.ProfileTarget{ID: id, Format: string(cfg.Format), Model: cfg.Model, BaseURL: cfg.BaseURL})
+		if err != nil {
+			return nil, ErrFirstDiagnosisModel
+		}
+		return cfg.NewOpenRouterProvider(policy)
+	}
 	if s.localResolver == nil {
 		return cfg.NewProvider()
 	}
@@ -62,7 +69,7 @@ func (blockedLocalProvider) Complete(context.Context, llm.CompletionRequest) (ll
 }
 
 func (s *Server) clearLocalLLM() {
-	if s.localResolver == nil {
+	if !s.hasModelPolicy() {
 		return
 	}
 	s.cfgMu.Lock()

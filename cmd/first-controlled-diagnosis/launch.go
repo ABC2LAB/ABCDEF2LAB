@@ -68,11 +68,7 @@ func checkLaunchFiles(c launchConfig) error {
 	if !valid {
 		return errPreparation
 	}
-	resolver, err := llmpolicy.LoadProfileManifestFile(c.LocalLLMManifestPath)
-	if err != nil {
-		return errPreparation
-	}
-	_, err = resolver.Resolve(llmpolicy.ProfileTarget{ID: c.ModelProfileID, Format: c.ModelFormat, BaseURL: c.ModelBaseURL, Model: c.ModelRef})
+	err = server.CheckFirstDiagnosisModelOptions(c.modelOptions(), llmpolicy.ProfileTarget{ID: c.ModelProfileID, Format: c.ModelFormat, BaseURL: c.ModelBaseURL, Model: c.ModelRef})
 	if err != nil {
 		return errPreparation
 	}
@@ -118,7 +114,7 @@ func runPrepareTask(ctx context.Context, args []string, stdout, stderr io.Writer
 		return 1
 	}
 	cfg, err := readLaunchConfig(*configPath)
-	if err != nil {
+	if err != nil || checkLaunchFiles(cfg) != nil {
 		fmt.Fprintln(stderr, "실행 설정을 사용할 수 없습니다")
 		return 1
 	}

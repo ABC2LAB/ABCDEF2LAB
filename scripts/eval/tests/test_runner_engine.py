@@ -61,8 +61,10 @@ TASK_SHAPES = {
         "bd1e80549787564149575354402cbc5ef17b23308d525a8be00e8633c7526d2e",
     ("server/server_mgmt.go", "func (s *Server) pgActivateProfile("):
         "636fcf4ea39ee15733a7d4cc224ff1553baefdad0f22f931a5e46850f089d85d",
+    # 명시적 OpenRouter 모드에서만 연결·빈 응답·스트림 재시도를 끈다.
+    # 외부 정책이 없는 기존 local-only·평가 경로와 task DTO 계약은 유지한다.
     ("server/server.go", "func (s *Server) loadLLMConfig("):
-        "35ce56195bf53dbe2e6fa456b8c3e384b3428b2ad8ccb697a8e78f13d8d733df",
+        "7094d6792af8cc9b2a487c9509b699a2b4b430e2fb8dd381bd29d45a3391a6a1",
     ("server/server.go", "func (s *Server) getLLM("):
         "3578d8622da0f87547261aea06ef17d3f46aa7215906fb122f8f8d3b53776436",
     ("db/config.go", "type LLMProfile struct"):

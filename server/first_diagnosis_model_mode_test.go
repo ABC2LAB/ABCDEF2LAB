@@ -1,0 +1,76 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/llmpolicy"
+	"github.com/Autumn-27/norma/llm"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func externalManifestFixture(t *testing.T) (string, llmpolicy.ProfileTarget) {
+	t.Helper()
+	target := llmpolicy.ProfileTarget{ID: 71, Format: "openai", BaseURL: llmpolicy.OpenRouterBaseURL, Model: llmpolicy.OpenRouterModel}
+	m := map[string]any{"version": 1, "profile_id": target.ID, "format": target.Format, "base_url": target.BaseURL, "model": target.Model, "provider_slug": "parasail/fp8", "expected_provider_name": "Parasail", "approval_id": "synthetic-owned-approval", "expires_at": time.Now().Add(time.Hour).UTC(), "strict_privacy_ack": true, "account_spend_cap_ack": true, "max_requests": 2, "max_input_tokens": 524288, "max_output_tokens": 8192, "max_cost_usd_micros": 1000000, "max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 4096, "timeout_seconds": 30, "max_concurrent": 1, "max_input_price_usd_micros_per_million": 150000, "max_output_price_usd_micros_per_million": 1000000}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "model.json")
+	raw, _ := json.Marshal(m)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path, target
+}
+func TestFirstDiagnosisExternalModeKeepsLocalPolicy(t *testing.T) {
+	path, target := externalManifestFixture(t)
+	options := FirstDiagnosisModelOptions{Mode: "openrouter", OpenRouterManifestPath: path}
+	if err := CheckFirstDiagnosisModelOptions(options, target); err != nil {
+		t.Fatal(err)
+	}
+	for name, o := range map[string]FirstDiagnosisModelOptions{"missing": {}, "implicit-external": {OpenRouterManifestPath: path}, "conflict": {Mode: "openrouter", LocalManifestPath: path, OpenRouterManifestPath: path}, "unknown": {Mode: "external", OpenRouterManifestPath: path}, "local-public": {Mode: "local_only", LocalManifestPath: path}} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := o.load(); err == nil {
+				t.Fatal("ambiguous or local-public model policy accepted")
+			}
+		})
+	}
+	local, external, err := options.load()
+	if err != nil || local != nil || external == nil {
+		t.Fatal("external policy did not stay separate")
+	}
+	other := target
+	other.ID++
+	if err := CheckFirstDiagnosisModelOptions(options, other); !errors.Is(err, ErrFirstDiagnosisModel) {
+		t.Fatal("wrong DB profile accepted")
+	}
+	other = target
+	other.BaseURL = "https://example.com/v1"
+	if err := CheckFirstDiagnosisModelOptions(options, other); !errors.Is(err, ErrFirstDiagnosisModel) {
+		t.Fatal("wrong DB endpoint accepted")
+	}
+	s := &Server{firstDiagnosis: true, openRouterPolicy: external}
+	cfg := agent.Config{Format: llm.FormatOpenAI, BaseURL: target.BaseURL, Model: target.Model, APIKey: "synthetic-not-a-secret", MaxTokens: 4096, ContextWindowK: 262, Stream: false}
+	if _, err := s.newProfileProvider(target.ID, cfg); err != nil {
+		t.Fatal("valid protected provider rejected", err)
+	}
+	cfg.BaseURL = "https://example.com/v1"
+	if _, err := s.newProfileProvider(target.ID, cfg); !errors.Is(err, ErrFirstDiagnosisModel) {
+		t.Fatal("external provider silently changed endpoint")
+	}
+	if got := s.FirstDiagnosisModelUsage(); got == nil || got.Requests != 0 {
+		t.Fatal("construction sent or consumed a model request")
+	}
+	if (&Server{}).hasModelPolicy() || !s.hasModelPolicy() {
+		t.Fatal("guarded provider classification failed")
+	}
+	if _, err := newServerConfiguredWithOptions(context.Background(), nil, "", "", "", nil, serverStartupOptions{openRouterPolicy: external}, nil); !errors.Is(err, ErrFirstDiagnosisModel) {
+		t.Fatal("external policy escaped first-diagnosis startup")
+	}
+}
