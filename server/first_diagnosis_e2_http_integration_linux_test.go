@@ -156,6 +156,8 @@ func (p *firstDiagnosisE2Provider) Complete(_ context.Context, request llm.Compl
 	for _, tool := range request.Tools {
 		switch tool.Name {
 		case "Bash", "graph_overview", "list_facts", "node_detail", "get_worker_output", "list_goals", "record_fact":
+		case "submit_diagnostic_candidate":
+			// 같은 intent의 실제 관찰만 저장하는 로컬 도구이며 송신 권한을 늘리지 않는다.
 		default:
 			p.unsupportedTool = true
 		}
