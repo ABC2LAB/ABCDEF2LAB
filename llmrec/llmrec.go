@@ -1,17 +1,17 @@
 // Package llmrec implements a recording decorator for llm.Provider. It intercepts
-// every Stream call, captures the full request and accumulated response, and
-// persists them to PostgreSQL for later inspection.
+// model calls and persists DLP-projected metadata to PostgreSQL. Message, wire
+// and error contents are never passed to the recording database writer.
 package llmrec
 
 import (
 	"context"
-	"encoding/json"
 	"iter"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
 )
@@ -72,6 +72,7 @@ type Recorder struct {
 	thinkingType    string
 	reasoningEffort string
 	enabled         func() bool // reports whether recording is currently on; nil = always record
+	recordPolicy    *dlp.Policy
 }
 
 // Wrap returns a Provider that records calls to pg when enabled() reports true.
@@ -79,9 +80,14 @@ type Recorder struct {
 // reasoningEffort are the config-level thinking params actually sent to the API
 // (empty = not sent). A nil enabled predicate records unconditionally.
 func Wrap(inner llm.Provider, pg *db.DB, model, profName, thinkingType, reasoningEffort string, enabled func() bool) *Recorder {
+	policy, err := newRecordingPolicy()
+	if err != nil {
+		log.Print("[llmrec] DLP policy unavailable; body recording blocked")
+	}
 	return &Recorder{
 		inner: inner, pg: pg, model: model, prof: profName,
 		thinkingType: thinkingType, reasoningEffort: reasoningEffort, enabled: enabled,
+		recordPolicy: policy,
 	}
 }
 
@@ -109,17 +115,16 @@ func parseSession(s string) (taskID, worker string) {
 	return taskID, worker
 }
 
-// Stream implements llm.Provider. It delegates to the inner provider, accumulates
-// the streamed events to reconstruct the response, and records the full exchange.
+// Stream forwards provider events and records only their projected metadata.
 //
 // The session identifier (e.g. "exp1-worker-i3") is carried on ctx by the norma
 // harness via transcript.WithSessionID; reading it per-call is race-free even when
 // planner and multiple workers share one Recorder instance.
 func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	// Body recording (the heavy debug trace: full request/response) is gated by the
+	// Projected trace recording is gated by the
 	// llm_record setting. Lightweight usage metering always runs — it powers token
 	// stats and must be complete even for interrupted/failed runs, so it is NOT
-	// gated. Only body serialization + response accumulation are skipped when off.
+	// gated. Only trace preparation and capture are skipped when off.
 	recordBodies := r.enabled == nil || r.enabled()
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
@@ -135,22 +140,18 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 		taskID = parsedID
 	}
 
-	// Serialize the request only when storing bodies (this is the expensive part).
-	// Alongside it, attach a Capture so the HTTP transport can hand back the
-	// untouched wire bodies — the normalized view below cannot reconstruct them
-	// (tool schemas are dropped, tool_use blocks never reach this layer, and the
-	// SSE framing is already decoded). See capture.go.
-	reqBody := ""
+	// Never serialize message/tool contents for the recording sink. Capture stays
+	// transient; persistence reads only whether a wire attempt existed.
+	var reqBody map[string]any
 	var capt *Capture
 	if recordBodies {
-		reqBody = r.serializeRequest(req)
-		ctx, capt = NewCapture(ctx)
+		reqBody = r.requestMetadata(req)
+		ctx, capt = NewMetadataCapture(ctx)
 	}
 
 	return func(yield func(llm.StreamEvent, error) bool) {
 		var (
-			textBuf     strings.Builder
-			thinkingBuf strings.Builder
+			hasThinking bool
 			usage       llm.Usage
 			stopReason  string
 			streamErr   error
@@ -170,7 +171,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
-				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
+				r.record(session, taskID, worker, reqBody, capt, start, hasThinking, usage, stopReason, err)
 			}
 		}
 		defer func() { finish(ctx.Err()) }()
@@ -184,21 +185,15 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				}
 				return
 			}
-			// Always track usage (cheap); accumulate text/thinking only for bodies.
+			// Track usage and content presence without accumulating private text.
 			// Anthropic (and the other providers) split token usage across events:
 			// message_start carries ONLY the input side (input + cache), message_delta
 			// ONLY the output. They must be FOLDED with Add — overwriting on delta
 			// would zero out the input already counted at start (mirrors the SDK's own
 			// llm.Accumulator; see norma/llm/accumulate.go).
 			switch ev.Type {
-			case llm.SETextDelta:
-				if recordBodies {
-					textBuf.WriteString(ev.Text)
-				}
 			case llm.SEThinkingDelta:
-				if recordBodies {
-					thinkingBuf.WriteString(ev.Text)
-				}
+				hasThinking = hasThinking || ev.Text != ""
 			case llm.SEMessageStart:
 				usage.Add(ev.Usage)
 			case llm.SEMessageDelta:
@@ -233,11 +228,11 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 		taskID = parsedID
 	}
 
-	reqBody := ""
+	var reqBody map[string]any
 	var capt *Capture
 	if recordBodies {
-		reqBody = r.serializeRequest(req)
-		ctx, capt = NewCapture(ctx)
+		reqBody = r.requestMetadata(req)
+		ctx, capt = NewMetadataCapture(ctx)
 	}
 
 	msg, stopReason, usage, err := r.inner.Complete(ctx, req)
@@ -247,19 +242,18 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	}
 	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
 	if recordBodies {
-		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
+		r.record(session, taskID, worker, reqBody, capt, start, hasThinkingContent(msg), usage, stopReason, err)
 	}
 	return msg, stopReason, usage, err
 }
 
-func thinkingText(msg llm.Message) string {
-	var b strings.Builder
+func hasThinkingContent(msg llm.Message) bool {
 	for _, block := range msg.Content {
 		if block.Type == llm.BlockThinking && block.Thinking != "" {
-			b.WriteString(block.Thinking)
+			return true
 		}
 	}
-	return b.String()
+	return false
 }
 
 // recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
@@ -286,49 +280,33 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 		Status:        status,
 	})
 	if err != nil {
-		log.Printf("[llmusage] insert: %v", err)
+		log.Print("[llmusage] insert failed")
 	}
 }
 
 // record persists one LLM call to PostgreSQL before the provider stream returns.
 // Keeping the write inside the owning task operation means task deletion can
 // drain calls and then remove records without a late async insert recreating one.
-func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, text, thinking string, usage llm.Usage, stopReason string, streamErr error) {
+func (r *Recorder) record(session, taskID, worker string, reqBody map[string]any, capt *Capture, start time.Time, hasThinking bool, usage llm.Usage, stopReason string, streamErr error) {
+	if r.pg == nil {
+		return
+	}
+	bodies, err := r.projectBodies(reqBody, hasThinking, usage, stopReason, capt, streamErr != nil)
+	if err != nil {
+		log.Print("[llmrec] DLP projection failed; body recording blocked")
+		return
+	}
 	latency := int(time.Since(start).Milliseconds())
 	status := "ok"
-	errMsg := ""
 	if streamErr != nil {
 		status = "error"
-		errMsg = streamErr.Error()
 	}
-
-	// Build response body JSON.
-	resp := map[string]any{
-		"text":        text,
-		"stop_reason": stopReason,
-		"usage": map[string]int{
-			"input_tokens":       usage.InputTokens,
-			"output_tokens":      usage.OutputTokens,
-			"cache_read_tokens":  usage.CacheReadTokens,
-			"cache_write_tokens": usage.CacheWriteTokens,
-		},
-	}
-	if thinking != "" {
-		resp["thinking"] = thinking
-	}
-	respBody, _ := json.Marshal(resp)
-
-	model := ""
-	if len(req.System) > 0 {
-		// model is not in CompletionRequest; use the configured model name
-	}
-	model = r.model
 
 	rec := &db.LLMRecord{
 		SessionID:    session,
 		TaskID:       taskID,
 		Worker:       worker,
-		Model:        model,
+		Model:        r.model,
 		ProfileName:  r.prof,
 		LatencyMs:    latency,
 		InputTokens:  usage.InputTokens,
@@ -336,53 +314,14 @@ func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, re
 		CacheRead:    usage.CacheReadTokens,
 		CacheWrite:   usage.CacheWriteTokens,
 		Status:       status,
-		Error:        errMsg,
-		RequestBody:  reqBody,
-		ResponseBody: string(respBody),
-		// Raw wire bodies; empty when the transport did not fill the Capture
-		// (e.g. a provider dialing through a client without the capture hook, or
-		// a call that failed before any HTTP request went out).
-		RawRequest:  capt.RawRequest(),
-		RawResponse: capt.RawResponse(),
+		Error:        bodies.Error,
+		RequestBody:  string(bodies.Request),
+		ResponseBody: string(bodies.Response),
+		RawRequest:   bodies.RawRequest,
+		RawResponse:  bodies.RawResponse,
 	}
 
 	if err := r.pg.InsertLLMRecord(rec); err != nil {
-		log.Printf("[llmrec] insert: %v", err)
+		log.Print("[llmrec] insert failed")
 	}
-}
-
-// serializeRequest builds a JSON representation of the completion request.
-func (r *Recorder) serializeRequest(req llm.CompletionRequest) string {
-	m := map[string]any{
-		"system":     req.System,
-		"messages":   req.Messages,
-		"max_tokens": req.MaxTokens,
-	}
-	// 记录本次调用实际发出的思考参数。type 采用「有效值」：每请求覆盖 req.Thinking
-	// 优先于配置级 thinkingType(与 norma buildBody 的判定一致，如 compaction 摘要会
-	// 强制 disabled)；effort 无每请求覆盖，直接取配置值。两者皆空则不写 thinking 字段。
-	effType := r.thinkingType
-	if req.Thinking != "" {
-		effType = req.Thinking
-	}
-	if effType != "" || r.reasoningEffort != "" {
-		m["thinking"] = map[string]string{"type": effType, "effort": r.reasoningEffort}
-	}
-	if len(req.Tools) > 0 {
-		// Store tool names only (full schemas are huge).
-		names := make([]string, len(req.Tools))
-		for i, t := range req.Tools {
-			names[i] = t.Name
-		}
-		m["tools"] = names
-		m["tools_count"] = len(req.Tools)
-	}
-	if req.Temperature != nil {
-		m["temperature"] = *req.Temperature
-	}
-	if len(req.Stop) > 0 {
-		m["stop"] = req.Stop
-	}
-	b, _ := json.Marshal(m)
-	return string(b)
 }

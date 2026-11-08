@@ -3,10 +3,25 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// ErrInvalidInterceptPattern does not expose the pattern or compiler diagnostic.
+var ErrInvalidInterceptPattern = errors.New("pattern 값이 올바른 정규식이 아닙니다")
+
+// ValidateInterceptPattern also protects callers that do not use the HTTP API.
+func ValidateInterceptPattern(matchType, pattern string) error {
+	if matchType == "regex" {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return ErrInvalidInterceptPattern
+		}
+	}
+	return nil
+}
 
 // InterceptRule is one row of intercept_rules.
 type InterceptRule struct {
@@ -73,6 +88,9 @@ func (d *DB) ListInterceptRules() ([]InterceptRule, error) {
 
 // CreateInterceptRule inserts a new rule.
 func (d *DB) CreateInterceptRule(name, matchTarget, matchType, pattern, action, message string, priority int, enabled bool, timeoutEnabled bool, timeoutSeconds int, timeoutAction string) (InterceptRule, error) {
+	if err := ValidateInterceptPattern(matchType, pattern); err != nil {
+		return InterceptRule{}, err
+	}
 	row := d.QueryRow(`
 INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -83,6 +101,9 @@ RETURNING `+interceptRuleCols,
 
 // UpdateInterceptRule replaces all editable fields of an existing rule.
 func (d *DB) UpdateInterceptRule(id int64, name, matchTarget, matchType, pattern, action, message string, priority int, enabled bool, timeoutEnabled bool, timeoutSeconds int, timeoutAction string) (InterceptRule, error) {
+	if err := ValidateInterceptPattern(matchType, pattern); err != nil {
+		return InterceptRule{}, err
+	}
 	row := d.QueryRow(`
 UPDATE intercept_rules
    SET name=$2, enabled=$3, priority=$4, match_target=$5,
@@ -102,8 +123,31 @@ func (d *DB) DeleteInterceptRule(id int64) error {
 
 // ToggleInterceptRule flips the enabled state of a rule.
 func (d *DB) ToggleInterceptRule(id int64, enabled bool) error {
-	_, err := d.Exec(`UPDATE intercept_rules SET enabled=$2 WHERE id=$1`, id, enabled)
-	return err
+	if !enabled {
+		_, err := d.Exec(`UPDATE intercept_rules SET enabled=false WHERE id=$1`, id)
+		return err
+	}
+	// Pin the stored pattern until the enable write commits. A concurrent update
+	// cannot replace a validated pattern between this read and the write.
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var matchType, pattern string
+	if err := tx.QueryRow(`SELECT match_type, pattern FROM intercept_rules WHERE id=$1 FOR UPDATE`, id).Scan(&matchType, &pattern); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // Preserve the existing no-op for an absent ID.
+		}
+		return err
+	}
+	if err := ValidateInterceptPattern(matchType, pattern); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE intercept_rules SET enabled=true WHERE id=$1`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CreateInterceptPending inserts a pending approval record and returns its ID.

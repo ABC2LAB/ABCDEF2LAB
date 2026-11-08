@@ -16,7 +16,7 @@ func TestTaskArchiveAPIQueueListAndLimits(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
-	defer m.Close()
+	t.Cleanup(func() { _ = m.Close() })
 	task, err := m.CreateTask("archive api", "verify 202", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -25,17 +25,17 @@ func TestTaskArchiveAPIQueueListAndLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		_, _ = m.pg.Exec(`DELETE FROM task_archives WHERE task_id=$1`, taskID)
 		_ = m.pg.DeleteTask(taskID)
-	}()
+	})
 
 	// Start with an already-cancelled context so the background archive worker
 	// exits before these route-contract assertions enqueue work.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	dataDir := t.TempDir()
-	s := New(ctx, m, dataDir, dataDir, dataDir)
+	s := newTestServer(t, ctx, m, dataDir, dataDir, dataDir)
 	s.archiveWG.Wait()
 	token, err := signJWT(s.jwtKey)
 	if err != nil {

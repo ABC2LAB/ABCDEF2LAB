@@ -22,8 +22,8 @@ import (
 // hostTools, if set, returns runtime host tools (currently the traffic tools when
 // capture is on) to add to EVERY agent's base list — the DB tools table then
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
-func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string)) {
-	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
+func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string)) func(context.Context, string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
+	return func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
 		a, err := pg.GetAgentByKey(agentKey)
 		if err != nil || a == nil {
 			return nil, agent.DeferredInfo{}, nil
@@ -85,13 +85,13 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				}
 				cl, err := connectMCP(ctx, m)
 				if err != nil {
-					log.Printf("[mcp] %s 连接失败: %v", m.Name, err)
+					log.Printf("[mcp] %s 연결 실패: %v", m.Name, err)
 					continue
 				}
 				closers = append(closers, cl)
 				ts, err := cl.Tools(ctx)
 				if err != nil {
-					log.Printf("[mcp] %s tools/list 失败: %v", m.Name, err)
+					log.Printf("[mcp] %s tools/list 실패: %v", m.Name, err)
 					continue
 				}
 				for _, t := range ts {
@@ -195,11 +195,11 @@ func seedPrompts(pg *db.DB) {
 	for key, tmpl := range agent.BuiltinPromptSeeds() {
 		a, err := pg.GetAgentByKey(key)
 		if err != nil || a == nil {
-			log.Printf("[prompts] seed %s 跳过: agent 不存在 (%v)", key, err)
+			log.Printf("[prompts] seed %s 건너뜀: agent 없음 (%v)", key, err)
 			continue
 		}
 		if err := pg.SeedPromptIfEmpty(a.ID, tmpl); err != nil {
-			log.Printf("[prompts] seed %s 失败: %v", key, err)
+			log.Printf("[prompts] seed %s 실패: %v", key, err)
 		}
 	}
 }
@@ -209,37 +209,44 @@ func seedPrompts(pg *db.DB) {
 // tool-assembly time each built-in tool is filtered by its agent binding / enabled
 // flag and, if kept, wrapped so the model sees the DB-overridden description/schema
 // and缺省入参 get injected. MCP/skill/host tools have no row and pass through.
-func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
-	agent.FindingTrafficBindingEnabled = func() bool { return pg.GetBool(settingAgentTrafficBinding, false) }
-	// Seed the built-in domain tools (first-insert only; DO NOTHING preserves edits).
-	// No startup prune: rows we didn't seed are left alone so future user-defined
-	// custom tools (system=false, added via the UI) survive restarts.
-	for _, s := range agent.BuiltinToolSeeds() {
-		schema, _ := json.Marshal(s.Schema)
-		agents, _ := json.Marshal(s.Agents)
-		if err := pg.SeedTool(s.Key, s.Desc, schema, agents); err != nil {
-			log.Printf("[tools] seed %s 失败: %v", s.Key, err)
+func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) (resolve func(context.Context, string, []actool.CoreTool) []actool.CoreTool, findingPolicy func() bool) {
+	return wireToolsConfigured(pg, domainReg, true)
+}
+
+// 실행 역할은 설치자가 준비한 catalog를 읽기만 한다.
+func wireToolsConfigured(pg *db.DB, domainReg map[string]actool.CoreTool, seed bool) (resolve func(context.Context, string, []actool.CoreTool) []actool.CoreTool, findingPolicy func() bool) {
+	findingPolicy = func() bool { return pg.GetBool(settingAgentTrafficBinding, false) }
+	if seed {
+		// Seed the built-in domain tools (first-insert only; DO NOTHING preserves edits).
+		// No startup prune: rows we didn't seed are left alone so future user-defined
+		// custom tools (system=false, added via the UI) survive restarts.
+		for _, s := range agent.BuiltinToolSeeds() {
+			schema, _ := json.Marshal(s.Schema)
+			agents, _ := json.Marshal(s.Agents)
+			if err := pg.SeedTool(s.Key, s.Desc, schema, agents); err != nil {
+				log.Printf("[tools] seed %s 실패: %v", s.Key, err)
+			}
 		}
-	}
-	// Seed the traffic host tools so they're bindable per-agent like built-ins.
-	// Default binding = worker (preserves prior behavior). Their runtime availability
-	// is still gated by the global capture switch (hostTools() returns them only when
-	// capture is on), so an off-capture binding simply never surfaces the tool.
-	trafficAgents, _ := json.Marshal([]string{"worker"})
-	for _, t := range traffic.SeedToolMetas() {
-		schema, _ := json.Marshal(t.InputSchema())
-		if err := pg.SeedTool(t.Name(), t.Description(), schema, trafficAgents); err != nil {
-			log.Printf("[tools] seed %s 失败: %v", t.Name(), err)
+		// Seed the traffic host tools so they're bindable per-agent like built-ins.
+		// Default binding = worker (preserves prior behavior). Their runtime availability
+		// is still gated by the global capture switch (hostTools() returns them only when
+		// capture is on), so an off-capture binding simply never surfaces the tool.
+		trafficAgents, _ := json.Marshal([]string{"worker"})
+		for _, t := range traffic.SeedToolMetas() {
+			schema, _ := json.Marshal(t.InputSchema())
+			if err := pg.SeedTool(t.Name(), t.Description(), schema, trafficAgents); err != nil {
+				log.Printf("[tools] seed %s 실패: %v", t.Name(), err)
+			}
 		}
 	}
 	// bashInteractiveShellNote is appended to Bash's description ONLY for agents whose
 	// interactive_shell is on, so Bash points at shell_open for interactive programs
 	// without ever referencing a tool that isn't injected (§14.1/§14.2).
-	const bashInteractiveShellNote = "\n\n需要【交互输入】的程序（msfconsole / ssh 交互登录 / mysql、psql、python 等 REPL / 密码或 yes/no 提示 / nc 反弹 shell）不要用 Bash（它没有 stdin、会卡住），改用 shell_open 开交互会话（用完 shell_close）。一次性、非交互命令仍用 Bash。"
-	agent.ToolResolve = func(ctx context.Context, agentKey string, tools []actool.CoreTool) []actool.CoreTool {
+	const bashInteractiveShellNote = "\n\nFor programs that need [interactive input] (msfconsole / interactive ssh login / REPLs such as mysql, psql, python / password or yes/no prompts / nc reverse shells), don't use Bash (it has no stdin and will hang). Use shell_open to open an interactive session instead (shell_close when done). One-off, non-interactive commands still use Bash."
+	resolve = func(ctx context.Context, agentKey string, tools []actool.CoreTool) []actool.CoreTool {
 		rows, err := pg.ListTools()
 		if err != nil {
-			log.Printf("[tools] 读取工具表失败，按代码默认放行: %v", err)
+			log.Printf("[tools] 도구 테이블 읽기 실패, 코드 기본값대로 허용: %v", err)
 			return tools
 		}
 		byKey := make(map[string]*db.Tool, len(rows))
@@ -297,7 +304,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 			}
 		}
 		if len(shellHints) > 0 {
-			note := "\n\n以下工具已安装在此 bash 环境中，可直接通过 Bash 调用：\n" + strings.Join(shellHints, "\n")
+			note := "\n\nThe following tools are installed in this bash environment and can be called directly through Bash:\n" + strings.Join(shellHints, "\n")
 			for i, t := range out {
 				if t.Name() == "Bash" {
 					out[i] = agent.DecorateTool(t, t.Description()+note, t.InputSchema())
@@ -322,6 +329,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		}
 		return out
 	}
+	return resolve, findingPolicy
 }
 
 func contains(ss []string, v string) bool {

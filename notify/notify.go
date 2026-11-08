@@ -10,6 +10,8 @@
 // 不允许把 webhook URL 之类的东西缓存进实现自身的字段。
 package notify
 
+import "sync"
+
 // 渠道类型标识。取值同时是 notification_channels.kind 的合法集合，由 server 侧
 // 白名单校验（与 findings.status 同理，不用 DB CHECK，方便后续加渠道）。
 const (
@@ -42,18 +44,35 @@ var severityRank = map[string]int{
 // SeverityRank 返回级别的序数；未知级别返回 0。
 func SeverityRank(severity string) int { return severityRank[severity] }
 
-// Lang, when wired by the server, returns the active user-facing output language
-// ("en"/"ko"/"zh"/"es"/"ja") for the strings this leaf package renders into push /
-// email messages (severity and status labels). Kept as an injected func so the
-// package stays standard-library-only: it does not import config/db/server. nil
-// (unit tests / standalone) → labelLang falls back to "ko", preserving the Korean
-// localization golden tests.
-var Lang func() string
+// SetLanguageResolver wires the active user-facing output language
+// ("ko") for the strings this leaf package renders into
+// push / email messages (severity and status labels). Kept as an injected func so
+// the package stays standard-library-only: it does not import config/db/server.
+// A nil resolver (unit tests / standalone) makes labelLang fall back to "ko",
+// preserving the Korean localization golden tests.
+var languageResolver struct {
+	sync.RWMutex
+	fn func() string
+}
+
+// SetLanguageResolver installs the process-wide language resolver and returns
+// the previously installed resolver. The resolver is snapshotted under the
+// lock, but invoked after releasing it so callbacks may safely re-enter this
+// package (including by replacing the resolver).
+func SetLanguageResolver(fn func() string) (previous func() string) {
+	languageResolver.Lock()
+	previous = languageResolver.fn
+	languageResolver.fn = fn
+	languageResolver.Unlock()
+	return previous
+}
 
 func labelLang() string {
-	if Lang != nil {
-		switch v := Lang(); v {
-		case "en", "ko", "zh", "es", "ja":
+	languageResolver.RLock()
+	fn := languageResolver.fn
+	languageResolver.RUnlock()
+	if fn != nil {
+		if v := fn(); v == "ko" {
 			return v
 		}
 	}
@@ -64,18 +83,10 @@ func labelLang() string {
 // the exact Korean values the localization golden tests pin.
 var severityLabels = map[string]map[string]string{
 	"ko": {"critical": "🔴 심각", "high": "🟠 높음", "medium": "🟡 중간", "low": "🔵 낮음"},
-	"en": {"critical": "🔴 Critical", "high": "🟠 High", "medium": "🟡 Medium", "low": "🔵 Low"},
-	"zh": {"critical": "🔴 严重", "high": "🟠 高危", "medium": "🟡 中危", "low": "🔵 低危"},
-	"es": {"critical": "🔴 Crítico", "high": "🟠 Alto", "medium": "🟡 Medio", "low": "🔵 Bajo"},
-	"ja": {"critical": "🔴 重大", "high": "🟠 高", "medium": "🟡 中", "low": "🔵 低"},
 }
 
 var statusLabels = map[string]map[string]string{
 	"ko": {"pending": "처리 대기", "in_progress": "처리 중", "confirmed": "확인됨", "resolved": "처리됨", "fixed": "수정됨", "false_positive": "오탐", "ignored": "무시", "duplicate": "중복", "risk_accepted": "위험 수용"},
-	"en": {"pending": "Pending", "in_progress": "In progress", "confirmed": "Confirmed", "resolved": "Resolved", "fixed": "Fixed", "false_positive": "False positive", "ignored": "Ignored", "duplicate": "Duplicate", "risk_accepted": "Risk accepted"},
-	"zh": {"pending": "待处理", "in_progress": "处理中", "confirmed": "已确认", "resolved": "已处理", "fixed": "已修复", "false_positive": "误报", "ignored": "忽略", "duplicate": "重复", "risk_accepted": "接受风险"},
-	"es": {"pending": "Pendiente", "in_progress": "En curso", "confirmed": "Confirmado", "resolved": "Resuelto", "fixed": "Corregido", "false_positive": "Falso positivo", "ignored": "Ignorado", "duplicate": "Duplicado", "risk_accepted": "Riesgo aceptado"},
-	"ja": {"pending": "対応待ち", "in_progress": "対応中", "confirmed": "確認済み", "resolved": "対応済み", "fixed": "修正済み", "false_positive": "誤検知", "ignored": "無視", "duplicate": "重複", "risk_accepted": "リスク受容"},
 }
 
 // SeverityLabel 返回带 emoji 的级别名(按当前输出语言)，用于消息标题与卡片配色。

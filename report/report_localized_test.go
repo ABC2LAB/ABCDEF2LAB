@@ -78,8 +78,8 @@ func TestReportMarkdownLocalized(t *testing.T) {
 		t.Fatalf("보고서 골격에 중국어 한자 %q 가 남아 있다:\n%s", string(r), out)
 	}
 	for _, want := range []string{
-		"# 침투 테스트 보고서: 데모 작업",
-		"- **작업 목표**: 샌드박스 전수 점검",
+		"# 침투 테스트 보고서: [REDACTED]",
+		"- **작업 목표**: [REDACTED]",
 		"- **생성 시각**:",
 		"## 요약",
 		"- 확인된 취약점: **1**건",
@@ -119,9 +119,9 @@ func TestFindingsMarkdownLocalized(t *testing.T) {
 		"| 심각도 | 개수 |",
 		"| 심각 |", "| 높음 |", "| 중간 |", "| 낮음 |", // 심각도 라벨(UI status.severity 와 동일)
 		"## 취약점 상세",
-		"- **유형**: SQL Injection",
+		"- **유형**: [REDACTED]",
 		"- **상태**: confirmed",
-		"- **소속 작업**: 데모 대상 침투 테스트",
+		"- **소속 작업**: [REDACTED]",
 		"- **발견 시각**:",
 		"**증거:**",
 		"**상세 보고서:**",
@@ -152,7 +152,7 @@ func TestFindingsMarkdownLocalized(t *testing.T) {
 }
 
 // TestFindingsCSVLocalized 는 CSV 익스포트 헤더가 한국어이고 중국어 한자가 없음을 검증한다.
-// (BOM 뒤 헤더 행만 한국어면 된다. 데이터 값은 원본 그대로 둔다.)
+// (BOM 뒤 헤더 행을 검사하며 데이터의 DLP는 별도 회귀로 확인한다.)
 func TestFindingsCSVLocalized(t *testing.T) {
 	raw := FindingsCSV([]*db.DBFinding{sampleDBFinding()})
 	out := strings.TrimPrefix(string(raw), "\xEF\xBB\xBF")

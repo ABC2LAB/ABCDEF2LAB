@@ -1,5 +1,7 @@
 # ARTEX 호스트 분류(triage)
 
+> **기존 참고 자료:** 현재 프로젝트 안내는 [ABC2LAB 문서](../../docs/README.md)를 확인합니다. 아래 절차·예시 출력은 기반 자료이며 현재 체크아웃의 검증 결과가 아닙니다. 원본 CI 워크플로는 현재 저장소에 없으므로 자동 실행·머지 게이트로 간주하지 않습니다. 해당 파일을 읽는 하네스·지표·MISP 시험은 조정 전 실패할 수 있습니다.
+
 한국어 · [English](README.md)
 
 [`artex_host_triage.py`](artex_host_triage.py) 는 ARTEX 가 실행된 정황이 의심되는 **호스트 한 대에서 직접**
@@ -28,9 +30,9 @@ ARTEX 가 돌았는가"를 빠르고 근거 있게 답해야 하는 사람을 �
   (MITRE ATT&CK T1557).
 - **로그 마커**: 로그 파일에서 보강 프로브의 User-Agent `artex-enrich/1.0`
   ([`enrich/enrich.go`](../../enrich/enrich.go)), 자체 업데이트 송신의 User-Agent `artex-selfupdate`
-  ([`selfupdate/github.go`](../../selfupdate/github.go)), 플랫폼 가드 감사 마커
-  ([`guard/guard.go`](../../guard/guard.go))를 찾습니다. 가드 마커는 비(非)ASCII 프레이밍까지 원문 그대로
-  두어 grep 이 실제로 일치하도록 했습니다. 로그 회전으로 `.gz`·`.bz2`·`.xz` 로 압축된 과거 로그도 풀어서
+  ([`selfupdate/github.go`](../../selfupdate/github.go)), 플랫폼 가드의 현재 영어 표식과 과거 중국어 표식을
+  모두 찾습니다([현재 코드](../../guard/guard.go), [과거 출처](../indicators/legacy_guard_marker.md)).
+  현재 감사 행에는 표시용 사유만 저장되므로 표식이 없을 수 있습니다. `.gz`·`.bz2`·`.xz` 로 압축된 과거 로그도 풀어서
   함께 검사하므로 호스트의 로그 이력까지 포괄합니다. 다만 파이썬 표준 라이브러리에 코덱이 없는 형식
   (`.zst`·`.lz4`)은 검사하지 않고 **건너뛴 파일로 보고**합니다. 조용히 깨끗하다고 처리하지 않으니, 그런
   파일은 먼저 압축을 풀거나 손으로 `grep` 해서 따로 확인하십시오.
@@ -100,7 +102,6 @@ detections/triage/artex_host_triage.py --self-test
 
 `--self-test` 는 합성 호스트를 만듭니다. 심어 둔 CA·색인·블롭 저장소가 있는 데이터 디렉터리, 각 마커가 든
 로그, 포트 목록, 캡처한 프로세스 환경변수 덤프를 만든 뒤, 모든 점검이 그 위에서 발화하는지 단언하고, 이어서
-깨끗한 호스트·정상 로그·회사 프록시 프로세스에서는 발견이 **0** 건인지(오탐이 없는지) 단언합니다. 이 자가 테스트는 [`detections` CI
-워크플로](../../.github/workflows/detections.yml)에 연결되어 있고 [`detections/tests/run-all.sh`](../tests/run-all.sh)
+깨끗한 호스트·정상 로그·회사 프록시 프로세스에서는 발견이 **0** 건인지(오탐이 없는지) 단언합니다. 이 자가 테스트는 `.github/workflows/detections.yml`에 연결되어 있고 [`detections/tests/run-all.sh`](../tests/run-all.sh)
 가 다시 돌립니다. 그래서 어떤 점검이 깨지거나, 지표가 grep 하는 소스 문자열에서 어긋나면 머지 게이트에서
 실패합니다. 돌려 볼 수 없는 탐지는 주장일 뿐이라는 원칙을 따릅니다.

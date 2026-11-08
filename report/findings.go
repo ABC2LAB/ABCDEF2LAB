@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"encoding/csv"
 	"fmt"
-	"path"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/dlp"
 )
 
 // 취약점 페이지의 「내보내기」용 렌더링: 여러 건의 findings 테이블 행을 요약 Markdown,
@@ -36,12 +35,16 @@ func findingTitle(f *db.DBFinding) string {
 // FindingsMarkdown 은 여러 건의 findings 를 하나의 요약 보고서로 통합한다(요약 + 심각도별
 // 그룹화, 각 건은 유형/상태/소속 작업/증거/상세 보고서를 포함).
 func FindingsMarkdown(fs []*db.DBFinding, generatedAt time.Time) string {
-	items := append([]*db.DBFinding(nil), fs...)
+	items, err := ProjectFindings(fs)
+	if err != nil || !validExportTime(generatedAt) {
+		return blockedReport
+	}
 	sortFindingsForExport(items)
 
 	var b strings.Builder
 	b.WriteString("# 취약점 요약 보고서\n\n")
-	fmt.Fprintf(&b, "- **생성 시각**: %s\n", generatedAt.Format("2006-01-02 15:04:05"))
+	b.WriteString(exportNotice)
+	fmt.Fprintf(&b, "- **생성 시각**: %s\n", generatedAt.UTC().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(&b, "- **취약점 총계**: %d건\n\n", len(items))
 
 	// 요약: 심각도별 집계.
@@ -53,6 +56,7 @@ func FindingsMarkdown(fs []*db.DBFinding, generatedAt time.Time) string {
 	b.WriteString("| 심각도 | 개수 |\n| --- | --- |\n")
 	for _, s := range []struct{ key, label string }{
 		{"critical", "심각"}, {"high", "높음"}, {"medium", "중간"}, {"low", "낮음"},
+		{"info", "정보"}, {dlp.Redacted, "미분류"},
 	} {
 		fmt.Fprintf(&b, "| %s | %d |\n", s.label, counts[s.key])
 	}
@@ -93,8 +97,14 @@ func FindingsMarkdown(fs []*db.DBFinding, generatedAt time.Time) string {
 
 // SingleFindingMarkdown 은 개별 취약점을 독립된 Markdown 한 건으로 렌더링한다(「취약점 하나당 파일 하나」 묶음에 사용).
 func SingleFindingMarkdown(f *db.DBFinding, generatedAt time.Time) string {
+	items, err := ProjectFindings([]*db.DBFinding{f})
+	if err != nil || !validExportTime(generatedAt) {
+		return blockedReport
+	}
+	f = items[0]
 	var b strings.Builder
 	fmt.Fprintf(&b, "# [%s] %s\n\n", strings.ToUpper(nz(f.Severity, "info")), findingTitle(f))
+	b.WriteString(exportNotice)
 	if f.VulnClass != "" {
 		fmt.Fprintf(&b, "- **유형**: %s\n", f.VulnClass)
 	}
@@ -104,7 +114,7 @@ func SingleFindingMarkdown(f *db.DBFinding, generatedAt time.Time) string {
 		fmt.Fprintf(&b, "- **소속 작업**: %s\n", desc)
 	}
 	fmt.Fprintf(&b, "- **발견 시각**: %s\n", f.CreatedAt.Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(&b, "- **생성 시각**: %s\n\n", generatedAt.Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(&b, "- **생성 시각**: %s\n\n", generatedAt.UTC().Format("2006-01-02 15:04:05"))
 	if s := strings.TrimSpace(f.Summary); s != "" {
 		fmt.Fprintf(&b, "## 개요\n\n%s\n\n", s)
 	}
@@ -120,32 +130,27 @@ func SingleFindingMarkdown(f *db.DBFinding, generatedAt time.Time) string {
 	return b.String()
 }
 
-var unsafeFilenameChars = regexp.MustCompile(`[^\p{Han}\p{L}\p{N}._-]+`)
-
-// FindingFilename 은 「취약점 하나당 파일 하나」를 위해 안전한 .md 파일 이름을 생성한다.
-// 예: `critical_SQL주입_#123.md`. 경로 구분자와 제어 문자를 제거하여 zip 내 비정상 경로를 막는다.
+// FindingFilename uses only fixed severity labels and an internal numeric ID;
+// sanitizing a raw title would still leak its letters into the ZIP directory.
 func FindingFilename(f *db.DBFinding) string {
-	sev := nz(f.Severity, "info")
-	title := findingTitle(f)
-	name := fmt.Sprintf("%s_%s_#%d", sev, title, f.ID)
-	name = unsafeFilenameChars.ReplaceAllString(name, "_")
-	name = strings.Trim(name, "._")
-	if name == "" {
-		name = fmt.Sprintf("finding_%d", f.ID)
+	if f == nil || f.ID < 0 {
+		return "finding.md"
 	}
-	// 방어적 처리: 경로를 한 번 더 벗겨 zip slip 을 차단한다.
-	name = path.Base(name)
-	if len(name) > 120 {
-		name = name[:120]
+	sev := "unknown"
+	if s := exportSeverity(f.Severity); s != dlp.Redacted {
+		sev = s
 	}
-	return name + ".md"
+	return fmt.Sprintf("%s_finding_%d.md", sev, f.ID)
 }
 
 // FindingsCSV 는 여러 건의 findings 를 CSV 로 렌더링한다(UTF-8 BOM 포함, Excel 이 한글을
 // 올바르게 인식하도록). 긴 report/evidence 전문은 담지 않고 요약 성격의 필드만 넣는다.
 // 전문이 필요하면 Markdown/JSON 으로 내보낸다.
 func FindingsCSV(fs []*db.DBFinding) []byte {
-	items := append([]*db.DBFinding(nil), fs...)
+	items, err := ProjectFindings(fs)
+	if err != nil {
+		return []byte(blockedReport)
+	}
 	sortFindingsForExport(items)
 
 	var buf bytes.Buffer

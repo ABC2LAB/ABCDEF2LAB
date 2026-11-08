@@ -144,11 +144,9 @@ type LLMRecord struct {
 	Error        string    `json:"error,omitempty"`
 	RequestBody  string    `json:"request_body,omitempty"`
 	ResponseBody string    `json:"response_body,omitempty"`
-	// RawRequest / RawResponse are the untouched HTTP bodies exchanged with the
-	// provider — the request as buildBody() sent it (full tool schemas included)
-	// and the raw SSE frames. RequestBody/ResponseBody above are the normalized
-	// view, which drops tool schemas and tool_use blocks entirely. Empty for
-	// records written before this was added, or when the call never reached HTTP.
+	// The Recorder stores DLP markers here when wire data was captured, and
+	// projected metadata in RequestBody/ResponseBody. Legacy/direct DB writers
+	// may still supply raw bytes; this persistence type is not a DLP boundary.
 	RawRequest  string `json:"raw_request,omitempty"`
 	RawResponse string `json:"raw_response,omitempty"`
 }

@@ -1,0 +1,201 @@
+//go:build linux
+
+package budgetlocal
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"os"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/Autumn-27/artex/db"
+)
+
+func TestDeniedPeerDoesNotNeedAnIssuanceSlot(t *testing.T) {
+	path := socketPath(t)
+	issuer := &testIssuer{}
+	s, err := listen(context.Background(), path, uint32(os.Geteuid()+1), uint32(os.Geteuid()+2), issuer.approve, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	// Keep every issuance slot occupied throughout the denial checks.
+	for i := 0; i < maxInFlight; i++ {
+		s.sem <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < maxInFlight; i++ {
+			<-s.sem
+		}
+	})
+	for i := 0; i < 2*maxInFlight; i++ {
+		conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			conn.Close()
+			t.Fatal(err)
+		}
+		var reply wireResponse
+		decoder := json.NewDecoder(conn)
+		err = decoder.Decode(&reply)
+		if err != nil || reply.Error != wireRejected || reply.Response != (Response{}) {
+			conn.Close()
+			t.Fatalf("denial %d used issuance capacity: %+v err=%v", i, reply, err)
+		}
+		// A reply alone does not prove the denied peer fd was closed.
+		if _, err := io.ReadAll(io.MultiReader(decoder.Buffered(), conn)); err != nil {
+			conn.Close()
+			t.Fatalf("denial %d did not close after its response: %v", i, err)
+		}
+		conn.Close()
+	}
+	if len(s.sem) != maxInFlight {
+		t.Fatal("rejected peers changed issuance occupancy")
+	}
+	if calls, _ := issuer.snapshot(); calls != 0 {
+		t.Fatalf("rejected peers reached callback: %d", calls)
+	}
+}
+
+func TestPeerRejectionDoesNotWaitForSocketCapacity(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fds[0]), "reject-peer")
+	peer := os.NewFile(uintptr(fds[1]), "silent-peer")
+	defer peer.Close()
+	conn, err := net.FileConn(file)
+	file.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unix := conn.(*net.UnixConn)
+	defer unix.Close()
+	raw, err := unix.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fillErr error
+	if err := raw.Control(func(fd uintptr) {
+		fillErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, 1024)
+		if fillErr != nil {
+			return
+		}
+		for {
+			_, fillErr = syscall.SendmsgN(int(fd), []byte{0}, nil, nil, syscall.MSG_DONTWAIT|syscall.MSG_NOSIGNAL)
+			if fillErr != nil {
+				return
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(fillErr, syscall.EAGAIN) {
+		t.Fatalf("could not fill socket output buffer: %v", fillErr)
+	}
+	done := make(chan struct{})
+	go func() {
+		rejectPeer(unix)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		unix.Close()
+		<-done
+		t.Fatal("peer rejection waited for a reader")
+	}
+}
+
+func TestOperatorIssuanceSlotsRemainBoundedAndRecover(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	path := socketPath(t)
+	entered := make(chan struct{}, maxInFlight)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	issuer := &testIssuer{}
+	s, err := listenWithTimeout(ctx, path, uint32(os.Geteuid()), uint32(os.Geteuid()),
+		func(ctx context.Context, uid uint32, r db.BudgetApprovalRequest, now time.Time) (db.BudgetApprovalRecord, error) {
+			calls.Add(1)
+			entered <- struct{}{}
+			select {
+			case <-release:
+				return issuer.approve(ctx, uid, r, now)
+			case <-ctx.Done():
+				return db.BudgetApprovalRecord{}, ctx.Err()
+			}
+		}, true, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cancel(); _ = s.Close(context.Background()) })
+	results := make(chan error, maxInFlight)
+	for i := 0; i < maxInFlight; i++ {
+		go func() {
+			_, err := submit(ctx, path, uint32(os.Geteuid()), testRequest(), true)
+			results <- err
+		}()
+	}
+	for i := 0; i < maxInFlight; i++ {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("operator did not enter issuance callback")
+		}
+	}
+	extraCtx, extraCancel := context.WithTimeout(ctx, time.Second)
+	defer extraCancel()
+	if _, err := submit(extraCtx, path, uint32(os.Geteuid()), testRequest(), true); !errors.Is(err, ErrUnknown) {
+		t.Fatalf("full operator pool changed overload outcome: %v", err)
+	}
+	if got := calls.Load(); got != maxInFlight {
+		t.Fatalf("issuance cap exceeded: %d", got)
+	}
+	close(release)
+	for i := 0; i < maxInFlight; i++ {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatalf("admitted operator failed: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("operator did not drain")
+		}
+	}
+	// listener가 열린 동안 WaitGroup을 다음 발급의 장벽으로 재사용하지 않는다.
+	// 완료한 클라이언트의 peer와 실제 슬롯 반환을 확인한 뒤 새 요청을 보낸다.
+	drainDeadline := time.NewTimer(2 * time.Second)
+	defer drainDeadline.Stop()
+	drainTick := time.NewTicker(time.Millisecond)
+	defer drainTick.Stop()
+	for {
+		s.mu.Lock()
+		peers := len(s.conns)
+		s.mu.Unlock()
+		slots := len(s.sem)
+		if peers == 0 && slots == 0 {
+			break
+		}
+		select {
+		case <-drainTick.C:
+		case <-drainDeadline.C:
+			t.Fatalf("발급 자원이 반환되지 않음: peers=%d slots=%d", peers, slots)
+		}
+	}
+	if _, err := submit(ctx, path, uint32(os.Geteuid()), testRequest(), true); err != nil {
+		t.Fatalf("released slot was not reusable: %v", err)
+	}
+	if got := calls.Load(); got != maxInFlight+1 {
+		t.Fatalf("callback count after recovery: %d", got)
+	}
+}

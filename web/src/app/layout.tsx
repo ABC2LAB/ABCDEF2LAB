@@ -2,59 +2,22 @@ import type { ReactNode } from "react";
 
 import type { Metadata } from "next";
 
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { APP_CONFIG } from "@/config/app-config";
-import { resolveLocale } from "@/i18n/config";
-import { IntlRuntimeProvider } from "@/i18n/intl-runtime-provider";
-import { fontVars } from "@/lib/fonts/registry";
-import { PREFERENCE_DEFAULTS } from "@/lib/preferences/preferences-config";
-import { ThemeBootScript } from "@/scripts/theme-boot";
-import { PreferencesStoreProvider } from "@/stores/preferences/preferences-provider";
-
-import "./globals.css";
+// 폐쇄망에서 외부 요청 없이 한글이 뜨도록 Noto Sans KR 을 self-host (fontsource, 빌드타임 번들).
+// variable 축이라 한 패밀리("Noto Sans KR Variable")로 전 weight 커버, unicode-range 로 필요한 글자 청크만 로드.
+import "@fontsource-variable/noto-sans-kr/index.css";
+// ABC2LAB 점검 흐름 UI 전용 전역 스타일(원본 시안 그대로). 기존 globals.css(Tailwind/shadcn)는
+// :root·body 를 덮어써 시안과 충돌하므로 여기서 불러오지 않는다.
+import "@/abc2lab-ui/abc2lab.css";
 
 export const metadata: Metadata = {
-  title: APP_CONFIG.meta.title,
-  description: APP_CONFIG.meta.description,
+  title: "ABC2LAB",
+  applicationName: "ABC2LAB",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
-  const { theme_mode, theme_preset, content_layout, navbar_style, sidebar_variant, sidebar_collapsible, font } =
-    PREFERENCE_DEFAULTS;
-  const locale = resolveLocale();
   return (
-    <html
-      lang={locale}
-      data-theme-mode={theme_mode}
-      data-theme-preset={theme_preset}
-      data-content-layout={content_layout}
-      data-navbar-style={navbar_style}
-      data-sidebar-variant={sidebar_variant}
-      data-sidebar-collapsible={sidebar_collapsible}
-      data-font={font}
-      suppressHydrationWarning
-    >
-      <head>
-        {/* Applies theme and layout preferences on load to avoid flicker and unnecessary server rerenders. */}
-        <ThemeBootScript />
-      </head>
-      <body className={`${fontVars} min-h-screen antialiased`}>
-        <IntlRuntimeProvider>
-          <TooltipProvider>
-            <PreferencesStoreProvider
-              themeMode={theme_mode}
-              themePreset={theme_preset}
-              contentLayout={content_layout}
-              navbarStyle={navbar_style}
-              font={font}
-            >
-              {children}
-              <Toaster />
-            </PreferencesStoreProvider>
-          </TooltipProvider>
-        </IntlRuntimeProvider>
-      </body>
+    <html lang="ko">
+      <body>{children}</body>
     </html>
   );
 }

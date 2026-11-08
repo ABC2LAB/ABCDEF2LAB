@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -81,6 +82,39 @@ type Node struct {
 	CreatedAt     time.Time       `json:"created_at"`
 	SourceTaskID  int64           `json:"source_task_id,omitempty"`
 	Inherited     bool            `json:"inherited,omitempty"`
+}
+
+// DisplayMetadata 는 결과 행의 화면용 글을 metadata 로 만든다. 모델과 사람이 다른 언어로 읽는 행은
+// summary·detail 에 모델용 글을, 여기에 사람용 글을 둔다.
+func DisplayMetadata(summary, detail string) json.RawMessage {
+	metadata, err := json.Marshal(displayText{Summary: utf8Clean(summary), Detail: utf8Clean(detail)})
+	if err != nil {
+		// 문자열 두 개라 실패할 수 없다. 실패해도 모델용 글은 남으니 행을 잃지 않는다.
+		return nil
+	}
+	return metadata
+}
+
+type displayText struct {
+	Summary string `json:"display_summary"`
+	Detail  string `json:"display_detail"`
+}
+
+// ForDisplay 는 사람에게 보일 활동을 돌려준다. 화면용 글이 있으면 바꿔 넣고, 목록 응답이 커지지 않게 metadata 는 비운다.
+func (a Activity) ForDisplay() Activity {
+	if a.Kind != "result" || len(a.Metadata) == 0 {
+		return a
+	}
+	var text displayText
+	if err := json.Unmarshal(a.Metadata, &text); err != nil || text.Summary == "" {
+		return a
+	}
+	a.Summary = text.Summary
+	if a.Detail != "" {
+		a.Detail = text.Detail
+	}
+	a.Metadata = nil
+	return a
 }
 
 // Activity is one worker execution step (= old task_activity).
@@ -201,6 +235,11 @@ func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority
 		return 0, err
 	}
 	defer tx.Rollback()
+	if kind == KindFinding {
+		if err := rejectControlledTaskTx(context.Background(), tx, 0, s.expID, 0); err != nil {
+			return 0, err
+		}
+	}
 	var id int64
 	if err := tx.QueryRow(`
 INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
@@ -266,8 +305,27 @@ ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, from, re
 // SetNodeState updates any node's state (never deletes). content_version bumps
 // so a folded member's state flip invalidates its digest's cached body (§5.3).
 func (s *ExplorationStore) SetNodeState(id int64, state string) error {
-	_, err := s.db.Exec(`UPDATE exploration_nodes SET state=$1, blocked_reason=NULL, content_version=content_version+1 WHERE id=$2 AND exploration_id=$3`, state, id, s.expID)
-	return err
+	var kind string
+	err := s.db.QueryRow(`SELECT kind FROM exploration_nodes WHERE id=$1 AND exploration_id=$2`, id, s.expID).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if kind != KindFinding {
+		// Intent/fact mutation must not acquire the finding evidence lock. The SQL
+		// condition also refuses a concurrent change into a finding.
+		_, err = s.db.Exec(`UPDATE exploration_nodes SET state=$1,blocked_reason=NULL,content_version=content_version+1 WHERE id=$2 AND exploration_id=$3 AND kind<>'finding'`, state, id, s.expID)
+		return err
+	}
+	return s.db.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if err := rejectControlledTaskTx(context.Background(), tx, 0, s.expID, id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`UPDATE exploration_nodes SET state=$1,blocked_reason=NULL,content_version=content_version+1 WHERE id=$2 AND exploration_id=$3 AND kind='finding'`, state, id, s.expID)
+		return err
+	})
 }
 
 // UpdateGoalPayload rewrites a goal node's payload text (and optional vulnclass);
@@ -1485,10 +1543,10 @@ func (s *ExplorationStore) ActivityList(nodeID *int64, sinceID int64, limit int)
 	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
 	if nodeID != nil {
 		rows, err = s.db.Query(`SELECT `+cols+`
-FROM activity WHERE exploration_id=$1 AND node_id=$2 AND id>$3 ORDER BY id LIMIT $4`, s.expID, *nodeID, sinceID, limit)
+FROM activity WHERE exploration_id=$1 AND node_id=$2 AND id>$3 AND kind IS DISTINCT FROM 'thinking' ORDER BY id LIMIT $4`, s.expID, *nodeID, sinceID, limit)
 	} else {
 		rows, err = s.db.Query(`SELECT `+cols+`
-FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, sinceID, limit)
+FROM activity WHERE exploration_id=$1 AND id>$2 AND kind IS DISTINCT FROM 'thinking' ORDER BY id LIMIT $3`, s.expID, sinceID, limit)
 	}
 	if err != nil {
 		return nil, sinceID, err
@@ -1519,7 +1577,7 @@ func (s *ExplorationStore) ActivityListForTerminalIntent(nodeID, sinceID int64, 
 		limit = 300
 	}
 	rows, err := s.db.Query(`SELECT a.id, a.node_id, COALESCE(a.worker,''), COALESCE(a.kind,''),
-		COALESCE(a.tool,''), COALESCE(a.tool_use_id,''), a.is_error, COALESCE(a.summary,''),
+		COALESCE(a.tool,''), COALESCE(a.tool_use_id,''), a.is_error, COALESCE(a.summary,''), a.metadata,
 		a.created_at, a.input_tokens, a.output_tokens, a.cache_read_tokens, a.cache_write_tokens
 	FROM activity a
 	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
@@ -1535,7 +1593,7 @@ func (s *ExplorationStore) ActivityListForTerminalIntent(nodeID, sinceID int64, 
 	cursor := sinceID
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
 			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
 			return nil, sinceID, err
 		}
@@ -1601,7 +1659,7 @@ func (s *ExplorationStore) ActivityPage(f ActivitySessionFilter, before int64, l
 	limitArg := len(args) + 1
 	args = append(args, limit+1) // one extra row to detect older history
 	q := fmt.Sprintf(`SELECT `+cols+`
-FROM activity WHERE exploration_id=$1%s AND ($%d <= 0 OR id < $%d)
+FROM activity WHERE exploration_id=$1%s AND kind IS DISTINCT FROM 'thinking' AND ($%d <= 0 OR id < $%d)
 ORDER BY id DESC LIMIT $%d`, cond, beforeArg, beforeArg, limitArg)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -1640,7 +1698,7 @@ func (s *ExplorationStore) ActivityPageForTerminalIntent(nodeID, before int64, l
 		limit = 200
 	}
 	rows, err := s.db.Query(`SELECT a.id, a.node_id, COALESCE(a.worker,''), COALESCE(a.kind,''),
-		COALESCE(a.tool,''), COALESCE(a.tool_use_id,''), a.is_error, COALESCE(a.summary,''),
+		COALESCE(a.tool,''), COALESCE(a.tool_use_id,''), a.is_error, COALESCE(a.summary,''), a.metadata,
 		a.created_at, a.input_tokens, a.output_tokens, a.cache_read_tokens, a.cache_write_tokens
 	FROM activity a
 	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
@@ -1656,7 +1714,7 @@ func (s *ExplorationStore) ActivityPageForTerminalIntent(nodeID, before int64, l
 	desc := []Activity{}
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
 			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
 			return nil, false, err
 		}
@@ -1741,9 +1799,19 @@ RETURNING seq, created_at`, s.expID).Scan(&m.Seq, &m.CreatedAt)
 }
 
 // ActivityDetail lazily returns the full detail blob for one step.
+// ActivityDisplayDetail 은 사람에게 보일 상세를 돌려준다. 화면용 글이 없는 행은 저장된 상세 그대로다.
+func (s *ExplorationStore) ActivityDisplayDetail(id int64) (string, error) {
+	var d sql.NullString
+	err := s.db.QueryRow(`SELECT COALESCE(NULLIF(metadata->>'display_detail',''), detail) FROM activity WHERE id=$1 AND exploration_id=$2 AND kind IS DISTINCT FROM 'thinking'`, id, s.expID).Scan(&d)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return d.String, err
+}
+
 func (s *ExplorationStore) ActivityDetail(id int64) (string, error) {
 	var d sql.NullString
-	err := s.db.QueryRow(`SELECT detail FROM activity WHERE id=$1 AND exploration_id=$2`, id, s.expID).Scan(&d)
+	err := s.db.QueryRow(`SELECT detail FROM activity WHERE id=$1 AND exploration_id=$2 AND kind IS DISTINCT FROM 'thinking'`, id, s.expID).Scan(&d)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -1992,7 +2060,7 @@ func (s *ExplorationStore) ActivityByIDsForTerminalIntents(ids []int64) ([]Activ
 		ph[i] = fmt.Sprintf("$%d", i+2)
 		args[i+1] = id
 	}
-	rows, err := s.db.Query(`SELECT a.id, a.node_id, COALESCE(a.kind,''), COALESCE(a.tool,''), a.is_error, COALESCE(a.detail,'')
+	rows, err := s.db.Query(`SELECT a.id, a.node_id, COALESCE(a.kind,''), COALESCE(a.tool,''), a.is_error, COALESCE(a.detail,''), a.metadata
 	FROM activity a
 	JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
 		WHERE a.exploration_id=$1 AND a.kind NOT IN ('thinking','usage') AND n.kind='intent'
@@ -2005,7 +2073,7 @@ func (s *ExplorationStore) ActivityByIDsForTerminalIntents(ids []int64) ([]Activ
 	out := []Activity{}
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.NodeID, &a.Kind, &a.Tool, &a.IsError, &a.Detail); err != nil {
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Kind, &a.Tool, &a.IsError, &a.Detail, &a.Metadata); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

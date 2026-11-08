@@ -1,0 +1,457 @@
+import { ApiError, apiFetch } from "./api";
+
+/**
+ * 엔진 DTO의 UI가 쓰는 부분만 추린 타입 (정본: server/dto.go).
+ * 필드를 늘릴 땐 dto.go 와 맞춰서 추가한다.
+ */
+
+/** server/dto.go FindingSeverityDTO — 심각도별 발견 수 (UI Severity 와 동일 키) */
+export type FindingSeverity = {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+};
+
+/** server/dto.go TaskDTO (부분) */
+export type EngineTask = {
+  id: string;
+  name: string;
+  description: string;
+  goal: string;
+  /** created | queued | running | paused | done | failed | timeout */
+  status: string;
+  created_at: string;
+  completed_at: string;
+  goals_total: number;
+  goals_met: number;
+  in_flight: number;
+  findings: FindingSeverity;
+};
+
+/** GET /api/tasks 응답: 목록 + 현재 활성 task id */
+export type TaskListResponse = {
+  active: string;
+  tasks: EngineTask[];
+};
+
+/** GET /api/tasks — 점검(task) 목록 (+ active id) */
+export async function listTasks(): Promise<TaskListResponse> {
+  const res = await apiFetch<TaskListResponse>("/api/tasks");
+  return { active: res.active ?? "", tasks: res.tasks ?? [] };
+}
+
+/** GET /api/tasks/{id} — 점검 하나 상세 (보고서/대시보드 헤더용) */
+export async function getTask(taskId: string): Promise<EngineTask> {
+  return apiFetch<EngineTask>(`/api/tasks/${encodeURIComponent(taskId)}`);
+}
+
+/** server/dto.go FindingAssetDTO — 발견이 걸린 자산(표시용 라벨 포함) */
+export type EngineFindingAsset = {
+  id: string;
+  type: string;
+  /** 예: "GET /api/orders/1" */
+  label: string;
+};
+
+/**
+ * server/dto.go FindingDTO (UI가 쓰는 부분).
+ * ※ E③ 판정(CONFIRMED/SUSPECTED/UNDECIDABLE)은 아직 이 DTO에 없다(verdict-record 계약 대기).
+ *   status 는 워크플로우 상태라 판정과 별개 — 판정 뱃지로 쓰지 않는다.
+ */
+export type EngineFinding = {
+  id: string;
+  finding_id?: string;
+  vulnclass: string;
+  name?: string;
+  /** critical | high | medium | low */
+  severity: string;
+  /** pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted */
+  status: string;
+  summary: string;
+  assets?: EngineFindingAsset[];
+  task_id?: string;
+  ts: string;
+};
+
+/** GET /api/exploration/findings?task={id} — 해당 task의 발견 목록(bare array) */
+export async function listTaskFindings(taskId: string): Promise<EngineFinding[]> {
+  if (!taskId) return [];
+  const res = await apiFetch<EngineFinding[]>(`/api/exploration/findings?task=${encodeURIComponent(taskId)}`);
+  return res ?? [];
+}
+
+/**
+ * guard/guard.go AuditEntry — ARTEX guard가 검토한 도구 호출 1건. 실제 송신 E² 증명과는 별개다.
+ * ※ 변조탐지 해시체인·권한분리(우리 기여)는 아직 이 레코드에 없다 — UI에서 "준비 중"으로 둔다.
+ */
+export type EngineAuditEntry = {
+  /** unix epoch(초) */
+  ts: number;
+  tool: string;
+  /** allow | block */
+  action: string;
+  reason?: string;
+  command?: string;
+};
+
+/** GET /api/audit?task={id} 응답: 게이트 로그 + 실패 귀속 집계 */
+export type AuditResponse = {
+  entries: EngineAuditEntry[];
+};
+
+/** GET /api/audit?task={id} — 해당 task의 ARTEX guard 도구 검토 로그 */
+export async function getAudit(taskId: string): Promise<AuditResponse> {
+  if (!taskId) return { entries: [] };
+  // task 없으면 서버가 bare [] 를 주므로(핸들러), entries 추출을 방어적으로.
+  const res = await apiFetch<AuditResponse | EngineAuditEntry[]>(`/api/audit?task=${encodeURIComponent(taskId)}`);
+  if (Array.isArray(res)) return { entries: res };
+  return { entries: res.entries ?? [] };
+}
+
+/**
+ * GET /api/intercept/task/{id} — ARTEX 승인 게이트(intercept)가 개입한 요청 기록(해당 task).
+ * 명시적 허용·차단 결정과 승인 요청을 남긴다. 모든 실제 송신을 남기는 원장은 아니다.
+ * (tool_input 원문은 민감값을 품을 수 있어 의도적으로 안 받는다.)
+ * ※ 우리 전송 통제(E²)·변조탐지 해시체인·권한분리는 아직 이 레코드에 없다("연동 전").
+ */
+export type EngineControlEvent = {
+  id: number;
+  /** unix epoch(ms) — decided_at 우선, 없으면 created_at */
+  ts: number;
+  taskId: string;
+  /** 요청한 에이전트 (예: work#1 · #256) */
+  agent: string;
+  tool: string;
+  /** allowed | denied | approved | pending | … */
+  status: string;
+  /** 누가 정했나: rule | judge | user */
+  source: string;
+  reason: string;
+  ruleName: string;
+};
+
+type InterceptHistoryRaw = {
+  id: number;
+  task_id?: number | string;
+  agent_name?: string;
+  tool_name?: string;
+  status?: string;
+  decision_source?: string;
+  reason?: string;
+  rule_name?: string;
+  decided_at?: string;
+  created_at?: string;
+};
+
+// task 전용 라우트라 서버에서 이미 이 task로 스코프됨(전역+클라필터 아님 → 잘림/오집계 없음).
+export async function getControlLog(taskId: string): Promise<EngineControlEvent[]> {
+  if (!taskId) return [];
+  const res = await apiFetch<{ items?: InterceptHistoryRaw[]; total?: number }>(
+    `/api/intercept/task/${encodeURIComponent(taskId)}`,
+  );
+  return (res.items ?? []).map((r) => ({
+    id: r.id,
+    ts: Date.parse(r.decided_at || r.created_at || "") || 0,
+    taskId: String(r.task_id ?? ""),
+    agent: r.agent_name ?? "",
+    tool: r.tool_name ?? "",
+    status: r.status ?? "",
+    source: r.decision_source ?? "",
+    reason: r.reason ?? "",
+    ruleName: r.rule_name ?? "",
+  }));
+}
+
+/**
+ * GET /api/exploration/activity?task={id} — 에이전트 활동 타임라인.
+ * 사람이 읽는 summary 만 받는다(원문 metadata·payload 는 민감값 가능 → 제외).
+ * seq 오름차순 = 시간순(초기 목표 분해 → 계획 → 도구 호출 → 결과 …).
+ */
+export type EngineActivity = {
+  seq: number;
+  worker: string;
+  /** unix epoch(ms) */
+  ts: number;
+  /** round | text | result | tool | observation | … */
+  kind: string;
+  isError: boolean;
+  summary: string;
+};
+
+type ActivityRaw = {
+  seq: number;
+  worker?: string;
+  ts?: string;
+  kind?: string;
+  is_error?: boolean;
+  summary?: string;
+};
+
+// TODO(이경준): cursor 페이지네이션/stream(SSE) 연동. 지금은 앞에서 limit 건만.
+export async function getActivity(taskId: string, limit = 300): Promise<EngineActivity[]> {
+  if (!taskId) return [];
+  const res = await apiFetch<{ items?: ActivityRaw[]; cursor?: string }>(
+    `/api/exploration/activity?task=${encodeURIComponent(taskId)}&limit=${limit}`,
+  );
+  return (res.items ?? []).map((r) => ({
+    seq: r.seq,
+    worker: r.worker ?? "",
+    ts: Date.parse(r.ts ?? "") || 0,
+    kind: r.kind ?? "",
+    isError: !!r.is_error,
+    summary: r.summary ?? "",
+  }));
+}
+
+/** GET /api/tasks/{id}/coverage — 검사 커버리지(범위 내 자산 대비 실제 탐색 비율). */
+export type EngineCoverageType = { type: string; total: number; tested: number };
+export type EngineCoverage = {
+  enabled: boolean;
+  scopeRows: number;
+  /** 분모: 범위 내 자산(엔드포인트·서비스 등) 수 */
+  denominator: number;
+  /** 분자: 실제 탐색한 수 */
+  tested: number;
+  /** 0..1 */
+  pct: number;
+  byType: EngineCoverageType[];
+};
+
+export async function getCoverage(taskId: string): Promise<EngineCoverage | null> {
+  if (!taskId) return null;
+  const r = await apiFetch<{
+    enabled?: boolean;
+    scope_rows?: number;
+    denominator?: number;
+    tested?: number;
+    pct?: number;
+    by_type?: EngineCoverageType[];
+  }>(`/api/tasks/${encodeURIComponent(taskId)}/coverage`);
+  return {
+    enabled: !!r.enabled,
+    scopeRows: r.scope_rows ?? 0,
+    denominator: r.denominator ?? 0,
+    tested: r.tested ?? 0,
+    pct: r.pct ?? 0,
+    byType: r.by_type ?? [],
+  };
+}
+
+/**
+ * db/task_scope.go CoverageGraphNode — 자산 그래프 노드(UI가 쓰는 부분).
+ * kind: company | root_domain | subdomain | ip | service | app | endpoint.
+ * in_scope=false 는 연결용 회색 노드(루트 도메인·회사). endpoint·service 의 label 은 URL 이다.
+ */
+export type EngineCoverageNode = {
+  key: string;
+  kind: string;
+  label: string;
+  tested: boolean;
+  in_scope: boolean;
+  asset_id?: number;
+  domain?: string;
+  ip?: string;
+  url?: string;
+  port?: number;
+};
+/** child → parent 포함 관계 (endpoint→service→subdomain/ip→root_domain→company) */
+export type EngineCoverageEdge = { src: string; dst: string };
+export type EngineCoverageGraph = { nodes: EngineCoverageNode[]; edges: EngineCoverageEdge[] };
+
+/**
+ * GET /api/tasks/{id}/coverage-graph — 범위 안 자산 전체와 검사 여부.
+ * 자산 저장소가 꺼져 있으면(503) null 을 돌려준다 — 오류와 "꺼짐"을 화면에서 구분하려고.
+ */
+export async function getCoverageGraph(taskId: string): Promise<EngineCoverageGraph | null> {
+  if (!taskId) return null;
+  try {
+    const r = await apiFetch<Partial<EngineCoverageGraph>>(`/api/tasks/${encodeURIComponent(taskId)}/coverage-graph`);
+    return { nodes: r.nodes ?? [], edges: r.edges ?? [] };
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 503) return null;
+    throw err;
+  }
+}
+
+/** GET /api/exploration/tokens?task={id} — 이 점검의 토큰 사용 합계. */
+export type EngineTokens = { input: number; output: number };
+export async function getTokens(taskId: string): Promise<EngineTokens> {
+  if (!taskId) return { input: 0, output: 0 };
+  const r = await apiFetch<{ total?: { input_tokens?: number; output_tokens?: number } }>(
+    `/api/exploration/tokens?task=${encodeURIComponent(taskId)}`,
+  );
+  return { input: r.total?.input_tokens ?? 0, output: r.total?.output_tokens ?? 0 };
+}
+
+/**
+ * 토큰 대시보드: GET /api/tokens/usage — 프로필별 누적과 최근 UTC 일자별 원장 집계.
+ * 전역 집계(task 무관). 비용은 엔진이 금액을 안 주므로 토큰량만 — 단가는 미노출.
+ */
+export type TokenProfile = {
+  profileName: string;
+  calls: number;
+  tasks: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+export type TokenDaily = { day: string; input: number; output: number; cacheRead: number };
+export type TokenUsage = { byProfile: TokenProfile[]; daily: TokenDaily[] };
+
+export const TOKEN_DAILY_DAYS = 365;
+
+export async function getTokenUsage(): Promise<TokenUsage> {
+  type RawP = {
+    profile_name: string;
+    calls: number;
+    tasks: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+  };
+  type RawD = { date: string; input_tokens: number; output_tokens: number; cache_read_tokens: number };
+  const usage = await apiFetch<{ by_profile: RawP[] | null; daily: RawD[] | null }>(
+    `/api/tokens/usage?days=${TOKEN_DAILY_DAYS}`,
+  );
+  // The ledger returns one UTC date row per profile; the chart needs one row per date.
+  const daily = new Map<string, TokenDaily>();
+  for (const row of usage.daily ?? []) {
+    const day = daily.get(row.date) ?? { day: row.date, input: 0, output: 0, cacheRead: 0 };
+    day.input += row.input_tokens;
+    day.output += row.output_tokens;
+    day.cacheRead += row.cache_read_tokens;
+    daily.set(row.date, day);
+  }
+  return {
+    byProfile: (usage.by_profile ?? []).map((p) => ({
+      profileName: p.profile_name || "(미지정)",
+      calls: p.calls,
+      tasks: p.tasks,
+      input: p.input_tokens,
+      output: p.output_tokens,
+      cacheRead: p.cache_read_tokens,
+      cacheWrite: p.cache_write_tokens,
+    })),
+    daily: [...daily.values()].sort((a, b) => a.day.localeCompare(b.day)),
+  };
+}
+
+/** POST /api/tasks/{id}/control — 일시정지/다시 시작(엔진 상태 변경, pause: running/queued, resume: paused). */
+export async function controlTask(taskId: string, action: "pause" | "resume"): Promise<void> {
+  await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/control`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+}
+
+/** Accepted archive job; it completes asynchronously and can later be restored. */
+export type EngineTaskArchive = { id: string; taskId: string; state: string };
+type ArchiveRaw = { id?: string | number; task_id?: string | number; state?: string };
+
+function archiveReceipt(raw: ArchiveRaw | null): EngineTaskArchive {
+  if (!raw || raw.id == null || raw.task_id == null || typeof raw.state !== "string") {
+    throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+  }
+  return { id: String(raw.id), taskId: String(raw.task_id), state: raw.state };
+}
+
+/** POST /api/tasks/{id}/archive — queue a cold archive job (202, not completion). */
+export async function archiveTask(taskId: string): Promise<EngineTaskArchive> {
+  const result = archiveReceipt(
+    await apiFetch<ArchiveRaw>(`/api/tasks/${encodeURIComponent(taskId)}/archive`, { method: "POST" }),
+  );
+  if (result.taskId !== taskId) throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+  return result;
+}
+
+/** GET /api/task-archives/{archiveId} — status uses the archive id, not task id. */
+export async function getTaskArchive(archiveId: string): Promise<EngineTaskArchive> {
+  const result = archiveReceipt(await apiFetch<ArchiveRaw>(`/api/task-archives/${encodeURIComponent(archiveId)}`));
+  if (result.id !== archiveId) throw new Error("보관 응답의 작업 연결을 확인하지 못했어요.");
+  return result;
+}
+
+/**
+ * GET /api/llm 응답 — 현재 LLM 설정(전역, task 무관).
+ * ※ key_set 은 "키가 설정됐는지" 불리언일 뿐 키 값이 아니다(값은 서버가 안 준다).
+ */
+export type EngineLLM = {
+  provider: string;
+  model: string;
+  base_url: string;
+  configured: boolean;
+  key_set: boolean;
+  context_window_k: number;
+};
+
+/** GET /api/llm — 현재 모델 설정 */
+export async function getLLM(): Promise<EngineLLM> {
+  return apiFetch<EngineLLM>("/api/llm");
+}
+
+/** GET /api/intercept/rules 의 규칙 1건 — ARTEX 도구 호출 승인 규칙(전역) */
+export type EngineInterceptRule = {
+  id: number;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  /** tool_input | url | … */
+  match_target: string;
+  /** regex | … */
+  match_type: string;
+  pattern: string;
+  /** deny | allow | ask */
+  action: string;
+  message?: string;
+};
+
+/** GET /api/intercept/rules — 활성 통제 규칙 목록(전역, bare {rules}) */
+export async function getInterceptRules(): Promise<EngineInterceptRule[]> {
+  const res = await apiFetch<{ rules?: EngineInterceptRule[] }>("/api/intercept/rules");
+  return res.rules ?? [];
+}
+
+/** db/intercept.go InterceptPending (UI가 쓰는 부분) — 승인 게이트에 걸려 사람의 결정을 기다리는 도구 호출 */
+export type EnginePendingApproval = {
+  id: number;
+  task_id: string | null;
+  agent_name: string;
+  tool_name: string;
+  status: string;
+  created_at: string;
+};
+
+/** GET /api/intercept/pending — 승인 대기 목록(모든 점검 공통, 최신순) */
+export async function listPendingApprovals(): Promise<EnginePendingApproval[]> {
+  const res = await apiFetch<{ pending?: EnginePendingApproval[] | null }>("/api/intercept/pending");
+  return (res.pending ?? []).filter((p) => p.status === "pending");
+}
+
+/** db/intercept.go InterceptPending 전체 — 승인 화면이 판단에 쓰는 요청 내용 포함 */
+export type EnginePendingDetail = EnginePendingApproval & {
+  /** 에이전트가 실행하려는 도구 입력(JSON). 비밀 값이 있을 수 있어 화면에는 가려서 보여 준다 */
+  tool_input?: unknown;
+  /** 걸린 통제 규칙의 메시지 또는 모델 판정 이유 */
+  reason?: string;
+  decision_source?: string;
+  decided_at?: string | null;
+};
+
+/** GET /api/intercept/pending/{id} — 승인 요청 하나(이미 결정된 요청도 상태와 함께 돌려준다) */
+export async function getPendingApproval(id: number): Promise<EnginePendingDetail> {
+  return apiFetch<EnginePendingDetail>(`/api/intercept/pending/${encodeURIComponent(String(id))}`);
+}
+
+/**
+ * POST /api/intercept/pending/{id}/decide — 사람의 결정(allowed=이번 한 번 허용, denied=거부).
+ * 이미 결정된 요청이면 서버가 409 를 돌려주고 ApiError(status 409)로 던져진다.
+ */
+export async function decidePendingApproval(id: number, decision: "allowed" | "denied"): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/intercept/pending/${encodeURIComponent(String(id))}/decide`, {
+    method: "POST",
+    body: JSON.stringify({ decision }),
+  });
+}

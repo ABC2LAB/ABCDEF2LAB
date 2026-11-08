@@ -1,0 +1,188 @@
+name: ci
+
+on:
+  # base 필터를 두지 않는다: 바로 아래 PR 브랜치를 base로 쓰는 스택 PR도 검사해야 한다(PR 템플릿·#168 리뷰).
+  pull_request:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # go.mod의 버전만 쓴다. 시험 단계는 망이 없어 도구 체인을 내려받을 수 없다.
+  GOTOOLCHAIN: local
+
+jobs:
+  go-static:
+    name: Go build·vet·gofmt·크로스빌드
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - name: darwin·windows 크로스빌드
+        run: |
+          for os in darwin windows; do
+            GOOS=$os GOARCH=amd64 go build ./... ./cmd/...
+          done
+      # upstream에서 온 파일 중 gofmt가 안 맞는 것이 있어 PR이 바꾼 Go 파일만 본다.
+      - name: gofmt·공백 검사(PR이 바꾼 파일)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff --check "$BASE_SHA" HEAD
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA" HEAD -- '*.go')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "바뀐 Go 파일 없음"
+            exit 0
+          fi
+          unformatted=$(gofmt -l "${files[@]}")
+          if [ -n "$unformatted" ]; then
+            echo "gofmt가 필요한 파일:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  go-test:
+    name: Go 시험(PostgreSQL 16·race·외부망 차단)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: 시험 DB(1회용 PostgreSQL 16, 소켓 전용)
+        run: |
+          if [ ! -x /usr/lib/postgresql/16/bin/initdb ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-16
+          fi
+          scripts/ci/pg-up.sh "$RUNNER_TEMP/pg" >>"$GITHUB_ENV"
+      # 시험 코드(TestMain 포함)는 아래 망 없는 단계에서만 실행한다. 여기서는 모듈만 받는다.
+      - name: 모듈 받기(이 단계까지만 망 사용)
+        run: go mod download
+      # e2sandbox 시험은 비특권 user namespace를 만든다. Ubuntu 23.10+는 AppArmor가 이를 기본으로 제한해
+      # (kernel.apparmor_restrict_unprivileged_userns=1) 기동이 고정 사유로 거부된다(#212 CI의 FAIL 17).
+      # 1회용 러너에서만 풀고 전후 값을 남긴다. 실제 배치에서는 helper용 AppArmor 프로필이나 이 설정이 배치 조건이다.
+      - name: 비특권 user namespace 허용(e2sandbox 시험)
+        run: |
+          key=kernel.apparmor_restrict_unprivileged_userns
+          echo "before: $(sysctl -n "$key" 2>/dev/null || echo absent)"
+          if sysctl -n "$key" >/dev/null 2>&1; then
+            sudo sysctl -w "$key=0"
+          fi
+          echo "after: $(sysctl -n "$key" 2>/dev/null || echo absent)"
+      # 시험이 외부 API·DNS에 닿지 않게 loopback만 있는 망 namespace에서 runner 권한으로 돌린다
+      # (CLAUDE.md 절대 규칙 8). DB는 unix 소켓이라 그대로 닿는다.
+      - name: go test
+        run: |
+          export CI_UID=$(id -u) CI_GID=$(id -g) CI_PATH=$PATH CI_HOME=$HOME
+          sudo --preserve-env unshare --net -- bash -c '
+            set -euo pipefail
+            ip link set lo up
+            if timeout 3 bash -c "</dev/tcp/1.1.1.1/443" 2>/dev/null; then
+              echo "외부망 차단 실패" >&2
+              exit 1
+            fi
+            exec setpriv --reuid="$CI_UID" --regid="$CI_GID" --init-groups \
+              env PATH="$CI_PATH" HOME="$CI_HOME" \
+              scripts/ci/go-test.sh "$RUNNER_TEMP/go-test.json" ./... -race -count=1 -timeout 20m
+          '
+      - name: PostgreSQL 로그 꼬리(실패 시)
+        if: failure()
+        run: tail -n 50 "$RUNNER_TEMP/pg/postgres.log" || true
+
+  eval:
+    name: 평가 스크립트 시험
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: unittest
+        working-directory: scripts/eval
+        run: python3 -I -B -m unittest discover -s tests
+      - name: Docker Compose CLI 확인(E② 배치 구성 렌더링 시험)
+        run: docker compose version
+      - name: E② 배치 검사기 unittest
+        working-directory: deploy/e2-network-boundary
+        # *_docker.py는 실제 컨테이너를 띄우는 수동 스크립트라 TestCase가 없다. 여기서는 합성 inspect·렌더링 시험만 돈다.
+        # Compose CLI가 없으면 렌더링 시험이 SKIP으로 빠지므로 SKIP을 통과로 보지 않는다.
+        run: |
+          set +e
+          out=$(python3 -I -B -m unittest discover -s . -t . 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
+          if printf '%s\n' "$out" | grep -q 'skipped='; then
+            echo "::error::E② 배치 시험에 SKIP이 있습니다(통과로 보지 않음)"
+            exit 1
+          fi
+
+  web:
+    name: Web build·단위 시험
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # workflow 자체를 paths로 생략하면 필수 체크가 Pending에 머물 수 있다.
+      # 같은 job 안에서 생략을 성공으로 마감하며, 기존 Go·평가 job은 항상 그대로 실행한다.
+      - name: Web 변경 감지·회귀 시험
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python3 -I -B -m unittest discover -s scripts/ci -p test_web_changed.py
+          changed=$(python3 -I -B scripts/ci/web-changed.py --base "$BASE_SHA" --head "$HEAD_SHA")
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+      - name: Web 변경 없음
+        if: steps.changes.outputs.changed == 'false'
+        run: echo 'Web 입력 변경 없음 — 프런트엔드 검증 생략(Go·평가 검사는 계속 실행)' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Web 의존성 설치
+        if: steps.changes.outputs.changed == 'true'
+        working-directory: web
+        env:
+          HUSKY: "0"
+        run: npm ci --no-audit --no-fund
+      - name: Web 단위 시험
+        if: steps.changes.outputs.changed == 'true'
+        working-directory: web
+        run: |
+          npm test -- --run --maxWorkers=2
+          find src -name '*.test.mjs' -print0 | xargs -0 -r node --test
+      - name: Next.js 빌드·타입 검사(Vercel 데모 모드)
+        if: steps.changes.outputs.changed == 'true'
+        working-directory: web
+        env:
+          NEXT_PUBLIC_MOCK: "1"
+        run: npm run build

@@ -1,0 +1,71 @@
+import { DEFAULT_TARGET_URL, type Target } from "../types";
+
+function stripToHost(url: string): string {
+  return url.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
+/**
+ * 원본 internal(): 내부망 · 로컬 주소면 true, 공인 주소면 false, URL이 아니면 null.
+ * (localhost, 점 없는 호스트명, 127/10/192.168/172.16~31/169.254 대역)
+ */
+export function isInternalUrl(url: string): boolean | null {
+  let h: string;
+  try {
+    h = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  if (!h) return null;
+  // URL.hostname 은 IPv6 를 대괄호 포함([::1])으로 돌려준다 → 정규화
+  h = h.replace(/^\[/, "").replace(/\]$/, "");
+  if (h === "localhost" || h === "::1") return true;
+  // IPv6: 루프백·ULA(fc00::/7)·링크로컬(fe80::/10)만 주소 형식상 내부로 표시한다.
+  if (h.includes(":")) return /^fe[89ab][0-9a-f]:/i.test(h) || /^f[cd][0-9a-f]{2}:/i.test(h);
+  if (h.indexOf(".") === -1) return true;
+  const m = h.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  return (
+    a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254)
+  );
+}
+
+/** LLM base_url 의 **호스트**가 내부망/로컬을 가리키는지 판별 (완전 로컬 모드 표시용).
+ *  전체 URL 문자열이 아니라 hostname 기준 — 쿼리에 'ollama' 가 있다고 로컬로 보지 않는다. */
+export function isLocalUrl(u: string): boolean {
+  if (isInternalUrl(u) === true) return true; // localhost · 사설 IP · IPv6 루프백/ULA 등
+  let h: string;
+  try {
+    h = new URL(u).hostname.replace(/^\[/, "").replace(/\]$/, "");
+  } catch {
+    return false;
+  }
+  return /^(ollama|host\.docker\.internal)$/i.test(h);
+}
+
+/** 원본 hostOf() */
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return stripToHost(url || "");
+  }
+}
+
+/** 원본 syncTarget(): 입력값 → 요약·대시보드·팝업에 보여줄 url / host */
+export function toTarget(input: string): Target {
+  const url = input.trim() || DEFAULT_TARGET_URL;
+  let host: string;
+  try {
+    host = new URL(url).host || url;
+  } catch {
+    host = stripToHost(url);
+  }
+  return { url, host };
+}
+
+/** DNS TXT 소유 확인용 1회용 토큰 (원본과 같은 형식) */
+export function randomVerifyToken(): string {
+  return `abc2lab-verify=${Math.random().toString(16).slice(2, 10)}${Math.random().toString(16).slice(2, 8)}`;
+}

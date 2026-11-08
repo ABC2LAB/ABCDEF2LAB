@@ -39,6 +39,8 @@
       "!.next",
       "!dist",
       "!out",
+      "!_parked",
+      "!mockups/*.html",
       "!src/components/ui",
       "!src/components/calendar"
     ]

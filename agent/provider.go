@@ -10,8 +10,10 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log"
 	"net/http"
 	"net/url"
@@ -20,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
@@ -258,6 +261,103 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	return c.newProviderWithClient(client)
+}
+
+var (
+	// These errors intentionally expose only the local-provider contract, not
+	// configuration values or policy/transport details.
+	ErrLocalProviderProxy   = errors.New("llm: local provider does not allow a proxy")
+	ErrLocalProviderBaseURL = errors.New("llm: local provider requires a base URL")
+	ErrLocalProvider        = errors.New("llm: local provider request failed")
+	ErrLocalProviderQuota   = errors.New("llm: quota exhausted")
+)
+
+// NewLocalProvider builds a provider whose HTTP client enforces the immutable
+// host-owned local LLM policy. Server/profile wiring belongs to the caller;
+// this factory only connects an already-resolved Config to the guarded client.
+func (c Config) NewLocalProvider(policy *llmpolicy.Policy, options llmpolicy.ClientOptions) (llm.Provider, error) {
+	if strings.TrimSpace(c.Proxy) != "" {
+		return nil, ErrLocalProviderProxy
+	}
+	if strings.TrimSpace(c.BaseURL) == "" {
+		return nil, ErrLocalProviderBaseURL
+	}
+	client, err := llmpolicy.NewClient(policy, options)
+	if err != nil {
+		return nil, err
+	}
+	// Keep quota conversion, request capture and per-session headers on the
+	// outside of the policy transport. The policy client remains responsible for
+	// redirect and DNS/peer validation while every actual request passes through
+	// the existing observability and quota boundary.
+	client.Transport = quotaAwareTransport{
+		base:             client.Transport,
+		sessionHeaderKey: strings.TrimSpace(c.SessionHeaderKey),
+	}
+	provider, err := c.newProviderWithClient(client)
+	if err != nil {
+		return nil, ErrLocalProvider
+	}
+	return localProvider{inner: provider}, nil
+}
+
+// localProvider is the error boundary for the local-only connection path.
+// The underlying SDK may include URLs, response bodies, or transport details;
+// none of those are safe to cross this boundary. Legacy NewProvider deliberately
+// does not use this wrapper and retains its historical error contract.
+type localProvider struct{ inner llm.Provider }
+
+func (p localProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		for event, err := range p.inner.Stream(ctx, req) {
+			if err != nil {
+				yield(llm.StreamEvent{}, localProviderError(ctx, err))
+				return
+			}
+			if !yield(event, nil) {
+				return
+			}
+		}
+	}
+}
+
+func (p localProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	message, stop, usage, err := p.inner.Complete(ctx, req)
+	if err != nil {
+		return llm.Message{}, "", llm.Usage{}, localProviderError(ctx, err)
+	}
+	return message, stop, usage, nil
+}
+
+func localProviderError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if err == nil {
+		return ErrLocalProvider
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	if errors.Is(err, llmpolicy.ErrRequestBlocked) ||
+		errors.Is(err, llmpolicy.ErrTransport) ||
+		errors.Is(err, llmpolicy.ErrBodyClose) {
+		return ErrLocalProvider
+	}
+	if IsQuotaExhaustedMessage(err.Error()) {
+		return ErrLocalProviderQuota
+	}
+	return ErrLocalProvider
+}
+
+func (c Config) newProviderWithClient(client *http.Client) (llm.Provider, error) {
+	if client == nil {
+		return nil, errors.New("llm: nil HTTP client")
+	}
 	lc := llm.Config{
 		Format:     c.Format,
 		BaseURL:    c.BaseURL,
@@ -345,12 +445,12 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 			req.Header.Set(t.sessionHeaderKey, sid)
 		}
 	}
-	// When LLM recording is on, the Recorder puts a Capture on the context so the
-	// raw wire bodies can be persisted. This is the only layer that still sees
-	// them: norma builds the request body internally and decodes the SSE response
-	// before either reaches the recorder.
+	// Recorder and connection diagnostics retain only request/response presence
+	// and numeric wire metadata. Explicit raw diagnostic captures still see the
+	// bodies here, before norma decodes provider events.
 	capt := llmrec.CaptureFrom(req.Context())
-	capt.SetRequest(requestBodySnapshot(req))
+	capt.MarkRequest()
+	capt.SetRequestSnapshot(func() string { return requestBodySnapshot(req) })
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {
@@ -419,53 +519,35 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) 
 	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)}}, nil
 }
 
-// logTestConnection prints the raw HTTP status code(s) and response body of a
-// connection test to the server log, so "点击测试" leaves a diagnosable trail of
-// exactly what the gateway returned — 401 bodies, quota text, empty frames — not
-// just the collapsed ok/err the UI shows. Bodies are clipped to keep a chatty
-// SSE stream from flooding the log.
-func logTestConnection(c Config, capt *llmrec.Capture) {
-	attempts := capt.Attempts()
+// Only numeric diagnostics cross the connection-test logging boundary. Neither
+// configuration strings nor provider text/errors are safe log fields.
+func logTestConnection(capt *llmrec.Capture, latency time.Duration, failed bool) {
+	attempts := capt.Metadata()
 	if len(attempts) == 0 {
-		log.Printf("[llm-test] %s / %s @ %s — 未发出任何 HTTP 请求(配置解析或建连即失败)",
-			c.Provider(), c.Model, c.BaseURL)
+		log.Printf("[llm-test] latency_ms=%d attempts=0 failed=%t", latency.Milliseconds(), failed)
 		return
 	}
 	for i, a := range attempts {
-		log.Printf("[llm-test] %s / %s @ %s — 尝试 %d/%d HTTP %d\n响应体: %s",
-			c.Provider(), c.Model, c.BaseURL, i+1, len(attempts), a.Status, clipBody(a.Body))
+		log.Printf("[llm-test] latency_ms=%d attempt=%d/%d http_status=%d response_bytes=%d failed=%t",
+			latency.Milliseconds(), i+1, len(attempts), a.Status, a.BodyBytes, failed)
 	}
-}
-
-// clipBody trims a wire body for logging. 4K is plenty to show an error JSON or
-// the head of an SSE stream while bounding a runaway response.
-func clipBody(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "(空)"
-	}
-	const max = 4096
-	if len(s) > max {
-		return s[:max] + fmt.Sprintf("…(截断,共 %d 字节)", len(s))
-	}
-	return s
 }
 
 // TestConnection makes a minimal real completion to verify the provider/model/
 // endpoint/key actually work. Returns the round-trip latency and the model's
-// reply text.
-func TestConnection(ctx context.Context, c Config) (time.Duration, string, error) {
+// reply text for internal callers; public API handlers must redact the reply
+// and error. Diagnostic logs contain only status, size and latency metadata.
+func TestConnection(ctx context.Context, c Config) (latency time.Duration, reply string, err error) {
+	ctx, capt := llmrec.NewMetadataCapture(ctx)
+	// Read final return values, including initialization errors and empty replies.
+	defer func() { logTestConnection(capt, latency, err != nil) }()
 	prov, err := c.NewProvider()
 	if err != nil {
 		return 0, "", err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	// 抓取原始 wire 报文:连接测试最需要看到的就是网关到底回了什么(状态码+响应体),
-	// 而 norma 把响应解码成 StreamEvent 后这些就没了。quotaAwareTransport 会在
-	// context 里找到这个 Capture 并填入每次 HTTP 尝试的状态码与 body。
-	ctx, capt := llmrec.NewCapture(ctx)
-	defer logTestConnection(c, capt)
+	// Capture is transient. Only its numeric metadata is used by this log sink.
 	// 连接测试是一条单发路径,不经过 agentcore 的会话循环,因此没人往 context 上挂
 	// session id。对配了 SessionHeaderKey 的端点(如 opencode zen 强制要求
 	// x-opencode-session 头,缺了直接 400 MissingSessionID),这会导致"对话正常、
@@ -478,7 +560,7 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// 就撞到输出上限(finish=length)、被截断,连接测试虽仍算通(err=nil)但显示成
 	// "已中断/length/resume" 一团糟。给足预算让它把 OK 干净吐完(finish=stop)。
 	// EscalateMaxTokens 保持 false:不因截断而抬额重试,避免 resume 循环空烧。
-	reply, err := agentcore.Run(ctx, agentcore.Options{
+	reply, err = agentcore.Run(ctx, agentcore.Options{
 		Provider:       prov,
 		SystemPrompt:   []string{"你是连接测试。直接输出两个字符 OK 即可，不要思考、不要解释、不要别的。"},
 		PermissionMode: acperm.ModeBypass,
@@ -486,16 +568,16 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 		MaxTokens:      8192,
 		NonStreaming:   !c.Stream, // 用该 profile 的真实收发模式做连接测试
 	}, "ping")
-	lat := time.Since(start)
+	latency = time.Since(start)
 	if err != nil {
-		return lat, "", err
+		return latency, "", err
 	}
 	// err==nil 还不够：请求通了但模型一个字都不吐的情况真实存在(思考把预算烧光、
 	// 正文被安全策略吞掉、兼容层把 content 丢了)。这种配置在会话里就是"不回话",
 	// 测试却报成功——正是本项要消除的落差。没有可见正文一律判失败。
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
-		return lat, "", fmt.Errorf("模型无回复内容（请求已通，但未返回任何文本）")
+		return latency, "", fmt.Errorf("模型无回复内容（请求已通，但未返回任何文本）")
 	}
-	return lat, reply, nil
+	return latency, reply, nil
 }

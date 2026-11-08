@@ -1,0 +1,52 @@
+{
+  "purpose": "고정 제공자가 게이트웨이가 넣는 샘플링 파라미터를 지원한다고 표시하는지 근거(평가 프로토콜 §6). 게이트웨이는 provider.require_parameters:true로 지원하지 않는 파라미터가 있으면 요청을 실패시킨다.",
+  "source": "GET https://openrouter.ai/api/v1/models/qwen/qwen3.6-35b-a3b/endpoints (공개, 키 없음)",
+  "fetched_at": "2026-11-04T05:13:40Z",
+  "response_sha256": "0e31dbacad2bdfbfaf5c2fe208f41499f218fad5d826c093b06759db9d1dc329",
+  "model": "qwen/qwen3.6-35b-a3b",
+  "pinned_slug": "deepinfra/fp8",
+  "match_rule": "tag == slug 또는 tag가 slug + '/'로 시작",
+  "pinned_parameters": [
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "presence_penalty",
+    "repetition_penalty",
+    "seed"
+  ],
+  "engine_parameters": [
+    "max_tokens",
+    "stop",
+    "tools"
+  ],
+  "engine_parameters_source": "엔진 LLM SDK(github.com/Autumn-27/norma v0.4.3 llm/openai.go)의 요청 필드 중 공식 설정에서 나갈 수 있는 것. reasoning_effort·thinking은 엔진 설정이 비어 있어 보내지 않음(2026-11-04 api 스모크 엔진 설정 스냅샷). 게이트웨이가 require_parameters:true를 넣으므로 이것도 지원 목록에 있어야 요청이 거부되지 않음",
+  "matched_endpoints": [
+    {
+      "provider_name": "DeepInfra",
+      "tag": "deepinfra/fp8",
+      "quantization": "fp8",
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "reasoning",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ],
+      "pinned_parameters_supported": true,
+      "engine_parameters_supported": true
+    }
+  ]
+}

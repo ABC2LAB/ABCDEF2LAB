@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -63,8 +64,11 @@ type Task struct {
 	Store                *pgdb.ExplorationStore `json:"-"`
 	Guard                *guard.Guard           `json:"-"`
 	notify               chan struct{}
-	lifecycleMu          sync.RWMutex
-	llmMu                sync.RWMutex
+	// 첫 진단은 Worker 완료 뒤 Planner가 실제로 재계획을 마쳐야 닫는다.
+	firstDiagnosisWorkSeq    atomic.Uint64
+	firstDiagnosisPlannedSeq atomic.Uint64
+	lifecycleMu              sync.RWMutex
+	llmMu                    sync.RWMutex
 
 	// pendingTriggers accumulates the concrete changes (worker done / finding) that
 	// fired planning rounds since the last one consumed them. The debounce coalesces

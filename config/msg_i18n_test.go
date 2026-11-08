@@ -1,89 +1,28 @@
 package config
 
-import (
-	"path/filepath"
-	"regexp"
-	"strings"
-	"testing"
-)
+import "testing"
 
-// TestStartupMessageSwitchesLanguage pins that the DB-config startup error and
-// source labels follow ARTEX_LANG: English by default, Korean/Chinese/Spanish/Japanese
-// when configured. Identifiers an operator must act on stay verbatim.
-func TestStartupMessageSwitchesLanguage(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("ARTEX_PG_DSN", "")
-	t.Setenv("ARTEX_CONFIG", filepath.Join(dir, "nope.json"))
-
-	// Default (no ARTEX_LANG) → English (artex-global default).
-	t.Setenv("ARTEX_LANG", "")
-	def := mustDSNErr(t)
-	if hasHangul(def) {
-		t.Errorf("default startup error should have no Hangul (English default): %q", def)
-	}
-	for _, id := range []string{"ARTEX_PG_DSN", "database", "dsn", "host/user/dbname"} {
-		if !containsStr(def, id) {
-			t.Errorf("default startup error must keep identifier %q: %q", id, def)
+// 표시 언어는 한국어 하나다. 환경 변수와 설정 파일에 다른 언어가 있어도 따르지 않는다.
+func TestLanguageIsFixedToKorean(t *testing.T) {
+	for _, value := range []string{"", "ko", "en", "zh", "ja", "es", "bad"} {
+		t.Setenv("ARTEX_LANG", value)
+		if got := Language(); got != "ko" {
+			t.Errorf("Language() with ARTEX_LANG=%q = %q, want ko", value, got)
 		}
 	}
-
-	// Explicit Korean → Korean.
-	t.Setenv("ARTEX_LANG", "ko")
-	assertKorean(t, "ko startup error", mustDSNErr(t))
-
-	// English → no Hangul, keeps identifiers.
-	t.Setenv("ARTEX_LANG", "en")
-	en := mustDSNErr(t)
-	if hasHangul(en) {
-		t.Errorf("en startup error should have no Hangul: %q", en)
-	}
-	for _, id := range []string{"ARTEX_PG_DSN", "database", "dsn", "host/user/dbname"} {
-		if !containsStr(en, id) {
-			t.Errorf("en startup error must keep identifier %q: %q", id, en)
+	for _, code := range []string{"en", "zh", "es", "ja", "bad", ""} {
+		if got := NormalizeLanguage(code); got != "" {
+			t.Errorf("NormalizeLanguage(%q) = %q, want empty", code, got)
 		}
 	}
-
-	// Chinese / Spanish / Japanese → non-empty and different from the Korean source.
-	for _, lang := range []string{"zh", "es", "ja"} {
-		t.Setenv("ARTEX_LANG", lang)
-		if got := mustDSNErr(t); got == "" {
-			t.Errorf("%s startup error should be non-empty", lang)
-		}
+	if got := NormalizeLanguage(" KO "); got != "ko" {
+		t.Errorf("NormalizeLanguage(KO) = %q", got)
 	}
 }
 
-func mustDSNErr(t *testing.T) string {
-	t.Helper()
-	_, _, err := PostgresDSN()
-	if err == nil {
-		t.Fatal("missing config should error")
-	}
-	return err.Error()
-}
-
-func containsStr(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
-
-// TestCatalogFormatVerbsMatch pins that every translation keeps the Korean
-// template's format verbs in the same order. Callers wrap only the template
-// (log.Printf(T(ko), args...)), so a dropped or reordered verb would print
-// %!s(MISSING) or swap arguments in the operator's console.
-func TestCatalogFormatVerbsMatch(t *testing.T) {
-	verbs := regexp.MustCompile(`%[-+# 0-9.]*[a-zA-Z%]`)
-	for name, cat := range map[string]map[string]map[string]string{"cfgCatalog": cfgCatalog, "logCatalog": logCatalog} {
-		for ko, tr := range cat {
-			want := strings.Join(verbs.FindAllString(ko, -1), " ")
-			for lang, v := range tr {
-				if got := strings.Join(verbs.FindAllString(v, -1), " "); got != want {
-					t.Errorf("%s[%q][%s] verbs = %q, want %q", name, ko, lang, got, want)
-				}
-			}
-		}
+func TestMessagesPassThrough(t *testing.T) {
+	const message = "[config] 설정 파일: %s"
+	if T(message) != message || trCfg(message) != message {
+		t.Fatal("message changed")
 	}
 }

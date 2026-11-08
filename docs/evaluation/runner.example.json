@@ -1,0 +1,108 @@
+{
+ "version": 1,
+ "runs_root": "/srv/abc2lab-eval/official/runs",
+ "secrets_env_file": "/srv/abc2lab-eval/eval.secrets.env",
+ "runner_key_path": "/srv/abc2lab-eval-keys/runner.key",
+ "images": {
+  "engine_baseline": {
+   "ref": "abc2lab-eval-engine:baseline-e53a79fe4df0",
+   "id": "sha256:<baseline 엔진 이미지 ID>"
+  },
+  "engine_ours": {
+   "ref": "abc2lab-eval-engine:ours-<동결 커밋 12자리>",
+   "id": "sha256:<개선 후 엔진 이미지 ID>"
+  },
+  "engine_db": {
+   "ref": "postgres:16-alpine",
+   "id": "sha256:<엔진 DB 이미지 ID>"
+  },
+  "meter": {
+   "ref": "abc2lab-eval-meter:<동결 커밋 12자리>",
+   "id": "sha256:<계측기 이미지 ID>"
+  }
+ },
+ "target_image_id": "sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d",
+ "ports": {
+  "engine_api_host": 18787,
+  "engine_container": 8787,
+  "target": 3000,
+  "obs": 8081,
+  "obs_host": 18081,
+  "llm_gateway": 8090,
+  "api_front": 8091
+ },
+ "observer_path": "/api/Challenges",
+ "observer_format": "challenge_scoreboard",
+ "observer_readonly_ref": "docs/evaluation/profiles/evidence/observer-readonly-juice-shop-15.0.0-20261104.json",
+ "e2": {"ours_mode": "none"},
+ "engine_rules": null,
+ "state": null,
+ "engine": {
+  "llm_provider": "openai",
+  "llm_stream": true,
+  "llm_policy_mode": "external"
+ },
+ "engine_db": {
+  "user": "artex",
+  "name": "artex"
+ },
+ "tmpfs": {
+  "engine_db": "1g",
+  "engine_data": "512m",
+  "min_free": "16m"
+ },
+ "health": {
+  "interval": "2s",
+  "timeout": "2s",
+  "retries": 60
+ },
+ "docker_timeout_seconds": 300,
+ "host_listen_allowlist": [
+  {
+   "address": "10.255.255.254",
+   "port": 53,
+   "reason": "WSL DNS 터널링 리졸버(lo /32). 대상·관측 경로 아님. 엔진은 외부 경로가 없고 게이트웨이만 llm_egress_net에 있음"
+  }
+ ],
+ "probe_timeout_ms": 2000,
+ "run": {
+  "compose_wait_seconds": 300,
+  "down_timeout_seconds": 60,
+  "ready_timeout_seconds": 180,
+  "budget_poll_seconds": 5,
+  "drain_timeout_seconds": 120,
+  "snapshot_timeout_seconds": 30,
+  "snapshot_max_bytes": 4194304,
+  "llm_verify_timeout_seconds": 300,
+  "llm_load_timeout_seconds": 600,
+  "task_create_timeout_seconds": 30,
+  "host_watch_interval_seconds": 2,
+  "host_watch_max_gap_seconds": 15,
+  "drain_grace_seconds": 60,
+  "post_settle_seconds": 10
+ },
+ "llm_gateway": {
+  "generation_path": "/api/v1/generation",
+  "verify_attempts": 15,
+  "verify_interval_seconds": 2,
+  "ca_bundle": "/etc/ssl/certs/ca-certificates.crt",
+  "expected_provider_name": "AtlasCloud"
+ },
+ "findings": {
+  "vocabulary_path": "/srv/abc2lab-eval/vocabulary.json",
+  "page_size": 100,
+  "timeout_seconds": 30,
+  "max_page_bytes": 1048576,
+  "max_total_bytes": 8388608,
+  "max_pages": 100
+ },
+ "verdict_export": null,
+ "task": {
+  "description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.",
+  "goal": "다른 사용자의 자원이나 권한 밖 기능에 접근되는지 확인한다",
+  "timeout_seconds": 0,
+  "plan_heartbeat_seconds": 0,
+  "seed_first_intent": false,
+  "coverage_enabled": true
+ }
+}

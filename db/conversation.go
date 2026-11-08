@@ -235,6 +235,8 @@ func (d *DB) DeleteConversations(ids []int64) ([]int64, error) {
 // execution step) and returns its id. Mirrors ExplorationStore.AppendActivity but
 // keyed by conversation_id. Reuses the Activity struct (NodeID is ignored here).
 func (d *DB) AppendConvActivity(convID int64, a Activity) (int64, error) {
+	// 대화 활동은 화면만 읽는다(모델은 세션 기록을 받는다).
+	a = a.ForDisplay()
 	var id int64
 	err := d.QueryRow(`
 INSERT INTO conversation_activities(conversation_id, worker, kind, tool, tool_use_id, is_error, summary, detail, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
@@ -252,7 +254,7 @@ func (d *DB) ConvActivityList(convID, sinceID int64, limit int) ([]Activity, int
 	}
 	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
 	rows, err := d.Query(`SELECT `+cols+`
-FROM conversation_activities WHERE conversation_id=$1 AND id>$2 ORDER BY id LIMIT $3`, convID, sinceID, limit)
+FROM conversation_activities WHERE conversation_id=$1 AND id>$2 AND kind IS DISTINCT FROM 'thinking' ORDER BY id LIMIT $3`, convID, sinceID, limit)
 	if err != nil {
 		return nil, sinceID, err
 	}
@@ -286,7 +288,7 @@ func (d *DB) ConvActivityPage(convID, before int64, limit int) ([]Activity, bool
 	// fetch one extra row to detect whether older history remains before this window.
 	rows, err := d.Query(`SELECT `+cols+`
 FROM conversation_activities
-WHERE conversation_id=$1 AND ($2 <= 0 OR id < $2)
+WHERE conversation_id=$1 AND kind IS DISTINCT FROM 'thinking' AND ($2 <= 0 OR id < $2)
 ORDER BY id DESC LIMIT $3`, convID, before, limit+1)
 	if err != nil {
 		return nil, false, err
@@ -319,7 +321,7 @@ ORDER BY id DESC LIMIT $3`, convID, before, limit+1)
 // ConvActivityDetail lazily returns the full detail blob for one step.
 func (d *DB) ConvActivityDetail(convID, id int64) (string, error) {
 	var s sql.NullString
-	err := d.QueryRow(`SELECT detail FROM conversation_activities WHERE id=$1 AND conversation_id=$2`, id, convID).Scan(&s)
+	err := d.QueryRow(`SELECT detail FROM conversation_activities WHERE id=$1 AND conversation_id=$2 AND kind IS DISTINCT FROM 'thinking'`, id, convID).Scan(&s)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

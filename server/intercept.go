@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -66,7 +65,7 @@ func (s *Server) wireInterceptReviewer() {
 		if v.Action == "" {
 			return intercept.Decision{ProfileID: profileID}, errors.New(errJudgeVerdictMalformed)
 		}
-		return intercept.Decision{Action: v.Action, Message: v.Reason, ProfileID: profileID}, nil
+		return intercept.JudgeDecision(v, profileID), nil
 	})
 }
 
@@ -207,6 +206,10 @@ func (s *Server) interceptToggleRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pg.ToggleInterceptRule(id, req.Enabled); err != nil {
+		if errors.Is(err, db.ErrInvalidInterceptPattern) {
+			writeErr(w, 400, err.Error())
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -509,12 +512,7 @@ func validateInterceptRuleReq(req interceptRuleReq) error {
 	default:
 		return fmt.Errorf("action 값은 allow, deny, ask 중 하나여야 합니다")
 	}
-	if req.MatchType == "regex" {
-		if _, err := regexp.Compile(req.Pattern); err != nil {
-			return fmt.Errorf("pattern 값이 올바른 정규식이 아닙니다: %w", err)
-		}
-	}
-	return nil
+	return db.ValidateInterceptPattern(req.MatchType, req.Pattern)
 }
 
 func (s *Server) interceptDetail(w http.ResponseWriter, r *http.Request) {

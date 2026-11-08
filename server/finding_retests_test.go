@@ -55,16 +55,16 @@ func newRetestServer(t *testing.T) (*Server, int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldAugment, oldResolve, oldPrompt := agent.ToolAugment, agent.ToolResolve, agent.PromptOverride
-	agent.ToolAugment = func(context.Context, string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
+	hooks := agent.RuntimeHooks{}
+	hooks.ToolAugment = func(context.Context, string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
 		return s.findingRetestTools(), agent.DeferredInfo{}, func() {}
 	}
-	agent.ToolResolve = nil
-	agent.PromptOverride = func(string) (string, bool) { return agent.RetesterDefaultPrompt, true }
+	hooks.PromptOverride = func(string) (string, bool) { return agent.RetesterDefaultPrompt, true }
+	s.runtimeHooks = hooks
+	s.ctx = agent.WithRuntimeHooks(s.ctx, hooks)
 	t.Cleanup(func() {
 		cancel()
 		waitRetestIdle(t, s)
-		agent.ToolAugment, agent.ToolResolve, agent.PromptOverride = oldAugment, oldResolve, oldPrompt
 		_, _ = pg.Exec(`DELETE FROM conversations WHERE id IN (SELECT conversation_id FROM finding_retests WHERE finding_id=$1)`, fid)
 		_, _ = pg.DeleteFinding(fid)
 		pg.Close()

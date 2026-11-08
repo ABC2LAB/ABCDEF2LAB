@@ -239,23 +239,33 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 			}
 		}
 		summary := intentSummaryOf(node)
-		if mode == "hard" {
-			cleanup, err := t.Store.CancelIntent(iid)
-			if err != nil {
-				return out, err
+		mutate := func() error {
+			if mode == "hard" {
+				cleanup, err := t.Store.CancelIntent(iid)
+				if err != nil {
+					return err
+				}
+				out.Deleted = &cleanup
+				out.State = "" // 노드가 삭제됨. 프런트엔드는 Deleted 를 보고 목록에서 제거한다.
+			} else {
+				if _, err := t.Store.SoftDeleteIntent(iid, reason); err != nil {
+					return err
+				}
+				out.State = db.StateIntentDeleted
 			}
-			s.cancelWorkerSide(t.ID, t.ExpID, iid)
-			t.NotifyCancelled(iid, summary, reason)
-			out.Deleted = &cleanup
-			out.State = "" // 노드가 삭제됨. 프런트엔드는 Deleted 를 보고 목록에서 제거한다.
-		} else {
-			if _, err := t.Store.SoftDeleteIntent(iid, reason); err != nil {
-				return out, err
-			}
-			s.cancelWorkerSide(t.ID, t.ExpID, iid)
-			t.NotifyCancelled(iid, summary, reason)
-			out.State = db.StateIntentDeleted
+			return nil
 		}
+		var err error
+		if s.engine != nil && s.engine.controlledReads != nil {
+			err = s.engine.controlledReads.cancelPendingWork(controlledWorkKey{t.ID, iid}, mutate)
+		} else {
+			err = mutate()
+		}
+		if err != nil {
+			return out, err
+		}
+		s.cancelWorkerSide(t.ID, t.ExpID, iid)
+		t.NotifyCancelled(iid, summary, reason)
 	default:
 		return out, fmt.Errorf("action must be pause|resume|cancel")
 	}

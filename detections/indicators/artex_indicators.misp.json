@@ -41,7 +41,16 @@
         "to_ids": true,
         "disable_correlation": false,
         "value": "【ARTEX 平台管控·非目标防御】",
-        "comment": "Control-framing prefix ARTEX writes to its audit log on a blocked tool call (guard/guard.go). Its presence in audit records supports an ARTEX-execution finding. Sigma: artex_guard_audit_framing.yml."
+        "comment": "Historical platform-control framing retained for old session and audit artifacts. Provenance: guard/guard.go at 450cc71f00092e7788a228a96b3bc71431ec288d. Current audit rows need not contain a framing marker. Sigma: artex_guard_audit_framing.yml."
+      },
+      {
+        "uuid": "6321034d-f0db-564d-80ae-d9c3305b897a",
+        "type": "pattern-in-file",
+        "category": "Artifacts dropped",
+        "to_ids": true,
+        "disable_correlation": false,
+        "value": "[ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]",
+        "comment": "Current English platform-control framing in model-facing blocked tool results. Retained session artifacts may contain it; current audit rows store display reasons separately. A hit does not prove a tool executed or reached a target. Sigma: artex_guard_audit_framing.yml."
       },
       {
         "uuid": "d5fe7761-c297-4e35-acfe-a3a4a5f01f7b",

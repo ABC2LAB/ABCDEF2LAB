@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	ErrEvidenceConflict = errors.New("流量证据已变更，请刷新后重试")
-	ErrFindingNotFound  = errors.New("漏洞不存在")
-	ErrEvidenceNotFound = errors.New("流量证据不存在")
+	ErrEvidenceConflict = errors.New("traffic evidence changed; refresh and retry")
+	ErrFindingNotFound  = errors.New("finding not found")
+	ErrEvidenceNotFound = errors.New("traffic evidence not found")
 )
 
 // This lock covers the evidence filesystem as well as its SQL references. All
@@ -203,6 +203,9 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(id) DO NOTHIN
 }
 
 func AddFindingTrafficTx(tx *sql.Tx, findingID int64, prepared []PreparedTrafficEvidence) error {
+	if err := rejectControlledFindingTx(context.Background(), tx, findingID); err != nil {
+		return err
+	}
 	var position int
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(position)+1,0) FROM finding_traffic_bindings WHERE finding_id=$1`, findingID).Scan(&position); err != nil {
 		return err
@@ -278,6 +281,9 @@ func (d *DB) EditFindingTraffic(ctx context.Context, findingID, bindingID, versi
 		return errors.New("无效的流量用途")
 	}
 	return d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+		if err := rejectControlledFindingTx(ctx, tx, findingID); err != nil {
+			return err
+		}
 		if err := LockFindingEvidenceTx(tx, findingID, &version); err != nil {
 			return err
 		}
@@ -340,6 +346,9 @@ type RecordedFinding struct {
 // ctx 由调用方传入本次事务所用的上下文（而非在内部取 context.Background）：
 // 事务内新加的推送事件写入同样应受调用方的取消与超时约束。
 func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, prepared []PreparedTrafficEvidence) (*RecordedFinding, error) {
+	if err := rejectControlledTaskTx(ctx, tx, in.TaskID, in.ExplorationID, 0); err != nil {
+		return nil, err
+	}
 	if err := LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 		return nil, err
 	}

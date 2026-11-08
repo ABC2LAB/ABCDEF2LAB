@@ -1,5 +1,7 @@
 # ARTEX detection rules (Sigma / host · log · SIEM)
 
+> **Inherited reference:** see the [ABC2LAB documentation](../../docs/README.md) for the current project. The procedures and sample outputs below are inherited material, not verification results for this checkout. The original CI workflow is absent, so automatic CI/merge gates are not provided here. Harness, indicator, and MISP checks that read that file may fail until adapted.
+
 English · [한국어](README.ko.md)
 
 > 한국어: 이 디렉터리는 [방어·탐지 가이드(docs/defense-ko.md)](../../docs/defense-ko.md) 4절
@@ -9,8 +11,7 @@ English · [한국어](README.ko.md)
 > **[README.ko.md](README.ko.md)** 를, 전체 탐지 묶음 개요는 **[../README.ko.md](../README.ko.md)** 를 보십시오.
 
 The host, log, and SIEM layer of the ARTEX detection set. These [Sigma](https://sigmahq.io) rules
-formalize the pseudo-rules in the defense guide ([Korean](../../docs/defense-ko.md) ·
-[English](../../docs/defense-en.md), section 4) into a vendor-neutral format you convert to your own
+formalize the pseudo-rules in the defense guide ([Korean reference](../../docs/defense-ko.md), section 4) into a vendor-neutral format you convert to your own
 SIEM or EDR query language. Every indicator is grounded in a string or behaviour verified in this
 repository's source, not inferred. The network layer lives under [`../suricata/`](../suricata/); the
 full detection set — the ATT&CK coverage layer, the indicator CSV / MISP export, and the host-triage
@@ -27,8 +28,9 @@ One rule, one observable fact. Convert them individually or as part of the whole
   User-Agent*. Outbound `artex-selfupdate` User-Agent from the self-update routine
   (`selfupdate/github.go`). Host/forensic egress indicator. `level: medium`.
 - **[`artex_guard_audit_framing.yml`](artex_guard_audit_framing.yml)** — *ARTEX Platform Guard
-  Audit-Log Framing*. The platform-guard control marker written to the audit log on a blocked tool
-  call (`guard/guard.go`). Host/forensic indicator. `level: high`.
+  Audit-Log Framing*. Current and historical platform-control markers in blocked tool-result/session
+  artifacts (`guard/guard.go`). Current audit rows need not contain either marker.
+  Host/forensic indicator. `level: high`.
 - **[`artex_recording_proxy_ca.yml`](artex_recording_proxy_ca.yml)** — *ARTEX Recording-Proxy MITM CA
   Certificate Artifact*. Creation of the recording proxy's MITM CA file under the
   `_ca/mitmproxy-ca-cert.pem` layout (`traffic/traffic.go`). Host/forensic artifact; the bare filename
@@ -63,7 +65,7 @@ reference will not resolve (the [Sigma test](../tests/sigma/) asserts exactly th
 Thresholds and windows are conservative defaults — tune them to your baseline. The pure web multi-stage
 case (enumerate → probe → authenticate) still needs base rules specific to your environment, because that
 pattern does not reduce to a single ARTEX-unique User-Agent; a generic behavioural base template to start
-from is in the [defense guide §4.2](../../docs/defense-en.md), kept out of this tested tree because it
+from is in the [defense guide §4.2](../../docs/defense-ko.md), kept out of this tested tree because it
 cannot be grounded in ARTEX source.
 
 ## Scope and honesty — read before deploying
@@ -123,5 +125,5 @@ backends), and [`sigma_lint/`](../tests/sigma_lint/) (the full SigmaHQ validator
 Detection contributions are welcome. New rules should keep every indicator grounded in an observable fact,
 state limitations in the `description`, pass the SigmaHQ validator baseline cleanly
 (`sigma check --validation-config ../tests/sigma_lint/validators.yml .`), and avoid any content that reads
-as attack guidance. See [`../../CONTRIBUTING.en.md`](../../CONTRIBUTING.en.md) and the network layer in
+as attack guidance. See [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) and the network layer in
 [`../suricata/`](../suricata/) / [`../README.md`](../README.md).

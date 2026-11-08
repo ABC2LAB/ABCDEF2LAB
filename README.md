@@ -1,383 +1,97 @@
-<div align="center">
+# ABC2LAB
 
-# ARTEX — Global Edition
+**실행 범위를 통제하고 실제 근거로 결과를 확인하는 웹 보안 진단 프로젝트**입니다.
+인가·비즈니스 로직 진단을 목표로 하며, 현재는 서로 다른 두 계정으로 같은 자료를 조회하는 수평 IDOR 검사부터 개발하고 있습니다.
 
-**An autonomous penetration-testing system driven by LLM multi-agents** (Go backend + Next.js frontend)
+> **개발 중입니다.** 전송 통제와 근거 판정의 핵심 모듈이 구현되어 있으며, 서버 승인·최초 결과 저장·화면까지 이어지는 전체 연결과 실제 반복 평가는 후속 작업입니다.
 
-The UI and generated output default to English, and **can be switched to Korean, Chinese, Spanish or Japanese in Settings (System → Settings → Display language).** Changing the language also changes the language of agent-generated reports, summaries and chat replies.
+[문서 목차](docs/README.md) · [개발 환경](docs/local-dev-ko.md) · [기여 안내](CONTRIBUTING.md) · [개발 계획](docs/development-plan.md)
 
-English · [한국어](README.ko.md) · [中文](README.zh.md) · [Español](README.es.md) · [日本語](README.ja.md)
+## 목표
 
-[![ci](https://github.com/jiwoochris/artex-global/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jiwoochris/artex-global/actions/workflows/ci.yml) [![detections](https://github.com/jiwoochris/artex-global/actions/workflows/detections.yml/badge.svg?branch=main)](https://github.com/jiwoochris/artex-global/actions/workflows/detections.yml) [![web](https://github.com/jiwoochris/artex-global/actions/workflows/web.yml/badge.svg?branch=main)](https://github.com/jiwoochris/artex-global/actions/workflows/web.yml) [![license: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+- AI가 검사 후보를 제안하고, 프로그램이 요청의 실행 가능 여부와 판정 근거를 확인합니다.
+- 사용자는 탐색 결과를 검토하고 다음 경로를 선택하며, 현재 작업과 판단 근거를 확인합니다.
+- 민감한 업무 환경의 로컬 운영을 지향합니다. 로컬 모델 연결과 전체 외부 송신 차단은 각각 검증합니다.
+- 초기 로컬 개발 기준 모델(검증 전)은 `Qwen/Qwen3.5-35B-A3B`입니다. 최종 모델·성능·고객 장비 사양은 미확정이며, [모델 도입·개선 계획](docs/llm-adoption-and-improvement-plan.md)에 모델 검증·프롬프트·RAG·보고서 방침을 정리했습니다.
+- 처음 보는 웹 서비스에도 설정과 시험 자료를 등록해 적용하는 것이 최종 방향입니다. 현재 검증 범위를 모든 웹 서비스나 취약점 유형으로 확대해 해석하지 않습니다.
 
-</div>
+## 유형 독립적 보고서
 
----
+보고서는 IDOR 전용이 아니라 실제 진단에서 확보한 여러 유형의 결과를 모으는 방향입니다. 일반 E② 관찰 후보와 기존 판정을 작업 범위로 묶는 상세 HTML/API가 있으며, 확정·검토 필요·미실행·불명 결과를 구분합니다. 자동 검증 미지원 유형은 후보로 보존합니다. [구현 범위와 남은 재현·캡처 과제](docs/llm-adoption-and-improvement-plan.md#유형-독립적-결과-수집과-종합-출력)를 확인하세요. 합성 시험은 실제 모델의 탐지 성능을 뜻하지 않습니다.
 
-> ## 🚨 Security & misuse warning — read this first
->
-> **This repository is published for use only within authorized environments, and only to build defensive and detection capabilities.**
->
-> ARTEX is an autonomous offensive tool powerful enough to carry an attack from reconnaissance through intrusion to data exfiltration with little human involvement, so the harm from misuse is correspondingly large. In October 2026, several Korean news outlets reported that investigators had found indications the upstream ARTEX was used in personal-data breaches targeting Korean financial institutions; the related investigation is ongoing. This global edition is not published to help attackers. Its purpose is to help defenders understand how such autonomous AI attacks work and build the capability to detect and block them.
->
-> - **Unauthorized use is a crime in itself.** Do not run any scanning, probing, or exploitation against systems you do not own or for which you lack explicit written authorization. In the Republic of Korea, unauthorized intrusion into an information and communications network violates the Network Act, and the Personal Information Protection Act also applies where personal data is involved.
-> - **Do not target live services or other parties' assets.** Verify only in learning, research, and locally isolated environments you own (deliberately vulnerable targets such as OWASP Juice Shop or DVWA).
-> - **Read it from a defender's point of view.** This repository also compiles defensive and detection material, such as detection signatures and hardening checklists, for autonomous AI attacks. → **[Defense & Detection Guide](docs/defense-en.md)** (also in [Korean](docs/defense-ko.md))
->
-> If you do not agree to this warning and to the [usage restrictions and disclaimer](#license-and-disclaimer) below, do not download or use this repository.
+기술별 조치와 AI 수정 프롬프트는 저장 artifact의 증거·입력 버전에 묶어 조회·복사·내보냅니다. 기술 미확인과 조건부 예시를 구분하며, 오래된 조치의 복사는 차단합니다. 자동 패치·운영 실행은 하지 않습니다. [조치·프롬프트의 구현 범위](docs/llm-adoption-and-improvement-plan.md#저장된-기술별-조치와-ai-수정-프롬프트)를 확인하세요.
 
----
+## 현재 상태
 
-> **This repository is a localized edition of the Chinese open-source project [Autumn-27/ARTEX](https://github.com/Autumn-27/ARTEX) (AGPL-3.0 · upstream repository currently unreachable, checked 2026-10), adapted so that users and teams worldwide can adopt it as-is.** To preserve the agents' decision-making performance, the internal reasoning prompts are kept in the original language, and only the user-facing output (findings, summaries, reports, chat replies) is forced into the selected language (English by default). See ["Why a global edition"](#why-a-global-edition) below for the rationale.
+아래 표는 `dev`의 모듈 경계입니다. 최신 세부 상태는 각 계약 문서와 PR의 기준 커밋·검증 결과를 확인합니다.
 
-ARTEX is a system in which several LLM-driven agents autonomously run a penetration test: they **break goals down on their own, execute real tools, and accumulate discovered assets and vulnerabilities into a graph** as they go. A single Go binary ships with the Next.js frontend embedded, and all data is stored in PostgreSQL.
+| 영역 | 구현된 범위 | 남은 연결 |
+|---|---|---|
+| 요청 통제 | 등록된 HTTP 조회 요청의 대상·계정·승인·예산·중단 검사, 서버 Worker 실행 경로 | 승인 단위 누적 예산과 운영 승인 발급·전달 |
+| 근거 판정 | 정상·교차 조회 비교, 필수 근거 검사, 확정·의심·판단불가·권한상 허용 구분 | 서버 증거 수집, 판정 발급과 최초 확정 저장 강제 |
+| 공통 작업 모드 | 순수 판별 코어와 PostgreSQL 등록·조회 | private marker 이관, 실행·저장 경계의 공통 적용 |
+| 로컬 모델 | HTTP 정책·provider 생성 경계, profile 정책 resolver | 운영 설정 읽기, 실제 profile 선택·캐시·fallback 연결 |
+| 사용자 화면·평가 | 기존 화면과 평가 기록·수집·검증 도구 | 승인·판정 실데이터 연결, 같은 조건의 실제 반복 측정 |
 
-> **Note on this edition's language.** This fork makes the product usable in five languages — **English (default), Korean, Chinese, Spanish, and Japanese** — selectable in Settings. The user-facing output is forced into the selected language, while the agents' internal reasoning prompts are kept in the original language to preserve benchmarked performance. See [Configuration](#configuration) for how the output language is enforced by a small code-fixed directive.
+등록된 HTTP 경로의 통제를 셸·MCP·브라우저·임의 프로세스의 전수 통제로 표현하지 않습니다.
+개별 테스트 통과나 기록 도구 준비를 완제품의 탐지 성능으로 표현하지 않습니다.
 
----
+## 목표 사용 흐름
 
-## ⚠️ Read first — authorized use and legal notice
+1. 운영자가 대상·계정·권한·시험 자료와 요청 예산을 등록합니다.
+2. AI가 검사 후보를 제안하고 사용자가 검사 방향을 확인합니다.
+3. 전송 직전에 범위·승인·예산·중단 상태를 검사합니다.
+4. 정상 조회와 교차 조회의 실제 자료·권한 근거를 비교합니다.
+5. 판정과 근거를 기록하고 사용자에게 상태를 보여줍니다.
 
-ARTEX may be used **only against targets you own or for which you have explicit written authorization.** Any scanning, probing, or exploitation beyond the authorized scope may itself be illegal.
+이 흐름의 전체 서버·화면 연결은 개발 중입니다. 근거가 부족한 결과는 판단불가로 남기며, 단순한 응답 성공을 취약점 확정으로 취급하지 않습니다.
 
-- In the Republic of Korea, intruding into or disrupting another party's information and communications network without authorization violates the **Act on Promotion of Information and Communications Network Utilization and Information Protection** (정보통신망법).
-- Personal data collected or exposed during a penetration test is subject to the Korean **Personal Information Protection Act** (개인정보보호법). Even with authorization, handle the access, retention, and deletion of personal data with care.
-- Wherever you are, comply with your own jurisdiction's laws on network security, data protection, and computer crime.
-- Use this for **learning, research, and verification in locally isolated environments.** Before targeting any live external system, secure written authorization and an agreed scope and time window.
+## 시작하기
 
-Full license terms, usage restrictions, and the disclaimer are in the [License and disclaimer](#license-and-disclaimer) section below. Using this tool constitutes your agreement to those terms.
-
----
-
-## Why a global edition
-
-Upstream ARTEX has its prompts, UI, and documentation entirely in Chinese, which made it cumbersome for anyone who does not read Chinese to read the results and share them with a team. This edition aims to:
-
-- **Localize the output** — the findings, fact summaries, final reports, and chat replies that agents surface to a human are forced into the selected language (English by default; Korean, Chinese, Spanish, and Japanese selectable). Commands, payloads, code, URLs, and raw logs are needed for analysis and are left in their original form.
-- **Preserve performance** — the internal reasoning prompts (the behavioral instruction body) that drive the agents' judgment are **not** translated. Behavior benchmarked in the original language is kept intact, and only the output language is changed, avoiding the quality drift that translation introduces.
-- **State the legal boundaries** — the "authorized scope only" warning is stated clearly, together with Korea-specific notices on network and privacy law (the maintainers are based in Korea); the law of wherever you operate applies as well.
-- **Support diverse LLM stacks** — the LLM provider can be swapped from a frontier model to any OpenAI-compatible endpoint (domestic or open models). See [Configuration](#configuration).
-
-> The boundaries and design policy of this multilingual edition are documented in more detail in the repository's working notes. To make it easy to diff against the upstream repository, the original Chinese document is preserved as [`README.zh.md`](README.zh.md).
-
----
-
-## Screenshots
-
-The three screens below show the default English UI (switchable to Korean, Chinese, Spanish, and Japanese in Settings). The data comes from a local, isolated sandbox: every target is the fictional `acme.com` and private address ranges.
-
-<p align="center">
-  <img src="screenshots/en/dashboard.png" width="900" alt="Dashboard overview"><br>
-  <sub><b>Dashboard</b> — active tasks, confirmed findings, asset nodes, LLM token spend, and the activity feed on one screen.</sub>
-</p>
-
-<p align="center">
-  <img src="screenshots/en/findings.png" width="900" alt="Findings list"><br>
-  <sub><b>Findings</b> — results aggregated by severity, status, asset, and owning task, exportable to CSV.</sub><br>
-  <sub>Finding <b>titles</b> are model-generated, so English technical terms can appear, mirroring the target app ([Model selection and output language](#model-selection-and-output-language)). The description under each title and the rest of the UI are in English (the default; switchable in Settings).</sub>
-</p>
-
-<p align="center">
-  <img src="screenshots/en/chat.png" width="900" alt="Human-in-the-loop chat"><br>
-  <sub><b>Chat</b> — a human steps into the autonomous run to inject hints while the agent summarizes the attack chain in English.</sub>
-</p>
-
-The original (Chinese UI) screens are available in [`README.zh.md`](README.zh.md#截图预览) (Chinese UI).
-
----
-
-## Quick start (Docker Compose)
-
-> **Prerequisites:** Docker and Docker Compose. The database is **PostgreSQL**, brought up by compose. Exploration requires an **LLM** (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; can also be set in the UI).
-
-> **Image:** the `artex` service in `docker-compose.yml` pulls `ghcr.io/jiwoochris/artex-global`, the global-edition image this repository publishes to GitHub Container Registry on every release tag (`v*`). The default tag is `latest` (the most recent release); set `ARTEX_TAG` in `.env` to pin a specific release. Upstream's original image `autumn27/artex` has been taken down from Docker Hub and is no longer used.
+개발 기준 브랜치는 `dev`이며 프로젝트 변경이 포함된 소스를 빌드합니다.
 
 ```bash
-git clone https://github.com/jiwoochris/artex-global.git
-cd artex-global
-cp .env.example .env          # set POSTGRES_PASSWORD; ANTHROPIC_API_KEY is optional
-docker compose up -d          # brings up the artex image + postgres together
-# → open http://localhost:8787 (on first visit, set the admin password at /setup)
-#   /setup asks for the setup token printed in the startup log: docker compose logs artex | grep -F '[auth]'
+git clone --branch dev https://github.com/ABC2LAB/ABCDEF2LAB.git
+cd ABCDEF2LAB
 ```
 
-The image bundles common tools (ripgrep, curl, vim, npm, nmap, and more), and when brought up with compose, `./skills` and `./data` are bind-mounted to the host and survive container recreation.
+Go 1.26.3, Node.js 22.22.2 이상인 22.x 계열, PostgreSQL 16을 준비하고 [로컬 개발 안내](docs/local-dev-ko.md)를 따릅니다.
+현재 Compose의 `artex` 서비스는 기반 프로젝트의 이미지를 사용하므로 ABC2LAB 변경 확인에는 소스 실행을 사용합니다.
 
-### Other installation methods
+실행 파일 `artex`, Go 모듈 경로, `ARTEX_*` 환경변수와 기존 API 이름은 현재 코드의 호환 식별자입니다. 문서의 프로젝트 이름과 구분합니다.
 
-Upstream provides several methods: an install script (`./install.sh`), precompiled binaries (Releases), and a single-binary build from source. The commands and full procedure are collected in the "安装" (Installation) section of [`README.zh.md`](README.zh.md#安装) (in Chinese); the essentials are reproduced below.
+## 구조
 
-- **Install script:** running `./install.sh` detects/installs Docker and then lets you choose "① all-in-Docker" or "② local compile and run." "① all-in-Docker" pulls and starts the same image as the quick start above (`ghcr.io/jiwoochris/artex-global`), while "② local compile and run" builds it yourself the same way as the **single-binary build from source** below.
-- **Single-binary build from source:**
+| 경로 | 역할 |
+|---|---|
+| `server/`, `agent/` | 작업 API, 실행 문맥, 계획·실행 역할 |
+| `transmit/`, `guard/` | 실제 HTTP 요청 통제, 승인·감사 경계 |
+| `idor/`, `oracle/`, `evidencebind/`, `retest/` | 조회 비교, 근거 판정·결속 검사, 재검증 매핑 |
+| `taskmode/`, `db/` | 작업 모드, PostgreSQL 저장과 그래프 |
+| `llmpolicy/`, `dlp/`, `llmrec/` | 모델 통신 정책, 민감정보 처리와 기록 |
+| `web/` | 진단·승인·결과 화면 |
+| `scripts/eval/` | 시험 환경·기록 검증과 평가 도구 |
 
-  ```bash
-  cd web && npm ci && npm run build:static && cd ..   # 1) static frontend build
-  rm -rf server/webui/dist && mkdir -p server/webui/dist && cp -a web/out/. server/webui/dist/   # 2) sync into the embed directory (avoids nesting on rebuild)
-  CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex   # 3) compile with the frontend embedded
-  ./start.sh                                          # → http://localhost:8787
-  ```
+모듈 사이의 연결 상태와 제한은 [계약 문서 목차](docs/README.md#구현-경계와-계약)를 기준으로 확인합니다.
 
-> The `npm ci` in step 1) installs the devDependencies the build needs (e.g. `@tailwindcss/postcss`). If your shell has `NODE_ENV=production` set, `npm ci` skips devDependencies and the build fails with `Error: Cannot find module '@tailwindcss/postcss'`; in that case install with `npm ci --include=dev`.
+## 사용 범위
 
-> Launch with `start.sh` (`start.bat` on Windows) rather than running `./artex` directly. That script is a supervisor that restarts the program based on its exit code, and it also handles the UI's "one-click update."
+소유하거나 명시적으로 승인받은 시험 대상에서만 실행합니다. 초기 통합은 등록된 비민감 자료의 조회로 한정하며, 상태 변경 검사는 별도 승인된 시험 환경에서 다룹니다.
+계정 비밀번호·인증 헤더·쿠키·토큰·대상 원문과 실행 결과를 저장소에 커밋하지 않습니다.
 
----
+민감한 업무 환경에서는 로컬 모델을 사용합니다. 외부 API 모델을 사용하면 프롬프트와 대상 자료가 가려지지 않은 채 제공자에게 전달됩니다. 그래서 실제 대상은 시작 전에 [사전 공지·승인](docs/external-llm-notice-ko.md)을 받습니다.
+공개 Juice Shop 평가의 외부 API 사용 조건과 모델·제공자·샘플링 고정 기준은 [평가 프로토콜](docs/evaluation/evaluation-protocol.md)을 따릅니다.
+실제 baseline 대비 반복 측정을 마치기 전에는 개선 수치를 주장하지 않습니다.
 
-## Configuration
+## 출처와 라이선스
 
-**Database** (`config.json`, or override with the `ARTEX_PG_DSN` environment variable):
+ABC2LAB은 [ARTEX](https://github.com/Autumn-27/ARTEX)의 [global edition](https://github.com/jiwoochris/artex-global)을 기반으로 개발합니다.
+에이전트 SDK는 [Autumn-27/norma](https://github.com/Autumn-27/norma)를 사용합니다([go.mod](go.mod)).
+포크 기준 커밋은 [`fdfb7a17b7da5e2de716c0e98475ec77a41c64c6`](https://github.com/ABC2LAB/ABCDEF2LAB/commit/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6)입니다.
+원본 출처와 AGPL-3.0 [LICENSE](LICENSE)를 유지합니다. [기존 기반 자료](docs/README.md#기존-참고-자료)는 현재 제품 안내와 구분합니다.
 
-```json
-{
-  "database": {
-    "host": "127.0.0.1", "port": 5432,
-    "user": "artex", "password": "yourpass",
-    "dbname": "artex", "sslmode": "disable"
-  }
-}
-```
-
-**LLM:** `export ANTHROPIC_API_KEY=sk-...` (or `OPENAI_API_KEY`), or enter it on the UI's "LLM settings" page. Optional environment variables: `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`. To use a domestic or open model, point `ARTEX_LLM_BASE_URL` at an OpenAI-compatible endpoint.
-
-**Output language:** this edition forces user-facing output into the selected language (English by default) via a small, code-fixed directive appended to each role's system prompt (it does not translate the reasoning body). Switch languages in Settings, or adapt that directive in `agent/prompt.go` (`langDirective`).
-
-**Concurrency:** the number of worker agents spawned per task is adjustable under "System settings" (default 3).
-
-**Common flags:** `./start.sh -addr :8787 -proxy :8788` — `-addr` is the frontend and API, `-proxy` is the traffic-recording proxy port. `-addr` defaults to `127.0.0.1:8787` (local connections only); pass an explicit bind address such as `:8787` to serve other machines (see "First-run protection" below).
-
-### Model selection and output language
-
-The output-language enforcement is **driven by a prompt directive (`langDirective()` in `agent/prompt.go`), not a hard-coded cap.** So how consistently the output stays in the selected language depends on the model's capability, the role, and the context. The validation figures below were measured with Korean output while Korean was the default; the same trend holds for the other languages.
-
-- **Use a capable frontier model.** In a short validation run that applied only the production directive against a local isolated sandbox, the default model `claude-opus-4-8` kept user-facing output in Korean across all four roles — planner, worker, reporter, and an authorized-sandbox planning request — with no refusals. `gpt-4o` also stayed in Korean on the same scenarios. A cheaper, smaller model (for example `gpt-4o-mini`), by contrast, let the report fall back to the original language. Output-language quality tracks model capability directly, so use a capable model wherever a human reads the report.
-- **Some role- and context-dependent drift remains.** Divergence shows up in role and output format more than in language itself. In particular, short outputs such as the worker's final one-sentence summary can expose the model's English chain-of-thought verbatim, and the structured fields of `report_finding` can lean toward English, mirroring the target app and its technical terms. In an earlier run, `gpt-4o`'s planner situation summary also reverted to the original language on some turns. Stating "write in the selected language" explicitly in the task instruction raises the fidelity.
-- **Give reasoning models a generous `max_tokens`.** A reasoning model that uses a separate thinking channel can spend a small response-token budget entirely on internal reasoning and leave the user-facing final answer empty. Here the answer itself disappears rather than the language, so set that LLM profile's `max_tokens` high enough.
-
-> **Token-cap pitfall on the OpenAI-compatible path.** OpenAI-family models such as `gpt-4o` cap response tokens at 16,384. OpenAI-compatible requests, however, carry a larger default output cap (32,768), so leaving it unchanged makes every call fail with `400 (max_tokens is too large)`. In that case, **set that profile's `max_tokens` to 16,384 or lower on the LLM settings page.** Anthropic-family models (including the default `claude-opus-4-8`) allow 32,768 and do not hit this pitfall.
-
-### First-run protection (setup token and bind address)
-
-There is a single admin account (`ARTEX`) whose password is created on the first visit at `/setup`. So that whoever reaches a not-yet-initialised instance first cannot claim it, the following protections apply.
-
-- **Setup token.** When the server starts without a password it prints one line `[auth] … Setup token: …` to the console (`docker compose logs artex` under Docker). `/setup` and `POST /api/auth/init` (`setup_token` field) only create the password when that value matches, and wrong attempts are rate-limited. For unattended deployments pin it with `ARTEX_SETUP_TOKEN`, or set the password directly with `ARTEX_ADMIN_PASSWORD` (8+ characters).
-- **Binds to 127.0.0.1 by default.** Both the `-addr` default of `artex` and the port publishing in `docker-compose.yml` open the loopback interface only. To reach it from other machines use `-addr :8787` or `ARTEX_BIND=0.0.0.0` in `.env`, but finish the initial setup first and prefer the reverse-proxy layout below. Starting without a password on a non-loopback address logs a warning.
-- **Changing the password ends every session.** The token signing key is bound to the password hash, so tokens issued before a change (from the UI, `reset-password.sh`, or a direct DB edit) stop working within seconds. When recovering from a compromised account, also review custom tools, MCP, LLM and notification settings after changing the password.
-- **CORS.** `/api` only answers cross-origin browser calls from origins listed in `ARTEX_CORS_ORIGINS` (comma-separated). The embedded UI is same-origin, so this is normally empty; the default only allows `next dev` from `dev.sh` (`http://localhost:5173`).
-
-### Reverse-proxy deployment (HTTPS / expose only 443)
-
-The frontend and the API/SSE are both served by the same backend port (default `:8787`), and the live activity stream connects **same-origin** by default. So there is no need to set `NEXT_PUBLIC_SSE_BASE` separately: expose only 443 to the public network and keep 8787 internal.
-
-SSE holds a long-lived connection and keeps pushing events, so you **must disable buffering** in the reverse proxy. If you don't, the browser connects but receives no events (the activity stream appears stuck loading). An Nginx configuration example is in [`README.zh.md`](README.zh.md#反向代理部署https--只开放-443).
-
----
-
-## System architecture
-
-ARTEX is an **autonomous penetration system driven by LLM multi-agents.** It uses a single Go backend (with the Next.js frontend embedded) over PostgreSQL, and the agent capabilities are provided by the [`norma`](https://github.com/Autumn-27/norma) (currently unreachable, checked 2026-10) SDK. At its core is a **dual-graph structure** and the two autonomy mechanisms around it: process-level information exchange between workers, and the planner's multi-round shared todolist.
-
-### Overall layers
-
-```mermaid
-flowchart TB
-  subgraph FE["Frontend Next.js (embedded in the single binary via go:embed)"]
-    UI["Dashboard · Tasks · Assets · Coverage graph · Traffic · Workspace · System settings"]
-  end
-  subgraph SRV["server (Go net/http)"]
-    API["REST /api/*　JWT auth　SSE"]
-    ENG["engine scheduling loop"]
-    MGR["Manager　task/engine/store lifecycle"]
-  end
-  subgraph AG["agent (norma SDK)"]
-    GO["goals　goal decomposition + scope extraction"]
-    PL["planner　the only intent producer"]
-    WK["worker　executor ×N"]
-    MA["mainagent　human-in-the-loop"]
-  end
-  subgraph DB["PostgreSQL"]
-    AGRAPH["Asset graph　assets / companies / task_scope"]
-    EGRAPH["Exploration graph　exploration_nodes / anchors / activity"]
-  end
-  subgraph SUB["Supporting subsystems"]
-    PROXY["traffic-recording proxy　MITM + CA recording"]
-    GUARD["guard / intercept　tool approval gate"]
-    ENR["enrich　async DNS / HTTP enrichment"]
-    EXT["MCP · skills · memory · report"]
-  end
-
-  UI -->|HTTP| API
-  API --> MGR --> ENG
-  ENG --> PL
-  ENG --> WK
-  API --> MA
-  API --> GO
-  PL --> DB
-  WK --> DB
-  MA --> DB
-  GO --> DB
-  WK -->|"records the full Bash / HTTP process"| PROXY
-  WK --> GUARD
-  WK --> ENR
-  PL -.-> EXT
-  WK -.-> EXT
-  MA -.-> EXT
-```
-
-- **Frontend** — the Next.js static build is embedded into the single binary with `go:embed`. It visualizes tasks, assets, exploration chains, and the coverage graph, and provides the human-in-the-loop chat.
-- **server** — handles `net/http` routing, JWT auth, and SSE; the `Manager` owns the lifecycle of tasks, engines, and the DB store.
-- **engine** — per task, runs one `plannerLoop` and N worker goroutines, handling intent assignment, timeouts, pause, and drain.
-- **agent** — split into goals / planner / worker / mainagent; the `ToolSet` exposes the dual graph as LLM tools.
-- **db** — stores the dual graph in PostgreSQL (pgx); the schema embedded via `go:embed` idempotently creates the tables on every startup.
-- **support** — the recording MITM proxy, the approval gate, async enrichment, and MCP / skills / memory / report.
-
-### The dual graph: exploration graph + asset graph
-
-The system separates "what the target is" from "how far it has been tested" into two graphs that are independent yet linked by anchors.
-
-- **Asset graph (globally shared)** — the source-of-truth asset store shared across tasks. Nodes are `root_domain / subdomain / ip / service / app / endpoint` and belong to a company. The parent-child relationships (domain → subdomain → service → endpoint) and the dedup keys are all computed by the program; agents submit only the raw information.
-- **Exploration graph (independent per task)** — the "thinking and progress" of a single task. Nodes are `goal / intent / fact / finding / hint`, connected by edges such as `spawns / derived_from / yields / proves` to form lineage chains.
-- **The two graphs are linked by anchors** — `exploration_anchors(node_id, asset_id)` pins intents, facts, and findings to concrete assets. This lets you query, from the exploration side, which asset a direction was attacking, and conversely which intent tested a given asset in this task and what facts it produced — in both directions.
-
-```mermaid
-flowchart LR
-  subgraph EG["Exploration graph (per task · progress chain)"]
-    direction TB
-    G["goal"]
-    I1["intent A"]
-    F1["fact"]
-    I2["intent B"]
-    FD["finding"]
-    G -->|spawns| I1
-    I1 -->|yields| F1
-    F1 -->|derived_from| I2
-    I2 -->|proves| FD
-  end
-  subgraph AG["Asset graph (globally shared · source of truth)"]
-    direction TB
-    RD["root_domain"]
-    SD["subdomain"]
-    SV["service"]
-    EP["endpoint"]
-    RD --> SD --> SV --> EP
-  end
-  I1 -. anchor .-> SD
-  F1 -. anchor .-> SV
-  I2 -. anchor .-> EP
-  FD -. anchor .-> EP
-```
-
-> Division of roles: the **planner** reads the state of the exploration graph and judges goals, emitting **intents** to the frontier only when there is a new direction not yet covered. A **worker** takes a **single intent**, executes it with real tools, writes the new assets/facts/findings into both graphs, and then stops. The asset graph is shared truth; the exploration graph is the per-task progress chain.
-
-### The engine and the intent lifecycle (one closed exploration loop)
-
-The engine is an **event-driven** closed loop. When the graph changes it wakes the planner; when the planner emits an intent a worker claims and executes it and writes the results; that write in turn triggers the next round. This cycle continues until a goal is proven (`prove_goal`).
-
-```mermaid
-sequenceDiagram
-  autonumber
-  participant EV as graph-change debounce
-  participant P as planner
-  participant FR as frontier intent queue
-  participant W as worker
-  participant PX as recording proxy
-  participant DB as dual graph + activity
-
-  EV-->>P: wake
-  P->>DB: read state (graph_overview prefetch + coverage/scope)
-  P->>FR: assign 0..N intents (with asset_ids)
-  Note over P,FR: most wakes assign 0 — if there is no new direction, it ends
-  W->>FR: claimNext to receive one intent
-  W->>DB: fetch the intent's asset_ids source assets as initial info
-  W->>PX: execute real tools (Kali / Bash / HTTP)
-  PX-->>W: response (full process recorded + CA verification)
-  W->>DB: record fact / asset / finding + step-by-step activity
-  DB-->>EV: graph changed
-  EV-->>P: wake again (closed loop)
-```
-
-### Process-level information exchange between workers
-
-In deep exploration, valuable observations (a particular error, a response fragment, a hidden parameter) often arise during one worker's **execution process** without being recorded as a formal fact. To avoid duplicated effort and let later workers build on earlier observations, workers can **search the processes of other workers.**
-
-- `search_all_worker_traces(q)` — search the execution processes of other workers in the same task by keyword (the worker's own intent steps are excluded automatically). Hits carry an `intent_id`.
-- `list_worker_traces` / `get_worker_trace(intent_id, step_ids=[…])` — first see which workers ran, then pull the full content of specific steps of a given worker to exchange details.
-
-This way, even when there is not yet a corresponding fact in the exploration graph, a later worker reuses observations from another's process. Information flows between workers at the "execution process" level while the boundaries stay intact (each worker still performs only its single assigned intent).
-
-```mermaid
-flowchart LR
-  WA["worker A (intent #12)"] -->|"per-step activity"| ACT[("exploration graph · activity process store")]
-  WB["worker B (intent #34)"] -->|"per-step activity"| ACT
-  WC["worker C (intent #56)"] ==>|"① search_all_worker_traces(q)"| ACT
-  ACT ==>|"② hits in A/B's steps (self excluded)"| WC
-  WC ==>|"③ get_worker_trace(intent_id, step_ids)"| ACT
-  ACT ==>|"④ return full process content"| WC
-```
-
-### The planner's multi-round shared todolist → a stable attack chain
-
-A real attack chain is often an ordered sequence of mutually dependent steps (e.g., find an injection point → obtain credentials → lateral movement → privilege escalation), and dispatching them all in parallel at once would tangle them. So the planner holds a **planning todolist that persists per task and is shared across wakes.**
-
-- The planner is event-driven, so it wakes whenever the graph changes, but **each wake is a fresh session.** The shared todolist records the serial attack chain **once** and then, across subsequent rounds, assigns intents **one step at a time in dependency order** (it does not unfold the whole chain ahead of time in a single round).
-- Each round, it assigns an intent only to the next step whose prerequisite is done and whose depended-upon fact already exists, updating the list as it goes (marking fact-satisfied steps complete).
-
-```mermaid
-flowchart TB
-  subgraph TODO["shared todolist (persists per task · resident across wakes)"]
-    direction LR
-    T1["1 injection point　[done]"]
-    T2["2 obtain credentials　[in progress]"]
-    T3["3 lateral movement　[awaiting prereq]"]
-    T4["4 privilege escalation　[awaiting prereq]"]
-    T1 -. prereq satisfied .-> T2 -.-> T3 -.-> T4
-  end
-  R1["round 1 wake　dispatch intent ①"] --> T1
-  R2["round 2 (① yields fact)　dispatch intent ②"] --> T2
-  R3["round 3 (② yields fact)　dispatch intent ③"] --> T3
-```
-
-This lets the attack chain progress reliably even in an "event-driven + stateless session" environment — without duplication and without going out of order. This is the core of how ARTEX completes multi-step attack chains autonomously.
-
----
-
-## Defense and detection material
-
-This repository aims to help the **defending side** understand how autonomous AI attacks work and build the capability to detect and block them. It takes the ARTEX behavior seen in the architecture above and turns it around into a **defender's view**, laying out what to observe and where to tighten.
-
-- **[Defense & Detection Guide (docs/defense-en.md)](docs/defense-en.md)** (also in [Korean](docs/defense-ko.md))
-  - How autonomous AI attacks differ from traditional scanners, why they are hard to detect, and how to detect them anyway
-  - The fingerprints a defender can observe (IoCs and behavioral signatures) — separated into the target view and the forensic view
-  - The entry points attackers target and the corresponding hardening (auxiliary authentication, IDOR, credential stuffing, sessions and secrets)
-  - WAF/SIEM/authentication-log detection rules (pseudo-rules), a hardening checklist, and an incident-response summary
-  - Korean official channels for indicators of compromise and advisories (KISA, FSI, PIPC) and the reporting duties under Korean law
-- **[Deployable detection rules (detections/)](detections/)** — the guide's fingerprint detections shipped as ready-to-use rules: the host/log/SIEM layer as [Sigma](https://sigmahq.io) rules (atomic + correlation; use `sigma convert` for Splunk, Elasticsearch, and others), and the network layer as [Suricata](https://suricata.io) rules targeting the enrich prober and norma SDK WebFetch User-Agents.
-  - **[ATT&CK coverage layer (detections/attack/)](detections/attack/)**: a [MITRE ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) layer (JSON) that maps the rules above to the techniques they tag, so you can see at a glance which attack behavior each rule catches. Every technique comes only from a rule's `attack.*` tags, with nothing added by guesswork.
-  - **[Machine-readable indicator list (detections/indicators/)](detections/indicators/)**: the unique fingerprints ARTEX itself emits, gathered into a single CSV (`artex_indicators.csv`) and shipped as a ready-to-import MISP event (`artex_indicators.misp.json`) as well, so you can drop them straight into a SIEM lookup table or a threat-intelligence platform (MISP, or anything that ingests the MISP format) as indicators of compromise (IoCs). Every value is a string verified in the repository source, and each row carries its source file and detection rule.
-  - **[Host triage script (detections/triage/)](detections/triage/)**: a read-only script, [`artex_host_triage.py`](detections/triage/artex_host_triage.py), for the responder standing at a single suspected host's shell with no SIEM or network sensor. It checks the same fingerprints the rules above do, plus — on the box itself — the three host/DB indicators the indicator CSV deliberately carries without a Sigma rule because they are not log- or network-observable (the server listen port, the recording-proxy endpoint, the PostgreSQL exploration schema). It runs on the standard library alone with nothing to install, and every finding is a triage lead carrying the same caveat as its indicator row, never an attribution on its own.
-  - The rules, the layer, the indicators above, and the host-triage script's self-test are all re-run and verified by the repository tests ([detections/tests/](detections/tests/)): a detection rule you cannot run is only a claim.
-
-> This material is continually expanded. Suggest additional detection rules or hardening items as issues, and when you send a rule directly, please follow the contract in [the "Contributing detection rules and detection tests" section of the contributing guide](CONTRIBUTING.en.md#contributing-detection-rules-and-detection-tests) (ground every indicator in observable fact, state the limits, pass static validation, and include a reproducible test).
-
----
-
-## Development
-
-Local development and testing:
-
-```bash
-./dev.sh    # backend (:8787) + traffic proxy (:8788) + frontend next dev (:5173) → http://localhost:5173
-```
-
-- Backend: `go run ./cmd/artex` (without `-tags embedui` the frontend is not embedded)
-- Frontend: `cd web && npm run dev` (proxies `/api` to the backend, with hot reload)
-- Tests: `go test ./...`
-- Mock preview (no backend): `cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
-
-For other development topics (such as manual vulnerability re-verification), see the "开发" (Development) section of [`README.zh.md`](README.zh.md#开发).
-
-The changes this global edition adds on top of upstream ARTEX are tracked in the [changelog (CHANGELOG.en.md)](CHANGELOG.en.md).
-
----
+<details>
+<summary>기반 프로젝트에서 이어받은 라이선스·이용 고지 원문</summary>
 
 ## License and disclaimer
 
@@ -402,11 +116,4 @@ This project is provided "AS IS" without any warranty, express or implied. The o
 
 **All legal responsibility and consequences rest with the user.**
 
----
-
-## Upstream project
-
-- Upstream repository: [Autumn-27/ARTEX](https://github.com/Autumn-27/ARTEX) (currently unreachable, checked 2026-10)
-- Original README (Chinese): [README.zh.md](README.zh.md)
-- Original online demo (Chinese UI): [https://artex-demo.vercel.app/](https://artex-demo.vercel.app/) (currently unreachable, checked 2026-10)
-- Agent SDK: [Autumn-27/norma](https://github.com/Autumn-27/norma) (currently unreachable, checked 2026-10)
+</details>

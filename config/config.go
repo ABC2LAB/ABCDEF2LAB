@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Database is the PostgreSQL connection config. Either set DSN directly, or set
@@ -36,12 +37,10 @@ type Config struct {
 
 // SupportedLanguages lists the user-facing output languages artex-global can
 // switch between. Agent output, UI strings and backend messages all key off these.
-var SupportedLanguages = []string{"en", "ko", "zh", "es", "ja"}
+var SupportedLanguages = []string{"ko"}
 
-// DefaultLanguage is the out-of-box user-facing language when nothing is
-// configured. artex-global defaults to English; Korean, Chinese, Spanish and
-// Japanese are selectable at runtime via the language setting (and ARTEX_LANG).
-const DefaultLanguage = "en"
+// DefaultLanguage is the only user-facing language. 사람이 보는 글은 한국어 하나다(CLAUDE.md 엔진 언어 규칙).
+const DefaultLanguage = "ko"
 
 // NormalizeLanguage lower-cases and validates a language code, returning "" when
 // the code is empty or unsupported (so callers can fall through to the next source).
@@ -55,22 +54,41 @@ func NormalizeLanguage(code string) string {
 	return ""
 }
 
-// CurrentLanguage, when wired by the server, returns the active user-facing
+// SetCurrentLanguage wires the runtime resolver for the active user-facing
 // output language picked at runtime (settings table) layered over the bootstrap
 // default. It is the single source backend display strings (enum labels, etc.)
-// read through ActiveLanguage. nil (unit tests / standalone) → ActiveLanguage
-// falls back to "ko", which keeps the Korean localization golden tests green.
-var CurrentLanguage func() string
+// read through ActiveLanguage. A nil resolver (unit tests / standalone) makes
+// ActiveLanguage fall back to "ko", which keeps the Korean localization golden
+// tests green.
+var currentLanguage struct {
+	sync.RWMutex
+	fn func() string
+}
+
+// SetCurrentLanguage installs the process-wide runtime language resolver and
+// returns the previously installed resolver. The resolver is snapshotted under
+// the lock, but always invoked after releasing it so callbacks may re-enter
+// this package (including by replacing the resolver).
+func SetCurrentLanguage(fn func() string) (previous func() string) {
+	currentLanguage.Lock()
+	previous = currentLanguage.fn
+	currentLanguage.fn = fn
+	currentLanguage.Unlock()
+	return previous
+}
 
 // ActiveLanguage resolves the language for backend display strings. Precedence:
 // the runtime hook (settings table, via the server) over an unwired fallback of
-// "ko". Production always wires CurrentLanguage, so a fresh deploy resolves to the
+// "ko". Production always wires SetCurrentLanguage, so a fresh deploy resolves to the
 // configured default (DefaultLanguage = "en") through that hook; the "ko" fallback
 // only applies when the hook is absent (unit tests / standalone), so the Korean
 // localization golden tests hold without each having to pin the language.
 func ActiveLanguage() string {
-	if CurrentLanguage != nil {
-		if v := NormalizeLanguage(CurrentLanguage()); v != "" {
+	currentLanguage.RLock()
+	fn := currentLanguage.fn
+	currentLanguage.RUnlock()
+	if fn != nil {
+		if v := NormalizeLanguage(fn()); v != "" {
 			return v
 		}
 	}

@@ -1,0 +1,32 @@
+{
+  "purpose": "관측 front가 통과시키는 GET /api/Challenges(쿼리 없음)가 Juice Shop v15.0.0의 해결 상태를 바꾸지 않는다는 근거. 러너 설정 observer_readonly_ref가 이 파일을 가리킨다(runner.md).",
+  "target_image": "bkimminich/juice-shop:v15.0.0@sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d",
+  "observer_path": "/api/Challenges",
+  "method": "엔진이 대상에 요청을 0건 보낸 완료·서명 회차(local 백엔드 가짜 LLM, 개발 머신)에서, 회차마다 새로 띄운 대상에 관측 front의 GET만 보내고 pre·post 스코어보드를 비교했다.",
+  "recorded_at": "2026-11-04",
+  "runs": [
+    {
+      "run_id": "baseline-20261104t050536z-2505ab1d",
+      "engine_requests": 0,
+      "observer_gets": 4,
+      "challenges": 102,
+      "pre_solved": 0,
+      "post_solved": 0,
+      "run_record_sha256": "a5c757269abac8b7a7c9fb340519a898d4c1c59bcec590264248d708dad3743c"
+    },
+    {
+      "run_id": "ours-20261104t050730z-d9bd5bfb",
+      "engine_requests": 0,
+      "observer_gets": 3,
+      "challenges": 102,
+      "pre_solved": 0,
+      "post_solved": 0,
+      "run_record_sha256": "f342be3f4be149654ec18962109270a86ab9a5e3db0a5c5c19ae62eab533a4b7"
+    }
+  ],
+  "limits": [
+    "해결 상태(스코어보드)만 확인했다. 로그·세션 등 다른 서버 상태는 보지 않았다.",
+    "pre 스냅샷 전에도 준비 확인 GET이 있었지만 새 인스턴스라 해결 0에서 시작했고, pre·post 모두 0이다.",
+    "회차 기록 원본은 결과물이라 레포에 넣지 않는다(해시만 남김)."
+  ]
+}

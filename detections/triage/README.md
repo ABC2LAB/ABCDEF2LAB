@@ -1,5 +1,7 @@
 # ARTEX host triage
 
+> **Inherited reference:** see the [ABC2LAB documentation](../../docs/README.md) for the current project. The procedures and sample outputs below are inherited material, not verification results for this checkout. The original CI workflow is absent, so automatic CI/merge gates are not provided here. Harness, indicator, and MISP checks that read that file may fail until adapted.
+
 English · [한국어](README.ko.md)
 
 > 한국어: [`artex_host_triage.py`](artex_host_triage.py) 는 ARTEX 가 돌았다고 의심되는 **호스트 한 대에서 직접**
@@ -34,8 +36,9 @@ carries the same honest caveat as the matching Sigma rule or indicator row.
   The CA is the trust anchor of an adversary-in-the-middle traffic recorder (ATT&CK T1557).
 - **Log markers** — the enrichment prober UA `artex-enrich/1.0` ([`enrich/enrich.go`](../../enrich/enrich.go)),
   the self-update egress UA `artex-selfupdate` ([`selfupdate/github.go`](../../selfupdate/github.go)), and
-  the platform-guard audit marker ([`guard/guard.go`](../../guard/guard.go); kept verbatim, including the
-  non-ASCII framing, so the grep matches) in the log file(s) you point it at. Rotated logs compressed as
+  current and historical platform-control markers ([current emitter](../../guard/guard.go),
+  [historical provenance](../indicators/legacy_guard_marker.md)) in the log file(s) you point it at.
+  Current audit rows store display reasons separately and need not contain either marker. Rotated logs compressed as
   `.gz`/`.bz2`/`.xz` are decompressed and scanned too, so the host's log history is covered; a format with
   no standard-library codec (`.zst`/`.lz4`) is reported as **skipped** rather than silently treated as
   clean — decompress it first or `grep` it by hand.
@@ -107,7 +110,7 @@ The `--self-test` builds a synthetic host — a data directory with a planted CA
 log containing each marker; a port listing; and a captured process-environment dump — and asserts every
 check fires on it, then asserts a clean host, a benign log, and a corporate-proxy process produce **zero**
 findings (no false positives). It is wired into the
-[`detections` CI workflow](../../.github/workflows/detections.yml) and re-run by
+`.github/workflows/detections.yml` and re-run by
 [`detections/tests/run-all.sh`](../tests/run-all.sh), so a change that breaks a check, or that drifts an
 indicator away from the source string it greps for, fails the merge gate. A detection you cannot run is
 only a claim.

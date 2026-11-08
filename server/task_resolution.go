@@ -71,9 +71,12 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 		}
 		if p != nil {
 			resolved := s.resolutionFromProfile(p, "agent_binding")
-			if resolved.Available {
+			if resolved.Available || s.localResolver != nil {
 				return resolved, nil
 			}
+		} else if s.localResolver != nil {
+			id := *a.LLMProfileID
+			return taskLLMResolution{ProfileID: &id, Source: "agent_binding", Reason: reasonLLMProfileMissing}, nil
 		}
 	}
 	state := t.llmStateSnapshot()
@@ -100,6 +103,9 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 	s.cfgMu.Lock()
 	on, name, cfg := s.llmOn, s.llmProf, s.llmCfg
 	s.cfgMu.Unlock()
+	if on && s.localResolver != nil {
+		_, _, on = s.globalProvider()
+	}
 	if on {
 		if name == "" {
 			name = sourceNameGlobalConfig

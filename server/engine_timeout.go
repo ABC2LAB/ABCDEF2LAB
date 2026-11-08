@@ -50,7 +50,7 @@ func (e *Engine) inflightCounter(taskID string) *int64 {
 func (e *Engine) beginTaskOperation(taskID string) bool {
 	e.deleteMu.RLock()
 	defer e.deleteMu.RUnlock()
-	if e.IsDeleting(taskID) {
+	if e.IsDeleting(taskID) || e.controlledTransitionBlocks(taskID) {
 		return false
 	}
 	atomic.AddInt64(e.inflightCounter(taskID), 1)
@@ -234,6 +234,13 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 const timeoutFinalRoundSummaryFmt = "작업 시간 초과 마무리·최종 판정(%d차)"
 
 func (e *Engine) runFinalPlannerRound(ctx context.Context, t *Task) (met bool) {
+	// 회수·만료 이후 독립 Planner 문맥으로 대상 도구를 다시 열지 않는다.
+	if t == nil || e.e2HTTP != nil || e.firstDiagnosis {
+		return false
+	}
+	if e.controlledTask(t.ID) {
+		return false
+	}
 	if e.IsDeleting(t.ID) {
 		return false
 	}
@@ -269,4 +276,8 @@ func (e *Engine) runFinalPlannerRound(ctx context.Context, t *Task) (met bool) {
 		log.Printf("[deadline] task %s 终局判定目标达成: %s", t.ID, reason)
 	}
 	return met
+}
+
+func (e *Engine) incControlledRegistration(taskID string) {
+	atomic.AddInt64(e.inflightCounter(taskID), 1)
 }

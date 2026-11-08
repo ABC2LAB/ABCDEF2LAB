@@ -1,5 +1,7 @@
 # ARTEX detection rules (Suricata / network)
 
+> **Inherited reference:** see the [ABC2LAB documentation](../../docs/README.md) for the current project. The procedures and sample outputs below are inherited material, not verification results for this checkout. The original CI workflow is absent, so automatic CI/merge gates are not provided here. Harness, indicator, and MISP checks that read that file may fail until adapted.
+
 English · [한국어](README.ko.md)
 
 > 한국어: 이 디렉터리는 [방어·탐지 가이드(docs/defense-ko.md)](../../docs/defense-ko.md) 2·4절의
@@ -11,8 +13,7 @@ English · [한국어](README.ko.md)
 The network-layer companion to the [Sigma rules](../sigma/). These [Suricata](https://suricata.io)
 signatures cover the two ARTEX artifacts that are observable on the wire, and every indicator is grounded in a
 string or behaviour verified in this repository's source, not inferred. The host, log, and SIEM layers live
-under [`../sigma/`](../sigma/); the defense guide ([Korean](../../docs/defense-ko.md) ·
-[English](../../docs/defense-en.md)) explains the full picture.
+under [`../sigma/`](../sigma/); the defense guide ([Korean reference](../../docs/defense-ko.md)) explains the full picture.
 
 ## Rules — [`artex.rules`](artex.rules)
 
@@ -43,8 +44,8 @@ under [`../sigma/`](../sigma/); the defense guide ([Korean](../../docs/defense-k
   signal is behaviour — rate and breadth — which is why sid 1000002 (and the Sigma correlation layer) key on
   velocity, and why pure web multi-stage detection needs base rules specific to your environment.
 - **Deliberately omitted.** The self-update User-Agent `artex-selfupdate` travels over HTTPS to GitHub and is
-  not network-observable (TLS SNI alone is too common to alert on). The audit-control marker is an
-  operator-side log artifact, not target-facing traffic — detect it with
+  not network-observable (TLS SNI alone is too common to alert on). Current and historical guard framing markers are
+  retained tool-result/session artifacts, not target-facing traffic — detect it with
   [`../sigma/artex_guard_audit_framing.yml`](../sigma/artex_guard_audit_framing.yml). The server port `:8787`
   and recording proxy `127.0.0.1:8788` (`cmd/artex/main.go`) are host-forensic (`ss`/`netstat`), not a
   network signature.
@@ -94,5 +95,5 @@ suricata -r enrich.pcap -S artex.rules -l out && \
 
 Detection contributions are welcome. New rules should keep every indicator grounded in an observable fact,
 state limitations in a comment, pass `suricata -T` cleanly, and avoid any content that reads as attack
-guidance. See [`../../CONTRIBUTING.en.md`](../../CONTRIBUTING.en.md) and the Sigma layer in
+guidance. See [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) and the Sigma layer in
 [`../sigma/`](../sigma/) / [`../README.md`](../README.md).

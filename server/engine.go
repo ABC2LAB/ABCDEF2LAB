@@ -33,7 +33,7 @@ func dropReason(err error) string {
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "23503":
-			return "fk_violation(23503,父exploration不存在)"
+			return "fk_violation(23503, 상위 exploration 없음)"
 		case "23505":
 			return "unique_violation(23505)"
 		default:
@@ -81,8 +81,8 @@ var errWorkControlConflict = errors.New("work control conflict")
 // applyIntentControl(task_control.go) → controlIntent(server.go:1236) → writeErr 409 로,
 // runDetachedIntent 의 반환 오류는 intent_intervention.go:147 → writeErr 로 사용자 화면에
 // 뜬다. 두 경로 모두 에이전트 도구(actool) 입력에 닿지 않으므로 한국어로 바꾼다. 반대로
-// 같은 파일의 SteerWork·KillWork(steer_work·kill_work 도구 결과)와 transitionIntentState
-// (내부 상태 전이 로그) 문구는 두뇌 입력·로그라 성능 드리프트를 막기 위해 원문을 보존한다
+// 같은 파일의 SteerWork·KillWork(steer_work·kill_work 도구 결과) 문구는 모델이 읽어 영어이고,
+// transitionIntentState 문구는 사람이 보는 로그·API 오류라 한국어다
 // (각 지점 주석 참조). 의도가 더 이상 paused 상태가 아니라는 재개 충돌 문구는 task_control.go
 // 의 errIntentCtrlStateConflictFmt 를 재사용해 단일 출처를 유지한다.
 const (
@@ -107,8 +107,13 @@ func retryableWorkerModelError(reason harness.TerminalReason, err error) bool {
 // (re)installed at runtime (LLM configured from the UI); the loops always run
 // but idle until an LLM is set.
 type Engine struct {
-	m        *Manager
-	debounce time.Duration
+	m                       *Manager
+	debounce                time.Duration
+	controlledReads         *controlledReadRuntime // installed by Server before any task starts
+	e2HTTP                  *E2HTTPRuntime         // 일반 HTTP는 등록 GET의 상태·승인과 분리한다.
+	firstDiagnosis          bool
+	firstDiagnosisAdmission func(*Task) error
+	controlledIdle          func(*Task) // parks a drained controlled task
 
 	bc *Broadcaster // live activity pub/sub (SSE)
 
@@ -166,7 +171,8 @@ type Engine struct {
 	resolveAuthoritative bool
 	// readiness reports whether a global LLM provider is configured — the signal behind
 	// Ready()/the llm_configured indicator. Wired once at startup; nil → not ready.
-	readiness func() bool
+	readiness    func() bool
+	runtimeHooks *agent.RuntimeHooks // nil for standalone engines; assigned before startup
 }
 
 type taskRuntime struct {
@@ -176,9 +182,10 @@ type taskRuntime struct {
 }
 
 type workExecution struct {
-	cancel context.CancelCauseFunc
-	done   chan error
-	action string // user action: pause | cancel
+	cancel            context.CancelCauseFunc
+	done              chan error
+	action            string // user action: pause | cancel
+	completionClaimed bool   // guarded by workMu; late cancellation cannot change this disposition
 }
 
 // nextPlannerRound returns the next planner round number for a task (1-based).
@@ -275,6 +282,9 @@ func (e *Engine) StopTask(taskID string) {
 	if rt != nil {
 		rt.wg.Wait()
 	}
+	if e.controlledReads != nil {
+		e.controlledReads.discardTask(taskID)
+	}
 
 	e.execMu.Lock()
 	if cancel := e.execCancel[taskID]; cancel != nil {
@@ -310,11 +320,21 @@ func (e *Engine) StopTask(taskID string) {
 // planner.Plan / worker.Execute), if present. Shared by Pause and the settle
 // sequence's hard-drain backstop.
 func (e *Engine) cancelExec(taskID string, cause error) {
+	if e.e2HTTP != nil {
+		_ = e.e2HTTP.FenceTask(taskID)
+	}
+	// A task cancellation and controlled completion cannot pass one another's
+	// execution decision unnoticed. No registry/DB work is performed here.
+	e.workMu.Lock()
 	e.execMu.Lock()
 	if cancel := e.execCancel[taskID]; cancel != nil {
 		cancel(cause)
 	}
 	e.execMu.Unlock()
+	e.workMu.Unlock()
+	if e.controlledReads != nil {
+		e.controlledReads.discardTask(taskID)
+	}
 }
 
 // Resume un-pauses a task and nudges a fresh planning round. The next exec under
@@ -410,10 +430,12 @@ func NewEngine(m *Manager) *Engine {
 }
 
 // registerWork records the cancel for the work currently running intentID.
-func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc) {
+func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc) *workExecution {
 	e.workMu.Lock()
-	e.work[intentID] = &workExecution{cancel: cancel, done: make(chan error, 1)}
+	run := &workExecution{cancel: cancel, done: make(chan error, 1)}
+	e.work[intentID] = run
 	e.workMu.Unlock()
+	return run
 }
 
 // detachWork removes the live control handle once Execute has returned. complete
@@ -452,6 +474,10 @@ func (e *Engine) ControlWork(ctx context.Context, intentID int64, action string)
 	if run == nil {
 		e.workMu.Unlock()
 		return fmt.Errorf(trMsg(errWorkControlNoRunningWorkFmt), errWorkControlConflict, intentID)
+	}
+	if run.completionClaimed {
+		e.workMu.Unlock()
+		return fmt.Errorf(trMsg(errWorkControlBusyFmt), errWorkControlConflict, intentID, "completed")
 	}
 	if run.action != "" {
 		e.workMu.Unlock()
@@ -498,10 +524,10 @@ func transitionIntentState(store *db.ExplorationStore, intentID int64, expected,
 		return err
 	}
 	if !changed {
-		// 이 CAS 충돌 오류는 runIntent(아래 989~1156) 안에서만 쓰이고 그 함수는 bool 을
-		// 반환한다. 오류는 log.Printf 로 남기거나 흐름 제어에만 쓰여 HTTP 응답·에이전트
-		// 도구(actool)로 나가지 않으므로, 로그 성격(Z2)이라 원문을 보존한다.
-		return fmt.Errorf("%w: 意图 %d 不再是 %s 状态", db.ErrIntentStateConflict, intentID, expected)
+		// 이 CAS 충돌 오류는 log.Printf 로 남거나, controlErr 로 ControlWork 를 거쳐
+		// controlIntent 의 writeErr 409 로 사람에게 간다. 에이전트 도구(actool)로는 나가지
+		// 않으므로 한국어다.
+		return fmt.Errorf("%w: 의도 %d 는 더 이상 %s 상태가 아니다", db.ErrIntentStateConflict, intentID, expected)
 	}
 	return nil
 }
@@ -511,16 +537,15 @@ func transitionIntentState(store *db.ExplorationStore, intentID int64, expected,
 // re-plans — no kill. Errors if no work is currently running that intent.
 func (e *Engine) SteerWork(intentID int64, msg string) error {
 	// SteerWork 는 planner·mainagent 의 steer_work 도구(agent/tools.go)로 배선되어, 아래 두
-	// 오류가 actool.Errorf(err.Error()) 로 에이전트에게 되돌아가는 두뇌 입력이다. 번역하면
-	// 벤치마크된 에이전트의 입력이 바뀌어 성능 드리프트 위험이 있어 원문을 보존한다.
+	// 오류가 actool.Errorf(err.Error()) 로 에이전트에게 되돌아간다. 모델이 읽는 글이라 영어다.
 	if strings.TrimSpace(msg) == "" {
-		return fmt.Errorf("纠偏消息不能为空")
+		return fmt.Errorf("steering message must not be empty")
 	}
 	e.workMu.Lock()
 	running := e.work[intentID] != nil
 	e.workMu.Unlock()
 	if !running {
-		return fmt.Errorf("意图 %d 当前没有运行中的 work（可能已结束或未被领取）", intentID)
+		return fmt.Errorf("intent %d has no running work right now (it may have ended or not been claimed)", intentID)
 	}
 	e.steerMu.Lock()
 	e.steerBox[intentID] = append(e.steerBox[intentID], msg)
@@ -581,8 +606,8 @@ const defaultEmptyTurnNudges = 2
 // 的 SEThinkingDelta)，所以 thinking-only 不算空。何况那层是原样重发整个 prompt，
 // 对这种由上下文形状决定的空转，重发只会让模型再想一遍。这里换成追加一条指令，让它
 // 带着已经产出的思考继续，输入变了才有理由给出不同的行为。
-const emptyTurnNudge = "【空转提醒】你上一轮只输出了思考过程，既没有给出正文回复，也没有调用任何工具，" +
-	"这一轮等于没有产出。请直接执行你刚才想好的下一步：要么调用工具，要么给出结论文字。不要重复思考。"
+const emptyTurnNudge = "[Empty-turn reminder] Your last turn output only your thinking, with no text reply and no tool call, " +
+	"so that turn produced nothing. Go straight to the next step you just worked out: either call a tool or give your conclusion as text. Don't repeat your thinking."
 
 // isThinkingOnlyTurn reports whether the latest assistant turn produced neither
 // text nor a tool call — i.e. the model spent the whole round thinking.
@@ -599,8 +624,8 @@ func isThinkingOnlyTurn(messages []llm.Message) bool {
 
 func (h steerHooks) PreToolUse(ctx context.Context, name string, input []byte) (bool, string, []byte) {
 	if msg, ok := h.drain(); ok {
-		return true, "【规划者实时纠偏】" + msg +
-			"\n（这是规划者对本意图的即时指令；本次工具调用未执行，请据此调整下一步。若与你当前打算冲突，以此为准。）", nil
+		return true, "[Planner real-time steering] " + msg +
+			"\n(This is the planner's immediate instruction for this intent. This tool call was not executed; adjust your next step accordingly. If it conflicts with what you currently plan, this instruction takes precedence.)", nil
 	}
 	if h.inner != nil {
 		return h.inner.PreToolUse(ctx, name, input)
@@ -634,10 +659,10 @@ func (h steerHooks) Stop(ctx context.Context, messages []llm.Message) (bool, []s
 	}
 	n := h.nudges.Add(1)
 	if n > int64(h.limit) {
-		log.Printf("[work %s] 空转回合(仅思考、无正文无工具)已达续跑上限 %d，放行收场", h.label, h.limit)
+		log.Printf("[work %s] 빈 턴(사고만 있고 본문·도구 호출 없음)이 재개 상한 %d 에 도달해 종료를 허용한다", h.label, h.limit)
 		return prevent, blocking, msg
 	}
-	log.Printf("[work %s] 空转回合(仅思考、无正文无工具)，注入续跑指令 (%d/%d)", h.label, n, h.limit)
+	log.Printf("[work %s] 빈 턴(사고만 있고 본문·도구 호출 없음), 재개 지시 주입 (%d/%d)", h.label, n, h.limit)
 	return false, []string{emptyTurnNudge}, ""
 }
 
@@ -645,14 +670,17 @@ func (h steerHooks) Stop(ctx context.Context, messages []llm.Message) (bool, []s
 // The work's agent-core session honors ctx cancellation and aborts promptly.
 func (e *Engine) KillWork(intentID int64) error {
 	e.workMu.Lock()
+	defer e.workMu.Unlock()
 	run := e.work[intentID]
-	e.workMu.Unlock()
 	if run == nil {
 		// KillWork 는 planner 의 kill_work 도구(agent/tools.go)로 배선되어, 이 오류가
-		// actool.Errorf(err.Error()) 로 에이전트에게 되돌아가는 두뇌 입력이다. SteerWork 와
-		// 같은 이유로 원문을 보존한다.
-		return fmt.Errorf("意图 %d 当前没有运行中的 work（可能已结束或未被领取）", intentID)
+		// actool.Errorf(err.Error()) 로 에이전트에게 되돌아간다. SteerWork 와 같은 이유로 영어다.
+		return fmt.Errorf("intent %d has no running work right now (it may have ended or not been claimed)", intentID)
 	}
+	if run.completionClaimed {
+		return fmt.Errorf(trMsg(errWorkControlBusyFmt), errWorkControlConflict, intentID, "completed")
+	}
+	// Planner cancellation and completion use the same decision boundary.
 	run.cancel(agent.AbortKilledByPlanner)
 	return nil
 }
@@ -688,13 +716,13 @@ func (e *Engine) emitActivity(t *Task, r db.Activity) db.Activity {
 		if isFKViolation(err) {
 			storeID := t.Store.ID()
 			if exists, refs, maxID, dErr := e.m.pg.ExplorationDiag(storeID); dErr != nil {
-				diag = fmt.Sprintf(" | FK诊断查询失败(store.expID=%d task.ExpID=%d): %v", storeID, t.ExpID, dErr)
+				diag = fmt.Sprintf(" | FK 진단 조회 실패(store.expID=%d task.ExpID=%d): %v", storeID, t.ExpID, dErr)
 			} else {
-				diag = fmt.Sprintf(" | FK诊断: store.expID=%d task.ExpID=%d exploration存在=%v 引用它的task数=%d MAX(exploration.id)=%d",
+				diag = fmt.Sprintf(" | FK 진단: store.expID=%d task.ExpID=%d exploration 존재=%v 참조 task 수=%d MAX(exploration.id)=%d",
 					storeID, t.ExpID, exists, refs, maxID)
 			}
 		}
-		log.Printf("[activity] task %s 丢弃活动记录(该任务累计第 %d 条) worker=%s kind=%s tool=%s tuid=%s reason=%s summary=%q: %v%s",
+		log.Printf("[activity] task %s 활동 기록 폐기(이 작업 누적 %d 번째) worker=%s kind=%s tool=%s tuid=%s reason=%s summary=%q: %v%s",
 			t.ID, n, r.Worker, r.Kind, r.Tool, r.ToolUseID, dropReason(err), preview(r.Summary, 80), err, diag)
 		e.touch(t.ID)
 		return r
@@ -719,12 +747,12 @@ func (e *Engine) appendActivity(t *Task, r db.Activity) (int64, error) {
 	for attempt := 1; attempt <= 3; attempt++ {
 		if id, err = t.Store.AppendActivity(r); err == nil {
 			if attempt > 1 {
-				log.Printf("[activity] task %s 写入第 %d 次重试成功 (worker=%s kind=%s tool=%s)",
+				log.Printf("[activity] task %s 기록 %d 번째 재시도 성공 (worker=%s kind=%s tool=%s)",
 					t.ID, attempt, r.Worker, r.Kind, r.Tool)
 			}
 			return id, nil
 		}
-		log.Printf("[activity] task %s 写入失败 (第 %d/3 次, worker=%s kind=%s tool=%s expID=%d): %v",
+		log.Printf("[activity] task %s 기록 실패 (%d/3 번째, worker=%s kind=%s tool=%s expID=%d): %v",
 			t.ID, attempt, r.Worker, r.Kind, r.Tool, t.Store.ID(), err)
 		time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
 	}
@@ -777,10 +805,24 @@ func (e *Engine) ReadyFor(t *Task) bool {
 	return p != nil && w != nil
 }
 
+func (e *Engine) withRuntimeHooks(ctx context.Context) context.Context {
+	if e.runtimeHooks != nil {
+		return agent.WithRuntimeHooks(ctx, *e.runtimeHooks)
+	}
+	return ctx
+}
+
 // Run starts the planner loop + N worker loops for a task. The loops always run
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
+	if t == nil || (e.firstDiagnosis && (e.firstDiagnosisAdmission == nil || e.firstDiagnosisAdmission(t) != nil)) {
+		return
+	}
+	if e.e2HTTP != nil && e.e2HTTP.AdmitTask(ctx, t) != nil {
+		return
+	}
+	ctx = e.withRuntimeHooks(ctx)
 	workers := e.m.Workers()
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
@@ -862,6 +904,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if e.IsDeleting(t.ID) {
 			return
 		}
+		if e.controlledTask(t.ID) {
+			return // controlled tasks execute registered reads; no autonomous tool path
+		}
 		// terminal task (goals all met → done, or failed): the run is over. A
 		// resume/nudge — e.g. auto-resume of the active task on restart — must NOT
 		// re-plan (it would burn an LLM round and re-confirm a settled result).
@@ -883,7 +928,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				// frontier 抽干且无在跑意图 → 收尾。用 Guarded 版做 CAS，避免踩到并发的
 				// pause/delete/超时收尾的状态转换。
 				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
-					log.Printf("[goalless] task %s 收尾落 done 失败: %v", t.ID, err)
+					log.Printf("[goalless] task %s 마무리 done 저장 실패: %v", t.ID, err)
 				} else if won {
 					e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
 						Summary: goallessTaskDoneSummary})
@@ -902,7 +947,19 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if ectx.Err() != nil || e.IsDeleting(t.ID) {
 			return
 		}
-		log.Printf("[planner] task %s 规划中…(%s 触发)", t.ID, src)
+		if e.e2HTTP != nil {
+			var bindingErr error
+			ectx, bindingErr = e.e2HTTP.PreparePlanning(ectx, t)
+			if errors.Is(bindingErr, ErrE2HTTPBusy) {
+				return
+			}
+			if bindingErr != nil {
+				_ = e.m.SetTaskStatus(t.ID, "failed")
+				e.cancelExec(t.ID, bindingErr)
+				return
+			}
+		}
+		log.Printf("[planner] task %s 계획 중...(%s 트리거)", t.ID, src)
 		// round marker: each Plan() is one planner round; emit a boundary so the
 		// UI can separate rounds in the transcript (kind='round').
 		e.emitActivity(t, db.Activity{Worker: "planner", Kind: "round",
@@ -911,24 +968,28 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// coalesces a burst; empty for time/heartbeat wakes).
 		triggers := t.drainTriggers()
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
+		workSeq := t.firstDiagnosisWorkSeq.Load()
 		e.BeginLLMCall(t.ID)
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 		e.EndLLMCall(t.ID)
+		if e.firstDiagnosis && err == nil && !met && ectx.Err() == nil {
+			t.firstDiagnosisPlannedSeq.Store(workSeq)
+		}
 		switch {
 		case err != nil && ectx.Err() == nil:
-			log.Printf("[planner] task %s 规划出错: %v", t.ID, err)
+			log.Printf("[planner] task %s 계획 오류: %v", t.ID, err)
 		case met:
-			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
+			log.Printf("[planner] task %s 목표 달성 판정: %s", t.ID, reason)
 			// 所有目标达成 → 持久化任务状态为 done（前端 DTO 会优先展示该终态）。
 			if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
-				log.Printf("[planner] task %s 标记完成落库失败: %v", t.ID, err)
+				log.Printf("[planner] task %s 완료 표시 저장 실패: %v", t.ID, err)
 			}
 			// 任务已判完成 → 立刻取消在跑的 worker：它们手头的意图跑出来也没意义了。
 			// 下一轮 worker 循环撞终态门就不再领新意图;被取消的这批走下方"任务已完成"分支
 			// 归为 stopped(而非 blocked)。
 			e.cancelExec(t.ID, agent.AbortGoalMet)
 		default:
-			log.Printf("[planner] task %s 规划完成", t.ID)
+			log.Printf("[planner] task %s 계획 완료", t.ID)
 		}
 		e.touch(t.ID)
 	}
@@ -988,6 +1049,7 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 		}
 		claimed := e.runWorkerStep(ctx, t, name, worker)
 		e.decInflight(t.ID)
+		e.maybeParkControlledTask(t)
 		if !claimed && sleepCtx(ctx, 800*time.Millisecond) {
 			return
 		}
@@ -998,11 +1060,12 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 // runIntent. Returns false when nothing was claimable. The pool worker loop is its
 // only caller.
 func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker *agent.Worker) bool {
+	ctx = e.withRuntimeHooks(ctx)
 	intent := e.claimNext(t, name)
 	if intent == nil {
 		return false
 	}
-	log.Printf("[worker %s] task %s 领取意图 #%d", name, t.ID, intent.ID)
+	log.Printf("[worker %s] task %s 의도 #%d 할당받음", name, t.ID, intent.ID)
 	return e.runIntent(ctx, t, name, worker, intent, "", "")
 }
 
@@ -1022,13 +1085,16 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
 	if ectx.Err() != nil || e.IsDeleting(t.ID) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
-			log.Printf("[worker %s] task %s 意图 #%d 领取后回退失败: %v", name, t.ID, intent.ID, err)
+			log.Printf("[worker %s] task %s 의도 #%d 할당 후 되돌리기 실패: %v", name, t.ID, intent.ID, err)
 		}
 		return true
 	}
 	// per-work child context so the planner's kill_work can stop just this work.
 	workCtx, workCancel := context.WithCancelCause(ectx)
-	e.registerWork(intent.ID, workCancel)
+	runHandle := e.registerWork(intent.ID, workCancel)
+	workCtx = context.WithValue(workCtx, controlledReadCompletionClaimKey{}, func() bool {
+		return e.claimControlledReadCompletion(t.ID, intent.ID, runHandle, workCtx, ectx)
+	})
 	// wrap the guard hooks so steer_work can inject a mid-run course-correction
 	// for THIS intent (drained before the worker's next tool call).
 	iid := intent.ID
@@ -1039,6 +1105,16 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	label := fmt.Sprintf("%s · #%d", name, iid)
 	workCtx = intercept.WithTaskContext(workCtx, t.ID, label, taskEmit)
+	// Acquire once for this whole work, including provider retries. A controlled
+	// tombstone without a fresh server registration must never use legacy tools.
+	var finishControlled func(...bool) error
+	var finishHTTP func() error
+	var controlledErr error
+	if e.e2HTTP != nil {
+		workCtx, finishHTTP, controlledErr = e.e2HTTP.PrepareWork(workCtx, t, intent)
+	} else {
+		workCtx, finishControlled, controlledErr = e.prepareControlledRead(workCtx, t, intent)
+	}
 	// nudges 有意建在 model_error 重跑循环之外:空转续跑的上限是「这条意图」的总量，
 	// 重跑一轮不该把额度清零重来。
 	hooks := steerHooks{
@@ -1049,16 +1125,23 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		label:  label,
 	}
 	wTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	e.BeginLLMCall(t.ID)
 	var reason harness.TerminalReason
 	var wrote agent.WriteCounts
 	var err error
-	if hasChatMessage {
-		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+	if controlledErr != nil {
+		if e.e2HTTP != nil && !errors.Is(controlledErr, ErrE2HTTPBusy) {
+			log.Printf("[E2] task %s 의도 #%d 작업 준비 거부", t.ID, intent.ID)
+		}
+		reason, err = harness.ReasonHookStopped, controlledErr
 	} else {
-		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+		e.BeginLLMCall(t.ID)
+		if hasChatMessage {
+			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+		} else {
+			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+		}
+		e.EndLLMCall(t.ID)
 	}
-	e.EndLLMCall(t.ID)
 	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
 	// 未暂停/未终止/未取消【且未进入收尾】时重试；否则让位给对应分支处理(收尾期不
 	// 再重试,避免退避挤占其他 worker 的优雅收尾窗口)。
@@ -1066,7 +1149,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	for attempt := 1; attempt <= maxRetries &&
 		retryableWorkerModelError(reason, err) &&
 		workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.isSettling(t.ID); attempt++ {
-		log.Printf("[worker %s] task %s 意图 #%d model_error 收场，%v 后重试 (%d/%d)",
+		log.Printf("[worker %s] task %s 의도 #%d model_error 로 종료, %v 뒤 재시도 (%d/%d)",
 			name, t.ID, intent.ID, retryBackoff, attempt, maxRetries)
 		if sleepCtx(workCtx, retryBackoff) {
 			break // 退避期间被取消（终止/暂停）→ 交给下方分支处理
@@ -1079,18 +1162,39 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 		e.EndLLMCall(t.ID)
 	}
+	var finalizeErr error
+	if finishHTTP != nil {
+		finalizeErr = finishHTTP()
+		if finalizeErr != nil {
+			log.Printf("[E2] task %s 의도 #%d HTTP 감사 마감 실패", t.ID, intent.ID)
+			err = errors.Join(err, finalizeErr)
+			reason = harness.ReasonHookStopped
+		}
+	}
+	if finishControlled != nil {
+		completed := err == nil && reason == harness.ReasonCompleted && workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.IsDeleting(t.ID)
+		finalizeErr = finishControlled(completed)
+		if finalizeErr != nil {
+			log.Printf("[E2] task %s intent #%d execution audit finalization failed: %v", t.ID, intent.ID, finalizeErr)
+			err = errors.Join(err, finalizeErr)
+			reason = harness.ReasonHookStopped
+		}
+	}
+	e.workMu.Lock()
+	completedControlled := runHandle.completionClaimed && finalizeErr == nil
+	e.workMu.Unlock()
 	// Capture kill state before detachWork cancels workCtx. kill = this work's
 	// ctx was cancelled (planner kill_work) while the TASK ctx kept running; a
 	// pause cancels the task ctx (ectx) instead. Checking workCtx.Err() AFTER
 	// unregister would always be true (unregister cancels it) → every completed
 	// work would be wrongly marked stopped.
 	workCause := context.Cause(workCtx)
-	killed := workCtx.Err() != nil && ectx.Err() == nil
+	killed := !completedControlled && workCtx.Err() != nil && ectx.Err() == nil
 	action, completeWork := e.detachWork(intent.ID)
 	// A caller may stop waiting and release its in-memory reservation before the
 	// agent honors cancellation. The named context cause remains authoritative and
 	// still settles the stopped run into a recoverable state.
-	if action == "" {
+	if !completedControlled && action == "" {
 		switch {
 		case errors.Is(workCause, agent.AbortWorkPausedByUser):
 			action = "pause"
@@ -1098,15 +1202,28 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			action = "cancel"
 		}
 	}
+	// An interrupted read is an execution failure, not a failure to pause or
+	// cancel. The controller still needs the persisted state and cleanup result.
 	var controlErr error
 	defer func() { completeWork(controlErr) }()
-	if action == "pause" {
-		controlErr = transitionIntentState(t.Store, intent.ID, "running", "paused")
+	// 전송 불명은 재개 가능한 open/paused가 아니다. 감사 상태와 함께 그래프에도 고정한다.
+	if e.e2HTTP != nil && errors.Is(err, agent.ErrE2HTTPUnknown) {
+		controlErr = t.Store.SetIntentBlockedReason(intent.ID, "e2_http_result_unknown")
 		if controlErr != nil {
-			log.Printf("[worker %s] task %s 意图 #%d 暂停状态落库失败: %v", name, t.ID, intent.ID, controlErr)
+			log.Printf("[E2] task %s 의도 #%d 전송 불명 상태 저장 실패", t.ID, intent.ID)
+		} else {
+			log.Printf("[E2] task %s 의도 #%d 전송 결과 불명으로 차단", t.ID, intent.ID)
+		}
+		e.touch(t.ID)
+		return true
+	}
+	if action == "pause" {
+		controlErr = errors.Join(controlErr, transitionIntentState(t.Store, intent.ID, "running", "paused"))
+		if controlErr != nil {
+			log.Printf("[worker %s] task %s 의도 #%d 일시정지 상태 저장 실패: %v", name, t.ID, intent.ID, controlErr)
 			return true
 		}
-		log.Printf("[worker %s] task %s 意图 #%d 已暂停", name, t.ID, intent.ID)
+		log.Printf("[worker %s] task %s 의도 #%d 일시정지됨", name, t.ID, intent.ID)
 		e.touch(t.ID)
 		return true
 	}
@@ -1114,50 +1231,50 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		// Park the stopped run in paused before handing cleanup to the API. If the
 		// request disconnects after cancellation, the intent remains recoverable and
 		// a later cancel can finish cleanup instead of leaving a phantom running row.
-		controlErr = transitionIntentState(t.Store, intent.ID, "running", "paused")
+		controlErr = errors.Join(controlErr, transitionIntentState(t.Store, intent.ID, "running", "paused"))
 		if controlErr != nil {
-			log.Printf("[worker %s] task %s 意图 #%d 取消栅栏落库失败: %v", name, t.ID, intent.ID, controlErr)
+			log.Printf("[worker %s] task %s 의도 #%d 취소 펜스 저장 실패: %v", name, t.ID, intent.ID, controlErr)
 			return true
 		}
-		log.Printf("[worker %s] task %s 意图 #%d 已停止，等待取消清理", name, t.ID, intent.ID)
+		log.Printf("[worker %s] task %s 의도 #%d 중지됨, 취소 정리 대기", name, t.ID, intent.ID)
 		e.touch(t.ID)
 		return true
 	}
 	// if a pause cancelled this run mid-flight, return the intent to the frontier
 	// so it is re-claimed on resume — the worker will resume the prior LLM
 	// conversation from its transcript instead of restarting from scratch.
-	if ectx.Err() != nil && taskExecutionPaused(context.Cause(ectx)) {
+	if !completedControlled && ectx.Err() != nil && taskExecutionPaused(context.Cause(ectx)) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
-			log.Printf("[worker %s] task %s 意图 #%d 任务暂停回退失败: %v", name, t.ID, intent.ID, err)
+			log.Printf("[worker %s] task %s 의도 #%d 작업 일시정지 되돌리기 실패: %v", name, t.ID, intent.ID, err)
 		}
 		return true
 	}
 	// 任务超时收尾的硬兜底 cancel(非 pause、非 kill)取消了本 run → 归为 exhausted(已收尾),
 	// 不要误标 blocked。此时 worker 通常已在 settlement 阶段把结果写回。
-	if ectx.Err() != nil && e.isSettling(t.ID) {
+	if !completedControlled && ectx.Err() != nil && e.isSettling(t.ID) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "exhausted"); err != nil {
-			log.Printf("[worker %s] task %s 意图 #%d 超时收尾状态落库失败: %v", name, t.ID, intent.ID, err)
+			log.Printf("[worker %s] task %s 의도 #%d 시간 초과 마무리 상태 저장 실패: %v", name, t.ID, intent.ID, err)
 		}
-		log.Printf("[worker %s] task %s 意图 #%d 因任务超时收尾结束(exhausted)，写回 %s", name, t.ID, intent.ID, wrote)
+		log.Printf("[worker %s] task %s 의도 #%d 작업 시간 초과 마무리로 종료(exhausted), 기록 %s", name, t.ID, intent.ID, wrote)
 		e.touch(t.ID)
 		return true
 	}
 	// 任务已判完成(done via 常规路径)→ 上面 cancelExec 取消了本 run。意图结果已无意义,
 	// 标 stopped(不是 blocked),别污染已完成任务的意图状态。
-	if ectx.Err() != nil && isTerminalStatus(e.m.TaskStatus(t.ID)) {
+	if !completedControlled && ectx.Err() != nil && isTerminalStatus(e.m.TaskStatus(t.ID)) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "stopped"); err != nil {
-			log.Printf("[worker %s] task %s 意图 #%d 终态停止落库失败: %v", name, t.ID, intent.ID, err)
+			log.Printf("[worker %s] task %s 의도 #%d 최종 상태 stopped 저장 실패: %v", name, t.ID, intent.ID, err)
 		}
-		log.Printf("[worker %s] task %s 意图 #%d 因任务已完成而取消(stopped)", name, t.ID, intent.ID)
+		log.Printf("[worker %s] task %s 의도 #%d 작업이 이미 완료되어 취소(stopped)", name, t.ID, intent.ID)
 		e.touch(t.ID)
 		return true
 	}
 	// killed by the planner: mark stopped (don't write back results, don't auto-reclaim).
 	if killed {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "stopped"); err != nil {
-			log.Printf("[worker %s] task %s 意图 #%d planner 停止落库失败: %v", name, t.ID, intent.ID, err)
+			log.Printf("[worker %s] task %s 의도 #%d planner 중지 저장 실패: %v", name, t.ID, intent.ID, err)
 		}
-		log.Printf("[worker %s] task %s 意图 #%d 被终止(stopped)", name, t.ID, intent.ID)
+		log.Printf("[worker %s] task %s 의도 #%d 강제 종료됨(stopped)", name, t.ID, intent.ID)
 		e.touch(t.ID)
 		t.Notify()
 		return true
@@ -1173,20 +1290,32 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		state = "blocked"
 	case reason == harness.ReasonMaxTurns:
 		state = "exhausted"
-		log.Printf("[worker %s] intent %d 撞步数上限(exhausted)，本次写回 %s", name, intent.ID, wrote)
+		log.Printf("[worker %s] intent %d 단계 수 상한 도달(exhausted), 이번 기록 %s", name, intent.ID, wrote)
 	case reason == harness.ReasonTimeout:
 		state = "exhausted"
-		log.Printf("[worker %s] intent %d 运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
+		log.Printf("[worker %s] intent %d 실행 시간 초과(exhausted), 마무리 뒤 기록 %s", name, intent.ID, wrote)
 	}
-	if state == "blocked" && isTaskLLMChainExhausted(err) {
+	if state == "blocked" && e.e2HTTP != nil && (errors.Is(err, agent.ErrE2HTTPPolicyLimited) || errors.Is(err, agent.ErrE2HTTPUnsupported)) {
+		// 프로그램이 확인한 미실행 사유를 보존한다. 일반 blocked나 결과 불명과 섞지 않는다.
+		blockedReason := "e2_http_policy_limited"
+		if errors.Is(err, agent.ErrE2HTTPUnsupported) {
+			blockedReason = "e2_http_unsupported"
+		}
+		if stateErr := t.Store.SetIntentBlockedReason(intent.ID, blockedReason); stateErr != nil {
+			log.Printf("[E2] task %s 의도 #%d 제한 사유 저장 실패: %v", t.ID, intent.ID, stateErr)
+		}
+	} else if state == "blocked" && isTaskLLMChainExhausted(err) {
 		_ = t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota)
 	} else {
 		if stateErr := transitionIntentState(t.Store, intent.ID, "running", state); stateErr != nil {
-			log.Printf("[worker %s] task %s 意图 #%d 终态 %s 落库失败: %v", name, t.ID, intent.ID, state, stateErr)
+			log.Printf("[worker %s] task %s 의도 #%d 최종 상태 %s 저장 실패: %v", name, t.ID, intent.ID, state, stateErr)
 		}
 	}
-	log.Printf("[worker %s] task %s 意图 #%d 结束: %s (写回 %s)", name, t.ID, intent.ID, state, wrote)
+	log.Printf("[worker %s] task %s 의도 #%d 종료: %s (기록 %s)", name, t.ID, intent.ID, state, wrote)
 	e.touch(t.ID)
+	if e.firstDiagnosis {
+		t.firstDiagnosisWorkSeq.Add(1)
+	}
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true
 }
@@ -1204,6 +1333,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 // task pause/delete/shutdown still stops it). Returns an error if the run could not
 // be started; the intent is left untouched in that case.
 func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64, requestID, message, agentMessage string) error {
+	ctx = e.withRuntimeHooks(ctx)
 	if !e.beginTaskOperation(t.ID) {
 		return fmt.Errorf("task is being deleted")
 	}
@@ -1242,7 +1372,10 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 	e.emitActivity(t, db.Activity{NodeID: &uid, Worker: "user", Kind: "user", Summary: message, Detail: message})
 	release = false // ownership of the admission passes to the goroutine
 	go func() {
-		defer e.decInflight(t.ID)
+		defer func() {
+			e.decInflight(t.ID)
+			e.maybeParkControlledTask(t)
+		}()
 		e.runIntent(ctx, t, "chat", worker, node, requestID, agentMessage)
 	}()
 	return nil

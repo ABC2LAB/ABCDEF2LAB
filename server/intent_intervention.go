@@ -58,6 +58,10 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "task not found")
 		return
 	}
+	if s.engine.controlledTask(t.ID) {
+		writeErr(w, http.StatusConflict, "통제 조회 작업에는 자유 입력 실행을 사용할 수 없습니다")
+		return
+	}
 	iid, err := strconv.ParseInt(r.PathValue("iid"), 10, 64)
 	if err != nil || iid <= 0 {
 		writeErr(w, http.StatusBadRequest, "bad intent id")
