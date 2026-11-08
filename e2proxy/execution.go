@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -93,7 +94,7 @@ func randomRef(prefix string) (string, error) {
 }
 
 func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
-	if parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
+	if !validApprovalConfig(cfg) || parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
 		!validRef(cfg.AccountRef) || !validRef(cfg.SessionRef) || cfg.ExpiresAt.IsZero() || !time.Now().Before(cfg.ExpiresAt) {
 		return nil, ErrConfig
 	}
@@ -588,13 +589,13 @@ func (e *Execution) snapshotLocked(id int64) ExecutionView {
 		ids = append(ids, intent)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	return ExecutionView{Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
+	return ExecutionView{ApprovalMode: e.cfg.ApprovalMode, Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
 		State: state, ExpiresAt: e.cfg.ExpiresAt, Counts: e.counts, Reason: reason, AuditComplete: !e.auditFailed && e.cfg.Recorder != nil}
 }
 func (e *Execution) Policy() PolicyView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	v := PolicyView{Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
+	v := PolicyView{ApprovalMode: e.cfg.ApprovalMode, Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
 	for _, r := range e.rules {
 		v.Rules = append(v.Rules, RuleView{Ref: r.Ref, Methods: append([]string(nil), r.Methods...), PathScopeRef: r.PathScopeRef})
 	}
@@ -711,6 +712,21 @@ func (c *Call) start(method string) (Receipt, error) {
 	e.counts.Attempts++
 	return r, nil
 }
+
+// 기록을 먼저 마친 정상 요청도 다른 요청의 실패 고정을 덮어쓰면 안 된다.
+// 호출자는 execution 잠금을 보유한다.
+func (c *Call) preserveOutcomeLocked(r Receipt, err error) {
+	e := c.e
+	c.reason = r.Reason
+	if err != nil || r.Reason == AuditFailed || e.auditFailed {
+		e.auditFailed = true
+		e.stopReason = AuditFailed
+		e.cancel()
+		c.auditComplete = false
+		c.reason = AuditFailed
+	}
+}
+
 func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) (Receipt, error) {
 	r.At = time.Now().UTC()
 	err := c.e.recordBounded(ctx, Event{Stage: "result", Receipt: r})
@@ -742,11 +758,7 @@ func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) 
 	}
 	add(&c.counts)
 	add(&e.counts)
-	c.reason = r.Reason
-	if err != nil {
-		c.auditComplete = false
-		c.reason = AuditFailed
-	}
+	c.preserveOutcomeLocked(r, err)
 	c.active--
 	if c.active == 0 {
 		close(c.idle)
@@ -839,6 +851,8 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	method := ""
 	if req != nil {
+		// 대기 중 호출자가 URL·헤더를 바꿔 승인 내용과 송신을 분리하지 못한다.
+		req = req.Clone(ctx)
 		method = req.Method
 	}
 	r, err := c.start(method)
@@ -908,6 +922,31 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	r.RuleRef = rule.Ref
 	r.PolicyRevision = revision
+	if e.cfg.RequestApproval != nil {
+		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
+		stopApproval := context.AfterFunc(ctx, cancelApproval)
+		proposal := RequestApprovalProposal{
+			Receipt: r, OwnerRef: e.cfg.OwnerRef, AccountRef: e.cfg.AccountRef, SessionRef: e.cfg.SessionRef,
+			ExpiresAt: c.expires, Method: method, URL: req.URL.String(), Host: requestHost,
+			Headers: requestHeaders.Clone(), Body: bytes.Clone(body),
+		}
+		// 보호 자격 원문은 승인 소비자에게 전달하지 않는다. 참조만 결속한다.
+		allowed, approvalErr := e.cfg.RequestApproval.AwaitRequestApproval(approvalCtx, proposal)
+		canceled := approvalCtx.Err() != nil || ctx.Err() != nil
+		stopApproval()
+		cancelApproval()
+		if approvalErr != nil && !(canceled && (errors.Is(approvalErr, context.Canceled) || errors.Is(approvalErr, context.DeadlineExceeded))) {
+			r.Decision, r.Reason = "denied", AuditFailed
+			return finish(nil, ErrAudit)
+		}
+		if !allowed || canceled {
+			r.Decision, r.Reason = "denied", PolicyDenied
+			if canceled {
+				r.Reason = Closed
+			}
+			return finish(nil, ErrDenied)
+		}
+	}
 	r.Decision = "allowed"
 	e.mu.Lock()
 	reason = c.blockedLocked()

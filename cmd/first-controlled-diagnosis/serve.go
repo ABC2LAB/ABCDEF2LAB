@@ -35,7 +35,11 @@ func (d *launchedDiagnosis) Close(ctx context.Context) error {
 	}
 	var resultErr error
 	if d.runtime != nil {
-		resultErr = d.runtime.Close(ctx)
+		if d.supervisor != nil {
+			resultErr = closeAndSaveDiagnosis(ctx, d.runtime, d.supervisor.PersistRunOutcome)
+		} else {
+			resultErr = d.runtime.Close(ctx)
+		}
 		if resultErr != nil {
 			status, ok := d.runtime.(interface{ ResourcesClosed() bool })
 			if !ok || !status.ResourcesClosed() {
@@ -215,4 +219,14 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer, exec
 		}
 	}
 	return 0
+}
+
+// 자원 마감과 결과 실패를 구별하고 DB를 닫기 전에 저장 실패를 반환한다.
+func closeAndSaveDiagnosis(ctx context.Context, runtime launchRuntime, persist func(context.Context, error) error) error {
+	resultErr := runtime.Close(ctx)
+	closureErr := resultErr
+	if status, ok := runtime.(interface{ ResourcesClosed() bool }); ok && status.ResourcesClosed() {
+		closureErr = nil
+	}
+	return errors.Join(resultErr, persist(ctx, closureErr))
 }

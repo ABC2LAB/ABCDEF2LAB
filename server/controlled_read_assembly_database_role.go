@@ -67,6 +67,11 @@ func checkFirstDiagnosisDatabase(ctx context.Context, pool *sql.DB, registered, 
 		{"e3_evidence_manifests", "SELECT"}, {"e3_oracle_verdicts", "SELECT"},
 		{"e3_verdict_issuances", "SELECT"}, {"e3_verdict_links", "SELECT"},
 	}
+	// 일반 HTTP의 확인·중지 조회는 승인 행 유무와 무관하게 저장소를 사용한다.
+	// 설치 누락을 첫 요청의 감사 실패로 미루지 않고 기동 전에 거부한다.
+	if !registered && !reportOnly {
+		required = append(required, struct{ name, privileges string }{"request_approvals", "SELECT,INSERT,UPDATE"})
+	}
 	if registered {
 		required = append(required, []struct{ name, privileges string }{{"audit_checkpoint_epochs", "SELECT"}, {"task_control_modes", "SELECT,INSERT,UPDATE"}, {"traffic_evidence_snapshots", "SELECT,INSERT"}, {"finding_traffic_bindings", "SELECT,INSERT"},
 			{"e3_evidence_manifests", "SELECT,INSERT"}, {"e3_oracle_verdicts", "SELECT,INSERT"},

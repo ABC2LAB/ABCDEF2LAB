@@ -121,7 +121,7 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 			if err := ledger.Register(budget.Grant{Key: key, Binding: binding, MaxRequests: 5, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(5 * time.Minute)}, now); err != nil {
 				t.Fatal(err)
 			}
-			execution, err := e2proxy.NewExecution(context.Background(), e2WorkerCredentialFixture(t, e2proxy.Config{
+			execution, err := e2proxy.NewExecution(context.Background(), e2WorkerCredentialFixture(t, e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 				Scope:    transmit.Scope{TaskRef: "7", RunRef: "native-worker-" + scheme, CaseRef: "worker-case", ResetRef: "worker-reset", PolicyRef: "worker-policy"},
 				IntentID: 22, OwnerRef: "ARTEX", PolicyRevision: "worker-revision", AccountRef: "fixture-account", SessionRef: "fixture-session", ExpiresAt: now.Add(5 * time.Minute),
 				Rules:  []e2proxy.Rule{{Ref: "worker-rule", Origin: target.URL, ConnectIP: connectIP, PathPrefix: "/fixture", PathScopeRef: "worker-path", Methods: []string{"GET"}, Headers: http.Header{"Authorization": {"Bearer " + credential}}}},

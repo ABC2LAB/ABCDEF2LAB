@@ -333,7 +333,7 @@ func newControlledLocalDatabaseFixture(t *testing.T) *controlledLocalDatabaseFix
 	})
 	exec(admin, "GRANT CONNECT ON DATABASE "+ident(dbName)+" TO "+ident(role))
 	exec(admin, "GRANT USAGE ON SCHEMA "+ident(schema)+" TO "+ident(role))
-	for _, name := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "task_control_modes", "findings"} {
+	for _, name := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "task_control_modes", "findings", "request_approvals"} {
 		exec(installer.DB, "GRANT SELECT,INSERT,UPDATE ON TABLE "+ident(name)+" TO "+ident(role))
 	}
 	for _, name := range []string{"traffic_evidence_snapshots", "finding_traffic_bindings", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links", "evidence_revision_initials", "evidence_revision_operations", "exploration_edges", "activity", "task_scope", "task_constraints", "exploration_anchors"} {

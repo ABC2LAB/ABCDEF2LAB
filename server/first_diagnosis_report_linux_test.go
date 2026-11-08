@@ -120,6 +120,39 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 		t.Fatal("saved report login")
 	}
 	token = session.Token
+	runPath := fmt.Sprintf("/api/tasks/%d/diagnosis-run", row.ID)
+	if w := request("GET", runPath, ""); w.Code != 404 {
+		t.Fatal("missing final outcome inferred", w.Code)
+	}
+	final := requestApprovalRunState{Phase: "closed", Outcome: "cancelled", RunRef: "synthetic-final-run", StopRequested: true, ContextCancelled: true, DrainComplete: true}
+	if saveDiagnosisRun(ctx, installer.DB, row.ID, final) != nil || saveDiagnosisRun(ctx, installer.DB, row.ID, final) != nil {
+		t.Fatal("final outcome persistence")
+	}
+	changed := final
+	changed.Outcome = "completed"
+	if saveDiagnosisRun(ctx, installer.DB, row.ID, changed) == nil {
+		t.Fatal("final outcome overwritten")
+	}
+	var saved diagnosisRunRecord
+	if w := request("GET", runPath, ""); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &saved) != nil || saved.Run.Outcome != "cancelled" || !saved.Run.DrainComplete || saved.Run.ClosureFailed {
+		t.Fatal("saved cancellation outcome", w.Code)
+	}
+	if w := request("GET", fmt.Sprintf("/api/tasks/%d/diagnosis-run", foreign.ID), ""); w.Code != 403 {
+		t.Fatal("foreign final outcome", w.Code)
+	}
+	for _, path := range []string{runPath + "?token=" + token, runPath + "?task=" + fmt.Sprint(row.ID)} {
+		if w := request("GET", path, ""); w.Code == 200 {
+			t.Fatal("query scope accepted")
+		}
+	}
+	runRequest := httptest.NewRequest("GET", runPath, nil)
+	runRequest.AddCookie(&http.Cookie{Name: "artex_token", Value: token})
+	runResponse := httptest.NewRecorder()
+	handler.ServeHTTP(runResponse, runRequest)
+	if runResponse.Code != 401 {
+		t.Fatal("cookie-only final outcome", runResponse.Code)
+	}
+
 	var list struct {
 		Entries []diagnosticRemediationEntryDTO `json:"entries"`
 	}
@@ -192,6 +225,16 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(dataDir); err != nil || len(entries) != 0 {
 		t.Fatal("report constructor created runtime state")
+	}
+	replacement, hashErr := bcrypt.GenerateFromPassword([]byte("rotated-synthetic-report-password"), bcrypt.MinCost)
+	if hashErr != nil || installer.SetSetting(authPassKey, string(replacement)) != nil {
+		t.Fatal("rotate auth")
+	}
+	if w := request("GET", runPath, ""); w.Code != 401 {
+		t.Fatal("stale run token accepted", w.Code)
+	}
+	if installer.SetSetting(authPassKey, string(hash)) != nil {
+		t.Fatal("restore auth")
 	}
 	cancel()
 	if w := request("GET", base, ""); w.Code != http.StatusServiceUnavailable {

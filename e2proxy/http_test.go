@@ -200,7 +200,7 @@ func proxyTestCall(t *testing.T, target string, roots *x509.CertPool) (*Executio
 		t.Fatal(err)
 	}
 	rec := &proxyTestRecorder{}
-	exec, err := NewExecution(t.Context(), Config{HeaderMode: HeaderProtectedSessionProposal,
+	exec, err := NewExecution(t.Context(), Config{ApprovalMode: ApprovalPreauthorizedScope, HeaderMode: HeaderProtectedSessionProposal,
 		Scope:    transmit.Scope{TaskRef: key.TaskRef, RunRef: "run_proxy", CaseRef: "case_proxy", ResetRef: binding.ResetRef, PolicyRef: binding.PolicyRef},
 		IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision_proxy", AccountRef: "account_proxy", SessionRef: "session_proxy",
 		ExpiresAt: now.Add(time.Minute), RootCAs: roots, Recorder: rec,

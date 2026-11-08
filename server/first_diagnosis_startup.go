@@ -71,6 +71,9 @@ func (s *Server) firstDiagnosisRoutes(next http.Handler) http.Handler {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			allowed = allowed || firstDiagnosisReadRoute(r.URL.Path)
 		}
+		if requestApprovalRoute(r) {
+			allowed = true
+		}
 		if s.firstDiagnosisPreparation || !allowed {
 			writeErr(w, http.StatusForbidden, "첫 진단 전용 서버에서는 이 작업을 사용할 수 없습니다")
 			return
@@ -159,6 +162,9 @@ func (s *Server) firstDiagnosisReportRoute(r *http.Request) bool {
 }
 
 func firstDiagnosisReportRequestTask(r *http.Request) (int64, bool) {
+	if id, ok := diagnosisRunRequestTask(r); ok {
+		return id, true
+	}
 	switch r.URL.Path {
 	case "/api/report/diagnostic", "/api/report/diagnostic/remediation/prompt":
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

@@ -59,6 +59,13 @@ export type RemediationEntry = {
   entry_id: string;
   title: string;
   outcome: string;
+  status: string;
+  verification: string;
+  evidence_digest: string;
+  report_version: string;
+  run: string;
+  intent_id: number;
+  observed_at: string;
   evidence_version: number;
   source_digest: string;
   summary: string;

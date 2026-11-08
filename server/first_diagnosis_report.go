@@ -29,6 +29,7 @@ func NewFirstDiagnosisReportHandler(ctx context.Context, pool *sql.DB, keyDir, d
 		return nil, ErrControlledReadHostConfiguration
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/tasks/{id}/diagnosis-run", func(w http.ResponseWriter, r *http.Request) { s.serveDiagnosisRun(w, r, taskID) })
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)

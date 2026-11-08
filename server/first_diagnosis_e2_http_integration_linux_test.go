@@ -291,7 +291,7 @@ func firstDiagnosisAcquiredRunner(t *testing.T, ctx context.Context, request E2H
 	if err := ledger.Register(budget.Grant{Key: grantKey, Binding: binding, MaxRequests: 4, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Minute)}, now); err != nil {
 		t.Fatal(err)
 	}
-	execution, err := e2proxy.NewExecution(ctx, e2proxy.Config{
+	execution, err := e2proxy.NewExecution(ctx, e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 		Scope:    transmit.Scope{TaskRef: request.TaskID, RunRef: runRef, CaseRef: expected.CaseRef, ResetRef: expected.ResetRef, PolicyRef: expected.PolicyRef},
 		IntentID: request.IntentID, OwnerRef: "ARTEX", PolicyRevision: expected.PolicyRevision, AccountRef: "acceptance-account", SessionRef: "acceptance-session", HeaderMode: e2proxy.HeaderProtectedSessionProposal, ExpiresAt: now.Add(time.Minute),
 		Rules:    []e2proxy.Rule{{Ref: "acceptance-rule", Origin: target, ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed", PathScopeRef: "acceptance-path", Methods: []string{"GET"}, CredentialHeaders: http.Header{"Authorization": []string{"Bearer " + firstDiagnosisE2Secret}}}},

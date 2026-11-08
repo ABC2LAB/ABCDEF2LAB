@@ -406,6 +406,28 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		return err
 	}
 	number := mustFirstDiagnosisTaskNumber(taskID)
+	if snapshotRef == "" {
+		server.requestApprovals.runStarted(number)
+	}
+	// 획득 전 중지도 동일한 감독자 마감 경로를 거친다.
+	defer func() {
+		if snapshotRef != "" || !server.requestApprovals.runFinished(number, err, stage == "audit-close" || stage == "drain") {
+			return
+		}
+		stage = "user-stop"
+		s.mu.Lock()
+		s.admissionGranted = false
+		s.mu.Unlock()
+		cleanup, finish := context.WithTimeout(context.WithoutCancel(run), 30*time.Second)
+		defer finish()
+		drainErr := s.drainTask(cleanup, server, task)
+		closeErr := server.engine.e2HTTP.CloseTask(cleanup, taskID)
+		server.requestApprovals.finishStop(number, errors.Join(drainErr, closeErr))
+		err = firstDiagnosisFailure(errors.Join(err, context.Canceled, drainErr, closeErr))
+	}()
+	if snapshotRef == "" && server.requestApprovals.userStopped(number) {
+		return firstDiagnosisFailure(context.Canceled)
+	}
 	stage = "quiescence"
 	if err = s.CheckTaskQuiescent(run, number); err != nil {
 		return err
@@ -449,6 +471,9 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		if !registered && server.requestApprovals.userStopped(number) {
+			return firstDiagnosisFailure(context.Canceled)
+		}
 		if run.Err() != nil {
 			server.engine.Pause(taskID, agent.AbortPausedRaceGuard)
 			return firstDiagnosisFailure(run.Err())

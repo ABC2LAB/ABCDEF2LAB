@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type ReactNode, useState } from "react";
+
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../lib/api";
@@ -196,7 +197,9 @@ describe("approving a real pending request from the dashboard", () => {
 
     await waitFor(() => expect(engine.decidePendingApproval).toHaveBeenCalledWith(42, "allowed"));
     expect(engine.decidePendingApproval).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText("요청 #42을 허용했어요. 에이전트가 이 요청 하나를 보내요.")).toBeVisible();
+    expect(
+      await screen.findByText("도구 호출 #42을 허용했어요. 실제 HTTP 요청의 승인·전송 여부는 별도로 확인해요."),
+    ).toBeVisible();
     // 다시 읽은 요청 상태로 결과를 확인하고, 더 결정할 수 없다
     expect(await screen.findByText("허용됨", { selector: "strong" })).toBeVisible();
     expect(screen.queryByRole("button", { name: /이번 한 번만 허용/ })).toBeNull();

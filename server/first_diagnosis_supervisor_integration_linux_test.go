@@ -152,7 +152,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	releaseTarget := make(chan struct{})
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		if mode == "cancel" {
+		if mode == "cancel" || mode == "user-stop" {
 			select {
 			case targetEntered <- struct{}{}:
 			default:
@@ -246,7 +246,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	defer func() {
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		if err := runtime.Close(closeCtx); err != nil && !((mode == "cancel" || mode == "prepare-fail" || mode == "planner-only") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
+		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop") || mode == "prepare-fail" || mode == "planner-only" || mode == "pre-run-stop") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
 			t.Error("실제 Engine 경로 최종 종료 실패")
 		}
 
@@ -272,8 +272,31 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}, textOnly: mode != "planner-only"}
 	// 실제 taskLLMRuntime.current의 role/model guard를 유지하고 profile cache의 모델만 대체한다.
 	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: provider, planner: plannerProvider})
+	if mode == "pre-run-stop" {
+		hash, err := runtime.server.reloadPassHash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := signJWT(runtime.server.signingKey(hash))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest("POST", "/api/tasks/"+task.ID+"/request-approvals/stop", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		runtime.Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("실행 전 중지 API: %d", rec.Code)
+		}
+		err = supervisor.Run(ctx, task.ID, 0, "")
+		state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
+		if !errors.Is(err, context.Canceled) || state.Phase != "closed" || !state.DrainComplete || state.Outcome != "cancelled" || hits.Load() != 0 || provider.calls != 0 || plannerProvider.calls != 0 {
+			t.Fatalf("실행 전 중지 마감 실패: state=%+v hits=%d", state, hits.Load())
+		}
+		return
+	}
 	var runErr error
-	if mode == "cancel" {
+	if mode == "cancel" || mode == "user-stop" {
 		runCtx, stopRun := context.WithCancel(ctx)
 		defer stopRun()
 		done := make(chan error, 1)
@@ -283,7 +306,25 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		case <-ctx.Done():
 			t.Fatal("취소 인수의 실제 대상 요청이 시작되지 않음")
 		}
-		stopRun()
+		if mode == "user-stop" {
+			hash, err := runtime.server.reloadPassHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := signJWT(runtime.server.signingKey(hash))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest("POST", "/api/tasks/"+task.ID+"/request-approvals/stop", nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			rec := httptest.NewRecorder()
+			runtime.Handler().ServeHTTP(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("사용자 중지 API 실패: %d %s", rec.Code, rec.Body.String())
+			}
+		} else {
+			stopRun()
+		}
 		select {
 		case runErr = <-done:
 		case <-ctx.Done():
@@ -311,9 +352,15 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
-	if mode == "cancel" {
+	if mode == "cancel" || mode == "user-stop" {
 		if runErr == nil || !errors.Is(runErr, context.Canceled) {
 			t.Fatal("진행 중 실제 HTTP 요청 취소를 성공으로 반환하거나 취소 원인을 잃음")
+		}
+		if mode == "user-stop" {
+			state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
+			if state.Phase != "closed" || state.Outcome != "cancelled" || !state.DrainComplete || state.ClosureFailed {
+				t.Fatalf("중지 마감 상태 불일치: %+v", state)
+			}
 		}
 		closeCtx, stop := context.WithTimeout(context.Background(), 8*time.Second)
 		defer stop()

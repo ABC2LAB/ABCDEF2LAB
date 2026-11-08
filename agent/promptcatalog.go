@@ -116,6 +116,7 @@ func BuiltinPromptSeeds() map[string]string {
 		"planner":   plannerDefaultTmpl,
 		"mainagent": mainAgentDefaultTmpl,
 		"worker":    workerDefaultTmpl,
+		"e2_worker": e2HTTPDiagnosticPrompt,
 		"auto":      autoDefaultTmpl,
 		"pentest":   pentestDefaultTmpl,
 	}
