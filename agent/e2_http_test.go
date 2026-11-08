@@ -59,8 +59,13 @@ func e2WorkerCredentialFixture(t *testing.T, cfg e2proxy.Config) e2proxy.Config 
 	return cfg
 }
 
-func e2WorkerFixture(t *testing.T) (*e2proxy.Execution, *e2runner.Runner, E2HTTPExecution) {
+func e2WorkerFixture(t *testing.T, ids ...int64) (*e2proxy.Execution, *e2runner.Runner, E2HTTPExecution) {
 	t.Helper()
+	taskID, intentID := int64(7), int64(22)
+	if len(ids) == 2 {
+		taskID, intentID = ids[0], ids[1]
+	}
+	taskRef := strconv.FormatInt(taskID, 10)
 	root, err := os.MkdirTemp("", "e2wa-")
 	if err != nil {
 		t.Fatal(err)
@@ -78,15 +83,15 @@ func e2WorkerFixture(t *testing.T) (*e2proxy.Execution, *e2runner.Runner, E2HTTP
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := budget.Key{TaskRef: "7", BudgetRef: "budget-1"}
+	key := budget.Key{TaskRef: taskRef, BudgetRef: "budget-1"}
 	binding := budget.Binding{PolicyRef: "policy-1", ResetRef: "reset-1"}
 	now := time.Now()
 	if err := ledger.Register(budget.Grant{Key: key, Binding: binding, MaxRequests: 10, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}, now); err != nil {
 		t.Fatal(err)
 	}
 	execution, err := e2proxy.NewExecution(context.Background(), e2WorkerCredentialFixture(t, e2proxy.Config{
-		Scope:    transmit.Scope{TaskRef: "7", RunRef: "worker-run-1", CaseRef: "case-1", ResetRef: "reset-1", PolicyRef: "policy-1"},
-		IntentID: 22, OwnerRef: "ARTEX", PolicyRevision: "revision-1", AccountRef: "account-1", SessionRef: "session-1", ExpiresAt: now.Add(time.Hour),
+		Scope:    transmit.Scope{TaskRef: taskRef, RunRef: "worker-run-1", CaseRef: "case-1", ResetRef: "reset-1", PolicyRef: "policy-1"},
+		IntentID: intentID, OwnerRef: "ARTEX", PolicyRevision: "revision-1", AccountRef: "account-1", SessionRef: "session-1", ExpiresAt: now.Add(time.Hour),
 		Rules:  []e2proxy.Rule{{Ref: "rule-1", Origin: "http://example.invalid", ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/", PathScopeRef: "path-1", Methods: []string{"GET"}, Headers: http.Header{"Authorization": {"Bearer keep-secret"}}}},
 		Budget: transmit.CumulativeBudget{Ledger: ledger, Key: key, Binding: binding}, Recorder: journal,
 		Limits: e2proxy.Limits{MaxAttempts: 20, MaxCalls: 10, MaxConcurrent: 2, MaxBodyBytes: 4096, RequestTimeout: time.Second, CallTimeout: 2 * time.Second, MaxDenials: 4, MaxTransient: 4, MaxUnknown: 4},
@@ -114,11 +119,11 @@ func e2WorkerFixture(t *testing.T) (*e2proxy.Execution, *e2runner.Runner, E2HTTP
 	if err != nil {
 		t.Fatal(err)
 	}
-	control, err := NewE2HTTPControl("7", 10)
+	control, err := NewE2HTTPControl(taskRef, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := E2HTTPExecution{Runner: runner, Control: control, TaskID: 7, IntentID: 22, TaskRef: "7", RunRef: "worker-run-1", MaxTurns: 3, MaxDuration: time.Second}
+	host := E2HTTPExecution{Runner: runner, Control: control, TaskID: taskID, IntentID: intentID, TaskRef: taskRef, RunRef: "worker-run-1", MaxTurns: 3, MaxDuration: time.Second}
 	return execution, runner, host
 }
 

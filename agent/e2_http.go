@@ -129,7 +129,10 @@ side effect. Do not invent approval, account/session identity, evidence or IDs.
 Allowed/denied counts and outcome-unknown counts overlap; do not add them into
 one exclusive total. Only an actual final trusted result establishes call drain
 and audit completion. Report incomplete work and policy-limited coverage.
-This session cannot create findings or E3 verdicts; those require the existing
+Use submit_diagnostic_candidate for a potential vulnerability supported by an actual
+Bash call_ref from this intent. It preserves an unconfirmed review candidate, never
+a finding or E3 verdict. Unsupported verification must not erase an observation.
+This session cannot create confirmed findings or E3 verdicts; those require the existing
 trusted evidence and storage pipeline. Do not claim overall diagnosis completion.`
 
 type e2HTTPRunFunc func(context.Context, string) (e2runner.Result, error)
@@ -140,6 +143,7 @@ type e2HTTPToolState struct {
 	incomplete   bool
 	runnerFailed bool
 	last         string
+	observations map[string]e2DiagnosticObservation
 }
 
 // A nonzero Bash exit is returned with ErrUnavailable by Runner even when the
@@ -240,6 +244,7 @@ func newE2HTTPBashTool(execution *e2proxy.Execution, run e2HTTPRunFunc, hostTime
 			result.Trusted.Classification = e2HTTPPolicyClassification(result)
 			state.outcome(result.Trusted.Classification)
 			result.ToolOutput = string(execution.RedactOutput([]byte(result.ToolOutput)))
+			state.observeDiagnostic(execution, actualIntentID, command, result)
 			unknown := result.Trusted.Classification == "result_unknown" || result.Trusted.Execution.Counts.Unknown > 0
 			incomplete := !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
 			if unknown || incomplete || runnerFailed || result.Trusted.Classification == "terminated" || result.Trusted.Classification == "isolation_unavailable" {
@@ -439,6 +444,7 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 		toolset.SetTaskID(taskID)
 		toolset.SetOwnerNode(intent.ID)
 		tools = append(tools, e2HTTPWorkerGraphTools(toolset.WorkerTools(), execution, intent.ID)...)
+		tools = append(tools, newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ }))
 	}
 	system, promptInfo, err := buildE2HTTPWorkerPrompt(ctx, name, tools, execution.RedactOutput)
 	if err != nil {
