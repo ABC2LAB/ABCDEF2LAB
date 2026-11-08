@@ -93,6 +93,7 @@ func StartFirstDiagnosisHTTP(ctx context.Context, manager *Manager, options Firs
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
 	run, cancel := context.WithCancel(ctx)
+	options.Hooks.RequestApprovals = newRequestApprovalService(manager.pg)
 	host, err := NewFirstDiagnosisHTTPHost(run, options.Host, options.Supervisor, options.Hooks)
 	if err != nil {
 		cancel()

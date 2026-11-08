@@ -1,7 +1,10 @@
 package report
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/Autumn-27/artex/remediation"
+	"html"
 	"strings"
 	"testing"
 	"time"
@@ -89,5 +92,119 @@ func TestDiagnosticReportRejectsUnverifiedConfirmationAndBounds(t *testing.T) {
 	}
 	if _, err := DiagnosticHTML(in); err == nil {
 		t.Fatal("overflow accepted")
+	}
+}
+
+func TestDiagnosticReportRemediationBindingAndSharing(t *testing.T) {
+	in := diagnosticFixture()
+	source := remediation.Input{FindingID: "candidate-4", ReportVersion: "sha256:" + strings.Repeat("a", 64), EvidenceVersion: "1", EvidenceDigest: strings.Repeat("b", 64), SourceDigest: strings.Repeat("c", 64), VulnClass: "sql_injection", Status: "review", EvidenceCount: 1, Technologies: []remediation.Technology{{Kind: "language", Name: "Java", Version: "17", Source: "user_provided", Confidence: "confirmed"}}}
+	bundle, err := remediation.Build(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Entries[3].RemediationSource = &source
+	in.Entries[3].RemediationBundle = &bundle
+	body, err := DiagnosticHTML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html.UnescapeString(string(body)), bundle.AIPrompt) {
+		t.Fatal("stored prompt changed")
+	}
+	in.Shared = true
+	body, err = DiagnosticHTML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "PreparedStatement") || strings.Contains(string(body), bundle.InputDigest) {
+		t.Fatal("shared action leaked")
+	}
+	if in.Entries[3].RemediationBundle == nil {
+		t.Fatal("source bundle mutated")
+	}
+	in.Shared = false
+	in.Entries[3].RemediationStale = true
+	if _, err = DiagnosticHTML(in); err == nil {
+		t.Fatal("stale prompt rendered")
+	}
+	in.Entries[3].RemediationStale = false
+	in.Entries[3].EvidenceVersion = 2
+	if _, err = DiagnosticHTML(in); err == nil {
+		t.Fatal("other evidence version rendered")
+	}
+	in.Entries[3].EvidenceVersion = 1
+	corrupt := bundle
+	corrupt.AIPrompt += " unauthorized instruction"
+	in.Entries[3].RemediationBundle = &corrupt
+	if _, err = DiagnosticHTML(in); err == nil {
+		t.Fatal("mutated prompt rendered")
+	}
+}
+
+func TestDiagnosticReportPreservesProvenanceAndExecutionScope(t *testing.T) {
+	in := diagnosticFixture()
+	source := remediation.Input{FindingID: "candidate-4", ReportVersion: "sha256:" + strings.Repeat("a", 64), EvidenceVersion: "1", EvidenceDigest: strings.Repeat("b", 64), SourceDigest: strings.Repeat("c", 64), VulnClass: "sql_injection", Status: "review", EvidenceCount: 1,
+		Context: remediation.Context{Component: "orders-api", Observation: "Manual correction", Source: "user_provided", ObservationsTruncated: true, Observations: []remediation.ContextObservation{
+			{Component: "orders-api", Observation: "Original response", Source: "observed", EvidenceRef: "evidence-1", RunID: "run-1", CallID: "call-1", StepID: "step-1", Truncated: true},
+			{Component: "orders-api", Observation: "Analyzer hypothesis", Source: "inferred", EvidenceRef: "evidence-2", StepID: "step-2", DependsOn: []string{"step-1"}},
+		}},
+		Technologies: []remediation.Technology{
+			{Kind: "language", Name: "Go", Version: "1.26", Source: "observed", Confidence: "observed", Component: "orders-api", ComponentRole: "backend", EvidenceRef: "evidence-1"},
+			{Kind: "language", Name: "Elixir", Version: "1.17", Source: "user_provided", Confidence: "confirmed", Component: "orders-api", ComponentRole: "backend"},
+		},
+	}
+	bundle, err := remediation.Build(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Entries[3].RemediationSource = &source
+	in.Entries[3].RemediationBundle = &bundle
+	body, err := DiagnosticHTML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := html.UnescapeString(string(body))
+	for _, want := range []string{"실행 관측", "모델·분석기 추정", "사용자 제공·수동 검토", "Original response", "Manual correction", "evidence-1", "step-1", "원본 상충 가능", "기술 상충 가능", "관측 또는 기술 목록이 잘렸습니다", "보완이 필요한 맥락", "실제 수정 실행형", "실행 범위는 전달받는 AI 세션의 권한", bundle.AIPrompt} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	in.Shared = true
+	body, err = DiagnosticHTML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"Original response", "Manual correction", "evidence-1", "orders-api", bundle.AIPrompt} {
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("shared leak %q", secret)
+		}
+	}
+}
+
+func TestDiagnosticBundleCopyRedactsEveryNestedString(t *testing.T) {
+	bundle := remediation.Bundle{AIPrompt: "Authorization: Bearer prompt-fixture-private", Context: remediation.Context{Observation: "password=observation-fixture-private", Observations: []remediation.ContextObservation{{Observation: "Authorization: Bearer step-fixture-private"}}}, SecurityCondition: []string{"password=condition-fixture-private"}, CodeExample: []string{"password=example-fixture-private"}, Technologies: []remediation.Technology{{Name: "person-fixture@example.invalid"}}}
+	raw, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean, err := diagnosticBundleCopy(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(clean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"prompt-fixture-private", "observation-fixture-private", "step-fixture-private", "condition-fixture-private", "example-fixture-private", "person-fixture@example.invalid"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("bundle leak %s", secret)
+		}
+	}
+	original, err := json.Marshal(bundle)
+	if err != nil || string(raw) != string(original) {
+		t.Fatal("source bundle mutated", err)
+	}
+	if _, err = diagnosticBundleCopy([]byte(`{"ai_prompt":"nul\u0000input"}`)); err == nil {
+		t.Fatal("NUL accepted")
 	}
 }

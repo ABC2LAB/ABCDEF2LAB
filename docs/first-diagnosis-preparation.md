@@ -2,7 +2,7 @@
 
 이 문서는 실행 전 인계·설치 준비용이다. 실제 진단을 시작하거나 권위를 발급하지 않는다. 이동찬의 환경·엔진 통합 준비와 공급자의 실제 자료를 구분한다. 개인 장비 조사·로컬 경로·세션·DSN·키·원본 감사 기록은 이 문서에 포함하지 않는다.
 
-기준 구현은 [#304의 cae608b](https://github.com/ABC2LAB/ABCDEF2LAB/pull/304), 계약 대조 기준은 dev `2e096607bc387d8896c7623bcde5fa14cf04d596`이다. [해당 head의 기동 문서](https://github.com/ABC2LAB/ABCDEF2LAB/blob/cae608b28a8dfdb57c60011f2e925710e0cebcad/docs/first-diagnosis-launch.md)를 재사용한다. #304가 바뀌거나 병합되면 **실제로 사용할 merged SHA의 CLI·검사 코드와 다시 대조**한다. 이 체크리스트는 #304 수용·병합 승인이나 신규 입력 형식 채택을 대신하지 않는다.
+현재 통합 구현 기준은 [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)의 `64121b38eb4269c6530a5b10c078645b353d2dc4`이며 [기동·API 문서](first-diagnosis-launch.md)를 재사용한다. 게시 전 결합한 dev `399da3ed4b71c0bc8b96ed7d6db487cc99d32ba1`에는 #304/#310/#312/#313/#318이 포함된다. 나머지 통합 기능의 최신 팀원 병합 여부는 별도로 확인한다. **실제로 사용할 승인된 정확 SHA의 CLI·검사 코드와 다시 대조**한다. 이 체크리스트는 실모델·실제 회차 수용, 팀원 병합 승인이나 신규 입력 형식 채택을 대신하지 않는다.
 
 ## 1. 준비 상태와 실행 경계
 
@@ -68,20 +68,23 @@
 - 설치 역할은 해당 모드의 schema·로그인·모델을 준비하고 runtime DSN으로 재사용하지 않는다. 키 registry·epoch 준비는 등록 GET 추가 항목이다.
 - 공통 SELECT/INSERT/UPDATE: `tasks`, `explorations`, `exploration_nodes`, `task_llm_profiles`, `findings`.
 - 공통 SELECT/INSERT: `activity`, `exploration_edges`, `task_scope`, `task_constraints`, `exploration_anchors`.
-- 공통 SELECT: `llm_profiles`, `intercept_rules`, `settings`, `agents`, `agent_prompts`, `task_categories`, `task_relations`, `assets`, `companies`, `company_scope`, `task_asset_links`, `asset_intercept_rules`, `task_intercept_rules`.
+- 공통 SELECT: `llm_profiles`, `intercept_rules`, `settings`, `agents`, `agent_prompts`, `task_categories`, `task_relations`, `assets`, `companies`, `company_scope`, `task_asset_links`, `asset_intercept_rules`, `task_intercept_rules`, `task_archives`, `e3_evidence_manifests`, `e3_oracle_verdicts`, `e3_verdict_issuances`, `e3_verdict_links`.
 - INSERT 대상의 실제 serial/identity sequence마다 USAGE, `try_inet(text)` EXECUTE. 검사기의 실제 목록과 설치 schema를 대조한다.
-- `task_categories`, `task_relations`, `task_scope` 조회가 필요하고, `task_archives` SELECT는 등록 GET 추가 요구다. `task_constraints`와 `task_scope`는 SELECT/INSERT이며 UPDATE/DELETE를 추가하지 않는다.
-- 원본 Planner는 `assets`, `companies`, `company_scope`, `task_asset_links`, `asset_intercept_rules`, `task_intercept_rules` 조회, `try_inet(text)` EXECUTE, `exploration_anchors` SELECT/INSERT를 사용한다. asset/company 쓰기는 추가하지 않는다.
+- `task_categories`, `task_relations`, `task_scope` 조회가 필요하고, `task_archives` SELECT는 두 모드의 저장 보고서에도 필요하다. `task_constraints`와 `task_scope`는 SELECT/INSERT이며 UPDATE/DELETE를 추가하지 않는다.
+- 원본 Planner는 `assets`, `companies`, `company_scope`, `task_asset_links`, `asset_intercept_rules`, `task_intercept_rules` 조회, `try_inet(text)` EXECUTE, `exploration_anchors` SELECT/INSERT를 사용한다. 제품의 자산/회사 내용 변경 경로는 추가하지 않는다. 아래에 명시한 행 잠금용 열 UPDATE 권한은 별도다.
+- 일반 HTTP 전용 SELECT/INSERT/UPDATE: `request_approvals`. 설치자가 기존 `db.Open` migration 경로로 테이블을 준비하며 첫 실행은 migration이나 GRANT를 하지 않는다. 등록 GET·report 역할에 이 권한을 공통 요구로 추가하지 않는다.
 - 등록 GET 추가 SELECT/INSERT/UPDATE: `task_control_modes`.
 - 등록 GET 추가 SELECT/INSERT: `traffic_evidence_snapshots`, `finding_traffic_bindings`, `e3_evidence_manifests`, `e3_oracle_verdicts`, `e3_verdict_issuances`, `e3_verdict_links`, `evidence_revision_initials`, `evidence_revision_operations`.
-- 등록 GET 추가 SELECT: `audit_checkpoint_epochs`, `task_archives`, `audit_checkpoint_history`, `audit_checkpoint_heads`, `audit_checkpoint_operations`.
-- `e3_evidence_manifests`, `e3_verdict_issuances`의 행 잠금용 UPDATE(id)만 추가한다. 전체 UPDATE/DELETE/TRUNCATE/TRIGGER 금지와 갱신을 거부하는 정확한 기존 `guard_e3_immutable` trigger를 확인한다.
+- 등록 GET 추가 SELECT: `audit_checkpoint_epochs`, `audit_checkpoint_history`, `audit_checkpoint_heads`, `audit_checkpoint_operations`.
+- 공통 저장 보고서의 행 잠금에는 `e3_verdict_issuances`와 `assets`의 UPDATE(id), `task_asset_links`의 UPDATE(task_id), `exploration_anchors`의 UPDATE(node_id)만 추가한다. 등록 GET만 `e3_evidence_manifests` UPDATE(id)를 추가로 요구한다. 이는 실제 열 UPDATE 권한이다. E③ 테이블의 전체 UPDATE/DELETE/TRUNCATE/TRIGGER 금지와 갱신을 거부하는 정확한 기존 `guard_e3_immutable` trigger를 확인한다.
 - runtime은 epoch/key registry에 **열 단위도 포함한 쓰기 권한이 없어야 한다**. checkpoint SQL 쓰기는 별도 host authority 역할이다.
 - superuser/CREATEDB/CREATEROLE/replication/BYPASSRLS, 상속·SET ROLE을 통한 관리자 권한, 광범위 read/write·server file/program·monitor, session_replication_role 변경, DB CREATE/TEMP, schema/object 소유/CREATE, 실행 가능한 SECURITY DEFINER, 임시 schema·모호한 search path를 검사한다.
 - 등록 GET의 host authority는 별도 LOGIN이다. epoch/key/history SELECT와 행 잠금에 필요한 **epoch UPDATE(store_ref), registry/history UPDATE(key_ref)**만 허용한다. 전체 UPDATE·추가 열 UPDATE·key command receipt 쓰기는 금지다. checkpoint history/operations는 SELECT/INSERT, heads는 SELECT/INSERT/UPDATE다.
 - runtime pool은 최대8이다. 등록 GET의 별도 host authority pool은 최소2이며 두 pool의 실제 DB/서버/schema identity가 같아야 한다. DSN은 `runtime_dsn_file`/`authority_dsn_file`의 보호 파일로 전달하고 명령 인자·PR·stdout에 원문을 넣지 않는다.
 
-정확 소스: [별도 authority 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/cae608b28a8dfdb57c60011f2e925710e0cebcad/server/controlled_read_assembly_database_authority.go), [런타임 DB 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/cae608b28a8dfdb57c60011f2e925710e0cebcad/server/controlled_read_assembly_database_role.go), [기동 check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/cae608b28a8dfdb57c60011f2e925710e0cebcad/cmd/first-controlled-diagnosis/launch_check.go). 함수 `CheckFirstDiagnosisHTTPRuntimeDatabase` / `CheckFirstDiagnosisRuntimeDatabase`의 실제 정의와 호출을 따라 최신 목록을 대조한다. 시험 fixture의 fake credentials/roles를 운영 자료로 복사하지 않는다. 검사기는 모든 테이블의 가능한 과잉 권한이 전부 제거됐음을 보증하는 도구가 아니다.
+종료 후 `report`는 별도 최소 역할을 사용하며 일반 runtime 권한을 복사하지 않는다. [기동 문서의 저장 보고서와 수정 프롬프트 절](first-diagnosis-launch.md#저장-보고서와-수정-프롬프트)의 정확한 SELECT·INSERT·sequence·잠금 열 목록을 따른다.
+
+정확 소스: [별도 authority 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/server/controlled_read_assembly_database_authority.go), [런타임 DB 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/server/controlled_read_assembly_database_role.go), [기동 check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/launch_check.go). 함수 `CheckFirstDiagnosisHTTPRuntimeDatabase` / `CheckFirstDiagnosisRuntimeDatabase`의 실제 정의와 호출을 따라 최신 목록을 대조한다. 시험 fixture의 fake credentials/roles를 운영 자료로 복사하지 않는다. 검사기는 모든 테이블의 가능한 과잉 권한이 전부 제거됐음을 보증하는 도구가 아니다.
 
 ## 4. 실제 자료 인계 대장
 
@@ -94,6 +97,7 @@
 ### 일반 HTTP 인계
 
 - `general_http.policy_file`: 기존 `abc2lab.e2-http-host-policy/v1` 형식의 실제 approval/run/reset/case/policy/budget 참조, 승인 기간·한도, 계정/세션, CA 인증서·개인키·감사키·credential 보호 파일과 SHA256, helper·state 경로.
+- 정책의 `approval_mode`는 `confirm_every_request` 또는 `preauthorized_scope`로 명시한다. 확인 모드는 owner `ARTEX`를 요구한다. 운영자는 rule별 `approval_display` 공개 path/query/JSON 키를 검토하며 비밀 원문을 표시 허용으로 지정하지 않는다. 자동 모드에도 같은 task/run 중지 경계가 있다.
 - `general_http.authority_file`: 기존 `abc2lab.first-http-authority/v1` 형식의 approval_ref, 실제 operator_uid·task_id·exploration_id, 정책 원문의 policy_sha256, valid_from·valid_until. 운영자가 실제 행과 정책 바이트를 확인한다. 승인 구간은 최대15분이며 정책 유효 구간을 포함해야 한다.
 - `general_http.authority_root`: 같은 전용 보호 namespace에서 단회 시작 marker·FD·배타 잠금을 유지한다. 종료·실패 뒤 같은 승인/root로 재기동하지 않는다. 새 회차는 새 승인과 새 전용 경로가 필요하다.
 - 실제 task/intent는 기동·Planner·Store에서 확인하며 임의 ID를 정책에 넣어 대신하지 않는다. 세션 만료·회수 또는 정책 바이트·실행 문맥 변경 시 재검증한다. A/B 쌍과 등록 GET 자료는 이 모드의 필수 입력이 아니다.
@@ -131,13 +135,13 @@ carrier는 최신 [선정 계약](contracts/kg-canary-carrier-stage1.md)의 revi
 - helper 실배치·모델 추론·대상 health/reset·A/B 조회·감사/판정/저장 성공을 증명하지 않는다.
 - 실제 자료·접근 권한이 없거나 자리표시자가 남으면 강행하지 않는다. 원문 비밀이 없는 요약만 공유하고 상세 출력은 보호 경로에 보존한다.
 
-근거: [launch config parser](https://github.com/ABC2LAB/ABCDEF2LAB/blob/cae608b28a8dfdb57c60011f2e925710e0cebcad/cmd/first-controlled-diagnosis/launch_config.go), [launch check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/cae608b28a8dfdb57c60011f2e925710e0cebcad/cmd/first-controlled-diagnosis/launch_check.go), [CLI 분기](https://github.com/ABC2LAB/ABCDEF2LAB/blob/cae608b28a8dfdb57c60011f2e925710e0cebcad/cmd/first-controlled-diagnosis/main.go).
+근거: [launch config parser](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/launch_config.go), [launch check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/launch_check.go), [CLI 분기](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/main.go).
 
 ## 6. 병합 후 실행 절차 (지금 실행하지 않음)
 
 이 절차는 미래 실행 승인을 대신하지 않는다. 각 단계의 조건이 미충족이면 멈추고 해당 담당에게 필요한 자료를 요청한다. 전체 평가 배치·쓰기 IDOR·보상·RAG·파인튜닝은 이 범위에 추가하지 않는다.
 
-1. #304의 병합 여부·최신 head·리뷰와 실제 merge commit, 최신 dev를 다시 확인한다. 원본/피드백 작업자의 checkout을 전환하지 않고 별도 소스 경로에서 실제 사용할 merged SHA를 고정한다.
+1. #317과 선행 PR의 병합 여부·최신 head·리뷰 및 최신 dev를 다시 확인한다. 원본/피드백 작업자의 checkout을 전환하지 않고 별도 소스 경로에서 사용이 승인된 정확 통합 SHA 또는 팀원 병합 SHA를 고정한다. 통합 브랜치 검증을 dev 반영으로 쓰지 않는다.
 2. 승인된 Go1.26.3로 아래 빌드. 공통 설치/runtime 역할·JWT/로그인·DB model profile/manifest를 확인하고, 일반 HTTP는 helper·policy/authority·보호 키 경로, 등록 GET은 별도 host authority·active key/epoch 등 §2의 모드별 추가 준비를 확인한다. 모델을 호출하지 않고 설정 일치 여부를 먼저 기록한다.
 3. 보호된 launch 설정과 task 입력으로 `prepare-task`. 반환된 실제 task_id/exploration_id만 보존한다. 다음 `prepare-intents`는 **명시적 실제 모델 호출 승인 후** 수행하고 실제 저장된 intent IDs를 확인한다. 준비 중 대상 도구는 차단된 경로를 사용한다.
 4. 선택한 모드의 자료를 인계한다. **일반 HTTP:** 실제 정책·계정/세션·예산·격리 자료와 task/exploration·정책 원문 digest에 결속된 authority를 확인한다. **등록 GET:** 실제 task/intent와 최신 instance/reset/generation에 맞는 A/B·snapshot/registry/metadata·정책을 받아 오프라인 형식/CheckPairing·ReadOnly·권한/세대/만료·같은 snapshot 결속을 확인한다.

@@ -182,7 +182,7 @@ func TestSandboxActualHTTPRelayAndPeer(t *testing.T) {
 }
 
 func TestSandboxBlocksDirectAndEnvironmentRemoval(t *testing.T) {
-	for _, kind := range []string{"env_removed", "explicit_no_proxy", "shell_child", "ipv6", "udp", "unsupported_socks"} {
+	for _, kind := range []string{"env_removed", "explicit_no_proxy", "shell_child", "relay_port_collision", "ipv6", "udp", "unsupported_socks"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newSandboxFixture(t, "placeholder")
 			var udp *net.UDPConn
@@ -226,11 +226,19 @@ func TestSandboxBlocksDirectAndEnvironmentRemoval(t *testing.T) {
 					t.Fatal("UDP positive control missing")
 				}
 			}
-			direct := "curl -sS --max-time 1 --noproxy '*' " + f.target.URL + "/direct"
+			directTarget := f.target.URL
+			if kind == "relay_port_collision" {
+				// 호스트와 격리 namespace의 loopback 포트는 독립적으로 할당된다.
+				// 대상과 relay 포트가 겹칠 때의 경로를 확정적으로 재현한다.
+				directTarget = `"$http_proxy"`
+			}
+			// 포트가 겹친 직통 요청은 relay에 닿아도 origin-form HTTP라 거부된다.
+			// 이 HTTP 거부도 curl 실패로 처리한다.
+			direct := "curl -fsS --max-time 1 --noproxy '*' " + directTarget + "/direct"
 			switch kind {
 			case "env_removed":
 				f.cfg.Command = "env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy " + direct
-			case "explicit_no_proxy":
+			case "explicit_no_proxy", "relay_port_collision":
 				f.cfg.Command = direct
 			case "shell_child":
 				f.cfg.Command = "bash -c " + fmt.Sprintf("%q", direct)
@@ -242,6 +250,9 @@ func TestSandboxBlocksDirectAndEnvironmentRemoval(t *testing.T) {
 				f.cfg.Command = "curl -sS --max-time 1 --proxy socks5h://127.0.0.1:1 " + f.target.URL + "/direct"
 			}
 			r := f.run(t)
+			if kind == "relay_port_collision" && (r.ExitCode != 22 || f.peers.Load() != 1) {
+				t.Fatalf("direct relay collision was not HTTP-denied: result=%+v peers=%d", r, f.peers.Load())
+			}
 			if udp != nil {
 				_ = udp.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 				var b [32]byte

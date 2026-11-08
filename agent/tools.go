@@ -1011,7 +1011,7 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 			if err := t.ts.PopulateFindingTrafficIDs([]*db.Node{n}); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			return jsonResult(n) // full payload incl. detail / evidence, plus explicit finding IDs
+			return diagnosticNodeResult(n) // 후보 원문은 저장소에 두고 모델에는 결속·요약만 전달한다.
 		})
 }
 

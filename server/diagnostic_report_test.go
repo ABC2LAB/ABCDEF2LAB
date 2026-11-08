@@ -300,3 +300,84 @@ func TestDiagnosticReportSnapshotAndByteLimit(t *testing.T) {
 		t.Fatal("oversized TEXT accepted")
 	}
 }
+
+func TestDiagnosticReportUnknownClassificationsRemainUnknown(t *testing.T) {
+	s, f, _ := trafficEvidenceServer(t)
+	stored, err := s.m.pg.GetFinding(f.FindingID)
+	if err != nil || stored.TaskID == nil {
+		t.Fatal(err)
+	}
+	for _, class := range []string{"result_unknown", "tool_failure", "transient_failure", "terminated"} {
+		diagnosticServerCandidate(t, s, *stored.TaskID, class)
+	}
+	data, err := loadDiagnosticReport(t.Context(), s.m.pg, *stored.TaskID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range data.Entries {
+		if entry.Kind == "candidate" {
+			count++
+			if entry.Outcome != "unknown" {
+				t.Fatalf("unknown classification downgraded: %s %s", entry.Status, entry.Outcome)
+			}
+		}
+	}
+	if count != 4 {
+		t.Fatalf("unknown results=%d", count)
+	}
+}
+func TestDiagnosticReportE3DigestsAndConfirmationGuardsIndependently(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	for _, scenario := range []string{"finding-manifest", "finding-verdict", "unlinked-manifest", "unlinked-verdict", "initial-version", "report-stale"} {
+		t.Run(scenario, func(t *testing.T) {
+			verdict := oracle.Confirmed
+			if strings.HasPrefix(scenario, "unlinked") {
+				verdict = oracle.Undecidable
+			}
+			f := diagnosticE3FixtureFor(t, s.m.pg, verdict, true)
+			result, err := s.m.pg.RecordControlledFinding(t.Context(), f.prepared, f.markers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline, err := loadDiagnosticReport(t.Context(), s.m.pg, f.taskID, time.Now())
+			if err != nil || len(baseline.Entries) != 1 {
+				t.Fatal("baseline invalid", err)
+			}
+			tx, err := s.m.pg.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			// 소유 시험 연결에서만 변조된 저장소 응답을 재현하고 반드시 롤백한다.
+			// 제품의 불변 트리거나 다른 연결의 집행 설정은 바꾸지 않는다.
+			if _, err = tx.ExecContext(t.Context(), `SET LOCAL session_replication_role=replica`); err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "initial-version":
+				_, err = tx.Exec(`UPDATE findings SET evidence_version=evidence_version+1,report='' WHERE id=$1`, result.FindingID)
+			case "report-stale":
+				_, err = tx.Exec(`UPDATE findings SET report='synthetic stale',report_evidence_version=evidence_version+1 WHERE id=$1`, result.FindingID)
+			default:
+				// 만지는 행을 task로 한정해 다른 시험의 근거는 보존한다.
+				if strings.HasSuffix(scenario, "manifest") {
+					_, err = tx.Exec(`UPDATE e3_evidence_manifests SET digest=decode(repeat('00',32),'hex') WHERE task_id=$1`, f.taskID)
+				} else {
+					_, err = tx.Exec(`UPDATE e3_oracle_verdicts SET payload_digest=decode(repeat('00',32),'hex') WHERE id IN (SELECT verdict_id FROM e3_verdict_issuances WHERE task_id=$1)`, f.taskID)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := readDiagnosticReport(t.Context(), tx, f.taskID, time.Now())
+			if scenario == "initial-version" || scenario == "report-stale" {
+				if err != nil || data.Entries[0].Outcome != "review" || data.Entries[0].Stale != (scenario == "report-stale") {
+					t.Fatal("independent confirmation guard failed", err)
+				}
+			} else if err == nil {
+				t.Fatal("corrupt E3 digest accepted")
+			}
+		})
+	}
+}

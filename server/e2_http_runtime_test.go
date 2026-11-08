@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
@@ -188,5 +189,34 @@ func TestE2HTTPRuntimeRejectsUnboundResultAndPreservesObserverFailure(t *testing
 	err := runtime.observeResult(context.Background(), runtime.task, lease, 19, result)
 	if !errors.Is(err, ErrE2HTTPHost) || !errors.Is(err, sentinel) || calls != 1 || runtime.Results(task.ID) != nil {
 		t.Fatal("unbound result accepted or existing observer failure swallowed")
+	}
+}
+
+// Worker가 취소를 먼저 반환해 unknown 표식이 없어도, drain에서 확정된 감사가 우선한다.
+func TestE2HTTPFinalIntentErrorPreservesLateUnknown(t *testing.T) {
+	for _, drainErr := range []error{nil, context.Canceled, e2runner.ErrIncomplete} {
+		earlyWorkerErr := context.Canceled
+		finalCalls := []e2proxy.CallResult{{IntentID: 7, Final: true, Counts: e2proxy.Counts{Unknown: 1}}}
+		err := errors.Join(earlyWorkerErr, e2HTTPFinalIntentError(drainErr, finalCalls, 7))
+		if !errors.Is(err, agent.ErrE2HTTPUnknown) || !errors.Is(err, context.Canceled) {
+			t.Fatal("late unknown lost", err)
+		}
+		if drainErr != nil && !errors.Is(err, drainErr) {
+			t.Fatal("drain error lost", err)
+		}
+	}
+}
+func TestE2HTTPFinalIntentErrorDoesNotInventUnknown(t *testing.T) {
+	calls := []e2proxy.CallResult{
+		{IntentID: 8, Final: true, Counts: e2proxy.Counts{Unknown: 1}},
+		{IntentID: 7, Final: true, Reason: e2proxy.PolicyDenied, Counts: e2proxy.Counts{Denied: 1}},
+		{IntentID: 7, Final: true, Reason: e2proxy.Unsupported, Counts: e2proxy.Counts{Unsupported: 1}},
+		{IntentID: 7, Final: true, Reason: e2proxy.AuditFailed, AuditComplete: false},
+	}
+	if err := e2HTTPFinalIntentError(nil, calls, 7); err != nil {
+		t.Fatal("foreign unknown or denial reclassified", err)
+	}
+	if err := e2HTTPFinalIntentError(e2runner.ErrIncomplete, calls, 7); !errors.Is(err, e2runner.ErrIncomplete) || errors.Is(err, agent.ErrE2HTTPUnknown) {
+		t.Fatal(err)
 	}
 }

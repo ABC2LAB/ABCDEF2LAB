@@ -61,7 +61,7 @@ func coreConfig(t testing.TB, origin string, rec Recorder, max uint64) Config {
 	if err := ledger.Register(grant, now); err != nil {
 		t.Fatal(err)
 	}
-	return Config{Scope: transmit.Scope{TaskRef: "task", RunRef: "run", CaseRef: "case", ResetRef: "reset", PolicyRef: "policy"}, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision1", AccountRef: "anonymous", SessionRef: "anonymous-session", ExpiresAt: now.Add(time.Hour),
+	return Config{ApprovalMode: ApprovalPreauthorizedScope, Scope: transmit.Scope{TaskRef: "task", RunRef: "run", CaseRef: "case", ResetRef: "reset", PolicyRef: "policy"}, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision1", AccountRef: "anonymous", SessionRef: "anonymous-session", ExpiresAt: now.Add(time.Hour),
 		Rules:  []Rule{{Ref: "rule", Origin: origin, ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed", PathScopeRef: "allowed-prefix", Methods: []string{"GET"}}},
 		Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grant.Key, Binding: grant.Binding}, Recorder: rec,
 		Limits: Limits{MaxAttempts: 1000, MaxCalls: 100, MaxConcurrent: 100, MaxBodyBytes: 1 << 20, RequestTimeout: time.Second, CallTimeout: time.Minute, MaxDenials: 1000, MaxTransient: 1000, MaxUnknown: 1000}}

@@ -109,7 +109,7 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 	}
 	t.Run("ungranted-runtime", func(t *testing.T) { assertRejected(t, runtimePool) })
 	// 실제 서버 SQL 경로의 최소 권한이다. 권한검사 구현에서 목록을 가져오지 않는다.
-	for _, name := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "task_control_modes", "findings"} {
+	for _, name := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "task_control_modes", "findings", "request_approvals"} {
 		exec("GRANT SELECT,INSERT,UPDATE ON TABLE " + ident(name) + " TO " + ident(role))
 	}
 	for _, name := range []string{"traffic_evidence_snapshots", "finding_traffic_bindings", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links", "evidence_revision_initials", "evidence_revision_operations", "exploration_edges", "activity", "task_scope", "task_constraints", "exploration_anchors"} {
@@ -119,6 +119,10 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 		exec("GRANT SELECT ON TABLE " + ident(name) + " TO " + ident(role))
 	}
 	exec("GRANT UPDATE(id) ON TABLE e3_evidence_manifests,e3_verdict_issuances TO " + ident(role))
+	exec("GRANT UPDATE(id) ON assets TO " + ident(role))
+	exec("GRANT UPDATE(task_id) ON task_asset_links TO " + ident(role))
+	exec("GRANT UPDATE(node_id) ON exploration_anchors TO " + ident(role))
+
 	exec("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO " + ident(role))
 	t.Run("runtime-login-positive", func(t *testing.T) {
 		if err := CheckFirstDiagnosisRuntimeDatabase(ctx, runtimePool); err != nil {
@@ -250,6 +254,34 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 				t.Fatal("실제 취소 intent 생성 실패")
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, cancelled, "cancel")
+		})
+		t.Run("actual-engine-user-stop-drain-no-new-send", func(t *testing.T) {
+			cancelled, err := manager.CreateTask("Owned cancelled engine fixture", "Cancel an active owned request", nil, 60, 60)
+			if err != nil || cancelled == nil {
+				t.Fatal("독립 취소 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", cancelled.ID); err != nil {
+				t.Fatal("취소 task 준비 상태 저장 실패")
+			}
+			cancelled.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := cancelled.Store.AddIntent(map[string]any{"summary": "Cancel the owned in-flight request"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 취소 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, cancelled, "user-stop")
+		})
+		t.Run("actual-engine-pre-run-stop-no-acquire", func(t *testing.T) {
+			cancelled, err := manager.CreateTask("Owned cancelled engine fixture", "Cancel an active owned request", nil, 60, 60)
+			if err != nil || cancelled == nil {
+				t.Fatal("독립 취소 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", cancelled.ID); err != nil {
+				t.Fatal("취소 task 준비 상태 저장 실패")
+			}
+			cancelled.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := cancelled.Store.AddIntent(map[string]any{"summary": "Cancel the owned in-flight request"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 취소 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, cancelled, "pre-run-stop")
 		})
 		var expID int64
 		if err := runtimePool.QueryRowContext(ctx, "SELECT exploration_id FROM tasks WHERE id=$1", task.ID).Scan(&expID); err != nil || expID != task.ExpID {

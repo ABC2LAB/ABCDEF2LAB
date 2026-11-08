@@ -156,7 +156,7 @@ func newRunnerFixtureWithRecorder(t *testing.T, base, helper, target string, roo
 	if decorate != nil {
 		recorder = decorate(recorder)
 	}
-	execution, err := e2proxy.NewExecution(t.Context(), e2proxy.Config{
+	execution, err := e2proxy.NewExecution(t.Context(), e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 		HeaderMode: e2proxy.HeaderProtectedSessionProposal,
 		Scope:      scope, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision_runner", AccountRef: "account_runner", SessionRef: "session_runner",
 		ExpiresAt: now.Add(time.Minute), RootCAs: roots, Recorder: recorder,
@@ -588,6 +588,10 @@ func TestRunnerClassificationTable(t *testing.T) {
 		{name: "incomplete", state: &runningCall{}, trusted: TrustedResult{}, want: "result_unknown"},
 		{name: "audit unknown", state: &runningCall{}, trusted: TrustedResult{Final: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Unknown: 1}}}, want: "result_unknown"},
 		{name: "allowed but not forwarded", state: &runningCall{}, trusted: TrustedResult{Final: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Allowed: 1}}}, want: ClassificationForwardNotAttempted},
+		{name: "approval infrastructure failed", state: &runningCall{}, trusted: TrustedResult{Call: e2proxy.CallResult{Reason: e2proxy.AuditFailed, Counts: e2proxy.Counts{Denied: 1}}}, want: "transient_failure"},
+		{name: "execution audit latch", state: &runningCall{}, trusted: TrustedResult{Final: true, Execution: e2proxy.ExecutionView{Reason: e2proxy.AuditFailed}}, want: "transient_failure"},
+		{name: "audit failure with unknown", state: &runningCall{}, trusted: TrustedResult{Call: e2proxy.CallResult{Reason: e2proxy.AuditFailed, Counts: e2proxy.Counts{Unknown: 1}}}, want: "result_unknown"},
+		{name: "audit failure after send", state: &runningCall{}, trusted: TrustedResult{Call: e2proxy.CallResult{Reason: e2proxy.AuditFailed, Counts: e2proxy.Counts{ForwardAttempted: 1}}}, want: "result_unknown"},
 		{name: "policy only", state: &runningCall{}, trusted: TrustedResult{Final: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Denied: 1}}}, want: "policy_not_executed"},
 		{name: "unsupported only", state: &runningCall{}, trusted: TrustedResult{Final: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Unsupported: 1}}}, want: "unsupported"},
 		{name: "proxy unavailable", state: &runningCall{termination: "proxy_unavailable"}, trusted: TrustedResult{Final: true}, want: "transient_failure"},

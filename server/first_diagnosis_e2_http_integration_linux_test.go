@@ -188,6 +188,47 @@ func (p *firstDiagnosisE2Provider) Complete(_ context.Context, request llm.Compl
 	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("The owned fixture step is complete.")}}, "end_turn", llm.Usage{}, nil
 }
 
+func TestFirstDiagnosisE2ProviderToolBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		unsupported bool
+	}{
+		{name: "Bash"},
+		{name: "graph_overview"},
+		{name: "list_facts"},
+		{name: "node_detail"},
+		{name: "get_worker_output"},
+		{name: "list_goals"},
+		{name: "record_fact"},
+		{name: "submit_diagnostic_candidate"},
+		{name: "WebFetch", unsupported: true},
+		{name: "WebSearch", unsupported: true},
+		{name: "Read", unsupported: true},
+		{name: "Write", unsupported: true},
+		{name: "Edit", unsupported: true},
+		{name: "MultiEdit", unsupported: true},
+		{name: "LS", unsupported: true},
+		{name: "Glob", unsupported: true},
+		{name: "Grep", unsupported: true},
+		{name: "create_finding", unsupported: true},
+		{name: "submit_diagnostic_candidate_extra", unsupported: true},
+		{name: "unknown_tool", unsupported: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &firstDiagnosisE2Provider{}
+			_, _, _, err := provider.Complete(t.Context(), llm.CompletionRequest{
+				Tools: []llm.ToolSchema{{Name: tc.name}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if provider.unsupportedTool != tc.unsupported {
+				t.Fatalf("fixture tool boundary: %s unsupported=%v, want %v", tc.name, provider.unsupportedTool, tc.unsupported)
+			}
+		})
+	}
+}
+
 type firstDiagnosisPlannerProbeProvider struct {
 	firstDiagnosisE2Provider
 	outboundToolExposed bool
@@ -250,7 +291,7 @@ func firstDiagnosisAcquiredRunner(t *testing.T, ctx context.Context, request E2H
 	if err := ledger.Register(budget.Grant{Key: grantKey, Binding: binding, MaxRequests: 4, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Minute)}, now); err != nil {
 		t.Fatal(err)
 	}
-	execution, err := e2proxy.NewExecution(ctx, e2proxy.Config{
+	execution, err := e2proxy.NewExecution(ctx, e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 		Scope:    transmit.Scope{TaskRef: request.TaskID, RunRef: runRef, CaseRef: expected.CaseRef, ResetRef: expected.ResetRef, PolicyRef: expected.PolicyRef},
 		IntentID: request.IntentID, OwnerRef: "ARTEX", PolicyRevision: expected.PolicyRevision, AccountRef: "acceptance-account", SessionRef: "acceptance-session", HeaderMode: e2proxy.HeaderProtectedSessionProposal, ExpiresAt: now.Add(time.Minute),
 		Rules:    []e2proxy.Rule{{Ref: "acceptance-rule", Origin: target, ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed", PathScopeRef: "acceptance-path", Methods: []string{"GET"}, CredentialHeaders: http.Header{"Authorization": []string{"Bearer " + firstDiagnosisE2Secret}}}},
@@ -430,7 +471,7 @@ func TestFirstDiagnosisE2ProductionRuntimeNativeAcceptance(t *testing.T) {
 			}
 			results := runtime.Results(task.ID)
 			calls := execution.Calls()
-			if len(results) != 1 || len(calls) != 1 || results[0].Call != calls[0] || !results[0].Final || results[0].Execution.Scope.TaskRef != task.ID || results[0].Call.IntentID != intent.ID {
+			if len(results) != 1 || len(calls) != 1 || !e2proxy.EqualCallResults(results[0].Call, calls[0]) || !results[0].Final || results[0].Execution.Scope.TaskRef != task.ID || results[0].Call.IntentID != intent.ID {
 				t.Fatal("실제 Runner observer가 같은 실행·intent·call의 프로그램 결과를 보존하지 못함")
 			}
 			if mode == "allowed" {

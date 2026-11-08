@@ -113,6 +113,7 @@ const (
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
+	requestApprovals               *RequestApprovalService
 	backgroundMu                   sync.Mutex
 	backgroundWG                   sync.WaitGroup
 	backgroundClosing              bool
@@ -302,6 +303,7 @@ func newServerConfiguredWithOptions(ctx context.Context, m *Manager, skillDir st
 			return nil, ErrControlledReadHostConfiguration
 		}
 		s.engine.e2HTTP = startup.e2HTTP
+		s.requestApprovals = startup.e2HTTP.options.RequestApprovals
 	} else if startup.assemblyStore != nil {
 		s.engine.controlledReads = newControlledReadRuntime(startup.assemblyStore)
 		context.AfterFunc(s.ctx, s.engine.controlledReads.discardAll)
@@ -1023,6 +1025,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
 	mux.HandleFunc("GET /api/report", s.getReport)
 	mux.HandleFunc("GET /api/report/diagnostic", s.diagnosticReport)
+	mux.HandleFunc("GET /api/report/diagnostic/remediation", s.listDiagnosticRemediation)
+	mux.HandleFunc("POST /api/report/diagnostic/remediation", s.createDiagnosticRemediation)
+	mux.HandleFunc("GET /api/report/diagnostic/remediation/prompt", s.copyDiagnosticRemediation)
 	mux.HandleFunc("GET /api/chat/mentions", s.searchChatMentions)
 	mux.HandleFunc("POST /api/chat", s.chat)
 	mux.HandleFunc("POST /api/chat/upload", s.chatUpload) // 方式1 文件上传:落到会话/任务工作目录 uploads/
@@ -1131,6 +1136,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/asset-intercept/rules/{id}", s.assetInterceptDeleteRule)
 	mux.HandleFunc("POST /api/asset-intercept/rules/{id}/toggle", s.assetInterceptToggleRule)
 
+	mux.HandleFunc("POST /api/tasks/{id}/request-approvals/stop", s.requestApprovalStop)
+	mux.HandleFunc("GET /api/tasks/{id}/diagnosis-run", s.diagnosisRun)
+	mux.HandleFunc("GET /api/tasks/{id}/request-approvals", s.requestApprovalList)
+	mux.HandleFunc("GET /api/tasks/{id}/request-approvals/{approvalID}", s.requestApprovalGet)
+	mux.HandleFunc("POST /api/tasks/{id}/request-approvals/{approvalID}/decision", s.requestApprovalDecide)
 	mux.HandleFunc("GET /api/intercept/pending", s.interceptListPending)
 	mux.HandleFunc("GET /api/intercept/pending/{id}", s.interceptGetOne)
 	mux.HandleFunc("POST /api/intercept/pending/{id}/decide", s.interceptDecide)

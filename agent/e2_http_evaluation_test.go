@@ -207,7 +207,7 @@ func TestE2HTTPEvaluationCallerSDKRoundTrip(t *testing.T) {
 						t.Fatal(err)
 					}
 					scope := transmit.Scope{TaskRef: "7", RunRef: "sdk-" + scheme + "-" + tc.name, CaseRef: "sdk-case", ResetRef: "sdk-reset", PolicyRef: "sdk-policy"}
-					cfg := e2proxy.Config{
+					cfg := e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 						HeaderMode: tc.mode, Scope: scope, IntentID: 22, OwnerRef: "ARTEX", PolicyRevision: "sdk-revision",
 						AccountRef: "fixture-account", SessionRef: "fixture-session", ExpiresAt: now.Add(time.Minute),
 						Rules:  []e2proxy.Rule{{Ref: "sdk-rule", Origin: target.URL, ConnectIP: ip, PathPrefix: "/fixture", PathScopeRef: "sdk-path", Methods: []string{"GET"}}},

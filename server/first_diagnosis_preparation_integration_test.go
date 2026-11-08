@@ -193,15 +193,20 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 	}()
 	exec("GRANT CONNECT ON DATABASE " + ident(database) + " TO " + ident(role))
 	exec("GRANT USAGE ON SCHEMA public TO " + ident(role))
-	for _, table := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "findings"} {
+	for _, table := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "findings", "request_approvals"} {
 		exec("GRANT SELECT,INSERT,UPDATE ON TABLE " + ident(table) + " TO " + ident(role))
 	}
 	for _, table := range []string{"activity", "exploration_edges", "exploration_anchors", "task_scope", "task_constraints"} {
 		exec("GRANT SELECT,INSERT ON TABLE " + ident(table) + " TO " + ident(role))
 	}
-	for _, table := range []string{"llm_profiles", "intercept_rules", "settings", "agents", "agent_prompts", "task_categories", "task_relations", "assets", "companies", "company_scope", "task_asset_links", "asset_intercept_rules", "task_intercept_rules"} {
+	for _, table := range []string{"task_archives", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links", "llm_profiles", "intercept_rules", "settings", "agents", "agent_prompts", "task_categories", "task_relations", "assets", "companies", "company_scope", "task_asset_links", "asset_intercept_rules", "task_intercept_rules"} {
 		exec("GRANT SELECT ON TABLE " + ident(table) + " TO " + ident(role))
 	}
+	exec("GRANT UPDATE(id) ON e3_verdict_issuances TO " + ident(role))
+	exec("GRANT UPDATE(id) ON assets TO " + ident(role))
+	exec("GRANT UPDATE(task_id) ON task_asset_links TO " + ident(role))
+	exec("GRANT UPDATE(node_id) ON exploration_anchors TO " + ident(role))
+
 	exec("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO " + ident(role))
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {

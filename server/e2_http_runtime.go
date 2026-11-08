@@ -68,6 +68,7 @@ func e2HTTPCloneEvaluation(value *e2proxy.EvaluationCallerContext) *e2proxy.Eval
 }
 
 type E2HTTPRuntimeOptions struct {
+	RequestApprovals        *RequestApprovalService
 	PolicyFingerprintSHA256 string
 	PolicyConfigSHA256      string
 	HeaderMode              e2proxy.HeaderMode
@@ -176,7 +177,7 @@ func (r *E2HTTPRuntime) AdmitTask(ctx context.Context, task *Task) error {
 			return ErrE2HTTPHost
 		}
 		r.task.mu.Lock()
-		closed := r.task.closed || r.task.blocked
+		closed := r.task.closed || r.task.blocked || r.task.ctx.Err() != nil
 		r.task.mu.Unlock()
 		if closed {
 			return ErrE2HTTPHost
@@ -188,6 +189,12 @@ func (r *E2HTTPRuntime) AdmitTask(ctx context.Context, task *Task) error {
 		return ErrE2HTTPHost
 	}
 	taskctx, cancel := context.WithCancel(r.ctx)
+	if r.options.RequestApprovals != nil {
+		if err := r.options.RequestApprovals.admitRun(taskctx, number, r.options.Expected.RunRef, cancel); err != nil {
+			cancel()
+			return err
+		}
+	}
 	r.task = &e2HTTPRuntimeTask{id: task.ID, number: number, exploration: task.ExpID, store: task.Store, ctx: taskctx, cancel: cancel, gate: make(chan struct{}, 1), closeGate: make(chan struct{}, 1), runs: make(map[int64]uint64), active: make(map[int64]chan struct{}), control: control}
 	return nil
 }
@@ -340,6 +347,8 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 		once.Do(func() {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.options.DrainTimeout)
 			finalErr = lease.Runner.DrainIntent(cleanupCtx, actual.ID)
+			// 세션 취소는 도구 완료보다 먼저 반환할 수 있다. drain 뒤의 실제 call을 다시 확인한다.
+			finalErr = e2HTTPFinalIntentError(finalErr, lease.Runner.Execution().Calls(), actual.ID)
 			cancel()
 			t.mu.Lock()
 			delete(t.active, actual.ID)
@@ -527,6 +536,7 @@ func (r *E2HTTPRuntime) PolicyMetadata() E2HTTPPolicyMetadata {
 }
 
 func e2HTTPCloneTrusted(value e2runner.TrustedResult) e2runner.TrustedResult {
+	value.Call = e2proxy.CloneCallResult(value.Call)
 	value.Execution.IntentIDs = append([]int64(nil), value.Execution.IntentIDs...)
 	value.Execution.Evaluation = e2HTTPCloneEvaluation(value.Execution.Evaluation)
 	return value
@@ -548,7 +558,7 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 			valid := trusted.Version == e2proxy.Version && trusted.Execution.Scope == view.Scope && view.Scope.TaskRef == t.id && trusted.Execution.PolicyRevision == view.PolicyRevision && trusted.Execution.HeaderMode == view.HeaderMode && trusted.Execution.IntentID == intentID && trusted.Call.IntentID == intentID && execution.HasIntent(intentID)
 			found := false
 			for _, call := range execution.Calls() {
-				if call == trusted.Call {
+				if e2proxy.EqualCallResults(call, trusted.Call) {
 					found = true
 					break
 				}
@@ -572,7 +582,7 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 				t.mu.Unlock()
 			}
 		}
-	} else if trusted.Call != (e2proxy.CallResult{}) || trusted.Final || trusted.ProcessBashExited || trusted.ProcessDrained || trusted.ProxyDrained {
+	} else if !e2proxy.EqualCallResults(trusted.Call, e2proxy.CallResult{}) || trusted.Final || trusted.ProcessBashExited || trusted.ProcessDrained || trusted.ProxyDrained {
 		recordErr = ErrE2HTTPHost
 	}
 	var observerErr error
@@ -609,4 +619,14 @@ func (r *E2HTTPRuntime) Results(taskID string) []e2runner.TrustedResult {
 		out[i] = e2HTTPCloneTrusted(result)
 	}
 	return out
+}
+
+// 실행 전체 누계가 아니라 현재 intent의 실제 call만 판정한다. 거부·미지원은 불명으로 승격하지 않는다.
+func e2HTTPFinalIntentError(drainErr error, calls []e2proxy.CallResult, intentID int64) error {
+	for _, call := range calls {
+		if call.IntentID == intentID && call.Counts.Unknown > 0 {
+			return errors.Join(drainErr, agent.ErrE2HTTPUnknown)
+		}
+	}
+	return drainErr
 }
