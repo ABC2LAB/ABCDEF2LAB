@@ -64,3 +64,20 @@ func TestFirstDiagnosisReportRouteScope(t *testing.T) {
 		})
 	}
 }
+
+func TestFirstDiagnosisReportQueryRejectsDuplicateValues(t *testing.T) {
+	for _, path := range []string{
+		"/api/report/diagnostic?task=17&task=17",
+		"/api/report/diagnostic?task=17&task=18",
+		"/api/report/diagnostic?task=17&audience=shared&audience=internal",
+	} {
+		if _, ok := firstDiagnosisReportRequestTask(httptest.NewRequest("GET", path, nil)); ok {
+			t.Fatal("ambiguous report query accepted", path)
+		}
+	}
+	for _, path := range []string{"/api/report/diagnostic?task=17", "/api/report/diagnostic?audience=internal&task=17", "/api/report/diagnostic?task=17&download=1"} {
+		if task, ok := firstDiagnosisReportRequestTask(httptest.NewRequest("GET", path, nil)); !ok || task != 17 {
+			t.Fatal("unambiguous control rejected", path)
+		}
+	}
+}

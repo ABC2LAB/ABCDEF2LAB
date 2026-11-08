@@ -267,3 +267,52 @@ func TestRequestApprovalResultReleasesOnlyPersistedWaiter(t *testing.T) {
 		}
 	}
 }
+
+// 실제 stop의 문맥 취소가 별도 stopRequested 검사를 가리지 않도록 live 문맥을 유지한다.
+func TestRequestApprovalStoppedBindingRejectsBeforeInsert(t *testing.T) {
+	inserts := 0
+	store := &approvalReviewStore{insert: func(context.Context) error { inserts++; return errors.New("synthetic storage failure") }}
+	s, p := approvalReviewFixture(t, store)
+	binding := s.bindings[1]
+	binding.stopRequested = true
+	s.bindings[1] = binding
+	allowed, err := s.AwaitRequestApproval(t.Context(), p)
+	if allowed || !errors.Is(err, errRequestApproval) || inserts != 0 || binding.ctx.Err() != nil || len(s.waiters) != 0 {
+		t.Fatal("stopped binding reached approval persistence", allowed, err, inserts)
+	}
+	// 같은 문맥·정책에서 중지 표식만 없애면 실제 insert 경로에 도달한다.
+	binding.stopRequested = false
+	s.bindings[1] = binding
+	_, err = s.AwaitRequestApproval(t.Context(), p)
+	if !errors.Is(err, errRequestApproval) || inserts != 1 {
+		t.Fatal("unstopped control did not reach insert", err, inserts)
+	}
+}
+func TestRequestApprovalStoppedProjectionWithLiveContexts(t *testing.T) {
+	for _, consumed := range []bool{false, true} {
+		store := &approvalReviewStore{}
+		s, p := approvalReviewFixture(t, store)
+		s.waiters[p.Receipt.AttemptID] = &requestApprovalWaiter{ctx: t.Context(), decision: make(chan struct{})}
+		a := db.RequestApproval{ID: p.Receipt.AttemptID, TaskID: 1, RunRef: "run", State: "pending", ExecutionState: "not_sent", ExpiresAt: p.ExpiresAt}
+		if consumed {
+			a.State = "allowed"
+			a.Consumed = true
+			a.ExecutionState = "dispatch_pending"
+		}
+		control := s.decorate(a)
+		if !control.Live || control.CanDecide == consumed {
+			t.Fatal("live control not decidable as expected")
+		}
+		binding := s.bindings[1]
+		binding.stopRequested = true
+		s.bindings[1] = binding
+		got := s.decorate(a)
+		wantState, wantExecution := "cancelled", "not_sent"
+		if consumed {
+			wantState, wantExecution = "allowed", "unknown"
+		}
+		if got.Live || got.CanDecide || got.State != wantState || got.ExecutionState != wantExecution || binding.ctx.Err() != nil {
+			t.Fatalf("stopped projection misreported: %+v", got)
+		}
+	}
+}
