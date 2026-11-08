@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/Autumn-27/artex/llmpolicy"
 )
 
 const launchFormat = "abc2lab.first-diagnosis-launch/v1"
@@ -66,7 +68,7 @@ func parseLaunchConfig(data []byte) (launchConfig, error) {
 		}
 		paths = append(paths, c.LocalLLMManifestPath)
 	case "openrouter":
-		if c.Mode != "general_http" || c.LocalLLMManifestPath != "" || c.ModelFormat != "openai" || c.ModelBaseURL != "https://openrouter.ai/api/v1" || c.ModelRef != "qwen/qwen3.5-35b-a3b" {
+		if c.Mode != "general_http" || c.LocalLLMManifestPath != "" || c.ModelFormat != "openai" || c.ModelBaseURL != llmpolicy.OpenRouterBaseURL || c.ModelRef != llmpolicy.OpenRouterModel {
 			return launchConfig{}, errPreparation
 		}
 		paths = append(paths, c.OpenRouterManifestPath)

@@ -8,6 +8,7 @@
 - 외부 모델 변경은 `feature/dongchan-openrouter-first-diagnosis-20261108`에서 별도로 검토한다. #317의 승인 취소·저장·보고서 변경을 중복 구현하지 않는다. 실제 사용 SHA와 정확 head CI는 이 브랜치의 PR에서 확인하며 미병합 코드를 dev 완료로 표기하지 않는다.
 - 외부 모드는 `general_http`와 그 `prepare-intents`만 지원한다. 등록 GET/IDOR의 기존 로컬 E③ 경로를 그대로 두며 외부 모드와 `registered_get` 조합을 거부한다.
 - 프로토콜은 OpenAI 호환 Chat Completions, 모델은 `qwen/qwen3.5-35b-a3b`, base는 정확히 `https://openrouter.ai/api/v1`다.
+- `llmpolicy.OpenRouterBaseURL`·`OpenRouterModel`은 이번 외부 모드의 **송신 허용 목록(allowlist)** 이며 실행 기본 설정이 아니다. 실제 모델·base는 launch config·DB profile·보호 manifest에서 받고 이 목록과 정확히 일치해야 송신할 수 있다. 설정만 바꿔 임의 모델·endpoint로 허용 범위를 넓히지 않으며, 이 경계는 기존 로컬 모델의 설정 선택을 바꾸지 않는다.
 - 첫 외부 모드는 **non-streaming만** 지원한다. profile의 `streaming=false`, 양수 `max_tokens`, `context_window_k=1..262`를 설정한다. 도구 선택은 SDK의 자동 선택만 지원하며 명시적 `tool_choice`는 거부한다. 스트리밍·thinking/reasoning override·proxy·session header·다른 토큰 필드·멀티모달·유료 plugin은 거부한다. 외부 스트리밍을 검증했다고 주장하지 않는다.
 - 기존 provider SDK를 재사용한다. profile/task/goals/planner/worker 단일 결속, 현재 DB 설정 재검사, 승인·중지·감사·마감 순서는 유지한다. 모델·provider·다른 키로 자동 fallback하지 않으며 새 외부 요청 자동 재시도도 하지 않는다.
 
