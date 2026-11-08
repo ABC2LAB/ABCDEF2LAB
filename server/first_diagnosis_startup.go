@@ -187,9 +187,10 @@ func firstDiagnosisReportRequestTask(r *http.Request) (int64, bool) {
 	}
 	// URL.Query는 잘못된 escape를 조용히 버리므로 폐쇄 파서를 사용한다.
 	query, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil || len(query["task"]) != 1 {
+	if err != nil {
 		return 0, false
 	}
+	// task도 다른 키와 같은 곳에서 중복을 거부한다. 누락·정규형은 아래 정수 검사가 맡는다.
 	for _, values := range query {
 		if len(values) != 1 {
 			return 0, false

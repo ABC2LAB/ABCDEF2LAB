@@ -104,3 +104,65 @@ func TestDiagnosisRunPersistsClosureFailureOwnedPostgres(t *testing.T) {
 		})
 	}
 }
+
+// 외곽 라우터가 아니라 실제 저장 결과 핸들러의 task 결속을 검증한다.
+func TestDiagnosisRunBoundTaskRejectsOtherwiseReadableResult(t *testing.T) {
+	pg := approvalTestDB(t)
+	var tasks []int64
+	for i := 0; i < 2; i++ {
+		task, err := pg.CreateTask("synthetic bound run", "fixture", nil, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tasks = append(tasks, task.ID)
+		t.Cleanup(func() {
+			if err := pg.DeleteTask(task.ID); err != nil {
+				t.Error(err)
+			}
+		})
+		if err = saveDiagnosisRun(t.Context(), pg.DB, task.ID, requestApprovalRunState{Phase: "closed", Outcome: "completed", RunRef: "synthetic-bound-run", DrainComplete: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{m: &Manager{pg: pg}, jwtKey: []byte("synthetic-bound-run-signing-key-material")}
+	hash, err := s.reloadPassHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := signJWT(s.signingKey(hash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(bound int64) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/tasks/"+strconv.FormatInt(tasks[1], 10)+"/diagnosis-run", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		s.serveDiagnosisRun(w, r, bound)
+		return w
+	}
+	control := request(tasks[1])
+	var stored diagnosisRunRecord
+	if control.Code != http.StatusOK || json.Unmarshal(control.Body.Bytes(), &stored) != nil || stored.TaskID != tasks[1] {
+		t.Fatal("authorized control failed", control.Code)
+	}
+	denied := request(tasks[0])
+	if denied.Code != http.StatusForbidden {
+		t.Fatal("foreign stored run became readable", denied.Code)
+	}
+}
+
+func TestDiagnosisRunOutcomeWhitelistIndependently(t *testing.T) {
+	valid := requestApprovalRunState{Phase: "closed", Outcome: "completed", RunRef: "synthetic-outcome", DrainComplete: true}
+	if !validDiagnosisRun(valid) {
+		t.Fatal("valid completed control rejected")
+	}
+	for _, outcome := range []string{"", "running", "unknown", "safe", "unregistered"} {
+		t.Run(outcome, func(t *testing.T) {
+			state := valid
+			state.Outcome = outcome
+			if validDiagnosisRun(state) {
+				t.Fatalf("unregistered outcome %q accepted", outcome)
+			}
+		})
+	}
+}
