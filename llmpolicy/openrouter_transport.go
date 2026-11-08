@@ -15,6 +15,9 @@ import (
 )
 
 const openRouterEndpoint = OpenRouterBaseURL + "/chat/completions"
+
+// HTTP JSON의 바이트 상한은 모델의 토큰 예약 상한과 별개다.
+const openRouterRequestLimit = 4 << 20
 const openRouterResponseLimit = 4 << 20
 
 type openRouterTransport struct {
@@ -114,9 +117,9 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	}
 	p := t.policy
 	m := p.manifest
-	raw, err := io.ReadAll(io.LimitReader(r.Body, m.MaxInputPerCall-4096+1))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, openRouterRequestLimit+1))
 	_ = r.Body.Close()
-	if err != nil || len(raw) > int(m.MaxInputPerCall-4096) {
+	if err != nil || len(raw) > openRouterRequestLimit {
 		return reject()
 	}
 	var body map[string]json.RawMessage
@@ -163,7 +166,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		"max_price": map[string]float64{"prompt": float64(m.InputPrice) / 1000000, "completion": float64(m.OutputPrice) / 1000000}}
 	body["provider"], _ = json.Marshal(provider)
 	wire, err := json.Marshal(body)
-	if err != nil {
+	if err != nil || len(wire) > openRouterRequestLimit {
 		return reject()
 	}
 	if err = p.reserve(output); err != nil {
