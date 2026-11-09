@@ -2,10 +2,11 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { ApiError, useApiResource } from "../lib/api";
 import {
+  canControlRun,
   decideRequestApproval,
   getRequestApproval,
-  listRequestApprovals,
   type RequestApproval,
+  readRequestApprovalState,
   stopRequestApprovalExecution,
 } from "../lib/request-approvals";
 
@@ -36,15 +37,11 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 }
 
 /** task가 바뀌면 부모 key로 다시 마운트하여 이전 요청의 결정 상태를 폐기한다. */
-export function RequestApprovalPanel({
-  taskId,
-  active,
-  refreshKey,
-}: {
-  taskId: string;
-  active: boolean;
-  refreshKey: number;
-}) {
+export function RequestApprovalPanel(props: { taskId: string; active: boolean; refreshKey: number }) {
+  return <TaskApprovalPanel key={props.taskId} {...props} />;
+}
+
+function TaskApprovalPanel({ taskId, active, refreshKey }: { taskId: string; active: boolean; refreshKey: number }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const [now, setNow] = useState(Date.now());
@@ -59,7 +56,7 @@ export function RequestApprovalPanel({
   const current = useRef({ active, selected });
   current.current = { active, selected };
   const list = useApiResource(
-    () => (active ? listRequestApprovals(taskId) : Promise.resolve(null)),
+    () => (active ? readRequestApprovalState(taskId) : Promise.resolve(null)),
     [taskId, active, refreshKey, nonce],
   );
   const detail = useApiResource(
@@ -78,6 +75,9 @@ export function RequestApprovalPanel({
     return () => clearInterval(timer);
   }, [active]);
 
+  const run = list.data?.run;
+  const runControllable = !!run && canControlRun(run) && !list.loading && !list.error;
+  const rows = list.data?.approvals ?? [];
   const d = detail.data;
   const exact = !!d && d.id === selected && String(d.task_id) === taskId;
   const unexpired = !!d && Number.isFinite(Date.parse(d.expires_at)) && Date.parse(d.expires_at) > now;
@@ -85,6 +85,9 @@ export function RequestApprovalPanel({
     !!d &&
     active &&
     exact &&
+    runControllable &&
+    d.run_ref === run?.run_ref &&
+    run?.execution?.state !== "blocked" &&
     !detail.loading &&
     !detail.error &&
     d.can_decide &&
@@ -97,12 +100,7 @@ export function RequestApprovalPanel({
     !stopAttempted &&
     !busy;
 
-  const canStop =
-    active &&
-    !list.loading &&
-    !list.error &&
-    !stopAttempted &&
-    !!list.data?.some((item) => String(item.task_id) === taskId && item.live);
+  const canStop = active && !list.loading && !list.error && !stopAttempted && runControllable;
 
   async function stopExecution() {
     if (!canStop || stopLock.current) return;
@@ -183,9 +181,11 @@ export function RequestApprovalPanel({
       </div>
       {list.error && <p role="alert">요청 승인 목록을 불러오지 못했어요. ({list.error})</p>}
       {list.loading && !selected && <p>요청 승인 목록을 불러오는 중…</p>}
-      {!list.loading && !list.error && list.data?.length === 0 && <p>이 점검에 기록된 실제 요청 승인이 없어요.</p>}
+      {!list.loading && !list.error && list.data && rows.length === 0 && (
+        <p>이 점검에 기록된 실제 요청 승인이 없어요. 사전 승인 범위 모드에서는 정상일 수 있어요.</p>
+      )}
       <div className="recent-list">
-        {(list.data ?? []).map((item) => (
+        {rows.map((item) => (
           <div className="recent-row" key={item.id}>
             <div className="recent-main">
               <div className="nm">

@@ -6,9 +6,26 @@
 
 ## 현재 첫 통합 진단의 진입점
 
-현재 공식 시작은 [첫 진단 CLI](../first-diagnosis-launch.md)의 `prepare-task → prepare-intents → check → run`이고, 종료 결과는 `report`로 제공합니다. 기존 `POST /api/tasks`는 ARTEX 일반 실행 API이며 이 통제 경로의 웹 기반 임의 URL 시작 API가 아닙니다. 주소 입력·화면 이동만으로 승인·격리·모델 준비가 끝났다고 표시하지 않습니다.
+실제 앱은 첫 진단 모드로 진입한다. 운영자 CLI의 prepare-task → prepare-intents → check → run과 종료 후 report 흐름을 보존한다. EntryScreen의 첫 진단 분기는 서버가 검증한 실제 task에 연결하며, 일반 ARTEX POST /api/tasks를 호출하지 않는다. 실행 서버는 선택 가능한 /api/tasks 목록을 보조로 쓰고, report 서버는 목록 없이 실제 task ID로 저장 결과를 확인한다. URL에는 비민감 task ID와 서버 종류만 보존하며 재진입 시 서버 확인을 다시 거친다.
 
-일반 HTTP 경로는 관찰에 결속된 후보를 `manual_review_required` 등 검토 상태로 저장합니다. 등록 GET·A/B 계정·KG·E③ 확정 경로와 구분하며, 도구 성공·HTTP 200·작업 종료를 취약점 확정으로 바꾸지 않습니다. 아래 기존 도메인 지도와 예시 getter는 현재 첫 진단의 전체 연결 완료를 뜻하지 않습니다.
+ABC2LabUI의 명시적인 mode가 첫 진단과 일반 ARTEX 화면을 분리한다. 첫 진단 모드는 연결·진행·E② 승인·보고서 화면만 마운트하여 숨은 일반 API 요청을 만들지 않는다. 기존 일반 ARTEX와 목업 화면은 별도 모드로 남는다. DNS TXT·임의 URL 실행·API 키·세션 자격 입력 시안은 실제 첫 진단 경로에서 접근할 수 없다.
+
+새 진단 관리 UI는 사용자가 명시적으로 열었을 때만 diagnosis-api.v1 카탈로그를 조회한다. 초안 생성·검증·시작은 별도 [진단 관리 계약](diagnosis-management.md)에 따른다. 기존 실행/report 서버의 allowlist를 넓혀 이 API를 넣지 않는다. 관리 서비스나 운영자 승인이 없으면 기존 CLI 연결은 유지하고 새 실행은 거부한다. 새 API 존재만으로 실제 독립 엔진 배치나 운영자 권위 공급이 완료됐다고 간주하지 않는다.
+
+일반 HTTP 후보는 manual_review_required로 유지한다. 진단 보고서의 고유 entry를 한 번씩 집계하며 일반 findings 수를 더하지 않는다. confirmed, manual_review_required, not_executed, unknown, negative를 별도 표시하고 미확인 식별자·판정·근거는 미확인으로 낮춘다. 실행 마감·허용 결정·HTTP 응답은 취약점 확정과 다르다.
+
+### 첫 진단 화면의 실제 API
+
+| 화면 | API | 의미 |
+|---|---|---|
+| 기존 task 연결 | GET /api/tasks(실행 서버만), GET /api/tasks/{id}/request-approvals 또는 GET /api/tasks/{id}/diagnosis-run | 목록은 보조이고 실제 단일 task 응답 검증 후 선택 |
+| 진행 | 요청별 승인 GET의 감독자 상태·집계 | ETA·단계 진행률·일반 활동/토큰 상세를 추정하지 않음 |
+| 승인·중지 | 기존 요청별 승인 GET/decision/stop | ARTEX intercept와 별개. 자동 모드 0행도 감독자 중지 가능 |
+| 저장 보고서 | GET /api/report/diagnostic/remediation?task=ID&audience=internal | DTO adapter + 판정 ViewModel 사용, 일반 task/findings/coverage 의존 없음 |
+| 종료 기록 | GET /api/tasks/{id}/diagnosis-run | 저장 준비 NOT_RUN은 현재 실행 여부를 증명하지 않음 |
+| HTML·AI 프롬프트 | 기존 diagnostic download, remediation POST, prompt GET | Bearer fetch, 현재 digest 검증, stale 복사 거부 |
+
+다음 기존 표는 일반 ARTEX 모드의 계약이다. 첫 진단 모드에서 모든 행을 호출하지 않는다.
 
 ## ARTEX 도메인 모델 (전제)
 - **task** = 대상+범위 1회 진단 단위. 생성→control(start/stop)→exploration→findings.
@@ -68,7 +85,7 @@
 - **E② "실제 전송 통제" 범위**: intercept 경로가 실제로 통제하는 경로부터 검증 후 노출("전수 통제" 주장 금지, [E② 지원 범위](e2-proxy-transfer-scope.md)).
 
 ## 열린 항목
-- **인증**: new_web엔 로그인 화면 없음(entry→target 직행). 옛 가드 `proxy.ts`는 `web/_parked/`로 격리(현재 open). 새 디자인용 auth 재설계 필요 — `GET /api/auth/status`·`POST /api/auth/login` 재사용 여부 포함.
+- **인증**: LoginScreen이 기존 auth status/login과 Bearer 세션을 재사용한다. 토큰 만료 시 화면을 해제하며 이전 세션의 늦은 응답으로 새 세션을 지우지 않는다. 개발용 자동 로그인·localStorage 보관은 최종 온프레미스 보안 수용 완료를 뜻하지 않는다.
 - ~~심각도 4→3 변환~~ → 프론트 4단 유지로 확정(변환 없음).
 - **생성/실행 경로 주의**: 기존 `POST /api/tasks`는 `launchTask`로 일반 엔진 탐색을 실제 개시한다. 단순 준비용 레코드 생성이나 첫 통제 진단의 시작 API로 사용하지 않는다. 첫 진단은 위 CLI와 승인된 host 자료·모델 설정·격리 조건을 사용하며 실제 모델·대상·브라우저 수용은 별도 검증한다.
 - **판정(verdict) 미노출**: `FindingDTO`에 verdict(ok/sus/und) 필드 없음 → report/finding의 판정 뱃지·분포는 verdict-record 계약(최민준)+엔진 API 노출(이동찬) 연동 후. 지금은 "준비 중" 표기.

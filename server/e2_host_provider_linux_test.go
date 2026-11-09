@@ -402,9 +402,13 @@ func TestE2HostProviderCloseErrorCannotBecomeSuccessOnRetry(t *testing.T) {
 }
 
 // 합성 키/정책만 만드는 시험 공급자다. 실제 모델·권위·배치 검증이 아니다.
-func e2HostPolicyFixture(t *testing.T) (FirstDiagnosisHTTPHostConfig, FirstDiagnosisHTTPApproval, E2HTTPFilePolicy) {
+func e2HostPolicyFixture(t *testing.T, validity ...time.Duration) (FirstDiagnosisHTTPHostConfig, FirstDiagnosisHTTPApproval, E2HTTPFilePolicy) {
 	t.Helper()
 	cfg, grant := e2HostAuthorityFixture(t)
+	if len(validity) > 0 {
+		grant.ValidUntil = time.Now().Add(validity[0])
+		e2HostWriteApproval(t, cfg, grant)
+	}
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)

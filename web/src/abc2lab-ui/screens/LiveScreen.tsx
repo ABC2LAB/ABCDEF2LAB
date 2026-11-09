@@ -196,7 +196,63 @@ const small = { fontSize: 14, fontWeight: 600, color: "var(--muted)" } as const;
 const btnSm = { padding: "8px 13px", fontSize: 14 } as const;
 
 /** ===== 진행 대시보드 ===== */
-export default function LiveScreen({ target }: { target: Target }) {
+export default function LiveScreen(props: { target: Target }) {
+  const { mode } = useSelection();
+  return mode === "first-diagnosis" ? <FirstDiagnosisLive /> : <ArtexLiveScreen {...props} />;
+}
+
+function FirstDiagnosisLive() {
+  const { taskId, connection } = useSelection();
+  const { screen, go } = useNav();
+  return (
+    <Screen id="live">
+      <div className="frame">
+        <TopBar />
+        <div style={{ padding: "24px", maxWidth: 1000, margin: "0 auto" }}>
+          <h1 className="big">첫 진단 실행 상태</h1>
+          {taskId ? (
+            <>
+              <p className="hint">task #{taskId} · CLI로 준비·실행한 진단의 실제 감독자 상태예요.</p>
+              <RunStatusPanel
+                key={taskId}
+                taskId={taskId}
+                active={screen === "live"}
+                source={connection}
+                onOpenApprovals={() => go("approval")}
+              />
+              <div className="row" style={{ gap: 12, marginTop: 16 }}>
+                {connection !== "report" && (
+                  <button className="btn" type="button" onClick={() => go("approval")}>
+                    요청 승인·중지 확인
+                  </button>
+                )}
+                <button className="btn primary" type="button" onClick={() => go("report")}>
+                  후보·진단 보고서 보기
+                </button>
+              </div>
+            </>
+          ) : (
+            <p>
+              연결된 task가 없어요.{" "}
+              <button className="btn" type="button" onClick={() => go("entry")}>
+                진단 연결
+              </button>
+            </p>
+          )}
+          <section className="card" style={{ marginTop: 20 }} aria-label="첫 진단 지원 범위">
+            <h3>실제 제공되는 정보만 표시해요</h3>
+            <p className="hint">
+              일반 ARTEX 일시중지·재개·아카이브와 활동·토큰 상세는 이 서버에서 지원하지 않아요. ETA와 단계별 진행률은
+              수집되지 않아 표시하지 않아요. 모델 사용량은 저장된 기록이 있을 때만 보여요.
+            </p>
+          </section>
+        </div>
+      </div>
+    </Screen>
+  );
+}
+
+function ArtexLiveScreen({ target }: { target: Target }) {
   const nav = useNav();
   const go = nav.go;
   const { taskId, selectTask, tasksVersion, refreshTasks } = useSelection();
