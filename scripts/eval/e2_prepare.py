@@ -224,7 +224,7 @@ def _private_file_digest(directory: int, name: str) -> str:
 
 
 def issue_run_ca(tool: Path, directory: Path, run_ref: str, expires: str, timeout: int) -> tuple[str, str]:
-    """회차 CA를 준비 디렉터리에 만들고 인증서·개인키 파일의 digest를 돌려준다. 키 값은 이 프로세스로 읽어 오지 않고 digest만 계산한다."""
+    """회차 CA를 준비 디렉터리에 만들고 인증서·개인키 파일의 digest를 돌려준다. 파일은 digest 계산에만 읽고 보관·출력하지 않는다."""
     command = [str(tool), "ca", "--cert-file", str(directory / CA_CERT_NAME), "--key-file", str(directory / CA_KEY_NAME), "--run-ref", run_ref, "--expires", expires]
     try:
         subprocess.run(command, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={}, timeout=timeout)
