@@ -16,7 +16,7 @@ import { Icon } from "../ui/icons";
 import { MenuButton } from "../ui/parts";
 import s from "../workbench.module.css";
 import { fetchTasks } from "./api";
-import { errorText, isOffline, isUnsupported } from "./map";
+import { errorText, isOffline } from "./map";
 import { useSource } from "./source";
 
 /**
@@ -44,12 +44,16 @@ export function getLiveAuthState(): LiveAuthState {
 }
 
 let runId = 0;
+/** v2 catalog 의 이 상태는 URL 진단 서버의 준비 서비스만 안 되는 경우다(v1 서버는 이 경로가 404). */
+const V2_SERVICE_UNAVAILABLE = 503;
 
 /**
- * 연결·세션 확인: readAuthStatus(설치 상태·연결) → restoreSession(저장된 토큰) → /api/tasks 로 토큰 확인.
- * /api/tasks 가 없는 서버(URL 진단 v2 관리 서버 등: 403·404·409·501·503)는 그 서버의 인증 경로인
- * v2 catalog 로 토큰을 다시 확인한다(읽기 전용, 실행 요청 아님). 연결 실패는 offline, initialized=false 는
- * uninitialized, 토큰 없음·401 은 login, 그 밖은 ready(섹션이 따로 접는다). 겹쳐 부르면 마지막 것만 반영한다.
+ * 연결·세션 확인: readAuthStatus(설치 상태·연결) → restoreSession(저장된 토큰) → 토큰 확인.
+ * 토큰 확인은 v2 catalog(읽기 전용, 실행 요청 아님)를 먼저 본다. 성공이면 URL 진단 서버라 /api/tasks 를 부르지 않는다
+ * (그 서버의 /api/tasks 는 하위 경로 리다이렉트라 개발 프록시와 맞물려 반복된다). 503 은 v2 준비 서비스만 안 되는
+ * 상태라 ready 로 두고 화면이 '확인 불가'를 보인다. 그 밖(404·501·403·응답 계약 불일치 등)은 v2 가 아니므로 기존처럼
+ * /api/tasks 로 확인한다. 연결 실패는 offline, initialized=false 는 uninitialized, 토큰 없음·401 은 login,
+ * 그 밖은 ready(섹션이 따로 접는다). 겹쳐 부르면 마지막 것만 반영한다.
  */
 export async function checkLiveAuth(): Promise<LiveAuthState> {
   const id = ++runId;
@@ -76,21 +80,22 @@ export async function checkLiveAuth(): Promise<LiveAuthState> {
   if (id !== runId) return useAuthStore.getState().state;
   if (!restored) return done("login");
   try {
+    await readURLCatalog();
+    if (id !== runId) return useAuthStore.getState().state;
+    return done("ready");
+  } catch (err) {
+    if (id !== runId) return useAuthStore.getState().state;
+    if (err instanceof ApiError && err.status === 401) return done("login");
+    if (isOffline(err)) return done("offline", errorText(err));
+    if (err instanceof ApiError && err.status === V2_SERVICE_UNAVAILABLE) return done("ready");
+    // v2 가 아님 → 기존 서버의 토큰 확인
+  }
+  try {
     await fetchTasks();
   } catch (err) {
     if (id !== runId) return useAuthStore.getState().state;
     if (err instanceof ApiError && err.status === 401) return done("login");
     if (isOffline(err)) return done("offline", errorText(err));
-    if (isUnsupported(err)) {
-      try {
-        await readURLCatalog();
-      } catch (e) {
-        if (id !== runId) return useAuthStore.getState().state;
-        if (e instanceof ApiError && e.status === 401) return done("login");
-        if (isOffline(e)) return done("offline", errorText(e));
-        // 404·501 등은 v2 서버도 아니라는 뜻 — 토큰 판단은 각 섹션의 실제 호출에 맡긴다
-      }
-    }
   }
   if (id !== runId) return useAuthStore.getState().state;
   return done("ready");

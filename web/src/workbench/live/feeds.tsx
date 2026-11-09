@@ -11,6 +11,7 @@ import { create } from "zustand";
 import { fetchPendingApprovals, fetchTasks, type LiveTask, type LiveTaskList, type PendingApproval } from "./api";
 import { useLiveAuth } from "./auth";
 import { useSource } from "./source";
+import { useUrl } from "./urlDiagnosis";
 import { type Poll, usePoll } from "./usePoll";
 
 /** 공용 조회 한 칸의 스냅숏 (usePoll 결과와 같은 모양). */
@@ -41,9 +42,11 @@ export function resetFeeds(): void {
   useFeeds.setState({ tasks: empty(), pending: empty() });
 }
 
-/** 공용 조회 실행자. Workbench 가 live 일 때 한 번만 그린다(아무것도 그리지 않음). */
+/** 공용 조회 실행자. Workbench 가 live 일 때 한 번만 그린다(아무것도 그리지 않음). 기존(일반 · 첫 진단) 서버에서만 부른다. */
 export function LiveFeeds() {
-  const ready = useLiveAuth().state === "ready";
+  // URL 진단(v2) 서버 · 서버 방식 확인 중에는 부르지 않는다(그 서버에는 점검 목록 · 도구 승인 대기가 없다)
+  const general = useUrl((st) => st.cap.kind !== "v2" && st.cap.kind !== "checking");
+  const ready = useLiveAuth().state === "ready" && general;
   const tasks = usePoll(() => fetchTasks(), [], { intervalMs: FEED_INTERVAL_MS, enabled: ready });
   const pending = usePoll(() => fetchPendingApprovals(), [], { intervalMs: FEED_INTERVAL_MS, enabled: ready });
 

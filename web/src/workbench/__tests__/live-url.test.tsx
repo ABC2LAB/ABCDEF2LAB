@@ -34,6 +34,7 @@ import { catalog, draft, handle, owner, ready, running } from "@/abc2lab-ui/lib/
 
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
+import { LiveFeeds } from "../live/feeds";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
 import { urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
@@ -498,31 +499,62 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(screen.getByText(/진단 목록 API 가 없어/)).toBeInTheDocument();
   });
 
-  it("일반 점검 목록이 없는 서버(404)면 v2 catalog 로 토큰을 확인한다: 401 → 로그인", async () => {
-    a.fetchTasks.mockRejectedValue(new ApiError(404, "HTTP 404"));
+  it("토큰은 v2 catalog 로 먼저 확인한다: 401 → 로그인, /api/tasks 는 부르지 않는다", async () => {
     u.readURLCatalog.mockRejectedValue(new ApiError(401, "authentication_required"));
     await act(async () => {
       await checkLiveAuth();
     });
-    expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
     expect(getLiveAuthState()).toBe("login");
+    expect(a.fetchTasks).not.toHaveBeenCalled();
   });
 
-  it("v2 catalog 가 토큰을 받아 주면 ready (실행 요청은 보내지 않는다)", async () => {
-    a.fetchTasks.mockRejectedValue(new ApiError(404, "HTTP 404"));
+  it("v2 catalog 가 받아 주면 ready — URL 진단 서버의 /api/tasks(하위 경로 리다이렉트)를 부르지 않고 실행 요청도 없다", async () => {
     await act(async () => {
       await checkLiveAuth();
     });
     expect(getLiveAuthState()).toBe("ready");
+    expect(a.fetchTasks).not.toHaveBeenCalled();
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   });
 
-  it("일반 점검 목록이 되는 서버는 catalog 로 다시 확인하지 않는다", async () => {
+  it("v2 준비 서비스만 안 되면(503) ready 로 두고 /api/tasks 로 넘어가지 않는다", async () => {
+    u.readURLCatalog.mockRejectedValue(new ApiError(503, "preparation_service_unavailable"));
     await act(async () => {
       await checkLiveAuth();
     });
     expect(getLiveAuthState()).toBe("ready");
-    expect(u.readURLCatalog).not.toHaveBeenCalled();
+    expect(a.fetchTasks).not.toHaveBeenCalled();
+  });
+
+  it("v2 가 아니면(404) 기존처럼 /api/tasks 로 확인한다: 성공 → ready, 401 → 로그인", async () => {
+    u.readURLCatalog.mockRejectedValue(new ApiError(404, "HTTP 404"));
+    await act(async () => {
+      await checkLiveAuth();
+    });
+    expect(a.fetchTasks).toHaveBeenCalledTimes(1);
+    expect(getLiveAuthState()).toBe("ready");
+    a.fetchTasks.mockRejectedValue(new ApiError(401, "expired"));
+    await act(async () => {
+      await checkLiveAuth();
+    });
+    expect(getLiveAuthState()).toBe("login");
+  });
+
+  it("공용 조회(점검 목록 · 승인 대기)는 v2 서버와 확인 중에는 부르지 않는다", async () => {
+    resetUrl({ kind: "checking" });
+    const { unmount } = render(<LiveFeeds />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(a.fetchTasks).not.toHaveBeenCalled();
+    act(() => useUrl.setState({ cap: { kind: "v2", catalog } }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(a.fetchTasks).not.toHaveBeenCalled();
+    act(() => useUrl.setState({ cap: { kind: "v1" } }));
+    await waitFor(() => expect(a.fetchTasks).toHaveBeenCalled());
+    unmount();
   });
 });
