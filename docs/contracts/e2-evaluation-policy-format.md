@@ -14,6 +14,10 @@
 
 **회차 독립의 정확한 범위:** 현재 Python 준비기는 `audit_key` 이외의 정책 필드를 바꾸지 않는다. 따라서 기본 정책의 `run_ref`, `reset_ref`, 승인 시각, 경로와 자원 pin은 생산자가 미리 공급한 값 그대로 준비 정책에 남는다. `run_ref`는 엔진의 `Scope.RunRef`이며 평가 `eval_run_id`와 **달라야** 한다(`NewE2StandaloneBackend`). `evaluation.run_ref`는 `run_ref`와 같아야 한다. 현재 기본 정책을 완전히 회차 불변으로 만들고 매 회차 엔진 `run_ref`·승인 시각까지 생성하는 로직은 **미구현**이다. 생산자는 지금 계약에서는 재사용 가능한 의미 템플릿을 공급하되, 실제 배치 전에 유효한 참조·기간·보호 자원을 공급해야 한다. 회차별 `reset_generation`은 정책의 `reset_ref`와 다른 값이며 준비 뒤 `BindReset`이 소문자 64자리 컨테이너 ID를 최초 한 번 결속한다. 같은 값만 멱등 재호출 가능하다. 실제 Docker ID와 사전 정책 참조를 같다고 가정하지 않는다.
 
+**평가 생산자 리뷰에서 채택한 공급 순서(구현 대기):** 생산자는 지문에 들어가는 필드와 회차 불변 참조만 가진 검토된 **의미 템플릿**을 입력으로 받는다. 이것은 별도 전송 정책 스키마가 아니며 Go 소비자에게 바로 전달하지 않는다. 러너의 후속 `prepare_e2_config` 구현이 `run_ref`(새 값, `eval_run_id`와 다름), `evaluation.run_ref`, `valid_from`·`valid_until`, `state_dir`, `helper`·`helper_sha256`, `ca_cert`·`ca_key`, `rules[].connect_ip`를 채워 **완전한 A 형식**을 만든 뒤 기존 감사 키 pin을 더해 B를 쓴다. 현재 Python 코드는 이 목록을 아직 채우지 않으므로 현재의 `ValidateE2HTTPPolicyDocument(raw, false)`는 **완전한 A JSON**만 검사한다. 의미 템플릿을 이 API에 직접 넣어 성공이라고 해석하지 않는다.
+
+IP pin은 `e2_net`의 사전 고정 subnet/계측기 주소로 기동 전에 결정하고, 기동 뒤 Docker 관측과 다르면 회차를 무효로 한다. 유효창의 시작은 준비 시각, 끝은 회차 예산에 drain·close 여유를 더한 시각이며 러너 설정의 상위 기한을 넘으면 준비를 거부하고 자동 연장하지 않는다. 예상 지문은 공식 프로파일의 `e2.policy_fingerprint_sha256`에 검토·동결한다. 오프라인에서 의미 템플릿의 자리값을 채워 **같은 Go encoder**로 계산하는 작은 CLI는 평가 담당이 후속 구현하며, 서비스 ready 값을 예상값으로 채우지 않는다. CA는 회차별로 새 의존성 없는 Go 도구가 만들고, `/run/e2-state`는 회차별 현재 UID 소유 0700 쓰기 가능 디렉터리로 mount한다. helper 절대 경로·SHA는 이미지가 고정된 뒤 공급한다. 이 공급·배치 계획은 최민준의 PR 리뷰 결정이며 이번 PR의 완료 코드나 실제 회차 수용 결과가 아니다.
+
 ## 2. 정책 JSON 필드
 
 표에서 **필수**는 A와 B의 닫힌 형식에서 키가 있어야 한다는 뜻이다. `audit_key`만 A에서 금지, B에서 필수다. 모든 필수 필드의 `null`은 거부하며 아래 표의 예외만 허용한다. `ValidateE2HTTPPolicyDocument`는 형식·정적 의미를 검사한다. **실행 검증** 열의 factory는 `LoadE2HTTPRuntimeOptions`의 파일·권위 검사, proxy는 `e2proxy.ValidatePolicyTemplate` 및 실제 요청 경계다. 시각·파일·권위의 유효성은 지문과 별도로 매회 검사한다.
@@ -115,4 +119,4 @@
 - 평가 회차는 `confirm_every_request`를 자동 승인으로 바꾸지 않고 `preauthorized_scope`를 사용한다. `protected_session_proposal`은 기존 parser 어휘이나 공식 평가용 기능 채택·배치 허가가 아니다.
 - 독립 `eval-e2` 바이너리/이미지, 인증된 launcher↔E② OpenCall/CloseCall, 실제 task/Planner 연결, Worker/Planner 상한 집행, 공식 계측·GT·모델/대상 수용은 별도 작업이다. #340/#341이나 이 문서의 정적 검증 통과가 이 항목을 완료시키지 않는다.
 
-11월 23일 인계 전에 **최민준과 함께** 실제 정책 생산자가 `run_ref`·유효기간·state/CA/helper/IP pin을 어느 보호 단계에서 공급하고 동결할지, 예상 지문의 오프라인 산출·보관 위치, 인증 채널·컨테이너 mount/UID, Planner/Worker 한도 연결의 담당과 수용 시험을 확정해야 한다. 이번 PR의 리뷰를 그 결정의 입력으로 사용한다.
+11월 23일 인계 전에는 위 공급 순서를 코드·합성 수용시험으로 구현하고, 고정 IP/Docker 관측·CA/helper 이미지 pin·state mount·오프라인 예상 지문을 검증해야 한다. 인증된 서비스 채널과 Planner/Worker 한도 연결의 담당·시험도 아직 별도 결정이다.

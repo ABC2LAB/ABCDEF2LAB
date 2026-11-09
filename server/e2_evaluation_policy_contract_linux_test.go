@@ -56,6 +56,20 @@ func TestE2EvaluationPolicyDocumentStages(t *testing.T) {
 	if _, err := ValidateE2HTTPPolicyDocument(raw, false); err == nil {
 		t.Fatal("template with audit pin accepted")
 	}
+	var preparedDoc map[string]any
+	if json.Unmarshal(raw, &preparedDoc) != nil {
+		t.Fatal("prepared fixture decode")
+	}
+	preparedDoc["audit_key"].(map[string]any)["sha256"] = "bad"
+	badAudit, _ := json.Marshal(preparedDoc)
+	if _, err := ValidateE2HTTPPolicyDocument(badAudit, true); err == nil {
+		t.Fatal("malformed prepared audit pin accepted")
+	}
+	preparedDoc["audit_key"] = nil
+	nullAudit, _ := json.Marshal(preparedDoc)
+	if _, err := ValidateE2HTTPPolicyDocument(nullAudit, true); err == nil {
+		t.Fatal("null prepared audit pin accepted")
+	}
 	cases := map[string][]byte{
 		"unknown":   bytes.Replace(base, []byte(`"format":`), []byte(`"unexpected":1,"format":`), 1),
 		"duplicate": bytes.Replace(base, []byte(`"format":`), []byte(`"format":"shadow","format":`), 1),
@@ -76,6 +90,71 @@ func TestE2EvaluationPolicyDocumentStages(t *testing.T) {
 			}
 			if _, err := ValidateE2HTTPPolicyDocument(mutated, false); err == nil {
 				t.Fatal("invalid policy accepted")
+			}
+		})
+	}
+}
+
+// 문서의 필드별 거부 규칙은 구현 분기를 하나씩 약화해도 깨지도록 독립 입력으로 고정한다.
+func TestE2EvaluationPolicyDocumentFieldFailures(t *testing.T) {
+	_, _, policy := e2HostPolicyFixture(t)
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source map[string]any
+	if json.Unmarshal(raw, &source) != nil {
+		t.Fatal("fixture decode")
+	}
+	delete(source, "audit_key")
+	cases := map[string]func(map[string]any){
+		"format":               func(o map[string]any) { o["format"] = "abc2lab.e2-http-host-policy/v2" },
+		"header_mode_empty":    func(o map[string]any) { o["header_mode"] = "" },
+		"run_ref_invalid":      func(o map[string]any) { o["run_ref"] = "https://example.invalid" },
+		"helper_digest":        func(o map[string]any) { o["helper_sha256"] = strings.Repeat("A", 64) },
+		"state_dir_empty":      func(o map[string]any) { o["state_dir"] = "" },
+		"helper_empty":         func(o map[string]any) { o["helper"] = "" },
+		"ca_pin_file":          func(o map[string]any) { o["ca_cert"].(map[string]any)["file"] = "../ca.pem" },
+		"ca_pin_hash":          func(o map[string]any) { o["ca_key"].(map[string]any)["sha256"] = "bad" },
+		"ca_pin_missing":       func(o map[string]any) { delete(o["ca_cert"].(map[string]any), "file") },
+		"ca_pin_null":          func(o map[string]any) { o["ca_cert"].(map[string]any)["sha256"] = nil },
+		"limits_missing":       func(o map[string]any) { delete(o["limits"].(map[string]any), "max_calls") },
+		"limits_null":          func(o map[string]any) { o["limits"].(map[string]any)["max_calls"] = nil },
+		"proxy_missing":        func(o map[string]any) { delete(o["proxy"].(map[string]any), "max_connections") },
+		"runtime_null":         func(o map[string]any) { o["runtime"].(map[string]any)["output_limit"] = nil },
+		"rule_display_missing": func(o map[string]any) { delete(o["rules"].([]any)[0].(map[string]any), "approval_display") },
+		"rule_display_null":    func(o map[string]any) { o["rules"].([]any)[0].(map[string]any)["approval_display"] = nil },
+		"rule_display_type": func(o map[string]any) {
+			o["rules"].([]any)[0].(map[string]any)["approval_display"].(map[string]any)["query_keys"] = "one"
+		},
+		"credential_wrong_mode": func(o map[string]any) { o["rules"].([]any)[0].(map[string]any)["credentials"] = o["ca_cert"] },
+		"future_before_start":   func(o map[string]any) { o["valid_until"] = o["valid_from"] },
+		"evaluation_wrong_mode": func(o map[string]any) {
+			o["evaluation"] = map[string]any{"run_ref": "fixture-run", "llm_backend": "api", "target_kind": "public_practice"}
+		},
+		"evaluation_run_mismatch": func(o map[string]any) {
+			o["header_mode"] = "evaluation_caller_passthrough"
+			o["evaluation"] = map[string]any{"run_ref": "other-run", "llm_backend": "api", "target_kind": "public_practice"}
+		},
+		"evaluation_missing": func(o map[string]any) {
+			o["header_mode"] = "evaluation_caller_passthrough"
+		},
+		"upstream_pin_invalid": func(o map[string]any) { o["upstream_ca"] = map[string]any{"file": "ca.pem", "sha256": "bad"} },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			var input map[string]any
+			sourceRaw, _ := json.Marshal(source)
+			if json.Unmarshal(sourceRaw, &input) != nil {
+				t.Fatal("fixture copy")
+			}
+			change(input)
+			wire, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ValidateE2HTTPPolicyDocument(wire, false); err == nil {
+				t.Fatal("invalid field accepted")
 			}
 		})
 	}
