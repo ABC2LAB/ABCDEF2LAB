@@ -234,6 +234,14 @@ Go 1.26.3에서 다음을 실행했다.
 저장소 CI와 같은 URL DSN/umask로 교정하여 위 전체 결과를 다시 얻었다.
 gofmt·git diff --check도 PASS다.
 
+후속 평가 가드 검증은 전체 scripts/eval 1,586개, E② 배치 55개, Web 변경 감지 13개 PASS다.
+loadLLMConfig의 source hash는 OpenRouter뿐 아니라 공유 예산 opt-in에서도 재시도를 금지한 차이를
+검토한 뒤 갱신했다. 예산·외부 정책이 없는 기존 평가/local-only 경로의 Config·Retry는 유지한다.
+해시 가드를 제거하거나 예산 보호를 되돌리지 않았다.
+두 실제 loader의 18개 leaf case(정책/예산 nil·OpenRouter-only·Budget-only와 정상/빈 키/없는 profile)를
+실제 PostgreSQL로 대조한 추가 race 회귀도 1회 및 3회 반복 PASS했다.
+Retry 외 Config 전체·ok·활성 이름 의미를 확인했고 모델/대상 HTTP·생성 task는 각각 0이었다.
+
 기존 v1 직접 실행 Chrome 68 assertions, 관리형 독립 프로세스 Chrome 45 assertions도 별도 PASS다.
 관리형 script는 초기 초안 화면이 열린 새 UI를 반영해 닫혔을 때만 열고 실제 v1 폼을 확인한다.
 기존 draft·revision/digest·복구 후 자동 시작 금지·명시 확인·단회 시작 검증을 유지했다.

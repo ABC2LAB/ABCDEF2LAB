@@ -23,7 +23,8 @@
 | 별도 확정 경로 | 등록 GET/IDOR의 A/B 계정·KG·E③ 근거 판정은 별도 경계다. 일반 HTTP 후보의 `manual_review_required`를 확정으로 바꾸지 않음 |
 | 합성·통합 시험 | [통합 시험 코드](../server/first_diagnosis_combined_acceptance_linux_test.go) 등으로 경계를 검사한다. 이 문서 정비는 새 시험 실행이나 실제 모델 진단 수용 결과가 아님 |
 | 실제 모델·대상 수용 미검증 | 모델/profile·권한·보호된 키·제공사 개인정보 조건·비용 한도·승인된 대상과 설치 자료를 갖춘 실제 회차는 별도 확인 필요. CI/합성 시험을 Qwen 진단 성공으로 계산하지 않음 |
-| UI 연결·후속 | 현재 첫 진단 시작은 CLI `prepare-task → prepare-intents → check → run`, 종료 결과는 별도 `report`. UI는 기존 상태·승인/거절·중지·결과·보고서·수정 프롬프트 API를 연결하며 임의 URL 웹 시작 API를 전제하지 않음 |
+| 기존 CLI·UI 연결 | CLI `prepare-task → prepare-intents → check → run`과 별도 `report`를 유지한다. UI는 실제 task의 상태·승인/거절·중지·결과·보고서·수정 프롬프트 API를 연결한다. |
+| URL 준비/시작 후속 (2026-11-09) | [URL v2 준비 경로](url-diagnosis-preparation.md)는 별도 보호 설치/위임 아래 초안·명시적 시작→실제 task/Planner→Gateway/E②→저장 보고서를 연결한다. [#340](https://github.com/ABC2LAB/ABCDEF2LAB/pull/340)·[#341](https://github.com/ABC2LAB/ABCDEF2LAB/pull/341)의 팀 리뷰 대상이며, URL 자체의 실행 승인·실대상/실모델 수용 또는 별도 eval-e2 daemon 완성을 뜻하지 않는다. |
 
 보고서 생성·프롬프트 복사는 고객 앱을 자동 수정하지 않는다. 수정 프롬프트는 고객 개발용 AI가
 실제 저장소의 경로·기술·근거를 확인하고 권한 안에서 수정·시험·리뷰하도록 지시하는 용도다.
