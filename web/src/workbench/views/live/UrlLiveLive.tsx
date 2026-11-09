@@ -63,9 +63,11 @@ function SendControl({ taskId, active, visible }: { taskId: string; active: bool
       <>
         <div className={s.meters}>
           <div className={s.cell}>
-            <div className={s.k}>허용 범위 안 전송</div>
-            <div className={s.v}>{known(ap.allowed)}</div>
-            <div className={s.sub}>감독자가 허용</div>
+            <div className={s.k}>허용 판정</div>
+            <div className={s.v} id="luAllowed">
+              {known(ap.allowed)}
+            </div>
+            <div className={s.sub}>{`실제 전송 아님 · 대상 전송 시도 ${known(ap.forwarded)}`}</div>
           </div>
           <div className={s.cell}>
             <div className={s.k}>막은 요청</div>
@@ -85,7 +87,7 @@ function SendControl({ taskId, active, visible }: { taskId: string; active: bool
         </div>
         <p className={s.help}>
           {ap.known
-            ? "엔진 실행 감독자가 센 요청 수입니다."
+            ? "엔진 실행 감독자가 센 요청 수입니다. 허용 판정에는 보내기 전에 취소된 요청도 들어가며, 실제로 보낸 수는 대상 전송 시도입니다."
             : "실행 정보가 아직 없어 허용 · 막음 · 불명은 비워 둡니다."}
         </p>
       </>

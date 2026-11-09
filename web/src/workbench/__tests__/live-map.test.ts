@@ -231,12 +231,36 @@ describe("전송 통제 · 모델 · 오류", () => {
     } as unknown as Parameters<typeof approvalCounts>[0];
     expect(approvalCounts(run, [{ state: "pending" }, { state: "allowed" }, { state: "pending" }])).toEqual({
       allowed: 4,
+      forwarded: 4,
       blocked: 3,
       held: 2,
       unknown: 1,
       known: true,
     });
-    expect(approvalCounts(null, null)).toEqual({ allowed: 0, blocked: 0, held: 0, unknown: 0, known: false });
+    expect(approvalCounts(null, null)).toEqual({
+      allowed: 0,
+      forwarded: 0,
+      blocked: 0,
+      held: 0,
+      unknown: 0,
+      known: false,
+    });
+    // 허용 판정은 실제 전송이 아니다: 허용 뒤 보내기 전에 취소되면 allowed=1 · forward_attempted=0
+    const cancelled = {
+      execution: {
+        counts: {
+          attempts: 1,
+          allowed: 1,
+          denied: 0,
+          unsupported: 0,
+          forward_attempted: 0,
+          responses: 0,
+          unknown: 0,
+          calls: 1,
+        },
+      },
+    } as unknown as Parameters<typeof approvalCounts>[0];
+    expect(approvalCounts(cancelled, [])).toMatchObject({ allowed: 1, forwarded: 0 });
   });
 
   it("isLocalBaseUrl (추정)", () => {

@@ -263,6 +263,33 @@ describe("live 점검 진행", () => {
     expect(within(feed).getAllByRole("listitem")).toHaveLength(5);
   });
 
+  it("전송 통제: 허용 후 보내기 전 취소(allowed 1 · 전송 시도 0)를 전송으로 보이지 않는다", async () => {
+    m.fetchRequestApprovals.mockResolvedValue({
+      approvals: [],
+      run: {
+        execution: {
+          counts: {
+            attempts: 1,
+            allowed: 1,
+            denied: 0,
+            unsupported: 0,
+            forward_attempted: 0,
+            responses: 0,
+            unknown: 0,
+            calls: 1,
+          },
+        },
+      },
+    } as never);
+    const { container } = renderLive();
+    await waitFor(() => expect(container.querySelector("#lvAllowed")).toHaveTextContent("1"));
+    const cell = container.querySelector("#lvAllowed")?.parentElement as HTMLElement;
+    expect(within(cell).getByText("허용 판정")).toBeInTheDocument();
+    expect(within(cell).getByText("실제 전송 아님 · 대상 전송 시도 0")).toBeInTheDocument();
+    expect(screen.getByText("요청 접수 1 · 대상 전송 시도 0")).toBeInTheDocument();
+    expect(screen.queryByText("허용 범위 안 전송")).toBeNull();
+  });
+
   it("전송 통제: run.execution.counts 와 보류 수로 네 칸, 미지원(503)이면 그 섹션만 접힌다", async () => {
     m.fetchRequestApprovals.mockResolvedValue({
       approvals: [{ state: "pending" }, { state: "pending" }, { state: "allowed" }],
@@ -282,7 +309,7 @@ describe("live 점검 진행", () => {
       },
     } as never);
     const { container, unmount } = renderLive();
-    await waitFor(() => expect(container.querySelector("#lvSent")).toHaveTextContent("12"));
+    await waitFor(() => expect(container.querySelector("#lvAllowed")).toHaveTextContent("12"));
     expect(container.querySelector("#lvBlk")).toHaveTextContent("3");
     expect(container.querySelector("#lvHold")).toHaveTextContent("2");
     expect(container.querySelector("#lvUnk")).toHaveTextContent("3");
@@ -293,7 +320,7 @@ describe("live 점검 진행", () => {
     m.fetchRequestApprovals.mockRejectedValue(new ApiError(503, "unavailable"));
     const r2 = renderLive();
     await waitFor(() => expect(screen.getByText("전송 통제: 이 서버 모드에서는 제공되지 않음")).toBeInTheDocument());
-    expect(r2.container.querySelector("#lvSent")).toBeNull();
+    expect(r2.container.querySelector("#lvAllowed")).toBeNull();
     expect(screen.getByText("요청별 전송 통제는 첫 진단 모드에서만 제공됩니다.")).toBeInTheDocument();
     // 다른 섹션은 그대로
     expect(r2.container.querySelector("#lvFeed")).not.toBeNull();

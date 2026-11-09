@@ -282,10 +282,15 @@ export function feedRow(a: LiveActivity): FeedRow {
 
 // ---------- 전송 통제 ----------
 
-/** 전송 통제 집계. known=false 면 실행 정보(run.execution)가 아직 없어 허용·막음·불명이 0 이다. */
+/** 전송 통제 집계. known=false 면 실행 정보(run.execution)가 아직 없어 허용·막음·불명·전송 시도가 0 이다. */
 export interface ApprovalCounts {
-  /** 허용 범위 안 전송 (counts.allowed) */
+  /**
+   * 허용 판정 (counts.allowed). 감독자가 허용한 수일 뿐 실제 전송 수가 아니다 —
+   * 허용 뒤 대상에 보내기 전에 취소된 요청도 들어간다(e2proxy TestIntentACKThenCallerCancellationIsAllowedButUnobserved).
+   */
   allowed: number;
+  /** 대상 전송 시도 (counts.forward_attempted). 실제로 대상에 보내려 한 수 */
+  forwarded: number;
   /** 막은 요청 (counts.denied + counts.unsupported) */
   blocked: number;
   /** 승인 필요로 보류 (approvals 중 state=pending) */
@@ -302,9 +307,10 @@ export function approvalCounts(
 ): ApprovalCounts {
   const c = run?.execution?.counts;
   const held = (approvals ?? []).filter((a) => a.state === "pending").length;
-  if (!c) return { allowed: 0, blocked: 0, held, unknown: 0, known: false };
+  if (!c) return { allowed: 0, forwarded: 0, blocked: 0, held, unknown: 0, known: false };
   return {
     allowed: c.allowed || 0,
+    forwarded: c.forward_attempted || 0,
     blocked: (c.denied || 0) + (c.unsupported || 0),
     held,
     unknown: c.unknown || 0,

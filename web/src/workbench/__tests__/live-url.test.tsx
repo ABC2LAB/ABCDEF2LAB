@@ -408,6 +408,36 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   });
 
+  it("전송 통제: 허용 판정을 실제 전송으로 보이지 않는다 (allowed 1 · 전송 시도 0)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    a.fetchRequestApprovals.mockResolvedValue({
+      approvals: [],
+      run: {
+        ...APPROVALS.run,
+        execution: {
+          ...(RUN_RECORD.kind === "run" ? RUN_RECORD.run.execution : undefined),
+          counts: {
+            attempts: 1,
+            allowed: 1,
+            denied: 0,
+            unsupported: 0,
+            forward_attempted: 0,
+            responses: 0,
+            unknown: 0,
+            calls: 1,
+          },
+        } as api.RequestApprovalRun["execution"],
+      },
+    });
+    const { container } = mount("live");
+    await waitFor(() => expect(container.querySelector("#luAllowed")).toHaveTextContent("1"));
+    const cell = container.querySelector("#luAllowed")?.parentElement as HTMLElement;
+    expect(within(cell).getByText("허용 판정")).toBeInTheDocument();
+    expect(within(cell).getByText("실제 전송 아님 · 대상 전송 시도 0")).toBeInTheDocument();
+    expect(screen.queryByText("허용 범위 안 전송")).toBeNull();
+  });
+
   it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 실행 종료 기록으로 안내한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
