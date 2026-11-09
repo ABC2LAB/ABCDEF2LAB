@@ -379,20 +379,50 @@ describe("LLM · 토큰 · 승인", () => {
   });
 
   it("요청별 승인: approvals null → [], 미리보기 값을 가린다", async () => {
-    route({
-      "/api/tasks/3/request-approvals": {
-        approvals: [{ id: "a1", state: "pending", input_preview: { session: "raw-s", q: "shoes" } }],
-        run: { phase: "running" },
-      },
+    // 팀 함수(readRequestApprovalState)가 응답 구조를 검증하므로 서버가 실제로 채우는 필드를 다 넣는다.
+    const run = (phase: string) => ({
+      run_ref: "run-1",
+      phase,
+      outcome: "",
+      stop_requested: false,
+      context_cancelled: false,
+      drain_complete: false,
+      closure_failed: false,
     });
+    const approval = {
+      id: "a1",
+      task_id: 3,
+      intent_id: 1,
+      run_ref: "run-1",
+      call_ref: "call-1",
+      attempt_id: "att-1",
+      policy_revision: "p1",
+      account_ref: "acct-a",
+      session_ref: "sess-a",
+      request_sha256: "a".repeat(64),
+      method: "GET",
+      target_origin: "https://x.test",
+      path: "/search",
+      created_at: "2026-11-09T00:00:00Z",
+      expires_at: "2026-11-09T00:10:00Z",
+      body_bytes: 0,
+      consumed: false,
+      live: true,
+      can_decide: true,
+      state: "pending",
+      execution_state: "not_sent",
+      input_preview: { session: "raw-s", q: "shoes" },
+    };
+    route({ "/api/tasks/3/request-approvals": { approvals: [approval], run: run("running") } });
     const r = await fetchRequestApprovals("3");
     expect(r.approvals[0].input_preview).toEqual({ session: "[REDACTED]", q: "shoes" });
-    route({ "/api/tasks/3/request-approvals": { approvals: null, run: { phase: "prepared" } } });
+    route({ "/api/tasks/3/request-approvals": { approvals: null, run: run("prepared") } });
     expect((await fetchRequestApprovals("3")).approvals).toEqual([]);
   });
 
   it("조치 자료는 기본 internal", async () => {
-    route({ "/api/report/diagnostic/remediation": { task_id: 3, entries: null } });
+    // 서버는 entries 를 항상 배열로 준다(diagnostic_remediation.go). null 은 팀 함수가 거부한다.
+    route({ "/api/report/diagnostic/remediation": { task_id: 3, entries: [] } });
     expect(await fetchRemediation("3")).toEqual({ task_id: 3, entries: [] });
     expect(apiFetch.mock.calls[0][0]).toBe("/api/report/diagnostic/remediation?task=3&audience=internal");
   });
