@@ -1,12 +1,14 @@
 /**
  * 소유·권한 KG → 접근통제 지도 데이터 (docs/contracts/kg-policy.md §2·§4).
  *
- * ※ 프로토타입: KG 저장소·서버 projection read API 는 아직 미구현(kg-policy §4.2(1)·§5).
- *   아래 목업은 그 계약 shape 를 그대로 따른 **예시 데이터**다. 실 KG 라우트가 생기면
- *   getAccessMap 만 교체하면 화면은 그대로 산다.
+ * ※ getAccessMap 은 실 라우트 `GET /api/tasks/{id}/access-map`(docs/contracts/access-map-read.md)에 배선됨.
+ *   taskId 가 없으면 예시(MOCK_MAP)를, 있으면 서버 projection 응답을 매핑한다. 색(decision)은 서버
+ *   `state` 로만 정하고(confirmed→vuln), 미등록 state·projection_error 는 리졸버가 fail-closed unknown(§4.2).
  *
  * v0.1 = 수평(cross-account) IDOR 조회 전용(kg-policy §0·§4.2(4)). 수직(역할 레벨)은 후속.
  */
+
+import { apiFetch } from "./api";
 
 /**
  * 셀 판정 — kg-policy §4.2(3) 셀 상태표와 정합.
@@ -301,10 +303,106 @@ const MOCK_MAP: AccessMap = {
 };
 
 /**
- * 접근통제 지도 조회.
- * TODO(이경준): 서버 projection read API(신규 라우트, 이동찬 소유 §4.2(1)·(7)) 연동 시
- *   이 함수만 실제 fetch 로 교체한다. taskId 는 작업별 스코프용 — 실 API 시그니처를 미리 맞춰 둔다.
+ * access-map-read.md 조회 응답(서버 projection). 전부 참조·yes/no/unknown 신호·필드명만 —
+ * URL·자격·계정 원문·표식 값·본문은 계약상 포함되지 않는다(§4.2·절대규칙 2).
  */
-export async function getAccessMap(_taskId: string | null): Promise<AccessMap> {
-  return MOCK_MAP;
+type ApiSignal = "yes" | "no" | "unknown";
+type ApiAccessCell = {
+  principal: string;
+  owner_ref: string;
+  resource_ref: string;
+  resource_label?: string;
+  state: string; // Phase1: confirmed/suspected/allow-ok/unknown/blank
+  oracle_value: string | null; // confirmed/suspected/undecidable/allowed — 원값 보존
+  applicable: boolean | null;
+  record_id: number | null;
+  case_ref: string | null;
+  observed_at: string | null;
+  reason_codes?: string[];
+  canary_fields?: string[];
+  projection_error?: string | null;
+  // 비교/체크 신호(현재 note 요약엔 안 쓰지만 계약 필드로 받아 둔다)
+  policy_check?: ApiSignal;
+  identity_check?: ApiSignal;
+  data_check?: ApiSignal;
+  same_resource?: ApiSignal;
+  owner_normal_data?: ApiSignal;
+  cross_normal_data?: ApiSignal;
+  nontrivial_data_match?: ApiSignal;
+  reflection_excluded?: ApiSignal;
+  template_excluded?: ApiSignal;
+};
+type ApiAccessMap = {
+  task_id: number;
+  run_ref?: string;
+  reset_generation?: string;
+  axis?: string;
+  policy_version: string;
+  cells?: ApiAccessCell[];
+};
+
+/** 서버 state → 내 AccessDecision. confirmed 는 vuln 으로, 그 외는 동명. 미등록 state 는 매핑 안 함(fail-closed). */
+const API_STATE_DECISION: Record<string, AccessDecision> = {
+  confirmed: "vuln",
+  suspected: "suspected",
+  "allow-ok": "allow-ok",
+  unknown: "unknown",
+  blank: "blank",
+};
+
+/** 셀 note(hover) — 사유 코드·적용성·표식 필드명만. 값·URL·자격은 넣지 않는다(절대규칙 2). */
+function cellNote(c: ApiAccessCell): string | undefined {
+  const parts: string[] = [];
+  if (c.reason_codes?.length) parts.push(c.reason_codes.join(", "));
+  if (c.applicable === false) parts.push("적용 불가 근거 있음");
+  else if (c.applicable == null) parts.push("적용 여부 미확인");
+  if (c.canary_fields?.length) parts.push(`표식 필드: ${c.canary_fields.join(", ")}`);
+  const s = parts.join(" · ");
+  return s.length > 0 ? s : undefined;
+}
+
+/**
+ * access-map-read.md 응답을 AccessMap 으로 매핑한다(fail-closed, §4.2).
+ * - 색은 서버 `state` 로만(confirmed→vuln). 미등록 state 는 unknown + projection_error("미등록 state").
+ * - 서버 `projection_error` 는 그대로 실어 리졸버가 unknown 으로 내리게 한다(관측없음≠판단불가 분리).
+ * - 신원·자원은 셀에서 distinct 파생. resource_ref 가 전역 유일(owner_ref 는 그 자원의 소유자)이라
+ *   계약의 4튜플 키 (principal, owner_ref, resource_ref, axis) 가 그리드에선 (principal, resource_ref) 로 수렴.
+ */
+export function mapApiAccessMap(res: ApiAccessMap): AccessMap {
+  const cells: KgCell[] = (res.cells ?? []).map((c) => {
+    const decision = API_STATE_DECISION[c.state];
+    return {
+      principalRef: c.principal,
+      resourceId: c.resource_ref,
+      decision: decision ?? "unknown",
+      note: cellNote(c),
+      // 서버 오류 우선, 없고 state 가 미등록이면 fail-closed 표시.
+      projectionError: c.projection_error ?? (decision ? undefined : `미등록 state: ${c.state}`),
+    };
+  });
+  const principals: KgPrincipal[] = distinctBy(
+    (res.cells ?? []).map((c) => ({ ref: c.principal, role: "", axis: "H" as KgAxis })),
+    (p) => p.ref,
+  );
+  const resources: KgResource[] = distinctBy(
+    (res.cells ?? []).map((c) => ({
+      id: c.resource_ref,
+      label: c.resource_label || c.resource_ref,
+      ownerRef: c.owner_ref,
+    })),
+    (r) => r.id,
+  );
+  return { principals, resources, cells, policyVersion: res.policy_version, mock: false };
+}
+
+/**
+ * 접근통제 지도 조회. taskId 없으면 예시(데모), 있으면 실 라우트 projection.
+ * 서버가 현재 scope 를 유일 확인 못 하면 409 → apiFetch 가 throw → 화면은 오류 표시(가짜 데이터 금지, fail-closed).
+ */
+export async function getAccessMap(taskId: string | null): Promise<AccessMap> {
+  if (!taskId) return MOCK_MAP;
+  const res = await apiFetch<ApiAccessMap>(`/api/tasks/${encodeURIComponent(taskId)}/access-map`, {
+    cache: "no-store",
+  });
+  return mapApiAccessMap(res);
 }

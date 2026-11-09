@@ -9,6 +9,7 @@ import {
   getAccessMap,
   hasProjectionIssues,
   type KgCell,
+  mapApiAccessMap,
   mapProjectionIssues,
 } from "./kg";
 
@@ -249,5 +250,99 @@ describe("mapProjectionIssues / hasProjectionIssues", () => {
     const iss = mapProjectionIssues(await getAccessMap(null));
     expect(iss).toEqual({ outOfGrid: 0, dupPrincipals: 0, dupResources: 0 });
     expect(hasProjectionIssues(iss)).toBe(false);
+  });
+});
+
+// 실 라우트(access-map-read.md) 응답 → AccessMap 매핑 검증. 색은 state 로만, 미등록/오류는 fail-closed.
+describe("mapApiAccessMap (실 라우트 응답 매핑)", () => {
+  const res = {
+    task_id: 17,
+    run_ref: "run-1",
+    reset_generation: "reset-1",
+    axis: "horizontal",
+    policy_version: "kg-fixture/v1:snap:deadbeef",
+    cells: [
+      {
+        principal: "account-b",
+        owner_ref: "account-a",
+        resource_ref: "address:1",
+        resource_label: "주소 1",
+        state: "confirmed",
+        oracle_value: "confirmed",
+        applicable: true,
+        record_id: 41,
+        case_ref: "c1",
+        observed_at: "t",
+        reason_codes: ["policy_deny_resolved"],
+        canary_fields: ["fullName"],
+        projection_error: null,
+      },
+      {
+        principal: "account-c",
+        owner_ref: "account-a",
+        resource_ref: "address:1",
+        resource_label: "주소 1",
+        state: "blank",
+        oracle_value: null,
+        applicable: null,
+        record_id: null,
+        case_ref: null,
+        observed_at: null,
+        reason_codes: [],
+        canary_fields: [],
+        projection_error: null,
+      },
+      {
+        principal: "account-b",
+        owner_ref: "account-a",
+        resource_ref: "address:2",
+        resource_label: "주소 2",
+        state: "weird-state",
+        oracle_value: null,
+        applicable: true,
+        record_id: 9,
+        case_ref: null,
+        observed_at: null,
+        projection_error: null,
+      },
+      {
+        principal: "account-c",
+        owner_ref: "account-a",
+        resource_ref: "address:2",
+        resource_label: "주소 2",
+        state: "unknown",
+        oracle_value: "undecidable",
+        applicable: true,
+        record_id: 7,
+        case_ref: null,
+        observed_at: null,
+        projection_error: "observation_unavailable",
+      },
+    ],
+  };
+
+  it("confirmed→vuln, blank→blank, 미등록 state·projection_error 는 fail-closed unknown", () => {
+    const map = mapApiAccessMap(res);
+    expect(map.mock).toBe(false);
+    expect(map.policyVersion).toBe("kg-fixture/v1:snap:deadbeef");
+    expect(map.principals.map((p) => p.ref).sort()).toEqual(["account-b", "account-c"]);
+    expect(map.resources.map((r) => r.id).sort()).toEqual(["address:1", "address:2"]);
+    const resolve = buildCellResolver(map.cells);
+    expect(resolve("account-b", "address:1").decision).toBe("vuln");
+    expect(resolve("account-c", "address:1").decision).toBe("blank");
+    const weird = resolve("account-b", "address:2");
+    expect(weird.decision).toBe("unknown");
+    expect(weird.projectionError).toContain("미등록 state");
+    const unavail = resolve("account-c", "address:2");
+    expect(unavail.decision).toBe("unknown");
+    expect(unavail.projectionError).toBe("observation_unavailable");
+  });
+
+  it("note 는 사유 코드·표식 필드명만 담고 값·URL 은 없다(절대규칙 2)", () => {
+    const map = mapApiAccessMap(res);
+    const cell = map.cells.find((c) => c.principalRef === "account-b" && c.resourceId === "address:1");
+    expect(cell?.note).toContain("policy_deny_resolved");
+    expect(cell?.note).toContain("표식 필드: fullName");
+    expect(cell?.note ?? "").not.toMatch(/https?:|kgfx-canary|Bearer/i);
   });
 });
