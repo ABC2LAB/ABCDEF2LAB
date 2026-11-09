@@ -37,7 +37,7 @@ export default function FirstDiagnosisReportScreen() {
         <div style={{ padding: "24px", maxWidth: 1100, margin: "0 auto" }}>
           <h1>첫 통합 진단 보고서</h1>
           <p className="hint">
-            CLI로 준비한 작업의 저장 결과예요. 실행 마감과 취약점 판정은 별개이며, 후보는 확정 취약점이 아니에요.
+            실제 작업의 저장 결과예요. 실행 마감과 취약점 판정은 별개이며, 후보는 확정 취약점이 아니에요.
           </p>
           <button className="btn" type="button" onClick={() => go("entry")}>
             작업 연결·변경
@@ -45,7 +45,7 @@ export default function FirstDiagnosisReportScreen() {
           {taskId ? (
             <Results key={`${taskId}-${connection}`} taskId={taskId} active={active} source={connection} />
           ) : (
-            <p role="status">먼저 CLI로 준비된 실제 작업에 연결해 주세요. 선택된 작업이 없어요.</p>
+            <p role="status">먼저 실제 진단 작업에 연결해 주세요. 선택된 작업이 없어요.</p>
           )}
         </div>
       </div>

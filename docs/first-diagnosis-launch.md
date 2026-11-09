@@ -2,7 +2,7 @@
 
 명시적으로 승인한 비민감 개발용 외부 추론은 [OpenRouter 첫 진단 계약](openrouter-first-diagnosis.md)을 따른다. 로컬 기본값·등록 GET/E③ 경로는 유지하며, 외부 모드는 별도 정책·제공사·개인정보·예산 입력과 실제 수용 검증이 필요하다.
 
-이 문서는 `cmd/first-controlled-diagnosis`의 실제 공급·기동 절차다. 일반 HTTP와 등록 GET은 각각 별도 모드이며, 한 실행 설정에서 동시에 선택할 수 없다. 운영자·팀원에게 받은 실제 입력을 검증해 소비한다. 이 명령은 키·epoch·승인·계정·KG 세대·세션을 발급하거나 운영 자료를 합성하지 않는다. 신규 LocalBinding/실행 전 metadata 파일 형식은 팀 검토용 미채택 초안이다. 보수적인 타입·승인 pin·실제 수명 검사를 구현했지만 계약 채택이나 실제 운영 수용을 뜻하지 않는다.
+이 문서는 `cmd/first-controlled-diagnosis`의 기존 CLI 공급·기동 절차다. 선택적 URL v2 준비/시작 설치는 [URL 기반 첫 진단 자동 준비](url-diagnosis-preparation.md)로 구분한다. 일반 HTTP와 등록 GET은 각각 별도 모드이며, 한 실행 설정에서 동시에 선택할 수 없다. 운영자·팀원에게 받은 실제 입력을 검증해 소비한다. 이 명령은 키·epoch·승인·계정·KG 세대·세션을 발급하거나 운영 자료를 합성하지 않는다. 신규 LocalBinding/실행 전 metadata 파일 형식은 팀 검토용 미채택 초안이다. 보수적인 타입·승인 pin·실제 수명 검사를 구현했지만 계약 채택이나 실제 운영 수용을 뜻하지 않는다.
 
 ## 첫 통합 진단의 고정 범위와 구현 기준
 
@@ -13,11 +13,13 @@
 일반 관찰은 검토 필요 후보로 저장하며 등록 GET/IDOR의 확정 finding으로 승격하지 않는다.
 등록 GET의 A/B·KG·snapshot 준비와 E③ 검증은 별도 경로로 유지한다.
 
-기동 계약은 공식 CLI의 `prepare-task → prepare-intents → check → run`이다.
-UI는 새 실행 명령이나 대상 URL을 제출하지 않는다. 첫 화면의 시작 동작은 운영자가
-위 CLI로 준비·승인된 한 실행을 시작한 뒤 해당 task에 연결하는 방식이다.
-이번 범위에 HTTP 시작 버튼은 없으며 UI 작업자가 새 시작 API를 설계하는 후속 과제도 아니다.
-향후 HTTP 시작 기능은 별도 승인·설계 범위다. `serve`는 `run`의 선행 단계가 아니다.
+기존 CLI 기동 계약은 `prepare-task → prepare-intents → check → run`이다.
+운영자가 이 절차로 준비·승인한 실제 task에 UI가 연결하는 경로를 유지한다.
+설치된 준비 원천을 소비하는 관리 API와 URL v2의 초안·명시적 시작은 별도 설치/API 계약이다.
+URL v2는 보호 프로필의 정확한 범위에서 신뢰 준비 서비스가 task·Planner·권위를 준비하며,
+입력 URL 자체를 권위로 삼거나 HTTP handler에서 임의 CLI를 호출하지 않는다.
+그 경계·검증·실모델 미수용 범위는 [URL 준비 문서](url-diagnosis-preparation.md)를 따른다.
+기존 `serve`는 `run`의 선행 단계가 아니다.
 
 **2026-11-08 확인 시점의 코드 스냅샷**은 `dev` `d2bfec57f34dae1c17b6026366e747f3a588750b`다.
 이 SHA는 상시 최신 실행 버전을 지정하지 않는다. 새 실행 전 최신 `origin/dev`의 정확한 SHA를 확인·기록하고

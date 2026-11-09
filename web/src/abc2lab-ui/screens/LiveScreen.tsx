@@ -212,7 +212,7 @@ function FirstDiagnosisLive() {
           <h1 className="big">첫 진단 실행 상태</h1>
           {taskId ? (
             <>
-              <p className="hint">task #{taskId} · CLI로 준비·실행한 진단의 실제 감독자 상태예요.</p>
+              <p className="hint">task #{taskId} · 실제 진단의 감독자 상태예요.</p>
               <RunStatusPanel
                 key={taskId}
                 taskId={taskId}

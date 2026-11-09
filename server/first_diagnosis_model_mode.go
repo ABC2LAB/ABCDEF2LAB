@@ -10,6 +10,7 @@ type FirstDiagnosisModelOptions struct {
 	Mode                   string
 	LocalManifestPath      string
 	OpenRouterManifestPath string
+	Budget                 *FirstDiagnosisModelBudget
 }
 
 func (FirstDiagnosisModelOptions) String() string {
@@ -73,7 +74,7 @@ func newFirstDiagnosisHTTPServer(ctx context.Context, m *Manager, skillDir, data
 	if err != nil {
 		return nil, err
 	}
-	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, e2HTTP: runtime, openRouterPolicy: external}, nil)
+	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, e2HTTP: runtime, openRouterPolicy: external, firstModelBudget: o.Budget}, nil)
 }
 
 // 준비 모드는 대상 실행 없이 같은 보호 모델 클라이언트로 Planner만 실행한다.
@@ -85,7 +86,7 @@ func NewFirstDiagnosisPreparationServerWithModel(ctx context.Context, m *Manager
 	if err != nil {
 		return nil, err
 	}
-	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, preparationOnly: true, openRouterPolicy: external}, nil)
+	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, preparationOnly: true, openRouterPolicy: external, firstModelBudget: o.Budget}, nil)
 }
 
 // 집계 정보만 반환한다. 키·프롬프트·대상 응답 원문은 포함하지 않는다.

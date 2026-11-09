@@ -20,34 +20,13 @@ func NewDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir, da
 	if ctx == nil || ctx.Err() != nil || pool == nil || len(runtimeAPIOrigin) > 1 {
 		return nil, ErrControlledReadHostConfiguration
 	}
-	key, err := readControlledReadAssemblyJWTKey(keyDir, dataDir)
+	s, authenticate, err := newDiagnosisManagementAuthentication(ctx, pool, keyDir, dataDir)
 	if err != nil {
-		return nil, ErrControlledReadHostConfiguration
-	}
-	s := &Server{ctx: ctx, m: &Manager{pg: &db.DB{DB: pool}}, jwtKey: key}
-	if s.bootstrapFirstDiagnosisAuth() != nil || ctx.Err() != nil {
-		clear(key)
-		return nil, ErrControlledReadHostConfiguration
-	}
-	authenticate := func(r *http.Request) (string, error) {
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") || len(auth) <= 7 {
-			return "", errors.New("인증이 필요합니다")
-		}
-		hash, err := s.reloadPassHash()
-		if err != nil {
-			return "", err
-		}
-		claims := &jwt.RegisteredClaims{}
-		token, err := jwt.ParseWithClaims(strings.TrimPrefix(auth, "Bearer "), claims, func(*jwt.Token) (any, error) { return s.signingKey(hash), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
-		if err != nil || !token.Valid || claims.Subject != "ARTEX" {
-			return "", errors.New("인증을 확인할 수 없습니다")
-		}
-		return "ARTEX", nil
+		return nil, err
 	}
 	management, err := diagnosisapi.New(diagnosisapi.Options{Registry: registry, Gateway: gateway, Authenticate: authenticate})
 	if err != nil {
-		clear(key)
+		clear(s.jwtKey)
 		return nil, ErrControlledReadHostConfiguration
 	}
 	mux := http.NewServeMux()
@@ -78,4 +57,34 @@ func NewDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir, da
 		defer stop()
 		mux.ServeHTTP(w, r.WithContext(requestContext))
 	}), nil
+}
+
+// 두 공개 버전은 같은 설치 인증 경계를 사용하며 실행 런타임을 초기화하지 않는다.
+func newDiagnosisManagementAuthentication(ctx context.Context, pool *sql.DB, keyDir, dataDir string) (*Server, diagnosisapi.Authenticate, error) {
+	key, err := readControlledReadAssemblyJWTKey(keyDir, dataDir)
+	if err != nil {
+		return nil, nil, ErrControlledReadHostConfiguration
+	}
+	s := &Server{ctx: ctx, m: &Manager{pg: &db.DB{DB: pool}}, jwtKey: key}
+	if s.bootstrapFirstDiagnosisAuth() != nil || ctx.Err() != nil {
+		clear(key)
+		return nil, nil, ErrControlledReadHostConfiguration
+	}
+	authenticate := func(r *http.Request) (string, error) {
+		auth := r.Header.Get("Authorization")
+		if len(r.Header.Values("Authorization")) != 1 || !strings.HasPrefix(auth, "Bearer ") || len(auth) <= 7 {
+			return "", errors.New("인증이 필요합니다")
+		}
+		hash, err := s.reloadPassHash()
+		if err != nil {
+			return "", err
+		}
+		claims := &jwt.RegisteredClaims{}
+		token, err := jwt.ParseWithClaims(strings.TrimPrefix(auth, "Bearer "), claims, func(*jwt.Token) (any, error) { return s.signingKey(hash), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
+		if err != nil || !token.Valid || claims.Subject != "ARTEX" {
+			return "", errors.New("인증을 확인할 수 없습니다")
+		}
+		return "ARTEX", nil
+	}
+	return s, authenticate, nil
 }

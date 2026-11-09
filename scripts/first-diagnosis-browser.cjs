@@ -59,6 +59,14 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const fill = async (selector, value) => {
     check(await evaluate("(()=>{const e=document.querySelector(" + JSON.stringify(selector) + ");if(!e)return false;Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e," + JSON.stringify(value) + ");e.dispatchEvent(new Event('input',{bubbles:true}));return true})()"), "입력 필드 없음");
   };
+  // URL 진입은 초안을 처음부터 연다. 닫힌 경우에만 실제 버튼으로 열고 기존 v1 폼을 확인한다.
+  const openManagementDraft = async () => {
+    const openButton = "Array.from(document.querySelectorAll('button')).some(b=>b.offsetWidth && !b.disabled && b.textContent.trim()==='새 진단 초안')";
+    await wait("Array.from(document.querySelectorAll('button')).some(b=>b.offsetWidth && !b.disabled && ['새 진단 초안','초안 화면 닫기'].includes(b.textContent.trim()))", "draft panel toggle missing");
+    if (await evaluate(openButton)) await click("새 진단 초안");
+    await wait("document.querySelector('#diagnosis-profile')?.offsetWidth > 0", "visible v1 draft form missing");
+    check(await evaluate("document.querySelector('#diagnosis-profile')?.closest('section')?.getAttribute('aria-label') === '새 진단 초안'"), "v1 draft form binding missing");
+  };
   await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
   await send("Browser.setDownloadBehavior", {behavior:"allow", downloadPath:artifactDir});
   await send("Browser.grantPermissions", {origin:ui, permissions:["clipboardReadWrite","clipboardSanitizedWrite"]});
@@ -67,7 +75,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     await wait("document.querySelector('#login-pass') !== null", "management login missing");
     await fill("#login-pass", "synthetic-owned-combined-fixture");
     await click("로그인");
-    await click("새 진단 초안");
+    await openManagementDraft();
     await wait("document.querySelector('#diagnosis-profile')?.options.length > 1", "operator catalog missing");
     await click("실행 없이 초안 생성");
     await wait("document.querySelector('[role=status]')?.innerText.includes('설정 지문')", "draft response missing");
@@ -82,7 +90,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     check(!apiStatuses.some(r=>/\/(start|stop)$/.test(r.path)), "draft caused start/stop");
     await send("Page.reload");
     await wait("document.querySelector('#diagnosis-task') !== null", "reload entry missing");
-    await click("새 진단 초안");
+    await openManagementDraft();
     await wait(textContains("운영자 승인 대기"), "saved draft handle not recovered");
     check(!apiStatuses.some(r=>/\/start$/.test(r.path)), "reload caused start");
   } else if (phase === "management-start") {
