@@ -36,6 +36,7 @@ type accessMapTestFixture struct {
 	in      e3record.Input
 	source  e3record.Source
 	markers db.TaskModeMarkerReader
+	spec    controlledReadSpec
 }
 
 func newAccessMapTestFixture(t *testing.T) *accessMapTestFixture {
@@ -108,7 +109,7 @@ func newAccessMapTestFixture(t *testing.T) *accessMapTestFixture {
 		t.Fatal(err)
 	}
 	b := accessMapBinding{Version: 1, TaskID: task.ID, ExplorationID: task.ExplorationID, IntentID: intent, Registration: registration, Ready: true, ModeVersion: mode.Version, Scope: scope, SnapshotRef: snapshot.Ref(), SnapshotDigest: snapshot.Digest(), PolicyVersion: snapshot.PolicyVersion(), GenerationRef: snapshot.GenerationRef(), InstanceRef: snapshot.InstanceRef(), Principals: snapshot.Principals(), Resources: resources, Attempts: []accessMapAttempt{}}
-	return &accessMapTestFixture{pg, store, b, in, source, markers}
+	return &accessMapTestFixture{pg, store, b, in, source, markers, spec}
 }
 
 func (f *accessMapTestFixture) save(t *testing.T) db.ControlledFindingResult {
@@ -274,7 +275,7 @@ func TestAccessMapOwnedPostgresRecordCorruption(t *testing.T) {
 }
 
 func TestAccessMapOwnedPostgresCanonicalIntegrity(t *testing.T) {
-	for _, scenario := range []string{"payload-digest", "manifest-digest", "payload-signal", "source-completion", "applicability", "duplicate-current", "mode-version", "deleted-task"} {
+	for _, scenario := range []string{"payload-digest", "manifest-digest", "payload-signal", "record-reset", "record-policy", "record-axis", "source-completion", "applicability", "duplicate-current", "mode-version", "deleted-task"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newAccessMapTestFixture(t)
 			result := f.save(t)
@@ -316,7 +317,7 @@ func TestAccessMapOwnedPostgresCanonicalIntegrity(t *testing.T) {
 					_, err = tx.Exec(`UPDATE e3_oracle_verdicts SET payload_digest=$1 WHERE id=$2`, make([]byte, 32), result.VerdictID)
 				case "manifest-digest":
 					_, err = tx.Exec(`UPDATE e3_evidence_manifests SET digest=$1 WHERE id=$2`, make([]byte, 32), result.ManifestID)
-				case "payload-signal":
+				case "payload-signal", "record-reset", "record-policy", "record-axis":
 					var raw []byte
 					if err = tx.QueryRow(`SELECT payload_canonical FROM e3_oracle_verdicts WHERE id=$1`, result.VerdictID).Scan(&raw); err != nil {
 						t.Fatal(err)
@@ -325,7 +326,16 @@ func TestAccessMapOwnedPostgresCanonicalIntegrity(t *testing.T) {
 					if err = json.Unmarshal(raw, &payload); err != nil {
 						t.Fatal(err)
 					}
-					payload["cross_normal_data"] = "no"
+					switch scenario {
+					case "payload-signal":
+						payload["cross_normal_data"] = "no"
+					case "record-reset":
+						payload["reset_generation"] = "other-reset"
+					case "record-policy":
+						payload["policy_version"] = "other-policy"
+					case "record-axis":
+						payload["axis"] = "vertical"
+					}
 					raw, err = json.Marshal(payload)
 					if err != nil {
 						t.Fatal(err)

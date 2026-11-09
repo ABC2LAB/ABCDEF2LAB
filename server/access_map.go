@@ -343,7 +343,7 @@ func (m accessMapManifest) matches(s e3record.Source, r accessMapRecord) bool {
 		m.KGSnapshotRef != s.KGSnapshotRef || m.KGSnapshotDigest != s.KGSnapshotDigest || m.GenerationRef != s.GenerationRef || m.InstanceRef != s.InstanceRef ||
 		m.CheckpointRef != s.FinalCheckpointRef || m.CheckpointDigest != s.FinalCheckpointDigest || s.FinalCheckpointScope != s.Expected.Scope || s.FinalCheckpointSequence == 0 ||
 		e.Policy.Context != s.Expected || e.Owner.Context != s.Expected || e.Cross.Context != s.Expected || e.Result.Context != s.Expected || e.Policy.Assertion != s.Policy ||
-		!r.ObservedAt.Equal(e.Result.ObservedAt) || !r.CreatedAt.Equal(s.RecordCreatedAt) || !slices.Equal(r.TrafficEvidenceRefs, s.TrafficEvidenceIDs) {
+		!r.ObservedAt.Equal(accessMapCanonicalTime(e.Result.ObservedAt)) || !r.CreatedAt.Equal(accessMapCanonicalTime(s.RecordCreatedAt)) || !slices.Equal(r.TrafficEvidenceRefs, s.TrafficEvidenceIDs) {
 		return false
 	}
 	v, f := e.Result.Result.Verdict, e.Result.Result.Facts
@@ -355,7 +355,7 @@ func (m accessMapManifest) matches(s e3record.Source, r accessMapRecord) bool {
 func (r accessMapRecord) valid(s e3record.Source) bool {
 	if r.Axis != "horizontal" || r.VulnClass != "IDOR" || r.ObservedAt.IsZero() || r.CreatedAt.IsZero() ||
 		r.OwnerStatus != s.Expected.Owner.Status || r.EvaluatedStatus != s.Expected.Evaluated.Status || r.ExpectedAccess != s.Policy.ExpectedAccess || r.Sharing != s.Policy.Sharing || r.Delegation != s.Policy.Delegation ||
-		!r.PolicyValidFrom.Equal(s.Policy.ValidFrom) || !r.PolicyValidUntil.Equal(s.Policy.ValidUntil) || r.HintMatchesCanonical != s.Policy.HintMatchesCanonical {
+		!r.PolicyValidFrom.Equal(accessMapCanonicalTime(s.Policy.ValidFrom)) || !r.PolicyValidUntil.Equal(accessMapCanonicalTime(s.Policy.ValidUntil)) || r.HintMatchesCanonical != s.Policy.HintMatchesCanonical {
 		return false
 	}
 	switch r.OracleValue {
@@ -363,11 +363,11 @@ func (r accessMapRecord) valid(s e3record.Source) bool {
 		if r.VulnVerdict == nil || *r.VulnVerdict != r.OracleValue {
 			return false
 		}
-		if r.OracleValue == oracle.Undecidable && r.AccessPolicyResult != "판정_불가" || r.OracleValue != oracle.Undecidable && r.AccessPolicyResult != "위반_후보" {
+		if r.OracleValue == oracle.Undecidable && r.AccessPolicyResult != e3record.AccessPolicyUndecidable || r.OracleValue != oracle.Undecidable && r.AccessPolicyResult != e3record.AccessPolicyViolationCandidate {
 			return false
 		}
 	case oracle.Allowed:
-		if r.VulnVerdict != nil || r.AccessPolicyResult != "위반_미관찰" || !s.Policy.HasRegisteredSource {
+		if r.VulnVerdict != nil || r.AccessPolicyResult != e3record.AccessPolicyNoViolationObserved || !s.Policy.HasRegisteredSource {
 			return false
 		}
 	default:
@@ -397,6 +397,11 @@ func (r accessMapRecord) valid(s e3record.Source) bool {
 		}
 	}
 	return true
+}
+
+// E③ v1 payload의 시각은 마이크로초다. 원본 manifest/Source의 정밀도는 보존한다.
+func accessMapCanonicalTime(at time.Time) time.Time {
+	return at.Round(0).UTC().Truncate(time.Microsecond)
 }
 
 func accessMapReason(reason oracle.JudgeReason) bool {
@@ -445,7 +450,7 @@ func projectAccessMap(b accessMapBinding, records []accessMapStoredRecord) acces
 				cell.State = "unknown"
 				switch r.OracleValue {
 				case oracle.Confirmed:
-					if r.PolicyCheck == oracle.StateYes && r.IdentityCheck == oracle.StateYes && r.DataCheck == oracle.StateYes && r.AccessPolicyResult == "위반_후보" {
+					if r.PolicyCheck == oracle.StateYes && r.IdentityCheck == oracle.StateYes && r.DataCheck == oracle.StateYes && r.AccessPolicyResult == e3record.AccessPolicyViolationCandidate {
 						cell.State = "confirmed"
 					} else {
 						cell.fail("record_invalid")

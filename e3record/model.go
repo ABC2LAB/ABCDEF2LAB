@@ -18,6 +18,13 @@ import (
 // PR #142 review 5751671737 and docs/contracts/e3-storage-gate.md.
 const MaxCanonicalBytes = 64 << 10
 
+// 저장 판정과 읽기 projection이 같은 의미 값을 사용하도록 한 곳에서 관리한다.
+const (
+	AccessPolicyViolationCandidate  = "위반_후보"
+	AccessPolicyNoViolationObserved = "위반_미관찰"
+	AccessPolicyUndecidable         = "판정_불가"
+)
+
 var (
 	ErrInvalid    = errors.New("e3_record_invalid")
 	ErrSource     = errors.New("e3_source_unavailable")

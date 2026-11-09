@@ -181,9 +181,7 @@ func (v *controlledReadVerificationState) execute(ctx context.Context, l *contro
 			return nil, errControlledReadUnavailable
 		}
 	}
-	if l.mapAttempt(ctx, resource, plan.Candidate.Owner.Label) != nil {
-		return nil, errControlledReadUnavailable
-	}
+	// 소유자 조회는 교차 계정 판정의 정상 대조이며 별도 판정 대상 셀이 아니다.
 	detail, reason := l.tx.VerifyReadDetailed(plan.Candidate, plan.KG)
 	if reason != "" || ctx.Err() != nil || !completeVerificationObservation(detail.Owner, l.scope) ||
 		!completeVerificationObservation(detail.Evaluated, l.scope) || l.tx.HealthStatus().Halted {
