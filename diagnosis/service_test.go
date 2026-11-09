@@ -197,6 +197,9 @@ func TestClosureEvidenceIsIndependentOfExecutionFailure(t *testing.T) {
 		closure  Closure
 		state    State
 	}{
+		{"close_error_only", nil, errors.New("close failure"), Closure{true, true}, Unknown},
+		{"drain_incomplete_without_error", nil, nil, Closure{false, true}, Unknown},
+		{"result_missing_without_error", nil, nil, Closure{true, false}, Unknown},
 		{"failed_saved", errors.New("execution failure"), nil, Closure{true, true}, Failed},
 		{"cancelled_saved", context.Canceled, nil, Closure{true, true}, Cancelled},
 		{"save_failed", nil, errors.New("save failure"), Closure{true, false}, Unknown},
@@ -216,5 +219,116 @@ func TestClosureEvidenceIsIndependentOfExecutionFailure(t *testing.T) {
 				t.Fatal("valid closure evidence rejected")
 			}
 		})
+	}
+}
+
+// 취소 요청 뒤 Runner가 nil을 반환해도 중지 사실이 정상 완료로 바뀌면 안 된다.
+type controlledExitRunner struct{ started, finish, closing, releaseClose chan struct{} }
+
+func (r *controlledExitRunner) Run(context.Context) error { close(r.started); <-r.finish; return nil }
+func (r *controlledExitRunner) Close(context.Context) (Closure, error) {
+	close(r.closing)
+	<-r.releaseClose
+	return Closure{true, true}, nil
+}
+func TestStoppingNormalReturnAndShutdownWait(t *testing.T) {
+	r := &controlledExitRunner{make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})}
+	s, e := NewPrepared(t.Context(), "23", "operator-prepared", r, time.Second)
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, _ = s.Call(t.Context(), request(Start))
+	<-r.started
+	response, _ := s.Call(t.Context(), request(Stop))
+	if response.Snapshot.State != Stopping {
+		t.Fatal(response)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- s.Shutdown(context.Background()) }()
+	select {
+	case <-finished:
+		t.Fatal("Shutdown returned before Run exited")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(r.finish)
+	<-r.closing
+	select {
+	case <-finished:
+		t.Fatal("Shutdown returned before Close finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(r.releaseClose)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not finish")
+	}
+	s.mu.Lock()
+	snapshot := s.snapshot
+	s.mu.Unlock()
+	if snapshot.State != Cancelled || !snapshot.DrainComplete || !snapshot.ResultReady {
+		t.Fatal(snapshot)
+	}
+}
+func TestPreStartStopAndParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &testRunner{finish: make(chan struct{})}
+	s, e := NewPrepared(ctx, "23", "operator-prepared", r, time.Second)
+	if e != nil {
+		t.Fatal(e)
+	}
+	response, e := s.Call(t.Context(), request(Stop))
+	if e != nil || response.Error != "not_started" || r.calls.Load() != 0 || r.closes.Load() != 0 {
+		t.Fatal(response, e)
+	}
+	cancel()
+	response, e = s.Call(t.Context(), request(Start))
+	if e != nil || response.Error != "service_closed" || r.calls.Load() != 0 {
+		t.Fatal(response, e)
+	}
+	if err := s.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestPreStartShutdownClosureFailure(t *testing.T) {
+	r := &testRunner{finish: make(chan struct{}), closeErr: errors.New("closure failed")}
+	s, e := NewPrepared(t.Context(), "23", "operator-prepared", r, time.Second)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if err := s.Shutdown(t.Context()); err == nil {
+		t.Fatal("closure error hidden")
+	}
+	s.mu.Lock()
+	snapshot := s.snapshot
+	s.mu.Unlock()
+	if snapshot.State != Unknown || snapshot.Started || snapshot.DrainComplete || snapshot.ResultReady || r.calls.Load() != 0 || r.closes.Load() != 1 {
+		t.Fatal(snapshot)
+	}
+}
+func TestParentCancellationStopsActiveExecution(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &testRunner{finish: make(chan struct{})}
+	s, e := NewPrepared(ctx, "23", "operator-prepared", r, time.Second)
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, _ = s.Call(t.Context(), request(Start))
+	cancel()
+	shutdownCtx, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	if err := s.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	snapshot := s.snapshot
+	s.mu.Unlock()
+	if snapshot.State != Cancelled || !snapshot.ResultReady || r.closes.Load() != 1 {
+		t.Fatal(snapshot)
 	}
 }

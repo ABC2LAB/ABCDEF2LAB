@@ -43,8 +43,8 @@ func (r *gatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error) {
 	if drained {
 		closureErr = nil
 	}
-	saveErr := r.launch.supervisor.PersistRunOutcome(ctx, closureErr)
-	result := diagnosis.Closure{DrainComplete: drained && httpErr == nil, ResultReady: saveErr == nil}
+	stored, saveErr := r.launch.supervisor.PersistRunOutcomeStored(ctx, closureErr)
+	result := diagnosis.Closure{DrainComplete: drained && httpErr == nil, ResultReady: stored && saveErr == nil}
 	if !drained {
 		return result, errors.Join(httpErr, runOutcome, saveErr)
 	}
@@ -88,6 +88,12 @@ func runGateway(ctx context.Context, args []string, input io.Reader, stdout, std
 	if err != nil {
 		fmt.Fprintln(stderr, "실행 설정을 사용할 수 없습니다")
 		return 1
+	}
+	// v1 결과는 일반 HTTP 종료 기록이다. 등록 GET의 KG/E③ 결과 계약은 아직 없다.
+	// 로그·DB·단회 권위 준비보다 먼저 거부하며 기존 run/serve 모드는 변경하지 않는다.
+	if c.Mode != "general_http" {
+		fmt.Fprintln(stderr, "gateway_registered_get_unsupported")
+		return 2
 	}
 	ctx, diagnostics, err := beginLaunchDiagnostics(ctx, c, "serve", 0, stderr)
 	if err != nil {
