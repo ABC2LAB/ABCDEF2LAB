@@ -14,7 +14,7 @@ import (
 
 // 연결된 디렉터리 FD를 수명 내내 보유해 경로 교체를 매 쓰기 전에 확인한다.
 func Create(dataDir, phase string, taskID int64, runRef string) (*Logger, error) {
-	if !filepath.IsAbs(dataDir) || filepath.Clean(dataDir) != dataDir || taskID < 0 || len(runRef) > 4096 || !vocabulary("prepare-task prepare-intents run serve report check preparation")[phase] {
+	if !filepath.IsAbs(dataDir) || filepath.Clean(dataDir) != dataDir || taskID < 0 || len(runRef) > maxReferenceBytes || !vocabulary("prepare-task prepare-intents run serve report check preparation")[phase] {
 		return nil, ErrCreate
 	}
 	fds := []int{}

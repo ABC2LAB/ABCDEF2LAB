@@ -8,6 +8,8 @@ import (
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 )
 
+const diagnosisLogQueryTimeout = 2 * time.Second
+
 // 원문 오류 대신 호출 지점과 문맥에서 확인한 고정 사유만 기록한다.
 func diagnosisLogOutcome(ctx context.Context, err error, fallback string) (string, string) {
 	if err == nil {
@@ -39,7 +41,7 @@ func (e *Engine) plannerLogStart(ctx context.Context, task *Task) (int64, bool) 
 		return 0, false
 	}
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "planner", Event: "planner_started", TaskID: mustFirstDiagnosisTaskNumber(task.ID), Stage: "planning", Status: "started"})
-	call, cancel := context.WithTimeout(ctx, 2*time.Second)
+	call, cancel := context.WithTimeout(ctx, diagnosisLogQueryTimeout)
 	defer cancel()
 	var last int64
 	err := e.m.pg.QueryRowContext(call, "SELECT COALESCE(max(id),0) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&last)
@@ -55,7 +57,7 @@ func (e *Engine) plannerLogFinish(ctx context.Context, task *Task, last int64, o
 	status, reason := diagnosisLogOutcome(ctx, operationErr, "planner_failed")
 	event := diagnosticlog.Event{Component: "planner", Event: "planner_finished", TaskID: mustFirstDiagnosisTaskNumber(task.ID), Stage: "planning", Status: status, ReasonCode: reason, DurationMS: time.Since(started).Milliseconds()}
 	if observed {
-		call, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		call, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosisLogQueryTimeout)
 		defer cancel()
 		var count int
 		err := e.m.pg.QueryRowContext(call, "SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND id>$2", task.ExpID, last).Scan(&count)
@@ -152,7 +154,7 @@ func (s *FirstDiagnosisSupervisor) logRunSummary(ctx context.Context, task int64
 		event.ReservedInputTokens, event.ReservedOutputTokens, event.ReservedCostMicros, event.CostMicros = model.ReservedInputTokens, model.ReservedOutputTokens, model.ReservedCostMicros, model.CostMicros
 		event.CostUncertain = model.Errors > 0
 	}
-	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosisLogQueryTimeout)
 	defer cancel()
 	if err := s.m.pg.QueryRowContext(call, `SELECT count(*) FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE t.id=$1 AND n.origin='e2_diagnostic_candidate_v1' AND n.payload->'diagnostic_candidate_v1'->>'run_ref'=$2`, task, state.RunRef).Scan(&event.Candidates); err != nil {
 		observationComplete = false

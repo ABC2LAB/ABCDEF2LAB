@@ -16,6 +16,9 @@ import (
 const MaxBytes int64 = 16 << 20
 const MaxEvents = 20000
 
+// 해시 전 참조 길이를 제한해 원문 식별자가 메모리를 무제한 점유하지 않게 한다.
+const maxReferenceBytes = 4096
+
 var (
 	ErrCreate = errors.New("diagnostic_log_create_failed")
 	ErrWrite  = errors.New("diagnostic_log_write_failed")
@@ -141,7 +144,7 @@ func (l *Logger) BindRun(ref string) error {
 	if l.closed {
 		return ErrClosed
 	}
-	if ref == "" || len(ref) > 4096 || l.run != "" && l.run != ref {
+	if ref == "" || len(ref) > maxReferenceBytes || l.run != "" && l.run != ref {
 		return l.failLocked(ErrEvent)
 	}
 	l.run = ref
@@ -267,7 +270,7 @@ func (l *Logger) Close() error {
 	return l.err
 }
 func valid(e Event) bool {
-	return allowed(components, e.Component, false) && allowed(events, e.Event, false) && allowed(stages, e.Stage, true) && allowed(statuses, e.Status, true) && allowed(reasons, e.ReasonCode, true) && allowed(tools, e.Tool, true) && allowed(roles, e.Role, true) && allowed(models, e.Model, true) && allowed(providers, e.Provider, true) && allowed(levels, e.Level, true) && e.CandidateID >= 0 && len(e.AttemptRef) <= 4096 && e.TaskID >= 0 && e.IntentID >= 0 && e.DurationMS >= 0 && e.Count >= 0 && e.HTTPStatus >= 0 && e.HTTPStatus <= 599 && e.InputTokens >= 0 && e.OutputTokens >= 0 && e.ReservedTokens >= 0 && finite(e.ReservedCostUSD) && finite(e.ReportedCostUSD) && e.TargetRequests >= 0 && e.Approved >= 0 && e.Denied >= 0 && e.Blocked >= 0 && e.Candidates >= 0 && e.ReservedInputTokens >= 0 && e.ReservedOutputTokens >= 0 && e.ReservedCostMicros >= 0 && e.CostMicros >= 0 && len(e.ModelRef) <= 4096 && len(e.ProviderRef) <= 4096 && len(e.RunRef) <= 4096 && len(e.CallRef) <= 4096
+	return allowed(components, e.Component, false) && allowed(events, e.Event, false) && allowed(stages, e.Stage, true) && allowed(statuses, e.Status, true) && allowed(reasons, e.ReasonCode, true) && allowed(tools, e.Tool, true) && allowed(roles, e.Role, true) && allowed(models, e.Model, true) && allowed(providers, e.Provider, true) && allowed(levels, e.Level, true) && e.CandidateID >= 0 && len(e.AttemptRef) <= maxReferenceBytes && e.TaskID >= 0 && e.IntentID >= 0 && e.DurationMS >= 0 && e.Count >= 0 && e.HTTPStatus >= 0 && e.HTTPStatus <= 599 && e.InputTokens >= 0 && e.OutputTokens >= 0 && e.ReservedTokens >= 0 && finite(e.ReservedCostUSD) && finite(e.ReportedCostUSD) && e.TargetRequests >= 0 && e.Approved >= 0 && e.Denied >= 0 && e.Blocked >= 0 && e.Candidates >= 0 && e.ReservedInputTokens >= 0 && e.ReservedOutputTokens >= 0 && e.ReservedCostMicros >= 0 && e.CostMicros >= 0 && len(e.ModelRef) <= maxReferenceBytes && len(e.ProviderRef) <= maxReferenceBytes && len(e.RunRef) <= maxReferenceBytes && len(e.CallRef) <= maxReferenceBytes
 }
 func finite(n float64) bool                                  { return n >= 0 && !math.IsNaN(n) && !math.IsInf(n, 0) }
 func allowed(set map[string]bool, s string, empty bool) bool { return empty && s == "" || set[s] }
