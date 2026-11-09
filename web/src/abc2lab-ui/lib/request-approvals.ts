@@ -63,7 +63,40 @@ export type RequestApprovalRunState = {
     };
   };
 };
-export type RequestApprovalState = { approvals: RequestApproval[]; run: RequestApprovalRunState };
+export type RequestApprovalState = { approvals: RequestApproval[] | null; run: RequestApprovalRunState };
+
+type RunCountKey = keyof NonNullable<RequestApprovalRunState["execution"]>["counts"];
+
+/**
+ * 진행 화면과 보고서가 같은 집계를 같은 이름으로 보이게 여기 한 곳에 둔다.
+ * attempts 는 E②가 판정 전에 접수한 수(차단분 포함)라 "전송"이 아니다. 실제 대상 송신은 forward_attempted.
+ */
+export const RUN_COUNT_ROWS: Array<{ key: RunCountKey; label: string }> = [
+  { key: "attempts", label: "요청 접수" },
+  { key: "allowed", label: "허용" },
+  { key: "denied", label: "차단" },
+  { key: "unsupported", label: "미지원" },
+  { key: "forward_attempted", label: "대상 전송 시도" },
+  { key: "responses", label: "응답 수신" },
+  { key: "unknown", label: "불명" },
+  { key: "calls", label: "호출" },
+];
+
+export const RUN_COUNT_NOTE =
+  "요청 접수는 판정 전에 받은 수라 차단분도 포함해요. 실제로 대상에 보낸 건 대상 전송 시도예요.";
+
+/** 서버가 보고한 모델 사용량. 원문 prompt·응답은 포함하지 않는다. */
+export type ModelUsage = {
+  requests: number;
+  errors: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd_micros: number;
+  provider_slug: string;
+  model: string;
+  blocked: boolean;
+  failure_reason?: string;
+};
 
 /**
  * 저장된 실행 종료 기록. 서버는 세 가지 200 변형을 돌려준다:
@@ -77,6 +110,7 @@ export type DiagnosisRunRecord = {
   saved_at?: string; // NOT_RUN 변형엔 없다
   run: RequestApprovalRunState | null;
   execution?: "NOT_RUN";
+  model?: ModelUsage;
   model_preparation?: unknown[]; // 참조만 — 원문은 표시하지 않는다
 };
 

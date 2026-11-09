@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { Modal } from "../components/Modal";
+import { RunStatusPanel } from "../components/RunStatusPanel";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { RefreshIcon, Sev, Strong, Sub } from "../components/ui";
@@ -473,6 +474,7 @@ export default function LiveScreen({ target }: { target: Target }) {
               </span>
             </div>
           )}
+          <RunStatusPanel taskId={taskId} active={nav.screen === "live"} onOpenApprovals={() => go("approval")} />
           <div
             style={{
               display: "flex",
