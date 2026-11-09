@@ -177,11 +177,21 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 	if p.check(ctx) != nil {
 		return llm.Message{}, "", llm.Usage{}, ErrFirstDiagnosisModel
 	}
-	return p.inner.Complete(ctx, req)
+	if p.server.firstModelBudget == nil {
+		return p.inner.Complete(ctx, req)
+	}
+	if err := p.server.firstModelBudget.before(ctx, p.config, &req); err != nil {
+		return llm.Message{}, "", llm.Usage{}, err
+	}
+	message, reason, usage, err := p.inner.Complete(ctx, req)
+	if budgetErr := p.server.firstModelBudget.after(usage, req.MaxTokens, err); budgetErr != nil {
+		return llm.Message{}, "", usage, budgetErr
+	}
+	return message, reason, usage, nil
 }
 func (p *firstDiagnosisModelProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
-		if p.check(ctx) != nil {
+		if p.check(ctx) != nil || p.server.firstModelBudget != nil {
 			yield(llm.StreamEvent{}, ErrFirstDiagnosisModel)
 			return
 		}
