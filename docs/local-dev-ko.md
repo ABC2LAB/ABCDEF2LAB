@@ -19,7 +19,7 @@
 - PostgreSQL **16** 또는 Docker
 - [ABC2LAB 저장소](https://github.com/ABC2LAB/ABCDEF2LAB)의 `dev` 소스
 
-[Dockerfile](../Dockerfile)은 Node 26으로 정적 제품 UI를 빌드하고 Go 1.26.3으로 내장 바이너리를 컴파일합니다. 이 안내의 로컬 개발용 Node 22 조건과 구분합니다.
+[Dockerfile](../Dockerfile)의 Node 20.x는 미리 빌드한 바이너리를 넣는 실행 이미지의 도구 환경입니다. 이 안내의 프런트엔드 개발·시험 의존성 요구와 구분하며, 이미지 안에서 Next.js를 컴파일한다는 뜻이 아닙니다.
 
 아래 명령은 저장소 루트에서 시작합니다. `.env`·`config.json`·키·실행 기록은 커밋하지 않습니다.
 설정 파일 예시는 [config.example.json](../config.example.json), Compose 입력 예시는 [.env.example](../.env.example)입니다.
@@ -143,8 +143,8 @@ UI의 기반 프로젝트 자동 업데이트 경로를 ABC2LAB 배포 갱신 �
 
 ## Compose의 현재 역할
 
-[docker-compose.yml](../docker-compose.yml)은 현재 소스에서 UI와 Go를 함께 빌드합니다.
-설치·업데이트·백업 절차는 [Docker 온프레미스 설치](docker-onprem-ko.md)를 따릅니다.
+[docker-compose.yml](../docker-compose.yml)의 `artex` 서비스는 `ghcr.io/jiwoochris/artex-global` 이미지를 사용합니다.
+`docker compose up`으로 뜬 화면에는 이 저장소에서 작성한 최신 기능이 들어 있다고 볼 수 없습니다.
 현재 개발 변경의 확인은 위 소스 실행으로 진행합니다. 프로젝트 자체 이미지·배포 설정은 별도 작업입니다.
 
 ## 검증 기록

@@ -180,32 +180,9 @@ jobs:
         run: |
           npm test -- --run --maxWorkers=2
           find src -name '*.test.mjs' -print0 | xargs -0 -r node --test
-      - name: Next.js 정적 제품 빌드·타입 검사
+      - name: Next.js 빌드·타입 검사(Vercel 데모 모드)
         if: steps.changes.outputs.changed == 'true'
         working-directory: web
         env:
-          NEXT_PUBLIC_MOCK: "0"
-        run: npm run build:static -- --webpack
-
-  docker:
-    name: 자체 Docker 이미지·Compose
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Compose 설정 검사
-        env:
-          POSTGRES_PASSWORD: synthetic-ci-password
-          ARTEX_SETUP_TOKEN: synthetic-ci-setup-token
-          ABC2LAB_POLICY_DIR: /tmp/abc2lab-ci-policy
-        run: docker compose config -q
-      - name: 소스·제품 UI 이미지 빌드(amd64)
-        run: |
-          docker build --platform linux/amd64 --target web-build -t abc2lab-web:ci .
-          docker build --platform linux/amd64 --build-arg VCS_REF="$GITHUB_SHA" -t "abc2lab:ci-$GITHUB_SHA" .
-      - name: 이미지 출처 확인
-        run: |
-          actual=$(docker image inspect "abc2lab:ci-$GITHUB_SHA" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
-          test "$actual" = "$GITHUB_SHA"
+          NEXT_PUBLIC_MOCK: "1"
+        run: npm run build
