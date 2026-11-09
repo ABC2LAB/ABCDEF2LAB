@@ -360,7 +360,7 @@ describe("live 보고서", () => {
     useSource.setState({ taskId: null });
     const { unmount } = renderReport();
     expect(await screen.findByRole("heading", { name: "보고서를 볼 점검을 고르세요" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /shop\.example\.com/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /shop\.example\.com/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /blog\.example\.com/ }));
     expect(useSource.getState().taskId).toBe("8");
     await waitFor(() => expect(m.fetchTaskFindings).toHaveBeenCalledWith("8"));
