@@ -49,6 +49,9 @@ const ep = (m: string, p: string) => {
   return e;
 };
 const rows = () => screen.getAllByRole("checkbox");
+/** 묶음을 모두 펼친다 (처음에는 모두 접혀 있다) */
+const expandAll = () => fireEvent.click(screen.getByRole("button", { name: "모두 펼치기" }));
+const groupHead = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}\\d`) });
 const filterChip = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}\\d+$`) });
 /** 표의 줄 버튼 (메서드 + 경로 + 기능 + 딱지 글자로 이름이 붙는다) */
 const rowButton = (m: string, p: string) => {
@@ -78,19 +81,39 @@ describe("범위 확인: 개수와 필터", () => {
     expect(filterChip("ID 포함")).toHaveTextContent("8");
     expect(filterChip("로그인 필요")).toHaveTextContent("23");
     expect(filterChip("제외됨")).toHaveTextContent("4");
-    expect(rows()).toHaveLength(37);
-    // 묶음 머리 (원본 SG 순서)
-    const heads = [...(byId(container, "sTable")?.children ?? [])]
-      .filter((x) => x.querySelector("input") === null)
-      .map((x) => x.textContent);
+    // 처음에는 묶음이 모두 접혀 있다
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    // 묶음 머리 (원본 SG 순서) — 접혀 있어도 개수·포함·승인 필요 요약이 보인다
+    const heads = [...(byId(container, "sTable")?.querySelectorAll("[data-sg]") ?? [])].map((x) => x.textContent);
     expect(heads).toEqual([
-      "계정·인증7AI 추정 묶음",
-      "장바구니·주문7AI 추정 묶음",
-      "결제·쿠폰3AI 추정 묶음",
-      "관리자8AI 추정 묶음",
-      "상품·리뷰6AI 추정 묶음",
-      "공개 페이지6AI 추정 묶음",
+      "계정·인증7포함 5 · 승인 필요 2AI 추정 묶음",
+      "장바구니·주문7포함 6 · 승인 필요 3AI 추정 묶음",
+      "결제·쿠폰3포함 3 · 승인 필요 2AI 추정 묶음",
+      "관리자8포함 7 · 승인 필요 2AI 추정 묶음",
+      "상품·리뷰6포함 6 · 승인 필요 1AI 추정 묶음",
+      "공개 페이지6포함 6AI 추정 묶음",
     ]);
+    expandAll();
+    expect(rows()).toHaveLength(37);
+    expect(screen.getByRole("button", { name: "모두 접기" })).toBeInTheDocument();
+  });
+
+  it("묶음 머리를 누르면 그 묶음만 열리고 다시 누르면 닫힌다", () => {
+    renderScope();
+    const acct = groupHead("계정·인증");
+    expect(acct).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(acct);
+    expect(acct).toHaveAttribute("aria-expanded", "true");
+    expect(rows()).toHaveLength(7);
+    expect(groupHead("장바구니·주문")).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(acct);
+    expect(acct).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    // 필터를 쓰면 결과가 있는 묶음이 펼쳐지고, '전체'로 돌아오면 다시 접힌다
+    fireEvent.click(filterChip("제외됨"));
+    expect(rows()).toHaveLength(4);
+    fireEvent.click(filterChip("전체"));
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
   });
 
   it("필터를 누르면 그 조건의 줄만, 누른 필터만 aria-pressed", () => {
@@ -116,7 +139,7 @@ describe("범위 확인: 개수와 필터", () => {
       "GET /api/coupons 점검에 포함",
       "POST /api/coupons/apply 점검에 포함",
     ]);
-    expect(byId(container, "sTable")).toHaveTextContent(/^결제·쿠폰2AI 추정 묶음/);
+    expect(byId(container, "sTable")).toHaveTextContent(/^결제·쿠폰2포함 2/);
     // 기능 이름으로도
     fireEvent.change(q, { target: { value: "장바구니" } });
     expect(rows()).toHaveLength(3);
@@ -135,6 +158,7 @@ describe("범위 확인: 개수와 필터", () => {
 describe("범위 확인: 포함 여부와 선택", () => {
   it("기본 제외를 체크하면 포함·제외·승인 필요 수가 바뀌고 그 줄이 선택된다", () => {
     const { container } = renderScope();
+    expandAll();
     const logout = screen.getByRole("checkbox", { name: "GET /api/logout 점검에 포함" });
     expect(logout).not.toBeChecked();
     fireEvent.click(logout);
@@ -161,6 +185,7 @@ describe("범위 확인: 포함 여부와 선택", () => {
 
   it("직접 제외하면 '제외' 딱지와 설명, 전역 제외는 체크 상자가 막혀 있다", () => {
     const { container } = renderScope();
+    expandAll();
     fireEvent.click(screen.getByRole("checkbox", { name: "GET /products 점검에 포함" }));
     const insp = byId(container, "sInsp") as HTMLElement;
     expect(within(insp).getByRole("heading", { level: 2 })).toHaveTextContent("GET /products");
