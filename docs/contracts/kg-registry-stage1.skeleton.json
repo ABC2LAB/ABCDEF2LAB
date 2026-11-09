@@ -11,7 +11,7 @@
   ],
   "resources": [
     {
-      "resource_ref": "basket:a-owned-PLACEHOLDER",
+      "resource_ref": "address:a-owned-PLACEHOLDER",
       "owner_ref": "account-a",
       "policies": [
         {
@@ -32,7 +32,7 @@
         }
       ],
       "canaries": [
-        { "field": "PLACEHOLDER-field", "value": "kgfx-canary-PLACEHOLDER-1", "trivial": false }
+        { "field": "fullName", "value": "kgfx-canary-PLACEHOLDER-1", "trivial": false }
       ]
     }
   ]

@@ -31,7 +31,7 @@
   ],
   "resources": [
     {
-      "ref": "basket:a-owned-PLACEHOLDER",
+      "ref": "address:a-owned-PLACEHOLDER",
       "url": "http://approved-target.example:8080/resource-PLACEHOLDER/a-owned",
       "approval_ref": "approved-read-PLACEHOLDER",
       "read_only": true,
@@ -42,7 +42,7 @@
         "ErrorValues": ["error-PLACEHOLDER"],
         "DataPath": ["data-PLACEHOLDER"],
         "Markers": [
-          { "Field": "PLACEHOLDER-field", "Value": "kgfx-canary-PLACEHOLDER-1", "Trivial": false }
+          { "Field": "fullName", "Value": "kgfx-canary-PLACEHOLDER-1", "Trivial": false }
         ]
       }
     }
