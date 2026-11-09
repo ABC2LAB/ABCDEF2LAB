@@ -473,6 +473,7 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 		body, encodeErr := json.Marshal(promptInfo)
 		if encodeErr != nil || binding.ObservePrompt(ctx, name, body) != nil {
 			log.Print("E② 평가 프롬프트 관측 저장 실패")
+			emitE2HTTPPromptActivity(emit, func(stage string) { log.Print(stage) }, intent.ID, name, promptInfo)
 		}
 	} else if emit != nil {
 		emitE2HTTPPromptActivity(emit, func(stage string) { log.Print(stage) }, intent.ID, name, promptInfo)

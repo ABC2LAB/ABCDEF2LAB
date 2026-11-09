@@ -152,3 +152,27 @@ func TestE2HTTPPromptActivityEncodingFailureSkipsActivity(t *testing.T) {
 		t.Fatalf("invalid activity detail: %v", err)
 	}
 }
+
+func TestE2HTTPPromptObserverFailureKeepsGeneralActivity(t *testing.T) {
+	_, _, binding := e2WorkerFixture(t)
+	var observed int
+	binding.ObservePrompt = func(context.Context, string, []byte) error {
+		observed++
+		return errors.New("synthetic-private-storage-error")
+	}
+	provider := &e2PromptCaptureProvider{}
+	worker := NewWorker(provider, "synthetic", t.TempDir(), nil, 10000, 2)
+	worker.SetNonStreaming(func() bool { return true })
+	var activities int
+	_, _, _ = worker.Execute(WithE2HTTPExecution(t.Context(), binding), "work#1", 7, nil, nil, &db.Node{ID: 22, Kind: db.KindIntent, Payload: json.RawMessage(`{}`)}, nil, func(a db.Activity) {
+		if a.Kind == "e2_prompt" {
+			activities++
+			if strings.Contains(a.Detail, "synthetic-private-storage-error") {
+				t.Error("storage error leaked")
+			}
+		}
+	}, nil, nil)
+	if observed != 1 || activities != 1 || provider.calls != 1 {
+		t.Fatal("failed projection changed worker or lost general activity")
+	}
+}

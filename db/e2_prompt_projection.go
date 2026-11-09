@@ -9,6 +9,7 @@ import (
 )
 
 var ErrE2Prompt = errors.New("e2_prompt_storage_unavailable")
+var ErrE2PromptBinding = errors.New("e2_prompt_binding_rejected")
 
 // 새 실행의 단회 등록이다. run_ref 재사용은 과거 관측과의 혼합을 막는다.
 func (s *ExplorationStore) RegisterE2PromptRun(ctx context.Context, task int64, run string) error {
@@ -132,6 +133,9 @@ func (s *ExplorationStore) E2PromptProjection(ctx context.Context, task int64, r
 	err = tx.QueryRowContext(ctx, `SELECT r.sealed,r.failed,r.next_sequence FROM e2_prompt_runs r JOIN tasks t ON t.id=r.task_id AND t.exploration_id=r.exploration_id
  WHERE r.run_ref=$1 AND r.task_id=$2 AND r.exploration_id=$3 AND t.deleted_at IS NULL FOR SHARE OF r`, run, task, s.expID).Scan(&sealed, &failed, &p.ExpectedCount)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return p, ErrE2PromptBinding
+		}
 		return p, ErrE2Prompt
 	}
 	p.SnapshotSequence = p.ExpectedCount
@@ -180,7 +184,7 @@ func (s *ExplorationStore) E2PromptProjection(ctx context.Context, task int64, r
 	}
 	rows.Close()
 	if count != p.ExpectedCount {
-		p.State = "invalid"
+		failed = true
 	}
 	if tx.Commit() != nil {
 		return p, ErrE2Prompt

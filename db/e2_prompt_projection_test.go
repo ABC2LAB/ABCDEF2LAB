@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -147,11 +148,11 @@ func TestE2PromptProjectionPostgres(t *testing.T) {
 				expected = "empty"
 			case "conflict":
 				expected = "conflict"
-			case "missing", "failed-close", "store-failure", "reuse-run":
+			case "missing", "failed-close", "store-failure", "reuse-run", "missing-sequence":
 				expected = "incomplete"
 			case "collecting":
 				expected = "collecting"
-			case "invalid-detail", "missing-sequence", "foreign-activity":
+			case "invalid-detail", "foreign-activity":
 				expected = "invalid"
 			}
 			if p.State != expected || p.Complete != (expected == "complete") {
@@ -169,7 +170,7 @@ func TestE2PromptProjectionPostgres(t *testing.T) {
 					t.Fatal("private field leaked")
 				}
 			}
-			if _, err = s.E2PromptProjection(ctx, task.ID+1, run); err == nil {
+			if _, err = s.E2PromptProjection(ctx, task.ID+1, run); !errors.Is(err, ErrE2PromptBinding) {
 				t.Fatal("foreign task accepted")
 			}
 			if _, err = s.BeginE2PromptWork(ctx, task.ID, run, intent+100000); err == nil {
@@ -177,7 +178,7 @@ func TestE2PromptProjectionPostgres(t *testing.T) {
 			}
 			canceled, cancel := context.WithCancel(ctx)
 			cancel()
-			if _, err = s.E2PromptProjection(canceled, task.ID, run); err == nil {
+			if _, err = s.E2PromptProjection(canceled, task.ID, run); !errors.Is(err, ErrE2Prompt) {
 				t.Fatal("query failure became empty projection")
 			}
 			if scenario != "collecting" {
@@ -186,5 +187,69 @@ func TestE2PromptProjectionPostgres(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestE2PromptArchiveRestorePostgres(t *testing.T) {
+	d, task, s, intent, run := promptPG(t)
+	ctx := t.Context()
+	if err := d.EnsureLLMRecordsTable(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.EnsureLLMUsageTable(); err != nil {
+		t.Fatal(err)
+	}
+	seq, err := s.BeginE2PromptWork(ctx, task.ID, run, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SaveE2PromptActivity(ctx, task.ID, run, seq, intent, "work#1", promptDetail("builtin", "a", "e")); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SealE2PromptRun(ctx, task.ID, run, true); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.E2PromptProjection(ctx, task.ID, run)
+	if err != nil || !before.Complete {
+		t.Fatal("fixture not complete")
+	}
+	if err = d.SetPaused(task.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := d.QueueTaskArchive(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID) })
+	claimed, err := d.ClaimTaskArchiveJob(ctx)
+	if err != nil || claimed == nil || claimed.ID != archive.ID {
+		t.Fatal("archive claim")
+	}
+	snapshot, err := d.SnapshotTaskArchive(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.CompleteTaskArchive(archive.ID, snapshot, "/tmp/synthetic-prompt-archive", "synthetic", 100, 50); err != nil {
+		t.Fatal("prompt observation blocked archive:", err)
+	}
+	if _, err = s.E2PromptProjection(ctx, task.ID, run); !errors.Is(err, ErrE2PromptBinding) {
+		t.Fatal("archived task projection served")
+	}
+	if _, err = d.QueueTaskArchiveRestore(archive.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = d.ClaimTaskArchiveJob(ctx)
+	if err != nil || claimed == nil || claimed.State != Restoring {
+		t.Fatal("restore claim")
+	}
+	if _, err = d.RestoreTaskArchive(archive.ID, snapshot, 60); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.CompleteTaskArchiveRestore(archive.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.E2PromptProjection(ctx, task.ID, run)
+	if err != nil || after.Complete || after.State != "incomplete" {
+		t.Fatal("restored generic activities became trusted observations")
 	}
 }

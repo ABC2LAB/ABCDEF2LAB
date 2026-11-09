@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2prompt"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -47,6 +49,10 @@ func (s *Server) e2PromptProjection(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	projection, err := task.Store.E2PromptProjection(ctx, taskID, query.Get("run_ref"))
 	if err != nil {
+		if errors.Is(err, db.ErrE2PromptBinding) {
+			writeErr(w, 409, "평가 실행 결속이 일치하지 않습니다")
+			return
+		}
 		writeErr(w, 503, "평가 관측을 확인할 수 없습니다")
 		return
 	}

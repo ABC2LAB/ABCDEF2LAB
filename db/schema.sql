@@ -549,10 +549,16 @@ CREATE TABLE IF NOT EXISTS e2_prompt_observations (
     run_ref TEXT NOT NULL REFERENCES e2_prompt_runs(run_ref) ON DELETE CASCADE,
     sequence BIGINT NOT NULL CHECK (sequence > 0),
     intent_id BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
-    activity_id BIGINT UNIQUE REFERENCES activity(id) ON DELETE RESTRICT,
+    activity_id BIGINT UNIQUE REFERENCES activity(id) ON DELETE SET NULL,
     worker TEXT,
     PRIMARY KEY(run_ref,sequence)
 );
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='e2_prompt_observations'::regclass AND conname='e2_prompt_observations_activity_id_fkey' AND confdeltype='n') THEN
+  ALTER TABLE e2_prompt_observations DROP CONSTRAINT IF EXISTS e2_prompt_observations_activity_id_fkey;
+  ALTER TABLE e2_prompt_observations ADD CONSTRAINT e2_prompt_observations_activity_id_fkey FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE SET NULL;
+ END IF;
+END $$;
 DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;
 CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

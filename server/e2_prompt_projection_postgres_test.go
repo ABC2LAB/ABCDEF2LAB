@@ -4,6 +4,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -153,7 +154,7 @@ else: raise AssertionError('different condition accepted')
 	for _, tc := range []struct {
 		name, auth, query string
 		want              int
-	}{{"normal", token, "run_ref=" + policy.RunRef, 200}, {"no-auth", "", "run_ref=" + policy.RunRef, 401}, {"foreign-subject", wrongSubject, "run_ref=" + policy.RunRef, 401}, {"wrong-run", token, "run_ref=other", 503}, {"unknown-query", token, "run_ref=" + policy.RunRef + "&raw=true", 400}, {"duplicate-query", token, "run_ref=a&run_ref=b", 400}, {"oversize", token, "run_ref=" + strings.Repeat("x", 300), 400}} {
+	}{{"normal", token, "run_ref=" + policy.RunRef, 200}, {"no-auth", "", "run_ref=" + policy.RunRef, 401}, {"foreign-subject", wrongSubject, "run_ref=" + policy.RunRef, 401}, {"wrong-run", token, "run_ref=other", 409}, {"unknown-query", token, "run_ref=" + policy.RunRef + "&raw=true", 400}, {"duplicate-query", token, "run_ref=a&run_ref=b", 400}, {"oversize", token, "run_ref=" + strings.Repeat("x", 300), 400}} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/e2-prompt-projection?"+tc.query, nil)
 			req.SetPathValue("id", task.ID)
@@ -172,5 +173,15 @@ else: raise AssertionError('different condition accepted')
 				}
 			}
 		})
+	}
+	queryFailure := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/e2-prompt-projection?run_ref="+policy.RunRef, nil)
+	queryFailure.SetPathValue("id", task.ID)
+	queryFailure.Header.Set("Authorization", "Bearer "+token)
+	canceled, cancel := context.WithCancel(queryFailure.Context())
+	cancel()
+	failureResponse := httptest.NewRecorder()
+	s.e2PromptProjection(failureResponse, queryFailure.WithContext(canceled))
+	if failureResponse.Code != 503 {
+		t.Fatal("DB query failure not distinguished from binding refusal")
 	}
 }

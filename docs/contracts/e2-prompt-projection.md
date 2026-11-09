@@ -15,7 +15,7 @@
 3. Worker 호출마다 원장에 기대 관측을 먼저 등록한다. intent 재실행도 새 `sequence`를 받는다. 재사용되는 `work#N` 슬롯은 관측의 고유 ID가 아니다.
 
    완전성의 모집단은 실제 `PrepareWork`로 준비된 Worker 호출이다. 아직 Worker에 전달되지 않은 Planner 후보, 모델이 실제로 받은 요청 수, 진단 범위 전체를 이 건수로 나타내지 않는다. 등록·저장은 각각 최대 2초로 제한한다.
-4. 신뢰 Go context에만 설치한 `ObservePrompt` callback이 실제 Worker 관측을 받는다. `SaveE2PromptActivity`는 Detail을 엄격하게 검사한 뒤 Activity와 원장의 `activity_id` 연결을 **같은 트랜잭션**에 쓴다. 일반 Activity insert나 모델 도구는 이 callback을 받지 못한다. callback이 있는 경로에서는 일반 emitter로 같은 prompt를 중복 저장하지 않는다.
+4. 신뢰 Go context에만 설치한 `ObservePrompt` callback이 실제 Worker 관측을 받는다. `SaveE2PromptActivity`는 Detail을 엄격하게 검사한 뒤 Activity와 원장의 `activity_id` 연결을 **같은 트랜잭션**에 쓴다. 일반 Activity insert나 모델 도구는 이 callback을 받지 못한다. 성공하면 일반 emitter로 중복 저장하지 않는다. callback 실패 시에는 기존 일반 Activity emitter를 fallback으로 호출해 화면/디버깅 기록을 시도하지만, 그 행을 신뢰 projection에 편입하지 않는다.
 5. 기대 등록·저장 실패는 고정 서버 로그와 실패 latch로 남긴다. 실행·E② 송신/감사 판정을 바꾸지 않으며, 실패를 정상 0건으로 바꾸지 않는다. 이미 등록된 기대 관측에 Activity가 없으면 누락이 된다.
 6. 실제 Worker finish·Runner drain·Execution Stop·release를 마친 기존 runtime 마감 경로에서만 원장을 봉인한다. 실패·프로세스 재시작·마감 저장 실패는 `complete`를 만들지 않는다. 재시작 후 미봉인 회차를 task의 terminal 상태만 보고 봉인하지 않는다.
 
@@ -31,7 +31,7 @@
 - 기존 설치 JWT를 `Authorization: Bearer …` 헤더로 보낸다. 정확히 하나의 헤더, HS256·만료·`sub=ARTEX`를 확인한다. query token/cookie만으로 이 경로를 호출할 수 없다. 기존 제품은 단일 설치 관리자 구조이므로 `ARTEX`가 설치 내 task를 조회한다. 다중 사용자 소유권 분리를 구현했다고 주장하지 않는다.
 - canonical 양수 task ID, 실제 Manager task와 Store exploration, DB task/exploration/run 결속을 재검사한다. 다른 task/run의 자료는 반환하지 않는다.
 - body 없는 GET, query는 정확히 하나의 `run_ref`만 허용한다. run_ref는 `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. Authorization 최대 8192바이트, query 최대 256바이트, 조회 시한 5초, 응답 최대 8MiB다.
-- 성공 JSON은 `Cache-Control: no-store`. 인증 실패 401, 잘못된 입력 400, 없는 task 404, 없는/다른 run·DB 장애·조회 불명은 503의 고정 한국어 오류다. 503을 빈 관측으로 해석하지 않는다. 원문 DB 오류·경로를 응답하지 않는다.
+- 성공 JSON은 `Cache-Control: no-store`. 인증 실패 401, 잘못된 입력 400, 없는 task 404, 없는/다른 task·exploration·run 결속은 409, DB 장애·조회 불명은 503의 고정 한국어 오류다. 409는 결속 거부, 503은 수집 불명이며 어느 쪽도 빈 관측으로 해석하지 않는다. 원문 DB 오류·경로를 응답하지 않는다.
 - 보호된 평가 러너가 내부 서버 API에 인증해 수집한다. 기존 관리 UI bridge의 허용 경로는 확장하지 않았다. 독립 프로세스 배치의 인증 identity·서명 기록 연계는 평가/E② 후속 계약이다.
 
 내부 서비스 함수는 `ExplorationStore.E2PromptProjection(ctx, taskID, runRef)`다. HTTP와 같은 DB 검사와 allowlist 투영을 사용하며, 호출자는 설치 권한을 확인한 신뢰 Go 코드여야 한다.
@@ -81,6 +81,8 @@
 
 존재하지 않는 원장·DB 조회 오류는 projection 객체가 아니라 error다. 과거에 일반 emitter로만 저장한 활동을 소급해 신뢰 관측으로 편입하지 않는다. `complete=false`나 HTTP 오류를 정상 0건·같은 조건·검사 완료로 바꾸지 않는다.
 
+**보관·복원:** Activity FK는 `ON DELETE SET NULL`이므로 기존 task archive의 Activity 삭제를 막지 않는다. 이후 intent 삭제로 원장 관측 행이 사라져도 run의 기대 건수는 남고 projection은 `incomplete`다. 보관된 task는 결속 조회 자체를 거부한다. 원장 출처를 archive manifest에 추가하지 않았으므로 복원된 일반 Activity를 다시 신뢰 관측에 자동 연결하지 않는다. 평가 수집은 보관 전에 마쳐야 하며, 보관·복원으로 과거 회차를 새 완료 회차로 만들지 않는다.
+
 ## 평가 담당 소비 순서
 
 1. 실제 회차의 task/exploration/E② run_ref를 인증된 실행 결속과 대조한다. task ID나 평가 run_id로 E② run_ref를 추정하지 않는다.
@@ -97,4 +99,4 @@
 - `server/TestE2PromptProjectionWorkerPostgresPython`: 실제 factory→runtime→Worker(합성 provider)→Activity/원장→마감→인증 API→Go JSON→기존 Python 비교기 경로다. 두 Worker와 조건 간 불일치, 무인증/다른 subject·run·미지 query·중복 query·크기 제한을 확인한다. 실제 모델·대상 송신은 없다.
 - `e2prompt/TestParseStrictDetail`: 버전/key/source/필수/digest/타입/null/미지·중복 키·trailing/UTF-8 오류를 검사한다. PostgreSQL 설정이 없으면 DB 시험은 SKIP이며 PASS로 세지 않는다.
 
-운영 DB는 설치자가 schema를 적용하고 신뢰 실행 role에 `e2_prompt_runs`, `e2_prompt_observations`의 SELECT/INSERT/UPDATE를 추가로 부여해야 한다. Activity/노드/task의 기존 읽기·Activity 쓰기도 필요하다. 평가 러너는 HTTP 읽기만 사용한다. 모델·도구·일반 외부 역할에는 원장 쓰기 권한을 주지 않는다. 권한 미설정은 projection 불명으로 남는다. 독립 eval-e2 이미지·OpenCall/CloseCall·정책 생산자·공식 러너/채점 연결·실제 평가 회차는 이번 구현 범위 밖이다.
+운영 DB는 설치자가 schema를 적용하고 신뢰 실행 role에 `e2_prompt_runs`, `e2_prompt_observations`의 SELECT/INSERT/UPDATE를 추가로 부여해야 한다. 일반 HTTP 설치 검사는 각 테이블의 세 권한을 기동 전에 확인한다. 등록 GET·report 역할에는 이 쓰기 권한을 공통 요구하지 않는다. Activity/노드/task의 기존 읽기·Activity 쓰기도 필요하다. 평가 러너는 HTTP 읽기만 사용한다. 모델·도구·일반 외부 역할에는 원장 쓰기 권한을 주지 않는다. 독립 eval-e2 이미지·OpenCall/CloseCall·정책 생산자·공식 러너/채점 연결·실제 평가 회차는 이번 구현 범위 밖이다.
