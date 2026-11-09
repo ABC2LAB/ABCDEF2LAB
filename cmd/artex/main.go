@@ -54,6 +54,7 @@ func run() int {
 	var (
 		addr    = flag.String("addr", "127.0.0.1:8787", "HTTP listen address (default accepts local connections only; use :8787 to serve other hosts)")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
+		keyDir  = flag.String("key-dir", config.BaseDir(), "JWT 서명 키 디렉터리(탐색 가능한 데이터 디렉터리 밖)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
 	)
 	flag.Parse()
@@ -113,9 +114,9 @@ func run() int {
 	}
 	log.Printf(config.T("[config] skill 디렉터리: %s"), skillDir)
 	srv, err := newPolicyServer(os.Getenv("ARTEX_LLM_POLICY_MODE"), func() (*server.Server, error) {
-		return server.NewWithLocalLLM(ctx, mgr, skillDir, *dataDir, config.BaseDir(), os.Getenv("ARTEX_LLM_PIN_MANIFEST"))
+		return server.NewWithLocalLLM(ctx, mgr, skillDir, *dataDir, *keyDir, os.Getenv("ARTEX_LLM_PIN_MANIFEST"))
 	}, func() *server.Server {
-		return server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+		return server.New(ctx, mgr, skillDir, *dataDir, *keyDir)
 	})
 	if err != nil {
 		log.Fatalf("local LLM policy: %v", err)
