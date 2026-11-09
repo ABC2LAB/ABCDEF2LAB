@@ -247,6 +247,17 @@ func TestFingerprintChangesWithPolicyMeaning(t *testing.T) {
 	}
 }
 
+func TestFingerprintRefusesCredentialRules(t *testing.T) {
+	path, _ := writePolicy(t, validPolicy(func(p map[string]any) {
+		p["header_mode"] = "protected_session_proposal"
+		firstRule(p)["credentials"] = map[string]any{"file": "credentials.json", "sha256": strings.Repeat("a", 64)}
+	}))
+	code, stdout, stderr := execute("fingerprint", "--policy-file", path)
+	if code != 1 || stdout != "" || stderr != "e2_eval_policy_invalid\n" {
+		t.Fatal(code, stdout, stderr)
+	}
+}
+
 func TestFingerprintStageFlag(t *testing.T) {
 	pin := map[string]any{"file": "audit.key", "sha256": strings.Repeat("d", 64)}
 	prepared, _ := writePolicy(t, validPolicy(func(p map[string]any) { p["audit_key"] = pin }))

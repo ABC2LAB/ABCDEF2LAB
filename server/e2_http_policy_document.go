@@ -26,8 +26,17 @@ func ValidateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 // E2HTTPPolicyContentFingerprint는 ValidateE2HTTPPolicyDocument를 통과한 정책의 내용 지문을 돌려준다.
 // 평가 러너가 비교할 예상값을 실제 회차 전에 계산하는 용도이며, 승인이나 배치 검증을 대신하지 않는다.
 func E2HTTPPolicyContentFingerprint(raw []byte, prepared bool) (string, error) {
-	_, fingerprint, err := validateE2HTTPPolicyDocument(raw, prepared)
-	return fingerprint, err
+	policy, fingerprint, err := validateE2HTTPPolicyDocument(raw, prepared)
+	if err != nil {
+		return "", err
+	}
+	// 자격 헤더 이름은 pin 파일을 읽어야 알 수 있고 지문에 들어간다. 파일 없이 계산하면 factory와 다른 값이 나온다.
+	for _, rule := range policy.Rules {
+		if rule.Credentials != nil {
+			return "", ErrE2HTTPHost
+		}
+	}
+	return fingerprint, nil
 }
 
 func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, string, error) {
