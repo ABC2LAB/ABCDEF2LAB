@@ -1,4 +1,7 @@
+import { z } from "zod";
+
 import { apiFetch } from "./api";
+import { diagnosticOutcome } from "./diagnostic-results";
 
 export type Technology = {
   kind: string;
@@ -78,8 +81,12 @@ export type RemediationEntry = {
 };
 export type RemediationData = { task_id: number; entries: RemediationEntry[] };
 const base = "/api/report/diagnostic/remediation";
-export function readRemediation(task: string, audience: string, signal?: AbortSignal) {
-  return apiFetch<RemediationData>(`${base}?${new URLSearchParams({ task, audience })}`, { signal, cache: "no-store" });
+export async function readRemediation(task: string, audience: string, signal?: AbortSignal): Promise<RemediationData> {
+  const data = await apiFetch<unknown>(`${base}?${new URLSearchParams({ task, audience })}`, {
+    signal,
+    cache: "no-store",
+  });
+  return parseRemediationData(data, task, audience);
 }
 export function generateRemediation(
   task: string,
@@ -169,4 +176,140 @@ export function technologyConflicts(technologies: Technology[]) {
     groups.set(key, values);
   }
   return [...groups].filter(([, values]) => values.size > 1).map(([key]) => key);
+}
+
+// 서버 DTO를 구조 검증한 뒤에만 화면으로 전달한다. 미래 판정이나 빠진 근거는 아래에서 미확인으로 보존한다.
+const text = z.string();
+const strings = z
+  .array(text)
+  .nullable()
+  .transform((value) => value ?? []);
+const natural = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const contextFields = {
+  component: text.optional(),
+  component_role: text.optional(),
+  endpoint: text.optional(),
+  prerequisites: text.optional(),
+  observation: text.optional(),
+  expected_behavior: text.optional(),
+  prohibited_behavior: text.optional(),
+  source: text.optional(),
+};
+const contextSchema = z.object({
+  ...contextFields,
+  observations: z
+    .array(
+      z.object({
+        ...contextFields,
+        evidence_ref: text.optional(),
+        observed_at: text.optional(),
+        run_id: text.optional(),
+        call_id: text.optional(),
+        step_id: text.optional(),
+        depends_on: strings.optional(),
+        truncated: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+  observations_truncated: z.boolean().optional(),
+});
+const technologySchema = z.object({
+  kind: text,
+  name: text,
+  version: text,
+  confidence: text,
+  source: text.optional(),
+  component: text.optional(),
+  component_role: text.optional(),
+  evidence_ref: text.optional(),
+  observed_at: text.optional(),
+});
+const bundleSchema = z.object({
+  finding_id: text,
+  input_digest: text.min(1),
+  source_digest: text.min(1),
+  evidence_version: text,
+  report_version: text,
+  remediation_version: text,
+  ai_prompt: text,
+  technologies: z
+    .array(technologySchema)
+    .nullable()
+    .transform((value) => value ?? []),
+  missing_context_fields: strings.optional(),
+  context: contextSchema.optional(),
+  security_condition: strings,
+  immediate_mitigation: strings,
+  root_fix: strings,
+  configuration: strings,
+  code_example: strings,
+  assumptions: strings,
+  verification: strings,
+  residual_risk: strings,
+});
+const recordSchema = z.object({
+  id: natural.positive(),
+  entry_id: text,
+  stale: z.boolean(),
+  bundle: bundleSchema.optional(),
+});
+const entrySchema = z.object({
+  entry_id: text.regex(/^(candidate|finding|verdict)-[1-9][0-9]*$/),
+  title: text.catch("제목 미확인"),
+  outcome: text.catch("unknown"),
+  status: text.catch(""),
+  verification: text.catch(""),
+  evidence_digest: text.catch(""),
+  report_version: text.catch(""),
+  run: text.catch(""),
+  intent_id: natural.catch(0),
+  observed_at: text.catch(""),
+  evidence_version: natural.catch(-1),
+  source_digest: text.catch(""),
+  summary: text.catch(""),
+  evidence: text.catch(""),
+  report: text.catch(""),
+  remediation: text.catch(""),
+  available: z.boolean().catch(false),
+  unavailable_reason: text.catch("근거 미확인"),
+  context: contextSchema.optional(),
+  technologies: z.array(technologySchema).optional(),
+  record: recordSchema.optional(),
+});
+const dataSchema = z.object({ task_id: natural.positive(), entries: z.array(entrySchema) });
+
+export function parseRemediationData(value: unknown, task: string, audience: string): RemediationData {
+  const data = dataSchema.parse(value);
+  if (String(data.task_id) !== task || !["internal", "shared"].includes(audience))
+    throw new Error("보고서 작업 범위 불일치");
+  const ids = new Set<string>();
+  for (const entry of data.entries) {
+    if (ids.has(entry.entry_id)) throw new Error("보고서 결과 식별자 중복");
+    ids.add(entry.entry_id);
+    if (
+      audience === "shared" &&
+      (entry.source_digest || entry.context || entry.technologies?.length || entry.record?.bundle)
+    )
+      throw new Error("공유 보고서 공개 범위 불일치");
+    if (audience === "internal") {
+      const outcome = diagnosticOutcome(entry);
+      if (outcome !== entry.outcome) {
+        entry.available = false;
+        entry.unavailable_reason = "판정 또는 증거 정보를 확인하지 못했어요. 다시 조회해 주세요.";
+      }
+      entry.outcome = outcome;
+    }
+    const record = entry.record;
+    const bundle = record?.bundle;
+    if (record && (record.entry_id !== entry.entry_id || (record.stale && bundle)))
+      throw new Error("저장 조치 결속 불일치");
+    if (
+      bundle &&
+      (bundle.finding_id !== entry.entry_id ||
+        bundle.source_digest !== entry.source_digest ||
+        bundle.evidence_version !== String(entry.evidence_version))
+    )
+      throw new Error("저장 조치 증거 버전 불일치");
+  }
+  return data;
 }

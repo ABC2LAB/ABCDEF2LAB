@@ -22,6 +22,7 @@ import { canonicalVulnClass } from "../lib/vulnclass";
 import { useGo, useNav } from "../nav";
 import type { Severity } from "../types";
 import AssetGraphPanel from "./AssetGraphPanel";
+import FirstDiagnosisReportScreen from "./FirstDiagnosisReportScreen";
 
 type Tab = "sum" | "list" | "cov" | "map" | "asset" | "ev" | "remediation";
 type DimKey = "sev" | "type";
@@ -124,6 +125,11 @@ function CoverageBar({
 
 /** ===== 보고서 ===== */
 export default function ReportScreen() {
+  const { mode } = useSelection();
+  return mode === "first-diagnosis" ? <FirstDiagnosisReportScreen /> : <ArtexReportScreen />;
+}
+
+function ArtexReportScreen() {
   const go = useGo();
   const nav = useNav();
   const { taskId, tasksVersion } = useSelection();

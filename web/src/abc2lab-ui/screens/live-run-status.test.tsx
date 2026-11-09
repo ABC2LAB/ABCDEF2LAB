@@ -56,11 +56,37 @@ beforeEach(() => {
   vi.mocked(engine.getCoverage).mockResolvedValue(null);
   vi.mocked(engine.getTokens).mockResolvedValue({ input: 0, output: 0 });
   vi.mocked(engine.getActivity).mockResolvedValue([]);
-  vi.stubGlobal("fetch", async () => {
+  vi.stubGlobal("fetch", async (path: string) => {
+    if (path.endsWith("/diagnosis-run")) return new Response(JSON.stringify({ error: "none" }), { status: 404 });
     approvalReads += 1;
     return new Response(
       JSON.stringify({
-        approvals: [{ state: "pending" }],
+        approvals: [
+          {
+            id: "a1",
+            task_id: 42,
+            run_ref: "run-42",
+            intent_id: 1,
+            call_ref: "call",
+            attempt_id: "a1",
+            policy_revision: "policy",
+            account_ref: "account",
+            session_ref: "session",
+            request_sha256: "a".repeat(64),
+            method: "GET",
+            target_origin: "http://127.0.0.1",
+            path: "/",
+            input_preview: {},
+            body_bytes: 0,
+            created_at: "2026-11-08T00:00:00Z",
+            expires_at: "2026-11-10T00:00:00Z",
+            state: "pending",
+            consumed: false,
+            execution_state: "not_sent",
+            live: true,
+            can_decide: true,
+          },
+        ],
         run: {
           run_ref: "run-42",
           phase: "running",

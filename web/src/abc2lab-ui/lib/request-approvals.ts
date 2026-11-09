@@ -115,8 +115,12 @@ export type DiagnosisRunRecord = {
 };
 
 /** 종료 후 report 서버에서도 같은 저장 결과를 읽는다. 404를 성공 완료로 바꾸지 않는다. */
-export function readDiagnosisRun(taskId: string): Promise<DiagnosisRunRecord> {
-  return apiFetch<DiagnosisRunRecord>(`/api/tasks/${encodeURIComponent(taskId)}/diagnosis-run`, { cache: "no-store" });
+export async function readDiagnosisRun(taskId: string): Promise<DiagnosisRunRecord> {
+  const value = await apiFetch<unknown>(`/api/tasks/${encodeURIComponent(taskId)}/diagnosis-run`, {
+    cache: "no-store",
+  });
+  if (!isDiagnosisRunRecord(value) || String(value.task_id) !== taskId) throw invalidResponse();
+  return value;
 }
 
 /**
@@ -165,33 +169,52 @@ function path(taskId: string, id?: string) {
 }
 
 /** 승인 행이 0건인 자동 모드·Worker 기동 전에도 실제 실행 상태를 조회한다. */
-export function readRequestApprovalState(taskId: string): Promise<RequestApprovalState> {
-  return apiFetch<RequestApprovalState>(path(taskId), { cache: "no-store" });
+export async function readRequestApprovalState(taskId: string): Promise<RequestApprovalState> {
+  const value = await apiFetch<unknown>(path(taskId), { cache: "no-store" });
+  if (!object(value) || !isRun(value.run) || (value.approvals !== null && !Array.isArray(value.approvals))) {
+    throw invalidResponse();
+  }
+  const run = value.run;
+  if (run.execution && run.execution.scope.TaskRef !== taskId) throw invalidResponse();
+  if (value.approvals === null) return { run, approvals: null };
+  const approvals: RequestApproval[] = [];
+  for (const item of value.approvals) {
+    if (!isApproval(item, taskId) || item.run_ref !== run.run_ref) throw invalidResponse();
+    approvals.push(item);
+  }
+  return { run, approvals };
 }
 
 export async function listRequestApprovals(taskId: string): Promise<RequestApproval[]> {
-  const response = await apiFetch<{ approvals: RequestApproval[] }>(path(taskId));
-  return response.approvals ?? [];
+  return (await readRequestApprovalState(taskId)).approvals ?? [];
 }
 
-export function getRequestApproval(taskId: string, id: string): Promise<RequestApproval> {
-  return apiFetch<RequestApproval>(path(taskId, id));
+export async function getRequestApproval(taskId: string, id: string): Promise<RequestApproval> {
+  const value = await apiFetch<unknown>(path(taskId, id), { cache: "no-store" });
+  if (!isApproval(value, taskId) || value.id !== id) throw invalidResponse();
+  return value;
 }
 
-export function decideRequestApproval(
+export async function decideRequestApproval(
   taskId: string,
   approval: Pick<RequestApproval, "id" | "request_sha256">,
   decision: "allow" | "deny",
 ): Promise<RequestApproval> {
   // 인증 실패 후 결정 POST를 자동 재시도하지 않는다. 새 인증 후 최신 상태를 먼저 읽는다.
-  return apiFetch<RequestApproval>(
+  const value = await apiFetch<unknown>(
     `${path(taskId, approval.id)}/decision`,
-    {
-      method: "POST",
-      body: JSON.stringify({ decision, request_sha256: approval.request_sha256 }),
-    },
+    { method: "POST", body: JSON.stringify({ decision, request_sha256: approval.request_sha256 }) },
     false,
   );
+  if (
+    !isApproval(value, taskId) ||
+    value.id !== approval.id ||
+    value.request_sha256 !== approval.request_sha256 ||
+    value.state !== (decision === "allow" ? "allowed" : "denied")
+  ) {
+    throw invalidResponse();
+  }
+  return value;
 }
 
 /** 신규 송신을 차단하고 감독자에게 마감을 요청한다. 마감은 readRequestApprovalState로 확인한다. */
@@ -205,4 +228,125 @@ export async function stopRequestApprovalExecution(taskId: string): Promise<void
     false,
   );
   if (result?.stopped !== true) throw new Error("전송 중지 완료를 확인하지 못했어요.");
+}
+
+// 외부 응답은 사용 전에 구조·식별자·판정 값을 검증한다. 누락을 0이나 성공으로 채우지 않는다.
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function strings(value: Record<string, unknown>, keys: string[]): boolean {
+  return keys.every((key) => typeof value[key] === "string");
+}
+function booleans(value: Record<string, unknown>, keys: string[]): boolean {
+  return keys.every((key) => typeof value[key] === "boolean");
+}
+function count(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function invalidResponse(): Error {
+  return new Error("점검 식별자 또는 실행·승인 응답을 확인할 수 없어요.");
+}
+function isRun(value: unknown): value is RequestApprovalRunState {
+  if (
+    !object(value) ||
+    typeof value.run_ref !== "string" ||
+    !value.run_ref ||
+    !["prepared", "running", "stopping", "closed", "failed"].includes(String(value.phase)) ||
+    !["", "completed", "cancelled", "failed"].includes(String(value.outcome)) ||
+    !booleans(value, ["stop_requested", "context_cancelled", "drain_complete", "closure_failed"])
+  )
+    return false;
+  const e = value.execution;
+  if (e === undefined) return true;
+  return (
+    object(e) &&
+    ["confirm_every_request", "preauthorized_scope"].includes(String(e.approval_mode)) &&
+    ["active", "blocked"].includes(String(e.state)) &&
+    strings(e, ["header_mode", "version", "owner_ref", "policy_revision", "expires_at", "reason"]) &&
+    typeof e.audit_complete === "boolean" &&
+    count(e.intent_id) &&
+    Array.isArray(e.intent_ids) &&
+    e.intent_ids.every(count) &&
+    object(e.scope) &&
+    strings(e.scope, ["RunRef", "TaskRef", "CaseRef", "ResetRef", "PolicyRef"]) &&
+    e.scope.RunRef === value.run_ref &&
+    object(e.counts) &&
+    RUN_COUNT_ROWS.every(({ key }) => count((e.counts as Record<string, unknown>)[key]))
+  );
+}
+function isApproval(value: unknown, taskId: string): value is RequestApproval {
+  return (
+    object(value) &&
+    count(value.task_id) &&
+    String(value.task_id) === taskId &&
+    count(value.intent_id) &&
+    strings(value, [
+      "id",
+      "run_ref",
+      "call_ref",
+      "attempt_id",
+      "policy_revision",
+      "account_ref",
+      "session_ref",
+      "request_sha256",
+      "method",
+      "target_origin",
+      "path",
+      "created_at",
+      "expires_at",
+    ]) &&
+    !!value.id &&
+    !!value.run_ref &&
+    typeof value.request_sha256 === "string" &&
+    /^[a-f0-9]{64}$/i.test(value.request_sha256) &&
+    count(value.body_bytes) &&
+    booleans(value, ["consumed", "live", "can_decide"]) &&
+    ["pending", "allowed", "denied", "expired", "cancelled"].includes(String(value.state)) &&
+    ["not_sent", "awaiting_dispatch", "dispatch_pending", "completed", "unknown"].includes(
+      String(value.execution_state),
+    ) &&
+    object(value.input_preview) &&
+    Object.values(value.input_preview).every((item) => typeof item === "string") &&
+    ["reason", "decided_by", "decided_at"].every((key) => value[key] === undefined || typeof value[key] === "string")
+  );
+}
+function isUsage(value: unknown): value is ModelUsage {
+  return (
+    object(value) &&
+    ["requests", "errors", "input_tokens", "output_tokens", "cost_usd_micros"].every((key) => count(value[key])) &&
+    strings(value, ["provider_slug", "model"]) &&
+    typeof value.blocked === "boolean" &&
+    (value.failure_reason === undefined || typeof value.failure_reason === "string")
+  );
+}
+function isDiagnosisRunRecord(value: unknown): value is DiagnosisRunRecord {
+  if (
+    !object(value) ||
+    value.version !== 1 ||
+    !count(value.task_id) ||
+    value.task_id === 0 ||
+    (value.model !== undefined && !isUsage(value.model)) ||
+    (value.model_preparation !== undefined && !Array.isArray(value.model_preparation))
+  )
+    return false;
+  if (value.run === null) return value.execution === "NOT_RUN";
+  return (
+    value.execution === undefined &&
+    isRun(value.run) &&
+    ["closed", "failed"].includes(value.run.phase) &&
+    typeof value.saved_at === "string" &&
+    Number.isFinite(Date.parse(value.saved_at)) &&
+    (!value.run.execution || value.run.execution.scope.TaskRef === String(value.task_id))
+  );
+}
+
+/** 승인행 존재 여부가 아니라 현재 감독자 상태가 제어 권한의 전제다. */
+export function canControlRun(run: RequestApprovalRunState): boolean {
+  return (
+    (run.phase === "prepared" || run.phase === "running") &&
+    !run.stop_requested &&
+    !run.context_cancelled &&
+    !run.drain_complete &&
+    !run.closure_failed
+  );
 }
