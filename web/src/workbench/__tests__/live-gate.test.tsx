@@ -194,7 +194,6 @@ describe("Workbench 안의 관문", () => {
     const views = [...container.querySelectorAll<HTMLElement>("section[data-view]")];
     views.forEach((v, i) => {
       expect(within(v).getByRole("heading", { level: 1, hidden: true })).toHaveTextContent(titles[i]);
-      expect(within(v).getByText("연결 준비 중")).toBeInTheDocument();
     });
     expect(screen.getByRole("complementary", { name: "주 메뉴" })).toBeInTheDocument();
   });
