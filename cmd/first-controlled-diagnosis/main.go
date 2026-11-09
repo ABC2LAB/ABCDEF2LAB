@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-const usage = "usage: first-controlled-diagnosis check -config <protected-file> [-database] | prepare-task -config <launch-file> -task <protected-task-file> | prepare-intents -config <launch-file> -task-id <actual-id> | serve -config <launch-file> | run -config <launch-file> | report -config <launch-file> -task-id <actual-id>"
+const usage = "usage: first-controlled-diagnosis check -config <protected-file> [-database] | check-registered-get -metadata <protected-file> -snapshot-dir <protected-directory> -registry <filename> | prepare-task -config <launch-file> -task <protected-task-file> | prepare-intents -config <launch-file> -task-id <actual-id> | serve -config <launch-file> | run -config <launch-file> | report -config <launch-file> -task-id <actual-id>"
 
 type checkReport struct {
 	Configuration string `json:"configuration"`
@@ -38,6 +38,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	}
 	if len(args) > 0 && args[0] == "report" {
 		return runReport(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "check-registered-get" {
+		return runRegisteredCheck(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) > 0 && args[0] == "prepare-intents" {
 		return runPrepareIntents(ctx, args[1:], stdout, stderr)
