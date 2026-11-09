@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,10 +88,18 @@ func (c *combinedHTTPClient) login() {
 }
 
 func TestFirstDiagnosisCombinedApprovalCandidateStoredReportOwnedPostgres(t *testing.T) {
+	runFirstDiagnosisCombinedAcceptance(t, false)
+}
+
+func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser bool) {
 	helper := firstDiagnosisNativeHelper(t)
 	f := newControlledLocalDatabaseFixture(t)
 	installer := &db.DB{DB: f.Installer}
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	timeout := time.Minute
+	if browser {
+		timeout = 8 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	logRoot := firstDiagnosisPrivateTemp(t)
 	if retained := os.Getenv("ARTEX_DIAGNOSTIC_ACCEPTANCE_DIR"); retained != "" {
@@ -131,7 +140,11 @@ func TestFirstDiagnosisCombinedApprovalCandidateStoredReportOwnedPostgres(t *tes
 		io.WriteString(w, `{"owned_fixture":true}`)
 	}))
 	defer target.Close()
-	cfg, grant, policy := e2HostPolicyFixture(t)
+	var validity []time.Duration
+	if browser {
+		validity = []time.Duration{8 * time.Minute}
+	}
+	cfg, grant, policy := e2HostPolicyFixture(t, validity...)
 	grant.TaskID = mustFirstDiagnosisTaskNumber(task.ID)
 	grant.ExplorationID = task.ExpID
 	binary, err := os.ReadFile(helper)
@@ -155,6 +168,12 @@ func TestFirstDiagnosisCombinedApprovalCandidateStoredReportOwnedPostgres(t *tes
 	policy.Runtime.WorkerTimeoutMS = 30000
 	policy.Runtime.MaxWorkerTurns = 6
 	policy.Runtime.MaxPlannerRounds = 4
+	if browser {
+		policy.Limits.CallTimeoutMS = 90000
+		policy.Limits.RequestTimeoutMS = 60000
+		policy.Proxy.RequestTimeoutMS = 60000
+		policy.Runtime.WorkerTimeoutMS = 120000
+	}
 	raw, err := json.Marshal(policy)
 	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0600) != nil {
 		t.Fatal("정책 준비 실패")
@@ -185,6 +204,11 @@ func TestFirstDiagnosisCombinedApprovalCandidateStoredReportOwnedPostgres(t *tes
 	defer api.Close()
 	client := &combinedHTTPClient{t: t, server: api}
 	client.login()
+	var ui *firstDiagnosisBrowserFixture
+	if browser {
+		ui = startFirstDiagnosisBrowserFixture(t, ctx, api.URL, task.ID)
+		ui.run("prepared")
+	}
 	approvalBase := "/api/tasks/" + task.ID + "/request-approvals"
 	code, preparedRaw, _ := client.request("GET", approvalBase, "")
 	var prepared struct{ Run requestApprovalRunState }
@@ -193,8 +217,17 @@ func TestFirstDiagnosisCombinedApprovalCandidateStoredReportOwnedPostgres(t *tes
 	}
 	done := make(chan error, 1)
 	go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
+	var browserDone chan error
+	if browser {
+		browserDone = make(chan error, 1)
+		go func() { browserDone <- ui.command("approvals") }()
+	}
 	decisions := map[string]string{}
-	deadline := time.NewTimer(35 * time.Second)
+	runWait := 35 * time.Second
+	if browser {
+		runWait = 120 * time.Second
+	}
+	deadline := time.NewTimer(runWait)
 	defer deadline.Stop()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -206,6 +239,11 @@ running:
 				t.Fatal("실제 감독 실행 실패", err)
 			}
 			break running
+		case browserErr := <-browserDone:
+			if browserErr != nil {
+				t.Fatal("실브라우저 승인 시험 실패", browserErr)
+			}
+			browserDone = nil
 		case <-deadline.C:
 			t.Fatal("승인 대기 실행 시간 초과")
 		case <-ticker.C:
@@ -218,6 +256,9 @@ running:
 				t.Fatalf("승인 목록 실패: %d", code)
 			}
 			for _, a := range list.Approvals {
+				if browser {
+					continue
+				}
 				if a.State != "pending" || decisions[a.ID] != "" {
 					continue
 				}
@@ -236,6 +277,26 @@ running:
 					t.Fatalf("실제 승인 API 실패: %d", code)
 				}
 				decisions[a.ID] = decision
+			}
+		}
+	}
+	if browser {
+		if browserDone != nil {
+			if err := <-browserDone; err != nil {
+				t.Fatal("실브라우저 승인 시험 실패", err)
+			}
+		}
+		code, b, _ := client.request("GET", approvalBase, "")
+		var state struct{ Approvals []db.RequestApproval }
+		if code != 200 || json.Unmarshal(b, &state) != nil {
+			t.Fatal("브라우저 결정 저장 조회 실패")
+		}
+		for _, a := range state.Approvals {
+			if a.State == "allowed" {
+				decisions[a.ID] = "allow"
+			}
+			if a.State == "denied" {
+				decisions[a.ID] = "deny"
 			}
 		}
 	}
@@ -320,7 +381,21 @@ running:
 	if err != nil {
 		t.Fatal("중단 후 저장 보고서 생성자 실패", err)
 	}
-	report := httptest.NewServer(handler)
+	var reportReads atomic.Int64
+	report := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/tasks/"+task.ID+"/diagnosis-run" {
+			reportReads.Add(1)
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	if browser {
+		listener, listenErr := net.Listen("tcp", strings.TrimPrefix(api.URL, "http://"))
+		if listenErr != nil {
+			t.Fatal("보고서 서버 동일 주소 재개 실패", listenErr)
+		}
+		report.Listener = listener
+	}
+	report.Start()
 	defer report.Close()
 	client = &combinedHTTPClient{t: t, server: report}
 	client.login()
@@ -341,6 +416,9 @@ running:
 	}
 	if code != 200 || json.Unmarshal(body, &list) != nil || len(list.Entries) != 1 {
 		t.Fatal("실제 저장 후보 보고서 누락")
+	}
+	if browser {
+		ui.run("report")
 	}
 	source := list.Entries[0]
 	raw, _ = json.Marshal(map[string]any{"entry_id": source.EntryID, "expected_source_digest": source.SourceDigest})
@@ -385,20 +463,23 @@ running:
 	if code, _, _ := client.request("GET", copyPath, ""); code != 409 {
 		t.Fatalf("stale 복사 허용: %d", code)
 	}
+	if browser {
+		ui.run("stale")
+	}
 	if hits.Load() != 1 || worker.calls+planner.calls != modelCalls {
 		t.Fatal("보고서 조회가 모델 또는 대상을 재호출함")
 	}
 	if err := logger.Close(); err != nil || logger.Incomplete() {
 		t.Fatal("진단 로그 마감 또는 관측 불완전", err)
 	}
-	verifyCombinedDiagnosisLog(t, logger.Path(), grant.TaskID, saved.Run.RunRef, worker.result.Trusted.Call.CallRef, modelCalls)
+	verifyCombinedDiagnosisLog(t, logger.Path(), grant.TaskID, saved.Run.RunRef, worker.result.Trusted.Call.CallRef, modelCalls, int(reportReads.Load()))
 	if os.Getenv("ARTEX_DIAGNOSTIC_ACCEPTANCE_DIR") != "" {
 		t.Logf("합성 진단 JSONL 보존: %s (송신=1 허용=1 거부=1 후보=1)", logger.Path())
 	}
 }
 
 // 원문이 아닌 합성 이벤트의 관계와 실측 결과만 검증한다.
-func verifyCombinedDiagnosisLog(t *testing.T, path string, task int64, runRef, callRef string, modelCalls int) {
+func verifyCombinedDiagnosisLog(t *testing.T, path string, task int64, runRef, callRef string, modelCalls, reportReads int) {
 	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
@@ -460,7 +541,7 @@ func verifyCombinedDiagnosisLog(t *testing.T, path string, task int64, runRef, c
 	if events["model_call_started"] != modelCalls || events["model_call_finished"] != modelCalls {
 		t.Fatalf("실제 모델 호출과 로그 건수 불일치: calls=%d started=%d finished=%d", modelCalls, events["model_call_started"], events["model_call_finished"])
 	}
-	if !summary || !correlated || events["run_finished"] != 1 || events["result_save_finished"] != 1 || events["report_queried"] != 1 || events["planner_finished"] == 0 {
+	if !summary || !correlated || events["run_finished"] != 1 || events["result_save_finished"] != 1 || reportReads < 1 || events["report_queried"] != reportReads || events["planner_finished"] == 0 {
 		t.Fatalf("실제 단계 관측 누락: summary=%v correlation=%v events=%v", summary, correlated, events)
 	}
 }

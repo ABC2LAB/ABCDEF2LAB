@@ -23,6 +23,14 @@ const run = (overrides: object = {}) => ({
 });
 const execution = {
   approval_mode: "confirm_every_request",
+  header_mode: "",
+  version: "v1",
+  owner_ref: "ARTEX",
+  policy_revision: "policy",
+  expires_at: "2026-11-10T00:00:00Z",
+  intent_id: 1,
+  intent_ids: [1],
+  scope: { RunRef: "run-1", TaskRef: "42", CaseRef: "case", ResetRef: "reset", PolicyRef: "policy" },
   state: "active",
   reason: "",
   audit_complete: false,
@@ -79,6 +87,39 @@ const panel = (taskId = "42", active = true, open = vi.fn()) => (
 );
 
 describe("실행 상태 패널", () => {
+  it("explicit run source does not query saved records or recover denied access", async () => {
+    live = () => json(403, { error: "forbidden" });
+    saved = () =>
+      json(200, { version: 1, task_id: 42, saved_at: "2026-11-08T00:00:00Z", run: run({ phase: "closed" }) });
+    render(<RunStatusPanel taskId="42" active source="run" onOpenApprovals={vi.fn()} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("권한이 없어요");
+    expect(requests.some((path) => path.endsWith("/diagnosis-run"))).toBe(false);
+    expect(screen.queryByText(/저장된 종료 기록/)).toBeNull();
+  });
+  it("explicit report source never queries approval routes for NOT_RUN", async () => {
+    saved = () => json(200, { version: 1, task_id: 42, run: null, execution: "NOT_RUN" });
+    render(<RunStatusPanel taskId="42" active source="report" onOpenApprovals={vi.fn()} />);
+    expect(await screen.findByText("계획 준비만 기록됐고 실행은 시작되지 않았어요.")).toBeVisible();
+    expect(requests.every((path) => path.endsWith("/diagnosis-run"))).toBe(true);
+  });
+  it("does not restore cached report data after a 403", async () => {
+    vi.useFakeTimers();
+    saved = () =>
+      json(200, { version: 1, task_id: 42, saved_at: "2026-11-08T00:00:00Z", run: run({ phase: "closed" }) });
+    render(<RunStatusPanel taskId="42" active source="report" onOpenApprovals={vi.fn()} />);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText(/저장된 종료 기록/)).toBeVisible();
+    saved = () => json(403, { error: "forbidden" });
+    await act(() => vi.advanceTimersByTimeAsync(3000));
+    expect(screen.getByRole("alert")).toHaveTextContent("권한이 없어요");
+    expect(screen.queryByText(/저장된 종료 기록/)).toBeNull();
+  });
+  it("does not offer pending approvals when the supervisor is closed", async () => {
+    live = () => liveBody(run({ phase: "closed", drain_complete: true }));
+    render(<RunStatusPanel taskId="42" active source="run" onOpenApprovals={vi.fn()} />);
+    await screen.findByText("마감 결과 미확인");
+    expect(screen.queryByRole("button", { name: /승인/ })).toBeNull();
+  });
   it("서버의 전송 경계 값을 항목별로 따로 보여 준다", async () => {
     live = () => liveBody(run({ execution }));
     render(panel());
@@ -99,7 +140,12 @@ describe("실행 상태 패널", () => {
 
   it("보고서의 종료 상태도 같은 집계 이름으로 보여 준다", async () => {
     saved = () =>
-      json(200, { version: 1, task_id: 42, run: run({ phase: "closed", outcome: "completed", execution }) });
+      json(200, {
+        version: 1,
+        task_id: 42,
+        saved_at: "2026-11-08T00:00:00Z",
+        run: run({ phase: "closed", outcome: "completed", execution }),
+      });
     render(<DiagnosisRunSummary taskId="42" active />);
     expect(await screen.findByText(COUNT_NOTE)).toBeVisible();
     expect(field("요청 접수")).toBe("11");
@@ -119,7 +165,33 @@ describe("실행 상태 패널", () => {
   it("승인 대기 건수는 pending 상태만 센다", async () => {
     const open = vi.fn();
     live = () =>
-      liveBody(run(), [{ state: "pending" }, { state: "allowed" }, { state: "pending" }, { state: "denied" }]);
+      liveBody(
+        run(),
+        ["pending", "allowed", "pending", "denied"].map((state, i) => ({
+          id: String(i),
+          task_id: 42,
+          run_ref: "run-1",
+          intent_id: 1,
+          call_ref: "call",
+          attempt_id: "attempt",
+          policy_revision: "policy",
+          account_ref: "account",
+          session_ref: "session",
+          request_sha256: "a".repeat(64),
+          method: "GET",
+          target_origin: "http://127.0.0.1",
+          path: "/",
+          input_preview: {},
+          body_bytes: 0,
+          created_at: "2026-11-08T00:00:00Z",
+          expires_at: "2026-11-10T00:00:00Z",
+          state,
+          consumed: false,
+          execution_state: "not_sent",
+          live: true,
+          can_decide: true,
+        })),
+      );
     render(panel("42", true, open));
     fireEvent.click(await screen.findByRole("button", { name: "승인 2건 보기" }));
     expect(open).toHaveBeenCalledTimes(1);
@@ -198,6 +270,7 @@ describe("실행 상태 패널", () => {
       json(200, {
         version: 1,
         task_id: 42,
+        saved_at: "2026-11-08T00:00:00Z",
         run: run({ phase: "closed", drain_complete: true }),
         model: usage({ errors: 1 }),
       });
@@ -215,10 +288,10 @@ describe("실행 상태 패널", () => {
     expect(screen.queryByText(/마감/)).toBeNull();
   });
 
-  it.each([403, 404])("실행도 저장 기록도 없으면(%i) 연결된 실행이 없다고 말한다", async (code) => {
+  it.each([404])("실행도 저장 기록도 없으면(%i) 연결된 실행이 없다고 말한다", async (code) => {
     live = () => json(code, { error: "no binding" });
     render(panel());
-    expect(await screen.findByText(/이 점검에 연결된 실행이 없어요/)).toBeVisible();
+    expect(await screen.findByText(/이 점검에 연결된 실행 또는 저장된 종료 결과가 없어요/)).toBeVisible();
   });
 
   it("그 밖의 요청 오류는 서버 사유를 보여 준다", async () => {

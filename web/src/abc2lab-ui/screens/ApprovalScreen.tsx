@@ -36,6 +36,49 @@ function ago(iso: string): string {
 
 /** ===== 승인 게이트: 엔진의 승인 대기 요청(intercept pending)을 사람이 허용 · 거부 ===== */
 export default function ApprovalScreen() {
+  const { mode } = useSelection();
+  return mode === "first-diagnosis" ? <FirstDiagnosisApprovalScreen /> : <ArtexApprovalScreen />;
+}
+
+function FirstDiagnosisApprovalScreen() {
+  const { screen, go } = useNav();
+  const { taskId, connection } = useSelection();
+  const [nonce, setNonce] = useState(0);
+  return (
+    <Screen id="approval">
+      <div className="frame">
+        <TopBar current="dashboard" />
+        <div style={{ padding: "22px 24px", maxWidth: 720 }}>
+          <button type="button" className="backbtn" onClick={() => go("live")}>
+            ← 실행 상태
+          </button>
+          <h1>첫 진단 HTTP 요청 승인</h1>
+          <p className="hint">CLI로 준비된 task의 E② 송신 승인만 처리해요. ARTEX 도구 승인과는 별개예요.</p>
+          {connection === "report" ? <p>저장 보고서 서버에서는 승인·중지·실행 변경을 할 수 없어요.</p> : null}
+          {connection !== "report" && taskId ? (
+            <>
+              <p>task #{taskId}</p>
+              <button type="button" className="btn xs" onClick={() => setNonce((n) => n + 1)}>
+                새로고침
+              </button>
+              <RequestApprovalPanel taskId={taskId} active={screen === "approval"} refreshKey={nonce} />
+            </>
+          ) : null}
+          {connection !== "report" && !taskId && (
+            <p>
+              연결된 task가 없어요.{" "}
+              <button type="button" className="ap-link" onClick={() => go("entry")}>
+                실제 task 연결
+              </button>
+            </p>
+          )}
+        </div>
+      </div>
+    </Screen>
+  );
+}
+
+function ArtexApprovalScreen() {
   const { screen, go } = useNav();
   const { taskId, refreshTasks, selectTask } = useSelection();
   const { pendingId, selectPending } = useApprovalTarget();

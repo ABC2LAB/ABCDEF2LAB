@@ -19,6 +19,7 @@ const entry = {
 } as RemediationEntry;
 it("explicitly scopes every operation and sends source CAS and tech only in the body", async () => {
   const signal = new AbortController().signal;
+  vi.mocked(apiFetch).mockResolvedValueOnce({ task_id: 42, entries: [] });
   await readRemediation("42", "shared", signal);
   expect(apiFetch).toHaveBeenLastCalledWith("/api/report/diagnostic/remediation?task=42&audience=shared", {
     signal,

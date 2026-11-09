@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import { MOCK } from "../lib/mock";
 import {
+  canControlRun,
   type DiagnosisRunRecord,
   type RequestApprovalRunState,
   RUN_COUNT_NOTE,
@@ -107,7 +108,13 @@ function Body({ view, onOpenApprovals }: { view: RunView; onOpenApprovals: () =>
     case "loading":
       return <p className="hint">실행 상태를 확인하는 중이에요.</p>;
     case "unbound":
-      return <p className="hint">이 점검에 연결된 실행이 없어요. 진단 서버에서 실행을 시작하면 여기에 표시돼요.</p>;
+      return (
+        <p className="hint">
+          이 점검에 연결된 실행 또는 저장된 종료 결과가 없어요. task ID와 CLI 준비 상태를 확인해 주세요.
+        </p>
+      );
+    case "forbidden":
+      return <p role="alert">이 task의 실행 상태를 볼 권한이 없어요. 이전 실행 데이터는 표시하지 않아요.</p>;
     case "unavailable":
       return (
         <>
@@ -147,7 +154,7 @@ function Body({ view, onOpenApprovals }: { view: RunView; onOpenApprovals: () =>
       return (
         <>
           <RunFields run={view.run} />
-          {view.pending > 0 && (
+          {view.pending > 0 && canControlRun(view.run) && (
             <button className="btn primary" type="button" onClick={onOpenApprovals}>
               승인 {view.pending}건 보기
             </button>
@@ -157,7 +164,7 @@ function Body({ view, onOpenApprovals }: { view: RunView; onOpenApprovals: () =>
   }
 }
 
-type PanelProps = { taskId: string; active: boolean; onOpenApprovals: () => void };
+type PanelProps = { taskId: string; active: boolean; onOpenApprovals: () => void; source?: "run" | "report" };
 
 /** 선택한 점검의 실제 실행 상태. 서버가 준 값만 보여 주고 없는 실행 정보를 만들지 않는다. 목업에는 실행이 없다. */
 export function RunStatusPanel(props: PanelProps) {
@@ -165,8 +172,8 @@ export function RunStatusPanel(props: PanelProps) {
   return <LiveRunStatus {...props} />;
 }
 
-function LiveRunStatus({ taskId, active, onOpenApprovals }: PanelProps) {
-  const view = useRunStatus(taskId, active);
+function LiveRunStatus({ taskId, active, onOpenApprovals, source }: PanelProps) {
+  const view = useRunStatus(taskId, active, source);
   return (
     <section className="card" aria-label="실행 상태">
       <h3>실행 상태</h3>

@@ -14,7 +14,15 @@ const fullRun: DiagnosisRunRecord = {
   version: 1,
   task_id: 42,
   saved_at: "2026-11-08T00:00:00Z",
-  run: { phase: "closed", outcome: "completed", stop_requested: false, drain_complete: true } as never,
+  run: {
+    run_ref: "run-1",
+    phase: "closed",
+    outcome: "completed",
+    stop_requested: false,
+    drain_complete: true,
+    closure_failed: false,
+    context_cancelled: false,
+  },
 };
 
 describe("classifyDiagnosisRun", () => {
