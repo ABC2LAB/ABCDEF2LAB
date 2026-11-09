@@ -839,6 +839,9 @@ func newDeadlineGuardedConn(conn net.Conn, call *Call, revision string, ob *obse
 // 외부 파일 변경과 송신을 원자적으로 묶는 검사는 아니다.
 // 각 지원 송신 경계 직전에 확인하고 한 번 실패한 위임은 다시 허용하지 않는다.
 // 호출자는 execution 잠금을 보유한다.
+// Dial 뒤 TLS/요청 조각을 쓰기 전에도 철회될 수 있으므로 Write 검사를 생략하지 않는다.
+// 판정·정책 세대와 송신의 잠금 경계를 유지하며 callback은 잠금 아래 실행된다.
+// URL 준비 callback은 held FD의 metadata를 확인하고 큰 helper 원문을 매번 다시 읽지 않는다.
 func (e *Execution) authorityCurrentLocked() bool {
 	if e.cfg.CheckAuthority == nil {
 		return true
