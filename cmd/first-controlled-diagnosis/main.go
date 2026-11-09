@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-const usage = "usage: first-controlled-diagnosis check -config <protected-file> [-database] | check-registered-get -metadata <protected-file> -snapshot-dir <protected-directory> -registry <filename> | prepare-task -config <launch-file> -task <protected-task-file> | prepare-intents -config <launch-file> -task-id <actual-id> | serve -config <launch-file> | run -config <launch-file> | report -config <launch-file> -task-id <actual-id>"
+const usage = "usage: first-controlled-diagnosis check -config <protected-file> [-database] | check-registered-get -metadata <protected-file> -snapshot-dir <protected-directory> -registry <filename> | prepare-task -config <launch-file> -task <protected-task-file> | prepare-intents -config <launch-file> -task-id <actual-id> | serve -config <launch-file> | run -config <launch-file> | report -config <launch-file> -task-id <actual-id> | gateway -config <launch-file> -preparation-ref <operator-reference>"
 
 type checkReport struct {
 	Configuration string `json:"configuration"`
@@ -35,6 +35,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 			return 1
 		}
 		return 0
+	}
+	if len(args) > 0 && args[0] == "gateway" {
+		return runGateway(ctx, args[1:], os.Stdin, stdout, stderr)
 	}
 	if len(args) > 0 && args[0] == "report" {
 		return runReport(ctx, args[1:], stdout, stderr)
