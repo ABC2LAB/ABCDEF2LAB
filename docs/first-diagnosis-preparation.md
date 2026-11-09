@@ -78,6 +78,7 @@ OpenRouter는 일반 HTTP의 명시적 외부 모드만 지원한다. 실제 pro
 - `task_categories`, `task_relations`, `task_scope` 조회가 필요하고, `task_archives` SELECT는 두 모드의 저장 보고서에도 필요하다. `task_constraints`와 `task_scope`는 SELECT/INSERT이며 UPDATE/DELETE를 추가하지 않는다.
 - 원본 Planner는 `assets`, `companies`, `company_scope`, `task_asset_links`, `asset_intercept_rules`, `task_intercept_rules` 조회, `try_inet(text)` EXECUTE, `exploration_anchors` SELECT/INSERT를 사용한다. 제품의 자산/회사 내용 변경 경로는 추가하지 않는다. 아래에 명시한 행 잠금용 열 UPDATE 권한은 별도다.
 - 일반 HTTP 전용 SELECT/INSERT/UPDATE: `request_approvals`. 설치자가 기존 `db.Open` migration 경로로 테이블을 준비하며 첫 실행은 migration이나 GRANT를 하지 않는다. 등록 GET·report 역할에 이 권한을 공통 요구로 추가하지 않는다.
+- 일반 HTTP 평가 프롬프트 projection의 신뢰 실행 역할은 `e2_prompt_runs`, `e2_prompt_observations`의 SELECT/INSERT/UPDATE가 추가로 필요하다. 설치자가 migration과 GRANT를 수행한다. 평가 러너는 인증된 [읽기 API](contracts/e2-prompt-projection.md)를 사용하며 DB 쓰기 권한을 갖지 않는다.
 - 등록 GET 추가 SELECT/INSERT/UPDATE: `task_control_modes`.
 - 등록 GET 추가 SELECT/INSERT: `traffic_evidence_snapshots`, `finding_traffic_bindings`, `e3_evidence_manifests`, `e3_oracle_verdicts`, `e3_verdict_issuances`, `e3_verdict_links`, `evidence_revision_initials`, `evidence_revision_operations`.
 - 등록 GET 추가 SELECT: `audit_checkpoint_epochs`, `audit_checkpoint_history`, `audit_checkpoint_heads`, `audit_checkpoint_operations`.

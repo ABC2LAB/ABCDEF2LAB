@@ -12,6 +12,11 @@ func TestFirstDiagnosisReportRouteScope(t *testing.T) {
 		method, path string
 		allowed      bool
 	}{
+		{"GET", "/api/tasks/17/e2-prompt-projection?run_ref=run-1", true},
+		{"GET", "/api/tasks/18/e2-prompt-projection?run_ref=run-1", false},
+		{"GET", "/api/tasks/17/e2-prompt-projection?run_ref=run-1&run_ref=other", false},
+		{"GET", "/api/tasks/17/e2-prompt-projection?run_ref=run-1&raw=true", false},
+		{"HEAD", "/api/tasks/17/e2-prompt-projection?run_ref=run-1", false},
 		{"GET", "/api/tasks/17/access-map", true},
 		{"GET", "/api/tasks/18/access-map", false},
 		{"GET", "/api/tasks/17/access-map?run_ref=past", false},

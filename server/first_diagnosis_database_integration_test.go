@@ -109,7 +109,7 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 	}
 	t.Run("ungranted-runtime", func(t *testing.T) { assertRejected(t, runtimePool) })
 	// 실제 서버 SQL 경로의 최소 권한이다. 권한검사 구현에서 목록을 가져오지 않는다.
-	for _, name := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "task_control_modes", "findings", "request_approvals"} {
+	for _, name := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "task_control_modes", "findings", "request_approvals", "e2_prompt_runs", "e2_prompt_observations"} {
 		exec("GRANT SELECT,INSERT,UPDATE ON TABLE " + ident(name) + " TO " + ident(role))
 	}
 	for _, name := range []string{"traffic_evidence_snapshots", "finding_traffic_bindings", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links", "evidence_revision_initials", "evidence_revision_operations", "exploration_edges", "activity", "task_scope", "task_constraints", "exploration_anchors"} {
