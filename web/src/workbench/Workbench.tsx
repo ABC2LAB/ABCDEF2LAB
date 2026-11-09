@@ -3,11 +3,15 @@
 // 작업대 루트: 노란 배너 · 레일 · 여섯 화면 section · 스크림 · 재생 엔진 · 해시 라우터.
 // 원본의 route() · goTo · openInsp/closeInsp · openRail/closeRail · dashPick · Esc · 강조색 복원을 맡는다.
 // window · location · matchMedia · localStorage 는 렌더 중에 건드리지 않고 effect·이벤트에서만 쓴다(SSR 사전 렌더).
+// 데이터 원천(live/source): demo 면 시안 화면, live 면 같은 자리에 <LiveGate> 로 감싼 실제 엔진 화면을 그린다.
 
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useCrawlEngine, useLiveEngine } from "./engines";
 import { cx } from "./lib/cx";
+import { LiveGate, useLiveAuthBoot } from "./live/auth";
+import { LiveFeeds } from "./live/feeds";
+import { canGoLive, useSource, useSourceBoot } from "./live/source";
 import { isView, type Shell, ShellContext, type View } from "./shell";
 import { type DSel, useWb } from "./store";
 import { Icon } from "./ui/icons";
@@ -15,6 +19,12 @@ import { Rail } from "./ui/Rail";
 import { Crawl } from "./views/Crawl";
 import { Dashboard } from "./views/Dashboard";
 import { Live } from "./views/Live";
+import { CrawlLive } from "./views/live/CrawlLive";
+import { DashboardLive } from "./views/live/DashboardLive";
+import { LiveLive } from "./views/live/LiveLive";
+import { NewScanLive } from "./views/live/NewScanLive";
+import { ReportLive } from "./views/live/ReportLive";
+import { ScopeLive } from "./views/live/ScopeLive";
 import { NewScan } from "./views/NewScan";
 import { Report } from "./views/Report";
 import { Scope } from "./views/Scope";
@@ -36,8 +46,34 @@ interface Nav {
   railNewVisible: boolean;
 }
 
+/** 맨 위 배너 문구 (demo 문구는 원본 그대로 — 바꾸지 말 것). */
+const DEMO_TEXT =
+  "작동하지 않는 UI 시안입니다 — 모든 숫자·기록은 예시이며, 실제 점검·소유 확인·세션 저장을 수행하지 않습니다.";
+const LIVE_TEXT = "실제 엔진 데이터입니다. '엔진 미지원'으로 표시된 칸은 백엔드에 아직 없는 기능입니다.";
+
+/** 맨 위 배너: demo 는 경고색 + "실제 엔진으로 보기", live 는 정보색 + "예시 재생으로 보기". MOCK 빌드는 버튼 없음. */
+function SourceBar() {
+  const source = useSource((st) => st.source);
+  const setSource = useSource((st) => st.setSource);
+  const live = source === "live";
+  return (
+    <div className={cx(s.demobar, live && s["lv-bar"])} role="note">
+      <Icon name={live ? "info" : "alert"} />
+      <span>{live ? LIVE_TEXT : DEMO_TEXT}</span>
+      {canGoLive() ? (
+        <button className={s["lv-bar-btn"]} type="button" onClick={() => setSource(live ? "demo" : "live")}>
+          {live ? "예시 재생으로 보기" : "실제 엔진으로 보기"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function Workbench() {
+  useSourceBoot();
+  useLiveAuthBoot();
   const accent = useWb((st) => st.accent);
+  const source = useSource((st) => st.source);
   const [route, setRoute] = useState<View>("dashboard");
   const [nav, setNav] = useState<Nav>({ seq: 0, byUser: false, railNewVisible: false });
   // 두 서랍을 한 상태로: Esc 는 상세 먼저, 없으면 레일 (원본 keydown)
@@ -77,8 +113,11 @@ export function Workbench() {
     const railNewVisible = st.railNew !== null;
     routeRef.current = h;
     setRoute(h);
-    if (h === "crawl") st.crawlEnter();
-    if (h === "live") st.liveEnter();
+    // 재생 진입 처리는 예시 재생일 때만 (live 화면은 엔진 데이터를 그린다)
+    if (useSource.getState().source === "demo") {
+      if (h === "crawl") st.crawlEnter();
+      if (h === "live") st.liveEnter();
+    }
     setNav((n) => ({ seq: n.seq + 1, byUser, railNewVisible }));
   }, []);
 
@@ -105,6 +144,17 @@ export function Workbench() {
     },
     [closeRail, openInsp],
   );
+
+  // live → demo 로 돌아오면 지금 화면의 재생 진입 처리를 한 번 한다 (live 동안은 건너뛰었으므로)
+  const prevSource = useRef(source);
+  useEffect(() => {
+    if (prevSource.current === source) return;
+    prevSource.current = source;
+    if (source !== "demo") return;
+    const st = useWb.getState();
+    if (routeRef.current === "crawl") st.crawlEnter();
+    if (routeRef.current === "live") st.liveEnter();
+  }, [source]);
 
   // 화면 폭·동작 줄이기 설정 (원본 NARROW · PHONE · REDUCE)
   useEffect(() => {
@@ -256,26 +306,25 @@ export function Workbench() {
       {body}
     </section>
   );
+  // 같은 자리에 demo 화면 또는 관문으로 감싼 live 화면
+  const pick = (title: string, demo: ReactNode, live: ReactNode) =>
+    source === "live" ? <LiveGate title={title}>{live}</LiveGate> : demo;
 
   return (
     <ShellContext.Provider value={shell}>
       <div ref={rootRef} className={s.root} data-accent={accent === "petrol" ? undefined : accent}>
         <Engines route={route} reduce={reduce} />
-        <div className={s.demobar} role="note">
-          <Icon name="alert" />
-          <span>
-            작동하지 않는 UI 시안입니다 — 모든 숫자·기록은 예시이며, 실제 점검·소유 확인·세션 저장을 수행하지 않습니다.
-          </span>
-        </div>
+        {source === "live" ? <LiveFeeds /> : null}
+        <SourceBar />
         <div className={s.app}>
           <Rail />
           <main className={s.work}>
-            {section("dashboard", <Dashboard />)}
-            {section("new", <NewScan />)}
-            {section("crawl", <Crawl />)}
-            {section("scope", <Scope />)}
-            {section("live", <Live />)}
-            {section("report", <Report />)}
+            {section("dashboard", pick("대시보드", <Dashboard />, <DashboardLive />))}
+            {section("new", pick("새 점검", <NewScan />, <NewScanLive />))}
+            {section("crawl", pick("자산 탐색", <Crawl />, <CrawlLive />))}
+            {section("scope", pick("범위 확인", <Scope />, <ScopeLive />))}
+            {section("live", pick("점검 진행", <Live />, <LiveLive />))}
+            {section("report", pick("보고서", <Report />, <ReportLive />))}
           </main>
         </div>
         <div className={s.scrim} id="scrim" data-scrim="" hidden={!(drawers.insp || drawers.rail)} />

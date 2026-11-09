@@ -3715,3 +3715,67 @@ button.smm:hover {
     transition: none !important;
   }
 }
+
+/* ===== live 전용 (실제 엔진 모드) — 위의 규칙은 건드리지 않고 여기에만 더한다 ===== */
+/* 배너: live 는 경고색 대신 정보(accent) 톤 */
+.demobar.lv-bar {
+  background: var(--accent-bg);
+  color: var(--accent-ink);
+  border-bottom-color: var(--accent-line);
+}
+/* 배너 안 원천 전환 버튼 */
+.lv-bar-btn {
+  flex: none;
+  margin-left: 4px;
+  padding: 1px 9px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.lv-bar-btn:hover {
+  background: var(--bg);
+}
+/* 관문 패널 (로그인 · 연결 실패 · 초기 설정) */
+.lv-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 400px;
+}
+.lv-gate-h {
+  font-size: 16px;
+}
+.lv-gate .note b {
+  display: block;
+  margin-bottom: 2px;
+}
+/* 안내 상자 안에서 글이 남는 폭을 차지 (다시 시도 버튼을 오른쪽으로) */
+.lv-grow {
+  flex: 1;
+  min-width: 0;
+}
+/* 레일: 빈 목록 · 상태 한 줄 */
+.lv-rempty {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--rail-mut);
+}
+/* 레일: 두 칸 스위치 (데이터 원천) */
+.swatches .sw-row.lv-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+/* 레일: 글자 모양 버튼 (로그아웃) */
+.lv-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--rail-acc);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
