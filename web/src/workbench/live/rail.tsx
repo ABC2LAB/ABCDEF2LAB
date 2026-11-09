@@ -19,7 +19,7 @@ import { errorText, isActive, isLocalBaseUrl, relTime, taskLabel, taskPhase } fr
 import { useNow } from "./parts";
 import { canGoLive, useSource } from "./source";
 import { useIsUrlMode, useUrl } from "./urlDiagnosis";
-import { isUrlActive, URL_PRESTART_STATES, urlHost, urlStateText, urlTone, urlViewFor } from "./urlMap";
+import { URL_ENDED_STATES, urlHost, urlStateText, urlTone, urlViewFor } from "./urlMap";
 import { usePoll } from "./usePoll";
 
 /** 레일 '진행 중'에 보일 최대 줄 수 (넘치면 "외 N건"). */
@@ -51,14 +51,17 @@ export function LiveRailTasks() {
   return useIsUrlMode() ? <UrlRailTasks /> : <TaskRailTasks />;
 }
 
-/** URL 진단: 이 브라우저가 이어 보는 진단 한 줄 (시작 전 · 진행 중은 위, 끝난 것은 아래). 누르면 알맞은 화면으로. */
+/**
+ * URL 진단: 이 브라우저가 이어 보는 진단 한 줄. 마감이 확인된 끝난 상태만 아래(최근 끝난 점검)에 두고,
+ * 시작 전 · 진행 중 · 결과 불명(unknown)은 위에 둔다(결과 불명을 끝난 것으로 보이지 않게). 누르면 알맞은 화면으로.
+ */
 function UrlRailTasks() {
   const { route, goTo } = useShell();
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
   const busy = useUrl((st) => st.busy);
-  const open = !job || isUrlActive(job) || URL_PRESTART_STATES.includes(job.state);
+  const open = !job || !URL_ENDED_STATES.includes(job.state);
   let row: ReactNode = null;
   if (handle) {
     const to = job ? urlViewFor(job) : "live";

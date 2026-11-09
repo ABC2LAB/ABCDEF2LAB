@@ -19,6 +19,12 @@ export const URL_PHASES = Object.keys(urlPhaseLabels) as UrlPhase[];
 /** 엔진이 아직 움직이는 상태 (상태를 주기적으로 다시 읽는다). */
 export const URL_ACTIVE_STATES: readonly UrlState[] = ["preparing", "running", "stopping"];
 
+/**
+ * 끝난 상태. 서버 계약(팀 parseURLJob)상 세 상태는 drain_complete 가 확인된 마감이다.
+ * unknown 은 마감 여부와 독립(재시작 복구 등)이라 넣지 않는다 — 끝난 것으로 안내하지 않는다.
+ */
+export const URL_ENDED_STATES: readonly UrlState[] = ["completed", "cancelled", "failed"];
+
 /** 시작 전 상태 (초안 · 범위 확인). */
 export const URL_PRESTART_STATES: readonly UrlState[] = ["awaiting_approval", "ready"];
 

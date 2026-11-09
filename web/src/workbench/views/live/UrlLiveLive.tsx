@@ -20,7 +20,7 @@ import {
 import { approvalCounts, fmtCount } from "../../live/map";
 import { ErrorNote, LoadingRow, ModeNote } from "../../live/parts";
 import { runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import { isUrlActive, urlStateText } from "../../live/urlMap";
+import { factText, isUrlActive, URL_ENDED_STATES, urlStateText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
@@ -118,6 +118,15 @@ function SendControl({ taskId, active, visible }: { taskId: string; active: bool
   );
 }
 
+/** 전송 통제를 읽지 않을 때의 안내 (마감 · 결과 불명 · 시작 전). */
+function sendPlaceholder(job: { drain_complete: boolean; state: string }, uncertain: boolean): string {
+  if (job.drain_complete)
+    return "실행이 마감됐습니다. 마감된 회차의 요청 · 전송 집계는 보고서의 실행 종료 기록에서 봅니다.";
+  if (job.state === "unknown" || uncertain)
+    return "결과 불명인 진단은 실행 감독자 상태를 이어 조회하지 않습니다. 상태 다시 조회로 서버 사실만 확인하세요.";
+  return "엔진 시작이 확인되면 실제 task 의 전송 통제 집계를 봅니다.";
+}
+
 /** live 점검 진행 (URL 진단). */
 export function UrlLiveLive() {
   const { route, goTo } = useShell();
@@ -126,6 +135,7 @@ export function UrlLiveLive() {
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
   const busy = useUrl((st) => st.busy);
+  const uncertain = useUrl((st) => st.uncertain);
   const g = useUrlGates();
   const host = useUrlHost();
 
@@ -150,7 +160,17 @@ export function UrlLiveLive() {
 
   const active = isUrlActive(job);
   const stoppable = job.state === "preparing" || job.state === "running";
-  const ended = ["completed", "cancelled", "failed", "unknown"].includes(job.state);
+  // 끝남은 마감이 확인된 상태만. 결과 불명(unknown)은 마감 여부와 독립이라 따로 안내한다.
+  const ended = URL_ENDED_STATES.includes(job.state);
+  const unknownNote =
+    job.state === "unknown" ? (
+      <div className={cx(s.note, s.warn)} role="note" id="luUnknown">
+        <Icon name="alert" />
+        <span>
+          {`결과 불명 — 준비 또는 실행 결과를 확인하지 못했습니다. 끝난 것으로 보지 않고 자동으로 다시 시작하지 않습니다. 엔진 시작 ${factText(job.started)} · 마감 확인 ${factText(job.drain_complete)} · 결과 저장 ${factText(job.result_ready)}`}
+        </span>
+      </div>
+    ) : null;
 
   let done: ReactNode = null;
   if (g.reportReadable) {
@@ -222,6 +242,7 @@ export function UrlLiveLive() {
             진행률 · 남은 시간은 추정하지 않습니다. 실행 마감 · HTTP 응답 · 후보 0건은 취약점 없음이나 확정을 뜻하지
             않습니다.
           </p>
+          {unknownNote}
           {done}
           {g.runReadable && job.task_id ? (
             <SendControl taskId={job.task_id} active={active} visible={visible} />
@@ -230,13 +251,7 @@ export function UrlLiveLive() {
               <div className={s.sh}>
                 <h2 id="luSendH">전송 통제</h2>
               </div>
-              {job.drain_complete ? (
-                <p className={s.empty}>
-                  실행이 마감됐습니다. 마감된 회차의 요청 · 전송 집계는 보고서의 실행 종료 기록에서 봅니다.
-                </p>
-              ) : (
-                <p className={s.empty}>엔진 시작이 확인되면 실제 task 의 전송 통제 집계를 봅니다.</p>
-              )}
+              <p className={s.empty}>{sendPlaceholder(job, uncertain)}</p>
             </section>
           )}
           <section className={s.sec} aria-labelledby="luUseH">

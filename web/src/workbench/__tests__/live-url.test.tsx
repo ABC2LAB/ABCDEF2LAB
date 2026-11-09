@@ -438,6 +438,31 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByText("허용 범위 안 전송")).toBeNull();
   });
 
+  it("결과 불명(unknown · 마감 미확인)을 끝난 진단으로 안내하지 않는다 — 화면 · 레일", async () => {
+    const unknownJob: url.URLDiagnosisJob = { ...running, revision: 6, state: "unknown" };
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(unknownJob);
+    const goTo = vi.fn<(v: View) => void>();
+    render(
+      <ShellContext.Provider value={shellValue({ route: "live", goTo })}>
+        <UrlFeeds />
+        <LiveByMode />
+        <LiveRailTasks />
+      </ShellContext.Provider>,
+    );
+    const note = await screen.findByText(/결과 불명 — 준비 또는 실행 결과를 확인하지 못했습니다/);
+    expect(note).toHaveTextContent("엔진 시작 확인됨 · 마감 확인 미확인 · 결과 저장 미확인");
+    expect(screen.queryByText(/진단이 끝났습니다/)).toBeNull();
+    expect(screen.queryByText(/실행이 마감됐습니다/)).toBeNull();
+    expect(screen.getByText(/결과 불명인 진단은 실행 감독자 상태를 이어 조회하지 않습니다/)).toBeInTheDocument();
+    expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
+    // 레일: 최근 끝난 점검이 아니라 위(진행 중) 묶음에
+    expect(screen.getByText("이 브라우저에서 이어 보는 끝난 진단 없음")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /target\.example/ })).toHaveTextContent("결과 불명");
+    // 중지는 보내지 않는다(준비 · 실행 중만)
+    expect(screen.queryByRole("button", { name: /진단 중지 요청/ })).toBeNull();
+  });
+
   it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 실행 종료 기록으로 안내한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
