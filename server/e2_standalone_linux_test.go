@@ -686,3 +686,209 @@ func TestE2StandaloneChildEnvironmentDoesNotChangeParentDatabase(t *testing.T) {
 		t.Fatal("child DSN did not fail before connection")
 	}
 }
+
+// 이미 획득된 실제 lease를 써서 factory의 중복 승인 검사에 기대지 않는다.
+func TestE2StandaloneRejectsUnauthorizedIntentBeforeRegistration(t *testing.T) {
+	b, _, _ := standaloneFixture(t, "", false)
+	if b.BindReset(t.Context(), strings.Repeat("a", 64)) != nil {
+		t.Fatal("bind")
+	}
+	q := E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17}
+	lease, err := b.factory.Acquire(b.ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.lease = &lease
+	q.IntentID = 999
+	if _, err := b.Execute(t.Context(), q, ""); !errors.Is(err, ErrE2Control) {
+		t.Fatal("unapproved intent did not fail at authorization")
+	}
+	if b.acquired.Execution.HasIntent(999) || len(b.acquired.Execution.Calls()) != 0 || b.toolCalls != 0 || b.failed {
+		t.Fatal("unapproved intent reached registration or runner")
+	}
+}
+
+func TestE2StandalonePrebindStopsBeforeAuthorityOrAcquisition(t *testing.T) {
+	b, _, p := standaloneFixture(t, "", false)
+	// 하위 승인/획득 거부가 prebind 가드 누락을 가리지 않도록 호출 자체를 계측한다.
+	authorized, acquired := 0, 0
+	b.factory.AuthorizeIntent = func(context.Context, E2HTTPRequest) error { authorized++; return nil }
+	b.factory.Acquire = func(context.Context, E2HTTPRequest) (E2HTTPRunOptions, error) {
+		acquired++
+		return E2HTTPRunOptions{}, ErrE2Control
+	}
+	if _, err := b.Execute(t.Context(), E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17}, ""); !errors.Is(err, ErrE2Control) {
+		t.Fatal("prebind execute accepted")
+	}
+	if authorized != 0 || acquired != 0 || b.lease != nil || b.failed {
+		t.Fatal("prebind execute entered a later boundary")
+	}
+	if _, err := os.Stat(filepath.Join(p.StateDir, "events.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("prebind allocated journal")
+	}
+}
+
+type standaloneChangingAuthorityFixture struct {
+	E2HTTPPolicyAuthority
+	change func()
+}
+
+func (a standaloneChangingAuthorityFixture) AuthorizePolicy(ctx context.Context, digest [32]byte) error {
+	a.change()
+	return a.E2HTTPPolicyAuthority.AuthorizePolicy(ctx, digest)
+}
+
+func TestE2StandaloneConstructorCrossChecksMetadata(t *testing.T) {
+	for _, mode := range []string{"policy_digest", "fingerprint", "header_mode"} {
+		t.Run(mode, func(t *testing.T) {
+			b, _, _ := standaloneFixture(t, "", false)
+			o := b.options
+			switch mode {
+			case "fingerprint":
+				o.ExpectedPolicyFingerprintSHA256 = strings.Repeat("f", 64)
+				if o.ExpectedPolicyFingerprintSHA256 == b.factory.PolicyFingerprintSHA256 {
+					t.Fatal("fixture fingerprint collision")
+				}
+			case "header_mode":
+				// 준비 파일 자체는 올바르게 다시 동결하되 실제 policy와 header mode만 다르게 한다.
+				c := *o.Config
+				c.HeaderMode = string(e2proxy.HeaderProtectedSessionProposal)
+				raw, err := json.Marshal(c)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(filepath.Dir(c.PolicyPath), "runner.json")
+				if os.WriteFile(path, raw, 0600) != nil {
+					t.Fatal("config write")
+				}
+				o.Config, err = e2config.Load(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "policy_digest":
+				// 정상 불변 Config에서는 두 digest가 동일하다. 최종 방어 비교만 검증하기 위해
+				// 초기 Check/ReadPolicy 뒤 권위 callback 시점의 변경을 명시적으로 합성한다.
+				original := o.Config.PolicySHA256
+				t.Cleanup(func() { o.Config.PolicySHA256 = original })
+				o.Authority = standaloneChangingAuthorityFixture{E2HTTPPolicyAuthority: o.Authority, change: func() { o.Config.PolicySHA256 = strings.Repeat("f", 64) }}
+			}
+			got, err := NewE2StandaloneBackend(t.Context(), o)
+			if got != nil {
+				if disposeErr := got.Dispose(); disposeErr != nil {
+					t.Error(disposeErr)
+				}
+			}
+			if got != nil || !errors.Is(err, ErrE2Control) {
+				t.Fatal("constructor metadata mismatch accepted")
+			}
+		})
+	}
+}
+
+func TestE2StandaloneObservationFailureLatchesAndPreventsPublish(t *testing.T) {
+	b, _, _ := standaloneFixture(t, "", false)
+	if b.BindReset(t.Context(), strings.Repeat("a", 64)) != nil {
+		t.Fatal("bind")
+	}
+	q := E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17}
+	lease, err := b.factory.Acquire(b.ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.lease = &lease
+	publisher := b.publisher
+	b.publisher = nil
+	// 빈 명령은 실제 Runner가 call 생성 전에 거부한다. 관찰 공급자 실패만 주입하여
+	// 실행/저널 자체는 건강하게 남겨, failed 검사 누락 시 Publish 성공을 검출한다.
+	_, err = b.Execute(t.Context(), q, "")
+	b.publisher = publisher
+	if !errors.Is(err, ErrE2Control) || !b.failed || len(b.acquired.Execution.Calls()) != 0 {
+		t.Fatal("observation failure not latched")
+	}
+	ready, err := b.Ready(t.Context())
+	if err != nil || ready.State != "failed" {
+		t.Fatal("failed observation still ready")
+	}
+	calls := b.toolCalls
+	if _, err := b.Execute(t.Context(), q, ""); !errors.Is(err, ErrE2Control) || b.toolCalls != calls {
+		t.Fatal("failed observation admitted another command")
+	}
+	if _, err := b.CloseAdmission(t.Context(), "close-observer"); err != nil {
+		t.Fatal(err)
+	}
+	final, err := b.Finalize(t.Context(), "close-observer")
+	if err != nil || final.State != "incomplete" {
+		t.Fatal("failed observer produced completion")
+	}
+	if _, err := os.Stat(filepath.Join(b.options.Config.EvidenceDir, e2export.ManifestFile)); !os.IsNotExist(err) {
+		t.Fatal("failed observer invoked publication")
+	}
+	// 정상 Publisher는 아직 Publish를 시도하지 않았다. Finalize가 실패 latch를 존중했으면
+	// 독립적인 검증용 호출에서 complete 산출물을 만들 수 있어야 한다.
+	if _, err := publisher.Publish(t.Context(), "probe-not-backend-final"); err != nil {
+		t.Fatal("fixture publisher was not independently healthy")
+	}
+}
+
+func TestE2StandaloneCloseReferencesRemainImmutable(t *testing.T) {
+	b, _, _ := standaloneFixture(t, "", false)
+	if b.BindReset(t.Context(), strings.Repeat("a", 64)) != nil {
+		t.Fatal("bind")
+	}
+	if _, err := b.Finalize(t.Context(), "close-one"); !errors.Is(err, ErrE2Control) || b.final != nil {
+		t.Fatal("finalized before close")
+	}
+	if _, err := b.CloseAdmission(t.Context(), "close-one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.CloseAdmission(t.Context(), "close-other"); !errors.Is(err, ErrE2Control) || b.closeRef != "close-one" {
+		t.Fatal("close reference replaced")
+	}
+	if _, err := b.Finalize(t.Context(), "close-other"); !errors.Is(err, ErrE2Control) || b.final != nil {
+		t.Fatal("wrong initial finalize reference accepted")
+	}
+	first, err := b.Finalize(t.Context(), "close-one")
+	if err != nil || first.State != "no_execution" {
+		t.Fatal("original close failed")
+	}
+	if _, err := b.Finalize(t.Context(), "close-other"); !errors.Is(err, ErrE2Control) {
+		t.Fatal("cached final returned to wrong reference")
+	}
+	again, err := b.Finalize(t.Context(), "close-one")
+	if err != nil || !reflectFinal(first, again) {
+		t.Fatal("original final changed")
+	}
+}
+
+func TestE2StandaloneAcquisitionRejectsResetMismatchAtBackend(t *testing.T) {
+	source, _, _ := standaloneFixture(t, "", false)
+	// 두 core는 같은 실제 정책만 읽고 아직 자원을 획득하지 않았다.
+	target, err := NewE2StandaloneBackend(t.Context(), source.options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := target.Dispose(); err != nil {
+			t.Error(err)
+		}
+	})
+	if source.BindReset(t.Context(), strings.Repeat("a", 64)) != nil || target.BindReset(t.Context(), strings.Repeat("b", 64)) != nil {
+		t.Fatal("bind")
+	}
+	lease, err := source.factory.Acquire(source.ctx, E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.lease = &lease
+	acquired := *source.acquired
+	acquired.AuditKey, err = source.options.Config.ReadAuditKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(acquired.AuditKey)
+	// 단순 err!=nil은 exporter의 중복 reset 검사로도 통과한다. backend 고유 오류와
+	// 소유권 미이전을 함께 확인해 backend reset 비교 삭제를 검출한다.
+	if err := target.onAcquire(t.Context(), acquired); !errors.Is(err, ErrE2Control) || target.acquired != nil || target.publisher != nil {
+		t.Fatal("mismatched reset passed backend acquisition boundary")
+	}
+}

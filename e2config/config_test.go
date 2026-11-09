@@ -436,3 +436,160 @@ func TestRejectNestedDirectories(t *testing.T) {
 		})
 	}
 }
+
+// 일반 JSON 디코더는 손상된 UTF-8을 대체하므로 참조 형식 검사와 독립해 확인한다.
+func TestStrictJSONRawUTF8(t *testing.T) {
+	for _, bad := range [][]byte{{0xff}, {0xc0, 0xaf}, {0xe2, 0x82}, {0xed, 0xa0, 0x80}} {
+		raw := append([]byte(`{"value":"`), bad...)
+		raw = append(raw, []byte(`"}`)...)
+		var target map[string]any
+		if StrictJSON(raw, &target) != ErrInvalid {
+			t.Fatal("invalid UTF-8 accepted")
+		}
+	}
+	var target map[string]any
+	if err := StrictJSON([]byte(`{"value":"정상 �"}`), &target); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestPolicyRawUTF8(t *testing.T) {
+	raw := append([]byte(`{"approval_mode":"preauthorized_scope","optional":"`), 0xff, '"', '}')
+	var target map[string]json.RawMessage
+	if policyJSON(raw, &target) != ErrInvalid {
+		t.Fatal("invalid policy UTF-8 accepted")
+	}
+}
+func TestJSONDepthBoundary(t *testing.T) {
+	for _, kind := range []string{"array", "object"} {
+		for _, depth := range []int{63, 64, 65, 66} {
+			t.Run(fmt.Sprintf("%s/%d", kind, depth), func(t *testing.T) {
+				raw := "0"
+				for range depth {
+					if kind == "array" {
+						raw = "[" + raw + "]"
+					} else {
+						raw = `{"x":` + raw + `}`
+					}
+				}
+				var target any
+				err := StrictJSON([]byte(raw), &target)
+				if depth <= 64 && err != nil {
+					t.Fatal("valid boundary rejected")
+				}
+				if depth > 64 && err != ErrInvalid {
+					t.Fatal("excessive depth accepted")
+				}
+			})
+		}
+	}
+	// 정책 최상위 객체도 깊이에 포함된다.
+	for _, depth := range []int{63, 64} {
+		t.Run(fmt.Sprintf("policy/%d", depth), func(t *testing.T) {
+			raw := `{"approval_mode":"preauthorized_scope","optional":` + strings.Repeat("[", depth) + "0" + strings.Repeat("]", depth) + "}"
+			var target map[string]json.RawMessage
+			err := policyJSON([]byte(raw), &target)
+			if depth == 63 && err != nil {
+				t.Fatal(err)
+			}
+			if depth == 64 && err != ErrInvalid {
+				t.Fatal("policy excessive depth accepted")
+			}
+		})
+	}
+}
+func TestCanonicalListenPort(t *testing.T) {
+	for _, port := range []string{"1", "65535", "8123"} {
+		t.Run("valid/"+port, func(t *testing.T) {
+			path, o := fixture(t)
+			o["listen"] = ":" + port
+			o["upstream"] = "http://eval-meter-upstream:" + port
+			put(t, path, o)
+			if _, err := Load(path); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, port := range []string{"", "0", "-1", "65536", "+8123", "08123", " 8123", "8123 ", "8_123", "8e3", "8123.0", "0x1fbb", "not-a-port", "18446744073709551616"} {
+		t.Run("invalid/"+port, func(t *testing.T) {
+			path, o := fixture(t)
+			o["listen"] = ":" + port
+			o["upstream"] = "http://eval-meter-upstream:" + port
+			put(t, path, o)
+			reject(t, path)
+		})
+	}
+	for _, listen := range []string{"localhost:8123", "127.0.0.1:8123", "[::1]:8123", "8123", "::8123", ":8123:8123", "[::]:8123"} {
+		t.Run("host/"+listen, func(t *testing.T) { path, o := fixture(t); o["listen"] = listen; put(t, path, o); reject(t, path) })
+	}
+}
+func requireRecheckRejected(t *testing.T, c *Config) {
+	t.Helper()
+	if c.Check() != ErrInvalid {
+		t.Fatal("changed directory accepted")
+	}
+	if b, err := c.ReadPolicy(); b != nil || err != ErrInvalid {
+		t.Fatal("policy read accepted changed directory")
+	}
+	if b, err := c.ReadAuditKey(); b != nil || err != ErrInvalid {
+		t.Fatal("key read accepted changed directory")
+	}
+}
+func TestRecheckDirectorySecurity(t *testing.T) {
+	for _, name := range []string{"prep", "control", "evidence"} {
+		for _, change := range []string{"mode", "missing", "symlink", "replacement"} {
+			t.Run(name+"/"+change, func(t *testing.T) {
+				path, _ := fixture(t)
+				c, err := Load(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = c.Check(); err != nil {
+					t.Fatal(err)
+				}
+				dir := filepath.Join(filepath.Dir(filepath.Dir(path)), name)
+				switch change {
+				case "mode":
+					err = os.Chmod(dir, 0750)
+				case "missing":
+					err = os.Rename(dir, dir+".old")
+				case "symlink":
+					err = os.Rename(dir, dir+".old")
+					if err == nil {
+						err = os.Symlink(dir+".old", dir)
+					}
+				case "replacement":
+					err = os.Rename(dir, dir+".old")
+					if err == nil {
+						err = os.Mkdir(dir, 0700)
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireRecheckRejected(t, c)
+			})
+		}
+	}
+}
+func TestRecheckDirectoryOwnership(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("changing directory ownership requires root; run this test separately as root")
+	}
+	for _, name := range []string{"prep", "control", "evidence"} {
+		t.Run(name, func(t *testing.T) {
+			path, _ := fixture(t)
+			c, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = c.Check(); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(filepath.Dir(filepath.Dir(path)), name)
+			if err = os.Chown(dir, 65534, -1); err != nil {
+				t.Fatal(err)
+			}
+			requireRecheckRejected(t, c)
+		})
+	}
+}
