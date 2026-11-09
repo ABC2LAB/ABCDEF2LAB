@@ -47,6 +47,7 @@
 - [대상 상태 코어](contracts/target-health-core.md) · [HTTP 상태 관측과 중단](contracts/e2-http-health-stop.md)
 - [가로채기 패턴 검증](contracts/intercept-pattern-validation.md)
 - [실행 컨텍스트 훅](contracts/runtime-hooks.md)
+- [E② 프롬프트 평가 projection과 수집 계약](contracts/e2-prompt-projection.md)
 
 ### 근거 판정과 결과 저장
 

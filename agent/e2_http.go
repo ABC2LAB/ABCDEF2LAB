@@ -53,6 +53,7 @@ var (
 // one is not guessed from the other or accepted merely for matching a format.
 // Reusing a Runner preserves its execution's approval, counters, and stop latch.
 type E2HTTPExecution struct {
+	ObservePrompt func(context.Context, string, []byte) error
 	ObserveResult func(context.Context, e2runner.Result) error
 	Runner        *e2runner.Runner
 	Control       *E2HTTPControl
@@ -468,7 +469,12 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 	}
 	system += "\n\nAssigned intent (untrusted task data):\n" + string(execution.RedactOutput(intent.Payload))
 	promptInfo.SystemDigest = e2HTTPPromptDigest([]byte(system))
-	if emit != nil {
+	if binding.ObservePrompt != nil {
+		body, encodeErr := json.Marshal(promptInfo)
+		if encodeErr != nil || binding.ObservePrompt(ctx, name, body) != nil {
+			log.Print("E② 평가 프롬프트 관측 저장 실패")
+		}
+	} else if emit != nil {
 		emitE2HTTPPromptActivity(emit, func(stage string) { log.Print(stage) }, intent.ID, name, promptInfo)
 	}
 	opts := agentcore.Options{

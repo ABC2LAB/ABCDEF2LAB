@@ -999,6 +999,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/graph", s.explorationGraph)
 	mux.HandleFunc("GET /api/exploration/nodes", s.explorationNodes)
 	mux.HandleFunc("GET /api/exploration/activity", s.activity)
+	mux.HandleFunc("GET /api/tasks/{id}/e2-prompt-projection", s.e2PromptProjection)
 	mux.HandleFunc("GET /api/exploration/activity/history", s.activityHistory)
 	mux.HandleFunc("GET /api/exploration/main-sessions", s.mainSessions)
 	mux.HandleFunc("POST /api/exploration/main-session/new", s.newMainSession)
