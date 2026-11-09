@@ -6,7 +6,7 @@ import {
   type URLDiagnosisScope,
   urlPhaseLabels,
   urlStateLabels,
-} from "@/abc2lab-ui/lib/diagnosis-url";
+} from "@/lib/diagnosis/diagnosis-url";
 
 import type { View } from "../shell";
 

@@ -13,7 +13,7 @@ import { useEffect } from "react";
 
 import { create } from "zustand";
 
-import { ApiError } from "@/abc2lab-ui/lib/api";
+import { ApiError } from "@/lib/diagnosis/api";
 import {
   commandURLDiagnosis,
   createURLDraft,
@@ -31,24 +31,23 @@ import {
   type URLDiagnosisJob,
   urlDiagnosisError,
   urlDiagnosisInput,
-} from "@/abc2lab-ui/lib/diagnosis-url";
+} from "@/lib/diagnosis/diagnosis-url";
 
 import { useLiveAuth } from "./auth";
 import { URL_ACTIVE_STATES, URL_PRESTART_STATES } from "./urlMap";
 
 /** 진행 중 진단 상태를 다시 읽는 간격(ms). 팀 화면과 같다. */
 export const URL_POLL_MS = 2000;
-/** catalog 가 이 상태면 이 서버는 v2 가 아니다(기존 v1 새 점검을 쓴다). */
-const V1_STATUSES: readonly number[] = [404, 501];
+/** URL API 미설치 상태는 운영자 설정이 필요하며 다른 엔진으로 전환하지 않는다. */
+const UNSUPPORTED_STATUSES: readonly number[] = [404, 501];
 
 /**
  * 서버의 새 점검 방식. unknown = 아직 확인 전(UrlFeeds 밖), checking = 확인 중,
- * v1 = 기존 POST /api/tasks, v2 = URL 진단, unavailable = 확인 불가(새 점검을 막는다).
+ * v2 = URL 진단, unavailable = 미설치 또는 확인 불가(새 점검을 막는다).
  */
 export type UrlCapability =
   | { kind: "unknown" }
   | { kind: "checking" }
-  | { kind: "v1" }
   | { kind: "v2"; catalog: URLDiagnosisCatalog }
   | { kind: "unavailable"; message: string };
 
@@ -167,7 +166,13 @@ async function checkCapability(): Promise<void> {
     await bootJob(catalog.ownerContext);
   } catch (cause) {
     if (id !== capRun) return;
-    if (cause instanceof ApiError && V1_STATUSES.includes(cause.status)) useUrl.setState({ cap: { kind: "v1" } });
+    if (cause instanceof ApiError && UNSUPPORTED_STATUSES.includes(cause.status))
+      useUrl.setState({
+        cap: {
+          kind: "unavailable",
+          message: "URL 진단 서비스가 설치되지 않았습니다. 운영자가 준비 서비스 연결을 확인해야 합니다.",
+        },
+      });
     else useUrl.setState({ cap: { kind: "unavailable", message: urlDiagnosisError(cause) } });
   }
 }

@@ -6,8 +6,8 @@
 
 import type { ReactNode } from "react";
 
-import { diagnosticOutcomeLabels, summarizeDiagnosticEntries } from "@/abc2lab-ui/lib/diagnostic-results";
-import { type RequestApprovalRunState, RUN_COUNT_NOTE, RUN_COUNT_ROWS } from "@/abc2lab-ui/lib/request-approvals";
+import { diagnosticOutcomeLabels, summarizeDiagnosticEntries } from "@/lib/diagnosis/diagnostic-results";
+import { type RequestApprovalRunState, RUN_COUNT_NOTE, RUN_COUNT_ROWS } from "@/lib/diagnosis/request-approvals";
 
 import { cx } from "../../lib/cx";
 import {

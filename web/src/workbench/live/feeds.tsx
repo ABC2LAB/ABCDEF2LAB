@@ -45,7 +45,7 @@ export function resetFeeds(): void {
 /** 공용 조회 실행자. Workbench 가 live 일 때 한 번만 그린다(아무것도 그리지 않음). 기존(일반 · 첫 진단) 서버에서만 부른다. */
 export function LiveFeeds() {
   // URL 진단(v2) 서버 · 서버 방식 확인 중에는 부르지 않는다(그 서버에는 점검 목록 · 도구 승인 대기가 없다)
-  const general = useUrl((st) => st.cap.kind !== "v2" && st.cap.kind !== "checking");
+  const general = useUrl((st) => false);
   const ready = useLiveAuth().state === "ready" && general;
   const tasks = usePoll(() => fetchTasks(), [], { intervalMs: FEED_INTERVAL_MS, enabled: ready });
   const pending = usePoll(() => fetchPendingApprovals(), [], { intervalMs: FEED_INTERVAL_MS, enabled: ready });

@@ -8,8 +8,8 @@ import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } fr
 
 import { create } from "zustand";
 
-import { ApiError, readAuthStatus, restoreSession, signIn, signOut, subscribeAuthRequired } from "@/abc2lab-ui/lib/api";
-import { readURLCatalog } from "@/abc2lab-ui/lib/diagnosis-url";
+import { ApiError, readAuthStatus, restoreSession, signIn, signOut, subscribeAuthRequired } from "@/lib/diagnosis/api";
+import { readURLCatalog } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../lib/cx";
 import { Icon } from "../ui/icons";
@@ -242,10 +242,9 @@ function LoginPanel() {
   );
 }
 
-/** 연결 실패 · 초기 설정 필요 안내 + 다시 시도 + 예시 재생으로 보기. */
+/** 연결 실패 · 초기 설정 필요 안내 + 다시 시도. */
 function StatusPanel({ title, children }: { title: string; children?: ReactNode }) {
   const { retry: again } = useLiveAuth();
-  const setSource = useSource((st) => st.setSource);
   return (
     <div className={s["lv-gate"]}>
       <div className={cx(s.note, s.warn)} role="alert">
@@ -259,9 +258,6 @@ function StatusPanel({ title, children }: { title: string; children?: ReactNode 
         <button className={cx(s.btn, s.pri)} type="button" onClick={again}>
           <Icon name="refresh" />
           다시 시도
-        </button>
-        <button className={s.btn} type="button" onClick={() => setSource("demo")}>
-          예시 재생으로 보기
         </button>
       </div>
     </div>

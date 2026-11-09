@@ -7,8 +7,8 @@ import { Fragment, type ReactNode, useEffect, useState } from "react";
 
 import { type LiveVerdict, SEVL, type SevKey, type Verdict as VerdictValue } from "../data/findings";
 import { cx } from "../lib/cx";
+import { useUrl } from "../live/urlDiagnosis";
 import { useShell } from "../shell";
-import { useWb } from "../store";
 import s from "../workbench.module.css";
 import { Icon } from "./icons";
 
@@ -165,10 +165,9 @@ export function ReportLink({
   current?: "page" | "step";
   children: ReactNode;
 }) {
-  const setReportHost = useWb((st) => st.setReportHost);
   return (
     // biome-ignore lint/a11y/useValidAnchor: 해시 라우팅 링크라 이동은 href 가 하고, onClick 은 보고서 대상만 바꾼다
-    <a className={className} href="#report" aria-current={current} onClick={() => setReportHost(kind)}>
+    <a className={className} href="#report" aria-current={current}>
       {children}
     </a>
   );
@@ -188,7 +187,7 @@ export type PhaseKey = (typeof PH)[number][0];
  * 보고서는 점검이 끝나거나(done) 종료(ended)되기 전에는 링크가 아닌 span.later. 보고서 링크를 누르면 setReportHost('live').
  */
 export function Phases({ phase }: { phase: PhaseKey }) {
-  const rep = useWb((st) => st.live.done || st.live.ended);
+  const rep = useUrl((st) => st.job?.result_ready === true);
   const at = PH.findIndex((p) => p[0] === phase);
   return (
     <nav className={s.phases} aria-label="점검 단계" data-phase={phase}>

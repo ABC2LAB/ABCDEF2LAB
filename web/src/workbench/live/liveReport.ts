@@ -1,7 +1,7 @@
 // 점검 진행 · 보고서(live) 화면 전용 순수 함수. 상태·시계를 갖지 않는다(지금 시각은 인자로).
 
-import { diagnosticOutcomeLabels } from "@/abc2lab-ui/lib/diagnostic-results";
-import type { RemediationEntry } from "@/abc2lab-ui/lib/remediation";
+import { diagnosticOutcomeLabels } from "@/lib/diagnosis/diagnostic-results";
+import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 
 import type { SevKey } from "../data/findings";
 import type { LiveCoverage, LiveFinding, LiveIntent, LiveTask, LlmProfile } from "./api";

@@ -1,8 +1,8 @@
 // live 화면용 순수 함수: 엔진 DTO → 작업대 화면 값(글·색 키). 상태를 갖지 않고 시계는 인자로 받는다.
 // 추정값(호스트 뽑기 · 경로 종류 · 로컬 모델)은 화면에 "추정"을 붙인다(EstimateTag).
 
-import { ApiError } from "@/abc2lab-ui/lib/api";
-import { isLocalUrl } from "@/abc2lab-ui/lib/net";
+import { ApiError } from "@/lib/diagnosis/api";
+import { isLocalUrl } from "@/lib/diagnosis/net";
 
 import type { SevKey } from "../data/findings";
 import { type PKind, pkind } from "../lib/kind";

@@ -10,7 +10,7 @@ import {
   type URLDiagnosisScope,
   urlPhaseLabels,
   urlReasonLabels,
-} from "@/abc2lab-ui/lib/diagnosis-url";
+} from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
 import { disconnectUrl, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
