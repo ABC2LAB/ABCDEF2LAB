@@ -29,17 +29,24 @@ type diagnosisRunRecord struct {
 
 // PersistRunOutcome는 drain 뒤의 감독자 상태만 저장한다. 조회 서버는 이 상태로 실행 권한을 복구하지 않는다.
 func (s *FirstDiagnosisSupervisor) PersistRunOutcome(ctx context.Context, closureErr error) error {
+	_, err := s.PersistRunOutcomeStored(ctx, closureErr)
+	return err
+}
+
+// PersistRunOutcomeStored는 일반 HTTP 종료 기록을 실제 저장하거나 동일 기록을 확인한 경우만 true다.
+// 시작 전과 등록 GET은 이 종류의 종료 기록을 만들지 않으므로 false를 반환한다.
+func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStored(ctx context.Context, closureErr error) (bool, error) {
 	if s == nil || ctx == nil || ctx.Err() != nil {
-		return ErrFirstDiagnosisOutcome
+		return false, ErrFirstDiagnosisOutcome
 	}
 	s.mu.Lock()
 	started, running, registered, task, server := s.runStarted, s.running, s.registered, s.runTask, s.server
 	s.mu.Unlock()
 	if !started || registered {
-		return nil
+		return false, nil
 	}
 	if running || server == nil || server.requestApprovals == nil || s.m == nil || s.m.pg == nil {
-		return ErrFirstDiagnosisOutcome
+		return false, ErrFirstDiagnosisOutcome
 	}
 	ctx = diagnosisLogContext(ctx, s.ctx)
 	state := server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task))
@@ -60,7 +67,7 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcome(ctx context.Context, closur
 	stored := err == nil
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_finished", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: status, ReasonCode: reason, DurationMS: time.Since(startedAt).Milliseconds(), ResultStored: &stored})
 	s.logRunSummary(ctx, mustFirstDiagnosisTaskNumber(task), state, stored)
-	return err
+	return stored, err
 }
 
 func validDiagnosisRun(state requestApprovalRunState) bool {

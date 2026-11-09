@@ -140,3 +140,60 @@ func TestClientRejectsUnrecognizedStateAndError(t *testing.T) {
 		}
 	}
 }
+
+func TestClientResponseCorrelationAndExclusivePayload(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Response)
+	}{
+		{"request_id", func(r *Response) { r.RequestID = "different" }},
+		{"version", func(r *Response) { r.Version = "diagnosis.v2" }},
+		{"task", func(r *Response) { r.Snapshot.TaskID = "24" }},
+		{"preparation", func(r *Response) { r.Snapshot.PreparationRef = "other" }},
+		{"both_payloads", func(r *Response) { r.Error = "not_started" }},
+		{"neither_payload", func(r *Response) { r.Snapshot = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := Response{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Prepared}}
+			tc.mutate(&response)
+			raw, _ := json.Marshal(response)
+			var writes bytes.Buffer
+			closes := 0
+			client, _ := NewClient(bytes.NewReader(append(raw, '\n')), &writes, func() error { closes++; return nil })
+			if _, err := client.Call(t.Context(), request(Status)); !errors.Is(err, ErrUnavailable) {
+				t.Fatal("invalid response accepted", err)
+			}
+			count := writes.Len()
+			if _, err := client.Call(t.Context(), request(Status)); !errors.Is(err, ErrUnavailable) || writes.Len() != count || closes != 1 {
+				t.Fatal("broken transport reused")
+			}
+		})
+	}
+}
+
+type shortWriter struct{ calls int }
+
+func (w *shortWriter) Write(p []byte) (int, error) { w.calls++; return len(p) - 1, nil }
+func TestClientShortWriteBreaksTransport(t *testing.T) {
+	response := Response{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Prepared}}
+	raw, _ := json.Marshal(response)
+	writer := &shortWriter{}
+	closed := 0
+	client, _ := NewClient(bytes.NewReader(append(raw, '\n')), writer, func() error { closed++; return nil })
+	if _, err := client.Call(t.Context(), request(Status)); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("short write accepted")
+	}
+	if _, err := client.Call(t.Context(), request(Status)); !errors.Is(err, ErrUnavailable) || writer.calls != 1 || closed != 1 {
+		t.Fatal("short write retried")
+	}
+}
+func TestServeStopsAtMalformedFrame(t *testing.T) {
+	r := &testRunner{finish: make(chan struct{})}
+	s := newTestService(t, r)
+	valid, _ := json.Marshal(request(Start))
+	var output bytes.Buffer
+	err := Serve(t.Context(), strings.NewReader("{invalid}\n"+string(valid)+"\n"), &output, s)
+	if !errors.Is(err, ErrProtocol) || output.Len() != 0 || r.calls.Load() != 0 {
+		t.Fatal("malformed frame did not terminate service", err)
+	}
+}

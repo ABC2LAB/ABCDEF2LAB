@@ -96,3 +96,11 @@ TestFirstDiagnosisGatewayIndependentProcessOwnedPostgres로 검증한다.
 
 운영자 승인 자료가 없으면 초안/검증 표시까지만 허용해야 하며,
 미연결 Gateway나 권위 대응을 성공 실행으로 표시하면 안 된다.
+
+
+### v1 결과 저장 지원 범위
+
+- Gateway v1은 general_http만 수용한다. registered_get은 보호 설정 파싱 직후 gateway_registered_get_unsupported로 거부하며 DB 연결·로그 생성·단회 권위 소비를 시작하지 않는다. 기존 run/serve/check의 등록 GET 흐름은 유지한다.
+- result_ready는 일반 HTTP 종료 기록을 실제 커밋했거나 동일한 정본 기록을 트랜잭션으로 확인한 경우에만 true다. 오류가 없다는 사실만으로 true가 되지 않는다.
+- 감독자의 PersistRunOutcomeStored는 저장 여부와 오류를 독립 반환한다. 시작 전 또는 등록 GET의 no-op은 (false, nil)이다. 기존 PersistRunOutcome 호출자에는 오류 반환 계약을 유지한다.
+- 등록 GET의 KG/E③ 저장물을 이 v1 종료 기록과 동일시하지 않는다. 해당 결과를 위한 별도 계약은 후속 작업이며 미지원 실행을 completed/unknown으로 대신하지 않는다.
