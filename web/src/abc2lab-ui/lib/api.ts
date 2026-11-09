@@ -8,10 +8,11 @@ import { MOCK } from "./mock";
  * 호출 경로: 브라우저 → `/api/*` (Next rewrite, dev) 또는 임베드 SPA → Go 서버(:8787).
  * 인증: 엔진의 유용한 엔드포인트는 전부 Bearer 토큰 필수.
  *
- * dev auto-login (임시): 새 UI엔 아직 로그인 화면이 없어, 개발 중에는 dev 자격증명으로
- * 자동 로그인해 토큰을 얻는다. 프로덕션 auth는 미정 — 이 분기는 production 번들에서 제거된다
- * (`process.env.NODE_ENV` 조건은 Next 빌드시 상수 폴딩되어 dead-code 제거).
- * 자격증명 값은 소스에 박지 않고 `web/.env.local`(gitignore)에서만 읽는다.
+ * 로그인: LoginScreen 이 signIn 으로 토큰을 받는다. 인증이 끊기면 subscribeAuthRequired 로 알려
+ * 화면이 로그인으로 돌아간다.
+ *
+ * dev auto-login (선택): `web/.env.local`(gitignore)에 dev 자격증명을 넣으면 개발 중 자동 로그인한다.
+ * 이 분기는 production 번들에서 제거된다(`process.env.NODE_ENV` 조건은 Next 빌드시 상수 폴딩되어 dead-code 제거).
  */
 
 let token: string | null = null;
@@ -82,6 +83,75 @@ export class ApiError extends Error {
   }
 }
 
+const authListeners = new Set<() => void>();
+
+/** 재시도로도 인증을 회복하지 못했을 때 호출된다. 화면을 로그인으로 돌리는 데 쓴다. */
+export function subscribeAuthRequired(listener: () => void): () => void {
+  authListeners.add(listener);
+  return () => {
+    authListeners.delete(listener);
+  };
+}
+
+function dropSession(): void {
+  token = null;
+  storeToken(null);
+  loginInFlight = null;
+}
+
+function requireSignIn(): void {
+  dropSession();
+  for (const listener of authListeners) listener();
+}
+
+async function responseError(res: Response): Promise<ApiError> {
+  let message = `HTTP ${res.status}`;
+  try {
+    const body = (await res.json()) as { error?: string };
+    if (body?.error) message = body.error;
+  } catch {
+    /* 본문 없음/비 JSON */
+  }
+  return new ApiError(res.status, message);
+}
+
+/** 저장된 토큰이나 개발용 자동 로그인으로 세션을 잇는다. 토큰의 유효성은 첫 API 응답이 판단한다. */
+export async function restoreSession(): Promise<boolean> {
+  if (MOCK) return true;
+  return (await ensureToken()) !== null;
+}
+
+/** 연결 실패는 status 0 인 ApiError 로 알린다. 실패한 시도는 세션을 남기지 않는다. */
+export async function signIn(username: string, password: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+      cache: "no-store",
+    });
+  } catch {
+    throw new ApiError(0, "엔진에 연결하지 못했어요.");
+  }
+  if (!res.ok) throw await responseError(res);
+  const data = (await res.json()) as { token?: string };
+  if (!data.token) throw new ApiError(502, "로그인 응답을 확인하지 못했어요.");
+  token = data.token;
+  storeToken(token);
+}
+
+export function signOut(): void {
+  requireSignIn();
+}
+
+/** 로그인 없이 읽을 수 있는 설치 상태. initialized=false 면 비밀번호가 아직 없다. */
+export async function readAuthStatus(): Promise<{ initialized: boolean }> {
+  const res = await fetch("/api/auth/status", { cache: "no-store" });
+  if (!res.ok) throw await responseError(res);
+  return (await res.json()) as { initialized: boolean };
+}
+
 /** 엔진 API 호출. path 는 `/api/...` 전체 경로. 401 이면 토큰을 버리고 한 번만 재로그인·재시도. */
 export async function apiFetch<T>(path: string, init: RequestInit = {}, retryAuth = true): Promise<T> {
   // 목업 빌드는 엔진에 요청하지 않는다(로그인도 하지 않음). 데이터는 이때만 불러온다.
@@ -99,22 +169,17 @@ async function authenticatedResponse(path: string, init: RequestInit, retryAuth:
 
   const res = await fetch(path, { ...init, headers });
 
-  if (res.status === 401 && retryAuth) {
-    token = null;
-    storeToken(null);
-    loginInFlight = null;
-    return authenticatedResponse(path, init, false);
-  }
-  if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const body = (await res.json()) as { error?: string };
-      if (body?.error) message = body.error;
-    } catch {
-      /* 본문 없음/비 JSON */
+  if (res.status === 401) {
+    if (retryAuth) {
+      dropSession();
+      return authenticatedResponse(path, init, false);
     }
-    throw new ApiError(res.status, message);
+    // 재시도로 회복하지 못했거나 재전송하면 안 되는 요청(승인 결정·중지)이다.
+    const error = await responseError(res);
+    requireSignIn();
+    throw error;
   }
+  if (!res.ok) throw await responseError(res);
   return res;
 }
 

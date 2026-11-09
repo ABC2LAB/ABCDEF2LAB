@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react';
+import { signOut } from '../lib/api';
+import { MOCK } from '../lib/mock';
 import { useGo } from '../nav';
 import { Brand } from './Brand';
 
@@ -20,6 +22,7 @@ export function MainNav({ current }: { current?: NavKey }) {
           {label}
         </a>
       ))}
+      {!MOCK && <a onClick={signOut}>로그아웃</a>}
     </div>
   );
 }
