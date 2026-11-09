@@ -36,6 +36,11 @@ func StartFirstDiagnosisControlled(ctx context.Context, manager *Manager, author
 	if ctx == nil || ctx.Err() != nil || manager == nil || manager.pg == nil || authorityDB == nil || nilFinalizationValue(o.Supervisor) || o.CleanupTimeout <= 0 {
 		return nil, ErrControlledReadHostConfiguration
 	}
+	// 불일치는 DB 권위·단회 시작 marker를 취득하기 전에 발견한다.
+	// 이후 설치자 승인과 등록 시의 동결·재검사는 그대로 수행한다.
+	if CheckRegisteredReadPreparation(ctx, o.MetadataFile, o.SnapshotDir, o.RegistryFile) != nil {
+		return nil, ErrControlledReadHostConfiguration
+	}
 	limits := auditlog.ExtensionLimits{MaxBytes: 8 << 20, MaxEvents: 4096, Timeout: 10 * time.Second}
 	local, err := AcquireControlledReadLocalHost(ctx, manager.pg.DB, authorityDB, ControlledReadLocalHostConfig{BindingFile: o.BindingFile, Supervisor: o.Supervisor, Limits: limits})
 	if err != nil {

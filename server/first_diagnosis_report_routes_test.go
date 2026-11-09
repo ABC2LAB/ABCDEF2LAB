@@ -12,6 +12,13 @@ func TestFirstDiagnosisReportRouteScope(t *testing.T) {
 		method, path string
 		allowed      bool
 	}{
+		{"GET", "/api/tasks/17/access-map", true},
+		{"GET", "/api/tasks/18/access-map", false},
+		{"GET", "/api/tasks/17/access-map?run_ref=past", false},
+		{"GET", "/api/tasks/17/access-map?case_ref=case-1", false},
+		{"GET", "/api/tasks/17/access-map?", false},
+		{"HEAD", "/api/tasks/17/access-map", false},
+		{"POST", "/api/tasks/17/access-map", false},
 		{"GET", "/api/report/diagnostic?task=17", true},
 		{"HEAD", "/api/report/diagnostic?task=17&download=1", true},
 		{"GET", "/api/report/diagnostic/remediation?task=17&audience=internal", true},

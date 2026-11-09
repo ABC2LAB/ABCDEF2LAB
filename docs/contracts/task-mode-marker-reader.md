@@ -1,5 +1,7 @@
 # 작업 모드 marker 읽기 어댑터 초안
 
+> **현재 구현과의 구분 (2026-11-08):** 본문의 runtime 미호출·서버 미연결 표기는 2026-11-02 reader 코어 단계 기록이다. 현재 연결은 [`server/controlled_read_mode.go`](../../server/controlled_read_mode.go)와 [첫 IDOR 통합](first-idor-integration.md)을 확인한다. 아래 파일 검증·root 신뢰·동기화 요구는 유지하며 운영 저장소 연속성 수용 완료를 뜻하지 않는다.
+
 2026-11-02 · 이동찬
 
 범위: [marker 판정표](./task-mode-marker.md)의 FM01~08을 합성 파일로 확인하는 **읽기 전용 어댑터**다. 기존 JSON 형식과 [DB reader callback](./task-mode-db.md) 계약을 유지한다. 실제 root 신뢰 설정·등록 잠금 증명 공급자, 파일 writer의 DB 잠금 참여, 이관·admission·finding/retest 저장 연결은 별도 후속이다. 기존 runtime은 이 reader를 호출하지 않는다.

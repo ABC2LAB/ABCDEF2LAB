@@ -1,5 +1,7 @@
 # 실행·저장 공통 mode DB — 구현 초안
 
+> **현재 구현과의 구분 (2026-11-08):** 본문의 Engine·최초 저장·marker 미연결 표기는 2026-10-30 DB 코어 단계 기록이다. 현재 연결은 [`server/controlled_read_mode.go`](../../server/controlled_read_mode.go)와 [첫 IDOR 통합](first-idor-integration.md)을 확인한다. 아래 단방향 전이·잠금·차단 계약은 유지하며 기존 작업의 자동 이관이나 운영 수용 완료를 뜻하지 않는다.
+
 2026-10-30 · 이동찬 · 검토/피드백용. [순수 모드 판별](../../taskmode/mode.go)
 
 상태: **실제 PostgreSQL reader·단방향 등록·DB 통합 시험 구현. Engine/최초 finding 저장 연결과 기존 파일 marker 이관은 후속.** 팀 최종 저장 규격 확정이나 기존 ARTEX 전체 통신/저장 강제 완료를 뜻하지 않는다.

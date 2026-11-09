@@ -1,5 +1,7 @@
 # 완전 로컬 LLM 허용 정책 코어
 
+> **코어 도입 단계의 범위·검증 기록입니다.** 본문의 서버/profile 연결을 후속으로 둔 표현은 당시 단계의 경계입니다. 현재 provider 연결은 [서버 로컬 모드](local-llm-server-mode.md)와 [로컬 개발 안내](../local-dev-ko.md)를 확인합니다. 아래 입력·신뢰·실패 계약과 코어 단독의 한계는 유지하며, 연결 구현을 실모델 수용이나 제품 전체 망 격리 완료로 해석하지 않습니다.
+
 범위: `llmpolicy.New`·`Policy.Decide`의 순수 판별 계약. 실제 HTTP 요청·dial 검사와 명시적 `Config.NewLocalProvider` 연결은 [로컬 LLM HTTP 어댑터](./local-llm-http.md)에서 관리한다. 서버·profile 자동 배선은 PR #71 병합 이후 별도 작업이다. 이 순수 코어 단독으로 실제 외부 송신 차단이 완료됐다고 설명하지 않는다.
 
 ## 입력과 허용 기준

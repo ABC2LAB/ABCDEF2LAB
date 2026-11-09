@@ -2855,7 +2855,8 @@ body {
   align-self: stretch;
   gap: 2px;
 }
-.top .nav a {
+.top .nav a,
+.top .nav button {
   display: flex;
   align-items: center;
   height: 56px;
@@ -2865,7 +2866,15 @@ body {
   color: #98a2b3;
   border-bottom: 2px solid transparent;
 }
-.top .nav a:hover {
+.top .nav button {
+  background: none;
+  border-top: 0;
+  border-left: 0;
+  border-right: 0;
+  cursor: pointer;
+}
+.top .nav a:hover,
+.top .nav button:hover {
   color: #e4e7ec;
 }
 .top .nav a.cur {

@@ -5,7 +5,7 @@
 
 ## 변경 범위
 
-- 현재 핵심은 요청 전송 통제, 근거 판정, 조회형 IDOR의 서버 통합입니다.
+- 현재 핵심은 온프레미스 AI DAST의 읽기 전용 일반 HTTP 진단·전송 통제·후보·보고서 연결과 별도의 조회형 IDOR 근거 판정입니다. 구현과 실제 모델 수용 상태는 [첫 진단 기동 안내](docs/first-diagnosis-launch.md)를 확인합니다.
 - 담당자가 다른 모듈과 만나는 부분은 입출력·신뢰 입력·실패 처리를 계약으로 맞추고 해당 담당자에게 리뷰를 요청합니다.
 - 구현된 코어, 실제 연결, 시험한 범위, 후속 계획을 구분합니다.
 - 실행·저장 허용을 모델의 설명만으로 결정하지 않습니다. 필수 근거가 없으면 판단불가나 차단 상태를 유지합니다.
@@ -35,7 +35,7 @@ PR과 `dev` push는 [CI](.github/workflows/ci.yml)가 자동으로 검사합니�
 - 1회용 PostgreSQL 16으로 loopback만 있는 망에서 패키지마다 `go test -race`를 돌립니다. DB는 시험 DSN 변수마다 따로 두고 패키지마다 새로 만듭니다. 시험 단위 PASS/FAIL/SKIP 수와 SKIP 목록을 요약에 남깁니다.
 - 평가 스크립트 unittest와 E② 배치 검사기(`deploy/e2-network-boundary`) unittest를 돌립니다. 배치 쪽은 합성 inspect·Compose 렌더링 시험만이고 SKIP은 실패로 봅니다. 실제 Docker를 띄우는 `*_docker.py`는 CI에서 돌지 않습니다.
 
-로컬에서는 `scripts/ci/pg-up.sh <빈 디렉터리>`로 같은 DB를 만들 수 있습니다. 출력 줄을 한 줄씩 `export`하세요. DSN에 `&`가 있어 `source`로 읽으면 값이 잘립니다. 웹(`web/`) 검사는 아직 CI에 없습니다.
+로컬에서는 `scripts/ci/pg-up.sh <빈 디렉터리>`로 같은 DB를 만들 수 있습니다. 출력 줄을 한 줄씩 `export`하세요. DSN에 `&`가 있어 `source`로 읽으면 값이 잘립니다. 웹 검사는 변경 범위에 따라 같은 CI의 Web job에서 수행하거나 명시적으로 생략합니다([Web CI 안내](docs/vercel-ci.md#actions-검증)). CI 성공은 실제 모델·대상 진단이나 UI 실연동 수용 완료가 아닙니다.
 
 프런트엔드 변경은 영향받은 테스트와 변경 파일의 Biome 검사, 정적 빌드·타입 검사를 수행합니다.
 

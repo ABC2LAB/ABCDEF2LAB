@@ -1,6 +1,13 @@
 # abc2lab-ui
 
-`ABC2LAB_UI_1.html` 시안을 React + TypeScript(TSX)로 옮긴 컴포넌트예요. 화면 12개의 마크업 · 스타일 · 동작을 원본 그대로 유지했어요.
+`ABC2LAB_UI_1.html` 시안에서 출발한 React + TypeScript(TSX) UI입니다. 현재 저장소는 Next.js에서 사용하며, 실 API에 연결된 화면과 예시 데이터 화면이 함께 있습니다. 아래 Vite 절차는 컴포넌트 이식 참고이며 현재 제품 기동 절차는 [로컬 개발 안내](../../../docs/local-dev-ko.md)를 따릅니다.
+
+## 현재 연결과 남은 범위
+
+- 작업 목록·상태 등 기존 조회는 `lib/engine.ts`, 요청별 E② 승인·거절·중지는 `lib/request-approvals.ts`와 `RequestApprovalPanel`, 저장 AI 수정 프롬프트는 `lib/remediation.ts`와 `RemediationPanel`을 사용합니다. 구현된 연결과 실제 모델·브라우저 수용 검증은 별개입니다.
+- 첫 통합 진단의 공식 시작은 [CLI `prepare-task → prepare-intents → check → run`](../../../docs/first-diagnosis-launch.md)이며 종료 결과는 `report`로 제공합니다. 주소 입력·화면 전환이나 기존 `POST /api/tasks`를 이 통제 경로의 임의 URL 시작 API로 사용하지 않습니다.
+- 접근통제 지도·구조화 판정 상세·E② 흐름·세분 커버리지의 `lib/kg.ts`, `finding.ts`, `e2flow.ts`, `coverage.ts` getter는 아직 예시 데이터를 반환합니다. 서버 계약/코어의 구현 여부와 이 화면의 연결 여부를 구분합니다.
+- 일반 HTTP 후보는 검토 필요 상태이며 E③ 확정과 다릅니다. API별 경계·보고서 경로는 [UI API 지도](../../../docs/contracts/ui-api-map.md)를 확인합니다.
 
 ## 적용 (Vite + React)
 
@@ -67,6 +74,6 @@ screens/           화면 12개 (Entry, Target, Job, Scope, Live, History, Repor
 ## 참고
 
 - 원본처럼 화면 12개를 모두 마운트해 두고 `hidden` 으로만 전환해요. 화면을 오가도 입력값 · 토글 상태가 유지돼요.
-- 숫자 · 목록은 시안 데이터예요. 각 screens 파일 위쪽 상수(`AREAS`, `ACTIVITY`, `PLAN` …)를 API 응답으로 바꾸면 돼요.
+- 숫자·목록 전체가 시안 데이터인 것은 아닙니다. 실 API 조회와 예시 getter·화면 상수를 구분하고, 미연결 데이터는 예시/준비 중 표기를 유지합니다. getter를 연결할 때도 승인·판정·마스킹 계약을 서버 응답에 맞춰 검증합니다.
 - 소유 확인(DNS TXT) · 허용 목록 검증은 타이머로 성공을 흉내 내는 시안 동작이에요.
 - CSS는 원본처럼 전역(`:root`, `body`, `.btn` …)이에요. 다른 페이지와 같이 쓰면 클래스 이름이 겹칠 수 있어요.

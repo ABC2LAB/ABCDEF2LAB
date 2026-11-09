@@ -14,6 +14,10 @@ func checkLaunch(ctx context.Context, c launchConfig, database bool, stdout, std
 		fmt.Fprintln(stderr, "기동 입력을 확인할 수 없습니다")
 		return 1
 	}
+	if c.Registered != nil && server.CheckRegisteredReadPreparation(ctx, c.Registered.MetadataFile, c.Registered.SnapshotDir, c.Registered.RegistryFile) != nil {
+		fmt.Fprintln(stderr, "등록 GET 준비 자료가 일치하지 않습니다")
+		return 1
+	}
 	report := checkReport{"PASS", "PASS", "PASS", "SKIP", "NOT_ACQUIRED", "NOT_RUN"}
 	if database {
 		pool, err := openLaunchDatabase(ctx, c.RuntimeDSNFile)

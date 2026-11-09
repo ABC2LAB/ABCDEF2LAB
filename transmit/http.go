@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,56 +77,9 @@ func NewHTTP(parent context.Context, cfg Config) (*HTTPTransmitter, error) {
 	if !ip.IsValid() || ip.IsUnspecified() || ip.IsMulticast() || ip.Zone() != "" {
 		return nil, invalid("connection IP")
 	}
-	origin, err := url.Parse(cfg.Origin)
-	if err != nil {
-		return nil, invalid("origin")
-	}
-	addr, err := authority(origin)
-	if err != nil || origin.RawQuery != "" || origin.ForceQuery || origin.Path != "" && origin.Path != "/" {
-		return nil, invalid("origin")
-	}
-	sessions, err := copySessions(cfg.Sessions)
+	addr, sessions, resources, err := prepareReadRegistration(cfg.Origin, cfg.Sessions, cfg.Resources)
 	if err != nil {
 		return nil, err
-	}
-	if len(sessions) == 0 || len(cfg.Resources) == 0 {
-		return nil, invalid("empty registry")
-	}
-	resources := make(map[string]binding, len(cfg.Resources))
-	for _, resource := range cfg.Resources {
-		if !refPattern.MatchString(resource.Ref) || !refPattern.MatchString(resource.ApprovalRef) || !resource.ReadOnly || len(resource.Accounts) == 0 {
-			return nil, invalid("resource registration")
-		}
-		if _, exists := resources[resource.Ref]; exists {
-			return nil, invalid("duplicate resource")
-		}
-		u, err := url.Parse(resource.URL)
-		if err != nil {
-			return nil, invalid("resource URL")
-		}
-		resourceAddr, err := authority(u)
-		if err != nil || u.Scheme != origin.Scheme || resourceAddr != addr {
-			return nil, invalid("resource origin")
-		}
-		// Store the canonical authority used by both the Host header and dial gate.
-		u.Host = addr
-		if _, err := http.NewRequest(http.MethodGet, u.String(), nil); err != nil {
-			return nil, invalid("resource URL")
-		}
-		accounts := make(map[string]bool, len(resource.Accounts))
-		for _, account := range resource.Accounts {
-			if _, exists := sessions[account]; !exists {
-				return nil, invalid("approved account")
-			}
-			accounts[account] = true
-		}
-		rule, err := copyRule(resource.View)
-		if err != nil {
-			return nil, err
-		}
-		resource.View = rule
-		resource.Accounts = append([]string(nil), resource.Accounts...)
-		resources[resource.Ref] = binding{resource, u, accounts}
 	}
 	health, err := newHealthState(cfg.Health, cfg.RequestTimeout, cfg.MinInterval)
 	if err != nil {

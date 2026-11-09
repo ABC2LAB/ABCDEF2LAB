@@ -1,5 +1,7 @@
 # 공식 비교 선언
 
+> **현재 파일의 용도:** `official-35b.json`은 이름을 유지한 **API 개발 측정 프로파일**이다. 실제 `environment.llm.backend`는 `api`, `base_url`은 `https://openrouter.ai/api/v1`, 모델은 `qwen/qwen3.5-35b-a3b`이며 `fixture.preparation_id`는 `anonymous`다. 아래 “공식”이라는 파일명·분류만으로 GPU 로컬 공식 비교에 사용할 수 없다. GPU 로컬 공식 프로파일은 [평가 프로토콜 §5.1·§6](../evaluation-protocol.md)에 따라 비교 시점에 별도로 작성·고정한다. 기존 근거와 과거 모델 기록은 보존한다.
+
 [평가 프로토콜 §5.1](../evaluation-protocol.md)에 따라 결과를 보기 전에 고정하는 비민감 선언만 둔다. 커밋 예외는 `official-*.json`과 그 근거 파일에만 해당한다. 계정·자원 원문, 결과, 회차 기록은 넣지 않는다.
 
 | 파일 | 내용 |

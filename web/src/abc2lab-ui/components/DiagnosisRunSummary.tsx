@@ -1,7 +1,12 @@
 import type { ReactNode } from "react";
 
 import { useApiResource } from "../lib/api";
-import { type RequestApprovalRunState, readDiagnosisRunDisplay } from "../lib/request-approvals";
+import {
+  type RequestApprovalRunState,
+  RUN_COUNT_NOTE,
+  RUN_COUNT_ROWS,
+  readDiagnosisRunDisplay,
+} from "../lib/request-approvals";
 
 /**
  * 진단 실행의 저장된 종료 상태를 보여주는 자족형 카드.
@@ -27,18 +32,6 @@ const OUTCOME: Record<RequestApprovalRunState["outcome"], string> = {
   cancelled: "취소로 종료",
   failed: "실패로 종료",
 };
-
-// attempts 는 E②가 판정 전에 접수한 수(차단분 포함)라 "전송"이 아니다. 실제 대상 송신은 forward_attempted.
-const COUNTS: { key: keyof NonNullable<RequestApprovalRunState["execution"]>["counts"]; label: string }[] = [
-  { key: "attempts", label: "요청 접수" },
-  { key: "allowed", label: "허용" },
-  { key: "denied", label: "차단" },
-  { key: "unsupported", label: "미지원" },
-  { key: "forward_attempted", label: "대상 전송 시도" },
-  { key: "responses", label: "응답 수신" },
-  { key: "unknown", label: "불명" },
-  { key: "calls", label: "호출" },
-];
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -93,7 +86,7 @@ export function DiagnosisRunSummary({ taskId, active }: { taskId: string; active
               <>
                 <Row label="요청 · 전송 집계">
                   <div className="dgrid" style={{ gridTemplateColumns: "repeat(4, 1fr)", gap: 8, margin: "4px 0" }}>
-                    {COUNTS.map(({ key, label }) => (
+                    {RUN_COUNT_ROWS.map(({ key, label }) => (
                       <div className="tile" key={key} style={{ padding: "8px 10px" }}>
                         <div className="k">{label}</div>
                         <div className="v" style={{ fontSize: 18 }}>
@@ -102,9 +95,7 @@ export function DiagnosisRunSummary({ taskId, active }: { taskId: string; active
                       </div>
                     ))}
                   </div>
-                  <span className="hint">
-                    요청 접수는 판정 전에 받은 수라 차단분도 포함해요. 실제로 대상에 보낸 건 대상 전송 시도예요.
-                  </span>
+                  <span className="hint">{RUN_COUNT_NOTE}</span>
                   <div>감사 {data.run.execution.audit_complete ? "완결" : "미완결"}</div>
                 </Row>
                 <Row label="회차 / 정책">
