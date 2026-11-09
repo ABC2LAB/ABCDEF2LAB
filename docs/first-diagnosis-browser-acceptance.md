@@ -33,7 +33,7 @@ CDP 포트는 loopback에만 두고 개인 브라우저나 기존 디버깅 세�
 - ARTEX_FIRST_DIAGNOSIS_BROWSER_NODE: 설치된 Node 실행 파일의 절대 경로.
 - ARTEX_FIRST_DIAGNOSIS_BROWSER_SCRIPT: 같은 Node가 읽을 수 있는 scripts/first-diagnosis-browser.cjs 절대 경로.
 - ARTEX_FIRST_DIAGNOSIS_CDP: 선택 사항. 기본 http://127.0.0.1:49329.
-- ARTEX_FIRST_DIAGNOSIS_BROWSER_OUTPUT: 선택 사항. 브라우저를 실행하는 OS의 비공개 출력 디렉터리.
+- ARTEX_FIRST_DIAGNOSIS_BROWSER_OUTPUT: 필수. 브라우저를 실행하는 OS의 비공개 출력 디렉터리. 새 디렉터리는 0700으로 만들며 공용 임시 경로를 기본값으로 쓰지 않는다. 기존 디렉터리도 비공개 권한으로 준비한다.
 
 WSL에서 Windows Node를 쓰면 NODE는 /mnt/c/.../node.exe,
 SCRIPT는 해당 Windows 프로세스가 읽을 수 있는 WSL UNC 경로를 지정한다.

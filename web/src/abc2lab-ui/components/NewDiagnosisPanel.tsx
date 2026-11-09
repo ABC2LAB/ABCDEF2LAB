@@ -251,6 +251,8 @@ export function NewDiagnosisPanel() {
           {draft.state === "awaiting_approval" && (
             <p>운영자가 이 초안 ID·수정 번호·설정 지문을 실제 task와 단회 권위에 결속해야 해요.</p>
           )}
+          {draft.drain_complete !== undefined && <p>마감 확인: {draft.drain_complete ? "확인됨" : "미확인"}</p>}
+          {draft.result_ready !== undefined && <p>결과 저장: {draft.result_ready ? "확인됨" : "미확인"}</p>}
           {draft.state === "completed" && <p>실행 마감은 취약점 없음이나 목표 달성을 뜻하지 않아요.</p>}
         </div>
       )}

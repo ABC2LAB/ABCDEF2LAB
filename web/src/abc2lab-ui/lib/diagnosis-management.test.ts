@@ -111,26 +111,43 @@ describe("진단 관리 API 공개 응답 검증", () => {
     vi.mocked(apiFetch).mockResolvedValue(envelope(value));
     await expect(readDiagnosisDraft("draft-1")).rejects.toMatchObject({ status: 422 });
   });
-  it("unknown은 결과 준비와 독립이며 결과에는 drain이 필요하다", async () => {
+  it.each([
+    { drain_complete: false, result_ready: false },
+    { drain_complete: false, result_ready: true },
+    { drain_complete: true, result_ready: false },
+    { drain_complete: true, result_ready: true },
+  ])("시작된 unknown의 마감·저장 여부를 독립적으로 보존한다: %o", async (closure) => {
     const value = {
       ...prepared,
       state: "unknown",
-      snapshot: { ...prepared.snapshot, state: "unknown", started: true, drain_complete: true, result_ready: true },
+      snapshot: { ...prepared.snapshot, state: "unknown", started: true, ...closure },
     };
     vi.mocked(apiFetch).mockResolvedValue(envelope(value));
-    expect(await readDiagnosisDraft("draft-1")).toMatchObject({
+    expect(await readDiagnosisDraft("draft-1")).toMatchObject({ state: "unknown", ...closure });
+    expect(await commandDiagnosis({ ...basic, state: "prepared", task_id: "42" }, "start", "start-1")).toMatchObject({
       state: "unknown",
-      drain_complete: true,
-      result_ready: true,
+      ...closure,
     });
-    vi.mocked(apiFetch).mockResolvedValue(
-      envelope({ ...value, snapshot: { ...value.snapshot, drain_complete: false } }),
-    );
-    await expect(readDiagnosisDraft("draft-1")).rejects.toMatchObject({ status: 422 });
   });
-  it("미시작 unknown 조회는 허용하되 시작 응답은 거부한다", async () => {
-    const value = { ...prepared, state: "unknown", snapshot: { ...prepared.snapshot, state: "unknown" } };
+  it.each([
+    { drain_complete: false, result_ready: false },
+    { drain_complete: false, result_ready: true },
+    { drain_complete: true, result_ready: false },
+    { drain_complete: true, result_ready: true },
+  ])("시작되지 않은 unknown snapshot은 조회·시작 응답 모두 거부한다: %o", async (closure) => {
+    const value = {
+      ...prepared,
+      state: "unknown",
+      snapshot: { ...prepared.snapshot, state: "unknown", started: false, ...closure },
+    };
     vi.mocked(apiFetch).mockResolvedValue(envelope(value));
+    await expect(readDiagnosisDraft("draft-1")).rejects.toMatchObject({ status: 422 });
+    await expect(
+      commandDiagnosis({ ...basic, state: "prepared", task_id: "42" }, "start", "start-1"),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+  it("snapshot 없는 unknown 조회는 허용하되 시작 응답은 거부한다", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(envelope({ ...basic, state: "unknown" }));
     expect((await readDiagnosisDraft("draft-1")).state).toBe("unknown");
     await expect(
       commandDiagnosis({ ...basic, state: "prepared", task_id: "42" }, "start", "start-1"),

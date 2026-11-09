@@ -112,6 +112,27 @@ describe("새 진단 안전 제어", () => {
     expect(screen.queryByText("실행 마감")).toBeNull();
   });
 
+  it.each([
+    { drain_complete: false, result_ready: false },
+    { drain_complete: false, result_ready: true },
+    { drain_complete: true, result_ready: false },
+  ])("unknown에서 마감·저장 상태를 표시하고 미완료 보고서 연결을 막는다: %o", async (closure) => {
+    management.storeDiagnosisHandle({ id: "draft-1", creationKey: "create-1" });
+    vi.mocked(management.readDiagnosisDraft).mockResolvedValueOnce({ ...running, state: "unknown", ...closure });
+    mount();
+    expect(await screen.findByText("결과 불명")).toBeVisible();
+    expect(screen.getByText(`마감 확인: ${closure.drain_complete ? "확인됨" : "미확인"}`)).toBeVisible();
+    expect(screen.getByText(`결과 저장: ${closure.result_ready ? "확인됨" : "미확인"}`)).toBeVisible();
+    const link = screen.getByRole("button", { name: "실제 task 상태·보고서 연결" });
+    expect(link).toBeDisabled();
+    fireEvent.click(link);
+    expect(verifyDiagnosisTask).not.toHaveBeenCalled();
+    expect(go).not.toHaveBeenCalled();
+    expect(management.commandDiagnosis).not.toHaveBeenCalled();
+    expect(screen.queryByText("실행 마감")).toBeNull();
+    expect(screen.getByRole("button", { name: "초안·실행 상태 다시 조회" })).toBeEnabled();
+  });
+
   it("목록 장애에도 기존 실행을 서버에서 복구하여 중지할 수 있다", async () => {
     management.storeDiagnosisHandle({ id: "draft-1", creationKey: "create-1" });
     vi.mocked(management.readDiagnosisProfiles).mockRejectedValueOnce(new ApiError(503, "unavailable"));

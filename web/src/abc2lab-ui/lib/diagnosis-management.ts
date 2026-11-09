@@ -118,7 +118,7 @@ function validSnapshot(value: unknown, task: unknown, state: string): boolean {
     case "failed":
       return value.started && value.drain_complete && value.result_ready;
     case "unknown":
-      return !value.result_ready || value.drain_complete;
+      return value.started === true;
     default:
       return false;
   }

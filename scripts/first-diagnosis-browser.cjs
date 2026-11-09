@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // 실제 Chrome CDP와 Next 개발 서버를 사용한다. fetch 응답을 대체하지 않는다.
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const [phase, ui, task] = process.argv.slice(2);
 const cdp = process.env.ARTEX_FIRST_DIAGNOSIS_CDP || "http://127.0.0.1:49329";
-const artifactDir = process.env.ARTEX_FIRST_DIAGNOSIS_BROWSER_OUTPUT || path.join(os.tmpdir(), "abc2lab-first-diagnosis-browser");
-fs.mkdirSync(artifactDir, { recursive: true });
+const artifactDir = process.env.ARTEX_FIRST_DIAGNOSIS_BROWSER_OUTPUT;
+if (!artifactDir) throw new Error("ARTEX_FIRST_DIAGNOSIS_BROWSER_OUTPUT에 비공개 출력 디렉터리를 지정하세요");
+fs.mkdirSync(artifactDir, { recursive: true, mode: 0o700 });
 for (const address of [cdp, ui]) { if (!["127.0.0.1", "localhost", "[::1]"].includes(new URL(address).hostname)) throw new Error("loopback 시험 주소만 허용"); }
 let assertions = 0;
 let diagnose = async () => ({});

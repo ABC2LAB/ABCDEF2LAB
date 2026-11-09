@@ -18,8 +18,8 @@ import (
 
 // 외부 의존성을 설치하지 않는다. 운영자가 이미 설치한 브라우저와 Node 드라이버만 쓴다.
 func TestFirstDiagnosisRealBrowserOwnedPostgres(t *testing.T) {
-	if os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_NODE") == "" || os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_SCRIPT") == "" {
-		t.Skip("NOT_RUN: 설치된 브라우저와 Node 드라이버 경로가 필요함")
+	if os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_NODE") == "" || os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_SCRIPT") == "" || os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_OUTPUT") == "" {
+		t.Skip("NOT_RUN: 설치된 브라우저·Node 드라이버 경로와 비공개 출력 디렉터리가 필요함")
 	}
 	runFirstDiagnosisCombinedAcceptance(t, true)
 }
