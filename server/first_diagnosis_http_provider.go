@@ -10,6 +10,7 @@ import (
 
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/internal/privateinput"
 	"github.com/Autumn-27/artex/transmit"
 )
@@ -93,10 +94,24 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	if ctx == nil || ctx.Err() != nil || e2HTTPNil(supervisor) || len(hooks) > 1 {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
+	policyStarted := time.Now()
+	var policyTask int64
+	policyChecked := false
+	finishStage := func(stage string, err error, reason string, started time.Time) {
+		status, code := diagnosisLogOutcome(ctx, err, reason)
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "stage_finished", TaskID: policyTask, Stage: stage, Status: status, ReasonCode: code, DurationMS: time.Since(started).Milliseconds()})
+	}
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "stage_started", Stage: "e2_policy", Status: "started"})
+	defer func() {
+		if !policyChecked {
+			finishStage("e2_policy", ErrFirstDiagnosisHTTPHost, "e2_policy_failed", policyStarted)
+		}
+	}()
 	authority, err := newFirstDiagnosisHTTPAuthority(ctx, cfg)
 	if err != nil {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
+	policyTask = authority.approval().TaskID
 	h := &FirstDiagnosisHTTPHost{authority: authority, supervisor: supervisor}
 	var hook FirstDiagnosisHTTPHooks
 	if len(hooks) == 1 {
@@ -132,7 +147,12 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 		_ = authority.close()
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
+	policyChecked = true
+	finishStage("e2_policy", nil, "e2_policy_failed", policyStarted)
+	runtimeStarted := time.Now()
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "stage_started", TaskID: policyTask, Stage: "host_startup", Status: "started"})
 	h.runtime, err = NewE2HTTPRuntime(ctx, options)
+	finishStage("host_startup", err, "host_startup_failed", runtimeStarted)
 	if err != nil {
 		authority.revoke()
 		_ = authority.close()

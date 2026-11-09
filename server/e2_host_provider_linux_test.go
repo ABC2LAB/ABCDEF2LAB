@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -14,6 +15,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +28,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/transmit"
 	"golang.org/x/sys/unix"
 )
@@ -459,9 +462,15 @@ func e2HostPolicyFixture(t *testing.T) (FirstDiagnosisHTTPHostConfig, FirstDiagn
 }
 func TestE2HostProviderProductionFactoryUsesProtectedOperatorInputs(t *testing.T) {
 	cfg, grant, policy := e2HostPolicyFixture(t)
+	logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	ctx := diagnosticlog.With(t.Context(), logger)
 	supervisor := &e2HostTestSupervisor{}
 	supervisor.quiescent.Store(true)
-	host, err := NewFirstDiagnosisHTTPHost(t.Context(), cfg, supervisor)
+	host, err := NewFirstDiagnosisHTTPHost(ctx, cfg, supervisor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,6 +487,7 @@ func TestE2HostProviderProductionFactoryUsesProtectedOperatorInputs(t *testing.T
 	if host.Context().Err() == nil {
 		t.Fatal("host close retained unacquired key authority")
 	}
+	verifyHostPolicyDiagnostic(t, logger, "succeeded", cfg.PolicyFile)
 }
 func TestFirstDiagnosisHTTPHostRejectsEvaluationCallerPassthrough(t *testing.T) {
 	cfg, grant, policy := e2HostPolicyFixture(t)
@@ -569,5 +579,85 @@ func TestE2HostProviderUnsafeResultCheckRetainsResources(t *testing.T) {
 	safe = true
 	if err = r.Close(t.Context()); err != nil || !r.ResourcesClosed() {
 		t.Fatal("proven safe retry could not release resources")
+	}
+}
+
+func TestFirstDiagnosisHTTPHostPolicyFailureDiagnostic(t *testing.T) {
+	for _, mode := range []string{"missing", "malformed"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg, grant, _ := e2HostPolicyFixture(t)
+			if mode == "missing" {
+				if err := os.Remove(cfg.PolicyFile); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				raw := []byte(`{"Authorization":"synthetic-secret-policy-body"}`)
+				if err := os.WriteFile(cfg.PolicyFile, raw, 0600); err != nil {
+					t.Fatal(err)
+				}
+				digest := sha256.Sum256(raw)
+				grant.PolicySHA256 = hex.EncodeToString(digest[:])
+				e2HostWriteApproval(t, cfg, grant)
+			}
+			logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", 0, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer logger.Close()
+			supervisor := &e2HostTestSupervisor{}
+			supervisor.quiescent.Store(true)
+			host, err := NewFirstDiagnosisHTTPHost(diagnosticlog.With(t.Context(), logger), cfg, supervisor)
+			if host != nil || !errors.Is(err, ErrFirstDiagnosisHTTPHost) {
+				if host != nil {
+					_ = host.Close(t.Context())
+				}
+				t.Fatal("잘못된 정책이 호스트를 생성함")
+			}
+			verifyHostPolicyDiagnostic(t, logger, "failed", cfg.PolicyFile)
+		})
+	}
+}
+
+func verifyHostPolicyDiagnostic(t *testing.T, logger *diagnosticlog.Logger, want, privatePath string) {
+	t.Helper()
+	if err := logger.Close(); err != nil {
+		t.Fatal("정책 진단 기록 실패", err)
+	}
+	raw, err := os.ReadFile(logger.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{privatePath, "Authorization", "synthetic-secret-policy-body"} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Fatal("정책 진단에 보호 원문 노출")
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	started, finished, hostStarted := 0, 0, 0
+	for {
+		var event diagnosticlog.Event
+		if err := decoder.Decode(&event); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if event.Stage == "host_startup" && event.Event == "stage_started" {
+			hostStarted++
+		}
+		if event.Stage != "e2_policy" {
+			continue
+		}
+		if event.Event == "stage_started" {
+			started++
+		}
+		if event.Event == "stage_finished" {
+			finished++
+			if event.Status != want || want == "failed" && event.ReasonCode != "e2_policy_failed" {
+				t.Fatal("실제 정책 검증과 진단 상태 불일치")
+			}
+		}
+	}
+	if started != 1 || finished != 1 || want == "failed" && hostStarted != 0 || want == "succeeded" && hostStarted != 1 {
+		t.Fatal("정책 검사와 런타임 기동 단계 혼동")
 	}
 }

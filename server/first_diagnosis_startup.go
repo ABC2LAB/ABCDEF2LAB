@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -83,7 +84,13 @@ func (s *Server) firstDiagnosisRoutes(next http.Handler) http.Handler {
 }
 
 // 준비 단계에서는 분해 실패를 원문 목표 fallback으로 숨기지 않는다.
-func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit func(db.Activity)) error {
+func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit func(db.Activity)) (resultErr error) {
+	startedAt := time.Now()
+	defer func() {
+		if t != nil {
+			diagnosisStage(ctx, mustFirstDiagnosisTaskNumber(t.ID), "goal_creation", resultErr, "goal_creation_failed", startedAt)
+		}
+	}()
 	if s == nil || !s.firstDiagnosisPreparation || ctx == nil || ctx.Err() != nil || t == nil || t.Store == nil {
 		return ErrControlledReadHostConfiguration
 	}

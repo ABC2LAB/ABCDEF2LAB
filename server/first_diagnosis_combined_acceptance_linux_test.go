@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,6 +22,8 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
+	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -89,6 +92,16 @@ func TestFirstDiagnosisCombinedApprovalCandidateStoredReportOwnedPostgres(t *tes
 	installer := &db.DB{DB: f.Installer}
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
+	logRoot := firstDiagnosisPrivateTemp(t)
+	if retained := os.Getenv("ARTEX_DIAGNOSTIC_ACCEPTANCE_DIR"); retained != "" {
+		logRoot = retained
+	}
+	logger, err := diagnosticlog.Create(logRoot, "run", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	ctx = diagnosticlog.With(ctx, logger)
 	manager, err := NewFirstDiagnosisManager(ctx, t.TempDir(), f.Runtime)
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +179,8 @@ func TestFirstDiagnosisCombinedApprovalCandidateStoredReportOwnedPostgres(t *tes
 	defer runtime.Close(context.Background())
 	worker := &combinedDiagnosisProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 15 " + target.URL + "/allowed; curl --silent --show-error --max-time 15 " + target.URL + "/denied"}}
 	planner := &firstDiagnosisPlannerProbeProvider{textOnly: true}
-	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: worker, planner: planner})
+	// 합성 공급자는 원문·선택 usage DB 기록 없이 실제 메타데이터 wrapper만 통과한다.
+	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, llmrec.Wrap(&firstDiagnosisRoleRoutedProvider{worker: worker, planner: planner}, nil, "local:synthetic", "", "", "", func() bool { return false }))
 	api := httptest.NewServer(runtime.Handler())
 	defer api.Close()
 	client := &combinedHTTPClient{t: t, server: api}
@@ -373,5 +387,80 @@ running:
 	}
 	if hits.Load() != 1 || worker.calls+planner.calls != modelCalls {
 		t.Fatal("보고서 조회가 모델 또는 대상을 재호출함")
+	}
+	if err := logger.Close(); err != nil || logger.Incomplete() {
+		t.Fatal("진단 로그 마감 또는 관측 불완전", err)
+	}
+	verifyCombinedDiagnosisLog(t, logger.Path(), grant.TaskID, saved.Run.RunRef, worker.result.Trusted.Call.CallRef, modelCalls)
+	if os.Getenv("ARTEX_DIAGNOSTIC_ACCEPTANCE_DIR") != "" {
+		t.Logf("합성 진단 JSONL 보존: %s (송신=1 허용=1 거부=1 후보=1)", logger.Path())
+	}
+}
+
+// 원문이 아닌 합성 이벤트의 관계와 실측 결과만 검증한다.
+func verifyCombinedDiagnosisLog(t *testing.T, path string, task int64, runRef, callRef string, modelCalls int) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, diagnosticlog.MaxBytes+1))
+	if err != nil || int64(len(raw)) > diagnosticlog.MaxBytes {
+		t.Fatal("진단 로그 읽기 한도", err)
+	}
+	for _, secret := range []string{"synthetic-owned-combined-jwt-material", "synthetic-owned-combined-fixture", "Authorization", "owned_fixture", runRef, callRef} {
+		if secret != "" && bytes.Contains(raw, []byte(secret)) {
+			t.Fatal("합성 민감 원문이 진단 로그에 포함됨")
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	events := map[string]int{}
+	modelRoles := map[string]int{}
+	summary := false
+	correlated := false
+	digest := sha256.Sum256([]byte(runRef))
+	expectedRun := hex.EncodeToString(digest[:])
+	callDigest := sha256.Sum256([]byte(callRef))
+	expectedCall := hex.EncodeToString(callDigest[:])
+	var previous uint64
+	for {
+		var event diagnosticlog.Event
+		err := decoder.Decode(&event)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal("JSONL 행 손상", err)
+		}
+		if event.Sequence <= previous || event.TaskID != 0 && event.TaskID != task {
+			t.Fatal("회차 추적 식별자 불일치")
+		}
+		previous = event.Sequence
+		events[event.Event]++
+		if event.Event == "model_call_started" {
+			modelRoles[event.Role]++
+		}
+		if event.RunRef != "" && event.RunRef != expectedRun {
+			t.Fatal("실제 run 해시 불일치")
+		}
+		if event.CallRef == expectedCall && event.IntentID > 0 && event.TaskID == task {
+			correlated = true
+		}
+		if event.Event == "run_summary" {
+			if event.TargetRequests != 1 || event.Approved != 1 || event.Denied != 1 || event.Candidates != 1 || event.Status != "succeeded" || event.ResultStored == nil || !*event.ResultStored || event.AuditComplete == nil || !*event.AuditComplete || event.ExecutionClosed == nil || !*event.ExecutionClosed {
+				t.Fatal("진단 집계가 실제 송신·후보·마감과 다름")
+			}
+			summary = true
+		}
+	}
+	if modelRoles["planner"] == 0 || modelRoles["worker"] == 0 || modelRoles["unknown"] != 0 {
+		t.Fatalf("실제 모델 역할 관측 누락: %v", modelRoles)
+	}
+	if events["model_call_started"] != modelCalls || events["model_call_finished"] != modelCalls {
+		t.Fatalf("실제 모델 호출과 로그 건수 불일치: calls=%d started=%d finished=%d", modelCalls, events["model_call_started"], events["model_call_finished"])
+	}
+	if !summary || !correlated || events["run_finished"] != 1 || events["result_save_finished"] != 1 || events["report_queried"] != 1 || events["planner_finished"] == 0 {
+		t.Fatalf("실제 단계 관측 누락: summary=%v correlation=%v events=%v", summary, correlated, events)
 	}
 }

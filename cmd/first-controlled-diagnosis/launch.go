@@ -50,7 +50,8 @@ func openLaunchDatabase(ctx context.Context, path string) (*sql.DB, error) {
 	return pool, nil
 }
 
-func checkLaunchFiles(c launchConfig) error {
+func checkLaunchFiles(c launchConfig) error { return checkLaunchFilesContext(context.Background(), c) }
+func checkLaunchFilesContext(ctx context.Context, c launchConfig) error {
 	for _, path := range []string{c.DataDir, c.SkillDir} {
 		if checkDirectory(path, false) != nil {
 			return errPreparation
@@ -68,7 +69,9 @@ func checkLaunchFiles(c launchConfig) error {
 	if !valid {
 		return errPreparation
 	}
-	err = server.CheckFirstDiagnosisModelOptions(c.modelOptions(), llmpolicy.ProfileTarget{ID: c.ModelProfileID, Format: c.ModelFormat, BaseURL: c.ModelBaseURL, Model: c.ModelRef})
+	err = diagnosticCheck(ctx, "model_profile", "model_profile_invalid", func() error {
+		return server.CheckFirstDiagnosisModelOptions(c.modelOptions(), llmpolicy.ProfileTarget{ID: c.ModelProfileID, Format: c.ModelFormat, BaseURL: c.ModelBaseURL, Model: c.ModelRef})
+	})
 	if err != nil {
 		return errPreparation
 	}
@@ -100,7 +103,7 @@ func checkLaunchDatabaseRole(ctx context.Context, pool *sql.DB, c launchConfig) 
 	return server.CheckFirstDiagnosisHTTPRuntimeDatabase(ctx, pool)
 }
 
-func runPrepareTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func runPrepareTask(ctx context.Context, args []string, stdout, stderr io.Writer) (code int) {
 	flags := flag.NewFlagSet("prepare-task", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	configPath := flags.String("config", "", "protected launch configuration")
@@ -114,10 +117,21 @@ func runPrepareTask(ctx context.Context, args []string, stdout, stderr io.Writer
 		return 1
 	}
 	cfg, err := readLaunchConfig(*configPath)
-	if err != nil || checkLaunchFiles(cfg) != nil {
+	if err != nil {
 		fmt.Fprintln(stderr, "실행 설정을 사용할 수 없습니다")
 		return 1
 	}
+	ctx, diagnostics, err := beginLaunchDiagnostics(ctx, cfg, "prepare-task", 0, stderr)
+	if err != nil {
+		return 1
+	}
+	stderr = diagnostics.stderr
+	defer diagnostics.finish(&code)
+	diagnostics.next("protected_files", "protected_files_unavailable")
+	if checkLaunchFilesContext(ctx, cfg) != nil {
+		return 1
+	}
+	diagnostics.next("task_creation", "task_creation_failed")
 	raw, err := readPrivateFile(*taskPath, 40<<10)
 	if err != nil {
 		fmt.Fprintln(stderr, "작업 입력을 사용할 수 없습니다")
@@ -129,20 +143,32 @@ func runPrepareTask(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintln(stderr, "작업 입력이 올바르지 않습니다")
 		return 1
 	}
+	diagnostics.next("database", "database_unavailable")
 	pool, err := openLaunchDatabase(ctx, cfg.RuntimeDSNFile)
 	if err != nil {
 		fmt.Fprintln(stderr, "런타임 데이터베이스를 사용할 수 없습니다")
 		return 1
 	}
 	defer pool.Close()
-	if checkLaunchDatabaseRole(ctx, pool, cfg) != nil || checkLaunchProfile(ctx, pool, cfg) != nil {
+	if diagnosticCheck(ctx, "database_role", "database_role_invalid", func() error { return checkLaunchDatabaseRole(ctx, pool, cfg) }) != nil || diagnosticCheck(ctx, "model_profile", "model_profile_invalid", func() error { return checkLaunchProfile(ctx, pool, cfg) }) != nil {
 		fmt.Fprintln(stderr, "런타임 역할 또는 모델 프로필을 확인할 수 없습니다")
+		return 1
+	}
+	diagnostics.next("task_creation", "task_creation_failed")
+	if diagnostics.ready() != nil {
 		return 1
 	}
 	actual, err := server.PrepareFirstDiagnosisTask(ctx, pool, input.Description, input.Goal, cfg.ModelProfileID, input.TimeoutSeconds)
 	if err != nil {
 		fmt.Fprintln(stderr, "작업 생성 결과를 확인할 수 없습니다")
 		return 1
+	}
+	if diagnostics.bindTask(actual.TaskID) != nil {
+		return 1
+	}
+	diagnostics.finish(&code)
+	if code != 0 {
+		return code
 	}
 	if json.NewEncoder(stdout).Encode(actual) != nil {
 		fmt.Fprintln(stderr, "출력을 기록할 수 없습니다")

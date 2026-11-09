@@ -14,6 +14,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
@@ -241,8 +242,15 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 	}
 }
 
-func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+// 첫 진단은 transcript 저장을 끄므로 세션 ID 대신 실제 runtime 역할을 전달한다.
+// 사용량 원장의 기존 역할 선택은 바꾸지 않고 진단 문맥만 보강한다.
+func (r *taskLLMRuntime) diagnosticContext(ctx context.Context) context.Context {
 	ctx = llmrec.WithTaskID(ctx, r.taskID)
+	return diagnosticlog.WithRole(ctx, r.agentKey)
+}
+
+func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	ctx = r.diagnosticContext(ctx)
 	return streamTaskLLM(ctx, r.taskID, req, r.streamHooks())
 }
 
@@ -252,7 +260,7 @@ func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) 
 // duplicated model output or tool execution (the "committed" bookkeeping the
 // streaming path needs is unnecessary here).
 func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	ctx = llmrec.WithTaskID(ctx, r.taskID)
+	ctx = r.diagnosticContext(ctx)
 	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks())
 }
 

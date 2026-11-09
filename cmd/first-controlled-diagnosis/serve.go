@@ -61,14 +61,19 @@ func (d *launchedDiagnosis) Close(ctx context.Context) error {
 }
 
 func startLaunch(ctx context.Context, c launchConfig) (*launchedDiagnosis, error) {
-	if checkLaunchFiles(c) != nil {
+	if diagnosticCheck(ctx, "protected_files", "protected_files_unavailable", func() error { return checkLaunchFilesContext(ctx, c) }) != nil {
 		return nil, errPreparation
 	}
-	pool, err := openLaunchDatabase(ctx, c.RuntimeDSNFile)
+	var pool *sql.DB
+	err := diagnosticCheck(ctx, "database", "database_unavailable", func() error {
+		var openErr error
+		pool, openErr = openLaunchDatabase(ctx, c.RuntimeDSNFile)
+		return openErr
+	})
 	if err != nil {
 		return nil, errPreparation
 	}
-	if checkLaunchDatabaseRole(ctx, pool, c) != nil || checkLaunchProfile(ctx, pool, c) != nil {
+	if diagnosticCheck(ctx, "database_role", "database_role_invalid", func() error { return checkLaunchDatabaseRole(ctx, pool, c) }) != nil || diagnosticCheck(ctx, "model_profile", "model_profile_invalid", func() error { return checkLaunchProfile(ctx, pool, c) }) != nil {
 		_ = pool.Close()
 		return nil, errPreparation
 	}
@@ -116,7 +121,7 @@ func startLaunch(ctx context.Context, c launchConfig) (*launchedDiagnosis, error
 		}
 		return fail(err)
 	}
-	if d.runtime != nil && checkLaunchTaskProfile(ctx, pool, d.runtime.TaskID(), c) != nil {
+	if d.runtime != nil && diagnosticCheck(ctx, "task_binding", "task_binding_failed", func() error { return checkLaunchTaskProfile(ctx, pool, d.runtime.TaskID(), c) }) != nil {
 		return fail(errPreparation)
 	}
 	if d.runtime == nil || d.runtime.TaskID() <= 0 {
@@ -125,7 +130,7 @@ func startLaunch(ctx context.Context, c launchConfig) (*launchedDiagnosis, error
 	return d, nil
 }
 
-func runServe(ctx context.Context, args []string, stdout, stderr io.Writer, execute bool) int {
+func runServe(ctx context.Context, args []string, stdout, stderr io.Writer, execute bool) (code int) {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	path := flags.String("config", "", "protected launch configuration")
@@ -142,11 +147,29 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer, exec
 		fmt.Fprintln(stderr, "실행 설정을 사용할 수 없습니다")
 		return 1
 	}
+	phase := "serve"
+	if execute {
+		phase = "run"
+	}
+	ctx, diagnostics, err := beginLaunchDiagnostics(ctx, c, phase, 0, stderr)
+	if err != nil {
+		return 1
+	}
+	stderr = diagnostics.stderr
+	defer diagnostics.finish(&code)
+	diagnostics.next("host_startup", "host_startup_failed")
 	d, err := startLaunch(ctx, c)
 	if err != nil {
 		fmt.Fprintln(stderr, "엄격 기동을 완료할 수 없습니다. 부분 자원과 마감 결과를 확인해야 합니다")
 		return 1
 	}
+	if diagnostics.bindTask(d.runtime.TaskID()) != nil || diagnostics.ready() != nil {
+		cleanup, cancel := launchCleanupContext(ctx, c)
+		_ = d.Close(cleanup)
+		cancel()
+		return 1
+	}
+	diagnostics.next("report_service", "report_service_failed")
 	listener, err := net.Listen("tcp", c.ListenAddr)
 	if err != nil {
 		cleanup, cancel := launchCleanupContext(ctx, c)
@@ -162,6 +185,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer, exec
 	httpServer := &http.Server{Handler: d.runtime.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10}
 	serving := make(chan error, 1)
 	go func() { serving <- httpServer.Serve(listener) }()
+	diagnostics.next("output", "output_failed")
 	if json.NewEncoder(stdout).Encode(map[string]any{"service_ready": true, "mode": c.Mode, "diagnosis": "NOT_RUN"}) != nil {
 		_ = listener.Close()
 		cleanup, cancel := launchCleanupContext(ctx, c)
@@ -170,6 +194,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer, exec
 		return 1
 	}
 	var runErr error
+	diagnostics.next("execution", "execution_failed")
 	if execute {
 		var intentID int64
 		var snapshot string
@@ -199,18 +224,35 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer, exec
 			}
 		}
 	}
+	if runErr != nil {
+		diagnostics.endError(runErr, "execution_failed")
+	}
+	diagnostics.next("shutdown", "drain_failed")
 	cleanup, cancel := launchCleanupContext(ctx, c)
 	defer cancel()
 	httpErr := httpServer.Shutdown(cleanup)
 	closeErr := d.Close(cleanup)
+	if httpErr != nil || closeErr != nil {
+		diagnostics.endError(errors.Join(httpErr, closeErr), "drain_failed")
+	} else {
+		diagnostics.end("succeeded", "")
+	}
 	if usage := d.supervisor.ModelUsage(); usage != nil {
+		diagnostics.next("output", "output_failed")
 		if json.NewEncoder(stdout).Encode(map[string]any{"model_usage": usage}) != nil {
 			runErr = errPreparation
+			diagnostics.end("failed", "output_failed")
+		} else {
+			diagnostics.end("succeeded", "")
 		}
 	}
 	if runErr != nil || httpErr != nil || closeErr != nil {
 		fmt.Fprintln(stderr, "진단 또는 마감의 성공을 확인할 수 없습니다")
 		return 1
+	}
+	diagnostics.finish(&code)
+	if code != 0 {
+		return code
 	}
 	if execute {
 		report := map[string]any{"service_ready": false, "mode": c.Mode, "execution": "PASS", "closure": "PASS"}

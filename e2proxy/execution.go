@@ -348,7 +348,8 @@ func (c *Call) blockedLocked() Reason {
 	}
 	return Complete
 }
-func (e *Execution) record(ctx context.Context, ev Event) error {
+func (e *Execution) record(ctx context.Context, ev Event) (resultErr error) {
+	defer func() { diagnosticAudit(e.ctx, ev, resultErr) }()
 	e.recordMu.Lock()
 	defer e.recordMu.Unlock()
 	e.mu.Lock()
@@ -1031,6 +1032,9 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, sendErr := client.Do(out)
 	r.ForwardAttempted = ob.forward.Load()
+	if r.ForwardAttempted {
+		diagnosticReceipt(e.ctx, r, "http_forward_attempted", "started", "")
+	}
 	r.RequestWritten = ob.written.Load()
 	r.NotSent = !r.ForwardAttempted
 	if sendErr != nil {
@@ -1042,6 +1046,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	r.ResponseReceived = true
 	r.StatusCode = resp.StatusCode
+	diagnosticReceipt(e.ctx, r, "http_response_received", "succeeded", "")
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, e.cfg.Limits.MaxBodyBytes+1))
 	closeErr := resp.Body.Close()
 	r.ResponseComplete = readErr == nil && closeErr == nil && int64(len(responseBody)) <= e.cfg.Limits.MaxBodyBytes
