@@ -131,9 +131,10 @@ carrier는 최신 [선정 계약](contracts/kg-canary-carrier-stage1.md)의 revi
 현재 launch `check` 경로는 `checkLaunch`의 검사와 선택 DB read 검사이며, `Start`/provider 취득·단회 시작 marker 생성 경로를 호출하지 않는다. 출력의 `providers:NOT_ACQUIRED`, `diagnosis:NOT_RUN`을 유지한다. 다만 **check PASS는 전체 인계 자료 검증이 아니다**.
 
 - 공통 config·일부 보호 경로/JWT·manifest 및 설정 정합을 검사한다.
+- `registered_get` 모드는 [등록 GET 준비 검사](registered-get-handoff.md)의 보호 metadata·snapshot·registry·참조 파일, 조회/응답 규칙, `CheckPairing`과 KG/Source 결속을 함께 확인한다. 이 검사만 수행하려면 모델/JWT/DB 설정 없이 `check-registered-get`을 사용한다.
 - `-database`를 붙이면 실제 runtime schema/역할/모델 profile 등 해당 코드의 조회 검사를 추가한다. 설치/migration/GRANT를 하지 않는다.
 - 등록 GET의 두 DB pool의 동일 DB/서버/schema identity는 이 check에서 대조하지 않는다. 실제 조립/권위 취득 단계의 별도 검증이 필요하다.
-- HTTP policy/authority 원문 내용·실제 권위 취득, 등록 LocalBinding/metadata/registry/snapshot 전체 결속·CheckPairing을 모두 검증했다고 확대하지 않는다. 보호 자료별 검사/실제 공급자 취득의 범위를 별도로 기록한다.
+- HTTP policy/authority 원문 내용·실제 권위 취득과 등록 LocalBinding의 독립 앵커·파일 바이트 승인까지 검증했다고 확대하지 않는다. 준비 파일의 내부 결속과 실제 공급자·실행 권위 취득은 구분한다.
 - helper 실배치·모델 추론·대상 health/reset·A/B 조회·감사/판정/저장 성공을 증명하지 않는다.
 - 실제 자료·접근 권한이 없거나 자리표시자가 남으면 강행하지 않는다. 원문 비밀이 없는 요약만 공유하고 상세 출력은 보호 경로에 보존한다.
 

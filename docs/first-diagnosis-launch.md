@@ -136,6 +136,10 @@ go build -o /srv/first-diagnosis/bin/first-controlled-diagnosis ./cmd/first-cont
 
 ## 등록 GET
 
+실제 모델·DB·실행 권위 기동 전 준비 자료를 검사하려면
+[등록 GET 자료 인계·통신 없는 검사](registered-get-handoff.md)의 `check-registered-get`을 사용한다.
+파일 결속 검사의 성공은 인증·비변경·실제 응답·실행 승인 수용을 대신하지 않는다.
+
 공통 필드와 `mode`를 `registered_get`으로 바꾸고 `general_http` 대신 다음 객체를 둔다.
 
 ```json
