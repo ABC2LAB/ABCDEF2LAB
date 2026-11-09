@@ -83,8 +83,13 @@ func TestDiagnosisRunPersistsClosureFailureOwnedPostgres(t *testing.T) {
 			if failed {
 				closureErr = errors.New("synthetic close failure")
 			}
-			if err = supervisor.PersistRunOutcome(t.Context(), closureErr); err != nil {
-				t.Fatal(err)
+			saved, saveErr := supervisor.PersistRunOutcomeStored(t.Context(), closureErr)
+			if saveErr != nil || !saved {
+				t.Fatalf("actual save not confirmed: stored=%v err=%v", saved, saveErr)
+			}
+			saved, saveErr = supervisor.PersistRunOutcomeStored(t.Context(), closureErr)
+			if saveErr != nil || !saved {
+				t.Fatalf("same canonical stored run not confirmed: stored=%v err=%v", saved, saveErr)
 			}
 			var raw []byte
 			if err = pg.QueryRowContext(t.Context(), `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND origin=$2`, task.ExplorationID, diagnosisRunOrigin).Scan(&raw); err != nil {
