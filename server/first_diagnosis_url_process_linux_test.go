@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -53,6 +55,7 @@ type urlProcessFixture struct {
 	plannerEntered                                                                      chan struct{}
 	releasePlanner                                                                      chan struct{}
 	releaseOnce                                                                         sync.Once
+	multi                                                                               *urlMultiIntentModel
 }
 
 func urlTestWrite(t *testing.T, path string, value any) string {
@@ -79,12 +82,23 @@ func urlTestAddress(t *testing.T) string {
 }
 
 func newURLProcessFixture(t *testing.T) *urlProcessFixture {
+	return newURLProcessFixtureModel(t, nil)
+}
+
+func newURLProcessFixtureModel(t *testing.T, multi *urlMultiIntentModel) *urlProcessFixture {
 	t.Helper()
 	helper := firstDiagnosisNativeHelper(t)
 	database := newControlledLocalDatabaseFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	t.Cleanup(cancel)
 	f := &urlProcessFixture{t: t, ctx: ctx, root: firstDiagnosisPrivateTemp(t), installer: &db.DB{DB: database.Installer}, plannerEntered: make(chan struct{}), releasePlanner: make(chan struct{})}
+	f.multi = multi
+	if multi != nil {
+		t.Cleanup(multi.release)
+		if f.installer.SetSetting(settingWorkers, "2") != nil {
+			t.Fatal("동시 Worker 두 개 설치 실패")
+		}
+	}
 	t.Cleanup(func() { f.releaseOnce.Do(func() { close(f.releasePlanner) }) })
 	f.binary = filepath.Join(f.root, "first-controlled-diagnosis")
 	build := exec.CommandContext(ctx, "go", "build", "-p", "1", "-buildvcs=false", "-o", f.binary, "../cmd/first-controlled-diagnosis")
@@ -156,6 +170,10 @@ func newURLProcessFixture(t *testing.T) *urlProcessFixture {
 	policy.HelperSHA256 = hex.EncodeToString(helperSum[:])
 	policy.StateDir = firstDiagnosisPrivateTemp(t)
 	policy.Rules = []E2HTTPFileRule{{ApprovalDisplay: RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, Ref: "owned-url-rule", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/allowed", PathScopeRef: "owned-url-path", Methods: []string{"GET"}}}
+	if multi != nil {
+		// 두 송신 뒤 마지막 Planner의 기존 양수 잔여 예산 검사를 유지한다.
+		policy.MaxRequests = 3
+	}
 	policy.Runtime.MaxWorkerTurns = 6
 	policy.Runtime.MaxPlannerRounds = 4
 	policy.Runtime.MaxToolCalls = 5
@@ -178,6 +196,19 @@ func newURLProcessFixture(t *testing.T) *urlProcessFixture {
 		t.Fatal("시험 JWT 설치 실패")
 	}
 	dsn := urlRuntimeDSN(t, ctx, database.Runtime)
+	// TCP 시험 DB도 실제 설치와 같이 제어 endpoint에 명시한다. 소켓 DB는 연결 IP가 없다.
+	protectedEndpoints := []any{map[string]any{"host": "127.0.0.1", "port": model.Listener.Addr().(*net.TCPAddr).Port, "addresses": []string{"127.0.0.1"}}}
+	databaseConfig, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal("소유 DB endpoint 파싱 실패")
+	}
+	if !strings.HasPrefix(databaseConfig.Host, "/") {
+		address, err := netip.ParseAddr(databaseConfig.Host)
+		if err != nil {
+			t.Fatal("소유 DB는 Unix 소켓 또는 숫자 IP가 필요함")
+		}
+		protectedEndpoints = append(protectedEndpoints, map[string]any{"host": address.String(), "port": int(databaseConfig.Port), "addresses": []string{address.String()}})
+	}
 	dsnPath := filepath.Join(f.root, "runtime-dsn")
 	if os.WriteFile(dsnPath, []byte(dsn), 0600) != nil {
 		t.Fatal("보호 DSN 설치 실패")
@@ -191,10 +222,10 @@ func newURLProcessFixture(t *testing.T) *urlProcessFixture {
 	apiLaunchHash := urlTestWrite(t, f.apiLaunch, launch)
 	f.socket = filepath.Join(f.root, "prepare.sock")
 	f.installation = filepath.Join(f.root, "installation.json")
-	budget := diagnosisprep.Budget{Requests: 2, ModelRequests: 20, InputTokens: 20 * 131072, OutputTokens: 20 * 2048, DurationSeconds: 120}
+	budget := diagnosisprep.Budget{Requests: int64(policy.MaxRequests), ModelRequests: 20, InputTokens: 20 * 131072, OutputTokens: 20 * 2048, DurationSeconds: 120}
 	urlTestWrite(t, f.installation, map[string]any{
 		"format": "abc2lab.url-preparation-installation/v1", "operator_uid": os.Geteuid(), "state_dir": firstDiagnosisPrivateTemp(t), "runs_dir": firstDiagnosisPrivateTemp(t), "socket_path": f.socket, "report_listen_addr": f.reportAddr, "api_launch": map[string]any{"file": f.apiLaunch, "sha256": apiLaunchHash},
-		"protected_endpoints": []any{map[string]any{"host": "127.0.0.1", "port": model.Listener.Addr().(*net.TCPAddr).Port, "addresses": []string{"127.0.0.1"}}},
+		"protected_endpoints": protectedEndpoints,
 		"profiles": []any{map[string]any{
 			"id": "owned-url", "label": "소유 HTTPS 합성 진단", "principal": "ARTEX", "target_ref": "owned-url-target", "scope_ref": "owned-readonly", "model_profile_ref": "local-synthetic", "model_label": "로컬 합성 모델",
 			"delegation_ref": "owned-url-delegation", "derive_runs": true, "valid_from": validFrom.Add(time.Second), "valid_until": validUntil.Add(-time.Second), "max_runs": 1, "aggregate_budget": budget, "budget": budget,
@@ -235,6 +266,12 @@ func urlRuntimeDSN(t *testing.T, ctx context.Context, pool *sql.DB) string {
 	return dsn
 }
 
+type urlSyntheticMessage struct {
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCallID string          `json:"tool_call_id"`
+}
+
 func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
 	f.modelCalls.Add(1)
 	if r.Method != "POST" || r.URL.Path != "/v1/chat/completions" {
@@ -248,10 +285,7 @@ func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
 				Name string `json:"name"`
 			} `json:"function"`
 		} `json:"tools"`
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
+		Messages []urlSyntheticMessage `json:"messages"`
 	}
 	if json.NewDecoder(io.LimitReader(r.Body, 2<<20)).Decode(&input) != nil || input.Stream {
 		http.Error(w, "bad synthetic request", 400)
@@ -281,10 +315,21 @@ func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
 			case <-r.Context().Done():
 				return
 			}
-			tool("add_intent", "url-planner-intent", map[string]any{"intents": []any{map[string]any{"summary": "Inspect " + f.target + "/allowed through the enforced Bash boundary and preserve a manual-review candidate.", "priority": 5}}})
+			intents := []any{map[string]any{"summary": "Inspect " + f.target + "/allowed through the enforced Bash boundary and preserve a manual-review candidate.", "priority": 5}}
+			if f.multi != nil {
+				intents = append(intents, map[string]any{"summary": "Independently repeat the owned read-only observation at " + f.target + "/allowed and preserve a separate manual-review candidate for the second intent.", "priority": 4})
+			}
+			tool("add_intent", "url-planner-intent", map[string]any{"intents": intents})
 		}
 	case names["Bash"]:
-		switch f.workerCalls.Add(1) {
+		call := f.workerCalls.Add(1)
+		if f.multi != nil {
+			if !f.multi.respond(f, r.Context(), call, input.Messages, tool) {
+				return
+			}
+			break
+		}
+		switch call {
 		case 1:
 			tool("Bash", "url-allowed", map[string]any{"command": "curl --silent --show-error --max-time 2 " + f.target + "/allowed", "timeout_ms": 2500})
 		case 3:

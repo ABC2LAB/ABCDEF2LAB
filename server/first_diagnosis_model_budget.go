@@ -17,6 +17,7 @@ var ErrFirstDiagnosisModelBudget = errors.New("first_diagnosis_model_budget_unav
 // 출력 한도와 직렬화 크기도 호출 전에 검사하며 성공 뒤에도 예약을 환불하지 않는다.
 type FirstDiagnosisModelBudget struct {
 	mu            sync.Mutex
+	callGate      chan struct{}
 	limits        diagnosisprep.Budget
 	inputPerCall  int64
 	outputPerCall int64
@@ -31,7 +32,30 @@ func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, out
 		inputPerCall > limits.InputTokens || outputPerCall > limits.OutputTokens || observe == nil {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
-	return &FirstDiagnosisModelBudget{limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe}, nil
+	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe}, nil
+}
+
+// 같은 회차의 Planner/Worker가 겹쳐도 미확인 사용량을 실패로 오인하지 않는다.
+// 예약 전부터 결과 사용량의 동기 영속 확인까지 한 호출만 gate를 보유한다.
+// 대기 취소는 예약이나 모델 호출을 만들지 않으며 실제 unknown latch는 해제하지 않는다.
+func (b *FirstDiagnosisModelBudget) acquireCall(ctx context.Context) (func(), error) {
+	if b == nil || b.callGate == nil || ctx == nil {
+		return nil, ErrFirstDiagnosisModelBudget
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case b.callGate <- struct{}{}:
+	}
+	release := func() { <-b.callGate }
+	if err := ctx.Err(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
 }
 
 func (*FirstDiagnosisModelBudget) String() string {

@@ -119,6 +119,9 @@ owner_context는 로그인 주체를 구분하는 불투명 식별자이며 인�
 - 일반 public 대상의 특수·사설 주소는 기본 거부한다.
   소유 합성/on-prem 예외도 정확한 origin+port+IP+scope에만 적용한다.
   관리 API·준비 서비스·모델·DB 목적지와 겹치는 target은 예외로도 허용하지 않는다.
+- URL 준비 모드는 설치 로더와 준비 계약에서 허용 메서드를 GET/HEAD로 제한한다.
+  E②는 실제 요청 메서드를 설치 정책과 다시 대조한다. UI 선택지만의 제한은 아니며,
+  다른 모드도 지원하는 공통 E② 전체가 GET/HEAD 전용이라는 뜻은 아니다.
 - GET이 비변경이라는 가정은 없다. 설치 attestation은 실제 prefix와 하위 경로,
   임의 query 및 bounded body라는 기존 E② 표현 범위 전체를 확인해야 한다.
   UI나 프롬프트로 실제 전송 권한이 더 좁아졌다고 주장하지 않는다.
@@ -153,10 +156,28 @@ result_ready=true인 실제 저장 결과만 보고서로 연결하고 마감 �
 설치 구성이 바뀌어 원래 DB 결속을 확인할 수 없으면 다른 task로 추측해 연결하지 않고 조회를 닫는다.
 과거 회차를 새 설치로 이전하는 자동 migration은 이번 범위가 아니다.
 
+### unknown 이후 운영 정지와 복구 한계
+
+unknown 영수증이 하나라도 있으면 같은 준비 서비스 설치의 모든 새 Start는 busy로 닫힌다.
+drain_complete=true는 로컬 실행 수명이 마감됐다는 사실이며, 모델 사용량이나 이미 전송한 외부 요청의
+실제 결과를 확정하는 증거는 아니다. 이번 구현은 마감된 unknown만 예외로 새 시작을 허용하지 않는다.
+
+현재 지원되는 in-place 영수증 재분류·강제 해제·재개 명령은 없다.
+운영자는 보존된 영수증·감사·provider/대상 기록으로 미확인 실행과 사용량을 대조하고,
+기존 예약을 계속 차감한 상태에서 복구 정책을 별도로 승인·검토해야 한다.
+그 뒤 사용할 reconciliation 절차/API는 후속 설계·구현 대상이다.
+journal/head 삭제, state_dir 교체, delegation_ref 변경으로 기존 예약이나 unknown을 우회하는 방식은
+지원 복구가 아니다. 새 설치·새 위임만 만들면 이전 불명 실행이 해소된 것으로 처리하지 않는다.
+이 운영 정지·복구 정책은 첫 실제 대상 수용 전에 팀이 확인해야 할 조건이다.
+
 새 URL 경로의 초기 모델 지원은 설치된 로컬 OpenAI 호환 비스트리밍 profile이다.
 준비와 실행이 공유하는 ledger가 실제 호출 전에 요청 1회, 설치한 전체 context 입력 상한,
 명시적 최대 출력 토큰을 보수적으로 예약한다. 추정 token 수를 hard limit로 사용하지 않는다.
 provider usage와 예약치를 구분하고 usage 미확인·호출 결과 불명 시 후속 호출을 차단한다.
+같은 회차의 Planner·Worker 모델 호출은 공유 gate에서 차례로 기다린다. gate는 예약 전부터
+응답 사용량의 동기 영속 확인까지 유지하며, 대기 취소는 예약·모델 호출을 소비하지 않는다.
+대기 뒤 실제 task/profile 결속과 남은 예산을 다시 확인한다. 실제 호출 오류·usage 누락 또는
+사용량 저장 실패는 기존 unknown 차단을 유지하며 대기 중인 호출도 모델로 보내지 않는다.
 이 예산 모드에서는 SDK 재시도와 HTTP redirect 재전송도 차단한다.
 외부 유료 모델 fallback은 없으며 OpenRouter의 기존 CLI 지원을 URL v2 수용으로 확대하지 않는다.
 
@@ -194,7 +215,7 @@ API 응답 mock이나 사전 task/intent 준비를 성공 근거로 삼지 않�
 추가 모델/대상 호출 0, 권위 미발급·엔진 미시작·drain=true·result_ready=false를 확인했다.
 그 호출의 사용량 미확인을 state=unknown으로 유지한다.
 새 process Stop 시험은 준비 중지이며 Worker 실행 중 Stop까지 새로 시험했다는 주장이 아니다.
-최종 native happy+준비 Stop 패키지는 5.972초 PASS였다.
+모델 동시성 수정 후 native happy+준비 Stop 패키지도 6.691초 PASS였다.
 
 합성 모델·대상은 소유 fixture이며 실제 Qwen 성능 또는 Sparrow 진단 결과가 아니다.
 준비·첫 호출 시간에는 의도적인 Planner 대기·API 재시작이 포함되므로 성능 비교에 사용하지 않는다.
@@ -214,11 +235,44 @@ API 응답 mock이나 사전 task/intent 준비를 성공 근거로 삼지 않�
 - 구체 fixture 설정과 프로세스 수명은 [native 시험](../server/first_diagnosis_url_process_linux_test.go),
   UI PR의 server/first_diagnosis_url_browser_process_linux_test.go와 scripts/url-diagnosis-browser.cjs를 따른다.
 
+### 동시 Worker와 추가 안전 경계 회귀
+
+실제 Planner가 intent 2개를 만들고 Engine Worker 2개가 동시에 실행되는 독립 프로세스 시험을
+추가했다. 첫 Worker의 합성 모델 HTTP 응답을 보류한 300ms 동안 실제 running intent 2,
+worker_started 2, finished 0인 상태에서 Worker HTTP 1·전체 모델 5·예약 5가 유지됐다.
+두 번째 Worker의 대기는 추가 예약·대상 송신을 만들지 않았다.
+
+응답 해제 후 intent done 2·Worker 성공 2·후보 2·확정 0·허용 송신 2·거부 수신 0·run 1,
+drain_complete/result_ready true를 확인했다. 합성 모델 11회(goals 2/Planner 3/Worker 6),
+보고 입력/출력 110/110, 예약 입력/출력 1,441,792/22,528, 비용 USD 0이었다.
+최초 성공 뒤 3회 반복도 3/3 PASS(10.392초)였다.
+처음 두 시험은 허용 송신 2건으로 fixture 요청 상한 2를 소진해 마지막 Planner의 기존
+remaining>0 검사를 통과하지 못했다. 다중 intent fixture 설치 상한만 3으로 정합화했으며,
+실제 송신은 2건이고 제품 예산·E② 정책은 변경하지 않았다.
+이 시험은 일반 CI에서 자동 실행되는 테스트가 아니라 ARTEX_URL_DIAGNOSIS_TEST=1의
+TestFirstDiagnosisURLConcurrentWorkersOwnedPostgres로 별도 실행한 수용시험이다.
+
+공유 예산의 실제 provider wrapper 회귀는 서로 다른 Server/provider가 한 예산을 공유하는 경우,
+대기 취소, 사용량 영속 확인 전 재예약 금지, 대기 중 task/profile 변경, 요청 한도,
+호출 오류·usage 누락/초과·오류와 usage 동시 반환·영속 실패 후 후속 모델 0건을 검사한다.
+준비/API에는 Authorized=false, 준비·실행 중 같은/다른 소유자의 신규 Start,
+Stopping 뒤 늦은 Running, 중복 task, 설치 digest/delegation 변경 차단을 추가했다.
+drain된 unknown의 신규 Start 차단·예약 보존은 서비스 재시작 뒤에도 대조한다.
+
+runtime의 21개 음성/양성 사례는 입력 origin/path/local_only, 보호 endpoint 충돌,
+credentials/attestation/MaxConcurrent, 혼합 DNS 순서·IPv6, Execute의 DNS·digest/delegation
+차단을 실제 부작용 전 확인한다. 정상 pin은 소유 DB TCP probe까지 도달한다.
+DNS 사례는 runtime별 비공개 resolver를 net.Pipe에 연결하므로 전역 resolver나 외부 DNS를
+변경하지 않는다. 운영 생성자는 nil 기본값으로 기존 시스템 resolver를 사용한다.
+리뷰의 가드 공백을 회귀 사례로 보강한 것이며, mutation 도구를 다시 실행해 모든 변이 제거를
+계측했다는 주장은 아니다.
+
 ### 전체 회귀
 
-최종 전체 Go race는 59패키지, 7,142 PASS / 0 FAIL / 11 SKIP이다.
-일반 실행에서 opt-in 때문에 생긴 URL native·Stop·Chrome 및 기존 v1 browser 두 개의 SKIP 5개는
-위 실제 수용시험에서 각각 별도로 PASS했다.
+동시성 수정 후 A의 최종 전체 Go race는 59패키지, 7,222 PASS / 0 FAIL / 11 SKIP이다.
+A 일반 실행에서 opt-in 때문에 생긴 URL native·Stop·동시 Worker 및 기존 v1 browser 두 개의
+SKIP 5개는 실제 수용시험에서 각각 별도로 PASS했다. URL v2 Chrome entry는 B에만 있으며
+위 브라우저 수용으로 별도 확인한다.
 나머지 NOT_RUN 6개는 root chown이 필요한 기존 소유권 검사 5개와
 승인된 외부 private model 설정이 필요한 TestLiveContextReview 1개다.
 
@@ -229,9 +283,11 @@ Go 1.26.3에서 다음을 실행했다.
 - 소유 --network none PostgreSQL 16의 전용 DB와 CI_PG_*를 지정하고 umask 022에서
   scripts/ci/go-test.sh <로컬 비공개 JSON 경로> ./... -race -p 1 -count=1 -timeout 20m
 
-전체 race는 10:40:28Z–10:48:07Z에 실행했다.
+동시성 수정 전 A+B 전체 race는 10:40:28Z–10:48:07Z에 7,142 PASS였고,
+수정 후 A 전체 race는 11:32:22Z–11:40:30Z에 위 7,222 PASS를 확인했다.
 초기 keyword DSN/umask 077 fixture 설정으로 생긴 13 FAIL은 제품 성공으로 계산하지 않았다.
-저장소 CI와 같은 URL DSN/umask로 교정하여 위 전체 결과를 다시 얻었다.
+저장소 CI와 같은 URL DSN/umask로 교정하여 수정 전 전체 결과를 다시 얻었고,
+수정 후에도 같은 소유 DB 설정을 사용했다.
 gofmt·git diff --check도 PASS다.
 
 후속 평가 가드 검증은 전체 scripts/eval 1,586개, E② 배치 55개, Web 변경 감지 13개 PASS다.
