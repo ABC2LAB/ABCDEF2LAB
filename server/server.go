@@ -124,6 +124,7 @@ type Server struct {
 	runtimeHooks                   agent.RuntimeHooks         // immutable callbacks owned by this server
 	localResolver                  *llmpolicy.ProfileResolver // 로컬 전용 정책은 외부 모드와 별도로 보존한다.
 	openRouterPolicy               *llmpolicy.OpenRouterPolicy
+	firstModelBudget               *FirstDiagnosisModelBudget
 	firstDiagnosisPreparation      bool
 	firstModelMu                   sync.RWMutex
 	firstModel                     *firstDiagnosisModelPin
@@ -256,6 +257,7 @@ func newServer(ctx context.Context, m *Manager, skillDir string, dataDir string,
 
 type serverStartupOptions struct {
 	openRouterPolicy     *llmpolicy.OpenRouterPolicy
+	firstModelBudget     *FirstDiagnosisModelBudget
 	existingAuthOnly     bool
 	assemblyStore        *controlledReadStore
 	noAutomaticAdmission bool
@@ -281,7 +283,7 @@ func newServerConfiguredWithOptions(ctx context.Context, m *Manager, skillDir st
 	if err != nil {
 		return nil, fmt.Errorf("[auth] JWT key: %w", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, openRouterPolicy: startup.openRouterPolicy, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, openRouterPolicy: startup.openRouterPolicy, firstModelBudget: startup.firstModelBudget, chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
@@ -496,7 +498,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
-	if s.openRouterPolicy != nil {
+	if s.openRouterPolicy != nil || s.firstModelBudget != nil {
 		// 불명 응답을 재전송하거나 프로필 전환으로 비용 상한을 초기화하지 않는다.
 		cfg.Retry = agent.RetryConfig{ConnectAttempts: -1, EmptyAttempts: -1, StreamAttempts: -1}
 	}
@@ -692,7 +694,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
-	if s.openRouterPolicy != nil {
+	if s.openRouterPolicy != nil || s.firstModelBudget != nil {
 		// 불명 응답을 재전송하거나 프로필 전환으로 비용 상한을 초기화하지 않는다.
 		cfg.Retry = agent.RetryConfig{ConnectAttempts: -1, EmptyAttempts: -1, StreamAttempts: -1}
 	}

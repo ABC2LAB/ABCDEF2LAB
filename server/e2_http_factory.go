@@ -54,6 +54,8 @@ func (E2HTTPAcquired) String() string   { return "server.E2HTTPAcquired[protecte
 func (E2HTTPAcquired) GoString() string { return "server.E2HTTPAcquired[protected]" }
 
 type E2HTTPFileOptions struct {
+	// 새 URL 준비의 상위 설치 위임을 재확인한다. 기존 호출자는 nil을 유지한다.
+	CheckAuthority   func() error
 	RequestApprovals *RequestApprovalService
 	PolicyFile       string
 	OnAcquire        func(context.Context, E2HTTPAcquired) error
@@ -329,10 +331,17 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	policyConfigSHA := hex.EncodeToString(digest[:])
 	expected := E2HTTPExpectedBinding{RunRef: policy.RunRef, ResetRef: policy.ResetRef, PolicyRef: policy.PolicyRef, CaseRef: policy.CaseRef, PolicyRevision: policy.PolicyRevision, BudgetRef: policy.BudgetRef}
 	current := func(checkCtx context.Context) error {
+		if input.CheckAuthority != nil && input.CheckAuthority() != nil {
+			return ErrE2HTTPHost
+		}
 		if checkCtx == nil || checkCtx.Err() != nil || authorityCtx.Err() != nil || input.Authority.CheckRoot(checkCtx) != nil || input.Authority.AuthorizePolicy(checkCtx, digest) != nil {
 			return ErrE2HTTPHost
 		}
 		return nil
+	}
+	var transmissionCheck func() error
+	if input.CheckAuthority != nil {
+		transmissionCheck = func() error { return current(authorityCtx) }
 	}
 	reset := func() (string, error) {
 		if resetBinding != nil {
@@ -407,7 +416,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			recorder = e2HTTPJournalObserver{next: recorder, observe: input.RequestApprovals.observe}
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits})
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits})
 		if createErr != nil {
 			return failed(nil, nil)
 		}

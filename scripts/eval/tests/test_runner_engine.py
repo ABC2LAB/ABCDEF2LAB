@@ -61,10 +61,11 @@ TASK_SHAPES = {
         "bd1e80549787564149575354402cbc5ef17b23308d525a8be00e8633c7526d2e",
     ("server/server_mgmt.go", "func (s *Server) pgActivateProfile("):
         "636fcf4ea39ee15733a7d4cc224ff1553baefdad0f22f931a5e46850f089d85d",
-    # 명시적 OpenRouter 모드에서만 연결·빈 응답·스트림 재시도를 끈다.
-    # 외부 정책이 없는 기존 local-only·평가 경로와 task DTO 계약은 유지한다.
+    # 명시적 OpenRouter 또는 첫 진단 공유 예산 모드에서 연결·빈 응답·스트림 재시도를 끈다.
+    # 정책·예산이 없는 기존 local-only·평가 경로의 Retry와 다른 Config·task DTO 계약은 유지한다.
+    # 두 실제 로더 분기는 server/first_diagnosis_model_budget_loader_linux_test.go에서 대조한다.
     ("server/server.go", "func (s *Server) loadLLMConfig("):
-        "7094d6792af8cc9b2a487c9509b699a2b4b430e2fb8dd381bd29d45a3391a6a1",
+        "fa0f1acd0524e20dc01d795fc71226eaace7ad887715ad49a2fab90414f01689",
     ("server/server.go", "func (s *Server) getLLM("):
         "3578d8622da0f87547261aea06ef17d3f46aa7215906fb122f8f8d3b53776436",
     ("db/config.go", "type LLMProfile struct"):

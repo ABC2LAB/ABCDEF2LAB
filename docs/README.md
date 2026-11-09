@@ -15,6 +15,7 @@
 - [로컬 개발·소스 빌드](local-dev-ko.md)
 - [첫 통합 진단 기동: CLI 준비·점검·실행·저장 보고서](first-diagnosis-launch.md)
 - [첫 진단 환경·권한·입력 준비](first-diagnosis-preparation.md)
+- [URL 기반 자동 준비: 설치 위임·영속 시작·공개 v2 경계](url-diagnosis-preparation.md)
 - [개발용 OpenRouter 연결과 실모델 수용 조건](openrouter-first-diagnosis.md)
 - [UI API 연결 지도](contracts/ui-api-map.md) · [UI 작업 지침](../web/src/abc2lab-ui/README.md)
 - [외부 LLM 사용 진단 사전 공지·승인 양식](external-llm-notice-ko.md)

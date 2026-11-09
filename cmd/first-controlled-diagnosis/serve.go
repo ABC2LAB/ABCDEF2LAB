@@ -61,19 +61,42 @@ func (d *launchedDiagnosis) Close(ctx context.Context) error {
 }
 
 func startLaunch(ctx context.Context, c launchConfig) (*launchedDiagnosis, error) {
+	return startLaunchWithModelBudget(ctx, c, nil)
+}
+
+func startLaunchWithModelBudget(ctx context.Context, c launchConfig, modelBudget *server.FirstDiagnosisModelBudget, checkAuthority ...func() error) (*launchedDiagnosis, error) {
+	if len(checkAuthority) > 1 {
+		return nil, errPreparation
+	}
+	var current func() error
+	if len(checkAuthority) == 1 {
+		current = checkAuthority[0]
+	}
+	return startLaunchWithDatabase(ctx, c, modelBudget, current, openLaunchDatabase)
+}
+
+// URL 모드는 설치 단계에서 검증한 DB bytes를 사용하는 opener를 주입한다.
+func startLaunchWithDatabase(ctx context.Context, c launchConfig, modelBudget *server.FirstDiagnosisModelBudget, current func() error, open func(context.Context, string) (*sql.DB, error)) (*launchedDiagnosis, error) {
+	if open == nil || current != nil && current() != nil {
+		return nil, errPreparation
+	}
 	if diagnosticCheck(ctx, "protected_files", "protected_files_unavailable", func() error { return checkLaunchFilesContext(ctx, c) }) != nil {
 		return nil, errPreparation
 	}
 	var pool *sql.DB
 	err := diagnosticCheck(ctx, "database", "database_unavailable", func() error {
 		var openErr error
-		pool, openErr = openLaunchDatabase(ctx, c.RuntimeDSNFile)
+		pool, openErr = open(ctx, c.RuntimeDSNFile)
 		return openErr
 	})
 	if err != nil {
 		return nil, errPreparation
 	}
 	if diagnosticCheck(ctx, "database_role", "database_role_invalid", func() error { return checkLaunchDatabaseRole(ctx, pool, c) }) != nil || diagnosticCheck(ctx, "model_profile", "model_profile_invalid", func() error { return checkLaunchProfile(ctx, pool, c) }) != nil {
+		_ = pool.Close()
+		return nil, errPreparation
+	}
+	if current != nil && current() != nil {
 		_ = pool.Close()
 		return nil, errPreparation
 	}
@@ -97,7 +120,7 @@ func startLaunch(ctx context.Context, c launchConfig) (*launchedDiagnosis, error
 	}
 	if c.Mode == "general_http" {
 		o := c.HTTP
-		httpRuntime, startErr := server.StartFirstDiagnosisHTTP(ctx, manager, server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: o.PolicyFile, AuthorityFile: o.AuthorityFile, AuthorityRoot: o.AuthorityRoot}, SkillDir: c.SkillDir, DataDir: c.DataDir, KeyDir: c.KeyDir, LocalLLMManifestPath: c.LocalLLMManifestPath, ModelExecutionMode: c.ModelExecutionMode, OpenRouterManifestPath: c.OpenRouterManifestPath, Supervisor: d.supervisor, Shutdown: d.supervisor.Shutdown(), CleanupTimeout: time.Duration(c.ShutdownTimeoutSeconds) * time.Second})
+		httpRuntime, startErr := server.StartFirstDiagnosisHTTP(ctx, manager, server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: o.PolicyFile, AuthorityFile: o.AuthorityFile, AuthorityRoot: o.AuthorityRoot}, SkillDir: c.SkillDir, DataDir: c.DataDir, KeyDir: c.KeyDir, LocalLLMManifestPath: c.LocalLLMManifestPath, ModelExecutionMode: c.ModelExecutionMode, ModelBudget: modelBudget, Hooks: server.FirstDiagnosisHTTPHooks{CheckAuthority: current}, OpenRouterManifestPath: c.OpenRouterManifestPath, Supervisor: d.supervisor, Shutdown: d.supervisor.Shutdown(), CleanupTimeout: time.Duration(c.ShutdownTimeoutSeconds) * time.Second})
 		err = startErr
 		if httpRuntime != nil {
 			d.runtime = httpRuntime
