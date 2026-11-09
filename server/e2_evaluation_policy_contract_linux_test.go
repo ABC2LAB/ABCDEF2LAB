@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -33,6 +34,18 @@ func TestE2EvaluationPolicyDocumentStages(t *testing.T) {
 	base, _ := json.Marshal(template)
 	if _, err := ValidateE2HTTPPolicyDocument(base, false); err != nil {
 		t.Fatal("base policy rejected:", err)
+	}
+	future := policy
+	future.ValidFrom = time.Now().Add(time.Hour)
+	future.ValidUntil = future.ValidFrom.Add(time.Hour)
+	futureRaw, err := json.Marshal(future)
+	if err != nil || json.Unmarshal(futureRaw, &template) != nil {
+		t.Fatal("future fixture encode")
+	}
+	delete(template, "audit_key")
+	futureBase, _ := json.Marshal(template)
+	if _, err := ValidateE2HTTPPolicyDocument(futureBase, false); err != nil {
+		t.Fatal("future offline template rejected:", err)
 	}
 	if _, err := ValidateE2HTTPPolicyDocument(raw, true); err != nil {
 		t.Fatal("prepared policy rejected:", err)
@@ -65,6 +78,44 @@ func TestE2EvaluationPolicyDocumentStages(t *testing.T) {
 				t.Fatal("invalid policy accepted")
 			}
 		})
+	}
+}
+
+// factory의 후속 정적 검사만으로 통과하는 누락 필드를 backend가 직접 거부해야 한다.
+func TestE2StandaloneUsesPreparedDocumentValidation(t *testing.T) {
+	host, _, policy := e2HostPolicyFixture(t)
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]json.RawMessage
+	if json.Unmarshal(raw, &document) != nil {
+		t.Fatal("fixture decode")
+	}
+	delete(document, "evaluation")
+	raw, err = json.Marshal(document)
+	if err != nil || os.WriteFile(host.PolicyFile, raw, 0600) != nil {
+		t.Fatal("incomplete policy write")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	authority := &standaloneAuthorityFixture{ctx: ctx, digest: sha256.Sum256(raw)}
+	factory, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: host.PolicyFile, Authority: authority, Supervisor: standaloneSupervisorFixture{}})
+	if err != nil {
+		t.Fatal("fixture must reach the old factory boundary:", err)
+	}
+	config := e2config.Config{Format: e2config.Format, EvalRunID: "eval-fixture", ReservationRef: "reservation-fixture", ModelTag: "model-fixture", HeaderMode: "preserve", PolicyFile: filepath.Base(host.PolicyFile), AuditKeyFile: policy.AuditKey.File, Listen: ":18432", Upstream: "http://eval-meter-upstream:18432", EvidenceDir: firstDiagnosisPrivateTemp(t), ControlDir: e2ControlPrivateTestDir(t)}
+	configRaw, err := json.Marshal(config)
+	configPath := filepath.Join(host.AuthorityRoot, "e2-config.json")
+	if err != nil || os.WriteFile(configPath, configRaw, 0600) != nil {
+		t.Fatal("config write")
+	}
+	loaded, err := e2config.Load(configPath)
+	if err != nil {
+		t.Fatal("preflight must accept the fixture:", err)
+	}
+	if _, err := NewE2StandaloneBackend(ctx, E2StandaloneOptions{Config: loaded, Authority: authority, Supervisor: standaloneSupervisorFixture{}, Readiness: &standaloneReadinessFixture{}, ExecutionRef: "fixture-execution", ExpectedPolicyFingerprintSHA256: factory.PolicyFingerprintSHA256}); err == nil {
+		t.Fatal("backend accepted a prepared policy without the required evaluation field")
 	}
 }
 

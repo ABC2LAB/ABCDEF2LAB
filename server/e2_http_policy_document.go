@@ -30,7 +30,7 @@ func ValidateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 	if !e2HTTPExactJSON(raw, top, []string{"upstream_ca"}, "evaluation", "upstream_ca") ||
 		policy.Format != E2HTTPFilePolicyFormat || policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope ||
 		policy.HeaderMode == "" || policy.MaxRequests == 0 || policy.MaxRequests > uint64(math.MaxInt) || len(policy.Rules) == 0 || len(policy.Rules) > 128 ||
-		!policy.ValidUntil.After(policy.ValidFrom) || policy.ValidFrom.After(time.Now()) || !policy.ValidUntil.After(time.Now()) {
+		!policy.ValidUntil.After(policy.ValidFrom) {
 		return E2HTTPFilePolicy{}, ErrE2HTTPHost
 	}
 	for _, value := range []string{policy.RunRef, policy.ResetRef, policy.PolicyRef, policy.CaseRef, policy.PolicyRevision, policy.BudgetRef, policy.OwnerRef, policy.AccountRef, policy.SessionRef} {

@@ -24,7 +24,7 @@
 | `approval_mode` | 문자열 필수, 평가에서는 `preauthorized_scope` | 생산자, A. 문서 API·factory·proxy | 포함 |
 | `run_ref`, `reset_ref`, `policy_ref`, `case_ref` | 각각 비어 있지 않은 참조 문자열 필수, `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}` | 신뢰 host/생산자, 준비 전. factory·실제 scope/BindReset 재검증 | 제외 |
 | `policy_revision`, `budget_ref`, `owner_ref`, `account_ref`, `session_ref` | 같은 참조 규칙, 각각 필수 | 신뢰 host/생산자, 준비 전. factory·실행/예산 결속 | 제외 |
-| `valid_from`, `valid_until` | RFC3339 시각 문자열 필수. 시작 ≤ 현재 < 종료, 시작 < 종료 | 승인 공급자, 준비 전. 문서 API·factory·실행 만료 검사 | 제외 |
+| `valid_from`, `valid_until` | RFC3339 시각 문자열 필수, 시작 < 종료. 실제 시작 시에는 시작 ≤ 현재 < 종료 | 승인 공급자, 준비 전. 문서 API는 순서만, factory·실행은 현재 시각/만료 검사 | 제외 |
 | `max_requests` | `uint64` 정수 필수, 1…`math.MaxInt` | 생산자, A. 문서 API·factory·Ledger | 포함 |
 | `header_mode` | 문자열 필수, `preserve`, `evaluation_caller_passthrough`, `protected_session_proposal` 중 하나. 빈 문자열 거부 | 생산자, A. 문서 API·proxy·준비 설정과 backend 대조 | 포함 |
 | `evaluation` | 객체 또는 `null` **필수**. 평가 전달 모드는 객체 필수, 그 외는 `null` | 생산자, A. 문서 API·proxy·준비 설정/실행 대조 | `llm_backend`, `target_kind` 포함, `run_ref` 제외 |
