@@ -13,6 +13,7 @@ import (
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -102,12 +103,23 @@ func TestProductCredentialsOwnedPostgres(t *testing.T) {
 	if f.Installer.QueryRow(`SELECT api_key FROM llm_profiles WHERE id=$1`, id).Scan(&stored) != nil || stored != secret {
 		t.Fatal("key not stored")
 	}
-	if writer.QueryRow(`SELECT api_key FROM llm_profiles WHERE id=$1`, id).Scan(&stored) == nil {
-		t.Fatal("writer can read model key")
+	var permission *pgconn.PgError
+	if e := writer.QueryRow(`SELECT api_key FROM llm_profiles WHERE id=$1`, id).Scan(&stored); !errors.As(e, &permission) || permission.Code != "42501" {
+		t.Fatal("writer key read did not fail with insufficient_privilege")
 	}
-	for _, changed := range []string{strings.Replace(string(body), binding.Model, "unapproved-model", 1), strings.Replace(string(body), binding.ProfileRef, "other-profile", 1), strings.TrimSuffix(string(body), "}") + `,"base_url":"https://other.invalid"}`} {
-		if request("/api/product/model-credentials", changed, session.Token).Code != 400 {
-			t.Fatal("unapproved model settings accepted")
+	for _, test := range []struct{ body, reason string }{
+		{strings.Replace(string(body), binding.Model, "unapproved-model", 1), "invalid_model_credentials"},
+		{strings.Replace(string(body), binding.ProfileRef, "other-profile", 1), "model_not_installed"},
+		{strings.TrimSuffix(string(body), "}") + `,"base_url":"https://other.invalid"}`, "invalid_model_credentials"},
+		{strings.Replace(string(body), secret, "", 1), "invalid_model_credentials"},
+		{strings.Replace(string(body), secret, "bad whitespace key", 1), "invalid_model_credentials"},
+		{strings.Replace(string(body), secret, strings.Repeat("x", 513), 1), "invalid_model_credentials"},
+		{strings.Repeat(" ", 5000) + string(body), "invalid_model_credentials"},
+	} {
+		response := request("/api/product/model-credentials", test.body, session.Token)
+		var failure struct{ Error string }
+		if response.Code != 400 || json.Unmarshal(response.Body.Bytes(), &failure) != nil || failure.Error != test.reason {
+			t.Fatal("unapproved model setting returned the wrong failure")
 		}
 	}
 	revoked = true
@@ -119,5 +131,20 @@ func TestProductCredentialsOwnedPostgres(t *testing.T) {
 	}
 	if _, e = NewProductDiagnosisHandler(context.Background(), f.Runtime, keys, data, endpoint, "", f.Installer, []ProductModelBinding{binding}); e == nil {
 		t.Fatal("privileged writer accepted")
+	}
+	// Each case changes one property of an otherwise valid writer, so a different
+	// privilege guard cannot hide removal of the guard under test.
+	for _, change := range []struct{ grant, restore string }{
+		{"ALTER ROLE " + ident + " CREATEDB", "ALTER ROLE " + ident + " NOCREATEDB"},
+		{"GRANT SELECT(api_key) ON llm_profiles TO " + ident, "REVOKE SELECT(api_key) ON llm_profiles FROM " + ident},
+		{"GRANT UPDATE(model) ON llm_profiles TO " + ident, "REVOKE UPDATE(model) ON llm_profiles FROM " + ident},
+		{"GRANT INSERT ON llm_profiles TO " + ident, "REVOKE INSERT ON llm_profiles FROM " + ident},
+	} {
+		exec(change.grant)
+		_, e = NewProductDiagnosisHandler(t.Context(), f.Runtime, keys, data, endpoint, "", writer, []ProductModelBinding{binding})
+		exec(change.restore)
+		if !errors.Is(e, ErrControlledReadHostConfiguration) {
+			t.Fatal("unsafe writer did not fail with host configuration error")
+		}
 	}
 }

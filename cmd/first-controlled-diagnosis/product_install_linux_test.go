@@ -24,12 +24,22 @@ func TestProductInstallRejectsUnapprovedInputBeforeSideEffects(t *testing.T) {
 		if os.Chmod(root, 0700) != nil {
 			t.Fatal("fixture permissions")
 		}
-		c := map[string]any{"format": "abc2lab.product-install/v1", "database_host": "192.0.2.10", "database_name": "abc2lab", "admin_password": "synthetic-only-install-password", "target_origin": "https://juice.test:9443", "target_ip": "192.0.2.20", "path_prefixes": []string{"/rest/products"}, "allow_private_target": false, "nonmutating_scope_acknowledged": true, "valid_for_hours": 24, "max_runs": 1, "local_model": map[string]any{"model": "owned-synthetic", "base_url": "http://192.0.2.30:8080/v1", "addresses": []string{"192.0.2.30"}, "context_window_k": 128, "max_tokens": 2048}}
+		c := map[string]any{"format": "abc2lab.product-install/v1", "database_host": "192.0.2.10", "database_name": "abc2lab", "admin_password": "synthetic-only-install-password", "target_origin": "https://juice.test:9443", "target_ip": "10.200.0.20", "path_prefixes": []string{"/rest/products"}, "allow_private_target": true, "nonmutating_scope_acknowledged": true, "valid_for_hours": 24, "max_runs": 1, "local_model": map[string]any{"model": "owned-synthetic", "base_url": "http://192.0.2.30:8080/v1", "addresses": []string{"192.0.2.30"}, "context_window_k": 128, "max_tokens": 2048}}
+		input := filepath.Join(root, "input.json")
+		valid, _ := json.Marshal(c)
+		if os.WriteFile(input, valid, 0600) != nil {
+			t.Fatal("private fixture")
+		}
+		var baselineOut, baselineErr bytes.Buffer
+		// The valid baseline reaches missing private-directory setup (1), rather
+		// than another input guard (2), before any DB or persistent state exists.
+		if runProductInstall(t.Context(), []string{"-input", input, "-root", root}, &baselineOut, &baselineErr) != 1 {
+			t.Fatal("invalid baseline hides input guard removal")
+		}
 		for k, v := range change {
 			c[k] = v
 		}
 		raw, _ := json.Marshal(c)
-		input := filepath.Join(root, "input.json")
 		if os.WriteFile(input, raw, 0600) != nil {
 			t.Fatal("private fixture")
 		}

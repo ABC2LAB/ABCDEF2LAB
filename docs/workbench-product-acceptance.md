@@ -14,7 +14,7 @@
 | 시험 대상 | OWASP Juice Shop v15.0.0, 고정 digest·소유 HTTPS front |
 | 모델 | 내부 합성 OpenAI 호환 서버 `product-synthetic` |
 
-Go 바이너리·UI를 같은 제품 Dockerfile에서 빌드했다. 원본 배포 엔진 이미지나 가짜 실행 엔진을 사용하지 않았다. 실제 dev 계열 Planner·Worker·URL v2·E②·후보 저장·보고서 경로를 실행했고, 모델 응답만 합성했다. 후속 문서 커밋은 이 수용 이미지의 실행 출처를 바꾸지 않는다.
+Go 바이너리·UI를 같은 제품 Dockerfile에서 빌드했다. 원본 배포 엔진 이미지나 가짜 실행 엔진을 사용하지 않았다. 실제 dev 계열 Planner·Worker·URL v2·E②·후보 저장·보고서 경로를 실행했고, 모델 응답만 합성했다. 후속 문서·시험 커밋은 이 수용 이미지의 실행 출처를 바꾸지 않는다.
 
 ## 실제 Docker·브라우저 결과
 
@@ -47,7 +47,7 @@ Go 바이너리·UI를 같은 제품 Dockerfile에서 빌드했다. 원본 배�
 ## 회귀 검사
 
 - Web: 34파일, **469 PASS / 0 FAIL**, TypeScript PASS. URL→외부 LLM 펼침→모델·키 등록→범위 조회에서 키가 진단 입력에 섞이지 않는 회귀 포함.
-- 실제 소유 PostgreSQL 제품 검사: 인증·키 열만 쓰기·키 읽기 금지·미승인 모델·설치 변경·privileged writer 거부 PASS. 등록 중 preparation 호출 0.
+- 실제 소유 PostgreSQL 제품 검사: 인증·키 열만 쓰기·키 읽기 SQLSTATE 42501·미승인 모델의 고유 오류·본문 상한·설치 변경·writer 역할/열/테이블별 초과 권한 거부 PASS. 등록 중 preparation 호출 0.
 - Go 전체: 저장소 CI runner의 패키지별 DB 초기화로 **62패키지, 6,726 PASS / 0 FAIL / 344 SKIP**. 별도 제품 5개 검사·실제 DB 키 등록·preflight 호출자 명령 거부 PASS. SKIP은 필요한 시험 입력·소유권·선택 수용 환경 미제공 등이며 통과가 아니다.
 - Go vet·build, 변경 CLI의 darwin/windows 크로스빌드, gofmt·diff PASS.
 - 평가 스크립트 **1,652 PASS**, E② 배치 검사 **55 PASS / SKIP 없음**, Web 변경 감지 **16 PASS**.
