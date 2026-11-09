@@ -68,6 +68,39 @@ func TestE2EvaluationPolicyDocumentStages(t *testing.T) {
 	}
 }
 
+// 자격 헤더 이름은 지문에 들어가는데 오프라인에서는 pin 파일을 읽지 않는다. 틀린 값을 내느니 값을 내지 않는다.
+func TestE2HTTPPolicyContentFingerprintRefusesCredentialRules(t *testing.T) {
+	_, _, policy := e2HostPolicyFixture(t)
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if json.Unmarshal(raw, &document) != nil {
+		t.Fatal("fixture decode")
+	}
+	delete(document, "audit_key")
+	document["header_mode"] = string(e2proxy.HeaderProtectedSessionProposal)
+	withoutCredentials, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint, err := E2HTTPPolicyContentFingerprint(withoutCredentials, false); err != nil || len(fingerprint) != 64 {
+		t.Fatal("protected mode without credentials rejected:", err)
+	}
+	document["rules"].([]any)[0].(map[string]any)["credentials"] = map[string]any{"file": "credentials.json", "sha256": strings.Repeat("a", 64)}
+	withCredentials, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateE2HTTPPolicyDocument(withCredentials, false); err != nil {
+		t.Fatal("credential policy is valid and must stay valid:", err)
+	}
+	if fingerprint, err := E2HTTPPolicyContentFingerprint(withCredentials, false); err == nil || fingerprint != "" {
+		t.Fatal("credential rule produced an offline fingerprint")
+	}
+}
+
 // 기존 Python 준비기가 만든 바이트를 Go의 보호 로더·정책 factory·독립 backend가 함께 소비한다.
 func TestE2EvaluationPythonPrepareGoConsumer(t *testing.T) {
 	python, err := exec.LookPath("python3")
@@ -158,6 +191,12 @@ func TestE2EvaluationPythonPrepareGoConsumer(t *testing.T) {
 	factory, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: c.PolicyPath, Authority: authority, Supervisor: standaloneSupervisorFixture{}})
 	if err != nil {
 		t.Fatal("Go policy factory rejected Python output:", err)
+	}
+	if offline, err := E2HTTPPolicyContentFingerprint(raw, true); err != nil || offline != factory.PolicyFingerprintSHA256 {
+		t.Fatal("offline fingerprint differs from the factory")
+	}
+	if _, err := E2HTTPPolicyContentFingerprint(raw, false); err == nil {
+		t.Fatal("prepared policy accepted as a base policy")
 	}
 	backend, err := NewE2StandaloneBackend(ctx, E2StandaloneOptions{Config: c, Authority: authority, Supervisor: standaloneSupervisorFixture{}, Readiness: &standaloneReadinessFixture{}, ExecutionRef: "fixture-execution", ExpectedPolicyFingerprintSHA256: factory.PolicyFingerprintSHA256})
 	if err != nil {
