@@ -3779,3 +3779,9 @@ button.smm:hover {
   text-decoration: underline;
   cursor: pointer;
 }
+/* live: live-report — 서버 글(발견 요약·증거·보고서 원문·조치 문장)을 줄바꿈 그대로 감싸 보인다 */
+.lv-pre,
+.code.lv-pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
