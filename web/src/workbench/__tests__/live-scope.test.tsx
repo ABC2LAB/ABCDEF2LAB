@@ -232,6 +232,10 @@ describe("범위 확인(live): 엔드포인트 표", () => {
   it("묶음 · 종류(추정) · 개수 · 거르기 · 검색, 포함/제외는 엔진 미지원", async () => {
     renderScope();
     await screen.findByText("/api");
+    // 묶음은 처음에 접혀 있다 → 모두 펼치기
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /^\/api\d/ })).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button", { name: "모두 펼치기" }));
     const boxes = screen.getAllByRole("checkbox");
     expect(boxes).toHaveLength(6);
     for (const b of boxes) {
@@ -254,6 +258,8 @@ describe("범위 확인(live): 엔드포인트 표", () => {
     expect(rowBtn(1)).toBeInTheDocument();
 
     fireEvent.click(chip("전체"));
+    // '전체'로 돌아오면 다시 접힌다
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
     fireEvent.change(screen.getByRole("searchbox", { name: "경로 검색" }), { target: { value: "ORDERS" } });
     expect(screen.getAllByRole("checkbox")).toHaveLength(2);
     // 파라미터 이름으로도 찾는다

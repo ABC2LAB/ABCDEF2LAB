@@ -47,6 +47,8 @@ export function ScopeLive() {
   const eps = usePoll(() => fetchEndpoints(taskId as string), [taskId], { enabled: on });
   const [filter, setFilter] = useState<LiveScopeFilter>("all");
   const [query, setQuery] = useState("");
+  // 묶음 접기·펼치기 (예시 화면과 같은 규칙): 기본은 접힘, 필터·검색 중이면 결과 묶음을 펼침.
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
   const [sel, setSel] = useState<{ id: number; task: string } | null>(null);
 
   const rows = useMemo(() => (eps.data?.assets ?? []).map(epRow), [eps.data]);
@@ -77,6 +79,9 @@ export function ScopeLive() {
   const fn = (SCOPE_FILTERS.find((f) => f[0] === filter) ?? SCOPE_FILTERS[0])[2];
   const q = query.trim().toLowerCase();
   const groups = groupRows(rows.filter((r) => fn(r) && matchesQuery(r, q)));
+  const forced = filter !== "all" || !!q;
+  const isOpen = (g: string) => opened[g] ?? forced;
+  const allOpen = groups.length > 0 && groups.every((x) => isOpen(x.g));
   // 고른 줄: 고른 것이 사라졌으면 표의 첫 줄
   const picked: EpRow | null =
     (sel && sel.task === taskId ? rows.find((r) => r.id === sel.id) : undefined) ?? ordered[0] ?? null;
@@ -89,53 +94,67 @@ export function ScopeLive() {
   else if (!rows.length) table = <p className={s.empty}>엔진이 아직 찾은 엔드포인트가 없습니다.</p>;
   else {
     table = (
-      <div className={s.stbl}>
+      <div className={s.stbl} id="lsTable">
         {groups.length ? (
-          groups.map(({ g, rows: gr }) => (
-            <Fragment key={g}>
-              <div className={s.sgh}>
-                {g}
-                <span className={s.c}>{gr.length}</span>
-                <span className={s.ai}>경로 첫 조각 묶음</span>
-              </div>
-              {gr.map((r) => {
-                const cur = picked?.id === r.id;
-                const seen = now ? relTime(r.ep.last_seen, now) : "";
-                const d = [`파라미터 ${r.ep.params.length}`, seen ? `마지막 관찰 ${seen}` : ""]
-                  .filter(Boolean)
-                  .join(" · ");
-                return (
-                  <div key={r.id} className={cx(s.srow, cur && s.sel)}>
-                    <span className={s.ck}>
-                      <input
-                        type="checkbox"
-                        ref={unknownBox}
-                        aria-label={`${r.m || "?"} ${r.p} 점검에 포함 (엔진 미지원)`}
-                        disabled
-                      />
-                    </span>
-                    <button
-                      className={s.sb}
-                      type="button"
-                      data-lsel={r.id}
-                      aria-current={cur ? "true" : undefined}
-                      onClick={() => {
-                        setSel({ id: r.id, task: taskId });
-                        openInsp();
-                      }}
-                    >
-                      <span className={cx(s.m, s[r.m])}>{r.m || "?"}</span>
-                      <span className={s.p}>
-                        <Pth p={r.p} />
-                      </span>
-                      <span className={s.d}>{d}</span>
-                      <KindTag k={r.k} />
-                    </button>
-                  </div>
-                );
-              })}
-            </Fragment>
-          ))
+          groups.map(({ g, rows: gr }, gi) => {
+            const open = isOpen(g);
+            const apn = gr.filter((r) => r.k === "ap").length;
+            return (
+              <Fragment key={g}>
+                <button
+                  className={s.sgh}
+                  type="button"
+                  aria-expanded={open}
+                  aria-controls={`lsg-${gi}`}
+                  onClick={() => setOpened((o) => ({ ...o, [g]: !open }))}
+                >
+                  <Icon name="chev" />
+                  {g}
+                  <span className={s.c}>{gr.length}</span>
+                  {apn ? <span className={s.sum}>{`${KIND_LABEL.ap} ${apn}`}</span> : null}
+                  <span className={s.ai}>경로 첫 조각 묶음</span>
+                </button>
+                <div id={`lsg-${gi}`} hidden={!open}>
+                  {gr.map((r) => {
+                    const cur = picked?.id === r.id;
+                    const seen = now ? relTime(r.ep.last_seen, now) : "";
+                    const d = [`파라미터 ${r.ep.params.length}`, seen ? `마지막 관찰 ${seen}` : ""]
+                      .filter(Boolean)
+                      .join(" · ");
+                    return (
+                      <div key={r.id} className={cx(s.srow, cur && s.sel)}>
+                        <span className={s.ck}>
+                          <input
+                            type="checkbox"
+                            ref={unknownBox}
+                            aria-label={`${r.m || "?"} ${r.p} 점검에 포함 (엔진 미지원)`}
+                            disabled
+                          />
+                        </span>
+                        <button
+                          className={s.sb}
+                          type="button"
+                          data-lsel={r.id}
+                          aria-current={cur ? "true" : undefined}
+                          onClick={() => {
+                            setSel({ id: r.id, task: taskId });
+                            openInsp();
+                          }}
+                        >
+                          <span className={cx(s.m, s[r.m])}>{r.m || "?"}</span>
+                          <span className={s.p}>
+                            <Pth p={r.p} />
+                          </span>
+                          <span className={s.d}>{d}</span>
+                          <KindTag k={r.k} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Fragment>
+            );
+          })
         ) : (
           <p className={s.empty} style={{ padding: 14 }}>
             조건에 맞는 경로가 없습니다.
@@ -196,7 +215,10 @@ export function ScopeLive() {
                     className={s.fchip}
                     type="button"
                     aria-pressed={filter === k}
-                    onClick={() => setFilter(k)}
+                    onClick={() => {
+                      setFilter(k);
+                      setOpened({});
+                    }}
                   >
                     {label}
                     <span className={s.c}>{rows.filter(f).length}</span>
@@ -209,8 +231,20 @@ export function ScopeLive() {
                 placeholder="경로 검색"
                 aria-label="경로 검색"
                 value={query}
-                onChange={(ev) => setQuery(ev.target.value)}
+                onChange={(ev) => {
+                  setQuery(ev.target.value);
+                  setOpened({});
+                }}
               />
+              <button
+                className={s.sall}
+                type="button"
+                aria-controls="lsTable"
+                hidden={!groups.length}
+                onClick={() => setOpened(Object.fromEntries(groups.map((x) => [x.g, !allOpen])))}
+              >
+                {allOpen ? "모두 접기" : "모두 펼치기"}
+              </button>
             </div>
           ) : null}
           {table}
