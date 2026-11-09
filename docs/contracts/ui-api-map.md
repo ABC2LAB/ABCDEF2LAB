@@ -1,8 +1,14 @@
 # UI ↔ 엔진 API 매핑 (new_web abc2lab-ui → ARTEX Go server)
 
 > 경계 계약. new_web 시안(12화면)을 Go 서버(`/api/*`, dev rewrite→`:8787`)에 배선하기 위한 화면별 엔드포인트 지도.
-> 라우트는 `server/*.go`(246개) 기준, DTO는 `server/dto.go`·`web/src/lib/types.ts`(격리됨, 계약 레퍼런스).
+> 현재 라우트는 `server/server.go`, DTO는 `server/dto.go`·`web/src/lib/types.ts`(격리됨, 계약 레퍼런스).
 > 작성: 이경준. 판정/증거 경계는 [verdict-record.md](verdict-record.md)·[e3-oracle.md](e3-oracle.md), KG 경계는 [kg-policy.md](kg-policy.md).
+
+## 현재 첫 통합 진단의 진입점
+
+현재 공식 시작은 [첫 진단 CLI](../first-diagnosis-launch.md)의 `prepare-task → prepare-intents → check → run`이고, 종료 결과는 `report`로 제공합니다. 기존 `POST /api/tasks`는 ARTEX 일반 실행 API이며 이 통제 경로의 웹 기반 임의 URL 시작 API가 아닙니다. 주소 입력·화면 이동만으로 승인·격리·모델 준비가 끝났다고 표시하지 않습니다.
+
+일반 HTTP 경로는 관찰에 결속된 후보를 `manual_review_required` 등 검토 상태로 저장합니다. 등록 GET·A/B 계정·KG·E③ 확정 경로와 구분하며, 도구 성공·HTTP 200·작업 종료를 취약점 확정으로 바꾸지 않습니다. 아래 기존 도메인 지도와 예시 getter는 현재 첫 진단의 전체 연결 완료를 뜻하지 않습니다.
 
 ## ARTEX 도메인 모델 (전제)
 - **task** = 대상+범위 1회 진단 단위. 생성→control(start/stop)→exploration→findings.
@@ -15,23 +21,26 @@
 
 | 화면 | 주 엔드포인트 | 비고 |
 |---|---|---|
-| **entry** (주소 입력) | `POST /api/tasks` (대상=입력 URL) | 소유확인(DNS TXT)은 현재 UI 전용, 백엔드 라우트 없음 → 폐쇄망 정책상 재검토 |
+| **entry** (주소 입력) | 첫 통합 진단 시작은 CLI. 기존 `POST /api/tasks`는 별도 ARTEX 실행 API | 주소 입력은 현재 UI 흐름이며 통제 진단 시작 API가 아님. DNS TXT 소유확인은 시안 동작이고 백엔드 라우트 없음 |
 | **target** (방식/요약) | `GET /api/tasks/{id}`, `POST /api/tasks/{id}/goals` | 대상 요약·목표 |
 | **job** (작업 설정·제외) | `POST /api/tasks/{id}/scope`, `POST /api/tasks/{id}/intercept-rules` | 제외 경로 = scope 제외 또는 intercept 규칙 |
 | **scope** (범위 확인·엔드포인트 on/off) | `GET /api/tasks/{id}/scope`, `GET /api/tasks/{id}/coverage`, `GET /api/assets`, `GET /api/exploration/findings/asset-tree` | 토글 저장 = scope/intercept-rules PATCH·toggle |
 | **live** (진행 대시보드) | `GET /api/tasks/{id}`, **SSE** `GET /api/exploration/activity/stream`, `GET /api/exploration/findings/stats`, `GET /api/tasks/{id}/coverage` | 실시간 = SSE. control: `POST /api/tasks/{id}/control` |
 | **history** (점검 기록) | `GET /api/tasks`, `GET /api/task-archives` | 목록·아카이브 |
-| **report** (보고서) | `GET /api/tasks/{id}`, `GET /api/exploration/findings`, `GET /api/tasks/{id}/coverage` | 발견 목록·커버리지·위험도 4단 타일 (※ `/api/report`·`/api/stats`는 코드 미사용) |
+| **report** (보고서) | 기존 목록·커버리지 조회 + `GET /api/report/diagnostic?task={id}` | 저장 자료의 종합 HTML 보고서. `audience=internal` 명시 외에는 공유용 DLP. 기존 화면 목록을 일반 HTTP 후보 전체로 간주하지 않음 |
+| **AI 수정 프롬프트** | `GET/POST /api/report/diagnostic/remediation`, `GET /api/report/diagnostic/remediation/prompt` (`task` query) | 저장 번들 조회·생성·현재성 검증 후 복사. `RemediationPanel` 연결. 고객 저장소의 수정·테스트 지시문이며 보고서 생성이 코드를 실행/수정하지 않음 |
 | **finding** (발견 상세·확정) | `GET /api/exploration/findings/{id}`, `/{id}/retests`, `/{id}/lineage`, `GET /api/traffic/exchange` | 증거·HTTP 교환·재시험(E③) |
 | **finding-und** (판단불가) | 위와 동일, 판정=UNDECIDABLE 분기 | 같은 상세 API, 판정값으로 분기 |
-| **approval** (승인) | `GET /api/intercept/pending`, `POST /api/intercept/pending/{id}/decide` | ARTEX 도구 승인 게이트. 실제 송신 E②와의 연결 — 협의: 이동찬 |
+| **approval** (승인) | `GET /api/tasks/{id}/request-approvals`, `GET /api/tasks/{id}/request-approvals/{approvalID}`, `POST /api/tasks/{id}/request-approvals/{approvalID}/decision` | 요청별 E② 승인·거절. `RequestApprovalPanel` 연결. 기존 `/api/intercept/pending`·`/{id}/decide`는 별도 ARTEX 도구 승인 게이트 |
+| **실행 중 상태·중지** | `GET /api/tasks/{id}/request-approvals`, `POST /api/tasks/{id}/request-approvals/stop` | 조회의 `{approvals, run}`에서 live 감독자 상태·drain·마감을 확인. 일반 task control과 별도이며 이미 송신된 요청은 되돌리지 않음 |
+| **저장된 첫 진단 결과** | `GET /api/tasks/{id}/diagnosis-run` | 저장된 준비/마감 상태 조회. 저장 상태가 없으면 404이며 live 감독자 조회나 성공 완료로 대체하지 않음 |
 | **settings** (통제 정책) | `GET/PUT /api/settings`, `GET/POST /api/intercept/rules`, `PUT /api/intercept/tool-config`, `GET /api/llm` | DLP·허용목록·모델 |
 | **audit** (통제 기록) | `GET /api/intercept/task/{id}`(배선됨), `/api/intercept/history` | ARTEX 승인 게이트의 명시적 허용/차단 결정·승인 요청 기록(전체 송신 원장은 아님). 변조탐지·권한분리·우리 E²는 UI 연동 전 |
 
 ## 프로토타입 getter seam — 목업 → 실 API 원스텝 교체점 (11/06)
 
 우리 기여 화면은 **얇은 lib getter 하나**를 데이터 seam으로 쓴다. 레이아웃이 바뀌어도 이 seam·계약은 유지되고,
-실 API 연동 = **그 getter만 fetch로 교체**(화면·fail-closed 규칙 안 건드림). 표현은 presentational 컴포넌트에만,
+실 API 연결은 getter에서 응답을 계약 shape로 변환하고 검증한다(화면의 fail-closed 규칙 유지). 표현은 presentational 컴포넌트에만,
 상태·집계·판정 로직은 lib에.
 
 | 화면 | 데이터 seam(교체점) | 목업 shape 계약 | 실 API 필요(백 소유) | 진입 경로 |
@@ -56,11 +65,15 @@
 - **IDOR 다계정 증거**(수평/수직, 계정 A/B·setup-success): finding 증거 구조에 포함. `idor/` 검증기 ↔ finding. (최민준)
 - **KG 접근통제 지도**(principal×resource 매트릭스): 전용 라우트 없음. `GET /api/tasks/{id}/coverage-graph`가 가장 근접(자산 그래프). KG 매트릭스는 신규 경계 — [kg-policy.md](kg-policy.md). (이경준)
 - **canary/표식**: KG가 등록·분류, 비교기 소비 (kg-policy §3.1).
-- **E② "실제 전송 통제" 범위**: intercept 경로가 실제로 통제하는 경로부터 검증 후 노출("전수 통제" 주장 금지, CLAUDE.md E²).
+- **E② "실제 전송 통제" 범위**: intercept 경로가 실제로 통제하는 경로부터 검증 후 노출("전수 통제" 주장 금지, [E② 지원 범위](e2-proxy-transfer-scope.md)).
 
 ## 열린 항목
 - **인증**: new_web엔 로그인 화면 없음(entry→target 직행). 옛 가드 `proxy.ts`는 `web/_parked/`로 격리(현재 open). 새 디자인용 auth 재설계 필요 — `GET /api/auth/status`·`POST /api/auth/login` 재사용 여부 포함.
 - ~~심각도 4→3 변환~~ → 프론트 4단 유지로 확정(변환 없음).
-- **생성/실행 경로 주의**: `POST /api/tasks`는 레코드 생성이 아니라 `launchTask`→`engine.Run`으로 **엔진 탐색을 실제 개시**함. entry/scope "시작" 버튼은 실행 트리거 → Ollama·Juice Shop 평가환경 + E²(이동찬) 검증 선행. 지금은 읽기 화면부터 배선.
+- **생성/실행 경로 주의**: 기존 `POST /api/tasks`는 `launchTask`로 일반 엔진 탐색을 실제 개시한다. 단순 준비용 레코드 생성이나 첫 통제 진단의 시작 API로 사용하지 않는다. 첫 진단은 위 CLI와 승인된 host 자료·모델 설정·격리 조건을 사용하며 실제 모델·대상·브라우저 수용은 별도 검증한다.
 - **판정(verdict) 미노출**: `FindingDTO`에 verdict(ok/sus/und) 필드 없음 → report/finding의 판정 뱃지·분포는 verdict-record 계약(최민준)+엔진 API 노출(이동찬) 연동 후. 지금은 "준비 중" 표기.
 - 배선 순서: target → scope → live → report/finding → approval → settings/audit (얇은 조회 경로부터, 상태변경·승인은 뒤).
+
+## 구현과 UI 수용의 구분
+
+API 구현 근거는 `server/server.go`, `server/request_approvals.go`, `server/diagnostic_report.go`이며 화면 연결은 `web/src/abc2lab-ui/lib/request-approvals.ts`, `lib/remediation.ts`와 해당 Panel을 확인합니다. 요청별 승인·저장 프롬프트 연결이 존재해도 모든 보고서/후보/판정 화면의 실연동이나 실모델 수용 완료는 아닙니다. 위 getter 표의 KG·판정 상세·E② 흐름·세분 커버리지는 예시와 실제 응답을 구분해야 합니다.

@@ -1,5 +1,7 @@
 # 동기 감사 checkpoint 게시자 — 비활성 통합 코어
 
+> **현재 구현과의 구분 (2026-11-08):** 본문의 서버 실행 경로 미연결 표기는 독립 publisher 코어 단계 기록이다. 현재 개발 연결은 [E② 동기 CPD 서버 연결](e2-durable-audit-server-wiring.md)과 [`server/controlled_read_publisher.go`](../../server/controlled_read_publisher.go)에 있다. 실제 host 인증·권한 분리·복원 anchor 수용과 운영 활성화는 별도이며 아래 감사 계약은 유지한다.
+
 2026-11-03 · 이동찬 · 구현 경계
 
 `auditpublisher`는 새 로컬 HMAC journal의 header, 각 intent/result, 최종 Close를 [CPD 저장 코어](../../auditcheckpoint/store.go)의 현재 head에 동기 게시한다. 이 패키지는 실제 `transmit.Recorder`이지만 서버 실행 경로에는 아직 연결하지 않았다. 실제 인증 서비스·store epoch/복원 anchor·키 공급·모델과 저장소 권한 분리·운영 활성화는 포함하지 않는다.

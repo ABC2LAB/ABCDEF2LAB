@@ -1,5 +1,7 @@
 # E② 네트워크 경계 집행 공통 계약
 
+> **단계 기록과 현재 구현:** 아래 구현 전·등록 GET 한정 상태는 공통 경계를 정한 초기 단계의 기록이며, §7.1 이후 일반 HTTP 요구·수용 기준과 구분합니다. 현재 읽기 전용 일반 HTTP 첫 통합의 코드·CLI·검증 범위는 [첫 진단 기동](../first-diagnosis-launch.md)을 확인합니다. 여기의 NE 수용·권한·격리·감사 계약을 완화하거나 전 경로/운영 수용 완료를 선언하지 않습니다.
+
 상태: **구현 전 제안·팀 검토용. 운영 비활성.** 기준 `dev` `f6450d1` (2026-11-05). 이 문서는 12월 18일 필수 범위의 집행점, A/B 병렬 구현 경계, C 통합 조건을 정한다. 실제 주체·권한자·키·epoch·배포 환경은 발급하거나 확정하지 않는다. 승인·감사·네트워크 분리의 실제 증거가 없으면 기능을 활성화하지 않는다. 평가와 제품의 공통 의미는 [평가 프로토콜 §2](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/evaluation/evaluation-protocol.md#2-평가-대상-고정)·[§8.3](https://github.com/ABC2LAB/ABCDEF2LAB/blob/dev/docs/evaluation/evaluation-protocol.md#83-개선-후-통제-검증--시도별-대조) 및 채택된 #189의 [§6.1](https://github.com/ABC2LAB/ABCDEF2LAB/blob/b598c9a3e4b76e4e624e10d63b8d58c08729c82c/docs/e2-proxy-control-decision-draft.md#61-관측-단계와-상관-id)·[§10](https://github.com/ABC2LAB/ABCDEF2LAB/blob/b598c9a3e4b76e4e624e10d63b8d58c08729c82c/docs/e2-proxy-control-decision-draft.md#10-추가-회신-반영-구현-선택우선순위목표-일정)을 따른다.
 
 ## 1. 현재 근거와 범위

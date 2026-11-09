@@ -1,5 +1,7 @@
 # 로컬 LLM HTTP 어댑터
 
+> **코어 도입 단계의 범위·검증 기록입니다.** 본문의 서버/profile 연결을 후속으로 둔 표현은 당시 단계의 경계입니다. 현재 provider 연결은 [서버 로컬 모드](local-llm-server-mode.md)와 [로컬 개발 안내](../local-dev-ko.md)를 확인합니다. 아래 입력·신뢰·실패 계약과 코어 단독의 한계는 유지하며, 연결 구현을 실모델 수용이나 제품 전체 망 격리 완료로 해석하지 않습니다.
+
 상태: 구현 초안. `llmpolicy.NewClient`와 `agent.Config.NewLocalProvider`를 명시적으로 호출하는 경로만 해당한다. 서버·profile 설정 배선은 PR #71 병합 이후 별도 작업이다. 기존 `Config.NewProvider` 호출이나 다른 클라이언트를 자동으로 통제하지 않는다.
 
 ## 입력과 소유권

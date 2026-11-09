@@ -1,5 +1,7 @@
 # 최초 IDOR host의 최종 감사 Source 연결
 
+> **단계 기록과 현재 코드 구분:** 아래 기준·브랜치·미병합 표시는 작성 당시 기록입니다. #142(`fb219bd`)와 #143(`4e91490`)의 merge commit은 현재 `dev` 이력에 포함됩니다. 현재 구현은 [최초 IDOR 통합](first-idor-integration.md)과 [감사 Source 코드](../../server/controlled_read_audit_source.go)를 확인합니다. 병합은 실제 공급자·운영 권위·실모델 수용 완료가 아닙니다.
+
 ## 기준과 범위
 
 선행 [#142](https://github.com/ABC2LAB/ABCDEF2LAB/pull/142)의 확인 head

@@ -1,5 +1,7 @@
 # HTTP Preview API와 수용시험 계약 (설계 초안)
 
+> **단계 기록과 현재 구현:** 이 문서는 Preview 설계·수용 명세의 초기 기록입니다. 현재 [전송기 Preview](../../transmit/preview.go)와 [단위 시험](../../transmit/preview_test.go)은 구현되어 있습니다. REST/UI 연결 여부와 Preview의 제한은 [REST 제안](e2-preview-rest-proposal.md)을 확인합니다. 아래 계획된 시험 전체의 실행이나 실제 송신 승인을 의미하지 않습니다.
+
 작성: 2026-11-03 · 이동찬 · 팀 검토용
 
 **상태: 문서 제안. Preview 코드·테스트·REST API·UI는 미구현이며, 아래 시험은 실행할 계획이다.** 이 문서의 머지는 기능 구현이나 실행 허가를 뜻하지 않는다.
