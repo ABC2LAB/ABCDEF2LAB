@@ -392,7 +392,7 @@ OpenRouter의 계획 단계 기록만 있으면 `run:null`, `execution:NOT_RUN`�
 `confirmed`로 바꾸지 않는다. 공유 응답은 자유문장·프롬프트·원본 digest를 숨긴다.
 내부 상세와 복사·HTML은 동일한 현재 유효 저장본을 사용하며 생성 과정에서 모델·대상 요청을 보내지 않는다.
 
-TypeScript 연결은 `web/src/abc2lab-ui/lib/request-approvals.ts`의
+TypeScript 연결은 `web/src/lib/diagnosis/request-approvals.ts`의
 `readRequestApprovalState`, `readDiagnosisRun`, 기존 결정/중지 함수와
 `RequestApprovalRunState`/`DiagnosisRunRecord`를 사용한다.
 보고서/조치는 `lib/remediation.ts`의 `readRemediation`, `generateRemediation`,

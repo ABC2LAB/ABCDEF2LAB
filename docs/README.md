@@ -12,12 +12,13 @@
 ## 시작하기
 
 - [프로젝트 목표와 현재 상태](../README.md)
+- [Workbench Docker 제품 설치](../deploy/product/README.md) · [Docker·브라우저 수용 기록](workbench-product-acceptance.md)
 - [로컬 개발·소스 빌드](local-dev-ko.md)
 - [첫 통합 진단 기동: CLI 준비·점검·실행·저장 보고서](first-diagnosis-launch.md)
 - [첫 진단 환경·권한·입력 준비](first-diagnosis-preparation.md)
 - [URL 기반 자동 준비: 설치 위임·영속 시작·공개 v2 경계](url-diagnosis-preparation.md)
 - [개발용 OpenRouter 연결과 실모델 수용 조건](openrouter-first-diagnosis.md)
-- [UI API 연결 지도](contracts/ui-api-map.md) · [UI 작업 지침](../web/src/abc2lab-ui/README.md)
+- [UI API 연결 지도](contracts/ui-api-map.md) · [UI 작업 지침](../web/src/workbench/README.md)
 - [외부 LLM 사용 진단 사전 공지·승인 양식](external-llm-notice-ko.md)
 - [기여와 검증 절차](../CONTRIBUTING.md)
 - [유지보수와 통합 확인](../MAINTAINING.md)
