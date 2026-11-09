@@ -215,9 +215,15 @@ func TestFingerprintPrintsTheContentDigest(t *testing.T) {
 func TestFingerprintIgnoresRunValues(t *testing.T) {
 	base := fingerprintOf(t, nil)
 	for name, edit := range map[string]func(map[string]any){
-		"run_ref":    func(p map[string]any) { p["run_ref"] = "run-2" },
-		"reset_ref":  func(p map[string]any) { p["reset_ref"] = "reset-2" },
-		"window":     func(p map[string]any) { p["valid_until"] = time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339) },
+		"run_ref":   func(p map[string]any) { p["run_ref"] = "run-2" },
+		"reset_ref": func(p map[string]any) { p["reset_ref"] = "reset-2" },
+		"window":    func(p map[string]any) { p["valid_until"] = time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339) },
+		"future_window": func(p map[string]any) {
+			p["valid_from"], p["valid_until"] = time.Now().Add(time.Hour).UTC().Format(time.RFC3339), time.Now().Add(2*time.Hour).UTC().Format(time.RFC3339)
+		},
+		"expired_window": func(p map[string]any) {
+			p["valid_from"], p["valid_until"] = time.Now().Add(-2*time.Hour).UTC().Format(time.RFC3339), time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		},
 		"state_dir":  func(p map[string]any) { p["state_dir"] = "/run/other-state" },
 		"helper":     func(p map[string]any) { p["helper"] = "/opt/other"; p["helper_sha256"] = strings.Repeat("b", 64) },
 		"ca_pin":     func(p map[string]any) { p["ca_cert"].(map[string]any)["sha256"] = strings.Repeat("c", 64) },
