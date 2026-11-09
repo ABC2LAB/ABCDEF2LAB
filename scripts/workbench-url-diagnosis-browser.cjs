@@ -101,10 +101,17 @@ function check(value, code) {
     if (answer.exceptionDetails) throw new Error("browser_evaluation_failed");
     return answer.result.value;
   };
+  // 새로고침·이동 중에는 실행 컨텍스트가 잠깐 사라져 평가가 실패할 수 있다 → 기다리는 동안만 다시 시도한다
   const wait = async (expression, code, timeout = 30000) => {
     const end = Date.now() + timeout;
     while (Date.now() < end) {
-      if (await evaluate(expression)) {
+      let ok = false;
+      try {
+        ok = await evaluate(expression);
+      } catch {
+        ok = false;
+      }
+      if (ok) {
         assertions++;
         return;
       }
