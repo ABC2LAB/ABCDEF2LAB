@@ -2887,6 +2887,8 @@ button.smm:hover {
   border: 1px solid var(--rule);
   border-radius: 6px;
   overflow: hidden;
+  /* .vm 은 세로 flex 라 줄어들 수 있으면 표가 잘리고 스크롤이 안 된다 */
+  flex-shrink: 0;
 }
 .sgh {
   display: flex;
