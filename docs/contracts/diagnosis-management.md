@@ -58,6 +58,7 @@ snapshot은 diagnosis.v1의 task/preparation/state/started/drain_complete/result
 - 초안 생성은 사용자+키에 결속한다. 같은 키·같은 최초 설정은 같은 초안이며 다른 설정은 거부한다.
 - PATCH/validate/start/stop은 현재 revision을 요구한다. 편집하면 검증·승인 결속을 버린다.
 - 시작 직전에 Registry가 사용자 + draft ID + revision + source digest + 실제 task ID + preparation ref + 만료를 다시 확인한다. 검증 때와 승인 내용이 달라지면 시작하지 않는다.
+- 승인 만료 시각은 UTC로 정규화해 비교한다. 같은 시각의 시간대 표현·파싱 위치는 결속을 바꾸지 않으며, 실제 만료 시각·task·preparation 변경은 시작과 시작 전 task 접근을 차단한다.
 - start는 Gateway 호출 전에 key를 기록한다. 응답 유실 뒤 같은 POST도 다시 전달하지 않는다. 다른 key로 시작하려 해도 거부한다.
 - start/stop 응답이 불명이면 unknown으로 보존하고 GET status로 확인한다. 클라이언트와 Gateway transport 모두 자동 재송신하지 않는다.
 - 승인 만료는 시작을 막는다. 이미 시작한 실행의 관측·중지는 기존 실행 결속으로 계속 가능하다.

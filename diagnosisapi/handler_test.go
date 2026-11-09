@@ -19,10 +19,11 @@ import (
 var testConfiguration = Configuration{TargetRef: "owned-loopback", ScopeRef: "read-only", ModelProfileRef: "synthetic", ApprovalMode: "confirm_every_request", Budget: Budget{Requests: 3, Tokens: 100, DurationSeconds: 60}}
 
 type fakeRegistry struct {
-	approved bool
-	invalid  bool
-	removed  bool
-	now      time.Time
+	approved  bool
+	invalid   bool
+	removed   bool
+	now       time.Time
+	transform func(*Binding)
 }
 
 func (f *fakeRegistry) Profiles(context.Context, string) ([]Profile, error) {
@@ -38,6 +39,9 @@ func (f *fakeRegistry) Approval(_ context.Context, owner string, d Draft) (*Bind
 	b := &Binding{Principal: owner, DraftID: d.ID, Revision: d.Revision, SourceDigest: d.SourceDigest, TaskID: "42", PreparationRef: "operator-prepared", ExpiresAt: f.now.Add(time.Minute)}
 	if f.invalid {
 		b.SourceDigest = "changed"
+	}
+	if f.transform != nil {
+		f.transform(b)
 	}
 	return b, nil
 }
@@ -231,6 +235,69 @@ func TestChangedApprovalBlocksStart(t *testing.T) {
 			code, _ := command(t, h, d, "start", "start")
 			if code != 409 || len(g.calls) != 1 {
 				t.Fatal(code, g.calls)
+			}
+		})
+	}
+}
+func TestReboundApprovalBlocksStartAndTaskAccess(t *testing.T) {
+	for name, change := range map[string]func(*Binding){
+		"task":        func(b *Binding) { b.TaskID = "43" },
+		"preparation": func(b *Binding) { b.PreparationRef = "other-preparation" },
+		"expiry":      func(b *Binding) { b.ExpiresAt = b.ExpiresAt.Add(time.Nanosecond) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, reg, g := setup(t)
+			d := create(t, h)
+			reg.approved = true
+			code, data := command(t, h, d, "validate", "")
+			if code != 200 || resultDraft(t, data).State != "prepared" || !h.BoundTask(t.Context(), "alice", "42") {
+				t.Fatal("approval not prepared", code, data)
+			}
+			reg.transform = change
+			if h.BoundTask(t.Context(), "alice", "42") {
+				t.Fatal("changed approval still grants task access")
+			}
+			code, data = command(t, h, d, "start", "start")
+			if code != 409 || string(data["error"]) != `"approval_changed"` {
+				t.Fatal("changed approval accepted", code, data)
+			}
+			code, data = request(t, h, "GET", "/drafts/"+d.ID+"/status", "alice", "", nil)
+			after := resultDraft(t, data)
+			if code != 200 || after.State != "awaiting_approval" || after.TaskID != "" || after.Snapshot != nil || h.BoundTask(t.Context(), "alice", "42") {
+				t.Fatal("stale preparation retained", code, after)
+			}
+			code, data = command(t, h, d, "start", "start")
+			if code != 409 || string(data["error"]) != `"approval_required"` || len(g.calls) != 1 || g.calls[0] != diagnosis.Validate {
+				t.Fatal("changed approval dispatched a command", code, data, g.calls)
+			}
+		})
+	}
+}
+func TestApprovalExpiryTimezoneDoesNotChangeBinding(t *testing.T) {
+	for name, offset := range map[string]int{"UTC": 0, "hours": 9 * 3600, "half_hour": 19800, "negative_half_hour": -12600, "quarter_hour": 20700} {
+		t.Run(name, func(t *testing.T) {
+			h, reg, g := setup(t)
+			d := create(t, h)
+			reg.approved = true
+			expires := reg.now.Add(time.Minute).In(time.FixedZone("", offset)).Format(time.RFC3339)
+			reg.transform = func(b *Binding) {
+				// 보호 registry를 다시 읽는 경우처럼 매번 시각을 새로 파싱한다.
+				var err error
+				b.ExpiresAt, err = time.ParseInLocation(time.RFC3339, expires, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			code, data := command(t, h, d, "validate", "")
+			if code != 200 || resultDraft(t, data).State != "prepared" {
+				t.Fatal("approval not prepared", code, data)
+			}
+			if !h.BoundTask(t.Context(), "alice", "42") || h.BoundTask(t.Context(), "bob", "42") || h.BoundTask(t.Context(), "alice", "43") {
+				t.Fatal("same instant changed task access")
+			}
+			code, data = command(t, h, d, "start", "start")
+			if code != 202 || resultDraft(t, data).State != "running" || len(g.calls) != 2 || g.calls[1] != diagnosis.Start {
+				t.Fatal("same instant blocked start", code, data, g.calls)
 			}
 		})
 	}

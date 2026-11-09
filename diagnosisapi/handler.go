@@ -429,6 +429,8 @@ func (h *Handler) binding(ctx context.Context, s *storedDraft) (*Binding, error)
 		return nil, errInput
 	}
 	copy := *b
+	// 같은 만료 시각은 파싱할 때 생긴 Location 포인터·monotonic 값과 무관하게 비교한다.
+	copy.ExpiresAt = copy.ExpiresAt.UTC()
 	return &copy, nil
 }
 func (h *Handler) call(ctx context.Context, s *storedDraft, b *Binding, cmd diagnosis.Command, key string) error {
