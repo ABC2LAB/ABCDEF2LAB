@@ -15,8 +15,11 @@ import { MOCK } from "./mock";
  * 이 분기는 production 번들에서 제거된다(`process.env.NODE_ENV` 조건은 Next 빌드시 상수 폴딩되어 dead-code 제거).
  */
 
-let token: string | null = null;
-let loginInFlight: Promise<string | null> | null = null;
+/** 로그인할 때마다 새 객체를 만든다. 늦게 온 응답이 지금 세션의 것인지 객체 동일성으로 가린다. */
+type Session = { token: string };
+
+let session: Session | null = null;
+let loginInFlight: Promise<Session | null> | null = null;
 
 const TOKEN_KEY = "abc2lab.devToken";
 
@@ -56,20 +59,22 @@ async function devLogin(): Promise<string | null> {
   }
 }
 
-async function ensureToken(): Promise<string | null> {
-  if (token) return token;
+async function ensureSession(): Promise<Session | null> {
+  if (session) return session;
   const stored = readStoredToken();
   if (stored) {
-    token = stored;
-    return token;
+    session = { token: stored };
+    return session;
   }
   if (!loginInFlight) {
-    loginInFlight = devLogin().then((t) => {
-      token = t;
-      storeToken(t);
-      loginInFlight = null;
-      return t;
+    const attempt: Promise<Session | null> = devLogin().then((value) => {
+      // 기다리는 사이 로그아웃이나 새 로그인이 있었으면 늦은 결과로 지금 세션을 바꾸지 않는다.
+      if (loginInFlight !== attempt) return session;
+      if (value) return startSession(value);
+      dropSession();
+      return null;
     });
+    loginInFlight = attempt;
   }
   return loginInFlight;
 }
@@ -93,8 +98,15 @@ export function subscribeAuthRequired(listener: () => void): () => void {
   };
 }
 
+function startSession(value: string): Session {
+  session = { token: value };
+  storeToken(value);
+  loginInFlight = null;
+  return session;
+}
+
 function dropSession(): void {
-  token = null;
+  session = null;
   storeToken(null);
   loginInFlight = null;
 }
@@ -117,8 +129,7 @@ async function responseError(res: Response): Promise<ApiError> {
 
 /** 저장된 토큰이나 개발용 자동 로그인으로 세션을 잇는다. 토큰의 유효성은 첫 API 응답이 판단한다. */
 export async function restoreSession(): Promise<boolean> {
-  if (MOCK) return true;
-  return (await ensureToken()) !== null;
+  return (await ensureSession()) !== null;
 }
 
 /** 연결 실패는 status 0 인 ApiError 로 알린다. 실패한 시도는 세션을 남기지 않는다. */
@@ -137,8 +148,7 @@ export async function signIn(username: string, password: string): Promise<void> 
   if (!res.ok) throw await responseError(res);
   const data = (await res.json()) as { token?: string };
   if (!data.token) throw new ApiError(502, "로그인 응답을 확인하지 못했어요.");
-  token = data.token;
-  storeToken(token);
+  startSession(data.token);
 }
 
 export function signOut(): void {
@@ -162,21 +172,23 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}, retryAut
 }
 
 async function authenticatedResponse(path: string, init: RequestInit, retryAuth: boolean): Promise<Response> {
-  const t = await ensureToken();
+  const sent = await ensureSession();
   const headers = new Headers(init.headers);
-  if (t) headers.set("Authorization", `Bearer ${t}`);
+  if (sent) headers.set("Authorization", `Bearer ${sent.token}`);
   if (init.body != null && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
 
   const res = await fetch(path, { ...init, headers });
 
   if (res.status === 401) {
-    if (retryAuth) {
+    // 응답을 기다리는 사이 세션이 바뀌었으면 이 401 은 지나간 세션의 것이다. 이 요청만 실패로 끝내고 지금 세션은 건드리지 않는다.
+    if (retryAuth && sent === session) {
       dropSession();
       return authenticatedResponse(path, init, false);
     }
     // 재시도로 회복하지 못했거나 재전송하면 안 되는 요청(승인 결정·중지)이다.
     const error = await responseError(res);
-    requireSignIn();
+    // 본문을 읽는 사이에도 세션이 바뀔 수 있어 읽은 뒤에 확인한다.
+    if (sent === session) requireSignIn();
     throw error;
   }
   if (!res.ok) throw await responseError(res);

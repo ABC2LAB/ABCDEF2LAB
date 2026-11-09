@@ -34,6 +34,190 @@ async function freshApi() {
 beforeEach(() => {
   localStorage.clear();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+const AUTO_USER = "dev-user";
+
+type Held = { path: string; method: string; auth: string | null; respond: (response: Response) => void };
+
+/** 응답 시점을 시험이 정하는 엔진. 사람이 하는 로그인만 바로 답하고 매번 다른 토큰을 준다. */
+function slowEngine() {
+  const held: Held[] = [];
+  let issued = 0;
+  vi.stubGlobal("fetch", (path: string, init: RequestInit = {}) => {
+    if (path === "/api/auth/login" && (JSON.parse(String(init.body)) as { username: string }).username !== AUTO_USER) {
+      issued += 1;
+      return Promise.resolve(json(200, { token: `session-${issued}` }));
+    }
+    return new Promise<Response>((respond) => {
+      held.push({ path, method: init.method ?? "GET", auth: new Headers(init.headers).get("Authorization"), respond });
+    });
+  });
+  return held;
+}
+
+async function heldCount(held: Held[], count: number) {
+  await vi.waitFor(() => expect(held).toHaveLength(count));
+}
+
+describe("지나간 세션의 늦은 401", () => {
+  it("읽기 요청의 늦은 401 은 새 세션을 지우지 않고 다시 로그인하라고 알리지 않는다", async () => {
+    const held = slowEngine();
+    const api = await freshApi();
+    const required = vi.fn();
+    api.subscribeAuthRequired(required);
+    await api.signIn("ARTEX", "pw");
+    const old = api.apiFetch("/api/tasks");
+    await heldCount(held, 1);
+    expect(held[0].auth).toBe("Bearer session-1");
+
+    api.signOut();
+    await api.signIn("ARTEX", "pw");
+    held[0].respond(json(401, { error: "expired" }));
+
+    await expect(old).rejects.toMatchObject({ status: 401 });
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("session-2");
+    expect(required).toHaveBeenCalledTimes(1);
+
+    const next = api.apiFetch("/api/next");
+    await heldCount(held, 2);
+    expect(held[1]).toMatchObject({ path: "/api/next", auth: "Bearer session-2" });
+    held[1].respond(json(200, { ok: true }));
+    await expect(next).resolves.toEqual({ ok: true });
+  });
+
+  it("재전송 금지 요청의 늦은 401 도 새 세션을 지우지 않고 다시 보내지 않는다", async () => {
+    const held = slowEngine();
+    const api = await freshApi();
+    const required = vi.fn();
+    api.subscribeAuthRequired(required);
+    await api.signIn("ARTEX", "pw");
+    const old = api.apiFetch("/api/decide", { method: "POST", body: "{}" }, false);
+    await heldCount(held, 1);
+
+    api.signOut();
+    await api.signIn("ARTEX", "pw");
+    held[0].respond(json(401, { error: "expired" }));
+
+    await expect(old).rejects.toMatchObject({ status: 401, message: "expired" });
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("session-2");
+    expect(required).toHaveBeenCalledTimes(1);
+    expect(held.filter((item) => item.method === "POST")).toHaveLength(1);
+  });
+
+  it("401 본문을 읽는 사이 다시 로그인해도 새 세션을 지우지 않는다", async () => {
+    const held = slowEngine();
+    const api = await freshApi();
+    const required = vi.fn();
+    api.subscribeAuthRequired(required);
+    await api.signIn("ARTEX", "pw");
+    const old = api.apiFetch("/api/decide", { method: "POST", body: "{}" }, false);
+    await heldCount(held, 1);
+
+    let finishBody: (body: unknown) => void = () => undefined;
+    const body = new Promise<unknown>((resolve) => {
+      finishBody = resolve;
+    });
+    const bodyRead = vi.fn(() => body);
+    held[0].respond({ status: 401, ok: false, json: bodyRead } as unknown as Response);
+    await vi.waitFor(() => expect(bodyRead).toHaveBeenCalledTimes(1));
+
+    api.signOut();
+    await api.signIn("ARTEX", "pw");
+    finishBody({ error: "expired" });
+
+    await expect(old).rejects.toMatchObject({ status: 401 });
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("session-2");
+    expect(required).toHaveBeenCalledTimes(1);
+  });
+
+  it("같은 세션의 요청 둘이 함께 만료되면 로그인 요구는 한 번만 한다", async () => {
+    const held = slowEngine();
+    const api = await freshApi();
+    const required = vi.fn();
+    api.subscribeAuthRequired(required);
+    await api.signIn("ARTEX", "pw");
+    const first = api.apiFetch("/api/first");
+    const second = api.apiFetch("/api/second");
+    await heldCount(held, 2);
+
+    held[0].respond(json(401, { error: "expired" }));
+    await heldCount(held, 3);
+    expect(held[2]).toMatchObject({ path: "/api/first", auth: null });
+    held[1].respond(json(401, { error: "expired" }));
+    await expect(second).rejects.toMatchObject({ status: 401 });
+    held[2].respond(json(401, { error: "expired" }));
+    await expect(first).rejects.toMatchObject({ status: 401 });
+
+    expect(required).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+  });
+});
+
+describe("늦게 끝난 개발용 자동 로그인", () => {
+  function useAutoLogin() {
+    vi.stubEnv("NEXT_PUBLIC_ARTEX_DEV_USER", AUTO_USER);
+    vi.stubEnv("NEXT_PUBLIC_ARTEX_DEV_PASS", "dev-pass");
+  }
+
+  it("그사이 로그인한 세션을 자동 로그인 토큰으로 덮지 않는다", async () => {
+    useAutoLogin();
+    const held = slowEngine();
+    const api = await freshApi();
+    const restoring = api.restoreSession();
+    await heldCount(held, 1);
+
+    await api.signIn("ARTEX", "pw");
+    held[0].respond(json(200, { token: "auto-token" }));
+
+    await expect(restoring).resolves.toBe(true);
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("session-1");
+  });
+
+  it("자동 로그인이 실패로 끝나도 그사이 로그인한 세션을 지우지 않는다", async () => {
+    useAutoLogin();
+    const held = slowEngine();
+    const api = await freshApi();
+    const restoring = api.restoreSession();
+    await heldCount(held, 1);
+
+    await api.signIn("ARTEX", "pw");
+    held[0].respond(json(500, { error: "down" }));
+
+    await expect(restoring).resolves.toBe(true);
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("session-1");
+  });
+
+  it("실패한 자동 로그인은 다음 복원 때 다시 시도한다", async () => {
+    useAutoLogin();
+    const held = slowEngine();
+    const api = await freshApi();
+    const first = api.restoreSession();
+    await heldCount(held, 1);
+    held[0].respond(json(500, { error: "down" }));
+    await expect(first).resolves.toBe(false);
+
+    const second = api.restoreSession();
+    await heldCount(held, 2);
+    held[1].respond(json(200, { token: "auto-token" }));
+    await expect(second).resolves.toBe(true);
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("auto-token");
+  });
+
+  it("로그아웃한 뒤 끝난 자동 로그인으로 세션이 되살아나지 않는다", async () => {
+    useAutoLogin();
+    const held = slowEngine();
+    const api = await freshApi();
+    const restoring = api.restoreSession();
+    await heldCount(held, 1);
+
+    api.signOut();
+    held[0].respond(json(200, { token: "auto-token" }));
+
+    await expect(restoring).resolves.toBe(false);
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+  });
 });
 
 describe("로그인 세션", () => {
