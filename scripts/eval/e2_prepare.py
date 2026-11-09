@@ -21,7 +21,8 @@ CONFIG_FORMAT = "abc2lab.e2-runner-config/v1"
 CONFIG_NAME, POLICY_NAME, KEY_NAME = "e2-config.json", "policy.json", "audit.key"
 CONTAINER_EVIDENCE_DIR, CONTAINER_CONTROL_DIR = "/evidence", "/run/e2-control"
 AUDIT_KEY_BYTES = 32
-MAX_POLICY_BYTES = 1024 * 1024
+# e2config.MaxPolicyBytes와 같아야 한다. 더 크면 제품 쪽 로더가 거부한다.
+MAX_POLICY_BYTES = 256 * 1024
 # 평가 회차에는 요청마다 승인할 사람이 없다. 확인 모드면 첫 요청에서 시한까지 멈춘다.
 EVAL_APPROVAL_MODE = "preauthorized_scope"
 _PRIVATE_DIR_MODE, _PRIVATE_FILE_MODE = 0o700, 0o600
@@ -111,14 +112,38 @@ def _read_policy(source: Path) -> bytes:
     return data
 
 
-def _check_approval_mode(policy: bytes) -> None:
-    """정책 원문은 그대로 복사한다. 여기서는 승인 모드만 본다."""
+def _no_duplicate_keys(pairs: list) -> dict:
+    document: dict = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("duplicate key")
+        document[key] = value
+    return document
+
+
+def _read_document(policy: bytes) -> dict:
+    """검토·동결한 정책을 읽는다. 다시 직렬화하면 중복 키가 조용히 사라지므로 여기서 거부한다."""
     try:
-        document = json.loads(policy)
+        document = json.loads(policy, object_pairs_hook=_no_duplicate_keys)
     except (ValueError, RecursionError):
         _fail("policy_invalid")
     if not isinstance(document, dict) or document.get("approval_mode") != EVAL_APPROVAL_MODE:
         _fail("policy_approval_mode")
+    if "audit_key" in document:
+        _fail("policy_audit_key_preset")
+    return document
+
+
+def _pinned_policy(document: dict, key: bytes) -> bytes:
+    """회차마다 새 감사 키를 만들므로 정책의 pin도 회차마다 채운다. 정책 지문에는 감사 키가 들어가지 않는다."""
+    pinned = dict(document, audit_key={"file": KEY_NAME, "sha256": hashlib.sha256(key).hexdigest()})
+    try:
+        data = json.dumps(pinned, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
+    except (ValueError, RecursionError):
+        _fail("policy_invalid")
+    if len(data) > MAX_POLICY_BYTES:
+        _fail("policy_too_large")
+    return data
 
 
 def _open_private_dir(directory: Path) -> int:
@@ -153,8 +178,8 @@ def _write_new(directory: int, name: str, data: bytes) -> None:
 def prepare_e2_config(directory: Path, values: E2RunValues, policy_source: Path) -> E2Prepared:
     """설정·정책·키를 쓰고 러너가 대조할 값을 돌려준다. `config_sha256`은 쓴 설정 파일의 정확한 바이트 digest다."""
     _check_values(values)
-    policy = _read_policy(policy_source)
-    _check_approval_mode(policy)
+    key = secrets.token_bytes(AUDIT_KEY_BYTES)
+    policy = _pinned_policy(_read_document(_read_policy(policy_source)), key)
     reservation_ref = new_reference("reservation")
     config = {"format": CONFIG_FORMAT, "eval_run_id": values.eval_run_id, "reservation_ref": reservation_ref, "model_tag": values.model_tag,
               "header_mode": values.header_mode, "evaluation": values.evaluation, "policy_file": POLICY_NAME, "audit_key_file": KEY_NAME,
@@ -163,7 +188,7 @@ def prepare_e2_config(directory: Path, values: E2RunValues, policy_source: Path)
     data = json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
     fd = _open_private_dir(directory)
     try:
-        _write_new(fd, KEY_NAME, secrets.token_bytes(AUDIT_KEY_BYTES))
+        _write_new(fd, KEY_NAME, key)
         _write_new(fd, POLICY_NAME, policy)
         _write_new(fd, CONFIG_NAME, data)
         try:
