@@ -280,6 +280,8 @@ function check(value, code) {
     check(startCount() === 0 && mutationCount() === 0, "recovery_replayed_mutation");
   } else if (phase === "url-report") {
     await send("Page.navigate", { url: `${WORKBENCH}#live` });
+    // 응답 유실 뒤에는 새로고침의 GET 조회로 같은 영수증을 복원한다.
+    await send("Page.reload");
     // 진행 중에는 작업대가 2초마다 상태만 다시 읽는다(버튼으로도 조회 가능)
     await wait(hasText("실행 마감"), "real_execution_not_completed", 75000);
     await wait(hasText("결과 저장을 확인했습니다"), "saved_result_missing");

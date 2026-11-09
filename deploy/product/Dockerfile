@@ -58,7 +58,6 @@ RUN chmod +x /app/artex /app/start.sh \
     && mkdir -p /app/data /app/keys /app/policy \
     && chown -R 1000:1000 /app/data /app/keys /app/policy /home/node
 USER 1000:1000
-VOLUME ["/app/data", "/app/keys"]
 EXPOSE 8787
 HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=4 \
   CMD curl -fsS http://127.0.0.1:8787/api/product/health >/dev/null || exit 1
