@@ -205,6 +205,22 @@ func TestFirstDiagnosisRegisteredProductionThroughStoredFinding(t *testing.T) {
 		t.Fatal("같은 실행의 owner/cross 2 GET 또는 결정적 Worker 결속 위반")
 	}
 	firstDiagnosisRegisteredStored(t, ctx, manager, runtime, source, keyBytes)
+	// 소유자 GET은 정상 대조다. 교차 주체의 판정 대상 셀로 기록하지 않는다.
+	projection, err := readAccessMap(ctx, manager.pg.DB, runtime.TaskID())
+	if err != nil {
+		t.Fatal("정상 검증 뒤 지도 조회 실패", err)
+	}
+	ownerCell, peerCell := accessMapFind(t, projection, "owner"), accessMapFind(t, projection, "peer")
+	if ownerCell.State != "blank" || ownerCell.ProjectionError != nil || ownerCell.RecordID != nil {
+		t.Fatal("소유자 정상 대조를 판정 기록 누락으로 표시함")
+	}
+	if peerCell.State != "confirmed" || peerCell.ProjectionError != nil || peerCell.RecordID == nil {
+		reason := "none"
+		if peerCell.ProjectionError != nil {
+			reason = *peerCell.ProjectionError
+		}
+		t.Fatalf("교차 계정 저장 판정 지도 연결 실패: state=%s reason=%s", peerCell.State, reason)
+	}
 	firstDiagnosisRegisteredHTTP(t, runtime, password)
 	closeCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 	defer stop()

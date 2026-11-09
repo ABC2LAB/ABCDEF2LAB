@@ -53,6 +53,7 @@ type controlledReadRuntime struct {
 	publisher    *controlledReadPublisherConfig
 	quiescing    map[string]bool
 	tokens       map[controlledWorkKey]*controlledReadTransition
+	mapStore     *accessMapStore
 }
 
 func newControlledReadRuntime(store *controlledReadStore) *controlledReadRuntime {
@@ -191,6 +192,13 @@ func (e *Engine) registerControlledRead(ctx context.Context, task *Task, intentI
 	if !canArm() {
 		return errControlledReadNotPaused
 	}
+	var mapRegistration string
+	if r.mapStore != nil {
+		mapRegistration, err = r.mapStore.invalidate(ctx, task.ID)
+		if err != nil {
+			return errControlledReadUnavailable
+		}
+	}
 	// Persist the downgrade barrier before any fallible secret/profile load.
 	if err := r.store.mark(task.ID, intentID); err != nil {
 		log.Print("[controlled-read] registration_failed reason=marker_write_failed")
@@ -214,6 +222,7 @@ func (e *Engine) registerControlledRead(ctx context.Context, task *Task, intentI
 		clear(spec.Key)
 		return errControlledReadNotPaused
 	}
+	spec.mapRegistration = mapRegistration
 	if len(makeRunnable) > 0 && makeRunnable[0] != nil {
 		if err := makeRunnable[0](); err != nil {
 			log.Print("[controlled-read] registration_failed reason=intent_transition_failed")
@@ -224,6 +233,10 @@ func (e *Engine) registerControlledRead(ctx context.Context, task *Task, intentI
 			clear(spec.Key)
 			return errControlledReadNotPaused
 		}
+	}
+	if r.mapStore != nil && r.mapStore.register(ctx, spec) != nil {
+		clear(spec.Key)
+		return errControlledReadUnavailable
 	}
 	r.pending[key] = spec
 	return nil
@@ -252,26 +265,27 @@ func validateControlledReadSpec(spec controlledReadSpec) error {
 }
 
 type controlledReadLease struct {
-	tx           *transmit.HTTPTransmitter
-	journal      *auditlog.Journal
-	recorder     *controlledCheckpointRecorder
-	store        *controlledReadStore
-	scope        transmit.Scope
-	sessions     map[string]idor.AccountRef
-	accounts     []string
-	resources    []string
-	timeout      time.Duration
-	runtime      *controlledReadRuntime
-	work         controlledWorkKey
-	once         sync.Once
-	closeErr     error
-	resultMu     sync.Mutex
-	observed     bool
-	denied       bool
-	verification *controlledReadVerificationState
-	fixture      *kgfixture.Snapshot
-	config       *ControlledReadConfigHandle
-	revokeConfig func()
+	tx              *transmit.HTTPTransmitter
+	journal         *auditlog.Journal
+	recorder        *controlledCheckpointRecorder
+	store           *controlledReadStore
+	scope           transmit.Scope
+	sessions        map[string]idor.AccountRef
+	accounts        []string
+	resources       []string
+	timeout         time.Duration
+	runtime         *controlledReadRuntime
+	work            controlledWorkKey
+	once            sync.Once
+	closeErr        error
+	resultMu        sync.Mutex
+	observed        bool
+	denied          bool
+	verification    *controlledReadVerificationState
+	fixture         *kgfixture.Snapshot
+	config          *ControlledReadConfigHandle
+	revokeConfig    func()
+	mapRegistration string
 }
 
 // prepareControlledRead is invoked once per runIntent, outside model retries.
@@ -326,6 +340,10 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 	}
 	runRef := "e2-" + uuid.NewString()
 	scope := transmit.Scope{RunRef: runRef, TaskRef: task.ID, CaseRef: spec.CaseRef, ResetRef: spec.ResetRef, PolicyRef: spec.PolicyRef}
+	if r.mapStore != nil && r.mapStore.start(ctx, spec, scope) != nil {
+		release()
+		return ctx, nil, errControlledReadUnavailable
+	}
 	var journal *auditlog.Journal
 	var published *controlledPublishedJournal
 	if publisherHost != nil {
@@ -369,7 +387,7 @@ func (e *Engine) prepareControlledRead(ctx context.Context, task *Task, intent *
 		published.drain.bind(tx)
 	}
 	lease := &controlledReadLease{tx: tx, journal: journal, recorder: recorder, store: r.store, scope: scope,
-		timeout: cfg.RequestTimeout, runtime: r, work: key, sessions: make(map[string]idor.AccountRef), fixture: spec.fixture}
+		timeout: cfg.RequestTimeout, runtime: r, work: key, sessions: make(map[string]idor.AccountRef), fixture: spec.fixture, mapRegistration: spec.mapRegistration}
 	for _, session := range cfg.Sessions {
 		lease.sessions[session.Account.Label] = session.Account
 		lease.accounts = append(lease.accounts, session.Account.Label)
@@ -518,6 +536,12 @@ func (l *controlledReadLease) tool() actool.CoreTool {
 			return actool.Errorf("controlled_read_invalid_input"), nil
 		}
 		// Tool cancellation (SDK deadline) must also stop the parent-bound sender.
+		if l.mapAttempt(ctx, resource, account) != nil {
+			l.resultMu.Lock()
+			l.denied = true
+			l.resultMu.Unlock()
+			return actool.Errorf("controlled_read_unavailable"), nil
+		}
 		stop := context.AfterFunc(ctx, l.tx.Stop)
 		defer stop()
 		capture, receipt, ok := l.tx.SendDetailed(idor.AccessRequest{As: l.sessions[account], ResourceRef: resource, Method: "GET"})

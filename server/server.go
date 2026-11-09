@@ -1151,6 +1151,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/tasks/{id}/request-approvals/stop", s.requestApprovalStop)
 	mux.HandleFunc("GET /api/tasks/{id}/diagnosis-run", s.diagnosisRun)
+	mux.HandleFunc("GET /api/tasks/{id}/access-map", s.accessMap)
 	mux.HandleFunc("GET /api/tasks/{id}/request-approvals", s.requestApprovalList)
 	mux.HandleFunc("GET /api/tasks/{id}/request-approvals/{approvalID}", s.requestApprovalGet)
 	mux.HandleFunc("POST /api/tasks/{id}/request-approvals/{approvalID}/decision", s.requestApprovalDecide)

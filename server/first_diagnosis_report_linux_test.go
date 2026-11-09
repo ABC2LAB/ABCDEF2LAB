@@ -68,7 +68,7 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	}
 	exec("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA " + ident(schema) + " FROM " + ident(role))
 	exec("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA " + ident(schema) + " FROM " + ident(role))
-	for _, table := range []string{"tasks", "task_archives", "findings", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
+	for _, table := range []string{"tasks", "task_archives", "findings", "task_control_modes", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
 		exec("GRANT SELECT ON " + ident(table) + " TO " + ident(role))
 	}
 	exec("GRANT INSERT ON exploration_nodes TO " + ident(role))
@@ -79,6 +79,11 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	if CheckFirstDiagnosisHTTPRuntimeDatabase(t.Context(), f.Runtime) == nil {
 		t.Fatal("report role gained execution privileges")
 	}
+	exec("REVOKE SELECT ON task_control_modes FROM " + ident(role))
+	if CheckFirstDiagnosisReportDatabase(t.Context(), f.Runtime) == nil {
+		t.Fatal("지도 세대 검증의 조회 권한 누락을 기동 전에 거부하지 않음")
+	}
+	exec("GRANT SELECT ON task_control_modes TO " + ident(role))
 	if CheckFirstDiagnosisReportDatabase(t.Context(), f.Runtime) != nil {
 		t.Fatal("minimal report role rejected")
 	}
@@ -121,6 +126,16 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 		t.Fatal("saved report login")
 	}
 	token = session.Token
+	mapPath := fmt.Sprintf("/api/tasks/%d/access-map", row.ID)
+	if w := request("GET", mapPath, ""); w.Code != 409 {
+		t.Fatal("저장 지도 범위 부재를 성공·기록없음으로 합성함", w.Code)
+	}
+	if w := request("GET", fmt.Sprintf("/api/tasks/%d/access-map", foreign.ID), ""); w.Code != 403 {
+		t.Fatal("보고서 서버가 다른 작업 지도를 허용함", w.Code)
+	}
+	if w := request("GET", mapPath+"?run_ref=past", ""); w.Code != 403 {
+		t.Fatal("보고서 서버가 지도 이력 파라미터를 허용함", w.Code)
+	}
 	runPath := fmt.Sprintf("/api/tasks/%d/diagnosis-run", row.ID)
 	if w := request("GET", runPath, ""); w.Code != 404 {
 		t.Fatal("missing final outcome inferred", w.Code)

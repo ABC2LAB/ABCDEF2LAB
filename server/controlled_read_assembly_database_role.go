@@ -82,6 +82,7 @@ func checkFirstDiagnosisDatabase(ctx context.Context, pool *sql.DB, registered, 
 	if reportOnly {
 		required = []struct{ name, privileges string }{
 			{"tasks", "SELECT"}, {"task_archives", "SELECT"}, {"findings", "SELECT"},
+			{"task_control_modes", "SELECT"},
 			{"exploration_nodes", "SELECT,INSERT"}, {"settings", "SELECT"},
 			{"assets", "SELECT"}, {"task_asset_links", "SELECT"}, {"exploration_anchors", "SELECT"},
 			{"e3_evidence_manifests", "SELECT"}, {"e3_oracle_verdicts", "SELECT"},
