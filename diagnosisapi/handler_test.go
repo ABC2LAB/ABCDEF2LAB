@@ -24,11 +24,15 @@ type fakeRegistry struct {
 	removed   bool
 	now       time.Time
 	transform func(*Binding)
+	profiles  []Profile
 }
 
 func (f *fakeRegistry) Profiles(context.Context, string) ([]Profile, error) {
 	if f.removed {
 		return nil, errors.New("unavailable")
+	}
+	if f.profiles != nil {
+		return f.profiles, nil
 	}
 	return []Profile{{ID: "profile", Label: "합성 시험", Configuration: testConfiguration}}, nil
 }
@@ -52,6 +56,7 @@ type fakeGateway struct {
 	startErr   bool
 	badBinding bool
 	state      diagnosis.State
+	snapshot   func(*diagnosis.Snapshot)
 }
 
 func (g *fakeGateway) Call(_ context.Context, r diagnosis.Request) (diagnosis.Response, error) {
@@ -74,6 +79,9 @@ func (g *fakeGateway) Call(_ context.Context, r diagnosis.Request) (diagnosis.Re
 	s := &diagnosis.Snapshot{TaskID: r.TaskID, PreparationRef: r.PreparationRef, State: state, Started: state != diagnosis.Prepared}
 	if g.badBinding {
 		s.TaskID = "43"
+	}
+	if g.snapshot != nil {
+		g.snapshot(s)
 	}
 	return diagnosis.Response{Version: diagnosis.Version, RequestID: r.RequestID, Snapshot: s}, nil
 }
