@@ -609,6 +609,74 @@ type Route = {
 
 const NO_CONTENT = Symbol("no-content");
 
+/**
+ * GET /api/tasks/{id}/access-map 예시 — docs/contracts/access-map-read.md shape.
+ * 값·URL·자격·표식 값 없음(코드·필드명만, 절대규칙 2). 목업 빌드의 기본 task(1005)에서도 지도가 뜨게 한다.
+ */
+function accessMap(id: string) {
+  const at = iso(2 * H);
+  const base = {
+    owner_ref: "account-a",
+    applicable: true,
+    case_ref: "mock-case-1",
+    observed_at: at,
+    projection_error: null,
+  };
+  return {
+    task_id: Number(id) || 0,
+    run_ref: "mock-run-1",
+    reset_generation: "mock-reset-1",
+    axis: "horizontal",
+    policy_version: "kg-fixture/v1:mock-snapshot:0000000000000000000000000000000000000000000000000000000000000000",
+    cells: [
+      {
+        ...base,
+        principal: "account-b",
+        resource_ref: "address:1",
+        resource_label: "주소 1",
+        state: "confirmed",
+        oracle_value: "confirmed",
+        record_id: 1,
+        reason_codes: ["policy_deny_resolved", "data_nontrivial_match"],
+        canary_fields: ["fullName"],
+      },
+      {
+        ...base,
+        principal: "account-b",
+        resource_ref: "address:2",
+        resource_label: "주소 2",
+        state: "suspected",
+        oracle_value: "suspected",
+        record_id: 2,
+        reason_codes: ["data_similar_no_marker"],
+        canary_fields: ["fullName"],
+      },
+      {
+        ...base,
+        principal: "account-a",
+        resource_ref: "address:1",
+        resource_label: "주소 1",
+        state: "allow-ok",
+        oracle_value: "allowed",
+        record_id: 3,
+        reason_codes: ["owner_self_access"],
+        canary_fields: [],
+      },
+      {
+        ...base,
+        principal: "account-a",
+        resource_ref: "address:2",
+        resource_label: "주소 2",
+        state: "unknown",
+        oracle_value: "undecidable",
+        record_id: 4,
+        reason_codes: ["evidence_insufficient"],
+        canary_fields: [],
+      },
+    ],
+  };
+}
+
 const ROUTES: Route[] = [
   { method: "GET", path: /^\/api\/tasks$/, reply: () => ({ active: MOCK_DEFAULT_TASK, tasks: TASKS }) },
   { method: "GET", path: /^\/api\/tasks\/([^/]+)$/, reply: ([id]) => TASKS.find((t) => t.id === id) },
@@ -621,6 +689,7 @@ const ROUTES: Route[] = [
     },
   },
   { method: "GET", path: /^\/api\/tasks\/([^/]+)\/coverage-graph$/, reply: ([id]) => coverageGraph(id) },
+  { method: "GET", path: /^\/api\/tasks\/([^/]+)\/access-map$/, reply: ([id]) => accessMap(id) },
   { method: "POST", path: /^\/api\/tasks\/([^/]+)\/control$/, reply: () => NO_CONTENT },
   {
     method: "POST",

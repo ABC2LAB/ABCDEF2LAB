@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as engine from "../lib/engine";
+import * as kg from "../lib/kg";
+import type { AccessMap } from "../lib/kg";
 import { SelectionContext } from "../lib/selection";
 import { NavContext } from "../nav";
 import ReportScreen from "./ReportScreen";
@@ -13,6 +15,31 @@ vi.mock("../lib/engine", () => ({
   getCoverage: vi.fn(),
   getCoverageGraph: vi.fn(),
 }));
+
+// getAccessMap 만 모킹(실 라우트 응답을 안 타게) — 나머지 kg 상수·리졸버는 실제를 쓴다.
+vi.mock("../lib/kg", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/kg")>();
+  return { ...actual, getAccessMap: vi.fn() };
+});
+
+// 보고서 지도 탭 예시: 확정(vuln)·의심(suspected)·판정불가(unknown) 셀 + mock 표식(캡션). 값·URL 없음.
+const MAP_FIXTURE: AccessMap = {
+  policyVersion: "kg-fixture/v1:mock:00",
+  mock: true,
+  principals: [
+    { ref: "account-b", role: "", axis: "H" },
+    { ref: "account-a", role: "", axis: "H" },
+  ],
+  resources: [
+    { id: "address:1", label: "주소 1", ownerRef: "account-a" },
+    { id: "address:2", label: "주소 2", ownerRef: "account-a" },
+  ],
+  cells: [
+    { principalRef: "account-b", resourceId: "address:1", decision: "vuln" },
+    { principalRef: "account-b", resourceId: "address:2", decision: "suspected" },
+    { principalRef: "account-a", resourceId: "address:2", decision: "unknown" },
+  ],
+};
 
 function show() {
   return render(
@@ -30,6 +57,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   // jsdom 에는 scrollIntoView 가 없다(발견 열기 시 그 줄로 스크롤)
   Element.prototype.scrollIntoView = vi.fn();
+  vi.mocked(kg.getAccessMap).mockResolvedValue(MAP_FIXTURE);
   vi.mocked(engine.getTask).mockResolvedValue({
     id: "task-1",
     name: "시험 점검",

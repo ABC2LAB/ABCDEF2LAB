@@ -7,13 +7,14 @@ import { NavContext } from "../nav";
 import AccessMapScreen from "./AccessMapScreen";
 
 // 전체 지도 화면이 공유 리졸버·집계를 화면에 올바로 반영하는지(§4.2(3)·(7)).
-// 목업(getAccessMap)은 결정적이라 추가 모킹 없이 렌더한다.
+// taskId=null 이면 getAccessMap 이 예시(MOCK_MAP)를 돌려줘 추가 모킹 없이 결정적으로 렌더한다.
+// 실 라우트 응답 매핑은 lib/kg 의 mapApiAccessMap 단위시험에서 따로 검증한다.
 
 function show() {
   return render(
     <NavContext.Provider value={{ screen: "access-map", go: vi.fn() }}>
       <SelectionContext.Provider
-        value={{ taskId: "task-1", tasksVersion: 0, selectTask: vi.fn(), refreshTasks: vi.fn() }}
+        value={{ taskId: null, tasksVersion: 0, selectTask: vi.fn(), refreshTasks: vi.fn() }}
       >
         <AccessMapScreen />
       </SelectionContext.Provider>
