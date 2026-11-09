@@ -51,7 +51,10 @@ E2_IMAGE_ID = "sha256:" + "e" * 64
 E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:test", "id": E2_IMAGE_ID}, "policy_path": "/srv/eval/e2-policy.json",
                     "policy_fingerprint_sha256": "f" * 64, "header_mode": "evaluation_caller_passthrough", "ready_timeout_seconds": 30,
                     "close_ack_timeout_seconds": 5, "close_timeout_seconds": 30, "poll_seconds": 1, "exchange_timeout_seconds": 5,
-                    "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30}
+                    "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30,
+                    "policy_tool": "/usr/local/bin/e2-eval-policy", "policy_tool_timeout_seconds": 30, "helper": "/usr/local/bin/e2-bash-sandbox",
+                    "helper_sha256": "a" * 64, "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10", "window_seconds": 7200,
+                    "approval_valid_until": "2099-01-01T00:00:00Z"}
 
 
 def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None):
@@ -257,6 +260,11 @@ class FakePorts:
             # 제품 E²는 자기 이미지를 쓴다. 가짜 E²는 계측기 이미지의 역할이다.
             role = "e2" if container["service"] == "eval-e2" and "e2" in self.spec.image_ids else ROLE_OF[container["service"]]
             container["image"] = self.spec.image_ids[role]
+        # 정책이 pin한 주소는 실제 compose가 그 주소를 쓴 것으로 둔다. 어긋나는 경우는 test_runner_checks가 본다.
+        for key, addresses in self.spec.expected.pinned.items():
+            network = next(n for n in networks if n["Labels"]["com.docker.compose.network"] == key)
+            for service, address in addresses.items():
+                network["Containers"][next(c["id"] for c in containers if c["service"] == service)]["IPv4Address"] = f"{address}/24"
         return networks, containers
 
     def preexisting(self):
@@ -2000,7 +2008,10 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
 
     def _e2_preparation_failure(self, tmp):
         def product_with_missing_policy(payload):
-            payload["e2"] = dict(E2_PRODUCT_BLOCK, policy_path=str(Path(tmp, "missing-policy.json")))
+            tool = Path(tmp, "fake-ca-tool")
+            tool.write_text('#!/bin/sh\numask 077\nprintf cert > "$3"\nprintf key > "$5"\n')
+            tool.chmod(0o700)
+            payload["e2"] = dict(E2_PRODUCT_BLOCK, policy_path=str(Path(tmp, "missing-policy.json")), policy_tool=str(tool))
         return self.inputs(tmp, product_with_missing_policy)
 
     def test_e2_preparation_failure_leaves_no_run_directory(self):

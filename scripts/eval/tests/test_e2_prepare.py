@@ -234,6 +234,7 @@ class TestOverlay(unittest.TestCase):
 
     def test_mounts_and_hardening(self):
         for expected in ("${EVAL_E2_CONFIG_DIR:?}:/run/e2-config:ro", "${EVAL_E2_EVIDENCE_DIR:?}:/evidence", "${EVAL_E2_CONTROL_DIR:?}:/run/e2-control",
+                         "${EVAL_E2_STATE_DIR:?}:/run/e2-state", "ipv4_address: ${EVAL_E2_METER_IP:?}", "- subnet: ${EVAL_E2_SUBNET:?}",
                          "image: ${EVAL_E2_IMAGE:?}", 'user: "${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}"', "read_only: true", "cap_drop: [ALL]",
                          "no-new-privileges:true", "-config=/run/e2-config/" + CONFIG_NAME):
             self.assertIn(expected, self.text)

@@ -224,6 +224,23 @@ class TestE2Slot(unittest.TestCase):
                 config, stub = plan_for(backend, e2="stub")
                 self.assertEqual(expected_topology(config, dataclasses.replace(stub, e2_mode="product")), expected_topology(config, stub))
 
+    def test_meter_address_must_be_the_one_the_policy_pinned(self):
+        import dataclasses
+        config, stub = plan_for(e2="stub")
+        expected = expected_topology(config, dataclasses.replace(stub, e2_mode="product", e2_meter_ip="172.30.9.10"))
+        for observed, violations in (("172.30.9.10/24", []), ("172.30.9.11/24", ["network.e2_net: ADDRESS_MISMATCH"])):
+            with self.subTest(observed):
+                networks, containers = raw_world(stub=True)
+                by_key(networks, "e2_net")["Containers"][by_service(containers, "eval-meter")["id"]]["IPv4Address"] = observed
+                self.assertEqual(check_topology(expected, PROJECT, *facts(networks, containers)), violations)
+
+    def test_only_the_product_pins_an_address(self):
+        import dataclasses
+        config, stub = plan_for(e2="stub")
+        self.assertEqual(expected_topology(config, stub).pinned, {})
+        self.assertEqual(expected_topology(config, dataclasses.replace(stub, e2_mode="product", e2_meter_ip="172.30.9.10")).pinned,
+                         {"e2_net": {"eval-meter": "172.30.9.10"}})
+
     def test_stub_takes_the_meter_slot_on_the_engine_net(self):
         config, plan = plan_for(e2="stub")
         expected = expected_topology(config, plan)
