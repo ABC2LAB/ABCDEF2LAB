@@ -90,7 +90,7 @@ describe("로그인 게이트", () => {
     localStorage.setItem(TOKEN_KEY, "issued");
     const view = await mountApp();
     await waitFor(() => expect(workspace(view)).not.toBeNull());
-    fireEvent.click(screen.getAllByText("로그아웃")[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "로그아웃" })[0]);
     expect(await screen.findByLabelText("비밀번호")).toBeVisible();
     expect(workspace(view)).toBeNull();
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
