@@ -255,7 +255,9 @@ describe("자산 탐색: 찾은 경로", () => {
     // 같은 주소의 메서드는 한 줄에, DELETE 는 DEL
     fireEvent.click(screen.getByRole("radio", { name: "전체" }));
     fireEvent.click(within(tree(container)).getByRole("button", { name: "/api 펼치기" }));
-    const cart = within(tree(container)).getByRole("button", { name: "DELETE /api/cart/{id}, 제외, 요청·응답 예시 보기" });
+    const cart = within(tree(container)).getByRole("button", {
+      name: "DELETE /api/cart/{id}, 제외, 요청·응답 예시 보기",
+    });
     expect(cart).toHaveTextContent("DEL");
   });
 
