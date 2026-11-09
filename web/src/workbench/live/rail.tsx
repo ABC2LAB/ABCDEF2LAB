@@ -2,6 +2,11 @@
 
 // 레일의 live 부분: 대시보드 배지(승인 대기) · 진행 중 / 최근 끝난 점검(tasks) · 분석 모델(llm, 로컬 추정) ·
 // 로그인 상태 · 데이터 원천 스위치. demo 레일은 ui/Rail.tsx 그대로이고, live 일 때만 이 조각으로 바꿔 끼운다.
+// URL 진단(v2) 서버는 점검 목록 · 엔진 LLM 설정을 주지 않으므로, 이 브라우저가 이어 보는 진단 한 줄과 설치 프로필 모델을 보인다.
+
+import type { ReactNode } from "react";
+
+import { urlPhaseLabels } from "@/abc2lab-ui/lib/diagnosis-url";
 
 import { cx } from "../lib/cx";
 import { useShell, type View } from "../shell";
@@ -13,6 +18,8 @@ import { useLivePending, useLiveTasks } from "./feeds";
 import { errorText, isActive, isLocalBaseUrl, relTime, taskLabel, taskPhase } from "./map";
 import { useNow } from "./parts";
 import { canGoLive, useSource } from "./source";
+import { useIsUrlMode, useUrl } from "./urlDiagnosis";
+import { isUrlActive, URL_PRESTART_STATES, urlHost, urlStateText, urlTone, urlViewFor } from "./urlMap";
 import { usePoll } from "./usePoll";
 
 /** 레일 '진행 중'에 보일 최대 줄 수 (넘치면 "외 N건"). */
@@ -39,8 +46,56 @@ function findingsTotal(t: LiveTask): number {
   return f.critical + f.high + f.medium + f.low;
 }
 
-/** 진행 중 / 최근 끝난 점검 두 묶음. 진행 중은 점검 진행으로, 끝난 것은 보고서로 간다(그 점검을 고른 뒤). */
+/** 진행 중 / 최근 끝난 점검 두 묶음. URL 진단 서버면 이어 보는 진단 한 줄. */
 export function LiveRailTasks() {
+  return useIsUrlMode() ? <UrlRailTasks /> : <TaskRailTasks />;
+}
+
+/** URL 진단: 이 브라우저가 이어 보는 진단 한 줄 (시작 전 · 진행 중은 위, 끝난 것은 아래). 누르면 알맞은 화면으로. */
+function UrlRailTasks() {
+  const { route, goTo } = useShell();
+  const handle = useUrl((st) => st.handle);
+  const job = useUrl((st) => st.job);
+  const verified = useUrl((st) => st.verified);
+  const busy = useUrl((st) => st.busy);
+  const open = !job || isUrlActive(job) || URL_PRESTART_STATES.includes(job.state);
+  let row: ReactNode = null;
+  if (handle) {
+    const to = job ? urlViewFor(job) : "live";
+    const tone = job && verified ? urlTone(job.state) : "wait";
+    let sub = busy ? "상태 확인 중" : "상태 미확인";
+    if (job) sub = `${urlStateText(job.state, verified)} · ${urlPhaseLabels[job.phase]}`;
+    row = (
+      <button
+        className={s.rs}
+        type="button"
+        data-url-job={job?.id ?? ""}
+        aria-current={route === to ? "page" : undefined}
+        onClick={() => goTo(to)}
+      >
+        <span className={cx(s.dot, s[tone])} />
+        <span className={s.host}>{urlHost(handle.input.target_url)}</span>
+        <span className={s.rsub}>{sub}</span>
+      </button>
+    );
+  }
+  return (
+    <>
+      <div className={s.rsec}>
+        <div className={s.rh}>진행 중</div>
+        {open ? row : null}
+        {!handle || !open ? <div className={s["lv-rempty"]}>진행 중인 URL 진단 없음</div> : null}
+      </div>
+      <div className={s.rsec}>
+        <div className={s.rh}>최근 끝난 점검</div>
+        {handle && !open ? row : <div className={s["lv-rempty"]}>이 브라우저에서 이어 보는 끝난 진단 없음</div>}
+      </div>
+    </>
+  );
+}
+
+/** 진행 중 / 최근 끝난 점검 두 묶음. 진행 중은 점검 진행으로, 끝난 것은 보고서로 간다(그 점검을 고른 뒤). */
+function TaskRailTasks() {
   const { route, goTo } = useShell();
   const auth = useLiveAuth().state;
   const feed = useLiveTasks();
@@ -133,8 +188,29 @@ export function LiveRailTasks() {
   );
 }
 
-/** 레일 아래 분석 모델 줄: GET /api/llm 의 model, base_url 로 로컬/외부를 **추정**. */
+/** 레일 아래 분석 모델 줄. URL 진단 서버면 이어 보는 진단의 설치 프로필 모델. */
 export function LiveRailModel() {
+  return useIsUrlMode() ? <UrlRailModel /> : <TaskRailModel />;
+}
+
+/** URL 진단: 진단마다 설치 프로필이 모델을 정한다. 로컬/외부는 catalog 에 없어 짐작하지 않는다. */
+function UrlRailModel() {
+  const cap = useUrl((st) => st.cap);
+  const profileId = useUrl((st) => st.job?.input.profile_id ?? st.handle?.input.profile_id ?? null);
+  const profile = cap.kind === "v2" && profileId ? cap.catalog.profiles.find((p) => p.id === profileId) : undefined;
+  return (
+    <div className={s.rf} id="railModel">
+      <Icon name="chip" />
+      <div>
+        {profile ? "분석 모델 · 설치 프로필" : "분석 모델 · 진단마다 설치 프로필"}
+        {profile ? <b>{profile.model_label}</b> : null}
+      </div>
+    </div>
+  );
+}
+
+/** 레일 아래 분석 모델 줄: GET /api/llm 의 model, base_url 로 로컬/외부를 **추정**. */
+function TaskRailModel() {
   const ready = useLiveAuth().state === "ready";
   const llm = usePoll(() => fetchLlm(), [], { intervalMs: 60_000, enabled: ready });
   let head = "분석 모델";

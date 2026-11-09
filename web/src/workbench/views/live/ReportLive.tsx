@@ -113,8 +113,8 @@ function covSub(p: Poll<LiveCoverage>): string {
   return `검사 ${p.data.tested}/${p.data.denominator} · 미검사는 안전을 뜻하지 않음`;
 }
 
-/** 우선 조치 (보고서 조치 자료, 내부 상세). */
-function Prio({ rem, findings }: { rem: Poll<Remediation>; findings: LiveFinding[] | null }) {
+/** 우선 조치 (보고서 조치 자료, 내부 상세). URL 진단 보고서(UrlLiveLive)도 쓴다. */
+export function Prio({ rem, findings }: { rem: Poll<Remediation>; findings: LiveFinding[] | null }) {
   const [all, setAll] = useState(false);
   let body: ReactNode = pollState(rem, "우선 조치");
   const rows = rem.data ? prioRows(rem.data.entries, findings) : [];
@@ -200,8 +200,8 @@ function Steps({ t, items }: { t: string; items: readonly string[] }) {
   );
 }
 
-/** 보고서 내려받기 (종합 HTML, 첫 진단 모드). 미지원이면 접는다. */
-function Download({ taskId }: { taskId: string }) {
+/** 보고서 내려받기 (종합 HTML, 첫 진단 모드). 미지원이면 접는다. URL 진단 보고서(UrlLiveLive)도 쓴다. */
+export function Download({ taskId }: { taskId: string }) {
   const [st, setSt] = useState<{ busy: Audience | null; err: unknown; done: Audience | null }>({
     busy: null,
     err: null,

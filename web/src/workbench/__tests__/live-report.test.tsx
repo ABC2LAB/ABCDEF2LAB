@@ -307,7 +307,7 @@ describe("live 보고서", () => {
     const items = prio();
     expect(items).toHaveLength(3);
     expect(items[0]).toHaveTextContent("심각");
-    expect(items[0]).toHaveTextContent("저장된 검증 있음");
+    expect(items[0]).toHaveTextContent("확정");
     expect(items[0]).toHaveTextContent("Authorization: Bearer [REDACTED]");
     expect(items[0]).toHaveTextContent("권고 소유자 검사 추가");
     expect(items[0]).toHaveTextContent("즉시 완화주문 조회 API 를 잠시 막는다");

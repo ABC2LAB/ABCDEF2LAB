@@ -4,6 +4,7 @@
 // 원본의 route() · goTo · openInsp/closeInsp · openRail/closeRail · dashPick · Esc · 강조색 복원을 맡는다.
 // window · location · matchMedia · localStorage 는 렌더 중에 건드리지 않고 effect·이벤트에서만 쓴다(SSR 사전 렌더).
 // 데이터 원천(live/source): demo 면 시안 화면, live 면 같은 자리에 <LiveGate> 로 감싼 실제 엔진 화면을 그린다.
+// live 의 대시보드 · 새 점검 · 범위 확인 · 점검 진행 · 보고서는 서버 방식(URL 진단 v2 / 기존)에 따라 views/live/byMode 가 고른다.
 
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -12,6 +13,7 @@ import { cx } from "./lib/cx";
 import { LiveGate, useLiveAuthBoot } from "./live/auth";
 import { LiveFeeds } from "./live/feeds";
 import { canGoLive, useSource, useSourceBoot } from "./live/source";
+import { UrlFeeds } from "./live/urlDiagnosis";
 import { isView, type Shell, ShellContext, type View } from "./shell";
 import { type DSel, useWb } from "./store";
 import { Icon } from "./ui/icons";
@@ -19,12 +21,8 @@ import { Rail } from "./ui/Rail";
 import { Crawl } from "./views/Crawl";
 import { Dashboard } from "./views/Dashboard";
 import { Live } from "./views/Live";
+import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "./views/live/byMode";
 import { CrawlLive } from "./views/live/CrawlLive";
-import { DashboardLive } from "./views/live/DashboardLive";
-import { LiveLive } from "./views/live/LiveLive";
-import { NewScanLive } from "./views/live/NewScanLive";
-import { ReportLive } from "./views/live/ReportLive";
-import { ScopeLive } from "./views/live/ScopeLive";
 import { NewScan } from "./views/NewScan";
 import { Report } from "./views/Report";
 import { Scope } from "./views/Scope";
@@ -315,16 +313,17 @@ export function Workbench() {
       <div ref={rootRef} className={s.root} data-accent={accent === "petrol" ? undefined : accent}>
         <Engines route={route} reduce={reduce} />
         {source === "live" ? <LiveFeeds /> : null}
+        {source === "live" ? <UrlFeeds /> : null}
         <SourceBar />
         <div className={s.app}>
           <Rail />
           <main className={s.work}>
-            {section("dashboard", pick("대시보드", <Dashboard />, <DashboardLive />))}
-            {section("new", pick("새 점검", <NewScan />, <NewScanLive />))}
+            {section("dashboard", pick("대시보드", <Dashboard />, <DashboardByMode />))}
+            {section("new", pick("새 점검", <NewScan />, <NewScanByMode />))}
             {section("crawl", pick("자산 탐색", <Crawl />, <CrawlLive />))}
-            {section("scope", pick("범위 확인", <Scope />, <ScopeLive />))}
-            {section("live", pick("점검 진행", <Live />, <LiveLive />))}
-            {section("report", pick("보고서", <Report />, <ReportLive />))}
+            {section("scope", pick("범위 확인", <Scope />, <ScopeByMode />))}
+            {section("live", pick("점검 진행", <Live />, <LiveByMode />))}
+            {section("report", pick("보고서", <Report />, <ReportByMode />))}
           </main>
         </div>
         <div className={s.scrim} id="scrim" data-scrim="" hidden={!(drawers.insp || drawers.rail)} />

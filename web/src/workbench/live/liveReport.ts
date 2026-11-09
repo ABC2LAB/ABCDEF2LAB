@@ -1,5 +1,6 @@
 // 점검 진행 · 보고서(live) 화면 전용 순수 함수. 상태·시계를 갖지 않는다(지금 시각은 인자로).
 
+import { diagnosticOutcomeLabels } from "@/abc2lab-ui/lib/diagnostic-results";
 import type { RemediationEntry } from "@/abc2lab-ui/lib/remediation";
 
 import type { SevKey } from "../data/findings";
@@ -163,13 +164,11 @@ export function modelOf(
 
 // ---------- 우선 조치 ----------
 
-/** 보고서 분류(remediation outcome) 이름. 판정 집계가 아니라 항목마다 서버가 붙인 분류다. */
-export const OUTCOME_LABEL: Readonly<Record<string, string>> = {
-  review: "검토 필요",
-  confirmed: "저장된 검증 있음",
-  not_executed: "실행 안 됨",
-  unknown: "결과 불명",
-};
+/**
+ * 보고서 분류(remediation outcome) 이름. 항목마다 서버가 붙이고 팀 lib(diagnosticOutcome)이 다시 검증한 분류다.
+ * 이름은 팀 보고서와 같게 둔다(확정은 저장된 검증이 있는 finding 만).
+ */
+export const OUTCOME_LABEL: Readonly<Record<string, string>> = diagnosticOutcomeLabels;
 
 /** outcome → 이름 (모르는 값은 원문). */
 export function outcomeLabel(outcome: string): string {

@@ -9,13 +9,14 @@ import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } fr
 import { create } from "zustand";
 
 import { ApiError, readAuthStatus, restoreSession, signIn, signOut, subscribeAuthRequired } from "@/abc2lab-ui/lib/api";
+import { readURLCatalog } from "@/abc2lab-ui/lib/diagnosis-url";
 
 import { cx } from "../lib/cx";
 import { Icon } from "../ui/icons";
 import { MenuButton } from "../ui/parts";
 import s from "../workbench.module.css";
 import { fetchTasks } from "./api";
-import { errorText, isOffline } from "./map";
+import { errorText, isOffline, isUnsupported } from "./map";
 import { useSource } from "./source";
 
 /**
@@ -46,8 +47,9 @@ let runId = 0;
 
 /**
  * 연결·세션 확인: readAuthStatus(설치 상태·연결) → restoreSession(저장된 토큰) → /api/tasks 로 토큰 확인.
- * 연결 실패는 offline, initialized=false 는 uninitialized, 토큰 없음·401 은 login, 그 밖은 ready
- * (첫 진단 모드의 403 등은 섹션이 따로 접는다). 겹쳐 부르면 마지막 것만 반영한다.
+ * /api/tasks 가 없는 서버(URL 진단 v2 관리 서버 등: 403·404·409·501·503)는 그 서버의 인증 경로인
+ * v2 catalog 로 토큰을 다시 확인한다(읽기 전용, 실행 요청 아님). 연결 실패는 offline, initialized=false 는
+ * uninitialized, 토큰 없음·401 은 login, 그 밖은 ready(섹션이 따로 접는다). 겹쳐 부르면 마지막 것만 반영한다.
  */
 export async function checkLiveAuth(): Promise<LiveAuthState> {
   const id = ++runId;
@@ -79,7 +81,18 @@ export async function checkLiveAuth(): Promise<LiveAuthState> {
     if (id !== runId) return useAuthStore.getState().state;
     if (err instanceof ApiError && err.status === 401) return done("login");
     if (isOffline(err)) return done("offline", errorText(err));
+    if (isUnsupported(err)) {
+      try {
+        await readURLCatalog();
+      } catch (e) {
+        if (id !== runId) return useAuthStore.getState().state;
+        if (e instanceof ApiError && e.status === 401) return done("login");
+        if (isOffline(e)) return done("offline", errorText(e));
+        // 404·501 등은 v2 서버도 아니라는 뜻 — 토큰 판단은 각 섹션의 실제 호출에 맡긴다
+      }
+    }
   }
+  if (id !== runId) return useAuthStore.getState().state;
   return done("ready");
 }
 

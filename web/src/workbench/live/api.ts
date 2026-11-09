@@ -895,6 +895,17 @@ export function decideRequestApproval(
   return call(() => ra.decideRequestApproval(taskId, approval, decision));
 }
 
+/** 저장된 실행 종료 기록의 표시용 판정 (팀 타입: none · not_run · unavailable · run). */
+export type DiagnosisRunView = ra.DiagnosisRunDisplay;
+
+/**
+ * GET /api/tasks/{id}/diagnosis-run — 저장된 실행 종료 기록(팀 readDiagnosisRunDisplay).
+ * 저장 없음(404)은 none, 다른 작업(403)은 unavailable 로 흡수하고 완료로 바꾸지 않는다. 그 밖의 실패는 오류.
+ */
+export function fetchDiagnosisRun(taskId: string): Promise<DiagnosisRunView> {
+  return call(() => ra.readDiagnosisRunDisplay(taskId));
+}
+
 // ---------- 보고서 ----------
 
 /** 조치 자료 (팀 타입). */

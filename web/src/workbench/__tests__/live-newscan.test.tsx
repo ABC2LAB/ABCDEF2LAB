@@ -214,6 +214,8 @@ describe("live 새 점검", () => {
       ],
     });
     expect(screen.getByText("엔진은 만들자마자 점검을 시작합니다(범위 확인 단계 없음).")).toBeInTheDocument();
+    // 일반 ARTEX 작업 생성임을 밝힌다(통제된 URL 진단과 구분)
+    expect(document.querySelector("#lvKind")).toHaveTextContent("일반 ARTEX 작업(POST /api/tasks)");
 
     const tasksBefore = m.fetchTasks.mock.calls.length;
     await act(async () => {

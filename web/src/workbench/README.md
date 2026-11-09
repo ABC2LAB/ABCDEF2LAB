@@ -75,6 +75,19 @@ export function LiveLive() {
 - `GET /api/tasks/{id}` 는 발견·토큰·목표 수가 늘 0 이다 → 숫자는 목록에서 읽는다. 발견 상세는 `finding_id` 로 부른다.
 - finding `status` 는 처리 상태다. 판정(확정·의심·판단 불가) 딱지로 쓰지 않는다(`findingStatusLabel`).
 
+**URL 진단 서버 (diagnosis-api.v2, #340·#341) — 통제된 AI DAST 진단**
+
+- 로그인이 끝나면 `UrlFeeds` 가 `GET /api/diagnoses/v2/catalog` 를 한 번 읽어 서버 방식을 고른다(`live/urlDiagnosis.tsx`). 성공 = URL 진단, 404·501 = 기존 v1(`POST /api/tasks`, 일반 ARTEX 작업 생성), 그 밖 = 확인 불가(새 점검을 막고 다시 시도만). **변경 요청이 실패해도 다른 실행 API 로 넘어가지 않는다.** 화면 다섯(대시보드 · 새 점검 · 범위 확인 · 점검 진행 · 보고서)은 `views/live/byMode.tsx` 가 `Url*Live` / 기존 화면 중에서 고른다.
+- 인증 확인(`live/auth.tsx`): `/api/tasks` 가 없는 서버(403·404·409·501·503)면 v2 catalog 로 토큰을 다시 확인한다(401 → 로그인). 토큰은 `Authorization` 헤더로만 보낸다.
+- 흐름: 새 점검(URL · 설치 프로필 · 이름 → 초안 + 범위 확인) → 범위 확인(서버가 돌려준 실제 origin · 경로 · 메서드 · 예산 · 만료 → 확인 상자 → 시작) → 점검 진행(서버 단계 9개 · started / drain_complete / result_ready 를 따로 · 모델 사용량 · 중지, 엔진 시작 뒤 실제 task 의 전송 통제 집계) → 보고서(result_ready 뒤 실제 task 의 판정 집계 · 실행 종료 기록(run ID · 마감 · E② 요청 · 전송 집계 · 감사) · 모델 사용량 · 우선 조치 · HTML 내려받기).
+- 요청 · 검증 · 결속 · 멱등 함수는 팀 `@/abc2lab-ui/lib/diagnosis-url` 을 그대로 쓰고 상태 전이는 팀 `URLDiagnosisPanel` 과 같다. 초안 · 시작은 각자 Idempotency-Key, 시작 · 중지는 자동 재전송하지 않고, 결과 불명이면 상태 조회(GET)만 된다. 판정 집계 · 실행 기록은 팀 `summarizeDiagnosticEntries` · `readDiagnosisRunDisplay` 를 쓴다(후보를 확정으로 올리지 않음).
+- v1 폼의 목표 · 제외 경로 · 커버리지 · LLM 프로필 순서 · 깊이 · 워커 · 계정은 v2 요청에 넣지 않는다(v2 입력은 `target_url` · `profile_id` · `display_name` 뿐). 범위는 설치된 승인 범위와 E② 가 정한다.
+- 조회 핸들은 팀 `storeURLHandle`(sessionStorage) 칸을 같이 쓴다 → 같은 탭이면 팀 화면과 작업대가 같은 진단을 이어 본다. 진단 식별자 · 영수증 키 · 입력만 남고 인증값 · 상태 · 설치 자료는 저장하지 않는다. 로그아웃하면 화면의 진단 상태를 비우고 다시 로그인해야 GET 으로 다시 읽는다.
+- 이 서버는 결속된 task 의 요청 승인 · 실행 기록 · 보고서만 연다. 진단 목록 API 가 없어 대시보드 · 레일은 이 탭이 이어 보는 진단 하나와 설치 프로필만 보인다. 점검 목록 · 의도 · 활동 · 발견 목록 · 커버리지 · 엔진 LLM 설정은 `<ModeNote />` 로 접는다.
+- 개발 서버 연결: `next dev` 의 `/api/*` 는 `AUTOPENTEST_API`(기본 `http://localhost:8787`)로 간다. URL 진단을 보려면 이 값을 `serve-url-api` 의 설치 주소로 맞춘다(일반 ARTEX 엔진과 다른 프로세스). 범용 프록시는 두지 않는다.
+- 아직 없는 것: 매 요청 확인(`confirm_every_request`) 진단의 요청별 허용 · 거절 결정(팀 화면 점검 진행에서 한다), 여러 진단 목록(백엔드 목록 API 필요).
+- 실브라우저 수용: 팀 하네스 `TestFirstDiagnosisURLBrowserIndependentProcessesOwnedPostgres` 에 `ARTEX_FIRST_DIAGNOSIS_BROWSER_SCRIPT=scripts/workbench-url-diagnosis-browser.cjs` 를 넘기면 같은 실제 흐름(PostgreSQL · 준비 서비스 · API · Gateway · E② · 합성 모델/HTTPS 대상)을 작업대 화면으로 검증한다(Chrome CDP · Node · 출력 경로 필요, `docs/url-diagnosis-preparation.md` 실행 절 참고).
+
 **보안 메모**
 
 - 가림(`maskSecrets`)은 **화면 표시용**이다. 서버 원문(트래픽 · 도구 입력 · 증거)은 가려지지 않는다 → 가린 글 곁에 `<MaskedNote />`. `live/api` 가 트래픽 원문 · 도구 입력 · 파라미터 값 · 요청 미리보기는 미리 가려 주고, 발견 요약·증거·활동 요약은 화면에서 `maskSecrets` 를 거친다.

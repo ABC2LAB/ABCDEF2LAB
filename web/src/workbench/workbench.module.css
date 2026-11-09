@@ -3800,6 +3800,11 @@ button.smm:hover {
   min-width: 0;
 }
 /* 레일: 빈 목록 · 상태 한 줄 */
+/* URL 진단 단계 띠: 9 단계라 넓은 화면에서도 줄바꿈해 지금 단계가 가려지지 않게 */
+.lv-phases {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
 .lv-rempty {
   padding: 4px 10px;
   font-size: 12px;

@@ -4,6 +4,7 @@
 // 대상 URL · 이름 · 목표 · LLM 프로필 · 제외 경로(→ 작업 규칙 block·fuzzy_url) · 커버리지 → POST /api/tasks.
 // 소유 확인 · 로그인 계정 · 전송 범위 · 깊이 · 워커 수는 엔진에 없어 한 묶음으로 막아 둔다(값을 보내지 않음).
 // 엔진은 만들자마자 점검을 시작한다 → 만든 점검을 고르고 점검 진행 화면으로 간다.
+// 이 폼은 URL 진단(v2)이 없는 서버에서만 보인다(views/live/byMode). 통제된 URL 진단과 섞이지 않게 맨 위에 밝힌다.
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
@@ -235,6 +236,13 @@ export function NewScanLive() {
             void start();
           }}
         >
+          <div className={cx(s.note, s.warn)} role="note" id="lvKind">
+            <Icon name="alert" />
+            <span>
+              이 서버는 URL 진단(통제된 AI DAST, /api/diagnoses/v2)을 제공하지 않아 일반 ARTEX 작업(POST /api/tasks)으로
+              만듭니다. 설치 승인 범위 확인 · 단회 실행 권위 · E② 요청 통제가 걸린 진단이 아닙니다.
+            </span>
+          </div>
           <div className={s.fsec}>
             <div className={s["fsec-h"]}>
               <h2>대상</h2>
