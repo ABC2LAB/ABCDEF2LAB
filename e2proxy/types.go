@@ -90,7 +90,10 @@ type Limits struct {
 	MaxUnknown     uint64
 }
 type Config struct {
-	ApprovalMode ApprovalMode
+	// CheckAuthority는 신뢰 호스트가 연결하는 위임 철회 검사다. nil은 기존 모드다.
+	// 짧고 제한된 로컬 검사만 수행하며 Execution으로 재진입하면 안 된다.
+	CheckAuthority func() error `json:"-"`
+	ApprovalMode   ApprovalMode
 	// RequestApproval은 호스트가 명시적으로 연결하는 요청별 확인 경계다.
 	RequestApproval RequestApprovalGate `json:"-"`
 	Evaluation      *EvaluationCallerContext

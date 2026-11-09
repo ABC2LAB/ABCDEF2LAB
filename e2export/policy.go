@@ -17,7 +17,7 @@ import (
 const PolicyContentFormat = "abc2lab.e2-policy-content/v1"
 
 // PolicyBehavior는 실제 서버/러너의 고정 상한이다. 회차 참조·IP·키·경로는 받지 않는다.
-// 이 encoder는 검토용 v1 제안이며 내용 지문이 승인이나 배치 검증을 대신하지 않는다.
+// 내용 지문 v1 계약은 정책 의미만 고정한다. 승인이나 배치 검증을 대신하지 않는다.
 type PolicyBehavior struct {
 	MaxWorkerTurns      int
 	MaxToolCalls        int

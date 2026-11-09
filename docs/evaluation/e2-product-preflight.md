@@ -1,6 +1,8 @@
 # 평가 E② 제품 연결 준비와 남은 신뢰 경계
 
 이 문서는 구현한 준비 검사와 아직 연결하지 않은 평가 배치를 구분한다.
+[평가 정책 생산·소비 형식 확정 제안](../contracts/e2-evaluation-policy-format.md)은
+기본 정책, 회차별 정책, 내용 지문의 입력과 검증을 따로 정의한다.
 [e2-runner-control 제안](../contracts/e2-runner-control-proposal.md)이나
 [e2-runner-integration 제안](../contracts/e2-runner-integration-proposal.md)을
 공식 계약으로 승격하지 않는다. 담당 리뷰는 E② 이동찬과 평가 최민준이 함께 한다.
@@ -37,9 +39,12 @@ go build -o /tmp/e2-runner-config-check ./cmd/e2-runner-config-check
 `product_policy_validated=false`이다. 이 명령은 제품 서비스 entrypoint가 아니며
 Compose의 `eval-e2` 명령으로 쓰지 않는다.
 
-정책 원문에 대해 수행하는 검사는 JSON 구조와
-`approval_mode=preauthorized_scope`이다. 알 수 없는 정책 필드와 실제 승인 범위는
-제품 정책 소비자가 자기의 닫힌 타입으로 다시 검사해야 한다.
+**이 명령과 `e2config.Load`만** 정책 원문에 수행하는 검사는 JSON 구조와
+`approval_mode=preauthorized_scope`이다. 독립 backend는 이제
+`server.ValidateE2HTTPPolicyDocument(raw, true)`로 정확한 필드·null·정적 상한을
+검사한 뒤 기존 factory에서 보호 파일·권위·실제 집행 의미를 검증한다.
+기본 정책은 `ValidateE2HTTPPolicyDocument(raw, false)`로 검사하며
+`audit_key` 키가 있으면 거부한다.
 사전검사 성공은 정책 수용·실제 task/intent 승인·대상 전송 허가가 아니다.
 `Check`는 시점 검사이므로 소비자는 실제 자원 사용 직전에도 보호 읽기와 권위 검사를 유지해야 한다.
 

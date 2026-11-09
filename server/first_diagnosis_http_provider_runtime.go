@@ -17,6 +17,7 @@ type FirstDiagnosisHTTPStartOptions struct {
 	SkillDir, DataDir, KeyDir string
 	LocalLLMManifestPath      string
 	ModelExecutionMode        string
+	ModelBudget               *FirstDiagnosisModelBudget
 	OpenRouterManifestPath    string
 	Supervisor                FirstDiagnosisHTTPHostSupervisor
 	Hooks                     FirstDiagnosisHTTPHooks
@@ -88,7 +89,7 @@ func StartFirstDiagnosisHTTP(ctx context.Context, manager *Manager, options Firs
 	if ctx == nil || ctx.Err() != nil || manager == nil || manager.pg == nil || manager.pg.DB == nil || e2HTTPNil(options.Supervisor) || options.CleanupTimeout <= 0 || options.CleanupTimeout > 2*time.Minute || options.Shutdown.BlockAdmission == nil || options.Shutdown.CancelAndDrain == nil || options.Shutdown.CheckResults == nil {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
-	modelOptions := FirstDiagnosisModelOptions{Mode: options.ModelExecutionMode, LocalManifestPath: options.LocalLLMManifestPath, OpenRouterManifestPath: options.OpenRouterManifestPath}
+	modelOptions := FirstDiagnosisModelOptions{Mode: options.ModelExecutionMode, LocalManifestPath: options.LocalLLMManifestPath, OpenRouterManifestPath: options.OpenRouterManifestPath, Budget: options.ModelBudget}
 	if _, _, err := modelOptions.load(); err != nil {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}

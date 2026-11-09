@@ -32,8 +32,11 @@ const (
 type LookupIPFunc func(context.Context, string) ([]netip.Addr, error)
 
 type ClientOptions struct {
-	LookupIP LookupIPFunc
-	RootCAs  *x509.CertPool
+	// DisableRedirects gives one admitted model call at most one HTTP request.
+	// The zero value preserves the existing same-origin redirect behavior.
+	DisableRedirects bool
+	LookupIP         LookupIPFunc
+	RootCAs          *x509.CertPool
 	// Zero preserves streaming without an overall deadline; caller contexts
 	// still cancel both resolution/dial and the HTTP request.
 	Timeout time.Duration
@@ -54,10 +57,11 @@ type dialPlanKey struct{}
 // httpAdapter owns the transport so callers cannot weaken individual dial/TLS
 // hooks. The host must retain the returned client's Transport/CheckRedirect.
 type httpAdapter struct {
-	policy *Policy
-	lookup LookupIPFunc
-	base   *http.Transport
-	dialer net.Dialer
+	policy           *Policy
+	disableRedirects bool
+	lookup           LookupIPFunc
+	base             *http.Transport
+	dialer           net.Dialer
 }
 
 // NewClient enforces a local endpoint snapshot on requests using this client.
@@ -80,7 +84,7 @@ func NewClient(policy *Policy, options ClientOptions) (*http.Client, error) {
 	if options.RootCAs != nil {
 		roots = options.RootCAs.Clone()
 	}
-	t := &httpAdapter{policy: policy, lookup: lookup, dialer: net.Dialer{Timeout: localDialTimeout, KeepAlive: -1}}
+	t := &httpAdapter{policy: policy, disableRedirects: options.DisableRedirects, lookup: lookup, dialer: net.Dialer{Timeout: localDialTimeout, KeepAlive: -1}}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	// A reused connection would skip the dial-time DNS/peer gate. HTTP/1 and
@@ -235,7 +239,7 @@ func (t *httpAdapter) dialContext(ctx context.Context, network, address string) 
 }
 
 func (t *httpAdapter) checkRedirect(r *http.Request, via []*http.Request) error {
-	if len(via) == 0 || len(via) >= localMaxRedirects {
+	if t.disableRedirects || len(via) == 0 || len(via) >= localMaxRedirects {
 		return ErrRequestBlocked
 	}
 	next, err := t.requestOrigin(r)

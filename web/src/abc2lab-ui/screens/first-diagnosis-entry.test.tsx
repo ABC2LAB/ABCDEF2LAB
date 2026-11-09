@@ -13,6 +13,7 @@ vi.mock("../lib/first-diagnosis", async (original) => ({
   listPreparedTasks: vi.fn(),
   verifyDiagnosisTask: vi.fn(),
 }));
+vi.mock("../components/DiagnosisCreationPanel", () => ({ DiagnosisCreationPanel: () => null }));
 const go = vi.fn(),
   connectTask = vi.fn(),
   selectTask = vi.fn();

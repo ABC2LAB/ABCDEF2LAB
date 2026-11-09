@@ -146,3 +146,16 @@ func TestPolicyFingerprintEvaluationModeAndRunBinding(t *testing.T) {
 		t.Fatal("실제 run 결속 불일치 수용")
 	}
 }
+
+func TestPolicyFingerprintGoldenVector(t *testing.T) {
+	c, b := policyFixture()
+	first := policyDigest(t, c, b)
+	second := policyDigest(t, c, b)
+	if first != second {
+		t.Fatal("same policy changed fingerprint")
+	}
+	const expected = "e9f33de9a7d59ca273a97abe3e9e33c20beef552b6b4e3687acc7a53f35d6f0c"
+	if first != expected {
+		t.Fatal("synthetic policy content encoder changed")
+	}
+}
