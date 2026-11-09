@@ -12,6 +12,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/transmit"
 )
 
@@ -77,6 +78,7 @@ type FirstDiagnosisSupervisor struct {
 	runIntent        int64
 	registered       bool
 	runErr           error
+	runLogErr        error
 	completed        bool
 	operations       sync.WaitGroup
 	ownedTask        string
@@ -292,7 +294,24 @@ func (s *FirstDiagnosisSupervisor) checkPreparationTask(ctx context.Context, tas
 	return nil
 }
 
-func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID string) error {
+func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID string) (resultErr error) {
+	started := time.Now()
+	preparationStage := "task_binding"
+	var observedContextErr error
+	defer func() {
+		loggedErr := resultErr
+		if observedContextErr != nil {
+			loggedErr = observedContextErr
+		}
+		reason := "planner_failed"
+		if preparationStage == "task_binding" {
+			reason = "task_binding_failed"
+		}
+		if preparationStage == "model_profile" {
+			reason = "model_profile_invalid"
+		}
+		diagnosisStage(ctx, mustFirstDiagnosisTaskNumber(taskID), preparationStage, loggedErr, reason, started)
+	}()
 	if s == nil || ctx == nil || ctx.Err() != nil || s.ctx.Err() != nil {
 		return ErrFirstDiagnosisPreparation
 	}
@@ -309,6 +328,7 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 	prepare, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	s.trackCancel(cancel)
 	defer cancel()
+	defer captureDiagnosisContextError(prepare, &observedContextErr)
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer stop()
 	task, err := s.task(prepare, taskID, true)
@@ -328,6 +348,7 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 	if err := s.pinTask(task.ID); err != nil {
 		return ErrFirstDiagnosisPreparation
 	}
+	preparationStage = "model_profile"
 	if err := server.bindFirstDiagnosisModel(prepare, task); err != nil {
 		return ErrFirstDiagnosisPreparation
 	}
@@ -339,15 +360,26 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 		return ErrFirstDiagnosisPreparation
 	}
 	defer server.engine.decInflight(task.ID)
+	preparationStage = "planning"
 	planning := agent.WithE2HTTPPlanning(server.engine.withRuntimeHooks(prepare))
 	emit := func(activity db.Activity) { server.engine.emitActivity(task, activity) }
 	if err := server.createFirstDiagnosisGoals(planning, task, emit); err != nil || planning.Err() != nil {
 		return ErrFirstDiagnosisPreparation
 	}
+	lastIntent, observed := s.plannerLogStart(planning, task)
+	planStarted := time.Now()
 	server.engine.BeginLLMCall(task.ID)
 	_, _, planErr := planner.Plan(planning, mustFirstDiagnosisTaskNumber(task.ID), server.m.Assets(), task.Store, task.Goal, nil, emit)
 	server.engine.EndLLMCall(task.ID)
+	server.engine.plannerLogFinish(planning, task, lastIntent, observed, planErr, planStarted)
 	active, readErr := task.Store.HasActiveIntent()
+	if readErr != nil || !active {
+		reason := "no_intents"
+		if readErr != nil {
+			reason = "intent_storage_failed"
+		}
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "planner", Event: "stage_finished", TaskID: mustFirstDiagnosisTaskNumber(taskID), Stage: "planning", Status: "failed", ReasonCode: reason})
+	}
 	if planErr != nil || planning.Err() != nil || readErr != nil || !active || s.checkPreparationTask(planning, task) != nil || server.checkFirstDiagnosisModel(planning, task) != nil {
 		return ErrFirstDiagnosisPreparation
 	}
@@ -373,6 +405,14 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		return ErrFirstDiagnosisSupervisor
 	}
 	stage := "admission"
+	var observedRunErr error
+	runStartedAt := time.Now()
+	stageStartedAt := runStartedAt
+	setStage := func(next string) {
+		diagnosisStage(ctx, mustFirstDiagnosisTaskNumber(taskID), diagnosisLogStage(stage), nil, "execution_failed", stageStartedAt)
+		stage, stageStartedAt = next, time.Now()
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "stage_started", TaskID: mustFirstDiagnosisTaskNumber(taskID), Stage: diagnosisLogStage(stage), Status: "started"})
+	}
 	s.running = true
 	s.runStarted = true
 	s.permit = taskID
@@ -381,7 +421,15 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	s.registered = snapshotRef != ""
 	s.operations.Add(1)
 	s.mu.Unlock()
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "run_started", TaskID: mustFirstDiagnosisTaskNumber(taskID), IntentID: intentID, Stage: "admission", Status: "started"})
 	defer func() {
+		loggedErr := err
+		if observedRunErr != nil {
+			loggedErr = observedRunErr
+		}
+		diagnosisStage(ctx, mustFirstDiagnosisTaskNumber(taskID), diagnosisLogStage(stage), loggedErr, diagnosisLogStageReason(stage), stageStartedAt)
+		status, reason := diagnosisLogOutcome(ctx, loggedErr, diagnosisLogStageReason(stage))
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "run_finished", TaskID: mustFirstDiagnosisTaskNumber(taskID), IntentID: intentID, Stage: diagnosisLogStage(stage), Status: status, ReasonCode: reason, DurationMS: time.Since(runStartedAt).Milliseconds()})
 		if err != nil {
 			log.Printf("[first-diagnosis] task %s 단계 %s 실패", taskID, stage)
 		}
@@ -391,6 +439,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		s.operationCancel = nil
 		s.permit = ""
 		s.runErr = err
+		s.runLogErr = loggedErr
 		s.completed = err == nil
 		s.mu.Unlock()
 		s.operations.Done()
@@ -400,12 +449,21 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	defer cancel()
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer stop()
-	stage = "task"
+	setStage("task")
 	task, err := s.task(run, taskID, false)
 	if err != nil {
 		return err
 	}
 	number := mustFirstDiagnosisTaskNumber(taskID)
+	if logger := diagnosticlog.From(ctx); logger != nil {
+		_ = logger.BindTask(number)
+		if snapshotRef == "" {
+			state := server.requestApprovals.runState(number)
+			if state.RunRef != "" {
+				_ = logger.BindRun(state.RunRef)
+			}
+		}
+	}
 	if snapshotRef == "" {
 		server.requestApprovals.runStarted(number)
 	}
@@ -414,7 +472,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		if snapshotRef != "" || !server.requestApprovals.runFinished(number, err, stage == "audit-close" || stage == "drain") {
 			return
 		}
-		stage = "user-stop"
+		stage, stageStartedAt = "user-stop", time.Now()
 		s.mu.Lock()
 		s.admissionGranted = false
 		s.mu.Unlock()
@@ -428,14 +486,15 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	if snapshotRef == "" && server.requestApprovals.userStopped(number) {
 		return firstDiagnosisFailure(context.Canceled)
 	}
-	stage = "quiescence"
+	setStage("quiescence")
 	if err = s.CheckTaskQuiescent(run, number); err != nil {
 		return err
 	}
-	stage = "model"
+	setStage("model")
 	if err := server.bindFirstDiagnosisModel(run, task); err != nil {
 		return firstDiagnosisFailure(err)
 	}
+	setStage("intent-binding")
 	var node *db.Node
 	if intentID > 0 {
 		node, err = task.Store.GetNode(intentID)
@@ -443,6 +502,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			return ErrFirstDiagnosisSupervisor
 		}
 	}
+	setStage("e2-policy")
 	registered := snapshotRef != ""
 	if registered {
 		if !safeSnapshotRef.MatchString(snapshotRef) || server.engine.controlledReads == nil || server.engine.e2HTTP != nil {
@@ -462,12 +522,12 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	s.mu.Lock()
 	s.admissionGranted = true
 	s.mu.Unlock()
-	stage = "admission"
+	setStage("admission")
 	queued, admissionErr := server.admitPausedTask(task)
 	if admissionErr != nil || queued {
 		return ErrFirstDiagnosisSupervisor
 	}
-	stage = "execution"
+	setStage("execution")
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -488,6 +548,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		}
 		state := task.lifecycleSnapshot()
 		if (registered && (intentState == "failed" || intentState == "blocked" || intentState == "timeout")) || state.Status == "failed" || state.Status == "timeout" {
+			observedRunErr = diagnosisRunObservedError(ErrFirstDiagnosisSupervisor, state.Status, intentState)
 			return ErrFirstDiagnosisSupervisor
 		}
 		terminal := registered && intentState == "done"
@@ -503,17 +564,17 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			s.admissionGranted = false
 			s.mu.Unlock()
 			if !registered {
-				stage = "fence"
+				setStage("fence")
 				if err = server.engine.e2HTTP.FenceTask(taskID); err != nil {
 					return firstDiagnosisFailure(err)
 				}
 			}
-			stage = "drain"
+			setStage("drain")
 			if err = s.drainTask(run, server, task); err != nil {
 				return err
 			}
 			if registered {
-				stage = "registered-result"
+				setStage("registered-result")
 				if err = s.checkRegisteredResult(run, task, intentID); err != nil {
 					return err
 				}
@@ -522,7 +583,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 				if completionErr != nil || !ready {
 					return ErrFirstDiagnosisSupervisor
 				}
-				stage = "audit-close"
+				setStage("audit-close")
 				if err = server.engine.e2HTTP.CloseTask(run, taskID); err != nil {
 					return firstDiagnosisFailure(err)
 				}

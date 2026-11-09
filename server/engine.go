@@ -969,9 +969,12 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		triggers := t.drainTriggers()
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
 		workSeq := t.firstDiagnosisWorkSeq.Load()
+		lastIntent, observed := e.plannerLogStart(ectx, t)
+		planStarted := time.Now()
 		e.BeginLLMCall(t.ID)
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 		e.EndLLMCall(t.ID)
+		e.plannerLogFinish(ectx, t, lastIntent, observed, err, planStarted)
 		if e.firstDiagnosis && err == nil && !met && ectx.Err() == nil {
 			t.firstDiagnosisPlannedSeq.Store(workSeq)
 		}

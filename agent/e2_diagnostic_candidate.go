@@ -15,6 +15,7 @@ import (
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -91,13 +92,19 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 		}, "required": []string{"call_ref", "vulnclass", "name", "summary"}},
 		Concurrent: func(json.RawMessage) bool { return false },
 		Run: func(ctx context.Context, input json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
+			event := func(name, status, reason, ref string) {
+				diagnosticAgentEvent(ctx, diagnosticlog.Event{Event: name, Stage: "candidate_storage", Status: status, ReasonCode: reason, TaskID: binding.TaskID, RunRef: binding.RunRef, IntentID: binding.IntentID, CallRef: ref, Tool: "submit_diagnostic_candidate"})
+			}
+			event("candidate_submitted", "started", "", "")
 			mu.Lock()
 			defer mu.Unlock()
 			if store == nil || state == nil || binding.Runner == nil || len(input) > 24<<10 {
+				event("candidate_validated", "failed", "candidate_unavailable", "")
 				return actool.Errorf("diagnostic_candidate_unavailable"), nil
 			}
 			execution := binding.Runner.Execution()
 			if execution == nil {
+				event("candidate_validated", "failed", "candidate_unavailable", "")
 				return actool.Errorf("diagnostic_candidate_unavailable"), nil
 			}
 			var in struct {
@@ -111,9 +118,11 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 			decoder := json.NewDecoder(bytes.NewReader(input))
 			decoder.DisallowUnknownFields()
 			if decoder.Decode(&in) != nil {
+				event("candidate_validated", "failed", "candidate_input_invalid", "")
 				return actool.Errorf("diagnostic_candidate_input_invalid"), nil
 			}
 			if _, err := decoder.Token(); err != io.EOF {
+				event("candidate_validated", "failed", "candidate_input_invalid", "")
 				return actool.Errorf("diagnostic_candidate_input_invalid"), nil
 			}
 			state.mu.Lock()
@@ -135,20 +144,24 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 			}
 			state.mu.Unlock()
 			if !ok {
+				event("candidate_validated", "failed", "candidate_observation_not_found", "")
 				return actool.Errorf("diagnostic_candidate_observation_not_found"), nil
 			}
 			if len(related) > 0 {
 				var envelope map[string]json.RawMessage
 				if json.Unmarshal([]byte(observed.Evidence), &envelope) != nil {
+					event("candidate_validated", "failed", "candidate_observation_invalid", "")
 					return actool.Errorf("diagnostic_candidate_observation_invalid"), nil
 				}
 				rawRelated, err := json.Marshal(related)
 				if err != nil {
+					event("candidate_validated", "failed", "candidate_observation_invalid", "")
 					return actool.Errorf("diagnostic_candidate_observation_invalid"), nil
 				}
 				envelope["related_calls"] = rawRelated
 				combined, err := json.Marshal(envelope)
 				if err != nil || len(combined) > 256<<10 {
+					event("candidate_validated", "failed", "candidate_evidence_too_large", "")
 					return actool.Errorf("diagnostic_candidate_evidence_too_large"), nil
 				}
 				observed.Evidence = string(combined)
@@ -162,12 +175,16 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				OutputTruncated: observed.Truncated,
 			}
 			if candidate.Validate() != nil {
+				event("candidate_validated", "failed", "candidate_binding_invalid", "")
 				return actool.Errorf("diagnostic_candidate_binding_invalid"), nil
 			}
+			event("candidate_validated", "succeeded", "", in.CallRef)
 			id, err := store.RecordDiagnosticCandidate(ctx, candidate)
 			if err != nil {
+				event("candidate_saved", "failed", "candidate_store_failed", in.CallRef)
 				return actool.Errorf("diagnostic_candidate_store_failed"), nil
 			}
+			event("candidate_saved", "manual_review_required", "", in.CallRef)
 			for _, saved := range onSaved {
 				if saved != nil {
 					saved()

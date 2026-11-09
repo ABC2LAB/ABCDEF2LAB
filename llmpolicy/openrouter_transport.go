@@ -5,6 +5,9 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
+
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"io"
 	"math"
 	"net"
@@ -100,6 +103,21 @@ func openRouterDialWith(ctx context.Context, network, address string, lookup fun
 	return c, nil
 }
 func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	// 진단 관측은 송신 권한이나 기존 사용량 집계를 대신하지 않는다.
+	diagnostic := diagnosticlog.Event{Component: "openrouter", Event: "model_request_denied", Stage: "model_call", Status: "denied", ReasonCode: "policy_denied", Model: OpenRouterModel}
+	started := time.Now()
+	var diagnosticContext context.Context
+	if r != nil {
+		diagnosticContext = r.Context()
+		diagnostic.Role = diagnosticlog.RoleFrom(diagnosticContext)
+	}
+	if t != nil && t.policy != nil {
+		diagnostic.ProviderRef = t.policy.manifest.ProviderSlug
+	}
+	defer func() {
+		diagnostic.DurationMS = time.Since(started).Milliseconds()
+		_ = diagnosticlog.Emit(diagnosticContext, diagnostic)
+	}()
 	reject := func() (*http.Response, error) {
 		if r != nil && r.Body != nil {
 			_ = r.Body.Close()
@@ -169,9 +187,20 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	if err != nil || len(wire) > openRouterRequestLimit {
 		return reject()
 	}
-	if err = p.reserve(output); err != nil {
+	if reason, reserveErr := p.reserveDiagnostic(output); reserveErr != nil {
+		diagnostic.ReasonCode = reason
 		return reject()
 	}
+	diagnostic.Event = "model_request_finished"
+	diagnostic.Status = "failed"
+	diagnostic.ReasonCode = "transport_failure"
+	diagnostic.ReservedInputTokens = m.MaxInputPerCall
+	diagnostic.ReservedOutputTokens = output
+	diagnostic.ReservedCostMicros = (m.MaxInputPerCall*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000
+	diagnostic.CostUncertain = true
+	begin := diagnostic
+	begin.Event, begin.Status, begin.ReasonCode = "model_request_started", "started", ""
+	_ = diagnosticlog.Emit(diagnosticContext, begin)
 	start := time.Now()
 	valid := false
 	failureReason := "transport_failure"
@@ -196,17 +225,41 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	copy.Header.Set("Authorization", r.Header.Get("Authorization"))
 	resp, err := t.base.RoundTrip(copy)
 	if err != nil || resp == nil {
+		diagnostic.ReasonCode = openRouterDiagnosticTransportReason(err, r.Context())
 		return nil, ErrOpenRouterPolicy
 	}
+	if resp.StatusCode >= 100 && resp.StatusCode <= 599 {
+		diagnostic.HTTPStatus = resp.StatusCode
+	}
 	if resp.Body == nil {
+		diagnostic.ReasonCode = "response_invalid"
 		return nil, ErrOpenRouterPolicy
 	}
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, openRouterResponseLimit+1))
 	_ = resp.Body.Close()
 	if readErr != nil || len(data) > openRouterResponseLimit || resp.StatusCode != 200 {
+		switch {
+		case resp.StatusCode == 401:
+			diagnostic.ReasonCode = "http_unauthorized"
+		case resp.StatusCode == 429:
+			diagnostic.ReasonCode = "http_rate_limited"
+		case resp.StatusCode >= 500 && resp.StatusCode <= 599:
+			diagnostic.ReasonCode = "http_server_error"
+		case resp.StatusCode >= 400 && resp.StatusCode <= 499:
+			diagnostic.ReasonCode = "http_client_error"
+		case readErr != nil:
+			diagnostic.ReasonCode = openRouterDiagnosticTransportReason(readErr, r.Context())
+		default:
+			diagnostic.ReasonCode = "response_invalid"
+		}
 		return nil, ErrOpenRouterPolicy
 	}
 	failureReason = "accounting_unknown"
+	diagnostic.ReasonCode = "accounting_unknown"
+	if !validOpenRouterJSON(data) || !validOpenRouterWireTools(data, body["tools"]) {
+		diagnostic.ReasonCode = "response_invalid"
+		return nil, ErrOpenRouterPolicy
+	}
 	var result struct {
 		Model    string `json:"model"`
 		Provider string `json:"provider"`
@@ -216,7 +269,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 			Cost   *float64 `json:"cost"`
 		} `json:"usage"`
 	}
-	if !validOpenRouterJSON(data) || !validOpenRouterWireTools(data, body["tools"]) || json.Unmarshal(data, &result) != nil || result.Model != OpenRouterModel || result.Provider != m.ExpectedProviderName ||
+	if json.Unmarshal(data, &result) != nil || result.Model != OpenRouterModel || result.Provider != m.ExpectedProviderName ||
 		result.Usage == nil || result.Usage.Cost == nil || result.Usage.Input < 1 || result.Usage.Input > m.MaxInputPerCall ||
 		result.Usage.Output < 0 || result.Usage.Output > output || math.IsNaN(*result.Usage.Cost) || math.IsInf(*result.Usage.Cost, 0) || *result.Usage.Cost < 0 {
 		return nil, ErrOpenRouterPolicy
@@ -233,6 +286,9 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	p.usage.CostMicros += int64(cost)
 	p.mu.Unlock()
 	valid = true
+	diagnostic.Status, diagnostic.ReasonCode = "succeeded", ""
+	diagnostic.InputTokens, diagnostic.OutputTokens = result.Usage.Input, result.Usage.Output
+	diagnostic.CostMicros, diagnostic.CostUncertain = int64(cost), false
 	resp.Body = io.NopCloser(bytes.NewReader(data))
 	resp.ContentLength = int64(len(data))
 	return resp, nil
@@ -346,4 +402,19 @@ func validOpenRouterJSON(data []byte) bool {
 func ValidOpenRouterToolArguments(raw []byte) bool {
 	var object map[string]json.RawMessage
 	return validOpenRouterJSON(raw) && json.Unmarshal(raw, &object) == nil && object != nil
+}
+
+// 오류 문자열은 버리고 문맥과 표준 오류 타입만 분류한다.
+func openRouterDiagnosticTransportReason(err error, ctx context.Context) string {
+	if errors.Is(err, context.DeadlineExceeded) || ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) || ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return "cancelled"
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return "timeout"
+	}
+	return "transport_failure"
 }

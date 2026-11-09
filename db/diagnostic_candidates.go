@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"strconv"
 	"strings"
 	"time"
@@ -150,7 +151,12 @@ func (s *ExplorationStore) RecordDiagnosticCandidate(ctx context.Context, c Diag
 	var existing int64
 	err = tx.QueryRowContext(ctx, `SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND origin=$2 AND payload->'diagnostic_candidate_v1'->>'run_ref'=$3 AND payload->'diagnostic_candidate_v1'->>'call_ref'=$4 AND payload->'diagnostic_candidate_v1'->>'vulnclass'=$5 AND payload->'diagnostic_candidate_v1'->>'name'=$6 AND payload->'diagnostic_candidate_v1'->>'intent_id'=$7 AND payload->'diagnostic_candidate_v1'->>'evidence_digest'=$8 ORDER BY id LIMIT 1`, s.expID, diagnosticCandidateOrigin, c.RunRef, c.CallRef, c.VulnClass, c.Name, strconv.FormatInt(c.IntentID, 10), c.EvidenceDigest).Scan(&existing)
 	if err == nil {
-		return existing, tx.Commit()
+
+		err := tx.Commit()
+		if err == nil {
+			_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "db", Event: "candidate_duplicate", Stage: "candidate_storage", Status: "manual_review_required", TaskID: c.TaskID, RunRef: c.RunRef, IntentID: c.IntentID, CallRef: c.CallRef, CandidateID: existing})
+		}
+		return existing, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return 0, err

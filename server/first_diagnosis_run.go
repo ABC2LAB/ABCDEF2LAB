@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -40,12 +41,26 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcome(ctx context.Context, closur
 	if running || server == nil || server.requestApprovals == nil || s.m == nil || s.m.pg == nil {
 		return ErrFirstDiagnosisOutcome
 	}
+	ctx = diagnosisLogContext(ctx, s.ctx)
 	state := server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task))
+	if logger := diagnosticlog.From(ctx); logger != nil {
+		_ = logger.BindTask(mustFirstDiagnosisTaskNumber(task))
+		if state.RunRef != "" {
+			_ = logger.BindRun(state.RunRef)
+		}
+	}
 	// 실행 실패 자체는 자원 마감 실패와 구별한다.
 	if closureErr != nil {
 		state.Phase, state.ClosureFailed, state.DrainComplete = "failed", true, false
 	}
-	return saveDiagnosisRunWithModel(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage())
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_started", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: "started"})
+	startedAt := time.Now()
+	err := saveDiagnosisRunWithModel(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage())
+	status, reason := diagnosisLogOutcome(ctx, err, "result_storage_failed")
+	stored := err == nil
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_finished", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: status, ReasonCode: reason, DurationMS: time.Since(startedAt).Milliseconds(), ResultStored: &stored})
+	s.logRunSummary(ctx, mustFirstDiagnosisTaskNumber(task), state, stored)
+	return err
 }
 
 func validDiagnosisRun(state requestApprovalRunState) bool {
@@ -173,8 +188,17 @@ func (s *Server) serveDiagnosisRun(w http.ResponseWriter, r *http.Request, bound
 		writeErr(w, 403, "선택한 작업의 실행 결과만 사용할 수 있습니다")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(diagnosisLogContext(r.Context(), s.ctx), 5*time.Second)
 	defer cancel()
+	queryStartedAt := time.Now()
+	querySucceeded := false
+	defer func() {
+		status, reason := "failed", "report_query_failed"
+		if querySucceeded {
+			status, reason = "succeeded", ""
+		}
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "report_queried", TaskID: task, Stage: "report_query", Status: status, ReasonCode: reason, DurationMS: time.Since(queryStartedAt).Milliseconds()})
+	}()
 	var raw []byte
 	err = s.m.pg.QueryRowContext(ctx, `SELECT n.payload FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.kind='fact' AND n.state='confirmed' AND n.origin=$2 AND n.payload->>'task_id'=$3 ORDER BY n.id DESC LIMIT 1`, task, diagnosisRunOrigin, strconv.FormatInt(task, 10)).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -185,6 +209,7 @@ func (s *Server) serveDiagnosisRun(w http.ResponseWriter, r *http.Request, bound
 		}
 		if len(preparation) > 0 {
 			// 유료 준비 실패를 실행 성공이나 완료 회차로 합성하지 않는다.
+			querySucceeded = true
 			writeJSON(w, 200, map[string]any{"version": 1, "task_id": task, "run": nil, "execution": "NOT_RUN", "model_preparation": preparation})
 			return
 		}
@@ -201,5 +226,6 @@ func (s *Server) serveDiagnosisRun(w http.ResponseWriter, r *http.Request, bound
 		writeErr(w, 503, "저장된 모델 사용량을 확인할 수 없습니다")
 		return
 	}
+	querySucceeded = true
 	writeJSON(w, 200, result)
 }
