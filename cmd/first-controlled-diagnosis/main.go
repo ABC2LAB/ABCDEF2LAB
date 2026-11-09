@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-const usage = "usage: first-controlled-diagnosis check -config <protected-file> [-database] | check-registered-get -metadata <protected-file> -snapshot-dir <protected-directory> -registry <filename> | prepare-task -config <launch-file> -task <protected-task-file> | prepare-intents -config <launch-file> -task-id <actual-id> | serve -config <launch-file> | run -config <launch-file> | report -config <launch-file> -task-id <actual-id> | gateway -config <launch-file> -preparation-ref <operator-reference> | manage -config <protected-launch> -registry <protected-registry> -gateway-read-fd <inherited-fd> -gateway-write-fd <inherited-fd>"
+const usage = "usage: first-controlled-diagnosis check -config <protected-file> [-database] | check-registered-get -metadata <protected-file> -snapshot-dir <protected-directory> -registry <filename> | prepare-task -config <launch-file> -task <protected-task-file> | prepare-intents -config <launch-file> -task-id <actual-id> | serve -config <launch-file> | run -config <launch-file> | report -config <launch-file> -task-id <actual-id> | gateway -config <launch-file> -preparation-ref <operator-reference> | manage -config <protected-launch> -registry <protected-registry> -gateway-read-fd <inherited-fd> -gateway-write-fd <inherited-fd> | prepare-service -installation <protected-installation> | serve-url-api -installation <protected-installation> -config <protected-launch> -socket <private-socket> -runtime-api-origin <loopback-origin>"
 
 type checkReport struct {
 	Configuration string `json:"configuration"`
@@ -35,6 +35,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 			return 1
 		}
 		return 0
+	}
+	if len(args) > 0 && args[0] == "prepare-service" {
+		return runURLPreparationService(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "serve-url-api" {
+		return runURLDiagnosisAPI(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) > 0 && args[0] == "manage" {
 		return runManagement(ctx, args[1:], stdout, stderr)

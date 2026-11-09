@@ -174,14 +174,36 @@ func (p *firstDiagnosisModelProvider) check(ctx context.Context) error {
 	return nil
 }
 func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	if p == nil || p.server == nil {
+		return llm.Message{}, "", llm.Usage{}, ErrFirstDiagnosisModel
+	}
+	budget := p.server.firstModelBudget
+	if budget != nil {
+		release, err := budget.acquireCall(ctx)
+		if err != nil {
+			return llm.Message{}, "", llm.Usage{}, err
+		}
+		defer release()
+	}
+	// 대기 중 DB/profile 결속이 바뀌었을 수 있어 gate 획득 뒤 다시 확인한다.
 	if p.check(ctx) != nil {
 		return llm.Message{}, "", llm.Usage{}, ErrFirstDiagnosisModel
 	}
-	return p.inner.Complete(ctx, req)
+	if budget == nil {
+		return p.inner.Complete(ctx, req)
+	}
+	if err := budget.before(ctx, p.config, &req); err != nil {
+		return llm.Message{}, "", llm.Usage{}, err
+	}
+	message, reason, usage, err := p.inner.Complete(ctx, req)
+	if budgetErr := budget.after(usage, req.MaxTokens, err); budgetErr != nil {
+		return llm.Message{}, "", usage, budgetErr
+	}
+	return message, reason, usage, nil
 }
 func (p *firstDiagnosisModelProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
-		if p.check(ctx) != nil {
+		if p.check(ctx) != nil || p.server.firstModelBudget != nil {
 			yield(llm.StreamEvent{}, ErrFirstDiagnosisModel)
 			return
 		}

@@ -836,11 +836,29 @@ func newDeadlineGuardedConn(conn net.Conn, call *Call, revision string, ob *obse
 	return &guardedConn{Conn: conn, c: call, revision: revision, ob: ob}, nil
 }
 
+// 외부 파일 변경과 송신을 원자적으로 묶는 검사는 아니다.
+// 각 지원 송신 경계 직전에 확인하고 한 번 실패한 위임은 다시 허용하지 않는다.
+// 호출자는 execution 잠금을 보유한다.
+// Dial 뒤 TLS/요청 조각을 쓰기 전에도 철회될 수 있으므로 Write 검사를 생략하지 않는다.
+// 판정·정책 세대와 송신의 잠금 경계를 유지하며 callback은 잠금 아래 실행된다.
+// URL 준비 callback은 held FD의 metadata를 확인하고 큰 helper 원문을 매번 다시 읽지 않는다.
+func (e *Execution) authorityCurrentLocked() bool {
+	if e.cfg.CheckAuthority == nil {
+		return true
+	}
+	if e.cfg.CheckAuthority() == nil {
+		return true
+	}
+	e.stopped, e.stopReason = true, Revoked
+	e.cancel()
+	return false
+}
+
 func (g *guardedConn) Write(p []byte) (int, error) {
 	e := g.c.e
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if g.c.blockedLocked() != Complete || e.cfg.PolicyRevision != g.revision {
+	if g.c.blockedLocked() != Complete || e.cfg.PolicyRevision != g.revision || !e.authorityCurrentLocked() || g.c.blockedLocked() != Complete || e.cfg.PolicyRevision != g.revision {
 		return 0, ErrDenied
 	}
 	g.ob.forward.Store(true)
@@ -888,6 +906,12 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	e.mu.Lock()
 	reason := c.blockedLocked()
+	if reason == Complete && !e.authorityCurrentLocked() {
+		reason = Revoked
+	}
+	if reason == Complete {
+		reason = c.blockedLocked()
+	}
 	rule, ok := e.matchLocked(req)
 	revision := e.cfg.PolicyRevision
 	if reason == Complete && !ok {
@@ -954,6 +978,15 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	if reason == Complete && e.cfg.PolicyRevision != revision {
 		reason = PolicyDenied
 	}
+	if reason == Complete && !e.authorityCurrentLocked() {
+		reason = Revoked
+	}
+	if reason == Complete {
+		reason = c.blockedLocked()
+	}
+	if reason == Complete && e.cfg.PolicyRevision != revision {
+		reason = PolicyDenied
+	}
 	if reason == Complete {
 		if err = e.cfg.Budget.Ledger.Reserve(e.cfg.Budget.Key, e.cfg.Budget.Binding, budget.Attempt{RunRef: e.cfg.Scope.RunRef, Sequence: r.Sequence}, time.Now()); err != nil {
 			reason = BudgetExhausted
@@ -1016,7 +1049,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	transport.DialContext = func(dctx context.Context, network, address string) (net.Conn, error) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		if c.blockedLocked() != Complete || e.cfg.PolicyRevision != revision || network != "tcp" || address != rule.authority {
+		if c.blockedLocked() != Complete || e.cfg.PolicyRevision != revision || network != "tcp" || address != rule.authority || !e.authorityCurrentLocked() || c.blockedLocked() != Complete || e.cfg.PolicyRevision != revision {
 			return nil, ErrDenied
 		}
 		ob.forward.Store(true)
@@ -1041,6 +1074,13 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Reason = TransportFailed
 		if r.ForwardAttempted {
 			r.Reason = Unknown
+		} else {
+			e.mu.Lock()
+			authorityRevoked := e.cfg.CheckAuthority != nil && e.stopReason == Revoked
+			e.mu.Unlock()
+			if authorityRevoked {
+				r.Decision, r.Reason = "denied", Revoked
+			}
 		}
 		return finish(nil, ErrDenied)
 	}

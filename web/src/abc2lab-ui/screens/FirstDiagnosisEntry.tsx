@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
-import { NewDiagnosisPanel } from "../components/NewDiagnosisPanel";
+import { DiagnosisCreationPanel } from "../components/DiagnosisCreationPanel";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import {
@@ -19,11 +19,11 @@ type TaskList =
   | { kind: "ready"; tasks: PreparedTask[] }
   | { kind: "unavailable"; message: string };
 
-/** CLI에서 만든 task의 서버 조회만 수행한다. */
+/** URL 준비 기능과 기존 task 연결을 구분한다. */
 export default function FirstDiagnosisEntry() {
   const { screen, go } = useNav();
   const { taskId, connection, connectTask, selectTask } = useSelection();
-  const [createOpen, setCreateOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(true);
   const [input, setInput] = useState(taskId ?? "");
   const [server, setServer] = useState<DiagnosisServer>(connection ?? "run");
   const [list, setList] = useState<TaskList>({ kind: "loading" });
@@ -82,6 +82,7 @@ export default function FirstDiagnosisEntry() {
     const current = ++generation.current;
     setBusy(true);
     setError("");
+    setCreateOpen(false);
     // 실패한 새 선택 뒤 이전 task 자료를 복원하지 않는다.
     selectTask(null);
     try {
@@ -102,14 +103,13 @@ export default function FirstDiagnosisEntry() {
       <div className="frame">
         <TopBar current="entry" />
         <div style={{ padding: "40px 24px", maxWidth: 800, margin: "0 auto" }}>
-          <h1 className="big">CLI 첫 진단에 연결</h1>
+          <h1 className="big">첫 진단 시작·연결</h1>
           <button className="btn" type="button" onClick={() => setCreateOpen((value) => !value)}>
             {createOpen ? "초안 화면 닫기" : "새 진단 초안"}
           </button>
-          {createOpen && active && <NewDiagnosisPanel />}
+          {createOpen && active && <DiagnosisCreationPanel />}
           <p className="hint">
-            운영자가 prepare-task → prepare-intents → check → run으로 준비한 실제 task를 선택해 주세요. 여기서는 기존
-            진단에 연결해요.
+            이미 만들어진 진단은 아래에서 실제 task ID로 연결할 수 있어요. 기존 CLI 진단도 같은 방식으로 조회해요.
           </p>
           <form className="card" onSubmit={connect}>
             <label className="fl" htmlFor="diagnosis-server">
@@ -184,7 +184,7 @@ export default function FirstDiagnosisEntry() {
             )}
           </form>
           <section className="card" aria-label="지원하지 않는 설정">
-            <h3>준비와 비밀정보는 기존 보호된 절차로</h3>
+            <h3>설치 설정과 비밀정보는 보호된 절차로</h3>
             <p className="hint">
               DNS TXT 소유 확인, API 키 등록, 세션·Cookie·Authorization 입력은 아직 지원하지 않아요. 이 화면에
               비밀정보를 입력하지 마세요.
