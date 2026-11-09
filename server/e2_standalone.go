@@ -85,8 +85,8 @@ func NewE2StandaloneBackend(ctx context.Context, o E2StandaloneOptions) (*E2Stan
 		return nil, ErrE2Control
 	}
 	defer clear(raw)
-	var policy E2HTTPFilePolicy
-	if strictJSON(raw, &policy) != nil || filepath.Join(filepath.Dir(o.Config.PolicyPath), policy.AuditKey.File) != o.Config.AuditKeyPath {
+	policy, parseErr := ValidateE2HTTPPolicyDocument(raw, true)
+	if parseErr != nil || filepath.Join(filepath.Dir(o.Config.PolicyPath), policy.AuditKey.File) != o.Config.AuditKeyPath {
 		return nil, ErrE2Control
 	}
 	key, err := o.Config.ReadAuditKey()
