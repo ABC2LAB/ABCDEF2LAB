@@ -28,6 +28,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/transmit"
+	"github.com/jackc/pgx/v5"
 )
 
 // 합성 권위는 정확한 digest/task/intent만 허용한다. 실제 Planner 수용 시험이 아니다.
@@ -295,8 +296,27 @@ func reflectFinal(a, b E2ControlFinal) bool {
 	return a.State == b.State && a.ManifestSHA256 == b.ManifestSHA256 && a.ExecutionRef == b.ExecutionRef
 }
 
+// DB가 필요 없는 자식은 부모 suite의 PostgreSQL advisory lock을 다시 획득하면 안 된다.
+// 빈 DSN은 config.json으로 fallback하므로, 연결 전에 파싱이 실패하는 명시적 값을 쓴다.
+// 부모 환경과 다른 PostgreSQL 시험의 환경은 변경하지 않는다.
+const standaloneChildNoDatabaseDSN = "postgres://%"
+
+func standaloneChildEnv(parent []string) []string {
+	child := make([]string, 0, len(parent)+1)
+	for _, entry := range parent {
+		if !strings.HasPrefix(entry, "ARTEX_PG_DSN=") {
+			child = append(child, entry)
+		}
+	}
+	return append(child, "ARTEX_PG_DSN="+standaloneChildNoDatabaseDSN)
+}
+
 func TestE2StandaloneSubprocessOwnsLifecycle(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestE2StandaloneActualRunnerAllowDenyAndExport$", "-test.v")
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestE2StandaloneActualRunnerAllowDenyAndExport$", "-test.v", "-test.timeout=90s")
+	cmd.Env = standaloneChildEnv(os.Environ())
+	cmd.WaitDelay = 2 * time.Second
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("독립 프로세스 lifecycle 실패: %s", output)
@@ -391,10 +411,11 @@ func TestE2StandaloneSubprocessControlWire(t *testing.T) {
 		}
 		t.Fatal("namespace probe")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestE2StandaloneSubprocessControlWire$", "-test.v")
-	cmd.Env = append(os.Environ(), "ABC2LAB_E2_STANDALONE_TEST_CHILD=1")
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestE2StandaloneSubprocessControlWire$", "-test.v", "-test.timeout=90s")
+	cmd.Env = append(standaloneChildEnv(os.Environ()), "ABC2LAB_E2_STANDALONE_TEST_CHILD=1")
+	cmd.WaitDelay = 2 * time.Second
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -635,5 +656,33 @@ func TestE2StandaloneRuntimeToolCallLimitIsAtomic(t *testing.T) {
 	final, err := b.Finalize(t.Context(), "close-one")
 	if err != nil || final.State != "complete" {
 		t.Fatal("limited call final")
+	}
+}
+
+func TestE2StandaloneChildEnvironmentDoesNotChangeParentDatabase(t *testing.T) {
+	before, present := os.LookupEnv("ARTEX_PG_DSN")
+	parent := []string{"ARTEX_PG_DSN=postgres://synthetic-parent/db", "PATH=/synthetic/bin", "ARTEX_FIRST_DIAGNOSIS_TEST_DSN=postgres://synthetic-owner/db", "ARTEX_PG_DSN=postgres://duplicate-parent/db"}
+	original := append([]string(nil), parent...)
+	child := standaloneChildEnv(parent)
+	count := 0
+	for _, entry := range child {
+		if strings.HasPrefix(entry, "ARTEX_PG_DSN=") {
+			count++
+			if entry != "ARTEX_PG_DSN="+standaloneChildNoDatabaseDSN {
+				t.Fatal("child inherited parent DB")
+			}
+		}
+	}
+	if count != 1 || len(child) != 3 || strings.Join(parent, "\n") != strings.Join(original, "\n") || strings.Join(child[:2], "\n") != "PATH=/synthetic/bin\nARTEX_FIRST_DIAGNOSIS_TEST_DSN=postgres://synthetic-owner/db" {
+		t.Fatal("child filter changed unrelated inputs")
+	}
+	after, stillPresent := os.LookupEnv("ARTEX_PG_DSN")
+	if before != after || present != stillPresent {
+		t.Fatal("parent database environment changed")
+	}
+	// database/sql은 파싱을 첫 Ping까지 미룬다. pgx 파싱 거부를 확인하여
+	// TestMain의 Ping이 실제 연결/advisory lock까지 갈 수 없음을 검증한다.
+	if _, err := pgx.ParseConfig(standaloneChildNoDatabaseDSN); err == nil {
+		t.Fatal("child DSN did not fail before connection")
 	}
 }
