@@ -90,6 +90,15 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 - stderr `diagnostic_logging_incomplete:log_storage_failed|log_limit|log_invalid_event|log_closed`, 종료 1.
 - 관측용 집계 조회 실패 등: 원래 실행 결과를 변경하지 않고 `incomplete`/`observation_complete=false`를 남기며 CLI `diagnostic_observation_incomplete`, 종료 1.
 
+`prepare-task`의 task 생성과 `prepare-intents`의 모델 호출·intent 저장은 로그 최종 확인 전에 끝날 수 있다.
+따라서 로깅 장애나 관측 불완전으로 종료 1이 되고 성공 stdout의 `task_id`·`intent_ids`가 없어도,
+이미 생성된 DB 행이나 발생한 모델 비용이 취소된 것은 아니다. 이는 성공 출력을 보류하는 현재 계약이다.
+**같은 준비 명령을 자동 재실행하지 않는다.** 먼저 남은 보호 로그의 비민감 ID를 확인하고,
+로그에 ID가 없으면 운영자의 허가된 읽기 전용 DB 조회로 해당 준비 시점의 `tasks` ID·exploration 연결과
+그 exploration의 intent ID·상태를 확인한다. `prepare-intents`는 기존 `--task-id`로 조회 범위를 좁힌다.
+작업·intent의 존재를 확인해 중복 생성·추가 모델 비용을 피하고, 행이나 회차를 특정할 수 없으면 결과 불명으로 남긴다.
+전체 payload·계정·키·prompt를 복구 근거에 복사하지 않으며, 확인한 ID도 새 실행 허가나 단회 승인 재사용 근거로 쓰지 않는다.
+
 로깅 오류를 E② 감사 실패로 바꾸지 않으며 로그가 송신 허가를 만들지도 않는다.
 이미 승인된 요청이 로그 오류 때문에 감사 정본에서 취소/미전송으로 바뀌지 않는다.
 저장된 기존 실행 결과는 실행/감사의 결과이며 관측 파일의 완전성을 증명하지 않는다.
