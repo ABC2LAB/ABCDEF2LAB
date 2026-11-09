@@ -68,10 +68,21 @@ type Input struct {
 }
 
 type Profile struct {
-	ID              string `json:"id"`
-	Label           string `json:"label"`
-	ModelProfileRef string `json:"model_profile_ref"`
-	ModelLabel      string `json:"model_label"`
+	ID              string     `json:"id"`
+	Label           string     `json:"label"`
+	ModelProfileRef string     `json:"model_profile_ref"`
+	ModelLabel      string     `json:"model_label"`
+	Model           *ModelInfo `json:"model,omitempty"`
+}
+
+// Only installed, non-secret model routing facts cross the public boundary.
+type ModelInfo struct {
+	Mode             string `json:"mode"`
+	Model            string `json:"model"`
+	Provider         string `json:"provider"`
+	ExternalTransfer bool   `json:"external_transfer"`
+	InputPerCall     int64  `json:"input_tokens_per_call"`
+	OutputPerCall    int64  `json:"output_tokens_per_call"`
 }
 
 // 요청·토큰은 실제 송신 전 예약 상한이다. 로컬 모델 비용은 0이며 유료 fallback은 없다.
@@ -87,28 +98,30 @@ type Budget struct {
 // prefix는 자신과 하위 경로를 포함한다. query/body의 실제 E② 범위를 축소해 표시하지 않는다.
 // 이 projection에는 연결 IP·보호 경로·키·승인 원문을 넣지 않는다.
 type Scope struct {
-	TargetRef      string    `json:"target_ref"`
-	ScopeRef       string    `json:"scope_ref"`
-	Origin         string    `json:"origin"`
-	PathPrefixes   []string  `json:"path_prefixes"`
-	Methods        []string  `json:"methods"`
-	QueryPolicy    string    `json:"query_policy"`
-	BodyPolicy     string    `json:"body_policy"`
-	MaxBodyBytes   int64     `json:"max_body_bytes"`
-	ApprovalMode   string    `json:"approval_mode"`
-	AttestationRef string    `json:"attestation_ref"`
-	Budget         Budget    `json:"budget"`
-	ExpiresAt      time.Time `json:"expires_at"`
+	TargetRef      string     `json:"target_ref"`
+	ScopeRef       string     `json:"scope_ref"`
+	Origin         string     `json:"origin"`
+	PathPrefixes   []string   `json:"path_prefixes"`
+	Methods        []string   `json:"methods"`
+	QueryPolicy    string     `json:"query_policy"`
+	BodyPolicy     string     `json:"body_policy"`
+	MaxBodyBytes   int64      `json:"max_body_bytes"`
+	ApprovalMode   string     `json:"approval_mode"`
+	AttestationRef string     `json:"attestation_ref"`
+	Budget         Budget     `json:"budget"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	Model          *ModelInfo `json:"model,omitempty"`
 }
 
 type ModelUsage struct {
-	Requests             int64 `json:"requests"`
-	InputTokens          int64 `json:"input_tokens"`
-	OutputTokens         int64 `json:"output_tokens"`
-	ReservedInputTokens  int64 `json:"reserved_input_tokens"`
-	ReservedOutputTokens int64 `json:"reserved_output_tokens"`
-	CostUSDMicros        int64 `json:"cost_usd_micros"`
-	UsageKnown           bool  `json:"usage_known"`
+	Requests              int64 `json:"requests"`
+	InputTokens           int64 `json:"input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReservedInputTokens   int64 `json:"reserved_input_tokens"`
+	ReservedOutputTokens  int64 `json:"reserved_output_tokens"`
+	CostUSDMicros         int64 `json:"cost_usd_micros"`
+	ReservedCostUSDMicros int64 `json:"reserved_cost_usd_micros,omitempty"`
+	UsageKnown            bool  `json:"usage_known"`
 }
 
 // 준비 단계에서 결과가 불명이면 Started=false일 수 있다.
@@ -135,15 +148,16 @@ type Job struct {
 // Principal은 API가 기존 Bearer 인증으로 확인한 주체다. 브라우저 body에서는 받지 않는다.
 // socket 주소·descriptor·파일 경로·환경 변수·명령·권위 자료는 요청 필드가 아니다.
 type Request struct {
-	Version          string  `json:"version"`
-	RequestID        string  `json:"request_id"`
-	Command          Command `json:"command"`
-	Principal        string  `json:"principal"`
-	JobID            string  `json:"job_id,omitempty"`
-	ExpectedRevision uint64  `json:"expected_revision,omitempty"`
-	IdempotencyKey   string  `json:"idempotency_key,omitempty"`
-	Input            *Input  `json:"input,omitempty"`
-	TaskID           string  `json:"task_id,omitempty"`
+	Version                   string  `json:"version"`
+	RequestID                 string  `json:"request_id"`
+	Command                   Command `json:"command"`
+	Principal                 string  `json:"principal"`
+	JobID                     string  `json:"job_id,omitempty"`
+	ExpectedRevision          uint64  `json:"expected_revision,omitempty"`
+	IdempotencyKey            string  `json:"idempotency_key,omitempty"`
+	Input                     *Input  `json:"input,omitempty"`
+	TaskID                    string  `json:"task_id,omitempty"`
+	ExternalTransferConfirmed bool    `json:"external_transfer_confirmed,omitempty"`
 }
 
 type Response struct {

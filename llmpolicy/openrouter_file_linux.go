@@ -100,6 +100,22 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 	if err != nil {
 		return nil, ErrInvalidOpenRouterManifestFile
 	}
+	resolver.available = func() error {
+		fresh, err := openRouterProtectedDirectory(dir)
+		if err != nil {
+			return ErrOpenRouterPolicy
+		}
+		defer unix.Close(fresh)
+		var st unix.Stat_t
+		if unix.Fstat(fresh, &st) != nil || !sameManifestDirectory(dirBefore, st) {
+			return ErrOpenRouterPolicy
+		}
+		marker := fmt.Sprintf(".openrouter-%x.used", sha256.Sum256([]byte(resolver.manifest.ApprovalID)))
+		if err = unix.Fstatat(fresh, marker, &st, unix.AT_SYMLINK_NOFOLLOW); err != unix.ENOENT {
+			return ErrOpenRouterPolicy
+		}
+		return nil
+	}
 	resolver.consume = func() error {
 		// 승인 ID당 최초 송신만 허용한다. 재시작 후 예산 재사용을 차단한다.
 		fresh, err := openRouterProtectedDirectory(dir)

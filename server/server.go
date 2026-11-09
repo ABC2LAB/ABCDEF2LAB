@@ -124,6 +124,7 @@ type Server struct {
 	runtimeHooks                   agent.RuntimeHooks         // immutable callbacks owned by this server
 	localResolver                  *llmpolicy.ProfileResolver // 로컬 전용 정책은 외부 모드와 별도로 보존한다.
 	openRouterPolicy               *llmpolicy.OpenRouterPolicy
+	openRouterBaseline             llmpolicy.OpenRouterUsage
 	firstModelBudget               *FirstDiagnosisModelBudget
 	firstDiagnosisPreparation      bool
 	firstModelMu                   sync.RWMutex

@@ -45,13 +45,14 @@ type openRouterManifest struct {
 
 // OpenRouterPolicy의 설정은 비공개이며 모든 클라이언트가 같은 예약 예산을 공유한다.
 type OpenRouterPolicy struct {
-	manifest openRouterManifest
-	mu       sync.Mutex
-	usage    OpenRouterUsage
-	active   int64
-	blocked  bool
-	started  bool
-	consume  func() error
+	manifest  openRouterManifest
+	mu        sync.Mutex
+	usage     OpenRouterUsage
+	active    int64
+	blocked   bool
+	started   bool
+	consume   func() error
+	available func() error
 }
 type OpenRouterUsage struct {
 	Requests             int64  `json:"requests"`
@@ -101,6 +102,9 @@ var openRouterSlug = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$`)
 
 // ParseOpenRouterManifest는 구문 검증 전용이다. 실제 전송에는 보호 파일 로더가 필요하다.
 func ParseOpenRouterManifest(data []byte) (*OpenRouterPolicy, error) {
+	return parseOpenRouterManifestAt(data, time.Now())
+}
+func parseOpenRouterManifestAt(data []byte, now time.Time) (*OpenRouterPolicy, error) {
 	if len(data) == 0 || len(data) > MaxProfileManifestBytes || !validManifestEncoding(data) {
 		return nil, ErrOpenRouterPolicy
 	}
@@ -137,7 +141,7 @@ func ParseOpenRouterManifest(data []byte) (*OpenRouterPolicy, error) {
 	}
 	if m.Version != 1 || m.ProfileID <= 0 || m.Format != "openai" || m.BaseURL != OpenRouterBaseURL || m.Model != OpenRouterModel ||
 		!validProfileValue(m.ExpectedProviderName, 128) || !openRouterSlug.MatchString(m.ProviderSlug) || !openRouterSlug.MatchString(m.ApprovalID) || !m.StrictPrivacyAck || !m.AccountSpendCapAck ||
-		!time.Now().Before(m.ExpiresAt) || m.MaxRequests <= 0 || m.MaxInputTokens <= 0 || m.MaxOutputTokens <= 0 || m.MaxCostMicros <= 0 ||
+		!now.Before(m.ExpiresAt) || m.MaxRequests <= 0 || m.MaxInputTokens <= 0 || m.MaxOutputTokens <= 0 || m.MaxCostMicros <= 0 ||
 		m.MaxInputPerCall != openRouterContext || m.MaxOutputPerCall <= 0 || m.MaxOutputPerCall > openRouterContext ||
 		m.TimeoutSeconds < 1 || m.TimeoutSeconds > 300 || m.MaxConcurrent < 1 || m.MaxConcurrent > 16 ||
 		m.InputPrice <= 0 || m.OutputPrice <= 0 || m.InputPrice > 1000000000 || m.OutputPrice > 1000000000 ||
@@ -200,4 +204,49 @@ func (p *OpenRouterPolicy) ValidateCallLimits(output, contextK int) error {
 		return ErrOpenRouterPolicy
 	}
 	return nil
+}
+
+// OpenRouterLimits is a secret-free projection for the trusted URL budget adapter.
+// The adapter reserves the same conservative price bound before entering transport.
+type OpenRouterLimits struct {
+	Requests, InputTokens, OutputTokens, CostMicros int64
+	InputPerCall, OutputPerCall                     int64
+	Provider                                        string
+	ExpiresAt                                       time.Time
+}
+
+func (p *OpenRouterPolicy) Limits() OpenRouterLimits {
+	if p == nil {
+		return OpenRouterLimits{}
+	}
+	m := p.manifest
+	return OpenRouterLimits{m.MaxRequests, m.MaxInputTokens, m.MaxOutputTokens, m.MaxCostMicros, m.MaxInputPerCall, m.MaxOutputPerCall, m.ProviderSlug, m.ExpiresAt}
+}
+
+func (p *OpenRouterPolicy) Quote(output int64) (int64, error) {
+	if p == nil || output < 1 || output > p.manifest.MaxOutputPerCall || !time.Now().Before(p.manifest.ExpiresAt) {
+		return 0, ErrOpenRouterPolicy
+	}
+	m := p.manifest
+	return (m.MaxInputPerCall*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000, nil
+}
+
+// DescribeOpenRouterManifest validates immutable installation metadata for saved
+// report lookup even after expiry. It returns no callable policy or credentials.
+func DescribeOpenRouterManifest(data []byte, output int64) (ProfileTarget, OpenRouterLimits, int64, error) {
+	p, err := parseOpenRouterManifestAt(data, time.Time{})
+	if err != nil || output < 1 || output > p.manifest.MaxOutputPerCall {
+		return ProfileTarget{}, OpenRouterLimits{}, 0, ErrOpenRouterPolicy
+	}
+	m := p.manifest
+	quote := (m.MaxInputPerCall*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000
+	return p.Target(), p.Limits(), quote, nil
+}
+
+// CheckAvailable is read-only. A consumed approval cannot authorize a new URL run.
+func (p *OpenRouterPolicy) CheckAvailable() error {
+	if p == nil || p.available == nil || !time.Now().Before(p.manifest.ExpiresAt) {
+		return ErrOpenRouterPolicy
+	}
+	return p.available()
 }

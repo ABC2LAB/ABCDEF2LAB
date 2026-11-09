@@ -349,3 +349,17 @@ func TestURLAPIRejectsInvalidUTF8BeforeEndpoint(t *testing.T) {
 		t.Fatal("invalid UTF-8 accepted")
 	}
 }
+
+func TestURLAPIExternalConsentOnlyOnStart(t *testing.T) {
+	body := `{"version":"diagnosis-api.v2","expected_revision":1,"external_transfer_confirmed":true}`
+	endpoint := &urlTestEndpoint{}
+	response := urlTestRequest(urlTestHandler(t, endpoint), "POST", URLBasePath+"/drafts/job-1/start", body, "start-1")
+	if response.Code != 200 || len(endpoint.calls) != 1 || !endpoint.calls[0].ExternalTransferConfirmed {
+		t.Fatal("external consent not bound to Start")
+	}
+	endpoint = &urlTestEndpoint{}
+	response = urlTestRequest(urlTestHandler(t, endpoint), "POST", URLBasePath+"/drafts/job-1/validate", body, "")
+	if response.Code != 400 || len(endpoint.calls) != 0 {
+		t.Fatal("consent on non-Start accepted")
+	}
+}

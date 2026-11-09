@@ -40,9 +40,10 @@ func NewURL(options URLOptions) (*URLHandler, error) {
 }
 
 type urlRequestBody struct {
-	Version          string               `json:"version"`
-	ExpectedRevision uint64               `json:"expected_revision,omitempty"`
-	Input            *diagnosisprep.Input `json:"input,omitempty"`
+	ExternalTransferConfirmed bool                 `json:"external_transfer_confirmed,omitempty"`
+	Version                   string               `json:"version"`
+	ExpectedRevision          uint64               `json:"expected_revision,omitempty"`
+	Input                     *diagnosisprep.Input `json:"input,omitempty"`
 }
 
 func urlFail(w http.ResponseWriter, status int, code string) {
@@ -153,10 +154,11 @@ func (h *URLHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if mutation {
 		body, err := decodeURL(w, r)
-		if err != nil {
+		if err != nil || (body.ExternalTransferConfirmed && req.Command != diagnosisprep.Start) {
 			urlFail(w, 400, "invalid_request")
 			return
 		}
+		req.ExternalTransferConfirmed = body.ExternalTransferConfirmed
 		if created {
 			if body.Input == nil || body.ExpectedRevision != 0 || !validURLInput(*body.Input) {
 				urlFail(w, 400, "invalid_request")

@@ -49,26 +49,37 @@ func (b *urlPreparationRuntime) Profiles(ctx context.Context, principal string) 
 	if ctx == nil || ctx.Err() != nil || principal != "ARTEX" {
 		return nil, errPreparation
 	}
-	c, _, err := b.installation()
+	c, pin, err := b.installation()
 	if err != nil {
 		return nil, err
 	}
 	out := []diagnosisprep.Profile{}
 	for _, p := range c.Profiles {
 		if p.Principal == principal {
-			out = append(out, urlProfilePublic(p))
+			public := urlProfilePublic(p)
+			loaded, loadErr := urlLoadProfile(c, pin, p)
+			if loaded != nil {
+				defer loaded.clearMaterials()
+			}
+			if loadErr == nil && loaded.inspection.Scope != nil {
+				public.Model = loaded.inspection.Scope.Model
+			}
+			out = append(out, public)
 		}
 	}
 	return out, nil
 }
 func (b *urlPreparationRuntime) load(principal string, input diagnosisprep.Input) (*urlLoadedProfile, error) {
+	return b.loadForReport(principal, input, false)
+}
+func (b *urlPreparationRuntime) loadForReport(principal string, input diagnosisprep.Input, reportOnly bool) (*urlLoadedProfile, error) {
 	c, pin, err := b.installation()
 	if err != nil {
 		return nil, err
 	}
 	for _, p := range c.Profiles {
 		if p.ID == input.ProfileID && p.Principal == principal {
-			return urlLoadProfile(c, pin, p)
+			return urlLoadProfileForReport(c, pin, p, reportOnly)
 		}
 	}
 	return nil, errPreparation
@@ -90,9 +101,6 @@ func (b *urlPreparationRuntime) Inspect(ctx context.Context, principal string, i
 		return diagnosisprep.Inspection{ReasonCode: "installation_unavailable"}, nil
 	}
 	defer l.clearMaterials()
-	if l.launch.ModelExecutionMode != "" && l.launch.ModelExecutionMode != "local_only" {
-		return diagnosisprep.Inspection{ReasonCode: "model_mode_unsupported"}, nil
-	}
 	i := l.inspection
 	u, _ := url.Parse(input.TargetURL)
 	if u.Scheme+"://"+u.Host != l.origin {
@@ -264,7 +272,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		}
 	}()
 	var lastModelRequest int64
-	modelBudget, err := server.NewFirstDiagnosisModelBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, func(usage diagnosisprep.ModelUsage) error {
+	observe := func(usage diagnosisprep.ModelUsage) error {
 		if usage.Requests > lastModelRequest {
 			if check() != nil {
 				return errPreparation
@@ -277,7 +285,13 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			}
 		}
 		return p.set(func(u *diagnosisprep.Update) { copy := usage; u.ModelUsage = &copy })
-	})
+	}
+	var modelBudget *server.FirstDiagnosisModelBudget
+	if l.launch.ModelExecutionMode == "openrouter" {
+		modelBudget, err = server.NewFirstDiagnosisOpenRouterBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, l.launch.OpenRouterManifestPath, observe)
+	} else {
+		modelBudget, err = server.NewFirstDiagnosisModelBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, observe)
+	}
 	if err != nil {
 		return knownFailure("model_budget_invalid", true)
 	}
@@ -634,7 +648,7 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 	// 재시작 후 저장 결과 조회는 실행이나 모델을 복원하지 않는다.
 	b.mu.Lock()
 	if b.reports[task] == nil {
-		loaded, loadErr := b.load("ARTEX", auth.Job.Input)
+		loaded, loadErr := b.loadForReport("ARTEX", auth.Job.Input, true)
 		if loadErr == nil {
 			defer loaded.clearMaterials()
 			// 만료는 저장 보고서를 지우지 않지만 설치/DB pin 교체를 과거 task에 적용하지 않는다.
