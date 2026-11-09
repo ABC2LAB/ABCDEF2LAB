@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -63,13 +64,41 @@ class TestPrepare(Case):
                                   "upstream": "http://eval-meter-upstream:8080", "evidence_dir": "/evidence", "control_dir": "/run/e2-control"})
         self.assertTrue(prepared.reservation_ref.startswith("reservation-"))
 
-    def test_files_are_private_and_the_policy_is_copied_exactly(self):
+    def test_policy_copy_gains_only_this_runs_key_pin(self):
         prepared = self.prepare()
+        written = (self.directory / POLICY_NAME).read_bytes()
+        document = json.loads(written)
+        pin = document.pop("audit_key")
+        self.assertEqual(document, json.loads(POLICY))
+        self.assertEqual(pin, {"file": KEY_NAME, "sha256": hashlib.sha256(prepared.key_path.read_bytes()).hexdigest()})
+        self.assertEqual(prepared.policy_sha256, hashlib.sha256(written).hexdigest())
+
+    def test_policy_pin_changes_with_the_key(self):
+        other = self.temp / "other-pin"
+        other.mkdir(mode=0o700)
+        self.prepare()
+        self.prepare(directory=other)
+        first, second = (json.loads((d / POLICY_NAME).read_bytes())["audit_key"]["sha256"] for d in (self.directory, other))
+        self.assertNotEqual(first, second)
+
+    def test_size_limit_matches_the_go_loader(self):
+        source = (ROOT / "e2config/config.go").read_text(encoding="utf-8")
+        match = re.search(r"const MaxPolicyBytes = (\d+) << (\d+)", source)
+        self.assertIsNotNone(match)
+        self.assertEqual(MAX_POLICY_BYTES, int(match.group(1)) << int(match.group(2)))
+
+    def test_pin_cannot_push_the_policy_over_the_limit(self):
+        head, tail = b'{"approval_mode": "preauthorized_scope", "x": "', b'"}'
+        source = self.temp / "at-limit.json"
+        source.write_bytes(head + b"a" * (MAX_POLICY_BYTES - len(head) - len(tail)) + tail)
+        self.rejected("policy_too_large", policy=source)
+        self.nothing_written()
+
+    def test_files_are_private(self):
+        self.prepare()
         self.assertEqual(sorted(os.listdir(self.directory)), sorted([CONFIG_NAME, KEY_NAME, POLICY_NAME]))
         for name in (CONFIG_NAME, KEY_NAME, POLICY_NAME):
             self.assertEqual(stat.S_IMODE(os.stat(self.directory / name).st_mode), 0o600, name)
-        self.assertEqual((self.directory / POLICY_NAME).read_bytes(), POLICY)
-        self.assertEqual(prepared.policy_sha256, hashlib.sha256(POLICY).hexdigest())
 
     def test_key_is_new_each_run_and_never_leaves_its_file(self):
         first = self.prepare()
@@ -144,7 +173,11 @@ class TestRejected(Case):
                                  ("array", b'["preauthorized_scope"]', "policy_approval_mode"),
                                  ("not-json", b"not json", "policy_invalid"),
                                  ("not-utf8", b"\xff", "policy_invalid"),
-                                 ("deep", b"[" * 100000, "policy_invalid")):
+                                 ("deep", b"[" * 100000, "policy_invalid"),
+                                 ("preset", b'{"approval_mode": "preauthorized_scope", "audit_key": {}}', "policy_audit_key_preset"),
+                                 ("duplicate", b'{"approval_mode": "preauthorized_scope", "approval_mode": "preauthorized_scope"}', "policy_invalid"),
+                                 ("nan", b'{"approval_mode": "preauthorized_scope", "x": NaN}', "policy_invalid"),
+                                 ("surrogate", b'{"approval_mode": "preauthorized_scope", "x": "\\ud800"}', "policy_invalid")):
             with self.subTest(name):
                 source = self.temp / f"{name}.json"
                 source.write_bytes(data)
@@ -154,7 +187,7 @@ class TestRejected(Case):
         exact = self.temp / "exact.json"
         exact.write_bytes(POLICY + b" " * (MAX_POLICY_BYTES - len(POLICY)))
         self.prepare(policy=exact)
-        self.assertEqual(len((self.directory / POLICY_NAME).read_bytes()), MAX_POLICY_BYTES)
+        self.assertLessEqual(len((self.directory / POLICY_NAME).read_bytes()), MAX_POLICY_BYTES)
 
     def test_directory_must_be_private_and_not_a_link(self):
         link = self.temp / "link-dir"

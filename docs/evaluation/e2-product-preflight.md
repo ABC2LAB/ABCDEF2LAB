@@ -89,7 +89,7 @@ E②에는 Docker socket을 주지 않는다. E②의 문자열 bind만으로 �
 
 ## 실제 배치 전에 남은 연결
 
-1. **제품 정책 생산자.** 현재 Python 준비기는 정책 원문을 복사하고 새 감사 키를 만든다.
+1. **제품 정책 생산자.** Python 준비기는 회차마다 새 감사 키를 만들고 정책의 `audit_key` pin을 채운다.
    기존 `server.E2HTTPFilePolicy`는 CA 인증서/키, helper, state 경로, 승인 수명,
    IP pin, 감사 키 digest 등을 요구한다. 이 자원을 실제로 준비하고 새 키와 정책 pin을
    일치시키는 경계가 필요하다. 동결 정책을 bind 시점에 덮어쓰지 않는다.
