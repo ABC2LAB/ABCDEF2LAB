@@ -4,9 +4,10 @@
 
 ## 통합 기준과 지원 범위
 
-- 현재 기준: 2026-11-08 확인한 `dev` `d2bfec57f34dae1c17b6026366e747f3a588750b`. [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)과 [#323](https://github.com/ABC2LAB/ABCDEF2LAB/pull/323)은 병합되어 있다. 코드 연결 완료와 실제 모델·대상 수용 완료는 구분한다.
+- **2026-11-08 확인 시점의 코드 스냅샷**: `dev` `d2bfec57f34dae1c17b6026366e747f3a588750b`. [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)과 [#323](https://github.com/ABC2LAB/ABCDEF2LAB/pull/323)은 병합되어 있다. 코드 연결 완료와 실제 모델·대상 수용 완료는 구분한다.
+- 위 SHA는 상시 최신 실행 버전을 지정하지 않는다. 새 실행 전 최신 `origin/dev`의 정확한 SHA를 확인·기록하고 해당 버전의 CLI·모델 정책과 이 계약을 다시 대조한다.
 - 과거 개발 출발점(현재 checkout 지침 아님): [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317) `2646aa9ab3195203ab841d2cb34859c56462e788`, dev `3dfe4375d9c7b86c7d73da8a866c4a8c84e4cd72` 결합.
-- 외부 모델 변경은 당시 `feature/dongchan-openrouter-first-diagnosis-20261108`에서 검토한 뒤 #323으로 병합했다. 현재 실행은 위 dev 기준을 사용하며, 병합 전 브랜치나 CI 통과를 실모델 진단 성공 근거로 쓰지 않는다.
+- 외부 모델 변경은 당시 `feature/dongchan-openrouter-first-diagnosis-20261108`에서 검토한 뒤 #323으로 병합했다. 현재 실행은 최신 `origin/dev`를 재확인한 뒤 시작하며, 병합 전 브랜치나 CI 통과를 실모델 진단 성공 근거로 쓰지 않는다.
 - 외부 모드는 `general_http`와 그 `prepare-intents`만 지원한다. 등록 GET/IDOR의 기존 로컬 E③ 경로를 그대로 두며 외부 모드와 `registered_get` 조합을 거부한다.
 - 프로토콜은 OpenAI 호환 Chat Completions, 모델은 `qwen/qwen3.5-35b-a3b`, base는 정확히 `https://openrouter.ai/api/v1`다.
 - `llmpolicy.OpenRouterBaseURL`·`OpenRouterModel`은 이번 외부 모드의 **송신 허용 목록(allowlist)** 이며 실행 기본 설정이 아니다. 실제 모델·base는 launch config·DB profile·보호 manifest에서 받고 이 목록과 정확히 일치해야 송신할 수 있다. 설정만 바꿔 임의 모델·endpoint로 허용 범위를 넓히지 않으며, 이 경계는 기존 로컬 모델의 설정 선택을 바꾸지 않는다.

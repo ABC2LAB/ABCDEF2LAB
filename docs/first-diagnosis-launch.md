@@ -19,7 +19,9 @@ UI는 새 실행 명령이나 대상 URL을 제출하지 않는다. 첫 화면�
 이번 범위에 HTTP 시작 버튼은 없으며 UI 작업자가 새 시작 API를 설계하는 후속 과제도 아니다.
 향후 HTTP 시작 기능은 별도 승인·설계 범위다. `serve`는 `run`의 선행 단계가 아니다.
 
-현재 실행·UI 연결 기준은 2026-11-08 확인한 `dev` `d2bfec57f34dae1c17b6026366e747f3a588750b`다.
+**2026-11-08 확인 시점의 코드 스냅샷**은 `dev` `d2bfec57f34dae1c17b6026366e747f3a588750b`다.
+이 SHA는 상시 최신 실행 버전을 지정하지 않는다. 새 실행 전 최신 `origin/dev`의 정확한 SHA를 확인·기록하고
+해당 버전의 CLI·API와 이 문서의 기동 조건을 다시 대조한다.
 [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)의 첫 진단 통합과
 [#323](https://github.com/ABC2LAB/ABCDEF2LAB/pull/323)의 OpenRouter 연결은 이 기준에 병합되어 있다.
 [#325](https://github.com/ABC2LAB/ABCDEF2LAB/pull/325)의 평가 러너 승인 모드 검사도 포함하지만
@@ -40,7 +42,7 @@ UI는 새 실행 명령이나 대상 URL을 제출하지 않는다. 첫 화면�
 
 당시 UI 연결 검증 브랜치는 `feature/dongchan-first-report-routes-20261107`,
 검증 커밋은 `64121b38eb4269c6530a5b10c078645b353d2dc4`였다.
-현재 작업은 위 최신 dev에서 시작하며 이 과거 브랜치로 되돌아가지 않는다.
+현재 작업은 최신 `origin/dev`를 재확인한 뒤 시작하며 이 과거 브랜치로 되돌아가지 않는다.
 
 ### 구현과 수용 검증의 구분
 

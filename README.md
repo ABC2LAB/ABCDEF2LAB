@@ -18,9 +18,11 @@ AI가 웹서비스의 여러 취약 가능성을 탐색하고, 프로그램이 �
 
 실제 기준 성능·커버리지·시간·비용을 측정한 뒤 프롬프트·도구·문맥·재계획을 개선하고, 필요한 경우 RAG, 모델·추론·서빙 비교, 최후 수단으로 파인튜닝을 검토합니다. [모델 도입·개선 계획](docs/llm-adoption-and-improvement-plan.md)을 따릅니다.
 
+인가·비즈니스 로직은 초기 집중 영역입니다. 제품 전체 목표를 설명하는 이번 정비는 팀의 E②·E③ 우선순위와 [개발 계획의 축소 순서](docs/development-plan.md)를 변경하지 않습니다.
+
 ## 현재 상태
 
-2026-11-08 확인 `dev`의 구현 기준은 `d2bfec57f34dae1c17b6026366e747f3a588750b`입니다. [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317) 첫 통합 진단, [#323](https://github.com/ABC2LAB/ABCDEF2LAB/pull/323) OpenRouter 개발 모드, [#325](https://github.com/ABC2LAB/ABCDEF2LAB/pull/325) 평가 승인 모드 확인이 병합되어 있습니다. 새 실행은 최신 `origin/dev`와 [기동 문서](docs/first-diagnosis-launch.md)의 조건을 다시 확인합니다.
+2026-11-08 확인 시점의 `dev` 코드 스냅샷은 `d2bfec57f34dae1c17b6026366e747f3a588750b`입니다. [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317) 첫 통합 진단, [#323](https://github.com/ABC2LAB/ABCDEF2LAB/pull/323) OpenRouter 개발 모드, [#325](https://github.com/ABC2LAB/ABCDEF2LAB/pull/325) 평가 승인 모드 확인이 병합되어 있습니다. 새 실행은 최신 `origin/dev`와 [기동 문서](docs/first-diagnosis-launch.md)의 조건을 다시 확인합니다.
 
 | 영역 | 구현 완료·합성/통합 시험 범위 | 미구현·미검증 및 후속 과제 |
 |---|---|---|
