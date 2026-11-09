@@ -162,6 +162,9 @@ func (s *Server) firstDiagnosisReportRoute(r *http.Request) bool {
 }
 
 func firstDiagnosisReportRequestTask(r *http.Request) (int64, bool) {
+	if id, ok := accessMapRequestTask(r); ok {
+		return id, true
+	}
 	if id, ok := diagnosisRunRequestTask(r); ok {
 		return id, true
 	}

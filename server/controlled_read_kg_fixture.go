@@ -44,6 +44,9 @@ func (s *Server) configureControlledReadFixtureRegistries(files map[string]strin
 		return ErrControlledReadHostConfiguration
 	}
 	r.store.fixtureRegistries = frozen
+	if s.m != nil && s.m.pg != nil && s.m.pg.DB != nil {
+		r.mapStore = &accessMapStore{pool: s.m.pg.DB}
+	}
 	return nil
 }
 

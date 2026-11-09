@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -28,6 +29,7 @@ import (
 	"github.com/Autumn-27/artex/remediation"
 	"github.com/Autumn-27/artex/server"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -134,7 +136,7 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 		}
 	})
 	exec(ownedAdmin, "GRANT USAGE ON SCHEMA "+ident(schema)+" TO "+ident(role))
-	for _, table := range []string{"tasks", "task_archives", "findings", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
+	for _, table := range []string{"tasks", "task_archives", "findings", "task_control_modes", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
 		exec(installer.DB, "GRANT SELECT ON "+ident(table)+" TO "+ident(role))
 	}
 	exec(installer.DB, "GRANT INSERT ON exploration_nodes TO "+ident(role))
@@ -190,7 +192,7 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 	if os.WriteFile(c.RuntimeDSNFile, []byte(runtimeDSN), 0600) != nil {
 		t.Fatal("런타임 DSN fixture 실패")
 	}
-	// 실제 보고서 LOGIN에는 모델·실행 테이블의 읽기 권한조차 없다.
+	// 보고서 LOGIN은 모델을 읽지 않고 지도 세대의 mode fence만 조회한다.
 	pool, err := openLaunchDatabase(ctx, c.RuntimeDSNFile)
 	if err != nil {
 		t.Fatal("최소 role 연결 실패")
@@ -220,9 +222,23 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 	if server.CheckFirstDiagnosisReportDatabase(ctx, pool) != nil {
 		t.Fatal("TEMP 회수 뒤 최소 보고서 역할 복구 실패")
 	}
-	for _, table := range []string{"llm_profiles", "task_llm_profiles", "task_control_modes"} {
+	for _, table := range []string{"llm_profiles", "task_llm_profiles"} {
 		if _, err := pool.ExecContext(ctx, "SELECT * FROM "+ident(table)+" LIMIT 0"); err == nil {
 			t.Fatal("보고서 role이 실행 테이블을 읽었습니다")
+		}
+	}
+	if _, err := pool.ExecContext(ctx, "SELECT * FROM task_control_modes LIMIT 0"); err != nil {
+		t.Fatal("지도 세대의 조회 권한 누락")
+	}
+	for _, query := range []string{
+		"UPDATE task_control_modes SET version=version WHERE false",
+		"DELETE FROM task_control_modes WHERE false",
+		"INSERT INTO task_control_modes(task_id,mode,version) SELECT 1,'controlled',1 WHERE false",
+	} {
+		_, err := pool.ExecContext(ctx, query)
+		var permission *pgconn.PgError
+		if !errors.As(err, &permission) || permission.Code != "42501" {
+			t.Fatal("보고서 role의 mode 변경이 권한 오류로 거부되지 않음", err)
 		}
 	}
 	if pool.Close() != nil {

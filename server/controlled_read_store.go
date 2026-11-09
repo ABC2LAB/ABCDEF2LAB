@@ -49,15 +49,16 @@ const (
 )
 
 type controlledReadSpec struct {
-	TaskID    string
-	IntentID  int64
-	CaseRef   string
-	ResetRef  string
-	PolicyRef string
-	HTTP      transmit.Config
-	KeyRef    string
-	Key       []byte `json:"-"`
-	fixture   *kgfixture.Snapshot
+	TaskID          string
+	IntentID        int64
+	CaseRef         string
+	ResetRef        string
+	PolicyRef       string
+	HTTP            transmit.Config
+	KeyRef          string
+	Key             []byte `json:"-"`
+	fixture         *kgfixture.Snapshot
+	mapRegistration string
 }
 
 type controlledReadStore struct {

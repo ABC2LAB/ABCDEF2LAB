@@ -294,7 +294,7 @@ running:
 	}
 	exec("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA " + ident(schema) + " FROM " + ident(role))
 	exec("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA " + ident(schema) + " FROM " + ident(role))
-	for _, table := range []string{"tasks", "task_archives", "findings", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
+	for _, table := range []string{"tasks", "task_archives", "findings", "task_control_modes", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
 		exec("GRANT SELECT ON " + ident(table) + " TO " + ident(role))
 	}
 	exec("GRANT INSERT ON exploration_nodes TO " + ident(role))
