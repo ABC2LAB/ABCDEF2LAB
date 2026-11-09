@@ -160,7 +160,7 @@ func (p *OpenRouterPolicy) reserveDiagnostic(output int64) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	m := p.manifest
-	cost := ((m.MaxInputPerCall*m.InputPrice + 999999) / 1000000) + ((output*m.OutputPrice + 999999) / 1000000)
+	cost := openRouterReservedCost(m, output)
 	reason := ""
 	switch {
 	case p.blocked:
@@ -206,8 +206,8 @@ func (p *OpenRouterPolicy) ValidateCallLimits(output, contextK int) error {
 	return nil
 }
 
-// OpenRouterLimits is a secret-free projection for the trusted URL budget adapter.
-// The adapter reserves the same conservative price bound before entering transport.
+// OpenRouterLimits는 신뢰된 URL 예산 어댑터에 제공하는 비밀 없는 집계다.
+// 어댑터는 transport 진입 전에 동일한 보수적 가격 상한을 예약한다.
 type OpenRouterLimits struct {
 	Requests, InputTokens, OutputTokens, CostMicros int64
 	InputPerCall, OutputPerCall                     int64
@@ -228,25 +228,30 @@ func (p *OpenRouterPolicy) Quote(output int64) (int64, error) {
 		return 0, ErrOpenRouterPolicy
 	}
 	m := p.manifest
-	return (m.MaxInputPerCall*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000, nil
+	return openRouterReservedCost(m, output), nil
 }
 
-// DescribeOpenRouterManifest validates immutable installation metadata for saved
-// report lookup even after expiry. It returns no callable policy or credentials.
+// DescribeOpenRouterManifest는 만료 후 저장 보고서 조회에 필요한 설치 메타데이터만 검증한다.
+// 호출 가능한 정책이나 자격 증명은 반환하지 않는다.
 func DescribeOpenRouterManifest(data []byte, output int64) (ProfileTarget, OpenRouterLimits, int64, error) {
 	p, err := parseOpenRouterManifestAt(data, time.Time{})
 	if err != nil || output < 1 || output > p.manifest.MaxOutputPerCall {
 		return ProfileTarget{}, OpenRouterLimits{}, 0, ErrOpenRouterPolicy
 	}
 	m := p.manifest
-	quote := (m.MaxInputPerCall*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000
+	quote := openRouterReservedCost(m, output)
 	return p.Target(), p.Limits(), quote, nil
 }
 
-// CheckAvailable is read-only. A consumed approval cannot authorize a new URL run.
+// CheckAvailable은 조회만 하며 이미 소비된 승인의 새 URL 회차 사용을 거부한다.
 func (p *OpenRouterPolicy) CheckAvailable() error {
 	if p == nil || p.available == nil || !time.Now().Before(p.manifest.ExpiresAt) {
 		return ErrOpenRouterPolicy
 	}
 	return p.available()
+}
+
+// 호출 예약·진단 관측·응답 비용 검증은 같은 보수적 올림식을 사용한다.
+func openRouterReservedCost(m openRouterManifest, output int64) int64 {
+	return (m.MaxInputPerCall*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000
 }

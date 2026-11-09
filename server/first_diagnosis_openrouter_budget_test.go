@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,7 +40,7 @@ func urlExternalBudget(t *testing.T, observe func(diagnosisprep.ModelUsage) erro
 	}
 	return b, path, agent.Config{Format: llm.FormatOpenAI, Model: llmpolicy.OpenRouterModel, BaseURL: llmpolicy.OpenRouterBaseURL, APIKey: "synthetic", ContextWindowK: 256, MaxTokens: 100}
 }
-func TestURLExternalBudgetHandoffUsesOnePolicy(t *testing.T) {
+func TestFirstDiagnosisOpenRouterModelBudgetHandoffUsesOnePolicy(t *testing.T) {
 	b, path, _ := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
 	options := FirstDiagnosisModelOptions{Mode: "openrouter", OpenRouterManifestPath: path, Budget: b}
 	_, planner, err := options.load()
@@ -54,13 +56,12 @@ func TestURLExternalBudgetHandoffUsesOnePolicy(t *testing.T) {
 		t.Fatal("different manifest accepted")
 	}
 	limits := b.limits
-	limits.CostUSDMicros++
 	limits.CostUSDMicros = 600001
 	if _, err = NewFirstDiagnosisOpenRouterBudget(limits, 262144, 100, path, b.observe); err == nil {
 		t.Fatal("approval total exceeded")
 	}
 }
-func TestURLExternalBudgetPersistsUSDOnceBeforeTransport(t *testing.T) {
+func TestFirstDiagnosisOpenRouterModelBudgetPersistsUSDOnceBeforeTransport(t *testing.T) {
 	var persisted []diagnosisprep.ModelUsage
 	b, _, cfg := urlExternalBudget(t, func(u diagnosisprep.ModelUsage) error { persisted = append(persisted, u); return nil })
 	req := llm.CompletionRequest{MaxTokens: 100}
@@ -71,7 +72,7 @@ func TestURLExternalBudgetPersistsUSDOnceBeforeTransport(t *testing.T) {
 	if err != nil || quote != 262244 || len(persisted) != 1 || persisted[0].ReservedCostUSDMicros != quote || persisted[0].UsageKnown || b.external.Snapshot().Requests != 0 {
 		t.Fatal("reservation did not precede transport exactly once")
 	}
-	// A successful-looking SDK response without validated transport accounting is unknown.
+	// SDK 응답이 성공처럼 보여도 transport 비용 검증이 없으면 불명으로 남긴다.
 	if b.after(llm.Usage{InputTokens: 10, OutputTokens: 10}, 100, nil) == nil || b.Snapshot().UsageKnown {
 		t.Fatal("unverified cost trusted")
 	}
@@ -79,7 +80,7 @@ func TestURLExternalBudgetPersistsUSDOnceBeforeTransport(t *testing.T) {
 		t.Fatal("unknown call retried")
 	}
 }
-func TestURLExternalBudgetStorageFailureAndCostExhaustion(t *testing.T) {
+func TestFirstDiagnosisOpenRouterModelBudgetStorageFailureAndCostExhaustion(t *testing.T) {
 	b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return errors.New("synthetic storage failure") })
 	req := llm.CompletionRequest{MaxTokens: 100}
 	if b.before(context.Background(), cfg, &req) == nil || b.external.Snapshot().Requests != 0 || b.Snapshot().ReservedCostUSDMicros != 262244 {
@@ -89,5 +90,56 @@ func TestURLExternalBudgetStorageFailureAndCostExhaustion(t *testing.T) {
 	b.limits.CostUSDMicros = 262243
 	if b.before(context.Background(), cfg, &req) == nil || b.Snapshot().Requests != 0 || b.external.Snapshot().Requests != 0 {
 		t.Fatal("insufficient USD reserved")
+	}
+}
+
+func TestFirstDiagnosisOpenRouterModelBudgetUSDOnlyBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cap     int64
+		allowed bool
+	}{{"exact", 262244, true}, {"one_micro_short", 262243, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var writes int
+			b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { writes++; return nil })
+			b.limits.CostUSDMicros = tc.cap
+			// 요청·입출력 토큰은 첫 호출 예약보다 넉넉하며 USD만 달라진다.
+			if b.limits.ModelRequests != 2 || b.limits.InputTokens != 524288 || b.limits.OutputTokens != 200 {
+				t.Fatal("다른 한도에 막힐 수 있는 fixture")
+			}
+			req := llm.CompletionRequest{MaxTokens: 100}
+			err := b.before(context.Background(), cfg, &req)
+			if (err == nil) != tc.allowed {
+				t.Fatal("USD만 부족한 호출의 허용 판정 오류")
+			}
+			u := b.Snapshot()
+			if tc.allowed {
+				if writes != 1 || u.Requests != 1 || u.ReservedCostUSDMicros != 262244 {
+					t.Fatal("경계값의 예약 누락")
+				}
+			} else if writes != 0 || u.Requests != 0 || u.ReservedInputTokens != 0 || u.ReservedOutputTokens != 0 || u.ReservedCostUSDMicros != 0 {
+				t.Fatal("USD 거절 후 부작용")
+			}
+			if b.external.Snapshot().Requests != 0 {
+				t.Fatal("예산 검사에서 송신 발생")
+			}
+		})
+	}
+}
+func TestFirstDiagnosisOpenRouterModelBudgetRejectsConsumedApprovalAtConstruction(t *testing.T) {
+	b, path, _ := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+	if _, err := NewFirstDiagnosisOpenRouterBudget(b.limits, 262144, 100, path, b.observe); err != nil {
+		t.Fatal("미소비 승인 대조군 실패")
+	}
+	marker := filepath.Join(filepath.Dir(path), fmt.Sprintf(".openrouter-%x.used", sha256.Sum256([]byte("url-budget-test"))))
+	if os.WriteFile(marker, nil, 0600) != nil {
+		t.Fatal("소비 marker 설치 실패")
+	}
+	// 구문·보호 파일 검증은 여전히 통과한다. 생성자의 소비 검사가 거부해야 한다.
+	if _, err := llmpolicy.LoadOpenRouterManifestFile(path); err != nil {
+		t.Fatal("소비 이외의 검사가 먼저 실패함")
+	}
+	if _, err := NewFirstDiagnosisOpenRouterBudget(b.limits, 262144, 100, path, b.observe); err == nil {
+		t.Fatal("소비된 승인이 생성자를 통과함")
 	}
 }

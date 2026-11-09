@@ -39,10 +39,10 @@ func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, out
 	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe}, nil
 }
 
-// One policy and call gate survive the preparation -> execution handoff.
-// The URL journal has already reserved the entire run against delegation totals.
-// Transport owns approval accounting; this adapter persists run reservations
-// before transport and copies validated actual cost, never sums both ledgers.
+// 준비에서 실행으로 넘어가도 정책과 호출 gate 하나를 공유한다.
+// URL 저널은 위임 총량에서 회차 전체를 이미 예약한 상태다.
+// transport가 승인 원장을 소유하고, 이 어댑터는 송신 전 회차 예약을 저장한다.
+// 검증된 실제 비용만 복사하며 두 원장의 금액을 더하지 않는다.
 func NewFirstDiagnosisOpenRouterBudget(limits diagnosisprep.Budget, inputPerCall, outputPerCall int64, manifestPath string, observe func(diagnosisprep.ModelUsage) error) (*FirstDiagnosisModelBudget, error) {
 	p, err := llmpolicy.LoadOpenRouterManifestFile(manifestPath)
 	if err != nil || p.CheckAvailable() != nil {
@@ -168,7 +168,7 @@ func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, call
 		usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0
 	if b.external != nil {
 		next, previous := b.external.Snapshot(), b.lastExternal
-		// Exactly one transport call must account for this SDK completion.
+		// 이 SDK 응답은 정확히 한 번의 transport 호출 사용량과 일치해야 한다.
 		known = known && !next.Blocked && next.Requests == previous.Requests+1 && next.Errors == previous.Errors && next.InputTokens-previous.InputTokens == int64(usage.InputTokens) && next.OutputTokens-previous.OutputTokens == int64(usage.OutputTokens) && next.CostMicros >= previous.CostMicros && next.CostMicros <= b.usage.ReservedCostUSDMicros
 		if known {
 			b.usage.CostUSDMicros += next.CostMicros - previous.CostMicros

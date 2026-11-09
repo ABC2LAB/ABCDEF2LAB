@@ -75,7 +75,7 @@ type Profile struct {
 	Model           *ModelInfo `json:"model,omitempty"`
 }
 
-// Only installed, non-secret model routing facts cross the public boundary.
+// 공개 경계에는 설치된 모델의 비밀 없는 라우팅 사실만 전달한다.
 type ModelInfo struct {
 	Mode             string `json:"mode"`
 	Model            string `json:"model"`

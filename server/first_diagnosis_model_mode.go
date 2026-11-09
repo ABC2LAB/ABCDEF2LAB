@@ -109,7 +109,7 @@ func (s *Server) FirstDiagnosisModelUsage() *llmpolicy.OpenRouterUsage {
 		return nil
 	}
 	usage := s.openRouterPolicy.Snapshot()
-	// Saved run usage is execution-only; preparation has its own immutable record.
+	// 저장 회차 사용량은 실행 단계만 포함하며 준비 단계는 별도 불변 기록으로 남긴다.
 	baseline := s.openRouterBaseline
 	usage.Requests -= baseline.Requests
 	usage.Errors -= baseline.Errors
