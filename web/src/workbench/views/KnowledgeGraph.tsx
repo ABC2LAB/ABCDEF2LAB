@@ -234,7 +234,7 @@ export function KnowledgeGraph({
                     className={cx(
                       s["kg-n"],
                       s[n.t],
-                      s[kstate(n.id)],
+                      kstate(n.id) && s[kstate(n.id)],
                       nodes.has(n.id) && s.on,
                       sel?.type === "node" && sel.id === n.id && s.sel,
                     )}

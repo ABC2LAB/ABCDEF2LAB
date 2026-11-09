@@ -456,10 +456,13 @@ export function Live() {
             <div className={s.dm}>
               <b>
                 <Icon name="check" />
-                <span id="lDoneT">{l.done ? "점검을 마쳤습니다" : "점검을 종료했습니다"}</span>
+                {/* 원본은 끝났을 때만 글을 바꾼다 (숨겨진 동안은 처음 글 그대로) */}
+                <span id="lDoneT">{l.ended && !l.done ? "점검을 종료했습니다" : "점검을 마쳤습니다"}</span>
               </b>
               <span id="lDoneS">
-                {`발견 ${l.forder.length}건 · ${vcount(l)}${l.done ? " · 보고서가 준비됐습니다" : " · 종료 시점까지의 결과로 보고서를 만듭니다"}`}
+                {fin
+                  ? `발견 ${l.forder.length}건 · ${vcount(l)}${l.done ? " · 보고서가 준비됐습니다" : " · 종료 시점까지의 결과로 보고서를 만듭니다"}`
+                  : null}
               </span>
             </div>
             <ReportLink kind="live" className={cx(s.btn, s.pri)}>
