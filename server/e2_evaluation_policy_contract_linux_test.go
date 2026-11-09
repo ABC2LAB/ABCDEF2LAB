@@ -159,6 +159,12 @@ func TestE2EvaluationPythonPrepareGoConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatal("Go policy factory rejected Python output:", err)
 	}
+	if offline, err := E2HTTPPolicyContentFingerprint(raw, true); err != nil || offline != factory.PolicyFingerprintSHA256 {
+		t.Fatal("offline fingerprint differs from the factory")
+	}
+	if _, err := E2HTTPPolicyContentFingerprint(raw, false); err == nil {
+		t.Fatal("prepared policy accepted as a base policy")
+	}
 	backend, err := NewE2StandaloneBackend(ctx, E2StandaloneOptions{Config: c, Authority: authority, Supervisor: standaloneSupervisorFixture{}, Readiness: &standaloneReadinessFixture{}, ExecutionRef: "fixture-execution", ExpectedPolicyFingerprintSHA256: factory.PolicyFingerprintSHA256})
 	if err != nil {
 		t.Fatal("Go backend rejected Python output:", err)
