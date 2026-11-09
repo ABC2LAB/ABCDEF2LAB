@@ -118,6 +118,25 @@ class WebChangedTests(unittest.TestCase):
                 self.commit()
                 self.assertTrue(self.changed())
 
+    def test_product_image_inputs_build(self):
+        for path in ("deploy/product/Dockerfile", "deploy/product/Dockerfile.dockerignore"):
+            with self.subTest(path=path):
+                before = self.git("rev-parse", "HEAD")
+                self.write(path)
+                self.assertTrue(self.changed(base=before, head=self.commit()))
+
+    def test_deleted_product_image_inputs_build(self):
+        for path in ("deploy/product/Dockerfile", "deploy/product/Dockerfile.dockerignore"):
+            with self.subTest(path=path):
+                self.write(path)
+                before = self.commit()
+                (self.root / path).unlink()
+                self.assertTrue(self.changed(base=before, head=self.commit()))
+
+    def test_product_image_documentation_only_skips(self):
+        self.write("deploy/product/README.md")
+        self.assertFalse(self.changed(head=self.commit()))
+
     def test_unchanged_commit_skips(self):
         self.assertFalse(self.changed())
 

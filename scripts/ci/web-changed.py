@@ -25,6 +25,9 @@ ROOT_INPUTS = {
     b".github/workflows/ci.yml",
     b"scripts/ci/web-changed.py",
     b"scripts/ci/test_web_changed.py",
+    # 제품 이미지의 UI 빌드·컨텍스트 변경도 기존 Web 검증에 연결한다.
+    b"deploy/product/Dockerfile",
+    b"deploy/product/Dockerfile.dockerignore",
 }
 
 
