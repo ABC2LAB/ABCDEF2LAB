@@ -21,7 +21,7 @@ import (
 
 const Format = "abc2lab.e2-runner-config/v1"
 const MaxConfigBytes = 64 << 10
-const MaxPolicyBytes = 1 << 20
+const MaxPolicyBytes = 256 << 10
 
 var ErrInvalid = errors.New("e2_runner_config_invalid")
 var ref = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$`)

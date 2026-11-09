@@ -593,3 +593,30 @@ func TestRecheckDirectoryOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestPolicySizeExactBoundary(t *testing.T) {
+	if MaxPolicyBytes != 256<<10 {
+		t.Fatal("existing host policy size limit changed")
+	}
+	for _, size := range []int{MaxPolicyBytes, MaxPolicyBytes + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			path, _ := fixture(t)
+			raw := []byte(`{"approval_mode":"preauthorized_scope"}`)
+			raw = append(raw, bytes.Repeat([]byte(" "), size-len(raw))...)
+			write(t, filepath.Join(filepath.Dir(path), "policy.json"), raw)
+			if size > MaxPolicyBytes {
+				reject(t, path)
+				return
+			}
+			c, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := c.ReadPolicy()
+			if err != nil || !bytes.Equal(got, raw) || c.PolicySHA256 != digest(raw) {
+				t.Fatal("exact-limit policy bytes were not preserved")
+			}
+			clear(got)
+		})
+	}
+}

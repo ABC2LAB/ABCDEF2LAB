@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2export"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
@@ -195,13 +196,13 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	raw := append([]byte(nil), frozen...)
 	var err error
 	if frozen == nil {
-		raw, err = privateinput.ReadFile(input.PolicyFile, 256<<10)
+		raw, err = privateinput.ReadFile(input.PolicyFile, e2config.MaxPolicyBytes)
 	}
 	if err != nil {
 		return empty, ErrE2HTTPHost
 	}
 	defer clear(raw)
-	if len(raw) == 0 || len(raw) > 256<<10 {
+	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes {
 		return empty, ErrE2HTTPHost
 	}
 	digest := sha256.Sum256(raw)
