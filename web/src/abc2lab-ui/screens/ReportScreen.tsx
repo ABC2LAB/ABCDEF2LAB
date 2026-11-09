@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 
+import { DiagnosisRunSummary } from "../components/DiagnosisRunSummary";
 import { DiagnosticDownload } from "../components/DiagnosticDownload";
 import { RemediationPanel } from "../components/RemediationPanel";
 import { Screen } from "../components/Screen";
@@ -245,6 +246,9 @@ export default function ReportScreen() {
               enabled={nav.screen === "report" && !taskRes.loading && !taskRes.error && task?.id === taskId}
             />
           </div>
+
+          {/* 실행 종료 상태 — 자족형 seam(데이터는 lib/request-approvals). 위치는 한 줄만 옮기면 바뀐다. */}
+          <DiagnosisRunSummary key={taskId} taskId={taskId} active={nav.screen === "report"} />
 
           {/* === 요약 타일 (위험도 4단) === */}
           <div className="dgrid" style={{ marginBottom: 14 }}>
