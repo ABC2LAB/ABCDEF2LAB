@@ -85,11 +85,15 @@
 
 ## 평가 담당 소비 순서
 
-1. 실제 회차의 task/exploration/E② run_ref를 인증된 실행 결속과 대조한다. task ID나 평가 run_id로 E② run_ref를 추정하지 않는다.
+1. 러너가 정책에 넣은 `run_ref`를 예상값으로 사용하고, 실제 회차의 task/exploration·실행 결속 및 응답의 같은 값을 대조한다. 응답 자체로 예상값을 채우거나 task ID/평가 run_id로 E② run_ref를 추정하지 않는다.
 2. 기존 E② 실행 마감 ACK 뒤 위 endpoint를 호출한다. `collecting`이면 bounded retry할 수 있지만 시한을 연장하거나 task 종료만으로 완료를 추정하지 않는다.
 3. 닫힌 format/키/타입/식별·`complete=true`, `state=complete`, expected=observed=snapshot_sequence=len(observations)>0, sequence 1…N, activity_id 중복 없음과 각 observation의 version/key/worker/digest를 검사한다. 누락된 페이지를 별도로 합치는 방식은 없다.
 4. 전체 observations를 그대로 기존 `run_prompt_identity()`에 넘긴다. 조건의 모든 회차를 `condition_prompt_identity()`에 넘긴다. 다섯 값은 `source`, `template_digest`, `guidance_digest`, `control_digest`, `tools_digest`다. `system_digest`는 없다.
 5. 회차 내 conflict, 조건 간 mismatch, 0건·비수집·불명은 비교 성공이 아니다. 이것을 회차 무효/조건 보류 중 어디에 반영할지는 최민준의 평가 정책으로 정한다. 이 PR은 채점을 바꾸지 않는다.
+
+최민준 리뷰의 소비 정책 제안은 `complete=true`만 비교기에 제공하고, collecting 시한 초과·incomplete·invalid·empty·조회 실패·회차 내 conflict는 `e2_prompt_unverified`로 회차 무효를 남기며 조건 내 회차 간 불일치는 비교를 거부하는 것이다. 이 정책과 409 결속 거부의 기록은 후속 러너/채점기 PR에서 평가 담당이 확정·구현한다.
+
+**11/23 별도 서비스 인계 수용 조건:** `ours_mode=product` launcher 경로에 실제 Worker 관측 callback과 마감 봉인을 연결해야 한다. 현재 독립 backend는 이 producer가 아니다. 러너 close ACK 뒤부터 compose down 전까지의 수집 구간에 projection이 `complete`가 되는 실제 통합 시험을 포함한다. 미봉인 collecting을 완료로 간주하거나 빈 대체 자료를 만들지 않는다. 이 연결·봉인 수용이 없으면 현재 endpoint 구현만으로 공식 product 평가가 가능하다고 말하지 않는다.
 
 **서명 기록 변경 대기:** 기존 `run-record/v1.1`의 닫힌 artifact descriptor와 필드를 변경하지 않았다. 러너의 인증 수집 시점, 받은 JSON 정확 바이트 digest·건수·format·task/exploration/run 결속을 새 artifact descriptor/서명 문맥에 포함하는 버전 개정은 최민준 리뷰가 필요하다. `runner.py`, `runner_record.py`, `run_record.py`, `score.py`, `e2_prompt_identity.py`는 그대로다. 일반 JSON 파일을 저장한 것만으로 기존 서명이 projection을 덮는다고 주장하지 않는다.
 
