@@ -289,6 +289,14 @@ export function UrlNewScanLive() {
               <dd className={s.mono}>{shown?.target_url ?? input?.target_url ?? "—"}</dd>
               <dt>모델</dt>
               <dd>{profile ? `${profile.label} · ${profile.model_label}` : "—"}</dd>
+              {profile?.model ? (
+                <>
+                  <dt>제공자</dt>
+                  <dd>{profile.model.provider} · OpenRouter</dd>
+                  <dt>외부 전송</dt>
+                  <dd>대상 응답·도구 출력 전송과 USD 상한을 범위 확인 화면에서 동의해야 합니다.</dd>
+                </>
+              ) : null}
               <dt>이름</dt>
               <dd>{nv.trim() || "—"}</dd>
             </dl>
@@ -381,7 +389,9 @@ export function UrlScopeLive() {
             disabled={!g.canStart}
             onChange={(e) => setUrlConfirmed(e.target.checked)}
           />
-          서버가 확인한 범위 · 모델 · 예산으로 준비와 단회 진단을 시작합니다.
+          {job.scope?.model?.external_transfer
+            ? "대상 응답·도구 출력의 외부 전송과 표시된 USD 비용 상한에 동의하고, 서버가 확인한 범위 · 모델 · 예산으로 단회 진단을 시작합니다."
+            : "서버가 확인한 범위 · 모델 · 예산으로 준비와 단회 진단을 시작합니다."}
         </label>
         <div className={s.hostline}>
           <button

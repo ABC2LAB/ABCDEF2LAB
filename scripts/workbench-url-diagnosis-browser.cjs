@@ -16,6 +16,7 @@ for (const value of [ui, cdp, targetURL]) {
 // Go 하네스(newURLProcessFixture)가 설치한 합성 값. 실제 계정·모델이 아니다.
 const FIXTURE_PASSWORD = "synthetic-owned-combined-fixture";
 const FIXTURE_PROFILE = "owned-url";
+const OPENROUTER = process.env.ARTEX_URL_OPENROUTER_BROWSER === "1";
 const WORKBENCH = `${ui}/workbench`;
 fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,6 +40,7 @@ function check(value, code) {
   const requests = [];
   const responses = [];
   let startReceipt;
+  let draftID;
   let droppedStartResponse = false;
   let dropError = false;
   const send = (method, params = {}) =>
@@ -74,6 +76,7 @@ function check(value, code) {
         if (phase === "url-lost-start" && requestPath.endsWith("/start") && !droppedStartResponse) {
           check(params.responseStatusCode >= 200 && params.responseStatusCode < 300, "start_not_accepted_before_loss");
           const body = JSON.parse(params.request.postData);
+          if (OPENROUTER) check(body.external_transfer_confirmed === true && Object.keys(body).sort().join(",") === "expected_revision,external_transfer_confirmed,version", "external_consent_body_or_credentials");
           const key = Object.entries(params.request.headers).find(
             ([name]) => name.toLowerCase() === "idempotency-key",
           )?.[1];
@@ -217,6 +220,14 @@ function check(value, code) {
       ),
       "start_without_explicit_confirmation",
     );
+    if (OPENROUTER) {
+      await wait(hasText("qwen/qwen3.5-35b-a3b"),"approved_model_missing");
+      await wait(hasText("fixture/endpoint"),"approved_provider_missing");
+      await wait(hasText("외부 전송"),"external_transfer_notice_missing");
+      check((await evaluate(fact("비용 상한"))).includes("6"),"approved_usd_cap_missing");
+    }
+    draftID = (await evaluate(fact("진단"))).match(/prep-[a-f0-9]{32}/)?.[0];
+    check(!!draftID,"draft_id_missing");
     check(startCount() === 0, "draft_started_execution");
     check(
       requests.filter((r) => r.method === "POST" && r.path === "/api/diagnoses/v2/drafts").length === 1,
@@ -227,6 +238,21 @@ function check(value, code) {
     await send("Page.reload");
     await wait(hasText("실행 전 검증 완료"), "refresh_did_not_restore");
     check(mutationCount() === mutations, "refresh_replayed_mutation");
+  } else if (phase === "url-start") {
+    await wait(hasText("실행 전 검증 완료"),"ready_scope_missing");
+    check(await evaluate("(()=>{const e=document.querySelector('section[data-view=scope]:not([hidden]) input[type=checkbox]');if(!e||e.disabled)return false;e.click();return true})()"),"start_confirmation_missing");
+    await click("진단 시작");
+    await wait(hasText("진단 중지 요청"),"live_stop_missing");
+    check(startCount()===1,"explicit_start_count");
+  } else if (phase === "url-stop") {
+    await click("상태 다시 조회");
+    await wait(`!!(${button("진단 중지 요청")})`,"fresh_stop_unavailable");
+    await click("진단 중지 요청");
+    await wait(hasText("결과 불명"),"cancelled_usage_claimed_known",20000);
+    check(requests.filter(r=>r.method==="POST"&&r.path.endsWith("/stop")).length===1,"stop_replayed");
+    check(responses.some(r=>r.path.endsWith("/stop")&&r.status===200),"stop_not_accepted");
+    check(startCount()===0,"stop_started_execution");
+    check((await evaluate(fact("엔진 시작")))==="미확인","preparation_claimed_engine_started");
   } else if (phase === "url-lost-start") {
     await send("Fetch.enable", {
       patterns: [{ urlPattern: "*://*/api/diagnoses/v2/drafts/*/start", requestStage: "Response" }],
@@ -263,6 +289,10 @@ function check(value, code) {
     // 진행 중에는 작업대가 2초마다 상태만 다시 읽는다(버튼으로도 조회 가능)
     await wait(hasText("실행 마감"), "real_execution_not_completed", 75000);
     await wait(hasText("결과 저장을 확인했습니다"), "saved_result_missing");
+    if (OPENROUTER) {
+      await wait(hasText("확인된 비용"),"confirmed_model_cost_missing");
+      await wait(hasText("예약 비용"),"reserved_model_cost_missing");
+    }
     // 마감된 회차를 실행 중처럼 조회하지 않고, '서버 모드 미제공'으로 잘못 안내하지 않는다
     await wait(hasText("실행이 마감됐습니다"), "closed_run_not_explained");
     check(!(await evaluate(hasText("전송 통제: 이 서버 모드에서는 제공되지 않음"))), "closed_run_shown_as_unsupported");
@@ -298,7 +328,7 @@ function check(value, code) {
   } else {
     throw new Error("unknown_phase");
   }
-  const summary = { phase, status: "PASS", assertions, ...(startReceipt ? { startReceipt } : {}) };
+  const summary = { phase, status: "PASS", assertions, ...(draftID ? { draftID } : {}), ...(startReceipt ? { startReceipt } : {}) };
   // 인증값·모델 원문·DOM·네트워크 원문은 보관하거나 출력하지 않는다.
   fs.appendFileSync(
     path.join(outputDir, "workbench-url-browser-summary.jsonl"),
