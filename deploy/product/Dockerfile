@@ -24,11 +24,14 @@ ARG TARGETARCH
 ARG VCS_REF=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -tags embedui \
       -ldflags="-X main.version=${VCS_REF}" -o /out/artex ./cmd/artex
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -tags embedui \
+      -ldflags="-X github.com/Autumn-27/artex/server.ProductRevision=${VCS_REF}" -o /out/first-controlled-diagnosis ./cmd/first-controlled-diagnosis \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/e2-bash-sandbox ./cmd/e2-bash-sandbox
 
 # Bash 도구와 기존 브라우저 CLI를 실행할 수 있는 이미지.
-FROM node:26-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68
+FROM node:26-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS product-runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl ripgrep git jq python3 wget unzip \
+      ca-certificates curl ripgrep git jq python3 wget unzip util-linux \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
     && rm -rf /var/lib/apt/lists/*
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright HOME=/home/node
@@ -44,6 +47,10 @@ LABEL org.opencontainers.image.source="https://github.com/ABC2LAB/ABCDEF2LAB" \
       org.opencontainers.image.description="ABC2LAB, derived from jiwoochris/artex-global"
 WORKDIR /app
 COPY --from=go-build /out/artex /app/artex
+COPY --from=go-build /out/first-controlled-diagnosis /app/first-controlled-diagnosis
+COPY --from=go-build /out/e2-bash-sandbox /app/e2-bash-sandbox
+COPY --chmod=755 deploy/product/install-entrypoint.sh /app/product-install-entrypoint
+COPY --chmod=755 deploy/product/preparation-entrypoint.sh /app/product-preparation-entrypoint
 COPY start.sh /app/start.sh
 COPY LICENSE /app/LICENSE
 COPY --chown=1000:1000 skills/ /app/skills/
@@ -54,6 +61,16 @@ USER 1000:1000
 VOLUME ["/app/data", "/app/keys"]
 EXPOSE 8787
 HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=4 \
-  CMD curl -fsS http://127.0.0.1:8787/api/health >/dev/null || exit 1
-ENTRYPOINT ["/app/start.sh"]
-CMD ["-addr", ":8787", "-proxy", "127.0.0.1:8788", "-key-dir", "/app/keys"]
+  CMD curl -fsS http://127.0.0.1:8787/api/product/health >/dev/null || exit 1
+ENTRYPOINT ["/app/first-controlled-diagnosis"]
+CMD ["product-front", "-listen", ":8787", "-api-origin", "http://127.0.0.1:28081"]
+
+# 수용 전용 이미지에는 합성 서버만 넣는다. 제품 서비스는 이 target을 사용하지 않는다.
+FROM go-build AS acceptance-build
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/product-fixture ./cmd/product-fixture
+FROM debian:bookworm-slim AS acceptance-fixture
+COPY --from=acceptance-build /out/product-fixture /app/product-fixture
+USER 1000:1000
+ENTRYPOINT ["/app/product-fixture"]
+
+FROM product-runtime AS product

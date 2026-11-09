@@ -36,6 +36,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == "install-product" {
+		return runProductInstall(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "product-preflight" {
+		return runProductPreflight(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "product-front" {
+		return runProductFront(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "prepare-service" {
 		return runURLPreparationService(ctx, args[1:], stdout, stderr)
 	}
