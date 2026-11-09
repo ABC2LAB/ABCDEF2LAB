@@ -547,8 +547,14 @@
   .scount{display:flex;flex-wrap:wrap;gap:6px 20px;font-size:13px;color:var(--ink-2)}
   .scount b{font-family:var(--mono);font-size:15px;color:var(--ink);margin-left:4px}
   .scount .ap b{color:var(--warn)}
-  .stbl{border:1px solid var(--rule);border-radius:6px;overflow:hidden}
-  .sgh{display:flex;align-items:center;gap:8px;padding:7px 14px;background:var(--well);border-top:1px solid var(--rule);font-size:12.5px;font-weight:600;color:var(--ink-2)}
+  .stbl{border:1px solid var(--rule);border-radius:6px;overflow:hidden;flex-shrink:0}
+  .sgh{display:flex;align-items:center;gap:8px;width:100%;padding:9px 14px;background:var(--well);border:0;border-top:1px solid var(--rule);font:inherit;font-size:12.5px;font-weight:600;color:var(--ink-2);text-align:left;cursor:pointer}
+.sgh:hover{color:var(--ink)}
+.sgh .ic{flex:none;transition:transform .15s}
+.sgh[aria-expanded="true"] .ic{transform:rotate(90deg)}
+.sgh .sum{font-weight:500;font-size:11.5px;color:var(--ink-3)}
+.sall{margin-left:auto;background:none;border:0;padding:4px 2px;font:inherit;font-size:12.5px;color:var(--accent);cursor:pointer}
+.sall:hover{text-decoration:underline}
   .sgh:first-child{border-top:0}
   .sgh .c{font-family:var(--mono);font-weight:500;color:var(--ink-3)}
   .sgh .ai{margin-left:auto;font-weight:500;font-size:11.5px;color:var(--ink-3)}
@@ -557,8 +563,9 @@
   .srow.sel{background:var(--accent-bg)}
   .srow .ck{display:grid;place-items:center}
   .srow .ck input{width:16px;height:16px;accent-color:var(--accent);margin:0}
-  .sb{display:grid;grid-template-columns:58px minmax(0,1.2fr) minmax(0,1fr) auto;gap:3px 12px;align-items:center;padding:9px 14px 9px 0;background:none;border:0;text-align:left;cursor:pointer;min-width:0;width:100%}
+  .sb{display:grid;grid-template-columns:58px minmax(0,1.2fr) minmax(0,1fr) 112px;gap:3px 12px;align-items:center;padding:9px 14px 9px 0;background:none;border:0;text-align:left;cursor:pointer;min-width:0;width:100%}
   .sb .d{font-size:13px;color:var(--ink-2);min-width:0}
+.sb .tag{justify-self:end}
   .srow.out .p,.srow.out .d{color:var(--ink-3)}
   @container (max-width:620px){ .sb{grid-template-columns:52px minmax(0,1fr) auto} .sb .d{grid-column:2 / -1;grid-row:2} }
   .checks{list-style:none;display:flex;flex-direction:column;gap:8px}
@@ -1052,6 +1059,7 @@
           <div class="filters">
             <div class="filters" role="group" aria-label="보기 필터" id="sFilters"></div>
             <input class="inp search" id="sQ" type="search" placeholder="경로 검색" aria-label="경로 검색">
+            <button class="sall" type="button" id="sAll" aria-controls="sTable">모두 펼치기</button>
           </div>
           <div class="stbl" id="sTable"></div>
           <details class="rulebox">
@@ -1702,7 +1710,7 @@
   ];
   var SG=['acct','order','pay','admin','shop','page'];
   EP.forEach(function(e,i){ e.i=i; e.k=kind(e.m,e.p); e.lock=e.k==='lock'; e.on=!(e.k==='off'||e.k==='lock'); e.hasId=e.p.indexOf('{')>=0; e.chg=e.m!=='GET' && e.k!=='login'; });
-  var sFilter='all', sQ='', sSel=12;
+  var sFilter='all', sQ='', sSel=12, sOpen={};
   var FL=[['all','전체',function(){ return true; }],['chg','데이터 변경',function(e){ return e.chg; }],['id','ID 포함',function(e){ return e.hasId; }],['auth','로그인 필요',function(e){ return !!e.auth; }],['off','제외됨',function(e){ return !e.on; }]];
   function scopeTag(e){ if(e.lock) return '<span class="tag ex">'+ico('lock')+'전역 제외</span>';
     if(!e.on) return '<span class="tag ex">제외'+(OFF[e.m+' '+e.p]?' · '+OFF[e.m+' '+e.p]:'')+'</span>';
@@ -1714,13 +1722,18 @@
     $('#sCount').innerHTML='<span>엔드포인트<b>'+EP.length+'</b></span><span>포함<b>'+on.length+'</b></span><span>제외<b>'+(EP.length-on.length)+'</b></span><span class="ap">승인 필요<b>'+ap+'</b></span><span>로그인 영역<b style="font-family:var(--sans);font-size:13px">예시</b></span>';
     $('#sFilters').innerHTML=FL.map(function(f){ var c=EP.filter(f[2]).length; return '<button class="fchip" type="button" data-sf="'+f[0]+'" aria-pressed="'+(sFilter===f[0])+'">'+f[1]+'<span class="c">'+c+'</span></button>'; }).join('');
     var fn=FL.filter(function(f){ return f[0]===sFilter; })[0][2], q=sQ.toLowerCase();
+    /* 묶음은 기본으로 접는다. 필터·검색 중에는 맞는 묶음을 펼쳐 보인다. 직접 연 상태는 필터·검색을 바꾸면 초기화. */
+    var forced=sFilter!=='all' || !!q, vis=[];
     var html=SG.map(function(g){ var rows=EP.filter(function(e){ return e.g===g && fn(e) && (!q || (e.m+' '+e.p+' '+e.d).toLowerCase().indexOf(q)>=0); });
       if(!rows.length) return '';
-      return '<div class="sgh">'+GL[g]+'<span class="c">'+rows.length+'</span><span class="ai">AI 추정 묶음</span></div>'+rows.map(function(e){
+      var open=sOpen[g]===undefined ? forced : sOpen[g], inc=rows.filter(function(e){ return e.on; }).length, apn=rows.filter(function(e){ return e.on && e.chg; }).length;
+      vis.push(open);
+      return '<button class="sgh" type="button" data-sg="'+g+'" aria-expanded="'+open+'" aria-controls="sg-'+g+'">'+ico('chev')+GL[g]+'<span class="c">'+rows.length+'</span><span class="sum">포함 '+inc+(apn?' · 승인 필요 '+apn:'')+'</span><span class="ai">AI 추정 묶음</span></button><div class="sgrp" id="sg-'+g+'"'+(open?'':' hidden')+'>'+rows.map(function(e){
         return '<div class="srow'+(e.on?'':' out')+(sSel===e.i?' sel':'')+'"><span class="ck"><input type="checkbox" data-son="'+e.i+'" aria-label="'+e.m+' '+e.p+' 점검에 포함"'+(e.on?' checked':'')+(e.lock?' disabled':'')+'></span>'+
-          '<button class="sb" type="button" data-ssel="'+e.i+'"'+(sSel===e.i?' aria-current="true"':'')+'><span class="m '+e.m+'">'+e.m+'</span><span class="p">'+pth(e.p)+'</span><span class="d">'+esc(e.d)+'</span>'+scopeTag(e)+'</button></div>'; }).join('');
+          '<button class="sb" type="button" data-ssel="'+e.i+'"'+(sSel===e.i?' aria-current="true"':'')+'><span class="m '+e.m+'">'+e.m+'</span><span class="p">'+pth(e.p)+'</span><span class="d">'+esc(e.d)+'</span>'+scopeTag(e)+'</button></div>'; }).join('')+'</div>';
     }).join('');
     $('#sTable').innerHTML = html || '<p class="empty" style="padding:14px">조건에 맞는 경로가 없습니다.</p>';
+    var sa=$('#sAll'), allOpen=vis.length>0 && vis.every(Boolean); sa.hidden=!vis.length; sa.textContent=allOpen?'모두 접기':'모두 펼치기';
     sInsp();
   }
   function whyText(e){
@@ -1835,10 +1848,11 @@
   document.addEventListener('keydown', function(e){ var b=e.target.closest && e.target.closest('[data-apitab]'); if(!b) return; var d=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0; if(!d) return; e.preventDefault();
     var all=$$('[data-apitab]',b.parentNode), n=all[(all.indexOf(b)+d+all.length)%all.length]; selApiTab(n); n.focus(); });
   function sInsp(){ $('#sInsp').innerHTML=apiDetail(EP[sSel],'s'); }
-  $('#sTable').addEventListener('click', function(e){ var b=e.target.closest('[data-ssel]'); if(b){ sSel=+b.getAttribute('data-ssel'); $$('#sTable .srow').forEach(function(r){ var bb=$('[data-ssel]',r), on=+bb.getAttribute('data-ssel')===sSel; r.classList.toggle('sel',on); if(on) bb.setAttribute('aria-current','true'); else bb.removeAttribute('aria-current'); }); sInsp(); openInsp(); } });
+  $('#sTable').addEventListener('click', function(e){ var h=e.target.closest('[data-sg]'); if(h){ var g=h.getAttribute('data-sg'); sOpen[g]=h.getAttribute('aria-expanded')!=='true'; renderScope(); var nh=$('[data-sg="'+g+'"]'); if(nh) nh.focus(); return; } var b=e.target.closest('[data-ssel]'); if(b){ sSel=+b.getAttribute('data-ssel'); $$('#sTable .srow').forEach(function(r){ var bb=$('[data-ssel]',r), on=+bb.getAttribute('data-ssel')===sSel; r.classList.toggle('sel',on); if(on) bb.setAttribute('aria-current','true'); else bb.removeAttribute('aria-current'); }); sInsp(); openInsp(); } });
   $('#sTable').addEventListener('change', function(e){ var c=e.target.closest('[data-son]'); if(!c) return; var x=EP[+c.getAttribute('data-son')]; x.on=c.checked; sSel=x.i; renderScope(); var nc=$('[data-son="'+x.i+'"]'); if(nc) nc.focus(); });
-  $('#sFilters').addEventListener('click', function(e){ var b=e.target.closest('[data-sf]'); if(!b) return; sFilter=b.getAttribute('data-sf'); renderScope(); var nb=$('[data-sf="'+sFilter+'"]'); if(nb) nb.focus(); });
-  $('#sQ').addEventListener('input', function(){ sQ=this.value.trim(); renderScope(); });
+  $('#sFilters').addEventListener('click', function(e){ var b=e.target.closest('[data-sf]'); if(!b) return; sFilter=b.getAttribute('data-sf'); sOpen={}; renderScope(); var nb=$('[data-sf="'+sFilter+'"]'); if(nb) nb.focus(); });
+  $('#sQ').addEventListener('input', function(){ sQ=this.value.trim(); sOpen={}; renderScope(); });
+  $('#sAll').addEventListener('click', function(){ var gs=$$('#sTable [data-sg]'), all=gs.length>0 && gs.every(function(b){ return b.getAttribute('aria-expanded')==='true'; }); gs.forEach(function(b){ sOpen[b.getAttribute('data-sg')]=!all; }); renderScope(); });
   $('#sStart').addEventListener('click', function(){ railNew(null); clearTimeout(crawl.timer); liveFresh=true; });
 
   /* ---------- 점검 진행: 계획대로 처음부터 끝까지 재생 ---------- */
