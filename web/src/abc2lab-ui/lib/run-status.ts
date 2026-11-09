@@ -19,6 +19,7 @@ export type RunView =
   | { kind: "saved"; record: DiagnosisRunRecord }
   | { kind: "preparedOnly"; record: DiagnosisRunRecord }
   | { kind: "unbound" }
+  | { kind: "forbidden" }
   | { kind: "unavailable"; message: string; lastRun: RequestApprovalRunState | null }
   | { kind: "disconnected"; lastRun: RequestApprovalRunState | null };
 
@@ -58,30 +59,77 @@ export function describeRun(run: RequestApprovalRunState): RunSummary {
   }
 }
 
-/** 실행 조회가 실패했을 때 보여 줄 상태. 인증 실패는 로그인 화면이 대신하므로 null 이다. */
-async function viewAfterFailure(
+/** 조회 거부는 이전 응답을 복원하지 않는다. 저장 결과를 먼저 읽어 report의 미지원 승인 경로와 분리한다. */
+function failureView(error: unknown, lastRun: RequestApprovalRunState | null): RunView {
+  if (error instanceof ApiError) {
+    if (error.status === 401) return { kind: "loading" };
+    if (error.status === 403) return { kind: "forbidden" };
+    if (error.status === 404) return { kind: "unbound" };
+    return { kind: "unavailable", message: error.message, lastRun };
+  }
+  if (error instanceof TypeError) return { kind: "disconnected", lastRun };
+  return { kind: "unavailable", message: error instanceof Error ? error.message : "응답 미확인", lastRun };
+}
+
+async function readView(
   taskId: string,
-  error: unknown,
   lastRun: RequestApprovalRunState | null,
-): Promise<RunView | null> {
-  if (error instanceof ApiError && error.status === 401) return null;
-  // 실행이 끝나 서버가 닫힌 뒤에도 저장 기록은 report 서버에서 읽을 수 있다.
+  source?: "run" | "report",
+): Promise<RunView> {
+  if (source === "report") {
+    try {
+      const record = await readDiagnosisRun(taskId);
+      return classifyDiagnosisRun(record).kind === "run" ? { kind: "saved", record } : { kind: "preparedOnly", record };
+    } catch (error) {
+      return failureView(error, null);
+    }
+  }
+  if (source === "run") {
+    try {
+      const live = await readRequestApprovalState(taskId);
+      return {
+        kind: "live",
+        run: live.run,
+        pending: (live.approvals ?? []).filter((item) => item.state === "pending").length,
+      };
+    } catch (error) {
+      return failureView(error, lastRun);
+    }
+  }
+  let prepared: DiagnosisRunRecord | null = null;
   try {
     const record = await readDiagnosisRun(taskId);
-    return classifyDiagnosisRun(record).kind === "run" ? { kind: "saved", record } : { kind: "preparedOnly", record };
-  } catch {
-    /* 저장 기록이 없으면 원래 실패로 판단한다. */
+    if (classifyDiagnosisRun(record).kind === "run") return { kind: "saved", record };
+    prepared = record;
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      return failureView(error, null);
+    }
+    // 저장 기록이 없거나 아직 저장소를 읽지 못해도 실행 서버 상태를 독립 확인한다.
   }
-  if (error instanceof ApiError) {
-    if (error.status === 403 || error.status === 404) return { kind: "unbound" };
-    if (error.status < 500 || error.status === 503) return { kind: "unavailable", message: error.message, lastRun };
+  try {
+    const live = await readRequestApprovalState(taskId);
+    return {
+      kind: "live",
+      run: live.run,
+      pending: (live.approvals ?? []).filter((item) => item.state === "pending").length,
+    };
+  } catch (error) {
+    // 방금 권한 검사를 통과해 받은 NOT_RUN만 보존한다. 실행/승인 권한으로 쓰지 않는다.
+    if (prepared && error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+      return { kind: "preparedOnly", record: prepared };
+    }
+    return failureView(error, lastRun);
   }
-  return { kind: "disconnected", lastRun };
 }
 
 /** active 인 동안 한 task 의 실행 상태를 폴링한다. 응답이 겹치거나 이전 task 응답이 끼어들지 않게 한다. */
-export function useRunStatus(taskId: string, active: boolean): RunView {
-  const [state, setState] = useState<{ taskId: string; view: RunView }>({ taskId, view: { kind: "loading" } });
+export function useRunStatus(taskId: string, active: boolean, source?: "run" | "report"): RunView {
+  const [state, setState] = useState<{ taskId: string; source?: "run" | "report"; view: RunView }>({
+    taskId,
+    source,
+    view: { kind: "loading" },
+  });
 
   useEffect(() => {
     if (!active) return;
@@ -91,19 +139,12 @@ export function useRunStatus(taskId: string, active: boolean): RunView {
 
     async function tick() {
       let delay = RUN_POLL_MS;
-      try {
-        const live = await readRequestApprovalState(taskId);
-        if (stopped) return;
-        lastRun = live.run;
-        const pending = (live.approvals ?? []).filter((item) => item.state === "pending").length;
-        setState({ taskId, view: { kind: "live", run: live.run, pending } });
-      } catch (error) {
-        if (stopped) return;
-        delay = RUN_RETRY_MS;
-        const view = await viewAfterFailure(taskId, error, lastRun);
-        if (stopped) return;
-        if (view) setState({ taskId, view });
-      }
+      const view = await readView(taskId, lastRun, source);
+      if (stopped) return;
+      if (view.kind === "live") lastRun = view.run;
+      else delay = RUN_RETRY_MS;
+      if (view.kind === "forbidden" || view.kind === "loading") lastRun = null;
+      setState({ taskId, source, view });
       timer = setTimeout(() => void tick(), delay);
     }
 
@@ -112,7 +153,7 @@ export function useRunStatus(taskId: string, active: boolean): RunView {
       stopped = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [taskId, active]);
+  }, [taskId, active, source]);
 
-  return state.taskId === taskId ? state.view : { kind: "loading" };
+  return state.taskId === taskId && state.source === source ? state.view : { kind: "loading" };
 }

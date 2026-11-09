@@ -1,7 +1,8 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 
 import { signOut } from "../lib/api";
 import { MOCK } from "../lib/mock";
+import { SelectionContext } from "../lib/selection";
 import { useGo } from "../nav";
 import { Brand } from "./Brand";
 
@@ -16,12 +17,31 @@ const NAV_ITEMS: Array<[NavKey, string]> = [
 
 export function MainNav({ current }: { current?: NavKey }) {
   const go = useGo();
+  const selection = useContext(SelectionContext);
+  if (selection?.mode === "first-diagnosis") {
+    return (
+      <nav className="nav" aria-label="첫 진단">
+        <button type="button" onClick={() => go("entry")}>
+          진단 연결
+        </button>
+        <button type="button" disabled={!selection.taskId} onClick={() => go("live")}>
+          실행 상태
+        </button>
+        <button type="button" disabled={!selection.taskId} onClick={() => go("report")}>
+          진단 보고서
+        </button>
+        <button type="button" onClick={signOut}>
+          로그아웃
+        </button>
+      </nav>
+    );
+  }
   return (
     <div className="nav">
       {NAV_ITEMS.map(([key, label]) => (
-        <a key={key} className={current === key ? "cur" : undefined} onClick={() => go(key)}>
+        <button type="button" key={key} className={current === key ? "cur" : undefined} onClick={() => go(key)}>
           {label}
-        </a>
+        </button>
       ))}
       {!MOCK && (
         <button type="button" onClick={signOut}>
@@ -52,8 +72,8 @@ export function TopBar({ current, right }: TopBarProps) {
 export function CancelLink() {
   const go = useGo();
   return (
-    <span className="muted-link" onClick={() => go("dashboard")}>
+    <button type="button" className="muted-link" onClick={() => go("dashboard")}>
       취소
-    </span>
+    </button>
   );
 }

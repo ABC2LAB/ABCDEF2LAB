@@ -10,6 +10,7 @@ import { isInternalUrl } from "../lib/net";
 import { useSelection } from "../lib/selection";
 import { useGo } from "../nav";
 import { DEFAULT_TARGET_URL, type Severity } from "../types";
+import FirstDiagnosisEntry from "./FirstDiagnosisEntry";
 
 type Props = {
   /** "점검 시작"을 누르면 입력한 주소를 위로 올려요 (요약 · 대시보드에 반영) */
@@ -125,7 +126,12 @@ function RecentScans() {
 }
 
 /** ===== 진입 ===== */
-export default function EntryScreen({ onStart }: Props) {
+export default function EntryScreen(props: Props) {
+  const { mode } = useSelection();
+  return mode === "first-diagnosis" ? <FirstDiagnosisEntry /> : <ArtexEntryScreen {...props} />;
+}
+
+function ArtexEntryScreen({ onStart }: Props) {
   const go = useGo();
   const [url, setUrl] = useState(DEFAULT_TARGET_URL);
   /** 소유 확인 팝업: 열릴 때마다 n을 올려서 새로 마운트 */

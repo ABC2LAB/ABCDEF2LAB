@@ -8,6 +8,8 @@ import { RequestApprovalPanel } from "./RequestApprovalPanel";
 
 vi.mock("../lib/request-approvals", () => ({
   listRequestApprovals: vi.fn(),
+  readRequestApprovalState: vi.fn(),
+  canControlRun: (run: approvals.RequestApprovalRunState) => run.phase === "running" && !run.stop_requested,
   getRequestApproval: vi.fn(),
   decideRequestApproval: vi.fn(),
   stopRequestApprovalExecution: vi.fn(),
@@ -40,6 +42,21 @@ const record = (extra: Partial<approvals.RequestApproval> = {}): approvals.Reque
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(approvals.listRequestApprovals).mockResolvedValue([record()]);
+  vi.mocked(approvals.readRequestApprovalState).mockImplementation(async (taskId) => {
+    const rows = await approvals.listRequestApprovals(taskId);
+    return {
+      approvals: rows,
+      run: {
+        run_ref: "run1",
+        phase: rows.some((row) => String(row.task_id) === taskId && row.live) ? "running" : "closed",
+        outcome: "",
+        stop_requested: false,
+        context_cancelled: false,
+        drain_complete: false,
+        closure_failed: false,
+      },
+    };
+  });
   vi.mocked(approvals.getRequestApproval).mockResolvedValue(record());
 });
 afterEach(cleanup);
@@ -48,6 +65,61 @@ async function open() {
   await screen.findByRole("button", { name: "이 HTTP 요청만 허용" });
 }
 describe("actual request approval panel", () => {
+  it("allows stopping a running automatic-mode run with zero approval rows", async () => {
+    vi.mocked(approvals.readRequestApprovalState).mockResolvedValue({
+      approvals: [],
+      run: {
+        run_ref: "run1",
+        phase: "running",
+        outcome: "",
+        stop_requested: false,
+        context_cancelled: false,
+        drain_complete: false,
+        closure_failed: false,
+      },
+    });
+    vi.mocked(approvals.stopRequestApprovalExecution).mockResolvedValue();
+    render(<RequestApprovalPanel taskId="42" active refreshKey={0} />);
+    expect(await screen.findByText(/사전 승인 범위 모드에서는 정상일 수 있어요/)).toBeVisible();
+    const stop = screen.getByRole("button", { name: "이 점검의 현재 전송 중지" });
+    expect(stop).toBeEnabled();
+    fireEvent.click(stop);
+    await waitFor(() => expect(approvals.stopRequestApprovalExecution).toHaveBeenCalledExactlyOnceWith("42"));
+  });
+  it.each([
+    "closed",
+    "failed",
+    "stopping",
+  ] as const)("does not decide or stop a %s run even if row metadata is stale", async (phase) => {
+    vi.mocked(approvals.readRequestApprovalState).mockResolvedValue({
+      approvals: [record()],
+      run: {
+        run_ref: "run1",
+        phase,
+        outcome: "",
+        stop_requested: false,
+        context_cancelled: false,
+        drain_complete: false,
+        closure_failed: false,
+      },
+    });
+    render(<RequestApprovalPanel taskId="42" active refreshKey={0} />);
+    await open();
+    expect(screen.getByRole("button", { name: "이 점검의 현재 전송 중지" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "이 HTTP 요청만 허용" })).toBeDisabled();
+  });
+  it("resets task-local state even when caller omits a React key", async () => {
+    vi.mocked(approvals.decideRequestApproval).mockRejectedValue(new Error("network"));
+    const view = render(<RequestApprovalPanel taskId="42" active refreshKey={0} />);
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "이 HTTP 요청만 허용" }));
+    await screen.findByText(/결정 저장 결과를 확인하지 못했어요/);
+    vi.mocked(approvals.listRequestApprovals).mockResolvedValue([record({ task_id: 99, id: "new" })]);
+    view.rerender(<RequestApprovalPanel taskId="99" active refreshKey={0} />);
+    await screen.findByRole("button", { name: "요청 상세 new" });
+    expect(screen.queryByText(/결정 저장 결과를 확인하지 못했어요/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "이 HTTP 요청만 허용" })).toBeNull();
+  });
   it("stops the current transmission once and refreshes cancelled pending requests", async () => {
     let resolve!: () => void;
     vi.mocked(approvals.stopRequestApprovalExecution).mockReturnValue(

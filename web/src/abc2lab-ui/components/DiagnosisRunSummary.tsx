@@ -65,8 +65,10 @@ export function DiagnosisRunSummary({ taskId, active }: { taskId: string; active
         )}
         {!loading && !error && data?.kind === "not_run" && (
           <p role="status">
-            {data.preparedOnly ? "모델 준비 단계만 있고 실행은 하지 않았어요." : "아직 실행하지 않았어요."} 완료 회차로
-            보지 않아요.
+            {data.preparedOnly
+              ? "모델 준비 기록은 있지만 저장된 실행 종료 결과는 없어요."
+              : "저장된 실행 종료 결과가 없어요."}{" "}
+            저장 기록의 NOT_RUN 표시는 현재 실행 여부를 보장하지 않아요. 실행 서버에서 상태를 확인해 주세요.
           </p>
         )}
         {!loading && !error && data?.kind === "unavailable" && (

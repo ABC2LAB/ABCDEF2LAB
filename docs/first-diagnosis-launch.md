@@ -267,7 +267,8 @@ GRANT UPDATE(node_id) ON exploration_anchors TO runtime_role;
 
 출력의 `mode:saved_report`, `execution:DISABLED`는 저장 자료 서비스만 준비됐다는 뜻이다. loopback으로만 열고 종료 시 HTTP 요청을 drain한 뒤 DB를 닫는다. 종료 drain 실패는 성공으로 바꾸지 않는다.
 
-이 후속 모드는 **인증 API와 보고서 API·HTML export 전용**이다. `/`의 기존 웹 UI, 로그인 화면, 브라우저 복사 버튼은 제공하지 않는다. 허용한 인증 경로는 `GET /api/auth/status`, 기존 계정의 `POST /api/auth/login`이며, 발급된 Bearer로 위 API를 사용한다. 별도 프런트엔드 화면의 연결이나 완료 후 브라우저 버튼 조작을 검증했다고 주장하지 않는다. 건강 확인 외 일반 task·채팅·업데이트·비밀번호 변경·실행 API는 열지 않는다.
+이 후속 모드는 **인증 API와 보고서 API·HTML export 전용**이다. Go report 서버 자체는 루트 웹 UI를 제공하지 않는다. 별도 Next 프런트엔드의 첫 진단 모드가 기존 로그인·저장 결과·HTML 다운로드·프롬프트 복사를 연결한다. 허용한 로그인은 기존 설치 계정의 auth status/login뿐이며, 새로운 계정·비밀번호 변경·일반 task·채팅·업데이트·실행 API를 열지 않는다. 브라우저 수용 결과는 [별도 시험 절차](first-diagnosis-browser-acceptance.md)의 실제 실행 증거와 구분해 기록한다.
+
 
 고정한 하나의 존재하는 task만 조회·저장할 수 있다. `done` task의 저장본뿐 아니라 paused/open 등 미완료 task의 **현재 저장된 중간 자료**도 제공한다. report 시작이나 프롬프트 생성은 완료 판정이 아니며 task 상태·실행 이력·원본 finding/판정/자산을 수정하지 않는다. 조치 생성 시에만 기존 exploration_nodes에 새 보고서 저장본을 추가한다. 원본 digest가 달라지면 기존 저장본은 stale로 표시되고 복사는 거부된다.
 
@@ -303,6 +304,11 @@ GRANT UPDATE(node_id) ON exploration_anchors TO report_role;
 owned loopback·synthetic provider·실제 PostgreSQL race 시험은 각각 검사한 경계만 증명한다. 실제 Juice Shop·실제 모델·같은 회차의 권한/세션/취소/저장 수용은 해당 자료로 별도 실행해야 한다. 제품 코드의 공급·기동·종료 구현이 남으면 그것을 팀원 자료 대기로 분류하지 않는다.
 
 ## UI 연결 계약: 실행·승인·저장 결과
+
+실제 앱은 CLI task 연결 화면으로 진입한다. 실행 서버와 저장 report 서버를 명시적으로 선택하고, task ID는 서버의 같은 task 응답이 확인된 뒤에만 활성화한다. report 서버는 일반 task 목록이 없어도 연결되며, 종료 기록 404는 미완료 상태로 유지한 채 같은 task의 진단 보고서를 확인할 수 있다. 401/403 뒤 다른 읽기로 이전 결과를 복원하지 않는다. 비민감 task ID를 URL에 유지해도 재접속 권한은 다시 확인한다.
+
+기존 CLI 연결과 별도로 새 관리 서비스는 [버전 관리 API](contracts/diagnosis-management.md)와 [독립 Gateway](contracts/diagnosis-gateway.md)를 사용한다. 초안 설정은 실행 권위가 아니며 보호된 운영자 승인 결속 없이는 시작할 수 없다. 기존 실행/report 서버 allowlist에는 새 초안·시작 라우트를 추가하지 않는다.
+
 
 ### 주소와 인증
 
