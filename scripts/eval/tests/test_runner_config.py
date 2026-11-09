@@ -463,7 +463,10 @@ class TestE2Mode(unittest.TestCase):
 E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:test", "id": "sha256:" + "e" * 64}, "policy_path": "/srv/eval/e2-policy.json",
                     "policy_fingerprint_sha256": "f" * 64, "header_mode": "evaluation_caller_passthrough", "ready_timeout_seconds": 30,
                     "close_ack_timeout_seconds": 5, "close_timeout_seconds": 30, "poll_seconds": 1, "exchange_timeout_seconds": 5,
-                    "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30}
+                    "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30,
+                    "policy_tool": "/usr/local/bin/e2-eval-policy", "policy_tool_timeout_seconds": 30, "helper": "/usr/local/bin/e2-bash-sandbox",
+                    "helper_sha256": "a" * 64, "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10", "window_seconds": 7200,
+                    "approval_valid_until": "2099-01-01T00:00:00Z"}
 
 
 class TestE2Product(unittest.TestCase):
@@ -499,6 +502,35 @@ class TestE2Product(unittest.TestCase):
             with self.subTest(changes=changes):
                 self.reject(E2_PRODUCT_BLOCK | changes, code)
 
+    def test_production_fields_are_validated(self):
+        for changes, code in (({"helper_sha256": "A" * 64}, "config.e2.helper_sha256: INVALID"),
+                              ({"helper_sha256": "a" * 63}, "config.e2.helper_sha256: INVALID"),
+                              ({"helper": "bin/helper"}, "config.e2.helper: EXPECTED_ABSOLUTE_PATH"),
+                              ({"policy_tool": "e2-eval-policy"}, "config.e2.policy_tool: EXPECTED_ABSOLUTE_PATH"),
+                              ({"policy_tool_timeout_seconds": 0}, "config.e2.policy_tool_timeout_seconds: INVALID"),
+                              ({"window_seconds": 0}, "config.e2.window_seconds: INVALID"),
+                              ({"window_seconds": 86401}, "config.e2.window_seconds: INVALID"),
+                              ({"approval_valid_until": "2099-01-01"}, "config.e2.approval_valid_until: INVALID"),
+                              ({"approval_valid_until": "2099-01-01T00:00:00+09:00"}, "config.e2.approval_valid_until: INVALID"),
+                              ({"approval_valid_until": 7}, "config.e2.approval_valid_until: INVALID"),
+                              ({"subnet": "172.30.9.1/24"}, "config.e2.subnet: INVALID"),
+                              ({"subnet": "8.8.8.0/24", "meter_ip": "8.8.8.10"}, "config.e2.subnet: INVALID"),
+                              ({"subnet": "172.30.9.0/30", "meter_ip": "172.30.9.2"}, "config.e2.subnet: INVALID"),
+                              ({"subnet": None}, "config.e2.subnet: INVALID"),
+                              ({"meter_ip": "172.30.10.10"}, "config.e2.meter_ip: INVALID"),
+                              ({"meter_ip": "172.30.9.0"}, "config.e2.meter_ip: INVALID"),
+                              ({"meter_ip": "172.30.9.1"}, "config.e2.meter_ip: INVALID"),
+                              ({"meter_ip": "172.30.9.255"}, "config.e2.meter_ip: INVALID"),
+                              ({"meter_ip": "not-an-ip"}, "config.e2.meter_ip: INVALID")):
+            with self.subTest(changes):
+                self.reject(E2_PRODUCT_BLOCK | changes, code)
+
+    def test_window_and_subnet_boundaries_are_accepted(self):
+        for changes in ({"window_seconds": 1}, {"window_seconds": 86400}, {"meter_ip": "172.30.9.2"}, {"meter_ip": "172.30.9.254"},
+                        {"subnet": "172.30.9.0/29", "meter_ip": "172.30.9.2"}):
+            with self.subTest(changes):
+                parse_runner_config(runner_config() | {"e2": E2_PRODUCT_BLOCK | changes})
+
     def test_overlay_and_image_join_the_ours_plan_only(self):
         config = parse_runner_config(runner_config() | {"e2": dict(E2_PRODUCT_BLOCK)})
         ours = plan_run(config, configuration(), "ours", "ours-1")
@@ -508,6 +540,8 @@ class TestE2Product(unittest.TestCase):
         self.assertEqual(baseline.e2_mode, "none")
         self.assertNotIn(COMPOSE_E2_PRODUCT, baseline.compose_files)
         self.assertNotIn("EVAL_E2_IMAGE", baseline.compose_env)
+        self.assertNotIn("EVAL_E2_SUBNET", baseline.compose_env)
+        self.assertEqual((ours.e2_meter_ip, baseline.e2_meter_ip), ("172.30.9.10", None))
         self.assertNotIn("e2", baseline.images)
 
     def test_run_directories_and_environment(self):
@@ -517,11 +551,13 @@ class TestE2Product(unittest.TestCase):
             root = Path(temp) / "runs"
             root.mkdir(mode=0o700)
             directory = create_run_directory(root, "ours-1", "product")
-            for path in (directory.e2, directory.e2_config, directory.e2_control, directory.e2_copy):
+            for path in (directory.e2, directory.e2_config, directory.e2_control, directory.e2_copy, directory.e2_state):
                 self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o700, path)
             env = compose_environment(plan, directory)
             self.assertEqual((env["EVAL_E2_CONFIG_DIR"], env["EVAL_E2_CONTROL_DIR"], env["EVAL_E2_EVIDENCE_DIR"]),
                              (str(directory.e2_config), str(directory.e2_control), str(directory.e2)))
+            self.assertEqual((env["EVAL_E2_STATE_DIR"], env["EVAL_E2_SUBNET"], env["EVAL_E2_METER_IP"]),
+                             (str(directory.e2_state), "172.30.9.0/24", "172.30.9.10"))
             # 수집 사본은 E²에 mount하지 않는다.
             self.assertNotIn(str(directory.e2_copy), env.values())
             other = create_run_directory(root, "ours-2")

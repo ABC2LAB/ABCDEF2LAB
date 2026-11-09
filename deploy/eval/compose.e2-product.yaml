@@ -16,6 +16,7 @@ services:
       - ${EVAL_E2_CONFIG_DIR:?}:/run/e2-config:ro
       - ${EVAL_E2_EVIDENCE_DIR:?}:/evidence
       - ${EVAL_E2_CONTROL_DIR:?}:/run/e2-control
+      - ${EVAL_E2_STATE_DIR:?}:/run/e2-state
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -29,9 +30,13 @@ services:
     networks: !override
       e2_net:
         aliases: [eval-meter-upstream]
+        ipv4_address: ${EVAL_E2_METER_IP:?}
       target_net: {}
 
 networks:
   # E²와 계측기만. 엔진은 붙지 않는다(엔진 → 계측기 직통 없음).
   e2_net:
     internal: true
+    ipam:
+      config:
+        - subnet: ${EVAL_E2_SUBNET:?}
