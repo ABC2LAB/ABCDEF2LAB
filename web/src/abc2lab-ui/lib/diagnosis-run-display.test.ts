@@ -32,6 +32,12 @@ describe("classifyDiagnosisRun", () => {
     ).toEqual({ kind: "not_run", preparedOnly: true });
   });
 
+  it("run 이 있으면 model_preparation 이 같이 와도 run 으로 분류한다(분기 순서 고정)", () => {
+    // 서버는 완전 레코드에도 model_preparation 을 omitempty 로 함께 보낼 수 있다. not_run 으로 새지 않아야 한다.
+    const withPrep: DiagnosisRunRecord = { ...fullRun, model_preparation: [{ model: "x" }] };
+    expect(classifyDiagnosisRun(withPrep)).toEqual({ kind: "run", savedAt: fullRun.saved_at, run: fullRun.run });
+  });
+
   it("레코드 없음은 none(완료 아님)", () => {
     expect(classifyDiagnosisRun(null)).toEqual({ kind: "none" });
   });

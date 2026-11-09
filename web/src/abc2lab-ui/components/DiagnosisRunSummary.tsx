@@ -28,12 +28,13 @@ const OUTCOME: Record<RequestApprovalRunState["outcome"], string> = {
   failed: "실패로 종료",
 };
 
+// attempts 는 E②가 판정 전에 접수한 수(차단분 포함)라 "전송"이 아니다. 실제 대상 송신은 forward_attempted.
 const COUNTS: { key: keyof NonNullable<RequestApprovalRunState["execution"]>["counts"]; label: string }[] = [
-  { key: "attempts", label: "전송 시도" },
+  { key: "attempts", label: "요청 접수" },
   { key: "allowed", label: "허용" },
   { key: "denied", label: "차단" },
   { key: "unsupported", label: "미지원" },
-  { key: "forward_attempted", label: "전송 시도됨" },
+  { key: "forward_attempted", label: "대상 전송 시도" },
   { key: "responses", label: "응답 수신" },
   { key: "unknown", label: "불명" },
   { key: "calls", label: "호출" },
@@ -83,14 +84,14 @@ export function DiagnosisRunSummary({ taskId, active }: { taskId: string; active
             <Row label="단계">{PHASE[data.run.phase] ?? "알 수 없는 단계"}</Row>
             <Row label="결과">{OUTCOME[data.run.outcome] ?? "알 수 없는 결과"}</Row>
             <Row label="마감">
-              {data.run.drain_complete ? "배수 완료" : "배수 미완료"}
+              {data.run.drain_complete ? "진행 중 요청 정리 완료" : "진행 중 요청 정리 미완료"}
               {data.run.stop_requested && " · 중지 요청됨"}
               {data.run.context_cancelled && " · 컨텍스트 취소됨"}
               {data.run.closure_failed && " · 마감 실패(완전 종료로 보지 않음)"}
             </Row>
             {data.run.execution ? (
               <>
-                <Row label="전송 집계">
+                <Row label="요청 · 전송 집계">
                   <div className="dgrid" style={{ gridTemplateColumns: "repeat(4, 1fr)", gap: 8, margin: "4px 0" }}>
                     {COUNTS.map(({ key, label }) => (
                       <div className="tile" key={key} style={{ padding: "8px 10px" }}>
@@ -101,7 +102,10 @@ export function DiagnosisRunSummary({ taskId, active }: { taskId: string; active
                       </div>
                     ))}
                   </div>
-                  감사 {data.run.execution.audit_complete ? "완결" : "미완결"}
+                  <span className="hint">
+                    요청 접수는 판정 전에 받은 수라 차단분도 포함해요. 실제로 대상에 보낸 건 대상 전송 시도예요.
+                  </span>
+                  <div>감사 {data.run.execution.audit_complete ? "완결" : "미완결"}</div>
                 </Row>
                 <Row label="회차 / 정책">
                   {data.run.run_ref || "—"} / {data.run.execution.policy_revision || "—"} (참조만 표시)
