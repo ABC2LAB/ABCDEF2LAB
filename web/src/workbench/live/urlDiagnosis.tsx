@@ -193,7 +193,7 @@ export interface UrlGates {
   canRefresh: boolean;
   /** 결과 저장이 확인돼 보고서를 읽어도 된다 */
   reportReadable: boolean;
-  /** 엔진 시작이 확인돼 실제 task 의 실행 상태를 읽어도 된다 */
+  /** 엔진 시작이 확인되고 아직 마감 전이라 실제 task 의 실행 감독자 상태(요청 승인)를 읽어도 된다 (팀 liveReadable 과 같은 뜻) */
   runReadable: boolean;
 }
 
@@ -211,7 +211,7 @@ export function urlGates(st: Pick<UrlStore, "handle" | "job" | "verified" | "unc
     canStop: !!job && verified && !uncertain && !busy && (job.state === "preparing" || job.state === "running"),
     canRefresh: !busy && !!handle,
     reportReadable: verified && job?.result_ready === true && !!job.task_id,
-    runReadable: verified && !uncertain && job?.started === true && !!job.task_id,
+    runReadable: verified && !uncertain && job?.started === true && !job.drain_complete && !!job.task_id,
   };
 }
 

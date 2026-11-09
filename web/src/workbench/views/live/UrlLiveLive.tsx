@@ -228,7 +228,13 @@ export function UrlLiveLive() {
               <div className={s.sh}>
                 <h2 id="luSendH">전송 통제</h2>
               </div>
-              <p className={s.empty}>엔진 시작이 확인되면 실제 task 의 전송 통제 집계를 봅니다.</p>
+              {job.drain_complete ? (
+                <p className={s.empty}>
+                  실행이 마감됐습니다. 마감된 회차의 요청 · 전송 집계는 보고서의 실행 종료 기록에서 봅니다.
+                </p>
+              ) : (
+                <p className={s.empty}>엔진 시작이 확인되면 실제 task 의 전송 통제 집계를 봅니다.</p>
+              )}
             </section>
           )}
           <section className={s.sec} aria-labelledby="luUseH">

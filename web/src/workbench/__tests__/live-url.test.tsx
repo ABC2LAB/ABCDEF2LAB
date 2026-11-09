@@ -408,6 +408,17 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   });
 
+  it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 실행 종료 기록으로 안내한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    const { goTo } = mount("live");
+    expect(await screen.findByText(/실행이 마감됐습니다/)).toBeInTheDocument();
+    expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
+    expect(screen.queryByText(/전송 통제: 이 서버 모드에서는 제공되지 않음/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /보고서 보기/ }));
+    expect(goTo).toHaveBeenCalledWith("report");
+  });
+
   it("중지 요청은 같은 진단에 한 번 (expected revision 은 팀 lib 이 넣는다)", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
