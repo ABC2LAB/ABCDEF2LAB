@@ -2894,12 +2894,46 @@ button.smm:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 14px;
+  width: 100%;
+  padding: 9px 14px;
   background: var(--well);
+  border: 0;
   border-top: 1px solid var(--rule);
+  font: inherit;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--ink-2);
+  text-align: left;
+  cursor: pointer;
+}
+.sgh:hover {
+  color: var(--ink);
+}
+/* 묶음 접기·펼치기: 닫히면 > , 열리면 v */
+.sgh .ic {
+  flex: none;
+  transition: transform 0.15s;
+}
+.sgh[aria-expanded="true"] .ic {
+  transform: rotate(90deg);
+}
+.sgh .sum {
+  font-weight: 500;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.sall {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  padding: 4px 2px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.sall:hover {
+  text-decoration: underline;
 }
 .sgh:first-child {
   border-top: 0;
@@ -2939,7 +2973,8 @@ button.smm:hover {
 }
 .sb {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  /* 딱지 칸을 고정 폭으로 — 줄마다 딱지 길이가 달라 설명 칸이 어긋나던 문제 */
+  grid-template-columns: 58px minmax(0, 1.2fr) minmax(0, 1fr) 112px;
   gap: 3px 12px;
   align-items: center;
   padding: 9px 14px 9px 0;
@@ -2954,6 +2989,9 @@ button.smm:hover {
   font-size: 13px;
   color: var(--ink-2);
   min-width: 0;
+}
+.sb .tag {
+  justify-self: end;
 }
 .srow.out .p,
 .srow.out .d {

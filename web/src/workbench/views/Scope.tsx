@@ -24,6 +24,9 @@ export function Scope() {
   const scopeStart = useWb((st) => st.scopeStart);
   const [filter, setFilter] = useState<ScopeFilter>("all");
   const [query, setQuery] = useState("");
+  // 묶음 접기·펼치기. 값이 없으면 기본(필터·검색 중이면 펼침, 아니면 접힘), 직접 누른 묶음만 기록한다.
+  // 필터·검색을 바꾸면 직접 연 상태는 지운다 (원본 sOpen).
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
   // 처음 선택은 EP[12] (GET /api/orders/{id}) — 원본 sSel=12
   const [sel, setSel] = useState(12);
 
@@ -39,6 +42,9 @@ export function Scope() {
       (e) => e.g === g && fn(e, isOn(e.i)) && (!q || `${e.m} ${e.p} ${e.d}`.toLowerCase().indexOf(q) >= 0),
     ),
   })).filter((x) => x.rows.length > 0);
+  const forced = filter !== "all" || !!q;
+  const isOpen = (g: string) => opened[g] ?? forced;
+  const allOpen = groups.length > 0 && groups.every((x) => isOpen(x.g));
 
   return (
     <>
@@ -122,7 +128,10 @@ export function Scope() {
                   type="button"
                   data-sf={k}
                   aria-pressed={filter === k}
-                  onClick={() => setFilter(k)}
+                  onClick={() => {
+                    setFilter(k);
+                    setOpened({});
+                  }}
                 >
                   {label}
                   <span className={s.c}>{EP.filter((e) => f(e, isOn(e.i))).length}</span>
@@ -136,59 +145,91 @@ export function Scope() {
               placeholder="경로 검색"
               aria-label="경로 검색"
               value={query}
-              onChange={(ev) => setQuery(ev.target.value)}
+              onChange={(ev) => {
+                setQuery(ev.target.value);
+                setOpened({});
+              }}
             />
+            <button
+              className={s.sall}
+              type="button"
+              id="sAll"
+              aria-controls="sTable"
+              hidden={!groups.length}
+              onClick={() => setOpened(Object.fromEntries(groups.map((x) => [x.g, !allOpen])))}
+            >
+              {allOpen ? "모두 접기" : "모두 펼치기"}
+            </button>
           </div>
           <div className={s.stbl} id="sTable">
             {groups.length ? (
-              groups.map(({ g, rows }) => (
-                <Fragment key={g}>
-                  <div className={s.sgh}>
-                    {GL[g]}
-                    <span className={s.c}>{rows.length}</span>
-                    <span className={s.ai}>AI 추정 묶음</span>
-                  </div>
-                  {rows.map((e) => {
-                    const on = isOn(e.i);
-                    const cur = sel === e.i;
-                    return (
-                      <div key={e.i} className={cx(s.srow, !on && s.out, cur && s.sel)}>
-                        <span className={s.ck}>
-                          <input
-                            type="checkbox"
-                            data-son={e.i}
-                            aria-label={`${e.m} ${e.p} 점검에 포함`}
-                            checked={on}
-                            disabled={e.lock}
-                            onChange={(ev) => {
-                              // 체크한 줄을 고른 줄로 (원본: 다시 그린 뒤 같은 체크 상자에 포커스 — 같은 요소라 그대로 유지)
-                              setEpOn(e.i, ev.target.checked);
-                              setSel(e.i);
-                            }}
-                          />
-                        </span>
-                        <button
-                          className={s.sb}
-                          type="button"
-                          data-ssel={e.i}
-                          aria-current={cur ? "true" : undefined}
-                          onClick={() => {
-                            setSel(e.i);
-                            openInsp();
-                          }}
-                        >
-                          <span className={cx(s.m, s[e.m])}>{e.m}</span>
-                          <span className={s.p}>
-                            <Pth p={e.p} />
-                          </span>
-                          <span className={s.d}>{e.d}</span>
-                          <ScopeTag e={e} on={on} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </Fragment>
-              ))
+              groups.map(({ g, rows }) => {
+                const open = isOpen(g);
+                const inc = rows.filter((e) => isOn(e.i)).length;
+                const apn = rows.filter((e) => isOn(e.i) && e.chg).length;
+                return (
+                  <Fragment key={g}>
+                    <button
+                      className={s.sgh}
+                      type="button"
+                      data-sg={g}
+                      aria-expanded={open}
+                      aria-controls={`sg-${g}`}
+                      onClick={() => setOpened((o) => ({ ...o, [g]: !open }))}
+                    >
+                      <Icon name="chev" />
+                      {GL[g]}
+                      <span className={s.c}>{rows.length}</span>
+                      <span className={s.sum}>
+                        포함 {inc}
+                        {apn ? ` · 승인 필요 ${apn}` : ""}
+                      </span>
+                      <span className={s.ai}>AI 추정 묶음</span>
+                    </button>
+                    <div id={`sg-${g}`} hidden={!open}>
+                      {rows.map((e) => {
+                        const on = isOn(e.i);
+                        const cur = sel === e.i;
+                        return (
+                          <div key={e.i} className={cx(s.srow, !on && s.out, cur && s.sel)}>
+                            <span className={s.ck}>
+                              <input
+                                type="checkbox"
+                                data-son={e.i}
+                                aria-label={`${e.m} ${e.p} 점검에 포함`}
+                                checked={on}
+                                disabled={e.lock}
+                                onChange={(ev) => {
+                                  // 체크한 줄을 고른 줄로 (원본: 다시 그린 뒤 같은 체크 상자에 포커스 — 같은 요소라 그대로 유지)
+                                  setEpOn(e.i, ev.target.checked);
+                                  setSel(e.i);
+                                }}
+                              />
+                            </span>
+                            <button
+                              className={s.sb}
+                              type="button"
+                              data-ssel={e.i}
+                              aria-current={cur ? "true" : undefined}
+                              onClick={() => {
+                                setSel(e.i);
+                                openInsp();
+                              }}
+                            >
+                              <span className={cx(s.m, s[e.m])}>{e.m}</span>
+                              <span className={s.p}>
+                                <Pth p={e.p} />
+                              </span>
+                              <span className={s.d}>{e.d}</span>
+                              <ScopeTag e={e} on={on} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </Fragment>
+                );
+              })
             ) : (
               <p className={s.empty} style={{ padding: 14 }}>
                 조건에 맞는 경로가 없습니다.
