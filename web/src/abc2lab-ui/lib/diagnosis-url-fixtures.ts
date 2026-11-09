@@ -59,3 +59,18 @@ export const handle: URLDiagnosisHandle = {
   sourceDigest: draft.source_digest,
 };
 export const envelope = (value: unknown) => ({ version: "diagnosis-api.v2", owner_context: owner, draft: value });
+
+export const externalModel = {
+  mode: "openrouter",
+  model: "qwen/qwen3.5-35b-a3b",
+  provider: "fixture/endpoint",
+  external_transfer: true,
+  input_tokens_per_call: 262144,
+  output_tokens_per_call: 2048,
+} as const;
+export const externalScope: URLDiagnosisScope = {
+  ...scope,
+  model: externalModel,
+  budget: { ...scope.budget, input_tokens: 524288, output_tokens: 4096, cost_usd_micros: 6000000 },
+};
+export const externalReady: URLDiagnosisJob = { ...ready, scope: externalScope };

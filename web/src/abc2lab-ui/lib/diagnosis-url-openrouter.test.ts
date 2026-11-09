@@ -1,19 +1,19 @@
 import { beforeEach, expect, it, vi } from "vitest";
+
 import { apiFetch } from "./api";
 import { commandURLDiagnosis, matchURLJob, parseURLCatalog, parseURLJob } from "./diagnosis-url";
-import { catalog, envelope, owner, ready, running } from "./diagnosis-url-fixtures";
+import {
+  catalog,
+  envelope,
+  externalModel as model,
+  owner,
+  ready,
+  running,
+  externalScope as scope,
+} from "./diagnosis-url-fixtures";
 
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), apiFetch: vi.fn() }));
 beforeEach(() => vi.resetAllMocks());
-const model = {
-  mode: "openrouter",
-  model: "qwen/qwen3.5-35b-a3b",
-  provider: "fixture/endpoint",
-  external_transfer: true,
-  input_tokens_per_call: 262144,
-  output_tokens_per_call: 2048,
-} as const;
-const scope = { ...ready.scope!, model, budget: { ...ready.scope!.budget, cost_usd_micros: 6000000 } };
 it("catalog and scope preserve installed provider and USD cap without credentials", () => {
   const profiles = [{ ...catalog.profiles[0], model }];
   expect(parseURLCatalog({ version: "diagnosis-api.v2", owner_context: owner, profiles }).profiles[0].model).toEqual(
@@ -42,9 +42,10 @@ it.each([
 it("Start binds explicit external consent while omitting model credentials and routing input", async () => {
   const current = { ...ready, scope };
   vi.mocked(apiFetch).mockResolvedValue(envelope({ ...running, revision: current.revision + 1, scope }));
-  await commandURLDiagnosis(current, "start", owner, "external-start");
-  const options = vi.mocked(apiFetch).mock.calls[0][1]!;
-  expect(JSON.parse(String(options.body))).toEqual({
+  await commandURLDiagnosis(current, "start", owner, "external-start", { externalTransferConfirmed: true });
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+  const options = vi.mocked(apiFetch).mock.calls[0][1];
+  expect(JSON.parse(String(options?.body))).toEqual({
     version: "diagnosis-api.v2",
     expected_revision: current.revision,
     external_transfer_confirmed: true,
@@ -65,4 +66,37 @@ it("keeps reserved cost on unknown and rejects decreasing reservation", () => {
   expect(current.model_usage?.usage_known).toBe(false);
   const next = { ...current, revision: current.revision + 1, model_usage: { ...usage, reserved_cost_usd_micros: 0 } };
   expect(() => matchURLJob(next, current)).toThrow();
+});
+
+it.each([
+  undefined,
+  {},
+  { externalTransferConfirmed: false },
+  { externalTransferConfirmed: "true" as unknown as boolean },
+])("명시적 외부 전송 동의가 없으면 요청 전에 시작을 거부한다: %o", async (confirmation) => {
+  const current = { ...ready, scope };
+  vi.mocked(apiFetch).mockResolvedValue(envelope({ ...running, revision: current.revision + 1, scope }));
+  await expect(commandURLDiagnosis(current, "start", owner, "external-start", confirmation)).rejects.toMatchObject({
+    status: 400,
+    message: "external_transfer_confirmation_required",
+  });
+  expect(apiFetch).not.toHaveBeenCalled();
+});
+it("로컬 시작은 외부 전송 동의를 생성하지 않는다", async () => {
+  vi.mocked(apiFetch).mockResolvedValue(envelope({ ...running, revision: ready.revision + 1 }));
+  await commandURLDiagnosis(ready, "start", owner, "local-start", { externalTransferConfirmed: true });
+  expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[0][1]?.body))).toEqual({
+    version: "diagnosis-api.v2",
+    expected_revision: ready.revision,
+  });
+});
+it.each(["validate", "stop"] as const)("%s 요청은 외부 전송 동의를 담지 않는다", async (action) => {
+  const current = { ...(action === "stop" ? running : ready), scope };
+  const next = action === "stop" ? { ...current, revision: current.revision + 1, state: "stopping" } : current;
+  vi.mocked(apiFetch).mockResolvedValue(envelope(next));
+  await commandURLDiagnosis(current, action, owner, undefined, { externalTransferConfirmed: true });
+  expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[0][1]?.body))).toEqual({
+    version: "diagnosis-api.v2",
+    expected_revision: current.revision,
+  });
 });

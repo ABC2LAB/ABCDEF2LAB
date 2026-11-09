@@ -545,8 +545,15 @@ export async function commandURLDiagnosis(
   action: "validate" | "start" | "stop",
   owner: string,
   key?: string,
+  confirmation?: { externalTransferConfirmed?: boolean },
 ): Promise<URLDiagnosisJob> {
   if (action === "start" && !ref(key)) return invalid();
+  // 외부 전송 동의는 호출 화면이 명시적으로 공급하며 scope에서 만들어 내지 않는다.
+  const externalStart = action === "start" && current.scope?.model?.external_transfer === true;
+  const externalTransferConfirmed = confirmation?.externalTransferConfirmed === true;
+  if (externalStart && !externalTransferConfirmed) {
+    throw new ApiError(400, "external_transfer_confirmation_required");
+  }
   const result = matchURLJob(
     parseURLJob(
       await apiFetch<unknown>(
@@ -558,9 +565,7 @@ export async function commandURLDiagnosis(
           body: JSON.stringify({
             version,
             expected_revision: current.revision,
-            ...(action === "start" && current.scope?.model?.external_transfer
-              ? { external_transfer_confirmed: true }
-              : {}),
+            ...(externalStart ? { external_transfer_confirmed: externalTransferConfirmed } : {}),
           }),
         },
         false,
@@ -685,6 +690,8 @@ export function urlDiagnosisError(cause: unknown): string {
       return "저장된 요청을 찾지 못했어요. 실행되지 않았다고 단정하거나 자동 재전송하지 않아요.";
     if (cause.message === "budget_exhausted")
       return "승인된 실행·모델 예산이 소진됐어요. 새 실행을 자동으로 만들지 않아요.";
+    if (cause.message === "external_transfer_confirmation_required")
+      return "대상 응답·도구 출력의 외부 전송과 USD 비용 상한에 명시적으로 동의해야 시작할 수 있어요.";
     if (cause.message === "approval_required")
       return "설치자 승인이 필요해요. URL 입력이나 사용자 확인만으로 실행 권위가 생기지 않아요.";
     if (cause.status === 409) return "승인 범위·설정 세대·실행 상태가 바뀌었어요. 현재 상태를 다시 조회해 주세요.";

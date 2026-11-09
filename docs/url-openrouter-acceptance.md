@@ -40,3 +40,15 @@ go test ./server -run 'TestFirstDiagnosisURLOpenRouterBrowser' -count=1 -timeout
 WSL에서 Windows Node를 사용할 때 CDP·출력 경로·`ARTEX_URL_OPENROUTER_BROWSER`는 WSLENV로 전달해야 한다. 모델 키는 시험 환경변수로 전달하지 않는다. 새로고침·결과 조회는 GET만 사용하고 Stop/Start POST를 자동 재시도하지 않는다. revision 충돌 시 명시적 상태 재조회 후 사용자가 다시 판단한다.
 
 실행 중 채팅·추가 지시는 별도 계약과 후속 PR 범위다. 일반 채팅 API를 URL host에 연결하지 않았다. 진단 범위나 예산을 확대할 수 없는 task/intent/권위 결속 명령 계약과 감사가 먼저 필요하다.
+
+## 브라우저의 명시적 외부 전송 동의
+
+`commandURLDiagnosis`는 Start의 다섯 번째 인자로 `{ externalTransferConfirmed: confirmed }`를 받는다.
+OpenRouter scope이면 이 값이 정확히 `true`인 경우에만 요청을 전송하며, 누락·false·문자열은
+HTTP 호출 전에 거부한다. scope가 외부 모델이라는 사실만으로 동의를 만들지 않는다.
+로컬 Start와 validate/stop 본문에는 외부 전송 동의 필드를 넣지 않는다.
+
+Workbench와 팀 URL 진단 패널은 서버가 확인한 provider·모델·호출당 토큰·USD 상한 및
+대상 응답·도구 출력·진단 지시의 외부 전송 안내를 표시하고, 사용자가 확인 상자를 켠 값을 전달한다.
+동의 값은 브라우저 저장소에 보관하거나 새로고침으로 복원하지 않는다. 서버는 별도로 Start의
+revision·실행 권위와 동의를 검증하고 receipt에 결속한다.
