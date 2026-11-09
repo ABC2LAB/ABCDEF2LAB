@@ -63,7 +63,20 @@ export type RequestApprovalRunState = {
     };
   };
 };
-export type RequestApprovalState = { approvals: RequestApproval[]; run: RequestApprovalRunState };
+export type RequestApprovalState = { approvals: RequestApproval[] | null; run: RequestApprovalRunState };
+
+/** 서버가 보고한 모델 사용량. 원문 prompt·응답은 포함하지 않는다. */
+export type ModelUsage = {
+  requests: number;
+  errors: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd_micros: number;
+  provider_slug: string;
+  model: string;
+  blocked: boolean;
+  failure_reason?: string;
+};
 
 /**
  * 저장된 실행 종료 기록. 서버는 세 가지 200 변형을 돌려준다:
@@ -77,6 +90,7 @@ export type DiagnosisRunRecord = {
   saved_at?: string; // NOT_RUN 변형엔 없다
   run: RequestApprovalRunState | null;
   execution?: "NOT_RUN";
+  model?: ModelUsage;
   model_preparation?: unknown[]; // 참조만 — 원문은 표시하지 않는다
 };
 
