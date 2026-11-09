@@ -60,7 +60,7 @@
 | `format` | `abc2lab.e2-runner-config/v1` |
 | `eval_run_id`, `reservation_ref`, `model_tag` | 회차 값. manifest에 그대로 쓴다 |
 | `header_mode`, `evaluation` | 전달 모드와 평가 선언(`llm_backend`·`target_kind`, 아니면 `null`) |
-| `policy_file` | 준비 디렉터리 안의 정책 입력 파일 이름. 검토·동결된 파일을 러너가 복사한다 |
+| `policy_file` | 준비 디렉터리 안의 정책 입력 파일 이름. 검토·동결된 파일을 러너가 복사하고 회차 감사 키의 `audit_key` pin을 채운다 |
 | `audit_key_file` | 준비 디렉터리 안의 회차 감사 키 파일 이름(32바이트, 값은 설정에 넣지 않음) |
 | `listen`, `upstream` | 엔진 쪽 listen 주소와 계측기 upstream(`http://eval-meter-upstream:<포트>`) |
 | `evidence_dir`, `control_dir` | 컨테이너 안 경로(`/evidence`, `/run/e2-control`) |
