@@ -162,6 +162,17 @@ function check(value, code) {
     visibleCounts: await evaluate(
       "({inputs:document.querySelectorAll('section[data-view]:not([hidden]) input').length,alerts:document.querySelectorAll('section[data-view]:not([hidden]) [role=alert]').length})",
     ),
+    // 경로·상태 코드만 (식별자는 {id} 로 가리고 본문·헤더는 남기지 않는다)
+    routeCounts: responses.reduce((counts, r) => {
+      const key = `${r.status} ${r.path.replace(/\/drafts\/[^/]+\//, "/drafts/{id}/").replace(/\/tasks\/[0-9]+\//, "/tasks/{id}/")}`;
+      counts[key] = (counts[key] || 0) + 1;
+      return counts;
+    }, {}),
+    // 보이는 경고는 작업대 자신의 안내 글이다(서버 원문 아님)
+    alertText: await evaluate(
+      "Array.from(document.querySelectorAll('section[data-view]:not([hidden]) [role=alert]')).map(e=>e.innerText.slice(0,160)).join(' | ')",
+    ),
+    view: await evaluate("location.hash"),
   });
   await send("Page.enable");
   await send("Runtime.enable");
@@ -170,11 +181,19 @@ function check(value, code) {
 
   if (phase === "url-draft") {
     await send("Page.navigate", { url: `${WORKBENCH}#new` });
-    // 기본은 예시 재생 → 사용자가 누르는 것과 같은 배너 버튼으로 실제 엔진 모드로 바꾼다(이미 실제면 그대로)
+    // 기본은 예시 재생 → 사용자가 누르는 것과 같은 배너 버튼으로 실제 엔진 모드로 바꾼다(이미 실제면 그대로).
+    // 개발 서버의 첫 컴파일 직후에는 React 가 이벤트를 붙이기 전이라 클릭이 먹지 않을 수 있다 → 배너가 바뀔 때까지 다시 누른다.
     await wait(`!!(${button("실제 엔진으로 보기")})||!!(${button("예시 재생으로 보기")})`, "source_switch_missing");
-    if (await evaluate(`!!(${button("실제 엔진으로 보기")})`)) await click("실제 엔진으로 보기");
-    await wait("document.querySelector('section[data-view=\"new\"] input[type=password]')!==null", "login_missing");
-    await fill('section[data-view="new"] input[type=password]', FIXTURE_PASSWORD);
+    for (let end = Date.now() + 60000; !(await evaluate(`!!(${button("예시 재생으로 보기")})`)); ) {
+      if (Date.now() > end) throw new Error("live_source_not_selected");
+      await evaluate(`(()=>{const b=${button("실제 엔진으로 보기")};if(b)b.click();return true})()`);
+      await sleep(500);
+    }
+    assertions++;
+    // 예시 화면의 새 점검 폼에도 비밀번호 칸이 있다 → 실제 엔진 로그인 패널의 칸만 고른다
+    const loginPass = 'section[data-view="new"] input[autocomplete="current-password"]';
+    await wait(`document.querySelector(${JSON.stringify(loginPass)})!==null`, "login_missing");
+    await fill(loginPass, FIXTURE_PASSWORD);
     await click("로그인");
     await wait("document.querySelector('#luProfile')?.options.length>1", "real_v2_catalog_missing");
     check(await evaluate("document.querySelector('#lvUrl')===null"), "v1_task_form_shown_on_v2_server");
