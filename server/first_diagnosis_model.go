@@ -174,17 +174,29 @@ func (p *firstDiagnosisModelProvider) check(ctx context.Context) error {
 	return nil
 }
 func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	if p == nil || p.server == nil {
+		return llm.Message{}, "", llm.Usage{}, ErrFirstDiagnosisModel
+	}
+	budget := p.server.firstModelBudget
+	if budget != nil {
+		release, err := budget.acquireCall(ctx)
+		if err != nil {
+			return llm.Message{}, "", llm.Usage{}, err
+		}
+		defer release()
+	}
+	// 대기 중 DB/profile 결속이 바뀌었을 수 있어 gate 획득 뒤 다시 확인한다.
 	if p.check(ctx) != nil {
 		return llm.Message{}, "", llm.Usage{}, ErrFirstDiagnosisModel
 	}
-	if p.server.firstModelBudget == nil {
+	if budget == nil {
 		return p.inner.Complete(ctx, req)
 	}
-	if err := p.server.firstModelBudget.before(ctx, p.config, &req); err != nil {
+	if err := budget.before(ctx, p.config, &req); err != nil {
 		return llm.Message{}, "", llm.Usage{}, err
 	}
 	message, reason, usage, err := p.inner.Complete(ctx, req)
-	if budgetErr := p.server.firstModelBudget.after(usage, req.MaxTokens, err); budgetErr != nil {
+	if budgetErr := budget.after(usage, req.MaxTokens, err); budgetErr != nil {
 		return llm.Message{}, "", usage, budgetErr
 	}
 	return message, reason, usage, nil

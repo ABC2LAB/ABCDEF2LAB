@@ -538,7 +538,7 @@ func (l *urlLoadedProfile) current() error {
 	}
 	return nil
 }
-func (l *urlLoadedProfile) dnsCheck(ctx context.Context) error {
+func (l *urlLoadedProfile) dnsCheck(ctx context.Context, resolver *net.Resolver) error {
 	u, _ := url.Parse(l.origin)
 	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
 		if ip != l.address {
@@ -548,7 +548,10 @@ func (l *urlLoadedProfile) dnsCheck(ctx context.Context) error {
 	}
 	bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	ips, err := net.DefaultResolver.LookupNetIP(bounded, "ip", u.Hostname())
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	ips, err := resolver.LookupNetIP(bounded, "ip", u.Hostname())
 	if err != nil || len(ips) == 0 || len(ips) > 32 {
 		return errPreparation
 	}

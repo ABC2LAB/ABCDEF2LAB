@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -24,6 +25,7 @@ type urlPreparationRuntime struct {
 	path     string
 	config   urlPreparationInstallation
 	endpoint diagnosisprep.Endpoint
+	resolver *net.Resolver // nil이면 시스템 resolver. 시험은 전역 DNS를 변경하지 않는다.
 	mu       sync.RWMutex
 	live     map[string]*urlLiveHandler
 	reports  map[string]*savedReportService
@@ -235,7 +237,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if check() != nil || p.set(func(u *diagnosisprep.Update) { u.Phase = diagnosisprep.ScopeCheck }) != nil {
 		return errPreparation
 	}
-	if l.dnsCheck(ctx) != nil {
+	if l.dnsCheck(ctx, b.resolver) != nil {
 		return knownFailure("target_dns_mismatch", true)
 	}
 	// 위임 삭제·교체·만료는 실행 중에도 신규 전송을 중단하는 context 철회다.
