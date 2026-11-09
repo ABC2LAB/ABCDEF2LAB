@@ -44,7 +44,7 @@ LLM_DIR_NAME = "llm"
 # 가짜 E²(e2.ours_mode=stub) 결정 행 디렉터리. 계측기 증거와 분리해 E²가 독립 계측 로그·seal 파일에 쓸 수 없게 한다.
 E2_DIR_NAME = "e2"
 # 제품 E②: 준비(읽기 전용 mount), 제어 socket, 러너 전용 수집 사본. 사본은 E²에 mount하지 않는다.
-E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME = "e2-config", "e2-control", "e2-copy"
+E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME, E2_STATE_DIR_NAME = "e2-config", "e2-control", "e2-copy", "e2-state"
 # 상태 차이 사본(대상 SQLite) 디렉터리. 사본은 지문을 뜬 즉시 지운다(값이 든 파일을 남기지 않음).
 STATE_DIR_NAME = "state"
 # 상태 차이(프로토콜 §8.2) 설정. null이면 사본을 뜨지 않는다. 앱별 값(DB 경로·해결 신호 테이블)은 여기서만 받는다.
@@ -149,7 +149,13 @@ _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page
 MAX_FINDINGS_PAGES = 10_000
 # 제품 E② 설정. 지문은 시범 전에 동결한 값이고 러너는 이 값과 대조만 한다(연결 제안 §4.1).
 _E2_PRODUCT_FIELDS = ("image", "policy_path", "policy_fingerprint_sha256", "header_mode", "ready_timeout_seconds", "close_ack_timeout_seconds",
-                      "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds", "verify_tool", "verify_timeout_seconds")
+                      "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds", "verify_tool", "verify_timeout_seconds",
+                      "policy_tool", "policy_tool_timeout_seconds", "helper", "helper_sha256", "subnet", "meter_ip", "window_seconds",
+                      "approval_valid_until")
+# 회차 CA 수명 상한(e2proxy maxExecutionCALifetime)과 같다. 승인 기간은 CA 수명을 넘을 수 없다.
+MAX_E2_WINDOW_SECONDS = 86_400
+# 게이트웨이 주소와 겹치지 않게 subnet은 최소 네 주소를 남긴다.
+MAX_E2_SUBNET_PREFIX = 29
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 # 개선 후 판정 export 수집 한도(null이면 수집 안 함). findings 한도와 따로 둔다.
 _VERDICT_LIMIT_FIELDS = ("page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
@@ -268,6 +274,8 @@ class RunPlan:
     compose_env: dict[str, str]
     # 이 회차의 E② 자리(E2_MODES). baseline은 항상 E2_NONE.
     e2_mode: str
+    # 제품 E²가 계측기에 붙는 고정 주소. up 뒤 실제 주소와 대조한다.
+    e2_meter_ip: str | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +288,7 @@ class RunDirectory:
     e2_config: Path
     e2_control: Path
     e2_copy: Path
+    e2_state: Path
 
 
 def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
@@ -489,7 +498,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
 def _e2_product(block: dict, errors: list[str]) -> dict | None:
     """제품 E② 설정. 시한은 실행 예산과 따로 기록하는 값이라 전부 명시한다."""
     image = _image(block["image"], "config.e2.image", errors) if "image" in block else None
-    for name in ("policy_path", "verify_tool"):
+    for name in ("policy_path", "verify_tool", "policy_tool", "helper"):
         if name in block and not _absolute_path(block[name]):
             errors.append(f"config.e2.{name}: EXPECTED_ABSOLUTE_PATH")
     if "policy_fingerprint_sha256" in block and not (isinstance(block["policy_fingerprint_sha256"], str)
@@ -498,12 +507,46 @@ def _e2_product(block: dict, errors: list[str]) -> dict | None:
     if "header_mode" in block and not (isinstance(block["header_mode"], str) and block["header_mode"] in E2_HEADER_MODES):
         errors.append("config.e2.header_mode: UNSUPPORTED")
     for name in ("ready_timeout_seconds", "close_ack_timeout_seconds", "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds",
-                 "verify_timeout_seconds"):
+                 "verify_timeout_seconds", "policy_tool_timeout_seconds"):
         if name in block and not _int(block[name], 1, MAX_RUN_SECONDS):
             errors.append(f"config.e2.{name}: INVALID")
+    if "helper_sha256" in block and not (isinstance(block["helper_sha256"], str) and _SHA256_HEX.fullmatch(block["helper_sha256"])):
+        errors.append("config.e2.helper_sha256: INVALID")
+    if "window_seconds" in block and not _int(block["window_seconds"], 1, MAX_E2_WINDOW_SECONDS):
+        errors.append("config.e2.window_seconds: INVALID")
+    if "approval_valid_until" in block and not _utc_time(block["approval_valid_until"]):
+        errors.append("config.e2.approval_valid_until: INVALID")
+    errors.extend(_e2_address_errors(block))
     if image is None or any(name not in block for name in _E2_PRODUCT_FIELDS):
         return None
     return {name: block[name] for name in _E2_PRODUCT_FIELDS} | {"image": image}
+
+
+def _utc_time(value: object) -> bool:
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _e2_address_errors(block: dict) -> list[str]:
+    """계측기 주소는 subnet 안의 호스트여야 하고 게이트웨이(첫 주소)와 겹치면 안 된다."""
+    if "subnet" not in block or "meter_ip" not in block:
+        return []
+    try:
+        subnet = ipaddress.IPv4Network(block["subnet"], strict=True)
+    except (TypeError, ValueError):
+        return ["config.e2.subnet: INVALID"]
+    if not subnet.is_private or subnet.prefixlen > MAX_E2_SUBNET_PREFIX:
+        return ["config.e2.subnet: INVALID"]
+    try:
+        meter = ipaddress.IPv4Address(block["meter_ip"])
+    except (TypeError, ValueError):
+        return ["config.e2.meter_ip: INVALID"]
+    if meter not in subnet or meter in (subnet.network_address, subnet.network_address + 1, subnet.broadcast_address):
+        return ["config.e2.meter_ip: INVALID"]
+    return []
 
 
 def _verdict_export(raw: object, errors: list[str]) -> dict | None:
@@ -724,10 +767,13 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     if e2_mode == E2_PRODUCT:
         images["e2"] = config.e2_product["image"]
         env["EVAL_E2_IMAGE"] = config.e2_product["image"].ref
+        env["EVAL_E2_SUBNET"] = config.e2_product["subnet"]
+        env["EVAL_E2_METER_IP"] = config.e2_product["meter_ip"]
     return RunPlan(side=side, run_id=run_id, project=f"eval-{run_id}", source_sha=declared["source_sha"],
                    llm=llm, target_image=target_image, engine_image=engine_image, images=images,
                    meter_port=origin.port, compose_files=tuple(files),
-                   secrets_env_file=config.secrets_env_file, compose_env=env, e2_mode=e2_mode)
+                   secrets_env_file=config.secrets_env_file, compose_env=env, e2_mode=e2_mode,
+                   e2_meter_ip=config.e2_product["meter_ip"] if e2_mode == E2_PRODUCT else None)
 
 
 def gateway_sampling(declared: dict, side: str) -> str:
@@ -778,7 +824,7 @@ def create_run_directory(runs_root: Path, run_id: str, e2_mode: str = E2_NONE) -
             os.close(_make_private_child(run_fd, E2_DIR_NAME))
             os.close(_make_private_child(run_fd, STATE_DIR_NAME))
             if e2_mode == E2_PRODUCT:
-                for name in (E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME):
+                for name in (E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME, E2_STATE_DIR_NAME):
                     os.close(_make_private_child(run_fd, name))
         finally:
             os.close(run_fd)
@@ -791,7 +837,7 @@ def create_run_directory(runs_root: Path, run_id: str, e2_mode: str = E2_NONE) -
     run = runs_root / run_id
     return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME, e2=run / E2_DIR_NAME,
                         state=run / STATE_DIR_NAME, e2_config=run / E2_CONFIG_DIR_NAME, e2_control=run / E2_CONTROL_DIR_NAME,
-                        e2_copy=run / E2_COPY_DIR_NAME)
+                        e2_copy=run / E2_COPY_DIR_NAME, e2_state=run / E2_STATE_DIR_NAME)
 
 
 def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str]:
@@ -803,6 +849,7 @@ def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str
     if plan.e2_mode == E2_PRODUCT:
         env["EVAL_E2_CONFIG_DIR"] = str(directory.e2_config)
         env["EVAL_E2_CONTROL_DIR"] = str(directory.e2_control)
+        env["EVAL_E2_STATE_DIR"] = str(directory.e2_state)
     env["EVAL_RUNNER_UID"] = str(os.geteuid())
     env["EVAL_RUNNER_GID"] = str(os.getegid())
     return env

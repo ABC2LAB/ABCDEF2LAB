@@ -15,7 +15,7 @@ import ipaddress
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping
 from urllib.parse import urlsplit
 
@@ -62,6 +62,8 @@ class NetworkExpectation:
 class ExpectedTopology:
     networks: Mapping[str, NetworkExpectation]
     publishes: Mapping[str, frozenset[Binding]]
+    # 망 이름 → 서비스 → 정책이 pin한 주소. 실제 주소와 다르면 회차를 쓰지 않는다.
+    pinned: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     @property
     def services(self) -> frozenset[str]:
@@ -143,7 +145,8 @@ def expected_topology(config: RunnerConfig, plan: RunPlan) -> ExpectedTopology:
     if plan.e2_mode != E2_NONE:
         networks[E2_NET] = NetworkExpectation(True, frozenset({E2_SERVICE, METER_SERVICE}))
         publishes[E2_SERVICE] = frozenset()
-    return ExpectedTopology(networks=networks, publishes=publishes)
+    pinned = {E2_NET: {METER_SERVICE: plan.e2_meter_ip}} if plan.e2_mode == E2_PRODUCT and plan.e2_meter_ip else {}
+    return ExpectedTopology(networks=networks, publishes=publishes, pinned=pinned)
 
 
 def _url_port(url: str) -> int:
@@ -322,11 +325,14 @@ def check_topology(expected: ExpectedTopology, project: str, networks: Iterable[
             if network.internal != want.internal:
                 violations.add(f"network.{key}: INTERNAL_MISMATCH")
             services = set()
-            for container_id in network.members:
+            for container_id, addresses in network.members.items():
                 if container_id not in service_by_id:
                     violations.add(f"network.{key}: FOREIGN_MEMBER")
                     continue
                 services.add(service_by_id[container_id])
+                wanted = expected.pinned.get(key, {}).get(service_by_id[container_id])
+                if wanted is not None and wanted not in addresses:
+                    violations.add(f"network.{key}: ADDRESS_MISMATCH")
                 attached.setdefault(container_id, set()).add(network.id)
             if services != set(want.members):
                 violations.add(f"network.{key}: MEMBERS_MISMATCH")
