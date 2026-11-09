@@ -1,5 +1,7 @@
 # E③ initial 관찰 revision SQL 코어
 
+> **단계 기록과 현재 구현:** 아래 서버 미연결·선행 head 표시는 독립 SQL 코어 도입 당시 기록입니다. 현재 [서버 revision 연결](e3-server-evidence-revision-wiring.md)과 [실제 연결 코드](../../server/controlled_read_revision.go)가 있습니다. 운영 권위·자료 공급·실모델 수용과 별개이며 revision 신뢰·발급 요구는 유지합니다.
+
 2026-11-03 · 이동찬 · **독립 개발 코어·팀 검토안, 서버 미연결**
 
 기준은 dev `88415fff88f1c66c4307ba370c360e6ad338efcc`와 열린 #151

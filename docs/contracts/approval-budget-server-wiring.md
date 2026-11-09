@@ -1,5 +1,7 @@
 # 공유예산 서버 연결 계약
 
+> **단계 기록과 현재 코드 구분:** 공유예산 서버 연결의 초기 설계·수용 기준입니다. 아래 #110 미병합 표시는 당시 기록이며 merge commit `125d4cc`는 현재 `dev` 이력에 포함됩니다. [HTTP CumulativeBudget 입력](../../transmit/config.go)과 [승인 DB 정본](approval-budget-store.md)·[실행 결속](approval-budget-run-binding.md)을 함께 확인합니다. 이 사실은 모든 서버 경로의 누적 예산 활성화·실제 운영 발급·SB 수용 완료를 뜻하지 않습니다.
+
 2026-11-03 · 이동찬
 
 상태: **서버 연결의 구현 기준 초안. 새 문서 1개이며 제품 코드·승인 발급·실제 서버 배선은 구현하지 않는다.** [누적 예산 코어](./approval-request-budget.md), [HTTP 전송기](./e2-http-transmitter.md), [서버 runtime](./e2-server-runtime.md)의 기존 책임을 유지한다. 팀의 최종 합의·운영 적용을 완료했다는 뜻은 아니다.

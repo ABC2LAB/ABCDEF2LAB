@@ -147,6 +147,12 @@ func ParseOpenRouterManifest(data []byte) (*OpenRouterPolicy, error) {
 	return &OpenRouterPolicy{manifest: m, usage: OpenRouterUsage{Provider: m.ProviderSlug, Model: OpenRouterModel, ApprovalRef: fmt.Sprintf("%x", sha256.Sum256([]byte(m.ApprovalID)))}}, nil
 }
 func (p *OpenRouterPolicy) reserve(output int64) error {
+	_, err := p.reserveDiagnostic(output)
+	return err
+}
+
+// 같은 잠금에서 얻은 거절 사유만 관측해 동시 호출의 집계를 섞지 않는다.
+func (p *OpenRouterPolicy) reserveDiagnostic(output int64) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	m := p.manifest
@@ -154,7 +160,7 @@ func (p *OpenRouterPolicy) reserve(output int64) error {
 	reason := ""
 	switch {
 	case p.blocked:
-		return ErrOpenRouterPolicy
+		return "policy_denied", ErrOpenRouterPolicy
 	case !time.Now().Before(m.ExpiresAt):
 		reason = "expired"
 	case output <= 0 || output > m.MaxOutputPerCall:
@@ -170,13 +176,13 @@ func (p *OpenRouterPolicy) reserve(output int64) error {
 	}
 	if reason != "" {
 		p.usage.FailureReason = reason
-		return ErrOpenRouterPolicy
+		return reason, ErrOpenRouterPolicy
 	}
 	if !p.started {
 		if p.consume == nil || p.consume() != nil {
 			p.blocked = true
 			p.usage.FailureReason = "approval_consumed"
-			return ErrOpenRouterPolicy
+			return "approval_consumed", ErrOpenRouterPolicy
 		}
 		p.started = true
 	}
@@ -185,7 +191,7 @@ func (p *OpenRouterPolicy) reserve(output int64) error {
 	p.usage.ReservedInputTokens += m.MaxInputPerCall
 	p.usage.ReservedOutputTokens += output
 	p.usage.ReservedCostMicros += cost
-	return nil
+	return "", nil
 }
 
 // ValidateCallLimits는 프로필 기본값이 승인된 요청 범위 안인지 검사한다.

@@ -178,7 +178,7 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{c.DataDir, c.KeyDir} {
+	for _, dir := range []string{c.KeyDir} {
 		if os.Mkdir(dir, 0700) != nil {
 			t.Fatal("인증 디렉터리 실패")
 		}

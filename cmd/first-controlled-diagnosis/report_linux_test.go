@@ -43,6 +43,9 @@ func reportConfigFixture(t *testing.T, registered bool, modelURL string) (string
 	for _, key := range []string{"data_dir", "key_dir", "skill_dir", "local_llm_manifest_path", "runtime_dsn_file"} {
 		c[key] = filepath.Join(root, key)
 	}
+	if err := os.Mkdir(c["data_dir"].(string), 0700); err != nil {
+		t.Fatal(err)
+	}
 	c["model_base_url"] = modelURL
 	c["shutdown_timeout_seconds"] = 2
 	if registered {
@@ -170,6 +173,16 @@ func TestReportOutputAndListenFailureClosePool(t *testing.T) {
 			if code := runSavedReport(context.Background(), []string{"-config", path, "-task-id", "8"}, reportFailedWriter{}, io.Discard, opener); code != 1 || !closed {
 				t.Fatal("failed startup did not close")
 			}
+			cfg, err := readLaunchConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows := diagnosticRows(t, cfg.DataDir)
+			last := rows[len(rows)-1]
+			if !occupied && (last.Stage != "output" || last.ReasonCode != "output_failed") {
+				t.Fatal("output failure mislabeled as shutdown")
+			}
+
 		})
 	}
 }

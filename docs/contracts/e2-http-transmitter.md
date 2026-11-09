@@ -1,5 +1,7 @@
 # E② 등록 HTTP 조회 전송기
 
+> **현재 구현과의 구분 (2026-11-08):** 본문의 실행 도구·감사 연결 후속 표기는 독립 전송기 코어 단계 기록이다. 현재 등록 GET 연결은 [서버 실행 컨텍스트](e2-server-runtime.md)와 [첫 IDOR 통합](first-idor-integration.md)을 확인한다. 아래 등록·승인·전송 계약은 유지하며 일반 HTTP 첫 진단이나 모든 통신 경로의 지원 범위로 확대하지 않는다.
+
 상태: `transmit/`의 독립 Go 구현과 합성 HTTP 시험. ARTEX 실행 도구·GUARD/Interceptor·DB 감사·실 KG/인증 어댑터 연결은 후속이다. 기존 [검증기 seam](./idor-verifier-seam.md)의 `idor.Transmitter`를 구현하며 기존 검증기·비교기는 변경하지 않는다.
 
 ## 입력과 실행 허가

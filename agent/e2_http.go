@@ -17,6 +17,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/permission"
@@ -257,6 +258,17 @@ func newE2HTTPBashTool(execution *e2proxy.Execution, run e2HTTPRunFunc, hostTime
 			}
 			controlView = control.finish(ticket, result, runnerFailed)
 			isError := runErr != nil || result.Trusted.Classification != "completed" || unknown || incomplete || result.Trusted.Execution.State != "active"
+			status := "succeeded"
+			if isError {
+				status = "failed"
+			}
+			if unknown {
+				status = "unknown"
+			}
+			if incomplete {
+				status = "incomplete"
+			}
+			diagnosticAgentEvent(ctx, diagnosticlog.Event{Event: "tool_result_observed", Stage: "tool_execution", Status: status, ReasonCode: diagnosticToolClassification(result.Trusted.Classification), IntentID: actualIntentID, CallRef: result.Trusted.Call.CallRef, Tool: "Bash"})
 			return encodeE2HTTPResult(result, isError, controlView), nil
 		},
 	})
@@ -409,7 +421,10 @@ func (t *e2HTTPGraphTool) Call(ctx context.Context, input json.RawMessage, tc *a
 	return out, nil
 }
 
-func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), binding E2HTTPExecution, requestID, message string) (harness.TerminalReason, WriteCounts, error) {
+func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), binding E2HTTPExecution, requestID, message string) (terminal harness.TerminalReason, writes WriteCounts, outcome error) {
+	start := time.Now()
+	diagnosticAgentEvent(ctx, diagnosticlog.Event{Event: "worker_started", Stage: "worker", Status: "started", TaskID: taskID, IntentID: binding.IntentID, RunRef: binding.RunRef})
+	defer func() { observeDiagnosticWorkerFinished(ctx, binding, terminal, outcome, time.Since(start)) }()
 	if err := validateE2HTTPExecution(ctx, binding, taskID, intent); err != nil {
 		return harness.ReasonModelError, WriteCounts{}, err
 	}
@@ -446,6 +461,7 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 		tools = append(tools, e2HTTPWorkerGraphTools(toolset.WorkerTools(), execution, intent.ID)...)
 		tools = append(tools, newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ }))
 	}
+	ctx, tools = withDiagnosticTools(ctx, tools, "worker")
 	system, promptInfo, err := buildE2HTTPWorkerPrompt(ctx, name, tools, execution.RedactOutput)
 	if err != nil {
 		return harness.ReasonModelError, WriteCounts{}, err

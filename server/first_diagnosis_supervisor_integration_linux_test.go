@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Autumn-27/norma/llm"
+	"io"
 	"iter"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/transmit"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/sys/unix"
@@ -146,6 +148,20 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	helper := firstDiagnosisNativeHelper(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
+	if mode == "cancel" || mode == "user-stop" || mode == "planner-only" || mode == "close-fail" {
+		logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", mustFirstDiagnosisTaskNumber(task.ID), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx = diagnosticlog.With(ctx, logger)
+		defer func() {
+			if err := logger.Close(); err != nil {
+				t.Error("실제 실패 회차 로그 마감", err)
+				return
+			}
+			verifySupervisorFailureLog(t, logger.Path(), mode)
+		}()
+	}
 	var hits atomic.Int64
 	targetEntered := make(chan struct{}, 1)
 	targetExited := make(chan struct{}, 1)
@@ -573,5 +589,49 @@ func (p *firstDiagnosisRoleRoutedProvider) Complete(ctx context.Context, request
 func (p *firstDiagnosisRoleRoutedProvider) Stream(ctx context.Context, request llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		yield(llm.StreamEvent{}, errors.New("unexpected fixture streaming"))
+	}
+}
+
+func verifySupervisorFailureLog(t *testing.T, path, mode string) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	found := 0
+	for {
+		var event diagnosticlog.Event
+		err := decoder.Decode(&event)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Error("실패 JSONL 손상", err)
+			return
+		}
+		if event.Event != "run_finished" {
+			continue
+		}
+		found++
+		switch mode {
+		case "cancel", "user-stop":
+			if event.Status != "cancelled" || event.ReasonCode != "user_cancelled" {
+				t.Error("실제 취소와 로그 상태 불일치")
+			}
+		case "planner-only":
+			if event.Status != "timeout" || event.ReasonCode != "timeout" {
+				t.Error("실제 제한 시간 초과와 로그 상태 불일치")
+			}
+		case "close-fail":
+			if event.Status != "failed" || event.Stage != "audit_close" || event.ReasonCode != "audit_failed" {
+				t.Error("실제 감사 마감 실패와 로그 상태 불일치")
+			}
+		}
+	}
+	if found != 1 {
+		t.Errorf("실제 실패 회차 마감 이벤트 수=%d", found)
 	}
 }

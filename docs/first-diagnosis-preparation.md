@@ -4,7 +4,9 @@
 
 이 문서는 실행 전 인계·설치 준비용이다. 실제 진단을 시작하거나 권위를 발급하지 않는다. 이동찬의 환경·엔진 통합 준비와 공급자의 실제 자료를 구분한다. 개인 장비 조사·로컬 경로·세션·DSN·키·원본 감사 기록은 이 문서에 포함하지 않는다.
 
-현재 통합 구현 기준은 [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317)의 `64121b38eb4269c6530a5b10c078645b353d2dc4`이며 [기동·API 문서](first-diagnosis-launch.md)를 재사용한다. 게시 전 결합한 dev `399da3ed4b71c0bc8b96ed7d6db487cc99d32ba1`에는 #304/#310/#312/#313/#318이 포함된다. 나머지 통합 기능의 최신 팀원 병합 여부는 별도로 확인한다. **실제로 사용할 승인된 정확 SHA의 CLI·검사 코드와 다시 대조**한다. 이 체크리스트는 실모델·실제 회차 수용, 팀원 병합 승인이나 신규 입력 형식 채택을 대신하지 않는다.
+**2026-11-08 확인 시점의 코드 스냅샷**은 `dev` `d2bfec57f34dae1c17b6026366e747f3a588750b`다.
+이 SHA는 상시 최신 실행 버전을 지정하지 않는다. 새 준비·실행 전 최신 `origin/dev`의 정확한 SHA를 확인·기록한다.
+#317 첫 진단 통합과 #323 OpenRouter 연결은 이 스냅샷에 병합되어 있으며 [기동·API 문서](first-diagnosis-launch.md)를 재사용한다. 과거 통합 SHA와 브랜치는 그 문서의 이력 절에 보존한다. **실제로 사용할 승인된 정확 SHA의 CLI·검사 코드와 다시 대조**한다. 이 체크리스트는 실모델·실제 회차 수용이나 신규 입력 형식 채택을 대신하지 않는다.
 
 ## 1. 준비 상태와 실행 경계
 
@@ -61,7 +63,8 @@
 
 기동 설정은 `abc2lab.first-diagnosis-launch/v1`, 일반 HTTP 또는 등록 GET 한 모드만 선택한다. CLI는 64KiB 이하 UTF-8, 중복/알 수 없는 키·null·대소문자 별칭 거부, 정규 절대경로, loopback listen 주소, 양수 model_profile_id, shutdown timeout 1~60초를 요구한다. 경로 최대 길이는 4096바이트다. 등록 GET의 registry_file은 경로가 아닌 파일 basename이다. E② UDS 경로는 `len(root)+len("/call-0123456789/proxy.sock") <= 106`바이트여야 하며 HTTP가 `StateDir/calls`를 넘기는 배치에서는 StateDir 최대73바이트다. 실제 미수령 값은 `.template`의 명시적 자리표시자로 남기며 check/기동 입력으로 쓰지 않는다.
 
-모델은 실제 task의 단일 ready profile chain을 고정한다. goals/planner/worker 역할 profile은 비어 있거나 정확히 같은 ID다. 임의 fallback/다른 역할 모델로 대체하지 않는다. 등록 GET의 Source.ModelTag는 승인 metadata 값을 유지한다. 모델·GPU·유료 API를 새로 고르지 않는다.
+모델은 실제 task의 단일 ready profile chain을 고정한다. goals/planner/worker 역할 profile은 비어 있거나 정확히 같은 ID다. 임의 fallback/다른 역할 모델로 대체하지 않는다. 등록 GET의 Source.ModelTag는 승인 metadata 값을 유지한다. 이 준비 점검만으로 모델·GPU·유료 API를 새로 고르거나 호출하지 않는다.
+OpenRouter는 일반 HTTP의 명시적 외부 모드만 지원한다. 실제 profile·키·제공사/privacy·비용 승인을 준비하고, `prepare-intents`와 `run`에 서로 다른 승인 ID/단계별 manifest를 사용한다. 합산 예산과 고정 모델·endpoint 조건은 [OpenRouter 안내](openrouter-first-diagnosis.md)를 따른다.
 
 ## 3. PostgreSQL 설치 인계
 
@@ -86,7 +89,7 @@
 
 종료 후 `report`는 별도 최소 역할을 사용하며 일반 runtime 권한을 복사하지 않는다. [기동 문서의 저장 보고서와 수정 프롬프트 절](first-diagnosis-launch.md#저장-보고서와-수정-프롬프트)의 정확한 SELECT·INSERT·sequence·잠금 열 목록을 따른다.
 
-정확 소스: [별도 authority 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/server/controlled_read_assembly_database_authority.go), [런타임 DB 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/server/controlled_read_assembly_database_role.go), [기동 check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/launch_check.go). 함수 `CheckFirstDiagnosisHTTPRuntimeDatabase` / `CheckFirstDiagnosisRuntimeDatabase`의 실제 정의와 호출을 따라 최신 목록을 대조한다. 시험 fixture의 fake credentials/roles를 운영 자료로 복사하지 않는다. 검사기는 모든 테이블의 가능한 과잉 권한이 전부 제거됐음을 보증하는 도구가 아니다.
+정확 소스: [별도 authority 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/d2bfec57f34dae1c17b6026366e747f3a588750b/server/controlled_read_assembly_database_authority.go), [런타임 DB 검사](https://github.com/ABC2LAB/ABCDEF2LAB/blob/d2bfec57f34dae1c17b6026366e747f3a588750b/server/controlled_read_assembly_database_role.go), [기동 check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/d2bfec57f34dae1c17b6026366e747f3a588750b/cmd/first-controlled-diagnosis/launch_check.go). 함수 `CheckFirstDiagnosisHTTPRuntimeDatabase` / `CheckFirstDiagnosisRuntimeDatabase`의 실제 정의와 호출을 따라 최신 목록을 대조한다. 시험 fixture의 fake credentials/roles를 운영 자료로 복사하지 않는다. 검사기는 모든 테이블의 가능한 과잉 권한이 전부 제거됐음을 보증하는 도구가 아니다.
 
 ## 4. 실제 자료 인계 대장
 
@@ -138,13 +141,13 @@ carrier는 최신 [선정 계약](contracts/kg-canary-carrier-stage1.md)의 revi
 - helper 실배치·모델 추론·대상 health/reset·A/B 조회·감사/판정/저장 성공을 증명하지 않는다.
 - 실제 자료·접근 권한이 없거나 자리표시자가 남으면 강행하지 않는다. 원문 비밀이 없는 요약만 공유하고 상세 출력은 보호 경로에 보존한다.
 
-근거: [launch config parser](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/launch_config.go), [launch check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/launch_check.go), [CLI 분기](https://github.com/ABC2LAB/ABCDEF2LAB/blob/64121b38eb4269c6530a5b10c078645b353d2dc4/cmd/first-controlled-diagnosis/main.go).
+근거: [launch config parser](https://github.com/ABC2LAB/ABCDEF2LAB/blob/d2bfec57f34dae1c17b6026366e747f3a588750b/cmd/first-controlled-diagnosis/launch_config.go), [launch check](https://github.com/ABC2LAB/ABCDEF2LAB/blob/d2bfec57f34dae1c17b6026366e747f3a588750b/cmd/first-controlled-diagnosis/launch_check.go), [CLI 분기](https://github.com/ABC2LAB/ABCDEF2LAB/blob/d2bfec57f34dae1c17b6026366e747f3a588750b/cmd/first-controlled-diagnosis/main.go).
 
-## 6. 병합 후 실행 절차 (지금 실행하지 않음)
+## 6. 현재 dev의 실행 절차 (별도 실행 승인 필요)
 
 이 절차는 미래 실행 승인을 대신하지 않는다. 각 단계의 조건이 미충족이면 멈추고 해당 담당에게 필요한 자료를 요청한다. 전체 평가 배치·쓰기 IDOR·보상·RAG·파인튜닝은 이 범위에 추가하지 않는다.
 
-1. #317과 선행 PR의 병합 여부·최신 head·리뷰 및 최신 dev를 다시 확인한다. 원본/피드백 작업자의 checkout을 전환하지 않고 별도 소스 경로에서 사용이 승인된 정확 통합 SHA 또는 팀원 병합 SHA를 고정한다. 통합 브랜치 검증을 dev 반영으로 쓰지 않는다.
+1. 최신 origin/dev를 다시 확인하고 사용이 승인된 정확 SHA를 고정한다. #317/#323/#325는 위 확인 기준에 이미 병합되어 있다. 기존 작업자의 checkout과 변경은 보존하고 별도 소스 경로를 사용한다.
 2. 승인된 Go1.26.3로 아래 빌드. 공통 설치/runtime 역할·JWT/로그인·DB model profile/manifest를 확인하고, 일반 HTTP는 helper·policy/authority·보호 키 경로, 등록 GET은 별도 host authority·active key/epoch 등 §2의 모드별 추가 준비를 확인한다. 모델을 호출하지 않고 설정 일치 여부를 먼저 기록한다.
 3. 보호된 launch 설정과 task 입력으로 `prepare-task`. 반환된 실제 task_id/exploration_id만 보존한다. 다음 `prepare-intents`는 **명시적 실제 모델 호출 승인 후** 수행하고 실제 저장된 intent IDs를 확인한다. 준비 중 대상 도구는 차단된 경로를 사용한다.
 4. 선택한 모드의 자료를 인계한다. **일반 HTTP:** 실제 정책·계정/세션·예산·격리 자료와 task/exploration·정책 원문 digest에 결속된 authority를 확인한다. **등록 GET:** 실제 task/intent와 최신 instance/reset/generation에 맞는 A/B·snapshot/registry/metadata·정책을 받아 오프라인 형식/CheckPairing·ReadOnly·권한/세대/만료·같은 snapshot 결속을 확인한다.
@@ -152,6 +155,7 @@ carrier는 최신 [선정 계약](contracts/kg-canary-carrier-stage1.md)의 revi
 6. 보호 설정으로 `check`, `check -database`. 비소비 경로지만 검사 범위 밖 공급 검증을 생략하지 않는다. 입력/권한/승인 바이트가 바뀌면 다시 검사한다.
 7. 명시적 실행 승인과 **새 회차의 유효한 미소비 단회 승인**으로 `run` 한 번. check가 소비하지 않았고 바이트/유효기간도 그대로라면 그 새 승인을 사용할 수 있다. 만료·변경 시 재발급/재결속/재검사한다. `serve`는 대안이며 같은 승인/root로 serve 후 run을 순차 실행하지 않는다.
 8. 신규 admission 차단 → task/call/대상 drain → 자식/터널/소켓 종료 → 감사/저장 → host/key/FD/SQL lease 반환을 같은 회차로 대조한다. 불명은 실패·불명으로 보존한다. 일반 HTTP는 execution/closure와 `e3=NOT_APPLICABLE`; 등록 GET은 감사 ACK/봉인 → revision/E③/finding(confirmed만) → 기존 인증 조회 대조다. 비평가 EvalRunID는 비워 둔다.
+9. 종료 후에는 별도 최소권한 `report -config ... -task-id ...`로 저장 자료를 연다. 모델·대상 요청이나 실행 재개는 하지 않는다. 보고서 전용 설정·역할은 [저장 보고서 기동](first-diagnosis-launch.md#실행-종료-후-저장-자료만-열기)을 따른다.
 
 아래 변수는 운영자가 **실제 승인된 절대경로/ID**로 설정한다. placeholder를 그대로 실행하지 않는다. 비밀값은 변수가 아니라 보호 파일 안에만 둔다.
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 )
 
 var errRequestApproval = errors.New("request_approval_unavailable")
@@ -140,7 +141,21 @@ func approvalPreview(p e2proxy.RequestApprovalProposal, rule E2HTTPFileRule) (st
 	}
 	return u.Scheme + "://" + u.Host, path, preview, nil
 }
-func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2proxy.RequestApprovalProposal) (bool, error) {
+func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2proxy.RequestApprovalProposal) (allowed bool, outcome error) {
+	status, reason := "failed", "approval_unavailable"
+	defer func() {
+		if errors.Is(outcome, context.Canceled) {
+			status, reason = "cancelled", "cancelled"
+		}
+		if errors.Is(outcome, context.DeadlineExceeded) {
+			status, reason = "timeout", "timeout"
+		}
+		task, _ := strconv.ParseInt(p.Receipt.Scope.TaskRef, 10, 64)
+		if task < 0 {
+			task = 0
+		}
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "request_approval_resolved", Stage: "request_approval", Status: status, ReasonCode: reason, TaskID: task, RunRef: p.Receipt.Scope.RunRef, IntentID: p.Receipt.IntentID, CallRef: p.Receipt.CallRef, AttemptRef: p.Receipt.AttemptID})
+	}()
 	task, err := strconv.ParseInt(p.Receipt.Scope.TaskRef, 10, 64)
 	if err != nil || ctx == nil || p.OwnerRef != "ARTEX" {
 		return false, errRequestApproval
@@ -154,6 +169,10 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 	}
 	if ctx.Err() != nil || binding.ctx.Err() != nil || !time.Now().Before(p.ExpiresAt) {
 		s.mu.Unlock()
+		status, reason = "cancelled", "cancelled"
+		if !time.Now().Before(p.ExpiresAt) {
+			status, reason = "expired", "expired"
+		}
 		return false, nil
 	}
 	origin, path, preview, err := approvalPreview(p, rule)
@@ -184,6 +203,7 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 	waiter := &requestApprovalWaiter{ctx: ctx, decision: make(chan struct{})}
 	s.waiters[a.ID] = waiter
 	s.mu.Unlock()
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "request_approval_pending", Stage: "request_approval", Status: "pending", TaskID: task, RunRef: a.RunRef, IntentID: a.IntentID, CallRef: a.CallRef, AttemptRef: a.AttemptID})
 	timer := time.NewTimer(time.Until(a.ExpiresAt))
 	defer timer.Stop()
 	select {
@@ -215,9 +235,14 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 				return false, errRequestApproval
 			}
 		}
+		status, reason = "cancelled", "cancelled"
+		if !time.Now().Before(a.ExpiresAt) {
+			status, reason = "expired", "expired"
+		}
 		return false, nil
 	}
 	if current.State != "allowed" || current.Consumed {
+		status, reason = "denied", "policy_denied"
 		return false, nil
 	}
 	current.Consumed = true
@@ -227,10 +252,12 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 	consumeCancel()
 	if err != nil {
 		if errors.Is(err, db.ErrRequestApprovalConflict) && !time.Now().Before(current.ExpiresAt) {
+			status, reason = "expired", "expired"
 			return false, nil
 		}
 		return false, requestApprovalStoreError(ctx, err)
 	}
+	status, reason = "allowed", "complete"
 	return true, nil
 }
 func (s *RequestApprovalService) authorized(task int64, owner string) bool {
@@ -290,6 +317,14 @@ func (s *RequestApprovalService) get(ctx context.Context, task int64, owner, id 
 	return s.decorate(a), nil
 }
 func (s *RequestApprovalService) decide(ctx context.Context, task int64, owner, id, digest, decision string) (db.RequestApproval, error) {
+	var observed *db.RequestApproval
+	var diagnosticContext context.Context
+	defer func() {
+		if observed != nil {
+			_ = diagnosticlog.Emit(diagnosticContext, diagnosticlog.Event{Component: "server", Event: "request_approval_decided", Stage: "request_approval", Status: observed.State, TaskID: task, RunRef: observed.RunRef, IntentID: observed.IntentID, CallRef: observed.CallRef, AttemptRef: observed.AttemptID})
+		}
+	}()
+
 	ctx, cancel := context.WithTimeout(ctx, requestApprovalStoreTimeout)
 	defer cancel()
 	s.mu.Lock()
@@ -320,6 +355,8 @@ func (s *RequestApprovalService) decide(ctx context.Context, task int64, owner, 
 		return a, err
 	}
 	close(s.waiters[id].decision)
+	observed = &a
+	diagnosticContext = s.bindings[task].ctx
 	return s.decorate(a), nil
 }
 func (s *RequestApprovalService) observe(ctx context.Context, event e2proxy.Event) error {

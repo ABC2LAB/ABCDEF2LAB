@@ -384,6 +384,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	cleanup := func() {}
 	if isE2HTTPPlanning(ctx) {
 		tools = e2HTTPPlannerTools(base)
+		ctx, tools = withDiagnosticTools(ctx, tools, "planner")
 	} else {
 		tools, def, cleanup = AugmentTools(ctx, "planner", base)
 	}

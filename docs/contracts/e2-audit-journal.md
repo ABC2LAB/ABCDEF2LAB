@@ -1,5 +1,7 @@
 # E② 감사 파일 저장기
 
+> **현재 구현과의 구분 (2026-11-08):** 본문의 2026-11-03 CPD 제안과 publisher 미구현 표기는 당시 단계 기록이다. 현재 개발 구현은 [checkpoint publisher](audit-checkpoint-publisher.md)와 [동기 CPD 서버 연결](e2-durable-audit-server-wiring.md)을 함께 확인한다. 로컬 journal 형식·외부 정본 요구는 유지하며 실제 host 권한 분리·운영 수용 완료를 뜻하지 않는다.
+
 상태: `transmit/auditlog`의 로컬 파일 저장·무결성 검증 구현. [등록 HTTP 전송기](./e2-http-transmitter.md)의 `transmit.Recorder`를 구현한다. PR #30 위 후속 브랜치에서 추가한 별도 패키지이며 기존 전송기·DB·UI 코드는 변경하지 않는다.
 
 ## 범위와 사용

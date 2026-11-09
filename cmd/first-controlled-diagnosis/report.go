@@ -39,7 +39,7 @@ func runReport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	return runSavedReport(ctx, args, stdout, stderr, openSavedReport)
 }
 
-func runSavedReport(ctx context.Context, args []string, stdout, stderr io.Writer, open func(context.Context, launchConfig, int64) (*savedReportService, error)) int {
+func runSavedReport(ctx context.Context, args []string, stdout, stderr io.Writer, open func(context.Context, launchConfig, int64) (*savedReportService, error)) (code int) {
 	flags := flag.NewFlagSet("report", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	path := flags.String("config", "", "protected launch configuration")
@@ -57,6 +57,13 @@ func runSavedReport(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintln(stderr, "실행 설정을 사용할 수 없습니다")
 		return 1
 	}
+	ctx, diagnostics, err := beginLaunchDiagnostics(ctx, c, "report", *taskID, stderr)
+	if err != nil {
+		return 1
+	}
+	stderr = diagnostics.stderr
+	defer diagnostics.finish(&code)
+	diagnostics.next("report_service", "report_service_failed")
 	service, err := open(ctx, c, *taskID)
 	if err != nil {
 		fmt.Fprintln(stderr, "저장 보고서의 인증·작업·데이터베이스를 확인할 수 없습니다")
@@ -71,20 +78,33 @@ func runSavedReport(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 		return 1
 	}
-	httpServer := &http.Server{Handler: service.handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10}
+	httpServer := &http.Server{Handler: diagnosticReportHandler(ctx, service.handler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10}
 	serving := make(chan error, 1)
 	go func() { serving <- httpServer.Serve(listener) }()
+	diagnostics.next("output", "output_failed")
 	outputErr := json.NewEncoder(stdout).Encode(map[string]any{"service_ready": true, "mode": "saved_report", "task_id": *taskID, "execution": "DISABLED"})
 	var serveErr error
 	if outputErr == nil {
+		diagnostics.next("report_service", "report_service_failed")
 		select {
 		case <-ctx.Done():
 		case serveErr = <-serving:
 		}
 	}
+	if outputErr != nil {
+		diagnostics.endError(outputErr, "output_failed")
+	} else if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		diagnostics.endError(serveErr, "report_service_failed")
+	}
+	diagnostics.next("shutdown", "drain_failed")
 	cleanup, cancel := launchCleanupContext(ctx, c)
 	defer cancel()
 	closeErr := closeSavedReport(cleanup, httpServer, service.close)
+	if closeErr != nil {
+		diagnostics.endError(closeErr, "drain_failed")
+	} else {
+		diagnostics.end("succeeded", "")
+	}
 	if outputErr != nil || serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) || closeErr != nil {
 		fmt.Fprintln(stderr, "저장 보고서 서비스 또는 마감의 성공을 확인할 수 없습니다")
 		return 1
