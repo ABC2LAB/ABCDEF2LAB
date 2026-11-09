@@ -1,27 +1,20 @@
 import type { ReactNode } from "react";
 
 import { MOCK } from "../lib/mock";
-import type { DiagnosisRunRecord, RequestApprovalRunState } from "../lib/request-approvals";
+import {
+  type DiagnosisRunRecord,
+  type RequestApprovalRunState,
+  RUN_COUNT_NOTE,
+  RUN_COUNT_ROWS,
+} from "../lib/request-approvals";
 import { describeRun, type RunView, useRunStatus } from "../lib/run-status";
 import { Pill } from "./ui";
-
-type Counts = NonNullable<RequestApprovalRunState["execution"]>["counts"];
 
 const APPROVAL_MODE: Record<string, string> = {
   confirm_every_request: "매 요청 확인",
   preauthorized_scope: "사전 승인 범위",
 };
 const EXECUTION_STATE: Record<string, string> = { active: "전송 가능", blocked: "전송 차단" };
-const COUNT_ROWS: Array<[keyof Counts, string]> = [
-  ["calls", "도구 호출"],
-  ["attempts", "시도"],
-  ["allowed", "허용"],
-  ["denied", "거절"],
-  ["unsupported", "미지원"],
-  ["forward_attempted", "전달 시도"],
-  ["responses", "응답"],
-  ["unknown", "결과 불명"],
-];
 const grid = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "0 18px" };
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -57,12 +50,13 @@ function RunFields({ run }: { run: RequestApprovalRunState }) {
             {execution.reason && <Row label="사유">{execution.reason}</Row>}
           </div>
           <div style={grid}>
-            {COUNT_ROWS.map(([key, label]) => (
+            {RUN_COUNT_ROWS.map(({ key, label }) => (
               <Row key={key} label={label}>
                 {execution.counts[key]}
               </Row>
             ))}
           </div>
+          <p className="hint">{RUN_COUNT_NOTE}</p>
         </>
       ) : (
         <p className="hint">아직 전송 경계를 획득하지 않았어요.</p>
@@ -79,11 +73,15 @@ function SavedModel({ record }: { record: DiagnosisRunRecord }) {
     <div style={grid}>
       {model && (
         <>
+          <Row label="제공자 / 모델">
+            {model.provider_slug || "—"} / {model.model || "—"}
+          </Row>
           <Row label="모델 요청">{model.requests}</Row>
           <Row label="입력·출력 토큰">
             {model.input_tokens} / {model.output_tokens}
           </Row>
           <Row label="보고된 비용">${(model.cost_usd_micros / 1_000_000).toFixed(4)}</Row>
+          {model.errors > 0 && <Row label="모델 오류">{model.errors}건, 실제 비용 불확실</Row>}
           {model.failure_reason && <Row label="모델 실패 사유">{model.failure_reason}</Row>}
         </>
       )}

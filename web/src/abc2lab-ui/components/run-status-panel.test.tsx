@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { DiagnosisRunSummary } from "./DiagnosisRunSummary";
 import { RunStatusPanel } from "./RunStatusPanel";
 
 type Handler = (path: string) => Response | Promise<Response>;
@@ -37,6 +38,19 @@ const execution = {
   },
 };
 const liveBody = (r: object, approvals: object[] | null = []) => json(200, { approvals, run: r });
+const usage = (overrides: object = {}) => ({
+  requests: 7,
+  errors: 0,
+  input_tokens: 100,
+  output_tokens: 20,
+  cost_usd_micros: 1_500_000,
+  provider_slug: "deepinfra/fp8",
+  model: "qwen/qwen3.6-35b-a3b",
+  blocked: false,
+  failure_reason: "",
+  ...overrides,
+});
+const COUNT_NOTE = "요청 접수는 판정 전에 받은 수라 차단분도 포함해요. 실제로 대상에 보낸 건 대상 전송 시도예요.";
 
 let live: Handler;
 let saved: Handler;
@@ -72,20 +86,34 @@ describe("실행 상태 패널", () => {
     expect(field("승인 방식")).toBe("매 요청 확인");
     expect(field("전송 경계")).toBe("전송 가능");
     expect(field("감사 기록")).toBe("미완결");
-    expect(field("시도")).toBe("11");
+    expect(field("요청 접수")).toBe("11");
     expect(field("허용")).toBe("12");
-    expect(field("거절")).toBe("13");
+    expect(field("차단")).toBe("13");
     expect(field("미지원")).toBe("14");
-    expect(field("전달 시도")).toBe("15");
-    expect(field("응답")).toBe("16");
-    expect(field("결과 불명")).toBe("17");
-    expect(field("도구 호출")).toBe("18");
+    expect(field("대상 전송 시도")).toBe("15");
+    expect(field("응답 수신")).toBe("16");
+    expect(field("불명")).toBe("17");
+    expect(field("호출")).toBe("18");
+    expect(screen.getByText(COUNT_NOTE)).toBeVisible();
+  });
+
+  it("보고서의 종료 상태도 같은 집계 이름으로 보여 준다", async () => {
+    saved = () =>
+      json(200, { version: 1, task_id: 42, run: run({ phase: "closed", outcome: "completed", execution }) });
+    render(<DiagnosisRunSummary taskId="42" active />);
+    expect(await screen.findByText(COUNT_NOTE)).toBeVisible();
+    expect(field("요청 접수")).toBe("11");
+    expect(field("차단")).toBe("13");
+    expect(field("대상 전송 시도")).toBe("15");
+    expect(field("응답 수신")).toBe("16");
+    expect(field("불명")).toBe("17");
+    expect(field("호출")).toBe("18");
   });
 
   it("전송 경계를 얻기 전에는 숫자를 만들어 내지 않는다", async () => {
     render(panel());
     expect(await screen.findByText("아직 전송 경계를 획득하지 않았어요.")).toBeVisible();
-    expect(screen.queryByText("전달 시도")).toBeNull();
+    expect(screen.queryByText("대상 전송 시도")).toBeNull();
   });
 
   it("승인 대기 건수는 pending 상태만 센다", async () => {
@@ -152,14 +180,30 @@ describe("실행 상태 패널", () => {
         task_id: 42,
         saved_at: "2026-11-08T00:00:00Z",
         run: run({ phase: "closed", outcome: "cancelled", drain_complete: true, stop_requested: true }),
-        model: { requests: 7, input_tokens: 100, output_tokens: 20, cost_usd_micros: 1_500_000, failure_reason: "" },
+        model: usage(),
       });
     render(panel());
     expect(await screen.findByText("중지 후 마감")).toBeVisible();
     expect(screen.getByText(/저장된 종료 기록이에요/)).toBeVisible();
+    expect(field("제공자 / 모델")).toBe("deepinfra/fp8 / qwen/qwen3.6-35b-a3b");
     expect(field("모델 요청")).toBe("7");
     expect(field("입력·출력 토큰")).toBe("100 / 20");
     expect(field("보고된 비용")).toBe("$1.5000");
+    expect(screen.queryByText("모델 오류")).toBeNull();
+  });
+
+  it("모델 오류가 한 건이라도 있으면 보고된 비용이 전부가 아니라고 알린다", async () => {
+    live = () => json(403, { error: "report only" });
+    saved = () =>
+      json(200, {
+        version: 1,
+        task_id: 42,
+        run: run({ phase: "closed", drain_complete: true }),
+        model: usage({ errors: 1 }),
+      });
+    render(panel());
+    await screen.findByText("보고된 비용");
+    expect(field("모델 오류")).toBe("1건, 실제 비용 불확실");
   });
 
   it("계획 준비만 기록된 task 를 실행 성공으로 표시하지 않는다", async () => {
