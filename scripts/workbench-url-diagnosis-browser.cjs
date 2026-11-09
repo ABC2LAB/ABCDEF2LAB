@@ -256,6 +256,9 @@ function check(value, code) {
     // 진행 중에는 작업대가 2초마다 상태만 다시 읽는다(버튼으로도 조회 가능)
     await wait(hasText("실행 마감"), "real_execution_not_completed", 75000);
     await wait(hasText("결과 저장을 확인했습니다"), "saved_result_missing");
+    // 마감된 회차를 실행 중처럼 조회하지 않고, '서버 모드 미제공'으로 잘못 안내하지 않는다
+    await wait(hasText("실행이 마감됐습니다"), "closed_run_not_explained");
+    check(!(await evaluate(hasText("전송 통제: 이 서버 모드에서는 제공되지 않음"))), "closed_run_shown_as_unsupported");
     check((await evaluate(fact("결과 저장"))) === "확인됨", "result_ready_fact_missing");
     check((await evaluate(fact("마감 확인"))) === "확인됨", "drain_fact_missing");
     await click("보고서 보기");
@@ -263,10 +266,9 @@ function check(value, code) {
       "(()=>{const r=document.querySelector('section[data-view=\"report\"]:not([hidden]) [aria-label=\"진단 판정 집계\"]');return !!r&&r.innerText.includes('검토 필요')&&/[0-9]+건/.test(r.innerText)})()",
       "outcome_strip_missing",
     );
-    check(
-      await evaluate(
-        "(()=>{const root=document.querySelector('section[data-view=\"report\"] [aria-label=\"진단 판정 집계\"]');if(!root)return false;const cells=Array.from(root.querySelectorAll('div')).filter(d=>d.children.length===2);const v=l=>cells.find(c=>c.children[0].textContent.trim()===l)?.children[1].textContent.trim();return v('검토 필요')==='1건'&&v('확정')==='0건'})()",
-      ),
+    // 조치 자료를 받기 전에는 칸이 없다(설명 글에도 '검토 필요'가 있다) → 칸 값이 맞을 때까지 기다린다
+    await wait(
+      "(()=>{const root=document.querySelector('section[data-view=\"report\"] [aria-label=\"진단 판정 집계\"]');if(!root)return false;const cells=Array.from(root.querySelectorAll('div')).filter(d=>d.children.length===2);const v=l=>cells.find(c=>c.children[0].textContent.trim()===l)?.children[1].textContent.trim();return v('검토 필요')==='1건'&&v('확정')==='0건'})()",
       "candidate_or_confirmed_count_mismatch",
     );
     await wait(hasText("정상 종료"), "stored_run_record_missing");
