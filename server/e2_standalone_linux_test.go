@@ -1,0 +1,639 @@
+//go:build linux
+
+package server
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/Autumn-27/artex/e2config"
+	"github.com/Autumn-27/artex/e2export"
+	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/transmit"
+)
+
+// 합성 권위는 정확한 digest/task/intent만 허용한다. 실제 Planner 수용 시험이 아니다.
+type standaloneAuthorityFixture struct {
+	ctx    context.Context
+	digest [32]byte
+}
+
+func (a *standaloneAuthorityFixture) Context() context.Context { return a.ctx }
+func (a *standaloneAuthorityFixture) CheckRoot(ctx context.Context) error {
+	return errors.Join(ctx.Err(), a.ctx.Err())
+}
+func (a *standaloneAuthorityFixture) AuthorizePolicy(ctx context.Context, d [32]byte) error {
+	if d != a.digest {
+		return ErrE2Control
+	}
+	return a.CheckRoot(ctx)
+}
+
+type standaloneSupervisorFixture struct{}
+
+func (standaloneSupervisorFixture) AuthorizeExecution(_ context.Context, s transmit.Scope, intent int64) error {
+	if s.TaskRef != "11" || s.RunRef != "fixture-run" || s.PolicyRef != "fixture-policy" || s.CaseRef != "fixture-case" || s.ResetRef != strings.Repeat("a", 64) || (intent != 17 && intent != 18) {
+		return ErrE2Control
+	}
+	return nil
+}
+
+type standaloneReadinessFixture struct{ reject bool }
+
+func (r *standaloneReadinessFixture) CheckReady(context.Context) error {
+	if r.reject {
+		return ErrE2Control
+	}
+	return nil
+}
+
+func standaloneFixture(t *testing.T, target string, realHelper bool, adjust ...func(*E2HTTPFilePolicy)) (*E2StandaloneBackend, *standaloneReadinessFixture, E2HTTPFilePolicy) {
+	t.Helper()
+	host, _, p := e2HostPolicyFixture(t)
+	if target != "" {
+		p.Rules[0].Origin = target
+		p.Rules[0].PathPrefix = "/allowed"
+	}
+	if realHelper {
+		helper := filepath.Join(host.AuthorityRoot, "e2-bash-sandbox")
+		cmd := exec.CommandContext(t.Context(), filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-p=2", "-buildvcs=false", "-o", helper, "../cmd/e2-bash-sandbox")
+		cmd.Env = append(os.Environ(), "GOMAXPROCS=2", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("합성 helper 빌드 실패: %s", output)
+		}
+		if os.Chmod(helper, 0700) != nil {
+			t.Fatal("helper mode")
+		}
+		d, err := e2HTTPExecutableDigest(helper)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Helper = helper
+		p.HelperSHA256 = hex.EncodeToString(d[:])
+		p.Runtime.WorkerTimeoutMS = 5000
+		p.Runtime.DrainTimeoutMS = 5000
+		p.Limits.CallTimeoutMS = 5000
+	}
+	for _, change := range adjust {
+		change(&p)
+	}
+	raw, err := json.Marshal(p)
+	if err != nil || os.WriteFile(host.PolicyFile, raw, 0600) != nil {
+		t.Fatal("policy write")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	a := &standaloneAuthorityFixture{ctx: ctx, digest: sha256.Sum256(raw)}
+	f, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: host.PolicyFile, Authority: a, Supervisor: standaloneSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := e2config.Config{Format: e2config.Format, EvalRunID: "eval-fixture", ReservationRef: "reservation-fixture", ModelTag: "model-fixture", HeaderMode: string(p.HeaderMode), PolicyFile: filepath.Base(host.PolicyFile), AuditKeyFile: p.AuditKey.File, Listen: ":18432", Upstream: "http://eval-meter-upstream:18432", EvidenceDir: firstDiagnosisPrivateTemp(t), ControlDir: e2ControlPrivateTestDir(t)}
+	wire, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(host.AuthorityRoot, "runner.json")
+	if os.WriteFile(path, wire, 0600) != nil {
+		t.Fatal("config write")
+	}
+	c, err := e2config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := &standaloneReadinessFixture{}
+	b, err := NewE2StandaloneBackend(ctx, E2StandaloneOptions{Config: c, Authority: a, Supervisor: standaloneSupervisorFixture{}, Readiness: ready, ExecutionRef: "execution-fixture", ExpectedPolicyFingerprintSHA256: f.PolicyFingerprintSHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := b.Dispose(); err != nil {
+			t.Error(err)
+		}
+	})
+	return b, ready, p
+}
+func TestE2StandaloneBindIsOneTimeAndPrebindHasNoExecution(t *testing.T) {
+	b, ready, p := standaloneFixture(t, "", false)
+	q := E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17}
+	if _, err := b.Execute(t.Context(), q, "true"); err == nil {
+		t.Fatal("prebind execution")
+	}
+	if _, err := os.Stat(filepath.Join(p.StateDir, "events.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("prebind journal")
+	}
+	v, err := b.Ready(t.Context())
+	if err != nil || v.State != "service_ready" || v.ConfigSHA256 != b.options.Config.ConfigSHA256 || v.ConfigSHA256 == b.factory.PolicyConfigSHA256 {
+		t.Fatal("config digests conflated")
+	}
+	reset := strings.Repeat("a", 64)
+	for _, bad := range []string{"container-name", strings.Repeat("A", 64), strings.Repeat("a", 63)} {
+		if b.BindReset(t.Context(), bad) == nil {
+			t.Fatal("invalid reset")
+		}
+	}
+	if b.BindReset(t.Context(), reset) != nil || b.BindReset(t.Context(), reset) != nil || b.BindReset(t.Context(), strings.Repeat("b", 64)) == nil {
+		t.Fatal("binding not immutable")
+	}
+	ready.reject = true
+	if _, err := b.Execute(t.Context(), q, "true"); err == nil {
+		t.Fatal("unready execution")
+	}
+	ready.reject = false
+	if _, err := b.CloseAdmission(t.Context(), "close-one"); err != nil {
+		t.Fatal(err)
+	}
+	final, err := b.Finalize(t.Context(), "close-one")
+	if err != nil || final.State != "no_execution" {
+		t.Fatal("no-execution final")
+	}
+}
+func TestE2StandaloneFailedBindCannotSwitchContainer(t *testing.T) {
+	b, r, _ := standaloneFixture(t, "", false)
+	r.reject = true
+	if b.BindReset(t.Context(), strings.Repeat("a", 64)) == nil {
+		t.Fatal("unready bind")
+	}
+	r.reject = false
+	if b.BindReset(t.Context(), strings.Repeat("b", 64)) == nil || b.BindReset(t.Context(), strings.Repeat("a", 64)) == nil {
+		t.Fatal("failed bind resumed")
+	}
+}
+func TestE2StandaloneRejectsChangedPreparedConfig(t *testing.T) {
+	b, _, _ := standaloneFixture(t, "", false)
+	b.options.Config.HeaderMode = "evaluation_caller_passthrough"
+	v, _ := b.Ready(t.Context())
+	if v.State == "service_ready" || b.BindReset(t.Context(), strings.Repeat("a", 64)) == nil {
+		t.Fatal("mutable config accepted")
+	}
+}
+func TestE2StandaloneActualRunnerAllowDenyAndExport(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("비특권 Linux 격리 시험")
+	}
+	probe := exec.CommandContext(t.Context(), "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount", "--net", "--ipc", "--uts", "true")
+	if out, err := probe.CombinedOutput(); err != nil {
+		if bytes.Contains(out, []byte("Operation not permitted")) {
+			t.Skip("사용자 namespace 환경 차단")
+		}
+		t.Fatal("namespace probe")
+	}
+	var received atomic.Int64
+	attemptHeaders := make(chan string, 4)
+	allowedAttempt := ""
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		attemptHeaders <- r.Header.Get(e2proxy.AttemptHeader)
+		_, _ = w.Write([]byte("fixture"))
+	}))
+	defer target.Close()
+	b, _, p := standaloneFixture(t, target.URL, true)
+	rawBefore, err := os.ReadFile(b.options.Config.PolicyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reset := strings.Repeat("a", 64)
+	if b.BindReset(t.Context(), reset) != nil {
+		t.Fatal("bind")
+	}
+	q := E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17}
+	for _, path := range []string{"/allowed", "/denied"} {
+		r, err := b.Execute(t.Context(), q, "curl --silent --max-time 2 '"+target.URL+path+"' >/dev/null")
+		if err != nil || !r.Trusted.Final {
+			t.Fatalf("actual runner final=%t err=%v", r.Trusted.Final, err)
+		}
+		if path == "/allowed" {
+			if len(r.Trusted.Call.Observations) != 1 {
+				t.Fatal("allowed observation missing")
+			}
+			allowedAttempt = r.Trusted.Call.Observations[0].AttemptRef
+			if allowedAttempt == "" || allowedAttempt != <-attemptHeaders {
+				t.Fatal("attempt header mismatch")
+			}
+		} else if r.Trusted.Call.Counts.ForwardAttempted != 0 || r.Trusted.Call.Counts.Denied != 1 {
+			t.Fatal("denied forwarding")
+		}
+	}
+	if received.Load() != 1 {
+		t.Fatalf("received=%d", received.Load())
+	}
+	direct, err := b.Execute(t.Context(), q, "curl --silent --noproxy '*' --max-time 2 '"+target.URL+"/allowed' >/dev/null")
+	if !errors.Is(err, e2runner.ErrUnavailable) || !direct.Trusted.Final || direct.Trusted.Classification != "tool_failure" || direct.Trusted.Call.Counts.ForwardAttempted != 0 || direct.Trusted.Call.Counts.Denied != 0 || received.Load() != 1 {
+		t.Fatalf("direct isolation: err=%v final=%t classification=%s counts=%+v received=%d", err, direct.Trusted.Final, direct.Trusted.Classification, direct.Trusted.Call.Counts, received.Load())
+	}
+	q.IntentID = 999
+	if _, err := b.Execute(t.Context(), q, "true"); err == nil {
+		t.Fatal("unknown intent accepted")
+	}
+	if _, err := b.CloseAdmission(t.Context(), "close-one"); err != nil {
+		t.Fatal(err)
+	}
+	if b.acquired.Execution.Snapshot().State != "blocked" {
+		t.Fatal("ACK before fence")
+	}
+	final, err := b.Finalize(t.Context(), "close-one")
+	if err != nil || final.State != "complete" {
+		t.Fatalf("final=%+v err=%v", final, err)
+	}
+	again, err := b.Finalize(t.Context(), "close-one")
+	if err != nil || !reflectFinal(final, again) {
+		t.Fatal("non-idempotent finalize")
+	}
+	rawAfter, _ := os.ReadFile(b.options.Config.PolicyPath)
+	if !bytes.Equal(rawBefore, rawAfter) {
+		t.Fatal("policy rewritten")
+	}
+	journal, err := os.ReadFile(filepath.Join(p.StateDir, "events.jsonl"))
+	if err != nil || !bytes.Contains(journal, []byte(reset)) || bytes.Contains(journal, []byte("fixture-reset")) {
+		t.Fatal("journal reset binding")
+	}
+	manifest, err := os.ReadFile(filepath.Join(b.options.Config.EvidenceDir, "manifest.json"))
+	if err != nil || !bytes.Contains(manifest, []byte(reset)) {
+		t.Fatal("manifest reset binding")
+	}
+	matched := false
+	for _, line := range bytes.Split(journal, []byte{'\n'}) {
+		var row struct {
+			Record *struct{ Event e2proxy.Event }
+		}
+		if json.Unmarshal(line, &row) == nil && row.Record != nil {
+			e := row.Record.Event
+			if e.AttemptID == allowedAttempt && e.ForwardAttempted {
+				matched = true
+			}
+		}
+	}
+	if !matched {
+		t.Fatal("trusted attempt missing from journal")
+	}
+	verify := exec.CommandContext(t.Context(), filepath.Join(runtime.GOROOT(), "bin", "go"), "run", "-p=2", "../cmd/e2-audit-verify", "--journal-format", "e2-http-v1", "--journal", filepath.Join(b.options.Config.EvidenceDir, e2export.JournalFile), "--checkpoint", filepath.Join(b.options.Config.EvidenceDir, e2export.CheckpointFile), "--key-file", b.options.Config.AuditKeyPath)
+	verify.Env = append(os.Environ(), "GOMAXPROCS=2", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
+	if out, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("actual audit verifier failed: %s", out)
+	}
+	b.publisher.Dispose()
+}
+func reflectFinal(a, b E2ControlFinal) bool {
+	return a.State == b.State && a.ManifestSHA256 == b.ManifestSHA256 && a.ExecutionRef == b.ExecutionRef
+}
+
+func TestE2StandaloneSubprocessOwnsLifecycle(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestE2StandaloneActualRunnerAllowDenyAndExport$", "-test.v")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("독립 프로세스 lifecycle 실패: %s", output)
+	}
+	if bytes.Contains(output, []byte("--- SKIP:")) {
+		t.Skip("하위 프로세스 Linux 격리 불가")
+	}
+	if !bytes.Contains(output, []byte("--- PASS: TestE2StandaloneActualRunnerAllowDenyAndExport")) {
+		t.Fatal("하위 프로세스 검증 결과 없음")
+	}
+}
+
+func TestE2StandaloneRejectsPreparedAuditKeyMismatch(t *testing.T) {
+	for _, mode := range []string{"path", "digest"} {
+		t.Run(mode, func(t *testing.T) {
+			b, _, p := standaloneFixture(t, "", false)
+			if mode == "path" {
+				p.AuditKey.File = p.CAKey.File
+			} else {
+				p.AuditKey.SHA256 = strings.Repeat("0", 64)
+			}
+			raw, err := json.Marshal(p)
+			if err != nil || os.WriteFile(b.options.Config.PolicyPath, raw, 0600) != nil {
+				t.Fatal("policy write")
+			}
+			c, err := e2config.Load(filepath.Join(filepath.Dir(b.options.Config.PolicyPath), "runner.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			o := b.options
+			o.Config = c
+			o.Authority = &standaloneAuthorityFixture{ctx: b.ctx, digest: sha256.Sum256(raw)}
+			if backend, err := NewE2StandaloneBackend(t.Context(), o); err == nil || backend != nil {
+				t.Fatal("prepared audit key mismatch accepted")
+			}
+		})
+	}
+}
+
+// 실제 별도 OS 프로세스와 UDS wire를 검증한다. 역할 UID 숫자·task 권위는 합성 fixture이며
+// 실제 다른 UID/mount 또는 인증된 원격 Planner 수용을 주장하지 않는다.
+func TestE2StandaloneSubprocessControlWire(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("비특권 Linux 제어 fixture")
+	}
+	if os.Getenv("ABC2LAB_E2_STANDALONE_TEST_CHILD") == "1" {
+		var received atomic.Int64
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1); _, _ = w.Write([]byte("fixture")) }))
+		defer target.Close()
+		b, _, _ := standaloneFixture(t, target.URL, true)
+		uid := uint32(os.Geteuid())
+		service, err := StartE2ControlService(t.Context(), E2ControlOptions{ControlDirectory: b.options.Config.ControlDir, EvalRunID: b.options.Config.EvalRunID, ReservationRef: b.options.Config.ReservationRef, RunnerUID: uid, EngineUID: uid + 1, ToolsUID: uid + 2, EvaluationDeployment: true, IOTimeout: time.Second, CloseTimeout: 5 * time.Second, MaxConnections: 2, Backend: b})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if service.Close(ctx) != nil {
+				t.Error("service close")
+			}
+		}()
+		fmt.Println("E2_TEST_SOCKET=" + filepath.Join(b.options.Config.ControlDir, E2ControlSocket))
+		input := bufio.NewScanner(os.Stdin)
+		if !input.Scan() || input.Text() != "run" {
+			t.Fatal("run handshake")
+		}
+		q := E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17}
+		for _, path := range []string{"/allowed", "/denied"} {
+			r, err := b.Execute(t.Context(), q, "curl --silent --max-time 2 '"+target.URL+path+"' >/dev/null")
+			if err != nil || !r.Trusted.Final {
+				t.Fatal("child actual runner")
+			}
+		}
+		if received.Load() != 1 {
+			t.Fatal("child upstream count")
+		}
+		fmt.Println("E2_TEST_CALLS=2_RECEIVED=1")
+		if !input.Scan() || input.Text() != "done" {
+			t.Fatal("final handshake")
+		}
+		head, err := b.Head(t.Context())
+		if err != nil || head.State != "complete" {
+			t.Fatal("child final incomplete")
+		}
+		return
+	}
+	probe := exec.CommandContext(t.Context(), "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount", "--net", "--ipc", "--uts", "true")
+	if out, err := probe.CombinedOutput(); err != nil {
+		if bytes.Contains(out, []byte("Operation not permitted")) {
+			t.Skip("사용자 namespace 환경 차단")
+		}
+		t.Fatal("namespace probe")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestE2StandaloneSubprocessControlWire$", "-test.v")
+	cmd.Env = append(os.Environ(), "ABC2LAB_E2_STANDALONE_TEST_CHILD=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if cmd.Start() != nil {
+		t.Fatal("child start")
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			cancel()
+			_ = cmd.Wait()
+		}
+	}()
+	scan := bufio.NewScanner(stdout)
+	readUntil := func(prefix string) string {
+		t.Helper()
+		for scan.Scan() {
+			line := scan.Text()
+			if strings.HasPrefix(line, prefix) {
+				return strings.TrimPrefix(line, prefix)
+			}
+		}
+		t.Fatalf("child handshake missing: %s", prefix)
+		return ""
+	}
+	socket := readUntil("E2_TEST_SOCKET=")
+	request := func(kind string) map[string]any {
+		t.Helper()
+		conn, err := net.DialTimeout("unix", socket, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if conn.SetDeadline(time.Now().Add(2*time.Second)) != nil {
+			t.Fatal("deadline")
+		}
+		q := map[string]any{"format": E2ControlFormat, "type": kind, "eval_run_id": "eval-fixture", "reservation_ref": "reservation-fixture"}
+		if kind == "bind" {
+			q["reset_generation"] = strings.Repeat("a", 64)
+		}
+		if kind == "close" || kind == "close_status" {
+			q["close_request_ref"] = "close-wire"
+		}
+		if json.NewEncoder(conn).Encode(q) != nil {
+			t.Fatal("request encode")
+		}
+		var reply map[string]any
+		if json.NewDecoder(conn).Decode(&reply) != nil {
+			t.Fatal("response decode")
+		}
+		return reply
+	}
+	if request("ready")["state"] != "service_ready" || request("head")["state"] != "no_execution" {
+		t.Fatal("wire prebind")
+	}
+	if request("bind")["reset_generation"] != strings.Repeat("a", 64) {
+		t.Fatal("wire bind")
+	}
+	if _, err := fmt.Fprintln(stdin, "run"); err != nil {
+		t.Fatal(err)
+	}
+	readUntil("E2_TEST_CALLS=2_RECEIVED=1")
+	if request("head")["state"] != "running" {
+		t.Fatal("wire execution")
+	}
+	if request("close")["admission_closed"] != true {
+		t.Fatal("wire close fence")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		v := request("close_status")
+		if v["state"] == "complete" {
+			break
+		}
+		if v["state"] != "closing" || time.Now().After(deadline) {
+			t.Fatal("wire final incomplete")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := fmt.Fprintln(stdin, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if stdin.Close() != nil {
+		t.Fatal("stdin close")
+	}
+	for scan.Scan() {
+	}
+	if scan.Err() != nil {
+		t.Fatal(scan.Err())
+	}
+	err = cmd.Wait()
+	waited = true
+	if err != nil {
+		t.Fatalf("child exit failed: %s", stderr.String())
+	}
+}
+
+func TestE2StandaloneZeroValueFailsClosed(t *testing.T) {
+	for _, b := range []*E2StandaloneBackend{nil, {}} {
+		if v, err := b.Ready(t.Context()); err == nil && v.State == "service_ready" {
+			t.Fatal("zero ready")
+		}
+		if _, err := b.Execute(t.Context(), E2HTTPRequest{}, "true"); err == nil {
+			t.Fatal("zero execute")
+		}
+		if b.BindReset(t.Context(), strings.Repeat("a", 64)) == nil {
+			t.Fatal("zero bind")
+		}
+		if _, err := b.Head(t.Context()); err == nil {
+			t.Fatal("zero head")
+		}
+		if _, err := b.CloseAdmission(t.Context(), "close-one"); err == nil {
+			t.Fatal("zero close")
+		}
+		if _, err := b.Finalize(t.Context(), "close-one"); err == nil {
+			t.Fatal("zero final")
+		}
+		if err := b.Dispose(); b != nil && err == nil {
+			t.Fatal("zero dispose")
+		}
+	}
+}
+
+func TestE2StandaloneFailedPublicationStillReleasesJournal(t *testing.T) {
+	b, _, _ := standaloneFixture(t, "", false)
+	if b.BindReset(t.Context(), strings.Repeat("a", 64)) != nil {
+		t.Fatal("bind")
+	}
+	lease, err := b.factory.Acquire(b.ctx, E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.lease = &lease
+	forged := e2runner.Result{Trusted: e2runner.TrustedResult{Call: e2proxy.CallResult{CallRef: "not-an-actual-call"}}}
+	if b.publisher.ObserveResult(t.Context(), forged) == nil {
+		t.Fatal("observer accepted forged result")
+	}
+	released := false
+	original := b.lease.Release
+	b.lease.Release = func(ctx context.Context) error {
+		released = true
+		if ctx.Err() != nil {
+			t.Fatal("cleanup inherited canceled context")
+		}
+		return original(ctx)
+	}
+	if _, err := b.CloseAdmission(t.Context(), "close-one"); err != nil {
+		t.Fatal(err)
+	}
+	final, err := b.Finalize(t.Context(), "close-one")
+	if err != nil || final.State != "incomplete" || !released {
+		t.Fatal("failed publication cleanup")
+	}
+	if !errors.Is(b.acquired.Journal.Record(t.Context(), e2proxy.Event{}), e2proxy.ErrJournalClosed) {
+		t.Fatal("journal leaked")
+	}
+}
+
+func TestE2StandaloneFailedStopHasAbortCleanup(t *testing.T) {
+	b, _, _ := standaloneFixture(t, "", false)
+	if b.BindReset(t.Context(), strings.Repeat("a", 64)) != nil {
+		t.Fatal("bind")
+	}
+	lease, err := b.factory.Acquire(b.ctx, E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.lease = &lease
+	if b.acquired.Journal.Close() != nil {
+		t.Fatal("force closed journal")
+	}
+	if _, err := b.CloseAdmission(t.Context(), "close-one"); err == nil {
+		t.Fatal("failed stop ACK")
+	}
+	if _, err := b.Finalize(t.Context(), "close-one"); err == nil {
+		t.Fatal("failed stop publication")
+	}
+	released := false
+	original := b.lease.Release
+	b.lease.Release = func(ctx context.Context) error { released = true; return original(ctx) }
+	err = b.Dispose()
+	if !released || !b.disposed || err == nil {
+		t.Fatal("abort did not clean and retain failure")
+	}
+	if _, err := os.Stat(filepath.Join(b.options.Config.EvidenceDir, e2export.ManifestFile)); !os.IsNotExist(err) {
+		t.Fatal("abort published manifest")
+	}
+}
+
+func TestE2StandaloneRuntimeToolCallLimitIsAtomic(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("비특권 Linux 격리 시험")
+	}
+	probe := exec.CommandContext(t.Context(), "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount", "--net", "--ipc", "--uts", "true")
+	if out, err := probe.CombinedOutput(); err != nil {
+		if bytes.Contains(out, []byte("Operation not permitted")) {
+			t.Skip("사용자 namespace 환경 차단")
+		}
+		t.Fatal("namespace probe")
+	}
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1); _, _ = w.Write([]byte("fixture")) }))
+	defer target.Close()
+	b, _, _ := standaloneFixture(t, target.URL, true, func(p *E2HTTPFilePolicy) { p.Runtime.MaxToolCalls = 1 })
+	if b.BindReset(t.Context(), strings.Repeat("a", 64)) != nil {
+		t.Fatal("bind")
+	}
+	q := E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17}
+	done := make(chan error, 2)
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			_, err := b.Execute(t.Context(), q, "curl --silent --max-time 2 '"+target.URL+"/allowed' >/dev/null")
+			done <- err
+		}()
+	}
+	close(start)
+	accepted := 0
+	for i := 0; i < 2; i++ {
+		if <-done == nil {
+			accepted++
+		}
+	}
+	if accepted != 1 || received.Load() != 1 || len(b.acquired.Execution.Calls()) != 1 {
+		t.Fatalf("runtime tool call limit failed: accepted=%d received=%d", accepted, received.Load())
+	}
+	if _, err := b.CloseAdmission(t.Context(), "close-one"); err != nil {
+		t.Fatal(err)
+	}
+	final, err := b.Finalize(t.Context(), "close-one")
+	if err != nil || final.State != "complete" {
+		t.Fatal("limited call final")
+	}
+}

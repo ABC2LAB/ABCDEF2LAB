@@ -179,6 +179,11 @@ func e2HTTPMilliseconds(value int64, max time.Duration) (time.Duration, bool) {
 
 // LoadE2HTTPRuntimeOptions는 승인된 기존 파일만 소비한다. 키·epoch·회차 승인을 발급하지 않는다.
 func LoadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions) (E2HTTPRuntimeOptions, error) {
+	return loadE2HTTPRuntimeOptions(ctx, input, nil, nil)
+}
+
+// 평가 backend만 동결 원문과 단일 reset 결속을 제공한다. 일반 M01은 파일의 고정 reset을 유지한다.
+func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, frozen []byte, resetBinding func() (string, error)) (E2HTTPRuntimeOptions, error) {
 	var empty E2HTTPRuntimeOptions
 	if ctx == nil || ctx.Err() != nil || e2HTTPNil(input.Authority) || e2HTTPNil(input.Supervisor) {
 		return empty, ErrE2HTTPHost
@@ -187,11 +192,18 @@ func LoadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions) (E2H
 	if authorityCtx == nil || authorityCtx.Err() != nil || input.Authority.CheckRoot(ctx) != nil {
 		return empty, ErrE2HTTPHost
 	}
-	raw, err := privateinput.ReadFile(input.PolicyFile, 256<<10)
+	raw := append([]byte(nil), frozen...)
+	var err error
+	if frozen == nil {
+		raw, err = privateinput.ReadFile(input.PolicyFile, 256<<10)
+	}
 	if err != nil {
 		return empty, ErrE2HTTPHost
 	}
 	defer clear(raw)
+	if len(raw) == 0 || len(raw) > 256<<10 {
+		return empty, ErrE2HTTPHost
+	}
 	digest := sha256.Sum256(raw)
 	if input.Authority.AuthorizePolicy(ctx, digest) != nil {
 		return empty, ErrE2HTTPHost
@@ -321,11 +333,21 @@ func LoadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions) (E2H
 		}
 		return nil
 	}
+	reset := func() (string, error) {
+		if resetBinding != nil {
+			return resetBinding()
+		}
+		return policy.ResetRef, nil
+	}
 	authorize := func(checkCtx context.Context, request E2HTTPRequest) error {
+		resetRef, resetErr := reset()
+		if resetErr != nil {
+			return ErrE2HTTPHost
+		}
 		if current(checkCtx) != nil || request.TaskIDNumber <= 0 || request.IntentID <= 0 || request.ExplorationID <= 0 || strconv.FormatInt(request.TaskIDNumber, 10) != request.TaskID {
 			return ErrE2HTTPHost
 		}
-		scope := transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: policy.ResetRef, PolicyRef: policy.PolicyRef}
+		scope := transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}
 		if input.Supervisor.AuthorizeExecution(checkCtx, scope, request.IntentID) != nil {
 			return ErrE2HTTPHost
 		}
@@ -338,6 +360,10 @@ func LoadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions) (E2H
 		acquireMu.Lock()
 		defer acquireMu.Unlock()
 		if claimed || authorize(taskctx, request) != nil {
+			return E2HTTPRunOptions{}, ErrE2HTTPHost
+		}
+		resetRef, resetErr := reset()
+		if resetErr != nil {
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
 		claimed = true
@@ -354,7 +380,7 @@ func LoadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions) (E2H
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
 		grantKey := budget.Key{TaskRef: request.TaskID, BudgetRef: policy.BudgetRef}
-		budgetBinding := budget.Binding{PolicyRef: policy.PolicyRef, ResetRef: policy.ResetRef}
+		budgetBinding := budget.Binding{PolicyRef: policy.PolicyRef, ResetRef: resetRef}
 		if ledger.Register(budget.Grant{Key: grantKey, Binding: budgetBinding, MaxRequests: policy.MaxRequests, ValidFrom: policy.ValidFrom, ValidUntil: policy.ValidUntil}, time.Now()) != nil {
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
@@ -380,7 +406,7 @@ func LoadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions) (E2H
 			}
 			recorder = e2HTTPJournalObserver{next: recorder, observe: input.RequestApprovals.observe}
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: policy.ResetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits})
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits})
 		if createErr != nil {
 			return failed(nil, nil)
 		}
