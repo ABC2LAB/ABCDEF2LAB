@@ -68,6 +68,7 @@ func e2HTTPCloneEvaluation(value *e2proxy.EvaluationCallerContext) *e2proxy.Eval
 }
 
 type E2HTTPRuntimeOptions struct {
+	PromptProjection        bool
 	RequestApprovals        *RequestApprovalService
 	PolicyFingerprintSHA256 string
 	PolicyConfigSHA256      string
@@ -124,6 +125,10 @@ type e2HTTPRuntimeTask struct {
 	resultsFailed bool
 	releaseCalled bool
 	releaseErr    error
+
+	promptFailed     bool // mu로 보호한다. 나머지 등록 상태는 gate 안에서만 접근한다.
+	promptRegistered bool
+	promptOwned      bool
 }
 
 func NewE2HTTPRuntime(parent context.Context, options E2HTTPRuntimeOptions) (*E2HTTPRuntime, error) {
@@ -338,7 +343,8 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.runs[actual.ID]++
 	t.mu.Unlock()
 	workCtx := e2HTTPTaskContext(ctx, t.ctx)
-	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
+	observePrompt := r.promptObserver(ctx, t, actual.ID)
+	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
 		return r.observeResult(observeCtx, t, lease, actual.ID, result)
 	}})
 	var once sync.Once
@@ -494,6 +500,7 @@ func (r *E2HTTPRuntime) closeTaskResources(ctx context.Context, t *e2HTTPRuntime
 	}
 	result := t.releaseErr
 	t.mu.Unlock()
+	r.sealPromptProjection(ctx, t, result == nil)
 	return result
 }
 

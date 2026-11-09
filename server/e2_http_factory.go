@@ -446,6 +446,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		clear(auditKey)
 		return empty, ErrE2HTTPHost
 	}
+	options.PromptProjection = true
 	return options, nil
 }
 
