@@ -122,3 +122,5 @@ docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptan
 ```
 
 모델 통계는 loopback 49082 `/stats`, 대상 A/B 통계는 각각 49081/49084 `/stats`, 소유 DNS 제어는 49083 `/control`이다. DNS 제어 토큰은 시험 전용 보호 파일에서만 읽는다. 대상 readiness는 TCP만 확인한다. `scripts/product-diagnosis-browser.cjs`는 별도 Chrome CDP와 보호된 합성 설치 입력을 사용해 실제 root Workbench를 조작한다. 시작 응답 유실 시험은 실제 서버가 수락한 응답만 버린다. 모델·진단 응답을 브라우저에서 위조하지 않는다. 실모델 수용은 실제 USD 승인과 운영 키가 별도로 준비된 뒤 수행한다.
+
+두 URL의 실제 승인·격리·키 재사용·보고서 및 미실행 Qwen 구분은 [제품 v2 수용 기록](../../docs/product-targets-v2-acceptance.md)을 따른다.

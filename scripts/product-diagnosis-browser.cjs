@@ -49,7 +49,7 @@ function check(value, code) {
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const id = ++nextID;
-      pending.set(id, { resolve, reject });
+      pending.set(id, { resolve, reject, method });
       socket.send(JSON.stringify({ id, method, params }));
     });
   socket.onmessage = async (event) => {
@@ -58,7 +58,7 @@ function check(value, code) {
       const waiter = pending.get(message.id);
       if (!waiter) return;
       pending.delete(message.id);
-      if (message.error) waiter.reject(new Error("cdp_operation_failed"));
+      if (message.error) waiter.reject(new Error(`cdp_operation_failed:${waiter.method}:${message.error.code}`));
       else waiter.resolve(message.result);
       return;
     }
@@ -193,7 +193,10 @@ function check(value, code) {
   await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: outputDir });
 
   async function openNew() {
-    await send("Page.navigate", { url: `${WORKBENCH}#new` });
+    await wait("document.readyState==='complete'", "initial_document_not_ready");
+    const previousDocument = await evaluate("performance.timeOrigin");
+    await send("Page.reload");
+    await wait(`performance.timeOrigin!==${JSON.stringify(previousDocument)}&&document.readyState==='complete'`, "new_document_not_ready");
     await click("새 점검");
     await wait("document.querySelector('section[data-view=new] input[autocomplete=current-password]')!==null||document.querySelector('#luProfile')?.options.length>=1", "login_or_catalog_missing");
     const loginPass = 'section[data-view="new"] input[autocomplete="current-password"]';
@@ -209,7 +212,35 @@ function check(value, code) {
     await fill("#luUrl", targetURL);
     await select("#luProfile", FIXTURE_PROFILE);
   }
-  if (phase === "target-approve") {
+  if (phase === "external-key-save" || phase === "external-key-reuse" || phase === "external-scope") {
+    check(DYNAMIC_TARGETS, "dynamic_install_required");
+    check(config.openrouter_manifest?.provider_slug === "fixture/endpoint" && config.openrouter_manifest?.approval_id === "product-key-registration-fixture", "synthetic_configuration_only_fixture_required");
+    await openNew();
+    await click("외부 LLM 사용하기");
+    await wait("document.querySelector('#externalModelName')?.value==='qwen/qwen3.5-35b-a3b'", "fixed_qwen_policy_missing");
+    check(await evaluate("document.querySelector('#externalModelName').readOnly"), "unapproved_model_editable");
+    if (phase === "external-key-save") {
+      await fill("#externalModelKey", "owned-synthetic-key-no-real-account");
+      await click("모델 연결 설정 저장");
+      await wait(hasText("서버에 키를 등록했습니다"), "key_registration_failed");
+      check(requests.filter(r=>r.method==="POST"&&r.path==="/api/product/model-credentials").length===1, "key_registration_replayed");
+    } else {
+      await wait(hasText("등록된 API 키를 재사용합니다"), "saved_key_not_reusable");
+      check(mutationCount()===0, "reuse_wrote_or_executed");
+    }
+    check(await evaluate("document.querySelector('#externalModelKey').value===''"), "key_retained_in_input");
+    check(await evaluate("![JSON.stringify(localStorage),JSON.stringify(sessionStorage),document.body.innerText].some(v=>v.includes('owned-synthetic-key-no-real-account'))"), "key_leaked_to_browser_storage_or_ui");
+    if (phase === "external-scope") {
+      await click("승인 범위 확인");
+      await wait(hasText("실행 전 검증 완료"), "external_scope_not_ready");
+      await wait(hasText("fixture/endpoint"), "external_provider_policy_missing");
+      await wait(hasText("qwen/qwen3.5-35b-a3b"), "external_model_policy_missing");
+      check((await evaluate(fact("비용 상한"))).includes("6"), "external_cost_policy_missing");
+      check(await evaluate("Array.from(document.querySelectorAll('section[data-view=scope] button')).find(b=>b.textContent.trim()==='진단 시작')?.disabled===true"), "external_start_without_consent");
+    }
+    check(startCount()===0,"credential_operation_started_model");
+    check(noLegacyExecution(),"credential_used_generic_engine");
+  } else if (phase === "target-approve") {
     check(DYNAMIC_TARGETS, "dynamic_install_required");
     await openNew();
     await wait("document.querySelector('#targetReadonlyBasis')!==null", "operator_registration_missing");

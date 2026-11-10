@@ -301,8 +301,8 @@ export function UrlNewScanLive() {
               <div className={s.note} role="note">
                 <Icon name="info" />
                 <span>
-                  목표 · 제외 경로 · 커버리지 · LLM 프로필 순서는 URL 진단이 받지 않습니다. 범위는 설치된 승인 범위가
-                  정합니다.
+                  목표 · 제외 경로 · 커버리지 · LLM 프로필 순서는 URL 진단이 받지 않습니다. 범위는 서버가 확인한 대상
+                  승인 기록으로 정합니다.
                 </span>
               </div>
             </div>
@@ -498,8 +498,8 @@ export function UrlScopeLive() {
         <div className={s.vm}>
           <UrlPhaseBar job={job} />
           <p className={s.lead}>
-            서버가 설치된 승인 범위와 대조해 돌려준 값입니다. 이 범위 밖 주소 · 메서드 · 다른 subdomain · 포트 ·
-            redirect 목적지는 자동으로 허가하지 않습니다.
+            서버가 현재 진단 URL의 승인 기록과 대조해 돌려준 값입니다. 이 범위 밖 주소 · 메서드 · 다른 subdomain · 포트
+            · redirect 목적지는 자동으로 허가하지 않습니다.
           </p>
           <section className={s.sec} aria-labelledby="luScopeH">
             <div className={s.sh}>
