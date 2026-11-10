@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -258,6 +259,60 @@ func TestE2RemoteClientMapsRunErrors(t *testing.T) {
 	}
 }
 
+func TestE2RemoteClientRejectsBadResponses(t *testing.T) {
+	valid := func(extra string) string { return `{"format":"` + E2RemoteFormat + `"` + extra + `}` }
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+	}{
+		"형식은 맞는 500": {http.StatusInternalServerError, valid(`,"describe":{}`)},
+		"다른 형식":      {http.StatusOK, `{"format":"other","describe":{}}`},
+		"오류 코드":      {http.StatusOK, valid(`,"code":"refused","describe":{}`)},
+		"본문 초과":      {http.StatusOK, valid(`,"describe":{}`) + strings.Repeat(" ", e2RemoteMaxBodyBytes)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			client, err := newE2RemoteClient(server.URL, writeE2RemoteToken(t, e2RemoteTestToken), 5*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.describe(context.Background()); err == nil {
+				t.Fatal("잘못된 응답을 받음")
+			}
+		})
+	}
+}
+
+func TestE2RemoteClientReportsUnknownBudget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		e2RemoteWrite(w, http.StatusOK, e2RemoteResponse{View: &e2RemoteView{BudgetRemaining: 9, BudgetKnown: false}})
+	}))
+	defer server.Close()
+	client, err := newE2RemoteClient(server.URL, writeE2RemoteToken(t, e2RemoteTestToken), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &e2RemoteRun{client: client, ctx: context.Background(), q: e2RemoteTestRequest}
+	if _, err := run.BudgetRemaining(); err == nil {
+		t.Fatal("모르는 예산을 값으로 돌려줌")
+	}
+}
+
+// 환경 프록시를 타면 실행 요청이 기록 프록시로 샌다. loopback은 프록시를 안 타서 동작으로는 못 잰다.
+func TestE2RemoteClientIgnoresEnvironmentProxy(t *testing.T) {
+	client, err := newE2RemoteClient("http://127.0.0.1:1", writeE2RemoteToken(t, e2RemoteTestToken), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.http.Transport.(*http.Transport).Proxy != nil {
+		t.Fatal("환경 프록시 사용")
+	}
+}
+
 func TestE2RemoteClientDoesNotFollowRedirects(t *testing.T) {
 	var followed atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -292,7 +347,12 @@ func TestReadE2RemoteToken(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "ok"), link); err != nil {
 		t.Fatal(err)
 	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0600); err != nil {
+		t.Fatal(err)
+	}
 	for name, path := range map[string]string{
+		"파이프":    fifo,
 		"짧음":     write("short", strings.Repeat("a", e2RemoteMinTokenBytes-1), 0600),
 		"다른 사용자": write("wide", e2RemoteTestToken, 0640),
 		"너무 김":   write("long", strings.Repeat("a", e2RemoteMaxTokenBytes+1), 0600),

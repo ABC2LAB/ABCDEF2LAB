@@ -255,9 +255,6 @@ func (b *E2StandaloneBackend) remoteAuthorize(ctx context.Context, q E2HTTPReque
 	if b.check(ctx) != nil {
 		return ErrE2Control
 	}
-	if _, err := b.resetBinding(); err != nil {
-		return err
-	}
 	return b.factory.AuthorizeIntent(ctx, q)
 }
 
