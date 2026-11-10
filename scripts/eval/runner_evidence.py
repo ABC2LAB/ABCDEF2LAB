@@ -15,6 +15,8 @@ import stat
 from pathlib import Path
 
 ENGINE_LOG = "engine-requests.jsonl"
+# 계측기의 가린 경로 기록. 브라우저 수용시험 전용이라 공식 회차에서 생기면 무효다.
+PATH_LOG = "engine-paths.jsonl"
 SEALED_MARKER = "engine-sealed.json"
 DRAINED_MARKER = "engine-drained.json"
 TERMINATED_MARKER = "engine-terminated.json"
@@ -229,6 +231,9 @@ class MeterFiles:
         if not all(_engine_stages_valid(row) for row in rows):
             raise EvidenceError("meter_row_invalid")
         return rows
+
+    def path_log_present(self) -> bool:
+        return os.path.lexists(self.path / PATH_LOG)
 
     def forwarded(self) -> int:
         """대상에 전달한 요청 수(stream 포함, seal 후 거부 건 제외)."""

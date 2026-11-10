@@ -113,6 +113,7 @@ class FakeMeter:
         self.observer_extra = 0
         self.rows_override = None
         self.drained_forwarded = None
+        self.path_log = False
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
         self.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
@@ -134,6 +135,9 @@ class FakeMeter:
         if self.e2_error:
             raise self.e2_error
         return [dict(row) for row in self.e2_rows]
+
+    def path_log_present(self):
+        return self.path_log
 
     def engine_rows(self):
         if self.rows_override is not None:
@@ -1516,6 +1520,10 @@ class TestFailures(unittest.TestCase):
         self.assert_invalid(result, ports, evidence, "post_topology_violation")
         self.assertEqual(evidence.files["post-checks.json"]["topology_violations"],
                          ["network.target_net: MEMBERS_MISMATCH", "service.engine: ATTACHMENT_INCONSISTENT"])
+
+    def test_meter_path_log_invalidates_the_run(self):
+        result, ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True))
+        self.assert_invalid(result, ports, evidence, "meter_path_log_enabled")
 
     def test_meter_and_observer_records_must_agree(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "observer_extra", 1))

@@ -596,6 +596,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if len(observer) != state.observer_calls or any(row["decision"] != "registered" for row in observer):
         raise RunFailure("observer_count_mismatch")
     rows = _step(state, "meter_read_failed", meter.engine_rows)
+    if _step(state, "meter_read_failed", meter.path_log_present):
+        raise RunFailure("meter_path_log_enabled")
     sealed = _step(state, "meter_read_failed", lambda: meter.marker(SEALED_MARKER))
     forwarded = _step(state, "meter_log_inconsistent", lambda: forwarded_count(rows))
     cancelled_rows = sum(1 for row in rows if row["outcome"] == FORCED_CANCELLED_OUTCOME)

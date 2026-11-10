@@ -215,6 +215,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `window_host_condition_violation`, `window_host_watch_gap` | 구간 중 허용되지 않은 호스트 리슨·읽기 실패, 표본 사이 공백이 허용값 초과 |
 | `window_watch_failed`, `window_events_failed` | 감시 시작·종료 실패, `docker events` 실패·형식 밖 출력 |
 | `observer_count_mismatch` | 관측 로그 건수가 러너 호출 수와 다르거나 거부 기록이 있음 |
+| `meter_path_log_enabled` | 계측기가 브라우저 수용시험 전용 경로 기록(`engine-paths.jsonl`)을 남김. 공식 회차는 켜지 않는다 |
 | `meter_read_failed`, `meter_log_inconsistent` | 계측기 기록 읽기 실패, 순번 누락·건수 불일치(강제 취소 행 수 ≠ drain 마커의 취소 수 포함) |
 | `e2_stub_log_invalid` | `e2.ours_mode=stub` 회차에서 가짜 E² 결정 행(`e2/e2-stub-decisions.jsonl`)이 없거나 형식이 틀림: 개행으로 끝나지 않은 꼬리(잘린 행), fixture 표식 아님, 모르는 결정, 메서드·결정 시각 형식, 발급된 결정에 시도 ID 없음·발급 실패에 ID 있음, ID 중복, 순번 공백 |
 | `llm_seal_failed`, `llm_read_failed`, `llm_unverified`, `llm_marker_invalid` | 게이트웨이 seal 실패, 기록 읽기 실패, 검증 마커 시한 초과, 마커 형식 오류 |
