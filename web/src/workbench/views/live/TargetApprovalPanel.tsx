@@ -21,7 +21,11 @@ type Target = {
   expires_at?: string;
 };
 type Reply = { targets?: Target[]; target?: Target; reason?: string };
+const TARGET_REQUEST_LIMIT = 4;
+const TARGET_APPROVAL_VALID_HOURS = 4;
 const reasons: Record<string, string> = {
+  dns_ownership_required: "IP 주소 직접 등록은 지원하지 않습니다. DNS 소유 확인이 가능한 호스트를 사용하세요.",
+  target_approval_expired: "TLS 확인 중 승인 시간이 지났습니다. 현재 승인 상태를 다시 조회하세요.",
   ownership_not_verified: "DNS TXT 소유 증명이 아직 확인되지 않았습니다. 레코드를 등록한 후 다시 확인하세요.",
   ownership_challenge_expired: "소유 확인 시간이 지났습니다. 새 등록을 준비하세요.",
   target_address_denied: "사설·메타데이터·보호 주소는 승인할 수 없습니다. 설치된 보안 정책을 확인하세요.",
@@ -38,12 +42,13 @@ function originOf(raw: string): string {
     return "";
   }
 }
-function targetReply(value: Reply): Target {
+function targetReply(value: Reply, origin: string): Target {
   const t = value.target;
   if (
     !t ||
     !/^target-[a-f0-9]{32}$/.test(t.id) ||
     originOf(t.origin) !== t.origin ||
+    t.origin !== origin ||
     !["pending", "approved", "revoked"].includes(t.state)
   )
     throw new Error("invalid_target_response");
@@ -58,8 +63,7 @@ function targetReply(value: Reply): Target {
   return t;
 }
 
-// Target approval is independent from a diagnosis draft. The server verifies DNS
-// ownership; a URL or a checkbox alone never becomes an execution capability.
+// 대상 승인은 진단 초안과 독립적이다. 서버가 DNS 소유를 검증하며 URL·체크박스만으로 실행 권위가 생기지 않는다.
 export function TargetApprovalPanel({
   url,
   disabled,
@@ -70,11 +74,13 @@ export function TargetApprovalPanel({
   onChanged?: () => void;
 }) {
   const generation = useRef(0);
+  const mutationLock = useRef(false);
   const [details, setDetails] = useState<Target | null>(null);
   const [paths, setPaths] = useState("");
   const [basis, setBasis] = useState("");
   const [busy, setBusy] = useState(false);
   const [unsupported, setUnsupported] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
   const [message, setMessage] = useState("");
   const origin = originOf(url);
   const selected = details?.origin === origin ? details : null;
@@ -90,16 +96,25 @@ export function TargetApprovalPanel({
       if (version !== generation.current) return;
       if (!r || (!r.target && !Array.isArray(r.targets) && Object.keys(r).length !== 0))
         throw new Error("invalid_target_catalog");
-      setDetails(r.target ? targetReply(r) : null);
+      setDetails(r.target ? targetReply(r, origin) : null);
+      setUncertain(false);
       setMessage("");
     } catch (e) {
       if (version !== generation.current) return;
       if (e instanceof ApiError && [404, 501].includes(e.status)) setUnsupported(true);
-      else setMessage("대상 승인을 확인하지 못했습니다. 실행 권한은 서버가 다시 검증합니다.");
+      else {
+        setUncertain(true);
+        setMessage("대상 승인을 확인하지 못했습니다. 대상 목록을 다시 조회해 주세요.");
+      }
     }
   }, [url, origin]);
   useEffect(() => {
     setDetails(null);
+    setBusy(false);
+    mutationLock.current = false;
+    setUncertain(false);
+    setUnsupported(false);
+    setMessage("");
     void list();
     return () => {
       generation.current++;
@@ -113,8 +128,10 @@ export function TargetApprovalPanel({
   }, [origin]);
   if (unsupported) return null;
   async function change(action: "register" | "approve" | "revoke") {
-    if (disabled || busy || !origin) return;
-    generation.current++;
+    if (disabled || busy || uncertain || mutationLock.current || !origin || (action !== "register" && !selected))
+      return;
+    mutationLock.current = true;
+    const version = ++generation.current;
     setBusy(true);
     setMessage("");
     try {
@@ -134,13 +151,17 @@ export function TargetApprovalPanel({
               path_prefixes: prefixes,
               methods: ["GET", "HEAD"],
               readonly_basis: basis.trim(),
-              requests: 4,
-              valid_hours: 4,
+              requests: TARGET_REQUEST_LIMIT,
+              valid_hours: TARGET_APPROVAL_VALID_HOURS,
             }
           : {};
       const r = await apiFetch<Reply>(path, { method: "POST", redirect: "error", body: JSON.stringify(body) }, false);
+      if (version !== generation.current) return;
       if (r.reason) throw new Error(r.reason);
-      const target = targetReply(r);
+      const target = targetReply(r, origin);
+      const expectedState = { register: "pending", approve: "approved", revoke: "revoked" }[action];
+      if (target.state !== expectedState || (action !== "register" && target.id !== selected?.id))
+        throw new Error("invalid_target_response");
       setDetails(target);
       onChanged?.();
 
@@ -151,11 +172,19 @@ export function TargetApprovalPanel({
       };
       setMessage(messages[action]);
     } catch (e) {
-      // Server errors are fixed reason codes, not target responses or credentials.
+      if (version !== generation.current) return;
+      // 서버의 고정 사유만 표시한다. 응답·자격 원문과 결과 불명인 결정을 재사용하지 않는다.
       const code = e instanceof Error ? e.message : "";
-      setMessage(reasons[code] ?? "변경 결과를 확인하지 못했습니다. 자동 재전송하지 말고 대상 목록을 다시 조회하세요.");
+      const known = Object.hasOwn(reasons, code);
+      setUncertain(!known);
+      setMessage(
+        known ? reasons[code] : "변경 결과를 확인하지 못했습니다. 자동 재전송하지 말고 대상 목록을 다시 조회하세요.",
+      );
     } finally {
-      setBusy(false);
+      if (version === generation.current) {
+        mutationLock.current = false;
+        setBusy(false);
+      }
     }
   }
   return (
@@ -163,6 +192,10 @@ export function TargetApprovalPanel({
       <div className={s["fsec-h"]}>
         <h2>대상 권한 · 운영자 승인</h2>
         <p>새 대상은 DNS 소유 확인과 구체적인 읽기 전용 범위 승인이 필요합니다.</p>
+        <p className={s.help}>
+          소유 승인 시 후보 IP별 TLS 연결(최대 8회), 시작 직전 선택 IP로 TLS 연결 1회를 수행합니다. HTTP 진단은 별도
+          시작 후 실행합니다.
+        </p>
       </div>
       <div className={s["fsec-b"]}>
         {selected?.state === "approved" ? (
@@ -177,7 +210,12 @@ export function TargetApprovalPanel({
               {selected.tls_spki_sha256?.slice(0, 16)}…
             </p>
             <p className={s.help}>승인 만료 {selected.expires_at}. 시작 전에 DNS·TLS와 승인 상태를 다시 확인합니다.</p>
-            <button className={s.btn} type="button" disabled={disabled || busy} onClick={() => void change("revoke")}>
+            <button
+              className={s.btn}
+              type="button"
+              disabled={disabled || busy || uncertain}
+              onClick={() => void change("revoke")}
+            >
               이 대상 승인 철회
             </button>
           </>
@@ -192,7 +230,12 @@ export function TargetApprovalPanel({
               대상 DNS 운영 화면에 레코드를 추가하세요. GET/HEAD도 상태를 바꿀 수 있으므로 등록한 경로의 비변경 승인이
               필요합니다.
             </p>
-            <button className={s.btn} type="button" disabled={disabled || busy} onClick={() => void change("approve")}>
+            <button
+              className={s.btn}
+              type="button"
+              disabled={disabled || busy || uncertain}
+              onClick={() => void change("approve")}
+            >
               소유 확인 후 대상 승인
             </button>
           </>
@@ -208,7 +251,7 @@ export function TargetApprovalPanel({
                 className={s.inp}
                 value={paths}
                 onChange={(e) => setPaths(e.target.value)}
-                disabled={disabled || busy}
+                disabled={disabled || busy || uncertain}
                 placeholder="비워 두면 입력 URL의 경로를 사용합니다"
               />
             </div>
@@ -221,7 +264,7 @@ export function TargetApprovalPanel({
                 className={s.inp}
                 value={basis}
                 onChange={(e) => setBasis(e.target.value)}
-                disabled={disabled || busy}
+                disabled={disabled || busy || uncertain}
                 maxLength={1024}
                 placeholder="승인된 업무·환경과 해당 GET/HEAD 경로가 상태를 바꾸지 않는 근거를 20자 이상 기재하세요"
               />
@@ -232,7 +275,7 @@ export function TargetApprovalPanel({
             <button
               className={s.btn}
               type="button"
-              disabled={!origin || disabled || busy || basis.trim().length < 20}
+              disabled={!origin || disabled || busy || uncertain || basis.trim().length < 20}
               onClick={() => void change("register")}
             >
               대상 등록·소유 확인 준비
