@@ -35,8 +35,8 @@ var (
 	callBare     = regexp.MustCompile(`(?i)` + bundleHTTPClient + `\.` + bundleVerb + `\(\s*` + bundleQuote + "(" + bundleBareTarget + ")" + bundleQuote)
 	callTemplate = regexp.MustCompile("(?i)\\." + bundleVerb + "\\(\\s*`(?:\\$\\{([\\w$.]+)\\})?(/" + bundleTemplateTail + ")?(\\$\\{|`)")
 	callMember   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(this\.[\w$]+)\s*[,)]`)
-	baseAssign   = regexp.MustCompile(`(this\.[\w$]+)\s*=\s*(?:[\w$.]+\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
-	baseTemplate = regexp.MustCompile("(this\\.[\\w$]+)\\s*=\\s*`(?:\\$\\{[\\w$.]+\\})?(/" + bundleTemplateTail + ")`")
+	baseAssign   = regexp.MustCompile(`(this\.[\w$]+)\s*=\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
+	baseTemplate = regexp.MustCompile("(this\\.[\\w$]+)\\s*=\\s*`(?:\\$\\{([\\w$.]+)\\})?(/" + bundleTemplateTail + ")`")
 	fetchCall    = regexp.MustCompile(`\bfetch\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote + `(?:\s*,\s*\{` + bundleFetchOptions + `\bmethod\s*:\s*` + bundleQuote + `(\w+)` + bundleQuote + `)?`)
 	xhrOpen      = regexp.MustCompile(`(?i)\.open\(\s*` + bundleQuote + `(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)` + bundleQuote + `\s*,\s*` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote)
 	urlField     = regexp.MustCompile(`\burl\s*:\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
@@ -62,9 +62,9 @@ const (
 )
 
 type bundleBase struct {
-	name, path string
-	at         int
-	dynamic    bool
+	name, expr, path string
+	at               int
+	state            baseState
 }
 
 // 한도에서 잘리면 그 뒤에 더 가까운 대입이 있을 수 있으므로, 믿을 수 있는 구간의 끝도 함께 돌려준다.
@@ -77,11 +77,36 @@ func bundleBases(body []byte) ([]bundleBase, int) {
 			cutoff = min(cutoff, matches[len(matches)-1][0])
 		}
 		for _, m := range matches {
-			bases = append(bases, bundleBase{string(body[m[2]:m[3]]), string(body[m[4]:m[5]]), m[0], byteAfter(body, m[1]) == '+'})
+			state := baseKnown
+			if byteAfter(body, m[1]) == '+' {
+				state = baseUnknown // 대입 뒤에 식이 더 붙어서 실제 주소를 모른다.
+			}
+			bases = append(bases, bundleBase{group(body, m, 1), group(body, m, 2), group(body, m, 3), m[0], state})
 		}
 	}
 	sort.Slice(bases, func(i, j int) bool { return bases[i].at < bases[j].at })
+	for i := range bases {
+		resolveBase(bases[:i], &bases[i])
+	}
 	return bases, cutoff
+}
+
+// 대입의 앞 식을 앞쪽 대입으로 풀어, 경로와 확정 여부를 앞 식에서 이어받는다.
+func resolveBase(earlier []bundleBase, b *bundleBase) {
+	switch {
+	case b.state == baseUnknown || b.expr == "":
+	case !strings.Contains(b.expr, "."):
+		b.state = baseUnknown
+	case !strings.HasPrefix(b.expr, "this."):
+		b.state = baseGuessed
+	default:
+		prev, ok := baseBefore(earlier, b.expr, b.at)
+		if !ok {
+			b.state = baseGuessed
+			return
+		}
+		b.path, b.state = prev.path+b.path, prev.state
+	}
 }
 
 // 번들러는 클래스를 차례로 내보내므로 가장 가까운 앞쪽 대입이 그 호출의 기준 주소다.
@@ -156,10 +181,10 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 		switch {
 		case !ok:
 			return suffix, baseGuessed
-		case base.dynamic:
-			return suffix, baseUnknown // 대입 뒤에 식이 더 붙어서 실제 주소를 모른다.
+		case base.state == baseUnknown:
+			return suffix, baseUnknown
 		}
-		return base.path + suffix, baseKnown
+		return base.path + suffix, base.state
 	}
 	call := func(method, expr, suffix string, at int, dynamic bool) {
 		path, state := full(expr, suffix, at)
@@ -186,9 +211,7 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), group(body, m, 3), m[0], group(body, m, 4) == "${")
 	}
 	for _, m := range callMember.FindAllSubmatchIndex(body, maxBundleMatches) {
-		if base, ok := baseBefore(bases, group(body, m, 2), m[0]); ok && m[0] <= cutoff && !base.dynamic {
-			emit(strings.ToUpper(group(body, m, 1)), base.path, "api", "script_call")
-		}
+		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), "", m[0], false)
 	}
 	for _, m := range fetchCall.FindAllSubmatchIndex(body, maxBundleMatches) {
 		method, next := strings.ToUpper(group(body, m, 3)), byteAfter(body, m[2*2+1]+1)

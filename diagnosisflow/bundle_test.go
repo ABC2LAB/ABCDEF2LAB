@@ -31,11 +31,19 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"other expression":      {`http.put(env.api+"/v1/item",e)`, []string{"PUT /v1/item script_guess"}},
 		"local variable":        {`const u=this.host+"/"+id;this.http.get(u+"/reviews")`, []string{"UNKNOWN /reviews static_literal"}},
 		"local template":        {"c.get(`${u}/rest/x`)", []string{"UNKNOWN /rest/x static_literal"}},
-		"base and suffix":       {`this.host=this.server+"/svc/items"}all(){return this.http.get(this.host+"/all")}`, []string{"GET /svc/items/all script_call"}},
-		"bare base":             {`this.host=this.server+"/svc/items"}all(){return this.http.get(this.host)}`, []string{"GET /svc/items script_call"}},
+		"base and suffix":       {`this.host=this.server+"/svc/items"}all(){return this.http.get(this.host+"/all")}`, []string{"GET /svc/items/all script_guess"}},
+		"bare base":             {`this.host=this.server+"/svc/items"}all(){return this.http.get(this.host)}`, []string{"GET /svc/items script_guess"}},
 		"bare base with body":   {`this.host="/svc/items"}add(e){return this.http.post(this.host,e)}`, []string{"POST /svc/items script_call"}},
+		"base chain":            {`this.a="/read/api";this.b=this.a+"/Users";this.http.get(this.b+"/x")`, []string{"GET /read/api/Users/x script_call"}},
+		"base from config":      {`this.b=environment.hostServer+"/read/api";this.http.get(this.b+"/x")`, []string{"GET /read/api/x script_guess"}},
+		"base from local":       {`this.b=u+"/p";c.get(this.b+"/x")`, []string{"UNKNOWN /x static_literal"}},
+		"base chain unknown":    {`this.a=s+"/p"+t;this.b=this.a+"/q";c.get(this.b+"/x")`, []string{"UNKNOWN /x static_literal"}},
+		"base chain guess":      {`this.a=cfg.u+"/p";this.b=this.a+"/q";c.get(this.b+"/x")`, []string{"GET /p/q/x script_guess"}},
+		"base from unassigned":  {`this.b=this.a+"/q";c.get(this.b+"/x")`, []string{"GET /q/x script_guess"}},
+		"template base config":  {"this.b=`${cfg.u}/p`;c.get(this.b+\"/x\")", []string{"GET /p/x script_guess"}},
+		"bare guessed base":     {`this.b=cfg.u+"/p";c.post(this.b,e)`, []string{"POST /p script_guess"}},
 		"bare unknown base":     {`this.http.get(this.host)`, []string{}},
-		"template base":         {"this.host=`${env}/svc/t`}x(){return this.http.get(this.host+\"/a\")}", []string{"GET /svc/t/a script_call"}},
+		"template base":         {"this.host=`${this.x}/svc/t`}x(){return this.http.get(this.host+\"/a\")}", []string{"GET /svc/t/a script_guess"}},
 		"template host":         {"this.http.get(`${this.server}/rest/search`,e)", []string{"GET /rest/search script_guess"}},
 		"template dynamic":      {"this.host=\"/svc/items\"}x(e){return this.http.get(`${this.host}/${e}`)}", []string{"GET /svc/items script_prefix"}},
 		"template dynamic deep": {"this.http.get(`${this.server}/rest/basket/${e}`)", []string{"GET /rest/basket script_prefix"}},
@@ -360,7 +368,7 @@ func TestDiscoveryResolvesBundleCallsAgainstOrigin(t *testing.T) {
 	c, _ := flowFixture(t, Manual)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.discoverBodyLocked([]byte(`this.host=s+"/read/items"}a(){return this.http.post(this.host+"/add",e)}`), "application/javascript", "/read/app.js")
+	c.discoverBodyLocked([]byte(`this.host="/read/items"}a(){return this.http.post(this.host+"/add",e)}`), "application/javascript", "/read/app.js")
 	if got := discovered(c); !slices.Contains(got, "POST /read/items/add api") {
 		t.Fatal(got)
 	}
