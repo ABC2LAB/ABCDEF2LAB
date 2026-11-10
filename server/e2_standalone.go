@@ -221,8 +221,6 @@ func (b *E2StandaloneBackend) observeResult(ctx context.Context, r e2runner.Resu
 	return p.ObserveResult(ctx, r)
 }
 
-// Execute는 신뢰한 Go 조립만 호출한다. 원격 입력을 이 메서드에 바로 전달하면 안 된다.
-// supervisor는 실제 task/intent 소유권을 검증해야 하며 양수 검사만으로 대체하지 않는다.
 // b.op을 쥔 채로 부른다. 회차당 실행 자원은 한 번만 만든다.
 func (b *E2StandaloneBackend) acquireLocked(ctx context.Context, q E2HTTPRequest) (*E2HTTPRunOptions, error) {
 	if _, err := b.resetBinding(); err != nil {
@@ -244,6 +242,9 @@ func (b *E2StandaloneBackend) acquireLocked(ctx context.Context, q E2HTTPRequest
 	return b.lease, nil
 }
 
+// Execute는 신뢰한 호출자만 부른다. 원격 호출은 토큰으로 인증된 엔진만 들어오고(`e2RemoteHandler`), 먼저 등록된 intent만
+// 통과한다. task는 첫 값에 고정된다. 그 intent가 실제로 그 task의 것인지는 엔진 런타임이 보장한다.
+// 다른 원격 경로를 붙일 때 이 전제를 새로 만족시키지 않으면 안 된다.
 func (b *E2StandaloneBackend) Execute(ctx context.Context, q E2HTTPRequest, command string) (e2runner.Result, error) {
 	if b == nil {
 		return e2runner.Result{}, ErrE2Control
