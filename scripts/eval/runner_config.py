@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
 from e2_export import E2_HEADER_MODES
+from isolation_proof import PURPOSE_OFFICIAL, PURPOSES
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
 from runner_docker import container_file_ok
 
@@ -145,6 +146,8 @@ _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_ima
                "observer_path", "observer_format", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
                "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export")
+# 목적 칸이 생기기 전 설정(같은 CONFIG_VERSION)도 그대로 읽게 선택 칸으로 둔다. 빠지면 공식 회차다.
+_OPTIONAL_TOP_FIELDS = ("purpose",)
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -250,6 +253,8 @@ class RunnerConfig:
     engine_rules: str | None
     # 개선 후 판정 export 수집 한도(_VERDICT_FIELDS). None이면 수집 안 함(records=null).
     verdict_export: dict | None
+    # 회차 목적(PURPOSES). 서명된 실행 조건에 남아 채점기가 공식 비교 회차만 받는다.
+    purpose: str
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -297,11 +302,11 @@ class RunDirectory:
     e2_engine: Path
 
 
-def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
+def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str], optional: tuple[str, ...] = ()) -> dict:
     if not isinstance(raw, dict):
         errors.append(f"{prefix}: EXPECTED_OBJECT")
         return {}
-    if set(raw) - set(names):
+    if set(raw) - set(names) - set(optional):
         errors.append(f"{prefix}: UNKNOWN_FIELDS")
     for name in names:
         if name not in raw:
@@ -352,7 +357,7 @@ def _image(raw: object, prefix: str, errors: list[str]) -> Image | None:
 
 def parse_runner_config(raw: object) -> RunnerConfig:
     errors: list[str] = []
-    top = _exact(raw, _TOP_FIELDS, "config", errors)
+    top = _exact(raw, _TOP_FIELDS, "config", errors, optional=_OPTIONAL_TOP_FIELDS)
     if "version" in top and not (type(top["version"]) is int and top["version"] == CONFIG_VERSION):
         errors.append("config.version: UNSUPPORTED")
     for name in ("runs_root", "secrets_env_file"):
@@ -395,6 +400,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     if "ours_mode" in e2 and e2["ours_mode"] not in E2_MODES:
         errors.append("config.e2.ours_mode: UNSUPPORTED")
     state = _state(top.get("state"), errors) if "state" in top else None
+    if "purpose" in top and top["purpose"] not in PURPOSES:
+        errors.append("config.purpose: UNSUPPORTED")
     db = _exact(top.get("engine_db"), ("user", "name"), "config.engine_db", errors) if "engine_db" in top else {}
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
@@ -498,7 +505,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},
         observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], e2_product=e2_product, state=state,
-        engine_rules=top["engine_rules"], verdict_export=verdict_export)
+        engine_rules=top["engine_rules"], verdict_export=verdict_export,
+        purpose=top.get("purpose", PURPOSE_OFFICIAL))
 
 
 def _e2_product(block: dict, errors: list[str]) -> dict | None:

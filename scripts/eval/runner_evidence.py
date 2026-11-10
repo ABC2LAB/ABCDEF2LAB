@@ -15,6 +15,13 @@ import stat
 from pathlib import Path
 
 ENGINE_LOG = "engine-requests.jsonl"
+# 계측기의 가린 경로 기록. 브라우저 수용시험 전용이라 공식 회차에서 생기면 무효다.
+PATH_LOG = "engine-paths.jsonl"
+# 경로 행(cmd/eval-meter paths.go pathRow)과 가림 규칙 판(pathMaskProfile). 판이 다른 패턴끼리는 비교하지 않는다.
+_PATH_ROW = frozenset({"seq", "method", "path_pattern", "masked_segments", "path_profile_ref", "path_key_ref"})
+PATH_PROFILE = "abc2lab.path-mask/v2"
+# 가림 키의 참조(paths.go pathKeyRef). 한 회차의 행은 모두 같은 키로 가렸어야 한다.
+_PATH_KEY_REF = re.compile(r"[0-9a-f]{16}\Z")
 SEALED_MARKER = "engine-sealed.json"
 DRAINED_MARKER = "engine-drained.json"
 TERMINATED_MARKER = "engine-terminated.json"
@@ -228,6 +235,31 @@ class MeterFiles:
         rows = _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW)
         if not all(_engine_stages_valid(row) for row in rows):
             raise EvidenceError("meter_row_invalid")
+        return rows
+
+    def path_log_present(self) -> bool:
+        return os.path.lexists(self.path / PATH_LOG)
+
+    def path_rows(self, engine_rows: list[dict]) -> list[dict]:
+        """수용시험 회차의 가린 경로 행(drain 뒤 최종 읽기). 계측기가 대상에 전달한 요청마다 정확히 한 행이다.
+
+        봉인 뒤 거부한 요청은 경로 행이 없다. 다른 가림 판, 잘린 꼬리, 요청 기록과 seq·메서드가 어긋난 행,
+        행마다 다른 키 참조는 거부한다.
+        """
+        data = _read_owned(self.path, PATH_LOG)
+        if data is None:
+            raise EvidenceError("meter_path_log_missing")
+        # 진행 중 읽기와 달리 개행으로 끝나지 않은 꼬리는 잘린 기록이다(_rows는 그 줄을 버리고 센다).
+        if data and not data.endswith(b"\n"):
+            raise EvidenceError("meter_path_log_invalid")
+        rows = _rows(data, _PATH_ROW)
+        forwarded = {row["seq"]: row["method"] for row in engine_rows if row["kind"] in FORWARDED_KINDS}
+        if {row["seq"]: row["method"] for row in rows} != forwarded or any(
+                row["path_profile_ref"] != PATH_PROFILE or not isinstance(row["path_pattern"], str)
+                or not row["path_pattern"] or type(row["masked_segments"]) is not int or row["masked_segments"] < 0
+                or not isinstance(row["path_key_ref"], str) or not _PATH_KEY_REF.match(row["path_key_ref"])
+                for row in rows) or len({row["path_key_ref"] for row in rows}) > 1:
+            raise EvidenceError("meter_path_log_invalid")
         return rows
 
     def forwarded(self) -> int:

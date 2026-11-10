@@ -227,6 +227,9 @@ type engineMeter struct {
 
 	mu           sync.Mutex
 	log          *rowLog
+	paths        *rowLog
+	pathKey      []byte
+	pathKeyRef   string
 	seq          uint64
 	sealed       bool
 	sealedAt     time.Time
@@ -286,6 +289,7 @@ func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isUpgrade(r) {
 		m.streamsTotal++
 	}
+	m.writePathLocked(seq, r)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	m.cancels[seq] = cancel
@@ -383,9 +387,7 @@ func (m *engineMeter) seal() {
 		m.forced[seq] = true
 		delete(m.streams, seq)
 	}
-	if err := m.log.file.Sync(); err != nil {
-		m.logFailed = true
-	}
+	m.syncLogsLocked()
 	m.writeMarkerLocked(sealedName, sealedMarker{Role: roleEngine, SealedAt: stamp(m.sealedAt), InflightAtSeal: m.inflight,
 		ForcedClosed: m.forcedClosed, LogComplete: !m.logFailed, ForwardedAtSeal: m.forwarded})
 	m.maybeDrainedLocked(m.sealedAt)
@@ -415,9 +417,7 @@ func (m *engineMeter) maybeDrainedLocked(at time.Time) {
 		return
 	}
 	m.drainedAt = at
-	if err := m.log.file.Sync(); err != nil {
-		m.logFailed = true
-	}
+	m.syncLogsLocked()
 	m.writeMarkerLocked(drainedName, drainedMarker{Role: roleEngine, SealedAt: stamp(m.sealedAt), DrainedAt: stamp(at),
 		Forwarded: m.forwarded, StreamsTotal: m.streamsTotal, RejectedAfterSeal: m.rejected,
 		ForcedClosed: m.forcedClosed, ForcedCancelled: m.forcedCancel, InflightAtDrain: m.inflight,
@@ -433,6 +433,48 @@ func (m *engineMeter) writeRowLocked(row engineRow) {
 	}
 }
 
+// enablePathLog는 보존 시험에서만 부른다. 끄면 기록 파일 자체가 생기지 않는다.
+func (m *engineMeter) enablePathLog(key []byte) string {
+	if len(key) != pathKeyBytes {
+		return invalidInput
+	}
+	file, code := createPrivateFile(m.dir, enginePathLogName)
+	if code != "" {
+		return code
+	}
+	m.paths, m.pathKey, m.pathKeyRef = &rowLog{file: file}, key, pathKeyRef(key)
+	return ""
+}
+
+// marker의 LogComplete는 요청 기록과 경로 기록이 모두 디스크에 내려간 뒤에만 참이다.
+func (m *engineMeter) syncLogsLocked() {
+	if err := m.log.file.Sync(); err != nil {
+		m.logFailed = true
+	}
+	if m.paths != nil {
+		if err := m.paths.file.Sync(); err != nil {
+			m.logFailed = true
+		}
+	}
+}
+
+// discard는 경로 기록을 열지 못해 시작을 포기할 때 방금 만든 요청 기록을 지운다.
+// 남겨 두면 다음 시작이 logExists로 막힌다.
+func (m *engineMeter) discard() error {
+	return errors.Join(m.log.file.Close(), removePrivateFile(m.dir, engineLogName))
+}
+
+func (m *engineMeter) writePathLocked(seq uint64, r *http.Request) {
+	if m.paths == nil {
+		return
+	}
+	pattern, masked := maskPath(r.URL.EscapedPath(), m.pathKey)
+	if err := m.paths.write(pathRow{Seq: seq, Method: r.Method, PathPattern: pattern, MaskedSegments: masked, PathProfileRef: pathMaskProfile,
+		PathKeyRef: m.pathKeyRef}); err != nil {
+		m.logFailed = true
+	}
+}
+
 func (m *engineMeter) writeMarkerLocked(name string, marker any) {
 	if err := writeMarker(m.dir, name, marker); err != nil {
 		m.markerFailed = true
@@ -444,9 +486,7 @@ func (m *engineMeter) writeMarkerLocked(name string, marker any) {
 func (m *engineMeter) terminate(reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.log.file.Sync(); err != nil {
-		m.logFailed = true
-	}
+	m.syncLogsLocked()
 	m.writeMarkerLocked(terminatedName, terminatedMarker{Role: roleEngine, Reason: reason, TerminatedAt: stamp(m.now()),
 		Sealed: m.sealed, Drained: !m.drainedAt.IsZero(), InflightAtTerminate: m.inflight, OpenStreams: len(m.streams),
 		ForcedCancelled: m.forcedCancel, Forwarded: m.forwarded, RejectedAfterSeal: m.rejected, LogComplete: !m.logFailed})
@@ -460,10 +500,14 @@ func (m *engineMeter) close() error {
 	}
 	syncErr := m.log.file.Sync()
 	closeErr := m.log.file.Close()
-	if m.markerFailed {
-		return errors.Join(syncErr, closeErr, errors.New("eval-meter: marker write failed"))
+	var pathsErr error
+	if m.paths != nil {
+		pathsErr = errors.Join(m.paths.file.Sync(), m.paths.file.Close())
 	}
-	return errors.Join(syncErr, closeErr)
+	if m.markerFailed {
+		return errors.Join(syncErr, closeErr, pathsErr, errors.New("eval-meter: marker write failed"))
+	}
+	return errors.Join(syncErr, closeErr, pathsErr)
 }
 
 // observerRow records the decision only; the registered path itself lives in
