@@ -4,7 +4,21 @@ import { validTaskID } from "./first-diagnosis";
 const base = "/api/diagnoses/v2";
 const version = "diagnosis-api.v2";
 export type URLDiagnosisInput = { target_url: string; profile_id: string; display_name?: string };
-export type URLDiagnosisProfile = { id: string; label: string; model_profile_ref: string; model_label: string };
+export type URLDiagnosisModel = {
+  mode: "openrouter";
+  model: "qwen/qwen3.5-35b-a3b";
+  provider: string;
+  external_transfer: true;
+  input_tokens_per_call: number;
+  output_tokens_per_call: number;
+};
+export type URLDiagnosisProfile = {
+  id: string;
+  label: string;
+  model_profile_ref: string;
+  model_label: string;
+  model?: URLDiagnosisModel;
+};
 export type URLDiagnosisCatalog = { ownerContext: string; profiles: URLDiagnosisProfile[] };
 export type URLDiagnosisBudget = {
   requests: number;
@@ -27,6 +41,7 @@ export type URLDiagnosisScope = {
   attestation_ref: string;
   budget: URLDiagnosisBudget;
   expires_at: string;
+  model?: URLDiagnosisModel;
 };
 export type URLDiagnosisUsage = {
   requests: number;
@@ -36,6 +51,7 @@ export type URLDiagnosisUsage = {
   reserved_output_tokens: number;
   cost_usd_micros: number;
   usage_known: boolean;
+  reserved_cost_usd_micros?: number;
 };
 export const urlStateLabels = {
   awaiting_approval: "승인 대기",
@@ -162,6 +178,30 @@ function budget(v: unknown): URLDiagnosisBudget {
   exact(v, [...keys]);
   return Object.fromEntries(keys.map((key) => [key, v[key]])) as URLDiagnosisBudget;
 }
+function model(v: unknown): URLDiagnosisModel {
+  if (
+    !object(v) ||
+    v.mode !== "openrouter" ||
+    v.model !== "qwen/qwen3.5-35b-a3b" ||
+    !text(v.provider, 128) ||
+    !v.provider ||
+    v.external_transfer !== true ||
+    v.input_tokens_per_call !== 262144 ||
+    !natural(v.output_tokens_per_call) ||
+    !v.output_tokens_per_call ||
+    v.output_tokens_per_call > v.input_tokens_per_call
+  )
+    return invalid();
+  exact(v, ["mode", "model", "provider", "external_transfer", "input_tokens_per_call", "output_tokens_per_call"]);
+  return {
+    mode: "openrouter",
+    model: "qwen/qwen3.5-35b-a3b",
+    provider: v.provider,
+    external_transfer: true,
+    input_tokens_per_call: 262144,
+    output_tokens_per_call: v.output_tokens_per_call,
+  };
+}
 function scope(v: unknown): URLDiagnosisScope {
   if (
     !object(v) ||
@@ -197,6 +237,7 @@ function scope(v: unknown): URLDiagnosisScope {
     "attestation_ref",
     "budget",
     "expires_at",
+    "model",
   ]);
   const origin = targetURL(v.origin);
   if (new URL(origin).pathname !== "/") return invalid();
@@ -216,6 +257,7 @@ function scope(v: unknown): URLDiagnosisScope {
     attestation_ref: v.attestation_ref,
     budget: budget(v.budget),
     expires_at: v.expires_at,
+    ...(v.model === undefined ? {} : { model: model(v.model) }),
   };
 }
 function usage(v: unknown): URLDiagnosisUsage {
@@ -228,8 +270,13 @@ function usage(v: unknown): URLDiagnosisUsage {
     "cost_usd_micros",
   ] as const;
   if (!object(v) || !keys.every((key) => natural(v[key])) || typeof v.usage_known !== "boolean") return invalid();
-  exact(v, [...keys, "usage_known"]);
-  return { ...Object.fromEntries(keys.map((key) => [key, v[key]])), usage_known: v.usage_known } as URLDiagnosisUsage;
+  if (v.reserved_cost_usd_micros !== undefined && !natural(v.reserved_cost_usd_micros)) return invalid();
+  exact(v, [...keys, "usage_known", "reserved_cost_usd_micros"]);
+  return {
+    ...Object.fromEntries(keys.map((key) => [key, v[key]])),
+    usage_known: v.usage_known,
+    ...(v.reserved_cost_usd_micros === undefined ? {} : { reserved_cost_usd_micros: v.reserved_cost_usd_micros }),
+  } as URLDiagnosisUsage;
 }
 function envelope(v: unknown, owner?: string): Record<string, unknown> {
   if (
@@ -258,9 +305,15 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       !p.model_label
     )
       return invalid();
-    exact(p, ["id", "label", "model_profile_ref", "model_label"]);
+    exact(p, ["id", "label", "model_profile_ref", "model_label", "model"]);
     seen.add(p.id);
-    return { id: p.id, label: p.label, model_profile_ref: p.model_profile_ref, model_label: p.model_label };
+    return {
+      id: p.id,
+      label: p.label,
+      model_profile_ref: p.model_profile_ref,
+      model_label: p.model_label,
+      ...(p.model === undefined ? {} : { model: model(p.model) }),
+    };
   });
   return { ownerContext: String(e.owner_context), profiles };
 }
@@ -482,6 +535,8 @@ export function matchURLJob(
       "cost_usd_micros",
     ] as const;
     for (const key of counters) if (result.model_usage[key] < current.model_usage[key]) return invalid();
+    if ((result.model_usage.reserved_cost_usd_micros ?? 0) < (current.model_usage.reserved_cost_usd_micros ?? 0))
+      return invalid();
   }
   return result;
 }
@@ -490,8 +545,15 @@ export async function commandURLDiagnosis(
   action: "validate" | "start" | "stop",
   owner: string,
   key?: string,
+  confirmation?: { externalTransferConfirmed?: boolean },
 ): Promise<URLDiagnosisJob> {
   if (action === "start" && !ref(key)) return invalid();
+  // 외부 전송 동의는 호출 화면이 명시적으로 공급하며 scope에서 만들어 내지 않는다.
+  const externalStart = action === "start" && current.scope?.model?.external_transfer === true;
+  const externalTransferConfirmed = confirmation?.externalTransferConfirmed === true;
+  if (externalStart && !externalTransferConfirmed) {
+    throw new ApiError(400, "external_transfer_confirmation_required");
+  }
   const result = matchURLJob(
     parseURLJob(
       await apiFetch<unknown>(
@@ -500,7 +562,11 @@ export async function commandURLDiagnosis(
           method: "POST",
           redirect: "error",
           ...(key ? { headers: { "Idempotency-Key": key } } : {}),
-          body: JSON.stringify({ version, expected_revision: current.revision }),
+          body: JSON.stringify({
+            version,
+            expected_revision: current.revision,
+            ...(externalStart ? { external_transfer_confirmed: externalTransferConfirmed } : {}),
+          }),
         },
         false,
       ),
@@ -598,6 +664,13 @@ export function matchURLHandle(job: URLDiagnosisJob, handle: URLDiagnosisHandle)
 }
 export const urlReasonLabels: Record<string, string> = {
   installation_unavailable: "설치자의 보호된 실행 설정을 사용할 수 없어요.",
+  installation_model_invalid:
+    "모델 설치·제공자·비용 한도 또는 승인 만료·소비 여부를 확인해야 해요. 운영자에게 새 승인을 요청해 주세요.",
+  installation_check_failed: "모델 키·프로필 또는 보호된 설치가 바뀌었거나 사용할 수 없어요. 운영자가 확인해야 해요.",
+  approval_expired: "설치된 진단 승인이 만료됐어요.",
+  model_budget_invalid: "승인된 모델 요청·토큰·USD 예산을 결속할 수 없어요.",
+  model_usage_unknown: "모델 응답·사용량·비용을 확인하지 못했어요. 예약을 유지하고 후속 호출을 차단했어요.",
+  planning_failed: "모델 계획 준비가 완료되지 않았어요. 상태와 사용량을 확인해 주세요.",
   model_mode_unsupported: "이 모델 실행 방식은 현재 자동 준비에서 지원하지 않아요. 다른 모델로 전환하지 않아요.",
   path_not_approved: "이 URL 경로는 설치된 승인 범위에 없어요.",
   target_not_approved: "이 대상은 설치된 승인 범위에 없어요.",
@@ -617,6 +690,8 @@ export function urlDiagnosisError(cause: unknown): string {
       return "저장된 요청을 찾지 못했어요. 실행되지 않았다고 단정하거나 자동 재전송하지 않아요.";
     if (cause.message === "budget_exhausted")
       return "승인된 실행·모델 예산이 소진됐어요. 새 실행을 자동으로 만들지 않아요.";
+    if (cause.message === "external_transfer_confirmation_required")
+      return "대상 응답·도구 출력의 외부 전송과 USD 비용 상한에 명시적으로 동의해야 시작할 수 있어요.";
     if (cause.message === "approval_required")
       return "설치자 승인이 필요해요. URL 입력이나 사용자 확인만으로 실행 권위가 생기지 않아요.";
     if (cause.status === 409) return "승인 범위·설정 세대·실행 상태가 바뀌었어요. 현재 상태를 다시 조회해 주세요.";

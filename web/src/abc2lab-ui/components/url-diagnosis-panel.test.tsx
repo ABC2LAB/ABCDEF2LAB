@@ -4,7 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../lib/api";
 import * as url from "../lib/diagnosis-url";
-import { catalog, draft, handle, owner, ready, running, scope } from "../lib/diagnosis-url-fixtures";
+import {
+  catalog,
+  draft,
+  externalModel,
+  externalReady,
+  handle,
+  owner,
+  ready,
+  running,
+  scope,
+} from "../lib/diagnosis-url-fixtures";
 import { verifyDiagnosisTask } from "../lib/first-diagnosis";
 import { SelectionContext } from "../lib/selection";
 import { NavContext } from "../nav";
@@ -97,7 +107,39 @@ describe("URL 입력에서 명시 시작까지", () => {
     );
     expect(screen.getByText("진단 준비 중")).toBeVisible();
     expect(screen.getByText("엔진 시작: 미확인")).toBeVisible();
-    expect(url.commandURLDiagnosis).toHaveBeenLastCalledWith(ready, "start", owner, startHandle?.startKey);
+    expect(url.commandURLDiagnosis).toHaveBeenLastCalledWith(ready, "start", owner, startHandle?.startKey, {
+      externalTransferConfirmed: true,
+    });
+  });
+  it("팀 화면도 provider·외부 전송·USD 안내를 확인한 동의만 Start에 전달한다", async () => {
+    saved(externalReady);
+    vi.mocked(url.commandURLDiagnosis).mockResolvedValue({
+      ...externalReady,
+      revision: 3,
+      state: "preparing",
+      phase: "planning",
+      preparation_started: true,
+    });
+    render(page({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] }));
+    const consent = await screen.findByRole("checkbox", { name: /대상 응답·도구 출력의 외부 전송/ });
+    const approved = screen.getByLabelText("서버가 확인한 승인 범위");
+    expect(approved).toHaveTextContent(externalModel.model);
+    expect(approved).toHaveTextContent(externalModel.provider);
+    expect(approved).toHaveTextContent("USD 6.000000");
+    expect(approved).toHaveTextContent("입력 262144 / 출력 2048");
+    expect(consent).not.toBeChecked();
+    const start = screen.getByRole("button", { name: "진단 시작" });
+    expect(start).toBeDisabled();
+    fireEvent.click(start);
+    expect(url.commandURLDiagnosis).not.toHaveBeenCalled();
+    fireEvent.click(consent);
+    fireEvent.click(start);
+    await waitFor(() =>
+      expect(url.commandURLDiagnosis).toHaveBeenCalledWith(externalReady, "start", owner, expect.any(String), {
+        externalTransferConfirmed: true,
+      }),
+    );
+    expect(sessionStorage.getItem("abc2lab.urlDiagnosisHandle.v2")).not.toContain("externalTransferConfirmed");
   });
   it("미승인 대상은 이유를 표시하고 시작 버튼을 만들지 않는다", async () => {
     vi.mocked(url.commandURLDiagnosis).mockResolvedValue({ ...draft, revision: 2, reason_code: "target_not_approved" });

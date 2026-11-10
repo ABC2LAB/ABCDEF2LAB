@@ -30,7 +30,16 @@ vi.mock("../live/api", async (importOriginal) => ({
 import * as teamApi from "@/abc2lab-ui/lib/api";
 import { ApiError } from "@/abc2lab-ui/lib/api";
 import * as url from "@/abc2lab-ui/lib/diagnosis-url";
-import { catalog, draft, handle, owner, ready, running } from "@/abc2lab-ui/lib/diagnosis-url-fixtures";
+import {
+  catalog,
+  draft,
+  externalModel,
+  externalReady,
+  handle,
+  owner,
+  ready,
+  running,
+} from "@/abc2lab-ui/lib/diagnosis-url-fixtures";
 
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
@@ -332,6 +341,28 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(screen.queryByRole("button", { name: "진단 시작" })).toBeNull();
   });
 
+  it("작업대의 명시적 외부 전송·USD 동의를 lib에 전달한다", async () => {
+    saveHandle();
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
+    u.readURLStatus.mockResolvedValue(externalReady);
+    u.commandURLDiagnosis.mockResolvedValue({ ...preparing, scope: externalReady.scope });
+    mount("scope");
+    const consent = await screen.findByRole("checkbox", { name: /대상 응답·도구 출력의 외부 전송/ });
+    expect(screen.getAllByText(externalModel.provider).length).toBeGreaterThan(0);
+    expect(consent).not.toBeChecked();
+    const start = screen.getByRole("button", { name: "진단 시작" });
+    expect(start).toBeDisabled();
+    fireEvent.click(start);
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+    fireEvent.click(consent);
+    fireEvent.click(start);
+    await waitFor(() =>
+      expect(u.commandURLDiagnosis).toHaveBeenCalledWith(externalReady, "start", owner, expect.any(String), {
+        externalTransferConfirmed: true,
+      }),
+    );
+    expect(sessionStorage.getItem("abc2lab.urlDiagnosisHandle.v2")).not.toContain("externalTransferConfirmed");
+  });
   it("시작 결과가 불명이면 다시 보내지 않고 상태 조회만 남긴다", async () => {
     saveHandle();
     u.commandURLDiagnosis.mockRejectedValue(new TypeError("network"));

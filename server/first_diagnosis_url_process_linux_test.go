@@ -58,6 +58,7 @@ type urlProcessFixture struct {
 	releaseOnce                                                                         sync.Once
 	multi                                                                               *urlMultiIntentModel
 	external                                                                            bool
+	externalFailure                                                                     string
 }
 
 func urlTestWrite(t *testing.T, path string, value any) string {
@@ -344,7 +345,11 @@ type urlSyntheticMessage struct {
 }
 
 func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
-	f.modelCalls.Add(1)
+	callNumber := f.modelCalls.Add(1)
+	if f.external && f.externalFailure == "http401" && callNumber == 1 {
+		w.WriteHeader(401)
+		return
+	}
 	if r.Method != "POST" || r.URL.Path != "/v1/chat/completions" {
 		http.Error(w, "unsupported", 400)
 		return
@@ -448,7 +453,20 @@ func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
 	if f.external {
 		modelName = llmpolicy.OpenRouterModel
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"id": "owned-url-model", "object": "chat.completion", "created": time.Now().Unix(), "model": modelName, "provider": "Fixture", "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20, "cost": 0.000001}})
+	response := map[string]any{"id": "owned-url-model", "object": "chat.completion", "created": time.Now().Unix(), "model": modelName, "provider": "Fixture", "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20, "cost": 0.000001}}
+	if f.external && callNumber == 1 {
+		switch f.externalFailure {
+		case "usage":
+			response["usage"] = nil
+		case "model":
+			response["model"] = "unapproved-model"
+		case "provider":
+			response["provider"] = "Unapproved"
+		case "cost":
+			response["usage"].(map[string]any)["cost"] = 7
+		}
+	}
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 type urlOwnedProcess struct {
@@ -939,10 +957,16 @@ func (f *urlProcessFixture) startPreparation() *urlOwnedProcess {
 
 // 실제 모델 응답 대기 중 중지를 시험한다. 실행 전 취소를 취약점 없음이나 모델 사용량 확인으로 바꾸지 않는다.
 func TestFirstDiagnosisURLStopDuringPreparationOwnedPostgres(t *testing.T) {
+	runURLStopDuringPreparation(t, false)
+}
+func TestFirstDiagnosisURLOpenRouterStopDuringPreparationOwnedPostgres(t *testing.T) {
+	runURLStopDuringPreparation(t, true)
+}
+func runURLStopDuringPreparation(t *testing.T, external bool) {
 	if os.Getenv("ARTEX_URL_DIAGNOSIS_TEST") != "1" {
 		t.Skip("NOT_RUN: 소유 로컬 URL 프로세스 수용 시험 opt-in 필요")
 	}
-	f := newURLProcessFixture(t)
+	f := newURLProcessFixtureMode(t, nil, external)
 	f.startPreparation()
 	f.startAPI()
 	client := f.api()
@@ -954,7 +978,7 @@ func TestFirstDiagnosisURLStopDuringPreparationOwnedPostgres(t *testing.T) {
 	if f.modelCalls.Load() != 0 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
 		t.Fatal("중지 fixture 시작 전 부작용")
 	}
-	job = client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/start", "owned-stop-start", map[string]any{"version": diagnosisapi.URLVersion, "expected_revision": job.Revision})
+	job = client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/start", "owned-stop-start", urlStartBody(job.Revision, external))
 	select {
 	case <-f.plannerEntered:
 	case <-time.After(25 * time.Second):
