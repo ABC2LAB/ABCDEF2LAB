@@ -23,7 +23,7 @@ URL은 요청 입력이며 대상·메서드·모델·비용을 승인하는 권
 4. 명시적으로 시작한다. 시작 전에는 task·Planner·대상 송신·단회 권위를 만들지 않는다.
 5. 준비 단계, 실제 실행·승인/거절, 마감·저장 상태를 확인하고 결과 보고서를 연다.
 
-운영자 설치는 별도다. 보호 DB 역할, 인증키, 로컬 모델 profile/manifest, 격리 helper, CA·감사 pin,
+운영자 설치는 별도다. 보호 DB 역할, 인증키, 설치된 모델 profile/manifest, 격리 helper, CA·감사 pin,
 실제 비변경 범위, 위임·예산·기한을 한 번 준비해야 한다.
 미설치·미승인 프로필은 준비되지 않은 이유를 반환한다.
 HTTP handler가 임의 shell 명령을 만들거나 회차마다 CLI를 호출하여 이 구분을 우회하지 않는다.
@@ -170,7 +170,8 @@ journal/head 삭제, state_dir 교체, delegation_ref 변경으로 기존 예약
 지원 복구가 아니다. 새 설치·새 위임만 만들면 이전 불명 실행이 해소된 것으로 처리하지 않는다.
 이 운영 정지·복구 정책은 첫 실제 대상 수용 전에 팀이 확인해야 할 조건이다.
 
-새 URL 경로의 초기 모델 지원은 설치된 로컬 OpenAI 호환 비스트리밍 profile이다.
+URL 경로는 설치된 로컬 OpenAI 호환 비스트리밍 profile과 명시적인 OpenRouter 모드를 지원한다.
+OpenRouter 보호 설치·키·회차/누적 USD·외부 전송 동의와 수용 범위는 [통합 계약](url-openrouter-integration.md)을 따른다.
 준비와 실행이 공유하는 ledger가 실제 호출 전에 요청 1회, 설치한 전체 context 입력 상한,
 명시적 최대 출력 토큰을 보수적으로 예약한다. 추정 token 수를 hard limit로 사용하지 않는다.
 provider usage와 예약치를 구분하고 usage 미확인·호출 결과 불명 시 후속 호출을 차단한다.
@@ -179,7 +180,7 @@ provider usage와 예약치를 구분하고 usage 미확인·호출 결과 불�
 대기 뒤 실제 task/profile 결속과 남은 예산을 다시 확인한다. 실제 호출 오류·usage 누락 또는
 사용량 저장 실패는 기존 unknown 차단을 유지하며 대기 중인 호출도 모델로 보내지 않는다.
 이 예산 모드에서는 SDK 재시도와 HTTP redirect 재전송도 차단한다.
-외부 유료 모델 fallback은 없으며 OpenRouter의 기존 CLI 지원을 URL v2 수용으로 확대하지 않는다.
+외부 유료 모델 fallback은 없다. OpenRouter URL 모드는 기존 CLI 지원과 별도로 실제 URL 준비·실행 경로에서 검증한다. 실제 유료 OpenRouter 수용은 합성 시험과 구분한다.
 
 ## 검증과 미실행 구분
 

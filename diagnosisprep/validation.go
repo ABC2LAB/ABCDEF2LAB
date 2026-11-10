@@ -135,7 +135,7 @@ func CanonicalInput(input Input) (Input, error) {
 }
 
 func ValidateRequest(r Request) error {
-	if r.Version != Version || !reference.MatchString(r.RequestID) || !validText(r.Principal, 256) {
+	if (r.ExternalTransferConfirmed && r.Command != Start) || r.Version != Version || !reference.MatchString(r.RequestID) || !validText(r.Principal, 256) {
 		return ErrProtocol
 	}
 	noInput := r.Input == nil
@@ -184,11 +184,17 @@ func ValidateRequest(r Request) error {
 func validBudget(b Budget) bool {
 	return b.Requests >= 0 && b.ModelRequests >= 0 && b.InputTokens >= 0 && b.OutputTokens >= 0 && b.CostUSDMicros >= 0 && b.DurationSeconds >= 0
 }
+func validModel(m *ModelInfo) bool {
+	if m == nil {
+		return true
+	}
+	return m.Mode == "openrouter" && m.Model == "qwen/qwen3.5-35b-a3b" && validText(m.Provider, 128) && m.Provider != "" && m.ExternalTransfer && m.InputPerCall == 262144 && m.OutputPerCall > 0 && m.OutputPerCall <= m.InputPerCall
+}
 func validScope(s *Scope) bool {
 	if s == nil {
 		return true
 	}
-	if !reference.MatchString(s.TargetRef) || !reference.MatchString(s.ScopeRef) || !reference.MatchString(s.AttestationRef) || !validText(s.ApprovalMode, 64) || !validText(s.QueryPolicy, 64) || !validText(s.BodyPolicy, 64) || !validBudget(s.Budget) || s.MaxBodyBytes < 0 || s.ExpiresAt.IsZero() || len(s.PathPrefixes) == 0 || len(s.PathPrefixes) > 64 || len(s.Methods) == 0 || len(s.Methods) > 8 {
+	if !validModel(s.Model) || !reference.MatchString(s.TargetRef) || !reference.MatchString(s.ScopeRef) || !reference.MatchString(s.AttestationRef) || !validText(s.ApprovalMode, 64) || !validText(s.QueryPolicy, 64) || !validText(s.BodyPolicy, 64) || !validBudget(s.Budget) || s.MaxBodyBytes < 0 || s.ExpiresAt.IsZero() || len(s.PathPrefixes) == 0 || len(s.PathPrefixes) > 64 || len(s.Methods) == 0 || len(s.Methods) > 8 {
 		return false
 	}
 	input, err := CanonicalInput(Input{TargetURL: s.Origin, ProfileID: "scope"})
@@ -212,7 +218,7 @@ func validScope(s *Scope) bool {
 	return true
 }
 func validUsage(u *ModelUsage) bool {
-	return u == nil || (u.Requests >= 0 && u.InputTokens >= 0 && u.OutputTokens >= 0 && u.ReservedInputTokens >= 0 && u.ReservedOutputTokens >= 0 && u.CostUSDMicros >= 0)
+	return u == nil || (u.Requests >= 0 && u.InputTokens >= 0 && u.OutputTokens >= 0 && u.ReservedInputTokens >= 0 && u.ReservedOutputTokens >= 0 && u.CostUSDMicros >= 0 && u.ReservedCostUSDMicros >= 0)
 }
 func validPhase(p Phase) bool {
 	switch p {
@@ -288,7 +294,7 @@ func ValidateResponse(r Request, response Response) error {
 		}
 		seen := map[string]bool{}
 		for _, p := range response.Profiles {
-			if !reference.MatchString(p.ID) || seen[p.ID] || !reference.MatchString(p.ModelProfileRef) || !validText(p.Label, 160) || !validText(p.ModelLabel, 160) {
+			if !validModel(p.Model) || !reference.MatchString(p.ID) || seen[p.ID] || !reference.MatchString(p.ModelProfileRef) || !validText(p.Label, 160) || !validText(p.ModelLabel, 160) {
 				return ErrProtocol
 			}
 			seen[p.ID] = true

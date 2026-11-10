@@ -39,6 +39,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
+	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
@@ -56,6 +57,7 @@ type urlProcessFixture struct {
 	releasePlanner                                                                      chan struct{}
 	releaseOnce                                                                         sync.Once
 	multi                                                                               *urlMultiIntentModel
+	external                                                                            bool
 }
 
 func urlTestWrite(t *testing.T, path string, value any) string {
@@ -86,13 +88,16 @@ func newURLProcessFixture(t *testing.T) *urlProcessFixture {
 }
 
 func newURLProcessFixtureModel(t *testing.T, multi *urlMultiIntentModel) *urlProcessFixture {
+	return newURLProcessFixtureMode(t, multi, false)
+}
+func newURLProcessFixtureMode(t *testing.T, multi *urlMultiIntentModel, external bool) *urlProcessFixture {
 	t.Helper()
 	helper := firstDiagnosisNativeHelper(t)
 	database := newControlledLocalDatabaseFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	t.Cleanup(cancel)
 	f := &urlProcessFixture{t: t, ctx: ctx, root: firstDiagnosisPrivateTemp(t), installer: &db.DB{DB: database.Installer}, plannerEntered: make(chan struct{}), releasePlanner: make(chan struct{})}
-	f.multi = multi
+	f.multi, f.external = multi, external
 	if multi != nil {
 		t.Cleanup(multi.release)
 		if f.installer.SetSetting(settingWorkers, "2") != nil {
@@ -101,11 +106,6 @@ func newURLProcessFixtureModel(t *testing.T, multi *urlMultiIntentModel) *urlPro
 	}
 	t.Cleanup(func() { f.releaseOnce.Do(func() { close(f.releasePlanner) }) })
 	f.binary = filepath.Join(f.root, "first-controlled-diagnosis")
-	build := exec.CommandContext(ctx, "go", "build", "-p", "1", "-buildvcs=false", "-o", f.binary, "../cmd/first-controlled-diagnosis")
-	build.Env = append(os.Environ(), "GOMAXPROCS=2", "GOMEMLIMIT=2GiB", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
-	if build.Run() != nil {
-		t.Fatal("URL 준비 서비스 소스 빌드 실패")
-	}
 	// 초기 task가 없음을 먼저 확인한다. 기존 실행 fixture를 가져오지 않는다.
 	var initial int
 	if f.installer.QueryRow("SELECT count(*) FROM tasks").Scan(&initial) != nil || initial != 0 {
@@ -151,12 +151,24 @@ func newURLProcessFixtureModel(t *testing.T, multi *urlMultiIntentModel) *urlPro
 	model := httptest.NewServer(http.HandlerFunc(f.model))
 	t.Cleanup(model.Close)
 	profile := &db.LLMProfile{Name: "owned-url-synthetic", Format: "openai", Model: "local:synthetic", BaseURL: model.URL + "/v1", APIKey: "owned-synthetic-key", Streaming: false, ContextWindowK: 128, MaxTokens: 2048}
+	if external {
+		profile.Model, profile.BaseURL, profile.ContextWindowK = llmpolicy.OpenRouterModel, llmpolicy.OpenRouterBaseURL, 256
+	}
 	profileID, err := f.installer.SaveProfile(profile)
 	if err != nil || f.installer.SetActiveProfile(profileID) != nil {
 		t.Fatal("합성 모델 설치 실패")
 	}
 	manifest := filepath.Join(f.root, "models.json")
 	manifestHash := urlTestWrite(t, manifest, map[string]any{"version": 1, "profiles": []any{map[string]any{"profile_id": profileID, "format": "openai", "model": "local:synthetic", "base_url": profile.BaseURL, "addresses": []string{"127.0.0.1"}}}})
+	if external {
+		manifestHash = urlTestWrite(t, manifest, map[string]any{
+			"version": 1, "profile_id": profileID, "format": "openai", "base_url": llmpolicy.OpenRouterBaseURL, "model": llmpolicy.OpenRouterModel,
+			"provider_slug": "fixture/endpoint", "expected_provider_name": "Fixture", "approval_id": "url-owned-approval", "expires_at": validUntil,
+			"strict_privacy_ack": true, "account_spend_cap_ack": true, "max_requests": 20, "max_input_tokens": 20 * 262144, "max_output_tokens": 20 * 2048, "max_cost_usd_micros": 6000000,
+			"max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 2048, "timeout_seconds": 10, "max_concurrent": 1,
+			"max_input_price_usd_micros_per_million": 1000000, "max_output_price_usd_micros_per_million": 1000000,
+		})
+	}
 	cfg, _, policy := e2HostPolicyFixture(t, 9*time.Minute)
 	// 이 파일은 기존 설치 템플릿일 뿐이다. 실제 ID 결속과 marker는 제품이 새 runs 디렉터리에 발급한다.
 	policy.ValidFrom, policy.ValidUntil = validFrom, validUntil
@@ -192,6 +204,21 @@ func newURLProcessFixtureModel(t *testing.T, multi *urlMultiIntentModel) *urlPro
 	policyHash := urlTestWrite(t, cfg.PolicyFile, policy)
 	keyDir, dataDir, skillDir := firstDiagnosisPrivateTemp(t), firstDiagnosisPrivateTemp(t), firstDiagnosisPrivateTemp(t)
 	f.dataDir = dataDir
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		files, _ := filepath.Glob(filepath.Join(dataDir, "diagnostic-logs", "*", "*.jsonl"))
+		for _, path := range files {
+			raw, _ := os.ReadFile(path)
+			for _, line := range bytes.Split(raw, []byte("\n")) {
+				var e diagnosticlog.Event
+				if json.Unmarshal(line, &e) == nil && (e.Status == "failed" || e.Status == "incomplete" || e.Status == "denied") {
+					t.Logf("synthetic failure event=%s stage=%s reason=%s", e.Event, e.Stage, e.ReasonCode)
+				}
+			}
+		}
+	})
 	if os.WriteFile(filepath.Join(keyDir, jwtKeyFilename), []byte("owned-url-jwt-material-at-least-32"), 0600) != nil {
 		t.Fatal("시험 JWT 설치 실패")
 	}
@@ -215,6 +242,9 @@ func newURLProcessFixtureModel(t *testing.T, multi *urlMultiIntentModel) *urlPro
 	}
 	f.apiAddr, f.reportAddr = urlTestAddress(t), urlTestAddress(t)
 	launch := map[string]any{"format": "abc2lab.first-diagnosis-launch/v1", "mode": "general_http", "listen_addr": f.reportAddr, "data_dir": dataDir, "key_dir": keyDir, "skill_dir": skillDir, "local_llm_manifest_path": manifest, "model_profile_id": profileID, "model_format": "openai", "model_base_url": profile.BaseURL, "model_ref": "local:synthetic", "runtime_dsn_file": dsnPath, "shutdown_timeout_seconds": 10, "general_http": map[string]any{"policy_file": cfg.PolicyFile, "authority_file": cfg.AuthorityFile, "authority_root": cfg.AuthorityRoot}}
+	if external {
+		launch["local_llm_manifest_path"], launch["model_execution_mode"], launch["openrouter_manifest_path"], launch["model_ref"] = "", "openrouter", manifest, llmpolicy.OpenRouterModel
+	}
 	template := filepath.Join(f.root, "template.json")
 	launchHash := urlTestWrite(t, template, launch)
 	launch["listen_addr"] = f.apiAddr
@@ -223,6 +253,13 @@ func newURLProcessFixtureModel(t *testing.T, multi *urlMultiIntentModel) *urlPro
 	f.socket = filepath.Join(f.root, "prepare.sock")
 	f.installation = filepath.Join(f.root, "installation.json")
 	budget := diagnosisprep.Budget{Requests: int64(policy.MaxRequests), ModelRequests: 20, InputTokens: 20 * 131072, OutputTokens: 20 * 2048, DurationSeconds: 120}
+	if external {
+		budget.InputTokens, budget.CostUSDMicros = 20*262144, 6000000
+	}
+	inputPerCall := 131072
+	if external {
+		inputPerCall = 262144
+	}
 	urlTestWrite(t, f.installation, map[string]any{
 		"format": "abc2lab.url-preparation-installation/v1", "operator_uid": os.Geteuid(), "state_dir": firstDiagnosisPrivateTemp(t), "runs_dir": firstDiagnosisPrivateTemp(t), "socket_path": f.socket, "report_listen_addr": f.reportAddr, "api_launch": map[string]any{"file": f.apiLaunch, "sha256": apiLaunchHash},
 		"protected_endpoints": protectedEndpoints,
@@ -231,9 +268,43 @@ func newURLProcessFixtureModel(t *testing.T, multi *urlMultiIntentModel) *urlPro
 			"delegation_ref": "owned-url-delegation", "derive_runs": true, "valid_from": validFrom.Add(time.Second), "valid_until": validUntil.Add(-time.Second), "max_runs": 1, "aggregate_budget": budget, "budget": budget,
 			"launch": map[string]any{"file": template, "sha256": launchHash}, "policy_sha256": policyHash, "manifest_sha256": manifestHash, "allow_private_target": true,
 			"attestation":      map[string]any{"ref": "owned-nonmutating-range", "verified": true, "path_prefixes": []string{"/allowed"}, "methods": []string{"GET"}, "query_policy": "any", "body_policy": "bounded", "max_body_bytes": policy.Limits.MaxBodyBytes},
-			"model_limits_ref": "owned-model-limits", "input_tokens_per_call": 131072, "output_tokens_per_call": 2048,
+			"model_limits_ref": "owned-model-limits", "input_tokens_per_call": inputPerCall, "output_tokens_per_call": 2048,
 		}},
 	})
+	build := exec.CommandContext(ctx, "go", "build", "-p", "1", "-buildvcs=false", "-o", f.binary, "../cmd/first-controlled-diagnosis")
+	build.Env = append(os.Environ(), "GOMAXPROCS=2", "GOMEMLIMIT=2GiB", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
+	if external {
+		source, err := filepath.Abs("../llmpolicy/openrouter_transport.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		needle := "resp, err := t.base.RoundTrip(copy)"
+		if strings.Count(string(raw), needle) != 1 {
+			t.Fatal("test overlay boundary changed")
+		}
+		// Guard/SDK/provider/usage logic is untouched. Only the already-authorized
+		// transport's physical destination is redirected in this test-built binary.
+		replacement := `cloneURL := *copy.URL
+ cloneURL.Scheme, cloneURL.Host, cloneURL.Path = "http", ` + strconv.Quote(model.Listener.Addr().String()) + `, "/v1/chat/completions"
+ copy.URL = &cloneURL
+ resp, err := t.base.RoundTrip(copy)`
+		dial := `DialContext: func(ctx context.Context, network,address string)(net.Conn,error){if address != ` + strconv.Quote(model.Listener.Addr().String()) + ` {return nil, ErrOpenRouterPolicy};return (&net.Dialer{}).DialContext(ctx,"tcp",address)},`
+		raw = []byte(strings.Replace(string(raw), "DialContext: openRouterDial,", dial, 1))
+		overlaySource := filepath.Join(f.root, "openrouter_transport.go")
+		if os.WriteFile(overlaySource, []byte(strings.Replace(string(raw), needle, replacement, 1)), 0600) != nil {
+			t.Fatal("test overlay write")
+		}
+		overlay := filepath.Join(f.root, "overlay.json")
+		urlTestWrite(t, overlay, map[string]any{"Replace": map[string]string{source: overlaySource}})
+		build.Args = append(build.Args[:2], append([]string{"-overlay", overlay}, build.Args[2:]...)...)
+	}
+	if build.Run() != nil {
+		t.Fatal("URL 준비 서비스 소스 빌드 실패")
+	}
 	return f
 }
 
@@ -279,8 +350,16 @@ func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Stream bool `json:"stream"`
-		Tools  []struct {
+		Stream    bool   `json:"stream"`
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+		Provider  struct {
+			Only           []string `json:"only"`
+			AllowFallbacks bool     `json:"allow_fallbacks"`
+			ZDR            bool     `json:"zdr"`
+			DataCollection string   `json:"data_collection"`
+		} `json:"provider"`
+		Tools []struct {
 			Function struct {
 				Name string `json:"name"`
 			} `json:"function"`
@@ -289,6 +368,11 @@ func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
 	}
 	if json.NewDecoder(io.LimitReader(r.Body, 2<<20)).Decode(&input) != nil || input.Stream {
 		http.Error(w, "bad synthetic request", 400)
+		return
+	}
+	if f.external && (input.Model != llmpolicy.OpenRouterModel || input.MaxTokens != 2048 || len(input.Provider.Only) != 1 || input.Provider.Only[0] != "fixture/endpoint" || input.Provider.AllowFallbacks || !input.Provider.ZDR || input.Provider.DataCollection != "deny" || r.Header.Get("Authorization") != "Bearer owned-synthetic-key") {
+		f.t.Error("OpenRouter SDK/provider pin mismatch")
+		w.WriteHeader(400)
 		return
 	}
 	names := map[string]bool{}
@@ -360,7 +444,11 @@ func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
 		f.t.Error("합성 모델에 알 수 없는 역할 도착")
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"id": "owned-url-model", "object": "chat.completion", "created": time.Now().Unix(), "model": "local:synthetic", "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}})
+	modelName := "local:synthetic"
+	if f.external {
+		modelName = llmpolicy.OpenRouterModel
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"id": "owned-url-model", "object": "chat.completion", "created": time.Now().Unix(), "model": modelName, "provider": "Fixture", "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20, "cost": 0.000001}})
 }
 
 type urlOwnedProcess struct {
@@ -461,6 +549,14 @@ func (c *urlAPIClient) job(method, path, key string, body any) diagnosisprep.Job
 	return response.Job
 }
 
+func urlStartBody(revision uint64, external bool) map[string]any {
+	body := map[string]any{"version": diagnosisapi.URLVersion, "expected_revision": revision}
+	if external {
+		body["external_transfer_confirmed"] = true
+	}
+	return body
+}
+
 type urlStartReceipt struct {
 	ID       string `json:"id"`
 	Revision uint64 `json:"revision"`
@@ -468,13 +564,16 @@ type urlStartReceipt struct {
 }
 
 func runURLProcessAcceptance(t *testing.T, browser bool) {
+	runURLProcessAcceptanceMode(t, browser, false)
+}
+func runURLProcessAcceptanceMode(t *testing.T, browser, external bool) {
 	if os.Getenv("ARTEX_URL_DIAGNOSIS_TEST") != "1" {
 		t.Skip("NOT_RUN: 소유 로컬 URL 프로세스 수용 시험 opt-in 필요")
 	}
 	if browser && (os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_NODE") == "" || os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_SCRIPT") == "" || os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_OUTPUT") == "") {
 		t.Skip("NOT_RUN: 설치된 브라우저·Node와 전용 출력 경로 필요")
 	}
-	f := newURLProcessFixture(t)
+	f := newURLProcessFixtureMode(t, nil, external)
 	service := f.startPreparation()
 	api := f.startAPI()
 	client := f.api()
@@ -527,7 +626,7 @@ func runURLProcessAcceptance(t *testing.T, browser bool) {
 		}
 		receipt = result.StartReceipt
 	} else {
-		client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+receipt.ID+"/start", receipt.Key, map[string]any{"version": diagnosisapi.URLVersion, "expected_revision": receipt.Revision})
+		client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+receipt.ID+"/start", receipt.Key, urlStartBody(receipt.Revision, external))
 	}
 	if receipt.ID == "" || receipt.Key == "" || receipt.Revision < 1 {
 		t.Fatal("실제 start 요청 결속 누락")
@@ -546,7 +645,7 @@ func runURLProcessAcceptance(t *testing.T, browser bool) {
 	if recovered.TaskID == "" || !recovered.PreparationStarted || recovered.Started {
 		t.Fatal("API 재시작 후 실제 준비 상태 복원 실패")
 	}
-	duplicate := client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+receipt.ID+"/start", receipt.Key, map[string]any{"version": diagnosisapi.URLVersion, "expected_revision": receipt.Revision})
+	duplicate := client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+receipt.ID+"/start", receipt.Key, urlStartBody(receipt.Revision, external))
 	if duplicate.ID != recovered.ID || duplicate.TaskID != recovered.TaskID {
 		t.Fatal("같은 start key가 다른 실행 생성")
 	}
@@ -589,8 +688,24 @@ func runURLProcessAcceptance(t *testing.T, browser bool) {
 	if taskCount != 1 || intents != 1 || plannerIntents != 1 || candidates != 1 || confirmed != 0 || runs != 1 || blockedIntents != 1 || f.allowed.Load() != 1 || f.denied.Load() != 0 {
 		t.Fatalf("task=%d intent=%d planner_intent=%d candidate=%d confirmed=%d run=%d policy_blocked_intents=%d allowed=%d denied=%d", taskCount, intents, plannerIntents, candidates, confirmed, runs, blockedIntents, f.allowed.Load(), f.denied.Load())
 	}
-	if final.ModelUsage == nil || !final.ModelUsage.UsageKnown || final.ModelUsage.Requests != f.modelCalls.Load() || final.ModelUsage.CostUSDMicros != 0 {
+	if final.ModelUsage == nil || !final.ModelUsage.UsageKnown || final.ModelUsage.Requests != f.modelCalls.Load() || final.ModelUsage.CostUSDMicros != func() int64 {
+		if external {
+			return f.modelCalls.Load()
+		}
+		return 0
+	}() {
 		t.Fatal("실제 모델 요청·사용량 집계 불일치")
+	}
+	if external {
+		var record diagnosisRunRecord
+		client.call("GET", "/api/tasks/"+final.TaskID+"/diagnosis-run", "", nil, &record)
+		if record.Model == nil || len(record.ModelPreparation) != 1 {
+			t.Fatal("saved stage usage missing")
+		}
+		prep := record.ModelPreparation[0].Usage
+		if prep.Requests != 4 || record.Model.Requests != f.modelCalls.Load()-4 || prep.CostMicros+record.Model.CostMicros != final.ModelUsage.CostUSDMicros || final.ModelUsage.ReservedCostUSDMicros != f.modelCalls.Load()*264192 {
+			t.Fatal("preparation double-counted in execution usage")
+		}
 	}
 	if browser {
 		ui.run("url-report")
@@ -639,6 +754,10 @@ func urlStoredReportComparable(t *testing.T, body []byte, taskID string) []byte 
 	result = append(result, marker...)
 	result = append(result, []byte("[export-time]</p>")...)
 	return append(result, after...)
+}
+
+func TestFirstDiagnosisURLOpenRouterIndependentProcessesOwnedPostgres(t *testing.T) {
+	runURLProcessAcceptanceMode(t, false, true)
 }
 
 func TestFirstDiagnosisURLIndependentProcessesOwnedPostgres(t *testing.T) {
@@ -709,6 +828,14 @@ func (f *urlProcessFixture) verifySummary(job diagnosisprep.Job, started, finish
 				t.Fatal("진단 이벤트 task·순서 불일치")
 			}
 			previous = event.Sequence
+			if event.Component == "openrouter" {
+				if event.Event == "model_request_started" {
+					event.Event = "model_call_started"
+				}
+				if event.Event == "model_request_finished" {
+					event.Event = "model_call_finished"
+				}
+			}
 			out.Events[event.Event]++
 			if event.TaskID == task {
 				out.TaskBoundEvents++

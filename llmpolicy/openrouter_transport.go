@@ -196,7 +196,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	diagnostic.ReasonCode = "transport_failure"
 	diagnostic.ReservedInputTokens = m.MaxInputPerCall
 	diagnostic.ReservedOutputTokens = output
-	diagnostic.ReservedCostMicros = (m.MaxInputPerCall*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000
+	diagnostic.ReservedCostMicros = openRouterReservedCost(m, output)
 	diagnostic.CostUncertain = true
 	begin := diagnostic
 	begin.Event, begin.Status, begin.ReasonCode = "model_request_started", "started", ""
@@ -275,7 +275,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		return nil, ErrOpenRouterPolicy
 	}
 	cost := math.Ceil(*result.Usage.Cost * 1000000)
-	reserved := (m.MaxInputPerCall*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000
+	reserved := openRouterReservedCost(m, output)
 	if cost > float64(reserved) {
 		return nil, ErrOpenRouterPolicy
 	}

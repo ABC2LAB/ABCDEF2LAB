@@ -90,6 +90,12 @@ func checkLaunchProfile(ctx context.Context, pool *sql.DB, c launchConfig) error
 	if pool.QueryRowContext(ctx, `SELECT format,COALESCE(base_url,''),model FROM llm_profiles WHERE id=$1`, c.ModelProfileID).Scan(&format, &base, &model) != nil || format != c.ModelFormat || base != c.ModelBaseURL || model != c.ModelRef {
 		return errPreparation
 	}
+	if c.ModelExecutionMode == "openrouter" {
+		var valid bool
+		if pool.QueryRowContext(ctx, `SELECT length(trim(api_key))>0 AND NOT streaming AND context_window_k=256 AND max_tokens>0 AND COALESCE(proxy,'')='' AND COALESCE(session_header_key,'')='' AND COALESCE(thinking_type,'')='' AND COALESCE(reasoning_effort,'')='' AND COALESCE(max_tokens_field,'') IN ('','max_tokens') FROM llm_profiles WHERE id=$1`, c.ModelProfileID).Scan(&valid) != nil || !valid {
+			return errPreparation
+		}
+	}
 	return server.CheckFirstDiagnosisModelRoleBinding(ctx, pool, c.ModelProfileID)
 }
 

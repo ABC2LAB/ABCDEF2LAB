@@ -68,6 +68,8 @@ manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/
 - 계획 준비의 기존 상한은 2분, 전체 Run은 30분이며 task 입력 timeout은 별도다. 시간 초과를 성공으로 처리하지 않는다. 모델 timeout과 전체 실행 timeout을 구분한다.
 - tool-call 이름·ID·JSON과 tool-result 결속을 검증한다. 등록되지 않은 도구, 중복/누락 결과 또는 잘못된 응답은 실행으로 넘기지 않는다. 등록 schema의 필수 필드·기본 타입은 기존 SDK 검증기를 재사용해 호출 전과 결과에 적용한다. 이는 enum·수치 범위·pattern·additionalProperties까지 검증하는 완전한 JSON Schema 구현이 아니며, 실제 의미·실행 권한 검사는 기존 도구와 E② 경계가 담당한다.
 
+URL v2 자동 준비는 [별도 통합 계약](url-openrouter-integration.md)을 따른다. URL 경로는 단일 프로세스·단일 승인·공유 예산으로 준비와 실행을 연결한다. 아래 수동 CLI의 두 단계 승인 절차와 혼동하지 않는다.
+
 ## 공식 실행 순서와 UI 인계
 
 1. 설치자가 실제 profile, 기존 JWT/로그인, 최소권한 runtime/report DB 역할, Linux helper, 승인 origin·method·path와 E② policy/authority를 준비한다. 합성 시험용 자격이나 승인 파일을 실제 자료로 복사하지 않는다.

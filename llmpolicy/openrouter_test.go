@@ -388,3 +388,19 @@ func TestOpenRouterCancellationStopsNewAttempts(t *testing.T) {
 		t.Fatal("new send after cancelled unknown response")
 	}
 }
+
+func TestOpenRouterExpiredManifestDescriptionCannotAuthorizeCalls(t *testing.T) {
+	p := openRouterFixture(t)
+	p.manifest.ExpiresAt = time.Now().Add(-time.Minute)
+	raw, _ := json.Marshal(p.manifest)
+	if _, err := ParseOpenRouterManifest(raw); err == nil {
+		t.Fatal("expired callable policy")
+	}
+	target, limits, quote, err := DescribeOpenRouterManifest(raw, 100)
+	if err != nil || target != p.Target() || limits.Provider != "fixture/endpoint" || quote != 262244 {
+		t.Fatal("saved-report metadata unavailable")
+	}
+	if _, err := p.Quote(100); err == nil {
+		t.Fatal("expired call quote")
+	}
+}

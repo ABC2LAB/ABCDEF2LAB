@@ -623,3 +623,38 @@ func TestConfirmedFailureBeforeTaskDoesNotInventTaskOrReport(t *testing.T) {
 		t.Fatal("prep failure invented facts")
 	}
 }
+
+func TestExternalTransferConsentIsRequiredAndDurable(t *testing.T) {
+	s, b, root := newFixture(t)
+	b.inspection.Scope.Model = &ModelInfo{Mode: "openrouter", Model: "qwen/qwen3.5-35b-a3b", Provider: "fixture/endpoint", ExternalTransfer: true, InputPerCall: 262144, OutputPerCall: 100}
+	j := create(t, s, "external-create")
+	denied := start(t, s, j, "external-start")
+	if denied.Error != "approval_required" || b.calls.Load() != 0 {
+		t.Fatal("external execution without consent")
+	}
+	r := request(Start)
+	r.JobID = j.ID
+	r.ExpectedRevision = j.Revision
+	r.IdempotencyKey = "external-start"
+	r.ExternalTransferConfirmed = true
+	if result := call(t, s, r); result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	for deadline := time.Now().Add(time.Second); status(t, s, j.ID).State != Completed; {
+		if time.Now().After(deadline) {
+			t.Fatal("synthetic completion timeout")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if s.Shutdown(context.Background()) != nil {
+		t.Fatal("shutdown")
+	}
+	restored, err := New(context.Background(), root, b)
+	if err != nil {
+		t.Fatal("consent receipt restart", err)
+	}
+	defer restored.Shutdown(context.Background())
+	if status(t, restored, j.ID).State != Completed || b.calls.Load() != 1 {
+		t.Fatal("consent receipt replayed execution")
+	}
+}

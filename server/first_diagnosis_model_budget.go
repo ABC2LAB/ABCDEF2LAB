@@ -8,6 +8,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/norma/llm"
 )
 
@@ -24,6 +25,9 @@ type FirstDiagnosisModelBudget struct {
 	usage         diagnosisprep.ModelUsage
 	blocked       bool
 	observe       func(diagnosisprep.ModelUsage) error
+	external      *llmpolicy.OpenRouterPolicy
+	manifestPath  string
+	lastExternal  llmpolicy.OpenRouterUsage
 }
 
 func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, outputPerCall int64, observe func(diagnosisprep.ModelUsage) error) (*FirstDiagnosisModelBudget, error) {
@@ -33,6 +37,29 @@ func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, out
 		return nil, ErrFirstDiagnosisModelBudget
 	}
 	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe}, nil
+}
+
+// 준비에서 실행으로 넘어가도 정책과 호출 gate 하나를 공유한다.
+// URL 저널은 위임 총량에서 회차 전체를 이미 예약한 상태다.
+// transport가 승인 원장을 소유하고, 이 어댑터는 송신 전 회차 예약을 저장한다.
+// 검증된 실제 비용만 복사하며 두 원장의 금액을 더하지 않는다.
+func NewFirstDiagnosisOpenRouterBudget(limits diagnosisprep.Budget, inputPerCall, outputPerCall int64, manifestPath string, observe func(diagnosisprep.ModelUsage) error) (*FirstDiagnosisModelBudget, error) {
+	p, err := llmpolicy.LoadOpenRouterManifestFile(manifestPath)
+	if err != nil || p.CheckAvailable() != nil {
+		return nil, ErrFirstDiagnosisModelBudget
+	}
+	m := p.Limits()
+	if limits.CostUSDMicros <= 0 || limits.CostUSDMicros > m.CostMicros || limits.ModelRequests > m.Requests || limits.InputTokens > m.InputTokens || limits.OutputTokens > m.OutputTokens || inputPerCall != m.InputPerCall || outputPerCall > m.OutputPerCall {
+		return nil, ErrFirstDiagnosisModelBudget
+	}
+	localLimits := limits
+	localLimits.CostUSDMicros = 0
+	b, err := NewFirstDiagnosisModelBudget(localLimits, inputPerCall, outputPerCall, observe)
+	if err != nil {
+		return nil, err
+	}
+	b.limits, b.external, b.manifestPath = limits, p, manifestPath
+	return b, nil
 }
 
 // 같은 회차의 Planner/Worker가 겹쳐도 미확인 사용량을 실패로 오인하지 않는다.
@@ -101,16 +128,27 @@ func (b *FirstDiagnosisModelBudget) before(ctx context.Context, cfg agent.Config
 		return ErrFirstDiagnosisModelBudget
 	}
 	clear(raw)
+	var cost int64
+	if b.external != nil {
+		cost, err = b.external.Quote(int64(req.MaxTokens))
+		if err != nil {
+			return ErrFirstDiagnosisModelBudget
+		}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.blocked || !b.usage.UsageKnown || b.usage.Requests >= b.limits.ModelRequests ||
 		b.inputPerCall > b.limits.InputTokens-b.usage.ReservedInputTokens ||
-		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.ReservedOutputTokens {
+		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.ReservedOutputTokens || cost > b.limits.CostUSDMicros-b.usage.ReservedCostUSDMicros {
 		return ErrFirstDiagnosisModelBudget
 	}
 	b.usage.Requests++
 	b.usage.ReservedInputTokens += b.inputPerCall
 	b.usage.ReservedOutputTokens += int64(req.MaxTokens)
+	b.usage.ReservedCostUSDMicros += cost
+	if b.external != nil {
+		b.lastExternal = b.external.Snapshot()
+	}
 	b.usage.UsageKnown = false
 	if b.observe(b.usage) != nil {
 		b.blocked = true
@@ -128,6 +166,14 @@ func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, call
 	known := callErr == nil && usage.InputTokens > 0 && usage.OutputTokens >= 0 &&
 		int64(usage.InputTokens) <= b.inputPerCall && usage.OutputTokens <= outputLimit &&
 		usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0
+	if b.external != nil {
+		next, previous := b.external.Snapshot(), b.lastExternal
+		// 이 SDK 응답은 정확히 한 번의 transport 호출 사용량과 일치해야 한다.
+		known = known && !next.Blocked && next.Requests == previous.Requests+1 && next.Errors == previous.Errors && next.InputTokens-previous.InputTokens == int64(usage.InputTokens) && next.OutputTokens-previous.OutputTokens == int64(usage.OutputTokens) && next.CostMicros >= previous.CostMicros && next.CostMicros <= b.usage.ReservedCostUSDMicros
+		if known {
+			b.usage.CostUSDMicros += next.CostMicros - previous.CostMicros
+		}
+	}
 	if known {
 		b.usage.InputTokens += int64(usage.InputTokens)
 		b.usage.OutputTokens += int64(usage.OutputTokens)

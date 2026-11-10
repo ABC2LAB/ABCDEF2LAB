@@ -221,8 +221,8 @@ func urlProfilePublic(p urlPreparationProfile) diagnosisprep.Profile {
 	return diagnosisprep.Profile{ID: p.ID, Label: p.Label, ModelProfileRef: p.ModelProfileRef, ModelLabel: p.ModelLabel}
 }
 func urlBudgetWithin(a, b diagnosisprep.Budget) bool {
-	return a.Requests > 0 && a.ModelRequests > 0 && a.InputTokens > 0 && a.OutputTokens > 0 && a.DurationSeconds > 0 && a.CostUSDMicros == 0 &&
-		a.Requests <= b.Requests && a.ModelRequests <= b.ModelRequests && a.InputTokens <= b.InputTokens && a.OutputTokens <= b.OutputTokens && a.DurationSeconds <= b.DurationSeconds && b.CostUSDMicros == 0
+	return a.Requests > 0 && a.ModelRequests > 0 && a.InputTokens > 0 && a.OutputTokens > 0 && a.DurationSeconds > 0 && a.CostUSDMicros >= 0 &&
+		a.Requests <= b.Requests && a.ModelRequests <= b.ModelRequests && a.InputTokens <= b.InputTokens && a.OutputTokens <= b.OutputTokens && a.DurationSeconds <= b.DurationSeconds && a.CostUSDMicros <= b.CostUSDMicros
 }
 func urlOrigin(raw string) (string, error) {
 	in, err := diagnosisprep.CanonicalInput(diagnosisprep.Input{TargetURL: raw, ProfileID: "origin"})
@@ -292,7 +292,10 @@ type urlPreparationError string
 
 func (e urlPreparationError) Error() string { return string(e) }
 
-func urlLoadProfile(c urlPreparationInstallation, installationPin urlInputPin, p urlPreparationProfile) (loaded *urlLoadedProfile, resultErr error) {
+func urlLoadProfile(c urlPreparationInstallation, installationPin urlInputPin, p urlPreparationProfile) (*urlLoadedProfile, error) {
+	return urlLoadProfileForReport(c, installationPin, p, false)
+}
+func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlInputPin, p urlPreparationProfile, reportOnly bool) (loaded *urlLoadedProfile, resultErr error) {
 	stage := "installation_profile_invalid"
 	defer func() {
 		if resultErr != nil {
@@ -323,8 +326,8 @@ func urlLoadProfile(c urlPreparationInstallation, installationPin urlInputPin, p
 		return nil, errPreparation
 	}
 	l := &urlLoadedProfile{profile: p, launch: launch, pins: []urlInputPin{installationPin, launchPin}, materials: map[string][]byte{}}
-	if launch.ModelExecutionMode != "" && launch.ModelExecutionMode != "local_only" {
-		return l, nil
+	if launch.ModelExecutionMode != "openrouter" && p.Budget.CostUSDMicros != 0 {
+		return nil, errPreparation
 	}
 	if launch.ModelFormat != "openai" {
 		return nil, errPreparation
@@ -388,51 +391,80 @@ func urlLoadProfile(c urlPreparationInstallation, installationPin urlInputPin, p
 		return nil, errPreparation
 	}
 	stage = "installation_model_invalid"
-	manifest, manifestPin, err := urlReadPin(launch.LocalLLMManifestPath, llmpolicy.MaxProfileManifestBytes, false)
+	manifestPath := launch.LocalLLMManifestPath
+	if launch.ModelExecutionMode == "openrouter" {
+		manifestPath = launch.OpenRouterManifestPath
+	}
+	manifest, manifestPin, err := urlReadPin(manifestPath, llmpolicy.MaxProfileManifestBytes, false)
 	defer clear(manifest)
 	if err != nil || manifestPin.digest != p.ManifestSHA256 {
 		return nil, errPreparation
 	}
-	resolver, err := llmpolicy.ParseProfileManifest(manifest)
-	if err != nil {
-		return nil, errPreparation
-	}
-	if _, err = resolver.Resolve(llmpolicy.ProfileTarget{ID: launch.ModelProfileID, Format: launch.ModelFormat, BaseURL: launch.ModelBaseURL, Model: launch.ModelRef}); err != nil {
-		return nil, errPreparation
-	}
 	l.pins = append(l.pins, manifestPin)
-	// 모델 origin·pin과 DB endpoint는 설치자 목록 누락 여부도 대조한다.
-	var modelDoc struct {
-		Profiles []struct {
-			ProfileID int64    `json:"profile_id"`
-			BaseURL   string   `json:"base_url"`
-			Addresses []string `json:"addresses"`
-		} `json:"profiles"`
-	}
-	if json.Unmarshal(manifest, &modelDoc) != nil {
-		return nil, errPreparation
-	}
-	target, _ := url.Parse(l.origin)
-	for _, model := range modelDoc.Profiles {
-		mu, e := url.Parse(model.BaseURL)
-		if e != nil {
+	if launch.ModelExecutionMode == "openrouter" {
+		targetModel, m, quote, err := llmpolicy.DescribeOpenRouterManifest(manifest, p.OutputTokensPerCall)
+		if err != nil || targetModel != (llmpolicy.ProfileTarget{ID: launch.ModelProfileID, Format: launch.ModelFormat, BaseURL: launch.ModelBaseURL, Model: launch.ModelRef}) {
 			return nil, errPreparation
 		}
-		mp := mu.Port()
-		if mp == "" {
-			if mu.Scheme == "https" {
-				mp = "443"
-			} else {
-				mp = "80"
-			}
-		}
-		if strconv.Itoa(urlPort(target)) == mp {
-			if target.Hostname() == mu.Hostname() {
+		if !reportOnly {
+			external, err := llmpolicy.LoadOpenRouterManifestFile(manifestPath)
+			if err != nil {
 				return nil, errPreparation
 			}
-			for _, ip := range model.Addresses {
-				if ip == l.address.String() {
+			if _, err = external.Resolve(targetModel); err != nil || external.CheckAvailable() != nil {
+				return nil, errPreparation
+			}
+		}
+		if err != nil || p.Budget.CostUSDMicros < quote || p.Budget.CostUSDMicros > m.CostMicros || p.Budget.ModelRequests > m.Requests || p.Budget.InputTokens > m.InputTokens || p.Budget.OutputTokens > m.OutputTokens || p.InputTokensPerCall != m.InputPerCall || p.OutputTokensPerCall > m.OutputPerCall {
+			return nil, errPreparation
+		}
+		// Model API permission never grants permission to scan the model service.
+		target, _ := url.Parse(l.origin)
+		if strings.EqualFold(target.Hostname(), "openrouter.ai") {
+			return nil, errPreparation
+		}
+		l.inspection.Scope = &diagnosisprep.Scope{ExpiresAt: m.ExpiresAt, Model: &diagnosisprep.ModelInfo{Mode: "openrouter", Model: launch.ModelRef, Provider: m.Provider, ExternalTransfer: true, InputPerCall: p.InputTokensPerCall, OutputPerCall: p.OutputTokensPerCall}}
+	} else {
+		resolver, err := llmpolicy.ParseProfileManifest(manifest)
+		if err != nil {
+			return nil, errPreparation
+		}
+		if _, err = resolver.Resolve(llmpolicy.ProfileTarget{ID: launch.ModelProfileID, Format: launch.ModelFormat, BaseURL: launch.ModelBaseURL, Model: launch.ModelRef}); err != nil {
+			return nil, errPreparation
+		}
+		// 모델 origin·pin과 DB endpoint는 설치자 목록 누락 여부도 대조한다.
+		var modelDoc struct {
+			Profiles []struct {
+				ProfileID int64    `json:"profile_id"`
+				BaseURL   string   `json:"base_url"`
+				Addresses []string `json:"addresses"`
+			} `json:"profiles"`
+		}
+		if json.Unmarshal(manifest, &modelDoc) != nil {
+			return nil, errPreparation
+		}
+		target, _ := url.Parse(l.origin)
+		for _, model := range modelDoc.Profiles {
+			mu, e := url.Parse(model.BaseURL)
+			if e != nil {
+				return nil, errPreparation
+			}
+			mp := mu.Port()
+			if mp == "" {
+				if mu.Scheme == "https" {
+					mp = "443"
+				} else {
+					mp = "80"
+				}
+			}
+			if strconv.Itoa(urlPort(target)) == mp {
+				if target.Hostname() == mu.Hostname() {
 					return nil, errPreparation
+				}
+				for _, ip := range model.Addresses {
+					if ip == l.address.String() {
+						return nil, errPreparation
+					}
 				}
 			}
 		}
@@ -515,7 +547,15 @@ func urlLoadProfile(c urlPreparationInstallation, installationPin urlInputPin, p
 		refs = append(refs, pin.path+"\x00"+pin.digest)
 	}
 	raw, _ := json.Marshal(refs)
-	l.inspection = diagnosisprep.Inspection{Scope: &diagnosisprep.Scope{TargetRef: p.TargetRef, ScopeRef: p.ScopeRef, Origin: l.origin, PathPrefixes: paths, Methods: methods, QueryPolicy: "any", BodyPolicy: "bounded", MaxBodyBytes: policy.Limits.MaxBodyBytes, ApprovalMode: string(policy.ApprovalMode), AttestationRef: p.Attestation.Ref, Budget: p.Budget, ExpiresAt: p.ValidUntil.UTC()}, InstallationDigest: urlSHA(raw), DelegationRef: p.DelegationRef, MaxRuns: p.MaxRuns, AggregateBudget: p.AggregateBudget}
+	expires := p.ValidUntil.UTC()
+	var model *diagnosisprep.ModelInfo
+	if l.inspection.Scope != nil {
+		model = l.inspection.Scope.Model
+		if l.inspection.Scope.ExpiresAt.Before(expires) {
+			expires = l.inspection.Scope.ExpiresAt
+		}
+	}
+	l.inspection = diagnosisprep.Inspection{Scope: &diagnosisprep.Scope{Model: model, TargetRef: p.TargetRef, ScopeRef: p.ScopeRef, Origin: l.origin, PathPrefixes: paths, Methods: methods, QueryPolicy: "any", BodyPolicy: "bounded", MaxBodyBytes: policy.Limits.MaxBodyBytes, ApprovalMode: string(policy.ApprovalMode), AttestationRef: p.Attestation.Ref, Budget: p.Budget, ExpiresAt: expires}, InstallationDigest: urlSHA(raw), DelegationRef: p.DelegationRef, MaxRuns: p.MaxRuns, AggregateBudget: p.AggregateBudget}
 	return l, nil
 }
 func (l *urlLoadedProfile) clearMaterials() {

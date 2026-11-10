@@ -280,7 +280,7 @@ func TestURLPreparationInspectRejectsUnapprovedInput(t *testing.T) {
 				f.launch.OpenRouterManifestPath = filepath.Join(filepath.Dir(f.path), "unused-openrouter.json")
 				f.launch.ModelBaseURL, f.launch.ModelRef = llmpolicy.OpenRouterBaseURL, llmpolicy.OpenRouterModel
 				f.write()
-				reason = "model_mode_unsupported"
+				reason = "installation_model_invalid"
 			}
 			got, err := b.Inspect(t.Context(), "ARTEX", input)
 			if err != nil || got.ReasonCode != reason || got.Scope != nil || got.InstallationDigest != "" {
@@ -457,5 +457,42 @@ func TestURLPreparationExecuteRejectsChangedInspectionBinding(t *testing.T) {
 				t.Fatal("결속 불일치에서 회차 권위를 발급함")
 			}
 		})
+	}
+}
+
+func TestURLPreparationOpenRouterInspectProtectedManifest(t *testing.T) {
+	f := newURLNegativeFixture(t)
+	f.launch.ModelExecutionMode = "openrouter"
+	f.launch.LocalLLMManifestPath = ""
+	f.launch.OpenRouterManifestPath = filepath.Join(filepath.Dir(f.path), "external.json")
+	f.launch.ModelBaseURL, f.launch.ModelRef = llmpolicy.OpenRouterBaseURL, llmpolicy.OpenRouterModel
+	p := &f.config.Profiles[0]
+	p.InputTokensPerCall = 262144
+	p.Budget.InputTokens = 524288
+	p.Budget.CostUSDMicros = 600000
+	p.AggregateBudget = p.Budget
+	f.write()
+	p.ManifestSHA256 = urlNegativeWrite(t, f.launch.OpenRouterManifestPath, map[string]any{
+		"version": 1, "profile_id": 1, "format": "openai", "base_url": llmpolicy.OpenRouterBaseURL, "model": llmpolicy.OpenRouterModel,
+		"provider_slug": "fixture/endpoint", "expected_provider_name": "Fixture", "approval_id": "url-inspect", "expires_at": time.Now().Add(time.Hour),
+		"strict_privacy_ack": true, "account_spend_cap_ack": true, "max_requests": 2, "max_input_tokens": 524288, "max_output_tokens": 2048, "max_cost_usd_micros": 600000,
+		"max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 1024, "timeout_seconds": 2, "max_concurrent": 1,
+		"max_input_price_usd_micros_per_million": 1000000, "max_output_price_usd_micros_per_million": 1000000,
+	})
+	urlNegativeWrite(t, f.path, f.config)
+	b := f.runtime()
+	got, err := b.Inspect(t.Context(), "ARTEX", f.input)
+	if err != nil || got.Scope == nil || got.ReasonCode != "" || got.Scope.Model == nil || !got.Scope.Model.ExternalTransfer || got.Scope.Model.Provider != "fixture/endpoint" {
+		t.Fatal("valid external installation rejected", got.ReasonCode)
+	}
+	if f.database.calls.Load() != 0 || f.model.calls.Load() != 0 || f.target.calls.Load() != 0 {
+		t.Fatal("Inspect caused egress")
+	}
+	if os.WriteFile(f.launch.OpenRouterManifestPath, []byte("{}"), 0600) != nil {
+		t.Fatal("change manifest")
+	}
+	got, err = b.Inspect(t.Context(), "ARTEX", f.input)
+	if err != nil || got.Scope != nil || got.ReasonCode != "installation_model_invalid" {
+		t.Fatal("replaced manifest accepted")
 	}
 }
