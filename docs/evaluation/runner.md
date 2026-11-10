@@ -240,13 +240,14 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 `llm-summary.json`에는 LLM 사유가 전부 남고, 결과 기록의 사유는 그중 정렬 첫째다.
 
-**제품 E②(`e2.ours_mode=product`):** 개선 후 회차에서만 쓴다. 제품 entrypoint가 아직 없어서 합성 시험으로만 확인했다. 망 배치와 부정 연결 기대값은 가짜 E²와 같다. 설정은 `image`, `policy_path`, `policy_fingerprint_sha256`(시범 전 동결값), `header_mode`, 시한 다섯(`ready_timeout_seconds`, `close_ack_timeout_seconds`, `close_timeout_seconds`, `poll_seconds`, `exchange_timeout_seconds`), `verify_tool`, `verify_timeout_seconds`, 정책 생산 설정 `policy_tool`, `policy_tool_timeout_seconds`, `helper`, `helper_sha256`, `subnet`, `meter_ip`, `window_seconds`, `approval_valid_until`다. `policy_path`는 회차 값이 없는 의미 템플릿이고([형식](../contracts/e2-evaluation-policy-format.md) A0), 시범 전 동결값은 `python3 -I scripts/eval/e2_policy_fingerprint.py --template <템플릿> --tool <e2-eval-policy> --timeout-seconds <초>`로 계산한다. `e2_net`은 `subnet` 고정 대역이고, up 뒤 계측기의 실제 주소가 `meter_ip`와 다르면 `pre_topology_violation`으로 무효다.
+**제품 E②(`e2.ours_mode=product`):** 개선 후 회차에서만 쓴다. 제품 entrypoint가 아직 없어서 합성 시험으로만 확인했다. 망 배치와 부정 연결 기대값은 가짜 E²와 같다. 설정은 `image`, `policy_path`, `policy_fingerprint_sha256`(시범 전 동결값), `header_mode`, 시한 다섯(`ready_timeout_seconds`, `close_ack_timeout_seconds`, `close_timeout_seconds`, `poll_seconds`, `exchange_timeout_seconds`), `verify_tool`, `verify_timeout_seconds`, 정책 생산 설정 `policy_tool`, `policy_tool_timeout_seconds`, `helper`, `helper_sha256`, `subnet`, `meter_ip`, `window_seconds`, `approval_valid_until`, `prompt_wait_seconds`다. `policy_path`는 회차 값이 없는 의미 템플릿이고([형식](../contracts/e2-evaluation-policy-format.md) A0), 시범 전 동결값은 `python3 -I scripts/eval/e2_policy_fingerprint.py --template <템플릿> --tool <e2-eval-policy> --timeout-seconds <초>`로 계산한다. `e2_net`은 `subnet` 고정 대역이고, up 뒤 계측기의 실제 주소가 `meter_ip`와 다르면 `pre_topology_violation`으로 무효다.
 
 1. compose 전에 `e2-config/`에 설정, 템플릿에 회차 값을 채운 정책, 회차 CA, 회차 감사 키를 쓴다. `e2-state/`는 E²가 쓰는 회차 상태 디렉터리다([제어 채널 제안](../contracts/e2-runner-control-proposal.md) §4). 키 값은 파일로만 있다. 정책의 `approval_mode`가 `preauthorized_scope`가 아니면 시작을 거부한다. 평가 회차에는 요청마다 승인할 사람이 없다. 정책 사본에는 러너가 이번 회차 감사 키의 `audit_key` pin을 채운다. 원본 정책에 `audit_key`가 있으면 거부한다. 감사 키는 정책 지문에 안 들어가서 동결 지문은 회차마다 같다.
 2. 작업 생성 전에 `ready`를 받아 설정 digest·전달 모드·평가 선언·동결 지문과 대조하고, `bind`로 대상 컨테이너 ID를 넘긴다. 어긋나면 POST 없이 `e2_<코드>`로 무효다.
 3. 예산이 끝나면 계측기보다 E²를 먼저 닫는다. 시한을 넘기면 기다리지 않고 계측기 seal로 넘어간다.
 4. 봉인 뒤 `e2/<execution_ref>`를 러너 전용 사본 `e2-copy/`로 옮겨 `e2-audit-verify`와 투영 행을 대조한다.
 5. 다 맞거나 실행이 없었으면 시도별 대조를 돌린다. `no_execution`은 결정 0건으로 대조해서 계측기에 도달한 요청이 있으면 `unrecorded_observed`로 나온다.
+6. E② 결과가 `complete`인 회차는 다음에 [프롬프트 투영](../contracts/e2-prompt-projection.md)을 받아 대조한다. 값은 러너가 정책에 넣은 `run_ref`로 묻는다. 수집 중(`collecting`)이나 일시 장애는 `prompt_wait_seconds` 안에서 다시 묻고, 시한을 넘기거나 `complete`가 아니면 그 회차는 `e2_prompt_unverified`로 무효다. 제품 실패·실행 없음 회차는 비교할 실행이 없어 `not_applicable`로 남기고 유효성은 아래 표대로다.
 
 | 결과 | 회차 | 통제 주장 |
 |---|---|---|
@@ -254,8 +255,9 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `no_execution` | 유효 | 허용 양성 근거가 없어 보류 |
 | `product_failure`(close 실패·`incomplete`·형식·무결성 실패) | 유효 | 대조 근거가 없어 보류 |
 | 회차 값·정책 지문 불일치, 파일 소유자, 읽기·검증 명령 장애(`e2_<코드>`) | 무효 | 없음 |
+| E② 결과는 완료인데 프롬프트 동일성 미확인(`e2_prompt_unverified`) | 무효 | 없음 |
 
-기록: `e2-service-ready.json`, `e2-collection.json`, 격리 근거의 `e2_product` 행. 키 파일은 회차 디렉터리 `e2-config/`에 남는다. 사후 `e2-audit-verify`에 필요하고, 회차 디렉터리는 커밋 금지 결과물이다.
+기록: `e2-service-ready.json`, `e2-collection.json`, `e2-prompt-projection.json`(미확인이면 `e2-prompt-status.json`), 격리 근거의 `e2_product`·`e2_prompt` 행. 키 파일은 회차 디렉터리 `e2-config/`에 남는다. 사후 `e2-audit-verify`에 필요하고, 회차 디렉터리는 커밋 금지 결과물이다.
 
 **판정 export:** 설정 `verdict_export`가 null이면 수집하지 않는다. 값이 있으면 개선 후 회차에서만 findings 다음, down 전에 [판정 페이지 제안](../contracts/verdict-record-page-api-proposal.md)대로 동결하고 전체 페이지를 모은다. 동결이 준비 전(409)이면 `ready_poll_seconds` 간격으로 다시 묻고, `ready_wait_seconds`를 넘기면 새 요청을 보내지 않는다.
 

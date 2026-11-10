@@ -54,7 +54,7 @@ from isolation_proof import blocked_attempts, valid_output_language  # noqa: E40
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from runner_engine import (  # noqa: E402
-    ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, engine_settings, intercept_summary, load_engine_rules,
+    ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
@@ -66,6 +66,8 @@ from e2_collect import OUTCOME_COMPLETE, OUTCOME_PRODUCT_FAILURE, E2Collection, 
 from e2_control import CLOSE_NO_EXECUTION, CLOSE_UNAVAILABLE, CloseResult, E2ControlError  # noqa: E402
 from e2_link import E2Link, E2LinkPaths  # noqa: E402
 from e2_prepare import E2PrepareError  # noqa: E402
+from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified, parse_projection  # noqa: E402
+from e2_prompt_identity import PROMPT_FIELDS  # noqa: E402
 from verdict_collector import (  # noqa: E402
     CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady, VerdictIntegrityError, collect_verdict_export,
 )
@@ -175,6 +177,8 @@ class RunPorts(Protocol):
     def e2_bind(self, reset_generation: str) -> None: ...
     def e2_close(self) -> CloseResult: ...
     def e2_collect(self, close: CloseResult, task_id: str, reset_generation: str) -> E2Collection: ...
+    def e2_run_ref(self) -> str: ...
+    def e2_prompt_projection(self, task_id: str, run_ref: str) -> bytes: ...
     def verdict_export(self, task_id: str, context: RecordContext) -> CollectedExport: ...
     def local_serving(self, phase: str, keep_alive_seconds: int) -> dict: ...
     def local_unload(self) -> None: ...
@@ -232,6 +236,8 @@ class RunSpec:
     # 판정 export를 기다리는 시한·간격. None이면 수집 안 함(baseline·설정 null).
     verdict_wait_seconds: float | None = None
     verdict_poll_seconds: float = 0
+    e2_prompt_wait_seconds: float = 0
+    e2_prompt_poll_seconds: float = 0
     # local 선언의 서버 버전·모델 digest·컨텍스트. api는 None.
     llm_serving: dict | None = None
     llm_keep_alive_seconds: int = 0
@@ -622,10 +628,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         reconciliation = _step(state, "e2_stub_log_invalid", lambda: reconcile(decisions, rows))
         _step(state, "evidence_write_failed",
               lambda: evidence.write_json("attempt-reconciliation.json", dict(reconciliation, fixture=True)))
-    e2_product = None
+    e2_product, e2_prompt = None, None
     if spec.e2_mode == E2_PRODUCT:
         e2_product, reconciliation = _collect_e2(ports, evidence, state, e2_close, task_id, pre["services"][TARGET_SERVICE]["id"], rows,
                                                  spec.image_ids["e2"])
+        e2_prompt = _collect_e2_prompt(spec, ports, evidence, state, clock, task_id, e2_product["collection_outcome"])
     verified = _wait_llm_verified(spec, gateway, clock, state)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
         verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling))
@@ -659,7 +666,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
-        reconciliation, records, verdict_row, e2_product))
+        reconciliation, records, verdict_row, e2_product, e2_prompt))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
@@ -718,6 +725,40 @@ def _collect_e2(ports: RunPorts, evidence, state: _State, close: CloseResult, ta
     return row, reconciliation
 
 
+_E2_PROMPT_DETAIL_FIELDS = ("task_id", "exploration_id", "run_ref", "expected_count", "projection_sha256") + PROMPT_FIELDS
+
+
+def _e2_prompt_unverified(evidence, state: _State, code: str) -> None:
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("e2-prompt-status.json", {"status": "unverified", "reason": code}))
+    raise RunFailure("e2_prompt_unverified")
+
+
+def _collect_e2_prompt(spec: RunSpec, ports: RunPorts, evidence, state: _State, clock: Clock, task_id: str, outcome: str) -> dict:
+    """회차의 Worker 프롬프트 식별값을 서명 근거로 남긴다(프로토콜 §2). 확인되지 않으면 회차를 쓰지 않는다.
+
+    제품 실패·실행 없음 회차는 비교할 실행이 없거나 봉인되지 않는다. 그 회차의 유효성은 §2의 E② 장애 규칙 그대로 둔다.
+    """
+    if outcome != OUTCOME_COMPLETE:
+        return {"status": "not_applicable", "reason": outcome} | {name: None for name in _E2_PROMPT_DETAIL_FIELDS}
+    run_ref = ports.e2_run_ref()
+    deadline = clock.monotonic() + spec.e2_prompt_wait_seconds
+    while True:
+        try:
+            raw = ports.e2_prompt_projection(task_id, run_ref)
+            result = parse_projection(raw, task_id, run_ref)
+            break
+        except E2PromptNotReady as exc:
+            reason = exc.code
+        except E2PromptUnverified as exc:
+            _e2_prompt_unverified(evidence, state, exc.code)
+        clock.sleep(min(spec.e2_prompt_poll_seconds, max(0, deadline - clock.monotonic())))
+        if clock.monotonic() >= deadline:
+            _e2_prompt_unverified(evidence, state, reason)
+    _step(state, "evidence_write_failed", lambda: evidence.write_bytes("e2-prompt-projection.json", raw))
+    return {"status": "verified", "reason": None, "task_id": task_id, "exploration_id": result.exploration_id, "run_ref": run_ref,
+            "expected_count": result.expected_count, "projection_sha256": result.projection_sha256, **dict(zip(PROMPT_FIELDS, result.identity))}
+
+
 def _record_context(spec: RunSpec, pre: dict) -> RecordContext:
     return RecordContext(run_id=spec.run_id, model_tag=spec.model_tag,
                          reset_generation=pre["services"][TARGET_SERVICE]["id"],
@@ -771,7 +812,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
                   pre_solved: dict, post_solved: dict, steps: dict, window: dict, observer: list, ready_calls: int,
                   meter_summary: dict, drained: dict, engine_rows: int, pre_checked_at: str,
                   post_check_at: str, conditions: dict, e2: dict, reconciliation: dict | None, records: dict | None,
-                  verdict_row: dict | None, e2_product: dict | None) -> dict:
+                  verdict_row: dict | None, e2_product: dict | None, e2_prompt: dict | None) -> dict:
     """v1.1 러너 기록(서명 전)과 그 근거 파일 둘(격리 근거·해결 이벤트)을 만든다. 서명은 down 뒤."""
     context = _record_context(spec, pre)
     boundary_ref, host_ref = "compose:" + spec.project, "host-condition:" + spec.run_id
@@ -785,7 +826,7 @@ def _build_record(spec: RunSpec, evidence, state: _State, pre: dict, post: dict,
         boundary_ref=boundary_ref, policy=policy, steps=steps, observer_rows=observer, ready_calls=ready_calls,
         observer_path_ref=get_ref, readonly_ref=spec.observer_readonly_ref, meter=meter_summary,
         drained=drained, engine_rows=engine_rows, conditions=conditions, e2=e2, reconciliation=reconciliation,
-        verdict_collection=verdict_row, e2_product=e2_product)
+        verdict_collection=verdict_row, e2_product=e2_product, e2_prompt=e2_prompt)
     evidence.write_json("isolation-evidence.json", isolation_evidence(context, rows))
     evidence_sha, evidence_size = evidence.describe("isolation-evidence.json")
     in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
@@ -954,10 +995,11 @@ class DockerPorts:
                  findings: Callable[[], dict], start: Callable[[], str], settings: Callable[[], dict],
                  rules: Callable[[], dict] | None = None, intercepted: Callable[[], dict] | None = None,
                  apply_settings: Callable[[], None] | None = None,
-                 verdicts: Callable[[str, RecordContext], CollectedExport] | None = None, e2_link: E2Link | None = None):
+                 verdicts: Callable[[str, RecordContext], CollectedExport] | None = None, e2_link: E2Link | None = None,
+                 e2_prompt: Callable[[str, str], bytes] | None = None):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
         self._findings, self._start, self._settings, self._rules = findings, start, settings, rules
-        self._intercepted, self._apply_settings, self._verdicts, self._e2 = intercepted, apply_settings, verdicts, e2_link
+        self._intercepted, self._apply_settings, self._verdicts, self._e2, self._e2_prompt = intercepted, apply_settings, verdicts, e2_link, e2_prompt
         self.base_args = compose_base_args(plan)
         self.obs_origin = f"http://127.0.0.1:{config.ports['obs_host']}"
 
@@ -1103,6 +1145,12 @@ class DockerPorts:
     def e2_collect(self, close: CloseResult, task_id: str, reset_generation: str) -> E2Collection:
         return self._e2.collect(close, task_id, reset_generation)
 
+    def e2_run_ref(self) -> str:
+        return self._e2.run_ref
+
+    def e2_prompt_projection(self, task_id: str, run_ref: str) -> bytes:
+        return self._e2_prompt(task_id, run_ref)
+
     def intercept_summary(self) -> dict:
         return self._intercepted()
 
@@ -1174,6 +1222,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         verdict_wait_seconds=(config.verdict_export["ready_wait_seconds"]
                               if config.verdict_export is not None and plan.side == POLICY_SWITCH_SIDE else None),
         verdict_poll_seconds=0 if config.verdict_export is None else config.verdict_export["ready_poll_seconds"],
+        e2_prompt_wait_seconds=config.e2_product["prompt_wait_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
+        e2_prompt_poll_seconds=config.e2_product["poll_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
         state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
         state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
         state_memory_enabled=config.state is not None and config.state["memory"] is not None,
@@ -1261,8 +1311,11 @@ def main(argv: list[str] | None = None) -> int:
                                       model_tag=context.model_tag, reset_generation=context.reset_generation,
                                       limits=verdict_limits(config.verdict_export))
 
+    def e2_prompt(task_id: str, run_ref: str) -> bytes:
+        return e2_prompt_projection(config.ports["engine_api_host"], secret, task_id, run_ref, config.e2_product["exchange_timeout_seconds"])
+
     ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules, intercepted,
-                        apply_settings, verdicts, e2_link)
+                        apply_settings, verdicts, e2_link, e2_prompt)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
                                     None if rules is None else rules.sha256), ports, MeterFiles(directory.meter, directory.e2),

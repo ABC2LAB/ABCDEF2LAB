@@ -151,7 +151,7 @@ MAX_FINDINGS_PAGES = 10_000
 _E2_PRODUCT_FIELDS = ("image", "policy_path", "policy_fingerprint_sha256", "header_mode", "ready_timeout_seconds", "close_ack_timeout_seconds",
                       "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds", "verify_tool", "verify_timeout_seconds",
                       "policy_tool", "policy_tool_timeout_seconds", "helper", "helper_sha256", "subnet", "meter_ip", "window_seconds",
-                      "approval_valid_until")
+                      "approval_valid_until", "prompt_wait_seconds")
 # 회차 CA 수명 상한(e2proxy maxExecutionCALifetime)과 같다. 승인 기간은 CA 수명을 넘을 수 없다.
 MAX_E2_WINDOW_SECONDS = 86_400
 # 게이트웨이 주소와 겹치지 않게 subnet은 최소 네 주소를 남긴다.
@@ -507,7 +507,7 @@ def _e2_product(block: dict, errors: list[str]) -> dict | None:
     if "header_mode" in block and not (isinstance(block["header_mode"], str) and block["header_mode"] in E2_HEADER_MODES):
         errors.append("config.e2.header_mode: UNSUPPORTED")
     for name in ("ready_timeout_seconds", "close_ack_timeout_seconds", "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds",
-                 "verify_timeout_seconds", "policy_tool_timeout_seconds"):
+                 "verify_timeout_seconds", "policy_tool_timeout_seconds", "prompt_wait_seconds"):
         if name in block and not _int(block[name], 1, MAX_RUN_SECONDS):
             errors.append(f"config.e2.{name}: INVALID")
     if "helper_sha256" in block and not (isinstance(block["helper_sha256"], str) and _SHA256_HEX.fullmatch(block["helper_sha256"])):

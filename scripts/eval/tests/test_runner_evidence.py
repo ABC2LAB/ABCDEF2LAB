@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import os
@@ -42,6 +43,20 @@ class TestEvidenceDir(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_write_bytes_keeps_the_exact_bytes(self):
+        evidence = EvidenceDir(self.dir)
+        data = b'{ "b":1,   "a":2 }'
+        digest = evidence.write_bytes("projection.json", data)
+        path = self.dir / "projection.json"
+        self.assertEqual(path.read_bytes(), data)
+        self.assertEqual(digest, hashlib.sha256(data).hexdigest())
+        self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o600)
+        self.assertEqual(evidence.digests()["projection.json"], digest)
+        with self.assertRaises(EvidenceError):
+            evidence.write_bytes("projection.json", b"{}")
+        with self.assertRaises(EvidenceError):
+            evidence.write_bytes("../escape.json", b"{}")
 
     def test_writes_once_private_and_remembers_digest(self):
         evidence = EvidenceDir(self.dir)

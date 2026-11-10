@@ -111,8 +111,9 @@ func TestE2PromptProjectionWorkerPostgresPython(t *testing.T) {
 	scripts, _ := filepath.Abs("../scripts/eval")
 	script := `import json,sys
 sys.path.insert(0,sys.argv[1])
+from e2_prompt_collect import parse_projection
 from e2_prompt_identity import run_prompt_identity, condition_prompt_identity, PromptIdentityError
-p=json.load(sys.stdin)
+raw=sys.stdin.buffer.read(); p=json.loads(raw)
 assert set(p)=={'format','task_id','exploration_id','run_ref','state','complete','expected_count','observed_count','snapshot_sequence','observations'}
 assert p['format']=='abc2lab.e2-prompt-projection/v1' and p['task_id']==int(sys.argv[2]) and p['run_ref']==sys.argv[3]
 rows=p['observations']; assert p['state']=='complete' and p['complete'] is True
@@ -123,6 +124,8 @@ for o in rows:
  assert set(o)=={'sequence','activity_id','intent_id','worker','version','key','source','template_digest','guidance_digest','control_digest','tools_digest'}
  assert o['version']=='e2-worker-prompt/v1' and o['key']=='e2_worker'
 assert run_prompt_identity(rows)==condition_prompt_identity([rows,rows])
+collected=parse_projection(raw,sys.argv[2],sys.argv[3])
+assert collected.identity==run_prompt_identity(rows) and collected.expected_count==2
 other=[dict(rows[0],source='override')]
 try: condition_prompt_identity([rows,other])
 except PromptIdentityError as e: assert e.code=='runs_differ'

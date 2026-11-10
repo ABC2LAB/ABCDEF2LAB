@@ -11,6 +11,7 @@ import tempfile
 import threading
 import traceback
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -21,6 +22,8 @@ from baseline_extract import MAX_VOCABULARY_BYTES, UPSTREAM_COMMIT
 from baseline_pages import BaselinePageMerge
 from runner_config import REPO_ROOT
 import runner  # noqa: E402
+import runner_engine  # noqa: E402
+from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified  # noqa: E402
 from runner_engine import (
     _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
     EngineLLMProfile, apply_engine_settings, engine_settings, findings_record, load_vocabulary, login, start_task,
@@ -237,6 +240,40 @@ class TestLogin(unittest.TestCase):
         engine = FakeEngine(**kwargs)
         self.addCleanup(engine.close)
         return engine
+
+    def projection(self, status, body=b"{}", error=None):
+        seen = {}
+
+        def get(port, path, headers, timeout, limit):
+            seen.update(port=port, path=path, headers=headers, timeout=timeout, limit=limit)
+            if error is not None:
+                raise error
+            return status, body
+        with mock.patch.object(runner_engine, "login", return_value="tok"), mock.patch.object(runner_engine, "_get", get):
+            return runner_engine.e2_prompt_projection(8080, AdminSecret("x"), "17", "e2run:1", 5), seen
+
+    def test_projection_asks_the_runners_task_and_run_with_a_bearer_token(self):
+        data, seen = self.projection(200, b'{"a":1}')
+        self.assertEqual(data, b'{"a":1}')
+        self.assertEqual((seen["path"], seen["headers"], seen["limit"]), ("/api/tasks/17/e2-prompt-projection?run_ref=e2run%3A1", {"Authorization": "Bearer tok"}, 8 << 20))
+
+    def test_projection_unavailable_can_be_asked_again(self):
+        with self.assertRaises(E2PromptNotReady) as caught:
+            self.projection(503)
+        self.assertEqual(caught.exception.code, "engine_unavailable")
+
+    def test_projection_network_or_login_failure_can_be_asked_again(self):
+        with self.assertRaises(E2PromptNotReady) as caught:
+            self.projection(200, error=OSError("synthetic"))
+        self.assertEqual(caught.exception.code, "engine_unreachable")
+        with mock.patch.object(runner_engine, "login", side_effect=EngineAPIError("engine_login_http_401")), self.assertRaises(E2PromptNotReady):
+            runner_engine.e2_prompt_projection(8080, AdminSecret("x"), "17", "e2run-1", 5)
+
+    def test_projection_binding_and_auth_refusals_are_final(self):
+        for status in (401, 400, 404, 409):
+            with self.subTest(status), self.assertRaises(E2PromptUnverified) as caught:
+                self.projection(status)
+            self.assertEqual(caught.exception.code, f"http_{status}")
 
     def test_login_posts_fixed_username_and_returns_token(self):
         engine = self.engine()

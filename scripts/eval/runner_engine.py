@@ -24,10 +24,12 @@ import re
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 from baseline_extract import MAX_VOCABULARY_BYTES, UPSTREAM_COMMIT, extract_baseline
 from baseline_pages import BaselinePageMerge
 from baseline_pages_collector import MAX_BEARER_LENGTH, BaselinePagesEndpoint, collect_baseline_pages
+from e2_prompt_collect import MAX_PROJECTION_BYTES, E2PromptNotReady, E2PromptUnverified
 
 LOGIN_PATH = "/api/auth/login"
 TASKS_PATH = "/api/tasks"
@@ -138,6 +140,21 @@ def _get(port: int, path: str, headers: dict, timeout: float, limit: int) -> tup
         connection.request("GET", path, headers={"Accept": "application/json", "Connection": "close", **headers})
         with closing(connection.getresponse()) as response:
             return response.status, response.read(limit + 1)
+
+
+def e2_prompt_projection(port: int, secret: AdminSecret, task_id: str, run_ref: str, timeout: float) -> bytes:
+    """실제 E② run_ref의 프롬프트 투영을 받은 바이트 그대로 돌려준다. 해석은 e2_prompt_collect가 한다."""
+    try:
+        token = login(port, secret, timeout)
+        status, data = _get(port, f"/api/tasks/{quote(task_id, safe='')}/e2-prompt-projection?{urlencode({'run_ref': run_ref})}",
+                            {"Authorization": "Bearer " + token}, timeout, MAX_PROJECTION_BYTES)
+    except (EngineAPIError, OSError, http.client.HTTPException, ValueError, OverflowError):
+        raise E2PromptNotReady("engine_unreachable") from None
+    if status == 503:
+        raise E2PromptNotReady("engine_unavailable")
+    if status != 200:
+        raise E2PromptUnverified(f"http_{status}")
+    return data
 
 
 def login(port: int, secret: AdminSecret, timeout: float) -> str:

@@ -12,6 +12,8 @@ import json
 import re
 from datetime import datetime
 
+from e2_prompt_identity import PROMPT_FIELDS, PROMPT_SOURCES
+
 _CONTEXT = ("run_id", "model_tag", "reset_generation", "instance_id", "execution_id")
 EVIDENCE_FORMAT = "abc2lab-isolation-evidence-v1"
 NETWORK_MODES = ("loopback_only", "dedicated_network")
@@ -49,6 +51,7 @@ _ROW_FIELDS = {
     "e2_product": {"close_state", "close_reason", "collection_outcome", "collection_reason", "rows", "attempts", "decisions",
                    "attempts_without_result", "allowed_not_sent", "checkpoint_sequence", "config_sha256", "policy_fingerprint_sha256",
                    "manifest_sha256", "image_id"},
+    "e2_prompt": {"status", "reason", "task_id", "exploration_id", "run_ref", "expected_count", "projection_sha256", *PROMPT_FIELDS},
     "attempt_reconciliation": {"cells", "allowed_responded", "meter_attempt_reused", "blocked_reached", "unrecorded_reached",
                                "positive_evidence", "control_claim_withheld"},
 }
@@ -323,6 +326,28 @@ def e2_product_row(receipt: dict, evidence: object) -> dict | None:
             or not _count(row["attempts"]) or sum(decisions.values()) != row["attempts"]):
         raise IsolationError("isolation_evidence.e2_product: 결정 건수 형식 오류")
     return row
+
+
+def e2_prompt(receipt: dict, evidence: object) -> tuple[str, ...] | None:
+    """제품 E² 회차의 Worker 프롬프트 식별값(프로토콜 §2). 결과가 완료인 회차는 확인된 값이 반드시 있어야 한다."""
+    if e2_mode(receipt, evidence) != "product":
+        if _rows(evidence, receipt)["e2_prompt"]:
+            raise IsolationError("isolation_evidence.e2_prompt: 제품 E² 회차에만 있음")
+        return None
+    row = _one(_rows(evidence, receipt), "e2_prompt")
+    outcome = e2_product_row(receipt, evidence)["collection_outcome"]
+    details = ("task_id", "exploration_id", "run_ref", "expected_count", "projection_sha256", *PROMPT_FIELDS)
+    if row["status"] == "not_applicable":
+        if outcome == "complete" or row["reason"] != outcome or any(row[name] is not None for name in details):
+            raise IsolationError("isolation_evidence.e2_prompt: 미적용 상태가 맞지 않음")
+        return None
+    if row["status"] != "verified" or outcome != "complete" or row["reason"] is not None:
+        raise IsolationError("isolation_evidence.e2_prompt: 확인 상태가 맞지 않음")
+    digests = ("projection_sha256", "template_digest", "guidance_digest", "control_digest", "tools_digest")
+    if (not all(_matches(_E2_SHA256, row[name]) for name in digests) or row["source"] not in PROMPT_SOURCES or not _count(row["exploration_id"])
+            or row["exploration_id"] < 1 or not _count(row["expected_count"]) or row["expected_count"] < 1 or not isinstance(row["task_id"], str) or not isinstance(row["run_ref"], str)):
+        raise IsolationError("isolation_evidence.e2_prompt: 값 형식 오류")
+    return tuple(row[name] for name in PROMPT_FIELDS)
 
 
 def verdict_collection(receipt: dict, evidence: object, records: object) -> None:
