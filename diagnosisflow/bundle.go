@@ -50,15 +50,21 @@ type bundleBase struct {
 	at         int
 }
 
-func bundleBases(body []byte) []bundleBase {
+// 한도에서 잘리면 그 뒤에 더 가까운 대입이 있을 수 있으므로, 믿을 수 있는 구간의 끝도 함께 돌려준다.
+func bundleBases(body []byte) ([]bundleBase, int) {
 	var bases []bundleBase
+	cutoff := len(body)
 	for _, re := range []*regexp.Regexp{baseAssign, baseTemplate} {
-		for _, m := range re.FindAllSubmatchIndex(body, maxBundleMatches) {
+		matches := re.FindAllSubmatchIndex(body, maxBundleMatches)
+		if len(matches) == maxBundleMatches {
+			cutoff = min(cutoff, matches[len(matches)-1][0])
+		}
+		for _, m := range matches {
 			bases = append(bases, bundleBase{string(body[m[2]:m[3]]), string(body[m[4]:m[5]]), m[0]})
 		}
 	}
 	sort.Slice(bases, func(i, j int) bool { return bases[i].at < bases[j].at })
-	return bases
+	return bases, cutoff
 }
 
 // 번들러는 클래스를 차례로 내보내므로 가장 가까운 앞쪽 대입이 그 호출의 기준 주소다.
@@ -102,20 +108,33 @@ func bundleRefs(body []byte) []bundleRef {
 		seen[key] = true
 		refs = append(refs, bundleRef{method, path, kind, source})
 	}
-	bases := bundleBases(body)
-	full := func(expr, suffix string, at int) string {
-		if strings.HasPrefix(expr, "this.") {
-			if base, ok := baseBefore(bases, expr, at); ok {
-				return base + suffix
-			}
+	bases, cutoff := bundleBases(body)
+	// 앞 식을 기준 주소로 푼다. 식에 뭐가 들었는지 모르면 경로를 확정하지 않는다.
+	full := func(expr, suffix string, at int) (string, bool) {
+		switch {
+		case expr == "":
+			return suffix, true
+		case !strings.Contains(expr, "."):
+			return suffix, false // 지역 변수는 전체 주소일 수도, 경로 일부일 수도 있다.
+		case !strings.HasPrefix(expr, "this."):
+			return suffix, true // env.api 같은 설정값은 origin으로 본다.
+		case at > cutoff:
+			return suffix, false
 		}
-		return suffix
+		if base, ok := baseBefore(bases, expr, at); ok {
+			return base + suffix, true
+		}
+		return suffix, true
 	}
 	call := func(method, expr, suffix string, at int, dynamic bool) {
-		path, source := full(expr, suffix, at), "script_call"
+		path, known := full(expr, suffix, at)
+		source := "script_call"
 		if dynamic {
 			// 뒤가 실행 중에 정해지는 주소라 앞부분만 후보로 남긴다.
 			path, source = strings.TrimSuffix(path, "/"), "script_prefix"
+		}
+		if !known {
+			method, source = "UNKNOWN", "static_literal"
 		}
 		emit(method, path, "api", source)
 	}
@@ -126,7 +145,7 @@ func bundleRefs(body []byte) []bundleRef {
 		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), group(body, m, 3), m[0], group(body, m, 4) == "${")
 	}
 	for _, m := range callMember.FindAllSubmatchIndex(body, maxBundleMatches) {
-		if base, ok := baseBefore(bases, group(body, m, 2), m[0]); ok {
+		if base, ok := baseBefore(bases, group(body, m, 2), m[0]); ok && m[0] <= cutoff {
 			emit(strings.ToUpper(group(body, m, 1)), base, "api", "script_call")
 		}
 	}

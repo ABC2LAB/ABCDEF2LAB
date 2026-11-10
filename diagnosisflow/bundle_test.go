@@ -29,6 +29,8 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"relative literal":      {`c.post("./rest/verify",x)`, []string{"POST ./rest/verify script_call"}},
 		"host prefix":           {`this.http.post(this.server+"/rest/login",e)`, []string{"POST /rest/login script_call"}},
 		"other expression":      {`http.put(env.api+"/v1/item",e)`, []string{"PUT /v1/item script_call"}},
+		"local variable":        {`const u=this.host+"/"+id;this.http.get(u+"/reviews")`, []string{"UNKNOWN /reviews static_literal"}},
+		"local template":        {"c.get(`${u}/rest/x`)", []string{"UNKNOWN /rest/x static_literal"}},
 		"base and suffix":       {`this.host=this.server+"/svc/items"}all(){return this.http.get(this.host+"/all")}`, []string{"GET /svc/items/all script_call"}},
 		"bare base":             {`this.host=this.server+"/svc/items"}all(){return this.http.get(this.host)}`, []string{"GET /svc/items script_call"}},
 		"bare base with body":   {`this.host="/svc/items"}add(e){return this.http.post(this.host,e)}`, []string{"POST /svc/items script_call"}},
@@ -76,6 +78,27 @@ func TestBundleBaseUsesNearestEarlierAssignment(t *testing.T) {
 	later := `a(){return this.http.get(this.host+"/x")}this.host="/late"`
 	if got := refStrings(bundleRefs([]byte(later))); !reflect.DeepEqual(got, []string{"GET /x script_call"}) {
 		t.Fatalf("later assignment used %q", got)
+	}
+}
+
+func TestBundleBaseCapStopsResolvingAfterTruncation(t *testing.T) {
+	assignments := func(n int) string {
+		var b strings.Builder
+		for i := 0; i < n; i++ {
+			b.WriteString(`this.r` + strconv.Itoa(i) + `="/route";`)
+		}
+		return b.String()
+	}
+	early := `this.host="/first";c.get(this.host+"/a");`
+	late := `this.host="/later";c.get(this.host+"/x");this.http.get(this.host)`
+	truncated := refStrings(bundleRefs([]byte(early + assignments(maxBundleMatches) + late)))
+	if want := []string{"GET /first/a script_call", "UNKNOWN /x static_literal"}; !reflect.DeepEqual(truncated, want) {
+		t.Fatalf("got=%q want=%q", truncated, want)
+	}
+	// late의 대입까지 합쳐 한도보다 하나 적으면 잘리지 않았으므로 정상 해석한다.
+	whole := refStrings(bundleRefs([]byte(early + assignments(maxBundleMatches-3) + late)))
+	if want := []string{"GET /first/a script_call", "GET /later/x script_call", "GET /later script_call"}; !reflect.DeepEqual(whole, want) {
+		t.Fatalf("got=%q want=%q", whole, want)
 	}
 }
 
