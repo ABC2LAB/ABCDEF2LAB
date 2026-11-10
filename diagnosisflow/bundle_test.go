@@ -61,6 +61,7 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"fetch single quote":    {`fetch("/data/n",{method:"GET",headers:{'X':'}'},method:"POST"})`, []string{"UNKNOWN /data/n script_call"}},
 		"fetch closed strings":  {`fetch("/data/h",{method:"POST",headers:{"X":"}{"}})`, []string{"POST /data/h script_call"}},
 		"fetch escaped quote":   {`fetch("/data/i",{method:"GET",headers:{"X":"a\"}"},method:"POST"})`, []string{"UNKNOWN /data/i script_call"}},
+		"fetch escaped closed":  {`fetch("/data/p",{method:"POST",headers:{"X":"a\"}"}})`, []string{"POST /data/p script_call"}},
 		"fetch comment":         {`fetch("/data/j",{method:"GET"/*}*/,mode:"x"})`, []string{"UNKNOWN /data/j script_call"}},
 		"fetch regex":           {`fetch("/data/m",{method:"GET",a:/}/,mode:"x"})`, []string{"UNKNOWN /data/m script_call"}},
 		"fetch template":        {"fetch(\"/data/l\",{method:\"GET\",headers:{a:`}`},mode:\"x\"})", []string{"UNKNOWN /data/l script_call"}},
