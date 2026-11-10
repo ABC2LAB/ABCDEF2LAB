@@ -73,10 +73,18 @@ Compose의 `eval-e2` 명령으로 쓰지 않는다.
 ## 서비스 진입점
 
 `cmd/e2-eval-service`가 `eval-e2`의 진입점이다. 이미지는 `deploy/eval/e2.Dockerfile`로 엔진 이미지 위에 만든다.
-지금은 러너 제어 채널만 연다. 엔진이 호출할 경로가 없고 `AuthorizeExecution`을 전부 거절하므로
-`service_ready`는 설정과 정책 지문이 맞는다는 뜻뿐이고 대상 송신 권한이나 도구 격리를 뜻하지 않는다.
-Docker 기본 seccomp에서는 샌드박스가 쓰는 user namespace가 막힌다(`unshare` EPERM, 11/10 실측).
-실행 경로를 붙일 때 `eval-e2` 전용 seccomp 프로필이 필요하다.
+러너 제어 채널을 열고, `-engine-token-file`을 주면 엔진이 부를 실행 통로를 `listen` 주소에 연다.
+토큰은 러너가 회차마다 만들어 `eval-e2`와 엔진에만 읽기 전용으로 mount한다. 토큰이 없으면 통로를 열지 않고
+`AuthorizeExecution`을 전부 거절한다. `service_ready`는 설정과 정책 지문이 맞는다는 뜻뿐이고 실행 권한을 뜻하지 않는다.
+
+Docker 기본 seccomp는 샌드박스가 쓰는 user namespace를 막는다(`unshare` EPERM, 11/10 실측). 그래서 `eval-e2`에는
+샌드박스가 쓰는 플래그 조합만 여는 `deploy/eval/seccomp-e2.json`을 준다. 샌드박스가 호출마다 임시 루트를 `/tmp`에 만들므로
+read-only 컨테이너에 `/tmp` tmpfs가 필요하다.
+
+엔진 쪽은 `ARTEX_E2_REMOTE_URL`을 받으면 정책과 한도를 `eval-e2`에서 읽어 런타임을 만든다. 실행 자원은 `eval-e2`가 소유한다.
+러너가 `eval-e2`를 닫으면 엔진이 이를 보고 task를 마감해 프롬프트 투영을 봉인한다.
+
+**실측(2026-11-10, 합성 모델):** 실제 엔진·`eval-e2`·계측기·Juice Shop을 러너로 돌려 회차가 `complete`로 끝났다. GET 6건이 대상에 도달하고 POST 1건이 차단됐으며 기록되지 않은 도달은 0건이다. 프롬프트 투영은 3건 모두 수집됐고 서명 검증을 통과했다. 샌드박스 안에서 제어 소켓·설정·근거·토큰 경로는 보이지 않고 대상 직접 연결은 실패했다. 합성 모델이라 탐지 성능은 재지 않았다.
 
 합성 수용시험은 실제 자식 프로세스의 backend와 UDS를 사용한다.
 부모가 ready → bind → head → close → close_status를 보내며,

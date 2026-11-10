@@ -64,8 +64,17 @@ def decide(body: dict, plan: dict) -> tuple[str, dict] | None:
     if PLANNER_TOOL in tools:
         return (PLANNER_TOOL, {"summary": plan["intent_summary"], "priority": INTENT_PRIORITY}) if results == 0 else None
     if WORKER_TOOL in tools and results < len(plan["commands"]):
-        return WORKER_TOOL, {"command": plan["commands"][results], "description": "scripted"}
+        return WORKER_TOOL, _worker_arguments(body, plan["commands"][results])
     return None
+
+
+def _worker_arguments(body: dict, command: str) -> dict:
+    """도구 스키마에 있는 필드만 보낸다. E② Bash는 모르는 필드를 입력 오류로 거절한다."""
+    for tool in body.get("tools") or []:
+        function = tool.get("function", {}) if isinstance(tool, dict) else {}
+        if function.get("name") == WORKER_TOOL and "description" in (function.get("parameters") or {}).get("properties", {}):
+            return {"command": command, "description": "scripted"}
+    return {"command": command}
 
 
 def completion(call: tuple[str, dict] | None, model: str) -> dict:

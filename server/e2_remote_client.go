@@ -12,6 +12,9 @@ import (
 	"github.com/Autumn-27/artex/e2runner"
 )
 
+// 조회가 실패했을 때의 상태 이름이다. 실행이 닫혔다는 뜻이 아니다.
+const e2RemoteViewUnavailable = "unavailable"
+
 // e2RemoteClient는 엔진 쪽에서 eval-e2의 실행 자원을 부른다.
 type e2RemoteClient struct {
 	url     string
@@ -94,7 +97,8 @@ func (c *e2RemoteClient) acquire(ctx context.Context, q E2HTTPRequest) (E2HTTPRu
 	if _, err := c.bounded(ctx, e2RemoteIdentity(e2RemoteAcquireOp, q)); err != nil {
 		return E2HTTPRunOptions{}, err
 	}
-	run := &e2RemoteRun{client: c, ctx: ctx, q: q}
+	// 조회는 task가 취소된 뒤 마감 단계에서도 돌아야 한다. 각 호출은 자체 시한으로 끊긴다.
+	run := &e2RemoteRun{client: c, ctx: context.WithoutCancel(ctx), q: q}
 	return E2HTTPRunOptions{Runner: run, Release: func(context.Context) error { return nil }}, nil
 }
 
@@ -122,7 +126,7 @@ func (r *e2RemoteRun) view(intent int64) (e2RemoteView, bool) {
 func (r *e2RemoteRun) SnapshotForIntent(id int64) e2proxy.ExecutionView {
 	view, ok := r.view(id)
 	if !ok {
-		return e2proxy.ExecutionView{State: "unavailable"}
+		return e2proxy.ExecutionView{State: e2RemoteViewUnavailable}
 	}
 	return view.Intent
 }
@@ -162,7 +166,7 @@ func (r *e2RemoteRun) RunForIntent(ctx context.Context, id int64, command string
 func (r *e2RemoteRun) Snapshot() e2proxy.ExecutionView {
 	view, ok := r.view(0)
 	if !ok {
-		return e2proxy.ExecutionView{State: "unavailable"}
+		return e2proxy.ExecutionView{State: e2RemoteViewUnavailable}
 	}
 	return view.Snapshot
 }
@@ -190,7 +194,15 @@ func (r *e2RemoteRun) Calls() []e2proxy.CallResult {
 	return view.Calls
 }
 
+// 러너가 먼저 닫은 실행은 이미 끝났다. 다시 멈추려다 실패하면 프롬프트 봉인까지 가지 못한다.
 func (r *e2RemoteRun) Stop(ctx context.Context) error {
+	view, ok := r.view(0)
+	if !ok {
+		return ErrE2Control
+	}
+	if view.Snapshot.State != "active" {
+		return nil
+	}
 	_, err := r.client.bounded(ctx, r.identity(e2RemoteStopOp, 0))
 	return err
 }

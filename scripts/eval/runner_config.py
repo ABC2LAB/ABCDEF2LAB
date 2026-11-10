@@ -38,6 +38,7 @@ COMPOSE_EVAL = REPO_ROOT / "deploy" / "eval" / "compose.eval.yaml"
 # 개선 후 회차의 E② 자리에 통과 전용 가짜 E²를 둔다(e2.ours_mode=stub일 때만, compose.eval.yaml 다음).
 COMPOSE_E2_STUB = REPO_ROOT / "deploy" / "eval" / "compose.e2-stub.yaml"
 COMPOSE_E2_PRODUCT = REPO_ROOT / "deploy" / "eval" / "compose.e2-product.yaml"
+E2_SECCOMP_PROFILE = REPO_ROOT / "deploy" / "eval" / "seccomp-e2.json"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
 LLM_DIR_NAME = "llm"
@@ -45,6 +46,7 @@ LLM_DIR_NAME = "llm"
 E2_DIR_NAME = "e2"
 # 제품 E②: 준비(읽기 전용 mount), 제어 socket, 러너 전용 수집 사본. 사본은 E²에 mount하지 않는다.
 E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME, E2_STATE_DIR_NAME = "e2-config", "e2-control", "e2-copy", "e2-state"
+E2_ENGINE_DIR_NAME = "e2-engine"
 # 상태 차이 사본(대상 SQLite) 디렉터리. 사본은 지문을 뜬 즉시 지운다(값이 든 파일을 남기지 않음).
 STATE_DIR_NAME = "state"
 # 상태 차이(프로토콜 §8.2) 설정. null이면 사본을 뜨지 않는다. 앱별 값(DB 경로·해결 신호 테이블)은 여기서만 받는다.
@@ -292,6 +294,7 @@ class RunDirectory:
     e2_control: Path
     e2_copy: Path
     e2_state: Path
+    e2_engine: Path
 
 
 def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
@@ -777,6 +780,7 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         env["EVAL_E2_METER_IP"] = config.e2_product["meter_ip"]
         env["EVAL_E2_IO_TIMEOUT_SECONDS"] = str(config.e2_product["exchange_timeout_seconds"])
         env["EVAL_E2_CLOSE_TIMEOUT_SECONDS"] = str(config.e2_product["close_timeout_seconds"])
+        env["EVAL_E2_SECCOMP_PROFILE"] = str(E2_SECCOMP_PROFILE)
     return RunPlan(side=side, run_id=run_id, project=f"eval-{run_id}", source_sha=declared["source_sha"],
                    llm=llm, target_image=target_image, engine_image=engine_image, images=images,
                    meter_port=origin.port, compose_files=tuple(files),
@@ -832,7 +836,7 @@ def create_run_directory(runs_root: Path, run_id: str, e2_mode: str = E2_NONE) -
             os.close(_make_private_child(run_fd, E2_DIR_NAME))
             os.close(_make_private_child(run_fd, STATE_DIR_NAME))
             if e2_mode == E2_PRODUCT:
-                for name in (E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME, E2_STATE_DIR_NAME):
+                for name in (E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME, E2_STATE_DIR_NAME, E2_ENGINE_DIR_NAME):
                     os.close(_make_private_child(run_fd, name))
         finally:
             os.close(run_fd)
@@ -845,7 +849,7 @@ def create_run_directory(runs_root: Path, run_id: str, e2_mode: str = E2_NONE) -
     run = runs_root / run_id
     return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME, e2=run / E2_DIR_NAME,
                         state=run / STATE_DIR_NAME, e2_config=run / E2_CONFIG_DIR_NAME, e2_control=run / E2_CONTROL_DIR_NAME,
-                        e2_copy=run / E2_COPY_DIR_NAME, e2_state=run / E2_STATE_DIR_NAME)
+                        e2_copy=run / E2_COPY_DIR_NAME, e2_state=run / E2_STATE_DIR_NAME, e2_engine=run / E2_ENGINE_DIR_NAME)
 
 
 def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str]:
@@ -858,6 +862,7 @@ def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str
         env["EVAL_E2_CONFIG_DIR"] = str(directory.e2_config)
         env["EVAL_E2_CONTROL_DIR"] = str(directory.e2_control)
         env["EVAL_E2_STATE_DIR"] = str(directory.e2_state)
+        env["EVAL_E2_ENGINE_AUTH_DIR"] = str(directory.e2_engine)
     env["EVAL_RUNNER_UID"] = str(os.geteuid())
     env["EVAL_RUNNER_GID"] = str(os.getegid())
     return env
