@@ -59,8 +59,11 @@ E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:te
                     "declared_differences_path": "/srv/eval/e2-declared.json", "declared_differences_sha256": "b" * 64}
 
 
-def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None):
+def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None,
+              purpose=None):
     preflight, payload = configuration(), runner_config()
+    if purpose is not None:
+        payload["purpose"] = purpose
     if e2 == "product":
         payload["e2"], e2 = dict(E2_PRODUCT_BLOCK), None
     if verdict is not None:
@@ -113,6 +116,9 @@ class FakeMeter:
         self.observer_extra = 0
         self.rows_override = None
         self.drained_forwarded = None
+        self.path_log = False
+        self.path_rows_error = None
+        self.path_rows_seen = None
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
         self.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
@@ -134,6 +140,15 @@ class FakeMeter:
         if self.e2_error:
             raise self.e2_error
         return [dict(row) for row in self.e2_rows]
+
+    def path_log_present(self):
+        return self.path_log
+
+    def path_rows(self, rows):
+        self.path_rows_seen = rows
+        if self.path_rows_error:
+            raise self.path_rows_error
+        return []
 
     def engine_rows(self):
         if self.rows_override is not None:
@@ -1516,6 +1531,34 @@ class TestFailures(unittest.TestCase):
         self.assert_invalid(result, ports, evidence, "post_topology_violation")
         self.assertEqual(evidence.files["post-checks.json"]["topology_violations"],
                          ["network.target_net: MEMBERS_MISMATCH", "service.engine: ATTACHMENT_INCONSISTENT"])
+
+    def test_meter_path_log_invalidates_the_run(self):
+        result, ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True))
+        self.assert_invalid(result, ports, evidence, "meter_path_log_enabled")
+
+    def test_browser_acceptance_run_needs_the_path_log(self):
+        spec = make_spec(purpose="browser_acceptance")
+        result, ports, _, evidence = run(spec=spec)
+        self.assert_invalid(result, ports, evidence, "meter_path_log_missing")
+        result, _ports, meter, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], "complete")
+        # 내용은 drain 뒤 요청 기록과 맞춰 본다.
+        self.assertEqual(meter.path_rows_seen, meter.engine_rows())
+        conditions = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "run_conditions")
+        self.assertEqual(conditions["purpose"], "browser_acceptance")
+
+    def test_browser_acceptance_path_log_must_match_the_requests(self):
+        from runner_evidence import EvidenceError
+
+        def broken(p, m, c):
+            m.path_log = True
+            m.path_rows_error = EvidenceError("meter_path_log_invalid")
+        result, ports, _, evidence = run(broken, spec=make_spec(purpose="browser_acceptance"))
+        self.assert_invalid(result, ports, evidence, "meter_path_log_invalid")
+        # 공식 회차는 내용을 읽지 않는다. 기록이 있는 것만으로 무효다.
+        result, ports, meter, evidence = run(broken)
+        self.assert_invalid(result, ports, evidence, "meter_path_log_enabled")
+        self.assertIsNone(meter.path_rows_seen)
 
     def test_meter_and_observer_records_must_agree(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "observer_extra", 1))
