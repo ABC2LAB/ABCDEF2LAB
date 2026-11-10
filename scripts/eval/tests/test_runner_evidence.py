@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
     ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_VERIFIED_MARKER,
-    OBSERVER_LOG, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_by_method, forwarded_count,
+    OBSERVER_LOG, PATH_LOG, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_by_method, forwarded_count,
     sequence_complete,
 )
 
@@ -310,6 +310,18 @@ class TestMeterFiles(unittest.TestCase):
         os.chmod(self.dir, 0o755)
         with self.assertRaises(EvidenceError):
             self.meter.forwarded()
+
+
+
+class MeterPathLogTests(unittest.TestCase):
+    def test_path_log_presence_follows_the_meter_file_name(self):
+        go = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/paths.go").read_text(encoding="utf-8")
+        self.assertIn('enginePathLogName = "%s"' % PATH_LOG, go)
+        with tempfile.TemporaryDirectory() as raw:
+            meter = MeterFiles(Path(raw))
+            self.assertFalse(meter.path_log_present())
+            (Path(raw) / PATH_LOG).write_text("", encoding="utf-8")
+            self.assertTrue(meter.path_log_present())
 
 
 if __name__ == "__main__":
