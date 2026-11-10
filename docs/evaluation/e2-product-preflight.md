@@ -98,6 +98,8 @@ read-only 컨테이너에 `/tmp` tmpfs가 필요하다.
 | 근거 디렉터리 고갈 | 감사는 상태 디렉터리에 쌓여 전송은 계속되고, close `incomplete`로 근거 없는 회차가 된다 | 2 |
 | 실행 중 close | 진행 중 명령 강제 종료, close 뒤 실행 거부, 프로세스와 `/tmp` 잔여 없음 | 0 |
 
+근거 디렉터리 고갈처럼 close가 `incomplete`로 끝난 회차는 러너에서 `product_failure`다. 프로토콜상 유효 회차라 성능표에는 들어가고 통제 주장만 보류된다.
+
 TLS 오류는 이 이미지로 재지 않았고 `e2proxy` Go 시험만 있다. 공식 대상은 HTTP다. 시도 중간에 감사 쓰기가 실패하는 경우도 Go 시험(`TestCoreAuditFailureBeforeSend`)으로만 확인했다.
 
 합성 수용시험은 실제 자식 프로세스의 backend와 UDS를 사용한다.
