@@ -52,6 +52,7 @@ import { urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
+import { WorkflowCrawlLive } from "../views/live/workflowViews";
 
 const u = vi.mocked(url);
 const a = vi.mocked(api);
@@ -737,4 +738,28 @@ it.each([
   expect(u.createURLDraft.mock.calls[0][0]).toEqual(input);
   expect(useUrl.getState().handle?.input.workflow_mode).toBe(mode);
   expect(useUrl.getState().job?.input.excluded_paths).toBe("/excluded");
+});
+
+it("탐색 화면에서 중지 버전 충돌을 안내하고 GET 확인 전에는 중지를 다시 보내지 않는다", async () => {
+  useUrl.setState({
+    cap: { kind: "v2", catalog },
+    handle,
+    job: running,
+    verified: false,
+    uncertain: true,
+    error: "revision_conflict",
+  });
+  u.readURLStatus.mockResolvedValue(running);
+  render(
+    <ShellContext.Provider value={shellValue({ route: "crawl" })}>
+      <WorkflowCrawlLive />
+    </ShellContext.Provider>,
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent("revision_conflict");
+  expect(screen.queryByRole("button", { name: "점검 중지" })).not.toBeInTheDocument();
+  expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "상태 다시 조회" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "점검 중지" })).toBeEnabled());
+  expect(u.readURLStatus).toHaveBeenCalledTimes(1);
+  expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
 });

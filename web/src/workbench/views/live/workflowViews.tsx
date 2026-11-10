@@ -9,7 +9,7 @@ import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, InspOpenButton } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { UrlHead, UrlNoJob, useUrlHost } from "./urlParts";
+import { UrlHead, UrlNoJob, UrlNotices, UrlRefreshButton, useUrlHost } from "./urlParts";
 
 function group(e: WorkflowEndpoint): string {
   if (/user|account|auth|login/i.test(e.path)) return "계정·인증";
@@ -64,6 +64,7 @@ export function WorkflowControls() {
           {flow.paused ? "다시 시작" : "일시정지"}
         </button>
       ) : null}
+      {jobUncertain || !jobVerified ? <UrlRefreshButton /> : null}
       <button className={s.btn} type="button" disabled={busy} onClick={() => void refreshWorkflow()}>
         탐색 상태 다시 조회
       </button>
@@ -217,6 +218,7 @@ export function WorkflowCrawlLive() {
       />
       <div className={s.vb}>
         <div className={s.vm}>
+          <UrlNotices />
           <WorkflowNotice />
           {!job ? <UrlNoJob what="자산 탐색" /> : null}
           {job && flow ? (
@@ -397,6 +399,7 @@ function ScopeSelection({ flow }: { flow: WorkflowSnapshot }) {
   return (
     <div className={s.vb}>
       <div className={s.vm}>
+        <UrlNotices />
         <WorkflowNotice />
         <div className={s.scount} id="sCount">
           <span>
@@ -553,6 +556,7 @@ export function WorkflowScopeLive() {
         <ScopeSelection key={flow.job_id} flow={flow} />
       ) : (
         <div className={s.vm}>
+          <UrlNotices />
           <WorkflowNotice />
           <p className={s.empty}>저장된 탐색 결과를 기다리고 있습니다.</p>
         </div>
