@@ -421,7 +421,7 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 		}
 	}
 	// 판정의 발급 권한은 주지 않는다. 일반 HTTP 후보는 확정 취약점으로 승격되지 않는다.
-	for _, table := range []string{"findings", "task_archives", "task_control_modes", "llm_profiles", "settings", "agents", "agent_prompts", "task_categories", "task_relations", "intercept_rules", "assets", "companies", "company_scope", "task_asset_links", "asset_intercept_rules", "task_intercept_rules", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
+	for _, table := range []string{"diagnostic_captures_v1", "findings", "task_archives", "task_control_modes", "llm_profiles", "settings", "agents", "agent_prompts", "task_categories", "task_relations", "intercept_rules", "assets", "companies", "company_scope", "task_asset_links", "asset_intercept_rules", "task_intercept_rules", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
 		if exec("GRANT SELECT ON "+table+" TO product_runtime") != nil {
 			return errPreparation
 		}
@@ -448,6 +448,9 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 		if exec("GRANT UPDATE(id) ON "+table+" TO product_api") != nil {
 			return errPreparation
 		}
+	}
+	if exec("GRANT INSERT ON diagnostic_captures_v1 TO product_runtime") != nil {
+		return errPreparation
 	}
 	if exec("GRANT SELECT(id,model,base_url,format),UPDATE(api_key) ON llm_profiles TO product_model_writer") != nil {
 		return errPreparation

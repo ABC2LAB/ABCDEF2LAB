@@ -14,6 +14,7 @@ import (
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/remediation"
 	"github.com/Autumn-27/artex/report"
+	"github.com/Autumn-27/artex/reproduction"
 )
 
 type diagnosticRemediationDTO struct {
@@ -24,6 +25,10 @@ type diagnosticRemediationDTO struct {
 	Bundle    *remediation.Bundle `json:"bundle,omitempty"`
 }
 type diagnosticRemediationEntryDTO struct {
+	VulnClass         string                    `json:"vuln_class"`
+	Severity          string                    `json:"severity"`
+	Steps             []reproduction.Step       `json:"steps,omitempty"`
+	StepsTruncated    bool                      `json:"steps_truncated,omitempty"`
 	Context           *remediation.Context      `json:"context,omitempty"`
 	Technologies      []remediation.Technology  `json:"technologies,omitempty"`
 	EntryID           string                    `json:"entry_id"`
@@ -131,9 +136,13 @@ func (s *Server) listDiagnosticRemediation(w http.ResponseWriter, r *http.Reques
 
 	entries := make([]diagnosticRemediationEntryDTO, 0, len(data.Entries))
 	for _, e := range data.Entries {
-		dto := diagnosticRemediationEntryDTO{EntryID: e.ID, Title: dlp.Redacted, Outcome: e.Outcome, Status: dlp.Redacted, Verification: e.Verification, EvidenceVersion: e.EvidenceVersion, Summary: dlp.Redacted, Evidence: dlp.Redacted, Report: dlp.Redacted, Remediation: dlp.Redacted, Run: dlp.Redacted, IntentID: e.IntentID, ObservedAt: e.ObservedAt, UnavailableReason: "내부 상세 모드를 명시적으로 선택하세요."}
+		dto := diagnosticRemediationEntryDTO{EntryID: e.ID, VulnClass: dlp.Redacted, Severity: "미평가", Title: dlp.Redacted, Outcome: e.Outcome, Status: dlp.Redacted, Verification: e.Verification, EvidenceVersion: e.EvidenceVersion, Summary: dlp.Redacted, Evidence: dlp.Redacted, Report: dlp.Redacted, Remediation: dlp.Redacted, Run: dlp.Redacted, IntentID: e.IntentID, ObservedAt: e.ObservedAt, UnavailableReason: "내부 상세 모드를 명시적으로 선택하세요."}
 		if internal {
+			dto.Steps = e.Steps
+			dto.StepsTruncated = e.StepsTruncated
 			dto.Title = dlp.DiagnosticText(e.Title)
+			dto.VulnClass = dlp.DiagnosticText(e.VulnClass)
+			dto.Severity = dlp.DiagnosticText(e.Severity)
 			dto.Status = dlp.DiagnosticText(e.Status)
 			dto.Summary = dlp.DiagnosticText(e.Summary)
 			dto.Evidence = dlp.DiagnosticText(e.Evidence)

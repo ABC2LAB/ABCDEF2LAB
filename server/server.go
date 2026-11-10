@@ -1042,6 +1042,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
 	mux.HandleFunc("GET /api/report", s.getReport)
 	mux.HandleFunc("GET /api/report/diagnostic", s.diagnosticReport)
+	mux.HandleFunc("GET /api/report/diagnostic/image", s.diagnosticCaptureImage)
 	mux.HandleFunc("GET /api/report/diagnostic/remediation", s.listDiagnosticRemediation)
 	mux.HandleFunc("POST /api/report/diagnostic/remediation", s.createDiagnosticRemediation)
 	mux.HandleFunc("GET /api/report/diagnostic/remediation/prompt", s.copyDiagnosticRemediation)

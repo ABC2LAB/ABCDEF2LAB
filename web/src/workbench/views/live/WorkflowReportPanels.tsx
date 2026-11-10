@@ -11,10 +11,19 @@ import type { Poll } from "../../live/usePoll";
 import { useShell } from "../../shell";
 import { InspHead, Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
+import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 
 // The report API already binds these entries to the task and stored evidence version.
 // Candidate titles and evidence remain escaped text; no new finding/verdict is synthesized here.
-export function WorkflowReportPanels({ rem, children }: { rem: Poll<Remediation>; children: ReactNode }) {
+export function WorkflowReportPanels({
+  rem,
+  children,
+  taskId,
+}: {
+  rem: Poll<Remediation>;
+  children: ReactNode;
+  taskId: string;
+}) {
   const [tab, setTab] = useState("list"),
     [selected, setSelected] = useState<string | null>(null);
   const { openInsp } = useShell();
@@ -111,27 +120,12 @@ export function WorkflowReportPanels({ rem, children }: { rem: Poll<Remediation>
       <aside className={s.vi} id="rInsp" aria-label="발견 상세">
         <InspHead eyebrow="실제 저장 증거" title={entry ? maskSecrets(entry.title) : "발견 상세"} />
         {entry ? (
-          <>
-            <Isec>
-              <p>
-                {outcomeLabel(entry.outcome)} · {entry.verification}
-              </p>
-              <p>{maskSecrets(entry.summary)}</p>
-              <p className={s.help}>실행 마감과 취약점 확정은 별개입니다. 판정은 서버에 저장된 검증 결과만 따릅니다.</p>
-            </Isec>
-            <Isec>
-              <h3>실제 요청·응답 증거</h3>
-              <pre className={s.code}>{maskSecrets(entry.evidence) || "저장된 요청·응답 본문 없음"}</pre>
-              <p className={s.help}>
-                증거 digest {entry.evidence_digest} · {entry.observed_at}
-              </p>
-            </Isec>
-            <Isec>
-              <h3>검토와 수정 권고</h3>
-              <p className={s["lv-pre"]}>{maskSecrets(entry.report)}</p>
-              <p className={s["lv-pre"]}>{maskSecrets(entry.remediation) || "저장된 수정 권고 없음"}</p>
-            </Isec>
-          </>
+          <DiagnosticEntrySections
+            key={`${taskId}:${entry.entry_id}:${entry.source_digest}:${entry.record?.id ?? 0}:${entry.record?.bundle?.input_digest ?? ""}`}
+            task={taskId}
+            entry={entry}
+            onReload={rem.reload}
+          />
         ) : (
           <Isec>
             <p className={s.help}>실제 저장된 항목을 고르면 상세를 표시합니다.</p>

@@ -8,21 +8,35 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/report"
+	"github.com/Autumn-27/artex/reproduction"
 )
 
 var errDiagnosticReportScope = errors.New("diagnostic report scope invalid")
 
 // 공유 기본값을 보존한다. 상세 사본은 인증된 관리자가 audience=internal을 명시해야 한다.
 func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
+	q, queryErr := url.ParseQuery(r.URL.RawQuery)
+	if queryErr != nil {
+		writeErr(w, 400, "보고서 조회 형식이 올바르지 않습니다.")
+		return
+	}
+	for key, values := range q {
+		if len(values) != 1 || (key != "task" && key != "audience" && key != "format" && key != "download" && key != "run") {
+			writeErr(w, 400, "보고서 조회 형식이 올바르지 않습니다.")
+			return
+		}
+	}
 	taskID, err := strconv.ParseInt(r.URL.Query().Get("task"), 10, 64)
 	audience := r.URL.Query().Get("audience")
-	if err != nil || taskID <= 0 || r.URL.Query().Get("run") != "" || (audience != "" && audience != "shared" && audience != "internal") {
+	format := r.URL.Query().Get("format")
+	if (format != "" && format != "html" && format != "docx") || err != nil || taskID <= 0 || r.URL.Query().Get("run") != "" || (audience != "" && audience != "shared" && audience != "internal") {
 		writeErr(w, 400, "작업 ID와 보고서 공개 범위를 확인하세요. 회차 필터는 지원하지 않습니다.")
 		return
 	}
@@ -40,16 +54,25 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data.Shared = audience != "internal"
-	body, err := report.DiagnosticHTML(data)
+	var body []byte
+	if format == "docx" {
+		body, err = report.DiagnosticDOCX(data)
+	} else {
+		body, err = report.DiagnosticHTML(data)
+	}
 	if err != nil {
 		writeErr(w, 422, "보고서를 안전하게 출력할 수 없습니다.")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox")
+	if format == "docx" {
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"diagnostic-task-%d.docx\"", taskID))
+	}
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
-	if r.URL.Query().Get("download") == "1" {
+	if r.URL.Query().Get("download") == "1" && format != "docx" {
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"diagnostic-task-%d.html\"", taskID))
 	}
 	if r.Context().Err() != nil {
@@ -81,6 +104,9 @@ func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time
 	}
 	var expID int64
 	if err := tx.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&expID); err != nil {
+		return out, err
+	}
+	if err := readDiagnosticOverview(ctx, tx, taskID, &out); err != nil {
 		return out, err
 	}
 	// 원문 TEXT를 드라이버로 읽기 전에 DB에서 총 바이트를 검사한다.
@@ -222,6 +248,21 @@ func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time
 	rows.Close()
 	if err := attachDiagnosticRemediations(ctx, tx, taskID, &out); err != nil {
 		return out, err
+	}
+	for i := range out.Entries {
+		entry := &out.Entries[i]
+		if entry.Stale {
+			continue
+		}
+		source, err := db.LoadDiagnosticRemediationSource(ctx, tx, taskID, entry.ID)
+		if err != nil {
+			return out, err
+		}
+		entry.Steps = reproduction.FromStored(taskID, entry.ID, entry.EvidenceVersion, entry.Digest, source.Context)
+		entry.StepsTruncated = source.Context.ObservationsTruncated
+		if err := attachDiagnosticCaptures(ctx, tx, taskID, entry, &storedBytes); err != nil {
+			return out, err
+		}
 	}
 	if err := readWorkflowReport(ctx, tx, taskID, &out); err != nil {
 		return out, err

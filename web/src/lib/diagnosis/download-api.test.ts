@@ -37,3 +37,26 @@ it("rejects a non-HTML success response", async () => {
   const { apiFetchBlob } = await import("./api");
   await expect(apiFetchBlob("/api/report/diagnostic?task=42")).rejects.toMatchObject({ status: 422 });
 });
+it("requires the explicitly selected Word or PNG media type and keeps image MIME for a verified blob", async () => {
+  const word = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(new Response("PK", { headers: { "Content-Type": word } }))
+    .mockResolvedValueOnce(
+      new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "Content-Type": "image/png" } }),
+    )
+    .mockResolvedValueOnce(new Response("<html>unexpected</html>", { headers: { "Content-Type": "text/html" } }))
+    .mockResolvedValueOnce(new Response("<svg/>", { headers: { "Content-Type": "image/svg+xml" } }));
+  vi.stubGlobal("fetch", fetcher);
+  const { apiFetchBlob } = await import("./api");
+  expect((await apiFetchBlob("/api/report/diagnostic?task=42&format=docx", {}, word)).type).toBe(
+    "application/octet-stream",
+  );
+  expect((await apiFetchBlob("/api/report/diagnostic/image?task=42", {}, "image/png")).type).toBe("image/png");
+  await expect(apiFetchBlob("/api/report/diagnostic?task=42&format=docx", {}, word)).rejects.toMatchObject({
+    status: 422,
+  });
+  await expect(apiFetchBlob("/api/report/diagnostic/image?task=42", {}, "image/png")).rejects.toMatchObject({
+    status: 422,
+  });
+});

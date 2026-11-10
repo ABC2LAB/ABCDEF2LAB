@@ -57,7 +57,7 @@ func diagnosticObservedContext(in *remediation.Input, c DiagnosticCandidate) err
 		step := fmt.Sprintf("attempt-%d", o.Sequence)
 		ref := "candidate-call-" + c.CallRef + "-" + step
 		component := "route-" + o.RuleRef
-		in.Context.Observations = append(in.Context.Observations, remediation.ContextObservation{Component: component, ComponentRole: "unknown", Endpoint: o.Method + " " + o.Endpoint, Observation: o.Summary(), Source: "observed", EvidenceRef: ref, ObservedAt: o.ObservedAt.Format(time.RFC3339Nano), RunID: c.RunRef, CallID: c.CallRef, StepID: step, Truncated: c.OutputTruncated})
+		in.Context.Observations = append(in.Context.Observations, remediation.ContextObservation{Method: o.Method, Component: component, ComponentRole: "unknown", Endpoint: o.Method + " " + o.Endpoint, Observation: o.Summary(), Source: "observed", EvidenceRef: ref, ObservedAt: o.ObservedAt.Format(time.RFC3339Nano), RunID: c.RunRef, CallID: c.CallRef, StepID: step, Truncated: c.OutputTruncated})
 		for _, tech := range o.Technologies {
 			kind, role := "server", "unknown"
 			if tech.Header == "X-Powered-By" {

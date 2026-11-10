@@ -676,6 +676,9 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 		http.Error(w, "작업 결속을 확인할 수 없습니다", 403)
 		return
 	}
+	if auth.Job.Scope != nil {
+		r = r.WithContext(server.WithDiagnosticReportScope(r.Context(), task, *auth.Job.Scope))
+	}
 	b.mu.RLock()
 	if live := b.live[task]; live != nil {
 		b.mu.RUnlock()

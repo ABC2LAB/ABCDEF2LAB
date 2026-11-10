@@ -27,6 +27,7 @@ export type RemediationContext = {
   observations_truncated?: boolean;
 };
 export type ContextObservation = Omit<RemediationContext, "observations" | "observations_truncated"> & {
+  method?: string;
   evidence_ref?: string;
   observed_at?: string;
   run_id?: string;
@@ -56,7 +57,33 @@ export type RemediationBundle = {
   residual_risk: string[];
 };
 export type RemediationRecord = { id: number; entry_id: string; stale: boolean; bundle?: RemediationBundle };
+export type ReproductionStep = {
+  task_id: number;
+  entry_id: string;
+  id: string;
+  number: number;
+  title: string;
+  source_step_id: string;
+  run_ref: string;
+  call_ref: string;
+  evidence_ref: string;
+  evidence_version: number;
+  evidence_digest: string;
+  binding_digest: string;
+  observed_at: string;
+  method: string;
+  path: string;
+  prerequisites: string;
+  observation: string;
+  depends_on?: string[];
+  truncated: boolean;
+  capture: { status: string; ref?: string; digest?: string; captured_at?: string; width?: number; height?: number };
+};
 export type RemediationEntry = {
+  steps?: ReproductionStep[];
+  steps_truncated?: boolean;
+  vuln_class?: string;
+  severity?: string;
   context?: RemediationContext;
   technologies?: Technology[];
   entry_id: string;
@@ -201,6 +228,7 @@ const contextSchema = z.object({
     .array(
       z.object({
         ...contextFields,
+        method: text.optional(),
         evidence_ref: text.optional(),
         observed_at: text.optional(),
         run_id: text.optional(),
@@ -253,7 +281,40 @@ const recordSchema = z.object({
   stale: z.boolean(),
   bundle: bundleSchema.optional(),
 });
+const stepSchema = z.object({
+  task_id: natural.positive(),
+  entry_id: text.regex(/^(candidate|finding|verdict)-[1-9][0-9]*$/),
+  id: text.regex(/^step-[a-f0-9]{24}$/),
+  number: natural.positive().max(32),
+  title: text,
+  source_step_id: text,
+  run_ref: text.min(1),
+  call_ref: text,
+  evidence_ref: text.min(1),
+  evidence_version: natural.positive(),
+  evidence_digest: text.regex(/^[a-f0-9]{64}$/),
+  binding_digest: text.regex(/^[a-f0-9]{64}$/),
+  observed_at: text,
+  method: text,
+  path: text,
+  prerequisites: text,
+  observation: text,
+  depends_on: strings.optional(),
+  truncated: z.boolean(),
+  capture: z.object({
+    status: z.enum(["captured", "not_captured", "not_supported", "failed", "storage_unavailable", "shared_omitted"]),
+    ref: text.optional(),
+    digest: text.optional(),
+    captured_at: text.optional(),
+    width: natural.optional(),
+    height: natural.optional(),
+  }),
+});
 const entrySchema = z.object({
+  steps: z.array(stepSchema).max(32).optional(),
+  steps_truncated: z.boolean().optional(),
+  vuln_class: text.optional(),
+  severity: text.optional(),
   entry_id: text.regex(/^(candidate|finding|verdict)-[1-9][0-9]*$/),
   title: text.catch("제목 미확인"),
   outcome: text.catch("unknown"),
@@ -288,7 +349,11 @@ export function parseRemediationData(value: unknown, task: string, audience: str
     ids.add(entry.entry_id);
     if (
       audience === "shared" &&
-      (entry.source_digest || entry.context || entry.technologies?.length || entry.record?.bundle)
+      (entry.source_digest ||
+        entry.context ||
+        entry.technologies?.length ||
+        entry.record?.bundle ||
+        entry.steps?.length)
     )
       throw new Error("공유 보고서 공개 범위 불일치");
     if (audience === "internal") {
@@ -299,6 +364,34 @@ export function parseRemediationData(value: unknown, task: string, audience: str
       }
       entry.outcome = outcome;
     }
+    if (
+      entry.steps?.some(
+        (step, i) =>
+          step.task_id !== data.task_id ||
+          step.entry_id !== entry.entry_id ||
+          step.number !== i + 1 ||
+          step.run_ref !== entry.run ||
+          step.evidence_version !== entry.evidence_version ||
+          step.evidence_digest !== entry.evidence_digest ||
+          step.id !== `step-${step.binding_digest.slice(0, 24)}`,
+      )
+    )
+      throw new Error("재현 단계의 작업·회차·증거 버전 불일치");
+    if (
+      entry.steps?.some(
+        (step) =>
+          step.capture.status === "captured" &&
+          (!/^[a-f0-9]{64}$/.test(step.capture.digest ?? "") ||
+            step.capture.ref !== `shot-${step.binding_digest.slice(0, 24)}` ||
+            !step.capture.captured_at ||
+            !step.capture.width ||
+            !step.capture.height ||
+            step.capture.width > 4096 ||
+            step.capture.height > 4096 ||
+            step.capture.width * step.capture.height > 8000000),
+      )
+    )
+      throw new Error("스크린샷 결속·규격 불일치");
     const record = entry.record;
     const bundle = record?.bundle;
     if (record && (record.entry_id !== entry.entry_id || (record.stale && bundle)))

@@ -48,6 +48,7 @@ import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspOpenButton, MenuButton } from "../../ui/parts";
 import s from "../../workbench.module.css";
+import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { FindingDetailLive, SevBadge, StatusTag } from "./FindingDetailLive";
 
 const SEVS = ["crit", "hi", "mid", "lo"] as const;
@@ -210,13 +211,13 @@ export function Download({ taskId }: { taskId: string }) {
   const ctrl = useRef<AbortController | null>(null);
   useEffect(() => () => ctrl.current?.abort(), []);
 
-  const run = async (aud: Audience) => {
+  const run = async (aud: Audience, format: "html" | "docx" = "html") => {
     ctrl.current?.abort();
     const c = new AbortController();
     ctrl.current = c;
     setSt({ busy: aud, err: null, done: null });
     try {
-      await downloadDiagnostic(taskId, aud, c.signal);
+      await downloadDiagnostic(taskId, aud, c.signal, format);
       if (!c.signal.aborted) setSt({ busy: null, err: null, done: aud });
     } catch (err) {
       if (!c.signal.aborted) setSt({ busy: null, err, done: null });
@@ -243,6 +244,22 @@ export function Download({ taskId }: { taskId: string }) {
             <button className={cx(s.btn, s.sm)} type="button" disabled={!!st.busy} onClick={() => run("internal")}>
               {st.busy === "internal" ? "내려받는 중…" : AUD_LABEL.internal}
             </button>
+            <button
+              className={cx(s.btn, s.sm)}
+              type="button"
+              disabled={!!st.busy}
+              onClick={() => run("shared", "docx")}
+            >
+              Word 공유용
+            </button>
+            <button
+              className={cx(s.btn, s.sm)}
+              type="button"
+              disabled={!!st.busy}
+              onClick={() => run("internal", "docx")}
+            >
+              Word 내부 상세
+            </button>
           </div>
           {st.err ? <ErrorNote error={st.err} /> : null}
           {st.done ? (
@@ -251,8 +268,8 @@ export function Download({ taskId }: { taskId: string }) {
             </p>
           ) : null}
           <p className={s.help}>
-            종합 HTML 보고서를 파일로 저장합니다. 공유용은 서버가 자유문장까지 가립니다. 내부 상세는 외부로 보내기 전에
-            민감정보를 검토하세요.
+            종합 HTML·Word 보고서를 같은 저장 자료로 생성합니다. 공유용은 서버가 자유문장까지 가립니다. 내부 상세는
+            외부로 보내기 전에 민감정보를 검토하세요.
           </p>
         </>
       )}
@@ -286,6 +303,9 @@ function ReportTaskView({ task, visible }: { task: LiveTask; visible: boolean })
   // 고른 발견 (처음·사라짐 → 첫 줄)
   const cur = list.find((f) => f.id === sel) ?? list[0] ?? null;
 
+  const reportEntry = cur?.finding_id
+    ? rem.data?.entries.find((e) => e.entry_id === `finding-${cur.finding_id}`)
+    : undefined;
   const dur = durationText(task, now);
   const model = modelOf(task, profiles.data);
   const pct = covPct(coverage.data);
@@ -448,11 +468,20 @@ function ReportTaskView({ task, visible }: { task: LiveTask; visible: boolean })
           <Download taskId={id} />
         </div>
         <aside className={s.vi} id="rvInsp" aria-label="발견 상세" ref={inspRef}>
-          {cur ? (
+          {reportEntry ? (
+            <DiagnosticEntrySections
+              key={`${id}:${reportEntry.entry_id}:${reportEntry.source_digest}:${reportEntry.record?.id ?? 0}:${reportEntry.record?.bundle?.input_digest ?? ""}`}
+              task={id}
+              entry={reportEntry}
+              onReload={rem.reload}
+            />
+          ) : null}
+          {cur && !reportEntry ? (
             <FindingDetailLive key={cur.id} row={cur} host={host ?? label} enabled={visible} />
-          ) : (
+          ) : null}
+          {!cur ? (
             <p className={s.empty}>{findings.data ? "발견이 없습니다." : "발견을 불러오면 여기에 상세가 보입니다."}</p>
-          )}
+          ) : null}
         </aside>
       </div>
     </>

@@ -169,6 +169,11 @@ func loadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 			}
 			in.EvidenceDigest = hex.EncodeToString(manifestDigest)
 			in.EvidenceCount = 1
+			if linkedVersion == evidenceVersion && (report == "" || reportVersion == evidenceVersion) {
+				if err := diagnosticE3Context(&in, taskID, manifest, value); err != nil {
+					return in, err
+				}
+			}
 			if value == "confirmed" && linkedVersion == evidenceVersion && (report == "" || reportVersion == evidenceVersion) {
 				in.Status = "confirmed"
 			}
@@ -194,6 +199,9 @@ func loadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 		in.EvidenceVersion = strconv.FormatInt(version, 10)
 		in.EvidenceDigest = hex.EncodeToString(digest)
 		in.EvidenceCount = 1
+		if err := diagnosticE3Context(&in, taskID, manifest, value); err != nil {
+			return in, err
+		}
 		if value == "allowed" {
 			in.Status = "negative"
 		} else if value == "undecidable" {
