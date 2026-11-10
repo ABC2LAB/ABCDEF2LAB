@@ -225,6 +225,10 @@ func (h *e2RemoteHandler) dispatch(ctx context.Context, request e2RemoteRequest)
 	case e2RemoteRegister:
 		return e2RemoteResponse{}, b.remoteRegister(ctx, request.IntentID)
 	case e2RemoteRunOp:
+		// Execute는 intent를 스스로 등록하므로, 먼저 등록된 것만 여기서 통과시킨다.
+		if err := b.remoteRegistered(ctx, request.IntentID); err != nil {
+			return e2RemoteResponse{}, err
+		}
 		result, err := b.Execute(ctx, request.identity(), request.Command)
 		return e2RemoteResponse{Result: &result, RunError: e2RemoteRunError(err)}, nil
 	case e2RemoteViewOp:
@@ -290,6 +294,17 @@ func (b *E2StandaloneBackend) remoteRegister(ctx context.Context, intent int64) 
 		return err
 	}
 	return lease.Execution.RegisterIntent(ctx, intent)
+}
+
+func (b *E2StandaloneBackend) remoteRegistered(ctx context.Context, intent int64) error {
+	lease, err := b.remoteLease(ctx)
+	if err != nil {
+		return err
+	}
+	if !lease.Execution.HasIntent(intent) {
+		return ErrE2Control
+	}
+	return nil
 }
 
 func (b *E2StandaloneBackend) remoteView(ctx context.Context, intent int64) (e2RemoteView, error) {
