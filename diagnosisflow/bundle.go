@@ -53,6 +53,14 @@ type bundleRef struct {
 	method, path, kind, source string
 }
 
+type baseState int
+
+const (
+	baseKnown baseState = iota
+	baseGuessed
+	baseUnknown
+)
+
 type bundleBase struct {
 	name, path string
 	at         int
@@ -105,16 +113,22 @@ func byteAfter(body []byte, at int) byte {
 // maxChunks는 스크립트가 발견 칸을 다 차지해 API 경로를 밀어내지 않게 하는 상한이다.
 func bundleRefs(body []byte, maxChunks int) []bundleRef {
 	var refs []bundleRef
-	seen, called := map[string]bool{}, map[string]bool{}
+	seen, called := map[string]int{}, map[string]bool{}
 	emit := func(method, path, kind, source string) {
 		if method != "UNKNOWN" {
 			called[path] = true
 		}
 		key := method + " " + path
-		if kind == "api" && path == "" || seen[key] {
+		if kind == "api" && path == "" {
 			return
 		}
-		seen[key] = true
+		if i, ok := seen[key]; ok {
+			if inferredSource(refs[i].source) && !inferredSource(source) {
+				refs[i].source = source
+			}
+			return
+		}
+		seen[key] = len(refs)
 		refs = append(refs, bundleRef{method, path, kind, source})
 	}
 	// 스크립트를 받아야 다음 번들을 읽을 수 있어서 API 경로보다 먼저 칸을 잡는다.
@@ -122,31 +136,34 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 		emit(chunk.method, chunk.path, chunk.kind, chunk.source)
 	}
 	bases, cutoff := bundleBases(body)
-	// 앞 식을 기준 주소로 푼다. 식에 뭐가 들었는지 모르면 경로를 확정하지 않는다.
-	full := func(expr, suffix string, at int) (string, bool) {
+	// 앞 식을 기준 주소로 푼다. 문자로 확인한 대입이 없으면 경로를 확정하지 않는다.
+	full := func(expr, suffix string, at int) (string, baseState) {
 		switch {
 		case expr == "":
-			return suffix, true
+			return suffix, baseKnown
 		case !strings.Contains(expr, "."):
-			return suffix, false // 지역 변수는 전체 주소일 수도, 경로 일부일 수도 있다.
+			return suffix, baseUnknown // 지역 변수는 전체 주소일 수도, 경로 일부일 수도 있다.
 		case !strings.HasPrefix(expr, "this."):
-			return suffix, true // env.api 같은 설정값은 origin으로 본다.
+			return suffix, baseGuessed // env.api 같은 설정값은 대개 origin이지만 다른 호스트일 수 있다.
 		case at > cutoff:
-			return suffix, false
+			return suffix, baseUnknown
 		}
 		if base, ok := baseBefore(bases, expr, at); ok {
-			return base + suffix, true
+			return base + suffix, baseKnown
 		}
-		return suffix, true
+		return suffix, baseGuessed
 	}
 	call := func(method, expr, suffix string, at int, dynamic bool) {
-		path, known := full(expr, suffix, at)
+		path, state := full(expr, suffix, at)
 		source := "script_call"
+		if state == baseGuessed {
+			source = "script_guess"
+		}
 		if dynamic {
 			// 뒤가 실행 중에 정해지는 주소라 앞부분만 후보로 남긴다.
 			path, source = strings.TrimSuffix(path, "/"), "script_prefix"
 		}
-		if !known {
+		if state == baseUnknown {
 			method, source = "UNKNOWN", "static_literal"
 		}
 		emit(method, path, "api", source)

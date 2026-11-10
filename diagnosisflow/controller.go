@@ -120,17 +120,14 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 			if old.InScope {
 				old.Change = "possible"
 			}
+		} else if old.Kind != "form" && inferredSource(old.Source) && !inferredSource(source) {
+			// 추정으로 먼저 봤어도 같은 호출을 문자 그대로 확인하면 후보를 올린다.
+			old.Source, old.From = source, from
+			old.InScope, old.Change = c.endpointScope(method, path, kind, source)
 		}
 		return old
 	}
-	change := "possible"
-	if (method == "GET" || method == "HEAD") && kind != "form" && c.readPath(path) {
-		change = "attested_read"
-	}
-	in := has(c.binding.Methods, method) && c.allowedPath(path)
-	if !in {
-		change = "blocked"
-	}
+	in, change := c.endpointScope(method, path, kind, source)
 	e := Endpoint{ID: endpointID(c.origin, method, path), Method: method, Path: path, Kind: kind, Source: source, From: from, InScope: in, Change: change}
 	if len(c.record.Snapshot.Endpoints) >= c.binding.Limits.MaxEndpoints {
 		c.record.Snapshot.Counts.Omitted++
@@ -147,6 +144,24 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 	c.record.Snapshot.Endpoints = append(c.record.Snapshot.Endpoints, e)
 	return &c.record.Snapshot.Endpoints[len(c.record.Snapshot.Endpoints)-1]
 }
+
+// 번들에서 경로를 문자 그대로 확인하지 못한 후보다.
+func inferredSource(source string) bool {
+	return source == "script_guess" || source == "script_prefix"
+}
+
+func (c *Controller) endpointScope(method, path, kind, source string) (bool, string) {
+	// 접두사는 앱이 실제로 보내는 주소가 아니므로 전송 후보로 두지 않는다.
+	if !has(c.binding.Methods, method) || !c.allowedPath(path) || source == "script_prefix" {
+		return false, "blocked"
+	}
+	// 폼과 추정 경로는 실제 요청이 다를 수 있어 자동 방문·선택하지 않는다.
+	if (method == "GET" || method == "HEAD") && kind != "form" && !inferredSource(source) && c.readPath(path) {
+		return true, "attested_read"
+	}
+	return true, "possible"
+}
+
 func (c *Controller) saveLocked(ctx context.Context, create bool, kind, method, path string, status int) error {
 	if c.poisoned {
 		return ErrProjection

@@ -27,8 +27,8 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 	}{
 		"direct literal":        {`c.delete("/rest/item")`, []string{"DELETE /rest/item script_call"}},
 		"relative literal":      {`c.post("./rest/verify",x)`, []string{"POST ./rest/verify script_call"}},
-		"host prefix":           {`this.http.post(this.server+"/rest/login",e)`, []string{"POST /rest/login script_call"}},
-		"other expression":      {`http.put(env.api+"/v1/item",e)`, []string{"PUT /v1/item script_call"}},
+		"host prefix":           {`this.http.post(this.server+"/rest/login",e)`, []string{"POST /rest/login script_guess"}},
+		"other expression":      {`http.put(env.api+"/v1/item",e)`, []string{"PUT /v1/item script_guess"}},
 		"local variable":        {`const u=this.host+"/"+id;this.http.get(u+"/reviews")`, []string{"UNKNOWN /reviews static_literal"}},
 		"local template":        {"c.get(`${u}/rest/x`)", []string{"UNKNOWN /rest/x static_literal"}},
 		"base and suffix":       {`this.host=this.server+"/svc/items"}all(){return this.http.get(this.host+"/all")}`, []string{"GET /svc/items/all script_call"}},
@@ -36,7 +36,7 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"bare base with body":   {`this.host="/svc/items"}add(e){return this.http.post(this.host,e)}`, []string{"POST /svc/items script_call"}},
 		"bare unknown base":     {`this.http.get(this.host)`, []string{}},
 		"template base":         {"this.host=`${env}/svc/t`}x(){return this.http.get(this.host+\"/a\")}", []string{"GET /svc/t/a script_call"}},
-		"template host":         {"this.http.get(`${this.server}/rest/search`,e)", []string{"GET /rest/search script_call"}},
+		"template host":         {"this.http.get(`${this.server}/rest/search`,e)", []string{"GET /rest/search script_guess"}},
 		"template dynamic":      {"this.host=\"/svc/items\"}x(e){return this.http.get(`${this.host}/${e}`)}", []string{"GET /svc/items script_prefix"}},
 		"template dynamic deep": {"this.http.get(`${this.server}/rest/basket/${e}`)", []string{"GET /rest/basket script_prefix"}},
 		"concat dynamic":        {`this.host="/svc/items"}x(e){return this.http.get(this.host+"/"+e)}`, []string{"GET /svc/items script_prefix"}},
@@ -97,7 +97,7 @@ func TestBundleBaseUsesNearestEarlierAssignment(t *testing.T) {
 		t.Fatalf("earlier template used %q", got)
 	}
 	later := `a(){return this.http.get(this.host+"/x")}this.host="/late"`
-	if got := refStrings(bundleRefs([]byte(later), maxBundleChunks)); !reflect.DeepEqual(got, []string{"GET /x script_call"}) {
+	if got := refStrings(bundleRefs([]byte(later), maxBundleChunks)); !reflect.DeepEqual(got, []string{"GET /x script_guess"}) {
 		t.Fatalf("later assignment used %q", got)
 	}
 }
@@ -391,6 +391,65 @@ func TestCrawlVisitsChunkWhenEndpointSlotsAreFull(t *testing.T) {
 	}
 	if want := []string{"/read", "/read/chunk.js"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("got=%q want=%q", order, want)
+	}
+}
+
+func endpointAt(c *Controller, method, path string) Endpoint {
+	if e := c.endpointLocked(method, path); e != nil {
+		return *e
+	}
+	return Endpoint{}
+}
+
+func TestCrawlLeavesInferredCandidatesUnvisitedAndUnselected(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	c.binding.Limits.MaxPages = 4
+	var order []string
+	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
+		order = append(order, strings.TrimPrefix(target, "https://owned.test"))
+		return crawlResult(`<script>this.http.get(this.server+"/read/guess");c.get("/read/items/"+id);c.post("/read/things/"+id)</script>`), nil
+	})
+	if !handled || err != nil {
+		t.Fatal(handled, err)
+	}
+	if want := []string{"/read"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("got=%q want=%q", order, want)
+	}
+	if e := endpointAt(c, "GET", "/read/guess"); !e.InScope || e.Change != "possible" || e.Selected {
+		t.Fatalf("%+v", e)
+	}
+	for _, e := range []Endpoint{endpointAt(c, "GET", "/read/items"), endpointAt(c, "POST", "/read/things")} {
+		if e.Path == "" || e.InScope || e.Change != "blocked" || e.Selected {
+			t.Fatalf("%+v", e)
+		}
+	}
+}
+
+func TestLiteralCallPromotesInferredEndpoint(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addLocked("GET", "/read/guess", "api", "script_guess", "/read/a.js")
+	c.addLocked("GET", "/read/prefix", "api", "script_prefix", "/read/a.js")
+	c.addLocked("GET", "/read/guess", "api", "script_call", "/read/b.js")
+	c.addLocked("GET", "/read/prefix", "api", "script_guess", "/read/b.js")
+	if e := endpointAt(c, "GET", "/read/guess"); e.Source != "script_call" || e.From != "/read/b.js" || e.Change != "attested_read" || !e.InScope {
+		t.Fatalf("%+v", e)
+	}
+	if e := endpointAt(c, "GET", "/read/prefix"); e.Source != "script_prefix" || e.Change != "blocked" {
+		t.Fatalf("%+v", e)
+	}
+	c.addLocked("GET", "/read/form", "form", "html_form", "/read")
+	c.addLocked("GET", "/read/form", "api", "script_call", "/read/a.js")
+	if e := endpointAt(c, "GET", "/read/form"); e.Kind != "form" || e.Change != "possible" {
+		t.Fatalf("%+v", e)
+	}
+}
+
+func TestBundleLiteralCallReplacesGuessedSource(t *testing.T) {
+	got := refStrings(bundleRefs([]byte(`c.get(env.x+"/a");c.get("/a")`), maxBundleChunks))
+	if want := []string{"GET /a script_call"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%q want=%q", got, want)
 	}
 }
 
