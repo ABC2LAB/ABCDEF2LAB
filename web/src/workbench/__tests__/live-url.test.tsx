@@ -763,3 +763,12 @@ it("탐색 화면에서 중지 버전 충돌을 안내하고 GET 확인 전에�
   expect(u.readURLStatus).toHaveBeenCalledTimes(1);
   expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
 });
+
+it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 구분해 표시한다", async () => {
+  const input = { ...ready.input, workflow_mode: "user_approval_v1" as const };
+  u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "workbench_selective_v1" } });
+  saveHandle({ ...handle, input });
+  mount("scope");
+  expect(await screen.findByText("읽기 사전 승인 · 쓰기 건별 확인")).toBeInTheDocument();
+  expect(screen.queryByText("사전 승인 범위")).toBeNull();
+});

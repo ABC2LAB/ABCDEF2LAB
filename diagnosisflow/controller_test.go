@@ -260,3 +260,38 @@ func TestAttestedReadExemptionIsPathScopedAndDoesNotValidateQuery(t *testing.T) 
 		t.Fatal("path-scoped query contract changed", err)
 	}
 }
+
+// Deliberately bypass upstream selection/classification to exercise the last
+// request boundary independently. The paired manual case proves no other guard
+// is responsible for the automatic-mode refusal.
+func TestAutomaticRequestBoundaryIndependentlyRejectsWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, change string
+		body                 bool
+	}{
+		{"selected_POST", "POST", "possible", false},
+		{"POST_misclassified_as_read", "POST", "attested_read", false},
+		{"GET_with_body", "GET", "attested_read", true},
+		{"GET_form", "GET", "possible", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, mode := range []string{Auto, Manual} {
+				c, _ := flowFixture(t, mode)
+				c.mu.Lock()
+				e := c.addLocked(tc.method, "/read/selected", "form", "html_form", "/read")
+				e.Selected = true
+				e.Change = tc.change
+				c.record.Snapshot.Stage = "diagnosing"
+				c.mu.Unlock()
+				view := e2proxy.RequestView{Method: tc.method, URL: "https://owned.test/read/selected", BodyPresent: tc.body}
+				err := c.Before(t.Context(), view)
+				if mode == Auto && !errors.Is(err, ErrDenied) {
+					t.Fatal("automatic boundary admitted a write", err)
+				}
+				if mode == Manual && err != nil {
+					t.Fatal("other guard obscured automatic-mode test", err)
+				}
+			}
+		})
+	}
+}

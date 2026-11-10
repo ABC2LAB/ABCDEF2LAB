@@ -444,6 +444,29 @@ func (r *E2HTTPRuntime) TaskID() (string, bool) {
 	return r.task.id, true
 }
 
+// Planner and Worker use the same bound runner's credential redactor, including
+// remote leases. Before acquisition (or after closure), omit optional target
+// data rather than falling back to raw paths or another task's credentials.
+func (r *E2HTTPRuntime) redactPlannerTargetData(taskID, data string) string {
+	if r == nil || data == "" {
+		return ""
+	}
+	r.mu.Lock()
+	t, closed := r.task, r.closed
+	r.mu.Unlock()
+	if closed || t == nil || t.id != taskID {
+		return ""
+	}
+	t.mu.Lock()
+	if t.closed || t.lease == nil || !t.validLease || e2HTTPNil(t.lease.Runner) {
+		t.mu.Unlock()
+		return ""
+	}
+	runner := t.lease.Runner
+	t.mu.Unlock()
+	return string(runner.RedactOutput([]byte(data)))
+}
+
 // Execution은 신뢰한 Go 조립/마감 경로의 실제 handle이다. HTTP 참조가 이를 만들지 않는다.
 func (r *E2HTTPRuntime) Execution(taskID string) (*e2proxy.Execution, bool) {
 	if r == nil {
