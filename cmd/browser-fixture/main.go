@@ -87,7 +87,7 @@ type receiverInfo struct {
 
 func parseReceiver(raw, udpListen string) (receiverInfo, error) {
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || !safeHost.MatchString(u.Host) ||
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !safeHost.MatchString(u.Host) ||
 		u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return receiverInfo{}, errors.New("receiver origin must be http(s)://host[:port]")
 	}

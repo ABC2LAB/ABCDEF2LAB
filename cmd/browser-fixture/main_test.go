@@ -228,7 +228,8 @@ func TestUDPRecordsArrivalOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if _, err := client.Write([]byte(sentinel)); err != nil {
+	packet := append(append([]byte{0, 1, 0, 0}, stunCookie...), sentinel...)
+	if _, err := client.Write(packet); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -240,7 +241,7 @@ func TestUDPRecordsArrivalOnly(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if got, want := readRows(t, path), []row{{Seq: 1, Surface: surfaceReceiverUDP, Scenario: unknownScenario}}; !reflect.DeepEqual(got, want) {
+	if got, want := readRows(t, path), []row{{Seq: 1, Surface: surfaceReceiverUDP, Scenario: scenarioSTUN}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
 	}
 	if data, _ := os.ReadFile(path); strings.Contains(string(data), sentinel) {
