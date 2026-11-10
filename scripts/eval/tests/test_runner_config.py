@@ -498,7 +498,8 @@ class TestE2Product(unittest.TestCase):
                               ({"header_mode": "other"}, "config.e2.header_mode: UNSUPPORTED"), ({"header_mode": []}, "config.e2.header_mode: UNSUPPORTED"),
                               ({"ready_timeout_seconds": 0}, "config.e2.ready_timeout_seconds: INVALID"), ({"close_ack_timeout_seconds": True}, "config.e2.close_ack_timeout_seconds: INVALID"),
                               ({"close_timeout_seconds": "5"}, "config.e2.close_timeout_seconds: INVALID"), ({"poll_seconds": -1}, "config.e2.poll_seconds: INVALID"),
-                              ({"exchange_timeout_seconds": 0}, "config.e2.exchange_timeout_seconds: INVALID"), ({"verify_timeout_seconds": 0}, "config.e2.verify_timeout_seconds: INVALID")):
+                              ({"exchange_timeout_seconds": 0}, "config.e2.exchange_timeout_seconds: INVALID"), ({"verify_timeout_seconds": 0}, "config.e2.verify_timeout_seconds: INVALID"),
+                              ({"exchange_timeout_seconds": 61}, "config.e2.exchange_timeout_seconds: TOO_LARGE"), ({"close_timeout_seconds": 121}, "config.e2.close_timeout_seconds: TOO_LARGE")):
             with self.subTest(changes=changes):
                 self.reject(E2_PRODUCT_BLOCK | changes, code)
 
@@ -560,6 +561,9 @@ class TestE2Product(unittest.TestCase):
                              (str(directory.e2_config), str(directory.e2_control), str(directory.e2)))
             self.assertEqual((env["EVAL_E2_STATE_DIR"], env["EVAL_E2_SUBNET"], env["EVAL_E2_METER_IP"]),
                              (str(directory.e2_state), "172.30.9.0/24", "172.30.9.10"))
+            # eval-e2의 시한은 러너가 기다리는 시한과 같은 값이어야 한다.
+            self.assertEqual((env["EVAL_E2_IO_TIMEOUT_SECONDS"], env["EVAL_E2_CLOSE_TIMEOUT_SECONDS"]),
+                             (str(E2_PRODUCT_BLOCK["exchange_timeout_seconds"]), str(E2_PRODUCT_BLOCK["close_timeout_seconds"])))
             # 수집 사본은 E²에 mount하지 않는다.
             self.assertNotIn(str(directory.e2_copy), env.values())
             other = create_run_directory(root, "ours-2")
