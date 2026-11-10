@@ -314,9 +314,9 @@ func TestConfirmedScriptUpgradesGuessedString(t *testing.T) {
 	if e := endpointAt(c, "GET", "/read/lazy.js"); e.Source != "bundle_chunk" || crawlRank(e) != 1 {
 		t.Fatalf("%+v", e)
 	}
-	c.addLocked("GET", "/read/api", "api", "script_call", "/read/a.js")
-	c.addLocked("GET", "/read/api", "script", "bundle_chunk", "/read/b.js")
-	if e := endpointAt(c, "GET", "/read/api"); e.Source != "script_call" {
+	c.addLocked("GET", "/read/same.js", "script", "bundle_string", "/read/a.js")
+	c.addLocked("GET", "/read/same.js", "api", "script_call", "/read/b.js")
+	if e := endpointAt(c, "GET", "/read/same.js"); e.Source != "bundle_string" {
 		t.Fatalf("%+v", e)
 	}
 }
