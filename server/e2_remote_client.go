@@ -193,7 +193,15 @@ func (r *e2RemoteRun) Calls() []e2proxy.CallResult {
 	return view.Calls
 }
 
+// 러너가 먼저 닫은 실행은 이미 끝났다. 다시 멈추려다 실패하면 프롬프트 봉인까지 가지 못한다.
 func (r *e2RemoteRun) Stop(ctx context.Context) error {
+	view, ok := r.view(0)
+	if !ok {
+		return ErrE2Control
+	}
+	if view.Snapshot.State != "active" {
+		return nil
+	}
 	_, err := r.client.bounded(ctx, r.identity(e2RemoteStopOp, 0))
 	return err
 }

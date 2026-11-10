@@ -116,4 +116,38 @@ func TestE2RemoteCloseWatcherClosesOnlyAFinishedExecution(t *testing.T) {
 	}
 }
 
+func TestE2RemoteStopSkipsAnExecutionTheRunnerClosed(t *testing.T) {
+	var state atomic.Value
+	var stops atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request e2RemoteRequest
+		if json.NewDecoder(r.Body).Decode(&request) != nil {
+			t.Error("요청 해석 실패")
+		}
+		if request.Op == e2RemoteStopOp {
+			stops.Add(1)
+			e2RemoteWrite(w, http.StatusOK, e2RemoteResponse{})
+			return
+		}
+		e2RemoteWrite(w, http.StatusOK, e2RemoteResponse{View: &e2RemoteView{Snapshot: e2proxy.ExecutionView{State: state.Load().(string)}}})
+	}))
+	client, err := newE2RemoteClient(server.URL, writeE2RemoteToken(t, e2RemoteTestToken), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &e2RemoteRun{client: client, ctx: context.Background(), q: e2RemoteTestRequest}
+	state.Store("closed")
+	if err := run.Stop(context.Background()); err != nil || stops.Load() != 0 {
+		t.Fatal("이미 닫힌 실행을 다시 멈춤", err, stops.Load())
+	}
+	state.Store("active")
+	if err := run.Stop(context.Background()); err != nil || stops.Load() != 1 {
+		t.Fatal("활성 실행을 멈추지 않음", err, stops.Load())
+	}
+	server.Close()
+	if run.Stop(context.Background()) == nil {
+		t.Fatal("상태를 모르는데 멈췄다고 함")
+	}
+}
+
 const strings64a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
