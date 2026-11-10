@@ -45,7 +45,7 @@
 
 **양성 대조**: 같은 시나리오를 통제 없는 Chromium으로 먼저 돌려 수신기에 닿는지 확인한다. 통제 없이도 닿지 않는 시나리오의 0건은 통과가 아니라 `UNDECIDABLE`이다.
 
-B08은 Chromium이 fixture 인증서를 신뢰할 때만 `Alt-Svc`를 보고 QUIC을 시도한다. 11/11에 fixture를 TLS로 띄우고 외부망 없는 내부 망에서 Chromium(headless shell 1254, `--enable-quic`)으로 `/bypass/B08`을 세 번 열어 확인했다. 인증서 공개키 해시를 `--ignore-certificate-errors-spki-list`로 넘기면 UDP 수신기에 QUIC long header 패킷 6개가 닿았고(수신기가 QUIC에 답하지 않아 응답은 h2로 대체됨), `--ignore-certificate-errors`만 주면 0건이었다. 그래서 B08의 양성 대조와 실행기 회차는 같은 신뢰 조건(인증서 공개키 해시 목록 또는 실행기에 넣는 CA)으로 돌린다. 신뢰 조건이 다르면 실행기 회차의 0건을 통제 효과로 읽지 않는다.
+B08은 Chromium이 fixture 인증서를 신뢰할 때만 `Alt-Svc`를 보고 QUIC을 시도한다. 11/11에 fixture를 TLS로 띄우고 외부망 없는 내부 망에서 Chromium(headless shell 1254, `--enable-quic`)으로 `/bypass/B08`을 세 번 열어 확인했다. 인증서 공개키 해시를 `--ignore-certificate-errors-spki-list`로 넘기면 UDP 수신기에 QUIC long header 패킷 6개가 닿았고(수신기가 QUIC에 답하지 않아 응답은 h2로 대체됨), `--ignore-certificate-errors`만 주면 0건이었다. 그래서 B08의 양성 대조와 실행기 회차는 같은 신뢰 조건(인증서 공개키 해시 목록 또는 실행기에 넣는 CA)으로 돌린다. 신뢰 조건이 다르면 실행기 회차의 0건을 통제 효과로 읽지 않는다. 이를 판단할 수 있게 B08 양성 대조와 실행기 회차는 결과에 신뢰 조건을 싣는다. 넘긴 공개키 해시 목록의 지문, 실행기에 넣은 CA의 지문, `--ignore-certificate-errors` 같은 인증서 오류 무시 플래그가 있었는지다. 실행기가 Chromium을 띄운 플래그 목록도 함께 남기면 B10(실행기 플래그 주입) 해석에도 쓴다.
 
 | ID | 시도 |
 |---|---|
