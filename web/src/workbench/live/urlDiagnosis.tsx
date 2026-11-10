@@ -283,7 +283,10 @@ export async function runUrlAction(kind: UrlAction, input?: URLDiagnosisInput): 
         storeURLHandle(saved);
         useUrl.setState({ handle: saved });
       }
-      next = await commandURLDiagnosis(job, kind, owner, kind === "start" ? saved.startKey : undefined);
+      next =
+        kind === "start"
+          ? await commandURLDiagnosis(job, kind, owner, saved.startKey, { externalTransferConfirmed: st.confirmed })
+          : await commandURLDiagnosis(job, kind, owner, undefined);
     }
     if (current !== generation || !saved) return false;
     if (job) {

@@ -175,7 +175,10 @@ export function URLDiagnosisPanel({ catalog }: { catalog: URLDiagnosisCatalog })
           handle.current = saved;
           storeURLHandle(saved);
         }
-        next = await commandURLDiagnosis(job, kind, owner, kind === "start" ? saved.startKey : undefined);
+        next =
+          kind === "start"
+            ? await commandURLDiagnosis(job, kind, owner, saved.startKey, { externalTransferConfirmed: confirmed })
+            : await commandURLDiagnosis(job, kind, owner, undefined);
       }
       if (current !== generation.current || !saved) return;
       if (job)
@@ -315,6 +318,23 @@ export function URLDiagnosisPanel({ catalog }: { catalog: URLDiagnosisCatalog })
             {job.scope.approval_mode === "confirm_every_request" ? "매 요청 확인" : "사전 승인 범위"} ·{" "}
             {job.scope.expires_at}
           </dd>
+          {job.scope.model && (
+            <>
+              <dt>분석 모델 / 제공자</dt>
+              <dd>
+                {job.scope.model.model} · OpenRouter / {job.scope.model.provider}
+              </dd>
+              <dt>호출당 토큰 상한</dt>
+              <dd>
+                입력 {job.scope.model.input_tokens_per_call} / 출력 {job.scope.model.output_tokens_per_call}
+              </dd>
+              <dt>외부 전송</dt>
+              <dd>
+                대상 응답·도구 출력·진단 지시가 승인된 OpenRouter 제공자에게 전송돼요. 개인정보·비밀이 없는 승인된
+                범위만 사용하세요.
+              </dd>
+            </>
+          )}
           <dt>대상 요청 / 시간 상한</dt>
           <dd>
             {job.scope.budget.requests}회 · {job.scope.budget.duration_seconds}초
@@ -396,7 +416,9 @@ export function URLDiagnosisPanel({ catalog }: { catalog: URLDiagnosisCatalog })
               disabled={!canStart}
               onChange={(event) => setConfirmed(event.target.checked)}
             />
-            서버가 확인한 범위·모델·예산으로 준비와 단회 진단을 시작할게요.
+            {job.scope?.model?.external_transfer
+              ? "대상 응답·도구 출력의 외부 전송과 표시된 USD 비용 상한에 동의하고, 서버가 확인한 범위·모델·예산으로 단회 진단을 시작할게요."
+              : "서버가 확인한 범위·모델·예산으로 준비와 단회 진단을 시작할게요."}
           </label>
           <button
             className="btn primary"

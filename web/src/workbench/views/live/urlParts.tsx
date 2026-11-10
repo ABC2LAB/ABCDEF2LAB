@@ -134,6 +134,20 @@ export function UrlScopeList({ scope }: { scope: URLDiagnosisScope }) {
         ["모델 요청 상한", `${b.model_requests}회`],
         ["토큰 상한", `입력 ${b.input_tokens} · 출력 ${b.output_tokens}`],
         ["비용 상한", usdText(b.cost_usd_micros)],
+        ...(scope.model
+          ? ([
+              ["분석 모델", `${scope.model.model} · OpenRouter`],
+              ["승인된 제공자", scope.model.provider],
+              [
+                "호출당 토큰 상한",
+                `입력 ${scope.model.input_tokens_per_call} · 출력 ${scope.model.output_tokens_per_call}`,
+              ],
+              [
+                "외부 전송",
+                "대상 응답·도구 출력·진단 지시가 승인된 OpenRouter 제공자에게 전송됩니다. 개인정보·비밀이 없는 승인된 범위만 사용하세요.",
+              ],
+            ] as [string, ReactNode][])
+          : []),
       ]}
     />
   );
@@ -150,6 +164,9 @@ export function UrlUsage({ job }: { job: URLDiagnosisJob }) {
       <Kv
         rows={[
           ["모델 요청", of(u.requests, b?.model_requests)],
+          ...(u.reserved_cost_usd_micros === undefined
+            ? []
+            : [["예약 비용", usdText(u.reserved_cost_usd_micros)] as [string, ReactNode]]),
           ["입력 토큰", `${of(u.input_tokens, b?.input_tokens)} · 예약 ${u.reserved_input_tokens}`],
           ["출력 토큰", `${of(u.output_tokens, b?.output_tokens)} · 예약 ${u.reserved_output_tokens}`],
           [
