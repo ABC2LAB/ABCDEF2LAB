@@ -26,6 +26,12 @@ Transport는 유일한 OpenRouter 승인 원장이다. URL 원장은 별도 범�
 
 Start 요청은 비용·외부 전송 동의를 `external_transfer_confirmed: true`로 보내며 서버가 scope와 revision에 대조해 영속 receipt에 저장한다. 키·manifest 경로·provider 선택값은 진단 body, React state, local/session storage, URL, 결과·보고서·로그에 전달하지 않는다. 공개 model projection은 mode/model/provider와 호출당 한도뿐이다. 기존 브라우저 복원 handle에도 model 자격을 추가하지 않는다.
 
+## Workbench 제품의 키 등록 정책 제안
+
+#351의 독립 CLI 설치는 운영자가 DB에 키를 등록하는 경로다. 그 경로와 별도로 #353은 브라우저에서 모델명·API 키를 입력하는 인증된 설정 UI를 제안한다. 이 변경은 #351의 브라우저 키 등록 제외 범위를 제품 경로에 한해 확장하며, [단일화 검토안](contracts/workbench-consolidation-review.md)의 담당자 검토·승인 전이다.
+
+키는 비제어 password 입력에서 별도 설정 API로 보내고 입력란을 비운다. 키 열 UPDATE만 가능한 별도 writer가 설치된 프로필을 갱신한다. 모델·base·provider·예산·승인 권위는 UI 입력으로 확대하지 않는다. 등록 응답은 설정 여부만 알려 주며, 키 저장은 자격 확인·모델 호출·진단 시작이 아니다. 일반 진단 body·상태·브라우저 저장소·로그·보고서로 키를 전달하지 않는 경계는 유지한다.
+
 ## 네트워크와 상호작용
 
 모델 송신은 기존 OpenRouter public-IP pin/TLS/privacy/provider/비용 정책을 통과한다. Worker 대상 송신은 기존 E② origin·IP·GET/HEAD·path·TLS·감사·Gateway 실행 권위를 통과한다. OpenRouter API hostname을 진단 대상으로 설치하는 것도 거부한다. E② 정책·메서드·TLS 검증 구현은 변경하지 않는다.

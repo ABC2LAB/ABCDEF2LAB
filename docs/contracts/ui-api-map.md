@@ -1,10 +1,12 @@
 # Workbench ↔ 진단 API 연결
 
+> 아래는 [#353](https://github.com/ABC2LAB/ABCDEF2LAB/pull/353)의 구현 제안이다. UI 삭제·미이관 기능과 12/18 화면 결정은 담당자 동의 전이며, [단일화 검토안](workbench-consolidation-review.md)에 범위와 채택 조건을 기록했다. 최신 dev에 채택됐거나 기존 화면과 기능이 동등하다는 뜻이 아니다.
+
 제품 UI는 `web/src/workbench/` 하나이며 `/`와 `/workbench`가 같은 컴포넌트를 표시한다. 기존 레일·여섯 화면·서랍·반응형·스타일을 유지한다. 중복 ABC2LabUI·목업 HTML·가짜 데이터·재생 엔진은 제거했다. 제품 배치와 구성도는 [Docker 설치 문서](../../deploy/product/README.md), 실제 검증 범위는 [수용 기록](../workbench-product-acceptance.md)을 따른다.
 
 ## 제품 진입점
 
-로그인 → URL 입력 → 설치된 로컬 프로필 또는 **외부 LLM 사용하기** → 모델명·API 키 등록 → 서버 범위 확인 → 명시적 시작 순서다. `diagnosis-api.v2`만 사용하고 404/501·조회 실패·결과 불명 상태에서 일반 `POST /api/tasks`나 v1으로 전환하지 않는다. 기존 공식 CLI prepare/check/run/report는 유지한다.
+로그인 → URL 입력 → 설치된 로컬 프로필 또는 **외부 LLM 사용하기** → 모델명·API 키 등록 → 서버 범위 확인 → 명시적 시작 순서다. `diagnosis-api.v2`만 사용하고 404/501·조회 실패·결과 불명 상태에서 일반 `POST /api/tasks`나 v1으로 전환하지 않는다. 기존 공식 CLI prepare/check/run/report는 유지한다. 요청별 허용·거절 UI가 없는 현재 Workbench는 `confirm_every_request`의 새 시작을 차단하며, 서버·CLI의 승인 계약은 유지한다.
 
 API handler는 모델 선택이나 임의 셸 생성으로 실행 권위를 만들지 않는다. 인증된 URL v2가 설치된 private preparation service를 호출하고, 보호된 실행 자료·Planner/Worker·E②를 재사용한다. 시작 전 키 등록·초안 생성·범위 확인은 모델 completion·대상 HTTP를 호출하지 않는다.
 
@@ -19,7 +21,7 @@ API handler는 모델 선택이나 임의 셸 생성으로 실행 권위를 만�
 | 새 점검 | `POST v2/drafts`, `POST /api/product/model-credentials` | 설치 프로필·승인 모델 없으면 차단 |
 | 자산 탐색 | 현재 진단의 서버 승인 scope | 별도 인벤토리·자동 크롤링 미지원 |
 | 범위 확인 | `POST v2/drafts/{id}/validate`, `/start` | 대상·모델·provider·토큰·USD·외부 전송 동의 확인 |
-| 점검 진행 | `GET v2/drafts/{id}/status`, receipt GET, `/stop`, task request-approvals | 결과 불명은 조회만 허용, 실행 재전송 금지 |
+| 점검 진행 | `GET v2/drafts/{id}/status`, receipt GET, `/stop`, task request-approvals 조회 | 허용·거절 조작 UI 미지원. 결과 불명은 조회만 허용, 실행 재전송 금지 |
 | 보고서 | `/api/tasks/{id}/diagnosis-run`, `/api/report/diagnostic/remediation`, diagnostic download | 저장·마감·판정·다운로드 실패를 구분 |
 
 초안·시작에는 idempotency key와 expected revision을 바인딩한다. 브라우저 영수증은 인증 주체에 결속되며 재진입은 서버 GET으로 확인한다. 응답 유실 뒤 재시작·모델 호출을 자동으로 다시 보내지 않는다. 보고서 bridge는 해당 주체의 실제 task만 허용한다.
