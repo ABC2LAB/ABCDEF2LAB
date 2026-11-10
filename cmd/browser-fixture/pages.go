@@ -1,13 +1,12 @@
 package main
 
 const (
-	htmlType       = "text/html; charset=utf-8"
-	jsType         = "text/javascript"
-	pageHead       = `<!doctype html><meta charset="utf-8"><title>fixture</title>`
-	altSvcScenario = "B08"
-	itemsJSON      = `{"items":["first","second"]}`
-	appCSS         = `#app{font-family:sans-serif}`
-	logoSVG        = `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>`
+	htmlType  = "text/html; charset=utf-8"
+	jsType    = "text/javascript"
+	pageHead  = `<!doctype html><meta charset="utf-8"><title>fixture</title>`
+	itemsJSON = `{"items":["first","second"]}`
+	appCSS    = `#app{font-family:sans-serif}`
+	logoSVG   = `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>`
 )
 
 // 첫 화면은 JS가 API를 읽어 그린다. 정적 HTML만 읽으면 내용이 없다.
@@ -25,7 +24,7 @@ self.addEventListener("fetch",e=>{if(new URL(e.request.url).pathname==="/sw-prob
 var scenarios = map[string]string{
 	"B04": `<img src="{{R}}/hit/B04-img"><script src="{{R}}/hit/B04-script"></script><script>fetch("{{R}}/hit/B04-fetch",{mode:"no-cors"})</script>`,
 	"B05": `<iframe src="/out/B05-frame"></iframe><script>fetch("/out/B05-fetch",{mode:"no-cors"})</script>`,
-	"B06": `<script>navigator.serviceWorker.addEventListener("controllerchange",()=>fetch("/sw-probe"));navigator.serviceWorker.register("/sw.js")</script>`,
+	"B06": `<script>const s=navigator.serviceWorker;if(s.controller){fetch("/sw-probe")}s.addEventListener("controllerchange",()=>fetch("/sw-probe"));s.register("/sw.js")</script>`,
 	"B07": `<script>new WebSocket("{{WS}}/hit/B07")</script>`,
 	"B08": `<script>for(let i=0;i<3;i++){fetch("/api/items")}</script>`,
 	"B09": `<script>const c=new RTCPeerConnection({iceServers:[{urls:"stun:{{STUN}}"}]});c.createDataChannel("x");c.createOffer().then(o=>c.setLocalDescription(o))</script>`,

@@ -29,6 +29,7 @@ const (
 	unknownScenario    = "unknown"
 	readHeaderTimeout  = 10 * time.Second
 	shutdownTimeout    = 5 * time.Second
+	altSvcMaxAge       = 60
 	udpBufferBytes     = 2048
 	stunCookieOffset   = 4
 	quicLongHeaderBit  = 0x80
@@ -53,8 +54,8 @@ type recorder struct {
 	mu     sync.Mutex
 	file   *os.File
 	seq    uint64
+	err    error
 	failed chan struct{}
-	once   sync.Once
 }
 
 func newRecorder(path string) (*recorder, error) {
@@ -69,6 +70,9 @@ func newRecorder(path string) (*recorder, error) {
 func (r *recorder) record(v row) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.err != nil {
+		return r.err
+	}
 	r.seq++
 	v.Seq = r.seq
 	data, err := json.Marshal(v)
@@ -76,27 +80,39 @@ func (r *recorder) record(v row) error {
 		_, err = r.file.Write(append(data, '\n'))
 	}
 	if err != nil {
-		r.once.Do(func() { close(r.failed) })
+		r.err = err
+		close(r.failed)
 	}
 	return err
 }
 
-type receiverInfo struct {
-	origin, websocket, stun string
+// 앞선 기록 실패와 저장 실패를 모두 돌려줘서, 끝에 생긴 손실도 실행 실패가 되게 한다.
+func (r *recorder) close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return errors.Join(r.err, r.file.Sync(), r.file.Close())
 }
 
-func parseReceiver(raw, udpListen string) (receiverInfo, error) {
+type receiverInfo struct {
+	origin, websocket, stun, udpPort string
+}
+
+// 대상이 HTTPS면 수신기도 HTTPS여야 한다. 아니면 혼합 콘텐츠로 막혀서 시도 자체가 생기지 않는다.
+func parseReceiver(raw, udpListen string, tlsEnabled bool) (receiverInfo, error) {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !safeHost.MatchString(u.Host) ||
 		u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return receiverInfo{}, errors.New("receiver origin must be http(s)://host[:port]")
+	}
+	if (u.Scheme == "https") != tlsEnabled {
+		return receiverInfo{}, errors.New("receiver origin scheme must match the TLS setting")
 	}
 	_, port, err := net.SplitHostPort(udpListen)
 	if err != nil {
 		return receiverInfo{}, fmt.Errorf("receiver udp address: %w", err)
 	}
 	origin := u.Scheme + "://" + u.Host
-	return receiverInfo{origin, "ws" + strings.TrimPrefix(origin, "http"), net.JoinHostPort(u.Hostname(), port)}, nil
+	return receiverInfo{origin, "ws" + strings.TrimPrefix(origin, "http"), net.JoinHostPort(u.Hostname(), port), port}, nil
 }
 
 func (i receiverInfo) render(text string) string {
@@ -127,8 +143,9 @@ func targetHandler(rec *recorder, receiver receiverInfo) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		if r.PathValue("id") == altSvcScenario {
-			w.Header().Set("Alt-Svc", `h3="`+receiver.stun+`"; ma=60`)
+		if r.PathValue("id") == scenarioQUIC {
+			// 다른 호스트를 가리키는 대안은 브라우저가 쓰지 않을 수 있어 같은 호스트의 UDP 포트를 광고한다.
+			w.Header().Set("Alt-Svc", fmt.Sprintf(`h3=":%s"; ma=%d`, receiver.udpPort, altSvcMaxAge))
 		}
 		write(w, htmlType, pageHead+receiver.render(page))
 	})
@@ -197,60 +214,74 @@ func serveUDP(ctx context.Context, conn net.PacketConn, rec *recorder) error {
 	}
 }
 
+type config struct {
+	listen, receiverListen, certFile, keyFile string
+	receiver                                  receiverInfo
+}
+
+func serve(ctx context.Context, cfg config, rec *recorder, udp net.PacketConn) error {
+	target := &http.Server{Addr: cfg.listen, Handler: targetHandler(rec, cfg.receiver), ReadHeaderTimeout: readHeaderTimeout}
+	outside := &http.Server{Addr: cfg.receiverListen, Handler: receiverHandler(rec), ReadHeaderTimeout: readHeaderTimeout}
+	listen := func(server *http.Server) error {
+		if cfg.certFile != "" {
+			return server.ListenAndServeTLS(cfg.certFile, cfg.keyFile)
+		}
+		return server.ListenAndServe()
+	}
+	failures := make(chan error, 2)
+	go func() { failures <- listen(target) }()
+	go func() { failures <- listen(outside) }()
+	udpDone := make(chan error, 1)
+	go func() { udpDone <- serveUDP(ctx, udp, rec) }()
+	var first error
+	udpFinished := false
+	select {
+	case <-ctx.Done():
+	case <-rec.failed:
+	case first = <-failures:
+	case first = <-udpDone:
+		udpFinished = true
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	results := []error{first, target.Shutdown(shutdown), outside.Shutdown(shutdown), udp.Close()}
+	if !udpFinished {
+		results = append(results, <-udpDone)
+	}
+	return errors.Join(append(results, rec.close())...)
+}
+
 func run() error {
 	listen := flag.String("listen", "", "target address")
 	receiverListen := flag.String("receiver-listen", "", "out-of-scope HTTP receiver address")
 	receiverUDP := flag.String("receiver-udp", "", "out-of-scope UDP receiver address")
 	receiverOrigin := flag.String("receiver-origin", "", "origin the pages use to reach the receiver")
 	logPath := flag.String("log", "", "new JSONL file for reached requests")
-	certFile := flag.String("tls-cert", "", "target TLS certificate")
-	keyFile := flag.String("tls-key", "", "target TLS key")
+	certFile := flag.String("tls-cert", "", "TLS certificate for the target and the receiver")
+	keyFile := flag.String("tls-key", "", "TLS key for the target and the receiver")
 	flag.Parse()
 	if *listen == "" || *receiverListen == "" || *receiverUDP == "" || *receiverOrigin == "" || *logPath == "" || (*certFile == "") != (*keyFile == "") {
 		return errors.New("-listen, -receiver-listen, -receiver-udp, -receiver-origin and -log are required; -tls-cert and -tls-key go together")
 	}
-	info, err := parseReceiver(*receiverOrigin, *receiverUDP)
+	info, err := parseReceiver(*receiverOrigin, *receiverUDP, *certFile != "")
+	if err != nil {
+		return err
+	}
+	udp, err := net.ListenPacket("udp", *receiverUDP)
 	if err != nil {
 		return err
 	}
 	rec, err := newRecorder(*logPath)
 	if err != nil {
-		return err
+		return errors.Join(err, udp.Close())
 	}
-	defer rec.file.Close()
-	udp, err := net.ListenPacket("udp", *receiverUDP)
-	if err != nil {
-		return err
-	}
-	defer udp.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	target := &http.Server{Addr: *listen, Handler: targetHandler(rec, info), ReadHeaderTimeout: readHeaderTimeout}
-	outside := &http.Server{Addr: *receiverListen, Handler: receiverHandler(rec), ReadHeaderTimeout: readHeaderTimeout}
-	failures := make(chan error, 3)
-	go func() {
-		if *certFile != "" {
-			failures <- target.ListenAndServeTLS(*certFile, *keyFile)
-			return
-		}
-		failures <- target.ListenAndServe()
-	}()
-	go func() { failures <- outside.ListenAndServe() }()
-	go func() { failures <- serveUDP(ctx, udp, rec) }()
-	var result error
-	select {
-	case <-ctx.Done():
-	case <-rec.failed:
-		result = errors.New("reach log write failed")
-	case result = <-failures:
-	}
-	shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	return errors.Join(result, target.Shutdown(shutdown), outside.Shutdown(shutdown))
+	return serve(ctx, config{*listen, *receiverListen, *certFile, *keyFile, info}, rec, udp)
 }
 
 func main() {
-	if err := run(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "browser-fixture:", err)
 		os.Exit(1)
 	}

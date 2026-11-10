@@ -2,7 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +24,7 @@ import (
 
 const sentinel = "SENTINELVALUE"
 
-var testReceiver = receiverInfo{"http://outside.test:9001", "ws://outside.test:9001", "outside.test:9002"}
+var testReceiver = receiverInfo{"http://outside.test:9001", "ws://outside.test:9001", "outside.test:9002", "9002"}
 
 func newTestRecorder(t *testing.T) (*recorder, string) {
 	t.Helper()
@@ -83,7 +91,7 @@ func TestScenarioPagesCarryAttempts(t *testing.T) {
 	want := map[string][]string{
 		"B04": {"http://outside.test:9001/hit/B04-img", "http://outside.test:9001/hit/B04-script", "http://outside.test:9001/hit/B04-fetch"},
 		"B05": {"/out/B05-frame", "/out/B05-fetch"},
-		"B06": {`register("/sw.js")`, `"controllerchange",()=>fetch("/sw-probe")`},
+		"B06": {`register("/sw.js")`, `"controllerchange",()=>fetch("/sw-probe")`, `if(s.controller){fetch("/sw-probe")}`},
 		"B07": {"ws://outside.test:9001/hit/B07"},
 		"B08": {`fetch("/api/items")`},
 		"B09": {"stun:outside.test:9002"},
@@ -135,7 +143,7 @@ func TestEveryOutsideAttemptIsAKnownHit(t *testing.T) {
 func TestAltSvcOnlyOnQUICScenario(t *testing.T) {
 	rec, _ := newTestRecorder(t)
 	h := targetHandler(rec, testReceiver)
-	if got := get(t, h, "/bypass/B08").Header().Get("Alt-Svc"); got != `h3="outside.test:9002"; ma=60` {
+	if got := get(t, h, "/bypass/B08").Header().Get("Alt-Svc"); got != `h3=":9002"; ma=60` {
 		t.Fatal(got)
 	}
 	if got := get(t, h, "/bypass/B04").Header().Get("Alt-Svc"); got != "" {
@@ -305,21 +313,191 @@ func TestRecordFailureFailsRunAndRequest(t *testing.T) {
 	}
 }
 
+func testPacketConn(t *testing.T) net.PacketConn {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func TestServeStopsCleanlyAndClosesLog(t *testing.T) {
+	rec, path := newTestRecorder(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, config{listen: "127.0.0.1:0", receiverListen: "127.0.0.1:0", receiver: testReceiver}, rec, testPacketConn(t))
+	}()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rec.file.Write([]byte("x")); !errors.Is(err, os.ErrClosed) {
+		t.Fatal(err)
+	}
+	if rows := readRows(t, path); len(rows) != 0 {
+		t.Fatal(rows)
+	}
+}
+
+func TestServeReportsRecordFailureEvenAfterCancel(t *testing.T) {
+	rec, _ := newTestRecorder(t)
+	rec.file.Close()
+	if err := rec.record(row{Surface: surfaceReceiver, Scenario: "B07"}); err == nil {
+		t.Fatal("record must fail on a closed file")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := serve(ctx, config{listen: "127.0.0.1:0", receiverListen: "127.0.0.1:0", receiver: testReceiver}, rec, testPacketConn(t))
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatal(err)
+	}
+}
+
+func TestServeEndsOnRecordFailure(t *testing.T) {
+	rec, _ := newTestRecorder(t)
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(t.Context(), config{listen: "127.0.0.1:0", receiverListen: "127.0.0.1:0", receiver: testReceiver}, rec, testPacketConn(t))
+	}()
+	rec.file.Close()
+	if err := rec.record(row{Surface: surfaceReceiver, Scenario: "B07"}); err == nil {
+		t.Fatal("record must fail on a closed file")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, os.ErrClosed) {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve kept running after a lost record")
+	}
+}
+
+func TestServeReportsListenFailure(t *testing.T) {
+	rec, _ := newTestRecorder(t)
+	err := serve(t.Context(), config{listen: "bad address", receiverListen: "127.0.0.1:0", receiver: testReceiver}, rec, testPacketConn(t))
+	if err == nil {
+		t.Fatal("listen failure must end the run")
+	}
+}
+
+func freeAddress(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().String()
+}
+
+func writeTestCertificate(t *testing.T) (string, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), DNSNames: []string{"localhost"}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certFile, keyFile
+}
+
+func TestServeUsesTLSForTargetAndReceiver(t *testing.T) {
+	rec, path := newTestRecorder(t)
+	certFile, keyFile := writeTestCertificate(t)
+	target, outside := freeAddress(t), freeAddress(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, config{target, outside, certFile, keyFile, testReceiver}, rec, testPacketConn(t))
+	}()
+	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	reach := func(url string) *http.Response {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			response, err := client.Get(url)
+			if err == nil {
+				response.Body.Close()
+				return response
+			}
+			if time.Now().After(deadline) {
+				t.Fatal(err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if got := reach("https://" + target + "/"); got.StatusCode != http.StatusOK || got.TLS == nil {
+		t.Fatal(got.StatusCode, got.TLS)
+	}
+	if got := reach("https://" + outside + "/hit/B07"); got.StatusCode != http.StatusNoContent || got.TLS == nil {
+		t.Fatal(got.StatusCode, got.TLS)
+	}
+	client.CloseIdleConnections()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if rows := readRows(t, path); len(rows) != 1 || rows[0].Scenario != "B07" {
+		t.Fatalf("%+v", rows)
+	}
+}
+
+func TestCloseReportsEarlierRecordFailure(t *testing.T) {
+	rec, _ := newTestRecorder(t)
+	earlier := errors.New("earlier failure")
+	rec.err = earlier
+	if err := rec.close(); !errors.Is(err, earlier) {
+		t.Fatal(err)
+	}
+}
+
+func TestRecordKeepsFirstFailure(t *testing.T) {
+	rec, _ := newTestRecorder(t)
+	rec.file.Close()
+	first := rec.record(row{Surface: surfaceReceiver, Scenario: "B07"})
+	if second := rec.record(row{Surface: surfaceReceiver, Scenario: "B07"}); first == nil || second != first {
+		t.Fatal(first, second)
+	}
+}
+
 func TestParseReceiver(t *testing.T) {
-	got, err := parseReceiver("https://outside.test:9001/", "0.0.0.0:9002")
-	if want := (receiverInfo{"https://outside.test:9001", "wss://outside.test:9001", "outside.test:9002"}); err != nil || got != want {
+	got, err := parseReceiver("https://outside.test:9001/", "0.0.0.0:9002", true)
+	if want := (receiverInfo{"https://outside.test:9001", "wss://outside.test:9001", "outside.test:9002", "9002"}); err != nil || got != want {
 		t.Fatalf("%+v %v", got, err)
 	}
 	bad := []string{"", "ftp://a.test", "http://", "http://a.test/x", "http://a.test?q=1", "http://a.test#f", "http://u:p@a.test", `http://a"b.test`}
 	for _, raw := range bad {
-		if _, err := parseReceiver(raw, "0.0.0.0:9002"); err == nil {
+		if _, err := parseReceiver(raw, "0.0.0.0:9002", false); err == nil {
 			t.Fatal(raw)
 		}
 	}
-	if _, err := parseReceiver("http://a.test", "no-port"); err == nil {
+	if _, err := parseReceiver("http://a.test", "no-port", false); err == nil {
 		t.Fatal("udp address")
 	}
-	if plain, err := parseReceiver("http://a.test", "0.0.0.0:1"); err != nil || plain.websocket != "ws://a.test" {
+	if plain, err := parseReceiver("http://a.test", "0.0.0.0:1", false); err != nil || plain.websocket != "ws://a.test" {
 		t.Fatalf("%+v %v", plain, err)
+	}
+	if _, err := parseReceiver("https://a.test", "0.0.0.0:1", false); err == nil {
+		t.Fatal("https receiver without TLS")
+	}
+	if _, err := parseReceiver("http://a.test", "0.0.0.0:1", true); err == nil {
+		t.Fatal("http receiver with TLS target")
 	}
 }
