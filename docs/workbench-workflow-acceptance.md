@@ -108,7 +108,21 @@ Planner가 만든 초기 intent를 보호 Worker가 받아 프로그램 소유�
 
 ### PR #366 내구성 리뷰 후속 검증
 
-리뷰 #5839384822의 대상 입력·탐색 실패·투영 저장·승인 경로 표시에 대한 수정은 별도 회귀 및 새 이미지 종단 실행으로 검증한다. 기존 표의 SHA와 실측을 새 코드의 결과로 해석하지 않는다. 최신 CI와 후속 실행 결과는 PR 본문에 기록한다. 상세 실패 분류·프레임/endpoint/명령/바인딩 상한은 [워크플로 계약](contracts/workbench-engine-workflow.md#대상-입력과-실패-처리)을 따른다.
+리뷰 #5839384822와 #6763822796을 반영한 제품 소스는 **`f42615a0df32337a588b80acb4f0a41235205493`**, 실행 이미지 ID는 **`sha256:8411c3ab83a3ec3a2a19addc0fdce1fe29d879fa5cd5bc7eda43192b8a0965d6`**이다. 새 볼륨·망의 소유 Juice Shop15.0.0, 같은 선언적 탐색 fixture, 로컬 합성 모델로 실제 실행했다. 이전 표의 실측과 구분한다.
+
+| 후속 종단 검사 | 실측 |
+|---|---|
+| 사용자 승인 | **77 assertions PASS**. 발견5·선택2, 실제 POST 허용1 도달/거부1 미전송, 선택 응답 유실·pause/resume·후보·HTML |
+| AI 자동 | **44 assertions PASS**. 읽기3 선택, POST0·제외/미선택0, 심화 Worker·저장 후보·HTML |
+| 선택 대기 중 UI 중지 | **33 assertions PASS**. cancelled/drain_complete, workflow stopped·deep0, 후속 송신0 |
+| 같은 이미지·DB 재시작 | **11 assertions PASS**. 두 완료 회차와 HTML 복구, 모델 총28회·receiver 계수 유지, 추가 실행0 |
+| 실제 계정 대조 | Juice Shop SQLite 집계: 허용 계정1·거부 계정0 |
+
+새 승인 화면에서 `POST /api/Users`가 보이고 query·본문은 공개하지 않는 것을 [화면](evidence/workbench-workflow/review-approval.png)에서 확인했다. 정본 HTML blob `3840003f318e927aebf5d41ff3f49e892da57812`는 그대로다. 제한된 [검증 수치·변이 목록](evidence/workbench-workflow/review-20261110.json)을 보존한다. 비밀 설치 입력·토큰·원문 로그·DB 덤프는 포함하지 않는다.
+
+후속 회귀: Web **518 PASS/0 FAIL/0 SKIP**, 정적 빌드·타입·변경8파일 Biome PASS. 로컬 전체 Go race는 마지막 후속 수정 전에 **64패키지 7,589 PASS/0 FAIL/18 SKIP**이며, 후속 `agent/diagnosisflow`는 race로 별도 통과했다. 실제 provider 요청을 검사해 Planner의 대상 경로가 user 역할에만 있음을 확인했다. 전체 build/vet PASS. 실제 PG16에서 NUL·긴 method·비표준 상태값·닫힌 pool 고장을 검증했고, 소유자/revision/선택/신뢰 마감/SQL CAS/프레임·endpoint·명령 상한/설치 동의/쓰기 필터/승인 경로 DLP/Planner 역할/부분 응답 등 **26종 변이가 지정 시험에서 실제 실패**했다. 최신 head 전체 CI 수치는 PR 본문을 따른다. SKIP은 통과로 계산하지 않는다.
+
+최초 후속 자동 모드는 큰 상품 응답의 `body_incomplete` 때문에 읽기 선택을 잘못 제외해 완료 대기를 넘겼다. 이를 수정하고 새 설치에서 위 두 모드를 다시 돌렸다. 그 실패 회차의 저널·예약은 별도로 보존하며 성공 회차에 포함하지 않는다. 새 Compose 입력 경로 오타는 진단 시작 전 거절돼 바로잡았고, 추가 agent 시험이 전체 회귀의 DB 초기화와 경합한 실행도 중단해 별도 소유 DB로 분리했다. 이 실패를 통과로 계산하지 않는다. 상세 실패 분류·프레임/endpoint/명령/바인딩 상한은 [워크플로 계약](contracts/workbench-engine-workflow.md#대상-입력과-실패-처리)을 따른다.
 
 ## 8. 미구현·미수용
 
