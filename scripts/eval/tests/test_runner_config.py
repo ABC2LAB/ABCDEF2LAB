@@ -63,6 +63,7 @@ def runner_config() -> dict:
         "state": None,
         "engine_rules": None,
         "verdict_export": None,
+        "purpose": "official",
         "task": {"description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.\n로그인 계정은 엔진 설정을 쓴다.",
                  "goal": "다른 사용자의 자원에 접근되는지 확인한다", "timeout_seconds": 1200,
                  "plan_heartbeat_seconds": 600, "seed_first_intent": False, "coverage_enabled": True},
@@ -426,6 +427,7 @@ class TestE2Mode(unittest.TestCase):
         for payload, code in (
                 ({k: v for k, v in runner_config().items() if k != "e2"}, "config.e2: MISSING"),
                 (runner_config() | {"e2": {"ours_mode": "other"}}, "config.e2.ours_mode: UNSUPPORTED"),
+                (runner_config() | {"purpose": "browser"}, "config.purpose: UNSUPPORTED"),
                 (runner_config() | {"e2": {"ours_mode": ""}}, "config.e2.ours_mode: UNSUPPORTED"),
                 (runner_config() | {"e2": {}}, "config.e2.ours_mode: MISSING"),
                 (runner_config() | {"e2": {"ours_mode": "stub", "port": 1}}, "config.e2: UNKNOWN_FIELDS"),

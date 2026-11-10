@@ -1525,6 +1525,15 @@ class TestFailures(unittest.TestCase):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True))
         self.assert_invalid(result, ports, evidence, "meter_path_log_enabled")
 
+    def test_browser_acceptance_run_needs_the_path_log(self):
+        spec = dataclasses.replace(make_spec(), purpose="browser_acceptance")
+        result, ports, _, evidence = run(spec=spec)
+        self.assert_invalid(result, ports, evidence, "meter_path_log_missing")
+        result, _ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], "complete")
+        conditions = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "run_conditions")
+        self.assertEqual(conditions["purpose"], "browser_acceptance")
+
     def test_meter_and_observer_records_must_agree(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "observer_extra", 1))
         self.assert_invalid(result, ports, evidence, "observer_count_mismatch")

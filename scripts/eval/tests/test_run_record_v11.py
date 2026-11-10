@@ -555,6 +555,9 @@ class TestRejectedV11(_V11):
             self.reject("run_conditions", f"r{index + 1}",
                         tamper_rows=lambda rows, n=name, v=value: row_of(rows, "run_conditions").update({n: v}))
         self.reject("run_conditions", "r20", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(output_language=1))
+        # 브라우저 수용시험 회차는 공식 비교에 쓰지 않는다.
+        self.reject("run_conditions", "r21", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            purpose="browser_acceptance"))
         self.reject("run_conditions", "r9", tamper_rows=lambda rows: row_of(rows, "run_conditions")["host"].update(
             logical_cpus=True))
         self.reject("run_conditions", "r10", tamper_rows=lambda rows: row_of(rows, "run_conditions")["sampling"].update(

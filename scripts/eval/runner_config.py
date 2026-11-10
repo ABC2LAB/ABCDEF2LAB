@@ -132,6 +132,10 @@ _LLM_POLICY_MODES = ("external",)
 # product = 제품 E²(제어 채널 제안). baseline은 항상 none이다(원본에는 E²가 없다).
 E2_NONE, E2_STUB, E2_PRODUCT = "none", "stub", "product"
 E2_MODES = (E2_NONE, E2_STUB, E2_PRODUCT)
+# 회차 목적. official만 공식 비교에 쓴다. browser_acceptance는 계측기 경로 기록이 있어야 하는 수용시험 회차다.
+PURPOSE_OFFICIAL = "official"
+PURPOSE_BROWSER_ACCEPTANCE = "browser_acceptance"
+PURPOSES = (PURPOSE_OFFICIAL, PURPOSE_BROWSER_ACCEPTANCE)
 # 관측 경로 응답 형식. opaque는 점수판 없는 연습 대상용이고 그 회차는 채점기가 거부한다(docs/evaluation/practice-targets.md).
 OBSERVER_SCOREBOARD = "challenge_scoreboard"
 OBSERVER_OPAQUE = "opaque"
@@ -144,7 +148,7 @@ MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "observer_format", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
-               "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export")
+               "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export", "purpose")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -250,6 +254,8 @@ class RunnerConfig:
     engine_rules: str | None
     # 개선 후 판정 export 수집 한도(_VERDICT_FIELDS). None이면 수집 안 함(records=null).
     verdict_export: dict | None
+    # 회차 목적(PURPOSES). 서명된 실행 조건에 남아 채점기가 공식 비교 회차만 받는다.
+    purpose: str
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -395,6 +401,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     if "ours_mode" in e2 and e2["ours_mode"] not in E2_MODES:
         errors.append("config.e2.ours_mode: UNSUPPORTED")
     state = _state(top.get("state"), errors) if "state" in top else None
+    if "purpose" in top and top["purpose"] not in PURPOSES:
+        errors.append("config.purpose: UNSUPPORTED")
     db = _exact(top.get("engine_db"), ("user", "name"), "config.engine_db", errors) if "engine_db" in top else {}
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
@@ -498,7 +506,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},
         observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], e2_product=e2_product, state=state,
-        engine_rules=top["engine_rules"], verdict_export=verdict_export)
+        engine_rules=top["engine_rules"], verdict_export=verdict_export, purpose=top["purpose"])
 
 
 def _e2_product(block: dict, errors: list[str]) -> dict | None:

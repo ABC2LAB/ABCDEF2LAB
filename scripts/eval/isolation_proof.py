@@ -43,7 +43,7 @@ _ROW_FIELDS = {
                              "sequence_complete"},
     "drain": {"engine_end", "sealed_at", "drained_at", "inflight", "grace_seconds", "settle_seconds",
               "forced_cancelled", "settle_applied_seconds"},
-    "run_conditions": {"engine_settings_sha256", "engine_rules_sha256", "output_language", "tool_tree_sha256", "workers",
+    "run_conditions": {"purpose", "engine_settings_sha256", "engine_rules_sha256", "output_language", "tool_tree_sha256", "workers",
                        "sampling", "host",
                        "machine_id_sha256", "llm_stream"},
     "e2_placement": {"mode", "decision_rows", "allowed", "unsupported", "unavailable"},
@@ -252,6 +252,9 @@ def valid_output_language(value: object) -> bool:
 
 def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     row = _one(rows, "run_conditions")
+    # 브라우저 수용시험 회차는 공식 비교 수치에 합산하지 않는다(browser-acceptance.md).
+    if row["purpose"] != "official":
+        raise IsolationError("isolation_evidence.run_conditions.purpose: 공식 비교 회차가 아님")
     _hex(row["engine_settings_sha256"], "isolation_evidence.run_conditions.engine_settings_sha256")
     _hex(row["machine_id_sha256"], "isolation_evidence.run_conditions.machine_id_sha256")
     _hex(row["tool_tree_sha256"], "isolation_evidence.run_conditions.tool_tree_sha256")
