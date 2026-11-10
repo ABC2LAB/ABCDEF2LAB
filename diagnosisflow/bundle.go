@@ -11,22 +11,26 @@ import (
 // 찾은 경로는 후보일 뿐이고, 실제 전송은 범위·선택·E② 검사를 그대로 거친다.
 
 const (
-	maxBundleMatches = 256
-	maxBundleChunks  = 64
-	bundleQuote      = "[\"'`]"
-	bundlePathTail   = "[^\"'`\\s<>$]{0,180}"
-	bundleVerb       = "(get|post|put|patch|delete)"
+	maxBundleMatches     = 256
+	maxBundleChunks      = 64
+	maxBundleChunkTables = 8
+	bundleQuote          = "[\"'`]"
+	bundlePathTail       = "[^\"'`\\s<>$]{0,180}"
+	bundleTemplateTail   = "[^`$\\s<>]{0,180}"
+	bundleLiteralTail    = "[^\"'`\\s<>]{1,160}"
+	bundleFetchOptions   = "[^{}]{0,200}?"
+	bundleVerb           = "(get|post|put|patch|delete)"
 )
 
 var (
-	apiLiteral = regexp.MustCompile(bundleQuote + "(/(?:api|rest)/[^\"'`\\s<>]{1,160})" + bundleQuote)
+	apiLiteral = regexp.MustCompile(bundleQuote + "(/(?:api|rest)/" + bundleLiteralTail + ")" + bundleQuote)
 	// `.post(this.host+"/x"`처럼 앞에 식이 붙어도 경로 글자를 잡는다. 번역 키 같은 `.get("KEY")`는 `/`로 시작하지 않아 빠진다.
 	callConcat   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(\\.?/" + bundlePathTail + ")" + bundleQuote)
-	callTemplate = regexp.MustCompile("(?i)\\." + bundleVerb + "\\(\\s*`(?:\\$\\{([\\w$.]+)\\})?(/[^`$\\s<>]{0,180})?(\\$\\{|`)")
+	callTemplate = regexp.MustCompile("(?i)\\." + bundleVerb + "\\(\\s*`(?:\\$\\{([\\w$.]+)\\})?(/" + bundleTemplateTail + ")?(\\$\\{|`)")
 	callMember   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(this\.[\w$]+)\s*[,)]`)
 	baseAssign   = regexp.MustCompile(`(this\.[\w$]+)\s*=\s*(?:[\w$.]+\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
-	baseTemplate = regexp.MustCompile("(this\\.[\\w$]+)\\s*=\\s*`(?:\\$\\{[\\w$.]+\\})?(/[^`$\\s<>]{0,180})`")
-	fetchCall    = regexp.MustCompile(`\bfetch\(\s*(?:[\w$.]+\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote + `(?:\s*,\s*\{[^{}]{0,200}?\bmethod\s*:\s*` + bundleQuote + `(\w+)` + bundleQuote + `)?`)
+	baseTemplate = regexp.MustCompile("(this\\.[\\w$]+)\\s*=\\s*`(?:\\$\\{[\\w$.]+\\})?(/" + bundleTemplateTail + ")`")
+	fetchCall    = regexp.MustCompile(`\bfetch\(\s*(?:[\w$.]+\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote + `(?:\s*,\s*\{` + bundleFetchOptions + `\bmethod\s*:\s*` + bundleQuote + `(\w+)` + bundleQuote + `)?`)
 	xhrOpen      = regexp.MustCompile(`\.open\(\s*` + bundleQuote + `(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)` + bundleQuote + `\s*,\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	urlField     = regexp.MustCompile(`\burl\s*:\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	// 슬래시 없는 "moment.js" 같은 모듈 이름은 파일 경로로 보지 않는다.
@@ -147,7 +151,7 @@ func bundleChunks(body []byte) []string {
 	if m := publicPath.FindSubmatch(body); m != nil {
 		prefix = string(m[1])
 	}
-	for _, m := range chunkMap.FindAllSubmatchIndex(body, 8) {
+	for _, m := range chunkMap.FindAllSubmatchIndex(body, maxBundleChunkTables) {
 		for _, entry := range chunkEntry.FindAllSubmatch(body[m[6]:m[7]], -1) {
 			id, err := strconv.Atoi(string(entry[1]))
 			if err != nil {
