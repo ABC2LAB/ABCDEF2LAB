@@ -62,6 +62,14 @@ func TestBundleBaseUsesNearestEarlierAssignment(t *testing.T) {
 	if got := refStrings(bundleRefs([]byte(body))); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%q", got)
 	}
+	named := `this.a="/first";this.b="/second";c.get(this.a+"/x")`
+	if got := refStrings(bundleRefs([]byte(named))); !reflect.DeepEqual(got, []string{"GET /first/x script_call"}) {
+		t.Fatalf("other base used %q", got)
+	}
+	mixed := "this.host=`/template`;this.host=\"/literal\";c.get(this.host+\"/x\")"
+	if got := refStrings(bundleRefs([]byte(mixed))); !reflect.DeepEqual(got, []string{"GET /literal/x script_call"}) {
+		t.Fatalf("earlier template used %q", got)
+	}
 	later := `a(){return this.http.get(this.host+"/x")}this.host="/late"`
 	if got := refStrings(bundleRefs([]byte(later))); !reflect.DeepEqual(got, []string{"GET /x script_call"}) {
 		t.Fatalf("later assignment used %q", got)
@@ -134,6 +142,27 @@ func TestDiscoveryResolvesBundleCallsAgainstOrigin(t *testing.T) {
 	c.discoverBodyLocked([]byte(`this.host=s+"/read/items"}a(){return this.http.post(this.host+"/add",e)}`), "application/javascript", "/read/app.js")
 	if got := discovered(c); !slices.Contains(got, "POST /read/items/add api") {
 		t.Fatal(got)
+	}
+}
+
+func TestCrawlDoesNotRefetchAFailedPage(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.binding.Limits.MaxPages = 3
+	var order []string
+	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
+		path := strings.TrimPrefix(target, "https://owned.test")
+		order = append(order, path)
+		trusted := e2runner.TrustedResult{Version: e2proxy.Version, Final: true, ProcessDrained: true, ProxyDrained: true, Call: e2proxy.CallResult{Final: true, AuditComplete: true, Counts: e2proxy.Counts{ForwardAttempted: 1}}}
+		if path != "/read" {
+			trusted.Call.Counts.ForwardAttempted = 0
+		}
+		return e2runner.Result{ToolOutput: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<a href=\"/read/bad\">b</a>", Trusted: trusted}, nil
+	})
+	if !handled || err != nil {
+		t.Fatal(handled, err)
+	}
+	if want := []string{"/read", "/read/bad"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("got=%q want=%q", order, want)
 	}
 }
 

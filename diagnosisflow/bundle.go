@@ -106,9 +106,7 @@ func bundleRefs(body []byte) []bundleRef {
 			// 뒤가 실행 중에 정해지는 주소라 앞부분만 후보로 남긴다.
 			path, source = strings.TrimSuffix(path, "/"), "script_prefix"
 		}
-		if path != "" {
-			emit(strings.ToUpper(group(body, m, 1)), path, "api", source)
-		}
+		emit(strings.ToUpper(group(body, m, 1)), path, "api", source)
 	}
 	for _, m := range callMember.FindAllSubmatchIndex(body, maxBundleMatches) {
 		if base, ok := baseBefore(bases, group(body, m, 2), m[0]); ok {
