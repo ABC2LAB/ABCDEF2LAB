@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/diagnosisprep"
@@ -13,6 +14,15 @@ import (
 )
 
 var ErrFirstDiagnosisModelBudget = errors.New("first_diagnosis_model_budget_unavailable")
+
+// 대상의 정상 철회·만료는 신규 작업을 막되 이미 예약한 모델 사용량은 마감한다.
+var ErrFirstDiagnosisTargetEnded = errors.New("first_diagnosis_target_approval_ended")
+
+type firstDiagnosisTargetDrain struct {
+	hard  context.Context
+	grace time.Duration
+	admit func() error
+}
 
 // 입력은 추정 토큰 대신 설치자가 고정한 전체 context를 매 호출 보수적으로 예약한다.
 // 출력 한도와 직렬화 크기도 호출 전에 검사하며 성공 뒤에도 예약을 환불하지 않는다.
@@ -28,6 +38,65 @@ type FirstDiagnosisModelBudget struct {
 	external      *llmpolicy.OpenRouterPolicy
 	manifestPath  string
 	lastExternal  llmpolicy.OpenRouterUsage
+	targetDrain   *firstDiagnosisTargetDrain
+}
+
+// 실행 전에 한 번만 설정한다. 사용자 중단·시간 상한·감사 실패는 hard context로 즉시 취소한다.
+func (b *FirstDiagnosisModelBudget) ConfigureTargetDrain(hard context.Context, grace time.Duration, admit func() error) error {
+	if b == nil || hard == nil || hard.Err() != nil || grace <= 0 || grace > 30*time.Second || admit == nil {
+		return ErrFirstDiagnosisModelBudget
+	}
+	if _, ok := hard.Deadline(); !ok {
+		return ErrFirstDiagnosisModelBudget
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.targetDrain != nil || b.usage.Requests != 0 {
+		return ErrFirstDiagnosisModelBudget
+	}
+	b.targetDrain = &firstDiagnosisTargetDrain{hard: hard, grace: grace, admit: admit}
+	return nil
+}
+
+// 원래 deadline을 유지하며 정상 대상 종료만 제한된 시간 동안 응답 수신을 허용한다.
+func (b *FirstDiagnosisModelBudget) modelCallContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := b.targetDrain
+	if d == nil {
+		return context.WithCancel(ctx)
+	}
+	deadline, ok := ctx.Deadline()
+	hardDeadline, _ := d.hard.Deadline()
+	if !ok || hardDeadline.Before(deadline) {
+		deadline = hardDeadline
+	}
+	call, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	var mu sync.Mutex
+	var timer *time.Timer
+	closed := false
+	stopHard := context.AfterFunc(d.hard, cancel)
+	stopCall := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if closed {
+			return
+		}
+		if errors.Is(context.Cause(ctx), ErrFirstDiagnosisTargetEnded) {
+			timer = time.AfterFunc(d.grace, cancel)
+		} else {
+			cancel()
+		}
+	})
+	return call, func() {
+		stopHard()
+		stopCall()
+		mu.Lock()
+		closed = true
+		if timer != nil {
+			timer.Stop()
+		}
+		mu.Unlock()
+		cancel()
+	}
 }
 
 func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, outputPerCall int64, observe func(diagnosisprep.ModelUsage) error) (*FirstDiagnosisModelBudget, error) {
@@ -137,6 +206,9 @@ func (b *FirstDiagnosisModelBudget) before(ctx context.Context, cfg agent.Config
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if ctx.Err() != nil || b.targetDrain != nil && b.targetDrain.admit() != nil {
+		return ErrFirstDiagnosisModelBudget
+	}
 	if b.blocked || !b.usage.UsageKnown || b.usage.Requests >= b.limits.ModelRequests ||
 		b.inputPerCall > b.limits.InputTokens-b.usage.ReservedInputTokens ||
 		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.ReservedOutputTokens || cost > b.limits.CostUSDMicros-b.usage.ReservedCostUSDMicros {

@@ -14,10 +14,11 @@ for (const value of [ui, cdp]) {
     throw new Error("소유 loopback 시험 주소만 허용합니다");
 }
 // Docker의 소유된 일회용 설치 입력만 읽는다. 비밀은 출력·증거에 기록하지 않는다.
-if (targetURL !== "https://juice.test:9443/rest/products") throw new Error("owned_fixture_target_required");
+if (!["https://juice.test:9443/rest/products", "https://juice-a.test:9443/rest/products", "https://juice-b.test:9443/rest/products"].includes(targetURL)) throw new Error("owned_fixture_target_required");
 const config = JSON.parse(fs.readFileSync(process.argv[5], "utf8"));
 const FIXTURE_PASSWORD = config.admin_password;
-const FIXTURE_PROFILE = "product-local_only";
+const DYNAMIC_TARGETS = config.format === "abc2lab.product-install/v2";
+const FIXTURE_PROFILE = DYNAMIC_TARGETS ? "product-model-local_only" : "product-local_only";
 const OPENROUTER = process.env.ARTEX_URL_OPENROUTER_BROWSER === "1";
 const WORKBENCH = `${ui}/`;
 fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
@@ -48,7 +49,7 @@ function check(value, code) {
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const id = ++nextID;
-      pending.set(id, { resolve, reject });
+      pending.set(id, { resolve, reject, method });
       socket.send(JSON.stringify({ id, method, params }));
     });
   socket.onmessage = async (event) => {
@@ -57,7 +58,7 @@ function check(value, code) {
       const waiter = pending.get(message.id);
       if (!waiter) return;
       pending.delete(message.id);
-      if (message.error) waiter.reject(new Error("cdp_operation_failed"));
+      if (message.error) waiter.reject(new Error(`cdp_operation_failed:${waiter.method}:${message.error.code}`));
       else waiter.resolve(message.result);
       return;
     }
@@ -140,7 +141,7 @@ function check(value, code) {
   const fill = async (selector, value) => {
     check(
       await evaluate(
-        `(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`,
+        `(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`,
       ),
       "input_missing",
     );
@@ -191,18 +192,75 @@ function check(value, code) {
   await send("Network.enable");
   await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: outputDir });
 
-  if (phase === "url-draft") {
-    await send("Page.navigate", { url: `${WORKBENCH}#new` });
-    await wait("document.querySelector('section[data-view=new] input[autocomplete=current-password]')!==null", "login_missing");
-    check(!(await evaluate(`!!(${button("실제 엔진으로 보기")})||!!(${button("예시 재생으로 보기")})`)), "demo_switch_present");
+  async function openNew() {
+    await wait("document.readyState==='complete'", "initial_document_not_ready");
+    const previousDocument = await evaluate("performance.timeOrigin");
+    await send("Page.reload");
+    await wait(`performance.timeOrigin!==${JSON.stringify(previousDocument)}&&document.readyState==='complete'`, "new_document_not_ready");
+    await click("새 점검");
+    await wait("document.querySelector('section[data-view=new] input[autocomplete=current-password]')!==null||document.querySelector('#luProfile')?.options.length>=1", "login_or_catalog_missing");
     const loginPass = 'section[data-view="new"] input[autocomplete="current-password"]';
-    await wait(`document.querySelector(${JSON.stringify(loginPass)})!==null`, "login_missing");
-    await fill(loginPass, FIXTURE_PASSWORD);
-    await click("로그인");
+    if (await evaluate(`document.querySelector(${JSON.stringify(loginPass)})!==null`)) {
+      await fill(loginPass, FIXTURE_PASSWORD);
+      await click("로그인");
+    }
     await wait("document.querySelector('#luProfile')?.options.length>=1", "real_v2_catalog_missing");
+    if (await evaluate(`!!(${button("다른 진단 만들기 · 조회 연결 해제")})`)) await click("다른 진단 만들기 · 조회 연결 해제");
+    await wait("document.querySelector('#luUrl')?.disabled===false", "new_target_input_locked");
+    check(!(await evaluate(`!!(${button("실제 엔진으로 보기")})||!!(${button("예시 재생으로 보기")})`)), "demo_switch_present");
     check(await evaluate("document.querySelector('#lvUrl')===null"), "v1_task_form_shown_on_v2_server");
     await fill("#luUrl", targetURL);
     await select("#luProfile", FIXTURE_PROFILE);
+  }
+  if (phase === "external-key-save" || phase === "external-key-reuse" || phase === "external-scope") {
+    check(DYNAMIC_TARGETS, "dynamic_install_required");
+    check(config.openrouter_manifest?.provider_slug === "fixture/endpoint" && config.openrouter_manifest?.approval_id === "product-key-registration-fixture", "synthetic_configuration_only_fixture_required");
+    await openNew();
+    await click("외부 LLM 사용하기");
+    await wait("document.querySelector('#externalModelName')?.value==='qwen/qwen3.5-35b-a3b'", "fixed_qwen_policy_missing");
+    check(await evaluate("document.querySelector('#externalModelName').readOnly"), "unapproved_model_editable");
+    if (phase === "external-key-save") {
+      await fill("#externalModelKey", "owned-synthetic-key-no-real-account");
+      await click("모델 연결 설정 저장");
+      await wait(hasText("서버에 키를 등록했습니다"), "key_registration_failed");
+      check(requests.filter(r=>r.method==="POST"&&r.path==="/api/product/model-credentials").length===1, "key_registration_replayed");
+    } else {
+      await wait(hasText("등록된 API 키를 재사용합니다"), "saved_key_not_reusable");
+      check(mutationCount()===0, "reuse_wrote_or_executed");
+    }
+    check(await evaluate("document.querySelector('#externalModelKey').value===''"), "key_retained_in_input");
+    check(await evaluate("![JSON.stringify(localStorage),JSON.stringify(sessionStorage),document.body.innerText].some(v=>v.includes('owned-synthetic-key-no-real-account'))"), "key_leaked_to_browser_storage_or_ui");
+    if (phase === "external-scope") {
+      await click("승인 범위 확인");
+      await wait(hasText("실행 전 검증 완료"), "external_scope_not_ready");
+      await wait(hasText("fixture/endpoint"), "external_provider_policy_missing");
+      await wait(hasText("qwen/qwen3.5-35b-a3b"), "external_model_policy_missing");
+      check((await evaluate(fact("비용 상한"))).includes("6"), "external_cost_policy_missing");
+      check(await evaluate("Array.from(document.querySelectorAll('section[data-view=scope] button')).find(b=>b.textContent.trim()==='진단 시작')?.disabled===true"), "external_start_without_consent");
+    }
+    check(startCount()===0,"credential_operation_started_model");
+    check(noLegacyExecution(),"credential_used_generic_engine");
+  } else if (phase === "target-approve") {
+    check(DYNAMIC_TARGETS, "dynamic_install_required");
+    await openNew();
+    await wait("document.querySelector('#targetReadonlyBasis')!==null", "operator_registration_missing");
+    await fill("#targetReadonlyPaths", "/rest/products");
+    await fill("#targetReadonlyBasis", "Owned Juice Shop fixture: the product listing GET/HEAD routes are approved for nonmutating diagnostic observation only.");
+    await click("대상 등록·소유 확인 준비");
+    await wait("document.querySelector('#targetChallengeValue')?.textContent.length>20", "ownership_challenge_missing");
+    await click("소유 확인 후 대상 승인");
+    await wait(hasText("DNS TXT 소유 증명이 아직 확인되지 않았습니다"), "declaration_alone_approved_target");
+    const proof = await evaluate("({name:document.querySelector('#targetChallengeName').textContent,values:[document.querySelector('#targetChallengeValue').textContent]})");
+    const tokenFile = process.env.ARTEX_PRODUCT_DNS_TOKEN_FILE;
+    check(!!tokenFile, "protected_dns_control_token_required");
+    const response = await fetch("http://127.0.0.1:49083/control", {method:"POST",headers:{"Content-Type":"application/json","X-Fixture-Control":fs.readFileSync(tokenFile,"utf8").trim()},body:JSON.stringify(proof)});
+    check(response.status===204,"owned_dns_publication_failed");
+    await click("소유 확인 후 대상 승인");
+    await wait(hasText(`승인된 대상: ${new URL(targetURL).origin}`), "target_approval_failed");
+    check(startCount()===0,"approval_started_diagnosis");
+    check(noLegacyExecution(),"approval_used_generic_engine");
+  } else if (phase === "url-draft") {
+    await openNew();
     await fill("#luName", "작업대 URL 브라우저 합성 수용");
     await click("승인 범위 확인");
     await wait(hasText("실행 전 검증 완료"), "approved_scope_not_ready");
@@ -230,6 +288,7 @@ function check(value, code) {
     check(noLegacyExecution(), "v2_fell_back_to_legacy_execution");
     const mutations = mutationCount();
     await send("Page.reload");
+    await click("범위 확인");
     await wait(hasText("실행 전 검증 완료"), "refresh_did_not_restore");
     check(mutationCount() === mutations, "refresh_replayed_mutation");
   } else if (phase === "url-start") {
@@ -282,6 +341,7 @@ function check(value, code) {
     await send("Page.navigate", { url: `${WORKBENCH}#live` });
     // 응답 유실 뒤에는 새로고침의 GET 조회로 같은 영수증을 복원한다.
     await send("Page.reload");
+    await click("점검 진행");
     // 진행 중에는 작업대가 2초마다 상태만 다시 읽는다(버튼으로도 조회 가능)
     await wait(hasText("실행 마감"), "real_execution_not_completed", 75000);
     await wait(hasText("결과 저장을 확인했습니다"), "saved_result_missing");

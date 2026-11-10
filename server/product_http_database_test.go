@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	pgdb "github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -59,7 +60,14 @@ func TestProductCredentialsOwnedPostgres(t *testing.T) {
 	if os.WriteFile(filepath.Join(keys, jwtKeyFilename), []byte("owned-synthetic-product-jwt-key-at-least-32-bytes"), 0600) != nil {
 		t.Fatal("fixture key")
 	}
-	endpoint := &urlManagementEndpoint{}
+	baseEndpoint := &urlManagementEndpoint{}
+	endpoint := productCredentialEndpoint{base: baseEndpoint, read: func() bool {
+		var configured bool
+		if f.Installer.QueryRow(`SELECT COALESCE(api_key,'')<>'' FROM llm_profiles WHERE id=$1`, id).Scan(&configured) != nil {
+			t.Fatal("credential boolean read")
+		}
+		return configured
+	}}
 	revoked := false
 	binding := ProductModelBinding{ProfileRef: "installed-external", ProfileID: id, Model: llmpolicy.OpenRouterModel, Check: func() error {
 		if revoked {
@@ -88,6 +96,21 @@ func TestProductCredentialsOwnedPostgres(t *testing.T) {
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &session) != nil || session.Token == "" {
 		t.Fatal("product login")
 	}
+	getStatus := func(token string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/product/model-credentials?profile_id="+binding.ProfileRef, nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	if getStatus("").Code != 401 {
+		t.Fatal("unauthenticated credential status")
+	}
+	if w := getStatus(session.Token); w.Code != 200 || !strings.Contains(w.Body.String(), `"configured":false`) {
+		t.Fatal("empty credential status")
+	}
 	secret := "owned-synthetic-provider-key"
 	body, _ := json.Marshal(map[string]string{"profile_id": binding.ProfileRef, "model": binding.Model, "api_key": secret})
 	for _, token := range []string{"", "invalid"} {
@@ -98,6 +121,12 @@ func TestProductCredentialsOwnedPostgres(t *testing.T) {
 	w = request("/api/product/model-credentials", string(body), session.Token)
 	if w.Code != 200 || strings.Contains(w.Body.String(), secret) || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("credential registration response")
+	}
+	for range 2 {
+		w := getStatus(session.Token)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"configured":true`) || strings.Contains(w.Body.String(), secret) || strings.Contains(w.Body.String(), "api_key") {
+			t.Fatal("safe reusable credential status")
+		}
 	}
 	var stored string
 	if f.Installer.QueryRow(`SELECT api_key FROM llm_profiles WHERE id=$1`, id).Scan(&stored) != nil || stored != secret {
@@ -126,7 +155,7 @@ func TestProductCredentialsOwnedPostgres(t *testing.T) {
 	if request("/api/product/model-credentials", string(body), session.Token).Code != 409 {
 		t.Fatal("revoked binding accepted")
 	}
-	if endpoint.calls.Load() != 0 {
+	if baseEndpoint.calls.Load() != 0 {
 		t.Fatal("key registration invoked preparation or execution")
 	}
 	if _, e = NewProductDiagnosisHandler(context.Background(), f.Runtime, keys, data, endpoint, "", f.Installer, []ProductModelBinding{binding}); e == nil {
@@ -147,4 +176,18 @@ func TestProductCredentialsOwnedPostgres(t *testing.T) {
 			t.Fatal("unsafe writer did not fail with host configuration error")
 		}
 	}
+}
+
+// This endpoint supplies only the same boolean projection as private preparation.
+// No model call is made by registration or subsequent status queries.
+type productCredentialEndpoint struct {
+	base *urlManagementEndpoint
+	read func() bool
+}
+
+func (p productCredentialEndpoint) Call(ctx context.Context, r diagnosisprep.Request) (diagnosisprep.Response, error) {
+	if r.Command != diagnosisprep.ProductControl {
+		return p.base.Call(ctx, r)
+	}
+	return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: r.RequestID, Product: &diagnosisprep.ProductResponse{Credential: &diagnosisprep.ProductCredential{ProfileID: r.Product.ProfileID, Model: llmpolicy.OpenRouterModel, Configured: p.read()}}}, nil
 }

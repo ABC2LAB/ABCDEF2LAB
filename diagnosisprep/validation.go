@@ -139,7 +139,14 @@ func ValidateRequest(r Request) error {
 		return ErrProtocol
 	}
 	noInput := r.Input == nil
+	if r.Command != ProductControl && r.Product != nil {
+		return ErrProtocol
+	}
 	switch r.Command {
+	case ProductControl:
+		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" || !validProductRequest(r.Product) {
+			return ErrProtocol
+		}
 	case Catalog:
 		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" {
 			return ErrProtocol
@@ -281,13 +288,23 @@ func ValidateResponse(r Request, response Response) error {
 	if ValidateRequest(r) != nil || response.Version != Version || response.RequestID != r.RequestID {
 		return ErrProtocol
 	}
+	if r.Command != ProductControl && response.Product != nil {
+		return ErrProtocol
+	}
 	if response.Error != "" {
+		if response.Product != nil {
+			return ErrProtocol
+		}
 		if !validError(response.Error) || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 {
 			return ErrProtocol
 		}
 		return nil
 	}
 	switch r.Command {
+	case ProductControl:
+		if response.Product == nil || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 || len(response.Product.Targets) > 128 {
+			return ErrProtocol
+		}
 	case Catalog:
 		if response.Job != nil || response.Authorized != nil || len(response.Profiles) > 256 {
 			return ErrProtocol

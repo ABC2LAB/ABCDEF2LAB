@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"net"
 	"net/netip"
 	"net/url"
 	"os"
@@ -37,62 +36,32 @@ import (
 )
 
 type productInstallInput struct {
-	Format                       string   `json:"format"`
-	DatabaseHost                 string   `json:"database_host"`
-	DatabaseName                 string   `json:"database_name"`
-	DatabasePasswordFile         string   `json:"database_password_file"`
-	AdminPassword                string   `json:"admin_password"`
-	TargetOrigin                 string   `json:"target_origin"`
-	TargetIP                     string   `json:"target_ip"`
-	PathPrefixes                 []string `json:"path_prefixes"`
-	AllowPrivateTarget           bool     `json:"allow_private_target"`
-	NonmutatingScopeAcknowledged bool     `json:"nonmutating_scope_acknowledged"`
-	ValidForHours                int64    `json:"valid_for_hours"`
-	MaxRuns                      int64    `json:"max_runs"`
-	LocalModel                   *struct {
+	Format               string `json:"format"`
+	DatabaseHost         string `json:"database_host"`
+	DatabaseName         string `json:"database_name"`
+	DatabasePasswordFile string `json:"database_password_file"`
+	AdminPassword        string `json:"admin_password"`
+
+	ValidForHours int64 `json:"valid_for_hours"`
+	MaxRuns       int64 `json:"max_runs"`
+	LocalModel    *struct {
 		Model          string   `json:"model"`
 		BaseURL        string   `json:"base_url"`
 		Addresses      []string `json:"addresses"`
 		ContextWindowK int      `json:"context_window_k"`
 		MaxTokens      int      `json:"max_tokens"`
 	} `json:"local_model,omitempty"`
-	OpenRouterManifest json.RawMessage `json:"openrouter_manifest,omitempty"`
-	FixtureTLS         bool            `json:"fixture_tls"`
-	UpstreamCAFile     string          `json:"upstream_ca_file,omitempty"`
+	TargetPolicy       productTargetPolicy `json:"target_policy"`
+	OpenRouterManifest json.RawMessage     `json:"openrouter_manifest,omitempty"`
+
+	UpstreamCAFile string `json:"upstream_ca_file,omitempty"`
 }
 
-func productRandom(n int) string {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		panic("random_unavailable")
-	}
-	return hex.EncodeToString(b)
-}
 func productKeyword(s string) string {
 	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, "\\", "\\\\"), "'", "\\'") + "'"
 }
 func productDSN(host, name, user, password string) string {
 	return "host=" + productKeyword(host) + " port=5432 user=" + productKeyword(user) + " password=" + productKeyword(password) + " dbname=" + productKeyword(name) + " sslmode=disable search_path=public connect_timeout=5"
-}
-func productWrite(path string, raw []byte) error {
-	f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if e != nil {
-		return errPreparation
-	}
-	_, e = f.Write(raw)
-	s := f.Sync()
-	c := f.Close()
-	if e != nil || s != nil || c != nil {
-		return errPreparation
-	}
-	return nil
-}
-func productJSON(path string, v any) (string, error) {
-	raw, e := json.Marshal(v)
-	if e != nil {
-		return "", e
-	}
-	return urlSHA(raw), productWrite(path, raw)
 }
 func productCA(name string, until time.Time) (cert, key []byte, parsed *x509.Certificate, private ed25519.PrivateKey, err error) {
 	pub, private, err := ed25519.GenerateKey(rand.Reader)
@@ -128,26 +97,33 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	}
 	defer clear(raw)
 	var c productInstallInput
-	if decodeLaunchJSON(raw, &c) != nil || c.Format != "abc2lab.product-install/v1" || len(c.AdminPassword) < 12 || !c.NonmutatingScopeAcknowledged || c.ValidForHours < 1 || c.ValidForHours > 168 || c.MaxRuns < 1 || c.MaxRuns > 1000 || len(c.PathPrefixes) < 1 {
+	if decodeLaunchJSON(raw, &c) != nil || c.Format != "abc2lab.product-install/v2" || len(c.AdminPassword) < 12 || c.ValidForHours < 1 || c.ValidForHours > 168 || c.MaxRuns < 1 || c.MaxRuns > 1000 {
 		return 2
 	}
 	if c.DatabasePasswordFile == "" {
 		c.DatabasePasswordFile = "/tmp/product-private/postgres-password"
 	}
 	ip, e := netip.ParseAddr(c.DatabaseHost)
-	targetIP, te := netip.ParseAddr(c.TargetIP)
-	origin, oe := urlOrigin(c.TargetOrigin)
-	if e != nil || ip.String() != c.DatabaseHost || te != nil || oe != nil || origin != c.TargetOrigin || !urlTargetIPAllowed(targetIP, c.AllowPrivateTarget) || !managementReference.MatchString(c.DatabaseName) {
+	if e != nil || ip.String() != c.DatabaseHost || !managementReference.MatchString(c.DatabaseName) {
 		return 2
 	}
 	if c.LocalModel == nil && len(c.OpenRouterManifest) == 0 {
 		return 2
 	}
-	for _, p := range c.PathPrefixes {
-		v, e := diagnosisprep.CanonicalInput(diagnosisprep.Input{TargetURL: origin + p, ProfileID: "install"})
-		if e != nil || v.TargetURL != origin+p {
-			return 2
-		}
+	if c.TargetPolicy.Format == "" {
+		c.TargetPolicy.Format = "abc2lab.product-target-policy/v1"
+	}
+	if len(c.TargetPolicy.AllowedPorts) == 0 {
+		c.TargetPolicy.AllowedPorts = []int{443}
+	}
+	if c.TargetPolicy.MaxRequests == 0 {
+		c.TargetPolicy.MaxRequests = 4
+	}
+	if c.TargetPolicy.MaxTargets == 0 {
+		c.TargetPolicy.MaxTargets = 32
+	}
+	if !validProductTargetPolicy(c.TargetPolicy) {
+		return 2
 	}
 	for _, d := range []string{"config", "data", "keys", "state", "runs", "ipc"} {
 		if checkDirectory(filepath.Join(*root, d), true) != nil {
@@ -229,36 +205,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 	pin := pins.write
 	caPin, keyPin, auditPin := pin("ca.pem", ca), pin("ca-key.pem", key), pin("audit-key", []byte(productRandom(16)))
 	var upstream *server.E2HTTPFilePin
-	if c.FixtureTLS {
-		cert, _, parent, private, e := productCA("ABC2LAB owned acceptance CA", until)
-		if e != nil {
-			return errPreparation
-		}
-		u, _ := url.Parse(c.TargetOrigin)
-		pub, leafKey, e := ed25519.GenerateKey(rand.Reader)
-		if e != nil {
-			return errPreparation
-		}
-		leaf := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: u.Hostname()}, NotBefore: now.Add(-time.Minute), NotAfter: until, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-		if ip := net.ParseIP(u.Hostname()); ip != nil {
-			leaf.IPAddresses = []net.IP{ip}
-		} else {
-			leaf.DNSNames = []string{u.Hostname()}
-		}
-		der, e := x509.CreateCertificate(rand.Reader, leaf, parent, pub, private)
-		if e != nil {
-			return errPreparation
-		}
-		pk, e := x509.MarshalPKCS8PrivateKey(leafKey)
-		if e != nil {
-			return errPreparation
-		}
-		if productWrite("/target-tls/leaf.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})) != nil || productWrite("/target-tls/key.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pk})) != nil {
-			return errPreparation
-		}
-		p := pin("upstream.pem", cert)
-		upstream = &p
-	} else if c.UpstreamCAFile != "" {
+	if c.UpstreamCAFile != "" {
 		raw, e := readPrivateFile(c.UpstreamCAFile, 1<<20)
 		if e != nil {
 			return errPreparation
@@ -266,6 +213,8 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		p := pin("upstream.pem", raw)
 		clear(raw)
 		upstream = &p
+		c.TargetPolicy.UpstreamCAFile = filepath.Join(config, "upstream.pem")
+		c.TargetPolicy.UpstreamCASHA256 = p.SHA256
 	}
 	if pins.err != nil {
 		return errPreparation
@@ -277,14 +226,18 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 	helperSHA := sha256.Sum256(helper)
 	policy := server.E2HTTPFilePolicy{Format: server.E2HTTPFilePolicyFormat, RunRef: "installation-template", ResetRef: "operator-target", PolicyRef: "installed-scope", CaseRef: "first-diagnosis", PolicyRevision: "v1", BudgetRef: "installed-target-budget", OwnerRef: "ARTEX", AccountRef: "operator", SessionRef: "operator", ValidFrom: now.Add(-time.Minute), ValidUntil: until, MaxRequests: 4, HeaderMode: e2proxy.HeaderPreserve, StateDir: filepath.Join(root, "state"), Helper: "/app/e2-bash-sandbox", HelperSHA256: hex.EncodeToString(helperSHA[:]), CACert: caPin, CAKey: keyPin, AuditKey: auditPin, UpstreamCA: upstream, ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 		Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 65536, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1}, Proxy: server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 5000, MaxHeaderBytes: 32768, MaxConnections: 4}, Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
-	for i, p := range c.PathPrefixes {
-		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: fmt.Sprintf("target-%d", i), Origin: c.TargetOrigin, ConnectIP: c.TargetIP, PathPrefix: p, PathScopeRef: fmt.Sprintf("path-%d", i), Methods: []string{"GET", "HEAD"}, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}})
-	}
+	policy.Rules = []server.E2HTTPFileRule{}
 	policySHA, err := productJSON(filepath.Join(config, "policy.json"), policy)
 	if err != nil {
 		return errPreparation
 	}
 	installation := urlPreparationInstallation{Format: urlPreparationFormat, OperatorUID: uint32(os.Geteuid()), StateDir: filepath.Join(root, "state"), RunsDir: filepath.Join(root, "runs"), SocketPath: filepath.Join(root, "ipc", "preparation.sock"), ReportListenAddr: "127.0.0.1:28080", APILaunch: urlProtectedPin{File: filepath.Join(config, "api-launch.json")}, ProtectedEndpoints: []urlProtectedEndpoint{{Host: c.DatabaseHost, Port: 5432, Addresses: []string{c.DatabaseHost}}}}
+	securityPath := filepath.Join(config, "target-policy.json")
+	securitySHA, e := productJSON(securityPath, c.TargetPolicy)
+	if e != nil {
+		return e
+	}
+	installation.Product = &urlProductInstallation{Format: "abc2lab.product-runtime/v2", TargetPolicy: urlProtectedPin{File: securityPath, SHA256: securitySHA}}
 	var first launchConfig
 	add := func(mode, model, base string, contextK, output int, manifest json.RawMessage) error {
 		profile := &pgdb.LLMProfile{Name: "product-" + mode, Format: "openai", Model: model, BaseURL: base, APIKey: "local-managed", ContextWindowK: contextK, MaxTokens: output, Streaming: false}
@@ -362,7 +315,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		aggregate.OutputTokens *= runs
 		aggregate.CostUSDMicros *= runs
 		aggregate.DurationSeconds *= runs
-		installation.Profiles = append(installation.Profiles, urlPreparationProfile{ID: "product-" + mode, Label: "승인된 URL 진단", Principal: "ARTEX", TargetRef: "installed-target", ScopeRef: "installed-scope", ModelProfileRef: "model-" + mode, ModelLabel: model, DelegationRef: "product-" + mode, DeriveRuns: true, ValidFrom: now.Add(-30 * time.Second), ValidUntil: end, MaxRuns: runs, AggregateBudget: aggregate, Budget: budget, Launch: urlProtectedPin{File: launchPath, SHA256: launchSHA}, PolicySHA256: policySHA, ManifestSHA256: manifestSHA, AllowPrivateTarget: c.AllowPrivateTarget, Attestation: urlNonmutatingAttestation{Ref: "operator-readonly", Verified: true, PathPrefixes: c.PathPrefixes, Methods: []string{"GET", "HEAD"}, QueryPolicy: "any", BodyPolicy: "bounded", MaxBodyBytes: 65536}, ModelLimitsRef: "installed-model-limits", InputTokensPerCall: int64(contextK) * 1024, OutputTokensPerCall: int64(output)})
+		installation.Product.Models = append(installation.Product.Models, urlPreparationProfile{ID: "product-model-" + mode, Label: "승인된 URL 진단", Principal: "ARTEX", ModelProfileRef: "model-" + mode, ModelLabel: model, DelegationRef: "product-" + mode, DeriveRuns: true, ValidFrom: now.Add(-30 * time.Second), ValidUntil: end, MaxRuns: runs, AggregateBudget: aggregate, Budget: budget, Launch: urlProtectedPin{File: launchPath, SHA256: launchSHA}, PolicySHA256: policySHA, ManifestSHA256: manifestSHA, ModelLimitsRef: "installed-model-limits", InputTokensPerCall: int64(contextK) * 1024, OutputTokensPerCall: int64(output)})
 		if first.Format == "" {
 			first = launch
 			if admin.SetActiveProfile(id) != nil {
@@ -405,12 +358,13 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 	if e != nil {
 		return errPreparation
 	}
-	for _, p := range installed.Profiles {
-		loaded, e := urlLoadProfile(installed, installationPin, p)
-		if e != nil {
-			return errPreparation
-		}
-		loaded.clearMaterials()
+	runtime, e := newProductRuntime(installed, installationPin)
+	if e != nil {
+		return e
+	}
+	defer runtime.targets.Close()
+	if _, e = runtime.profiles(); e != nil {
+		return e
 	}
 	return productPrepareAPIProjection(root)
 }

@@ -5,6 +5,7 @@ package diagnosisprep
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -326,5 +327,62 @@ func TestDrainedUnknownKeepsInstallationBlocked(t *testing.T) {
 	}
 	if b.calls.Load() != 1 {
 		t.Fatal("unknown caused another Execute")
+	}
+}
+
+func TestDrainedKnownCancellationAllowsNextRunWithoutRefund(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart_%t", restart), func(t *testing.T) {
+			s, b, root := newFixture(t)
+			persisted := make(chan error, 1)
+			usage := &ModelUsage{Requests: 1, ReservedInputTokens: 30, ReservedOutputTokens: 20, InputTokens: 2, OutputTokens: 1, UsageKnown: true}
+			b.run = func(ctx context.Context, e Execution, p Publish) error {
+				if b.calls.Load() > 1 {
+					return completeRun(ctx, e, p)
+				}
+				err := p(Update{State: Cancelled, Phase: Closure, PreparationStarted: true, TaskID: "42", DrainComplete: true, AuthorityState: AuthorityNotIssued, ModelUsage: usage, ReasonCode: "target_approval_ended"})
+				persisted <- err
+				return err
+			}
+			first := create(t, s, "known-create")
+			if got := start(t, s, first, "known-start"); got.Error != "" {
+				t.Fatal(got.Error)
+			}
+			if err := awaitNegativeGateResult(t, persisted); err != nil {
+				t.Fatal(err)
+			}
+			s.mu.Lock()
+			handle := s.executions[first.ID]
+			s.mu.Unlock()
+			if handle.done != nil {
+				select {
+				case <-handle.done:
+				case <-time.After(time.Second):
+					t.Fatal("drain incomplete")
+				}
+			}
+			before := status(t, s, first.ID)
+			if before.State != Cancelled || !before.DrainComplete || !reflect.DeepEqual(before.ModelUsage, usage) {
+				t.Fatal("known cancellation lost")
+			}
+			if restart {
+				if s.Shutdown(t.Context()) != nil {
+					t.Fatal("shutdown")
+				}
+				var err error
+				s, err = New(t.Context(), root, b)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
+			}
+			second := create(t, s, "known-next-create")
+			if got := start(t, s, second, "known-next-start"); got.Error != "" {
+				t.Fatal("known cancellation blocked next run", got.Error)
+			}
+			if got := status(t, s, first.ID); !reflect.DeepEqual(got, before) {
+				t.Fatal("old usage/reservation refunded or changed")
+			}
+		})
 	}
 }
