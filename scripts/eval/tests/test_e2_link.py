@@ -79,6 +79,10 @@ class TestRunValues(Case):
         self.assertNotEqual(policy["run_ref"], "eval-run-1")
         self.assertEqual(policy["evaluation"]["run_ref"], policy["run_ref"])
 
+    def test_link_keeps_the_run_reference_it_put_in_the_policy(self):
+        link = self.link()
+        self.assertEqual(link.run_ref, json.loads((self.paths.config / POLICY_NAME).read_bytes())["run_ref"])
+
     def test_two_runs_do_not_share_a_run_reference(self):
         first = self.policy_written()["run_ref"]
         for name in os.listdir(self.paths.config):

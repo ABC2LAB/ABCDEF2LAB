@@ -30,6 +30,7 @@ from runner_config import (
 from runner_engine import EngineAPIError, task_request
 from runner_window import WatchSample
 from test_verdict_pages import CONTEXT as VERDICT_CONTEXT, two_pages
+from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified  # noqa: E402
 from e2_collect import CloseAck, E2Collection, E2CollectionInvalid
 from e2_control import CloseResult, E2ControlError
 from e2_export import E2Export
@@ -54,7 +55,7 @@ E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:te
                     "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30,
                     "policy_tool": "/usr/local/bin/e2-eval-policy", "policy_tool_timeout_seconds": 30, "helper": "/usr/local/bin/e2-bash-sandbox",
                     "helper_sha256": "a" * 64, "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10", "window_seconds": 7200,
-                    "approval_valid_until": "2099-01-01T00:00:00Z"}
+                    "approval_valid_until": "2099-01-01T00:00:00Z", "prompt_wait_seconds": 30}
 
 
 def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None):
@@ -184,6 +185,12 @@ class FakeEvidence:
         self.files[name] = copy.deepcopy(payload)
         return "h-" + name
 
+    def write_bytes(self, name, data):
+        if name in self.files:
+            raise AssertionError("evidence written twice")
+        self.files[name] = data.decode("utf-8")
+        return "h-" + name
+
     def digests(self):
         return {name: "h-" + name for name in self.files}
 
@@ -197,6 +204,8 @@ class FakePorts:
         self.verdict_results, self.verdict_args, self.verdict_times = [], [], []
         self.e2_ready_error = self.e2_bind_error = self.e2_bound = self.e2_collect_args = None
         self.e2_close_result, self.e2_collection = e2_closed(), e2_collected()
+        # 차례로 돌려줄 응답. 하나 남으면 계속 그것을 돌려준다. 예외는 raise한다.
+        self.e2_prompt_results, self.e2_prompt_asked = [e2_projection()], []
         self.fake_clock, self.verdict_call_seconds = None, 0
         self.rules_sha256 = None
         self.spec = spec
@@ -429,6 +438,16 @@ class FakePorts:
         self._call("e2_close")
         return self.e2_close_result
 
+    def e2_run_ref(self):
+        return E2_RUN_REF
+
+    def e2_prompt_projection(self, task_id, run_ref):
+        self.e2_prompt_asked.append((task_id, run_ref, tuple(self.calls)))
+        result = self.e2_prompt_results.pop(0) if len(self.e2_prompt_results) > 1 else self.e2_prompt_results[0]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
     def e2_collect(self, close, task_id, reset_generation):
         self._call("e2_collect")
         self.e2_collect_args = (close, task_id, reset_generation)
@@ -496,6 +515,20 @@ FULL_ORDER = ["preexisting", "image_ids", "tool_tree", "host_spec", "up", "facts
 E2_MAC, E2_MANIFEST = "9" * 64, "8" * 64
 
 
+E2_RUN_REF = "e2run-fixture"
+E2_TASK_NUMBER = 17
+
+
+def e2_projection(task_id=None, state="complete", tools="d" * 64, **changes):
+    """제품 서버의 투영 응답과 같은 모양. 러너가 받은 task id는 합성 포트가 준다."""
+    row = {"sequence": 1, "activity_id": 7, "intent_id": 3, "worker": "work#1", "version": "e2-worker-prompt/v1", "key": "e2_worker", "source": "builtin",
+           "template_digest": "a" * 64, "guidance_digest": "b" * 64, "control_digest": "c" * 64, "tools_digest": tools}
+    done = state == "complete"
+    document = {"format": "abc2lab.e2-prompt-projection/v1", "task_id": E2_TASK_NUMBER, "exploration_id": 9, "run_ref": E2_RUN_REF, "state": state, "complete": done,
+                "expected_count": 1, "observed_count": 1, "snapshot_sequence": 1, "observations": [row] if done or state == "collecting" else []} | changes
+    return json.dumps(document).encode("utf-8")
+
+
 def e2_closed(state="complete", reason=None, execution_ref="execution-1", manifest=E2_MANIFEST):
     ack = CloseAck("close-1", 6, E2_MAC, manifest) if state == "complete" else None
     return CloseResult(state, reason, state != "unavailable", execution_ref, manifest, ack)
@@ -526,6 +559,85 @@ class TestE2Product(unittest.TestCase):
 
     def row(self, evidence, kind):
         return [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == kind]
+
+    def prompted(self, *results, wait=None):
+        spec_changes = {} if wait is None else {"e2_prompt_wait_seconds": wait}
+        spec = dataclasses.replace(make_spec(e2="product"), **spec_changes)
+
+        def apply(ports, meter, clock):
+            meter.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
+                             {"seq": 2, "decision": "allowed", "attempt_id": "b" * 32},
+                             {"seq": 3, "decision": "denied", "attempt_id": "c" * 32}]
+            ports.e2_prompt_results = list(results)
+        return run(apply, spec=spec)
+
+    def test_verified_prompt_is_signed_with_the_received_bytes(self):
+        raw = e2_projection()
+        result, ports, _meter, evidence = self.prompted(raw)
+        self.assertEqual(result["status"], "complete")
+        [row] = self.row(evidence, "e2_prompt")
+        self.assertEqual({name: row[name] for name in ("status", "reason", "task_id", "exploration_id", "run_ref", "expected_count", "projection_sha256")},
+                         {"status": "verified", "reason": None, "task_id": "17", "exploration_id": 9, "run_ref": E2_RUN_REF, "expected_count": 1,
+                          "projection_sha256": hashlib.sha256(raw).hexdigest()})
+        self.assertEqual({name: row[name] for name in ("source", "template_digest", "guidance_digest", "control_digest", "tools_digest")},
+                         {"source": "builtin", "template_digest": "a" * 64, "guidance_digest": "b" * 64, "control_digest": "c" * 64, "tools_digest": "d" * 64})
+        self.assertEqual(evidence.files["e2-prompt-projection.json"], raw.decode("utf-8"))
+
+    def test_prompt_is_asked_with_the_runners_own_values_after_close(self):
+        _result, ports, _meter, _evidence = self.prompted(e2_projection())
+        task_id, run_ref, calls = ports.e2_prompt_asked[0]
+        self.assertEqual((task_id, run_ref), ("17", E2_RUN_REF))
+        self.assertIn("e2_close", calls)
+        self.assertIn("e2_collect", calls)
+
+    def test_collecting_is_asked_again_until_complete(self):
+        result, ports, _meter, _evidence = self.prompted(e2_projection(state="collecting"), E2PromptNotReady("engine_unavailable"), e2_projection())
+        self.assertEqual((result["status"], len(ports.e2_prompt_asked)), ("complete", 3))
+
+    def test_collecting_past_the_deadline_invalidates_the_run(self):
+        result, ports, _meter, evidence = self.prompted(e2_projection(state="collecting"), wait=3)
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_prompt_unverified"]))
+        self.assertEqual(evidence.files["e2-prompt-status.json"], {"status": "unverified", "reason": "collecting"})
+        self.assertGreater(len(ports.e2_prompt_asked), 1)
+
+    def test_states_other_than_complete_invalidate_without_asking_again(self):
+        for state, reason in (("incomplete", "state_incomplete"), ("empty", "state_empty"), ("invalid", "state_invalid"), ("conflict", "state_conflict")):
+            with self.subTest(state):
+                result, ports, _meter, evidence = self.prompted(e2_projection(state=state))
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_prompt_unverified"]))
+                self.assertEqual(evidence.files["e2-prompt-status.json"]["reason"], reason)
+                self.assertEqual(len(ports.e2_prompt_asked), 1)
+
+    def test_another_runs_projection_invalidates_the_run(self):
+        result, _ports, _meter, evidence = self.prompted(e2_projection(run_ref="e2run-other"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_prompt_unverified"]))
+        self.assertEqual(evidence.files["e2-prompt-status.json"]["reason"], "projection_invalid")
+
+    def test_product_failure_is_not_invalidated_by_a_missing_prompt(self):
+        def mutate(ports):
+            ports.e2_collection = e2_collected("product_failure", "audit_incomplete", None)
+            ports.e2_prompt_results = [E2PromptUnverified("should_not_be_asked")]
+        result, ports, _meter, evidence = self.go(mutate)
+        self.assertEqual(result["status"], "complete")
+        [row] = self.row(evidence, "e2_prompt")
+        self.assertEqual((row["status"], row["reason"], row["run_ref"], row["tools_digest"]), ("not_applicable", "product_failure", None, None))
+        self.assertEqual(ports.e2_prompt_asked, [])
+        self.assertNotIn("e2-prompt-projection.json", evidence.files)
+
+    def test_no_execution_is_not_invalidated_by_a_missing_prompt(self):
+        def mutate(ports):
+            ports.e2_close_result = e2_closed("no_execution", execution_ref=None, manifest=None)
+            ports.e2_prompt_results = [E2PromptUnverified("should_not_be_asked")]
+        result, ports, _meter, evidence = self.go(mutate)
+        self.assertEqual((result["status"], self.row(evidence, "e2_prompt")[0]["status"]), ("complete", "not_applicable"))
+        self.assertEqual(ports.e2_prompt_asked, [])
+
+    def test_other_placements_have_no_prompt_row(self):
+        for mode in (None, "stub"):
+            with self.subTest(mode):
+                result, _ports, _meter, evidence = run(spec=make_spec(e2=mode))
+                self.assertEqual(result["status"], "complete")
+                self.assertEqual(self.row(evidence, "e2_prompt"), [])
 
     def test_complete_run_order_and_signed_rows(self):
         result, ports, _meter, evidence = self.go()
