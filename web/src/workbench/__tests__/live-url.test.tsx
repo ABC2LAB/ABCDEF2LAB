@@ -52,6 +52,7 @@ import { urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
+import { WorkflowCrawlLive } from "../views/live/workflowViews";
 
 const u = vi.mocked(url);
 const a = vi.mocked(api);
@@ -488,14 +489,15 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   });
 
-  it("이미 진행 중인 요청별 확인 회차는 삭제된 화면 대신 운영자 확인·중지를 안내한다", async () => {
+  it("이미 진행 중인 요청별 확인 회차는 실제 요청 승인 목록과 중지를 제공한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
       ...running,
       scope: { ...scope, approval_mode: "confirm_every_request" },
     });
     mount("live");
-    expect(await screen.findByText(/이 작업대에서는 요청별 허용·거절을 할 수 없습니다/)).toBeVisible();
+    expect(await screen.findByRole("region", { name: "실제 HTTP 요청 승인" })).toBeVisible();
+    expect(screen.queryByText(/이 작업대에서는 요청별 허용·거절을 할 수 없습니다/)).toBeNull();
     expect(screen.queryByText(/팀 화면의 점검 진행/)).toBeNull();
     expect(screen.getByRole("button", { name: /진단 중지 요청/ })).toBeEnabled();
     expect(a.fetchRequestApprovals).toHaveBeenCalledWith("42");
@@ -608,7 +610,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(within(record).getByText("차단").parentElement as HTMLElement).getByText("2")).toBeInTheDocument();
     // 모델 사용량 · 비용은 서버 기록이 없으면 그렇다고 말한다
     expect(screen.getByText("모델 사용량 · 비용 기록은 아직 제공되지 않았습니다.")).toBeInTheDocument();
-    expect(screen.getByText(/후보 1/)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "저장 보고서 내용" })).getByRole("button", { name: /후보 1/ }),
+    ).toBeInTheDocument();
   });
 
   it("다른 진단 만들기: 조회 연결만 끊고 폼을 비운다", async () => {
@@ -720,4 +724,51 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(a.fetchTasks).not.toHaveBeenCalled();
     unmount();
   });
+});
+
+it.each([
+  "ai_auto_v1",
+  "user_approval_v1",
+] as const)("초안 저장 어댑터가 %s 모드와 제외 경로를 보존한다", async (mode) => {
+  const input = url.urlDiagnosisInput("https://target.example/", "profile-1", "소유 워크플로", mode, "/excluded");
+  resetUrl({ kind: "v2", catalog });
+  u.createURLDraft.mockResolvedValue({ ...draft, input });
+  u.commandURLDiagnosis.mockResolvedValue({ ...ready, input });
+  expect(await runUrlAction("validate", input)).toBe(true);
+  expect(u.createURLDraft.mock.calls[0][0]).toEqual(input);
+  expect(useUrl.getState().handle?.input.workflow_mode).toBe(mode);
+  expect(useUrl.getState().job?.input.excluded_paths).toBe("/excluded");
+});
+
+it("탐색 화면에서 중지 버전 충돌을 안내하고 GET 확인 전에는 중지를 다시 보내지 않는다", async () => {
+  useUrl.setState({
+    cap: { kind: "v2", catalog },
+    handle,
+    job: running,
+    verified: false,
+    uncertain: true,
+    error: "revision_conflict",
+  });
+  u.readURLStatus.mockResolvedValue(running);
+  render(
+    <ShellContext.Provider value={shellValue({ route: "crawl" })}>
+      <WorkflowCrawlLive />
+    </ShellContext.Provider>,
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent("revision_conflict");
+  expect(screen.queryByRole("button", { name: "점검 중지" })).not.toBeInTheDocument();
+  expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "상태 다시 조회" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "점검 중지" })).toBeEnabled());
+  expect(u.readURLStatus).toHaveBeenCalledTimes(1);
+  expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+});
+
+it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 구분해 표시한다", async () => {
+  const input = { ...ready.input, workflow_mode: "user_approval_v1" as const };
+  u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "workbench_selective_v1" } });
+  saveHandle({ ...handle, input });
+  mount("scope");
+  expect(await screen.findByText("읽기 사전 승인 · 쓰기 건별 확인")).toBeInTheDocument();
+  expect(screen.queryByText("사전 승인 범위")).toBeNull();
 });

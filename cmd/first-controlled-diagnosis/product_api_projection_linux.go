@@ -23,7 +23,9 @@ func (p *productPinWriter) write(name string, raw []byte) server.E2HTTPFilePin {
 	return server.E2HTTPFilePin{File: name, SHA256: urlSHA(raw)}
 }
 
-func productAPIModelLaunches(c urlPreparationInstallation) []urlPreparationProfile { return c.Profiles }
+func productAPIModelLaunches(c urlPreparationInstallation) []urlPreparationProfile {
+	return productModels(c)
+}
 
 // API에는 필요한 설정·JWT·제한된 DB 자격만 복사한다. 실행 비밀과 저널은 투영하지 않는다.
 // 원본의 논리 경로를 유지하므로 API도 같은 설치 digest를 검증한다.

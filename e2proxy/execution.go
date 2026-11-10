@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
@@ -130,11 +131,20 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 	out := make([]compiledRule, 0, len(rules))
 	seen := map[string]bool{}
 	for _, r := range rules {
+		if r.TLSSPKISHA256 != "" {
+			b, e := hex.DecodeString(r.TLSSPKISHA256)
+			if e != nil || len(b) != 32 || hex.EncodeToString(b) != r.TLSSPKISHA256 {
+				return nil, ErrConfig
+			}
+		}
 		if !validRef(r.Ref) || !validRef(r.PathScopeRef) || seen[r.Ref] || !r.ConnectIP.IsValid() || r.ConnectIP.IsUnspecified() || r.ConnectIP.IsMulticast() || r.ConnectIP.Zone() != "" {
 			return nil, ErrConfig
 		}
 		seen[r.Ref] = true
 		u, err := url.Parse(r.Origin)
+		if err == nil && r.TLSSPKISHA256 != "" && u.Scheme != "https" {
+			return nil, ErrConfig
+		}
 		if err != nil {
 			return nil, ErrConfig
 		}
@@ -879,7 +889,19 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		return nil, r, err
 	}
 	finish := func(resp *http.Response, cause error) (*http.Response, Receipt, error) {
-		rr, aerr := c.finish(ctx, r, func(rr Receipt) { c.observeHTTP(req, resp, rr) })
+		var boundaryErr error
+		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
+			c.observeHTTP(req, resp, rr)
+			if c.e.cfg.RequestBoundary != nil && req != nil && req.URL != nil {
+				boundaryErr = c.e.cfg.RequestBoundary.After(context.WithoutCancel(ctx), RequestView{Method: req.Method, URL: req.URL.String(), BodyPresent: req.ContentLength != 0}, rr)
+			}
+		})
+		if boundaryErr != nil && !errors.Is(boundaryErr, ErrBoundaryProjection) {
+			c.e.mu.Lock()
+			c.e.auditFailed = true
+			c.e.mu.Unlock()
+			return nil, rr, ErrAudit
+		}
 		if aerr != nil {
 			return nil, rr, aerr
 		}
@@ -947,7 +969,16 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	r.RuleRef = rule.Ref
 	r.PolicyRevision = revision
-	if e.cfg.RequestApproval != nil {
+	view := RequestView{Method: method, URL: req.URL.String(), BodyPresent: len(body) > 0, BodyBytes: len(body)}
+	if e.cfg.RequestBoundary != nil && e.cfg.RequestBoundary.Before(ctx, view) != nil {
+		r.Decision, r.Reason = "denied", PolicyDenied
+		return finish(nil, ErrDenied)
+	}
+	needsApproval := e.cfg.RequestApproval != nil
+	if needsApproval && e.cfg.ApprovalMode == ApprovalWorkbenchV1 && (method == "GET" || method == "HEAD") && len(body) == 0 && e.cfg.RequestBoundary.PreapprovedRead(view) {
+		needsApproval = false
+	}
+	if needsApproval {
 		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
 		stopApproval := context.AfterFunc(ctx, cancelApproval)
 		proposal := RequestApprovalProposal{
@@ -971,6 +1002,10 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 			}
 			return finish(nil, ErrDenied)
 		}
+	}
+	if e.cfg.RequestBoundary != nil && e.cfg.RequestBoundary.Before(ctx, view) != nil {
+		r.Decision, r.Reason = "denied", PolicyDenied
+		return finish(nil, ErrDenied)
 	}
 	r.Decision = "allowed"
 	e.mu.Lock()
@@ -1045,6 +1080,19 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, DisableCompression: true, Protocols: protocols,
 		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: e.cfg.RootCAs},
 		TLSHandshakeTimeout: e.cfg.Limits.RequestTimeout, ResponseHeaderTimeout: e.cfg.Limits.RequestTimeout}
+	if rule.TLSSPKISHA256 != "" {
+		pin := rule.TLSSPKISHA256
+		transport.TLSClientConfig.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return ErrDenied
+			}
+			sum := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
+			if hex.EncodeToString(sum[:]) != pin {
+				return ErrDenied
+			}
+			return nil
+		}
+	}
 	_, port, _ := net.SplitHostPort(rule.authority)
 	transport.DialContext = func(dctx context.Context, network, address string) (net.Conn, error) {
 		e.mu.Lock()

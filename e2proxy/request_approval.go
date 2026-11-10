@@ -47,11 +47,18 @@ type ApprovalMode string
 
 const (
 	ApprovalConfirmEveryRequest ApprovalMode = "confirm_every_request"
-	ApprovalPreauthorizedScope  ApprovalMode = "preauthorized_scope"
+	// 선택/원 승인 범위를 함께 집행하고, 운영자가 사전 확인한 읽기만 개별 확인을 생략한다.
+	ApprovalWorkbenchV1        ApprovalMode = "workbench_selective_v1"
+	ApprovalPreauthorizedScope ApprovalMode = "preauthorized_scope"
 )
 
 func validApprovalConfig(cfg Config) bool {
+	if cfg.RequestBoundary != nil && nilRequestBoundary(cfg.RequestBoundary) {
+		return false
+	}
 	switch cfg.ApprovalMode {
+	case ApprovalWorkbenchV1:
+		return !nilApprovalGate(cfg.RequestApproval) && !nilRequestBoundary(cfg.RequestBoundary)
 	case ApprovalConfirmEveryRequest:
 		return !nilApprovalGate(cfg.RequestApproval)
 	case ApprovalPreauthorizedScope:

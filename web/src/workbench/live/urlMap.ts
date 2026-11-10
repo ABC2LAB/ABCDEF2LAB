@@ -103,6 +103,7 @@ export function usdText(micros: number): string {
 
 /** 승인 방식 글. */
 export function approvalModeText(mode: URLDiagnosisScope["approval_mode"]): string {
+  if (mode === "workbench_selective_v1") return "읽기 사전 승인 · 쓰기 건별 확인";
   return mode === "confirm_every_request" ? "매 요청 확인" : "사전 승인 범위";
 }
 

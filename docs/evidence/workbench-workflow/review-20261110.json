@@ -1,0 +1,233 @@
+{
+  "format": "abc2lab.workflow-review-evidence/v1",
+  "product_source": "f42615a0df32337a588b80acb4f0a41235205493",
+  "product_image_id": "sha256:8411c3ab83a3ec3a2a19addc0fdce1fe29d879fa5cd5bc7eda43192b8a0965d6",
+  "target": "owned disposable Juice Shop 15.0.0",
+  "discovery": "declared static navigation fixture",
+  "model": "owned-synthetic-workflow",
+  "paid_qwen": "NOT_RUN",
+  "browser_assertions": {
+    "manual": 77,
+    "auto": 44,
+    "stop": 33,
+    "recover": 11
+  },
+  "rounds": {
+    "manual": {
+      "task": "1",
+      "stage": "completed",
+      "counts": {
+        "found": 5,
+        "visited": 4,
+        "queued": 0,
+        "sent": 5,
+        "attempted": 5,
+        "unknown": 0,
+        "blocked": 2
+      },
+      "received_delta": {
+        "GET /rest/admin/application-version": 1,
+        "GET /rest/products/search": 2,
+        "GET /workflow": 1,
+        "POST /api/Users": 1
+      },
+      "approvals": [
+        {
+          "state": "allowed",
+          "execution": "completed"
+        },
+        {
+          "state": "denied",
+          "execution": "not_sent"
+        }
+      ]
+    },
+    "auto": {
+      "task": "2",
+      "stage": "completed",
+      "counts": {
+        "found": 5,
+        "visited": 3,
+        "queued": 0,
+        "sent": 4,
+        "attempted": 4,
+        "unknown": 0,
+        "blocked": 1
+      },
+      "received_delta": {
+        "GET /rest/admin/application-version": 1,
+        "GET /rest/products/search": 2,
+        "GET /workflow": 1
+      },
+      "approvals": []
+    },
+    "stop": {
+      "task": "3",
+      "stage": "stopped",
+      "state": "cancelled",
+      "drain_complete": true,
+      "deep_runs": 0
+    }
+  },
+  "actual_accounts": {
+    "allowed": 1,
+    "denied": 0
+  },
+  "regression": {
+    "web": {
+      "pass": 518,
+      "fail": 0,
+      "skip": 0
+    },
+    "local_full_go_race_before_last_followup": {
+      "packages": 64,
+      "pass": 7589,
+      "fail": 0,
+      "skip": 18
+    },
+    "followup_agent_and_flow_race": "PASS",
+    "build_vet_static_type_biome": "PASS"
+  },
+  "mutations": [
+    {
+      "name": "owner",
+      "status": "CAUGHT",
+      "test": "TestCommandBoundaryRejectsStaleForeignAndIneligibleSelection/owner"
+    },
+    {
+      "name": "revision",
+      "status": "CAUGHT",
+      "test": "TestCommandBoundaryRejectsStaleForeignAndIneligibleSelection/revision"
+    },
+    {
+      "name": "selection_scope",
+      "status": "CAUGHT",
+      "test": "TestCommandBoundaryRejectsStaleForeignAndIneligibleSelection/excluded"
+    },
+    {
+      "name": "write_grant",
+      "status": "CAUGHT",
+      "test": "TestCommandBoundaryRejectsStaleForeignAndIneligibleSelection/write_without_grant"
+    },
+    {
+      "name": "endpoint_cap",
+      "status": "CAUGHT",
+      "test": "TestOutOfScopeLinksDoNotDisplaceEligibleEndpoints"
+    },
+    {
+      "name": "reserve_resume",
+      "status": "CAUGHT",
+      "test": "TestCommandLimitAlwaysLeavesResumeAvailable"
+    },
+    {
+      "name": "escaped_path",
+      "status": "CAUGHT",
+      "test": "TestTargetInputCannotPoisonWorkflowProjection"
+    },
+    {
+      "name": "method_bound",
+      "status": "CAUGHT",
+      "test": "TestTargetInputCannotPoisonWorkflowProjection"
+    },
+    {
+      "name": "projection_frame",
+      "status": "CAUGHT",
+      "test": "TestProjectionCompactionKeepsScopeAndSignalsDetailLoss"
+    },
+    {
+      "name": "status_bound",
+      "status": "CAUGHT",
+      "test": "TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork/status"
+    },
+    {
+      "name": "crawl_failure_wake",
+      "status": "CAUGHT",
+      "test": "TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork/version"
+    },
+    {
+      "name": "job_state",
+      "status": "CAUGHT",
+      "test": "TestWorkflowCommandsRequireActiveURLJob"
+    },
+    {
+      "name": "installation_optin",
+      "status": "CAUGHT",
+      "test": "TestWorkflowProfileBindsCompleteInputAndNarrowsAutomaticMethods"
+    },
+    {
+      "name": "auto_write_filter",
+      "status": "CAUGHT",
+      "test": "TestWorkflowProfileBindsCompleteInputAndNarrowsAutomaticMethods"
+    },
+    {
+      "name": "target_consent",
+      "status": "CAUGHT",
+      "test": "TestWorkflowProfileBindsCompleteInputAndNarrowsAutomaticMethods"
+    },
+    {
+      "name": "public_path_mask",
+      "status": "CAUGHT",
+      "test": "TestRequestApprovalPublicPathUsesWorkflowMasking"
+    },
+    {
+      "name": "trust_version",
+      "status": "CAUGHT",
+      "test": "TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork/version"
+    },
+    {
+      "name": "trust_final",
+      "status": "CAUGHT",
+      "test": "TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork/final"
+    },
+    {
+      "name": "trust_call_final",
+      "status": "CAUGHT",
+      "test": "TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork/call_final"
+    },
+    {
+      "name": "trust_process",
+      "status": "CAUGHT",
+      "test": "TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork/process"
+    },
+    {
+      "name": "trust_proxy",
+      "status": "CAUGHT",
+      "test": "TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork/proxy"
+    },
+    {
+      "name": "trust_audit",
+      "status": "CAUGHT",
+      "test": "TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork/audit"
+    },
+    {
+      "name": "trust_unknown",
+      "status": "CAUGHT",
+      "test": "TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork/unknown"
+    },
+    {
+      "name": "sql_cas",
+      "status": "CAUGHT",
+      "test": "TestPostgresSelectionRecoveryAndAtomicRevision"
+    },
+    {
+      "name": "planner_role",
+      "status": "CAUGHT",
+      "test": "TestPlannerWorkflowPathsRemainUserData"
+    },
+    {
+      "name": "clipped_read",
+      "status": "CAUGHT",
+      "test": "TestAutomaticSelectionRetainsAttestedReadsWithClippedBody"
+    }
+  ],
+  "limitations": [
+    "Local synthetic model only; paid model not run.",
+    "HTTP wire/usage uncertainty still preserves unknown and busy.",
+    "Earlier failed auto acceptance trial and its journal/reservations are preserved separately.",
+    "Temporary harness path typo rejected startup before diagnosis; not counted as a passed round.",
+    "Initial additional agent test collided with full suite database setup; repeated only on separate owned database.",
+    "Team policy adoption and UI owner acceptance are still pending."
+  ],
+  "restart_additional_model_calls": 0,
+  "restart_receiver_changes": 0
+}

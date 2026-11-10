@@ -1,0 +1,391 @@
+{
+  "date": "2026-11-10",
+  "product_source": "0f89e68f47376302ae6b8780d7529563807523d0",
+  "product_image": "sha256:f8e80f42e9a1718d4cc4363f17bbc50cb6aa962a64c1b23c1c91bdb6a978ca7f",
+  "canonical_branch_commit": "065fe205ba64654c642cb99674cb27802dd371da",
+  "canonical_html_blob": "3840003f318e927aebf5d41ff3f49e892da57812",
+  "target": "Owned disposable OWASP Juice Shop 15.0.0; /workflow is declared static navigation fixture",
+  "model": "owned-synthetic-workflow",
+  "qwen": "NOT_RUN",
+  "checks": {
+    "manual": 68,
+    "auto": 44,
+    "stop": 33,
+    "recover": 11,
+    "design": 14
+  },
+  "accounts": {
+    "allowed": 1,
+    "denied": 0
+  },
+  "rounds": {
+    "manual": {
+      "job": "prep-9d5b79f5bc3d2dbc36aa306493bbfbd1",
+      "task": "1",
+      "stage": "completed",
+      "counts": {
+        "found": 5,
+        "visited": 4,
+        "queued": 0,
+        "sent": 5,
+        "attempted": 5,
+        "unknown": 0,
+        "blocked": 2
+      },
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/workflow",
+          "selected": false,
+          "visited": true
+        },
+        {
+          "method": "GET",
+          "path": "/rest/products/search",
+          "selected": true,
+          "visited": true
+        },
+        {
+          "method": "GET",
+          "path": "/rest/admin/application-version",
+          "selected": false,
+          "visited": true
+        },
+        {
+          "method": "GET",
+          "path": "/excluded",
+          "selected": false,
+          "visited": false
+        },
+        {
+          "method": "POST",
+          "path": "/api/Users",
+          "selected": true,
+          "visited": true
+        }
+      ],
+      "received_delta": {
+        "GET /rest/admin/application-version": 1,
+        "GET /rest/products/search": 2,
+        "GET /workflow": 1,
+        "POST /api/Users": 1
+      },
+      "approvals": [
+        {
+          "state": "denied",
+          "execution": "not_sent"
+        },
+        {
+          "state": "allowed",
+          "execution": "completed"
+        }
+      ],
+      "qwen": "NOT_RUN"
+    },
+    "auto": {
+      "job": "prep-3913c453e9d71f0051480f8b28cc801f",
+      "task": "2",
+      "stage": "completed",
+      "counts": {
+        "found": 5,
+        "visited": 3,
+        "queued": 0,
+        "sent": 4,
+        "attempted": 4,
+        "unknown": 0,
+        "blocked": 1
+      },
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/workflow",
+          "selected": true,
+          "visited": true
+        },
+        {
+          "method": "GET",
+          "path": "/rest/products/search",
+          "selected": true,
+          "visited": true
+        },
+        {
+          "method": "GET",
+          "path": "/rest/admin/application-version",
+          "selected": true,
+          "visited": true
+        },
+        {
+          "method": "GET",
+          "path": "/excluded",
+          "selected": false,
+          "visited": false
+        },
+        {
+          "method": "POST",
+          "path": "/api/Users",
+          "selected": false,
+          "visited": false
+        }
+      ],
+      "received_delta": {
+        "GET /rest/admin/application-version": 1,
+        "GET /rest/products/search": 2,
+        "GET /workflow": 1
+      },
+      "approvals": [],
+      "qwen": "NOT_RUN"
+    },
+    "stop": {
+      "job": "prep-c9be0a172915e2dae7bfdbe9922577c2",
+      "task": "3",
+      "state": "cancelled",
+      "drain_complete": true,
+      "stage": "stopped",
+      "deep_runs": 0,
+      "stop_posts": 1,
+      "qwen": "NOT_RUN"
+    }
+  },
+  "screens": [
+    {
+      "view": "dashboard",
+      "metrics": {
+        "scrollWidth": 1440,
+        "viewport": 1440,
+        "headings": [
+          "대시보드",
+          "이어 보는 URL 진단",
+          "전송 전 확인 —",
+          "설치된 진단 프로필",
+          "점검 목록 · 최근 30일 집계"
+        ],
+        "railWidth": 236
+      }
+    },
+    {
+      "view": "new",
+      "metrics": {
+        "scrollWidth": 1440,
+        "viewport": 1440,
+        "headings": [
+          "새 점검",
+          "조회 중인 진단",
+          "대상",
+          "로그인",
+          "분석 모델",
+          "대상 권한 · 운영자 승인",
+          "작업",
+          "점검 요약"
+        ],
+        "railWidth": 236
+      }
+    },
+    {
+      "view": "crawl",
+      "metrics": {
+        "scrollWidth": 1440,
+        "viewport": 1440,
+        "headings": [
+          "자산 탐색",
+          "탐색 기록",
+          "찾은 경로 5"
+        ],
+        "railWidth": 236
+      }
+    },
+    {
+      "view": "scope",
+      "metrics": {
+        "scrollWidth": 1440,
+        "viewport": 1440,
+        "headings": [
+          "범위 확인",
+          "경로를 선택하세요"
+        ],
+        "railWidth": 236
+      }
+    },
+    {
+      "view": "live",
+      "metrics": {
+        "scrollWidth": 1440,
+        "viewport": 1440,
+        "headings": [
+          "점검 진행",
+          "전송 통제",
+          "모델 사용량",
+          "점검 계획",
+          "지난 활동",
+          "진단 정보"
+        ],
+        "railWidth": 236
+      }
+    },
+    {
+      "view": "report",
+      "metrics": {
+        "scrollWidth": 1440,
+        "viewport": 1440,
+        "headings": [
+          "juice-a.test:9443 보고서",
+          "진단 판정 집계",
+          "실행 종료 기록",
+          "실제 탐색·선택 범위",
+          "모델 사용량 · 비용",
+          "우선 조치",
+          "내려받기",
+          "전체 검사 커버리지",
+          "발견 상세"
+        ],
+        "railWidth": 236
+      }
+    }
+  ],
+  "audit": [
+    {
+      "task": 1,
+      "status": 200,
+      "phase": "closed",
+      "outcome": "completed",
+      "drain_complete": true,
+      "audit_complete": true,
+      "execution_counts": {
+        "attempts": 7,
+        "allowed": 5,
+        "denied": 2,
+        "unsupported": 0,
+        "forward_attempted": 5,
+        "responses": 5,
+        "unknown": 0,
+        "calls": 7
+      }
+    },
+    {
+      "task": 2,
+      "status": 200,
+      "phase": "closed",
+      "outcome": "completed",
+      "drain_complete": true,
+      "audit_complete": true,
+      "execution_counts": {
+        "attempts": 5,
+        "allowed": 4,
+        "denied": 1,
+        "unsupported": 0,
+        "forward_attempted": 4,
+        "responses": 4,
+        "unknown": 0,
+        "calls": 5
+      }
+    },
+    {
+      "task": 3,
+      "status": 200,
+      "phase": "failed",
+      "outcome": "failed",
+      "drain_complete": false,
+      "audit_complete": true,
+      "execution_counts": {
+        "attempts": 3,
+        "allowed": 3,
+        "denied": 0,
+        "unsupported": 0,
+        "forward_attempted": 3,
+        "responses": 3,
+        "unknown": 0,
+        "calls": 3
+      }
+    }
+  ],
+  "restart": {
+    "same_image": true,
+    "same_volumes": true,
+    "no_reexecution": true,
+    "before": {
+      "49481": {
+        "fixture": true,
+        "received": {
+          "GET /rest/admin/application-version": 2,
+          "GET /rest/products/search": 3,
+          "GET /workflow": 2,
+          "POST /api/Users": 1
+        }
+      },
+      "49482": {
+        "allowed_received": 0,
+        "fixture": true,
+        "goal_calls": 6,
+        "model_calls": 28,
+        "outside_received": 0,
+        "planner_calls": 12,
+        "ready": true,
+        "worker_calls": 10
+      },
+      "49484": {
+        "fixture": true,
+        "received": {
+          "GET /rest/admin/application-version": 1,
+          "GET /rest/products/search": 2,
+          "GET /workflow": 1
+        }
+      }
+    },
+    "after": {
+      "49481": {
+        "fixture": true,
+        "received": {
+          "GET /rest/admin/application-version": 2,
+          "GET /rest/products/search": 3,
+          "GET /workflow": 2,
+          "POST /api/Users": 1
+        }
+      },
+      "49482": {
+        "allowed_received": 0,
+        "fixture": true,
+        "goal_calls": 6,
+        "model_calls": 28,
+        "outside_received": 0,
+        "planner_calls": 12,
+        "ready": true,
+        "worker_calls": 10
+      },
+      "49484": {
+        "fixture": true,
+        "received": {
+          "GET /rest/admin/application-version": 1,
+          "GET /rest/products/search": 2,
+          "GET /workflow": 1
+        }
+      }
+    }
+  },
+  "tests": {
+    "web": {
+      "files": 37,
+      "pass": 502,
+      "fail": 0,
+      "skip": 0
+    },
+    "server_pg16_race": {
+      "pass": 1994,
+      "fail": 0,
+      "skip": 13
+    },
+    "evaluation_python": {
+      "pass": 1733,
+      "fail": 0
+    },
+    "e2_deployment_python": {
+      "pass": 55,
+      "fail": 0
+    },
+    "full_go_earlier_snapshot": {
+      "packages": 64,
+      "pass": 7520,
+      "fail": 0,
+      "skip": 18,
+      "qualification": "Before final targeted fixes; final affected packages rechecked, PR-head CI separate"
+    }
+  }
+}

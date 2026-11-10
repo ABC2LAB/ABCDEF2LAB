@@ -6,7 +6,7 @@
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { type URLDiagnosisInput, urlDiagnosisInput } from "@/lib/diagnosis/diagnosis-url";
+import { type URLDiagnosisInput, urlDiagnosisInput, type WorkflowMode } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
 import { LoadingRow } from "../../live/parts";
@@ -18,6 +18,7 @@ import { Icon } from "../../ui/icons";
 import { CloseInspButton, InspHead, InspOpenButton, Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ExternalModelSettings } from "./ExternalModelSettings";
+import { TargetApprovalPanel } from "./TargetApprovalPanel";
 import {
   reasonText,
   UrlDisconnect,
@@ -39,10 +40,16 @@ const API_VERSION = "diagnosis-api.v2";
 const GO_LABEL = { scope: "범위 확인으로", live: "점검 진행 보기", report: "보고서 보기" } as const;
 
 /** 입력 → 서버에 보낼 초안 입력 (팀 lib 검사를 통과해야만). */
-function draftInput(target: string, profile: string, name: string): URLDiagnosisInput | null {
+function draftInput(
+  target: string,
+  profile: string,
+  name: string,
+  mode?: WorkflowMode,
+  excludes = "",
+): URLDiagnosisInput | null {
   if (!profile) return null;
   try {
-    return urlDiagnosisInput(target, profile, name);
+    return urlDiagnosisInput(target, profile, name, mode, excludes);
   } catch {
     return null;
   }
@@ -65,6 +72,8 @@ export function UrlNewScanLive() {
   const [target, setTarget] = useState("");
   const [profileId, setProfileId] = useState(first);
   const [name, setName] = useState("");
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("user_approval_v1");
+  const [excluded, setExcluded] = useState("");
   const [externalOpen, setExternalOpen] = useState(false);
   const [credentialReady, setCredentialReady] = useState(false);
   const externalProfile = profiles.find((p) => p.model?.mode === "openrouter");
@@ -77,8 +86,8 @@ export function UrlNewScanLive() {
     seenReset.current = resetSeq;
     setTarget("");
     setName("");
-    setProfileId(first);
-  }, [resetSeq, first]);
+    setProfileId(externalOpen && externalProfile ? externalProfile.id : first);
+  }, [resetSeq, first, externalOpen, externalProfile]);
 
   // 다른 화면의 '이 주소로 다시 점검' (조회 중인 진단이 없을 때만)
   useEffect(() => {
@@ -93,7 +102,15 @@ export function UrlNewScanLive() {
   const pv = shown ? shown.profile_id : profileId;
   const nv = shown ? (shown.display_name ?? "") : name;
   const profile = profiles.find((p) => p.id === pv) ?? null;
-  const input = shown ? null : draftInput(target, profileId, name);
+  const input = shown
+    ? null
+    : draftInput(
+        target,
+        profileId,
+        name,
+        profile?.workflow ? workflowMode : undefined,
+        profile?.workflow ? excluded : "",
+      );
 
   const hint = urlTargetHint(tv);
   const why: string[] = [];
@@ -108,6 +125,7 @@ export function UrlNewScanLive() {
     !shown &&
     !!input &&
     g.canValidate &&
+    (!profile?.workflow || !!name.trim()) &&
     !busy &&
     (!profile?.model?.external_transfer || (externalOpen && credentialReady));
 
@@ -217,6 +235,50 @@ export function UrlNewScanLive() {
 
           <div className={s.fsec}>
             <div className={s["fsec-h"]}>
+              <h2>로그인</h2>
+              <p>대상 계정 연결은 현재 제품에서 지원하지 않습니다.</p>
+            </div>
+            <fieldset className={s["fsec-b"]} disabled aria-label="대상 로그인 · 미지원">
+              <div className={s.seg} role="radiogroup" aria-label="점검 영역">
+                <label>
+                  <input type="radio" name="nAuth" value="in" />
+                  <span>로그인 영역 포함 · 미지원</span>
+                </label>
+                <label>
+                  <input type="radio" name="nAuth" value="pub" defaultChecked />
+                  <span>공개 영역만</span>
+                </label>
+              </div>
+              <div className={s.seg} role="radiogroup" aria-label="대상 로그인 방법">
+                <label>
+                  <input type="radio" name="nHow" value="form" />
+                  <span>아이디 · 비밀번호</span>
+                </label>
+                <label>
+                  <input type="radio" name="nHow" value="sess" />
+                  <span>세션 직접 입력</span>
+                </label>
+              </div>
+              {["A", "B"].map((account) => (
+                <div className={s.acct} key={account}>
+                  <span className={s.an}>계정 {account}</span>
+                  <input className={s.inp} placeholder="연결 미지원" aria-label={`계정 ${account} 아이디 · 미지원`} />
+                  <input
+                    className={s.inp}
+                    type="password"
+                    placeholder="입력하지 마세요"
+                    autoComplete="off"
+                    aria-label={`계정 ${account} 비밀번호 · 미지원`}
+                  />
+                </div>
+              ))}
+              <p className={s.help}>
+                비밀번호·쿠키를 입력하거나 저장하지 않습니다. 인증된 계정 간 접근 검사는 아직 연결되지 않았습니다.
+              </p>
+            </fieldset>
+          </div>
+          <div className={s.fsec}>
+            <div className={s["fsec-h"]}>
               <h2>분석 모델</h2>
               <p>설치자가 승인한 모델 프로필만 고를 수 있습니다. 다른 모델로 바꿔 돌리지 않습니다.</p>
             </div>
@@ -239,7 +301,7 @@ export function UrlNewScanLive() {
               </button>
               {externalOpen ? (
                 <ExternalModelSettings
-                  key={externalProfile?.id ?? "unavailable"}
+                  key={`${externalProfile?.id ?? "unavailable"}:${resetSeq}`}
                   profile={externalProfile}
                   disabled={g.inputLocked}
                   onReady={setCredentialReady}
@@ -270,6 +332,15 @@ export function UrlNewScanLive() {
             </div>
           </div>
 
+          <TargetApprovalPanel
+            requestLimit={profile?.workflow_request_limit}
+            allowStateChanges={profile?.workflow?.allow_reversible_writes}
+            url={tv}
+            disabled={busy}
+            onChanged={() => {
+              if (handle && !job?.preparation_started) void runUrlAction("validate");
+            }}
+          />
           <div className={s.fsec}>
             <div className={s["fsec-h"]}>
               <h2>작업</h2>
@@ -278,7 +349,7 @@ export function UrlNewScanLive() {
             <div className={s["fsec-b"]}>
               <div className={s.field}>
                 <label className={s.lbl} htmlFor="luName">
-                  진단 이름 · 선택
+                  진단 이름 {profile?.workflow ? "· 필수" : "· 선택"}
                 </label>
                 <input
                   className={s.inp}
@@ -290,13 +361,103 @@ export function UrlNewScanLive() {
                   onChange={(e) => setName(e.target.value)}
                 />
               </div>
-              <div className={s.note} role="note">
-                <Icon name="info" />
-                <span>
-                  목표 · 제외 경로 · 커버리지 · LLM 프로필 순서는 URL 진단이 받지 않습니다. 범위는 설치된 승인 범위가
-                  정합니다.
+              <div className={s.field}>
+                <span className={s.lbl} id="nGoalL">
+                  점검 목표 · 현재 설치 정책 사용
                 </span>
+                <fieldset className={s.goals} aria-labelledby="nGoalL">
+                  {["주문·결제 권한 경계", "관리자 기능 접근", "비로그인 노출"].map((goal) => (
+                    <label className={s.goal} key={goal}>
+                      <input type="checkbox" disabled />
+                      <span>{goal} · 선택 미지원</span>
+                    </label>
+                  ))}
+                </fieldset>
               </div>
+              <div className={s.two}>
+                <div className={s.field}>
+                  <span className={s.lbl}>점검 범위</span>
+                  <div className={s.seg} role="radiogroup" aria-label="점검 범위">
+                    {["설치 상한", "심화", "제한 없음"].map((depth, i) => (
+                      <label key={depth}>
+                        <input type="radio" name="nDepth" disabled defaultChecked={i === 0} />
+                        <span>{depth}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className={s.field}>
+                  <label className={s.lbl} htmlFor="nWorkers">
+                    워커 수
+                  </label>
+                  <select className={s.inp} id="nWorkers" disabled>
+                    <option>설치 정책 사용</option>
+                  </select>
+                </div>
+              </div>
+              <p className={s.help}>
+                범위·워커 수를 화면에서 확대하지 않습니다. 탐색 상한은 승인 범위 확인에 표시합니다.
+              </p>
+              {profile?.workflow ? (
+                <>
+                  <div className={s.field}>
+                    <span className={s.lbl}>진단 모드 · HTTP 송신 권한과 별개</span>
+                    <div className={s.opts} role="radiogroup" aria-label="진단 모드">
+                      {(
+                        [
+                          [
+                            "ai_auto_v1",
+                            "AI 자동 모드",
+                            "사전 승인한 경로와 임의 query로 탐색·심화 진단을 이어갑니다. query의 무해성은 검증하지 않으며 상태 변경을 자동 승인하지 않습니다.",
+                          ],
+                          [
+                            "user_approval_v1",
+                            "사용자 승인 모드",
+                            "초기 탐색 후 엔드포인트를 선택합니다. 사전 승인한 읽기는 임의 query도 건별 확인 없이 보내고, 상태 변경 가능 요청은 개별 확인합니다.",
+                          ],
+                        ] as const
+                      ).map(([id, label, help]) => (
+                        <label className={s.opt} key={id}>
+                          <input
+                            type="radio"
+                            name="nSend"
+                            value={id}
+                            checked={(shown?.workflow_mode ?? workflowMode) === id}
+                            disabled={g.inputLocked}
+                            onChange={() => setWorkflowMode(id)}
+                          />
+                          <b>{label}</b>
+                          <small>{help}</small>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className={s.field}>
+                    <label className={s.lbl} htmlFor="nExcl">
+                      제외 경로 · 한 줄에 하나
+                    </label>
+                    <textarea
+                      id="nExcl"
+                      className={s.inp}
+                      value={shown?.excluded_paths ?? excluded}
+                      disabled={g.inputLocked}
+                      maxLength={2048}
+                      onChange={(e) => setExcluded(e.target.value)}
+                      placeholder={"/api/admin/reset\n/api/users/*/delete"}
+                    />
+                    <p className={s.help}>
+                      경로 접두어와 전체 구간 *를 지원합니다. 제외 범위는 서버에 저장하며 새 발견으로 넓히지 않습니다.
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <div className={s.note} role="note">
+                  <Icon name="info" />
+                  <span>
+                    이 설치에는 탐색·선택 워크플로가 활성화되지 않았습니다. 기존 승인 범위 진단만 실행할 수 있습니다.
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -407,7 +568,7 @@ export function UrlScopeLive() {
   }
 
   const start = async () => {
-    if (await runUrlAction("start")) goTo("live");
+    if (await runUrlAction("start")) goTo(job.input.workflow_mode ? "crawl" : "live");
   };
   const revalidate = () => void runUrlAction("validate");
 
@@ -490,8 +651,8 @@ export function UrlScopeLive() {
         <div className={s.vm}>
           <UrlPhaseBar job={job} />
           <p className={s.lead}>
-            서버가 설치된 승인 범위와 대조해 돌려준 값입니다. 이 범위 밖 주소 · 메서드 · 다른 subdomain · 포트 ·
-            redirect 목적지는 자동으로 허가하지 않습니다.
+            서버가 현재 진단 URL의 승인 기록과 대조해 돌려준 값입니다. 이 범위 밖 주소 · 메서드 · 다른 subdomain · 포트
+            · redirect 목적지는 자동으로 허가하지 않습니다.
           </p>
           <section className={s.sec} aria-labelledby="luScopeH">
             <div className={s.sh}>

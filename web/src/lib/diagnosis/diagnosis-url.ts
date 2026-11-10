@@ -3,7 +3,21 @@ import { validTaskID } from "./first-diagnosis";
 
 const base = "/api/diagnoses/v2";
 const version = "diagnosis-api.v2";
-export type URLDiagnosisInput = { target_url: string; profile_id: string; display_name?: string };
+export type WorkflowMode = "ai_auto_v1" | "user_approval_v1";
+export type WorkflowLimits = {
+  format: "abc2lab.workbench-flow/v1";
+  max_pages: number;
+  max_endpoints: number;
+  max_response_bytes: number;
+  allow_reversible_writes: boolean;
+};
+export type URLDiagnosisInput = {
+  target_url: string;
+  profile_id: string;
+  display_name?: string;
+  workflow_mode?: WorkflowMode;
+  excluded_paths?: string;
+};
 export type URLDiagnosisModel = {
   mode: "openrouter";
   model: "qwen/qwen3.5-35b-a3b";
@@ -13,6 +27,8 @@ export type URLDiagnosisModel = {
   output_tokens_per_call: number;
 };
 export type URLDiagnosisProfile = {
+  workflow?: WorkflowLimits;
+  workflow_request_limit?: number;
   id: string;
   label: string;
   model_profile_ref: string;
@@ -37,7 +53,7 @@ export type URLDiagnosisScope = {
   query_policy: "any";
   body_policy: "bounded";
   max_body_bytes: number;
-  approval_mode: "preauthorized_scope" | "confirm_every_request";
+  approval_mode: "preauthorized_scope" | "confirm_every_request" | "workbench_selective_v1";
   attestation_ref: string;
   budget: URLDiagnosisBudget;
   expires_at: string;
@@ -144,25 +160,59 @@ function targetURL(v: unknown): string {
   return parsed.href;
 }
 /** URL은 요청일 뿐이다. DNS·실제 연결·경로 허가는 서버와 E②가 검증한다. */
-export function urlDiagnosisInput(target: string, profile: string, name: string): URLDiagnosisInput {
+export function urlDiagnosisInput(
+  target: string,
+  profile: string,
+  name: string,
+  workflowMode?: WorkflowMode,
+  excludedPaths = "",
+): URLDiagnosisInput {
   return parseInput({
     target_url: target.trim(),
     profile_id: profile,
+    ...(workflowMode ? { workflow_mode: workflowMode } : {}),
+    ...(excludedPaths.trim() ? { excluded_paths: excludedPaths.trim() } : {}),
     ...(name.trim() ? { display_name: name.trim() } : {}),
   });
 }
 function parseInput(v: unknown): URLDiagnosisInput {
   if (!object(v) || !ref(v.profile_id) || (v.display_name !== undefined && !text(v.display_name))) return invalid();
-  exact(v, ["target_url", "profile_id", "display_name"]);
+  exact(v, ["target_url", "profile_id", "display_name", "workflow_mode", "excluded_paths"]);
+  if (v.workflow_mode !== undefined && v.workflow_mode !== "ai_auto_v1" && v.workflow_mode !== "user_approval_v1")
+    return invalid();
+  if (v.excluded_paths !== undefined) {
+    if (
+      typeof v.excluded_paths !== "string" ||
+      !v.workflow_mode ||
+      v.excluded_paths.length > 2048 ||
+      v.excluded_paths
+        .split("\n")
+        .some(
+          (p) =>
+            !p.startsWith("/") ||
+            /[\\%?#!\r\t ]/.test(p) ||
+            p.includes("//") ||
+            p.includes("..") ||
+            p.split("/").some((part) => part.includes("*") && part !== "*"),
+        )
+    )
+      return invalid();
+  }
   return {
     target_url: targetURL(v.target_url),
     profile_id: v.profile_id,
+    ...(v.workflow_mode ? { workflow_mode: v.workflow_mode as WorkflowMode } : {}),
+    ...(v.excluded_paths ? { excluded_paths: String(v.excluded_paths) } : {}),
     ...(v.display_name ? { display_name: String(v.display_name) } : {}),
   };
 }
 export function sameURLInput(a: URLDiagnosisInput, b: URLDiagnosisInput): boolean {
   return (
-    a.target_url === b.target_url && a.profile_id === b.profile_id && (a.display_name ?? "") === (b.display_name ?? "")
+    a.target_url === b.target_url &&
+    a.profile_id === b.profile_id &&
+    (a.display_name ?? "") === (b.display_name ?? "") &&
+    (a.workflow_mode ?? "") === (b.workflow_mode ?? "") &&
+    (a.excluded_paths ?? "") === (b.excluded_paths ?? "")
   );
 }
 function budget(v: unknown): URLDiagnosisBudget {
@@ -215,11 +265,18 @@ function scope(v: unknown): URLDiagnosisScope {
     !Array.isArray(v.methods) ||
     !v.methods.length ||
     v.methods.length > 8 ||
-    !v.methods.every((m) => m === "GET" || m === "HEAD") ||
+    !v.methods.every(
+      (m) =>
+        m === "GET" ||
+        m === "HEAD" ||
+        (v.approval_mode === "workbench_selective_v1" && ["POST", "PUT", "PATCH"].includes(String(m))),
+    ) ||
     v.query_policy !== "any" ||
     v.body_policy !== "bounded" ||
     !natural(v.max_body_bytes) ||
-    (v.approval_mode !== "preauthorized_scope" && v.approval_mode !== "confirm_every_request") ||
+    (v.approval_mode !== "preauthorized_scope" &&
+      v.approval_mode !== "confirm_every_request" &&
+      v.approval_mode !== "workbench_selective_v1") ||
     !text(v.expires_at, 64) ||
     !Number.isFinite(Date.parse(v.expires_at))
   )
@@ -302,10 +359,12 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       !p.label ||
       !ref(p.model_profile_ref) ||
       !text(p.model_label) ||
-      !p.model_label
+      !p.model_label ||
+      (p.workflow !== undefined &&
+        (!natural(p.workflow_request_limit) || p.workflow_request_limit < 1 || p.workflow_request_limit > 100))
     )
       return invalid();
-    exact(p, ["id", "label", "model_profile_ref", "model_label", "model"]);
+    exact(p, ["id", "label", "model_profile_ref", "model_label", "model", "workflow", "workflow_request_limit"]);
     seen.add(p.id);
     return {
       id: p.id,
@@ -313,6 +372,9 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       model_profile_ref: p.model_profile_ref,
       model_label: p.model_label,
       ...(p.model === undefined ? {} : { model: model(p.model) }),
+      ...(p.workflow === undefined
+        ? {}
+        : { workflow: parseWorkflowLimits(p.workflow), workflow_request_limit: Number(p.workflow_request_limit) }),
     };
   });
   return { ownerContext: String(e.owner_context), profiles };
@@ -357,7 +419,12 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
   ]);
   const input = parseInput(d.input);
   const approved = d.scope === undefined ? undefined : scope(d.scope);
-  if (approved && approved.origin !== new URL(input.target_url).origin) return invalid();
+  if (
+    approved &&
+    (approved.origin !== new URL(input.target_url).origin ||
+      (approved.approval_mode === "workbench_selective_v1" && input.workflow_mode !== "user_approval_v1"))
+  )
+    return invalid();
   if (["ready", "preparing", "running", "completed"].includes(d.state) && !approved) return invalid();
   if (
     d.started &&
@@ -699,4 +766,24 @@ export function urlDiagnosisError(cause: unknown): string {
     if (cause.status === 503) return "준비 서비스의 응답을 확인하지 못했어요. 같은 진단의 상태만 다시 조회해 주세요.";
   }
   return "응답을 확인하지 못했어요. 자동 재전송하지 않고 같은 진단의 상태만 다시 조회해 주세요.";
+}
+
+export function parseWorkflowLimits(v: unknown): WorkflowLimits {
+  if (
+    !object(v) ||
+    v.format !== "abc2lab.workbench-flow/v1" ||
+    !natural(v.max_pages) ||
+    v.max_pages < 1 ||
+    v.max_pages > 32 ||
+    !natural(v.max_endpoints) ||
+    v.max_endpoints < 1 ||
+    v.max_endpoints > 32 ||
+    !natural(v.max_response_bytes) ||
+    v.max_response_bytes < 4096 ||
+    v.max_response_bytes > 2097152 ||
+    typeof v.allow_reversible_writes !== "boolean"
+  )
+    return invalid();
+  exact(v, ["format", "max_pages", "max_endpoints", "max_response_bytes", "allow_reversible_writes"]);
+  return v as WorkflowLimits;
 }

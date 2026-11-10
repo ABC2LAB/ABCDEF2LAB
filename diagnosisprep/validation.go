@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"io"
 	"net"
 	"net/netip"
@@ -40,6 +41,26 @@ func validTask(id string) bool {
 
 // CanonicalInput은 문자열만 검사한다. 설치 승인·DNS·연결 권위를 만들지 않는다.
 func CanonicalInput(input Input) (Input, error) {
+	if input.WorkflowMode != "" && !diagnosisflow.ValidMode(input.WorkflowMode) || len(input.ExcludedPaths) > 2048 || input.ExcludedPaths != "" && input.WorkflowMode == "" {
+		return Input{}, ErrProtocol
+	}
+	if input.ExcludedPaths != "" {
+		paths := strings.Split(input.ExcludedPaths, "\n")
+		if len(paths) > 32 {
+			return Input{}, ErrProtocol
+		}
+		for _, p := range paths {
+			for _, part := range strings.Split(p, "/") {
+				if strings.Contains(part, "*") && part != "*" {
+					return Input{}, ErrProtocol
+				}
+			}
+			if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "%?#!\\ \r\t") || strings.Contains(p, "//") || strings.Contains(p, "..") || len(p) > 256 {
+				return Input{}, ErrProtocol
+			}
+		}
+	}
+
 	raw := input.TargetURL
 	if len(raw) == 0 || len(raw) > 2048 || !reference.MatchString(input.ProfileID) || (input.DisplayName != "" && !validText(input.DisplayName, 160)) {
 		return Input{}, ErrProtocol
@@ -139,7 +160,14 @@ func ValidateRequest(r Request) error {
 		return ErrProtocol
 	}
 	noInput := r.Input == nil
+	if r.Command != ProductControl && r.Product != nil {
+		return ErrProtocol
+	}
 	switch r.Command {
+	case ProductControl:
+		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" || !validProductRequest(r.Product) {
+			return ErrProtocol
+		}
 	case Catalog:
 		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" {
 			return ErrProtocol
@@ -211,7 +239,7 @@ func validScope(s *Scope) bool {
 		}
 	}
 	for _, m := range s.Methods {
-		if m != "GET" && m != "HEAD" {
+		if m != "GET" && m != "HEAD" && !(s.ApprovalMode == "workbench_selective_v1" && (m == "POST" || m == "PUT" || m == "PATCH")) {
 			return false
 		}
 	}
@@ -230,6 +258,9 @@ func validPhase(p Phase) bool {
 func terminal(s State) bool { return s == Completed || s == Cancelled || s == Failed }
 func active(s State) bool   { return s == Preparing || s == Running || s == Stopping }
 func validJob(j Job) bool {
+	if j.Scope != nil && j.Scope.ApprovalMode == "workbench_selective_v1" && j.Input.WorkflowMode != "user_approval_v1" {
+		return false
+	}
 	if !reference.MatchString(j.ID) || j.Revision == 0 || !digestPattern.MatchString(j.SourceDigest) || !validPhase(j.Phase) || !validScope(j.Scope) || !validUsage(j.ModelUsage) || (j.ReasonCode != "" && !reasonPattern.MatchString(j.ReasonCode)) || (j.TaskID != "" && !validTask(j.TaskID)) {
 		return false
 	}
@@ -281,20 +312,30 @@ func ValidateResponse(r Request, response Response) error {
 	if ValidateRequest(r) != nil || response.Version != Version || response.RequestID != r.RequestID {
 		return ErrProtocol
 	}
+	if r.Command != ProductControl && response.Product != nil {
+		return ErrProtocol
+	}
 	if response.Error != "" {
+		if response.Product != nil {
+			return ErrProtocol
+		}
 		if !validError(response.Error) || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 {
 			return ErrProtocol
 		}
 		return nil
 	}
 	switch r.Command {
+	case ProductControl:
+		if response.Product == nil || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 || len(response.Product.Targets) > 128 {
+			return ErrProtocol
+		}
 	case Catalog:
 		if response.Job != nil || response.Authorized != nil || len(response.Profiles) > 256 {
 			return ErrProtocol
 		}
 		seen := map[string]bool{}
 		for _, p := range response.Profiles {
-			if !validModel(p.Model) || !reference.MatchString(p.ID) || seen[p.ID] || !reference.MatchString(p.ModelProfileRef) || !validText(p.Label, 160) || !validText(p.ModelLabel, 160) {
+			if (p.Workflow != nil && (!p.Workflow.Valid() || p.WorkflowRequestLimit < 1 || p.WorkflowRequestLimit > 100)) || !validModel(p.Model) || !reference.MatchString(p.ID) || seen[p.ID] || !reference.MatchString(p.ModelProfileRef) || !validText(p.Label, 160) || !validText(p.ModelLabel, 160) {
 				return ErrProtocol
 			}
 			seen[p.ID] = true

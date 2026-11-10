@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosis"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/server"
@@ -29,18 +30,27 @@ type urlPreparationRuntime struct {
 	mu       sync.RWMutex
 	live     map[string]*urlLiveHandler
 	reports  map[string]*savedReportService
+	product  *productRuntime
 }
 
 func newURLPreparationRuntime(ctx context.Context, path string) (*urlPreparationRuntime, error) {
-	c, _, err := readURLInstallation(path)
+	c, pin, err := readURLInstallation(path)
 	if err != nil {
 		return nil, errPreparation
 	}
-	return &urlPreparationRuntime{ctx: ctx, path: path, config: c, live: map[string]*urlLiveHandler{}, reports: map[string]*savedReportService{}}, nil
+	b := &urlPreparationRuntime{ctx: ctx, path: path, config: c, live: map[string]*urlLiveHandler{}, reports: map[string]*savedReportService{}}
+	if c.Product != nil {
+		b.product, err = newProductRuntime(c, pin)
+		if err != nil {
+			return nil, err
+		}
+		b.resolver = b.product.targets.resolver
+	}
+	return b, nil
 }
 func (b *urlPreparationRuntime) installation() (urlPreparationInstallation, urlInputPin, error) {
 	c, pin, err := readURLInstallation(b.path)
-	if err != nil || c.StateDir != b.config.StateDir || c.RunsDir != b.config.RunsDir || c.SocketPath != b.config.SocketPath || c.ReportListenAddr != b.config.ReportListenAddr || c.APILaunch != b.config.APILaunch || !reflect.DeepEqual(c.ProtectedEndpoints, b.config.ProtectedEndpoints) {
+	if err != nil || c.StateDir != b.config.StateDir || c.RunsDir != b.config.RunsDir || c.SocketPath != b.config.SocketPath || c.ReportListenAddr != b.config.ReportListenAddr || c.APILaunch != b.config.APILaunch || !reflect.DeepEqual(c.ProtectedEndpoints, b.config.ProtectedEndpoints) || !sameProductInstallation(c.Product, b.config.Product) {
 		return c, pin, errPreparation
 	}
 	return c, pin, nil
@@ -52,6 +62,9 @@ func (b *urlPreparationRuntime) Profiles(ctx context.Context, principal string) 
 	c, pin, err := b.installation()
 	if err != nil {
 		return nil, err
+	}
+	if b.product != nil {
+		return b.product.profiles()
 	}
 	out := []diagnosisprep.Profile{}
 	for _, p := range c.Profiles {
@@ -72,10 +85,17 @@ func (b *urlPreparationRuntime) Profiles(ctx context.Context, principal string) 
 func (b *urlPreparationRuntime) load(principal string, input diagnosisprep.Input) (*urlLoadedProfile, error) {
 	return b.loadForReport(principal, input, false)
 }
-func (b *urlPreparationRuntime) loadForReport(principal string, input diagnosisprep.Input, reportOnly bool) (*urlLoadedProfile, error) {
+func (b *urlPreparationRuntime) loadForReport(principal string, input diagnosisprep.Input, reportOnly bool, reportTarget ...string) (*urlLoadedProfile, error) {
 	c, pin, err := b.installation()
 	if err != nil {
 		return nil, err
+	}
+	if b.product != nil {
+		id := ""
+		if len(reportTarget) > 0 {
+			id = reportTarget[0]
+		}
+		return b.product.load(principal, input, reportOnly, id)
 	}
 	for _, p := range c.Profiles {
 		if p.ID == input.ProfileID && p.Principal == principal {
@@ -147,8 +167,12 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if l.inspection.InstallationDigest != execution.Inspection.InstallationDigest || l.inspection.DelegationRef != execution.Inspection.DelegationRef {
 		return errPreparation
 	}
-	ctx, cancel := context.WithTimeout(parent, time.Duration(l.profile.Budget.DurationSeconds)*time.Second)
+	hard, cancel := context.WithTimeout(parent, time.Duration(l.profile.Budget.DurationSeconds)*time.Second)
 	defer cancel()
+	ctx, stopTarget := context.WithCancelCause(hard)
+	defer stopTarget(context.Canceled)
+	var flow *diagnosisflow.Controller
+	var flowPool *sql.DB
 	p := &urlProgress{publish: publish, update: diagnosisprep.Update{State: diagnosisprep.Preparing, Phase: diagnosisprep.ScopeCheck, PreparationStarted: true, AuthorityState: diagnosisprep.AuthorityNotIssued}}
 	knownFailure := func(code string, drained bool) error {
 		state := diagnosisprep.Failed
@@ -174,6 +198,13 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			}
 		})
 		return errPreparation
+	}
+	if l.productTarget != nil {
+		release, e := b.product.attach(*l.productTarget, execution.Job.ID, func() { stopTarget(server.ErrFirstDiagnosisTargetEnded) })
+		if e != nil {
+			return knownFailure("target_approval_changed", true)
+		}
+		defer release()
 	}
 	var diagnostics *launchDiagnostics
 	check := func() error {
@@ -231,7 +262,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	p.publish = func(u diagnosisprep.Update) error {
 		switch u.State {
 		case diagnosisprep.Completed, diagnosisprep.Failed, diagnosisprep.Cancelled, diagnosisprep.Unknown:
-			finishDiagnostics(&u)
+			u = settleProductWorkflow(parent, flow, u, finishDiagnostics)
 		}
 		return publish(u)
 	}
@@ -254,27 +285,13 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	go func() {
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
-		for {
-			select {
-			case <-watchDone:
-				return
-			case <-ctx.Done():
-				return
-			case <-diagnostics.logger.Failed():
-				cancel()
-				return
-			case <-ticker.C:
-				if l.current() != nil {
-					cancel()
-					return
-				}
-			}
-		}
+		watchURLPreparation(hard, watchDone, diagnostics.logger.Failed(), ticker.C, l.current, cancel, stopTarget)
 	}()
 	var lastModelRequest int64
 	observe := func(usage diagnosisprep.ModelUsage) error {
 		if usage.Requests > lastModelRequest {
-			if check() != nil {
+			// 대상 호출 admission은 예약 전에 검사한다. 마감 usage는 종료 뒤에도 저장한다.
+			if l.productTarget == nil && check() != nil {
 				return errPreparation
 			}
 			lastModelRequest = usage.Requests
@@ -293,6 +310,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		modelBudget, err = server.NewFirstDiagnosisModelBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, observe)
 	}
 	if err != nil {
+		return knownFailure("model_budget_invalid", true)
+	}
+	if l.productTarget != nil && modelBudget.ConfigureTargetDrain(hard, min(time.Duration(l.launch.ShutdownTimeoutSeconds)*time.Second/2, 30*time.Second), check) != nil {
 		return knownFailure("model_budget_invalid", true)
 	}
 	diagnostics.next("database", "database_unavailable")
@@ -317,6 +337,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		description = execution.Job.Input.DisplayName
 	}
 	goal := "Inspect the approved read-only HTTPS target " + execution.Job.Input.TargetURL + " through the enforced E2 boundary. Collect observations and manual-review candidates only. Do not request state changes or other origins."
+	if execution.Job.Input.WorkflowMode != "" {
+		goal = "Inspect the approved read-only HTTPS target " + execution.Job.Input.TargetURL + " through the enforced E2 boundary. Workbench workflow mode: " + execution.Job.Input.WorkflowMode + ". First prepare an initial discovery intent. The host will perform bounded discovery in the protected Worker. After discovery, use the server-provided exact selected endpoints for deep diagnostic intents. State-changing requests require separately granted scope and per-request confirmation; never invent that permission. Collect only supported observations and unconfirmed review candidates."
+	}
 	if check() != nil {
 		_ = pool.Close()
 		return knownFailure("installation_changed", true)
@@ -333,6 +356,24 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	}
 	diagnostics.next("task_binding", "task_binding_failed")
 	taskID := strconv.FormatInt(actual.TaskID, 10)
+	flow, flowPool, err = b.createWorkflow(ctx, l, execution, taskID, check)
+	if err != nil {
+		_ = pool.Close()
+		return knownFailure("workflow_storage_unavailable", true)
+	}
+	if flowPool != nil {
+		defer func() {
+			b.product.flowMu.Lock()
+			delete(b.product.flows, execution.Job.ID)
+			b.product.flowMu.Unlock()
+			flowPool.Close()
+		}()
+		if modelBudget.ConfigureAdmission(flow.Wait) != nil {
+			_ = pool.Close()
+			return knownFailure("model_budget_invalid", true)
+		}
+	}
+
 	if p.set(func(u *diagnosisprep.Update) { u.TaskID = taskID }) != nil {
 		_ = pool.Close()
 		return errPreparation
@@ -431,7 +472,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			return nil, errPreparation
 		}
 		return urlOpenDatabase(call, b.config, dsnPin)
-	})
+	}, flow)
 	if err != nil {
 		drained := d == nil
 		if d != nil {
@@ -516,7 +557,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		case <-ticker.C:
 			status, e := gateway.Call(ctx, diagnosis.Request{Version: diagnosis.Version, RequestID: "url-status", Command: diagnosis.Status, TaskID: taskID, PreparationRef: execution.Job.ID})
 			if e != nil || status.Snapshot == nil {
-				cancel()
+				// A target stop may already be draining model usage. A failed
+				// status read with that cancelled context must not hard-cancel it.
+				cancelURLStatusFailure(ctx, cancel)
 				continue
 			}
 			s := status.Snapshot
@@ -648,7 +691,11 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 	// 재시작 후 저장 결과 조회는 실행이나 모델을 복원하지 않는다.
 	b.mu.Lock()
 	if b.reports[task] == nil {
-		loaded, loadErr := b.loadForReport("ARTEX", auth.Job.Input, true)
+		targetRef := ""
+		if auth.Job.Scope != nil {
+			targetRef = auth.Job.Scope.TargetRef
+		}
+		loaded, loadErr := b.loadForReport("ARTEX", auth.Job.Input, true, targetRef)
 		if loadErr == nil {
 			defer loaded.clearMaterials()
 			// 만료는 저장 보고서를 지우지 않지만 설치/DB pin 교체를 과거 task에 적용하지 않는다.
@@ -700,3 +747,53 @@ func (b *urlPreparationRuntime) closeReports() error {
 
 var _ diagnosisprep.Backend = (*urlPreparationRuntime)(nil)
 var _ http.Handler = (*urlPreparationRuntime)(nil)
+
+// Execute keeps audit watching active during a normal target drain.
+func watchURLPreparation(hard context.Context, done, auditFailed <-chan struct{}, ticks <-chan time.Time, current func() error, cancel context.CancelFunc, stopTarget context.CancelCauseFunc) {
+	for {
+		select {
+		case <-done:
+			return
+		case <-hard.Done():
+			return
+		case <-auditFailed:
+			cancel()
+			return
+		case <-ticks:
+			if err := current(); err != nil {
+				if errors.Is(err, server.ErrFirstDiagnosisTargetEnded) {
+					stopTarget(err)
+					continue
+				}
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+// A failed read after a soft target stop must preserve an active usage drain.
+func cancelURLStatusFailure(ctx context.Context, cancel context.CancelFunc) {
+	if ctx.Err() == nil {
+		cancel()
+	}
+}
+
+func settleProductWorkflow(ctx context.Context, flow *diagnosisflow.Controller, u diagnosisprep.Update, finish func(*diagnosisprep.Update)) diagnosisprep.Update {
+	finish(&u)
+	if u.ModelUsage != nil && !u.ModelUsage.UsageKnown {
+		u.State = diagnosisprep.Unknown
+		u.ReasonCode = "model_usage_unknown"
+	}
+	if flow != nil {
+		if flow.Failed() && u.State != diagnosisprep.Unknown {
+			u.State = diagnosisprep.Failed
+			u.ReasonCode = "workflow_failed"
+		}
+		if flow.Close(context.WithoutCancel(ctx), workflowTerminal(u.State)) != nil && u.State != diagnosisprep.Unknown {
+			u.State = diagnosisprep.Failed
+			u.ReasonCode = "workflow_projection_failed"
+		}
+	}
+	return u
+}

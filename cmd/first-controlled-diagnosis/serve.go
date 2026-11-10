@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -76,7 +77,7 @@ func startLaunchWithModelBudget(ctx context.Context, c launchConfig, modelBudget
 }
 
 // URL 모드는 설치 단계에서 검증한 DB bytes를 사용하는 opener를 주입한다.
-func startLaunchWithDatabase(ctx context.Context, c launchConfig, modelBudget *server.FirstDiagnosisModelBudget, current func() error, open func(context.Context, string) (*sql.DB, error)) (*launchedDiagnosis, error) {
+func startLaunchWithDatabase(ctx context.Context, c launchConfig, modelBudget *server.FirstDiagnosisModelBudget, current func() error, open func(context.Context, string) (*sql.DB, error), workflow ...*diagnosisflow.Controller) (*launchedDiagnosis, error) {
 	if open == nil || current != nil && current() != nil {
 		return nil, errPreparation
 	}
@@ -119,8 +120,15 @@ func startLaunchWithDatabase(ctx context.Context, c launchConfig, modelBudget *s
 		return fail(err)
 	}
 	if c.Mode == "general_http" {
+		var flow *diagnosisflow.Controller
+		if len(workflow) > 1 {
+			return fail(errPreparation)
+		}
+		if len(workflow) == 1 {
+			flow = workflow[0]
+		}
 		o := c.HTTP
-		httpRuntime, startErr := server.StartFirstDiagnosisHTTP(ctx, manager, server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: o.PolicyFile, AuthorityFile: o.AuthorityFile, AuthorityRoot: o.AuthorityRoot}, SkillDir: c.SkillDir, DataDir: c.DataDir, KeyDir: c.KeyDir, LocalLLMManifestPath: c.LocalLLMManifestPath, ModelExecutionMode: c.ModelExecutionMode, ModelBudget: modelBudget, Hooks: server.FirstDiagnosisHTTPHooks{CheckAuthority: current}, OpenRouterManifestPath: c.OpenRouterManifestPath, Supervisor: d.supervisor, Shutdown: d.supervisor.Shutdown(), CleanupTimeout: time.Duration(c.ShutdownTimeoutSeconds) * time.Second})
+		httpRuntime, startErr := server.StartFirstDiagnosisHTTP(ctx, manager, server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: o.PolicyFile, AuthorityFile: o.AuthorityFile, AuthorityRoot: o.AuthorityRoot}, SkillDir: c.SkillDir, DataDir: c.DataDir, KeyDir: c.KeyDir, LocalLLMManifestPath: c.LocalLLMManifestPath, ModelExecutionMode: c.ModelExecutionMode, ModelBudget: modelBudget, Hooks: server.FirstDiagnosisHTTPHooks{Workflow: flow, CheckAuthority: current}, OpenRouterManifestPath: c.OpenRouterManifestPath, Supervisor: d.supervisor, Shutdown: d.supervisor.Shutdown(), CleanupTimeout: time.Duration(c.ShutdownTimeoutSeconds) * time.Second})
 		err = startErr
 		if httpRuntime != nil {
 			d.runtime = httpRuntime

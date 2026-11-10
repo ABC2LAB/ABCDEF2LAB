@@ -122,7 +122,7 @@ export function UrlScopeList({ scope }: { scope: URLDiagnosisScope }) {
           </span>,
         ],
         ["메서드", scope.methods.join(", ")],
-        ["query · body", `임의 query 허용 · body 최대 ${scope.max_body_bytes} bytes`],
+        ["query · body", `경로 단위 승인 · 임의 query 허용(무해성 미검증) · body 최대 ${scope.max_body_bytes} bytes`],
         ["승인 방식", approvalModeText(scope.approval_mode)],
         [
           "만료",

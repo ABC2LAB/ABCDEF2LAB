@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
@@ -55,6 +56,7 @@ func (FirstDiagnosisHTTPApproval) GoString() string {
 
 // 평가 제어 채널이 필요한 별도 배치만 관찰자를 명시적으로 연결한다.
 type FirstDiagnosisHTTPHooks struct {
+	Workflow         *diagnosisflow.Controller
 	CheckAuthority   func() error
 	RequestApprovals *RequestApprovalService
 	ObserveEvent     func(context.Context, e2proxy.Event) error
@@ -118,7 +120,7 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	if len(hooks) == 1 {
 		hook = hooks[0]
 	}
-	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire})
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire})
 	if err != nil {
 		authority.revoke()
 		_ = authority.close()

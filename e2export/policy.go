@@ -93,7 +93,12 @@ func canonicalPolicy(cfg e2proxy.Config, maxRequests uint64, b PolicyBehavior) (
 		if !utf8.ValidString(r.PathPrefix) {
 			return nil, ErrConfig
 		}
-		rules = append(rules, map[string]any{"origin": map[string]any{"scheme": u.Scheme, "host": host, "port": n}, "path_prefix": r.PathPrefix, "path_match": "clean_segment_prefix_v1", "methods": append([]string{}, r.Methods...), "headers": headers, "credential_header_names": credentials, "credential_handling": string(mode)})
+		rule := map[string]any{"origin": map[string]any{"scheme": u.Scheme, "host": host, "port": n}, "path_prefix": r.PathPrefix, "path_match": "clean_segment_prefix_v1", "methods": append([]string{}, r.Methods...), "headers": headers, "credential_header_names": credentials, "credential_handling": string(mode)}
+		// 승인 공개키 값은 회차별 결속이며, 내용 지문에는 집행 방식만 포함한다.
+		if r.TLSSPKISHA256 != "" {
+			rule["tls_approval_binding"] = "exact_leaf_spki_sha256_v1"
+		}
+		rules = append(rules, rule)
 	}
 	l := cfg.Limits
 	content := map[string]any{

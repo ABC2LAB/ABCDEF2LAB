@@ -10,15 +10,16 @@ Linux Docker Engine 26 이상과 Compose 2.35 이상이 필요하다. UID 1000�
 
 ```json
 {
-  "format": "abc2lab.product-install/v1",
+  "format": "abc2lab.product-install/v2",
   "database_host": "172.31.252.10",
   "database_name": "abc2lab",
   "admin_password": "REPLACE-WITH-A-PRIVATE-ADMIN-PASSWORD",
-  "target_origin": "https://approved-target.example",
-  "target_ip": "192.0.2.20",
-  "path_prefixes": ["/approved-readonly"],
-  "allow_private_target": false,
-  "nonmutating_scope_acknowledged": true,
+  "target_policy": {
+    "format": "abc2lab.product-target-policy/v1",
+    "allowed_ports": [443],
+    "max_requests": 4,
+    "max_targets": 32
+  },
   "valid_for_hours": 24,
   "max_runs": 3,
   "local_model": {
@@ -31,7 +32,9 @@ Linux Docker Engine 26 이상과 Compose 2.35 이상이 필요하다. UID 1000�
 }
 ```
 
-`192.0.2.*`는 문서용 주소다. 실제 연결 가능한 고정 IP를 지정한다. 사설 대상은 `allow_private_target: true`가 필요하다. `nonmutating_scope_acknowledged`는 해당 GET/HEAD 경로가 상태를 바꾸지 않는다는 운영자의 확인이다. 자동 탐색으로 범위를 늘리지 않는다. 대상 origin은 HTTPS이며 사용자 정보·query·fragment를 포함하지 않는다.
+`192.0.2.*`는 문서용 모델 주소다. 실제 승인된 고정 모델 endpoint를 지정한다. OpenRouter만 사용할 때는 `local_model` 대신 아래의 보호된 `openrouter_manifest`를 제공한다.
+
+**설치에는 진단 대상 origin·IP·경로가 없다.** `target_policy`는 엔진이 사용할 보안 환경의 상한이며 대상 승인이 아니다. 기본은 공개 IP·HTTPS 443만 허용한다. 운영자는 별도 검토한 온프레미스 환경에서만 좁은 `private_cidrs`(IPv4 /24 이상·IPv6 /64 이상)와 포트를 설치할 수 있다. UI는 이 보안 환경을 넓힐 수 없다. loopback·link-local·메타데이터·예약 주소는 예외 CIDR로도 허용하지 않는다. 새 진단 URL 등록에는 재설치나 이 JSON 수정이 필요 없다.
 
 ```bash
 export PRODUCT_SOURCE_SHA="$(git rev-parse HEAD)"
@@ -47,17 +50,55 @@ Workbench는 `http://127.0.0.1:8787/`, 사용자명은 `ABC2LAB`, 비밀번호�
 
 `./install.sh`는 같은 환경변수로 구성 검사·제품 소스 build·`up -d --wait`를 실행한다. `./update.sh`는 검토한 소스에서 같은 절차로 기존 설치를 검증·재사용하며 데이터/예산을 초기화하거나 설치 형식을 자동 이관하지 않는다. 비밀번호 복구는 같은 환경변수로 `./reset-password.sh`를 실행해 숨김 입력한다.
 
-설치자는 빈 전용 DB, 최소 권한 역할, 로그인 해시·JWT 키, E② CA·감사 키·helper pin, 대상·모델 정책, 위임·private IPC를 생성한다. 설치와 헬스체크는 모델 completion·대상 HTTP를 호출하지 않는다. 재기동은 기존 installation을 검증하고 재사용한다. API는 `product-state`의 `api` 하위 경로와 private IPC만 읽기 전용으로 마운트한다. 투영에는 API launch·설치 메타데이터·모델 launch·JWT·API 및 model-writer DSN만 있으며 CA 개인키·HMAC 감사 키·runtime DSN·실행 저널은 없다. 기존 설치도 installer 재실행 시 원본을 검증해 투영을 생성하며, 불일치한 기존 투영은 덮어쓰지 않는다. [Compose의 volume.subpath](https://docs.docker.com/reference/compose-file/services/#volumes)를 사용한다. 부분 실패의 `.installing`은 자동 삭제하지 않는다. 사용하지 않은 전용 설치인지 운영자가 확인한 뒤 새 볼륨으로 다시 설치한다.
+설치자는 빈 전용 DB, 최소 권한 역할, 로그인 해시·JWT 키, E② CA·감사 키·helper pin, 대상 보안 상한·모델 정책, 위임·private IPC를 생성한다. 설치와 헬스체크는 모델 completion·대상 HTTP를 호출하지 않는다. 재기동은 기존 installation을 검증하고 재사용한다. API는 `product-state`의 `api` 하위 경로와 private IPC만 읽기 전용으로 마운트한다. 투영에는 API launch·설치 메타데이터·모델 launch·JWT·API 및 model-writer DSN만 있으며 CA 개인키·HMAC 감사 키·runtime DSN·실행 저널은 없다. 기존 설치도 installer 재실행 시 원본을 검증해 투영을 생성하며, 불일치한 기존 투영은 덮어쓰지 않는다. [Compose의 volume.subpath](https://docs.docker.com/reference/compose-file/services/#volumes)를 사용한다. 부분 실패의 `.installing`은 자동 삭제하지 않는다. 사용하지 않은 전용 설치인지 운영자가 확인한 뒤 새 볼륨으로 다시 설치한다.
 
 ## 사용 흐름과 외부 LLM
 
-**새 점검 → URL 입력 → 외부 LLM 사용하기(선택) → 모델명·API 키 → 모델 연결 설정 저장 → 승인 범위 확인 → 명시적 동의 → 진단 시작.** 로컬 승인 프로필이 하나면 기본 선택한다. 키 저장과 범위 확인만으로 진단을 실행하지 않는다.
+**새 점검 → URL 입력 → 외부 LLM 사용하기 → 승인 모델 선택·API 키 등록/재사용 → 대상 권한·범위 등록 및 소유 확인 → 서버 승인 범위·비용 확인 → 명시적 동의 → 진단 시작.** 로컬 승인 프로필이 하나면 기본 선택한다. 키 저장과 범위 확인만으로 진단을 실행하지 않는다.
 
 OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON 형식](../../docs/openrouter-first-diagnosis.md)을 추가한다. `local_model`은 생략할 수 있다. 현재 모델은 `qwen/qwen3.5-35b-a3b`, endpoint는 `https://openrouter.ai/api/v1`로 고정된다. installer가 profile ID를 생성된 DB ID에 바인딩한다. provider slug/응답 이름, privacy/ZDR, 계정 spend cap, 요청·토큰·실제 USD 상한, 가격 상한, 만료·승인 ID를 운영자가 확인한다. 키 입력으로 이 설정을 바꿀 수 없다.
 
-키는 인증된 `POST /api/product/model-credentials`에서 설치된 프로필의 `api_key` 열만 갱신한다. 별도 writer 역할에는 키 읽기·모델·endpoint·예산 변경 권한이 없다. 비제어 password 입력은 전송 즉시 비우며 React 상태·URL·진단 초안·local/session storage·보고서에 키를 넣지 않는다. 시작 시 외부 전송·비용 동의는 별도로 필요하다. 키 변경·응답 유실·사용량 불명은 기존 fail-closed 계약을 따른다.
+키는 인증된 `POST /api/product/model-credentials`에서 설치된 프로필의 `api_key` 열만 갱신한다. 별도 writer 역할에는 키 읽기·모델·endpoint·예산 변경 권한이 없다. 비제어 password 입력은 전송 즉시 비우며 React 상태·URL·진단 초안·local/session storage·보고서에 키를 넣지 않는다. 시작 시 외부 전송·비용 동의는 별도로 필요하다. 키 변경·응답 유실·사용량 불명은 기존 fail-closed 계약을 따른다. 다음 진단은 인증된 GET에서 `configured`와 승인 모델 ID만 읽어 키를 재사용한다. API 키 값은 브라우저로 반환하지 않는다. 연결 실패 시 합성 모델이나 일반 ARTEX 엔진으로 자동 전환하지 않는다.
 
 유료 승인은 단회다. 한도·만료·누적 예산 소진 후에는 기존 운영자 재승인이 필요하다. marker·journal 삭제로 재승인하지 않는다. 사용자 모델 입력은 설치된 승인 모델에 한정된다.
+
+## 탐색·선택 워크플로 설치
+
+새 설치에서만 `target_policy.max_requests`와 선택적인 `target_policy.workflow`를 함께 지정한다. 아래 설정은 회차 HTTP 상한 64, 초기 탐색 최대 8페이지, 발견 최대 32개다.
+
+```json
+{
+  "max_requests": 64,
+  "workflow": {
+    "format": "abc2lab.workbench-flow/v1",
+    "max_pages": 8,
+    "max_endpoints": 32,
+    "max_response_bytes": 2097152,
+    "allow_reversible_writes": true
+  }
+}
+```
+
+Workbench에서 AI 자동 또는 사용자 승인 모드를 고른다. 두 모드 모두 보호 Worker의 E② Bash 경로로 초기 정적 탐색을 수행한다. 사용자 승인 모드는 저장된 발견 중 선택한 메서드·경로만 심화 검사하며, 설치 상한과 대상 등록에서 별도로 동의한 복구 가능한 상태 변경만 요청별 확인으로 보낸다. 자동 모드는 GET/HEAD 읽기 범위만 사용한다. GET 폼은 별도 확인 대상이며, 정적 문자열에서 HTTP 메서드를 확인하지 못하면 `UNKNOWN`으로 남겨 자동 방문·선택하지 않는다. 동적 SPA 전체 탐색과 대상 로그인 A/B 연결은 지원하지 않는다.
+
+상태 변경 본문은 최대 64KiB다. 개별 확인 기한은 도구·회차 기한과 proxy 1분 상한 중 빠른 값이며 화면에 실제 만료를 표시한다. 일시정지로 기한이나 예산을 연장하지 않는다. 초기 탐색·선택·명령 영수증은 PostgreSQL에 저장한다. 결과 불명 뒤 자동 재전송·예약 환불·재실행은 하지 않는다. 새 입력별 파생 설정은 최대 512개까지 보존하며 자동 삭제하지 않는다.
+
+이 설정은 기존 유료 모델의 요청·토큰·USD 승인 한도를 늘리지 않는다. 새 워크플로는 충분한 모델 예산을 운영자가 사전 승인한 환경에서 사용한다. 기존 설치의 보호 파일을 편집하거나 자동 이관하지 않는다. 자세한 API·정책 제안은 [워크플로 계약](../../docs/contracts/workbench-engine-workflow.md)을 참조한다.
+
+## 새 대상 등록·승인
+
+1. Workbench에서 HTTPS URL, 명시적인 읽기 전용 경로, 운영자의 진단 권한과 해당 GET/HEAD의 비변경 승인 근거를 입력한다. 요청 상한은 기본 회차당 4회, 승인 유효 기간은 4시간이다. GET/HEAD라는 이유만으로 안전하다고 승인하지 않는다.
+2. **대상 등록·소유 확인 준비**는 pending 기록과 임의 DNS TXT challenge만 만든다. 실행 권한은 발행하지 않는다. 현재 단일 관리자(`ABC2LAB`, 내부 subject `ARTEX`)만 등록·승인할 수 있다.
+3. 표시된 `_abc2lab-challenge.<호스트>` 이름·값을 대상 DNS 운영 화면에 등록하고 **소유 확인 후 대상 승인**을 누른다. 서버가 TXT 소유 증명, 모든 DNS 주소, 설치 상한, 포트, 검증된 TLS 인증서와 leaf SPKI를 확인한다. 이 확인은 TLS handshake이며 대상 HTTP 진단을 실행하지 않는다. IP literal 대상은 초기 범위에서 지원하지 않는다.
+4. 서버의 범위 확인 화면에서 경로·메서드·요청/모델/토큰/USD 예산과 외부 전송을 검토하고 명시적으로 시작한다. 범위 확인과 재조회는 DNS·대상 HTTP·모델을 호출하지 않는다. **시작 직전** 소유 증명·DNS 주소 집합·TLS 공개키·만료·철회를 재검증한 뒤 개량 Planner/Worker를 실행한다.
+
+대상 승인 권한 모델은 #353에서 분리한 [후속 제안](../../docs/contracts/product-target-approval-proposal.md)이며 팀 합의 전이다. 승인 시 정상 TLS 1회(후보 주소 실패 시 최대 8회), 시작 직전 선택 IP에 TLS 1회를 수행한다. 각 접촉의 시도·결과는 `state/targets/tls-contacts` 보호 저널에 기록하고 기록 실패 시 차단한다. 대상 HTTP 0과 무접촉을 혼용하지 않는다.
+
+승인은 보호된 `state/targets` journal에 영속화된다. 매 회차는 독립 target/scope 참조와 정확한 origin/IP/port/path/method/TLS pin을 갖는다. DNS 주소 집합이 바뀌면 새 진단은 시작되지 않으며, 실제 연결도 승인 IP로만 전송하고 TLS pin을 다시 검사한다. 리다이렉트는 자동 추적하지 않는다. 다른 등록 대상의 승인을 빌려 쓰지 않는다.
+
+승인 철회는 해당 대상의 신규 실행을 막고 진행 중인 해당 대상의 context만 취소한다. 회차별 마감·불명 처리는 기존 계약을 따른다. 저장 보고서는 당시 target 참조의 승인 기록을 사용하므로 새 URL 등록이나 철회로 다른 회차의 범위를 바꾸지 않는다. 만료·DNS/TLS 변경 후에는 새 승인이 필요하다. 초기 등록 수 상한은 설치당 32개이며 기록 삭제·재설정으로 권한을 복구하지 않는다.
+
+설치 v2는 새 제품 설치 형식이다. 기존 v1 고정 대상 설치의 저장 보고서/독립 CLI 계약은 유지하지만 자동 변환하지 않는다. v1→v2 데이터 이관은 운영자 검토가 필요한 별도 작업이다.
 
 ## 실행 경계와 영속 상태
 
@@ -86,7 +127,7 @@ workbench에는 DB·키·제품 상태 볼륨이 없다. api는 상태 볼륨을
 |---|---|
 | 로그인 | `/api/auth/status`, `/api/auth/login` |
 | 대시보드 | URL v2 catalog·현재 receipt/status. 전체 이력 미제공 안내 |
-| 새 점검 | `/api/diagnoses/v2/catalog`, `.../drafts`, `/api/product/model-credentials` |
+| 새 점검 | `/api/diagnoses/v2/catalog`, `.../drafts`, `/api/product/targets`, `/api/product/model-credentials` |
 | 자산 탐색 | 현재 진단의 서버 승인 scope. 별도 인벤토리·자동 크롤링 미지원 안내 |
 | 범위 확인 | URL v2 validate·scope·budget·명시적 start |
 | 점검 진행 | URL v2 status/receipt·stop, 실제 task request-approvals |
@@ -98,13 +139,34 @@ workbench에는 DB·키·제품 상태 볼륨이 없다. api는 상태 볼륨을
 
 `compose.acceptance.yaml`은 시험 overlay다. Juice Shop **v15.0.0**(digest `fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d`), HTTPS front, 합성 OpenAI 호환 모델만 추가한다. 제품의 개량 엔진·URL v2·E②·DB·보고서는 실제 경로다.
 
-전용 설치에서만 `fixture_tls: true`, target origin `https://juice.test:9443`, IP `172.31.253.20`, path `/rest/products`, local model `http://172.31.252.30:8080/v1`, addresses `["172.31.252.30"]`를 지정한다. 내부망 CIDR이 호스트 네트워크와 충돌하면 운영자가 Compose와 설치 주소를 함께 조정한다.
+수용 설치 v2는 대상 origin/IP/path 없이 `target_policy.private_cidrs: ["172.31.253.0/24"]`, `allowed_ports: [9443]`, 시험 resolver `172.31.252.40:5353`, `upstream_ca_file: "/target-tls/ca.pem"`와 로컬 모델 `http://172.31.252.30:8080/v1`만 준비한다. fixture-init은 소유 시험 CA·두 HTTPS front 인증서·DNS 제어 토큰을 전용 볼륨에 생성한다. 제품 installer는 시험 인증서나 대상 승인을 만들지 않는다.
+
+Workbench에서 `https://juice-a.test:9443/rest/products`, `https://juice-b.test:9443/rest/products`를 각각 등록한다. 보호된 DNS 제어 토큰으로 시험 DNS에 challenge를 게시한 뒤 UI 승인·별도 진단을 진행한다. 각 Worker는 허용 상품 경로를 읽고, 다른 승인 대상에 대한 송신이 거부되는지 시도한다. 기존 `juice.test` 단일 대상 fixture/응답 유실·저장 보고서 시험 경로도 유지한다. 내부망 CIDR이 호스트와 충돌하면 운영자가 시험 overlay의 주소를 함께 조정한다.
 
 ```bash
 docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml build
 docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml up -d --wait
 ```
 
-모델 통계는 loopback 49082 `/stats`, 대상 통계는 49081 `/stats`다. 대상 readiness는 TCP만 확인한다. `scripts/product-diagnosis-browser.cjs`는 별도 Chrome CDP와 보호된 합성 설치 입력을 사용해 실제 root Workbench를 조작한다. 시작 응답 유실 시험은 실제 서버가 수락한 응답만 버린다. 모델·진단 응답을 브라우저에서 위조하지 않는다. 실모델 수용은 실제 USD 승인과 운영 키가 별도로 준비된 뒤 수행한다.
+모델 통계는 loopback 49082 `/stats`, 대상 A/B 통계는 각각 49081/49084 `/stats`, 소유 DNS 제어는 49083 `/control`이다. DNS 제어 토큰은 시험 전용 보호 파일에서만 읽는다. 대상 readiness는 TCP만 확인한다. `scripts/product-diagnosis-browser.cjs`는 별도 Chrome CDP와 보호된 합성 설치 입력을 사용해 실제 root Workbench를 조작한다. 시작 응답 유실 시험은 실제 서버가 수락한 응답만 버린다. 모델·진단 응답을 브라우저에서 위조하지 않는다. 실모델 수용은 실제 USD 승인과 운영 키가 별도로 준비된 뒤 수행한다.
+
+두 URL의 실제 승인·격리·키 재사용·보고서 및 미실행 Qwen 구분은 [제품 v2 수용 기록](../../docs/product-targets-v2-acceptance.md)을 따른다.
+
+### 탐색·선택·요청 승인 종단 시험
+
+선택적인 workflow를 켠 제품은 [워크플로 계약](../../docs/contracts/workbench-engine-workflow.md)과 [실측 수용 기록](../../docs/workbench-workflow-acceptance.md)을 따른다. 위 화면 API 표는 workflow 미설치 경로다. 설치한 경우 자산 탐색·선택·요청 승인·보고서를 실제 workflow API에 연결한다.
+
+소유 일회용 환경에서 `compose.workflow-acceptance.yaml`을 세 번째 overlay로 추가하면 모델은 `workflow-model`, A/B front는 `workflow-target` 역할을 사용한다. `/workflow`는 시험용 HTML 탐색 페이지이고 실제 상품·버전·계정 생성은 뒤의 Juice Shop에 전달한다. 모델 id는 설치 JSON에 `owned-synthetic-workflow`로 명시한다. 유료 모델 수용에 사용하지 않는다.
+
+```bash
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml -f deploy/product/compose.workflow-acceptance.yaml build
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml -f deploy/product/compose.workflow-acceptance.yaml up -d --no-build --wait
+```
+
+브라우저 시험의 기본 포트는 제품18887, A/B 통계49481/49484, 모델49482, DNS제어49483, 별도 소유 Chrome CDP49439다. Compose의 `PRODUCT_PORT`, `PRODUCT_TARGET_STATS_PORT`, `PRODUCT_TARGET_B_STATS_PORT`, `PRODUCT_MODEL_STATS_PORT`, `PRODUCT_DNS_CONTROL_PORT`를 이에 맞춘다. 호스트의 다른 내부망과 충돌하면 기존 시험 안내대로 네트워크 주소와 설치 JSON의 CIDR/resolver/model 주소를 함께 바꾼다.
+
+fixture-init이 만든 새 `/target-tls/control-token`을 stdout에 노출하지 않고 mode0600의 전용 파일로 복사한다. `scripts/workbench-workflow-browser.cjs <manual|auto|stop|recover|design> <private-install.json> <private-dns-token> <output-dir>` 순서로 실제 브라우저를 조작한다. Chrome CDP와 스크립트는 같은 loopback 환경에서 연결해야 한다. 이번 기록은 Windows Chrome157·Node22를 사용했다. 상태·실행 결과를 브라우저 내부 store에 주입하지 않는다.
+
+동일 이미지·볼륨 재시작은 `stop workbench api preparation postgres` 뒤 같은 Compose의 `up -d --no-build --wait postgres preparation api workbench`로 확인한다. 설치 당시와 helper 지문이 다른 이미지는 기존 pin 검사에서 거절된다. 보호 파일을 고치거나 unknown 저널·예산 예약을 지워 이미지 변경을 우회하지 않는다. 이미지 교체·설치 세대 마이그레이션은 별도 검토가 필요하다.
 
 비밀번호 재설정은 실행 중인 Workbench의 `product-password-hash`가 stdin으로 받은 비밀번호를 Go bcrypt로 해시하고 PostgreSQL에는 해시만 전달한다. `pgcrypto` 확장이나 스키마를 추가하지 않는다. 새 비밀번호는 12~72 bytes이며 명령행·컨테이너 환경변수·파일에 원문을 넣지 않는다. 공통 Compose 진입점은 설치 입력의 실제 경로가 저장소 밖이고 파일 권한이 0600인지 확인한 뒤 Docker를 호출한다.

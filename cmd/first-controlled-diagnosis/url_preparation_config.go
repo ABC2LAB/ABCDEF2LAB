@@ -47,6 +47,7 @@ type urlNonmutatingAttestation struct {
 	MaxBodyBytes int64    `json:"max_body_bytes"`
 }
 type urlPreparationProfile struct {
+	WorkflowMode        string                    `json:"workflow_mode,omitempty"`
 	ID                  string                    `json:"id"`
 	Label               string                    `json:"label"`
 	Principal           string                    `json:"principal"`
@@ -65,7 +66,7 @@ type urlPreparationProfile struct {
 	PolicySHA256        string                    `json:"policy_sha256"`
 	ManifestSHA256      string                    `json:"manifest_sha256"`
 	AllowPrivateTarget  bool                      `json:"allow_private_target"`
-	Attestation         urlNonmutatingAttestation `json:"attestation"`
+	Attestation         urlNonmutatingAttestation `json:"attestation,omitzero"`
 	ModelLimitsRef      string                    `json:"model_limits_ref"`
 	InputTokensPerCall  int64                     `json:"input_tokens_per_call"`
 	OutputTokensPerCall int64                     `json:"output_tokens_per_call"`
@@ -79,7 +80,8 @@ type urlPreparationInstallation struct {
 	ReportListenAddr   string                  `json:"report_listen_addr"`
 	APILaunch          urlProtectedPin         `json:"api_launch"`
 	ProtectedEndpoints []urlProtectedEndpoint  `json:"protected_endpoints"`
-	Profiles           []urlPreparationProfile `json:"profiles"`
+	Profiles           []urlPreparationProfile `json:"profiles,omitempty"`
+	Product            *urlProductInstallation `json:"product,omitempty"`
 }
 type urlInputPin struct {
 	path, digest string
@@ -89,16 +91,18 @@ type urlInputPin struct {
 	executable   bool
 }
 type urlLoadedProfile struct {
-	profile       urlPreparationProfile
-	launch        launchConfig
-	policy        server.E2HTTPFilePolicy
-	origin        string
-	address       netip.Addr
-	pins          []urlInputPin
-	materials     map[string][]byte
-	inspection    diagnosisprep.Inspection
-	heldCheck     func() error
-	releaseInputs func()
+	profile         urlPreparationProfile
+	launch          launchConfig
+	policy          server.E2HTTPFilePolicy
+	origin          string
+	address         netip.Addr
+	pins            []urlInputPin
+	materials       map[string][]byte
+	inspection      diagnosisprep.Inspection
+	heldCheck       func() error
+	releaseInputs   func()
+	productTarget   *productTargetRecord
+	productRegistry *productTargetRegistry
 }
 
 func (*urlLoadedProfile) String() string { return "urlLoadedProfile[protected]" }
@@ -160,7 +164,7 @@ func readURLInstallation(path string) (urlPreparationInstallation, urlInputPin, 
 	raw, pin, err := urlReadPin(path, 256<<10, false)
 	defer clear(raw)
 	if err != nil || decodeLaunchJSON(raw, &c) != nil || c.Format != urlPreparationFormat || urlOperatorUID() != c.OperatorUID ||
-		c.OperatorUID == 0 || len(c.Profiles) < 1 || len(c.Profiles) > 64 || len(c.ProtectedEndpoints) < 1 || len(c.ProtectedEndpoints) > 64 {
+		c.OperatorUID == 0 || (c.Product == nil && len(c.Profiles) < 1) || len(c.Profiles) > 64 || len(c.ProtectedEndpoints) < 1 || len(c.ProtectedEndpoints) > 64 {
 		return c, pin, errPreparation
 	}
 	for _, p := range []string{c.StateDir, c.RunsDir, filepath.Dir(c.SocketPath)} {
@@ -258,7 +262,7 @@ func urlTargetIPAllowed(ip netip.Addr, private bool) bool {
 		return private
 	}
 	// 관리·메타데이터·전환용 특수 주소는 private 예외에도 포함하지 않는다.
-	for _, prefix := range []string{"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3", "::/96", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/23", "2001:db8::/32", "2002::/16"} {
+	for _, prefix := range []string{"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3", "::/96", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/23", "2001:db8::/32", "2002::/16", "fec0::/10", "::ffff:0:0:0/96", "192.88.99.0/24", "5f00::/16", "3fff::/20"} {
 		if netip.MustParsePrefix(prefix).Contains(ip) {
 			return false
 		}
@@ -348,7 +352,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 	if policy.Format != server.E2HTTPFilePolicyFormat || policy.Evaluation != nil || len(policy.Rules) < 1 || len(policy.Rules) > 64 ||
 		policy.HeaderMode != e2proxy.HeaderPreserve || policy.OwnerRef != "ARTEX" || policy.MaxRequests != uint64(p.Budget.Requests) ||
 		policy.Limits.MaxBodyBytes != p.Attestation.MaxBodyBytes || policy.Limits.MaxConcurrent != 1 ||
-		(policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope && policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest) ||
+		(policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope && policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest && !(p.WorkflowMode != "" && policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1)) ||
 		policy.ValidFrom.After(p.ValidFrom) || policy.ValidUntil.Before(p.ValidUntil) {
 		return nil, errPreparation
 	}
@@ -372,7 +376,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 		}
 		paths = append(paths, rule.PathPrefix)
 		for _, method := range rule.Methods {
-			if method != "GET" && method != "HEAD" {
+			if method != "GET" && method != "HEAD" && !(p.WorkflowMode != "" && (method == "POST" || method == "PUT" || method == "PATCH")) {
 				return nil, errPreparation
 			}
 			if !seenMethods[method] {
@@ -438,7 +442,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 				ProfileID int64    `json:"profile_id"`
 				BaseURL   string   `json:"base_url"`
 				Addresses []string `json:"addresses"`
-			} `json:"profiles"`
+			} `json:"profiles,omitempty"`
 		}
 		if json.Unmarshal(manifest, &modelDoc) != nil {
 			return nil, errPreparation
@@ -565,20 +569,31 @@ func (l *urlLoadedProfile) clearMaterials() {
 }
 func (l *urlLoadedProfile) current() error {
 	now := time.Now()
-	if now.Before(l.profile.ValidFrom) || !now.Before(l.profile.ValidUntil) {
+	targetExpiry := l.productTarget != nil && !l.profile.ValidUntil.Before(l.productTarget.Target.ExpiresAt)
+	if now.Before(l.profile.ValidFrom) || !now.Before(l.profile.ValidUntil) && !targetExpiry {
 		return errPreparation
 	}
 	if l.heldCheck != nil {
-		return l.heldCheck()
-	}
-	for _, pin := range l.pins {
-		if pin.check() != nil {
+		if l.heldCheck() != nil {
 			return errPreparation
 		}
+	} else {
+		for _, pin := range l.pins {
+			if pin.check() != nil {
+				return errPreparation
+			}
+		}
+	}
+	if l.productTarget != nil {
+		return l.productRegistry.current(*l.productTarget)
 	}
 	return nil
 }
+
 func (l *urlLoadedProfile) dnsCheck(ctx context.Context, resolver *net.Resolver) error {
+	if l.productTarget != nil {
+		return l.productRegistry.recheck(ctx, *l.productTarget)
+	}
 	u, _ := url.Parse(l.origin)
 	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
 		if ip != l.address {
