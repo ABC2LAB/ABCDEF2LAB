@@ -266,7 +266,7 @@ func TestE2StandaloneActualRunnerAllowDenyAndExport(t *testing.T) {
 	if err != nil || !bytes.Contains(journal, []byte(reset)) || bytes.Contains(journal, []byte("fixture-reset")) {
 		t.Fatal("journal reset binding")
 	}
-	manifest, err := os.ReadFile(filepath.Join(b.options.Config.EvidenceDir, "manifest.json"))
+	manifest, err := os.ReadFile(filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, "manifest.json"))
 	if err != nil || !bytes.Contains(manifest, []byte(reset)) {
 		t.Fatal("manifest reset binding")
 	}
@@ -285,7 +285,7 @@ func TestE2StandaloneActualRunnerAllowDenyAndExport(t *testing.T) {
 	if !matched {
 		t.Fatal("trusted attempt missing from journal")
 	}
-	verify := exec.CommandContext(t.Context(), filepath.Join(runtime.GOROOT(), "bin", "go"), "run", "-p=2", "../cmd/e2-audit-verify", "--journal-format", "e2-http-v1", "--journal", filepath.Join(b.options.Config.EvidenceDir, e2export.JournalFile), "--checkpoint", filepath.Join(b.options.Config.EvidenceDir, e2export.CheckpointFile), "--key-file", b.options.Config.AuditKeyPath)
+	verify := exec.CommandContext(t.Context(), filepath.Join(runtime.GOROOT(), "bin", "go"), "run", "-p=2", "../cmd/e2-audit-verify", "--journal-format", "e2-http-v1", "--journal", filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, e2export.JournalFile), "--checkpoint", filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, e2export.CheckpointFile), "--key-file", b.options.Config.AuditKeyPath)
 	verify.Env = append(os.Environ(), "GOMAXPROCS=2", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
 	if out, err := verify.CombinedOutput(); err != nil {
 		t.Fatalf("actual audit verifier failed: %s", out)
@@ -607,7 +607,7 @@ func TestE2StandaloneFailedStopHasAbortCleanup(t *testing.T) {
 	if !released || !b.disposed || err == nil {
 		t.Fatal("abort did not clean and retain failure")
 	}
-	if _, err := os.Stat(filepath.Join(b.options.Config.EvidenceDir, e2export.ManifestFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, e2export.ManifestFile)); !os.IsNotExist(err) {
 		t.Fatal("abort published manifest")
 	}
 }
@@ -820,7 +820,7 @@ func TestE2StandaloneObservationFailureLatchesAndPreventsPublish(t *testing.T) {
 	if err != nil || final.State != "incomplete" {
 		t.Fatal("failed observer produced completion")
 	}
-	if _, err := os.Stat(filepath.Join(b.options.Config.EvidenceDir, e2export.ManifestFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, e2export.ManifestFile)); !os.IsNotExist(err) {
 		t.Fatal("failed observer invoked publication")
 	}
 	// 정상 Publisher는 아직 Publish를 시도하지 않았다. Finalize가 실패 latch를 존중했으면

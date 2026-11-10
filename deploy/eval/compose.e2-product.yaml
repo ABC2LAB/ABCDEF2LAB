@@ -3,8 +3,9 @@
 #   엔진 ─(engine_net)─▶ eval-e2 ─(e2_net)─▶ eval-meter ─(target_net)─▶ target
 # 망 배치는 가짜 E²(compose.e2-stub.yaml)와 같다. 엔진은 계측기 이름(http://eval-meter:<포트>)으로 보내고
 # 그 이름을 engine_net에서는 eval-e2가 받으며, 실제 계측기는 e2_net의 eval-meter-upstream이다.
-# 이미지는 deploy/eval/e2.Dockerfile, 진입점은 cmd/e2-eval-service다. 지금은 제어 채널만 열고 실행은 전부 거절한다.
-# 준비 디렉터리는 읽기 전용이고 러너 서명 키·Docker 소켓은 주지 않는다. 엔진에는 이 셋 다 mount하지 않는다.
+# 이미지는 deploy/eval/e2.Dockerfile, 진입점은 cmd/e2-eval-service다. Bash는 eval-e2의 샌드박스에서 돌고
+# 엔진은 회차별 토큰으로 인증해 실행을 맡긴다. 그래서 샌드박스가 쓰는 namespace만 여는 seccomp 프로필이 필요하다.
+# 준비 디렉터리는 읽기 전용이고 러너 서명 키·Docker 소켓은 주지 않는다. 엔진에는 토큰 디렉터리만 mount한다.
 
 services:
   eval-e2:
@@ -14,19 +15,37 @@ services:
       - -config=/run/e2-config/e2-config.json
       - -io-timeout=${EVAL_E2_IO_TIMEOUT_SECONDS:?}s
       - -close-timeout=${EVAL_E2_CLOSE_TIMEOUT_SECONDS:?}s
+      - -engine-token-file=/run/e2-engine/engine-token
     volumes:
       - ${EVAL_E2_CONFIG_DIR:?}:/run/e2-config:ro
       - ${EVAL_E2_EVIDENCE_DIR:?}:/evidence
       - ${EVAL_E2_CONTROL_DIR:?}:/run/e2-control
       - ${EVAL_E2_STATE_DIR:?}:/run/e2-state
+      - ${EVAL_E2_ENGINE_AUTH_DIR:?}:/run/e2-engine:ro
     read_only: true
+    # 샌드박스가 호출마다 임시 루트를 여기에 만든다. 도구 쪽에서는 보이지 않는다.
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777
     cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=${EVAL_E2_SECCOMP_PROFILE:?}
     depends_on: [eval-meter]
     networks:
       engine_net:
         aliases: [eval-meter]
       e2_net: {}
+
+  # 엔진은 대상으로 직접 보내지 않고 eval-e2에 실행을 맡긴다.
+  engine:
+    depends_on:
+      eval-e2:
+        condition: service_started
+    environment:
+      ARTEX_E2_REMOTE_URL: http://eval-e2:${EVAL_METER_PORT:?}
+      ARTEX_E2_REMOTE_TOKEN_FILE: /run/e2-engine/engine-token
+    volumes:
+      - ${EVAL_E2_ENGINE_AUTH_DIR:?}:/run/e2-engine:ro
 
   eval-meter:
     networks: !override

@@ -48,6 +48,19 @@ var (
 	ErrE2HTTPNotExecuted   = errors.New("e2_http_not_executed")
 )
 
+// E2HTTPScope는 Worker가 읽는 실행 상태의 경계다. 같은 프로세스의 실행이든 원격 E²든 구현할 수 있다.
+type E2HTTPScope interface {
+	SnapshotForIntent(intentID int64) e2proxy.ExecutionView
+	HasIntent(intentID int64) bool
+	RedactOutput(data []byte) []byte
+}
+
+// E2HTTPRunner는 Worker가 명령을 맡기는 경계다.
+type E2HTTPRunner interface {
+	E2HTTPScope
+	RunForIntent(ctx context.Context, intentID int64, command string) (e2runner.Result, error)
+}
+
 // E2HTTPExecution is installed by the trusted engine, never decoded from model
 // input. The numeric worker IDs and opaque proxy scope are checked separately;
 // one is not guessed from the other or accepted merely for matching a format.
@@ -55,7 +68,7 @@ var (
 type E2HTTPExecution struct {
 	ObservePrompt func(context.Context, string, []byte) error
 	ObserveResult func(context.Context, e2runner.Result) error
-	Runner        *e2runner.Runner
+	Runner        E2HTTPRunner
 	Control       *E2HTTPControl
 	TaskID        int64
 	IntentID      int64
@@ -100,10 +113,7 @@ func validateE2HTTPExecution(ctx context.Context, b E2HTTPExecution, taskID int6
 	if _, mixed := controlledReadExecutionFrom(ctx); mixed {
 		return ErrE2HTTPBinding
 	}
-	execution := b.Runner.Execution()
-	if execution == nil {
-		return ErrE2HTTPBinding
-	}
+	execution := b.Runner
 	snapshot := execution.SnapshotForIntent(b.IntentID)
 	if snapshot.Version != e2proxy.Version || snapshot.Scope.TaskRef != b.TaskRef ||
 		snapshot.Scope.RunRef != b.RunRef || !execution.HasIntent(b.IntentID) {
@@ -188,7 +198,7 @@ func e2HTTPPolicyClassification(result e2runner.Result) string {
 
 // The injectable run function is private and used by deterministic adapter
 // tests. The production entry always supplies its concrete trusted Runner.Run.
-func newE2HTTPBashTool(execution *e2proxy.Execution, run e2HTTPRunFunc, hostTimeout time.Duration, state *e2HTTPToolState, control *E2HTTPControl, intentPayload json.RawMessage, actualIntentID int64) actool.CoreTool {
+func newE2HTTPBashTool(execution E2HTTPScope, run e2HTTPRunFunc, hostTimeout time.Duration, state *e2HTTPToolState, control *E2HTTPControl, intentPayload json.RawMessage, actualIntentID int64) actool.CoreTool {
 	originalBash := actool.NewBash()
 	return actool.Build(actool.Spec{
 		Name:        "Bash",
@@ -370,7 +380,7 @@ func e2HTTPPlannerTools(base []actool.CoreTool) []actool.CoreTool {
 	return out
 }
 
-func e2HTTPWorkerGraphTools(base []actool.CoreTool, execution *e2proxy.Execution, intentID int64) []actool.CoreTool {
+func e2HTTPWorkerGraphTools(base []actool.CoreTool, execution E2HTTPScope, intentID int64) []actool.CoreTool {
 	allowed := map[string]bool{
 		"graph_overview": true, "list_facts": true, "node_detail": true,
 		"get_worker_output": true, "list_goals": true, "record_fact": true,
@@ -388,7 +398,7 @@ func e2HTTPWorkerGraphTools(base []actool.CoreTool, execution *e2proxy.Execution
 
 type e2HTTPGraphTool struct {
 	actool.CoreTool
-	execution *e2proxy.Execution
+	execution E2HTTPScope
 	intentID  int64
 }
 
@@ -429,7 +439,7 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 	if err := validateE2HTTPExecution(ctx, binding, taskID, intent); err != nil {
 		return harness.ReasonModelError, WriteCounts{}, err
 	}
-	execution := binding.Runner.Execution()
+	execution := binding.Runner
 	turns := binding.MaxTurns
 	if w.maxTurns > 0 && w.maxTurns < turns {
 		turns = w.maxTurns
@@ -508,7 +518,7 @@ func emitE2HTTPPromptActivity(emit func(db.Activity), reportStage func(string), 
 	emit(db.Activity{Kind: "e2_prompt", Tool: "E2HTTP", NodeID: &intentID, Worker: worker, Summary: "E② 워커 프롬프트 적용", Detail: string(body)})
 }
 
-func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.Node, emit func(db.Activity), opts agentcore.Options, input string, execution *e2proxy.Execution, state *e2HTTPToolState, toolset *ToolSet) (harness.TerminalReason, WriteCounts, error) {
+func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.Node, emit func(db.Activity), opts agentcore.Options, input string, execution E2HTTPScope, state *e2HTTPToolState, toolset *ToolSet) (harness.TerminalReason, WriteCounts, error) {
 	session := agentcore.NewSession(opts)
 	defer session.Close()
 	_, reason, runErr := captureRunSession(ctx, session, input, func(activity db.Activity) {
