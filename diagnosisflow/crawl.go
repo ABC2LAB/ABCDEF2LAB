@@ -8,12 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 )
-
-var apiLiteral = regexp.MustCompile("[\"'`](/(?:api|rest)/[^\"'`\\s<>]{1,160})[\"'`]")
-var methodLiteral = regexp.MustCompile("(?i)\\.(get|post|put|patch|delete)\\(\\s*[\"'`]([^\"'`\\s<>]{1,180})[\"'`]")
 
 func (c *Controller) resolve(raw, from string) (string, bool) {
 	if len(raw) > 2048 || strings.ContainsAny(raw, "\r\n\\") {
@@ -72,6 +68,10 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 				if attrs["src"] != "" {
 					add("GET", attrs["src"], "script", "html_script")
 				}
+			case "link":
+				if rel := strings.ToLower(attrs["rel"]); rel == "modulepreload" || rel == "preload" && strings.EqualFold(attrs["as"], "script") {
+					add("GET", attrs["href"], "script", "html_script")
+				}
 			case "form":
 				method := strings.ToUpper(attrs["method"])
 				if method == "" {
@@ -86,17 +86,8 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 		}
 	}
 	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") || strings.Contains(contentType, "html") {
-		explicit := map[string]bool{}
-		for _, match := range methodLiteral.FindAllSubmatch(scriptBody, 128) {
-			method, raw := strings.ToUpper(string(match[1])), string(match[2])
-			explicit[raw] = true
-			add(method, raw, "api", "script_call")
-		}
-		for _, match := range apiLiteral.FindAllSubmatch(scriptBody, 128) {
-			raw := string(match[1])
-			if !explicit[raw] {
-				add("UNKNOWN", raw, "api", "static_literal")
-			}
+		for _, ref := range bundleRefs(scriptBody) {
+			add(ref.method, ref.path, ref.kind, ref.source)
 		}
 	}
 }
@@ -146,12 +137,16 @@ func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, fail
 			continue
 		}
 		path := ""
+		bestID, bestRank := "", 0
 		for _, e := range c.record.Snapshot.Endpoints {
 			if e.Method == "GET" && e.InScope && e.Change == "attested_read" && !e.Visited && !attempted[e.ID] {
-				path = e.Path
-				attempted[e.ID] = true
-				break
+				if rank := crawlRank(e); bestID == "" || rank < bestRank {
+					path, bestID, bestRank = e.Path, e.ID, rank
+				}
 			}
+		}
+		if bestID != "" {
+			attempted[bestID] = true
 		}
 		if path == "" {
 			c.mu.Unlock()
