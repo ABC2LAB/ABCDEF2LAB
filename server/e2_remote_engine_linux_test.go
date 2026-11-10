@@ -150,4 +150,27 @@ func TestE2RemoteStopSkipsAnExecutionTheRunnerClosed(t *testing.T) {
 	}
 }
 
+func TestE2RemoteRunKeepsWorkingAfterTheTaskIsCancelled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		e2RemoteWrite(w, http.StatusOK, e2RemoteResponse{View: &e2RemoteView{Snapshot: e2proxy.ExecutionView{State: "closed"}}})
+	}))
+	defer server.Close()
+	client, err := newE2RemoteClient(server.URL, writeE2RemoteToken(t, e2RemoteTestToken), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskCtx, cancel := context.WithCancel(context.Background())
+	lease, err := client.acquire(taskCtx, e2RemoteTestRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if state := lease.Runner.Snapshot().State; state != "closed" {
+		t.Fatal("task 취소 뒤 조회 실패:", state)
+	}
+	if err := lease.Runner.Stop(context.Background()); err != nil {
+		t.Fatal("task 취소 뒤 마감 실패:", err)
+	}
+}
+
 const strings64a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

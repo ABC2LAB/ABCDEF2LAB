@@ -97,7 +97,8 @@ func (c *e2RemoteClient) acquire(ctx context.Context, q E2HTTPRequest) (E2HTTPRu
 	if _, err := c.bounded(ctx, e2RemoteIdentity(e2RemoteAcquireOp, q)); err != nil {
 		return E2HTTPRunOptions{}, err
 	}
-	run := &e2RemoteRun{client: c, ctx: ctx, q: q}
+	// 조회는 task가 취소된 뒤 마감 단계에서도 돌아야 한다. 각 호출은 자체 시한으로 끊긴다.
+	run := &e2RemoteRun{client: c, ctx: context.WithoutCancel(ctx), q: q}
 	return E2HTTPRunOptions{Runner: run, Release: func(context.Context) error { return nil }}, nil
 }
 
