@@ -224,6 +224,31 @@ def sequence_complete(rows: list[dict]) -> bool:
     return sorted(row["seq"] for row in rows) == list(range(1, len(rows) + 1))
 
 
+def _count(value: object) -> bool:
+    return type(value) is int and value >= 0
+
+
+def drain_complete(drained: dict) -> bool:
+    """drain 표식이 끝난 drain인지. 진행 중 요청 0, 기록 완료, 강제 취소 수가 정수여야 한다.
+
+    러너(drain 대기)와 보존 집계가 같은 규칙을 쓴다.
+    """
+    return (type(drained.get("inflight_at_drain")) is int and drained["inflight_at_drain"] == 0
+            and drained.get("log_complete") is True and _count(drained.get("forced_cancelled_requests")))
+
+
+def final_log_consistent(rows: list[dict], sealed: dict | None, drained: dict) -> bool:
+    """drain 뒤 요청 기록이 표식과 맞는지. 봉인 표식, 순번 1..n, 전달 수, 강제 취소 행 수를 본다.
+
+    drain_complete를 통과한 표식에만 쓴다. 모르는 kind는 forwarded_count가 거부한다.
+    러너(마감 확인)와 보존 집계가 같은 규칙을 쓴다.
+    """
+    expected = drained.get("forwarded_requests")
+    cancelled = sum(1 for row in rows if row["outcome"] == FORCED_CANCELLED_OUTCOME)
+    return (sealed is not None and sequence_complete(rows) and _count(expected)
+            and forwarded_count(rows) == expected and cancelled == drained["forced_cancelled_requests"])
+
+
 class MeterFiles:
     """계측기 bind 디렉터리 읽기. 러너는 쓰지 않는다. e2_path는 가짜 E²의 따로 둔 bind 디렉터리다."""
 
