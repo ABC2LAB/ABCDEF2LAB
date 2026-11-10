@@ -23,7 +23,7 @@
 
 `agent/planner.go`, `agent/worker.go`, `server/engine.go`, `agent/tools.go`와 `skills/api-recon/`을 조사했다. 원본 Planner의 intent 생성, Worker의 E② Bash 경로·안전 바닥·회차 공유 호출 한도, 실제 감독자·감사·PostgreSQL·보고서를 유지한다. 보호 Worker의 그래프 도구는 제한돼 있고 기존 자산 INSERT를 제공하지 않아 별도 프로그램 소유 탐색 projection이 필요하다.
 
-API Recon은 정적/동적 탐색 참고 템플릿이며 로그인 우회 mock·임의 브라우저 실행을 포함한다. 제품에서 그대로 실행하지 않는다. 프로그램 소유 초기 탐색은 기존 E② Bash 실행기로 TLS 검증하는 curl을 실행하고 실제 받은 HTML 링크·폼·script 참조 및 제한된 정적 API literal을 해석한다. 폼 주소에서 GET을 만들어내지 않으며, 명시적인 메서드 호출을 확인하지 못한 문자열은 UNKNOWN으로 기록하고 자동 방문하지 않는다. HTTP 요청·call/attempt·drain 근거를 기존 E②에서 얻는다. 동적 SPA 브라우저 탐색 완성으로 주장하지 않는다.
+API Recon은 정적/동적 탐색 참고 템플릿이며 로그인 우회 mock·임의 브라우저 실행을 포함한다. 제품에서 그대로 실행하지 않는다. 프로그램 소유 초기 탐색은 기존 E② Bash 실행기로 TLS 검증하는 curl을 실행하고 실제 받은 HTML 링크·폼·script 참조 및 제한된 정적 API literal을 해석한다. 번들에서는 `.post(base+"/x")`·템플릿·`fetch`·XHR 호출과 `this.x="/base"` 대입을 읽어 메서드와 경로를 잇는다. `/`로 시작하지 않는 `.get("KEY")`는 경로로 보지 않고, JS를 실행하지 않으므로 실행 중에 조합되는 주소는 놓친다. `.js` 경로 문자열과 webpack 청크 표로 lazy chunk를 찾고, 페이지 한도 안에서 번들을 먼저 받고 라이브러리 묶음은 나중에 받는다. 폼 주소에서 GET을 만들어내지 않으며, 명시적인 메서드 호출을 확인하지 못한 문자열은 UNKNOWN으로 기록하고 자동 방문하지 않는다. HTTP 요청·call/attempt·drain 근거를 기존 E②에서 얻는다. 동적 SPA 브라우저 탐색 완성으로 주장하지 않는다.
 
 ## API와 상태 전이
 
