@@ -282,27 +282,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	go func() {
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
-		for {
-			select {
-			case <-watchDone:
-				return
-			case <-hard.Done():
-				return
-			case <-diagnostics.logger.Failed():
-				cancel()
-				return
-			case <-ticker.C:
-				if e := l.current(); e != nil {
-					if errors.Is(e, server.ErrFirstDiagnosisTargetEnded) {
-						stopTarget(e)
-						continue
-					} else {
-						cancel()
-					}
-					return
-				}
-			}
-		}
+		watchURLPreparation(hard, watchDone, diagnostics.logger.Failed(), ticker.C, l.current, cancel, stopTarget)
 	}()
 	var lastModelRequest int64
 	observe := func(usage diagnosisprep.ModelUsage) error {
@@ -553,7 +533,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		case <-ticker.C:
 			status, e := gateway.Call(ctx, diagnosis.Request{Version: diagnosis.Version, RequestID: "url-status", Command: diagnosis.Status, TaskID: taskID, PreparationRef: execution.Job.ID})
 			if e != nil || status.Snapshot == nil {
-				cancel()
+				// A target stop may already be draining model usage. A failed
+				// status read with that cancelled context must not hard-cancel it.
+				cancelURLStatusFailure(ctx, cancel)
 				continue
 			}
 			s := status.Snapshot
@@ -741,3 +723,34 @@ func (b *urlPreparationRuntime) closeReports() error {
 
 var _ diagnosisprep.Backend = (*urlPreparationRuntime)(nil)
 var _ http.Handler = (*urlPreparationRuntime)(nil)
+
+// Execute keeps audit watching active during a normal target drain.
+func watchURLPreparation(hard context.Context, done, auditFailed <-chan struct{}, ticks <-chan time.Time, current func() error, cancel context.CancelFunc, stopTarget context.CancelCauseFunc) {
+	for {
+		select {
+		case <-done:
+			return
+		case <-hard.Done():
+			return
+		case <-auditFailed:
+			cancel()
+			return
+		case <-ticks:
+			if err := current(); err != nil {
+				if errors.Is(err, server.ErrFirstDiagnosisTargetEnded) {
+					stopTarget(err)
+					continue
+				}
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+// A failed read after a soft target stop must preserve an active usage drain.
+func cancelURLStatusFailure(ctx context.Context, cancel context.CancelFunc) {
+	if ctx.Err() == nil {
+		cancel()
+	}
+}

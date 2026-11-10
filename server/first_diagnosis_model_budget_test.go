@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/diagnosisprep"
@@ -126,5 +127,30 @@ func TestFirstDiagnosisModelBudgetRedirectRemainsUnknown(t *testing.T) {
 				t.Fatal("uncertain call retried")
 			}
 		})
+	}
+}
+
+func TestFirstDiagnosisModelBudgetHardStopInterruptsTargetGrace(t *testing.T) {
+	hard, hardStop := context.WithTimeout(t.Context(), 10*time.Second)
+	defer hardStop()
+	target, stopTarget := context.WithCancelCause(hard)
+	defer stopTarget(context.Canceled)
+	b, _ := modelBudgetFixture(t, func(diagnosisprep.ModelUsage) error { return nil })
+	if err := b.ConfigureTargetDrain(hard, 5*time.Second, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	call, finish := b.modelCallContext(target)
+	defer finish()
+	stopTarget(ErrFirstDiagnosisTargetEnded)
+	select {
+	case <-call.Done():
+		t.Fatal("normal target stop cancelled active call before grace")
+	case <-time.After(30 * time.Millisecond):
+	}
+	hardStop()
+	select {
+	case <-call.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("hard stop failed to interrupt target grace")
 	}
 }
