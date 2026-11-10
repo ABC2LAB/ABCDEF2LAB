@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/server"
 )
 
 type productTargetPolicy struct {
@@ -210,7 +211,7 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 	size := 0
 	for _, p := range s.PathPrefixes {
 		v, e := diagnosisprep.CanonicalInput(diagnosisprep.Input{TargetURL: u.Scheme + "://" + u.Host + p, ProfileID: "target"})
-		if e != nil || v.TargetURL != u.Scheme+"://"+u.Host+p {
+		if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || e != nil || v.TargetURL != u.Scheme+"://"+u.Host+p {
 			return diagnosisprep.ProductTarget{}, errors.New("invalid_path_scope")
 		}
 		size += len(p)
@@ -419,6 +420,9 @@ func (r *productTargetRegistry) current(rec productTargetRecord) error {
 		return errPreparation
 	}
 	now, ok := r.records[rec.Target.ID]
+	if ok && (now.Target.State == "revoked" || productTargetDigest(now) == productTargetDigest(rec) && !r.now().Before(now.Target.ExpiresAt)) {
+		return server.ErrFirstDiagnosisTargetEnded
+	}
 	if !ok || now.Target.State != "approved" || productTargetDigest(now) != productTargetDigest(rec) || !r.now().Before(now.Target.ExpiresAt) {
 		return errPreparation
 	}

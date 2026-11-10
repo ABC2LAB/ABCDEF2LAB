@@ -270,7 +270,8 @@ export function TargetApprovalPanel({
               />
             </div>
             <p className={s.help}>
-              등록 후 DNS TXT 소유 증명을 확인합니다. URL 입력만으로 송신 권한을 만들지 않습니다.
+              등록 후 DNS TXT 소유 증명을 확인합니다. 비변경 근거는 운영자의 확인이며 서버가 GET/HEAD의 무해성을 자동
+              검증하지 않습니다.
             </p>
             <button
               className={s.btn}

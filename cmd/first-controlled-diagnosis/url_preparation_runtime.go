@@ -166,8 +166,10 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if l.inspection.InstallationDigest != execution.Inspection.InstallationDigest || l.inspection.DelegationRef != execution.Inspection.DelegationRef {
 		return errPreparation
 	}
-	ctx, cancel := context.WithTimeout(parent, time.Duration(l.profile.Budget.DurationSeconds)*time.Second)
+	hard, cancel := context.WithTimeout(parent, time.Duration(l.profile.Budget.DurationSeconds)*time.Second)
 	defer cancel()
+	ctx, stopTarget := context.WithCancelCause(hard)
+	defer stopTarget(context.Canceled)
 	p := &urlProgress{publish: publish, update: diagnosisprep.Update{State: diagnosisprep.Preparing, Phase: diagnosisprep.ScopeCheck, PreparationStarted: true, AuthorityState: diagnosisprep.AuthorityNotIssued}}
 	knownFailure := func(code string, drained bool) error {
 		state := diagnosisprep.Failed
@@ -195,7 +197,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		return errPreparation
 	}
 	if l.productTarget != nil {
-		release, e := b.product.attach(*l.productTarget, execution.Job.ID, cancel)
+		release, e := b.product.attach(*l.productTarget, execution.Job.ID, func() { stopTarget(server.ErrFirstDiagnosisTargetEnded) })
 		if e != nil {
 			return knownFailure("target_approval_changed", true)
 		}
@@ -284,14 +286,19 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			select {
 			case <-watchDone:
 				return
-			case <-ctx.Done():
+			case <-hard.Done():
 				return
 			case <-diagnostics.logger.Failed():
 				cancel()
 				return
 			case <-ticker.C:
-				if l.current() != nil {
-					cancel()
+				if e := l.current(); e != nil {
+					if errors.Is(e, server.ErrFirstDiagnosisTargetEnded) {
+						stopTarget(e)
+						continue
+					} else {
+						cancel()
+					}
 					return
 				}
 			}
@@ -300,7 +307,8 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	var lastModelRequest int64
 	observe := func(usage diagnosisprep.ModelUsage) error {
 		if usage.Requests > lastModelRequest {
-			if check() != nil {
+			// 대상 호출 admission은 예약 전에 검사한다. 마감 usage는 종료 뒤에도 저장한다.
+			if l.productTarget == nil && check() != nil {
 				return errPreparation
 			}
 			lastModelRequest = usage.Requests
@@ -319,6 +327,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		modelBudget, err = server.NewFirstDiagnosisModelBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, observe)
 	}
 	if err != nil {
+		return knownFailure("model_budget_invalid", true)
+	}
+	if l.productTarget != nil && modelBudget.ConfigureTargetDrain(hard, min(time.Duration(l.launch.ShutdownTimeoutSeconds)*time.Second/2, 30*time.Second), check) != nil {
 		return knownFailure("model_budget_invalid", true)
 	}
 	diagnostics.next("database", "database_unavailable")

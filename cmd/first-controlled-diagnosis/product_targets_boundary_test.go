@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/server"
 )
 
 func TestProductTargetApprovalExpiryBoundaries(t *testing.T) {
@@ -68,10 +69,10 @@ func TestProductTargetApprovalExpiryBoundaries(t *testing.T) {
 				if _, err := r.lookup("ARTEX", "https://expiry.example.test/read", ""); err == nil || err.Error() != "target_not_approved" {
 					t.Fatalf("만료 승인으로 새 실행 자료 조회: %v", err)
 				}
-				if err := r.current(rec); !errors.Is(err, errPreparation) {
+				if err := r.current(rec); !errors.Is(err, server.ErrFirstDiagnosisTargetEnded) {
 					t.Fatalf("기존 회차의 만료 승인을 현재로 인정: %v", err)
 				}
-				if err := loaded.current(); !errors.Is(err, errPreparation) {
+				if err := loaded.current(); !errors.Is(err, server.ErrFirstDiagnosisTargetEnded) {
 					t.Fatal("실행 감시가 만료된 대상을 현재 권위로 인정", err)
 				}
 				beforeDNS, beforeTLS := dns, probes
@@ -152,5 +153,79 @@ func TestProductTargetValidityRangeBeforePersistence(t *testing.T) {
 	spec.ValidHours = 24
 	if _, err := r.register("ARTEX", spec); err != nil {
 		t.Fatal("24시간 정상 경계 거부", err)
+	}
+}
+
+func TestProductTargetRelativePathRejectedBeforePersistence(t *testing.T) {
+	r, _ := targetTestRegistry(t)
+	if _, err := r.register("ARTEX", targetTestSpec("paths.example.test")); err != nil {
+		t.Fatal("positive path scope", err)
+	}
+	before := len(r.records)
+	for _, path := range []string{"read", "@other.example/read", "//other.example/read"} {
+		spec := targetTestSpec("paths.example.test")
+		spec.PathPrefixes = []string{path}
+		if _, err := r.register("ARTEX", spec); err == nil || err.Error() != "invalid_path_scope" || len(r.records) != before {
+			t.Fatal("relative/authority path persisted", path, err)
+		}
+	}
+}
+
+func TestProductTargetSpecialAddressesNeverReceivePrivateException(t *testing.T) {
+	r, _ := targetTestRegistry(t)
+	if !urlTargetIPAllowed(netip.MustParseAddr("8.8.8.8"), false) || !r.addressAllowed(netip.MustParseAddr("10.200.1.10")) {
+		t.Fatal("positive address controls")
+	}
+	for _, value := range []string{"fec0::1", "::ffff:0:0:1", "192.88.99.1", "5f00::1", "3fff::1"} {
+		ip := netip.MustParseAddr(value)
+		for _, private := range []bool{false, true} {
+			if urlTargetIPAllowed(ip, private) {
+				t.Fatal("special address allowed", value, private)
+			}
+		}
+		if r.addressAllowed(ip) {
+			t.Fatal("special address escaped registry filter", value)
+		}
+	}
+}
+
+func TestProductTargetStopCauseDoesNotHideAuditFailure(t *testing.T) {
+	r, _ := targetTestRegistry(t)
+	spec := targetTestSpec("stop.example.test")
+	v, err := r.register("ARTEX", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.lookupTXT = func(context.Context, string) ([]string, error) { return []string{v.ChallengeValue}, nil }
+	r.lookupIP = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("10.200.1.10")}, nil
+	}
+	r.probe = func(context.Context, string, string, int) (string, time.Time, error) {
+		return strings.Repeat("a", 64), time.Now().Add(time.Hour), nil
+	}
+	if _, err = r.approve(t.Context(), "ARTEX", v.ID); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := r.lookup("ARTEX", spec.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := &urlLoadedProfile{productTarget: &rec, productRegistry: r, profile: urlPreparationProfile{ValidFrom: time.Now().Add(-time.Hour), ValidUntil: rec.Target.ExpiresAt}}
+	if _, err = r.revoke("ARTEX", v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(loaded.current(), server.ErrFirstDiagnosisTargetEnded) {
+		t.Fatal("normal revoke missing stop cause")
+	}
+	loaded.heldCheck = func() error { return errPreparation }
+	if errors.Is(loaded.current(), server.ErrFirstDiagnosisTargetEnded) || loaded.current() == nil {
+		t.Fatal("pin failure treated as normal revoke")
+	}
+	loaded.heldCheck = nil
+	if r.contacts.Close() != nil {
+		t.Fatal("fixture close")
+	}
+	if errors.Is(loaded.current(), server.ErrFirstDiagnosisTargetEnded) || loaded.current() == nil {
+		t.Fatal("audit failure treated as normal revoke")
 	}
 }

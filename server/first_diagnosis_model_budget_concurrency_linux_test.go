@@ -315,6 +315,77 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 			t.Fatal("대기 중 바뀐 모델 결속이 허용됨")
 		}
 	})
+	for _, mode := range []string{"revoke", "expiry", "user_stop", "audit_after_target_stop", "grace_timeout", "provider_error"} {
+		t.Run("target_stop_"+mode, func(t *testing.T) {
+			hard, hardStop := context.WithTimeout(f.Context, 5*time.Second)
+			defer hardStop()
+			ctx, stop := context.WithCancelCause(hard)
+			defer stop(context.Canceled)
+			var closed atomic.Bool
+			var persisted []diagnosisprep.ModelUsage
+			b := newBudget(t, 2, func(u diagnosisprep.ModelUsage) error { persisted = append(persisted, u); return nil })
+			grace := time.Second
+			if mode == "grace_timeout" {
+				grace = 80 * time.Millisecond
+			}
+			if b.ConfigureTargetDrain(hard, grace, func() error {
+				if closed.Load() {
+					return ErrFirstDiagnosisTargetEnded
+				}
+				return nil
+			}) != nil {
+				t.Fatal("target drain setup")
+			}
+			release := make(chan struct{})
+			first := &budgetConcurrentProvider{entered: make(chan struct{}), release: release, usage: knownUsage}
+			if mode == "provider_error" {
+				first.err = errors.New("owned provider error")
+			}
+			second := &budgetConcurrentProvider{usage: knownUsage}
+			r1 := call(ctx, wrap(t, b, first))
+			budgetAwaitSignal(t, first.entered)
+			waiter := &budgetWaitingContext{Context: ctx, observed: make(chan struct{})}
+			r2 := call(waiter, wrap(t, b, second))
+			budgetAwaitSignal(t, waiter.observed)
+			closed.Store(true)
+			if mode == "user_stop" {
+				stop(context.Canceled)
+			} else {
+				stop(ErrFirstDiagnosisTargetEnded)
+			}
+			if budgetAwaitResult(t, r2) == nil || second.calls.Load() != 0 {
+				t.Fatal("new call after target stop")
+			}
+			known := mode == "revoke" || mode == "expiry"
+			if known || mode == "provider_error" {
+				budgetRequireWaiting(t, r1, second)
+				close(release)
+			} else if mode == "audit_after_target_stop" {
+				hardStop()
+			}
+			err := budgetAwaitResult(t, r1)
+			if (err == nil) != known {
+				t.Fatal("incorrect drain result", err)
+			}
+			usage := b.Snapshot()
+			if usage.UsageKnown != known || usage.Requests != 1 || usage.ReservedInputTokens != 65536 || usage.ReservedOutputTokens != 128 || first.calls.Load() != 1 || len(persisted) != 2 || persisted[1].UsageKnown != known {
+				t.Fatal("usage not drained or reservation refunded", usage)
+			}
+		})
+	}
+	t.Run("target_admission_closed_before_context_watcher", func(t *testing.T) {
+		hard, cancel := context.WithTimeout(f.Context, time.Second)
+		defer cancel()
+		b := newBudget(t, 2, noop)
+		if b.ConfigureTargetDrain(hard, time.Second, func() error { return ErrFirstDiagnosisTargetEnded }) != nil {
+			t.Fatal("target drain setup")
+		}
+		inner := &budgetConcurrentProvider{usage: knownUsage}
+		if budgetAwaitResult(t, call(hard, wrap(t, b, inner))) == nil || inner.calls.Load() != 0 || b.Snapshot().Requests != 0 || !b.Snapshot().UsageKnown {
+			t.Fatal("closed admission consumed a call")
+		}
+	})
+
 }
 
 // 실제 wrapper 테스트와 별도로 초기화되지 않은 gate도 무한 대기 없이 닫는다.

@@ -261,7 +261,7 @@ func urlTargetIPAllowed(ip netip.Addr, private bool) bool {
 		return private
 	}
 	// 관리·메타데이터·전환용 특수 주소는 private 예외에도 포함하지 않는다.
-	for _, prefix := range []string{"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3", "::/96", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/23", "2001:db8::/32", "2002::/16"} {
+	for _, prefix := range []string{"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3", "::/96", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/23", "2001:db8::/32", "2002::/16", "fec0::/10", "::ffff:0:0:0/96", "192.88.99.0/24", "5f00::/16", "3fff::/20"} {
 		if netip.MustParsePrefix(prefix).Contains(ip) {
 			return false
 		}
@@ -567,23 +567,28 @@ func (l *urlLoadedProfile) clearMaterials() {
 	}
 }
 func (l *urlLoadedProfile) current() error {
-	if l.productTarget != nil && l.productRegistry.current(*l.productTarget) != nil {
-		return errPreparation
-	}
 	now := time.Now()
-	if now.Before(l.profile.ValidFrom) || !now.Before(l.profile.ValidUntil) {
+	targetExpiry := l.productTarget != nil && !l.profile.ValidUntil.Before(l.productTarget.Target.ExpiresAt)
+	if now.Before(l.profile.ValidFrom) || !now.Before(l.profile.ValidUntil) && !targetExpiry {
 		return errPreparation
 	}
 	if l.heldCheck != nil {
-		return l.heldCheck()
-	}
-	for _, pin := range l.pins {
-		if pin.check() != nil {
+		if l.heldCheck() != nil {
 			return errPreparation
 		}
+	} else {
+		for _, pin := range l.pins {
+			if pin.check() != nil {
+				return errPreparation
+			}
+		}
+	}
+	if l.productTarget != nil {
+		return l.productRegistry.current(*l.productTarget)
 	}
 	return nil
 }
+
 func (l *urlLoadedProfile) dnsCheck(ctx context.Context, resolver *net.Resolver) error {
 	if l.productTarget != nil {
 		return l.productRegistry.recheck(ctx, *l.productTarget)
