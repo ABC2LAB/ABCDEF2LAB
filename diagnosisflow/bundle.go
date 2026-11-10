@@ -1,0 +1,364 @@
+package diagnosisflow
+
+import (
+	"bytes"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// 번들에서 요청 주소를 글자로만 찾는다. JS를 실행하지 않으므로 실행 중에 조합되는 주소는 놓친다.
+// 찾은 경로는 후보일 뿐이고, 실제 전송은 범위·선택·E② 검사를 그대로 거친다.
+
+const (
+	maxBundleMatches     = 256
+	maxBundleChunks      = 64
+	maxBundleChunkTables = 8
+	bundleQuote          = "[\"'`]"
+	bundlePathTail       = "[^\"'`\\s<>$]{0,180}"
+	bundleTemplateTail   = "[^`$\\s<>]{0,180}"
+	bundleLiteralTail    = "[^\"'`\\s<>]{1,160}"
+	bundleFetchOptions   = "[^{}]{0,200}?"
+	maxFetchOptionTail   = 400
+	bundleVerb           = "(get|post|put|patch|delete)"
+	// 번역 키 같은 `.get("KEY")`는 `/`가 없어서 빠진다. 다른 호스트 주소는 resolve가 거른다.
+	bundleCallTarget = "(?:https?://|\\.{0,2}/|[\\w-]+/)" + bundlePathTail
+	bundleBareTarget = "[\\w.-]{1,180}"
+	bundleHTTPClient = "(?:^|[^\\w$])(?-i:_?http|httpClient|\\$http|axios|\\$|jQuery)"
+)
+
+var (
+	apiLiteral = regexp.MustCompile(bundleQuote + "(/(?:api|rest)/" + bundleLiteralTail + ")" + bundleQuote)
+	// `.post(this.host+"/x"`처럼 앞에 식이 붙어도 경로 글자를 잡는다.
+	callConcat = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote)
+	// 슬래시 없는 상대 경로는 번역 키·Map 키와 글자로 구분되지 않아서, 받는 쪽이 HTTP 클라이언트로 보일 때만 경로로 본다.
+	callBare     = regexp.MustCompile(`(?i)` + bundleHTTPClient + `\.` + bundleVerb + `\(\s*` + bundleQuote + "(" + bundleBareTarget + ")" + bundleQuote)
+	callTemplate = regexp.MustCompile("(?i)\\." + bundleVerb + "\\(\\s*`(?:\\$\\{([\\w$.]+)\\})?(/" + bundleTemplateTail + ")?(\\$\\{|`)")
+	callMember   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(this\.[\w$]+)\s*[,)]`)
+	baseAssign   = regexp.MustCompile(`(this\.[\w$]+)\s*=\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
+	baseTemplate = regexp.MustCompile("(this\\.[\\w$]+)\\s*=\\s*`(?:\\$\\{([\\w$.]+)\\})?(/" + bundleTemplateTail + ")`")
+	fetchCall    = regexp.MustCompile(`\bfetch\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote + `(?:\s*,\s*\{` + bundleFetchOptions + `\bmethod\s*:\s*` + bundleQuote + `(\w+)` + bundleQuote + `)?`)
+	xhrOpen      = regexp.MustCompile(`(?i)\.open\(\s*` + bundleQuote + `(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)` + bundleQuote + `\s*,\s*` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote)
+	urlField     = regexp.MustCompile(`\burl\s*:\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
+	// 슬래시 없는 "moment.js" 같은 모듈 이름은 파일 경로로 보지 않는다.
+	chunkFile = regexp.MustCompile(bundleQuote + `((?:\.{0,2}/)?(?:[\w-]+/)*[\w.-]+\.m?js)` + bundleQuote)
+	// webpack 런타임의 청크 표: ({1:"abc"})[e]+".js", e+"."+{1:"abc"}[e]+".js", "chunk-"+{...}[e]+".js"
+	chunkMap   = regexp.MustCompile(`=>\s*(?:"([\w/-]*)"\s*\+\s*)?(?:\w\s*\+\s*"([.\w-]*)"\s*\+\s*)?\(?\{((?:\d+:"[\w-]+",?)+)\}\)?\[\w\]\s*\+\s*"(\.[\w.-]*js)"`)
+	chunkEntry = regexp.MustCompile(`(\d+):"([\w-]+)"`)
+	publicPath = regexp.MustCompile(`\.p\s*=\s*"(/[\w./-]*)"`)
+	chunkHash  = regexp.MustCompile(`[.-]([0-9A-Za-z_-]{8,})(?:\.chunk)?\.m?js$`)
+)
+
+type bundleRef struct {
+	method, path, kind, source string
+}
+
+type baseState int
+
+const (
+	baseKnown baseState = iota
+	baseGuessed
+	baseUnknown
+)
+
+type bundleBase struct {
+	name, expr, path string
+	at               int
+	state            baseState
+}
+
+// 한도에서 잘리면 그 뒤에 더 가까운 대입이 있을 수 있으므로, 믿을 수 있는 구간의 끝도 함께 돌려준다.
+func bundleBases(body []byte) ([]bundleBase, int) {
+	var bases []bundleBase
+	cutoff := len(body)
+	for _, re := range []*regexp.Regexp{baseAssign, baseTemplate} {
+		matches := re.FindAllSubmatchIndex(body, maxBundleMatches)
+		if len(matches) == maxBundleMatches {
+			cutoff = min(cutoff, matches[len(matches)-1][0])
+		}
+		for _, m := range matches {
+			state := baseKnown
+			if byteAfter(body, m[1]) == '+' {
+				state = baseUnknown // 대입 뒤에 식이 더 붙어서 실제 주소를 모른다.
+			}
+			bases = append(bases, bundleBase{group(body, m, 1), group(body, m, 2), group(body, m, 3), m[0], state})
+		}
+	}
+	sort.Slice(bases, func(i, j int) bool { return bases[i].at < bases[j].at })
+	for i := range bases {
+		resolveBase(bases[:i], &bases[i])
+	}
+	return bases, cutoff
+}
+
+// 대입의 앞 식을 앞쪽 대입으로 풀어, 경로와 확정 여부를 앞 식에서 이어받는다.
+func resolveBase(earlier []bundleBase, b *bundleBase) {
+	switch {
+	case b.state == baseUnknown || b.expr == "":
+	case !strings.Contains(b.expr, "."):
+		b.state = baseUnknown
+	case !strings.HasPrefix(b.expr, "this."):
+		b.state = baseGuessed
+	default:
+		prev, ok := baseBefore(earlier, b.expr, b.at)
+		if !ok {
+			b.state = baseGuessed
+			return
+		}
+		b.path, b.state = prev.path+b.path, prev.state
+	}
+}
+
+// 번들러는 클래스를 차례로 내보내므로 가장 가까운 앞쪽 대입이 그 호출의 기준 주소다.
+func baseBefore(bases []bundleBase, name string, at int) (bundleBase, bool) {
+	for i := len(bases) - 1; i >= 0; i-- {
+		if bases[i].at < at && bases[i].name == name {
+			return bases[i], true
+		}
+	}
+	return bundleBase{}, false
+}
+
+func group(body []byte, m []int, n int) string {
+	if m[2*n] < 0 {
+		return ""
+	}
+	return string(body[m[2*n]:m[2*n+1]])
+}
+
+// fetch 옵션에서 method가 다른 값으로 덮일 수 있으면 읽은 값을 확정하지 않는다.
+func fetchMethodFinal(body []byte, pathEnd, methodStart, after int) bool {
+	if bytes.Contains(body[pathEnd:methodStart], []byte("...")) {
+		return false
+	}
+	depth, quote := 1, byte(0)
+	for i := after; i < len(body) && i < after+maxFetchOptionTail; i++ {
+		c := body[i]
+		switch {
+		case quote != 0:
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '`' || c == '/':
+			return false // 템플릿·주석·정규식 안의 중괄호는 객체 경계로 셀 수 없다.
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				rest := body[after:i]
+				return !bytes.Contains(rest, []byte("...")) && !bytes.Contains(rest, []byte("method"))
+			}
+		}
+	}
+	return false
+}
+
+// 경로 문자열 뒤에 무엇이 붙었는지 보려고 공백을 건너뛴 첫 글자를 돌려준다.
+func byteAfter(body []byte, at int) byte {
+	for ; at < len(body); at++ {
+		if c := body[at]; c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			return c
+		}
+	}
+	return 0
+}
+
+// maxChunks는 스크립트가 발견 칸을 다 차지해 API 경로를 밀어내지 않게 하는 상한이다.
+func bundleRefs(body []byte, maxChunks int) []bundleRef {
+	var refs []bundleRef
+	seen, called := map[string]int{}, map[string]bool{}
+	emit := func(method, path, kind, source string) {
+		if method != "UNKNOWN" {
+			called[path] = true
+		}
+		key := method + " " + path
+		if kind == "api" && path == "" {
+			return
+		}
+		if i, ok := seen[key]; ok {
+			if inferredSource(refs[i].source) && !inferredSource(source) {
+				refs[i].source = source
+			}
+			return
+		}
+		seen[key] = len(refs)
+		refs = append(refs, bundleRef{method, path, kind, source})
+	}
+	// 확인한 청크를 받아야 다음 번들을 읽을 수 있어서 API 경로보다 먼저 칸을 잡는다.
+	maxChunks = max(0, min(maxChunks, maxBundleChunks))
+	sure, guessed := bundleChunks(body)
+	sure = sure[:min(maxChunks, len(sure))]
+	for _, chunk := range sure {
+		emit(chunk.method, chunk.path, chunk.kind, chunk.source)
+	}
+	bases, cutoff := bundleBases(body)
+	// 앞 식을 기준 주소로 푼다. 문자로 확인한 대입이 없으면 경로를 확정하지 않는다.
+	full := func(expr, suffix string, at int) (string, baseState) {
+		switch {
+		case expr == "":
+			return suffix, baseKnown
+		case !strings.Contains(expr, "."):
+			return suffix, baseUnknown // 지역 변수는 전체 주소일 수도, 경로 일부일 수도 있다.
+		case !strings.HasPrefix(expr, "this."):
+			return suffix, baseGuessed // env.api 같은 설정값은 대개 origin이지만 다른 호스트일 수 있다.
+		case at > cutoff:
+			return suffix, baseUnknown
+		}
+		base, ok := baseBefore(bases, expr, at)
+		switch {
+		case !ok:
+			return suffix, baseGuessed
+		case base.state == baseUnknown:
+			return suffix, baseUnknown
+		}
+		return base.path + suffix, base.state
+	}
+	call := func(method, expr, suffix string, at int, dynamic bool) {
+		called[suffix] = true // 호출 안의 접미사 글자를 UNKNOWN 경로로 다시 세지 않는다.
+		path, state := full(expr, suffix, at)
+		source := "script_call"
+		if state == baseGuessed {
+			source = "script_guess"
+		}
+		if dynamic {
+			// 뒤가 실행 중에 정해지는 주소라 앞부분만 후보로 남긴다.
+			path, source = strings.TrimSuffix(path, "/"), "script_prefix"
+		}
+		if state == baseUnknown {
+			method, source = "UNKNOWN", "static_literal"
+		}
+		emit(method, path, "api", source)
+	}
+	for _, m := range callConcat.FindAllSubmatchIndex(body, maxBundleMatches) {
+		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), group(body, m, 3), m[0], byteAfter(body, m[1]) == '+')
+	}
+	for _, m := range callBare.FindAllSubmatchIndex(body, maxBundleMatches) {
+		call(strings.ToUpper(group(body, m, 1)), "", group(body, m, 2), m[0], byteAfter(body, m[1]) == '+')
+	}
+	for _, m := range callTemplate.FindAllSubmatchIndex(body, maxBundleMatches) {
+		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), group(body, m, 3), m[0], group(body, m, 4) == "${")
+	}
+	for _, m := range callMember.FindAllSubmatchIndex(body, maxBundleMatches) {
+		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), "", m[0], false)
+	}
+	for _, m := range fetchCall.FindAllSubmatchIndex(body, maxBundleMatches) {
+		method, next := strings.ToUpper(group(body, m, 3)), byteAfter(body, m[2*2+1]+1)
+		if method != "" && !fetchMethodFinal(body, m[2*2+1], m[2*3], m[1]) {
+			method = "UNKNOWN"
+		}
+		if method == "" {
+			// 두 번째 인자가 있는데 메서드를 못 읽었으면 쓰기일 수 있다. 인자가 없을 때만 GET이다.
+			method = "UNKNOWN"
+			if next == ')' {
+				method = "GET"
+			}
+		}
+		call(method, group(body, m, 1), group(body, m, 2), m[0], next == '+')
+	}
+	for _, m := range xhrOpen.FindAllSubmatchIndex(body, maxBundleMatches) {
+		call(strings.ToUpper(group(body, m, 1)), "", group(body, m, 2), m[0], byteAfter(body, m[1]) == '+')
+	}
+	literals := append(urlField.FindAllSubmatchIndex(body, maxBundleMatches), apiLiteral.FindAllSubmatchIndex(body, maxBundleMatches)...)
+	for _, m := range literals {
+		if path := group(body, m, 1); !called[path] {
+			emit("UNKNOWN", path, "api", "static_literal")
+		}
+	}
+	// 확인 안 된 `.js` 문자열은 API 경로 뒤에서 남은 스크립트 칸만 쓴다.
+	for _, chunk := range guessed[:min(maxChunks-len(sure), len(guessed))] {
+		emit(chunk.method, chunk.path, chunk.kind, chunk.source)
+	}
+	return refs
+}
+
+// 파일 이름의 해시는 빌드 도구가 만든 청크라는 근거다.
+func hashedChunk(path string) bool {
+	m := chunkHash.FindStringSubmatch(path)
+	if m == nil {
+		return false
+	}
+	// 숫자나 대소문자 섞임이 없으면 일반 이름으로 본다.
+	return strings.ContainsAny(m[1], "0123456789") || strings.ToLower(m[1]) != m[1] && strings.ToUpper(m[1]) != m[1]
+}
+
+// 같은 경로를 근거 있는 형태로도 봤으면 확인한 청크로 친다.
+func bundleChunks(body []byte) (sure, guessed []bundleRef) {
+	prefix := ""
+	if m := publicPath.FindSubmatch(body); m != nil {
+		prefix = string(m[1])
+	}
+	seen := map[string]bool{}
+	add := func(list *[]bundleRef, path, source string) {
+		if !seen[path] {
+			seen[path] = true
+			*list = append(*list, bundleRef{"GET", path, "script", source})
+		}
+	}
+	for _, m := range chunkMap.FindAllSubmatchIndex(body, maxBundleChunkTables) {
+		for _, entry := range chunkEntry.FindAllSubmatch(body[m[6]:m[7]], -1) {
+			id, err := strconv.Atoi(string(entry[1]))
+			if err != nil {
+				continue
+			}
+			name := group(body, m, 1)
+			if m[2*2] >= 0 {
+				name += strconv.Itoa(id) + group(body, m, 2)
+			}
+			path := prefix + name + string(entry[2]) + group(body, m, 4)
+			if prefix == "" && strings.Contains(path, "/") && path[0] != '.' && path[0] != '/' {
+				path = "/" + path // 디렉터리가 붙은 표 이름은 번들 위치가 아니라 배포 기준 주소에서 시작한다.
+			}
+			add(&sure, path, "bundle_chunk")
+		}
+	}
+	type candidate struct {
+		path string
+		sure bool
+	}
+	var candidates []candidate
+	for _, m := range chunkFile.FindAllSubmatchIndex(body, maxBundleMatches) {
+		path := group(body, m, 1)
+		if !strings.Contains(path, "/") || strings.Contains(path, "node_modules") {
+			continue
+		}
+		imported := bytes.HasSuffix(bytes.TrimRight(body[:m[0]], " \t\r\n"), []byte("import("))
+		if path[0] != '.' && path[0] != '/' {
+			// Vite의 "assets/a.js"처럼 앞이 없는 경로는 번들 위치가 아니라 배포 기준 주소에서 시작한다.
+			path = strings.TrimSuffix(prefix, "/") + "/" + path
+		}
+		candidates = append(candidates, candidate{path, imported || hashedChunk(path)})
+	}
+	for _, c := range candidates {
+		if c.sure {
+			add(&sure, c.path, "bundle_chunk")
+		}
+	}
+	for _, c := range candidates {
+		if !c.sure {
+			add(&guessed, c.path, "bundle_string")
+		}
+	}
+	return sure, guessed
+}
+
+// 라이브러리 묶음은 API 호출이 거의 없어서 페이지 한도가 빠듯할 때 뒤로 미룬다.
+var vendorScript = regexp.MustCompile(`(?i)(^|[/.~-])(vendors?|polyfills?|framework|chunk-vendors)([.~-]|$)`)
+
+// 번들이 경로를 가장 많이 알려 주므로 시작 페이지 다음에 먼저 받는다.
+func crawlRank(e Endpoint) int {
+	switch {
+	case e.Source == "start":
+		return 0
+	case e.Kind == "script" && (e.Source == "bundle_string" || vendorScript.MatchString(e.Path)):
+		return 3 // 글자만 `.js`로 끝나는 문자열은 없는 파일일 수 있어 실제 페이지 뒤로 미룬다.
+	case e.Kind == "script":
+		return 1
+	}
+	return 2
+}

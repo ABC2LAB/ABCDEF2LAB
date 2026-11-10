@@ -8,12 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 )
 
-var apiLiteral = regexp.MustCompile("[\"'`](/(?:api|rest)/[^\"'`\\s<>]{1,160})[\"'`]")
-var methodLiteral = regexp.MustCompile("(?i)\\.(get|post|put|patch|delete)\\(\\s*[\"'`]([^\"'`\\s<>]{1,180})[\"'`]")
+// 스크립트 후보가 발견 칸의 절반을 넘어 API 경로를 밀어내지 않게 한다.
+const scriptSlotDivisor = 2
 
 func (c *Controller) resolve(raw, from string) (string, bool) {
 	if len(raw) > 2048 || strings.ContainsAny(raw, "\r\n\\") {
@@ -29,13 +28,63 @@ func (c *Controller) resolve(raw, from string) (string, bool) {
 	}
 	return canonicalPath(u)
 }
+
+// 스크립트 후보는 회차 전체에서 발견 상한의 절반까지만 칸을 쓴다.
+func (c *Controller) scriptSlotsLocked() int {
+	used := 0
+	for _, e := range c.record.Snapshot.Endpoints {
+		if e.Kind == "script" {
+			used++
+		}
+	}
+	return c.binding.Limits.MaxEndpoints/scriptSlotDivisor - used
+}
+
+// 스크립트를 참조한 문서를 따라 올라가 기준 주소를 돌려준다. 문서를 모르면 known이 false이고,
+// 문서의 base가 다른 origin을 가리키면 foreign이 true다.
+func (c *Controller) documentLocked(from string) (doc string, known, foreign bool) {
+	for range c.record.Snapshot.Endpoints {
+		e := c.endpointLocked("GET", from)
+		if e == nil {
+			return "", false, false
+		}
+		if e.Kind != "script" {
+			if b, ok := c.documentBases[from]; ok {
+				return b.path, b.known, !b.known
+			}
+			return from, true, false
+		}
+		from = e.From
+	}
+	return "", false, false
+}
+
+func preloadsScript(attrs map[string]string) bool {
+	for _, rel := range strings.Fields(strings.ToLower(attrs["rel"])) {
+		if rel == "modulepreload" || rel == "preload" && strings.EqualFold(attrs["as"], "script") {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
-	add := func(method, raw, kind, source string) {
-		if p, ok := c.resolve(raw, from); ok {
+	addFrom := func(base, method, raw, kind, source string) {
+		if p, ok := c.resolve(raw, base); ok {
 			c.addLocked(method, p, kind, source, from)
 		} else {
 			c.record.Snapshot.Counts.InvalidPaths++
 		}
+	}
+	// 문서의 기준 주소다. <base href>를 만나면 바뀌고, 다른 origin을 가리키면 상대 주소를 풀 수 없다.
+	base, baseKnown, baseSeen := from, true, false
+	add := func(method, raw, kind, source string) {
+		// base가 다른 origin이면 `/x`도 그 origin으로 가므로 전체 주소만 받는다.
+		if !baseKnown && !strings.Contains(raw, "://") {
+			c.record.Snapshot.Counts.InvalidPaths++
+			return
+		}
+		addFrom(base, method, raw, kind, source)
 	}
 	scriptBody := body
 	if strings.Contains(contentType, "html") {
@@ -65,12 +114,25 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 				attrs[a.Key] = a.Val
 			}
 			switch t.Data {
+			case "base":
+				if attrs["href"] != "" && !baseSeen {
+					baseSeen = true
+					base, baseKnown = c.resolve(attrs["href"], from)
+					if c.documentBases == nil {
+						c.documentBases = map[string]documentBase{}
+					}
+					c.documentBases[from] = documentBase{base, baseKnown}
+				}
 			case "a":
 				add("GET", attrs["href"], "page", "html_link")
 			case "script":
 				inScript = true
 				if attrs["src"] != "" {
 					add("GET", attrs["src"], "script", "html_script")
+				}
+			case "link":
+				if attrs["href"] != "" && preloadsScript(attrs) {
+					add("GET", attrs["href"], "script", "html_script")
 				}
 			case "form":
 				method := strings.ToUpper(attrs["method"])
@@ -86,16 +148,22 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 		}
 	}
 	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") || strings.Contains(contentType, "html") {
-		explicit := map[string]bool{}
-		for _, match := range methodLiteral.FindAllSubmatch(scriptBody, 128) {
-			method, raw := strings.ToUpper(string(match[1])), string(match[2])
-			explicit[raw] = true
-			add(method, raw, "api", "script_call")
+		doc, docKnown, foreignBase := base, baseKnown, !baseKnown
+		if !strings.Contains(contentType, "html") {
+			doc, docKnown, foreignBase = c.documentLocked(from)
 		}
-		for _, match := range apiLiteral.FindAllSubmatch(scriptBody, 128) {
-			raw := string(match[1])
-			if !explicit[raw] {
-				add("UNKNOWN", raw, "api", "static_literal")
+		for _, ref := range bundleRefs(scriptBody, c.scriptSlotsLocked()) {
+			switch {
+			case ref.kind != "api" || strings.Contains(ref.path, "://"):
+				add(ref.method, ref.path, ref.kind, ref.source)
+			case docKnown:
+				// 브라우저는 XHR·fetch의 상대 주소를 스크립트가 아니라 문서 기준 주소로 푼다.
+				addFrom(doc, ref.method, ref.path, ref.kind, ref.source)
+			case strings.HasPrefix(ref.path, "/") && !foreignBase:
+				add(ref.method, ref.path, ref.kind, ref.source)
+			default:
+				// 어느 경로인지 모르는 후보로 칸을 쓰지 않는다.
+				c.record.Snapshot.Counts.InvalidPaths++
 			}
 		}
 	}
@@ -146,12 +214,16 @@ func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, fail
 			continue
 		}
 		path := ""
+		bestID, bestRank := "", 0
 		for _, e := range c.record.Snapshot.Endpoints {
 			if e.Method == "GET" && e.InScope && e.Change == "attested_read" && !e.Visited && !attempted[e.ID] {
-				path = e.Path
-				attempted[e.ID] = true
-				break
+				if rank := crawlRank(e); bestID == "" || rank < bestRank {
+					path, bestID, bestRank = e.Path, e.ID, rank
+				}
 			}
+		}
+		if bestID != "" {
+			attempted[bestID] = true
 		}
 		if path == "" {
 			c.mu.Unlock()
@@ -226,7 +298,7 @@ func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, fail
 		c.record.Snapshot.Stage = "diagnosing"
 		for i := range c.record.Snapshot.Endpoints {
 			e := &c.record.Snapshot.Endpoints[i]
-			e.Selected = e.InScope && e.Change == "attested_read" && (e.ObservationError == "" || e.ObservationError == "body_incomplete")
+			e.Selected = e.InScope && e.Change == "attested_read" && e.Kind != "script" && (e.ObservationError == "" || e.ObservationError == "body_incomplete")
 		}
 	}
 	return true, c.saveLocked(ctx, false, "crawl_finished", "", "", 0)
