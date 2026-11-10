@@ -42,10 +42,61 @@ type E2HTTPRequest struct {
 
 // Release는 성공한 프로세스/감사 drain 뒤 공급자가 가진 자원을 해제한다.
 // 오류의 의미가 불명일 수 있어 Runtime은 Release를 자동 재실행하지 않는다.
+// E2HTTPLeaseRunner는 런타임이 회차 실행 자원을 쓰는 경계다. 로컬 Runner와 원격 E²가 구현한다.
+type E2HTTPLeaseRunner interface {
+	agent.E2HTTPRunner
+	Snapshot() e2proxy.ExecutionView
+	Policy() e2proxy.PolicyView
+	BudgetRemaining() (uint64, error)
+	RegisterIntent(context.Context, int64) error
+	Calls() []e2proxy.CallResult
+	Stop(context.Context) error
+	DrainIntent(context.Context, int64) error
+	Close(context.Context) error
+}
+
+// localE2HTTPRun은 같은 프로세스의 Runner를 경계에 맞춘다.
+type localE2HTTPRun struct{ runner *e2runner.Runner }
+
+// nil이면 nil 인터페이스를 돌려준다. 실패 경로가 만든 빈 lease를 있는 것처럼 보이게 하면 안 된다.
+func newLocalE2HTTPRun(runner *e2runner.Runner) E2HTTPLeaseRunner {
+	if runner == nil || runner.Execution() == nil {
+		return nil
+	}
+	return localE2HTTPRun{runner: runner}
+}
+
+func (r localE2HTTPRun) SnapshotForIntent(id int64) e2proxy.ExecutionView {
+	return r.runner.Execution().SnapshotForIntent(id)
+}
+func (r localE2HTTPRun) HasIntent(id int64) bool { return r.runner.Execution().HasIntent(id) }
+func (r localE2HTTPRun) RedactOutput(data []byte) []byte {
+	return r.runner.Execution().RedactOutput(data)
+}
+func (r localE2HTTPRun) RunForIntent(ctx context.Context, id int64, command string) (e2runner.Result, error) {
+	return r.runner.RunForIntent(ctx, id, command)
+}
+func (r localE2HTTPRun) Snapshot() e2proxy.ExecutionView { return r.runner.Execution().Snapshot() }
+func (r localE2HTTPRun) Policy() e2proxy.PolicyView      { return r.runner.Execution().Policy() }
+func (r localE2HTTPRun) BudgetRemaining() (uint64, error) {
+	return r.runner.Execution().BudgetRemaining()
+}
+func (r localE2HTTPRun) RegisterIntent(ctx context.Context, id int64) error {
+	return r.runner.Execution().RegisterIntent(ctx, id)
+}
+func (r localE2HTTPRun) Calls() []e2proxy.CallResult { return r.runner.Execution().Calls() }
+func (r localE2HTTPRun) Stop(ctx context.Context) error {
+	return r.runner.Execution().Stop(ctx)
+}
+func (r localE2HTTPRun) DrainIntent(ctx context.Context, id int64) error {
+	return r.runner.DrainIntent(ctx, id)
+}
+func (r localE2HTTPRun) Close(ctx context.Context) error { return r.runner.Close(ctx) }
+
 type E2HTTPRunOptions struct {
 	Execution     *e2proxy.Execution
 	ObserveResult func(context.Context, e2runner.Result) error
-	Runner        *e2runner.Runner
+	Runner        E2HTTPLeaseRunner
 	Release       func(context.Context) error
 }
 
@@ -78,6 +129,7 @@ type E2HTTPRuntimeOptions struct {
 	CheckAuthority          func(context.Context) error
 	AuthorizeIntent         func(context.Context, E2HTTPRequest) error
 	Expected                E2HTTPExpectedBinding
+	ResetBoundRemotely      bool
 	Acquire                 func(context.Context, E2HTTPRequest) (E2HTTPRunOptions, error)
 	MaxWorkerTurns          int
 	MaxToolCalls            int
@@ -255,21 +307,28 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 	return agent.WithE2HTTPPlanning(e2HTTPTaskContext(ctx, t.ctx)), nil
 }
 
+// 원격 실행에서는 러너가 대상 컨테이너 ID를 eval-e2에 bind한다. 엔진은 그 값을 알 수 없다.
+func (r *E2HTTPRuntime) resetMatches(actual string) bool {
+	if r.options.ResetBoundRemotely {
+		return actual != ""
+	}
+	return actual == r.options.Expected.ResetRef
+}
+
 func (r *E2HTTPRuntime) validLease(t *e2HTTPRuntimeTask, lease E2HTTPRunOptions, initialIntent int64) bool {
 	if lease.Runner == nil || lease.Release == nil {
 		return false
 	}
-	execution := lease.Runner.Execution()
-	if execution == nil || lease.Execution != nil && lease.Execution != execution {
+	if local, ok := lease.Runner.(localE2HTTPRun); ok && lease.Execution != nil && lease.Execution != local.runner.Execution() {
 		return false
 	}
-	view := execution.Snapshot()
+	view := lease.Runner.Snapshot()
 	expected := r.options.Expected
-	if view.Version != e2proxy.Version || view.State != "active" || !view.AuditComplete || view.Scope.TaskRef != t.id || view.Scope.RunRef != expected.RunRef || view.Scope.ResetRef != expected.ResetRef || view.Scope.PolicyRef != expected.PolicyRef || view.Scope.CaseRef != expected.CaseRef || view.PolicyRevision != expected.PolicyRevision || initialIntent > 0 && (view.IntentID != initialIntent || !execution.HasIntent(initialIntent)) {
+	if view.Version != e2proxy.Version || view.State != "active" || !view.AuditComplete || view.Scope.TaskRef != t.id || view.Scope.RunRef != expected.RunRef || !r.resetMatches(view.Scope.ResetRef) || view.Scope.PolicyRef != expected.PolicyRef || view.Scope.CaseRef != expected.CaseRef || view.PolicyRevision != expected.PolicyRevision || initialIntent > 0 && (view.IntentID != initialIntent || !lease.Runner.HasIntent(initialIntent)) {
 		return false
 	}
-	policy := execution.Policy()
-	remaining, err := execution.BudgetRemaining()
+	policy := lease.Runner.Policy()
+	remaining, err := lease.Runner.BudgetRemaining()
 	return policy.BudgetRef == expected.BudgetRef && err == nil && remaining > 0
 }
 
@@ -330,7 +389,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	if !r.validLease(t, *lease, 0) {
 		return ctx, nil, ErrE2HTTPHost
 	}
-	if err := lease.Runner.Execution().RegisterIntent(ctx, actual.ID); err != nil {
+	if err := lease.Runner.RegisterIntent(ctx, actual.ID); err != nil {
 		return ctx, nil, ErrE2HTTPHost
 	}
 	t.mu.Lock()
@@ -354,7 +413,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.options.DrainTimeout)
 			finalErr = lease.Runner.DrainIntent(cleanupCtx, actual.ID)
 			// 세션 취소는 도구 완료보다 먼저 반환할 수 있다. drain 뒤의 실제 call을 다시 확인한다.
-			finalErr = e2HTTPFinalIntentError(finalErr, lease.Runner.Execution().Calls(), actual.ID)
+			finalErr = e2HTTPFinalIntentError(finalErr, lease.Runner.Calls(), actual.ID)
 			cancel()
 			t.mu.Lock()
 			delete(t.active, actual.ID)
@@ -394,7 +453,12 @@ func (r *E2HTTPRuntime) Execution(taskID string) (*e2proxy.Execution, bool) {
 	if t.lease == nil || !t.validLease || t.lease.Runner == nil {
 		return nil, false
 	}
-	return t.lease.Runner.Execution(), true
+	// 원격 실행은 이 프로세스에 Execution 객체가 없다.
+	local, ok := t.lease.Runner.(localE2HTTPRun)
+	if !ok {
+		return nil, false
+	}
+	return local.runner.Execution(), true
 }
 
 func (r *E2HTTPRuntime) FenceTask(taskID string) error {
@@ -452,19 +516,15 @@ func (r *E2HTTPRuntime) closeTaskResources(ctx context.Context, t *e2HTTPRuntime
 	if lease == nil || lease.Runner == nil && lease.Execution == nil && lease.Release == nil {
 		return nil
 	}
-	execution := lease.Execution
+	var stopErr, drainErr error
 	if lease.Runner != nil {
-		if execution != nil && execution != lease.Runner.Execution() {
+		if local, ok := lease.Runner.(localE2HTTPRun); ok && lease.Execution != nil && lease.Execution != local.runner.Execution() {
 			return ErrE2HTTPClosure
 		}
-		execution = lease.Runner.Execution()
-	}
-	var stopErr, drainErr error
-	if execution != nil {
-		stopErr = execution.Stop(ctx)
-	}
-	if lease.Runner != nil {
+		stopErr = lease.Runner.Stop(ctx)
 		drainErr = lease.Runner.Close(ctx)
+	} else if lease.Execution != nil {
+		stopErr = lease.Execution.Stop(ctx)
 	}
 	if stopErr != nil || drainErr != nil {
 		return ErrE2HTTPClosure
@@ -557,10 +617,8 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 	if lease == nil || lease.Runner == nil {
 		recordErr = ErrE2HTTPHost
 	} else if trusted.Call.CallRef != "" {
-		execution := lease.Runner.Execution()
-		if execution == nil {
-			recordErr = ErrE2HTTPHost
-		} else {
+		execution := lease.Runner
+		{
 			view := execution.Snapshot()
 			valid := trusted.Version == e2proxy.Version && trusted.Execution.Scope == view.Scope && view.Scope.TaskRef == t.id && trusted.Execution.PolicyRevision == view.PolicyRevision && trusted.Execution.HeaderMode == view.HeaderMode && trusted.Execution.IntentID == intentID && trusted.Call.IntentID == intentID && execution.HasIntent(intentID)
 			found := false

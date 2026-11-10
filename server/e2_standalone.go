@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -187,7 +188,12 @@ func (b *E2StandaloneBackend) onAcquire(ctx context.Context, a E2HTTPAcquired) e
 		return ErrE2Control
 	}
 	c := b.options.Config
-	p, err := e2export.New(e2export.Config{Execution: a.Execution, Runner: a.Runner, Journal: a.Journal, JournalDirectory: a.JournalDirectory, JournalName: a.JournalName, OutputDirectory: c.EvidenceDir, AuditKey: a.AuditKey, ExecutionRef: b.options.ExecutionRef, EvalRunID: c.EvalRunID, ReservationRef: c.ReservationRef, ModelTag: c.ModelTag, ResetGeneration: b.reset, EngineTaskID: v.Scope.TaskRef, PolicyFingerprintSHA256: a.PolicyFingerprintSHA256})
+	// 러너는 게시 루트 아래 실행별 디렉터리에서 읽는다(연결 제안 §4.1).
+	output := filepath.Join(c.EvidenceDir, b.options.ExecutionRef)
+	if os.Mkdir(output, 0700) != nil {
+		return ErrE2Control
+	}
+	p, err := e2export.New(e2export.Config{Execution: a.Execution, Runner: a.Runner, Journal: a.Journal, JournalDirectory: a.JournalDirectory, JournalName: a.JournalName, OutputDirectory: output, AuditKey: a.AuditKey, ExecutionRef: b.options.ExecutionRef, EvalRunID: c.EvalRunID, ReservationRef: c.ReservationRef, ModelTag: c.ModelTag, ResetGeneration: b.reset, EngineTaskID: v.Scope.TaskRef, PolicyFingerprintSHA256: a.PolicyFingerprintSHA256})
 	if err != nil {
 		return err
 	}
@@ -217,6 +223,27 @@ func (b *E2StandaloneBackend) observeResult(ctx context.Context, r e2runner.Resu
 
 // Execute는 신뢰한 Go 조립만 호출한다. 원격 입력을 이 메서드에 바로 전달하면 안 된다.
 // supervisor는 실제 task/intent 소유권을 검증해야 하며 양수 검사만으로 대체하지 않는다.
+// b.op을 쥔 채로 부른다. 회차당 실행 자원은 한 번만 만든다.
+func (b *E2StandaloneBackend) acquireLocked(ctx context.Context, q E2HTTPRequest) (*E2HTTPRunOptions, error) {
+	if _, err := b.resetBinding(); err != nil {
+		return nil, err
+	}
+	if b.factory.AuthorizeIntent(ctx, q) != nil {
+		return nil, ErrE2Control
+	}
+	if b.lease == nil {
+		lease, err := b.factory.Acquire(b.ctx, q)
+		b.lease = &lease
+		if err != nil {
+			b.mu.Lock()
+			b.failed = true
+			b.mu.Unlock()
+			return nil, ErrE2Control
+		}
+	}
+	return b.lease, nil
+}
+
 func (b *E2StandaloneBackend) Execute(ctx context.Context, q E2HTTPRequest, command string) (e2runner.Result, error) {
 	if b == nil {
 		return e2runner.Result{}, ErrE2Control
@@ -226,26 +253,11 @@ func (b *E2StandaloneBackend) Execute(ctx context.Context, q E2HTTPRequest, comm
 		b.op.Unlock()
 		return e2runner.Result{}, ErrE2Control
 	}
-	if _, err := b.resetBinding(); err != nil {
+	lease, err := b.acquireLocked(ctx, q)
+	if err != nil {
 		b.op.Unlock()
 		return e2runner.Result{}, err
 	}
-	if b.factory.AuthorizeIntent(ctx, q) != nil {
-		b.op.Unlock()
-		return e2runner.Result{}, ErrE2Control
-	}
-	if b.lease == nil {
-		lease, err := b.factory.Acquire(b.ctx, q)
-		b.lease = &lease
-		if err != nil {
-			b.mu.Lock()
-			b.failed = true
-			b.mu.Unlock()
-			b.op.Unlock()
-			return e2runner.Result{}, ErrE2Control
-		}
-	}
-	lease := b.lease
 	if b.toolCalls >= b.factory.MaxToolCalls {
 		b.op.Unlock()
 		return e2runner.Result{}, ErrE2Control

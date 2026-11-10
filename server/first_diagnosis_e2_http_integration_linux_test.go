@@ -353,7 +353,7 @@ func TestFirstDiagnosisE2ProductionRuntimeNativeAcceptance(t *testing.T) {
 					runRef = "foreign-acceptance-run"
 				}
 				actual = firstDiagnosisAcquiredRunner(t, ctx, request, helper, target.URL, runRef)
-				return E2HTTPRunOptions{Runner: actual, Release: func(context.Context) error { released.Add(1); return nil }}, nil
+				return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(actual), Release: func(context.Context) error { released.Add(1); return nil }}, nil
 			}, MaxWorkerTurns: 4, MaxToolCalls: 4, WorkerTimeout: 10 * time.Second, MaxPlannerRounds: 4, MaxIntentRuns: 4, DrainTimeout: 5 * time.Second})
 			if err != nil {
 				t.Fatal("생산 E2 Runtime 생성 실패")

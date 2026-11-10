@@ -1,4 +1,5 @@
 # 제품 배포는 보호된 URL v2 준비·실행 경로를 사용한다.
 # 최초 설치와 보호 파일 준비: deploy/product/README.md
+name: abc2lab-product
 include:
   - path: deploy/product/compose.yaml

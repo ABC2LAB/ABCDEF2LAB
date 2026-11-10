@@ -48,3 +48,24 @@ func TestLocalPolicyFailureStopsStartupWithoutExternalFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestNewEngineServerChoosesRemoteOnlyWithExternalPolicy(t *testing.T) {
+	remote, local, external := &server.Server{}, &server.Server{}, &server.Server{}
+	build := func(mode, url string) (*server.Server, error) {
+		return newEngineServer(mode, url, func() (*server.Server, error) { return local, nil }, func() *server.Server { return external }, func() (*server.Server, error) { return remote, nil })
+	}
+	if got, err := build("external", "http://eval-e2:1"); err != nil || got != remote {
+		t.Fatal("원격 E²를 고르지 않음", err)
+	}
+	if got, err := build("external", ""); err != nil || got != external {
+		t.Fatal("원격 주소 없이 원격으로 감", err)
+	}
+	if got, err := build("local-only", ""); err != nil || got != local {
+		t.Fatal("기존 로컬 정책 경로가 바뀜", err)
+	}
+	for _, mode := range []string{"", "local-only"} {
+		if got, err := build(mode, "http://eval-e2:1"); err == nil || got != nil {
+			t.Fatalf("로컬 정책(%q)을 조용히 원격 조립으로 바꿈", mode)
+		}
+	}
+}

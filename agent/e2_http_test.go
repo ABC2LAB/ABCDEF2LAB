@@ -126,7 +126,7 @@ func e2WorkerFixtureTarget(t *testing.T, origin, prefix string, ids ...int64) (*
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := E2HTTPExecution{Runner: runner, Control: control, TaskID: taskID, IntentID: intentID, TaskRef: taskRef, RunRef: "worker-run-1", MaxTurns: 3, MaxDuration: time.Second}
+	host := E2HTTPExecution{Runner: localRunnerForTest{runner}, Control: control, TaskID: taskID, IntentID: intentID, TaskRef: taskRef, RunRef: "worker-run-1", MaxTurns: 3, MaxDuration: time.Second}
 	return execution, runner, host
 }
 
@@ -867,7 +867,7 @@ func TestE2HTTPRegisteredIntentBindingSharesRunnerAndControl(t *testing.T) {
 	if err := validateE2HTTPExecution(context.Background(), next, 7, node); err != nil {
 		t.Fatal(err)
 	}
-	if next.Runner != runner || next.Control != binding.Control {
+	if next.Runner != E2HTTPRunner(localRunnerForTest{runner}) || next.Control != binding.Control {
 		t.Fatal("intent replaced task runner or limits")
 	}
 }

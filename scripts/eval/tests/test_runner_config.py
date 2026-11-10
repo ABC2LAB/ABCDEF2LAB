@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_DATA_PATH,
+    COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_SERVICE, ENGINE_DATA_PATH,
     ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
     MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
     compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
@@ -449,7 +449,7 @@ class TestE2Mode(unittest.TestCase):
     def test_overlay_names_match_the_runner_constants(self):
         text = _yaml_without_comments(COMPOSE_E2_STUB.read_text(encoding="utf-8"))
         self.assertEqual(compose_services(COMPOSE_E2_STUB), {E2_SERVICE, METER_SERVICE})
-        self.assertEqual(compose_services(COMPOSE_E2_PRODUCT), {E2_SERVICE, METER_SERVICE})
+        self.assertEqual(compose_services(COMPOSE_E2_PRODUCT), {E2_SERVICE, METER_SERVICE, ENGINE_SERVICE})
         self.assertIn(f"aliases: [{METER_SERVICE}]", text)  # 엔진은 계측기 이름으로 E²에 닿는다
         self.assertIn(f"aliases: [{METER_UPSTREAM_ALIAS}]", text)
         self.assertIn(f"-upstream=http://{METER_UPSTREAM_ALIAS}:${{EVAL_METER_PORT:?}}", text)
@@ -561,6 +561,9 @@ class TestE2Product(unittest.TestCase):
                              (str(directory.e2_config), str(directory.e2_control), str(directory.e2)))
             self.assertEqual((env["EVAL_E2_STATE_DIR"], env["EVAL_E2_SUBNET"], env["EVAL_E2_METER_IP"]),
                              (str(directory.e2_state), "172.30.9.0/24", "172.30.9.10"))
+            self.assertEqual(env["EVAL_E2_ENGINE_AUTH_DIR"], str(directory.e2_engine))
+            self.assertTrue(Path(env["EVAL_E2_SECCOMP_PROFILE"]).is_file())
+            self.assertEqual(stat.S_IMODE(directory.e2_engine.stat().st_mode), 0o700)
             # eval-e2의 시한은 러너가 기다리는 시한과 같은 값이어야 한다.
             self.assertEqual((env["EVAL_E2_IO_TIMEOUT_SECONDS"], env["EVAL_E2_CLOSE_TIMEOUT_SECONDS"]),
                              (str(E2_PRODUCT_BLOCK["exchange_timeout_seconds"]), str(E2_PRODUCT_BLOCK["close_timeout_seconds"])))

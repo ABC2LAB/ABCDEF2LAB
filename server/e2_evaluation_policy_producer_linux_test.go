@@ -7,10 +7,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -81,14 +83,23 @@ func e2ProducedRunFixture(t *testing.T) e2ProducedRun {
 from datetime import datetime, timezone
 from pathlib import Path
 from e2_prepare import E2RunResources, E2RunValues, approval_window, issue_run_ca, prepare_e2_config, render_policy
-prep, template, tool, helper, digest, state, ip = sys.argv[2:9]
+prep, template, tool, helper, digest, state, ip, port = sys.argv[2:10]
 run_ref = "e2run-go-consumer"
 start, end = approval_window(datetime.now(timezone.utc), 3600, "2099-01-01T00:00:00Z")
 cert, key = issue_run_ca(Path(tool), Path(prep), run_ref, end, 60)
 policy = render_policy(Path(template), E2RunResources(run_ref, start, end, state, helper, digest, cert, key, ip))
-prepare_e2_config(Path(prep), E2RunValues("eval-run-1", "model-1", "evaluation_caller_passthrough", {"llm_backend": "api", "target_kind": "public_practice"}, 8080), policy)
+prepare_e2_config(Path(prep), E2RunValues("eval-run-1", "model-1", "evaluation_caller_passthrough", {"llm_backend": "api", "target_kind": "public_practice"}, int(port)), policy)
 `
-	cmd := exec.CommandContext(t.Context(), python, "-I", "-c", produce, scripts, prep, template, tool, policy.Helper, policy.HelperSHA256, policy.StateDir, connectIP)
+	// 엔진 호출 경로를 여는 시험이 이 포트로 listen한다. 고정 포트는 다른 프로세스와 부딪힌다.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), python, "-I", "-c", produce, scripts, prep, template, tool, policy.Helper, policy.HelperSHA256, policy.StateDir, connectIP, port)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("producer failed: %s", output)
 	}

@@ -177,7 +177,7 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 				worker.SetNonStreaming(func() bool { return true })
 				ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 				defer cancel()
-				ctx = WithE2HTTPExecution(ctx, E2HTTPExecution{Runner: runner, Control: control, TaskID: 7, IntentID: intentID, TaskRef: "7", RunRef: "native-worker-" + scheme, MaxTurns: 3, MaxDuration: 10 * time.Second, ObserveResult: observe})
+				ctx = WithE2HTTPExecution(ctx, E2HTTPExecution{Runner: localRunnerForTest{runner}, Control: control, TaskID: 7, IntentID: intentID, TaskRef: "7", RunRef: "native-worker-" + scheme, MaxTurns: 3, MaxDuration: 10 * time.Second, ObserveResult: observe})
 				payload, _ := json.Marshal(map[string]string{"summary": "owned fixture intent " + strconv.FormatInt(intentID, 10)})
 				intent := &db.Node{ID: intentID, Kind: db.KindIntent, Payload: payload}
 				_, writes, runErr := worker.Execute(ctx, "worker", 7, nil, nil, intent, nil, func(a db.Activity) { activities = append(activities, a) }, nil, nil)

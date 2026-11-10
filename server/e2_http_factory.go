@@ -401,7 +401,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		}
 		release := func(context.Context) error { return journal.Close() }
 		failed := func(execution *e2proxy.Execution, runner *e2runner.Runner) (E2HTTPRunOptions, error) {
-			return E2HTTPRunOptions{Runner: runner, Execution: execution, Release: release}, ErrE2HTTPHost
+			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release}, ErrE2HTTPHost
 		}
 		recorder := e2proxy.Recorder(journal)
 		if input.ObserveEvent != nil {
@@ -440,7 +440,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				return failed(execution, runner)
 			}
 		}
-		return E2HTTPRunOptions{Runner: runner, Execution: execution, Release: release, ObserveResult: input.ObserveResult}, nil
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult}, nil
 	}
 	options := E2HTTPRuntimeOptions{RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout}
 	if current(ctx) != nil {

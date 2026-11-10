@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from e2_collect import OUTCOME_PRODUCT_FAILURE, CloseAck  # noqa: E402
 from e2_control import CloseResult  # noqa: E402
-from e2_link import E2Link, E2LinkPaths, evaluation_declaration  # noqa: E402
+from e2_link import ENGINE_TOKEN_NAME, E2Link, E2LinkPaths, evaluation_declaration  # noqa: E402
 from e2_prepare import CONFIG_NAME, POLICY_NAME, E2PrepareError  # noqa: E402
 
 FINGERPRINT = "f" * 64
@@ -36,8 +37,8 @@ class Case(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
-        self.paths = E2LinkPaths(*(base / name for name in ("config", "evidence", "control", "copy")))
-        for path in (self.paths.config, self.paths.evidence, self.paths.control, self.paths.copy):
+        self.paths = E2LinkPaths(*(base / name for name in ("config", "evidence", "control", "copy", "engine")))
+        for path in (self.paths.config, self.paths.evidence, self.paths.control, self.paths.copy, self.paths.engine):
             path.mkdir(mode=0o700)
         self.policy = base / "policy.json"
         self.policy.write_bytes(json.dumps({"approval_mode": "preauthorized_scope", "rules": [{"ref": "rule-1"}, {"ref": "rule-2"}],
@@ -85,9 +86,22 @@ class TestRunValues(Case):
 
     def test_two_runs_do_not_share_a_run_reference(self):
         first = self.policy_written()["run_ref"]
-        for name in os.listdir(self.paths.config):
-            os.unlink(self.paths.config / name)
+        for directory in (self.paths.config, self.paths.engine):
+            for name in os.listdir(directory):
+                os.unlink(directory / name)
         self.assertNotEqual(self.policy_written()["run_ref"], first)
+
+    def test_engine_token_is_private_and_long_enough(self):
+        self.link()
+        path = self.paths.engine / ENGINE_TOKEN_NAME
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertRegex(path.read_text(encoding="ascii"), r"\A[0-9a-f]{64}\Z")
+
+    def test_engine_token_is_never_reused(self):
+        (self.paths.engine / ENGINE_TOKEN_NAME).write_text("old", encoding="ascii")
+        with self.assertRaises(E2PrepareError) as caught:
+            self.link()
+        self.assertEqual(caught.exception.code, "engine_token_failed")
 
     def test_window_past_the_approval_stops_before_the_ca_exists(self):
         with self.assertRaises(E2PrepareError) as caught:
