@@ -67,6 +67,8 @@ OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON �
 3. 표시된 `_abc2lab-challenge.<호스트>` 이름·값을 대상 DNS 운영 화면에 등록하고 **소유 확인 후 대상 승인**을 누른다. 서버가 TXT 소유 증명, 모든 DNS 주소, 설치 상한, 포트, 검증된 TLS 인증서와 leaf SPKI를 확인한다. 이 확인은 TLS handshake이며 대상 HTTP 진단을 실행하지 않는다. IP literal 대상은 초기 범위에서 지원하지 않는다.
 4. 서버의 범위 확인 화면에서 경로·메서드·요청/모델/토큰/USD 예산과 외부 전송을 검토하고 명시적으로 시작한다. 범위 확인과 재조회는 DNS·대상 HTTP·모델을 호출하지 않는다. **시작 직전** 소유 증명·DNS 주소 집합·TLS 공개키·만료·철회를 재검증한 뒤 개량 Planner/Worker를 실행한다.
 
+대상 승인 권한 모델은 #353에서 분리한 [후속 제안](../../docs/contracts/product-target-approval-proposal.md)이며 팀 합의 전이다. 승인 시 정상 TLS 1회(후보 주소 실패 시 최대 8회), 시작 직전 선택 IP에 TLS 1회를 수행한다. 각 접촉의 시도·결과는 `state/targets/tls-contacts` 보호 저널에 기록하고 기록 실패 시 차단한다. 대상 HTTP 0과 무접촉을 혼용하지 않는다.
+
 승인은 보호된 `state/targets` journal에 영속화된다. 매 회차는 독립 target/scope 참조와 정확한 origin/IP/port/path/method/TLS pin을 갖는다. DNS 주소 집합이 바뀌면 새 진단은 시작되지 않으며, 실제 연결도 승인 IP로만 전송하고 TLS pin을 다시 검사한다. 리다이렉트는 자동 추적하지 않는다. 다른 등록 대상의 승인을 빌려 쓰지 않는다.
 
 승인 철회는 해당 대상의 신규 실행을 막고 진행 중인 해당 대상의 context만 취소한다. 회차별 마감·불명 처리는 기존 계약을 따른다. 저장 보고서는 당시 target 참조의 승인 기록을 사용하므로 새 URL 등록이나 철회로 다른 회차의 범위를 바꾸지 않는다. 만료·DNS/TLS 변경 후에는 새 승인이 필요하다. 초기 등록 수 상한은 설치당 32개이며 기록 삭제·재설정으로 권한을 복구하지 않는다.

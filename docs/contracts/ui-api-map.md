@@ -10,6 +10,10 @@
 
 API handler는 모델 선택이나 임의 셸 생성으로 실행 권위를 만들지 않는다. 인증된 URL v2가 설치된 private preparation service를 호출하고, 보호된 실행 자료·Planner/Worker·E②를 재사용한다. 시작 전 키 등록·초안 생성·범위 확인은 모델 completion·대상 HTTP를 호출하지 않는다.
 
+## 회차별 대상 승인 후속 제안
+
+대상 승인 v2는 #353과 분리한 [권한 모델 제안](product-target-approval-proposal.md)이다. 초안·범위 조회는 무접촉이지만 **소유 승인 때 TLS 정상 경로 1회(실패한 후보 IP 포함 최대 8회), 시작 직전 선택 IP에 TLS 1회**를 수행한다. DNS/TXT 재조회와 이 사전 TLS는 HTTP 진단·모델 호출과 구분한다. TLS 시도·결과는 별도 보호 저널에 저장하며, 감사 실패·만료·검사기 누락은 시작을 거부한다. 실제 접촉 없는 흐름으로 설명하지 않는다.
+
 ## 화면별 연결
 
 아래 `v2`는 `/api/diagnoses/v2`다.
