@@ -55,6 +55,14 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"known method wins":     {`var a="/api/thing";c.get("/api/thing")`, []string{"GET /api/thing script_call"}},
 		"translation key":       {`t.get("ADDRESS_ADDED");t.get("a.b")`, []string{}},
 		"map delete":            {`m.delete("key");m.get(k)`, []string{}},
+		"bare http client":      {`this.http.get("old")`, []string{"GET old script_call"}},
+		"bare client file":      {`this.httpClient.get("data.json")`, []string{"GET data.json script_call"}},
+		"bare axios":            {`axios.post("save",x)`, []string{"POST save script_call"}},
+		"bare jquery":           {`;$.get("data")`, []string{"GET data script_call"}},
+		"bare dynamic":          {`this.http.get("old"+id)`, []string{"GET old script_prefix"}},
+		"bare opaque receiver":  {`c.get("old")`, []string{}},
+		"translation service":   {`this.translate.get("ADDRESS_ADDED")`, []string{}},
+		"dollar in name":        {`a$.get("KEY")`, []string{}},
 		"relative without dot":  {`c.get("rest/x")`, []string{"GET rest/x script_call"}},
 		"same origin absolute":  {`c.get("https://owned.test/rest/x")`, []string{"GET https://owned.test/rest/x script_call"}},
 		"fetch relative":        {`fetch("rest/y")`, []string{"GET rest/y script_call"}},
@@ -258,9 +266,9 @@ func TestDiscoveryResolvesAbsoluteAndRelativeCalls(t *testing.T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	invalid := c.record.Snapshot.Counts.InvalidPaths
-	c.discoverBodyLocked([]byte(`c.get("https://owned.test/read/abs");c.get("rel/x");c.get("https://other.test/read/y")`), "application/javascript", "/read/app.js")
+	c.discoverBodyLocked([]byte(`c.get("https://owned.test/read/abs");c.get("rel/x");this.http.get("old");c.get("https://other.test/read/y")`), "application/javascript", "/read/app.js")
 	got := discovered(c)
-	if !slices.Contains(got, "GET /read/abs api") || !slices.Contains(got, "GET /read/rel/x api") || slices.Contains(got, "GET /read/y api") {
+	if !slices.Contains(got, "GET /read/abs api") || !slices.Contains(got, "GET /read/rel/x api") || !slices.Contains(got, "GET /read/old api") || slices.Contains(got, "GET /read/y api") {
 		t.Fatal(got)
 	}
 	if c.record.Snapshot.Counts.InvalidPaths != invalid+1 {

@@ -23,12 +23,16 @@ const (
 	bundleVerb           = "(get|post|put|patch|delete)"
 	// 번역 키 같은 `.get("KEY")`는 `/`가 없어서 빠진다. 다른 호스트 주소는 resolve가 거른다.
 	bundleCallTarget = "(?:https?://|\\.{0,2}/|[\\w-]+/)" + bundlePathTail
+	bundleBareTarget = "[\\w.-]{1,180}"
+	bundleHTTPClient = "(?:[\\w$]*(?:http|axios|api|client|request|ajax|jquery)[\\w$]*|[^\\w$]\\$)"
 )
 
 var (
 	apiLiteral = regexp.MustCompile(bundleQuote + "(/(?:api|rest)/" + bundleLiteralTail + ")" + bundleQuote)
 	// `.post(this.host+"/x"`처럼 앞에 식이 붙어도 경로 글자를 잡는다.
-	callConcat   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote)
+	callConcat = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote)
+	// 슬래시 없는 상대 경로는 번역 키·Map 키와 글자로 구분되지 않아서, 받는 쪽이 HTTP 클라이언트로 보일 때만 경로로 본다.
+	callBare     = regexp.MustCompile(`(?i)` + bundleHTTPClient + `\.` + bundleVerb + `\(\s*` + bundleQuote + "(" + bundleBareTarget + ")" + bundleQuote)
 	callTemplate = regexp.MustCompile("(?i)\\." + bundleVerb + "\\(\\s*`(?:\\$\\{([\\w$.]+)\\})?(/" + bundleTemplateTail + ")?(\\$\\{|`)")
 	callMember   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(this\.[\w$]+)\s*[,)]`)
 	baseAssign   = regexp.MustCompile(`(this\.[\w$]+)\s*=\s*(?:[\w$.]+\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
@@ -149,6 +153,9 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 	}
 	for _, m := range callConcat.FindAllSubmatchIndex(body, maxBundleMatches) {
 		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), group(body, m, 3), m[0], byteAfter(body, m[1]) == '+')
+	}
+	for _, m := range callBare.FindAllSubmatchIndex(body, maxBundleMatches) {
+		call(strings.ToUpper(group(body, m, 1)), "", group(body, m, 2), m[0], byteAfter(body, m[1]) == '+')
 	}
 	for _, m := range callTemplate.FindAllSubmatchIndex(body, maxBundleMatches) {
 		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), group(body, m, 3), m[0], group(body, m, 4) == "${")
