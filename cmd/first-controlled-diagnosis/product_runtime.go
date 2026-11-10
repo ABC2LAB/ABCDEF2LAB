@@ -72,6 +72,7 @@ func newProductRuntime(c urlPreparationInstallation, pin urlInputPin) (*productR
 	if e != nil {
 		return nil, e
 	}
+	targets.endpointAllowed = func(origin string, ip netip.Addr) bool { return !urlProtectedConflict(c, origin, ip) }
 	p := &productRuntime{config: c, installationPin: pin, targets: targets, active: map[string]map[string]context.CancelFunc{}}
 	if _, e = p.profiles(); e != nil {
 		_ = targets.Close()

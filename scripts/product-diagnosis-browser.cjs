@@ -194,6 +194,7 @@ function check(value, code) {
 
   async function openNew() {
     await send("Page.navigate", { url: `${WORKBENCH}#new` });
+    await click("새 점검");
     await wait("document.querySelector('section[data-view=new] input[autocomplete=current-password]')!==null||document.querySelector('#luProfile')?.options.length>=1", "login_or_catalog_missing");
     const loginPass = 'section[data-view="new"] input[autocomplete="current-password"]';
     if (await evaluate(`document.querySelector(${JSON.stringify(loginPass)})!==null`)) {
@@ -201,7 +202,8 @@ function check(value, code) {
       await click("로그인");
     }
     await wait("document.querySelector('#luProfile')?.options.length>=1", "real_v2_catalog_missing");
-    if (await evaluate(`!!(${button("다른 진단 만들기")})`)) await click("다른 진단 만들기");
+    if (await evaluate(`!!(${button("다른 진단 만들기 · 조회 연결 해제")})`)) await click("다른 진단 만들기 · 조회 연결 해제");
+    await wait("document.querySelector('#luUrl')?.disabled===false", "new_target_input_locked");
     check(!(await evaluate(`!!(${button("실제 엔진으로 보기")})||!!(${button("예시 재생으로 보기")})`)), "demo_switch_present");
     check(await evaluate("document.querySelector('#lvUrl')===null"), "v1_task_form_shown_on_v2_server");
     await fill("#luUrl", targetURL);
@@ -255,6 +257,7 @@ function check(value, code) {
     check(noLegacyExecution(), "v2_fell_back_to_legacy_execution");
     const mutations = mutationCount();
     await send("Page.reload");
+    await click("범위 확인");
     await wait(hasText("실행 전 검증 완료"), "refresh_did_not_restore");
     check(mutationCount() === mutations, "refresh_replayed_mutation");
   } else if (phase === "url-start") {
@@ -307,6 +310,7 @@ function check(value, code) {
     await send("Page.navigate", { url: `${WORKBENCH}#live` });
     // 응답 유실 뒤에는 새로고침의 GET 조회로 같은 영수증을 복원한다.
     await send("Page.reload");
+    await click("점검 진행");
     // 진행 중에는 작업대가 2초마다 상태만 다시 읽는다(버튼으로도 조회 가능)
     await wait(hasText("실행 마감"), "real_execution_not_completed", 75000);
     await wait(hasText("결과 저장을 확인했습니다"), "saved_result_missing");

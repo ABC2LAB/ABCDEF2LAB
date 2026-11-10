@@ -196,3 +196,29 @@ func TestProductTargetRevocationCancelsOnlyMatchingRun(t *testing.T) {
 		t.Fatal("revocation mixed two run contexts")
 	}
 }
+
+func TestProductTargetExceptionsCannotAllowMetadataOrProtectedServices(t *testing.T) {
+	r, _ := targetTestRegistry(t)
+	r.policy.PrivateCIDRs = append(r.policy.PrivateCIDRs, "fd20:ce::/64", "fd00:ec2::/64")
+	for _, raw := range []string{"fd20:ce::254", "fd00:ec2::254"} {
+		if r.addressAllowed(netip.MustParseAddr(raw)) {
+			t.Fatal("CIDR exception admitted metadata")
+		}
+	}
+	v, e := r.register("ARTEX", targetTestSpec("model.example.test"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	r.lookupTXT = func(context.Context, string) ([]string, error) { return []string{v.ChallengeValue}, nil }
+	r.lookupIP = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("10.200.1.10")}, nil
+	}
+	r.probe = func(context.Context, string, string, int) (string, time.Time, error) {
+		t.Fatal("protected service reached TLS probe")
+		return "", time.Time{}, nil
+	}
+	r.endpointAllowed = func(origin string, ip netip.Addr) bool { return false }
+	if _, e = r.approve(t.Context(), "ARTEX", v.ID); e == nil || e.Error() != "target_address_denied" {
+		t.Fatal("protected endpoint acquired target approval")
+	}
+}

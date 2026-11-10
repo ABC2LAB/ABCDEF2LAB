@@ -26,8 +26,8 @@ type ProductTarget struct {
 	Origin         string    `json:"origin"`
 	State          string    `json:"state"`
 	Revision       uint64    `json:"revision"`
-	PathPrefixes   []string  `json:"path_prefixes"`
-	Methods        []string  `json:"methods"`
+	PathPrefixes   []string  `json:"path_prefixes,omitempty"`
+	Methods        []string  `json:"methods,omitempty"`
 	Requests       int64     `json:"requests"`
 	ChallengeName  string    `json:"challenge_name,omitempty"`
 	ChallengeValue string    `json:"challenge_value,omitempty"`

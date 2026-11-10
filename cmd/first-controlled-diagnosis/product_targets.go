@@ -52,9 +52,10 @@ type productTargetRegistry struct {
 	roots       *x509.CertPool
 	now         func() time.Time
 	// Test dependencies never come from HTTP or installation JSON.
-	lookupTXT func(context.Context, string) ([]string, error)
-	lookupIP  func(context.Context, string) ([]netip.Addr, error)
-	probe     func(context.Context, string, string, int) (string, time.Time, error)
+	lookupTXT       func(context.Context, string) ([]string, error)
+	lookupIP        func(context.Context, string) ([]netip.Addr, error)
+	probe           func(context.Context, string, string, int) (string, time.Time, error)
+	endpointAllowed func(string, netip.Addr) bool
 }
 
 func productTargetDigest(r productTargetRecord) string { b, _ := json.Marshal(r); return urlSHA(b) }
@@ -243,7 +244,7 @@ func (r *productTargetRegistry) addresses(ctx context.Context, host string) ([]s
 	return out, nil
 }
 func (r *productTargetRegistry) addressAllowed(ip netip.Addr) bool {
-	if !ip.IsValid() || ip.Zone() != "" || ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.Is4In6() || netip.MustParsePrefix("fd00:ec2::/64").Contains(ip) {
+	if !urlTargetIPAllowed(ip, true) || !ip.IsValid() || ip.Zone() != "" || ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.Is4In6() || netip.MustParsePrefix("fd00:ec2::/64").Contains(ip) {
 		return false
 	}
 	if ip.IsPrivate() {
@@ -283,6 +284,9 @@ func (r *productTargetRegistry) probeTLS(ctx context.Context, host, ip string, p
 	return hex.EncodeToString(sum[:]), cert.NotAfter, nil
 }
 func (r *productTargetRegistry) approve(ctx context.Context, principal, id string) (diagnosisprep.ProductTarget, error) {
+	if r.check() != nil {
+		return diagnosisprep.ProductTarget{}, errPreparation
+	}
 	r.mu.Lock()
 	rec, ok := r.records[id]
 	r.mu.Unlock()
@@ -304,6 +308,9 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 	addresses, e := r.addresses(ctx, u.Hostname())
 	if e != nil {
 		return diagnosisprep.ProductTarget{}, e
+	}
+	if r.checkDestinations(rec.Target.Origin, addresses) != nil {
+		return diagnosisprep.ProductTarget{}, errors.New("target_address_denied")
 	}
 	var spki string
 	var expiry time.Time
@@ -402,6 +409,9 @@ func (r *productTargetRegistry) recheck(ctx context.Context, rec productTargetRe
 	addresses, e := r.addresses(ctx, u.Hostname())
 	if e != nil {
 		return e
+	}
+	if r.checkDestinations(rec.Target.Origin, addresses) != nil {
+		return errors.New("target_address_denied")
 	}
 	if !reflect.DeepEqual(addresses, rec.Target.Addresses) {
 		return errors.New("target_dns_changed")
@@ -526,4 +536,17 @@ func (r *productTargetRegistry) resolve(principal, raw string) (*diagnosisprep.P
 	}
 	t := productTargetCopy(*pending).Target
 	return &t, nil
+}
+
+func (r *productTargetRegistry) checkDestinations(origin string, addresses []string) error {
+	if r.endpointAllowed == nil {
+		return nil
+	}
+	for _, raw := range addresses {
+		ip, e := netip.ParseAddr(raw)
+		if e != nil || !r.endpointAllowed(origin, ip) {
+			return errPreparation
+		}
+	}
+	return nil
 }
