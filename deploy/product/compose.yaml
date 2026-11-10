@@ -74,7 +74,17 @@ services:
     depends_on:
       preparation: {condition: service_healthy}
     network_mode: service:preparation
-    volumes: [product-state:/p:ro]
+    volumes:
+      - type: volume
+        source: product-state
+        target: /p
+        read_only: true
+        volume: {subpath: api, nocopy: true}
+      - type: volume
+        source: product-state
+        target: /p/ipc
+        read_only: true
+        volume: {subpath: ipc, nocopy: true}
     tmpfs: ['/tmp:rw,noexec,nosuid,nodev,size=16m']
     read_only: true
     cap_drop: [ALL]
