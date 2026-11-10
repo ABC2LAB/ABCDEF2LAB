@@ -24,7 +24,7 @@ const (
 	// 번역 키 같은 `.get("KEY")`는 `/`가 없어서 빠진다. 다른 호스트 주소는 resolve가 거른다.
 	bundleCallTarget = "(?:https?://|\\.{0,2}/|[\\w-]+/)" + bundlePathTail
 	bundleBareTarget = "[\\w.-]{1,180}"
-	bundleHTTPClient = "(?:^|[^\\w$])(?:_?http|httpclient|\\$http|axios|\\$|jquery)"
+	bundleHTTPClient = "(?:^|[^\\w$])(?-i:_?http|httpClient|\\$http|axios|\\$|jQuery)"
 )
 
 var (
