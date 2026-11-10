@@ -14,6 +14,8 @@ func writeMarker(*os.File, string, any) error { return os.ErrPermission }
 
 func removePrivateFile(*os.File, string) error { return os.ErrPermission }
 
+func readPathKey(string) ([]byte, string) { return nil, unsupportedPlatform }
+
 var sealSignals []os.Signal
 
 func isSealSignal(os.Signal) bool { return false }

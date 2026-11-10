@@ -47,7 +47,8 @@ from runner_checks import (  # noqa: E402
 )
 from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
-    METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
+    METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, TARGET_SERVICE,
+    POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
 from isolation_proof import blocked_attempts, valid_output_language  # noqa: E402
@@ -250,6 +251,8 @@ class RunSpec:
     # 메모리 저장 읽기를 할지(러너 설정 state.memory). 양쪽 회차에 같게 적용한다.
     state_memory_enabled: bool = False
     engine_rules_sha256: str | None = None  # 원본 ② 규칙 파일 해시. None이면 규칙을 넣지 않는다
+    # 회차 목적(러너 설정 purpose). 빠지면 경로 기록을 막는 공식 회차로 본다.
+    purpose: str = PURPOSE_OFFICIAL
 
 
 class WatchHandle(Protocol):
@@ -596,8 +599,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if len(observer) != state.observer_calls or any(row["decision"] != "registered" for row in observer):
         raise RunFailure("observer_count_mismatch")
     rows = _step(state, "meter_read_failed", meter.engine_rows)
-    if _step(state, "meter_read_failed", meter.path_log_present):
+    # 경로 기록은 브라우저 수용시험 회차에만 있어야 한다. 공식 회차에 있으면 무효, 수용시험 회차에 없으면 측정할 수 없다.
+    path_log = _step(state, "meter_read_failed", meter.path_log_present)
+    if spec.purpose == PURPOSE_OFFICIAL and path_log:
         raise RunFailure("meter_path_log_enabled")
+    if spec.purpose == PURPOSE_BROWSER_ACCEPTANCE and not path_log:
+        raise RunFailure("meter_path_log_missing")
     sealed = _step(state, "meter_read_failed", lambda: meter.marker(SEALED_MARKER))
     forwarded = _step(state, "meter_log_inconsistent", lambda: forwarded_count(rows))
     cancelled_rows = sum(1 for row in rows if row["outcome"] == FORCED_CANCELLED_OUTCOME)
@@ -659,7 +666,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
     # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
     # 스트리밍은 엔진이 SSE와 비스트리밍 경로를 고르는 값이라 시간·응답 처리 조건이 달라진다(#174 리뷰). 선언값이다.
-    conditions = {"engine_settings_sha256": state.engine_settings_sha256, "engine_rules_sha256": spec.engine_rules_sha256,
+    conditions = {"purpose": spec.purpose,
+                  "engine_settings_sha256": state.engine_settings_sha256, "engine_rules_sha256": spec.engine_rules_sha256,
                   "output_language": state.output_language,
                   "tool_tree_sha256": state.tool_tree_sha256,
                   "workers": spec.worker_count,
@@ -1226,6 +1234,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         observer_readonly_ref=config.observer_readonly_ref, observer_format=config.observer_format,
         verdict_wait_seconds=(config.verdict_export["ready_wait_seconds"]
                               if config.verdict_export is not None and plan.side == POLICY_SWITCH_SIDE else None),
+        purpose=config.purpose,
         verdict_poll_seconds=0 if config.verdict_export is None else config.verdict_export["ready_poll_seconds"],
         e2_prompt_wait_seconds=config.e2_product["prompt_wait_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
         e2_prompt_poll_seconds=config.e2_product["poll_seconds"] if plan.e2_mode == E2_PRODUCT else 0,

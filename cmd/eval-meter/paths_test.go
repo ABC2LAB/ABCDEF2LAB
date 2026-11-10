@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,16 +14,69 @@ import (
 	"time"
 )
 
-const pathSentinel = "SENTINELVALUE"
+const (
+	pathSentinel = "SENTINELVALUE"
+	shortAccount = "jimsmithexample"
+	shortToken   = "XyZaBc9XyZaBc9XyZ"
+)
+
+var testPathKey = bytes.Repeat([]byte{7}, pathKeyBytes)
+
+func writePathKey(t *testing.T, key []byte, mode os.FileMode) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "path.key")
+	if err := os.WriteFile(path, key, mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestReadPathKey(t *testing.T) {
+	good := writePathKey(t, testPathKey, 0o600)
+	if key, code := readPathKey(good); code != "" || !bytes.Equal(key, testPathKey) {
+		t.Fatal(code)
+	}
+	link := filepath.Join(t.TempDir(), "link.key")
+	if err := os.Symlink(good, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{
+		"readable by others": writePathKey(t, testPathKey, 0o644),
+		"short":              writePathKey(t, testPathKey[:pathKeyBytes-1], 0o600),
+		"long":               writePathKey(t, append(append([]byte{}, testPathKey...), 1), 0o600),
+		"symlink":            link,
+		"missing":            filepath.Join(t.TempDir(), "none"),
+		"directory":          t.TempDir(),
+	} {
+		if _, code := readPathKey(path); code != pathKeyRequired {
+			t.Fatal(name, code)
+		}
+	}
+}
+
+func TestEnablePathLogRejectsWrongKeyLength(t *testing.T) {
+	upstream, _ := recordingUpstream(t)
+	m, _, dir := newTestEngine(t, upstream)
+	if code := m.enablePathLog(testPathKey[:8]); code != invalidInput {
+		t.Fatal(code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, enginePathLogName)); !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
 
 // 가림 규칙의 합성 벡터는 testdata에 두어 다른 언어의 소비자도 같은 값으로 시험할 수 있게 한다.
 func TestMaskPath(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("testdata", "path-mask-v1.json"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "path-mask-v2.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var file struct {
 		Profile string `json:"profile"`
+		KeyHex  string `json:"key_hex"`
 		Vectors []struct {
 			Name           string `json:"name"`
 			Path           string `json:"path"`
@@ -33,12 +87,13 @@ func TestMaskPath(t *testing.T) {
 	if err := json.Unmarshal(raw, &file); err != nil {
 		t.Fatal(err)
 	}
-	if file.Profile != pathMaskProfile || len(file.Vectors) < 20 {
-		t.Fatal(file.Profile, len(file.Vectors))
+	key, err := hex.DecodeString(file.KeyHex)
+	if file.Profile != pathMaskProfile || len(file.Vectors) < 20 || err != nil || len(key) != pathKeyBytes {
+		t.Fatal(file.Profile, len(file.Vectors), err)
 	}
 	for _, tc := range file.Vectors {
 		t.Run(tc.Name, func(t *testing.T) {
-			pattern, masked := maskPath(tc.Path)
+			pattern, masked := maskPath(tc.Path, key)
 			if pattern != tc.PathPattern || masked != tc.MaskedSegments {
 				t.Fatalf("got %q %d want %q %d", pattern, masked, tc.PathPattern, tc.MaskedSegments)
 			}
@@ -47,12 +102,12 @@ func TestMaskPath(t *testing.T) {
 }
 
 func TestMaskPathBoundsSegments(t *testing.T) {
-	fits := strings.Repeat("/a", maxPathSegments) + "/"
-	if pattern, masked := maskPath(fits); pattern != fits || masked != 0 {
+	fits := strings.Repeat("/1", maxPathSegments) + "/"
+	if pattern, masked := maskPath(fits, testPathKey); pattern != strings.Repeat("/{id}", maxPathSegments)+"/" || masked != maxPathSegments {
 		t.Fatal(pattern, masked)
 	}
 	tooLong := strings.Repeat("/a", maxPathSegments+1)
-	if pattern, masked := maskPath(tooLong); pattern != maskedLongPath || masked != maxPathSegments+1 {
+	if pattern, masked := maskPath(tooLong, testPathKey); pattern != maskedLongPath || masked != maxPathSegments+1 {
 		t.Fatal(pattern, masked)
 	}
 }
@@ -61,7 +116,7 @@ func newPathEngine(t *testing.T) (*engineMeter, func(string, string) (int, strin
 	t.Helper()
 	upstream, _ := recordingUpstream(t)
 	m, front, dir := newTestEngine(t, upstream)
-	if code := m.enablePathLog(); code != "" {
+	if code := m.enablePathLog(testPathKey); code != "" {
 		t.Fatal(code)
 	}
 	do := func(method, target string) (int, string) {
@@ -80,17 +135,32 @@ func TestEnginePathLogRecordsMaskedForwardedRequests(t *testing.T) {
 	do(http.MethodGet, "/api/Users/123?token="+pathSentinel)
 	do(http.MethodPost, "/users/"+pathSentinel+"@example.test")
 	do(http.MethodGet, "/a%2Fb/ok")
+	do(http.MethodGet, "/profile/"+shortAccount)
+	do(http.MethodGet, "/reset/"+shortToken)
 	m.seal()
 	if status, _ := do(http.MethodGet, "/after/seal"); status != http.StatusServiceUnavailable {
 		t.Fatal(status)
 	}
-	want := []pathRow{{1, "GET", "/api/Users/{id}", 1, pathMaskProfile}, {2, "POST", "/users/{id}", 1, pathMaskProfile}, {3, "GET", "/{id}/ok", 1, pathMaskProfile}}
+	h := func(segment string) string { return pseudonym(segment, testPathKey) }
+	want := []pathRow{
+		{1, "GET", "/" + h("api") + "/" + h("Users") + "/{id}", 1, pathMaskProfile},
+		{2, "POST", "/" + h("users") + "/{id}", 1, pathMaskProfile},
+		{3, "GET", "/{id}/" + h("ok"), 1, pathMaskProfile},
+		{4, "GET", "/" + h("profile") + "/" + h(shortAccount), 0, pathMaskProfile},
+		{5, "GET", "/" + h("reset") + "/" + h(shortToken), 0, pathMaskProfile},
+	}
 	if got := readRows[pathRow](t, path); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
 	}
 	body, err := os.ReadFile(path)
-	if err != nil || bytes.Contains(body, []byte(pathSentinel)) {
-		t.Fatal(err, string(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 규칙으로 값이라고 볼 수 없는 짧은 계정명·토큰도 원문으로 남지 않는다.
+	for _, raw := range []string{pathSentinel, shortAccount, shortToken, "/profile", "/reset", "/Users"} {
+		if bytes.Contains(body, []byte(raw)) {
+			t.Fatal(raw, string(body))
+		}
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0o600 {
@@ -110,7 +180,7 @@ func TestEnginePathLogIsOffByDefault(t *testing.T) {
 
 func TestEnginePathLogRefusesExistingFile(t *testing.T) {
 	m, _, _ := newPathEngine(t)
-	if code := m.enablePathLog(); code != logExists {
+	if code := m.enablePathLog(testPathKey); code != logExists {
 		t.Fatal(code)
 	}
 }
@@ -131,7 +201,7 @@ func TestEnginePathLogCloseReportsFailure(t *testing.T) {
 	if code != "" {
 		t.Fatal(code)
 	}
-	if code := m.enablePathLog(); code != "" {
+	if code := m.enablePathLog(testPathKey); code != "" {
 		t.Fatal(code)
 	}
 	_ = m.paths.file.Close()
@@ -145,9 +215,12 @@ func TestEnginePathLogCloseReportsFailure(t *testing.T) {
 
 func TestPathLogFlagIsEngineOnly(t *testing.T) {
 	path, _ := privateTestDir(t)
+	key := writePathKey(t, testPathKey, 0o600)
 	for _, args := range [][]string{
-		{"-role", "observer", "-listen", "127.0.0.1:0", "-upstream", "http://t:1", "-log-dir", path, "-allow-path", "/x", "-path-log"},
+		{"-role", "observer", "-listen", "127.0.0.1:0", "-upstream", "http://t:1", "-log-dir", path, "-allow-path", "/x", "-path-log", "-path-key-file", key},
 		{"-role", "probe", "-path-log"},
+		{"-role", "engine", "-listen", "127.0.0.1:0", "-upstream", "http://t:1", "-log-dir", path, "-path-log"},
+		{"-role", "engine", "-listen", "127.0.0.1:0", "-upstream", "http://t:1", "-log-dir", path, "-path-key-file", key},
 	} {
 		var stderr bytes.Buffer
 		if code := run(args, strings.NewReader(""), io.Discard, &stderr); code != 2 || !strings.HasPrefix(stderr.String(), invalidInput) {
@@ -164,7 +237,8 @@ func TestRunEngineRejectsLeftoverPathLog(t *testing.T) {
 	}
 	_ = file.Close()
 	var stderr bytes.Buffer
-	args := []string{"-role", "engine", "-listen", "127.0.0.1:0", "-upstream", "http://t:1", "-log-dir", path, "-path-log"}
+	args := []string{"-role", "engine", "-listen", "127.0.0.1:0", "-upstream", "http://t:1", "-log-dir", path, "-path-log",
+		"-path-key-file", writePathKey(t, testPathKey, 0o600)}
 	if exit := run(args, strings.NewReader(""), io.Discard, &stderr); exit == 0 || !strings.HasPrefix(stderr.String(), logExists) {
 		t.Fatal(exit, stderr.String())
 	}

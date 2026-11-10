@@ -179,7 +179,7 @@ func TestRunEnginePathLogFlagWritesPatterns(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer upstream.Close()
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-	addr, dir, exit := runEngine(t, upstream.URL, "-path-log")
+	addr, dir, exit := runEngine(t, upstream.URL, "-path-log", "-path-key-file", writePathKey(t, testPathKey, 0o600))
 	resp, err := client.Get("http://" + addr + "/api/Users/7")
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestRunEnginePathLogFlagWritesPatterns(t *testing.T) {
 		t.Fatal("front did not stop")
 	}
 	rows := readRows[pathRow](t, filepath.Join(dir, enginePathLogName))
-	if len(rows) != 1 || rows[0].PathPattern != "/api/Users/{id}" {
+	if len(rows) != 1 || rows[0].PathPattern != "/"+pseudonym("api", testPathKey)+"/"+pseudonym("Users", testPathKey)+"/{id}" {
 		t.Fatalf("%+v", rows)
 	}
 }

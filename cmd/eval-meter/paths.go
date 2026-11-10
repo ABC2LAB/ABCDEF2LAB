@@ -1,23 +1,35 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/url"
 	"regexp"
 	"strings"
 )
 
 // 브라우저 수용시험의 보존 시험 전용 기록이다(docs/evaluation/browser-acceptance.md §6).
-// 공식 회차에서는 켜지 않는다. 경로는 기록 전에 가리고 원문은 어떤 파일에도 남기지 않는다.
+// 공식 회차에서는 켜지 않는다. 경로 조각의 원문은 어떤 파일에도 남기지 않는다.
+// 값처럼 보이는 조각은 `{id}`로 가리고, 나머지 조각도 짧은 계정명·토큰과 글자로 구분할 수 없으므로
+// 회차 묶음이 함께 쓰는 비밀 키의 HMAC으로 바꾼다. 같은 키를 쓴 회차끼리는 같은 조각이 같은 값이 되어
+// 보존율을 셀 수 있다. 키는 근거 디렉터리 밖에 두고 기록하지 않는다.
 
 const (
 	enginePathLogName = "engine-paths.jsonl"
 	// 가림 규칙을 바꾸면 이 값을 올려서 다른 규칙의 패턴끼리 비교하지 않게 한다.
-	pathMaskProfile  = "abc2lab.path-mask/v1"
-	maskedSegment    = "{id}"
-	maskedLongPath   = "/{too_long}"
-	maxPathSegments  = 32
-	maxSegmentLength = 32
+	pathMaskProfile    = "abc2lab.path-mask/v2"
+	maskedSegment      = "{id}"
+	maskedLongPath     = "/{too_long}"
+	maxPathSegments    = 32
+	maxSegmentLength   = 32
+	pathKeyBytes       = 32
+	pseudonymHexLength = 16
 )
+
+// 정적 자원과 API를 나눠 셀 수 있게 확장자만 남긴다(scripts/eval/preservation.py의 STATIC_SUFFIXES와 같다).
+var staticSuffixes = []string{".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+	".woff", ".woff2", ".ttf", ".otf"}
 
 var (
 	safeSegment    = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
@@ -41,8 +53,23 @@ func looksEncoded(segment string) bool {
 		(strings.ContainsAny(segment, "0123456789") || strings.ToLower(segment) != segment && strings.ToUpper(segment) != segment)
 }
 
-// 안전 문자 밖(이메일의 @, base64의 +·= 등)이나 32자를 넘는 조각(UUID 포함)은 전부 가린다.
-func maskSegment(raw string) (string, bool) {
+func pseudonym(segment string, key []byte) string {
+	suffix, lower := "", strings.ToLower(segment)
+	// 목록의 확장자끼리는 서로의 끝이 되지 않아서 처음 맞는 것이 유일하다.
+	for _, candidate := range staticSuffixes {
+		if strings.HasSuffix(lower, candidate) {
+			suffix = candidate
+			break
+		}
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(segment)) // hash.Hash의 Write는 오류를 돌려주지 않는다.
+	return "{h:" + hex.EncodeToString(mac.Sum(nil))[:pseudonymHexLength] + "}" + suffix
+}
+
+// 안전 문자 밖(이메일의 @, base64의 +·= 등)이나 32자를 넘는 조각(UUID 포함)은 `{id}`로 가린다.
+// 가린 조각만 masked로 센다. HMAC으로 바꾼 조각은 값이 아니라 이름일 수도 있어서 세지 않는다.
+func maskSegment(raw string, key []byte) (string, bool) {
 	if raw == "" {
 		return "", false
 	}
@@ -51,10 +78,10 @@ func maskSegment(raw string) (string, bool) {
 		digitSegment.MatchString(segment) || hexSegment.MatchString(segment) || looksEncoded(segment) {
 		return maskedSegment, true
 	}
-	return segment, false
+	return pseudonym(segment, key), false
 }
 
-func maskPath(escaped string) (string, int) {
+func maskPath(escaped string, key []byte) (string, int) {
 	segments := strings.Split(escaped, "/")
 	// 빈 조각(맨 앞, 끝 `/`)은 값이 아니므로 세지 않는다.
 	values := 0
@@ -68,7 +95,7 @@ func maskPath(escaped string) (string, int) {
 	}
 	masked := 0
 	for i, raw := range segments {
-		segment, hit := maskSegment(raw)
+		segment, hit := maskSegment(raw, key)
 		segments[i] = segment
 		if hit {
 			masked++

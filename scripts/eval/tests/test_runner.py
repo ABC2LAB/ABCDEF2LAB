@@ -59,8 +59,11 @@ E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:te
                     "declared_differences_path": "/srv/eval/e2-declared.json", "declared_differences_sha256": "b" * 64}
 
 
-def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None):
+def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None,
+              purpose=None):
     preflight, payload = configuration(), runner_config()
+    if purpose is not None:
+        payload["purpose"] = purpose
     if e2 == "product":
         payload["e2"], e2 = dict(E2_PRODUCT_BLOCK), None
     if verdict is not None:
@@ -1524,6 +1527,15 @@ class TestFailures(unittest.TestCase):
     def test_meter_path_log_invalidates_the_run(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True))
         self.assert_invalid(result, ports, evidence, "meter_path_log_enabled")
+
+    def test_browser_acceptance_run_needs_the_path_log(self):
+        spec = make_spec(purpose="browser_acceptance")
+        result, ports, _, evidence = run(spec=spec)
+        self.assert_invalid(result, ports, evidence, "meter_path_log_missing")
+        result, _ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], "complete")
+        conditions = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "run_conditions")
+        self.assertEqual(conditions["purpose"], "browser_acceptance")
 
     def test_meter_and_observer_records_must_agree(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "observer_extra", 1))

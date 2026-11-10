@@ -60,6 +60,7 @@ const (
 	serveFailed         = "eval_meter_serve_failed"
 	probeOutputFailed   = "eval_meter_probe_output_unavailable"
 	keyNotAllowed       = "eval_meter_key_not_allowed"
+	pathKeyRequired     = "eval_meter_path_key_required"
 	statfsFailed        = "eval_meter_statfs_failed"
 	statfsNotTmpfs      = "eval_meter_statfs_not_tmpfs"
 	statfsNotMounted    = "eval_meter_statfs_not_mounted"
@@ -116,6 +117,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	verifyInterval := flags.Duration("verify-interval", 0, "llm-gateway api: wait between lookups")
 	drainGrace := flags.Duration("drain-grace", 0, "engine: after seal, cancel requests still open this long (0: wait)")
 	pathLog := flags.Bool("path-log", false, "engine: record masked path patterns for the browser acceptance test; never set on official runs")
+	pathKeyFile := flags.String("path-key-file", "", "engine with -path-log: private 32-byte key shared by the compared runs")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fail(stderr, invalidInput)
 	}
@@ -132,7 +134,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if (*role != roleEngine && *drainGrace != 0) || *drainGrace < 0 || *drainGrace > maxDrainGrace {
 		return fail(stderr, invalidInput)
 	}
-	if *role != roleEngine && *pathLog {
+	if (*role != roleEngine && *pathLog) || *pathLog != (*pathKeyFile != "") {
 		return fail(stderr, invalidInput)
 	}
 	var gatewayCfg gatewayConfig
@@ -193,12 +195,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var finish func() error
 	switch *role {
 	case roleEngine:
+		var pathKey []byte
+		if *pathLog {
+			// 키를 먼저 읽어서, 키가 없으면 요청 기록도 만들지 않는다.
+			if pathKey, code = readPathKey(*pathKeyFile); code != "" {
+				return fail(stderr, code)
+			}
+		}
 		m, code := newEngineMeter(dir, target, time.Now, *drainGrace)
 		if code != "" {
 			return fail(stderr, code)
 		}
 		if *pathLog {
-			if code := m.enablePathLog(); code != "" {
+			if code := m.enablePathLog(pathKey); code != "" {
 				if err := m.discard(); err != nil {
 					return fail(stderr, storageUnavailable)
 				}

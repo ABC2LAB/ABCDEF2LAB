@@ -228,6 +228,7 @@ type engineMeter struct {
 	mu           sync.Mutex
 	log          *rowLog
 	paths        *rowLog
+	pathKey      []byte
 	seq          uint64
 	sealed       bool
 	sealedAt     time.Time
@@ -432,12 +433,15 @@ func (m *engineMeter) writeRowLocked(row engineRow) {
 }
 
 // enablePathLog는 보존 시험에서만 부른다. 끄면 기록 파일 자체가 생기지 않는다.
-func (m *engineMeter) enablePathLog() string {
+func (m *engineMeter) enablePathLog(key []byte) string {
+	if len(key) != pathKeyBytes {
+		return invalidInput
+	}
 	file, code := createPrivateFile(m.dir, enginePathLogName)
 	if code != "" {
 		return code
 	}
-	m.paths = &rowLog{file: file}
+	m.paths, m.pathKey = &rowLog{file: file}, key
 	return ""
 }
 
@@ -463,7 +467,7 @@ func (m *engineMeter) writePathLocked(seq uint64, r *http.Request) {
 	if m.paths == nil {
 		return
 	}
-	pattern, masked := maskPath(r.URL.EscapedPath())
+	pattern, masked := maskPath(r.URL.EscapedPath(), m.pathKey)
 	if err := m.paths.write(pathRow{Seq: seq, Method: r.Method, PathPattern: pattern, MaskedSegments: masked, PathProfileRef: pathMaskProfile}); err != nil {
 		m.logFailed = true
 	}
