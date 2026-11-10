@@ -227,6 +227,7 @@ type engineMeter struct {
 
 	mu           sync.Mutex
 	log          *rowLog
+	paths        *rowLog
 	seq          uint64
 	sealed       bool
 	sealedAt     time.Time
@@ -286,6 +287,7 @@ func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isUpgrade(r) {
 		m.streamsTotal++
 	}
+	m.writePathLocked(seq, r)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	m.cancels[seq] = cancel
@@ -433,6 +435,26 @@ func (m *engineMeter) writeRowLocked(row engineRow) {
 	}
 }
 
+// enablePathLog는 보존 시험에서만 부른다. 끄면 기록 파일 자체가 생기지 않는다.
+func (m *engineMeter) enablePathLog() string {
+	file, code := createPrivateFile(m.dir, enginePathLogName)
+	if code != "" {
+		return code
+	}
+	m.paths = &rowLog{file: file}
+	return ""
+}
+
+func (m *engineMeter) writePathLocked(seq uint64, r *http.Request) {
+	if m.paths == nil {
+		return
+	}
+	pattern, masked := maskPath(r.URL.EscapedPath())
+	if err := m.paths.write(pathRow{Seq: seq, Method: r.Method, Pattern: pattern, Masked: masked}); err != nil {
+		m.logFailed = true
+	}
+}
+
 func (m *engineMeter) writeMarkerLocked(name string, marker any) {
 	if err := writeMarker(m.dir, name, marker); err != nil {
 		m.markerFailed = true
@@ -460,10 +482,14 @@ func (m *engineMeter) close() error {
 	}
 	syncErr := m.log.file.Sync()
 	closeErr := m.log.file.Close()
-	if m.markerFailed {
-		return errors.Join(syncErr, closeErr, errors.New("eval-meter: marker write failed"))
+	var pathsErr error
+	if m.paths != nil {
+		pathsErr = errors.Join(m.paths.file.Sync(), m.paths.file.Close())
 	}
-	return errors.Join(syncErr, closeErr)
+	if m.markerFailed {
+		return errors.Join(syncErr, closeErr, pathsErr, errors.New("eval-meter: marker write failed"))
+	}
+	return errors.Join(syncErr, closeErr, pathsErr)
 }
 
 // observerRow records the decision only; the registered path itself lives in
