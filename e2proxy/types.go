@@ -65,12 +65,13 @@ const (
 )
 
 type Rule struct {
-	Ref          string
-	Origin       string
-	ConnectIP    netip.Addr
-	PathPrefix   string
-	PathScopeRef string
-	Methods      []string
+	TLSSPKISHA256 string `json:"tls_spki_sha256,omitempty"`
+	Ref           string
+	Origin        string
+	ConnectIP     netip.Addr
+	PathPrefix    string
+	PathScopeRef  string
+	Methods       []string
 	// Headers explicitly declares ordinary, noncredential constraints. Values
 	// must already match the caller; they are never injected or overwritten.
 	Headers http.Header `json:"-"`

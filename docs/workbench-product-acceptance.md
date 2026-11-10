@@ -1,5 +1,7 @@
 # Workbench Docker 제품 수용 기록
 
+이 문서는 설치 v1의 과거 단일 대상 수용이다. 최신 설치 v2와 새 URL의 회차별 승인·실행 격리는 [두 URL 수용 기록](product-targets-v2-acceptance.md)을 따른다.
+
 2026-11-10 KST. 기준 `origin/dev`는 `8f479109af72200b665605927c18af1b5fbccb97`이다. 선행 #351·#352와 기존 제품 이미지 #353의 최신 커밋을 통합했다. 자동 병합하지 않는다. 구성도·설치·화면별 API는 [제품 문서](../deploy/product/README.md), UI 신뢰 경계는 [API 지도](contracts/ui-api-map.md)에 있다.
 
 ## 실행 출처

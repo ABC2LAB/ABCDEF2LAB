@@ -18,13 +18,13 @@ func TestProductInstallRejectsUnapprovedInputBeforeSideEffects(t *testing.T) {
 		{"format": "unknown"}, {"admin_password": "short"}, {"nonmutating_scope_acknowledged": false},
 		{"target_origin": "http://juice.test:9443"}, {"target_origin": "https://u:p@juice.test:9443"},
 		{"target_origin": "https://juice.test:9443?x=1"}, {"target_ip": "127.0.0.1", "allow_private_target": false},
-		{"path_prefixes": []string{"/%2e"}}, {"valid_for_hours": 169}, {"max_runs": 1001}, {"unexpected": true},
+		{"path_prefixes": []string{"/%2e"}}, {"target_policy": map[string]any{"allowed_ports": []int{0}}}, {"target_policy": map[string]any{"private_cidrs": []string{"0.0.0.0/0"}}}, {"valid_for_hours": 169}, {"max_runs": 1001}, {"unexpected": true},
 	} {
 		root := t.TempDir()
 		if os.Chmod(root, 0700) != nil {
 			t.Fatal("fixture permissions")
 		}
-		c := map[string]any{"format": "abc2lab.product-install/v1", "database_host": "192.0.2.10", "database_name": "abc2lab", "admin_password": "synthetic-only-install-password", "target_origin": "https://juice.test:9443", "target_ip": "10.200.0.20", "path_prefixes": []string{"/rest/products"}, "allow_private_target": true, "nonmutating_scope_acknowledged": true, "valid_for_hours": 24, "max_runs": 1, "local_model": map[string]any{"model": "owned-synthetic", "base_url": "http://192.0.2.30:8080/v1", "addresses": []string{"192.0.2.30"}, "context_window_k": 128, "max_tokens": 2048}}
+		c := map[string]any{"format": "abc2lab.product-install/v2", "database_host": "192.0.2.10", "database_name": "abc2lab", "admin_password": "synthetic-only-install-password", "valid_for_hours": 24, "max_runs": 1, "local_model": map[string]any{"model": "owned-synthetic", "base_url": "http://192.0.2.30:8080/v1", "addresses": []string{"192.0.2.30"}, "context_window_k": 128, "max_tokens": 2048}}
 		input := filepath.Join(root, "input.json")
 		valid, _ := json.Marshal(c)
 		if os.WriteFile(input, valid, 0600) != nil {

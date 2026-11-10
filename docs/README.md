@@ -12,7 +12,7 @@
 ## 시작하기
 
 - [프로젝트 목표와 현재 상태](../README.md)
-- [Workbench Docker 제품 설치](../deploy/product/README.md) · [Docker·브라우저 수용 기록](workbench-product-acceptance.md)
+- [Workbench Docker 제품 설치](../deploy/product/README.md) · [기존 단일 대상 수용](workbench-product-acceptance.md) · [두 URL 회차별 승인·수용](product-targets-v2-acceptance.md)
 - [로컬 개발·소스 빌드](local-dev-ko.md)
 - [첫 통합 진단 기동: CLI 준비·점검·실행·저장 보고서](first-diagnosis-launch.md)
 - [첫 진단 환경·권한·입력 준비](first-diagnosis-preparation.md)

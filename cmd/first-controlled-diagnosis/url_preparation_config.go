@@ -65,7 +65,7 @@ type urlPreparationProfile struct {
 	PolicySHA256        string                    `json:"policy_sha256"`
 	ManifestSHA256      string                    `json:"manifest_sha256"`
 	AllowPrivateTarget  bool                      `json:"allow_private_target"`
-	Attestation         urlNonmutatingAttestation `json:"attestation"`
+	Attestation         urlNonmutatingAttestation `json:"attestation,omitzero"`
 	ModelLimitsRef      string                    `json:"model_limits_ref"`
 	InputTokensPerCall  int64                     `json:"input_tokens_per_call"`
 	OutputTokensPerCall int64                     `json:"output_tokens_per_call"`
@@ -79,7 +79,8 @@ type urlPreparationInstallation struct {
 	ReportListenAddr   string                  `json:"report_listen_addr"`
 	APILaunch          urlProtectedPin         `json:"api_launch"`
 	ProtectedEndpoints []urlProtectedEndpoint  `json:"protected_endpoints"`
-	Profiles           []urlPreparationProfile `json:"profiles"`
+	Profiles           []urlPreparationProfile `json:"profiles,omitempty"`
+	Product            *urlProductInstallation `json:"product,omitempty"`
 }
 type urlInputPin struct {
 	path, digest string
@@ -89,16 +90,18 @@ type urlInputPin struct {
 	executable   bool
 }
 type urlLoadedProfile struct {
-	profile       urlPreparationProfile
-	launch        launchConfig
-	policy        server.E2HTTPFilePolicy
-	origin        string
-	address       netip.Addr
-	pins          []urlInputPin
-	materials     map[string][]byte
-	inspection    diagnosisprep.Inspection
-	heldCheck     func() error
-	releaseInputs func()
+	profile         urlPreparationProfile
+	launch          launchConfig
+	policy          server.E2HTTPFilePolicy
+	origin          string
+	address         netip.Addr
+	pins            []urlInputPin
+	materials       map[string][]byte
+	inspection      diagnosisprep.Inspection
+	heldCheck       func() error
+	releaseInputs   func()
+	productTarget   *productTargetRecord
+	productRegistry *productTargetRegistry
 }
 
 func (*urlLoadedProfile) String() string { return "urlLoadedProfile[protected]" }
@@ -160,7 +163,7 @@ func readURLInstallation(path string) (urlPreparationInstallation, urlInputPin, 
 	raw, pin, err := urlReadPin(path, 256<<10, false)
 	defer clear(raw)
 	if err != nil || decodeLaunchJSON(raw, &c) != nil || c.Format != urlPreparationFormat || urlOperatorUID() != c.OperatorUID ||
-		c.OperatorUID == 0 || len(c.Profiles) < 1 || len(c.Profiles) > 64 || len(c.ProtectedEndpoints) < 1 || len(c.ProtectedEndpoints) > 64 {
+		c.OperatorUID == 0 || (c.Product == nil && len(c.Profiles) < 1) || len(c.Profiles) > 64 || len(c.ProtectedEndpoints) < 1 || len(c.ProtectedEndpoints) > 64 {
 		return c, pin, errPreparation
 	}
 	for _, p := range []string{c.StateDir, c.RunsDir, filepath.Dir(c.SocketPath)} {
@@ -438,7 +441,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 				ProfileID int64    `json:"profile_id"`
 				BaseURL   string   `json:"base_url"`
 				Addresses []string `json:"addresses"`
-			} `json:"profiles"`
+			} `json:"profiles,omitempty"`
 		}
 		if json.Unmarshal(manifest, &modelDoc) != nil {
 			return nil, errPreparation
@@ -564,6 +567,9 @@ func (l *urlLoadedProfile) clearMaterials() {
 	}
 }
 func (l *urlLoadedProfile) current() error {
+	if l.productTarget != nil && l.productRegistry.current(*l.productTarget) != nil {
+		return errPreparation
+	}
 	now := time.Now()
 	if now.Before(l.profile.ValidFrom) || !now.Before(l.profile.ValidUntil) {
 		return errPreparation
@@ -579,6 +585,9 @@ func (l *urlLoadedProfile) current() error {
 	return nil
 }
 func (l *urlLoadedProfile) dnsCheck(ctx context.Context, resolver *net.Resolver) error {
+	if l.productTarget != nil {
+		return l.productRegistry.recheck(ctx, *l.productTarget)
+	}
 	u, _ := url.Parse(l.origin)
 	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
 		if ip != l.address {

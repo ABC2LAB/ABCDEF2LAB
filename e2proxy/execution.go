@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
@@ -130,11 +131,20 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 	out := make([]compiledRule, 0, len(rules))
 	seen := map[string]bool{}
 	for _, r := range rules {
+		if r.TLSSPKISHA256 != "" {
+			b, e := hex.DecodeString(r.TLSSPKISHA256)
+			if e != nil || len(b) != 32 || hex.EncodeToString(b) != r.TLSSPKISHA256 {
+				return nil, ErrConfig
+			}
+		}
 		if !validRef(r.Ref) || !validRef(r.PathScopeRef) || seen[r.Ref] || !r.ConnectIP.IsValid() || r.ConnectIP.IsUnspecified() || r.ConnectIP.IsMulticast() || r.ConnectIP.Zone() != "" {
 			return nil, ErrConfig
 		}
 		seen[r.Ref] = true
 		u, err := url.Parse(r.Origin)
+		if err == nil && r.TLSSPKISHA256 != "" && u.Scheme != "https" {
+			return nil, ErrConfig
+		}
 		if err != nil {
 			return nil, ErrConfig
 		}
@@ -1045,6 +1055,19 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, DisableCompression: true, Protocols: protocols,
 		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: e.cfg.RootCAs},
 		TLSHandshakeTimeout: e.cfg.Limits.RequestTimeout, ResponseHeaderTimeout: e.cfg.Limits.RequestTimeout}
+	if rule.TLSSPKISHA256 != "" {
+		pin := rule.TLSSPKISHA256
+		transport.TLSClientConfig.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return ErrDenied
+			}
+			sum := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
+			if hex.EncodeToString(sum[:]) != pin {
+				return ErrDenied
+			}
+			return nil
+		}
+	}
 	_, port, _ := net.SplitHostPort(rule.authority)
 	transport.DialContext = func(dctx context.Context, network, address string) (net.Conn, error) {
 		e.mu.Lock()

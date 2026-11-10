@@ -18,7 +18,7 @@ API handler는 모델 선택이나 임의 셸 생성으로 실행 권위를 만�
 |---|---|---|
 | 로그인·계정 | `/api/auth/status`, `/api/auth/login` | 초기 설정·연결 실패·401을 구분 |
 | 대시보드 | `GET v2/catalog`, 현재 진단의 receipt/status | 전체 서버 이력·없는 값을 만들지 않음 |
-| 새 점검 | `POST v2/drafts`, `POST /api/product/model-credentials` | 설치 프로필·승인 모델 없으면 차단 |
+| 새 점검 | `POST v2/drafts`, `/api/product/targets` 등록·DNS 소유 확인·승인, `/api/product/model-credentials` 등록·상태 조회 | 대상 미승인·모델 정책 부재는 차단. 키는 서버 존재 여부만 재사용 |
 | 자산 탐색 | 현재 진단의 서버 승인 scope | 별도 인벤토리·자동 크롤링 미지원 |
 | 범위 확인 | `POST v2/drafts/{id}/validate`, `/start` | 대상·모델·provider·토큰·USD·외부 전송 동의 확인 |
 | 점검 진행 | `GET v2/drafts/{id}/status`, receipt GET, `/stop`, task request-approvals 조회 | 허용·거절 조작 UI 미지원. 결과 불명은 조회만 허용, 실행 재전송 금지 |
@@ -46,3 +46,6 @@ API 키는 비제어 password 입력에서 별도 인증 설정 API로 보낸 �
 - private preparation·실제 엔진: `cmd/first-controlled-diagnosis/`, `diagnosisprep/`, 기존 Planner/Worker·E②.
 
 범용 ARTEX의 task/exploration/findings/intercept API가 존재하는 사실과 제품 URL 진단 경로의 수용은 다르다. ARTEX 도구 승인과 E② 실제 전송 집행도 구분한다. 일반 HTTP 후보를 지원되지 않는 구조화 E③ 판정으로 승격하지 않는다.
+
+
+제품 설치 v2는 대상 보안 환경·모델 정책을 준비하고 대상 URL을 고정하지 않는다. Workbench의 대상 등록은 pending이며, 인증된 운영자의 DNS TXT 소유 증명과 명시적 비변경 경로/메서드·요청 상한을 보호 preparation에서 검증한 뒤 승인한다. 시작 직전 DNS 주소 집합·TLS 공개키·철회·만료를 다시 확인하며, 회차의 target/scope 참조와 파생 E② 규칙에 결속한다. URL/체크박스만으로 송신 권한을 만들지 않는다. 저장 보고서는 당시 target 참조를 사용한다. 자세한 절차와 초기 제한은 [설치 문서](../../deploy/product/README.md#새-대상-등록승인)를 따른다.
