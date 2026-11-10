@@ -298,7 +298,7 @@ func TestReportCommandOwnedPostgres(t *testing.T) {
 	if status, _ := request("GET", base, ""); status != 401 {
 		t.Fatal("익명 보고서 허용")
 	}
-	status, body := request("POST", "/api/auth/login", `{"username":"ARTEX","password":"synthetic-owned-report-cli"}`)
+	status, body := request("POST", "/api/auth/login", `{"username":"ABC2LAB","password":"synthetic-owned-report-cli"}`)
 	var session struct {
 		Token string `json:"token"`
 	}

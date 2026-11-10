@@ -6,7 +6,7 @@ AI가 웹서비스의 여러 취약 가능성을 탐색하고, 프로그램이 �
 
 > **개발 중입니다.** 첫 통합 진단의 CLI·Planner/Worker·격리 실행·E② 승인/중지·후보 저장·마감·보고서 연결과 개발용 OpenRouter 연결은 구현되어 있습니다. 합성·통합 시험과 실제 모델·대상 수용, UI 전체 연결 완료는 구분합니다. 현재 모든 취약점 유형의 탐지·자동 확정을 보장하지 않습니다.
 
-[문서 목차](docs/README.md) · [첫 진단 기동](docs/first-diagnosis-launch.md) · [개발 환경](docs/local-dev-ko.md) · [기여 안내](CONTRIBUTING.md) · [개발 계획](docs/development-plan.md)
+[Workbench Docker 설치](deploy/product/README.md) · [문서 목차](docs/README.md) · [첫 진단 기동](docs/first-diagnosis-launch.md) · [개발 환경](docs/local-dev-ko.md) · [기여 안내](CONTRIBUTING.md) · [개발 계획](docs/development-plan.md)
 
 ## 목표
 

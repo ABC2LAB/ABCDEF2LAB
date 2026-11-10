@@ -102,7 +102,7 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 - ⚠️ **GT 상관 언급 주의(절대규칙 7 가드)** — 지도 resource 축은 `resource_ref`의 type을 평가 GT 상관과 **공유**한다(§6 Open #1·E² type 명명). 이 문서·UI·그 외 평가 밖 코드에서 평가 GT 상관을 적을 땐 **설명 + 디렉토리(`scripts/eval/`)로만** 쓰고 그 데이터 파일명·모듈 import 리터럴을 쓰지 않는다 — eval 가드(`test_gt_not_referenced_outside_eval`)가 평가 밖의 그 리터럴을 전부 막는다(PR #26에서 걸렸던 지점).
 
 ### 4.1 판정 레코드 → 지도 읽기 필드 (verdict-record Open #4 응답)
-판정 레코드([verdict-record §2](./verdict-record.md))를 접근통제 지도에 투영할 **향후 읽기 어댑터의 계약 제안**이다. 현재 `web/src/abc2lab-ui/lib/kg.ts`·`screens/AccessMapScreen.tsx`는 목업이며 판정 레코드를 읽지 않는다. 아래 필드 전체가 현재 UI 타입에 구현됐거나 레코드와 1:1로 대응한다는 뜻은 아니다. 레코드는 "셀 색"을 직접 담지 않고, 서버가 검증한 레코드·커버리지·KG 메타데이터를 어댑터가 조합한다. 응답 본문·canary **값**·자격 원문은 지도에 전달하지 않는다([verdict-record §3 마스킹](./verdict-record.md), 절대규칙 2·8).
+판정 레코드([verdict-record §2](./verdict-record.md))를 접근통제 지도에 투영하는 계약이다. 서버 읽기 projection([access-map-read](./access-map-read.md), #330)과 클라이언트의 `getAccessMap`·`mapApiAccessMap`(#337)은 구현돼 있다. Workbench 통합에서 제거한 것은 지도 화면이며, 어댑터·매핑·리졸버는 `web/src/lib/diagnosis/kg.ts`에 보존했다. 현재 Workbench의 자산 화면은 서버가 승인한 진단 범위만 표시한다. 지도 패널 재부착은 이경준 담당 후속이며 현재의 실제 지도 표시 완료로 간주하지 않는다. 아래 필드 전체가 현재 UI 타입에 구현됐거나 레코드와 1:1로 대응한다는 뜻은 아니다. 레코드는 "셀 색"을 직접 담지 않고, 서버가 검증한 레코드·커버리지·KG 메타데이터를 어댑터가 조합한다. 응답 본문·canary **값**·자격 원문은 지도에 전달하지 않는다([verdict-record §3 마스킹](./verdict-record.md), 절대규칙 2·8).
 
 **(a) 축·헤더 — 향후 projection이 읽을 근거(조회 범위 규칙은 §4.2 (4)로 대체):**
 | 지도 요소 | 근거 | 현재 타입과의 경계 |

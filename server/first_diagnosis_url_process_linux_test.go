@@ -506,7 +506,7 @@ func (f *urlProcessFixture) api() *urlAPIClient {
 	var login struct {
 		Token string `json:"token"`
 	}
-	c.call("POST", "/api/auth/login", "", map[string]string{"username": "ARTEX", "password": "synthetic-owned-combined-fixture"}, &login)
+	c.call("POST", "/api/auth/login", "", map[string]string{"username": "ABC2LAB", "password": "synthetic-owned-combined-fixture"}, &login)
 	if login.Token == "" {
 		f.t.Fatal("실제 API 로그인 실패")
 	}

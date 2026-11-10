@@ -4,7 +4,7 @@
 
 - diagnosisapi/: HTTP 요청 검사, 초안·revision·멱등성 기록, 운영자 승인 결속 검사, diagnosis.Gateway 명령 전달. Planner·Worker·LLM·DB를 import하지 않는다.
 - diagnosis/: diagnosis.v1 실행 명령과 응답, 준비된 단일 실행 서비스, 제한된 JSON pipe 전송. HTTP 인증·화면 상태를 알지 않는다.
-- server/diagnosis_management.go: 기존 보호 JWT 키와 DB 로그인 해시만 조립하는 인증 factory. 기존 단일 관리자 ARTEX이며 다중 사용자 RBAC 완료가 아니다. 새 비밀번호·JWT 키·모델 프로필·작업을 DB에 만들지 않는다.
+- server/diagnosis_management.go: 기존 보호 JWT 키와 DB 로그인 해시만 조립하는 인증 factory. 로그인 이름은 ABC2LAB이며 기존 단일 관리자 내부 식별자 ARTEX를 유지한다. 다중 사용자 RBAC 완료가 아니다. 새 비밀번호·JWT 키·모델 프로필·작업을 DB에 만들지 않는다.
 - cmd/first-controlled-diagnosis/management.go: 운영자가 기동하는 독립 API 프로세스. 이미 실행 중인 gateway 프로세스와 상속 pipe로 연결한다. HTTP 요청마다 subprocess를 만들지 않는다.
 - cmd/first-controlled-diagnosis/managed_registry.go: 운영자 보호 registry를 매번 읽어 공개 선택 항목 및 정확 초안 승인을 제공한다.
 - 기존 prepare-task → prepare-intents → check → run → report CLI는 유지한다. UI 초안 ID는 기존 실제 task ID가 아니며, 운영자 준비·승인 연결 전에는 실행할 수 없다.

@@ -54,7 +54,7 @@ from isolation_proof import blocked_attempts, valid_output_language  # noqa: E40
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from runner_engine import (  # noqa: E402
-    AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
+    ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
@@ -1270,7 +1270,8 @@ def main(argv: list[str] | None = None) -> int:
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])
         rules = None if config.engine_rules is None else load_engine_rules(config.engine_rules)
         # 설정이 통과한 뒤에만 묻는다. 비밀번호는 이 프로세스 메모리에만 있고 어디에도 쓰지 않는다.
-        secret = AdminSecret(getpass.getpass("엔진 관리자 비밀번호(화면에 표시되지 않음): "))
+        secret = AdminSecret(getpass.getpass("엔진 관리자 비밀번호(화면에 표시되지 않음): "),
+                             username=BASELINE_ADMIN_USERNAME if plan.side == "baseline" else ADMIN_USERNAME)
         directory = create_run_directory(config.runs_root, plan.run_id, plan.e2_mode)
         e2_link = None
         if plan.e2_mode == E2_PRODUCT:

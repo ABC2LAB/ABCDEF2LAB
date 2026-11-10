@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({ listeners: new Set<() => void>() }));
 
-vi.mock("@/abc2lab-ui/lib/api", async (importOriginal) => {
-  const real = await importOriginal<typeof import("@/abc2lab-ui/lib/api")>();
+vi.mock("@/lib/diagnosis/api", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/diagnosis/api")>();
   return {
     ...real,
     apiFetch: vi.fn(),
@@ -26,8 +26,8 @@ vi.mock("@/abc2lab-ui/lib/api", async (importOriginal) => {
   };
 });
 
-import * as teamApi from "@/abc2lab-ui/lib/api";
-import { ApiError } from "@/abc2lab-ui/lib/api";
+import * as teamApi from "@/lib/diagnosis/api";
+import { ApiError } from "@/lib/diagnosis/api";
 
 import {
   checkLiveAuth,
@@ -112,11 +112,12 @@ describe("LiveGate", () => {
     expect(await screen.findByText("엔진(8787)에 연결할 수 없습니다")).toBeInTheDocument();
   });
 
-  it("예시 재생으로 보기 → demo", async () => {
+  it("서버 오류에도 실제 연결을 유지하고 예시 전환을 표시하지 않는다", async () => {
     m.readAuthStatus.mockRejectedValue(new ApiError(0, "x"));
     render(<Harness />);
-    fireEvent.click(await screen.findByRole("button", { name: "예시 재생으로 보기" }));
-    expect(useSource.getState().source).toBe("demo");
+    expect(await screen.findByRole("button", { name: "다시 시도" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "예시 재생으로 보기" })).toBeNull();
+    expect(useSource.getState().source).toBe("live");
   });
 
   it("initialized=false → 초기 설정 안내", async () => {
@@ -131,13 +132,13 @@ describe("LiveGate", () => {
     m.restoreSession.mockResolvedValue(false);
     render(<Harness />);
     const pass = await screen.findByLabelText("비밀번호");
-    expect(screen.getByLabelText("아이디")).toHaveValue("ARTEX");
+    expect(screen.getByLabelText("아이디")).toHaveValue("ABC2LAB");
 
     m.signIn.mockRejectedValueOnce(new ApiError(401, "bad"));
     fireEvent.change(pass, { target: { value: "wrong-pw" } });
     fireEvent.click(screen.getByRole("button", { name: "로그인" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("아이디 또는 비밀번호가 맞지 않습니다.");
-    expect(m.signIn).toHaveBeenLastCalledWith("ARTEX", "wrong-pw");
+    expect(m.signIn).toHaveBeenLastCalledWith("ABC2LAB", "wrong-pw");
     expect(screen.getByLabelText("비밀번호")).toHaveValue("");
 
     m.signIn.mockResolvedValueOnce(undefined);
@@ -146,7 +147,7 @@ describe("LiveGate", () => {
     fireEvent.submit(screen.getByLabelText("비밀번호").closest("form") as HTMLFormElement);
     expect(screen.getByLabelText("비밀번호")).toHaveValue("");
     expect(await screen.findByText("실제 화면")).toBeInTheDocument();
-    expect(m.signIn).toHaveBeenLastCalledWith("ARTEX", "right-pw");
+    expect(m.signIn).toHaveBeenLastCalledWith("ABC2LAB", "right-pw");
   });
 
   it("토큰이 있어도 첫 호출이 401 이면 로그인", async () => {

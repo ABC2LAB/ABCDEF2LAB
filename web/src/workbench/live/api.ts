@@ -5,10 +5,10 @@
 // - 서비스 자산의 auth[] · extra · LLM proxy · API 키 힌트처럼 화면에 필요 없는 민감 칸은 받아도 버린다.
 // - 토큰은 URL·쿼리에 넣지 않는다(apiFetch 가 Authorization 헤더로만 보낸다).
 
-import { ApiError, apiFetch, apiFetchBlob } from "@/abc2lab-ui/lib/api";
-import * as engine from "@/abc2lab-ui/lib/engine";
-import { type RemediationData, readRemediation } from "@/abc2lab-ui/lib/remediation";
-import * as ra from "@/abc2lab-ui/lib/request-approvals";
+import { ApiError, apiFetch, apiFetchBlob } from "@/lib/diagnosis/api";
+import * as engine from "@/lib/diagnosis/engine";
+import { type RemediationData, readRemediation } from "@/lib/diagnosis/remediation";
+import * as ra from "@/lib/diagnosis/request-approvals";
 
 import { maskJson, maskParam, maskSecrets } from "./mask";
 

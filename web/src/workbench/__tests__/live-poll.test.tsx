@@ -5,7 +5,7 @@ import { StrictMode } from "react";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError } from "@/abc2lab-ui/lib/api";
+import { ApiError } from "@/lib/diagnosis/api";
 
 import { usePoll } from "../live/usePoll";
 
