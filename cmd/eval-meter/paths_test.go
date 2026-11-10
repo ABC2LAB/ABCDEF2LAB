@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -14,40 +15,32 @@ import (
 
 const pathSentinel = "SENTINELVALUE"
 
+// 가림 규칙의 합성 벡터는 testdata에 두어 다른 언어의 소비자도 같은 값으로 시험할 수 있게 한다.
 func TestMaskPath(t *testing.T) {
-	for name, tc := range map[string]struct {
-		path    string
-		pattern string
-		masked  int
-	}{
-		"plain":             {"/api/Users", "/api/Users", 0},
-		"root":              {"/", "/", 0},
-		"trailing slash":    {"/api/Users/", "/api/Users/", 0},
-		"digits":            {"/api/Users/123", "/api/Users/{id}", 1},
-		"digits and letter": {"/v2/items", "/v2/items", 0},
-		"uuid":              {"/o/123e4567-e89b-12d3-a456-426614174000", "/o/{id}", 1},
-		"hex":               {"/o/0123456789abcdef", "/o/{id}", 1},
-		"short hex":         {"/o/abc123", "/o/abc123", 0},
-		"encoded digits":    {"/reset/abcdefghij0123456789", "/reset/{id}", 1},
-		"encoded mixed":     {"/reset/AbCdEfGhIjKlMnOpQrSt", "/reset/{id}", 1},
-		"endpoint name":     {"/authentication-details", "/authentication-details", 0},
-		"upper name":        {"/AUTHENTICATION-DETAILS", "/AUTHENTICATION-DETAILS", 0},
-		"short mixed":       {"/getUser", "/getUser", 0},
-		"email":             {"/users/a@example.test", "/users/{id}", 1},
-		"encoded email":     {"/users/a%40example.test", "/users/{id}", 1},
-		"base64 padding":    {"/t/abc%3D", "/t/{id}", 1},
-		"decoded plain":     {"/a%2Db", "/a-b", 0},
-		"encoded slash":     {"/a%2Fb", "/{id}", 1},
-		"bad escape":        {"/a%ZZ/b", "/{id}/b", 1},
-		"long":              {"/" + strings.Repeat("g", maxSegmentLength+1), "/{id}", 1},
-		"exact long":        {"/" + strings.Repeat("g", maxSegmentLength), "/" + strings.Repeat("g", maxSegmentLength), 0},
-		"not a path":        {"*", "{id}", 1},
-		"two values":        {"/a/1/b/2", "/a/{id}/b/{id}", 2},
-	} {
-		t.Run(name, func(t *testing.T) {
-			pattern, masked := maskPath(tc.path)
-			if pattern != tc.pattern || masked != tc.masked {
-				t.Fatalf("got %q %d want %q %d", pattern, masked, tc.pattern, tc.masked)
+	raw, err := os.ReadFile(filepath.Join("testdata", "path-mask-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Profile string `json:"profile"`
+		Vectors []struct {
+			Name           string `json:"name"`
+			Path           string `json:"path"`
+			PathPattern    string `json:"path_pattern"`
+			MaskedSegments int    `json:"masked_segments"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	if file.Profile != pathMaskProfile || len(file.Vectors) < 20 {
+		t.Fatal(file.Profile, len(file.Vectors))
+	}
+	for _, tc := range file.Vectors {
+		t.Run(tc.Name, func(t *testing.T) {
+			pattern, masked := maskPath(tc.Path)
+			if pattern != tc.PathPattern || masked != tc.MaskedSegments {
+				t.Fatalf("got %q %d want %q %d", pattern, masked, tc.PathPattern, tc.MaskedSegments)
 			}
 		})
 	}
@@ -91,7 +84,7 @@ func TestEnginePathLogRecordsMaskedForwardedRequests(t *testing.T) {
 	if status, _ := do(http.MethodGet, "/after/seal"); status != http.StatusServiceUnavailable {
 		t.Fatal(status)
 	}
-	want := []pathRow{{1, "GET", "/api/Users/{id}", 1}, {2, "POST", "/users/{id}", 1}, {3, "GET", "/{id}/ok", 1}}
+	want := []pathRow{{1, "GET", "/api/Users/{id}", 1, pathMaskProfile}, {2, "POST", "/users/{id}", 1, pathMaskProfile}, {3, "GET", "/{id}/ok", 1, pathMaskProfile}}
 	if got := readRows[pathRow](t, path); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
 	}

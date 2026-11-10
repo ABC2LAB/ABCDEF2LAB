@@ -194,7 +194,7 @@ func TestRunEnginePathLogFlagWritesPatterns(t *testing.T) {
 		t.Fatal("front did not stop")
 	}
 	rows := readRows[pathRow](t, filepath.Join(dir, enginePathLogName))
-	if len(rows) != 1 || rows[0].Pattern != "/api/Users/{id}" {
+	if len(rows) != 1 || rows[0].PathPattern != "/api/Users/{id}" {
 		t.Fatalf("%+v", rows)
 	}
 }

@@ -11,10 +11,12 @@ import (
 
 const (
 	enginePathLogName = "engine-paths.jsonl"
-	maskedSegment     = "{id}"
-	maskedLongPath    = "/{too_long}"
-	maxPathSegments   = 32
-	maxSegmentLength  = 32
+	// 가림 규칙을 바꾸면 이 값을 올려서 다른 규칙의 패턴끼리 비교하지 않게 한다.
+	pathMaskProfile  = "abc2lab.path-mask/v1"
+	maskedSegment    = "{id}"
+	maskedLongPath   = "/{too_long}"
+	maxPathSegments  = 32
+	maxSegmentLength = 32
 )
 
 var (
@@ -24,11 +26,13 @@ var (
 	encodedSegment = regexp.MustCompile(`^[A-Za-z0-9_-]{20,}$`)
 )
 
+// 시도 ID·전송 단계는 같은 seq의 engine-requests.jsonl 행에 있다. 여기에 복사하지 않는다.
 type pathRow struct {
-	Seq     uint64 `json:"seq"`
-	Method  string `json:"method"`
-	Pattern string `json:"pattern"`
-	Masked  int    `json:"masked"`
+	Seq            uint64 `json:"seq"`
+	Method         string `json:"method"`
+	PathPattern    string `json:"path_pattern"`
+	MaskedSegments int    `json:"masked_segments"`
+	PathProfileRef string `json:"path_profile_ref"`
 }
 
 // 일반 엔드포인트 이름(authentication-details)은 남기고, 숫자나 대소문자가 섞인 긴 조각만 값으로 본다.

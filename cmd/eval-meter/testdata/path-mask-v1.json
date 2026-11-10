@@ -1,0 +1,143 @@
+{
+ "profile": "abc2lab.path-mask/v1",
+ "vectors": [
+  {
+   "name": "plain",
+   "path": "/api/Users",
+   "path_pattern": "/api/Users",
+   "masked_segments": 0
+  },
+  {
+   "name": "root",
+   "path": "/",
+   "path_pattern": "/",
+   "masked_segments": 0
+  },
+  {
+   "name": "trailing slash",
+   "path": "/api/Users/",
+   "path_pattern": "/api/Users/",
+   "masked_segments": 0
+  },
+  {
+   "name": "digits",
+   "path": "/api/Users/123",
+   "path_pattern": "/api/Users/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "digits and letter",
+   "path": "/v2/items",
+   "path_pattern": "/v2/items",
+   "masked_segments": 0
+  },
+  {
+   "name": "uuid",
+   "path": "/o/123e4567-e89b-12d3-a456-426614174000",
+   "path_pattern": "/o/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "hex",
+   "path": "/o/0123456789abcdef",
+   "path_pattern": "/o/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "short hex",
+   "path": "/o/abc123",
+   "path_pattern": "/o/abc123",
+   "masked_segments": 0
+  },
+  {
+   "name": "encoded digits",
+   "path": "/reset/abcdefghij0123456789",
+   "path_pattern": "/reset/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "encoded mixed",
+   "path": "/reset/AbCdEfGhIjKlMnOpQrSt",
+   "path_pattern": "/reset/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "endpoint name",
+   "path": "/authentication-details",
+   "path_pattern": "/authentication-details",
+   "masked_segments": 0
+  },
+  {
+   "name": "upper name",
+   "path": "/AUTHENTICATION-DETAILS",
+   "path_pattern": "/AUTHENTICATION-DETAILS",
+   "masked_segments": 0
+  },
+  {
+   "name": "short mixed",
+   "path": "/getUser",
+   "path_pattern": "/getUser",
+   "masked_segments": 0
+  },
+  {
+   "name": "email",
+   "path": "/users/a@example.test",
+   "path_pattern": "/users/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "encoded email",
+   "path": "/users/a%40example.test",
+   "path_pattern": "/users/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "base64 padding",
+   "path": "/t/abc%3D",
+   "path_pattern": "/t/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "decoded plain",
+   "path": "/a%2Db",
+   "path_pattern": "/a-b",
+   "masked_segments": 0
+  },
+  {
+   "name": "encoded slash",
+   "path": "/a%2Fb",
+   "path_pattern": "/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "bad escape",
+   "path": "/a%ZZ/b",
+   "path_pattern": "/{id}/b",
+   "masked_segments": 1
+  },
+  {
+   "name": "long",
+   "path": "/ggggggggggggggggggggggggggggggggg",
+   "path_pattern": "/{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "exact long",
+   "path": "/gggggggggggggggggggggggggggggggg",
+   "path_pattern": "/gggggggggggggggggggggggggggggggg",
+   "masked_segments": 0
+  },
+  {
+   "name": "not a path",
+   "path": "*",
+   "path_pattern": "{id}",
+   "masked_segments": 1
+  },
+  {
+   "name": "two values",
+   "path": "/a/1/b/2",
+   "path_pattern": "/a/{id}/b/{id}",
+   "masked_segments": 2
+  }
+ ]
+}
