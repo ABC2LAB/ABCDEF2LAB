@@ -36,7 +36,7 @@ from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa:
 from scoreboard import SnapshotError  # noqa: E402
 
 from e2_prompt_identity import PROMPT_FIELDS, PromptIdentityError, condition_prompt_identity  # noqa: E402
-from isolation_proof import E2_PRODUCT_FAILURE  # noqa: E402
+from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE  # noqa: E402
 from run_record import V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key  # noqa: E402
 
 Correlate = Callable[[VerdictRecord], str | None]
@@ -328,7 +328,7 @@ def build_report(
                                            "LLM 스트리밍": set(), "엔진 규칙 파일": set(), "도구 트리": set()}
     # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
     e2_modes: dict[str, set[str]] = {}
-    e2_identities: dict[str, set[tuple[str, str]]] = {}
+    e2_identities: dict[str, set[tuple[str, str, str, str]]] = {}
     e2_prompts: dict[str, list[tuple[str, ...]]] = {}
     # 표시 언어도 baseline·개선 후가 일부러 다르다(프로토콜 §2). 조건 하나 안에서만 같아야 한다.
     output_languages: dict[str, set[str]] = {}
@@ -384,7 +384,7 @@ def build_report(
             identities = e2_identities.setdefault(m.condition, set())
             identities.add(inputs.e2_identity)
             if len(identities) > 1:
-                raise ComparabilityError(f"E② 정책 지문·이미지 불일치({m.condition}) — 같은 정책·이미지끼리만 집계(프로토콜 §2)")
+                raise ComparabilityError(f"E② 정책 지문·이미지·선언 차이 불일치({m.condition}) — 같은 정책·이미지·선언끼리만 집계(프로토콜 §2)")
         if inputs.e2_prompt is not None:
             e2_prompts.setdefault(m.condition, []).append(inputs.e2_prompt)
         # 증명 없는 회차는 대조 근거가 None이다. 조건의 분모에 남겨 보류로 센다(#225 리뷰).
@@ -399,6 +399,9 @@ def build_report(
             condition_prompt_identity([[dict(zip(PROMPT_FIELDS, identity))] for identity in identities])
         except PromptIdentityError:
             raise ComparabilityError(f"E② 프롬프트 불일치({condition}) — 조건 하나는 같은 프롬프트로만 집계(프로토콜 §2)") from None
+    for condition, identities in e2_identities.items():
+        if any(identity[3] == E2_DECLARED_PROPOSED for identity in identities):
+            warnings.append(f"경고[공식 비교 아님] {condition}: 선언 차이 목록이 PM 확정 전(proposed) — 시범·개발 측정용이며 공식 비교표에 쓰지 않음(프로토콜 §2)")
     for condition, modes in e2_modes.items():
         if "stub" in modes:
             # 가짜 E² 회차는 시범·공식 결과가 아니다(프로토콜 §2). 배치 스모크를 확인할 때만 명시적으로 연다.

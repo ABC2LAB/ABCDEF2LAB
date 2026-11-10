@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -139,6 +140,53 @@ func TestE2RemoteRunsThroughTheBackend(t *testing.T) {
 	}
 	if state := run.Snapshot().State; state == "active" {
 		t.Fatal("중지 뒤에도 활성 상태")
+	}
+}
+
+// 출력의 `rc=<값>` 줄이 정확히 그 값인지 본다. 부분 일치는 rc=127을 rc=1로 읽는다.
+func e2RemoteExitCodeIs(output string, want int) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if value, ok := strings.CutPrefix(line, "rc="); ok {
+			return value == strconv.Itoa(want)
+		}
+	}
+	return false
+}
+
+// 도구 호출 상한이 있어 별도 fixture로 잰다.
+func TestE2RemoteSandboxCannotReachTheChannelOrNest(t *testing.T) {
+	f := startE2RemoteFixture(t)
+	run := f.acquire(t)
+	ctx := context.Background()
+	// 샌드박스는 빈 netns라 같은 프로세스의 엔진 통로에 닿으면 안 된다. HTTP로 닿으면 401이어도 curl은 rc=0이다.
+	reach, err := run.RunForIntent(ctx, 17, fmt.Sprintf("curl --noproxy '*' --silent --max-time 2 -o /dev/null http://%s%s; echo rc=$?", f.server.addr, e2RemotePath))
+	if err != nil || !e2RemoteExitCodeIs(reach.ToolOutput, 7) {
+		t.Fatalf("샌드박스가 엔진 통로에 닿음: err=%v output=%q", err, reach.ToolOutput)
+	}
+	// 없는 명령(rc=127)을 거절로 착각하지 않게 줄 전체를 비교하고, 다른 이유의 실패와 구분하려고 EPERM 문구도 본다.
+	nested, err := run.RunForIntent(ctx, 17, "unshare -U true; echo rc=$?")
+	if err != nil || !e2RemoteExitCodeIs(nested.ToolOutput, 1) || !strings.Contains(nested.ToolOutput, "Operation not permitted") {
+		t.Fatalf("샌드박스 안에서 namespace를 다시 만듦: err=%v output=%q", err, nested.ToolOutput)
+	}
+}
+
+// 도구 호출 상한에 먼저 걸리지 않게 첫 호출로 잰다.
+func TestE2RemoteRunsOnlyRegisteredIntents(t *testing.T) {
+	f := startE2RemoteFixture(t)
+	run := f.acquire(t)
+	if _, err := run.RunForIntent(context.Background(), 18, "true"); !errors.Is(err, ErrE2Control) || errors.Is(err, e2runner.ErrUnavailable) {
+		t.Fatal("등록하지 않은 intent가 실행됨:", err)
+	}
+	if run.HasIntent(18) {
+		t.Fatal("거절된 실행이 intent를 등록함")
+	}
+}
+
+func TestE2RemoteExitCodeIsExact(t *testing.T) {
+	for output, want := range map[string]bool{"rc=1\n": true, "unshare: denied\nrc=1\n": true, "rc=0\n": false, "rc=127\n": false, "rc=10\n": false, "": false, "xrc=1\n": false} {
+		if e2RemoteExitCodeIs(output, 1) != want {
+			t.Fatalf("%q", output)
+		}
 	}
 }
 
