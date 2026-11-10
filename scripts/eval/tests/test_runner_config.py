@@ -466,7 +466,8 @@ E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:te
                     "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30,
                     "policy_tool": "/usr/local/bin/e2-eval-policy", "policy_tool_timeout_seconds": 30, "helper": "/usr/local/bin/e2-bash-sandbox",
                     "helper_sha256": "a" * 64, "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10", "window_seconds": 7200,
-                    "approval_valid_until": "2099-01-01T00:00:00Z", "prompt_wait_seconds": 30}
+                    "approval_valid_until": "2099-01-01T00:00:00Z", "prompt_wait_seconds": 30,
+                    "declared_differences_path": "/srv/eval/e2-declared.json", "declared_differences_sha256": "b" * 64}
 
 
 class TestE2Product(unittest.TestCase):
@@ -509,6 +510,8 @@ class TestE2Product(unittest.TestCase):
                               ({"helper": "bin/helper"}, "config.e2.helper: EXPECTED_ABSOLUTE_PATH"),
                               ({"policy_tool": "e2-eval-policy"}, "config.e2.policy_tool: EXPECTED_ABSOLUTE_PATH"),
                               ({"policy_tool_timeout_seconds": 0}, "config.e2.policy_tool_timeout_seconds: INVALID"),
+                              ({"declared_differences_path": "e2-declared.json"}, "config.e2.declared_differences_path: EXPECTED_ABSOLUTE_PATH"),
+                              ({"declared_differences_sha256": "x"}, "config.e2.declared_differences_sha256: INVALID"),
                               ({"prompt_wait_seconds": 0}, "config.e2.prompt_wait_seconds: INVALID"),
                               ({"prompt_wait_seconds": "30"}, "config.e2.prompt_wait_seconds: INVALID"),
                               ({"window_seconds": 0}, "config.e2.window_seconds: INVALID"),

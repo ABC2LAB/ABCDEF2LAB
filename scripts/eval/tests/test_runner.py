@@ -55,7 +55,8 @@ E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:te
                     "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30,
                     "policy_tool": "/usr/local/bin/e2-eval-policy", "policy_tool_timeout_seconds": 30, "helper": "/usr/local/bin/e2-bash-sandbox",
                     "helper_sha256": "a" * 64, "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10", "window_seconds": 7200,
-                    "approval_valid_until": "2099-01-01T00:00:00Z", "prompt_wait_seconds": 30}
+                    "approval_valid_until": "2099-01-01T00:00:00Z", "prompt_wait_seconds": 30,
+                    "declared_differences_path": "/srv/eval/e2-declared.json", "declared_differences_sha256": "b" * 64}
 
 
 def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None):
@@ -662,6 +663,7 @@ class TestE2Product(unittest.TestCase):
         self.assertEqual(row["decisions"], {"allowed": 2, "denied": 1, "unsupported": 0})
         self.assertEqual((row["config_sha256"], row["policy_fingerprint_sha256"], row["manifest_sha256"]), ("1" * 64, "f" * 64, E2_MANIFEST))
         self.assertEqual(row["image_id"], E2_IMAGE_ID)
+        self.assertEqual(row["declared_differences_sha256"], "b" * 64)
         self.assertEqual(evidence.files["e2-service-ready.json"]["state"], "service_ready")
         self.assertEqual(evidence.files["e2-collection.json"]["outcome"], "complete")
         cells = self.row(evidence, "attempt_reconciliation")[0]["cells"]
@@ -2123,7 +2125,10 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
             tool = Path(tmp, "fake-ca-tool")
             tool.write_text('#!/bin/sh\numask 077\nprintf cert > "$3"\nprintf key > "$5"\n')
             tool.chmod(0o700)
-            payload["e2"] = dict(E2_PRODUCT_BLOCK, policy_path=str(Path(tmp, "missing-policy.json")), policy_tool=str(tool))
+            declared = Path(tmp, "declared.json")
+            declared.write_bytes(b"{}")
+            payload["e2"] = dict(E2_PRODUCT_BLOCK, policy_path=str(Path(tmp, "missing-policy.json")), policy_tool=str(tool), declared_differences_path=str(declared),
+                                 declared_differences_sha256=hashlib.sha256(b"{}").hexdigest())
         return self.inputs(tmp, product_with_missing_policy)
 
     def test_e2_preparation_failure_leaves_no_run_directory(self):
