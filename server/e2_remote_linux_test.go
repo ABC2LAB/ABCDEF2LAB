@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -405,14 +406,8 @@ func TestE2EvalServiceOpensTheEngineChannelOnlyWithAToken(t *testing.T) {
 	if err != nil {
 		t.Fatal("토큰이 있는 서비스 기동 실패:", err)
 	}
-	defer func() {
-		closing, stop := context.WithTimeout(context.Background(), 10*time.Second)
-		defer stop()
-		if err := service.Close(closing); err != nil {
-			t.Error(err)
-		}
-	}()
-	client, err := newE2RemoteClient("http://"+service.remote.addr, tokenPath, 5*time.Second)
+	address := service.remote.addr
+	client, err := newE2RemoteClient("http://"+address, tokenPath, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,6 +417,15 @@ func TestE2EvalServiceOpensTheEngineChannelOnlyWithAToken(t *testing.T) {
 	}
 	if _, ok := service.backend.options.Supervisor.(*e2EvalTaskBinding); !ok {
 		t.Fatal("토큰이 있는데 task 고정이 없음")
+	}
+	closing, stop := context.WithTimeout(context.Background(), 10*time.Second)
+	defer stop()
+	if err := service.Close(closing); err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := net.DialTimeout("tcp", address, time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatal("서비스 종료 뒤에도 엔진 호출 경로가 열림")
 	}
 }
 
