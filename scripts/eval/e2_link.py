@@ -45,7 +45,7 @@ class E2Link:
     def __init__(self, product: dict, paths: E2LinkPaths, run_id: str, model_tag: str, llm_backend: str, port: int, now: Callable[[], datetime] = _utc_now):
         self.product, self.paths, self.run_id, self.model_tag, self.llm_backend = product, paths, run_id, model_tag, llm_backend
         self.evaluation = evaluation_declaration(product["header_mode"], llm_backend)
-        run_ref = new_reference(RUN_REFERENCE_PREFIX)
+        self.run_ref = run_ref = new_reference(RUN_REFERENCE_PREFIX)
         valid_from, valid_until = approval_window(now(), product["window_seconds"], product["approval_valid_until"])
         cert_sha256, key_sha256 = issue_run_ca(Path(product["policy_tool"]), paths.config, run_ref, valid_until, product["policy_tool_timeout_seconds"])
         policy = render_policy(Path(product["policy_path"]), E2RunResources(run_ref, valid_from, valid_until, CONTAINER_STATE_DIR, product["helper"],

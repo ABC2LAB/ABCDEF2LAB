@@ -237,9 +237,85 @@ class TestRejectedV11(_V11):
                "config_sha256": "1" * 64, "policy_fingerprint_sha256": "2" * 64, "manifest_sha256": "3" * 64,
                "image_id": "sha256:" + "4" * 64} | changes
 
+        prompt = self._prompt_row(row["collection_outcome"])
+
         def add(rows):
             rows.append({"kind": "e2_product", "seq": len(rows) + 1, "at": rows[-1]["at"], **row})
+            rows.append({"kind": "e2_prompt", "seq": len(rows) + 1, "at": rows[-1]["at"], **prompt})
         return add
+
+    PROMPT_VALUES = {"source": "builtin", "template_digest": "a" * 64, "guidance_digest": "b" * 64, "control_digest": "c" * 64, "tools_digest": "d" * 64}
+
+    def _prompt_row(self, outcome="complete", **changes):
+        details = {"task_id": "42", "exploration_id": 9, "run_ref": "e2run-1", "expected_count": 2, "projection_sha256": "e" * 64} | self.PROMPT_VALUES
+        if outcome != "complete":
+            return {"status": "not_applicable", "reason": outcome} | {name: None for name in details} | changes
+        return {"status": "verified", "reason": None} | details | changes
+
+    def _with_prompt(self, prompt):
+        """제품 행은 그대로 두고 프롬프트 행만 바꾼다."""
+        add = self._product_row()
+
+        def apply(rows):
+            add(rows)
+            rows[-1].update(prompt)
+        return apply
+
+    def test_verified_prompt_reaches_the_scorer(self):
+        inputs = self.inputs(self.v11("pv", e2=self.PRODUCT, tamper_rows=self._product_row()))
+        self.assertEqual(inputs.e2_prompt, ("builtin", "a" * 64, "b" * 64, "c" * 64, "d" * 64))
+
+    def test_other_placements_have_no_prompt(self):
+        self.assertIsNone(self.inputs(self.v11("pn")).e2_prompt)
+        self.assertIsNone(self.inputs(self.v11("ps", e2=E2_STUB_PLACEMENT)).e2_prompt)
+
+    def test_failed_product_has_no_prompt_to_compare(self):
+        self.assertIsNone(self.inputs(self.v11("pf", e2=self.PRODUCT, tamper_rows=self._failed_product, blocked_attempts=None)).e2_prompt)
+
+    def test_prompt_row_is_required_exactly_once_on_product_runs(self):
+        def without(rows):
+            self._product_row()(rows)
+            rows.pop()
+
+        def twice(rows):
+            self._product_row()(rows)
+            rows.append(dict(rows[-1], seq=len(rows) + 1))
+        self.reject("e2_prompt: 정확히 한 행", "pa", e2=self.PRODUCT, tamper_rows=without)
+        self.reject("e2_prompt: 정확히 한 행", "pb", e2=self.PRODUCT, tamper_rows=twice)
+
+    def test_prompt_row_only_belongs_to_product_runs(self):
+        def add(rows):
+            rows.append({"kind": "e2_prompt", "seq": len(rows) + 1, "at": rows[-1]["at"], **self._prompt_row()})
+        self.reject("e2_prompt: 제품 E² 회차에만", "pc", tamper_rows=add)
+        self.reject("e2_prompt: 제품 E² 회차에만", "pd", e2=E2_STUB_PLACEMENT, tamper_rows=add)
+
+    def test_complete_outcome_cannot_skip_the_prompt(self):
+        self.reject("미적용 상태", "pe", e2=self.PRODUCT, tamper_rows=self._with_prompt(self._prompt_row("product_failure", reason="complete")))
+
+    def test_verified_status_needs_a_complete_outcome(self):
+        def forged(rows):
+            self._failed_product(rows)
+            rows[-1].update(self._prompt_row())
+        self.reject("확인 상태", "pf2", e2=self.PRODUCT, tamper_rows=forged, blocked_attempts=None)
+
+    def test_not_applicable_reason_is_the_outcome_and_holds_no_values(self):
+        for name, changes in (("reason", {"reason": "complete"}), ("value", {"tools_digest": "d" * 64}), ("run_ref", {"run_ref": "e2run-1"})):
+            with self.subTest(name):
+                def forged(rows):
+                    self._failed_product(rows)
+                    rows[-1].update(changes)
+                self.reject("미적용 상태", "pg" + name[:3], e2=self.PRODUCT, tamper_rows=forged, blocked_attempts=None)
+
+    def test_verified_values_are_checked(self):
+        for name, changes in (("digest", {"tools_digest": "D" * 64}), ("template", {"template_digest": "x"}), ("hash", {"projection_sha256": "zz"}),
+                              ("source", {"source": "db"}), ("exploration", {"exploration_id": 0}), ("count", {"expected_count": 0}),
+                              ("task", {"task_id": 42}), ("run", {"run_ref": None}), ("reason", {"reason": "x"})):
+            with self.subTest(name):
+                code = "확인 상태" if name == "reason" else "값 형식 오류"
+                self.reject(code, "ph" + name[:3], e2=self.PRODUCT, tamper_rows=self._with_prompt(changes))
+
+    def test_unknown_status_is_rejected(self):
+        self.reject("확인 상태", "pi", e2=self.PRODUCT, tamper_rows=self._with_prompt({"status": "maybe"}))
 
     def test_product_run_uses_its_own_decision_counts(self):
         inputs = self.inputs(self.v11("p1", e2=self.PRODUCT, tamper_rows=self._product_row()))
@@ -360,6 +436,22 @@ class TestRejectedV11(_V11):
         mixed = [self.v11("l3"), self.v11("l4", repeat_index=1, tamper_rows=english)]
         with self.assertRaisesRegex(ComparabilityError, "표시 언어 혼합"):
             build_report(self.load(mixed), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_one_condition_must_use_one_prompt(self):
+        for name in ("source", "template_digest", "guidance_digest", "control_digest", "tools_digest"):
+            with self.subTest(name):
+                value = "override" if name == "source" else "e" * 64
+                runs = [self._product_run(f"y{name[:3]}a"), self.v11(f"y{name[:3]}b", repeat_index=1, e2=self.PRODUCT, tamper_rows=self._with_prompt({name: value}))]
+                with self.assertRaisesRegex(ComparabilityError, "E② 프롬프트 불일치"):
+                    build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_same_prompt_in_one_condition_is_accepted(self):
+        runs = [self._product_run("z0"), self._product_run("z1", 1)]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_failed_product_run_does_not_break_the_prompt_comparison(self):
+        runs = [self._product_run("z2"), self.v11("z3", repeat_index=1, e2=self.PRODUCT, tamper_rows=self._failed_product)]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
 
     def test_one_condition_must_use_one_policy_and_image(self):
         for index, changes in enumerate(({"policy_fingerprint_sha256": "5" * 64}, {"image_id": "sha256:" + "6" * 64})):

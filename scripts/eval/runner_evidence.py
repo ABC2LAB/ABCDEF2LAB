@@ -112,6 +112,12 @@ class EvidenceDir:
                               allow_nan=False).encode("utf-8") + b"\n"
         except (TypeError, ValueError):
             raise EvidenceError("evidence_payload_invalid") from None
+        return self.write_bytes(name, data)
+
+    def write_bytes(self, name: str, data: bytes) -> str:
+        """받은 바이트를 그대로 남긴다. 다시 직렬화하면 digest가 받은 것과 달라진다."""
+        if not _NAME.fullmatch(name):
+            raise EvidenceError("evidence_name_invalid")
         directory = _open_dir(self.path)
         try:
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,

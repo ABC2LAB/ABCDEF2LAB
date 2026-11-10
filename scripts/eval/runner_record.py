@@ -97,7 +97,7 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
                   allowed: list[dict], boundary_ref: str, policy: str, steps: dict, observer_rows: list[dict],
                   ready_calls: int, observer_path_ref: str, readonly_ref: str, meter: dict, drained: dict,
                   engine_rows: int, conditions: dict, e2: dict, reconciliation: dict | None = None,
-                  verdict_collection: dict | None = None, e2_product: dict | None = None) -> list[dict]:
+                  verdict_collection: dict | None = None, e2_product: dict | None = None, e2_prompt: dict | None = None) -> list[dict]:
     """러너가 확인한 근거를 §3.1 행으로 옮긴다. seq는 이 함수가 붙인다."""
     network_ids = sorted(n["id"] for n in pre["networks"].values())
     rows: list[dict] = [
@@ -138,6 +138,8 @@ def evidence_rows(*, pre_at: str, post_check_at: str, window: dict, pre: dict, p
     if e2_product is not None:
         # 제품 E② 수집 결과. 제품 실패도 유효 회차이고 대조 근거만 없다(연결 제안 §4.3).
         rows.append({"kind": "e2_product", "at": steps["drained"]["at"], **e2_product})
+    if e2_prompt is not None:
+        rows.append({"kind": "e2_prompt", "at": steps["drained"]["at"], **e2_prompt})
     if verdict_collection is not None:
         # 판정 export 수집 상태. 무결성 실패면 채점기가 표를 멈춘다(run-record-v1.1 §3.1).
         rows.append({"kind": "verdict_collection", "at": steps["drained"]["at"], **verdict_collection})
