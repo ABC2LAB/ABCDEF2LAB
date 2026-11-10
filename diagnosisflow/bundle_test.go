@@ -61,6 +61,7 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"fetch unclosed":        {`fetch("/data/f",{method:"GET"`, []string{"UNKNOWN /data/f script_call"}},
 		"fetch nested options":  {`fetch("/data/add",{headers:{a:1},method:"POST"})`, []string{"UNKNOWN /data/add script_call"}},
 		"fetch variable init":   {`fetch("/data/add",init)`, []string{"UNKNOWN /data/add script_call"}},
+		"unknown keeps source":  {`fetch("/x/y",init);c.get(u+"/x/y")`, []string{"UNKNOWN /x/y static_literal"}},
 		"fetch unknown literal": {`fetch("/api/x",init)`, []string{"UNKNOWN /api/x script_call"}},
 		"fetch base":            {`this.b="/api";fetch(this.b+"/z")`, []string{"GET /api/z script_call"}},
 		"fetch dynamic":         {`fetch("/data/one/"+id)`, []string{"UNKNOWN /data/one script_prefix"}},

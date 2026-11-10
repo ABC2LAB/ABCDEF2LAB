@@ -255,8 +255,7 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 	}
 	literals := append(urlField.FindAllSubmatchIndex(body, maxBundleMatches), apiLiteral.FindAllSubmatchIndex(body, maxBundleMatches)...)
 	for _, m := range literals {
-		// 동적 호출은 끝 `/`를 뗀 경로로 기록되므로 같은 literal을 UNKNOWN으로 다시 세지 않는다.
-		if path := group(body, m, 1); !called[path] && !called[strings.TrimSuffix(path, "/")] {
+		if path := group(body, m, 1); !called[path] {
 			emit("UNKNOWN", path, "api", "static_literal")
 		}
 	}
