@@ -163,9 +163,9 @@ func TestE2RemoteSandboxCannotReachTheChannelOrNest(t *testing.T) {
 	if err != nil || !e2RemoteExitCodeIs(reach.ToolOutput, 7) {
 		t.Fatalf("샌드박스가 엔진 통로에 닿음: err=%v output=%q", err, reach.ToolOutput)
 	}
-	// 없는 명령(rc=127)을 거절로 착각하지 않게 줄 전체를 비교한다.
+	// 없는 명령(rc=127)을 거절로 착각하지 않게 줄 전체를 비교하고, 다른 이유의 실패와 구분하려고 EPERM 문구도 본다.
 	nested, err := run.RunForIntent(ctx, 17, "unshare -U true; echo rc=$?")
-	if err != nil || !e2RemoteExitCodeIs(nested.ToolOutput, 1) {
+	if err != nil || !e2RemoteExitCodeIs(nested.ToolOutput, 1) || !strings.Contains(nested.ToolOutput, "Operation not permitted") {
 		t.Fatalf("샌드박스 안에서 namespace를 다시 만듦: err=%v output=%q", err, nested.ToolOutput)
 	}
 }
