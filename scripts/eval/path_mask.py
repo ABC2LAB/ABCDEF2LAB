@@ -46,13 +46,21 @@ def read_path_key(path: str) -> bytes:
     except OSError:
         raise PathKeyError("path_key_unavailable") from None
     # fdopen 전에 연 fd로 확인한다(디렉터리는 fdopen에서 다른 예외로 샌다).
-    info = os.fstat(fd)
+    # 네트워크 마운트의 EIO 같은 읽기 오류도 같은 사유로 바꿔 호출자 밖으로 새지 않게 한다(#378 리뷰).
+    try:
+        info = os.fstat(fd)
+    except OSError:
+        os.close(fd)
+        raise PathKeyError("path_key_unavailable") from None
     if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o7777 != 0o600 or info.st_uid != os.geteuid()
             or info.st_size != KEY_BYTES):
         os.close(fd)
         raise PathKeyError("path_key_untrusted")
-    with os.fdopen(fd, "rb") as stream:
-        key = stream.read(KEY_BYTES + 1)
+    try:
+        with os.fdopen(fd, "rb") as stream:
+            key = stream.read(KEY_BYTES + 1)
+    except OSError:
+        raise PathKeyError("path_key_unavailable") from None
     if len(key) != KEY_BYTES:
         raise PathKeyError("path_key_untrusted")
     return key

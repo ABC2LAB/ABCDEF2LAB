@@ -16,12 +16,13 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_SERVICE, ENGINE_DATA_PATH,
+    COMPOSE_ACCEPTANCE, COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_SERVICE, ENGINE_DATA_PATH,
     ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
     MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
-    compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
+    check_key_files, compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
     new_run_id, parse_runner_config, plan_run,
 )
+from path_mask import key_ref  # noqa: E402
 from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 
 
@@ -440,8 +441,24 @@ class TestE2Mode(unittest.TestCase):
         # 목적 칸이 생기기 전 설정도 같은 CONFIG_VERSION으로 읽는다.
         before = {k: v for k, v in runner_config().items() if k != "purpose"}
         self.assertEqual(parse_runner_config(before).purpose, "official")
-        self.assertEqual(parse_runner_config(runner_config() | {"purpose": "browser_acceptance"}).purpose,
-                         "browser_acceptance")
+        acceptance = parse_runner_config(runner_config() | {"purpose": "browser_acceptance",
+                                                            "path_key_file": "/srv/eval/path.key"})
+        self.assertEqual((acceptance.purpose, acceptance.path_key_file), ("browser_acceptance", Path("/srv/eval/path.key")))
+        self.assertIsNone(parse_runner_config(before).path_key_file)
+
+    def test_path_key_file_only_for_acceptance(self):
+        # 공식 회차에서 경로 기록을 켤 길을 설정에 두지 않는다. 수용시험 회차는 키가 반드시 있어야 한다.
+        acceptance = runner_config() | {"purpose": "browser_acceptance"}
+        for payload, code in (
+                (runner_config() | {"path_key_file": "/srv/eval/path.key"}, "config.path_key_file: OFFICIAL_FORBIDDEN"),
+                ({k: v for k, v in runner_config().items() if k != "purpose"} | {"path_key_file": "/srv/eval/path.key"},
+                 "config.path_key_file: OFFICIAL_FORBIDDEN"),
+                (acceptance, "config.path_key_file: MISSING"),
+                (acceptance | {"path_key_file": "path.key"}, "config.path_key_file: EXPECTED_ABSOLUTE_PATH"),
+                (acceptance | {"path_key_file": runner_config()["runs_root"] + "/k"}, "config.path_key_file: INSIDE_RUNS_ROOT")):
+            with self.subTest(code=code, key=payload.get("path_key_file")), self.assertRaises(RunnerConfigError) as caught:
+                parse_runner_config(payload)
+            self.assertIn(code, caught.exception.errors)
 
     def test_stub_adds_the_overlay_to_the_ours_side_only(self):
         config = parse_runner_config(runner_config() | {"e2": {"ours_mode": "stub"}})
@@ -870,6 +887,12 @@ class TestComposeContract(unittest.TestCase):
             with self.subTest(backend=backend):
                 self.assertEqual(set(env) & SECRET_ENV_NAMES, set())
                 self.assertEqual(compose_variables(plan.compose_files), set(env) | secret_env_names(backend))
+            accepted = plan_run(parse_runner_config(runner_config() | {"purpose": "browser_acceptance",
+                                                                       "path_key_file": "/srv/eval/path.key"}),
+                                preflight, "baseline", f"acc-{backend}")
+            accepted_env = compose_environment(accepted, create_run_directory(self.root, f"acc-{backend}"))
+            with self.subTest(backend=backend, purpose="browser_acceptance"):
+                self.assertEqual(compose_variables(accepted.compose_files), set(accepted_env) | secret_env_names(backend))
 
     def test_tmpfs_sizes_and_lower_bound(self):
         self.assertEqual([size_bytes(v) for v in ("16", "16k", "16m", "1g")], [16, 16 * 1024, 16 * 1024 ** 2, 1024 ** 3])
@@ -892,7 +915,8 @@ class TestComposeContract(unittest.TestCase):
                 self.assertIn(f"- {path}:size=${{{size_var}:?}}", text)
 
     def test_every_compose_file_is_covered(self):
-        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT}
+        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT,
+                 COMPOSE_ACCEPTANCE}
         on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
         on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
         self.assertEqual(on_disk, files)
@@ -935,6 +959,105 @@ class TestComposeContract(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 compose_variables([path])
 
+
+class TestAcceptanceWiring(unittest.TestCase):
+    """수용시험 회차만 계측기 경로 기록을 켠다(docs/evaluation/browser-acceptance.md §6)."""
+
+    ACCEPTANCE = {"purpose": "browser_acceptance", "path_key_file": "/srv/eval/path.key"}
+
+    def test_overlay_only_on_acceptance_runs_for_both_sides(self):
+        acceptance = parse_runner_config(runner_config() | self.ACCEPTANCE)
+        official = parse_runner_config(runner_config())
+        for side in ("baseline", "ours"):
+            with self.subTest(side=side):
+                plan = plan_run(acceptance, configuration(), side, f"{side}-acc")
+                self.assertEqual((plan.compose_files[-1], plan.compose_env["EVAL_PATH_KEY_FILE"]),
+                                 (COMPOSE_ACCEPTANCE, "/srv/eval/path.key"))
+                plain = plan_run(official, configuration(), side, f"{side}-off")
+                self.assertNotIn(COMPOSE_ACCEPTANCE, plain.compose_files)
+                self.assertNotIn("EVAL_PATH_KEY_FILE", plain.compose_env)
+
+    def test_overlay_repeats_the_meter_command_and_adds_only_the_path_log(self):
+        # compose의 command는 덮어쓰기다. 기본 명령이 바뀌면 overlay도 같이 바뀌어야 한다.
+        def meter(path):
+            text = _yaml_without_comments(path.read_text(encoding="utf-8"))
+            block = text[text.index("  eval-meter:"):]
+            command = block[block.index("    command:"):]
+            lines = []
+            for line in command.splitlines()[1:]:
+                if not line.strip():  # 지운 주석 줄
+                    continue
+                if not line.startswith("      - "):
+                    break
+                lines.append(line.removeprefix("      - "))
+            return lines, block
+        base, _ = meter(COMPOSE_EVAL)
+        overlay, block = meter(COMPOSE_ACCEPTANCE)
+        self.assertEqual(overlay, base + ["-path-log", "-path-key-file=/run/eval-path-key"])
+        # 긴 문법: `:` 들어간 경로도 그대로, 파일이 없으면 디렉터리를 만들지 않고 실패한다.
+        for line in ("- type: bind", "source: ${EVAL_PATH_KEY_FILE:?", "target: /run/eval-path-key",
+                     "read_only: true", "create_host_path: false"):
+            self.assertIn(line, block)
+        self.assertEqual(compose_services(COMPOSE_ACCEPTANCE), {METER_SERVICE})
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "POSIX 전용")
+    def test_key_files_are_checked_before_up(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            runs = base / "runs"
+            runs.mkdir(mode=0o700)
+            keys = base / "keys"
+            keys.mkdir(mode=0o700)
+            runner_key = keys / "runner.key"
+            runner_key.write_bytes(bytes(32))
+            secrets = keys / "eval.secrets.env"
+            secrets.write_bytes(b"X=1\n")
+            key = keys / "path.key"
+            key.write_bytes(bytes(range(32)))
+            for path in (runner_key, secrets, key):
+                os.chmod(path, 0o600)
+            common = {"runs_root": str(runs), "runner_key_path": str(runner_key), "secrets_env_file": str(secrets)}
+
+            def check(**fields):
+                return check_key_files(parse_runner_config(runner_config() | common | fields))
+
+            # 공식 회차는 키 참조가 없고, 수용시험 회차는 키 값이 아니라 참조를 돌려준다.
+            self.assertIsNone(check())
+            self.assertEqual(check(purpose="browser_acceptance", path_key_file=str(key)), key_ref(bytes(range(32))))
+            cases = [
+                ({"path_key_file": str(runner_key)}, "config.path_key_file: SAME_AS_RUNNER_KEY"),
+                ({"path_key_file": str(secrets)}, "config.path_key_file: SAME_AS_SECRETS_FILE"),
+            ]
+            # 상위 디렉터리 링크로 runs_root 안을 가리키는 별칭은 글자 검사를 통과해도 실제 위치로 거부한다.
+            inside = runs / "shared"
+            inside.mkdir(mode=0o700)
+            alias = base / "alias"
+            alias.symlink_to(inside, target_is_directory=True)
+            hidden = inside / "path.key"
+            hidden.write_bytes(bytes(32))
+            os.chmod(hidden, 0o600)
+            cases.append(({"path_key_file": str(alias / "path.key")}, "config.path_key_file: INSIDE_RUNS_ROOT"))
+            # 같은 파일을 다른 이름(하드 링크)으로 줘도 같은 파일이다.
+            linked = keys / "runner-copy.key"
+            os.link(runner_key, linked)
+            cases.append(({"path_key_file": str(linked)}, "config.path_key_file: SAME_AS_RUNNER_KEY"))
+            for fields, code in cases:
+                with self.subTest(code=code, key=fields["path_key_file"]), self.assertRaises(RunnerConfigError) as caught:
+                    check(purpose="browser_acceptance", **fields)
+                self.assertEqual(caught.exception.errors, [code])
+            with self.assertRaises(RunnerConfigError) as caught:
+                check(runner_key_path=str(alias / "runner.key"))
+            self.assertEqual(caught.exception.errors, ["config.runner_key_path: INSIDE_RUNS_ROOT"])
+            for mode, data in ((0o644, bytes(32)), (0o600, bytes(31))):
+                key.write_bytes(data)
+                os.chmod(key, mode)
+                with self.subTest(mode=oct(mode), size=len(data)), self.assertRaises(RunnerConfigError) as caught:
+                    check(purpose="browser_acceptance", path_key_file=str(key))
+                self.assertEqual(caught.exception.errors, ["config.path_key_file: path_key_untrusted"])
+            key.unlink()
+            with self.assertRaises(RunnerConfigError) as caught:
+                check(purpose="browser_acceptance", path_key_file=str(key))
+            self.assertEqual(caught.exception.errors, ["config.path_key_file: path_key_unavailable"])
 
 if __name__ == "__main__":
     unittest.main()
