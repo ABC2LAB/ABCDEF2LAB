@@ -527,6 +527,9 @@ func TestReceiverCountsConnectionWithoutRequest(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+	if rows := readRows(t, path); len(rows) != 1 {
+		t.Fatalf("one connection must be one row: %+v", rows)
+	}
 }
 
 func TestReceiverCountsFailedTLSVerification(t *testing.T) {
@@ -624,8 +627,8 @@ func TestRunAdvertisesActualUDPPort(t *testing.T) {
 }
 
 func TestRunRejectsIncompleteFlags(t *testing.T) {
-	if err := run(t.Context(), []string{"-listen", "127.0.0.1:0"}); err == nil {
-		t.Fatal("missing flags must fail")
+	if err := run(t.Context(), []string{"-listen", "127.0.0.1:0"}); err == nil || !strings.Contains(err.Error(), "are required") {
+		t.Fatal(err)
 	}
 	if err := run(t.Context(), []string{"-unknown"}); err == nil {
 		t.Fatal("unknown flag must fail")
