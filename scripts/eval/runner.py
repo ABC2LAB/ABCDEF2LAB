@@ -1269,7 +1269,7 @@ def main(argv: list[str] | None = None) -> int:
         directory = create_run_directory(config.runs_root, plan.run_id, plan.e2_mode)
         e2_link = None
         if plan.e2_mode == E2_PRODUCT:
-            e2_link = E2Link(config.e2_product, E2LinkPaths(directory.e2_config, directory.e2, directory.e2_control, directory.e2_copy),
+            e2_link = E2Link(config.e2_product, E2LinkPaths(directory.e2_config, directory.e2, directory.e2_control, directory.e2_copy, directory.e2_engine),
                              plan.run_id, plan.llm["model"], plan.llm["backend"], plan.meter_port)
     except (RunnerConfigError, PreflightError) as exc:
         print("\n".join(getattr(exc, "errors", ["config: INVALID"])), file=sys.stderr)

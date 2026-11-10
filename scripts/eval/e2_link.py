@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,10 +14,13 @@ from pathlib import Path
 from e2_collect import OUTCOME_PRODUCT_FAILURE, E2Collection, collect_e2_export, subprocess_verifier
 from e2_control import CloseResult, ControlChannel, ServiceExpectation, Waiting, close_execution, wait_service_ready
 from e2_export import E2Expectation, HEADER_PASSTHROUGH, TARGET_PUBLIC_PRACTICE
-from e2_prepare import (CONTAINER_STATE_DIR, E2Prepared, E2RunResources, E2RunValues, approval_window, issue_run_ca, new_reference,
+from e2_prepare import (CONTAINER_STATE_DIR, E2Prepared, E2PrepareError, E2RunResources, E2RunValues, approval_window, issue_run_ca, new_reference,
                         prepare_e2_config, render_policy)
 
 CLOSE_REFERENCE_PREFIX = "close"
+ENGINE_TOKEN_NAME = "engine-token"
+# 서비스가 받는 최소 길이(32바이트)보다 hex 문자열이 길도록 잡는다.
+ENGINE_TOKEN_BYTES = 32
 # 엔진 쪽 실행 참조. 제품 backend가 평가 eval_run_id와 같으면 거부한다.
 RUN_REFERENCE_PREFIX = "e2run"
 # 게시 디렉터리 안의 한 단계 이름만 받는다. 제어 응답 값으로 경로가 벗어나지 않게 한다.
@@ -35,6 +40,17 @@ class E2LinkPaths:
     evidence: Path
     control: Path
     copy: Path
+    engine: Path
+
+
+def write_engine_token(directory: Path) -> None:
+    """엔진이 eval-e2를 부를 때 쓰는 회차 토큰을 만든다. 회차 기록에는 남기지 않는다."""
+    try:
+        fd = os.open(directory / ENGINE_TOKEN_NAME, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError:
+        raise E2PrepareError("engine_token_failed") from None
+    with os.fdopen(fd, "w", encoding="ascii") as handle:
+        handle.write(secrets.token_hex(ENGINE_TOKEN_BYTES))
 
 
 def _utc_now() -> datetime:
@@ -51,6 +67,7 @@ class E2Link:
         policy = render_policy(Path(product["policy_path"]), E2RunResources(run_ref, valid_from, valid_until, CONTAINER_STATE_DIR, product["helper"],
                                                                             product["helper_sha256"], cert_sha256, key_sha256, product["meter_ip"]))
         self.prepared: E2Prepared = prepare_e2_config(paths.config, E2RunValues(run_id, model_tag, product["header_mode"], self.evaluation, port), policy)
+        write_engine_token(paths.engine)
         self.channel = ControlChannel(paths.control, run_id, self.prepared.reservation_ref, product["exchange_timeout_seconds"])
         self.waiting = Waiting(time.monotonic, time.sleep, product["poll_seconds"])
 
