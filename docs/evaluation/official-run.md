@@ -127,6 +127,7 @@
    ```
    official_e2_policy_sha256 = 285ab34ccccdc966200f3c1afcf557c73612bf34be7dc0148efdad100a8e4fd5
    official_e2_policy_fingerprint_sha256 = b219f820ab5ad6263898a4ff69bfb2b9f6a4595bf628e8b4a94da502e1291f9c
+   official_e2_declared_differences_sha256 = 491191074f1ad309eea0668dc6abf805941c8d8693f533cf92f6ac1a70b90f1d
    ```
 
    이미지와 도구는 동결 작업 트리에서 만든다. `$TOOLS`는 레포 밖 러너 uid 소유 디렉터리다.
@@ -149,10 +150,11 @@
     "ready_timeout_seconds": 60, "close_ack_timeout_seconds": 20, "close_timeout_seconds": 60, "poll_seconds": 1, "exchange_timeout_seconds": 10,
     "verify_tool": "$TOOLS/e2-audit-verify", "verify_timeout_seconds": 30, "policy_tool": "$TOOLS/e2-eval-policy", "policy_tool_timeout_seconds": 60,
     "helper": "/app/e2/e2-bash-sandbox", "helper_sha256": "<위 sha256>", "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10",
-    "window_seconds": 7200, "approval_valid_until": "<RFC3339>", "prompt_wait_seconds": 30}
+    "window_seconds": 7200, "approval_valid_until": "<RFC3339>", "prompt_wait_seconds": 30,
+    "declared_differences_path": ".../official-e2-declared-differences.json", "declared_differences_sha256": "<위 해시>"}
    ```
 
-   **공식 회차 전에 남은 것:** `Accept-Encoding` 처리(프로토콜 §2, 현행은 `identity` 밖의 값을 unsupported로 거부)와 [샌드박스 도구 차이](e2-tool-equivalence.md) 22개는 PM 확정이 필요하다. 선언 차이를 정책 지문·회차 기록에 남기는 연결도 아직 없다. 그 전의 회차는 공식 비교가 아니다.
+   **공식 회차 전에 남은 것:** `Accept-Encoding` 처리(프로토콜 §2)와 [샌드박스 도구 차이](e2-tool-equivalence.md)를 담은 [선언 차이 목록](profiles/official-e2-declared-differences.json)은 PM 확정이 필요하다. 지금 `status`는 `proposed`다. 확정하면 `confirmed`로 바꾸고 위 해시를 다시 고정한다. 그 전의 회차는 공식 비교가 아니다.
 
 ## 5. 회차 실행
 

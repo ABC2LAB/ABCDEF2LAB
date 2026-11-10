@@ -235,7 +235,7 @@ class TestRejectedV11(_V11):
         row = {"close_state": "complete", "close_reason": None, "collection_outcome": "complete", "collection_reason": None, "rows": 7, "attempts": 5,
                "decisions": {"allowed": 4, "denied": 1, "unsupported": 0}, "attempts_without_result": 0, "allowed_not_sent": 0, "checkpoint_sequence": 7,
                "config_sha256": "1" * 64, "policy_fingerprint_sha256": "2" * 64, "manifest_sha256": "3" * 64,
-               "image_id": "sha256:" + "4" * 64} | changes
+               "image_id": "sha256:" + "4" * 64, "declared_differences_sha256": "7" * 64} | changes
 
         prompt = self._prompt_row(row["collection_outcome"])
 
@@ -410,7 +410,7 @@ class TestRejectedV11(_V11):
                  ({"attempts": 4}, "결정 건수 형식 오류"), ({"attempts": True}, "결정 건수 형식 오류"),
                  # 합이 1이면 True도 합과 같아 보인다.
                  ({"attempts": True, "decisions": {"allowed": 1, "denied": 0, "unsupported": 0}}, "결정 건수 형식 오류"),
-                 ({"config_sha256": "x"}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": None}, "대조 값 형식 오류"),
+                 ({"declared_differences_sha256": "x"}, "대조 값 형식 오류"), ({"config_sha256": "x"}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": None}, "대조 값 형식 오류"),
                  # 숫자는 문자열로 바꾸면 hex처럼 보인다.
                  ({"policy_fingerprint_sha256": int("2" * 64)}, "대조 값 형식 오류"), ({"config_sha256": int("1" * 64)}, "대조 값 형식 오류"),
                  ({"policy_fingerprint_sha256": ["2" * 64]}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": "A" * 64}, "대조 값 형식 오류"),
@@ -423,7 +423,7 @@ class TestRejectedV11(_V11):
         return self.v11(name, repeat_index=repeat, e2=self.PRODUCT, tamper_rows=self._product_row(**changes))
 
     def test_identity_is_read_only_from_product_runs(self):
-        self.assertEqual(self.inputs(self._product_run("i1")).e2_identity, ("2" * 64, "sha256:" + "4" * 64))
+        self.assertEqual(self.inputs(self._product_run("i1")).e2_identity, ("2" * 64, "sha256:" + "4" * 64, "7" * 64))
         self.assertIsNone(self.inputs(self.v11("i2")).e2_identity)
         self.assertIsNone(self.inputs(self.v11("i3", e2=E2_STUB_PLACEMENT)).e2_identity)
 
@@ -454,10 +454,10 @@ class TestRejectedV11(_V11):
         build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
 
     def test_one_condition_must_use_one_policy_and_image(self):
-        for index, changes in enumerate(({"policy_fingerprint_sha256": "5" * 64}, {"image_id": "sha256:" + "6" * 64})):
+        for index, changes in enumerate(({"policy_fingerprint_sha256": "5" * 64}, {"image_id": "sha256:" + "6" * 64}, {"declared_differences_sha256": "8" * 64})):
             with self.subTest(changes=changes):
                 runs = [self._product_run(f"x{index}a"), self._product_run(f"x{index}b", 1, **changes)]
-                with self.assertRaisesRegex(ComparabilityError, "E② 정책 지문·이미지 불일치"):
+                with self.assertRaisesRegex(ComparabilityError, "E② 정책 지문·이미지·선언 차이 불일치"):
                     build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
 
     def test_other_conditions_may_use_another_policy(self):

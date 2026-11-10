@@ -153,7 +153,7 @@ MAX_FINDINGS_PAGES = 10_000
 _E2_PRODUCT_FIELDS = ("image", "policy_path", "policy_fingerprint_sha256", "header_mode", "ready_timeout_seconds", "close_ack_timeout_seconds",
                       "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds", "verify_tool", "verify_timeout_seconds",
                       "policy_tool", "policy_tool_timeout_seconds", "helper", "helper_sha256", "subnet", "meter_ip", "window_seconds",
-                      "approval_valid_until", "prompt_wait_seconds")
+                      "approval_valid_until", "prompt_wait_seconds", "declared_differences_path", "declared_differences_sha256")
 # 서비스 쪽 상한(server.StartE2ControlService)과 같다. 넘기면 eval-e2가 기동하지 못한다.
 MAX_E2_IO_TIMEOUT_SECONDS = 60
 MAX_E2_CLOSE_TIMEOUT_SECONDS = 120
@@ -504,7 +504,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
 def _e2_product(block: dict, errors: list[str]) -> dict | None:
     """제품 E② 설정. 시한은 실행 예산과 따로 기록하는 값이라 전부 명시한다."""
     image = _image(block["image"], "config.e2.image", errors) if "image" in block else None
-    for name in ("policy_path", "verify_tool", "policy_tool", "helper"):
+    for name in ("policy_path", "verify_tool", "policy_tool", "helper", "declared_differences_path"):
         if name in block and not _absolute_path(block[name]):
             errors.append(f"config.e2.{name}: EXPECTED_ABSOLUTE_PATH")
     if "policy_fingerprint_sha256" in block and not (isinstance(block["policy_fingerprint_sha256"], str)
@@ -519,8 +519,9 @@ def _e2_product(block: dict, errors: list[str]) -> dict | None:
     for name, limit in (("exchange_timeout_seconds", MAX_E2_IO_TIMEOUT_SECONDS), ("close_timeout_seconds", MAX_E2_CLOSE_TIMEOUT_SECONDS)):
         if isinstance(block.get(name), int) and block[name] > limit:
             errors.append(f"config.e2.{name}: TOO_LARGE")
-    if "helper_sha256" in block and not (isinstance(block["helper_sha256"], str) and _SHA256_HEX.fullmatch(block["helper_sha256"])):
-        errors.append("config.e2.helper_sha256: INVALID")
+    for name in ("helper_sha256", "declared_differences_sha256"):
+        if name in block and not (isinstance(block[name], str) and _SHA256_HEX.fullmatch(block[name])):
+            errors.append(f"config.e2.{name}: INVALID")
     if "window_seconds" in block and not _int(block["window_seconds"], 1, MAX_E2_WINDOW_SECONDS):
         errors.append("config.e2.window_seconds: INVALID")
     if "approval_valid_until" in block and not _utc_time(block["approval_valid_until"]):
