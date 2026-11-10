@@ -142,6 +142,8 @@ export function RequestApprovalPanel({
                 </dd>
                 <dt>본문 크기</dt>
                 <dd>{a.body_bytes} bytes · 원문 비공개</dd>
+                <dt>승인 만료</dt>
+                <dd>{new Date(a.expires_at).toLocaleString("ko-KR")} · 일시정지로 연장하지 않음</dd>
                 <dt>상태</dt>
                 <dd>
                   {a.state} · {a.execution_state}

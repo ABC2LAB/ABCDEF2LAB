@@ -237,14 +237,17 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		policy.Limits.MaxBodyBytes = int64(flow.MaxResponseBytes)
 		policy.Limits.MaxAttempts = 200
 		policy.Limits.MaxCalls = 64
-		policy.Limits.CallTimeoutMS = 120000
-		policy.Proxy.RequestTimeoutMS = 120000
+		policy.Limits.CallTimeoutMS = 60000
+		policy.Proxy.RequestTimeoutMS = 60000
 		policy.Limits.MaxDenials = 16
 		policy.Runtime.OutputLimit = flow.MaxResponseBytes + 8192
 		policy.Runtime.MaxToolCalls = 64
 		policy.Runtime.MaxWorkerTurns = 16
 		policy.Runtime.WorkerTimeoutMS = 180000
 		policy.Runtime.MaxPlannerRounds = 12
+	}
+	if !validProductPolicyTemplate(policy) {
+		return errPreparation
 	}
 	policy.Rules = []server.E2HTTPFileRule{}
 	policySHA, err := productJSON(filepath.Join(config, "policy.json"), policy)

@@ -111,7 +111,7 @@ func (p *productRuntime) model(id string) (urlPreparationProfile, launchConfig, 
 	}
 	b, pp, e := urlReadPin(cfg.HTTP.PolicyFile, e2config.MaxPolicyBytes, false)
 	defer clear(b)
-	if e != nil || pp.digest != m.PolicySHA256 || e2config.StrictJSON(b, &policy) != nil || len(policy.Rules) != 0 || policy.Format != server.E2HTTPFilePolicyFormat || policy.OwnerRef != "ARTEX" {
+	if e != nil || pp.digest != m.PolicySHA256 || e2config.StrictJSON(b, &policy) != nil || len(policy.Rules) != 0 || policy.Format != server.E2HTTPFilePolicyFormat || policy.OwnerRef != "ARTEX" || !validProductPolicyTemplate(policy) {
 		return m, cfg, policy, nil, errPreparation
 	}
 	manifestPath := cfg.LocalLLMManifestPath
@@ -197,11 +197,11 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	if checkDirectory(root, true) != nil {
 		return nil, errPreparation
 	}
-	bindingInput := input.WorkflowMode + "\n" + input.ExcludedPaths
+	bindingSource := productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256
 	if input.WorkflowMode != "" {
-		bindingInput = workflowInputDigest(input)
+		bindingSource += "\n" + workflowInputDigest(input)
 	}
-	name := "bound-" + urlSHA([]byte(productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256 + "\n" + bindingInput))[:32]
+	name := "bound-" + urlSHA([]byte(bindingSource))[:32]
 	dir := filepath.Join(root, name)
 	derived := m
 	derived.TargetRef = rec.Target.ID

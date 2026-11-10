@@ -17,6 +17,7 @@ import (
 
 func TestWorkflowProfileBindsCompleteInputAndNarrowsAutomaticMethods(t *testing.T) {
 	f := newURLNegativeFixture(t)
+	completeProductTemplateForTest(f)
 	m := f.config.Profiles[0]
 	m.TargetRef = ""
 	m.ScopeRef = ""

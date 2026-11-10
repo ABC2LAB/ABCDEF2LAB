@@ -19,10 +19,10 @@ async function eventually(read,predicate,code,ms=60000){const end=Date.now()+ms;
  const login=await api('/api/auth/login',{username:'ABC2LAB',password:config.admin_password});token=login.token;check(!!token,'real_operator_login');
  const pages=await(await fetch(cdp+'/json/list')).json();let page=pages.find(p=>p.type==='page'&&p.url.startsWith(ui));if(!page)page=await(await fetch(cdp+'/json/new?'+encodeURIComponent(ui+'/#new'),{method:'PUT'})).json();
  socket=new WebSocket(page.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject;});
- let next=0;const pending=new Map();let dropSelection=false,dropped=false;
+ let next=0;const pending=new Map();let dropSelection=false,dropped=false,draftInputObserved=false;
  function send(method,params={}){return new Promise((resolve,reject)=>{const id=++next;pending.set(id,{resolve,reject});socket.send(JSON.stringify({id,method,params}));});}
  socket.onmessage=async event=>{const m=JSON.parse(event.data);if(m.id){const p=pending.get(m.id);if(!p)return;pending.delete(m.id);if(m.error)p.reject(new Error('cdp_operation_failed'));else p.resolve(m.result);return;}
-  if(m.method==='Network.requestWillBeSent'){const r=m.params.request,p=new URL(r.url).pathname;if(p.startsWith('/api/'))requests.push({path:p,method:r.method});if(r.method==='POST'&&/\/drafts\/[^/]+\/start$/.test(p))jobID=p.split('/').at(-2);}
+  if(m.method==='Network.requestWillBeSent'){const r=m.params.request,p=new URL(r.url).pathname;if(p.startsWith('/api/'))requests.push({path:p,method:r.method});if(r.method==='POST'&&p==='/api/diagnoses/v2/drafts'){const v=JSON.parse(r.postData||'{}');draftInputObserved=v.input?.workflow_mode===(mode==='auto'?'ai_auto_v1':'user_approval_v1')&&v.input?.excluded_paths==='/excluded';}if(r.method==='POST'&&/\/drafts\/[^/]+\/start$/.test(p))jobID=p.split('/').at(-2);}
   if(m.method==='Fetch.requestPaused'){const p=m.params;if(dropSelection&&!dropped&&p.request.url.endsWith('/selection')){check(p.responseStatusCode===200,'selection_not_stored_before_response_loss');dropped=true;await send('Fetch.failRequest',{requestId:p.requestId,errorReason:'Aborted'});}else await send('Fetch.continueRequest',{requestId:p.requestId});}
  };
  async function evaluate(expression){const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true,userGesture:true});if(r.exceptionDetails)throw new Error('browser_evaluation_failed');return r.result.value;}
@@ -37,7 +37,7 @@ async function eventually(read,predicate,code,ms=60000){const end=Date.now()+ms;
  async function flow(){try{return(await api('/api/product/workflows/'+jobID)).workflow;}catch(e){if(e.message.startsWith('real_api_status_409_'))return {initial_completed:false};throw e;}}
  const stats=async()=>{const r=await fetch('http://127.0.0.1:'+(mode==='auto'?49484:49481)+'/workflow-stats');return(await r.json()).received;};
  await send('Page.enable');await send('Runtime.enable');await send('Network.enable');await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
- await send('Page.navigate',{url:ui+'/#new'});await wait("document.readyState==='complete'",'document_not_ready');
+ await send('Network.setCacheDisabled',{cacheDisabled:true});await send('Page.navigate',{url:ui+'/#new'});const previousDocument=await evaluate('performance.timeOrigin');await send('Page.reload',{ignoreCache:true});await wait(`performance.timeOrigin!==${previousDocument}&&document.readyState==='complete'`,'document_not_ready');
  await wait("!!document.querySelector('input[autocomplete=current-password]')||document.querySelector('#luProfile')?.options.length>=2",'login_or_catalog_missing');
  if(await evaluate("!!document.querySelector('input[autocomplete=current-password]')")){await fill('section[data-view=new] input[autocomplete=username]','ABC2LAB');await fill('section[data-view=new] input[autocomplete=current-password]',config.admin_password);await click('로그인');}
  await navigate('new');await wait("document.querySelector('#luProfile')?.options.length>=2",'installed_workflow_catalog_missing');
@@ -58,14 +58,14 @@ async function eventually(read,predicate,code,ms=60000){const end=Date.now()+ms;
   if(mode==='manual')await evaluate("document.querySelector('#targetReversible').click()");
   await click('대상 등록·소유 확인 준비');await wait("!!document.querySelector('#targetChallengeName')",'DNS_challenge_missing');
   const challenge=await evaluate("({name:document.querySelector('#targetChallengeName').textContent,values:[document.querySelector('#targetChallengeValue').textContent]})");
-  const dns=await fetch('http://127.0.0.1:49483/control',{method:'POST',headers:{'Content-Type':'application/json','X-Fixture-Control':fs.readFileSync(dnsTokenPath,'utf8').trim()},body:JSON.stringify({...challenge,host:new URL(origin).hostname,ip:mode==='auto'?'10.88.1.22':'10.88.1.20'})});check(dns.status===204,'owned_DNS_control_failed');
+  const dns=await fetch('http://127.0.0.1:49483/control',{method:'POST',headers:{'Content-Type':'application/json','X-Fixture-Control':fs.readFileSync(dnsTokenPath,'utf8').trim()},body:JSON.stringify({...challenge,host:new URL(origin).hostname,ip:config.target_policy.private_cidrs[0].split('/')[0].split('.').slice(0,3).join('.')+(mode==='auto'?'.22':'.20')})});check(dns.status===204,'owned_DNS_control_failed');
   await click('소유 확인 후 대상 승인');await wait(`document.querySelector('${visible}').innerText.includes('서버가 소유·범위·DNS/IP·TLS를 확인해 승인했습니다')`,'target_approval_failed');
   }
   check((await stats())['POST /api/Users']===undefined,'state_change_before_start');await screenshot(mode+'-new');
-  await click('승인 범위 확인');await wait("document.querySelector('section[data-view=scope]:not([hidden])')!==null",'prestart_scope_missing');
+  await click('승인 범위 확인');await wait("document.querySelector('section[data-view=scope]:not([hidden])')!==null",'prestart_scope_missing');check(draftInputObserved,'workflow_input_not_sent_from_browser');
   await wait(`Array.from(document.querySelectorAll('${visible} input[type=checkbox]')).some(e=>!e.disabled)`,'start_confirmation_unavailable');await evaluate(`Array.from(document.querySelectorAll('${visible} input[type=checkbox]')).find(e=>!e.disabled).click()`);await click('진단 시작');
   await eventually(async()=>jobID,Boolean,'start_receipt_missing');
-  const first=await eventually(flow,f=>f.initial_completed,'initial_crawl_not_complete',90000);check(first.endpoints.some(e=>e.path==='/rest/products/search'&&e.visited),'actual_product_discovery_missing');check(first.endpoints.some(e=>e.path==='/api/Users'&&e.method==='POST'),'form_discovery_missing');check(first.endpoints.some(e=>e.path==='/excluded'&&!e.in_scope&&!e.visited),'exclusion_not_recorded');
+  const first=await eventually(flow,f=>f.initial_completed||['failed','unknown','stopped'].includes(f.stage),'initial_crawl_not_complete',90000);check(first.initial_completed,'initial_crawl_closed_without_discovery_'+first.stage);check(first.endpoints.some(e=>e.path==='/rest/products/search'&&e.visited),'actual_product_discovery_missing');check(first.endpoints.some(e=>e.path==='/api/Users'&&e.method==='POST'),'form_discovery_missing');check(first.endpoints.some(e=>e.path==='/excluded'&&!e.in_scope&&!e.visited),'exclusion_not_recorded');
   await screenshot(mode+'-crawl');
   if(mode==='manual'){
    check(first.stage==='awaiting_selection'&&first.deep_runs===0,'deep_worker_started_before_selection');check((await stats())['POST /api/Users']===undefined,'POST_reached_target_before_selection');

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/server"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 func TestProductModelsBindIndependentTargetsWithoutNetworkOnInspect(t *testing.T) {
 	f := newURLNegativeFixture(t)
+	completeProductTemplateForTest(f)
 	m := f.config.Profiles[0]
 	m.TargetRef = ""
 	m.ScopeRef = ""
@@ -74,6 +76,11 @@ func TestProductModelsBindIndependentTargetsWithoutNetworkOnInspect(t *testing.T
 		t.Fatal("load A", e)
 	}
 	defer one.clearMaterials()
+	record, lookupErr := r.lookup("ARTEX", input.TargetURL, "")
+	legacyName := "bound-" + urlSHA([]byte(productTargetDigest(record) + "\n" + m.ID + "\n" + m.Launch.SHA256))[:32]
+	if lookupErr != nil || filepath.Base(filepath.Dir(one.launch.HTTP.PolicyFile)) != legacyName {
+		t.Fatal("existing target binding path changed; stored report recovery would diverge")
+	}
 	b := approve("b.example.test")
 	two, e := runtime.load("ARTEX", diagnosisprep.Input{ProfileID: m.ID, TargetURL: "https://b.example.test/read/item"}, false, "")
 	if e != nil {
@@ -113,4 +120,12 @@ func TestProductModelsBindIndependentTargetsWithoutNetworkOnInspect(t *testing.T
 		t.Fatal("tampered cached binding trusted")
 	}
 	f.assertNoConnections()
+}
+
+// Product catalog now validates the actual encoder bounds before exposing a model.
+// The generic negative fixture intentionally omits them, so supply a valid product template.
+func completeProductTemplateForTest(f *urlNegativeFixture) {
+	f.policy.Limits = server.E2HTTPFileLimits{MaxAttempts: 20, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 1024, RequestTimeoutMS: 5000, CallTimeoutMS: 20000, MaxDenials: 8, MaxTransient: 1, MaxUnknown: 1}
+	f.policy.Proxy = server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 20000, MaxHeaderBytes: 32768, MaxConnections: 4}
+	f.policy.Runtime = server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 4096}
 }
