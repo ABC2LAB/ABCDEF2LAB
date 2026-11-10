@@ -124,9 +124,7 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 		// or seed for the same method/path was seen first. Never upgrade it back.
 		if kind == "form" {
 			old.Kind, old.Source, old.From = kind, source, from
-			if old.InScope {
-				old.Change = "possible"
-			}
+			old.InScope, old.Change = c.endpointScope(method, path, kind, source)
 		} else if inferredSource(old.Source) && !inferredSource(source) {
 			// 추정으로 먼저 봤어도 같은 호출을 문자 그대로 확인하면 후보를 올린다.
 			old.Source, old.From = source, from

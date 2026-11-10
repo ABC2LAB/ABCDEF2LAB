@@ -40,26 +40,23 @@ func (c *Controller) scriptSlotsLocked() int {
 	return c.binding.Limits.MaxEndpoints/scriptSlotDivisor - used
 }
 
-// 스크립트를 참조한 문서를 따라 올라간다. 문서를 모르면 false다.
-func (c *Controller) documentLocked(from string) (string, bool) {
+// 스크립트를 참조한 문서를 따라 올라가 기준 주소를 돌려준다. 문서를 모르면 known이 false이고,
+// 문서의 base가 다른 origin을 가리키면 foreign이 true다.
+func (c *Controller) documentLocked(from string) (doc string, known, foreign bool) {
 	for range c.record.Snapshot.Endpoints {
 		e := c.endpointLocked("GET", from)
 		if e == nil {
-			return "", false
+			return "", false, false
 		}
 		if e.Kind != "script" {
 			if b, ok := c.documentBases[from]; ok {
-				return b.path, b.known
+				return b.path, b.known, !b.known
 			}
-			return from, true
+			return from, true, false
 		}
 		from = e.From
 	}
-	return "", false
-}
-
-func absoluteRef(raw string) bool {
-	return strings.HasPrefix(raw, "/") || strings.Contains(raw, "://")
+	return "", false, false
 }
 
 func preloadsScript(attrs map[string]string) bool {
@@ -82,7 +79,8 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 	// 문서의 기준 주소다. <base href>를 만나면 바뀌고, 다른 origin을 가리키면 상대 주소를 풀 수 없다.
 	base, baseKnown, baseSeen := from, true, false
 	add := func(method, raw, kind, source string) {
-		if !baseKnown && !absoluteRef(raw) {
+		// base가 다른 origin이면 `/x`도 그 origin으로 가므로 전체 주소만 받는다.
+		if !baseKnown && !strings.Contains(raw, "://") {
 			c.record.Snapshot.Counts.InvalidPaths++
 			return
 		}
@@ -150,17 +148,19 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 		}
 	}
 	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") || strings.Contains(contentType, "html") {
-		doc, docKnown := base, baseKnown
+		doc, docKnown, foreignBase := base, baseKnown, !baseKnown
 		if !strings.Contains(contentType, "html") {
-			doc, docKnown = c.documentLocked(from)
+			doc, docKnown, foreignBase = c.documentLocked(from)
 		}
 		for _, ref := range bundleRefs(scriptBody, c.scriptSlotsLocked()) {
 			switch {
-			case ref.kind != "api" || absoluteRef(ref.path):
+			case ref.kind != "api" || strings.Contains(ref.path, "://"):
 				add(ref.method, ref.path, ref.kind, ref.source)
 			case docKnown:
 				// 브라우저는 XHR·fetch의 상대 주소를 스크립트가 아니라 문서 기준 주소로 푼다.
 				addFrom(doc, ref.method, ref.path, ref.kind, ref.source)
+			case strings.HasPrefix(ref.path, "/") && !foreignBase:
+				add(ref.method, ref.path, ref.kind, ref.source)
 			default:
 				// 어느 경로인지 모르는 후보로 칸을 쓰지 않는다.
 				c.record.Snapshot.Counts.InvalidPaths++

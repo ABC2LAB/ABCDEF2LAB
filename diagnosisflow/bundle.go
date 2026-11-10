@@ -44,10 +44,10 @@ var (
 	// 슬래시 없는 "moment.js" 같은 모듈 이름은 파일 경로로 보지 않는다.
 	chunkFile = regexp.MustCompile(bundleQuote + `((?:\.{0,2}/)?(?:[\w-]+/)*[\w.-]+\.m?js)` + bundleQuote)
 	// webpack 런타임의 청크 표: ({1:"abc"})[e]+".js", e+"."+{1:"abc"}[e]+".js", "chunk-"+{...}[e]+".js"
-	chunkMap   = regexp.MustCompile(`=>\s*(?:"([\w-]*)"\s*\+\s*)?(?:\w\s*\+\s*"([.\w-]*)"\s*\+\s*)?\(?\{((?:\d+:"[\w-]+",?)+)\}\)?\[\w\]\s*\+\s*"(\.[\w.-]*js)"`)
+	chunkMap   = regexp.MustCompile(`=>\s*(?:"([\w/-]*)"\s*\+\s*)?(?:\w\s*\+\s*"([.\w-]*)"\s*\+\s*)?\(?\{((?:\d+:"[\w-]+",?)+)\}\)?\[\w\]\s*\+\s*"(\.[\w.-]*js)"`)
 	chunkEntry = regexp.MustCompile(`(\d+):"([\w-]+)"`)
 	publicPath = regexp.MustCompile(`\.p\s*=\s*"(/[\w./-]*)"`)
-	chunkHash  = regexp.MustCompile(`[.-]([0-9A-Za-z_]{8,})(?:\.chunk)?\.m?js$`)
+	chunkHash  = regexp.MustCompile(`[.-]([0-9A-Za-z_-]{8,})(?:\.chunk)?\.m?js$`)
 )
 
 type bundleRef struct {
@@ -209,6 +209,7 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 		return base.path + suffix, base.state
 	}
 	call := func(method, expr, suffix string, at int, dynamic bool) {
+		called[suffix] = true // 호출 안의 접미사 글자를 UNKNOWN 경로로 다시 세지 않는다.
 		path, state := full(expr, suffix, at)
 		source := "script_call"
 		if state == baseGuessed {
@@ -269,7 +270,11 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 // 파일 이름의 해시는 빌드 도구가 만든 청크라는 근거다.
 func hashedChunk(path string) bool {
 	m := chunkHash.FindStringSubmatch(path)
-	return m != nil && strings.ContainsAny(m[1], "0123456789")
+	if m == nil {
+		return false
+	}
+	// 숫자나 대소문자 섞임이 없으면 일반 이름으로 본다.
+	return strings.ContainsAny(m[1], "0123456789") || strings.ToLower(m[1]) != m[1] && strings.ToUpper(m[1]) != m[1]
 }
 
 // 같은 경로를 근거 있는 형태로도 봤으면 확인한 청크로 친다.
@@ -295,7 +300,11 @@ func bundleChunks(body []byte) (sure, guessed []bundleRef) {
 			if m[2*2] >= 0 {
 				name += strconv.Itoa(id) + group(body, m, 2)
 			}
-			add(&sure, prefix+name+string(entry[2])+group(body, m, 4), "bundle_chunk")
+			path := prefix + name + string(entry[2]) + group(body, m, 4)
+			if prefix == "" && strings.Contains(path, "/") && path[0] != '.' && path[0] != '/' {
+				path = "/" + path // 디렉터리가 붙은 표 이름은 번들 위치가 아니라 배포 기준 주소에서 시작한다.
+			}
+			add(&sure, path, "bundle_chunk")
 		}
 	}
 	type candidate struct {

@@ -42,6 +42,7 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"base from unassigned":  {`this.b=this.a+"/q";c.get(this.b+"/x")`, []string{"GET /q/x script_guess"}},
 		"template base config":  {"this.b=`${cfg.u}/p`;c.get(this.b+\"/x\")", []string{"GET /p/x script_guess"}},
 		"bare guessed base":     {`this.b=cfg.u+"/p";c.post(this.b,e)`, []string{"POST /p script_guess"}},
+		"suffix literal":        {`this.base="/p";this.http.get(this.base+"/rest/x")`, []string{"GET /p/rest/x script_call"}},
 		"bare unknown base":     {`this.http.get(this.host)`, []string{}},
 		"template base":         {"this.host=`${this.x}/svc/t`}x(){return this.http.get(this.host+\"/a\")}", []string{"GET /svc/t/a script_guess"}},
 		"template host":         {"this.http.get(`${this.server}/rest/search`,e)", []string{"GET /rest/search script_guess"}},
@@ -188,6 +189,11 @@ func TestBundleChunks(t *testing.T) {
 		"bare directory":  {`["assets/b.mjs"]`, []string{"/assets/b.mjs bundle_string"}},
 		"vite hashed":     {`["assets/index-a1B2c3D4.js"]`, []string{"/assets/index-a1B2c3D4.js bundle_chunk"}},
 		"cra chunk":       {`"static/js/2.abc12345.chunk.js"`, []string{"/static/js/2.abc12345.chunk.js bundle_chunk"}},
+		"vite dash hash":  {`["assets/index-B-x3k9aZ.js"]`, []string{"/assets/index-B-x3k9aZ.js bundle_chunk"}},
+		"mixed no digit":  {`["assets/index-AbCdEfGh.js"]`, []string{"/assets/index-AbCdEfGh.js bundle_chunk"}},
+		"upper only":      {`["assets/x-APPLICATIONNAME.js"]`, []string{"/assets/x-APPLICATIONNAME.js bundle_string"}},
+		"cra table":       {`r.u=e=>"static/js/"+e+"."+{1:"abc"}[e]+".chunk.js"`, []string{"/static/js/1.abc.chunk.js bundle_chunk"}},
+		"cra public":      {`r.p="/app/",r.u=e=>"static/js/"+e+"."+{1:"abc"}[e]+".chunk.js"`, []string{"/app/static/js/1.abc.chunk.js bundle_chunk"}},
 		"hash no digit":   {`"assets/application-bootstrap.js"`, []string{"/assets/application-bootstrap.js bundle_string"}},
 		"short hash":      {`"assets/index-a1.js"`, []string{"/assets/index-a1.js bundle_string"}},
 		"public base":     {`r.p="/app/";x=["assets/b.js"]`, []string{"/app/assets/b.js bundle_string"}},
@@ -460,18 +466,19 @@ func TestDocumentBaseOnOtherOriginStopsRelativeReferences(t *testing.T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	invalid := c.record.Snapshot.Counts.InvalidPaths
-	c.discoverBodyLocked([]byte(`<base href="https://other.test/"><a href="read/x">x</a><a href="/read/abs">y</a><script>http.get("read/users")</script>`), "text/html", "/read/profile")
+	c.discoverBodyLocked([]byte(`<base href="https://other.test/"><a href="read/x">x</a><a href="/read/abs">y</a><a href="https://owned.test/read/full">z</a><script>http.get("read/users");c.get("/read/inline")</script>`), "text/html", "/read/profile")
 	got := discovered(c)
-	if slices.Contains(got, "GET /read/x page") || slices.Contains(got, "GET /read/users api") || !slices.Contains(got, "GET /read/abs page") {
+	if slices.Contains(got, "GET /read/x page") || slices.Contains(got, "GET /read/users api") || slices.Contains(got, "GET /read/abs page") || slices.Contains(got, "GET /read/inline api") || !slices.Contains(got, "GET /read/full page") {
 		t.Fatal(got)
 	}
-	if c.record.Snapshot.Counts.InvalidPaths < invalid+2 {
+	if c.record.Snapshot.Counts.InvalidPaths != invalid+4 {
 		t.Fatal(c.record.Snapshot.Counts.InvalidPaths)
 	}
 	c.addLocked("GET", "/read/profile", "page", "html_link", "/read")
 	c.addLocked("GET", "/read/app.js", "script", "html_script", "/read/profile")
-	c.discoverBodyLocked([]byte(`http.get("read/external")`), "application/javascript", "/read/app.js")
-	if got := discovered(c); slices.Contains(got, "GET /read/read/external api") || slices.Contains(got, "GET /read/external api") {
+	c.discoverBodyLocked([]byte(`http.get("read/external");c.get("/read/rootcall");c.get("https://owned.test/read/fullcall")`), "application/javascript", "/read/app.js")
+	got = discovered(c)
+	if slices.Contains(got, "GET /read/read/external api") || slices.Contains(got, "GET /read/external api") || slices.Contains(got, "GET /read/rootcall api") || !slices.Contains(got, "GET /read/fullcall api") {
 		t.Fatal(got)
 	}
 }
@@ -642,6 +649,22 @@ func TestAutoSelectionSkipsScripts(t *testing.T) {
 		t.Fatalf("%+v", e)
 	}
 	if e := endpointAt(c, "GET", "/read/page"); !e.Selected {
+		t.Fatalf("%+v", e)
+	}
+}
+
+func TestFormRecomputesScopeAfterPrefix(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addLocked("GET", "/read/search", "api", "script_prefix", "/read/a.js")
+	c.addLocked("GET", "/read/search", "form", "html_form", "/read")
+	if e := endpointAt(c, "GET", "/read/search"); e.Kind != "form" || !e.InScope || e.Change != "possible" {
+		t.Fatalf("%+v", e)
+	}
+	c.addLocked("GET", "/other", "api", "script_call", "/read/a.js")
+	c.addLocked("GET", "/other", "form", "html_form", "/read")
+	if e := endpointAt(c, "GET", "/other"); e.Kind != "form" || e.InScope || e.Change != "blocked" {
 		t.Fatalf("%+v", e)
 	}
 }
