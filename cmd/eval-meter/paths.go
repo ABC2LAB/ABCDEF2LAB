@@ -55,9 +55,11 @@ func looksEncoded(segment string) bool {
 
 func pseudonym(segment string, key []byte) string {
 	suffix, lower := "", strings.ToLower(segment)
+	// 목록의 확장자끼리는 서로의 끝이 되지 않아서 처음 맞는 것이 유일하다.
 	for _, candidate := range staticSuffixes {
-		if strings.HasSuffix(lower, candidate) && len(candidate) > len(suffix) {
+		if strings.HasSuffix(lower, candidate) {
 			suffix = candidate
+			break
 		}
 	}
 	mac := hmac.New(sha256.New, key)
