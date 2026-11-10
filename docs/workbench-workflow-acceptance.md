@@ -128,7 +128,7 @@ Planner가 만든 초기 intent를 보호 Worker가 받아 프로그램 소유�
 
 `176e696` 구현 승인 뒤 남은 네 항목도 반영했다. `workbench_selective_v1`은 범위 확인에서 **읽기 사전 승인 · 쓰기 건별 확인**으로 표시한다. 자동 모드 경계는 선택·분류가 앞에서 잘못 허용된 상황을 따로 구성해 POST·본문 있는 GET·상태 변경 가능 GET을 거부하고 같은 요청의 수동 모드 대조는 통과하는지 확인한다. 실제 Worker → Crawl → Bash 어댑터가 만든 명령을 argv 전용 합성 실행기에 넘겨 `--globoff`와 정규 인코딩 URL 한 개의 결속을 검사한다. 이 시험은 실제 HTTP 송신 수용이 아니다.
 
-Planner 자료도 Worker와 같은 결속 실행기의 `RedactOutput`을 거친다. 미획득·미검증·다른 task·닫힌 lease 및 마스킹 실패에서 원문으로 대체하지 않는 것을 회귀로 검증한다. 실제 모델·대상·Docker 수용은 위 `f42615a` 기록이며 이 후속 수정에서 새 Docker 실행으로 계산하지 않는다. 최신 회귀·변이·CI 결과는 PR 본문을 따른다.
+Planner 자료도 Worker와 같은 결속 실행기의 `RedactOutput`을 거친다. 미획득·미검증·다른 task·닫힌 lease 및 마스킹 실패에서 원문으로 대체하지 않는 것을 회귀로 검증한다. 추가로 소유 PostgreSQL의 실제 task에서 `plannerLoop` → 실제 Planner → 합성 provider 요청까지 구동해 선택 경로의 자격값이 제거되고 공개 경로는 user 자료에 남는지 검증한다. 실제 실행기의 보호 자격값을 사용하지만 sandbox·대상 HTTP는 실행하지 않는다. 루프 호출부를 원문 `SelectedData()`로 되돌리는 변이가 자격 유출 assertion에 잡힌다. 실제 모델·대상·Docker 수용은 위 `f42615a` 기록이며 이 후속 수정에서 새 Docker 실행으로 계산하지 않는다. 최신 회귀·변이·CI 결과는 PR 본문을 따른다.
 
 ## 8. 미구현·미수용
 
