@@ -102,6 +102,18 @@ func TestBundleBaseUsesNearestEarlierAssignment(t *testing.T) {
 	}
 }
 
+func TestBundleBaseWithDynamicTailIsNotUsed(t *testing.T) {
+	got := refStrings(bundleRefs([]byte(`this.host=s+"/api"+t;this.http.delete(this.host+"/1");this.http.get(this.host)`), maxBundleChunks))
+	if want := []string{"UNKNOWN /1 static_literal"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%q want=%q", got, want)
+	}
+	// 뒤에 온전한 대입이 있으면 그 값을 쓴다.
+	got = refStrings(bundleRefs([]byte(`this.host=s+"/api"+t;this.host="/ok";c.get(this.host+"/1")`), maxBundleChunks))
+	if want := []string{"GET /ok/1 script_call"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%q want=%q", got, want)
+	}
+}
+
 func TestBundleBaseCapStopsResolvingAfterTruncation(t *testing.T) {
 	assignments := func(n int) string {
 		var b strings.Builder

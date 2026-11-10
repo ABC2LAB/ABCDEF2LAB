@@ -64,6 +64,7 @@ const (
 type bundleBase struct {
 	name, path string
 	at         int
+	dynamic    bool
 }
 
 // 한도에서 잘리면 그 뒤에 더 가까운 대입이 있을 수 있으므로, 믿을 수 있는 구간의 끝도 함께 돌려준다.
@@ -76,7 +77,7 @@ func bundleBases(body []byte) ([]bundleBase, int) {
 			cutoff = min(cutoff, matches[len(matches)-1][0])
 		}
 		for _, m := range matches {
-			bases = append(bases, bundleBase{string(body[m[2]:m[3]]), string(body[m[4]:m[5]]), m[0]})
+			bases = append(bases, bundleBase{string(body[m[2]:m[3]]), string(body[m[4]:m[5]]), m[0], byteAfter(body, m[1]) == '+'})
 		}
 	}
 	sort.Slice(bases, func(i, j int) bool { return bases[i].at < bases[j].at })
@@ -84,13 +85,13 @@ func bundleBases(body []byte) ([]bundleBase, int) {
 }
 
 // 번들러는 클래스를 차례로 내보내므로 가장 가까운 앞쪽 대입이 그 호출의 기준 주소다.
-func baseBefore(bases []bundleBase, name string, at int) (string, bool) {
+func baseBefore(bases []bundleBase, name string, at int) (bundleBase, bool) {
 	for i := len(bases) - 1; i >= 0; i-- {
 		if bases[i].at < at && bases[i].name == name {
-			return bases[i].path, true
+			return bases[i], true
 		}
 	}
-	return "", false
+	return bundleBase{}, false
 }
 
 func group(body []byte, m []int, n int) string {
@@ -148,10 +149,14 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 		case at > cutoff:
 			return suffix, baseUnknown
 		}
-		if base, ok := baseBefore(bases, expr, at); ok {
-			return base + suffix, baseKnown
+		base, ok := baseBefore(bases, expr, at)
+		switch {
+		case !ok:
+			return suffix, baseGuessed
+		case base.dynamic:
+			return suffix, baseUnknown // 대입 뒤에 식이 더 붙어서 실제 주소를 모른다.
 		}
-		return suffix, baseGuessed
+		return base.path + suffix, baseKnown
 	}
 	call := func(method, expr, suffix string, at int, dynamic bool) {
 		path, state := full(expr, suffix, at)
@@ -178,8 +183,8 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), group(body, m, 3), m[0], group(body, m, 4) == "${")
 	}
 	for _, m := range callMember.FindAllSubmatchIndex(body, maxBundleMatches) {
-		if base, ok := baseBefore(bases, group(body, m, 2), m[0]); ok && m[0] <= cutoff {
-			emit(strings.ToUpper(group(body, m, 1)), base, "api", "script_call")
+		if base, ok := baseBefore(bases, group(body, m, 2), m[0]); ok && m[0] <= cutoff && !base.dynamic {
+			emit(strings.ToUpper(group(body, m, 1)), base.path, "api", "script_call")
 		}
 	}
 	for _, m := range fetchCall.FindAllSubmatchIndex(body, maxBundleMatches) {
