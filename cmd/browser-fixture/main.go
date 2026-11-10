@@ -228,30 +228,23 @@ func serveUDP(ctx context.Context, conn net.PacketConn, rec *recorder) error {
 }
 
 type config struct {
-	listen, receiverListen, certFile, keyFile string
-	receiver                                  receiverInfo
-	// 미리 연 리스너가 있으면 주소 대신 쓴다. 시험이 빈 포트를 고른 뒤 다시 여는 사이의 경합을 없앤다.
-	targetListener, receiverListener net.Listener
+	certFile, keyFile string
+	receiver          receiverInfo
 }
 
-func listenOn(l net.Listener, addr string) (net.Listener, error) {
-	if l != nil {
-		return l, nil
+// HTTP 서버가 이미 닫은 리스너면 ErrClosed가 정상이다.
+func closeListener(l net.Listener) {
+	if err := l.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		fmt.Fprintln(os.Stderr, "browser-fixture: listener close failed:", err)
 	}
-	return net.Listen("tcp", addr)
 }
 
-func serve(ctx context.Context, cfg config, rec *recorder, udp net.PacketConn) error {
-	targetListener, err := listenOn(cfg.targetListener, cfg.listen)
-	if err != nil {
-		return errors.Join(err, udp.Close(), rec.close())
-	}
-	receiverListener, err := listenOn(cfg.receiverListener, cfg.receiverListen)
-	if err != nil {
-		return errors.Join(err, targetListener.Close(), udp.Close(), rec.close())
-	}
-	target := &http.Server{Addr: cfg.listen, Handler: targetHandler(rec, cfg.receiver), ReadHeaderTimeout: readHeaderTimeout}
-	outside := &http.Server{Addr: cfg.receiverListen, Handler: receiverHandler(rec), ReadHeaderTimeout: readHeaderTimeout,
+// serve는 받은 리스너를 어떤 경로로 끝나든 닫는다. TLS 인증서를 못 읽어 Serve에 넘기지 못한 경우도 같다.
+func serve(ctx context.Context, cfg config, rec *recorder, targetListener, receiverListener net.Listener, udp net.PacketConn) error {
+	defer closeListener(targetListener)
+	defer closeListener(receiverListener)
+	target := &http.Server{Handler: targetHandler(rec, cfg.receiver), ReadHeaderTimeout: readHeaderTimeout}
+	outside := &http.Server{Handler: receiverHandler(rec), ReadHeaderTimeout: readHeaderTimeout,
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			// HTTP 요청 전에 끊긴 연결도 도달이다. 실패는 recorder가 들고 있다가 실행 실패로 돌려준다.
 			if state == http.StateNew && rec.record(row{Surface: surfaceReceiverTCP, Scenario: unknownScenario}) != nil {
@@ -306,17 +299,28 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	targetListener, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return errors.Join(err, udp.Close())
+	}
+	receiverListener, err := net.Listen("tcp", *receiverListen)
+	if err != nil {
+		return errors.Join(err, targetListener.Close(), udp.Close())
+	}
+	announce(targetListener.Addr(), receiverListener.Addr())
 	// 임시 포트(:0)를 써도 페이지가 실제 포트를 광고하도록 연 뒤의 주소를 쓴다.
 	info, err := parseReceiver(*receiverOrigin, udp.LocalAddr().String(), *certFile != "")
-	if err != nil {
-		return errors.Join(err, udp.Close())
+	if err == nil {
+		var rec *recorder
+		if rec, err = newRecorder(*logPath); err == nil {
+			return serve(ctx, config{certFile: *certFile, keyFile: *keyFile, receiver: info}, rec, targetListener, receiverListener, udp)
+		}
 	}
-	rec, err := newRecorder(*logPath)
-	if err != nil {
-		return errors.Join(err, udp.Close())
-	}
-	return serve(ctx, config{listen: *listen, receiverListen: *receiverListen, certFile: *certFile, keyFile: *keyFile, receiver: info}, rec, udp)
+	return errors.Join(err, targetListener.Close(), receiverListener.Close(), udp.Close())
 }
+
+// 시험이 임시 포트로 연 실제 주소를 알 수 있게 한다.
+var announce = func(target, receiver net.Addr) {}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
