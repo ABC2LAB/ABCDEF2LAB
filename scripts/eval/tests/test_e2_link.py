@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -14,16 +17,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from e2_collect import OUTCOME_PRODUCT_FAILURE, CloseAck  # noqa: E402
 from e2_control import CloseResult  # noqa: E402
 from e2_link import E2Link, E2LinkPaths, evaluation_declaration  # noqa: E402
-from e2_prepare import CONFIG_NAME, E2PrepareError  # noqa: E402
+from e2_prepare import CONFIG_NAME, POLICY_NAME, E2PrepareError  # noqa: E402
 
 FINGERPRINT = "f" * 64
+NOW = datetime(2026, 11, 24, 3, 4, 5, 678000, timezone.utc)
 ACK = CloseAck("close-1", 6, "9" * 64, "8" * 64)
 
 
 def product(**changes):
     return {"policy_path": "", "policy_fingerprint_sha256": FINGERPRINT, "header_mode": "evaluation_caller_passthrough", "ready_timeout_seconds": 30,
             "close_ack_timeout_seconds": 5, "close_timeout_seconds": 7, "poll_seconds": 1, "exchange_timeout_seconds": 3, "verify_tool": "/bin/tool",
-            "verify_timeout_seconds": 9} | changes
+            "verify_timeout_seconds": 9, "policy_tool": "", "policy_tool_timeout_seconds": 11, "helper": "/usr/local/bin/helper", "helper_sha256": "a" * 64,
+            "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10", "window_seconds": 7200, "approval_valid_until": "2099-01-01T00:00:00Z"} | changes
 
 
 class Case(unittest.TestCase):
@@ -35,13 +40,66 @@ class Case(unittest.TestCase):
         for path in (self.paths.config, self.paths.evidence, self.paths.control, self.paths.copy):
             path.mkdir(mode=0o700)
         self.policy = base / "policy.json"
-        self.policy.write_bytes(b'{"approval_mode": "preauthorized_scope"}\n')
+        self.policy.write_bytes(json.dumps({"approval_mode": "preauthorized_scope", "rules": [{"ref": "rule-1"}, {"ref": "rule-2"}],
+                                            "evaluation": {"llm_backend": "api", "target_kind": "public_practice"}}).encode())
+        self.tool = base / "fake-ca-tool"
+        self.tool.write_text('#!/bin/sh\numask 077\nprintf cert > "$3"\nprintf key > "$5"\n')
+        self.tool.chmod(0o700)
 
     def link(self, **changes):
-        return E2Link(product(policy_path=str(self.policy), **changes), self.paths, "eval-run-1", "model-1", "api", 8080)
+        return E2Link(product(policy_path=str(self.policy), policy_tool=str(self.tool), **changes), self.paths, "eval-run-1", "model-1", "api", 8080, now=lambda: NOW)
 
     def closed(self, execution_ref="execution-1", state="complete", ack=ACK):
         return CloseResult(state, None, True, execution_ref, "8" * 64, ack)
+
+
+class TestRunValues(Case):
+    def policy_written(self):
+        self.link()
+        return json.loads((self.paths.config / POLICY_NAME).read_bytes())
+
+    def test_template_receives_the_values_of_this_run(self):
+        policy = self.policy_written()
+        self.assertEqual((policy["valid_from"], policy["valid_until"], policy["state_dir"], policy["helper"], policy["helper_sha256"]),
+                         ("2026-11-24T03:04:05Z", "2026-11-24T05:04:05Z", "/run/e2-state", "/usr/local/bin/helper", "a" * 64))
+        self.assertEqual([rule["connect_ip"] for rule in policy["rules"]], ["172.30.9.10", "172.30.9.10"])
+        self.assertEqual(policy["ca_cert"], {"file": "ca.pem", "sha256": hashlib.sha256(b"cert").hexdigest()})
+        self.assertEqual(policy["ca_key"], {"file": "ca.key", "sha256": hashlib.sha256(b"key").hexdigest()})
+
+    def test_ca_lives_as_long_as_the_approval(self):
+        seen = self.tool.with_name("ca-args")
+        self.tool.write_text(f'#!/bin/sh\numask 077\nprintf "%s\\n" "$@" > "{seen}"\nprintf cert > "$3"\nprintf key > "$5"\n')
+        self.link()
+        args = seen.read_text().splitlines()
+        self.assertEqual(args[args.index("--expires") + 1], "2026-11-24T05:04:05Z")
+
+    def test_engine_run_reference_is_new_and_differs_from_the_evaluation_id(self):
+        policy = self.policy_written()
+        self.assertRegex(policy["run_ref"], r"^e2run-[0-9a-f]{32}$")
+        self.assertNotEqual(policy["run_ref"], "eval-run-1")
+        self.assertEqual(policy["evaluation"]["run_ref"], policy["run_ref"])
+
+    def test_two_runs_do_not_share_a_run_reference(self):
+        first = self.policy_written()["run_ref"]
+        for name in os.listdir(self.paths.config):
+            os.unlink(self.paths.config / name)
+        self.assertNotEqual(self.policy_written()["run_ref"], first)
+
+    def test_window_past_the_approval_stops_before_the_ca_exists(self):
+        with self.assertRaises(E2PrepareError) as caught:
+            self.link(approval_valid_until="2026-11-24T05:04:04Z")
+        self.assertEqual(caught.exception.code, "approval_window_exceeded")
+        self.assertEqual(os.listdir(self.paths.config), [])
+
+    def test_window_ending_exactly_at_the_approval_is_allowed(self):
+        self.link(approval_valid_until="2026-11-24T05:04:05Z")
+
+    def test_failing_ca_tool_stops_before_the_policy(self):
+        self.tool.write_text("#!/bin/sh\nexit 3\n")
+        with self.assertRaises(E2PrepareError) as caught:
+            self.link()
+        self.assertEqual(caught.exception.code, "ca_tool_failed")
+        self.assertNotIn(POLICY_NAME, os.listdir(self.paths.config))
 
 
 class TestLink(Case):
@@ -57,7 +115,7 @@ class TestLink(Case):
 
     def test_bad_values_stop_at_preparing(self):
         with self.assertRaises(E2PrepareError):
-            E2Link(product(policy_path=str(self.policy / "absent")), self.paths, "eval-run-1", "model-1", "api", 8080)
+            E2Link(product(policy_path=str(self.policy / "absent"), policy_tool=str(self.tool)), self.paths, "eval-run-1", "model-1", "api", 8080)
 
     def test_channel_uses_the_run_and_timeouts(self):
         link = self.link()

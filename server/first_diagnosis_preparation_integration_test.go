@@ -193,7 +193,7 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 	}()
 	exec("GRANT CONNECT ON DATABASE " + ident(database) + " TO " + ident(role))
 	exec("GRANT USAGE ON SCHEMA public TO " + ident(role))
-	for _, table := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "findings", "request_approvals"} {
+	for _, table := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "findings", "request_approvals", "e2_prompt_runs", "e2_prompt_observations"} {
 		exec("GRANT SELECT,INSERT,UPDATE ON TABLE " + ident(table) + " TO " + ident(role))
 	}
 	for _, table := range []string{"activity", "exploration_edges", "exploration_anchors", "task_scope", "task_constraints"} {

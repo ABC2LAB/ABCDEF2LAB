@@ -1,0 +1,626 @@
+// live URL 진단(diagnosis-api.v2): 서버 방식 확인(catalog) → 새 점검(초안 + 범위 확인) → 범위 확인(확인 상자 + 시작)
+// → 점검 진행(상태 조회 · 중지 · 실제 task 전송 통제) → 보고서(결과 저장 확인 뒤). 팀 lib 의 요청 함수만 모의하고
+// 검증 · 결속 함수(matchURLJob · matchURLHandle · urlDiagnosisInput · 핸들 저장)는 진짜를 쓴다.
+
+import "@testing-library/jest-dom/vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/abc2lab-ui/lib/diagnosis-url", async (original) => ({
+  ...(await original<typeof import("@/abc2lab-ui/lib/diagnosis-url")>()),
+  readURLCatalog: vi.fn(),
+  createURLDraft: vi.fn(),
+  commandURLDiagnosis: vi.fn(),
+  readURLReceipt: vi.fn(),
+  readURLStatus: vi.fn(),
+}));
+vi.mock("@/abc2lab-ui/lib/api", async (original) => ({
+  ...(await original<typeof import("@/abc2lab-ui/lib/api")>()),
+  readAuthStatus: vi.fn(),
+  restoreSession: vi.fn(),
+}));
+vi.mock("../live/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../live/api")>()),
+  fetchRequestApprovals: vi.fn(),
+  fetchRemediation: vi.fn(),
+  fetchDiagnosisRun: vi.fn(),
+  fetchTasks: vi.fn(),
+}));
+
+import * as teamApi from "@/abc2lab-ui/lib/api";
+import { ApiError } from "@/abc2lab-ui/lib/api";
+import * as url from "@/abc2lab-ui/lib/diagnosis-url";
+import { catalog, draft, handle, owner, ready, running } from "@/abc2lab-ui/lib/diagnosis-url-fixtures";
+
+import * as api from "../live/api";
+import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
+import { LiveFeeds } from "../live/feeds";
+import { LiveRailTasks } from "../live/rail";
+import { resetUrl, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
+import { urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
+import { type Shell, ShellContext, type View } from "../shell";
+import { createInitialState, useWb } from "../store";
+import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
+
+const u = vi.mocked(url);
+const a = vi.mocked(api);
+const noop = () => undefined;
+
+const preparing: url.URLDiagnosisJob = {
+  ...ready,
+  revision: 3,
+  state: "preparing",
+  phase: "task_creation",
+  preparation_started: true,
+  authority_state: "issued",
+};
+const completed: url.URLDiagnosisJob = {
+  ...running,
+  revision: 7,
+  state: "completed",
+  phase: "report",
+  drain_complete: true,
+  result_ready: true,
+};
+
+function shellValue(over: Partial<Shell> = {}): Shell {
+  return {
+    route: "new",
+    navSeq: 1,
+    narrow: false,
+    phone: false,
+    reduce: false,
+    inspOpen: false,
+    railOpen: false,
+    railNewAtRoute: false,
+    goTo: noop,
+    openInsp: noop,
+    closeInsp: noop,
+    openRail: noop,
+    closeRail: noop,
+    dashPick: noop,
+    ...over,
+  };
+}
+
+/** UrlFeeds(확인 · 주기 조회) + 화면 하나. */
+function mount(view: "dashboard" | "new" | "scope" | "live" | "report") {
+  const goTo = vi.fn<(v: View) => void>();
+  const body = {
+    dashboard: <DashboardByMode />,
+    new: <NewScanByMode />,
+    scope: <ScopeByMode />,
+    live: <LiveByMode />,
+    report: <ReportByMode />,
+  }[view];
+  const r = render(
+    <ShellContext.Provider value={shellValue({ route: view, goTo })}>
+      <UrlFeeds />
+      {body}
+    </ShellContext.Provider>,
+  );
+  return { ...r, goTo };
+}
+
+/** 이 브라우저에 이어 볼 진단이 있다(팀 핸들 칸). */
+function saveHandle(h: url.URLDiagnosisHandle = handle) {
+  url.storeURLHandle(h);
+}
+
+const APPROVALS: api.RequestApprovalState = {
+  approvals: [],
+  run: {
+    run_ref: "run-1",
+    phase: "running",
+    outcome: "",
+    stop_requested: false,
+    context_cancelled: false,
+    drain_complete: false,
+    closure_failed: false,
+  },
+};
+
+/** 저장된 실행 종료 기록 (task 42, 정상 종료 · 마감 · 감사 완결). */
+const RUN_RECORD: api.DiagnosisRunView = {
+  kind: "run",
+  savedAt: "2026-11-09T12:20:00Z",
+  run: {
+    ...APPROVALS.run,
+    phase: "closed",
+    outcome: "completed",
+    drain_complete: true,
+    execution: {
+      approval_mode: "preauthorized_scope",
+      header_mode: "none",
+      version: "1",
+      scope: { RunRef: "run-1", TaskRef: "42", CaseRef: "case-1", ResetRef: "reset-1", PolicyRef: "policy-1" },
+      intent_id: 7,
+      intent_ids: [7],
+      owner_ref: "owner-1",
+      policy_revision: "rev-1",
+      state: "active",
+      expires_at: "2030-01-01T00:00:00Z",
+      reason: "",
+      audit_complete: true,
+      counts: {
+        attempts: 3,
+        allowed: 1,
+        denied: 2,
+        unsupported: 0,
+        forward_attempted: 1,
+        responses: 1,
+        unknown: 0,
+        calls: 3,
+      },
+    },
+  },
+};
+
+/** 후보 한 건 (팀 diagnosticOutcome 이 review 로 분류하는 모양). */
+function candidate(n: number): api.Remediation["entries"][number] {
+  return {
+    entry_id: `candidate-${n}`,
+    title: `후보 ${n}`,
+    outcome: "review",
+    status: "completed",
+    verification: "manual_review_required",
+    evidence_digest: "e".repeat(64),
+    report_version: "1",
+    run: "run-1",
+    intent_id: 7,
+    observed_at: "2026-11-09T12:10:00Z",
+    evidence_version: 1,
+    source_digest: "d".repeat(64),
+    summary: "다른 계정 응답 후보",
+    evidence: "",
+    report: "",
+    remediation: "",
+    available: true,
+    unavailable_reason: "",
+  };
+}
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  sessionStorage.clear();
+  resetUrl();
+  setLiveAuthState("ready");
+  useWb.setState(createInitialState());
+  u.readURLCatalog.mockResolvedValue(catalog);
+  u.createURLDraft.mockResolvedValue(draft);
+  u.commandURLDiagnosis.mockResolvedValue(ready);
+  u.readURLStatus.mockResolvedValue(ready);
+  u.readURLReceipt.mockResolvedValue(draft);
+  a.fetchRequestApprovals.mockResolvedValue(APPROVALS);
+  a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
+  a.fetchDiagnosisRun.mockResolvedValue(RUN_RECORD);
+  a.fetchTasks.mockResolvedValue({ active: "", tasks: [] });
+  vi.mocked(teamApi.readAuthStatus).mockResolvedValue({ initialized: true });
+  vi.mocked(teamApi.restoreSession).mockResolvedValue(true);
+});
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
+describe("URL 진단 계산", () => {
+  it("주소 안내: HTTPS 만 · 계정 정보 · query/fragment · 인코딩", () => {
+    expect(urlTargetHint("")).toBe("");
+    expect(urlTargetHint("http://target.example/")).toBe("HTTPS 주소만 받습니다.");
+    expect(urlTargetHint("https://u:p@target.example/")).toBe("계정 정보(user:pass@)는 넣지 마세요.");
+    expect(urlTargetHint("https://target.example/?a=1")).toBe("query · fragment(? #)는 넣지 마세요.");
+    expect(urlTargetHint("https://target.example/%2e")).toBe("퍼센트 인코딩 · 역슬래시는 쓸 수 없습니다.");
+    expect(urlTargetHint("https://target.example/app")).toBeNull();
+  });
+
+  it("갈 화면: 시작 전 → 범위 확인, 결과 저장 확인 → 보고서, 그 밖 → 점검 진행", () => {
+    expect(urlViewFor(draft)).toBe("scope");
+    expect(urlViewFor(ready)).toBe("scope");
+    expect(urlViewFor(running)).toBe("live");
+    expect(urlViewFor(completed)).toBe("report");
+    expect(urlViewFor({ ...completed, result_ready: false })).toBe("live");
+    expect(urlTone("failed")).toBe("stop");
+    expect(urlTone("running")).toBe("run");
+  });
+
+  it("시작 조건: 확인된 ready + 범위, 시작 키를 보낸 뒤 · 결과 불명 · 요청 중이면 막는다", () => {
+    const base = { handle, job: ready, verified: true, uncertain: false, busy: false };
+    expect(urlGates(base).canStart).toBe(true);
+    expect(urlGates({ ...base, handle: { ...handle, startKey: "start-1", startRevision: 2 } }).canStart).toBe(false);
+    expect(urlGates({ ...base, uncertain: true }).canStart).toBe(false);
+    expect(urlGates({ ...base, busy: true }).canStart).toBe(false);
+    expect(urlGates({ ...base, verified: false }).canStart).toBe(false);
+    expect(urlGates({ ...base, job: { ...ready, scope: undefined } }).canStart).toBe(false);
+    expect(urlGates({ ...base, job: running }).canStop).toBe(true);
+    expect(urlGates({ ...base, job: completed }).reportReadable).toBe(true);
+    expect(urlGates({ ...base, job: running }).reportReadable).toBe(false);
+  });
+});
+
+describe("서버 방식 확인 (catalog)", () => {
+  it("catalog 가 오면 URL 진단 폼, 기존 v1 칸은 없다", async () => {
+    mount("new");
+    expect(await screen.findByLabelText(/진단 대상 URL/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/점검할 사이트 주소/)).toBeNull();
+    expect(screen.queryByLabelText(/제외 경로/)).toBeNull();
+    expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
+  });
+
+  it("404 · 501 이면 기존 v1 새 점검", async () => {
+    u.readURLCatalog.mockRejectedValue(new ApiError(404, "HTTP 404"));
+    mount("new");
+    expect(await screen.findByLabelText(/점검할 사이트 주소/)).toBeInTheDocument();
+    expect(useUrl.getState().cap.kind).toBe("v1");
+  });
+
+  it("확인 불가(503)면 어느 쪽으로도 만들지 않고, 다시 시도는 catalog 만 다시 읽는다", async () => {
+    u.readURLCatalog.mockRejectedValueOnce(new ApiError(503, "preparation_service_unavailable"));
+    mount("new");
+    expect(await screen.findByRole("alert")).toHaveTextContent("새 점검 방식을 확인하지 못했습니다");
+    expect(screen.queryByLabelText(/점검할 사이트 주소/)).toBeNull();
+    expect(screen.queryByLabelText(/진단 대상 URL/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+    expect(await screen.findByLabelText(/진단 대상 URL/)).toBeInTheDocument();
+    expect(u.readURLCatalog).toHaveBeenCalledTimes(2);
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+  });
+
+  it("로그인 전에는 확인 중으로 두고 catalog 를 부르지 않는다", () => {
+    setLiveAuthState("login");
+    mount("new");
+    expect(screen.getByRole("status")).toHaveTextContent("서버의 새 점검 방식을 확인하는 중");
+    expect(u.readURLCatalog).not.toHaveBeenCalled();
+  });
+});
+
+describe("새 점검 → 범위 확인 (URL 진단)", () => {
+  it("URL · 프로필로 초안을 한 번 만들고 범위 확인까지 한 뒤 범위 확인 화면으로 간다", async () => {
+    const { goTo, container } = mount("new");
+    const target = (await screen.findByLabelText(/진단 대상 URL/)) as HTMLInputElement;
+    const send = () => screen.getAllByRole("button", { name: "승인 범위 확인" });
+    expect(send()[0]).toBeDisabled();
+    fireEvent.change(target, { target: { value: "http://target.example/" } });
+    expect(screen.getAllByText("HTTPS 주소만 받습니다.").length).toBeGreaterThan(0);
+    expect(send()[0]).toBeDisabled();
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    expect((screen.getByLabelText("승인된 모델 프로필") as HTMLSelectElement).value).toBe("profile-1");
+    expect(JSON.parse(container.querySelector("#luBody")?.textContent ?? "{}")).toEqual({
+      version: "diagnosis-api.v2",
+      input: { target_url: "https://target.example/", profile_id: "profile-1" },
+    });
+    await act(async () => {
+      fireEvent.click(send()[0]);
+    });
+    expect(u.createURLDraft).toHaveBeenCalledTimes(1);
+    const [input, key, who] = u.createURLDraft.mock.calls[0];
+    expect(input).toEqual({ target_url: "https://target.example/", profile_id: "profile-1" });
+    expect(typeof key).toBe("string");
+    expect(who).toBe(owner);
+    expect(u.commandURLDiagnosis).toHaveBeenCalledWith(draft, "validate", owner);
+    await waitFor(() => expect(goTo).toHaveBeenCalledWith("scope"));
+    // 조회 핸들만 남는다(영수증 키 · 결속). 입력은 잠긴다.
+    const saved = url.readURLHandle(owner);
+    expect(saved).toMatchObject({ creationKey: key, id: ready.id, revision: ready.revision });
+    expect(target).toBeDisabled();
+    expect(useUrl.getState().job?.state).toBe("ready");
+  });
+
+  it("범위 확인: 서버가 돌려준 범위를 보이고, 확인 상자를 켜야 한 번만 시작한다", async () => {
+    saveHandle();
+    u.commandURLDiagnosis.mockResolvedValue(preparing);
+    const { goTo } = mount("scope");
+    expect(await screen.findByText("https://target.example")).toBeInTheDocument();
+    expect(screen.getByText("사전 승인 범위")).toBeInTheDocument();
+    expect(screen.getByText("3회 · 60초")).toBeInTheDocument();
+    const start = screen.getByRole("button", { name: "진단 시작" });
+    expect(start).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(start).toBeEnabled();
+    await act(async () => {
+      fireEvent.click(start);
+      fireEvent.click(start);
+    });
+    expect(u.commandURLDiagnosis).toHaveBeenCalledTimes(1);
+    const [job, action, who, key] = u.commandURLDiagnosis.mock.calls[0];
+    expect(job).toEqual(ready);
+    expect(action).toBe("start");
+    expect(who).toBe(owner);
+    expect(typeof key).toBe("string");
+    await waitFor(() => expect(goTo).toHaveBeenCalledWith("live"));
+    expect(url.readURLHandle(owner)).toMatchObject({ startKey: key, bindingLocked: true });
+    // 시작 뒤에는 같은 진단을 다시 시작하지 않는다
+    expect(screen.queryByRole("button", { name: "진단 시작" })).toBeNull();
+  });
+
+  it("시작 결과가 불명이면 다시 보내지 않고 상태 조회만 남긴다", async () => {
+    saveHandle();
+    u.commandURLDiagnosis.mockRejectedValue(new TypeError("network"));
+    const { goTo } = mount("scope");
+    await screen.findByText("https://target.example");
+    fireEvent.click(screen.getByRole("checkbox"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "진단 시작" }));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("자동 재전송하지 않고");
+    expect(goTo).not.toHaveBeenCalled();
+    expect(screen.getByText(/시작 · 모델 호출을 자동으로 다시 보내지 않습니다/)).toBeInTheDocument();
+    expect(useUrl.getState().uncertain).toBe(true);
+    expect(url.readURLHandle(owner)?.startKey).toBeTruthy();
+    expect(u.commandURLDiagnosis).toHaveBeenCalledTimes(1);
+  });
+
+  it("설치자 승인 대기면 사유를 보이고 시작 상자가 없다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...draft, revision: 2, reason_code: "approval_required" });
+    mount("scope");
+    expect(await screen.findByText(/설치자 승인이 필요해요/)).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("이어 볼 진단이 없으면 새 점검으로 안내한다", async () => {
+    mount("scope");
+    expect(await screen.findByText(/이어 볼 URL 진단이 없습니다/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /새 점검/ })).toHaveAttribute("href", "#new");
+  });
+});
+
+describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
+  it("저장된 핸들로는 GET 만 한다(초안 · 시작을 다시 보내지 않음)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    expect(await screen.findByText("엔진 실행 중")).toBeInTheDocument();
+    expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner);
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  });
+
+  it("영수증만 있으면(id 없음) 생성 영수증을 조회한다", async () => {
+    saveHandle({ ownerContext: owner, creationKey: "create-1", input: draft.input });
+    mount("new");
+    await waitFor(() => expect(u.readURLReceipt).toHaveBeenCalledWith("create-1", owner));
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+    expect(await screen.findByText("조회 중인 진단")).toBeInTheDocument();
+  });
+
+  it("조회 권한이 없으면(403) 핸들을 지운다", async () => {
+    saveHandle();
+    u.readURLStatus.mockRejectedValue(new ApiError(403, "forbidden"));
+    mount("live");
+    expect(await screen.findByText(/이 진단을 조회하거나 실행할 권한이 없어요/)).toBeInTheDocument();
+    expect(url.readURLHandle(owner)).toBeNull();
+  });
+
+  it("진행 중이면 상태만 주기적으로 다시 읽고, 실제 task 의 전송 통제를 부른다", async () => {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(u.readURLStatus).toHaveBeenCalledTimes(1);
+    expect(a.fetchRequestApprovals).toHaveBeenCalledWith("42");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(URL_POLL_MS);
+    });
+    expect(u.readURLStatus).toHaveBeenCalledTimes(2);
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  });
+
+  it("전송 통제: 허용 판정을 실제 전송으로 보이지 않는다 (allowed 1 · 전송 시도 0)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    a.fetchRequestApprovals.mockResolvedValue({
+      approvals: [],
+      run: {
+        ...APPROVALS.run,
+        execution: {
+          ...(RUN_RECORD.kind === "run" ? RUN_RECORD.run.execution : undefined),
+          counts: {
+            attempts: 1,
+            allowed: 1,
+            denied: 0,
+            unsupported: 0,
+            forward_attempted: 0,
+            responses: 0,
+            unknown: 0,
+            calls: 1,
+          },
+        } as api.RequestApprovalRun["execution"],
+      },
+    });
+    const { container } = mount("live");
+    await waitFor(() => expect(container.querySelector("#luAllowed")).toHaveTextContent("1"));
+    const cell = container.querySelector("#luAllowed")?.parentElement as HTMLElement;
+    expect(within(cell).getByText("허용 판정")).toBeInTheDocument();
+    expect(within(cell).getByText("실제 전송 아님 · 대상 전송 시도 0")).toBeInTheDocument();
+    expect(screen.queryByText("허용 범위 안 전송")).toBeNull();
+  });
+
+  it("결과 불명(unknown · 마감 미확인)을 끝난 진단으로 안내하지 않는다 — 화면 · 레일", async () => {
+    const unknownJob: url.URLDiagnosisJob = { ...running, revision: 6, state: "unknown" };
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(unknownJob);
+    const goTo = vi.fn<(v: View) => void>();
+    render(
+      <ShellContext.Provider value={shellValue({ route: "live", goTo })}>
+        <UrlFeeds />
+        <LiveByMode />
+        <LiveRailTasks />
+      </ShellContext.Provider>,
+    );
+    const note = await screen.findByText(/결과 불명 — 준비 또는 실행 결과를 확인하지 못했습니다/);
+    expect(note).toHaveTextContent("엔진 시작 확인됨 · 마감 확인 미확인 · 결과 저장 미확인");
+    expect(screen.queryByText(/진단이 끝났습니다/)).toBeNull();
+    expect(screen.queryByText(/실행이 마감됐습니다/)).toBeNull();
+    expect(screen.getByText(/결과 불명인 진단은 실행 감독자 상태를 이어 조회하지 않습니다/)).toBeInTheDocument();
+    expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
+    // 레일: 최근 끝난 점검이 아니라 위(진행 중) 묶음에
+    expect(screen.getByText("이 브라우저에서 이어 보는 끝난 진단 없음")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /target\.example/ })).toHaveTextContent("결과 불명");
+    // 중지는 보내지 않는다(준비 · 실행 중만)
+    expect(screen.queryByRole("button", { name: /진단 중지 요청/ })).toBeNull();
+  });
+
+  it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 실행 종료 기록으로 안내한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    const { goTo } = mount("live");
+    expect(await screen.findByText(/실행이 마감됐습니다/)).toBeInTheDocument();
+    expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
+    expect(screen.queryByText(/전송 통제: 이 서버 모드에서는 제공되지 않음/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /보고서 보기/ }));
+    expect(goTo).toHaveBeenCalledWith("report");
+  });
+
+  it("중지 요청은 같은 진단에 한 번 (expected revision 은 팀 lib 이 넣는다)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    u.commandURLDiagnosis.mockResolvedValue({ ...running, revision: 6, state: "stopping" });
+    mount("live");
+    const stop = await screen.findByRole("button", { name: /진단 중지 요청/ });
+    await act(async () => {
+      fireEvent.click(stop);
+    });
+    expect(u.commandURLDiagnosis).toHaveBeenCalledWith(running, "stop", owner, undefined);
+    expect(await screen.findByText("중지·마감 중")).toBeInTheDocument();
+  });
+
+  it("보고서는 결과 저장이 확인된 뒤에만 실제 task 의 조치 자료를 부른다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("report");
+    expect(await screen.findByText(/결과 저장이 확인되면 보고서를 봅니다/)).toBeInTheDocument();
+    expect(a.fetchRemediation).not.toHaveBeenCalled();
+    cleanup();
+    resetUrl();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("report");
+    expect(await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).toBeInTheDocument();
+    await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
+    expect(a.fetchDiagnosisRun).toHaveBeenCalledWith("42");
+    // 판정 집계: 후보는 검토 필요, 확정 0 (팀 lib 분류)
+    const strip = await screen.findByRole("region", { name: "진단 판정 집계" });
+    const cell = (label: string) => within(strip).getByText(label).parentElement as HTMLElement;
+    await waitFor(() => expect(within(cell("검토 필요")).getByText("1건")).toBeInTheDocument());
+    expect(within(cell("확정")).getByText("0건")).toBeInTheDocument();
+    // 실행 종료 기록: 실행 ID · 정상 종료 · 감사 · E② 집계는 저장 값 그대로
+    const record = screen.getByRole("region", { name: "실행 종료 기록" });
+    expect(within(record).getByText("정상 종료")).toBeInTheDocument();
+    expect(within(record).getByText("run-1")).toBeInTheDocument();
+    expect(within(record).getByText("완결")).toBeInTheDocument();
+    expect(within(within(record).getByText("차단").parentElement as HTMLElement).getByText("2")).toBeInTheDocument();
+    // 모델 사용량 · 비용은 서버 기록이 없으면 그렇다고 말한다
+    expect(screen.getByText("모델 사용량 · 비용 기록은 아직 제공되지 않았습니다.")).toBeInTheDocument();
+    expect(screen.getByText(/후보 1/)).toBeInTheDocument();
+  });
+
+  it("다른 진단 만들기: 조회 연결만 끊고 폼을 비운다", async () => {
+    saveHandle();
+    mount("new");
+    expect(await screen.findByText("조회 중인 진단")).toBeInTheDocument();
+    expect((screen.getByLabelText(/진단 대상 URL/) as HTMLInputElement).value).toBe("https://target.example/");
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /다른 진단 만들기/ }));
+    });
+    expect(url.readURLHandle(owner)).toBeNull();
+    const target = screen.getByLabelText(/진단 대상 URL/) as HTMLInputElement;
+    expect(target.value).toBe("");
+    expect(target).toBeEnabled();
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  });
+});
+
+describe("레일 (URL 진단)", () => {
+  it("이어 보는 진단 한 줄을 보이고 누르면 알맞은 화면으로 간다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const goTo = vi.fn<(v: View) => void>();
+    render(
+      <ShellContext.Provider value={shellValue({ route: "dashboard", goTo })}>
+        <UrlFeeds />
+        <LiveRailTasks />
+      </ShellContext.Provider>,
+    );
+    const row = await screen.findByRole("button", { name: /target\.example/ });
+    expect(within(row).getByText("엔진 실행 중 · 대상 진단")).toBeInTheDocument();
+    fireEvent.click(row);
+    expect(goTo).toHaveBeenCalledWith("live");
+    expect(screen.getByText("이 브라우저에서 이어 보는 끝난 진단 없음")).toBeInTheDocument();
+  });
+});
+
+describe("대시보드 · 인증 (URL 진단)", () => {
+  it("대시보드: 이어 보는 진단 한 줄 · 설치 프로필 · 목록 API 없음 안내", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const { goTo } = mount("dashboard");
+    const row = await screen.findByRole("button", { name: /target\.example/ });
+    expect(within(row).getByText("엔진 실행 중")).toBeInTheDocument();
+    fireEvent.click(row);
+    expect(goTo).toHaveBeenCalledWith("live");
+    expect(screen.getByText("승인된 읽기")).toBeInTheDocument();
+    expect(screen.getByText(/진단 목록 API 가 없어/)).toBeInTheDocument();
+  });
+
+  it("토큰은 v2 catalog 로 먼저 확인한다: 401 → 로그인, /api/tasks 는 부르지 않는다", async () => {
+    u.readURLCatalog.mockRejectedValue(new ApiError(401, "authentication_required"));
+    await act(async () => {
+      await checkLiveAuth();
+    });
+    expect(getLiveAuthState()).toBe("login");
+    expect(a.fetchTasks).not.toHaveBeenCalled();
+  });
+
+  it("v2 catalog 가 받아 주면 ready — URL 진단 서버의 /api/tasks(하위 경로 리다이렉트)를 부르지 않고 실행 요청도 없다", async () => {
+    await act(async () => {
+      await checkLiveAuth();
+    });
+    expect(getLiveAuthState()).toBe("ready");
+    expect(a.fetchTasks).not.toHaveBeenCalled();
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  });
+
+  it("v2 준비 서비스만 안 되면(503) ready 로 두고 /api/tasks 로 넘어가지 않는다", async () => {
+    u.readURLCatalog.mockRejectedValue(new ApiError(503, "preparation_service_unavailable"));
+    await act(async () => {
+      await checkLiveAuth();
+    });
+    expect(getLiveAuthState()).toBe("ready");
+    expect(a.fetchTasks).not.toHaveBeenCalled();
+  });
+
+  it("v2 가 아니면(404) 기존처럼 /api/tasks 로 확인한다: 성공 → ready, 401 → 로그인", async () => {
+    u.readURLCatalog.mockRejectedValue(new ApiError(404, "HTTP 404"));
+    await act(async () => {
+      await checkLiveAuth();
+    });
+    expect(a.fetchTasks).toHaveBeenCalledTimes(1);
+    expect(getLiveAuthState()).toBe("ready");
+    a.fetchTasks.mockRejectedValue(new ApiError(401, "expired"));
+    await act(async () => {
+      await checkLiveAuth();
+    });
+    expect(getLiveAuthState()).toBe("login");
+  });
+
+  it("공용 조회(점검 목록 · 승인 대기)는 v2 서버와 확인 중에는 부르지 않는다", async () => {
+    resetUrl({ kind: "checking" });
+    const { unmount } = render(<LiveFeeds />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(a.fetchTasks).not.toHaveBeenCalled();
+    act(() => useUrl.setState({ cap: { kind: "v2", catalog } }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(a.fetchTasks).not.toHaveBeenCalled();
+    act(() => useUrl.setState({ cap: { kind: "v1" } }));
+    await waitFor(() => expect(a.fetchTasks).toHaveBeenCalled());
+    unmount();
+  });
+});

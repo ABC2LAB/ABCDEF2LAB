@@ -2,17 +2,18 @@
 
 기준: `origin/dev` `19f1288e75bdaa3033c902103ac7145a95dcd6d1` (#340·#341 병합 후). 이 문서는 최민준의 평가 생산자 리뷰와 PR 병합 전까지 **확정 제안**이다. 정책 정본은 `server.E2HTTPFilePolicy`와 `e2proxy`의 실제 검증이다. 새 정책 버전은 만들지 않는다. 이 문서의 검증 API는 오프라인 형식 검사이며 실행 허가가 아니다.
 
-## 1. 세 산출물과 책임
+## 1. 산출물과 책임
 
 | 단계 | 형식과 소유 | 변경되는 값 | 검증 |
 |---|---|---|---|
-| A. 검토한 기본 정책 | `abc2lab.e2-http-host-policy/v1`, 정책 생산자 | 집행 범위·상한·전달·평가 선언과 보호 자원 pin. **`audit_key` 키 자체 없음** | `server.ValidateE2HTTPPolicyDocument(raw, false)`로 닫힌 JSON·정적 의미. 자원 실재/권한은 별도 |
+| A0. 검토한 의미 템플릿 | JSON 객체, 러너 설정 `e2.policy_path`의 파일 | 내용 지문에 들어가는 필드와 회차 불변 참조만 둔다. 회차 값(`run_ref`, `evaluation.run_ref`, `valid_from`, `valid_until`, `state_dir`, `helper`, `helper_sha256`, `ca_cert`, `ca_key`, `rules[].connect_ip`)과 `audit_key`가 있으면 거부한다 | Python `render_policy` |
+| A. 회차 기본 정책 | `abc2lab.e2-http-host-policy/v1`, 러너 `render_policy`가 A0에 회차 값을 채운 결과 | 집행 범위·상한·전달·평가 선언과 보호 자원 pin. **`audit_key` 키 자체 없음** | `server.ValidateE2HTTPPolicyDocument(raw, false)`로 닫힌 JSON·정적 의미. 자원 실재/권한은 별도 |
 | B. 회차별 준비 정책 | 같은 형식, Python `prepare_e2_config` | 새 32바이트 `audit.key`를 만들고 `audit_key: {"file":"audit.key","sha256":…}`만 추가. 정확한 준비 바이트 SHA-256을 반환 | `e2config.Load`는 보호 파일·정확 바이트·최소 정책 구조, `ValidateE2HTTPPolicyDocument(raw, true)`는 닫힌 정책, `LoadE2HTTPRuntimeOptions`와 `NewE2StandaloneBackend`는 pin·CA·helper·집행 의미·권위 |
 | C. 내용 지문 | `abc2lab.e2-policy-content/v1`, Go `e2export.PolicyFingerprint` | 정책 의미가 같으면 회차마다 같음 | 준비 후 실제 factory 산출값을 사전 검토·동결한 예상 지문과 비교. 서비스 응답을 예상값으로 자동 채택하지 않음 |
 
 `config_sha256`은 준비 설정 JSON 파일의 정확한 바이트, `policy_sha256`은 준비 정책 JSON 파일의 정확한 바이트, `policy_fingerprint_sha256`은 C의 의미 투영이다. 앞의 두 지문은 순서·공백·회차 키 pin이 바뀌면 달라질 수 있다. 내용 지문은 세 값을 대신하거나 접근 권한을 주지 않는다.
 
-**회차 독립의 정확한 범위:** 현재 Python 준비기는 `audit_key` 이외의 정책 필드를 바꾸지 않는다. 따라서 기본 정책의 `run_ref`, `reset_ref`, 승인 시각, 경로와 자원 pin은 생산자가 미리 공급한 값 그대로 준비 정책에 남는다. `run_ref`는 엔진의 `Scope.RunRef`이며 평가 `eval_run_id`와 **달라야** 한다(`NewE2StandaloneBackend`). `evaluation.run_ref`는 `run_ref`와 같아야 한다. 현재 기본 정책을 완전히 회차 불변으로 만들고 매 회차 엔진 `run_ref`·승인 시각까지 생성하는 로직은 **미구현**이다. 생산자는 지금 계약에서는 재사용 가능한 의미 템플릿을 공급하되, 실제 배치 전에 유효한 참조·기간·보호 자원을 공급해야 한다. 회차별 `reset_generation`은 정책의 `reset_ref`와 다른 값이며 준비 뒤 `BindReset`이 소문자 64자리 컨테이너 ID를 최초 한 번 결속한다. 같은 값만 멱등 재호출 가능하다. 실제 Docker ID와 사전 정책 참조를 같다고 가정하지 않는다.
+**회차 값의 공급:** 러너가 준비 단계에서 A0에 채운다. `run_ref`는 회차마다 새로 만들고 평가 `eval_run_id`와 **달라야** 하며(`NewE2StandaloneBackend`) `evaluation.run_ref`는 같은 값이다. `valid_from`은 준비 시각, `valid_until`은 거기에 `e2.window_seconds`를 더한 값이고, `e2.approval_valid_until`을 넘으면 준비를 멈춘다(자동 연장 없음). `state_dir`는 `/run/e2-state`(회차별 0700, E② 쓰기 가능), `helper`·`helper_sha256`은 러너 설정 값이다. CA는 `e2.policy_tool`의 `ca`가 회차마다 새로 만들고 실제 파일 바이트로 pin을 채운다. `rules[].connect_ip`는 `e2_net` 고정 subnet의 계측기 주소 `e2.meter_ip`이고, up 뒤 Docker가 알려 주는 실제 주소와 다르면 그 회차를 쓰지 않는다. 회차별 `reset_generation`은 정책의 `reset_ref`와 다른 값이며 준비 뒤 `BindReset`이 소문자 64자리 컨테이너 ID를 최초 한 번 결속한다. 같은 값만 멱등 재호출 가능하다. 실제 Docker ID와 사전 정책 참조를 같다고 가정하지 않는다.
 
 ## 2. 정책 JSON 필드
 
@@ -24,7 +25,7 @@
 | `approval_mode` | 문자열 필수, 평가에서는 `preauthorized_scope` | 생산자, A. 문서 API·factory·proxy | 포함 |
 | `run_ref`, `reset_ref`, `policy_ref`, `case_ref` | 각각 비어 있지 않은 참조 문자열 필수, `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}` | 신뢰 host/생산자, 준비 전. factory·실제 scope/BindReset 재검증 | 제외 |
 | `policy_revision`, `budget_ref`, `owner_ref`, `account_ref`, `session_ref` | 같은 참조 규칙, 각각 필수 | 신뢰 host/생산자, 준비 전. factory·실행/예산 결속 | 제외 |
-| `valid_from`, `valid_until` | RFC3339 시각 문자열 필수. 시작 ≤ 현재 < 종료, 시작 < 종료 | 승인 공급자, 준비 전. 문서 API·factory·실행 만료 검사 | 제외 |
+| `valid_from`, `valid_until` | RFC3339 시각 문자열 필수, 시작 < 종료. 실제 시작 시에는 시작 ≤ 현재 < 종료 | 승인 공급자, 준비 전. 문서 API는 순서만, factory·실행은 현재 시각/만료 검사 | 제외 |
 | `max_requests` | `uint64` 정수 필수, 1…`math.MaxInt` | 생산자, A. 문서 API·factory·Ledger | 포함 |
 | `header_mode` | 문자열 필수, `preserve`, `evaluation_caller_passthrough`, `protected_session_proposal` 중 하나. 빈 문자열 거부 | 생산자, A. 문서 API·proxy·준비 설정과 backend 대조 | 포함 |
 | `evaluation` | 객체 또는 `null` **필수**. 평가 전달 모드는 객체 필수, 그 외는 `null` | 생산자, A. 문서 API·proxy·준비 설정/실행 대조 | `llm_backend`, `target_kind` 포함, `run_ref` 제외 |
@@ -105,6 +106,8 @@
 
 `go test ./server -run 'TestE2EvaluationPolicyDocumentStages|TestE2EvaluationPythonPrepareGoConsumer' -count=1`은 실제 Go 타입이 만든 **합성 CA·helper·정책**을 사용한다. 첫 시험은 A에서 `audit_key`를 제거하고 A/B 형식, 미지·중복 키, 필수 누락, 금지 `null`, 타입, 승인 모드, 잘못된 method/path/origin, 상한·크기 초과를 검사한다. 둘째는 Python `e2_prepare.py`가 A를 읽어 키·pin·B·준비 설정을 쓰고, Go `e2config.Load` → 문서 API → factory → 독립 backend가 이를 소비하고 정확한 바이트 digest·감사 pin·예상 지문 불일치를 확인한다. 시험 프로세스의 보호 mount 경로만 로컬 임시 디렉터리로 바꿔 `e2config.Load`에 공급한다. 실제 배치의 `/evidence`·`/run/e2-control` mount와 동일하다는 주장은 아니다. 합성 키·CA 원문은 저장소에 넣지 않는다.
 
+`go test ./server -run TestE2EvaluationPolicyProducerGoConsumer -count=1`은 A0에서 시작해 러너 생산자·실제 `e2-eval-policy`·`e2config`·factory·독립 backend까지 잇고, 오프라인 예상 지문이 실제 factory 값과 같은지 대조한다.
+
 기존 `e2config` 시험은 잘못된 설정 키·타입·권한·symlink·정책 중복 키·감사 키 길이·교체를, `server` standalone 시험은 감사 pin mismatch와 단회 bind를, `e2export` 시험은 내용 지문 안정성·의미 변경·비밀 값 제외를 추가로 검증한다. 정책 파일 SHA가 같아도 승인 권위·실제 IP/CA·task/intent·Docker ID와 서비스 격리가 맞지 않으면 시작/송신을 거부한다.
 
 ## 6. 구현 상태와 충돌 정리
@@ -115,4 +118,4 @@
 - 평가 회차는 `confirm_every_request`를 자동 승인으로 바꾸지 않고 `preauthorized_scope`를 사용한다. `protected_session_proposal`은 기존 parser 어휘이나 공식 평가용 기능 채택·배치 허가가 아니다.
 - 독립 `eval-e2` 바이너리/이미지, 인증된 launcher↔E② OpenCall/CloseCall, 실제 task/Planner 연결, Worker/Planner 상한 집행, 공식 계측·GT·모델/대상 수용은 별도 작업이다. #340/#341이나 이 문서의 정적 검증 통과가 이 항목을 완료시키지 않는다.
 
-11월 23일 인계 전에 **최민준과 함께** 실제 정책 생산자가 `run_ref`·유효기간·state/CA/helper/IP pin을 어느 보호 단계에서 공급하고 동결할지, 예상 지문의 오프라인 산출·보관 위치, 인증 채널·컨테이너 mount/UID, Planner/Worker 한도 연결의 담당과 수용 시험을 확정해야 한다. 이번 PR의 리뷰를 그 결정의 입력으로 사용한다.
+예상 지문은 `scripts/eval/e2_policy_fingerprint.py`로 A0에서 오프라인으로 계산해 공식 프로파일의 `e2.policy_fingerprint_sha256`에 둔다. 서비스 응답을 예상값으로 쓰지 않는다. 자리값은 지문에 들어가지 않는 필드에만 쓴다. 11월 23일 인계 전에 인증 채널, Planner/Worker 한도 연결의 담당과 수용 시험을 확정해야 한다.

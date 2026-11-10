@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -34,6 +35,18 @@ func TestE2EvaluationPolicyDocumentStages(t *testing.T) {
 	if _, err := ValidateE2HTTPPolicyDocument(base, false); err != nil {
 		t.Fatal("base policy rejected:", err)
 	}
+	future := policy
+	future.ValidFrom = time.Now().Add(time.Hour)
+	future.ValidUntil = future.ValidFrom.Add(time.Hour)
+	futureRaw, err := json.Marshal(future)
+	if err != nil || json.Unmarshal(futureRaw, &template) != nil {
+		t.Fatal("future fixture encode")
+	}
+	delete(template, "audit_key")
+	futureBase, _ := json.Marshal(template)
+	if _, err := ValidateE2HTTPPolicyDocument(futureBase, false); err != nil {
+		t.Fatal("future offline template rejected:", err)
+	}
 	if _, err := ValidateE2HTTPPolicyDocument(raw, true); err != nil {
 		t.Fatal("prepared policy rejected:", err)
 	}
@@ -42,6 +55,20 @@ func TestE2EvaluationPolicyDocumentStages(t *testing.T) {
 	}
 	if _, err := ValidateE2HTTPPolicyDocument(raw, false); err == nil {
 		t.Fatal("template with audit pin accepted")
+	}
+	var preparedDoc map[string]any
+	if json.Unmarshal(raw, &preparedDoc) != nil {
+		t.Fatal("prepared fixture decode")
+	}
+	preparedDoc["audit_key"].(map[string]any)["sha256"] = "bad"
+	badAudit, _ := json.Marshal(preparedDoc)
+	if _, err := ValidateE2HTTPPolicyDocument(badAudit, true); err == nil {
+		t.Fatal("malformed prepared audit pin accepted")
+	}
+	preparedDoc["audit_key"] = nil
+	nullAudit, _ := json.Marshal(preparedDoc)
+	if _, err := ValidateE2HTTPPolicyDocument(nullAudit, true); err == nil {
+		t.Fatal("null prepared audit pin accepted")
 	}
 	cases := map[string][]byte{
 		"unknown":   bytes.Replace(base, []byte(`"format":`), []byte(`"unexpected":1,"format":`), 1),
@@ -65,6 +92,202 @@ func TestE2EvaluationPolicyDocumentStages(t *testing.T) {
 				t.Fatal("invalid policy accepted")
 			}
 		})
+	}
+}
+
+// 오프라인 검증·지문은 회차 시각과 분리하고 실제 시작의 유효창 검사는 유지한다.
+func TestE2EvaluationOfflineValidityAndRuntimeWindow(t *testing.T) {
+	host, _, policy := e2HostPolicyFixture(t)
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := E2HTTPPolicyContentFingerprint(raw, true)
+	if err != nil {
+		t.Fatal("current fingerprint:", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	load := func(raw []byte) (E2HTTPRuntimeOptions, error) {
+		t.Helper()
+		if err := os.WriteFile(host.PolicyFile, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		authority := &standaloneAuthorityFixture{ctx: ctx, digest: sha256.Sum256(raw)}
+		return LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: host.PolicyFile, Authority: authority, Supervisor: standaloneSupervisorFixture{}})
+	}
+	if _, err := load(raw); err != nil {
+		t.Fatal("current runtime control:", err)
+	}
+	for name, offset := range map[string]time.Duration{"future": time.Hour, "expired": -2 * time.Hour} {
+		t.Run(name, func(t *testing.T) {
+			changed := policy
+			changed.ValidFrom = time.Now().Add(offset)
+			changed.ValidUntil = changed.ValidFrom.Add(time.Hour)
+			wire, err := json.Marshal(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, prepared := range []bool{false, true} {
+				input := wire
+				if !prepared {
+					var document map[string]json.RawMessage
+					if err := json.Unmarshal(wire, &document); err != nil {
+						t.Fatal(err)
+					}
+					delete(document, "audit_key")
+					input, err = json.Marshal(document)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := ValidateE2HTTPPolicyDocument(input, prepared); err != nil {
+					t.Fatal("offline document:", err)
+				}
+				if got, err := E2HTTPPolicyContentFingerprint(input, prepared); err != nil || got != want {
+					t.Fatal("offline fingerprint changed with the validity window:", err)
+				}
+			}
+			if _, err := load(wire); err != ErrE2HTTPHost {
+				t.Fatal("runtime accepted a policy outside the current validity window:", err)
+			}
+		})
+	}
+}
+
+// 문서의 필드별 거부 규칙은 구현 분기를 하나씩 약화해도 깨지도록 독립 입력으로 고정한다.
+func TestE2EvaluationPolicyDocumentFieldFailures(t *testing.T) {
+	_, _, policy := e2HostPolicyFixture(t)
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source map[string]any
+	if json.Unmarshal(raw, &source) != nil {
+		t.Fatal("fixture decode")
+	}
+	delete(source, "audit_key")
+	cases := map[string]func(map[string]any){
+		"format":               func(o map[string]any) { o["format"] = "abc2lab.e2-http-host-policy/v2" },
+		"header_mode_empty":    func(o map[string]any) { o["header_mode"] = "" },
+		"run_ref_invalid":      func(o map[string]any) { o["run_ref"] = "https://example.invalid" },
+		"helper_digest":        func(o map[string]any) { o["helper_sha256"] = strings.Repeat("A", 64) },
+		"state_dir_empty":      func(o map[string]any) { o["state_dir"] = "" },
+		"helper_empty":         func(o map[string]any) { o["helper"] = "" },
+		"ca_pin_file":          func(o map[string]any) { o["ca_cert"].(map[string]any)["file"] = "../ca.pem" },
+		"ca_pin_hash":          func(o map[string]any) { o["ca_key"].(map[string]any)["sha256"] = "bad" },
+		"ca_pin_missing":       func(o map[string]any) { delete(o["ca_cert"].(map[string]any), "file") },
+		"ca_pin_null":          func(o map[string]any) { o["ca_cert"].(map[string]any)["sha256"] = nil },
+		"limits_missing":       func(o map[string]any) { delete(o["limits"].(map[string]any), "max_calls") },
+		"limits_null":          func(o map[string]any) { o["limits"].(map[string]any)["max_calls"] = nil },
+		"proxy_missing":        func(o map[string]any) { delete(o["proxy"].(map[string]any), "max_connections") },
+		"runtime_null":         func(o map[string]any) { o["runtime"].(map[string]any)["output_limit"] = nil },
+		"rule_display_missing": func(o map[string]any) { delete(o["rules"].([]any)[0].(map[string]any), "approval_display") },
+		"rule_display_null":    func(o map[string]any) { o["rules"].([]any)[0].(map[string]any)["approval_display"] = nil },
+		"rule_display_type": func(o map[string]any) {
+			o["rules"].([]any)[0].(map[string]any)["approval_display"].(map[string]any)["query_keys"] = "one"
+		},
+		"credential_wrong_mode": func(o map[string]any) { o["rules"].([]any)[0].(map[string]any)["credentials"] = o["ca_cert"] },
+		"future_before_start":   func(o map[string]any) { o["valid_until"] = o["valid_from"] },
+		"evaluation_wrong_mode": func(o map[string]any) {
+			o["evaluation"] = map[string]any{"run_ref": "fixture-run", "llm_backend": "api", "target_kind": "public_practice"}
+		},
+		"evaluation_run_mismatch": func(o map[string]any) {
+			o["header_mode"] = "evaluation_caller_passthrough"
+			o["evaluation"] = map[string]any{"run_ref": "other-run", "llm_backend": "api", "target_kind": "public_practice"}
+		},
+		"evaluation_missing": func(o map[string]any) {
+			o["header_mode"] = "evaluation_caller_passthrough"
+		},
+		"upstream_pin_invalid": func(o map[string]any) { o["upstream_ca"] = map[string]any{"file": "ca.pem", "sha256": "bad"} },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			var input map[string]any
+			sourceRaw, _ := json.Marshal(source)
+			if json.Unmarshal(sourceRaw, &input) != nil {
+				t.Fatal("fixture copy")
+			}
+			change(input)
+			wire, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ValidateE2HTTPPolicyDocument(wire, false); err == nil {
+				t.Fatal("invalid field accepted")
+			}
+		})
+	}
+}
+
+// factory의 후속 정적 검사만으로 통과하는 누락 필드를 backend가 직접 거부해야 한다.
+func TestE2StandaloneUsesPreparedDocumentValidation(t *testing.T) {
+	host, _, policy := e2HostPolicyFixture(t)
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]json.RawMessage
+	if json.Unmarshal(raw, &document) != nil {
+		t.Fatal("fixture decode")
+	}
+	delete(document, "evaluation")
+	raw, err = json.Marshal(document)
+	if err != nil || os.WriteFile(host.PolicyFile, raw, 0600) != nil {
+		t.Fatal("incomplete policy write")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	authority := &standaloneAuthorityFixture{ctx: ctx, digest: sha256.Sum256(raw)}
+	factory, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: host.PolicyFile, Authority: authority, Supervisor: standaloneSupervisorFixture{}})
+	if err != nil {
+		t.Fatal("fixture must reach the old factory boundary:", err)
+	}
+	config := e2config.Config{Format: e2config.Format, EvalRunID: "eval-fixture", ReservationRef: "reservation-fixture", ModelTag: "model-fixture", HeaderMode: "preserve", PolicyFile: filepath.Base(host.PolicyFile), AuditKeyFile: policy.AuditKey.File, Listen: ":18432", Upstream: "http://eval-meter-upstream:18432", EvidenceDir: firstDiagnosisPrivateTemp(t), ControlDir: e2ControlPrivateTestDir(t)}
+	configRaw, err := json.Marshal(config)
+	configPath := filepath.Join(host.AuthorityRoot, "e2-config.json")
+	if err != nil || os.WriteFile(configPath, configRaw, 0600) != nil {
+		t.Fatal("config write")
+	}
+	loaded, err := e2config.Load(configPath)
+	if err != nil {
+		t.Fatal("preflight must accept the fixture:", err)
+	}
+	if _, err := NewE2StandaloneBackend(ctx, E2StandaloneOptions{Config: loaded, Authority: authority, Supervisor: standaloneSupervisorFixture{}, Readiness: &standaloneReadinessFixture{}, ExecutionRef: "fixture-execution", ExpectedPolicyFingerprintSHA256: factory.PolicyFingerprintSHA256}); err == nil {
+		t.Fatal("backend accepted a prepared policy without the required evaluation field")
+	}
+}
+
+// 자격 헤더 이름은 지문에 들어가는데 오프라인에서는 pin 파일을 읽지 않는다. 틀린 값을 내느니 값을 내지 않는다.
+func TestE2HTTPPolicyContentFingerprintRefusesCredentialRules(t *testing.T) {
+	_, _, policy := e2HostPolicyFixture(t)
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if json.Unmarshal(raw, &document) != nil {
+		t.Fatal("fixture decode")
+	}
+	delete(document, "audit_key")
+	document["header_mode"] = string(e2proxy.HeaderProtectedSessionProposal)
+	withoutCredentials, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint, err := E2HTTPPolicyContentFingerprint(withoutCredentials, false); err != nil || len(fingerprint) != 64 {
+		t.Fatal("protected mode without credentials rejected:", err)
+	}
+	document["rules"].([]any)[0].(map[string]any)["credentials"] = map[string]any{"file": "credentials.json", "sha256": strings.Repeat("a", 64)}
+	withCredentials, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateE2HTTPPolicyDocument(withCredentials, false); err != nil {
+		t.Fatal("credential policy is valid and must stay valid:", err)
+	}
+	if fingerprint, err := E2HTTPPolicyContentFingerprint(withCredentials, false); err == nil || fingerprint != "" {
+		t.Fatal("credential rule produced an offline fingerprint")
 	}
 }
 
@@ -158,6 +381,12 @@ func TestE2EvaluationPythonPrepareGoConsumer(t *testing.T) {
 	factory, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: c.PolicyPath, Authority: authority, Supervisor: standaloneSupervisorFixture{}})
 	if err != nil {
 		t.Fatal("Go policy factory rejected Python output:", err)
+	}
+	if offline, err := E2HTTPPolicyContentFingerprint(raw, true); err != nil || offline != factory.PolicyFingerprintSHA256 {
+		t.Fatal("offline fingerprint differs from the factory")
+	}
+	if _, err := E2HTTPPolicyContentFingerprint(raw, false); err == nil {
+		t.Fatal("prepared policy accepted as a base policy")
 	}
 	backend, err := NewE2StandaloneBackend(ctx, E2StandaloneOptions{Config: c, Authority: authority, Supervisor: standaloneSupervisorFixture{}, Readiness: &standaloneReadinessFixture{}, ExecutionRef: "fixture-execution", ExpectedPolicyFingerprintSHA256: factory.PolicyFingerprintSHA256})
 	if err != nil {
