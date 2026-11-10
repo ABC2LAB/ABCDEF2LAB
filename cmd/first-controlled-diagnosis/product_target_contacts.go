@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+type productContactJournal interface {
+	Check() error
+	Append(json.RawMessage) error
+	Close() error
+}
+
 // HTTP 전송 감사와 별도로 TLS 사전 접촉 시도·결과를 보호 저널에 결속한다.
 // 원문 인증서·오류·키는 저장하지 않는다. 감사 저장 실패 시 접촉·승인을 진행하지 않는다.
 type productTLSContact struct {

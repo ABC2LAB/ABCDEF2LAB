@@ -47,7 +47,7 @@ type productTargetRegistry struct {
 	policy      productTargetPolicy
 	policyCheck func() error
 	journal     *diagnosisprep.ProtectedJournal
-	contacts    *diagnosisprep.ProtectedJournal
+	contacts    productContactJournal
 	records     map[string]productTargetRecord
 	approvals   map[string]productTargetRecord
 	resolver    *net.Resolver
