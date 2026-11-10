@@ -6,7 +6,8 @@
 개정: 2026-11-02 — §3.2 추가(Canary 등록 계약 — 등록 시점·결속 저장·등록 키·원자적 유일성·멱등·역참조, [idor-canary-fixture](./idor-canary-fixture.md) Open #1 응답)
 개정: 2026-11-02 — §4.2 추가(지도 실데이터 읽기 어댑터 — 2단계 검증·셀 상태 재정의·scope·단계. Open #6 구체화 + verdict-record Open #4 공동 응답, 최민준·이동찬 리뷰 반영)
 개정: 2026-11-03 — §4.1 범위·상태 규칙을 §4.2로 정렬, 회차 메타 일치 검증·정상허용의 동일 자원 조건·레코드 ID 매핑·마스킹 참조 명확화
-상태: **설계 초안. 저장소·어댑터·API 미구현.** [e3-oracle](./e3-oracle.md) Open #2·#3 에 대한 응답.
+개정: 2026-11-10 — 구현 현행화: §4 지도 읽기 1단계 구현(서버 projection #330·클라 매핑 #337) 반영, §6 Open #6 1단계 종결·잔여를 Open #7로 분리, 1단계 `resource_ref` type `address`(#334)
+상태: **§4 지도 읽기 1단계 구현됨** — 서버 projection `GET /api/tasks/{id}/access-map`([access-map-read](./access-map-read.md), #330) + 클라 매핑 `getAccessMap`·`mapApiAccessMap`(#337). 정본 정책 = fixture 레지스트리([kg-fixture-registry](./kg-fixture-registry.md)), 1단계 carrier `address`/`fullName`([kg-registry-stage1-skeleton](./kg-registry-stage1-skeleton.md)). **미구현**: KG 영속 저장소(§6 Open #3·#4), 지도 Phase 2·3 셀 상태·이력(§6 Open #7), 수직 축(§6 Open #2). [e3-oracle](./e3-oracle.md) Open #2·#3 에 대한 응답.
 연결: [E③ 오라클](./e3-oracle.md) · [평가 프로토콜](../evaluation/evaluation-protocol.md) · [개선 계획 Phase 3](../development-plan.md)
 
 ## 0. 범위
@@ -90,7 +91,7 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 - **(5) 충돌·불변 변경 = 준비 실패** — 같은 값을 **다른 등록 키**에 쓰거나, 같은 키의 불변 내용을 바꾸려 하면 **준비 실패**다. 부분 실패는 고쳐 이어가지 않고, 진행 요청 종료·회차 폐기 확인 뒤 리셋부터 **새 묶음**으로 다시 한다(fixture §3).
 - **(6) 표식 → 소유 계정 역참조** — `Value → owner_ref` 대응은 **서버가 선택한 같은 run/reset·토큰·인스턴스·bundle_ref 및 요청의 전체 resource_ref에 결속된 정본 등록에서만** 확인한다. 값 유일성은 한 세대 안의 조건이므로 범위 없이 여러 세대를 합쳐 조회하거나 다른 세대의 같은 값으로 소유자를 채우지 않는다. 조회 범위/출처를 확인하지 못하거나 결과가 없거나 여러 소유자와 충돌하면 준비 실패다. owner 응답의 HTTP 200·표식 노출만으로 소유권을 추정하지 않는다. 등록 소유자와 실제 준비 결과가 다르거나 미확인이면 준비 실패다. 외부에 전달하는 역참조 산출물은 **`owner_ref` 라벨만**(계정 원문·토큰 값 금지, 절대규칙 2)이며, 소비 서버는 내부에서 위 범위와 등록 참조를 계속 결속·검증한다. 이 역참조가 §3.1 비교기 `idor.Marker` 의 "A-고유" 근거이자 §3 오라클 `Subjects.OwnerRef` 축의 소스다.
 
-**여기서 안 정하는 것**: 저장 위치·물리 형식(Open #3), 불변 준비 묶음의 물리 저장·부분 실패 검출 API(fixture Open #5), `resource_ref` 의 `type` 명명([seam §5](./idor-verifier-seam.md)·fixture Open #6 — 접근통제 지도와 **공유 축**이라 type 확정 시 함께 재검토).
+**여기서 안 정하는 것**: 저장 위치·물리 형식(Open #3), 불변 준비 묶음의 물리 저장·부분 실패 검출 API(fixture Open #5), `resource_ref` 의 `type` 명명([seam §5](./idor-verifier-seam.md)·fixture Open #6 — 접근통제 지도와 **공유 축**이라 type 확정 시 함께 재검토. 1단계는 `address`로 확정 — C1~C6 실측, [kg-registry-stage1-skeleton](./kg-registry-stage1-skeleton.md)·#334).
 
 > 교차참조: 이 §3.2 는 canary fixture Open #1(= "KG 등록 계약 = 이경준")의 응답 제안이다. idor-canary-fixture.md 쪽 역링크는 그 문서 소유자(최민준)에게 리뷰로 제안한다 — 직접 편집하지 않음.
 
@@ -111,30 +112,30 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 | 열 resource `id`/`label` (`KgResource`) | 전체 `resource_ref`(`type:id`, [seam §1](./idor-verifier-seam.md#1-resource_ref-규약--typeid-임시확정--민준경준)) + KG 표시 라벨 | type만으로 인스턴스를 합치지 않음. id는 reset 세대 안에서만 유효하며 표시 라벨은 별도 보강 |
 | 열 소유자 `ownerRef` | `owner_ref` | 라벨만 |
 | 판정 축 | 레코드 `axis`(`horizontal`/`vertical`) | v0.1은 horizontal만. 현재 `KgPrincipal.axis`의 H/V는 목업 행 그룹이므로 직접 대입하지 않음 |
-| 조회 범위 | 서버의 task 문맥 + envelope `run_id` + `reset_generation`·`policy_version`·판정 축 | §4.2 (4)의 내부 결속 검증을 따른다. 현재 `AccessMap`의 회차·세대 메타데이터/API 확장은 Open #6 |
+| 조회 범위 | 서버의 task 문맥 + envelope `run_id` + `reset_generation`·`policy_version`·판정 축 | §4.2 (4)의 내부 결속 검증을 따른다. 1단계는 [access-map-read](./access-map-read.md)가 고정: 입력은 task ID만, 서버가 현재 실행·세대를 내부 결속하고 응답 최상위에 `run_ref`·`reset_generation`·`policy_version`을 하나씩 싣는다 |
 | 모델 헤더 메타 | `model_tag` + 회차 고정 모델 식별자·제공자·샘플링 메타 | 조회 축과 구분하되 envelope↔레코드 일치 검증은 유지(§4.2 (2) A) |
 | 셀 근거 선택·이력 | `id`·`case_ref`·`observed_at` + 전체 principal/resource ref | 동일 셀에 여러 case·재검증 레코드가 있을 수 있음 |
 | `policyVersion`(지도 헤더) | 선택 범위의 `policy_version` | 모든 표시 셀을 같은 snapshot으로 검증한 경우에만 단일 버전 표시. **1단계 포맷**(kg-fixture-registry §3): `kg-fixture/v1:<snapshot_id>:<digest 64hex>`(≤128바이트, 구분자 `:`). 지도 헤더는 이 문자열을 **변형·절단 없이 그대로** 표기(감사 표기와 1:1) — 이경준 확인(Open #1 (a)) |
 
 **조회 범위·선택을 먼저 검증한다(§4.2 (2)·(4)).** 한 지도는 서버가 선택한 task/run·reset 세대·정책 snapshot·판정 축에 한정한다. 레코드 envelope와 커버리지도 같은 범위여야 한다. `model_tag`는 헤더 메타이며, 조회 축에서 제외해도 envelope↔레코드의 메타 일치 검증을 생략하지 않는다. 다른 범위의 과거 레코드는 현재 셀에 재사용하지 않고 별도 이력으로만 읽는다. 필수 연결 누락·불일치가 있으면 해당 데이터의 로딩을 거부하거나 `unknown`과 부족 사유로 표시하며 색을 추정하지 않는다. `run_id`는 envelope의 회차 키이지 `case_ref`의 대체값이 아니다.
 
-같은 셀의 복수 레코드를 입력 순서나 마지막 항목 우선으로 덮지 않는다. 서버가 선택한 case와 레코드 id를 고정하고 그 근거·관찰시각을 표시한다. 유일한 선택을 검증할 수 없거나 같은 선택 안에서 근거가 상충하면 `unknown`과 상충 사유를 표시한다. 선택·이력 API의 물리 형식은 Open #6에서 정하며, 과거 confirmed를 새 세대나 근거 없는 결과로 지우지 않는다.
+같은 셀의 복수 레코드를 입력 순서나 마지막 항목 우선으로 덮지 않는다. 서버가 선택한 case와 레코드 id를 고정하고 그 근거·관찰시각을 표시한다. 유일한 선택을 검증할 수 없거나 같은 선택 안에서 근거가 상충하면 `unknown`과 상충 사유를 표시한다. 1단계([access-map-read](./access-map-read.md)): 같은 셀 `(principal, owner_ref, resource_ref, axis)`에 레코드가 2건 이상이면 판정이 같아도 `unknown`(`selection_ambiguous`)이며 최신·confirmed 우선 선택은 없다. 이력 조회 파라미터는 열지 않고 재검증 `evidence_revision` 선택은 후속 계약이다(§6 Open #7). 과거 confirmed를 새 세대나 근거 없는 결과로 지우지 않는다.
 
 **(b) 셀 판정 파생 — §4.2 (2)·(3)으로 대체:**
 기존 `AccessDecision` 상태표 대신 §4.2의 검증·분기와 상태표를 적용한다. `confirmed`/`suspected`는 별도 색으로 구분하고, `allow-ok`는 그 절의 추가 관찰 조건을 충족할 때만 산출한다. `oracle_value=allowed`만으로 정상 허용·차단을 산출하지 않는다. 현재 UI 타입의 변경은 §4.2 (7)의 후속 작업이다.
 
 **(c) 파생 규칙(절대규칙 5·fail-closed):**
 - `access_policy_result=위반_미관찰`은 `oracle_value=allowed`의 저장 표현이며 **실제 허용·차단 관찰이나 취약점 없음의 증명이 아니다**([seam §6.2](./idor-verifier-seam.md#62-전송-결과와-판정의-구분)). 명시적 allow이면 데이터 비교가 불명이어도 allowed가 가능하다. `expected_access=deny`여도 sharing/delegation의 `resolved_allow` 예외로 allowed가 되므로, expected_access만 보고 `deny-ok`로 분기하지 않는다.
-- 정상 허용은 §4.2 (3)의 동일 실행·자원에 결속된 추가 관찰 조건을 따른다. 정상 차단의 별도 관찰 계약(근거 ref·실행 연결)은 Open #6이며 §4.2의 Phase 3까지 보류한다. E²의 송신 전 거부·예산/중지·네트워크 실패를 애플리케이션의 정상 차단으로 바꾸지 않으며 HTTP 상태코드 하나로도 결정하지 않는다. 현재 레코드에는 이 차단 관찰을 독립적으로 입증하는 필드가 없다.
+- 정상 허용은 §4.2 (3)의 동일 실행·자원에 결속된 추가 관찰 조건을 따른다. 정상 차단의 별도 관찰 계약(근거 ref·실행 연결)은 §6 Open #7이며 §4.2의 Phase 3까지 보류한다(1단계 projection도 `deny-ok`를 산출하지 않음). E²의 송신 전 거부·예산/중지·네트워크 실패를 애플리케이션의 정상 차단으로 바꾸지 않으며 HTTP 상태코드 하나로도 결정하지 않는다. 현재 레코드에는 이 차단 관찰을 독립적으로 입증하는 필드가 없다.
 - 커버리지 부재는 시도 없음이 아니다. 레코드와 커버리지가 상충해도 `untested`나 정상색으로 내리지 않는다. "검사했으나 판정/근거 불명"과 "명시적으로 미검사"를 분리한다([판정 레코드 §4](./verdict-record.md#4-평가-읽기-계약-eval-count_basis--레코드)).
 - 셀 note = `reason_codes`(정책→신원→데이터 순) + canary 노출 시 `canary_fields`(응답 **필드명만**, 값 아님 — [verdict-record §3](./verdict-record.md)). 레코드의 enum 간 모순·미등록 값도 `unknown`으로 표시하고 사유를 남긴다.
 - 정책 유효창은 `policy_valid_from ≤ observed_at < policy_valid_until`로 평가한다. **관찰시각 기준** 만료·`hint_matches_canonical=false`로 UNDECIDABLE 된 셀은 `unknown`과 사유로 표시한다. 현재 시각에 만료됐다는 이유만으로 과거의 유효한 관찰을 덮지 않는다. reset 세대 교체는 새 실행/지도 범위에 이전 세대의 정책·표식·판정을 재사용하지 않는 별도 경계다.
-- v0.1 실제 연결은 horizontal 레코드만 판정 축으로 읽는다. vertical과 현재 목업 색/라벨은 후속 미리보기다. 현재 UI의 `vuln` 공통 "취약" 라벨은 §4.2의 확정/의심 별도 색·배지와 조회 범위·상태 확장을 구현한 뒤 실데이터에 연결한다. 이 PR은 문서만 바꾸며 연결 완료를 뜻하지 않는다.
+- v0.1 실제 연결은 horizontal 레코드만 판정 축으로 읽는다. vertical과 현재 목업 색/라벨은 후속 미리보기다. 실데이터 연결 상태(11/10): 서버 projection(#330)과 클라 매핑(#337, 확정/의심 별도 색·배지, 미등록 state·`projection_error`→`unknown`, 관측없음≠판단불가)까지 구현됐다. 지도 화면은 UI 재배치(Workbench 통합) 뒤 같은 매핑을 재사용해 다시 붙인다(§6 Open #7). 실제 진단 scope에서의 점등 확인은 아직 없다.
 
 > 교차참조: 이 §4.1은 verdict-record "시각화 읽기 필드 = 이경준" 경계(verdict-record §0·Open #4)의 응답 제안이다. verdict-record.md 쪽 역링크는 그 문서 소유자(최민준)에게 리뷰로 제안한다 — 직접 편집하지 않음.
 
 ### 4.2 접근통제 지도 실데이터 읽기 어댑터 (Open #6 구체화 · verdict-record Open #4 공동 응답)
-> 최민준(판정 필드)·이동찬(서버 읽기 어댑터) 리뷰 반영. 이 절은 **표시 의미·조합 규칙**을 고정하는 제안이고, 판정 필드 의미는 [verdict-record §2](./verdict-record.md), 서버 projection·저장은 이동찬 구현 소유다. "계약"은 의미이지 구현 완료가 아니다.
+> 최민준(판정 필드)·이동찬(서버 읽기 어댑터) 리뷰 반영. 이 절은 **표시 의미·조합 규칙**을 고정하는 제안이고, 판정 필드 의미는 [verdict-record §2](./verdict-record.md), 서버 projection·저장은 이동찬 구현 소유다. "계약"은 의미이지 구현 완료가 아니다. 1단계 서버 projection은 이 절의 규칙대로 [access-map-read](./access-map-read.md)(#330)로 구현됐고, Phase 2·3은 §6 Open #7에 남는다.
 
 **(1) 위치·책임 분리.** 읽기 어댑터 = **서버 projection(순수 read)**. 판정 발급 경로(세대 검증·정책 재resolve·Evaluate)와 분리한다. 읽기 어댑터는 저장된 판정·관측을 조회·투영만 하고, **불일치 자료는 거부하거나 unknown으로 표시**하며, 과거 판정을 현재 셀에 재사용하지 않고, GET이 누락 셀을 채우려 새 검증을 실행하지 않는다. UI는 조합·판정하지 않고 서버 검증 결과만 렌더(절대규칙 3·4·5). 응답 본문·canary 값·자격 원문은 지도에 전달하지 않는다([verdict-record §3](./verdict-record.md)).
 
@@ -188,4 +189,9 @@ KG `Canary` → 비교기 `idor.Marker` 매핑(1:1):
 4. **KG 저장소 테이블명·마이그레이션 담당** — oracle Open #5(판정 레코드 테이블)와 함께 최민준↔이동찬.
 5. **신원 status 와 KG ref 의 결합 지점** — 어댑터가 둘을 `SubjectContext` 로 합치는 위치(서버 바인딩 vs 어댑터).
 
-6. **지도 실데이터 읽기 어댑터** — task/run·reset·snapshot 범위와 모델 헤더 메타 검증, case/레코드 선택·이력 API, 세대 교체의 reader/실행 무효화 시점, KG의 applicability 근거, 정상 접근/애플리케이션 차단 관찰의 필드·서버 검증·상태 파생. 현재 목업 타입 확장과 확정/의심 가시 표시는 실제 연결 전에 정렬한다. (이경준↔최민준↔이동찬) → **§4.2에서 2단계 검증·셀 상태 재정의·scope·단계로 구체화(리뷰 중).**
+6. **지도 실데이터 읽기 어댑터** — **1단계 종결(11/9).** [access-map-read](./access-map-read.md)(#330)와 클라 매핑(#337)으로 범위 결속(task ID 입력·서버 내부 결속)·셀 키 `(principal, owner_ref, resource_ref, axis)`·복수 레코드 `selection_ambiguous`·세대 교체 무효화·applicability(`true`/`null`, `false`는 Phase 2)·관측없음(`observation_unavailable`)≠판단불가(`undecidable`) 분리가 정해졌다. 최민준 "상태 우선순위" 이견도 복수 레코드=unknown·우선 선택 없음으로 정렬됐다. 남은 범위는 Open #7. (이경준↔최민준↔이동찬)
+7. **지도 잔여 — Phase 2·3·이력·UI** (이경준↔최민준↔이동찬):
+   - (a) Phase 2 `untested`·`na`: 검사 계획(레지스트리 `policies[]`의 평가 주체)과 시도 기록을 대조한 명시적 미시도, 명시적 적용불가(`applicable=false`) 근거. **이경준 계약 제안 예정.**
+   - (b) Phase 3 `deny-ok`: 애플리케이션 정상 차단 관찰의 필드·서버 검증·실행 연결.
+   - (c) 재검증 `evidence_revision` 선택·이력 조회.
+   - (d) 지도 화면 재부착: UI 재배치 뒤 `getAccessMap`·`mapApiAccessMap`·리졸버를 재사용하고, 실제 진단 scope에서 점등을 확인한다.
