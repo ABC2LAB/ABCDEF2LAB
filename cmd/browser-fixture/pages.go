@@ -25,7 +25,7 @@ self.addEventListener("fetch",e=>{if(new URL(e.request.url).pathname==="/sw-prob
 var scenarios = map[string]string{
 	"B04": `<img src="{{R}}/hit/B04-img"><script src="{{R}}/hit/B04-script"></script><script>fetch("{{R}}/hit/B04-fetch",{mode:"no-cors"})</script>`,
 	"B05": `<iframe src="/out/B05-frame"></iframe><script>fetch("/out/B05-fetch",{mode:"no-cors"})</script>`,
-	"B06": `<script>navigator.serviceWorker.register("/sw.js").then(()=>navigator.serviceWorker.ready).then(()=>fetch("/sw-probe"))</script>`,
+	"B06": `<script>navigator.serviceWorker.addEventListener("controllerchange",()=>fetch("/sw-probe"));navigator.serviceWorker.register("/sw.js")</script>`,
 	"B07": `<script>new WebSocket("{{WS}}/hit/B07")</script>`,
 	"B08": `<script>for(let i=0;i<3;i++){fetch("/api/items")}</script>`,
 	"B09": `<script>const c=new RTCPeerConnection({iceServers:[{urls:"stun:{{STUN}}"}]});c.createDataChannel("x");c.createOffer().then(o=>c.setLocalDescription(o))</script>`,

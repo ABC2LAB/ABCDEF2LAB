@@ -83,7 +83,7 @@ func TestScenarioPagesCarryAttempts(t *testing.T) {
 	want := map[string][]string{
 		"B04": {"http://outside.test:9001/hit/B04-img", "http://outside.test:9001/hit/B04-script", "http://outside.test:9001/hit/B04-fetch"},
 		"B05": {"/out/B05-frame", "/out/B05-fetch"},
-		"B06": {`register("/sw.js")`, `fetch("/sw-probe")`},
+		"B06": {`register("/sw.js")`, `"controllerchange",()=>fetch("/sw-probe")`},
 		"B07": {"ws://outside.test:9001/hit/B07"},
 		"B08": {`fetch("/api/items")`},
 		"B09": {"stun:outside.test:9002"},
@@ -245,6 +245,26 @@ func TestUDPRecordsArrivalOnly(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(path); strings.Contains(string(data), sentinel) {
 		t.Fatal(string(data))
+	}
+}
+
+func TestClassifyUDP(t *testing.T) {
+	stun := append([]byte{0, 1, 0, 0}, stunCookie...)
+	for name, tc := range map[string]struct {
+		packet []byte
+		want   string
+	}{
+		"stun":           {stun, scenarioSTUN},
+		"stun over quic": {append([]byte{0xC0, 1, 0, 0}, stunCookie...), scenarioSTUN},
+		"quic long":      {[]byte{0xC0, 0, 0, 0, 1}, scenarioQUIC},
+		"quic bit only":  {[]byte{0x80}, scenarioQUIC},
+		"other":          {[]byte{0x40, 0, 0, 0, 1}, unknownScenario},
+		"short cookie":   {[]byte{0, 1, 0, 0, 0x21, 0x12, 0xA4}, unknownScenario},
+		"empty":          {nil, unknownScenario},
+	} {
+		if got := classifyUDP(tc.packet); got != tc.want {
+			t.Errorf("%s got=%s want=%s", name, got, tc.want)
+		}
 	}
 }
 

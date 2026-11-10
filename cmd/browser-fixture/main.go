@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,7 +30,13 @@ const (
 	readHeaderTimeout  = 10 * time.Second
 	shutdownTimeout    = 5 * time.Second
 	udpBufferBytes     = 2048
+	stunCookieOffset   = 4
+	quicLongHeaderBit  = 0x80
+	scenarioQUIC       = "B08"
+	scenarioSTUN       = "B09"
 )
+
+var stunCookie = []byte{0x21, 0x12, 0xA4, 0x42}
 
 var safeHost = regexp.MustCompile(`^[A-Za-z0-9.:\[\]-]+$`)
 
@@ -163,17 +170,28 @@ func receiverHandler(rec *recorder) http.Handler {
 	})
 }
 
-// QUIC·STUN 시도는 UDP로 온다. 내용은 보지 않고 도달 사실만 남긴다.
+// 첫 바이트와 STUN 고정값으로 시나리오만 구분한다. 내용은 기록하지 않는다.
+func classifyUDP(packet []byte) string {
+	switch {
+	case len(packet) >= stunCookieOffset+len(stunCookie) && bytes.Equal(packet[stunCookieOffset:stunCookieOffset+len(stunCookie)], stunCookie):
+		return scenarioSTUN
+	case len(packet) > 0 && packet[0]&quicLongHeaderBit != 0:
+		return scenarioQUIC
+	}
+	return unknownScenario
+}
+
 func serveUDP(ctx context.Context, conn net.PacketConn, rec *recorder) error {
 	buffer := make([]byte, udpBufferBytes)
 	for {
-		if _, _, err := conn.ReadFrom(buffer); err != nil {
+		n, _, err := conn.ReadFrom(buffer)
+		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
 			return err
 		}
-		if err := rec.record(row{Surface: surfaceReceiverUDP, Scenario: unknownScenario}); err != nil {
+		if err := rec.record(row{Surface: surfaceReceiverUDP, Scenario: classifyUDP(buffer[:n])}); err != nil {
 			return err
 		}
 	}
