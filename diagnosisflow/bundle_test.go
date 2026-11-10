@@ -57,6 +57,13 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"fetch spread after":    {`fetch("/data/b",{method:"GET",...o})`, []string{"UNKNOWN /data/b script_call"}},
 		"fetch spread before":   {`fetch("/data/c",{...o,method:"GET"})`, []string{"UNKNOWN /data/c script_call"}},
 		"fetch spread nested":   {`fetch("/data/d",{method:"GET",headers:{a:1},...o})`, []string{"UNKNOWN /data/d script_call"}},
+		"fetch brace in string": {`fetch("/data/g",{method:"GET",headers:{"X":"}"},method:"POST"})`, []string{"UNKNOWN /data/g script_call"}},
+		"fetch single quote":    {`fetch("/data/n",{method:"GET",headers:{'X':'}'},method:"POST"})`, []string{"UNKNOWN /data/n script_call"}},
+		"fetch closed strings":  {`fetch("/data/h",{method:"POST",headers:{"X":"}{"}})`, []string{"POST /data/h script_call"}},
+		"fetch escaped quote":   {`fetch("/data/i",{method:"GET",headers:{"X":"a\"}"},method:"POST"})`, []string{"UNKNOWN /data/i script_call"}},
+		"fetch comment":         {`fetch("/data/j",{method:"GET"/*}*/,mode:"x"})`, []string{"UNKNOWN /data/j script_call"}},
+		"fetch regex":           {`fetch("/data/m",{method:"GET",a:/}/,mode:"x"})`, []string{"UNKNOWN /data/m script_call"}},
+		"fetch template":        {"fetch(\"/data/l\",{method:\"GET\",headers:{a:`}`},mode:\"x\"})", []string{"UNKNOWN /data/l script_call"}},
 		"fetch nested after":    {`fetch("/data/e",{method:"POST",headers:{a:1}})`, []string{"POST /data/e script_call"}},
 		"fetch unclosed":        {`fetch("/data/f",{method:"GET"`, []string{"UNKNOWN /data/f script_call"}},
 		"fetch nested options":  {`fetch("/data/add",{headers:{a:1},method:"POST"})`, []string{"UNKNOWN /data/add script_call"}},
@@ -563,7 +570,7 @@ func TestCrawlLeavesUnreadFetchOptionsUnvisitedAndUnselected(t *testing.T) {
 	var order []string
 	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
 		order = append(order, strings.TrimPrefix(target, "https://owned.test"))
-		return crawlResult(`<script>fetch("/read/nested",{headers:{a:1},method:"POST"});fetch("/read/init",init);fetch("/read/dup",{method:"GET",method:"POST"});fetch("/read/spread",{method:"GET",...opts})</script>`), nil
+		return crawlResult(`<script>fetch("/read/nested",{headers:{a:1},method:"POST"});fetch("/read/init",init);fetch("/read/dup",{method:"GET",method:"POST"});fetch("/read/spread",{method:"GET",...opts});fetch("/read/brace",{method:"GET",headers:{"X":"}"},method:"POST"})</script>`), nil
 	})
 	if !handled || err != nil {
 		t.Fatal(handled, err)
@@ -573,14 +580,14 @@ func TestCrawlLeavesUnreadFetchOptionsUnvisitedAndUnselected(t *testing.T) {
 	}
 	found := 0
 	for _, e := range c.record.Snapshot.Endpoints {
-		if e.Path == "/read/nested" || e.Path == "/read/init" || e.Path == "/read/dup" || e.Path == "/read/spread" {
+		if e.Path == "/read/nested" || e.Path == "/read/init" || e.Path == "/read/dup" || e.Path == "/read/spread" || e.Path == "/read/brace" {
 			found++
 			if e.Method != "UNKNOWN" || e.Selected {
 				t.Fatalf("%+v", e)
 			}
 		}
 	}
-	if found != 4 {
+	if found != 5 {
 		t.Fatal(found)
 	}
 }

@@ -132,12 +132,23 @@ func fetchMethodFinal(body []byte, pathEnd, methodStart, after int) bool {
 	if bytes.Contains(body[pathEnd:methodStart], []byte("...")) {
 		return false
 	}
-	depth := 1
+	depth, quote := 1, byte(0)
 	for i := after; i < len(body) && i < after+maxFetchOptionTail; i++ {
-		switch body[i] {
-		case '{':
+		c := body[i]
+		switch {
+		case quote != 0:
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '`' || c == '/':
+			return false // 템플릿·주석·정규식 안의 중괄호는 객체 경계로 셀 수 없다.
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '{':
 			depth++
-		case '}':
+		case c == '}':
 			depth--
 			if depth == 0 {
 				rest := body[after:i]
