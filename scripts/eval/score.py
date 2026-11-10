@@ -384,7 +384,7 @@ def build_report(
             identities = e2_identities.setdefault(m.condition, set())
             identities.add(inputs.e2_identity)
             if len(identities) > 1:
-                raise ComparabilityError(f"E② 정책 지문·이미지 불일치({m.condition}) — 같은 정책·이미지끼리만 집계(프로토콜 §2)")
+                raise ComparabilityError(f"E② 정책 지문·이미지·선언 차이 불일치({m.condition}) — 같은 정책·이미지·선언끼리만 집계(프로토콜 §2)")
         if inputs.e2_prompt is not None:
             e2_prompts.setdefault(m.condition, []).append(inputs.e2_prompt)
         # 증명 없는 회차는 대조 근거가 None이다. 조건의 분모에 남겨 보류로 센다(#225 리뷰).
