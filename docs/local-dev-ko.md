@@ -157,3 +157,5 @@ UI의 기반 프로젝트 자동 업데이트 경로를 ABC2LAB 배포 갱신 �
 - 모델 연결: 실제 profile·모델·BaseURL과 도구 호출 가능 여부를 확인합니다. 비밀값은 기록하지 않습니다.
 - 진단: 승인 범위·비민감 시험 자료·계정·요청 예산을 준비하고 [현재 기동 안내](first-diagnosis-launch.md)와 [준비 체크리스트](first-diagnosis-preparation.md)를 따릅니다. 일반 HTTP 후보와 별도 등록 GET/IDOR E③ 확정을 구분합니다.
 - 성능 평가: [고정 조건](evaluation/evaluation-protocol.md)과 실제 반복 실행이 필요합니다. 기동 확인을 baseline 완료로 기록하지 않습니다.
+
+비밀번호 재설정은 실행 중인 Workbench의 `product-password-hash`가 stdin으로 받은 비밀번호를 Go bcrypt로 해시하고 PostgreSQL에는 해시만 전달한다. `pgcrypto` 확장이나 스키마를 추가하지 않는다. 새 비밀번호는 12~72 bytes이며 명령행·컨테이너 환경변수·파일에 원문을 넣지 않는다. 공통 Compose 진입점은 설치 입력의 실제 경로가 저장소 밖이고 파일 권한이 0600인지 확인한 뒤 Docker를 호출한다.

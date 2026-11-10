@@ -11,13 +11,15 @@ fi
 read -rsp 'ABC2LAB 새 관리자 비밀번호(12자 이상): ' ABC2LAB_RESET_PASSWORD; echo >&2
 read -rsp '확인을 위해 다시 입력: ' confirmation; echo >&2
 [[ ${#ABC2LAB_RESET_PASSWORD} -ge 12 && "$ABC2LAB_RESET_PASSWORD" = "$confirmation" ]] || { echo '비밀번호 길이 또는 확인이 일치하지 않습니다.' >&2; exit 2; }
-export ABC2LAB_RESET_PASSWORD
-trap 'unset ABC2LAB_RESET_PASSWORD confirmation' EXIT
-./scripts/product-compose.sh exec -T -e ABC2LAB_RESET_PASSWORD postgres sh -eu -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -q' <<'SQL'
-\getenv newpw ABC2LAB_RESET_PASSWORD
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+trap 'unset ABC2LAB_RESET_PASSWORD confirmation ABC2LAB_RESET_HASH' EXIT
+ABC2LAB_RESET_HASH=$(printf '%s' "$ABC2LAB_RESET_PASSWORD" | ./scripts/product-compose.sh exec -T workbench /app/first-controlled-diagnosis product-password-hash)
+unset ABC2LAB_RESET_PASSWORD confirmation
+[[ "$ABC2LAB_RESET_HASH" =~ ^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$ ]] || { echo '비밀번호 해시를 만들 수 없습니다.' >&2; exit 1; }
+export ABC2LAB_RESET_HASH
+./scripts/product-compose.sh exec -T -e ABC2LAB_RESET_HASH postgres sh -eu -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -q' <<'SQL'
+\getenv newhash ABC2LAB_RESET_HASH
 INSERT INTO settings(key, value)
-VALUES ('auth.password_hash', crypt(:'newpw', gen_salt('bf', 12)))
+VALUES ('auth.password_hash', :'newhash')
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 SQL
 printf '%s\n' 'ABC2LAB 관리자 비밀번호를 재설정했습니다. 기존 로그인 토큰은 무효화됩니다.'
