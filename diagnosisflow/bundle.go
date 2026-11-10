@@ -20,6 +20,7 @@ const (
 	bundleTemplateTail   = "[^`$\\s<>]{0,180}"
 	bundleLiteralTail    = "[^\"'`\\s<>]{1,160}"
 	bundleFetchOptions   = "[^{}]{0,200}?"
+	maxFetchOptionTail   = 400
 	bundleVerb           = "(get|post|put|patch|delete)"
 	// 번역 키 같은 `.get("KEY")`는 `/`가 없어서 빠진다. 다른 호스트 주소는 resolve가 거른다.
 	bundleCallTarget = "(?:https?://|\\.{0,2}/|[\\w-]+/)" + bundlePathTail
@@ -126,6 +127,27 @@ func group(body []byte, m []int, n int) string {
 	return string(body[m[2*n]:m[2*n+1]])
 }
 
+// fetch 옵션에서 method가 다른 값으로 덮일 수 있으면 읽은 값을 확정하지 않는다.
+func fetchMethodFinal(body []byte, pathEnd, methodStart, after int) bool {
+	if bytes.Contains(body[pathEnd:methodStart], []byte("...")) {
+		return false
+	}
+	depth := 1
+	for i := after; i < len(body) && i < after+maxFetchOptionTail; i++ {
+		switch body[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				rest := body[after:i]
+				return !bytes.Contains(rest, []byte("...")) && !bytes.Contains(rest, []byte("method"))
+			}
+		}
+	}
+	return false
+}
+
 // 경로 문자열 뒤에 무엇이 붙었는지 보려고 공백을 건너뛴 첫 글자를 돌려준다.
 func byteAfter(body []byte, at int) byte {
 	for ; at < len(body); at++ {
@@ -215,6 +237,9 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 	}
 	for _, m := range fetchCall.FindAllSubmatchIndex(body, maxBundleMatches) {
 		method, next := strings.ToUpper(group(body, m, 3)), byteAfter(body, m[2*2+1]+1)
+		if method != "" && !fetchMethodFinal(body, m[2*2+1], m[2*3], m[1]) {
+			method = "UNKNOWN"
+		}
 		if method == "" {
 			// 두 번째 인자가 있는데 메서드를 못 읽었으면 쓰기일 수 있다. 인자가 없을 때만 GET이다.
 			method = "UNKNOWN"

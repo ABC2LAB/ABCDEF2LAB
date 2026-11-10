@@ -52,6 +52,12 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"concat only dynamic":   {`this.http.get(this.server+"/"+e)`, []string{}},
 		"fetch default":         {`fetch("/data/list")`, []string{"GET /data/list script_call"}},
 		"fetch with method":     {`fetch("/data/add",{headers:h,method:"post"})`, []string{"POST /data/add script_call"}},
+		"fetch duplicate":       {`fetch("/data/a",{method:"GET",method:"POST"})`, []string{"UNKNOWN /data/a script_call"}},
+		"fetch spread after":    {`fetch("/data/b",{method:"GET",...o})`, []string{"UNKNOWN /data/b script_call"}},
+		"fetch spread before":   {`fetch("/data/c",{...o,method:"GET"})`, []string{"UNKNOWN /data/c script_call"}},
+		"fetch spread nested":   {`fetch("/data/d",{method:"GET",headers:{a:1},...o})`, []string{"UNKNOWN /data/d script_call"}},
+		"fetch nested after":    {`fetch("/data/e",{method:"POST",headers:{a:1}})`, []string{"POST /data/e script_call"}},
+		"fetch unclosed":        {`fetch("/data/f",{method:"GET"`, []string{"UNKNOWN /data/f script_call"}},
 		"fetch nested options":  {`fetch("/data/add",{headers:{a:1},method:"POST"})`, []string{"UNKNOWN /data/add script_call"}},
 		"fetch variable init":   {`fetch("/data/add",init)`, []string{"UNKNOWN /data/add script_call"}},
 		"fetch unknown literal": {`fetch("/api/x",init)`, []string{"UNKNOWN /api/x script_call"}},
@@ -545,7 +551,7 @@ func TestCrawlLeavesUnreadFetchOptionsUnvisitedAndUnselected(t *testing.T) {
 	var order []string
 	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
 		order = append(order, strings.TrimPrefix(target, "https://owned.test"))
-		return crawlResult(`<script>fetch("/read/nested",{headers:{a:1},method:"POST"});fetch("/read/init",init)</script>`), nil
+		return crawlResult(`<script>fetch("/read/nested",{headers:{a:1},method:"POST"});fetch("/read/init",init);fetch("/read/dup",{method:"GET",method:"POST"});fetch("/read/spread",{method:"GET",...opts})</script>`), nil
 	})
 	if !handled || err != nil {
 		t.Fatal(handled, err)
@@ -555,14 +561,14 @@ func TestCrawlLeavesUnreadFetchOptionsUnvisitedAndUnselected(t *testing.T) {
 	}
 	found := 0
 	for _, e := range c.record.Snapshot.Endpoints {
-		if e.Path == "/read/nested" || e.Path == "/read/init" {
+		if e.Path == "/read/nested" || e.Path == "/read/init" || e.Path == "/read/dup" || e.Path == "/read/spread" {
 			found++
 			if e.Method != "UNKNOWN" || e.Selected {
 				t.Fatalf("%+v", e)
 			}
 		}
 	}
-	if found != 2 {
+	if found != 4 {
 		t.Fatal(found)
 	}
 }
