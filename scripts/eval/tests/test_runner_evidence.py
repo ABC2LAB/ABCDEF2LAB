@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
     ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_VERIFIED_MARKER,
-    OBSERVER_LOG, PATH_LOG, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_by_method, forwarded_count,
+    OBSERVER_LOG, PATH_LOG, PATH_PROFILE, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_by_method, forwarded_count,
     sequence_complete,
 )
 
@@ -322,6 +322,75 @@ class MeterPathLogTests(unittest.TestCase):
             self.assertFalse(meter.path_log_present())
             (Path(raw) / PATH_LOG).write_text("", encoding="utf-8")
             self.assertTrue(meter.path_log_present())
+
+    def test_path_row_format_matches_the_meter(self):
+        go = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/paths.go").read_text(encoding="utf-8")
+        self.assertRegex(go, r'pathMaskProfile\s*=\s*"%s"' % re.escape(PATH_PROFILE))
+        for field in ("seq", "method", "path_pattern", "masked_segments", "path_profile_ref"):
+            self.assertIn('`json:"%s"`' % field, go)
+
+
+def path_row(seq, method="GET", pattern="/{h:0123456789abcdef}", masked=0, profile=PATH_PROFILE):
+    return {"seq": seq, "method": method, "path_pattern": pattern, "masked_segments": masked,
+            "path_profile_ref": profile}
+
+
+@unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "mkfifo"), "POSIX 전용")
+class MeterPathRowsTests(unittest.TestCase):
+    """수용시험 회차의 경로 기록 내용 검사(#372 리뷰)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name, "meter")
+        self.dir.mkdir(mode=0o700)
+        os.chmod(self.dir, 0o700)
+        self.meter = MeterFiles(self.dir)
+        # 1·3은 전달, 2는 stream(전달), 4는 봉인 뒤 거부(경로 행 없음).
+        self.engine = [engine_row(1), engine_row(2, "stream"), engine_row(3), engine_row(4, "rejected")]
+        self.engine[2]["method"] = "POST"
+
+    def write(self, rows, tail=""):
+        (self.dir / PATH_LOG).write_text("".join(json.dumps(row) + "\n" for row in rows) + tail, encoding="utf-8")
+
+    def check(self, code):
+        with self.assertRaises(EvidenceError) as caught:
+            self.meter.path_rows(self.engine)
+        self.assertEqual(str(caught.exception), code)
+
+    def test_one_row_per_forwarded_request(self):
+        good = [path_row(1), path_row(2), path_row(3, "POST", "/{h:0123456789abcdef}/{id}", 1)]
+        self.write(good)
+        self.assertEqual(self.meter.path_rows(self.engine), good)
+
+    def test_missing_or_untrusted_file_is_rejected(self):
+        self.check("meter_path_log_missing")
+        (self.dir / PATH_LOG).mkdir()
+        self.check("meter_file_untrusted")
+        (self.dir / PATH_LOG).rmdir()
+        os.mkfifo(self.dir / PATH_LOG, 0o600)
+        self.check("meter_file_untrusted")
+
+    def test_contents_must_match_the_request_log(self):
+        good = [path_row(1), path_row(2), path_row(3, "POST")]
+        for name, rows, tail in (
+                ("empty", [], ""),
+                # 행 수가 맞아도 잘린 꼬리가 있으면 거부한다(_rows가 그 줄을 버리므로 대조만으로는 못 잡는다).
+                ("truncated tail", good, '{"seq": 4'),
+                ("missing row", good[:2], ""),
+                ("rejected request has a row", good + [path_row(4)], ""),
+                ("method differs", [path_row(1), path_row(2), path_row(3, "GET")], ""),
+                ("other profile", [path_row(1), path_row(2), path_row(3, "POST", profile="abc2lab.path-mask/v1")], ""),
+                ("empty pattern", [path_row(1), path_row(2, pattern=""), path_row(3, "POST")], ""),
+                ("negative masked", [path_row(1, masked=-1), path_row(2), path_row(3, "POST")], ""),
+                ("bool masked", [path_row(1, masked=True), path_row(2), path_row(3, "POST")], "")):
+            with self.subTest(name):
+                self.write(rows, tail)
+                self.check("meter_path_log_invalid")
+        self.write([dict(path_row(1), extra=1), path_row(2), path_row(3, "POST")])
+        self.check("meter_row_invalid")
+        self.write([path_row(1), path_row(1), path_row(3, "POST")])
+        self.check("meter_seq_invalid")
 
 
 if __name__ == "__main__":

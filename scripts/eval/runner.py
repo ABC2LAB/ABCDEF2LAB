@@ -610,6 +610,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if (sealed is None or not sequence_complete(rows) or forwarded != drained.get("forwarded_requests")
             or cancelled_rows != drained["forced_cancelled_requests"]):
         raise RunFailure("meter_log_inconsistent")
+    # 수용시험 회차는 경로 기록이 전달한 요청과 한 행씩 맞아야 보존율을 셀 수 있다(요청 기록을 확인한 뒤에 본다).
+    if spec.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+        _step(state, "meter_path_log_invalid", lambda: meter.path_rows(rows))
     meter_summary = {
         "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
         "stop_reason": stop_reason, "forwarded_at_stop": forwarded_at_stop,
