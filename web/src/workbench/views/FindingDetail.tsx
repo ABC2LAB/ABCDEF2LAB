@@ -143,10 +143,10 @@ export function FindingDetail({
             </li>
           </ol>
           <div className={s.codewrap}>
+            <CopyButton targetId={cid} className={s.copy} />
             <pre className={s.code} id={cid}>
               {`curl -s https://${host}/api/orders/1012 \\\n  -H 'Cookie: session=<계정 B 세션>'`}
             </pre>
-            <CopyButton targetId={cid} className={s.copy} />
           </div>
         </Isec>
       ) : null}

@@ -136,7 +136,6 @@
   .vh-meta{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--ink-3);margin-top:6px}
   .vh-meta b{color:var(--ink-2);font-weight:500}
   .vh-acts{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-  .snap{font-size:12.5px;color:var(--ink-3)}
   .menu-btn{display:none}
   .phases{display:flex;gap:2px;margin-top:12px;overflow-x:auto;scrollbar-width:none}
   .ph{display:flex;align-items:center;gap:8px;padding:8px 14px 11px;color:var(--ink-3);text-decoration:none;font-weight:500;font-size:13.5px;border-bottom:2px solid transparent;white-space:nowrap}
@@ -247,8 +246,8 @@
   .code .cm{color:var(--ink-3)}
   .code .hl{background:var(--warn-bg);color:var(--warn);border-radius:3px;padding:0 2px}
   .code .rd{color:var(--ink-3)}
-  .codewrap{position:relative}
-  .codewrap .copy{position:absolute;top:6px;right:6px}
+  .codewrap{display:flex;flex-direction:column;gap:6px}
+  .codewrap .copy{align-self:flex-end}
   .ilist{display:flex;flex-direction:column;gap:6px;list-style:none}
   .ilist li{display:flex;gap:8px;font-size:13.5px;align-items:flex-start}
   .ilist li .ic{margin-top:3px;color:var(--ok)}
@@ -765,7 +764,7 @@
       <header class="vh">
         <div class="vh-top"><button class="icon-btn menu-btn" type="button" data-rail-open aria-label="메뉴 열기"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button><span class="crumb">작업대</span></div>
         <div class="vh-row">
-          <div class="vh-title"><h1 tabindex="-1">대시보드</h1><span class="snap" id="dSnap"></span></div>
+          <div class="vh-title"><h1 tabindex="-1">대시보드</h1></div>
           <div class="vh-acts">
             <button class="btn" type="button" id="dRefresh"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>새로고침</button>
             <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>상세</button>
@@ -1394,8 +1393,6 @@
     else h+=isec('', S.path==='in' ? '<div class="result ok">'+ico('check')+'<div>포함했습니다. 다음 계획 단계에서 세 가지 권한으로 확인합니다.</div></div>' : '<div class="result no">'+ico('x')+'<div>제외했습니다. 이 경로는 보내지 않고 기록만 남깁니다.</div></div>');
     return h;
   }
-  $('#dRefresh').addEventListener('click', function(){ $('#dSnap').textContent='조회 '+clock(); });
-  $('#dSnap').textContent='조회 '+clock();
 
   /* ---------- 새 점검 ---------- */
   var ALLOW=['shop.example.com','api.store-dev.com','blog.example.com','docs.example.com','app.sample.io'];
@@ -1979,7 +1976,7 @@
     if(f.full){
       var cid='repro-'+ctx;
       h+=isec('재현 방법','<ol class="ilist dash" style="list-style:decimal;padding-left:18px;display:block"><li style="display:list-item">계정 B로 로그인해 세션을 얻습니다.</li><li style="display:list-item">A의 주문 번호로 아래 요청을 보냅니다.</li><li style="display:list-item">응답에 표식 <code>ABC2LAB-CANARY-7f3a</code>가 있으면 재현된 것입니다.</li></ol>'+
-        '<div class="codewrap"><pre class="code" id="'+cid+'">curl -s https://'+host+'/api/orders/1012 \\\n  -H \'Cookie: session=&lt;계정 B 세션&gt;\'</pre><button class="btn sm copy" type="button" data-copy="'+cid+'">'+'복사</button></div>');
+        '<div class="codewrap"><button class="btn sm copy" type="button" data-copy="'+cid+'">'+'복사</button><pre class="code" id="'+cid+'">curl -s https://'+host+'/api/orders/1012 \\\n  -H \'Cookie: session=&lt;계정 B 세션&gt;\'</pre></div>');
     }
     if(f.next) h+=isec('다음 단계','<p>'+f.next+'</p>');
     if(f.fix) h+=isec('조치 방안','<p>'+f.fix+'</p>');

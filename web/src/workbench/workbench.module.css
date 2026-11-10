@@ -1279,12 +1279,12 @@ a.ph:hover {
   color: var(--ink-3);
 }
 .codewrap {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .codewrap .copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
+  align-self: flex-end;
 }
 .ilist {
   display: flex;

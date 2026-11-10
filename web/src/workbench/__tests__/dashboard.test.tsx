@@ -99,15 +99,10 @@ describe("<Dashboard />", () => {
     expect(d.getByRole("button", { name: "상세 닫기" })).toBeInTheDocument();
   });
 
-  it("조회 시각을 마운트 뒤와 새로고침 때 채운다", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 10, 9, 9, 5));
+  it("제목 옆에 조회 시각을 두지 않는다 (새로고침 버튼은 남김)", () => {
     const { container } = renderDash();
-    expect(container.querySelector("#dSnap")).toHaveTextContent("조회 09:05");
-    vi.setSystemTime(new Date(2026, 10, 9, 14, 30));
-    fireEvent.click(screen.getByRole("button", { name: "새로고침" }));
-    expect(container.querySelector("#dSnap")).toHaveTextContent("조회 14:30");
-    vi.useRealTimers();
+    expect(container.querySelector("#dSnap")).toBeNull();
+    expect(screen.getByRole("button", { name: "새로고침" })).toBeInTheDocument();
   });
 
   it("승인하고 보내기 → 결과 상자, 칸·목록·진행 줄이 바뀐다", () => {

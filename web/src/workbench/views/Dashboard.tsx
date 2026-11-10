@@ -4,14 +4,14 @@
 // 원본 syncDecisions 의 대시보드 부분 · renderTodo · renderActive · renderDone · dInsp · pathDecideInsp · 대시보드 클릭 처리.
 // 줄을 누르면 useShell().dashPick (dSel 바꾸기 + 줄 스크롤 + 상세 서랍). 줄에는 data-dsel 을 남긴다(dashPick 이 찾는다).
 
-import { type ReactNode, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 
 import { REQ_CHECKOUT, TODO } from "../data/dashboard";
 import { cx } from "../lib/cx";
 import { apiActive, type PillSpec, shopMeta, todoOpen, todoPill } from "../lib/dashboard";
 import { pending, pendingSub } from "../lib/decisions";
 import { lcur, livePill, lpct, lremain } from "../lib/liveState";
-import { clock, hms } from "../lib/time";
+import { hms } from "../lib/time";
 import { useShell } from "../shell";
 import { type DSel, useCurHost, useWb } from "../store";
 import { Icon } from "../ui/icons";
@@ -536,11 +536,6 @@ function DashInsp() {
 }
 
 export function Dashboard() {
-  // 조회 시각: 렌더 중에 시계를 읽지 않도록 마운트 뒤에 채운다 (원본은 시작할 때 한 번 + 새로고침)
-  const [snap, setSnap] = useState("");
-  useEffect(() => {
-    setSnap(`조회 ${clock()}`);
-  }, []);
   return (
     <>
       <header className={s.vh}>
@@ -551,12 +546,9 @@ export function Dashboard() {
         <div className={s["vh-row"]}>
           <div className={s["vh-title"]}>
             <h1 tabIndex={-1}>대시보드</h1>
-            <span className={s.snap} id="dSnap">
-              {snap}
-            </span>
           </div>
           <div className={s["vh-acts"]}>
-            <button className={s.btn} type="button" id="dRefresh" onClick={() => setSnap(`조회 ${clock()}`)}>
+            <button className={s.btn} type="button" id="dRefresh">
               <Icon name="refresh" />
               새로고침
             </button>
