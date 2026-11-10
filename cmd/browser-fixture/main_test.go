@@ -327,7 +327,7 @@ func TestServeStopsCleanlyAndClosesLog(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, config{listen: "127.0.0.1:0", receiverListen: "127.0.0.1:0", receiver: testReceiver}, rec, testPacketConn(t))
+		done <- serve(ctx, config{receiver: testReceiver}, rec, listenLocal(t), listenLocal(t), testPacketConn(t))
 	}()
 	cancel()
 	if err := <-done; err != nil {
@@ -349,7 +349,7 @@ func TestServeReportsRecordFailureEvenAfterCancel(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	err := serve(ctx, config{listen: "127.0.0.1:0", receiverListen: "127.0.0.1:0", receiver: testReceiver}, rec, testPacketConn(t))
+	err := serve(ctx, config{receiver: testReceiver}, rec, listenLocal(t), listenLocal(t), testPacketConn(t))
 	if !errors.Is(err, os.ErrClosed) {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestServeEndsOnRecordFailure(t *testing.T) {
 	rec, _ := newTestRecorder(t)
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(t.Context(), config{listen: "127.0.0.1:0", receiverListen: "127.0.0.1:0", receiver: testReceiver}, rec, testPacketConn(t))
+		done <- serve(t.Context(), config{receiver: testReceiver}, rec, listenLocal(t), listenLocal(t), testPacketConn(t))
 	}()
 	rec.file.Close()
 	if err := rec.record(row{Surface: surfaceReceiver, Scenario: "B07"}); err == nil {
@@ -375,22 +375,59 @@ func TestServeEndsOnRecordFailure(t *testing.T) {
 	}
 }
 
-func TestServeReportsListenFailure(t *testing.T) {
-	rec, _ := newTestRecorder(t)
-	err := serve(t.Context(), config{listen: "bad address", receiverListen: "127.0.0.1:0", receiver: testReceiver}, rec, testPacketConn(t))
-	if err == nil {
-		t.Fatal("listen failure must end the run")
+func TestRunReportsListenFailure(t *testing.T) {
+	base := []string{"-receiver-udp", "127.0.0.1:0", "-receiver-origin", "http://outside.test:9001", "-log", filepath.Join(t.TempDir(), "reach.jsonl")}
+	for _, args := range [][]string{
+		append([]string{"-listen", "bad address", "-receiver-listen", "127.0.0.1:0"}, base...),
+		append([]string{"-listen", "127.0.0.1:0", "-receiver-listen", "bad address"}, base...),
+	} {
+		if err := run(t.Context(), args); err == nil {
+			t.Fatal(args)
+		}
 	}
 }
 
-func freeAddress(t *testing.T) string {
+func TestServeClosesListenersOnEveryReturn(t *testing.T) {
+	certFile, keyFile := writeTestCertificate(t)
+	cases := map[string]struct {
+		cfg    config
+		cancel bool
+		fails  bool
+	}{
+		"missing certificate": {config{certFile: certFile + ".missing", keyFile: keyFile, receiver: testReceiver}, false, true},
+		"already cancelled":   {config{receiver: testReceiver}, true, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			rec, _ := newTestRecorder(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			if tc.cancel {
+				cancel()
+			}
+			defer cancel()
+			target, outside := listenLocal(t), listenLocal(t)
+			err := serve(ctx, tc.cfg, rec, target, outside, testPacketConn(t))
+			if (err != nil) != tc.fails {
+				t.Fatal(err)
+			}
+			for _, l := range []net.Listener{target, outside} {
+				if _, err := l.Accept(); !errors.Is(err, net.ErrClosed) {
+					t.Fatal(l.Addr(), err)
+				}
+			}
+		})
+	}
+}
+
+// 리스너를 연 채로 넘겨서, 주소를 고른 뒤 다시 여는 사이에 다른 시험이 포트를 가져가지 못하게 한다.
+func listenLocal(t *testing.T) net.Listener {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
-	return l.Addr().String()
+	t.Cleanup(func() { l.Close() })
+	return l
 }
 
 func writeTestCertificate(t *testing.T) (string, string) {
@@ -422,12 +459,12 @@ func writeTestCertificate(t *testing.T) (string, string) {
 func TestServeUsesTLSForTargetAndReceiver(t *testing.T) {
 	rec, path := newTestRecorder(t)
 	certFile, keyFile := writeTestCertificate(t)
-	target, outside := freeAddress(t), freeAddress(t)
+	targetListener, outsideListener := listenLocal(t), listenLocal(t)
+	target, outside := targetListener.Addr().String(), outsideListener.Addr().String()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() {
-		done <- serve(ctx, config{target, outside, certFile, keyFile, testReceiver}, rec, testPacketConn(t))
-	}()
+	cfg := config{certFile: certFile, keyFile: keyFile, receiver: testReceiver}
+	go func() { done <- serve(ctx, cfg, rec, targetListener, outsideListener, testPacketConn(t)) }()
 	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
 	reach := func(url string) *http.Response {
 		deadline := time.Now().Add(5 * time.Second)
@@ -465,13 +502,13 @@ func TestServeUsesTLSForTargetAndReceiver(t *testing.T) {
 	}
 }
 
-func startServe(t *testing.T, cfg config, rec *recorder) (context.CancelFunc, <-chan error) {
+func startServe(t *testing.T, cfg config, rec *recorder, target, outside net.Listener) (context.CancelFunc, <-chan error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	conn := testPacketConn(t)
-	go func() { done <- serve(ctx, cfg, rec, conn) }()
+	go func() { done <- serve(ctx, cfg, rec, target, outside, conn) }()
 	return cancel, done
 }
 
@@ -519,9 +556,9 @@ func onlyConnections(rows []row) bool {
 
 func TestReceiverCountsConnectionWithoutRequest(t *testing.T) {
 	rec, path := newTestRecorder(t)
-	outside := freeAddress(t)
-	cancel, done := startServe(t, config{listen: freeAddress(t), receiverListen: outside, receiver: testReceiver}, rec)
-	dialUntilReady(t, outside).Close()
+	outside := listenLocal(t)
+	cancel, done := startServe(t, config{receiver: testReceiver}, rec, listenLocal(t), outside)
+	dialUntilReady(t, outside.Addr().String()).Close()
 	waitForRows(t, path, onlyConnections)
 	cancel()
 	if err := <-done; err != nil {
@@ -535,9 +572,9 @@ func TestReceiverCountsConnectionWithoutRequest(t *testing.T) {
 func TestReceiverCountsFailedTLSVerification(t *testing.T) {
 	rec, path := newTestRecorder(t)
 	certFile, keyFile := writeTestCertificate(t)
-	outside := freeAddress(t)
-	cancel, done := startServe(t, config{freeAddress(t), outside, certFile, keyFile, testReceiver}, rec)
-	raw := dialUntilReady(t, outside)
+	outside := listenLocal(t)
+	cancel, done := startServe(t, config{certFile: certFile, keyFile: keyFile, receiver: testReceiver}, rec, listenLocal(t), outside)
+	raw := dialUntilReady(t, outside.Addr().String())
 	defer raw.Close()
 	// 신뢰하지 않는 인증서라 핸드셰이크가 끝나지 않고, HTTP 요청은 보내지 않는다.
 	var verify x509.UnknownAuthorityError
@@ -553,12 +590,12 @@ func TestReceiverCountsFailedTLSVerification(t *testing.T) {
 
 func TestConnectionRecordFailureFailsRun(t *testing.T) {
 	rec, _ := newTestRecorder(t)
-	outside := freeAddress(t)
-	_, done := startServe(t, config{listen: freeAddress(t), receiverListen: outside, receiver: testReceiver}, rec)
+	outside := listenLocal(t)
+	_, done := startServe(t, config{receiver: testReceiver}, rec, listenLocal(t), outside)
 	rec.mu.Lock()
 	rec.file.Close()
 	rec.mu.Unlock()
-	raw := dialUntilReady(t, outside)
+	raw := dialUntilReady(t, outside.Addr().String())
 	defer raw.Close()
 	select {
 	case err := <-done:
@@ -605,12 +642,21 @@ func TestNonReadRecordFailureFailsRequest(t *testing.T) {
 }
 
 func TestRunAdvertisesActualUDPPort(t *testing.T) {
-	target := freeAddress(t)
+	bound := make(chan string, 1)
+	announce = func(target, _ net.Addr) { bound <- target.String() }
+	t.Cleanup(func() { announce = func(net.Addr, net.Addr) {} })
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	args := []string{"-listen", target, "-receiver-listen", freeAddress(t), "-receiver-udp", "127.0.0.1:0", "-receiver-origin", "http://outside.test:9001", "-log", filepath.Join(t.TempDir(), "reach.jsonl")}
+	args := []string{"-listen", "127.0.0.1:0", "-receiver-listen", "127.0.0.1:0", "-receiver-udp", "127.0.0.1:0", "-receiver-origin", "http://outside.test:9001", "-log", filepath.Join(t.TempDir(), "reach.jsonl")}
 	go func() { done <- run(ctx, args) }()
-	dialUntilReady(t, target).Close()
+	var target string
+	select {
+	case target = <-bound:
+	case err := <-done:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("run never bound its listeners")
+	}
 	response, err := http.Get("http://" + target + "/bypass/B08")
 	if err != nil {
 		t.Fatal(err)
