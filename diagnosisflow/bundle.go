@@ -78,6 +78,16 @@ func group(body []byte, m []int, n int) string {
 	return string(body[m[2*n]:m[2*n+1]])
 }
 
+// 경로 문자열 뒤에 무엇이 붙었는지 보려고 공백을 건너뛴 첫 글자를 돌려준다.
+func byteAfter(body []byte, at int) byte {
+	for ; at < len(body); at++ {
+		if c := body[at]; c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+			return c
+		}
+	}
+	return 0
+}
+
 func bundleRefs(body []byte) []bundleRef {
 	var refs []bundleRef
 	seen, called := map[string]bool{}, map[string]bool{}
@@ -101,16 +111,19 @@ func bundleRefs(body []byte) []bundleRef {
 		}
 		return suffix
 	}
-	for _, m := range callConcat.FindAllSubmatchIndex(body, maxBundleMatches) {
-		emit(strings.ToUpper(group(body, m, 1)), full(group(body, m, 2), group(body, m, 3), m[0]), "api", "script_call")
-	}
-	for _, m := range callTemplate.FindAllSubmatchIndex(body, maxBundleMatches) {
-		path, source := full(group(body, m, 2), group(body, m, 3), m[0]), "script_call"
-		if group(body, m, 4) == "${" {
+	call := func(method, expr, suffix string, at int, dynamic bool) {
+		path, source := full(expr, suffix, at), "script_call"
+		if dynamic {
 			// 뒤가 실행 중에 정해지는 주소라 앞부분만 후보로 남긴다.
 			path, source = strings.TrimSuffix(path, "/"), "script_prefix"
 		}
-		emit(strings.ToUpper(group(body, m, 1)), path, "api", source)
+		emit(method, path, "api", source)
+	}
+	for _, m := range callConcat.FindAllSubmatchIndex(body, maxBundleMatches) {
+		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), group(body, m, 3), m[0], byteAfter(body, m[1]) == '+')
+	}
+	for _, m := range callTemplate.FindAllSubmatchIndex(body, maxBundleMatches) {
+		call(strings.ToUpper(group(body, m, 1)), group(body, m, 2), group(body, m, 3), m[0], group(body, m, 4) == "${")
 	}
 	for _, m := range callMember.FindAllSubmatchIndex(body, maxBundleMatches) {
 		if base, ok := baseBefore(bases, group(body, m, 2), m[0]); ok {
@@ -129,7 +142,8 @@ func bundleRefs(body []byte) []bundleRef {
 	}
 	literals := append(urlField.FindAllSubmatchIndex(body, maxBundleMatches), apiLiteral.FindAllSubmatchIndex(body, maxBundleMatches)...)
 	for _, m := range literals {
-		if path := group(body, m, 1); !called[path] {
+		// 동적 호출은 끝 `/`를 뗀 경로로 기록되므로 같은 literal을 UNKNOWN으로 다시 세지 않는다.
+		if path := group(body, m, 1); !called[path] && !called[strings.TrimSuffix(path, "/")] {
 			emit("UNKNOWN", path, "api", "static_literal")
 		}
 	}
