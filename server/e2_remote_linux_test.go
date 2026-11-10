@@ -125,6 +125,9 @@ func TestE2RemoteRunsThroughTheBackend(t *testing.T) {
 	if !errors.Is(err, e2runner.ErrUnavailable) || !failed.Trusted.Final || failed.Trusted.ExitCode != 3 {
 		t.Fatalf("0이 아닌 종료: err=%v final=%v code=%d", err, failed.Trusted.Final, failed.Trusted.ExitCode)
 	}
+	if _, err := run.RunForIntent(ctx, 18, "true"); !errors.Is(err, ErrE2Control) || errors.Is(err, e2runner.ErrUnavailable) {
+		t.Fatal("등록하지 않은 intent가 실행됨:", err)
+	}
 	if calls := run.Calls(); len(calls) != 3 {
 		t.Fatal("호출 기록 수", len(calls))
 	}
@@ -139,6 +142,23 @@ func TestE2RemoteRunsThroughTheBackend(t *testing.T) {
 	}
 	if state := run.Snapshot().State; state == "active" {
 		t.Fatal("중지 뒤에도 활성 상태")
+	}
+}
+
+// 도구 호출 상한이 있어 별도 fixture로 잰다.
+func TestE2RemoteSandboxCannotReachTheChannelOrNest(t *testing.T) {
+	f := startE2RemoteFixture(t)
+	run := f.acquire(t)
+	ctx := context.Background()
+	// 샌드박스는 빈 netns라 같은 프로세스의 엔진 통로에 닿으면 안 된다. HTTP로 닿으면 401이어도 curl은 rc=0이다.
+	reach, err := run.RunForIntent(ctx, 17, fmt.Sprintf("curl --noproxy '*' --silent --max-time 2 -o /dev/null http://%s%s; echo rc=$?", f.server.addr, e2RemotePath))
+	if err != nil || !strings.Contains(reach.ToolOutput, "rc=7") {
+		t.Fatalf("샌드박스가 엔진 통로에 닿음: err=%v output=%q", err, reach.ToolOutput)
+	}
+	// 없는 명령(rc=127)을 거절로 착각하지 않게 정확한 값을 본다.
+	nested, err := run.RunForIntent(ctx, 17, "unshare -U true; echo rc=$?")
+	if err != nil || !strings.Contains(nested.ToolOutput, "rc=1") {
+		t.Fatalf("샌드박스 안에서 namespace를 다시 만듦: err=%v output=%q", err, nested.ToolOutput)
 	}
 }
 
