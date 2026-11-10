@@ -20,17 +20,19 @@ const (
 	bundleLiteralTail    = "[^\"'`\\s<>]{1,160}"
 	bundleFetchOptions   = "[^{}]{0,200}?"
 	bundleVerb           = "(get|post|put|patch|delete)"
+	// 번역 키 같은 `.get("KEY")`는 `/`가 없어서 빠진다. 다른 호스트 주소는 resolve가 거른다.
+	bundleCallTarget = "(?:https?://|\\.{0,2}/|[\\w-]+/)" + bundlePathTail
 )
 
 var (
 	apiLiteral = regexp.MustCompile(bundleQuote + "(/(?:api|rest)/" + bundleLiteralTail + ")" + bundleQuote)
-	// `.post(this.host+"/x"`처럼 앞에 식이 붙어도 경로 글자를 잡는다. 번역 키 같은 `.get("KEY")`는 `/`로 시작하지 않아 빠진다.
-	callConcat   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(\\.?/" + bundlePathTail + ")" + bundleQuote)
+	// `.post(this.host+"/x"`처럼 앞에 식이 붙어도 경로 글자를 잡는다.
+	callConcat   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote)
 	callTemplate = regexp.MustCompile("(?i)\\." + bundleVerb + "\\(\\s*`(?:\\$\\{([\\w$.]+)\\})?(/" + bundleTemplateTail + ")?(\\$\\{|`)")
 	callMember   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(this\.[\w$]+)\s*[,)]`)
 	baseAssign   = regexp.MustCompile(`(this\.[\w$]+)\s*=\s*(?:[\w$.]+\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	baseTemplate = regexp.MustCompile("(this\\.[\\w$]+)\\s*=\\s*`(?:\\$\\{[\\w$.]+\\})?(/" + bundleTemplateTail + ")`")
-	fetchCall    = regexp.MustCompile(`\bfetch\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote + `(?:\s*,\s*\{` + bundleFetchOptions + `\bmethod\s*:\s*` + bundleQuote + `(\w+)` + bundleQuote + `)?`)
+	fetchCall    = regexp.MustCompile(`\bfetch\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote + `(?:\s*,\s*\{` + bundleFetchOptions + `\bmethod\s*:\s*` + bundleQuote + `(\w+)` + bundleQuote + `)?`)
 	xhrOpen      = regexp.MustCompile(`\.open\(\s*` + bundleQuote + `(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)` + bundleQuote + `\s*,\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	urlField     = regexp.MustCompile(`\burl\s*:\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	// 슬래시 없는 "moment.js" 같은 모듈 이름은 파일 경로로 보지 않는다.
@@ -102,7 +104,7 @@ func bundleRefs(body []byte) []bundleRef {
 			called[path] = true
 		}
 		key := method + " " + path
-		if kind == "api" && !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "./") || seen[key] {
+		if kind == "api" && path == "" || seen[key] {
 			return
 		}
 		seen[key] = true

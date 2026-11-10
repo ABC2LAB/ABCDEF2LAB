@@ -55,7 +55,10 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"known method wins":     {`var a="/api/thing";c.get("/api/thing")`, []string{"GET /api/thing script_call"}},
 		"translation key":       {`t.get("ADDRESS_ADDED");t.get("a.b")`, []string{}},
 		"map delete":            {`m.delete("key");m.get(k)`, []string{}},
-		"absolute other host":   {`c.get("https://other.test/x")`, []string{}},
+		"relative without dot":  {`c.get("rest/x")`, []string{"GET rest/x script_call"}},
+		"same origin absolute":  {`c.get("https://owned.test/rest/x")`, []string{"GET https://owned.test/rest/x script_call"}},
+		"fetch relative":        {`fetch("rest/y")`, []string{"GET rest/y script_call"}},
+		"empty template":        {"c.get(`${a}${b}`)", []string{}},
 		"duplicate":             {`c.get("/a");c.get("/a")`, []string{"GET /a script_call"}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -173,6 +176,21 @@ func TestDiscoveryResolvesBundleCallsAgainstOrigin(t *testing.T) {
 	c.discoverBodyLocked([]byte(`this.host=s+"/read/items"}a(){return this.http.post(this.host+"/add",e)}`), "application/javascript", "/read/app.js")
 	if got := discovered(c); !slices.Contains(got, "POST /read/items/add api") {
 		t.Fatal(got)
+	}
+}
+
+func TestDiscoveryResolvesAbsoluteAndRelativeCalls(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	invalid := c.record.Snapshot.Counts.InvalidPaths
+	c.discoverBodyLocked([]byte(`c.get("https://owned.test/read/abs");c.get("rel/x");c.get("https://other.test/read/y")`), "application/javascript", "/read/app.js")
+	got := discovered(c)
+	if !slices.Contains(got, "GET /read/abs api") || !slices.Contains(got, "GET /read/rel/x api") || slices.Contains(got, "GET /read/y api") {
+		t.Fatal(got)
+	}
+	if c.record.Snapshot.Counts.InvalidPaths != invalid+1 {
+		t.Fatal(c.record.Snapshot.Counts.InvalidPaths)
 	}
 }
 
