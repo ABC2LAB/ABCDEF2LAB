@@ -60,7 +60,7 @@ E②는 고정 origin/IP/port/TLS/path/method/예산 검사 뒤 workflow의 실�
 
 ## 대상 입력과 실패 처리
 
-대상에서 얻은 경로는 제어 문자·NUL·역슬래시·모호한 인코딩·128바이트 초과를 거부하고 URL의 `EscapedPath`로 유지한다. 프로그램 소유 curl은 `--globoff`로 한 URL을 한 요청으로 처리한다. HTML 표준 밖의 form method(예: `dialog`)는 `UNKNOWN`, HTTP 범위 밖 상태값은 0으로 정규화한다. UNKNOWN은 선택·전송 권한이 아니다.
+대상에서 얻은 경로는 제어 문자·NUL·역슬래시·모호한 인코딩·128바이트 초과를 거부하고 URL의 `EscapedPath`로 유지한다. 프로그램 소유 curl은 `--globoff`로 한 URL을 한 요청으로 처리한다. HTML 표준 밖의 form method(예: `dialog`)는 `UNKNOWN`, HTTP 범위 밖 상태값은 0으로 정규화한다. UNKNOWN은 선택·전송 권한이 아니다. 큰 응답의 `body_incomplete`는 탐색 요약이 일부라는 뜻이며 별도 확인된 읽기 권한을 회수하지 않는다. 자동 모드는 이 읽기 endpoint를 선택에 유지하고 부분 관찰 사실을 표시한다.
 
 페이지 하나의 알려진 HTTP 실패·파싱 실패는 해당 endpoint의 `observation_error`와 이벤트로 남기고 다른 적격 페이지를 계속 탐색한다. 신뢰 마감(version/final/call final/process/proxy/audit/unknown)이 불충분하거나 관찰한 페이지가 하나도 없으면 탐색을 `failed`로 마감해 선택·심화 대기를 즉시 해제한다. 대상에서 받은 경로는 시스템 지시에 넣지 않고 별도 user 입력의 비신뢰 JSON 자료로 전달한다. 실제 권한은 계속 E②와 선택 교집합이 집행한다.
 

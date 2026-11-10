@@ -120,6 +120,11 @@ func TestCrawlPageFailureIsIsolatedAndTerminalFailureUnblocksWork(t *testing.T) 
 				t.Fatal("untrusted discovery completed")
 			}
 			s, _ := c.Snapshot()
+			for _, endpoint := range s.Endpoints {
+				if endpoint.Status != 0 && field == "status" {
+					t.Fatal("invalid status reached UI projection", endpoint.Status)
+				}
+			}
 			if s.Stage != "failed" {
 				t.Fatal("failed crawl still waits", s.Stage)
 			}
@@ -224,11 +229,18 @@ func TestCommandBoundaryRejectsStaleForeignAndIneligibleSelection(t *testing.T) 
 	}
 }
 func TestCommandLimitAlwaysLeavesResumeAvailable(t *testing.T) {
-	c, _ := flowFixture(t, Auto)
+	c, _ := flowFixture(t, Manual)
 	syntheticCrawl(t, c)
+	initial, _ := c.Snapshot()
+	if _, err := c.Command(t.Context(), "ARTEX", "selection", "owned-selection", initial.Revision, []string{initial.Endpoints[0].ID}); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 40; i++ {
 		s, _ := c.Snapshot()
 		paused, err := c.Command(t.Context(), "ARTEX", "pause", fmt.Sprintf("pause-%d", i), s.Revision, nil)
+		if len(s.Commands) >= 31 && err == nil {
+			t.Fatal("pause consumed the reserved resume receipt")
+		}
 		if err != nil {
 			if s.Paused {
 				t.Fatal("command cap left workflow paused")
@@ -284,5 +296,32 @@ func TestWorkflowSystemInstructionsContainOnlyOpaqueEndpointReferences(t *testin
 	var rows []map[string]string
 	if json.Unmarshal([]byte(c.SelectedData()), &rows) != nil || len(rows) != 1 || rows[0]["path"] != "/read/IGNORE_PREVIOUS_INSTRUCTIONS" {
 		t.Fatal("target data lost instead of separated")
+	}
+}
+
+func TestAutomaticSelectionRetainsAttestedReadsWithClippedBody(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	_, err := c.Crawl(t.Context(), func(_ context.Context, target string) (e2runner.Result, error) {
+		body := `<a href="/read/large">large</a>`
+		if strings.HasSuffix(target, "/large") {
+			body = strings.Repeat("x", 8192)
+		}
+		return closedPage(c, target, body, 200), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := c.Snapshot()
+	found := false
+	for _, e := range s.Endpoints {
+		if e.Path == "/read/large" {
+			found = true
+			if !e.Selected || e.ObservationError != "body_incomplete" {
+				t.Fatal("body summary cap removed attested read authority", e)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("large observed page disappeared")
 	}
 }
