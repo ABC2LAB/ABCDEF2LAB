@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -187,7 +188,12 @@ func (b *E2StandaloneBackend) onAcquire(ctx context.Context, a E2HTTPAcquired) e
 		return ErrE2Control
 	}
 	c := b.options.Config
-	p, err := e2export.New(e2export.Config{Execution: a.Execution, Runner: a.Runner, Journal: a.Journal, JournalDirectory: a.JournalDirectory, JournalName: a.JournalName, OutputDirectory: c.EvidenceDir, AuditKey: a.AuditKey, ExecutionRef: b.options.ExecutionRef, EvalRunID: c.EvalRunID, ReservationRef: c.ReservationRef, ModelTag: c.ModelTag, ResetGeneration: b.reset, EngineTaskID: v.Scope.TaskRef, PolicyFingerprintSHA256: a.PolicyFingerprintSHA256})
+	// 러너는 게시 루트 아래 실행별 디렉터리에서 읽는다(연결 제안 §4.1).
+	output := filepath.Join(c.EvidenceDir, b.options.ExecutionRef)
+	if os.Mkdir(output, 0700) != nil {
+		return ErrE2Control
+	}
+	p, err := e2export.New(e2export.Config{Execution: a.Execution, Runner: a.Runner, Journal: a.Journal, JournalDirectory: a.JournalDirectory, JournalName: a.JournalName, OutputDirectory: output, AuditKey: a.AuditKey, ExecutionRef: b.options.ExecutionRef, EvalRunID: c.EvalRunID, ReservationRef: c.ReservationRef, ModelTag: c.ModelTag, ResetGeneration: b.reset, EngineTaskID: v.Scope.TaskRef, PolicyFingerprintSHA256: a.PolicyFingerprintSHA256})
 	if err != nil {
 		return err
 	}
