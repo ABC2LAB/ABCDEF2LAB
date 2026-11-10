@@ -57,7 +57,7 @@ class LoadRoundTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
-    def meter(self, engine, paths, drained=True, engine_tail=""):
+    def meter(self, engine, paths, drained=True, engine_tail="", sealed=True):
         directory = Path(self.tmp.name, str(len(os.listdir(self.tmp.name))))
         directory.mkdir(mode=0o700)
         os.chmod(directory, 0o700)
@@ -66,9 +66,12 @@ class LoadRoundTests(unittest.TestCase):
         if paths is not None:
             (directory / "engine-paths.jsonl").write_text("".join(json.dumps(row) + "\n" for row in paths),
                                                           encoding="utf-8")
+        if sealed:
+            (directory / "engine-sealed.json").write_text(json.dumps({"role": "engine"}), encoding="utf-8")
         if drained:
             forwarded = sum(1 for row in engine if row["kind"] != "rejected")
-            marker = {"role": "engine", "forwarded_requests": forwarded, "log_complete": True}
+            marker = {"role": "engine", "forwarded_requests": forwarded, "log_complete": True, "inflight_at_drain": 0,
+                      "forced_cancelled_requests": 0}
             if isinstance(drained, dict):
                 marker.update(drained)
             (directory / "engine-drained.json").write_text(json.dumps(marker), encoding="utf-8")
@@ -90,6 +93,13 @@ class LoadRoundTests(unittest.TestCase):
         # 예산은 sent와 상관없이 전달 행마다 쓰인다. 정적 자원은 예산 안 전달 행(sent=no 포함)으로 센다.
         self.assertEqual((got.forwarded, got.static_forwarded, got.sent, got.uncertain, got.masked_segments),
                          (5, 2, 3, 1, 1))
+        self.assertTrue(got.reached_budget)
+        self.assertFalse(load_round(self.meter(engine, paths), 7, REF).reached_budget)
+
+    def test_too_long_paths_are_counted(self):
+        long_path = "/a" * 33
+        got = load_round(self.meter([engine_row(1), engine_row(2)], [path_row(1, long_path), path_row(2, "/b")]), 10, REF)
+        self.assertEqual((got.too_long, ("GET", "/{too_long}") in got.patterns), (1, True))
 
     def test_rejects_unfinished_or_missing_logs(self):
         # 계측기 디렉터리 대신 빈 디렉터리를 넘긴 경우.
@@ -104,6 +114,11 @@ class LoadRoundTests(unittest.TestCase):
         self.check(self.meter([engine_row(1)], [path_row(1, "/a")], drained={"forwarded_requests": 2},
                               engine_tail=json.dumps(engine_row(2))), "meter_log_incomplete")
         self.check(self.meter([engine_row(2)], [path_row(2, "/a")]), "meter_log_incomplete")
+        # 러너가 무효로 하는 기록도 받지 않는다(같은 함수를 쓴다).
+        for marker in ({"inflight_at_drain": 5}, {"forwarded_requests": 1.0}, {"forced_cancelled_requests": 1}):
+            with self.subTest(marker=marker):
+                self.check(self.meter([engine_row(1)], [path_row(1, "/a")], drained=marker), "meter_log_incomplete")
+        self.check(self.meter([engine_row(1)], [path_row(1, "/a")], sealed=False), "meter_log_incomplete")
         self.check(self.meter([engine_row(1)], None), "meter_path_log_missing")
 
     def test_unknown_kind_is_rejected_not_skipped(self):
@@ -195,11 +210,23 @@ class SummarizeTests(unittest.TestCase):
         for bad in ([], dict(good, format="x"), dict(good, extra=1), dict(good, methods="DELETE"),
                     dict(good, methods=["delete"]), dict(good, path_prefixes=["admin"]), dict(good, path_prefixes=[1]),
                     dict(good, path_prefixes=["/"]), dict(good, path_prefixes=["/a%2Fb"]),
-                    dict(good, path_prefixes=["/a//b"]), dict(good, path_prefixes=["/é"])):
+                    dict(good, path_prefixes=["/a//b"]), dict(good, path_prefixes=["/é"]),
+                    dict(good, path_prefixes=["/rest/../admin"]), dict(good, path_prefixes=["/."]),
+                    dict(good, path_prefixes=["/a/./b"]), dict(good, path_prefixes=["/a/.."])):
             with self.subTest(bad=bad), self.assertRaises(PreservationError):
                 load_exclusions(bad, KEY)
         with self.assertRaises(PreservationError):
             load_exclusions(good, KEY[:8])
+        # 점으로 시작할 뿐인 조각은 받는다.
+        self.assertEqual(len(load_exclusions(dict(good, path_prefixes=["/.well-known", "/a..b/"]), KEY).path_prefixes), 2)
+
+    def test_both_sides_report_budget_use(self):
+        baseline = [rnd(("GET", "/a")), Round(frozenset({("GET", "/a")}), 80, 0, 70, 0, 0, reached_budget=False)]
+        improved = [rnd(("GET", "/a"), forwarded=500), Round(frozenset({("GET", "/a")}), 500, 0, 500, 0, 0, too_long=2)]
+        got = summarize(baseline, improved, NONE, False)
+        self.assertEqual(got["forwarded"], {"baseline": [1, 80], "improved": [500, 500]})
+        self.assertEqual(got["pairs_under_budget"], [2])
+        self.assertEqual(got["too_long"], {"baseline": [0, 0], "improved": [0, 2]})
 
     def test_excluded_count_follows_the_read_only_domain(self):
         baseline = [rnd(("GET", "/a"), ("DELETE", "/x"), ("DELETE", "/y"))]

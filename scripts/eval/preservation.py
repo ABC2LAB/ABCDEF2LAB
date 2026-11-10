@@ -21,7 +21,7 @@ from pathlib import Path
 
 from path_mask import PATH_PROFILE, STATIC_SUFFIXES, PathKeyError, key_ref, mask_path, read_path_key
 from runner_evidence import (
-    DRAINED_MARKER, FORWARDED_KINDS, EvidenceError, MeterFiles, forwarded_count, sequence_complete,
+    DRAINED_MARKER, FORWARDED_KINDS, SEALED_MARKER, EvidenceError, MeterFiles, drain_complete, final_log_consistent,
 )
 
 SUMMARY_FORMAT = "abc2lab.preservation-summary/v2"
@@ -29,7 +29,10 @@ EXCLUSIONS_FORMAT = "abc2lab.preservation-exclusions/v1"
 READ_METHODS = frozenset({"GET", "HEAD"})
 _METHOD = re.compile(r"[A-Z]{1,16}\Z")
 # 규칙 경로는 ASCII 안전 문자 조각만 받는다(path_mask의 소문자 변환이 Go와 같은 범위). `/` 하나는 전부를 빼서 받지 않는다.
-_RULE_PATH = re.compile(r"(?:/[A-Za-z0-9._~-]+)+/?\Z")
+# `.`·`..` 조각은 계측기 경로에 남지 않아 어떤 패턴과도 맞지 않으므로(오타가 조용히 0건이 된다) 받지 않는다.
+_RULE_PATH = re.compile(r"(?:/(?!\.\.?(?:/|\Z))[A-Za-z0-9._~-]+)+/?\Z")
+# 계측기는 32조각을 넘는 경로를 이 패턴 하나로 남긴다. 접두사 규칙에 걸리지 않고 서로 다른 경로가 합쳐지므로 수를 따로 싣는다.
+TOO_LONG_PATTERN = "/{too_long}"
 
 
 class PreservationError(RuntimeError):
@@ -46,6 +49,9 @@ class Round:
     sent: int
     uncertain: int
     masked_segments: int
+    # 예산까지 전달했는지. 아니면 시간 등 다른 한도로 먼저 멈춘 회차다(멈춘 이유는 러너 결과에 있다).
+    reached_budget: bool = True
+    too_long: int = 0
 
 
 def is_static(pattern: str) -> bool:
@@ -60,20 +66,21 @@ def load_round(directory: Path, budget: int, expected_key_ref: str) -> Round:
     meter = MeterFiles(directory)
     try:
         engine = meter.engine_rows()
-        total = forwarded_count(engine)
         drained = meter.marker(DRAINED_MARKER)
-        # 최종 집계다. drain 표식이 없거나 기록이 덜 내려갔거나 순번·건수가 표식과 다르면(잘린 꼬리 포함) 받지 않는다.
-        if (drained is None or drained.get("log_complete") is not True or drained.get("forwarded_requests") != total
-                or not sequence_complete(engine)):
+        # 최종 집계다. 러너가 무효로 하는 기록(drain 미완료, 봉인 표식 없음, 순번·건수가 표식과 다름, 잘린 꼬리)은
+        # 러너와 같은 함수로 거른다.
+        if (drained is None or not drain_complete(drained)
+                or not final_log_consistent(engine, meter.marker(SEALED_MARKER), drained)):
             raise PreservationError("meter_log_incomplete")
         paths = {row["seq"]: row for row in meter.path_rows(engine)}
     except EvidenceError as exc:
         raise PreservationError(str(exc)) from None
     if any(row["path_key_ref"] != expected_key_ref for row in paths.values()):
         raise PreservationError("path_key_mismatch")
-    forwarded = sorted((row for row in engine if row["kind"] in FORWARDED_KINDS), key=lambda row: row["seq"])[:budget]
+    ordered = sorted((row for row in engine if row["kind"] in FORWARDED_KINDS), key=lambda row: row["seq"])
+    forwarded = ordered[:budget]
     patterns: set[tuple[str, str]] = set()
-    static = sent = uncertain = masked = 0
+    static = sent = uncertain = masked = too_long = 0
     for row in forwarded:
         path = paths[row["seq"]]
         static += is_static(path["path_pattern"])
@@ -84,7 +91,9 @@ def load_round(directory: Path, budget: int, expected_key_ref: str) -> Round:
         patterns.add((row["method"], path["path_pattern"]))
         sent += 1
         masked += path["masked_segments"]
-    return Round(frozenset(patterns), len(forwarded), static, sent, uncertain, masked)
+        too_long += path["path_pattern"] == TOO_LONG_PATTERN
+    return Round(frozenset(patterns), len(forwarded), static, sent, uncertain, masked,
+                 reached_budget=len(ordered) >= budget, too_long=too_long)
 
 
 @dataclass(frozen=True)
@@ -176,6 +185,12 @@ def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusio
                           "static_share": r.static_forwarded / r.forwarded if r.forwarded else None}
                          for r in improved],
         "sent": {"baseline": [r.sent for r in baseline], "improved": [r.sent for r in improved]},
+        # 양쪽 모두 예산 수까지만 센다(§6). 예산 전에 멈춘 회차가 있는 짝은 순번으로 드러낸다.
+        "forwarded": {"baseline": [r.forwarded for r in baseline], "improved": [r.forwarded for r in improved]},
+        "pairs_under_budget": [i for i, (b, o) in enumerate(zip(baseline, improved), start=1)
+                               if not (b.reached_budget and o.reached_budget)],
+        # 32조각을 넘어 하나로 합쳐진 경로(sent=yes 행 수). 제외 규칙에 걸리지 않고 분모에 한 패턴으로 남는다.
+        "too_long": {"baseline": [r.too_long for r in baseline], "improved": [r.too_long for r in improved]},
         "uncertain": {"baseline": [r.uncertain for r in baseline], "improved": [r.uncertain for r in improved]},
         "masked_segments": {"baseline": [r.masked_segments for r in baseline],
                             "improved": [r.masked_segments for r in improved]},
