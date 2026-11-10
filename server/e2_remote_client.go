@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -202,4 +201,4 @@ func (r *e2RemoteRun) DrainIntent(ctx context.Context, id int64) error {
 }
 
 // 실행 자원의 마감은 러너의 close 요청으로 E²가 한다. 엔진이 먼저 닫으면 마감 순서가 어긋난다.
-func (r *e2RemoteRun) Close(ctx context.Context) error { return errors.Join(ctx.Err()) }
+func (r *e2RemoteRun) Close(context.Context) error { return nil }
