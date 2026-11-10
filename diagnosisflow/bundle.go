@@ -38,7 +38,7 @@ var (
 	baseAssign   = regexp.MustCompile(`(this\.[\w$]+)\s*=\s*(?:[\w$.]+\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	baseTemplate = regexp.MustCompile("(this\\.[\\w$]+)\\s*=\\s*`(?:\\$\\{[\\w$.]+\\})?(/" + bundleTemplateTail + ")`")
 	fetchCall    = regexp.MustCompile(`\bfetch\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote + `(?:\s*,\s*\{` + bundleFetchOptions + `\bmethod\s*:\s*` + bundleQuote + `(\w+)` + bundleQuote + `)?`)
-	xhrOpen      = regexp.MustCompile(`\.open\(\s*` + bundleQuote + `(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)` + bundleQuote + `\s*,\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
+	xhrOpen      = regexp.MustCompile(`(?i)\.open\(\s*` + bundleQuote + `(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)` + bundleQuote + `\s*,\s*` + bundleQuote + "(" + bundleCallTarget + ")" + bundleQuote)
 	urlField     = regexp.MustCompile(`\burl\s*:\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	// 슬래시 없는 "moment.js" 같은 모듈 이름은 파일 경로로 보지 않는다.
 	chunkFile = regexp.MustCompile(bundleQuote + `((?:\.{0,2}/)?(?:[\w-]+/)*[\w.-]+\.m?js)` + bundleQuote)
@@ -199,7 +199,7 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 		call(method, group(body, m, 1), group(body, m, 2), m[0], next == '+')
 	}
 	for _, m := range xhrOpen.FindAllSubmatchIndex(body, maxBundleMatches) {
-		emit(group(body, m, 1), group(body, m, 2), "api", "script_call")
+		call(strings.ToUpper(group(body, m, 1)), "", group(body, m, 2), m[0], byteAfter(body, m[1]) == '+')
 	}
 	literals := append(urlField.FindAllSubmatchIndex(body, maxBundleMatches), apiLiteral.FindAllSubmatchIndex(body, maxBundleMatches)...)
 	for _, m := range literals {
