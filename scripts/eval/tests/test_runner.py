@@ -79,7 +79,7 @@ def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, obse
             preflight[name]["run_storage"]["tmpfs_min_free"] = min_free
     config = parse_runner_config(payload)
     plan = plan_run(config, preflight, side, f"{side}-1")
-    return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0)
+    return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0, e2_declared_status="proposed")
 
 
 MIB = 1024 * 1024
@@ -663,7 +663,7 @@ class TestE2Product(unittest.TestCase):
         self.assertEqual(row["decisions"], {"allowed": 2, "denied": 1, "unsupported": 0})
         self.assertEqual((row["config_sha256"], row["policy_fingerprint_sha256"], row["manifest_sha256"]), ("1" * 64, "f" * 64, E2_MANIFEST))
         self.assertEqual(row["image_id"], E2_IMAGE_ID)
-        self.assertEqual(row["declared_differences_sha256"], "b" * 64)
+        self.assertEqual((row["declared_differences_sha256"], row["declared_differences_status"]), ("b" * 64, "proposed"))
         self.assertEqual(evidence.files["e2-service-ready.json"]["state"], "service_ready")
         self.assertEqual(evidence.files["e2-collection.json"]["outcome"], "complete")
         cells = self.row(evidence, "attempt_reconciliation")[0]["cells"]
@@ -2126,9 +2126,10 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
             tool.write_text('#!/bin/sh\numask 077\nprintf cert > "$3"\nprintf key > "$5"\n')
             tool.chmod(0o700)
             declared = Path(tmp, "declared.json")
-            declared.write_bytes(b"{}")
+            body = b'{"format": "abc2lab.e2-declared-differences/v1", "status": "proposed"}'
+            declared.write_bytes(body)
             payload["e2"] = dict(E2_PRODUCT_BLOCK, policy_path=str(Path(tmp, "missing-policy.json")), policy_tool=str(tool), declared_differences_path=str(declared),
-                                 declared_differences_sha256=hashlib.sha256(b"{}").hexdigest())
+                                 declared_differences_sha256=hashlib.sha256(body).hexdigest())
         return self.inputs(tmp, product_with_missing_policy)
 
     def test_e2_preparation_failure_leaves_no_run_directory(self):
