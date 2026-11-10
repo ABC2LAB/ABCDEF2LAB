@@ -129,6 +129,7 @@ type E2HTTPRuntimeOptions struct {
 	CheckAuthority          func(context.Context) error
 	AuthorizeIntent         func(context.Context, E2HTTPRequest) error
 	Expected                E2HTTPExpectedBinding
+	ResetBoundRemotely      bool
 	Acquire                 func(context.Context, E2HTTPRequest) (E2HTTPRunOptions, error)
 	MaxWorkerTurns          int
 	MaxToolCalls            int
@@ -306,6 +307,14 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 	return agent.WithE2HTTPPlanning(e2HTTPTaskContext(ctx, t.ctx)), nil
 }
 
+// 원격 실행에서는 러너가 대상 컨테이너 ID를 eval-e2에 bind한다. 엔진은 그 값을 알 수 없다.
+func (r *E2HTTPRuntime) resetMatches(actual string) bool {
+	if r.options.ResetBoundRemotely {
+		return actual != ""
+	}
+	return actual == r.options.Expected.ResetRef
+}
+
 func (r *E2HTTPRuntime) validLease(t *e2HTTPRuntimeTask, lease E2HTTPRunOptions, initialIntent int64) bool {
 	if lease.Runner == nil || lease.Release == nil {
 		return false
@@ -315,7 +324,7 @@ func (r *E2HTTPRuntime) validLease(t *e2HTTPRuntimeTask, lease E2HTTPRunOptions,
 	}
 	view := lease.Runner.Snapshot()
 	expected := r.options.Expected
-	if view.Version != e2proxy.Version || view.State != "active" || !view.AuditComplete || view.Scope.TaskRef != t.id || view.Scope.RunRef != expected.RunRef || view.Scope.ResetRef != expected.ResetRef || view.Scope.PolicyRef != expected.PolicyRef || view.Scope.CaseRef != expected.CaseRef || view.PolicyRevision != expected.PolicyRevision || initialIntent > 0 && (view.IntentID != initialIntent || !lease.Runner.HasIntent(initialIntent)) {
+	if view.Version != e2proxy.Version || view.State != "active" || !view.AuditComplete || view.Scope.TaskRef != t.id || view.Scope.RunRef != expected.RunRef || !r.resetMatches(view.Scope.ResetRef) || view.Scope.PolicyRef != expected.PolicyRef || view.Scope.CaseRef != expected.CaseRef || view.PolicyRevision != expected.PolicyRevision || initialIntent > 0 && (view.IntentID != initialIntent || !lease.Runner.HasIntent(initialIntent)) {
 		return false
 	}
 	policy := lease.Runner.Policy()
