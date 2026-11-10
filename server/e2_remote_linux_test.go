@@ -148,23 +148,27 @@ func TestE2RemoteRefusesBadCalls(t *testing.T) {
 		method, path, token, body string
 		status                    int
 	}{
-		"정상 대조":   {http.MethodPost, e2RemotePath, e2RemoteTestToken, body, http.StatusOK},
-		"GET":     {http.MethodGet, e2RemotePath, e2RemoteTestToken, "", http.StatusNotFound},
-		"다른 경로":   {http.MethodPost, "/v1/other", e2RemoteTestToken, body, http.StatusNotFound},
-		"토큰 없음":   {http.MethodPost, e2RemotePath, "", body, http.StatusUnauthorized},
-		"다른 토큰":   {http.MethodPost, e2RemotePath, strings.Repeat("x", 48), body, http.StatusUnauthorized},
-		"모르는 필드":  {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"` + E2RemoteFormat + `","op":"describe","x":1}`, http.StatusBadRequest},
-		"다른 형식":   {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"other","op":"describe"}`, http.StatusBadRequest},
-		"본문 초과":   {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"` + E2RemoteFormat + `","op":"redact","command":"` + strings.Repeat("a", e2RemoteMaxBodyBytes) + `"}`, http.StatusBadRequest},
-		"모르는 연산":  {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"` + E2RemoteFormat + `","op":"shell"}`, http.StatusConflict},
-		"획득 전 조회": {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"` + E2RemoteFormat + `","op":"view"}`, http.StatusConflict},
+		"정상 대조":     {http.MethodPost, e2RemotePath, e2RemoteTestToken, body, http.StatusOK},
+		"GET":       {http.MethodGet, e2RemotePath, e2RemoteTestToken, "", http.StatusNotFound},
+		"다른 경로":     {http.MethodPost, "/v1/other", e2RemoteTestToken, body, http.StatusNotFound},
+		"토큰 없음":     {http.MethodPost, e2RemotePath, "", body, http.StatusUnauthorized},
+		"접두사 없는 토큰": {http.MethodPost, e2RemotePath, "\x00raw", body, http.StatusUnauthorized},
+		"다른 토큰":     {http.MethodPost, e2RemotePath, strings.Repeat("x", 48), body, http.StatusUnauthorized},
+		"모르는 필드":    {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"` + E2RemoteFormat + `","op":"describe","x":1}`, http.StatusBadRequest},
+		"다른 형식":     {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"other","op":"describe"}`, http.StatusBadRequest},
+		"본문 초과":     {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"` + E2RemoteFormat + `","op":"redact","command":"` + strings.Repeat("a", e2RemoteMaxBodyBytes) + `"}`, http.StatusBadRequest},
+		"모르는 연산":    {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"` + E2RemoteFormat + `","op":"shell"}`, http.StatusConflict},
+		"획득 전 조회":   {http.MethodPost, e2RemotePath, e2RemoteTestToken, `{"format":"` + E2RemoteFormat + `","op":"view"}`, http.StatusConflict},
 	} {
 		t.Run(name, func(t *testing.T) {
 			request, err := http.NewRequest(tc.method, url+tc.path, strings.NewReader(tc.body))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.token != "" {
+			switch {
+			case tc.token == "\x00raw":
+				request.Header.Set("Authorization", e2RemoteTestToken)
+			case tc.token != "":
 				request.Header.Set("Authorization", "Bearer "+tc.token)
 			}
 			response, err := http.DefaultClient.Do(request)
