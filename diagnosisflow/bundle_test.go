@@ -131,6 +131,10 @@ func TestBundleBaseWithDynamicTailIsNotUsed(t *testing.T) {
 	if want := []string{"UNKNOWN /1 static_literal"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got=%q want=%q", got, want)
 	}
+	got = refStrings(bundleRefs([]byte(`this.host="/api"+t;this.http.delete(this.host+"/2")`), maxBundleChunks))
+	if want := []string{"UNKNOWN /2 static_literal"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%q want=%q", got, want)
+	}
 	// 뒤에 온전한 대입이 있으면 그 값을 쓴다.
 	got = refStrings(bundleRefs([]byte(`this.host=s+"/api"+t;this.host="/ok";c.get(this.host+"/1")`), maxBundleChunks))
 	if want := []string{"GET /ok/1 script_call"}; !reflect.DeepEqual(got, want) {
@@ -432,7 +436,7 @@ func TestDocumentBaseHrefResolvesReferences(t *testing.T) {
 	c, _ := flowFixture(t, Manual)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	page := `<base href="/"><base href="/read/ignored/"><a href="read/a">a</a><script src="read/app.js"></script><script>http.get("read/users")</script>`
+	page := `<base target="_blank"><base href="/"><base href="/read/ignored/"><a href="read/a">a</a><script src="read/app.js"></script><script>http.get("read/users")</script>`
 	c.discoverBodyLocked([]byte(page), "text/html", "/read/profile")
 	got := discovered(c)
 	for _, want := range []string{"GET /read/a page", "GET /read/app.js script", "GET /read/users api"} {
