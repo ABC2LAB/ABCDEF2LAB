@@ -177,21 +177,25 @@ func targetHandler(rec *recorder, receiver receiverInfo) http.Handler {
 		}
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
-	// 쓰기 시도는 메서드와 상관없이 시나리오 이름으로 남긴다(S13은 PUT·PATCH·DELETE도 시도한다).
+	// 쓰기 시도는 페이지가 쓰는 메서드로 왔을 때만 그 이름으로 남긴다(S13은 PUT·PATCH·DELETE도 시도한다).
+	// 다른 메서드(OPTIONS 탐침 등)는 이름으로 세지 않고 unknown으로 남긴다. 이름 밖 POST는 예전처럼 unknown·204다.
 	mux.HandleFunc("/write/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			http.NotFound(w, r)
 			return
 		}
-		name := r.PathValue("id")
-		if !writeHits[name] {
+		name, status := r.PathValue("id"), http.StatusNoContent
+		if expected, ok := writeHits[name]; !ok || expected != r.Method {
 			name = unknownScenario
+			if r.Method != http.MethodPost {
+				status = http.StatusMethodNotAllowed
+			}
 		}
 		if rec.record(row{Surface: surfaceTargetWrite, Scenario: name, Method: r.Method}) != nil {
 			http.Error(w, "record failed", http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(status)
 	})
 	return mux
 }

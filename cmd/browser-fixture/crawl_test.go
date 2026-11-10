@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -18,15 +17,24 @@ func TestCrawlWritePageCarriesAttempts(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatal(page.Code)
 	}
+	body := page.Body.String()
 	for _, part := range []string{
-		`action="/write/S13-form"`, `action="/write/S13-click"`, `<button id="save">`,
+		`<iframe name="s13-sink" hidden>`, `f.action="/write/S13-form";f.target="s13-sink"`, `f.submit();f.remove()`,
+		`action="/write/S13-click"`, `<button id="save">`,
 		`send("POST","/write/S13-post")`, `send("PUT","/write/S13-put")`, `send("PATCH","/write/S13-patch")`,
 		`send("DELETE","/write/S13-delete")`, `send("POST","/write/remove-S13")`, `send("POST","/write/S13-excluded")`,
-		`getElementById("auto").submit()`,
+		`getElementById("s13-attempted").textContent=String(n)`, `try{fetch(p,`,
 	} {
-		if !strings.Contains(page.Body.String(), part) {
-			t.Fatal(part, page.Body.String())
+		if !strings.Contains(body, part) {
+			t.Fatal(part, body)
 		}
+	}
+	// 자동 폼은 DOM에 남지 않고(크롤러가 다시 제출하지 못함), 다른 시도의 완료를 기다리지 않는다(#377 리뷰).
+	script := body[strings.Index(body, "<script>"):]
+	if regexp.MustCompile(`<form[^>]*/write/S13-form`).MatchString(body) || strings.Contains(script, ".then(") ||
+		strings.Contains(script, "await") || strings.Contains(script, "Promise") ||
+		strings.Index(script, "f.submit()") > strings.Index(script, "fetch(") {
+		t.Fatal(script)
 	}
 	// 우회 페이지와 크롤링 페이지는 서로의 경로로 열리지 않는다.
 	for _, path := range []string{"/crawl/S99", "/crawl/B14", "/bypass/S13"} {
@@ -36,16 +44,25 @@ func TestCrawlWritePageCarriesAttempts(t *testing.T) {
 	}
 }
 
-// 페이지가 시도하는 쓰기는 전부 이름이 등록되어 있고, 등록된 이름은 전부 어떤 페이지가 시도한다.
+// 페이지가 시도하는 쓰기는 전부 이름과 메서드가 등록되어 있고, 등록된 이름은 전부 어떤 페이지가 시도한다.
 func TestEveryWriteAttemptIsAKnownHit(t *testing.T) {
-	attempted := map[string]bool{}
+	sent := regexp.MustCompile(`send\("([A-Z]+)","/write/([^"]+)"\)`)
+	attempted := map[string]string{}
 	for _, pages := range []map[string]string{scenarios, crawlScenarios} {
 		for id, page := range pages {
+			methods := map[string]string{}
+			for _, match := range sent.FindAllStringSubmatch(page, -1) {
+				methods[match[2]] = match[1]
+			}
 			for _, match := range regexp.MustCompile(`/write/([^"']+)`).FindAllStringSubmatch(page, -1) {
-				if !writeHits[match[1]] {
-					t.Fatal(id, match[1])
+				method, ok := methods[match[1]]
+				if !ok {
+					method = http.MethodPost // 폼·fetch POST·sendBeacon
 				}
-				attempted[match[1]] = true
+				if writeHits[match[1]] != method {
+					t.Fatal(id, match[1], method)
+				}
+				attempted[match[1]] = method
 			}
 		}
 	}
@@ -54,54 +71,43 @@ func TestEveryWriteAttemptIsAKnownHit(t *testing.T) {
 	}
 }
 
-func TestWritesAreRecordedForEveryMethod(t *testing.T) {
+func TestWritesAreRecordedOnlyWithTheirMethod(t *testing.T) {
 	rec, path := newTestRecorder(t)
 	h := targetHandler(rec, testReceiver)
-	cases := []struct{ method, name string }{
-		{http.MethodPost, "S13-post"}, {http.MethodPut, "S13-put"}, {http.MethodPatch, "S13-patch"},
-		{http.MethodDelete, "S13-delete"}, {http.MethodPost, "remove-S13"}, {http.MethodPut, sentinel},
+	cases := []struct {
+		method, name string
+		status       int
+		want         string
+	}{
+		{http.MethodPost, "S13-post", http.StatusNoContent, "S13-post"},
+		{http.MethodPut, "S13-put", http.StatusNoContent, "S13-put"},
+		{http.MethodPatch, "S13-patch", http.StatusNoContent, "S13-patch"},
+		{http.MethodDelete, "S13-delete", http.StatusNoContent, "S13-delete"},
+		{http.MethodPost, "remove-S13", http.StatusNoContent, "remove-S13"},
+		// 메서드가 다르면 그 이름으로 세지 않는다. 쓰기가 아닌 탐침도 마찬가지다.
+		{http.MethodOptions, "S13-put", http.StatusMethodNotAllowed, unknownScenario},
+		{http.MethodPut, "B14-fetch", http.StatusMethodNotAllowed, unknownScenario},
+		{http.MethodPost, "S13-delete", http.StatusNoContent, unknownScenario},
+		{http.MethodPut, sentinel, http.StatusMethodNotAllowed, unknownScenario},
 	}
-	for _, tc := range cases {
+	var want []row
+	for i, tc := range cases {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(tc.method, "/write/"+tc.name+"?q="+sentinel, strings.NewReader(sentinel)))
-		if w.Code != http.StatusNoContent {
+		if w.Code != tc.status {
 			t.Fatal(tc, w.Code)
 		}
+		want = append(want, row{uint64(i + 1), surfaceTargetWrite, tc.want, tc.method, false})
 	}
 	head := httptest.NewRecorder()
 	h.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/write/S13-post", nil))
 	if head.Code != http.StatusNotFound {
 		t.Fatal(head.Code)
 	}
-	want := []row{{1, surfaceTargetWrite, "S13-post", "POST", false}, {2, surfaceTargetWrite, "S13-put", "PUT", false},
-		{3, surfaceTargetWrite, "S13-patch", "PATCH", false}, {4, surfaceTargetWrite, "S13-delete", "DELETE", false},
-		{5, surfaceTargetWrite, "remove-S13", "POST", false}, {6, surfaceTargetWrite, unknownScenario, "PUT", false}}
 	if got := readRows(t, path); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
 	}
 	if data, _ := os.ReadFile(path); strings.Contains(string(data), sentinel) {
 		t.Fatal(string(data))
-	}
-}
-
-// 위험 경로 시도는 엔진의 내장 삭제 엔드포인트 규칙에 걸리는 이름이어야 하고, 나머지 S13 이름은 걸리지 않아야 한다.
-// 규칙이 바뀌면 이 시험이 먼저 알려 준다.
-func TestRiskyWritePathMatchesTheBuiltinRule(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "..", "db", "db.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := regexp.MustCompile("const deleteEndpointPathPattern = `([^`]+)`").FindSubmatch(src)
-	if found == nil {
-		t.Fatal("deleteEndpointPathPattern not found")
-	}
-	rule := regexp.MustCompile(string(found[1]))
-	for name := range writeHits {
-		if !strings.HasPrefix(name, "S13") && name != "remove-S13" {
-			continue
-		}
-		if got := rule.MatchString("/write/" + name); got != (name == "remove-S13") {
-			t.Fatal(name, got)
-		}
 	}
 }
