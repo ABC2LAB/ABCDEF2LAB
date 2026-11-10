@@ -17,6 +17,7 @@ DOCS = Path(__file__).resolve().parents[3] / "docs/evaluation"
 TEMPLATE = DOCS / "profiles/official-e2-policy.json"
 PROFILE = DOCS / "profiles/official-35b.json"
 RUNBOOK = DOCS / "official-run.md"
+DECLARED = DOCS / "profiles/official-e2-declared-differences.json"
 DIGEST = "a" * 64
 RESOURCES = E2RunResources("run-1", "2026-11-24T00:00:00Z", "2026-11-24T02:00:00Z", "/run/e2-state", "/app/e2/e2-bash-sandbox",
                            DIGEST, DIGEST, DIGEST, "172.30.9.10")
@@ -59,6 +60,21 @@ class OfficialE2PolicyTest(unittest.TestCase):
         self.assertIsNotNone(pinned)
         self.assertEqual(hashlib.sha256(TEMPLATE.read_bytes()).hexdigest(), pinned.group(1))
         self.assertRegex(text, r"official_e2_policy_fingerprint_sha256 = [0-9a-f]{64}")
+
+    def test_runbook_pins_the_declared_differences(self) -> None:
+        pinned = re.search(r"official_e2_declared_differences_sha256 = ([0-9a-f]{64})", RUNBOOK.read_text(encoding="utf-8"))
+        self.assertIsNotNone(pinned)
+        self.assertEqual(hashlib.sha256(DECLARED.read_bytes()).hexdigest(), pinned.group(1))
+
+    def test_declared_differences_are_well_formed(self) -> None:
+        document = json.loads(DECLARED.read_text(encoding="utf-8"))
+        self.assertEqual("abc2lab.e2-declared-differences/v1", document["format"])
+        self.assertIn(document["status"], ("proposed", "confirmed"))
+        self.assertTrue((DOCS.parents[1] / document["evidence"]).is_file())
+        identifiers = [entry["id"] for entry in document["differences"]]
+        self.assertEqual(len(identifiers), len(set(identifiers)))
+        for entry in document["differences"]:
+            self.assertTrue(entry["items"] and entry["reason"], entry["id"])
 
 
 if __name__ == "__main__":
