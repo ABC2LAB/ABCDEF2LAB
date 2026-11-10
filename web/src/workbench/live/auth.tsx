@@ -13,7 +13,7 @@ import { readURLCatalog } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../lib/cx";
 import { Icon } from "../ui/icons";
-import { MenuButton } from "../ui/parts";
+import { MenuButton } from "../ui/MenuButton";
 import s from "../workbench.module.css";
 import { fetchTasks } from "./api";
 import { errorText, isOffline } from "./map";

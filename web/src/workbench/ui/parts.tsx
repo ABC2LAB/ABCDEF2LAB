@@ -128,15 +128,7 @@ export function Kv({ rows }: { rows: ReadonlyArray<readonly [ReactNode, ReactNod
   );
 }
 
-/** 화면 머리의 메뉴 버튼 (휴대폰에서만 보임) → 레일 서랍. 원본 `button.menu-btn[data-rail-open]`. */
-export function MenuButton() {
-  const { openRail } = useShell();
-  return (
-    <button className={cx(s["icon-btn"], s["menu-btn"])} type="button" aria-label="메뉴 열기" onClick={openRail}>
-      <Icon name="menu" />
-    </button>
-  );
-}
+export { MenuButton } from "./MenuButton";
 
 /** 화면 머리의 '상세' 버튼 (좁은 화면에서만 보임) → 상세 서랍. 원본 `button.btn.insp-only[data-insp-open]`. */
 export function InspOpenButton({ children, id }: { children: ReactNode; id?: string }) {
@@ -154,7 +146,6 @@ export function InspOpenButton({ children, id }: { children: ReactNode; id?: str
  * kind: blog = 끝난 예시 점검(레일 · 대시보드) · live = 방금 끝낸 점검(단계 표시 · 진행 화면 '보고서 보기').
  */
 export function ReportLink({
-  kind,
   className,
   current,
   children,
@@ -166,7 +157,6 @@ export function ReportLink({
   children: ReactNode;
 }) {
   return (
-    // biome-ignore lint/a11y/useValidAnchor: 해시 라우팅 링크라 이동은 href 가 하고, onClick 은 보고서 대상만 바꾼다
     <a className={className} href="#report" aria-current={current}>
       {children}
     </a>
