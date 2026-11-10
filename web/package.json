@@ -13,10 +13,7 @@
     "check": "biome check",
     "check:fix": "biome check --write",
     "prepare": "husky || true",
-    "generate:presets": "ts-node -P tsconfig.scripts.json src/scripts/generate-theme-presets.ts",
-    "extract:i18n": "ts-node -P tsconfig.scripts.json src/scripts/extract-i18n.ts",
-    "test": "vitest",
-    "check:i18n": "ts-node -P tsconfig.scripts.json src/scripts/check-i18n-keys.ts"
+    "test": "vitest"
   },
   "lint-staged": {
     "*.{js,ts,jsx,tsx}": [
