@@ -162,3 +162,17 @@ func TestPathLogFlagIsEngineOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestRunEngineRejectsLeftoverPathLog(t *testing.T) {
+	path, dir := privateTestDir(t)
+	file, code := createPrivateFile(dir, enginePathLogName)
+	if code != "" {
+		t.Fatal(code)
+	}
+	_ = file.Close()
+	var stderr bytes.Buffer
+	args := []string{"-role", "engine", "-listen", "127.0.0.1:0", "-upstream", "http://t:1", "-log-dir", path, "-path-log"}
+	if exit := run(args, strings.NewReader(""), io.Discard, &stderr); exit == 0 || !strings.HasPrefix(stderr.String(), logExists) {
+		t.Fatal(exit, stderr.String())
+	}
+}
