@@ -19,9 +19,10 @@ from runner_config import (
     COMPOSE_ACCEPTANCE, COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_SERVICE, ENGINE_DATA_PATH,
     ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
     MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
-    check_path_key, compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
+    check_key_files, compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
     new_run_id, parse_runner_config, plan_run,
 )
+from path_mask import key_ref  # noqa: E402
 from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 
 
@@ -993,30 +994,70 @@ class TestAcceptanceWiring(unittest.TestCase):
         base, _ = meter(COMPOSE_EVAL)
         overlay, block = meter(COMPOSE_ACCEPTANCE)
         self.assertEqual(overlay, base + ["-path-log", "-path-key-file=/run/eval-path-key"])
-        self.assertIn("- ${EVAL_PATH_KEY_FILE:?", block)
-        self.assertIn(":/run/eval-path-key:ro", block)
+        # 긴 문법: `:` 들어간 경로도 그대로, 파일이 없으면 디렉터리를 만들지 않고 실패한다.
+        for line in ("- type: bind", "source: ${EVAL_PATH_KEY_FILE:?", "target: /run/eval-path-key",
+                     "read_only: true", "create_host_path: false"):
+            self.assertIn(line, block)
         self.assertEqual(compose_services(COMPOSE_ACCEPTANCE), {METER_SERVICE})
 
     @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "POSIX 전용")
-    def test_key_file_is_checked_before_up(self):
-        check_path_key(parse_runner_config(runner_config()))
+    def test_key_files_are_checked_before_up(self):
         with tempfile.TemporaryDirectory() as raw:
-            key = Path(raw, "path.key")
-            key.write_bytes(bytes(32))
-            os.chmod(key, 0o600)
-            config = parse_runner_config(runner_config() | self.ACCEPTANCE | {"path_key_file": str(key)})
-            check_path_key(config)
+            base = Path(raw)
+            runs = base / "runs"
+            runs.mkdir(mode=0o700)
+            keys = base / "keys"
+            keys.mkdir(mode=0o700)
+            runner_key = keys / "runner.key"
+            runner_key.write_bytes(bytes(32))
+            secrets = keys / "eval.secrets.env"
+            secrets.write_bytes(b"X=1\n")
+            key = keys / "path.key"
+            key.write_bytes(bytes(range(32)))
+            for path in (runner_key, secrets, key):
+                os.chmod(path, 0o600)
+            common = {"runs_root": str(runs), "runner_key_path": str(runner_key), "secrets_env_file": str(secrets)}
+
+            def check(**fields):
+                return check_key_files(parse_runner_config(runner_config() | common | fields))
+
+            # 공식 회차는 키 참조가 없고, 수용시험 회차는 키 값이 아니라 참조를 돌려준다.
+            self.assertIsNone(check())
+            self.assertEqual(check(purpose="browser_acceptance", path_key_file=str(key)), key_ref(bytes(range(32))))
+            cases = [
+                ({"path_key_file": str(runner_key)}, "config.path_key_file: SAME_AS_RUNNER_KEY"),
+                ({"path_key_file": str(secrets)}, "config.path_key_file: SAME_AS_SECRETS_FILE"),
+            ]
+            # 상위 디렉터리 링크로 runs_root 안을 가리키는 별칭은 글자 검사를 통과해도 실제 위치로 거부한다.
+            inside = runs / "shared"
+            inside.mkdir(mode=0o700)
+            alias = base / "alias"
+            alias.symlink_to(inside, target_is_directory=True)
+            hidden = inside / "path.key"
+            hidden.write_bytes(bytes(32))
+            os.chmod(hidden, 0o600)
+            cases.append(({"path_key_file": str(alias / "path.key")}, "config.path_key_file: INSIDE_RUNS_ROOT"))
+            # 같은 파일을 다른 이름(하드 링크)으로 줘도 같은 파일이다.
+            linked = keys / "runner-copy.key"
+            os.link(runner_key, linked)
+            cases.append(({"path_key_file": str(linked)}, "config.path_key_file: SAME_AS_RUNNER_KEY"))
+            for fields, code in cases:
+                with self.subTest(code=code, key=fields["path_key_file"]), self.assertRaises(RunnerConfigError) as caught:
+                    check(purpose="browser_acceptance", **fields)
+                self.assertEqual(caught.exception.errors, [code])
+            with self.assertRaises(RunnerConfigError) as caught:
+                check(runner_key_path=str(alias / "runner.key"))
+            self.assertEqual(caught.exception.errors, ["config.runner_key_path: INSIDE_RUNS_ROOT"])
             for mode, data in ((0o644, bytes(32)), (0o600, bytes(31))):
                 key.write_bytes(data)
                 os.chmod(key, mode)
                 with self.subTest(mode=oct(mode), size=len(data)), self.assertRaises(RunnerConfigError) as caught:
-                    check_path_key(config)
+                    check(purpose="browser_acceptance", path_key_file=str(key))
                 self.assertEqual(caught.exception.errors, ["config.path_key_file: path_key_untrusted"])
             key.unlink()
             with self.assertRaises(RunnerConfigError) as caught:
-                check_path_key(config)
+                check(purpose="browser_acceptance", path_key_file=str(key))
             self.assertEqual(caught.exception.errors, ["config.path_key_file: path_key_unavailable"])
-
 
 if __name__ == "__main__":
     unittest.main()

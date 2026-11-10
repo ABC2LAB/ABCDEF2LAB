@@ -84,7 +84,11 @@ def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, obse
             preflight[name]["run_storage"]["tmpfs_min_free"] = min_free
     config = parse_runner_config(payload)
     plan = plan_run(config, preflight, side, f"{side}-1")
-    return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0, e2_declared_status="proposed")
+    return build_spec(config, plan, preflight, "t" * 64, "우리@35b", 0, e2_declared_status="proposed",
+                      path_key_ref=PATH_KEY_REF if purpose == "browser_acceptance" else None)
+
+
+PATH_KEY_REF = "0123456789abcdef"
 
 
 MIB = 1024 * 1024
@@ -121,6 +125,7 @@ class FakeMeter:
         self.path_log = False
         self.path_rows_error = None
         self.path_rows_seen = None
+        self.path_key_ref = PATH_KEY_REF
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
         self.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
@@ -150,7 +155,7 @@ class FakeMeter:
         self.path_rows_seen = rows
         if self.path_rows_error:
             raise self.path_rows_error
-        return []
+        return [{"seq": 1, "path_key_ref": self.path_key_ref}]
 
     def engine_rows(self):
         if self.rows_override is not None:
@@ -1547,7 +1552,24 @@ class TestFailures(unittest.TestCase):
         # 내용은 drain 뒤 요청 기록과 맞춰 본다.
         self.assertEqual(meter.path_rows_seen, meter.engine_rows())
         conditions = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "run_conditions")
-        self.assertEqual(conditions["purpose"], "browser_acceptance")
+        self.assertEqual((conditions["purpose"], conditions["path_key_ref"]), ("browser_acceptance", PATH_KEY_REF))
+
+    def test_browser_acceptance_path_rows_must_use_the_checked_key(self):
+        def other_key(p, m, c):
+            m.path_log, m.path_key_ref = True, "f" * 16
+        result, ports, _, evidence = run(other_key, spec=make_spec(purpose="browser_acceptance"))
+        self.assert_invalid(result, ports, evidence, "meter_path_key_mismatch")
+
+    def test_key_ref_only_on_acceptance_specs(self):
+        payload = runner_config()
+        config = parse_runner_config(payload)
+        plan = plan_run(config, configuration(), "ours", "ours-1")
+        with self.assertRaises(RunnerConfigError):
+            build_spec(config, plan, configuration(), "t" * 64, "우리@35b", 0, path_key_ref=PATH_KEY_REF)
+        accepted = parse_runner_config(payload | {"purpose": "browser_acceptance", "path_key_file": "/srv/eval/path.key"})
+        with self.assertRaises(RunnerConfigError):
+            build_spec(accepted, plan_run(accepted, configuration(), "ours", "ours-2"), configuration(), "t" * 64,
+                       "우리@35b", 0)
 
     def test_browser_acceptance_path_log_must_match_the_requests(self):
         from runner_evidence import EvidenceError

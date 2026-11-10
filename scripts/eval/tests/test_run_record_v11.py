@@ -559,8 +559,19 @@ class TestRejectedV11(_V11):
             purpose="browser"))
         # 수용시험 회차도 격리 증명은 통과한다. 공식 비교에서 빼는 것은 채점기 몫이다.
         acceptance = self.inputs(self.v11("acc", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
-            purpose="browser_acceptance")))
+            purpose="browser_acceptance", path_key_ref="0123456789abcdef")))
         self.assertEqual((acceptance.proof_id is not None, acceptance.purpose), (True, "browser_acceptance"))
+        # 수용시험 회차만 경로 가림 키 참조(16 hex)를 가진다(#378).
+        for index, change in enumerate(({"purpose": "browser_acceptance"},
+                                        {"purpose": "browser_acceptance", "path_key_ref": "0123456789ABCDEF"},
+                                        {"purpose": "browser_acceptance", "path_key_ref": None},
+                                        {"purpose": "official", "path_key_ref": "0123456789abcdef"},
+                                        {"path_key_ref": "x"})):
+            self.reject("run_conditions", f"k{index}",
+                        tamper_rows=lambda rows, c=change: row_of(rows, "run_conditions").update(c))
+        official = self.inputs(self.v11("offref", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            path_key_ref=None)))
+        self.assertEqual(official.purpose, "official")
         # 목적 칸이 생기기 전에 서명된 근거는 공식 회차로 읽는다.
         before = self.inputs(self.v11("old", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("purpose")))
         self.assertEqual(before.purpose, "official")
@@ -720,7 +731,7 @@ class TestComparison(_V11):
         old = self.v11("o1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("purpose"))
         build_report(self.load([self.v11("o0"), old]), self.correlate, self.correlatable, runner_key=self.runner_key)
         acceptance = self.v11("a1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
-            purpose="browser_acceptance"))
+            purpose="browser_acceptance", path_key_ref="0123456789abcdef"))
         with self.assertRaisesRegex(ComparabilityError, "공식 비교 회차가 아님"):
             build_report(self.load([self.v11("a0"), acceptance]), self.correlate, self.correlatable,
                          runner_key=self.runner_key)

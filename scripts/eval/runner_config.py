@@ -23,7 +23,7 @@ from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
 from e2_export import E2_HEADER_MODES
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, PURPOSES
-from path_mask import PathKeyError, read_path_key
+from path_mask import PathKeyError, key_ref, read_path_key
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
 from runner_docker import container_file_ok
 
@@ -320,6 +320,19 @@ def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str], 
     return raw
 
 
+def _outside_runs_root(top: dict, field: str, errors: list[str]) -> None:
+    """설정 글자 기준 검사(절대 경로, runs_root 밖). 링크를 풀어 본 실제 위치는 check_key_files가 실행 전에 본다."""
+    path = top[field]
+    if not _absolute_path(path):
+        errors.append(f"config.{field}: EXPECTED_ABSOLUTE_PATH")
+    elif _absolute_path(top.get("runs_root")) and _inside(path, top["runs_root"]):
+        errors.append(f"config.{field}: INSIDE_RUNS_ROOT")
+
+
+def _inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
 def _int(value: object, low: int, high: int) -> bool:
     return type(value) is int and low <= value <= high
 
@@ -415,13 +428,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     elif acceptance and "path_key_file" not in top:
         errors.append("config.path_key_file: MISSING")
     elif acceptance:
-        path_key = top["path_key_file"]
-        if not _absolute_path(path_key):
-            errors.append("config.path_key_file: EXPECTED_ABSOLUTE_PATH")
-        elif _absolute_path(top.get("runs_root")) and (path_key == top["runs_root"]
-                                                       or path_key.startswith(top["runs_root"].rstrip("/") + "/")):
-            # 키는 근거와 함께 복사·공유되지 않게 회차 디렉터리 밖에 둔다.
-            errors.append("config.path_key_file: INSIDE_RUNS_ROOT")
+        # 키는 근거와 함께 복사·공유되지 않게 회차 디렉터리 밖에 둔다. 실제 위치는 check_key_files가 다시 본다.
+        _outside_runs_root(top, "path_key_file", errors)
     db = _exact(top.get("engine_db"), ("user", "name"), "config.engine_db", errors) if "engine_db" in top else {}
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
@@ -448,13 +456,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     if "probe_timeout_ms" in top and not _int(top["probe_timeout_ms"], 1, MAX_PROBE_TIMEOUT_MS):
         errors.append("config.probe_timeout_ms: INVALID")
     if "runner_key_path" in top:
-        key_path = top["runner_key_path"]
-        if not _absolute_path(key_path):
-            errors.append("config.runner_key_path: EXPECTED_ABSOLUTE_PATH")
-        elif _absolute_path(top.get("runs_root")) and (key_path == top["runs_root"]
-                                                       or key_path.startswith(top["runs_root"].rstrip("/") + "/")):
-            # 서명 키는 회차 디렉터리 밖에 둔다. 회차 자료와 함께 복사·공유되지 않게.
-            errors.append("config.runner_key_path: INSIDE_RUNS_ROOT")
+        # 서명 키는 회차 디렉터리 밖에 둔다. 회차 자료와 함께 복사·공유되지 않게.
+        _outside_runs_root(top, "runner_key_path", errors)
     gateway = _exact(top.get("llm_gateway"), _GATEWAY_FIELDS, "config.llm_gateway", errors) if "llm_gateway" in top else {}
     if "generation_path" in gateway and not _observer_path(gateway["generation_path"]):
         errors.append("config.llm_gateway.generation_path: INVALID")
@@ -715,12 +718,34 @@ def load_runner_config(path: str | Path) -> RunnerConfig:
     return parse_runner_config(payload)
 
 
-def check_path_key(config: RunnerConfig) -> None:
-    """수용시험 회차의 키 파일을 up 전에 계측기와 같은 조건(러너 uid·0600·32바이트)으로 확인한다. 값은 버린다."""
-    if config.path_key_file is None:
-        return
+def _same_file(a: Path, b: Path) -> bool:
     try:
-        read_path_key(str(config.path_key_file))
+        first, second = os.stat(a), os.stat(b)
+    except OSError:
+        return False  # 없는 파일과는 같을 수 없다. 없는 키 자체는 각자 읽을 때 거부된다.
+    return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+
+
+def check_key_files(config: RunnerConfig) -> str | None:
+    """비밀번호를 묻거나 up 하기 전에 키 파일의 실제 위치를 확인한다(#378 리뷰).
+
+    러너 서명 키와 경로 가림 키는 상위 디렉터리 링크를 풀어도 runs_root 밖이어야 한다. 경로 가림 키는
+    계측기와 같은 조건(러너 uid·0600·32바이트)으로 읽고, 러너 서명 키·비밀 env 파일과 같은 파일이면 거부한다
+    (서명 키가 대상 망의 계측기 컨테이너에 마운트되지 않게). 돌려주는 값은 키가 아니라 키 참조(16 hex)다.
+    """
+    root = os.path.realpath(config.runs_root)
+    if _inside(os.path.realpath(config.runner_key_path), root):
+        raise RunnerConfigError(["config.runner_key_path: INSIDE_RUNS_ROOT"])
+    if config.path_key_file is None:
+        return None
+    if _inside(os.path.realpath(config.path_key_file), root):
+        raise RunnerConfigError(["config.path_key_file: INSIDE_RUNS_ROOT"])
+    if _same_file(config.path_key_file, config.runner_key_path):
+        raise RunnerConfigError(["config.path_key_file: SAME_AS_RUNNER_KEY"])
+    if _same_file(config.path_key_file, config.secrets_env_file):
+        raise RunnerConfigError(["config.path_key_file: SAME_AS_SECRETS_FILE"])
+    try:
+        return key_ref(read_path_key(str(config.path_key_file)))
     except PathKeyError as exc:
         raise RunnerConfigError([f"config.path_key_file: {exc}"]) from None
 
