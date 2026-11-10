@@ -109,8 +109,8 @@ function SendControl({ taskId, active, visible }: { taskId: string; active: bool
         <div className={s.note} role="note">
           <Icon name="info" />
           <span>
-            이 진단은 매 요청 확인 방식입니다. 요청별 허용 · 거절은 아직 작업대에 없어 팀 화면의 점검 진행(실제 HTTP
-            요청 승인)에서 결정합니다.
+            이 작업대에서는 요청별 허용·거절을 할 수 없습니다. 진행 중인 이 회차는 운영자 확인이 필요하며, 진단 중지를
+            요청할 수 있습니다.
           </span>
         </div>
       ) : null}

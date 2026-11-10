@@ -40,13 +40,14 @@ import {
   owner,
   ready,
   running,
+  scope,
 } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
 import { LiveFeeds } from "../live/feeds";
 import { LiveRailTasks } from "../live/rail";
-import { resetUrl, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
+import { resetUrl, runUrlAction, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
 import { urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
@@ -255,6 +256,14 @@ describe("URL 진단 계산", () => {
     expect(urlTone("running")).toBe("run");
   });
 
+  it("요청별 승인 UI가 없는 모드는 ready여도 시작하지 않는다", () => {
+    const base = { handle, job: ready, verified: true, uncertain: false, busy: false };
+    expect(urlGates(base).canStart).toBe(true);
+    const perRequest = { ...ready, scope: { ...scope, approval_mode: "confirm_every_request" as const } };
+    expect(urlGates({ ...base, job: perRequest }).canStart).toBe(false);
+    expect(urlGates({ ...base, job: { ...running, scope: perRequest.scope } }).canStop).toBe(true);
+  });
+
   it("시작 조건: 확인된 ready + 범위, 시작 키를 보낸 뒤 · 결과 불명 · 요청 중이면 막는다", () => {
     const base = { handle, job: ready, verified: true, uncertain: false, busy: false };
     expect(urlGates(base).canStart).toBe(true);
@@ -405,6 +414,21 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).toHaveBeenCalledTimes(1);
   });
 
+  it("매 요청 확인 범위는 안내하고 체크박스·시작 요청을 차단한다", async () => {
+    saveHandle();
+    const perRequest = { ...ready, scope: { ...scope, approval_mode: "confirm_every_request" as const } };
+    u.readURLStatus.mockResolvedValue(perRequest);
+    mount("scope");
+    expect(await screen.findByText(/요청별 확인이 필요한 프로필은 현재 작업대에서 시작할 수 없습니다/)).toBeVisible();
+    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "진단 시작" })).toBeDisabled();
+    act(() => useUrl.setState({ confirmed: true }));
+    await expect(runUrlAction("start")).resolves.toBe(false);
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+    expect(url.readURLHandle(owner)?.startKey).toBeUndefined();
+    expect(useUrl.getState().job?.scope?.approval_mode).toBe("confirm_every_request");
+  });
+
   it("설치자 승인 대기면 사유를 보이고 시작 상자가 없다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({ ...draft, revision: 2, reason_code: "approval_required" });
@@ -461,6 +485,20 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       await vi.advanceTimersByTimeAsync(URL_POLL_MS);
     });
     expect(u.readURLStatus).toHaveBeenCalledTimes(2);
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  });
+
+  it("이미 진행 중인 요청별 확인 회차는 삭제된 화면 대신 운영자 확인·중지를 안내한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({
+      ...running,
+      scope: { ...scope, approval_mode: "confirm_every_request" },
+    });
+    mount("live");
+    expect(await screen.findByText(/이 작업대에서는 요청별 허용·거절을 할 수 없습니다/)).toBeVisible();
+    expect(screen.queryByText(/팀 화면의 점검 진행/)).toBeNull();
+    expect(screen.getByRole("button", { name: /진단 중지 요청/ })).toBeEnabled();
+    expect(a.fetchRequestApprovals).toHaveBeenCalledWith("42");
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   });
 

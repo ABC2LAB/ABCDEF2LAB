@@ -211,8 +211,15 @@ export function urlGates(st: Pick<UrlStore, "handle" | "job" | "verified" | "unc
     startSent,
     inputLocked: !!handle || busy,
     canValidate: !busy && !uncertain && !bound && !job?.preparation_started && !(!!handle && !job),
+    // 요청별 허용·거절 UI가 연결되기 전에는 해당 모드로 새 회차를 시작하지 않는다.
     canStart:
-      verified && !uncertain && !busy && job?.state === "ready" && !!job.scope && !startSent && !handle?.bindingLocked,
+      verified &&
+      !uncertain &&
+      !busy &&
+      job?.state === "ready" &&
+      job.scope?.approval_mode === "preauthorized_scope" &&
+      !startSent &&
+      !handle?.bindingLocked,
     canStop: !!job && verified && !uncertain && !busy && (job.state === "preparing" || job.state === "running"),
     canRefresh: !busy && !!handle,
     reportReadable: verified && job?.result_ready === true && !!job.task_id,

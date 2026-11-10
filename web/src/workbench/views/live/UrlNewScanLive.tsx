@@ -415,6 +415,15 @@ export function UrlScopeLive() {
   if (job.state === "ready") {
     action = (
       <>
+        {job.scope?.approval_mode === "confirm_every_request" ? (
+          <div className={cx(s.note, s.warn)} role="note">
+            <Icon name="alert" />
+            <span>
+              요청별 확인이 필요한 프로필은 현재 작업대에서 시작할 수 없습니다. 운영자에게 요청별 승인 경로를 확인해
+              주세요.
+            </span>
+          </div>
+        ) : null}
         <label className={s.ckline}>
           <input
             type="checkbox"
