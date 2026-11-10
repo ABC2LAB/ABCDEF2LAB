@@ -65,6 +65,9 @@ type E2StandaloneBackend struct {
 func (*E2StandaloneBackend) String() string   { return "server.E2StandaloneBackend[protected]" }
 func (*E2StandaloneBackend) GoString() string { return "server.E2StandaloneBackend[protected]" }
 
+// 도구는 이 backend의 Runner 샌드박스에서만 돈다(E2ControlIsolationToolSandbox).
+func (*E2StandaloneBackend) e2ControlOwnsToolSandbox() {}
+
 func NewE2StandaloneBackend(ctx context.Context, o E2StandaloneOptions) (*E2StandaloneBackend, error) {
 	if ctx == nil || ctx.Err() != nil || o.Config.Check() != nil || e2HTTPNil(o.Authority) || e2HTTPNil(o.Supervisor) || e2HTTPNil(o.Readiness) || !validE2ControlRef(o.ExecutionRef) || !e2ControlHash.MatchString(o.ExpectedPolicyFingerprintSHA256) {
 		return nil, ErrE2Control

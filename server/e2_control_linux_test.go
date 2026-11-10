@@ -103,3 +103,40 @@ func TestE2ControlActualUnixWireAndClose(t *testing.T) {
 		t.Fatal("자기 socket 정리 실패")
 	}
 }
+
+func TestE2ControlToolSandboxNeedsTheOwningBackend(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("비특권 Linux 제어 fixture")
+	}
+	_, fake := newE2ControlStateFixture(t)
+	real, _, _ := standaloneFixture(t, "", false)
+	base := E2ControlOptions{ControlDirectory: e2ControlPrivateTestDir(t), EvalRunID: "eval_one", ReservationRef: "reservation_one", RunnerUID: uint32(os.Geteuid()), EvaluationDeployment: true, IOTimeout: time.Second, CloseTimeout: time.Second, MaxConnections: 2}
+	for name, change := range map[string]func(*E2ControlOptions){
+		"샌드박스가 없는 backend": func(o *E2ControlOptions) { o.Isolation, o.Backend = E2ControlIsolationToolSandbox, fake },
+		"엔진 uid 선언": func(o *E2ControlOptions) {
+			o.Isolation, o.Backend, o.EngineUID = E2ControlIsolationToolSandbox, real, 1
+		},
+		"도구 uid 선언":       func(o *E2ControlOptions) { o.Isolation, o.Backend, o.ToolsUID = E2ControlIsolationToolSandbox, real, 1 },
+		"모르는 격리 값":        func(o *E2ControlOptions) { o.Isolation, o.Backend = "other", real },
+		"uid 분리인데 uid 없음": func(o *E2ControlOptions) { o.Backend = real },
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := base
+			change(&opts)
+			if _, err := StartE2ControlService(t.Context(), opts); err == nil {
+				t.Fatal("격리 선언을 잘못 수용")
+			}
+		})
+	}
+	opts := base
+	opts.Isolation, opts.Backend = E2ControlIsolationToolSandbox, real
+	service, err := StartE2ControlService(t.Context(), opts)
+	if err != nil {
+		t.Fatal("샌드박스를 소유한 backend 거부:", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := service.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
