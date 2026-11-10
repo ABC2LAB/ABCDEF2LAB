@@ -5,6 +5,7 @@ package e2sandbox
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -80,6 +81,29 @@ func TestPrepareMountTarget(t *testing.T) {
 	}
 	if prepareMountTarget(file, false) == nil {
 		t.Fatal("이미 있는 대상을 다시 만듦")
+	}
+	// 쓰기 가능한 기존 파일이어도 거절해야 한다. 0444 파일만 시험하면 권한 오류가 O_EXCL을 가린다.
+	writable := filepath.Join(root, "e")
+	if os.WriteFile(writable, []byte("keep"), 0644) != nil {
+		t.Fatal("fixture")
+	}
+	if prepareMountTarget(writable, false) == nil {
+		t.Fatal("이미 있는 쓰기 가능 파일을 다시 만듦")
+	}
+}
+
+func TestRuntimePathInfoSkipsOnlyMissingPaths(t *testing.T) {
+	info, present, err := runtimePathInfo(os.Stat, filepath.Join(t.TempDir(), "missing"))
+	if info != nil || present || err != nil {
+		t.Fatal("없는 경로를 건너뛰지 않음", present, err)
+	}
+	dir := t.TempDir()
+	if info, present, err = runtimePathInfo(os.Stat, dir); err != nil || !present || !info.IsDir() {
+		t.Fatal("있는 경로를 못 읽음", present, err)
+	}
+	denied := func(string) (os.FileInfo, error) { return nil, fs.ErrPermission }
+	if _, present, err = runtimePathInfo(denied, dir); !errors.Is(err, fs.ErrPermission) || present {
+		t.Fatal("권한 오류를 건너뜀", present, err)
 	}
 }
 

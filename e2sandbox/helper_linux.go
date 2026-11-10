@@ -237,6 +237,18 @@ func sandboxRuntimePaths(triplet string, glob func(string) ([]string, error), is
 	return append(paths, shared...), nil
 }
 
+// 없는 경로만 건너뛴다. 권한 오류 등을 건너뛰면 도구 경로가 조용히 빠진다.
+func runtimePathInfo(stat func(string) (os.FileInfo, error), path string) (os.FileInfo, bool, error) {
+	info, err := stat(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return info, true, nil
+}
+
 func isDirectory(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
@@ -369,12 +381,12 @@ func setupJail(cfg helperConfig) error {
 	}
 	seen := map[string]bool{}
 	for _, path := range paths {
-		info, err := os.Stat(path)
-		if os.IsNotExist(err) {
-			continue
-		}
+		info, present, err := runtimePathInfo(os.Stat, path)
 		if err != nil {
 			return jailError("system_source", ErrConfig)
+		}
+		if !present {
+			continue
 		}
 		resolved, err := filepath.EvalSymlinks(path)
 		if err != nil || !allowedSystemSource(resolved) {
