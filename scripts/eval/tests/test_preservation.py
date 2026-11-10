@@ -115,7 +115,8 @@ class LoadRoundTests(unittest.TestCase):
                               engine_tail=json.dumps(engine_row(2))), "meter_log_incomplete")
         self.check(self.meter([engine_row(2)], [path_row(2, "/a")]), "meter_log_incomplete")
         # 러너가 무효로 하는 기록도 받지 않는다(같은 함수를 쓴다).
-        for marker in ({"inflight_at_drain": 5}, {"forwarded_requests": 1.0}, {"forced_cancelled_requests": 1}):
+        for marker in ({"inflight_at_drain": 5}, {"forwarded_requests": 1.0}, {"forwarded_requests": True},
+                       {"forced_cancelled_requests": 1}):
             with self.subTest(marker=marker):
                 self.check(self.meter([engine_row(1)], [path_row(1, "/a")], drained=marker), "meter_log_incomplete")
         self.check(self.meter([engine_row(1)], [path_row(1, "/a")], sealed=False), "meter_log_incomplete")
