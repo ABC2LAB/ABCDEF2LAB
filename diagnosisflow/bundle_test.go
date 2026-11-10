@@ -129,7 +129,7 @@ func TestBundleChunks(t *testing.T) {
 		"bare directory":  {`["assets/b.mjs"]`, []string{"/assets/b.mjs bundle_string"}},
 		"vite hashed":     {`["assets/index-a1B2c3D4.js"]`, []string{"/assets/index-a1B2c3D4.js bundle_chunk"}},
 		"cra chunk":       {`"static/js/2.abc12345.chunk.js"`, []string{"/static/js/2.abc12345.chunk.js bundle_chunk"}},
-		"hash no digit":   {`"assets/application-loader.js"`, []string{"/assets/application-loader.js bundle_string"}},
+		"hash no digit":   {`"assets/application-bootstrap.js"`, []string{"/assets/application-bootstrap.js bundle_string"}},
 		"short hash":      {`"assets/index-a1.js"`, []string{"/assets/index-a1.js bundle_string"}},
 		"public base":     {`r.p="/app/";x=["assets/b.js"]`, []string{"/app/assets/b.js bundle_string"}},
 		"absolute":        {`"/static/c.js"`, []string{"/static/c.js bundle_string"}},
