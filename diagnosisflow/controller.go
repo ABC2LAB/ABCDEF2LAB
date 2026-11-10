@@ -120,7 +120,7 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 			if old.InScope {
 				old.Change = "possible"
 			}
-		} else if old.Kind != "form" && inferredSource(old.Source) && !inferredSource(source) {
+		} else if inferredSource(old.Source) && !inferredSource(source) {
 			// 추정으로 먼저 봤어도 같은 호출을 문자 그대로 확인하면 후보를 올린다.
 			old.Source, old.From = source, from
 			old.InScope, old.Change = c.endpointScope(method, path, kind, source)

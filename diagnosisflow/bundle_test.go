@@ -46,6 +46,7 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"fetch with method":     {`fetch("/data/add",{headers:h,method:"post"})`, []string{"POST /data/add script_call"}},
 		"fetch nested options":  {`fetch("/data/add",{headers:{a:1},method:"POST"})`, []string{"UNKNOWN /data/add script_call"}},
 		"fetch variable init":   {`fetch("/data/add",init)`, []string{"UNKNOWN /data/add script_call"}},
+		"fetch unknown literal": {`fetch("/api/x",init)`, []string{"UNKNOWN /api/x script_call"}},
 		"fetch base":            {`this.b="/api";fetch(this.b+"/z")`, []string{"GET /api/z script_call"}},
 		"fetch dynamic":         {`fetch("/data/one/"+id)`, []string{"UNKNOWN /data/one script_prefix"}},
 		"fetch local":           {`fetch(u+"/z")`, []string{"UNKNOWN /z static_literal"}},
@@ -399,9 +400,9 @@ func TestRelativeCallWithoutKnownDocumentIsUnknown(t *testing.T) {
 	c, _ := flowFixture(t, Manual)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.discoverBodyLocked([]byte(`c.get("rel/x")`), "application/javascript", "/read/js/app.js")
+	c.discoverBodyLocked([]byte(`c.get("rel/x");c.get("https://owned.test/read/abs");c.get("/read/root")`), "application/javascript", "/read/js/app.js")
 	got := discovered(c)
-	if !slices.Contains(got, "UNKNOWN /read/js/rel/x api") || slices.Contains(got, "GET /read/js/rel/x api") {
+	if !slices.Contains(got, "UNKNOWN /read/js/rel/x api") || slices.Contains(got, "GET /read/js/rel/x api") || !slices.Contains(got, "GET /read/abs api") || !slices.Contains(got, "GET /read/root api") {
 		t.Fatal(got)
 	}
 }
@@ -571,6 +572,10 @@ func TestLiteralCallPromotesInferredEndpoint(t *testing.T) {
 		t.Fatalf("%+v", e)
 	}
 	if e := endpointAt(c, "GET", "/read/prefix"); e.Source != "script_prefix" || e.Change != "blocked" {
+		t.Fatalf("%+v", e)
+	}
+	c.addLocked("GET", "/read/prefix", "api", "script_call", "/read/c.js")
+	if e := endpointAt(c, "GET", "/read/prefix"); e.Source != "script_call" || e.Change != "attested_read" || !e.InScope {
 		t.Fatalf("%+v", e)
 	}
 	c.addLocked("GET", "/read/form", "form", "html_form", "/read")
