@@ -53,30 +53,37 @@ func looksEncoded(segment string) bool {
 		(strings.ContainsAny(segment, "0123456789") || strings.ToLower(segment) != segment && strings.ToUpper(segment) != segment)
 }
 
-func pseudonym(segment string, key []byte) string {
-	suffix, lower := "", strings.ToLower(segment)
-	// 목록의 확장자끼리는 서로의 끝이 되지 않아서 처음 맞는 것이 유일하다.
+// 목록의 확장자끼리는 서로의 끝이 되지 않아서 처음 맞는 것이 유일하다.
+func staticSuffix(segment string) string {
+	lower := strings.ToLower(segment)
 	for _, candidate := range staticSuffixes {
 		if strings.HasSuffix(lower, candidate) {
-			suffix = candidate
-			break
+			return candidate
 		}
 	}
+	return ""
+}
+
+func pseudonym(segment string, key []byte) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(segment)) // hash.Hash의 Write는 오류를 돌려주지 않는다.
-	return "{h:" + hex.EncodeToString(mac.Sum(nil))[:pseudonymHexLength] + "}" + suffix
+	return "{h:" + hex.EncodeToString(mac.Sum(nil))[:pseudonymHexLength] + "}" + staticSuffix(segment)
 }
 
 // 안전 문자 밖(이메일의 @, base64의 +·= 등)이나 32자를 넘는 조각(UUID 포함)은 `{id}`로 가린다.
+// 가린 조각에도 정적 자원 확장자는 남겨서 해시가 긴 번들 이름(main.<hex32>.js)이 API로 세이지 않게 한다.
 // 가린 조각만 masked로 센다. HMAC으로 바꾼 조각은 값이 아니라 이름일 수도 있어서 세지 않는다.
 func maskSegment(raw string, key []byte) (string, bool) {
 	if raw == "" {
 		return "", false
 	}
 	segment, err := url.PathUnescape(raw)
-	if err != nil || len(segment) > maxSegmentLength || !safeSegment.MatchString(segment) ||
+	if err != nil {
+		return maskedSegment + staticSuffix(raw), true
+	}
+	if len(segment) > maxSegmentLength || !safeSegment.MatchString(segment) ||
 		digitSegment.MatchString(segment) || hexSegment.MatchString(segment) || looksEncoded(segment) {
-		return maskedSegment, true
+		return maskedSegment + staticSuffix(segment), true
 	}
 	return pseudonym(segment, key), false
 }

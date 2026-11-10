@@ -163,6 +163,24 @@
    "path": "/f/a.woff2",
    "path_pattern": "/{h:9ab7a0055285b491}/{h:46f7c9f0333e5c4d}.woff2",
    "masked_segments": 0
+  },
+  {
+   "name": "long hashed bundle",
+   "path": "/main.3f2a9b8c7d6e5f4a3b2c1d0e9f8a7b6c.js",
+   "path_pattern": "/{id}.js",
+   "masked_segments": 1
+  },
+  {
+   "name": "masked static keeps suffix",
+   "path": "/img/a%40b.PNG",
+   "path_pattern": "/{h:51e5bd8167a19a20}/{id}.png",
+   "masked_segments": 1
+  },
+  {
+   "name": "bad escape keeps suffix",
+   "path": "/a%ZZ.css",
+   "path_pattern": "/{id}.css",
+   "masked_segments": 1
   }
  ]
 }
