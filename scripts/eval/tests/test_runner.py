@@ -64,6 +64,8 @@ def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, obse
     preflight, payload = configuration(), runner_config()
     if purpose is not None:
         payload["purpose"] = purpose
+    if purpose == "browser_acceptance":
+        payload["path_key_file"] = "/srv/eval/path.key"
     if e2 == "product":
         payload["e2"], e2 = dict(E2_PRODUCT_BLOCK), None
     if verdict is not None:
@@ -2147,6 +2149,22 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                         self.assertEqual(runner.main(argv), 2)
                         ask.assert_not_called()
                 self.assertEqual(list(root.iterdir()), [])
+
+    def test_acceptance_key_is_checked_before_asking_anything(self):
+        # 수용시험 회차의 키가 계측기 조건에 안 맞으면 비밀번호를 묻기 전에 끝내고 회차 디렉터리를 만들지 않는다.
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp, "path.key")
+            key.write_bytes(bytes(32))
+            key.chmod(0o644)
+            root, argv = self.inputs(tmp, lambda payload: payload.update(purpose="browser_acceptance", path_key_file=str(key)))
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass") as ask, contextlib.redirect_stderr(err):
+                self.assertEqual(runner.main(argv), 2)
+            ask.assert_not_called()
+            self.assertEqual(err.getvalue().strip(), "config.path_key_file: path_key_untrusted")
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_condition_and_repeat_are_checked_first(self):
         import contextlib

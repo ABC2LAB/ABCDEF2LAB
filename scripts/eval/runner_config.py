@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
 from e2_export import E2_HEADER_MODES
-from isolation_proof import PURPOSE_OFFICIAL, PURPOSES
+from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, PURPOSES
+from path_mask import PathKeyError, read_path_key
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
 from runner_docker import container_file_ok
 
@@ -39,6 +40,8 @@ COMPOSE_EVAL = REPO_ROOT / "deploy" / "eval" / "compose.eval.yaml"
 # 개선 후 회차의 E② 자리에 통과 전용 가짜 E²를 둔다(e2.ours_mode=stub일 때만, compose.eval.yaml 다음).
 COMPOSE_E2_STUB = REPO_ROOT / "deploy" / "eval" / "compose.e2-stub.yaml"
 COMPOSE_E2_PRODUCT = REPO_ROOT / "deploy" / "eval" / "compose.e2-product.yaml"
+# 브라우저 수용시험 회차에만 얹는다(purpose=browser_acceptance). 계측기가 가린 경로를 기록한다.
+COMPOSE_ACCEPTANCE = REPO_ROOT / "deploy" / "eval" / "compose.acceptance.yaml"
 E2_SECCOMP_PROFILE = REPO_ROOT / "deploy" / "eval" / "seccomp-e2.json"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
@@ -147,7 +150,8 @@ _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_ima
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
                "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export")
 # 목적 칸이 생기기 전 설정(같은 CONFIG_VERSION)도 그대로 읽게 선택 칸으로 둔다. 빠지면 공식 회차다.
-_OPTIONAL_TOP_FIELDS = ("purpose",)
+# path_key_file은 수용시험 회차에만 있어야 한다(계측기 경로 가림 키, 회차 디렉터리 밖).
+_OPTIONAL_TOP_FIELDS = ("purpose", "path_key_file")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -255,6 +259,8 @@ class RunnerConfig:
     verdict_export: dict | None
     # 회차 목적(PURPOSES). 서명된 실행 조건에 남아 채점기가 공식 비교 회차만 받는다.
     purpose: str
+    # 수용시험 회차의 경로 가림 키 파일(비교할 회차 묶음이 같이 쓴다). 공식 회차는 None.
+    path_key_file: Path | None
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -402,6 +408,20 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     state = _state(top.get("state"), errors) if "state" in top else None
     if "purpose" in top and top["purpose"] not in PURPOSES:
         errors.append("config.purpose: UNSUPPORTED")
+    acceptance = top.get("purpose") == PURPOSE_BROWSER_ACCEPTANCE
+    if "path_key_file" in top and not acceptance:
+        # 공식 회차에서 경로 기록을 켤 길을 설정에 두지 않는다.
+        errors.append("config.path_key_file: OFFICIAL_FORBIDDEN")
+    elif acceptance and "path_key_file" not in top:
+        errors.append("config.path_key_file: MISSING")
+    elif acceptance:
+        path_key = top["path_key_file"]
+        if not _absolute_path(path_key):
+            errors.append("config.path_key_file: EXPECTED_ABSOLUTE_PATH")
+        elif _absolute_path(top.get("runs_root")) and (path_key == top["runs_root"]
+                                                       or path_key.startswith(top["runs_root"].rstrip("/") + "/")):
+            # 키는 근거와 함께 복사·공유되지 않게 회차 디렉터리 밖에 둔다.
+            errors.append("config.path_key_file: INSIDE_RUNS_ROOT")
     db = _exact(top.get("engine_db"), ("user", "name"), "config.engine_db", errors) if "engine_db" in top else {}
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
@@ -506,7 +526,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         task={name: task[name] for name in _TASK_FIELDS},
         observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], e2_product=e2_product, state=state,
         engine_rules=top["engine_rules"], verdict_export=verdict_export,
-        purpose=top.get("purpose", PURPOSE_OFFICIAL))
+        purpose=top.get("purpose", PURPOSE_OFFICIAL),
+        path_key_file=Path(top["path_key_file"]) if "path_key_file" in top else None)
 
 
 def _e2_product(block: dict, errors: list[str]) -> dict | None:
@@ -694,6 +715,16 @@ def load_runner_config(path: str | Path) -> RunnerConfig:
     return parse_runner_config(payload)
 
 
+def check_path_key(config: RunnerConfig) -> None:
+    """수용시험 회차의 키 파일을 up 전에 계측기와 같은 조건(러너 uid·0600·32바이트)으로 확인한다. 값은 버린다."""
+    if config.path_key_file is None:
+        return
+    try:
+        read_path_key(str(config.path_key_file))
+    except PathKeyError as exc:
+        raise RunnerConfigError([f"config.path_key_file: {exc}"]) from None
+
+
 def new_run_id(side: str, now: datetime | None = None) -> str:
     """compose project 이름 규칙(소문자·숫자·-)을 지키고 회차마다 다르다."""
     if side not in SIDES:
@@ -740,6 +771,9 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         files.append(COMPOSE_E2_STUB)
     elif e2_mode == E2_PRODUCT:
         files.append(COMPOSE_E2_PRODUCT)
+    # 보존 시험은 원본·개선 후 양쪽 회차의 경로를 같은 키로 가려야 비교할 수 있다.
+    if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+        files.append(COMPOSE_ACCEPTANCE)
     env = {
         "EVAL_ENGINE_IMAGE": engine_image.ref,
         "EVAL_ENGINE_DB_IMAGE": config.images["engine_db"].ref,
@@ -771,6 +805,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "EVAL_LLM_CHAT_PATH": base_path + CHAT_COMPLETIONS_SUFFIX,
         "EVAL_LLM_SAMPLING": gateway_sampling(declared, side),
     }
+    if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+        env["EVAL_PATH_KEY_FILE"] = str(config.path_key_file)
     if llm["backend"] == "api":
         env["EVAL_LLM_PROVIDER"] = llm["provider"]
         env["EVAL_LLM_GENERATION_PATH"] = config.llm_gateway["generation_path"]
