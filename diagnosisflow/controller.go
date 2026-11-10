@@ -124,6 +124,9 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 			// 추정으로 먼저 봤어도 같은 호출을 문자 그대로 확인하면 후보를 올린다.
 			old.Source, old.From = source, from
 			old.InScope, old.Change = c.endpointScope(method, path, kind, source)
+		} else if old.Source == "bundle_string" && kind == "script" {
+			// 글자로만 봤던 스크립트를 근거 있는 형태로 다시 보면 방문 순서를 올린다.
+			old.Source = source
 		}
 		return old
 	}

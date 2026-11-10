@@ -142,6 +142,11 @@ func TestBundleBaseCapStopsResolvingAfterTruncation(t *testing.T) {
 	}
 }
 
+func allChunks(body []byte) []bundleRef {
+	sure, guessed := bundleChunks(body)
+	return append(sure, guessed...)
+}
+
 func chunkStrings(refs []bundleRef) []string {
 	out := []string{}
 	for _, r := range refs {
@@ -172,9 +177,10 @@ func TestBundleChunks(t *testing.T) {
 		"prefix":          {`r.u=e=>"chunk-"+{7:"abc"}[e]+".js"`, []string{"chunk-abc.js bundle_chunk"}},
 		"public path":     {`r.p="/static/js/",r.u=e=>({7:"abc"})[e]+".js"`, []string{"/static/js/abc.js bundle_chunk"}},
 		"duplicate":       {`"/a/b.js","/a/b.js"`, []string{"/a/b.js bundle_string"}},
+		"import wins":     {`"/a/lazy.js";import("/a/lazy.js")`, []string{"/a/lazy.js bundle_chunk"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := chunkStrings(bundleChunks([]byte(tc.body), maxBundleChunks)); !reflect.DeepEqual(got, tc.want) {
+			if got := chunkStrings(allChunks([]byte(tc.body))); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got=%q want=%q", got, tc.want)
 			}
 		})
@@ -186,17 +192,27 @@ func TestBundleChunksAreCapped(t *testing.T) {
 	for i := 0; i < maxBundleChunks+20; i++ {
 		b.WriteString(`"/c` + strconv.Itoa(i) + `.js",`)
 	}
-	if got := bundleChunks([]byte(b.String()), maxBundleChunks+40); len(got) != maxBundleChunks {
+	if got := bundleRefs([]byte(b.String()), maxBundleChunks+40); len(got) != maxBundleChunks {
 		t.Fatal(len(got))
 	}
-	if got := bundleChunks([]byte(b.String()), 3); len(got) != 3 {
+	if got := bundleRefs([]byte(b.String()), 3); len(got) != 3 {
+		t.Fatal(len(got))
+	}
+	if got := bundleRefs([]byte(b.String()), -2); len(got) != 0 {
 		t.Fatal(len(got))
 	}
 }
 
 func TestBundleChunksPreferConfirmedOverGuessed(t *testing.T) {
-	got := chunkStrings(bundleChunks([]byte(`"/guess/a.js","/guess/b.js";import("./real.js")`), 1))
+	got := chunkStrings(bundleRefs([]byte(`"/guess/a.js","/guess/b.js";import("./real.js")`), 1))
 	if want := []string{"./real.js bundle_chunk"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%q want=%q", got, want)
+	}
+}
+
+func TestGuessedScriptsComeAfterAPIRefsInsideChunkBudget(t *testing.T) {
+	got := chunkStrings(bundleRefs([]byte(`"/g/a.js","/g/b.js";import("./real.js");c.get("/api/x")`), 2))
+	if want := []string{"./real.js bundle_chunk", "/api/x script_call", "/g/a.js bundle_string"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got=%q want=%q", got, want)
 	}
 }
@@ -241,6 +257,67 @@ func TestChunksCannotCrowdOutAPIRefs(t *testing.T) {
 	}
 	if scripts != c.binding.Limits.MaxEndpoints/2 || !slices.Contains(got, "GET /read/api api") {
 		t.Fatal(scripts, got)
+	}
+}
+
+func TestGuessedScriptsDoNotTakeSlotsBeforeAPIRefs(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var b strings.Builder
+	for i := 0; i < 16; i++ {
+		b.WriteString(`"/read/x/g` + strconv.Itoa(i) + `.js",`)
+	}
+	for i := 0; i < c.binding.Limits.MaxEndpoints; i++ {
+		b.WriteString(`c.get("/read/a` + strconv.Itoa(i) + `");`)
+	}
+	c.discoverBodyLocked([]byte(b.String()), "application/javascript", "/read/app.js")
+	for _, e := range discovered(c) {
+		if strings.HasSuffix(e, " script") {
+			t.Fatal(e)
+		}
+	}
+}
+
+func TestScriptSlotsAreSharedAcrossBundles(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	limit := c.binding.Limits.MaxEndpoints / 2
+	bundle := func(tag string) []byte {
+		var b strings.Builder
+		for i := 0; i < limit+4; i++ {
+			b.WriteString(`import("/read/` + tag + strconv.Itoa(i) + `.js");`)
+		}
+		b.WriteString(`c.get("/read/api-` + tag + `");`)
+		return []byte(b.String())
+	}
+	c.discoverBodyLocked(bundle("a"), "application/javascript", "/read/a.js")
+	c.discoverBodyLocked(bundle("b"), "application/javascript", "/read/b.js")
+	scripts, got := 0, discovered(c)
+	for _, e := range got {
+		if strings.HasSuffix(e, " script") {
+			scripts++
+		}
+	}
+	if scripts != limit || !slices.Contains(got, "GET /read/api-a api") || !slices.Contains(got, "GET /read/api-b api") {
+		t.Fatal(scripts, got)
+	}
+}
+
+func TestConfirmedScriptUpgradesGuessedString(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addLocked("GET", "/read/lazy.js", "script", "bundle_string", "/read/a.js")
+	c.addLocked("GET", "/read/lazy.js", "script", "bundle_chunk", "/read/b.js")
+	if e := endpointAt(c, "GET", "/read/lazy.js"); e.Source != "bundle_chunk" || crawlRank(e) != 1 {
+		t.Fatalf("%+v", e)
+	}
+	c.addLocked("GET", "/read/api", "api", "script_call", "/read/a.js")
+	c.addLocked("GET", "/read/api", "script", "bundle_chunk", "/read/b.js")
+	if e := endpointAt(c, "GET", "/read/api"); e.Source != "script_call" {
+		t.Fatalf("%+v", e)
 	}
 }
 

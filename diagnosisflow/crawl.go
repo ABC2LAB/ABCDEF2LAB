@@ -26,6 +26,17 @@ func (c *Controller) resolve(raw, from string) (string, bool) {
 	return canonicalPath(u)
 }
 
+// 스크립트 후보는 회차 전체에서 발견 상한의 절반까지만 칸을 쓴다.
+func (c *Controller) scriptSlotsLocked() int {
+	used := 0
+	for _, e := range c.record.Snapshot.Endpoints {
+		if e.Kind == "script" {
+			used++
+		}
+	}
+	return c.binding.Limits.MaxEndpoints/2 - used
+}
+
 // 스크립트를 참조한 문서를 따라 올라간다. 문서를 모르면 false다.
 func (c *Controller) documentLocked(from string) (string, bool) {
 	for range c.record.Snapshot.Endpoints {
@@ -116,7 +127,7 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 		if !strings.Contains(contentType, "html") {
 			doc, docKnown = c.documentLocked(from)
 		}
-		for _, ref := range bundleRefs(scriptBody, c.binding.Limits.MaxEndpoints/2) {
+		for _, ref := range bundleRefs(scriptBody, c.scriptSlotsLocked()) {
 			switch {
 			case ref.kind != "api" || strings.HasPrefix(ref.path, "/") || strings.Contains(ref.path, "://"):
 				add(ref.method, ref.path, ref.kind, ref.source)

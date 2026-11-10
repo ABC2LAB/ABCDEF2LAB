@@ -132,8 +132,11 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 		seen[key] = len(refs)
 		refs = append(refs, bundleRef{method, path, kind, source})
 	}
-	// 스크립트를 받아야 다음 번들을 읽을 수 있어서 API 경로보다 먼저 칸을 잡는다.
-	for _, chunk := range bundleChunks(body, maxChunks) {
+	// 확인한 청크를 받아야 다음 번들을 읽을 수 있어서 API 경로보다 먼저 칸을 잡는다.
+	maxChunks = max(0, min(maxChunks, maxBundleChunks))
+	sure, guessed := bundleChunks(body)
+	sure = sure[:min(maxChunks, len(sure))]
+	for _, chunk := range sure {
 		emit(chunk.method, chunk.path, chunk.kind, chunk.source)
 	}
 	bases, cutoff := bundleBases(body)
@@ -208,6 +211,10 @@ func bundleRefs(body []byte, maxChunks int) []bundleRef {
 			emit("UNKNOWN", path, "api", "static_literal")
 		}
 	}
+	// 확인 안 된 `.js` 문자열은 API 경로 뒤에서 남은 스크립트 칸만 쓴다.
+	for _, chunk := range guessed[:min(maxChunks-len(sure), len(guessed))] {
+		emit(chunk.method, chunk.path, chunk.kind, chunk.source)
+	}
 	return refs
 }
 
@@ -217,12 +224,12 @@ func hashedChunk(path string) bool {
 	return m != nil && strings.ContainsAny(m[1], "0123456789")
 }
 
-func bundleChunks(body []byte, limit int) []bundleRef {
+// 같은 경로를 근거 있는 형태로도 봤으면 확인한 청크로 친다.
+func bundleChunks(body []byte) (sure, guessed []bundleRef) {
 	prefix := ""
 	if m := publicPath.FindSubmatch(body); m != nil {
 		prefix = string(m[1])
 	}
-	var sure, guessed []bundleRef
 	seen := map[string]bool{}
 	add := func(list *[]bundleRef, path, source string) {
 		if !seen[path] {
@@ -243,6 +250,11 @@ func bundleChunks(body []byte, limit int) []bundleRef {
 			add(&sure, prefix+name+string(entry[2])+group(body, m, 4), "bundle_chunk")
 		}
 	}
+	type candidate struct {
+		path string
+		sure bool
+	}
+	var candidates []candidate
 	for _, m := range chunkFile.FindAllSubmatchIndex(body, maxBundleMatches) {
 		path := group(body, m, 1)
 		if !strings.Contains(path, "/") || strings.Contains(path, "node_modules") {
@@ -253,14 +265,19 @@ func bundleChunks(body []byte, limit int) []bundleRef {
 			// Vite의 "assets/a.js"처럼 앞이 없는 경로는 번들 위치가 아니라 배포 기준 주소에서 시작한다.
 			path = strings.TrimSuffix(prefix, "/") + "/" + path
 		}
-		if imported || hashedChunk(path) {
-			add(&sure, path, "bundle_chunk")
-		} else {
-			add(&guessed, path, "bundle_string")
+		candidates = append(candidates, candidate{path, imported || hashedChunk(path)})
+	}
+	for _, c := range candidates {
+		if c.sure {
+			add(&sure, c.path, "bundle_chunk")
 		}
 	}
-	chunks := append(sure, guessed...)
-	return chunks[:min(limit, maxBundleChunks, len(chunks))]
+	for _, c := range candidates {
+		if !c.sure {
+			add(&guessed, c.path, "bundle_string")
+		}
+	}
+	return sure, guessed
 }
 
 // 라이브러리 묶음은 API 호출이 거의 없어서 페이지 한도가 빠듯할 때 뒤로 미룬다.
