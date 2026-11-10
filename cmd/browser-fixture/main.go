@@ -25,6 +25,7 @@ import (
 const (
 	surfaceReceiver    = "receiver"
 	surfaceReceiverUDP = "receiver_udp"
+	surfaceReceiverTCP = "receiver_conn"
 	surfaceTargetWrite = "target_write"
 	unknownScenario    = "unknown"
 	readHeaderTimeout  = 10 * time.Second
@@ -156,6 +157,18 @@ func targetHandler(rec *recorder, receiver receiverInfo) http.Handler {
 		}
 		http.Redirect(w, r, receiver.origin+"/hit/"+r.PathValue("id"), http.StatusFound)
 	})
+	// 시나리오 밖의 쓰기 요청도 "대상에 쓰기가 닿지 않았다"의 근거가 되도록 전부 남긴다.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			http.NotFound(w, r)
+			return
+		}
+		if rec.record(row{Surface: surfaceTargetWrite, Scenario: unknownScenario, Method: r.Method}) != nil {
+			http.Error(w, "record failed", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})
 	mux.HandleFunc("POST /write/{id}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("id")
 		if !writeHits[name] {
@@ -221,7 +234,13 @@ type config struct {
 
 func serve(ctx context.Context, cfg config, rec *recorder, udp net.PacketConn) error {
 	target := &http.Server{Addr: cfg.listen, Handler: targetHandler(rec, cfg.receiver), ReadHeaderTimeout: readHeaderTimeout}
-	outside := &http.Server{Addr: cfg.receiverListen, Handler: receiverHandler(rec), ReadHeaderTimeout: readHeaderTimeout}
+	outside := &http.Server{Addr: cfg.receiverListen, Handler: receiverHandler(rec), ReadHeaderTimeout: readHeaderTimeout,
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			// HTTP 요청 전에 끊긴 연결도 도달이다. 실패는 recorder가 들고 있다가 실행 실패로 돌려준다.
+			if state == http.StateNew && rec.record(row{Surface: surfaceReceiverTCP, Scenario: unknownScenario}) != nil {
+				fmt.Fprintln(os.Stderr, "browser-fixture: connection record failed")
+			}
+		}}
 	listen := func(server *http.Server) error {
 		if cfg.certFile != "" {
 			return server.ListenAndServeTLS(cfg.certFile, cfg.keyFile)
@@ -251,37 +270,42 @@ func serve(ctx context.Context, cfg config, rec *recorder, udp net.PacketConn) e
 	return errors.Join(append(results, rec.close())...)
 }
 
-func run() error {
-	listen := flag.String("listen", "", "target address")
-	receiverListen := flag.String("receiver-listen", "", "out-of-scope HTTP receiver address")
-	receiverUDP := flag.String("receiver-udp", "", "out-of-scope UDP receiver address")
-	receiverOrigin := flag.String("receiver-origin", "", "origin the pages use to reach the receiver")
-	logPath := flag.String("log", "", "new JSONL file for reached requests")
-	certFile := flag.String("tls-cert", "", "TLS certificate for the target and the receiver")
-	keyFile := flag.String("tls-key", "", "TLS key for the target and the receiver")
-	flag.Parse()
+func run(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("browser-fixture", flag.ContinueOnError)
+	listen := flags.String("listen", "", "target address")
+	receiverListen := flags.String("receiver-listen", "", "out-of-scope HTTP receiver address")
+	receiverUDP := flags.String("receiver-udp", "", "UDP address that accepts traffic for both the target and receiver host names, for example 0.0.0.0:PORT")
+	receiverOrigin := flags.String("receiver-origin", "", "origin the pages use to reach the receiver")
+	logPath := flags.String("log", "", "new JSONL file for reached requests")
+	certFile := flags.String("tls-cert", "", "TLS certificate for the target and the receiver")
+	keyFile := flags.String("tls-key", "", "TLS key for the target and the receiver")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
 	if *listen == "" || *receiverListen == "" || *receiverUDP == "" || *receiverOrigin == "" || *logPath == "" || (*certFile == "") != (*keyFile == "") {
 		return errors.New("-listen, -receiver-listen, -receiver-udp, -receiver-origin and -log are required; -tls-cert and -tls-key go together")
-	}
-	info, err := parseReceiver(*receiverOrigin, *receiverUDP, *certFile != "")
-	if err != nil {
-		return err
 	}
 	udp, err := net.ListenPacket("udp", *receiverUDP)
 	if err != nil {
 		return err
 	}
+	// 임시 포트(:0)를 써도 페이지가 실제 포트를 광고하도록 연 뒤의 주소를 쓴다.
+	info, err := parseReceiver(*receiverOrigin, udp.LocalAddr().String(), *certFile != "")
+	if err != nil {
+		return errors.Join(err, udp.Close())
+	}
 	rec, err := newRecorder(*logPath)
 	if err != nil {
 		return errors.Join(err, udp.Close())
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	return serve(ctx, config{*listen, *receiverListen, *certFile, *keyFile, info}, rec, udp)
 }
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err := run(ctx, os.Args[1:])
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "browser-fixture:", err)
 		os.Exit(1)
 	}

@@ -183,7 +183,7 @@ func TestTargetWritesAreRecorded(t *testing.T) {
 			t.Fatal(w.Code)
 		}
 	}
-	if got := get(t, h, "/write/B14-fetch"); got.Code != http.StatusMethodNotAllowed {
+	if got := get(t, h, "/write/B14-fetch"); got.Code != http.StatusNotFound {
 		t.Fatal(got.Code)
 	}
 	want := []row{{1, surfaceTargetWrite, "B14-fetch", "POST", false}, {2, surfaceTargetWrite, unknownScenario, "POST", false}}
@@ -454,8 +454,181 @@ func TestServeUsesTLSForTargetAndReceiver(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if rows := readRows(t, path); len(rows) != 1 || rows[0].Scenario != "B07" {
-		t.Fatalf("%+v", rows)
+	hits := 0
+	for _, v := range readRows(t, path) {
+		if v.Surface == surfaceReceiver && v.Scenario == "B07" {
+			hits++
+		}
+	}
+	if hits != 1 {
+		t.Fatal(hits)
+	}
+}
+
+func startServe(t *testing.T, cfg config, rec *recorder) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	conn := testPacketConn(t)
+	go func() { done <- serve(ctx, cfg, rec, conn) }()
+	return cancel, done
+}
+
+func waitForRows(t *testing.T, path string, want func([]row) bool) []row {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rows := readRows(t, path)
+		if want(rows) {
+			return rows
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%+v", rows)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func dialUntilReady(t *testing.T, addr string) net.Conn {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		conn, err := net.Dial("tcp", addr)
+		if err == nil {
+			return conn
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func onlyConnections(rows []row) bool {
+	if len(rows) == 0 {
+		return false
+	}
+	for _, v := range rows {
+		if v.Surface != surfaceReceiverTCP || v.Scenario != unknownScenario || v.Method != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func TestReceiverCountsConnectionWithoutRequest(t *testing.T) {
+	rec, path := newTestRecorder(t)
+	outside := freeAddress(t)
+	cancel, done := startServe(t, config{listen: freeAddress(t), receiverListen: outside, receiver: testReceiver}, rec)
+	dialUntilReady(t, outside).Close()
+	waitForRows(t, path, onlyConnections)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReceiverCountsFailedTLSVerification(t *testing.T) {
+	rec, path := newTestRecorder(t)
+	certFile, keyFile := writeTestCertificate(t)
+	outside := freeAddress(t)
+	cancel, done := startServe(t, config{freeAddress(t), outside, certFile, keyFile, testReceiver}, rec)
+	raw := dialUntilReady(t, outside)
+	defer raw.Close()
+	// 신뢰하지 않는 인증서라 핸드셰이크가 끝나지 않고, HTTP 요청은 보내지 않는다.
+	var verify x509.UnknownAuthorityError
+	if err := tls.Client(raw, &tls.Config{ServerName: "localhost"}).Handshake(); !errors.As(err, &verify) {
+		t.Fatal(err)
+	}
+	waitForRows(t, path, onlyConnections)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConnectionRecordFailureFailsRun(t *testing.T) {
+	rec, _ := newTestRecorder(t)
+	outside := freeAddress(t)
+	_, done := startServe(t, config{listen: freeAddress(t), receiverListen: outside, receiver: testReceiver}, rec)
+	rec.mu.Lock()
+	rec.file.Close()
+	rec.mu.Unlock()
+	raw := dialUntilReady(t, outside)
+	defer raw.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, os.ErrClosed) {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve kept running after a lost connection record")
+	}
+}
+
+func TestNonReadRequestsAreRecorded(t *testing.T) {
+	rec, path := newTestRecorder(t)
+	h := targetHandler(rec, testReceiver)
+	for _, tc := range []struct{ method, path string }{{"POST", "/api/items"}, {"PUT", "/x"}, {"DELETE", "/assets/app.js"}, {"OPTIONS", "/"}} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path+"?q="+sentinel, strings.NewReader(sentinel)))
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatal(tc, w.Code)
+		}
+	}
+	if got := get(t, h, "/nope"); got.Code != http.StatusNotFound {
+		t.Fatal(got.Code)
+	}
+	head := httptest.NewRecorder()
+	h.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/nope", nil))
+	want := []row{{1, surfaceTargetWrite, unknownScenario, "POST", false}, {2, surfaceTargetWrite, unknownScenario, "PUT", false}, {3, surfaceTargetWrite, unknownScenario, "DELETE", false}, {4, surfaceTargetWrite, unknownScenario, "OPTIONS", false}}
+	if got := readRows(t, path); !reflect.DeepEqual(got, want) {
+		t.Fatalf("%+v", got)
+	}
+	if data, _ := os.ReadFile(path); strings.Contains(string(data), sentinel) {
+		t.Fatal(string(data))
+	}
+}
+
+func TestNonReadRecordFailureFailsRequest(t *testing.T) {
+	rec, _ := newTestRecorder(t)
+	rec.file.Close()
+	w := httptest.NewRecorder()
+	targetHandler(rec, testReceiver).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/items", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatal(w.Code)
+	}
+}
+
+func TestRunAdvertisesActualUDPPort(t *testing.T) {
+	target := freeAddress(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	args := []string{"-listen", target, "-receiver-listen", freeAddress(t), "-receiver-udp", "127.0.0.1:0", "-receiver-origin", "http://outside.test:9001", "-log", filepath.Join(t.TempDir(), "reach.jsonl")}
+	go func() { done <- run(ctx, args) }()
+	dialUntilReady(t, target).Close()
+	response, err := http.Get("http://" + target + "/bypass/B08")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	header := response.Header.Get("Alt-Svc")
+	if !strings.HasPrefix(header, `h3=":`) || strings.HasPrefix(header, `h3=":0"`) {
+		t.Fatal(header)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunRejectsIncompleteFlags(t *testing.T) {
+	if err := run(t.Context(), []string{"-listen", "127.0.0.1:0"}); err == nil {
+		t.Fatal("missing flags must fail")
+	}
+	if err := run(t.Context(), []string{"-unknown"}); err == nil {
+		t.Fatal("unknown flag must fail")
 	}
 }
 
