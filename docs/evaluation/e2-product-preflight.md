@@ -86,7 +86,7 @@ read-only 컨테이너에 `/tmp` tmpfs가 필요하다.
 
 **실측(2026-11-10, 합성 모델):** 실제 엔진·`eval-e2`·계측기·Juice Shop을 러너로 돌려 회차가 `complete`로 끝났다. GET 6건이 대상에 도달하고 POST 1건이 차단됐으며 기록되지 않은 도달은 0건이다. 프롬프트 투영은 3건 모두 수집됐고 서명 검증을 통과했다. 샌드박스 안에서 제어 소켓·설정·근거·토큰 경로는 보이지 않고, 대상 직접 연결과 엔진 통로 연결(loopback·컨테이너 IP)은 실패했다(rc=7). 샌드박스 안에서 namespace를 다시 만드는 것도 샌드박스 자체 seccomp가 거절한다(`unshare` EPERM, 컨테이너 프로필이 허용하는 플래그 조합 포함). 합성 모델이라 탐지 성능은 재지 않았다.
 
-**공식 정책 모양 실측(2026-11-10, 스크립트 모델):** 메서드 7개·전 경로·`evaluation_caller_passthrough`로 3회차 돌렸고 마지막 회차는 완료·서명됐다. 가입 POST 201, 로그인 토큰을 받아 `Authorization: Bearer`는 토큰 없이 401·있으면 200, `Cookie`는 본문의 사용자 정보까지 갈렸다. HEAD·OPTIONS·PUT·PATCH도 대상까지 갔다. 계측기 33건이 전부 E② 허용 기록과 맞았고 기록 없는 도달과 차단 뒤 도달은 0이다. `curl -X DELETE`는 원본에도 있는 기본 안전 규칙이 E② 앞에서 막아 DELETE는 대상까지 가지 않았다. `Accept-Encoding: gzip`은 502(unsupported)였고, 같은 명령을 다시 보내면 실행되지 않았다.
+**공식 정책 실측(2026-11-10, 스크립트 모델):** [공식 정책 템플릿](profiles/official-e2-policy.json)을 `llm_backend`만 로컬 시험 모델에 맞춰 바꿔 돌렸고 회차는 완료·서명됐다. 가입 POST 201, 로그인 토큰을 받아 `Authorization: Bearer`는 토큰 없이 401·있으면 200, `Cookie`는 응답의 사용자 정보까지 갈렸다. HEAD·OPTIONS·PUT·PATCH도 대상까지 갔다. 계측기 66건이 전부 E② 허용 기록과 맞았고 기록 없는 도달과 차단 뒤 도달은 0이다. 회차는 러너의 요청 예산으로 끝나 E② 한도가 먼저 걸리지 않았다. `curl -X DELETE`는 원본에도 있는 기본 안전 규칙이 E② 앞에서 막아 DELETE는 대상까지 가지 않았다. `Accept-Encoding: gzip`은 502(unsupported)였고, 같은 명령을 다시 보내면 실행되지 않았다.
 
 합성 수용시험은 실제 자식 프로세스의 backend와 UDS를 사용한다.
 부모가 ready → bind → head → close → close_status를 보내며,
