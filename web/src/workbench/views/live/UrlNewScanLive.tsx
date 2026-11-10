@@ -18,6 +18,7 @@ import { Icon } from "../../ui/icons";
 import { CloseInspButton, InspHead, InspOpenButton, Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ExternalModelSettings } from "./ExternalModelSettings";
+import { TargetApprovalPanel } from "./TargetApprovalPanel";
 import {
   reasonText,
   UrlDisconnect,
@@ -77,8 +78,8 @@ export function UrlNewScanLive() {
     seenReset.current = resetSeq;
     setTarget("");
     setName("");
-    setProfileId(first);
-  }, [resetSeq, first]);
+    setProfileId(externalOpen && externalProfile ? externalProfile.id : first);
+  }, [resetSeq, first, externalOpen, externalProfile]);
 
   // 다른 화면의 '이 주소로 다시 점검' (조회 중인 진단이 없을 때만)
   useEffect(() => {
@@ -239,7 +240,7 @@ export function UrlNewScanLive() {
               </button>
               {externalOpen ? (
                 <ExternalModelSettings
-                  key={externalProfile?.id ?? "unavailable"}
+                  key={`${externalProfile?.id ?? "unavailable"}:${resetSeq}`}
                   profile={externalProfile}
                   disabled={g.inputLocked}
                   onReady={setCredentialReady}
@@ -270,6 +271,13 @@ export function UrlNewScanLive() {
             </div>
           </div>
 
+          <TargetApprovalPanel
+            url={tv}
+            disabled={busy}
+            onChanged={() => {
+              if (handle && !job?.preparation_started) void runUrlAction("validate");
+            }}
+          />
           <div className={s.fsec}>
             <div className={s["fsec-h"]}>
               <h2>작업</h2>

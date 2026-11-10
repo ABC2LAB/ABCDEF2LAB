@@ -14,6 +14,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"regexp"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -25,6 +27,14 @@ func main() {
 	target := flag.String("target", "https://juice.test:9443", "owned target")
 	upstream := flag.String("upstream", "http://juice-shop:3000", "owned Juice Shop")
 	flag.Parse()
+	if *mode == "init" {
+		must(fixtureInit())
+		return
+	}
+	if *mode == "dns" {
+		must(fixtureDNS())
+		return
+	}
 	stats := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ready := true
 		if *mode == "target" {
@@ -69,7 +79,15 @@ func must(e error) {
 		os.Exit(1)
 	}
 }
+
+type fixtureTurns struct{ goals, planner, worker int }
+
 func model(target string) http.Handler {
+	var mu sync.Mutex
+	turns := map[string]*fixtureTurns{}
+	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice)\.test:9443`)
+	exactGoal := regexp.MustCompile(`Inspect the approved read-only HTTPS target (https://(?:juice-a|juice-b|juice)\.test:9443)`)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Model string `json:"model"`
@@ -87,6 +105,29 @@ func model(target string) http.Handler {
 			w.WriteHeader(400)
 			return
 		}
+		chosen := target
+		for _, message := range req.Messages {
+			if match := exactGoal.FindStringSubmatch(string(message.Content)); len(match) > 1 {
+				chosen = match[1]
+				break
+			}
+		}
+		if chosen == target {
+			for _, message := range req.Messages {
+				if match := originPattern.FindString(string(message.Content)); match != "" {
+					chosen = match
+					break
+				}
+			}
+		}
+		target := chosen
+		mu.Lock()
+		defer mu.Unlock()
+		turn := turns[target]
+		if turn == nil {
+			turn = &fixtureTurns{}
+			turns[target] = turn
+		}
 		calls.Add(1)
 		names := map[string]bool{}
 		for _, t := range req.Tools {
@@ -101,15 +142,21 @@ func model(target string) http.Handler {
 		}
 		switch {
 		case names["set_goals"] && !names["add_intent"] && !names["Bash"]:
-			if goals.Add(1) == 1 {
-				tool("set_goals", "owned-goal", map[string]any{"goals": []any{map[string]any{"text": "Observe approved products and save a manual-review candidate.", "vulnclass": "access_control"}}})
+			goals.Add(1)
+			turn.goals++
+			if turn.goals == 1 {
+				tool("set_goals", "owned-goal", map[string]any{"goals": []any{map[string]any{"text": "Observe approved products at " + target + " and save a manual-review candidate.", "vulnclass": "access_control"}}})
 			}
 		case names["add_intent"] && !names["Bash"]:
-			if planner.Add(1) == 1 {
+			planner.Add(1)
+			turn.planner++
+			if turn.planner == 1 {
 				tool("add_intent", "owned-intent", map[string]any{"intents": []any{map[string]any{"summary": "Observe " + target + "/rest/products/search through the enforced Bash boundary, preserve a manual-review candidate, and verify denial of /outside-approved.", "priority": 5}}})
 			}
 		case names["Bash"]:
-			switch worker.Add(1) {
+			worker.Add(1)
+			turn.worker++
+			switch turn.worker {
 			case 1:
 				tool("Bash", "owned-allow", map[string]any{"command": "curl --silent --show-error --max-time 5 " + target + "/rest/products/search", "timeout_ms": 7000})
 			case 2:
@@ -133,7 +180,14 @@ func model(target string) http.Handler {
 				}
 				tool("submit_diagnostic_candidate", "owned-candidate", map[string]any{"call_ref": ref, "vulnclass": "access_control", "name": "소유 Juice Shop 관찰 후보", "summary": "실제 HTTPS 상품 응답을 관찰했습니다. 확정 취약점이 아닌 수동 검토 후보입니다.", "remediation": "실제 접근 권한을 별도로 검증하세요."})
 			case 3:
-				tool("Bash", "owned-deny", map[string]any{"command": "curl --silent --show-error --max-time 5 " + target + "/outside-approved", "timeout_ms": 7000})
+				deniedTarget := target + "/outside-approved"
+				if target == "https://juice-a.test:9443" {
+					deniedTarget = "https://juice-b.test:9443/rest/products/search"
+				}
+				if target == "https://juice-b.test:9443" {
+					deniedTarget = "https://juice-a.test:9443/rest/products/search"
+				}
+				tool("Bash", "owned-deny", map[string]any{"command": "curl --silent --show-error --max-time 5 " + deniedTarget, "timeout_ms": 7000})
 			}
 		default:
 			http.Error(w, "unexpected_role", 400)

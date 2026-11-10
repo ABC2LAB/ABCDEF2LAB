@@ -14,10 +14,11 @@ for (const value of [ui, cdp]) {
     throw new Error("소유 loopback 시험 주소만 허용합니다");
 }
 // Docker의 소유된 일회용 설치 입력만 읽는다. 비밀은 출력·증거에 기록하지 않는다.
-if (targetURL !== "https://juice.test:9443/rest/products") throw new Error("owned_fixture_target_required");
+if (!["https://juice.test:9443/rest/products", "https://juice-a.test:9443/rest/products", "https://juice-b.test:9443/rest/products"].includes(targetURL)) throw new Error("owned_fixture_target_required");
 const config = JSON.parse(fs.readFileSync(process.argv[5], "utf8"));
 const FIXTURE_PASSWORD = config.admin_password;
-const FIXTURE_PROFILE = "product-local_only";
+const DYNAMIC_TARGETS = config.format === "abc2lab.product-install/v2";
+const FIXTURE_PROFILE = DYNAMIC_TARGETS ? "product-model-local_only" : "product-local_only";
 const OPENROUTER = process.env.ARTEX_URL_OPENROUTER_BROWSER === "1";
 const WORKBENCH = `${ui}/`;
 fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
@@ -140,7 +141,7 @@ function check(value, code) {
   const fill = async (selector, value) => {
     check(
       await evaluate(
-        `(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`,
+        `(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`,
       ),
       "input_missing",
     );
@@ -191,18 +192,42 @@ function check(value, code) {
   await send("Network.enable");
   await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: outputDir });
 
-  if (phase === "url-draft") {
+  async function openNew() {
     await send("Page.navigate", { url: `${WORKBENCH}#new` });
-    await wait("document.querySelector('section[data-view=new] input[autocomplete=current-password]')!==null", "login_missing");
-    check(!(await evaluate(`!!(${button("실제 엔진으로 보기")})||!!(${button("예시 재생으로 보기")})`)), "demo_switch_present");
+    await wait("document.querySelector('section[data-view=new] input[autocomplete=current-password]')!==null||document.querySelector('#luProfile')?.options.length>=1", "login_or_catalog_missing");
     const loginPass = 'section[data-view="new"] input[autocomplete="current-password"]';
-    await wait(`document.querySelector(${JSON.stringify(loginPass)})!==null`, "login_missing");
-    await fill(loginPass, FIXTURE_PASSWORD);
-    await click("로그인");
+    if (await evaluate(`document.querySelector(${JSON.stringify(loginPass)})!==null`)) {
+      await fill(loginPass, FIXTURE_PASSWORD);
+      await click("로그인");
+    }
     await wait("document.querySelector('#luProfile')?.options.length>=1", "real_v2_catalog_missing");
+    if (await evaluate(`!!(${button("다른 진단 만들기")})`)) await click("다른 진단 만들기");
+    check(!(await evaluate(`!!(${button("실제 엔진으로 보기")})||!!(${button("예시 재생으로 보기")})`)), "demo_switch_present");
     check(await evaluate("document.querySelector('#lvUrl')===null"), "v1_task_form_shown_on_v2_server");
     await fill("#luUrl", targetURL);
     await select("#luProfile", FIXTURE_PROFILE);
+  }
+  if (phase === "target-approve") {
+    check(DYNAMIC_TARGETS, "dynamic_install_required");
+    await openNew();
+    await wait("document.querySelector('#targetReadonlyBasis')!==null", "operator_registration_missing");
+    await fill("#targetReadonlyPaths", "/rest/products");
+    await fill("#targetReadonlyBasis", "Owned Juice Shop fixture: the product listing GET/HEAD routes are approved for nonmutating diagnostic observation only.");
+    await click("대상 등록·소유 확인 준비");
+    await wait("document.querySelector('#targetChallengeValue')?.textContent.length>20", "ownership_challenge_missing");
+    await click("소유 확인 후 대상 승인");
+    await wait(hasText("DNS TXT 소유 증명이 아직 확인되지 않았습니다"), "declaration_alone_approved_target");
+    const proof = await evaluate("({name:document.querySelector('#targetChallengeName').textContent,values:[document.querySelector('#targetChallengeValue').textContent]})");
+    const tokenFile = process.env.ARTEX_PRODUCT_DNS_TOKEN_FILE;
+    check(!!tokenFile, "protected_dns_control_token_required");
+    const response = await fetch("http://127.0.0.1:49083/control", {method:"POST",headers:{"Content-Type":"application/json","X-Fixture-Control":fs.readFileSync(tokenFile,"utf8").trim()},body:JSON.stringify(proof)});
+    check(response.status===204,"owned_dns_publication_failed");
+    await click("소유 확인 후 대상 승인");
+    await wait(hasText(`승인된 대상: ${new URL(targetURL).origin}`), "target_approval_failed");
+    check(startCount()===0,"approval_started_diagnosis");
+    check(noLegacyExecution(),"approval_used_generic_engine");
+  } else if (phase === "url-draft") {
+    await openNew();
     await fill("#luName", "작업대 URL 브라우저 합성 수용");
     await click("승인 범위 확인");
     await wait(hasText("실행 전 검증 완료"), "approved_scope_not_ready");

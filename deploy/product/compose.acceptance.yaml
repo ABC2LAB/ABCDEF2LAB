@@ -1,4 +1,37 @@
 services:
+  fixture-init:
+    image: abc2lab-product-fixture:${PRODUCT_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: deploy/product/Dockerfile
+      target: acceptance-fixture
+      args: {VCS_REF: '${PRODUCT_SOURCE_SHA:?}'}
+    user: '0:0'
+    command: [-mode, init]
+    volumes: [target-tls:/target-tls]
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    network_mode: none
+    restart: 'no'
+  install:
+    depends_on:
+      fixture-init: {condition: service_completed_successfully}
+    volumes: [target-tls:/target-tls:ro]
+  fixture-dns:
+    image: abc2lab-product-fixture:${PRODUCT_TAG:-local}
+    command: [-mode, dns]
+    depends_on:
+      fixture-init: {condition: service_completed_successfully}
+    volumes: [target-tls:/target-tls:ro]
+    networks:
+      control: {ipv4_address: 172.31.252.40}
+      fixture-control: {}
+    ports: ['127.0.0.1:${PRODUCT_DNS_CONTROL_PORT:-49083}:9083']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
   juice-shop:
     image: bkimminich/juice-shop:v15.0.0@sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d
     networks:
@@ -15,15 +48,31 @@ services:
         VCS_REF: ${PRODUCT_SOURCE_SHA:?}
     command: [-mode, target]
     depends_on:
-      install: {condition: service_completed_successfully}
+      fixture-init: {condition: service_completed_successfully}
       juice-shop: {condition: service_started}
     volumes: [target-tls:/target-tls:ro]
     networks:
       target:
         ipv4_address: 172.31.253.20
-        aliases: [juice.test]
+        aliases: [juice.test, juice-a.test]
       fixture-control: {}
     ports: ['127.0.0.1:${PRODUCT_TARGET_STATS_PORT:-49081}:9081']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  target-front-b:
+    image: abc2lab-product-fixture:${PRODUCT_TAG:-local}
+    command: [-mode, target]
+    depends_on:
+      fixture-init: {condition: service_completed_successfully}
+      juice-shop: {condition: service_started}
+    volumes: [target-tls:/target-tls:ro]
+    networks:
+      target:
+        ipv4_address: 172.31.253.22
+        aliases: [juice-b.test]
+      fixture-control: {}
+    ports: ['127.0.0.1:${PRODUCT_TARGET_B_STATS_PORT:-49084}:9081']
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -45,3 +94,6 @@ services:
     security_opt: [no-new-privileges:true]
 networks:
   fixture-control: {}
+
+volumes:
+  target-tls: {}
