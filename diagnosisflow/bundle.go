@@ -30,7 +30,7 @@ var (
 	callMember   = regexp.MustCompile(`(?i)\.` + bundleVerb + `\(\s*(this\.[\w$]+)\s*[,)]`)
 	baseAssign   = regexp.MustCompile(`(this\.[\w$]+)\s*=\s*(?:[\w$.]+\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	baseTemplate = regexp.MustCompile("(this\\.[\\w$]+)\\s*=\\s*`(?:\\$\\{[\\w$.]+\\})?(/" + bundleTemplateTail + ")`")
-	fetchCall    = regexp.MustCompile(`\bfetch\(\s*(?:[\w$.]+\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote + `(?:\s*,\s*\{` + bundleFetchOptions + `\bmethod\s*:\s*` + bundleQuote + `(\w+)` + bundleQuote + `)?`)
+	fetchCall    = regexp.MustCompile(`\bfetch\(\s*(?:([\w$.]+)\s*\+\s*)?` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote + `(?:\s*,\s*\{` + bundleFetchOptions + `\bmethod\s*:\s*` + bundleQuote + `(\w+)` + bundleQuote + `)?`)
 	xhrOpen      = regexp.MustCompile(`\.open\(\s*` + bundleQuote + `(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)` + bundleQuote + `\s*,\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	urlField     = regexp.MustCompile(`\burl\s*:\s*` + bundleQuote + "(/" + bundlePathTail + ")" + bundleQuote)
 	// 슬래시 없는 "moment.js" 같은 모듈 이름은 파일 경로로 보지 않는다.
@@ -150,11 +150,15 @@ func bundleRefs(body []byte) []bundleRef {
 		}
 	}
 	for _, m := range fetchCall.FindAllSubmatchIndex(body, maxBundleMatches) {
-		method := strings.ToUpper(group(body, m, 2))
+		method, next := strings.ToUpper(group(body, m, 3)), byteAfter(body, m[2*2+1]+1)
 		if method == "" {
-			method = "GET"
+			// 두 번째 인자가 있는데 메서드를 못 읽었으면 쓰기일 수 있다. 인자가 없을 때만 GET이다.
+			method = "UNKNOWN"
+			if next == ')' {
+				method = "GET"
+			}
 		}
-		emit(method, group(body, m, 1), "api", "script_call")
+		call(method, group(body, m, 1), group(body, m, 2), m[0], next == '+')
 	}
 	for _, m := range xhrOpen.FindAllSubmatchIndex(body, maxBundleMatches) {
 		emit(group(body, m, 1), group(body, m, 2), "api", "script_call")
