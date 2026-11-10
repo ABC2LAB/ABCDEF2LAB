@@ -9,10 +9,13 @@ import { cx } from "../../lib/cx";
 import { ModeNote } from "../../live/parts";
 import { useUrl } from "../../live/urlDiagnosis";
 import { urlHost, urlViewFor } from "../../live/urlMap";
+import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
+import { RequestApprovalPanel } from "./RequestApprovalPanel";
 import { UrlHead, UrlNotices, UrlPill } from "./urlParts";
+import { WorkflowNotice } from "./workflowViews";
 
 /** 이어 보는 진단 한 줄 (누르면 상태에 맞는 화면으로). */
 function CurrentJob() {
@@ -56,6 +59,9 @@ function CurrentJob() {
 /** live 대시보드 (URL 진단 서버). */
 export function UrlDashboardLive() {
   const cap = useUrl((st) => st.cap);
+  const job = useUrl((st) => st.job);
+  const flow = useUrl((st) => st.flow);
+  const { route, goTo } = useShell();
   const profiles = cap.kind === "v2" ? cap.catalog.profiles : [];
   return (
     <>
@@ -74,11 +80,27 @@ export function UrlDashboardLive() {
             <h2 id="luDashJobH">이어 보는 URL 진단</h2>
           </div>
           <CurrentJob />
+          {flow ? (
+            <>
+              <p>
+                {flowStageText[flow.stage]} · 실제 응답 {flow.counts.visited} · 발견 {flow.counts.found}
+              </p>
+              <WorkflowNotice />
+              {flow.stage === "awaiting_selection" ? (
+                <button type="button" className={cx(s.btn, s.pri)} onClick={() => goTo("scope")}>
+                  심화 탐색 경로 선택
+                </button>
+              ) : null}
+            </>
+          ) : null}
           <p className={s.help}>
             이 서버에는 진단 목록 API 가 없어, 이 브라우저 탭이 영수증으로 이어 보는 진단만 보입니다. 다른 브라우저 ·
             탭에서 시작한 진단은 여기에 나오지 않습니다.
           </p>
         </section>
+        {job?.task_id && job.input.workflow_mode === "user_approval_v1" ? (
+          <RequestApprovalPanel key={job.task_id} taskId={job.task_id} active={route === "dashboard"} compact />
+        ) : null}
         <section className={s.sec} aria-labelledby="luDashProfH">
           <div className={s.sh}>
             <h2 id="luDashProfH">설치된 진단 프로필</h2>
@@ -103,7 +125,7 @@ export function UrlDashboardLive() {
         </section>
         <section className={s.sec} aria-labelledby="luDashMoreH">
           <div className={s.sh}>
-            <h2 id="luDashMoreH">점검 목록 · 최근 30일 집계 · 승인 대기 · 토큰 사용량</h2>
+            <h2 id="luDashMoreH">점검 목록 · 최근 30일 집계</h2>
           </div>
           <ModeNote what="점검 목록 · 집계" />
         </section>

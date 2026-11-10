@@ -6,6 +6,7 @@
 import type { ReactNode } from "react";
 
 import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
+import { readRequestApprovalState } from "@/lib/diagnosis/request-approvals";
 
 import { cx } from "../lib/cx";
 import { useShell, type View } from "../shell";
@@ -14,6 +15,7 @@ import s from "../workbench.module.css";
 import { useLiveAuth } from "./auth";
 import { useUrl } from "./urlDiagnosis";
 import { URL_ENDED_STATES, urlHost, urlStateText, urlTone, urlViewFor } from "./urlMap";
+import { usePoll } from "./usePoll";
 
 /** 레일 '진행 중'에 보일 최대 줄 수 (넘치면 "외 N건"). */
 export const RAIL_ACTIVE_MAX = 6;
@@ -25,7 +27,21 @@ const _ACTIVE_VIEWS: readonly View[] = ["crawl", "scope", "live"];
 
 /** 대시보드 링크의 배지: 도구 호출 승인 대기 수. 미지원·0 이면 숨김. */
 export function LiveRailBadge() {
-  return null;
+  const job = useUrl((st) => st.job);
+  const flow = useUrl((st) => st.flow);
+  const taskId = job?.task_id;
+  const enabled = !!taskId && job?.input.workflow_mode === "user_approval_v1" && !URL_ENDED_STATES.includes(job.state);
+  const state = usePoll(() => readRequestApprovalState(taskId as string), [taskId], {
+    enabled,
+    intervalMs: enabled ? 2000 : 0,
+  });
+  const matches = enabled && state.data && flow && state.data.run.run_ref === flow.run_ref && !state.error;
+  const count = matches ? (state.data?.approvals ?? []).filter((a) => a.state === "pending").length : 0;
+  return count > 0 ? (
+    <span role="status" className={s.badge} aria-label={`현재 회차 HTTP 승인 대기 ${count}개`}>
+      {count}
+    </span>
+  ) : null;
 }
 
 /** 진행 중 / 최근 끝난 점검 두 묶음. URL 진단 서버면 이어 보는 진단 한 줄. */

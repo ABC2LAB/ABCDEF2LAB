@@ -599,6 +599,9 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 
 // 일반 HTTP의 nil 반환은 감사가 닫힌 실행 마감이며 목표 충족이나 E③ 판정이 아니다.
 func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server *Server, task *Task) (bool, error) {
+	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && flow.Failed() {
+		return false, ErrFirstDiagnosisOutcome
+	}
 	var active, done, bad int
 	err := s.m.pg.QueryRowContext(ctx, `SELECT
  count(*) FILTER (WHERE state IN ('open','running')),
@@ -619,6 +622,9 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 			return false, ErrFirstDiagnosisSupervisor
 		}
 		return false, nil
+	}
+	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && !flow.DeepReady() {
+		return false, ErrFirstDiagnosisOutcome
 	}
 	execution, ok := server.engine.e2HTTP.Execution(task.ID)
 	if !ok || execution == nil {

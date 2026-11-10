@@ -1,0 +1,9 @@
+# Owned disposable workflow acceptance only. Layer after compose.acceptance.yaml.
+# Uses the real product engine; only the local model and navigation page are fixtures.
+services:
+  synthetic-model:
+    command: [-mode, workflow-model]
+  target-front:
+    command: [-mode, workflow-target]
+  target-front-b:
+    command: [-mode, workflow-target]

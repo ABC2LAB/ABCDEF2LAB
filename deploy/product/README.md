@@ -62,6 +62,29 @@ OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON �
 
 유료 승인은 단회다. 한도·만료·누적 예산 소진 후에는 기존 운영자 재승인이 필요하다. marker·journal 삭제로 재승인하지 않는다. 사용자 모델 입력은 설치된 승인 모델에 한정된다.
 
+## 탐색·선택 워크플로 설치
+
+새 설치에서만 `target_policy.max_requests`와 선택적인 `target_policy.workflow`를 함께 지정한다. 아래 설정은 회차 HTTP 상한 64, 초기 탐색 최대 8페이지, 발견 최대 32개다.
+
+```json
+{
+  "max_requests": 64,
+  "workflow": {
+    "format": "abc2lab.workbench-flow/v1",
+    "max_pages": 8,
+    "max_endpoints": 32,
+    "max_response_bytes": 2097152,
+    "allow_reversible_writes": true
+  }
+}
+```
+
+Workbench에서 AI 자동 또는 사용자 승인 모드를 고른다. 두 모드 모두 보호 Worker의 E② Bash 경로로 초기 정적 탐색을 수행한다. 사용자 승인 모드는 저장된 발견 중 선택한 메서드·경로만 심화 검사하며, 설치 상한과 대상 등록에서 별도로 동의한 복구 가능한 상태 변경만 요청별 확인으로 보낸다. 자동 모드는 GET/HEAD 읽기 범위만 사용한다. GET 폼은 별도 확인 대상이며, 정적 문자열에서 HTTP 메서드를 확인하지 못하면 `UNKNOWN`으로 남겨 자동 방문·선택하지 않는다. 동적 SPA 전체 탐색과 대상 로그인 A/B 연결은 지원하지 않는다.
+
+상태 변경 본문은 최대 64KiB다. 개별 확인 기한은 도구·회차 기한과 proxy 1분 상한 중 빠른 값이며 화면에 실제 만료를 표시한다. 일시정지로 기한이나 예산을 연장하지 않는다. 초기 탐색·선택·명령 영수증은 PostgreSQL에 저장한다. 결과 불명 뒤 자동 재전송·예약 환불·재실행은 하지 않는다. 새 입력별 파생 설정은 최대 512개까지 보존하며 자동 삭제하지 않는다.
+
+이 설정은 기존 유료 모델의 요청·토큰·USD 승인 한도를 늘리지 않는다. 새 워크플로는 충분한 모델 예산을 운영자가 사전 승인한 환경에서 사용한다. 기존 설치의 보호 파일을 편집하거나 자동 이관하지 않는다. 자세한 API·정책 제안은 [워크플로 계약](../../docs/contracts/workbench-engine-workflow.md)을 참조한다.
+
 ## 새 대상 등록·승인
 
 1. Workbench에서 HTTPS URL, 명시적인 읽기 전용 경로, 운영자의 진단 권한과 해당 GET/HEAD의 비변경 승인 근거를 입력한다. 요청 상한은 기본 회차당 4회, 승인 유효 기간은 4시간이다. GET/HEAD라는 이유만으로 안전하다고 승인하지 않는다.
@@ -128,5 +151,22 @@ docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptan
 모델 통계는 loopback 49082 `/stats`, 대상 A/B 통계는 각각 49081/49084 `/stats`, 소유 DNS 제어는 49083 `/control`이다. DNS 제어 토큰은 시험 전용 보호 파일에서만 읽는다. 대상 readiness는 TCP만 확인한다. `scripts/product-diagnosis-browser.cjs`는 별도 Chrome CDP와 보호된 합성 설치 입력을 사용해 실제 root Workbench를 조작한다. 시작 응답 유실 시험은 실제 서버가 수락한 응답만 버린다. 모델·진단 응답을 브라우저에서 위조하지 않는다. 실모델 수용은 실제 USD 승인과 운영 키가 별도로 준비된 뒤 수행한다.
 
 두 URL의 실제 승인·격리·키 재사용·보고서 및 미실행 Qwen 구분은 [제품 v2 수용 기록](../../docs/product-targets-v2-acceptance.md)을 따른다.
+
+### 탐색·선택·요청 승인 종단 시험
+
+선택적인 workflow를 켠 제품은 [워크플로 계약](../../docs/contracts/workbench-engine-workflow.md)과 [실측 수용 기록](../../docs/workbench-workflow-acceptance.md)을 따른다. 위 화면 API 표는 workflow 미설치 경로다. 설치한 경우 자산 탐색·선택·요청 승인·보고서를 실제 workflow API에 연결한다.
+
+소유 일회용 환경에서 `compose.workflow-acceptance.yaml`을 세 번째 overlay로 추가하면 모델은 `workflow-model`, A/B front는 `workflow-target` 역할을 사용한다. `/workflow`는 시험용 HTML 탐색 페이지이고 실제 상품·버전·계정 생성은 뒤의 Juice Shop에 전달한다. 모델 id는 설치 JSON에 `owned-synthetic-workflow`로 명시한다. 유료 모델 수용에 사용하지 않는다.
+
+```bash
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml -f deploy/product/compose.workflow-acceptance.yaml build
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml -f deploy/product/compose.workflow-acceptance.yaml up -d --no-build --wait
+```
+
+브라우저 시험의 기본 포트는 제품18887, A/B 통계49481/49484, 모델49482, DNS제어49483, 별도 소유 Chrome CDP49439다. Compose의 `PRODUCT_PORT`, `PRODUCT_TARGET_STATS_PORT`, `PRODUCT_TARGET_B_STATS_PORT`, `PRODUCT_MODEL_STATS_PORT`, `PRODUCT_DNS_CONTROL_PORT`를 이에 맞춘다. 호스트의 다른 내부망과 충돌하면 기존 시험 안내대로 네트워크 주소와 설치 JSON의 CIDR/resolver/model 주소를 함께 바꾼다.
+
+fixture-init이 만든 새 `/target-tls/control-token`을 stdout에 노출하지 않고 mode0600의 전용 파일로 복사한다. `scripts/workbench-workflow-browser.cjs <manual|auto|stop|recover|design> <private-install.json> <private-dns-token> <output-dir>` 순서로 실제 브라우저를 조작한다. Chrome CDP와 스크립트는 같은 loopback 환경에서 연결해야 한다. 이번 기록은 Windows Chrome157·Node22를 사용했다. 상태·실행 결과를 브라우저 내부 store에 주입하지 않는다.
+
+동일 이미지·볼륨 재시작은 `stop workbench api preparation postgres` 뒤 같은 Compose의 `up -d --no-build --wait postgres preparation api workbench`로 확인한다. 설치 당시와 helper 지문이 다른 이미지는 기존 pin 검사에서 거절된다. 보호 파일을 고치거나 unknown 저널·예산 예약을 지워 이미지 변경을 우회하지 않는다. 이미지 교체·설치 세대 마이그레이션은 별도 검토가 필요하다.
 
 비밀번호 재설정은 실행 중인 Workbench의 `product-password-hash`가 stdin으로 받은 비밀번호를 Go bcrypt로 해시하고 PostgreSQL에는 해시만 전달한다. `pgcrypto` 확장이나 스키마를 추가하지 않는다. 새 비밀번호는 12~72 bytes이며 명령행·컨테이너 환경변수·파일에 원문을 넣지 않는다. 공통 Compose 진입점은 설치 입력의 실제 경로가 저장소 밖이고 파일 권한이 0600인지 확인한 뒤 Docker를 호출한다.

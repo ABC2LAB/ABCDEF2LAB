@@ -142,3 +142,20 @@ it("중복 승인 클릭·URL 변경 뒤 늦은 응답이 새 대상에 영향�
   expect(changed).not.toHaveBeenCalled();
   expect(screen.queryByText(/승인된 대상:/)).toBeNull();
 });
+
+it("새 origin에는 이전 대상의 쓰기 동의가 넘어가지 않는다", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({});
+  const view = render(<TargetApprovalPanel url={url} disabled={false} allowStateChanges />);
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(screen.getByRole("checkbox")).toBeChecked();
+  view.rerender(<TargetApprovalPanel url="https://second.example.test/read" disabled={false} allowStateChanges />);
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole("checkbox")).not.toBeChecked();
+  fireEvent.change(screen.getByLabelText("운영자의 진단 권한·비변경 승인 근거"), {
+    target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록·소유 확인 준비" }));
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(3));
+  expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[2][1]?.body)).methods).toEqual(["GET", "HEAD"]);
+});

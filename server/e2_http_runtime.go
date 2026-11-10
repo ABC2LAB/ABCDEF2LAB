@@ -11,6 +11,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 )
@@ -119,6 +120,7 @@ func e2HTTPCloneEvaluation(value *e2proxy.EvaluationCallerContext) *e2proxy.Eval
 }
 
 type E2HTTPRuntimeOptions struct {
+	Workflow                *diagnosisflow.Controller
 	PromptProjection        bool
 	RequestApprovals        *RequestApprovalService
 	PolicyFingerprintSHA256 string
@@ -282,6 +284,11 @@ func e2HTTPTaskContext(ctx context.Context, taskctx context.Context) context.Con
 }
 
 func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (context.Context, error) {
+	if r.options.Workflow != nil {
+		if err := r.options.Workflow.BeforePlanning(ctx); err != nil {
+			return ctx, err
+		}
+	}
 	t, err := r.taskFor(task)
 	if err != nil || ctx == nil || ctx.Err() != nil {
 		return ctx, ErrE2HTTPHost
@@ -403,7 +410,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.mu.Unlock()
 	workCtx := e2HTTPTaskContext(ctx, t.ctx)
 	observePrompt := r.promptObserver(ctx, t, actual.ID)
-	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
+	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
 		return r.observeResult(observeCtx, t, lease, actual.ID, result)
 	}})
 	var once sync.Once
@@ -435,6 +442,29 @@ func (r *E2HTTPRuntime) TaskID() (string, bool) {
 		return "", false
 	}
 	return r.task.id, true
+}
+
+// Planner and Worker use the same bound runner's credential redactor, including
+// remote leases. Before acquisition (or after closure), omit optional target
+// data rather than falling back to raw paths or another task's credentials.
+func (r *E2HTTPRuntime) redactPlannerTargetData(taskID, data string) string {
+	if r == nil || data == "" {
+		return ""
+	}
+	r.mu.Lock()
+	t, closed := r.task, r.closed
+	r.mu.Unlock()
+	if closed || t == nil || t.id != taskID {
+		return ""
+	}
+	t.mu.Lock()
+	if t.closed || t.lease == nil || !t.validLease || e2HTTPNil(t.lease.Runner) {
+		t.mu.Unlock()
+		return ""
+	}
+	runner := t.lease.Runner
+	t.mu.Unlock()
+	return string(runner.RedactOutput([]byte(data)))
 }
 
 // Execution은 신뢰한 Go 조립/마감 경로의 실제 handle이다. HTTP 참조가 이를 만들지 않는다.

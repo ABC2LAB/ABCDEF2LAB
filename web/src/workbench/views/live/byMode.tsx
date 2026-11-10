@@ -2,12 +2,13 @@
 import type { ReactNode } from "react";
 
 import { LoadingRow } from "../../live/parts";
-import { recheckUrl, useUrlCapability } from "../../live/urlDiagnosis";
+import { recheckUrl, useUrl, useUrlCapability } from "../../live/urlDiagnosis";
 import s from "../../workbench.module.css";
 import { UrlDashboardLive } from "./UrlDashboardLive";
 import { UrlLiveLive, UrlReportLive } from "./UrlLiveLive";
 import { UrlNewScanLive, UrlScopeLive } from "./UrlNewScanLive";
 import { UrlHead } from "./urlParts";
+import { WorkflowScopeLive } from "./workflowViews";
 
 function Supported({ title, children }: { title: string; children: ReactNode }) {
   const cap = useUrlCapability();
@@ -25,7 +26,7 @@ function Supported({ title, children }: { title: string; children: ReactNode }) 
                 ? cap.message
                 : "URL 진단 서비스가 설치되지 않았습니다. 운영자 설정이 필요합니다."}
             </p>
-            <button className={s.btn} onClick={recheckUrl}>
+            <button type="button" className={s.btn} onClick={recheckUrl}>
               다시 조회
             </button>
           </div>
@@ -44,11 +45,14 @@ export const DashboardByMode = () => (
     <UrlDashboardLive />
   </Supported>
 );
-export const ScopeByMode = () => (
-  <Supported title="범위 확인">
-    <UrlScopeLive />
-  </Supported>
-);
+export function ScopeByMode() {
+  const job = useUrl((st) => st.job);
+  return (
+    <Supported title="범위 확인">
+      {job?.input.workflow_mode && job.preparation_started ? <WorkflowScopeLive /> : <UrlScopeLive />}
+    </Supported>
+  );
+}
 export const LiveByMode = () => (
   <Supported title="점검 진행">
     <UrlLiveLive />
