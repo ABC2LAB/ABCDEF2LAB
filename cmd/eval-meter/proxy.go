@@ -385,9 +385,7 @@ func (m *engineMeter) seal() {
 		m.forced[seq] = true
 		delete(m.streams, seq)
 	}
-	if err := m.log.file.Sync(); err != nil {
-		m.logFailed = true
-	}
+	m.syncLogsLocked()
 	m.writeMarkerLocked(sealedName, sealedMarker{Role: roleEngine, SealedAt: stamp(m.sealedAt), InflightAtSeal: m.inflight,
 		ForcedClosed: m.forcedClosed, LogComplete: !m.logFailed, ForwardedAtSeal: m.forwarded})
 	m.maybeDrainedLocked(m.sealedAt)
@@ -417,9 +415,7 @@ func (m *engineMeter) maybeDrainedLocked(at time.Time) {
 		return
 	}
 	m.drainedAt = at
-	if err := m.log.file.Sync(); err != nil {
-		m.logFailed = true
-	}
+	m.syncLogsLocked()
 	m.writeMarkerLocked(drainedName, drainedMarker{Role: roleEngine, SealedAt: stamp(m.sealedAt), DrainedAt: stamp(at),
 		Forwarded: m.forwarded, StreamsTotal: m.streamsTotal, RejectedAfterSeal: m.rejected,
 		ForcedClosed: m.forcedClosed, ForcedCancelled: m.forcedCancel, InflightAtDrain: m.inflight,
@@ -445,6 +441,24 @@ func (m *engineMeter) enablePathLog() string {
 	return ""
 }
 
+// marker의 LogComplete는 요청 기록과 경로 기록이 모두 디스크에 내려간 뒤에만 참이다.
+func (m *engineMeter) syncLogsLocked() {
+	if err := m.log.file.Sync(); err != nil {
+		m.logFailed = true
+	}
+	if m.paths != nil {
+		if err := m.paths.file.Sync(); err != nil {
+			m.logFailed = true
+		}
+	}
+}
+
+// discard는 경로 기록을 열지 못해 시작을 포기할 때 방금 만든 요청 기록을 지운다.
+// 남겨 두면 다음 시작이 logExists로 막힌다.
+func (m *engineMeter) discard() error {
+	return errors.Join(m.log.file.Close(), removePrivateFile(m.dir, engineLogName))
+}
+
 func (m *engineMeter) writePathLocked(seq uint64, r *http.Request) {
 	if m.paths == nil {
 		return
@@ -466,9 +480,7 @@ func (m *engineMeter) writeMarkerLocked(name string, marker any) {
 func (m *engineMeter) terminate(reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.log.file.Sync(); err != nil {
-		m.logFailed = true
-	}
+	m.syncLogsLocked()
 	m.writeMarkerLocked(terminatedName, terminatedMarker{Role: roleEngine, Reason: reason, TerminatedAt: stamp(m.now()),
 		Sealed: m.sealed, Drained: !m.drainedAt.IsZero(), InflightAtTerminate: m.inflight, OpenStreams: len(m.streams),
 		ForcedCancelled: m.forcedCancel, Forwarded: m.forwarded, RejectedAfterSeal: m.rejected, LogComplete: !m.logFailed})

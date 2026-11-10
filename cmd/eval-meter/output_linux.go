@@ -60,6 +60,10 @@ func createPrivateFile(dir *os.File, name string) (*os.File, string) {
 	return file, ""
 }
 
+func removePrivateFile(dir *os.File, name string) error {
+	return syscall.Unlinkat(int(dir.Fd()), name)
+}
+
 // writeMarker publishes a state file only after its content and directory
 // entry are durable, so the runner never reads a partial marker.
 func writeMarker(dir *os.File, name string, marker any) error {

@@ -199,6 +199,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		if *pathLog {
 			if code := m.enablePathLog(); code != "" {
+				if err := m.discard(); err != nil {
+					return fail(stderr, storageUnavailable)
+				}
 				return fail(stderr, code)
 			}
 		}

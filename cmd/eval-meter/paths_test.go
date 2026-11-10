@@ -54,11 +54,11 @@ func TestMaskPath(t *testing.T) {
 }
 
 func TestMaskPathBoundsSegments(t *testing.T) {
-	fits := strings.Repeat("/a", maxPathSegments-1)
+	fits := strings.Repeat("/a", maxPathSegments) + "/"
 	if pattern, masked := maskPath(fits); pattern != fits || masked != 0 {
 		t.Fatal(pattern, masked)
 	}
-	tooLong := fits + "/a"
+	tooLong := strings.Repeat("/a", maxPathSegments+1)
 	if pattern, masked := maskPath(tooLong); pattern != maskedLongPath || masked != maxPathSegments+1 {
 		t.Fatal(pattern, masked)
 	}
@@ -174,5 +174,19 @@ func TestRunEngineRejectsLeftoverPathLog(t *testing.T) {
 	args := []string{"-role", "engine", "-listen", "127.0.0.1:0", "-upstream", "http://t:1", "-log-dir", path, "-path-log"}
 	if exit := run(args, strings.NewReader(""), io.Discard, &stderr); exit == 0 || !strings.HasPrefix(stderr.String(), logExists) {
 		t.Fatal(exit, stderr.String())
+	}
+	// 실패한 시작은 요청 기록을 남기지 않아서, 남은 경로 기록만 치우면 다시 시작할 수 있다.
+	if _, err := os.Stat(filepath.Join(path, engineLogName)); !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+func TestPathLogSyncFailureMarksSealIncomplete(t *testing.T) {
+	m, do, logPath := newPathEngine(t)
+	do(http.MethodGet, "/one")
+	_ = m.paths.file.Close()
+	m.seal()
+	if marker := readMarker[sealedMarker](t, filepath.Join(filepath.Dir(logPath), sealedName)); marker.LogComplete {
+		t.Fatalf("%+v", marker)
 	}
 }

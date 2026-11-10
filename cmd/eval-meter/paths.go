@@ -52,8 +52,15 @@ func maskSegment(raw string) (string, bool) {
 
 func maskPath(escaped string) (string, int) {
 	segments := strings.Split(escaped, "/")
-	if len(segments) > maxPathSegments {
-		return maskedLongPath, len(segments)
+	// 빈 조각(맨 앞, 끝 `/`)은 값이 아니므로 세지 않는다.
+	values := 0
+	for _, segment := range segments {
+		if segment != "" {
+			values++
+		}
+	}
+	if values > maxPathSegments {
+		return maskedLongPath, values
 	}
 	masked := 0
 	for i, raw := range segments {
