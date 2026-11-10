@@ -152,6 +152,9 @@ _E2_PRODUCT_FIELDS = ("image", "policy_path", "policy_fingerprint_sha256", "head
                       "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds", "verify_tool", "verify_timeout_seconds",
                       "policy_tool", "policy_tool_timeout_seconds", "helper", "helper_sha256", "subnet", "meter_ip", "window_seconds",
                       "approval_valid_until", "prompt_wait_seconds")
+# 서비스 쪽 상한(server.StartE2ControlService)과 같다. 넘기면 eval-e2가 기동하지 못한다.
+MAX_E2_IO_TIMEOUT_SECONDS = 60
+MAX_E2_CLOSE_TIMEOUT_SECONDS = 120
 # 회차 CA 수명 상한(e2proxy maxExecutionCALifetime)과 같다. 승인 기간은 CA 수명을 넘을 수 없다.
 MAX_E2_WINDOW_SECONDS = 86_400
 # 게이트웨이 주소와 겹치지 않게 subnet은 최소 네 주소를 남긴다.
@@ -510,6 +513,9 @@ def _e2_product(block: dict, errors: list[str]) -> dict | None:
                  "verify_timeout_seconds", "policy_tool_timeout_seconds", "prompt_wait_seconds"):
         if name in block and not _int(block[name], 1, MAX_RUN_SECONDS):
             errors.append(f"config.e2.{name}: INVALID")
+    for name, limit in (("exchange_timeout_seconds", MAX_E2_IO_TIMEOUT_SECONDS), ("close_timeout_seconds", MAX_E2_CLOSE_TIMEOUT_SECONDS)):
+        if isinstance(block.get(name), int) and block[name] > limit:
+            errors.append(f"config.e2.{name}: TOO_LARGE")
     if "helper_sha256" in block and not (isinstance(block["helper_sha256"], str) and _SHA256_HEX.fullmatch(block["helper_sha256"])):
         errors.append("config.e2.helper_sha256: INVALID")
     if "window_seconds" in block and not _int(block["window_seconds"], 1, MAX_E2_WINDOW_SECONDS):
@@ -769,6 +775,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         env["EVAL_E2_IMAGE"] = config.e2_product["image"].ref
         env["EVAL_E2_SUBNET"] = config.e2_product["subnet"]
         env["EVAL_E2_METER_IP"] = config.e2_product["meter_ip"]
+        env["EVAL_E2_IO_TIMEOUT_SECONDS"] = str(config.e2_product["exchange_timeout_seconds"])
+        env["EVAL_E2_CLOSE_TIMEOUT_SECONDS"] = str(config.e2_product["close_timeout_seconds"])
     return RunPlan(side=side, run_id=run_id, project=f"eval-{run_id}", source_sha=declared["source_sha"],
                    llm=llm, target_image=target_image, engine_image=engine_image, images=images,
                    meter_port=origin.port, compose_files=tuple(files),
