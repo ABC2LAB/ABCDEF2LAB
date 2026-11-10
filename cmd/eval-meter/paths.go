@@ -25,6 +25,8 @@ const (
 	maxSegmentLength   = 32
 	pathKeyBytes       = 32
 	pseudonymHexLength = 16
+	// 키 참조는 이 고정 문자열의 HMAC이다. `/`가 들어 있어 경로 조각의 가명과 겹치지 않는다.
+	pathKeyRefLabel = "abc2lab.path-key-ref/v1"
 )
 
 // 정적 자원과 API를 나눠 셀 수 있게 확장자만 남긴다(scripts/eval/preservation.py의 STATIC_SUFFIXES와 같다).
@@ -45,6 +47,8 @@ type pathRow struct {
 	PathPattern    string `json:"path_pattern"`
 	MaskedSegments int    `json:"masked_segments"`
 	PathProfileRef string `json:"path_profile_ref"`
+	// 집계할 때 회차 묶음이 같은 키를 썼는지, 집계자가 가진 키가 그 키인지 확인하는 값이다. 키 값은 남기지 않는다.
+	PathKeyRef string `json:"path_key_ref"`
 }
 
 // 일반 엔드포인트 이름(authentication-details)은 남기고, 숫자나 대소문자가 섞인 긴 조각만 값으로 본다.
@@ -62,6 +66,12 @@ func staticSuffix(segment string) string {
 		}
 	}
 	return ""
+}
+
+func pathKeyRef(key []byte) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(pathKeyRefLabel)) // hash.Hash의 Write는 오류를 돌려주지 않는다.
+	return hex.EncodeToString(mac.Sum(nil))[:pseudonymHexLength]
 }
 
 func pseudonym(segment string, key []byte) string {

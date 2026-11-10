@@ -217,7 +217,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `window_watch_failed`, `window_events_failed` | 감시 시작·종료 실패, `docker events` 실패·형식 밖 출력 |
 | `observer_count_mismatch` | 관측 로그 건수가 러너 호출 수와 다르거나 거부 기록이 있음 |
 | `meter_path_log_enabled`, `meter_path_log_missing` | `purpose=official` 회차에 계측기 경로 기록(`engine-paths.jsonl`)이 있음, `purpose=browser_acceptance` 회차에 없음 |
-| `meter_path_log_invalid` | `purpose=browser_acceptance` 회차의 경로 기록이 러너 소유 일반 파일이 아니거나, 꼬리가 잘렸거나, 가림 판(`abc2lab.path-mask/v2`)이 다르거나, 전달한 요청과 `seq`·메서드가 한 행씩 맞지 않음(봉인 뒤 거부한 요청은 행이 없어야 함) |
+| `meter_path_log_invalid` | `purpose=browser_acceptance` 회차의 경로 기록이 러너 소유 일반 파일이 아니거나, 꼬리가 잘렸거나, 가림 판(`abc2lab.path-mask/v2`)이 다르거나, 행마다 키 참조가 다르거나, 전달한 요청과 `seq`·메서드가 한 행씩 맞지 않음(봉인 뒤 거부한 요청은 행이 없어야 함) |
 | `meter_read_failed`, `meter_log_inconsistent` | 계측기 기록 읽기 실패, 순번 누락·건수 불일치(강제 취소 행 수 ≠ drain 마커의 취소 수 포함) |
 | `e2_stub_log_invalid` | `e2.ours_mode=stub` 회차에서 가짜 E² 결정 행(`e2/e2-stub-decisions.jsonl`)이 없거나 형식이 틀림: 개행으로 끝나지 않은 꼬리(잘린 행), fixture 표식 아님, 모르는 결정, 메서드·결정 시각 형식, 발급된 결정에 시도 ID 없음·발급 실패에 ID 있음, ID 중복, 순번 공백 |
 | `llm_seal_failed`, `llm_read_failed`, `llm_unverified`, `llm_marker_invalid` | 게이트웨이 seal 실패, 기록 읽기 실패, 검증 마커 시한 초과, 마커 형식 오류 |

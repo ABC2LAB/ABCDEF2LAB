@@ -326,13 +326,14 @@ class MeterPathLogTests(unittest.TestCase):
     def test_path_row_format_matches_the_meter(self):
         go = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/paths.go").read_text(encoding="utf-8")
         self.assertRegex(go, r'pathMaskProfile\s*=\s*"%s"' % re.escape(PATH_PROFILE))
-        for field in ("seq", "method", "path_pattern", "masked_segments", "path_profile_ref"):
+        for field in ("seq", "method", "path_pattern", "masked_segments", "path_profile_ref", "path_key_ref"):
             self.assertIn('`json:"%s"`' % field, go)
 
 
-def path_row(seq, method="GET", pattern="/{h:0123456789abcdef}", masked=0, profile=PATH_PROFILE):
+def path_row(seq, method="GET", pattern="/{h:0123456789abcdef}", masked=0, profile=PATH_PROFILE,
+             key_ref="00112233445566ff"):
     return {"seq": seq, "method": method, "path_pattern": pattern, "masked_segments": masked,
-            "path_profile_ref": profile}
+            "path_profile_ref": profile, "path_key_ref": key_ref}
 
 
 @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "mkfifo"), "POSIX 전용")
@@ -383,7 +384,10 @@ class MeterPathRowsTests(unittest.TestCase):
                 ("other profile", [path_row(1), path_row(2), path_row(3, "POST", profile="abc2lab.path-mask/v1")], ""),
                 ("empty pattern", [path_row(1), path_row(2, pattern=""), path_row(3, "POST")], ""),
                 ("negative masked", [path_row(1, masked=-1), path_row(2), path_row(3, "POST")], ""),
-                ("bool masked", [path_row(1, masked=True), path_row(2), path_row(3, "POST")], "")):
+                ("bool masked", [path_row(1, masked=True), path_row(2), path_row(3, "POST")], ""),
+                ("bad key ref", [path_row(1, key_ref="00112233445566FF"), path_row(2, key_ref="00112233445566FF"),
+                                 path_row(3, "POST", key_ref="00112233445566FF")], ""),
+                ("two keys", [path_row(1, key_ref="ffffffffffffffff"), path_row(2), path_row(3, "POST")], "")):
             with self.subTest(name):
                 self.write(rows, tail)
                 self.check("meter_path_log_invalid")

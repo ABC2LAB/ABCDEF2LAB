@@ -77,6 +77,7 @@ func TestMaskPath(t *testing.T) {
 	var file struct {
 		Profile string `json:"profile"`
 		KeyHex  string `json:"key_hex"`
+		KeyRef  string `json:"key_ref"`
 		Vectors []struct {
 			Name           string `json:"name"`
 			Path           string `json:"path"`
@@ -90,6 +91,9 @@ func TestMaskPath(t *testing.T) {
 	key, err := hex.DecodeString(file.KeyHex)
 	if file.Profile != pathMaskProfile || len(file.Vectors) < 20 || err != nil || len(key) != pathKeyBytes {
 		t.Fatal(file.Profile, len(file.Vectors), err)
+	}
+	if got := pathKeyRef(key); got != file.KeyRef || got == pathKeyRef(testPathKey) {
+		t.Fatal(got)
 	}
 	for _, tc := range file.Vectors {
 		t.Run(tc.Name, func(t *testing.T) {
@@ -142,12 +146,13 @@ func TestEnginePathLogRecordsMaskedForwardedRequests(t *testing.T) {
 		t.Fatal(status)
 	}
 	h := func(segment string) string { return pseudonym(segment, testPathKey) }
+	ref := pathKeyRef(testPathKey)
 	want := []pathRow{
-		{1, "GET", "/" + h("api") + "/" + h("Users") + "/{id}", 1, pathMaskProfile},
-		{2, "POST", "/" + h("users") + "/{id}", 1, pathMaskProfile},
-		{3, "GET", "/{id}/" + h("ok"), 1, pathMaskProfile},
-		{4, "GET", "/" + h("profile") + "/" + h(shortAccount), 0, pathMaskProfile},
-		{5, "GET", "/" + h("reset") + "/" + h(shortToken), 0, pathMaskProfile},
+		{1, "GET", "/" + h("api") + "/" + h("Users") + "/{id}", 1, pathMaskProfile, ref},
+		{2, "POST", "/" + h("users") + "/{id}", 1, pathMaskProfile, ref},
+		{3, "GET", "/{id}/" + h("ok"), 1, pathMaskProfile, ref},
+		{4, "GET", "/" + h("profile") + "/" + h(shortAccount), 0, pathMaskProfile, ref},
+		{5, "GET", "/" + h("reset") + "/" + h(shortToken), 0, pathMaskProfile, ref},
 	}
 	if got := readRows[pathRow](t, path); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
