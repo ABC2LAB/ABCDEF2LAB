@@ -118,7 +118,7 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	if w := request("GET", base, ""); w.Code != 401 {
 		t.Fatal("anonymous report admitted")
 	}
-	login := request("POST", "/api/auth/login", fmt.Sprintf(`{"username":"ARTEX","password":%q}`, password))
+	login := request("POST", "/api/auth/login", fmt.Sprintf(`{"username":"ABC2LAB","password":%q}`, password))
 	var session struct {
 		Token string `json:"token"`
 	}

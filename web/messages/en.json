@@ -2131,7 +2131,7 @@
   },
   "changePasswordDialog": {
     "title": "Change password",
-    "description": "The username is fixed as <b>ARTEX</b>. You must first authenticate by entering your current password, and after changing the password, login Tokens already issued remain valid until they expire.",
+    "description": "The username is fixed as <b>ABC2LAB</b>. You must first authenticate by entering your current password, and after changing the password, login Tokens already issued remain valid until they expire.",
     "currentPassword": "Current password",
     "newPassword": "New password",
     "confirmPassword": "Confirm new password",

@@ -79,7 +79,7 @@ func (c *combinedHTTPClient) request(method, path, body string) (int, []byte, ht
 }
 func (c *combinedHTTPClient) login() {
 	c.t.Helper()
-	code, raw, _ := c.request("POST", "/api/auth/login", `{"username":"ARTEX","password":"synthetic-owned-combined-fixture"}`)
+	code, raw, _ := c.request("POST", "/api/auth/login", `{"username":"ABC2LAB","password":"synthetic-owned-combined-fixture"}`)
 	var session struct{ Token string }
 	if code != 200 || json.Unmarshal(raw, &session) != nil || session.Token == "" {
 		c.t.Fatalf("실제 로그인 실패: %d", code)

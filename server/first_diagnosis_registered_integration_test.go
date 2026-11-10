@@ -316,7 +316,7 @@ func firstDiagnosisRegisteredStored(t *testing.T, ctx context.Context, m *Manage
 func firstDiagnosisRegisteredHTTP(t *testing.T, r *FirstDiagnosisControlledRuntime, password string) {
 	t.Helper()
 	handler := r.Handler()
-	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"username":"ARTEX","password":"`+password+`"}`))
+	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"username":"ABC2LAB","password":"`+password+`"}`))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, login)
 	var auth struct {

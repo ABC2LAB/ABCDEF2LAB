@@ -37,7 +37,8 @@ export const auth = {
       if (parts.length !== 3) return null;
       // base64url → base64
       const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-      const username: string = payload.sub ?? "ARTEX";
+      // 기존 승인 자료와 연결되는 JWT 주체는 화면의 로그인 이름으로 표시한다.
+      const username: string = payload.sub === "ARTEX" ? "ABC2LAB" : (payload.sub ?? "ABC2LAB");
       return { id: "1", name: username, username, email: "", avatar: "", role: "operator" };
     } catch {
       return null;

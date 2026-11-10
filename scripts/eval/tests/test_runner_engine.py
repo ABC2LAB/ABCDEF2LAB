@@ -22,7 +22,7 @@ from baseline_pages import BaselinePageMerge
 from runner_config import REPO_ROOT
 import runner  # noqa: E402
 from runner_engine import (
-    _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
+    _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
     EngineLLMProfile, apply_engine_settings, engine_settings, findings_record, load_vocabulary, login, start_task,
     task_request,
 )
@@ -103,7 +103,11 @@ class TestDTOFormatGuard(unittest.TestCase):
         for (path, start), expected in DTO_SHAPES.items():
             text = (REPO_ROOT / path).read_text(encoding="utf-8")
             with self.subTest(block=start):
-                self.assertEqual(hashlib.sha256(go_block(text, start).encode()).hexdigest(), expected)
+                block = go_block(text, start)
+                if (path, start) == ("server/auth.go", "func (s *Server) authLogin("):
+                    # 계정 이름 외의 로그인·비밀번호·토큰 계약은 고정 baseline과 같아야 한다.
+                    block = block.replace('req.Username != "ABC2LAB"', 'req.Username != "ARTEX"')
+                self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), expected)
 
     def test_task_creation_contract_matches(self):
         for (path, start), expected in TASK_SHAPES.items():
@@ -246,7 +250,19 @@ class TestLogin(unittest.TestCase):
         # 핸들러 본문은 DTO 가드가 고정한다. 상수가 그 핸들러가 비교하는 이름과 같은지 따로 본다.
         handler = go_block((REPO_ROOT / "server/auth.go").read_text(encoding="utf-8"), "func (s *Server) authLogin(")
         self.assertIn(f'req.Username != "{ADMIN_USERNAME}"', handler)
-        self.assertEqual(ADMIN_USERNAME, "ARTEX")
+        self.assertEqual(ADMIN_USERNAME, "ABC2LAB")
+
+    def test_baseline_uses_its_original_username_without_fallback(self):
+        engine = self.engine()
+        secret = AdminSecret(PASSWORD, username=BASELINE_ADMIN_USERNAME)
+        self.assertEqual(login(engine.port, secret, 5), TOKEN)
+        self.assertEqual(len(engine.requests), 1)
+        self.assertEqual(json.loads(engine.requests[0][3]), {"username": "ARTEX", "password": PASSWORD})
+
+    def test_unapproved_username_is_rejected_before_login(self):
+        with self.assertRaises(EngineAPIError) as caught:
+            AdminSecret(PASSWORD, username="other")
+        self.assertEqual(str(caught.exception), "engine_username_invalid")
 
     def test_failures_use_fixed_codes_without_secrets(self):
         cases = [

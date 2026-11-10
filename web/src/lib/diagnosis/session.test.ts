@@ -67,13 +67,13 @@ describe("지나간 세션의 늦은 401", () => {
     const api = await freshApi();
     const required = vi.fn();
     api.subscribeAuthRequired(required);
-    await api.signIn("ARTEX", "pw");
+    await api.signIn("ABC2LAB", "pw");
     const old = api.apiFetch("/api/tasks");
     await heldCount(held, 1);
     expect(held[0].auth).toBe("Bearer session-1");
 
     api.signOut();
-    await api.signIn("ARTEX", "pw");
+    await api.signIn("ABC2LAB", "pw");
     held[0].respond(json(401, { error: "expired" }));
 
     await expect(old).rejects.toMatchObject({ status: 401 });
@@ -92,12 +92,12 @@ describe("지나간 세션의 늦은 401", () => {
     const api = await freshApi();
     const required = vi.fn();
     api.subscribeAuthRequired(required);
-    await api.signIn("ARTEX", "pw");
+    await api.signIn("ABC2LAB", "pw");
     const old = api.apiFetch("/api/decide", { method: "POST", body: "{}" }, false);
     await heldCount(held, 1);
 
     api.signOut();
-    await api.signIn("ARTEX", "pw");
+    await api.signIn("ABC2LAB", "pw");
     held[0].respond(json(401, { error: "expired" }));
 
     await expect(old).rejects.toMatchObject({ status: 401, message: "expired" });
@@ -111,7 +111,7 @@ describe("지나간 세션의 늦은 401", () => {
     const api = await freshApi();
     const required = vi.fn();
     api.subscribeAuthRequired(required);
-    await api.signIn("ARTEX", "pw");
+    await api.signIn("ABC2LAB", "pw");
     const old = api.apiFetch("/api/decide", { method: "POST", body: "{}" }, false);
     await heldCount(held, 1);
 
@@ -124,7 +124,7 @@ describe("지나간 세션의 늦은 401", () => {
     await vi.waitFor(() => expect(bodyRead).toHaveBeenCalledTimes(1));
 
     api.signOut();
-    await api.signIn("ARTEX", "pw");
+    await api.signIn("ABC2LAB", "pw");
     finishBody({ error: "expired" });
 
     await expect(old).rejects.toMatchObject({ status: 401 });
@@ -137,7 +137,7 @@ describe("지나간 세션의 늦은 401", () => {
     const api = await freshApi();
     const required = vi.fn();
     api.subscribeAuthRequired(required);
-    await api.signIn("ARTEX", "pw");
+    await api.signIn("ABC2LAB", "pw");
     const first = api.apiFetch("/api/first");
     const second = api.apiFetch("/api/second");
     await heldCount(held, 2);
@@ -170,7 +170,7 @@ describe("로그인 세션", () => {
   it("로그인하면 받은 토큰으로 이후 요청을 보낸다", async () => {
     const seen = fakeEngine();
     const api = await freshApi();
-    await api.signIn("ARTEX", "right");
+    await api.signIn("ABC2LAB", "right");
     await expect(api.apiFetch("/api/tasks")).resolves.toEqual({ ok: true });
     expect(seen.at(-1)).toEqual({ path: "/api/tasks", method: "GET", auth: "Bearer issued" });
     await expect(api.restoreSession()).resolves.toBe(true);
@@ -179,7 +179,7 @@ describe("로그인 세션", () => {
   it("로그인이 거절되면 세션을 남기지 않고 서버 오류를 알린다", async () => {
     fakeEngine();
     const api = await freshApi();
-    await expect(api.signIn("ARTEX", "wrong")).rejects.toMatchObject({ status: 401, message: "bad credential" });
+    await expect(api.signIn("ABC2LAB", "wrong")).rejects.toMatchObject({ status: 401, message: "bad credential" });
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
     await expect(api.restoreSession()).resolves.toBe(false);
   });
@@ -187,7 +187,7 @@ describe("로그인 세션", () => {
   it("토큰 없는 성공 응답은 로그인 성공으로 보지 않는다", async () => {
     fakeEngine();
     const api = await freshApi();
-    await expect(api.signIn("ARTEX", "no-token")).rejects.toMatchObject({ status: 502 });
+    await expect(api.signIn("ABC2LAB", "no-token")).rejects.toMatchObject({ status: 502 });
     await expect(api.restoreSession()).resolves.toBe(false);
   });
 
@@ -196,7 +196,7 @@ describe("로그인 세션", () => {
       throw new TypeError("network down");
     });
     const api = await freshApi();
-    await expect(api.signIn("ARTEX", "right")).rejects.toMatchObject({ status: 0 });
+    await expect(api.signIn("ABC2LAB", "right")).rejects.toMatchObject({ status: 0 });
   });
 
   it("만료된 토큰은 세션을 지우고 로그인이 필요하다고 알린다", async () => {
@@ -237,7 +237,7 @@ describe("로그인 세션", () => {
   it("로그아웃은 세션을 지우고 구독을 해제한 쪽에는 알리지 않는다", async () => {
     fakeEngine();
     const api = await freshApi();
-    await api.signIn("ARTEX", "right");
+    await api.signIn("ABC2LAB", "right");
     const kept = vi.fn();
     const removed = vi.fn();
     api.subscribeAuthRequired(kept);

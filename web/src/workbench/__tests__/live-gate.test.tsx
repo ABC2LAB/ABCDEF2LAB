@@ -132,13 +132,13 @@ describe("LiveGate", () => {
     m.restoreSession.mockResolvedValue(false);
     render(<Harness />);
     const pass = await screen.findByLabelText("비밀번호");
-    expect(screen.getByLabelText("아이디")).toHaveValue("ARTEX");
+    expect(screen.getByLabelText("아이디")).toHaveValue("ABC2LAB");
 
     m.signIn.mockRejectedValueOnce(new ApiError(401, "bad"));
     fireEvent.change(pass, { target: { value: "wrong-pw" } });
     fireEvent.click(screen.getByRole("button", { name: "로그인" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("아이디 또는 비밀번호가 맞지 않습니다.");
-    expect(m.signIn).toHaveBeenLastCalledWith("ARTEX", "wrong-pw");
+    expect(m.signIn).toHaveBeenLastCalledWith("ABC2LAB", "wrong-pw");
     expect(screen.getByLabelText("비밀번호")).toHaveValue("");
 
     m.signIn.mockResolvedValueOnce(undefined);
@@ -147,7 +147,7 @@ describe("LiveGate", () => {
     fireEvent.submit(screen.getByLabelText("비밀번호").closest("form") as HTMLFormElement);
     expect(screen.getByLabelText("비밀번호")).toHaveValue("");
     expect(await screen.findByText("실제 화면")).toBeInTheDocument();
-    expect(m.signIn).toHaveBeenLastCalledWith("ARTEX", "right-pw");
+    expect(m.signIn).toHaveBeenLastCalledWith("ABC2LAB", "right-pw");
   });
 
   it("토큰이 있어도 첫 호출이 401 이면 로그인", async () => {

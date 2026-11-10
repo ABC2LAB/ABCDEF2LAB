@@ -82,7 +82,7 @@ func TestProductCredentialsOwnedPostgres(t *testing.T) {
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	login, _ := json.Marshal(map[string]string{"username": "ARTEX", "password": password})
+	login, _ := json.Marshal(map[string]string{"username": "ABC2LAB", "password": password})
 	w := request("/api/auth/login", string(login), "")
 	var session struct{ Token string }
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &session) != nil || session.Token == "" {

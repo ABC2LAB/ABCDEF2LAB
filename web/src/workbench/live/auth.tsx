@@ -172,10 +172,10 @@ export function useLiveAuthBoot(): void {
 
 // ---------- 화면 ----------
 
-/** 로그인 패널. 아이디 기본값은 엔진 관리자 계정 이름(ARTEX). */
+/** 로그인 패널. 아이디 기본값은 엔진 관리자 계정 이름(ABC2LAB). */
 function LoginPanel() {
   const { login: doLogin } = useLiveAuth();
-  const [username, setUsername] = useState("ARTEX");
+  const [username, setUsername] = useState("ABC2LAB");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

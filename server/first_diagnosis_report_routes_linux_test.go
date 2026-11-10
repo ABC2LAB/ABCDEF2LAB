@@ -150,7 +150,7 @@ func checkFirstDiagnosisStoredReportFlow(t *testing.T, runtime *FirstDiagnosisHT
 	if got := request("GET", base+"&audience=internal", ""); got.Code != 401 {
 		t.Fatal("anonymous report admitted")
 	}
-	login := request("POST", "/api/auth/login", `{"username":"ARTEX","password":"synthetic-owned-constructor-fixture"}`)
+	login := request("POST", "/api/auth/login", `{"username":"ABC2LAB","password":"synthetic-owned-constructor-fixture"}`)
 	var session struct {
 		Token string `json:"token"`
 	}
