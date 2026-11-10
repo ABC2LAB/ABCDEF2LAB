@@ -58,8 +58,8 @@ from runner_engine import (  # noqa: E402
     load_vocabulary, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
-    DRAINED_MARKER, FORCED_CANCELLED_OUTCOME, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
-    e2_stub_counts, forwarded_by_method, forwarded_count, read_private_json, sequence_complete,
+    DRAINED_MARKER, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
+    drain_complete, e2_stub_counts, final_log_consistent, forwarded_by_method, forwarded_count, read_private_json,
 )
 from attempt_reconcile import reconcile  # noqa: E402
 from e2_collect import OUTCOME_COMPLETE, OUTCOME_PRODUCT_FAILURE, E2Collection, E2CollectionInvalid  # noqa: E402
@@ -415,9 +415,7 @@ def _wait_drained(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State)
         if clock.monotonic() >= deadline:
             raise RunFailure("drain_timeout")
         clock.sleep(spec.poll_seconds)
-    cancelled = drained.get("forced_cancelled_requests")
-    if (drained.get("inflight_at_drain") != 0 or drained.get("log_complete") is not True
-            or type(cancelled) is not int or cancelled < 0):
+    if not drain_complete(drained):
         raise RunFailure("drain_incomplete")
     return drained
 
@@ -606,9 +604,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure("meter_path_log_missing")
     sealed = _step(state, "meter_read_failed", lambda: meter.marker(SEALED_MARKER))
     forwarded = _step(state, "meter_log_inconsistent", lambda: forwarded_count(rows))
-    cancelled_rows = sum(1 for row in rows if row["outcome"] == FORCED_CANCELLED_OUTCOME)
-    if (sealed is None or not sequence_complete(rows) or forwarded != drained.get("forwarded_requests")
-            or cancelled_rows != drained["forced_cancelled_requests"]):
+    if not _step(state, "meter_log_inconsistent", lambda: final_log_consistent(rows, sealed, drained)):
         raise RunFailure("meter_log_inconsistent")
     # 수용시험 회차는 경로 기록이 전달한 요청과 한 행씩 맞아야 보존율을 셀 수 있다(요청 기록을 확인한 뒤에 본다).
     if spec.purpose == PURPOSE_BROWSER_ACCEPTANCE:

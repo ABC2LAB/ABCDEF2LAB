@@ -16,8 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
     ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_VERIFIED_MARKER,
-    OBSERVER_LOG, PATH_LOG, PATH_PROFILE, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, forwarded_by_method, forwarded_count,
-    sequence_complete,
+    OBSERVER_LOG, PATH_LOG, PATH_PROFILE, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, drain_complete,
+    final_log_consistent, forwarded_by_method, forwarded_count, sequence_complete,
 )
 
 
@@ -311,6 +311,38 @@ class TestMeterFiles(unittest.TestCase):
         with self.assertRaises(EvidenceError):
             self.meter.forwarded()
 
+
+
+class FinalMeterChecksTests(unittest.TestCase):
+    """러너와 보존 집계가 같이 쓰는 drain·마감 확인(#376 리뷰)."""
+
+    DRAINED = {"role": "engine", "inflight_at_drain": 0, "log_complete": True, "forced_cancelled_requests": 1,
+               "forwarded_requests": 2}
+
+    def rows(self):
+        cancelled = dict(engine_row(2), outcome="forced_cancelled")
+        return [engine_row(1), cancelled, engine_row(3, "rejected")]
+
+    def test_drain_complete(self):
+        self.assertTrue(drain_complete(self.DRAINED))
+        for field, value in (("inflight_at_drain", 5), ("inflight_at_drain", False), ("inflight_at_drain", 0.0),
+                             ("log_complete", 1), ("forced_cancelled_requests", -1),
+                             ("forced_cancelled_requests", True), ("forced_cancelled_requests", None)):
+            with self.subTest(field=field, value=value):
+                self.assertFalse(drain_complete(dict(self.DRAINED, **{field: value})))
+        self.assertFalse(drain_complete({k: v for k, v in self.DRAINED.items() if k != "inflight_at_drain"}))
+
+    def test_final_log_consistent(self):
+        sealed = {"role": "engine"}
+        self.assertTrue(final_log_consistent(self.rows(), sealed, self.DRAINED))
+        self.assertFalse(final_log_consistent(self.rows(), None, self.DRAINED))
+        self.assertFalse(final_log_consistent(self.rows()[1:], sealed, dict(self.DRAINED, forwarded_requests=1)))
+        for value in (3, 2.0, True, None, "2"):
+            with self.subTest(forwarded=value):
+                self.assertFalse(final_log_consistent(self.rows(), sealed, dict(self.DRAINED, forwarded_requests=value)))
+        self.assertFalse(final_log_consistent(self.rows(), sealed, dict(self.DRAINED, forced_cancelled_requests=0)))
+        with self.assertRaises(EvidenceError):
+            final_log_consistent(self.rows() + [engine_row(4, "other")], sealed, self.DRAINED)
 
 
 class MeterPathLogTests(unittest.TestCase):
