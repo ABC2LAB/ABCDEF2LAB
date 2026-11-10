@@ -58,7 +58,7 @@ class RunInputs:
     run_conditions: tuple[str, str, str, str, str, str] | None = None  # (엔진 설정, 적용 샘플링, 머신 사양, 머신 ID) 해시와 LLM 스트리밍
     output_language: str | None = None  # v1.1 격리 근거의 표시 언어. 조건 사이에서는 일부러 다르다(프로토콜 §2)
     e2_mode: str | None = None  # v1.1 격리 근거의 E② 자리(none|stub|product). 증명이 없으면 None
-    e2_identity: tuple[str, str, str] | None = None  # 제품 E² 회차의 (정책 지문, 이미지 ID, 선언 차이 해시). 그 밖에는 None
+    e2_identity: tuple[str, str, str, str] | None = None  # 제품 E² 회차의 (정책 지문, 이미지 ID, 선언 차이 해시·상태). 그 밖에는 None
     e2_outcome: str | None = None  # 제품 E² 회차의 수집 결과. 그 밖에는 None
     e2_prompt: tuple[str, ...] | None = None  # 확인된 Worker 프롬프트 식별값. 제품 E² 완료 회차에만 있다
     attempt_reconciliation: dict | None = None  # E② 자리가 있는 회차의 시도별 대조 건수(§8.3). none·증명 없음이면 None
