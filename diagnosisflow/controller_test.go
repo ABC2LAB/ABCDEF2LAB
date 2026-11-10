@@ -168,6 +168,9 @@ func TestPauseWaitAndFailedStorageDenyNewSideEffects(t *testing.T) {
 	if c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item"}) == nil {
 		t.Fatal("storage failure did not fence request")
 	}
+	if c.PreapprovedRead(e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item"}) {
+		t.Fatal("poisoned store retained automatic read exemption")
+	}
 }
 func TestWorkflowPublicProjectionNeverReturnsCredentialPath(t *testing.T) {
 	s := Project(Snapshot{Endpoints: []Endpoint{{Path: "/read/user@example.test", Request: "GET /read/user@example.test HTTP/1.1", From: "/read/user@example.test"}}})
@@ -209,5 +212,51 @@ func TestHTMLFormDoesNotInventGETAndStaticMethodIsUnknown(t *testing.T) {
 	}
 	if !strings.Contains(c.Instructions(), "Workbench workflow mode: user_approval_v1") {
 		t.Fatal("worker did not receive bound execution mode")
+	}
+}
+
+func TestCrawlingOnlyAdmitsAttestedGETWithoutBody(t *testing.T) {
+	for _, mode := range []string{Auto, Manual} {
+		t.Run(mode, func(t *testing.T) {
+			c, _ := flowFixture(t, mode)
+			c.mu.Lock()
+			c.discoverBodyLocked([]byte(`<form method="get" action="/read/form"></form><form method="post" action="/read/write"></form>`), "text/html", "/read")
+			c.addLocked("HEAD", "/read/head", "api", "script_call", "/read")
+			c.mu.Unlock()
+			if snap, err := c.Snapshot(); err != nil || snap.Stage != "crawling" {
+				t.Fatal("fixture already left crawling")
+			}
+			if err := c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read"}); err != nil {
+				t.Fatal("attested crawl GET rejected", err)
+			}
+			for _, tc := range []struct {
+				name, method, path string
+				body               bool
+			}{
+				{"post", "POST", "/read/write", false}, {"get_body", "GET", "/read", true}, {"get_form", "GET", "/read/form", false}, {"head", "HEAD", "/read/head", false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					c.mu.Lock()
+					e := c.endpointLocked(tc.method, tc.path)
+					eligible := e != nil && e.InScope && e.Change != "blocked"
+					c.mu.Unlock()
+					if !eligible {
+						t.Fatal("another scope guard would hide the crawling restriction")
+					}
+					if err := c.Before(t.Context(), e2proxy.RequestView{Method: tc.method, URL: "https://owned.test" + tc.path, BodyPresent: tc.body}); !errors.Is(err, ErrDenied) {
+						t.Fatal("crawling admitted request needing a separate approval", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAttestedReadExemptionIsPathScopedAndDoesNotValidateQuery(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	syntheticCrawl(t, c)
+	v := e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item?owned_fixture=value"}
+	if err := c.Before(t.Context(), v); err != nil || !c.PreapprovedRead(v) {
+		t.Fatal("path-scoped query contract changed", err)
 	}
 }

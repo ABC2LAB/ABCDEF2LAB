@@ -199,6 +199,10 @@ export function TargetApprovalPanel({
         <h2>대상 권한 · 운영자 승인</h2>
         <p>새 대상은 DNS 소유 확인과 구체적인 읽기 전용 범위 승인이 필요합니다.</p>
         <p className={s.help}>
+          읽기 승인은 경로 단위이며 해당 경로의 임의 query까지 포함합니다. 서버는 query의 무해성을 검증하지 않습니다.
+          query로 상태가 바뀔 수 있는 경로는 읽기 범위에 포함하지 마세요.
+        </p>
+        <p className={s.help}>
           소유 승인 시 후보 IP별 TLS 연결(최대 8회), 시작 직전 선택 IP로 TLS 연결 1회를 수행합니다. HTTP 진단은 별도
           시작 후 실행합니다.
         </p>
