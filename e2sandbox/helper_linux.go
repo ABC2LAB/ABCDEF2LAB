@@ -161,7 +161,7 @@ func HelperMain() int {
 	cmd.Dir = "/work"
 	proxy := "http://" + listener.Addr().String()
 	cmd.Env = []string{
-		"PATH=/usr/bin:/bin", "HOME=/work", "TMPDIR=/tmp", "LANG=C", "LC_ALL=C",
+		"PATH=/usr/local/bin:/usr/sbin:/usr/bin:/bin", "HOME=/work", "TMPDIR=/tmp", "LANG=C", "LC_ALL=C",
 		"HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy, "ALL_PROXY=" + proxy,
 		"http_proxy=" + proxy, "https_proxy=" + proxy, "all_proxy=" + proxy,
 		"NO_PROXY=", "no_proxy=", "SSL_CERT_FILE=/run/e2/ca.pem", "CURL_CA_BUNDLE=/run/e2/ca.pem",
@@ -211,6 +211,56 @@ func emptyCapabilities() bool {
 	}
 	return fields["NoNewPrivs:"] == "1" && fields["Seccomp:"] == "2"
 }
+
+// 평가에서 원본 엔진과 같은 도구로 비교하려면 이미지의 도구 경로가 샌드박스에도 보여야 한다.
+// /usr/local/lib 전체는 넣지 않는다. 호스트에 따라 매우 커서 시작마다 하는 특수 파일 검사가 느려진다.
+func sandboxRuntimePaths(triplet string, glob func(string) ([]string, error), isDir func(string) bool) ([]string, error) {
+	paths := []string{
+		"/usr/bin", "/usr/sbin", "/bin", "/usr/local/bin", "/usr/lib/" + triplet, "/lib/" + triplet, "/usr/lib64", "/lib64",
+		"/usr/lib/cargo/bin/coreutils", "/etc/alternatives", "/etc/ld.so.cache",
+	}
+	for _, pattern := range []string{"/usr/lib/python3*", "/usr/local/lib/python3*"} {
+		found, err := glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range found {
+			if isDir(path) {
+				paths = append(paths, path)
+			}
+		}
+	}
+	shared, err := glob("/usr/local/lib/libpython3*")
+	if err != nil {
+		return nil, err
+	}
+	return append(paths, shared...), nil
+}
+
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// /etc에서는 도구 실행에 필요한 두 항목만 연다. 계정 파일 등 나머지는 계속 가린다.
+func allowedSystemSource(resolved string) bool {
+	return strings.HasPrefix(resolved, "/usr/") || resolved == "/etc/alternatives" || resolved == "/etc/ld.so.cache"
+}
+
+func prepareMountTarget(target string, directory bool) error {
+	if directory {
+		return os.MkdirAll(target, 0755)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0444)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 func mountReadOnly(source, target string) error {
 	if err := unix.Mount(source, target, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return err
@@ -313,24 +363,21 @@ func setupJail(cfg helperConfig) error {
 	default:
 		return jailError("architecture", ErrUnavailable)
 	}
-	paths := []string{"/usr/bin", "/bin", "/usr/lib/" + triplet, "/lib/" + triplet, "/usr/lib64", "/lib64", "/usr/lib/cargo/bin/coreutils"}
-	python, err := filepath.Glob("/usr/lib/python3*")
+	paths, err := sandboxRuntimePaths(triplet, filepath.Glob, isDirectory)
 	if err != nil {
 		return jailError("runtime_glob", ErrConfig)
 	}
-	for _, path := range python {
-		info, err := os.Stat(path)
-		if err == nil && info.IsDir() {
-			paths = append(paths, path)
-		}
-	}
 	seen := map[string]bool{}
 	for _, path := range paths {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
 			continue
 		}
+		if err != nil {
+			return jailError("system_source", ErrConfig)
+		}
 		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil || !strings.HasPrefix(resolved, "/usr/") {
+		if err != nil || !allowedSystemSource(resolved) {
 			return jailError("system_source", ErrConfig)
 		}
 		if !seen[resolved] {
@@ -339,10 +386,11 @@ func setupJail(cfg helperConfig) error {
 			}
 			seen[resolved] = true
 		}
-		if err := os.MkdirAll(filepath.Join(root, path), 0755); err != nil {
+		target := filepath.Join(root, path)
+		if err := prepareMountTarget(target, info.IsDir()); err != nil {
 			return jailError("runtime_directory", err)
 		}
-		if err := mountReadOnly(resolved, filepath.Join(root, path)); err != nil {
+		if err := mountReadOnly(resolved, target); err != nil {
 			return jailError("system_readonly", err)
 		}
 	}
