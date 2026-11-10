@@ -383,6 +383,17 @@ func TestServeReportsListenFailure(t *testing.T) {
 	}
 }
 
+// 리스너를 연 채로 넘겨서, 주소를 고른 뒤 다시 여는 사이에 다른 시험이 포트를 가져가지 못하게 한다.
+func listenLocal(t *testing.T) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	return l
+}
+
 func freeAddress(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -422,12 +433,12 @@ func writeTestCertificate(t *testing.T) (string, string) {
 func TestServeUsesTLSForTargetAndReceiver(t *testing.T) {
 	rec, path := newTestRecorder(t)
 	certFile, keyFile := writeTestCertificate(t)
-	target, outside := freeAddress(t), freeAddress(t)
+	targetListener, outsideListener := listenLocal(t), listenLocal(t)
+	target, outside := targetListener.Addr().String(), outsideListener.Addr().String()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() {
-		done <- serve(ctx, config{target, outside, certFile, keyFile, testReceiver}, rec, testPacketConn(t))
-	}()
+	cfg := config{certFile: certFile, keyFile: keyFile, receiver: testReceiver, targetListener: targetListener, receiverListener: outsideListener}
+	go func() { done <- serve(ctx, cfg, rec, testPacketConn(t)) }()
 	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
 	reach := func(url string) *http.Response {
 		deadline := time.Now().Add(5 * time.Second)
@@ -519,9 +530,9 @@ func onlyConnections(rows []row) bool {
 
 func TestReceiverCountsConnectionWithoutRequest(t *testing.T) {
 	rec, path := newTestRecorder(t)
-	outside := freeAddress(t)
-	cancel, done := startServe(t, config{listen: freeAddress(t), receiverListen: outside, receiver: testReceiver}, rec)
-	dialUntilReady(t, outside).Close()
+	outside := listenLocal(t)
+	cancel, done := startServe(t, config{receiver: testReceiver, targetListener: listenLocal(t), receiverListener: outside}, rec)
+	dialUntilReady(t, outside.Addr().String()).Close()
 	waitForRows(t, path, onlyConnections)
 	cancel()
 	if err := <-done; err != nil {
@@ -535,9 +546,10 @@ func TestReceiverCountsConnectionWithoutRequest(t *testing.T) {
 func TestReceiverCountsFailedTLSVerification(t *testing.T) {
 	rec, path := newTestRecorder(t)
 	certFile, keyFile := writeTestCertificate(t)
-	outside := freeAddress(t)
-	cancel, done := startServe(t, config{freeAddress(t), outside, certFile, keyFile, testReceiver}, rec)
-	raw := dialUntilReady(t, outside)
+	outside := listenLocal(t)
+	cfg := config{certFile: certFile, keyFile: keyFile, receiver: testReceiver, targetListener: listenLocal(t), receiverListener: outside}
+	cancel, done := startServe(t, cfg, rec)
+	raw := dialUntilReady(t, outside.Addr().String())
 	defer raw.Close()
 	// 신뢰하지 않는 인증서라 핸드셰이크가 끝나지 않고, HTTP 요청은 보내지 않는다.
 	var verify x509.UnknownAuthorityError
@@ -553,12 +565,12 @@ func TestReceiverCountsFailedTLSVerification(t *testing.T) {
 
 func TestConnectionRecordFailureFailsRun(t *testing.T) {
 	rec, _ := newTestRecorder(t)
-	outside := freeAddress(t)
-	_, done := startServe(t, config{listen: freeAddress(t), receiverListen: outside, receiver: testReceiver}, rec)
+	outside := listenLocal(t)
+	_, done := startServe(t, config{receiver: testReceiver, targetListener: listenLocal(t), receiverListener: outside}, rec)
 	rec.mu.Lock()
 	rec.file.Close()
 	rec.mu.Unlock()
-	raw := dialUntilReady(t, outside)
+	raw := dialUntilReady(t, outside.Addr().String())
 	defer raw.Close()
 	select {
 	case err := <-done:

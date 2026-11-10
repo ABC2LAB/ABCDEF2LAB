@@ -230,9 +230,26 @@ func serveUDP(ctx context.Context, conn net.PacketConn, rec *recorder) error {
 type config struct {
 	listen, receiverListen, certFile, keyFile string
 	receiver                                  receiverInfo
+	// 미리 연 리스너가 있으면 주소 대신 쓴다. 시험이 빈 포트를 고른 뒤 다시 여는 사이의 경합을 없앤다.
+	targetListener, receiverListener net.Listener
+}
+
+func listenOn(l net.Listener, addr string) (net.Listener, error) {
+	if l != nil {
+		return l, nil
+	}
+	return net.Listen("tcp", addr)
 }
 
 func serve(ctx context.Context, cfg config, rec *recorder, udp net.PacketConn) error {
+	targetListener, err := listenOn(cfg.targetListener, cfg.listen)
+	if err != nil {
+		return errors.Join(err, udp.Close(), rec.close())
+	}
+	receiverListener, err := listenOn(cfg.receiverListener, cfg.receiverListen)
+	if err != nil {
+		return errors.Join(err, targetListener.Close(), udp.Close(), rec.close())
+	}
 	target := &http.Server{Addr: cfg.listen, Handler: targetHandler(rec, cfg.receiver), ReadHeaderTimeout: readHeaderTimeout}
 	outside := &http.Server{Addr: cfg.receiverListen, Handler: receiverHandler(rec), ReadHeaderTimeout: readHeaderTimeout,
 		ConnState: func(_ net.Conn, state http.ConnState) {
@@ -241,15 +258,15 @@ func serve(ctx context.Context, cfg config, rec *recorder, udp net.PacketConn) e
 				fmt.Fprintln(os.Stderr, "browser-fixture: connection record failed")
 			}
 		}}
-	listen := func(server *http.Server) error {
+	listen := func(server *http.Server, l net.Listener) error {
 		if cfg.certFile != "" {
-			return server.ListenAndServeTLS(cfg.certFile, cfg.keyFile)
+			return server.ServeTLS(l, cfg.certFile, cfg.keyFile)
 		}
-		return server.ListenAndServe()
+		return server.Serve(l)
 	}
 	failures := make(chan error, 2)
-	go func() { failures <- listen(target) }()
-	go func() { failures <- listen(outside) }()
+	go func() { failures <- listen(target, targetListener) }()
+	go func() { failures <- listen(outside, receiverListener) }()
 	udpDone := make(chan error, 1)
 	go func() { udpDone <- serveUDP(ctx, udp, rec) }()
 	var first error
@@ -298,7 +315,7 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return errors.Join(err, udp.Close())
 	}
-	return serve(ctx, config{*listen, *receiverListen, *certFile, *keyFile, info}, rec, udp)
+	return serve(ctx, config{listen: *listen, receiverListen: *receiverListen, certFile: *certFile, keyFile: *keyFile, receiver: info}, rec, udp)
 }
 
 func main() {
