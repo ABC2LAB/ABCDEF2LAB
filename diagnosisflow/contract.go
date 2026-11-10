@@ -20,6 +20,7 @@ const Manual = "user_approval_v1"
 var ErrUnavailable = errors.New("workflow_unavailable")
 var ErrDenied = errors.New("workflow_request_denied")
 var ErrConflict = errors.New("workflow_revision_conflict")
+var ErrProjection = e2proxy.ErrBoundaryProjection
 
 type Limits struct {
 	Format                string `json:"format"`
@@ -35,21 +36,22 @@ func (l Limits) Valid() bool {
 func ValidMode(mode string) bool { return mode == Auto || mode == Manual }
 
 type Endpoint struct {
-	ID         string `json:"id"`
-	Method     string `json:"method"`
-	Path       string `json:"path"`
-	Kind       string `json:"kind"`
-	Source     string `json:"source"`
-	From       string `json:"from"`
-	InScope    bool   `json:"in_scope"`
-	Change     string `json:"change"`
-	Visited    bool   `json:"visited"`
-	Status     int    `json:"status,omitempty"`
-	Selected   bool   `json:"selected"`
-	Duplicates int    `json:"duplicates"`
-	CallRef    string `json:"call_ref,omitempty"`
-	Request    string `json:"request,omitempty"`
-	Response   string `json:"response,omitempty"`
+	ObservationError string `json:"observation_error,omitempty"`
+	ID               string `json:"id"`
+	Method           string `json:"method"`
+	Path             string `json:"path"`
+	Kind             string `json:"kind"`
+	Source           string `json:"source"`
+	From             string `json:"from"`
+	InScope          bool   `json:"in_scope"`
+	Change           string `json:"change"`
+	Visited          bool   `json:"visited"`
+	Status           int    `json:"status,omitempty"`
+	Selected         bool   `json:"selected"`
+	Duplicates       int    `json:"duplicates"`
+	CallRef          string `json:"call_ref,omitempty"`
+	Request          string `json:"request,omitempty"`
+	Response         string `json:"response,omitempty"`
 }
 type Event struct {
 	At     time.Time `json:"at"`
@@ -59,14 +61,16 @@ type Event struct {
 	Status int       `json:"status,omitempty"`
 }
 type Counts struct {
-	Found     int    `json:"found"`
-	Visited   int    `json:"visited"`
-	Queued    int    `json:"queued"`
-	Sent      uint64 `json:"sent"`
-	Attempted uint64 `json:"attempted"`
-	Unknown   uint64 `json:"unknown"`
-	Blocked   uint64 `json:"blocked"`
-	Held      uint64 `json:"held,omitempty"`
+	Found        int    `json:"found"`
+	Visited      int    `json:"visited"`
+	Queued       int    `json:"queued"`
+	Sent         uint64 `json:"sent"`
+	Attempted    uint64 `json:"attempted"`
+	Unknown      uint64 `json:"unknown"`
+	Blocked      uint64 `json:"blocked"`
+	Held         uint64 `json:"held,omitempty"`
+	Omitted      uint64 `json:"omitted,omitempty"`
+	InvalidPaths uint64 `json:"invalid_paths,omitempty"`
 }
 type Command struct {
 	Key       string `json:"key"`
@@ -86,6 +90,8 @@ type Activity struct {
 	Summary string    `json:"summary"`
 }
 type Snapshot struct {
+	Failure          string     `json:"failure,omitempty"`
+	DetailTruncated  bool       `json:"detail_truncated,omitempty"`
 	ReversibleWrites bool       `json:"reversible_writes"`
 	Commands         []Command  `json:"commands"`
 	Plan             []Plan     `json:"plan,omitempty"`

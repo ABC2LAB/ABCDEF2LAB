@@ -896,7 +896,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 				boundaryErr = c.e.cfg.RequestBoundary.After(context.WithoutCancel(ctx), RequestView{Method: req.Method, URL: req.URL.String(), BodyPresent: req.ContentLength != 0}, rr)
 			}
 		})
-		if boundaryErr != nil {
+		if boundaryErr != nil && !errors.Is(boundaryErr, ErrBoundaryProjection) {
 			c.e.mu.Lock()
 			c.e.auditFailed = true
 			c.e.mu.Unlock()

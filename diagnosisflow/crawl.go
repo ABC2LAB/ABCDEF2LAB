@@ -3,6 +3,7 @@ package diagnosisflow
 import (
 	"bufio"
 	"context"
+	"github.com/Autumn-27/artex/e2proxy"
 	"golang.org/x/net/html"
 	"io"
 	"net/http"
@@ -26,24 +27,14 @@ func (c *Controller) resolve(raw, from string) (string, bool) {
 	if err != nil || u.User != nil || u.Scheme+"://"+u.Host != c.origin || u.RawPath != "" || strings.Contains(u.Path, "%") {
 		return "", false
 	}
-	p := u.Path
-	if p == "" {
-		p = "/"
-	}
-	if len(p) > 128 || strings.Contains(p, "//") {
-		return "", false
-	}
-	for _, part := range strings.Split(p, "/") {
-		if part == "." || part == ".." {
-			return "", false
-		}
-	}
-	return p, true
+	return canonicalPath(u)
 }
 func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 	add := func(method, raw, kind, source string) {
 		if p, ok := c.resolve(raw, from); ok {
 			c.addLocked(method, p, kind, source, from)
+		} else {
+			c.record.Snapshot.Counts.InvalidPaths++
 		}
 	}
 	scriptBody := body
@@ -112,13 +103,27 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 
 // 첫 보호 Worker가 같은 Bash·공유 호출 예산·E② proxy로 초기 탐색을 수행한다.
 // 정적 발견은 실제 방문이나 SPA 동적 탐색 성공을 의미하지 않는다.
-func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (bool, error) {
+func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, failure error) {
 	c.mu.Lock()
 	if c.claimed {
+		failed := c.poisoned || c.record.Snapshot.Stage == "failed"
 		c.mu.Unlock()
+		if failed {
+			return true, ErrDenied
+		}
 		return false, nil
 	}
 	c.claimed = true
+	c.mu.Unlock()
+	defer func() {
+		if failure != nil && ctx.Err() == nil {
+			_ = c.Fail(context.WithoutCancel(ctx), "crawl_failed")
+		}
+		c.mu.Lock()
+		c.nativePath = ""
+		c.mu.Unlock()
+	}()
+	c.mu.Lock()
 	if fetch == nil || c.poisoned || c.record.Snapshot.Stage != "crawling" {
 		c.mu.Unlock()
 		return true, ErrUnavailable
@@ -129,11 +134,17 @@ func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (bool, error) {
 	}
 	c.mu.Unlock()
 	attempted := map[string]bool{}
+	observed := 0
 	for page := 0; page < c.binding.Limits.MaxPages; page++ {
 		if err := c.Wait(ctx); err != nil {
 			return true, err
 		}
 		c.mu.Lock()
+		if c.record.Snapshot.Paused {
+			c.mu.Unlock()
+			page--
+			continue
+		}
 		path := ""
 		for _, e := range c.record.Snapshot.Endpoints {
 			if e.Method == "GET" && e.InScope && e.Change == "attested_read" && !e.Visited && !attempted[e.ID] {
@@ -147,30 +158,63 @@ func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (bool, error) {
 			break
 		}
 		c.record.Snapshot.CurrentPath = path
+		c.nativePath = path // This one program-owned fetch is admitted before pause.
 		if err := c.saveLocked(ctx, false, "visit_started", "GET", path, 0); err != nil {
 			c.mu.Unlock()
 			return true, err
 		}
 		c.mu.Unlock()
-		result, err := fetch(ctx, c.origin+path)
-		if err != nil || !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete || result.Trusted.Call.Counts.ForwardAttempted != 1 || result.Trusted.Call.Counts.Unknown != 0 {
+		result, fetchErr := fetch(ctx, c.origin+path)
+		c.mu.Lock()
+		c.nativePath = ""
+		c.mu.Unlock()
+		trusted := result.Trusted
+		if trusted.Version != e2proxy.Version || !trusted.Final || !trusted.Call.Final || !trusted.ProcessDrained || !trusted.ProxyDrained || !trusted.Call.AuditComplete || trusted.Call.Counts.Unknown != 0 {
 			return true, ErrUnavailable
 		}
-		response, parseErr := http.ReadResponse(bufio.NewReader(strings.NewReader(result.ToolOutput)), &http.Request{Method: "GET"})
-		c.mu.Lock()
-		if parseErr == nil {
-			body, readErr := io.ReadAll(io.LimitReader(response.Body, int64(c.binding.Limits.MaxResponseBytes)+1))
-			_ = response.Body.Close()
-			if readErr == nil && len(body) <= c.binding.Limits.MaxResponseBytes && !result.Trusted.OutputTruncated {
-				c.discoverBodyLocked(body, response.Header.Get("Content-Type"), path)
+		pageError := ""
+		var body []byte
+		contentType := ""
+		if fetchErr != nil || trusted.ExitCode != 0 || trusted.Call.Counts.ForwardAttempted != 1 {
+			pageError = "fetch_failed"
+		} else {
+			response, parseErr := http.ReadResponse(bufio.NewReader(strings.NewReader(result.ToolOutput)), &http.Request{Method: "GET"})
+			if parseErr != nil {
+				pageError = "response_parse_failed"
+			} else {
+				contentType = response.Header.Get("Content-Type")
+				var readErr error
+				body, readErr = io.ReadAll(io.LimitReader(response.Body, int64(c.binding.Limits.MaxResponseBytes)+1))
+				_ = response.Body.Close()
+				if boundedStatus(response.StatusCode) == 0 {
+					pageError = "unsupported_status"
+				} else if readErr != nil || len(body) > c.binding.Limits.MaxResponseBytes || trusted.OutputTruncated {
+					pageError = "body_incomplete"
+				} else if response.StatusCode >= 400 {
+					pageError = "http_error"
+				}
 			}
-			clear(body)
 		}
-		if err := c.saveLocked(ctx, false, "visit_finished", "GET", path, 0); err != nil {
-			c.mu.Unlock()
+		c.mu.Lock()
+		if pageError == "" {
+			observed++
+			c.discoverBodyLocked(body, contentType, path)
+		} else if e := c.endpointLocked("GET", path); e != nil {
+			e.ObservationError = pageError
+		}
+		clear(body)
+		kind := "visit_finished"
+		if pageError != "" {
+			kind = "page_failed"
+		}
+		err := c.saveLocked(ctx, false, kind, "GET", path, 0)
+		c.mu.Unlock()
+		if err != nil {
 			return true, err
 		}
-		c.mu.Unlock()
+	}
+	if observed == 0 {
+		return true, ErrUnavailable
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -182,7 +226,7 @@ func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (bool, error) {
 		c.record.Snapshot.Stage = "diagnosing"
 		for i := range c.record.Snapshot.Endpoints {
 			e := &c.record.Snapshot.Endpoints[i]
-			e.Selected = e.InScope && e.Change == "attested_read"
+			e.Selected = e.InScope && e.Change == "attested_read" && e.ObservationError == ""
 		}
 	}
 	return true, c.saveLocked(ctx, false, "crawl_finished", "", "", 0)

@@ -127,3 +127,41 @@ func TestWorkflowBoundaryAndAuditFailureCannotBeBypassed(t *testing.T) {
 		t.Fatal("audit failure allowed another request")
 	}
 }
+
+type projectionBoundary struct{ failed bool }
+
+func (b *projectionBoundary) Before(context.Context, RequestView) error {
+	if b.failed {
+		return ErrDenied
+	}
+	return nil
+}
+func (b *projectionBoundary) PreapprovedRead(RequestView) bool { return true }
+func (b *projectionBoundary) After(context.Context, RequestView, Receipt) error {
+	b.failed = true
+	return ErrBoundaryProjection
+}
+func TestProjectionFailureStopsAdmissionWithoutLosingWireAudit(t *testing.T) {
+	var hits atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); io.WriteString(w, "owned") }))
+	defer target.Close()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 4)
+	cfg.RequestBoundary = &projectionBoundary{}
+	execution, call := coreOpen(t, cfg)
+	resp, r, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if resp != nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	if err != nil || !r.ResponseComplete || !r.RequestWritten {
+		t.Fatal("projection erased known HTTP outcome", err, r)
+	}
+	_, r, err = call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if !errors.Is(err, ErrDenied) || r.ForwardAttempted || hits.Load() != 1 {
+		t.Fatal("failed projection admitted later request", err, r)
+	}
+	snapshot := execution.Snapshot()
+	if !snapshot.AuditComplete || snapshot.Counts.Unknown != 0 {
+		t.Fatal("optional projection poisoned wire audit", snapshot)
+	}
+}

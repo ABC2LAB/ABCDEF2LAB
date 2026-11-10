@@ -203,6 +203,26 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	}
 	name := "bound-" + urlSHA([]byte(bindingSource))[:32]
 	dir := filepath.Join(root, name)
+	// Keep historical immutable bindings. A full workflow cache must not consume
+	// the independent capacity reserved for ordinary preauthorized rounds.
+	if input.WorkflowMode == "" {
+		if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+			entries, readErr := os.ReadDir(root)
+			if readErr != nil {
+				return nil, errPreparation
+			}
+			if len(entries) >= 512 {
+				root = filepath.Join(root, "ordinary")
+				if err := os.Mkdir(root, 0700); err != nil && !os.IsExist(err) {
+					return nil, errPreparation
+				}
+				if checkDirectory(root, true) != nil {
+					return nil, errPreparation
+				}
+				dir = filepath.Join(root, name)
+			}
+		}
+	}
 	derived := m
 	derived.TargetRef = rec.Target.ID
 	derived.ScopeRef = "scope-" + rec.Target.ID
@@ -237,7 +257,7 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	derived.Attestation.Methods = append([]string(nil), methods...)
 	policy.Rules = nil
 	for i, path := range rec.Target.PathPrefixes {
-		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "target-path-" + string(rune('a'+i)), Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: path, PathScopeRef: "readonly-path-" + string(rune('a'+i)), Methods: methods, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
+		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "target-path-" + string(rune('a'+i)), Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: path, PathScopeRef: "readonly-path-" + string(rune('a'+i)), Methods: methods, ApprovalDisplay: server.RequestApprovalDisplay{PublicPath: input.WorkflowMode == diagnosisflow.Manual, QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
 	}
 	oldPolicyDir := filepath.Dir(cfg.HTTP.PolicyFile)
 	cfg.HTTP.PolicyFile = filepath.Join(dir, "policy.json")

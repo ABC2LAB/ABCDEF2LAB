@@ -22,6 +22,7 @@ export function RequestApprovalPanel({
   active: boolean;
   compact?: boolean;
 }) {
+  const job = useUrl((st) => st.job);
   const flow = useUrl((st) => st.flow),
     verified = useUrl((st) => st.verified),
     uncertain = useUrl((st) => st.uncertain);
@@ -47,14 +48,43 @@ export function RequestApprovalPanel({
     };
   }, [taskId]);
   const data = state.data,
-    runMatches = !!data && !state.error && (!flow || data.run.run_ref === flow.run_ref);
+    runMatches =
+      !!data &&
+      !state.error &&
+      job?.task_id === taskId &&
+      ["preparing", "running"].includes(job.state) &&
+      (!flow || (flow.task_id === taskId && data.run.run_ref === flow.run_ref));
   const observed = unconfirmed ? data?.approvals?.find((a) => a.id === unconfirmed) : null;
   // 상태 조회가 실제 결정·만료·취소를 확인하기 전에는 결정 POST를 반복하지 않는다.
   const unresolved = !!unconfirmed && (!observed || observed.state === "pending");
   const rows = data?.approvals ?? [];
   const pending = rows.filter((a) => a.state === "pending");
+  const currentGate = (row: RequestApproval) => {
+    const st = useUrl.getState();
+    return (
+      st.verified &&
+      !st.uncertain &&
+      st.job?.task_id === taskId &&
+      ["preparing", "running"].includes(st.job.state) &&
+      (!st.flow ||
+        (st.flow.task_id === taskId &&
+          st.flow.run_ref === row.run_ref &&
+          !st.flow.paused &&
+          !st.flowUncertain &&
+          st.flowVerified))
+    );
+  };
+  useEffect(() => {
+    if (!active) {
+      generation.current++;
+      lock.current = false;
+      setBusy(null);
+    }
+  }, [active]);
   const decide = async (row: RequestApproval, decision: "allow" | "deny") => {
     if (
+      !active ||
+      !currentGate(row) ||
       lock.current ||
       !runMatches ||
       !verified ||
@@ -72,6 +102,7 @@ export function RequestApprovalPanel({
     try {
       const fresh = await getRequestApproval(taskId, row.id);
       if (token !== generation.current || identity.current !== taskId) return;
+      if (!currentGate(row)) return;
       if (
         fresh.run_ref !== row.run_ref ||
         fresh.attempt_id !== row.attempt_id ||
@@ -80,6 +111,7 @@ export function RequestApprovalPanel({
         !fresh.can_decide
       )
         throw new Error("approval_changed");
+      setUnconfirmed(row.id);
       await decideRequestApproval(taskId, fresh, decision);
       if (token !== generation.current || identity.current !== taskId) return;
       setUnconfirmed(null);
@@ -154,7 +186,7 @@ export function RequestApprovalPanel({
                   className={s.btn}
                   type="button"
                   disabled={
-                    !!busy || unresolved || !verified || uncertain || !a.can_decide || !a.live || !!flow?.paused
+                    !!busy || unresolved || !verified || uncertain || !a.can_decide || !a.live || !currentGate(a)
                   }
                   onClick={() => void decide(a, "allow")}
                 >
@@ -164,7 +196,7 @@ export function RequestApprovalPanel({
                   className={s.btn}
                   type="button"
                   disabled={
-                    !!busy || unresolved || !verified || uncertain || !a.can_decide || !a.live || !!flow?.paused
+                    !!busy || unresolved || !verified || uncertain || !a.can_decide || !a.live || !currentGate(a)
                   }
                   onClick={() => void decide(a, "deny")}
                 >

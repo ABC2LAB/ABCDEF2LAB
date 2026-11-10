@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 )
@@ -109,7 +110,7 @@ func approvalPreview(p e2proxy.RequestApprovalProposal, rule E2HTTPFileRule) (st
 	}
 	path := rule.PathPrefix
 	if rule.ApprovalDisplay.PublicPath {
-		path = u.EscapedPath()
+		path = dlp.DiagnosticText(u.EscapedPath())
 	} else if u.Path != rule.PathPrefix {
 		path = strings.TrimSuffix(path, "/") + "/[REDACTED]"
 	}

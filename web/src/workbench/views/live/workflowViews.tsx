@@ -3,7 +3,14 @@
 import { useMemo, useState } from "react";
 
 import { cx } from "../../lib/cx";
-import { refreshWorkflow, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import {
+  refreshWorkflow,
+  retryWorkflowAction,
+  runUrlAction,
+  runWorkflowAction,
+  useUrl,
+  useUrlGates,
+} from "../../live/urlDiagnosis";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
@@ -24,11 +31,24 @@ function changeText(e: WorkflowEndpoint): string {
   return e.change === "possible" ? "전송 전 개별 승인" : "사전 확인 읽기 범위";
 }
 export function WorkflowNotice() {
+  const flow = useUrl((st) => st.flow);
   const error = useUrl((st) => st.flowError),
     uncertain = useUrl((st) => st.flowUncertain),
     verified = useUrl((st) => st.flowVerified);
   return (
     <>
+      {flow?.counts.omitted ? (
+        <p role="status">
+          발견 상한으로 생략한 항목 {flow.counts.omitted}건(중복 포함) · 전체 탐색 완료를 뜻하지 않습니다.
+        </p>
+      ) : null}
+      {flow?.counts.invalid_paths ? (
+        <p className={s.help}>형식·범위로 등록하지 않은 링크 {flow.counts.invalid_paths}건</p>
+      ) : null}
+      {flow?.detail_truncated ? <p role="status">화면 응답 상한으로 일부 관찰 상세를 생략했습니다.</p> : null}
+      {flow && !flow.paused && flow.commands.length >= 31 ? (
+        <p className={s.help}>일시정지 명령 상한에 도달했습니다. 실행은 계속되며 중지는 가능합니다.</p>
+      ) : null}
       {error ? (
         <p role="alert" className={s.help}>
           {error}
@@ -36,6 +56,11 @@ export function WorkflowNotice() {
       ) : null}
       {uncertain ? <p role="status">명령 결과 불명 · 조회로 확인하기 전에는 변경 명령을 보내지 않습니다.</p> : null}
       {!uncertain && !verified ? <p className={s.help}>현재 탐색 상태를 확인하는 중입니다.</p> : null}
+      {uncertain && verified ? (
+        <button type="button" className={s.btn} onClick={() => void retryWorkflowAction()}>
+          같은 명령 확인·재시도
+        </button>
+      ) : null}
     </>
   );
 }
@@ -56,7 +81,14 @@ export function WorkflowControls() {
         <button
           className={s.btn}
           type="button"
-          disabled={!verified || uncertain || busy || !jobVerified || jobUncertain}
+          disabled={
+            !verified ||
+            uncertain ||
+            busy ||
+            !jobVerified ||
+            jobUncertain ||
+            (!flow.paused && flow.commands.length >= 31)
+          }
           aria-pressed={flow.paused}
           onClick={() => void runWorkflowAction(flow.paused ? "resume" : "pause")}
         >
@@ -108,6 +140,14 @@ function EndpointDetail({ endpoint }: { endpoint: WorkflowEndpoint | null }) {
           </div>
           {tab === "info" ? (
             <dl className={s.kv}>
+              <dt>선택 경로 참조</dt>
+              <dd>{e.id}</dd>
+              {e.observation_error ? (
+                <>
+                  <dt>관찰 실패</dt>
+                  <dd>{e.observation_error}</dd>
+                </>
+              ) : null}
               <dt>발견 유형</dt>
               <dd>{e.kind}</dd>
               <dt>출처</dt>
@@ -610,6 +650,7 @@ export function WorkflowReport() {
         <h2 id="rWorkflowH">실제 탐색·선택 범위</h2>
       </div>
       <WorkflowNotice />
+      {flow.failure ? <p role="alert">탐색 실패 · {flow.failure}. 추가 실행은 중단됐습니다.</p> : null}
       <p>
         {flow.mode === "ai_auto_v1" ? "AI 자동" : "사용자 승인"} · {flowStageText[flow.stage]} · 심화 Worker 마감{" "}
         {flow.deep_closed}/{flow.deep_runs}

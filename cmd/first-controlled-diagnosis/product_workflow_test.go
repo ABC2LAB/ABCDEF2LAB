@@ -4,7 +4,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,6 +98,80 @@ func TestWorkflowProfileBindsCompleteInputAndNarrowsAutomaticMethods(t *testing.
 		if method != "GET" && method != "HEAD" {
 			t.Fatal("automatic mode inherited write authority")
 		}
+	}
+	// Installation opt-in, target consent and ordinary-mode write filtering are
+	// separate boundaries: a signed POST target must not widen the legacy path.
+	input.WorkflowMode = ""
+	ordinary, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal("ordinary profile", err)
+	}
+	ordinary.clearMaterials()
+	for _, rule := range ordinary.policy.Rules {
+		for _, method := range rule.Methods {
+			if method != "GET" && method != "HEAD" {
+				t.Fatal("ordinary mode inherited writes")
+			}
+		}
+	}
+	for _, rule := range one.policy.Rules {
+		if !rule.ApprovalDisplay.PublicPath {
+			t.Fatal("manual approval cannot distinguish paths")
+		}
+	}
+	installed := runtime.targets.policy.Workflow
+	runtime.targets.policy.Workflow = nil
+	input.WorkflowMode = diagnosisflow.Manual
+	if loaded, err := runtime.load("ARTEX", input, false, ""); err == nil {
+		loaded.clearMaterials()
+		t.Fatal("workflow without installation opt-in")
+	}
+	runtime.targets.policy.Workflow = installed
+	installed.AllowReversibleWrites = false
+	if _, err := r.register("ARTEX", spec); err == nil {
+		t.Fatal("write target bypassed installation consent")
+	}
+	installed.AllowReversibleWrites = true
+	spec.ReversibleWrites = false
+	if _, err := r.register("ARTEX", spec); err == nil {
+		t.Fatal("write target bypassed target consent")
+	}
+	// Historical workflow pins are preserved at capacity. Ordinary rounds have
+	// their own bounded reserve and cannot be starved by workflow display names.
+	root := filepath.Join(runtime.config.StateDir, "bindings")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(entries); i < 512; i++ {
+		if err = os.Mkdir(filepath.Join(root, fmt.Sprintf("owned-reserved-%03d", i)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	input.DisplayName = "Full workflow cache"
+	if loaded, err := runtime.load("ARTEX", input, false, ""); err == nil {
+		loaded.clearMaterials()
+		t.Fatal("workflow binding cap removed")
+	}
+	// A different approved target makes this ordinary binding new as well.
+	spec.ReversibleWrites = true
+	spec.ReadonlyBasis += " Updated owned scope."
+	changed, err := r.register("ARTEX", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txt[changed.ChallengeName] = []string{changed.ChallengeValue}
+	if _, err = r.approve(t.Context(), "ARTEX", changed.ID); err != nil {
+		t.Fatal(err)
+	}
+	input.WorkflowMode = ""
+	fallback, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal("ordinary round blocked by workflow cache", err)
+	}
+	defer fallback.clearMaterials()
+	if filepath.Base(filepath.Dir(filepath.Dir(fallback.launch.HTTP.PolicyFile))) != "ordinary" {
+		t.Fatal("ordinary reserve not used")
 	}
 	f.assertNoConnections()
 }

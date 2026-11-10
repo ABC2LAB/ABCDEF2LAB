@@ -19,6 +19,7 @@ export type WorkflowEndpoint = {
   status?: number;
   selected: boolean;
   duplicates: number;
+  observation_error?: string;
   call_ref?: string;
   request?: string;
   response?: string;
@@ -38,6 +39,8 @@ export type WorkflowSnapshot = {
   deep_closed: number;
   reversible_writes: boolean;
   current_path?: string;
+  failure?: string;
+  detail_truncated?: boolean;
   limits: WorkflowLimits;
   counts: {
     found: number;
@@ -48,6 +51,8 @@ export type WorkflowSnapshot = {
     unknown: number;
     blocked: number;
     held?: number;
+    omitted?: number;
+    invalid_paths?: number;
   };
   endpoints: WorkflowEndpoint[];
   events: { at: string; kind: string; method?: string; path?: string; status?: number }[];
@@ -89,7 +94,14 @@ export function parseWorkflow(value: unknown, job: URLDiagnosisJob): WorkflowSna
     !obj(s.counts)
   )
     return invalid();
+  if (
+    (s.failure !== undefined && !text(s.failure, 64)) ||
+    (s.detail_truncated !== undefined && typeof s.detail_truncated !== "boolean")
+  )
+    return invalid();
   parseWorkflowLimits(s.limits);
+  for (const k of ["omitted", "invalid_paths"]) if (s.counts[k] !== undefined && !num(s.counts[k])) return invalid();
+  if (s.current_path !== undefined && !text(s.current_path, 512)) return invalid();
   for (const k of ["found", "visited", "queued", "sent", "attempted", "unknown", "blocked"]) {
     if (!num(s.counts[k])) return invalid();
   }
@@ -120,6 +132,7 @@ export function parseWorkflow(value: unknown, job: URLDiagnosisJob): WorkflowSna
       typeof e.selected !== "boolean" ||
       !num(e.duplicates) ||
       (e.status !== undefined && (!num(e.status) || e.status > 599)) ||
+      (e.observation_error !== undefined && !text(e.observation_error, 64)) ||
       (e.request !== undefined && !text(e.request, 1024)) ||
       (e.response !== undefined && !text(e.response, 1024))
     )

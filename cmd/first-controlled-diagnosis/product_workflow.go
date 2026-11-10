@@ -113,5 +113,6 @@ func (e productPreparationEndpoint) workflowControl(ctx context.Context, r diagn
 	if _, err = strconv.ParseInt(snapshot.TaskID, 10, 64); err != nil {
 		return nil, errPreparation
 	}
+	snapshot = diagnosisflow.Project(snapshot)
 	return &snapshot, nil
 }

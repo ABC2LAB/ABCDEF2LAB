@@ -104,7 +104,8 @@ let lock = false;
 let capRun = 0;
 let flowGeneration = 0;
 let flowLock = false;
-let flowPending: { key: string; revision: number } | null = null;
+let flowPending: { key: string; revision: number; operation: "selection" | "pause" | "resume"; ids: string[] } | null =
+  null;
 
 /** 진행 중인 응답을 모두 버리고 진단 상태를 비운다 (cap 은 그대로). */
 function dropJob(): void {
@@ -472,13 +473,14 @@ export async function refreshWorkflow(expectedID?: string): Promise<void> {
 export async function runWorkflowAction(
   operation: "selection" | "pause" | "resume",
   ids: string[] = [],
+  replay = false,
 ): Promise<boolean> {
   const st = useUrl.getState(),
     job = st.job,
     current = st.flow;
   if (
     flowLock ||
-    st.flowUncertain ||
+    (st.flowUncertain && !replay) ||
     !st.flowVerified ||
     !job ||
     !current ||
@@ -488,12 +490,19 @@ export async function runWorkflowAction(
   )
     return false;
   flowLock = true;
-  const token = flowGeneration,
-    key = crypto.randomUUID();
-  flowPending = { key, revision: current.revision };
+  const token = flowGeneration;
+  const previous = flowPending;
+  if (replay && (!previous || previous.operation !== operation)) {
+    flowLock = false;
+    return false;
+  }
+  const pending =
+    replay && previous ? previous : { key: crypto.randomUUID(), revision: current.revision, operation, ids: [...ids] };
+  const key = pending.key;
+  flowPending = pending;
   useUrl.setState({ flowBusy: true, flowError: "" });
   try {
-    const next = await commandWorkflow(job, current, operation, key, ids);
+    const next = await commandWorkflow(job, { ...current, revision: pending.revision }, operation, key, pending.ids);
     if (token !== flowGeneration) return false;
     if (!next.commands.some((c) => c.key === key)) throw new Error("unbound_command_receipt");
     flowPending = null;
@@ -517,4 +526,11 @@ export async function runWorkflowAction(
       useUrl.setState({ flowBusy: false });
     }
   }
+}
+
+/** Explicit same-key replay only after a fresh GET; never an automatic POST retry. */
+export async function retryWorkflowAction(): Promise<boolean> {
+  const pending = flowPending;
+  if (!pending || !useUrl.getState().flowUncertain || !useUrl.getState().flowVerified) return false;
+  return runWorkflowAction(pending.operation, pending.ids, true);
 }

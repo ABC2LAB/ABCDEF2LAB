@@ -126,6 +126,7 @@ export function TargetApprovalPanel({
     };
   }, [list]);
   useEffect(() => {
+    setReversible(false);
     if (origin) {
       setPaths("");
       setBasis("");

@@ -262,13 +262,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	p.publish = func(u diagnosisprep.Update) error {
 		switch u.State {
 		case diagnosisprep.Completed, diagnosisprep.Failed, diagnosisprep.Cancelled, diagnosisprep.Unknown:
-			if flow != nil {
-				if flow.Close(context.WithoutCancel(parent), workflowTerminal(u.State)) != nil {
-					u.State = diagnosisprep.Unknown
-					u.ReasonCode = "workflow_storage_unconfirmed"
-				}
-			}
-			finishDiagnostics(&u)
+			u = settleProductWorkflow(parent, flow, u, finishDiagnostics)
 		}
 		return publish(u)
 	}
@@ -783,4 +777,23 @@ func cancelURLStatusFailure(ctx context.Context, cancel context.CancelFunc) {
 	if ctx.Err() == nil {
 		cancel()
 	}
+}
+
+func settleProductWorkflow(ctx context.Context, flow *diagnosisflow.Controller, u diagnosisprep.Update, finish func(*diagnosisprep.Update)) diagnosisprep.Update {
+	finish(&u)
+	if u.ModelUsage != nil && !u.ModelUsage.UsageKnown {
+		u.State = diagnosisprep.Unknown
+		u.ReasonCode = "model_usage_unknown"
+	}
+	if flow != nil {
+		if flow.Failed() && u.State != diagnosisprep.Unknown {
+			u.State = diagnosisprep.Failed
+			u.ReasonCode = "workflow_failed"
+		}
+		if flow.Close(context.WithoutCancel(ctx), workflowTerminal(u.State)) != nil && u.State != diagnosisprep.Unknown {
+			u.State = diagnosisprep.Failed
+			u.ReasonCode = "workflow_projection_failed"
+		}
+	}
+	return u
 }

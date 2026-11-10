@@ -177,3 +177,38 @@ it("URL status polling does not orphan an in-flight selection or lose its respon
   expect(useUrl.getState().flowUncertain).toBe(false);
   expect(useUrl.getState().flow?.stage).toBe("diagnosing");
 });
+
+it("explicit recovery reuses the original key and payload after a POST never reached the server", async () => {
+  const { retryWorkflowAction } = await import("../live/urlDiagnosis");
+  vi.mocked(apiFetch).mockRejectedValueOnce(new TypeError("owned request loss"));
+  expect(await runWorkflowAction("selection", ["endpoint-owned"])).toBe(false);
+  const original = vi.mocked(apiFetch).mock.calls[0];
+  expect(await retryWorkflowAction()).toBe(false);
+  vi.mocked(apiFetch).mockResolvedValueOnce({ workflow: snapshot });
+  await refreshWorkflow();
+  vi.mocked(apiFetch).mockImplementationOnce(async (_path, init) => ({
+    workflow: {
+      ...snapshot,
+      revision: 13,
+      stage: "diagnosing",
+      commands: [
+        { key: (init?.headers as Record<string, string>)["Idempotency-Key"], operation: "selection", revision: 13 },
+      ],
+    },
+  }));
+  expect(await retryWorkflowAction()).toBe(true);
+  const replay = vi.mocked(apiFetch).mock.calls[2];
+  expect(replay[1]?.body).toBe(original[1]?.body);
+  expect(replay[1]?.headers).toEqual(original[1]?.headers);
+  expect(replay[2]).toBe(false);
+});
+it.each([
+  "completed",
+  "failed",
+  "unknown",
+  "cancelled",
+] as const)("terminal URL state %s blocks workflow POST", async (state) => {
+  useUrl.setState({ job: { ...job, state } });
+  expect(await runWorkflowAction("pause")).toBe(false);
+  expect(apiFetch).not.toHaveBeenCalled();
+});

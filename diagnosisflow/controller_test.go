@@ -74,7 +74,7 @@ func syntheticCrawl(t *testing.T, c *Controller) {
 		if strings.HasSuffix(target, "/item") {
 			body = `<a href="/read/item">duplicate</a>`
 		}
-		return e2runner.Result{ToolOutput: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + body, Trusted: e2runner.TrustedResult{Final: true, ProcessDrained: true, ProxyDrained: true, Call: e2proxy.CallResult{AuditComplete: true, Counts: e2proxy.Counts{ForwardAttempted: 1}}}}, nil
+		return e2runner.Result{ToolOutput: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + body, Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Final: true, ProcessDrained: true, ProxyDrained: true, Call: e2proxy.CallResult{Final: true, AuditComplete: true, Counts: e2proxy.Counts{ForwardAttempted: 1}}}}, nil
 	})
 	if !handled || err != nil || calls != 2 {
 		t.Fatal("bounded crawl", handled, calls, err)
