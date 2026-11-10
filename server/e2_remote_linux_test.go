@@ -125,9 +125,6 @@ func TestE2RemoteRunsThroughTheBackend(t *testing.T) {
 	if !errors.Is(err, e2runner.ErrUnavailable) || !failed.Trusted.Final || failed.Trusted.ExitCode != 3 {
 		t.Fatalf("0이 아닌 종료: err=%v final=%v code=%d", err, failed.Trusted.Final, failed.Trusted.ExitCode)
 	}
-	if _, err := run.RunForIntent(ctx, 18, "true"); !errors.Is(err, ErrE2Control) || errors.Is(err, e2runner.ErrUnavailable) {
-		t.Fatal("등록하지 않은 intent가 실행됨:", err)
-	}
 	if calls := run.Calls(); len(calls) != 3 {
 		t.Fatal("호출 기록 수", len(calls))
 	}
@@ -159,6 +156,18 @@ func TestE2RemoteSandboxCannotReachTheChannelOrNest(t *testing.T) {
 	nested, err := run.RunForIntent(ctx, 17, "unshare -U true; echo rc=$?")
 	if err != nil || !strings.Contains(nested.ToolOutput, "rc=1") {
 		t.Fatalf("샌드박스 안에서 namespace를 다시 만듦: err=%v output=%q", err, nested.ToolOutput)
+	}
+}
+
+// 도구 호출 상한에 먼저 걸리지 않게 첫 호출로 잰다.
+func TestE2RemoteRunsOnlyRegisteredIntents(t *testing.T) {
+	f := startE2RemoteFixture(t)
+	run := f.acquire(t)
+	if _, err := run.RunForIntent(context.Background(), 18, "true"); !errors.Is(err, ErrE2Control) || errors.Is(err, e2runner.ErrUnavailable) {
+		t.Fatal("등록하지 않은 intent가 실행됨:", err)
+	}
+	if run.HasIntent(18) {
+		t.Fatal("거절된 실행이 intent를 등록함")
 	}
 }
 
