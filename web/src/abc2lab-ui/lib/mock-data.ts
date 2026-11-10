@@ -499,7 +499,7 @@ function tokenUsage() {
 
 const LLM = {
   provider: "openai",
-  model: "qwen/qwen3.6-35b-a3b (예시)",
+  model: "qwen3.6-35b-a3b (예시)",
   base_url: "http://llm.internal/v1",
   configured: true,
   key_set: false,
@@ -596,128 +596,6 @@ const PENDING: {
   },
 ];
 
-/**
- * 발견 상세(GET /api/exploration/findings/{finding_id}) 예시 — 증거 · 보고서 · 요청 기록 · 재검증.
- * 따로 적지 않은 발견은 요약을 증거로 쓰고, 요청 기록 · 재검증은 비워 둔다.
- */
-type FindingExtra = {
-  evidence: string;
-  report?: string;
-  traffic?: { role: string; note: string; method: string; url: string; status: number; resp_len: number }[];
-  retests?: { verdict: string; status: string; summary: string; ageMs: number }[];
-};
-const FINDING_EXTRA: Record<string, FindingExtra> = {
-  "F-1004-1": {
-    evidence:
-      "계정 B 세션으로 계정 A의 주문 1012 상세 요청\nGET /api/orders/1012\nCookie: session=b-7f2c91e0\n→ 200, 응답에 계정 A의 주문 표식(buyer_note)이 그대로 나옴\n대조: 계정 B 본인 주문 1013 → 200, 비로그인 → 401",
-    report:
-      "## 요약\n주문 상세 API가 요청한 사용자가 주문의 주인인지 확인하지 않아, 주문 번호만 바꾸면 다른 사용자의 주문을 볼 수 있어요.\n\n## 재현 방법\n1. 계정 B로 로그인한다.\n2. GET /api/orders/1012 (계정 A의 주문)를 요청한다.\n3. 200과 함께 계정 A의 주문 내용이 돌아온다.\n\n## 고치려면\n주문 조회 시 order.owner_id 와 세션 사용자를 서버에서 비교하세요.",
-    traffic: [
-      {
-        role: "baseline",
-        note: "계정 A 본인 주문 조회",
-        method: "GET",
-        url: "https://shop.example.com/api/orders/1012",
-        status: 200,
-        resp_len: 1840,
-      },
-      {
-        role: "proof",
-        note: "계정 B로 계정 A의 주문 조회",
-        method: "GET",
-        url: "https://shop.example.com/api/orders/1012",
-        status: 200,
-        resp_len: 1840,
-      },
-      {
-        role: "verification",
-        note: "비로그인 대조",
-        method: "GET",
-        url: "https://shop.example.com/api/orders/1012",
-        status: 401,
-        resp_len: 52,
-      },
-    ],
-    retests: [
-      { verdict: "reproduced", status: "completed", summary: "같은 요청이 여전히 200으로 응답", ageMs: 0.5 * H },
-    ],
-  },
-  "F-1003-1": {
-    evidence:
-      "role=user 계정 토큰으로 관리자 API 호출\nGET /api/admin/users\nAuthorization: Bearer user-token-3b8e\n→ 200, 전체 사용자 목록(이메일 · 역할) 반환",
-    report:
-      "## 요약\n관리자 전용 사용자 목록 API가 역할(role)을 확인하지 않아 일반 사용자도 전체 회원 정보를 볼 수 있어요.\n\n## 고치려면\n관리자 API 앞단에서 세션 사용자의 role 이 admin 인지 서버에서 확인하세요.",
-    traffic: [
-      {
-        role: "proof",
-        note: "일반 사용자 토큰으로 호출",
-        method: "GET",
-        url: "https://api.store-dev.com/api/admin/users",
-        status: 200,
-        resp_len: 9230,
-      },
-    ],
-    retests: [
-      { verdict: "fixed", status: "completed", summary: "패치 후 403으로 바뀜", ageMs: 2 * H },
-      { verdict: "reproduced", status: "completed", summary: "여전히 200", ageMs: 20 * H },
-    ],
-  },
-};
-
-function findingDetail(fid: string) {
-  const f = Object.values(FINDINGS)
-    .flat()
-    .find((x) => x.finding_id === fid);
-  if (!f) return undefined;
-  const extra = FINDING_EXTRA[fid];
-  return {
-    ...f,
-    evidence: extra?.evidence ?? f.summary,
-    report: extra?.report ?? "",
-    report_stale: false,
-    traffic_count: extra?.traffic?.length ?? 0,
-    task_description: TASKS.find((t) => t.id === f.task_id)?.description ?? "",
-  };
-}
-
-function findingTraffic(fid: string) {
-  if (!findingDetail(fid)) return undefined;
-  return {
-    finding_id: fid,
-    bindings: (FINDING_EXTRA[fid]?.traffic ?? []).map((t, i) => ({
-      id: `${fid}-b${i}`,
-      role: t.role,
-      note: t.note,
-      position: i,
-      snapshot: {
-        method: t.method,
-        url: t.url,
-        status: t.status,
-        content_type: "application/json",
-        req_len: 0,
-        resp_len: t.resp_len,
-        captured_at: Math.floor((now - 1.6 * H) / 1000) + i * 7,
-      },
-    })),
-  };
-}
-
-function findingRetests(fid: string) {
-  if (!findingDetail(fid)) return undefined;
-  return {
-    retests: (FINDING_EXTRA[fid]?.retests ?? []).map((r, i) => ({
-      id: i + 1,
-      finding_id: fid,
-      status: r.status,
-      verdict: r.verdict,
-      summary: r.summary,
-      error: "",
-      created_at: iso(r.ageMs + 60_000),
-      finished_at: iso(r.ageMs),
-    })),
-  };
-}
-
 function taskIdFrom(url: URL): string {
   return url.searchParams.get("task") ?? "";
 }
@@ -731,6 +609,74 @@ type Route = {
 
 const NO_CONTENT = Symbol("no-content");
 
+/**
+ * GET /api/tasks/{id}/access-map 예시 — docs/contracts/access-map-read.md shape.
+ * 값·URL·자격·표식 값 없음(코드·필드명만, 절대규칙 2). 목업 빌드의 기본 task(1005)에서도 지도가 뜨게 한다.
+ */
+function accessMap(id: string) {
+  const at = iso(2 * H);
+  const base = {
+    owner_ref: "account-a",
+    applicable: true,
+    case_ref: "mock-case-1",
+    observed_at: at,
+    projection_error: null,
+  };
+  return {
+    task_id: Number(id) || 0,
+    run_ref: "mock-run-1",
+    reset_generation: "mock-reset-1",
+    axis: "horizontal",
+    policy_version: "kg-fixture/v1:mock-snapshot:0000000000000000000000000000000000000000000000000000000000000000",
+    cells: [
+      {
+        ...base,
+        principal: "account-b",
+        resource_ref: "address:1",
+        resource_label: "주소 1",
+        state: "confirmed",
+        oracle_value: "confirmed",
+        record_id: 1,
+        reason_codes: ["policy_deny_resolved", "data_nontrivial_match"],
+        canary_fields: ["fullName"],
+      },
+      {
+        ...base,
+        principal: "account-b",
+        resource_ref: "address:2",
+        resource_label: "주소 2",
+        state: "suspected",
+        oracle_value: "suspected",
+        record_id: 2,
+        reason_codes: ["data_similar_no_marker"],
+        canary_fields: ["fullName"],
+      },
+      {
+        ...base,
+        principal: "account-a",
+        resource_ref: "address:1",
+        resource_label: "주소 1",
+        state: "allow-ok",
+        oracle_value: "allowed",
+        record_id: 3,
+        reason_codes: ["owner_self_access"],
+        canary_fields: [],
+      },
+      {
+        ...base,
+        principal: "account-a",
+        resource_ref: "address:2",
+        resource_label: "주소 2",
+        state: "unknown",
+        oracle_value: "undecidable",
+        record_id: 4,
+        reason_codes: ["evidence_insufficient"],
+        canary_fields: [],
+      },
+    ],
+  };
+}
+
 const ROUTES: Route[] = [
   { method: "GET", path: /^\/api\/tasks$/, reply: () => ({ active: MOCK_DEFAULT_TASK, tasks: TASKS }) },
   { method: "GET", path: /^\/api\/tasks\/([^/]+)$/, reply: ([id]) => TASKS.find((t) => t.id === id) },
@@ -743,6 +689,7 @@ const ROUTES: Route[] = [
     },
   },
   { method: "GET", path: /^\/api\/tasks\/([^/]+)\/coverage-graph$/, reply: ([id]) => coverageGraph(id) },
+  { method: "GET", path: /^\/api\/tasks\/([^/]+)\/access-map$/, reply: ([id]) => accessMap(id) },
   { method: "POST", path: /^\/api\/tasks\/([^/]+)\/control$/, reply: () => NO_CONTENT },
   {
     method: "POST",
@@ -755,9 +702,6 @@ const ROUTES: Route[] = [
     reply: ([id]) => ({ id: `ar-${id}`, task_id: id, state: "archived" }),
   },
   { method: "GET", path: /^\/api\/exploration\/findings$/, reply: (_, url) => FINDINGS[taskIdFrom(url)] ?? [] },
-  { method: "GET", path: /^\/api\/exploration\/findings\/([^/]+)$/, reply: ([fid]) => findingDetail(fid) },
-  { method: "GET", path: /^\/api\/exploration\/findings\/([^/]+)\/traffic$/, reply: ([fid]) => findingTraffic(fid) },
-  { method: "GET", path: /^\/api\/exploration\/findings\/([^/]+)\/retests$/, reply: ([fid]) => findingRetests(fid) },
   { method: "GET", path: /^\/api\/exploration\/activity$/, reply: (_, url) => ({ items: activity(taskIdFrom(url)) }) },
   {
     method: "GET",

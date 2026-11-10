@@ -16,13 +16,13 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
-    COMPOSE_COMMON, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_DATA_PATH,
+    COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_SERVICE, ENGINE_DATA_PATH,
     ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
     MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
     compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
     new_run_id, parse_runner_config, plan_run,
 )
-from test_preflight import configuration, local_llm
+from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 
 
 def image(name: str, digit: str) -> dict:
@@ -40,6 +40,7 @@ def runner_config() -> dict:
         "ports": {"engine_api_host": 18787, "engine_container": 8787, "target": 3000, "obs": 8081, "obs_host": 18081,
                   "llm_gateway": 8090, "api_front": 8091},
         "observer_path": "/api/records",
+        "observer_format": "challenge_scoreboard",
         "engine": {"llm_provider": "openai", "llm_stream": True, "llm_policy_mode": "external"},
         "engine_db": {"user": "artex", "name": "artex"},
         "tmpfs": {"engine_db": "1g", "engine_data": "512m", "min_free": "16m"},
@@ -50,7 +51,7 @@ def runner_config() -> dict:
         "runner_key_path": "/srv/eval-keys/runner.key",
         "run": {"compose_wait_seconds": 120, "down_timeout_seconds": 30, "ready_timeout_seconds": 120,
                 "budget_poll_seconds": 5, "drain_timeout_seconds": 60, "snapshot_timeout_seconds": 30,
-                "snapshot_max_bytes": 4194304, "llm_verify_timeout_seconds": 300,
+                "snapshot_max_bytes": 4194304, "llm_verify_timeout_seconds": 300, "llm_load_timeout_seconds": 300,
                 "task_create_timeout_seconds": 20, "host_watch_interval_seconds": 2,
                 "host_watch_max_gap_seconds": 15, "drain_grace_seconds": 30, "post_settle_seconds": 2},
         "llm_gateway": {"generation_path": "/api/v1/generation", "verify_attempts": 5, "verify_interval_seconds": 2,
@@ -61,6 +62,7 @@ def runner_config() -> dict:
         "e2": {"ours_mode": "none"},
         "state": None,
         "engine_rules": None,
+        "verdict_export": None,
         "task": {"description": "평가 대상 http://eval-meter:8080 웹앱의 접근 통제를 진단한다.\n로그인 계정은 엔진 설정을 쓴다.",
                  "goal": "다른 사용자의 자원에 접근되는지 확인한다", "timeout_seconds": 1200,
                  "plan_heartbeat_seconds": 600, "seed_first_intent": False, "coverage_enabled": True},
@@ -90,6 +92,34 @@ class TestParseRunnerConfig(unittest.TestCase):
         payload = runner_config()
         del payload["findings"]["max_pages"]
         self.reject(payload, "config.findings.max_pages: MISSING")
+
+    def test_verdict_export_is_off_when_null_and_closed_when_set(self):
+        self.assertIsNone(parse_runner_config(runner_config()).verdict_export)
+        block = {"page_size": 200, "timeout_seconds": 30, "max_page_bytes": 8 * 1024 * 1024, "max_total_bytes": 8 * 1024 * 1024,
+                 "max_pages": 10_000, "ready_wait_seconds": 60, "ready_poll_seconds": 5}
+        payload = runner_config()
+        payload["verdict_export"] = block
+        self.assertEqual(parse_runner_config(payload).verdict_export, block)
+        payload = runner_config()
+        del payload["verdict_export"]
+        self.reject(payload, "config.verdict_export: MISSING")
+        for changes, reason in (({"page_size": 201}, "page_size: INVALID"), ({"page_size": 0}, "page_size: INVALID"),
+                                ({"timeout_seconds": True}, "timeout_seconds: INVALID"), ({"max_page_bytes": 8 * 1024 * 1024 + 1}, "max_page_bytes: INVALID"),
+                                ({"max_total_bytes": 0}, "max_total_bytes: INVALID"), ({"max_pages": 10_001}, "max_pages: INVALID"),
+                                ({"ready_wait_seconds": 0}, "ready_wait_seconds: INVALID"), ({"ready_poll_seconds": "5"}, "ready_poll_seconds: INVALID")):
+            with self.subTest(changes=changes):
+                payload = runner_config()
+                payload["verdict_export"] = block | changes
+                self.reject(payload, "config.verdict_export." + reason)
+        payload = runner_config()
+        payload["verdict_export"] = {key: value for key, value in block.items() if key != "max_pages"}
+        self.reject(payload, "config.verdict_export.max_pages: MISSING")
+        payload = runner_config()
+        payload["verdict_export"] = block | {"extra": 1}
+        self.reject(payload, "config.verdict_export: UNKNOWN_FIELDS")
+        payload = runner_config()
+        payload["verdict_export"] = "on"
+        self.reject(payload, "config.verdict_export: EXPECTED_OBJECT")
 
     def test_observer_readonly_ref_is_a_required_plain_reference(self):
         for value in ("", " ref", "ref\n", "x" * 201, 7, None):
@@ -156,6 +186,15 @@ class TestParseRunnerConfig(unittest.TestCase):
         payload["ports"]["obs_host"] = payload["ports"]["engine_api_host"]
         self.reject(payload, "config.ports: HOST_PORT_CONFLICT")
 
+    def test_observer_format_is_explicit_and_closed(self):
+        payload = runner_config()
+        del payload["observer_format"]
+        self.reject(payload, "config.observer_format: MISSING")
+        for value in ("", "none", "OPAQUE", None, 1):
+            self.reject(runner_config() | {"observer_format": value}, "config.observer_format: INVALID")
+        for value in ("challenge_scoreboard", "opaque"):
+            self.assertEqual(parse_runner_config(runner_config() | {"observer_format": value}).observer_format, value)
+
     def test_observer_path_follows_meter_rule(self):
         for value in ("api/x", "/a?b", "/a#b", "/a%2f", "/a\\b", "/a b", "//a", "/a/../b", "/a/./b", "/é", ""):
             self.reject(runner_config() | {"observer_path": value}, "config.observer_path: INVALID")
@@ -175,6 +214,7 @@ class TestParseRunnerConfig(unittest.TestCase):
             (("llm_gateway", "expected_provider_name"), "a\nb", "config.llm_gateway.expected_provider_name: INVALID"),
             (("llm_gateway", "expected_provider_name"), "x" * 101, "config.llm_gateway.expected_provider_name: INVALID"),
             (("llm_gateway", "expected_provider_name"), 7, "config.llm_gateway.expected_provider_name: INVALID"),
+            (("run", "llm_load_timeout_seconds"), 0, "config.run.llm_load_timeout_seconds: INVALID"),
             (("run", "llm_verify_timeout_seconds"), 0, "config.run.llm_verify_timeout_seconds: INVALID"),
             (("findings", "vocabulary_path"), "vocabulary.json", "config.findings.vocabulary_path: EXPECTED_ABSOLUTE_PATH"),
             (("findings", "page_size"), 201, "config.findings.page_size: INVALID"),
@@ -385,7 +425,7 @@ class TestE2Mode(unittest.TestCase):
     def test_e2_block_is_required_and_closed(self):
         for payload, code in (
                 ({k: v for k, v in runner_config().items() if k != "e2"}, "config.e2: MISSING"),
-                (runner_config() | {"e2": {"ours_mode": "product"}}, "config.e2.ours_mode: UNSUPPORTED"),
+                (runner_config() | {"e2": {"ours_mode": "other"}}, "config.e2.ours_mode: UNSUPPORTED"),
                 (runner_config() | {"e2": {"ours_mode": ""}}, "config.e2.ours_mode: UNSUPPORTED"),
                 (runner_config() | {"e2": {}}, "config.e2.ours_mode: MISSING"),
                 (runner_config() | {"e2": {"ours_mode": "stub", "port": 1}}, "config.e2: UNKNOWN_FIELDS"),
@@ -409,6 +449,7 @@ class TestE2Mode(unittest.TestCase):
     def test_overlay_names_match_the_runner_constants(self):
         text = _yaml_without_comments(COMPOSE_E2_STUB.read_text(encoding="utf-8"))
         self.assertEqual(compose_services(COMPOSE_E2_STUB), {E2_SERVICE, METER_SERVICE})
+        self.assertEqual(compose_services(COMPOSE_E2_PRODUCT), {E2_SERVICE, METER_SERVICE, ENGINE_SERVICE})
         self.assertIn(f"aliases: [{METER_SERVICE}]", text)  # 엔진은 계측기 이름으로 E²에 닿는다
         self.assertIn(f"aliases: [{METER_UPSTREAM_ALIAS}]", text)
         self.assertIn(f"-upstream=http://{METER_UPSTREAM_ALIAS}:${{EVAL_METER_PORT:?}}", text)
@@ -417,6 +458,128 @@ class TestE2Mode(unittest.TestCase):
         # E²는 따로 둔 증거 디렉터리에만 쓴다. 계측기 증거(meter/) 경로를 마운트하지 않는다.
         self.assertIn("- ${EVAL_E2_EVIDENCE_DIR:?}:/evidence", text)
         self.assertNotIn("EVAL_EVIDENCE_DIR", text)
+
+
+E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:test", "id": "sha256:" + "e" * 64}, "policy_path": "/srv/eval/e2-policy.json",
+                    "policy_fingerprint_sha256": "f" * 64, "header_mode": "evaluation_caller_passthrough", "ready_timeout_seconds": 30,
+                    "close_ack_timeout_seconds": 5, "close_timeout_seconds": 30, "poll_seconds": 1, "exchange_timeout_seconds": 5,
+                    "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30,
+                    "policy_tool": "/usr/local/bin/e2-eval-policy", "policy_tool_timeout_seconds": 30, "helper": "/usr/local/bin/e2-bash-sandbox",
+                    "helper_sha256": "a" * 64, "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10", "window_seconds": 7200,
+                    "approval_valid_until": "2099-01-01T00:00:00Z", "prompt_wait_seconds": 30}
+
+
+class TestE2Product(unittest.TestCase):
+    def reject(self, block, code):
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(runner_config() | {"e2": block})
+        self.assertIn(code, caught.exception.errors)
+
+    def test_block_is_parsed_with_its_image(self):
+        config = parse_runner_config(runner_config() | {"e2": dict(E2_PRODUCT_BLOCK)})
+        self.assertEqual((config.e2_ours_mode, config.e2_product["image"].ref, config.e2_product["close_timeout_seconds"]),
+                         ("product", "abc2lab-eval-e2:test", 30))
+        self.assertIsNone(parse_runner_config(runner_config()).e2_product)
+
+    def test_fields_are_closed_and_only_for_product(self):
+        self.reject({"ours_mode": "none", "image": {}}, "config.e2: UNKNOWN_FIELDS")
+        self.reject({"ours_mode": "stub", "header_mode": "preserve"}, "config.e2: UNKNOWN_FIELDS")
+        self.reject(E2_PRODUCT_BLOCK | {"extra": 1}, "config.e2: UNKNOWN_FIELDS")
+        for name in E2_PRODUCT_BLOCK:
+            if name == "ours_mode":
+                continue
+            with self.subTest(name=name):
+                self.reject({key: value for key, value in E2_PRODUCT_BLOCK.items() if key != name}, f"config.e2.{name}: MISSING")
+
+    def test_bad_values(self):
+        for changes, code in (({"image": {"ref": "x", "id": "bad"}}, "config.e2.image.id: INVALID"), ({"policy_path": "relative.json"}, "config.e2.policy_path: EXPECTED_ABSOLUTE_PATH"),
+                              ({"verify_tool": "e2-audit-verify"}, "config.e2.verify_tool: EXPECTED_ABSOLUTE_PATH"),
+                              ({"policy_fingerprint_sha256": "x"}, "config.e2.policy_fingerprint_sha256: INVALID"), ({"policy_fingerprint_sha256": 7}, "config.e2.policy_fingerprint_sha256: INVALID"),
+                              ({"header_mode": "other"}, "config.e2.header_mode: UNSUPPORTED"), ({"header_mode": []}, "config.e2.header_mode: UNSUPPORTED"),
+                              ({"ready_timeout_seconds": 0}, "config.e2.ready_timeout_seconds: INVALID"), ({"close_ack_timeout_seconds": True}, "config.e2.close_ack_timeout_seconds: INVALID"),
+                              ({"close_timeout_seconds": "5"}, "config.e2.close_timeout_seconds: INVALID"), ({"poll_seconds": -1}, "config.e2.poll_seconds: INVALID"),
+                              ({"exchange_timeout_seconds": 0}, "config.e2.exchange_timeout_seconds: INVALID"), ({"verify_timeout_seconds": 0}, "config.e2.verify_timeout_seconds: INVALID"),
+                              ({"exchange_timeout_seconds": 61}, "config.e2.exchange_timeout_seconds: TOO_LARGE"), ({"close_timeout_seconds": 121}, "config.e2.close_timeout_seconds: TOO_LARGE")):
+            with self.subTest(changes=changes):
+                self.reject(E2_PRODUCT_BLOCK | changes, code)
+
+    def test_production_fields_are_validated(self):
+        for changes, code in (({"helper_sha256": "A" * 64}, "config.e2.helper_sha256: INVALID"),
+                              ({"helper_sha256": "a" * 63}, "config.e2.helper_sha256: INVALID"),
+                              ({"helper": "bin/helper"}, "config.e2.helper: EXPECTED_ABSOLUTE_PATH"),
+                              ({"policy_tool": "e2-eval-policy"}, "config.e2.policy_tool: EXPECTED_ABSOLUTE_PATH"),
+                              ({"policy_tool_timeout_seconds": 0}, "config.e2.policy_tool_timeout_seconds: INVALID"),
+                              ({"prompt_wait_seconds": 0}, "config.e2.prompt_wait_seconds: INVALID"),
+                              ({"prompt_wait_seconds": "30"}, "config.e2.prompt_wait_seconds: INVALID"),
+                              ({"window_seconds": 0}, "config.e2.window_seconds: INVALID"),
+                              ({"window_seconds": 86401}, "config.e2.window_seconds: INVALID"),
+                              ({"approval_valid_until": "2099-01-01"}, "config.e2.approval_valid_until: INVALID"),
+                              ({"approval_valid_until": "2099-01-01T00:00:00+09:00"}, "config.e2.approval_valid_until: INVALID"),
+                              ({"approval_valid_until": 7}, "config.e2.approval_valid_until: INVALID"),
+                              ({"subnet": "172.30.9.1/24"}, "config.e2.subnet: INVALID"),
+                              ({"subnet": "8.8.8.0/24", "meter_ip": "8.8.8.10"}, "config.e2.subnet: INVALID"),
+                              ({"subnet": "172.30.9.0/30", "meter_ip": "172.30.9.2"}, "config.e2.subnet: INVALID"),
+                              ({"subnet": None}, "config.e2.subnet: INVALID"),
+                              ({"meter_ip": "172.30.10.10"}, "config.e2.meter_ip: INVALID"),
+                              ({"meter_ip": "172.30.9.0"}, "config.e2.meter_ip: INVALID"),
+                              ({"meter_ip": "172.30.9.1"}, "config.e2.meter_ip: INVALID"),
+                              ({"meter_ip": "172.30.9.255"}, "config.e2.meter_ip: INVALID"),
+                              ({"meter_ip": "not-an-ip"}, "config.e2.meter_ip: INVALID")):
+            with self.subTest(changes):
+                self.reject(E2_PRODUCT_BLOCK | changes, code)
+
+    def test_window_and_subnet_boundaries_are_accepted(self):
+        for changes in ({"window_seconds": 1}, {"window_seconds": 86400}, {"meter_ip": "172.30.9.2"}, {"meter_ip": "172.30.9.254"},
+                        {"subnet": "172.30.9.0/29", "meter_ip": "172.30.9.2"}):
+            with self.subTest(changes):
+                parse_runner_config(runner_config() | {"e2": E2_PRODUCT_BLOCK | changes})
+
+    def test_overlay_and_image_join_the_ours_plan_only(self):
+        config = parse_runner_config(runner_config() | {"e2": dict(E2_PRODUCT_BLOCK)})
+        ours = plan_run(config, configuration(), "ours", "ours-1")
+        baseline = plan_run(config, configuration(), "baseline", "baseline-1")
+        self.assertEqual((ours.e2_mode, ours.compose_files[-1]), ("product", COMPOSE_E2_PRODUCT))
+        self.assertEqual((ours.compose_env["EVAL_E2_IMAGE"], ours.images["e2"].id), ("abc2lab-eval-e2:test", "sha256:" + "e" * 64))
+        self.assertEqual(baseline.e2_mode, "none")
+        self.assertNotIn(COMPOSE_E2_PRODUCT, baseline.compose_files)
+        self.assertNotIn("EVAL_E2_IMAGE", baseline.compose_env)
+        self.assertNotIn("EVAL_E2_SUBNET", baseline.compose_env)
+        self.assertEqual((ours.e2_meter_ip, baseline.e2_meter_ip), ("172.30.9.10", None))
+        self.assertNotIn("e2", baseline.images)
+
+    def test_run_directories_and_environment(self):
+        config = parse_runner_config(runner_config() | {"e2": dict(E2_PRODUCT_BLOCK)})
+        plan = plan_run(config, configuration(), "ours", "ours-1")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "runs"
+            root.mkdir(mode=0o700)
+            directory = create_run_directory(root, "ours-1", "product")
+            for path in (directory.e2, directory.e2_config, directory.e2_control, directory.e2_copy, directory.e2_state):
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o700, path)
+            env = compose_environment(plan, directory)
+            self.assertEqual((env["EVAL_E2_CONFIG_DIR"], env["EVAL_E2_CONTROL_DIR"], env["EVAL_E2_EVIDENCE_DIR"]),
+                             (str(directory.e2_config), str(directory.e2_control), str(directory.e2)))
+            self.assertEqual((env["EVAL_E2_STATE_DIR"], env["EVAL_E2_SUBNET"], env["EVAL_E2_METER_IP"]),
+                             (str(directory.e2_state), "172.30.9.0/24", "172.30.9.10"))
+            self.assertEqual(env["EVAL_E2_ENGINE_AUTH_DIR"], str(directory.e2_engine))
+            self.assertTrue(Path(env["EVAL_E2_SECCOMP_PROFILE"]).is_file())
+            self.assertEqual(stat.S_IMODE(directory.e2_engine.stat().st_mode), 0o700)
+            # eval-e2의 시한은 러너가 기다리는 시한과 같은 값이어야 한다.
+            self.assertEqual((env["EVAL_E2_IO_TIMEOUT_SECONDS"], env["EVAL_E2_CLOSE_TIMEOUT_SECONDS"]),
+                             (str(E2_PRODUCT_BLOCK["exchange_timeout_seconds"]), str(E2_PRODUCT_BLOCK["close_timeout_seconds"])))
+            # 수집 사본은 E²에 mount하지 않는다.
+            self.assertNotIn(str(directory.e2_copy), env.values())
+            other = create_run_directory(root, "ours-2")
+            self.assertFalse(other.e2_config.exists())
+
+    def test_overlay_variables_are_all_supplied(self):
+        config = parse_runner_config(runner_config() | {"e2": dict(E2_PRODUCT_BLOCK)})
+        plan = plan_run(config, configuration(), "ours", "ours-1")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "runs"
+            root.mkdir(mode=0o700)
+            env = compose_environment(plan, create_run_directory(root, "ours-1", "product"))
+        self.assertLessEqual(compose_variables([COMPOSE_E2_PRODUCT]), set(env))
 
 
 class TestPlanRun(unittest.TestCase):
@@ -488,6 +651,7 @@ class TestPlanRun(unittest.TestCase):
         preflight = configuration()
         for side in ("baseline", "ours"):
             preflight[side]["llm"] = local_llm()
+            preflight[side]["sampling"] = dict(LOCAL_SAMPLING)
         plan = plan_run(self.config, preflight, "baseline", "b")
         self.assertEqual(plan.compose_files, (COMPOSE_COMMON, COMPOSE_LOCAL_LLM, COMPOSE_EVAL))
         self.assertEqual(plan.compose_env["EVAL_LLM_HOSTNAME"], "llm-host")
@@ -661,6 +825,21 @@ class TestComposeContract(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_gateway_sampling_is_declared_values_for_each_backend(self):
+        config = parse_runner_config(runner_config())
+        api = plan_run(config, configuration(), "ours", "ours-api")
+        self.assertEqual(json.loads(api.compose_env["EVAL_LLM_SAMPLING"]),
+                         {"temperature": configuration()["ours"]["temperature"], **configuration()["ours"]["sampling"],
+                          "seed": configuration()["ours"]["seed"]})
+        preflight = configuration()
+        for side in ("baseline", "ours"):
+            preflight[side]["llm"] = local_llm()
+            preflight[side]["sampling"] = dict(LOCAL_SAMPLING)
+        local = plan_run(config, preflight, "ours", "ours-local")
+        self.assertEqual(json.loads(local.compose_env["EVAL_LLM_SAMPLING"]),
+                         {"temperature": preflight["ours"]["temperature"], **LOCAL_SAMPLING,
+                          "seed": preflight["ours"]["seed"]})
+
     def test_compose_variables_equal_runner_env_plus_secrets_per_backend(self):
         config = parse_runner_config(runner_config())
         for backend, llm in (("api", None), ("local", local_llm())):
@@ -668,6 +847,7 @@ class TestComposeContract(unittest.TestCase):
             if llm:
                 for side in ("baseline", "ours"):
                     preflight[side]["llm"] = llm
+                    preflight[side]["sampling"] = dict(LOCAL_SAMPLING)
             plan = plan_run(config, preflight, "ours", f"ours-{backend}")
             env = compose_environment(plan, create_run_directory(self.root, f"ours-{backend}"))
             stub = plan_run(parse_runner_config(runner_config() | {"e2": {"ours_mode": "stub"}}), preflight, "ours",
@@ -700,7 +880,7 @@ class TestComposeContract(unittest.TestCase):
                 self.assertIn(f"- {path}:size=${{{size_var}:?}}", text)
 
     def test_every_compose_file_is_covered(self):
-        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB}
+        files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT}
         on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
         on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
         self.assertEqual(on_disk, files)
@@ -713,13 +893,13 @@ class TestComposeContract(unittest.TestCase):
 
     def test_no_restart_policy_anywhere(self):
         # 회차 중 자동 재시작은 계측기 카운터·대상 상태·엔진 tmpfs를 조용히 초기화한다. 기본값(no)에 맡긴다.
-        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT):
             text = _yaml_without_comments(Path(path).read_text(encoding="utf-8"))
             with self.subTest(path=path.name):
                 self.assertNotRegex(text, r"(?m)^\s*restart\s*:")
 
     def test_every_publish_is_loopback_only(self):
-        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB):
+        for path in (COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT):
             lines = _yaml_without_comments(Path(path).read_text(encoding="utf-8")).splitlines()
             entries = []
             for index, line in enumerate(lines):

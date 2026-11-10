@@ -1,355 +1,330 @@
-import { type ReactNode, useMemo } from "react";
+import { useMemo } from "react";
 
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
-import { Pill, Sev, Strong, Sub } from "../components/ui";
+import { MockBanner, Pill, Sev, Strong, Sub, VerdictBadge } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import {
-  type EngineFinding,
-  type EngineFindingRetest,
-  type EngineFindingTraffic,
+  COMPARISON_SIGNALS,
+  type ComparisonRow,
+  dataAccessProven,
+  displayComparisonRow,
+  displayVerdict,
+  type FindingRecord,
   getFinding,
-  getFindingTraffic,
-  getTask,
-  listFindingRetests,
-} from "../lib/engine";
-import { redactInput } from "../lib/redact";
-import { useSelection } from "../lib/selection";
-import { useNav } from "../nav";
-import type { Severity } from "../types";
+  missingEvidence,
+  ORACLE_BADGE,
+  SIGNAL_LABEL,
+} from "../lib/finding";
+import { useGo } from "../nav";
 
 const bodyText = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 } as const;
+const listText = { margin: 0, paddingLeft: 18, fontSize: 14, color: "var(--muted)", lineHeight: 1.8 } as const;
 const cellSub = { color: "var(--muted)", fontSize: 13 } as const;
-const reqMethod = { fontFamily: "var(--mono)", fontSize: 13, fontWeight: 600 } as const;
-const reqUrl = { fontFamily: "var(--mono)", fontSize: 12, color: "var(--muted)", overflowWrap: "anywhere" } as const;
-/** .ev 는 white-space: pre — 에이전트가 쓴 긴 줄은 화면 폭에서 접는다 */
-const evText = { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } as const;
 
-const SEVERITIES = new Set<string>(["critical", "high", "medium", "low"]);
-
-/** 발견의 처리 상태(엔진 findings.status). E③ 판정(확정 · 의심 · 판단 불가)과는 다른 값이다 */
-const STATUS_LABEL: Record<string, string> = {
-  pending: "검토 전",
-  in_progress: "검토 중",
-  confirmed: "검토에서 취약점으로 확인",
-  resolved: "처리됨",
-  fixed: "수정됨",
-  false_positive: "오탐",
-  ignored: "무시",
-  duplicate: "중복",
-  risk_accepted: "위험 수용",
-};
-const ROLE_LABEL: Record<string, string> = {
-  baseline: "기준 요청",
-  proof: "증명",
-  verification: "검증",
-  supporting: "참고",
-};
-const RETEST_STATUS: Record<string, string> = {
-  pending: "대기",
-  running: "진행 중",
-  completed: "완료",
-  failed: "실패",
-  stopped: "중지",
-};
-const RETEST_VERDICT: Record<string, string> = {
-  reproduced: "재현됨",
-  fixed: "고쳐짐",
-  inconclusive: "결론 못 냄",
+/** 비교 행 판정 → 셀 배지. */
+const ROW_CELL: Record<ComparisonRow["row"], { label: string; style: React.CSSProperties }> = {
+  ok: { label: "정상", style: {} },
+  vuln: { label: "취약", style: { background: "var(--danger-weak)", color: "var(--danger)" } },
+  sus: { label: "의심", style: { background: "var(--warn-weak)", color: "var(--warn)" } },
+  und: { label: "판단 불가", style: { background: "var(--warn-weak)", color: "var(--warn)" } },
 };
 
-function findingName(f: EngineFinding): string {
-  if (f.name) return f.name;
-  if (f.vulnclass) return f.vulnclass;
-  return "이름 없는 발견";
-}
-function when(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const dt = new Date(iso);
-  if (Number.isNaN(dt.getTime())) return "";
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${dt.getMonth() + 1}/${dt.getDate()} ${p(dt.getHours())}:${p(dt.getMinutes())}`;
-}
-function size(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)}MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`;
-  return `${n}B`;
-}
-
-/** ===== 발견 상세 — 엔진이 기록한 발견 1건 (보고서의 [자세히 보기]로 들어온다) ===== */
-export default function FindingScreen() {
-  const { screen, go } = useNav();
-  const { finding, taskId } = useSelection();
-  // 화면은 숨겨져 있어도 마운트돼 있다. 보일 때만 조회하고, 다시 들어올 때마다 새로 읽는다.
-  const active = screen === "finding";
-  const ctxTask = finding?.task_id ? finding.task_id : taskId;
-  // 상세 · 요청 기록 · 재검증은 발견 표 id(finding_id)로만 조회된다
-  const fid = finding?.finding_id ?? "";
-  const when$ = <T,>(ok: boolean, fetch: () => Promise<T>) => (active && ok ? fetch() : Promise.resolve(null));
-
-  const detailRes = useApiResource(() => when$(!!fid, () => getFinding(fid, ctxTask)), [fid, ctxTask, active]);
-  const taskRes = useApiResource(() => when$(!!ctxTask, () => getTask(ctxTask ?? "")), [ctxTask, active]);
-  const detail = detailRes.data;
-  const trafficCount = detail?.traffic_count ?? 0;
-  const trafficRes = useApiResource(
-    () => when$(!!fid && trafficCount > 0, () => getFindingTraffic(fid, ctxTask)),
-    [fid, ctxTask, active, trafficCount],
+/** 통제변수 한 줄(감사·재현). */
+function Meta({ k, v }: { k: string; v: string }) {
+  return (
+    <div style={{ display: "flex", gap: 8, fontSize: 12, lineHeight: 1.8 }}>
+      <span style={{ color: "var(--faint)", flex: "none", minWidth: 96 }}>{k}</span>
+      <code style={{ color: "var(--muted)", wordBreak: "break-all" }}>{v}</code>
+    </div>
   );
-  const retestRes = useApiResource(() => when$(!!fid, () => listFindingRetests(fid)), [fid, active]);
+}
 
-  // 목록에서 넘어온 값을 먼저 보여 주고, 상세가 오면 그 값으로 덮는다
-  const f: EngineFinding | null = detail ?? finding ?? null;
-  const evidence = useMemo(() => redactInput(f?.evidence ?? ""), [f?.evidence]);
-  const report = useMemo(() => redactInput(detail?.report ?? ""), [detail?.report]);
+/**
+ * 판정 레코드 본문 — record 하나를 fail-closed 로 그린다(화면 테스트가 임의 레코드로 직접 렌더).
+ * 화면 판정은 `displayVerdict`(증거 부족 시 보수 하향), 원값은 감사용으로 함께 표시한다.
+ */
+export function FindingDetail({ record }: { record: FindingRecord }) {
+  const display = displayVerdict(record);
+  const dbadge = ORACLE_BADGE[display];
+  const rawBadge = ORACLE_BADGE[record.oracleValue];
+  const overridden = display !== record.oracleValue;
+  const proven = dataAccessProven(record);
+  const missing = missingEvidence(record);
+  const confirmedSignals = COMPARISON_SIGNALS.filter((s) => record.signals[s.key] === "yes");
+  const openSignals = COMPARISON_SIGNALS.filter((s) => record.signals[s.key] !== "yes");
 
-  const task = taskRes.data;
-  const taskLabel = task ? task.name || task.description || `점검 #${task.id}` : "보고서";
+  return (
+    <>
+      <div className="row" style={{ alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+        <Sev level={record.severity} />
+        {dbadge.verdict ? <VerdictBadge verdict={dbadge.verdict} /> : <Pill tone="muted">{dbadge.label}</Pill>}
+        <Pill tone="muted">
+          {record.vulnClass} · {record.axis === "horizontal" ? "수평" : "수직"}
+        </Pill>
+      </div>
+      <h1 className="big" style={{ marginBottom: 4 }}>
+        {record.title}
+      </h1>
+      <div className="ep" style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--muted)" }}>
+        {record.resourceRef} <span style={{ color: "var(--faint)" }}>· 논리 자원 참조(raw URL 아님)</span>
+      </div>
 
-  if (!f) {
-    return (
-      <Screen id="finding">
-        <div className="frame">
-          <TopBar current="history" />
-          <div style={{ padding: "22px 24px", maxWidth: 760 }}>
-            <div className="crumb">
-              <CrumbLink to="history" go={go}>
-                점검 기록
-              </CrumbLink>{" "}
-              › <span>발견</span>
-            </div>
-            <h1 className="big">발견 상세</h1>
-            <p className="lead">보고서의 발견 목록에서 항목을 펼친 뒤 [자세히 보기]를 누르면 여기서 열려요.</p>
-            <button className="btn" type="button" onClick={() => go("history")}>
-              점검 기록으로
-            </button>
-          </div>
+      {/* 원값을 숨기지 않되(감사 보존), 증거 부족으로 화면 판정을 내렸음을 명시. */}
+      {overridden && (
+        <div
+          style={{
+            fontSize: 13,
+            color: "var(--warn)",
+            background: "var(--warn-weak)",
+            border: "1px solid var(--warn-border)",
+            borderRadius: 6,
+            padding: "9px 12px",
+            marginTop: 10,
+          }}
+        >
+          오라클 <Strong>원값 {rawBadge.label}</Strong>(감사용 보존) — 증거 3조건이 불완비라 화면 판정은 보수적으로{" "}
+          <Strong>{dbadge.label}</Strong>로 내렸어요(절대규칙 5).
         </div>
-      </Screen>
-    );
-  }
+      )}
 
-  const sev = SEVERITIES.has(f.severity) ? (f.severity as Severity) : undefined;
-  const assets = f.assets ?? [];
+      <div className="card" style={{ marginTop: 16 }}>
+        <h3>무엇이 관찰됐나</h3>
+        {proven ? (
+          <p style={bodyText}>
+            <Strong>{record.subjects.evaluatedRef}</Strong>(무관한 사용자)로 <Strong>{record.subjects.ownerRef}</Strong>
+            의 자원(<code>{record.resourceRef}</code>)을 교차 요청했을 때,{" "}
+            <Strong>{record.subjects.ownerRef}에만 심은 비자명 표식</Strong>이 응답 필드에 그대로 나타났고 요청
+            반사·공통 템플릿은 배제됐어요 — "{record.subjects.evaluatedRef}가 {record.subjects.ownerRef}의 실제 자원을
+            받았다"는 신호예요.
+          </p>
+        ) : (
+          <>
+            <p style={{ ...bodyText, marginBottom: 8 }}>
+              <Strong>{record.subjects.evaluatedRef}</Strong>로 <Strong>{record.subjects.ownerRef}</Strong>의 자원(
+              <code>{record.resourceRef}</code>)을 교차 요청했어요. 아래 신호 중{" "}
+              <Strong>핵심 증거가 비어 있어 교차 데이터 접근을 단정하지 않아요</Strong>(증거 없는 취약 관찰 금지).
+            </p>
+            <ul style={listText}>
+              <li>확인된 신호: {confirmedSignals.map((s) => s.label).join(" · ") || "없음"}</li>
+              <li>
+                미확인: {openSignals.map((s) => `${s.label}(${SIGNAL_LABEL[record.signals[s.key]]})`).join(" · ")}
+              </li>
+            </ul>
+          </>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>
+          판정 <Sub>· 세 체크(정책·신원·데이터)</Sub>
+        </h3>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+          <Pill tone={record.checks.policy === "yes" ? undefined : "warn"}>
+            정책 {SIGNAL_LABEL[record.checks.policy]}
+          </Pill>
+          <Pill tone={record.checks.identity === "yes" ? undefined : "warn"}>
+            신원 {SIGNAL_LABEL[record.checks.identity]}
+          </Pill>
+          <Pill tone={record.checks.data === "yes" ? undefined : "warn"}>
+            데이터 {SIGNAL_LABEL[record.checks.data]}
+          </Pill>
+          <Pill tone="muted">정책 관찰: {record.accessPolicyResult.replace(/_/g, " ")}</Pill>
+        </div>
+        <div className="hint">
+          사유 코드: <code>{record.reasonCodes.join(" · ")}</code>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>
+          다계정 비교 <Sub>· 같은 자원, 다른 주체 (신호 기반 — 요청/응답 원문 아님)</Sub>
+        </h3>
+        <div className="scrollx">
+          <table className="cmp">
+            <thead>
+              <tr>
+                <th>요청 주체</th>
+                <th>자원</th>
+                <th>관측</th>
+                <th>판정</th>
+              </tr>
+            </thead>
+            <tbody>
+              {record.comparison.map((rowData) => {
+                // 화면 판정이 확정이 아니면 행의 'vuln' 도 보수적으로 '판단 불가'로(상단 배지와 일관).
+                const shownRow = displayComparisonRow(display, rowData.row);
+                const cell = ROW_CELL[shownRow];
+                return (
+                  <tr
+                    key={rowData.label}
+                    style={shownRow === "vuln" ? { background: "var(--danger-weak)" } : undefined}
+                  >
+                    <td>
+                      <strong>{rowData.label}</strong>
+                      <br />
+                      <span style={cellSub}>{rowData.roleNote}</span>
+                    </td>
+                    <td>
+                      <code>{rowData.resourceRef}</code>
+                    </td>
+                    <td style={cellSub}>{rowData.observation}</td>
+                    <td>
+                      <span className="vbadge2" style={{ fontSize: 12, ...cell.style }}>
+                        {cell.label}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {display !== "confirmed" && record.comparison.some((c) => c.row === "vuln") && (
+          <div className="hint">
+            화면 판정이 <Strong>{dbadge.label}</Strong>라, 표의 '취약' 행은 보수적으로 <Strong>판단 불가</Strong>로
+            표시했어요(상단 판정과 일관 — 증거 불완비).
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>
+          증거 <Sub>· 이름·신호만 저장(값·본문 마스킹)</Sub>
+        </h3>
+        <p style={{ ...bodyText, marginBottom: 10 }}>
+          표식이 산 응답 필드:{" "}
+          {record.canaryFields.map((f) => (
+            <code key={f}>{f}</code>
+          ))}{" "}
+          · 값은 <span style={{ color: "var(--danger)" }}>[REDACTED]</span> (절대규칙 2 — canary 값·본문·쿠키 저장 안
+          함).
+        </p>
+        <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {COMPARISON_SIGNALS.map((s) => (
+            <Pill key={s.key} tone={record.signals[s.key] === "yes" ? undefined : "warn"}>
+              {s.label} {SIGNAL_LABEL[record.signals[s.key]]}
+            </Pill>
+          ))}
+        </div>
+        <div className="hint">
+          트래픽 증거 ref: <code>{record.trafficEvidenceRefs.join(", ") || "—"}</code> (본문 아님, 참조 id만).
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>왜 이 판정인가</h3>
+        {display === "confirmed" ? (
+          <>
+            <ul style={listText}>
+              <li>
+                <Strong>{record.subjects.evaluatedRef}</Strong> 응답에{" "}
+                <Strong>{record.subjects.ownerRef}의 표식</Strong>이 그대로 담겼다(실제로 받았음)
+              </li>
+              <li>비자명 표식이고 요청 반사·공통 템플릿이 배제됐다(대조군과 다름)</li>
+              <li>세 체크(정책·신원·데이터) 모두 충족</li>
+            </ul>
+            <div className="hint">
+              증거 3조건이 모두 모여 <Strong>확정</Strong>. 하나라도 비면 <Strong>판단 불가</Strong>로 남겨요.
+            </div>
+          </>
+        ) : (
+          <>
+            <p style={{ ...bodyText, marginBottom: 8 }}>
+              화면 판정 <Strong>{dbadge.label}</Strong>
+              {overridden ? `(오라클 원값 ${rawBadge.label})` : ""} — 아래 증거가 비어 확정으로 올리지 않아요.
+            </p>
+            <ul style={listText}>
+              {missing.length > 0 ? (
+                missing.map((m) => <li key={m}>{m}</li>)
+              ) : (
+                <li>부족 신호 없음(레코드 신호를 다시 확인)</li>
+              )}
+            </ul>
+            <div className="hint">
+              미실행·판단 불가를 <Strong>"취약 없음"·"안전"으로 적지 않아요</Strong>(절대규칙 5). 확인 못 한 건 확인 못
+              했다고 남겨요.
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>
+          통제변수 <Sub>· 재현·감사</Sub>
+        </h3>
+        <Meta k="오라클 원값" v={record.oracleValue} />
+        <Meta k="정책 버전" v={record.control.policyVersion} />
+        <Meta k="정책=정본" v={record.control.hintMatchesCanonical ? "일치" : "불일치(정책 무효)"} />
+        <Meta k="기대 접근" v={record.control.expectedAccess} />
+        <Meta k="reset 세대" v={record.control.resetGeneration} />
+        <Meta k="관찰 시각" v={new Date(record.control.observedAt).toISOString()} />
+        <Meta k="모델 태그" v={record.control.modelTag} />
+        <Meta
+          k="주체 상태"
+          v={`${record.subjects.ownerRef}=${record.subjects.ownerStatus} · ${record.subjects.evaluatedRef}=${record.subjects.evaluatedStatus}`}
+        />
+      </div>
+
+      <div className="card" style={{ marginBottom: 0 }}>
+        <h3>고치려면</h3>
+        <p style={bodyText}>
+          자원 조회 시 <code>자원.소유자 == 세션 주체</code>를 서버에서 검사하세요. 번호 추측을 막으려면 순차 ID 대신
+          추측 어려운 식별자를 쓰는 것도 방법이에요.
+        </p>
+      </div>
+    </>
+  );
+}
+
+/** ===== 발견 상세 (판정 레코드) ===== */
+export default function FindingScreen() {
+  const go = useGo();
+  const { data, loading, error } = useApiResource(() => getFinding(null), []);
+
   return (
     <Screen id="finding">
       <div className="frame">
         <TopBar current="history" />
         <div style={{ padding: "22px 24px", maxWidth: 760 }}>
           <div className="crumb">
-            <CrumbLink to="history" go={go}>
+            {/* biome-ignore lint/a11y/useValidAnchor: 시안 crumb 링크(href 로 키보드 이동 가능) */}
+            <a
+              href="#history"
+              onClick={(e) => {
+                e.preventDefault();
+                go("history");
+              }}
+            >
               점검 기록
-            </CrumbLink>{" "}
-            ›{" "}
-            <CrumbLink to="report" go={go}>
-              {taskLabel}
-            </CrumbLink>{" "}
+            </a>{" "}
+            › {/* biome-ignore lint/a11y/useValidAnchor: 시안 crumb 링크(href 로 키보드 이동 가능) */}
+            <a
+              href="#report"
+              onClick={(e) => {
+                e.preventDefault();
+                go("report");
+              }}
+            >
+              보고서
+            </a>{" "}
             › <span>발견</span>
           </div>
-          <div className="row" style={{ alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-            <Sev level={sev} />
-            {f.vulnclass && <Pill tone="muted">{f.vulnclass}</Pill>}
-            <Pill tone="muted">처리 상태 · {STATUS_LABEL[f.status] ?? f.status}</Pill>
-            {f.inherited && <Pill tone="warn">연결된 점검에서 물려받음</Pill>}
-          </div>
-          <h1 className="big" style={{ marginBottom: 4 }}>
-            {findingName(f)}
-          </h1>
-          {assets.length > 0 && (
-            <div className="ep" style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--muted)" }}>
-              {assets[0].label}
-              {assets.length > 1 && ` 외 ${assets.length - 1}개`}
-            </div>
-          )}
-          <p className="hint" style={{ marginTop: 10 }}>
-            에이전트가 기록한 내용이에요. 확정 · 의심 · 판단 불가 <Strong>판정</Strong>은 E③ 오라클 연동 후 표시돼요.
-          </p>
 
-          {detailRes.error && (
-            <div className="hcard dash-err" style={{ marginTop: 12 }}>
-              <div style={{ minWidth: 0 }}>
-                <div className="nm">발견 상세를 불러오지 못했어요</div>
-                <div className="meta">{detailRes.error}</div>
-              </div>
-              <div className="acts">
-                <button className="btn xs" type="button" onClick={detailRes.reload}>
-                  다시 시도
-                </button>
-              </div>
-            </div>
-          )}
+          <MockBanner>
+            판정 레코드(verdict-record) 연동 전 예시예요. 아래 판정·비교·증거는 실데이터가 아니며, 실제 발견은 E③ 오라클
+            레코드로 채워져요. <Strong>구조·마스킹은 실제와 같은 계약</Strong>이라 연동 시 그대로 살아요.
+          </MockBanner>
 
-          <div className="card" style={{ marginTop: 16 }}>
-            <h3>무엇이 문제인가</h3>
-            <p style={bodyText}>{f.summary || "요약이 없어요."}</p>
-          </div>
-
-          <div className="card">
-            <h3>
-              증거 <Sub>· 에이전트 기록 · 쿠키 · 토큰 값은 가려서 보여 줘요</Sub>
-            </h3>
-            {evidence ? (
-              <div className="ev" style={evText}>
-                {evidence}
-              </div>
-            ) : (
-              <p style={bodyText}>에이전트가 남긴 증거가 없어요.</p>
-            )}
-          </div>
-
-          {!fid ? (
-            <div className="card" style={{ marginBottom: 0 }}>
-              <h3>요청 기록 · 보고서 · 재검증</h3>
-              <p style={bodyText}>
-                발견 표에 등록되지 않은 발견이라 요청 기록 · 상세 보고서 · 재검증 이력을 불러올 수 없어요.
-              </p>
+          {loading || !data ? (
+            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>
+              {error ? `불러오지 못했어요. (${error})` : "불러오는 중…"}
             </div>
           ) : (
-            <>
-              <TrafficCard
-                loading={detailRes.loading || (trafficCount > 0 && trafficRes.loading)}
-                error={trafficRes.error}
-                count={trafficCount}
-                rows={trafficRes.data ?? []}
-              />
-              <div className="card">
-                <h3>
-                  상세 보고서 <Sub>· 에이전트 작성</Sub>
-                </h3>
-                {detailRes.loading && <p style={bodyText}>불러오는 중…</p>}
-                {!detailRes.loading && detail && !report && <p style={bodyText}>아직 작성된 보고서가 없어요.</p>}
-                {!detailRes.loading && report && (
-                  <>
-                    {detail?.report_stale && (
-                      <p className="hint" style={{ marginTop: 0 }}>
-                        증거가 바뀐 뒤 아직 다시 쓰이지 않은 보고서예요.
-                      </p>
-                    )}
-                    <div className="ev" style={evText}>
-                      {report}
-                    </div>
-                  </>
-                )}
-              </div>
-              <RetestCard loading={retestRes.loading} error={retestRes.error} rows={retestRes.data ?? []} />
-            </>
+            <FindingDetail record={data} />
           )}
         </div>
       </div>
     </Screen>
-  );
-}
-
-/** 상단 경로(.crumb a) 링크 — 주소 해시도 맞춰 두고 화면 전환은 go 로 한다 */
-function CrumbLink({
-  to,
-  go,
-  children,
-}: {
-  to: "history" | "report";
-  go: (s: "history" | "report") => void;
-  children: ReactNode;
-}) {
-  return (
-    <a
-      href={`#${to}`}
-      onClick={(event) => {
-        event.preventDefault();
-        go(to);
-      }}
-    >
-      {children}
-    </a>
-  );
-}
-
-function TrafficCard({
-  loading,
-  error,
-  count,
-  rows,
-}: {
-  loading: boolean;
-  error: string | null;
-  count: number;
-  rows: EngineFindingTraffic[];
-}) {
-  return (
-    <div className="card">
-      <h3>
-        요청 · 응답 기록 <Sub>· 머리글 · 본문 없이 요약만</Sub>
-      </h3>
-      {loading && <p style={bodyText}>불러오는 중…</p>}
-      {!loading && error && <p style={bodyText}>요청 기록을 불러오지 못했어요. ({error})</p>}
-      {!loading && !error && (count === 0 || rows.length === 0) && (
-        <p style={bodyText}>이 발견에 묶인 요청 기록이 없어요. 엔진 설정에서 트래픽 기록이 꺼져 있으면 남지 않아요.</p>
-      )}
-      {!loading && !error && rows.length > 0 && (
-        <div className="scrollx">
-          <table className="cmp">
-            <thead>
-              <tr>
-                <th>역할</th>
-                <th>요청</th>
-                <th>응답</th>
-                <th>메모</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id}>
-                  <td>
-                    <strong>{ROLE_LABEL[r.role] ?? (r.role || "—")}</strong>
-                  </td>
-                  <td>
-                    <span style={reqMethod}>{r.method || "—"}</span>
-                    <br />
-                    <span style={reqUrl}>{redactInput(r.url)}</span>
-                  </td>
-                  <td>
-                    <code>{r.status || "—"}</code>
-                    <br />
-                    <span style={cellSub}>
-                      {[r.contentType, r.respLen > 0 && size(r.respLen)].filter(Boolean).join(" · ")}
-                    </span>
-                  </td>
-                  <td>
-                    <span style={cellSub}>{r.note || "—"}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function RetestCard({ loading, error, rows }: { loading: boolean; error: string | null; rows: EngineFindingRetest[] }) {
-  return (
-    <div className="card" style={{ marginBottom: 0 }}>
-      <h3>
-        재검증 이력 <Sub>· 같은 공격을 다시 보내 지금도 재현되는지 확인한 결과</Sub>
-      </h3>
-      {loading && <p style={bodyText}>불러오는 중…</p>}
-      {!loading && error && <p style={bodyText}>재검증 이력을 불러오지 못했어요. ({error})</p>}
-      {!loading && !error && rows.length === 0 && <p style={bodyText}>아직 재검증한 적이 없어요.</p>}
-      {!loading && !error && rows.length > 0 && (
-        <div className="recent-list">
-          {rows.map((r) => (
-            <div className="recent-row" key={r.id}>
-              <div className="recent-main">
-                <div className="nm">{RETEST_VERDICT[r.verdict] ?? (r.verdict || "결과 없음")}</div>
-                <div className="meta">
-                  {[when(r.createdAt), RETEST_STATUS[r.status] ?? r.status, r.summary || r.error]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }

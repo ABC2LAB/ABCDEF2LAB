@@ -13,7 +13,7 @@ const DEFAULT_WORKERS = 3;
 const WORKER_OPTIONS = [1, 2, 3, 4, 6, 8];
 
 /** ===== 작업 설정 ===== */
-export default function JobScreen({ target, onStart }: { target: Target; onStart?: () => void }) {
+export default function JobScreen({ target }: { target: Target }) {
   const go = useGo();
   const [workers, setWorkers] = useState(DEFAULT_WORKERS);
   return (
@@ -126,7 +126,7 @@ export default function JobScreen({ target, onStart }: { target: Target; onStart
             </div>
             <div className="srow">
               <div className="k">모델</div>
-              <div className="v">qwen/qwen3.6-35b-a3b</div>
+              <div className="v">qwen2.5:32b</div>
             </div>
             <div className="hr" style={{ margin: "14px 0" }} />
             <div className="srow">
@@ -143,15 +143,7 @@ export default function JobScreen({ target, onStart }: { target: Target; onStart
               <button className="btn" type="button" onClick={() => go("target")}>
                 이전
               </button>
-              <button
-                className="btn primary"
-                type="button"
-                onClick={() => {
-                  onStart?.();
-                  go("crawl");
-                }}
-                style={{ flex: 1 }}
-              >
+              <button className="btn primary" type="button" onClick={() => go("scope")} style={{ flex: 1 }}>
                 점검 시작
               </button>
             </div>

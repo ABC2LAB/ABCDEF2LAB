@@ -49,20 +49,22 @@ const (
 )
 
 type controlledReadSpec struct {
-	TaskID    string
-	IntentID  int64
-	CaseRef   string
-	ResetRef  string
-	PolicyRef string
-	HTTP      transmit.Config
-	KeyRef    string
-	Key       []byte `json:"-"`
-	fixture   *kgfixture.Snapshot
+	TaskID          string
+	IntentID        int64
+	CaseRef         string
+	ResetRef        string
+	PolicyRef       string
+	HTTP            transmit.Config
+	KeyRef          string
+	Key             []byte `json:"-"`
+	fixture         *kgfixture.Snapshot
+	mapRegistration string
 }
 
 type controlledReadStore struct {
 	snapshotDir, stateDir string
-	fixtureRegistries     map[string]string // copied at bootstrap; immutable thereafter
+	fixtureRegistries     map[string]string          // copied at bootstrap; immutable thereafter
+	authorizeInput        func(string, []byte) error // 실제 재읽기 바이트를 설치자 승인에 결속한다.
 }
 
 var safeSnapshotRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$`)
@@ -271,8 +273,13 @@ func (s *controlledReadStore) load(taskID string, intentID int64, snapshotRef st
 	if !numericID.MatchString(taskID) || intentID <= 0 || !safeSnapshotRef.MatchString(snapshotRef) {
 		return out, errControlledReadSnapshot
 	}
-	b, err := readPrivate(filepath.Join(s.snapshotDir, snapshotRef+".json"), 1<<20)
+	snapshotPath := filepath.Join(s.snapshotDir, snapshotRef+".json")
+	b, err := readPrivate(snapshotPath, 1<<20)
 	if err != nil {
+		return out, errControlledReadSnapshot
+	}
+	defer clear(b)
+	if s.authorizeInput != nil && s.authorizeInput(snapshotPath, b) != nil {
 		return out, errControlledReadSnapshot
 	}
 	var in snapshotJSON

@@ -22,9 +22,12 @@ def api_llm():
             "provider": "example-provider", "fallbacks": False}
 
 
+LOCAL_SAMPLING = {"top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0.25}
+
+
 def local_llm():
     return {"backend": "local", "base_url": "http://llm-host:11434/v1", "model": "example-model:fixed-tag",
-            "hostname": "llm-host", "host_ip": "172.17.0.1"}
+            "hostname": "llm-host", "host_ip": "172.17.0.1", "model_digest": "a" * 64, "context_length": 32768, "server_version": "0.32.6", "placement": "any"}
 
 
 def configuration():
@@ -36,7 +39,7 @@ def configuration():
         "temperature": 0,
         "seed": 42,
         "target_origin": "http://eval-meter:8080",
-        "worker_count": 1,
+        "worker_count": 1, "context_window_k": 32,
         "time_budget_seconds": 1200,
         "request_budget": 100,
         "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "16m"},
@@ -104,7 +107,7 @@ class TestCheckPreflight(unittest.TestCase):
         changes = {
             "llm": api_llm() | {"provider": "other-provider"},
             "temperature": 0.2, "seed": 43, "target_origin": "http://eval-meter:8081",
-            "worker_count": 2, "time_budget_seconds": 600, "request_budget": 200,
+            "worker_count": 2, "context_window_k": 64, "time_budget_seconds": 600, "request_budget": 200,
             "run_storage": {"engine_db_tmpfs": "1g", "engine_data_tmpfs": "512m", "tmpfs_min_free": "32m"},
             "run_drain": {"grace_seconds": 60, "settle_seconds": 2},
             "sampling": {"top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0},
@@ -279,6 +282,20 @@ class TestCheckPreflight(unittest.TestCase):
             local_llm() | {"model": "example-model:latest"},
             local_llm() | {"model": "example-model"},
             local_llm() | {"provider": "example-provider"},
+            local_llm() | {"model_digest": "A" * 64},
+            local_llm() | {"model_digest": "a" * 63},
+            local_llm() | {"model_digest": 1},
+            local_llm() | {"context_length": 0},
+            local_llm() | {"placement": "cpu"}, local_llm() | {"placement": None}, local_llm() | {"placement": True},
+            {k: v for k, v in local_llm().items() if k != "placement"},
+            local_llm() | {"context_length": 5 * 1024 * 1024},
+            local_llm() | {"context_length": True},
+            local_llm() | {"context_length": "32768"},
+            local_llm() | {"server_version": "latest"},
+            local_llm() | {"server_version": 1},
+            {key: value for key, value in local_llm().items() if key != "model_digest"},
+            {key: value for key, value in local_llm().items() if key != "context_length"},
+            {key: value for key, value in local_llm().items() if key != "server_version"},
             {key: value for key, value in local_llm().items() if key != "host_ip"},
         ]
         for value in invalid:
@@ -289,9 +306,32 @@ class TestCheckPreflight(unittest.TestCase):
         payload = configuration()
         for section in ("baseline", "ours"):
             payload[section]["llm"] = local_llm()
+            payload[section]["sampling"] = dict(LOCAL_SAMPLING)
         check_preflight(payload)
         payload["ours"]["llm"] = local_llm() | {"host_ip": "fd00::1"}
         self.reject(payload, "comparison.llm: MISMATCH")
+
+    def test_sampling_set_must_match_the_backend(self):
+        api_set = configuration()["ours"]["sampling"]
+        local = configuration()
+        for section in ("baseline", "ours"):
+            local[section]["llm"] = local_llm()
+            local[section]["sampling"] = dict(LOCAL_SAMPLING)
+        check_preflight(local)
+        wrong = copy.deepcopy(local)
+        wrong["ours"]["sampling"] = dict(api_set)
+        self.reject(wrong, "ours.sampling: BACKEND_MISMATCH")
+        wrong = configuration()
+        wrong["baseline"]["sampling"] = dict(LOCAL_SAMPLING)
+        self.reject(wrong, "baseline.sampling: BACKEND_MISMATCH")
+        for sampling in ({}, {**LOCAL_SAMPLING, "top_k": 20},
+                         {k: v for k, v in LOCAL_SAMPLING.items() if k != "top_p"},
+                         {**LOCAL_SAMPLING, "top_p": 0}, {**LOCAL_SAMPLING, "top_p": 1.5},
+                         {**LOCAL_SAMPLING, "presence_penalty": 3}, {**LOCAL_SAMPLING, "frequency_penalty": -3},
+                         {**LOCAL_SAMPLING, "frequency_penalty": "1"}):
+            wrong = copy.deepcopy(local)
+            wrong["ours"]["sampling"] = sampling
+            self.reject(wrong, "ours.sampling: INVALID")
 
     def test_each_url_guard_rejects_on_its_own(self):
         # 다른 검사에 먼저 걸리지 않게, 해당 가드 하나만 어기는 입력을 쓴다.
@@ -311,12 +351,29 @@ class TestCheckPreflight(unittest.TestCase):
         payload = configuration()
         for section in ("baseline", "ours"):
             payload[section]["llm"] = local_llm() | {"host_ip": "fd00::1"}
+            payload[section]["sampling"] = dict(LOCAL_SAMPLING)
         check_preflight(payload)
 
     def test_backend_kind_must_match_between_baseline_and_ours(self):
         payload = configuration()
         payload["ours"]["llm"] = local_llm()
         self.reject(payload, "comparison.llm: MISMATCH")
+
+    def test_context_window_must_fit_the_local_server(self):
+        def local(window, length=64000):
+            payload = configuration()
+            for side in ("baseline", "ours"):
+                payload[side]["llm"] = local_llm() | {"context_length": length}
+                payload[side]["sampling"] = {"top_p": 0.95, "presence_penalty": 1.5, "frequency_penalty": 0.0}
+                payload[side]["context_window_k"] = window
+            return payload
+        check_preflight(local(64))  # 경계: 서버 컨텍스트와 정확히 같으면 통과
+        self.reject(local(65), "ours.context_window_k: ABOVE_SERVER_CONTEXT")
+        self.reject(local(65), "baseline.context_window_k: ABOVE_SERVER_CONTEXT")
+        api = configuration()
+        for side in ("baseline", "ours"):
+            api[side]["context_window_k"] = 1000  # API는 서버 컨텍스트 선언이 없다
+        check_preflight(api)
 
     def test_unknown_sampling_values_and_boolean_or_nonfinite_numbers_fail(self):
         values = {
@@ -325,6 +382,7 @@ class TestCheckPreflight(unittest.TestCase):
             "time_budget_seconds": (None, False, "1200", 0, -1, float("nan"), float("inf"), 10**1000),
             "request_budget": (None, False, "100", 0, -1, 1.5),
             "worker_count": (None, True, "1", 0, -1, 1.5),
+            "context_window_k": (None, True, "32", 31, 1001, 32.0),
         }
         for field, invalid in values.items():
             for value in invalid:

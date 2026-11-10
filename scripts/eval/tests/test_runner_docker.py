@@ -28,6 +28,19 @@ class FakeExecutor:
         return self.results.pop(0)
 
 
+class TestRunBounded(unittest.TestCase):
+    def test_passes_the_callers_limits_and_returns_the_exit_code_to_it(self):
+        calls = []
+
+        def bounded(args, env, timeout, max_stdout):
+            calls.append((args, env, timeout, max_stdout))
+            return runner_docker.BoundedResult(3, b"out", b"")
+        docker = Docker(FakeExecutor(), {"DOCKER_HOST": "unix:///x"}, 1, bounded=bounded)
+        result = docker.run_bounded(("run", "x"), 5.0, 9)
+        self.assertEqual(calls, [(["run", "x"], {"DOCKER_HOST": "unix:///x"}, 5.0, 9)])
+        self.assertEqual((result.returncode, result.stdout), (3, b"out"))
+
+
 class FakeStream:
     """docker events 프로세스 대역. 실제처럼 terminate() 전까지 stdout이 열려 있다(파이프).
 

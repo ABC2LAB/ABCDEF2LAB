@@ -17,7 +17,7 @@ from manifest import load_manifests  # noqa: E402
 from run_record import sign_run_record  # noqa: E402
 from runner import RESULT_FORMAT  # noqa: E402
 from session_runs import (  # noqa: E402
-    RESULT_MISSING, SessionError, build_manifest, expected_order, main, read_session, tally,
+    RESULT_MISSING, SessionError, auxiliary, build_manifest, expected_order, main, read_session, tally,
 )
 
 CONDITION = {"baseline": "원본@35b", "ours": "우리@35b"}
@@ -48,13 +48,13 @@ class Session:
         write(directory / "runner-result.json", result, signed=fields.get("status") == "complete")
 
     def complete(self, side: str, minute: int, repeat: int, condition: str | None = None,
-                 task: str = "t" * 64, e2_mode: object = "none") -> Path:
+                 task: str = "t" * 64, e2_mode: object = "none", total_requests: object = 400) -> Path:
         directory = self._dir(side, minute)
         self._result(directory, side, minute, status="complete", task_request_sha256=task.replace("t", "a"),
                      e2_mode=e2_mode)
         record = {"run_id": directory.name, "engine": side, "condition": condition or CONDITION[side],
-                  "repeat_index": repeat, "model_tag": "qwen/qwen3.6-35b-a3b", "reset_generation": "r" * 64,
-                  "total_requests": 400, "blocked_attempts": None, "elapsed_seconds": 1200.5,
+                  "repeat_index": repeat, "model_tag": "qwen/qwen3.5-35b-a3b", "reset_generation": "r" * 64,
+                  "total_requests": total_requests, "blocked_attempts": None, "elapsed_seconds": 1200.5,
                   "artifacts": {"pre": {"path": "pre/normalized.json"}, "post": {"path": "post/normalized.json"},
                                 "records": None}}
         write(directory / "run-record.json", record, signed=True)
@@ -99,8 +99,13 @@ class TestFixtureE2(SessionCase):
         self.assertTrue(any("e2_mode=stub" in e for e in caught.exception.errors), caught.exception.errors)
         self.assertEqual(len(read_session(self.root, KEY, allow_fixture_e2=True)), 2)
 
+    def test_product_runs_count_without_the_fixture_flag(self):
+        self.s.complete("baseline", 1, 0)
+        self.s.complete("ours", 2, 0, e2_mode="product")
+        self.assertEqual(len(read_session(self.root, KEY)), 2)
+
     def test_missing_or_unknown_e2_mode_is_refused(self):
-        for minute, value in enumerate((None, "product", "")):
+        for minute, value in enumerate((None, "other", "")):
             with self.subTest(value=value):
                 directory = self.s.complete("ours", minute, minute, e2_mode=value)
                 with self.assertRaises(SessionError) as caught:
@@ -109,6 +114,54 @@ class TestFixtureE2(SessionCase):
                 for child in directory.iterdir():
                     child.unlink()
                 directory.rmdir()
+
+
+class TestAuxiliary(SessionCase):
+    def _run(self, side, minute, repeat, stop, over, seconds):
+        directory = self.s.complete(side, minute, repeat)
+        result = json.loads((directory / "runner-result.json").read_text(encoding="utf-8"))
+        result.pop("signature")
+        result["meter"] = {"stop_reason": stop, "over_budget": over}
+        write(directory / "runner-result.json", result, signed=True)
+        record = json.loads((directory / "run-record.json").read_text(encoding="utf-8"))
+        record.pop("signature")
+        record["timeline"] = {"engine_start": {"at": "2026-11-10T10:00:00.000000000Z"},
+                              "engine_end": {"at": f"2026-11-10T10:00:{seconds:02d}.000000000Z"}}
+        write(directory / "run-record.json", record, signed=True)
+
+    def test_each_side_gets_its_stop_reasons_overrun_and_duration(self):
+        self._run("baseline", 0, 0, "time_budget", 0, 10)
+        self._run("baseline", 1, 1, "request_budget", 2, 20)
+        self._run("ours", 2, 0, "time_budget", 1, 30)
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| baseline | 2 | request_budget 1, time_budget 1 | 1 ± 1.41421 | 15 ± 7.07107 |", lines)
+        self.assertIn("| ours | 1 | time_budget 1 | 1 (n=1) | 30 (n=1) |", lines)
+
+    def test_missing_values_are_not_counted_as_zero(self):
+        self._run("baseline", 0, 0, "time_budget", 0, 10)
+        self.s.complete("baseline", 1, 1)  # meter·timeline 없음
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| baseline | 2 | time_budget 1, 미기록 1 | — | — |", lines)
+
+    def test_a_boolean_overrun_is_not_a_number(self):
+        self._run("baseline", 0, 0, "time_budget", True, 10)
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| baseline | 1 | time_budget 1 | — | 10 (n=1) |", lines)
+
+    def test_the_command_prints_the_table(self):
+        self._run("baseline", 0, 0, "time_budget", 0, 10)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main([str(self.root), "--repeats", "3", "--runner-key-file", str(self.key_file)]), 0)
+        self.assertIn("보조 지표(프로토콜 §5", out.getvalue())
+        self.assertIn("| baseline | 1 | time_budget 1 | 0 (n=1) | 10 (n=1) |", out.getvalue())
+
+    def test_invalid_attempts_stay_out_and_an_empty_side_shows_dashes(self):
+        self._run("ours", 0, 0, "time_budget", 0, 10)
+        self.s.invalid("ours", 1, "probe_failed")
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| ours | 1 | time_budget 1 | 0 (n=1) | 10 (n=1) |", lines)
+        self.assertIn("| baseline | 0 | — | — | — |", lines)
 
 
 class TestOrder(unittest.TestCase):
@@ -125,6 +178,16 @@ class TestTally(SessionCase):
         self.assertIn("| baseline | 원본@35b | 3 | 3 | 0 | 0% | — |", lines)
         self.assertIn("| ours | 우리@35b | 3 | 3 | 0 | 0% | — |", lines)
         self.assertIn("유효 순서: B O O B B O (기대 B O O B B O: 일치)", lines)
+
+    def test_zero_request_runs_stay_valid_and_warn_per_side(self):
+        self.s.complete("baseline", 1, 0, total_requests=0)
+        self.s.complete("ours", 2, 0, total_requests=None)
+        self.s.complete("ours", 3, 1, total_requests=5)
+        lines, warnings = tally(read_session(self.root, KEY), 1)
+        self.assertIn("| baseline | 원본@35b | 1 | 1 | 0 | 0% | — |", lines)
+        zero = [w for w in warnings if w.startswith("경고[대상 요청 0]")]
+        self.assertEqual(len(zero), 1)
+        self.assertIn("baseline: 유효 회차 1개", zero[0])
 
     def test_invalid_attempts_are_counted_per_side_with_their_first_reason(self):
         self.s.complete("baseline", 0, 0)

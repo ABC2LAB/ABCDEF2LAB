@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -27,7 +28,21 @@ const (
 	// How the gateway re-encodes it ahead of the provider pin.
 	pinnedSamplingFields = `"temperature":1,"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.5,` +
 		`"repetition_penalty":1,"seed":42`
+	// What a local server's OpenAI path applies.
+	pinnedLocalSampling = `{"temperature":1.0,"top_p":0.95,"presence_penalty":0.5,"frequency_penalty":0.25,"seed":42}`
+	// How the gateway re-encodes it ahead of the engine's body.
+	pinnedLocalFields = `"temperature":1,"top_p":0.95,"presence_penalty":0.5,"frequency_penalty":0.25,"seed":42`
 )
+
+// sameSampling compares marker values, which come back from JSON, with what was pinned.
+func sameSampling(t *testing.T, got any, want samplingPin) bool {
+	t.Helper()
+	wantMembers := map[string]any{}
+	if err := json.Unmarshal(append(append([]byte("{"), want.fields()...), '}'), &wantMembers); err != nil {
+		t.Fatal(err)
+	}
+	return reflect.DeepEqual(got, wantMembers)
+}
 
 type upstreamCall struct {
 	method, path, query, body string
@@ -58,10 +73,11 @@ func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.Unlock()
 	switch r.URL.Path {
 	case chatPath:
+		// 취소를 기다리는 합성 응답은 정상 EOF와 경쟁하지 않도록 연결을 중단한다.
 		if bytes.Contains(body, []byte(`"slow"`)) {
 			p.slowStarted <- struct{}{}
 			<-r.Context().Done()
-			return
+			panic(http.ErrAbortHandler)
 		}
 		if bytes.Contains(body, []byte(`"partial"`)) {
 			// One event with an id, then the provider keeps the stream open.
@@ -70,10 +86,28 @@ func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.(http.Flusher).Flush()
 			p.slowStarted <- struct{}{}
 			<-r.Context().Done()
-			return
+			panic(http.ErrAbortHandler)
 		}
 		if bytes.Contains(body, []byte(`"broken"`)) {
 			panic(http.ErrAbortHandler) // drop the connection without an answer
+		}
+		if bytes.Contains(body, []byte(`"done-then-hold"`)) {
+			// 종료 이벤트까지 보내고 연결은 닫지 않는다. 엔진이 먼저 닫으면 EOF를 못 읽는다.
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"id\":\"gen-partial\",\"choices\":[]}\n\ndata: [DONE]\n\n")
+			w.(http.Flusher).Flush()
+			p.slowStarted <- struct{}{}
+			<-r.Context().Done()
+			panic(http.ErrAbortHandler)
+		}
+		if bytes.Contains(body, []byte(`"cut-after-done"`)) || bytes.Contains(body, []byte(`"cut-before-done"`)) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"id\":\"gen-partial\",\"choices\":[]}\n\n")
+			if bytes.Contains(body, []byte(`"cut-after-done"`)) {
+				_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			}
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler)
 		}
 		p.mu.Lock()
 		p.next++
@@ -160,6 +194,11 @@ func newHarness(t *testing.T, backend string) *gatewayHarness {
 		cfg.verifyAttempts, cfg.verifyInterval = 3, time.Millisecond
 	} else {
 		upstream = httptest.NewServer(h.provider)
+		sampling, ok := parseLocalSampling(pinnedLocalSampling)
+		if !ok {
+			t.Fatal("test local sampling rejected")
+		}
+		cfg.sampling = sampling
 	}
 	t.Cleanup(upstream.Close)
 	u, err := url.Parse(upstream.URL)
@@ -394,7 +433,7 @@ func TestGatewayRejectsWithoutForwarding(t *testing.T) {
 	}
 }
 
-func TestGatewayLocalForwardsUnchangedWithoutKey(t *testing.T) {
+func TestGatewayLocalPinsSamplingAndForwardsTheRestWithoutKey(t *testing.T) {
 	h := newHarness(t, backendLocal)
 	resp, _ := h.post(t, chatPath, "application/json", engineBody, map[string]string{
 		"Authorization": "Bearer engine-placeholder", "X-Session-Id": "s-1"})
@@ -402,16 +441,17 @@ func TestGatewayLocalForwardsUnchangedWithoutKey(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 	calls := h.provider.chatCalls()
-	if len(calls) != 1 || calls[0].body != engineBody {
-		t.Fatalf("local body changed: %+v", calls)
+	if want := `{` + pinnedLocalFields + `,` + engineBody[1:]; len(calls) != 1 || calls[0].body != want {
+		t.Fatalf("local body %+v, want %s", calls, want)
 	}
 	if calls[0].header.Get("Authorization") != "" || calls[0].header.Get("X-Session-Id") != "" {
 		t.Fatalf("local upstream got engine headers")
 	}
 	h.waitRows(t, 1)
 	marker := h.sealAndWait(t)
-	if marker.Backend != backendLocal || marker.Sampling != nil || marker.Forwarded != 1 || len(marker.Generations) != 0 ||
-		!marker.LogComplete {
+	wantLocal, _ := parseLocalSampling(pinnedLocalSampling)
+	if marker.Backend != backendLocal || !sameSampling(t, marker.Sampling, wantLocal) || marker.Forwarded != 1 ||
+		len(marker.Generations) != 0 || !marker.LogComplete {
 		t.Fatalf("marker %+v", marker)
 	}
 	h.provider.mu.Lock()
@@ -447,7 +487,7 @@ func TestGatewaySealCancelsVerifiesAndNeverWritesKey(t *testing.T) {
 
 	want, _ := parseSampling(pinnedSampling)
 	if marker.Role != roleGateway || marker.Backend != backendAPI || marker.Provider != pinnedSlug ||
-		marker.Sampling == nil || *marker.Sampling != *want || marker.Forwarded != 2 || marker.CancelledBySeal != 1 || marker.MissingIDs != 0 || !marker.LogComplete {
+		!sameSampling(t, marker.Sampling, want) || marker.Forwarded != 2 || marker.CancelledBySeal != 1 || marker.MissingIDs != 0 || !marker.LogComplete {
 		t.Fatalf("marker %+v", marker)
 	}
 	if len(marker.Generations) != 2 {
@@ -609,6 +649,222 @@ func TestGatewayUpstreamFailureIsCountedSeparately(t *testing.T) {
 	}
 }
 
+func TestUnfinishedEndNames(t *testing.T) {
+	cases := []struct {
+		clientClosed, doneSeen bool
+		want                   string
+	}{
+		{true, true, "client_closed_after_done"},
+		{true, false, "client_closed_before_done"},
+		{false, true, "upstream_cut_after_done"},
+		{false, false, "upstream_cut_before_done"},
+	}
+	for _, tc := range cases {
+		if got := unfinishedEnd(tc.clientClosed, tc.doneSeen); got != tc.want {
+			t.Fatalf("unfinishedEnd(%v,%v) = %s, want %s", tc.clientClosed, tc.doneSeen, got, tc.want)
+		}
+	}
+}
+
+// 엔진이 먼저 닫은 스트림과 위쪽에서 끊긴 스트림을 같은 upstream_error로 뭉치지 않는다.
+func TestGatewaySeparatesWhoEndedAnUnfinishedStream(t *testing.T) {
+	stream := func(t *testing.T, h *gatewayHarness, model string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, h.front.URL+chatPath, strings.NewReader(`{"model":"`+model+`","stream":true}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := h.front.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	readUntil := func(t *testing.T, resp *http.Response, want string) {
+		t.Helper()
+		var got []byte
+		chunk := make([]byte, 64)
+		for !strings.Contains(string(got), want) {
+			n, err := resp.Body.Read(chunk)
+			got = append(got, chunk[:n]...)
+			if err != nil {
+				t.Fatalf("read %q before %q: %v", got, want, err)
+			}
+		}
+	}
+	cases := []struct {
+		name, model, want string
+		exercise          func(t *testing.T, h *gatewayHarness, resp *http.Response)
+	}{
+		{"engine read to the terminal event and closed", "done-then-hold", endClientClosedAfterDone,
+			func(t *testing.T, h *gatewayHarness, resp *http.Response) {
+				<-h.provider.slowStarted
+				readUntil(t, resp, "[DONE]")
+				resp.Body.Close()
+			}},
+		{"engine closed before the terminal event", "partial", endClientClosedBeforeDone,
+			func(t *testing.T, h *gatewayHarness, resp *http.Response) {
+				<-h.provider.slowStarted
+				readUntil(t, resp, "gen-partial")
+				resp.Body.Close()
+			}},
+		{"connection dropped after the terminal event", "cut-after-done", endUpstreamCutAfterDone,
+			func(_ *testing.T, _ *gatewayHarness, resp *http.Response) {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}},
+		{"connection dropped before the terminal event", "cut-before-done", endUpstreamCutBeforeDone,
+			func(_ *testing.T, _ *gatewayHarness, resp *http.Response) {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, backendAPI)
+			h.provider.lookups["gen-partial"] = []int{http.StatusOK}
+			tc.exercise(t, h, stream(t, h, tc.model))
+			rows := h.waitRows(t, 1)
+			if rows[0].Decision != "upstream_error" || rows[0].UnfinishedEnd != tc.want || rows[0].GenerationID != "gen-partial" {
+				t.Fatalf("rows %+v", rows)
+			}
+			marker := h.sealAndWait(t)
+			want := map[string]uint64{endClientClosedAfterDone: 0, endClientClosedBeforeDone: 0, endUpstreamCutAfterDone: 0, endUpstreamCutBeforeDone: 0}
+			want[tc.want] = 1
+			if marker.UpstreamErrors != 1 || !reflect.DeepEqual(marker.UpstreamEnds, want) {
+				t.Fatalf("marker %+v", marker)
+			}
+		})
+	}
+}
+
+// 정상 완료와 봉인 취소는 종료 모양을 세지 않는다.
+func TestGatewayFinishedAndSealedRowsHaveNoUnfinishedEnd(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.provider.lookups["gen-1"] = []int{http.StatusOK}
+	h.provider.lookups["gen-partial"] = []int{http.StatusOK}
+	if resp, _ := h.post(t, chatPath, "application/json", `{"model":"m","stream":true}`, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	// 첫 요청의 완료 기록을 확정한 뒤 봉인 취소를 시작한다.
+	if rows := h.waitRows(t, 1); len(rows) != 1 || rows[0].Decision != "forwarded" {
+		t.Fatalf("첫 요청의 완료 기록이 다름: %+v", rows)
+	}
+	req, err := http.NewRequest(http.MethodPost, h.front.URL+chatPath, strings.NewReader(`{"model":"partial","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.front.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	<-h.provider.slowStarted
+	// 취소 전에 첫 이벤트가 프록시를 지나온 것을 확인한다.
+	initialEvent := "data: {\"id\":\"gen-partial\",\"choices\":[]}\n\n"
+	first := make([]byte, len(initialEvent))
+	if _, err := io.ReadFull(resp.Body, first); err != nil {
+		t.Fatalf("첫 스트림 이벤트를 읽지 못함: %v", err)
+	}
+	if string(first) != initialEvent {
+		t.Fatalf("첫 스트림 이벤트가 다름: %q", first)
+	}
+	marker := h.sealAndWait(t)
+	if marker.Forwarded != 1 || marker.CancelledBySeal != 1 || marker.UpstreamErrors != 0 {
+		t.Fatalf("marker %+v", marker)
+	}
+	for name, count := range marker.UpstreamEnds {
+		if count != 0 {
+			t.Fatalf("%s counted %d", name, count)
+		}
+	}
+	for _, row := range h.waitRows(t, 2) {
+		if row.UnfinishedEnd != "" {
+			t.Fatalf("row %+v", row)
+		}
+	}
+}
+
+func TestStatusRecorderRemembersFailedWrite(t *testing.T) {
+	rec := &statusRecorder{ResponseWriter: failingWriter{httptest.NewRecorder()}}
+	if _, err := rec.Write([]byte("x")); err == nil || !rec.writeFailed {
+		t.Fatalf("writeFailed %v, err %v", rec.writeFailed, err)
+	}
+	ok := &statusRecorder{ResponseWriter: httptest.NewRecorder()}
+	if _, err := ok.Write([]byte("x")); err != nil || ok.writeFailed {
+		t.Fatalf("writeFailed %v, err %v", ok.writeFailed, err)
+	}
+}
+
+// 호출자에게 쓰기가 실패하면 context 취소가 아직 안 왔어도 호출자가 먼저 닫은 것으로 센다.
+func TestGatewayCountsFailedWriteAsClientClosed(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.provider.lookups["gen-partial"] = []int{http.StatusOK}
+	req := httptest.NewRequest(http.MethodPost, chatPath, strings.NewReader(`{"model":"partial","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.g.ServeHTTP(failingWriter{httptest.NewRecorder()}, req)
+	<-h.provider.slowStarted
+	rows := h.waitRows(t, 1)
+	if rows[0].Decision != "upstream_error" || rows[0].UnfinishedEnd != endClientClosedBeforeDone {
+		t.Fatalf("rows %+v", rows)
+	}
+}
+
+type failingWriter struct{ http.ResponseWriter }
+
+func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestDoneScanFindsOnlyTheTerminalLine(t *testing.T) {
+	scan := func(stream bool, chunks ...string) bool {
+		s := &idScanner{ReadCloser: io.NopCloser(&chunkReader{chunks: chunks}), stream: stream}
+		_, _ = io.Copy(io.Discard, s)
+		return s.done
+	}
+	found := map[string][]string{
+		"whole":            {"data: {}\n\ndata: [DONE]\n\n"},
+		"no space":         {"data: {}\n\ndata:[DONE]\n\n"},
+		"crlf":             {"data: {}\r\n\r\ndata: [DONE]\r\n\r\n"},
+		"split":            {"data: {}\n\nda", "ta: [DO", "NE]", "\n\n"},
+		"split at newline": {"data: {}\n", "\n", "data: [DONE]\r", "\n"},
+		"one byte a time":  strings.Split("data: {}\n\ndata: [DONE]\r\n", ""),
+		"first line":       {"data: [DONE]\n"},
+	}
+	for name, chunks := range found {
+		if !scan(true, chunks...) {
+			t.Errorf("%s: not found", name)
+		}
+	}
+	missed := map[string][]string{
+		"none":             {"data: {}\n\n"},
+		"unterminated":     {"data: {}\n\ndata: [DONE]"},
+		"inside json":      {"data: {\"x\":\"data: [DONE]\"}\n\n"},
+		"escaped newline":  {"data: {\"x\":\"\\ndata: [DONE]\\n\"}\n\n"},
+		"not at line head": {"xdata: [DONE]\n"},
+		"other field":      {"event: [DONE]\n"},
+	}
+	for name, chunks := range missed {
+		if scan(true, chunks...) {
+			t.Errorf("%s: found", name)
+		}
+	}
+	if scan(false, "data: [DONE]\n") {
+		t.Error("non-stream answer counted a terminal event")
+	}
+}
+
+type chunkReader struct{ chunks []string }
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.chunks[0])
+	r.chunks = r.chunks[1:]
+	return n, nil
+}
+
 func TestGenerationIDScanning(t *testing.T) {
 	jsonCases := map[string]string{
 		`{"id":"gen-1","x":1}`:                        "gen-1",
@@ -645,7 +901,7 @@ func TestRunGatewayFlagRules(t *testing.T) {
 		"-allow-path", chatPath, "-log-dir", path, "-provider", pinnedSlug, "-sampling", pinnedSampling,
 		"-generation-path", genPath, "-verify-attempts", "3", "-verify-interval", "2s"}
 	local := []string{"-role", "llm-gateway", "-backend", "local", "-listen", "127.0.0.1:0", "-upstream",
-		"http://llm-host:11434", "-allow-path", "/v1/chat/completions", "-log-dir", path}
+		"http://llm-host:11434", "-allow-path", "/v1/chat/completions", "-log-dir", path, "-sampling", pinnedLocalSampling}
 	replace := func(args []string, flag, value string) []string {
 		out := append([]string(nil), args...)
 		for i := range out {
@@ -681,7 +937,9 @@ func TestRunGatewayFlagRules(t *testing.T) {
 		{"api sampling missing seed", replace(api, "-sampling", strings.Replace(pinnedSampling, `,"seed":42`, "", 1)), canaryKey, invalidInput},
 		{"api sampling unknown key", replace(api, "-sampling", strings.Replace(pinnedSampling, `"seed"`, `"seeds"`, 1)), canaryKey, invalidInput},
 		{"api sampling trailing", replace(api, "-sampling", pinnedSampling+" {}"), canaryKey, invalidInput},
-		{"local with sampling", append(append([]string(nil), local...), "-sampling", pinnedSampling), "", invalidInput},
+		{"local no sampling", drop(local, "-sampling"), "", invalidInput},
+		{"local with the api sampling keys", replace(local, "-sampling", pinnedSampling), "", invalidInput},
+		{"local sampling missing seed", replace(local, "-sampling", strings.Replace(pinnedLocalSampling, `,"seed":42`, "", 1)), "", invalidInput},
 		{"api no generation path", drop(api, "-generation-path"), canaryKey, invalidInput},
 		{"api zero attempts", replace(api, "-verify-attempts", "0"), canaryKey, invalidInput},
 		{"api too many attempts", replace(api, "-verify-attempts", "101"), canaryKey, invalidInput},
@@ -717,8 +975,51 @@ func TestRunGatewayFlagRules(t *testing.T) {
 		time.Second, canaryKey); !ok {
 		t.Fatal("valid api config rejected")
 	}
-	if _, ok := gatewayFromFlags("local", "http://llm-host:11434", "/v1/chat/completions", "", "", "", 0, 0, ""); !ok {
+	if _, ok := gatewayFromFlags("local", "http://llm-host:11434", "/v1/chat/completions", "", pinnedLocalSampling, "", 0, 0, ""); !ok {
 		t.Fatal("valid local config rejected")
+	}
+}
+
+func TestParseLocalSamplingKeysAndRanges(t *testing.T) {
+	if p, ok := parseLocalSampling(pinnedLocalSampling); !ok || string(p.fields()) != pinnedLocalFields {
+		t.Fatalf("official local sampling rejected or re-encoded: %+v", p)
+	}
+	rendered := func(old, new string) string { return strings.Replace(pinnedLocalSampling, old, new, 1) }
+	for _, raw := range []string{
+		rendered(`"temperature":1.0`, `"temperature":0`), rendered(`"temperature":1.0`, `"temperature":2`),
+		rendered(`"top_p":0.95`, `"top_p":1`), rendered(`"presence_penalty":0.5`, `"presence_penalty":-2`),
+		rendered(`"frequency_penalty":0.25`, `"frequency_penalty":2`), rendered(`"seed":42`, `"seed":0`),
+	} {
+		if _, ok := parseLocalSampling(raw); !ok {
+			t.Errorf("rejected %s", raw)
+		}
+	}
+	for _, raw := range []string{
+		"", "{}", pinnedSampling,
+		rendered(`"temperature":1.0`, `"temperature":2.5`), rendered(`"temperature":1.0`, `"temperature":-1`),
+		rendered(`"top_p":0.95`, `"top_p":0`), rendered(`"top_p":0.95`, `"top_p":1.5`),
+		rendered(`"presence_penalty":0.5`, `"presence_penalty":3`), rendered(`"frequency_penalty":0.25`, `"frequency_penalty":-3`),
+		rendered(`"seed":42`, `"seed":-1`), rendered(`"seed":42`, `"seed":1.5`), rendered(`"seed":42`, `"seed":"42"`),
+		rendered(`"frequency_penalty":0.25`, `"frequency_penalty":null`), rendered(`"top_p":0.95,`, ``),
+		rendered(`"seed":42`, `"seed":42,"top_k":20`), pinnedLocalSampling + " {}",
+		strings.Repeat(" ", maxSamplingFlagBytes+1) + pinnedLocalSampling,
+	} {
+		if _, ok := parseLocalSampling(raw); ok {
+			t.Errorf("accepted %s", raw)
+		}
+	}
+}
+
+func TestGatewayLocalRefusesEngineChosenSampling(t *testing.T) {
+	h := newHarness(t, backendLocal)
+	for _, key := range []string{"temperature", "top_p", "seed", "presence_penalty", "frequency_penalty", "top_k"} {
+		body := `{"` + key + `":1,` + engineBody[1:]
+		if resp, _ := h.post(t, chatPath, "application/json", body, nil); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status %d", key, resp.StatusCode)
+		}
+	}
+	if calls := h.provider.chatCalls(); len(calls) != 0 {
+		t.Fatalf("refused bodies reached the upstream: %+v", calls)
 	}
 }
 

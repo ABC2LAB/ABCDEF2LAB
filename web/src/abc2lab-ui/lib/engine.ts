@@ -69,12 +69,8 @@ export type EngineFinding = {
   /** pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted */
   status: string;
   summary: string;
-  /** 에이전트가 발견을 기록할 때 남긴 증거(자유 서술 · JSON). 목록에도 실려 온다 */
-  evidence?: string;
   assets?: EngineFindingAsset[];
   task_id?: string;
-  /** 연결된 다른 점검에서 물려받은 발견(읽기 전용) */
-  inherited?: boolean;
   ts: string;
 };
 
@@ -83,131 +79,6 @@ export async function listTaskFindings(taskId: string): Promise<EngineFinding[]>
   if (!taskId) return [];
   const res = await apiFetch<EngineFinding[]>(`/api/exploration/findings?task=${encodeURIComponent(taskId)}`);
   return res ?? [];
-}
-
-/** 발견 상세 조회에 붙이는 ?context_task= — 이 점검에서 볼 수 있는 발견인지 엔진이 확인한다 */
-function findingQuery(taskId?: string | null): string {
-  return taskId ? `?context_task=${encodeURIComponent(taskId)}` : "";
-}
-
-/** GET /api/exploration/findings/{finding_id} — 발견 1건 상세. id 는 목록의 finding_id(발견 표 id)다 */
-export type EngineFindingDetail = EngineFinding & {
-  evidence: string;
-  /** 상세 보고서(Markdown). 아직 안 쓰였으면 빈 값 */
-  report?: string;
-  /** 증거가 바뀐 뒤 보고서가 다시 쓰이지 않았음 */
-  report_stale?: boolean;
-  /** 이 발견에 묶인 요청 · 응답 기록 수 */
-  traffic_count?: number;
-  task_description?: string;
-};
-
-export async function getFinding(findingId: string, taskId?: string | null): Promise<EngineFindingDetail> {
-  return apiFetch<EngineFindingDetail>(
-    `/api/exploration/findings/${encodeURIComponent(findingId)}${findingQuery(taskId)}`,
-  );
-}
-
-/**
- * GET /api/exploration/findings/{id}/traffic — 발견의 근거로 묶인 요청 · 응답 기록.
- * 엔진이 머리글 · 본문을 빼고 요약만 준다(메서드 · 주소 · 응답 코드 · 크기).
- */
-export type EngineFindingTraffic = {
-  id: string;
-  /** baseline 기준 요청 | proof 증명 | verification 검증 | supporting 참고 */
-  role: string;
-  note: string;
-  method: string;
-  url: string;
-  status: number;
-  contentType: string;
-  reqLen: number;
-  respLen: number;
-  /** unix epoch(ms) — 모르면 0 */
-  capturedAt: number;
-};
-
-type FindingTrafficRaw = {
-  bindings?: {
-    id: string;
-    role?: string;
-    note?: string;
-    position?: number;
-    snapshot?: {
-      method?: string;
-      url?: string;
-      status?: number;
-      content_type?: string;
-      req_len?: number;
-      resp_len?: number;
-      captured_at?: number;
-    };
-  }[];
-};
-
-export async function getFindingTraffic(findingId: string, taskId?: string | null): Promise<EngineFindingTraffic[]> {
-  const res = await apiFetch<FindingTrafficRaw>(
-    `/api/exploration/findings/${encodeURIComponent(findingId)}/traffic${findingQuery(taskId)}`,
-  );
-  return [...(res.bindings ?? [])]
-    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-    .map((b) => {
-      const s = b.snapshot ?? {};
-      // captured_at 은 초 단위(unix)로 온다
-      const at = s.captured_at ?? 0;
-      return {
-        id: String(b.id),
-        role: b.role ?? "",
-        note: b.note ?? "",
-        method: s.method ?? "",
-        url: s.url ?? "",
-        status: s.status ?? 0,
-        contentType: s.content_type ?? "",
-        reqLen: s.req_len ?? 0,
-        respLen: s.resp_len ?? 0,
-        capturedAt: at > 0 && at < 1e12 ? at * 1000 : at,
-      };
-    });
-}
-
-/** GET /api/exploration/findings/{id}/retests — 재검증 이력(최근 것이 먼저 오도록 정렬해서 돌려준다) */
-export type EngineFindingRetest = {
-  id: number;
-  /** pending | running | completed | failed | stopped */
-  status: string;
-  /** reproduced 재현됨 | fixed 고쳐짐 | inconclusive 결론 못 냄 | "" 아직 없음 */
-  verdict: string;
-  summary: string;
-  error: string;
-  createdAt: string;
-  finishedAt: string | null;
-};
-
-type FindingRetestRaw = {
-  id: number;
-  status?: string;
-  verdict?: string;
-  summary?: string;
-  error?: string;
-  created_at?: string;
-  finished_at?: string | null;
-};
-
-export async function listFindingRetests(findingId: string): Promise<EngineFindingRetest[]> {
-  const res = await apiFetch<{ retests?: FindingRetestRaw[] }>(
-    `/api/exploration/findings/${encodeURIComponent(findingId)}/retests`,
-  );
-  return (res.retests ?? [])
-    .map((r) => ({
-      id: r.id,
-      status: r.status ?? "",
-      verdict: r.verdict ?? "",
-      summary: r.summary ?? "",
-      error: r.error ?? "",
-      createdAt: r.created_at ?? "",
-      finishedAt: r.finished_at ?? null,
-    }))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 /**

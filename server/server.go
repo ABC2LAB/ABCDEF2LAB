@@ -75,7 +75,7 @@ const (
 	errNotifyDigestRange   = "요약 주기는 1~1440분 사이여야 합니다"
 
 	// 사용자 대면 출력 언어 설정 (putSettings)
-	errOutputLanguageInvalid = "지원하지 않는 언어입니다(en·ko·zh·es·ja 중 하나여야 합니다)"
+	errOutputLanguageInvalid = "지원하지 않는 언어입니다(ko만 지원합니다)"
 
 	// 메인 에이전트 대화·세션 (newMainSession / chat)
 	errTaskDeletingNewSession = "작업을 삭제하는 중이라 새 세션을 만들 수 없습니다"
@@ -113,15 +113,24 @@ const (
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	backgroundMu      sync.Mutex
-	backgroundWG      sync.WaitGroup
-	backgroundClosing bool
-	backgroundDone    chan struct{}
-	m                 *Manager
-	engine            *Engine
-	ctx               context.Context
-	runtimeHooks      agent.RuntimeHooks         // immutable callbacks owned by this server
-	localResolver     *llmpolicy.ProfileResolver // nil only in explicit external/legacy mode
+	requestApprovals               *RequestApprovalService
+	backgroundMu                   sync.Mutex
+	backgroundWG                   sync.WaitGroup
+	backgroundClosing              bool
+	backgroundDone                 chan struct{}
+	m                              *Manager
+	engine                         *Engine
+	ctx                            context.Context
+	runtimeHooks                   agent.RuntimeHooks         // immutable callbacks owned by this server
+	localResolver                  *llmpolicy.ProfileResolver // 로컬 전용 정책은 외부 모드와 별도로 보존한다.
+	openRouterPolicy               *llmpolicy.OpenRouterPolicy
+	openRouterBaseline             llmpolicy.OpenRouterUsage
+	firstModelBudget               *FirstDiagnosisModelBudget
+	firstDiagnosisPreparation      bool
+	firstModelMu                   sync.RWMutex
+	firstModel                     *firstDiagnosisModelPin
+	firstDiagnosisAdmissionStopped atomic.Bool
+	firstDiagnosis                 bool // 첫 기동에서는 복구·예약·비지원 도구 경로를 자동으로 열지 않는다.
 
 	skillDir string // root directory for skill subdirectories
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
@@ -247,12 +256,35 @@ func newServer(ctx context.Context, m *Manager, skillDir string, dataDir string,
 	return s
 }
 
+type serverStartupOptions struct {
+	openRouterPolicy     *llmpolicy.OpenRouterPolicy
+	firstModelBudget     *FirstDiagnosisModelBudget
+	existingAuthOnly     bool
+	assemblyStore        *controlledReadStore
+	noAutomaticAdmission bool
+	e2HTTP               *E2HTTPRuntime
+	preparationOnly      bool
+}
+
 func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, localResolver *llmpolicy.ProfileResolver, bootstrap func(*Server) error) (*Server, error) {
-	key, err := loadOrCreateJWTKey(keyDir, dataDir)
+	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, localResolver, serverStartupOptions{}, bootstrap)
+}
+
+func newServerConfiguredWithOptions(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, localResolver *llmpolicy.ProfileResolver, startup serverStartupOptions, bootstrap func(*Server) error) (*Server, error) {
+	if startup.openRouterPolicy != nil && (localResolver != nil || !startup.existingAuthOnly || !startup.noAutomaticAdmission || startup.assemblyStore != nil) {
+		return nil, ErrFirstDiagnosisModel
+	}
+	var key []byte
+	var err error
+	if startup.existingAuthOnly {
+		key, err = readControlledReadAssemblyJWTKey(keyDir, dataDir)
+	} else {
+		key, err = loadOrCreateJWTKey(keyDir, dataDir)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("[auth] JWT key: %w", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, openRouterPolicy: startup.openRouterPolicy, firstModelBudget: startup.firstModelBudget, chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
@@ -260,8 +292,30 @@ func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataD
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	// First-run protection: cache the password hash and, while none is set, issue
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
-	s.bootstrapAuth()
-	if err := s.initControlledReads(keyDir, dataDir); err != nil {
+	s.firstDiagnosis = startup.noAutomaticAdmission
+	s.firstDiagnosisPreparation = startup.preparationOnly
+	s.engine.firstDiagnosis = s.firstDiagnosis
+	if startup.existingAuthOnly {
+		if err := s.bootstrapFirstDiagnosisAuth(); err != nil {
+			return nil, err
+		}
+	} else {
+		s.bootstrapAuth()
+	}
+	if startup.preparationOnly {
+		if startup.e2HTTP != nil || startup.assemblyStore != nil {
+			return nil, ErrControlledReadHostConfiguration
+		}
+	} else if startup.e2HTTP != nil {
+		if startup.assemblyStore != nil {
+			return nil, ErrControlledReadHostConfiguration
+		}
+		s.engine.e2HTTP = startup.e2HTTP
+		s.requestApprovals = startup.e2HTTP.options.RequestApprovals
+	} else if startup.assemblyStore != nil {
+		s.engine.controlledReads = newControlledReadRuntime(startup.assemblyStore)
+		context.AfterFunc(s.ctx, s.engine.controlledReads.discardAll)
+	} else if err := s.initControlledReads(keyDir, dataDir); err != nil {
 		return nil, fmt.Errorf("[E2] private execution store unavailable; server startup stopped: %w", err)
 	}
 	if bootstrap != nil {
@@ -274,7 +328,9 @@ func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataD
 	s.runtimeHooks = s.buildRuntimeHooks()
 	s.ctx = agent.WithRuntimeHooks(s.ctx, s.runtimeHooks)
 	s.engine.runtimeHooks = &s.runtimeHooks
-	s.initSideQuestions()
+	if !startup.noAutomaticAdmission {
+		s.initSideQuestions()
+	}
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
 	s.applyRetryPolicy()
@@ -302,29 +358,31 @@ func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataD
 		// synchronized. Agent prompts and tools use the server-owned bundle.
 		config.SetCurrentLanguage(s.outputLanguage)
 		notify.SetLanguageResolver(s.outputLanguage)
-		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
-		s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
-		if err := s.seedFindingRetester(); err != nil {
-			log.Printf("[retester] seed: %v", err)
+		if !startup.noAutomaticAdmission {
+			seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
+			s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
+			if err := s.seedFindingRetester(); err != nil {
+				log.Printf("[retester] seed: %v", err)
+			}
+			s.startBackground(func() { s.evidenceStore().RunGC(s.ctx) })
+			s.seedPythonInterpreter()                                // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
+			s.startBackground(func() { newScheduler(s).Run(s.ctx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+			// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
+			// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
+			// 통합 테스트는 stepRealtime·stepDigest 를 직접 호출해 분배를 결정론적으로
+			// 검증하므로, 이 환경 변수로 백그라운드 루프만 끌 수 있다(미설정이 기본).
+			if os.Getenv(notifyBackgroundDisabledEnv) == "" {
+				s.startBackground(func() { newNotifier(s).Run(s.ctx) })
+			} else {
+				// 핵심 기능(취약점 IM 알림 전송)을 끄는 분기라 시작 로그를 남긴다. 이 변수는
+				// 통합 테스트 전용이므로, 운영에서 켜져 있으면 실수나 환경 상속을 의심할 단서가 된다.
+				log.Printf(logT("[notify] 백그라운드 알림 전송 루프가 %s 로 꺼졌습니다(테스트 전용) — 취약점 IM 알림이 전송되지 않습니다"), notifyBackgroundDisabledEnv)
+			}
+			// Fill the tool cache for any enabled MCP that has none yet (notably the
+			// seeded browser MCP on first run). Async so it never blocks startup.
+			s.startBackground(s.discoverEmptyMCPsOnStartup)
+			logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 		}
-		s.startBackground(func() { s.evidenceStore().RunGC(s.ctx) })
-		s.seedPythonInterpreter()                                // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
-		s.startBackground(func() { newScheduler(s).Run(s.ctx) }) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
-		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
-		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
-		// 통합 테스트는 stepRealtime·stepDigest 를 직접 호출해 분배를 결정론적으로
-		// 검증하므로, 이 환경 변수로 백그라운드 루프만 끌 수 있다(미설정이 기본).
-		if os.Getenv(notifyBackgroundDisabledEnv) == "" {
-			s.startBackground(func() { newNotifier(s).Run(s.ctx) })
-		} else {
-			// 핵심 기능(취약점 IM 알림 전송)을 끄는 분기라 시작 로그를 남긴다. 이 변수는
-			// 통합 테스트 전용이므로, 운영에서 켜져 있으면 실수나 환경 상속을 의심할 단서가 된다.
-			log.Printf(logT("[notify] 백그라운드 알림 전송 루프가 %s 로 꺼졌습니다(테스트 전용) — 취약점 IM 알림이 전송되지 않습니다"), notifyBackgroundDisabledEnv)
-		}
-		// Fill the tool cache for any enabled MCP that has none yet (notably the
-		// seeded browser MCP on first run). Async so it never blocks startup.
-		s.startBackground(s.discoverEmptyMCPsOnStartup)
-		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 	}
 	// precedence: persisted DB config > env.
 	if cfg, ok := s.loadLLMConfig(); ok {
@@ -342,9 +400,26 @@ func newServerConfigured(ctx context.Context, m *Manager, skillDir string, dataD
 	} else {
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
 	}
-	s.restoreTaskRuntimes()
-	s.startBackground(s.reconcileConcurrency)
-	s.startTaskArchiveWorker()
+	if startup.noAutomaticAdmission {
+		if len(m.List()) == 0 {
+			m.LoadExisting()
+		}
+		for _, task := range m.List() {
+			state := task.lifecycleSnapshot()
+			if isTerminalStatus(state.Status) {
+				continue
+			}
+			// 다른 실행을 자동 복원하거나 DB 상태를 덮어쓰지 않는다.
+			if !state.Paused || state.Queued {
+				return nil, ErrControlledReadHostConfiguration
+			}
+			s.engine.paused.Store(task.ID, true)
+		}
+	} else {
+		s.restoreTaskRuntimes()
+		s.startBackground(s.reconcileConcurrency)
+		s.startTaskArchiveWorker()
+	}
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	return s, nil
 }
@@ -424,6 +499,10 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
+	if s.openRouterPolicy != nil || s.firstModelBudget != nil {
+		// 불명 응답을 재전송하거나 프로필 전환으로 비용 상한을 초기화하지 않는다.
+		cfg.Retry = agent.RetryConfig{ConnectAttempts: -1, EmptyAttempts: -1, StreamAttempts: -1}
+	}
 	if cfg.APIKey == "" {
 		return cfg, false
 	}
@@ -519,7 +598,7 @@ func maxTokensResolver(cfg agent.Config) func() int {
 // the running engine as the GLOBAL active pair. Safe to call at runtime (UI configures LLM).
 func (s *Server) applyLLM(cfg agent.Config) error {
 	var prov llm.Provider
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		active, err := s.m.pg.ActiveProfile()
 		if err != nil || active == nil {
 			return ErrLocalLLMProfile
@@ -535,7 +614,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	}
 	// A persisted active profile must use the same cached provider as task chains
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
-	if s.localResolver == nil {
+	if !s.hasModelPolicy() {
 		if active, _ := s.m.pg.ActiveProfile(); active != nil {
 			if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
 				prov, _, _ = s.providerForProfile(active.ID)
@@ -543,7 +622,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 		}
 	}
 	if prov == nil {
-		if s.localResolver != nil {
+		if s.hasModelPolicy() {
 			return ErrLocalLLMProfile
 		}
 		var err error
@@ -616,6 +695,10 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
+	if s.openRouterPolicy != nil || s.firstModelBudget != nil {
+		// 불명 응답을 재전송하거나 프로필 전환으로 비용 상한을 초기화하지 않는다.
+		cfg.Retry = agent.RetryConfig{ConnectAttempts: -1, EmptyAttempts: -1, StreamAttempts: -1}
+	}
 	if cfg.APIKey == "" {
 		return cfg, false
 	}
@@ -653,11 +736,11 @@ func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) (*int64
 // config was active.
 func (s *Server) resolveChatAgent(c *db.Conversation) *agent.ChatAgent {
 	effective, err := s.effectiveProfileForAgent(c.AgentKey, c.LLMProfileID)
-	if err != nil && s.localResolver != nil {
+	if err != nil && s.hasModelPolicy() {
 		return nil
 	}
 	ca := s.chatAgentRef()
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		if _, _, ok := s.globalProvider(); !ok {
 			ca = nil
 		}
@@ -665,7 +748,7 @@ func (s *Server) resolveChatAgent(c *db.Conversation) *agent.ChatAgent {
 	if effective != nil {
 		if pa := s.chatAgentForProfile(*effective); pa != nil {
 			ca = pa
-		} else if s.localResolver != nil {
+		} else if s.hasModelPolicy() {
 			return nil // invalid explicit binding cannot fall back to global
 		}
 	}
@@ -695,7 +778,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	s.provCacheMu.Lock()
 	if e := s.provByProfile[id]; e != nil {
 		s.provCacheMu.Unlock()
-		if s.localResolver != nil {
+		if s.hasModelPolicy() {
 			current, ok := s.loadProfileConfig(id)
 			if !ok || current != e.cfg {
 				return nil, agent.Config{}, false
@@ -715,7 +798,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 		return nil, agent.Config{}, false
 	}
 	// Wrap with recorder, tagged with this profile's name.
-	if p, _ := s.m.pg.ProfileByID(id); p != nil {
+	if p, _ := s.m.pg.ProfileByID(id); p != nil && s.openRouterPolicy == nil {
 		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
@@ -742,7 +825,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	cached := s.profChatAgents[id]
 	s.profMu.Unlock()
 	if cached != nil {
-		if s.localResolver == nil {
+		if !s.hasModelPolicy() {
 			return cached
 		}
 		if _, _, ok := s.providerForProfile(id); !ok {
@@ -917,6 +1000,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/graph", s.explorationGraph)
 	mux.HandleFunc("GET /api/exploration/nodes", s.explorationNodes)
 	mux.HandleFunc("GET /api/exploration/activity", s.activity)
+	mux.HandleFunc("GET /api/tasks/{id}/e2-prompt-projection", s.e2PromptProjection)
 	mux.HandleFunc("GET /api/exploration/activity/history", s.activityHistory)
 	mux.HandleFunc("GET /api/exploration/main-sessions", s.mainSessions)
 	mux.HandleFunc("POST /api/exploration/main-session/new", s.newMainSession)
@@ -957,6 +1041,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/notify/deliveries/{id}/retry", s.notifyRetryDelivery)
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
 	mux.HandleFunc("GET /api/report", s.getReport)
+	mux.HandleFunc("GET /api/report/diagnostic", s.diagnosticReport)
+	mux.HandleFunc("GET /api/report/diagnostic/remediation", s.listDiagnosticRemediation)
+	mux.HandleFunc("POST /api/report/diagnostic/remediation", s.createDiagnosticRemediation)
+	mux.HandleFunc("GET /api/report/diagnostic/remediation/prompt", s.copyDiagnosticRemediation)
 	mux.HandleFunc("GET /api/chat/mentions", s.searchChatMentions)
 	mux.HandleFunc("POST /api/chat", s.chat)
 	mux.HandleFunc("POST /api/chat/upload", s.chatUpload) // 方式1 文件上传:落到会话/任务工作目录 uploads/
@@ -1065,6 +1153,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/asset-intercept/rules/{id}", s.assetInterceptDeleteRule)
 	mux.HandleFunc("POST /api/asset-intercept/rules/{id}/toggle", s.assetInterceptToggleRule)
 
+	mux.HandleFunc("POST /api/tasks/{id}/request-approvals/stop", s.requestApprovalStop)
+	mux.HandleFunc("GET /api/tasks/{id}/diagnosis-run", s.diagnosisRun)
+	mux.HandleFunc("GET /api/tasks/{id}/access-map", s.accessMap)
+	mux.HandleFunc("GET /api/tasks/{id}/request-approvals", s.requestApprovalList)
+	mux.HandleFunc("GET /api/tasks/{id}/request-approvals/{approvalID}", s.requestApprovalGet)
+	mux.HandleFunc("POST /api/tasks/{id}/request-approvals/{approvalID}/decision", s.requestApprovalDecide)
 	mux.HandleFunc("GET /api/intercept/pending", s.interceptListPending)
 	mux.HandleFunc("GET /api/intercept/pending/{id}", s.interceptGetOne)
 	mux.HandleFunc("POST /api/intercept/pending/{id}/decide", s.interceptDecide)
@@ -1081,7 +1175,11 @@ func (s *Server) Handler() http.Handler {
 	// /api/* goes through CORS + JWT; everything else is served by the embedded
 	// frontend (public — auth is enforced client-side and on the API). With the
 	// no-embed build the webui handler just 404s (run `next dev` separately).
-	api := cors(s.requireAuth(mux))
+	var apiRoutes http.Handler = mux
+	if s.firstDiagnosis {
+		apiRoutes = s.firstDiagnosisRoutes(mux)
+	}
+	api := cors(s.requireAuth(apiRoutes))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
 	root.Handle("/", s.webuiHandler())
@@ -1454,7 +1552,7 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 
 // setLLM configures the LLM at runtime. A blank api_key keeps the existing key.
 func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		writeErr(w, http.StatusForbidden, "로컬 전용 모드에서는 기본 LLM 설정 변경을 사용할 수 없습니다")
 		return
 	}
@@ -1517,7 +1615,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 
 // testLLM makes a real minimal completion to verify the config works.
 func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": trMsg(errLLMTestFailed), "latency_ms": 0})
 		return // the legacy probe constructs an unguarded provider
 	}
@@ -1614,7 +1712,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(req.Description) == "" {
-		req.Description = "未命名任务"
+		req.Description = "이름 없는 작업"
 	}
 	if len(req.LLMProfileIDs) == 0 && req.LLMProfileID != nil {
 		req.LLMProfileIDs = []int64{*req.LLMProfileID}
@@ -3203,12 +3301,9 @@ func (s *Server) activityDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"detail": d})
 }
 
-// taskActivityDetail keeps the legacy local-task behavior (including thinking
-// rows), while inherited details are restricted to terminal worker intents.
-// This prevents a guessed global activity id from exposing source planner/main
-// or in-flight transcripts.
+// 표시 상세도 저장된 추론을 제외하며, 소스 작업은 종료된 worker 의도만 조회한다.
 func taskActivityDetail(t *Task, seq int64) (string, error) {
-	return t.Store.ActivityDetailWithSources(seq)
+	return t.Store.ActivityDisplayDetailWithSources(seq)
 }
 
 func (s *Server) getTraffic(w http.ResponseWriter, r *http.Request) {
@@ -3506,8 +3601,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		NotifyEnabled    *bool   `json:"notify_enabled"`
 		NotifyBaseURL    *string `json:"notify_public_base_url"`
 		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
-		// 사용자 대면 출력 언어(en/ko/zh/es/ja). 에이전트 훅이 매 턴 읽으므로 즉시 적용되고
-		// 에이전트를 다시 생성할 필요가 없다. null=변경 안 함.
+		// 표시 언어는 ko만 지원한다. null이면 기존 설정을 유지한다.
 		OutputLanguage *string `json:"output_language"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -3534,8 +3628,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.OutputLanguage != nil {
-		// 지원 언어("en"/"ko"/"zh"/"es")만 받는다. 에이전트 훅이 매 턴 읽으므로 즉시
-		// 적용되고 에이전트를 다시 생성할 필요가 없다.
+		// 저장 전에 ko 단일 언어 계약을 검사한다.
 		lang := config.NormalizeLanguage(*req.OutputLanguage)
 		if lang == "" {
 			writeErr(w, 400, errOutputLanguageInvalid)

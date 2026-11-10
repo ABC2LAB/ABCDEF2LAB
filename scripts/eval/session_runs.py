@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from aggregate import _optional_stat as optional_stat  # noqa: E402
 from isolation_proof import E2_MODES  # noqa: E402
 from run_record import RunRecordError, read_runner_key, sign_run_record  # noqa: E402
 from runner import COMPLETE, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME  # noqa: E402
@@ -140,7 +141,7 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
     # 서명된 E② 자리. 가짜 E²(stub) 회차는 배치 확인용이라 시범·공식 세션 집계에 넣지 않는다(프로토콜 §2).
     e2_mode = result.get("e2_mode")
     if e2_mode not in E2_MODES:
-        errors.append(f"{directory.name}: 완료 결과의 e2_mode가 none|stub이 아님")
+        errors.append(f"{directory.name}: 완료 결과의 e2_mode가 none|stub|product가 아님")
         return None
     if e2_mode == "stub" and not allow_fixture_e2:
         errors.append(f"{directory.name}: 가짜 E② 회차(e2_mode=stub)는 세션 집계에 넣지 않음 — 배치 확인용(프로토콜 §2), "
@@ -212,6 +213,9 @@ def tally(attempts: list[Attempt], repeats: int) -> tuple[list[str], list[str]]:
             warnings.append(f"경고[시도 상한] {side}: 시도 {len(mine)}회 > 2N({2 * repeats}) — 더 돌리지 말고 원인부터 고친다")
         if len(valid) < repeats:
             warnings.append(f"경고[유효 부족] {side}: 유효 {len(valid)}회 < N({repeats}) — 결과는 미완")
+        zero = sum(1 for a in valid if a.record.get("total_requests") == 0)
+        if zero:
+            warnings.append(f"경고[대상 요청 0] {side}: 유효 회차 {zero}개가 대상 요청 없이 끝남 — 원인을 결과 문서에 적는다")
     marks = " ".join(SIDE_LETTER[a.side] + ("✓" if a.status == COMPLETE else "✗") for a in attempts)
     lines.append(f"시도 순서(시작 시각): {marks or '—'}")
     valid_order = [SIDE_LETTER[a.side] for a in attempts if a.status == COMPLETE]
@@ -244,6 +248,31 @@ def build_manifest(runs_root: Path, attempts: list[Attempt]) -> dict:
         )
         runs.append(run)
     return {"runs": runs}
+
+
+def _engine_seconds(record: dict) -> float | None:
+    """서명된 기록의 작업 생성~엔진 종료 시간. 시각을 못 읽으면 None이고 표에서 "—"가 된다."""
+    try:
+        start = datetime.fromisoformat(record["timeline"]["engine_start"]["at"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(record["timeline"]["engine_end"]["at"].replace("Z", "+00:00"))
+        return (end - start).total_seconds()
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return None
+
+
+def auxiliary(attempts: list[Attempt]) -> list[str]:
+    """§5 보조 지표(유효 회차, 쪽별). 값이 빠진 회차는 0으로 세지 않아 그 칸이 "—"가 된다."""
+    lines = ["| 쪽 | 유효 회차 | 종료 사유 | 예산 초과분 | 구간 소요 시간(초) |", "|---|---|---|---|---|"]
+    for side in SIDES:
+        valid = [a for a in attempts if a.side == side and a.status == COMPLETE]
+        meters = [meter if isinstance(meter := a.result.get("meter"), dict) else {} for a in valid]
+        stops = Counter(str(meter.get("stop_reason", "미기록")) for meter in meters)
+        reasons = ", ".join(f"{reason} {count}" for reason, count in sorted(stops.items())) or "—"
+        over = [value if type(value := meter.get("over_budget")) is int else None for meter in meters]
+        seconds = [_engine_seconds(a.record) for a in valid]
+        lines.append(f"| {side} | {len(valid)} | {reasons} | {optional_stat(over).render()} "
+                     f"| {optional_stat(seconds).render()} |")
+    return lines
 
 
 def write_new(path: Path, payload: dict) -> None:
@@ -280,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     lines, warnings = tally(attempts, args.repeats)
     print("\n".join(lines))
+    print("\n".join(["", "보조 지표(프로토콜 §5, 효율 주장의 근거로 쓰지 않음):", *auxiliary(attempts)]))
     for warning in warnings:
         print(warning, file=sys.stderr)
     if args.manifest:

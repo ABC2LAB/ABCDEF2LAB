@@ -26,7 +26,7 @@ Coverage here means "this repository ships a detection that tags this technique"
 fully covered". The score is deliberately honest about detection strength:
 
 - **100 — ARTEX-specific signature or behaviour.** A static indicator unique to ARTEX (the
-  `artex-enrich/1.0` / `artex-selfupdate` User-Agents, the guard audit marker) or a behaviour rule built
+  `artex-enrich/1.0` / `artex-selfupdate` User-Agents, current and historical guard framing markers) or a behaviour rule built
   on one (enrichment velocity / fan-out, guard-block burst).
 - **50–65 — generic hunting lead.** Destructive-command hunting mirrored from the ARTEX guard deny list.
   The same commands are run by legitimate administrators, so these fire on benign activity too; treat a

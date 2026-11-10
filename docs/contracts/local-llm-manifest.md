@@ -1,5 +1,7 @@
 # 운영자 pin manifest 엄격 파서
 
+> **코어 도입 단계의 범위·검증 기록입니다.** 본문의 서버/profile 연결을 후속으로 둔 표현은 당시 단계의 경계입니다. 현재 provider 연결은 [서버 로컬 모드](local-llm-server-mode.md)와 [로컬 개발 안내](../local-dev-ko.md)를 확인합니다. 아래 입력·신뢰·실패 계약과 코어 단독의 한계는 유지하며, 연결 구현을 실모델 수용이나 제품 전체 망 격리 완료로 해석하지 않습니다.
+
 2026-11-02 · 이동찬
 
 상태: **JSON bytes → 로컬 profile resolver의 순수 파서. Linux 파일 로더는 [별도 계약](./local-llm-manifest-file.md)으로 구현했고 실제 profile/provider 연결은 후속이다.** [profile 정책 입력 계약](./local-llm-profile-policy.md)의 host-owned `ProfilePin`을 만들어 기존 `NewProfileResolver`에 전달한다. 기존 서버 설정·provider 선택·캐시·fallback은 바꾸지 않는다.

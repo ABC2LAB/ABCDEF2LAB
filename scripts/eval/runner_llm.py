@@ -12,11 +12,15 @@
 from __future__ import annotations
 
 _MARKER_FIELDS = frozenset({"role", "backend", "provider", "sampling", "sealed_at", "drained_at", "verified_at",
-                            "forwarded_requests", "upstream_errors", "rejected_requests", "rejected_after_seal",
+                            "forwarded_requests", "upstream_errors", "upstream_error_ends", "rejected_requests", "rejected_after_seal",
                             "cancelled_by_seal", "responses_without_generation_id", "generations", "log_complete"})
+# upstream_error 행에서 게이트웨이가 관찰한 것. 호출자 쪽 취소·쓰기 실패와 위쪽 응답의 종료 줄 읽기만 말한다.
+# 엔진이 그 줄을 받았는지, 어느 쪽이 먼저 닫았는지, 끊긴 책임은 말하지 않는다.
+UPSTREAM_ENDS = frozenset({"client_closed_after_done", "client_closed_before_done", "upstream_cut_after_done", "upstream_cut_before_done"})
 _COUNTS = ("forwarded_requests", "upstream_errors", "rejected_requests", "rejected_after_seal", "cancelled_by_seal",
            "responses_without_generation_id")
 SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty", "seed"})
+LOCAL_SAMPLING_KEYS = frozenset({"temperature", "top_p", "presence_penalty", "frequency_penalty", "seed"})
 
 
 class LLMMarkerError(ValueError):
@@ -27,11 +31,15 @@ def _check_shape(marker: object) -> None:
     if not isinstance(marker, dict) or set(marker) != _MARKER_FIELDS:
         raise LLMMarkerError("llm_marker_invalid")
     sampling = marker["sampling"]
-    if sampling is not None and (not isinstance(sampling, dict) or set(sampling) != SAMPLING_KEYS or any(
+    if sampling is not None and (not isinstance(sampling, dict) or set(sampling) not in (SAMPLING_KEYS, LOCAL_SAMPLING_KEYS) or any(
             type(value) not in (int, float) for value in sampling.values())):
         raise LLMMarkerError("llm_marker_invalid")
     if (type(marker["log_complete"]) is not bool or not isinstance(marker["generations"], list)
             or any(type(marker[name]) is not int or marker[name] < 0 for name in _COUNTS)):
+        raise LLMMarkerError("llm_marker_invalid")
+    ends = marker["upstream_error_ends"]
+    if (not isinstance(ends, dict) or set(ends) != UPSTREAM_ENDS or any(type(value) is not int or value < 0 for value in ends.values())
+            or sum(ends.values()) != marker["upstream_errors"]):
         raise LLMMarkerError("llm_marker_invalid")
     for generation in marker["generations"]:
         if (not isinstance(generation, dict) or set(generation) != {"id", "status", "provider_name", "attempts"}
@@ -49,7 +57,7 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
               sampling: dict | None) -> tuple[list[str], dict]:
     """(사유 목록, 기록용 요약). 사유가 없어야 그 회차의 LLM 조건을 고정됐다고 말할 수 있다.
 
-    sampling은 선언에서 만든 기대 적용값(api)이고, local이면 None이다.
+    sampling은 선언에서 만든 기대 적용값이다. 백엔드마다 키 묶음이 다르다.
     """
     _check_shape(marker)
     reasons: set[str] = set()
@@ -57,7 +65,8 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
     # float로 바꾸지 않고 그대로 비교한다: 파이썬의 int·float 비교는 정확해서 2^53을 넘는 seed도 구분한다.
     applied = marker["sampling"]
     if (applied is None) != (sampling is None) or (
-            applied is not None and any(applied[key] != sampling[key] for key in SAMPLING_KEYS)):
+            applied is not None and (set(applied) != set(sampling)
+                                     or any(applied[key] != sampling[key] for key in sampling))):
         reasons.add("llm_sampling_mismatch")
     if marker["backend"] != backend:
         reasons.add("llm_backend_mismatch")
@@ -93,7 +102,8 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
     summary = {
         "backend": marker["backend"], "pinned_provider": marker["provider"], "expected_provider_name": provider_name,
         "sampling_applied": applied,
-        **{name: marker[name] for name in _COUNTS}, "generations": len(generations), "unverified": unverified,
+        **{name: marker[name] for name in _COUNTS}, "upstream_error_ends": dict(sorted(marker["upstream_error_ends"].items())),
+        "generations": len(generations), "unverified": unverified,
         "provider_mismatch": mismatched, "fallback_attempted": fallback, "fallback_unverifiable": fallback_unknown,
         "providers": sorted(providers), "endpoint_ids": sorted(endpoints),
         "sealed_at": marker["sealed_at"], "drained_at": marker["drained_at"], "verified_at": marker["verified_at"],

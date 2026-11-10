@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 
+import { RequestApprovalPanel } from "../components/RequestApprovalPanel";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { Pill, RefreshIcon, Strong } from "../components/ui";
@@ -35,8 +36,51 @@ function ago(iso: string): string {
 
 /** ===== 승인 게이트: 엔진의 승인 대기 요청(intercept pending)을 사람이 허용 · 거부 ===== */
 export default function ApprovalScreen() {
+  const { mode } = useSelection();
+  return mode === "first-diagnosis" ? <FirstDiagnosisApprovalScreen /> : <ArtexApprovalScreen />;
+}
+
+function FirstDiagnosisApprovalScreen() {
   const { screen, go } = useNav();
-  const { refreshTasks, selectTask } = useSelection();
+  const { taskId, connection } = useSelection();
+  const [nonce, setNonce] = useState(0);
+  return (
+    <Screen id="approval">
+      <div className="frame">
+        <TopBar current="dashboard" />
+        <div style={{ padding: "22px 24px", maxWidth: 720 }}>
+          <button type="button" className="backbtn" onClick={() => go("live")}>
+            ← 실행 상태
+          </button>
+          <h1>첫 진단 HTTP 요청 승인</h1>
+          <p className="hint">CLI로 준비된 task의 E② 송신 승인만 처리해요. ARTEX 도구 승인과는 별개예요.</p>
+          {connection === "report" ? <p>저장 보고서 서버에서는 승인·중지·실행 변경을 할 수 없어요.</p> : null}
+          {connection !== "report" && taskId ? (
+            <>
+              <p>task #{taskId}</p>
+              <button type="button" className="btn xs" onClick={() => setNonce((n) => n + 1)}>
+                새로고침
+              </button>
+              <RequestApprovalPanel taskId={taskId} active={screen === "approval"} refreshKey={nonce} />
+            </>
+          ) : null}
+          {connection !== "report" && !taskId && (
+            <p>
+              연결된 task가 없어요.{" "}
+              <button type="button" className="ap-link" onClick={() => go("entry")}>
+                실제 task 연결
+              </button>
+            </p>
+          )}
+        </div>
+      </div>
+    </Screen>
+  );
+}
+
+function ArtexApprovalScreen() {
+  const { screen, go } = useNav();
+  const { taskId, refreshTasks, selectTask } = useSelection();
   const { pendingId, selectPending } = useApprovalTarget();
   // 숨겨진 동안에는 조회하지 않고, 들어올 때마다 · 결정한 뒤(nonce) 다시 읽는다
   const active = screen === "approval";
@@ -105,7 +149,7 @@ export default function ApprovalScreen() {
     body = (
       <>
         <h1 className="big" style={{ marginBottom: 14 }}>
-          승인 대기
+          도구 호출 승인 대기
         </h1>
         {list}
       </>
@@ -133,11 +177,11 @@ export default function ApprovalScreen() {
             <Pill tone="muted">{taskName(d.task_id)}</Pill>
           </div>
           <h1 className="big" style={{ marginBottom: 14 }}>
-            {decided ? "결정된 요청이에요" : "이 요청을 보내도 될까요?"}
+            {decided ? "결정된 요청이에요" : "이 도구 호출을 허용할까요?"}
           </h1>
 
           <div className="card">
-            <h3>에이전트가 하려는 일</h3>
+            <h3>에이전트의 도구 호출</h3>
             <div className="srow">
               <div className="k">요청</div>
               <div className="v">
@@ -173,7 +217,7 @@ export default function ApprovalScreen() {
                   style={{ textAlign: "left", borderColor: "var(--teal-border)" }}
                 >
                   <strong style={{ color: "var(--teal-ink)" }}>이번 한 번만 허용</strong>
-                  <div style={optionDesc}>이 요청 하나만 보내요</div>
+                  <div style={optionDesc}>이 도구 호출을 허용해요. 실제 HTTP 요청 승인은 별도예요.</div>
                 </button>
                 <button
                   className="btn danger"
@@ -183,7 +227,7 @@ export default function ApprovalScreen() {
                   style={{ textAlign: "left" }}
                 >
                   <strong>거부</strong>
-                  <div style={optionDesc}>보내지 않아요</div>
+                  <div style={optionDesc}>이 도구 호출을 실행하지 않아요</div>
                 </button>
               </div>
             )}
@@ -208,8 +252,9 @@ export default function ApprovalScreen() {
             <div style={{ minWidth: 0 }}>
               <div className="nm">
                 {shownResult.kind === "allowed" &&
-                  `요청 #${shownResult.id}을 허용했어요. 에이전트가 이 요청 하나를 보내요.`}
-                {shownResult.kind === "denied" && `요청 #${shownResult.id}을 거부했어요. 이 요청은 보내지 않아요.`}
+                  `도구 호출 #${shownResult.id}을 허용했어요. 실제 HTTP 요청의 승인·전송 여부는 별도로 확인해요.`}
+                {shownResult.kind === "denied" &&
+                  `도구 호출 #${shownResult.id}을 거부했어요. 이 도구 호출은 실행하지 않아요.`}
                 {shownResult.kind === "already" && `요청 #${shownResult.id}은 이미 처리된 요청이에요.`}
                 {shownResult.kind === "error" && `요청 #${shownResult.id}을 처리하지 못했어요.`}
               </div>
@@ -244,6 +289,24 @@ export default function ApprovalScreen() {
               <RefreshIcon /> 새로고침
             </button>
           </div>
+          <label htmlFor="request-approval-task">실제 요청을 확인할 점검</label>
+          <select
+            id="request-approval-task"
+            value={taskId ?? ""}
+            onChange={(event) => selectTask(event.target.value || null)}
+          >
+            <option value="">점검을 선택하세요</option>
+            {(tasksRes.data?.tasks ?? []).map((task) => (
+              <option key={task.id} value={task.id}>
+                {task.name || `점검 #${task.id}`}
+              </option>
+            ))}
+          </select>
+          {taskId ? (
+            <RequestApprovalPanel key={taskId} taskId={taskId} active={active} refreshKey={nonce} />
+          ) : (
+            <p className="hint">점검을 선택하면 실제 HTTP 요청의 승인·실행 상태를 확인할 수 있어요.</p>
+          )}
           {body}
           <div className="hint">
             결정은 누가 · 언제 내렸는지와 함께{" "}

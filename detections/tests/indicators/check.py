@@ -79,10 +79,17 @@ INDICATORS = [
         "rules": ["detections/sigma/artex_selfupdate_egress.yml"],
     },
     {
-        "label": "platform-guard audit framing marker",
-        "value": "【ARTEX 平台管控·非目标防御】",
+        "label": "platform-guard model-result framing marker",
+        "value": "[ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]",
         "sources": ["guard/guard.go"],
-        "rules": ["detections/sigma/artex_guard_audit_framing.yml"],
+        "rules": ["detections/sigma/artex_guard_audit_framing.yml", "detections/triage/artex_host_triage.py"],
+    },
+    {
+        "label": "historical platform-guard framing marker",
+        "value": "【ARTEX 平台管控·非目标防御】",
+        "sources": ["detections/indicators/legacy_guard_marker.md"],
+        "rules": ["detections/sigma/artex_guard_audit_framing.yml", "detections/triage/artex_host_triage.py"],
+        "historical": True,
     },
 ]
 
@@ -136,7 +143,8 @@ for ind in INDICATORS:
     present = [s for s in ind["sources"] if contains(s, value) is True]
     missing_files = [s for s in ind["sources"] if contains(s, value) is None]
     if present:
-        ok("%s: %r emitted by %s" % (label, value, ", ".join(present)))
+        origin = "documented historical value in" if ind.get("historical") else "emitted by"
+        ok("%s: %r %s %s" % (label, value, origin, ", ".join(present)))
     elif missing_files:
         bad("%s: source file(s) missing: %s (upstream moved the emitter?)"
             % (label, ", ".join(missing_files)))

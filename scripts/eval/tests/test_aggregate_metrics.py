@@ -17,6 +17,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import aggregate
+from ground_truth import bac_category, core_gt
 
 _EMPTY_BASIS = ()
 _PROFILES = (
@@ -98,6 +99,20 @@ class TestAggregateMetricsProperties(unittest.TestCase):
         for stat in (single.elapsed_seconds, single.total_requests, single.blocked_attempts):
             self.assert_stat(stat, mean=0.0, stdev=None, n=1, rendered="0 (n=1)")
 
+    def test_zero_request_runs_are_noted_under_the_table_per_condition(self):
+        original = self.aggregate([(1.0, 0, 0), (2.0, 5, 0), (3.0, None, 0)], condition="원본")
+        ours = self.aggregate([(1.0, 7, 0), (2.0, 8, 0)], condition="우리")
+        self.assertEqual((original.zero_request_runs, original.measured_request_runs), (1, 2))
+        self.assertEqual((ours.zero_request_runs, ours.measured_request_runs), (0, 2))
+        rendered = aggregate.render_matrix([original, ours], "synthetic metrics")
+        self.assertIn("대상 요청 0 회차: 원본 1/2. 대상 요청이 없던 회차", rendered)
+        self.assertNotIn("우리 0/", rendered)
+
+    def test_unmeasured_requests_are_not_zero_request_runs(self):
+        row = self.aggregate([(1.0, None, 0), (2.0, None, 0)], condition="원본")
+        self.assertEqual((row.zero_request_runs, row.measured_request_runs), (0, 0))
+        self.assertNotIn("대상 요청 0 회차", aggregate.render_matrix([row], "synthetic metrics"))
+
     def test_render_matrix_preserves_condition_order_and_measurement_columns(self):
         first = self.aggregate(((0.0, 0, 0), (10.0, 100, 5)), condition="first")
         second = self.aggregate(((None, 2, None),), condition="second")
@@ -160,6 +175,34 @@ class TestAggregateMetricsProperties(unittest.TestCase):
             actual = self.aggregate(_PROFILES)
             with self.assertRaises(AssertionError):
                 self.assert_stat(actual.elapsed_seconds, mean=10.0, stdev=10.0, n=3, rendered="10 ± 10")
+
+
+class TestPrimaryMetric(unittest.TestCase):
+    CORE = core_gt()
+    BAC = bac_category()
+    BASES = (("코어", CORE), ("BAC", BAC))
+
+    def repeat(self, solved, known=True):
+        return aggregate.RepeatResult("ours", None, 1, engine_solved=frozenset(solved), attribution_known=known)
+
+    def test_counts_only_keys_of_each_basis(self):
+        core_only = next(c.key for c in self.CORE if c.key not in {b.key for b in self.BAC})
+        bac_only = next(c.key for c in self.BAC if c.key not in {b.key for b in self.CORE})
+        repeats = [self.repeat({core_only, "outside_every_basis"}), self.repeat({core_only, bac_only})]
+        self.assertEqual(aggregate.engine_attributed_stat(repeats, self.CORE).render(), "1 ± 0")
+        self.assertEqual(aggregate.engine_attributed_stat(repeats, self.BAC).render(), "0.5 ± 0.707107")
+
+    def test_real_zero_stays_zero_and_unknown_is_not_zero(self):
+        self.assertEqual(aggregate.engine_attributed_stat([self.repeat(())], self.CORE).render(), "0 (n=1)")
+        mixed = [self.repeat(()), self.repeat((), known=False)]
+        self.assertEqual(aggregate.engine_attributed_stat(mixed, self.CORE).render(), "—")
+
+    def test_table_has_a_row_per_condition_and_counts_unknown_runs(self):
+        table = aggregate.render_primary_metric(
+            {"baseline": [self.repeat(())], "ours": [self.repeat(()), self.repeat((), known=False)]}, self.BASES)
+        self.assertIn("| 조건 | 회차 수 | 코어 | BAC | 귀속 미확인 회차 |", table)
+        self.assertIn("| baseline | 1 | 0 (n=1) | 0 (n=1) | 0 |", table)
+        self.assertIn("| ours | 2 | — | — | 1 |", table)
 
 
 if __name__ == "__main__":

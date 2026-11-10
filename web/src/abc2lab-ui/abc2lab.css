@@ -2855,7 +2855,8 @@ body {
   align-self: stretch;
   gap: 2px;
 }
-.top .nav a {
+.top .nav a,
+.top .nav button {
   display: flex;
   align-items: center;
   height: 56px;
@@ -2865,7 +2866,15 @@ body {
   color: #98a2b3;
   border-bottom: 2px solid transparent;
 }
-.top .nav a:hover {
+.top .nav button {
+  background: none;
+  border-top: 0;
+  border-left: 0;
+  border-right: 0;
+  cursor: pointer;
+}
+.top .nav a:hover,
+.top .nav button:hover {
   color: #e4e7ec;
 }
 .top .nav a.cur {
@@ -3676,14 +3685,6 @@ h1.big {
 .tile.attn-warn .v {
   color: var(--warn);
 }
-/* 발견된 취약점 타일: 합계와 심각도별 숫자를 빨간색으로 */
-.tile.attn-crit .v,
-.tile.attn-crit .sub b {
-  color: var(--crit);
-}
-.tile.attn-crit .sub b {
-  font-weight: 700;
-}
 .tile .v .unit {
   font-size: 14px;
   font-weight: 600;
@@ -3705,28 +3706,6 @@ h1.big {
 }
 .dash-sec {
   margin-bottom: 22px;
-}
-/* 지금 처리할 일: 4개 뒤 [더보기] — 목록 맨 아래 한 줄 버튼 */
-.dash-more {
-  display: block;
-  width: 100%;
-  padding: 10px 14px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--teal-ink);
-  background: var(--surface-2);
-  border: none;
-  border-top: 1px solid var(--line);
-  cursor: pointer;
-  text-align: center;
-}
-.dash-more:hover {
-  text-decoration: underline;
-}
-.dash-more:focus-visible {
-  outline: 2px solid var(--teal);
-  outline-offset: -2px;
 }
 .dash-cnt {
   font-size: 13px;
@@ -3855,329 +3834,5 @@ h1.big {
 @media (max-width: 720px) {
   .dash-tiles {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-/* ===== 자산 탐색 (1차 탐색 · 크롤링) 시안 — 아티팩트 v74 ===== */
-.cr-tiles {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 14px 0 16px;
-}
-@media (max-width: 640px) {
-  .cr-tiles {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-.cr-now.paused .spin {
-  animation: none;
-  border: none;
-  border-radius: 3px;
-  background: var(--warn);
-}
-/* 진행 막대는 늘어날 때 부드럽게(값은 뒤로 가지 않는다 — CrawlScreen 의 PCT) */
-.cr-bar > i {
-  transition: width 0.3s ease-out;
-}
-/* 탐색이 끝나기 전 [범위 확인]은 눌리지 않는 것이 보이게 */
-.cr-next:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.cr-ok {
-  display: inline-flex;
-  flex: none;
-  color: var(--teal);
-}
-.cr-safe {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  font-size: 13px;
-  line-height: 1.65;
-  color: var(--muted);
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 10px 13px;
-  margin: 0 0 18px;
-}
-.cr-safe svg {
-  flex: none;
-  margin-top: 2px;
-  color: var(--teal-ink);
-}
-.cr-safe b {
-  color: var(--fg);
-  font-weight: 600;
-}
-.cr-body {
-  display: flex;
-  gap: 18px;
-  align-items: flex-start;
-  flex-wrap: wrap;
-}
-.cr-logw {
-  flex: 3 1 500px;
-  min-width: 0;
-}
-.cr-treew {
-  flex: 2 1 300px;
-  min-width: 0;
-}
-.cr-h {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-.cr-h h3 {
-  font-size: 15px;
-  margin: 0;
-}
-/* 응답 코드 칩 — 범례 · 기록 줄에서 margin 만 덧씌우므로 먼저 둔다 */
-.cr-st {
-  flex: none;
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 2px 7px;
-}
-.cr-st.s2 {
-  color: var(--ok);
-  background: var(--ok-weak);
-  border-color: transparent;
-}
-.cr-st.s4 {
-  color: var(--warn);
-  background: var(--warn-weak);
-  border-color: transparent;
-}
-/* 범례: 제목 아래 한 줄 */
-.cr-tleg {
-  display: flex;
-  gap: 6px 8px;
-  flex-wrap: wrap;
-  align-items: center;
-  margin: -2px 0 10px;
-  font-size: 12px;
-  color: var(--muted);
-}
-/* 탐색 기록: 최신 줄이 위, 넘치면 안에서만 스크롤 */
-.cr-log {
-  max-height: 430px;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-.cr-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 9px 12px;
-  border-top: 1px solid var(--line);
-  font-size: 13px;
-}
-.cr-row:first-child {
-  border-top: none;
-}
-.cr-row .cr-t {
-  flex: none;
-  width: 64px;
-  color: var(--faint);
-  font-variant-numeric: tabular-nums;
-}
-.cr-row .op-m {
-  min-width: 62px;
-  padding: 3px 6px;
-  font-size: 12px;
-}
-.cr-row .cr-path {
-  min-width: 0;
-  padding: 0;
-  font-family: var(--mono);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg);
-  background: none;
-  border: none;
-  overflow-wrap: anywhere;
-}
-.cr-row .cr-note {
-  flex: 1 1 160px;
-  min-width: 0;
-  color: var(--muted);
-}
-.cr-row .dtag,
-.cr-row .cr-st {
-  margin-left: auto;
-}
-.cr-row.cr-sys {
-  background: var(--surface-2);
-  color: var(--muted);
-}
-.cr-row .cr-msg {
-  flex: 1 1 200px;
-  min-width: 0;
-}
-@keyframes crIn {
-  from {
-    opacity: 0;
-    transform: translateY(-3px);
-  }
-}
-/* 찾은 경로: 묶음마다 한 줄, 최신 경로가 앞. 넘치면 오른쪽이 흐려지고 머리를 누르면 모두 펼침 */
-.cr-tree {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-}
-.cr-g {
-  min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 8px 12px 10px;
-}
-.cr-gh {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  margin-bottom: 6px;
-  padding: 2px 0;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--fg);
-  text-align: left;
-  background: none;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.cr-gh:hover .cr-gt {
-  color: var(--teal-ink);
-}
-.cr-gh:focus-visible {
-  outline: 2px solid var(--teal);
-  outline-offset: 2px;
-}
-.cr-gn {
-  margin-left: auto;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.cr-chev {
-  color: var(--muted);
-  transition: transform 0.15s;
-}
-.cr-gh[aria-expanded="true"] .cr-chev {
-  transform: rotate(180deg);
-}
-.cr-ps {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 6px;
-  overflow: hidden;
-}
-.cr-ps.more {
-  -webkit-mask-image: linear-gradient(to right, #000 82%, transparent);
-  mask-image: linear-gradient(to right, #000 82%, transparent);
-}
-.cr-g.open .cr-ps {
-  flex-wrap: wrap;
-}
-.cr-chip {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 7px 2px 2px;
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: nowrap;
-  color: var(--fg);
-  background: var(--surface);
-  border: 1px solid var(--line-2);
-  border-radius: 4px;
-}
-.cr-chip i {
-  flex: none;
-  padding: 1px 5px;
-  font-style: normal;
-  font-weight: 700;
-  font-size: 11px;
-  color: var(--ink);
-  background: var(--soft);
-  border-radius: 3px;
-}
-.cr-chip.lock,
-.cr-chip.off {
-  color: var(--muted);
-  border-style: dashed;
-}
-/* 보내기 전에 승인이 필요한 경로 — 범위 확인의 '승인 후 전송'과 같은 기준 · 같은 주황 */
-.cr-chip.ap {
-  border-color: var(--warn-border);
-}
-.cr-apb,
-.cr-xb {
-  flex: none;
-  padding: 0 5px;
-  font-family: inherit;
-  font-size: 11px;
-  line-height: 1.5;
-  border-radius: 3px;
-}
-.cr-apb {
-  font-weight: 700;
-  color: var(--warn);
-  background: var(--warn-weak);
-}
-.cr-xb {
-  font-weight: 600;
-  color: var(--muted);
-  border: 1px dashed var(--line-2);
-}
-.cr-gap {
-  margin-left: auto;
-  padding: 1px 6px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--warn);
-  background: var(--warn-weak);
-  border-radius: 4px;
-}
-.cr-gap + .cr-gn {
-  margin-left: 8px;
-}
-.cr-chip.new {
-  border-color: var(--teal);
-  box-shadow: 0 0 0 2px var(--teal-weak);
-  animation: crIn 0.35s ease-out;
-}
-.cr-empty {
-  padding: 14px;
-  font-size: 13px;
-  color: var(--muted);
-  border: 1px dashed var(--line-2);
-  border-radius: 6px;
-}
-@media (prefers-reduced-motion: reduce) {
-  .cr-chip.new {
-    animation: none;
-  }
-  .cr-bar > i {
-    transition: none;
-  }
-  .cr-chev {
-    transition: none;
   }
 }

@@ -10,6 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from isolation_proof import blocked_attempts
 from run_record import sign_run_record
 from runner_checks import policy_sha256
 from runner_record import (
@@ -30,7 +31,8 @@ CONDITIONS = {"engine_settings_sha256": "e" * 64, "workers": 3, "llm_stream": Tr
                            "repetition_penalty": 1.0, "seed": 42},
               "host": {"cpu_model": "Example CPU", "logical_cpus": 8, "memory_kib": 16777216, "kernel": "6.0.0",
                        "docker_server_version": "29.1.3"},
-              "machine_id_sha256": "d" * 64, "engine_rules_sha256": None}
+              "machine_id_sha256": "d" * 64, "engine_rules_sha256": None, "output_language": "ko",
+              "tool_tree_sha256": "7" * 64}
 # E② 자리 행. 기본은 E² 없음(none, 건수 없음). 가짜 E² 회차는 e2=E2_STUB_PLACEMENT로 바꾼다.
 E2_NONE_PLACEMENT = {"mode": "none", "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None}
 E2_STUB_PLACEMENT = {"mode": "stub", "decision_rows": 5, "allowed": 4, "unsupported": 1, "unavailable": 0}
@@ -38,7 +40,7 @@ E2_STUB_PLACEMENT = {"mode": "stub", "decision_rows": 5, "allowed": 4, "unsuppor
 STUB_RECONCILIATION = {"cells": {"allowed_observed": 4, "allowed_unobserved": 0, "denied_unobserved": 1,
                                  "denied_observed": 0, "unrecorded_observed": 0},
                        "meter_attempt_reused": 0, "blocked_reached": 0, "unrecorded_reached": 0,
-                       "positive_evidence": True, "control_claim_withheld": False}
+                       "positive_evidence": True, "control_claim_withheld": False, "allowed_responded": 4}
 
 def snapshot(name: str) -> dict:
     """runner_checks.network_snapshot 모양의 합성 망 스냅샷(엔진·계측기·대상·관측 front)."""
@@ -100,6 +102,7 @@ def make_v11(root: Path, key: bytes, name: str, *, pre=None, solved=None, record
                             records=[dict(r, reset_generation=run["reset_generation"]) for r in records]),
             "records.json", "engine")
     proof_obj = None
+    blocked = None
     if proof:
         snap = snapshot(name)
         policy = policy_sha256(snap)
@@ -129,6 +132,10 @@ def make_v11(root: Path, key: bytes, name: str, *, pre=None, solved=None, record
                                                             else None)))
         if tamper_rows:
             tamper_rows(rows)
+        try:
+            blocked = blocked_attempts(next((row for row in rows if row["kind"] == "attempt_reconciliation"), None))
+        except (KeyError, TypeError):  # 형식을 일부러 망가뜨린 시험은 채점기의 형식 검사에서 걸린다
+            blocked = None
         evidence = add("isolation_evidence", isolation_evidence(context, rows), "isolation-evidence.json", "engine")
         in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
         proof_obj = isolation_proof(context, steps, artifacts["pre"]["sha256"], artifacts["post"]["sha256"],
@@ -144,10 +151,12 @@ def make_v11(root: Path, key: bytes, name: str, *, pre=None, solved=None, record
         tamper_events(events)
     if proof or events:
         add("solve_events", dict(context.fields(), phase="engine", events=events), "solve-events.json", "engine")
+    # 기본은 러너처럼 대조 근거에서 구한다. 시험이 값을 직접 주면 그 값을 쓴다.
+    run.setdefault("blocked_attempts", blocked)
     record = run_record(context, engine=run["engine"], condition=run["condition"], repeat_index=run["repeat_index"],
                         total_requests=total_requests, fixture_fingerprint=hashlib.sha256(b"fixture-v1").hexdigest(),
                         environment_fingerprint=hashlib.sha256(b"environment-v1").hexdigest(), steps=steps,
-                        artifacts=artifacts, proof=proof_obj)
+                        artifacts=artifacts, proof=proof_obj, blocked_attempts=run["blocked_attempts"])
     if tamper_record:
         tamper_record(record)
     (folder / "runner.json").write_text(json.dumps(sign_run_record(record, key)))

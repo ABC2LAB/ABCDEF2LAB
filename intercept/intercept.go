@@ -29,9 +29,18 @@ import (
 // ErrConfigurationUnavailable never includes stored patterns or DB diagnostics.
 var ErrConfigurationUnavailable = errors.New("통제 규칙 설정을 확인할 수 없어 실행을 차단했습니다")
 
+// 설정 오류는 내부 진단·표시 문구를 모델에 보내지 않고 동일한 거부로 처리한다.
+func ConfigurationUnavailableDecision() Decision {
+	return Decision{
+		Action: "deny", Message: ErrConfigurationUnavailable.Error(),
+		ModelMessage: "The platform control configuration is unavailable; execution is blocked (reason_code=configuration_unavailable).",
+		ReasonCode:   "configuration_unavailable",
+	}
+}
+
 // 사용자에게 노출되는 가로채기 판정·승인 메시지(한국어). judge 판정 결과·규칙 메시지는
-// 승인 기록(reason)·활동 스트림·409 응답으로 표시된다. 성능에 영향을 주는 에이전트 두뇌
-// (판정 프롬프트 본문)는 번역하지 않으며, [模型] 센티넬(decision_source 분류용 · UI 에서
+// 승인 기록(reason)·활동 스트림·409 응답으로 표시된다. 판정 프롬프트 본문은 모델이 읽는 영어이고,
+// [模型] 센티넬(decision_source 분류용 · UI 에서
 // 표시 전 제거 · db SQL LIKE·HasPrefix 소비처와 결합)도 원문 그대로 둔다.
 const (
 	msgReviewContextIncomplete = "검토 맥락이 완전하지 않아 사람의 확인이 필요합니다: "
@@ -341,6 +350,8 @@ type Decision struct {
 	ProfileID        int64
 	Action           string // "allow" | "deny" | "ask"
 	Message          string
+	ModelMessage     string // 모델에만 전달하는 영어 설명. 사용자 규칙은 비워 두면 Message를 쓴다.
+	ReasonCode       string // 표시 언어와 무관한 판정 식별값
 	RuleID           int64
 	TimeoutEnabled   bool
 	TimeoutSeconds   int
@@ -515,6 +526,9 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 		out = Decision{ProfileID: out.ProfileID, ModelFallback: true, Action: cfg.FailAction, Message: msgModelOutputUnparsable}
 	}
 	// A model verdict never carries a rule; keep RuleID 0 (→ NULL) for history.
+	model := JudgeDecision(Verdict{Action: out.Action}, out.ProfileID)
+	out.ModelMessage = model.ModelMessage
+	out.ReasonCode = model.ReasonCode
 	out.RuleID = 0
 	if len(modelInput) > 0 {
 		out.ModelInput = modelInput
@@ -540,10 +554,7 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 }
 
 func judgeActionLabel(action string) string {
-	if v, ok := judgeActionLabels[judgeActionLang()][action]; ok {
-		return v
-	}
-	if v, ok := judgeActionLabels["ko"][action]; ok {
+	if v, ok := judgeActionLabels[action]; ok {
 		return v
 	}
 	return action
@@ -556,7 +567,7 @@ func judgeActionLabel(action string) string {
 func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	rules, err := i.rules()
 	if err != nil {
-		return Decision{Action: "deny", Message: ErrConfigurationUnavailable.Error()}, true
+		return ConfigurationUnavailableDecision(), true
 	}
 	if len(rules) == 0 {
 		return Decision{}, false
@@ -568,10 +579,18 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 				msg = defaultMessage(r.Action, r.Name)
 			}
 			configJSON, _ := json.Marshal(r.InterceptRule)
+			modelMessage, reasonCode := db.BuiltinRuleModelMessage(r.InterceptRule)
+			// 운영자가 쓴 메시지는 보존하고 프로그램의 기본 안내만 영어로 분리한다.
+			if r.Message == "" && (r.Action == "deny" || r.Action == "ask") {
+				reasonCode = "rule_" + r.Action
+				modelMessage = "The platform intercept rule returned " + r.Action + " (reason_code=" + reasonCode + ")."
+			}
 			return Decision{
 				RuleName: r.Name, ConfigDigest: digestInput(configJSON),
 				Action:         r.Action,
 				Message:        msg,
+				ModelMessage:   modelMessage,
+				ReasonCode:     reasonCode,
 				RuleID:         r.ID,
 				TimeoutEnabled: r.TimeoutEnabled,
 				TimeoutSeconds: r.TimeoutSeconds,

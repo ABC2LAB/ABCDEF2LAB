@@ -40,6 +40,9 @@ declare -A databases=(
 	[ENGINE_METRICS_TEST_DSN]=artex_engine_metrics
 	[ARTEX_STORAGE_INSPECTION_TEST_DSN]=artex_storage_inspection
 	[ARTEX_FINALIZATION_SCOPE_TEST_DSN]=artex_finalization_scope
+	[ARTEX_FIRST_DIAGNOSIS_TEST_DSN]=artex_first_diagnosis
+	[ARTEX_FIRST_DIAGNOSIS_ROLE_TEST_DSN]=artex_first_diagnosis_role
+	[ARTEX_FIRST_DIAGNOSIS_PREPARATION_TEST_DSN]=artex_first_diagnosis_preparation
 )
 for name in $(printf '%s\n' "${!databases[@]}" | sort); do
 	"$bin/createdb" --host="$socket" --username="$user" "${databases[$name]}"
@@ -53,6 +56,9 @@ echo "ARTEX_STORAGE_INSPECTION_OWNED_PG=$owned"
 # server E③ 최종 저장 수명 PG 시험(#215)은 트리거 DDL을 만들므로 1회용 클러스터 확인을 요구한다. 그 시험이 지금 받는
 # 형식은 "1"이다(위 표식 형식으로 맞추면 여기만 바꾼다).
 echo "ARTEX_FINALIZATION_SCOPE_TEST_OWNED=1"
+# 첫 진단 인수 시험(#304)은 role·권한을 바꾼다. 이 값이 없으면 시험이 SKIP되어 CI가 통제 경로를 못 돈다.
+echo "ARTEX_FIRST_DIAGNOSIS_ROLE_TEST_OWNED=1"
+echo "ARTEX_FIRST_DIAGNOSIS_PREPARATION_TEST_OWNED=1"
 echo "CI_PG_BIN=$bin"
 echo "CI_PG_SOCKET=$socket"
 echo "CI_PG_USER=$user"

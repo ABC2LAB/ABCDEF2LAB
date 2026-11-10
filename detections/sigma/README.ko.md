@@ -24,8 +24,9 @@ SIEM·EDR 질의 언어로 변환해 씁니다. 모든 지표는 추정이 아�
   User-Agent*. 자가 업데이트 루틴(`selfupdate/github.go`)이 내보내는 아웃바운드 `artex-selfupdate`
   User-Agent 입니다. 호스트·포렌식 egress 지표입니다. `level: medium`.
 - **[`artex_guard_audit_framing.yml`](artex_guard_audit_framing.yml)**: *ARTEX Platform Guard
-  Audit-Log Framing*. 도구 호출이 차단될 때 감사 로그에 기록되는 플랫폼 가드 통제 마커입니다
-  (`guard/guard.go`). 호스트·포렌식 지표입니다. `level: high`.
+  Audit-Log Framing*. 차단 결과·세션 기록에 있는 현재 영어 표식과 과거 중국어 표식을 모두 찾습니다.
+  현재 감사 행은 표시용 사유를 별도로 저장하므로 표식이 없을 수 있습니다. 호스트·포렌식 지표입니다.
+  `level: high`.
 - **[`artex_recording_proxy_ca.yml`](artex_recording_proxy_ca.yml)**: *ARTEX Recording-Proxy MITM CA
   Certificate Artifact*. 기록 프록시가 `_ca/mitmproxy-ca-cert.pem` 배치로 생성하는 MITM CA 파일입니다
   (`traffic/traffic.go`). 호스트·포렌식 산출물이며, 파일명 자체는 단독 실행 mitmproxy 와도 공유되므로

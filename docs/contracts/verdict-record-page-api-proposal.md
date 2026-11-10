@@ -1,5 +1,7 @@
 # 판정 레코드 페이지 API 응답 제안
 
+> **현재 구현과 계약 검토 사항 (2026-11-08):** 아래 미구현 표기는 제안 당시 상태다. 현재 [수집기](../../scripts/eval/verdict_collector.py)와 [평가 러너](../../scripts/eval/runner.py)에 선택적 동결·페이지 수집 호출이 있지만, 제안된 서버 API와 실제 제품 수용 완료를 뜻하지 않는다. 현재 러너는 findings·intercept summary 뒤 판정을 수집해 §3·VRP10의 동결 선행 순서와 차이가 있다. 이 차이는 평가·서버 담당자 검토가 필요하며 아래 순서·보안·수용 계약을 문서 정비로 변경하지 않는다.
+
 2026-11-03 · 이동찬 · **리뷰 결정 반영 제안. API·수집기 미구현이며 운영 활성화 근거 아님.**
 
 검토 기준은 `dev` `b1dea7458b8ff80744991de5b5c46c54f91465ec`다. 이 문서는 러너가 구조화 판정을 수집할 읽기 API·응답 예시와 export를 동결할 명시 제어 호출을 제안한다. 판정 레코드의 논리 필드·마스킹·평가 읽기는 **최민준의 계약 영역**이며, [판정 레코드 계약](./verdict-record.md)을 수정하거나 새 필드를 합의된 것으로 간주하지 않는다. 아래에 명시한 평가 담당자의 리뷰 결정 외 경로·페이지 필드·오류 코드는 검토 대상이다.
@@ -26,7 +28,7 @@ Accept: application/json
 
 기존 `/api` 인증이 필요하다. 예시는 인증 헤더 값을 생략했다. task 경로와 `run_id`는 검색 조건이지 발급 출처나 조회 권한의 증명이 아니다. 구현할 서버는 task와 신뢰 러너 회차의 등록 결속 및 조회 권한을 대조한다. **이 GET으로 run_id를 등록·재결속하지 않는다.**
 
-**회차 결속 권장안 — 별도 구현 선행 조건:** 러너가 작업 생성 `POST /api/tasks` 본문에 비민감 `run_id`·`model_tag`·`reset_generation`을 넣고 서버가 task 생성 시 한 번만 불변 결속하며 이후 재결속을 거부한다. 출처는 러너 회차의 `run_id`, 사전검사 `llm.model`, 현재 대상 컨테이너 ID인 `reset_generation`이다. 러너는 실제 세 필드가 포함된 요청 본문의 SHA-256을 기존 `task.json` 기록 경로로 서명 근거에 결속해야 한다. 현재 작업 생성 필드·서버 등록·러너 배선은 미구현이며, 이 값만으로 비신뢰 caller에 조회·발급 권한이나 검사 실행 승인을 부여하지 않는다.
+**회차 결속 권장안 — 별도 구현 선행 조건:** runner는 compose 기동 뒤 작업 생성 전에 인증된 서버 전용 경로로 비민감 `run_id`·`model_tag`·`reset_generation`을 한 번 등록하고, 서버는 runner identity·서버 인스턴스·만료·비밀 단회 capability로 결속한 다음 한 task 생성에 이를 원자적으로 소비해 launch 전에 불변 결속한다. POST 직전 새 로그인과 단일 사용자 이름만으로 이 연결을 추정하지 않으며 capability는 기존 본문 밖의 보호 제어 문맥으로 전달한다. 출처는 러너 회차의 `run_id`, 사전검사 `llm.model`, 현재 대상 컨테이너 ID인 `reset_generation`이다. 기존 `POST /api/tasks` 여섯 필드 본문은 바꾸지 않는다. 회차별 값을 본문에 넣으면 세션의 동일 `task_request_sha256`과 baseline 동일 본문 조건을 깨므로, 등록·소비 근거는 별도 서명 기록에 결속한다([서버–러너 후속안 §7](./e2-runner-integration-proposal.md#7-141-서버-동결과-러너-수집)). 전용 경로·권한·불변 결속·실패 수용·러너 배선은 미구현이며, 새 DB라는 조건만으로 다른 caller 선점·재결속을 허용하지 않는다. 이 값만으로 비신뢰 caller에 조회·발급 권한이나 검사 실행 승인을 부여하지 않는다.
 
 응답·export manifest·오류 본문에는 GT 챌린지 키·매핑·평가 정답을 넣지 않는다. 사람이 type 후보를 검토할 때 참고한 평가 자료도 runtime payload로 전달하지 않는다.
 
@@ -167,7 +169,7 @@ Accept: application/json
 - **수동 확정:** `manual_confirmation_count`는 같은 회차·고정 export에 신뢰 결속된 수동 카테고리의 별도 건수만이다. 승인자·시각·근거 로그는 서버 필수 저장이며 이 API에 수동 판정 행·로그 원문을 싣지 않는다. run 결속을 검증할 수 없는 수동 항목을 임의로 이 건수에 넣지 않는다. 건수는 `total`·자동 `records[]`와 모든 판정 지표·분모에서 제외한다([저장 게이트 §1.1](./e3-storage-gate.md#11-사람-수동-확정의-세-조건)).
 - **ALLOWED:** `record_checks.status=verified`인 행은 `oracle_value=allowed`, `vuln_verdict=null`을 그대로 보존한다. `status=undecidable`이면 아래처럼 두 필드를 평가용 `undecidable`로 바꾸되 원값은 서명 근거에 남긴다. 빈 결과·취약점 없음·fixed로 바꾸지 않는다.
 
-**최민준의 평가 담당 결정:** 러너 어댑터는 원 페이지 전부와 `record_checks`를 서명 근거로 원본 보존한다. `status=undecidable`인 행은 채점용 사본의 `oracle_value`·`vuln_verdict`를 모두 문자열 `undecidable`로 바꾸고, 원값·canonical digest는 근거 원본에 유지한다. 변환 건수와 고정 사유 코드는 서명된 러너 결과에 기록한다. `verified`·`undecidable` 이외 status는 어댑터가 거부한다.
+**최민준의 평가 담당 결정:** (페이지 검증과 채점 사본 변환은 [`scripts/eval/verdict_pages.py`](../../scripts/eval/verdict_pages.py). 서버 API·러너 수집 연결 전이며 합성 페이지로만 시험했다. 채점 사본이 어긋나지 않게 `access_policy_result`도 `판정_불가`로 맞춘다.) 러너 어댑터는 원 페이지 전부와 `record_checks`를 서명 근거로 원본 보존한다. `status=undecidable`인 행은 채점용 사본의 `oracle_value`·`vuln_verdict`를 모두 문자열 `undecidable`로 바꾸고, 원값·canonical digest는 근거 원본에 유지한다. 변환 건수와 고정 사유 코드는 서명된 러너 결과에 기록한다. `verified`·`undecidable` 이외 status는 어댑터가 거부한다.
 
 현재 `scripts/eval/collect.py`는 `oracle_value`에 `confirmed`·`suspected`·`undecidable`·`allowed`만 받고, `allowed`이면 `vuln_verdict=null`, 그 외에는 두 값의 일치를 요구하며 채점 envelope의 추가 필드를 거부한다. **이 페이지 응답을 그대로 `parse_scan_output`에 넘길 수 없다.** 후속 어댑터는 모든 페이지·메타·`record_checks` 검증과 위 변환 후 기존 `run_id`·`model_tag`·`reset_generation`·`records` 네 필드 envelope만 만든다. `record_checks`·변환 건수·사유를 이 닫힌 envelope의 새 필드로 넣지 않는다. 이 결정은 [리뷰](https://github.com/ABC2LAB/ABCDEF2LAB/pull/141#issuecomment-6602013580)에 따른 후속 수집기 계약이며, 실제 러너 수집·보존·어댑터 구현과 수용시험 전에는 공식 비교에 연결하지 않는다.
 

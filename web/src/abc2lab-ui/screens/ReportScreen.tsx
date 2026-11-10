@@ -8,6 +8,9 @@ import {
   useState,
 } from "react";
 
+import { DiagnosisRunSummary } from "../components/DiagnosisRunSummary";
+import { DiagnosticDownload } from "../components/DiagnosticDownload";
+import { RemediationPanel } from "../components/RemediationPanel";
 import { Screen } from "../components/Screen";
 import { TopBar } from "../components/TopBar";
 import { Strong, Sub } from "../components/ui";
@@ -16,11 +19,12 @@ import { type EngineCoverage, type EngineFinding, getCoverage, getTask, listTask
 import { type AccessDecision, buildCellResolver, DECISION_CELL, DECISION_LABEL, getAccessMap } from "../lib/kg";
 import { useSelection } from "../lib/selection";
 import { canonicalVulnClass } from "../lib/vulnclass";
-import { useGo } from "../nav";
+import { useGo, useNav } from "../nav";
 import type { Severity } from "../types";
 import AssetGraphPanel from "./AssetGraphPanel";
+import FirstDiagnosisReportScreen from "./FirstDiagnosisReportScreen";
 
-type Tab = "sum" | "list" | "cov" | "map" | "asset" | "ev";
+type Tab = "sum" | "list" | "cov" | "map" | "asset" | "ev" | "remediation";
 type DimKey = "sev" | "type";
 type Kind = "bar" | "share" | "table";
 
@@ -78,7 +82,6 @@ const STATUS_LABEL: Record<string, string> = {
   timeout: "시간초과",
 };
 
-const btnSm = { padding: "9px 14px", fontSize: 14 } as const;
 const bodyText: CSSProperties = { fontSize: 14, color: "var(--muted)", lineHeight: 1.7, margin: 0 };
 const subH: CSSProperties = { fontWeight: 500, color: "var(--muted)", fontSize: 13 };
 
@@ -122,7 +125,13 @@ function CoverageBar({
 
 /** ===== 보고서 ===== */
 export default function ReportScreen() {
+  const { mode } = useSelection();
+  return mode === "first-diagnosis" ? <FirstDiagnosisReportScreen /> : <ArtexReportScreen />;
+}
+
+function ArtexReportScreen() {
   const go = useGo();
+  const nav = useNav();
   const { taskId, tasksVersion } = useSelection();
   const [tab, setTab] = useState<Tab>("sum");
   const [openRow, setOpenRow] = useState<string | null>(null);
@@ -237,18 +246,15 @@ export default function ReportScreen() {
                 {reportLead}
               </p>
             </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 6 }}>내보내기</div>
-              <div className="row" style={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
-                {/* TODO(이경준): GET /api/report 연결 — 지금은 비활성 */}
-                {["HTML", "PDF", "JSON"].map((f) => (
-                  <button key={f} className="btn" type="button" style={btnSm} disabled>
-                    {f}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <DiagnosticDownload
+              key={taskId}
+              taskId={taskId}
+              enabled={nav.screen === "report" && !taskRes.loading && !taskRes.error && task?.id === taskId}
+            />
           </div>
+
+          {/* 실행 종료 상태 — 자족형 seam(데이터는 lib/request-approvals). 위치는 한 줄만 옮기면 바뀐다. */}
+          <DiagnosisRunSummary key={taskId} taskId={taskId} active={nav.screen === "report"} />
 
           {/* === 요약 타일 (위험도 4단) === */}
           <div className="dgrid" style={{ marginBottom: 14 }}>
@@ -300,6 +306,7 @@ export default function ReportScreen() {
               [
                 ["sum", "요약"],
                 ["list", "발견 목록"],
+                ["remediation", "상세 · 수정 프롬프트"],
                 ["cov", "커버리지"],
                 ["map", "접근통제 지도"],
                 ["asset", "자산 그래프"],
@@ -336,10 +343,11 @@ export default function ReportScreen() {
               setOpenRow={setOpenRow}
             />
           )}
-          {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} />}
-          {tab === "map" && <MapPanel taskId={taskId} />}
+          {tab === "cov" && <CoveragePanel cov={cov} loading={covRes.loading} error={covRes.error} go={go} />}
+          {tab === "map" && <MapPanel taskId={taskId} go={go} />}
           {tab === "asset" && <AssetGraphPanel taskId={taskId} findings={findings} onOpenFinding={openFinding} />}
           {tab === "ev" && <EvidencePanel go={go} />}
+          {tab === "remediation" && <RemediationPanel key={taskId} taskId={taskId} active={nav.screen === "report"} />}
         </div>
       </div>
     </Screen>
@@ -748,13 +756,6 @@ function ListPanel({
   setOpenRow: (id: string | null) => void;
 }) {
   const toggle = (id: string) => setOpenRow(openRow === id ? null : id);
-  // [자세히 보기] → 이 발견을 골라 발견 상세로(엔진이 기록한 증거 · 요청 기록 · 재검증 이력)
-  const go = useGo();
-  const { selectFinding } = useSelection();
-  const openDetail = (f: EngineFinding) => {
-    selectFinding?.(f);
-    go("finding");
-  };
   if (loading) {
     return <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)" }}>불러오는 중…</div>;
   }
@@ -775,8 +776,8 @@ function ListPanel({
   return (
     <div className="rpanel">
       <p className="hint" style={{ margin: "0 0 12px" }}>
-        이름 · 엔드포인트 · 위험도는 실데이터예요. 항목을 누르면 핵심만 펼쳐지고, <Strong>자세히 보기</Strong>에서
-        에이전트가 남긴 증거 · 요청 기록 · 재검증 이력을 봐요. 확정 · 의심 · 판단 불가 판정은 E③ 연동 후예요.
+        이름 · 엔드포인트 · 위험도는 실데이터예요. 항목을 누르면 핵심만 펼쳐지고, 전체 증거 · 비교표 · 판정은{" "}
+        <Strong>자세히 보기(E③ 연동 후)</Strong>에서 봐요.
       </p>
       {findings.map((f) => {
         const open = openRow === f.id;
@@ -825,8 +826,8 @@ function ListPanel({
                     구조화 증거(요청/응답 · canary)와 확정/의심/판단 불가 판정은 E③ 오라클 연동 후 채워져요.
                   </dd>
                 </dl>
-                <button type="button" className="btn" onClick={() => openDetail(f)}>
-                  자세히 보기
+                <button type="button" className="btn" disabled>
+                  자세히 보기 (E③ 연동 후)
                 </button>
               </div>
             )}
@@ -842,10 +843,12 @@ function CoveragePanel({
   cov,
   loading,
   error,
+  go,
 }: {
   cov: EngineCoverage | null | undefined;
   loading: boolean;
   error: string | null;
+  go: (s: "coverage") => void;
 }) {
   let content: ReactNode;
   if (loading) content = <p style={bodyText}>불러오는 중…</p>;
@@ -873,6 +876,9 @@ function CoveragePanel({
           검사 커버리지 <Sub>· 범위 내 자산 대비 실제 탐색</Sub>
         </h3>
         {content}
+        <button className="btn" type="button" style={{ marginTop: 14 }} onClick={() => go("coverage")}>
+          전체 커버리지 열기 →
+        </button>
       </div>
     </div>
   );
@@ -904,7 +910,7 @@ const LEG_DOT: Record<AccessDecision, CSSProperties> = {
 const MAP_LEGEND_BASE: AccessDecision[] = ["allow-ok", "deny-ok", "vuln", "untested"];
 const MAP_LEGEND_EXTRA: AccessDecision[] = ["suspected", "unknown", "blank"];
 
-function MapPanel({ taskId }: { taskId: string }) {
+function MapPanel({ taskId, go }: { taskId: string; go: (s: "access-map") => void }) {
   const { data, loading, error } = useApiResource(() => getAccessMap(taskId), [taskId]);
   // 전체 지도와 동일한 fail-closed 규칙(중복·미반환 처리)을 공유 리졸버로 적용(kg §4.2(7)).
   const resolve = useMemo(() => buildCellResolver(data?.cells ?? []), [data]);
@@ -978,6 +984,9 @@ function MapPanel({ taskId }: { taskId: string }) {
         </p>
         {data?.mock && <p className="map-mock">예시 데이터예요. 소유·권한 KG 연동 후 실제 결과로 채워져요.</p>}
         {content}
+        <button className="btn" type="button" style={{ marginTop: 14 }} onClick={() => go("access-map")}>
+          전체 접근통제 지도 열기 →
+        </button>
       </div>
     </div>
   );

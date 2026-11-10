@@ -15,13 +15,17 @@ from urllib.parse import urlsplit
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_URL_LENGTH = 512
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
+# 엔진 압축 기준 창(K 토큰). profile_fingerprint와 같은 범위(엔진 agent/provider.go가 이 범위로 자른다).
+MIN_CONTEXT_WINDOW_K, MAX_CONTEXT_WINDOW_K = 32, 1000
+# 모델이 어디에 올라가야 하는가. gpu는 전부 GPU에 올라가 있어야 하고, any는 개발용 CPU 회차다(러너가 서버 값으로 대조).
+LOCAL_PLACEMENTS = ("gpu", "any")
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 _REFERENCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9./:_-]*\Z")
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 _PLACEHOLDER = re.compile(r"(?:^|[/:._-])(?:todo|tbd|changeme|placeholder)(?:$|[/:._-])", re.I)
 _SHARED = (
     "network_mode", "llm", "temperature", "sampling", "seed", "target_origin",
-    "worker_count", "time_budget_seconds", "request_budget", "run_storage", "run_drain",
+    "worker_count", "context_window_k", "time_budget_seconds", "request_budget", "run_storage", "run_drain",
     "fixture_fingerprint", "environment_fingerprint", "scope_fingerprint",
 )
 # 러너 v1은 전용 망 격리만 지원한다(평가 프로토콜 §2). 엔진은 계측기 origin으로만 대상에 닿는다.
@@ -50,13 +54,21 @@ MAX_SETTLE_SECONDS = 3600
 # temperature·seed 외 샘플링 고정값. 엔진은 샘플링을 보내지 않아 평가 LLM 게이트웨이가 요청마다 넣는다(평가 프로토콜 §6).
 # 범위는 게이트웨이(cmd/eval-meter sampling.go)와 같다(drift 테스트). 프로파일 지문과 같은 정의.
 SAMPLING_FIELDS = ("top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty")
+# local은 로컬 서버의 OpenAI 호환 경로가 실제로 적용하는 값만 받는다. top_k·min_p·repetition_penalty는
+# 그 경로가 오류 없이 무시하므로 적으면 적용되지 않은 값을 기록하게 된다(profiles/evidence/ollama-openai-sampling).
+LOCAL_SAMPLING_FIELDS = ("top_p", "presence_penalty", "frequency_penalty")
 MAX_TOP_K = 1000
 MAX_PENALTY = 2
 # 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
 _LLM_FIELDS = {
     "api": ("backend", "base_url", "model", "provider", "fallbacks"),
-    "local": ("backend", "base_url", "model", "hostname", "host_ip"),
+    # 태그만으로는 고정이 아니다. 가중치 digest·서버가 할당한 컨텍스트·서버 버전을 함께 선언한다(러너가 실제 값과 대조).
+    "local": ("backend", "base_url", "model", "hostname", "host_ip", "model_digest", "context_length", "server_version",
+              "placement"),
 }
+_MODEL_DIGEST = re.compile(r"[0-9a-f]{64}")
+_SERVER_VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
+MAX_CONTEXT_LENGTH = 4 * 1024 * 1024
 _RUN_FIELDS = ("source_sha", "target_image", *_SHARED)
 _PIN_FIELDS = ("baseline_source_sha", "target_image")
 
@@ -160,7 +172,11 @@ def _llm(value: object) -> bool:
         address = None
     return (_service_name(value["hostname"]) and parsed.hostname == value["hostname"]
             and _tagged_reference(value["model"]) and address is not None and host_ip == str(address)
-            and any(address in network for network in _LOCAL_NETWORKS))
+            and any(address in network for network in _LOCAL_NETWORKS)
+            and isinstance(value["model_digest"], str) and bool(_MODEL_DIGEST.fullmatch(value["model_digest"]))
+            and type(value["context_length"]) is int and 1 <= value["context_length"] <= MAX_CONTEXT_LENGTH
+            and isinstance(value["server_version"], str) and bool(_SERVER_VERSION.fullmatch(value["server_version"]))
+            and value["placement"] in LOCAL_PLACEMENTS)
 
 
 def _number(value: object, *, positive: bool) -> bool:
@@ -202,8 +218,14 @@ def _bounded(value: object, low: int, high: int, *, low_open: bool) -> bool:
 
 
 def _sampling(value: object) -> bool:
-    """temperature·seed 외 다섯 값이 정확히 있고 게이트웨이가 받는 범위 안이어야 한다."""
-    if not isinstance(value, dict) or set(value) != set(SAMPLING_FIELDS):
+    """temperature·seed 외 값이 한 백엔드의 묶음과 정확히 같고 게이트웨이가 받는 범위 안이어야 한다."""
+    if not isinstance(value, dict):
+        return False
+    if set(value) == set(LOCAL_SAMPLING_FIELDS):
+        return (_bounded(value["top_p"], 0, 1, low_open=True)
+                and _bounded(value["presence_penalty"], -MAX_PENALTY, MAX_PENALTY, low_open=False)
+                and _bounded(value["frequency_penalty"], -MAX_PENALTY, MAX_PENALTY, low_open=False))
+    if set(value) != set(SAMPLING_FIELDS):
         return False
     return (type(value["top_k"]) is int and 1 <= value["top_k"] <= MAX_TOP_K
             and _bounded(value["top_p"], 0, 1, low_open=True) and _bounded(value["min_p"], 0, 1, low_open=False)
@@ -234,6 +256,8 @@ def _valid(field: str, value: object) -> bool:
         return _number(value, positive=False)
     if field == "time_budget_seconds":
         return _number(value, positive=True)
+    if field == "context_window_k":
+        return type(value) is int and MIN_CONTEXT_WINDOW_K <= value <= MAX_CONTEXT_WINDOW_K
     return type(value) is int and value >= (0 if field == "seed" else 1)
 
 
@@ -272,6 +296,15 @@ def check_preflight(payload: object) -> None:
         if "target_image" in valid_pins and "target_image" in valid:
             if pins["target_image"] != config["target_image"]:
                 errors.append(f"{label}.target_image: PIN_MISMATCH")
+        # 묶음과 백엔드가 어긋나면 게이트웨이가 시작하지 않는다. 회차 전에 거부한다.
+        if "llm" in valid and "sampling" in valid:
+            expected = LOCAL_SAMPLING_FIELDS if config["llm"]["backend"] == "local" else SAMPLING_FIELDS
+            if set(config["sampling"]) != set(expected):
+                errors.append(f"{label}.sampling: BACKEND_MISMATCH")
+        # 로컬 서버는 넘친 입력을 오류 없이 잘라낸다. 엔진이 압축하기 전에 잘리면 안 된다.
+        if ("llm" in valid and "context_window_k" in valid and config["llm"]["backend"] == "local"
+                and config["context_window_k"] * 1000 > config["llm"]["context_length"]):
+            errors.append(f"{label}.context_window_k: ABOVE_SERVER_CONTEXT")
     for field in _SHARED:
         if field in valid_baseline and field in valid_ours and baseline[field] != ours[field]:
             errors.append(f"comparison.{field}: MISMATCH")

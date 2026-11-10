@@ -172,7 +172,26 @@ func TestOperatorIssuanceSlotsRemainBoundedAndRecover(t *testing.T) {
 			t.Fatal("operator did not drain")
 		}
 	}
-	s.wg.Wait()
+	// listener가 열린 동안 WaitGroup을 다음 발급의 장벽으로 재사용하지 않는다.
+	// 완료한 클라이언트의 peer와 실제 슬롯 반환을 확인한 뒤 새 요청을 보낸다.
+	drainDeadline := time.NewTimer(2 * time.Second)
+	defer drainDeadline.Stop()
+	drainTick := time.NewTicker(time.Millisecond)
+	defer drainTick.Stop()
+	for {
+		s.mu.Lock()
+		peers := len(s.conns)
+		s.mu.Unlock()
+		slots := len(s.sem)
+		if peers == 0 && slots == 0 {
+			break
+		}
+		select {
+		case <-drainTick.C:
+		case <-drainDeadline.C:
+			t.Fatalf("발급 자원이 반환되지 않음: peers=%d slots=%d", peers, slots)
+		}
+	}
 	if _, err := submit(ctx, path, uint32(os.Geteuid()), testRequest(), true); err != nil {
 		t.Fatalf("released slot was not reusable: %v", err)
 	}

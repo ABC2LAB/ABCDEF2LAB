@@ -1,5 +1,7 @@
 # CPD checkpoint 영속 코어 — 팀 검토용 구현안
 
+> **코어 도입 단계의 기록과 현재 연결을 구분합니다.** 아래 Close/drain·외부 ACK·E③ 소비 연결을 후속으로 둔 표현은 당시 단계다. 현재 [서버 publisher](../../server/controlled_read_publisher.go)와 [로컬 provider](../../server/controlled_read_assembly_local_providers.go)에 전송기 drain 증언·Seal·checkpoint 저장·publisher ACK 및 sealed-head 소비 연결이 있다. 연결 범위는 [감사 publisher](audit-checkpoint-publisher.md)와 [실제 감사 공급](first-idor-audit-source.md)을 따르며, 운영 인증·복원·실제 모델/대상 수용 완료를 주장하지 않는다. 아래 코어 계약은 그대로 보존한다.
+
 2026-11-03 · 이동찬 · **개발용 코어 구현, 운영 비활성·팀 계약 미확정**
 
 기준은 최신 `dev` `88415fff88f1c66c4307ba370c360e6ad338efcc`와 열린 선행 #145

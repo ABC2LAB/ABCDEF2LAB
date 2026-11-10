@@ -17,6 +17,8 @@ from run_record import RunRecordError, load_run_inputs
 from runner_checks import policy_sha256
 from runner_record import _network_snapshot
 from score import ComparabilityError, build_report, score_run
+from ground_truth import core_gt
+from run_fixture import KEYS
 from run_fixture_v11 import E2_STUB_PLACEMENT, STUB_RECONCILIATION, make_v11, snapshot
 from test_score import _RunDir, _record
 
@@ -178,13 +180,302 @@ class TestRejectedV11(_V11):
         self.assertEqual(self.inputs(self.v11("en")).e2_mode, "none")
         self.assertEqual(self.inputs(self.v11("es", e2=E2_STUB_PLACEMENT)).e2_mode, "stub")
         self.reject("e2_placement", "e0", tamper_rows=lambda rows: drop(rows, row_of(rows, "e2_placement")))
-        bad = [{"mode": "product"}, {"decision_rows": 0}, {"mode": "stub"},
+        bad = [{"mode": "other"}, {"decision_rows": 0}, {"mode": "stub"}, {"mode": "product", "decision_rows": 0},
                {"mode": "stub", "decision_rows": 1, "allowed": 1, "unsupported": 0, "unavailable": 1},
                {"mode": "stub", "decision_rows": 0, "allowed": 0, "unsupported": 0, "unavailable": -1},
                {"mode": "stub", "decision_rows": True, "allowed": 1, "unsupported": 0, "unavailable": 0}]
         for index, change in enumerate(bad):
             self.reject("e2_placement", f"e{index + 1}",
                         tamper_rows=lambda rows, c=change: row_of(rows, "e2_placement").update(c))
+
+    def _verdict_row(self, status, reason):
+        def add(rows):
+            rows.append({"kind": "verdict_collection", "seq": len(rows) + 1, "at": rows[-1]["at"], "status": status, "reason": reason})
+        return add
+
+    def test_verdict_integrity_failure_stops_grading(self):
+        """무결성 실패가 records=null(판정 미수집)로 숨지 않는다."""
+        self.reject("판정 export 무결성 실패: 채점 중단", "vi",
+                    tamper_rows=self._verdict_row("integrity_failed", "verdict_collect: PAGE_INTEGRITY_FAILED"))
+        run = self.v11("vs", solved={KEY: True}, tamper_rows=self._verdict_row("integrity_failed", "verdict_collect: X"))
+        with self.assertRaisesRegex(RunRecordError, "채점 중단"):
+            score_run(self.load([run])[0], self.correlate, runner_key=self.runner_key, correlatable=self.correlatable)
+
+    def test_verdict_uncollected_stays_undecidable(self):
+        run = self.v11("vn", solved={KEY: True}, tamper_rows=self._verdict_row("not_collected", "verdict_collect: FREEZE_EXPORT_NOT_FOUND"))
+        scored = score_run(self.load([run])[0], self.correlate, runner_key=self.runner_key, correlatable=self.correlatable)
+        self.assertEqual(set(scored.result.verdicts.values()), {ScanVerdict.UNDECIDABLE})
+        self.assertIn(KEY, scored.result.engine_solved)
+
+    def test_verdict_collection_row_must_agree_with_records(self):
+        collected = self.inputs(self.v11("vc", records=[_record("confirmed", "rest:basket:1")],
+                                         tamper_rows=self._verdict_row("collected", None)))
+        self.assertTrue(collected.judgments_collected)
+        self.reject("수집했는데 records가 없음", "v1", tamper_rows=self._verdict_row("collected", None))
+        self.reject("수집했는데 records가 없음", "v2", records=[_record("confirmed", "rest:basket:1")],
+                    tamper_rows=self._verdict_row("collected", "verdict_collect: X"))
+        self.reject("미수집인데 records가 있거나", "v3", records=[_record("confirmed", "rest:basket:1")],
+                    tamper_rows=self._verdict_row("not_collected", "verdict_collect: X"))
+        self.reject("미수집인데 records가 있거나", "v4", tamper_rows=self._verdict_row("not_collected", None))
+        self.reject("미수집인데 records가 있거나", "v5", tamper_rows=self._verdict_row("not_collected", ""))
+        self.reject("미수집인데 records가 있거나", "v9", tamper_rows=self._verdict_row("not_collected", 7))
+        self.reject("미수집인데 records가 있거나", "v6", records=[_record("confirmed", "rest:basket:1")],
+                    tamper_rows=self._verdict_row("integrity_failed", "verdict_collect: X"))
+        self.reject("collected\\|not_collected", "v7", tamper_rows=self._verdict_row("other", "x"))
+
+    def test_verdict_collection_row_is_at_most_one(self):
+        def twice(rows):
+            self._verdict_row("not_collected", "a")(rows)
+            self._verdict_row("not_collected", "a")(rows)
+        self.reject("행은 하나", "v8", tamper_rows=twice)
+
+    PRODUCT = {"mode": "product", "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None}
+
+    def _product_row(self, **changes):
+        row = {"close_state": "complete", "close_reason": None, "collection_outcome": "complete", "collection_reason": None, "rows": 7, "attempts": 5,
+               "decisions": {"allowed": 4, "denied": 1, "unsupported": 0}, "attempts_without_result": 0, "allowed_not_sent": 0, "checkpoint_sequence": 7,
+               "config_sha256": "1" * 64, "policy_fingerprint_sha256": "2" * 64, "manifest_sha256": "3" * 64,
+               "image_id": "sha256:" + "4" * 64} | changes
+
+        prompt = self._prompt_row(row["collection_outcome"])
+
+        def add(rows):
+            rows.append({"kind": "e2_product", "seq": len(rows) + 1, "at": rows[-1]["at"], **row})
+            rows.append({"kind": "e2_prompt", "seq": len(rows) + 1, "at": rows[-1]["at"], **prompt})
+        return add
+
+    PROMPT_VALUES = {"source": "builtin", "template_digest": "a" * 64, "guidance_digest": "b" * 64, "control_digest": "c" * 64, "tools_digest": "d" * 64}
+
+    def _prompt_row(self, outcome="complete", **changes):
+        details = {"task_id": "42", "exploration_id": 9, "run_ref": "e2run-1", "expected_count": 2, "projection_sha256": "e" * 64} | self.PROMPT_VALUES
+        if outcome != "complete":
+            return {"status": "not_applicable", "reason": outcome} | {name: None for name in details} | changes
+        return {"status": "verified", "reason": None} | details | changes
+
+    def _with_prompt(self, prompt):
+        """제품 행은 그대로 두고 프롬프트 행만 바꾼다."""
+        add = self._product_row()
+
+        def apply(rows):
+            add(rows)
+            rows[-1].update(prompt)
+        return apply
+
+    def test_verified_prompt_reaches_the_scorer(self):
+        inputs = self.inputs(self.v11("pv", e2=self.PRODUCT, tamper_rows=self._product_row()))
+        self.assertEqual(inputs.e2_prompt, ("builtin", "a" * 64, "b" * 64, "c" * 64, "d" * 64))
+
+    def test_other_placements_have_no_prompt(self):
+        self.assertIsNone(self.inputs(self.v11("pn")).e2_prompt)
+        self.assertIsNone(self.inputs(self.v11("ps", e2=E2_STUB_PLACEMENT)).e2_prompt)
+
+    def test_failed_product_has_no_prompt_to_compare(self):
+        self.assertIsNone(self.inputs(self.v11("pf", e2=self.PRODUCT, tamper_rows=self._failed_product, blocked_attempts=None)).e2_prompt)
+
+    def test_prompt_row_is_required_exactly_once_on_product_runs(self):
+        def without(rows):
+            self._product_row()(rows)
+            rows.pop()
+
+        def twice(rows):
+            self._product_row()(rows)
+            rows.append(dict(rows[-1], seq=len(rows) + 1))
+        self.reject("e2_prompt: 정확히 한 행", "pa", e2=self.PRODUCT, tamper_rows=without)
+        self.reject("e2_prompt: 정확히 한 행", "pb", e2=self.PRODUCT, tamper_rows=twice)
+
+    def test_prompt_row_only_belongs_to_product_runs(self):
+        def add(rows):
+            rows.append({"kind": "e2_prompt", "seq": len(rows) + 1, "at": rows[-1]["at"], **self._prompt_row()})
+        self.reject("e2_prompt: 제품 E² 회차에만", "pc", tamper_rows=add)
+        self.reject("e2_prompt: 제품 E² 회차에만", "pd", e2=E2_STUB_PLACEMENT, tamper_rows=add)
+
+    def test_complete_outcome_cannot_skip_the_prompt(self):
+        self.reject("미적용 상태", "pe", e2=self.PRODUCT, tamper_rows=self._with_prompt(self._prompt_row("product_failure", reason="complete")))
+
+    def test_verified_status_needs_a_complete_outcome(self):
+        def forged(rows):
+            self._failed_product(rows)
+            rows[-1].update(self._prompt_row())
+        self.reject("확인 상태", "pf2", e2=self.PRODUCT, tamper_rows=forged, blocked_attempts=None)
+
+    def test_not_applicable_reason_is_the_outcome_and_holds_no_values(self):
+        for name, changes in (("reason", {"reason": "complete"}), ("value", {"tools_digest": "d" * 64}), ("run_ref", {"run_ref": "e2run-1"})):
+            with self.subTest(name):
+                def forged(rows):
+                    self._failed_product(rows)
+                    rows[-1].update(changes)
+                self.reject("미적용 상태", "pg" + name[:3], e2=self.PRODUCT, tamper_rows=forged, blocked_attempts=None)
+
+    def test_verified_values_are_checked(self):
+        for name, changes in (("digest", {"tools_digest": "D" * 64}), ("template", {"template_digest": "x"}), ("hash", {"projection_sha256": "zz"}),
+                              ("source", {"source": "db"}), ("exploration", {"exploration_id": 0}), ("count", {"expected_count": 0}),
+                              ("task", {"task_id": 42}), ("run", {"run_ref": None}), ("reason", {"reason": "x"})):
+            with self.subTest(name):
+                code = "확인 상태" if name == "reason" else "값 형식 오류"
+                self.reject(code, "ph" + name[:3], e2=self.PRODUCT, tamper_rows=self._with_prompt(changes))
+
+    def test_unknown_status_is_rejected(self):
+        self.reject("확인 상태", "pi", e2=self.PRODUCT, tamper_rows=self._with_prompt({"status": "maybe"}))
+
+    def test_product_run_uses_its_own_decision_counts(self):
+        inputs = self.inputs(self.v11("p1", e2=self.PRODUCT, tamper_rows=self._product_row()))
+        self.assertEqual((inputs.e2_mode, inputs.attempt_reconciliation), ("product", STUB_RECONCILIATION))
+
+    def test_blocked_attempts_must_match_the_verified_reconciliation(self):
+        # 근거와 다른 값·근거가 있는데 없는 값·근거가 없는데 있는 값 모두 서명만으로 표에 오르지 않는다.
+        for name, kwargs in (("b0", {"e2": E2_STUB_PLACEMENT, "blocked_attempts": 99}),
+                             ("b1", {"e2": E2_STUB_PLACEMENT, "blocked_attempts": None}),
+                             ("b2", {"blocked_attempts": 1}),
+                             ("b3", {"proof": False, "blocked_attempts": 1}),
+                             ("b4", {"e2": self.PRODUCT, "tamper_rows": self._failed_product, "blocked_attempts": 0})):
+            with self.subTest(name):
+                self.reject("blocked_attempts", name, **kwargs)
+
+    def test_verified_blocked_attempts_reach_the_table(self):
+        denied = dict(STUB_RECONCILIATION, blocked_reached=1, positive_evidence=True, control_claim_withheld=True,
+                      cells=dict(STUB_RECONCILIATION["cells"], denied_unobserved=2, denied_observed=1))
+        # 두 칸을 합쳐 3건이 되게 E² 결정 건수도 맞춘다.
+        placement = dict(E2_STUB_PLACEMENT, decision_rows=E2_STUB_PLACEMENT["allowed"] + 3, unsupported=3)
+        run = self.v11("b5", e2=placement, reconciliation=denied)
+        self.assertEqual(run["blocked_attempts"], 3)
+        report = build_report(self.load([run]), self.correlate, self.correlatable, runner_key=self.runner_key,
+                              allow_fixture_e2=True)
+        self.assertIn("| 5 (n=1) | 3 (n=1) |", report.text)
+        self.assertIsNone(self.v11("b6")["blocked_attempts"])
+        self.inputs(self.v11("b7"))
+
+    def _failed_product(self, rows):
+        drop(rows, row_of(rows, "attempt_reconciliation"))
+        self._product_row(close_state="unavailable", close_reason="close_timeout", collection_outcome="product_failure",
+                          collection_reason="close_timeout", rows=None, attempts=None, decisions=None,
+                          checkpoint_sequence=None, manifest_sha256=None)(rows)
+
+    def test_conditions_with_only_product_failures_keep_the_table_and_the_warning(self):
+        runs = [self.v11(f"f{i}", repeat_index=i, e2=self.PRODUCT, tamper_rows=self._failed_product) for i in range(3)]
+        report = build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("| E② 자리 | product |", report.text)
+        self.assertIn("| 회차 수 | 3 |", report.text)
+        self.assertIn("| 제품 실패 회차(무효 아님, 기대 0) | 3 |", report.text)
+        self.assertIn("| 통제 주장 | 보류(회차 3/3) |", report.text)
+        warning = next(w for w in report.warnings if "통제 주장 보류" in w)
+        self.assertIn("대조 근거 없는 회차 3(제품 실패 3)", warning)
+
+    def test_product_failure_count_is_per_condition_and_excludes_complete_runs(self):
+        runs = [self.v11("g0", e2=self.PRODUCT, tamper_rows=self._product_row()),
+                self.v11("g1", repeat_index=1, e2=self.PRODUCT, tamper_rows=self._failed_product)]
+        report = build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("| 제품 실패 회차(무효 아님, 기대 0) | 1 |", report.text)
+        self.assertIn("| 통제 주장 | 보류(회차 1/2) |", report.text)
+
+    def test_runs_without_e2_stay_out_of_the_control_table(self):
+        report = build_report(self.load([self.v11("h0"), self.v11("h1", repeat_index=1)]), self.correlate,
+                              self.correlatable, runner_key=self.runner_key)
+        self.assertNotIn("통제 검증", report.text)
+
+    def test_product_failure_has_no_reconciliation_and_stays_a_run(self):
+        def failed(rows):
+            drop(rows, row_of(rows, "attempt_reconciliation"))
+            self._product_row(close_state="unavailable", close_reason="close_timeout", collection_outcome="product_failure", collection_reason="close_timeout",
+                              rows=None, attempts=None, decisions=None, checkpoint_sequence=None, manifest_sha256=None)(rows)
+        inputs = self.inputs(self.v11("p2", e2=self.PRODUCT, tamper_rows=failed))
+        self.assertEqual((inputs.e2_mode, inputs.attempt_reconciliation), ("product", None))
+        self.reject("제품 실패 회차에는 없어야", "p3", e2=self.PRODUCT, tamper_rows=self._product_row(
+            close_state="unavailable", collection_outcome="product_failure", collection_reason="close_timeout", decisions=None, attempts=None))
+
+    def test_no_execution_reconciles_against_zero_decisions(self):
+        zero = {"cells": {"allowed_observed": 0, "allowed_unobserved": 0, "denied_unobserved": 0, "denied_observed": 0, "unrecorded_observed": 2},
+                "meter_attempt_reused": 0, "blocked_reached": 0, "unrecorded_reached": 2, "positive_evidence": False, "control_claim_withheld": True,
+                "allowed_responded": 0}
+        row = self._product_row(close_state="no_execution", collection_outcome="no_execution", rows=None, attempts=None, decisions=None, checkpoint_sequence=None, manifest_sha256=None)
+        inputs = self.inputs(self.v11("p4", e2=self.PRODUCT, reconciliation=zero, tamper_rows=row))
+        self.assertEqual(inputs.attempt_reconciliation["unrecorded_reached"], 2)
+        self.assertTrue(inputs.attempt_reconciliation["control_claim_withheld"])
+
+    def test_product_row_must_exist_only_on_product_runs_and_be_consistent(self):
+        self.reject("e2_product: 정확히 한 행", "q0", e2=self.PRODUCT)
+        self.reject("e2_product: 제품 E² 회차에만", "q1", tamper_rows=self._product_row())
+        self.reject("e2_product: 제품 E² 회차에만", "q2", e2=E2_STUB_PLACEMENT, tamper_rows=self._product_row())
+        def twice(rows):
+            self._product_row()(rows)
+            self._product_row()(rows)
+        self.reject("e2_product: 정확히 한 행", "q3", e2=self.PRODUCT, tamper_rows=twice)
+        cases = (({"close_state": "other"}, "상태 형식 오류"), ({"collection_outcome": "other"}, "상태 형식 오류"), ({"close_reason": 7}, "상태 형식 오류"),
+                 ({"collection_reason": "x"}, "완료 상태가 맞지 않음"), ({"close_state": "incomplete"}, "완료 상태가 맞지 않음"),
+                 ({"close_state": "no_execution"}, "완료 상태가 맞지 않음"), ({"collection_outcome": "no_execution"}, "실행 없음 상태가 맞지 않음"),
+                 ({"close_state": "no_execution", "collection_outcome": "no_execution", "collection_reason": "x"}, "실행 없음 상태가 맞지 않음"),
+                 ({"collection_outcome": "product_failure"}, "제품 실패 사유 없음"), ({"collection_outcome": "product_failure", "collection_reason": ""}, "제품 실패 사유 없음"),
+                 ({"collection_outcome": "product_failure", "collection_reason": 7}, "제품 실패 사유 없음"),
+                 ({"decisions": None}, "완료인데 결정 건수 없음"), ({"decisions": {}}, "결정 건수 형식 오류"), ({"decisions": 7}, "결정 건수 형식 오류"),
+                 ({"decisions": {"allowed": 4, "denied": 1}}, "결정 건수 형식 오류"), ({"decisions": {"allowed": -1, "denied": 6, "unsupported": 0}}, "결정 건수 형식 오류"),
+                 ({"attempts": 4}, "결정 건수 형식 오류"), ({"attempts": True}, "결정 건수 형식 오류"),
+                 # 합이 1이면 True도 합과 같아 보인다.
+                 ({"attempts": True, "decisions": {"allowed": 1, "denied": 0, "unsupported": 0}}, "결정 건수 형식 오류"),
+                 ({"config_sha256": "x"}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": None}, "대조 값 형식 오류"),
+                 # 숫자는 문자열로 바꾸면 hex처럼 보인다.
+                 ({"policy_fingerprint_sha256": int("2" * 64)}, "대조 값 형식 오류"), ({"config_sha256": int("1" * 64)}, "대조 값 형식 오류"),
+                 ({"policy_fingerprint_sha256": ["2" * 64]}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": "A" * 64}, "대조 값 형식 오류"),
+                 ({"image_id": "abc"}, "대조 값 형식 오류"), ({"image_id": "4" * 64}, "대조 값 형식 오류"), ({"image_id": None}, "대조 값 형식 오류"))
+        for index, (changes, pattern) in enumerate(cases):
+            with self.subTest(changes=changes):
+                self.reject(pattern, f"w{index}", e2=self.PRODUCT, tamper_rows=self._product_row(**changes))
+
+    def _product_run(self, name, repeat=0, **changes):
+        return self.v11(name, repeat_index=repeat, e2=self.PRODUCT, tamper_rows=self._product_row(**changes))
+
+    def test_identity_is_read_only_from_product_runs(self):
+        self.assertEqual(self.inputs(self._product_run("i1")).e2_identity, ("2" * 64, "sha256:" + "4" * 64))
+        self.assertIsNone(self.inputs(self.v11("i2")).e2_identity)
+        self.assertIsNone(self.inputs(self.v11("i3", e2=E2_STUB_PLACEMENT)).e2_identity)
+
+    def test_output_language_may_differ_between_conditions_only(self):
+        english = lambda rows: row_of(rows, "run_conditions").update(output_language="en")
+        self.assertEqual(self.inputs(self.v11("l0")).output_language, "ko")
+        other = self.v11("l1", condition="baseline", engine="baseline", tamper_rows=english)
+        build_report(self.load([self.v11("l2"), other]), self.correlate, self.correlatable,
+                     runner_key=self.runner_key)
+        mixed = [self.v11("l3"), self.v11("l4", repeat_index=1, tamper_rows=english)]
+        with self.assertRaisesRegex(ComparabilityError, "표시 언어 혼합"):
+            build_report(self.load(mixed), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_one_condition_must_use_one_prompt(self):
+        for name in ("source", "template_digest", "guidance_digest", "control_digest", "tools_digest"):
+            with self.subTest(name):
+                value = "override" if name == "source" else "e" * 64
+                runs = [self._product_run(f"y{name[:3]}a"), self.v11(f"y{name[:3]}b", repeat_index=1, e2=self.PRODUCT, tamper_rows=self._with_prompt({name: value}))]
+                with self.assertRaisesRegex(ComparabilityError, "E② 프롬프트 불일치"):
+                    build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_same_prompt_in_one_condition_is_accepted(self):
+        runs = [self._product_run("z0"), self._product_run("z1", 1)]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_failed_product_run_does_not_break_the_prompt_comparison(self):
+        runs = [self._product_run("z2"), self.v11("z3", repeat_index=1, e2=self.PRODUCT, tamper_rows=self._failed_product)]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_one_condition_must_use_one_policy_and_image(self):
+        for index, changes in enumerate(({"policy_fingerprint_sha256": "5" * 64}, {"image_id": "sha256:" + "6" * 64})):
+            with self.subTest(changes=changes):
+                runs = [self._product_run(f"x{index}a"), self._product_run(f"x{index}b", 1, **changes)]
+                with self.assertRaisesRegex(ComparabilityError, "E② 정책 지문·이미지 불일치"):
+                    build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_other_conditions_may_use_another_policy(self):
+        # 대조는 조건 안에서만 한다.
+        runs = [self.v11("oa", condition="우리@a", e2=self.PRODUCT, tamper_rows=self._product_row()),
+                self.v11("ob", condition="우리@b", e2=self.PRODUCT, tamper_rows=self._product_row(policy_fingerprint_sha256="5" * 64))]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_same_policy_and_image_are_compared_together(self):
+        # 설정 digest는 회차 값이 들어가 회차마다 다르다. 대조하지 않는다.
+        runs = [self._product_run("sa"), self._product_run("sb", 1, config_sha256="7" * 64, manifest_sha256="8" * 64)]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_product_cells_must_add_up_to_its_decisions(self):
+        self.reject("칸 합이 E② 결정 건수와 다름", "c1", e2=self.PRODUCT, tamper_rows=self._product_row(decisions={"allowed": 3, "denied": 2, "unsupported": 0}))
+        # 차단은 denied와 unsupported를 합쳐서 본다.
+        inputs = self.inputs(self.v11("c2", e2=self.PRODUCT, tamper_rows=self._product_row(decisions={"allowed": 4, "denied": 0, "unsupported": 1})))
+        self.assertEqual(inputs.e2_mode, "product")
 
     def test_attempt_reconciliation_row_follows_the_e2_placement(self):
         self.assertIsNone(self.inputs(self.v11("rn")).attempt_reconciliation)
@@ -201,6 +492,7 @@ class TestRejectedV11(_V11):
                {"cells": dict(cells, allowed_observed=True, allowed_unobserved=3)},
                {"cells": list(cells.values())},
                {"meter_attempt_reused": -1}, {"blocked_reached": "0"}, {"unrecorded_reached": None},
+               {"allowed_responded": -1}, {"allowed_responded": True},
                {"positive_evidence": 1}, {"control_claim_withheld": 0}]
         for index, change in enumerate(bad):
             with self.subTest(change=change):
@@ -213,7 +505,12 @@ class TestRejectedV11(_V11):
         bad = [{"blocked_reached": 1}, {"unrecorded_reached": 1}, {"positive_evidence": False},
                {"control_claim_withheld": True},
                {"meter_attempt_reused": 1},
-               {"cells": dict(cells, allowed_observed=0, allowed_unobserved=4), "positive_evidence": False},
+               {"cells": dict(cells, allowed_observed=0, allowed_unobserved=4), "allowed_responded": 0},
+               # 접수는 있는데 대상 응답이 없으면 양성 근거가 없고 통제 주장은 보류다
+               {"allowed_responded": 0},
+               {"allowed_responded": 0, "positive_evidence": False},
+               {"allowed_responded": 0, "control_claim_withheld": True},
+               {"allowed_responded": 5},
                {"cells": dict(cells, denied_observed=1, denied_unobserved=0), "blocked_reached": 1},
                {"cells": dict(cells, unrecorded_observed=1), "unrecorded_reached": 1}]
         for index, change in enumerate(bad):
@@ -227,7 +524,7 @@ class TestRejectedV11(_V11):
                                         {"allowed_observed": 3, "allowed_unobserved": 0})):
             with self.subTest(change=change):
                 self.reject("칸 합이 E② 결정 건수와 다름", f"s{index}", e2=E2_STUB_PLACEMENT,
-                            reconciliation=dict(STUB_RECONCILIATION, cells=dict(cells, **change)))
+                            reconciliation=dict(STUB_RECONCILIATION, allowed_responded=3, cells=dict(cells, **change)))
         # 차단 쪽 합에는 미지원·사용 불가가 둘 다 들어간다.
         unavailable = dict(E2_STUB_PLACEMENT, unsupported=0, unavailable=1)
         self.assertEqual(self.inputs(self.v11("su", e2=unavailable)).attempt_reconciliation, STUB_RECONCILIATION)
@@ -242,19 +539,28 @@ class TestRejectedV11(_V11):
 
     def test_run_conditions_row_is_required_and_typed(self):
         self.reject("run_conditions", "r0", tamper_rows=lambda rows: drop(rows, row_of(rows, "run_conditions")))
-        cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "workers": 0,
+        cases = {"engine_settings_sha256": "x", "machine_id_sha256": "E" * 64, "output_language": "KO", "tool_tree_sha256": None,
+                 "workers": 0,
                  "sampling": {"temperature": 1.0}, "host": {"cpu_model": "x"}, "llm_stream": "true"}
         for index, (name, value) in enumerate(cases.items()):
             self.reject("run_conditions", f"r{index + 1}",
                         tamper_rows=lambda rows, n=name, v=value: row_of(rows, "run_conditions").update({n: v}))
+        self.reject("run_conditions", "r20", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(output_language=1))
         self.reject("run_conditions", "r9", tamper_rows=lambda rows: row_of(rows, "run_conditions")["host"].update(
             logical_cpus=True))
         self.reject("run_conditions", "r10", tamper_rows=lambda rows: row_of(rows, "run_conditions")["sampling"].update(
             seed="42"))
-        # local 백엔드는 샘플링을 넣지 않아 null이다.
+        # 예전 local 회차는 샘플링을 넣지 않아 null이다.
         local = self.inputs(self.v11("loc", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
             sampling=None)))
         self.assertEqual(local.version, "1.1")
+        # 지금 local은 자기 묶음을 쓴다. 두 묶음이 섞이면 거부한다.
+        applied = {"temperature": 1.0, "top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0.25, "seed": 42}
+        local = self.inputs(self.v11("loc2", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            sampling=dict(applied))))
+        self.assertEqual(local.version, "1.1")
+        self.reject("run_conditions", "mixed-sampling", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            sampling=dict(applied, top_k=20)))
         self.assertIsNotNone(self.inputs(self.v11("ok")).run_conditions)
         # 스트리밍은 bool만 받는다(1·"true"를 true로 읽지 않음). 행에서 빠져도 거부.
         self.reject("run_conditions", "r11", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(llm_stream=1))
@@ -426,18 +732,18 @@ class TestComparison(_V11):
 
     def test_control_table_sums_each_row_per_condition(self):
         # 행마다 합계가 서로 다르고(행이 뒤바뀌면 드러남) 두 회차 값이 둘 다 0이 아닌 행이 있다(합 대신 최댓값이면 드러남).
-        clean = dict(STUB_RECONCILIATION, cells=dict(STUB_RECONCILIATION["cells"], allowed_observed=3,
-                                                     allowed_unobserved=1))
+        clean = dict(STUB_RECONCILIATION, allowed_responded=2,
+                     cells=dict(STUB_RECONCILIATION["cells"], allowed_observed=3, allowed_unobserved=1))
         bad = {"cells": {"allowed_observed": 0, "allowed_unobserved": 4, "denied_unobserved": 0, "denied_observed": 1,
                          "unrecorded_observed": 2},
-               "meter_attempt_reused": 3, "blocked_reached": 1, "unrecorded_reached": 2, "positive_evidence": False,
-               "control_claim_withheld": True}
+               "allowed_responded": 0, "meter_attempt_reused": 3, "blocked_reached": 1, "unrecorded_reached": 2,
+               "positive_evidence": False, "control_claim_withheld": True}
         report = build_report(self.load([self.v11("c1", e2=E2_STUB_PLACEMENT, reconciliation=clean),
                                          self.v11("c2", repeat_index=1, e2=E2_STUB_PLACEMENT, reconciliation=bad)]),
                               self.correlate, self.correlatable, runner_key=self.runner_key, allow_fixture_e2=True)
         table = report.text.split("### 개선 후 통제 검증 — 시도별 대조(프로토콜 §8.3)\n", 1)[1]
         for line in ("| 항목 | 우리@test |", "| 회차 수 | 2 |", "| E② 자리 | stub |",
-                     "| 허용·관측됨 | 3 (3, 0) |", "| 허용·관측되지 않음 | 5 (1, 4) |", "| 차단·관측되지 않음 | 1 (1, 0) |",
+                     "| 허용·관측됨 | 3 (3, 0) |", "| 허용·대상 응답 수신(허용 양성 근거) | 2 (2, 0) |", "| 허용·관측되지 않음 | 5 (1, 4) |", "| 차단·관측되지 않음 | 1 (1, 0) |",
                      "| 차단 후 대상 도달(기대 0) | 1 (0, 1) |", "| E② 기록 없이 대상 도달(기대 0) | 2 (0, 2) |",
                      "| 같은 시도 ID 재사용(기대 0) | 3 (0, 3) |", "| 허용 양성 근거 있는 회차 | 1/2 |",
                      "| 통제 주장 | 보류(회차 1/2) — 가짜 E², 통제 증명 아님 |"):
@@ -461,6 +767,21 @@ class TestComparison(_V11):
         matrix = report.text.split("### 개선 후 통제 검증", 1)[0]
         self.assertIn("| 7 ± 2.82843 |", matrix)  # 총 요청 수 5·9 두 회차 평균 ± SD
 
+    def test_primary_metric_comes_from_signed_attribution_without_judgments(self):
+        key = next(c.key for c in core_gt() if c.key in KEYS)
+        report = build_report(self.load([self.v11("m1", solved={key: True}), self.v11("m2", repeat_index=1)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("### 주 지표 — 회차당 엔진 귀속 해결 수", report.text)
+        self.assertLess(report.text.index("주 지표"), report.text.index("측정 매트릭스"))
+        self.assertIn("| 우리@test | 2 | 0.5 ± 0.707107 |", report.text)
+
+    def test_primary_metric_is_unknown_for_a_run_without_proof(self):
+        key = next(c.key for c in core_gt() if c.key in KEYS)
+        report = build_report(self.load([self.v11("u1", solved={key: True}),
+                                         self.v11("u2", repeat_index=1, proof=False)]),
+                              self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertIn("| 우리@test | 2 | — | — | 1 |", report.text)
+
     def test_control_table_only_for_conditions_with_e2(self):
         clean = build_report(self.load([self.v11("k1", e2=E2_STUB_PLACEMENT),
                                         self.v11("k2", repeat_index=1, e2=E2_STUB_PLACEMENT)]),
@@ -481,7 +802,8 @@ class TestComparison(_V11):
                    "머신 사양": lambda row: row["host"].update(memory_kib=1),
                    "머신": lambda row: row.update(machine_id_sha256="0" * 64),
                    "LLM 스트리밍": lambda row: row.update(llm_stream=False),
-                   "엔진 규칙 파일": lambda row: row.update(engine_rules_sha256="a" * 64)}
+                   "엔진 규칙 파일": lambda row: row.update(engine_rules_sha256="a" * 64),
+                   "도구 트리": lambda row: row.update(tool_tree_sha256="8" * 64)}
         for index, (label, change) in enumerate(changes.items()):
             with self.subTest(label=label):
                 other = self.v11(f"m{index}", repeat_index=1,

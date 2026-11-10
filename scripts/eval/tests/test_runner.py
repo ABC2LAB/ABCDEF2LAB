@@ -12,23 +12,33 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import runner
-from runner import COMPLETE, INVALID, RESULT_NAME, Clock, DockerPorts, Facts, RunFailure, build_spec, execute_run
+from tool_tree import tree_sha256
+from runner import COMPLETE, INVALID, RESULT_NAME, Clock, DockerPorts, Facts, RunFailure, build_spec, verdict_limits, execute_run
 from runner_config import (
     COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, RunnerConfigError, compose_environment,
     create_run_directory, parse_runner_config, plan_run,
 )
-from runner_engine import task_request
+from runner_engine import EngineAPIError, task_request
 from runner_window import WatchSample
+from test_verdict_pages import CONTEXT as VERDICT_CONTEXT, two_pages
+from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified  # noqa: E402
+from e2_collect import CloseAck, E2Collection, E2CollectionInvalid
+from e2_control import CloseResult, E2ControlError
+from e2_export import E2Export
+from verdict_collector import CollectedExport, CollectLimits, VerdictCollectError, VerdictExportNotReady, VerdictIntegrityError
+from verdict_pages import merge_verdict_pages
 from runner_docker import DockerError
 from runner_probe import PASS, ProbeOutcome
-from test_preflight import configuration
+from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 from test_runner_checks import DAEMON, raw_world
 from test_runner_config import _yaml_without_comments, runner_config
 from test_runner_llm import generation as llm_generation
@@ -38,14 +48,30 @@ ROLE_OF = {"engine": "engine", "engine-db": "engine_db", "target": "target", "ev
            "eval-llm-gw": "meter", "eval-api": "meter", "eval-e2": "meter"}
 
 
-def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None):
+E2_IMAGE_ID = "sha256:" + "e" * 64
+E2_PRODUCT_BLOCK = {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:test", "id": E2_IMAGE_ID}, "policy_path": "/srv/eval/e2-policy.json",
+                    "policy_fingerprint_sha256": "f" * 64, "header_mode": "evaluation_caller_passthrough", "ready_timeout_seconds": 30,
+                    "close_ack_timeout_seconds": 5, "close_timeout_seconds": 30, "poll_seconds": 1, "exchange_timeout_seconds": 5,
+                    "verify_tool": "/usr/local/bin/e2-audit-verify", "verify_timeout_seconds": 30,
+                    "policy_tool": "/usr/local/bin/e2-eval-policy", "policy_tool_timeout_seconds": 30, "helper": "/usr/local/bin/e2-bash-sandbox",
+                    "helper_sha256": "a" * 64, "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10", "window_seconds": 7200,
+                    "approval_valid_until": "2099-01-01T00:00:00Z", "prompt_wait_seconds": 30}
+
+
+def make_spec(side="ours", min_free=None, stream=None, e2=None, state=None, observer_format=None, verdict=None):
     preflight, payload = configuration(), runner_config()
+    if e2 == "product":
+        payload["e2"], e2 = dict(E2_PRODUCT_BLOCK), None
+    if verdict is not None:
+        payload["verdict_export"] = verdict
     if state is not None:
         payload["state"] = state
     if e2 is not None:
         payload["e2"]["ours_mode"] = e2
     if stream is not None:
         payload["engine"]["llm_stream"] = stream
+    if observer_format is not None:
+        payload["observer_format"] = observer_format
     if min_free is not None:  # 하한은 러너 설정과 사전검사 선언(환경 지문 입력)에 같이 바꿔야 한다
         payload["tmpfs"]["min_free"] = min_free
         for name in ("baseline", "ours"):
@@ -62,12 +88,14 @@ PROBE_IDS = {"pre": "a1" * 32, "post": "b2" * 32}
 class FakeClock:
     def __init__(self):
         self.t = 0.0
+        self.sleeps = []
 
     def clock(self):
         return Clock(lambda: datetime(2026, 11, 2, tzinfo=timezone.utc) + timedelta(seconds=self.t),
                      lambda: self.t, self.sleep)
 
     def sleep(self, seconds):
+        self.sleeps.append(seconds)
         self.t += seconds
 
 
@@ -117,9 +145,10 @@ class FakeMeter:
         def attempt(i):
             return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
                     else {"attempt_id_state": "absent", "attempt_id": ""})
-        return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", **attempt(i)} for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 1)},
-                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", **attempt(n + 2)}]
+        return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", "response": "complete", **attempt(i)}
+                for i in range(1, n + 1)] + \
+               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none", **attempt(n + 1)},
+                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none", **attempt(n + 2)}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -156,6 +185,12 @@ class FakeEvidence:
         self.files[name] = copy.deepcopy(payload)
         return "h-" + name
 
+    def write_bytes(self, name, data):
+        if name in self.files:
+            raise AssertionError("evidence written twice")
+        self.files[name] = data.decode("utf-8")
+        return "h-" + name
+
     def digests(self):
         return {name: "h-" + name for name in self.files}
 
@@ -165,6 +200,13 @@ class FakeEvidence:
 
 class FakePorts:
     def __init__(self, spec):
+        self.serving = {}
+        self.verdict_results, self.verdict_args, self.verdict_times = [], [], []
+        self.e2_ready_error = self.e2_bind_error = self.e2_bound = self.e2_collect_args = None
+        self.e2_close_result, self.e2_collection = e2_closed(), e2_collected()
+        # 차례로 돌려줄 응답. 하나 남으면 계속 그것을 돌려준다. 예외는 raise한다.
+        self.e2_prompt_results, self.e2_prompt_asked = [e2_projection()], []
+        self.fake_clock, self.verdict_call_seconds = None, 0
         self.rules_sha256 = None
         self.spec = spec
         self.calls = []
@@ -196,9 +238,10 @@ class FakePorts:
         self.host = {"cpu_model": "Example CPU", "logical_cpus": 8, "memory_kib": 16 * 1024 * 1024,
                      "kernel": "6.0.0-example", "docker_server_version": "29.1.3", "machine_id_sha256": "c" * 64}
         # 엔진 설정 응답(runner_engine이 프록시를 설정 여부로 바꾼 뒤): 선언 worker_count·모델과 같고 프록시 없음.
-        self.settings = {"settings": {"workers": spec.worker_count, "web_search_proxy_set": False,
+        self.settings = {"settings": {"workers": spec.worker_count, "output_language": "ko", "web_search_proxy_set": False,
                                       "global_proxy_set": False, "llm_pool_enabled": False},
-                         "llm": {"model": spec.model_tag, "proxy_set": False, "reasoning_effort": ""}}
+                         "llm": {"model": spec.model_tag, "proxy_set": False, "reasoning_effort": "", "thinking_type": "",
+                                 "context_window_k": spec.context_window_k}}
         # 상태 차이 사본: 단계별 SQLite 행. state_dir는 시험이 정한다(설정 state가 있는 회차만 부른다).
         self.state_dir = None
         self.state_rows = {"pre": [(1, "a")], "post": [(1, "a"), (2, "b")]}
@@ -223,7 +266,14 @@ class FakePorts:
         stub = self.world_stub if self.world_stub is not None else "eval-e2" in self.spec.expected.services
         networks, containers = raw_world(stub)
         for container in containers:
-            container["image"] = self.spec.image_ids[ROLE_OF[container["service"]]]
+            # 제품 E²는 자기 이미지를 쓴다. 가짜 E²는 계측기 이미지의 역할이다.
+            role = "e2" if container["service"] == "eval-e2" and "e2" in self.spec.image_ids else ROLE_OF[container["service"]]
+            container["image"] = self.spec.image_ids[role]
+        # 정책이 pin한 주소는 실제 compose가 그 주소를 쓴 것으로 둔다. 어긋나는 경우는 test_runner_checks가 본다.
+        for key, addresses in self.spec.expected.pinned.items():
+            network = next(n for n in networks if n["Labels"]["com.docker.compose.network"] == key)
+            for service, address in addresses.items():
+                network["Containers"][next(c["id"] for c in containers if c["service"] == service)]["IPv4Address"] = f"{address}/24"
         return networks, containers
 
     def preexisting(self):
@@ -277,9 +327,16 @@ class FakePorts:
                 "received_at": f"2026-11-02T00:00:0{2 if phase == 'pre' else 9}+00:00",
                 "solved": dict(self.solved[phase])}
 
+    def tool_tree(self):
+        self._call("tool_tree")
+        return "7" * 64
+
     def host_spec(self):
         self._call("host_spec")
         return dict(self.host)
+
+    def apply_engine_settings(self):
+        self._call("apply_engine_settings")
 
     def engine_settings(self):
         self._call("engine_settings")
@@ -365,9 +422,65 @@ class FakePorts:
         self._call("findings")
         return {"items": 0}
 
+    def e2_service_ready(self):
+        self._call("e2_service_ready")
+        if self.e2_ready_error is not None:
+            raise self.e2_ready_error
+        return {"state": "service_ready", "config_sha256": "1" * 64, "policy_fingerprint_sha256": "f" * 64}
+
+    def e2_bind(self, reset_generation):
+        self._call("e2_bind")
+        self.e2_bound = reset_generation
+        if self.e2_bind_error is not None:
+            raise self.e2_bind_error
+
+    def e2_close(self):
+        self._call("e2_close")
+        return self.e2_close_result
+
+    def e2_run_ref(self):
+        return E2_RUN_REF
+
+    def e2_prompt_projection(self, task_id, run_ref):
+        self.e2_prompt_asked.append((task_id, run_ref, tuple(self.calls)))
+        result = self.e2_prompt_results.pop(0) if len(self.e2_prompt_results) > 1 else self.e2_prompt_results[0]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def e2_collect(self, close, task_id, reset_generation):
+        self._call("e2_collect")
+        self.e2_collect_args = (close, task_id, reset_generation)
+        if isinstance(self.e2_collection, Exception):
+            raise self.e2_collection
+        return self.e2_collection
+
+    def verdict_export(self, task_id, context):
+        self._call("verdict_export")
+        self.verdict_args.append((task_id, context))
+        clock = self.fake_clock
+        if clock is not None:
+            self.verdict_times.append(clock.t)
+            clock.t += self.verdict_call_seconds
+        result = self.verdict_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
     def intercept_summary(self):
         self._call("intercept_summary")
         return {"format": "intercept", "total": 0}
+
+    def local_serving(self, phase, keep_alive_seconds):
+        self._call(f"local_serving:{phase}")
+        self.keep_alive_seen = keep_alive_seconds
+        observed = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768, "size": 100,
+                    "size_vram": 100, "gpu_used_bytes": 100, "quantization_level": "Q4", "other_models_loaded": 0,
+                    "keep_alive_remaining_seconds": keep_alive_seconds}
+        return observed | self.serving.get(phase, {})
+
+    def local_unload(self):
+        self._call("local_unload")
 
     def sign(self, payload):
         self.sign_calls += 1
@@ -393,10 +506,383 @@ def run(mutate=None, mutate_gateway=None, spec=None):
     return result, ports, meter, evidence
 
 
-FULL_ORDER = ["preexisting", "image_ids", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
-              "wait_ready", "events:start", "watch:start", "scoreboard:pre", "engine_settings", "start_task", "seal",
+FULL_ORDER = ["preexisting", "image_ids", "tool_tree", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
+              "wait_ready", "events:start", "watch:start", "scoreboard:pre", "apply_engine_settings", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
+
+
+E2_MAC, E2_MANIFEST = "9" * 64, "8" * 64
+
+
+E2_RUN_REF = "e2run-fixture"
+E2_TASK_NUMBER = 17
+
+
+def e2_projection(task_id=None, state="complete", tools="d" * 64, **changes):
+    """제품 서버의 투영 응답과 같은 모양. 러너가 받은 task id는 합성 포트가 준다."""
+    row = {"sequence": 1, "activity_id": 7, "intent_id": 3, "worker": "work#1", "version": "e2-worker-prompt/v1", "key": "e2_worker", "source": "builtin",
+           "template_digest": "a" * 64, "guidance_digest": "b" * 64, "control_digest": "c" * 64, "tools_digest": tools}
+    done = state == "complete"
+    document = {"format": "abc2lab.e2-prompt-projection/v1", "task_id": E2_TASK_NUMBER, "exploration_id": 9, "run_ref": E2_RUN_REF, "state": state, "complete": done,
+                "expected_count": 1, "observed_count": 1, "snapshot_sequence": 1, "observations": [row] if done or state == "collecting" else []} | changes
+    return json.dumps(document).encode("utf-8")
+
+
+def e2_closed(state="complete", reason=None, execution_ref="execution-1", manifest=E2_MANIFEST):
+    ack = CloseAck("close-1", 6, E2_MAC, manifest) if state == "complete" else None
+    return CloseResult(state, reason, state != "unavailable", execution_ref, manifest, ack)
+
+
+def e2_export_of(decisions=None, state="complete"):
+    rows = [{"attempt_id": "a" * 32, "decision": "allowed"}, {"attempt_id": "b" * 32, "decision": "allowed"},
+            {"attempt_id": "c" * 32, "decision": "denied"}] if decisions is None else decisions
+    return E2Export(state, {}, tuple(rows), 6, 0, 0, 2, (("complete", 2),), (("policy_denied", 1),))
+
+
+def e2_collected(outcome="complete", reason="", export="default"):
+    return E2Collection(outcome, reason, e2_export_of() if export == "default" else export, {"manifest.json": E2_MANIFEST},
+                        {"sequence": 6, "mac": E2_MAC} if outcome == "complete" else None)
+
+
+class TestE2Product(unittest.TestCase):
+    """제품 E② 모드의 러너 순서와 실패 갈래(연결 제안 §4.3). 가짜 port만 쓰며 제품 E²로 돌린 것이 아니다."""
+
+    def go(self, mutate=None, side="ours"):
+        def apply(ports, meter, clock):
+            meter.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
+                             {"seq": 2, "decision": "allowed", "attempt_id": "b" * 32},
+                             {"seq": 3, "decision": "denied", "attempt_id": "c" * 32}]
+            if mutate:
+                mutate(ports)
+        return run(apply, spec=make_spec(side=side, e2="product"))
+
+    def row(self, evidence, kind):
+        return [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == kind]
+
+    def prompted(self, *results, wait=None):
+        spec_changes = {} if wait is None else {"e2_prompt_wait_seconds": wait}
+        spec = dataclasses.replace(make_spec(e2="product"), **spec_changes)
+
+        def apply(ports, meter, clock):
+            meter.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
+                             {"seq": 2, "decision": "allowed", "attempt_id": "b" * 32},
+                             {"seq": 3, "decision": "denied", "attempt_id": "c" * 32}]
+            ports.e2_prompt_results = list(results)
+        return run(apply, spec=spec)
+
+    def test_verified_prompt_is_signed_with_the_received_bytes(self):
+        raw = e2_projection()
+        result, ports, _meter, evidence = self.prompted(raw)
+        self.assertEqual(result["status"], "complete")
+        [row] = self.row(evidence, "e2_prompt")
+        self.assertEqual({name: row[name] for name in ("status", "reason", "task_id", "exploration_id", "run_ref", "expected_count", "projection_sha256")},
+                         {"status": "verified", "reason": None, "task_id": "17", "exploration_id": 9, "run_ref": E2_RUN_REF, "expected_count": 1,
+                          "projection_sha256": hashlib.sha256(raw).hexdigest()})
+        self.assertEqual({name: row[name] for name in ("source", "template_digest", "guidance_digest", "control_digest", "tools_digest")},
+                         {"source": "builtin", "template_digest": "a" * 64, "guidance_digest": "b" * 64, "control_digest": "c" * 64, "tools_digest": "d" * 64})
+        self.assertEqual(evidence.files["e2-prompt-projection.json"], raw.decode("utf-8"))
+
+    def test_prompt_is_asked_with_the_runners_own_values_after_close(self):
+        _result, ports, _meter, _evidence = self.prompted(e2_projection())
+        task_id, run_ref, calls = ports.e2_prompt_asked[0]
+        self.assertEqual((task_id, run_ref), ("17", E2_RUN_REF))
+        self.assertIn("e2_close", calls)
+        self.assertIn("e2_collect", calls)
+
+    def test_collecting_is_asked_again_until_complete(self):
+        result, ports, _meter, _evidence = self.prompted(e2_projection(state="collecting"), E2PromptNotReady("engine_unavailable"), e2_projection())
+        self.assertEqual((result["status"], len(ports.e2_prompt_asked)), ("complete", 3))
+
+    def test_collecting_past_the_deadline_invalidates_the_run(self):
+        result, ports, _meter, evidence = self.prompted(e2_projection(state="collecting"), wait=3)
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_prompt_unverified"]))
+        self.assertEqual(evidence.files["e2-prompt-status.json"], {"status": "unverified", "reason": "collecting"})
+        self.assertGreater(len(ports.e2_prompt_asked), 1)
+
+    def test_states_other_than_complete_invalidate_without_asking_again(self):
+        for state, reason in (("incomplete", "state_incomplete"), ("empty", "state_empty"), ("invalid", "state_invalid"), ("conflict", "state_conflict")):
+            with self.subTest(state):
+                result, ports, _meter, evidence = self.prompted(e2_projection(state=state))
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_prompt_unverified"]))
+                self.assertEqual(evidence.files["e2-prompt-status.json"]["reason"], reason)
+                self.assertEqual(len(ports.e2_prompt_asked), 1)
+
+    def test_another_runs_projection_invalidates_the_run(self):
+        result, _ports, _meter, evidence = self.prompted(e2_projection(run_ref="e2run-other"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_prompt_unverified"]))
+        self.assertEqual(evidence.files["e2-prompt-status.json"]["reason"], "projection_invalid")
+
+    def test_product_failure_is_not_invalidated_by_a_missing_prompt(self):
+        def mutate(ports):
+            ports.e2_collection = e2_collected("product_failure", "audit_incomplete", None)
+            ports.e2_prompt_results = [E2PromptUnverified("should_not_be_asked")]
+        result, ports, _meter, evidence = self.go(mutate)
+        self.assertEqual(result["status"], "complete")
+        [row] = self.row(evidence, "e2_prompt")
+        self.assertEqual((row["status"], row["reason"], row["run_ref"], row["tools_digest"]), ("not_applicable", "product_failure", None, None))
+        self.assertEqual(ports.e2_prompt_asked, [])
+        self.assertNotIn("e2-prompt-projection.json", evidence.files)
+
+    def test_no_execution_is_not_invalidated_by_a_missing_prompt(self):
+        def mutate(ports):
+            ports.e2_close_result = e2_closed("no_execution", execution_ref=None, manifest=None)
+            ports.e2_prompt_results = [E2PromptUnverified("should_not_be_asked")]
+        result, ports, _meter, evidence = self.go(mutate)
+        self.assertEqual((result["status"], self.row(evidence, "e2_prompt")[0]["status"]), ("complete", "not_applicable"))
+        self.assertEqual(ports.e2_prompt_asked, [])
+
+    def test_other_placements_have_no_prompt_row(self):
+        for mode in (None, "stub"):
+            with self.subTest(mode):
+                result, _ports, _meter, evidence = run(spec=make_spec(e2=mode))
+                self.assertEqual(result["status"], "complete")
+                self.assertEqual(self.row(evidence, "e2_prompt"), [])
+
+    def test_complete_run_order_and_signed_rows(self):
+        result, ports, _meter, evidence = self.go()
+        self.assertEqual((result["status"], result["e2_mode"]), (COMPLETE, "product"))
+        calls = ports.calls
+        # 서비스 대조와 bind는 작업 전, E² 종료는 계측기 봉인 전, 수집은 봉인 뒤다.
+        self.assertLess(calls.index("e2_service_ready"), calls.index("e2_bind"))
+        self.assertLess(calls.index("e2_bind"), calls.index("start_task"))
+        self.assertLess(calls.index("start_task"), calls.index("e2_close"))
+        self.assertLess(calls.index("e2_close"), next(i for i, c in enumerate(calls) if c.startswith("seal")))
+        self.assertLess(next(i for i, c in enumerate(calls) if c.startswith("seal")), calls.index("e2_collect"))
+        self.assertLess(calls.index("e2_collect"), calls.index("down"))
+        close, task_id, generation = ports.e2_collect_args
+        self.assertEqual((close.state, task_id, generation, ports.e2_bound), ("complete", "17", ports.e2_bound, generation))
+        record = evidence.files["run-record.json"]
+        self.assertEqual(generation, record["reset_generation"])
+        placement = self.row(evidence, "e2_placement")[0]
+        self.assertEqual((placement["mode"], placement["decision_rows"], placement["allowed"]), ("product", None, None))
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["close_state"], row["collection_outcome"], row["collection_reason"], row["attempts"], row["rows"], row["checkpoint_sequence"]),
+                         ("complete", "complete", None, 3, 6, 6))
+        self.assertEqual(row["decisions"], {"allowed": 2, "denied": 1, "unsupported": 0})
+        self.assertEqual((row["config_sha256"], row["policy_fingerprint_sha256"], row["manifest_sha256"]), ("1" * 64, "f" * 64, E2_MANIFEST))
+        self.assertEqual(row["image_id"], E2_IMAGE_ID)
+        self.assertEqual(evidence.files["e2-service-ready.json"]["state"], "service_ready")
+        self.assertEqual(evidence.files["e2-collection.json"]["outcome"], "complete")
+        cells = self.row(evidence, "attempt_reconciliation")[0]["cells"]
+        self.assertEqual((cells["allowed_observed"], cells["denied_unobserved"], cells["denied_observed"]), (2, 1, 0))
+        self.assertNotIn("fixture", evidence.files["attempt-reconciliation.json"])
+        self.assertEqual(record["blocked_attempts"], 1)
+
+    def test_baseline_never_has_the_e2(self):
+        self.assertEqual(make_spec(side="baseline", e2="product").e2_mode, "none")
+        self.assertEqual(make_spec(side="ours", e2="product").e2_mode, "product")
+
+    def test_service_not_ready_refuses_before_the_task(self):
+        for error, reason in ((E2ControlError("policy_fingerprint_sha256_mismatch"), "e2_policy_fingerprint_sha256_mismatch"),
+                              (E2ControlError("service_ready_timeout"), "e2_service_ready_timeout"), (RuntimeError("synthetic"), "e2_service_not_ready")):
+            with self.subTest(reason=reason):
+                result, ports, _meter, _evidence = self.go(lambda p, e=error: setattr(p, "e2_ready_error", e))
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
+                self.assertNotIn("start_task", ports.calls)
+                self.assertNotIn("e2_bind", ports.calls)
+
+    def test_bind_failure_refuses_before_the_task(self):
+        result, ports, _meter, _evidence = self.go(lambda p: setattr(p, "e2_bind_error", E2ControlError("refused_bind_conflict")))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_refused_bind_conflict"]))
+        self.assertNotIn("start_task", ports.calls)
+
+    def test_close_failure_is_a_product_failure_and_the_run_moves_on(self):
+        result, ports, _meter, evidence = self.go(lambda p: setattr(p, "e2_close_result", e2_closed("unavailable", "close_timeout", None, None)))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("e2_collect", ports.calls)
+        self.assertTrue([call for call in ports.calls if call.startswith("seal")])
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["close_state"], row["collection_outcome"], row["collection_reason"], row["decisions"], row["attempts"]),
+                         ("unavailable", "product_failure", "close_timeout", None, None))
+        self.assertEqual(self.row(evidence, "attempt_reconciliation"), [])
+        self.assertNotIn("attempt-reconciliation.json", evidence.files)
+        self.assertIsNone(evidence.files["run-record.json"]["blocked_attempts"])
+
+    def test_incomplete_export_is_a_product_failure_with_counts_kept(self):
+        def mutate(ports):
+            ports.e2_close_result = e2_closed("incomplete", "audit_failed", manifest=None)
+            ports.e2_collection = e2_collected("product_failure", "export_incomplete")
+        result, ports, _meter, evidence = self.go(mutate)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertIn("e2_collect", ports.calls)
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["close_state"], row["close_reason"], row["collection_outcome"], row["collection_reason"], row["attempts"]),
+                         ("incomplete", "audit_failed", "product_failure", "export_incomplete", 3))
+        self.assertEqual(self.row(evidence, "attempt_reconciliation"), [])
+
+    def test_collection_problems_on_a_complete_close_are_product_failures(self):
+        result, _ports, _meter, evidence = self.go(lambda p: setattr(p, "e2_collection", e2_collected("product_failure", "audit_integrity_failed", None)))
+        self.assertEqual(result["status"], COMPLETE)
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["collection_outcome"], row["collection_reason"], row["decisions"]), ("product_failure", "audit_integrity_failed", None))
+
+    def test_config_violation_at_collection_invalidates_the_run(self):
+        result, _ports, _meter, _evidence = self.go(lambda p: setattr(p, "e2_collection", E2CollectionInvalid("policy_fingerprint_mismatch")))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_policy_fingerprint_mismatch"]))
+
+    def test_unexpected_collection_error_has_a_fixed_reason(self):
+        result, _ports, _meter, _evidence = self.go(lambda p: setattr(p, "e2_collection", RuntimeError("synthetic-value-41c2")))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["e2_collect_failed"]))
+
+    def test_no_execution_is_not_filled_in_as_blocked_or_complete(self):
+        result, ports, _meter, evidence = self.go(lambda p: setattr(p, "e2_close_result", e2_closed("no_execution", None, None, None)))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("e2_collect", ports.calls)
+        row = self.row(evidence, "e2_product")[0]
+        self.assertEqual((row["close_state"], row["collection_outcome"], row["collection_reason"], row["decisions"]), ("no_execution", "no_execution", None, None))
+        # 실행이 없다는데 계측기에 요청이 있으면 기록 없이 도달한 것으로 센다.
+        cells = self.row(evidence, "attempt_reconciliation")[0]["cells"]
+        self.assertEqual((cells["allowed_observed"], cells["denied_unobserved"]), (0, 0))
+        self.assertEqual(evidence.files["run-record.json"]["blocked_attempts"], 0)
+
+    def test_blocked_attempts_counts_both_denied_cells_and_stays_unknown_without_evidence(self):
+        cells = {"denied_unobserved": 3, "denied_observed": 4}
+        self.assertEqual(runner.blocked_attempts({"cells": cells}), 7)
+        self.assertEqual(runner.blocked_attempts({"cells": {"denied_unobserved": 0, "denied_observed": 0}}), 0)
+        self.assertIsNone(runner.blocked_attempts(None))
+
+    def test_keep_alive_includes_the_close_wait_on_both_sides(self):
+        payload = runner_config()
+        base = runner._llm_keep_alive_seconds(parse_runner_config(payload), 100)
+        payload["e2"] = dict(E2_PRODUCT_BLOCK)
+        self.assertEqual(runner._llm_keep_alive_seconds(parse_runner_config(payload), 100), base + 35)
+
+
+VERDICT_BLOCK = {"page_size": 100, "timeout_seconds": 30, "max_page_bytes": 1 << 20, "max_total_bytes": 8 << 20, "max_pages": 10,
+                 "ready_wait_seconds": 10, "ready_poll_seconds": 4}
+
+
+def collected_export():
+    pages = two_pages()
+    return CollectedExport(VERDICT_CONTEXT.export_ref, pages, merge_verdict_pages(pages, VERDICT_CONTEXT))
+
+
+class TestVerdictExport(unittest.TestCase):
+    """개선 후 판정 export(#278 §7). 못 모으면 records=null이고 회차는 유효하다."""
+
+    def run_with(self, *results, side="ours"):
+        def mutate(ports, _meter, clock):
+            ports.verdict_results, ports.fake_clock = list(results), clock
+        return run(mutate=mutate, spec=make_spec(side=side, verdict=VERDICT_BLOCK))
+
+    def status(self, evidence):
+        return evidence.files["verdict-export.json"]
+
+    def test_off_when_the_config_is_null(self):
+        result, ports, _meter, evidence = run()
+        self.assertEqual(result["status"], "complete")
+        self.assertNotIn("verdict_export", ports.calls)
+        self.assertNotIn("verdict-export.json", evidence.files)
+        self.assertIsNone(evidence.files["run-record.json"]["artifacts"]["records"])
+
+    def test_baseline_never_collects(self):
+        self.assertIsNone(make_spec(side="baseline", verdict=VERDICT_BLOCK).verdict_wait_seconds)
+        self.assertEqual(make_spec(side="ours", verdict=VERDICT_BLOCK).verdict_wait_seconds, 10)
+        self.assertIsNone(make_spec(side="ours").verdict_wait_seconds)
+
+    def test_collected_export_becomes_the_records_artifact(self):
+        export = collected_export()
+        result, ports, _meter, evidence = self.run_with(export)
+        self.assertEqual(result["status"], "complete")
+        # 엔진 API가 살아 있을 때 모은다. down보다 앞이고 findings 수집 뒤다.
+        self.assertLess(ports.calls.index("intercept_summary"), ports.calls.index("verdict_export"))
+        self.assertLess(ports.calls.index("verdict_export"), ports.calls.index("down"))
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        record = evidence.files["run-record.json"]
+        self.assertEqual(record["artifacts"]["records"]["path"], "verdict-records.json")
+        self.assertEqual(record["artifacts"]["records"]["sha256"], "h-verdict-records.json")
+        self.assertEqual(record["artifacts"]["records"]["phase"], "engine")
+        self.assertEqual(evidence.files["verdict-records.json"], export.export.envelope)
+        self.assertEqual(evidence.files["verdict-pages.json"], {"pages": list(export.pages)})
+        self.assertEqual(self.status(evidence), {"format": "abc2lab-eval-verdict-collection-v1", "status": "collected", "reason": None,
+                                                 "export": export.export.summary(), "pages_sha256": "h-verdict-pages.json"})
+        task_id, context = ports.verdict_args[0]
+        self.assertEqual(task_id, "17")
+        self.assertEqual((context.run_id, context.model_tag, context.reset_generation),
+                         (record["run_id"], record["model_tag"], record["reset_generation"]))
+        # 리셋 세대는 대상 컨테이너다. 엔진 컨테이너로 바뀌면 재시작이 세대 변경으로 안 잡힌다.
+        self.assertEqual(context.reset_generation, record["instance_id"])
+        self.assertNotEqual(context.reset_generation, record["execution_id"])
+
+    def test_not_ready_is_retried_until_collected(self):
+        not_ready = VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")
+        result, ports, _meter, evidence = self.run_with(not_ready, collected_export())
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(ports.calls.count("verdict_export"), 2)
+        self.assertEqual(self.status(evidence)["status"], "collected")
+
+    def test_not_ready_past_the_deadline_is_not_collected_and_the_run_stays_valid(self):
+        not_ready = VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")
+        result, ports, _meter, evidence = self.run_with(*[not_ready] * 20)
+        self.assertEqual(result["status"], "complete")
+        # 시한 10초·간격 4초: 0·4·8초에 묻고, 남은 2초만 기다린 뒤 시한에는 새 요청을 안 보낸다.
+        self.assertEqual(ports.calls.count("verdict_export"), 3)
+        self.assertEqual(ports.verdict_times, [ports.verdict_times[0] + offset for offset in (0, 4, 8)])
+        self.assertEqual(ports.fake_clock.sleeps[-3:], [4, 4, 2])
+        self.assertEqual(self.status(evidence), {"format": "abc2lab-eval-verdict-collection-v1", "status": "not_collected",
+                                                 "reason": "verdict_collect: EXPORT_NOT_READY", "export": None, "pages_sha256": None})
+        self.assertIsNone(evidence.files["run-record.json"]["artifacts"]["records"])
+        self.assertNotIn("verdict-records.json", evidence.files)
+
+    def test_a_slow_answer_past_the_deadline_is_not_asked_again(self):
+        def mutate(ports, _meter, clock):
+            ports.verdict_results = [VerdictExportNotReady("verdict_collect: EXPORT_NOT_READY")] * 5
+            ports.verdict_call_seconds, ports.fake_clock = 11, clock
+        result, ports, _meter, evidence = run(mutate=mutate, spec=make_spec(verdict=VERDICT_BLOCK))
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        self.assertEqual((result["status"], evidence.files["verdict-export.json"]["status"]), (COMPLETE, "not_collected"))
+        # 시한이 지났으면 음수로 자지 않는다(실제 time.sleep은 음수에 ValueError).
+        self.assertEqual(ports.fake_clock.sleeps[-1], 0)
+
+    def test_integrity_failure_is_signed_as_a_stop_and_keeps_the_run(self):
+        result, ports, _meter, evidence = self.run_with(VerdictIntegrityError("verdict_collect: PAGE_INTEGRITY_FAILED"))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        self.assertEqual(self.status(evidence)["status"], "integrity_failed")
+        self.assertEqual(self.status(evidence)["reason"], "verdict_collect: PAGE_INTEGRITY_FAILED")
+        self.assertIsNone(evidence.files["run-record.json"]["artifacts"]["records"])
+        rows = [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "verdict_collection"]
+        self.assertEqual([(row["status"], row["reason"]) for row in rows], [("integrity_failed", "verdict_collect: PAGE_INTEGRITY_FAILED")])
+
+    def test_collection_state_is_signed_for_the_scorer(self):
+        for results, status, reason in (((collected_export(),), "collected", None),
+                                        ((VerdictCollectError("verdict_collect: FREEZE_EXPORT_NOT_FOUND"),), "not_collected",
+                                         "verdict_collect: FREEZE_EXPORT_NOT_FOUND")):
+            with self.subTest(status=status):
+                _result, _ports, _meter, evidence = self.run_with(*results)
+                rows = [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "verdict_collection"]
+                self.assertEqual([(row["status"], row["reason"]) for row in rows], [(status, reason)])
+        _result, _ports, _meter, evidence = run()
+        self.assertEqual([row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "verdict_collection"], [])
+
+    def test_other_failures_are_not_retried(self):
+        result, ports, _meter, evidence = self.run_with(VerdictCollectError("verdict_collect: FREEZE_EXPORT_NOT_FOUND"))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(ports.calls.count("verdict_export"), 1)
+        self.assertEqual(self.status(evidence)["reason"], "verdict_collect: FREEZE_EXPORT_NOT_FOUND")
+
+    def test_engine_api_failure_keeps_only_a_fixed_reason(self):
+        result, _ports, _meter, evidence = self.run_with(EngineAPIError("synthetic-value-41c2"))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(self.status(evidence)["reason"], "verdict_collect: ENGINE_API_FAILED")
+        self.assertNotIn("synthetic-value-41c2", json.dumps(evidence.files))
+
+    def test_failed_write_of_the_status_invalidates_the_run(self):
+        class Failing(FakeEvidence):
+            def write_json(self, name, payload):
+                if name == "verdict-export.json":
+                    raise OSError("synthetic")
+                return super().write_json(name, payload)
+        spec = make_spec(verdict=VERDICT_BLOCK)
+        ports = FakePorts(spec)
+        ports.verdict_results = [VerdictCollectError("verdict_collect: X")]
+        result = execute_run(spec, ports, FakeMeter(ports), FakeGateway(ports), Failing(), FakeClock().clock())
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["evidence_write_failed"]))
+
+    def test_limits_come_from_the_config_block(self):
+        self.assertEqual(verdict_limits(VERDICT_BLOCK), CollectLimits(page_size=100, timeout_seconds=30, max_page_bytes=1 << 20,
+                                                                     max_total_bytes=8 << 20, max_pages=10))
 
 
 STATE = {"sqlite_path": "/app/data/target.sqlite", "signal_tables": ["Challenges"], "max_copy_bytes": 1 << 20,
@@ -551,6 +1037,7 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual((task["format"], task["request_sha256"], task["task_id"]),
                          ("abc2lab-eval-runner-task-v1", "t" * 64, "17"))
         self.assertEqual(result["task_request_sha256"], "t" * 64)
+        self.assertEqual(result["observer_format"], "challenge_scoreboard")
         # 엔진 LLM 정책 모드는 선언값만 남는다(엔진이 드러내지 않음 → 관측 null).
         self.assertEqual(result["engine_llm_policy"], {"declared": "external", "observed": None})
         # baseline(e53a79f)에는 스위치가 없어 같은 compose 값이 넘어가도 선언하지 않는다(#133 리뷰).
@@ -732,6 +1219,7 @@ class TestFailures(unittest.TestCase):
             ("probe:post", "post_probe_invalid"), ("scoreboard:post", "post_scoreboard_failed"),
             ("tmpfs:pre", "pre_tmpfs_measure_failed"), ("tmpfs:post", "tmpfs_measure_failed"),
             ("findings", "findings_failed"), ("intercept_summary", "intercept_summary_failed"),
+            ("apply_engine_settings", "engine_settings_apply_failed"),
             ("engine_settings", "engine_settings_failed"),
         ]
         for name, reason in cases:
@@ -854,7 +1342,7 @@ class TestFailures(unittest.TestCase):
         result, ports, _, evidence = run(spec=spec)
         self.assertEqual(result["status"], COMPLETE)
         rules_at = ports.calls.index("apply_engine_rules")
-        self.assertEqual(ports.calls[rules_at - 1:rules_at + 2], ["scoreboard:pre", "apply_engine_rules", "engine_settings"])
+        self.assertEqual(ports.calls[rules_at - 1:rules_at + 2], ["apply_engine_settings", "apply_engine_rules", "engine_settings"])
         self.assertEqual(evidence.files["engine-rules.json"]["file_sha256"], "a" * 64)
         self.assertEqual(result["engine_rules"], evidence.files["engine-rules.json"])
         self.assertEqual(result["run_conditions"]["engine_rules_sha256"], "a" * 64)
@@ -875,12 +1363,17 @@ class TestFailures(unittest.TestCase):
         conditions = result["run_conditions"]
         settings = evidence.files["engine-settings.json"]
         self.assertEqual(settings, ports.settings)
-        self.assertEqual(conditions["engine_settings_sha256"], runner.canonical_sha256(settings))
+        comparable = copy.deepcopy(settings)
+        del comparable["settings"]["output_language"]
+        self.assertEqual(conditions["engine_settings_sha256"], runner.canonical_sha256(comparable))
+        self.assertEqual(conditions["output_language"], "ko")
+        self.assertEqual(settings["settings"]["output_language"], "ko")  # 근거 파일에는 그대로 남는다
         self.assertEqual(conditions["workers"], ports.spec.worker_count)
         self.assertIs(conditions["llm_stream"], ports.spec.llm_stream)
         # 선언값이 아니라 게이트웨이가 마커에 남긴 적용값이 기록된다.
         self.assertEqual(conditions["sampling"], evidence.files["llm-summary.json"]["sampling_applied"])
         self.assertEqual(conditions["machine_id_sha256"], ports.host["machine_id_sha256"])
+        self.assertEqual(conditions["tool_tree_sha256"], "7" * 64)
         self.assertNotIn("machine_id_sha256", conditions["host"])
         row = next(r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "run_conditions")
         self.assertEqual({key: row[key] for key in conditions}, conditions)
@@ -904,12 +1397,58 @@ class TestFailures(unittest.TestCase):
                    "web search proxy": lambda s: s["settings"].update(web_search_proxy_set=True),
                    "llm proxy": lambda s: s["llm"].update(proxy_set=True),
                    "model": lambda s: s["llm"].update(model="other/model"),
+                   "context window": lambda s: s["llm"].update(context_window_k=s["llm"]["context_window_k"] + 1),
+                   "context window unset": lambda s: s["llm"].update(context_window_k=0),
+                   "context window type": lambda s: s["llm"].update(context_window_k=str(s["llm"]["context_window_k"])),
+                   "reasoning effort": lambda s: s["llm"].update(reasoning_effort="high"),
+                   "thinking type": lambda s: s["llm"].update(thinking_type="disabled"),
+                   "reasoning missing": lambda s: s["llm"].pop("reasoning_effort"),
+                   "thinking missing": lambda s: s["llm"].pop("thinking_type"),
                    "missing part": lambda s: s.pop("llm")}
         for label, change in changes.items():
             with self.subTest(label=label):
                 result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.settings))
                 self.assert_invalid(result, ports, evidence, "engine_settings_mismatch")
                 self.assertNotIn("start_task", ports.calls)
+
+    def test_output_language_stays_out_of_the_settings_hash_and_nothing_else_does(self):
+        def conditions(change):
+            result, *_ = run(lambda p, m, c, f=change: f(p.settings))
+            self.assertEqual(result["status"], COMPLETE)
+            return result["run_conditions"]
+        korean = conditions(lambda s: None)
+        english = conditions(lambda s: s["settings"].update(output_language="en"))
+        self.assertEqual(english["output_language"], "en")
+        self.assertEqual(english["engine_settings_sha256"], korean["engine_settings_sha256"])
+        other = conditions(lambda s: s["settings"].update(llm_record=True))
+        self.assertNotEqual(other["engine_settings_sha256"], korean["engine_settings_sha256"])
+
+    def test_missing_or_malformed_output_language_invalidates_before_the_task(self):
+        changes = {"없음": lambda s: s["settings"].pop("output_language"),
+                   "문자열 아님": lambda s: s["settings"].update(output_language=1),
+                   "대문자": lambda s: s["settings"].update(output_language="KO"),
+                   "빈 문자열": lambda s: s["settings"].update(output_language=""),
+                   "지역 표기": lambda s: s["settings"].update(output_language="ko-KR")}
+        for label, change in changes.items():
+            with self.subTest(label=label):
+                result, ports, _, evidence = run(lambda p, m, c, f=change: f(p.settings))
+                self.assert_invalid(result, ports, evidence, "engine_settings_failed")
+                self.assertNotIn("start_task", ports.calls)
+
+    def test_settings_go_in_before_the_snapshot_that_checks_them(self):
+        result, ports, *_ = run()
+        self.assertEqual(result["status"], COMPLETE)
+        applied = ports.calls.index("apply_engine_settings")
+        self.assertLess(ports.calls.index("scoreboard:pre"), applied)
+        self.assertLess(applied, ports.calls.index("engine_settings"))
+        self.assertLess(ports.calls.index("engine_settings"), ports.calls.index("start_task"))
+
+    def test_settings_failure_invalidates_before_the_task(self):
+        def fail(ports, meter, clock):
+            ports.apply_engine_settings = lambda: (_ for _ in ()).throw(EngineAPIError("engine_settings_apply_http_500"))
+        result, ports, _, evidence = run(mutate=fail)
+        self.assert_invalid(result, ports, evidence, "engine_settings_apply_failed")
+        self.assertNotIn("start_task", ports.calls)
 
     def test_host_spec_must_be_complete(self):
         for label, change in {"missing": lambda h: h.pop("kernel"), "empty model": lambda h: h.update(cpu_model=""),
@@ -1052,6 +1591,16 @@ class TestFailures(unittest.TestCase):
             p.image_ids = lambda: dict(p.spec.image_ids, target="sha256:" + "f" * 64)
         result, ports, _, evidence = run(other_image)
         self.assert_invalid(result, ports, evidence, "image_id_mismatch", down=False)
+
+    def test_tool_tree_failure_stops_before_compose_up(self):
+        def broken(p, m, c):
+            def fail():
+                p._call("tool_tree")
+                raise ValueError("/path/that/must/not/leak")
+            p.tool_tree = fail
+        result, ports, _, evidence = run(broken)
+        self.assert_invalid(result, ports, evidence, "tool_tree_failed", down=False)
+        self.assertNotIn("up", ports.calls)
 
     def test_running_container_image_must_match(self):
         def swap(networks, containers):
@@ -1254,6 +1803,111 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
             self.assertEqual(self.services_referencing(name), set())
         self.assertEqual(self.services_referencing("EVAL_LLM_EVIDENCE_DIR"), {"eval-llm-gw"})
 
+    def test_spec_expects_the_declared_sampling_for_each_backend(self):
+        api_declared = configuration()
+        config = parse_runner_config(runner_config())
+        spec = build_spec(config, plan_run(config, api_declared, "ours", "ours-1"), api_declared, "t" * 64, "c", 0)
+        self.assertEqual(spec.llm_sampling, {"temperature": api_declared["ours"]["temperature"],
+                                             **api_declared["ours"]["sampling"], "seed": api_declared["ours"]["seed"]})
+        local_declared = configuration()
+        for side in ("baseline", "ours"):
+            local_declared[side]["llm"] = local_llm()
+            local_declared[side]["sampling"] = dict(LOCAL_SAMPLING)
+        spec = build_spec(config, plan_run(config, local_declared, "ours", "ours-1"), local_declared, "t" * 64, "c", 0)
+        self.assertEqual(spec.llm_sampling, {"temperature": local_declared["ours"]["temperature"],
+                                             **LOCAL_SAMPLING, "seed": local_declared["ours"]["seed"]})
+
+    def test_spec_expects_the_declared_serving_only_for_local(self):
+        config = parse_runner_config(runner_config())
+        api = configuration()
+        self.assertIsNone(build_spec(config, plan_run(config, api, "ours", "ours-1"), api, "t" * 64, "c", 0).llm_serving)
+        local = configuration()
+        for side in ("baseline", "ours"):
+            local[side]["llm"] = local_llm()
+            local[side]["sampling"] = dict(LOCAL_SAMPLING)
+        spec = build_spec(config, plan_run(config, local, "ours", "ours-1"), local, "t" * 64, "c", 0)
+        self.assertEqual(spec.llm_serving, {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768,
+                                            "placement": "any"})
+        # 시간 예산보다 짧으면 요청 공백 동안 모델이 내려갈 수 있다. 예산이 늘면 같이 늘어야 한다.
+        declared = local["ours"]["time_budget_seconds"]
+        self.assertGreater(spec.llm_keep_alive_seconds, declared)
+        longer = copy.deepcopy(local)
+        for side in ("baseline", "ours"):
+            longer[side]["time_budget_seconds"] = declared + 100
+        self.assertEqual(build_spec(config, plan_run(config, longer, "ours", "ours-1"), longer, "t" * 64, "c", 0)
+                         .llm_keep_alive_seconds, spec.llm_keep_alive_seconds + 100)
+
+    def test_keep_alive_covers_each_step_between_the_load_and_the_last_read(self):
+        # 적재는 compose 기동보다 앞선다. 준비 단계가 길어도 첫 LLM 요청 전에 모델이 내려가면 안 된다.
+        base = parse_runner_config(runner_config())
+        before = runner._llm_keep_alive_seconds(base, 60)
+        for name in ("compose_wait_seconds", "ready_timeout_seconds", "task_create_timeout_seconds",
+                     "drain_timeout_seconds", "post_settle_seconds", "snapshot_timeout_seconds",
+                     "llm_verify_timeout_seconds"):
+            with self.subTest(name):
+                changed = copy.deepcopy(base)
+                changed.run[name] += 7
+                self.assertEqual(runner._llm_keep_alive_seconds(changed, 60), before + 7)
+        # 동찬 지적의 예: 예시 설정에서 준비 단계 상한만 510초인 경우에도 시간 예산을 더한 만큼 남아야 한다.
+        slow = copy.deepcopy(base)
+        slow.run.update(compose_wait_seconds=300, ready_timeout_seconds=180, task_create_timeout_seconds=30)
+        self.assertGreater(runner._llm_keep_alive_seconds(slow, 60), 510 + 60)
+
+    def test_gpu_placement_adds_the_gpu_side_reading_to_every_read(self):
+        config = parse_runner_config(runner_config())
+        local = configuration()
+        for side in ("baseline", "ours"):
+            local[side]["llm"] = local_llm() | {"placement": "gpu"}
+            local[side]["sampling"] = dict(LOCAL_SAMPLING)
+        ports = DockerPorts(config, plan_run(config, local, "ours", "ours-1"), None, docker=None, findings=dict,
+                            start=lambda: "1", settings=dict)
+        with patch.object(runner, "read_serving", return_value={"x": 1}), \
+                patch.object(runner, "read_gpu_used_bytes", return_value=7) as gpu:
+            for phase in ("pre", "task_start", "post"):
+                self.assertEqual(ports.local_serving(phase, 900), {"x": 1, "gpu_used_bytes": 7})
+        self.assertEqual(gpu.call_count, 3)
+
+    def test_local_serving_reads_the_fixed_ip_and_loads_only_before_the_run(self):
+        config = parse_runner_config(runner_config())
+        local = configuration()
+        for side in ("baseline", "ours"):
+            local[side]["llm"] = local_llm()
+            local[side]["sampling"] = dict(LOCAL_SAMPLING)
+        ports = DockerPorts(config, plan_run(config, local, "ours", "ours-1"), None, docker=None, findings=dict,
+                            start=lambda: "1", settings=dict)
+        with patch.object(runner, "read_serving", return_value={"x": 1}) as read:
+            # 개발용 회차(placement any)는 GPU 도구를 부르지 않는다.
+            with patch.object(runner, "read_gpu_used_bytes") as gpu:
+                self.assertEqual(ports.local_serving("pre", 900), {"x": 1, "gpu_used_bytes": None})
+            gpu.assert_not_called()
+            ports.local_serving("task_start", 900)
+            ports.local_serving("post", 900)
+        timeout = config.run["llm_load_timeout_seconds"]
+        target = ("172.17.0.1", 11434, "example-model:fixed-tag", timeout)
+        self.assertEqual(read.call_args_list[0].args, target)
+        self.assertEqual([call.kwargs["keep_alive_seconds"] for call in read.call_args_list], [900, 900, None])
+        with patch.object(runner, "unload_model") as unload:
+            ports.local_unload()
+        unload.assert_called_once_with(*target)
+
+    def test_scoreboard_passes_the_configured_observer_format(self):
+        for observer_format, opaque in (("challenge_scoreboard", False), ("opaque", True)):
+            with self.subTest(observer_format), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "runs"
+                root.mkdir(mode=0o700)
+                os.chmod(root, 0o700)
+                config = parse_runner_config(runner_config() | {"runs_root": str(root), "observer_format": observer_format})
+                plan = plan_run(config, configuration(), "ours", "ours-1")
+                directory = create_run_directory(root, "ours-1")
+                ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1", settings=dict)
+                snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
+                with patch.object(runner, "collect_snapshot") as collect, \
+                        patch.object(runner, "read_private_json", return_value={"solved": {}}):
+                    ports.scoreboard("pre", snapshot)
+                self.assertIs(collect.call_args.kwargs["opaque"], opaque)
+                spec = build_spec(config, plan, configuration(), "t" * 64, "c", 0)
+                self.assertEqual(spec.observer_format, observer_format)
+
     def test_meter_mount_is_a_subdirectory_apart_from_scoreboards(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp, "runs")
@@ -1301,6 +1955,24 @@ class TestDockerPortsStateCopy(unittest.TestCase):
             self.assertEqual(oct(os.stat(directory.state / "pre").st_mode & 0o777), "0o700")
             with self.assertRaises(FileExistsError):  # 같은 단계 디렉터리를 다시 쓰지 않는다
                 ports.state_copy("pre", snapshot)
+
+
+class TestDockerPortsToolTree(unittest.TestCase):
+    def test_hashes_the_engine_image_of_this_side(self):
+        tree = {"dpkg": {"curl": "7.88.1"}}
+        for side in ("baseline", "ours"):
+            with self.subTest(side), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp, "runs")
+                root.mkdir(mode=0o700)
+                os.chmod(root, 0o700)
+                config = parse_runner_config(runner_config() | {"runs_root": str(root)})
+                plan = plan_run(config, configuration(), side, f"{side}-1")
+                docker = SimpleNamespace(run_bounded=object())
+                ports = DockerPorts(config, plan, create_run_directory(root, f"{side}-1"), docker=docker,
+                                    findings=dict, start=lambda: "1", settings=dict)
+                with patch.object(runner, "collect_tree", return_value=tree) as collect:
+                    self.assertEqual(ports.tool_tree(), tree_sha256(tree))
+                self.assertEqual(collect.call_args[0], (config.images[f"engine_{side}"].id, docker.run_bounded))
 
 
 class TestDockerPortsStateMemory(unittest.TestCase):
@@ -1446,6 +2118,40 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                 self.assertEqual(err.getvalue().strip(), code)
                 self.assertEqual(list(root.iterdir()), [])
 
+    def _e2_preparation_failure(self, tmp):
+        def product_with_missing_policy(payload):
+            tool = Path(tmp, "fake-ca-tool")
+            tool.write_text('#!/bin/sh\numask 077\nprintf cert > "$3"\nprintf key > "$5"\n')
+            tool.chmod(0o700)
+            payload["e2"] = dict(E2_PRODUCT_BLOCK, policy_path=str(Path(tmp, "missing-policy.json")), policy_tool=str(tool))
+        return self.inputs(tmp, product_with_missing_policy)
+
+    def test_e2_preparation_failure_leaves_no_run_directory(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            root, argv = self._e2_preparation_failure(tmp)
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass", return_value="not-a-real-password"), contextlib.redirect_stderr(err):
+                self.assertEqual(runner.main(argv), 2)
+            self.assertIn("policy_unavailable", err.getvalue())
+            self.assertEqual(list(root.iterdir()), [])  # 시도로 세지 않는다(exit 2)
+
+    def test_a_directory_that_cannot_be_removed_is_named_for_the_operator(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            root, argv = self._e2_preparation_failure(tmp)
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass", return_value="not-a-real-password"), \
+                    patch.object(runner.shutil, "rmtree", side_effect=OSError("/secret/path")), \
+                    contextlib.redirect_stderr(err):
+                self.assertEqual(runner.main(argv), 2)
+            left = [path.name for path in root.iterdir()]
+            self.assertEqual(len(left), 1)
+            self.assertIn(f"REMOVE_FAILED {left[0]}", err.getvalue())
+            self.assertNotIn("/secret/path", err.getvalue())
+
     def test_bad_inputs_stop_before_asking_or_creating_a_run(self):
         import contextlib
         import io
@@ -1477,6 +2183,155 @@ class TestCommandLine(unittest.TestCase):
                                   text=True, timeout=60, check=False)
         self.assertEqual(done.returncode, 0, done.stderr[-500:])
         self.assertIn("--side", done.stdout)
+
+
+SERVING = {"server_version": "0.32.6", "model_digest": "a" * 64, "context_length": 32768, "placement": "any"}
+KEEP_ALIVE = 900
+
+
+def serving_spec():
+    return dataclasses.replace(make_spec(), llm_serving=dict(SERVING), llm_keep_alive_seconds=KEEP_ALIVE)
+
+
+def serving_run(**serving):
+    return run(mutate=lambda ports, meter, clock: ports.serving.update(serving), spec=serving_spec())
+
+
+class TestLocalServing(unittest.TestCase):
+    def test_api_never_reads_the_local_server(self):
+        result, ports, *_ = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertFalse([call for call in ports.calls if call.startswith("local_")])
+        self.assertIsNone(result["llm_serving"])
+        self.assertIsNone(result["llm_unloaded"])
+
+    def test_reads_before_compose_up_and_after_the_llm_marker(self):
+        result, ports, _, evidence = serving_run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertLess(ports.calls.index("local_serving:pre"), ports.calls.index("up"))
+        self.assertGreater(ports.calls.index("local_serving:post"), ports.calls.index("seal_gateway"))
+        self.assertEqual(set(result["llm_serving"]), {"pre", "task_start", "post"})
+        self.assertEqual(evidence.files["llm-serving.json"]["post"]["model_digest"], "a" * 64)
+
+    def test_mismatch_before_the_run_stops_before_compose_up(self):
+        for change in ({"context_length": 4096}, {"model_digest": "b" * 64}, {"server_version": "0.33.0"}):
+            with self.subTest(change=change):
+                result, ports, _, evidence = serving_run(pre=change)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_mismatch"]))
+                self.assertNotIn("up", ports.calls)
+                self.assertIn("llm-serving.json", evidence.files)
+
+    def test_change_after_the_run_invalidates_it(self):
+        result, *_ = serving_run(post={"context_length": 4096})
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_mismatch"]))
+
+    def test_unloaded_model_after_the_run_is_unverified(self):
+        result, *_ = serving_run(post={"model_digest": None, "context_length": None})
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_unverified"]))
+
+    def test_read_failure_is_its_own_reason(self):
+        def fail(ports, meter, clock):
+            ports.local_serving = lambda phase, keep_alive: (_ for _ in ()).throw(ValueError("x"))
+        result, *_ = run(mutate=fail, spec=serving_spec())
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_read_failed"]))
+
+    def test_short_keep_alive_before_the_run_stops_before_compose_up(self):
+        result, ports, *_ = serving_run(pre={"keep_alive_remaining_seconds": KEEP_ALIVE - runner.KEEP_ALIVE_SLACK_SECONDS - 1})
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_keep_alive_short"]))
+        self.assertNotIn("up", ports.calls)
+
+    def test_keep_alive_is_renewed_right_before_the_task(self):
+        result, ports, *_ = serving_run()
+        self.assertEqual(result["status"], COMPLETE)
+        task_start = ports.calls.index("local_serving:task_start")
+        self.assertEqual(ports.calls[task_start + 1], "start_task")
+        self.assertLess(ports.calls.index("scoreboard:pre"), task_start)
+
+    def test_slow_pre_snapshot_cannot_expire_the_model_before_the_task(self):
+        # 동찬 지적의 경로: pre 스냅샷이 유지 기간보다 늦게 끝나도 첫 요청이 적재 시간을 치르면 안 된다.
+        # 서버의 만료 시각을 가짜 시계로 흉내 내서, 작업을 만드는 순간 모델이 살아 있는지 본다.
+        late = KEEP_ALIVE + 300
+        alive_at_start = []
+
+        def mutate(ports, meter, clock):
+            expires = {}
+            serve, board, start = ports.local_serving, ports.scoreboard, ports.start_task
+
+            def local_serving(phase, keep_alive):
+                if phase != "post":
+                    expires["at"] = clock.t + keep_alive
+                return serve(phase, keep_alive)
+
+            def scoreboard(phase, snapshot):
+                if phase == "pre":
+                    clock.t += late
+                return board(phase, snapshot)
+
+            def start_task():
+                alive_at_start.append(clock.t < expires["at"])
+                return start()
+
+            ports.local_serving, ports.scoreboard, ports.start_task = local_serving, scoreboard, start_task
+        result, *_ = run(mutate=mutate, spec=serving_spec())
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(alive_at_start, [True])
+
+    def test_failed_renewal_stops_before_the_task(self):
+        short = {"keep_alive_remaining_seconds": KEEP_ALIVE - runner.KEEP_ALIVE_SLACK_SECONDS - 1}
+        for label, change, reason in (("short", short, "llm_serving_keep_alive_short"),
+                                      ("digest", {"model_digest": "b" * 64}, "llm_serving_mismatch"),
+                                      ("unloaded", {"model_digest": None}, "llm_serving_unverified")):
+            with self.subTest(label):
+                result, ports, _, evidence = serving_run(task_start=change)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
+                self.assertNotIn("start_task", ports.calls)
+                self.assertIn("llm-serving.json", evidence.files)
+
+    def test_gpu_placement_needs_gpu_side_evidence_at_every_read(self):
+        spec = dataclasses.replace(serving_spec(), llm_serving=dict(SERVING, placement="gpu"))
+        for phase in ("pre", "task_start", "post"):
+            with self.subTest(phase=phase):
+                def no_reading(ports, meter, clock, phase=phase):
+                    ports.serving.update({phase: {"gpu_used_bytes": None}})
+                result, *_ = run(mutate=no_reading, spec=spec)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_unverified"]))
+
+    def test_gpu_placement_is_judged_at_every_read(self):
+        spec = dataclasses.replace(serving_spec(), llm_serving=dict(SERVING, placement="gpu"))
+        def on_cpu(phase):
+            return lambda ports, meter, clock: ports.serving.update({phase: {"size": 100, "size_vram": 40}})
+        result, ports, *_ = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)  # 가짜 서버는 전부 GPU에 올라가 있다
+        for phase, stopped_before in (("pre", "up"), ("task_start", "start_task"), ("post", None)):
+            with self.subTest(phase=phase):
+                result, ports, *_ = run(mutate=on_cpu(phase), spec=spec)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_serving_not_on_gpu"]))
+                if stopped_before is not None:
+                    self.assertNotIn(stopped_before, ports.calls)
+
+    def test_keep_alive_is_not_judged_after_the_run(self):
+        result, *_ = serving_run(post={"keep_alive_remaining_seconds": 1})
+        self.assertEqual(result["status"], COMPLETE)
+
+    def test_requested_keep_alive_reaches_the_port(self):
+        _, ports, *_ = serving_run()
+        self.assertEqual(ports.keep_alive_seen, KEEP_ALIVE)
+
+    def test_model_is_unloaded_after_down_on_completion_and_on_failure(self):
+        for label, serving in (("complete", {}), ("failed", {"pre": {"context_length": 4096}})):
+            with self.subTest(label):
+                result, ports, *_ = serving_run(**serving)
+                self.assertTrue(result["llm_unloaded"])
+                self.assertEqual(ports.calls.count("local_unload"), 1)
+                if "down" in ports.calls:
+                    self.assertGreater(ports.calls.index("local_unload"), ports.calls.index("down"))
+
+    def test_unload_failure_is_recorded_but_keeps_the_run(self):
+        def fail(ports, meter, clock):
+            ports.local_unload = lambda: (_ for _ in ()).throw(ValueError("x"))
+        result, *_ = run(mutate=fail, spec=serving_spec())
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertIs(result["llm_unloaded"], False)
 
 
 class TestSignatureKey(unittest.TestCase):

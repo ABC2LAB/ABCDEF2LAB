@@ -153,11 +153,11 @@ def _reject_token_fields(raw: bytes) -> None:
             pending.extend(value)
 
 
-def _read_response(response: http.client.HTTPResponse, maximum: int) -> bytes:
+def _read_response(response: http.client.HTTPResponse, maximum: int, json_only: bool = True) -> bytes:
     if response.status != 200:
         raise SnapshotCollectionError(f"스냅샷 HTTP 상태 부정: {response.status}")
     content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
-    if content_type != "application/json":
+    if json_only and content_type != "application/json":
         raise SnapshotCollectionError("JSON 응답 Content-Type 필요")
     if response.getheader("Content-Encoding", "identity").strip().lower() != "identity":
         raise SnapshotCollectionError("압축 응답은 지원하지 않음")
@@ -189,7 +189,7 @@ def _read_response(response: http.client.HTTPResponse, maximum: int) -> bytes:
 
 
 def collect_snapshot(config: SnapshotEndpoint, run_directory: str | Path, phase: str,
-                     context: SnapshotContext) -> CollectedSnapshot:
+                     context: SnapshotContext, *, opaque: bool = False) -> CollectedSnapshot:
     """독립 계측 GET 1회→원본/정규화 저장. 호출자가 등록한 읽기 전용 계측 path가 필요하다.
 
     timeout_seconds는 연결/읽기의 socket 비활성 제한이다. 스캔 전체 시간 예산이 아니다.
@@ -203,12 +203,12 @@ def collect_snapshot(config: SnapshotEndpoint, run_directory: str | Path, phase:
         with closing(http.client.HTTPConnection(host, port, timeout=config.timeout_seconds)) as connection:
             connection.request("GET", config.path, headers={
                 "Host": host_header,
-                "Accept": "application/json",
+                "Accept": "*/*" if opaque else "application/json",
                 "Accept-Encoding": "identity",
                 "Connection": "close",
             })
             with closing(connection.getresponse()) as response:
-                raw = _read_response(response, config.max_bytes)
+                raw = _read_response(response, config.max_bytes, json_only=not opaque)
     except SnapshotCollectionError:
         raise
     except (OSError, http.client.HTTPException, ValueError, OverflowError):
@@ -216,9 +216,10 @@ def collect_snapshot(config: SnapshotEndpoint, run_directory: str | Path, phase:
     received = datetime.now(timezone.utc)
     if received < requested:
         raise SnapshotCollectionError("수집 시계 역행")
-    _reject_token_fields(raw)
+    if not opaque:
+        _reject_token_fields(raw)  # opaque는 원문을 저장하지 않으므로 검사할 필드도 남지 않는다
     try:
-        artifacts = write_snapshot(run_directory, phase, raw, context, max_bytes=config.max_bytes)
+        artifacts = write_snapshot(run_directory, phase, raw, context, max_bytes=config.max_bytes, opaque=opaque)
     except SnapshotWriteError:
         raise SnapshotCollectionError("스냅샷 원본 검증/저장 실패") from None
     return CollectedSnapshot(artifacts, requested.isoformat(), received.isoformat())

@@ -182,6 +182,7 @@ func (e *Engine) registerControlledReadMode(ctx context.Context, task *Task, int
 			r.mu.Unlock()
 		}
 	}()
+	ctx = firstDiagnosisRegistrationContext(ctx, task.ID)
 	if r.mode.host.CheckRoot(ctx) != nil || r.mode.host.CheckTaskQuiescent(ctx, taskID) != nil {
 		return errControlledReadUnavailable
 	}
@@ -189,10 +190,18 @@ func (e *Engine) registerControlledReadMode(ctx context.Context, task *Task, int
 	if _, err := e.m.pg.RegisterTaskMode(ctx, taskID, taskmode.ModeControlled, nil); err != nil {
 		return errControlledReadUnavailable
 	}
+	var mapRegistration string
+	if r.mapStore != nil {
+		mapRegistration, err = r.mapStore.invalidate(ctx, task.ID)
+		if err != nil {
+			return errControlledReadUnavailable
+		}
+	}
 	loaded, err = r.store.load(task.ID, intentID, snapshotRef)
 	if err != nil || validateControlledReadSpec(loaded) != nil {
 		return errControlledReadUnavailable
 	}
+	loaded.mapRegistration = mapRegistration
 	markers, err := r.taskModeMarkers(taskID)
 	if err != nil {
 		return errControlledReadUnavailable
@@ -226,6 +235,9 @@ AND n.id=$2 AND n.kind='intent' AND n.state=$3 RETURNING n.id`, taskID, intentID
 	lifecycle = task.lifecycleSnapshot()
 	if r.closed || ctx.Err() != nil || r.tokens[key] != token || !e.IsPaused(task.ID) || !lifecycle.Paused ||
 		isTerminalStatus(lifecycle.Status) || e.IsDeleting(task.ID) || e.inflightCount(task.ID) != 1 {
+		return errControlledReadUnavailable
+	}
+	if r.mapStore != nil && r.mapStore.register(ctx, loaded) != nil {
 		return errControlledReadUnavailable
 	}
 	r.pending[key] = loaded

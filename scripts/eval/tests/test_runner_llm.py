@@ -24,17 +24,23 @@ def generation(gen_id, provider=NAME, attempts=None, status="verified"):
             "attempts": attempts if status == "verified" else []}
 
 
+NO_ENDS = {"client_closed_after_done": 0, "client_closed_before_done": 0, "upstream_cut_after_done": 0, "upstream_cut_before_done": 0}
+
+
 def marker(**overrides):
     base = {"role": "llm-gateway", "backend": "api", "provider": SLUG, "sampling": dict(SAMPLING),
             "sealed_at": "a", "drained_at": "b",
-            "verified_at": "c", "forwarded_requests": 3, "upstream_errors": 0, "rejected_requests": 0,
+            "verified_at": "c", "forwarded_requests": 3, "upstream_errors": 0, "upstream_error_ends": dict(NO_ENDS), "rejected_requests": 0,
             "rejected_after_seal": 1, "cancelled_by_seal": 0, "responses_without_generation_id": 0,
             "generations": [generation("gen-1"), generation("gen-2")], "log_complete": True}
     return base | overrides
 
 
+LOCAL_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "presence_penalty": 0.5, "frequency_penalty": 0.25, "seed": 42}
+
+
 def judge(m, backend="api"):
-    return judge_llm(m, backend, SLUG if backend == "api" else "", NAME, SAMPLING if backend == "api" else None)
+    return judge_llm(m, backend, SLUG if backend == "api" else "", NAME, SAMPLING if backend == "api" else LOCAL_SAMPLING)
 
 
 class TestJudgeApi(unittest.TestCase):
@@ -101,9 +107,10 @@ class TestJudgeSampling(unittest.TestCase):
                 changed = dict(SAMPLING, **{name: SAMPLING[name] + 1})
                 self.assertEqual(judge(marker(sampling=changed))[0], ["llm_sampling_mismatch"])
         self.assertEqual(judge(marker(sampling=None))[0], ["llm_sampling_mismatch"])
-        # local은 샘플링을 넣지 않는다. 마커에 값이 있으면 구성이 섞인 것이다.
+        # 묶음이 백엔드와 다르면 구성이 섞인 것이다.
         self.assertEqual(judge(marker(backend="local", provider="", generations=[]), backend="local")[0],
                          ["llm_sampling_mismatch"])
+        self.assertEqual(judge(marker(sampling=dict(LOCAL_SAMPLING)))[0], ["llm_sampling_mismatch"])
 
     def test_large_integer_seed_is_compared_without_float_rounding(self):
         # 2^53+1과 2^53은 float로 바꾸면 같아진다. 다른 seed가 적용됐으면 고정이 아니다.
@@ -122,18 +129,44 @@ class TestJudgeSampling(unittest.TestCase):
 
 class TestJudgeLocal(unittest.TestCase):
     def test_local_records_counts_only(self):
-        reasons, summary = judge(marker(backend="local", provider="", generations=[], sampling=None), backend="local")
+        reasons, summary = judge(marker(backend="local", provider="", generations=[], sampling=dict(LOCAL_SAMPLING)),
+                                 backend="local")
         self.assertEqual(reasons, [])
-        self.assertEqual((summary["generations"], summary["forwarded_requests"]), (0, 3))
+        self.assertEqual((summary["generations"], summary["forwarded_requests"], summary["sampling_applied"]),
+                         (0, 3, LOCAL_SAMPLING))
+
+    def test_sampling_set_of_the_other_backend_is_a_mismatch_even_with_equal_shared_values(self):
+        # 겹치는 키의 값이 같아도 묶음이 다르면 고정이 아니다.
+        shared = {key: LOCAL_SAMPLING[key] for key in LOCAL_SAMPLING if key != "frequency_penalty"}
+        api_set = dict(shared, top_k=20, min_p=0.0, repetition_penalty=1.0)
+        local = {"backend": "local", "provider": "", "generations": []}
+        self.assertEqual(judge(marker(**local, sampling=api_set), backend="local")[0], ["llm_sampling_mismatch"])
+        reasons, _ = judge_llm(marker(sampling=dict(LOCAL_SAMPLING)), "api", SLUG, NAME, api_set)
+        self.assertEqual(reasons, ["llm_sampling_mismatch"])
+
+    def test_local_sampling_must_be_the_declared_values(self):
+        local = {"backend": "local", "provider": "", "generations": []}
+        self.assertEqual(judge(marker(**local, sampling=None), backend="local")[0], ["llm_sampling_mismatch"])
+        for name in LOCAL_SAMPLING:
+            with self.subTest(name):
+                changed = dict(LOCAL_SAMPLING, **{name: LOCAL_SAMPLING[name] + 1})
+                self.assertEqual(judge(marker(**local, sampling=changed), backend="local")[0], ["llm_sampling_mismatch"])
 
     def test_local_with_lookups_or_pin_is_mixed_configuration(self):
-        for m in (marker(backend="local", provider="", sampling=None),
-                  marker(backend="local", generations=[], sampling=None)):
+        for m in (marker(backend="local", provider="", sampling=dict(LOCAL_SAMPLING)),
+                  marker(backend="local", generations=[], sampling=dict(LOCAL_SAMPLING))):
             with self.subTest(m=m["provider"]):
                 self.assertEqual(judge(m, backend="local")[0], ["llm_backend_mismatch"])
 
 
 class TestMarkerShape(unittest.TestCase):
+    def test_unfinished_stream_ends_are_reported_and_do_not_decide_validity(self):
+        ends = NO_ENDS | {"client_closed_after_done": 2, "upstream_cut_before_done": 1}
+        reasons, summary = judge_llm(marker(upstream_errors=3, upstream_error_ends=ends), "api", SLUG, NAME, SAMPLING)
+        self.assertEqual(reasons, [])
+        self.assertEqual((summary["upstream_errors"], summary["upstream_error_ends"]), (3, ends))
+        self.assertEqual(list(summary["upstream_error_ends"]), sorted(ends))
+
     def test_contract_shape_enforced(self):
         bad = []
         m = marker()
@@ -142,6 +175,17 @@ class TestMarkerShape(unittest.TestCase):
         m = marker()
         del m["upstream_errors"]
         bad.append(m)
+        m = marker()
+        del m["upstream_error_ends"]
+        bad.append(m)
+        bad.append(marker(upstream_error_ends=None))
+        bad.append(marker(upstream_error_ends={}))
+        bad.append(marker(upstream_error_ends=NO_ENDS | {"other": 0}))
+        bad.append(marker(upstream_error_ends=NO_ENDS | {"upstream_cut_after_done": -1}))
+        bad.append(marker(upstream_error_ends=NO_ENDS | {"upstream_cut_after_done": True}))
+        # 합이 upstream_errors와 달라도 구조 위반이다.
+        bad.append(marker(upstream_errors=1))
+        bad.append(marker(upstream_error_ends=NO_ENDS | {"client_closed_after_done": 1}))
         bad.append(marker(log_complete="true"))
         bad.append(marker(forwarded_requests=-1))
         bad.append(marker(cancelled_by_seal=True))

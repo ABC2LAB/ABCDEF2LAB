@@ -21,7 +21,10 @@ type ControlledReadHostOptions struct {
 	// FixtureRegistries is a draft opt-in mapping from snapshot_ref to a registry
 	// basename inside the existing private snapshot directory. Nil preserves the
 	// compatibility path; a configured mapping never falls back on a missing ref.
-	FixtureRegistries map[string]string `json:"-"`
+	FixtureRegistries map[string]string                 `json:"-"`
+	AuditSource       *ControlledReadAuditSourceOptions `json:"-"`
+	assemblyStore     *controlledReadStore
+	existingAuthOnly  bool
 }
 
 // NewWithControlledReadHost installs strict mode admission and verified-read
@@ -63,7 +66,7 @@ func newControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, k
 			return nil, ErrLocalLLMPolicy
 		}
 	}
-	return newServerConfigured(ctx, m, skillDir, dataDir, keyDir, resolver, func(s *Server) error {
+	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, resolver, serverStartupOptions{existingAuthOnly: options.existingAuthOnly, assemblyStore: options.assemblyStore, noAutomaticAdmission: options.existingAuthOnly}, func(s *Server) error {
 		if err := s.configureControlledReadFixtureRegistries(registries); err != nil {
 			return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 		}
@@ -75,7 +78,14 @@ func newControlledReadHost(ctx context.Context, m *Manager, skillDir, dataDir, k
 				return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 			}
 		}
-		if err := s.configureControlledReadFindings(options.Findings, revisions); err != nil {
+		findings, auditErr := s.bindControlledReadAuditSource(options.Findings, options.AuditSource)
+		if auditErr != nil {
+			return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, auditErr)
+		}
+		if registries != nil {
+			findings = bindControlledReadFixtureFindings(findings)
+		}
+		if err := s.configureControlledReadFindings(findings, revisions); err != nil {
 			return fmt.Errorf("%w: %w", ErrControlledReadHostConfiguration, err)
 		}
 		return nil

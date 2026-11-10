@@ -14,6 +14,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
@@ -122,6 +123,19 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 	r.s.syncTaskLLMState(pt)
 	t, _ := r.s.m.Task(r.taskID)
 	sel := taskLLMSelection{task: t, revision: pt.LLMChainRevision}
+	if r.s.firstDiagnosis {
+		id, bindingErr := r.s.firstDiagnosisProfileID(r.s.ctx, t)
+		if bindingErr != nil {
+			return sel, ErrFirstDiagnosisModel
+		}
+		// 검증 뒤 역할을 다시 고르지 않는다. DB 변경 경합도 다른 profile 송신으로 이어지지 않는다.
+		prov, cfg, ok := r.s.providerForProfile(id)
+		if !ok {
+			return sel, ErrFirstDiagnosisModel
+		}
+		sel.profileID, sel.provider, sel.retry = id, &firstDiagnosisModelProvider{server: r.s, task: t, profileID: id, config: cfg, inner: prov}, cfg.Retry
+		return sel, nil
+	}
 	if prov, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		sel.provider, sel.retry = prov, cfg.Retry
 		return sel, nil
@@ -152,6 +166,15 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 // the caller. If failover switches profiles, the change takes effect on the next
 // agent run (a fresh Session is built per run in captureRun).
 func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
+	if r.s.firstDiagnosis {
+		task, _ := r.s.m.Task(r.taskID)
+		id, err := r.s.firstDiagnosisProfileID(r.s.ctx, task)
+		if err != nil {
+			return agent.Config{}, false
+		}
+		_, cfg, ok := r.s.providerForProfile(id)
+		return cfg, ok
+	}
 	taskNum, err := parseTaskID(r.taskID)
 	if err != nil {
 		return agent.Config{}, false
@@ -219,8 +242,15 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 	}
 }
 
-func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+// 첫 진단은 transcript 저장을 끄므로 세션 ID 대신 실제 runtime 역할을 전달한다.
+// 사용량 원장의 기존 역할 선택은 바꾸지 않고 진단 문맥만 보강한다.
+func (r *taskLLMRuntime) diagnosticContext(ctx context.Context) context.Context {
 	ctx = llmrec.WithTaskID(ctx, r.taskID)
+	return diagnosticlog.WithRole(ctx, r.agentKey)
+}
+
+func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	ctx = r.diagnosticContext(ctx)
 	return streamTaskLLM(ctx, r.taskID, req, r.streamHooks())
 }
 
@@ -230,7 +260,7 @@ func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) 
 // duplicated model output or tool execution (the "committed" bookkeeping the
 // streaming path needs is unnecessary here).
 func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	ctx = llmrec.WithTaskID(ctx, r.taskID)
+	ctx = r.diagnosticContext(ctx)
 	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks())
 }
 
@@ -454,6 +484,10 @@ func isRetryableStreamError(err error) bool {
 // CompactionWindow mirrors current()'s precedence so the context window always
 // matches the provider the role will actually stream on.
 func (r *taskLLMRuntime) CompactionWindow() int {
+	if r.s.firstDiagnosis {
+		cfg, _ := r.activeCfg()
+		return cfg.CompactionWindow()
+	}
 	if _, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		return cfg.CompactionWindow()
 	}
@@ -493,7 +527,7 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 // callers cannot fall through. External mode honors llm_pool_bind_fallback.
 func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Config, bool) {
 	id, err := s.effectiveProfileForAgent(agentKey, nil)
-	if err != nil && s.localResolver != nil {
+	if err != nil && s.hasModelPolicy() {
 		return blockedLocalProvider{}, agent.Config{}, true
 	}
 	if id == nil {
@@ -501,7 +535,7 @@ func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Conf
 	}
 	prov, cfg, ok := s.providerForProfile(*id)
 	if !ok {
-		if s.localResolver != nil {
+		if s.hasModelPolicy() {
 			return blockedLocalProvider{}, agent.Config{}, true
 		}
 		return nil, agent.Config{}, false
@@ -519,7 +553,7 @@ func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
 	if !on || prov == nil {
 		return nil, agent.Config{}, false
 	}
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		active, err := s.m.pg.ActiveProfile()
 		if err != nil || active == nil {
 			return nil, agent.Config{}, false
@@ -542,6 +576,14 @@ func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
 func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 	if t == nil || len(agentKeys) == 0 {
 		return false
+	}
+	if s.firstDiagnosis {
+		id, err := s.firstDiagnosisProfileID(s.ctx, t)
+		if err != nil {
+			return false
+		}
+		_, _, ok := s.providerForProfile(id)
+		return ok
 	}
 	state := t.llmStateSnapshot()
 	unboundReady := false

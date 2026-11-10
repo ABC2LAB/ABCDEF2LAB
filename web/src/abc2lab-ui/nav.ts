@@ -6,7 +6,6 @@ export const SCREENS = [
   "entry",
   "target",
   "job",
-  "crawl",
   "scope",
   "live",
   "history",
@@ -18,6 +17,7 @@ export const SCREENS = [
   "audit",
   "access-map",
   "e2-flow",
+  "coverage",
   "tokens",
 ] as const;
 

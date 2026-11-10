@@ -3,6 +3,15 @@
 프로젝트 변경을 확인하려면 현재 저장소의 소스를 실행합니다.
 이 안내의 완료 범위는 개발 서버·DB·모델 연결 확인입니다. 전체 진단 성공, 외부 송신 차단, 탐지 성능 측정을 뜻하지 않습니다.
 
+## 개발 서버와 첫 통합 진단의 구분
+
+아래 `cmd/artex`·`dev.sh`는 일반 소스 개발·UI 확인 경로입니다.
+첫 통합 진단의 공식 실행 경로는 [기동 안내](first-diagnosis-launch.md)의 별도 CLI
+`prepare-task → prepare-intents → check → run`이며, 종료 후 저장 자료는 `report`로 엽니다.
+첫 진단 runtime에 필요한 기존 인증·최소권한 DB 역할을 일반 개발 서버의 최초 setup·관리자 DB로 대신해서는 안 됩니다.
+현재 UI는 해당 task의 상태·요청별 승인/거절·중지·후보·보고서·AI 수정 프롬프트 API를 연결합니다.
+웹에서 임의 URL을 받아 첫 통합 진단을 시작하는 API가 구현됐다는 뜻은 아닙니다.
+
 ## 준비
 
 - Go **1.26.3**: [go.mod](../go.mod) 기준
@@ -46,6 +55,15 @@ OpenAI 호환 로컬 모델 서버의 **모델 식별자와 실제 BaseURL**을 
 Ollama를 호스트에서 실행하고 기본 포트를 쓰는 경우 BaseURL은 `http://127.0.0.1:11434/v1`입니다.
 모델 이름은 설치한 값으로 정하며 특정 모델의 적합성·성능을 이 문서에서 보장하지 않습니다.
 
+초기 로컬 기준 모델(검증 전)은 `Qwen/Qwen3.5-35B-A3B`이며, 모델 선정·개선 순서·장비 실측 기준은
+[LLM 도입·개선 계획](llm-adoption-and-improvement-plan.md)을 따릅니다. 아래 Ollama 주소 예시는
+이 모델의 설치·호환성·메모리 검증 결과가 아닙니다. 먼저 추론 환경을 검증하며 학습 GPU는 필수 준비물이 아닙니다.
+
+제품 바이너리의 기본은 [local-only 모드](contracts/local-llm-server-mode.md)입니다.
+검증된 `ARTEX_LLM_PIN_MANIFEST`와 pin에 일치하는 DB active profile이 필요하며,
+다음 환경변수 예시만으로 local-only provider가 활성화되지는 않습니다.
+실제 시작 설정·권한·profile 선택은 해당 계약을 확인하고, 연결 실패를 외부 API 자동 전환으로 복구하지 않습니다.
+
 ```bash
 export ARTEX_LLM_PROVIDER=openai
 read -rp '설치한 로컬 모델 식별자: ' ARTEX_LLM_MODEL
@@ -56,14 +74,15 @@ export ARTEX_LANG=ko
 ```
 
 `local-placeholder`는 인증을 요구하지 않는 소유 로컬 서버 예시입니다. 인증이 필요한 서버는 로컬 설정에 실제 키를 넣고 공유하지 않습니다.
-현재 환경변수 기반 `FromEnv()`는 키가 비어 있으면 LLM 설정을 활성화하지 않습니다. UI의 LLM profile 선택·설정도 함께 확인합니다.
+기존 환경변수 기반 `FromEnv()`는 키가 비어 있으면 LLM 설정을 활성화하지 않습니다. local-only의 실제 선택·실패 처리는 위 서버 모드 계약을 따릅니다.
 코드에서 `ARTEX_*` 이름을 사용하므로 문서에서도 같은 이름을 유지합니다.
 
-운영 기본 표시 언어는 `en`이며 `ARTEX_LANG=ko`로 한국어 기본값을 지정합니다. 실행 중 서버 설정과 브라우저의 표시 언어 설정도 확인합니다.
+서버의 표시 언어는 한국어 하나입니다. `ARTEX_LANG`과 설정 파일의 `language`, 저장된 표시 언어 설정은 더 따르지 않습니다.
 언어 지시는 모델 출력의 일관성을 유도하는 기능입니다. 명령·URL·코드·응답 원문을 번역하지 않습니다.
 출력 상한 오류가 나면 해당 profile의 `max_tokens`를 모델 서버가 허용하는 범위에 맞춥니다.
 
 민감한 실배포는 로컬 모델을 운영 기준으로 합니다. 로컬 모델 연결만으로 셸·MCP 등 다른 경로의 외부 송신까지 차단되었다고 판단하지 않습니다.
+명시적으로 승인한 비민감 개발 환경의 첫 일반 HTTP 진단은 [OpenRouter 모드](openrouter-first-diagnosis.md)를 사용할 수 있습니다. #323으로 연결 코드는 병합됐지만 실제 API 호출·진단 성공은 별도 수용 대상입니다. 이 예외는 `cmd/first-controlled-diagnosis`의 고정 모델·endpoint·보호 manifest 경로이며 아래 일반 개발 서버의 외부 fallback 설정이 아닙니다.
 공개 시험 대상의 외부 API 평가는 [평가 프로토콜](evaluation/evaluation-protocol.md)을 따릅니다.
 
 ## 소스 개발 실행
@@ -87,6 +106,8 @@ go run ./cmd/artex -addr 127.0.0.1:8787 -proxy 127.0.0.1:8788
 
 ```bash
 cd web
+export AUTOPENTEST_API=http://127.0.0.1:8787
+export NEXT_PUBLIC_MOCK=0
 npm run dev -- --hostname 127.0.0.1 --port 5173
 ```
 
@@ -130,5 +151,5 @@ UI의 기반 프로젝트 자동 업데이트 경로를 ABC2LAB 배포 갱신 �
 
 - 빌드·기동: 소스 SHA, 도구 버전, DB 연결과 UI/API 응답을 기록합니다.
 - 모델 연결: 실제 profile·모델·BaseURL과 도구 호출 가능 여부를 확인합니다. 비밀값은 기록하지 않습니다.
-- 진단: 승인 범위·비민감 시험 자료·계정·요청 예산을 준비하고 [통합 설계](engine-improvement-draft.md)를 따릅니다.
+- 진단: 승인 범위·비민감 시험 자료·계정·요청 예산을 준비하고 [현재 기동 안내](first-diagnosis-launch.md)와 [준비 체크리스트](first-diagnosis-preparation.md)를 따릅니다. 일반 HTTP 후보와 별도 등록 GET/IDOR E③ 확정을 구분합니다.
 - 성능 평가: [고정 조건](evaluation/evaluation-protocol.md)과 실제 반복 실행이 필요합니다. 기동 확인을 baseline 완료로 기록하지 않습니다.

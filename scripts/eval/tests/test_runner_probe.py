@@ -18,7 +18,7 @@ from runner_probe import (
     INVALID, NEGATIVE, PASS, POSITIVE, VIOLATION, ProbeSetupError, evaluate_probe, probe_expectations, probe_plan,
     run_probe,
 )
-from test_preflight import configuration, local_llm
+from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 from test_runner_checks import DAEMON, PROJECT, SERVICE_IDS, by_key, by_service, facts, raw_world
 from test_runner_config import runner_config
 
@@ -28,6 +28,7 @@ def make_plan(backend="api", e2=None, **ports):
     if backend == "local":
         for side in ("baseline", "ours"):
             preflight[side]["llm"] = local_llm()
+            preflight[side]["sampling"] = dict(LOCAL_SAMPLING)
     payload = runner_config()
     payload["ports"].update(ports)
     if e2 is not None:
@@ -100,10 +101,16 @@ class TestExpectations(unittest.TestCase):
                 {"dns:eval-ours-1-eval-meter-1", "dns:444444444444", "dns:eval-meter-upstream"}}
         self.assertEqual(stub, base)
 
+    def test_product_probes_like_the_stub(self):
+        import dataclasses
+        stub = dataclasses.replace(make_plan(), e2_mode="stub")
+        product = dataclasses.replace(make_plan(), e2_mode="product")
+        self.assertEqual(probe_expectations(product, make_snapshot()), probe_expectations(stub, make_snapshot()))
+
     def test_unknown_e2_mode_is_refused(self):
         import dataclasses
         with self.assertRaises(ProbeSetupError):
-            probe_expectations(dataclasses.replace(make_plan(), e2_mode="product"), make_snapshot())
+            probe_expectations(dataclasses.replace(make_plan(), e2_mode="other"), make_snapshot())
 
     def test_api_paths_from_snapshot_and_backend(self):
         expectations = probe_expectations(make_plan(), make_snapshot())

@@ -128,7 +128,7 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 // poolForActive wraps the globally-active provider in the failover chain. Returns
 // prov unchanged when failover is off or there's nothing to fall back to.
 func (s *Server) poolForActive(activeID int64, prov llm.Provider, cfg agent.Config) llm.Provider {
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		return prov // no implicit fallback from a local-only profile
 	}
 	pool := s.poolChain(activeID, prov, cfg)
@@ -148,7 +148,7 @@ func (s *Server) poolForActive(activeID int64, prov llm.Provider, cfg agent.Conf
 // are on; otherwise a bound profile stays exclusive (fails hard), which is the
 // default and the documented precedence.
 func (s *Server) poolForBinding(id int64, prov llm.Provider, cfg agent.Config) llm.Provider {
-	if s.localResolver != nil {
+	if s.hasModelPolicy() {
 		return prov
 	}
 	if s.m == nil || !s.m.LLMPoolEnabled() || !s.m.LLMPoolBindFallback() {

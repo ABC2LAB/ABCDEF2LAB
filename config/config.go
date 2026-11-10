@@ -37,12 +37,10 @@ type Config struct {
 
 // SupportedLanguages lists the user-facing output languages artex-global can
 // switch between. Agent output, UI strings and backend messages all key off these.
-var SupportedLanguages = []string{"en", "ko", "zh", "es", "ja"}
+var SupportedLanguages = []string{"ko"}
 
-// DefaultLanguage is the out-of-box user-facing language when nothing is
-// configured. artex-global defaults to English; Korean, Chinese, Spanish and
-// Japanese are selectable at runtime via the language setting (and ARTEX_LANG).
-const DefaultLanguage = "en"
+// DefaultLanguage is the only user-facing language. 사람이 보는 글은 한국어 하나다(CLAUDE.md 엔진 언어 규칙).
+const DefaultLanguage = "ko"
 
 // NormalizeLanguage lower-cases and validates a language code, returning "" when
 // the code is empty or unsupported (so callers can fall through to the next source).

@@ -14,7 +14,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-FORMAT = "abc2lab-eval-profile-v5"
+FORMAT = "abc2lab-eval-profile-v6"
+# 엔진 압축 기준 창(K 토큰). 엔진이 이 범위로 잘라 쓰므로(agent/provider.go) 범위 밖 선언은 적용값과 달라진다.
+MIN_CONTEXT_WINDOW_K, MAX_CONTEXT_WINDOW_K = 32, 1000
+# 모델이 어디에 올라가야 하는가. gpu는 전부 GPU에 올라가 있어야 하고, any는 개발용 CPU 회차다(러너가 서버 값으로 대조).
+LOCAL_PLACEMENTS = ("gpu", "any")
 PROFILE_VERSION = 5
 MAX_INPUT_BYTES = 64 * 1024
 MAX_PATH_LENGTH = 512
@@ -55,13 +59,21 @@ MAX_SETTLE_SECONDS = 3600
 # temperature·seed 외 샘플링 고정값. 엔진은 샘플링을 보내지 않아 평가 LLM 게이트웨이가 요청마다 넣는다(평가 프로토콜 §6).
 # 범위는 게이트웨이(cmd/eval-meter sampling.go)와 같다(drift 테스트).
 SAMPLING_FIELDS = ("top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty")
+# local은 로컬 서버의 OpenAI 호환 경로가 실제로 적용하는 값만 받는다. top_k·min_p·repetition_penalty는
+# 그 경로가 오류 없이 무시하므로 적으면 적용되지 않은 값을 기록하게 된다(profiles/evidence/ollama-openai-sampling).
+LOCAL_SAMPLING_FIELDS = ("top_p", "presence_penalty", "frequency_penalty")
 MAX_TOP_K = 1000
 MAX_PENALTY = 2
 # 백엔드별로 받는 키가 정확히 정해져 있다. 섞이거나 빠지면 거부한다(평가 프로토콜 §6).
 _LLM_FIELDS = {
     "api": ("backend", "base_url", "model", "provider", "fallbacks"),
-    "local": ("backend", "base_url", "model", "hostname", "host_ip"),
+    # 태그만으로는 고정이 아니다. 가중치 digest·서버가 할당한 컨텍스트·서버 버전을 함께 선언한다(러너가 실제 값과 대조).
+    "local": ("backend", "base_url", "model", "hostname", "host_ip", "model_digest", "context_length", "server_version",
+              "placement"),
 }
+_MODEL_DIGEST = re.compile(r"[0-9a-f]{64}")
+_SERVER_VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
+MAX_CONTEXT_LENGTH = 4 * 1024 * 1024
 
 
 class ProfileError(ValueError):
@@ -233,7 +245,11 @@ def _llm(value: object) -> bool:
         address = None
     return (_service_name(value["hostname"]) and parsed.hostname == value["hostname"]
             and _tagged_reference(value["model"]) and address is not None and host_ip == str(address)
-            and any(address in network for network in _LOCAL_NETWORKS))
+            and any(address in network for network in _LOCAL_NETWORKS)
+            and isinstance(value["model_digest"], str) and bool(_MODEL_DIGEST.fullmatch(value["model_digest"]))
+            and type(value["context_length"]) is int and 1 <= value["context_length"] <= MAX_CONTEXT_LENGTH
+            and isinstance(value["server_version"], str) and bool(_SERVER_VERSION.fullmatch(value["server_version"]))
+            and value["placement"] in LOCAL_PLACEMENTS)
 
 
 def _path(value: object) -> str:
@@ -352,6 +368,19 @@ def _bounded(value: object, path: str, low: int, high: int, *, low_open: bool) -
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+def _local_sampling(raw: object) -> dict:
+    """local의 temperature·seed 외 세 값. 사전검사와 같은 정의다."""
+    if not isinstance(raw, dict) or set(raw) != set(LOCAL_SAMPLING_FIELDS):
+        _fail("environment.sampling", "INVALID_SAMPLING")
+    return {
+        "top_p": _bounded(raw["top_p"], "environment.sampling.top_p", 0, 1, low_open=True),
+        "presence_penalty": _bounded(raw["presence_penalty"], "environment.sampling.presence_penalty",
+                                     -MAX_PENALTY, MAX_PENALTY, low_open=False),
+        "frequency_penalty": _bounded(raw["frequency_penalty"], "environment.sampling.frequency_penalty",
+                                      -MAX_PENALTY, MAX_PENALTY, low_open=False),
+    }
+
+
 def _sampling(raw: object) -> dict:
     """temperature·seed 외 다섯 값. 하나라도 빠지면 제공자 기본값으로 조용히 돌아가므로 정확히 다섯 키를 요구한다."""
     if not isinstance(raw, dict) or set(raw) != set(SAMPLING_FIELDS):
@@ -372,7 +401,8 @@ def _sampling(raw: object) -> dict:
 
 def _environment(raw: object) -> dict:
     raw = _object(raw, ("network_mode", "llm", "temperature", "sampling", "seed", "target_image",
-                        "worker_count", "time_budget_seconds", "request_budget", "run_storage", "run_drain"),
+                        "worker_count", "context_window_k", "time_budget_seconds", "request_budget", "run_storage",
+                        "run_drain"),
                   "environment")
     if raw["network_mode"] not in _NETWORK_MODES:
         _fail("environment.network_mode", "UNSUPPORTED_NETWORK_MODE")
@@ -382,15 +412,23 @@ def _environment(raw: object) -> dict:
         _fail("environment.run_storage", "INVALID_RUN_STORAGE")
     if not _run_drain(raw["run_drain"]):
         _fail("environment.run_drain", "INVALID_RUN_DRAIN")
+    window = raw["context_window_k"]
+    if type(window) is not int or not MIN_CONTEXT_WINDOW_K <= window <= MAX_CONTEXT_WINDOW_K:
+        _fail("environment.context_window_k", "INVALID_CONTEXT_WINDOW")
+    # 로컬 서버는 넘친 입력을 오류 없이 잘라낸다. 엔진이 압축하기 전에 잘리면 안 된다.
+    if raw["llm"]["backend"] == "local" and window * 1000 > raw["llm"]["context_length"]:
+        _fail("environment.context_window_k", "ABOVE_SERVER_CONTEXT")
     return {
         "network_mode": raw["network_mode"],
         # API 고정 조건(모델·제공자·fallback)과 로컬 고정 IP가 모두 환경 지문에 들어간다.
         "llm": dict(raw["llm"]),
         "temperature": _number(raw["temperature"], "environment.temperature", positive=False),
-        "sampling": _sampling(raw["sampling"]),
+        "sampling": (_local_sampling(raw["sampling"]) if raw["llm"]["backend"] == "local"
+                     else _sampling(raw["sampling"])),
         "seed": _integer(raw["seed"], "environment.seed", zero=True),
         "target_image": _reference(raw["target_image"], "environment.target_image", image=True),
         "worker_count": _integer(raw["worker_count"], "environment.worker_count"),
+        "context_window_k": window,
         "time_budget_seconds": _number(raw["time_budget_seconds"], "environment.time_budget_seconds", positive=True),
         "request_budget": _integer(raw["request_budget"], "environment.request_budget"),
         "run_storage": dict(raw["run_storage"]),

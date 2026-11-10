@@ -28,8 +28,9 @@ One rule, one observable fact. Convert them individually or as part of the whole
   User-Agent*. Outbound `artex-selfupdate` User-Agent from the self-update routine
   (`selfupdate/github.go`). Host/forensic egress indicator. `level: medium`.
 - **[`artex_guard_audit_framing.yml`](artex_guard_audit_framing.yml)** — *ARTEX Platform Guard
-  Audit-Log Framing*. The platform-guard control marker written to the audit log on a blocked tool
-  call (`guard/guard.go`). Host/forensic indicator. `level: high`.
+  Audit-Log Framing*. Current and historical platform-control markers in blocked tool-result/session
+  artifacts (`guard/guard.go`). Current audit rows need not contain either marker.
+  Host/forensic indicator. `level: high`.
 - **[`artex_recording_proxy_ca.yml`](artex_recording_proxy_ca.yml)** — *ARTEX Recording-Proxy MITM CA
   Certificate Artifact*. Creation of the recording proxy's MITM CA file under the
   `_ca/mitmproxy-ca-cert.pem` layout (`traffic/traffic.go`). Host/forensic artifact; the bare filename

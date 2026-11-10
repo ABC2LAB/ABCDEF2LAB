@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./abc2lab.css";
+
+import { restoreSession, subscribeAuthRequired } from "./lib/api";
 import { ApprovalContext, type ApprovalTarget } from "./lib/approval";
-import type { EngineFinding } from "./lib/engine";
+import { validTaskID } from "./lib/first-diagnosis";
 import { MOCK, MOCK_DEFAULT_TASK } from "./lib/mock";
 import { toTarget } from "./lib/net";
 import { type Selection, SelectionContext } from "./lib/selection";
@@ -9,7 +11,7 @@ import { isScreenId, NavContext, type NavValue, type ScreenId } from "./nav";
 import AccessMapScreen from "./screens/AccessMapScreen";
 import ApprovalScreen from "./screens/ApprovalScreen";
 import AuditScreen from "./screens/AuditScreen";
-import CrawlScreen from "./screens/CrawlScreen";
+import CoverageScreen from "./screens/CoverageScreen";
 import DashboardScreen from "./screens/DashboardScreen";
 import E2FlowScreen from "./screens/E2FlowScreen";
 import EntryScreen from "./screens/EntryScreen";
@@ -18,6 +20,7 @@ import FindingUndScreen from "./screens/FindingUndScreen";
 import HistoryScreen from "./screens/HistoryScreen";
 import JobScreen from "./screens/JobScreen";
 import LiveScreen from "./screens/LiveScreen";
+import LoginScreen from "./screens/LoginScreen";
 import ReportScreen from "./screens/ReportScreen";
 import ScopeScreen from "./screens/ScopeScreen";
 import SettingsScreen from "./screens/SettingsScreen";
@@ -28,6 +31,8 @@ import { DEFAULT_TARGET_URL, type Target } from "./types";
 export type ABC2LabUIProps = {
   /** 처음 보여줄 화면 (URL 해시가 있으면 해시가 우선) */
   initialScreen?: ScreenId;
+  /** 일반 ARTEX와 CLI 첫 진단의 서버 계약을 섞지 않는다. */
+  mode?: "first-diagnosis" | "artex";
   /**
    * 화면을 바꿀 때 URL 해시(#report 등)를 history 에 쌓을지 (기본 true).
    * true 면 브라우저 뒤로/앞으로가 화면 전환으로 동작한다. react-router를 쓰면 false 추천.
@@ -37,30 +42,94 @@ export type ABC2LabUIProps = {
   theme?: "light" | "dark";
 };
 
+/** 로그인 뒤에만 화면을 마운트한다. 화면들은 마운트 즉시 API를 읽기 때문이다. */
+export default function ABC2LabUI(props: ABC2LabUIProps) {
+  const [auth, setAuth] = useState<"checking" | "in" | "out">(MOCK ? "in" : "checking");
+
+  useEffect(() => {
+    if (MOCK) return;
+    let live = true;
+    restoreSession()
+      .then((restored) => {
+        if (live) setAuth(restored ? "in" : "out");
+      })
+      .catch(() => {
+        if (live) setAuth("out");
+      });
+    const unsubscribe = subscribeAuthRequired(() => setAuth("out"));
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, []);
+
+  if (auth === "checking") return null;
+  if (auth === "out") return <LoginScreen onSignedIn={() => setAuth("in")} />;
+  return <Workspace {...props} />;
+}
+
 /** ABC2LAB 점검 흐름 UI (원본 ABC2LAB_UI.html 의 React + TypeScript 버전) */
-export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true, theme }: ABC2LabUIProps) {
+function Workspace({ initialScreen = "dashboard", syncHash = true, theme, mode = "artex" }: ABC2LabUIProps) {
+  const firstDiagnosis = mode === "first-diagnosis" && !MOCK;
+  const allowedScreen = useCallback(
+    (next: ScreenId): ScreenId =>
+      !firstDiagnosis || ["entry", "live", "approval", "report"].includes(next) ? next : "entry",
+    [firstDiagnosis],
+  );
   // 초기값은 SSR/CSR 가 같아야(hydration) 하므로 결정적으로 initialScreen 으로 둔다.
   // URL 해시(#settings 등) 반영은 마운트 후 아래 effect 에서 — 서버는 해시를 못 읽기 때문.
-  const [screen, setScreen] = useState<ScreenId>(initialScreen);
+  const [screen, setScreen] = useState<ScreenId>(allowedScreen(initialScreen));
 
   // 진입 화면에서 입력한 대상 주소 → 요약 · 범위 확인 · 대시보드 · 팝업에 반영
   const [target, setTarget] = useState<Target>(() => toTarget(DEFAULT_TARGET_URL));
-  // 작업 설정의 [점검 시작]을 누를 때마다 1씩 늘려 자산 탐색(시안)을 처음부터 다시 돌린다
-  const [crawlRun, setCrawlRun] = useState(0);
 
   // 지금 보고 있는 점검(task) — 기록에서 카드를 열 때 지정. report/live/finding 이 읽는다.
   const [taskId, setTaskId] = useState<string | null>(MOCK ? MOCK_DEFAULT_TASK : null);
   const [tasksVersion, setTasksVersion] = useState(0);
+  const [connection, setConnection] = useState<"run" | "report">("run");
+  const connectTask = useCallback(
+    (id: string, source: "run" | "report") => {
+      setTaskId(id);
+      setConnection(source);
+      if (syncHash) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("task", id);
+        url.searchParams.set("server", source);
+        window.history.replaceState(window.history.state, "", url);
+      }
+    },
+    [syncHash],
+  );
+  // URL에는 task 번호만 남긴다. Entry가 서버 응답으로 검증하기 전 선택 상태로 복원하지 않는다.
+  const selectTask = useCallback(
+    (id: string | null) => {
+      setTaskId(id);
+      if (firstDiagnosis && !id && syncHash) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("task");
+        url.searchParams.delete("server");
+        window.history.replaceState(window.history.state, "", url);
+      }
+    },
+    [firstDiagnosis, syncHash],
+  );
   const refreshTasks = useCallback(() => setTasksVersion((version) => version + 1), []);
-  // 발견 상세가 보여 줄 발견 — 보고서의 [자세히 보기]가 고른다
-  const [finding, setFinding] = useState<EngineFinding | null>(null);
   const selection = useMemo<Selection>(
-    () => ({ taskId, selectTask: setTaskId, tasksVersion, refreshTasks, finding, selectFinding: setFinding }),
-    [taskId, tasksVersion, refreshTasks, finding],
+    () => ({
+      taskId,
+      selectTask,
+      tasksVersion,
+      refreshTasks,
+      mode: firstDiagnosis ? "first-diagnosis" : "artex",
+      connection,
+      connectTask,
+    }),
+    [taskId, selectTask, tasksVersion, refreshTasks, firstDiagnosis, connection, connectTask],
   );
 
   const go = useCallback(
-    (next: ScreenId) => {
+    (requested: ScreenId) => {
+      const next = allowedScreen(requested);
       if (next === screen) return; // 같은 화면이면 히스토리 엔트리 안 쌓음
       setScreen(next);
       if (syncHash) {
@@ -73,7 +142,7 @@ export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true
       }
       window.scrollTo(0, 0);
     },
-    [screen, syncHash],
+    [screen, syncHash, allowedScreen],
   );
 
   // 마운트 시 현재 해시를 화면에 반영 + 브라우저 뒤로/앞으로(popstate) 복원.
@@ -82,12 +151,15 @@ export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true
     if (!syncHash) return;
     const applyHash = () => {
       const fromHash = window.location.hash.replace("#", "");
-      setScreen(isScreenId(fromHash) ? fromHash : initialScreen);
+      const requested = allowedScreen(isScreenId(fromHash) ? fromHash : initialScreen);
+      const urlTask = new URLSearchParams(window.location.search).get("task");
+      // 새로고침·새 링크는 Entry 검증을 거친다. task 변경 뒤 이전 결과를 히스토리로 복구하지 않는다.
+      setScreen(firstDiagnosis && (!taskId || urlTask !== taskId || !validTaskID(taskId)) ? "entry" : requested);
     };
     applyHash();
     window.addEventListener("popstate", applyHash);
     return () => window.removeEventListener("popstate", applyHash);
-  }, [syncHash, initialScreen]);
+  }, [syncHash, initialScreen, allowedScreen, firstDiagnosis, taskId]);
 
   const nav = useMemo<NavValue>(() => ({ screen, go }), [screen, go]);
 
@@ -123,23 +195,34 @@ export default function ABC2LabUI({ initialScreen = "dashboard", syncHash = true
             </div>
           )}
           <div className="stage">
-            <DashboardScreen />
-            <EntryScreen onStart={(input) => setTarget(toTarget(input))} />
-            <TargetScreen target={target} />
-            <JobScreen target={target} onStart={() => setCrawlRun((n) => n + 1)} />
-            <CrawlScreen target={target} run={crawlRun} />
-            <ScopeScreen target={target} />
-            <LiveScreen target={target} />
-            <HistoryScreen />
-            <ReportScreen />
-            <FindingScreen />
-            <FindingUndScreen />
-            <ApprovalScreen />
-            <SettingsScreen />
-            <AuditScreen />
-            <AccessMapScreen />
-            <E2FlowScreen />
-            <TokensScreen />
+            {firstDiagnosis ? (
+              <>
+                <EntryScreen onStart={(input) => setTarget(toTarget(input))} />
+                <LiveScreen key={`live:${taskId ?? ""}`} target={target} />
+                <ApprovalScreen key={`approval:${taskId ?? ""}`} />
+                <ReportScreen key={`report:${taskId ?? ""}`} />
+              </>
+            ) : (
+              <>
+                <DashboardScreen />
+                <EntryScreen onStart={(input) => setTarget(toTarget(input))} />
+                <TargetScreen target={target} />
+                <JobScreen target={target} />
+                <ScopeScreen target={target} />
+                <LiveScreen target={target} />
+                <HistoryScreen />
+                <ReportScreen />
+                <FindingScreen />
+                <FindingUndScreen />
+                <ApprovalScreen />
+                <SettingsScreen />
+                <AuditScreen />
+                <AccessMapScreen />
+                <E2FlowScreen />
+                <CoverageScreen />
+                <TokensScreen />
+              </>
+            )}
           </div>
         </ApprovalContext.Provider>
       </SelectionContext.Provider>

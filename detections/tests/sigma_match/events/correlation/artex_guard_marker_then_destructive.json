@@ -16,6 +16,22 @@
           "Image": "/usr/bin/rm"
         }
       ]
+    },
+    {
+      "label": "guard marker then a destructive command on the same host within 30 minutes (current English marker)",
+      "events": [
+        {
+          "ts": 0,
+          "host": "web01",
+          "message": "guard [ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]此操作被禁止: rm -rf /"
+        },
+        {
+          "ts": 600,
+          "host": "web01",
+          "CommandLine": "rm -rf / --no-preserve-root",
+          "Image": "/usr/bin/rm"
+        }
+      ]
     }
   ],
   "negative": [
@@ -68,6 +84,53 @@
           "ts": 0,
           "host": "web01",
           "message": "guard 【ARTEX 平台管控·非目标防御】此操作被禁止: rm -rf /"
+        },
+        {
+          "ts": 600,
+          "host": "db02",
+          "CommandLine": "rm -rf / --no-preserve-root",
+          "Image": "/usr/bin/rm"
+        }
+      ]
+    },
+    {
+      "label": "only the guard marker, no destructive command (current English marker)",
+      "events": [
+        {
+          "ts": 0,
+          "host": "web01",
+          "message": "guard [ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]此操作被禁止: rm -rf /"
+        },
+        {
+          "ts": 120,
+          "host": "web01",
+          "message": "guard [ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]此操作被禁止: rm -rf /"
+        }
+      ]
+    },
+    {
+      "label": "both present but ~60 minutes apart, outside the 30-minute window (current English marker)",
+      "events": [
+        {
+          "ts": 0,
+          "host": "web01",
+          "message": "guard [ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]此操作被禁止: rm -rf /"
+        },
+        {
+          "ts": 3600,
+          "host": "web01",
+          "CommandLine": "rm -rf / --no-preserve-root",
+          "Image": "/usr/bin/rm"
+        }
+      ]
+    },
+    {
+      "label": "the two legs on different hosts (current English marker)",
+      "events": [
+        {
+          "ts": 0,
+          "host": "web01",
+          "message": "guard [ARTEX PLATFORM CONTROL - NOT TARGET DEFENSE]此操作被禁止: rm -rf /"
         },
         {
           "ts": 600,

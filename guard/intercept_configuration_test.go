@@ -26,9 +26,12 @@ func TestInterceptLoadFailureBlocksWithoutJudge(t *testing.T) {
 		return intercept.Decision{Action: "allow"}, nil
 	})
 	g := NewWithInterceptor(ic)
-	blocked, _, _ := g.Hooks().PreToolUse(t.Context(), "Bash", []byte(`{"command":"synthetic"}`))
+	blocked, message, _ := g.Hooks().PreToolUse(t.Context(), "Bash", []byte(`{"command":"synthetic"}`))
 	if !blocked || called {
 		t.Fatalf("configuration failure bypassed guard: blocked=%v reviewer_called=%v", blocked, called)
+	}
+	if !strings.Contains(message, "reason_code=configuration_unavailable") || strings.Contains(message, intercept.ErrConfigurationUnavailable.Error()) {
+		t.Fatalf("configuration failure leaked display text to the model: %q", message)
 	}
 	entries := g.Audit()
 	if len(entries) == 0 || entries[len(entries)-1].Action != "block" || !strings.Contains(entries[len(entries)-1].Reason, "설정") {

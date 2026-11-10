@@ -57,6 +57,8 @@ type HeaderMode string
 
 const (
 	HeaderPreserve HeaderMode = "preserve"
+	// Evaluation-only caller credentials; requires a matching Evaluation context.
+	HeaderEvaluationCallerPassthrough HeaderMode = "evaluation_caller_passthrough"
 	// This opt-in host seam is a Draft proposal, not an adopted general-mode
 	// contract or an authorization to activate protected session injection.
 	HeaderProtectedSessionProposal HeaderMode = "protected_session_proposal"
@@ -88,19 +90,26 @@ type Limits struct {
 	MaxUnknown     uint64
 }
 type Config struct {
-	HeaderMode     HeaderMode
-	Scope          transmit.Scope
-	IntentID       int64
-	OwnerRef       string
-	PolicyRevision string
-	AccountRef     string
-	SessionRef     string
-	ExpiresAt      time.Time
-	Rules          []Rule
-	Budget         transmit.CumulativeBudget `json:"-"`
-	Recorder       Recorder                  `json:"-"`
-	RootCAs        *x509.CertPool            `json:"-"`
-	Limits         Limits
+	// CheckAuthority는 신뢰 호스트가 연결하는 위임 철회 검사다. nil은 기존 모드다.
+	// 짧고 제한된 로컬 검사만 수행하며 Execution으로 재진입하면 안 된다.
+	CheckAuthority func() error `json:"-"`
+	ApprovalMode   ApprovalMode
+	// RequestApproval은 호스트가 명시적으로 연결하는 요청별 확인 경계다.
+	RequestApproval RequestApprovalGate `json:"-"`
+	Evaluation      *EvaluationCallerContext
+	HeaderMode      HeaderMode
+	Scope           transmit.Scope
+	IntentID        int64
+	OwnerRef        string
+	PolicyRevision  string
+	AccountRef      string
+	SessionRef      string
+	ExpiresAt       time.Time
+	Rules           []Rule
+	Budget          transmit.CumulativeBudget `json:"-"`
+	Recorder        Recorder                  `json:"-"`
+	RootCAs         *x509.CertPool            `json:"-"`
+	Limits          Limits
 }
 type Restriction struct {
 	PolicyRevision string    `json:"policy_revision"`
@@ -146,18 +155,20 @@ type Counts struct {
 	Calls            int    `json:"calls"`
 }
 type ExecutionView struct {
-	HeaderMode     HeaderMode     `json:"header_mode"`
-	IntentIDs      []int64        `json:"intent_ids"`
-	Version        string         `json:"version"`
-	Scope          transmit.Scope `json:"scope"`
-	IntentID       int64          `json:"intent_id"`
-	OwnerRef       string         `json:"owner_ref"`
-	PolicyRevision string         `json:"policy_revision"`
-	State          string         `json:"state"`
-	ExpiresAt      time.Time      `json:"expires_at"`
-	Counts         Counts         `json:"counts"`
-	Reason         Reason         `json:"reason"`
-	AuditComplete  bool           `json:"audit_complete"`
+	ApprovalMode   ApprovalMode             `json:"approval_mode"`
+	Evaluation     *EvaluationCallerContext `json:"evaluation,omitempty"`
+	HeaderMode     HeaderMode               `json:"header_mode"`
+	IntentIDs      []int64                  `json:"intent_ids"`
+	Version        string                   `json:"version"`
+	Scope          transmit.Scope           `json:"scope"`
+	IntentID       int64                    `json:"intent_id"`
+	OwnerRef       string                   `json:"owner_ref"`
+	PolicyRevision string                   `json:"policy_revision"`
+	State          string                   `json:"state"`
+	ExpiresAt      time.Time                `json:"expires_at"`
+	Counts         Counts                   `json:"counts"`
+	Reason         Reason                   `json:"reason"`
+	AuditComplete  bool                     `json:"audit_complete"`
 }
 type RuleView struct {
 	Ref          string   `json:"ref"`
@@ -165,22 +176,26 @@ type RuleView struct {
 	PathScopeRef string   `json:"path_scope_ref"`
 }
 type PolicyView struct {
-	HeaderMode        HeaderMode `json:"header_mode"`
-	BudgetRef         string     `json:"budget_ref"`
-	RemainingRequests uint64     `json:"remaining_requests"`
-	BudgetAvailable   bool       `json:"budget_available"`
-	Version           string     `json:"version"`
-	PolicyRevision    string     `json:"policy_revision"`
-	ExpiresAt         time.Time  `json:"expires_at"`
-	Rules             []RuleView `json:"rules"`
+	ApprovalMode      ApprovalMode             `json:"approval_mode"`
+	Evaluation        *EvaluationCallerContext `json:"evaluation,omitempty"`
+	HeaderMode        HeaderMode               `json:"header_mode"`
+	BudgetRef         string                   `json:"budget_ref"`
+	RemainingRequests uint64                   `json:"remaining_requests"`
+	BudgetAvailable   bool                     `json:"budget_available"`
+	Version           string                   `json:"version"`
+	PolicyRevision    string                   `json:"policy_revision"`
+	ExpiresAt         time.Time                `json:"expires_at"`
+	Rules             []RuleView               `json:"rules"`
 }
 type CallResult struct {
-	IntentID      int64  `json:"intent_id"`
-	CallRef       string `json:"call_ref"`
-	CommandRef    string `json:"command_ref"`
-	State         string `json:"state"`
-	Counts        Counts `json:"counts"`
-	AuditComplete bool   `json:"audit_complete"`
-	Final         bool   `json:"final"`
-	Reason        Reason `json:"reason"`
+	Observations          []HTTPObservation `json:"observations,omitempty"`
+	ObservationsTruncated bool              `json:"observations_truncated,omitempty"`
+	IntentID              int64             `json:"intent_id"`
+	CallRef               string            `json:"call_ref"`
+	CommandRef            string            `json:"command_ref"`
+	State                 string            `json:"state"`
+	Counts                Counts            `json:"counts"`
+	AuditComplete         bool              `json:"audit_complete"`
+	Final                 bool              `json:"final"`
+	Reason                Reason            `json:"reason"`
 }

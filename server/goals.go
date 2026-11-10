@@ -65,6 +65,15 @@ func (s *Server) startTaskEngine(t *Task) {
 		return
 	}
 	ctx := s.engine.execContextFor(s.ctx, t.ID)
+	if s.engine.e2HTTP != nil {
+		var err error
+		ctx, err = s.engine.e2HTTP.PreparePlanning(ctx, t)
+		if err != nil {
+			_ = s.m.SetTaskStatus(t.ID, "failed")
+			s.engine.cancelExec(t.ID, err)
+			return
+		}
+	}
 	if ctx.Err() != nil || s.engine.IsDeleting(t.ID) {
 		return
 	}
@@ -147,6 +156,14 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	if !exists || current != t || s.engine.IsDeleting(t.ID) {
 		return false, fmt.Errorf("task is being deleted")
 	}
+	if s.firstDiagnosis {
+		if s.firstDiagnosisPreparation || s.firstDiagnosisAdmissionStopped.Load() || s.engine.firstDiagnosisAdmission == nil || s.engine.firstDiagnosisAdmission(t) != nil {
+			return false, ErrControlledReadHostConfiguration
+		}
+	}
+	if s.engine.e2HTTP != nil && s.engine.e2HTTP.AdmitTask(s.ctx, t) != nil {
+		return false, ErrE2HTTPHost
+	}
 	if !s.engine.beginTaskOperation(t.ID) {
 		return false, fmt.Errorf("task is being deleted")
 	}
@@ -203,8 +220,9 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	// An existing pause already supplies this barrier. Re-cancelling it would
 	// revoke the fresh controlled-read approval registered while paused.
 	if !engineWasPaused && (shouldQueue || wasTerminal || wasPaused || wasQueued) {
-		s.engine.Pause(t.ID, agent.Causef("queued_for_admission", "任务等待运行准入",
-			"任务正在等待并发队列或准入状态提交，本次执行已停止；只有获得运行槽后才会重新领取意图"))
+		s.engine.Pause(t.ID, agent.NewCause("queued_for_admission", "작업이 실행 허가를 기다림",
+			"작업이 동시 실행 대기열이나 허가 상태 저장을 기다리고 있어 이번 실행을 멈췄다. 실행 슬롯을 받은 뒤에야 의도를 다시 가져간다",
+			"The task is waiting in the concurrency queue or for its admission state to be committed, so this execution stopped; intents are claimed again only after it gets a run slot"))
 	}
 
 	status := lifecycle.Status
@@ -292,8 +310,9 @@ func (s *Server) reconcileConcurrency() {
 				continue
 			}
 			mode := s.resumeAdmissionMode(task)
-			s.engine.Pause(task.ID, agent.Causef("llm_unavailable_queued", "LLM 不可用，任务进入等待队列",
-				"任务当前无法解析可运行的 Planner/Worker LLM，已释放并发槽；配置恢复后按队列顺序继续"))
+			s.engine.Pause(task.ID, agent.NewCause("llm_unavailable_queued", "LLM을 쓸 수 없어 작업이 대기열에 들어감",
+				"작업에 쓸 Planner/Worker LLM을 정하지 못해 동시 실행 슬롯을 반납했다. 설정이 돌아오면 대기열 순서대로 이어 간다",
+				"The task can't resolve a runnable Planner/Worker LLM, so it released its concurrency slot; it continues in queue order once the configuration recovers"))
 			if err := s.m.EnqueueTask(task.ID, mode); err != nil {
 				s.engine.Resume(task)
 				log.Printf("[concurrency] task %s 因 LLM 不可用入队失败: %v", task.ID, err)

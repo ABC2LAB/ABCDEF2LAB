@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -63,22 +64,24 @@ type Execution struct {
 	secretHeaders  map[string]struct{}
 }
 type Call struct {
-	ingressToken  [32]byte
-	e             *Execution
-	ctx           context.Context
-	cancel        context.CancelFunc
-	ref           string
-	commandRef    string
-	intentID      int64
-	expires       time.Time
-	closing       bool
-	finalized     bool
-	active        int
-	idle          chan struct{}
-	counts        Counts
-	auditComplete bool
-	reason        Reason
-	closeGate     chan struct{}
+	diagnostics          []HTTPObservation
+	diagnosticsTruncated bool
+	ingressToken         [32]byte
+	e                    *Execution
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	ref                  string
+	commandRef           string
+	intentID             int64
+	expires              time.Time
+	closing              bool
+	finalized            bool
+	active               int
+	idle                 chan struct{}
+	counts               Counts
+	auditComplete        bool
+	reason               Reason
+	closeGate            chan struct{}
 }
 
 func validRef(v string) bool { return safeRef.MatchString(v) && !strings.Contains(v, "://") }
@@ -91,7 +94,7 @@ func randomRef(prefix string) (string, error) {
 }
 
 func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
-	if parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
+	if !validApprovalConfig(cfg) || parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
 		!validRef(cfg.AccountRef) || !validRef(cfg.SessionRef) || cfg.ExpiresAt.IsZero() || !time.Now().Before(cfg.ExpiresAt) {
 		return nil, ErrConfig
 	}
@@ -107,27 +110,12 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 	if _, err := cfg.Budget.Ledger.Remaining(cfg.Budget.Key, cfg.Budget.Binding, time.Now()); err != nil {
 		return nil, ErrConfig
 	}
-	l := cfg.Limits
-	if l.MaxAttempts == 0 || l.MaxAttempts > maxExecutionAttempts || l.MaxCalls <= 0 || l.MaxCalls > maxExecutionCalls || l.MaxConcurrent <= 0 || l.MaxConcurrent > maxConcurrentRequests ||
-		l.MaxBodyBytes <= 0 || l.MaxBodyBytes > maxRequestBodyBytes || l.RequestTimeout <= 0 || l.RequestTimeout > maxRequestTimeout ||
-		l.CallTimeout <= 0 || l.CallTimeout > maxCallTimeout || l.MaxDenials == 0 || l.MaxTransient == 0 || l.MaxUnknown == 0 {
-		return nil, ErrConfig
-	}
-	rules, err := compileRules(cfg.Rules)
+	rules, mode, evaluation, err := compilePolicyTemplate(cfg)
 	if err != nil {
 		return nil, err
 	}
-	if cfg.HeaderMode == "" {
-		cfg.HeaderMode = HeaderPreserve
-	}
-	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal {
-		return nil, ErrConfig
-	}
-	for _, rule := range rules {
-		if cfg.HeaderMode == HeaderPreserve && len(rule.CredentialHeaders) != 0 {
-			return nil, ErrConfig
-		}
-	}
+	cfg.HeaderMode = mode
+	cfg.Evaluation = evaluation
 	cfg.Rules = nil
 	if cfg.RootCAs != nil {
 		cfg.RootCAs = cfg.RootCAs.Clone()
@@ -360,7 +348,8 @@ func (c *Call) blockedLocked() Reason {
 	}
 	return Complete
 }
-func (e *Execution) record(ctx context.Context, ev Event) error {
+func (e *Execution) record(ctx context.Context, ev Event) (resultErr error) {
+	defer func() { diagnosticAudit(e.ctx, ev, resultErr) }()
 	e.recordMu.Lock()
 	defer e.recordMu.Unlock()
 	e.mu.Lock()
@@ -565,7 +554,7 @@ func (c *Call) resultLocked() CallResult {
 	if c.finalized {
 		state = "closed"
 	}
-	return CallResult{IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, State: state, Counts: c.counts, AuditComplete: c.auditComplete && !c.e.auditFailed, Final: c.finalized, Reason: c.reason}
+	return CallResult{Observations: cloneHTTPObservations(c.diagnostics), ObservationsTruncated: c.diagnosticsTruncated, IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, State: state, Counts: c.counts, AuditComplete: c.auditComplete && !c.e.auditFailed, Final: c.finalized, Reason: c.reason}
 }
 
 // Snapshot uses the original approval anchor. Counts remain execution-wide;
@@ -601,13 +590,13 @@ func (e *Execution) snapshotLocked(id int64) ExecutionView {
 		ids = append(ids, intent)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	return ExecutionView{HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
+	return ExecutionView{ApprovalMode: e.cfg.ApprovalMode, Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
 		State: state, ExpiresAt: e.cfg.ExpiresAt, Counts: e.counts, Reason: reason, AuditComplete: !e.auditFailed && e.cfg.Recorder != nil}
 }
 func (e *Execution) Policy() PolicyView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	v := PolicyView{HeaderMode: e.cfg.HeaderMode, Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
+	v := PolicyView{ApprovalMode: e.cfg.ApprovalMode, Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, PolicyRevision: e.cfg.PolicyRevision, ExpiresAt: e.cfg.ExpiresAt}
 	for _, r := range e.rules {
 		v.Rules = append(v.Rules, RuleView{Ref: r.Ref, Methods: append([]string(nil), r.Methods...), PathScopeRef: r.PathScopeRef})
 	}
@@ -724,10 +713,28 @@ func (c *Call) start(method string) (Receipt, error) {
 	e.counts.Attempts++
 	return r, nil
 }
-func (c *Call) finish(ctx context.Context, r Receipt) (Receipt, error) {
+
+// 기록을 먼저 마친 정상 요청도 다른 요청의 실패 고정을 덮어쓰면 안 된다.
+// 호출자는 execution 잠금을 보유한다.
+func (c *Call) preserveOutcomeLocked(r Receipt, err error) {
+	e := c.e
+	c.reason = r.Reason
+	if err != nil || r.Reason == AuditFailed || e.auditFailed {
+		e.auditFailed = true
+		e.stopReason = AuditFailed
+		e.cancel()
+		c.auditComplete = false
+		c.reason = AuditFailed
+	}
+}
+
+func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) (Receipt, error) {
 	r.At = time.Now().UTC()
 	err := c.e.recordBounded(ctx, Event{Stage: "result", Receipt: r})
 	r.AuditComplete = err == nil && r.Reason != AuditFailed
+	for _, capture := range observe {
+		capture(r)
+	}
 	e := c.e
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -752,11 +759,7 @@ func (c *Call) finish(ctx context.Context, r Receipt) (Receipt, error) {
 	}
 	add(&c.counts)
 	add(&e.counts)
-	c.reason = r.Reason
-	if err != nil {
-		c.auditComplete = false
-		c.reason = AuditFailed
-	}
+	c.preserveOutcomeLocked(r, err)
 	c.active--
 	if c.active == 0 {
 		close(c.idle)
@@ -833,11 +836,29 @@ func newDeadlineGuardedConn(conn net.Conn, call *Call, revision string, ob *obse
 	return &guardedConn{Conn: conn, c: call, revision: revision, ob: ob}, nil
 }
 
+// 외부 파일 변경과 송신을 원자적으로 묶는 검사는 아니다.
+// 각 지원 송신 경계 직전에 확인하고 한 번 실패한 위임은 다시 허용하지 않는다.
+// 호출자는 execution 잠금을 보유한다.
+// Dial 뒤 TLS/요청 조각을 쓰기 전에도 철회될 수 있으므로 Write 검사를 생략하지 않는다.
+// 판정·정책 세대와 송신의 잠금 경계를 유지하며 callback은 잠금 아래 실행된다.
+// URL 준비 callback은 held FD의 metadata를 확인하고 큰 helper 원문을 매번 다시 읽지 않는다.
+func (e *Execution) authorityCurrentLocked() bool {
+	if e.cfg.CheckAuthority == nil {
+		return true
+	}
+	if e.cfg.CheckAuthority() == nil {
+		return true
+	}
+	e.stopped, e.stopReason = true, Revoked
+	e.cancel()
+	return false
+}
+
 func (g *guardedConn) Write(p []byte) (int, error) {
 	e := g.c.e
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if g.c.blockedLocked() != Complete || e.cfg.PolicyRevision != g.revision {
+	if g.c.blockedLocked() != Complete || e.cfg.PolicyRevision != g.revision || !e.authorityCurrentLocked() || g.c.blockedLocked() != Complete || e.cfg.PolicyRevision != g.revision {
 		return 0, ErrDenied
 	}
 	g.ob.forward.Store(true)
@@ -849,6 +870,8 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	method := ""
 	if req != nil {
+		// 대기 중 호출자가 URL·헤더를 바꿔 승인 내용과 송신을 분리하지 못한다.
+		req = req.Clone(ctx)
 		method = req.Method
 	}
 	r, err := c.start(method)
@@ -856,7 +879,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		return nil, r, err
 	}
 	finish := func(resp *http.Response, cause error) (*http.Response, Receipt, error) {
-		rr, aerr := c.finish(ctx, r)
+		rr, aerr := c.finish(ctx, r, func(rr Receipt) { c.observeHTTP(req, resp, rr) })
 		if aerr != nil {
 			return nil, rr, aerr
 		}
@@ -874,16 +897,21 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
 	}
+	e := c.e
 	requestHost, hostOK := preservedRequestHost(req)
-	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") ||
-		headerPresent(req.Header, "Authorization") || headerPresent(req.Header, "Cookie") {
+	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") || !e.callerCredentialsAllowed(req.Header) {
 		r.Decision = "unsupported"
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
 	}
-	e := c.e
 	e.mu.Lock()
 	reason := c.blockedLocked()
+	if reason == Complete && !e.authorityCurrentLocked() {
+		reason = Revoked
+	}
+	if reason == Complete {
+		reason = c.blockedLocked()
+	}
 	rule, ok := e.matchLocked(req)
 	revision := e.cfg.PolicyRevision
 	if reason == Complete && !ok {
@@ -919,9 +947,43 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	r.RuleRef = rule.Ref
 	r.PolicyRevision = revision
+	if e.cfg.RequestApproval != nil {
+		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
+		stopApproval := context.AfterFunc(ctx, cancelApproval)
+		proposal := RequestApprovalProposal{
+			Receipt: r, OwnerRef: e.cfg.OwnerRef, AccountRef: e.cfg.AccountRef, SessionRef: e.cfg.SessionRef,
+			ExpiresAt: c.expires, Method: method, URL: req.URL.String(), Host: requestHost,
+			Headers: requestHeaders.Clone(), Body: bytes.Clone(body),
+		}
+		// 보호 자격 원문은 승인 소비자에게 전달하지 않는다. 참조만 결속한다.
+		allowed, approvalErr := e.cfg.RequestApproval.AwaitRequestApproval(approvalCtx, proposal)
+		canceled := approvalCtx.Err() != nil || ctx.Err() != nil
+		stopApproval()
+		cancelApproval()
+		if approvalErr != nil && !(canceled && (errors.Is(approvalErr, context.Canceled) || errors.Is(approvalErr, context.DeadlineExceeded))) {
+			r.Decision, r.Reason = "denied", AuditFailed
+			return finish(nil, ErrAudit)
+		}
+		if !allowed || canceled {
+			r.Decision, r.Reason = "denied", PolicyDenied
+			if canceled {
+				r.Reason = Closed
+			}
+			return finish(nil, ErrDenied)
+		}
+	}
 	r.Decision = "allowed"
 	e.mu.Lock()
 	reason = c.blockedLocked()
+	if reason == Complete && e.cfg.PolicyRevision != revision {
+		reason = PolicyDenied
+	}
+	if reason == Complete && !e.authorityCurrentLocked() {
+		reason = Revoked
+	}
+	if reason == Complete {
+		reason = c.blockedLocked()
+	}
 	if reason == Complete && e.cfg.PolicyRevision != revision {
 		reason = PolicyDenied
 	}
@@ -987,7 +1049,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	transport.DialContext = func(dctx context.Context, network, address string) (net.Conn, error) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		if c.blockedLocked() != Complete || e.cfg.PolicyRevision != revision || network != "tcp" || address != rule.authority {
+		if c.blockedLocked() != Complete || e.cfg.PolicyRevision != revision || network != "tcp" || address != rule.authority || !e.authorityCurrentLocked() || c.blockedLocked() != Complete || e.cfg.PolicyRevision != revision {
 			return nil, ErrDenied
 		}
 		ob.forward.Store(true)
@@ -1003,17 +1065,28 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, sendErr := client.Do(out)
 	r.ForwardAttempted = ob.forward.Load()
+	if r.ForwardAttempted {
+		diagnosticReceipt(e.ctx, r, "http_forward_attempted", "started", "")
+	}
 	r.RequestWritten = ob.written.Load()
 	r.NotSent = !r.ForwardAttempted
 	if sendErr != nil {
 		r.Reason = TransportFailed
 		if r.ForwardAttempted {
 			r.Reason = Unknown
+		} else {
+			e.mu.Lock()
+			authorityRevoked := e.cfg.CheckAuthority != nil && e.stopReason == Revoked
+			e.mu.Unlock()
+			if authorityRevoked {
+				r.Decision, r.Reason = "denied", Revoked
+			}
 		}
 		return finish(nil, ErrDenied)
 	}
 	r.ResponseReceived = true
 	r.StatusCode = resp.StatusCode
+	diagnosticReceipt(e.ctx, r, "http_response_received", "succeeded", "")
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, e.cfg.Limits.MaxBodyBytes+1))
 	closeErr := resp.Body.Close()
 	r.ResponseComplete = readErr == nil && closeErr == nil && int64(len(responseBody)) <= e.cfg.Limits.MaxBodyBytes
@@ -1206,4 +1279,40 @@ func identityEncoding(headers http.Header, field string) bool {
 		}
 	}
 	return values <= 1
+}
+
+// ValidatePolicyTemplate은 정적 규칙·한도·헤더 모드만 검사한다.
+// 실제 task/intent/예산/권위의 수용 또는 실행 생성은 하지 않으며 NewExecution 검사를 대체하지 않는다.
+func ValidatePolicyTemplate(cfg Config) error {
+	_, _, _, err := compilePolicyTemplate(cfg)
+	return err
+}
+
+func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationCallerContext, error) {
+	l := cfg.Limits
+	if l.MaxAttempts == 0 || l.MaxAttempts > maxExecutionAttempts || l.MaxCalls <= 0 || l.MaxCalls > maxExecutionCalls || l.MaxConcurrent <= 0 || l.MaxConcurrent > maxConcurrentRequests ||
+		l.MaxBodyBytes <= 0 || l.MaxBodyBytes > maxRequestBodyBytes || l.RequestTimeout <= 0 || l.RequestTimeout > maxRequestTimeout ||
+		l.CallTimeout <= 0 || l.CallTimeout > maxCallTimeout || l.MaxDenials == 0 || l.MaxTransient == 0 || l.MaxUnknown == 0 {
+		return nil, "", nil, ErrConfig
+	}
+	rules, err := compileRules(cfg.Rules)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if cfg.HeaderMode == "" {
+		cfg.HeaderMode = HeaderPreserve
+	}
+	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal && cfg.HeaderMode != HeaderEvaluationCallerPassthrough {
+		return nil, "", nil, ErrConfig
+	}
+	cfg.Evaluation, err = validateEvaluationCallerContext(cfg)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	for _, rule := range rules {
+		if cfg.HeaderMode != HeaderProtectedSessionProposal && len(rule.CredentialHeaders) != 0 {
+			return nil, "", nil, ErrConfig
+		}
+	}
+	return rules, cfg.HeaderMode, cfg.Evaluation, nil
 }

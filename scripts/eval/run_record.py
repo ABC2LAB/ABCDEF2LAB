@@ -22,7 +22,7 @@ from collect import VerdictRecord
 from ground_truth import bac_category, core_gt
 from isolation_proof import (
     IsolationError, attempt_reconciliation, check_isolated_events, check_isolation, check_unproven_events,
-    drain_policy, e2_mode, run_conditions,
+    blocked_attempts, drain_policy, e2_collection_outcome, e2_identity, e2_mode, e2_prompt, output_language, run_conditions, verdict_collection,
 )
 from manifest import RunManifest
 from scoreboard import SnapshotError, normalize_challenges, require_basis_keys
@@ -56,7 +56,11 @@ class RunInputs:
     proof_id: str | None = None  # v1.1 격리 증명(없으면 귀속 미확인)
     drain_policy: tuple[int, int] | None = None  # v1.1 증명 근거의 봉인 뒤 (유예, 정착 대기) 초
     run_conditions: tuple[str, str, str, str, str, str] | None = None  # (엔진 설정, 적용 샘플링, 머신 사양, 머신 ID) 해시와 LLM 스트리밍
-    e2_mode: str | None = None  # v1.1 격리 근거의 E② 자리(none|stub). 증명이 없으면 None
+    output_language: str | None = None  # v1.1 격리 근거의 표시 언어. 조건 사이에서는 일부러 다르다(프로토콜 §2)
+    e2_mode: str | None = None  # v1.1 격리 근거의 E② 자리(none|stub|product). 증명이 없으면 None
+    e2_identity: tuple[str, str] | None = None  # 제품 E² 회차의 (정책 지문, 이미지 ID). 그 밖에는 None
+    e2_outcome: str | None = None  # 제품 E² 회차의 수집 결과. 그 밖에는 None
+    e2_prompt: tuple[str, ...] | None = None  # 확인된 Worker 프롬프트 식별값. 제품 E² 완료 회차에만 있다
     attempt_reconciliation: dict | None = None  # E② 자리가 있는 회차의 시도별 대조 건수(§8.3). none·증명 없음이면 None
 
 
@@ -395,20 +399,29 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
     try:
         if proof is None:
             check_unproven_events(rows("solve_events", "events"))
-            engine_solved, proof_id, policy, conditions, e2, reconciled = frozenset(), None, None, None, None, None
+            language, outcome = None, None
+            engine_solved, proof_id, policy, conditions, e2, reconciled, identity, prompt = frozenset(), None, None, None, None, None, None, None
         else:
             proof = check_isolation(receipt, steps, artifacts, proof, loaded["isolation_evidence"])
             engine_solved = check_isolated_events(rows("solve_events", "events"), receipt, proof, steps, pre, post)
             proof_id = proof["proof_id"]
             policy = drain_policy(receipt, loaded["isolation_evidence"])
             conditions = run_conditions(receipt, loaded["isolation_evidence"])
+            language = output_language(receipt, loaded["isolation_evidence"])
             e2 = e2_mode(receipt, loaded["isolation_evidence"])
+            identity = e2_identity(receipt, loaded["isolation_evidence"])
+            prompt = e2_prompt(receipt, loaded["isolation_evidence"])
+            outcome = e2_collection_outcome(receipt, loaded["isolation_evidence"])
             reconciled = attempt_reconciliation(receipt, loaded["isolation_evidence"])
+            verdict_collection(receipt, loaded["isolation_evidence"], loaded["records"])
     except IsolationError as exc:
         raise RunRecordError(str(exc)) from None
+    # 표의 차단 시도 수는 이 값이다. 서명만 믿지 않고 검증한 대조 근거와 맞춘다(#308 리뷰).
+    if receipt["blocked_attempts"] != blocked_attempts(reconciled):
+        raise RunRecordError("러너 기록 blocked_attempts가 E② 대조 근거와 다름")
     return RunInputs(pre, post, loaded["records"], traffic,
                      None if covered is None else frozenset(covered), engine_solved,
                      receipt["execution_id"], receipt["fixture_fingerprint"], receipt["environment_fingerprint"],
                      version=V11, judgments_collected=loaded["records"] is not None, proof_id=proof_id,
-                     drain_policy=policy, run_conditions=conditions, e2_mode=e2,
-                     attempt_reconciliation=reconciled)
+                     drain_policy=policy, run_conditions=conditions, output_language=language, e2_mode=e2,
+                     attempt_reconciliation=reconciled, e2_identity=identity, e2_outcome=outcome, e2_prompt=prompt)

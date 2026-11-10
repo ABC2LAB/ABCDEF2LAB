@@ -18,7 +18,7 @@ from runner_checks import (
 )
 from runner_config import COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LOCAL_LLM, parse_runner_config, plan_run
 from runner_docker import DaemonIdentity
-from test_preflight import configuration, local_llm
+from test_preflight import LOCAL_SAMPLING, configuration, local_llm
 from test_runner_config import _yaml_without_comments, runner_config
 
 PROJECT = "eval-ours-1"
@@ -44,6 +44,7 @@ def plan_for(backend="api", e2=None, side="ours"):
     if backend == "local":
         for name in ("baseline", "ours"):
             preflight[name]["llm"] = local_llm()
+            preflight[name]["sampling"] = dict(LOCAL_SAMPLING)
     payload = runner_config()
     if e2 is not None:
         payload["e2"]["ours_mode"] = e2
@@ -216,6 +217,30 @@ class TestExpectations(unittest.TestCase):
 class TestE2Slot(unittest.TestCase):
     """개선 후의 E② 자리(프로토콜 §2): 엔진 → E² → 계측기 → 대상, 엔진 → 계측기 직통 없음."""
 
+    def test_product_has_the_same_placement_as_the_stub(self):
+        import dataclasses
+        for backend in ("api", "local"):
+            with self.subTest(backend=backend):
+                config, stub = plan_for(backend, e2="stub")
+                self.assertEqual(expected_topology(config, dataclasses.replace(stub, e2_mode="product")), expected_topology(config, stub))
+
+    def test_meter_address_must_be_the_one_the_policy_pinned(self):
+        import dataclasses
+        config, stub = plan_for(e2="stub")
+        expected = expected_topology(config, dataclasses.replace(stub, e2_mode="product", e2_meter_ip="172.30.9.10"))
+        for observed, violations in (("172.30.9.10/24", []), ("172.30.9.11/24", ["network.e2_net: ADDRESS_MISMATCH"])):
+            with self.subTest(observed):
+                networks, containers = raw_world(stub=True)
+                by_key(networks, "e2_net")["Containers"][by_service(containers, "eval-meter")["id"]]["IPv4Address"] = observed
+                self.assertEqual(check_topology(expected, PROJECT, *facts(networks, containers)), violations)
+
+    def test_only_the_product_pins_an_address(self):
+        import dataclasses
+        config, stub = plan_for(e2="stub")
+        self.assertEqual(expected_topology(config, stub).pinned, {})
+        self.assertEqual(expected_topology(config, dataclasses.replace(stub, e2_mode="product", e2_meter_ip="172.30.9.10")).pinned,
+                         {"e2_net": {"eval-meter": "172.30.9.10"}})
+
     def test_stub_takes_the_meter_slot_on_the_engine_net(self):
         config, plan = plan_for(e2="stub")
         expected = expected_topology(config, plan)
@@ -238,7 +263,7 @@ class TestE2Slot(unittest.TestCase):
         import dataclasses
         config, plan = plan_for()
         with self.assertRaises(CheckInputError):
-            expected_topology(config, dataclasses.replace(plan, e2_mode="product"))
+            expected_topology(config, dataclasses.replace(plan, e2_mode="other"))
 
     def test_stub_world_passes_and_a_direct_meter_path_is_caught(self):
         config, plan = plan_for(e2="stub")

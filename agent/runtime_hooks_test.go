@@ -131,10 +131,10 @@ func TestRuntimeHooksConcurrentOwnerIsolationAndCleanup(t *testing.T) {
 	}
 	for got := range results {
 		if got.owner == "A" {
-			if got.lang != "en" || !strings.Contains(got.body, "A prompt") || !strings.Contains(got.wrap, "A wrapup") || !got.guide {
+			if got.lang != "ko" || !strings.Contains(got.body, "A prompt") || !strings.Contains(got.wrap, "A wrapup") || !got.guide {
 				t.Fatalf("A result mixed or lost owner state: %+v", got)
 			}
-		} else if got.lang != "ja" || !strings.Contains(got.body, "B prompt") || !strings.Contains(got.wrap, "B wrapup") || got.guide {
+		} else if got.lang != "ko" || !strings.Contains(got.body, "B prompt") || !strings.Contains(got.wrap, "B wrapup") || got.guide {
 			t.Fatalf("B result mixed or lost owner state: %+v", got)
 		}
 	}

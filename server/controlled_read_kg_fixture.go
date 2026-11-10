@@ -44,6 +44,9 @@ func (s *Server) configureControlledReadFixtureRegistries(files map[string]strin
 		return ErrControlledReadHostConfiguration
 	}
 	r.store.fixtureRegistries = frozen
+	if s.m != nil && s.m.pg != nil && s.m.pg.DB != nil {
+		r.mapStore = &accessMapStore{pool: s.m.pg.DB}
+	}
 	return nil
 }
 
@@ -60,6 +63,9 @@ func (s *controlledReadStore) bindFixtureRegistry(spec *controlledReadSpec, ref 
 		return &kgfixture.Error{Code: kgfixture.CodeUnreadable}
 	}
 	defer clear(body)
+	if s.authorizeInput != nil && s.authorizeInput(filepath.Join(s.snapshotDir, name), body) != nil {
+		return &kgfixture.Error{Code: kgfixture.CodeUnreadable}
+	}
 	snapshot, err := kgfixture.Parse(body)
 	if err != nil {
 		return err

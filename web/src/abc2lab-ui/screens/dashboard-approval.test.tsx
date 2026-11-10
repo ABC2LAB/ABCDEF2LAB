@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type ReactNode, useState } from "react";
+
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../lib/api";
@@ -94,11 +95,6 @@ const tileValue = (label: string) =>
   within(screen.getByText(label, { selector: ".tile .k" }).closest(".tile") as HTMLElement).getByText(/^\d+$|^—$/, {
     selector: ".v",
   });
-/** 진행 중인 점검은 타일 대신 목록 제목 옆 건수로 보인다(0건이면 건수 대신 빈 목록 안내) */
-const activeCount = () => {
-  const head = screen.getByText("진행 중인 점검", { selector: ".recent-head span" }).closest(".recent-head");
-  return head?.querySelector(".dash-cnt")?.textContent ?? "0건";
-};
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -129,28 +125,28 @@ describe("dashboard snapshot refresh", () => {
 
   it("reads tasks and approvals again when the dashboard is entered again", async () => {
     show();
-    await waitFor(() => expect(activeCount()).toBe("1건"));
-    expect(tileValue("결정 대기")).toHaveTextContent("0");
+    await waitFor(() => expect(tileValue("진행 중인 점검")).toHaveTextContent("1"));
+    expect(tileValue("승인 대기")).toHaveTextContent("0");
 
     finishAndAsk();
     fireEvent.click(screen.getByRole("button", { name: "다른 화면으로" }));
     fireEvent.click(screen.getByRole("button", { name: "대시보드로" }));
 
-    await waitFor(() => expect(activeCount()).toBe("0건"));
-    await waitFor(() => expect(tileValue("결정 대기")).toHaveTextContent("1"));
+    await waitFor(() => expect(tileValue("진행 중인 점검")).toHaveTextContent("0"));
+    await waitFor(() => expect(tileValue("승인 대기")).toHaveTextContent("1"));
     expect(engine.listTasks).toHaveBeenCalledTimes(2);
     expect(engine.listPendingApprovals).toHaveBeenCalledTimes(2);
   });
 
   it("reads them again on 새로고침 while staying on the dashboard", async () => {
     show();
-    await waitFor(() => expect(activeCount()).toBe("1건"));
+    await waitFor(() => expect(tileValue("진행 중인 점검")).toHaveTextContent("1"));
 
     finishAndAsk();
     fireEvent.click(screen.getByRole("button", { name: "새로고침" }));
 
-    await waitFor(() => expect(activeCount()).toBe("0건"));
-    await waitFor(() => expect(tileValue("결정 대기")).toHaveTextContent("1"));
+    await waitFor(() => expect(tileValue("진행 중인 점검")).toHaveTextContent("0"));
+    await waitFor(() => expect(tileValue("승인 대기")).toHaveTextContent("1"));
   });
 
   it("does not query while the dashboard is hidden", async () => {
@@ -201,7 +197,9 @@ describe("approving a real pending request from the dashboard", () => {
 
     await waitFor(() => expect(engine.decidePendingApproval).toHaveBeenCalledWith(42, "allowed"));
     expect(engine.decidePendingApproval).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText("요청 #42을 허용했어요. 에이전트가 이 요청 하나를 보내요.")).toBeVisible();
+    expect(
+      await screen.findByText("도구 호출 #42을 허용했어요. 실제 HTTP 요청의 승인·전송 여부는 별도로 확인해요."),
+    ).toBeVisible();
     // 다시 읽은 요청 상태로 결과를 확인하고, 더 결정할 수 없다
     expect(await screen.findByText("허용됨", { selector: "strong" })).toBeVisible();
     expect(screen.queryByRole("button", { name: /이번 한 번만 허용/ })).toBeNull();

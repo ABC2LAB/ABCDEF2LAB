@@ -12,6 +12,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/dlp"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
 )
@@ -142,14 +143,19 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 
 	// Never serialize message/tool contents for the recording sink. Capture stays
 	// transient; persistence reads only whether a wire attempt existed.
+	ctx = diagnosticlog.WithRole(ctx, diagnosticCallRole(ctx, worker))
 	var reqBody map[string]any
 	var capt *Capture
 	if recordBodies {
 		reqBody = r.requestMetadata(req)
+	}
+	if recordBodies || diagnosticlog.From(ctx) != nil {
 		ctx, capt = NewMetadataCapture(ctx)
 	}
 
 	return func(yield func(llm.StreamEvent, error) bool) {
+		diagnosticFinish := r.startDiagnostic(ctx, capt)
+		streamComplete := false
 		var (
 			hasThinking bool
 			usage       llm.Usage
@@ -163,6 +169,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				return
 			}
 			finished = true
+			diagnosticFinish(usage, err, streamComplete, stopReason)
 			status := "ok"
 			if err != nil {
 				status = "error"
@@ -208,6 +215,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 		}
 
 		// Stream completed normally.
+		streamComplete = true
 		finish(streamErr)
 	}
 }
@@ -228,14 +236,19 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 		taskID = parsedID
 	}
 
+	ctx = diagnosticlog.WithRole(ctx, diagnosticCallRole(ctx, worker))
 	var reqBody map[string]any
 	var capt *Capture
 	if recordBodies {
 		reqBody = r.requestMetadata(req)
+	}
+	if recordBodies || diagnosticlog.From(ctx) != nil {
 		ctx, capt = NewMetadataCapture(ctx)
 	}
 
+	diagnosticFinish := r.startDiagnostic(ctx, capt)
 	msg, stopReason, usage, err := r.inner.Complete(ctx, req)
+	diagnosticFinish(usage, err, true, stopReason)
 	status := "ok"
 	if err != nil {
 		status = "error"

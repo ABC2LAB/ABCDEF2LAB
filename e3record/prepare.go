@@ -91,12 +91,12 @@ func Prepare(ctx context.Context, in Input, reader SourceReader) (Prepared, erro
 		return Prepared{}, ErrPrecision
 	}
 	var vuln any = string(verdict.Value)
-	access := "위반_후보"
+	access := AccessPolicyViolationCandidate
 	if verdict.Value == oracle.Allowed {
-		vuln, access = nil, "위반_미관찰"
+		vuln, access = nil, AccessPolicyNoViolationObserved
 	}
 	if verdict.Value == oracle.Undecidable {
-		access = "판정_불가"
+		access = AccessPolicyUndecidable
 	}
 	facts := in.Evidence.Result.Result.Facts
 	payload := map[string]any{

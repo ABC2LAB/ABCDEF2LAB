@@ -7,7 +7,6 @@ import { Strong } from "../components/ui";
 import { useApiResource } from "../lib/api";
 import { type EngineControlEvent, getControlLog } from "../lib/engine";
 import { useSelection } from "../lib/selection";
-import { zhToKo } from "../lib/zh-ko";
 import { useGo } from "../nav";
 
 // 누가 통제를 정했나 (decision_source)
@@ -185,11 +184,11 @@ export default function AuditScreen() {
                     <span className="msg" style={{ minWidth: 0 }}>
                       <span
                         style={{ ...(oneLine as React.CSSProperties), display: "block" }}
-                        title={zhToKo(e.reason) || e.ruleName}
+                        title={e.reason || e.ruleName}
                       >
                         {e.agent ? <span style={{ color: "var(--faint)" }}>{e.agent} · </span> : null}
                         <code>{e.tool || "요청"}</code> · <strong style={st.style}>{st.label}</strong>
-                        {e.reason ? ` · ${zhToKo(e.reason)}` : ""}
+                        {e.reason ? ` · ${e.reason}` : ""}
                       </span>
                       {e.ruleName ? (
                         <span

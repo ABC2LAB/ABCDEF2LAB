@@ -1,5 +1,7 @@
 # E② 서버 실행 컨텍스트와 Worker 연결
 
+> **단계 기록과 현재 코드 구분:** 등록 GET Worker를 처음 연결한 단계의 계약·검증 기록입니다. 아래 DB mode 정본·KG/판정 연결을 미완으로 둔 설명은 당시 범위입니다. 현재 opt-in strict 경로에는 [DB mode 연결](../../server/controlled_read_mode.go)과 [최초 IDOR 판정·저장 통합](first-idor-integration.md)이 있습니다. 일반 HTTP 첫 진단은 [별도 CLI 경로](../first-diagnosis-launch.md)이며, 이 연결을 운영 권위·실모델·전체 송신 통제 수용으로 확대하지 않습니다.
+
 상태: 등록된 HTTP GET을 실제 `Engine.runIntent → Worker.Execute`에 연결한 구현. [전송기](./e2-http-transmitter.md)와 [감사 저장기](./e2-audit-journal.md)를 사용한다. 자동 로그인·KG 저장소·IDOR 판정/최초 finding 저장·UI는 이 단계에서 연결하지 않는다. 통제 Worker는 `report_finding`을 제공하지 않는다.
 
 ## 서버가 보유하는 승인 정보

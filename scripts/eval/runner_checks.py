@@ -15,12 +15,12 @@ import ipaddress
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping
 from urllib.parse import urlsplit
 
 from runner_config import (
-    API_FRONT_SERVICE, E2_NET, E2_NONE, E2_SERVICE, E2_STUB, ENGINE_API_NET, ENGINE_DB_SERVICE, ENGINE_NET,
+    API_FRONT_SERVICE, E2_NET, E2_NONE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_API_NET, ENGINE_DB_SERVICE, ENGINE_NET,
     ENGINE_SERVICE, LLM_EGRESS_NET, LLM_GW_SERVICE, METER_SERVICE, OBS_NET, OBS_SERVICE, TARGET_NET, TARGET_SERVICE,
     RunnerConfig, RunPlan,
 )
@@ -62,6 +62,8 @@ class NetworkExpectation:
 class ExpectedTopology:
     networks: Mapping[str, NetworkExpectation]
     publishes: Mapping[str, frozenset[Binding]]
+    # 망 이름 → 서비스 → 정책이 pin한 주소. 실제 주소와 다르면 회차를 쓰지 않는다.
+    pinned: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     @property
     def services(self) -> frozenset[str]:
@@ -118,10 +120,11 @@ def expected_topology(config: RunnerConfig, plan: RunPlan) -> ExpectedTopology:
     """
     if plan.llm["backend"] not in ("api", "local"):
         raise CheckInputError("llm_backend_unsupported")
-    if plan.e2_mode not in (E2_NONE, E2_STUB):
+    if plan.e2_mode not in (E2_NONE, E2_STUB, E2_PRODUCT):
         raise CheckInputError("e2_mode_unsupported")
     ports = config.ports
-    front = E2_SERVICE if plan.e2_mode == E2_STUB else METER_SERVICE
+    # 제품 E²의 망 배치는 가짜 E²와 같다(compose.e2-product.yaml).
+    front = METER_SERVICE if plan.e2_mode == E2_NONE else E2_SERVICE
     networks = {
         ENGINE_NET: NetworkExpectation(True, frozenset({ENGINE_SERVICE, ENGINE_DB_SERVICE, front,
                                                         LLM_GW_SERVICE, API_FRONT_SERVICE})),
@@ -139,10 +142,11 @@ def expected_topology(config: RunnerConfig, plan: RunPlan) -> ExpectedTopology:
         API_FRONT_SERVICE: frozenset({Binding(f"{ports['api_front']}/tcp", LOOPBACK_V4, ports["engine_api_host"])}),
         OBS_SERVICE: frozenset({Binding(f"{ports['obs']}/tcp", LOOPBACK_V4, ports["obs_host"])}),
     }
-    if plan.e2_mode == E2_STUB:
+    if plan.e2_mode != E2_NONE:
         networks[E2_NET] = NetworkExpectation(True, frozenset({E2_SERVICE, METER_SERVICE}))
         publishes[E2_SERVICE] = frozenset()
-    return ExpectedTopology(networks=networks, publishes=publishes)
+    pinned = {E2_NET: {METER_SERVICE: plan.e2_meter_ip}} if plan.e2_mode == E2_PRODUCT and plan.e2_meter_ip else {}
+    return ExpectedTopology(networks=networks, publishes=publishes, pinned=pinned)
 
 
 def _url_port(url: str) -> int:
@@ -321,11 +325,14 @@ def check_topology(expected: ExpectedTopology, project: str, networks: Iterable[
             if network.internal != want.internal:
                 violations.add(f"network.{key}: INTERNAL_MISMATCH")
             services = set()
-            for container_id in network.members:
+            for container_id, addresses in network.members.items():
                 if container_id not in service_by_id:
                     violations.add(f"network.{key}: FOREIGN_MEMBER")
                     continue
                 services.add(service_by_id[container_id])
+                wanted = expected.pinned.get(key, {}).get(service_by_id[container_id])
+                if wanted is not None and wanted not in addresses:
+                    violations.add(f"network.{key}: ADDRESS_MISMATCH")
                 attached.setdefault(container_id, set()).add(network.id)
             if services != set(want.members):
                 violations.add(f"network.{key}: MEMBERS_MISMATCH")

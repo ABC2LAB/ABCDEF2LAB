@@ -11,6 +11,7 @@ import tempfile
 import threading
 import traceback
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -20,9 +21,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from baseline_extract import MAX_VOCABULARY_BYTES, UPSTREAM_COMMIT
 from baseline_pages import BaselinePageMerge
 from runner_config import REPO_ROOT
+import runner  # noqa: E402
+import runner_engine  # noqa: E402
+from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified  # noqa: E402
 from runner_engine import (
     _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
-    engine_settings, findings_record, load_vocabulary, login, start_task, task_request,
+    EngineLLMProfile, apply_engine_settings, engine_settings, findings_record, load_vocabulary, login, start_task,
+    task_request,
 )
 from test_runner_config import runner_config
 from test_baseline_extract import finding, vocabulary
@@ -46,13 +51,28 @@ DTO_SHAPES = {
 # 개선 후가 같다(직접 확인한 값). 다르면 baseline·개선 후가 같은 요청으로 같은 일을 시작한다는 전제를 다시 본다.
 TASK_SHAPES = {
     ("server/server.go", "type createTaskReq struct"): "f07493c7ed7ca34b80af73f43b69b70207d61221e5fd2002f3cd514277b00f77",
+    # baseline과 다른 곳은 설명이 빈 요청의 기본 이름(언어 전환)뿐이다. 러너는 빈 설명을 거부하므로 회차에서 타지 않는다.
     ("server/server.go", "func (s *Server) createTask("):
-        "afa5623bfcd3de47848a84425a1bc6c873ba29f8e419b6c20872d2746f97115e",
+        "f05d1f004bc7c101827a08ffbe1d2b499e6b9547e748753d1ce8aa1aa3ea6f56",
     ("server/goals.go", "func (s *Server) launchTask("): "2a05e77a7e68b7aa3e5b94bce4bdc0e8e56416de1996c8f7d6a4ac8545e3e513",
     ("server/server.go", "func (s *Server) seed("): "7d0891d1bdcc78596ed2a3c8e40cd22b0be3866c78cc25962e948ed41430963a",
     ("server/server.go", "func parseTarget("): "4fa3c05b1d4ac4d24a387df3dda6fb87e566f45e9f16f0a2b79fa5e3b47bb3ea",
     ("server/dto.go", "type TaskDTO struct"): "119a0e91764c1e1e9c3a7701e0d0ddb8d63be7d700faf389d160eefadca56163",
     ("server/auth.go", "func (s *Server) requireAuth("): "1a66aca5c409d1b827327f5b6524438522821a1ba759508ad9c704750e790ef0",
+    # 러너가 압축 기준 창을 넣는 경로(apply_engine_settings). baseline e53a79f와 같은 값을 직접 확인했다.
+    ("server/server_mgmt.go", "func (s *Server) pgSaveProfile("):
+        "bd1e80549787564149575354402cbc5ef17b23308d525a8be00e8633c7526d2e",
+    ("server/server_mgmt.go", "func (s *Server) pgActivateProfile("):
+        "636fcf4ea39ee15733a7d4cc224ff1553baefdad0f22f931a5e46850f089d85d",
+    # 명시적 OpenRouter 또는 첫 진단 공유 예산 모드에서 연결·빈 응답·스트림 재시도를 끈다.
+    # 정책·예산이 없는 기존 local-only·평가 경로의 Retry와 다른 Config·task DTO 계약은 유지한다.
+    # 두 실제 로더 분기는 server/first_diagnosis_model_budget_loader_linux_test.go에서 대조한다.
+    ("server/server.go", "func (s *Server) loadLLMConfig("):
+        "fa0f1acd0524e20dc01d795fc71226eaace7ad887715ad49a2fab90414f01689",
+    ("server/server.go", "func (s *Server) getLLM("):
+        "3578d8622da0f87547261aea06ef17d3f46aa7215906fb122f8f8d3b53776436",
+    ("db/config.go", "type LLMProfile struct"):
+        "d94ed53b2203f42b0825da23763b92863794507bef5d3d97a0c47f1d8742a8b8",
 }
 TARGET = "http://eval-meter:8080"
 
@@ -126,10 +146,12 @@ class FakeEngine:
     """로그인 1개와 findings 페이지 조회만 하는 합성 엔진 API."""
 
     def __init__(self, items=None, login_status=200, login_body=None, task_status=201, task_body=None,
-                 settings=None):
+                 settings=None, apply=None):
         self.items = [finding()] if items is None else items
         # 실행 설정 GET 응답: 경로 → (status, 본문 bytes). 없으면 정상 응답.
         self.settings = settings or {}
+        # 실행 설정 쓰기 응답: 경로 → (status, 본문 bytes). 없으면 정상 응답.
+        self.apply = apply or {}
         self.login_status, self.login_body = login_status, login_body
         self.task_status, self.task_body = task_status, task_body
         self.requests = []
@@ -142,6 +164,9 @@ class FakeEngine:
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 engine.requests.append(("POST", self.path, dict(self.headers), body))
+                if self.path in ("/api/llm/profiles", "/api/llm/profiles/active"):
+                    self.apply_reply()
+                    return
                 if self.path == "/api/tasks" and engine.task_status is None:
                     self.close_connection = True  # 응답 없이 끊는다(생성 여부가 모호한 실패)
                     return
@@ -153,6 +178,22 @@ class FakeEngine:
                 else:
                     status = engine.login_status
                     payload = engine.login_body if engine.login_body is not None else json.dumps({"token": TOKEN}).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_PUT(self):
+                engine.requests.append(("PUT", self.path, dict(self.headers),
+                                        self.rfile.read(int(self.headers.get("Content-Length", "0")))))
+                self.apply_reply()
+
+            def apply_reply(self):
+                body = b'{"id": 7}' if self.path == "/api/llm/profiles" else b'{"ok": true}'
+                status, payload = engine.apply.get(self.path, (200, body))
+                if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+                    status = 401
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -195,6 +236,40 @@ class TestLogin(unittest.TestCase):
         engine = FakeEngine(**kwargs)
         self.addCleanup(engine.close)
         return engine
+
+    def projection(self, status, body=b"{}", error=None):
+        seen = {}
+
+        def get(port, path, headers, timeout, limit):
+            seen.update(port=port, path=path, headers=headers, timeout=timeout, limit=limit)
+            if error is not None:
+                raise error
+            return status, body
+        with mock.patch.object(runner_engine, "login", return_value="tok"), mock.patch.object(runner_engine, "_get", get):
+            return runner_engine.e2_prompt_projection(8080, AdminSecret("x"), "17", "e2run:1", 5), seen
+
+    def test_projection_asks_the_runners_task_and_run_with_a_bearer_token(self):
+        data, seen = self.projection(200, b'{"a":1}')
+        self.assertEqual(data, b'{"a":1}')
+        self.assertEqual((seen["path"], seen["headers"], seen["limit"]), ("/api/tasks/17/e2-prompt-projection?run_ref=e2run%3A1", {"Authorization": "Bearer tok"}, 8 << 20))
+
+    def test_projection_unavailable_can_be_asked_again(self):
+        with self.assertRaises(E2PromptNotReady) as caught:
+            self.projection(503)
+        self.assertEqual(caught.exception.code, "engine_unavailable")
+
+    def test_projection_network_or_login_failure_can_be_asked_again(self):
+        with self.assertRaises(E2PromptNotReady) as caught:
+            self.projection(200, error=OSError("synthetic"))
+        self.assertEqual(caught.exception.code, "engine_unreachable")
+        with mock.patch.object(runner_engine, "login", side_effect=EngineAPIError("engine_login_http_401")), self.assertRaises(E2PromptNotReady):
+            runner_engine.e2_prompt_projection(8080, AdminSecret("x"), "17", "e2run-1", 5)
+
+    def test_projection_binding_and_auth_refusals_are_final(self):
+        for status in (401, 400, 404, 409):
+            with self.subTest(status), self.assertRaises(E2PromptUnverified) as caught:
+                self.projection(status)
+            self.assertEqual(caught.exception.code, f"http_{status}")
 
     def test_login_posts_fixed_username_and_returns_token(self):
         engine = self.engine()
@@ -418,6 +493,66 @@ class TestVocabulary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestApplyEngineSettings(unittest.TestCase):
+    PROFILE = EngineLLMProfile("openai", "example-org/example-model", "http://eval-llm-gw:8090/api/v1",
+                               "gateway-holds-the-key", 64, False)
+
+    def engine(self, **kwargs):
+        engine = FakeEngine(**kwargs)
+        self.addCleanup(engine.close)
+        return engine
+
+    def test_saves_activates_then_sets_workers_with_one_login(self):
+        engine = self.engine()
+        apply_engine_settings(engine.port, AdminSecret(PASSWORD), self.PROFILE, 2, 5)
+        self.assertEqual([(method, path) for method, path, _, _ in engine.requests],
+                         [("POST", "/api/auth/login"), ("POST", "/api/llm/profiles"),
+                          ("POST", "/api/llm/profiles/active"), ("PUT", "/api/settings")])
+        _, _, _, saved = engine.requests[1]
+        # 스트리밍 값을 그대로 넘겨야 한다. /api/llm 경로는 실행 중 설정을 스트리밍으로 되돌린다.
+        self.assertEqual(json.loads(saved), {"name": "default", "format": "openai", "model": "example-org/example-model",
+                                             "base_url": "http://eval-llm-gw:8090/api/v1", "api_key": "gateway-holds-the-key",
+                                             "context_window_k": 64, "streaming": False})
+        self.assertEqual(json.loads(engine.requests[2][3]), {"id": 7})
+        self.assertEqual(json.loads(engine.requests[3][3]), {"workers": 2})
+        for _, _, headers, body in engine.requests[1:]:
+            self.assertEqual(headers["Authorization"], f"Bearer {TOKEN}")
+            self.assertNotIn(PASSWORD.encode(), body)
+
+    def test_each_failure_has_a_fixed_code_and_stops_there(self):
+        cases = [
+            ({"/api/llm/profiles": (500, b"{}")}, "engine_settings_apply_http_500", 2),
+            ({"/api/llm/profiles": (200, b"not json")}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles": (200, b"[]")}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles": (200, b'{"id": 0}')}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles": (200, b'{"id": "7"}')}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles": (200, b'{"id": true}')}, "engine_settings_apply_response_invalid", 2),
+            ({"/api/llm/profiles/active": (500, b"{}")}, "engine_settings_apply_http_500", 3),
+            ({"/api/settings": (400, b"{}")}, "engine_settings_apply_http_400", 4),
+        ]
+        for apply, code, requests in cases:
+            with self.subTest(code=code, apply=apply):
+                engine = self.engine(apply=apply)
+                with self.assertRaises(EngineAPIError) as caught:
+                    apply_engine_settings(engine.port, AdminSecret(PASSWORD), self.PROFILE, 2, 5)
+                self.assertEqual(str(caught.exception), code)
+                self.assertEqual(len(engine.requests), requests)
+                self.assertNotIn(PASSWORD, str(caught.exception))
+
+    def test_unreachable_engine_has_a_fixed_code(self):
+        engine = self.engine()
+        port = engine.port
+        engine.close()
+        self.doCleanups()
+        with self.assertRaises(EngineAPIError):
+            apply_engine_settings(port, AdminSecret(PASSWORD), self.PROFILE, 2, 1)
+
+    def test_placeholder_key_matches_compose(self):
+        # 엔진이 키를 지우면 LLM이 꺼지므로 같은 자리값을 넣는다. 진짜 키가 아니어야 한다.
+        compose = (Path(__file__).resolve().parents[3] / "deploy/engine-isolated/compose.yaml").read_text(encoding="utf-8")
+        self.assertIn(f"OPENAI_API_KEY: {runner.ENGINE_LLM_PLACEHOLDER_KEY}", compose)
 
 
 class TestEngineSettings(unittest.TestCase):

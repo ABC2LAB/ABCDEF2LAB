@@ -535,6 +535,30 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
+
+-- 평가 투영의 출처 원장. 일반 Activity 삽입만으로 이 연결을 만들 수 없다.
+CREATE TABLE IF NOT EXISTS e2_prompt_runs (
+    run_ref TEXT PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+    sealed BOOLEAN NOT NULL DEFAULT false,
+    failed BOOLEAN NOT NULL DEFAULT false,
+    next_sequence BIGINT NOT NULL DEFAULT 0 CHECK (next_sequence BETWEEN 0 AND 10000)
+);
+CREATE TABLE IF NOT EXISTS e2_prompt_observations (
+    run_ref TEXT NOT NULL REFERENCES e2_prompt_runs(run_ref) ON DELETE CASCADE,
+    sequence BIGINT NOT NULL CHECK (sequence > 0),
+    intent_id BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+    activity_id BIGINT UNIQUE REFERENCES activity(id) ON DELETE SET NULL,
+    worker TEXT,
+    PRIMARY KEY(run_ref,sequence)
+);
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='e2_prompt_observations'::regclass AND conname='e2_prompt_observations_activity_id_fkey' AND confdeltype='n') THEN
+  ALTER TABLE e2_prompt_observations DROP CONSTRAINT IF EXISTS e2_prompt_observations_activity_id_fkey;
+  ALTER TABLE e2_prompt_observations ADD CONSTRAINT e2_prompt_observations_activity_id_fkey FOREIGN KEY(activity_id) REFERENCES activity(id) ON DELETE SET NULL;
+ END IF;
+END $$;
 DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;
 CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -667,7 +691,7 @@ CREATE TRIGGER trg_task_asset_links_upd BEFORE UPDATE ON task_asset_links
 CREATE OR REPLACE FUNCTION sync_task_asset_links() RETURNS trigger AS $$
 BEGIN
     INSERT INTO task_asset_links(task_id, asset_id, source, source_summary)
-    SELECT task.id, NEW.id, 'system', '任务执行期间自动关联'
+    SELECT task.id, NEW.id, 'system', '작업 실행 중 자동 연결'
     FROM unnest(NEW.task_ids) AS requested(task_id)
     JOIN tasks task ON task.id=requested.task_id AND task.deleted_at IS NULL
     ON CONFLICT (task_id, asset_id) DO NOTHING;
@@ -685,7 +709,7 @@ CREATE TRIGGER trg_assets_task_links AFTER INSERT OR UPDATE OF task_ids ON asset
 -- Existing installations receive an auditable legacy source without rewriting
 -- task_ids. Ignore stale array ids that no longer resolve to a live task.
 INSERT INTO task_asset_links(task_id, asset_id, source, source_summary)
-SELECT task.id, asset.id, 'legacy', '由历史任务资产关联迁移'
+SELECT task.id, asset.id, 'legacy', '이전 작업 자산 연결에서 옮김'
 FROM assets asset
 CROSS JOIN LATERAL unnest(asset.task_ids) AS requested(task_id)
 JOIN tasks task ON task.id=requested.task_id AND task.deleted_at IS NULL
@@ -1131,7 +1155,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_retests_active ON finding_retests(
 -- 删除会话保留复测记录，同时解除尚未结束的复测占用。
 CREATE OR REPLACE FUNCTION stop_deleted_conversation_retest() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    UPDATE finding_retests SET status='stopped', error='复测会话已删除', finished_at=now()
+    UPDATE finding_retests SET status='stopped', error='재검증 세션이 삭제됨', finished_at=now()
     WHERE conversation_id=OLD.id AND status IN ('pending','running');
     RETURN OLD;
 END;

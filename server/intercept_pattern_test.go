@@ -11,18 +11,11 @@ import (
 	"github.com/Autumn-27/artex/intercept"
 )
 
-func TestInterceptPatternErrorsArePrivateAndTranslated(t *testing.T) {
+func TestInterceptPatternErrorsArePrivate(t *testing.T) {
 	const privatePattern = "(?P<synthetic-private-pattern"
 	err := validateInterceptRuleReq(interceptRuleReq{Name: "fixture", MatchTarget: "tool_name", MatchType: "regex", Pattern: privatePattern, Action: "deny"})
 	if err != db.ErrInvalidInterceptPattern || strings.Contains(err.Error(), privatePattern) {
 		t.Fatal("HTTP validation exposed the pattern or used a different error contract")
-	}
-	for _, message := range []string{err.Error(), intercept.ErrConfigurationUnavailable.Error()} {
-		for _, language := range []string{"en", "zh", "es", "ja"} {
-			if errCatalog[message][language] == "" {
-				t.Fatalf("missing configuration error translation: %s", language)
-			}
-		}
 	}
 }
 

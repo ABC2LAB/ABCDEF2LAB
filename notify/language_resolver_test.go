@@ -11,19 +11,19 @@ import (
 
 func TestSetLanguageResolverAllowsReentrantReplacement(t *testing.T) {
 	if os.Getenv("ARTEX_REENTRANT_NOTIFY_CHILD") == "1" {
-		replacement := func() string { return "en" }
+		replacement := func() string { return "ko" }
 		SetLanguageResolver(func() string {
 			previous := SetLanguageResolver(replacement)
 			if previous == nil {
 				t.Error("reentrant replacement lost the active resolver")
 			}
-			return "en"
+			return "ko"
 		})
-		if got := SeverityLabel("high"); got != "🟠 High" {
-			t.Fatalf("SeverityLabel(high) = %q, want English label", got)
+		if got := SeverityLabel("high"); got != "🟠 높음" {
+			t.Fatalf("SeverityLabel(high) = %q, want Korean label", got)
 		}
-		if got := SeverityLabel("high"); got != "🟠 High" {
-			t.Fatalf("SeverityLabel(high) after replacement = %q, want English label", got)
+		if got := SeverityLabel("high"); got != "🟠 높음" {
+			t.Fatalf("SeverityLabel(high) after replacement = %q, want Korean label", got)
 		}
 		return
 	}
@@ -57,7 +57,7 @@ func TestLanguageResolverConcurrentReplaceAndRead(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations*2; i++ {
-			if got := SeverityLabel("high"); got != "🟠 High" && got != "🟠 높음" {
+			if got := SeverityLabel("high"); got != "🟠 높음" {
 				t.Errorf("SeverityLabel(high) = %q, want English or Korean label", got)
 				return
 			}

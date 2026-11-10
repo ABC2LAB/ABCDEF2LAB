@@ -24,15 +24,20 @@ import re
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 from baseline_extract import MAX_VOCABULARY_BYTES, UPSTREAM_COMMIT, extract_baseline
 from baseline_pages import BaselinePageMerge
 from baseline_pages_collector import MAX_BEARER_LENGTH, BaselinePagesEndpoint, collect_baseline_pages
+from e2_prompt_collect import MAX_PROJECTION_BYTES, E2PromptNotReady, E2PromptUnverified
 
 LOGIN_PATH = "/api/auth/login"
 TASKS_PATH = "/api/tasks"
 # 작업 생성 전에 읽는 실행 설정. 두 응답은 baseline(e53a79f)과 개선 후가 같은 코드로 만든다(평가 프로토콜 §6).
 SETTINGS_PATHS = {"settings": "/api/settings", "llm": "/api/llm"}
+LLM_PROFILES_PATH = "/api/llm/profiles"
+LLM_ACTIVE_PROFILE_PATH = "/api/llm/profiles/active"
+ENGINE_PROFILE_NAME = "default"
 MAX_SETTINGS_RESPONSE_BYTES = 64 * 1024
 # 프록시 URL에는 자격정보가 들어갈 수 있어 값 대신 설정 여부만 남긴다. 평가 회차에서는 비어 있어야 한다
 # (설정되면 엔진 송신 경로가 계측기·게이트웨이 밖으로 바뀐다).
@@ -127,6 +132,21 @@ def _get(port: int, path: str, headers: dict, timeout: float, limit: int) -> tup
         connection.request("GET", path, headers={"Accept": "application/json", "Connection": "close", **headers})
         with closing(connection.getresponse()) as response:
             return response.status, response.read(limit + 1)
+
+
+def e2_prompt_projection(port: int, secret: AdminSecret, task_id: str, run_ref: str, timeout: float) -> bytes:
+    """실제 E② run_ref의 프롬프트 투영을 받은 바이트 그대로 돌려준다. 해석은 e2_prompt_collect가 한다."""
+    try:
+        token = login(port, secret, timeout)
+        status, data = _get(port, f"/api/tasks/{quote(task_id, safe='')}/e2-prompt-projection?{urlencode({'run_ref': run_ref})}",
+                            {"Authorization": "Bearer " + token}, timeout, MAX_PROJECTION_BYTES)
+    except (EngineAPIError, OSError, http.client.HTTPException, ValueError, OverflowError):
+        raise E2PromptNotReady("engine_unreachable") from None
+    if status == 503:
+        raise E2PromptNotReady("engine_unavailable")
+    if status != 200:
+        raise E2PromptUnverified(f"http_{status}")
+    return data
 
 
 def login(port: int, secret: AdminSecret, timeout: float) -> str:
@@ -329,6 +349,49 @@ def _rule_body(rule: dict) -> dict:
     # 사람이 답해야 하는 ask와 시간 제한은 자동 회차에서 쓰지 않는다. 꺼져 있어 쓰이지 않는 값은 내장 규칙과 같게 둔다.
     return dict(rule, enabled=True, timeout_enabled=False, timeout_seconds=RULE_TIMEOUT_SECONDS,
                 timeout_action=RULE_TIMEOUT_ACTION)
+
+
+@dataclass(frozen=True)
+class EngineLLMProfile:
+    """러너가 양쪽 엔진에 넣는 LLM 실행 설정. api_key는 게이트웨이 뒤에서 쓰지 않는 자리값이다."""
+    format: str
+    model: str
+    base_url: str
+    api_key: str
+    context_window_k: int
+    streaming: bool
+
+
+def apply_engine_settings(port: int, secret: AdminSecret, profile: EngineLLMProfile, workers: int, timeout: float) -> None:
+    """압축 기준 창과 worker 수를 작업 전에 넣는다. 결과 확인은 뒤의 실행 설정 스냅샷이 한다.
+
+    `/api/llm`이 아니라 프로파일 경로를 쓴다. `/api/llm`은 저장값과 달리 실행 중 설정을 스트리밍으로
+    되돌려 `llm_stream=false` 조건이 조용히 바뀐다. 이 경로는 baseline·개선 후 코드가 같다(시험 가드).
+    """
+    headers = {"Authorization": f"Bearer {login(port, secret, timeout)}"}
+    body = {"name": ENGINE_PROFILE_NAME, "format": profile.format, "model": profile.model, "base_url": profile.base_url,
+            "api_key": profile.api_key, "context_window_k": profile.context_window_k, "streaming": profile.streaming}
+    try:
+        status, data = _post(port, LLM_PROFILES_PATH, json.dumps(body).encode("utf-8"), headers, timeout,
+                             MAX_SETTINGS_RESPONSE_BYTES)
+        if status != 200:
+            raise EngineAPIError(f"engine_settings_apply_http_{status}")
+        try:
+            profile_id = json.loads(data.decode("utf-8")).get("id")
+        except (UnicodeError, ValueError, AttributeError):
+            raise EngineAPIError("engine_settings_apply_response_invalid") from None
+        if type(profile_id) is not int or profile_id <= 0:
+            raise EngineAPIError("engine_settings_apply_response_invalid")
+        status, _ = _post(port, LLM_ACTIVE_PROFILE_PATH, json.dumps({"id": profile_id}).encode("utf-8"), headers, timeout,
+                          MAX_SETTINGS_RESPONSE_BYTES)
+        if status != 200:
+            raise EngineAPIError(f"engine_settings_apply_http_{status}")
+        status, _ = _put(port, SETTINGS_PATHS["settings"], json.dumps({"workers": workers}).encode("utf-8"), headers, timeout,
+                         MAX_SETTINGS_RESPONSE_BYTES)
+        if status != 200:
+            raise EngineAPIError(f"engine_settings_apply_http_{status}")
+    except (OSError, http.client.HTTPException, ValueError, OverflowError):
+        raise EngineAPIError("engine_settings_apply_unreachable") from None
 
 
 def apply_engine_rules(port: int, secret: AdminSecret, rules: EngineRules, timeout: float) -> dict:
