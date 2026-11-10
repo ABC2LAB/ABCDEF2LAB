@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -69,6 +70,15 @@ class ReadPathKeyTests(unittest.TestCase):
                            ("missing", str(Path(self.tmp.name, "none")))):
             with self.subTest(name), self.assertRaises(PathKeyError):
                 read_path_key(path)
+
+    def test_read_errors_become_key_errors(self):
+        # 네트워크 마운트의 EIO 같은 오류가 호출자 밖으로 새지 않는다(#378 리뷰).
+        good = self.key_file("good", bytes(range(KEY_BYTES)))
+        for target in ("fstat", "fdopen"):
+            with self.subTest(target), patch(f"path_mask.os.{target}", side_effect=OSError(5, "EIO")), \
+                    self.assertRaises(PathKeyError) as caught:
+                read_path_key(good)
+            self.assertEqual(str(caught.exception), "path_key_unavailable")
 
 
 if __name__ == "__main__":

@@ -18,8 +18,14 @@ class MeterPathLogGuardTests(unittest.TestCase):
         ]
         self.assertGreater(len(files), 20)
         self.assertTrue(any(path.name == "meter.Dockerfile" for path in files))
+        # 수용시험 전용 overlay 한 파일만 예외다. 러너는 purpose=browser_acceptance일 때만 그 파일을 얹는다
+        # (test_runner_config.TestAcceptanceWiring).
+        acceptance = REPO_ROOT / "deploy" / "eval" / "compose.acceptance.yaml"
+        self.assertIn(acceptance, files)
+        self.assertIn("-path-log", acceptance.read_text(encoding="utf-8"))
         for path in files:
-            self.assertNotIn("path-log", path.read_text(encoding="utf-8"), str(path))
+            if path != acceptance:
+                self.assertNotIn("path-log", path.read_text(encoding="utf-8"), str(path))
 
 
 if __name__ == "__main__":
