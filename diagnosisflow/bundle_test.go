@@ -407,13 +407,61 @@ func TestRelativeCallFollowsScriptChainToDocument(t *testing.T) {
 	}
 }
 
-func TestRelativeCallWithoutKnownDocumentIsUnknown(t *testing.T) {
+func TestRelativeCallWithoutKnownDocumentIsNotRegistered(t *testing.T) {
 	c, _ := flowFixture(t, Manual)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	invalid := c.record.Snapshot.Counts.InvalidPaths
 	c.discoverBodyLocked([]byte(`c.get("rel/x");c.get("https://owned.test/read/abs");c.get("/read/root")`), "application/javascript", "/read/js/app.js")
 	got := discovered(c)
-	if !slices.Contains(got, "UNKNOWN /read/js/rel/x api") || slices.Contains(got, "GET /read/js/rel/x api") || !slices.Contains(got, "GET /read/abs api") || !slices.Contains(got, "GET /read/root api") {
+	if slices.Contains(got, "UNKNOWN /read/js/rel/x api") || slices.Contains(got, "GET /read/js/rel/x api") || !slices.Contains(got, "GET /read/abs api") || !slices.Contains(got, "GET /read/root api") {
+		t.Fatal(got)
+	}
+	if c.record.Snapshot.Counts.InvalidPaths != invalid+1 {
+		t.Fatal(c.record.Snapshot.Counts.InvalidPaths)
+	}
+}
+
+func TestDocumentBaseHrefResolvesReferences(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	page := `<base href="/"><base href="/read/ignored/"><a href="read/a">a</a><script src="read/app.js"></script><script>http.get("read/users")</script>`
+	c.discoverBodyLocked([]byte(page), "text/html", "/read/profile")
+	got := discovered(c)
+	for _, want := range []string{"GET /read/a page", "GET /read/app.js script", "GET /read/users api"} {
+		if !slices.Contains(got, want) {
+			t.Fatal(want, got)
+		}
+	}
+	if slices.Contains(got, "GET /read/read/users api") {
+		t.Fatal(got)
+	}
+	c.addLocked("GET", "/read/profile", "page", "html_link", "/read")
+	c.addLocked("GET", "/read/js/app.js", "script", "html_script", "/read/profile")
+	c.discoverBodyLocked([]byte(`http.get("read/external")`), "application/javascript", "/read/js/app.js")
+	if got := discovered(c); !slices.Contains(got, "GET /read/external api") || slices.Contains(got, "GET /read/js/read/external api") {
+		t.Fatal(got)
+	}
+}
+
+func TestDocumentBaseOnOtherOriginStopsRelativeReferences(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	invalid := c.record.Snapshot.Counts.InvalidPaths
+	c.discoverBodyLocked([]byte(`<base href="https://other.test/"><a href="read/x">x</a><a href="/read/abs">y</a><script>http.get("read/users")</script>`), "text/html", "/read/profile")
+	got := discovered(c)
+	if slices.Contains(got, "GET /read/x page") || slices.Contains(got, "GET /read/users api") || !slices.Contains(got, "GET /read/abs page") {
+		t.Fatal(got)
+	}
+	if c.record.Snapshot.Counts.InvalidPaths < invalid+2 {
+		t.Fatal(c.record.Snapshot.Counts.InvalidPaths)
+	}
+	c.addLocked("GET", "/read/profile", "page", "html_link", "/read")
+	c.addLocked("GET", "/read/app.js", "script", "html_script", "/read/profile")
+	c.discoverBodyLocked([]byte(`http.get("read/external")`), "application/javascript", "/read/app.js")
+	if got := discovered(c); slices.Contains(got, "GET /read/read/external api") || slices.Contains(got, "GET /read/external api") {
 		t.Fatal(got)
 	}
 }

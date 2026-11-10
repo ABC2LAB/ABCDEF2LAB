@@ -45,11 +45,18 @@ func (c *Controller) documentLocked(from string) (string, bool) {
 			return "", false
 		}
 		if e.Kind != "script" {
+			if b, ok := c.documentBases[from]; ok {
+				return b.path, b.known
+			}
 			return from, true
 		}
 		from = e.From
 	}
 	return "", false
+}
+
+func absoluteRef(raw string) bool {
+	return strings.HasPrefix(raw, "/") || strings.Contains(raw, "://")
 }
 
 func preloadsScript(attrs map[string]string) bool {
@@ -69,7 +76,15 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 			c.record.Snapshot.Counts.InvalidPaths++
 		}
 	}
-	add := func(method, raw, kind, source string) { addFrom(from, method, raw, kind, source) }
+	// 문서의 기준 주소다. <base href>를 만나면 바뀌고, 다른 origin을 가리키면 상대 주소를 풀 수 없다.
+	base, baseKnown, baseSeen := from, true, false
+	add := func(method, raw, kind, source string) {
+		if !baseKnown && !absoluteRef(raw) {
+			c.record.Snapshot.Counts.InvalidPaths++
+			return
+		}
+		addFrom(base, method, raw, kind, source)
+	}
 	scriptBody := body
 	if strings.Contains(contentType, "html") {
 		scriptBody = nil
@@ -98,6 +113,15 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 				attrs[a.Key] = a.Val
 			}
 			switch t.Data {
+			case "base":
+				if attrs["href"] != "" && !baseSeen {
+					baseSeen = true
+					base, baseKnown = c.resolve(attrs["href"], from)
+					if c.documentBases == nil {
+						c.documentBases = map[string]documentBase{}
+					}
+					c.documentBases[from] = documentBase{base, baseKnown}
+				}
 			case "a":
 				add("GET", attrs["href"], "page", "html_link")
 			case "script":
@@ -123,19 +147,20 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 		}
 	}
 	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") || strings.Contains(contentType, "html") {
-		doc, docKnown := from, true
+		doc, docKnown := base, baseKnown
 		if !strings.Contains(contentType, "html") {
 			doc, docKnown = c.documentLocked(from)
 		}
 		for _, ref := range bundleRefs(scriptBody, c.scriptSlotsLocked()) {
 			switch {
-			case ref.kind != "api" || strings.HasPrefix(ref.path, "/") || strings.Contains(ref.path, "://"):
+			case ref.kind != "api" || absoluteRef(ref.path):
 				add(ref.method, ref.path, ref.kind, ref.source)
 			case docKnown:
-				// 브라우저는 XHR·fetch의 상대 주소를 스크립트가 아니라 문서 기준으로 푼다.
+				// 브라우저는 XHR·fetch의 상대 주소를 스크립트가 아니라 문서 기준 주소로 푼다.
 				addFrom(doc, ref.method, ref.path, ref.kind, ref.source)
 			default:
-				add("UNKNOWN", ref.path, ref.kind, "static_literal")
+				// 어느 경로인지 모르는 후보로 칸을 쓰지 않는다.
+				c.record.Snapshot.Counts.InvalidPaths++
 			}
 		}
 	}

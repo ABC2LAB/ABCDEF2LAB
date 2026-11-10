@@ -23,6 +23,13 @@ type Controller struct {
 	attempts   map[string]bool
 	origin     string
 	nativePath string
+	// 문서별 <base href> 해석 결과. 초기 탐색 안에서만 쓰므로 저장하지 않는다.
+	documentBases map[string]documentBase
+}
+
+type documentBase struct {
+	path  string
+	known bool
 }
 
 func New(ctx context.Context, b Binding, store Store) (*Controller, error) {
