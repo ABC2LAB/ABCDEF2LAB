@@ -133,12 +133,7 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 		return 1
 	}
 	backend.endpoint = service
-	var ipcEndpoint diagnosisprep.Endpoint = service
-	if backend.product != nil {
-		ipcEndpoint = productPreparationEndpoint{base: service, product: backend.product}
-		defer backend.product.targets.Close()
-	}
-	ipc, err := diagnosisprep.ListenUnix(ctx, backend.config.SocketPath, ipcEndpoint)
+	ipc, err := diagnosisprep.ListenUnix(ctx, backend.config.SocketPath, service)
 	if err != nil {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		_ = service.Shutdown(cleanup)
@@ -244,7 +239,7 @@ func runURLDiagnosisAPI(ctx context.Context, args []string, stdout, stderr io.Wr
 				return 1
 			}
 			defer writer.Close()
-			for _, p := range productModels(installed) {
+			for _, p := range installed.Profiles {
 				raw, pin, e := urlReadPin(p.Launch.File, maxLaunchBytes, false)
 				if e != nil {
 					return 1

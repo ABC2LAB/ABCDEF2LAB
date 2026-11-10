@@ -18,7 +18,6 @@ import { Icon } from "../../ui/icons";
 import { CloseInspButton, InspHead, InspOpenButton, Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ExternalModelSettings } from "./ExternalModelSettings";
-import { TargetApprovalPanel } from "./TargetApprovalPanel";
 import {
   reasonText,
   UrlDisconnect,
@@ -78,8 +77,8 @@ export function UrlNewScanLive() {
     seenReset.current = resetSeq;
     setTarget("");
     setName("");
-    setProfileId(externalOpen && externalProfile ? externalProfile.id : first);
-  }, [resetSeq, first, externalOpen, externalProfile]);
+    setProfileId(first);
+  }, [resetSeq, first]);
 
   // 다른 화면의 '이 주소로 다시 점검' (조회 중인 진단이 없을 때만)
   useEffect(() => {
@@ -240,7 +239,7 @@ export function UrlNewScanLive() {
               </button>
               {externalOpen ? (
                 <ExternalModelSettings
-                  key={`${externalProfile?.id ?? "unavailable"}:${resetSeq}`}
+                  key={externalProfile?.id ?? "unavailable"}
                   profile={externalProfile}
                   disabled={g.inputLocked}
                   onReady={setCredentialReady}
@@ -271,13 +270,6 @@ export function UrlNewScanLive() {
             </div>
           </div>
 
-          <TargetApprovalPanel
-            url={tv}
-            disabled={busy}
-            onChanged={() => {
-              if (handle && !job?.preparation_started) void runUrlAction("validate");
-            }}
-          />
           <div className={s.fsec}>
             <div className={s["fsec-h"]}>
               <h2>작업</h2>
@@ -301,8 +293,8 @@ export function UrlNewScanLive() {
               <div className={s.note} role="note">
                 <Icon name="info" />
                 <span>
-                  목표 · 제외 경로 · 커버리지 · LLM 프로필 순서는 URL 진단이 받지 않습니다. 범위는 서버가 확인한 대상
-                  승인 기록으로 정합니다.
+                  목표 · 제외 경로 · 커버리지 · LLM 프로필 순서는 URL 진단이 받지 않습니다. 범위는 설치된 승인 범위가
+                  정합니다.
                 </span>
               </div>
             </div>
@@ -498,8 +490,8 @@ export function UrlScopeLive() {
         <div className={s.vm}>
           <UrlPhaseBar job={job} />
           <p className={s.lead}>
-            서버가 현재 진단 URL의 승인 기록과 대조해 돌려준 값입니다. 이 범위 밖 주소 · 메서드 · 다른 subdomain · 포트
-            · redirect 목적지는 자동으로 허가하지 않습니다.
+            서버가 설치된 승인 범위와 대조해 돌려준 값입니다. 이 범위 밖 주소 · 메서드 · 다른 subdomain · 포트 ·
+            redirect 목적지는 자동으로 허가하지 않습니다.
           </p>
           <section className={s.sec} aria-labelledby="luScopeH">
             <div className={s.sh}>

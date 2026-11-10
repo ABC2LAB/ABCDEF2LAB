@@ -4,6 +4,7 @@ set -eu
 for name in config data keys state runs ipc; do
  install -d -m 0700 -o 1000 -g 1000 "/p/$name"
 done
+install -d -m 0700 -o 1000 -g 1000 /target-tls
 install -d -m 0700 -o 1000 -g 1000 /tmp/product-private
 install -m 0600 -o 1000 -g 1000 /run/secrets/product_install /tmp/product-private/install.json
 install -m 0600 -o 1000 -g 1000 /run/secrets/postgres_password /tmp/product-private/postgres-password

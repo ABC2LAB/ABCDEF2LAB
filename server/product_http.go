@@ -68,27 +68,6 @@ func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataD
 			return
 		}
 		if r.URL.Path == "/api/product/model-credentials" {
-			if r.Method == "GET" {
-				owner, e := authenticate(r)
-				if e != nil || owner != "ARTEX" {
-					writeJSON(w, 401, map[string]string{"error": "authentication_required"})
-					return
-				}
-				query := r.URL.Query()
-				id := query.Get("profile_id")
-				if len(query) != 1 || len(query["profile_id"]) != 1 {
-					writeJSON(w, 400, map[string]string{"error": "invalid_model_profile"})
-					return
-				}
-				for _, m := range models {
-					if m.ProfileRef == id && m.Check != nil && m.Check() == nil {
-						callProductControl(w, r, owner, endpoint, &diagnosisprep.ProductRequest{Operation: "credentials", ProfileID: id})
-						return
-					}
-				}
-				writeJSON(w, 400, map[string]string{"error": "model_not_installed"})
-				return
-			}
 			if r.Method != "POST" {
 				writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
 				return
@@ -138,15 +117,6 @@ func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataD
 			}
 			body.APIKey = ""
 			writeJSON(w, 400, map[string]string{"error": "model_not_installed"})
-			return
-		}
-		if r.URL.Path == "/api/product/targets" || strings.HasPrefix(r.URL.Path, "/api/product/targets/") {
-			owner, e := authenticate(r)
-			if e != nil {
-				writeJSON(w, 401, map[string]string{"error": "authentication_required"})
-				return
-			}
-			productTargetsHTTP(w, r, owner, endpoint)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {

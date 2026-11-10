@@ -111,7 +111,7 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 	}
 	rules := make([]e2proxy.Rule, 0, len(policy.Rules))
 	for i, rule := range policy.Rules {
-		if !e2HTTPExactJSON(ruleJSON[i], []string{"approval_display", "ref", "origin", "connect_ip", "path_prefix", "path_scope_ref", "methods"}, []string{"credentials", "tls_spki_sha256"}, "credentials") {
+		if !e2HTTPExactJSON(ruleJSON[i], []string{"approval_display", "ref", "origin", "connect_ip", "path_prefix", "path_scope_ref", "methods"}, []string{"credentials"}, "credentials") {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
 		var obj map[string]json.RawMessage
@@ -129,7 +129,7 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 		if err != nil {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
-		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: rule.Methods})
+		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Origin: rule.Origin, ConnectIP: ip, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: rule.Methods})
 	}
 	requestTimeout, ok1 := e2HTTPMilliseconds(policy.Limits.RequestTimeoutMS, time.Minute)
 	callTimeout, ok2 := e2HTTPMilliseconds(policy.Limits.CallTimeoutMS, time.Hour)

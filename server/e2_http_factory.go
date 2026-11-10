@@ -73,7 +73,6 @@ type E2HTTPFilePin struct {
 	SHA256 string `json:"sha256"`
 }
 type E2HTTPFileRule struct {
-	TLSSPKISHA256   string                 `json:"tls_spki_sha256,omitempty"`
 	ApprovalDisplay RequestApprovalDisplay `json:"approval_display"`
 	Ref             string                 `json:"ref"`
 	Origin          string                 `json:"origin"`
@@ -299,7 +298,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			credentials = secret.Headers
 		}
-		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
+		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Origin: rule.Origin, ConnectIP: ip, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
 	}
 	requestTimeout, ok1 := e2HTTPMilliseconds(policy.Limits.RequestTimeoutMS, time.Minute)
 	callTimeout, ok2 := e2HTTPMilliseconds(policy.Limits.CallTimeoutMS, time.Hour)

@@ -31,7 +31,7 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
     secrets: [product_install, postgres_password]
-    volumes: [product-state:/p]
+    volumes: [product-state:/p, target-tls:/target-tls]
     tmpfs: ['/tmp:rw,nosuid,nodev,size=16m']
     read_only: true
     cap_drop: [ALL]
@@ -123,3 +123,4 @@ networks:
 volumes:
   postgres-data: {}
   product-state: {}
+  target-tls: {}

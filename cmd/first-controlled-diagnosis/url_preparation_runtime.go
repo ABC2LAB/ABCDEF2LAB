@@ -29,27 +29,18 @@ type urlPreparationRuntime struct {
 	mu       sync.RWMutex
 	live     map[string]*urlLiveHandler
 	reports  map[string]*savedReportService
-	product  *productRuntime
 }
 
 func newURLPreparationRuntime(ctx context.Context, path string) (*urlPreparationRuntime, error) {
-	c, pin, err := readURLInstallation(path)
+	c, _, err := readURLInstallation(path)
 	if err != nil {
 		return nil, errPreparation
 	}
-	b := &urlPreparationRuntime{ctx: ctx, path: path, config: c, live: map[string]*urlLiveHandler{}, reports: map[string]*savedReportService{}}
-	if c.Product != nil {
-		b.product, err = newProductRuntime(c, pin)
-		if err != nil {
-			return nil, err
-		}
-		b.resolver = b.product.targets.resolver
-	}
-	return b, nil
+	return &urlPreparationRuntime{ctx: ctx, path: path, config: c, live: map[string]*urlLiveHandler{}, reports: map[string]*savedReportService{}}, nil
 }
 func (b *urlPreparationRuntime) installation() (urlPreparationInstallation, urlInputPin, error) {
 	c, pin, err := readURLInstallation(b.path)
-	if err != nil || c.StateDir != b.config.StateDir || c.RunsDir != b.config.RunsDir || c.SocketPath != b.config.SocketPath || c.ReportListenAddr != b.config.ReportListenAddr || c.APILaunch != b.config.APILaunch || !reflect.DeepEqual(c.ProtectedEndpoints, b.config.ProtectedEndpoints) || !sameProductInstallation(c.Product, b.config.Product) {
+	if err != nil || c.StateDir != b.config.StateDir || c.RunsDir != b.config.RunsDir || c.SocketPath != b.config.SocketPath || c.ReportListenAddr != b.config.ReportListenAddr || c.APILaunch != b.config.APILaunch || !reflect.DeepEqual(c.ProtectedEndpoints, b.config.ProtectedEndpoints) {
 		return c, pin, errPreparation
 	}
 	return c, pin, nil
@@ -61,9 +52,6 @@ func (b *urlPreparationRuntime) Profiles(ctx context.Context, principal string) 
 	c, pin, err := b.installation()
 	if err != nil {
 		return nil, err
-	}
-	if b.product != nil {
-		return b.product.profiles()
 	}
 	out := []diagnosisprep.Profile{}
 	for _, p := range c.Profiles {
@@ -84,17 +72,10 @@ func (b *urlPreparationRuntime) Profiles(ctx context.Context, principal string) 
 func (b *urlPreparationRuntime) load(principal string, input diagnosisprep.Input) (*urlLoadedProfile, error) {
 	return b.loadForReport(principal, input, false)
 }
-func (b *urlPreparationRuntime) loadForReport(principal string, input diagnosisprep.Input, reportOnly bool, reportTarget ...string) (*urlLoadedProfile, error) {
+func (b *urlPreparationRuntime) loadForReport(principal string, input diagnosisprep.Input, reportOnly bool) (*urlLoadedProfile, error) {
 	c, pin, err := b.installation()
 	if err != nil {
 		return nil, err
-	}
-	if b.product != nil {
-		id := ""
-		if len(reportTarget) > 0 {
-			id = reportTarget[0]
-		}
-		return b.product.load(principal, input, reportOnly, id)
 	}
 	for _, p := range c.Profiles {
 		if p.ID == input.ProfileID && p.Principal == principal {
@@ -193,13 +174,6 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			}
 		})
 		return errPreparation
-	}
-	if l.productTarget != nil {
-		release, e := b.product.attach(*l.productTarget, execution.Job.ID, cancel)
-		if e != nil {
-			return knownFailure("target_approval_changed", true)
-		}
-		defer release()
 	}
 	var diagnostics *launchDiagnostics
 	check := func() error {
@@ -674,11 +648,7 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 	// 재시작 후 저장 결과 조회는 실행이나 모델을 복원하지 않는다.
 	b.mu.Lock()
 	if b.reports[task] == nil {
-		targetRef := ""
-		if auth.Job.Scope != nil {
-			targetRef = auth.Job.Scope.TargetRef
-		}
-		loaded, loadErr := b.loadForReport("ARTEX", auth.Job.Input, true, targetRef)
+		loaded, loadErr := b.loadForReport("ARTEX", auth.Job.Input, true)
 		if loadErr == nil {
 			defer loaded.clearMaterials()
 			// 만료는 저장 보고서를 지우지 않지만 설치/DB pin 교체를 과거 task에 적용하지 않는다.

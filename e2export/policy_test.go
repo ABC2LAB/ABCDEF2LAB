@@ -159,17 +159,3 @@ func TestPolicyFingerprintGoldenVector(t *testing.T) {
 		t.Fatal("synthetic policy content encoder changed")
 	}
 }
-
-func TestPolicyFingerprintIncludesTLSApprovalModeWithoutRunKey(t *testing.T) {
-	c, b := policyFixture()
-	without := policyDigest(t, c, b)
-	c.Rules[0].TLSSPKISHA256 = strings.Repeat("a", 64)
-	pinned := policyDigest(t, c, b)
-	if pinned == without {
-		t.Fatal("TLS approval enforcement missing from meaning")
-	}
-	c.Rules[0].TLSSPKISHA256 = strings.Repeat("b", 64)
-	if policyDigest(t, c, b) != pinned {
-		t.Fatal("per-approval TLS key leaked into meaning")
-	}
-}

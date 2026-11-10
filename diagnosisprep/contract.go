@@ -148,27 +148,25 @@ type Job struct {
 // Principal은 API가 기존 Bearer 인증으로 확인한 주체다. 브라우저 body에서는 받지 않는다.
 // socket 주소·descriptor·파일 경로·환경 변수·명령·권위 자료는 요청 필드가 아니다.
 type Request struct {
-	Version                   string          `json:"version"`
-	RequestID                 string          `json:"request_id"`
-	Command                   Command         `json:"command"`
-	Principal                 string          `json:"principal"`
-	JobID                     string          `json:"job_id,omitempty"`
-	ExpectedRevision          uint64          `json:"expected_revision,omitempty"`
-	IdempotencyKey            string          `json:"idempotency_key,omitempty"`
-	Input                     *Input          `json:"input,omitempty"`
-	TaskID                    string          `json:"task_id,omitempty"`
-	ExternalTransferConfirmed bool            `json:"external_transfer_confirmed,omitempty"`
-	Product                   *ProductRequest `json:"product,omitempty"`
+	Version                   string  `json:"version"`
+	RequestID                 string  `json:"request_id"`
+	Command                   Command `json:"command"`
+	Principal                 string  `json:"principal"`
+	JobID                     string  `json:"job_id,omitempty"`
+	ExpectedRevision          uint64  `json:"expected_revision,omitempty"`
+	IdempotencyKey            string  `json:"idempotency_key,omitempty"`
+	Input                     *Input  `json:"input,omitempty"`
+	TaskID                    string  `json:"task_id,omitempty"`
+	ExternalTransferConfirmed bool    `json:"external_transfer_confirmed,omitempty"`
 }
 
 type Response struct {
-	Version    string           `json:"version"`
-	RequestID  string           `json:"request_id"`
-	Profiles   []Profile        `json:"profiles,omitempty"`
-	Job        *Job             `json:"job,omitempty"`
-	Authorized *bool            `json:"authorized,omitempty"`
-	Error      string           `json:"error,omitempty"`
-	Product    *ProductResponse `json:"product,omitempty"`
+	Version    string    `json:"version"`
+	RequestID  string    `json:"request_id"`
+	Profiles   []Profile `json:"profiles,omitempty"`
+	Job        *Job      `json:"job,omitempty"`
+	Authorized *bool     `json:"authorized,omitempty"`
+	Error      string    `json:"error,omitempty"`
 }
 
 // Endpoint는 이미 설치된 비공개 서비스 연결이다. Call은 변경 요청을 자동 재송신하지 않는다.
