@@ -86,6 +86,22 @@ read-only 컨테이너에 `/tmp` tmpfs가 필요하다.
 
 **실측(2026-11-10, 합성 모델):** 실제 엔진·`eval-e2`·계측기·Juice Shop을 러너로 돌려 회차가 `complete`로 끝났다. GET 6건이 대상에 도달하고 POST 1건이 차단됐으며 기록되지 않은 도달은 0건이다. 프롬프트 투영은 3건 모두 수집됐고 서명 검증을 통과했다. 샌드박스 안에서 제어 소켓·설정·근거·토큰 경로는 보이지 않고, 대상 직접 연결과 엔진 통로 연결(loopback·컨테이너 IP)은 실패했다(rc=7). 샌드박스 안에서 namespace를 다시 만드는 것도 샌드박스 자체 seccomp가 거절한다(`unshare` EPERM, 컨테이너 프로필이 허용하는 플래그 조합 포함). 합성 모델이라 탐지 성능은 재지 않았다.
 
+**공식 정책 실측(2026-11-10, 스크립트 모델):** [공식 정책 템플릿](profiles/official-e2-policy.json)을 `llm_backend`만 로컬 시험 모델에 맞춰 바꿔 돌렸고 회차는 완료·서명됐다. 가입 POST 201, 로그인 토큰을 받아 `Authorization: Bearer`는 토큰 없이 401·있으면 200, `Cookie`는 응답의 사용자 정보까지 갈렸다. HEAD·OPTIONS·PUT·PATCH도 대상까지 갔다. 계측기 66건이 전부 E② 허용 기록과 맞았고 기록 없는 도달과 차단 뒤 도달은 0이다. 회차는 러너의 요청 예산으로 끝나 E② 한도가 먼저 걸리지 않았다. `curl -X DELETE`는 원본에도 있는 기본 안전 규칙이 E② 앞에서 막아 DELETE는 대상까지 가지 않았다. `Accept-Encoding: gzip`은 502(unsupported)였고, 같은 명령을 다시 보내면 실행되지 않았다.
+
+**음성 시험(2026-11-10, 실제 `eval-e2` 컨테이너, Compose와 같은 seccomp·read-only·`/tmp` tmpfs):** 시나리오마다 양성 대조 1건이 계측 서버까지 간 것을 확인했다. 아래 "대상 도달"은 양성 대조를 뺀 건수다.
+
+| 시나리오 | 결과 | 대상 도달 |
+|---|---|---|
+| 우회 9가지(범위 밖 경로, IP origin, 다른 호스트, 허용 밖 메서드, 프록시 끄기, 프록시 변수 제거, `/dev/tcp`, 파이썬 직접 연결, CONNECT) | 정책 거부 또는 연결 불가 | 0 |
+| 승인 만료 뒤 전송 | 실행 실패 | 0 |
+| E② 상태 디렉터리 고갈 | 실행 불가, close `unavailable`, 서비스 종료 코드 1 | 0 |
+| 근거 디렉터리 고갈 | 감사는 상태 디렉터리에 쌓여 전송은 계속되고, close `incomplete`로 근거 없는 회차가 된다 | 2 |
+| 실행 중 close | 진행 중 명령 강제 종료, close 뒤 실행 거부, 프로세스와 `/tmp` 잔여 없음 | 0 |
+
+근거 디렉터리 고갈처럼 close가 `incomplete`로 끝난 회차는 러너에서 `product_failure`다. 프로토콜상 유효 회차라 성능표에는 들어가고 통제 주장만 보류된다.
+
+TLS 오류는 이 이미지로 재지 않았고 `e2proxy` Go 시험만 있다. 공식 대상은 HTTP다. 시도 중간에 감사 쓰기가 실패하는 경우도 Go 시험(`TestCoreAuditFailureBeforeSend`)으로만 확인했다.
+
 합성 수용시험은 실제 자식 프로세스의 backend와 UDS를 사용한다.
 부모가 ready → bind → head → close → close_status를 보내며,
 실제 Linux 격리 Runner와 e2proxy에서 허용 요청 1건, 범위 밖 요청 0건,

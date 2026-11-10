@@ -1,0 +1,46 @@
+{
+ "account_ref": "official-anonymous",
+ "approval_mode": "preauthorized_scope",
+ "budget_ref": "official-budget",
+ "case_ref": "official-case",
+ "evaluation": {"llm_backend": "api", "target_kind": "public_practice"},
+ "format": "abc2lab.e2-http-host-policy/v1",
+ "header_mode": "evaluation_caller_passthrough",
+ "limits": {
+  "call_timeout_ms": 600000,
+  "max_attempts": 40000,
+  "max_body_bytes": 16777216,
+  "max_calls": 1000,
+  "max_concurrent": 32,
+  "max_denials": 40000,
+  "max_transient": 40000,
+  "max_unknown": 40000,
+  "request_timeout_ms": 60000
+ },
+ "max_requests": 40000,
+ "owner_ref": "official-owner",
+ "policy_ref": "official-policy",
+ "policy_revision": "official-v1",
+ "proxy": {"header_timeout_ms": 60000, "max_connections": 64, "max_header_bytes": 1048576, "request_timeout_ms": 60000},
+ "reset_ref": "official-reset",
+ "rules": [
+  {
+   "approval_display": {"json_fields": null, "public_path": false, "query_keys": null},
+   "methods": ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"],
+   "origin": "http://eval-meter:8080",
+   "path_prefix": "/",
+   "path_scope_ref": "official-all-paths",
+   "ref": "official-target"
+  }
+ ],
+ "runtime": {
+  "drain_timeout_ms": 60000,
+  "max_intent_runs": 10,
+  "max_planner_rounds": 100,
+  "max_tool_calls": 1000,
+  "max_worker_turns": 1000,
+  "output_limit": 30000,
+  "worker_timeout_ms": 1800000
+ },
+ "session_ref": "official-session"
+}
