@@ -1,0 +1,485 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Browser execution event v1 proposal",
+  "description": "Proposed host event projection. This schema does not issue authority or validate provenance, sequence continuity, uint64 range, durable commit, or cross-event bindings.",
+  "type": "object",
+  "properties": {
+    "version": {"const":"abc2lab.browser-event/v1"},
+    "event_id": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+    "seq": {"type":"string","pattern":"^[1-9][0-9]{0,19}$"},
+    "at": {"type":"string","format":"date-time","pattern":"Z$"},
+    "kind": {
+      "enum": [
+        "session.started",
+        "action.started",
+        "action.finished",
+        "request.observed",
+        "attempt.result",
+        "ingress.rejected",
+        "session.fenced",
+        "session.closed"
+      ]
+    },
+    "source": {"type":"string","enum":["host","proxy","e2"]},
+    "task_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+    "run_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+    "intent_id": {"type":"string","pattern":"^[1-9][0-9]{0,19}$"},
+    "call_ref": {"anyOf":[{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]},
+    "command_ref": {"anyOf":[{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]},
+    "browser_session_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+    "phase": {"const":"recon"},
+    "action_ref": {"anyOf":[{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]},
+    "request_ref": {"anyOf":[{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]},
+    "attempt_ref": {"anyOf":[{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]},
+    "payload": {"type":"object"}
+  },
+  "required": [
+    "version",
+    "event_id",
+    "seq",
+    "at",
+    "kind",
+    "source",
+    "task_ref",
+    "run_ref",
+    "intent_id",
+    "call_ref",
+    "command_ref",
+    "browser_session_ref",
+    "phase",
+    "action_ref",
+    "request_ref",
+    "attempt_ref",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "session.started": {
+      "type": "object",
+      "properties": {
+        "grant_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+        "policy_revision": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+        "budget_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+        "limits_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+        "runtime_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+        "crawl_permission": {"type":"string","enum":["read_only","approved_writes"]}
+      },
+      "required": ["grant_ref","policy_revision","budget_ref","limits_ref","runtime_ref","crawl_permission"],
+      "additionalProperties": false
+    },
+    "action.started": {
+      "type": "object",
+      "properties": {"operation":{"type":"string","enum":["navigate","wait_for_selector"]}},
+      "required": ["operation"],
+      "additionalProperties": false
+    },
+    "action.finished": {
+      "type": "object",
+      "properties": {
+        "status": {"type":"string","enum":["succeeded","failed","timed_out","cancelled"]},
+        "reason": {"type":"string","enum":["complete","driver_failed","timeout","fenced","unsupported"]},
+        "basis": {"enum":["driver_report","host_control"],"type":"string"},
+        "duration_ms": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"}
+      },
+      "required": ["status","reason","basis","duration_ms"],
+      "additionalProperties": false
+    },
+    "request.observed": {
+      "type": "object",
+      "properties": {
+        "method": {"type":"string","enum":["GET","HEAD","POST","PUT","PATCH","DELETE","OPTIONS","OTHER"]},
+        "destination_scope": {"type":"string","enum":["approved","outside","invalid"]},
+        "endpoint_ref": {
+          "anyOf": [{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]
+        },
+        "path_scope_ref": {
+          "anyOf": [{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]
+        }
+      },
+      "required": ["method","destination_scope","endpoint_ref","path_scope_ref"],
+      "additionalProperties": false
+    },
+    "attempt.result": {
+      "type": "object",
+      "properties": {
+        "request_class": {"type":"string","enum":["application_http","proxy_transport"]},
+        "e2_version": {"const":"e2-http-v1"},
+        "policy_revision": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+        "rule_ref": {
+          "anyOf": [{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]
+        },
+        "e2_sequence": {"type":"string","pattern":"^[1-9][0-9]{0,19}$"},
+        "method": {"type":"string","enum":["GET","HEAD","POST","PUT","PATCH","DELETE","OPTIONS","CONNECT","OTHER"]},
+        "decision": {"type":"string","enum":["allowed","denied","unsupported"]},
+        "reason": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "unsupported",
+            "policy_denied",
+            "closed",
+            "audit_failed",
+            "expired",
+            "revoked",
+            "budget_exhausted",
+            "transport_failed",
+            "unknown",
+            "attempt_limit",
+            "denial_limit",
+            "transient_limit",
+            "unknown_limit",
+            "invalid"
+          ]
+        },
+        "forward_attempted": {"type":"boolean"},
+        "request_written": {"type":"boolean"},
+        "response_received": {"type":"boolean"},
+        "response_complete": {"type":"boolean"},
+        "not_sent": {"type":"boolean"},
+        "audit_complete": {"type":"boolean"},
+        "status_code": {"anyOf":[{"type":"integer","minimum":100,"maximum":599},{"type":"null"}]}
+      },
+      "required": [
+        "request_class",
+        "e2_version",
+        "policy_revision",
+        "rule_ref",
+        "e2_sequence",
+        "method",
+        "decision",
+        "reason",
+        "forward_attempted",
+        "request_written",
+        "response_received",
+        "response_complete",
+        "not_sent",
+        "audit_complete",
+        "status_code"
+      ],
+      "additionalProperties": false
+    },
+    "ingress.rejected": {
+      "type": "object",
+      "properties": {
+        "layer": {"type":"string","enum":["application_http","proxy_transport"]},
+        "reason": {
+          "type": "string",
+          "enum": ["parse_failed","tls_failed","unsupported","admission_closed","event_sink_failed","invalid_binding"]
+        }
+      },
+      "required": ["layer","reason"],
+      "additionalProperties": false
+    },
+    "session.fenced": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "normal_close",
+            "user_stop",
+            "paused",
+            "revoked",
+            "expired",
+            "budget_exhausted",
+            "attempt_limit",
+            "denial_limit",
+            "transient_limit",
+            "unknown_limit",
+            "resource_limit",
+            "audit_failed",
+            "event_sink_failed",
+            "invalid_binding",
+            "driver_failed",
+            "setup_failed",
+            "runtime_unavailable",
+            "drain_timeout",
+            "unknown"
+          ]
+        }
+      },
+      "required": ["reason"],
+      "additionalProperties": false
+    },
+    "session.closed": {
+      "type": "object",
+      "properties": {
+        "status": {"type":"string","enum":["completed","stopped","failed","incomplete"]},
+        "reason": {
+          "type": "string",
+          "enum": [
+            "normal_close",
+            "user_stop",
+            "paused",
+            "revoked",
+            "expired",
+            "budget_exhausted",
+            "attempt_limit",
+            "denial_limit",
+            "transient_limit",
+            "unknown_limit",
+            "resource_limit",
+            "audit_failed",
+            "event_sink_failed",
+            "invalid_binding",
+            "driver_failed",
+            "setup_failed",
+            "runtime_unavailable",
+            "drain_timeout",
+            "unknown"
+          ]
+        },
+        "process_drained": {"type":"boolean"},
+        "proxy_drained": {"type":"boolean"},
+        "audit_complete": {"type":"boolean"},
+        "event_log_complete": {"type":"boolean"},
+        "host_correlation_complete": {"type":"boolean"},
+        "counts": {
+          "type": "object",
+          "properties": {
+            "observed_requests": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "attempt_results": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "forward_attempted": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "request_written": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "responses_received": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "denied": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "unsupported": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "unknown": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "unresolved_requests": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "unresolved_attempts": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
+            "dropped_events": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]}
+          },
+          "required": [
+            "observed_requests",
+            "attempt_results",
+            "forward_attempted",
+            "request_written",
+            "responses_received",
+            "denied",
+            "unsupported",
+            "unknown",
+            "unresolved_requests",
+            "unresolved_attempts",
+            "dropped_events"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "status",
+        "reason",
+        "process_drained",
+        "proxy_drained",
+        "audit_complete",
+        "event_log_complete",
+        "host_correlation_complete",
+        "counts"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties":{"kind":{"const":"session.started"}},"required":["kind"]},
+      "then": {
+        "properties": {
+          "source": {"const":"host"},
+          "payload": {"$ref":"#/$defs/session.started"},
+          "call_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "command_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "action_ref": {"type":"null"},
+          "attempt_ref": {"type":"null"},
+          "request_ref": {"type":"null"}
+        }
+      }
+    },
+    {
+      "if": {"properties":{"kind":{"const":"action.started"}},"required":["kind"]},
+      "then": {
+        "properties": {
+          "source": {"const":"host"},
+          "payload": {"$ref":"#/$defs/action.started"},
+          "call_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "command_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "action_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "attempt_ref": {"type":"null"},
+          "request_ref": {"type":"null"}
+        }
+      }
+    },
+    {
+      "if": {"properties":{"kind":{"const":"action.finished"}},"required":["kind"]},
+      "then": {
+        "properties": {
+          "source": {"const":"host"},
+          "payload": {"$ref":"#/$defs/action.finished"},
+          "call_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "command_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "action_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "attempt_ref": {"type":"null"},
+          "request_ref": {"type":"null"}
+        }
+      }
+    },
+    {
+      "if": {"properties":{"kind":{"const":"request.observed"}},"required":["kind"]},
+      "then": {
+        "properties": {
+          "source": {"const":"proxy"},
+          "payload": {"$ref":"#/$defs/request.observed"},
+          "call_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "command_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "action_ref": {"type":"null"},
+          "attempt_ref": {"type":"null"},
+          "request_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128}
+        }
+      }
+    },
+    {
+      "if": {"properties":{"kind":{"const":"attempt.result"}},"required":["kind"]},
+      "then": {
+        "properties": {
+          "source": {"const":"e2"},
+          "payload": {"$ref":"#/$defs/attempt.result"},
+          "call_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "command_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "action_ref": {"type":"null"},
+          "attempt_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128}
+        }
+      }
+    },
+    {
+      "if": {"properties":{"kind":{"const":"ingress.rejected"}},"required":["kind"]},
+      "then": {
+        "properties": {
+          "source": {"const":"proxy"},
+          "payload": {"$ref":"#/$defs/ingress.rejected"},
+          "call_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "command_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "action_ref": {"type":"null"},
+          "attempt_ref": {"type":"null"}
+        }
+      }
+    },
+    {
+      "if": {"properties":{"kind":{"const":"session.fenced"}},"required":["kind"]},
+      "then": {
+        "properties": {
+          "source": {"const":"host"},
+          "payload": {"$ref":"#/$defs/session.fenced"},
+          "call_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "command_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "action_ref": {"type":"null"},
+          "attempt_ref": {"type":"null"},
+          "request_ref": {"type":"null"}
+        }
+      }
+    },
+    {
+      "if": {"properties":{"kind":{"const":"session.closed"}},"required":["kind"]},
+      "then": {
+        "properties": {
+          "source": {"const":"host"},
+          "payload": {"$ref":"#/$defs/session.closed"},
+          "action_ref": {"type":"null"},
+          "attempt_ref": {"type":"null"},
+          "request_ref": {"type":"null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {"const":"attempt.result"},
+          "payload": {"properties":{"request_class":{"const":"application_http"}},"required":["request_class"]}
+        },
+        "required": ["kind","payload"]
+      },
+      "then": {
+        "properties": {"request_ref":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128}}
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {"const":"attempt.result"},
+          "payload": {"properties":{"request_class":{"const":"proxy_transport"}},"required":["request_class"]}
+        },
+        "required": ["kind","payload"]
+      },
+      "then": {"properties":{"request_ref":{"type":"null"}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {"const":"ingress.rejected"},
+          "payload": {"properties":{"layer":{"const":"application_http"}},"required":["layer"]}
+        },
+        "required": ["kind","payload"]
+      },
+      "then": {
+        "properties": {"request_ref":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128}}
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {"const":"ingress.rejected"},
+          "payload": {"properties":{"layer":{"const":"proxy_transport"}},"required":["layer"]}
+        },
+        "required": ["kind","payload"]
+      },
+      "then": {"properties":{"request_ref":{"type":"null"}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {"const":"session.closed"},
+          "payload": {"properties":{"status":{"const":"completed"}},"required":["status"]}
+        },
+        "required": ["kind","payload"]
+      },
+      "then": {
+        "properties": {
+          "call_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "command_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
+          "payload": {
+            "properties": {
+              "reason": {"const":"normal_close"},
+              "process_drained": {"const":true},
+              "proxy_drained": {"const":true},
+              "audit_complete": {"const":true},
+              "event_log_complete": {"const":true},
+              "host_correlation_complete": {"const":true},
+              "counts": {
+                "properties": {
+                  "observed_requests": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
+                  "attempt_results": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
+                  "forward_attempted": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
+                  "request_written": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
+                  "responses_received": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
+                  "denied": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
+                  "unsupported": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
+                  "unknown": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
+                  "unresolved_requests": {"const":"0"},
+                  "unresolved_attempts": {"const":"0"},
+                  "dropped_events": {"const":"0"}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {"const":"action.finished"},
+          "payload": {"properties":{"status":{"const":"succeeded"}},"required":["status"]}
+        },
+        "required": ["kind","payload"]
+      },
+      "then": {"properties":{"payload":{"properties":{"basis":{"const":"driver_report"},"reason":{"const":"complete"}}}}}
+    }
+  ]
+}

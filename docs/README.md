@@ -44,6 +44,7 @@
 ### 요청 통제와 감사
 
 - [HTTP 전송기](contracts/e2-http-transmitter.md)
+- [E② Browser 실행기 설계안](e2-browser-executor-design.md) · [Browser 이벤트 계약·스키마](contracts/browser-execution-events.md) — 팀 검토용, 구현·수용 미완료
 - [서버 실행 문맥과 Worker 연결](contracts/e2-server-runtime.md)
 - [승인별 요청 예산](contracts/approval-request-budget.md)
 - [감사 저널](contracts/e2-audit-journal.md)
