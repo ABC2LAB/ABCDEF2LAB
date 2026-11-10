@@ -102,12 +102,14 @@ export const useUrl = create<UrlStore>()(() => ({ cap: { kind: "unknown" }, ...c
 let generation = 0;
 let lock = false;
 let capRun = 0;
+let flowGeneration = 0;
 let flowLock = false;
 let flowPending: { key: string; revision: number } | null = null;
 
 /** 진행 중인 응답을 모두 버리고 진단 상태를 비운다 (cap 은 그대로). */
 function dropJob(): void {
   generation += 1;
+  flowGeneration += 1;
   lock = false;
   flowLock = false;
   flowPending = null;
@@ -147,6 +149,9 @@ function accept(next: URLDiagnosisJob, saved: URLDiagnosisHandle): void {
 
 /** 저장된 핸들로 같은 진단을 다시 읽는다(GET 만). owner 가 다르면 팀 readURLHandle 이 버린다. */
 async function bootJob(owner: string): Promise<void> {
+  flowGeneration += 1;
+  flowLock = false;
+  flowPending = null;
   const current = ++generation;
   const saved = readURLHandle(owner);
   lock = false;
@@ -441,11 +446,11 @@ export function isUrlPrestart(job: Pick<URLDiagnosisJob, "state"> | null): boole
 export async function refreshWorkflow(expectedID?: string): Promise<void> {
   const st = useUrl.getState(),
     job = st.job,
-    token = generation;
+    token = flowGeneration;
   if (!job?.input.workflow_mode || !job.task_id || flowLock || (expectedID && job.id !== expectedID)) return;
   try {
     const next = await readWorkflow(job);
-    if (token !== generation || useUrl.getState().job?.id !== job.id) return;
+    if (token !== flowGeneration || useUrl.getState().job?.id !== job.id) return;
     if (flowLock) return;
     const latest = useUrl.getState().flow;
     if (next && latest && next.revision < latest.revision) return;
@@ -460,7 +465,7 @@ export async function refreshWorkflow(expectedID?: string): Promise<void> {
       flowError: "",
     });
   } catch {
-    if (token === generation)
+    if (token === flowGeneration)
       useUrl.setState({ flowVerified: false, flowError: "탐색 상태를 확인할 수 없습니다. 다시 조회하세요." });
   }
 }
@@ -483,19 +488,19 @@ export async function runWorkflowAction(
   )
     return false;
   flowLock = true;
-  const token = generation,
+  const token = flowGeneration,
     key = crypto.randomUUID();
   flowPending = { key, revision: current.revision };
   useUrl.setState({ flowBusy: true, flowError: "" });
   try {
     const next = await commandWorkflow(job, current, operation, key, ids);
-    if (token !== generation) return false;
+    if (token !== flowGeneration) return false;
     if (!next.commands.some((c) => c.key === key)) throw new Error("unbound_command_receipt");
     flowPending = null;
     useUrl.setState({ flow: next, flowVerified: true, flowUncertain: false });
     return true;
   } catch (error) {
-    if (token !== generation) return false;
+    if (token !== flowGeneration) return false;
     const known = error instanceof ApiError && [400, 401, 403, 404, 409].includes(error.status);
     if (known) flowPending = null;
     useUrl.setState({
@@ -507,7 +512,7 @@ export async function runWorkflowAction(
     });
     return false;
   } finally {
-    if (token === generation) {
+    if (token === flowGeneration) {
       flowLock = false;
       useUrl.setState({ flowBusy: false });
     }

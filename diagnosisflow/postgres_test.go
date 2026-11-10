@@ -62,6 +62,13 @@ func TestPostgresSelectionRecoveryAndAtomicRevision(t *testing.T) {
 	if err = pool.QueryRow(`SELECT count(*) FROM diagnosis_workflow_events WHERE job_id=$1`, b.JobID).Scan(&revisions); err != nil || uint64(revisions) != selected.Revision {
 		t.Fatal("non-atomic workflow history", err, revisions)
 	}
+	if _, err = pool.Exec(`INSERT INTO activity(exploration_id,worker,kind,tool,summary) VALUES($1,'work#1','tool','Bash',$2)`, row.ExplorationID, `Bash {"command":"curl --data '{\"password\":\"owned-private-value\"}'"}`); err != nil {
+		t.Fatal(err)
+	}
+	_, activities, readErr := store.Display(t.Context(), "ARTEX", b.JobID)
+	if readErr != nil || len(activities) != 1 || strings.Contains(activities[0].Summary, "owned-private-value") || strings.Contains(activities[0].Summary, "command") || !strings.Contains(activities[0].Summary, "Bash") {
+		t.Fatal("raw tool activity was projected", readErr)
+	}
 	if _, _, err = store.Display(t.Context(), "ARTEX", b.JobID); err != nil {
 		t.Fatal("actual plans/activity query failed", err)
 	}

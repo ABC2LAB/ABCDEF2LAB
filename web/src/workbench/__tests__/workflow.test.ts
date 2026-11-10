@@ -2,9 +2,9 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 import { parseURLJob, urlDiagnosisInput } from "@/lib/diagnosis/diagnosis-url";
-import { handle, running, scope } from "@/lib/diagnosis/diagnosis-url-fixtures";
+import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
-import { refreshWorkflow, resetUrl, runWorkflowAction, useUrl } from "../live/urlDiagnosis";
+import { refreshWorkflow, resetUrl, runUrlAction, runWorkflowAction, useUrl } from "../live/urlDiagnosis";
 import { FLOW_VERSION, parseWorkflow, type WorkflowSnapshot } from "../live/workflow";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
@@ -153,4 +153,27 @@ it("known revision conflicts still require a fresh read", async () => {
   expect(await runWorkflowAction("pause")).toBe(false);
   expect(useUrl.getState().flowUncertain).toBe(false);
   expect(useUrl.getState().flowVerified).toBe(false);
+});
+
+it("URL status polling does not orphan an in-flight selection or lose its response-loss fence", async () => {
+  useUrl.setState({ cap: { kind: "v2", catalog } });
+  let rejectLoss: (reason: unknown) => void = () => undefined;
+  vi.mocked(apiFetch).mockImplementation(async (path, init) => {
+    if (String(path).endsWith("/status"))
+      return { version: "diagnosis-api.v2", owner_context: handle.ownerContext, draft: job };
+    if (init?.method === "POST")
+      return new Promise((_resolve, reject) => {
+        rejectLoss = reject;
+      });
+    return { workflow: { ...snapshot, revision: 13, stage: "diagnosing" } };
+  });
+  const selection = runWorkflowAction("selection", ["endpoint-owned"]);
+  expect(await runUrlAction("refresh")).toBe(true);
+  rejectLoss(new TypeError("owned response loss"));
+  expect(await selection).toBe(false);
+  expect(useUrl.getState().flowBusy).toBe(false);
+  expect(useUrl.getState().flowUncertain).toBe(true);
+  await refreshWorkflow();
+  expect(useUrl.getState().flowUncertain).toBe(false);
+  expect(useUrl.getState().flow?.stage).toBe("diagnosing");
 });

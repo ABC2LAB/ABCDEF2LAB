@@ -35,7 +35,7 @@ export function LiveRailBadge() {
     enabled,
     intervalMs: enabled ? 2000 : 0,
   });
-  const matches = state.data && flow && state.data.run.run_ref === flow.run_ref && !state.error;
+  const matches = enabled && state.data && flow && state.data.run.run_ref === flow.run_ref && !state.error;
   const count = matches ? (state.data?.approvals ?? []).filter((a) => a.state === "pending").length : 0;
   return count > 0 ? (
     <span role="status" className={s.badge} aria-label={`현재 회차 HTTP 승인 대기 ${count}개`}>

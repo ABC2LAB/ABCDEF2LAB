@@ -44,15 +44,19 @@ export function WorkflowControls() {
     busy = useUrl((st) => st.flowBusy),
     verified = useUrl((st) => st.flowVerified),
     uncertain = useUrl((st) => st.flowUncertain),
-    g = useUrlGates();
-  const active = flow && ["crawling", "diagnosing"].includes(flow.stage);
+    g = useUrlGates(),
+    job = useUrl((st) => st.job),
+    jobVerified = useUrl((st) => st.verified),
+    jobUncertain = useUrl((st) => st.uncertain);
+  const active =
+    job && ["preparing", "running"].includes(job.state) && flow && ["crawling", "diagnosing"].includes(flow.stage);
   return (
     <>
       {active ? (
         <button
           className={s.btn}
           type="button"
-          disabled={!verified || uncertain || busy}
+          disabled={!verified || uncertain || busy || !jobVerified || jobUncertain}
           aria-pressed={flow.paused}
           onClick={() => void runWorkflowAction(flow.paused ? "resume" : "pause")}
         >

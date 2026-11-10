@@ -96,19 +96,19 @@ func (p Postgres) Display(ctx context.Context, owner, id string) ([]Plan, []Acti
 		return nil, nil, ErrUnavailable
 	}
 	rows.Close()
-	rows, err = p.DB.QueryContext(ctx, `SELECT a.id,a.created_at,COALESCE(a.worker,''),COALESCE(a.kind,''),COALESCE(a.summary,'') FROM diagnosis_workflows w JOIN tasks t ON t.id=w.task_id JOIN activity a ON a.exploration_id=t.exploration_id WHERE w.job_id=$1 AND w.owner_ref=$2 ORDER BY a.id DESC LIMIT 20`, id, owner)
+	rows, err = p.DB.QueryContext(ctx, `SELECT a.id,a.created_at,COALESCE(a.worker,''),COALESCE(a.kind,''),COALESCE(a.tool,'') FROM diagnosis_workflows w JOIN tasks t ON t.id=w.task_id JOIN activity a ON a.exploration_id=t.exploration_id WHERE w.job_id=$1 AND w.owner_ref=$2 ORDER BY a.id DESC LIMIT 20`, id, owner)
 	if err != nil {
 		return nil, nil, ErrUnavailable
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var v Activity
-		if rows.Scan(&v.ID, &v.At, &v.Worker, &v.Kind, &v.Summary) != nil {
+		var tool string
+		if rows.Scan(&v.ID, &v.At, &v.Worker, &v.Kind, &tool) != nil {
 			return nil, nil, ErrUnavailable
 		}
-		v.Worker = displayText(v.Worker, 64)
-		v.Kind = displayText(v.Kind, 64)
-		v.Summary = displayText(v.Summary, 240)
+		v.Worker = publicWorker(v.Worker)
+		v.Kind, v.Summary = publicActivity(v.Kind, tool)
 		activities = append(activities, v)
 	}
 	return plans, activities, rows.Err()
@@ -127,5 +127,38 @@ func displayText(raw string, limit int) string {
 		}
 		r = []rune(out)
 		out = string(r[:len(r)-1])
+	}
+}
+
+// Activity summaries can contain serialized tool input or output. Never publish them,
+// even after pattern redaction: escaped JSON and credentials need not be recognizable.
+func publicWorker(worker string) string {
+	if worker == "planner" || worker == "goals" {
+		return worker
+	}
+	if len(worker) > 5 && len(worker) <= 14 && worker[:5] == "work#" {
+		if n, err := strconv.Atoi(worker[5:]); err == nil && n >= 0 && strconv.Itoa(n) == worker[5:] {
+			return worker
+		}
+	}
+	return "engine"
+}
+func publicActivity(kind, tool string) (string, string) {
+	if tool != "" {
+		switch tool {
+		case "Bash", "add_intent", "set_goals", "submit_diagnostic_candidate", "graph_overview":
+			return "tool", tool + " 도구 활동 기록 (원문 비공개)"
+		}
+		return "tool", "도구 활동 기록 (원문 비공개)"
+	}
+	switch kind {
+	case "plan", "planner", "plan_start", "plan_end":
+		return "plan", "Planner 계획 활동 기록"
+	case "intent", "intent_done", "intent_start", "intent_finish":
+		return "intent", "Worker 의도 상태 기록"
+	case "text", "message", "assistant", "llm", "thought":
+		return "model", "모델 메시지 기록 (원문 비공개)"
+	default:
+		return "event", "엔진 활동 기록 (원문 비공개)"
 	}
 }
