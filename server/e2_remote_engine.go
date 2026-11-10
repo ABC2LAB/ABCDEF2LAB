@@ -33,7 +33,7 @@ func NewWithRemoteE2(ctx context.Context, m *Manager, skillDir, dataDir, keyDir 
 }
 
 func newE2RemoteRuntime(ctx context.Context, o E2RemoteEngineOptions) (*E2HTTPRuntime, error) {
-	if ctx == nil || ctx.Err() != nil || o.DescribeTimeout <= 0 {
+	if ctx == nil || ctx.Err() != nil {
 		return nil, ErrE2Control
 	}
 	client, err := newE2RemoteClient(o.URL, o.TokenFile, o.RequestTimeout)
