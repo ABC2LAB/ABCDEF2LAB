@@ -182,6 +182,12 @@
    "path": "/a%ZZ.css",
    "path_pattern": "/{id}.css",
    "masked_segments": 1
+  },
+  {
+   "name": "bad escape before encoded suffix",
+   "path": "/x%ZZ%2Ejs",
+   "path_pattern": "/{id}",
+   "masked_segments": 1
   }
  ]
 }
