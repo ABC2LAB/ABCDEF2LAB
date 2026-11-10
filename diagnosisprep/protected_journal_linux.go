@@ -7,8 +7,8 @@ import (
 	"sync"
 )
 
-// ProtectedJournal reuses the coordinator's descriptor-bound, fsynced chain/head
-// storage. Callers use a separate private directory; no journal path is an RPC input.
+// ProtectedJournal은 준비 서비스의 descriptor 결속·동기 저장 chain/head를 재사용한다.
+// 호출자는 별도 비공개 디렉터리를 사용하며 저널 경로를 RPC 입력으로 받지 않는다.
 type ProtectedJournal struct {
 	mu      sync.Mutex
 	journal *journal

@@ -391,7 +391,7 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 	return out, nil
 }
 
-// Keep model and target installation immutable while the target journal grows.
+// 대상 저널이 늘어나도 모델·대상 설치 상한은 불변으로 유지한다.
 func sameProductInstallation(a, b *urlProductInstallation) bool { return reflect.DeepEqual(a, b) }
 
 func (p *productRuntime) attach(rec productTargetRecord, id string, cancel context.CancelFunc) (func(), error) {

@@ -24,6 +24,7 @@ func targetTestRegistry(t *testing.T) (*productTargetRegistry, string) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	r.endpointAllowed = func(string, netip.Addr) bool { return true }
 	t.Cleanup(func() { _ = r.Close() })
 	return r, root
 }
@@ -152,7 +153,7 @@ func TestProductTargetRevocationCancelsOnlyMatchingRun(t *testing.T) {
 	r, _ := targetTestRegistry(t)
 	ctx := t.Context()
 	r.lookupTXT = func(context.Context, string) ([]string, error) { return nil, errors.New("unused") }
-	// Populate through the same durable transition shape, with an owned synthetic proof.
+	// 소유한 합성 증명으로 실제 영속 전이와 같은 경로를 채운다.
 	approve := func(host, ip string) productTargetRecord {
 		t.Helper()
 		v, e := r.register("ARTEX", targetTestSpec(host))

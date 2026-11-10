@@ -46,12 +46,13 @@ type productTargetRegistry struct {
 	policy      productTargetPolicy
 	policyCheck func() error
 	journal     *diagnosisprep.ProtectedJournal
+	contacts    *diagnosisprep.ProtectedJournal
 	records     map[string]productTargetRecord
 	approvals   map[string]productTargetRecord
 	resolver    *net.Resolver
 	roots       *x509.CertPool
 	now         func() time.Time
-	// Test dependencies never come from HTTP or installation JSON.
+	// 시험 의존성은 HTTP나 설치 JSON에서 받지 않는다.
 	lookupTXT       func(context.Context, string) ([]string, error)
 	lookupIP        func(context.Context, string) ([]netip.Addr, error)
 	probe           func(context.Context, string, string, int) (string, time.Time, error)
@@ -99,7 +100,29 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 	if e != nil {
 		return nil, e
 	}
-	r := &productTargetRegistry{policy: p, policyCheck: check, journal: journal, records: map[string]productTargetRecord{}, approvals: map[string]productTargetRecord{}, resolver: resolver, roots: roots, now: func() time.Time { return time.Now().UTC() }}
+	contactDir := filepath.Join(dir, "tls-contacts")
+	if err := os.Mkdir(contactDir, 0700); err != nil && !os.IsExist(err) {
+		_ = journal.Close()
+		return nil, err
+	}
+	// 첫 접촉 전에 감사 디렉터리의 부모 엔트리도 동기 저장한다.
+	parent, err := os.Open(dir)
+	if err != nil {
+		_ = journal.Close()
+		return nil, err
+	}
+	err = parent.Sync()
+	_ = parent.Close()
+	if err != nil {
+		_ = journal.Close()
+		return nil, err
+	}
+	contacts, _, err := diagnosisprep.OpenProtectedJournal(contactDir)
+	if err != nil {
+		_ = journal.Close()
+		return nil, err
+	}
+	r := &productTargetRegistry{policy: p, policyCheck: check, journal: journal, contacts: contacts, records: map[string]productTargetRecord{}, approvals: map[string]productTargetRecord{}, resolver: resolver, roots: roots, now: func() time.Time { return time.Now().UTC() }}
 	r.lookupTXT = resolver.LookupTXT
 	r.lookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		return resolver.LookupNetIP(ctx, "ip", host)
@@ -108,7 +131,7 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 	for _, event := range events {
 		var rec productTargetRecord
 		if decodeLaunchJSON(event, &rec) != nil || r.replay(rec) != nil {
-			_ = journal.Close()
+			_ = r.Close()
 			return nil, errPreparation
 		}
 	}
@@ -142,7 +165,7 @@ func (r *productTargetRegistry) replay(next productTargetRecord) error {
 	return nil
 }
 func (r *productTargetRegistry) check() error {
-	if r.policyCheck() != nil || r.journal.Check() != nil {
+	if r.policyCheck() != nil || r.journal.Check() != nil || r.contacts.Check() != nil {
 		return errPreparation
 	}
 	return nil
@@ -157,7 +180,9 @@ func (r *productTargetRegistry) append(next productTargetRecord) error {
 	}
 	return r.replay(next)
 }
-func (r *productTargetRegistry) Close() error { return r.journal.Close() }
+func (r *productTargetRegistry) Close() error {
+	return errors.Join(r.journal.Close(), r.contacts.Close())
+}
 func (r *productTargetRegistry) register(principal string, s diagnosisprep.TargetRegistration) (diagnosisprep.ProductTarget, error) {
 	if principal != "ARTEX" {
 		return diagnosisprep.ProductTarget{}, errors.New("operator_required")
@@ -316,7 +341,7 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 	var expiry time.Time
 	var selected string
 	for _, ip := range addresses {
-		spki, expiry, e = r.probe(ctx, u.Hostname(), ip, rec.Target.Port)
+		spki, expiry, e = r.probeWithAudit(ctx, "approve", rec, u.Hostname(), ip)
 		if e == nil {
 			selected = ip
 			break
@@ -332,9 +357,12 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 	next.Target.TLSSPKISHA256 = spki
 	next.SelectedIP = selected
 	next.Target.ApprovedAt = r.now()
-	next.Target.ExpiresAt = r.now().Add(time.Duration(rec.ValidHours) * time.Hour)
+	next.Target.ExpiresAt = next.Target.ApprovedAt.Add(time.Duration(rec.ValidHours) * time.Hour)
 	if expiry.Before(next.Target.ExpiresAt) {
 		next.Target.ExpiresAt = expiry
+	}
+	if !next.Target.ApprovedAt.Before(next.Target.ExpiresAt) {
+		return diagnosisprep.ProductTarget{}, errors.New("target_approval_expired")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -416,7 +444,7 @@ func (r *productTargetRegistry) recheck(ctx context.Context, rec productTargetRe
 	if !reflect.DeepEqual(addresses, rec.Target.Addresses) {
 		return errors.New("target_dns_changed")
 	}
-	spki, _, e := r.probe(ctx, u.Hostname(), rec.SelectedIP, rec.Target.Port)
+	spki, _, e := r.probeWithAudit(ctx, "start", rec, u.Hostname(), rec.SelectedIP)
 	if e != nil || spki != rec.Target.TLSSPKISHA256 {
 		return errors.New("target_tls_changed")
 	}
@@ -470,7 +498,7 @@ func (r *productTargetRegistry) revoke(principal, id string) (diagnosisprep.Prod
 	return rec.Target, nil
 }
 
-// Registry directories are installation security state, not target inputs.
+// 레지스트리 디렉터리는 설치 보안 상태이며 대상 입력으로 지정하지 않는다.
 func productTargetDirectory(root string) (string, error) {
 	p := filepath.Join(root, "targets")
 	if e := os.Mkdir(p, 0700); e != nil && !os.IsExist(e) {
@@ -539,8 +567,8 @@ func (r *productTargetRegistry) resolve(principal, raw string) (*diagnosisprep.P
 }
 
 func (r *productTargetRegistry) checkDestinations(origin string, addresses []string) error {
-	if r.endpointAllowed == nil {
-		return nil
+	if r.endpointAllowed == nil || len(addresses) == 0 {
+		return errPreparation
 	}
 	for _, raw := range addresses {
 		ip, e := netip.ParseAddr(raw)
