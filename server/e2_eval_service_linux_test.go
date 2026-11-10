@@ -152,6 +152,19 @@ func TestE2EvalServiceStopsAnsweringAfterClose(t *testing.T) {
 		_ = conn.Close()
 		t.Fatal("종료 뒤에도 제어 소켓이 열림")
 	}
+	f.service.backend.mu.Lock()
+	disposed := f.service.backend.disposed
+	f.service.backend.mu.Unlock()
+	if !disposed {
+		t.Fatal("종료 뒤에도 backend가 정리되지 않음")
+	}
+}
+
+func TestE2EvalServiceCloseReportsControlFailure(t *testing.T) {
+	f := startE2EvalFixture(t)
+	if err := f.service.Close(nil); !errors.Is(err, ErrE2Control) { //nolint:staticcheck // 제어 채널 종료 실패가 전달되는지 시험한다.
+		t.Fatal("제어 채널 종료 실패를 숨김:", err)
+	}
 }
 
 func TestE2EvalServiceRejectsBadInput(t *testing.T) {

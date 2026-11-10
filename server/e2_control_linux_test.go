@@ -140,3 +140,36 @@ func TestE2ControlToolSandboxNeedsTheOwningBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 조건을 하나씩만 어겨야 서로 가리지 않는다.
+func TestE2ControlSeparateUIDsCheckEachRole(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("비특권 Linux 제어 fixture")
+	}
+	_, fake := newE2ControlStateFixture(t)
+	uid := uint32(os.Geteuid())
+	base := E2ControlOptions{ControlDirectory: e2ControlPrivateTestDir(t), EvalRunID: "eval_one", ReservationRef: "reservation_one", RunnerUID: uid, EngineUID: uid + 1, ToolsUID: uid + 2, EvaluationDeployment: true, IOTimeout: time.Second, CloseTimeout: time.Second, MaxConnections: 2, Backend: fake}
+	for name, change := range map[string]func(*E2ControlOptions){
+		"엔진 uid 없음":  func(o *E2ControlOptions) { o.EngineUID = 0 },
+		"도구 uid 없음":  func(o *E2ControlOptions) { o.ToolsUID = 0 },
+		"엔진이 러너 uid": func(o *E2ControlOptions) { o.EngineUID = uid },
+		"도구가 러너 uid": func(o *E2ControlOptions) { o.ToolsUID = uid },
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := base
+			change(&opts)
+			if _, err := StartE2ControlService(t.Context(), opts); err == nil {
+				t.Fatal("uid 분리가 안 된 구성을 수용")
+			}
+		})
+	}
+	service, err := StartE2ControlService(t.Context(), base)
+	if err != nil {
+		t.Fatal("uid가 분리된 구성 거부:", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := service.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
