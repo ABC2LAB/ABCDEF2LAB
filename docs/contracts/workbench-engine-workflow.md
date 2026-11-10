@@ -1,10 +1,10 @@
 # Workbench 정본과 실제 진단 워크플로 연결
 
-상태: 구현·수용 진행 중. 선행 #353 → #360에 의존하며 자동 병합하지 않는다. 대상 승인 권한 모델 및 새 요청 정책은 팀 채택 검토 대상이다.
+상태: 구현 및 소유 합성 모델 종단 검증. 실제 유료 Qwen·팀 정책 채택·UI 담당자 수용은 미완료. 선행 #353 → #360에 의존하며 자동 병합하지 않는다. 대상 승인 권한 모델 및 새 요청 정책은 팀 채택 검토 대상이다.
 
 ## 디자인 정본과 분석
 
-정본은 `feature/jaesang`의 `030536aa5095`에 있는 `web/mockups/abc2lab-workbench.html`이다. 원본을 그대로 보존한다. 전체 HTML DOM·CSS·JavaScript AST를 분석했다. 여섯 화면, CSS selector 634개, 함수 101개가 있다. React CSS와 selector/declaration 단위의 단순 비교에서 530개가 같았다. 이는 미디어 조건·CSS module 범위를 정규화하지 않은 조사 수치이며 시각적 일치 판정이 아니다.
+정본은 `feature/jaesang`의 `065fe205ba64` (HTML blob은 기존 `030536aa5095`와 동일)에 있는 `web/mockups/abc2lab-workbench.html`이다. 원본을 그대로 보존한다. 전체 HTML DOM·CSS·JavaScript AST를 분석했다. 여섯 화면, CSS selector 634개, 함수 101개가 있다. React CSS와 selector/declaration 단위의 단순 비교에서 530개가 같았다. 이는 미디어 조건·CSS module 범위를 정규화하지 않은 조사 수치이며 시각적 일치 판정이 아니다.
 
 236px 레일, 가운데 시트·384px 상세 패널, 1199px 상세 서랍·759px 레일 서랍, 강조색·타이포그래피·Esc/포커스 동작을 유지한다. 기존 Workbench/shell/Rail/Icon/parts/CSS와 인증·URL v2·모델 키 등록·요청별 승인·보고서 어댑터를 재사용한다. 정본의 LINES 55개, EP 37개, PLAN 10개, LT 23개 및 결과/그래프 예시·타이머는 제품 실행 자료로 사용하지 않는다.
 
@@ -52,4 +52,4 @@ E②는 고정 origin/IP/port/TLS/path/method/예산 검사 뒤 workflow의 실�
 
 ## 수용 기록
 
-진행 중. 소유 격리 Juice Shop, 합성 모델과 실제 유료 Qwen을 구분한다. 화면 대응·두 모드·실제 발견/선택·승인 전/후/거부의 대상 도달·중지·보고서·Docker 재기동/응답 유실을 검증한 뒤 이 절을 실행 SHA와 결과로 갱신한다. 유료 Qwen은 별도 계정·예산·외부 전송 승인 준비 전 NOT_RUN이다.
+실행별 SHA·실측·화면 비교·미수용 범위는 [워크플로 수용 기록](../workbench-workflow-acceptance.md)을 따른다. 소유 격리 Juice Shop, 합성 모델과 실제 유료 Qwen을 구분한다. 화면 대응·두 모드·실제 발견/선택·승인 전/후/거부의 대상 도달·중지·보고서·Docker 재기동/응답 유실의 실제 검증 결과를 해당 문서에 기록했다. 유료 Qwen은 별도 계정·예산·외부 전송 승인 준비 전 NOT_RUN이다.

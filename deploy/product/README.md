@@ -152,4 +152,21 @@ docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptan
 
 두 URL의 실제 승인·격리·키 재사용·보고서 및 미실행 Qwen 구분은 [제품 v2 수용 기록](../../docs/product-targets-v2-acceptance.md)을 따른다.
 
+### 탐색·선택·요청 승인 종단 시험
+
+선택적인 workflow를 켠 제품은 [워크플로 계약](../../docs/contracts/workbench-engine-workflow.md)과 [실측 수용 기록](../../docs/workbench-workflow-acceptance.md)을 따른다. 위 화면 API 표는 workflow 미설치 경로다. 설치한 경우 자산 탐색·선택·요청 승인·보고서를 실제 workflow API에 연결한다.
+
+소유 일회용 환경에서 `compose.workflow-acceptance.yaml`을 세 번째 overlay로 추가하면 모델은 `workflow-model`, A/B front는 `workflow-target` 역할을 사용한다. `/workflow`는 시험용 HTML 탐색 페이지이고 실제 상품·버전·계정 생성은 뒤의 Juice Shop에 전달한다. 모델 id는 설치 JSON에 `owned-synthetic-workflow`로 명시한다. 유료 모델 수용에 사용하지 않는다.
+
+```bash
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml -f deploy/product/compose.workflow-acceptance.yaml build
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml -f deploy/product/compose.workflow-acceptance.yaml up -d --no-build --wait
+```
+
+브라우저 시험의 기본 포트는 제품18887, A/B 통계49481/49484, 모델49482, DNS제어49483, 별도 소유 Chrome CDP49439다. Compose의 `PRODUCT_PORT`, `PRODUCT_TARGET_STATS_PORT`, `PRODUCT_TARGET_B_STATS_PORT`, `PRODUCT_MODEL_STATS_PORT`, `PRODUCT_DNS_CONTROL_PORT`를 이에 맞춘다. 호스트의 다른 내부망과 충돌하면 기존 시험 안내대로 네트워크 주소와 설치 JSON의 CIDR/resolver/model 주소를 함께 바꾼다.
+
+fixture-init이 만든 새 `/target-tls/control-token`을 stdout에 노출하지 않고 mode0600의 전용 파일로 복사한다. `scripts/workbench-workflow-browser.cjs <manual|auto|stop|recover|design> <private-install.json> <private-dns-token> <output-dir>` 순서로 실제 브라우저를 조작한다. Chrome CDP와 스크립트는 같은 loopback 환경에서 연결해야 한다. 이번 기록은 Windows Chrome157·Node22를 사용했다. 상태·실행 결과를 브라우저 내부 store에 주입하지 않는다.
+
+동일 이미지·볼륨 재시작은 `stop workbench api preparation postgres` 뒤 같은 Compose의 `up -d --no-build --wait postgres preparation api workbench`로 확인한다. 설치 당시와 helper 지문이 다른 이미지는 기존 pin 검사에서 거절된다. 보호 파일을 고치거나 unknown 저널·예산 예약을 지워 이미지 변경을 우회하지 않는다. 이미지 교체·설치 세대 마이그레이션은 별도 검토가 필요하다.
+
 비밀번호 재설정은 실행 중인 Workbench의 `product-password-hash`가 stdin으로 받은 비밀번호를 Go bcrypt로 해시하고 PostgreSQL에는 해시만 전달한다. `pgcrypto` 확장이나 스키마를 추가하지 않는다. 새 비밀번호는 12~72 bytes이며 명령행·컨테이너 환경변수·파일에 원문을 넣지 않는다. 공통 Compose 진입점은 설치 입력의 실제 경로가 저장소 밖이고 파일 권한이 0600인지 확인한 뒤 Docker를 호출한다.
