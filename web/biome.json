@@ -31,7 +31,19 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!.github", "!.husky", "!node_modules", "!.next", "!dist", "!out", "!mockups/*.html"]
+    "includes": [
+      "**",
+      "!.github",
+      "!.husky",
+      "!node_modules",
+      "!.next",
+      "!dist",
+      "!out",
+      "!_parked",
+      "!mockups/*.html",
+      "!src/components/ui",
+      "!src/components/calendar"
+    ]
   },
   "formatter": {
     "enabled": true,

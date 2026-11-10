@@ -6,16 +6,17 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/abc2lab-ui/lib/diagnosis-url", async (original) => ({
-  ...(await original<typeof import("@/abc2lab-ui/lib/diagnosis-url")>()),
+vi.mock("@/lib/diagnosis/diagnosis-url", async (original) => ({
+  ...(await original<typeof import("@/lib/diagnosis/diagnosis-url")>()),
   readURLCatalog: vi.fn(),
   createURLDraft: vi.fn(),
   commandURLDiagnosis: vi.fn(),
   readURLReceipt: vi.fn(),
   readURLStatus: vi.fn(),
 }));
-vi.mock("@/abc2lab-ui/lib/api", async (original) => ({
-  ...(await original<typeof import("@/abc2lab-ui/lib/api")>()),
+vi.mock("@/lib/diagnosis/api", async (original) => ({
+  ...(await original<typeof import("@/lib/diagnosis/api")>()),
+  apiFetch: vi.fn(),
   readAuthStatus: vi.fn(),
   restoreSession: vi.fn(),
 }));
@@ -27,9 +28,9 @@ vi.mock("../live/api", async (importOriginal) => ({
   fetchTasks: vi.fn(),
 }));
 
-import * as teamApi from "@/abc2lab-ui/lib/api";
-import { ApiError } from "@/abc2lab-ui/lib/api";
-import * as url from "@/abc2lab-ui/lib/diagnosis-url";
+import * as teamApi from "@/lib/diagnosis/api";
+import { ApiError } from "@/lib/diagnosis/api";
+import * as url from "@/lib/diagnosis/diagnosis-url";
 import {
   catalog,
   draft,
@@ -39,13 +40,14 @@ import {
   owner,
   ready,
   running,
-} from "@/abc2lab-ui/lib/diagnosis-url-fixtures";
+  scope,
+} from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
 import { LiveFeeds } from "../live/feeds";
 import { LiveRailTasks } from "../live/rail";
-import { resetUrl, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
+import { resetUrl, runUrlAction, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
 import { urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
@@ -54,6 +56,28 @@ import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode }
 const u = vi.mocked(url);
 const a = vi.mocked(api);
 const noop = () => undefined;
+
+it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조회만 한다", async () => {
+  u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
+  vi.mocked(teamApi.apiFetch).mockResolvedValue({ configured: true });
+  mount("new");
+  const target = await screen.findByLabelText(/진단 대상 URL/);
+  fireEvent.change(target, { target: { value: "https://target.example/app" } });
+  fireEvent.click(screen.getByRole("button", { name: "외부 LLM 사용하기" }));
+  expect(screen.getByLabelText("모델명")).toHaveValue(externalModel.model);
+  fireEvent.change(screen.getByLabelText("API 키"), { target: { value: "synthetic-input-provider-key" } });
+  fireEvent.click(screen.getByRole("button", { name: "모델 연결 설정 저장" }));
+  expect(screen.getByLabelText("API 키")).toHaveValue("");
+  await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
+  expect(u.createURLDraft).not.toHaveBeenCalled();
+  expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+  await waitFor(() => expect(u.createURLDraft).toHaveBeenCalledTimes(1));
+  const input = u.createURLDraft.mock.calls[0][0];
+  expect(Object.keys(input).sort()).toEqual(["profile_id", "target_url"]);
+  expect(JSON.stringify(input)).not.toContain("synthetic-input-provider-key");
+  expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+});
 
 const preparing: url.URLDiagnosisJob = {
   ...ready,
@@ -81,6 +105,7 @@ function shellValue(over: Partial<Shell> = {}): Shell {
     reduce: false,
     inspOpen: false,
     railOpen: false,
+    railNewAtRoute: false,
     goTo: noop,
     openInsp: noop,
     closeInsp: noop,
@@ -231,6 +256,14 @@ describe("URL 진단 계산", () => {
     expect(urlTone("running")).toBe("run");
   });
 
+  it("요청별 승인 UI가 없는 모드는 ready여도 시작하지 않는다", () => {
+    const base = { handle, job: ready, verified: true, uncertain: false, busy: false };
+    expect(urlGates(base).canStart).toBe(true);
+    const perRequest = { ...ready, scope: { ...scope, approval_mode: "confirm_every_request" as const } };
+    expect(urlGates({ ...base, job: perRequest }).canStart).toBe(false);
+    expect(urlGates({ ...base, job: { ...running, scope: perRequest.scope } }).canStop).toBe(true);
+  });
+
   it("시작 조건: 확인된 ready + 범위, 시작 키를 보낸 뒤 · 결과 불명 · 요청 중이면 막는다", () => {
     const base = { handle, job: ready, verified: true, uncertain: false, busy: false };
     expect(urlGates(base).canStart).toBe(true);
@@ -254,20 +287,22 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
   });
 
-  it("404 · 501 이면 기존 v1 새 점검", async () => {
-    u.readURLCatalog.mockRejectedValue(new ApiError(404, "HTTP 404"));
+  it.each([404, 501])("%s 이면 설치 안내만 표시하고 진단 생성은 막는다", async (status) => {
+    u.readURLCatalog.mockRejectedValue(new ApiError(status, "unsupported"));
     mount("new");
-    expect(await screen.findByLabelText(/점검할 사이트 주소/)).toBeInTheDocument();
-    expect(useUrl.getState().cap.kind).toBe("v1");
+    expect(await screen.findByRole("alert")).toHaveTextContent("설치");
+    expect(screen.queryByLabelText(/점검할 사이트 주소/)).toBeNull();
+    expect(useUrl.getState().cap.kind).toBe("unavailable");
+    expect(u.createURLDraft).not.toHaveBeenCalled();
   });
 
   it("확인 불가(503)면 어느 쪽으로도 만들지 않고, 다시 시도는 catalog 만 다시 읽는다", async () => {
     u.readURLCatalog.mockRejectedValueOnce(new ApiError(503, "preparation_service_unavailable"));
     mount("new");
-    expect(await screen.findByRole("alert")).toHaveTextContent("새 점검 방식을 확인하지 못했습니다");
+    expect(await screen.findByRole("alert")).toHaveTextContent("준비 서비스의 응답을 확인하지 못했어요");
     expect(screen.queryByLabelText(/점검할 사이트 주소/)).toBeNull();
     expect(screen.queryByLabelText(/진단 대상 URL/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+    fireEvent.click(screen.getByRole("button", { name: "다시 조회" }));
     expect(await screen.findByLabelText(/진단 대상 URL/)).toBeInTheDocument();
     expect(u.readURLCatalog).toHaveBeenCalledTimes(2);
     expect(u.createURLDraft).not.toHaveBeenCalled();
@@ -276,7 +311,7 @@ describe("서버 방식 확인 (catalog)", () => {
   it("로그인 전에는 확인 중으로 두고 catalog 를 부르지 않는다", () => {
     setLiveAuthState("login");
     mount("new");
-    expect(screen.getByRole("status")).toHaveTextContent("서버의 새 점검 방식을 확인하는 중");
+    expect(screen.getByRole("status")).toHaveTextContent("URL 진단 서비스를 확인하는 중");
     expect(u.readURLCatalog).not.toHaveBeenCalled();
   });
 });
@@ -379,6 +414,21 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).toHaveBeenCalledTimes(1);
   });
 
+  it("매 요청 확인 범위는 안내하고 체크박스·시작 요청을 차단한다", async () => {
+    saveHandle();
+    const perRequest = { ...ready, scope: { ...scope, approval_mode: "confirm_every_request" as const } };
+    u.readURLStatus.mockResolvedValue(perRequest);
+    mount("scope");
+    expect(await screen.findByText(/요청별 확인이 필요한 프로필은 현재 작업대에서 시작할 수 없습니다/)).toBeVisible();
+    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "진단 시작" })).toBeDisabled();
+    act(() => useUrl.setState({ confirmed: true }));
+    await expect(runUrlAction("start")).resolves.toBe(false);
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+    expect(url.readURLHandle(owner)?.startKey).toBeUndefined();
+    expect(useUrl.getState().job?.scope?.approval_mode).toBe("confirm_every_request");
+  });
+
   it("설치자 승인 대기면 사유를 보이고 시작 상자가 없다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({ ...draft, revision: 2, reason_code: "approval_required" });
@@ -435,6 +485,20 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       await vi.advanceTimersByTimeAsync(URL_POLL_MS);
     });
     expect(u.readURLStatus).toHaveBeenCalledTimes(2);
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  });
+
+  it("이미 진행 중인 요청별 확인 회차는 삭제된 화면 대신 운영자 확인·중지를 안내한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({
+      ...running,
+      scope: { ...scope, approval_mode: "confirm_every_request" },
+    });
+    mount("live");
+    expect(await screen.findByText(/이 작업대에서는 요청별 허용·거절을 할 수 없습니다/)).toBeVisible();
+    expect(screen.queryByText(/팀 화면의 점검 진행/)).toBeNull();
+    expect(screen.getByRole("button", { name: /진단 중지 요청/ })).toBeEnabled();
+    expect(a.fetchRequestApprovals).toHaveBeenCalledWith("42");
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   });
 
@@ -649,8 +713,11 @@ describe("대시보드 · 인증 (URL 진단)", () => {
       await Promise.resolve();
     });
     expect(a.fetchTasks).not.toHaveBeenCalled();
-    act(() => useUrl.setState({ cap: { kind: "v1" } }));
-    await waitFor(() => expect(a.fetchTasks).toHaveBeenCalled());
+    act(() => useUrl.setState({ cap: { kind: "unavailable", message: "미설치" } }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(a.fetchTasks).not.toHaveBeenCalled();
     unmount();
   });
 });

@@ -491,7 +491,7 @@ func TestFirstDiagnosisE2ProductionRuntimeNativeAcceptance(t *testing.T) {
 				nextWorker := agent.NewWorker(nextProvider, "deterministic-acceptance", firstDiagnosisPrivateTemp(t), nil, 12000, 4)
 				nextWorker.SetNonStreaming(func() bool { return true })
 				if _, _, nextErr = nextWorker.Execute(nextContext, "worker", taskNumber, nil, nil, nextIntent, nil, nil, nil, nil); nextErr != nil {
-					t.Fatal("두 번째 intent의 실제 Worker 실패")
+					t.Fatalf("두 번째 intent의 실제 Worker 실패: %v", nextErr)
 				}
 				if nextErr = nextFinish(); nextErr != nil {
 					t.Fatal("두 번째 intent 마감 실패")

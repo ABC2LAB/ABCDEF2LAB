@@ -6,7 +6,7 @@
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { type URLDiagnosisInput, urlDiagnosisInput } from "@/abc2lab-ui/lib/diagnosis-url";
+import { type URLDiagnosisInput, urlDiagnosisInput } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
 import { LoadingRow } from "../../live/parts";
@@ -17,6 +17,7 @@ import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, InspHead, InspOpenButton, Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
+import { ExternalModelSettings } from "./ExternalModelSettings";
 import {
   reasonText,
   UrlDisconnect,
@@ -64,6 +65,9 @@ export function UrlNewScanLive() {
   const [target, setTarget] = useState("");
   const [profileId, setProfileId] = useState(first);
   const [name, setName] = useState("");
+  const [externalOpen, setExternalOpen] = useState(false);
+  const [credentialReady, setCredentialReady] = useState(false);
+  const externalProfile = profiles.find((p) => p.model?.mode === "openrouter");
   const seenSeq = useRef(useWb.getState().prefill?.seq ?? 0);
   const seenReset = useRef(resetSeq);
 
@@ -100,7 +104,12 @@ export function UrlNewScanLive() {
     if (!profiles.length) why.push("설치된 모델 프로필이 없습니다 (설치자 설정 필요)");
     else if (!profile) why.push("모델 프로필을 고르세요");
   }
-  const canSend = !shown && !!input && g.canValidate && !busy;
+  const canSend =
+    !shown &&
+    !!input &&
+    g.canValidate &&
+    !busy &&
+    (!profile?.model?.external_transfer || (externalOpen && credentialReady));
 
   const send = async () => {
     if (!canSend || !input) return;
@@ -212,6 +221,30 @@ export function UrlNewScanLive() {
               <p>설치자가 승인한 모델 프로필만 고를 수 있습니다. 다른 모델로 바꿔 돌리지 않습니다.</p>
             </div>
             <div className={s["fsec-b"]}>
+              <button
+                type="button"
+                className={s.btn}
+                aria-expanded={externalOpen}
+                disabled={g.inputLocked}
+                onClick={() => {
+                  const next = !externalOpen;
+                  setExternalOpen(next);
+                  setCredentialReady(false);
+                  setProfileId(
+                    next ? (externalProfile?.id ?? "") : (profiles.find((p) => !p.model?.external_transfer)?.id ?? ""),
+                  );
+                }}
+              >
+                외부 LLM 사용하기
+              </button>
+              {externalOpen ? (
+                <ExternalModelSettings
+                  key={externalProfile?.id ?? "unavailable"}
+                  profile={externalProfile}
+                  disabled={g.inputLocked}
+                  onReady={setCredentialReady}
+                />
+              ) : null}
               <div className={s.field}>
                 <label className={s.lbl} htmlFor="luProfile">
                   승인된 모델 프로필
@@ -382,6 +415,15 @@ export function UrlScopeLive() {
   if (job.state === "ready") {
     action = (
       <>
+        {job.scope?.approval_mode === "confirm_every_request" ? (
+          <div className={cx(s.note, s.warn)} role="note">
+            <Icon name="alert" />
+            <span>
+              요청별 확인이 필요한 프로필은 현재 작업대에서 시작할 수 없습니다. 운영자에게 요청별 승인 경로를 확인해
+              주세요.
+            </span>
+          </div>
+        ) : null}
         <label className={s.ckline}>
           <input
             type="checkbox"

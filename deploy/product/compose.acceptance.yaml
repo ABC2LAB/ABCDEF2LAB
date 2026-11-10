@@ -1,0 +1,47 @@
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:v15.0.0@sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d
+    networks:
+      target: {ipv4_address: 172.31.253.21}
+    healthcheck: {disable: true}
+    security_opt: [no-new-privileges:true]
+  target-front:
+    image: abc2lab-product-fixture:${PRODUCT_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: deploy/product/Dockerfile
+      target: acceptance-fixture
+      args:
+        VCS_REF: ${PRODUCT_SOURCE_SHA:?}
+    command: [-mode, target]
+    depends_on:
+      install: {condition: service_completed_successfully}
+      juice-shop: {condition: service_started}
+    volumes: [target-tls:/target-tls:ro]
+    networks:
+      target:
+        ipv4_address: 172.31.253.20
+        aliases: [juice.test]
+      fixture-control: {}
+    ports: ['127.0.0.1:${PRODUCT_TARGET_STATS_PORT:-49081}:9081']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  synthetic-model:
+    image: abc2lab-product-fixture:${PRODUCT_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: deploy/product/Dockerfile
+      target: acceptance-fixture
+      args:
+        VCS_REF: ${PRODUCT_SOURCE_SHA:?}
+    command: [-mode, model]
+    networks:
+      control: {ipv4_address: 172.31.252.30}
+      fixture-control: {}
+    ports: ['127.0.0.1:${PRODUCT_MODEL_STATS_PORT:-49082}:8080']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+networks:
+  fixture-control: {}

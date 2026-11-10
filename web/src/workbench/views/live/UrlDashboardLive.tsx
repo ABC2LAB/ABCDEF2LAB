@@ -3,7 +3,7 @@
 // URL 진단(v2) 서버의 대시보드. 이 서버에는 진단 목록 · 집계 API 가 없어(catalog · 영수증 조회 · 진단별 상태만)
 // 이 브라우저 탭이 이어 보는 진단 하나와 설치된 진단 프로필만 실제 값으로 보이고, 나머지는 미제공으로 둔다.
 
-import { urlPhaseLabels } from "@/abc2lab-ui/lib/diagnosis-url";
+import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
 import { ModeNote } from "../../live/parts";

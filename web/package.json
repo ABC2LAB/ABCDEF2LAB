@@ -4,7 +4,6 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "mockup": "node mockups/serve.mjs",
     "build": "next build",
     "build:static": "NEXT_EXPORT=1 next build",
     "start": "next start",
@@ -13,7 +12,10 @@
     "check": "biome check",
     "check:fix": "biome check --write",
     "prepare": "husky || true",
-    "test": "vitest"
+    "generate:presets": "ts-node -P tsconfig.scripts.json src/scripts/generate-theme-presets.ts",
+    "extract:i18n": "ts-node -P tsconfig.scripts.json src/scripts/extract-i18n.ts",
+    "test": "vitest",
+    "check:i18n": "ts-node -P tsconfig.scripts.json src/scripts/check-i18n-keys.ts"
   },
   "lint-staged": {
     "*.{js,ts,jsx,tsx}": [

@@ -119,6 +119,8 @@ jobs:
       - name: unittest
         working-directory: scripts/eval
         run: python3 -I -B -m unittest discover -s tests
+      - name: 제품 운영 스크립트 시험
+        run: python3 -I -B -m unittest discover -s scripts/ci -p test_product_scripts.py
       - name: Docker Compose CLI 확인(E② 배치 구성 렌더링 시험)
         run: docker compose version
       - name: E② 배치 검사기 unittest

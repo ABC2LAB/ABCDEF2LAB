@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { ApiError } from "@/abc2lab-ui/lib/api";
+import { ApiError } from "@/lib/diagnosis/api";
 
 import type { LiveActivity, LiveTask } from "../live/api";
 import {

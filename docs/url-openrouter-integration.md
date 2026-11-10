@@ -17,7 +17,7 @@ Transport는 유일한 OpenRouter 승인 원장이다. URL 원장은 별도 범�
 ## 최소 설치 순서
 
 1. 기존 [URL 준비 설치](url-diagnosis-preparation.md)의 Linux 전용 UID, PostgreSQL 최소권한 역할, JWT/로그인, helper, CA, 비변경 GET/HEAD 대상 정책, private IPC, API·보고서 서비스를 설치한다. 대상 origin/IP/path/method 권위는 모델 선택으로 늘어나지 않는다.
-2. 운영자가 기존 신뢰된 DB 모델 프로필에 API 키를 등록한다. `format=openai`, 위 exact model/base, `streaming=false`, `context_window_k=256`, 양수 `max_tokens`, `max_tokens_field=max_tokens`, proxy/session header/thinking/reasoning override 없음으로 고정한다. goals/planner/worker 역할 pin은 비어 있거나 같은 profile ID여야 한다. API 키 등록용 브라우저 UI는 추가하지 않는다.
+2. 운영자가 기존 신뢰된 DB 모델 프로필에 API 키를 등록한다. `format=openai`, 위 exact model/base, `streaming=false`, `context_window_k=256`, 양수 `max_tokens`, `max_tokens_field=max_tokens`, proxy/session header/thinking/reasoning override 없음으로 고정한다. goals/planner/worker 역할 pin은 비어 있거나 같은 profile ID여야 한다. 독립 CLI 설치는 이 DB 등록 방식을 사용한다. Workbench 제품은 [인증된 키 설정 UI](../deploy/product/README.md#사용-흐름과-외부-llm)를 제공하며, 보호된 모델·provider·비용 승인과 진단 입력의 분리는 유지한다.
 3. [기존 OpenRouter manifest](openrouter-first-diagnosis.md)의 보호 파일 형식으로 profile ID, provider slug와 정확한 응답 provider name, privacy/ZDR 확인, 계정 spend cap 확인, 만료, 요청·토큰·USD·timeout·동시성·가격 상한을 설치한다. 파일은 UID 소유 0600, 전용 디렉터리는 0700이고 symlink·교체를 거부한다. 키는 manifest에도 넣지 않는다.
 4. URL launch에 `model_execution_mode: "openrouter"`, `local_llm_manifest_path: ""`, `openrouter_manifest_path: "/설치자/보호/manifest.json"`과 같은 DB profile/model/base를 설정한다. installation의 launch SHA256·manifest SHA256을 갱신한다. `input_tokens_per_call=262144`, 출력은 DB/manifest 한도 이하, 회차·누적 USD는 양수이며 승인 manifest 한도 이내로 설정한다. local_only는 기존대로 비용 0만 허용한다.
 5. 보호 installation의 model label에 Qwen3.5/OpenRouter를 지정하고 기존 `prepare-service`와 `serve-url-api`를 실행한다. `AUTOPENTEST_API`가 이 API를 향하는 Workbench에서 프로필·URL을 선택한다. 범위 확인에서 대상, provider, 토큰·USD 상한과 외부 전송을 확인하고 동의한 뒤 명시적으로 시작한다.
@@ -25,6 +25,12 @@ Transport는 유일한 OpenRouter 승인 원장이다. URL 원장은 별도 범�
 키는 backend DB 조회에만 사용한다. 실제 task/profile chain과 역할 pin, 매 호출의 최신 DB config(키 포함)를 다시 대조한다. 키 교체·빈 키·프로필 교체는 현재 회차의 다음 호출을 차단하며 재시작/새 승인으로 설치를 다시 확인한다. provider가 반환한 401/429/5xx는 재시도하지 않고 비용 불명으로 처리한다. provider의 실제 계정 키 만료 시점은 호출 전 로컬 검사만으로 확인할 수 없다.
 
 Start 요청은 비용·외부 전송 동의를 `external_transfer_confirmed: true`로 보내며 서버가 scope와 revision에 대조해 영속 receipt에 저장한다. 키·manifest 경로·provider 선택값은 진단 body, React state, local/session storage, URL, 결과·보고서·로그에 전달하지 않는다. 공개 model projection은 mode/model/provider와 호출당 한도뿐이다. 기존 브라우저 복원 handle에도 model 자격을 추가하지 않는다.
+
+## Workbench 제품의 키 등록 정책 제안
+
+#351의 독립 CLI 설치는 운영자가 DB에 키를 등록하는 경로다. 그 경로와 별도로 #353은 브라우저에서 모델명·API 키를 입력하는 인증된 설정 UI를 제안한다. 이 변경은 #351의 브라우저 키 등록 제외 범위를 제품 경로에 한해 확장하며, [단일화 검토안](contracts/workbench-consolidation-review.md)의 담당자 검토·승인 전이다.
+
+키는 비제어 password 입력에서 별도 설정 API로 보내고 입력란을 비운다. 키 열 UPDATE만 가능한 별도 writer가 설치된 프로필을 갱신한다. 모델·base·provider·예산·승인 권위는 UI 입력으로 확대하지 않는다. 등록 응답은 설정 여부만 알려 주며, 키 저장은 자격 확인·모델 호출·진단 시작이 아니다. 일반 진단 body·상태·브라우저 저장소·로그·보고서로 키를 전달하지 않는 경계는 유지한다.
 
 ## 네트워크와 상호작용
 

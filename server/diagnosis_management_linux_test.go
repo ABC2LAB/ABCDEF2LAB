@@ -94,7 +94,7 @@ func TestDiagnosisManagementExistingAuthOwnedPostgres(t *testing.T) {
 	if code, _ := call("GET", diagnosisapi.BasePath+"/catalog", "", nil); code != 401 {
 		t.Fatal(code)
 	}
-	code, data := call("POST", "/api/auth/login", "", map[string]string{"username": "ARTEX", "password": password})
+	code, data := call("POST", "/api/auth/login", "", map[string]string{"username": "ABC2LAB", "password": password})
 	if code != 200 || json.Unmarshal(data["token"], &token) != nil || token == "" {
 		t.Fatal("existing login rejected", code)
 	}

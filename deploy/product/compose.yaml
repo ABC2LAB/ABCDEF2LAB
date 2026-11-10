@@ -1,0 +1,136 @@
+name: abc2lab-product
+x-product: &product
+  image: abc2lab-product:${PRODUCT_TAG:-local}
+  build:
+    context: ../..
+    dockerfile: deploy/product/Dockerfile
+    args:
+      VCS_REF: ${PRODUCT_SOURCE_SHA:?set the exact product source commit}
+services:
+  postgres:
+    image: postgres:16-bookworm@sha256:5264710be20f409750ac6dc4e5706dcef929c87e241605463f0f9aefa932a8d9
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: abc2lab
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    networks:
+      control: {ipv4_address: 172.31.252.10}
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -d, abc2lab]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  install:
+    <<: *product
+    user: '0:0'
+    entrypoint: [/app/product-install-entrypoint]
+    depends_on:
+      postgres: {condition: service_healthy}
+    secrets: [product_install, postgres_password]
+    volumes: [product-state:/p, target-tls:/target-tls]
+    tmpfs: ['/tmp:rw,nosuid,nodev,size=16m']
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
+    networks: [control]
+    restart: 'no'
+  preparation:
+    <<: *product
+    user: '1000:1000'
+    entrypoint: [/app/product-preparation-entrypoint]
+    depends_on:
+      install: {condition: service_completed_successfully}
+    volumes: [product-state:/p]
+    tmpfs: ['/tmp:rw,nosuid,nodev,size=64m']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp-preparation.json
+    pids_limit: 256
+    mem_limit: 2g
+    networks:
+      control: {ipv4_address: 172.31.252.12}
+      target: {ipv4_address: 172.31.253.12}
+      frontend: {}
+    ports: ['127.0.0.1:${PRODUCT_PORT:-8787}:8787']
+    healthcheck:
+      test: [CMD, test, -S, /p/ipc/preparation.sock]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+    stop_grace_period: 60s
+  api:
+    <<: *product
+    user: '1000:1000'
+    entrypoint: [/app/first-controlled-diagnosis]
+    command: [serve-url-api, -installation, /p/config/installation.json, -config, /p/config/api-launch.json, -socket, /p/ipc/preparation.sock, -runtime-api-origin, 'http://127.0.0.1:28080', -product-ui, -credential-dsn-file, /p/config/model-writer.dsn]
+    depends_on:
+      preparation: {condition: service_healthy}
+    network_mode: service:preparation
+    volumes:
+      - type: volume
+        source: product-state
+        target: /p
+        read_only: true
+        volume: {subpath: api, nocopy: true}
+      - type: volume
+        source: product-state
+        target: /p/ipc
+        read_only: true
+        volume: {subpath: ipc, nocopy: true}
+    tmpfs: ['/tmp:rw,noexec,nosuid,nodev,size=16m']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, 'http://127.0.0.1:28081/api/product/health']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    stop_grace_period: 30s
+  workbench:
+    <<: *product
+    user: '1000:1000'
+    entrypoint: [/app/first-controlled-diagnosis]
+    command: [product-front, -listen, ':8787', -api-origin, 'http://127.0.0.1:28081']
+    depends_on:
+      api: {condition: service_healthy}
+    network_mode: service:preparation
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, 'http://127.0.0.1:8787/api/product/health']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+secrets:
+  product_install:
+    file: ${PRODUCT_INSTALL_FILE:?protected product install JSON}
+  postgres_password:
+    file: ${PRODUCT_POSTGRES_PASSWORD_FILE:?protected postgres password file}
+networks:
+  control:
+    internal: true
+    ipam:
+      config: [{subnet: 172.31.252.0/24}]
+  target:
+    internal: true
+    ipam:
+      config: [{subnet: 172.31.253.0/24}]
+  frontend: {}
+volumes:
+  postgres-data: {}
+  product-state: {}
+  target-tls: {}
