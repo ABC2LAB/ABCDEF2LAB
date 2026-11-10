@@ -619,6 +619,23 @@ func TestCrawlLeavesInferredCandidatesUnvisitedAndUnselected(t *testing.T) {
 	}
 }
 
+func TestAutoSelectionSkipsScripts(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	c.binding.Limits.MaxPages = 3
+	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
+		return crawlResult(`<script src="/read/app.js"></script><a href="/read/page">p</a>`), nil
+	})
+	if !handled || err != nil {
+		t.Fatal(handled, err)
+	}
+	if e := endpointAt(c, "GET", "/read/app.js"); e.Path == "" || e.Selected {
+		t.Fatalf("%+v", e)
+	}
+	if e := endpointAt(c, "GET", "/read/page"); !e.Selected {
+		t.Fatalf("%+v", e)
+	}
+}
+
 func TestLiteralCallPromotesInferredEndpoint(t *testing.T) {
 	c, _ := flowFixture(t, Manual)
 	c.mu.Lock()

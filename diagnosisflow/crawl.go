@@ -11,6 +11,9 @@ import (
 	"strings"
 )
 
+// 스크립트 후보가 발견 칸의 절반을 넘어 API 경로를 밀어내지 않게 한다.
+const scriptSlotDivisor = 2
+
 func (c *Controller) resolve(raw, from string) (string, bool) {
 	if len(raw) > 2048 || strings.ContainsAny(raw, "\r\n\\") {
 		return "", false
@@ -34,7 +37,7 @@ func (c *Controller) scriptSlotsLocked() int {
 			used++
 		}
 	}
-	return c.binding.Limits.MaxEndpoints/2 - used
+	return c.binding.Limits.MaxEndpoints/scriptSlotDivisor - used
 }
 
 // 스크립트를 참조한 문서를 따라 올라간다. 문서를 모르면 false다.
@@ -295,7 +298,7 @@ func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, fail
 		c.record.Snapshot.Stage = "diagnosing"
 		for i := range c.record.Snapshot.Endpoints {
 			e := &c.record.Snapshot.Endpoints[i]
-			e.Selected = e.InScope && e.Change == "attested_read" && (e.ObservationError == "" || e.ObservationError == "body_incomplete")
+			e.Selected = e.InScope && e.Change == "attested_read" && e.Kind != "script" && (e.ObservationError == "" || e.ObservationError == "body_incomplete")
 		}
 	}
 	return true, c.saveLocked(ctx, false, "crawl_finished", "", "", 0)
