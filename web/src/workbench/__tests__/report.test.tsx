@@ -58,7 +58,8 @@ describe("<Report />", () => {
     expect(
       within(box).getByRole("heading", { level: 2, name: "비로그인 상태에서 관리자 통계가 열림" }),
     ).toBeInTheDocument();
-    expect(within(box).getByText("신규")).toBeInTheDocument();
+    // 지난 점검 대비 '신규' 표시는 없앴다
+    expect(within(box).queryByText("신규")).toBeNull();
     expect(box).toHaveTextContent("세션 쿠키 없이 보낸 요청 1건 · 비교용 대조군 1건");
   });
 
@@ -158,7 +159,7 @@ describe("<Report />", () => {
     );
     expect(container.querySelector("#rExample")).toBeVisible();
     expect(container.querySelector("#rExample")).toHaveTextContent(
-      "방금 종료한 점검의 실제 결과가 아닙니다. 아래 발견·판정·커버리지·그래프는 완료된 예시 점검(blog.example.com)의 고정 샘플입니다. 실제로 조기 종료하면 종료 시점까지 수집한 결과만, 커버리지도 그만큼만 집계됩니다.",
+      "방금 종료한 점검의 실제 결과가 아닙니다. 아래 발견·판정·커버리지·그래프는 완료된 예시 점검(blog.example.com)의 고정 샘플입니다.",
     );
     const box = insp(container);
     expect(

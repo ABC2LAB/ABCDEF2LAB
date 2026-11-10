@@ -29,8 +29,6 @@ export interface Shell {
   inspOpen: boolean;
   /** 레일 서랍이 열림 */
   railOpen: boolean;
-  /** 레일 전용: 마지막 라우팅 순간에 새 점검 줄이 보였는가 (원본 route() 의 aria-current 계산 시점) */
-  railNewAtRoute: boolean;
   /** 화면 이동. 이미 그 해시면 다시 라우팅(서랍 닫기·맨 위로·h1 포커스). 원본 goTo. */
   goTo: (name: View) => void;
   /** 상세 서랍 열기 (넓은 화면에서는 아무것도 안 함). 30ms 뒤 `.vi [data-insp-close]` 첫 버튼에 포커스. 원본 openInsp. */
@@ -59,7 +57,6 @@ export const ShellContext = createContext<Shell>({
   reduce: false,
   inspOpen: false,
   railOpen: false,
-  railNewAtRoute: false,
   goTo: noop,
   openInsp: noop,
   closeInsp: noop,

@@ -168,7 +168,6 @@ function shellValue(over: Partial<Shell> = {}): Shell {
     reduce: false,
     inspOpen: false,
     railOpen: false,
-    railNewAtRoute: false,
     goTo: noop,
     openInsp: noop,
     closeInsp: noop,

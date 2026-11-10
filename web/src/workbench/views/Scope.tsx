@@ -77,10 +77,6 @@ export function Scope() {
       </header>
       <div className={s.vb}>
         <div className={s.vm}>
-          <p className={s.lead}>
-            자산 탐색에서 찾은 경로입니다. 점검할 경로를 고르면 그 범위로 점검을 시작합니다. 포함 여부와 승인 필요
-            여부는 메서드와 경로처럼 <b>관찰한 사실</b>로만 정하고, 묶음과 설명은 AI 추정입니다.
-          </p>
           <div className={s.scount} id="sCount">
             <span>
               엔드포인트<b>{EP.length}</b>

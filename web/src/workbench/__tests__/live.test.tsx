@@ -161,8 +161,6 @@ describe("<Live />", () => {
     fireEvent.click(screen.getByRole("button", { name: "점검에 포함" }));
     expect(useWb.getState().S.path).toBe("in");
     expect(screen.getByText("포함함")).toBeInTheDocument();
-    expect(
-      screen.getByText("계정 A, 계정 B, 비로그인으로 조회 요청만 보내 확인합니다. 결정은 감사 로그에 남았습니다."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("계정 A, 계정 B, 비로그인으로 조회 요청만 보내 확인합니다.")).toBeInTheDocument();
   });
 });

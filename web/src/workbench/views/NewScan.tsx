@@ -91,7 +91,7 @@ export function NewScan() {
   const [lastExt, setLastExt] = useState<string | null>(null);
   /** 'TXT 레코드 확인' 을 누른 hostname (1.3초 동안 버튼을 막는다) */
   const [checking, setChecking] = useState<string | null>(null);
-  const [vState, setVState] = useState("토큰은 1시간 동안 이 주소에만 유효합니다.");
+  const [vState, setVState] = useState("");
   const urlRef = useRef<HTMLInputElement>(null);
   const seenSeq = useRef(0);
 
@@ -138,7 +138,7 @@ export function NewScan() {
     const t = window.setTimeout(() => {
       setVerified((m) => ({ ...m, [checking]: true }));
       setChecking(null);
-      setVState("시안이라 실제 확인 없이 예시로 통과했습니다. 실제로는 DNS TXT 확인이 필요합니다.");
+      setVState("시안이라 실제 확인 없이 예시로 통과했습니다");
       urlRef.current?.focus();
     }, 1300);
     return () => window.clearTimeout(t);
@@ -195,7 +195,6 @@ export function NewScan() {
           <div className={s.fsec}>
             <div className={s["fsec-h"]}>
               <h2>대상</h2>
-              <p>허용 목록에 있는 주소나 내부 주소만 점검할 수 있습니다.</p>
             </div>
             <div className={s["fsec-b"]}>
               <div className={s.field}>
@@ -222,10 +221,7 @@ export function NewScan() {
                   {hl.kind === "err" ? (
                     <span className={s.err}>{hl.text}</span>
                   ) : (
-                    <>
-                      <span className={cx(s.pill, s[hl.cls])}>{hl.pill}</span>
-                      <span className={s.help}>{hl.help}</span>
-                    </>
+                    <span className={cx(s.pill, s[hl.cls])}>{hl.pill}</span>
                   )}
                 </div>
               </div>
@@ -237,7 +233,6 @@ export function NewScan() {
                       {vh}
                     </b>{" "}
                     은(는) 허용 목록에 없는 외부 주소입니다. 아래 TXT 레코드를 도메인 DNS에 추가한 뒤 확인을 누르세요.
-                    웹 파일 인증은 우회 위험이 있어 지원하지 않습니다.
                   </div>
                 </div>
                 <div className={s.rec}>
@@ -291,7 +286,6 @@ export function NewScan() {
           <div className={s.fsec}>
             <div className={s["fsec-h"]}>
               <h2>로그인</h2>
-              <p>계정이 2개 이상이면 계정 사이의 접근(IDOR)도 점검합니다.</p>
             </div>
             <div className={s["fsec-b"]}>
               <Seg<Auth>
@@ -368,10 +362,7 @@ export function NewScan() {
                     </label>
                     <textarea className={s.inp} id="nSB" placeholder="Cookie: session=…" {...text("sb")} />
                   </div>
-                  <p className={s.help}>
-                    시안입니다 — 실제 세션 값·비밀번호를 넣지 말고 예시 값만 쓰세요. (실제 연동 시에는 입력값을 보호하고
-                    로그·내보내기에서 제외하도록 구현·검증해야 합니다. 이 시안에는 해당 보호 기능이 없습니다.)
-                  </p>
+                  <p className={s.help}>시안입니다 — 실제 세션 값·비밀번호를 넣지 말고 예시 값만 쓰세요.</p>
                 </div>
               </div>
             </div>
@@ -380,7 +371,6 @@ export function NewScan() {
           <div className={s.fsec}>
             <div className={s["fsec-h"]}>
               <h2>분석 모델</h2>
-              <p>점검을 판단하는 LLM이 어디서 돌지 정합니다.</p>
             </div>
             <div className={s["fsec-b"]}>
               <Seg<Llm>
@@ -413,7 +403,6 @@ export function NewScan() {
               </div>
               <div className={s.hostline} id="nLocalState" hidden={f.llm !== "local"}>
                 <span className={cx(s.pill, s.ok)}>내부 LLM 연결됨</span>
-                <span className={s.help}>외부 API를 쓰지 않습니다</span>
               </div>
               <div className={s["fsec-b"]} id="nApi" hidden={f.llm !== "api"}>
                 <div className={s.two}>
@@ -431,7 +420,6 @@ export function NewScan() {
                     <span className={s.lbl}>API 키</span>
                     <div className={s.hostline}>
                       <span className={cx(s.pill, s.ok)}>등록됨 10/28</span>
-                      <span className={s.help}>저장된 키는 다시 보여주지 않습니다</span>
                     </div>
                   </div>
                 </div>
@@ -448,7 +436,6 @@ export function NewScan() {
           <div className={s.fsec}>
             <div className={s["fsec-h"]}>
               <h2>작업</h2>
-              <p>이름과 목표, 데이터를 바꾸는 요청을 어떻게 다룰지 정합니다.</p>
             </div>
             <div className={s["fsec-b"]}>
               <div className={s.field}>
@@ -491,7 +478,6 @@ export function NewScan() {
                     </label>
                   ))}
                 </div>
-                <span className={s.help}>비워 두면 기본 목표로 점검합니다.</span>
               </div>
               <div className={s.field}>
                 <span className={s.lbl} id="nSendL">
@@ -515,8 +501,7 @@ export function NewScan() {
                 <div className={cx(s.note, s.warn)} id="nFullWarn" hidden={f.send !== "full"}>
                   <Icon name="alert" />
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    실제 주문이 만들어지거나 데이터가 지워질 수 있습니다. 운영 서버에는 쓰지 마세요. 전체 허용에서도
-                    허용 목록, 제외 경로, 감사 로그는 그대로 적용됩니다.
+                    실제 주문이 만들어지거나 데이터가 지워질 수 있습니다. 운영 서버에는 쓰지 마세요.
                     <label className={s.ckline}>
                       <input
                         type="checkbox"
@@ -541,9 +526,6 @@ export function NewScan() {
                     options={DEPTHS.map((d) => [d, d] as const)}
                     onPick={(depth) => set({ depth })}
                   />
-                  <span className={s.help} id="nDepthHelp">
-                    {v.depthHelp}
-                  </span>
                 </div>
                 <div className={s.field}>
                   <label className={s.lbl} htmlFor="nWorkers">
@@ -554,7 +536,6 @@ export function NewScan() {
                       <option key={w}>{w}</option>
                     ))}
                   </select>
-                  <span className={s.help}>LLM이 동시에 처리하는 작업 수. 대상 서버 요청 속도와는 관계없습니다.</span>
                 </div>
               </div>
               <div className={s.field}>
@@ -565,12 +546,8 @@ export function NewScan() {
                   className={s.inp}
                   id="nExcl"
                   placeholder={"/api/admin/reset\n/api/users/*/delete"}
-                  aria-describedby="nExclHelp"
                   {...text("excl")}
                 />
-                <span className={s.help} id="nExclHelp">
-                  적은 경로는 전체 허용에서도 요청하지 않습니다. 공통 규칙 /admin/delete* 는 이미 적용됩니다.
-                </span>
               </div>
             </div>
           </div>
@@ -641,9 +618,6 @@ export function NewScan() {
               점검 시작
             </button>
             <span className={s.why}>{why}</span>
-            <p className={s.help}>
-              시작하면 먼저 자산 탐색으로 링크와 폼을 따라가며 경로를 모읍니다. 탐색은 조회(GET) 요청만 보냅니다.
-            </p>
           </div>
         </aside>
       </div>

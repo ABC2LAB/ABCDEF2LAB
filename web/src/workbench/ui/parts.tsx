@@ -161,8 +161,8 @@ export function ReportLink({
 }: {
   kind: "blog" | "live";
   className?: string;
-  /** aria-current 값 (레일은 "page", 단계 표시는 "step") */
-  current?: "page" | "step";
+  /** aria-current 값 (레일 빨간 점은 "true", 단계 표시는 "step") */
+  current?: "true" | "step";
   children: ReactNode;
 }) {
   const setReportHost = useWb((st) => st.setReportHost);

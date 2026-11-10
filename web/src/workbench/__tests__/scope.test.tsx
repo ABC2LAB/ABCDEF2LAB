@@ -23,7 +23,6 @@ function shell(over: Partial<Shell> = {}): Shell {
     reduce: false,
     inspOpen: false,
     railOpen: false,
-    railNewAtRoute: false,
     goTo: noop,
     openInsp: noop,
     closeInsp: noop,
@@ -177,19 +176,18 @@ describe("범위 확인: 포함 여부와 선택", () => {
     expect(rowButton("POST", "/api/password/reset")).toHaveAttribute("aria-current", "true");
     const insp = byId(container, "sInsp") as HTMLElement;
     expect(within(insp).getByRole("heading", { level: 2 })).toHaveTextContent("POST /api/password/reset");
-    expect(insp).toHaveTextContent(
-      "보내면 실제 메일이 발송됩니다. 그래서 기본으로 제외했습니다. 범위 확인에서 체크하면 포함하고, 보낼 때 승인을 받습니다.",
-    );
+    // 처리 설명 칸은 없앴다 (딱지만으로 보인다)
+    expect(insp).not.toHaveTextContent("기본으로 제외했습니다");
     expect(within(insp).getByText("제외 · 메일 발송")).toBeInTheDocument();
   });
 
-  it("직접 제외하면 '제외' 딱지와 설명, 전역 제외는 체크 상자가 막혀 있다", () => {
+  it("직접 제외하면 '제외' 딱지, 전역 제외는 체크 상자가 막혀 있다", () => {
     const { container } = renderScope();
     expandAll();
     fireEvent.click(screen.getByRole("checkbox", { name: "GET /products 점검에 포함" }));
     const insp = byId(container, "sInsp") as HTMLElement;
     expect(within(insp).getByRole("heading", { level: 2 })).toHaveTextContent("GET /products");
-    expect(insp).toHaveTextContent("직접 제외했습니다. 체크하면 다시 포함합니다.");
+    expect(insp).not.toHaveTextContent("직접 제외했습니다");
     expect(within(rowButton("GET", "/products")).getByText("제외")).toBeInTheDocument();
     const lock = screen.getByRole("checkbox", { name: "DELETE /admin/delete-user/{id} 점검에 포함" });
     expect(lock).toBeDisabled();
@@ -212,7 +210,7 @@ describe("범위 확인: 포함 여부와 선택", () => {
     expect(within(insp).getByText("포함 · 보낼 때 승인")).toBeInTheDocument();
     expect(within(insp).getByText("로그인 필요")).toBeInTheDocument();
     expect(insp).toHaveTextContent("응답200찾은 곳/checkout 화면요청 횟수1회근거요청 본문에 금액·결제 수단");
-    expect(insp).toHaveTextContent("데이터를 바꾸는 요청이라 범위에 넣어도 보낼 때마다 승인을 받습니다.");
+    expect(insp).not.toHaveTextContent("보낼 때마다 승인을 받습니다");
   });
 
   it("'선택한 범위로 점검 시작': 레일 새 점검 줄을 숨기고 진행 화면을 처음부터", () => {
@@ -274,9 +272,8 @@ describe("API 상세", () => {
     const { container } = renderScope();
     fireEvent.click(screen.getByRole("tab", { name: "요청·응답 예시" }));
     const panel = byId(container, "s-p-ex") as HTMLElement;
-    expect(panel).toHaveTextContent(
-      "탐색에서 실제로 주고받은 요청과 응답입니다. 세션, 토큰, 개인정보는 <자리표시자>로 바꿔 저장했습니다.",
-    );
+    // 위 안내 문단은 없앴고, 출처는 카드의 '예시 · 관찰' 표시로 남는다
+    expect(panel).not.toHaveTextContent("탐색에서 실제로 주고받은 요청과 응답입니다");
     expect(within(panel).getAllByText("예시 · 관찰")).toHaveLength(2);
     expect(byId(container, "s-req")?.textContent).toBe(
       "GET /api/orders/1012 HTTP/1.1\nHost: shop.example.com\nAccept: application/json\nCookie: session=<계정 A 세션>",
@@ -297,26 +294,24 @@ describe("API 상세", () => {
     expect(byId(container, "s-req")).toHaveTextContent("Accept: text/html");
   });
 
-  it("보내지 않은 변경 요청 · 기본 제외 · 전역 제외의 안내와 출처", () => {
+  it("보내지 않은 변경 요청 · 기본 제외 · 전역 제외의 출처 표시", () => {
     const { container } = renderScope();
     fireEvent.click(screen.getByRole("tab", { name: "요청·응답 예시" }));
     const panel = byId(container, "s-p-ex") as HTMLElement;
     fireEvent.click(rowButton("PATCH", "/api/orders/{id}"));
-    expect(panel).toHaveTextContent("아직 보내지 않은 요청입니다.");
+    expect(panel).not.toHaveTextContent("아직 보내지 않은 요청입니다");
     expect(within(panel).getByText("예시 · 찾은 모양")).toBeInTheDocument();
     expect(within(panel).getByText("예시 · AI 추정")).toBeInTheDocument();
     expect(byId(container, "s-req")?.textContent).toBe(
       'PATCH /api/orders/1012 HTTP/1.1\nHost: shop.example.com\nAccept: application/json\nCookie: session=<계정 A 세션>\nContent-Type: application/json\n\n{\n  "status": "cancelled"\n}',
     );
     fireEvent.click(rowButton("GET", "/api/logout"));
-    expect(panel).toHaveTextContent("기본으로 제외한 경로라 보내지 않았습니다(세션이 끊김).");
+    expect(within(panel).getByText("예시 · AI 추정")).toBeInTheDocument();
     // 302: 본문·Content-Type 없이 헤더만
     expect(byId(container, "s-res")?.textContent).toBe(
       "HTTP/1.1 302 Found\nLocation: /\nSet-Cookie: session=; Max-Age=0",
     );
     fireEvent.click(rowButton("DELETE", "/admin/delete-user/{id}"));
-    expect(panel).toHaveTextContent("전역 제외 규칙 /admin/delete*에 걸려 보내지 않는 경로입니다.");
-    expect(within(panel).getByText("/admin/delete*").tagName).toBe("CODE");
     expect(byId(container, "s-res")).toBeNull();
     expect(within(panel).getByText("없음")).toBeInTheDocument();
     expect(within(panel).getByText("보내지 않는 요청이라 응답이 없습니다.")).toBeInTheDocument();

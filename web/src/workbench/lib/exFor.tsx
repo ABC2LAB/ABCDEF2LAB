@@ -1,9 +1,5 @@
 // 엔드포인트 하나의 요청·응답 예시 글. 원본 exFor(e) (host 는 전역 target 대신 인자로 받음).
-// 안내 문구(note)에 <code> 가 있어 ReactNode 로 돌려준다(HTML 파서에 맡기지 않음).
 
-import type { ReactNode } from "react";
-
-import { OFF } from "../data/crawl";
 import { EX, IDS, QS, REASON } from "../data/examples";
 import type { Endpoint } from "../data/scope";
 
@@ -16,30 +12,11 @@ export interface ExView {
   readonly res: string | null;
   /** 응답이 없을 때의 안내 */
   readonly none: string | null;
-  /** 예시 위 안내 문구 */
-  readonly note: ReactNode;
 }
 
 function accept(p: string): string {
   if (p.indexOf("/api/") === 0 || p === "/health") return "application/json";
   return /\.(txt|xml)$/.test(p) ? "*/*" : "text/html";
-}
-
-function note(e: Endpoint, sent: boolean, key: string): ReactNode {
-  if (e.lock) {
-    return (
-      <>
-        전역 제외 규칙 <code>/admin/delete*</code>에 걸려 보내지 않는 경로입니다. 요청은 스크립트에서 찾은 모양으로 만든
-        예시입니다.
-      </>
-    );
-  }
-  if (sent)
-    return "탐색에서 실제로 주고받은 요청과 응답입니다. 세션, 토큰, 개인정보는 <자리표시자>로 바꿔 저장했습니다.";
-  if (e.k === "off") {
-    return `기본으로 제외한 경로라 보내지 않았습니다(${OFF[key]}). 요청은 찾은 모양으로, 응답은 비슷한 경로를 보고 AI가 추정한 예시입니다.`;
-  }
-  return "아직 보내지 않은 요청입니다. 요청은 폼과 스크립트에서 찾은 모양으로 만들었고, 응답은 비슷한 경로를 보고 AI가 추정했습니다. 범위에 넣고 승인하면 실제 응답으로 바뀝니다.";
 }
 
 /** 원본 `exFor(e)`. host 는 `curHost(target)`. */
@@ -77,5 +54,5 @@ export function exFor(e: Endpoint, host: string): ExView {
     if (body && !r.none) L.push("", ...body.split("\n"));
     res = L.join("\n");
   }
-  return { sent, req: req.join("\n"), res, none, note: note(e, sent, key) };
+  return { sent, req: req.join("\n"), res, none };
 }

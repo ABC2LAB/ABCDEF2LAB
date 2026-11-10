@@ -47,7 +47,7 @@ function LiveDecide() {
           <span className={s.pill}>결정 없음</span>
           {ep}
         </b>
-        <span>점검이 끝날 때까지 포함 여부를 정하지 않아 보내지 않았습니다. 이 경로는 미검사로 남깁니다.</span>
+        <span>포함 여부를 정하지 않아 보내지 않았습니다.</span>
       </div>
     );
   } else if (!path) {
@@ -58,10 +58,7 @@ function LiveDecide() {
             <span className={cx(s.pill, s.wait)}>확인 필요</span>
             {ep}
           </b>
-          <span>
-            점검 중 새로 찾은 관리자 경로입니다. 관리자 메뉴 스크립트에서 찾았고, 처음 보는 권한 영역이라 자동으로
-            처리하지 않았습니다. 그동안 다른 계획은 계속 진행합니다.
-          </span>
+          <span>점검 중 새로 찾은 관리자 경로입니다.</span>
         </div>
         <div className={s.acts}>
           <button className={cx(s.btn, s.pri, s.sm)} type="button" data-pathd="in" onClick={() => setPath("in")}>
@@ -81,8 +78,7 @@ function LiveDecide() {
           {ep}
         </b>
         <span>
-          {path === "in" ? "계정 A, 계정 B, 비로그인으로 조회 요청만 보내 확인합니다." : "보내지 않고 기록만 남깁니다."}{" "}
-          결정은 감사 로그에 남았습니다.
+          {path === "in" ? "계정 A, 계정 B, 비로그인으로 조회 요청만 보내 확인합니다." : "보내지 않고 기록만 남깁니다."}
         </span>
       </div>
     );
@@ -179,7 +175,6 @@ function LiveInsp() {
                 </span>
               ))}
             </div>
-            <p className={s.help}>증거가 충분할 때만 확정하고, 부족하면 판단 불가로 나눕니다.</p>
           </Isec>
           <Isec t="발견 · 최근 순">
             <div className={s.flist}>
@@ -195,7 +190,7 @@ function LiveInsp() {
         </>
       ) : (
         <Isec>
-          <p className={s.empty}>아직 발견이 없습니다. 찾으면 여기에 바로 나타납니다.</p>
+          <p className={s.empty}>아직 발견이 없습니다.</p>
         </Isec>
       )}
       <Isec t="커버리지">
@@ -210,13 +205,11 @@ function LiveInsp() {
             새로 찾은 경로 <b>{l.ep - 37}</b>
           </span>
         </div>
-        <p className={s.help}>미검사 항목은 안전을 뜻하지 않습니다.</p>
       </Isec>
       {l.decide && !path ? (
         <Isec t="결정 대기">
           <p>
-            새로 찾은 관리자 경로 <code>/admin/export</code>를 포함할지 정해 주세요. 가운데 화면 위쪽에서 결정할 수
-            있습니다.
+            새로 찾은 관리자 경로 <code>/admin/export</code>를 포함할지 정해 주세요.
           </p>
         </Isec>
       ) : null}
@@ -298,7 +291,7 @@ export function Live() {
         종료됨
       </>
     );
-    task = "새 요청을 보내지 않습니다. 끝내지 못한 항목은 미검사로 남깁니다";
+    task = "새 요청을 보내지 않습니다";
   }
 
   // 상태 알약 (원본 lState)
@@ -504,9 +497,6 @@ export function Live() {
                 <div className={s.sub}>응답 없음</div>
               </div>
             </div>
-            <p className={s.help}>
-              전송 통제를 거친 HTTP 요청만 셉니다. 셸·브라우저·MCP 같은 다른 도구의 통신은 들어가지 않습니다.
-            </p>
           </section>
           <div className={s["two-col"]}>
             <section className={s.sec} aria-labelledby="lPlanH">
@@ -519,9 +509,6 @@ export function Live() {
               <ol className={s.plan} id="lPlan">
                 {plan}
               </ol>
-              <p className={s.help}>
-                계획은 플래너가 만들고 워커가 실행합니다. 같은 자원·조건의 중복 요청은 한 번만 보냅니다.
-              </p>
             </section>
             <section className={s.sec} aria-labelledby="lFeedH">
               <div className={s.sh}>
@@ -531,24 +518,6 @@ export function Live() {
                     {`${l.feed.length}건`}
                   </span>
                 </h2>
-                <div className={s.legend}>
-                  <span>
-                    <span className={cx(s.fd, s.ok, s.dot)} />
-                    정상 확인
-                  </span>
-                  <span>
-                    <span className={cx(s.fd, s.col, s.dot)} />
-                    경로 수집
-                  </span>
-                  <span>
-                    <span className={cx(s.fd, s.blk, s.dot)} />
-                    막은 시도
-                  </span>
-                  <span>
-                    <span className={cx(s.fd, s.hit, s.dot)} />
-                    발견
-                  </span>
-                </div>
               </div>
               <ul className={cx(s.feed, l.feedAll && l.feed.length > FEED_N && s.scroll)} id="lFeed" ref={feedRef}>
                 {shown.length ? (
@@ -569,7 +538,7 @@ export function Live() {
                     </li>
                   ))
                 ) : (
-                  <li className={s.empty}>아직 끝난 일이 없습니다. 지금 하는 일이 끝나면 여기로 내려옵니다.</li>
+                  <li className={s.empty}>아직 끝난 일이 없습니다.</li>
                 )}
               </ul>
               <button

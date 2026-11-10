@@ -1,6 +1,6 @@
 "use client";
 
-// 보고서 '자산 지식 그래프' 탭 내용. 원본 renderKg · kgSvg · legSw · kgApply 를 JSX 로 옮긴 것.
+// 보고서 '자산 지식 그래프' 탭 내용. 원본 renderKg · kgSvg · kgApply 를 JSX 로 옮긴 것.
 // 고른 것(sel)과 고르는 동작은 보고서 화면이 갖고, 여기서는 그리기와 강조(has-sel · on · sel · aria-pressed)만 한다.
 
 import { type KeyboardEvent, useMemo } from "react";
@@ -17,7 +17,6 @@ import {
   KX,
   kbox,
   kcurve,
-  kgCount,
   kgHighlight,
   kname,
   kstate,
@@ -88,15 +87,6 @@ function NodeShape({ n }: { n: KgNode }) {
   );
 }
 
-/** 범례 선 견본. 원본 `legSw(cls)`. */
-function LegSw({ st }: { st: KgState }) {
-  return (
-    <svg width="26" height="8" aria-hidden="true">
-      <path className={cx(s["kg-e"], s[`e-${st}`])} d="M1 4H25" style={{ opacity: 1 }} />
-    </svg>
-  );
-}
-
 /** Enter · Space 로 누르기 (원본 keydown: [data-kgn],[data-kgb] 에 click 을 보냄) */
 function pressKey(e: KeyboardEvent, go: () => void) {
   if (e.key !== "Enter" && e.key !== " ") return;
@@ -141,10 +131,6 @@ export function KnowledgeGraph({
           {f6?.title}
         </button>
       </div>
-      <p className={s.lead}>
-        점검 중 실제로 주고받은 요청과 응답으로 만든 소유·권한 관계입니다. 누가(역할) 어떤 엔드포인트로 어떤 자원에
-        닿았는지 이어 보면 공격 경로가 보입니다. 노드나 발견 표시를 누르면 오른쪽에 관계가 나옵니다.
-      </p>
       <div className={s.sec}>
         <div className={s.sh}>
           <h2>확인된 공격 경로</h2>
@@ -274,30 +260,6 @@ export function KnowledgeGraph({
           </svg>
         </div>
         <div className={s.kgleg}>
-          <span>
-            <LegSw st="ok" />
-            허용 {kgCount("ok")}
-          </span>
-          <span>
-            <LegSw st="block" />
-            차단 {kgCount("block")}
-          </span>
-          <span>
-            <LegSw st="vuln" />
-            취약 {kgCount("vuln")}
-          </span>
-          <span>
-            <LegSw st="sus" />
-            의심 {kgCount("sus")}
-          </span>
-          <span>
-            <LegSw st="untested" />
-            미검사 {kgCount("untested")}
-          </span>
-          <span>
-            <LegSw st="own" />
-            소유 · 선택할 때 보임
-          </span>
           <button
             className={cx(s.btn, s.sm)}
             type="button"
@@ -308,10 +270,6 @@ export function KnowledgeGraph({
             전체 보기
           </button>
         </div>
-        <p className={s.help}>
-          관계의 상태는 관찰한 사실이고, 자원 이름(주문, 프로필)은 응답 내용을 보고 AI가 붙였습니다. 미검사는 안전하다는
-          뜻이 아닙니다.
-        </p>
       </div>
     </>
   );

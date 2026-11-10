@@ -70,12 +70,6 @@ export type Send = "ap" | "full";
 export type Depth = "표준" | "심화" | "제한 없음";
 
 export const DEPTHS: readonly Depth[] = ["표준", "심화", "제한 없음"];
-/** 점검 범위 도움말. 원본 nDepthHelp 표. */
-export const DEPTH_HELP: Readonly<Record<Depth, string>> = {
-  표준: "주요 엔드포인트와 로그인 흐름 중심",
-  심화: "전체 엔드포인트, 입력 변형, 여러 단계 흐름까지",
-  "제한 없음": "새 발견이 없을 때까지 돌고 스스로 끝냅니다",
-};
 /** 점검 목표 체크 상자 (화면 순서). */
 export const GOALS: readonly string[] = ["주문·결제 권한 경계", "관리자 기능 접근", "비로그인 노출"];
 export const MODELS: readonly string[] = ["qwen/qwen3.6-35b-a3b", "qwen2.5:32b", "llama3.1:70b", "qwen2.5:7b"];
@@ -161,7 +155,7 @@ export function normalizeUrl(v: string): string | null {
 /** 주소 아래 한 줄 (원본 #nHost). err = 오류 글 · pill = 알약 + 도움말. */
 export type HostLine =
   | { readonly kind: "err"; readonly text: string }
-  | { readonly kind: "pill"; readonly cls: "ok" | "wait"; readonly pill: string; readonly help: string };
+  | { readonly kind: "pill"; readonly cls: "ok" | "wait"; readonly pill: string };
 
 /** nSync 가 그리던 값 전부. */
 export interface NView {
@@ -171,7 +165,6 @@ export interface NView {
   readonly hostLine: HostLine;
   /** 작업 이름이 있음 (없으면 오류 글 · aria-invalid) */
   readonly nameOk: boolean;
-  readonly depthHelp: string;
   /** 오른쪽 '점검 요약' (sTarget · sAuth · sLlm · sDepth · sGoal · sSend) */
   readonly sum: {
     readonly target: string;
@@ -200,16 +193,11 @@ export function nView(f: NewForm, verified: Verified): NView {
       text: filled ? "주소 형식을 확인하세요. 예: https://shop.example.com" : "점검할 사이트 주소를 입력하세요.",
     };
   } else if (st.kind === "int") {
-    hostLine = { kind: "pill", cls: "ok", pill: "내부 주소", help: "소유 확인 없이 바로 점검할 수 있습니다" };
+    hostLine = { kind: "pill", cls: "ok", pill: "내부 주소" };
   } else if (st.kind === "allow") {
-    hostLine = {
-      kind: "pill",
-      cls: "ok",
-      pill: ver ? "허용 · 예시 통과(시안)" : "허용 목록 · 예시",
-      help: ver ? "시안이라 실제 DNS 조회 없이 통과했습니다" : "설정 › 통제 정책에서 관리합니다",
-    };
+    hostLine = { kind: "pill", cls: "ok", pill: ver ? "허용 · 예시 통과(시안)" : "허용 목록 · 예시" };
   } else {
-    hostLine = { kind: "pill", cls: "wait", pill: "소유 확인 필요", help: "허용 목록에 없는 외부 주소입니다" };
+    hostLine = { kind: "pill", cls: "wait", pill: "소유 확인 필요" };
   }
 
   const name = f.name.trim();
@@ -238,7 +226,6 @@ export function nView(f: NewForm, verified: Verified): NView {
     urlInvalid: st.kind === "bad" && filled,
     hostLine,
     nameOk: !!name,
-    depthHelp: DEPTH_HELP[f.depth],
     sum: {
       target: st.url ? st.url.origin : "—",
       auth:

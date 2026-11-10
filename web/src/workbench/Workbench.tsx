@@ -41,7 +41,6 @@ function Engines({ route, reduce }: { route: View; reduce: boolean }) {
 interface Nav {
   seq: number;
   byUser: boolean;
-  railNewVisible: boolean;
 }
 
 /** 맨 위 배너 문구 (demo 문구는 원본 그대로 — 바꾸지 말 것). */
@@ -73,7 +72,7 @@ export function Workbench() {
   const accent = useWb((st) => st.accent);
   const source = useSource((st) => st.source);
   const [route, setRoute] = useState<View>("dashboard");
-  const [nav, setNav] = useState<Nav>({ seq: 0, byUser: false, railNewVisible: false });
+  const [nav, setNav] = useState<Nav>({ seq: 0, byUser: false });
   // 두 서랍을 한 상태로: Esc 는 상세 먼저, 없으면 레일 (원본 keydown)
   const [drawers, setDrawers] = useState({ insp: false, rail: false });
   const [inspFocus, setInspFocus] = useState(0);
@@ -107,8 +106,6 @@ export function Workbench() {
     const h: View = isView(raw) ? raw : "dashboard";
     setDrawers({ insp: false, rail: false });
     const st = useWb.getState();
-    // aria-current 는 이 순간 새 점검 줄이 보였는지로 정한다 (원본은 진입 처리 전에 계산)
-    const railNewVisible = st.railNew !== null;
     routeRef.current = h;
     setRoute(h);
     // 재생 진입 처리는 예시 재생일 때만 (live 화면은 엔진 데이터를 그린다)
@@ -116,7 +113,7 @@ export function Workbench() {
       if (h === "crawl") st.crawlEnter();
       if (h === "live") st.liveEnter();
     }
-    setNav((n) => ({ seq: n.seq + 1, byUser, railNewVisible }));
+    setNav((n) => ({ seq: n.seq + 1, byUser }));
   }, []);
 
   const goTo = useCallback(
@@ -281,7 +278,6 @@ export function Workbench() {
       reduce,
       inspOpen: drawers.insp,
       railOpen: drawers.rail,
-      railNewAtRoute: nav.railNewVisible,
       goTo,
       openInsp,
       closeInsp,

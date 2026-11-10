@@ -254,17 +254,6 @@ function ApprInsp() {
       <Isec t="보낼 요청">
         <pre className={s.code}>{REQ_CHECKOUT}</pre>
       </Isec>
-      <Isec t="확인하려는 것">
-        <p>결제 금액을 1원으로 바꿔 보내도 주문이 만들어지는지 확인합니다. 업무 흐름 우회(WSTG-BUSL-01)입니다.</p>
-      </Isec>
-      <Isec t="보내기 전에 알아둘 것">
-        <div className={cx(s.note, s.warn)}>
-          <Icon name="alert" />
-          <div>
-            실제 주문이 만들어질 수 있습니다. 리셋할 수 있는 시험환경일 때만 승인하세요. 결정은 감사 로그에 남습니다.
-          </div>
-        </div>
-      </Isec>
       {S.appr ? (
         <Isec>
           {S.appr === "ok" ? (
@@ -314,12 +303,6 @@ function PathDecideInsp() {
             ["처리 규칙", "관리자 경로 · 처음 보는 권한 영역은 확인 요청"],
           ]}
         />
-      </Isec>
-      <Isec t="결정하면">
-        <p>
-          포함하면 계정 A, 계정 B, 비로그인으로 접근되는지 조회 요청만 보내 확인합니다. 제외하면 보내지 않고 기록만
-          남깁니다.
-        </p>
       </Isec>
       {S.path ? (
         <Isec>
@@ -372,12 +355,6 @@ function AppInsp() {
         title="판단 불가 2건"
         chips={<span className={s.pill}>결과 확인</span>}
       />
-      <Isec>
-        <p>
-          일부 응답이 느려 결과를 확정하지 못했습니다. 판단 불가는 안전하다는 뜻이 아닙니다. 사람이 확인하거나 다시
-          점검해야 확정됩니다.
-        </p>
-      </Isec>
       <Isec t="점검 정보">
         <Kv
           rows={[
@@ -401,12 +378,6 @@ function DocsInsp() {
         title="미검사 영역 있음"
         chips={<span className={s.pill}>커버리지 76%</span>}
       />
-      <Isec>
-        <p>
-          점검하지 못한 24%는 결과에 들어가지 않았습니다. 미검사 영역은 안전을 뜻하지 않습니다. 발견이 없다는 결과도
-          점검한 76% 안에서만 맞습니다.
-        </p>
-      </Isec>
       <Isec t="점검 정보">
         <Kv
           rows={[

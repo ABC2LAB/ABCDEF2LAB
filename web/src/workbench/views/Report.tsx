@@ -73,11 +73,6 @@ function KgNodeDetail({
           {n.sub}
         </p>
       ) : null}
-      {n.t === "role" && n.desc ? (
-        <Isec>
-          <p>{n.desc}</p>
-        </Isec>
-      ) : null}
       <Isec t={`관계 ${rels.length}`}>
         <ul className={s.rel}>
           {rels.map(({ e, i }) => {
@@ -114,13 +109,6 @@ function KgNodeDetail({
               ) : null;
             })}
           </div>
-        </Isec>
-      ) : null}
-      {n.t === "res" ? (
-        <Isec>
-          <p className={s.help}>
-            자원 이름은 응답 내용을 보고 AI가 붙였습니다. 소유 관계는 계정별 응답에 심은 표식(canary)으로 확인했습니다.
-          </p>
         </Isec>
       ) : null}
     </>
@@ -295,7 +283,7 @@ export function Report() {
             <Icon name="alert" />
             <div className={s["rex-t"]}>
               {live
-                ? `방금 ${ended ? "종료" : "완료"}한 점검의 실제 결과가 아닙니다. 아래 발견·판정·커버리지·그래프는 완료된 예시 점검(blog.example.com)의 고정 샘플입니다${ended ? ". 실제로 조기 종료하면 종료 시점까지 수집한 결과만, 커버리지도 그만큼만 집계됩니다." : "."}`
+                ? `방금 ${ended ? "종료" : "완료"}한 점검의 실제 결과가 아닙니다. 아래 발견·판정·커버리지·그래프는 완료된 예시 점검(blog.example.com)의 고정 샘플입니다.`
                 : null}
             </div>
           </div>
@@ -322,30 +310,9 @@ export function Report() {
               <div className={s.v}>
                 91<small>%</small>
               </div>
-              <div className={s.sub}>미검사 9% · 안전을 뜻하지 않음</div>
+              <div className={s.sub}>미검사 9%</div>
             </div>
           </div>
-          <div className={s.diff}>
-            <span>지난 점검(10/18) 대비</span>
-            <span>
-              신규 <b>2</b>
-            </span>
-            <span>
-              유지 <b>4</b>
-            </span>
-            <span>
-              재현 안 됨 <b>1</b> · 조치 완료를 뜻하지 않음
-            </span>
-          </div>
-          <section className={s.sec} aria-labelledby="rSumH">
-            <div className={s.sh}>
-              <h2 id="rSumH">결과 요약</h2>
-            </div>
-            <p className={s.lead}>
-              주문 조회의 수평 권한 상승(IDOR)과 관리자 통계의 비인증 접근(수직 권한 상승)이 확정되었습니다. 결제 금액
-              변경은 데이터를 바꾸는 요청이라 승인 전까지 보내지 않아 판단 불가로 남겼습니다.
-            </p>
-          </section>
           <section className={s.sec} aria-labelledby="rPrioH">
             <div className={s.sh}>
               <h2 id="rPrioH">우선 조치</h2>
@@ -419,10 +386,7 @@ export function Report() {
                   >
                     <Sev k={f.sev} />
                     <span className={s.fm}>
-                      <span className={s.ft}>
-                        {f.title}
-                        {f.isNew ? <span className={cx(s.tag, s.new)}>신규</span> : null}
-                      </span>
+                      <span className={s.ft}>{f.title}</span>
                       <span className={s.fe}>
                         <FindingEp f={f} />
                         <span>{f.type}</span>
@@ -448,10 +412,6 @@ export function Report() {
               </div>
             </div>
             <div role="tabpanel" id="rp-map" aria-labelledby="rtab-map" hidden={tab !== "map"}>
-              <p className={s.help} style={{ marginBottom: 10 }}>
-                행은 계정·역할, 열은 자원 묶음입니다. 취약 칸은 접근되면 안 되는 조합이 열린 경우입니다. 같은 역할끼리는
-                수평 IDOR, 위 역할의 자원은 수직 권한 상승입니다.
-              </p>
               <div className={s.tblwrap}>
                 <table className={s.amap}>
                   <thead>
@@ -546,28 +506,9 @@ export function Report() {
                   </tbody>
                 </table>
               </div>
-              <div className={s.legend} style={{ marginTop: 10 }}>
-                <span>
-                  <Ac k="al">허용</Ac>정상 허용
-                </span>
-                <span>
-                  <Ac k="bl">차단</Ac>정상 차단
-                </span>
-                <span>
-                  <Ac k="vu">취약</Ac>열리면 안 되는데 열림
-                </span>
-                <span>
-                  <Ac k="nt">미검사</Ac>아직 확인 안 함
-                </span>
-              </div>
             </div>
             <div role="tabpanel" id="rp-ev" aria-labelledby="rtab-ev" hidden={tab !== "ev"}>
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <p className={s.help}>
-                  실제 연동 시에는 요청과 응답을 가려서 저장하도록(쿠키, 토큰, 비밀번호는 [REDACTED]) 구현·검증해야
-                  하고, 소유 확인에는 개인정보 대신 표식(canary)을 쓰도록 설계합니다. 이 시안에는 해당 저장 기능이
-                  없습니다.
-                </p>
                 <ul className={s.evi}>
                   <li>
                     <code>evidence/order-idor</code>
@@ -583,13 +524,6 @@ export function Report() {
                     <span>응답 헤더 1건</span>
                   </li>
                 </ul>
-                <div className={s.note}>
-                  <Icon name="shield" />
-                  <div>
-                    점검 중 보낸 요청과 승인 결정은 변조를 알아챌 수 있는 감사 로그로 남습니다. 점검 운영자는 로그를
-                    지울 수 없습니다(권한 분리).
-                  </div>
-                </div>
               </div>
             </div>
           </section>

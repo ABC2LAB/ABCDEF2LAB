@@ -1,11 +1,13 @@
 "use client";
 
-// 왼쪽 레일: 메뉴 · 점검 목록 · 운영 상태 · 강조색 시안. 원본 aside#rail 과 그것을 고치던 syncDecisions · railNew · liveRender 부분.
+// 왼쪽 레일: 메뉴 · 점검 목록 · 운영 상태 · 강조색 시안. 원본 aside#rail 과 그것을 고치던 syncDecisions · railNew · liveRender · syncRailSel 부분.
 // live(실제 엔진)일 때는 배지 · 점검 목록 · 분석 모델 줄만 live/rail.tsx 조각으로 바꿔 끼운다(demo 는 그대로).
+// 점검 줄에는 상태 색 점 대신, 지금 오른쪽에 보이는 기록의 줄에만 빨간 점(aria-current)을 찍는다.
 
 import { cx } from "../lib/cx";
 import { railApi } from "../lib/decisions";
 import { railShop } from "../lib/liveState";
+import { type RailKey, railKey } from "../lib/rail";
 import { LiveRailAccount, LiveRailBadge, LiveRailModel, LiveRailTasks, SourceSwitch } from "../live/rail";
 import { useIsLive } from "../live/source";
 import type { View } from "../shell";
@@ -32,12 +34,13 @@ function pickAccent(k: Accent) {
 }
 
 export function Rail() {
-  const { route, railOpen, railNewAtRoute, closeRail, dashPick } = useShell();
+  const { route, railOpen, closeRail, dashPick } = useShell();
   const n = usePending();
   const appr = useWb((st) => st.S.appr);
   const phase = useWb((st) => st.railNew);
   const crawlDone = useWb((st) => st.crawl.done);
-  const crawlPaused = useWb((st) => st.crawl.paused);
+  const dSel = useWb((st) => st.dSel);
+  const reportKind = useWb((st) => st.report.kind);
   const live = useWb((st) => st.live);
   const accent = useWb((st) => st.accent);
   const host = useCurHost();
@@ -47,7 +50,9 @@ export function Rail() {
   const cur = (nav: readonly View[], visible = true) => (visible && nav.includes(route) ? "page" : undefined);
   const shop = railShop(live);
   const api = railApi({ appr, path: null });
-  const newRun = phase === "crawl" && !crawlDone && !crawlPaused;
+  // 빨간 점: 지금 오른쪽에 보이는 기록의 줄 (원본 syncRailSel)
+  const rk = railKey(route, dSel, reportKind, phase !== null);
+  const on = (k: RailKey) => (rk === k ? ("true" as const) : undefined);
   let newSub = "범위 확인 대기";
   if (phase === "crawl") newSub = crawlDone ? "탐색 완료 · 범위 확인 대기" : "자산 탐색 중";
 
@@ -90,21 +95,15 @@ export function Rail() {
         <>
           <div className={s.rsec}>
             <div className={s.rh}>진행 중</div>
-            <a
-              className={s.rs}
-              href={`#${phase ?? "crawl"}`}
-              id="railNew"
-              hidden={!phase}
-              aria-current={cur(["crawl", "scope"], railNewAtRoute)}
-            >
-              <span className={cx(s.dot, newRun ? s.run : s.wait)} id="railNewDot" />
+            <a className={s.rs} href={`#${phase ?? "crawl"}`} id="railNew" hidden={!phase} aria-current={on("new")}>
+              <span className={s.mk} aria-hidden="true" />
               <span className={cx(s.host, s["t-host"])}>{host}</span>
               <span className={s.rsub} id="railNewSub">
                 {newSub}
               </span>
             </a>
-            <a className={s.rs} href="#live" aria-current={cur(["live"])}>
-              <span className={cx(s.dot, s[shop.dot])} id="railShopDot" />
+            <a className={s.rs} href="#live" aria-current={on("shop")}>
+              <span className={s.mk} aria-hidden="true" />
               <span className={cx(s.host, s["t-host"])}>{host}</span>
               <span className={s.rsub} id="railShopSub">
                 {shop.sub}
@@ -113,8 +112,8 @@ export function Rail() {
                 <i id="railShopBar" style={{ width: `${shop.pct}%` }} />
               </span>
             </a>
-            <button className={s.rs} type="button" onClick={() => dashPick("appr")}>
-              <span className={cx(s.dot, s[api.dot])} id="railApiDot" />
+            <button className={s.rs} type="button" aria-current={on("api")} onClick={() => dashPick("appr")}>
+              <span className={s.mk} aria-hidden="true" />
               <span className={s.host}>api.store-dev.com</span>
               <span className={s.rsub} id="railApiSub">
                 {api.sub}
@@ -126,18 +125,18 @@ export function Rail() {
           </div>
           <div className={s.rsec}>
             <div className={s.rh}>최근 끝난 점검</div>
-            <ReportLink kind="blog" className={s.rs} current={cur(["report"])}>
-              <span className={cx(s.dot, s.ok)} />
+            <ReportLink kind="blog" className={s.rs} current={on("blog")}>
+              <span className={s.mk} aria-hidden="true" />
               <span className={s.host}>blog.example.com</span>
               <span className={s.rsub}>10/25 · 발견 6</span>
             </ReportLink>
-            <button className={s.rs} type="button" onClick={() => dashPick("done-docs")}>
-              <span className={cx(s.dot, s.stop)} />
+            <button className={s.rs} type="button" aria-current={on("docs")} onClick={() => dashPick("done-docs")}>
+              <span className={s.mk} aria-hidden="true" />
               <span className={s.host}>docs.example.com</span>
               <span className={s.rsub}>10/24 · 발견 없음</span>
             </button>
-            <button className={s.rs} type="button" onClick={() => dashPick("done-app")}>
-              <span className={cx(s.dot, s.stop)} />
+            <button className={s.rs} type="button" aria-current={on("app")} onClick={() => dashPick("done-app")}>
+              <span className={s.mk} aria-hidden="true" />
               <span className={s.host}>app.sample.io</span>
               <span className={s.rsub}>10/23 · 판단 불가 2</span>
             </button>

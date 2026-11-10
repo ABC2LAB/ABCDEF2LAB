@@ -480,30 +480,9 @@ export function Crawl() {
               <div className={s.k}>요청 안 함 · 규칙으로 막음</div>
             </div>
           </div>
-          <div className={s.note}>
-            <Icon name="info" />
-            <div>
-              탐색에서는 보기만 하는 <b>GET 요청만</b> 보냅니다. 데이터를 바꾸는 경로(POST·PUT·PATCH·DELETE)는 찾아서
-              기록만 하고, 범위 확인 뒤 승인을 받아 보냅니다. 로그인은 입력한 테스트 계정으로만 합니다.
-            </div>
-          </div>
           <section className={s.sec} aria-labelledby="cLogH">
             <div className={s.sh}>
               <h2 id="cLogH">탐색 기록</h2>
-              <div className={s.legend}>
-                <span>
-                  <span className={cx(s.sc, s.s2)}>200</span>보낸 요청
-                </span>
-                <span>
-                  <span className={cx(s.tag, s.ap)}>승인 후 전송</span>보내기 전 승인
-                </span>
-                <span>
-                  <span className={cx(s.tag, s.ex)}>제외 예정</span>보내지 않음
-                </span>
-                <span>
-                  <span className={cx(s.tag, s.out)}>요청 안 함</span>규칙으로 막음
-                </span>
-              </div>
             </div>
             <div className={s.log} id="cLog" aria-live="off" ref={logRef} onScroll={onLogScroll}>
               <div className={s.lh}>
@@ -594,9 +573,7 @@ export function Crawl() {
               <div id="cTree" ref={treeRef}>
                 {tree}
               </div>
-              <p className={s["tree-hint"]}>
-                경로를 누르면 요청·응답 예시를 볼 수 있습니다. 묶음 이름은 AI 추정입니다.
-              </p>
+              <p className={s["tree-hint"]}>묶음 이름 · AI 추정</p>
             </div>
           </div>
           <div id="cApi" hidden={apiKey === null}>

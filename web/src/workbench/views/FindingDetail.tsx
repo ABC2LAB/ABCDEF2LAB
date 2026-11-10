@@ -1,7 +1,7 @@
 "use client";
 
 // 발견 상세 (보고서 · 점검 진행 공통). 원본 `findingHtml(f, host, ctx, vdNow)` 와 `fEp(f)` 를 JSX 로 옮긴 것.
-// ctx: report = 보고서 상세 패널 · live = 진행 화면의 발견 패널 (판정 중 표시 · '보고서는 점검이 끝나면…' 안내).
+// ctx: report = 보고서 상세 패널 · live = 진행 화면의 발견 패널 (판정 중 표시).
 
 import type { Finding, LiveVerdict } from "../data/findings";
 import { cx } from "../lib/cx";
@@ -44,16 +44,12 @@ export function FindingDetail({
           <>
             <Sev k={f.sev} />
             {vdNow ? <VerdictLive v={vdNow} /> : <Verdict v={f.vd} />}
-            {f.isNew && ctx === "report" ? <span className={cx(s.tag, s.new)}>신규</span> : null}
           </>
         }
       />
       <div className={s["vi-ep"]}>
         <FindingEp f={f} />
       </div>
-      <Isec t="내용">
-        <p>{f.what}</p>
-      </Isec>
       {f.full ? (
         <>
           <Isec t="계정별 응답 비교">
@@ -114,9 +110,6 @@ export function FindingDetail({
               <span className={s.rd}>[REDACTED]</span>
               {'"\n}'}
             </pre>
-            <p className={s.help}>
-              실제 값 대신 A 주문 전용 표식이 B의 응답에서 보였습니다. 주소와 개인정보는 가려서 저장하지 않습니다.
-            </p>
           </Isec>
         </>
       ) : (
@@ -126,7 +119,7 @@ export function FindingDetail({
       )}
       {pending ? (
         <Isec t="판정">
-          <p>검증 에이전트가 확인 중입니다. 증거가 충분하면 확정, 부족하면 판단 불가로 나눕니다.</p>
+          <p>검증 에이전트가 확인 중입니다.</p>
         </Isec>
       ) : (
         <Isec t={f.basisL}>
@@ -138,9 +131,6 @@ export function FindingDetail({
               </li>
             ))}
           </ul>
-          {sure && f.full ? (
-            <p className={s.help}>세 가지 증거가 모두 있어 확정했습니다. 하나라도 없으면 판단 불가로 분류합니다.</p>
-          ) : null}
         </Isec>
       )}
       {f.full ? (
@@ -158,7 +148,6 @@ export function FindingDetail({
             </pre>
             <CopyButton targetId={cid} className={s.copy} />
           </div>
-          <p className={s.help}>세션 값은 저장하지 않으니 직접 넣으세요. 보고서와 공유본에도 들어가지 않습니다.</p>
         </Isec>
       ) : null}
       {f.next ? (
@@ -191,12 +180,6 @@ export function FindingDetail({
               <span />
             </li>
           </ol>
-          <p className={s.help}>재점검은 같은 요청 3건(계정 A, 계정 B, 비로그인)만 다시 보냅니다.</p>
-        </Isec>
-      ) : null}
-      {ctx === "live" ? (
-        <Isec>
-          <p className={s.help}>보고서는 점검이 끝나면 만들어집니다. 그때 조치 담당과 재점검을 정할 수 있습니다.</p>
         </Isec>
       ) : null}
       <Isec t="분류">

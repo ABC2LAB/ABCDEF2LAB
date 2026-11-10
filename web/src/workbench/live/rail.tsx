@@ -19,7 +19,7 @@ import { errorText, isActive, isLocalBaseUrl, relTime, taskLabel, taskPhase } fr
 import { useNow } from "./parts";
 import { canGoLive, useSource } from "./source";
 import { useIsUrlMode, useUrl } from "./urlDiagnosis";
-import { URL_ENDED_STATES, urlHost, urlStateText, urlTone, urlViewFor } from "./urlMap";
+import { URL_ENDED_STATES, urlHost, urlStateText, urlViewFor } from "./urlMap";
 import { usePoll } from "./usePoll";
 
 /** 레일 '진행 중'에 보일 최대 줄 수 (넘치면 "외 N건"). */
@@ -65,7 +65,6 @@ function UrlRailTasks() {
   let row: ReactNode = null;
   if (handle) {
     const to = job ? urlViewFor(job) : "live";
-    const tone = job && verified ? urlTone(job.state) : "wait";
     let sub = busy ? "상태 확인 중" : "상태 미확인";
     if (job) sub = `${urlStateText(job.state, verified)} · ${urlPhaseLabels[job.phase]}`;
     row = (
@@ -76,7 +75,7 @@ function UrlRailTasks() {
         aria-current={route === to ? "page" : undefined}
         onClick={() => goTo(to)}
       >
-        <span className={cx(s.dot, s[tone])} />
+        <span className={s.mk} aria-hidden="true" />
         <span className={s.host}>{urlHost(handle.input.target_url)}</span>
         <span className={s.rsub}>{sub}</span>
       </button>
@@ -148,7 +147,7 @@ function TaskRailTasks() {
               aria-current={cur(t, ACTIVE_VIEWS)}
               onClick={() => open(t, "live")}
             >
-              <span className={cx(s.dot, s[ph.tone])} />
+              <span className={s.mk} aria-hidden="true" />
               <span className={s.host}>{taskLabel(t)}</span>
               <span className={s.rsub}>{goals ? `${ph.label} · ${goals}` : ph.label}</span>
               {t.goals_total > 0 ? (
@@ -180,7 +179,7 @@ function TaskRailTasks() {
               aria-current={cur(t, ["report"])}
               onClick={() => open(t, "report")}
             >
-              <span className={cx(s.dot, s[ph.tone])} />
+              <span className={s.mk} aria-hidden="true" />
               <span className={s.host}>{taskLabel(t)}</span>
               <span className={s.rsub}>{parts.join(" · ")}</span>
             </button>

@@ -1,9 +1,10 @@
 // 렌더 확인: 노란 배너, 기본 화면(대시보드), 공통 부품의 글자. CSS 모듈 클래스 이름은 검사하지 않는다.
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { railKey } from "../lib/rail";
 import { createInitialState, useWb } from "../store";
 import { CodeCard, Ep, hlHttp } from "../ui/parts";
 import { Workbench } from "../Workbench";
@@ -34,6 +35,9 @@ describe("<Workbench />", () => {
     expect(container.querySelector("#railBadge")).toHaveTextContent("2");
     expect(container.querySelector("#railShopSub")).toHaveTextContent("점검 중 · 58%");
     expect(screen.getByRole("link", { name: /대시보드/ })).toHaveAttribute("aria-current", "page");
+    // 대시보드 처음 고른 항목(승인 요청)은 api.store-dev.com 의 기록 → 그 줄에 빨간 점
+    const rail = within(container.querySelector("#rail") as HTMLElement);
+    expect(rail.getByRole("button", { name: /api\.store-dev\.com/ })).toHaveAttribute("aria-current", "true");
   });
 
   it("해시가 바뀌면 그 화면으로 가고 h1 에 포커스, 진행 화면이면 재생을 시작한다", () => {
@@ -46,7 +50,38 @@ describe("<Workbench />", () => {
     expect(live?.hidden).toBe(false);
     expect(document.activeElement).toBe(live?.querySelector("h1"));
     expect(useWb.getState().live.playing).toBe(true);
-    expect(screen.getByRole("link", { name: /shop\.example\.com/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: /shop\.example\.com/ })).toHaveAttribute("aria-current", "true");
+  });
+
+  it("레일 점검 줄: 상태 색 점은 없고, 오른쪽에 보이는 기록의 줄 하나에만 빨간 점", () => {
+    const { container } = render(<Workbench />);
+    const marked = () =>
+      [...container.querySelectorAll<HTMLElement>('#rail [aria-current="true"]')].map((el) => el.textContent ?? "");
+    // 예전 상태 점(id)이 없다
+    for (const id of ["railNewDot", "railShopDot", "railApiDot"]) expect(container.querySelector(`#${id}`)).toBeNull();
+    expect(marked()).toEqual([expect.stringContaining("api.store-dev.com")]);
+    // 대시보드에서 다른 기록을 고르면 점이 그 줄로 옮겨 간다
+    const rail = within(container.querySelector("#rail") as HTMLElement);
+    fireEvent.click(rail.getByRole("button", { name: /docs\.example\.com/ }));
+    expect(useWb.getState().dSel).toBe("done-docs");
+    expect(marked()).toEqual([expect.stringContaining("docs.example.com")]);
+    fireEvent.click(rail.getByRole("button", { name: /app\.sample\.io/ }));
+    expect(marked()).toEqual([expect.stringContaining("app.sample.io")]);
+  });
+});
+
+describe("railKey (레일 빨간 점 줄)", () => {
+  it("화면과 고른 항목으로 줄을 정한다", () => {
+    expect(railKey("live", "appr", "blog", false)).toBe("shop");
+    expect(railKey("crawl", "appr", "blog", true)).toBe("new");
+    expect(railKey("scope", "appr", "blog", false)).toBeNull();
+    expect(railKey("report", "appr", "blog", false)).toBe("blog");
+    expect(railKey("report", "appr", "live", false)).toBe("shop");
+    expect(railKey("dashboard", "appr", "blog", false)).toBe("api");
+    expect(railKey("dashboard", "path", "blog", false)).toBe("shop");
+    expect(railKey("dashboard", "und", "blog", false)).toBe("app");
+    expect(railKey("dashboard", "cov", "blog", false)).toBe("docs");
+    expect(railKey("new", "appr", "blog", false)).toBeNull();
   });
 });
 

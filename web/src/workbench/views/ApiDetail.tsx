@@ -1,9 +1,9 @@
 "use client";
 
 // API 상세 (기본 정보 · 요청·응답 예시 탭). 범위 확인의 상세 패널과 자산 탐색의 찾은 경로 패널이 함께 쓴다.
-// 원본 apiDetail(e, px) · scopeTag · whyText · selApiTab(+화살표 키). px 는 id 접두어('s' 범위 · 'c' 자산 탐색).
+// 원본 apiDetail(e, px) · scopeTag · selApiTab(+화살표 키). px 는 id 접두어('s' 범위 · 'c' 자산 탐색).
 
-import { type KeyboardEvent, type ReactNode, useRef } from "react";
+import { type KeyboardEvent, useRef } from "react";
 
 import { GL, OFF } from "../data/crawl";
 import { type Endpoint, epOn } from "../data/scope";
@@ -30,30 +30,6 @@ export function ScopeTag({ e, on }: { e: Endpoint; on: boolean }) {
   if (e.k === "login") return <span className={cx(s.tag, s.lg)}>테스트 계정</span>;
   if (e.chg) return <span className={cx(s.tag, s.ap)}>포함 · 보낼 때 승인</span>;
   return <span className={cx(s.tag, s.in)}>자동 포함</span>;
-}
-
-/** 처리 설명. 원본 `whyText(e)`. */
-function whyText(e: Endpoint, on: boolean): ReactNode {
-  if (e.lock) {
-    return (
-      <>
-        전역 제외 규칙 <code>/admin/delete*</code>에 걸려 이 점검에서는 보내지 않습니다. 규칙은 설정 › 통제 정책에서
-        바꿉니다.
-      </>
-    );
-  }
-  if (!on) {
-    const off = OFF[`${e.m} ${e.p}`];
-    if (!off) return "직접 제외했습니다. 체크하면 다시 포함합니다.";
-    const what = off
-      .replace("세션이 끊김", "세션이 끊깁니다")
-      .replace("메일 발송", "실제 메일이 발송됩니다")
-      .replace("삭제 요청", "데이터가 지워집니다");
-    return `보내면 ${what}. 그래서 기본으로 제외했습니다. 범위 확인에서 체크하면 포함하고, 보낼 때 승인을 받습니다.`;
-  }
-  if (e.k === "login") return "입력한 테스트 계정으로만 로그인합니다.";
-  if (e.chg) return "데이터를 바꾸는 요청이라 범위에 넣어도 보낼 때마다 승인을 받습니다.";
-  return "보기만 하는 요청이라 자동으로 포함합니다.";
 }
 
 /** 탭 사이 이동 키 → 방향 */
@@ -141,13 +117,9 @@ export function ApiDetail({ e, px }: { e: Endpoint; px: "s" | "c" }) {
             ]}
           />
         </Isec>
-        <Isec t="처리">
-          <p>{whyText(e, on)}</p>
-        </Isec>
       </div>
       <div role="tabpanel" id={`${px}-p-ex`} aria-labelledby={`${px}-t-ex`} hidden={tab !== "ex"}>
         <div className={s.expanel}>
-          <p className={s.help}>{x.note}</p>
           <CodeCard title="요청 예시" src={x.sent ? "예시 · 관찰" : "예시 · 찾은 모양"} text={x.req} id={`${px}-req`} />
           {x.res !== null ? (
             <CodeCard title="응답 예시" src={src} text={x.res} id={`${px}-res`} />

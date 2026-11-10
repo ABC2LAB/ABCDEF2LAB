@@ -20,7 +20,6 @@ function shellValue(over: Partial<Shell> = {}): Shell {
     reduce: false,
     inspOpen: false,
     railOpen: false,
-    railNewAtRoute: false,
     goTo: noop,
     openInsp: noop,
     closeInsp: noop,
@@ -92,12 +91,7 @@ describe("새 점검 계산 (원본 parseUrl · isInternal · hostState · nSync
   it("처음 폼은 시작할 수 있고 요약이 원본과 같다", () => {
     const v = nView(initialForm(), {});
     expect(v.why).toEqual([]);
-    expect(v.hostLine).toEqual({
-      kind: "pill",
-      cls: "ok",
-      pill: "허용 목록 · 예시",
-      help: "설정 › 통제 정책에서 관리합니다",
-    });
+    expect(v.hostLine).toEqual({ kind: "pill", cls: "ok", pill: "허용 목록 · 예시" });
     expect(v.sum).toEqual({
       target: "https://shop.example.com",
       auth: "로그인 영역 포함 · 계정 2개 (아이디·비밀번호)",
@@ -143,14 +137,14 @@ describe("<NewScan />", () => {
     expect(screen.getByRole("heading", { level: 1, name: "새 점검" })).toHaveAttribute("tabindex", "-1");
     expect(url()).toHaveValue("https://shop.example.com");
     expect(url()).toHaveAttribute("aria-invalid", "false");
-    expect($("#nHost")).toHaveTextContent("허용 목록 · 예시설정 › 통제 정책에서 관리합니다");
+    expect($("#nHost").textContent).toBe("허용 목록 · 예시");
     expect($("#nVerify")).not.toBeVisible();
     expect(name()).toHaveValue("shop.example.com 점검");
     expect(name()).toHaveAttribute("aria-invalid", "false");
     expect(screen.getByText("작업 이름을 입력하세요.")).not.toBeVisible();
     for (const b of starts()) expect(b).toBeEnabled();
     expect($("#sTarget")).toHaveTextContent("https://shop.example.com");
-    expect($("#nDepthHelp")).toHaveTextContent("주요 엔드포인트와 로그인 흐름 중심");
+    expect($("#nDepthHelp")).toBeNull();
     expect(screen.getByRole("button", { name: "요약 닫기" })).toBeInTheDocument();
   });
 
@@ -171,7 +165,7 @@ describe("<NewScan />", () => {
   it("내부 주소는 바로 점검할 수 있다", () => {
     const { $, name, typeUrl } = renderNew();
     typeUrl("localhost:3000");
-    expect($("#nHost")).toHaveTextContent("내부 주소소유 확인 없이 바로 점검할 수 있습니다");
+    expect($("#nHost").textContent).toBe("내부 주소");
     expect($("#pTarget")).toHaveTextContent("localhost · 내부 주소");
     expect($("#sTarget")).toHaveTextContent("https://localhost:3000");
     expect(name()).toHaveValue("localhost 점검");
@@ -181,7 +175,7 @@ describe("<NewScan />", () => {
     vi.useFakeTimers();
     const { $, url, name, starts, typeUrl } = renderNew();
     typeUrl("https://evil.test/path");
-    expect($("#nHost")).toHaveTextContent("소유 확인 필요허용 목록에 없는 외부 주소입니다");
+    expect($("#nHost").textContent).toBe("소유 확인 필요");
     expect($("#nVerify")).toBeVisible();
     expect($("#vHost")).toHaveTextContent("evil.test");
     expect($("#vName")).toHaveTextContent("_abc2lab-challenge.evil.test");
@@ -205,11 +199,9 @@ describe("<NewScan />", () => {
       vi.advanceTimersByTime(1300);
     });
     expect(check).toBeEnabled();
-    expect($("#vState")).toHaveTextContent(
-      "시안이라 실제 확인 없이 예시로 통과했습니다. 실제로는 DNS TXT 확인이 필요합니다.",
-    );
+    expect($("#vState").textContent).toBe("시안이라 실제 확인 없이 예시로 통과했습니다");
     expect($("#nVerify")).not.toBeVisible();
-    expect($("#nHost")).toHaveTextContent("허용 · 예시 통과(시안)시안이라 실제 DNS 조회 없이 통과했습니다");
+    expect($("#nHost").textContent).toBe("허용 · 예시 통과(시안)");
     expect($("#pTarget")).toHaveTextContent("evil.test · 예시 통과(시안)");
     expect(document.activeElement).toBe(url());
     for (const b of starts()) expect(b).toBeEnabled();
@@ -257,7 +249,6 @@ describe("<NewScan />", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: "제한 없음" }));
     fireEvent.change(screen.getByLabelText("워커 수"), { target: { value: "8" } });
-    expect($("#nDepthHelp")).toHaveTextContent("새 발견이 없을 때까지 돌고 스스로 끝냅니다");
     expect($("#sDepth")).toHaveTextContent("제한 없음 · 워커 8");
 
     fireEvent.click(screen.getByRole("checkbox", { name: "주문·결제 권한 경계" }));

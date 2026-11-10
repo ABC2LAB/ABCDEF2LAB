@@ -21,6 +21,7 @@
   --rail-ink: #e4edf0;
   --rail-mut: #93a7b0;
   --rail-acc: #5cc8e4;
+  --rail-sel: #ff5a4e;
   --crit: #a3170f;
   --crit-bg: #fbe8e6;
   --hi: #c2321c;
@@ -455,8 +456,11 @@
   width: 100%;
 }
 .rs:hover,
-.rs[aria-current="page"] {
+.rs[aria-current] {
   background: var(--rail-2);
+}
+.rs[aria-current] {
+  font-weight: 600;
 }
 .rs .host {
   font-family: var(--mono);
@@ -468,6 +472,7 @@
 .rs .rsub {
   grid-column: 2;
   font-size: 12px;
+  font-weight: 400;
   color: var(--rail-mut);
 }
 .rs .rbar {
@@ -493,18 +498,15 @@
   background: var(--rail-mut);
   flex: none;
 }
-.dot.run {
-  background: var(--rail-acc);
-  animation: pulse 1.6s ease-in-out infinite;
+/* 레일 점검 줄: 지금 오른쪽에 보이는 기록의 줄에만 빨간 점 */
+.rs .mk {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
 }
-.dot.wait {
-  background: #f2b654;
-}
-.dot.ok {
-  background: #5ecb8f;
-}
-.dot.stop {
-  background: var(--rail-mut);
+.rs[aria-current] .mk {
+  background: var(--rail-sel);
 }
 @keyframes pulse {
   50% {
@@ -905,10 +907,6 @@ a.ph:hover {
   color: var(--ok);
 }
 .tag.lg {
-  background: var(--accent-bg);
-  color: var(--accent-ink);
-}
-.tag.new {
   background: var(--accent-bg);
   color: var(--accent-ink);
 }
@@ -2613,14 +2611,6 @@ button.smm:hover {
   color: var(--ink-3);
   align-items: center;
 }
-.kgleg span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.kgleg svg {
-  flex: none;
-}
 .rel {
   list-style: none;
   display: flex;
@@ -3414,17 +3404,6 @@ button.smm:hover {
 }
 
 /* 보고서 */
-.diff {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  font-size: 12.5px;
-  color: var(--ink-2);
-}
-.diff b {
-  font-family: var(--mono);
-  color: var(--ink);
-}
 .prio {
   list-style: none;
   counter-reset: p;

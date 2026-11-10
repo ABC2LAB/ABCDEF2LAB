@@ -25,7 +25,6 @@ function renderDash() {
     reduce: false,
     inspOpen: false,
     railOpen: false,
-    railNewAtRoute: false,
     goTo,
     openInsp: noop,
     closeInsp: noop,
