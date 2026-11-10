@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Autumn-27/artex/e2proxy"
 )
 
 func e2RemoteDescribedFixture() e2RemoteDescribe {
@@ -73,6 +75,44 @@ func TestE2HTTPRuntimeResetMatching(t *testing.T) {
 	remote := &E2HTTPRuntime{options: E2HTTPRuntimeOptions{Expected: E2HTTPExpectedBinding{ResetRef: e2RemoteResetPlaceholder}, ResetBoundRemotely: true}}
 	if !remote.resetMatches(strings64a) || remote.resetMatches("") {
 		t.Fatal("원격 실행의 reset 대조가 틀림")
+	}
+}
+
+type e2RemoteLeaseFixture struct {
+	E2HTTPLeaseRunner
+	state string
+}
+
+func (f *e2RemoteLeaseFixture) Snapshot() e2proxy.ExecutionView {
+	return e2proxy.ExecutionView{State: f.state}
+}
+func (f *e2RemoteLeaseFixture) Stop(context.Context) error  { return nil }
+func (f *e2RemoteLeaseFixture) Close(context.Context) error { return nil }
+
+func TestE2RemoteCloseWatcherClosesOnlyAFinishedExecution(t *testing.T) {
+	runtime, task := e2HTTPRuntimeFixture(t, nil)
+	ctx := context.Background()
+	if runtime.closeIfRemoteStopped(ctx) {
+		t.Fatal("task 없이 마감함")
+	}
+	if err := runtime.AdmitTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.closeIfRemoteStopped(ctx) {
+		t.Fatal("실행 자원 없이 마감함")
+	}
+	var released atomic.Int32
+	lease := &e2RemoteLeaseFixture{state: "active"}
+	runtime.task.lease = &E2HTTPRunOptions{Runner: lease, Release: func(context.Context) error { released.Add(1); return nil }}
+	for _, state := range []string{"active", e2RemoteViewUnavailable} {
+		lease.state = state
+		if runtime.closeIfRemoteStopped(ctx) || released.Load() != 0 || runtime.task.closed {
+			t.Fatalf("%s 상태에서 task를 마감함", state)
+		}
+	}
+	lease.state = "blocked"
+	if !runtime.closeIfRemoteStopped(ctx) || released.Load() != 1 || !runtime.task.closed {
+		t.Fatal("닫힌 실행의 task를 마감하지 않음")
 	}
 }
 

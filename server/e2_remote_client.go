@@ -12,6 +12,9 @@ import (
 	"github.com/Autumn-27/artex/e2runner"
 )
 
+// 조회가 실패했을 때의 상태 이름이다. 실행이 닫혔다는 뜻이 아니다.
+const e2RemoteViewUnavailable = "unavailable"
+
 // e2RemoteClient는 엔진 쪽에서 eval-e2의 실행 자원을 부른다.
 type e2RemoteClient struct {
 	url     string
@@ -122,7 +125,7 @@ func (r *e2RemoteRun) view(intent int64) (e2RemoteView, bool) {
 func (r *e2RemoteRun) SnapshotForIntent(id int64) e2proxy.ExecutionView {
 	view, ok := r.view(id)
 	if !ok {
-		return e2proxy.ExecutionView{State: "unavailable"}
+		return e2proxy.ExecutionView{State: e2RemoteViewUnavailable}
 	}
 	return view.Intent
 }
@@ -162,7 +165,7 @@ func (r *e2RemoteRun) RunForIntent(ctx context.Context, id int64, command string
 func (r *e2RemoteRun) Snapshot() e2proxy.ExecutionView {
 	view, ok := r.view(0)
 	if !ok {
-		return e2proxy.ExecutionView{State: "unavailable"}
+		return e2proxy.ExecutionView{State: e2RemoteViewUnavailable}
 	}
 	return view.Snapshot
 }
