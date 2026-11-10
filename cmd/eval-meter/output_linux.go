@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"syscall"
 )
@@ -58,6 +59,26 @@ func createPrivateFile(dir *os.File, name string) (*os.File, string) {
 		return nil, storageUnavailable
 	}
 	return file, ""
+}
+
+// readPathKey는 회차 묶음이 함께 쓰는 경로 가림 키를 읽는다. 다른 사용자가 읽을 수 있거나 길이가 다르면 거부한다.
+func readPathKey(path string) ([]byte, string) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, pathKeyRequired
+	}
+	file := os.NewFile(uintptr(fd), "eval-meter-path-key")
+	defer func() { _ = file.Close() }() // 읽기 전용 파일이라 닫기 실패가 결과를 바꾸지 않는다.
+	var info syscall.Stat_t
+	if err := syscall.Fstat(fd, &info); err != nil || info.Mode&syscall.S_IFMT != syscall.S_IFREG ||
+		info.Mode&0o7777 != 0o600 || info.Uid != uint32(os.Geteuid()) || info.Size != pathKeyBytes {
+		return nil, pathKeyRequired
+	}
+	key := make([]byte, pathKeyBytes)
+	if _, err := io.ReadFull(file, key); err != nil {
+		return nil, pathKeyRequired
+	}
+	return key, ""
 }
 
 func removePrivateFile(dir *os.File, name string) error {
