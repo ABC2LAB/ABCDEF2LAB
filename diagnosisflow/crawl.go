@@ -25,6 +25,22 @@ func (c *Controller) resolve(raw, from string) (string, bool) {
 	}
 	return canonicalPath(u)
 }
+
+// 스크립트를 참조한 문서를 따라 올라간다. 문서를 모르면 false다.
+func (c *Controller) documentLocked(from string) (string, bool) {
+	for range c.record.Snapshot.Endpoints {
+		e := c.endpointLocked("GET", from)
+		if e == nil {
+			return "", false
+		}
+		if e.Kind != "script" {
+			return from, true
+		}
+		from = e.From
+	}
+	return "", false
+}
+
 func preloadsScript(attrs map[string]string) bool {
 	for _, rel := range strings.Fields(strings.ToLower(attrs["rel"])) {
 		if rel == "modulepreload" || rel == "preload" && strings.EqualFold(attrs["as"], "script") {
@@ -35,13 +51,14 @@ func preloadsScript(attrs map[string]string) bool {
 }
 
 func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
-	add := func(method, raw, kind, source string) {
-		if p, ok := c.resolve(raw, from); ok {
+	addFrom := func(base, method, raw, kind, source string) {
+		if p, ok := c.resolve(raw, base); ok {
 			c.addLocked(method, p, kind, source, from)
 		} else {
 			c.record.Snapshot.Counts.InvalidPaths++
 		}
 	}
+	add := func(method, raw, kind, source string) { addFrom(from, method, raw, kind, source) }
 	scriptBody := body
 	if strings.Contains(contentType, "html") {
 		scriptBody = nil
@@ -95,8 +112,20 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 		}
 	}
 	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") || strings.Contains(contentType, "html") {
+		doc, docKnown := from, true
+		if !strings.Contains(contentType, "html") {
+			doc, docKnown = c.documentLocked(from)
+		}
 		for _, ref := range bundleRefs(scriptBody, c.binding.Limits.MaxEndpoints/2) {
-			add(ref.method, ref.path, ref.kind, ref.source)
+			switch {
+			case ref.kind != "api" || strings.HasPrefix(ref.path, "/") || strings.Contains(ref.path, "://"):
+				add(ref.method, ref.path, ref.kind, ref.source)
+			case docKnown:
+				// 브라우저는 XHR·fetch의 상대 주소를 스크립트가 아니라 문서 기준으로 푼다.
+				addFrom(doc, ref.method, ref.path, ref.kind, ref.source)
+			default:
+				add("UNKNOWN", ref.path, ref.kind, "static_literal")
+			}
 		}
 	}
 }

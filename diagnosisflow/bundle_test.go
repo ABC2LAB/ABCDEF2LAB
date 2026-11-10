@@ -292,14 +292,50 @@ func TestDiscoveryResolvesAbsoluteAndRelativeCalls(t *testing.T) {
 	c, _ := flowFixture(t, Manual)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.addLocked("GET", "/read/index", "page", "html_link", "/read")
+	c.addLocked("GET", "/read/js/app.js", "script", "html_script", "/read/index")
 	invalid := c.record.Snapshot.Counts.InvalidPaths
-	c.discoverBodyLocked([]byte(`c.get("https://owned.test/read/abs");c.get("rel/x");this.http.get("old");c.get("https://other.test/read/y")`), "application/javascript", "/read/app.js")
+	c.discoverBodyLocked([]byte(`c.get("https://owned.test/read/abs");c.get("rel/x");this.http.get("old");c.get("https://other.test/read/y")`), "application/javascript", "/read/js/app.js")
 	got := discovered(c)
-	if !slices.Contains(got, "GET /read/abs api") || !slices.Contains(got, "GET /read/rel/x api") || !slices.Contains(got, "GET /read/old api") || slices.Contains(got, "GET /read/y api") {
+	if !slices.Contains(got, "GET /read/abs api") || !slices.Contains(got, "GET /read/rel/x api") || !slices.Contains(got, "GET /read/old api") || slices.Contains(got, "GET /read/y api") || slices.Contains(got, "GET /read/js/rel/x api") {
 		t.Fatal(got)
 	}
 	if c.record.Snapshot.Counts.InvalidPaths != invalid+1 {
 		t.Fatal(c.record.Snapshot.Counts.InvalidPaths)
+	}
+}
+
+func TestRelativeCallFollowsScriptChainToDocument(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addLocked("GET", "/read/index", "page", "html_link", "/read")
+	c.addLocked("GET", "/read/js/app.js", "script", "html_script", "/read/index")
+	c.addLocked("GET", "/read/js/lazy/c.js", "script", "bundle_chunk", "/read/js/app.js")
+	c.discoverBodyLocked([]byte(`c.get("rel/x")`), "application/javascript", "/read/js/lazy/c.js")
+	if e := endpointAt(c, "GET", "/read/rel/x"); e.From != "/read/js/lazy/c.js" {
+		t.Fatalf("%+v %q", e, discovered(c))
+	}
+}
+
+func TestRelativeCallWithoutKnownDocumentIsUnknown(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.discoverBodyLocked([]byte(`c.get("rel/x")`), "application/javascript", "/read/js/app.js")
+	got := discovered(c)
+	if !slices.Contains(got, "UNKNOWN /read/js/rel/x api") || slices.Contains(got, "GET /read/js/rel/x api") {
+		t.Fatal(got)
+	}
+}
+
+func TestInlineScriptResolvesRelativeCallAgainstItsPage(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.discoverBodyLocked([]byte(`<script>c.get("rel/x")</script>`), "text/html", "/read/index")
+	if got := discovered(c); !slices.Contains(got, "GET /read/rel/x api") {
+		t.Fatal(got)
 	}
 }
 
