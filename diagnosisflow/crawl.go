@@ -46,12 +46,24 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 			c.addLocked(method, p, kind, source, from)
 		}
 	}
+	scriptBody := body
 	if strings.Contains(contentType, "html") {
+		scriptBody = nil
+		inScript := false
 		z := html.NewTokenizer(strings.NewReader(string(body)))
 		for {
 			token := z.Next()
 			if token == html.ErrorToken {
 				break
+			}
+			if token == html.TextToken && inScript {
+				scriptBody = append(scriptBody, z.Text()...)
+				scriptBody = append(scriptBody, '\n')
+			}
+			if token == html.EndTagToken {
+				if name, _ := z.TagName(); string(name) == "script" {
+					inScript = false
+				}
 			}
 			if token != html.StartTagToken && token != html.SelfClosingTagToken {
 				continue
@@ -65,7 +77,10 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 			case "a":
 				add("GET", attrs["href"], "page", "html_link")
 			case "script":
-				add("GET", attrs["src"], "script", "html_script")
+				inScript = true
+				if attrs["src"] != "" {
+					add("GET", attrs["src"], "script", "html_script")
+				}
 			case "form":
 				method := strings.ToUpper(attrs["method"])
 				if method == "" {
@@ -81,15 +96,15 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 	}
 	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") || strings.Contains(contentType, "html") {
 		explicit := map[string]bool{}
-		for _, match := range methodLiteral.FindAllSubmatch(body, 128) {
+		for _, match := range methodLiteral.FindAllSubmatch(scriptBody, 128) {
 			method, raw := strings.ToUpper(string(match[1])), string(match[2])
 			explicit[raw] = true
 			add(method, raw, "api", "script_call")
 		}
-		for _, match := range apiLiteral.FindAllSubmatch(body, 128) {
+		for _, match := range apiLiteral.FindAllSubmatch(scriptBody, 128) {
 			raw := string(match[1])
 			if !explicit[raw] {
-				add("GET", raw, "api", "static_literal")
+				add("UNKNOWN", raw, "api", "static_literal")
 			}
 		}
 	}

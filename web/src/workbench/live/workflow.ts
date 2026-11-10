@@ -113,7 +113,7 @@ export function parseWorkflow(value: unknown, job: URLDiagnosisJob): WorkflowSna
       !text(e.from, 512) ||
       !text(e.kind, 32) ||
       !text(e.source, 32) ||
-      !["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(String(e.method)) ||
+      !["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "UNKNOWN"].includes(String(e.method)) ||
       !["possible", "attested_read", "blocked"].includes(String(e.change)) ||
       typeof e.in_scope !== "boolean" ||
       typeof e.visited !== "boolean" ||

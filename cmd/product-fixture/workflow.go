@@ -69,6 +69,23 @@ func workflowModel() http.Handler {
 		}
 		mu.Lock()
 		defer mu.Unlock()
+		freshGoals := false
+		for _, tool := range req.Tools {
+			freshGoals = freshGoals || tool.Function.Name == "set_goals"
+		}
+		for _, tool := range req.Tools {
+			if tool.Function.Name == "add_intent" || tool.Function.Name == "Bash" {
+				freshGoals = false
+			}
+		}
+		for _, message := range req.Messages {
+			if message.Role == "tool" {
+				freshGoals = false
+			}
+		}
+		if freshGoals {
+			turns[target] = &fixtureTurns{}
+		}
 		turn := turns[target]
 		if turn == nil {
 			turn = &fixtureTurns{}

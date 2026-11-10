@@ -15,15 +15,15 @@
 | crawl | cState/cNow/cLog/cTree/cFound/cSent/cAp/cSkip, 상세·pause/cancel | UrlAssetsLive → 실제 탐색 화면 | 기존은 설치 범위만 표시. 실제 발견·방문·대기·전송/차단·멈춤 API 필요. 임의 진행률/예상 시간 금지 |
 | scope | sCount/sFilters/sQ/sTable/sInsp/sStart | UrlScopeLive → 탐색 후 범위 선택 | 기존은 시작 전 승인 요약. 실제 발견 ID·메서드·출처·관찰·포함 상태, 선택 저장/재개 필요 |
 | live | lPlan/lFeed/lDecide/lState/mSent/mBlk/mHold | UrlLiveLive, 기존 승인·활동/보고서 DTO | 원본 엔진 계획·모델 사용량·E② 사실 표시. 선택/일시정지 상태 추가. 실제 승인 API 재사용 |
-| report | rList/rInsp, 탭·보고서 내려받기 | UrlReportLive, ReportLive/FindingDetailLive | 저장된 탐색 범위·선택·승인·미실행과 기존 증거 연결. 후보를 확정으로 승격하지 않음 |
+| report | rList/rInsp, 탭·보고서 내려받기 | UrlReportLive, ReportLive, WorkflowReportPanels | 저장된 탐색 범위·선택·승인·미실행과 기존 증거 연결. 후보를 확정으로 승격하지 않음 |
 
-로그인 A/B 입력, 모델 서버 임의 변경, 무제한 depth/worker 등 현재 서버가 지원하지 않는 시안 칸은 연결됐다고 표시하지 않는다. 화면에서 제거하거나 새 기능을 축소할 경우 담당자 검토가 필요하다. 비밀 입력을 React/store/storage에 추가하지 않는다.
+로그인 A/B 입력, 모델 서버 임의 변경, 무제한 depth/worker 등 현재 서버가 지원하지 않는 시안 칸은 구조를 보존하고 비활성 상태·사유를 표시한다. 화면에서 제거하거나 새 기능을 축소할 경우 담당자 검토가 필요하다. 비밀 입력을 React/store/storage에 추가하지 않는다.
 
 ## 엔진·탐색 재사용 조사
 
 `agent/planner.go`, `agent/worker.go`, `server/engine.go`, `agent/tools.go`와 `skills/api-recon/`을 조사했다. 원본 Planner의 intent 생성, Worker의 E② Bash 경로·안전 바닥·회차 공유 호출 한도, 실제 감독자·감사·PostgreSQL·보고서를 유지한다. 보호 Worker의 그래프 도구는 제한돼 있고 기존 자산 INSERT를 제공하지 않아 별도 프로그램 소유 탐색 projection이 필요하다.
 
-API Recon은 정적/동적 탐색 참고 템플릿이며 로그인 우회 mock·임의 브라우저 실행을 포함한다. 제품에서 그대로 실행하지 않는다. 프로그램 소유 초기 탐색은 기존 E② Bash 실행기로 TLS 검증하는 curl을 실행하고 실제 받은 HTML 링크·폼·script 참조 및 제한된 정적 API literal을 해석한다. HTTP 요청·call/attempt·drain 근거를 기존 E②에서 얻는다. 동적 SPA 브라우저 탐색 완성으로 주장하지 않는다.
+API Recon은 정적/동적 탐색 참고 템플릿이며 로그인 우회 mock·임의 브라우저 실행을 포함한다. 제품에서 그대로 실행하지 않는다. 프로그램 소유 초기 탐색은 기존 E② Bash 실행기로 TLS 검증하는 curl을 실행하고 실제 받은 HTML 링크·폼·script 참조 및 제한된 정적 API literal을 해석한다. 폼 주소에서 GET을 만들어내지 않으며, 명시적인 메서드 호출을 확인하지 못한 문자열은 UNKNOWN으로 기록하고 자동 방문하지 않는다. HTTP 요청·call/attempt·drain 근거를 기존 E②에서 얻는다. 동적 SPA 브라우저 탐색 완성으로 주장하지 않는다.
 
 ## API와 상태 전이
 
@@ -36,17 +36,17 @@ URL 초안·승인·시작·상태·중지·영수증 복구는 `diagnosis-api.v
 | 모델·권한·예산, URL 실행 영수증 | 기존 /api/diagnoses/v2 | 기존 2초 polling, owner/input/source digest/task |
 | 실제 발견·탐색 상태·선택·관찰/명령 영수증 | /api/product/workflows/{jobID} | 인증 IPC, 2초 polling, job/task/run/source digest/revision |
 | 선택 저장·진단 재개 | .../selection | 예상 revision·단회 명령 키, 서버 발견 ID와 원 승인 범위의 교집합 |
-| 일시정지·재개 | .../pause, .../resume | 동일 결속, 신규 전송/모델 admission 대기, 기존 응답은 마감 |
+| 일시정지·재개 | .../pause, .../resume | 동일 결속, 신규 전송/모델 admission 대기, 이미 admission된 요청·응답은 마감 |
 | 요청별 확인·허용/거부·중지 | 기존 /api/tasks/{id}/request-approvals 계열 | 실제 task/run/attempt/지문. 응답 유실 후 GET으로만 복구 |
 | 증거·후보·HTML | 기존 보고서 API + 저장 workflow projection | 실제 저장 근거, 미검증·판단 불가 보존 |
 
-워크플로 단계는 crawling → awaiting_selection → diagnosing → completed이다. 자동 모드는 초기 탐색 뒤 원 승인 안의 적격 발견만 선택한다. 사용자 모드는 선택 저장 전 심화 요청을 보내지 않는다. 진단 중 새로 발견한 경로는 선택 범위를 자동 확대하지 않는다. 멈춤·실패·unknown은 별도 사실이며 완료율을 만들어 표시하지 않는다.
+워크플로 단계는 crawling → awaiting_selection → diagnosing → completed이다. 자동 모드는 초기 탐색 뒤 원 승인 안의 적격 발견만 선택한다. 사용자 모드는 선택 저장 전 심화 요청을 보내지 않는다. 진단 중 새로 발견한 경로는 선택 범위를 자동 확대하지 않는다. 초기 탐색만 끝나고 심화 Worker가 한 번도 실행되지 않으면 전체 완료로 처리하지 않는다. 멈춤·실패·unknown은 별도 사실이며 완료율을 만들어 표시하지 않는다.
 
 초기 탐색과 선택/명령·이벤트는 PostgreSQL에 저장한다. 재기동은 종료되지 않은 진단을 자동 재실행하지 않으며 과거 결과만 읽는다. unknown을 없애거나 예약을 환불해 재실행하지 않는다.
 
 ## 요청 정책 제안
 
-기존 confirm_every_request는 GET을 포함해 전부 확인하는 의미를 유지한다. 새 버전 정책은 운영자가 사전 확인한 읽기 범위·본문 없는 GET/HEAD만 자동 허용하고 나머지 허용된 요청은 기존 요청별 확인 경계로 보낸다. 메서드만으로 무해성을 주장하지 않는다. 상태 변경은 설치 상한과 대상의 복구 가능한 시험 범위에 별도 동의가 있어야 한다. 삭제·초기화·로그아웃·결제/전송 등 고위험 경로는 자동/확인 모두에서 제외한다. AI 자동 모드는 상태 변경을 자동 승인하지 않는다.
+새 정책 이름은 `workbench_selective_v1`이다. 기존 confirm_every_request는 GET을 포함해 전부 확인하는 의미를 유지한다. 새 버전 정책은 운영자가 사전 확인한 읽기 범위·본문 없는 GET/HEAD만 자동 허용하고 나머지 허용된 요청은 기존 요청별 확인 경계로 보낸다. 메서드만으로 무해성을 주장하지 않는다. 상태 변경은 설치 상한과 대상의 복구 가능한 시험 범위에 별도 동의가 있어야 한다. 삭제·초기화·로그아웃·결제/전송 등 고위험 경로는 자동/확인 모두에서 제외한다. AI 자동 모드는 상태 변경을 자동 승인하지 않는다.
 
 E②는 고정 origin/IP/port/TLS/path/method/예산 검사 뒤 workflow의 실제 단계·정확한 선택 메서드/경로·제외 규칙을 추가로 검사한다. UI/LLM 입력으로 이 경계를 대체하지 않는다. 허용/거부·사전 대기/실제 전송/불명은 별도 사실로 기록한다.
 

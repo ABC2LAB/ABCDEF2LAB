@@ -193,3 +193,21 @@ func TestGETFormCannotInheritReadExemptionFromEarlierLink(t *testing.T) {
 	}
 	t.Fatal("GET form not discovered")
 }
+
+func TestHTMLFormDoesNotInventGETAndStaticMethodIsUnknown(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	c.discoverBodyLocked([]byte(`<form method="post" action="/api/Users"></form><script>client.get('/api/Products'); client.post('/api/Profile'); const unresolved='/api/Unresolved';</script>`), "text/html", "/read")
+	c.mu.Unlock()
+	s, _ := c.Snapshot()
+	seen := map[string]bool{}
+	for _, e := range s.Endpoints {
+		seen[e.Method+" "+e.Path] = true
+	}
+	if seen["GET /api/Users"] || !seen["POST /api/Users"] || !seen["GET /api/Products"] || !seen["POST /api/Profile"] || !seen["UNKNOWN /api/Unresolved"] {
+		t.Fatal("invented method or missed actual source", seen)
+	}
+	if !strings.Contains(c.Instructions(), "Workbench workflow mode: user_approval_v1") {
+		t.Fatal("worker did not receive bound execution mode")
+	}
+}
