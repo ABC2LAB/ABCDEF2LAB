@@ -27,6 +27,7 @@ import (
 	"github.com/Autumn-27/artex/auditcheckpoint"
 	"github.com/Autumn-27/artex/auditkeys"
 	pgdb "github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/evidencerevision"
@@ -118,6 +119,9 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	}
 	if c.TargetPolicy.MaxRequests == 0 {
 		c.TargetPolicy.MaxRequests = 4
+		if c.TargetPolicy.Workflow != nil {
+			c.TargetPolicy.MaxRequests = 64
+		}
 	}
 	if c.TargetPolicy.MaxTargets == 0 {
 		c.TargetPolicy.MaxTargets = 32
@@ -157,6 +161,9 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 			return errPreparation
 		}
 	}
+	if c.TargetPolicy.Workflow != nil && diagnosisflow.Migrate(ctx, admin.DB) != nil {
+		return errPreparation
+	}
 	if admin.EnsureLLMUsageTable() != nil || admin.EnsureLLMRecordsTable() != nil {
 		return errPreparation
 	}
@@ -191,7 +198,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 			return errPreparation
 		}
 	}
-	if productGrantRoles(ctx, admin.DB, c.DatabaseName) != nil {
+	if productGrantRoles(ctx, admin.DB, c.DatabaseName, c.TargetPolicy.Workflow != nil) != nil {
 		return errPreparation
 	}
 	if productWrite(filepath.Join(root, "keys", "jwt.key"), []byte(productRandom(32))) != nil {
@@ -226,6 +233,19 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 	helperSHA := sha256.Sum256(helper)
 	policy := server.E2HTTPFilePolicy{Format: server.E2HTTPFilePolicyFormat, RunRef: "installation-template", ResetRef: "operator-target", PolicyRef: "installed-scope", CaseRef: "first-diagnosis", PolicyRevision: "v1", BudgetRef: "installed-target-budget", OwnerRef: "ARTEX", AccountRef: "operator", SessionRef: "operator", ValidFrom: now.Add(-time.Minute), ValidUntil: until, MaxRequests: 4, HeaderMode: e2proxy.HeaderPreserve, StateDir: filepath.Join(root, "state"), Helper: "/app/e2-bash-sandbox", HelperSHA256: hex.EncodeToString(helperSHA[:]), CACert: caPin, CAKey: keyPin, AuditKey: auditPin, UpstreamCA: upstream, ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 		Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 65536, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1}, Proxy: server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 5000, MaxHeaderBytes: 32768, MaxConnections: 4}, Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
+	if flow := c.TargetPolicy.Workflow; flow != nil {
+		policy.Limits.MaxBodyBytes = int64(flow.MaxResponseBytes)
+		policy.Limits.MaxAttempts = 200
+		policy.Limits.MaxCalls = 64
+		policy.Limits.CallTimeoutMS = 120000
+		policy.Proxy.RequestTimeoutMS = 120000
+		policy.Limits.MaxDenials = 16
+		policy.Runtime.OutputLimit = flow.MaxResponseBytes + 8192
+		policy.Runtime.MaxToolCalls = 64
+		policy.Runtime.MaxWorkerTurns = 16
+		policy.Runtime.WorkerTimeoutMS = 180000
+		policy.Runtime.MaxPlannerRounds = 12
+	}
 	policy.Rules = []server.E2HTTPFileRule{}
 	policySHA, err := productJSON(filepath.Join(config, "policy.json"), policy)
 	if err != nil {
@@ -250,6 +270,10 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		}
 		launch := launchConfig{Format: launchFormat, Mode: "general_http", ListenAddr: "127.0.0.1:28080", DataDir: filepath.Join(root, "data"), KeyDir: filepath.Join(root, "keys"), SkillDir: "/app/skills", ModelExecutionMode: mode, ModelProfileID: id, ModelFormat: "openai", ModelBaseURL: base, ModelRef: model, RuntimeDSNFile: filepath.Join(config, "runtime.dsn"), ShutdownTimeoutSeconds: 20, HTTP: &httpLaunch{PolicyFile: filepath.Join(config, "policy.json"), AuthorityFile: filepath.Join(config, "authority-template.json"), AuthorityRoot: config}}
 		budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 20 * int64(contextK) * 1024, OutputTokens: 20 * int64(output), DurationSeconds: 180}
+		if c.TargetPolicy.Workflow != nil {
+			budget.Requests = c.TargetPolicy.MaxRequests
+			budget.DurationSeconds = 600
+		}
 		manifestPath := filepath.Join(config, mode+"-model.json")
 		var manifestSHA string
 		end := until
@@ -368,7 +392,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 	}
 	return productPrepareAPIProjection(root)
 }
-func productGrantRoles(ctx context.Context, pool *sql.DB, name string) error {
+func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow ...bool) error {
 	exec := func(s string) error { _, e := pool.ExecContext(ctx, s); return e }
 	if exec("REVOKE CREATE,TEMP ON DATABASE \""+name+"\" FROM PUBLIC") != nil || exec("REVOKE CREATE ON SCHEMA public FROM PUBLIC") != nil {
 		return errPreparation
@@ -385,6 +409,11 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string) error {
 	}
 	for _, table := range []string{"activity", "exploration_edges", "task_scope", "task_constraints", "exploration_anchors", "llm_usage", "llm_records"} {
 		if exec("GRANT SELECT,INSERT ON "+table+" TO product_runtime") != nil {
+			return errPreparation
+		}
+	}
+	if len(workflow) == 1 && workflow[0] {
+		if exec("GRANT SELECT,INSERT,UPDATE ON diagnosis_workflows TO product_runtime") != nil || exec("GRANT SELECT,INSERT ON diagnosis_workflow_events TO product_runtime") != nil {
 			return errPreparation
 		}
 	}

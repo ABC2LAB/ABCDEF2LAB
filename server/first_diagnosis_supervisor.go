@@ -620,6 +620,9 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		}
 		return false, nil
 	}
+	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && !flow.DeepReady() {
+		return false, ErrFirstDiagnosisOutcome
+	}
 	execution, ok := server.engine.e2HTTP.Execution(task.ID)
 	if !ok || execution == nil {
 		return false, ErrFirstDiagnosisSupervisor

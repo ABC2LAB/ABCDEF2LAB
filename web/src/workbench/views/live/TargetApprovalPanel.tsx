@@ -68,16 +68,21 @@ export function TargetApprovalPanel({
   url,
   disabled,
   onChanged,
+  requestLimit = TARGET_REQUEST_LIMIT,
+  allowStateChanges = false,
 }: {
   url: string;
   disabled: boolean;
   onChanged?: () => void;
+  requestLimit?: number;
+  allowStateChanges?: boolean;
 }) {
   const generation = useRef(0);
   const mutationLock = useRef(false);
   const [details, setDetails] = useState<Target | null>(null);
   const [paths, setPaths] = useState("");
   const [basis, setBasis] = useState("");
+  const [reversible, setReversible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [unsupported, setUnsupported] = useState(false);
   const [uncertain, setUncertain] = useState(false);
@@ -149,9 +154,10 @@ export function TargetApprovalPanel({
           ? {
               url,
               path_prefixes: prefixes,
-              methods: ["GET", "HEAD"],
+              methods: allowStateChanges && reversible ? ["GET", "HEAD", "POST", "PUT", "PATCH"] : ["GET", "HEAD"],
+              ...(allowStateChanges && reversible ? { reversible_writes: true } : {}),
               readonly_basis: basis.trim(),
-              requests: TARGET_REQUEST_LIMIT,
+              requests: requestLimit,
               valid_hours: TARGET_APPROVAL_VALID_HOURS,
             }
           : {};
@@ -269,6 +275,24 @@ export function TargetApprovalPanel({
                 placeholder="승인된 업무·환경과 해당 GET/HEAD 경로가 상태를 바꾸지 않는 근거를 20자 이상 기재하세요"
               />
             </div>
+            {allowStateChanges ? (
+              <label className={s.ckline}>
+                <input
+                  id="targetReversible"
+                  type="checkbox"
+                  checked={reversible}
+                  disabled={disabled || busy || uncertain}
+                  onChange={(e) => setReversible(e.target.checked)}
+                />
+                <span>
+                  이 대상은 복구 가능한 소유 시험환경이며 선택한 POST/PUT/PATCH 검사의 권한도 있습니다. 각 요청은 전송
+                  전에 확인합니다. 삭제·초기화·결제 등 고위험 작업은 제외합니다.
+                </span>
+              </label>
+            ) : null}
+            <p className={s.help}>
+              회차 요청 상한 {requestLimit} · 상태 변경 범위는 별도 동의한 설치에서만 등록할 수 있습니다.
+            </p>
             <p className={s.help}>
               등록 후 DNS TXT 소유 증명을 확인합니다. 비변경 근거는 운영자의 확인이며 서버가 GET/HEAD의 무해성을 자동
               검증하지 않습니다.

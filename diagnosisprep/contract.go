@@ -5,6 +5,7 @@ package diagnosisprep
 import (
 	"context"
 	"errors"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"time"
 )
 
@@ -62,17 +63,20 @@ const (
 )
 
 type Input struct {
-	TargetURL   string `json:"target_url"`
-	ProfileID   string `json:"profile_id"`
-	DisplayName string `json:"display_name,omitempty"`
+	WorkflowMode  string `json:"workflow_mode,omitempty"`
+	ExcludedPaths string `json:"excluded_paths,omitempty"`
+	TargetURL     string `json:"target_url"`
+	ProfileID     string `json:"profile_id"`
+	DisplayName   string `json:"display_name,omitempty"`
 }
 
 type Profile struct {
-	ID              string     `json:"id"`
-	Label           string     `json:"label"`
-	ModelProfileRef string     `json:"model_profile_ref"`
-	ModelLabel      string     `json:"model_label"`
-	Model           *ModelInfo `json:"model,omitempty"`
+	Workflow        *diagnosisflow.Limits `json:"workflow,omitempty"`
+	ID              string                `json:"id"`
+	Label           string                `json:"label"`
+	ModelProfileRef string                `json:"model_profile_ref"`
+	ModelLabel      string                `json:"model_label"`
+	Model           *ModelInfo            `json:"model,omitempty"`
 }
 
 // 공개 경계에는 설치된 모델의 비밀 없는 라우팅 사실만 전달한다.

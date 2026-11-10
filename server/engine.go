@@ -972,7 +972,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		lastIntent, observed := e.plannerLogStart(ectx, t)
 		planStarted := time.Now()
 		e.BeginLLMCall(t.ID)
-		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
+		goal := t.Goal
+		if e.e2HTTP != nil && e.e2HTTP.options.Workflow != nil {
+			goal += e.e2HTTP.options.Workflow.Instructions()
+		}
+		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, goal, triggers, emit)
 		e.EndLLMCall(t.ID)
 		e.plannerLogFinish(ectx, t, lastIntent, observed, err, planStarted)
 		if e.firstDiagnosis && err == nil && !met && ectx.Err() == nil {

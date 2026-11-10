@@ -889,7 +889,19 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		return nil, r, err
 	}
 	finish := func(resp *http.Response, cause error) (*http.Response, Receipt, error) {
-		rr, aerr := c.finish(ctx, r, func(rr Receipt) { c.observeHTTP(req, resp, rr) })
+		var boundaryErr error
+		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
+			c.observeHTTP(req, resp, rr)
+			if c.e.cfg.RequestBoundary != nil && req != nil && req.URL != nil {
+				boundaryErr = c.e.cfg.RequestBoundary.After(context.WithoutCancel(ctx), RequestView{Method: req.Method, URL: req.URL.String(), BodyPresent: req.ContentLength != 0}, rr)
+			}
+		})
+		if boundaryErr != nil {
+			c.e.mu.Lock()
+			c.e.auditFailed = true
+			c.e.mu.Unlock()
+			return nil, rr, ErrAudit
+		}
 		if aerr != nil {
 			return nil, rr, aerr
 		}
@@ -957,7 +969,16 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	r.RuleRef = rule.Ref
 	r.PolicyRevision = revision
-	if e.cfg.RequestApproval != nil {
+	view := RequestView{Method: method, URL: req.URL.String(), BodyPresent: len(body) > 0, BodyBytes: len(body)}
+	if e.cfg.RequestBoundary != nil && e.cfg.RequestBoundary.Before(ctx, view) != nil {
+		r.Decision, r.Reason = "denied", PolicyDenied
+		return finish(nil, ErrDenied)
+	}
+	needsApproval := e.cfg.RequestApproval != nil
+	if needsApproval && e.cfg.ApprovalMode == ApprovalWorkbenchV1 && (method == "GET" || method == "HEAD") && len(body) == 0 && e.cfg.RequestBoundary.PreapprovedRead(view) {
+		needsApproval = false
+	}
+	if needsApproval {
 		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
 		stopApproval := context.AfterFunc(ctx, cancelApproval)
 		proposal := RequestApprovalProposal{
@@ -981,6 +1002,10 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 			}
 			return finish(nil, ErrDenied)
 		}
+	}
+	if e.cfg.RequestBoundary != nil && e.cfg.RequestBoundary.Before(ctx, view) != nil {
+		r.Decision, r.Reason = "denied", PolicyDenied
+		return finish(nil, ErrDenied)
 	}
 	r.Decision = "allowed"
 	e.mu.Lock()

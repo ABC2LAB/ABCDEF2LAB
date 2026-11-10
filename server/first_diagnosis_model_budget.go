@@ -39,6 +39,7 @@ type FirstDiagnosisModelBudget struct {
 	manifestPath  string
 	lastExternal  llmpolicy.OpenRouterUsage
 	targetDrain   *firstDiagnosisTargetDrain
+	admission     func(context.Context) error
 }
 
 // 실행 전에 한 번만 설정한다. 사용자 중단·시간 상한·감사 실패는 hard context로 즉시 취소한다.
@@ -55,6 +56,20 @@ func (b *FirstDiagnosisModelBudget) ConfigureTargetDrain(hard context.Context, g
 		return ErrFirstDiagnosisModelBudget
 	}
 	b.targetDrain = &firstDiagnosisTargetDrain{hard: hard, grace: grace, admit: admit}
+	return nil
+}
+
+// 준비 전 설치된 워크플로가 일시정지 때 새 모델 예약을 기다리게 한다.
+func (b *FirstDiagnosisModelBudget) ConfigureAdmission(wait func(context.Context) error) error {
+	if b == nil || wait == nil {
+		return ErrFirstDiagnosisModelBudget
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.admission != nil || b.usage.Requests != 0 {
+		return ErrFirstDiagnosisModelBudget
+	}
+	b.admission = wait
 	return nil
 }
 
@@ -181,6 +196,14 @@ func (b *FirstDiagnosisModelBudget) checkConfig(c agent.Config) error {
 }
 
 func (b *FirstDiagnosisModelBudget) before(ctx context.Context, cfg agent.Config, req *llm.CompletionRequest) error {
+	if ctx == nil {
+		return ErrFirstDiagnosisModelBudget
+	}
+	if b != nil && b.admission != nil {
+		if err := b.admission(ctx); err != nil {
+			return err
+		}
+	}
 	if b == nil {
 		return nil
 	}

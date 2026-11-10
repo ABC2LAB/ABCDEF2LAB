@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosis"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/server"
@@ -170,6 +171,8 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	defer cancel()
 	ctx, stopTarget := context.WithCancelCause(hard)
 	defer stopTarget(context.Canceled)
+	var flow *diagnosisflow.Controller
+	var flowPool *sql.DB
 	p := &urlProgress{publish: publish, update: diagnosisprep.Update{State: diagnosisprep.Preparing, Phase: diagnosisprep.ScopeCheck, PreparationStarted: true, AuthorityState: diagnosisprep.AuthorityNotIssued}}
 	knownFailure := func(code string, drained bool) error {
 		state := diagnosisprep.Failed
@@ -259,6 +262,12 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	p.publish = func(u diagnosisprep.Update) error {
 		switch u.State {
 		case diagnosisprep.Completed, diagnosisprep.Failed, diagnosisprep.Cancelled, diagnosisprep.Unknown:
+			if flow != nil {
+				if flow.Close(context.WithoutCancel(parent), workflowTerminal(u.State)) != nil {
+					u.State = diagnosisprep.Unknown
+					u.ReasonCode = "workflow_storage_unconfirmed"
+				}
+			}
 			finishDiagnostics(&u)
 		}
 		return publish(u)
@@ -334,6 +343,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		description = execution.Job.Input.DisplayName
 	}
 	goal := "Inspect the approved read-only HTTPS target " + execution.Job.Input.TargetURL + " through the enforced E2 boundary. Collect observations and manual-review candidates only. Do not request state changes or other origins."
+	if execution.Job.Input.WorkflowMode != "" {
+		goal = "Inspect the approved read-only HTTPS target " + execution.Job.Input.TargetURL + " through the enforced E2 boundary. Workbench workflow mode: " + execution.Job.Input.WorkflowMode + ". First prepare an initial discovery intent. The host will perform bounded discovery in the protected Worker. After discovery, use the server-provided exact selected endpoints for deep diagnostic intents. State-changing requests require separately granted scope and per-request confirmation; never invent that permission. Collect only supported observations and unconfirmed review candidates."
+	}
 	if check() != nil {
 		_ = pool.Close()
 		return knownFailure("installation_changed", true)
@@ -350,6 +362,24 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	}
 	diagnostics.next("task_binding", "task_binding_failed")
 	taskID := strconv.FormatInt(actual.TaskID, 10)
+	flow, flowPool, err = b.createWorkflow(ctx, l, execution, taskID, check)
+	if err != nil {
+		_ = pool.Close()
+		return knownFailure("workflow_storage_unavailable", true)
+	}
+	if flowPool != nil {
+		defer func() {
+			b.product.flowMu.Lock()
+			delete(b.product.flows, execution.Job.ID)
+			b.product.flowMu.Unlock()
+			flowPool.Close()
+		}()
+		if modelBudget.ConfigureAdmission(flow.Wait) != nil {
+			_ = pool.Close()
+			return knownFailure("model_budget_invalid", true)
+		}
+	}
+
 	if p.set(func(u *diagnosisprep.Update) { u.TaskID = taskID }) != nil {
 		_ = pool.Close()
 		return errPreparation
@@ -448,7 +478,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			return nil, errPreparation
 		}
 		return urlOpenDatabase(call, b.config, dsnPin)
-	})
+	}, flow)
 	if err != nil {
 		drained := d == nil
 		if d != nil {

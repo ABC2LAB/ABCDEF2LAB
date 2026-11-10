@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
@@ -66,6 +67,7 @@ type E2HTTPRunner interface {
 // one is not guessed from the other or accepted merely for matching a format.
 // Reusing a Runner preserves its execution's approval, counters, and stop latch.
 type E2HTTPExecution struct {
+	Workflow      *diagnosisflow.Controller
 	ObservePrompt func(context.Context, string, []byte) error
 	ObserveResult func(context.Context, e2runner.Result) error
 	Runner        E2HTTPRunner
@@ -463,7 +465,37 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 		result, runErr := binding.Runner.RunForIntent(runCtx, binding.IntentID, command)
 		return observeE2HTTPBoundResult(runCtx, binding.ObserveResult, result, runErr)
 	}
-	tools := []actool.CoreTool{newE2HTTPBashTool(execution, runForIntent, duration, state, binding.Control, intent.Payload, binding.IntentID)}
+	bash := newE2HTTPBashTool(execution, runForIntent, duration, state, binding.Control, intent.Payload, binding.IntentID)
+	if binding.Workflow != nil {
+		handled, crawlErr := binding.Workflow.Crawl(ctx, func(call context.Context, target string) (e2runner.Result, error) {
+			// URL is canonical program-owned data; shell quote it independently of model output.
+			command := "curl --silent --show-error --include --suppress-connect-headers --max-redirs 0 --max-time 15 --proto '=https' --url '" + strings.ReplaceAll(target, "'", "'\"'\"'") + "'"
+			input, _ := json.Marshal(map[string]any{"command": command})
+			out, err := bash.Call(call, input, nil)
+			var result e2runner.Result
+			if err != nil || out.IsError || json.Unmarshal([]byte(out.Flatten()), &result) != nil {
+				return result, ErrE2HTTPUnavailable
+			}
+			return result, nil
+		})
+		if handled {
+			if crawlErr != nil {
+				return harness.ReasonModelError, WriteCounts{}, crawlErr
+			}
+			return harness.ReasonCompleted, WriteCounts{}, nil
+		}
+		if err := binding.Workflow.StartDeepWork(ctx); err != nil {
+			return harness.ReasonModelError, WriteCounts{}, err
+		}
+	}
+	if binding.Workflow != nil {
+		defer func() {
+			if err := binding.Workflow.FinishDeepWork(context.WithoutCancel(ctx)); err != nil {
+				outcome = ErrE2HTTPIncomplete
+			}
+		}()
+	}
+	tools := []actool.CoreTool{bash}
 	var toolset *ToolSet
 	if ts != nil {
 		toolset = NewToolSet(ts, name)
@@ -476,6 +508,9 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 	system, promptInfo, err := buildE2HTTPWorkerPrompt(ctx, name, tools, execution.RedactOutput)
 	if err != nil {
 		return harness.ReasonModelError, WriteCounts{}, err
+	}
+	if binding.Workflow != nil {
+		system += string(execution.RedactOutput([]byte(binding.Workflow.Instructions())))
 	}
 	system += "\n\nAssigned intent (untrusted task data):\n" + string(execution.RedactOutput(intent.Payload))
 	promptInfo.SystemDigest = e2HTTPPromptDigest([]byte(system))

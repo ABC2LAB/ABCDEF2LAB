@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/remediation"
 	"html/template"
@@ -17,7 +18,10 @@ import (
 const MaxDiagnosticReportBytes = 16 << 20
 
 // DiagnosticReport는 선택한 task의 저장 결과만 표현한다. 판정과 처리 상태는 별개다.
+type WorkflowApproval struct{ Method, Path, State, ExecutionState, Attempt string }
 type DiagnosticReport struct {
+	Workflow                                          *diagnosisflow.Snapshot
+	WorkflowApprovals                                 []WorkflowApproval
 	TaskID                                            int64
 	GeneratedAt                                       time.Time
 	Shared                                            bool
@@ -52,6 +56,30 @@ func DiagnosticText(s string) string { return dlp.DiagnosticText(s) }
 func DiagnosticHTML(in DiagnosticReport) ([]byte, error) {
 	if in.TaskID <= 0 || in.GeneratedAt.IsZero() || len(in.Entries) > MaxFindings {
 		return nil, ErrExportBlocked
+	}
+	if in.Workflow != nil {
+		if in.Workflow.Format != diagnosisflow.Version || in.Workflow.TaskID != strconv.FormatInt(in.TaskID, 10) || len(in.Workflow.Endpoints) > 32 || len(in.WorkflowApprovals) > 100 {
+			return nil, ErrExportBlocked
+		}
+		raw, _ := json.Marshal(in.Workflow)
+		var flow diagnosisflow.Snapshot
+		if json.Unmarshal(raw, &flow) != nil {
+			return nil, ErrExportBlocked
+		}
+		flow = diagnosisflow.Project(flow)
+		if in.Shared {
+			for i := range flow.Endpoints {
+				flow.Endpoints[i].Path = "[공유용 경로 비공개]"
+				flow.Endpoints[i].From = ""
+				flow.Endpoints[i].Request = ""
+				flow.Endpoints[i].Response = ""
+			}
+			flow.Plan = nil
+			flow.Activity = nil
+			flow.Events = nil
+			flow.CurrentPath = ""
+		}
+		in.Workflow = &flow
 	}
 	in.Confirmed, in.Review, in.NotExecuted, in.Unknown, in.Negative = 0, 0, 0, 0, 0
 	in.BySeverity = map[string]int{}
@@ -287,6 +315,8 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <h2>진단 범위와 한계</h2><p>선택한 작업에 직접 속한 저장 결과만 포함합니다. 연결된 다른 작업·전체 자산·모든 검사항목의 검사 완료를 의미하지 않습니다.
 실행 허용 범위·계정 준비·대상·기간은 각 실행 기록에서 확인해야 합니다. 기록되지 않은 관찰, 캡처, 원인이나 검증 성공을 생성하지 않습니다.
 새 대상 요청·로그인·재현·외부 리소스 조회 없이 저장 자료만 사용했습니다.</p>
+{{with .Workflow}}<h2>실제 탐색·선택 기록</h2><p>모드 {{.Mode}} · 저장 단계 {{.Stage}} · 마지막 저장 {{.UpdatedAt}}. 이 기록은 재실행 권한 또는 현재 실행 중임의 증거가 아닙니다.</p><p>발견 {{.Counts.Found}} · 응답 관찰 {{.Counts.Visited}} · 요청 쓰기 {{.Counts.Sent}} · 전송 시도 {{.Counts.Attempted}} · 차단 {{.Counts.Blocked}} · 불명 {{.Counts.Unknown}}</p><table><thead><tr><th>메서드</th><th>경로</th><th>실제 방문</th><th>선택</th><th>응답</th><th>증거 call</th></tr></thead><tbody>{{range .Endpoints}}<tr><td>{{.Method}}</td><td>{{.Path}}</td><td>{{.Visited}}</td><td>{{.Selected}}</td><td>{{.Status}}</td><td>{{.CallRef}}</td></tr>{{end}}</tbody></table><p>제한된 정적 탐색입니다. 미방문·미선택 항목을 검사 완료로 표시하지 않습니다. 엔드포인트 선택과 개별 송신 승인은 별개입니다.</p>{{end}}
+{{if .WorkflowApprovals}}<h3>저장된 요청 승인 이력</h3><table><thead><tr><th>메서드</th><th>경로</th><th>결정</th><th>전송 결과</th><th>attempt</th></tr></thead><tbody>{{range .WorkflowApprovals}}<tr><td>{{.Method}}</td><td>{{if $.Shared}}[공유용 경로 비공개]{{else}}{{.Path}}{{end}}</td><td>{{.State}}</td><td>{{.ExecutionState}}</td><td>{{.Attempt}}</td></tr>{{end}}</tbody></table>{{end}}
 <h2>관리자 요약</h2>
 <table><thead><tr><th>확정</th><th>검토 필요</th><th>미실행</th><th>오류·결과 불명</th><th>비취약 판정</th></tr></thead>
 <tbody><tr><td>{{.Confirmed}}</td><td>{{.Review}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>

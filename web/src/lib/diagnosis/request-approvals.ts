@@ -39,7 +39,7 @@ export type RequestApprovalRunState = {
   drain_complete: boolean;
   closure_failed: boolean;
   execution?: {
-    approval_mode: "confirm_every_request" | "preauthorized_scope";
+    approval_mode: "confirm_every_request" | "preauthorized_scope" | "workbench_selective_v1";
     header_mode: string;
     version: string;
     scope: { RunRef: string; TaskRef: string; CaseRef: string; ResetRef: string; PolicyRef: string };
@@ -260,7 +260,7 @@ function isRun(value: unknown): value is RequestApprovalRunState {
   if (e === undefined) return true;
   return (
     object(e) &&
-    ["confirm_every_request", "preauthorized_scope"].includes(String(e.approval_mode)) &&
+    ["confirm_every_request", "preauthorized_scope", "workbench_selective_v1"].includes(String(e.approval_mode)) &&
     ["active", "blocked"].includes(String(e.state)) &&
     strings(e, ["header_mode", "version", "owner_ref", "policy_revision", "expires_at", "reason"]) &&
     typeof e.audit_complete === "boolean" &&

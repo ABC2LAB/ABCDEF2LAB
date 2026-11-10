@@ -11,10 +11,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2config"
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/server"
+	"net/url"
 )
 
 type urlProductInstallation struct {
@@ -23,6 +26,8 @@ type urlProductInstallation struct {
 	Models       []urlPreparationProfile `json:"models"`
 }
 type productRuntime struct {
+	flowMu          sync.RWMutex
+	flows           map[string]*diagnosisflow.Controller
 	config          urlPreparationInstallation
 	installationPin urlInputPin
 	targets         *productTargetRegistry
@@ -73,7 +78,7 @@ func newProductRuntime(c urlPreparationInstallation, pin urlInputPin) (*productR
 		return nil, e
 	}
 	targets.endpointAllowed = func(origin string, ip netip.Addr) bool { return !urlProtectedConflict(c, origin, ip) }
-	p := &productRuntime{config: c, installationPin: pin, targets: targets, active: map[string]map[string]context.CancelFunc{}}
+	p := &productRuntime{config: c, installationPin: pin, targets: targets, flows: map[string]*diagnosisflow.Controller{}, active: map[string]map[string]context.CancelFunc{}}
 	if _, e = p.profiles(); e != nil {
 		_ = targets.Close()
 		return nil, e
@@ -145,6 +150,7 @@ func (p *productRuntime) profiles() ([]diagnosisprep.Profile, error) {
 			return nil, e
 		}
 		v := urlProfilePublic(m)
+		v.Workflow = p.targets.policy.Workflow
 		if cfg.ModelExecutionMode == "openrouter" {
 			raw, e := readPrivateFile(cfg.OpenRouterManifestPath, 64<<10)
 			if e != nil {
@@ -165,6 +171,12 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	if reportOnly && reportID == "" {
 		return nil, errPreparation
 	}
+	if input.WorkflowMode != "" {
+		u, e := url.Parse(input.TargetURL)
+		if p.targets.policy.Workflow == nil || !diagnosisflow.ValidMode(input.WorkflowMode) || e != nil || len(u.Path) > 128 {
+			return nil, urlPreparationError("workflow_unavailable")
+		}
+	}
 	rec, e := p.targets.lookup(principal, input.TargetURL, reportID)
 	if e != nil {
 		return nil, urlPreparationError("target_not_approved")
@@ -182,7 +194,7 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	if checkDirectory(root, true) != nil {
 		return nil, errPreparation
 	}
-	name := "bound-" + urlSHA([]byte(productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256))[:32]
+	name := "bound-" + urlSHA([]byte(productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256 + "\n" + input.WorkflowMode + "\n" + input.ExcludedPaths))[:32]
 	dir := filepath.Join(root, name)
 	derived := m
 	derived.TargetRef = rec.Target.ID
@@ -198,9 +210,27 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	policy.ValidUntil = derived.ValidUntil
 	policy.MaxRequests = uint64(rec.Target.Requests)
 	policy.PolicyRef = derived.ScopeRef
+	if input.WorkflowMode != "" {
+		derived.WorkflowMode = input.WorkflowMode
+		policy.Workflow = &server.E2HTTPWorkflowPolicy{Format: diagnosisflow.Version, Mode: input.WorkflowMode, InputSHA256: workflowInputDigest(input)}
+		if input.WorkflowMode == diagnosisflow.Manual {
+			policy.ApprovalMode = e2proxy.ApprovalWorkbenchV1
+		}
+	}
+
+	methods := append([]string(nil), rec.Target.Methods...)
+	if input.WorkflowMode == diagnosisflow.Auto {
+		methods = nil
+		for _, method := range rec.Target.Methods {
+			if method == "GET" || method == "HEAD" {
+				methods = append(methods, method)
+			}
+		}
+	}
+	derived.Attestation.Methods = append([]string(nil), methods...)
 	policy.Rules = nil
 	for i, path := range rec.Target.PathPrefixes {
-		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "target-path-" + string(rune('a'+i)), Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: path, PathScopeRef: "readonly-path-" + string(rune('a'+i)), Methods: rec.Target.Methods, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
+		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "target-path-" + string(rune('a'+i)), Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: path, PathScopeRef: "readonly-path-" + string(rune('a'+i)), Methods: methods, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
 	}
 	oldPolicyDir := filepath.Dir(cfg.HTTP.PolicyFile)
 	cfg.HTTP.PolicyFile = filepath.Join(dir, "policy.json")
@@ -351,35 +381,39 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 	control := &diagnosisprep.ProductResponse{}
 	out.Product = control
 	var err error
-	switch r.Product.Operation {
-	case "resolve":
-		control.Target, err = p.targets.resolve(r.Principal, r.Product.TargetURL)
-	case "targets":
-		_, control.Targets, err = p.targets.view(r.Principal, "")
-	case "target":
-		control.Target, _, err = p.targets.view(r.Principal, r.Product.TargetID)
-	case "register":
-		var t diagnosisprep.ProductTarget
-		t, err = p.targets.register(r.Principal, *r.Product.Registration)
-		if err == nil {
-			control.Target = &t
+	if strings.HasPrefix(r.Product.Operation, "workflow_") {
+		control.Workflow, err = e.workflowControl(ctx, r)
+	} else {
+		switch r.Product.Operation {
+		case "resolve":
+			control.Target, err = p.targets.resolve(r.Principal, r.Product.TargetURL)
+		case "targets":
+			_, control.Targets, err = p.targets.view(r.Principal, "")
+		case "target":
+			control.Target, _, err = p.targets.view(r.Principal, r.Product.TargetID)
+		case "register":
+			var t diagnosisprep.ProductTarget
+			t, err = p.targets.register(r.Principal, *r.Product.Registration)
+			if err == nil {
+				control.Target = &t
+			}
+		case "approve":
+			var t diagnosisprep.ProductTarget
+			t, err = p.targets.approve(ctx, r.Principal, r.Product.TargetID)
+			if err == nil {
+				control.Target = &t
+			}
+		case "revoke":
+			var t diagnosisprep.ProductTarget
+			t, err = p.revoke(r.Principal, r.Product.TargetID)
+			if err == nil {
+				control.Target = &t
+			}
+		case "credentials":
+			control.Credential, err = p.credential(ctx, r.Product.ProfileID)
+		default:
+			err = errors.New("invalid_product_operation")
 		}
-	case "approve":
-		var t diagnosisprep.ProductTarget
-		t, err = p.targets.approve(ctx, r.Principal, r.Product.TargetID)
-		if err == nil {
-			control.Target = &t
-		}
-	case "revoke":
-		var t diagnosisprep.ProductTarget
-		t, err = p.revoke(r.Principal, r.Product.TargetID)
-		if err == nil {
-			control.Target = &t
-		}
-	case "credentials":
-		control.Credential, err = p.credential(ctx, r.Product.ProfileID)
-	default:
-		err = errors.New("invalid_product_operation")
 	}
 	if err != nil {
 		reason := err.Error()
@@ -420,4 +454,9 @@ func (p *productRuntime) revoke(principal, id string) (diagnosisprep.ProductTarg
 		cancel()
 	}
 	return t, nil
+}
+
+func workflowInputDigest(input diagnosisprep.Input) string {
+	raw, _ := json.Marshal(input)
+	return urlSHA(raw)
 }

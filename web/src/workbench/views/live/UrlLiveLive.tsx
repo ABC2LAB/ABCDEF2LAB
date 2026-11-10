@@ -1,4 +1,6 @@
 "use client";
+import { RequestApprovalPanel } from "./RequestApprovalPanel";
+import { WorkflowActivity, WorkflowControls, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
 // URL 진단(v2) 시작 뒤 두 화면: 점검 진행(서버 단계 · 사실 · 모델 사용량 · 중지 + 실제 task 의 전송 통제 집계)과
 // 보고서(결과 저장이 확인된 실제 task 의 우선 조치 · 내려받기). URL 진단 서버는 결속된 task 의
@@ -51,7 +53,8 @@ function SendControl({ taskId, active, visible }: { taskId: string; active: bool
     intervalMs: active ? APPROVALS_EVERY : 0,
     enabled: visible,
   });
-  const everyRequest = job?.scope?.approval_mode === "confirm_every_request";
+  const everyRequest =
+    job?.scope?.approval_mode === "confirm_every_request" || job?.scope?.approval_mode === "workbench_selective_v1";
   let body: ReactNode;
   if (approvals.unsupported) body = <ModeNote what="전송 통제" />;
   else if (!approvals.data && approvals.error) body = <ErrorNote error={approvals.error} onRetry={approvals.reload} />;
@@ -105,15 +108,7 @@ function SendControl({ taskId, active, visible }: { taskId: string; active: bool
         ) : null}
       </div>
       {body}
-      {everyRequest ? (
-        <div className={s.note} role="note">
-          <Icon name="info" />
-          <span>
-            이 작업대에서는 요청별 허용·거절을 할 수 없습니다. 진행 중인 이 회차는 운영자 확인이 필요하며, 진단 중지를
-            요청할 수 있습니다.
-          </span>
-        </div>
-      ) : null}
+      {everyRequest ? <RequestApprovalPanel key={taskId} taskId={taskId} active={active && visible} /> : null}
     </section>
   );
 }
@@ -218,7 +213,8 @@ export function UrlLiveLive() {
         acts={
           <>
             <UrlRefreshButton />
-            {stoppable ? (
+            {job.input.workflow_mode ? <WorkflowControls /> : null}
+            {stoppable && !job.input.workflow_mode ? (
               <button
                 className={cx(s.btn, s.danger)}
                 type="button"
@@ -260,13 +256,17 @@ export function UrlLiveLive() {
             </div>
             <UrlUsage job={job} />
           </section>
-          <section className={s.sec} aria-labelledby="luMoreH">
-            <div className={s.sh}>
+          {job.input.workflow_mode ? (
+            <>
+              <WorkflowNotice />
+              <WorkflowActivity />
+            </>
+          ) : (
+            <section className={s.sec} aria-labelledby="luMoreH">
               <h2 id="luMoreH">점검 계획 · 지난 활동 · 발견</h2>
-            </div>
-            <ModeNote what="의도 목록 · 활동 · 발견" />
-            <p className={s.help}>URL 진단 서버는 결속된 task 의 요청 승인 · 실행 기록 · 보고서만 엽니다.</p>
-          </section>
+              <ModeNote what="의도 목록 · 활동 · 발견" />
+            </section>
+          )}
         </div>
         <aside className={s.vi} aria-label="진단 정보">
           <InspHead eyebrow={host ?? ""} title="진단 정보" />
@@ -532,6 +532,7 @@ export function UrlReportLive() {
         </p>
         <OutcomeStrip rem={rem} />
         <RunRecord run={run} />
+        <WorkflowReport />
         <section className={s.sec} aria-labelledby="luRepUseH">
           <div className={s.sh}>
             <h2 id="luRepUseH">모델 사용량 · 비용</h2>

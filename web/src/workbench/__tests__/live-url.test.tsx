@@ -488,14 +488,15 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   });
 
-  it("이미 진행 중인 요청별 확인 회차는 삭제된 화면 대신 운영자 확인·중지를 안내한다", async () => {
+  it("이미 진행 중인 요청별 확인 회차는 실제 요청 승인 목록과 중지를 제공한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
       ...running,
       scope: { ...scope, approval_mode: "confirm_every_request" },
     });
     mount("live");
-    expect(await screen.findByText(/이 작업대에서는 요청별 허용·거절을 할 수 없습니다/)).toBeVisible();
+    expect(await screen.findByRole("region", { name: "실제 HTTP 요청 승인" })).toBeVisible();
+    expect(screen.queryByText(/이 작업대에서는 요청별 허용·거절을 할 수 없습니다/)).toBeNull();
     expect(screen.queryByText(/팀 화면의 점검 진행/)).toBeNull();
     expect(screen.getByRole("button", { name: /진단 중지 요청/ })).toBeEnabled();
     expect(a.fetchRequestApprovals).toHaveBeenCalledWith("42");

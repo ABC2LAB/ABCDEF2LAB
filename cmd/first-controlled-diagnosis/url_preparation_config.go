@@ -47,6 +47,7 @@ type urlNonmutatingAttestation struct {
 	MaxBodyBytes int64    `json:"max_body_bytes"`
 }
 type urlPreparationProfile struct {
+	WorkflowMode        string                    `json:"workflow_mode,omitempty"`
 	ID                  string                    `json:"id"`
 	Label               string                    `json:"label"`
 	Principal           string                    `json:"principal"`
@@ -351,7 +352,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 	if policy.Format != server.E2HTTPFilePolicyFormat || policy.Evaluation != nil || len(policy.Rules) < 1 || len(policy.Rules) > 64 ||
 		policy.HeaderMode != e2proxy.HeaderPreserve || policy.OwnerRef != "ARTEX" || policy.MaxRequests != uint64(p.Budget.Requests) ||
 		policy.Limits.MaxBodyBytes != p.Attestation.MaxBodyBytes || policy.Limits.MaxConcurrent != 1 ||
-		(policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope && policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest) ||
+		(policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope && policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest && !(p.WorkflowMode != "" && policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1)) ||
 		policy.ValidFrom.After(p.ValidFrom) || policy.ValidUntil.Before(p.ValidUntil) {
 		return nil, errPreparation
 	}
@@ -375,7 +376,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 		}
 		paths = append(paths, rule.PathPrefix)
 		for _, method := range rule.Methods {
-			if method != "GET" && method != "HEAD" {
+			if method != "GET" && method != "HEAD" && !(p.WorkflowMode != "" && (method == "POST" || method == "PUT" || method == "PATCH")) {
 				return nil, errPreparation
 			}
 			if !seenMethods[method] {

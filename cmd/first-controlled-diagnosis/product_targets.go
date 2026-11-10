@@ -20,27 +20,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/server"
 )
 
 type productTargetPolicy struct {
-	UpstreamCASHA256 string   `json:"upstream_ca_sha256,omitempty"`
-	Format           string   `json:"format"`
-	AllowedPorts     []int    `json:"allowed_ports"`
-	PrivateCIDRs     []string `json:"private_cidrs,omitempty"`
-	ResolverAddress  string   `json:"resolver_address,omitempty"`
-	MaxRequests      int64    `json:"max_requests"`
-	MaxTargets       int      `json:"max_targets"`
-	UpstreamCAFile   string   `json:"upstream_ca_file,omitempty"`
+	Workflow         *diagnosisflow.Limits `json:"workflow,omitempty"`
+	UpstreamCASHA256 string                `json:"upstream_ca_sha256,omitempty"`
+	Format           string                `json:"format"`
+	AllowedPorts     []int                 `json:"allowed_ports"`
+	PrivateCIDRs     []string              `json:"private_cidrs,omitempty"`
+	ResolverAddress  string                `json:"resolver_address,omitempty"`
+	MaxRequests      int64                 `json:"max_requests"`
+	MaxTargets       int                   `json:"max_targets"`
+	UpstreamCAFile   string                `json:"upstream_ca_file,omitempty"`
 }
 type productTargetRecord struct {
-	Target         diagnosisprep.ProductTarget `json:"target"`
-	Principal      string                      `json:"principal"`
-	ReadonlyBasis  string                      `json:"readonly_basis"`
-	ValidHours     int64                       `json:"valid_hours"`
-	SelectedIP     string                      `json:"selected_ip,omitempty"`
-	ProofExpiresAt time.Time                   `json:"proof_expires_at"`
+	Target           diagnosisprep.ProductTarget `json:"target"`
+	Principal        string                      `json:"principal"`
+	ReadonlyBasis    string                      `json:"readonly_basis"`
+	ValidHours       int64                       `json:"valid_hours"`
+	SelectedIP       string                      `json:"selected_ip,omitempty"`
+	ReversibleWrites bool                        `json:"reversible_writes,omitempty"`
+	ProofExpiresAt   time.Time                   `json:"proof_expires_at"`
 }
 type productTargetRegistry struct {
 	mu          sync.Mutex
@@ -204,7 +207,7 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 	if !allowed {
 		return diagnosisprep.ProductTarget{}, errors.New("target_port_denied")
 	}
-	if s.Requests < 1 || s.Requests > r.policy.MaxRequests || s.ValidHours < 1 || s.ValidHours > 24 || len(strings.TrimSpace(s.ReadonlyBasis)) < 20 || len(s.ReadonlyBasis) > 1024 || len(s.PathPrefixes) < 1 || len(s.PathPrefixes) > 16 || len(s.Methods) < 1 || len(s.Methods) > 2 {
+	if s.Requests < 1 || s.Requests > r.policy.MaxRequests || s.ValidHours < 1 || s.ValidHours > 24 || len(strings.TrimSpace(s.ReadonlyBasis)) < 20 || len(s.ReadonlyBasis) > 1024 || len(s.PathPrefixes) < 1 || len(s.PathPrefixes) > 16 || len(s.Methods) < 1 || len(s.Methods) > 5 {
 		return diagnosisprep.ProductTarget{}, errors.New("readonly_scope_required")
 	}
 	paths := []string{}
@@ -224,7 +227,7 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 	methods := append([]string(nil), s.Methods...)
 	sort.Strings(methods)
 	for i, m := range methods {
-		if m != "GET" && m != "HEAD" || i > 0 && methods[i-1] == m {
+		if (m != "GET" && m != "HEAD" && !(r.policy.Workflow != nil && r.policy.Workflow.AllowReversibleWrites && s.ReversibleWrites && (m == "POST" || m == "PUT" || m == "PATCH"))) || i > 0 && methods[i-1] == m {
 			return diagnosisprep.ProductTarget{}, errors.New("readonly_scope_required")
 		}
 	}
@@ -243,7 +246,7 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 	}
 	id := "target-" + productRandom(16)
 	t := diagnosisprep.ProductTarget{ID: id, Origin: u.Scheme + "://" + u.Host, State: "pending", Revision: 1, PathPrefixes: paths, Methods: methods, Requests: s.Requests, Port: port, ChallengeName: "_abc2lab-challenge." + u.Hostname(), ChallengeValue: "abc2lab-proof-v1-" + productRandom(32)}
-	rec := productTargetRecord{Target: t, Principal: principal, ReadonlyBasis: strings.TrimSpace(s.ReadonlyBasis), ValidHours: s.ValidHours, ProofExpiresAt: r.now().Add(30 * time.Minute)}
+	rec := productTargetRecord{Target: t, Principal: principal, ReversibleWrites: s.ReversibleWrites, ReadonlyBasis: strings.TrimSpace(s.ReadonlyBasis), ValidHours: s.ValidHours, ProofExpiresAt: r.now().Add(30 * time.Minute)}
 	if r.append(rec) != nil {
 		return diagnosisprep.ProductTarget{}, errPreparation
 	}
@@ -515,6 +518,9 @@ func productTargetDirectory(root string) (string, error) {
 }
 
 func validProductTargetPolicy(p productTargetPolicy) bool {
+	if p.Workflow != nil && !p.Workflow.Valid() {
+		return false
+	}
 	if p.Format != "abc2lab.product-target-policy/v1" || p.MaxRequests < 1 || p.MaxRequests > 100 || p.MaxTargets < 2 || p.MaxTargets > 64 || len(p.AllowedPorts) < 1 || len(p.AllowedPorts) > 8 {
 		return false
 	}

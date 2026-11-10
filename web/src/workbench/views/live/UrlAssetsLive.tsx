@@ -2,8 +2,10 @@
 import { useUrl } from "../../live/urlDiagnosis";
 import s from "../../workbench.module.css";
 import { UrlHead, UrlNoJob, UrlNotices, UrlScopeList } from "./urlParts";
+import { WorkflowCrawlLive } from "./workflowViews";
 export function UrlAssetsLive() {
   const job = useUrl((st) => st.job);
+  if (job?.input.workflow_mode) return <WorkflowCrawlLive />;
   return (
     <>
       <UrlHead title="자산 탐색" crumb="자산 탐색" />

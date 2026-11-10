@@ -46,10 +46,14 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load()})
 	})
-	if *mode == "model" {
+	if *mode == "model" || *mode == "workflow-model" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
-		mux.Handle("POST /v1/chat/completions", model(*target))
+		handler := model(*target)
+		if *mode == "workflow-model" {
+			handler = workflowModel()
+		}
+		mux.Handle("POST /v1/chat/completions", handler)
 		must(http.ListenAndServe(":8080", mux))
 		return
 	}
@@ -61,6 +65,9 @@ func main() {
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
+		if *mode == "workflow-target" {
+			mux.Handle("GET /workflow-stats", workflowStats())
+		}
 		must(http.ListenAndServe(":9081", mux))
 	}()
 	server := &http.Server{Addr: ":9443", TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +75,14 @@ func main() {
 			allowed.Add(1)
 		} else {
 			denied.Add(1)
+		}
+		if *mode == "workflow-target" {
+			workflowReceive(r)
+			if r.Method == "GET" && r.URL.Path == "/workflow" {
+				w.Header().Set("Content-Type", "text/html")
+				io.WriteString(w, `<html><body><h1>Owned acceptance navigation fixture</h1><a href="/rest/products/search">Actual Juice Shop products</a><a href="/rest/admin/application-version">Actual Juice Shop version</a><a href="/excluded">Excluded fixture path</a><form method="post" action="/api/Users"></form></body></html>`)
+				return
+			}
 		}
 		proxy.ServeHTTP(w, r)
 	})}
