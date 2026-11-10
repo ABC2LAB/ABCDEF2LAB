@@ -150,6 +150,14 @@ func targetHandler(rec *recorder, receiver receiverInfo) http.Handler {
 		}
 		write(w, htmlType, pageHead+receiver.render(page))
 	})
+	mux.HandleFunc("GET /crawl/{id}", func(w http.ResponseWriter, r *http.Request) {
+		page, ok := crawlScenarios[r.PathValue("id")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		write(w, htmlType, pageHead+page)
+	})
 	mux.HandleFunc("GET /out/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if !redirectHits[r.PathValue("id")] {
 			http.NotFound(w, r)
@@ -169,7 +177,12 @@ func targetHandler(rec *recorder, receiver receiverInfo) http.Handler {
 		}
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
-	mux.HandleFunc("POST /write/{id}", func(w http.ResponseWriter, r *http.Request) {
+	// 쓰기 시도는 메서드와 상관없이 시나리오 이름으로 남긴다(S13은 PUT·PATCH·DELETE도 시도한다).
+	mux.HandleFunc("/write/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			http.NotFound(w, r)
+			return
+		}
 		name := r.PathValue("id")
 		if !writeHits[name] {
 			name = unknownScenario
