@@ -268,10 +268,13 @@ func TestHTMLPreloadScriptsAreDiscovered(t *testing.T) {
 	c, _ := flowFixture(t, Manual)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.discoverBodyLocked([]byte(`<link rel="modulepreload" href="/read/a.js"><link rel="PRELOAD" as="script" href="/read/b.js"><link rel="preload" as="style" href="/read/c.css"><link rel="stylesheet" href="/read/d.css">`), "text/html", "/read")
+	c.discoverBodyLocked([]byte(`<link rel="modulepreload" href="/read/a.js"><link rel="PRELOAD" as="script" href="/read/b.js"><link rel=" preload  foo " as="script" href="/read/e.js"><link rel="preload" as="style" href="/read/c.css"><link rel="stylesheet" href="/read/d.css"><link rel="modulepreload">`), "text/html", "/read")
 	got := discovered(c)
-	if !slices.Contains(got, "GET /read/a.js script") || !slices.Contains(got, "GET /read/b.js script") || slices.Contains(got, "GET /read/c.css script") || slices.Contains(got, "GET /read/d.css script") {
+	if !slices.Contains(got, "GET /read/a.js script") || !slices.Contains(got, "GET /read/b.js script") || !slices.Contains(got, "GET /read/e.js script") || slices.Contains(got, "GET /read/c.css script") || slices.Contains(got, "GET /read/d.css script") {
 		t.Fatal(got)
+	}
+	if e := endpointAt(c, "GET", "/read"); e.Kind == "script" || e.Duplicates != 0 {
+		t.Fatalf("empty href reached the page itself: %+v", e)
 	}
 }
 

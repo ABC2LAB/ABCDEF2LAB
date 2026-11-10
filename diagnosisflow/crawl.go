@@ -25,6 +25,15 @@ func (c *Controller) resolve(raw, from string) (string, bool) {
 	}
 	return canonicalPath(u)
 }
+func preloadsScript(attrs map[string]string) bool {
+	for _, rel := range strings.Fields(strings.ToLower(attrs["rel"])) {
+		if rel == "modulepreload" || rel == "preload" && strings.EqualFold(attrs["as"], "script") {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 	add := func(method, raw, kind, source string) {
 		if p, ok := c.resolve(raw, from); ok {
@@ -69,7 +78,7 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 					add("GET", attrs["src"], "script", "html_script")
 				}
 			case "link":
-				if rel := strings.ToLower(attrs["rel"]); rel == "modulepreload" || rel == "preload" && strings.EqualFold(attrs["as"], "script") {
+				if attrs["href"] != "" && preloadsScript(attrs) {
 					add("GET", attrs["href"], "script", "html_script")
 				}
 			case "form":
