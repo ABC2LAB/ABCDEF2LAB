@@ -62,7 +62,7 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"duplicate":             {`c.get("/a");c.get("/a")`, []string{"GET /a script_call"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := refStrings(bundleRefs([]byte(tc.body))); !reflect.DeepEqual(got, tc.want) {
+			if got := refStrings(bundleRefs([]byte(tc.body), maxBundleChunks)); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got=%q want=%q", got, tc.want)
 			}
 		})
@@ -72,19 +72,19 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 func TestBundleBaseUsesNearestEarlierAssignment(t *testing.T) {
 	body := `this.host="/first"}a(){return this.http.get(this.host+"/x")}this.host="/second"}b(){return this.http.get(this.host+"/y")}`
 	want := []string{"GET /first/x script_call", "GET /second/y script_call"}
-	if got := refStrings(bundleRefs([]byte(body))); !reflect.DeepEqual(got, want) {
+	if got := refStrings(bundleRefs([]byte(body), maxBundleChunks)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%q", got)
 	}
 	named := `this.a="/first";this.b="/second";c.get(this.a+"/x")`
-	if got := refStrings(bundleRefs([]byte(named))); !reflect.DeepEqual(got, []string{"GET /first/x script_call"}) {
+	if got := refStrings(bundleRefs([]byte(named), maxBundleChunks)); !reflect.DeepEqual(got, []string{"GET /first/x script_call"}) {
 		t.Fatalf("other base used %q", got)
 	}
 	mixed := "this.host=`/template`;this.host=\"/literal\";c.get(this.host+\"/x\")"
-	if got := refStrings(bundleRefs([]byte(mixed))); !reflect.DeepEqual(got, []string{"GET /literal/x script_call"}) {
+	if got := refStrings(bundleRefs([]byte(mixed), maxBundleChunks)); !reflect.DeepEqual(got, []string{"GET /literal/x script_call"}) {
 		t.Fatalf("earlier template used %q", got)
 	}
 	later := `a(){return this.http.get(this.host+"/x")}this.host="/late"`
-	if got := refStrings(bundleRefs([]byte(later))); !reflect.DeepEqual(got, []string{"GET /x script_call"}) {
+	if got := refStrings(bundleRefs([]byte(later), maxBundleChunks)); !reflect.DeepEqual(got, []string{"GET /x script_call"}) {
 		t.Fatalf("later assignment used %q", got)
 	}
 }
@@ -99,15 +99,23 @@ func TestBundleBaseCapStopsResolvingAfterTruncation(t *testing.T) {
 	}
 	early := `this.host="/first";c.get(this.host+"/a");`
 	late := `this.host="/later";c.get(this.host+"/x");this.http.get(this.host)`
-	truncated := refStrings(bundleRefs([]byte(early + assignments(maxBundleMatches) + late)))
+	truncated := refStrings(bundleRefs([]byte(early+assignments(maxBundleMatches)+late), maxBundleChunks))
 	if want := []string{"GET /first/a script_call", "UNKNOWN /x static_literal"}; !reflect.DeepEqual(truncated, want) {
 		t.Fatalf("got=%q want=%q", truncated, want)
 	}
 	// late의 대입까지 합쳐 한도보다 하나 적으면 잘리지 않았으므로 정상 해석한다.
-	whole := refStrings(bundleRefs([]byte(early + assignments(maxBundleMatches-3) + late)))
+	whole := refStrings(bundleRefs([]byte(early+assignments(maxBundleMatches-3)+late), maxBundleChunks))
 	if want := []string{"GET /first/a script_call", "GET /later/x script_call", "GET /later script_call"}; !reflect.DeepEqual(whole, want) {
 		t.Fatalf("got=%q want=%q", whole, want)
 	}
+}
+
+func chunkStrings(refs []bundleRef) []string {
+	out := []string{}
+	for _, r := range refs {
+		out = append(out, r.path+" "+r.source)
+	}
+	return out
 }
 
 func TestBundleChunks(t *testing.T) {
@@ -115,18 +123,26 @@ func TestBundleChunks(t *testing.T) {
 		body string
 		want []string
 	}{
-		"relative":     {`import("./chunk-a.js")`, []string{"./chunk-a.js"}},
-		"directory":    {`["assets/b.mjs"]`, []string{"assets/b.mjs"}},
-		"absolute":     {`"/static/c.js"`, []string{"/static/c.js"}},
-		"bare module":  {`require("moment.js")`, nil},
-		"node modules": {`"node_modules/x/y.js"`, nil},
-		"map":          {`r.u=e=>({1:"abc",2:"def"})[e]+".js"`, []string{"abc.js", "def.js"}},
-		"id and hash":  {`r.u=e=>e+"."+{7:"abc"}[e]+".js"`, []string{"7.abc.js"}},
-		"prefix":       {`r.u=e=>"chunk-"+{7:"abc"}[e]+".js"`, []string{"chunk-abc.js"}},
-		"public path":  {`r.p="/static/js/",r.u=e=>({7:"abc"})[e]+".js"`, []string{"/static/js/abc.js"}},
+		"import":          {`import("./chunk-a.js")`, []string{"./chunk-a.js bundle_chunk"}},
+		"spaced import":   {`import( "/static/lazy.js")`, []string{"/static/lazy.js bundle_chunk"}},
+		"relative string": {`"./chunk-a.js"`, []string{"./chunk-a.js bundle_string"}},
+		"bare directory":  {`["assets/b.mjs"]`, []string{"/assets/b.mjs bundle_string"}},
+		"vite hashed":     {`["assets/index-a1B2c3D4.js"]`, []string{"/assets/index-a1B2c3D4.js bundle_chunk"}},
+		"cra chunk":       {`"static/js/2.abc12345.chunk.js"`, []string{"/static/js/2.abc12345.chunk.js bundle_chunk"}},
+		"hash no digit":   {`"assets/application-loader.js"`, []string{"/assets/application-loader.js bundle_string"}},
+		"short hash":      {`"assets/index-a1.js"`, []string{"/assets/index-a1.js bundle_string"}},
+		"public base":     {`r.p="/app/";x=["assets/b.js"]`, []string{"/app/assets/b.js bundle_string"}},
+		"absolute":        {`"/static/c.js"`, []string{"/static/c.js bundle_string"}},
+		"bare module":     {`require("moment.js")`, []string{}},
+		"node modules":    {`"node_modules/x/y.js"`, []string{}},
+		"map":             {`r.u=e=>({1:"abc",2:"def"})[e]+".js"`, []string{"abc.js bundle_chunk", "def.js bundle_chunk"}},
+		"id and hash":     {`r.u=e=>e+"."+{7:"abc"}[e]+".js"`, []string{"7.abc.js bundle_chunk"}},
+		"prefix":          {`r.u=e=>"chunk-"+{7:"abc"}[e]+".js"`, []string{"chunk-abc.js bundle_chunk"}},
+		"public path":     {`r.p="/static/js/",r.u=e=>({7:"abc"})[e]+".js"`, []string{"/static/js/abc.js bundle_chunk"}},
+		"duplicate":       {`"/a/b.js","/a/b.js"`, []string{"/a/b.js bundle_string"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := bundleChunks([]byte(tc.body)); !reflect.DeepEqual(got, tc.want) {
+			if got := chunkStrings(bundleChunks([]byte(tc.body), maxBundleChunks)); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got=%q want=%q", got, tc.want)
 			}
 		})
@@ -138,15 +154,73 @@ func TestBundleChunksAreCapped(t *testing.T) {
 	for i := 0; i < maxBundleChunks+20; i++ {
 		b.WriteString(`"/c` + strconv.Itoa(i) + `.js",`)
 	}
-	if got := bundleChunks([]byte(b.String())); len(got) != maxBundleChunks {
+	if got := bundleChunks([]byte(b.String()), maxBundleChunks+40); len(got) != maxBundleChunks {
+		t.Fatal(len(got))
+	}
+	if got := bundleChunks([]byte(b.String()), 3); len(got) != 3 {
 		t.Fatal(len(got))
 	}
 }
 
+func TestBundleChunksPreferConfirmedOverGuessed(t *testing.T) {
+	got := chunkStrings(bundleChunks([]byte(`"/guess/a.js","/guess/b.js";import("./real.js")`), 1))
+	if want := []string{"./real.js bundle_chunk"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%q want=%q", got, want)
+	}
+}
+
 func TestBundleChunkIsScriptKind(t *testing.T) {
-	refs := bundleRefs([]byte(`"/static/c.js"`))
-	if len(refs) != 1 || refs[0] != (bundleRef{"GET", "/static/c.js", "script", "bundle_chunk"}) {
+	refs := bundleRefs([]byte(`"/static/c.js"`), maxBundleChunks)
+	if len(refs) != 1 || refs[0] != (bundleRef{"GET", "/static/c.js", "script", "bundle_string"}) {
 		t.Fatalf("%+v", refs)
+	}
+}
+
+func TestChunksKeepSlotsAheadOfAPIRefs(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var b strings.Builder
+	for i := 0; i < c.binding.Limits.MaxEndpoints*2; i++ {
+		b.WriteString(`c.get("/read/a` + strconv.Itoa(i) + `");`)
+	}
+	b.WriteString(`import("./lazy.js");`)
+	c.discoverBodyLocked([]byte(b.String()), "application/javascript", "/read/app.js")
+	if got := discovered(c); !slices.Contains(got, "GET /read/lazy.js script") {
+		t.Fatal(got)
+	}
+}
+
+func TestChunksCannotCrowdOutAPIRefs(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var b strings.Builder
+	for i := 0; i < c.binding.Limits.MaxEndpoints*2; i++ {
+		b.WriteString(`"/read/x/c` + strconv.Itoa(i) + `.js",`)
+	}
+	b.WriteString(`c.get("/read/api");`)
+	c.discoverBodyLocked([]byte(b.String()), "application/javascript", "/read/app.js")
+	scripts, got := 0, discovered(c)
+	for _, e := range got {
+		if strings.HasSuffix(e, " script") {
+			scripts++
+		}
+	}
+	if scripts != c.binding.Limits.MaxEndpoints/2 || !slices.Contains(got, "GET /read/api api") {
+		t.Fatal(scripts, got)
+	}
+}
+
+func TestBareChunkPathResolvesFromRootNotBundle(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.binding.PathPrefixes = []string{"/"}
+	c.discoverBodyLocked([]byte(`["assets/index-a1B2c3D4.js"]`), "application/javascript", "/assets/index.js")
+	got := discovered(c)
+	if !slices.Contains(got, "GET /assets/index-a1B2c3D4.js script") || slices.Contains(got, "GET /assets/assets/index-a1B2c3D4.js script") {
+		t.Fatal(got)
 	}
 }
 
@@ -227,11 +301,30 @@ func TestCrawlRankOrdersScriptsBeforePagesAndVendorsLast(t *testing.T) {
 		{Endpoint{Kind: "script", Path: "/vendor.js"}, 3},
 		{Endpoint{Kind: "script", Path: "/js/chunk-vendors.abc.js"}, 3},
 		{Endpoint{Kind: "script", Path: "/polyfills.js"}, 3},
+		{Endpoint{Kind: "script", Source: "bundle_chunk", Path: "/lazy.js"}, 1},
+		{Endpoint{Kind: "script", Source: "bundle_string", Path: "/src/error.js"}, 3},
 		{Endpoint{Kind: "page", Path: "/vendor.js"}, 2},
 	} {
 		if got := crawlRank(tc.e); got != tc.want {
 			t.Errorf("%+v got=%d want=%d", tc.e, got, tc.want)
 		}
+	}
+}
+
+func TestCrawlVisitsPagesBeforeGuessedScriptStrings(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.binding.Limits.MaxPages = 2
+	var order []string
+	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
+		order = append(order, strings.TrimPrefix(target, "https://owned.test"))
+		body := `<a href="/read/page">p</a><script>var a="/read/src/error.js"</script>`
+		return e2runner.Result{ToolOutput: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + body, Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Final: true, ProcessDrained: true, ProxyDrained: true, Call: e2proxy.CallResult{Final: true, AuditComplete: true, Counts: e2proxy.Counts{ForwardAttempted: 1}}}}, nil
+	})
+	if !handled || err != nil {
+		t.Fatal(handled, err)
+	}
+	if want := []string{"/read", "/read/page"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("got=%q want=%q", order, want)
 	}
 }
 

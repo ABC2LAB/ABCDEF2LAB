@@ -86,7 +86,7 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 		}
 	}
 	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") || strings.Contains(contentType, "html") {
-		for _, ref := range bundleRefs(scriptBody) {
+		for _, ref := range bundleRefs(scriptBody, c.binding.Limits.MaxEndpoints/2) {
 			add(ref.method, ref.path, ref.kind, ref.source)
 		}
 	}

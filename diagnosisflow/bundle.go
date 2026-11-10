@@ -1,6 +1,7 @@
 package diagnosisflow
 
 import (
+	"bytes"
 	"regexp"
 	"sort"
 	"strconv"
@@ -41,6 +42,7 @@ var (
 	chunkMap   = regexp.MustCompile(`=>\s*(?:"([\w-]*)"\s*\+\s*)?(?:\w\s*\+\s*"([.\w-]*)"\s*\+\s*)?\(?\{((?:\d+:"[\w-]+",?)+)\}\)?\[\w\]\s*\+\s*"(\.[\w.-]*js)"`)
 	chunkEntry = regexp.MustCompile(`(\d+):"([\w-]+)"`)
 	publicPath = regexp.MustCompile(`\.p\s*=\s*"(/[\w./-]*)"`)
+	chunkHash  = regexp.MustCompile(`[.-]([0-9A-Za-z_]{8,})(?:\.chunk)?\.m?js$`)
 )
 
 type bundleRef struct {
@@ -96,7 +98,8 @@ func byteAfter(body []byte, at int) byte {
 	return 0
 }
 
-func bundleRefs(body []byte) []bundleRef {
+// maxChunks는 스크립트가 발견 칸을 다 차지해 API 경로를 밀어내지 않게 하는 상한이다.
+func bundleRefs(body []byte, maxChunks int) []bundleRef {
 	var refs []bundleRef
 	seen, called := map[string]bool{}, map[string]bool{}
 	emit := func(method, path, kind, source string) {
@@ -109,6 +112,10 @@ func bundleRefs(body []byte) []bundleRef {
 		}
 		seen[key] = true
 		refs = append(refs, bundleRef{method, path, kind, source})
+	}
+	// 스크립트를 받아야 다음 번들을 읽을 수 있어서 API 경로보다 먼저 칸을 잡는다.
+	for _, chunk := range bundleChunks(body, maxChunks) {
+		emit(chunk.method, chunk.path, chunk.kind, chunk.source)
 	}
 	bases, cutoff := bundleBases(body)
 	// 앞 식을 기준 주소로 푼다. 식에 뭐가 들었는지 모르면 경로를 확정하지 않는다.
@@ -172,23 +179,27 @@ func bundleRefs(body []byte) []bundleRef {
 			emit("UNKNOWN", path, "api", "static_literal")
 		}
 	}
-	for _, path := range bundleChunks(body) {
-		emit("GET", path, "script", "bundle_chunk")
-	}
 	return refs
 }
 
-func bundleChunks(body []byte) []string {
-	var chunks []string
-	for _, m := range chunkFile.FindAllSubmatchIndex(body, maxBundleMatches) {
-		path := group(body, m, 1)
-		if strings.Contains(path, "/") && !strings.Contains(path, "node_modules") {
-			chunks = append(chunks, path)
-		}
-	}
+// 파일 이름의 해시는 빌드 도구가 만든 청크라는 근거다.
+func hashedChunk(path string) bool {
+	m := chunkHash.FindStringSubmatch(path)
+	return m != nil && strings.ContainsAny(m[1], "0123456789")
+}
+
+func bundleChunks(body []byte, limit int) []bundleRef {
 	prefix := ""
 	if m := publicPath.FindSubmatch(body); m != nil {
 		prefix = string(m[1])
+	}
+	var sure, guessed []bundleRef
+	seen := map[string]bool{}
+	add := func(list *[]bundleRef, path, source string) {
+		if !seen[path] {
+			seen[path] = true
+			*list = append(*list, bundleRef{"GET", path, "script", source})
+		}
 	}
 	for _, m := range chunkMap.FindAllSubmatchIndex(body, maxBundleChunkTables) {
 		for _, entry := range chunkEntry.FindAllSubmatch(body[m[6]:m[7]], -1) {
@@ -200,13 +211,27 @@ func bundleChunks(body []byte) []string {
 			if m[2*2] >= 0 {
 				name += strconv.Itoa(id) + group(body, m, 2)
 			}
-			chunks = append(chunks, prefix+name+string(entry[2])+group(body, m, 4))
+			add(&sure, prefix+name+string(entry[2])+group(body, m, 4), "bundle_chunk")
 		}
 	}
-	if len(chunks) > maxBundleChunks {
-		chunks = chunks[:maxBundleChunks]
+	for _, m := range chunkFile.FindAllSubmatchIndex(body, maxBundleMatches) {
+		path := group(body, m, 1)
+		if !strings.Contains(path, "/") || strings.Contains(path, "node_modules") {
+			continue
+		}
+		imported := bytes.HasSuffix(bytes.TrimRight(body[:m[0]], " \t\r\n"), []byte("import("))
+		if path[0] != '.' && path[0] != '/' {
+			// Vite의 "assets/a.js"처럼 앞이 없는 경로는 번들 위치가 아니라 배포 기준 주소에서 시작한다.
+			path = strings.TrimSuffix(prefix, "/") + "/" + path
+		}
+		if imported || hashedChunk(path) {
+			add(&sure, path, "bundle_chunk")
+		} else {
+			add(&guessed, path, "bundle_string")
+		}
 	}
-	return chunks
+	chunks := append(sure, guessed...)
+	return chunks[:min(limit, maxBundleChunks, len(chunks))]
 }
 
 // 라이브러리 묶음은 API 호출이 거의 없어서 페이지 한도가 빠듯할 때 뒤로 미룬다.
@@ -217,8 +242,8 @@ func crawlRank(e Endpoint) int {
 	switch {
 	case e.Source == "start":
 		return 0
-	case e.Kind == "script" && vendorScript.MatchString(e.Path):
-		return 3
+	case e.Kind == "script" && (e.Source == "bundle_string" || vendorScript.MatchString(e.Path)):
+		return 3 // 글자만 `.js`로 끝나는 문자열은 없는 파일일 수 있어 실제 페이지 뒤로 미룬다.
 	case e.Kind == "script":
 		return 1
 	}
