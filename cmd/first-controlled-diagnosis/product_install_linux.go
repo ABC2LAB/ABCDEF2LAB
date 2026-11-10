@@ -85,7 +85,7 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 		return 2
 	}
 	if _, err := os.Stat(filepath.Join(*root, "config", "installation.json")); err == nil {
-		if _, _, err = readURLInstallation(filepath.Join(*root, "config", "installation.json")); err != nil {
+		if err = productPrepareAPIProjection(*root); err != nil {
 			return 1
 		}
 		fmt.Fprintln(stdout, "product_already_installed")
@@ -201,12 +201,8 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 	if err != nil {
 		return errPreparation
 	}
-	pin := func(name string, raw []byte) server.E2HTTPFilePin {
-		if productWrite(filepath.Join(config, name), raw) != nil {
-			err = errPreparation
-		}
-		return server.E2HTTPFilePin{File: name, SHA256: urlSHA(raw)}
-	}
+	pins := productPinWriter{dir: config}
+	pin := pins.write
 	caPin, keyPin, auditPin := pin("ca.pem", ca), pin("ca-key.pem", key), pin("audit-key", []byte(productRandom(16)))
 	var upstream *server.E2HTTPFilePin
 	if c.UpstreamCAFile != "" {
@@ -219,6 +215,9 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		upstream = &p
 		c.TargetPolicy.UpstreamCAFile = filepath.Join(config, "upstream.pem")
 		c.TargetPolicy.UpstreamCASHA256 = p.SHA256
+	}
+	if pins.err != nil {
+		return errPreparation
 	}
 	helper, err := os.ReadFile("/app/e2-bash-sandbox")
 	if err != nil {
@@ -367,7 +366,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 	if _, e = runtime.profiles(); e != nil {
 		return e
 	}
-	return nil
+	return productPrepareAPIProjection(root)
 }
 func productGrantRoles(ctx context.Context, pool *sql.DB, name string) error {
 	exec := func(s string) error { _, e := pool.ExecContext(ctx, s); return e }
