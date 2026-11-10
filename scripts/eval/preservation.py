@@ -24,9 +24,10 @@ SUMMARY_FORMAT = "abc2lab.preservation-summary/v1"
 EXCLUSIONS_FORMAT = "abc2lab.preservation-exclusions/v1"
 # cmd/eval-meter paths.go의 pathRow·pathMaskProfile과 같은 값이다.
 PATH_ROW = frozenset({"seq", "method", "path_pattern", "masked_segments", "path_profile_ref"})
-PATH_PROFILE = "abc2lab.path-mask/v1"
+PATH_PROFILE = "abc2lab.path-mask/v2"
 READ_METHODS = frozenset({"GET", "HEAD"})
 # 정적 자원과 API를 따로 센다. 경로의 마지막 조각 확장자로만 나누며, 응답 형식은 보지 않는다.
+# 계측기는 HMAC으로 바꾼 조각에도 이 확장자만 남긴다(cmd/eval-meter paths.go의 staticSuffixes와 같다).
 STATIC_SUFFIXES = (".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
                    ".woff", ".woff2", ".ttf", ".otf")
 _METHOD = re.compile(r"[A-Z]{1,16}\Z")

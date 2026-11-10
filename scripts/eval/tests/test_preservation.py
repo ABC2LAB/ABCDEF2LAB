@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from preservation import (  # noqa: E402
-    EXCLUSIONS_FORMAT, PATH_PROFILE, Exclusions, PreservationError, Round, load_exclusions, load_round, main,
+    EXCLUSIONS_FORMAT, PATH_PROFILE, STATIC_SUFFIXES, Exclusions, PreservationError, Round, load_exclusions, load_round, main,
     summarize,
 )
 
@@ -128,8 +128,10 @@ class SummarizeTests(unittest.TestCase):
         rules = load_exclusions({"format": EXCLUSIONS_FORMAT, "methods": ["DELETE"], "path_prefixes": ["/admin"]})
         baseline = [rnd(("DELETE", "/x"), ("GET", "/admin"), ("GET", "/admin/users"), ("GET", "/administer"),
                         ("GET", "/a"))]
-        got = summarize(baseline, [rnd(("GET", "/a"))], rules, False)
+        got = summarize(baseline, [rnd(("GET", "/a"), ("DELETE", "/y"), ("GET", "/admin/new"))], rules, False)
         self.assertEqual((got["excluded_by_rules"], got["denominator"], got["union_ratio"]), (3, 2, 1 / 2))
+        # 설계상 막히는 패턴은 개선 후에만 닿아도 세지 않는다.
+        self.assertEqual(got["improved_only"], 0)
 
     def test_read_only_uses_get_and_head(self):
         baseline = [rnd(("GET", "/a"), ("HEAD", "/a"), ("POST", "/a"), ("PUT", "/b"))]
@@ -178,6 +180,8 @@ class ExclusionsTests(unittest.TestCase):
     def test_path_profile_matches_the_meter(self):
         go = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/paths.go").read_text(encoding="utf-8")
         self.assertRegex(go, r'pathMaskProfile\s*=\s*"%s"' % re.escape(PATH_PROFILE))
+        listed = re.search(r"var staticSuffixes = \[\]string\{(.*?)\}", go, re.S).group(1)
+        self.assertEqual(tuple(re.findall(r'"([^"]+)"', listed)), STATIC_SUFFIXES)
         for field in ("seq", "method", "path_pattern", "masked_segments", "path_profile_ref"):
             self.assertIn('`json:"%s"`' % field, go)
 
