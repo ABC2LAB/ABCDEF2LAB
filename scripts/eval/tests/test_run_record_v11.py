@@ -555,9 +555,16 @@ class TestRejectedV11(_V11):
             self.reject("run_conditions", f"r{index + 1}",
                         tamper_rows=lambda rows, n=name, v=value: row_of(rows, "run_conditions").update({n: v}))
         self.reject("run_conditions", "r20", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(output_language=1))
-        # 브라우저 수용시험 회차는 공식 비교에 쓰지 않는다.
         self.reject("run_conditions", "r21", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
-            purpose="browser_acceptance"))
+            purpose="browser"))
+        # 수용시험 회차도 격리 증명은 통과한다. 공식 비교에서 빼는 것은 채점기 몫이다.
+        acceptance = self.inputs(self.v11("acc", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            purpose="browser_acceptance")))
+        self.assertEqual((acceptance.proof_id is not None, acceptance.purpose), (True, "browser_acceptance"))
+        # 목적 칸이 생기기 전에 서명된 근거는 공식 회차로 읽는다.
+        before = self.inputs(self.v11("old", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("purpose")))
+        self.assertEqual(before.purpose, "official")
+        self.assertEqual(before.run_conditions, self.inputs(self.v11("new")).run_conditions)
         self.reject("run_conditions", "r9", tamper_rows=lambda rows: row_of(rows, "run_conditions")["host"].update(
             logical_cpus=True))
         self.reject("run_conditions", "r10", tamper_rows=lambda rows: row_of(rows, "run_conditions")["sampling"].update(
@@ -707,6 +714,16 @@ class TestComparison(_V11):
         second = self.v11("p2", repeat_index=1, tamper_proof=lambda p: p.update(proof_id="proof-run-p1"))
         with self.assertRaisesRegex(ComparabilityError, "proof_id"):
             build_report(self.load([first, second]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_acceptance_runs_are_refused_by_the_scorer(self):
+        # 격리는 통과해도 수용시험 회차가 섞인 표는 만들지 않는다. 목적 칸 없는 옛 근거는 공식 회차로 합산한다.
+        old = self.v11("o1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("purpose"))
+        build_report(self.load([self.v11("o0"), old]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        acceptance = self.v11("a1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            purpose="browser_acceptance"))
+        with self.assertRaisesRegex(ComparabilityError, "공식 비교 회차가 아님"):
+            build_report(self.load([self.v11("a0"), acceptance]), self.correlate, self.correlatable,
+                         runner_key=self.runner_key)
 
     def test_runs_with_different_drain_policies_are_not_compared(self):
         # 같은 환경 지문이라도 서명 근거의 유예·정착 대기가 다르면 비교하지 않는다(#153 리뷰).

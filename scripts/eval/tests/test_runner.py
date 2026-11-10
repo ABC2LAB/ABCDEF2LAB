@@ -117,6 +117,8 @@ class FakeMeter:
         self.rows_override = None
         self.drained_forwarded = None
         self.path_log = False
+        self.path_rows_error = None
+        self.path_rows_seen = None
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
         self.e2_rows = [{"seq": 1, "decision": "allowed", "attempt_id": "a" * 32},
@@ -141,6 +143,12 @@ class FakeMeter:
 
     def path_log_present(self):
         return self.path_log
+
+    def path_rows(self, rows):
+        self.path_rows_seen = rows
+        if self.path_rows_error:
+            raise self.path_rows_error
+        return []
 
     def engine_rows(self):
         if self.rows_override is not None:
@@ -1532,10 +1540,25 @@ class TestFailures(unittest.TestCase):
         spec = make_spec(purpose="browser_acceptance")
         result, ports, _, evidence = run(spec=spec)
         self.assert_invalid(result, ports, evidence, "meter_path_log_missing")
-        result, _ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        result, _ports, meter, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
         self.assertEqual(result["status"], "complete")
+        # 내용은 drain 뒤 요청 기록과 맞춰 본다.
+        self.assertEqual(meter.path_rows_seen, meter.engine_rows())
         conditions = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "run_conditions")
         self.assertEqual(conditions["purpose"], "browser_acceptance")
+
+    def test_browser_acceptance_path_log_must_match_the_requests(self):
+        from runner_evidence import EvidenceError
+
+        def broken(p, m, c):
+            m.path_log = True
+            m.path_rows_error = EvidenceError("meter_path_log_invalid")
+        result, ports, _, evidence = run(broken, spec=make_spec(purpose="browser_acceptance"))
+        self.assert_invalid(result, ports, evidence, "meter_path_log_invalid")
+        # 공식 회차는 내용을 읽지 않는다. 기록이 있는 것만으로 무효다.
+        result, ports, meter, evidence = run(broken)
+        self.assert_invalid(result, ports, evidence, "meter_path_log_enabled")
+        self.assertIsNone(meter.path_rows_seen)
 
     def test_meter_and_observer_records_must_agree(self):
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "observer_extra", 1))

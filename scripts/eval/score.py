@@ -36,7 +36,7 @@ from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa:
 from scoreboard import SnapshotError  # noqa: E402
 
 from e2_prompt_identity import PROMPT_FIELDS, PromptIdentityError, condition_prompt_identity  # noqa: E402
-from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE  # noqa: E402
+from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key  # noqa: E402
 
 Correlate = Callable[[VerdictRecord], str | None]
@@ -337,6 +337,10 @@ def build_report(
     for m in manifests:
         scored = score_run(m, correlate, correlatable=correlatable, runner_key=runner_key)
         inputs = scored.inputs
+        # 브라우저 수용시험 회차는 격리 증명은 그대로 확인하되 공식 비교에는 넣지 않는다(browser-acceptance.md).
+        # 조용히 빼면 분모가 바뀌므로 표 전체를 거부한다.
+        if inputs.purpose not in (None, PURPOSE_OFFICIAL):
+            raise ComparabilityError(f"공식 비교 회차가 아님(purpose={inputs.purpose}) — 수용시험 회차는 표에 합산하지 않음")
         basis = {c.key for c in core_gt() + bac_category()}
         conditions = (inputs.fixture_fingerprint, inputs.environment_fingerprint,
                       tuple((key, inputs.pre[key]) for key in sorted(basis)))

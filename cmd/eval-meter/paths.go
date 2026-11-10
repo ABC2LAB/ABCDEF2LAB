@@ -25,6 +25,8 @@ const (
 	maxSegmentLength   = 32
 	pathKeyBytes       = 32
 	pseudonymHexLength = 16
+	// 키 참조는 이 고정 문자열의 HMAC이다. `/`가 들어 있어 경로 조각의 가명과 겹치지 않는다.
+	pathKeyRefLabel = "abc2lab.path-key-ref/v1"
 )
 
 // 정적 자원과 API를 나눠 셀 수 있게 확장자만 남긴다(scripts/eval/preservation.py의 STATIC_SUFFIXES와 같다).
@@ -45,6 +47,8 @@ type pathRow struct {
 	PathPattern    string `json:"path_pattern"`
 	MaskedSegments int    `json:"masked_segments"`
 	PathProfileRef string `json:"path_profile_ref"`
+	// 집계할 때 회차 묶음이 같은 키를 썼는지, 집계자가 가진 키가 그 키인지 확인하는 값이다. 키 값은 남기지 않는다.
+	PathKeyRef string `json:"path_key_ref"`
 }
 
 // 일반 엔드포인트 이름(authentication-details)은 남기고, 숫자나 대소문자가 섞인 긴 조각만 값으로 본다.
@@ -53,30 +57,43 @@ func looksEncoded(segment string) bool {
 		(strings.ContainsAny(segment, "0123456789") || strings.ToLower(segment) != segment && strings.ToUpper(segment) != segment)
 }
 
-func pseudonym(segment string, key []byte) string {
-	suffix, lower := "", strings.ToLower(segment)
-	// 목록의 확장자끼리는 서로의 끝이 되지 않아서 처음 맞는 것이 유일하다.
+// 목록의 확장자끼리는 서로의 끝이 되지 않아서 처음 맞는 것이 유일하다.
+func staticSuffix(segment string) string {
+	lower := strings.ToLower(segment)
 	for _, candidate := range staticSuffixes {
 		if strings.HasSuffix(lower, candidate) {
-			suffix = candidate
-			break
+			return candidate
 		}
 	}
+	return ""
+}
+
+func pathKeyRef(key []byte) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(pathKeyRefLabel)) // hash.Hash의 Write는 오류를 돌려주지 않는다.
+	return hex.EncodeToString(mac.Sum(nil))[:pseudonymHexLength]
+}
+
+func pseudonym(segment string, key []byte) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(segment)) // hash.Hash의 Write는 오류를 돌려주지 않는다.
-	return "{h:" + hex.EncodeToString(mac.Sum(nil))[:pseudonymHexLength] + "}" + suffix
+	return "{h:" + hex.EncodeToString(mac.Sum(nil))[:pseudonymHexLength] + "}" + staticSuffix(segment)
 }
 
 // 안전 문자 밖(이메일의 @, base64의 +·= 등)이나 32자를 넘는 조각(UUID 포함)은 `{id}`로 가린다.
+// 가린 조각에도 정적 자원 확장자는 남겨서 해시가 긴 번들 이름(main.<hex32>.js)이 API로 세이지 않게 한다.
 // 가린 조각만 masked로 센다. HMAC으로 바꾼 조각은 값이 아니라 이름일 수도 있어서 세지 않는다.
 func maskSegment(raw string, key []byte) (string, bool) {
 	if raw == "" {
 		return "", false
 	}
 	segment, err := url.PathUnescape(raw)
-	if err != nil || len(segment) > maxSegmentLength || !safeSegment.MatchString(segment) ||
+	if err != nil {
+		return maskedSegment + staticSuffix(raw), true
+	}
+	if len(segment) > maxSegmentLength || !safeSegment.MatchString(segment) ||
 		digitSegment.MatchString(segment) || hexSegment.MatchString(segment) || looksEncoded(segment) {
-		return maskedSegment, true
+		return maskedSegment + staticSuffix(segment), true
 	}
 	return pseudonym(segment, key), false
 }

@@ -229,6 +229,7 @@ type engineMeter struct {
 	log          *rowLog
 	paths        *rowLog
 	pathKey      []byte
+	pathKeyRef   string
 	seq          uint64
 	sealed       bool
 	sealedAt     time.Time
@@ -441,7 +442,7 @@ func (m *engineMeter) enablePathLog(key []byte) string {
 	if code != "" {
 		return code
 	}
-	m.paths, m.pathKey = &rowLog{file: file}, key
+	m.paths, m.pathKey, m.pathKeyRef = &rowLog{file: file}, key, pathKeyRef(key)
 	return ""
 }
 
@@ -468,7 +469,8 @@ func (m *engineMeter) writePathLocked(seq uint64, r *http.Request) {
 		return
 	}
 	pattern, masked := maskPath(r.URL.EscapedPath(), m.pathKey)
-	if err := m.paths.write(pathRow{Seq: seq, Method: r.Method, PathPattern: pattern, MaskedSegments: masked, PathProfileRef: pathMaskProfile}); err != nil {
+	if err := m.paths.write(pathRow{Seq: seq, Method: r.Method, PathPattern: pattern, MaskedSegments: masked, PathProfileRef: pathMaskProfile,
+		PathKeyRef: m.pathKeyRef}); err != nil {
 		m.logFailed = true
 	}
 }

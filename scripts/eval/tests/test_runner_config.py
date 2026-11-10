@@ -436,6 +436,13 @@ class TestE2Mode(unittest.TestCase):
                 parse_runner_config(payload)
             self.assertIn(code, caught.exception.errors)
 
+    def test_purpose_is_optional_and_defaults_to_official(self):
+        # 목적 칸이 생기기 전 설정도 같은 CONFIG_VERSION으로 읽는다.
+        before = {k: v for k, v in runner_config().items() if k != "purpose"}
+        self.assertEqual(parse_runner_config(before).purpose, "official")
+        self.assertEqual(parse_runner_config(runner_config() | {"purpose": "browser_acceptance"}).purpose,
+                         "browser_acceptance")
+
     def test_stub_adds_the_overlay_to_the_ours_side_only(self):
         config = parse_runner_config(runner_config() | {"e2": {"ours_mode": "stub"}})
         ours = plan_run(config, configuration(), "ours", "ours-1")

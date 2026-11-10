@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
 from e2_export import E2_HEADER_MODES
+from isolation_proof import PURPOSE_OFFICIAL, PURPOSES
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
 from runner_docker import container_file_ok
 
@@ -132,10 +133,6 @@ _LLM_POLICY_MODES = ("external",)
 # product = 제품 E²(제어 채널 제안). baseline은 항상 none이다(원본에는 E²가 없다).
 E2_NONE, E2_STUB, E2_PRODUCT = "none", "stub", "product"
 E2_MODES = (E2_NONE, E2_STUB, E2_PRODUCT)
-# 회차 목적. official만 공식 비교에 쓴다. browser_acceptance는 계측기 경로 기록이 있어야 하는 수용시험 회차다.
-PURPOSE_OFFICIAL = "official"
-PURPOSE_BROWSER_ACCEPTANCE = "browser_acceptance"
-PURPOSES = (PURPOSE_OFFICIAL, PURPOSE_BROWSER_ACCEPTANCE)
 # 관측 경로 응답 형식. opaque는 점수판 없는 연습 대상용이고 그 회차는 채점기가 거부한다(docs/evaluation/practice-targets.md).
 OBSERVER_SCOREBOARD = "challenge_scoreboard"
 OBSERVER_OPAQUE = "opaque"
@@ -148,7 +145,9 @@ MAX_PROVIDER_NAME_LENGTH = 100
 _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_image_id", "ports",
                "observer_path", "observer_format", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
-               "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export", "purpose")
+               "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export")
+# 목적 칸이 생기기 전 설정(같은 CONFIG_VERSION)도 그대로 읽게 선택 칸으로 둔다. 빠지면 공식 회차다.
+_OPTIONAL_TOP_FIELDS = ("purpose",)
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -303,11 +302,11 @@ class RunDirectory:
     e2_engine: Path
 
 
-def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
+def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str], optional: tuple[str, ...] = ()) -> dict:
     if not isinstance(raw, dict):
         errors.append(f"{prefix}: EXPECTED_OBJECT")
         return {}
-    if set(raw) - set(names):
+    if set(raw) - set(names) - set(optional):
         errors.append(f"{prefix}: UNKNOWN_FIELDS")
     for name in names:
         if name not in raw:
@@ -358,7 +357,7 @@ def _image(raw: object, prefix: str, errors: list[str]) -> Image | None:
 
 def parse_runner_config(raw: object) -> RunnerConfig:
     errors: list[str] = []
-    top = _exact(raw, _TOP_FIELDS, "config", errors)
+    top = _exact(raw, _TOP_FIELDS, "config", errors, optional=_OPTIONAL_TOP_FIELDS)
     if "version" in top and not (type(top["version"]) is int and top["version"] == CONFIG_VERSION):
         errors.append("config.version: UNSUPPORTED")
     for name in ("runs_root", "secrets_env_file"):
@@ -506,7 +505,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},
         observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], e2_product=e2_product, state=state,
-        engine_rules=top["engine_rules"], verdict_export=verdict_export, purpose=top["purpose"])
+        engine_rules=top["engine_rules"], verdict_export=verdict_export,
+        purpose=top.get("purpose", PURPOSE_OFFICIAL))
 
 
 def _e2_product(block: dict, errors: list[str]) -> dict | None:

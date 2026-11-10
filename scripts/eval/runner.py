@@ -47,11 +47,10 @@ from runner_checks import (  # noqa: E402
 )
 from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
-    METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, TARGET_SERVICE,
-    POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
+    METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id, plan_run,
 )
-from isolation_proof import blocked_attempts, valid_output_language  # noqa: E402
+from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, blocked_attempts, valid_output_language  # noqa: E402
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from runner_engine import (  # noqa: E402
@@ -611,6 +610,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if (sealed is None or not sequence_complete(rows) or forwarded != drained.get("forwarded_requests")
             or cancelled_rows != drained["forced_cancelled_requests"]):
         raise RunFailure("meter_log_inconsistent")
+    # 수용시험 회차는 경로 기록이 전달한 요청과 한 행씩 맞아야 보존율을 셀 수 있다(요청 기록을 확인한 뒤에 본다).
+    if spec.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+        _step(state, "meter_path_log_invalid", lambda: meter.path_rows(rows))
     meter_summary = {
         "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
         "stop_reason": stop_reason, "forwarded_at_stop": forwarded_at_stop,
