@@ -37,7 +37,7 @@ func main() {
 	}
 	stats := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ready := true
-		if *mode == "target" {
+		if *mode == "target" || *mode == "workflow-target" {
 			c, e := net.DialTimeout("tcp", "juice-shop:3000", time.Second)
 			ready = e == nil
 			if c != nil {

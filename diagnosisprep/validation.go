@@ -335,7 +335,7 @@ func ValidateResponse(r Request, response Response) error {
 		}
 		seen := map[string]bool{}
 		for _, p := range response.Profiles {
-			if !validModel(p.Model) || !reference.MatchString(p.ID) || seen[p.ID] || !reference.MatchString(p.ModelProfileRef) || !validText(p.Label, 160) || !validText(p.ModelLabel, 160) {
+			if (p.Workflow != nil && (!p.Workflow.Valid() || p.WorkflowRequestLimit < 1 || p.WorkflowRequestLimit > 100)) || !validModel(p.Model) || !reference.MatchString(p.ID) || seen[p.ID] || !reference.MatchString(p.ModelProfileRef) || !validText(p.Label, 160) || !validText(p.ModelLabel, 160) {
 				return ErrProtocol
 			}
 			seen[p.ID] = true

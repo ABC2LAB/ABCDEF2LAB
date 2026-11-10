@@ -374,7 +374,7 @@ function ScopeSelection({ flow }: { flow: WorkflowSnapshot }) {
           (filter === "all" ||
             (filter === "chg" && e.change === "possible") ||
             (filter === "id" && /\d/.test(e.path)) ||
-            (filter === "out" && !e.in_scope)) &&
+            (filter === "off" && !e.in_scope)) &&
           `${e.method} ${e.path}`.toLowerCase().includes(query.toLowerCase()),
       ),
     [flow.endpoints, filter, query],

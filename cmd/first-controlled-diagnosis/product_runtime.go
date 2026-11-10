@@ -151,6 +151,9 @@ func (p *productRuntime) profiles() ([]diagnosisprep.Profile, error) {
 		}
 		v := urlProfilePublic(m)
 		v.Workflow = p.targets.policy.Workflow
+		if v.Workflow != nil {
+			v.WorkflowRequestLimit = p.targets.policy.MaxRequests
+		}
 		if cfg.ModelExecutionMode == "openrouter" {
 			raw, e := readPrivateFile(cfg.OpenRouterManifestPath, 64<<10)
 			if e != nil {
@@ -194,7 +197,11 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	if checkDirectory(root, true) != nil {
 		return nil, errPreparation
 	}
-	name := "bound-" + urlSHA([]byte(productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256 + "\n" + input.WorkflowMode + "\n" + input.ExcludedPaths))[:32]
+	bindingInput := input.WorkflowMode + "\n" + input.ExcludedPaths
+	if input.WorkflowMode != "" {
+		bindingInput = workflowInputDigest(input)
+	}
+	name := "bound-" + urlSHA([]byte(productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256 + "\n" + bindingInput))[:32]
 	dir := filepath.Join(root, name)
 	derived := m
 	derived.TargetRef = rec.Target.ID
@@ -219,7 +226,7 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	}
 
 	methods := append([]string(nil), rec.Target.Methods...)
-	if input.WorkflowMode == diagnosisflow.Auto {
+	if input.WorkflowMode != diagnosisflow.Manual {
 		methods = nil
 		for _, method := range rec.Target.Methods {
 			if method == "GET" || method == "HEAD" {
@@ -240,6 +247,10 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	expectedLaunch, _ := json.Marshal(cfg)
 
 	if _, e = os.Stat(dir); os.IsNotExist(e) {
+		entries, readErr := os.ReadDir(root)
+		if readErr != nil || len(entries) >= 512 {
+			return nil, urlPreparationError("workflow_binding_limit")
+		}
 		temp, e := os.MkdirTemp(root, ".binding-")
 		if e != nil {
 			return nil, e

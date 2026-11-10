@@ -97,6 +97,14 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 	}
 	if old := c.endpointLocked(method, path); old != nil {
 		old.Duplicates++
+		// A discovered GET form is evidence of possible side effects, even if a link
+		// or seed for the same method/path was seen first. Never upgrade it back.
+		if kind == "form" {
+			old.Kind, old.Source, old.From = kind, source, from
+			if old.InScope {
+				old.Change = "possible"
+			}
+		}
 		return old
 	}
 	if len(path) > 128 || len(c.record.Snapshot.Endpoints) >= c.binding.Limits.MaxEndpoints {

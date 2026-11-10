@@ -47,7 +47,7 @@ export function RequestApprovalPanel({
     };
   }, [taskId]);
   const data = state.data,
-    runMatches = !!data && (!flow || data.run.run_ref === flow.run_ref);
+    runMatches = !!data && !state.error && (!flow || data.run.run_ref === flow.run_ref);
   const observed = unconfirmed ? data?.approvals?.find((a) => a.id === unconfirmed) : null;
   // 상태 조회가 실제 결정·만료·취소를 확인하기 전에는 결정 POST를 반복하지 않는다.
   const unresolved = !!unconfirmed && (!observed || observed.state === "pending");
@@ -123,9 +123,13 @@ export function RequestApprovalPanel({
               <p>
                 {a.target_origin} · 실제 attempt {a.attempt_id}
               </p>
+              <p>
+                AI 요청 이유:{" "}
+                {flow?.plan?.find((p) => p.id === a.intent_id)?.title ?? "서버가 요청별 이유를 제공하지 않았습니다."}
+              </p>
               <p className={s.help}>
-                AI가 제출한 요청입니다. 영향은 자동 검증하지 않았습니다. 상태를 바꿀 수 있으므로 권한·복구 범위를
-                확인하세요.
+                예상 영향: AI가 제출한 요청입니다. 영향은 자동 검증하지 않았습니다. 상태를 바꿀 수 있으므로 권한·복구
+                범위를 확인하세요.
               </p>
               <dl className={s.kv}>
                 <dt>서버 미리보기</dt>
@@ -147,7 +151,9 @@ export function RequestApprovalPanel({
                 <button
                   className={s.btn}
                   type="button"
-                  disabled={!!busy || unresolved || !a.can_decide || !a.live || !!flow?.paused}
+                  disabled={
+                    !!busy || unresolved || !verified || uncertain || !a.can_decide || !a.live || !!flow?.paused
+                  }
                   onClick={() => void decide(a, "allow")}
                 >
                   이 요청 허용
@@ -155,7 +161,9 @@ export function RequestApprovalPanel({
                 <button
                   className={s.btn}
                   type="button"
-                  disabled={!!busy || unresolved || !a.can_decide || !a.live || !!flow?.paused}
+                  disabled={
+                    !!busy || unresolved || !verified || uncertain || !a.can_decide || !a.live || !!flow?.paused
+                  }
                   onClick={() => void decide(a, "deny")}
                 >
                   이 요청 거부

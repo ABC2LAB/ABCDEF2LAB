@@ -28,6 +28,7 @@ export type URLDiagnosisModel = {
 };
 export type URLDiagnosisProfile = {
   workflow?: WorkflowLimits;
+  workflow_request_limit?: number;
   id: string;
   label: string;
   model_profile_ref: string;
@@ -358,10 +359,12 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       !p.label ||
       !ref(p.model_profile_ref) ||
       !text(p.model_label) ||
-      !p.model_label
+      !p.model_label ||
+      (p.workflow !== undefined &&
+        (!natural(p.workflow_request_limit) || p.workflow_request_limit < 1 || p.workflow_request_limit > 100))
     )
       return invalid();
-    exact(p, ["id", "label", "model_profile_ref", "model_label", "model", "workflow"]);
+    exact(p, ["id", "label", "model_profile_ref", "model_label", "model", "workflow", "workflow_request_limit"]);
     seen.add(p.id);
     return {
       id: p.id,
@@ -369,7 +372,9 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       model_profile_ref: p.model_profile_ref,
       model_label: p.model_label,
       ...(p.model === undefined ? {} : { model: model(p.model) }),
-      ...(p.workflow === undefined ? {} : { workflow: parseWorkflowLimits(p.workflow) }),
+      ...(p.workflow === undefined
+        ? {}
+        : { workflow: parseWorkflowLimits(p.workflow), workflow_request_limit: Number(p.workflow_request_limit) }),
     };
   });
   return { ownerContext: String(e.owner_context), profiles };

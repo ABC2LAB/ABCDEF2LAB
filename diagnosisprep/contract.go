@@ -71,12 +71,13 @@ type Input struct {
 }
 
 type Profile struct {
-	Workflow        *diagnosisflow.Limits `json:"workflow,omitempty"`
-	ID              string                `json:"id"`
-	Label           string                `json:"label"`
-	ModelProfileRef string                `json:"model_profile_ref"`
-	ModelLabel      string                `json:"model_label"`
-	Model           *ModelInfo            `json:"model,omitempty"`
+	WorkflowRequestLimit int64                 `json:"workflow_request_limit,omitempty"`
+	Workflow             *diagnosisflow.Limits `json:"workflow,omitempty"`
+	ID                   string                `json:"id"`
+	Label                string                `json:"label"`
+	ModelProfileRef      string                `json:"model_profile_ref"`
+	ModelLabel           string                `json:"model_label"`
+	Model                *ModelInfo            `json:"model,omitempty"`
 }
 
 // 공개 경계에는 설치된 모델의 비밀 없는 라우팅 사실만 전달한다.

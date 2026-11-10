@@ -1,0 +1,91 @@
+#!/usr/bin/env node
+// Owned Docker/Chrome acceptance. Real UI commands and APIs only; model completion is an explicitly installed fixture.
+const fs = require('node:fs');
+const path = require('node:path');
+const [mode, configPath, dnsTokenPath, outputDir] = process.argv.slice(2);
+if (!['manual','auto','recover','design'].includes(mode)) throw new Error('owned_phase_required');
+const ui='http://127.0.0.1:18887', cdp='http://127.0.0.1:49439';
+const config=JSON.parse(fs.readFileSync(configPath,'utf8'));
+if(config.format!=='abc2lab.product-install/v2'||config.local_model?.model!=='owned-synthetic-workflow') throw new Error('synthetic_owned_install_required');
+const origin=mode==='auto'?'https://juice-b.test:9443':'https://juice-a.test:9443';
+fs.mkdirSync(outputDir,{recursive:true});
+let assertions=0,token='',jobID='',socket;
+const requests=[];
+function check(ok,code){if(!ok)throw new Error(code);assertions++;}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function api(route,body){const response=await fetch(ui+route,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:body===undefined?undefined:JSON.stringify(body),redirect:'error'});if(!response.ok)throw new Error('real_api_status_'+response.status+'_'+route.split('?')[0]);return response.headers.get('content-type')?.includes('application/json')?response.json():response.text();}
+async function eventually(read,predicate,code,ms=60000){const end=Date.now()+ms;while(Date.now()<end){const value=await read();if(predicate(value)){assertions++;return value;}await sleep(150);}throw new Error(code);}
+(async()=>{
+ const login=await api('/api/auth/login',{username:'ABC2LAB',password:config.admin_password});token=login.token;check(!!token,'real_operator_login');
+ const pages=await(await fetch(cdp+'/json/list')).json();let page=pages.find(p=>p.type==='page'&&p.url.startsWith(ui));if(!page)page=await(await fetch(cdp+'/json/new?'+encodeURIComponent(ui+'/#new'),{method:'PUT'})).json();
+ socket=new WebSocket(page.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject;});
+ let next=0;const pending=new Map();let dropSelection=false,dropped=false;
+ function send(method,params={}){return new Promise((resolve,reject)=>{const id=++next;pending.set(id,{resolve,reject});socket.send(JSON.stringify({id,method,params}));});}
+ socket.onmessage=async event=>{const m=JSON.parse(event.data);if(m.id){const p=pending.get(m.id);if(!p)return;pending.delete(m.id);if(m.error)p.reject(new Error('cdp_operation_failed'));else p.resolve(m.result);return;}
+  if(m.method==='Network.requestWillBeSent'){const r=m.params.request,p=new URL(r.url).pathname;if(p.startsWith('/api/'))requests.push({path:p,method:r.method});if(r.method==='POST'&&/\/drafts\/[^/]+\/start$/.test(p))jobID=p.split('/').at(-2);}
+  if(m.method==='Fetch.requestPaused'){const p=m.params;if(dropSelection&&!dropped&&p.request.url.endsWith('/selection')){check(p.responseStatusCode===200,'selection_not_stored_before_response_loss');dropped=true;await send('Fetch.failRequest',{requestId:p.requestId,errorReason:'Aborted'});}else await send('Fetch.continueRequest',{requestId:p.requestId});}
+ };
+ async function evaluate(expression){const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true,userGesture:true});if(r.exceptionDetails)throw new Error('browser_evaluation_failed');return r.result.value;}
+ async function wait(expression,code,ms=30000){return eventually(async()=>{try{return await evaluate(expression);}catch{return false;}},Boolean,code,ms);}
+ const visible='section[data-view]:not([hidden])';
+ const button=text=>`Array.from(document.querySelectorAll('button,a')).find(b=>b.offsetWidth&&!b.disabled&&b.textContent.trim()===${JSON.stringify(text)})`;
+ async function click(text){await wait(`!!(${button(text)})`,'button_unavailable_'+text);await evaluate(`(${button(text)}).click()`);}
+ async function fill(selector,value){check(await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`),'input_missing');}
+ async function screenshot(name){const r=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(outputDir,name+'.png'),Buffer.from(r.data,'base64'));}
+ async function navigate(view){await evaluate(`location.hash=${JSON.stringify('#'+view)}`);await wait(`document.querySelector('section[data-view=${view}]:not([hidden])')!==null`,'view_unavailable_'+view);}
+ async function currentJob(){return(await api('/api/diagnoses/v2/drafts/'+jobID+'/status')).draft;}
+ async function flow(){try{return(await api('/api/product/workflows/'+jobID)).workflow;}catch(e){if(e.message.startsWith('real_api_status_409_'))return {initial_completed:false};throw e;}}
+ const stats=async()=>{const r=await fetch('http://127.0.0.1:'+(mode==='auto'?49484:49481)+'/workflow-stats');return(await r.json()).received;};
+ await send('Page.enable');await send('Runtime.enable');await send('Network.enable');await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+ await send('Page.navigate',{url:ui+'/#new'});await wait("document.readyState==='complete'",'document_not_ready');
+ await wait("!!document.querySelector('input[autocomplete=current-password]')||document.querySelector('#luProfile')?.options.length>=2",'login_or_catalog_missing');
+ if(await evaluate("!!document.querySelector('input[autocomplete=current-password]')")){await fill('section[data-view=new] input[autocomplete=username]','ABC2LAB');await fill('section[data-view=new] input[autocomplete=current-password]',config.admin_password);await click('로그인');}
+ await navigate('new');await wait("document.querySelector('#luProfile')?.options.length>=2",'installed_workflow_catalog_missing');
+ if(mode==='recover'){
+  const stored=JSON.parse(fs.readFileSync(path.join(outputDir,'rounds.json'),'utf8'));
+  for(const id of Object.values(stored)){jobID=id;const j=await currentJob(),f=await flow();check(j.state==='completed'&&j.result_ready&&f.stage==='completed'&&f.deep_runs>0&&f.deep_closed===f.deep_runs,'restart_result_not_recovered');const html=await api('/api/report/diagnostic?task='+j.task_id+'&audience=internal');check(typeof html==='string'&&html.includes('실제 탐색·선택 기록'),'saved_html_not_recovered');}
+  await navigate('report');await wait(`document.querySelector('${visible}').innerText.includes('실제 탐색·선택 범위')`,'browser_saved_report_missing');await screenshot('recovered-report');
+ }else if(mode==='design'){
+  const mapping=[];for(const view of ['dashboard','new','crawl','scope','live','report']){await navigate(view);await screenshot('desktop-'+view);mapping.push({view,metrics:await evaluate(`(()=>{const v=document.querySelector('section[data-view=${view}]'),r=document.querySelector('aside.rail')||document.querySelector('[class*=rail]');return {scrollWidth:document.documentElement.scrollWidth,viewport:innerWidth,headings:[...v.querySelectorAll('h1,h2')].map(e=>e.textContent).slice(0,20),railWidth:r?.getBoundingClientRect().width}})()`)});}
+  await send('Emulation.setDeviceMetricsOverride',{width:1000,height:900,deviceScaleFactor:1,mobile:false});await navigate('scope');await screenshot('tablet-scope');await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});await navigate('new');await screenshot('phone-new');check(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'phone_horizontal_overflow');fs.writeFileSync(path.join(outputDir,'screen-mapping.json'),JSON.stringify(mapping,null,2));
+ }else{
+  if(await evaluate(`!!(${button('다른 진단 만들기 · 조회 연결 해제')})`))await click('다른 진단 만들기 · 조회 연결 해제');
+  await wait("document.querySelector('#luUrl')?.disabled===false",'new_input_locked');await fill('#luUrl',origin+'/workflow');await fill('#luName','소유 '+mode+' 워크플로 검증');
+  await evaluate(`document.querySelector('input[name=nSend][value=${mode==='auto'?'ai_auto_v1':'user_approval_v1'}]').click()`);await fill('#nExcl','/excluded');
+  await wait(`!!document.querySelector('#targetReadonlyPaths')||document.querySelector('${visible}').innerText.includes('승인된 대상:')`,'target_state_missing');
+  if(await evaluate("!!document.querySelector('#targetReadonlyPaths')")){
+  await fill('#targetReadonlyPaths','/');await fill('#targetReadonlyBasis','Owned disposable Juice Shop acceptance. Public GET endpoints are operator reviewed; no logout/reset/payment paths.');
+  if(mode==='manual')await evaluate("document.querySelector('#targetReversible').click()");
+  await click('대상 등록·소유 확인 준비');await wait("!!document.querySelector('#targetChallengeName')",'DNS_challenge_missing');
+  const challenge=await evaluate("({name:document.querySelector('#targetChallengeName').textContent,values:[document.querySelector('#targetChallengeValue').textContent]})");
+  const dns=await fetch('http://127.0.0.1:49483/control',{method:'POST',headers:{'Content-Type':'application/json','X-Fixture-Control':fs.readFileSync(dnsTokenPath,'utf8').trim()},body:JSON.stringify({...challenge,host:new URL(origin).hostname,ip:mode==='auto'?'10.88.1.22':'10.88.1.20'})});check(dns.status===204,'owned_DNS_control_failed');
+  await click('소유 확인 후 대상 승인');await wait(`document.querySelector('${visible}').innerText.includes('서버가 소유·범위·DNS/IP·TLS를 확인해 승인했습니다')`,'target_approval_failed');
+  }
+  check((await stats())['POST /api/Users']===undefined,'state_change_before_start');await screenshot(mode+'-new');
+  await click('승인 범위 확인');await wait("document.querySelector('section[data-view=scope]:not([hidden])')!==null",'prestart_scope_missing');
+  await wait(`Array.from(document.querySelectorAll('${visible} input[type=checkbox]')).some(e=>!e.disabled)`,'start_confirmation_unavailable');await evaluate(`Array.from(document.querySelectorAll('${visible} input[type=checkbox]')).find(e=>!e.disabled).click()`);await click('진단 시작');
+  await eventually(async()=>jobID,Boolean,'start_receipt_missing');
+  const first=await eventually(flow,f=>f.initial_completed,'initial_crawl_not_complete',90000);check(first.endpoints.some(e=>e.path==='/rest/products/search'&&e.visited),'actual_product_discovery_missing');check(first.endpoints.some(e=>e.path==='/api/Users'&&e.method==='POST'),'form_discovery_missing');check(first.endpoints.some(e=>e.path==='/excluded'&&!e.in_scope&&!e.visited),'exclusion_not_recorded');
+  await screenshot(mode+'-crawl');
+  if(mode==='manual'){
+   check(first.stage==='awaiting_selection'&&first.deep_runs===0,'deep_worker_started_before_selection');check((await stats())['POST /api/Users']===undefined,'POST_reached_target_before_selection');
+   await click('범위 확인');await wait("!!document.querySelector('#sTable')",'selection_screen_missing');
+   await fill('#sQ','/rest/products/search');await wait(`!!document.querySelector('input[aria-label="GET /rest/products/search 점검에 포함"]')`,'GET_selection_missing');await evaluate(`document.querySelector('input[aria-label="GET /rest/products/search 점검에 포함"]').click()`);
+   await fill('#sQ','/api/Users');await wait(`!!document.querySelector('input[aria-label="POST /api/Users 점검에 포함"]')`,'POST_selection_missing');await evaluate(`document.querySelector('input[aria-label="POST /api/Users 점검에 포함"]').click()`);await fill('#sQ','');await screenshot('manual-scope');
+   dropSelection=true;await send('Fetch.enable',{patterns:[{urlPattern:'*/api/product/workflows/*/selection',requestStage:'Response'}]});await click('선택한 범위로 심화 점검 시작');await eventually(async()=>dropped,Boolean,'response_loss_not_exercised');
+   await eventually(flow,f=>f.stage==='diagnosing'&&f.endpoints.filter(e=>e.selected).length===2,'selected_scope_not_persisted');await send('Fetch.disable');await navigate('live');
+   await wait(`document.querySelector('${visible}').innerText.includes('POST /api/Users')`,'real_pending_request_missing',45000);check((await stats())['POST /api/Users']===undefined,'unapproved_POST_received');
+   await click('일시정지');await eventually(flow,f=>f.paused,'pause_not_stored');const before=await stats();await sleep(2200);check(JSON.stringify(await stats())===JSON.stringify(before),'paused_target_requests_changed');check(await evaluate(`Array.from(document.querySelectorAll('${visible} button')).filter(e=>e.textContent.trim()==='이 요청 허용').every(e=>e.disabled)`),'approval_enabled_while_paused');await screenshot('manual-paused');await click('다시 시작');await eventually(flow,f=>!f.paused,'resume_not_stored');
+   await screenshot('manual-approval');await click('이 요청 허용');await eventually(stats,s=>s['POST /api/Users']===1,'allowed_POST_not_received');
+   const second=await eventually(async()=>api('/api/tasks/'+(await currentJob()).task_id+'/request-approvals'),s=>s.approvals.some(a=>a.state==='pending'),'second_attempt_not_held');await wait(`document.querySelector('${visible}').innerText.includes(${JSON.stringify(second.approvals.find(a=>a.state==='pending').attempt_id)})`,'second_attempt_not_visible');await wait(`Array.from(document.querySelectorAll('${visible} button')).some(e=>e.textContent.trim()==='이 요청 거부'&&!e.disabled)`,'deny_button_not_available');await click('이 요청 거부');
+  }
+  const done=await eventually(currentJob,j=>['completed','failed','unknown'].includes(j.state),'run_not_closed',90000);check(done.state==='completed'&&done.drain_complete&&done.result_ready,'run_not_successfully_closed_'+done.state+'_'+done.reason_code);
+  const final=await flow();check(final.stage==='completed'&&final.deep_runs>0&&final.deep_closed===final.deep_runs,'deep_diagnosis_missing');const received=await stats();check(!received['GET /not-discovered']&&!received['GET /excluded'],'unselected_or_excluded_reached_target');check((received['POST /api/Users']||0)===(mode==='manual'?1:0),'denied_or_automatic_write_received');
+  const approvals=await api('/api/tasks/'+done.task_id+'/request-approvals');if(mode==='manual')check(approvals.approvals.filter(a=>a.state==='allowed').length===1&&approvals.approvals.filter(a=>a.state==='denied').length===1,'stored_decisions_incomplete');
+  await navigate('report');await wait(`document.querySelector('${visible}').innerText.includes('실제 탐색·선택 범위')`,'real_report_missing');await screenshot(mode+'-report');
+  const html=await api('/api/report/diagnostic?task='+done.task_id+'&audience=internal');check(typeof html==='string'&&html.includes('실제 탐색·선택 기록')&&html.includes('소유 Juice Shop 실제 응답 관찰'),'stored_candidate_or_workflow_missing');
+  check(requests.filter(r=>r.method==='POST'&&r.path.endsWith('/selection')).length===(mode==='manual'?1:0),'selection_duplicate_send');check(!requests.some(r=>r.method==='POST'&&r.path==='/api/tasks'),'uncontrolled_execution_fallback');
+  const file=path.join(outputDir,'rounds.json');const rounds=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):{};rounds[mode]=jobID;fs.writeFileSync(file,JSON.stringify(rounds));fs.writeFileSync(path.join(outputDir,mode+'-facts.json'),JSON.stringify({job:jobID,task:done.task_id,stage:final.stage,counts:final.counts,endpoints:final.endpoints.map(e=>({method:e.method,path:e.path,selected:e.selected,visited:e.visited})),received,approvals:approvals.approvals.map(a=>({state:a.state,execution:a.execution_state})),qwen:'NOT_RUN'},null,2));
+ }
+ console.log(JSON.stringify({phase:mode,status:'PASS',assertions,job_id:jobID||undefined,qwen:'NOT_RUN'}));socket.close();
+})().catch(error=>{console.error(JSON.stringify({phase:mode,status:'FAIL',reason:error.message}));if(socket)socket.close();process.exitCode=1;});

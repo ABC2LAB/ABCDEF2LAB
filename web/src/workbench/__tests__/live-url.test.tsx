@@ -609,7 +609,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(within(record).getByText("차단").parentElement as HTMLElement).getByText("2")).toBeInTheDocument();
     // 모델 사용량 · 비용은 서버 기록이 없으면 그렇다고 말한다
     expect(screen.getByText("모델 사용량 · 비용 기록은 아직 제공되지 않았습니다.")).toBeInTheDocument();
-    expect(screen.getByText(/후보 1/)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "저장 보고서 내용" })).getByRole("button", { name: /후보 1/ }),
+    ).toBeInTheDocument();
   });
 
   it("다른 진단 만들기: 조회 연결만 끊고 폼을 비운다", async () => {
@@ -721,4 +723,18 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(a.fetchTasks).not.toHaveBeenCalled();
     unmount();
   });
+});
+
+it.each([
+  "ai_auto_v1",
+  "user_approval_v1",
+] as const)("초안 저장 어댑터가 %s 모드와 제외 경로를 보존한다", async (mode) => {
+  const input = url.urlDiagnosisInput("https://target.example/", "profile-1", "소유 워크플로", mode, "/excluded");
+  resetUrl({ kind: "v2", catalog });
+  u.createURLDraft.mockResolvedValue({ ...draft, input });
+  u.commandURLDiagnosis.mockResolvedValue({ ...ready, input });
+  expect(await runUrlAction("validate", input)).toBe(true);
+  expect(u.createURLDraft.mock.calls[0][0]).toEqual(input);
+  expect(useUrl.getState().handle?.input.workflow_mode).toBe(mode);
+  expect(useUrl.getState().job?.input.excluded_paths).toBe("/excluded");
 });

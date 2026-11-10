@@ -287,7 +287,13 @@ export async function runUrlAction(kind: UrlAction, input?: URLDiagnosisInput): 
       if (saved && !job) return false;
       if (!saved) {
         if (!input) return false;
-        const checked = urlDiagnosisInput(input.target_url, input.profile_id, input.display_name ?? "");
+        const checked = urlDiagnosisInput(
+          input.target_url,
+          input.profile_id,
+          input.display_name ?? "",
+          input.workflow_mode,
+          input.excluded_paths ?? "",
+        );
         const cap = st.cap;
         if (cap.kind !== "v2" || !cap.catalog.profiles.some((p) => p.id === checked.profile_id)) return false;
         saved = { ownerContext: owner, creationKey: crypto.randomUUID(), input: checked };

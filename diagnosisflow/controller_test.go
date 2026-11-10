@@ -176,3 +176,20 @@ func TestWorkflowPublicProjectionNeverReturnsCredentialPath(t *testing.T) {
 		t.Fatal("credential-like path exposed")
 	}
 }
+
+func TestGETFormCannotInheritReadExemptionFromEarlierLink(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	c.mu.Lock()
+	c.discoverBodyLocked([]byte(`<a href="/read/change">link</a><form method="get" action="/read/change"></form><a href="/read/change">later link</a>`), "text/html", "/read")
+	c.mu.Unlock()
+	s, _ := c.Snapshot()
+	for _, e := range s.Endpoints {
+		if e.Path == "/read/change" {
+			if e.Change != "possible" || e.Kind != "form" || e.Duplicates != 2 {
+				t.Fatal("GET form inherited read exemption", e)
+			}
+			return
+		}
+	}
+	t.Fatal("GET form not discovered")
+}

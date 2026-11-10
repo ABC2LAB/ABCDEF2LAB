@@ -333,7 +333,7 @@ export function UrlNewScanLive() {
           </div>
 
           <TargetApprovalPanel
-            requestLimit={profile?.workflow ? 64 : undefined}
+            requestLimit={profile?.workflow_request_limit}
             allowStateChanges={profile?.workflow?.allow_reversible_writes}
             url={tv}
             disabled={busy}

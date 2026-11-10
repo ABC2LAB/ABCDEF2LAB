@@ -1,5 +1,6 @@
 "use client";
 import { RequestApprovalPanel } from "./RequestApprovalPanel";
+import { WorkflowReportPanels } from "./WorkflowReportPanels";
 import { WorkflowActivity, WorkflowControls, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
 // URL 진단(v2) 시작 뒤 두 화면: 점검 진행(서버 단계 · 사실 · 모델 사용량 · 중지 + 실제 task 의 전송 통제 집계)과
@@ -526,7 +527,7 @@ export function UrlReportLive() {
           </>
         }
       />
-      <div className={s.vm}>
+      <WorkflowReportPanels key={taskId} rem={rem}>
         <p className={s.lead}>
           실제 task 의 저장 결과입니다. 실행 마감과 취약점 판정은 별개이며, 후보는 확정 취약점이 아닙니다.
         </p>
@@ -543,14 +544,12 @@ export function UrlReportLive() {
         <Download taskId={taskId} />
         <section className={s.sec} aria-labelledby="luRepMoreH">
           <div className={s.sh}>
-            <h2 id="luRepMoreH">발견 목록 · 커버리지</h2>
+            <h2 id="luRepMoreH">전체 검사 커버리지</h2>
           </div>
-          <ModeNote what="발견 목록 · 커버리지" />
-          <p className={s.help}>
-            URL 진단 서버는 결속된 task 의 보고서 · 조치 자료만 엽니다. 내려받은 보고서에서 보세요.
-          </p>
+          <ModeNote what="전체 검사 커버리지" />
+          <p className={s.help}>발견·방문 수로 전체 취약점 검사 커버리지를 계산하지 않습니다.</p>
         </section>
-      </div>
+      </WorkflowReportPanels>
     </>
   );
 }
