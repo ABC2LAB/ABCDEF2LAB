@@ -154,7 +154,7 @@
     "declared_differences_path": ".../official-e2-declared-differences.json", "declared_differences_sha256": "<위 해시>"}
    ```
 
-   **공식 회차 전에 남은 것:** `Accept-Encoding` 처리(프로토콜 §2)와 [샌드박스 도구 차이](e2-tool-equivalence.md)를 담은 [선언 차이 목록](profiles/official-e2-declared-differences.json)은 PM 확정이 필요하다. 지금 `status`는 `proposed`다. 확정하면 `confirmed`로 바꾸고 위 해시를 다시 고정한다. 그 전의 회차는 공식 비교가 아니다.
+   **공식 회차 전에 남은 것:** `Accept-Encoding` 처리(프로토콜 §2)와 [샌드박스 도구 차이](e2-tool-equivalence.md)를 담은 [선언 차이 목록](profiles/official-e2-declared-differences.json)은 PM 확정이 필요하다. 지금 `status`는 `proposed`다. 확정하면 `confirmed`로 바꾸고 위 해시를 다시 고정한다. 그 전의 회차는 공식 비교가 아니고, 채점기가 그 조건에 경고를 낸다.
 
 ## 5. 회차 실행
 

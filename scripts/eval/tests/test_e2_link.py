@@ -44,7 +44,7 @@ class Case(unittest.TestCase):
         self.policy.write_bytes(json.dumps({"approval_mode": "preauthorized_scope", "rules": [{"ref": "rule-1"}, {"ref": "rule-2"}],
                                             "evaluation": {"llm_backend": "api", "target_kind": "public_practice"}}).encode())
         self.declared = base / "declared.json"
-        self.declared.write_bytes(b'{"differences": []}')
+        self.declared.write_bytes(b'{"format": "abc2lab.e2-declared-differences/v1", "status": "proposed"}')
         self.tool = base / "fake-ca-tool"
         self.tool.write_text('#!/bin/sh\numask 077\nprintf cert > "$3"\nprintf key > "$5"\n')
         self.tool.chmod(0o700)
@@ -145,6 +145,21 @@ class TestLink(Case):
 
     def test_declared_differences_must_match_the_frozen_digest(self):
         self.assert_declared_refused("declared_differences_mismatch", declared_differences_sha256="0" * 64)
+
+    def test_declared_status_comes_from_the_frozen_file(self):
+        self.assertEqual("proposed", self.link().declared_status)
+
+    def test_declared_status_reads_a_confirmed_list(self):
+        self.declared.write_bytes(b'{"format": "abc2lab.e2-declared-differences/v1", "status": "confirmed"}')
+        self.assertEqual("confirmed", self.link().declared_status)
+
+    def test_declared_differences_must_be_a_known_document(self):
+        for body in (b"not json", b"[]", b'{"status": "proposed"}', b'{"format": "abc2lab.e2-declared-differences/v2", "status": "proposed"}',
+                     b'{"format": "abc2lab.e2-declared-differences/v1"}', b'{"format": "abc2lab.e2-declared-differences/v1", "status": "draft"}',
+                     b'{"format": "abc2lab.e2-declared-differences/v1", "status": "proposed", "status": "confirmed"}'):
+            with self.subTest(body=body):
+                self.declared.write_bytes(body)
+                self.assert_declared_refused("declared_differences_invalid")
 
     def test_declared_differences_file_is_read_safely(self):
         link = self.declared.with_name("declared-link.json")
