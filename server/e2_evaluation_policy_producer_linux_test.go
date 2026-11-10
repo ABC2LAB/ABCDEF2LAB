@@ -18,9 +18,11 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 )
 
-// 러너의 정책 생산자가 만든 파일을 실제 도구·로더·factory·독립 backend가 받는지 끝까지 대조한다.
-// 자리값으로 오프라인 계산한 예상 지문이 실제 회차의 지문과 같아야 공식 프로파일에 동결한 값이 쓸모가 있다.
-func TestE2EvaluationPolicyProducerGoConsumer(t *testing.T) {
+type e2ProducedRun struct{ configPath, expectedFingerprint, connectIP string }
+
+// 러너의 정책 생산자와 실제 도구로 회차 입력을 만든다.
+func e2ProducedRunFixture(t *testing.T) e2ProducedRun {
+	t.Helper()
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 unavailable")
@@ -107,6 +109,14 @@ prepare_e2_config(Path(prep), E2RunValues("eval-run-1", "model-1", "evaluation_c
 	if err := os.WriteFile(configPath, configBytes, 0600); err != nil {
 		t.Fatal(err)
 	}
+	return e2ProducedRun{configPath, expected, connectIP}
+}
+
+// 러너의 정책 생산자가 만든 파일을 실제 도구·로더·factory·독립 backend가 받는지 끝까지 대조한다.
+// 자리값으로 오프라인 계산한 예상 지문이 실제 회차의 지문과 같아야 공식 프로파일에 동결한 값이 쓸모가 있다.
+func TestE2EvaluationPolicyProducerGoConsumer(t *testing.T) {
+	run := e2ProducedRunFixture(t)
+	configPath, expected, connectIP, prep := run.configPath, run.expectedFingerprint, run.connectIP, filepath.Dir(run.configPath)
 	c, err := e2config.Load(configPath)
 	if err != nil {
 		t.Fatal("runner config rejected:", err)
