@@ -238,6 +238,8 @@ class RunSpec:
     verdict_poll_seconds: float = 0
     e2_prompt_wait_seconds: float = 0
     e2_prompt_poll_seconds: float = 0
+    e2_declared_differences_sha256: str = ""
+    e2_declared_differences_status: str = ""
     # local 선언의 서버 버전·모델 digest·컨텍스트. api는 None.
     llm_serving: dict | None = None
     llm_keep_alive_seconds: int = 0
@@ -631,7 +633,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     e2_product, e2_prompt = None, None
     if spec.e2_mode == E2_PRODUCT:
         e2_product, reconciliation = _collect_e2(ports, evidence, state, e2_close, task_id, pre["services"][TARGET_SERVICE]["id"], rows,
-                                                 spec.image_ids["e2"])
+                                                 spec.image_ids["e2"], spec.e2_declared_differences_sha256, spec.e2_declared_differences_status)
         e2_prompt = _collect_e2_prompt(spec, ports, evidence, state, clock, task_id, e2_product["collection_outcome"])
     verified = _wait_llm_verified(spec, gateway, clock, state)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
@@ -689,7 +691,7 @@ def _e2_step(state: _State, code: str, action: Callable):
 
 
 def _collect_e2(ports: RunPorts, evidence, state: _State, close: CloseResult, task_id: str, target_id: str,
-                rows: list[dict], image_id: str) -> tuple[dict, dict | None]:
+                rows: list[dict], image_id: str, declared_differences: str, declared_status: str) -> tuple[dict, dict | None]:
     """제품 E② 결과를 모은다(연결 제안 §4.3). (서명할 행, 시도별 대조). 제품 실패는 회차를 유효로 두고 대조 근거만 없다.
 
     기술적 무효(회차 값·지문 불일치, 러너 쪽 수집 장애)는 RunFailure로 올린다. 없는 결과를 차단 0건으로 채우지 않는다.
@@ -713,7 +715,8 @@ def _collect_e2(ports: RunPorts, evidence, state: _State, close: CloseResult, ta
            "allowed_not_sent": None if summary is None else summary["allowed_not_sent"],
            "checkpoint_sequence": None if collection is None or collection.checkpoint is None else collection.checkpoint["sequence"],
            "config_sha256": state.e2_service["config_sha256"], "policy_fingerprint_sha256": state.e2_service["policy_fingerprint_sha256"],
-           "manifest_sha256": close.manifest_sha256, "image_id": image_id}
+           "manifest_sha256": close.manifest_sha256, "image_id": image_id, "declared_differences_sha256": declared_differences,
+           "declared_differences_status": declared_status}
     _step(state, "evidence_write_failed", lambda: evidence.write_json("e2-collection.json", {
         "close": {"state": close.state, "reason": close.reason, "admission_closed": close.admission_closed, "execution_ref": close.execution_ref},
         "collection": None if collection is None else collection.evidence(), "outcome": outcome, "reason": reason}))
@@ -1189,7 +1192,7 @@ def verdict_limits(block: dict) -> CollectLimits:
 
 
 def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str, condition: str,
-               repeat_index: int, engine_rules_sha256: str | None = None) -> RunSpec:
+               repeat_index: int, engine_rules_sha256: str | None = None, e2_declared_status: str = "") -> RunSpec:
     declared = preflight[plan.side]
     return RunSpec(
         run_id=plan.run_id, side=plan.side, project=plan.project, llm_backend=plan.llm["backend"],
@@ -1224,6 +1227,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         verdict_poll_seconds=0 if config.verdict_export is None else config.verdict_export["ready_poll_seconds"],
         e2_prompt_wait_seconds=config.e2_product["prompt_wait_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
         e2_prompt_poll_seconds=config.e2_product["poll_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
+        e2_declared_differences_sha256=config.e2_product["declared_differences_sha256"] if plan.e2_mode == E2_PRODUCT else "",
+        e2_declared_differences_status=e2_declared_status,
         state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
         state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
         state_memory_enabled=config.state is not None and config.state["memory"] is not None,
@@ -1318,7 +1323,8 @@ def main(argv: list[str] | None = None) -> int:
                         apply_settings, verdicts, e2_link, e2_prompt)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
-                                    None if rules is None else rules.sha256), ports, MeterFiles(directory.meter, directory.e2),
+                                    None if rules is None else rules.sha256,
+                                    "" if e2_link is None else e2_link.declared_status), ports, MeterFiles(directory.meter, directory.e2),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
     return 0 if result["status"] == COMPLETE else 1

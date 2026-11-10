@@ -122,6 +122,40 @@
 5. **러너 서명 키:** 엔진 감사 키와 **별도로** `cd "$T" && go run ./cmd/e2-audit-keygen --key-file /srv/abc2lab-eval-keys/runner.key`(0600, runs_root 밖). 세션 사이에 유지한다.
 6. **분류 매핑:** 평가자가 검토한 매핑 JSON 하나를 양쪽이 같이 쓴다(`findings.vocabulary_path`). 원본 SHA-256이 회차 기록에 남는다.
 
+7. **제품 E②(개선 후 회차):** 정책은 [공식 정책 템플릿](profiles/official-e2-policy.json)을 그대로 쓴다. 범위는 공식 프로파일의 scope를 옮긴 것이고(프로토콜 §2), 한도는 러너 예산보다 먼저 걸리지 않게 잡았다. 파일을 고치면 아래 값과 달라져 시험과 러너가 멈춘다.
+
+   ```
+   official_e2_policy_sha256 = 285ab34ccccdc966200f3c1afcf557c73612bf34be7dc0148efdad100a8e4fd5
+   official_e2_policy_fingerprint_sha256 = b219f820ab5ad6263898a4ff69bfb2b9f6a4595bf628e8b4a94da502e1291f9c
+   official_e2_declared_differences_sha256 = 491191074f1ad309eea0668dc6abf805941c8d8693f533cf92f6ac1a70b90f1d
+   ```
+
+   이미지와 도구는 동결 작업 트리에서 만든다. `$TOOLS`는 레포 밖 러너 uid 소유 디렉터리다.
+
+   ```bash
+   ctx=$(mktemp -d)
+   (cd "$W/ours" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o "$ctx/e2-eval-service" ./cmd/e2-eval-service \
+     && CGO_ENABLED=0 GOOS=linux go build -trimpath -o "$ctx/e2-bash-sandbox" ./cmd/e2-bash-sandbox \
+     && go build -trimpath -o "$TOOLS/e2-eval-policy" ./cmd/e2-eval-policy \
+     && go build -trimpath -o "$TOOLS/e2-audit-verify" ./cmd/e2-audit-verify)
+   docker build -q -f "$W/ours/deploy/eval/e2.Dockerfile" --build-arg ENGINE_IMAGE="abc2lab-eval-engine:ours-${OURS:0:12}" -t "abc2lab-eval-e2:${OURS:0:12}" "$ctx"
+   sha256sum "$ctx/e2-bash-sandbox"   # e2.helper_sha256
+   ```
+
+   `runner.json`의 `e2`는 아래처럼 채운다. `policy_path`는 템플릿 파일 경로, `image.id`는 위 이미지의 ID, `approval_valid_until`은 세션이 끝나는 날의 승인 만료 시각이다.
+
+   ```json
+   {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:<OURS 12자리>", "id": "sha256:..."}, "policy_path": ".../official-e2-policy.json",
+    "policy_fingerprint_sha256": "<위 지문>", "header_mode": "evaluation_caller_passthrough",
+    "ready_timeout_seconds": 60, "close_ack_timeout_seconds": 20, "close_timeout_seconds": 60, "poll_seconds": 1, "exchange_timeout_seconds": 10,
+    "verify_tool": "$TOOLS/e2-audit-verify", "verify_timeout_seconds": 30, "policy_tool": "$TOOLS/e2-eval-policy", "policy_tool_timeout_seconds": 60,
+    "helper": "/app/e2/e2-bash-sandbox", "helper_sha256": "<위 sha256>", "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10",
+    "window_seconds": 7200, "approval_valid_until": "<RFC3339>", "prompt_wait_seconds": 30,
+    "declared_differences_path": ".../official-e2-declared-differences.json", "declared_differences_sha256": "<위 해시>"}
+   ```
+
+   **공식 회차 전에 남은 것:** `Accept-Encoding` 처리(프로토콜 §2)와 [샌드박스 도구 차이](e2-tool-equivalence.md)를 담은 [선언 차이 목록](profiles/official-e2-declared-differences.json)은 PM 확정이 필요하다. 지금 `status`는 `proposed`다. 확정하면 `confirmed`로 바꾸고 위 해시를 다시 고정한다. 그 전의 회차는 공식 비교가 아니고, 채점기가 그 조건에 경고를 낸다.
+
 ## 5. 회차 실행
 
 한 회차:

@@ -67,7 +67,7 @@ def product_evidence(run_id: str, decisions: dict | None, allowed: int = 1) -> d
     base = dict(CONTEXT, run_id=run_id)
     product = {"kind": "e2_product", "seq": 2, "at": "2026-11-06T00:00:00Z", "close_reason": None, "rows": None, "attempts_without_result": 0,
                "allowed_not_sent": 0, "checkpoint_sequence": None, "config_sha256": "1" * 64, "policy_fingerprint_sha256": "2" * 64, "manifest_sha256": None,
-               "image_id": "sha256:" + "4" * 64}
+               "image_id": "sha256:" + "4" * 64, "declared_differences_sha256": "7" * 64, "declared_differences_status": "confirmed"}
     rows = [{"kind": "e2_placement", "seq": 1, "at": "2026-11-06T00:00:00Z", "mode": "product", "decision_rows": None,
              "allowed": None, "unsupported": None, "unavailable": None}]
     if decisions is None:

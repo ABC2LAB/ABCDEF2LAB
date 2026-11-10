@@ -26,6 +26,9 @@ CONTAINER_EVIDENCE_DIR, CONTAINER_CONTROL_DIR, CONTAINER_STATE_DIR = "/evidence"
 AUDIT_KEY_BYTES = 32
 # e2config.MaxPolicyBytes와 같아야 한다. 더 크면 제품 쪽 로더가 거부한다.
 MAX_POLICY_BYTES = 256 * 1024
+MAX_DECLARED_DIFFERENCES_BYTES = 64 * 1024
+DECLARED_DIFFERENCES_FORMAT = "abc2lab.e2-declared-differences/v1"
+DECLARED_DIFFERENCES_STATUSES = ("proposed", "confirmed")
 # 평가 회차에는 요청마다 승인할 사람이 없다. 확인 모드면 첫 요청에서 시한까지 멈춘다.
 EVAL_APPROVAL_MODE = "preauthorized_scope"
 # 제품 정책 로더가 PEM 파일을 읽는 상한과 같다.
@@ -133,6 +136,38 @@ def _read_policy(source: Path) -> bytes:
     if len(data) > MAX_POLICY_BYTES:
         _fail("policy_too_large")
     return data
+
+
+@dataclass(frozen=True)
+class DeclaredDifferences:
+    sha256: str
+    status: str
+
+
+def read_declared_differences(source: Path) -> DeclaredDifferences:
+    """선언된 차이 목록의 해시와 확정 상태. 링크·특수 파일은 받지 않는다."""
+    try:
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except OSError:
+        _fail("declared_differences_unavailable")
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            _fail("declared_differences_not_regular")
+        data = os.read(fd, MAX_DECLARED_DIFFERENCES_BYTES + 1)
+    except OSError:
+        _fail("declared_differences_unavailable")
+    finally:
+        os.close(fd)
+    if len(data) > MAX_DECLARED_DIFFERENCES_BYTES:
+        _fail("declared_differences_too_large")
+    try:
+        document = json.loads(data, object_pairs_hook=_no_duplicate_keys)
+    except (ValueError, RecursionError):
+        _fail("declared_differences_invalid")
+    if not isinstance(document, dict) or document.get("format") != DECLARED_DIFFERENCES_FORMAT or document.get("status") not in DECLARED_DIFFERENCES_STATUSES:
+        _fail("declared_differences_invalid")
+    return DeclaredDifferences(hashlib.sha256(data).hexdigest(), document["status"])
 
 
 def _no_duplicate_keys(pairs: list) -> dict:

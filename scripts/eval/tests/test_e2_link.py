@@ -43,12 +43,15 @@ class Case(unittest.TestCase):
         self.policy = base / "policy.json"
         self.policy.write_bytes(json.dumps({"approval_mode": "preauthorized_scope", "rules": [{"ref": "rule-1"}, {"ref": "rule-2"}],
                                             "evaluation": {"llm_backend": "api", "target_kind": "public_practice"}}).encode())
+        self.declared = base / "declared.json"
+        self.declared.write_bytes(b'{"format": "abc2lab.e2-declared-differences/v1", "status": "proposed"}')
         self.tool = base / "fake-ca-tool"
         self.tool.write_text('#!/bin/sh\numask 077\nprintf cert > "$3"\nprintf key > "$5"\n')
         self.tool.chmod(0o700)
 
     def link(self, **changes):
-        return E2Link(product(policy_path=str(self.policy), policy_tool=str(self.tool), **changes), self.paths, "eval-run-1", "model-1", "api", 8080, now=lambda: NOW)
+        declared = {"declared_differences_path": str(self.declared), "declared_differences_sha256": hashlib.sha256(self.declared.read_bytes()).hexdigest()} | changes
+        return E2Link(product(**({"policy_path": str(self.policy), "policy_tool": str(self.tool)} | declared)), self.paths, "eval-run-1", "model-1", "api", 8080, now=lambda: NOW)
 
     def closed(self, execution_ref="execution-1", state="complete", ack=ACK):
         return CloseResult(state, None, True, execution_ref, "8" * 64, ack)
@@ -132,8 +135,40 @@ class TestLink(Case):
                          ("eval-run-1", "model-1", link.prepared.reservation_ref, ":8080", {"llm_backend": "api", "target_kind": "public_practice"}))
 
     def test_bad_values_stop_at_preparing(self):
-        with self.assertRaises(E2PrepareError):
-            E2Link(product(policy_path=str(self.policy / "absent"), policy_tool=str(self.tool)), self.paths, "eval-run-1", "model-1", "api", 8080)
+        with self.assertRaisesRegex(E2PrepareError, "policy_unavailable"):
+            self.link(policy_path=str(self.policy / "absent"))
+
+    def assert_declared_refused(self, code, **changes):
+        with self.assertRaisesRegex(E2PrepareError, code):
+            self.link(**changes)
+        self.assertEqual([], list(self.paths.config.iterdir()), "동결 목록 확인 전에 회차 자료를 만듦")
+
+    def test_declared_differences_must_match_the_frozen_digest(self):
+        self.assert_declared_refused("declared_differences_mismatch", declared_differences_sha256="0" * 64)
+
+    def test_declared_status_comes_from_the_frozen_file(self):
+        self.assertEqual("proposed", self.link().declared_status)
+
+    def test_declared_status_reads_a_confirmed_list(self):
+        self.declared.write_bytes(b'{"format": "abc2lab.e2-declared-differences/v1", "status": "confirmed"}')
+        self.assertEqual("confirmed", self.link().declared_status)
+
+    def test_declared_differences_must_be_a_known_document(self):
+        for body in (b"not json", b"[]", b'{"status": "proposed"}', b'{"format": "abc2lab.e2-declared-differences/v2", "status": "proposed"}',
+                     b'{"format": "abc2lab.e2-declared-differences/v1"}', b'{"format": "abc2lab.e2-declared-differences/v1", "status": "draft"}',
+                     b'{"format": "abc2lab.e2-declared-differences/v1", "status": "proposed", "status": "confirmed"}'):
+            with self.subTest(body=body):
+                self.declared.write_bytes(body)
+                self.assert_declared_refused("declared_differences_invalid")
+
+    def test_declared_differences_file_is_read_safely(self):
+        link = self.declared.with_name("declared-link.json")
+        link.symlink_to(self.declared)
+        self.assert_declared_refused("declared_differences_unavailable", declared_differences_path=str(link))
+        self.assert_declared_refused("declared_differences_unavailable", declared_differences_path=str(self.declared.with_name("absent.json")))
+        self.assert_declared_refused("declared_differences_not_regular", declared_differences_path=str(self.declared.parent))
+        self.declared.write_bytes(b"x" * (64 * 1024 + 1))
+        self.assert_declared_refused("declared_differences_too_large")
 
     def test_channel_uses_the_run_and_timeouts(self):
         link = self.link()

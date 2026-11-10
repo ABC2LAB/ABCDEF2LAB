@@ -62,7 +62,7 @@
 | `limits.max_calls` | 정수 1…1000 | proxy, 포함 |
 | `limits.max_concurrent` | 정수 1…100 | proxy, 포함 |
 | `limits.max_body_bytes` | 정수 1…16777216 **바이트** | proxy, 포함 |
-| `limits.request_timeout_ms` | 정수 1…120000 **ms** | factory에서 Duration 변환, proxy, 지문에는 ns |
+| `limits.request_timeout_ms` | 정수 1…60000 **ms** | factory에서 Duration 변환, proxy, 지문에는 ns |
 | `limits.call_timeout_ms` | 정수 1…3600000 **ms** | factory·proxy, 지문에는 ns |
 | `limits.max_denials`, `max_transient`, `max_unknown` | `uint64` 각각 1 이상 | proxy, 포함. 시도 상한이 추가로 유효 |
 | `proxy.header_timeout_ms`, `request_timeout_ms` | 정수 각각 1…60000 **ms**, header ≤ request | factory·proxy, 지문에는 ns |
