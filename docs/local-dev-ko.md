@@ -10,7 +10,7 @@
 `prepare-task → prepare-intents → check → run`이며, 종료 후 저장 자료는 `report`로 엽니다.
 첫 진단 runtime에 필요한 기존 인증·최소권한 DB 역할을 일반 개발 서버의 최초 setup·관리자 DB로 대신해서는 안 됩니다.
 현재 UI는 해당 task의 상태·요청별 승인/거절·중지·후보·보고서·AI 수정 프롬프트 API를 연결합니다.
-웹에서 임의 URL을 받아 첫 통합 진단을 시작하는 API가 구현됐다는 뜻은 아닙니다.
+제품 Workbench의 URL v2 시작은 [제품 Docker 경로](../deploy/product/README.md)의 인증 API·보호 준비 서비스로 연결합니다. 현재 v1 설치의 대상은 설치 시 고정하며 회차별 대상 승인은 후속 PR #360의 별도 권한 모델 검토 대상입니다.
 
 ## 준비
 
@@ -141,11 +141,15 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 이 경우 웹 주소는 <http://127.0.0.1:8787>입니다. 기존 빌드 결과가 있는 작업 폴더에서는 오래된 페이지가 섞이지 않도록 별도 체크아웃을 사용합니다.
 UI의 기반 프로젝트 자동 업데이트 경로를 ABC2LAB 배포 갱신 절차로 사용하지 않습니다. 배포 후보는 소스 SHA와 검증 결과를 고정해 확인합니다.
 
-## Compose의 현재 역할
+## 제품 Docker 개발 경로
 
-[docker-compose.yml](../docker-compose.yml)의 `artex` 서비스는 `ghcr.io/jiwoochris/artex-global` 이미지를 사용합니다.
-`docker compose up`으로 뜬 화면에는 이 저장소에서 작성한 최신 기능이 들어 있다고 볼 수 없습니다.
-현재 개발 변경의 확인은 위 소스 실행으로 진행합니다. 프로젝트 자체 이미지·배포 설정은 별도 작업입니다.
+서버 기동과 통합 개발은 [제품 Docker 안내](../deploy/product/README.md)를 따른다. 루트 [docker-compose.yml](../docker-compose.yml)은 같은 제품 구성을 include하며 project 이름도 `abc2lab-product`로 일치한다. Workbench·인증 API·보호 준비 서비스·Planner/Worker·E②·PostgreSQL·저장 보고서를 현재 소스로 함께 빌드한다.
+
+운영자가 저장소 밖 0700 디렉터리의 0600 설치 JSON·DB 비밀번호 파일을 준비하고 `PRODUCT_INSTALL_FILE`·`PRODUCT_POSTGRES_PASSWORD_FILE`·빌드할 전체 `PRODUCT_SOURCE_SHA`를 export한다. 최초 설치는 `./install.sh`, 검토한 새 소스로 재빌드·기동은 `./update.sh`다. 기존 설치·키·데이터·승인 예산은 재사용하며 v1→v2 이관이나 예산 초기화를 자동 수행하지 않는다.
+
+브라우저는 기본 <http://127.0.0.1:8787>이며 관리자 이름은 `ABC2LAB`, 비밀번호는 설치 JSON의 값이다. `/setup` 토큰을 사용하지 않는다. `./scripts/product-compose.sh logs -f preparation api workbench`로 로그를 확인한다. 관리자 복구는 같은 환경변수로 `./reset-password.sh`를 실행하고 숨김 입력한다. 제품 PostgreSQL 컨테이너의 `POSTGRES_USER`·`POSTGRES_DB`를 사용하며 비밀번호는 argv·파일에 쓰지 않는다.
+
+앞의 일반 `cmd/artex`·`dev.sh`·단일 바이너리 절은 코드 조사·단위 개발의 참고 경로다. 제품의 승인·전송 통합 수용은 Docker 경로에서 별도로 검증해야 하며, 일반 서버의 `POST /api/tasks`로 대신하지 않는다.
 
 ## 검증 기록
 
