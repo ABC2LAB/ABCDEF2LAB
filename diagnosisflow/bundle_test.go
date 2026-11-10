@@ -60,6 +60,11 @@ func TestBundleRefsReadRequestShapes(t *testing.T) {
 		"bare axios":            {`axios.post("save",x)`, []string{"POST save script_call"}},
 		"bare jquery":           {`;$.get("data")`, []string{"GET data script_call"}},
 		"bare dynamic":          {`this.http.get("old"+id)`, []string{"GET old script_prefix"}},
+		"bare api":              {`api.get("a")`, []string{"GET a script_call"}},
+		"bare client":           {`client.get("b")`, []string{"GET b script_call"}},
+		"bare request":          {`request.get("c")`, []string{"GET c script_call"}},
+		"bare ajax":             {`ajax.get("d")`, []string{"GET d script_call"}},
+		"bare jQuery name":      {`jQuery.get("e")`, []string{"GET e script_call"}},
 		"bare opaque receiver":  {`c.get("old")`, []string{}},
 		"translation service":   {`this.translate.get("ADDRESS_ADDED")`, []string{}},
 		"dollar in name":        {`a$.get("KEY")`, []string{}},
@@ -107,7 +112,8 @@ func TestBundleBaseCapStopsResolvingAfterTruncation(t *testing.T) {
 	}
 	early := `this.host="/first";c.get(this.host+"/a");`
 	late := `this.host="/later";c.get(this.host+"/x");this.http.get(this.host)`
-	truncated := refStrings(bundleRefs([]byte(early+assignments(maxBundleMatches)+late), maxBundleChunks))
+	// 첫 대입과 합쳐 한도를 채우므로 late의 대입은 수집되지 않는다.
+	truncated := refStrings(bundleRefs([]byte(early+assignments(maxBundleMatches-1)+late), maxBundleChunks))
 	if want := []string{"GET /first/a script_call", "UNKNOWN /x static_literal"}; !reflect.DeepEqual(truncated, want) {
 		t.Fatalf("got=%q want=%q", truncated, want)
 	}
@@ -325,13 +331,65 @@ func TestCrawlVisitsPagesBeforeGuessedScriptStrings(t *testing.T) {
 	var order []string
 	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
 		order = append(order, strings.TrimPrefix(target, "https://owned.test"))
-		body := `<a href="/read/page">p</a><script>var a="/read/src/error.js"</script>`
-		return e2runner.Result{ToolOutput: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + body, Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Final: true, ProcessDrained: true, ProxyDrained: true, Call: e2proxy.CallResult{Final: true, AuditComplete: true, Counts: e2proxy.Counts{ForwardAttempted: 1}}}}, nil
+		return crawlResult(`<a href="/read/page">p</a><script>var a="/read/src/error.js"</script>`), nil
 	})
 	if !handled || err != nil {
 		t.Fatal(handled, err)
 	}
 	if want := []string{"/read", "/read/page"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("got=%q want=%q", order, want)
+	}
+}
+
+func crawlResult(body string) e2runner.Result {
+	return e2runner.Result{ToolOutput: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + body, Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Final: true, ProcessDrained: true, ProxyDrained: true, Call: e2proxy.CallResult{Final: true, AuditComplete: true, Counts: e2proxy.Counts{ForwardAttempted: 1}}}}
+}
+
+func TestCrawlLeavesUnreadFetchOptionsUnvisitedAndUnselected(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	c.binding.Limits.MaxPages = 3
+	var order []string
+	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
+		order = append(order, strings.TrimPrefix(target, "https://owned.test"))
+		return crawlResult(`<script>fetch("/read/nested",{headers:{a:1},method:"POST"});fetch("/read/init",init)</script>`), nil
+	})
+	if !handled || err != nil {
+		t.Fatal(handled, err)
+	}
+	if want := []string{"/read"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("got=%q want=%q", order, want)
+	}
+	found := 0
+	for _, e := range c.record.Snapshot.Endpoints {
+		if e.Path == "/read/nested" || e.Path == "/read/init" {
+			found++
+			if e.Method != "UNKNOWN" || e.Selected {
+				t.Fatalf("%+v", e)
+			}
+		}
+	}
+	if found != 2 {
+		t.Fatal(found)
+	}
+}
+
+func TestCrawlVisitsChunkWhenEndpointSlotsAreFull(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	c.binding.Limits.MaxPages = 2
+	var calls strings.Builder
+	for i := 0; i < c.binding.Limits.MaxEndpoints; i++ {
+		calls.WriteString(`c.get("/read/a` + strconv.Itoa(i) + `");`)
+	}
+	calls.WriteString(`import("/read/chunk.js");`)
+	var order []string
+	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
+		order = append(order, strings.TrimPrefix(target, "https://owned.test"))
+		return crawlResult("<script>" + calls.String() + "</script>"), nil
+	})
+	if !handled || err != nil {
+		t.Fatal(handled, err)
+	}
+	if want := []string{"/read", "/read/chunk.js"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("got=%q want=%q", order, want)
 	}
 }
