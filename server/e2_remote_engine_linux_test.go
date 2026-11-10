@@ -173,4 +173,31 @@ func TestE2RemoteRunKeepsWorkingAfterTheTaskIsCancelled(t *testing.T) {
 	}
 }
 
+func TestNewE2RemoteRuntimeStartsTheCloseWatcher(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		described := e2RemoteDescribedFixture()
+		e2RemoteWrite(w, http.StatusOK, e2RemoteResponse{Describe: &described})
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime, err := newE2RemoteRuntime(ctx, E2RemoteEngineOptions{URL: server.URL, TokenFile: writeE2RemoteToken(t, e2RemoteTestToken), RequestTimeout: time.Second, DescribeTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, task := e2HTTPRuntimeFixture(t, nil)
+	if err := runtime.AdmitTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	runtime.task.mu.Lock()
+	runtime.task.lease = &E2HTTPRunOptions{Runner: &e2RemoteLeaseFixture{state: "blocked"}, Release: func(context.Context) error { close(released); return nil }}
+	runtime.task.mu.Unlock()
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("E² 종료를 보고도 엔진이 task를 마감하지 않음")
+	}
+}
+
 const strings64a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
