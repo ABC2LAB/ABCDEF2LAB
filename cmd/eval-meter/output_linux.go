@@ -62,8 +62,9 @@ func createPrivateFile(dir *os.File, name string) (*os.File, string) {
 }
 
 // readPathKey는 회차 묶음이 함께 쓰는 경로 가림 키를 읽는다. 다른 사용자가 읽을 수 있거나 길이가 다르면 거부한다.
+// O_NONBLOCK은 FIFO를 넘겨받았을 때 writer를 기다리며 멈추지 않고 아래 파일 종류 검사에서 거부하게 한다.
 func readPathKey(path string) ([]byte, string) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, pathKeyRequired
 	}
