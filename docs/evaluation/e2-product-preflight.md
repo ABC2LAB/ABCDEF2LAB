@@ -68,8 +68,15 @@ Compose의 `eval-e2` 명령으로 쓰지 않는다.
 
 현재 command 단위 API만 있으므로 실제 Planner round, Worker turn·세션별 intent-run
 제한은 아직 연결되지 않았다. 정책 지문 일치가 이 lifecycle 제한의 집행 완료를 뜻하지 않는다.
-`Config.Listen/Upstream`의 실제 공유 ingress 배치도 아직 없으며, readiness 제공자가
-실제 호출자 인증·격리·라우팅을 검사하는 제품 조립과 서비스 entrypoint가 필요하다.
+`Config.Listen/Upstream`의 실제 공유 ingress 배치도 아직 없다.
+
+## 서비스 진입점
+
+`cmd/e2-eval-service`가 `eval-e2`의 진입점이다. 이미지는 `deploy/eval/e2.Dockerfile`로 엔진 이미지 위에 만든다.
+지금은 러너 제어 채널만 연다. 엔진이 호출할 경로가 없고 `AuthorizeExecution`을 전부 거절하므로
+`service_ready`는 설정과 정책 지문이 맞는다는 뜻뿐이고 대상 송신 권한이나 도구 격리를 뜻하지 않는다.
+Docker 기본 seccomp에서는 샌드박스가 쓰는 user namespace가 막힌다(`unshare` EPERM, 11/10 실측).
+실행 경로를 붙일 때 `eval-e2` 전용 seccomp 프로필이 필요하다.
 
 합성 수용시험은 실제 자식 프로세스의 backend와 UDS를 사용한다.
 부모가 ready → bind → head → close → close_status를 보내며,

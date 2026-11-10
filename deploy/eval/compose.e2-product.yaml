@@ -1,9 +1,9 @@
 # 개선 후 회차의 E② 자리에 제품 E²를 넣는다(제어 채널 제안 docs/contracts/e2-runner-control-proposal.md).
-# compose.eval.yaml 위에 마지막으로 얹는다. 러너가 e2.ours_mode=product일 때 붙일 파일이고, 아직 연결 전이다.
+# compose.eval.yaml 위에 마지막으로 얹는다. 러너가 e2.ours_mode=product일 때 붙이는 파일이다.
 #   엔진 ─(engine_net)─▶ eval-e2 ─(e2_net)─▶ eval-meter ─(target_net)─▶ target
 # 망 배치는 가짜 E²(compose.e2-stub.yaml)와 같다. 엔진은 계측기 이름(http://eval-meter:<포트>)으로 보내고
 # 그 이름을 engine_net에서는 eval-e2가 받으며, 실제 계측기는 e2_net의 eval-meter-upstream이다.
-# 제품 entrypoint는 아직 없어서 이미지·명령은 후보다.
+# 이미지는 deploy/eval/e2.Dockerfile, 진입점은 cmd/e2-eval-service다. 지금은 제어 채널만 열고 실행은 전부 거절한다.
 # 준비 디렉터리는 읽기 전용이고 러너 서명 키·Docker 소켓은 주지 않는다. 엔진에는 이 셋 다 mount하지 않는다.
 
 services:
@@ -12,6 +12,8 @@ services:
     user: "${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}"
     command:
       - -config=/run/e2-config/e2-config.json
+      - -io-timeout=${EVAL_E2_IO_TIMEOUT_SECONDS:?}s
+      - -close-timeout=${EVAL_E2_CLOSE_TIMEOUT_SECONDS:?}s
     volumes:
       - ${EVAL_E2_CONFIG_DIR:?}:/run/e2-config:ro
       - ${EVAL_E2_EVIDENCE_DIR:?}:/evidence
