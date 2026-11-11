@@ -3,7 +3,9 @@
 // 점검 기록 (시안 v27 ~ v30): 레일에서 점검을 누르면 오는 화면. 진행 중 · 끝난 점검을 나열하고, 제목 옆에 칸마다 따로 필터를 둔다.
 // 서버에 진단 목록 API 가 없어 줄은 이 브라우저가 이어 보는 진단 하나뿐이다(레일과 같은 줄 · 목록을 만들어 채우지 않는다).
 // 필터는 서버 값으로만 나눈다: 진행 중은 진단 상태 · 탐색 단계 · 요청 승인 대기, 끝난 점검은 팀 lib 의 판정 분류(보고서 저장 뒤).
-// 어느 묶음에도 들지 않는 값(상태 미확인 · 결과 불명 · 보고서 없음)은 '전체' 에만 보인다.
+// 끝난 점검의 결과 묶음은 실행 마감(completed)된 점검만 나눈다 — 중지 · 실패는 보고서가 있어도 끝까지 보지 않았으므로 나누지 않는다.
+// '발견 없음' 은 근거가 있을 때만: 정상 대조 결과가 있고 나머지 판정이 0 일 때. 판정 기록이 없으면 발견 없음이 아니다(절대규칙 5).
+// 어느 묶음에도 들지 않는 값(상태 미확인 · 결과 불명 · 중지 · 실패 · 판정 기록 없음 · 보고서 없음)은 '전체' 에만 보인다.
 
 import { type ReactNode, useState } from "react";
 
@@ -12,6 +14,7 @@ import { diagnosticOutcomeLabels, summarizeDiagnosticEntries } from "@/lib/diagn
 
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
+import { clockOf } from "../../live/map";
 import { refreshWorkflow, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ACTIVE_STATES, URL_ENDED_STATES, type UrlState, urlHost } from "../../live/urlMap";
 import { usePoll } from "../../live/usePoll";
@@ -45,16 +48,17 @@ export function recRunKind(
 }
 
 /**
- * 끝난 점검의 결과 묶음 (팀 lib 판정 집계 그대로). 확정 → 발견 있음, 검토 필요 → 검토 필요,
- * 미실행 · 결과 불명 → 판단 불가, 넷 다 0 → 발견 없음. 보고서를 못 읽었으면 빈 목록.
+ * 끝난 점검의 결과 묶음 (팀 lib 판정 집계 그대로). 실행 마감(completed)된 점검만 나눈다.
+ * 확정 → 발견 있음, 검토 필요 → 검토 필요, 미실행 · 결과 불명 → 판단 불가,
+ * 정상 대조 결과가 있고 그 넷이 0 → 발견 없음. 보고서를 못 읽었거나 판정 기록이 없으면 빈 목록('전체' 에만).
  */
-export function recDoneKinds(counts: Record<DiagnosticOutcome, number> | null): DoneKind[] {
-  if (!counts) return [];
+export function recDoneKinds(state: UrlState, counts: Record<DiagnosticOutcome, number> | null): DoneKind[] {
+  if (state !== "completed" || !counts) return [];
   const out: DoneKind[] = [];
   if (counts.confirmed > 0) out.push("hit");
   if (counts.review > 0) out.push("review");
   if (counts.not_executed + counts.unknown > 0) out.push("und");
-  if (!out.length) out.push("clean");
+  if (!out.length && counts.negative > 0) out.push("clean");
   return out;
 }
 
@@ -70,7 +74,12 @@ export const DONE_CHIPS: ReadonlyArray<Chip<DoneKind>> = [
   ["all", "전체", true, "끝난 점검 모두"],
   ["hit", "발견 있음", true, "확정 발견이 있는 점검"],
   ["review", "검토 필요", false, "사람이 검토할 후보가 있는 점검"],
-  ["clean", "발견 없음", true, "확정 · 검토 필요 · 미실행 · 결과 불명이 하나도 없는 점검"],
+  [
+    "clean",
+    "발견 없음",
+    true,
+    "정상 대조 결과만 있는 점검(확정 · 검토 필요 · 미실행 · 결과 불명 0건) · 발견이 없다고 안전하다는 뜻은 아닙니다",
+  ],
   ["und", "판단 불가", true, "미실행 또는 결과 불명이 있는 점검"],
 ];
 
@@ -136,8 +145,8 @@ export function UrlRecordsLive() {
   const remFor = rem.data && reportId && String(rem.data.task_id) === reportId ? rem.data : null;
   const counts = remFor ? summarizeDiagnosticEntries(remFor.entries) : null;
   const runKind = job && !ended ? recRunKind(job.state, verified, flow?.stage ?? null, a.pending.length) : null;
-  const doneKinds = ended ? recDoneKinds(counts) : [];
-  const doneLoading = ended && !!reportId && !remFor;
+  const doneKinds = ended && job ? recDoneKinds(job.state, counts) : [];
+  const doneLoading = job?.state === "completed" && !!reportId && !remFor;
   const hasRun = !!handle && !ended;
   const hasDone = !!handle && ended;
   const runOk = (k: RunKind | "all") => hasRun && (k === "all" || runKind === k);
@@ -185,8 +194,14 @@ export function UrlRecordsLive() {
     </button>
   ) : null;
   // 오른쪽 상세에 덧붙일 줄 · 버튼
+  // 승인 대기는 두 종류를 나눠 보인다: 시작 전 범위 승인 · 보낼 요청의 승인(만료가 있어 가장 빠른 만료를 같이)
   const extraRows: Array<readonly [ReactNode, ReactNode]> = [];
-  if (a.pending.length) extraRows.push(["승인 대기", `요청 ${a.pending.length}건`]);
+  if (job?.state === "awaiting_approval" && verified) extraRows.push(["승인 대기", "시작 전 범위 승인"]);
+  if (a.pending.length) {
+    const soonest = Math.min(...a.pending.map((r) => Date.parse(r.expires_at)).filter((t) => !Number.isNaN(t)));
+    const exp = Number.isFinite(soonest) ? ` · 가장 빠른 만료 ${clockOf(soonest)}` : "";
+    extraRows.push(["승인 대기", `보낼 요청 ${a.pending.length}건${exp}`]);
+  }
   if (counts)
     extraRows.push([
       "결과",
@@ -260,6 +275,11 @@ export function UrlRecordsLive() {
             ) : (
               <p className={s.empty}>{doneEmptyText(hasDone, doneLoading)}</p>
             )}
+            {hasDone && !doneLoading && !doneKinds.length ? (
+              <p className={s.help} role="note">
+                {unsortedText(job?.state, !!counts)}
+              </p>
+            ) : null}
           </section>
         </div>
         <aside className={s.vi} id="recInsp" aria-label="선택한 점검">
@@ -281,6 +301,13 @@ export function UrlRecordsLive() {
       </div>
     </>
   );
+}
+
+/** 끝난 점검을 결과로 나누지 않은 까닭 ('전체' 에만 보일 때). */
+function unsortedText(state: UrlState | undefined, readable: boolean): string {
+  if (state !== "completed") return "중지 · 실패한 점검은 끝까지 보지 않아 결과로 나누지 않고 '전체' 에만 보입니다.";
+  if (!readable) return "결과 저장이 확인되지 않아 결과로 나누지 않고 '전체' 에만 보입니다.";
+  return "정상 대조 결과가 없어 '발견 없음' 으로 나누지 않고 '전체' 에만 보입니다.";
 }
 
 /** 끝난 점검 칸이 비었을 때의 글. */

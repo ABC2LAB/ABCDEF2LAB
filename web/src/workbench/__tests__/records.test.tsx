@@ -95,13 +95,18 @@ describe("점검 기록 묶음 계산", () => {
     expect(recRunKind("ready", true, null, 0)).toBeNull();
   });
 
-  it("끝난 점검: 팀 lib 판정 집계 그대로 — 확정 · 검토 필요 · 판단 불가(미실행 · 결과 불명), 넷 다 0 이면 발견 없음", () => {
-    expect(recDoneKinds(null)).toEqual([]);
-    expect(recDoneKinds({ ...zero, negative: 3 })).toEqual(["clean"]);
-    expect(recDoneKinds({ ...zero, confirmed: 1 })).toEqual(["hit"]);
-    expect(recDoneKinds({ ...zero, review: 2 })).toEqual(["review"]);
-    expect(recDoneKinds({ ...zero, not_executed: 1 })).toEqual(["und"]);
-    expect(recDoneKinds({ ...zero, confirmed: 1, unknown: 1 })).toEqual(["hit", "und"]);
+  it("끝난 점검: 실행 마감된 점검만 팀 lib 판정 집계로 나눈다 — 발견 없음은 정상 대조 결과가 있을 때만", () => {
+    expect(recDoneKinds("completed", null)).toEqual([]);
+    expect(recDoneKinds("completed", { ...zero, negative: 3 })).toEqual(["clean"]);
+    expect(recDoneKinds("completed", { ...zero, confirmed: 1 })).toEqual(["hit"]);
+    expect(recDoneKinds("completed", { ...zero, review: 2 })).toEqual(["review"]);
+    expect(recDoneKinds("completed", { ...zero, not_executed: 1 })).toEqual(["und"]);
+    expect(recDoneKinds("completed", { ...zero, confirmed: 1, unknown: 1 })).toEqual(["hit", "und"]);
+    // 판정 기록이 하나도 없으면 '검사했고 정상' 의 근거가 아니다 (절대규칙 5)
+    expect(recDoneKinds("completed", zero)).toEqual([]);
+    // 중지 · 실패는 보고서가 있어도 나누지 않는다 (끝까지 보지 않음)
+    expect(recDoneKinds("cancelled", { ...zero, negative: 3 })).toEqual([]);
+    expect(recDoneKinds("failed", { ...zero, confirmed: 1 })).toEqual([]);
   });
 });
 
@@ -161,6 +166,38 @@ describe("점검 기록 화면", () => {
     const detail = screen.getByRole("complementary", { name: "선택한 점검" });
     expect(within(detail).getByText("확정 0 · 검토 필요 1 · 미실행 0 · 결과 불명 0")).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "이 주소로 다시 점검" })).toBeInTheDocument();
+  });
+
+  it("결과 저장이 확인된 중지 점검도 결과로 나누지 않고 '전체' 에만 보인다 (판정 0건이어도 발견 없음 아님)", async () => {
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
+    useUrl.setState({ handle, job: { ...completed, state: "cancelled" }, verified: true });
+    render(
+      <ShellContext.Provider value={shell("records")}>
+        <UrlRecordsLive />
+      </ShellContext.Provider>,
+    );
+    const done = screen.getByRole("region", { name: "끝난 점검" });
+    expect(within(done).getByRole("button", { name: /target\.example/ })).toBeInTheDocument();
+    for (const c of ["발견 있음", "발견 없음", "판단 불가"]) expect(chip(done, c)).toHaveTextContent("0");
+    expect(within(done).getByRole("note")).toHaveTextContent(
+      "중지 · 실패한 점검은 끝까지 보지 않아 결과로 나누지 않고",
+    );
+    fireEvent.click(chip(done, "발견 없음"));
+    expect(within(done).queryByRole("button", { name: /target\.example/ })).toBeNull();
+  });
+
+  it("실행 마감된 점검이라도 판정 기록이 0건이면 발견 없음으로 나누지 않는다", async () => {
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
+    useUrl.setState({ handle, job: completed, verified: true });
+    render(
+      <ShellContext.Provider value={shell("records")}>
+        <UrlRecordsLive />
+      </ShellContext.Provider>,
+    );
+    const done = screen.getByRole("region", { name: "끝난 점검" });
+    await waitFor(() => expect(within(done).getByRole("note")).toHaveTextContent("정상 대조 결과가 없어"));
+    expect(chip(done, "발견 없음")).toHaveTextContent("0");
+    expect(chip(done, "전체")).toHaveTextContent("1");
   });
 
   it("보고서를 못 읽은 끝난 점검(결과 저장 미확인)은 판정을 부르지 않고 '전체' 에만 보인다", () => {
@@ -226,7 +263,8 @@ describe("점검 기록 화면", () => {
     await waitFor(() => expect(chip(run, "승인 대기")).toHaveTextContent("1"));
     expect(chip(run, "점검 중")).toHaveTextContent("0");
     const detail = screen.getByRole("complementary", { name: "선택한 점검" });
-    expect(within(detail).getByText("요청 1건")).toBeInTheDocument();
+    // 승인 대기 종류(보낼 요청)와 가장 빠른 만료를 같이 보인다
+    expect(within(detail).getByText(/^보낼 요청 1건 · 가장 빠른 만료 \d\d:\d\d:\d\d$/)).toBeInTheDocument();
     fireEvent.click(within(detail).getByRole("button", { name: "승인 요청 보기" }));
     expect(goTo).toHaveBeenCalledWith("dashboard");
   });
