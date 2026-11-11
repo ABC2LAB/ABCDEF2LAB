@@ -10,8 +10,10 @@ import { decideRequestApproval, getRequestApproval, type RequestApproval } from 
 
 import { cx } from "../../lib/cx";
 import { fetchRequestApprovals, type RequestApprovalState } from "../../live/api";
+import { clockOf } from "../../live/map";
 import { useUrl } from "../../live/urlDiagnosis";
 import { type Poll, usePoll } from "../../live/usePoll";
+import { Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
 
 export interface Approvals {
@@ -119,7 +121,11 @@ export function useRequestApprovals(taskId: string, active: boolean): Approvals 
       await decideRequestApproval(taskId, fresh, decision);
       if (token !== generation.current || identity.current !== taskId) return;
       setUnconfirmed(null);
-      setMessage(decision === "allow" ? "이 요청 한 번만 허용했습니다." : "이 요청을 거부했습니다.");
+      setMessage(
+        decision === "allow"
+          ? "이 요청 한 번만 허용했습니다. 실제 전송 결과는 진행 기록에서 따로 확인하세요."
+          : "이 요청을 거부했습니다.",
+      );
       poll.reload();
     } catch {
       if (token === generation.current && identity.current === taskId) {
@@ -137,27 +143,50 @@ export function useRequestApprovals(taskId: string, active: boolean): Approvals 
   return { poll, runMatches, rows, pending, busy, unresolved, message, canDecide, decide };
 }
 
-/** 보낼 요청: 메서드 · 경로 · 대상 host 와 서버가 준 미리보기(본문은 빈 줄 뒤). 원문 본문은 서버가 공개하지 않는다. */
+/** 서버가 붙이는 미리보기 안내 키. 값은 서버 문장 그대로 보여 준다. */
+const PREVIEW_LIMIT_KEY = "표시 제한";
+
+/**
+ * 보낼 요청: 메서드 · 경로 · 대상(scheme 포함)과 서버가 준 미리보기 전부.
+ * 서버(request_approvals.go approvalPreview)는 호스트가 공개로 지정한 `query.<키>` · `body.<키>` 와
+ * `표시 제한` 안내만 보낸다. 원문 본문은 공개하지 않으며, 화면은 키를 바꾸거나 고르지 않고 그대로 보인다.
+ */
 export function ApprovalRequestCode({ row }: { row: RequestApproval }) {
-  let host = row.target_origin;
-  try {
-    host = new URL(row.target_origin).host;
-  } catch {
-    // 서버 값을 그대로 둔다
-  }
   const entries = Object.entries(row.input_preview);
-  const head = entries.filter(([k]) => k !== "body");
-  const body = entries.find(([k]) => k === "body")?.[1];
+  const shown = entries.filter(([k]) => k !== PREVIEW_LIMIT_KEY);
+  const limit = row.input_preview[PREVIEW_LIMIT_KEY];
   const text = [
     `${row.method} ${row.path}`,
-    `Host: ${host}`,
-    ...head.map(([k, v]) => `${k}: ${v}`),
-    ...(body !== undefined ? ["", body] : []),
+    `대상: ${row.target_origin}`,
+    ...(shown.length ? shown.map(([k, v]) => `${k}: ${v}`) : ["(공개로 지정된 query · body 입력 없음)"]),
   ].join("\n");
-  return <pre className={s.code}>{text}</pre>;
+  return (
+    <>
+      <pre className={s.code}>{text}</pre>
+      {limit ? (
+        <p className={s.help} role="note">
+          {`${PREVIEW_LIMIT_KEY}: ${limit}`}
+        </p>
+      ) : null}
+    </>
+  );
 }
 
-/** 승인하고 보내기 · 거부 버튼 줄 (+ 결정 안내). */
+/** 승인 정보: 본문 크기 · 만료(일시정지로 연장 안 함) · 실제 attempt · 상태. 모두 서버 값. */
+export function ApprovalFacts({ row }: { row: RequestApproval }) {
+  return (
+    <Kv
+      rows={[
+        ["본문 크기", `${row.body_bytes} bytes · 원문 비공개`],
+        ["승인 만료", `${clockOf(row.expires_at) || row.expires_at} · 일시정지로 연장하지 않음`],
+        ["실제 attempt", row.attempt_id],
+        ["상태", `${APPROVAL_STATE_TEXT[row.state]} · ${row.execution_state}`],
+      ]}
+    />
+  );
+}
+
+/** 승인 · 거부 버튼 줄 (+ 결정 안내). 화면은 결정만 기록하고, 실제 전송은 서버가 한다. */
 export function ApprovalActions({ a, row, size }: { a: Approvals; row: RequestApproval; size?: "sm" }) {
   const off = !a.canDecide(row);
   return (
@@ -169,7 +198,7 @@ export function ApprovalActions({ a, row, size }: { a: Approvals; row: RequestAp
           disabled={off}
           onClick={() => void a.decide(row, "allow")}
         >
-          {a.busy === row.id ? "보내는 중…" : "승인하고 보내기"}
+          {a.busy === row.id ? "기록 중…" : "이 요청 승인"}
         </button>
         <button
           className={cx(s.btn, size && s.sm)}

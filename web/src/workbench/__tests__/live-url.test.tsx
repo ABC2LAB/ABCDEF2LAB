@@ -358,7 +358,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.commandURLDiagnosis.mockResolvedValue(preparing);
     const { goTo } = mount("new");
     expect(await screen.findByText("https://target.example · / · GET")).toBeInTheDocument();
-    expect(screen.getByText("대상 요청 3회 · 60초 · 모델 요청 2회")).toBeInTheDocument();
+    expect(
+      screen.getByText(/^대상 요청 3회 · 60초 · 모델 요청 2회 · 토큰 입력 \d+ · 출력 \d+ · body 최대 \d+ bytes$/),
+    ).toBeInTheDocument();
     const start = screen.getByRole("button", { name: "점검 시작" });
     expect(start).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox"));
@@ -782,6 +784,10 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "workbench_selective_v1" } });
   saveHandle({ ...handle, input });
   mount("new");
-  expect(await screen.findByText("데이터를 바꾸는 요청은 승인한 것만 보냄")).toBeInTheDocument();
+  expect(await screen.findByText("쓰기 메서드 요청은 한 건씩 승인한 것만 보냄")).toBeInTheDocument();
+  // 메서드 기준 이름일 뿐: GET · HEAD · query 도 상태를 바꿀 수 있다는 안내가 같이 보인다 (절대규칙 6)
+  expect(
+    screen.getByText("GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다"),
+  ).toBeInTheDocument();
   expect(screen.getByText("https://target.example · / · GET")).toBeInTheDocument();
 });

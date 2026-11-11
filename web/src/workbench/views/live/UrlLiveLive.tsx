@@ -24,14 +24,14 @@ import { approvalCounts, clockOf, errorText, fmtCount, isUnsupported, planState 
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import { factText, URL_ENDED_STATES, urlStateText } from "../../live/urlMap";
+import { factText, URL_ENDED_STATES, urlStateText, usdText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
 import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { useRequestApprovals } from "./approvals";
+import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import { PauseButton, useStopConfirm, WorkflowActivity, WorkflowNotice, WorkflowReport } from "./workflowViews";
@@ -45,10 +45,17 @@ const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
   negative: "정상",
 };
 
-/** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 그 밖 = 판단 불가 모양). */
+/** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 정상 = 초록, 그 밖 = 판단 불가 모양). */
 function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: boolean }) {
   return (
-    <span className={cx(s.vd, o === "review" && s.sus, (o === "not_executed" || o === "unknown") && s.und)}>
+    <span
+      className={cx(
+        s.vd,
+        o === "review" && s.sus,
+        o === "negative" && s.neg,
+        (o === "not_executed" || o === "unknown") && s.und,
+      )}
+    >
       {short ? SHORT[o] : diagnosticOutcomeLabels[o]}
     </span>
   );
@@ -67,7 +74,7 @@ function Usage() {
         ["모델 요청", of(u.requests, b?.model_requests)],
         ["입력 토큰", of(u.input_tokens, b?.input_tokens)],
         ["출력 토큰", of(u.output_tokens, b?.output_tokens)],
-        ["비용", u.usage_known ? `USD ${(u.cost_usd_micros / 1_000_000).toFixed(4)}` : "불명"],
+        ["비용", u.usage_known ? usdText(u.cost_usd_micros) : "불명"],
       ]}
     />
   );
@@ -244,15 +251,11 @@ export function UrlLiveLive() {
                   <span className={cx(s.m, s[r.method])}>{r.method}</span>
                   <span className={s.p}>{r.path}</span>
                 </b>
-                <span>
-                  {flow?.plan?.find((p) => p.id === r.intent_id)?.title ?? "데이터를 바꿀 수 있는 요청입니다."}
-                  {r.input_preview.body ? (
-                    <>
-                      {" · "}
-                      <code style={{ wordBreak: "break-all" }}>{r.input_preview.body}</code>
-                    </>
-                  ) : null}
-                </span>
+                <span>{flow?.plan?.find((p) => p.id === r.intent_id)?.title ?? "계획 제목 없음"}</span>
+              </div>
+              <div className={s["lv-aprev"]}>
+                <ApprovalRequestCode row={r} />
+                <ApprovalFacts row={r} />
               </div>
               <div className={s.acts}>
                 <button
@@ -305,7 +308,7 @@ export function UrlLiveLive() {
                 <div className={s.cell}>
                   <div className={s.k}>승인 필요로 보류</div>
                   <div className={s.v}>{fmtCount(ap.held)}</div>
-                  <div className={s.sub}>데이터를 바꾸는 요청</div>
+                  <div className={s.sub}>쓰기 메서드 · 전송 전 확인</div>
                 </div>
                 <div className={s.cell}>
                   <div className={s.k}>전송 불명</div>
@@ -330,13 +333,13 @@ export function UrlLiveLive() {
           />
           <Isec t="결정 대기">
             {a.pending.length ? (
-              <p>{`데이터를 바꾸는 요청 ${a.pending.length}건을 승인하거나 거부해 주세요.`}</p>
+              <p>{`전송 전 확인이 필요한 요청 ${a.pending.length}건을 승인하거나 거부해 주세요.`}</p>
             ) : (
               <p className={s.help}>결정할 요청이 없습니다.</p>
             )}
           </Isec>
           {flow ? (
-            <Isec t="커버리지">
+            <Isec t="탐색 현황">
               <div className={s.vbar}>
                 <span>
                   방문 <b>{visited}</b> / {flow.counts.found} 경로
@@ -582,7 +585,7 @@ function FindingDetail({
       {!e.available ? (
         <div className={cx(s.note, s.warn)} role="note">
           <Icon name="alert" />
-          <span>{e.unavailable_reason}</span>
+          <span>{maskSecrets(e.unavailable_reason)}</span>
         </div>
       ) : null}
       <DiagnosticEntrySections
@@ -591,26 +594,6 @@ function FindingDetail({
         entry={e}
         onReload={onReload}
       />
-      <Isec t="조치 및 재점검">
-        <ol className={s.tl}>
-          <li className={s.done}>
-            <span>발견</span>
-            <span>{clockOf(e.observed_at) || "—"}</span>
-          </li>
-          <li className={s.done}>
-            <span>{diagnosticOutcomeLabels[o]}</span>
-            <span />
-          </li>
-          <li className={s.now}>
-            <span>{e.record?.bundle ? "조치 자료 저장됨 · 조치 대기" : "조치 대기"}</span>
-            <span />
-          </li>
-          <li>
-            <span>재점검 · 아직 안 함</span>
-            <span />
-          </li>
-        </ol>
-      </Isec>
     </>
   );
 }

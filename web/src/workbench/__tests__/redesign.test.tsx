@@ -184,7 +184,12 @@ describe("대시보드", () => {
           method: "PUT",
           target_origin: "https://target.example",
           path: "/api/users/2",
-          input_preview: { body: '{"role":"customer"}' },
+          // 서버(approvalPreview)가 내는 모양 그대로: query.<키> · body.<키> · 표시 제한
+          input_preview: {
+            "body.role": '"customer"',
+            "표시 제한":
+              "호스트가 공개로 지정한 경로와 입력만 표시합니다. 비공개 입력·상태 변경 영향은 확인되지 않았습니다.",
+          },
           body_bytes: 19,
           created_at: "2026-11-11T01:02:03Z",
           expires_at: "2099-01-01T00:00:00Z",
@@ -204,9 +209,18 @@ describe("대시보드", () => {
     const todo = await screen.findByRole("region", { name: "지금 처리할 일" });
     await waitFor(() => expect(within(todo).getByText(/PUT \/api\/users\/2/)).toBeInTheDocument());
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
-    expect(within(detail).getByText("데이터를 바꾸는 요청")).toBeInTheDocument();
-    expect(within(detail).getByText(/Host: target\.example/)).toBeInTheDocument();
-    expect(within(detail).getByRole("button", { name: "승인하고 보내기" })).toBeInTheDocument();
+    expect(within(detail).getByText("쓰기 메서드")).toBeInTheDocument();
+    // 보낼 요청: 대상(scheme 포함)과 서버 미리보기 키 전부, 표시 제한 안내는 서버 문장 그대로
+    expect(within(detail).getByText(/대상: https:\/\/target\.example/)).toBeInTheDocument();
+    expect(within(detail).getByText(/body\.role: "customer"/)).toBeInTheDocument();
+    expect(within(detail).getByRole("note")).toHaveTextContent(
+      "표시 제한: 호스트가 공개로 지정한 경로와 입력만 표시합니다.",
+    );
+    // 승인 정보: 크기 · 만료(연장 안 함) · attempt · 상태
+    expect(within(detail).getByText("19 bytes · 원문 비공개")).toBeInTheDocument();
+    expect(within(detail).getByText(/일시정지로 연장하지 않음$/)).toBeInTheDocument();
+    expect(within(detail).getByText("attempt-1")).toBeInTheDocument();
+    expect(within(detail).getByRole("button", { name: "이 요청 승인" })).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "거부" })).toBeInTheDocument();
   });
 });

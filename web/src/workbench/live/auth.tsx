@@ -121,6 +121,14 @@ function rememberAccountName(name: string): void {
   }
 }
 
+function forgetAccountName(): void {
+  try {
+    localStorage.removeItem(ACCOUNT_KEY);
+  } catch {
+    // 저장소를 못 쓰면 지울 것도 없다
+  }
+}
+
 /** 로그인 실패 → 안내 글. */
 function loginError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -159,6 +167,7 @@ async function login(username: string, password: string): Promise<string | null>
 
 function logout(): void {
   runId++;
+  forgetAccountName();
   signOut();
   useAuthStore.setState({ state: "login", detail: null });
 }

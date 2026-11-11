@@ -208,6 +208,11 @@ export function TargetApprovalPanel({
               {`${(selected.path_prefixes ?? []).join(", ")} · ${(selected.methods ?? []).join("/")} · 회차 요청 ${selected.requests}회 · 만료 ${selected.expires_at}`}
             </span>
           </div>
+          <div className={s.hostline}>
+            <span className={s.help}>
+              {`서버가 확인한 연결 · IP ${(selected.addresses ?? []).join(", ") || "—"} · 포트 ${selected.port} · TLS 공개키 ${selected.tls_spki_sha256 ? `${selected.tls_spki_sha256.slice(0, 16)}…` : "—"}`}
+            </span>
+          </div>
           <div>
             <button className={cx(s.btn, s.sm)} type="button" disabled={off} onClick={() => void change("revoke")}>
               승인 철회
@@ -219,7 +224,10 @@ export function TargetApprovalPanel({
         <>
           <div className={s.hostline}>
             <span className={cx(s.tag, s.ap)}>소유 확인 대기</span>
-            <span className={s.help}>대상 DNS 에 아래 TXT 레코드를 추가한 뒤 확인하세요.</span>
+            <span className={s.help}>
+              대상 DNS 에 아래 TXT 레코드를 추가한 뒤 확인하세요. GET/HEAD 도 상태를 바꿀 수 있으므로 등록한 경로의
+              비변경 승인이 필요합니다.
+            </span>
           </div>
           <dl className={s.kv}>
             <dt>레코드 이름</dt>
@@ -268,13 +276,19 @@ export function TargetApprovalPanel({
                 onChange={(e) => setBasis(e.target.value)}
                 disabled={off}
                 maxLength={1024}
-                placeholder="20자 이상"
+                placeholder="승인된 업무 · 환경과 이 GET/HEAD 경로가 상태를 바꾸지 않는 근거 (20자 이상)"
               />
             </div>
           </div>
           <p className={s.help}>
-            읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 승인할 때 후보 IP별 TLS 연결을 최대 8회
-            합니다.
+            읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
+            query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 TLS 연결을 최대 8회 합니다.
+          </p>
+          <p className={s.help} id="targetHarmlessNote">
+            비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
+            확인합니다
+            {requestLimit ? ` · 회차 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만 등록할
+            수 있습니다
           </p>
           {allowStateChanges ? (
             <label className={s.ckline}>

@@ -18,10 +18,10 @@ import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { ApprovalActions, ApprovalRequestCode, useRequestApprovals } from "./approvals";
+import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { UrlHead, UrlNotices, UrlPill } from "./urlParts";
 
-/** 상태를 바꿀 수 있는 메서드 (승인 요청 딱지). */
+/** 쓰기 메서드 (승인 요청 딱지). 메서드 기준 이름일 뿐, GET · HEAD · query 도 상태를 바꿀 수 있다. */
 const WRITE = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 type Sel = { kind: "job" } | { kind: "approval"; id: string };
@@ -180,12 +180,15 @@ export function UrlDashboardLive() {
           chips={
             <>
               <span className={cx(s.pill, s.wait)}>승인 대기</span>
-              {WRITE.has(chosen.method) ? <span className={cx(s.tag, s.ap)}>데이터를 바꾸는 요청</span> : null}
+              {WRITE.has(chosen.method) ? <span className={cx(s.tag, s.ap)}>쓰기 메서드</span> : null}
             </>
           }
         />
         <Isec t="보낼 요청">
           <ApprovalRequestCode row={chosen} />
+        </Isec>
+        <Isec t="승인 정보">
+          <ApprovalFacts row={chosen} />
         </Isec>
         <Isec>
           <ApprovalActions a={a} row={chosen} />

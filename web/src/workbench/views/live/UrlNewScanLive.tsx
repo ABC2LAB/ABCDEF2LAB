@@ -22,6 +22,15 @@ import { TargetApprovalPanel } from "./TargetApprovalPanel";
 import { reasonText, UrlHead, UrlNotices, UrlPill } from "./urlParts";
 
 /** 입력 → 서버에 보낼 초안 입력 (팀 lib 검사를 통과해야만). */
+
+/** 시작 전 범위의 승인 방식(서버 값) → 안전 정책 문구. */
+const APPROVAL_MODE_RULE: Readonly<
+  Record<"preauthorized_scope" | "confirm_every_request" | "workbench_selective_v1", string>
+> = {
+  preauthorized_scope: "사전 승인한 경로와 임의 query 로 진행 · 상태 변경은 자동 승인 안 함",
+  confirm_every_request: "모든 요청을 한 건씩 승인한 것만 보냄",
+  workbench_selective_v1: "쓰기 메서드 요청은 한 건씩 승인한 것만 보냄",
+};
 function draftInput(
   target: string,
   profile: string,
@@ -38,7 +47,7 @@ function draftInput(
 }
 
 const MODES = [
-  ["user_approval_v1", "사용자 승인", "탐색 뒤 점검할 경로를 고르고, 데이터를 바꾸는 요청은 한 건씩 승인합니다"],
+  ["user_approval_v1", "사용자 승인", "탐색 뒤 점검할 경로를 고르고, 쓰기 메서드 요청은 한 건씩 승인합니다"],
   ["ai_auto_v1", "AI 자동", "승인 범위 안에서 탐색과 점검을 이어 갑니다 · 데이터 변경은 자동 승인 안 함"],
 ] as const;
 
@@ -292,7 +301,7 @@ export function UrlNewScanLive() {
                 requestLimit={profile?.workflow_request_limit}
                 allowStateChanges={profile?.workflow?.allow_reversible_writes}
                 url={tv}
-                disabled={busy || started}
+                disabled={busy}
                 onChanged={() => {
                   if (handle && !job?.preparation_started) void runUrlAction("validate");
                 }}
@@ -469,16 +478,13 @@ export function UrlNewScanLive() {
                   sub={`${scope.origin} · ${scope.path_prefixes.join(", ")} · ${scope.methods.join("/")}`}
                 />
                 <Rule
-                  t={
-                    job?.input.workflow_mode === "ai_auto_v1"
-                      ? "데이터를 바꾸는 요청은 자동 승인 안 함"
-                      : "데이터를 바꾸는 요청은 승인한 것만 보냄"
-                  }
+                  t={APPROVAL_MODE_RULE[scope.approval_mode]}
+                  sub="GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다"
                 />
                 {excludedCount ? <Rule t="제외 경로는 요청 안 함" sub={`${excludedCount}개`} /> : null}
                 <Rule
                   t="요청 · 시간 상한"
-                  sub={`대상 요청 ${scope.budget.requests}회 · ${scope.budget.duration_seconds}초 · 모델 요청 ${scope.budget.model_requests}회`}
+                  sub={`대상 요청 ${scope.budget.requests}회 · ${scope.budget.duration_seconds}초 · 모델 요청 ${scope.budget.model_requests}회 · 토큰 입력 ${scope.budget.input_tokens} · 출력 ${scope.budget.output_tokens} · body 최대 ${scope.max_body_bytes} bytes`}
                 />
                 {scope.model ? (
                   <Rule

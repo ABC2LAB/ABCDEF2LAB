@@ -98,12 +98,15 @@ describe("계정 메뉴", () => {
     expect(btn).toHaveFocus();
   });
 
-  it("로그아웃하면 '로그인 안 됨'이 되고, 메뉴에는 로그인 항목만 남는다", async () => {
+  it("로그아웃하면 '로그인 안 됨'이 되고, 기억한 이름도 지우며, 메뉴에는 로그인 항목만 남는다", async () => {
+    localStorage.setItem("abc2lab.accountName", "ABC2LAB");
     setLiveAuthState("ready");
     render(<Foot />);
-    fireEvent.click(screen.getByRole("button", { name: /계정/ }));
+    fireEvent.click(screen.getByRole("button", { name: /ABC2LAB/ }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "계정" })).getByRole("button", { name: "로그아웃" }));
     expect(m.signOut).toHaveBeenCalled();
+    // 공용 단말에 이전 아이디가 남지 않게
+    expect(localStorage.getItem("abc2lab.accountName")).toBeNull();
     const btn = screen.getByRole("button", { name: /로그인 안 됨/ });
     fireEvent.click(btn);
     const menu = screen.getByRole("dialog", { name: "계정" });

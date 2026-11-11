@@ -123,6 +123,10 @@ export function ExternalModelSettings({
         </div>
       </div>
       {!profile ? <p role="alert">운영자가 외부 모델 승인 · 제공자 · 비용 한도를 먼저 설치해야 합니다.</p> : null}
+      <p className={s.help}>
+        키는 서버에만 등록하고 키 값은 브라우저로 읽어오지 않습니다. 외부 전송 · USD 상한 동의는 다음 범위 확인 화면에서
+        따로 합니다.
+      </p>
       <div className={s.hostline}>
         {saved ? <span className={cx(s.tag, s.in)}>키 등록됨</span> : null}
         <button

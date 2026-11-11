@@ -47,6 +47,14 @@ it.each([404, 501])("API %s는 패널을 숨긴다", async (status) => {
   await waitFor(() => expect(screen.queryByText("대상 권한 · 운영자 승인")).toBeNull());
   expect(apiFetch).toHaveBeenCalledTimes(1);
 });
+it("등록 화면에 GET/HEAD · query 무해성을 서버가 검증하지 않는다는 고지가 보인다", async () => {
+  vi.mocked(apiFetch).mockResolvedValueOnce({});
+  render(<TargetApprovalPanel url={url} disabled={false} />);
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+  expect(screen.getByText(/서버는 GET\/HEAD 의 무해성을 검증하지 않습니다/)).toBeVisible();
+  expect(screen.getByText(/서버는 query 의 무해성을 검증하지 않으니/)).toBeVisible();
+  expect(screen.getByText(/상태 변경 범위는 별도 동의한 설치에서만 등록할 수 있습니다/)).toBeVisible();
+});
 it("등록의 읽기 범위와 TLS 사전 접촉을 안내한다", async () => {
   vi.mocked(apiFetch).mockResolvedValueOnce({}).mockResolvedValueOnce({ target: pending });
   render(<TargetApprovalPanel url={url} disabled={false} />);

@@ -60,7 +60,7 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
-/** 화면들이 쓰는 그대로: 승인 훅 + 승인하고 보내기 · 거부 버튼 + 목록 다시 조회. */
+/** 화면들이 쓰는 그대로: 승인 훅 + 이 요청 승인 · 거부 버튼 + 목록 다시 조회. */
 function Harness() {
   const a = useRequestApprovals("42", true);
   const pending = a.pending[0];
@@ -75,13 +75,13 @@ function Harness() {
 }
 async function mount() {
   render(<Harness />);
-  const button = await screen.findByRole("button", { name: "승인하고 보내기" });
+  const button = await screen.findByRole("button", { name: "이 요청 승인" });
   await waitFor(() => expect(button).toBeEnabled());
   return button;
 }
 it.each(["allow", "deny"])("rechecks exact approval fingerprint before %s and never retries POST", async (decision) => {
   await mount();
-  fireEvent.click(screen.getByRole("button", { name: decision === "allow" ? "승인하고 보내기" : "거부" }));
+  fireEvent.click(screen.getByRole("button", { name: decision === "allow" ? "이 요청 승인" : "거부" }));
   await waitFor(() => expect(vi.mocked(apiFetch).mock.calls.some(([, i]) => i?.method === "POST")).toBe(true));
   const calls = vi.mocked(apiFetch).mock.calls,
     index = calls.findIndex(([, i]) => i?.method === "POST");
