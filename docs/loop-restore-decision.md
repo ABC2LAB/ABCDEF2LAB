@@ -22,7 +22,7 @@
 | WebSearch | 설치 설정(`webSearch`)대로. 완전 로컬 모드에서는 끈다 | 대상이 아니라 검색 제공자로 나간다(규칙 8) |
 | skills | 복원. 지시문만 읽고, 안의 명령은 Bash(E②)로 실행된다. 이미지에 skills 데이터를 싣는 것은 C30 | 송신 없음 |
 | MCP(Playwright 등) | **진단에서는 계속 뺀다.** 브라우저는 탐색 프로필 | 규칙 3, #410 |
-| 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail). 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지. 지금 E② 필터의 graph_overview·list_facts·get_worker_output·list_goals는 원본 Worker 목록에 없는 Planner 도구라 실제로 Worker에 들어간 적이 없고, 프로필에도 넣지 않는다 | DB 안 작업 |
+| 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail). insert_assets는 열린 항목 5 뒤. 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지. 지금 E② 필터의 graph_overview·list_facts·get_worker_output·list_goals는 원본 Worker 목록에 없는 Planner 도구라 실제로 Worker에 들어간 적이 없고, 프로필에도 넣지 않는다 | DB 안 작업 |
 | insert_assets의 자동 보강(DNS·HTTP) | 진단 모드에서는 끈다. 자산 기록만 한다 | 서버가 발견 자산에 직접 보낸다. 필요하면 탐색 단계 몫 |
 | report_finding | 원본 이름·입력 형식으로 복원하되 진단 모드에서는 **확정이 아니라 진단 후보로 저장**한다(지금 `submit_diagnostic_candidate`와 같은 저장). 판정은 E③이 E② 기록으로 한다 | 규칙 5. 원본 프롬프트·skills가 report_finding을 부른다 |
 | traffic_search·traffic_get·traffic_blob | 복원 대상. 진단 요청이 어디에 기록되는지 먼저 확인하고(열린 항목 1), 요청 쪽 인증 헤더·쿠키는 이름만 보인다 | 규칙 2 |
@@ -67,11 +67,14 @@
 ## 7. 구현 순서
 
 1. 골격: 진단 Worker·Planner 도구를 원본 도구 목록(WorkerTools·PlannerTools·기본 도구)에서 프로필(`agent/tool_profile.go`)로 고른다. 대상으로 보내거나 E② 결속이 필요한 도구(Bash·후보 제출)는 E② 판으로만 채우고 원본 목록의 같은 이름 도구(호스트 Bash)는 고르지 않는다. 이 단계에서는 프로필에 지금 E② 도구만 넣어 **동작 차이가 없게** 하고, 그것을 시험으로 고정한다. 프로필 밖 도구가 섞이면 시작 전에 거부한다. Worker 프롬프트·세션을 원본 경로(`workerSystem`·`execute`)로 옮기는 것은 3단계에서 원본 프롬프트로 바꿀 때 한다.
-2. C26·C27: Planner 도구·마무리 턴·상한 설정, Worker 실행 중 Planner 깨우기.
-3. C24 일부와 C25: 그래프 도구·report_finding(후보)·skills·WebSearch·Sleep, 원본 프롬프트.
-4. C19 정리.
-5. WebFetch E② 판.
-6. 파일 도구(C29와 같이)와 traffic 도구(열린 항목 1 뒤).
+2. C24 일부: Worker 그래프 조회 도구(list_findings·list_assets·search_all_worker_traces·get_worker_trace). 저장소 조회뿐이다. insert_assets는 제품 DB 역할이 assets를 SELECT만 허용해서 넣어도 항상 실패하므로 열린 항목 5와 같이 정한다.
+3. C25와 C24 나머지: 원본 프롬프트·마무리 턴, report_finding(후보)·skills·WebSearch·Sleep.
+4. WebFetch E② 판.
+5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
+6. C27(Worker 실행 중 Planner 깨우기)·kill_work·steer_work·C19는 **C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤.** Planner가 Worker 실행 중에 goal_met·kill_work를 부르면 진행 중인 E② 호출이 취소되고, 지금은 그 결과 불명이 실행 전체를 멈춘다.
+7. 파일 도구(C29와 같이)와 traffic 도구(열린 항목 1 뒤).
+
+2단계를 구현하면서 5·6단계의 의존을 확인해 순서를 바꿨다. 지금은 Planner가 Worker가 모두 끝난 뒤에만 돌아서(C27) goal_met이 진행 중인 호출을 끊지는 않지만, 열린 intent가 남는 문제는 그대로다.
 
 단계마다 P0 원자료로 보존 비교를 다시 잴 수 있게, 단계 PR의 커밋을 회차 기록의 엔진 커밋으로 남긴다.
 
@@ -92,3 +95,4 @@
 2. **대화 기록 재개**: 지금 E② 모드는 사람 지시로 이전 대화를 이어가지 않는다. 대화 기록 저장의 가림과 같이 정한다.
 3. **같은 intent 안 병렬 도구 호출**: 원본 SDK가 병렬 호출을 하면 호출 단위 예약을 어떻게 나눌지. 그 전에는 하나씩이다.
 4. **탐색 프로필 도구 목록**: 탐색 실행기 결정안 2-b에서 정한다.
+5. **진단 단계 자산 쓰기(insert_assets)**: 제품 DB 역할은 assets·task_asset_links를 SELECT만 허용한다(`server/controlled_read_assembly_database_role.go`). 진단 Worker가 발견 자산을 기록하게 할지, 탐색 단계 몫으로 둘지 이동찬과 정한다.
