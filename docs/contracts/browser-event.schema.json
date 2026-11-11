@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Browser execution event v1 proposal",
-  "description": "Proposed host event projection. Validate with Draft202012Validator and FormatChecker. Does not issue authority or validate provenance, calendar validity without a format checker, sequence continuity, uint64 range, registry contents, durable commit, counts against events, or cross-event bindings.",
+  "description": "Proposed host event projection. Validate with Draft202012Validator and FormatChecker. Does not issue authority or validate provenance, calendar validity without a format checker, registry contents, durable commit, sequence continuity, counts against events, or cross-event bindings. Decimal string patterns enforce uint64 bounds.",
   "type": "object",
   "properties": {
     "version": {"const":"abc2lab.browser-event/v1"},
     "event_id": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
-    "seq": {"type":"string","pattern":"^[1-9][0-9]{0,19}$"},
+    "seq": {"$ref":"#/$defs/positive_uint64"},
     "at": {
       "type": "string",
       "format": "date-time",
@@ -27,7 +27,7 @@
     "source": {"type":"string","enum":["host","proxy","e2"]},
     "task_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
     "run_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
-    "intent_id": {"type":"string","pattern":"^[1-9][0-9]{0,19}$"},
+    "intent_id": {"$ref":"#/$defs/positive_uint64"},
     "call_ref": {"anyOf":[{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]},
     "command_ref": {"anyOf":[{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]},
     "browser_session_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
@@ -75,11 +75,28 @@
           "properties": {
             "cookie_storage": {"const":"disabled"},
             "service_workers": {"const":"blocked"},
-            "certificate_trust": {"enum":["platform","dedicated_ca","spki_list"]},
+            "certificate_trust": {"enum":["platform","dedicated_ca"]},
             "ca_sha256": {"anyOf":[{"type":"string","pattern":"^[0-9a-f]{64}$"},{"type":"null"}]},
             "spki_list_sha256": {"anyOf":[{"type":"string","pattern":"^[0-9a-f]{64}$"},{"type":"null"}]},
-            "certificate_errors_ignored": {"type":"boolean"},
-            "chromium_flags": {"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^--[a-z0-9][a-z0-9-]{0,79}$"}},
+            "certificate_errors_ignored": {"const":false},
+            "chromium_flags": {
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^--[a-z0-9][a-z0-9-]{0,79}$",
+                "not": {
+                  "enum": [
+                    "--ignore-certificate-errors",
+                    "--ignore-certificate-errors-spki-list",
+                    "--allow-insecure-localhost",
+                    "--no-sandbox",
+                    "--disable-web-security"
+                  ]
+                }
+              }
+            },
             "flags_profile_ref": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128}
           },
           "required": [
@@ -100,10 +117,6 @@
             {
               "if": {"properties":{"certificate_trust":{"const":"dedicated_ca"}},"required":["certificate_trust"]},
               "then": {"properties":{"ca_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"spki_list_sha256":{"type":"null"}}}
-            },
-            {
-              "if": {"properties":{"certificate_trust":{"const":"spki_list"}},"required":["certificate_trust"]},
-              "then": {"properties":{"ca_sha256":{"type":"null"},"spki_list_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}}
             }
           ]
         }
@@ -139,7 +152,7 @@
         "status": {"type":"string","enum":["succeeded","failed","timed_out","cancelled"]},
         "reason": {"type":"string","enum":["complete","driver_failed","timeout","fenced","unsupported"]},
         "basis": {"enum":["driver_report","host_control"],"type":"string"},
-        "duration_ms": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"}
+        "duration_ms": {"$ref":"#/$defs/uint64"}
       },
       "required": ["status","reason","basis","duration_ms"],
       "additionalProperties": false,
@@ -174,7 +187,7 @@
         "e2_version": {"const":"e2-http-v1"},
         "policy_revision": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},
         "rule_ref": {"anyOf":[{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$","maxLength":128},{"type":"null"}]},
-        "e2_sequence": {"type":"string","pattern":"^[1-9][0-9]{0,19}$"},
+        "e2_sequence": {"$ref":"#/$defs/positive_uint64"},
         "method": {"type":"string","enum":["GET","HEAD","POST","PUT","PATCH","DELETE","OPTIONS","OTHER"]},
         "decision": {"type":"string","enum":["allowed","denied","unsupported"]},
         "reason": {
@@ -203,7 +216,7 @@
         "response_complete": {"type":"boolean"},
         "not_sent": {"type":"boolean"},
         "audit_complete": {"type":"boolean"},
-        "status_code": {"anyOf":[{"type":"integer","minimum":100,"maximum":599},{"type":"null"}]}
+        "status_code": {"anyOf":[{"type":"integer","minimum":100,"maximum":999},{"type":"null"}]}
       },
       "required": [
         "request_class",
@@ -226,7 +239,7 @@
       "allOf": [
         {
           "if": {"properties":{"decision":{"const":"allowed"}},"required":["decision"]},
-          "then": {"properties":{"reason":{"enum":["complete","closed","transport_failed","unknown","audit_failed"]}}}
+          "then": {"properties":{"reason":{"enum":["complete","closed","transport_failed","unknown"]}}}
         },
         {
           "if": {"properties":{"decision":{"const":"unsupported"}},"required":["decision"]},
@@ -293,7 +306,23 @@
             }
           }
         },
-        {"if":{"properties":{"decision":{"const":"unsupported"}},"required":["decision"]},"then":{"properties":{"not_sent":{"const":true}}}}
+        {"if":{"properties":{"decision":{"const":"unsupported"}},"required":["decision"]},"then":{"properties":{"not_sent":{"const":true}}}},
+        {
+          "if": {"properties":{"not_sent":{"const":false}},"required":["not_sent"]},
+          "then": {"properties":{"forward_attempted":{"const":true}}}
+        },
+        {
+          "if": {"properties":{"reason":{"const":"audit_failed"}},"required":["reason"]},
+          "then": {"properties":{"audit_complete":{"const":false}}}
+        },
+        {
+          "if": {"properties":{"reason":{"const":"unknown"}},"required":["reason"]},
+          "then": {"properties":{"decision":{"const":"allowed"},"forward_attempted":{"const":true},"not_sent":{"const":false}}}
+        },
+        {
+          "if": {"properties":{"reason":{"enum":["closed","transport_failed","audit_failed"]}},"required":["reason"]},
+          "then": {"properties":{"not_sent":{"const":true}}}
+        }
       ]
     },
     "ingress.rejected": {
@@ -313,12 +342,26 @@
             "preflight_blocked",
             "dangerous_request",
             "queue_full",
-            "queue_timeout"
+            "queue_timeout",
+            "scope_blocked"
           ]
         }
       },
       "required": ["layer","reason"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {"reason":{"enum":["crawl_write_blocked","preflight_blocked","dangerous_request","queue_full","queue_timeout"]}},
+            "required": ["reason"]
+          },
+          "then": {"properties":{"layer":{"const":"application_http"}}}
+        },
+        {
+          "if": {"properties":{"reason":{"const":"tls_failed"}},"required":["reason"]},
+          "then": {"properties":{"layer":{"const":"proxy_transport"}}}
+        }
+      ]
     },
     "session.fenced": {
       "type": "object",
@@ -387,20 +430,55 @@
         "counts": {
           "type": "object",
           "properties": {
-            "observed_requests": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "attempt_results": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "forward_attempted": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "request_written": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "responses_received": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "denied": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "unsupported": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "unknown": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "unresolved_requests": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "unresolved_attempts": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "dropped_events": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "local_write_blocked": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "preflight_blocked": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]},
-            "queue_rejected": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},{"type":"null"}]}
+            "observed_requests": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "attempt_results": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "forward_attempted": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "request_written": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "responses_received": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "denied": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "unsupported": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "unknown": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "unresolved_requests": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "unresolved_attempts": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "dropped_events": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "local_write_blocked": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "preflight_blocked": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "queue_rejected": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "ingress_rejected": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "application_attempt_results": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "application_ingress_rejected": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+            "ingress_by_reason": {
+              "type": "object",
+              "properties": {
+                "parse_failed": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "tls_failed": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "unsupported": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "admission_closed": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "event_sink_failed": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "invalid_binding": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "crawl_write_blocked": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "preflight_blocked": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "dangerous_request": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "queue_full": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "queue_timeout": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]},
+                "scope_blocked": {"anyOf":[{"$ref":"#/$defs/uint64"},{"type":"null"}]}
+              },
+              "required": [
+                "parse_failed",
+                "tls_failed",
+                "unsupported",
+                "admission_closed",
+                "event_sink_failed",
+                "invalid_binding",
+                "crawl_write_blocked",
+                "preflight_blocked",
+                "dangerous_request",
+                "queue_full",
+                "queue_timeout",
+                "scope_blocked"
+              ],
+              "additionalProperties": false
+            }
           },
           "required": [
             "observed_requests",
@@ -416,12 +494,32 @@
             "dropped_events",
             "local_write_blocked",
             "preflight_blocked",
-            "queue_rejected"
+            "queue_rejected",
+            "ingress_rejected",
+            "application_attempt_results",
+            "application_ingress_rejected",
+            "ingress_by_reason"
           ],
           "additionalProperties": false
+        },
+        "exploration_limits": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 8,
+          "items": {"enum":["cookies_disabled","service_worker_blocked","encoded_response_unknown","auth_not_prepared"]}
         }
       },
-      "required": ["status","reason","process_drained","proxy_drained","audit_complete","event_log_complete","host_correlation_complete","counts"],
+      "required": [
+        "status",
+        "reason",
+        "process_drained",
+        "proxy_drained",
+        "audit_complete",
+        "event_log_complete",
+        "host_correlation_complete",
+        "counts",
+        "exploration_limits"
+      ],
       "additionalProperties": false,
       "allOf": [
         {
@@ -448,8 +546,65 @@
         {
           "if": {"properties":{"status":{"const":"failed"}},"required":["status"]},
           "then": {"properties":{"reason":{"enum":["invalid_binding","driver_failed","setup_failed","runtime_unavailable"]}}}
+        },
+        {
+          "if": {"properties":{"status":{"enum":["completed","stopped","failed"]}},"required":["status"]},
+          "then": {
+            "properties": {
+              "process_drained": {"const":true},
+              "proxy_drained": {"const":true},
+              "audit_complete": {"const":true},
+              "event_log_complete": {"const":true},
+              "host_correlation_complete": {"const":true},
+              "counts": {
+                "properties": {
+                  "observed_requests": {"$ref":"#/$defs/uint64"},
+                  "attempt_results": {"$ref":"#/$defs/uint64"},
+                  "forward_attempted": {"$ref":"#/$defs/uint64"},
+                  "request_written": {"$ref":"#/$defs/uint64"},
+                  "responses_received": {"$ref":"#/$defs/uint64"},
+                  "denied": {"$ref":"#/$defs/uint64"},
+                  "unsupported": {"$ref":"#/$defs/uint64"},
+                  "unknown": {"$ref":"#/$defs/uint64"},
+                  "unresolved_requests": {"const":"0"},
+                  "unresolved_attempts": {"const":"0"},
+                  "dropped_events": {"const":"0"},
+                  "local_write_blocked": {"$ref":"#/$defs/uint64"},
+                  "preflight_blocked": {"$ref":"#/$defs/uint64"},
+                  "queue_rejected": {"$ref":"#/$defs/uint64"},
+                  "ingress_rejected": {"$ref":"#/$defs/uint64"},
+                  "application_attempt_results": {"$ref":"#/$defs/uint64"},
+                  "application_ingress_rejected": {"$ref":"#/$defs/uint64"},
+                  "ingress_by_reason": {
+                    "properties": {
+                      "parse_failed": {"$ref":"#/$defs/uint64"},
+                      "tls_failed": {"$ref":"#/$defs/uint64"},
+                      "unsupported": {"$ref":"#/$defs/uint64"},
+                      "admission_closed": {"$ref":"#/$defs/uint64"},
+                      "event_sink_failed": {"$ref":"#/$defs/uint64"},
+                      "invalid_binding": {"$ref":"#/$defs/uint64"},
+                      "crawl_write_blocked": {"$ref":"#/$defs/uint64"},
+                      "preflight_blocked": {"$ref":"#/$defs/uint64"},
+                      "dangerous_request": {"$ref":"#/$defs/uint64"},
+                      "queue_full": {"$ref":"#/$defs/uint64"},
+                      "queue_timeout": {"$ref":"#/$defs/uint64"},
+                      "scope_blocked": {"$ref":"#/$defs/uint64"}
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       ]
+    },
+    "positive_uint64": {
+      "type": "string",
+      "pattern": "^([1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$"
+    },
+    "uint64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)$"
     }
   },
   "allOf": [
@@ -614,20 +769,20 @@
               "host_correlation_complete": {"const":true},
               "counts": {
                 "properties": {
-                  "observed_requests": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
-                  "attempt_results": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
-                  "forward_attempted": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
-                  "request_written": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
-                  "responses_received": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
-                  "denied": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
-                  "unsupported": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
-                  "unknown": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
+                  "observed_requests": {"$ref":"#/$defs/uint64"},
+                  "attempt_results": {"$ref":"#/$defs/uint64"},
+                  "forward_attempted": {"$ref":"#/$defs/uint64"},
+                  "request_written": {"$ref":"#/$defs/uint64"},
+                  "responses_received": {"$ref":"#/$defs/uint64"},
+                  "denied": {"$ref":"#/$defs/uint64"},
+                  "unsupported": {"$ref":"#/$defs/uint64"},
+                  "unknown": {"$ref":"#/$defs/uint64"},
                   "unresolved_requests": {"const":"0"},
                   "unresolved_attempts": {"const":"0"},
                   "dropped_events": {"const":"0"},
-                  "local_write_blocked": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
-                  "preflight_blocked": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"},
-                  "queue_rejected": {"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$"}
+                  "local_write_blocked": {"$ref":"#/$defs/uint64"},
+                  "preflight_blocked": {"$ref":"#/$defs/uint64"},
+                  "queue_rejected": {"$ref":"#/$defs/uint64"}
                 }
               }
             }

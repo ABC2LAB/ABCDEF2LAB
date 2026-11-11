@@ -249,8 +249,30 @@
         "dropped_events": "0",
         "local_write_blocked": "1",
         "preflight_blocked": "0",
-        "queue_rejected": "0"
-      }
+        "queue_rejected": "0",
+        "ingress_rejected": "1",
+        "application_attempt_results": "1",
+        "application_ingress_rejected": "1",
+        "ingress_by_reason": {
+          "parse_failed": "0",
+          "tls_failed": "0",
+          "unsupported": "0",
+          "admission_closed": "0",
+          "event_sink_failed": "0",
+          "invalid_binding": "0",
+          "crawl_write_blocked": "1",
+          "preflight_blocked": "0",
+          "dangerous_request": "0",
+          "queue_full": "0",
+          "queue_timeout": "0",
+          "scope_blocked": "0"
+        }
+      },
+      "exploration_limits": [
+        "cookies_disabled",
+        "service_worker_blocked",
+        "auth_not_prepared"
+      ]
     }
   }
 ]

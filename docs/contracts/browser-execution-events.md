@@ -59,7 +59,7 @@ Schema의 필드·enum·null 조건을 정본으로 하고, 아래는 그 의미
 | `attempt.result` / e2 | 아래 Receipt 투영 | attempt 필수. 애플리케이션 요청이면 request 필수, proxy transport이면 request null |
 | `ingress.rejected` / proxy | `layer`, `reason` | **E② AttemptID 미발급** 거부만. 파싱된 요청이면 request, transport이면 null. action/attempt null |
 | `session.fenced` / host | `reason` | 최초 fence 1회. action/request/attempt null |
-| `session.closed` / host | `status`, `reason`, 정리/완결 플래그, `counts` | 최종 1회. action/request/attempt null |
+| `session.closed` / host | `status`, `reason`, 정리/완결 플래그, `counts`, `exploration_limits` | 최종 1회. action/request/attempt null |
 
 ### 요청 관찰
 
@@ -100,6 +100,10 @@ OS 차단만 있고 호스트가 사건을 관측하지 못했으면 transport �
 | `status_code` | 대상 응답의 원본 코드, 없으면 null. 프록시가 만든 실패 코드를 넣지 않음 |
 
 허용과 송신, 송신 시도와 완전 기록, 응답과 취약점 판정은 별개다.
+`not_sent`는 현재 E②의 `!ForwardAttempted`와 일치해야 하고, `status_code`는 원본 세 자리(100–999)를 보존한다.
+`reason=audit_failed`이면 `audit_complete=false`다. 반대 방향은 일반화하지 않는다. `Call.finish`의
+result ACK 실패는 실제 wire 결과 `complete`를 다시 쓰지 않으므로 `complete + audit_complete=false`도
+충실한 영수증 투영이다. 이 경우 세션 종료는 `incomplete`여야 한다([실제 코드](../../e2proxy/execution.go)).
 `allowed + closed + not_sent`처럼 송신 전 중단된 조합도 원본대로 보존한다.
 결과 불명을 `denied`, `not_sent=true`, 응답 없음 또는 0건으로 고쳐 적지 않는다.
 
@@ -108,6 +112,8 @@ OS 차단만 있고 호스트가 사건을 관측하지 못했으면 transport �
 `ingress.rejected.layer`는 `application_http` / `proxy_transport`다.
 사유는 Schema의 닫힌 enum이다. `crawl_write_blocked`는 read_only의 POST/PUT/PATCH,
 `preflight_blocked`는 read_only OPTIONS, `dangerous_request`는 DELETE/위험 요청 guard다.
+`scope_blocked`는 승인 밖 origin·경로·메서드의 로컬 차단이다. 외부 origin의 CONNECT는
+`proxy_transport`로 E② Reject 전에 끝내며 아직 파싱하지 않은 내부 HTTP request를 생성하지 않는다.
 `queue_full`·`queue_timeout`은 E② 진입 전 admission 실패다. 나머지는 `parse_failed`, `tls_failed`,
 `unsupported`, `admission_closed`, `event_sink_failed`, `invalid_binding`이다.
 Call이 닫혀 Receipt가 비어 있으면 `admission_closed`로 남긴다. 원본 오류 문자열·URL·헤더를 넣지 않는다.
@@ -174,17 +180,30 @@ E② CallResult를 결속해야 한다. 이 ACK/종료 반환 없이 closed 레�
 | `local_write_blocked` | ingress.rejected의 crawl_write_blocked 수. E② denied와 별도 |
 | `preflight_blocked` | ingress.rejected의 preflight_blocked 수. 쓰기 수에 넣지 않음 |
 | `queue_rejected` | ingress.rejected의 queue_full/queue_timeout 수. 정책 위반 수에 넣지 않음 |
+| `ingress_rejected` | E② 미발급 입구 거부 총수. transport 포함 |
+| `application_attempt_results` | application_http인 E② result 수 |
+| `application_ingress_rejected` | application_http인 ingress.rejected 수 |
+| `ingress_by_reason` | 모든 입구 reason별 건수의 닫힌 객체. scope/dangerous/parse/TLS/unsupported/admission/저장/결속 실패도 누락 없이 보존 |
 | `unresolved_requests` | observed 뒤 terminal 결과가 없는 요청 수 |
 | `unresolved_attempts` | 보호된 E② Call attempt 수와 수집한 고유 result의 미대응 수 |
 | `dropped_events` | 확인된 유실 수. 유실 규모 불명은 null |
 
 위 건수는 서로 겹치는 축이므로 합산해 전체 요청 수로 만들지 않는다.
-`completed`에는 다섯 플래그 true, 모든 건수 non-null, 미대응·유실 0이 필요하다.
+`completed`·`stopped`·`failed`에는 다섯 플래그 true, 모든 건수(사유별 건수 포함) non-null,
+미대응·유실 0이 필요하다. 하나라도 확인되지 않으면 `incomplete`다. 호스트/소비자는 관측 건수 =
+application attempt + application ingress + unresolved_requests, ingress 총수 = reason별 합계를 대조한다.
+이 교차 건수의 산술 관계는 JSON Schema 밖의 스트림 검증이다.
 기록된 completed를 최종 수용할 때는 위 closed 저장 ACK도 필요하다.
 정상적으로 모두 정리된 budget/사용자 중지는 `stopped`, 시작/드라이버 실패는 `failed`,
 정리·관찰 완결을 확인하지 못하면 다른 사유보다 `incomplete`가 우선한다.
 종료 반환의 완결 확인은 독립 계측기와의 조인 완료나 탐색 전체 완료를 대신하지 않는다.
 프로세스가 죽어 closed/ACK가 없으면 마지막 사건을 완료로 추정하지 않는다.
+
+`exploration_limits`는 호스트가 확인한 `cookies_disabled`, `service_worker_blocked`,
+`auth_not_prepared`, `encoded_response_unknown`만 넣는 중복 없는 배열이다. 마지막 값은 보호된 경계가
+인코딩 응답임을 확인한 경우만 허용하며 일반 `unknown` 영수증에서 추론하지 않는다.
+배열의 조건은 탐색 제약을 설명하며 실제 누락 개수나 진단 완료를 증명하지 않는다.
+빈 배열은 **보고된 제한 없음**, 누락은 계약 오류다. UI가 건수에서 부분 탐색을 유도하지 않는다.
 
 ## 5. 최소 예시와 읽기/쓰기 해석
 
@@ -213,10 +232,19 @@ Schema의 `additionalProperties=false`와 kind별 필드를 검사한다. 중복
 JSON Schema만으로 끝나지 않으므로 호스트 및 소비자가 추가 검증한다.
 스키마는 상태/사유·not_sent/송신·응답 플래그의 모순을 거부한다. UTC 시각은 엄격한 형태와
 `format`을 함께 검사한다. `format`을 annotation으로만 처리하는 validator는 월별 일수까지 검사하지 않는다.
-자동 형식 회귀 시험은 기존 Python `jsonschema`가 설치된 환경에서
-`python3 -I -B -m unittest discover -s docs/contracts -p 'test_browser_events.py'`로 실행한다.
-Draft202012Validator와 FormatChecker를 모두 사용하며 의도적 모순·실제 예시를 검사한다.
-이 형식 시험은 이벤트 출처·정수 범위·실제 참조·건수/seq 일치·durable ACK·독립 계측을 검증하지 않는다.
+자동 형식 회귀 시험은 Python 3.10 이상에서 다음과 같이 실행한다. validator는 **시험 전용** 고정 의존성이며 제품 runtime에 설치하지 않는다.
+
+```bash
+python3 -m venv /tmp/browser-contract-tests
+/tmp/browser-contract-tests/bin/python -m pip install -r scripts/eval/requirements-browser-contract.txt
+/tmp/browser-contract-tests/bin/python -I -B -m unittest discover -s scripts/eval/browser_contract_tests
+```
+
+[CI 평가 job](../../.github/workflows/ci.yml)이 같은 명령을 실행한다. UTC 형태·소수초는 Schema 패턴으로, 달력과 시각은 Python 3.10의 `strptime`으로 검사하므로
+3.11의 fromisoformat 확장에 의존하지 않는다.
+Draft202012Validator와 FormatChecker에 실제 date-time 검사 함수를 등록해 의도적 모순·실제 예시를 검사한다.
+소비자는 형식 검사가 실제 활성화됐는지 확인해야 하며, 미등록 format을 달력 검증 성공으로 취급하지 않는다.
+이 형식 시험은 이벤트 출처·실제 참조·건수/seq 일치·durable ACK·독립 계측을 검증하지 않는다.
 알 수 없는 버전·kind·enum·타입·참조는 성공으로 수용하지 않는다. 자격값이 섞인 원본은 오류 로그에도 출력하지 않는다.
 
 ## 7. 최민준 계측기와의 연결 제안

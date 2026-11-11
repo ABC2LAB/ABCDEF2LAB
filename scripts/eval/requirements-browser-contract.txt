@@ -1,0 +1,2 @@
+# Test-only Draft 2020-12 validator. No runtime/evaluation engine dependency.
+jsonschema==4.19.2
