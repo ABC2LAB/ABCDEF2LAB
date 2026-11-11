@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e3record"
 	"github.com/Autumn-27/artex/evidencebind"
 	"github.com/Autumn-27/artex/idor"
@@ -22,7 +23,7 @@ import (
 	"github.com/Autumn-27/artex/report"
 )
 
-func diagnosticServerCandidate(t *testing.T, s *Server, taskID int64, classification string) int64 {
+func diagnosticServerCandidate(t *testing.T, s *Server, taskID int64, classification string, observations ...e2proxy.HTTPObservation) int64 {
 	t.Helper()
 	task := s.m.ResolveTask(strconv.FormatInt(taskID, 10))
 	intent, err := task.Store.AddIntent(map[string]any{"description": "synthetic report observation"}, 5, nil, "test")
@@ -31,7 +32,7 @@ func diagnosticServerCandidate(t *testing.T, s *Server, taskID int64, classifica
 	}
 	evidence := map[string]any{"tool_output": "synthetic observed response <script>not executable</script>", "command": "synthetic fixture input", "trusted": map[string]any{
 		"classification": classification, "execution": map[string]any{"scope": map[string]any{"TaskRef": fmt.Sprint(taskID), "RunRef": "synthetic-report-run"}, "intent_id": intent},
-		"call": map[string]any{"call_ref": fmt.Sprintf("call-%d", intent), "intent_id": intent}, "output_truncated": false}}
+		"call": map[string]any{"call_ref": fmt.Sprintf("call-%d", intent), "intent_id": intent, "observations": observations}, "output_truncated": false}}
 	raw, _ := json.Marshal(evidence)
 	c := db.DiagnosticCandidate{TaskID: taskID, IntentID: intent, RunRef: "synthetic-report-run", CallRef: fmt.Sprintf("call-%d", intent), VulnClass: "XSS", Name: "합성 XSS 후보", Summary: "관측된 응답을 사람이 검토해야 합니다.", Remediation: "출력 문맥별 인코딩 적용 여부를 확인하세요.", Classification: classification, Verification: "manual_review_required", EvidenceVersion: 1, EvidenceDigest: db.DiagnosticEvidenceDigest(string(raw)), ObservedAt: time.Now().UTC(), Evidence: string(raw)}
 	id, err := task.Store.RecordDiagnosticCandidate(context.Background(), c)
@@ -108,8 +109,14 @@ func TestDiagnosticReportDatabaseCorruptionAndPageOverflow(t *testing.T) {
 	if _, err = s.m.pg.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{diagnostic_candidate_v1,evidence_digest}','"wrong"') WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = loadDiagnosticReport(context.Background(), s.m.pg, tid, time.Now()); err == nil {
-		t.Fatal("corrupt evidence accepted")
+	invalidData, err := loadDiagnosticReport(context.Background(), s.m.pg, tid, time.Now())
+	if err != nil || invalidData.SourceFailures != 1 {
+		t.Fatal("invalid candidate not isolated", err)
+	}
+	for _, entry := range invalidData.Entries {
+		if entry.ID == fmt.Sprintf("candidate-%d", id) && (!entry.SourceLoadFailed || entry.Outcome != "unknown" || entry.Digest != "" || len(entry.Steps) != 0) {
+			t.Fatal("corrupt candidate trusted")
+		}
 	}
 	if _, err = s.m.pg.Exec(`DELETE FROM exploration_nodes WHERE id=$1`, id); err != nil {
 		t.Fatal(err)

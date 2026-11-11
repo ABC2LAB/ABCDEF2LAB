@@ -7,22 +7,56 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/remediation"
 	"github.com/Autumn-27/artex/report"
+	"github.com/Autumn-27/artex/reproduction"
 )
 
 var errDiagnosticReportScope = errors.New("diagnostic report scope invalid")
 
+func diagnosticReadFailureCode(err error) int {
+	if errors.Is(err, sql.ErrNoRows) {
+		return http.StatusNotFound
+	}
+	if errors.Is(err, errDiagnosticReportScope) || errors.Is(err, report.ErrExportBlocked) || errors.Is(err, db.ErrDiagnosticRemediation) || errors.Is(err, db.ErrDiagnosticCandidate) || errors.Is(err, remediation.ErrInvalid) {
+		return http.StatusUnprocessableEntity
+	}
+	return http.StatusServiceUnavailable
+}
+func unavailableDiagnosticEntry(entry *report.DiagnosticEntry) {
+	entry.SourceLoadFailed = true
+	entry.Steps = nil
+	entry.CurrentSource = nil
+	entry.RemediationBundle, entry.RemediationSource = nil, nil
+	entry.RemediationStale = entry.RemediationArtifactID > 0
+	entry.Outcome, entry.Verification = "unknown", "manual_review_required"
+}
+
 // 공유 기본값을 보존한다. 상세 사본은 인증된 관리자가 audience=internal을 명시해야 한다.
 func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
+	q, queryErr := url.ParseQuery(r.URL.RawQuery)
+	if queryErr != nil {
+		writeErr(w, 400, "보고서 조회 형식이 올바르지 않습니다.")
+		return
+	}
+	for key, values := range q {
+		if len(values) != 1 || (key != "task" && key != "audience" && key != "format" && key != "download" && key != "run") {
+			writeErr(w, 400, "보고서 조회 형식이 올바르지 않습니다.")
+			return
+		}
+	}
 	taskID, err := strconv.ParseInt(r.URL.Query().Get("task"), 10, 64)
 	audience := r.URL.Query().Get("audience")
-	if err != nil || taskID <= 0 || r.URL.Query().Get("run") != "" || (audience != "" && audience != "shared" && audience != "internal") {
+	format := r.URL.Query().Get("format")
+	if (format != "" && format != "html" && format != "docx") || err != nil || taskID <= 0 || r.URL.Query().Get("run") != "" || (audience != "" && audience != "shared" && audience != "internal") {
 		writeErr(w, 400, "작업 ID와 보고서 공개 범위를 확인하세요. 회차 필터는 지원하지 않습니다.")
 		return
 	}
@@ -30,26 +64,32 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 503, "보고서 저장소를 사용할 수 없습니다.")
 		return
 	}
-	data, err := loadDiagnosticReport(r.Context(), s.m.pg, taskID, time.Now())
+	data, err := loadDiagnosticReportWithCaptures(r.Context(), s.m.pg, taskID, time.Now(), audience == "internal")
 	if err != nil {
-		code := 422
-		if errors.Is(err, sql.ErrNoRows) {
-			code = 404
-		}
+		code := diagnosticReadFailureCode(err)
 		writeErr(w, code, "보고서 범위 또는 저장 증거를 확인할 수 없습니다.")
 		return
 	}
 	data.Shared = audience != "internal"
-	body, err := report.DiagnosticHTML(data)
+	var body []byte
+	if format == "docx" {
+		body, err = report.DiagnosticDOCX(data)
+	} else {
+		body, err = report.DiagnosticHTML(data)
+	}
 	if err != nil {
 		writeErr(w, 422, "보고서를 안전하게 출력할 수 없습니다.")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox")
+	if format == "docx" {
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"diagnostic-task-%d.docx\"", taskID))
+	}
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
-	if r.URL.Query().Get("download") == "1" {
+	if r.URL.Query().Get("download") == "1" && format != "docx" {
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"diagnostic-task-%d.html\"", taskID))
 	}
 	if r.Context().Err() != nil {
@@ -60,12 +100,15 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 
 // 모든 조회를 같은 PostgreSQL 스냅샷에서 수행한다. 원문 파일·대상 URL은 열지 않는다.
 func loadDiagnosticReport(ctx context.Context, pg *db.DB, taskID int64, at time.Time) (report.DiagnosticReport, error) {
+	return loadDiagnosticReportWithCaptures(ctx, pg, taskID, at, true)
+}
+func loadDiagnosticReportWithCaptures(ctx context.Context, pg *db.DB, taskID int64, at time.Time, images bool) (report.DiagnosticReport, error) {
 	tx, err := pg.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return report.DiagnosticReport{}, err
 	}
 	defer tx.Rollback()
-	out, err := readDiagnosticReport(ctx, tx, taskID, at)
+	out, err := readDiagnosticReportWithCaptures(ctx, tx, taskID, at, images)
 	if err != nil {
 		return out, err
 	}
@@ -75,12 +118,18 @@ func loadDiagnosticReport(ctx context.Context, pg *db.DB, taskID int64, at time.
 	return out, nil
 }
 func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time.Time) (report.DiagnosticReport, error) {
+	return readDiagnosticReportWithCaptures(ctx, tx, taskID, at, true)
+}
+func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID int64, at time.Time, images bool) (report.DiagnosticReport, error) {
 	out := report.DiagnosticReport{TaskID: taskID, GeneratedAt: at}
 	if taskID <= 0 {
 		return out, errDiagnosticReportScope
 	}
 	var expID int64
 	if err := tx.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&expID); err != nil {
+		return out, err
+	}
+	if err := readDiagnosticOverview(ctx, tx, taskID, &out); err != nil {
 		return out, err
 	}
 	// 원문 TEXT를 드라이버로 읽기 전에 DB에서 총 바이트를 검사한다.
@@ -93,11 +142,17 @@ func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time
 	if storedBytes > report.MaxDiagnosticReportBytes {
 		return out, report.ErrExportBlocked
 	}
-	candidates, err := db.ListDiagnosticCandidatesQuery(ctx, tx, expID, taskID, "", report.MaxFindings+1)
+	candidates, err := db.ListDiagnosticReportCandidates(ctx, tx, expID, taskID, report.MaxFindings+1)
 	if err != nil {
 		return out, err
 	}
-	for _, c := range candidates {
+	for _, row := range candidates {
+		c := row.Candidate
+		if row.Unavailable {
+			log.Printf("diagnostic source unavailable: task=%d entry=candidate-%d reason=source_invalid", taskID, c.ID)
+			out.Entries = append(out.Entries, report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", Title: "저장 후보 근거 확인 실패", Outcome: "unknown", Verification: "manual_review_required", Severity: "미평가", SourceLoadFailed: true})
+			continue
+		}
 		storedBytes += int64(len(c.Evidence) + len(c.Name) + len(c.VulnClass) + len(c.Summary) + len(c.Remediation) + len(c.RunRef) + len(c.CallRef))
 		if storedBytes > report.MaxDiagnosticReportBytes {
 			return out, report.ErrExportBlocked
@@ -222,6 +277,51 @@ func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time
 	rows.Close()
 	if err := attachDiagnosticRemediations(ctx, tx, taskID, &out); err != nil {
 		return out, err
+	}
+	var captureBytes int64
+	for i := range out.Entries {
+		entry := &out.Entries[i]
+		if entry.SourceLoadFailed {
+			entry.RemediationBundle, entry.RemediationSource = nil, nil
+			entry.RemediationStale = entry.RemediationArtifactID > 0
+			out.SourceFailures++
+			continue
+		}
+		source, err := db.LoadDiagnosticRemediationSourceIsolated(ctx, tx, taskID, entry.ID)
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, db.ErrDiagnosticRemediation) {
+				return out, err
+			}
+			log.Printf("diagnostic source unavailable: task=%d entry=%s reason=source_invalid", taskID, entry.ID)
+			unavailableDiagnosticEntry(entry)
+			out.SourceFailures++
+			continue
+		}
+		entry.CurrentSource = &source
+		if entry.Stale {
+			continue
+		}
+		entry.Steps = reproduction.FromStored(taskID, entry.ID, entry.EvidenceVersion, entry.Digest, source.Context)
+		bound := true
+		for _, step := range entry.Steps {
+			if step.RunRef != entry.Run || reproduction.Validate(step, entry.EvidenceVersion, entry.Digest) != nil {
+				bound = false
+				break
+			}
+		}
+		if !bound {
+			log.Printf("diagnostic source unavailable: task=%d entry=%s reason=observation_binding_invalid", taskID, entry.ID)
+			unavailableDiagnosticEntry(entry)
+			out.SourceFailures++
+			continue
+		}
+		entry.StepsTruncated = source.Context.ObservationsTruncated
+		if err := attachDiagnosticCaptures(ctx, tx, taskID, entry, &captureBytes, images); err != nil {
+			return out, err
+		}
 	}
 	if err := readWorkflowReport(ctx, tx, taskID, &out); err != nil {
 		return out, err

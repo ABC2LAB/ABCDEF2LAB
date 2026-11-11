@@ -342,6 +342,9 @@ func TestFirstIDORSyntheticEngineThroughStoredFinding(t *testing.T) {
 				if err != nil || intent == nil || intent.State != "done" {
 					t.Fatalf("durable finding and final intent disagree: state=%v err=%v", intent, err)
 				}
+				if mode == "confirmed" {
+					assertPracticalReportFromExecutedE3(t, f.s, taskID, &hits)
+				}
 				if mode == "late-pause" {
 					var paused, queued bool
 					if err := f.m.pg.QueryRow("SELECT paused,queued FROM tasks WHERE id=$1", id).Scan(&paused, &queued); err != nil {
