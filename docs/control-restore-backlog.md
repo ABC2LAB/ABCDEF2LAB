@@ -2,7 +2,7 @@
 
 2026-11-11 조사(최민준). dev `54023077` 코드를 원본 ARTEX(`fdfb7a17`)와 비교해 읽은 결과다. **실행해서 잰 것이 아니고**, 얼마나 깎이는지는 측정 전이라 적지 않는다. 숫자는 이미 저장소 문서에 잰 근거가 있는 것만 썼다. 위치(파일:줄)는 그 커밋 기준이다.
 
-[개발 계획의 11/11 개선 순서](development-plan.md#1111-개선-순서--원본-능력-보존-우선)에 따라 이 목록을 우선 개선 목록으로 관리한다. 담당은 2026-11-12에 정했다. 실행 허용 판단(범위·메서드·위험 요청·탐색 경계)은 이동찬에게 두고, 허용 판단이 아닌 배관·운영·화면 쪽을 최민준·이경준이 나눠 맡는다(CLAUDE.md "E²(실행 허용)는 시나리오/IDOR 만드는 사람과 분리"). `미정`은 아직 담당을 정하지 않은 항목이다. 각 PR은 걷어낸 항목의 ID, 유지한 통제, 원본 대비 남은 차이를 적는다. 영향은 **오류**(정상 동작을 멈추거나 막음)와 **저하**(발견·품질·처리량을 줄임)로 나눈다.
+[개발 계획의 11/11 개선 순서](development-plan.md#1111-개선-순서--원본-능력-보존-우선)에 따라 이 목록을 우선 개선 목록으로 관리한다. 담당은 2026-11-12에 정했다. 실행 허용 판단(범위·메서드·위험 요청·탐색 경계)은 이동찬에게 두고, 허용 판단이 아닌 배관·운영·화면 쪽을 최민준·이경준이 나눠 맡는다. 한 항목에 허용 판단과 화면이 섞이면(C21·C22) 허용 판단 부분은 이동찬에게 두고, 집행 경로를 바꾸는 항목(C15·C16)은 이동찬 페어 리뷰를 필수로 한다(CLAUDE.md "E²(실행 허용)는 시나리오/IDOR 만드는 사람과 분리"). `미정`은 아직 담당을 정하지 않은 항목이다. 각 PR은 걷어낸 항목의 ID, 유지한 통제, 원본 대비 남은 차이를 적는다. 영향은 **오류**(정상 동작을 멈추거나 막음)와 **저하**(발견·품질·처리량을 줄임)로 나눈다.
 
 ## 1. 실패 한 번이 실행·설치 전체를 멈추는 것
 
@@ -27,14 +27,14 @@
 | ID | 내용 | 영향 | 위치 | 순서·담당 |
 |---|---|---|---|---|
 | C14 | 로그인 불가. 제품은 `Authorization`·`Cookie` 요청을 거부하고, `Set-Cookie`·`WWW-Authenticate` 응답을 통째로 숨겨 unknown으로 센다(C01·C03 정지로 이어짐). 대상 자격 설정도 거부 | 오류 | `e2proxy/execution.go:924`, `e2proxy/headers.go:145-166`, `cmd/first-controlled-diagnosis/url_preparation_config.go:367` | P2·이동찬 |
-| C15 | `Accept-Encoding`이 identity가 아니면 거부(측정: gzip 요청 502, [근거](evaluation/e2-product-preflight.md)) | 저하 | `e2proxy/execution.go:924,1316-1330` | P2·최민준 |
-| C16 | 64KiB 상한이 자르지 않고 막는다. 넘는 응답은 unknown, 넘는 요청은 미지원 | 오류 | `e2proxy/execution.go:963-968,1138-1144` | P2·최민준 |
+| C15 | `Accept-Encoding`이 identity가 아니면 거부(측정: gzip 요청 502, [근거](evaluation/e2-product-preflight.md)) | 저하 | `e2proxy/execution.go:924,1316-1330` | P2·최민준(이동찬 페어 리뷰 필수) |
+| C16 | 64KiB 상한이 자르지 않고 막는다. 넘는 응답은 unknown, 넘는 요청은 미지원 | 오류 | `e2proxy/execution.go:963-968,1138-1144` | P2·최민준(이동찬 페어 리뷰 필수) |
 | C17 | 인코딩·점 경로(`%`, `..`, `//`) 거부, 거부 수에도 들어감 | 저하 | `e2proxy/execution.go:186-188,817` | P2·이동찬 |
 | C18 | 진단은 크롤에서 본 정확한 메서드+경로만. `/x/1`을 봐도 `/x/2`는 못 보냄. 자동 모드는 GET·HEAD·본문 없음, 32개 상한, JS 미실행, 새 경로 추가 안 함 | 오류 | `diagnosisflow/controller.go:379-417`, `diagnosisflow/contract.go:34`, `diagnosisflow/input.go:36` | P2·이동찬 |
 | C19 | 같은 명령 재전송 금지, intent당 대안 1회 | 오류 | `agent/e2_http.go:695-790` | P1(루프 복원)·미정 |
 | C20 | 동시 실행 1개를 넘으면 대기 대신 거부로 셈. Bash 슬롯도 실행 전체에 1개 | 오류 | `e2proxy/execution.go:942-944`, `e2runner/runner_linux.go:110` | P2·이동찬 |
-| C21 | 요청별 승인이 10초(워크플로 60초) 안에 안 오면 거부로 셈, 그동안 Bash 슬롯 점유. 자동 모드는 승인된 쓰기 메서드를 GET·HEAD로 깎음(11/11 사전 1회 승인과 충돌) | 저하 | `e2proxy/execution.go:977-1005`, `cmd/first-controlled-diagnosis/product_runtime.go:248-260` | P2·이경준 |
-| C22 | 대상은 https만, query 없는 URL만 | 오류 | `diagnosisprep/validation.go:77` | P2·이경준 |
+| C21 | 요청별 승인이 10초(워크플로 60초) 안에 안 오면 거부로 셈, 그동안 Bash 슬롯 점유. 자동 모드는 승인된 쓰기 메서드를 GET·HEAD로 깎음(11/11 사전 1회 승인과 충돌) | 저하 | `e2proxy/execution.go:977-1005`, `cmd/first-controlled-diagnosis/product_runtime.go:248-260` | P2·이동찬(메서드 범위)·이경준(승인 화면·흐름) |
+| C22 | 대상은 https만, query 없는 URL만 | 오류 | `diagnosisprep/validation.go:77` | P2·이동찬(대상 스킴·TLS 조건)·이경준(등록 화면) |
 | C23 | 위험 경로 단어 필터가 GET도 막음(`reset`·`payment` 등). "무엇을" 통제 범위지만 범위가 넓음 | 저하 | `diagnosisflow/controller.go:63-72` | P2·이동찬 |
 
 ## 3. 원본보다 덜 하게 만드는 것
