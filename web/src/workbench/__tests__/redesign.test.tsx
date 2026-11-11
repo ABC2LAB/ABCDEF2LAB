@@ -35,6 +35,7 @@ const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
   closeInsp: noop,
   openRail: noop,
   closeRail: noop,
+  foldRail: noop,
   dashPick: noop,
   ...over,
 });

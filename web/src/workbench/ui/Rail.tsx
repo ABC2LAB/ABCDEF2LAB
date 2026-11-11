@@ -27,7 +27,7 @@ function pickAccent(k: Accent) {
 }
 
 export function Rail() {
-  const { route, railOpen, closeRail } = useShell();
+  const { route, railOpen, closeRail, foldRail } = useShell();
   const accent = useWb((st) => st.accent);
   return (
     <aside className={cx(s.rail, railOpen && s.open)} id="rail" aria-label="주 메뉴">
@@ -36,6 +36,17 @@ export function Rail() {
           <BrandMark />
           ABC2LAB
         </a>
+        {/* 휴대폰보다 넓은 화면: 레일 접기 (다시 펼치기는 화면 머리의 메뉴 버튼) */}
+        <button
+          className={cx(s["icon-btn"], s["rail-fold"])}
+          type="button"
+          data-rail-fold=""
+          aria-label="메뉴 접기"
+          title="메뉴 접기"
+          onClick={foldRail}
+        >
+          <Icon name="panelLeft" />
+        </button>
         <button
           className={cx(s["icon-btn"], s["rail-x"])}
           type="button"

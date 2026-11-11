@@ -3822,3 +3822,38 @@ button.smm:hover {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* 넓은 화면 패널 접기 (이 브라우저에 기억). 좁은 화면 · 휴대폰의 서랍과는 별개라 각 폭 안에서만 적용한다. */
+/* 레일: 휴대폰보다 넓으면 통째로 숨기고, 화면 머리의 메뉴 버튼으로 다시 펼친다 */
+@media (min-width: 760px) {
+  .app.rail-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app.rail-hidden > .rail {
+    display: none;
+  }
+  .app.rail-hidden .icon-btn.menu-btn {
+    display: inline-grid;
+  }
+}
+/* 휴대폰은 레일이 서랍이라 접기 버튼 대신 닫기(rail-x)를 쓴다 */
+@media (max-width: 759px) {
+  .icon-btn.rail-fold {
+    display: none;
+  }
+}
+/* 상세 패널: 넓은 화면에서 닫기 버튼으로 접고, 화면 머리의 상세 버튼(insp-only)으로 다시 펼친다 */
+@media (min-width: 1200px) {
+  .icon-btn.insp-x {
+    display: inline-grid;
+  }
+  .app.insp-hidden .vb {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app.insp-hidden .vi {
+    display: none;
+  }
+  .app.insp-hidden .btn.insp-only {
+    display: inline-flex;
+  }
+}

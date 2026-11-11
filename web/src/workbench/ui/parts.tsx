@@ -17,9 +17,10 @@ import { Icon } from "./icons";
  */
 export function CloseInspButton({ label }: { label: string }) {
   const { closeInsp } = useShell();
+  // insp-only: 좁은 화면 서랍 닫기, insp-x: 넓은 화면에서도 보여서 상세 패널 접기
   return (
     <button
-      className={cx(s["icon-btn"], s["insp-only"])}
+      className={cx(s["icon-btn"], s["insp-only"], s["insp-x"])}
       type="button"
       data-insp-close=""
       aria-label={`${label} 닫기`}
@@ -81,8 +82,9 @@ export { MenuButton } from "./MenuButton";
 /** 화면 머리의 '상세' 버튼 (좁은 화면에서만 보임) → 상세 서랍. 원본 `button.btn.insp-only[data-insp-open]`. */
 export function InspOpenButton({ children, id }: { children: ReactNode; id?: string }) {
   const { openInsp } = useShell();
+  // 좁은 화면이거나 넓은 화면에서 상세 패널을 접었을 때만 보인다(CSS)
   return (
-    <button className={cx(s.btn, s["insp-only"])} type="button" id={id} onClick={openInsp}>
+    <button className={cx(s.btn, s["insp-only"])} type="button" id={id} data-insp-open="" onClick={openInsp}>
       <Icon name="panel" />
       {children}
     </button>

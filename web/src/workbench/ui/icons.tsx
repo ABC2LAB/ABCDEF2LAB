@@ -84,6 +84,13 @@ const PATHS = {
       <path d="M14.5 4.5v15" />
     </>
   ),
+  // 왼쪽 칸이 있는 패널: 레일 접기
+  panelLeft: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+      <path d="M9.5 4.5v15" />
+    </>
+  ),
   refresh: (
     <>
       <path d="M20 12a8 8 0 1 1-2.34-5.66" />
