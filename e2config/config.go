@@ -20,6 +20,13 @@ import (
 )
 
 const Format = "abc2lab.e2-runner-config/v1"
+
+// FormatPathKey는 v1에 수용시험 경로 가림 키 파일(path_key_file)을 더한 판이다. E② 시도 경로 투영
+// (browser-acceptance.md §6 진단 요청 반복 차단 수)에만 쓰고, 공식 회차는 v1만 쓴다.
+const FormatPathKey = "abc2lab.e2-runner-config/v2"
+
+// PathKeyBytes는 경로 가림 키 길이다(pathmask.KeyBytes와 같다).
+const PathKeyBytes = 32
 const MaxConfigBytes = 64 << 10
 const MaxPolicyBytes = 256 << 10
 
@@ -44,18 +51,21 @@ type Config struct {
 	Upstream       string      `json:"upstream"`
 	EvidenceDir    string      `json:"evidence_dir"`
 	ControlDir     string      `json:"control_dir"`
-	ConfigSHA256   string      `json:"-"`
-	PolicySHA256   string      `json:"-"`
-	PolicyPath     string      `json:"-"`
-	AuditKeyPath   string      `json:"-"`
-	path           string
-	files          []pinned
-	dirs           []pinned
-	original       snapshot
+	// v2에만 있다. v1 설정을 다시 직렬화해도 이 키가 생기지 않게 omitempty다.
+	PathKeyFile  string `json:"path_key_file,omitempty"`
+	ConfigSHA256 string `json:"-"`
+	PolicySHA256 string `json:"-"`
+	PolicyPath   string `json:"-"`
+	AuditKeyPath string `json:"-"`
+	PathKeyPath  string `json:"-"`
+	path         string
+	files        []pinned
+	dirs         []pinned
+	original     snapshot
 }
 type snapshot struct {
-	wire                                      []byte
-	configSHA, policySHA, policyPath, keyPath string
+	wire                                                   []byte
+	configSHA, policySHA, policyPath, keyPath, pathKeyPath string
 }
 
 type pinned struct {
@@ -159,7 +169,15 @@ func Load(path string) (*Config, error) {
 	}
 	defer clear(raw)
 	var c Config
-	if !exactFields(raw, "format", "eval_run_id", "reservation_ref", "model_tag", "header_mode", "evaluation", "policy_file", "audit_key_file", "listen", "upstream", "evidence_dir", "control_dir") || StrictJSON(raw, &c) != nil || c.Format != Format {
+	fields := []string{"format", "eval_run_id", "reservation_ref", "model_tag", "header_mode", "evaluation", "policy_file", "audit_key_file", "listen", "upstream", "evidence_dir", "control_dir"}
+	var head struct {
+		Format string `json:"format"`
+	}
+	if json.Unmarshal(raw, &head) == nil && head.Format == FormatPathKey {
+		fields = append(fields, "path_key_file")
+	}
+	if !exactFields(raw, fields...) || StrictJSON(raw, &c) != nil || (c.Format != Format && c.Format != FormatPathKey) ||
+		(c.Format == FormatPathKey) != (c.PathKeyFile != "") {
 		return nil, ErrInvalid
 	}
 	for _, s := range []string{c.EvalRunID, c.ReservationRef, c.ModelTag} {
@@ -168,6 +186,9 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	if !fileRef.MatchString(c.PolicyFile) || !fileRef.MatchString(c.AuditKeyFile) || c.PolicyFile == c.AuditKeyFile || c.PolicyFile == filepath.Base(path) || c.AuditKeyFile == filepath.Base(path) {
+		return nil, ErrInvalid
+	}
+	if c.PathKeyFile != "" && (!fileRef.MatchString(c.PathKeyFile) || c.PathKeyFile == c.PolicyFile || c.PathKeyFile == c.AuditKeyFile || c.PathKeyFile == filepath.Base(path)) {
 		return nil, ErrInvalid
 	}
 	switch c.HeaderMode {
@@ -196,6 +217,9 @@ func Load(path string) (*Config, error) {
 	c.path = path
 	c.PolicyPath = filepath.Join(filepath.Dir(path), c.PolicyFile)
 	c.AuditKeyPath = filepath.Join(filepath.Dir(path), c.AuditKeyFile)
+	if c.PathKeyFile != "" {
+		c.PathKeyPath = filepath.Join(filepath.Dir(path), c.PathKeyFile)
+	}
 	c.ConfigSHA256 = digest(raw)
 	for _, dir := range []string{filepath.Dir(path), c.ControlDir, c.EvidenceDir} {
 		if privateinput.CheckDirectory(dir, true) != nil {
@@ -216,7 +240,11 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	for i, p := range []pinned{{path: path, limit: MaxConfigBytes}, {path: c.PolicyPath, limit: MaxPolicyBytes}, {path: c.AuditKeyPath, limit: 32}} {
+	files := []pinned{{path: path, limit: MaxConfigBytes}, {path: c.PolicyPath, limit: MaxPolicyBytes}, {path: c.AuditKeyPath, limit: 32}}
+	if c.PathKeyPath != "" {
+		files = append(files, pinned{path: c.PathKeyPath, limit: PathKeyBytes})
+	}
+	for i, p := range files {
 		data, e := privateinput.ReadFile(p.path, p.limit)
 		if e != nil {
 			return nil, ErrInvalid
@@ -234,7 +262,7 @@ func Load(path string) (*Config, error) {
 			}
 			c.PolicySHA256 = p.digest
 		}
-		if i == 2 && len(data) != 32 {
+		if i == 2 && len(data) != 32 || i == 3 && len(data) != PathKeyBytes {
 			clear(data)
 			return nil, ErrInvalid
 		}
@@ -253,6 +281,11 @@ func Load(path string) (*Config, error) {
 	c.original.policySHA = c.PolicySHA256
 	c.original.policyPath = c.PolicyPath
 	c.original.keyPath = c.AuditKeyPath
+	c.original.pathKeyPath = c.PathKeyPath
+	// 감사 키와 경로 키가 같은 바이트면 서로 다른 용도의 비밀이 섞인다.
+	if len(c.files) == 4 && c.files[2].digest == c.files[3].digest {
+		return nil, ErrInvalid
+	}
 	if c.Check() != nil {
 		return nil, ErrInvalid
 	}
@@ -261,11 +294,15 @@ func Load(path string) (*Config, error) {
 
 // Check은 사용 직전에 같은 파일·디렉터리와 정확한 바이트를 다시 확인한다.
 func (c *Config) Check() error {
-	if c == nil || len(c.files) != 3 || len(c.dirs) != 3 {
+	wantFiles := 3
+	if c != nil && c.original.pathKeyPath != "" {
+		wantFiles = 4
+	}
+	if c == nil || len(c.files) != wantFiles || len(c.dirs) != 3 {
 		return ErrInvalid
 	}
 	wire, err := json.Marshal(c)
-	if err != nil || !bytes.Equal(wire, c.original.wire) || c.ConfigSHA256 != c.original.configSHA || c.PolicySHA256 != c.original.policySHA || c.PolicyPath != c.original.policyPath || c.AuditKeyPath != c.original.keyPath {
+	if err != nil || !bytes.Equal(wire, c.original.wire) || c.ConfigSHA256 != c.original.configSHA || c.PolicySHA256 != c.original.policySHA || c.PolicyPath != c.original.policyPath || c.AuditKeyPath != c.original.keyPath || c.PathKeyPath != c.original.pathKeyPath {
 		return ErrInvalid
 	}
 	for _, p := range c.dirs {
@@ -306,6 +343,17 @@ func (c *Config) ReadAuditKey() ([]byte, error) {
 		return nil, ErrInvalid
 	}
 	return readPinned(c.files[2])
+}
+
+// HasPathKey는 v2(수용시험 경로 키) 설정인지다.
+func (c *Config) HasPathKey() bool { return c != nil && c.PathKeyPath != "" }
+
+// ReadPathKey는 수용시험 경로 가림 키를 읽는다. v1 설정이면 오류다. 키 값은 기록하지 않는다.
+func (c *Config) ReadPathKey() ([]byte, error) {
+	if !c.HasPathKey() || c.Check() != nil {
+		return nil, ErrInvalid
+	}
+	return readPinned(c.files[3])
 }
 
 // 정책의 선택 필드는 null일 수 있다. 실제 스키마 검증은 정책 소비자가 맡는다.

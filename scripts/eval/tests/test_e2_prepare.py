@@ -16,8 +16,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from e2_prepare import (AUDIT_KEY_BYTES, CONFIG_NAME, KEY_NAME, MAX_POLICY_BYTES, POLICY_NAME, E2PrepareError, E2RunValues,  # noqa: E402
-                        new_reference, prepare_e2_config)
+from e2_prepare import (AUDIT_KEY_BYTES, CONFIG_NAME, KEY_NAME, MAX_POLICY_BYTES, PATH_KEY_NAME, POLICY_NAME,  # noqa: E402
+                        E2PrepareError, E2RunValues, new_reference, prepare_e2_config)
 
 ROOT = Path(__file__).resolve().parents[3]
 OVERLAY = ROOT / "deploy/eval/compose.e2-product.yaml"
@@ -50,6 +50,41 @@ class Case(unittest.TestCase):
 
     def nothing_written(self):
         self.assertEqual(os.listdir(self.directory), [])
+
+
+class TestPathKey(Case):
+    """수용시험 회차만 v2 설정과 경로 가림 키 파일을 쓴다. 공식 회차(키 없음)는 v1 그대로다."""
+
+    def test_path_key_writes_a_v2_config_and_a_private_key_file(self):
+        key = bytes(range(AUDIT_KEY_BYTES))
+        prepared = prepare_e2_config(self.directory, VALUES, self.policy, path_key=key)
+        config = json.loads((self.directory / CONFIG_NAME).read_bytes())
+        self.assertEqual(config["format"], "abc2lab.e2-runner-config/v2")
+        self.assertEqual(config["path_key_file"], PATH_KEY_NAME)
+        self.assertEqual((self.directory / PATH_KEY_NAME).read_bytes(), key)
+        self.assertEqual(stat.S_IMODE(os.stat(self.directory / PATH_KEY_NAME).st_mode), 0o600)
+        self.assertEqual(sorted(os.listdir(self.directory)), sorted([CONFIG_NAME, KEY_NAME, PATH_KEY_NAME, POLICY_NAME]))
+        self.assertNotEqual(prepared.key_path.read_bytes(), key)
+        self.assertNotIn(key.hex(), (self.directory / CONFIG_NAME).read_text(encoding="utf-8"))
+
+    def test_without_path_key_the_config_stays_v1(self):
+        self.prepare()
+        config = json.loads((self.directory / CONFIG_NAME).read_bytes())
+        self.assertEqual(config["format"], "abc2lab.e2-runner-config/v1")
+        self.assertNotIn("path_key_file", config)
+        self.assertFalse((self.directory / PATH_KEY_NAME).exists())
+
+    def test_bad_path_key_writes_nothing(self):
+        for bad in (b"", bytes(AUDIT_KEY_BYTES - 1), bytes(AUDIT_KEY_BYTES + 1), bytearray(AUDIT_KEY_BYTES), "x" * AUDIT_KEY_BYTES):
+            with self.subTest(bad=type(bad).__name__ + str(len(bad))), self.assertRaises(E2PrepareError) as caught:
+                prepare_e2_config(self.directory, VALUES, self.policy, path_key=bad)
+            self.assertEqual(caught.exception.code, "path_key_invalid")
+            self.nothing_written()
+
+    def test_go_loader_knows_the_v2_format(self):
+        source = (ROOT / "e2config/config.go").read_text(encoding="utf-8")
+        self.assertIn('FormatPathKey = "abc2lab.e2-runner-config/v2"', source)
+        self.assertIn('`json:"path_key_file,omitempty"`', source)
 
 
 class TestPrepare(Case):
