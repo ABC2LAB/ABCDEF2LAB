@@ -264,6 +264,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 기록: `e2-service-ready.json`, `e2-collection.json`, `e2-prompt-projection.json`(미확인이면 `e2-prompt-status.json`), 격리 근거의 `e2_product`·`e2_prompt` 행. 키 파일은 회차 디렉터리 `e2-config/`에 남는다. 사후 `e2-audit-verify`에 필요하고, 회차 디렉터리는 커밋 금지 결과물이다.
 
+**E② 시도 경로 투영(수용시험 회차만):** `purpose`가 `browser_acceptance`이면 러너가 계측기와 같은 경로 가림 키(`path_key_file`)를 eval-e2 설정 v2(`abc2lab.e2-runner-config/v2`, `path.key`)로 넘긴다. eval-e2는 시도마다 `e2-attempt-paths.jsonl`(`abc2lab.e2-attempt-paths/v1`: 순번·결정·사유·메서드·가린 경로 패턴(URL이 없던 거부는 `null`)·가린 조각 수·가림 판·키 참조)을 쓰고, 마감까지 성공했을 때만 완료 표식 `e2-attempt-paths.done.json`(행 수·기록 바이트 SHA-256)을 쓴다. 러너는 두 파일이 있으면 E② 수집 사본으로 옮겨 `e2-collection.json`의 digest에 남긴다. 공식 회차(`official`, 설정 v1)에 둘 중 하나라도 있으면 `e2_attempt_paths_unexpected`로 무효다. 집계(`scripts/eval/e2_attempt_paths.py`)는 표식이 없거나, 행 수·digest가 기록과 다르거나, 행마다 정확한 8칸·같은 가림 판·같은 키 참조가 아니거나, 행의 순번·결정이 감사 내보내기(`attempts.jsonl`)의 결과 시도와 1:1이 아니면 그 회차의 투영을 쓰지 않는다(수용시험 §6 진단 요청 반복 차단 수는 `NOT_RUN`). 경로 원문은 어디에도 남지 않는다.
+
 **판정 export:** 설정 `verdict_export`가 null이면 수집하지 않는다. 값이 있으면 개선 후 회차에서만 findings 다음, down 전에 [판정 페이지 제안](../contracts/verdict-record-page-api-proposal.md)대로 동결하고 전체 페이지를 모은다. 동결이 준비 전(409)이면 `ready_poll_seconds` 간격으로 다시 묻고, `ready_wait_seconds`를 넘기면 새 요청을 보내지 않는다.
 
 - 다 맞으면 `verdict-pages.json`(원본 페이지)·`verdict-records.json`(채점 입력)·`verdict-export.json`을 남기고 `artifacts.records`가 채점 입력을 가리킨다.
