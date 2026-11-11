@@ -11,16 +11,18 @@ E②까지 온 진단 요청의 거부만 센다. 탐색 경계 차단은 이 �
 
 from __future__ import annotations
 
-import json
 import os
 import stat
 from collections import Counter
 from pathlib import Path
 
 from e2_attempt_paths import ATTEMPT_PATHS_DONE_FILE, ATTEMPT_PATHS_FILE, MAX_ATTEMPT_PATHS_BYTES, MAX_DONE_BYTES, AttemptPathsError, parse_attempt_paths
+from e2_export import ATTEMPTS_FILE, STAGE_RESULT, STATE_COMPLETE, E2ExportError, parse_attempts, strict_object
 
-ATTEMPTS_COPY = "attempts.jsonl"
+ATTEMPTS_COPY = ATTEMPTS_FILE
+MANIFEST_COPY = "manifest.json"
 MAX_ATTEMPTS_BYTES = 256 << 20
+MAX_MANIFEST_BYTES = 64 * 1024
 REFUSALS = frozenset({"denied", "unsupported"})
 NOT_RUN = "NOT_RUN"
 OK = "ok"
@@ -58,21 +60,21 @@ def _not_run(reason: str, paths: bool = False) -> dict:
     return result
 
 
-def _audit_refusals(attempts: bytes) -> list[dict]:
-    rows = []
-    for line in attempts.split(b"\n"):
-        if not line:
-            continue
-        try:
-            row = json.loads(line.decode("utf-8"))
-        except (UnicodeError, ValueError):
-            raise AttemptPathsError("e2_attempts_invalid") from None
-        if not isinstance(row, dict) or any(not isinstance(row.get(name, ""), str) for name in ("stage", "decision", "reason", "method", "rule_ref")):
-            # 묶음 키로 쓰는 칸이 문자열이 아니면 해시할 수 없어 정해진 오류 대신 TypeError가 난다.
-            raise AttemptPathsError("e2_attempts_invalid")
-        if row.get("stage") == "result" and row.get("decision") in REFUSALS:
-            rows.append(row)
-    return rows
+def _audit_refusals(attempts: bytes, manifest_data: bytes) -> list[dict]:
+    """감사 내보내기의 결과 시도 중 거부. 형식·필수 칸·열거값·순번·digest는 러너 수집과 같은 계약(e2_export)으로 다시 본다.
+
+    검증하지 못한 감사를 '거부 0건'으로 세지 않는다. 결과가 complete가 아닌 내보내기도 받지 않는다.
+    """
+    try:
+        manifest = strict_object(manifest_data)
+        complete = manifest.get("state") == STATE_COMPLETE
+        parse_attempts(attempts, manifest)
+        rows = [strict_object(line) for line in attempts.split(b"\n") if line]
+    except (E2ExportError, KeyError, TypeError, ValueError):
+        raise AttemptPathsError("e2_attempts_invalid") from None
+    if not complete:
+        raise AttemptPathsError("e2_export_incomplete")
+    return [row for row in rows if row["stage"] == STAGE_RESULT and row["decision"] in REFUSALS]
 
 
 def summarize_round(copy_dir: Path | None, path_key_ref: str) -> dict:
@@ -81,9 +83,10 @@ def summarize_round(copy_dir: Path | None, path_key_ref: str) -> dict:
         return {"paths": _not_run("e2_copy_not_given", True), "rule_refs": _not_run("e2_copy_not_given")}
     try:
         attempts = _read(copy_dir, ATTEMPTS_COPY, MAX_ATTEMPTS_BYTES)
-        if attempts is None:
+        manifest = _read(copy_dir, MANIFEST_COPY, MAX_MANIFEST_BYTES)
+        if attempts is None or manifest is None:
             raise AttemptPathsError("e2_attempts_missing")
-        audit = _audit_refusals(attempts)
+        audit = _audit_refusals(attempts, manifest)
     except AttemptPathsError as exc:
         return {"paths": _not_run(str(exc), True), "rule_refs": _not_run(str(exc))}
     groups, total = _repeats([(row.get("reason", ""), row.get("method", ""), row.get("rule_ref", "")) for row in audit])
