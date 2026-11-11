@@ -15,8 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from path_mask import key_ref, mask_path  # noqa: E402
 from preservation import (  # noqa: E402
-    EXCLUSIONS_FORMAT, PATH_PROFILE, Exclusions, PreservationError, Round, is_static, load_exclusions, load_round,
-    main, summarize,
+    EXCLUSIONS_FORMAT, PATH_PROFILE, SUMMARY_FORMAT, AuthHeaders, Exclusions, PreservationError, Round, is_static,
+    load_exclusions, load_round, main, summarize,
 )
 
 KEY = bytes(range(32))
@@ -35,10 +35,14 @@ def engine_row(seq, method="GET", kind="request", sent="yes"):
             "attempt_id_state": "absent", "attempt_id": ""}
 
 
-def path_row(seq, path, method="GET", ref=REF):
+def path_row(seq, path, method="GET", ref=REF, auth=None):
+    """auth가 (Authorization, Cookie) 쌍이면 인증 헤더 칸이 있는 계측기 행, None이면 그 칸이 생기기 전 행이다."""
     pattern, count = mask_path(path, KEY)
-    return {"seq": seq, "method": method, "path_pattern": pattern, "masked_segments": count,
-            "path_profile_ref": PATH_PROFILE, "path_key_ref": ref}
+    row = {"seq": seq, "method": method, "path_pattern": pattern, "masked_segments": count,
+           "path_profile_ref": PATH_PROFILE, "path_key_ref": ref}
+    if auth is not None:
+        row.update(has_authorization=auth[0], has_cookie=auth[1])
+    return row
 
 
 def rnd(*keys, forwarded=None, static=0):
@@ -96,6 +100,22 @@ class LoadRoundTests(unittest.TestCase):
         self.assertTrue(got.reached_budget)
         self.assertFalse(load_round(self.meter(engine, paths), 7, REF).reached_budget)
 
+    def test_auth_headers_are_counted_inside_the_budget(self):
+        # 예산 안 전달 행이면 sent와 상관없이 센다. 봉인 뒤 거부(경로 행 없음)와 예산 밖 행은 세지 않는다.
+        engine = [engine_row(1), engine_row(2), engine_row(3, sent="no"), engine_row(4), engine_row(5),
+                  engine_row(6, kind="rejected", sent="no")]
+        paths = [path_row(1, "/a", auth=(True, False)), path_row(2, "/b", auth=(False, True)),
+                 path_row(3, "/c", auth=(True, True)), path_row(4, "/d", auth=(False, False)),
+                 path_row(5, "/e", auth=(True, True))]
+        self.assertEqual(load_round(self.meter(engine, paths), 4, REF).auth_headers, AuthHeaders(2, 2, 3))
+        self.assertEqual(load_round(self.meter(engine, paths), 10, REF).auth_headers, AuthHeaders(3, 3, 4))
+
+    def test_rows_before_the_auth_columns_are_not_run(self):
+        got = load_round(self.meter([engine_row(1)], [path_row(1, "/a")]), 10, REF)
+        self.assertIsNone(got.auth_headers)
+        # 전달이 없는 회차는 계측기 판과 상관없이 붙은 요청도 없다.
+        self.assertEqual(load_round(self.meter([], []), 10, REF).auth_headers, AuthHeaders(0, 0, 0))
+
     def test_too_long_paths_are_counted(self):
         long_path = "/a" * 33
         got = load_round(self.meter([engine_row(1), engine_row(2)], [path_row(1, long_path), path_row(2, "/b")]), 10, REF)
@@ -144,7 +164,8 @@ class LoadRoundTests(unittest.TestCase):
 
     def test_cli_prints_summary(self):
         base = self.meter([engine_row(1), engine_row(2), engine_row(3)],
-                          [path_row(1, "/a"), path_row(2, "/b"), path_row(3, "/rest/admin/users")])
+                          [path_row(1, "/a", auth=(False, True)), path_row(2, "/b", auth=(False, False)),
+                           path_row(3, "/rest/admin/users", auth=(True, True))])
         improved = self.meter([engine_row(1)], [path_row(1, "/a")])
         rule_file = Path(self.tmp.name, "rules.json")
         rule_file.write_text(json.dumps({"format": EXCLUSIONS_FORMAT, "methods": ["DELETE"],
@@ -160,6 +181,9 @@ class LoadRoundTests(unittest.TestCase):
         self.assertEqual(code, 0)
         summary = json.loads(out.getvalue())
         self.assertEqual((summary["denominator"], summary["union_ratio"], summary["excluded_by_rules"]), (2, 0.5, 1))
+        self.assertEqual(summary["format"], SUMMARY_FORMAT)
+        self.assertEqual(summary["auth_headers"], {"baseline": [{"authorization": 1, "cookie": 2, "any": 2}],
+                                                   "improved": [None]})
         # 패턴·규칙 원문·가명 어느 것도 결과에 싣지 않는다.
         for text in ("/a", "admin", masked("/a"), masked("/rest/admin")):
             self.assertNotIn(text, out.getvalue())
@@ -270,6 +294,12 @@ class SummarizeTests(unittest.TestCase):
                          ([80], [2], [3]))
         self.assertIsNone(summarize([rnd()], [Round(frozenset(), 0, 0, 0, 0, 0)], NONE, False)["browser_cost"][0]
                           ["static_share"])
+
+    def test_auth_headers_are_reported_per_round(self):
+        counted = Round(frozenset(), 3, 0, 3, 0, 0, auth_headers=AuthHeaders(1, 2, 2))
+        got = summarize([counted, rnd()], [rnd(), counted], NONE, False)
+        self.assertEqual(got["auth_headers"], {"baseline": [{"authorization": 1, "cookie": 2, "any": 2}, None],
+                                               "improved": [None, {"authorization": 1, "cookie": 2, "any": 2}]})
 
     def test_baseline_reference_uses_every_ordered_pair(self):
         a, b, c = ("GET", "/a"), ("GET", "/b"), ("GET", "/c")
