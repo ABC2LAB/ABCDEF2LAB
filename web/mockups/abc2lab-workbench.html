@@ -669,6 +669,31 @@
 
   .scrim{position:fixed;inset:0;background:var(--scrim);z-index:30}
 
+  /* 왼쪽 메뉴 · 오른쪽 패널 접기 (이 브라우저에 기억) */
+  .app{transition:grid-template-columns .22s ease}
+  .vb{transition:grid-template-columns .22s ease}
+  .rail .icon-btn.rail-fold{width:30px;height:30px;background:none;border-color:transparent;color:var(--rail-mut)}
+  .rail .icon-btn.rail-fold:hover{background:var(--rail-2);color:var(--rail-ink)}
+  .icon-btn.pane-btn{color:var(--ink-2)}
+  @media (min-width:760px){
+    .app.rail-min{grid-template-columns:64px minmax(0,1fr)}
+    .app.rail-min .rail{align-items:center;overflow-x:hidden;padding-left:max(12px,env(safe-area-inset-left,0px));padding-right:12px}
+    .app.rail-min .rail-top{flex-direction:column;gap:10px}
+    .app.rail-min .brand{padding:4px}
+    .app.rail-min .lbl{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+    .app.rail-min .new-btn{width:40px;height:40px;padding:0}
+    .app.rail-min .rl{position:relative;width:40px;height:40px;padding:0;justify-content:center}
+    .app.rail-min .rl .badge{position:absolute;top:1px;right:-2px;min-width:16px;padding:0 4px;line-height:16px;font-size:10.5px;text-align:center}
+    .app.rail-min .rsec,.app.rail-min .rail-foot{display:none}
+  }
+  @media (min-width:1200px){
+    .app.insp-min .vb{grid-template-columns:minmax(0,1fr) 0px}
+    .app.insp-min .vi{visibility:hidden;overflow:hidden;padding-left:0;padding-right:0;border-left-width:0}
+    .app.insp-min .insp-only{display:inline-flex}
+    .app.insp-min .icon-btn.pane-btn{display:none}
+    .app.insp-min .formbar{display:flex}
+  }
+
   /* 넓지 않은 화면: 상세 패널은 오른쪽에서 열리는 서랍 */
   @media (max-width:1199px){
     .vb{grid-template-columns:minmax(0,1fr)}
@@ -676,6 +701,7 @@
     .view.io .vi{transform:none;visibility:visible;transition:transform .22s ease,visibility 0s}
     .insp-only{display:inline-flex}
     .icon-btn.insp-only{display:inline-grid}
+    .icon-btn.pane-btn{display:none}
     .formbar{display:flex}
   }
   /* 휴대폰: 레일은 왼쪽 서랍, 화면은 한 줄로 */
@@ -686,6 +712,7 @@
     .rail{position:fixed;top:0;left:0;bottom:0;width:min(300px,86vw);z-index:40;transform:translateX(-104%);visibility:hidden;transition:transform .22s ease,visibility 0s linear .22s;padding-top:max(16px,calc(env(safe-area-inset-top,0px) + 12px))}
     .rail.open{transform:none;visibility:visible;transition:transform .22s ease,visibility 0s}
     .icon-btn.rail-x,.icon-btn.menu-btn{display:inline-grid}
+    .rail .icon-btn.rail-fold{display:none}
     .view{display:block}
     .vh{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
     .vh.has-ph{padding-bottom:0}
@@ -716,6 +743,9 @@
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.2v.1"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
   <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15"/></symbol>
+  <symbol id="i-fold-l" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15M15.5 10l-2 2 2 2"/></symbol>
+  <symbol id="i-unfold-l" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15M13.5 10l2 2-2 2"/></symbol>
+  <symbol id="i-fold-r" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15M8.5 10l2 2-2 2"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5l7 3v5.5c0 4.2-3 7.4-7 8.5-4-1.1-7-4.3-7-8.5V6.5z"/></symbol>
   <symbol id="i-chip" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></symbol>
@@ -727,12 +757,13 @@
   <!-- ===== 레일: 메뉴 · 점검 목록 · 운영 상태 ===== -->
   <aside class="rail" id="rail" aria-label="주 메뉴">
     <div class="rail-top">
-      <a class="brand" href="#dashboard"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19L4 12C4 7 7.6 3.5 12 3.5C16.4 3.5 20 7 20 12L20 19L18 21L16 19L14 21L12 19L10 21L8 19L6 21Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.3 8.4L9.3 10.4M14.7 8.4L14.7 10.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 12L15 14.6L12 18.4L9 14.6ZM9.4 14.6L14.6 14.6" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>ABC2LAB</a>
+      <a class="brand" href="#dashboard"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19L4 12C4 7 7.6 3.5 12 3.5C16.4 3.5 20 7 20 12L20 19L18 21L16 19L14 21L12 19L10 21L8 19L6 21Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.3 8.4L9.3 10.4M14.7 8.4L14.7 10.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 12L15 14.6L12 18.4L9 14.6ZM9.4 14.6L14.6 14.6" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span class="lbl">ABC2LAB</span></a>
+      <button class="icon-btn rail-fold" type="button" data-rail-fold aria-controls="rail" aria-expanded="true" aria-label="메뉴 접기" title="메뉴 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-l"/></svg></button>
       <button class="icon-btn rail-x" type="button" data-rail-close aria-label="메뉴 닫기"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
     </div>
-    <a class="new-btn" href="#new" data-nav="new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>새 점검</a>
+    <a class="new-btn" href="#new" data-nav="new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span class="lbl">새 점검</span></a>
     <nav class="rnav" aria-label="화면">
-      <a class="rl" href="#dashboard" data-nav="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg>대시보드<span class="badge" id="railBadge" title="결정 대기">2</span></a>
+      <a class="rl" href="#dashboard" data-nav="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg><span class="lbl">대시보드</span><span class="badge" id="railBadge" title="결정 대기">2</span></a>
     </nav>
     <div class="rsec">
       <div class="rh">진행 중</div>
@@ -768,7 +799,7 @@
           <div class="vh-title"><h1 tabindex="-1">대시보드</h1><span class="snap" id="dSnap"></span></div>
           <div class="vh-acts">
             <button class="btn" type="button" id="dRefresh"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>새로고침</button>
-            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>상세</button>
+            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>상세</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
           </div>
         </div>
       </header>
@@ -807,7 +838,7 @@
           <div class="vh-title"><h1 tabindex="-1">새 점검</h1></div>
           <div class="vh-acts">
             <a class="btn" href="#dashboard">취소</a>
-            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>요약</button>
+            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>요약</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
           </div>
         </div>
       </header>
@@ -971,7 +1002,7 @@
           <div class="vh-acts">
             <button class="btn" type="button" id="cPause" aria-pressed="false"><svg class="ic" aria-hidden="true"><use href="#i-pause"/></svg><span>일시정지</span></button>
             <button class="btn" type="button" id="cCancel">점검 취소</button>
-            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>찾은 경로</button>
+            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>찾은 경로</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
             <a class="btn pri" href="#scope" id="cNext" aria-disabled="true">범위 확인<svg class="ic" aria-hidden="true"><use href="#i-arrow"/></svg></a>
           </div>
         </div>
@@ -1031,7 +1062,7 @@
         <div class="vh-row">
           <div class="vh-title"><h1 tabindex="-1">범위 확인</h1><span class="pill wait">탐색 완료 · 확인 대기</span></div>
           <div class="vh-acts">
-            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>상세</button>
+            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>상세</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
             <a class="btn pri" href="#live" id="sStart">선택한 범위로 점검 시작<svg class="ic" aria-hidden="true"><use href="#i-arrow"/></svg></a>
           </div>
         </div>
@@ -1072,7 +1103,7 @@
           <div class="vh-acts">
             <button class="btn" type="button" id="lPause" aria-pressed="false"><svg class="ic" aria-hidden="true"><use href="#i-pause"/></svg><span>일시정지</span></button>
             <button class="btn danger" type="button" id="lEnd"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>종료</button>
-            <button class="btn insp-only" type="button" data-insp-open id="lInspBtn"><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>발견</button>
+            <button class="btn insp-only" type="button" data-insp-open id="lInspBtn"><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>발견</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
           </div>
         </div>
         <nav class="phases" aria-label="점검 단계" data-phase="live"></nav>
@@ -1133,7 +1164,7 @@
         <div class="vh-top"><button class="icon-btn menu-btn" type="button" data-rail-open aria-label="메뉴 열기"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button><nav class="crumb" aria-label="위치"><a href="#dashboard">작업대</a><span class="sep">/</span><span>점검 기록</span><span class="sep">/</span><span class="host" id="rCrumbHost">blog.example.com</span></nav></div>
         <div class="vh-row">
           <div class="vh-title"><h1 tabindex="-1" id="rTitle">blog.example.com 보고서</h1><span class="pill ok" id="rPill">점검 완료</span></div>
-          <div class="vh-acts"><button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>발견 상세</button></div>
+          <div class="vh-acts"><button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>발견 상세</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button></div>
         </div>
         <div class="vh-meta" id="rMeta"><span>시작 <b>10/25 14:03</b></span><span>소요 <b>28분</b></span><span>모델 <b>qwen/qwen3.6-35b-a3b · 로컬</b></span><span>커버리지 <b>91%</b></span></div>
       </header>
@@ -1254,13 +1285,33 @@
   function goTo(name){ if(location.hash==='#'+name) route(true); else location.hash=name; }
 
   // 상세 패널(넓지 않은 화면에서는 서랍) · 레일(휴대폰에서는 서랍)
-  function openInsp(){ if(!NARROW.matches) return; var v=view(); v.classList.add('io'); scrim.hidden=false; var b=$('.vi [data-insp-close]',v); if(b) setTimeout(function(){ b.focus(); }, 30); }
+  function openInsp(){ if(!NARROW.matches){ if(app.classList.contains('insp-min')) setInspMin(false, true); return; } var v=view(); v.classList.add('io'); scrim.hidden=false; var b=$('.vi [data-insp-close]',v); if(b) setTimeout(function(){ b.focus(); }, 30); }
   function closeInsp(){ $$('.view.io').forEach(function(v){ v.classList.remove('io'); }); if(!rail.classList.contains('open')) scrim.hidden=true; }
   function openRail(){ rail.classList.add('open'); scrim.hidden=false; var b=$('[data-rail-close]',rail); setTimeout(function(){ b.focus(); }, 30); }
   function closeRail(){ rail.classList.remove('open'); if(!$('.view.io')) scrim.hidden=true; }
+
+  // 왼쪽 메뉴 · 오른쪽 패널 접기 (넓은 화면). 접힌 오른쪽 패널은 머리의 '요약·상세' 버튼이나 항목 선택으로 다시 펼친다.
+  var app=$('.app');
+  var RAIL_TIPS=[['.brand','ABC2LAB'],['.new-btn','새 점검'],['.rl[data-nav="dashboard"]','대시보드']];
+  function setRailMin(on, save){
+    app.classList.toggle('rail-min', on);
+    var b=$('[data-rail-fold]'), t= on ? '메뉴 펼치기' : '메뉴 접기';
+    b.setAttribute('aria-expanded', on ? 'false' : 'true'); b.setAttribute('aria-label', t); b.title=t;
+    $('use', b).setAttribute('href', on ? '#i-unfold-l' : '#i-fold-l');
+    RAIL_TIPS.forEach(function(p){ var el=$(p[0], rail); if(!el) return; if(on) el.title=p[1]; else el.removeAttribute('title'); });
+    if(save){ try{ localStorage.setItem('abc2lab-rail-min', on ? '1' : '0'); }catch(err){} }
+  }
+  function setInspMin(on, save){
+    app.classList.toggle('insp-min', on);
+    $$('[data-insp-fold]').forEach(function(b){ b.setAttribute('aria-expanded', on ? 'false' : 'true'); });
+    if(save){ try{ localStorage.setItem('abc2lab-insp-min', on ? '1' : '0'); }catch(err){} }
+  }
   document.addEventListener('click', function(e){
     var t=e.target;
-    if(t.closest('[data-insp-open]')){ openInsp(); return; }
+    if(t.closest('[data-rail-fold]')){ setRailMin(!app.classList.contains('rail-min'), true); return; }
+    if(t.closest('[data-insp-fold]')){ setInspMin(true, true); var ob=$('[data-insp-open]', view()); if(ob) setTimeout(function(){ ob.focus(); }, 30); return; }
+    if(t.closest('[data-insp-open]')){ var wasMin=!NARROW.matches && app.classList.contains('insp-min'); openInsp();
+      if(wasMin){ var fb=$('[data-insp-fold]', view()); if(fb) setTimeout(function(){ fb.focus(); }, 30); } return; }
     if(t.closest('[data-insp-close]')){ closeInsp(); return; }
     if(t.closest('[data-rail-open]')){ openRail(); return; }
     if(t.closest('[data-rail-close]')){ closeRail(); return; }
@@ -2158,6 +2209,8 @@
     try{ localStorage.setItem('abc2lab-accent',k); }catch(err){} }
   document.addEventListener('click', function(e){ var b=e.target.closest('[data-accent-pick]'); if(b) setAccent(b.getAttribute('data-accent-pick')); });
   try{ var savedAccent=localStorage.getItem('abc2lab-accent'); if(savedAccent==='cobalt'||savedAccent==='mono') setAccent(savedAccent); }catch(err){}
+
+  try{ if(localStorage.getItem('abc2lab-rail-min')==='1') setRailMin(true); if(localStorage.getItem('abc2lab-insp-min')==='1') setInspMin(true); }catch(err){}
 
   /* ---------- 시작 ---------- */
   liveReset('resume');

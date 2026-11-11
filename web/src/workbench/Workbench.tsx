@@ -12,7 +12,7 @@ import { cx } from "./lib/cx";
 import { LiveGate, useLiveAuthBoot } from "./live/auth";
 import { UrlFeeds } from "./live/urlDiagnosis";
 import { isView, type Shell, ShellContext, type View } from "./shell";
-import { type DSel, useWb } from "./store";
+import { type DSel, type Panel, useWb } from "./store";
 import { Icon } from "./ui/icons";
 import { Rail } from "./ui/Rail";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "./views/live/byMode";
@@ -28,9 +28,34 @@ interface Nav {
   railNewVisible: boolean;
 }
 
+/** 넓은 화면에서 접은 패널을 이 브라우저에 기억하는 키. */
+const PANEL_KEY: Readonly<Record<Panel, string>> = { rail: "abc2lab-rail-hidden", insp: "abc2lab-insp-hidden" };
+/** 패널을 접거나 펼친 뒤 다음 버튼으로 포커스를 옮기기까지 (화면이 다시 그려질 시간). */
+const FOCUS_DELAY_MS = 30;
+
+/**
+ * 화면이 그 폭보다 넓은가 (matchMedia 결과가 거짓). matchMedia 가 없는 환경(테스트)은 넓다고 보지 않는다
+ * → 기존 서랍 동작 그대로.
+ */
+const wider = (mq: MediaQueryList | null) => !!mq && !mq.matches;
+
+/** 넓은 화면 패널 접기 · 펼치기를 스토어와 이 브라우저 저장소에 같이 쓴다. */
+function setPanel(panel: Panel, hidden: boolean) {
+  useWb.getState().setPanelHidden(panel, hidden);
+  try {
+    if (hidden) localStorage.setItem(PANEL_KEY[panel], "1");
+    else localStorage.removeItem(PANEL_KEY[panel]);
+  } catch {
+    // 저장소를 못 쓰면 이번만 적용
+  }
+}
+
 export function Workbench() {
   useLiveAuthBoot();
   const accent = useWb((st) => st.accent);
+  const theme = useWb((st) => st.theme);
+  const railHidden = useWb((st) => st.railHidden);
+  const inspHidden = useWb((st) => st.inspHidden);
   const [route, setRoute] = useState<View>("dashboard");
   const [nav, setNav] = useState<Nav>({ seq: 0, byUser: false, railNewVisible: false });
   // 두 서랍을 한 상태로: Esc 는 상세 먼저, 없으면 레일 (원본 keydown)
@@ -42,23 +67,58 @@ export function Workbench() {
   const [reduce, setReduce] = useState(false);
 
   const narrowMq = useRef<MediaQueryList | null>(null);
+  const phoneMq = useRef<MediaQueryList | null>(null);
   const routeRef = useRef<View>("dashboard");
   const openAfter = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const views = useRef<Partial<Record<View, HTMLElement | null>>>({});
 
-  // 상세 패널(넓지 않은 화면에서는 서랍) · 레일(휴대폰에서는 서랍)
+  /** 지금 화면 안에서 고른 버튼에 잠시 뒤 포커스 (접은 패널의 버튼이 사라지므로 다시 펼칠 버튼으로 옮긴다). */
+  const focusLater = useCallback((selector: string, inView: boolean) => {
+    window.setTimeout(() => {
+      const scope = inView ? views.current[routeRef.current] : rootRef.current;
+      try {
+        scope?.querySelector<HTMLElement>(selector)?.focus();
+      } catch {
+        // 포커스 실패는 무시
+      }
+    }, FOCUS_DELAY_MS);
+  }, []);
+  // 상세 패널: 넓지 않은 화면에서는 서랍, 넓은 화면에서는 접기 · 펼치기(항목을 고르면 다시 펼친다)
   const openInsp = useCallback(() => {
+    if (wider(narrowMq.current)) {
+      if (!useWb.getState().inspHidden) return;
+      setPanel("insp", false);
+      setInspFocus((n) => n + 1);
+      return;
+    }
     if (!narrowMq.current?.matches) return;
     setDrawers((d) => ({ ...d, insp: true }));
     setInspFocus((n) => n + 1);
   }, []);
-  const closeInsp = useCallback(() => setDrawers((d) => (d.insp ? { ...d, insp: false } : d)), []);
+  const closeInsp = useCallback(() => {
+    if (wider(narrowMq.current)) {
+      setPanel("insp", true);
+      focusLater("[data-pane-toggle]", true);
+      return;
+    }
+    setDrawers((d) => (d.insp ? { ...d, insp: false } : d));
+  }, [focusLater]);
+  // 레일: 휴대폰에서는 서랍, 그보다 넓으면 접기 · 펼치기
   const openRail = useCallback(() => {
+    if (wider(phoneMq.current)) {
+      setPanel("rail", false);
+      focusLater("[data-rail-fold]", false);
+      return;
+    }
     setDrawers((d) => ({ ...d, rail: true }));
     setRailFocus((n) => n + 1);
-  }, []);
+  }, [focusLater]);
   const closeRail = useCallback(() => setDrawers((d) => (d.rail ? { ...d, rail: false } : d)), []);
+  const foldRail = useCallback(() => {
+    setPanel("rail", true);
+    focusLater("[data-rail-fold]", false);
+  }, [focusLater]);
 
   /** 원본 route(byUser): 해시 → 화면. 서랍을 닫고 진입 처리(crawlEnter · liveEnter)를 한 뒤, 스크롤·포커스는 레이아웃 effect 에서. */
   const doRoute = useCallback((byUser: boolean) => {
@@ -102,6 +162,7 @@ export function Workbench() {
     const nq = window.matchMedia("(max-width:1199px)");
     const pq = window.matchMedia("(max-width:759px)");
     narrowMq.current = nq;
+    phoneMq.current = pq;
     setReduce(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     const sync = () => {
       setNarrow(nq.matches);
@@ -195,13 +256,18 @@ export function Workbench() {
     return () => root.removeEventListener("click", onClick);
   }, []);
 
-  // 강조색 시안 복원 (이 브라우저에만 기억)
+  // 강조색 시안 · 화면 모드 · 접은 패널 복원 (이 브라우저에만 기억)
   useEffect(() => {
     try {
       const saved = localStorage.getItem("abc2lab-accent");
       if (saved === "cobalt" || saved === "mono") useWb.getState().setAccent(saved);
+      const savedTheme = localStorage.getItem("abc2lab-theme");
+      if (savedTheme === "light" || savedTheme === "dark") useWb.getState().setTheme(savedTheme);
+      for (const panel of ["rail", "insp"] as const) {
+        if (localStorage.getItem(PANEL_KEY[panel]) === "1") useWb.getState().setPanelHidden(panel, true);
+      }
     } catch {
-      // 저장소를 못 쓰면 기본색
+      // 저장소를 못 쓰면 기본색 · 펼친 패널
     }
   }, []);
 
@@ -229,9 +295,10 @@ export function Workbench() {
       closeInsp,
       openRail,
       closeRail,
+      foldRail,
       dashPick,
     }),
-    [route, nav, narrow, phone, reduce, drawers, goTo, openInsp, closeInsp, openRail, closeRail, dashPick],
+    [route, nav, narrow, phone, reduce, drawers, goTo, openInsp, closeInsp, openRail, closeRail, foldRail, dashPick],
   );
 
   const section = (name: View, body: ReactNode) => (
@@ -251,13 +318,19 @@ export function Workbench() {
 
   return (
     <ShellContext.Provider value={shell}>
-      <div ref={rootRef} className={s.root} data-accent={accent === "petrol" ? undefined : accent}>
+      <div
+        ref={rootRef}
+        className={s.root}
+        data-wb-root=""
+        data-accent={accent === "petrol" ? undefined : accent}
+        data-theme={theme === "system" ? undefined : theme}
+      >
         <UrlFeeds />
         <div className={cx(s.demobar, s["lv-bar"])} role="note">
           <Icon name="info" />
           <span>실제 서버 전용 · 승인 범위와 사용량은 서버가 확인한 값만 표시합니다.</span>
         </div>
-        <div className={s.app}>
+        <div className={cx(s.app, railHidden && s["rail-hidden"], inspHidden && s["insp-hidden"])}>
           <Rail />
           <main className={s.work}>
             {section("dashboard", pick("대시보드", <DashboardByMode />))}

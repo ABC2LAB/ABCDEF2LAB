@@ -64,12 +64,24 @@ export function urlPhaseIndex(phase: UrlPhase): number {
 }
 
 /** 진단을 열 때 갈 수 있는 화면. */
-export type UrlView = Extract<View, "scope" | "live" | "report">;
+export type UrlView = Extract<View, "new" | "live" | "report">;
 
-/** 이 진단을 열 때 갈 화면: 시작 전 → 범위 확인, 결과 저장 확인 → 보고서, 그 밖 → 점검 진행. */
+/** 이 진단을 열 때 갈 화면: 시작 전 → 새 점검(승인 범위 확인 · 시작), 결과 저장 확인 → 보고서, 그 밖 → 점검 진행. */
 export function urlViewFor(job: Pick<URLDiagnosisJob, "state" | "result_ready" | "task_id">): UrlView {
-  if (URL_PRESTART_STATES.includes(job.state)) return "scope";
+  if (URL_PRESTART_STATES.includes(job.state)) return "new";
   if (job.result_ready && job.task_id) return "report";
+  return "live";
+}
+
+/** 탐색 단계까지 보고 갈 화면: 탐색 중 → 자산 탐색, 선택 대기 → 범위 확인, 그 밖은 urlViewFor. */
+export function scanViewFor(
+  job: Pick<URLDiagnosisJob, "state" | "result_ready" | "task_id">,
+  stage: "crawling" | "awaiting_selection" | "diagnosing" | "completed" | "stopped" | "failed" | "unknown" | null,
+): Extract<View, "new" | "crawl" | "scope" | "live" | "report"> {
+  const to = urlViewFor(job);
+  if (to !== "live") return to;
+  if (stage === "crawling") return "crawl";
+  if (stage === "awaiting_selection") return "scope";
   return "live";
 }
 
