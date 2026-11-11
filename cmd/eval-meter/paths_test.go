@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/hex"
-	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -12,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Autumn-27/artex/pathmask"
 )
 
 const (
@@ -68,54 +68,6 @@ func TestEnablePathLogRejectsWrongKeyLength(t *testing.T) {
 	}
 }
 
-// 가림 규칙의 합성 벡터는 testdata에 두어 다른 언어의 소비자도 같은 값으로 시험할 수 있게 한다.
-func TestMaskPath(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("testdata", "path-mask-v2.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var file struct {
-		Profile string `json:"profile"`
-		KeyHex  string `json:"key_hex"`
-		KeyRef  string `json:"key_ref"`
-		Vectors []struct {
-			Name           string `json:"name"`
-			Path           string `json:"path"`
-			PathPattern    string `json:"path_pattern"`
-			MaskedSegments int    `json:"masked_segments"`
-		} `json:"vectors"`
-	}
-	if err := json.Unmarshal(raw, &file); err != nil {
-		t.Fatal(err)
-	}
-	key, err := hex.DecodeString(file.KeyHex)
-	if file.Profile != pathMaskProfile || len(file.Vectors) < 20 || err != nil || len(key) != pathKeyBytes {
-		t.Fatal(file.Profile, len(file.Vectors), err)
-	}
-	if got := pathKeyRef(key); got != file.KeyRef || got == pathKeyRef(testPathKey) {
-		t.Fatal(got)
-	}
-	for _, tc := range file.Vectors {
-		t.Run(tc.Name, func(t *testing.T) {
-			pattern, masked := maskPath(tc.Path, key)
-			if pattern != tc.PathPattern || masked != tc.MaskedSegments {
-				t.Fatalf("got %q %d want %q %d", pattern, masked, tc.PathPattern, tc.MaskedSegments)
-			}
-		})
-	}
-}
-
-func TestMaskPathBoundsSegments(t *testing.T) {
-	fits := strings.Repeat("/1", maxPathSegments) + "/"
-	if pattern, masked := maskPath(fits, testPathKey); pattern != strings.Repeat("/{id}", maxPathSegments)+"/" || masked != maxPathSegments {
-		t.Fatal(pattern, masked)
-	}
-	tooLong := strings.Repeat("/a", maxPathSegments+1)
-	if pattern, masked := maskPath(tooLong, testPathKey); pattern != maskedLongPath || masked != maxPathSegments+1 {
-		t.Fatal(pattern, masked)
-	}
-}
-
 // startPathEngine은 경로 기록을 켠 계측기 앞단 주소와 경로 기록 파일 위치를 준다.
 func startPathEngine(t *testing.T) (*engineMeter, string, string) {
 	t.Helper()
@@ -152,8 +104,8 @@ func TestEnginePathLogRecordsMaskedForwardedRequests(t *testing.T) {
 	if status, _ := do(http.MethodGet, "/after/seal"); status != http.StatusServiceUnavailable {
 		t.Fatal(status)
 	}
-	h := func(segment string) string { return pseudonym(segment, testPathKey) }
-	ref := pathKeyRef(testPathKey)
+	h := func(segment string) string { return pathmask.Pseudonym(segment, testPathKey) }
+	ref := pathmask.KeyRef(testPathKey)
 	want := []pathRow{
 		{1, "GET", "/" + h("api") + "/" + h("Users") + "/{id}", 1, pathMaskProfile, ref, false, true},
 		{2, "POST", "/" + h("users") + "/{id}", 1, pathMaskProfile, ref, false, true},

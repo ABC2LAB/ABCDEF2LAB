@@ -357,7 +357,9 @@ class MeterPathLogTests(unittest.TestCase):
 
     def test_path_row_format_matches_the_meter(self):
         go = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/paths.go").read_text(encoding="utf-8")
-        self.assertRegex(go, r'pathMaskProfile\s*=\s*"%s"' % re.escape(PATH_PROFILE))
+        mask = (Path(__file__).resolve().parents[3] / "pathmask/pathmask.go").read_text(encoding="utf-8")
+        self.assertRegex(mask, r'\bProfile\s*=\s*"%s"' % re.escape(PATH_PROFILE))
+        self.assertIn("pathMaskProfile   = pathmask.Profile", go)
         for field in ("seq", "method", "path_pattern", "masked_segments", "path_profile_ref", "path_key_ref",
                       *sorted(PATH_AUTH_FIELDS)):
             self.assertIn('`json:"%s"`' % field, go)

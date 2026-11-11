@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Autumn-27/artex/pathmask"
 )
 
 const (
@@ -442,7 +444,7 @@ func (m *engineMeter) enablePathLog(key []byte) string {
 	if code != "" {
 		return code
 	}
-	m.paths, m.pathKey, m.pathKeyRef = &rowLog{file: file}, key, pathKeyRef(key)
+	m.paths, m.pathKey, m.pathKeyRef = &rowLog{file: file}, key, pathmask.KeyRef(key)
 	return ""
 }
 
@@ -468,7 +470,7 @@ func (m *engineMeter) writePathLocked(seq uint64, r *http.Request) {
 	if m.paths == nil {
 		return
 	}
-	pattern, masked := maskPath(r.URL.EscapedPath(), m.pathKey)
+	pattern, masked := pathmask.Mask(r.URL.EscapedPath(), m.pathKey)
 	if err := m.paths.write(pathRow{Seq: seq, Method: r.Method, PathPattern: pattern, MaskedSegments: masked, PathProfileRef: pathMaskProfile,
 		PathKeyRef: m.pathKeyRef, HasAuthorization: hasHeaderValue(r.Header, "Authorization"),
 		HasCookie: hasHeaderValue(r.Header, "Cookie")}); err != nil {
