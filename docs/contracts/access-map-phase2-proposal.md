@@ -1,7 +1,7 @@
 # 접근통제 지도 Phase 2 셀 상태(`untested`·`na`) — 의미·소비 계약 제안
 
 작성: 2026-11-10 · 이경준 · **팀 리뷰용 제안, 미확정.** 서버 projection·저장·E① 구현은 이동찬 lane이고, 여기서 고정하는 것은 **표시 의미와 소비 규칙**이다.
-검토 기준: `dev` `d582937`.
+검토 기준: `dev` `9b948d8`.
 연결: [access-map-read](./access-map-read.md)(1단계 구현 계약) · [kg-policy §4.2·§6 Open #7 (a)](./kg-policy.md#42-접근통제-지도-실데이터-읽기-어댑터-open-6-구체화--verdict-record-open-4-공동-응답) · [kg-fixture-registry §2](./kg-fixture-registry.md) · [verdict-record](./verdict-record.md) · E①(`agent/planner.go:303` — 탐색 종료·재계획, 포크 SHA 참조점)
 
 이 문서는 [kg-policy §6 Open #7 (a)](./kg-policy.md#6-open--팀-정렬-필요)("Phase 2 `untested`·`na`: … **이경준 계약 제안 예정**")의 응답이다. [access-map-read](./access-map-read.md) "셀 선택·상태"가 미산출로 남긴 두 상태를 산출 가능하게 하는 근거·발행·소비를 정한다. 구현 완료나 팀 최종 합의 선언이 아니다.
@@ -26,9 +26,10 @@
 - `applicable` ∈ `true`(정책에 평가 주체 등록)·`null`(등록 근거 없음). **`false`는 "1단계 미산출"**.
 - 레코드 0건 분기: 시도 후 누락 `record_missing_after_attempt`(unknown) · 적용 근거만 있고 관측 미확인 `observation_unavailable`(unknown) · 성공한 조회에서 관련 근거 전무 `blank`.
 
-**클라 seam**([web/src/abc2lab-ui/lib/kg.ts](../../web/src/abc2lab-ui/lib/kg.ts)):
+**클라 seam**([web/src/lib/diagnosis/kg.ts](../../web/src/lib/diagnosis/kg.ts)):
+- #353(Workbench 단일화)으로 지도 화면이 빠져 지금은 **seam만 남아 있다**(화면 재부착은 이경준 후속). 아래 현황은 옮겨진 파일 기준이다.
 - `AccessDecision` 타입에 `untested`·`na`가 **이미 있다** — 라벨(`미검사`·`—`), 셀 클래스(`cell-none`·`cell-na`), `KNOWN_DECISIONS` 포함. 색·집계 자리는 준비됨.
-- 그러나 `API_STATE_DECISION`은 Phase 1 상태만 매핑한다 → 서버가 지금 `state="untested"`나 `"na"`를 보내도 **매핑 없음 → `미등록 state`로 fail-closed unknown**. 즉 UI는 아직 두 상태를 **신뢰해서 받지 않는다**.
+- 그러나 `API_STATE_DECISION`은 Phase 1 상태만 매핑한다 → 서버가 지금 `state="untested"`나 `"na"`를 보내도 **매핑 없음 → `미등록 state`로 fail-closed unknown**. 즉 UI는 실데이터 경로에서 아직 두 상태를 **신뢰해서 받지 않는다**. `kg.ts` MOCK이 `untested`를 보여 주는 것은 **예시 표시일 뿐** Phase 2 동작 근거가 아니다.
 - `applicable`은 `cellNote`에서만 소비된다(`false`→"적용 불가 근거 있음", `null`→"적용 여부 미확인"). **색(decision)을 결정하지는 않는다.**
 
 따라서 Phase 2 작업은 둘로 갈린다: **(서버)** `state`에 두 값을 추가 발행 + 뒷받침 근거 필드 결속 / **(UI)** 두 값의 `state→decision` 매핑과 교차검증 추가.
@@ -62,17 +63,17 @@
 ### 3.2 근거 출처 (제안 — 저장·스키마는 owner)
 - `applicable=false`는 **검사 계획/정책의 명시적 비적용 선언**에서만 온다. 현재 레지스트리 `resources[].policies[]`는 **적용 pair만** 선언하므로(→ `applicable=true`), **비적용을 선언할 수단이 지금 없다.** 새 근거가 필요하다(§7 Open #1).
 - 후보 두 가지 — 어느 쪽이든 **명시적 선언**이어야 하고 부재 추론은 금지:
-  - (A) 레지스트리 `resources[]`에 자원별 **out-of-scope principal** 선언(최민준 [kg-fixture-registry](./kg-fixture-registry.md) 확장).
+  - (A) 레지스트리 `resources[]`에 자원별 **out-of-scope principal** 선언(최민준 [kg-fixture-registry](./kg-fixture-registry.md) 확장). **비용**: 레지스트리 §2는 객체마다 다른 키를 금지하고 `format`이 정확히 `abc2lab.kg-fixture-registry/v1`이므로, 키를 더하면 현재 해석기가 레지스트리 전체를 `registry_format`으로 거부한다 → 형식 버전(`/v2`)과 해석기를 함께 바꿔야 한다.
   - (B) E①/검사 계획이 "이 `(resource_ref, principal)`은 계획상 비대상"을 명시 기록(이동찬).
 - **금지 추론**: 레코드 부재, `owner==evaluated`, `applicable=null`, 평가 정답 목록(절대규칙 7)에서 `na`를 끌어내지 않는다.
 
 ### 3.3 projection 발행 (제안 → 이동찬)
-- `state="na"` ⟺ `applicable=false`로 **1:1**. 둘이 어긋나면(한쪽만 설정) 불일치이므로 projection은 그 셀을 `na`로 내지 말고 `observation_unavailable`/`blank` 또는 projection-error로 처리한다.
+- `state="na"` ⟺ `applicable=false`로 **1:1**. 둘이 어긋나면(한쪽만 설정) 불일치이므로 projection은 그 셀을 **projection-error(예: `na_evidence_mismatch`)로만** 내린다. `blank`(근거 전무)·`observation_unavailable`(적용 근거 있음)로 내리지 않는다 — `applicable=false` 자체가 근거라 두 상태의 정의와 부딪치고, 불일치가 정상 색 안에 묻힌다.
 - `na` 셀: `oracle_value`·`record_id`·`case_ref`·`observed_at`은 `null`. `reason_codes`·`canary_fields`는 `[]`. 적용불가 **근거 참조**는 별도 필드(라벨/코드만, 값·URL·계정 원문 금지 — 절대규칙 2).
 
 ### 3.4 UI 소비 (내 lane — 구현 가능)
 - `API_STATE_DECISION`에 `na: "na"` 추가.
-- **교차검증(fail-closed)**: `state="na"`인데 `applicable !== false`면 색을 주지 않고 `unknown` + projection-error "na 근거 불일치". (역방향 `applicable===false`인데 `state!=="na"`는 서버 분기 문제이므로 §3.3 규칙으로 서버에서 막고, UI는 `state`만 신뢰한다.)
+- **교차검증(fail-closed)**: `state="na"`인데 `applicable !== false`면 색을 주지 않고 `unknown` + projection-error "na 근거 불일치". 역방향(`applicable===false`인데 `state!=="na"`)도 §3.3으로 서버가 막되, UI도 같은 fail-closed로 `unknown` + projection-error "적용불가 근거와 충돌"로 내린다(§5).
 - 집계·표시: `countDecisions`의 `na`는 이미 0 초기화됨. 라벨 `—`, 셀 `cell-na`, 배지 없음. **헤드라인 커버리지 분모에서 `na`를 빼는 집계 보조는 §7 Open #5에서 접근성과 함께 확인.**
 
 ## 4. `untested` (미시도) — E① 선행
@@ -85,12 +86,12 @@
 
 ### 4.3 필요한 두 근거 (제안 → 이동찬 E① · 최민준 case)
 두 근거가 **같은 scope**(task/run·reset 세대·정책 snapshot·판정 축 — [kg-policy §4.2(4)](./kg-policy.md))에 결속돼야 한다.
-1. **검사 계획(test plan)** — 어떤 `(resource_ref, evaluated_ref, 행동)`을 볼 작정이었나. 출처 후보 = 레지스트리 `policies[]`의 `(resource_ref, evaluated_ref)` + E① 플래너가 실제로 연 계획 항목. 계획에 있음 = `applicable=true`의 근거.
-2. **시도 원장(attempt ledger)** — 계획 항목별 상태: (a) **미시도**, (b) 시도했으나 레코드 없음(`record_missing_after_attempt`), (c) 시도→레코드 있음.
-- `untested` = 계획에 있음(1) ∧ 시도 원장이 **명시적 미시도 (a)**로 확정. **(b)는 `unknown`, (c)는 Phase 1 레코드 분기로 간다.**
+1. **검사 계획(test plan)** — 어떤 `(resource_ref, evaluated_ref, 행동)`을 볼 작정이었나. 출처 = **레지스트리 `policies[]`의 `(resource_ref, evaluated_ref)`로 한정**한다. 계획에 있음 = `applicable=true`의 근거이고, [access-map-read](./access-map-read.md)의 `applicable=true` 정의(레지스트리 정책에 평가 주체 등록)와 같은 출처다. E① 플래너가 레지스트리 밖 `(resource, principal)`을 계획한 경우는 Phase 2 `untested` 대상이 아니다 — 넓히려면 `applicable` 정의 확장을 access-map-read 소유자에게 제안해야 한다(§7 Open #3).
+2. **시도 원장(attempt ledger)** — 계획 항목별 상태: (a) **미시도**, (b) 시도했으나 레코드 없음(`record_missing_after_attempt`), (c) 시도→레코드 있음, (d) **시도했으나 미송신**(E② 사전 거부·예산/중지·네트워크 실패, 사유 코드 동반).
+- `untested` = 계획에 있음(1) ∧ 시도 원장이 **명시적 미시도 (a)**로 확정. **(b)·(d)는 `unknown`, (c)는 Phase 1 레코드 분기로 간다.** (d)를 따로 두는 이유: 송신 0건 시도를 (a)로 기록하면 차단된 검사가 "미검사"로 보여 §2 불변식(송신 0건 ⇏ `untested`)을 어긴다.
 
 ### 4.4 E① 의존성 (왜 선행)
-E①(탐색 종료·재계획, `agent/planner.go:303`)이 '검사완료·발견없음'/'증거부족'/'미시도'를 **명시 처리**해야(CLAUDE.md E①) projection이 "미시도"를 **양의 신호**로 받아 발행할 수 있다. E① 없이 시도 0건을 미시도로 추정하면 fail-closed 위반이다. 그래서 `untested`는 **E① 선행**이다([kg-policy §4.2(3) "E① 선행"·§6 Open #7 (a)](./kg-policy.md)).
+CLAUDE.md E①(탐색 종료·재계획, `agent/planner.go:303`)이 명시 처리하는 것은 '검사완료·발견없음'/'증거부족'/'정책상 검증불가'다. **'미시도'는 들어 있지 않으므로 이 문서가 E①에 새로 추가 요청한다.** '정책상 검증불가'(E② 사전 거부 등)는 이 지도에서 시도 원장 (d) → `unknown`이다. E①이 '미시도'까지 명시 처리해야 projection이 "미시도"를 **양의 신호**로 받아 발행할 수 있다. E① 없이 시도 0건을 미시도로 추정하면 fail-closed 위반이다. 그래서 `untested`는 **E① 선행**이다([kg-policy §4.2(3) "E① 선행"·§6 Open #7 (a)](./kg-policy.md)).
 
 **범위 가드**: 시도 원장은 **조회(읽기) 한정**이다. 상태변경 행동은 얇은 IDOR 경로 밖(절대규칙 6)이라 이 계획/원장에 포함하지 않는다. E② 사전 거부·예산/중지·네트워크 실패는 미시도가 아니라 `unknown`이다(§2 불변식).
 
@@ -106,20 +107,20 @@ E①(탐색 종료·재계획, `agent/planner.go:303`)이 '검사완료·발견�
 
 ## 5. 소비 계약 요약 (state → decision + 교차검증)
 
-UI가 서버 `state`를 받아 색으로 확정하는 규칙. Phase 2가 추가하는 두 행이 굵게.
+UI가 서버 `state`를 받아 색으로 확정하는 규칙. Phase 2가 추가하는 두 행이 굵게. 공통 규칙: **`applicable===false`면 `na` 말고는 전부 `unknown`**이고, `blank`는 `applicable=null`일 때만 그린다.
 
 | 서버 `state` | 기대 `applicable` | UI `decision` | fail-closed(어긋나면) |
 |---|---|---|---|
-| `confirmed` | (무관) | `vuln` | — |
-| `suspected` | (무관) | `suspected` | — |
-| `allow-ok` | (무관) | `allow-ok` | — |
+| `confirmed` | `false` 아님 | `vuln` | `applicable===false` → `unknown`("적용불가 근거와 충돌") |
+| `suspected` | `false` 아님 | `suspected` | `applicable===false` → `unknown`("적용불가 근거와 충돌") |
+| `allow-ok` | `false` 아님 | `allow-ok` | `applicable===false` → `unknown`("적용불가 근거와 충돌") |
 | `unknown` | (무관) | `unknown` + 사유 | — |
-| `blank` | `null` 기대 | `blank` | — |
+| `blank` | `null` 필수 | `blank` | `applicable!==null` → `unknown`("blank 근거 불일치" — 정책 등록 셀은 access-map-read상 `observation_unavailable`이어야 함) |
 | **`untested`** | **`true` 필수** | **`untested`** | **`applicable!==true` → `unknown`("미시도 근거 불일치")** |
 | **`na`** | **`false` 필수** | **`na`** | **`applicable!==false` → `unknown`("na 근거 불일치")** |
 | (미등록 state) | — | `unknown` | 색 추정 금지("미등록 state") |
 
-`projection_error`가 있으면 Phase 1처럼 **항상 우선**해서 `unknown`으로 내린다(§4.2(2) 별도 네임스페이스). 색 추정 금지·중복 셀 `selection_ambiguous`·미반환 `unknown`은 그대로다. 이 교차검증은 기존 UI 선행 하드닝(§4.2(7))의 Phase 2 확장이다.
+`projection_error`가 있으면 Phase 1처럼 **항상 우선**해서 `unknown`으로 내린다([kg-policy §4.2(2)](./kg-policy.md) 별도 네임스페이스). 색 추정 금지·중복 셀 `selection_ambiguous`·미반환 `unknown`은 그대로다. 이 교차검증은 기존 UI 선행 하드닝([kg-policy §4.2(7)](./kg-policy.md))의 Phase 2 확장이다.
 
 ## 6. 단계·담당
 
@@ -138,8 +139,8 @@ UI가 서버 `state`를 받아 색으로 확정하는 규칙. Phase 2가 추가�
 
 1. **`na` 근거 출처** — 레지스트리 비적용 선언(§3.2 (A), 최민준) vs E①/검사 계획 비대상 기록(§3.2 (B), 이동찬). 어디에 둘지. (`applicable=false`의 정본 발급 주체 확정)
 2. **`untested` 시도 원장** — E① 산출물 형태·결속 키(계획 ref ↔ 시도 상태 코드)·scope 결속 방식. [verdict-record](./verdict-record.md)의 읽기 계약(`count_basis`)과 중복·정렬되는지(미시도를 거기서 읽나 별도 원장인가).
-3. **`applicable`↔`state` 발행 위치** — projection이 둘을 각각 내보내나, 하나에서 다른 하나를 파생하나. §3.3·§5 교차검증의 정본.
-4. **시도 상태 코드 네임스페이스** — 미시도/시도-후-누락/시도-후-레코드 코드를 projection-error·oracle `reason_codes`와 **분리**해서 둘지(§4.2(2)의 별도 네임스페이스 관례).
+3. **`applicable`↔`state` 발행 위치** — projection이 둘을 각각 내보내나, 하나에서 다른 하나를 파생하나. §3.3·§5 교차검증의 정본. 레지스트리 밖 E① 계획 항목까지 `untested`로 볼지(=`applicable` 정의 확장, access-map-read 소유자)도 여기서 정한다.
+4. **시도 상태 코드 네임스페이스** — 미시도/시도-후-누락/시도-후-레코드/시도-미송신 코드를 projection-error·oracle `reason_codes`와 **분리**해서 둘지([kg-policy §4.2(2)](./kg-policy.md)의 별도 네임스페이스 관례).
 5. **축소 화면 시각 구분·집계** — `na`/`blank`/`untested` 3색(`cell-na`·`cell-blank`·`cell-none`)의 접근성 대비, 헤드라인 커버리지 분모에서 `na` 제외 여부·집계 보조.
 
 > 교차참조: 이 문서는 [kg-policy §6 Open #7 (a)](./kg-policy.md)의 "이경준 계약 제안 예정"에 대한 응답 제안이다. [access-map-read](./access-map-read.md)·[verdict-record](./verdict-record.md)·[kg-fixture-registry](./kg-fixture-registry.md) 쪽 역링크나 스키마 변경은 각 문서 소유자(이동찬·최민준) 리뷰로 제안한다 — 직접 편집하지 않는다. 서버 projection·저장·E① 구현은 이동찬 lane이다.
