@@ -1938,6 +1938,7 @@ select.inp {
 .formbar {
   position: sticky;
   bottom: 0;
+  z-index: 2;
   margin-top: -6px;
   padding: 12px 0;
   border-top: 1px solid var(--rule);
@@ -3918,6 +3919,15 @@ button.smm:hover {
   }
   .formbar {
     display: flex;
+  }
+}
+/*
+ * 휴대폰보다 넓으면 .vm 이 스크롤 칸이라, sticky 줄이 칸의 아래 여백(padding-block 끝 64px)만큼 위에 붙어
+ * 그 아래로 내용이 비쳐 보였다 → 여백만큼 내려 칸 맨 아래에 붙인다. 끝까지 내리면 제자리(여백 위)에 놓인다.
+ */
+@media (min-width: 760px) {
+  .formbar {
+    bottom: -64px;
   }
 }
 /* 휴대폰: 레일은 왼쪽 서랍, 화면은 한 줄로 */

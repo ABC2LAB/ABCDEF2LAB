@@ -10,8 +10,8 @@ import "@fontsource-variable/noto-sans-kr/index.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ABC2LAB",
-  applicationName: "ABC2LAB",
+  title: "JinDo",
+  applicationName: "JinDo",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
