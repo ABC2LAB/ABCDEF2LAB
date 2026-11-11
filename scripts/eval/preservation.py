@@ -21,12 +21,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from path_mask import PATH_PROFILE, STATIC_SUFFIXES, PathKeyError, key_ref, mask_path, read_path_key
+from repeat_denials import summarize_round
 from runner_evidence import (
     DRAINED_MARKER, FORWARDED_KINDS, PATH_AUTH_FIELDS, SEALED_MARKER, EvidenceError, MeterFiles, drain_complete,
     final_log_consistent,
 )
 
-SUMMARY_FORMAT = "abc2lab.preservation-summary/v4"
+SUMMARY_FORMAT = "abc2lab.preservation-summary/v5"
 EXCLUSIONS_FORMAT = "abc2lab.preservation-exclusions/v1"
 READ_METHODS = frozenset({"GET", "HEAD"})
 _METHOD = re.compile(r"[A-Z]{1,16}\Z")
@@ -207,10 +208,18 @@ def _auth_headers(round_: Round) -> dict | None:
     return None if round_.auth_headers is None else asdict(round_.auth_headers)
 
 
-def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusions, read_only: bool) -> dict:
-    """read_only면 GET·HEAD 패턴만 분모로 쓰는 읽기 보존율, 아니면 전체 보존율이다."""
+def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusions, read_only: bool,
+              repeat_denials: list[dict] | None = None) -> dict:
+    """read_only면 GET·HEAD 패턴만 분모로 쓰는 읽기 보존율, 아니면 전체 보존율이다.
+
+    repeat_denials는 개선 후 회차마다의 진단 요청 반복 차단 수(repeat_denials.summarize_round)다. 없으면 회차마다 NOT_RUN이다.
+    """
     if not baseline or len(baseline) != len(improved):
         raise PreservationError("pairs_invalid")
+    if repeat_denials is None:
+        repeat_denials = [summarize_round(None, "") for _ in improved]
+    if len(repeat_denials) != len(improved):
+        raise PreservationError("e2_copies_invalid")
 
     def in_domain(key: tuple[str, str]) -> bool:
         return not read_only or key[0] in READ_METHODS
@@ -246,6 +255,8 @@ def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusio
         "uncertain": {"baseline": [r.uncertain for r in baseline], "improved": [r.uncertain for r in improved]},
         "masked_segments": {"baseline": [r.masked_segments for r in baseline],
                             "improved": [r.masked_segments for r in improved]},
+        # 개선 후 회차별 진단 요청 반복 차단 수(E②까지 온 거부만). 원본에는 E②가 없다.
+        "repeat_denials": {"improved": repeat_denials},
         # 회차별 인증 헤더가 붙은 예산 안 전달 수. null은 계측기가 그 칸을 남기기 전 회차(NOT_RUN)다.
         "auth_headers": {"baseline": [_auth_headers(r) for r in baseline],
                          "improved": [_auth_headers(r) for r in improved]},
@@ -260,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exclusions", type=Path, required=True, help="설계상 막히는 패턴 규칙 JSON(원문 경로)")
     parser.add_argument("--path-key-file", required=True, help="계측기 -path-key-file과 같은 키 파일(근거 디렉터리 밖)")
     parser.add_argument("--read-only", action="store_true", help="GET·HEAD 패턴만 분모로 쓴다(R-R)")
+    parser.add_argument("--improved-e2", action="append", type=Path,
+                        help="개선 후 회차의 E② 수집 사본(회차 디렉터리의 e2-copy, --improved와 같은 순서). 주면 반복 차단 수를 센다")
     args = parser.parse_args(argv)
     try:
         try:
@@ -274,7 +287,8 @@ def main(argv: list[str] | None = None) -> int:
         ref = key_ref(key)
         baseline = [load_round(path, args.budget, ref) for path in args.baseline]
         improved = [load_round(path, args.budget, ref) for path in args.improved]
-        summary = summarize(baseline, improved, exclusions, args.read_only)
+        repeats = None if args.improved_e2 is None else [summarize_round(path, ref) for path in args.improved_e2]
+        summary = summarize(baseline, improved, exclusions, args.read_only, repeats)
     except PreservationError as exc:
         print(f"preservation: {exc}", file=sys.stderr)
         return 2
