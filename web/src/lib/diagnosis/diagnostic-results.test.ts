@@ -99,3 +99,41 @@ describe("diagnostic result DTO", () => {
     expect(() => parseRemediationData(undefined, "42", "internal")).toThrow();
   });
 });
+
+it("rejects reproduction steps bound to another task, entry, run or evidence version", () => {
+  const step = {
+    task_id: 42,
+    entry_id: valid.entry_id,
+    id: `step-${"c".repeat(24)}`,
+    number: 1,
+    title: "저장 관찰",
+    source_step_id: "actual",
+    run_ref: valid.run,
+    call_ref: "call-1",
+    evidence_ref: "proof-1",
+    evidence_version: valid.evidence_version,
+    evidence_digest: valid.evidence_digest,
+    binding_digest: "c".repeat(64),
+    observed_at: valid.observed_at,
+    method: "GET",
+    path: "/safe",
+    prerequisites: "",
+    observation: "실제 기록",
+    truncated: false,
+    capture: { status: "not_captured" },
+  };
+  const read = (s: unknown, audience = "internal") =>
+    parseRemediationData({ task_id: 42, entries: [{ ...valid, steps: [s] }] }, "42", audience);
+  expect(read(step).entries[0].steps?.[0].id).toBe(step.id);
+  for (const change of [
+    { task_id: 43 },
+    { entry_id: "candidate-2" },
+    { run_ref: "foreign-run" },
+    { evidence_version: 2 },
+    { evidence_digest: "e".repeat(64) },
+    { id: `step-${"d".repeat(24)}` },
+    { capture: { status: "captured", digest: "invalid" } },
+  ])
+    expect(() => read({ ...step, ...change })).toThrow();
+  expect(() => read(step, "shared")).toThrow();
+});

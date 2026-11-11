@@ -179,7 +179,7 @@ func firstDiagnosisReportRequestTask(r *http.Request) (int64, bool) {
 		return id, true
 	}
 	switch r.URL.Path {
-	case "/api/report/diagnostic", "/api/report/diagnostic/remediation/prompt":
+	case "/api/report/diagnostic", "/api/report/diagnostic/image", "/api/report/diagnostic/remediation/prompt":
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			return 0, false
 		}

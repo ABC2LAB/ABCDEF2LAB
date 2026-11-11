@@ -15,10 +15,11 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisapi"
+	"github.com/Autumn-27/artex/report"
 )
 
 const managementBridgeRequestLimit = 256 << 10
-const managementBridgeResponseLimit = 16 << 20
+const managementBridgeResponseLimit = report.MaxDiagnosticExportBytes
 
 var managementApprovalRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
@@ -72,6 +73,11 @@ func managementBridgeTask(r *http.Request) (string, bool) {
 	switch r.URL.Path {
 	case "/api/report/diagnostic":
 		allowed["download"] = true
+		allowed["format"] = true
+	case "/api/report/diagnostic/image":
+		allowed["entry"] = true
+		allowed["step"] = true
+		allowed["digest"] = true
 	case "/api/report/diagnostic/remediation":
 	case "/api/report/diagnostic/remediation/prompt":
 		allowed["entry"] = true
@@ -162,7 +168,7 @@ func (b *diagnosisManagementBridge) ServeHTTP(w http.ResponseWriter, r *http.Req
 		writeErr(w, 502, "진단 API 응답 크기를 확인할 수 없습니다")
 		return
 	}
-	for _, name := range []string{"Content-Type", "Content-Disposition"} {
+	for _, name := range []string{"Content-Type", "Content-Disposition", "Content-Security-Policy", "X-Content-Type-Options"} {
 		if value := response.Header.Get(name); value != "" {
 			w.Header().Set(name, value)
 		}

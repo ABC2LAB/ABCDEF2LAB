@@ -184,6 +184,9 @@ func Open(dsn string) (*DB, error) {
 		if err := applyDDLWithRetry(context.Background(), conn, requestApprovalSchemaSQL, time.Sleep); err != nil {
 			return fmt.Errorf("apply request approval schema: %w", err)
 		}
+		if err := applyDDLWithRetry(context.Background(), conn, diagnosticCaptureSchemaSQL, time.Sleep); err != nil {
+			return fmt.Errorf("apply diagnostic capture v1 schema: %w", err)
+		}
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}

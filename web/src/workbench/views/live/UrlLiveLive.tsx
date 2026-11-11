@@ -32,6 +32,7 @@ import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { useRequestApprovals } from "./approvals";
+import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import { PauseButton, useStopConfirm, WorkflowActivity, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
@@ -478,27 +479,41 @@ function RunRecord({ run }: { run: Poll<DiagnosisRunView> }) {
   );
 }
 
-/** 보고서 파일 내려받기 (종합 HTML: 공유용 · 내부 상세). */
-function Download({ taskId }: { taskId: string }) {
-  const [st, setSt] = useState<{ busy: "shared" | "internal" | null; err: unknown; done: boolean }>({
-    busy: null,
-    err: null,
-    done: false,
-  });
+type Audience = "shared" | "internal";
+type Format = "html" | "docx";
+const AUD_TEXT: Readonly<Record<Audience, string>> = { shared: "공유용", internal: "내부 상세" };
+
+/** 보고서 파일 내려받기: 같은 저장 자료로 만든 종합 HTML · Word, 각각 공유용 · 내부 상세. */
+export function Download({ taskId }: { taskId: string }) {
+  const [st, setSt] = useState<{
+    busy: `${Audience}:${Format}` | null;
+    err: unknown;
+    done: { aud: Audience; format: Format } | null;
+  }>({ busy: null, err: null, done: null });
   const ctrl = useRef<AbortController | null>(null);
   useEffect(() => () => ctrl.current?.abort(), []);
-  const run = async (aud: "shared" | "internal") => {
+  const run = async (aud: Audience, format: Format) => {
     ctrl.current?.abort();
     const c = new AbortController();
     ctrl.current = c;
-    setSt({ busy: aud, err: null, done: false });
+    setSt({ busy: `${aud}:${format}`, err: null, done: null });
     try {
-      await downloadDiagnostic(taskId, aud, c.signal);
-      if (!c.signal.aborted) setSt({ busy: null, err: null, done: true });
+      await downloadDiagnostic(taskId, aud, c.signal, format);
+      if (!c.signal.aborted) setSt({ busy: null, err: null, done: { aud, format } });
     } catch (err) {
-      if (!c.signal.aborted) setSt({ busy: null, err, done: false });
+      if (!c.signal.aborted) setSt({ busy: null, err, done: null });
     }
   };
+  const btn = (aud: Audience, format: Format, label: string, pri = false) => (
+    <button
+      className={cx(s.btn, s.sm, pri && s.pri)}
+      type="button"
+      disabled={!!st.busy}
+      onClick={() => void run(aud, format)}
+    >
+      {st.busy === `${aud}:${format}` ? (format === "docx" ? `${label} 내려받는 중…` : "내려받는 중…") : label}
+    </button>
+  );
   return (
     <section className={s.sec} aria-labelledby="rvDlH">
       <div className={s.sh}>
@@ -508,26 +523,38 @@ function Download({ taskId }: { taskId: string }) {
         <p className={s.empty}>이 점검은 보고서 파일을 제공하지 않습니다.</p>
       ) : (
         <div className={s.acts}>
-          <button className={cx(s.btn, s.pri, s.sm)} type="button" disabled={!!st.busy} onClick={() => run("shared")}>
-            {st.busy === "shared" ? "내려받는 중…" : "공유용 사본"}
-          </button>
-          <button className={cx(s.btn, s.sm)} type="button" disabled={!!st.busy} onClick={() => run("internal")}>
-            {st.busy === "internal" ? "내려받는 중…" : "내부 상세 사본"}
-          </button>
+          {btn("shared", "html", "공유용 사본", true)}
+          {btn("internal", "html", "내부 상세 사본")}
+          {btn("shared", "docx", "Word 공유용")}
+          {btn("internal", "docx", "Word 내부 상세")}
         </div>
       )}
       {st.err && !isUnsupported(st.err) ? <p role="alert">{errorText(st.err)}</p> : null}
       {st.done ? (
         <p className={s.help} role="status">
-          파일을 저장했습니다.
+          {`${st.done.format === "docx" ? "Word" : "HTML"} ${AUD_TEXT[st.done.aud]} 파일을 저장했습니다.`}
         </p>
       ) : null}
+      <p className={s.help}>
+        종합 HTML · Word 보고서를 같은 저장 자료로 만듭니다. 공유용은 서버가 자유문장까지 가립니다. 내부 상세는 외부로
+        보내기 전에 민감정보를 검토하세요.
+      </p>
     </section>
   );
 }
 
 /** 발견 상세 (오른쪽). */
-function FindingDetail({ e, host }: { e: RemediationEntry | undefined; host: string | null }) {
+function FindingDetail({
+  e,
+  host,
+  taskId,
+  onReload,
+}: {
+  e: RemediationEntry | undefined;
+  host: string | null;
+  taskId: string;
+  onReload: () => void;
+}) {
   if (!e) {
     return (
       <>
@@ -537,13 +564,6 @@ function FindingDetail({ e, host }: { e: RemediationEntry | undefined; host: str
     );
   }
   const o = diagnosticOutcome(e);
-  const b = e.record && !e.record.stale ? e.record.bundle : undefined;
-  const steps: Array<[string, readonly string[] | undefined]> = [
-    ["즉시 완화", b?.immediate_mitigation],
-    ["근본 수정", b?.root_fix],
-    ["설정", b?.configuration],
-    ["확인 방법", b?.verification],
-  ];
   return (
     <>
       <InspHead
@@ -562,49 +582,12 @@ function FindingDetail({ e, host }: { e: RemediationEntry | undefined; host: str
           <span>{e.unavailable_reason}</span>
         </div>
       ) : null}
-      <Isec t={o === "confirmed" ? "확정 근거" : "판정 근거"}>
-        <ul className={s.ilist}>
-          {e.summary ? (
-            <li>
-              <Icon name="check" />
-              <span>{maskSecrets(e.summary)}</span>
-            </li>
-          ) : null}
-          <li>
-            <Icon name="check" />
-            <span>
-              {e.verification === "stored_verification" ? "저장된 검증 결과로 판정" : "사람 검토가 필요한 결과"}
-            </span>
-          </li>
-        </ul>
-      </Isec>
-      <Isec t="증거 · 실제 요청 · 응답">
-        {e.evidence ? (
-          <pre className={s.code} id="rEvidence" style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-            {prettyEvidence(e.evidence)}
-          </pre>
-        ) : (
-          <p className={s.empty}>저장된 요청 · 응답 본문이 없습니다.</p>
-        )}
-      </Isec>
-      <Isec t="조치 방안">
-        {e.remediation ? <p>{maskSecrets(e.remediation)}</p> : null}
-        {steps.map(([t, items]) =>
-          items?.length ? (
-            <div key={t}>
-              <b>{t}</b>
-              <ul className={cx(s.ilist, s.dash)}>
-                {items.map((x) => (
-                  <li key={x}>
-                    <span>{maskSecrets(x)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null,
-        )}
-        {!e.remediation && !b ? <p className={s.empty}>저장된 조치 자료가 없습니다.</p> : null}
-      </Isec>
+      <DiagnosticEntrySections
+        key={`${taskId}:${e.entry_id}:${e.source_digest}:${e.record?.id ?? 0}:${e.record?.bundle?.input_digest ?? ""}`}
+        task={taskId}
+        entry={e}
+        onReload={onReload}
+      />
       <Isec t="조치 및 재점검">
         <ol className={s.tl}>
           <li className={s.done}>
@@ -842,7 +825,7 @@ export function UrlReportLive() {
           </section>
         </div>
         <aside className={s.vi} id="rInsp" aria-label="발견 상세">
-          <FindingDetail e={chosen} host={host} />
+          <FindingDetail e={chosen} host={host} taskId={taskId} onReload={rem.reload} />
         </aside>
       </div>
     </>
