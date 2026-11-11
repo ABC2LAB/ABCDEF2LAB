@@ -37,12 +37,13 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream http://HOST:PORT -log-dir PRIVATE_DIR [-allow-path /PATH]\n" +
-	"                  [engine: -drain-grace DURATION]\n" +
+	"                  [engine: -drain-grace DURATION -explore-listen ADDR -path-log -path-key-file PRIVATE_FILE]\n" +
 	"       eval-meter -role llm-gateway -backend api|local -listen ADDR -upstream ORIGIN -allow-path /PATH -log-dir PRIVATE_DIR\n" +
 	"                  [api: -provider SLUG -generation-path /PATH -verify-attempts N -verify-interval DURATION, key in " + llmKeyEnv + "]\n" +
 	"       eval-meter -role api-front -listen ADDR -upstream http://ENGINE:PORT\n" +
@@ -118,6 +119,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	drainGrace := flags.Duration("drain-grace", 0, "engine: after seal, cancel requests still open this long (0: wait)")
 	pathLog := flags.Bool("path-log", false, "engine: record masked path patterns for the browser acceptance test; never set on official runs")
 	pathKeyFile := flags.String("path-key-file", "", "engine with -path-log: private 32-byte key shared by the compared runs")
+	exploreListen := flags.String("explore-listen", "", "engine: second listen address for the exploration ingress (exploration boundary)")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fail(stderr, invalidInput)
 	}
@@ -135,6 +137,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, invalidInput)
 	}
 	if (*role != roleEngine && *pathLog) || *pathLog != (*pathKeyFile != "") {
+		return fail(stderr, invalidInput)
+	}
+	// 같은 주소를 두 번 주면 두 번째 리슨이 실패해 listenUnavailable로 끝난다.
+	if *role != roleEngine && *exploreListen != "" {
 		return fail(stderr, invalidInput)
 	}
 	var gatewayCfg gatewayConfig
@@ -190,6 +196,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	defer closeOrReport(dir, stderr)
 
 	var handler http.Handler
+	var fronts []extraFront
 	var seal func()
 	var terminate func(string)
 	var finish func() error
@@ -215,6 +222,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			}
 		}
 		handler, seal, terminate, finish = m, m.seal, m.terminate, m.close
+		if *exploreListen != "" {
+			// 탐색 경계가 보내는 요청은 이 리슨으로 받는다. 같은 기록·순번·봉인을 쓰고 경로 행에 입구만 남긴다.
+			fronts = append(fronts, extraFront{listen: *exploreListen, handler: m.ingress(ingressExplore), notify: listeningExplore})
+		}
 	case roleObserver:
 		o, code := newObserver(dir, target, *allowPath, time.Now)
 		if code != "" {
@@ -234,32 +245,55 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		handler, finish = stub, stub.close
 	}
-	return serve(*listen, handler, seal, terminate, finish, stderr)
+	return serve(*listen, handler, seal, terminate, finish, stderr, fronts...)
 }
 
 // listening is told the bound address once a front accepts connections. Tests start fronts on port 0 and
 // learn the address here instead of picking a free port, closing it and hoping nothing else takes it.
 var listening = func(net.Addr) {}
 
-// serve runs one front until SIGTERM/interrupt; the seal signal only seals.
+// listeningExplore is the same hook for the engine's exploration ingress front.
+var listeningExplore = func(net.Addr) {}
+
+// extraFront is another listener served by the same process until the same stop.
+type extraFront struct {
+	listen  string
+	handler http.Handler
+	notify  func(net.Addr)
+}
+
+// serve runs the fronts until SIGTERM/interrupt; the seal signal only seals.
 func serve(listen string, handler http.Handler, seal func(), terminate func(string), finish func() error,
-	stderr io.Writer) int {
+	stderr io.Writer, extras ...extraFront) int {
 	// Handlers go in before the port opens: a seal or stop sent as soon as the front is reachable must be
 	// recorded, not hit the default action.
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, append([]os.Signal{syscall.SIGTERM, os.Interrupt}, sealSignals...)...)
 	defer signal.Stop(signals)
-	listener, err := net.Listen("tcp", listen)
-	if err != nil {
-		if err := finish(); err != nil {
-			fmt.Fprintln(stderr, storageUnavailable)
+	fronts := append([]extraFront{{listen: listen, handler: handler, notify: listening}}, extras...)
+	listeners := make([]net.Listener, 0, len(fronts))
+	for _, front := range fronts {
+		listener, err := net.Listen("tcp", front.listen)
+		if err != nil {
+			for _, opened := range listeners {
+				_ = opened.Close()
+			}
+			if err := finish(); err != nil {
+				fmt.Fprintln(stderr, storageUnavailable)
+			}
+			return fail(stderr, listenUnavailable)
 		}
-		return fail(stderr, listenUnavailable)
+		listeners = append(listeners, listener)
 	}
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- server.Serve(listener) }()
-	listening(listener.Addr())
+	servers := make([]*http.Server, len(fronts))
+	serveErr := make(chan error, len(fronts))
+	for i, front := range fronts {
+		servers[i] = &http.Server{Handler: front.handler, ReadHeaderTimeout: readHeaderTimeout}
+		go func(server *http.Server, listener net.Listener) { serveErr <- server.Serve(listener) }(servers[i], listeners[i])
+	}
+	for i, front := range fronts {
+		front.notify(listeners[i].Addr())
+	}
 	exit := 0
 	reason := "signal"
 loop:
@@ -289,9 +323,24 @@ loop:
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		fmt.Fprintln(stderr, serveFailed)
-		exit = 1
+	// Shutdown은 먼저 리슨을 닫고 진행 중 요청을 기다린다. 차례로 부르면 한 입구의 긴 요청을 기다리는 동안 다른
+	// 입구가 새 요청을 계속 받아 전달하므로, 모든 입구의 Shutdown을 함께 시작해 새 수신을 동시에 멈춘다.
+	shutdownErrs := make([]error, len(servers))
+	var stopping sync.WaitGroup
+	for i, server := range servers {
+		stopping.Add(1)
+		go func(i int, server *http.Server) {
+			defer stopping.Done()
+			shutdownErrs[i] = server.Shutdown(ctx)
+		}(i, server)
+	}
+	stopping.Wait()
+	for _, err := range shutdownErrs {
+		if err != nil {
+			fmt.Fprintln(stderr, serveFailed)
+			exit = 1
+			break
+		}
 	}
 	if err := finish(); err != nil {
 		fmt.Fprintln(stderr, storageUnavailable)

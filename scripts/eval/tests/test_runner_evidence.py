@@ -364,15 +364,20 @@ class MeterPathLogTests(unittest.TestCase):
                       *sorted(PATH_AUTH_FIELDS)):
             self.assertIn('`json:"%s"`' % field, go)
         self.assertEqual(PATH_AUTH_FIELDS, {"has_authorization", "has_cookie"})
+        self.assertIn('`json:"ingress"`', go)
+        for name in ("main", "explore"):
+            self.assertIn(f'= "{name}"', go)
 
 
 def path_row(seq, method="GET", pattern="/{h:0123456789abcdef}", masked=0, profile=PATH_PROFILE,
-             key_ref="00112233445566ff", auth=None):
+             key_ref="00112233445566ff", auth=None, ingress=None):
     """auth가 (Authorization, Cookie) 값 쌍이면 인증 헤더 칸이 있는 행, None이면 그 칸이 생기기 전 계측기의 행이다."""
     row = {"seq": seq, "method": method, "path_pattern": pattern, "masked_segments": masked,
            "path_profile_ref": profile, "path_key_ref": key_ref}
     if auth is not None:
         row.update(has_authorization=auth[0], has_cookie=auth[1])
+    if ingress is not None:
+        row["ingress"] = ingress
     return row
 
 
@@ -408,6 +413,11 @@ class MeterPathRowsTests(unittest.TestCase):
                      path_row(3, "POST", auth=(False, False))]
         self.write(with_auth)
         self.assertEqual(self.meter.path_rows(self.engine), with_auth)
+        # 입구 칸이 있는 계측기의 행도 받는다(인증 헤더 칸 뒤에 생긴 칸).
+        with_ingress = [path_row(1, auth=(True, False), ingress="main"), path_row(2, auth=(False, True), ingress="explore"),
+                        path_row(3, "POST", auth=(False, False), ingress="main")]
+        self.write(with_ingress)
+        self.assertEqual(self.meter.path_rows(self.engine), with_ingress)
 
     def test_missing_or_untrusted_file_is_rejected(self):
         self.check("meter_path_log_missing")
@@ -440,7 +450,13 @@ class MeterPathRowsTests(unittest.TestCase):
                 ("null cookie", [path_row(1, auth=(False, False)), path_row(2, auth=(False, None)),
                                  path_row(3, "POST", auth=(False, False))], ""),
                 ("string cookie", [path_row(1, auth=(False, False)), path_row(2, auth=(False, False)),
-                                   path_row(3, "POST", auth=(False, "true"))], "")):
+                                   path_row(3, "POST", auth=(False, "true"))], ""),
+                ("mixed ingress shape", [path_row(1, auth=(False, False), ingress="main"), path_row(2, auth=(False, False)),
+                                         path_row(3, "POST", auth=(False, False), ingress="main")], ""),
+                ("unknown ingress", [path_row(1, auth=(False, False), ingress="main"), path_row(2, auth=(False, False), ingress="side"),
+                                     path_row(3, "POST", auth=(False, False), ingress="main")], ""),
+                ("list ingress", [path_row(1, auth=(False, False), ingress=["main"]), path_row(2, auth=(False, False), ingress="main"),
+                                  path_row(3, "POST", auth=(False, False), ingress="main")], "")):
             with self.subTest(name):
                 self.write(rows, tail)
                 self.check("meter_path_log_invalid")
@@ -448,6 +464,9 @@ class MeterPathRowsTests(unittest.TestCase):
         self.check("meter_row_invalid")
         # 칸 묶음의 한쪽만 있는 행은 어느 판의 모양도 아니다.
         self.write([dict(path_row(1), has_cookie=False), path_row(2), path_row(3, "POST")])
+        self.check("meter_row_invalid")
+        # 입구 칸은 인증 헤더 칸 뒤에 생겼으므로 인증 칸 없이 입구 칸만 있는 모양은 없다.
+        self.write([path_row(1, ingress="main"), path_row(2, ingress="main"), path_row(3, "POST", ingress="main")])
         self.check("meter_row_invalid")
         self.write([path_row(1), path_row(1), path_row(3, "POST")])
         self.check("meter_seq_invalid")

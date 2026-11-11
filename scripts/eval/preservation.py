@@ -23,11 +23,11 @@ from pathlib import Path
 from path_mask import PATH_PROFILE, STATIC_SUFFIXES, PathKeyError, key_ref, mask_path, read_path_key
 from repeat_denials import summarize_round
 from runner_evidence import (
-    DRAINED_MARKER, FORWARDED_KINDS, PATH_AUTH_FIELDS, SEALED_MARKER, EvidenceError, MeterFiles, drain_complete,
-    final_log_consistent,
+    DRAINED_MARKER, FORWARDED_KINDS, INGRESSES, PATH_AUTH_FIELDS, PATH_INGRESS_FIELD, SEALED_MARKER, EvidenceError, MeterFiles,
+    drain_complete, final_log_consistent,
 )
 
-SUMMARY_FORMAT = "abc2lab.preservation-summary/v5"
+SUMMARY_FORMAT = "abc2lab.preservation-summary/v6"
 EXCLUSIONS_FORMAT = "abc2lab.preservation-exclusions/v1"
 READ_METHODS = frozenset({"GET", "HEAD"})
 _METHOD = re.compile(r"[A-Z]{1,16}\Z")
@@ -67,6 +67,9 @@ class Round:
     # 예산 안 전달 행 중 Authorization·Cookie 헤더가 붙은 수. 계측기가 그 칸을 남기기 전 회차는 None(NOT_RUN)이다.
     # 인증을 시도했다는 관찰일 뿐 로그인 성공 근거가 아니다.
     auth_headers: AuthHeaders | None = None
+    # 예산 안 전달 행의 계측기 입구별 수(main: 원본 엔진 직접·E② 진단 입구, explore: 탐색 경계 입구).
+    # 계측기가 입구 칸을 남기기 전 회차는 None(NOT_RUN)이다.
+    ingress: tuple[tuple[str, int], ...] | None = None
 
 
 def is_static(pattern: str) -> bool:
@@ -98,9 +101,13 @@ def load_round(directory: Path, budget: int, expected_key_ref: str) -> Round:
     static = sent = uncertain = masked = too_long = 0
     # path_rows가 한 기록 안의 행 모양을 하나로 맞춰 두므로, 칸이 없는 행이 하나라도 있으면 그 회차 전체에 없다.
     has_auth_fields = all(PATH_AUTH_FIELDS <= set(row) for row in paths.values())
+    has_ingress = all(PATH_INGRESS_FIELD in row for row in paths.values())
+    ingress = dict.fromkeys(sorted(INGRESSES), 0)
     authorization = cookie = either = 0
     for row in forwarded:
         path = paths[row["seq"]]
+        if has_ingress:
+            ingress[path[PATH_INGRESS_FIELD]] += 1
         if has_auth_fields:
             authorization += path["has_authorization"]
             cookie += path["has_cookie"]
@@ -116,7 +123,8 @@ def load_round(directory: Path, budget: int, expected_key_ref: str) -> Round:
         too_long += path["path_pattern"] == TOO_LONG_PATTERN
     return Round(frozenset(patterns), len(forwarded), static, sent, uncertain, masked,
                  reached_budget=len(ordered) >= budget, too_long=too_long,
-                 auth_headers=AuthHeaders(authorization, cookie, either) if has_auth_fields else None)
+                 auth_headers=AuthHeaders(authorization, cookie, either) if has_auth_fields else None,
+                 ingress=tuple(ingress.items()) if has_ingress else None)
 
 
 @dataclass(frozen=True)
@@ -255,6 +263,9 @@ def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusio
         "uncertain": {"baseline": [r.uncertain for r in baseline], "improved": [r.uncertain for r in improved]},
         "masked_segments": {"baseline": [r.masked_segments for r in baseline],
                             "improved": [r.masked_segments for r in improved]},
+        # 회차별 예산 안 전달 행의 계측기 입구별 수. null은 계측기가 입구 칸을 남기기 전 회차(NOT_RUN)다.
+        "ingress": {"baseline": [None if r.ingress is None else dict(r.ingress) for r in baseline],
+                    "improved": [None if r.ingress is None else dict(r.ingress) for r in improved]},
         # 개선 후 회차별 진단 요청 반복 차단 수(E②까지 온 거부만). 원본에는 E②가 없다.
         "repeat_denials": {"improved": repeat_denials},
         # 회차별 인증 헤더가 붙은 예산 안 전달 수. null은 계측기가 그 칸을 남기기 전 회차(NOT_RUN)다.
