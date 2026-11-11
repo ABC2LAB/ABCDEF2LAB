@@ -2414,6 +2414,10 @@ select.inp {
   border-radius: 8px;
   padding: 9px 12px;
 }
+/*
+ * TODO(윤재상): 자산 탐색 '주소 구조' 보기를 뺀 뒤(#394) 안 쓰는 트리 전용 규칙(.sm-head ~ .sm-leg, .smm).
+ * .sm 은 작은 버튼(.btn.sm)과 이름이 겹쳐, 버튼 모양을 확인하면서 후속에서 정리한다.
+ */
 .sm-head {
   display: flex;
   align-items: center;

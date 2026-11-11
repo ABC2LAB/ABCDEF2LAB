@@ -325,7 +325,6 @@ export function WorkflowCrawlLive() {
     host = useUrlHost(),
     { goTo, openInsp } = useShell();
   const [selected, setSelected] = useState<string | null>(null);
-  const [view, setView] = useState("card");
   const [filter, setFilter] = useState("all");
   const stop = useStopConfirm("점검 취소");
   const endpoints = flow?.endpoints ?? [];
@@ -487,24 +486,8 @@ export function WorkflowCrawlLive() {
                 </div>
               ) : null}
               <div className={s.isec} style={{ gap: 12 }}>
+                {/* 찾은 경로는 묶음 카드로만 본다 (시안 v32: 주소 구조 보기 뺌) */}
                 <div className={s.fctl}>
-                  <div className={s.seg} role="radiogroup" aria-label="보기 방식">
-                    {[
-                      ["card", "묶음별"],
-                      ["tree", "주소 구조"],
-                    ].map(([id, label]) => (
-                      <label key={id}>
-                        <input
-                          type="radio"
-                          name="cView"
-                          value={id}
-                          checked={view === id}
-                          onChange={() => setView(id)}
-                        />
-                        <span>{label}</span>
-                      </label>
-                    ))}
-                  </div>
                   <div className={s.seg} role="radiogroup" aria-label="보이는 경로">
                     {[
                       ["all", "전체"],
@@ -519,22 +502,7 @@ export function WorkflowCrawlLive() {
                   </div>
                 </div>
                 <div id="cTree">
-                  {view === "card" ? (
-                    <EndpointCards endpoints={shown} onSelect={select} />
-                  ) : (
-                    <ul className={s["sm-root"]}>
-                      {[...shown]
-                        .sort((a, b) => a.path.localeCompare(b.path))
-                        .map((e) => (
-                          <li key={e.id}>
-                            <button type="button" className={s["sm-t"]} onClick={() => select(e)}>
-                              <span className={cx(s.smm, s[e.method], kindOf(e) === "ex" && s.off)}>{e.method}</span>{" "}
-                              {e.path}
-                            </button>
-                          </li>
-                        ))}
-                    </ul>
-                  )}
+                  <EndpointCards endpoints={shown} onSelect={select} />
                 </div>
               </div>
             </>
