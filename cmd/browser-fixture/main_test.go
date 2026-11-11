@@ -24,7 +24,7 @@ import (
 
 const sentinel = "SENTINELVALUE"
 
-var testReceiver = receiverInfo{"http://outside.test:9001", "ws://outside.test:9001", "outside.test:9002", "9002"}
+var testReceiver = receiverInfo{origin: "http://outside.test:9001", websocket: "ws://outside.test:9001", stun: "outside.test:9002", udpPort: "9002"}
 
 func newTestRecorder(t *testing.T) (*recorder, string) {
 	t.Helper()
@@ -701,7 +701,7 @@ func TestRecordKeepsFirstFailure(t *testing.T) {
 
 func TestParseReceiver(t *testing.T) {
 	got, err := parseReceiver("https://outside.test:9001/", "0.0.0.0:9002", true)
-	if want := (receiverInfo{"https://outside.test:9001", "wss://outside.test:9001", "outside.test:9002", "9002"}); err != nil || got != want {
+	if want := (receiverInfo{origin: "https://outside.test:9001", websocket: "wss://outside.test:9001", stun: "outside.test:9002", udpPort: "9002"}); err != nil || got != want {
 		t.Fatalf("%+v %v", got, err)
 	}
 	bad := []string{"", "ftp://a.test", "http://", "http://a.test/x", "http://a.test?q=1", "http://a.test#f", "http://u:p@a.test", `http://a"b.test`}
