@@ -457,3 +457,74 @@ class TestGoDefinitions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAttemptPaths(Fixture):
+    """수용시험 회차(경로 키를 넘긴 회차)의 시도 경로 기록·완료 표식 수집. 공식 회차에 있으면 무효다."""
+
+    def collect_paths(self, attempt_paths):
+        for copied in self.copy.iterdir():
+            copied.unlink()
+        return collect_e2_export(self.source, self.copy, EXPECTED, self.current_ack(), "/private/run.key", self.verifier,
+                                 attempt_paths=attempt_paths)
+
+    def test_acceptance_round_copies_the_projection_into_the_signed_digests(self):
+        self.write("e2-attempt-paths.jsonl", b'{"sequence":1}\n')
+        self.write("e2-attempt-paths.done.json", b'{"format":"x"}\n')
+        result = self.collect_paths(True)
+        self.assertEqual(result.outcome, OUTCOME_COMPLETE)
+        for name in ("e2-attempt-paths.jsonl", "e2-attempt-paths.done.json"):
+            self.assertEqual(result.sha256[name], hashlib.sha256((self.copy / name).read_bytes()).hexdigest())
+            self.assertIn(name, result.evidence()["sha256"])
+
+    def test_acceptance_round_without_projection_stays_complete(self):
+        # 마감 실패로 표식이 없거나 기록이 없으면 옮기지 않는다. E② 결과 판정은 그대로다.
+        self.write("e2-attempt-paths.jsonl", b'{"sequence":1}\n')
+        result = self.collect_paths(True)
+        self.assertEqual(result.outcome, OUTCOME_COMPLETE)
+        self.assertIn("e2-attempt-paths.jsonl", result.sha256)
+        self.assertNotIn("e2-attempt-paths.done.json", result.sha256)
+        os.unlink(self.source / "e2-attempt-paths.jsonl")
+        result = self.collect_paths(True)
+        self.assertEqual(result.outcome, OUTCOME_COMPLETE)
+
+    def test_official_round_with_projection_is_invalid(self):
+        for name in ("e2-attempt-paths.jsonl", "e2-attempt-paths.done.json"):
+            with self.subTest(name):
+                for other in ("e2-attempt-paths.jsonl", "e2-attempt-paths.done.json"):
+                    if (self.source / other).exists():
+                        (self.source / other).unlink()
+                self.write(name, b"{}\n")
+                with self.assertRaises(E2CollectionInvalid) as caught:
+                    self.collect_paths(False)
+                self.assertEqual(caught.exception.code, "attempt_paths_unexpected")
+
+    def test_official_round_is_invalid_even_when_the_export_failed(self):
+        # 결과가 불완전하거나 manifest가 없어 제품 실패로 끝나는 회차에도 공식 회차 금지가 먼저 걸린다.
+        for name in ("e2-attempt-paths.jsonl", "e2-attempt-paths.done.json"):
+            for failure in ("incomplete", "manifest_missing"):
+                with self.subTest(name=name, failure=failure):
+                    for leftover in os.listdir(self.source):
+                        (self.source / leftover).unlink()
+                    self.manifest["state"] = "incomplete" if failure == "incomplete" else "complete"
+                    self.publish()
+                    if failure == "manifest_missing":
+                        (self.source / "manifest.json").unlink()
+                    self.write(name, b"{}\n")
+                    with self.assertRaises(E2CollectionInvalid) as caught:
+                        self.collect_paths(False)
+                    self.assertEqual(caught.exception.code, "attempt_paths_unexpected")
+                    # 수용시험 회차라면 같은 실패는 제품 실패로 남고 경로 파일은 옮기지 않는다.
+                    result = self.collect_paths(True)
+                    self.assertEqual(result.outcome, OUTCOME_PRODUCT_FAILURE)
+                    self.assertNotIn(name, result.sha256)
+
+    def test_linked_projection_is_not_followed(self):
+        target = Path(self.temp.name) / "elsewhere"
+        target.write_bytes(b"{}\n")
+        os.symlink(target, self.source / "e2-attempt-paths.jsonl")
+        result = self.collect_paths(True)
+        self.assertEqual(result.outcome, OUTCOME_COMPLETE)
+        self.assertNotIn("e2-attempt-paths.jsonl", result.sha256)
+        with self.assertRaises(E2CollectionInvalid):
+            self.collect_paths(False)

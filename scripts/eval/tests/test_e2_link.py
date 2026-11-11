@@ -49,9 +49,10 @@ class Case(unittest.TestCase):
         self.tool.write_text('#!/bin/sh\numask 077\nprintf cert > "$3"\nprintf key > "$5"\n')
         self.tool.chmod(0o700)
 
-    def link(self, **changes):
+    def link(self, path_key=None, **changes):
         declared = {"declared_differences_path": str(self.declared), "declared_differences_sha256": hashlib.sha256(self.declared.read_bytes()).hexdigest()} | changes
-        return E2Link(product(**({"policy_path": str(self.policy), "policy_tool": str(self.tool)} | declared)), self.paths, "eval-run-1", "model-1", "api", 8080, now=lambda: NOW)
+        return E2Link(product(**({"policy_path": str(self.policy), "policy_tool": str(self.tool)} | declared)), self.paths, "eval-run-1", "model-1", "api", 8080, now=lambda: NOW,
+                      path_key=path_key)
 
     def closed(self, execution_ref="execution-1", state="complete", ack=ACK):
         return CloseResult(state, None, True, execution_ref, "8" * 64, ack)
@@ -215,6 +216,18 @@ class TestCollect(Case):
         self.assertEqual((expected.eval_run_id, expected.model_tag, expected.reset_generation, expected.reservation_ref, expected.engine_task_id,
                           expected.policy_fingerprint_sha256, expected.header_mode, expected.llm_backend),
                          ("eval-run-1", "model-1", "target-1", link.prepared.reservation_ref, "17", FINGERPRINT, "evaluation_caller_passthrough", "api"))
+        # 공식 회차(키 없음)는 시도 경로 기록을 받지 않는다.
+        self.assertEqual(collect.call_args.kwargs, {"attempt_paths": False})
+
+    def test_acceptance_round_passes_the_path_key_and_collects_the_projection(self):
+        key = bytes(range(32))
+        link = self.link(path_key=key)
+        config = json.loads((self.paths.config / "e2-config.json").read_bytes())
+        self.assertEqual((config["format"], config["path_key_file"]), ("abc2lab.e2-runner-config/v2", "path.key"))
+        self.assertEqual((self.paths.config / "path.key").read_bytes(), key)
+        with mock.patch("e2_link.collect_e2_export", return_value="result") as collect, mock.patch("e2_link.subprocess_verifier", return_value="tool"):
+            link.collect(self.closed(), "17", "target-1")
+        self.assertEqual(collect.call_args.kwargs, {"attempt_paths": True})
 
     def test_execution_reference_cannot_leave_the_evidence_directory(self):
         link = self.link()

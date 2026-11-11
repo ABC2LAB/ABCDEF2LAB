@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
+from e2_attempt_paths import ATTEMPT_PATHS_DONE_FILE, ATTEMPT_PATHS_FILE, MAX_ATTEMPT_PATHS_BYTES, MAX_DONE_BYTES
 from e2_export import (ATTEMPTS_FILE, JOURNAL_VERSION, STATE_COMPLETE, E2Expectation, E2Export, E2ExportError, parse_attempts, parse_manifest,
                        strict_object)
 
@@ -267,8 +268,44 @@ class _Progress:
     checkpoint: dict | None = None
 
 
+def _present(directory: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise E2CollectionInvalid("export_unavailable") from None
+    return True
+
+
+def _reject_attempt_paths(source: int) -> None:
+    """공식 회차(v1)에 시도 경로 기록이나 완료 표식이 있으면 경로 기록을 막는 조건을 어긴 것이므로 회차를 무효로 둔다.
+
+    E② 결과가 불완전하거나 manifest가 없어 제품 실패로 끝나는 회차에도 적용되도록 다른 판정보다 먼저 본다.
+    """
+    for name in (ATTEMPT_PATHS_FILE, ATTEMPT_PATHS_DONE_FILE):
+        if _present(source, name):
+            raise E2CollectionInvalid("attempt_paths_unexpected")
+
+
+def _collect_attempt_paths(source: int, copies: _Copies) -> None:
+    """수용시험 회차(설정 v2)의 시도 경로 기록과 완료 표식을 사본으로 옮긴다. 검증은 e2_attempt_paths가 한다.
+
+    없으면(마감 실패 등) 회차는 유효하고 그 지표만 NOT_RUN이 되도록 옮기지 않는다.
+    """
+    for name, maximum in ((ATTEMPT_PATHS_FILE, MAX_ATTEMPT_PATHS_BYTES), (ATTEMPT_PATHS_DONE_FILE, MAX_DONE_BYTES)):
+        if not _present(source, name):
+            continue
+        try:
+            data = _read_file(source, name, maximum, "attempt_paths_missing")
+        except _ProductFailure:
+            # 경로 투영은 측정용이다. 읽을 수 없으면 옮기지 않고(NOT_RUN) E② 결과 판정은 그대로 둔다.
+            continue
+        copies.keep(name, data)
+
+
 def _collect(source: int, copies: _Copies, expected: E2Expectation, close_ack: CloseAck | None, key_path: str, run_verifier: RunVerifier,
-             progress: _Progress) -> None:
+             progress: _Progress, attempt_paths: bool = False) -> None:
     manifest_data = _read_file(source, MANIFEST_FILE, MAX_MANIFEST_BYTES, "manifest_missing")
     manifest_sha256 = copies.keep(MANIFEST_FILE, manifest_data)
     manifest = _parsed_manifest(manifest_data, expected)
@@ -290,18 +327,25 @@ def _collect(source: int, copies: _Copies, expected: E2Expectation, close_ack: C
     _verify_audit(run_verifier, copies, key_path, checkpoint, manifest["rows"])
     _check_projection(journal, attempts)
     progress.checkpoint = {"sequence": checkpoint["Sequence"], "mac": checkpoint["MAC"]}
+    if attempt_paths:
+        _collect_attempt_paths(source, copies)
 
 
 def collect_e2_export(source_dir: Path, copy_dir: Path, expected: E2Expectation, close_ack: CloseAck | None, key_path: str,
-                      run_verifier: RunVerifier) -> E2Collection:
-    """E② 실행 디렉터리를 읽어 판정한다. 제품 실패는 결과로 돌려주고, 기술적 무효는 E2CollectionInvalid로 올린다."""
+                      run_verifier: RunVerifier, attempt_paths: bool = False) -> E2Collection:
+    """E② 실행 디렉터리를 읽어 판정한다. 제품 실패는 결과로 돌려주고, 기술적 무효는 E2CollectionInvalid로 올린다.
+
+    attempt_paths는 수용시험 회차(경로 키를 넘긴 회차)인지다. 아니면 시도 경로 기록이 있을 때 무효다.
+    """
     copies = _Copies(copy_dir)
     progress = _Progress()
     reason, outcome = "", OUTCOME_COMPLETE
     try:
         source = _open_export_dir(source_dir)
         try:
-            _collect(source, copies, expected, close_ack, key_path, run_verifier, progress)
+            if not attempt_paths:
+                _reject_attempt_paths(source)
+            _collect(source, copies, expected, close_ack, key_path, run_verifier, progress, attempt_paths)
         finally:
             os.close(source)
     except _ProductFailure as failure:

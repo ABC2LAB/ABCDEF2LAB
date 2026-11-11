@@ -11,6 +11,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import types
 import unittest
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
@@ -2469,3 +2470,23 @@ class TestHostSpec(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AcceptancePathKeyTests(unittest.TestCase):
+    """수용시험 회차만 계측기와 같은 경로 가림 키를 eval-e2에 넘긴다(E② 시도 경로 투영)."""
+
+    def config(self, purpose, path):
+        return types.SimpleNamespace(purpose=purpose, path_key_file=path)
+
+    def test_only_acceptance_rounds_read_the_key(self):
+        from runner import acceptance_path_key
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp, "path.key")
+            key.write_bytes(bytes(range(32)))
+            key.chmod(0o600)
+            self.assertEqual(acceptance_path_key(self.config("browser_acceptance", key)), bytes(range(32)))
+            self.assertIsNone(acceptance_path_key(self.config("official", key)))
+            key.chmod(0o644)
+            with self.assertRaises(RunnerConfigError) as caught:
+                acceptance_path_key(self.config("browser_acceptance", key))
+            self.assertEqual(caught.exception.errors, ["config.path_key_file: UNREADABLE"])

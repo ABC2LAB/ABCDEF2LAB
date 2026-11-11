@@ -58,7 +58,10 @@ def _utc_now() -> datetime:
 
 
 class E2Link:
-    def __init__(self, product: dict, paths: E2LinkPaths, run_id: str, model_tag: str, llm_backend: str, port: int, now: Callable[[], datetime] = _utc_now):
+    def __init__(self, product: dict, paths: E2LinkPaths, run_id: str, model_tag: str, llm_backend: str, port: int, now: Callable[[], datetime] = _utc_now,
+                 path_key: bytes | None = None):
+        # 수용시험 회차의 경로 가림 키(계측기와 같은 키). 주면 eval-e2가 E② 시도 경로를 같은 규칙으로 남긴다.
+        self.attempt_paths = path_key is not None
         self.product, self.paths, self.run_id, self.model_tag, self.llm_backend = product, paths, run_id, model_tag, llm_backend
         self.evaluation = evaluation_declaration(product["header_mode"], llm_backend)
         # 회차 자료를 만들기 전에 멈춘다. 동결한 목록이 아니면 어떤 차이를 선언한 회차인지 말할 수 없다.
@@ -71,7 +74,8 @@ class E2Link:
         cert_sha256, key_sha256 = issue_run_ca(Path(product["policy_tool"]), paths.config, run_ref, valid_until, product["policy_tool_timeout_seconds"])
         policy = render_policy(Path(product["policy_path"]), E2RunResources(run_ref, valid_from, valid_until, CONTAINER_STATE_DIR, product["helper"],
                                                                             product["helper_sha256"], cert_sha256, key_sha256, product["meter_ip"]))
-        self.prepared: E2Prepared = prepare_e2_config(paths.config, E2RunValues(run_id, model_tag, product["header_mode"], self.evaluation, port), policy)
+        self.prepared: E2Prepared = prepare_e2_config(paths.config, E2RunValues(run_id, model_tag, product["header_mode"], self.evaluation, port), policy,
+                                                      path_key=path_key)
         write_engine_token(paths.engine)
         self.channel = ControlChannel(paths.control, run_id, self.prepared.reservation_ref, product["exchange_timeout_seconds"])
         self.waiting = Waiting(time.monotonic, time.sleep, product["poll_seconds"])
@@ -96,4 +100,5 @@ class E2Link:
                                  policy_fingerprint_sha256=self.product["policy_fingerprint_sha256"], header_mode=self.product["header_mode"],
                                  llm_backend=self.llm_backend)
         return collect_e2_export(self.paths.evidence / close.execution_ref, self.paths.copy, expected, close.ack, str(self.prepared.key_path),
-                                 subprocess_verifier(self.product["verify_tool"], self.product["verify_timeout_seconds"]))
+                                 subprocess_verifier(self.product["verify_tool"], self.product["verify_timeout_seconds"]),
+                                 attempt_paths=self.attempt_paths)
