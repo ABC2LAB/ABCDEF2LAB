@@ -20,6 +20,7 @@
 - [개발용 OpenRouter 연결과 실모델 수용 조건](openrouter-first-diagnosis.md)
 - [회차별 대상 승인 권한 모델·TLS 접촉·감사(11/11 팀 합의)](contracts/product-target-approval-proposal.md)
 - [Workbench 단일화 검토안·미이관 기능·담당자 동의 조건](contracts/workbench-consolidation-review.md)
+- [통제 때문에 원본보다 깎이는 항목 — 우선 개선 목록(C01~C35)](control-restore-backlog.md)
 - [탐색 실행기 ↔ 탐색 경계 최소 계약(제안)](contracts/exploration-boundary.md)
 - [Workbench 실제 탐색·선택·요청 승인 계약](contracts/workbench-engine-workflow.md) · [두 모드 Docker·브라우저 수용](workbench-workflow-acceptance.md)
 - [UI API 연결 지도](contracts/ui-api-map.md) · [UI 작업 지침](../web/src/workbench/README.md)
