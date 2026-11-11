@@ -385,6 +385,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if isE2HTTPPlanning(ctx) {
 		tools = e2HTTPPlannerTools(base)
 		ctx, tools = withDiagnosticTools(ctx, tools, "planner")
+		if e2HTTPHasMCPTool(tools) {
+			return false, "", ErrE2HTTPBinding
+		}
 	} else {
 		tools, def, cleanup = AugmentTools(ctx, "planner", base)
 	}
