@@ -369,7 +369,9 @@ func TestE2HTTPUnknownAndIncompleteCallsStopFurtherRuns(t *testing.T) {
 func TestE2HTTPPlannerAndWorkerFilterByOriginalToolAllowlist(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
 	var base []actool.CoreTool
-	for _, name := range []string{"Bash", "WebFetch", "Skill", "ExecuteExtraTool", "record_fact", "add_intent", "list_facts", "node_detail", "report_finding", "insert_assets", "add_task_scope", "TodoWrite", "Monitor"} {
+	// 브라우저 MCP 도구(mcp__<서버>__<도구>)는 이름 끝이 허용 이름과 같아도 진단 단계에 들어가지 않는다.
+	for _, name := range []string{"Bash", "WebFetch", "Skill", "ExecuteExtraTool", "record_fact", "add_intent", "list_facts", "node_detail", "report_finding", "insert_assets", "add_task_scope", "TodoWrite", "Monitor",
+		"mcp__browser__browser_navigate", "mcp__browser__node_detail", "mcp__browser__list_facts"} {
 		base = append(base, e2WorkerFixtureTool(name, nil))
 	}
 	planner := e2HTTPPlannerTools(base)
@@ -869,5 +871,27 @@ func TestE2HTTPRegisteredIntentBindingSharesRunnerAndControl(t *testing.T) {
 	}
 	if next.Runner != E2HTTPRunner(localRunnerForTest{runner}) || next.Control != binding.Control {
 		t.Fatal("intent replaced task runner or limits")
+	}
+}
+
+// 진단 단계 도구 목록에 MCP 도구가 섞이면 Worker·Planner를 시작하지 않는다(탐색 실행기 결정안 §2-2).
+func TestE2HTTPDiagnosisRejectsMCPTools(t *testing.T) {
+	plain := []actool.CoreTool{e2WorkerFixtureTool("Bash", nil), e2WorkerFixtureTool("node_detail", nil), nil}
+	if e2HTTPHasMCPTool(plain) {
+		t.Fatal("graph tools reported as MCP")
+	}
+	if !e2HTTPHasMCPTool(append(plain, e2WorkerFixtureTool("mcp__browser__browser_navigate", nil))) {
+		t.Fatal("MCP tool not detected")
+	}
+	// 지금 구성으로는 MCP가 들어올 길이 없으므로, 검사가 실제로 시작 경로에 있는지를 소스로 묶는다.
+	for file, after := range map[string]string{"e2_http.go": `withDiagnosticTools(ctx, tools, "worker")`, "planner.go": `withDiagnosticTools(ctx, tools, "planner")`} {
+		source, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, rest, ok := strings.Cut(string(source), after)
+		if !ok || !strings.HasPrefix(strings.TrimSpace(rest), "if e2HTTPHasMCPTool(tools) {") {
+			t.Fatalf("%s: MCP check is not right after the diagnosis tool list", file)
+		}
 	}
 }
