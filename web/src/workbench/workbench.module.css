@@ -4046,15 +4046,85 @@ button.smm:hover {
 
 /* 넓은 화면 패널 접기 (이 브라우저에 기억). 좁은 화면 · 휴대폰의 서랍과는 별개라 각 폭 안에서만 적용한다. */
 /* 레일: 휴대폰보다 넓으면 통째로 숨기고, 화면 머리의 메뉴 버튼으로 다시 펼친다 */
+/* 레일: 휴대폰보다 넓으면 아이콘 줄(64px)로 접고, 줄 안의 같은 버튼으로 다시 펼친다 (시안 v19) */
+.rail .icon-btn.rail-fold {
+  width: 30px;
+  height: 30px;
+  background: none;
+  border-color: transparent;
+  color: var(--rail-mut);
+}
+.rail .icon-btn.rail-fold:hover {
+  background: var(--rail-2);
+  color: var(--rail-ink);
+}
 @media (min-width: 760px) {
+  .app {
+    transition: grid-template-columns 0.22s ease;
+  }
   .app.rail-hidden {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: 64px minmax(0, 1fr);
   }
   .app.rail-hidden > .rail {
+    align-items: center;
+    overflow-x: hidden;
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    padding-right: 12px;
+  }
+  .app.rail-hidden .rail-top {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .app.rail-hidden .brand {
+    padding: 4px;
+  }
+  .app.rail-hidden .rlbl {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .app.rail-hidden .new-btn {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+  }
+  .app.rail-hidden .rl {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+  .app.rail-hidden .rl .badge {
+    position: absolute;
+    top: 1px;
+    right: -2px;
+    min-width: 16px;
+    margin-left: 0;
+    padding: 0 4px;
+    line-height: 16px;
+    font-size: 10.5px;
+    text-align: center;
+  }
+  .app.rail-hidden .rsec {
     display: none;
   }
-  .app.rail-hidden .icon-btn.menu-btn {
-    display: inline-grid;
+  .app.rail-hidden .rail-foot {
+    align-self: stretch;
+    align-items: center;
+  }
+  .app.rail-hidden .acct-btn {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+  .app.rail-hidden .acct-btn .am-who,
+  .app.rail-hidden .acct-btn > .ic {
+    display: none;
   }
 }
 /* 휴대폰은 레일이 서랍이라 접기 버튼 대신 닫기(rail-x)를 쓴다 */

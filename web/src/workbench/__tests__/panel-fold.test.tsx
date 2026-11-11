@@ -87,18 +87,24 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it("넓은 화면: 레일 접기 버튼으로 접고, 화면 머리의 메뉴 버튼으로 다시 펼치며, 이 브라우저에 기억한다", async () => {
+it("넓은 화면: 레일 접기 버튼으로 아이콘 줄로 접고, 같은 자리의 펼치기 버튼으로 다시 펼치며, 이 브라우저에 기억한다", async () => {
   screenWidth({ narrow: false, phone: false });
   const c = await mount();
-  fireEvent.click(screen.getByRole("button", { name: "메뉴 접기" }));
+  const fold = screen.getByRole("button", { name: "메뉴 접기" });
+  expect(fold).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(fold);
   expect(app(c)).toHaveClass(s["rail-hidden"]);
   expect(localStorage.getItem("abc2lab-rail-hidden")).toBe("1");
   // 서랍이 아니라 접기라 가림막을 띄우지 않는다
   expect(c.querySelector("[data-scrim]")).not.toBeVisible();
-  const menu = dashboard(c).querySelector<HTMLElement>("[data-rail-open]") as HTMLElement;
-  fireEvent.click(menu);
+  // 접힌 줄에도 레일은 남고(새 점검 · 대시보드 · 계정), 글자는 읽기 이름으로 남는다
+  expect(screen.getByRole("link", { name: /새 점검/ })).toHaveAttribute("title", "새 점검");
+  const unfold = screen.getByRole("button", { name: "메뉴 펼치기" });
+  expect(unfold).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(unfold);
   expect(app(c)).not.toHaveClass(s["rail-hidden"]);
   expect(localStorage.getItem("abc2lab-rail-hidden")).toBeNull();
+  expect(screen.getByRole("button", { name: "메뉴 접기" })).toBeInTheDocument();
   expect(c.querySelector(`.${s.rail}`)).not.toHaveClass(s.open);
 });
 

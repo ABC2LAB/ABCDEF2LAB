@@ -117,7 +117,7 @@ export function Workbench() {
   const closeRail = useCallback(() => setDrawers((d) => (d.rail ? { ...d, rail: false } : d)), []);
   const foldRail = useCallback(() => {
     setPanel("rail", true);
-    focusLater("[data-rail-open]", true);
+    focusLater("[data-rail-fold]", false);
   }, [focusLater]);
 
   /** 원본 route(byUser): 해시 → 화면. 서랍을 닫고 진입 처리(crawlEnter · liveEnter)를 한 뒤, 스크롤·포커스는 레이아웃 effect 에서. */

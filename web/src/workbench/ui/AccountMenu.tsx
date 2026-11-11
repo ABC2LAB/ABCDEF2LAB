@@ -132,10 +132,19 @@ export function AccountMenu() {
     const m = menuRef.current;
     if (!b || !m) return;
     const r = b.getBoundingClientRect();
-    const w = Math.min(Math.max(248, r.width), window.innerWidth - 16);
+    const strip =
+      useWb.getState().railHidden &&
+      (typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 760px)").matches);
+    const w = Math.min(Math.max(248, strip ? 0 : r.width), window.innerWidth - 16);
     m.style.width = `${w}px`;
-    m.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;
-    m.style.bottom = `${window.innerHeight - r.top + 6}px`;
+    if (strip) {
+      const rail = b.closest("aside")?.getBoundingClientRect();
+      m.style.left = `${(rail?.right ?? r.right) + 8}px`;
+      m.style.bottom = `${Math.max(8, window.innerHeight - r.bottom)}px`;
+    } else {
+      m.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;
+      m.style.bottom = `${window.innerHeight - r.top + 6}px`;
+    }
   }, []);
 
   // 열 때: 자리 잡기 → 첫 항목에 포커스

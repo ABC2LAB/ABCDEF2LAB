@@ -7,29 +7,36 @@
 import { cx } from "../lib/cx";
 import { LiveRailBadge, LiveRailTasks } from "../live/rail";
 import { useShell } from "../shell";
+import { useWb } from "../store";
 import s from "../workbench.module.css";
 import { AccountMenu } from "./AccountMenu";
 import { BrandMark, Icon } from "./icons";
 
 export function Rail() {
-  const { route, railOpen, closeRail, foldRail } = useShell();
+  const { route, railOpen, closeRail, foldRail, openRail } = useShell();
+  // 넓은 화면에서 접으면 아이콘 줄(64px)만 남는다 (시안 v19). 글자는 가리고 마우스를 올리면 이름이 뜬다.
+  const folded = useWb((st) => st.railHidden);
+  const tip = (t: string) => (folded ? t : undefined);
+  const foldText = folded ? "메뉴 펼치기" : "메뉴 접기";
   return (
     <aside className={cx(s.rail, railOpen && s.open)} id="rail" aria-label="주 메뉴">
       <div className={s["rail-top"]}>
-        <a className={s.brand} href="#dashboard">
+        <a className={s.brand} href="#dashboard" title={tip("ABC2LAB")}>
           <BrandMark />
-          ABC2LAB
+          <span className={s.rlbl}>ABC2LAB</span>
         </a>
-        {/* 휴대폰보다 넓은 화면: 레일 접기 (다시 펼치기는 화면 머리의 메뉴 버튼) */}
+        {/* 휴대폰보다 넓은 화면: 레일을 아이콘 줄로 접고 · 같은 버튼으로 다시 펼친다 */}
         <button
           className={cx(s["icon-btn"], s["rail-fold"])}
           type="button"
           data-rail-fold=""
-          aria-label="메뉴 접기"
-          title="메뉴 접기"
-          onClick={foldRail}
+          aria-controls="rail"
+          aria-expanded={!folded}
+          aria-label={foldText}
+          title={foldText}
+          onClick={folded ? openRail : foldRail}
         >
-          <Icon name="panelLeft" />
+          <Icon name={folded ? "unfoldLeft" : "foldLeft"} />
         </button>
         <button
           className={cx(s["icon-btn"], s["rail-x"])}
@@ -41,13 +48,24 @@ export function Rail() {
           <Icon name="x" />
         </button>
       </div>
-      <a className={s["new-btn"]} href="#new" aria-current={route === "new" ? "page" : undefined}>
-        <Icon name="plus" />새 점검
+      <a
+        className={s["new-btn"]}
+        href="#new"
+        aria-current={route === "new" ? "page" : undefined}
+        title={tip("새 점검")}
+      >
+        <Icon name="plus" />
+        <span className={s.rlbl}>새 점검</span>
       </a>
       <nav className={s.rnav} aria-label="화면">
-        <a className={s.rl} href="#dashboard" aria-current={route === "dashboard" ? "page" : undefined}>
+        <a
+          className={s.rl}
+          href="#dashboard"
+          aria-current={route === "dashboard" ? "page" : undefined}
+          title={tip("대시보드")}
+        >
           <Icon name="grid" />
-          대시보드
+          <span className={s.rlbl}>대시보드</span>
           <LiveRailBadge />
         </a>
       </nav>
