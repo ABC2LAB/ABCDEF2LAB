@@ -31,16 +31,11 @@ const APPROVAL_MODE_RULE: Readonly<
   confirm_every_request: "모든 요청을 한 건씩 승인한 것만 보냄",
   workbench_selective_v1: "쓰기 메서드 요청은 한 건씩 승인한 것만 보냄",
 };
-function draftInput(
-  target: string,
-  profile: string,
-  name: string,
-  mode?: WorkflowMode,
-  excludes = "",
-): URLDiagnosisInput | null {
+// 작업 이름(display_name)은 받지 않는다 (시안 v39): 서버에서 선택 값이고 주소와 겹친다. 비우면 서버가 기본 설명을 붙인다.
+function draftInput(target: string, profile: string, mode?: WorkflowMode, excludes = ""): URLDiagnosisInput | null {
   if (!profile) return null;
   try {
-    return urlDiagnosisInput(target, profile, name, mode, excludes);
+    return urlDiagnosisInput(target, profile, "", mode, excludes);
   } catch {
     return null;
   }
@@ -52,10 +47,10 @@ const MODES = [
 ] as const;
 
 /** 안전 정책 한 줄 (시안 ilist). */
-function Rule({ t, sub }: { t: ReactNode; sub?: string }) {
+function Rule({ t, sub, warn = false }: { t: ReactNode; sub?: string; warn?: boolean }) {
   return (
     <li>
-      <Icon name="check" />
+      <Icon name={warn ? "alert" : "check"} />
       <div>
         {t}
         {sub !== undefined ? <small>{sub}</small> : null}
@@ -84,7 +79,6 @@ export function UrlNewScanLive() {
   const [target, setTarget] = useState("");
   const [kind, setKind] = useState<"local" | "external">(locals.length || !externals.length ? "local" : "external");
   const [profileId, setProfileId] = useState("");
-  const [name, setName] = useState("");
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("user_approval_v1");
   const [excluded, setExcluded] = useState("");
   const [credentialReady, setCredentialReady] = useState(false);
@@ -96,7 +90,6 @@ export function UrlNewScanLive() {
     if (resetSeq === seenReset.current) return;
     seenReset.current = resetSeq;
     setTarget("");
-    setName("");
     setExcluded("");
   }, [resetSeq]);
 
@@ -114,7 +107,6 @@ export function UrlNewScanLive() {
   const pv = shown ? shown.profile_id : pickedId;
   const profile = profiles.find((p) => p.id === pv) ?? null;
   const tv = shown ? shown.target_url : target;
-  const nv = shown ? (shown.display_name ?? "") : name;
   const mv = shown?.workflow_mode ?? workflowMode;
   const ev = shown ? (shown.excluded_paths ?? "") : excluded;
   const external = !!profile?.model?.external_transfer;
@@ -122,7 +114,7 @@ export function UrlNewScanLive() {
   const shownKind = shown ? lockedKind : kind;
   const input = shown
     ? null
-    : draftInput(target, pv, name, profile?.workflow ? workflowMode : undefined, profile?.workflow ? excluded : "");
+    : draftInput(target, pv, profile?.workflow ? workflowMode : undefined, profile?.workflow ? excluded : "");
 
   const hint = urlTargetHint(tv);
   const why: string[] = [];
@@ -132,16 +124,9 @@ export function UrlNewScanLive() {
     else if (!input && profile) why.push("주소 형식을 확인하세요");
     if (!profiles.length) why.push("설치된 모델 프로필이 없습니다");
     else if (!profile) why.push("모델을 고르세요");
-    else if (profile.workflow && !name.trim()) why.push("작업 이름을 입력하세요");
     if (external && !credentialReady) why.push("외부 API 키를 등록하세요");
   }
-  const canSend =
-    !shown &&
-    !!input &&
-    g.canValidate &&
-    (!profile?.workflow || !!name.trim()) &&
-    !busy &&
-    (!external || credentialReady);
+  const canSend = !shown && !!input && g.canValidate && !busy && (!external || credentialReady);
   const send = async () => {
     if (canSend && input) await runUrlAction("validate", input);
   };
@@ -369,27 +354,13 @@ export function UrlNewScanLive() {
             </div>
           </div>
 
-          <div className={s.fsec}>
-            <div className={s["fsec-h"]}>
-              <h2>작업</h2>
-            </div>
-            <div className={s["fsec-b"]}>
-              <div className={s.field}>
-                <label className={s.lbl} htmlFor="luName">
-                  작업 이름{profile?.workflow ? <span className={s.req}>필수</span> : null}
-                </label>
-                <input
-                  className={s.inp}
-                  id="luName"
-                  value={nv}
-                  maxLength={160}
-                  disabled={g.inputLocked}
-                  autoComplete="off"
-                  placeholder={tv ? `${urlHost(tv)} 점검` : ""}
-                  onChange={(e) => setName(e.target.value)}
-                />
+          {/* 점검 설정: 탐색 흐름이 있는 프로필만 진단 모드 · 제외 경로를 받는다(없으면 칸째 숨김) */}
+          {profile?.workflow ? (
+            <div className={s.fsec}>
+              <div className={s["fsec-h"]}>
+                <h2>점검 설정</h2>
               </div>
-              {profile?.workflow ? (
+              <div className={s["fsec-b"]}>
                 <>
                   <div className={s.field}>
                     <span className={s.lbl}>진단 모드</span>
@@ -425,9 +396,9 @@ export function UrlNewScanLive() {
                     />
                   </div>
                 </>
-              ) : null}
+              </div>
             </div>
-          </div>
+          ) : null}
 
           <div className={s.formbar}>
             {handle ? (
@@ -453,10 +424,10 @@ export function UrlNewScanLive() {
           </div>
           <div className={s.isec} style={{ borderTop: 0, marginTop: 10, paddingTop: 0 }}>
             <dl className={s.sumkv}>
-              <dt>대상</dt>
+              <dt>사이트</dt>
               <dd className={s.mono}>{shown?.target_url ?? input?.target_url ?? (tv.trim() || "—")}</dd>
-              <dt>모델</dt>
-              <dd>{profile ? `${external ? "외부" : "로컬"} · ${profile.model_label}` : "—"}</dd>
+              <dt>분석 모델</dt>
+              <dd>{profile ? `${profile.model_label} (${external ? "외부 API" : "로컬"})` : "—"}</dd>
               {profile?.workflow ? (
                 <>
                   <dt>진단 모드</dt>
@@ -465,23 +436,19 @@ export function UrlNewScanLive() {
                   <dd>{excludedCount ? `${excludedCount}개` : "없음"}</dd>
                 </>
               ) : null}
-              <dt>이름</dt>
-              <dd>{nv.trim() || "—"}</dd>
             </dl>
           </div>
           <div className={s.isec}>
-            <h3>이 점검에 적용되는 안전 정책</h3>
+            {/* 안전 장치 (시안 v41): 짧은 말로, 서버 값 · 절대규칙 6 고지는 그대로 */}
+            <h3>안전 장치</h3>
             {scope ? (
               <ul className={s.policy} id="luPolicy">
                 <Rule
-                  t="승인된 대상과 경로만 요청"
+                  t="승인된 사이트 · 경로에만 요청"
                   sub={`${scope.origin} · ${scope.path_prefixes.join(", ")} · ${scope.methods.join("/")}`}
                 />
-                <Rule
-                  t={APPROVAL_MODE_RULE[scope.approval_mode]}
-                  sub="GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다"
-                />
-                {excludedCount ? <Rule t="제외 경로는 요청 안 함" sub={`${excludedCount}개`} /> : null}
+                <Rule t={APPROVAL_MODE_RULE[scope.approval_mode]} />
+                {excludedCount ? <Rule t="제외한 경로는 요청 안 함" sub={`${excludedCount}개`} /> : null}
                 <Rule
                   t="요청 · 시간 상한"
                   sub={`대상 요청 ${scope.budget.requests}회 · ${scope.budget.duration_seconds}초 · 모델 요청 ${scope.budget.model_requests}회 · 토큰 입력 ${scope.budget.input_tokens} · 출력 ${scope.budget.output_tokens} · body 최대 ${scope.max_body_bytes} bytes`}
@@ -492,7 +459,12 @@ export function UrlNewScanLive() {
                     sub={`${scope.model.provider} · 비용 상한 ${usdText(scope.budget.cost_usd_micros)}`}
                   />
                 ) : null}
-                <Rule t="모든 요청과 승인 결정 기록" sub={`승인 만료 ${scope.expires_at}`} />
+                <Rule t="모든 요청 · 승인 기록 남김" sub={`승인 만료 ${scope.expires_at}`} />
+                <Rule
+                  warn
+                  t="조회 요청도 데이터를 바꿀 수 있음"
+                  sub="GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다"
+                />
               </ul>
             ) : (
               <p className={s.help}>승인 범위를 확인하면 서버가 정한 범위 · 상한이 여기에 나옵니다.</p>

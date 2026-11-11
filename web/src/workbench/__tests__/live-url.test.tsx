@@ -292,6 +292,41 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
   });
 
+  it("작업 이름 칸은 없고, 탐색 흐름이 있는 프로필만 '점검 설정' 칸(진단 모드 · 제외 경로)이 보인다 (시안 v39)", async () => {
+    const limits = {
+      format: "abc2lab.workbench-flow/v1" as const,
+      max_pages: 10,
+      max_endpoints: 20,
+      max_response_bytes: 1000,
+      allow_reversible_writes: false,
+    };
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], workflow: limits }] });
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    expect(screen.queryByLabelText(/작업 이름/)).toBeNull();
+    expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/제외 경로/)).toBeInTheDocument();
+    // 작업 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    const send = screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
+    expect(send).toBeEnabled();
+    await act(async () => {
+      fireEvent.click(send);
+    });
+    expect(u.createURLDraft.mock.calls[0][0]).toEqual({
+      target_url: "https://target.example/",
+      profile_id: "profile-1",
+      workflow_mode: "user_approval_v1",
+    });
+  });
+
+  it("탐색 흐름이 없는 프로필은 '점검 설정' 칸을 그리지 않는다", async () => {
+    mount("new");
+    await screen.findByLabelText(/점검할 사이트 주소/);
+    expect(screen.queryByRole("heading", { name: "점검 설정" })).toBeNull();
+    expect(screen.queryByLabelText(/작업 이름/)).toBeNull();
+  });
+
   it.each([404, 501])("%s 이면 설치 안내만 표시하고 진단 생성은 막는다", async (status) => {
     u.readURLCatalog.mockRejectedValue(new ApiError(status, "unsupported"));
     mount("new");
@@ -332,7 +367,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     expect((screen.getByLabelText("모델") as HTMLSelectElement).value).toBe("profile-1");
     // 범위 확인 전에는 서버 범위가 없다
-    expect(screen.queryByText("승인된 대상과 경로만 요청")).toBeNull();
+    expect(screen.queryByText("승인된 사이트 · 경로에만 요청")).toBeNull();
     await act(async () => {
       fireEvent.click(send()[0]);
     });
@@ -343,7 +378,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(who).toBe(owner);
     expect(u.commandURLDiagnosis).toHaveBeenCalledWith(draft, "validate", owner);
     // 같은 화면에서 서버가 돌려준 범위 · 상한과 시작 단계가 나온다(다른 화면으로 가지 않는다)
-    expect(await screen.findByText("승인된 대상과 경로만 요청")).toBeInTheDocument();
+    expect(await screen.findByText("승인된 사이트 · 경로에만 요청")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "점검 시작" })).toBeDisabled();
     expect(goTo).not.toHaveBeenCalled();
     // 조회 핸들만 남는다(영수증 키 · 결속). 입력은 잠긴다.
@@ -791,4 +826,8 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
     screen.getByText("GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다"),
   ).toBeInTheDocument();
   expect(screen.getByText("https://target.example · / · GET")).toBeInTheDocument();
+  // 안전 장치 (시안 v41): 짧은 제목, 절대규칙 6 고지는 경고 줄로 그대로
+  expect(screen.getByRole("heading", { name: "안전 장치" })).toBeInTheDocument();
+  expect(screen.getByText("조회 요청도 데이터를 바꿀 수 있음")).toBeInTheDocument();
+  expect(screen.getByText("모든 요청 · 승인 기록 남김")).toBeInTheDocument();
 });
