@@ -192,6 +192,21 @@ class LoadRoundTests(unittest.TestCase):
             with redirect_stderr(err):
                 self.assertEqual(main(args + extra), 2)
             self.assertIn(expected, err.getvalue())
+        self.assertEqual(summary["repeat_denials"]["improved"][0]["paths"]["reason"], "e2_copy_not_given")
+        # 개선 후 회차의 E② 수집 사본을 주면 반복 차단 수를 센다. 개수가 짝과 다르면 거부한다.
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from test_repeat_denials import KEY as COPY_KEY, copy_dir
+        self.assertEqual(COPY_KEY, KEY)
+        e2_copy = copy_dir(Path(self.tmp.name))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(main(args + ["--budget", "10", "--improved-e2", str(e2_copy)]), 0)
+        paths = json.loads(out.getvalue())["repeat_denials"]["improved"][0]["paths"]
+        self.assertEqual((paths["status"], paths["repeated_groups"], paths["repeated_refusals"]), ("ok", 1, 2))
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(main(args + ["--budget", "10", "--improved-e2", str(e2_copy), "--improved-e2", str(e2_copy)]), 2)
+        self.assertIn("e2_copies_invalid", err.getvalue())
         os.chmod(key_file, 0o644)
         err = io.StringIO()
         with redirect_stderr(err):
@@ -334,6 +349,9 @@ class SummarizeTests(unittest.TestCase):
         for baseline, improved in (([], []), ([rnd()], []), ([rnd()], [rnd(), rnd()])):
             with self.assertRaises(PreservationError):
                 summarize(baseline, improved, NONE, False)
+        with self.assertRaises(PreservationError) as caught:
+            summarize([rnd()], [rnd()], NONE, False, repeat_denials=[])
+        self.assertEqual(str(caught.exception), "e2_copies_invalid")
 
 
 if __name__ == "__main__":
