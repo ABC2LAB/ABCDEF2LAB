@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/Autumn-27/artex/pathmask"
@@ -14,7 +15,26 @@ const (
 	enginePathLogName = "engine-paths.jsonl"
 	pathMaskProfile   = pathmask.Profile
 	pathKeyBytes      = pathmask.KeyBytes
+	// 요청이 들어온 리슨. main은 -listen(원본 엔진 직접·E② 진단 입구), explore는 -explore-listen(탐색 경계 입구)이다.
+	ingressMain    = "main"
+	ingressExplore = "explore"
 )
+
+type ingressKey struct{}
+
+// ingress는 같은 계측기를 다른 입구 이름으로 부르는 처리기다. 기록·순번·봉인은 공유한다.
+func (m *engineMeter) ingress(name string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ingressKey{}, name)))
+	})
+}
+
+func requestIngress(r *http.Request) string {
+	if name, ok := r.Context().Value(ingressKey{}).(string); ok {
+		return name
+	}
+	return ingressMain
+}
 
 // 시도 ID·전송 단계는 같은 seq의 engine-requests.jsonl 행에 있다. 여기에 복사하지 않는다.
 type pathRow struct {
@@ -29,6 +49,8 @@ type pathRow struct {
 	// 인증을 시도했다는 관찰일 뿐 로그인이 됐다는 근거가 아니다(browser-acceptance.md §6).
 	HasAuthorization bool `json:"has_authorization"`
 	HasCookie        bool `json:"has_cookie"`
+	// 요청이 들어온 계측기 입구(ingressMain·ingressExplore). 입구별 전달 수(browser-acceptance.md §6)의 근거다.
+	Ingress string `json:"ingress"`
 }
 
 // hasHeaderValue는 그 이름의 헤더 줄 중 빈 값이 아닌 줄이 하나라도 있는지 본다. 빈 헤더는 자격을 싣지 않는다.

@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -107,11 +109,11 @@ func TestEnginePathLogRecordsMaskedForwardedRequests(t *testing.T) {
 	h := func(segment string) string { return pathmask.Pseudonym(segment, testPathKey) }
 	ref := pathmask.KeyRef(testPathKey)
 	want := []pathRow{
-		{1, "GET", "/" + h("api") + "/" + h("Users") + "/{id}", 1, pathMaskProfile, ref, false, true},
-		{2, "POST", "/" + h("users") + "/{id}", 1, pathMaskProfile, ref, false, true},
-		{3, "GET", "/{id}/" + h("ok"), 1, pathMaskProfile, ref, false, true},
-		{4, "GET", "/" + h("profile") + "/" + h(shortAccount), 0, pathMaskProfile, ref, false, true},
-		{5, "GET", "/" + h("reset") + "/" + h(shortToken), 0, pathMaskProfile, ref, false, true},
+		{1, "GET", "/" + h("api") + "/" + h("Users") + "/{id}", 1, pathMaskProfile, ref, false, true, ingressMain},
+		{2, "POST", "/" + h("users") + "/{id}", 1, pathMaskProfile, ref, false, true, ingressMain},
+		{3, "GET", "/{id}/" + h("ok"), 1, pathMaskProfile, ref, false, true, ingressMain},
+		{4, "GET", "/" + h("profile") + "/" + h(shortAccount), 0, pathMaskProfile, ref, false, true, ingressMain},
+		{5, "GET", "/" + h("reset") + "/" + h(shortToken), 0, pathMaskProfile, ref, false, true, ingressMain},
 	}
 	if got := readRows[pathRow](t, path); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
@@ -177,6 +179,29 @@ func TestEnginePathLogRecordsAuthHeaderPresenceOnly(t *testing.T) {
 		if bytes.Contains(body, []byte(raw)) {
 			t.Fatal(raw, string(body))
 		}
+	}
+}
+
+// 탐색 입구로 들어온 요청은 같은 기록·순번에 남고 경로 행의 입구만 다르다.
+func TestEnginePathLogRecordsIngress(t *testing.T) {
+	m, base, path := startPathEngine(t)
+	explore := httptest.NewServer(m.ingress(ingressExplore))
+	t.Cleanup(explore.Close)
+	for _, target := range []string{base + "/one", explore.URL + "/two", base + "/three"} {
+		req, err := http.NewRequest(http.MethodGet, target, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		send(t, req)
+	}
+	m.seal()
+	rows := readRows[pathRow](t, path)
+	got := []string{}
+	for _, row := range rows {
+		got = append(got, fmt.Sprintf("%d %s", row.Seq, row.Ingress))
+	}
+	if !reflect.DeepEqual(got, []string{"1 main", "2 explore", "3 main"}) {
+		t.Fatalf("%v", got)
 	}
 }
 

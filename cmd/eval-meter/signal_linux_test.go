@@ -200,3 +200,100 @@ func TestRunEnginePathLogFlagWritesPatterns(t *testing.T) {
 		t.Fatalf("%+v", rows)
 	}
 }
+
+// -explore-listen은 두 번째 리슨을 열고, 같은 기록에 입구를 나눠 남긴다. 종료 신호 하나로 둘 다 닫힌다.
+func TestRunEngineExploreListenTagsIngress(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	explored := make(chan net.Addr, 1)
+	listeningExplore = func(addr net.Addr) { explored <- addr }
+	t.Cleanup(func() { listeningExplore = func(net.Addr) {} })
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	addr, dir, exit := runEngine(t, upstream.URL, "-explore-listen", "127.0.0.1:0", "-path-log", "-path-key-file", writePathKey(t, testPathKey, 0o600))
+	var exploreAddr string
+	select {
+	case a := <-explored:
+		exploreAddr = a.String()
+	case <-time.After(5 * time.Second):
+		// 실패해도 엔진을 멈춰서 같은 시험 프로세스의 뒤 시험이 매달리지 않게 한다.
+		stopRun(t, exit)
+		t.Fatal("explore front did not listen")
+	}
+	for _, target := range []string{"http://" + addr + "/a", "http://" + exploreAddr + "/b"} {
+		resp, err := client.Get(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exit:
+	case <-time.After(10 * time.Second):
+		t.Fatal("fronts did not stop")
+	}
+	rows := readRows[pathRow](t, filepath.Join(dir, enginePathLogName))
+	if len(rows) != 2 || rows[0].Ingress != ingressMain || rows[1].Ingress != ingressExplore {
+		t.Fatalf("%+v", rows)
+	}
+	if _, err := net.DialTimeout("tcp", exploreAddr, 200*time.Millisecond); err == nil {
+		t.Fatal("explore front still open after stop")
+	}
+}
+
+func TestRunExploreListenOnlyForEngine(t *testing.T) {
+	dir, _ := privateTestDir(t)
+	for _, args := range [][]string{
+		{"-role", "observer", "-listen", "127.0.0.1:0", "-explore-listen", "127.0.0.1:0", "-upstream", "http://127.0.0.1:9", "-log-dir", dir, "-allow-path", "/x"},
+	} {
+		// 받아들이면 그 역할이 신호를 기다리며 계속 돈다. 시험이 매달리지 않게 시간 안에 안 끝나면 멈춘다.
+		var stderr bytes.Buffer
+		exit := make(chan int, 1)
+		go func() { exit <- run(args, strings.NewReader(""), io.Discard, &stderr) }()
+		select {
+		case code := <-exit:
+			if code != 2 || !strings.Contains(stderr.String(), invalidInput) {
+				t.Fatalf("%v: %d %s", args, code, stderr.String())
+			}
+		case <-time.After(2 * time.Second):
+			stopRun(t, exit)
+			t.Fatalf("%v was accepted", args)
+		}
+	}
+	// 이미 쓰는 주소면 두 리슨 다 열지 않고 기록을 남기지 않는다.
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	engineDir, _ := privateTestDir(t)
+	var stderr bytes.Buffer
+	args := []string{"-role", "engine", "-listen", "127.0.0.1:0", "-explore-listen", busy.Addr().String(), "-upstream", "http://127.0.0.1:9", "-log-dir", engineDir}
+	exit := make(chan int, 1)
+	go func() { exit <- run(args, strings.NewReader(""), io.Discard, &stderr) }()
+	select {
+	case code := <-exit:
+		if code != 1 || !strings.Contains(stderr.String(), listenUnavailable) {
+			t.Fatalf("%d %s", code, stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		stopRun(t, exit)
+		t.Fatal("engine started without its explore front")
+	}
+}
+
+// stopRun은 신호를 기다리며 도는 run을 SIGTERM으로 끝내고 기다린다.
+func stopRun(t *testing.T, exit chan int) {
+	t.Helper()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Error(err)
+		return
+	}
+	select {
+	case <-exit:
+	case <-time.After(10 * time.Second):
+		t.Error("run did not stop on SIGTERM")
+	}
+}
