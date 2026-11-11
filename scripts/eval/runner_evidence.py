@@ -23,6 +23,9 @@ PATH_PROFILE = "abc2lab.path-mask/v2"
 # 인증 헤더 유무 칸(paths.go HasAuthorization·HasCookie). 이 칸이 생기기 전 계측기의 행에는 없고, 그 회차의
 # 인증 헤더 수는 NOT_RUN이다. 한 기록 안의 행은 모두 같은 모양이어야 한다.
 PATH_AUTH_FIELDS = frozenset({"has_authorization", "has_cookie"})
+# 계측기 입구 칸(paths.go Ingress). 인증 헤더 칸보다 뒤에 생겼다. 이 칸이 없는 회차의 입구별 전달 수는 NOT_RUN이다.
+PATH_INGRESS_FIELD = "ingress"
+INGRESSES = frozenset({"main", "explore"})
 # 가림 키의 참조(pathmask.go KeyRef). 한 회차의 행은 모두 같은 키로 가렸어야 한다.
 _PATH_KEY_REF = re.compile(r"[0-9a-f]{16}\Z")
 SEALED_MARKER = "engine-sealed.json"
@@ -190,12 +193,14 @@ def _read_owned(directory: Path, name: str) -> bytes | None:
         os.close(dir_fd)
 
 
-def _rows(data: bytes | None, fields: frozenset[str], optional: frozenset[str] = frozenset()) -> list[dict]:
+def _rows(data: bytes | None, fields: frozenset[str], optional: frozenset[str] = frozenset(),
+          later: frozenset[str] = frozenset()) -> list[dict]:
     """완결된 줄(\\n으로 끝남)만 센다. 쓰는 중인 마지막 줄은 다음 읽기로 미룬다.
 
-    optional은 형식이 늘기 전 행에 없던 칸 묶음이다. 행은 그 칸을 전부 갖거나 하나도 갖지 않아야 한다.
+    optional·later는 형식이 늘 때 생긴 칸 묶음이다(later가 더 나중). 행 모양은 fields, fields+optional,
+    fields+optional+later 중 하나여야 한다.
     """
-    shapes = (fields, fields | optional)
+    shapes = (fields, fields | optional, fields | optional | later)
     if not data:
         return []
     complete = data[:data.rfind(b"\n") + 1]
@@ -284,15 +289,16 @@ class MeterFiles:
         # 진행 중 읽기와 달리 개행으로 끝나지 않은 꼬리는 잘린 기록이다(_rows는 그 줄을 버리고 센다).
         if data and not data.endswith(b"\n"):
             raise EvidenceError("meter_path_log_invalid")
-        rows = _rows(data, _PATH_ROW, PATH_AUTH_FIELDS)
+        rows = _rows(data, _PATH_ROW, PATH_AUTH_FIELDS, frozenset({PATH_INGRESS_FIELD}))
         forwarded = {row["seq"]: row["method"] for row in engine_rows if row["kind"] in FORWARDED_KINDS}
         if {row["seq"]: row["method"] for row in rows} != forwarded or any(
                 row["path_profile_ref"] != PATH_PROFILE or not isinstance(row["path_pattern"], str)
                 or not row["path_pattern"] or type(row["masked_segments"]) is not int or row["masked_segments"] < 0
                 or not isinstance(row["path_key_ref"], str) or not _PATH_KEY_REF.match(row["path_key_ref"])
                 or any(type(row[name]) is not bool for name in PATH_AUTH_FIELDS & set(row))
+                or PATH_INGRESS_FIELD in row and (not isinstance(row[PATH_INGRESS_FIELD], str) or row[PATH_INGRESS_FIELD] not in INGRESSES)
                 for row in rows) or len({row["path_key_ref"] for row in rows}) > 1 \
-                or len({PATH_AUTH_FIELDS <= set(row) for row in rows}) > 1:
+                or len({frozenset(row) for row in rows}) > 1:
             raise EvidenceError("meter_path_log_invalid")
         return rows
 

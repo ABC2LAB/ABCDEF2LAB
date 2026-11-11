@@ -35,13 +35,15 @@ def engine_row(seq, method="GET", kind="request", sent="yes"):
             "attempt_id_state": "absent", "attempt_id": ""}
 
 
-def path_row(seq, path, method="GET", ref=REF, auth=None):
+def path_row(seq, path, method="GET", ref=REF, auth=None, ingress=None):
     """auth가 (Authorization, Cookie) 쌍이면 인증 헤더 칸이 있는 계측기 행, None이면 그 칸이 생기기 전 행이다."""
     pattern, count = mask_path(path, KEY)
     row = {"seq": seq, "method": method, "path_pattern": pattern, "masked_segments": count,
            "path_profile_ref": PATH_PROFILE, "path_key_ref": ref}
     if auth is not None:
         row.update(has_authorization=auth[0], has_cookie=auth[1])
+    if ingress is not None:
+        row["ingress"] = ingress
     return row
 
 
@@ -109,6 +111,19 @@ class LoadRoundTests(unittest.TestCase):
                  path_row(5, "/e", auth=(True, True))]
         self.assertEqual(load_round(self.meter(engine, paths), 4, REF).auth_headers, AuthHeaders(2, 2, 3))
         self.assertEqual(load_round(self.meter(engine, paths), 10, REF).auth_headers, AuthHeaders(3, 3, 4))
+
+    def test_ingress_is_counted_inside_the_budget(self):
+        engine = [engine_row(1), engine_row(2, sent="no"), engine_row(3), engine_row(4)]
+        paths = [path_row(1, "/a", auth=(False, False), ingress="main"), path_row(2, "/b", auth=(False, False), ingress="explore"),
+                 path_row(3, "/c", auth=(False, False), ingress="explore"), path_row(4, "/d", auth=(False, False), ingress="main")]
+        got = load_round(self.meter(engine, paths), 3, REF)
+        self.assertEqual(dict(got.ingress), {"main": 1, "explore": 2})
+        summary = summarize([got], [got], NONE, False)
+        self.assertEqual(summary["ingress"], {"baseline": [{"explore": 2, "main": 1}], "improved": [{"explore": 2, "main": 1}]})
+        # 입구 칸 전의 계측기 회차는 null(NOT_RUN)이다.
+        old = load_round(self.meter([engine_row(1)], [path_row(1, "/a", auth=(False, False))]), 3, REF)
+        self.assertIsNone(old.ingress)
+        self.assertEqual(summarize([old], [got], NONE, False)["ingress"]["baseline"], [None])
 
     def test_rows_before_the_auth_columns_are_not_run(self):
         got = load_round(self.meter([engine_row(1)], [path_row(1, "/a")]), 10, REF)
