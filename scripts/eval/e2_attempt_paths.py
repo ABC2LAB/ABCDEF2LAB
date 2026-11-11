@@ -97,7 +97,9 @@ def parse_attempt_paths(rows: bytes | None, done: bytes | None, attempts: bytes,
         _fail("attempt_paths_row_count_mismatch")
     for row in parsed:
         pattern = row.get("path_pattern")
-        if (set(row) != _ROW_FIELDS or not _count(row["sequence"]) or row["decision"] not in _DECISIONS
+        # 집합 대조 전에 문자열인지 본다(배열·객체는 해시할 수 없어 정해진 오류 대신 TypeError가 난다).
+        if (set(row) != _ROW_FIELDS or not _count(row["sequence"])
+                or not isinstance(row["decision"], str) or row["decision"] not in _DECISIONS
                 or not isinstance(row["reason"], str) or not row["reason"] or not isinstance(row["method"], str)
                 or not (pattern is None or isinstance(pattern, str) and pattern.startswith("/"))
                 or not _count(row["masked_segments"]) or (pattern is None and row["masked_segments"] != 0)

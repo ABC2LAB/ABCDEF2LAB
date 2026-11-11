@@ -499,6 +499,26 @@ class TestAttemptPaths(Fixture):
                     self.collect_paths(False)
                 self.assertEqual(caught.exception.code, "attempt_paths_unexpected")
 
+    def test_official_round_is_invalid_even_when_the_export_failed(self):
+        # 결과가 불완전하거나 manifest가 없어 제품 실패로 끝나는 회차에도 공식 회차 금지가 먼저 걸린다.
+        for name in ("e2-attempt-paths.jsonl", "e2-attempt-paths.done.json"):
+            for failure in ("incomplete", "manifest_missing"):
+                with self.subTest(name=name, failure=failure):
+                    for leftover in os.listdir(self.source):
+                        (self.source / leftover).unlink()
+                    self.manifest["state"] = "incomplete" if failure == "incomplete" else "complete"
+                    self.publish()
+                    if failure == "manifest_missing":
+                        (self.source / "manifest.json").unlink()
+                    self.write(name, b"{}\n")
+                    with self.assertRaises(E2CollectionInvalid) as caught:
+                        self.collect_paths(False)
+                    self.assertEqual(caught.exception.code, "attempt_paths_unexpected")
+                    # 수용시험 회차라면 같은 실패는 제품 실패로 남고 경로 파일은 옮기지 않는다.
+                    result = self.collect_paths(True)
+                    self.assertEqual(result.outcome, OUTCOME_PRODUCT_FAILURE)
+                    self.assertNotIn(name, result.sha256)
+
     def test_linked_projection_is_not_followed(self):
         target = Path(self.temp.name) / "elsewhere"
         target.write_bytes(b"{}\n")
