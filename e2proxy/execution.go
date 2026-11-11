@@ -810,7 +810,8 @@ func (c *Call) Reject(ctx context.Context, method string, reason Reason) (Receip
 		r.Decision = "denied"
 	}
 	r.Reason = reason
-	return c.finish(ctx, r)
+	// 형식 오류·CONNECT 단계 거부는 요청 URL이 없어 경로를 만들 수 없다(평가 집계에서 "경로 미확보").
+	return c.finish(ctx, r, func(rr Receipt) { c.observeAttemptPath(nil, rr) })
 }
 func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 	a, err := canonicalAuthority(req.URL)
@@ -892,6 +893,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		var boundaryErr error
 		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
 			c.observeHTTP(req, resp, rr)
+			c.observeAttemptPath(req, rr)
 			if c.e.cfg.RequestBoundary != nil && req != nil && req.URL != nil {
 				boundaryErr = c.e.cfg.RequestBoundary.After(context.WithoutCancel(ctx), RequestView{Method: req.Method, URL: req.URL.String(), BodyPresent: req.ContentLength != 0}, rr)
 			}
