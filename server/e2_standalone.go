@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -61,6 +62,8 @@ type E2StandaloneBackend struct {
 	active                           int
 	idle                             chan struct{}
 	final                            *E2ControlFinal
+	// 수용시험 회차(설정 v2)에만 있다. 공식 회차는 nil이다.
+	attemptPaths *e2AttemptPathLog
 }
 
 func (*E2StandaloneBackend) String() string   { return "server.E2StandaloneBackend[protected]" }
@@ -105,6 +108,15 @@ func NewE2StandaloneBackend(ctx context.Context, o E2StandaloneOptions) (*E2Stan
 	b := &E2StandaloneBackend{ctx: owned, cancel: cancel, options: o, idle: make(chan struct{})}
 	close(b.idle)
 	input := E2HTTPFileOptions{PolicyFile: o.Config.PolicyPath, Authority: e2StandaloneAuthority{E2HTTPPolicyAuthority: o.Authority, ctx: owned}, Supervisor: o.Supervisor, OnAcquire: b.onAcquire, ObserveEvent: b.observeEvent, ObserveResult: b.observeResult}
+	if o.Config.HasPathKey() {
+		pathKey, keyErr := o.Config.ReadPathKey()
+		b.attemptPaths = newE2AttemptPathLog(pathKey)
+		clear(pathKey)
+		if keyErr != nil || b.attemptPaths == nil {
+			return nil, ErrE2Control
+		}
+		input.AttemptPathObserver = b.attemptPaths.observe
+	}
 	f, err := loadE2HTTPRuntimeOptions(ctx, input, raw, b.resetBinding)
 	if err != nil {
 		return nil, err
@@ -191,6 +203,10 @@ func (b *E2StandaloneBackend) onAcquire(ctx context.Context, a E2HTTPAcquired) e
 	// 러너는 게시 루트 아래 실행별 디렉터리에서 읽는다(연결 제안 §4.1).
 	output := filepath.Join(c.EvidenceDir, b.options.ExecutionRef)
 	if os.Mkdir(output, 0700) != nil {
+		return ErrE2Control
+	}
+	// 첫 시도 전에 연다. 열지 못하면 측정 회차를 시작하지 않는다(행이 빠진 기록을 만들지 않는다).
+	if b.attemptPaths != nil && b.attemptPaths.open(output) != nil {
 		return ErrE2Control
 	}
 	p, err := e2export.New(e2export.Config{Execution: a.Execution, Runner: a.Runner, Journal: a.Journal, JournalDirectory: a.JournalDirectory, JournalName: a.JournalName, OutputDirectory: output, AuditKey: a.AuditKey, ExecutionRef: b.options.ExecutionRef, EvalRunID: c.EvalRunID, ReservationRef: c.ReservationRef, ModelTag: c.ModelTag, ResetGeneration: b.reset, EngineTaskID: v.Scope.TaskRef, PolicyFingerprintSHA256: a.PolicyFingerprintSHA256})
@@ -376,6 +392,11 @@ func (b *E2StandaloneBackend) Finalize(ctx context.Context, ref string) (E2Contr
 		b.mu.Lock()
 		p, failed := b.publisher, b.failed
 		b.mu.Unlock()
+		// 모든 호출이 끝난 뒤(idle)라 더 올 행이 없다. 게시 전에 경로 기록을 디스크에 내린다.
+		// 실패해도 E② 마감에는 끼어들지 않고, 기록이 불완전한 것은 러너가 순번 대조로 잡는다.
+		if b.attemptPaths != nil && b.attemptPaths.close() != nil {
+			log.Print("[e2-standalone] attempt_paths_close_failed")
+		}
 		if p != nil && !failed {
 			r, err := p.Publish(ctx, ref)
 			if err == nil {
@@ -453,6 +474,9 @@ func (b *E2StandaloneBackend) Dispose() error {
 	b.mu.Unlock()
 	if p != nil {
 		p.Dispose()
+	}
+	if b.attemptPaths != nil && b.attemptPaths.close() != nil {
+		log.Print("[e2-standalone] attempt_paths_close_failed")
 	}
 	if err != nil {
 		return ErrE2Control

@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/internal/privateinput"
+	"github.com/Autumn-27/artex/pathmask"
 )
 
 const Format = "abc2lab.e2-runner-config/v1"
@@ -25,8 +26,8 @@ const Format = "abc2lab.e2-runner-config/v1"
 // (browser-acceptance.md §6 진단 요청 반복 차단 수)에만 쓰고, 공식 회차는 v1만 쓴다.
 const FormatPathKey = "abc2lab.e2-runner-config/v2"
 
-// PathKeyBytes는 경로 가림 키 길이다(pathmask.KeyBytes와 같다).
-const PathKeyBytes = 32
+// PathKeyBytes는 경로 가림 키 길이다. 계측기·eval-e2가 같은 규칙을 쓰도록 pathmask에 묶는다.
+const PathKeyBytes = pathmask.KeyBytes
 const MaxConfigBytes = 64 << 10
 const MaxPolicyBytes = 256 << 10
 
