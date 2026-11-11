@@ -67,6 +67,7 @@ from e2_collect import OUTCOME_COMPLETE, OUTCOME_PRODUCT_FAILURE, E2Collection, 
 from e2_control import CLOSE_NO_EXECUTION, CLOSE_UNAVAILABLE, CloseResult, E2ControlError  # noqa: E402
 from e2_link import E2Link, E2LinkPaths  # noqa: E402
 from e2_prepare import E2PrepareError  # noqa: E402
+from path_mask import PathKeyError, read_path_key  # noqa: E402
 from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified, parse_projection  # noqa: E402
 from e2_prompt_identity import PROMPT_FIELDS  # noqa: E402
 from verdict_collector import (  # noqa: E402
@@ -694,6 +695,19 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                      "daemon": pre["daemon"], "scoreboards": {"pre": pre_board, "post": post_board}}
 
 
+def acceptance_path_key(config) -> bytes | None:
+    """수용시험 회차만 계측기와 같은 경로 가림 키를 eval-e2에 넘긴다(E② 시도 경로 투영). 공식 회차는 None이다.
+
+    check_key_files가 같은 파일을 이미 확인했다. 그 사이 바뀌어 읽을 수 없으면 설정 오류로 멈춘다.
+    """
+    if config.purpose != PURPOSE_BROWSER_ACCEPTANCE:
+        return None
+    try:
+        return read_path_key(str(config.path_key_file))
+    except PathKeyError:
+        raise RunnerConfigError(["config.path_key_file: UNREADABLE"]) from None
+
+
 def _e2_step(state: _State, code: str, action: Callable):
     """제어 채널·수집의 고정 코드를 회차 사유로 그대로 올린다. 그 밖의 예외는 그 단계의 사유다."""
     def run():
@@ -1284,6 +1298,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_runner_config(args.config)
         path_key_ref = check_key_files(config)
+        path_key = acceptance_path_key(config)
         preflight = load_preflight(args.preflight)
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
         task = task_request(config.task, preflight[plan.side]["target_origin"])
@@ -1296,7 +1311,7 @@ def main(argv: list[str] | None = None) -> int:
         e2_link = None
         if plan.e2_mode == E2_PRODUCT:
             e2_link = E2Link(config.e2_product, E2LinkPaths(directory.e2_config, directory.e2, directory.e2_control, directory.e2_copy, directory.e2_engine),
-                             plan.run_id, plan.llm["model"], plan.llm["backend"], plan.meter_port)
+                             plan.run_id, plan.llm["model"], plan.llm["backend"], plan.meter_port, path_key=path_key)
     except (RunnerConfigError, PreflightError) as exc:
         print("\n".join(getattr(exc, "errors", ["config: INVALID"])), file=sys.stderr)
         return 2
