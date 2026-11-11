@@ -4148,3 +4148,38 @@ button.smm:hover {
     display: inline-flex;
   }
 }
+/*
+ * 접으면 가운데 내용은 넓어지지 않고 좁은 단(--cw)으로 가운데에 모이며, 나머지는 양옆 여백이 된다 (시안 v23 · v24).
+ * --cw = 두 패널을 펼쳤을 때 내용 폭 - 120px (최소 560px · 최대 960px)
+ * 여백은 칸의 실제 폭(100%) 기준이라 상세 패널이 없는 화면(로그인 · 연결 확인 관문)도 똑같이 가운데에 모인다.
+ */
+@media (min-width: 760px) {
+  .vh,
+  .vm {
+    transition: padding 0.22s ease;
+  }
+  .app.rail-hidden {
+    --cw: clamp(560px, calc(100vw - 412px), 960px);
+  }
+  .app.rail-hidden .vh,
+  .app.rail-hidden .vm {
+    padding-left: max(28px, calc((100% - var(--cw)) / 2));
+    padding-right: max(28px, calc((100% - var(--cw)) / 2));
+  }
+}
+@media (min-width: 1200px) {
+  .app.rail-hidden,
+  .app.insp-hidden {
+    --cw: clamp(560px, calc(100vw - 796px), 960px);
+  }
+  .app.insp-hidden .vh,
+  .app.insp-hidden .vm {
+    padding-left: max(28px, calc((100% - var(--cw)) / 2));
+    padding-right: max(28px, calc((100% - var(--cw)) / 2));
+  }
+  /* 상세 패널이 펼쳐진 화면: 머리는 패널 위까지 걸치므로 패널 폭(384px)을 빼고 내용과 맞추고, 오른쪽 버튼은 패널 위 끝에 둔다 */
+  .app.rail-hidden:not(.insp-hidden) .view:has(.vi) > .vh {
+    padding-left: max(28px, calc((100% - 384px - var(--cw)) / 2));
+    padding-right: max(28px, env(safe-area-inset-right, 0px));
+  }
+}
