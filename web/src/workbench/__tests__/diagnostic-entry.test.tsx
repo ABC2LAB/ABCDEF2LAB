@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import { apiFetchBlob } from "@/lib/diagnosis/api";
+import { ApiError, apiFetchBlob } from "@/lib/diagnosis/api";
 import {
   generateRemediation,
   type RemediationBundle,
@@ -12,8 +12,15 @@ import {
 
 import { DiagnosticEntrySections } from "../views/live/DiagnosticEntrySections";
 
-vi.mock("@/lib/diagnosis/api", () => ({ apiFetchBlob: vi.fn() }));
-vi.mock("@/lib/diagnosis/remediation", () => ({ generateRemediation: vi.fn(), readCopyPrompt: vi.fn() }));
+vi.mock("@/lib/diagnosis/api", async (original) => ({
+  ...(await original<typeof import("@/lib/diagnosis/api")>()),
+  apiFetchBlob: vi.fn(),
+}));
+vi.mock("@/lib/diagnosis/remediation", async (original) => ({
+  ...(await original<typeof import("@/lib/diagnosis/remediation")>()),
+  generateRemediation: vi.fn(),
+  readCopyPrompt: vi.fn(),
+}));
 const bundle: RemediationBundle = {
   finding_id: "finding-1",
   input_digest: "saved-input",
@@ -204,4 +211,30 @@ it("reports source load failure without presenting generated steps or offering g
   expect(screen.getByRole("alert")).toHaveTextContent("근거 불러오기 실패");
   expect(screen.queryByRole("heading", { name: /Step 1/ })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" })).toBeDisabled();
+});
+
+it("blocks copying a stored prompt that differs from its masked display", async () => {
+  const entry = fixture();
+  const prompt = "Authorization: Bearer synthetic-secret-value";
+  entry.record = { id: 7, entry_id: entry.entry_id, stale: false, bundle: { ...bundle, ai_prompt: prompt } };
+  vi.mocked(readCopyPrompt).mockResolvedValue({
+    entry_id: entry.entry_id,
+    record_id: 7,
+    input_digest: bundle.input_digest,
+    ai_prompt: prompt,
+  });
+  render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "AI 수정 프롬프트 복사" }));
+  await screen.findByText(/프롬프트가 변경됐거나 복사 권한/);
+  expect(copy).not.toHaveBeenCalled();
+});
+
+it("distinguishes missing current images from integrity failures", async () => {
+  const entry = fixture();
+  if (!entry.steps?.[0]) throw Error("fixture step");
+  entry.steps[0].capture = { status: "captured", digest: "c".repeat(64), width: 4, height: 4 };
+  vi.mocked(apiFetchBlob).mockRejectedValue(new ApiError(404, "missing"));
+  render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "검증된 증적 이미지 보기" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("현재 회차에서 이미지를 찾지 못했습니다");
 });

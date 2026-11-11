@@ -109,11 +109,11 @@ func TestDiagnosticReportDatabaseCorruptionAndPageOverflow(t *testing.T) {
 	if _, err = s.m.pg.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{diagnostic_candidate_v1,evidence_digest}','"wrong"') WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	data, err := loadDiagnosticReport(context.Background(), s.m.pg, tid, time.Now())
-	if err != nil || data.SourceFailures != 1 {
+	invalidData, err := loadDiagnosticReport(context.Background(), s.m.pg, tid, time.Now())
+	if err != nil || invalidData.SourceFailures != 1 {
 		t.Fatal("invalid candidate not isolated", err)
 	}
-	for _, entry := range data.Entries {
+	for _, entry := range invalidData.Entries {
 		if entry.ID == fmt.Sprintf("candidate-%d", id) && (!entry.SourceLoadFailed || entry.Outcome != "unknown" || entry.Digest != "" || len(entry.Steps) != 0) {
 			t.Fatal("corrupt candidate trusted")
 		}

@@ -203,7 +203,11 @@ function Steps({ t, items }: { t: string; items: readonly string[] }) {
 
 /** 보고서 내려받기 (종합 HTML, 첫 진단 모드). 미지원이면 접는다. URL 진단 보고서(UrlLiveLive)도 쓴다. */
 export function Download({ taskId }: { taskId: string }) {
-  const [st, setSt] = useState<{ busy: Audience | null; err: unknown; done: Audience | null }>({
+  const [st, setSt] = useState<{
+    busy: `${Audience}:${"html" | "docx"}` | null;
+    err: unknown;
+    done: { aud: Audience; format: "html" | "docx" } | null;
+  }>({
     busy: null,
     err: null,
     done: null,
@@ -215,10 +219,10 @@ export function Download({ taskId }: { taskId: string }) {
     ctrl.current?.abort();
     const c = new AbortController();
     ctrl.current = c;
-    setSt({ busy: aud, err: null, done: null });
+    setSt({ busy: `${aud}:${format}`, err: null, done: null });
     try {
       await downloadDiagnostic(taskId, aud, c.signal, format);
-      if (!c.signal.aborted) setSt({ busy: null, err: null, done: aud });
+      if (!c.signal.aborted) setSt({ busy: null, err: null, done: { aud, format } });
     } catch (err) {
       if (!c.signal.aborted) setSt({ busy: null, err, done: null });
     }
@@ -239,10 +243,10 @@ export function Download({ taskId }: { taskId: string }) {
         <>
           <div className={s.acts}>
             <button className={cx(s.btn, s.pri, s.sm)} type="button" disabled={!!st.busy} onClick={() => run("shared")}>
-              {st.busy === "shared" ? "내려받는 중…" : AUD_LABEL.shared}
+              {st.busy === "shared:html" ? "내려받는 중…" : AUD_LABEL.shared}
             </button>
             <button className={cx(s.btn, s.sm)} type="button" disabled={!!st.busy} onClick={() => run("internal")}>
-              {st.busy === "internal" ? "내려받는 중…" : AUD_LABEL.internal}
+              {st.busy === "internal:html" ? "내려받는 중…" : AUD_LABEL.internal}
             </button>
             <button
               className={cx(s.btn, s.sm)}
@@ -250,7 +254,7 @@ export function Download({ taskId }: { taskId: string }) {
               disabled={!!st.busy}
               onClick={() => run("shared", "docx")}
             >
-              Word 공유용
+              {st.busy === "shared:docx" ? "Word 공유용 내려받는 중…" : "Word 공유용"}
             </button>
             <button
               className={cx(s.btn, s.sm)}
@@ -258,13 +262,13 @@ export function Download({ taskId }: { taskId: string }) {
               disabled={!!st.busy}
               onClick={() => run("internal", "docx")}
             >
-              Word 내부 상세
+              {st.busy === "internal:docx" ? "Word 내부 상세 내려받는 중…" : "Word 내부 상세"}
             </button>
           </div>
           {st.err ? <ErrorNote error={st.err} /> : null}
           {st.done ? (
             <p className={s.help} role="status">
-              {`${AUD_LABEL[st.done]} 파일을 저장했습니다.`}
+              {`${st.done.format === "docx" ? "Word" : "HTML"} ${st.done.aud === "shared" ? "공유용" : "내부 상세"} 파일을 저장했습니다.`}
             </p>
           ) : null}
           <p className={s.help}>

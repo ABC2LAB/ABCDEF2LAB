@@ -3,6 +3,9 @@ import { z } from "zod";
 import { apiFetch } from "./api";
 import { diagnosticOutcome } from "./diagnostic-results";
 
+// docs/contracts/practical-diagnostic-report.md; matches reportcapture and SQL bounds.
+export const DIAGNOSTIC_CAPTURE_LIMITS = { pngBytes: 1048576, dimension: 4096, pixels: 8000000 } as const;
+
 export type Technology = {
   kind: string;
   name: string;
@@ -399,9 +402,9 @@ export function parseRemediationData(value: unknown, task: string, audience: str
             !step.capture.captured_at ||
             !step.capture.width ||
             !step.capture.height ||
-            step.capture.width > 4096 ||
-            step.capture.height > 4096 ||
-            step.capture.width * step.capture.height > 8000000),
+            step.capture.width > DIAGNOSTIC_CAPTURE_LIMITS.dimension ||
+            step.capture.height > DIAGNOSTIC_CAPTURE_LIMITS.dimension ||
+            step.capture.width * step.capture.height > DIAGNOSTIC_CAPTURE_LIMITS.pixels),
       )
     )
       throw new Error("스크린샷 결속·규격 불일치");

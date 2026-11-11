@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react";
 
 import Image from "next/image";
 
-import { apiFetchBlob } from "@/lib/diagnosis/api";
+import { ApiError, apiFetchBlob } from "@/lib/diagnosis/api";
 import {
+  DIAGNOSTIC_CAPTURE_LIMITS,
   generateRemediation,
   type RemediationEntry,
   type ReproductionStep,
@@ -16,6 +17,17 @@ import { outcomeLabel } from "../../live/liveReport";
 import { maskSecrets } from "../../live/mask";
 import { Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
+
+const captureStatusLabels: Record<string, string> = {
+  captured: "확보",
+  not_captured: "미확보",
+  not_supported: "캡처 미지원 또는 승인 없음",
+  failed: "캡처 실패",
+  storage_unavailable: "캡처 저장소 사용 불가",
+  shared_omitted: "공유용에서 생략",
+  capacity_omitted: "용량 초과로 생략",
+  binding_invalid: "현재 결속·이미지 검증 실패",
+};
 
 function StoredScreenshot({ task, entry, step }: { task: string; entry: string; step: ReproductionStep }) {
   const [url, setUrl] = useState("");
@@ -47,7 +59,7 @@ function StoredScreenshot({ task, entry, step }: { task: string; entry: string; 
         },
         "image/png",
       );
-      if (blob.type !== "image/png" || blob.size > 1048576) throw Error("invalid_image");
+      if (blob.type !== "image/png" || blob.size > DIAGNOSTIC_CAPTURE_LIMITS.pngBytes) throw Error("invalid_image");
       const bytes = await blob.arrayBuffer();
       const digest = await crypto.subtle.digest("SHA-256", bytes);
       const hex = Array.from(new Uint8Array(digest), (n) => n.toString(16).padStart(2, "0")).join("");
@@ -55,9 +67,13 @@ function StoredScreenshot({ task, entry, step }: { task: string; entry: string; 
       if (controller.signal.aborted) return;
       objectURL.current = URL.createObjectURL(blob);
       setUrl(objectURL.current);
-    } catch {
+    } catch (error) {
       if (!controller.signal.aborted)
-        setMessage("현재 증거·권한·이미지 무결성을 확인하지 못했습니다. 이미지 사용을 중지했습니다.");
+        setMessage(
+          error instanceof ApiError && (error.status === 404 || error.status === 409)
+            ? "현재 회차에서 이미지를 찾지 못했습니다. 현재 증거 버전을 다시 조회하세요."
+            : "현재 증거·권한·이미지 무결성을 확인하지 못했습니다. 이미지 사용을 중지했습니다.",
+        );
     } finally {
       if (!controller.signal.aborted) setBusy(false);
     }
@@ -66,7 +82,7 @@ function StoredScreenshot({ task, entry, step }: { task: string; entry: string; 
     return (
       <p className={s.help}>
         스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공 · 상태{" "}
-        {step.capture.status === "capacity_omitted" ? "용량 초과로 생략" : step.capture.status}
+        {captureStatusLabels[step.capture.status] ?? "상태 미확인"}
       </p>
     );
   return (
@@ -145,6 +161,9 @@ export function DiagnosticEntrySections({
         reply.ai_prompt !== bundle.ai_prompt
       )
         throw Error("prompt_mismatch");
+      // Copy the exact stored prompt only when the displayed masking projection is identical.
+      // The server rebuilds from normalized DLP context; this guard also rejects a compromised response.
+      if (maskSecrets(reply.ai_prompt) !== reply.ai_prompt) throw Error("prompt_contains_sensitive_value");
       await navigator.clipboard.writeText(reply.ai_prompt);
       if (!controller.signal.aborted) setMessage("같은 저장 프롬프트를 복사했습니다.");
     } catch {
