@@ -22,7 +22,21 @@
       "budget_ref": "budget_fixture",
       "limits_ref": "limits_fixture",
       "runtime_ref": "runtime_fixture",
-      "crawl_permission": "read_only"
+      "crawl_permission": "read_only",
+      "test_environment_ref": null,
+      "reset_proof_ref": null,
+      "browser_profile": {
+        "cookie_storage": "disabled",
+        "service_workers": "blocked",
+        "certificate_trust": "dedicated_ca",
+        "ca_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "spki_list_sha256": null,
+        "certificate_errors_ignored": false,
+        "chromium_flags": [
+          "--headless"
+        ],
+        "flags_profile_ref": "flags_fixture"
+      }
     }
   },
   {
@@ -140,28 +154,15 @@
     "phase": "recon",
     "action_ref": null,
     "request_ref": "br_fixture_write",
-    "attempt_ref": "22222222222222222222222222222222",
+    "attempt_ref": null,
     "event_id": "be_fixture_6",
     "seq": "6",
     "at": "2026-11-11T00:00:06Z",
-    "kind": "attempt.result",
-    "source": "e2",
+    "kind": "ingress.rejected",
+    "source": "proxy",
     "payload": {
-      "request_class": "application_http",
-      "e2_version": "e2-http-v1",
-      "policy_revision": "policy_fixture",
-      "rule_ref": null,
-      "e2_sequence": "2",
-      "method": "POST",
-      "decision": "denied",
-      "reason": "policy_denied",
-      "forward_attempted": false,
-      "request_written": false,
-      "response_received": false,
-      "response_complete": false,
-      "not_sent": true,
-      "audit_complete": true,
-      "status_code": null
+      "layer": "application_http",
+      "reason": "crawl_write_blocked"
     }
   },
   {
@@ -236,16 +237,19 @@
       "host_correlation_complete": true,
       "counts": {
         "observed_requests": "2",
-        "attempt_results": "2",
+        "attempt_results": "1",
         "forward_attempted": "1",
         "request_written": "1",
         "responses_received": "1",
-        "denied": "1",
+        "denied": "0",
         "unsupported": "0",
         "unknown": "0",
         "unresolved_requests": "0",
         "unresolved_attempts": "0",
-        "dropped_events": "0"
+        "dropped_events": "0",
+        "local_write_blocked": "1",
+        "preflight_blocked": "0",
+        "queue_rejected": "0"
       }
     }
   }

@@ -22,7 +22,21 @@
       "budget_ref": "budget_fixture",
       "limits_ref": "limits_fixture",
       "runtime_ref": "runtime_fixture",
-      "crawl_permission": "approved_writes"
+      "crawl_permission": "approved_writes",
+      "test_environment_ref": "testenv_fixture",
+      "reset_proof_ref": "reset_fixture",
+      "browser_profile": {
+        "cookie_storage": "disabled",
+        "service_workers": "blocked",
+        "certificate_trust": "dedicated_ca",
+        "ca_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "spki_list_sha256": null,
+        "certificate_errors_ignored": false,
+        "chromium_flags": [
+          "--headless"
+        ],
+        "flags_profile_ref": "flags_fixture"
+      }
     }
   },
   {
@@ -245,7 +259,10 @@
         "unknown": "0",
         "unresolved_requests": "0",
         "unresolved_attempts": "0",
-        "dropped_events": "0"
+        "dropped_events": "0",
+        "local_write_blocked": "0",
+        "preflight_blocked": "0",
+        "queue_rejected": "0"
       }
     }
   }

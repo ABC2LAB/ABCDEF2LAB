@@ -52,7 +52,7 @@ Schema의 필드·enum·null 조건을 정본으로 하고, 아래는 그 의미
 
 | `kind` / `source` | payload | 참조 조건 |
 | --- | --- | --- |
-| `session.started` / host | `grant_ref`, `policy_revision`, `budget_ref`, `limits_ref`, `runtime_ref`, `crawl_permission` | ready 성공 후 1회. call/command 필수, action/request/attempt null |
+| `session.started` / host | `grant_ref`, `policy_revision`, `budget_ref`, `limits_ref`, `runtime_ref`, `crawl_permission`, `test_environment_ref`, `reset_proof_ref`, `browser_profile` | ready 성공 후 1회. call/command 필수, action/request/attempt null |
 | `action.started` / host | `operation`: `navigate` 또는 `wait_for_selector` | action 필수, request/attempt null |
 | `action.finished` / host | `status`, `reason`, `basis`(driver_report/host_control), `duration_ms`(10진 문자열) | 시작과 같은 action. request/attempt null |
 | `request.observed` / proxy | `method`, `destination_scope`, `endpoint_ref`, `path_scope_ref` | request 필수, action/attempt null |
@@ -89,7 +89,7 @@ OS 차단만 있고 호스트가 사건을 관측하지 못했으면 transport �
 | `request_class` | 호스트가 `application_http` / `proxy_transport`로 분류 |
 | `e2_version` | 원본 `Version`, 현재 `e2-http-v1` |
 | `policy_revision`, `rule_ref`, `e2_sequence` | 원본 정책·규칙·Sequence. 없는 RuleRef는 null, Sequence는 10진 문자열 |
-| `method` | Receipt.Method의 안전한 enum 투영. CONNECT는 별도 값, 빈 값/기타는 OTHER |
+| `method` | Receipt.Method의 안전한 enum 투영. 빈 값/기타는 OTHER. E②가 지우는 CONNECT를 영수증 밖에서 복원하지 않음 |
 | `decision` | 원본 `allowed` / `denied` / `unsupported` |
 | `reason` | 현재 e2proxy.Reason enum 그대로. 알려지지 않은 새 값은 호환 성공 대신 계약 오류 |
 | `forward_attempted` | 대상 연결/송신을 시도했음. 접수/전달 완료 증명이 아님 |
@@ -106,14 +106,41 @@ OS 차단만 있고 호스트가 사건을 관측하지 못했으면 transport �
 ### E② 시도 발급 전 거부
 
 `ingress.rejected.layer`는 `application_http` / `proxy_transport`다.
-사유는 `parse_failed`, `tls_failed`, `unsupported`, `admission_closed`, `event_sink_failed`, `invalid_binding` 중 하나다.
+사유는 Schema의 닫힌 enum이다. `crawl_write_blocked`는 read_only의 POST/PUT/PATCH,
+`preflight_blocked`는 read_only OPTIONS, `dangerous_request`는 DELETE/위험 요청 guard다.
+`queue_full`·`queue_timeout`은 E② 진입 전 admission 실패다. 나머지는 `parse_failed`, `tls_failed`,
+`unsupported`, `admission_closed`, `event_sink_failed`, `invalid_binding`이다.
 Call이 닫혀 Receipt가 비어 있으면 `admission_closed`로 남긴다. 원본 오류 문자열·URL·헤더를 넣지 않는다.
 이 사건은 E② 미실행이며, E② attempt 수나 계측기 송신 수를 증가시키지 않는다.
 
+### 시작 프로필과 B08 조건
+
+`session.started.test_environment_ref`·`reset_proof_ref`는 approved_writes에서 필수다.
+호스트는 origin·회차·초기화·운영자 승인에 결속된 독립 기록과 대조한다. 문자열 자체는 승인 증거가 아니다.
+`browser_profile`은 호스트가 실제 적용하고 확인한 쿠키 저장·SW 차단, 인증서 신뢰 종류,
+`ca_sha256` 또는 정렬한 공개 SPKI 해시 목록의 canonical JSON SHA-256(`spki_list_sha256`),
+인증서 오류 무시 여부, Chromium **플래그 이름 목록**과 `flags_profile_ref`다.
+목록에는 `--name`만 넣고 `=값`·경로·토큰·URL·원문 argv는 저장하지 않는다. 전체 값은 검토된 고정 runtime
+프로필로 결속하며 CA/SPKI 값은 지문으로만 남긴다. 이름 목록과 프로필이 다르면 시작 실패다.
+제품 1단계는 전용 CA/정상 platform 신뢰만 허용하고, 오류 무시 플래그·SPKI 예외는 차단한다.
+수용시험 B08 양성 대조의 동일 필드를 회차 결과에 남겨 신뢰 조건을 비교한다. 이 이벤트만으로
+서로 다른 CA/SPKI 조건의 동등성이나 QUIC 차단을 증명하지 않는다. B10은 플래그 주입 부재도 확인한다.
+
 ## 4. 수명·순서·종료의 정합 조건
 
-호스트는 한 세션의 기록을 직렬화한다. request 관찰은 해당 E② 호출 전에 영속 ACK를 받고,
-결과는 호출 반환 뒤 기록한다. 이벤트 저장소가 E② 내부 잠금을 재진입하거나 권한을 바꾸지 않도록 분리한다.
+호스트는 한 세션의 seq/기록을 직렬화하되 **bounded group commit**을 사용한다. request 관찰은
+해당 E② 호출 전에 영속 ACK를 받고, 결과는 호출 반환 뒤 기록한다. 여러 관찰을 한 fsync로 묶어도
+각 사건의 seq·commit 참조와 ACK를 보존한다. 비동기 enqueue 성공을 durable ACK로 바꾸지 않는다.
+ACK 실패/유실이면 해당 요청을 보내지 않고 fence한다. dispatch 후 기록 실패는 unknown/incomplete다.
+
+구현 전 고정할 초기 성능 목표는 flush 간격 ≤10ms, batch ≤64건, 대기열 ≤256건,
+단일 ACK deadline 250ms와 목표 p99 ≤100ms다(실측 아님). profile이 더 작은 양수 한도를 적용할 수 있다.
+큐/ACK 대기 시간·fsync 지연·batch 크기·대기 만료 수·최대 backlog를 합성 부하 시험에서 측정한다.
+목표를 넘으면 결과를 보고하고 프로필을 재검토한다. ACK deadline 실패는 target timeout이 아니다.
+대기열은 승인/Call/세션 deadline 안에서만 기다리며, E② `Limits.RequestTimeout`의 wire 처리 예산과
+별도로 잰다. 현재 workflow의 Call/프록시 60초가 E② 요청 기본 5초를 늘려 주지 않는다.
+`limits_ref`가 queue/ACK·E② RequestTimeout·Call/프록시/세션 timeout 및 모든 중단 상한을 해석할 수 있어야 한다.
+E② 자체 intent/result 감사 쓰기를 생략하거나 receipt보다 앞서 결과를 성공으로 기록하지 않는다. 이벤트 저장소가 E② 내부 잠금을 재진입하거나 권한을 바꾸지 않도록 분리한다.
 동시 요청 간 시각·seq로 네트워크 인과 관계를 추측하지 않는다.
 
 - ready 이후 `session.started` 한 번, 액션마다 started/finished 한 쌍, 정상/중지 경로에서 fenced/closed 각 한 번이다.
@@ -144,6 +171,9 @@ E② CallResult를 결속해야 한다. 이 ACK/종료 반환 없이 closed 레�
 | `forward_attempted`, `request_written`, `responses_received` | 고유 Receipt의 대응 true 수 |
 | `denied`, `unsupported` | 대응 decision 수 |
 | `unknown` | 원본 Reason=unknown 수 |
+| `local_write_blocked` | ingress.rejected의 crawl_write_blocked 수. E② denied와 별도 |
+| `preflight_blocked` | ingress.rejected의 preflight_blocked 수. 쓰기 수에 넣지 않음 |
+| `queue_rejected` | ingress.rejected의 queue_full/queue_timeout 수. 정책 위반 수에 넣지 않음 |
 | `unresolved_requests` | observed 뒤 terminal 결과가 없는 요청 수 |
 | `unresolved_attempts` | 보호된 E② Call attempt 수와 수집한 고유 result의 미대응 수 |
 | `dropped_events` | 확인된 유실 수. 유실 규모 불명은 null |
@@ -158,8 +188,8 @@ E② CallResult를 결속해야 한다. 이 ACK/종료 반환 없이 closed 레�
 
 ## 5. 최소 예시와 읽기/쓰기 해석
 
-[합성 예시](examples/browser-events.v1.json)는 읽기 승인 세션의 GET 성공 1건·POST 거부 1건이다.
-관찰 2, E② result 2, forward_attempted 1, request_written 1, response_received 1, denied 1이다.
+[합성 예시](examples/browser-events.v1.json)는 읽기 승인 세션의 GET 성공 1건·POST 로컬 차단 1건이다.
+관찰 2, E② result 1, forward_attempted 1, request_written 1, response_received 1, local_write_blocked 1, denied 0이다.
 POST는 발견했지만 송신하지 않았으며 독립 계측기에서는 GET의 AttemptID만 접수돼야 한다.
 예시의 `completed`는 이 세션이 닫혔다는 뜻이며 보존 시험 통과 수치가 아니다.
 
@@ -167,7 +197,7 @@ POST는 발견했지만 송신하지 않았으며 독립 계측기에서는 GET�
 allowed이고, forward_attempted/request_written/response_received가 각각 2, denied가 0인 세션이다.
 실제 수용에서는 관찰 → E② allowed → 실제 전송 플래그 → 독립 계측 접수로 확인한다.
 권한·메서드·위험 제한에 걸린 POST와 DELETE는 여전히 거부할 수 있다.
-전송된 쓰기 수는 기본적으로 GET·HEAD 이외의 **승인된 애플리케이션 메서드**의 해당 전송 축으로 따로 센다.
+전송된 쓰기 수는 POST/PUT/PATCH의 해당 전송 축으로 따로 센다. OPTIONS는 preflight로 별도 집계하고 쓰기로 세지 않는다.
 로그인 수를 여기에 섞지 않으며, 향후 auth_prepare 계약에서 별도 단계와 합계를 정의한다.
 
 ## 6. 민감정보·입력 검증
@@ -181,6 +211,12 @@ endpoint 참조는 호스트 메모리의 실제 요청을 찾기 위한 것으�
 Schema의 `additionalProperties=false`와 kind별 필드를 검사한다. 중복 JSON 키는 파싱 전 거부하고,
 크기·깊이·레코드 수 상한은 신뢰 limits 프로필로 적용한다. 참조/순서/교차 필드/실제 출처 검증은
 JSON Schema만으로 끝나지 않으므로 호스트 및 소비자가 추가 검증한다.
+스키마는 상태/사유·not_sent/송신·응답 플래그의 모순을 거부한다. UTC 시각은 엄격한 형태와
+`format`을 함께 검사한다. `format`을 annotation으로만 처리하는 validator는 월별 일수까지 검사하지 않는다.
+자동 형식 회귀 시험은 기존 Python `jsonschema`가 설치된 환경에서
+`python3 -I -B -m unittest discover -s docs/contracts -p 'test_browser_events.py'`로 실행한다.
+Draft202012Validator와 FormatChecker를 모두 사용하며 의도적 모순·실제 예시를 검사한다.
+이 형식 시험은 이벤트 출처·정수 범위·실제 참조·건수/seq 일치·durable ACK·독립 계측을 검증하지 않는다.
 알 수 없는 버전·kind·enum·타입·참조는 성공으로 수용하지 않는다. 자격값이 섞인 원본은 오류 로그에도 출력하지 않는다.
 
 ## 7. 최민준 계측기와의 연결 제안
@@ -189,13 +225,13 @@ JSON Schema만으로 끝나지 않으므로 호스트 및 소비자가 추가 �
 현재 공식 `engineRow`는 path/query/header/body를 저장하지 않는다.
 공식 회차의 기본 동작·형식은 유지하고, 보존 전용 실행에서만 별도 옵션·출력으로 마스킹한 경로를 기록한다.
 
-| 제안 필드 | 출처 / 목적 |
+현재 dev의 #372 및 후속 path-mask/v2 계약에 맞춘다.
+
+| 저장 위치 | 필드 / 목적 |
 | --- | --- |
-| `run_ref`, `measurement_ref` | 러너가 고정한 보존 회차·프로필 식별자. 공식 회차와 구분 |
-| `seq` | 독립 계측기 자체의 접수 순서 |
-| `attempt_id_state`, `attempt_id` | 기존 헤더의 형식·중복 검사 결과와 값. baseline은 없을 수 있음 |
-| `method`, `path_pattern`, `path_profile_ref`, `masked_segments` | 보존율 산출용 마스킹 결과. 원본 URL·query는 저장하지 않음 |
-| 기존 `sent`, `response`, `outcome` | 계측기에서 직접 확인한 단계. Browser/E② 값 복사 금지 |
+| 러너의 회차 기록 | `run_ref`, `measurement_ref`, purpose·실행 조건. 개별 path 행에 복사하지 않음 |
+| `engine-paths.jsonl` | `seq`, `method`, `path_pattern`, `masked_segments`, `path_profile_ref`, `path_key_ref` 여섯 필드 |
+| 같은 seq의 `engine-requests.jsonl` | `attempt_id_state`, `attempt_id`, `sent`, `response`, `outcome`. path 행에 중복하지 않음 |
 
 개선 후 조인 키는 **같은 회차의 원래 AttemptID**다. `request_ref → attempt_ref → meter.attempt_id`로 대조한다.
 rule/path/시각/메서드·마스킹 결과가 같아도 같은 시도라고 추정하지 않는다.
@@ -205,15 +241,17 @@ rule/path/시각/메서드·마스킹 결과가 같아도 같은 시도라고 �
 차단된 시도가 독립 계측기에 접수되면 `sent=no`여도 차단 수용 실패다.
 TLS 실패·preconnect의 TCP 접수, HTTP 접수, UDP 수신은 단위가 다르므로 따로 센다.
 
-경로 프로필은 수용시험의 percent decode·숫자/UUID/긴 hex/base64·이메일·긴 segment 마스킹 기준을 따른다.
-query·fragment는 제외하고 비밀 값은 **영속 기록 전** 제거한다.
-encoded separator, 이중 인코딩, 잘못된 percent/UTF-8, root/trailing slash, 빈 segment의 처리와
-같은 프로필의 Go/Python 결과가 일치하는 합성 벡터를 먼저 고정한다. 애매하면 전체 경로를 null로 처리하고
-측정 불명/제외 건수를 보고하며 원문 fallback을 두지 않는다. 현재 이 프로필의 구현·일치 시험은 미실행이다.
+정본은 [Go 계측기](../../cmd/eval-meter/paths.go)의 `abc2lab.path-mask/v2`와
+[고정 벡터](../../cmd/eval-meter/testdata/path-mask-v2.json)다. 새 Browser/Python 마스킹을 별도로 만들지 않는다.
+집계용 [기존 Python 판](../../scripts/eval/path_mask.py)은 같은 벡터를 통과해야 한다.
+숫자·인코딩 실패 등 값 조각은 `{id}`(정적 확장자 보존), 나머지도 원문 대신 같은 회차 묶음 키의 HMAC으로
+가린다. 32조각 초과는 `/{too_long}`이고 해당 건수를 별도 보고한다. 애매하다는 이유로 전체 path를 null로
+바꾸거나 원문 fallback하지 않는다. 키는 근거 디렉터리 밖에 두고 기록하지 않는다. `path_key_ref`가 같은
+회차끼리만 비교한다. query·fragment·원문은 영속 기록 전에 제외한다.
 
 계측기는 허용된 송신을, Browser 입구는 차단 포함 발견을 관찰한다. 이 두 집합의 분모를 섞지 않는다.
-독립 계측 접수/송신 기준의 보존율·정규화·유효 회차 판정은 최민준의 평가 문서가 정한다.
-R-P/R-F/R-R과 R-F 전체 보존율 기준은 [설계안](../e2-browser-executor-design.md#9-검증과-3단계-연결)을 따른다.
+독립 계측 접수/송신 기준의 보존율·정규화·유효 회차·R-P/R-F/R-R 및 완료 판정은
+[Browser 수용시험](../evaluation/browser-acceptance.md#6-3단계-보존-시험)과 그 §7만 따른다.
 통제 점수·보존 점수를 합치거나 공식 비교표에 합산하지 않는다.
 
 ## 8. 계약 채택 전 확인
