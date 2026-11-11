@@ -60,6 +60,9 @@ services:
       # workbench는 이 주소에만 리슨한다. 엔진이 탐색 제어망(explore_control)에 붙어도 그 망에는 포트가 열리지 않게 한다
       # (docs/contracts/exploration-boundary.md §9-1). 호스트 공개는 아래 ports 그대로다.
       frontend: {ipv4_address: 172.31.250.12}
+      # 탐색 단계에서 브라우저 샌드박스의 MCP(http://explore-browser:<포트>/)로 나가기만 한다. 이 망에 리슨은 없다
+      # (위 workbench 고정 주소, preparation·api는 127.0.0.1). 탐색 실행기 결정안 §3-1.
+      explore_control: {}
     ports: ['127.0.0.1:${PRODUCT_PORT:-8787}:8787']
     healthcheck:
       test: [CMD, test, -S, /p/ipc/preparation.sock]
