@@ -115,7 +115,7 @@ flowchart LR
   A -->|저장 보고서 bridge| P
 ```
 
-workbench에는 DB·키·제품 상태 볼륨이 없다. api는 상태 볼륨을 읽기 전용으로 사용한다. preparation만 회차와 영속 상태를 쓴다. 세 서비스는 기존 loopback API 계약 때문에 preparation의 network namespace만 공유한다. PID·capability·rootfs는 분리한다. PostgreSQL과 시험 대상은 내부 control/target 망에 있으며 DB 포트를 공개하지 않는다. 외부 모델 연결은 명시적으로 설치된 보호 정책만 허용한다.
+workbench에는 DB·키·제품 상태 볼륨이 없다. preparation netns 안의 TCP 리슨은 preparation·api가 127.0.0.1, workbench가 frontend 망 고정 주소(`172.31.250.12:8787`)뿐이라 모든 인터페이스에 열린 포트가 없다(엔진이 탐색 제어망에 붙어도 그 망에 포트가 열리지 않게 하려는 조건, 계약 §9-1). 호스트 쪽 공개는 그대로 `127.0.0.1:8787`이다. api는 상태 볼륨을 읽기 전용으로 사용한다. preparation만 회차와 영속 상태를 쓴다. 세 서비스는 기존 loopback API 계약 때문에 preparation의 network namespace만 공유한다. PID·capability·rootfs는 분리한다. PostgreSQL과 시험 대상은 내부 control/target 망에 있으며 DB 포트를 공개하지 않는다. 외부 모델 연결은 명시적으로 설치된 보호 정책만 허용한다.
 
 런타임은 UID 1000, read-only rootfs, cap_drop ALL, no-new-privileges다. [준비 서비스 seccomp](seccomp-preparation.json)는 [Docker 기본 정책](https://docs.docker.com/engine/security/seccomp/)의 deny 기본값에 필요한 namespace 조합과 내부 mount·pivot만 추가한다. 원본 Moby profiles commit은 `4b8214fc4971e06172938a1f1554ccff6647ee80`; [라이선스](seccomp-preparation.LICENSE)를 포함한다. Bash helper의 기존 capability 제거·추가 seccomp·네트워크 격리는 유지한다. AppArmor가 별도로 막는 호스트에서는 운영자의 정책 검토가 필요하다.
 

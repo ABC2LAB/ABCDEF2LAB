@@ -57,7 +57,9 @@ services:
     networks:
       control: {ipv4_address: 172.31.252.12}
       target: {ipv4_address: 172.31.253.12}
-      frontend: {}
+      # workbench는 이 주소에만 리슨한다. 엔진이 탐색 제어망(explore_control)에 붙어도 그 망에는 포트가 열리지 않게 한다
+      # (docs/contracts/exploration-boundary.md §9-1). 호스트 공개는 아래 ports 그대로다.
+      frontend: {ipv4_address: 172.31.250.12}
     ports: ['127.0.0.1:${PRODUCT_PORT:-8787}:8787']
     healthcheck:
       test: [CMD, test, -S, /p/ipc/preparation.sock]
@@ -101,7 +103,7 @@ services:
     <<: *product
     user: '1000:1000'
     entrypoint: [/app/first-controlled-diagnosis]
-    command: [product-front, -listen, ':8787', -api-origin, 'http://127.0.0.1:28081']
+    command: [product-front, -listen, '172.31.250.12:8787', -api-origin, 'http://127.0.0.1:28081']
     depends_on:
       api: {condition: service_healthy}
     network_mode: service:preparation
@@ -110,7 +112,7 @@ services:
     security_opt: [no-new-privileges:true]
     pids_limit: 64
     healthcheck:
-      test: [CMD, curl, --fail, --silent, 'http://127.0.0.1:8787/api/product/health']
+      test: [CMD, curl, --fail, --silent, 'http://172.31.250.12:8787/api/product/health']
       interval: 5s
       timeout: 3s
       retries: 30
@@ -175,7 +177,9 @@ networks:
     internal: true
     ipam:
       config: [{subnet: 172.31.253.0/24}]
-  frontend: {}
+  frontend:
+    ipam:
+      config: [{subnet: 172.31.250.0/24}]
   # 엔진(MCP 클라이언트)과 브라우저 샌드박스만 붙는 제어망. 엔진은 이 망에서 포트를 열지 않는다(계약 §9-1).
   explore_control:
     internal: true
