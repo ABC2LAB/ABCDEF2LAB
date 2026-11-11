@@ -120,11 +120,13 @@ func TestProxyFailureCarriesOutcomeAndReason(t *testing.T) {
 	_, addr, roots := proxyTestListener(t, call)
 	client := proxyTestClient(t, addr, roots)
 	sequenceOf := regexp.MustCompile(` sequence=([0-9]+)\. `)
-	send := func(path, encoding string) *http.Response {
-		req, _ := http.NewRequest(http.MethodGet, target.URL+path, nil)
-		if encoding != "" {
-			req.Header.Set("Accept-Encoding", encoding)
+	// body가 있으면 POST로 보낸다. proxyTestCall의 MaxBodyBytes(8192)를 넘는 본문은 송신 전 미지원이다.
+	send := func(path, body string) *http.Response {
+		method, reader := http.MethodGet, io.Reader(nil)
+		if body != "" {
+			method, reader = http.MethodPost, strings.NewReader(body)
 		}
+		req, _ := http.NewRequest(method, target.URL+path, reader)
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -133,18 +135,18 @@ func TestProxyFailureCarriesOutcomeAndReason(t *testing.T) {
 	}
 	var bodies []string
 	for _, tc := range []struct {
-		name, path, encoding string
-		class                ProxyOutcomeClass
-		reason               Reason
-		reached              int64
+		name, path, body string
+		class            ProxyOutcomeClass
+		reason           Reason
+		reached          int64
 	}{
 		{"outside scope", "/outside", "", OutcomeNotSent, PolicyDenied, 0},
-		{"compressed encoding", "/allowed", "gzip", OutcomeNotSent, Unsupported, 0},
+		{"request body over limit", "/allowed", strings.Repeat("y", 9000), OutcomeNotSent, Unsupported, 0},
 		{"response over limit", "/allowed", "", OutcomeUnknown, Unknown, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := received.Load()
-			resp := send(tc.path, tc.encoding)
+			resp := send(tc.path, tc.body)
 			class, reason, body := proxyOutcomeResponse(t, resp)
 			bodies = append(bodies, body)
 			if resp.StatusCode != http.StatusBadGateway || class != tc.class || reason != tc.reason ||
