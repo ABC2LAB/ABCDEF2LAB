@@ -79,16 +79,20 @@
 
 출처는 그 버전 패키지 README의 도구 절이다(제품 이미지 `deploy/product/Dockerfile`이 0.0.84로 고정). 버전을 올리면 이 목록을 다시 본다.
 
-- **허용**(기본 묶음 중): `browser_navigate`, `browser_navigate_back`, `browser_tabs`, `browser_click`, `browser_hover`, `browser_drag`, `browser_type`, `browser_fill_form`, `browser_select_option`, `browser_press_key`, `browser_handle_dialog`, `browser_wait_for`, `browser_snapshot`, `browser_find`, `browser_take_screenshot`, `browser_resize`, `browser_emulate_media`, `browser_console_messages`, `browser_network_requests`, `browser_network_request`, `browser_evaluate`, `browser_close`.
+이 목록과 수용시험 B17·B18의 기준 이미지는 제품 이미지(0.0.84)다. 공식 평가 이미지(루트 `Dockerfile`)는 `@playwright/mcp@latest`라 빌드마다 버전이 바뀔 수 있다. 그래서 실행기는 실제 MCP 버전과 모델에 노출한 도구 목록을 회차 기록에 남기고, 버전이 0.0.84가 아니면 이 목록을 그 버전으로 다시 보기 전까지 그 회차를 보존 측정·공식 회차에 쓰지 않는다. 이름이 바뀐 허용 도구가 조용히 빠져 측정에 섞이는 것을 막기 위해서다. 루트 `Dockerfile`을 고정할지는 원본 이미지와의 도구 트리 동등성(프로토콜 §2)과 함께 따로 정한다.
+
+- **허용**(기본 묶음 중): `browser_navigate`, `browser_navigate_back`, `browser_tabs`, `browser_click`, `browser_hover`, `browser_drag`, `browser_type`, `browser_fill_form`, `browser_select_option`, `browser_press_key`, `browser_handle_dialog`, `browser_wait_for`, `browser_snapshot`, `browser_find`, `browser_take_screenshot`, `browser_resize`, `browser_emulate_media`, `browser_console_messages`, `browser_network_requests`, `browser_evaluate`, `browser_close`.
 - **제외**:
   - `browser_run_code_unsafe` — MCP 서버 프로세스에서 임의 JS를 실행한다(README: "RCE-equivalent"). 헤더를 바꾸거나 Node에서 직접 보낼 수 있어 입구 분리(§3)를 무너뜨린다. 0.0.84에서는 기본 묶음에 들어 있고 끄는 CLI 옵션이 문서에 없으므로, 실행기가 모델에 노출하기 전에 뺀다.
   - `browser_file_upload`·`browser_drop` — 샌드박스의 파일 경로를 대상에 올린다. 쓰기이고 탐색에 필요하지 않다.
+  - `browser_network_request` — 요청·응답의 헤더와 본문 원문(쿠키·`Set-Cookie` 포함)을 돌려주고 파일로도 저장한다. 비인증 방문에서도 서버가 세션 쿠키를 발급하므로 S09 조건에 맞지 않는다. 요청 목록(`browser_network_requests`)만 남긴다.
+  - 페이지가 WebMCP로 등록하는 도구 — 0.0.84는 기본으로 모아 노출한다(README: "Enabled by default"). 설명과 결과를 대상이 정하므로 프롬프트 주입 통로가 된다. `--no-webmcp`로 끈다.
   - `--caps`로 켜는 묶음 전부(`network`·`storage`·`config`·`devtools`·`vision`·`pdf`·`testing`). 특히 `browser_route`는 요청 헤더를 지우거나 응답을 바꾸고, 쿠키·저장소 설정은 프로그램의 인증 준비(§8)가 맡는다. `--caps`는 넘기지 않는다.
 - **허용하되 알고 쓰는 것**:
   - `browser_evaluate`는 페이지 안에서 JS를 실행한다. 금지 헤더는 바꾸지 못하지만 §3의 외부 GET 한계는 그대로다.
-  - `browser_network_request`는 요청 상세(헤더 포함)를 돌려주므로 브라우저 세션 쿠키가 모델 입력에 들어갈 수 있다. 실제 대상의 인증 탐색은 §8이 확정되기 전에는 하지 않으므로, 계정 분류(§9-7)를 정할 때 다시 본다.
-- **CLI 옵션**: `--headless`, `--isolated`, `--proxy-server <브라우저 입구>`, `--output-dir <브라우저 샌드박스 안>`만 쓴다. `--ignore-https-errors`(경계 CA를 신뢰시킨다), `--init-page`(Playwright 페이지 객체에 TypeScript 실행), `--caps`는 쓰지 않는다. `--allowed-origins`·`--blocked-origins`·`--secrets`는 README도 보안 경계가 아니라고 하므로 통제 근거로 쓰지 않는다.
-- **거르는 곳**: 지금 MCP 연결(`server/mcpdiscover.go`·`server/assembly.go`)에는 도구 단위 허용 목록이 없다(`allowed_tools`·`disabled_tools`·`tool_filter` 검색 0건). 실행기가 MCP 도구를 모델에 노출하기 전에 이 목록으로 거른다(구현 최민준). 목록에 없는 도구는 버전이 바뀌어도 노출하지 않는다(기본 거부). B18은 노출된 도구가 이 목록과 같은지 확인한다.
+  - 허용 도구의 출력에도 S09를 적용한다. 인증 준비(§8)가 들어오면 실행기가 MCP 도구 출력에서 프로그램이 넣은 자격 값을 정확값으로 가린 뒤 모델·공유 결과에 넘긴다(E② 도구 출력 가림과 같은 방식). 비인증 회차에서도 심은 표식의 노출 0건을 확인한다.
+- **CLI 옵션**: `--headless`, `--isolated`, `--no-webmcp`, `--proxy-server <브라우저 입구>`, `--output-dir <브라우저 샌드박스 안>`만 쓴다. `--ignore-https-errors`(경계 CA를 신뢰시킨다), `--init-page`(Playwright 페이지 객체에 TypeScript 실행), `--caps`는 쓰지 않는다. `--allowed-origins`·`--blocked-origins`·`--secrets`는 README도 보안 경계가 아니라고 하므로 통제 근거로 쓰지 않는다.
+- **거르는 곳**: 지금 MCP 연결(`server/mcpdiscover.go`·`server/assembly.go`)에는 도구 단위 허용 목록이 없다(`allowed_tools`·`disabled_tools`·`tool_filter` 검색 0건). 실행기가 MCP 도구를 모델에 노출하기 전에 이 목록으로 거른다(구현 최민준). 처음 받은 목록뿐 아니라 MCP 서버가 도구 목록 변경을 알릴 때마다 다시 거른다. 목록에 없는 도구는 버전이 바뀌어도 노출하지 않는다(기본 거부). 허용 이름과 같은 이름을 다른 출처(WebMCP 등)가 등록해도 MCP 서버 기본 도구가 아니면 노출하지 않는다. B18은 WebMCP 도구를 등록하는 fixture 페이지를 연 뒤에도 노출된 도구가 이 목록과 같은지 확인한다.
 
 ## 6. 중지·종료 신호
 
