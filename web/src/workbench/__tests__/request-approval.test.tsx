@@ -1,9 +1,11 @@
 import "@testing-library/jest-dom/vitest";
+
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { apiFetch } from "@/lib/diagnosis/api";
 import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
+import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "../views/live/approvals";
@@ -145,7 +147,7 @@ it("승인 미리보기는 서버 키(query.<키> · body.<키> · 표시 제한
   const shaped = {
     ...row,
     input_preview: { "query.mode": '["edit"]', "body.role": '"customer"', "표시 제한": limit },
-  };
+  } as RequestApproval;
   render(
     <>
       <ApprovalRequestCode row={shaped} />
