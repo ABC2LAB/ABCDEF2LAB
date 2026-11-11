@@ -91,7 +91,7 @@
 - **허용하되 알고 쓰는 것**:
   - `browser_evaluate`는 페이지 안에서 JS를 실행한다. 금지 헤더는 바꾸지 못하지만 §3의 외부 GET 한계는 그대로다.
   - 허용 도구의 출력에도 S09를 적용한다. 인증 준비(§8)가 들어오면 실행기가 MCP 도구 출력에서 프로그램이 넣은 자격 값을 정확값으로 가린 뒤 모델·공유 결과에 넘긴다(E② 도구 출력 가림과 같은 방식). 비인증 회차에서도 심은 표식의 노출 0건을 확인한다.
-- **CLI 옵션**: `--headless`, `--isolated`, `--no-webmcp`, `--proxy-server <브라우저 입구>`, `--output-dir <브라우저 샌드박스 안>`만 쓴다. `--ignore-https-errors`(경계 CA를 신뢰시킨다), `--init-page`(Playwright 페이지 객체에 TypeScript 실행), `--caps`는 쓰지 않는다. `--allowed-origins`·`--blocked-origins`·`--secrets`는 README도 보안 경계가 아니라고 하므로 통제 근거로 쓰지 않는다.
+- **CLI 옵션**: 실행기(서버)가 정하고 모델이 바꿀 수 없는 옵션만 쓴다. 공통은 `--headless`, `--isolated`, `--no-webmcp`, `--proxy-server <브라우저 입구>`, `--output-dir <브라우저 샌드박스 안>`이다. §9-1 HTTP 배치에서는 `--port <MCP 포트>`, `--host <브라우저 컨테이너의 제어망 주소>`, `--allowed-hosts <엔진이 접속하는 호스트:포트>`를 더한다. 세 값은 한 묶음이다. 엔진의 MCP `http` URL은 `http://<allowed-hosts 값>/...`이고, 그 이름이 `--host` 주소로 풀려야 한다. 셋 중 하나라도 어긋나면 실행기가 브라우저 컨테이너를 띄우지 않는다. §9-1 분리 대안에서는 MCP 쪽에 `--cdp-endpoint <Chromium 컨테이너의 CDP 주소>`를 더한다. 이 목록 밖의 옵션은 넣지 않는다. `--ignore-https-errors`(경계 CA를 신뢰시킨다), `--init-page`(Playwright 페이지 객체에 TypeScript 실행), `--caps`는 쓰지 않는다. `--allowed-origins`·`--blocked-origins`·`--secrets`는 README도 보안 경계가 아니라고 하므로 통제 근거로 쓰지 않는다.
 - **거르는 곳**: 지금 MCP 연결(`server/mcpdiscover.go`·`server/assembly.go`)에는 도구 단위 허용 목록이 없다(`allowed_tools`·`disabled_tools`·`tool_filter` 검색 0건). 실행기가 MCP 도구를 모델에 노출하기 전에 이 목록으로 거른다(구현 최민준). 처음 받은 목록뿐 아니라 MCP 서버가 도구 목록 변경을 알릴 때마다 다시 거른다. 목록에 없는 도구는 버전이 바뀌어도 노출하지 않는다(기본 거부). 허용 이름과 같은 이름을 다른 출처(WebMCP 등)가 등록해도 MCP 서버 기본 도구가 아니면 노출하지 않는다. B18은 WebMCP 도구를 등록하는 fixture 페이지를 연 뒤에도 노출된 도구가 이 목록과 같은지 확인한다.
 
 ## 6. 중지·종료 신호
