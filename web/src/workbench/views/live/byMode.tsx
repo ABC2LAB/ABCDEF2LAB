@@ -7,6 +7,7 @@ import s from "../../workbench.module.css";
 import { UrlDashboardLive } from "./UrlDashboardLive";
 import { UrlLiveLive, UrlReportLive } from "./UrlLiveLive";
 import { UrlNewScanLive } from "./UrlNewScanLive";
+import { UrlRecordsLive } from "./UrlRecordsLive";
 import { UrlHead } from "./urlParts";
 import { WorkflowScopeLive } from "./workflowViews";
 
@@ -43,6 +44,11 @@ export const NewScanByMode = () => (
 export const DashboardByMode = () => (
   <Supported title="대시보드">
     <UrlDashboardLive />
+  </Supported>
+);
+export const RecordsByMode = () => (
+  <Supported title="점검 기록">
+    <UrlRecordsLive />
   </Supported>
 );
 export const ScopeByMode = () => (

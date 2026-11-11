@@ -655,8 +655,9 @@ describe("레일 (URL 진단)", () => {
     );
     const row = await screen.findByRole("button", { name: /target\.example/ });
     expect(within(row).getByText("엔진 실행 중 · 대상 진단")).toBeInTheDocument();
+    // 레일 줄은 점검 기록 화면으로 간다 (시안 v27)
     fireEvent.click(row);
-    expect(goTo).toHaveBeenCalledWith("live");
+    expect(goTo).toHaveBeenCalledWith("records");
     expect(screen.getByText("끝난 점검 없음")).toBeInTheDocument();
     // 지금 보는 화면이 이 점검이 아니면 빨간 현재 표시를 하지 않는다
     expect(row).not.toHaveAttribute("aria-current");

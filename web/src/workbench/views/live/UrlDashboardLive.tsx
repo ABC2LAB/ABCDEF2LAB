@@ -10,23 +10,21 @@ import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 
 import { cx } from "../../lib/cx";
 import { clockOf } from "../../live/map";
-import { disconnectUrl, refreshWorkflow, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import { scanViewFor, URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
+import { refreshWorkflow, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import { URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
 import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
-import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
-import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
-import { UrlHead, UrlNotices, UrlPill } from "./urlParts";
+import { JobSummary } from "./jobSummary";
+import { UrlHead, UrlPill } from "./urlParts";
 
 /** 쓰기 메서드 (승인 요청 딱지). 메서드 기준 이름일 뿐, GET · HEAD · query 도 상태를 바꿀 수 있다. */
 const WRITE = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 type Sel = { kind: "job" } | { kind: "approval"; id: string };
-
-const MODE_TEXT = { ai_auto_v1: "AI 자동", user_approval_v1: "사용자 승인", none: "설치 범위" } as const;
 
 /** live 대시보드 (URL 진단 서버). */
 export function UrlDashboardLive() {
@@ -35,7 +33,6 @@ export function UrlDashboardLive() {
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
   const flow = useUrl((st) => st.flow);
-  const cap = useUrl((st) => st.cap);
   const g = useUrlGates();
   const visible = route === "dashboard";
   const ended = !!job && URL_ENDED_STATES.includes(job.state);
@@ -49,12 +46,6 @@ export function UrlDashboardLive() {
 
   const host = handle ? urlHost(handle.input.target_url) : null;
   const name = handle?.input.display_name?.trim() || null;
-  const to = job ? scanViewFor(job, flow?.stage ?? null) : null;
-  let stageText = "—";
-  if (flow) stageText = flowStageText[flow.stage];
-  else if (job) stageText = urlStateText(job.state, verified);
-  const profile =
-    cap.kind === "v2" && handle ? cap.catalog.profiles.find((p) => p.id === handle.input.profile_id) : undefined;
 
   const pick = (next: Sel) => {
     setSel(next);
@@ -196,57 +187,7 @@ export function UrlDashboardLive() {
       </>
     );
   } else if (handle) {
-    insp = (
-      <>
-        <InspHead
-          eyebrow={<span className={s.host}>{host}</span>}
-          title={name ?? host ?? "점검 정보"}
-          chips={job ? <UrlPill job={job} verified={verified} /> : null}
-        />
-        <Isec t="점검 정보">
-          <Kv
-            rows={[
-              [
-                "대상",
-                <span key="t" className={s.mono}>
-                  {handle.input.target_url}
-                </span>,
-              ],
-              ["분석 모델", profile ? profile.model_label : handle.input.profile_id],
-              ["진단 모드", MODE_TEXT[handle.input.workflow_mode ?? "none"]],
-              ["단계", stageText],
-              ["실제 task", job?.task_id ? `#${job.task_id}` : "아직 없음"],
-            ]}
-          />
-        </Isec>
-        <Isec>
-          <div className={s.acts}>
-            {to ? (
-              <button className={cx(s.btn, s.pri)} type="button" onClick={() => goTo(to)}>
-                점검 보기
-                <Icon name="arrow" />
-              </button>
-            ) : null}
-            {ended ? (
-              <button
-                className={s.btn}
-                type="button"
-                onClick={() => {
-                  const url = handle.input.target_url;
-                  disconnectUrl();
-                  useWb.getState().nPrefill(url);
-                  goTo("new");
-                }}
-              >
-                이 주소로 다시 점검
-              </button>
-            ) : null}
-          </div>
-          {ended ? <p className={s.help}>다시 점검하면 이 점검은 이 브라우저 목록에서 빠집니다.</p> : null}
-          <UrlNotices />
-        </Isec>
-      </>
-    );
+    insp = <JobSummary />;
   } else {
     insp = (
       <>
@@ -307,6 +248,9 @@ export function UrlDashboardLive() {
           <section className={s.sec} aria-labelledby="dDoneH">
             <div className={s.sh}>
               <h2 id="dDoneH">최근 끝난 점검</h2>
+              <a className={s.aside} href="#records">
+                점검 기록 보기
+              </a>
             </div>
             {jobRow && ended ? (
               <div className={s.list} id="dDone">
