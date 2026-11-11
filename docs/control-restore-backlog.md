@@ -31,7 +31,7 @@
 | C16 | 64KiB 상한이 자르지 않고 막는다. 넘는 응답은 unknown, 넘는 요청은 미지원 | 오류 | `e2proxy/execution.go:963-968,1138-1144` | P2·최민준(이동찬 페어 리뷰 필수) |
 | C17 | 인코딩·점 경로(`%`, `..`, `//`) 거부, 거부 수에도 들어감 | 저하 | `e2proxy/execution.go:186-188,817` | P2·이동찬 |
 | C18 | 진단은 크롤에서 본 정확한 메서드+경로만. `/x/1`을 봐도 `/x/2`는 못 보냄. 자동 모드는 GET·HEAD·본문 없음, 32개 상한, JS 미실행, 새 경로 추가 안 함 | 오류 | `diagnosisflow/controller.go:379-417`, `diagnosisflow/contract.go:34`, `diagnosisflow/input.go:36` | P2·이동찬 |
-| C19 | 같은 명령 재전송 금지, intent당 대안 1회 | 오류 | `agent/e2_http.go:695-790` | P1(루프 복원)·미정 |
+| C19 | 같은 명령 재전송 금지, intent당 대안 1회 | 오류 | `agent/e2_http.go:695-790` | P1(루프 복원)·최민준 |
 | C20 | 동시 실행 1개를 넘으면 대기 대신 거부로 셈. Bash 슬롯도 실행 전체에 1개 | 오류 | `e2proxy/execution.go:942-944`, `e2runner/runner_linux.go:110` | P2·이동찬 |
 | C21 | 요청별 승인이 10초(워크플로 60초) 안에 안 오면 거부로 셈, 그동안 Bash 슬롯 점유. 자동 모드는 승인된 쓰기 메서드를 GET·HEAD로 깎음(11/11 사전 1회 승인과 충돌) | 저하 | `e2proxy/execution.go:977-1005`, `cmd/first-controlled-diagnosis/product_runtime.go:248-260` | P2·이동찬(메서드 범위)·이경준(승인 화면·흐름) |
 | C22 | 대상은 https만, query 없는 URL만 | 오류 | `diagnosisprep/validation.go:77` | P2·이동찬(대상 스킴·TLS 조건)·이경준(등록 화면) |
@@ -41,10 +41,10 @@
 
 | ID | 내용 | 영향 | 위치 | 순서·담당 |
 |---|---|---|---|---|
-| C24 | Worker 도구가 Bash·node_detail·record_fact·후보 제출 4개뿐. WebFetch·WebSearch·파일·트래픽 조회·skills·MCP·자산·발견·추적 조회 없음(원본 1회차 대상 요청 361건 중 WebFetch 15건, [근거](e2-proxy-control-decision-draft.md)) | 저하 | `agent/e2_http.go:385-399,499-508` | P1(루프 복원)·미정 |
-| C25 | Worker 프롬프트가 6줄 지침으로 바뀜. 그래프 개요·제약·대상 자산·intent ID 줄이 빠지고 목표가 "읽기 전용, 후보만"으로 고정 | 저하 | `agent/e2_http.go:509-543`, `cmd/first-controlled-diagnosis/url_preparation_runtime.go:339-342` | P1(루프 복원)·미정 |
-| C26 | Planner에서 prove_goal·goal_met·kill/steer·report_finding·scope·skills·MCP·WebFetch·WebSearch·Todo 제거, Plan당 16턴·2분, 마무리 턴 없음 | 저하 | `agent/e2_http.go:367-383,792-840`, `agent/planner.go:360-390` | P1(루프 복원)·미정 |
-| C27 | Planner가 Worker가 다 끝날 때까지 못 돈다(원본은 동시) | 저하 | `server/e2_http_runtime.go:304-306` | P1(루프 복원)·미정 |
+| C24 | Worker 도구가 Bash·node_detail·record_fact·후보 제출 4개뿐. WebFetch·WebSearch·파일·트래픽 조회·skills·MCP·자산·발견·추적 조회 없음(원본 1회차 대상 요청 361건 중 WebFetch 15건, [근거](e2-proxy-control-decision-draft.md)) | 저하 | `agent/e2_http.go:385-399,499-508` | P1(루프 복원)·최민준 |
+| C25 | Worker 프롬프트가 6줄 지침으로 바뀜. 그래프 개요·제약·대상 자산·intent ID 줄이 빠지고 목표가 "읽기 전용, 후보만"으로 고정 | 저하 | `agent/e2_http.go:509-543`, `cmd/first-controlled-diagnosis/url_preparation_runtime.go:339-342` | P1(루프 복원)·최민준 |
+| C26 | Planner에서 prove_goal·goal_met·kill/steer·report_finding·scope·skills·MCP·WebFetch·WebSearch·Todo 제거, Plan당 16턴·2분, 마무리 턴 없음 | 저하 | `agent/e2_http.go:367-383,792-840`, `agent/planner.go:360-390` | P1(루프 복원)·최민준 |
+| C27 | Planner가 Worker가 다 끝날 때까지 못 돈다(원본은 동시) | 저하 | `server/e2_http_runtime.go:304-306` | P1(루프 복원)·최민준 |
 | C28 | 모델 호출이 한 번에 하나이고 호출마다 컨텍스트 전체를 예약(기록상 실제 90/90에 예약 1,179,648/18,432, [근거](url-diagnosis-preparation.md)) | 저하 | `server/first_diagnosis_model_budget.go:157-236` | P3·최민준 |
 | C29 | 호출마다 작업 디렉터리를 새로 만들고 지움, `/work` 32MiB·`/tmp` 16MiB 실행 불가, 출력 32KiB 넘으면 버림(원본은 파일로 넘겨 다시 읽음) | 저하 | `e2runner/runner_linux.go:256-267,387-390`, `e2sandbox/helper_linux.go:411,482` | P3·미정 |
 | C30 | 이미지 데이터 미탑재(워드리스트·Playwright·skills). 도구 동등성 79개 중 57개 일치([근거](evaluation/e2-tool-equivalence.md)) | 저하 | `e2sandbox/helper_linux.go` | P3·미정 |
