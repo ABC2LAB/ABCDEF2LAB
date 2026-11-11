@@ -24,7 +24,7 @@
 | Juice Shop v15.0.0 | 첫 렌더링 수용, 보존 시험 |
 | VAmPI | SPA가 아닌 대상의 탐색이 깨지지 않는지 확인 |
 
-- fixture의 수신기는 세 역할로 나눈다. 승인되지 않은 내부망 주소, 메타데이터 서비스 주소(링크 로컬 `169.254.169.254` 등), 외부 CDN 역할(승인 origin 밖 공개 호스트)이다. fixture에서 그 주소를 만들 수 없는 역할의 시험은 `NOT_RUN`이다.
+- fixture의 수신기는 세 역할로 나눈다. 승인되지 않은 내부망 주소, 메타데이터 서비스 주소(링크 로컬 `169.254.169.254` 등), 외부 CDN 역할(승인 origin 밖 공개 호스트)이다. fixture에서 그 주소를 만들 수 없는 역할의 시험은 `NOT_RUN`이다. fixture(`cmd/browser-fixture`)는 기존 수신기(`-receiver-listen`·`-receiver-origin`)를 내부망 역할로 쓰고, 메타데이터 역할(`-metadata-listen`·`-metadata-origin`)과 외부 CDN 역할(`-cdn-listen`·`-cdn-origin`)은 선택으로 띄운다. 역할 주소(메타데이터 주소 등)는 회차 배치가 정하고 fixture는 받은 origin만 쓴다. 기록의 `surface`는 `receiver`(내부망)·`receiver_metadata`·`receiver_cdn`이고, HTTP 요청 전에 끊긴 연결은 각각 `receiver_conn`·`receiver_conn_metadata`·`receiver_conn_cdn`이다. 역할 수신기가 없으면 그 역할이 필요한 페이지(`/bypass/B15`, `/crawl/P08`)는 404이고, 메타데이터 시도는 B04·B05·B07·B12·B13 페이지에 붙지 않는다. 외부 CDN 역할은 `/cdn/P08.*` 자원을 실제로 내주므로 P08은 도달이 아니라 렌더링(`#p08-ready`가 `ok`)까지 본다. B17의 직접 송신 도착 이름은 `B17-node`·`B17-curl`이고, B18의 WebMCP 등록 페이지는 `/crawl/B18-webmcp`다(브라우저가 WebMCP API를 내놓지 않으면 `#webmcp-attempted`가 `none`이라 `UNDECIDABLE`).
 - 시험 망은 외부 인터넷이 없다. 그래서 대상 페이지가 실제 외부 CDN에서 받는 자원은 원본·개선 후 모두 실패한다. 보존 시험(§6)은 이 조건이 양쪽에 같으므로 그대로 비교하고, 외부 자원 허용은 fixture의 외부 CDN 역할 수신기로만 확인한다.
 - 외부 자원의 기대 결과는 모드마다 다르다. 외부 통신을 승인한 모드(외부 API 모드)에서는 페이지가 불러오는 외부 자원을 허용하고(P08), 완전 로컬 모드에서는 외부 송신을 전부 막는다(P09, 절대규칙 8). 두 모드를 각각 돌리고, 회차 결과에 모드를 싣는다.
 - 대상 주소, 첫 화면 확인 셀렉터, 계정은 설정으로 받는다. 앱별 값을 코드에 두지 않는다.
