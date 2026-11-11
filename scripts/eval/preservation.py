@@ -5,8 +5,9 @@
 계측기는 경로 조각을 키 HMAC 가명으로 남기므로, 설계상 막히는 경로 규칙도 같은 키로 가린 뒤 비교한다.
 키는 근거 디렉터리 밖 파일로만 받고, 행의 키 참조와 맞는지 먼저 확인한다(다른 키면 규칙이 조용히 0건이 된다).
 
-못 닿은 패턴의 이유(policy_blocked·budget_limited·not_attempted)는 E② 시도 기록이 있어야 나눌 수 있어서
-이 단계에는 없다.
+원본끼리 보존율(`baseline_reference`)은 원본이 회차마다 흔들리는 정도를 보여 주는 참고값이고 판정에 쓰지 않는다.
+못 닿은 패턴의 이유(policy_blocked·budget_limited·not_attempted)는 같은 키로 가린 차단 기록(탐색 경계·E②)이
+있어야 나눌 수 있어서 이 단계에는 없다.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from runner_evidence import (
     DRAINED_MARKER, FORWARDED_KINDS, SEALED_MARKER, EvidenceError, MeterFiles, drain_complete, final_log_consistent,
 )
 
-SUMMARY_FORMAT = "abc2lab.preservation-summary/v2"
+SUMMARY_FORMAT = "abc2lab.preservation-summary/v3"
 EXCLUSIONS_FORMAT = "abc2lab.preservation-exclusions/v1"
 READ_METHODS = frozenset({"GET", "HEAD"})
 _METHOD = re.compile(r"[A-Z]{1,16}\Z")
@@ -156,6 +157,31 @@ def _compare(baseline: list[Round], improved: list[Round], keep) -> dict:
     }
 
 
+def _baseline_reference(baseline: list[Round], keep) -> dict:
+    """원본 회차끼리의 보존율. 같은 원본이 회차마다 얼마나 흔들리는지 보여 주는 참고값이고 판정에는 쓰지 않는다.
+
+    순서쌍 (Bi, Bj), i≠j 전부를 개선 후 짝과 같은 분모 범위·제외 규칙으로 |Bi∩Bj| / |Bi|로 센다.
+    방향마다 분모가 달라 값이 달라지므로 한쪽 방향만 고르지 않는다.
+    """
+    if len(baseline) < 2:
+        return {"reason": "baseline_rounds_lt_2", "pair_ratios": [], "pair_mean": None, "pair_sd": None,
+                "pairs_without_denominator": 0}
+    ratios = []
+    empty = 0
+    for i, first in enumerate(baseline):
+        denominator = {key for key in first.patterns if keep(key)}
+        for j, second in enumerate(baseline):
+            if i == j:
+                continue
+            ratio = _ratio(denominator, set(second.patterns))
+            if ratio is None:
+                empty += 1
+            else:
+                ratios.append(ratio)
+    return {"reason": None, "pair_ratios": ratios, "pair_mean": statistics.fmean(ratios) if ratios else None,
+            "pair_sd": statistics.stdev(ratios) if len(ratios) >= 2 else None, "pairs_without_denominator": empty}
+
+
 def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusions, read_only: bool) -> dict:
     """read_only면 GET·HEAD 패턴만 분모로 쓰는 읽기 보존율, 아니면 전체 보존율이다."""
     if not baseline or len(baseline) != len(improved):
@@ -176,6 +202,7 @@ def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusio
         "pairs": len(baseline),
         "excluded_by_rules": sum(1 for key in base_domain if exclusions.excludes(key)),
         **_compare(baseline, improved, keep),
+        "baseline_reference": _baseline_reference(baseline, keep),
         "by_class": {
             "api": _compare(baseline, improved, lambda key: keep(key) and not is_static(key[1])),
             "static": _compare(baseline, improved, lambda key: keep(key) and is_static(key[1])),
