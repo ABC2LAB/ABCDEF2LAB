@@ -18,7 +18,7 @@
 - [첫 진단 환경·권한·입력 준비](first-diagnosis-preparation.md)
 - [URL 기반 자동 준비: 설치 위임·영속 시작·공개 v2 경계](url-diagnosis-preparation.md)
 - [개발용 OpenRouter 연결과 실모델 수용 조건](openrouter-first-diagnosis.md)
-- [회차별 대상 승인 권한 모델·TLS 접촉·감사 제안](contracts/product-target-approval-proposal.md)
+- [회차별 대상 승인 권한 모델·TLS 접촉·감사(11/11 팀 합의)](contracts/product-target-approval-proposal.md)
 - [Workbench 단일화 검토안·미이관 기능·담당자 동의 조건](contracts/workbench-consolidation-review.md)
 - [Workbench 실제 탐색·선택·요청 승인 계약](contracts/workbench-engine-workflow.md) · [두 모드 Docker·브라우저 수용](workbench-workflow-acceptance.md)
 - [UI API 연결 지도](contracts/ui-api-map.md) · [UI 작업 지침](../web/src/workbench/README.md)
