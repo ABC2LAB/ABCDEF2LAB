@@ -38,7 +38,7 @@
    - **제어 끝점**: E② 제어 소켓, LLM 게이트웨이, 관리 API, 평가 계측기 관측 포트는 막는다.
    - **외부 공개 호스트**: `full_local`이면 막는다. `external_allowed`이면 브라우저 입구로 들어온 요청 중 메서드가 GET·HEAD이고 `Sec-Fetch-Mode`가 `navigate`가 아닌 것만 허용한다. 페이지 스크립트는 이 헤더를 바꿀 수 없지만 자동화 계층(Playwright·CDP)은 바꿀 수 있다. 그래서 모델에 주는 MCP 도구를 고정 목록으로 하고, 요청 헤더·라우팅을 바꾸거나 Playwright·Node 코드를 실행하는 도구는 넣지 않는다(§5). 이 조건에서만 이 헤더를 브라우저 입구 안에서 이동과 자원을 가르는 데 쓴다. 직접 입구로 들어온 요청은 헤더와 상관없이 외부로 보내지 않는다(`external_direct`).
    - **한계**: 외부 통신 승인 모드에서 브라우저 입구의 외부 GET을 허용하면, 페이지 스크립트나 모델이 브라우저에서 실행한 스크립트가 query에 값을 실어 외부 호스트로 보낼 수 있다. 이 경로는 막지 않는다고 적어 둔다. 줄이는 방안은 §9.
-2. **지원하지 않는 통신.** QUIC·UDP, WebRTC, 경계를 거치지 않는 TCP, 경계 밖 DNS는 네트워크 단에서 막힌다(§5). 승인 대상으로 가는 WebSocket을 허용할지는 열린 항목이다(§9).
+2. **지원하지 않는 통신.** QUIC·UDP, WebRTC, 경계를 거치지 않는 TCP, 경계 밖 DNS는 네트워크 단에서 막힌다(§5). 승인 대상으로 가는 WebSocket은 §9-3에 따른다.
 3. **상한.** 상한에 닿으면 그 요청은 막고(`cap_exhausted`) 세션은 §6대로 마감한다.
 4. **대조 시험.** 구현은 다음 음성·양성 대조를 함께 통과해야 한다([수용시험](../evaluation/browser-acceptance.md) B11·B15·B17·B18·P08).
    - 음성: 직접 입구에서 Node 기본 `fetch`와 `Sec-Fetch-*`를 위조한 curl로 외부 CDN 역할 수신기를 부르면 도달 0건이다.
@@ -56,7 +56,7 @@
 |---|---|
 | `session_ref`·`seq`·`at` | 세션과 순번, 시각 |
 | `decision` | `forwarded` 또는 `denied` |
-| `reason` | 막은 이유. `out_of_scope_origin`, `out_of_scope_path`, `method_not_approved`, `risky_path`, `internal_address`, `metadata_address`, `control_endpoint`, `external_blocked_local`, `external_direct`, `external_navigation`, `external_method`, `cap_exhausted`, `session_closed`, `target_ended`, `protocol_unsupported` |
+| `reason` | 막은 이유. `out_of_scope_origin`, `out_of_scope_path`, `method_not_approved`, `risky_path`, `internal_address`, `metadata_address`, `control_endpoint`, `external_blocked_local`, `external_direct`, `external_navigation`, `external_method`, `cap_exhausted`, `session_closed`, `target_ended`, `ws_read_only`, `protocol_unsupported` |
 | `ingress` | `browser`·`direct` |
 | `dest_class` | `approved`·`external`·`internal`·`metadata`·`control` |
 | `method`·`status`·`bytes` | 메서드, 응답 상태, 응답 바이트 수 |
@@ -121,12 +121,18 @@
 - 로그인은 프로그램이 인증 준비로 하고, 브라우저 프로필에 세션을 넣는다. 모델은 비밀번호를 입력하지 않는다.
 - 실행기는 인증 헤더를 승인 origin 요청에만 붙인다. 브라우저 전체 요청에 헤더를 넣는 방식(예: Playwright `extraHTTPHeaders`)은 쓰지 않는다.
 
-## 9. 열린 항목
+## 9. 결정과 남은 항목
 
-1. (이동찬) 경계의 배치: 별도 컨테이너인지, 엔진 안 프로세스인지. 평가 회차에서 계측기의 탐색 입구를 어떻게 나눌지(프로토콜 §2).
-2. (이동찬) 외부 호스트의 TLS: 가로채서(시스템 루트로 검증) 메서드·`Sec-Fetch-*`를 볼지, 터널로 호스트만 볼지. 터널이면 외부 쓰기·이동 차단(§3)을 할 수 없다.
-3. (이동찬) 승인 대상으로 가는 WebSocket 허용 여부.
-4. (이동찬) 세션 제어 형식: Go 인터페이스인지, 제어 소켓인지. 두 입구를 어떻게 나눌지(입구별 리슨 주소·망).
-5. (이동찬) 원본 기록 프록시(`traffic/`)는 관찰 통로로 쓰지 않는 것을 제안한다. 대상 TLS를 검증하지 않고(`SslInsecure`), 실행 결속이 없고, 헤더를 평문으로 저장하고, 오류가 나면 기록 없이 통과시키기 때문이다.
-6. (이동찬·최민준) 브라우저 입구 외부 GET으로 값이 나가는 한계(§3)를 줄일지. 예: 승인 origin 문서가 불러온 호스트만 허용, 외부 호스트 허용 목록. 렌더링이 깎이는 정도는 보존 측정으로 본다.
-7. (이동찬·이경준) `시험 계정` 분류를 누가 정하고 어디에 저장하는지, 모델 입력 허용과 수용시험 S09의 관계. 팀 결정이 정본(개발 계획·프로토콜)에 들어간 뒤 §8을 확정한다.
+2026-11-12부터 열린 항목은 최민준이 결정안을 정하고 이동찬이 리뷰한다(개발 권한 위임). 아래 1~6은 결정안이고, 리뷰로 확정되면 "제안" 표시를 뗀다.
+
+1. **배치 — 별도 컨테이너 세 개.**
+   - 탐색 경계는 엔진 밖 별도 컨테이너(`explore-boundary`)다. 브라우저 입구와 직접 입구를 서로 다른 Docker 망의 리슨 주소로 둔다(구현 이동찬).
+   - 브라우저 샌드박스도 별도 컨테이너(`explore-browser`)다. Chromium과 `@playwright/mcp@0.0.84`를 HTTP 전송(`--port`, `--host`, `--allowed-hosts <엔진>`)으로 띄우고, 엔진은 기존 MCP `http` 전송(`server/mcpdiscover.go`)으로 붙는다. 이 컨테이너는 엔진 제어망(엔진만)과 브라우저 입구망(경계만)에만 붙는다. 그래서 MCP 서버가 엔진 환경 변수(제어 비밀)를 물려받지 않고(§5), 중지는 컨테이너 종료로 한다(§6). 지금 원본 MCP가 엔진의 stdio 자식으로 떠 환경을 통째로 물려받고 PID 하나만 죽는 문제를 이 배치로 없앤다.
+   - 직접 샌드박스는 기존 Bash 격리 실행(`e2sandbox`)을 쓴다. 탐색 단계에서는 relay가 E② 대신 경계의 직접 입구로 가고, 진단 단계에서는 지금처럼 E②로 간다. 단계는 서버가 정하고 모델·Worker가 고르지 못한다.
+   - 평가 회차에서는 경계가 계측기의 탐색 입구(별칭 `eval-meter-explore`, 별도 리슨)로, E②가 진단 입구(기존 `eval-meter-upstream`)로 보낸다. 계측기는 입구별 리슨으로 전달 행에 입구를 남긴다(프로토콜 §2 경로 분리).
+2. **외부 호스트 TLS — 가로챈다.** 경계가 외부 호스트도 TLS를 가로채고, 대상 쪽 인증서는 시스템 루트로 검증한다. 그래야 메서드·`Sec-Fetch-*`를 보고 §3의 외부 이동·쓰기 차단을 할 수 있다. 브라우저는 승인 대상 때문에 이미 경계 CA를 신뢰하므로 추가 신뢰 설정은 없다.
+3. **WebSocket — 쓰기까지 승인한 회차의 승인 대상만.** 승인 origin·경로 안의 업그레이드는 `write_mode=approved_writes`일 때만 허용한다. WebSocket 메시지는 메서드로 읽기·쓰기를 가를 수 없어서, 읽기만 승인한 회차는 막는다(`ws_read_only`). 메시지 내용은 기록하지 않고 연결 수·바이트만 남긴다. 외부 호스트로 가는 WebSocket은 막는다.
+4. **세션 제어 — 유닉스 소켓 제어 API.** 엔진 서버와 경계 사이에 줄 단위 JSON 제어 소켓(`open`·`close`·`status`)을 둔다. 소켓은 엔진 서버 프로세스만 닿고, 브라우저·직접 샌드박스는 닿지 못한다. 세션 입력은 §2 그대로다.
+5. **원본 기록 프록시(`traffic/`)는 관찰 통로로 쓰지 않는다.** 대상 TLS를 검증하지 않고(`SslInsecure`), 실행 결속이 없고, 헤더를 평문으로 저장하고, 오류가 나면 기록 없이 통과시키기 때문이다. 경계 기록(§4)이 관찰의 정본이다.
+6. **브라우저 입구 외부 GET 유출(§3 한계) — 지금은 한계로 두고 잰다.** 경계 기록의 `external_host` 수를 보존 측정과 함께 보고, 줄이는 규칙(승인 origin 문서가 불러온 호스트만 허용, 허용 목록)은 측정 결과를 보고 정한다.
+7. **(남음, 이동찬·이경준)** `시험 계정` 분류의 저장 위치와 승인 주체. 효력 조건은 [개발 계획의 계정 항목](../development-plan.md#1111-개선-순서--원본-능력-보존-우선)을 따르고, 분류가 들어올 때 §8과 수용시험 S09를 함께 고친다.
