@@ -271,6 +271,35 @@ class SummarizeTests(unittest.TestCase):
         self.assertIsNone(summarize([rnd()], [Round(frozenset(), 0, 0, 0, 0, 0)], NONE, False)["browser_cost"][0]
                           ["static_share"])
 
+    def test_baseline_reference_uses_every_ordered_pair(self):
+        a, b, c = ("GET", "/a"), ("GET", "/b"), ("GET", "/c")
+        got = summarize([rnd(a, b), rnd(a), rnd(a, c)], [rnd(), rnd(), rnd()], NONE, False)["baseline_reference"]
+        # (0,1) 1/2 · (0,2) 1/2 · (1,0) 1 · (1,2) 1 · (2,0) 1/2 · (2,1) 1/2. 개선 후 회차는 값에 들어가지 않는다.
+        self.assertEqual(got["pair_ratios"], [0.5, 0.5, 1.0, 1.0, 0.5, 0.5])
+        self.assertAlmostEqual(got["pair_mean"], 4 / 6)
+        self.assertIsNotNone(got["pair_sd"])
+        self.assertEqual((got["reason"], got["pairs_without_denominator"]), (None, 0))
+
+    def test_baseline_reference_follows_domain_and_exclusions(self):
+        get, post = ("GET", "/a"), ("POST", "/b")
+        baseline = [rnd(get, post), rnd(get)]
+        self.assertEqual(summarize(baseline, [rnd(), rnd()], NONE, False)["baseline_reference"]["pair_ratios"],
+                         [0.5, 1.0])
+        self.assertEqual(summarize(baseline, [rnd(), rnd()], NONE, True)["baseline_reference"]["pair_ratios"],
+                         [1.0, 1.0])
+        rule = Exclusions(frozenset({"POST"}), ())
+        self.assertEqual(summarize(baseline, [rnd(), rnd()], rule, False)["baseline_reference"]["pair_ratios"],
+                         [1.0, 1.0])
+
+    def test_baseline_reference_needs_two_rounds(self):
+        got = summarize([rnd(("GET", "/a"))], [rnd(("GET", "/a"))], NONE, False)["baseline_reference"]
+        self.assertEqual(got, {"reason": "baseline_rounds_lt_2", "pair_ratios": [], "pair_mean": None,
+                               "pair_sd": None, "pairs_without_denominator": 0})
+
+    def test_baseline_reference_counts_empty_denominators(self):
+        got = summarize([rnd(), rnd(("GET", "/a"))], [rnd(), rnd()], NONE, False)["baseline_reference"]
+        self.assertEqual((got["pair_ratios"], got["pairs_without_denominator"], got["pair_sd"]), ([0.0], 1, None))
+
     def test_pairs_must_line_up(self):
         for baseline, improved in (([], []), ([rnd()], []), ([rnd()], [rnd(), rnd()])):
             with self.assertRaises(PreservationError):
