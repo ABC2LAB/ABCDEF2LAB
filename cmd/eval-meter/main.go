@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -322,10 +323,23 @@ loop:
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	for _, server := range servers {
-		if err := server.Shutdown(ctx); err != nil {
+	// Shutdown은 먼저 리슨을 닫고 진행 중 요청을 기다린다. 차례로 부르면 한 입구의 긴 요청을 기다리는 동안 다른
+	// 입구가 새 요청을 계속 받아 전달하므로, 모든 입구의 Shutdown을 함께 시작해 새 수신을 동시에 멈춘다.
+	shutdownErrs := make([]error, len(servers))
+	var stopping sync.WaitGroup
+	for i, server := range servers {
+		stopping.Add(1)
+		go func(i int, server *http.Server) {
+			defer stopping.Done()
+			shutdownErrs[i] = server.Shutdown(ctx)
+		}(i, server)
+	}
+	stopping.Wait()
+	for _, err := range shutdownErrs {
+		if err != nil {
 			fmt.Fprintln(stderr, serveFailed)
 			exit = 1
+			break
 		}
 	}
 	if err := finish(); err != nil {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -295,5 +296,80 @@ func stopRun(t *testing.T, exit chan int) {
 	case <-exit:
 	case <-time.After(10 * time.Second):
 		t.Error("run did not stop on SIGTERM")
+	}
+}
+
+// 종료 신호 뒤에는 main 입구의 긴 요청을 기다리는 동안에도 explore 입구가 새 요청을 받지 않는다.
+func TestRunEngineStopClosesEveryIngressBeforeDraining(t *testing.T) {
+	held := make(chan struct{})
+	release := make(chan struct{})
+	var received atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		if r.URL.Path == "/slow" {
+			close(held)
+			<-release
+		}
+	}))
+	defer upstream.Close()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	explored := make(chan net.Addr, 1)
+	listeningExplore = func(addr net.Addr) { explored <- addr }
+	t.Cleanup(func() { listeningExplore = func(net.Addr) {} })
+	addr, _, exit := runEngine(t, upstream.URL, "-explore-listen", "127.0.0.1:0")
+	var exploreAddr string
+	select {
+	case a := <-explored:
+		exploreAddr = a.String()
+	case <-time.After(5 * time.Second):
+		stopRun(t, exit)
+		t.Fatal("explore front did not listen")
+	}
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	go func() {
+		if resp, err := client.Get("http://" + addr + "/slow"); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		stopRun(t, exit)
+		t.Fatal("slow request did not reach the target")
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	// main 리슨이 닫힐 때까지 기다린 뒤 explore로 새 요청을 보낸다.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil {
+			break
+		}
+		_ = conn.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("main front still accepting after stop")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if resp, err := client.Get("http://" + exploreAddr + "/after-stop"); err == nil {
+		_ = resp.Body.Close()
+		t.Errorf("explore front accepted a new request after stop: %d", resp.StatusCode)
+	}
+	close(release)
+	select {
+	case <-exit:
+	case <-time.After(10 * time.Second):
+		t.Fatal("fronts did not stop")
+	}
+	if got := received.Load(); got != 1 {
+		t.Fatalf("target received %d requests, want only the held one", got)
 	}
 }
