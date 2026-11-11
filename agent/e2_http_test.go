@@ -374,21 +374,30 @@ func TestE2HTTPPlannerAndWorkerFilterByOriginalToolAllowlist(t *testing.T) {
 		"mcp__browser__browser_navigate", "mcp__browser__node_detail", "mcp__browser__list_facts"} {
 		base = append(base, e2WorkerFixtureTool(name, nil))
 	}
-	planner := e2HTTPPlannerTools(base)
+	planner, err := diagnosisPlannerProfile.selectTools(base, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var names []string
 	for _, tool := range planner {
 		names = append(names, tool.Name())
 	}
-	if strings.Join(names, ",") != "add_intent,list_facts,node_detail" {
+	// 출력은 프로필 순서(PlannerTools 순서)다.
+	if strings.Join(names, ",") != "list_facts,node_detail,add_intent" {
 		t.Fatalf("planner tools=%v", names)
 	}
-	worker := e2HTTPWorkerGraphTools(base, execution, 22)
+	e2Bash := e2WorkerFixtureTool("Bash", nil)
+	worker, err := diagnosisWorkerProfile.selectTools(base, map[string]actool.CoreTool{"Bash": e2Bash}, e2HTTPGraphWrap(execution, 22))
+	if err != nil {
+		t.Fatal(err)
+	}
 	names = nil
 	for _, tool := range worker {
 		names = append(names, tool.Name())
 	}
-	if strings.Join(names, ",") != "record_fact,list_facts,node_detail" {
-		t.Fatalf("worker graph tools=%v", names)
+	// list_facts는 원본 WorkerTools에 없는 Planner 도구라 Worker 프로필에 없다. Bash는 원본 목록이 아니라 E② 판이다.
+	if strings.Join(names, ",") != "Bash,record_fact,node_detail" || worker[0] != e2Bash {
+		t.Fatalf("worker tools=%v", names)
 	}
 }
 
@@ -404,7 +413,7 @@ func TestE2HTTPFactToolEnforcesIntentAndRedactsPayload(t *testing.T) {
 		out.Extra = []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock("keep-secret")}}}
 		return out, nil
 	})
-	tool := e2HTTPWorkerGraphTools([]actool.CoreTool{base}, execution, 22)[0]
+	tool := e2HTTPGraphWrap(execution, 22)(base)
 	for _, input := range []string{`{"intent_id":23}`, `{"intent_id":22,"facts":[{"intent_id":23}]}`} {
 		result, err := tool.Call(context.Background(), json.RawMessage(input), nil)
 		if err != nil || !result.IsError || calls != 0 {
@@ -884,13 +893,14 @@ func TestE2HTTPDiagnosisRejectsMCPTools(t *testing.T) {
 		t.Fatal("MCP tool not detected")
 	}
 	// 지금 구성으로는 MCP가 들어올 길이 없으므로, 검사가 실제로 시작 경로에 있는지를 소스로 묶는다.
-	for file, after := range map[string]string{"e2_http.go": `withDiagnosticTools(ctx, tools, "worker")`, "planner.go": `withDiagnosticTools(ctx, tools, "planner")`} {
+	for file, after := range map[string]string{"e2_http.go": `withDiagnosticTools(ctx, tools, "worker")`, "planner.go": `withDiagnosticTools(ctx, selected, "planner")`} {
 		source, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, rest, ok := strings.Cut(string(source), after)
-		if !ok || !strings.HasPrefix(strings.TrimSpace(rest), "if e2HTTPHasMCPTool(tools) {") {
+		check := map[string]string{"e2_http.go": "if err := diagnosisWorkerProfile.check(tools); err != nil {", "planner.go": "if err := diagnosisPlannerProfile.check(tools); err != nil {"}[file]
+		if !ok || !strings.HasPrefix(strings.TrimSpace(rest), check) {
 			t.Fatalf("%s: MCP check is not right after the diagnosis tool list", file)
 		}
 	}

@@ -377,41 +377,12 @@ func e2HTTPHasMCPTool(tools []actool.CoreTool) bool {
 	return false
 }
 
-// Only the original graph tools can be passed here; callers must skip tool
-// augmentation entirely. A matching name is not proof that an arbitrary MCP or
-// external tool is safe.
-func e2HTTPPlannerTools(base []actool.CoreTool) []actool.CoreTool {
-	allowed := map[string]bool{
-		"graph_overview": true, "list_findings": true, "list_facts": true, "node_detail": true,
-		"expand_digest": true, "get_worker_output": true, "get_worker_trace": true,
-		"search_all_worker_traces": true, "list_goals": true, "add_intent": true,
-		"list_companies": true, "list_assets": true, "list_untested_assets": true,
+// e2HTTPGraphWrap은 프로필이 원본 목록에서 고른 그래프 도구에 intent 결속과 출력 가림을 씌운다.
+// 고르는 일은 diagnosisWorkerProfile이 한다. 이름이 같다는 것만으로 임의 MCP·외부 도구가 안전하다는 뜻은 아니다.
+func e2HTTPGraphWrap(execution E2HTTPScope, intentID int64) func(actool.CoreTool) actool.CoreTool {
+	return func(tool actool.CoreTool) actool.CoreTool {
+		return &e2HTTPGraphTool{CoreTool: tool, execution: execution, intentID: intentID}
 	}
-	out := make([]actool.CoreTool, 0, len(base))
-	for _, tool := range base {
-		if tool == nil || isNilCoreTool(tool) || !allowed[tool.Name()] {
-			continue
-		}
-		allowed[tool.Name()] = false
-		out = append(out, tool)
-	}
-	return out
-}
-
-func e2HTTPWorkerGraphTools(base []actool.CoreTool, execution E2HTTPScope, intentID int64) []actool.CoreTool {
-	allowed := map[string]bool{
-		"graph_overview": true, "list_facts": true, "node_detail": true,
-		"get_worker_output": true, "list_goals": true, "record_fact": true,
-	}
-	out := make([]actool.CoreTool, 0, len(base))
-	for _, tool := range base {
-		if tool == nil || isNilCoreTool(tool) || !allowed[tool.Name()] {
-			continue
-		}
-		allowed[tool.Name()] = false
-		out = append(out, &e2HTTPGraphTool{CoreTool: tool, execution: execution, intentID: intentID})
-	}
-	return out
 }
 
 type e2HTTPGraphTool struct {
@@ -512,18 +483,25 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 			}
 		}()
 	}
-	tools := []actool.CoreTool{bash}
+	// 원본 Worker와 같은 도구 목록에서 진단 프로필로 고른다. 대상으로 보내는 도구는 E② 판으로만 채운다.
+	base := append([]actool.CoreTool(nil), w.extraTools...)
+	bindings := map[string]actool.CoreTool{"Bash": bash}
 	var toolset *ToolSet
 	if ts != nil {
 		toolset = NewToolSet(ts, name)
 		toolset.SetTaskID(taskID)
 		toolset.SetOwnerNode(intent.ID)
-		tools = append(tools, e2HTTPWorkerGraphTools(toolset.WorkerTools(), execution, intent.ID)...)
-		tools = append(tools, newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ }))
+		base = append(toolset.WorkerTools(), base...)
+		bindings["submit_diagnostic_candidate"] = newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ })
+	}
+	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
+	tools, err := diagnosisWorkerProfile.selectTools(base, bindings, e2HTTPGraphWrap(execution, intent.ID))
+	if err != nil {
+		return harness.ReasonModelError, WriteCounts{}, err
 	}
 	ctx, tools = withDiagnosticTools(ctx, tools, "worker")
-	if e2HTTPHasMCPTool(tools) {
-		return harness.ReasonModelError, WriteCounts{}, ErrE2HTTPBinding
+	if err := diagnosisWorkerProfile.check(tools); err != nil {
+		return harness.ReasonModelError, WriteCounts{}, err
 	}
 	system, promptInfo, err := buildE2HTTPWorkerPrompt(ctx, name, tools, execution.RedactOutput)
 	if err != nil {
@@ -822,7 +800,11 @@ func constrainE2HTTPPlannerOptions(ctx context.Context, opts *agentcore.Options)
 	if opts == nil {
 		return ErrE2HTTPBinding
 	}
-	opts.Tools = e2HTTPPlannerTools(opts.Tools)
+	tools, err := diagnosisPlannerProfile.selectTools(opts.Tools, nil, nil)
+	if err != nil {
+		return err
+	}
+	opts.Tools = tools
 	opts.EnableWebFetch = false
 	opts.EnableWebSearch = false
 	opts.DisableBackgroundTasks = true
