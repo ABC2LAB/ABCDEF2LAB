@@ -89,7 +89,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 					continue
 				}
 				closers = append(closers, cl)
-				ts, err := cl.Tools(ctx)
+				ts, err := agentMCPTools(ctx, m, cl)
 				if err != nil {
 					log.Printf("[mcp] %s tools/list 실패: %v", m.Name, err)
 					continue
