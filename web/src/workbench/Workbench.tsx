@@ -53,6 +53,7 @@ function setPanel(panel: Panel, hidden: boolean) {
 export function Workbench() {
   useLiveAuthBoot();
   const accent = useWb((st) => st.accent);
+  const theme = useWb((st) => st.theme);
   const railHidden = useWb((st) => st.railHidden);
   const inspHidden = useWb((st) => st.inspHidden);
   const [route, setRoute] = useState<View>("dashboard");
@@ -255,11 +256,13 @@ export function Workbench() {
     return () => root.removeEventListener("click", onClick);
   }, []);
 
-  // 강조색 시안 · 접은 패널 복원 (이 브라우저에만 기억)
+  // 강조색 시안 · 화면 모드 · 접은 패널 복원 (이 브라우저에만 기억)
   useEffect(() => {
     try {
       const saved = localStorage.getItem("abc2lab-accent");
       if (saved === "cobalt" || saved === "mono") useWb.getState().setAccent(saved);
+      const savedTheme = localStorage.getItem("abc2lab-theme");
+      if (savedTheme === "light" || savedTheme === "dark") useWb.getState().setTheme(savedTheme);
       for (const panel of ["rail", "insp"] as const) {
         if (localStorage.getItem(PANEL_KEY[panel]) === "1") useWb.getState().setPanelHidden(panel, true);
       }
@@ -315,7 +318,13 @@ export function Workbench() {
 
   return (
     <ShellContext.Provider value={shell}>
-      <div ref={rootRef} className={s.root} data-accent={accent === "petrol" ? undefined : accent}>
+      <div
+        ref={rootRef}
+        className={s.root}
+        data-wb-root=""
+        data-accent={accent === "petrol" ? undefined : accent}
+        data-theme={theme === "system" ? undefined : theme}
+      >
         <UrlFeeds />
         <div className={cx(s.demobar, s["lv-bar"])} role="note">
           <Icon name="info" />

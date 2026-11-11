@@ -1,7 +1,9 @@
 "use client";
 
-// 레일의 실제 값 조각: 결정 대기 배지 · 이 브라우저가 이어 보는 점검 줄 · 분석 모델 · 진단 모드 · 로그인.
+// 레일의 실제 값 조각: 결정 대기 배지 · 이 브라우저가 이어 보는 점검 줄(진행 중 · 끝난 점검 묶음) · 계정 메뉴의 분석 모델 · 진단 모드.
 // 서버에 진단 목록 API 가 없어 점검 줄은 이어 보는 진단 하나뿐이다(전체 목록·집계를 만들어 채우지 않는다).
+
+import { type ReactNode, useEffect, useState } from "react";
 
 import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import { readRequestApprovalState } from "@/lib/diagnosis/request-approvals";
@@ -9,7 +11,6 @@ import { readRequestApprovalState } from "@/lib/diagnosis/request-approvals";
 import { useShell, type View } from "../shell";
 import { Icon } from "../ui/icons";
 import s from "../workbench.module.css";
-import { useLiveAuth } from "./auth";
 import { useUrl } from "./urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, URL_PRESTART_STATES, urlHost, urlStateText } from "./urlMap";
 import { usePoll } from "./usePoll";
@@ -51,7 +52,54 @@ function useRowSub(): string {
   return `${urlStateText(job.state)} · ${urlPhaseLabels[job.phase]}`;
 }
 
-/** 진행 중 / 최근 끝난 점검. 이 브라우저가 이어 보는 진단 한 줄을 알맞은 묶음에 둔다(결과 불명은 끝난 것으로 두지 않는다). */
+/** 레일 묶음 하나: 머리를 누르면 아래 목록을 접고 펼친다(이 브라우저에 기억). 접어도 건수는 보인다. */
+function RailSection({
+  id,
+  title,
+  count,
+  children,
+}: {
+  id: string;
+  title: string;
+  count: number;
+  children: ReactNode;
+}) {
+  const key = `abc2lab-rsec-${id}`;
+  const [open, setOpen] = useState(true);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(key) === "0") setOpen(false);
+    } catch {
+      // 저장소를 못 쓰면 펼친 채로
+    }
+  }, [key]);
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    try {
+      localStorage.setItem(key, next ? "1" : "0");
+    } catch {
+      // 이번만 적용
+    }
+  };
+  const listId = `rsec-${id}`;
+  return (
+    <div className={s.rsec}>
+      <button className={s.rh} type="button" aria-expanded={open} aria-controls={listId} onClick={toggle}>
+        <Icon name="chev" />
+        {title}
+        <span className={s.c} role="img" aria-label={`${count}건`}>
+          {count}
+        </span>
+      </button>
+      <div className={s.rlist} id={listId} hidden={!open}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** 진행 중 / 끝난 점검. 이 브라우저가 이어 보는 진단 한 줄을 알맞은 묶음에 둔다(결과 불명은 끝난 것으로 두지 않는다). */
 export function LiveRailTasks() {
   const { route, goTo } = useShell();
   const handle = useUrl((st) => st.handle);
@@ -74,28 +122,29 @@ export function LiveRailTasks() {
       <span className={s.rsub}>{sub}</span>
     </button>
   ) : null;
+  const running = !!row && !ended;
+  const done = !!row && ended;
   return (
     <>
-      <div className={s.rsec}>
-        <div className={s.rh}>진행 중</div>
-        {row && !ended ? row : <div className={s["lv-rempty"]}>진행 중인 점검 없음</div>}
-      </div>
-      <div className={s.rsec}>
-        <div className={s.rh}>최근 끝난 점검</div>
-        {row && ended ? row : <div className={s["lv-rempty"]}>끝난 점검 없음</div>}
-      </div>
+      <RailSection id="run" title="진행 중" count={running ? 1 : 0}>
+        {running ? row : <div className={s["lv-rempty"]}>진행 중인 점검 없음</div>}
+      </RailSection>
+      <RailSection id="done" title="끝난 점검" count={done ? 1 : 0}>
+        {done ? row : <div className={s["lv-rempty"]}>끝난 점검 없음</div>}
+      </RailSection>
     </>
   );
 }
 
-/** 레일 아래 분석 모델 · 진단 모드 줄 (이어 보는 진단의 설치 프로필 기준). */
-export function LiveRailModel() {
+/** 계정 메뉴의 분석 모델 · 진단 모드 줄 (이어 보는 진단의 설치 프로필 기준). */
+export function LiveAccountModel() {
   const cap = useUrl((st) => st.cap);
   const input = useUrl((st) => st.job?.input ?? st.handle?.input ?? null);
   const profile = cap.kind === "v2" && input ? cap.catalog.profiles.find((p) => p.id === input.profile_id) : undefined;
+  const approval = input?.workflow_mode === "user_approval_v1";
   return (
     <>
-      <div className={s.rf} id="railModel">
+      <div className={s["am-info"]} id="railModel">
         <Icon name="chip" />
         <div>
           {profile ? `분석 모델 · ${profile.model?.external_transfer ? "외부" : "로컬"}` : "분석 모델"}
@@ -103,32 +152,14 @@ export function LiveRailModel() {
         </div>
       </div>
       {input?.workflow_mode ? (
-        <div className={s.rf}>
+        <div className={s["am-info"]}>
           <Icon name="shield" />
           <div>
-            {input.workflow_mode === "user_approval_v1" ? "사용자 승인 모드" : "AI 자동 모드"}
-            <br />
-            {input.workflow_mode === "user_approval_v1" ? "상태 변경은 승인 후 전송" : "상태 변경은 자동 승인 안 함"}
+            {approval ? "사용자 승인 모드" : "AI 자동 모드"}
+            <span>{approval ? "상태 변경은 승인 후 전송" : "상태 변경은 자동 승인 안 함"}</span>
           </div>
         </div>
       ) : null}
     </>
-  );
-}
-
-/** 레일 아래 로그인 상태 줄 + 로그아웃 (ready 일 때만). */
-export function LiveRailAccount() {
-  const { state, logout } = useLiveAuth();
-  if (state !== "ready") return null;
-  return (
-    <div className={s.rf}>
-      <Icon name="lock" />
-      <div>
-        엔진에 로그인됨{" "}
-        <button className={s["lv-link"]} type="button" onClick={logout}>
-          로그아웃
-        </button>
-      </div>
-    </div>
   );
 }

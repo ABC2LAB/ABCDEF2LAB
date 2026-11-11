@@ -101,6 +101,26 @@ export async function checkLiveAuth(): Promise<LiveAuthState> {
   return done("ready");
 }
 
+const ACCOUNT_KEY = "abc2lab.accountName";
+
+/** 마지막으로 로그인한 아이디 (계정 버튼에 표시). 비밀번호 · 토큰과는 별개이고 없으면 null. */
+export function readAccountName(): string | null {
+  try {
+    const v = localStorage.getItem(ACCOUNT_KEY);
+    return v && v.length <= 64 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberAccountName(name: string): void {
+  try {
+    localStorage.setItem(ACCOUNT_KEY, name.slice(0, 64));
+  } catch {
+    // 저장소를 못 쓰면 이름 없이 표시
+  }
+}
+
 /** 로그인 실패 → 안내 글. */
 function loginError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -128,6 +148,7 @@ async function login(username: string, password: string): Promise<string | null>
   runId++; // 진행 중인 확인 결과는 버린다
   try {
     await signIn(username, password);
+    rememberAccountName(username);
     useAuthStore.setState({ state: "ready", detail: null });
     return null;
   } catch (err) {

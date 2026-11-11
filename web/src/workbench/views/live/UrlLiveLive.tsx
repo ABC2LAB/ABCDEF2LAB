@@ -482,6 +482,8 @@ function RunRecord({ run }: { run: Poll<DiagnosisRunView> }) {
 type Audience = "shared" | "internal";
 type Format = "html" | "docx";
 const AUD_TEXT: Readonly<Record<Audience, string>> = { shared: "공유용", internal: "내부 상세" };
+/** 내려받는 동안 버튼 글 (Word 는 어느 파일인지 남긴다). */
+const busyText = (label: string, format: Format) => (format === "docx" ? `${label} 내려받는 중…` : "내려받는 중…");
 
 /** 보고서 파일 내려받기: 같은 저장 자료로 만든 종합 HTML · Word, 각각 공유용 · 내부 상세. */
 export function Download({ taskId }: { taskId: string }) {
@@ -511,7 +513,7 @@ export function Download({ taskId }: { taskId: string }) {
       disabled={!!st.busy}
       onClick={() => void run(aud, format)}
     >
-      {st.busy === `${aud}:${format}` ? (format === "docx" ? `${label} 내려받는 중…` : "내려받는 중…") : label}
+      {st.busy === `${aud}:${format}` ? busyText(label, format) : label}
     </button>
   );
   return (
