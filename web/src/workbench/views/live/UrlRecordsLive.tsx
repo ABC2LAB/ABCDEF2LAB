@@ -146,7 +146,10 @@ export function UrlRecordsLive() {
   const counts = remFor ? summarizeDiagnosticEntries(remFor.entries) : null;
   const runKind = job && !ended ? recRunKind(job.state, verified, flow?.stage ?? null, a.pending.length) : null;
   const doneKinds = ended && job ? recDoneKinds(job.state, counts) : [];
-  const doneLoading = job?.state === "completed" && !!reportId && !remFor;
+  // 결과를 아직 모름(읽는 중 · 실패) → 칩 개수는 '—'. 읽는 중일 때만 레일 이동의 필터 해제를 보류하고, 실패하면 보류를 푼다
+  const doneUnknown = job?.state === "completed" && !!reportId && !remFor;
+  const remFailed = doneUnknown && !!rem.error;
+  const doneLoading = doneUnknown && !rem.error;
   const hasRun = !!handle && !ended;
   const hasDone = !!handle && ended;
   const runOk = (k: RunKind | "all") => hasRun && (k === "all" || runKind === k);
@@ -230,7 +233,7 @@ export function UrlRecordsLive() {
 
   const runCount = (k: RunKind | "all") => (runOk(k) ? 1 : 0);
   const doneCount = (k: DoneKind | "all"): number | null => {
-    if (k !== "all" && doneLoading) return null;
+    if (k !== "all" && doneUnknown) return null;
     return doneOk(k) ? 1 : 0;
   };
   const runShown = runOk(runF);
@@ -286,11 +289,11 @@ export function UrlRecordsLive() {
                 {row}
               </div>
             ) : (
-              <p className={s.empty}>{doneEmptyText(hasDone, doneLoading)}</p>
+              <p className={s.empty}>{doneEmptyText(hasDone, doneLoading, remFailed)}</p>
             )}
             {hasDone && !doneLoading && !doneKinds.length ? (
               <p className={s.help} role="note">
-                {unsortedText(job?.state, !!counts)}
+                {unsortedText(job?.state, !!counts, remFailed)}
               </p>
             ) : null}
           </section>
@@ -317,14 +320,16 @@ export function UrlRecordsLive() {
 }
 
 /** 끝난 점검을 결과로 나누지 않은 까닭 ('전체' 에만 보일 때). */
-function unsortedText(state: UrlState | undefined, readable: boolean): string {
+function unsortedText(state: UrlState | undefined, readable: boolean, failed: boolean): string {
+  if (failed) return "보고서를 읽지 못해 결과로 나누지 않고 '전체' 에만 보입니다. 새로고침으로 다시 읽을 수 있습니다.";
   if (state !== "completed") return "중지 · 실패한 점검은 끝까지 보지 않아 결과로 나누지 않고 '전체' 에만 보입니다.";
   if (!readable) return "결과 저장이 확인되지 않아 결과로 나누지 않고 '전체' 에만 보입니다.";
   return "정상 대조 결과가 없어 '발견 없음' 으로 나누지 않고 '전체' 에만 보입니다.";
 }
 
 /** 끝난 점검 칸이 비었을 때의 글. */
-function doneEmptyText(hasDone: boolean, loading: boolean): string {
+function doneEmptyText(hasDone: boolean, loading: boolean, failed: boolean): string {
   if (!hasDone) return "끝난 점검이 없습니다.";
+  if (failed) return "보고서를 읽지 못해 결과를 모릅니다.";
   return loading ? "보고서를 읽는 중입니다." : "이 결과의 끝난 점검이 없습니다.";
 }

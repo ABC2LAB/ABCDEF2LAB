@@ -329,6 +329,32 @@ describe("점검 기록 화면", () => {
     expect(within(done).getByText("이 결과의 끝난 점검이 없습니다.")).toBeInTheDocument();
   });
 
+  it("보류 중에 보고서 조회가 실패하면 보류를 풀고 '전체' 로 돌린다 (칩 개수는 모름 '—' 그대로)", async () => {
+    let fail: (e: unknown) => void = () => undefined;
+    vi.mocked(api.fetchRemediation).mockImplementation(
+      () =>
+        new Promise<api.Remediation>((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    useUrl.setState({ handle, job: completed, verified: true });
+    const view = (navSeq: number) => (
+      <ShellContext.Provider value={shell("records", { navSeq })}>
+        <UrlRecordsLive />
+      </ShellContext.Provider>
+    );
+    const { rerender } = render(view(1));
+    const done = screen.getByRole("region", { name: "끝난 점검" });
+    await waitFor(() => expect(api.fetchRemediation).toHaveBeenCalledTimes(1));
+    fireEvent.click(chip(done, "발견 없음"));
+    rerender(view(2));
+    fail(new Error("보고서 조회 실패"));
+    await waitFor(() => expect(chip(done, "전체")).toHaveAttribute("aria-pressed", "true"));
+    expect(within(done).getByRole("button", { name: /target\.example/ })).toBeInTheDocument();
+    expect(chip(done, "발견 없음")).toHaveTextContent("—");
+    expect(within(done).getByRole("note")).toHaveTextContent("보고서를 읽지 못해 결과로 나누지 않고");
+  });
+
   it("이어 보는 점검이 없으면 두 칸 모두 빈 안내와 새 점검 링크", () => {
     render(
       <ShellContext.Provider value={shell("records")}>
