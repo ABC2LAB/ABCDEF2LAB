@@ -72,4 +72,26 @@ COPY --from=acceptance-build /out/product-fixture /app/product-fixture
 USER 1000:1000
 ENTRYPOINT ["/app/product-fixture"]
 
+# 탐색 브라우저 샌드박스(docs/contracts/exploration-boundary.md §9-1). Chromium과 Playwright MCP만 넣고
+# 엔진 바이너리·제어 비밀은 넣지 않는다. 엔진은 제어망에서 MCP HTTP로 붙고, 브라우저는 탐색 경계의 브라우저 입구로만 나간다.
+# 기본 빌드 대상은 마지막 product 단계라 이 단계는 `--target explore-browser`로만 만든다.
+FROM node:26-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS explore-browser
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libnss3-tools \
+    && rm -rf /var/lib/apt/lists/*
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright HOME=/home/node
+# MCP는 자기 패키지에 묶인 Playwright 판(0.0.84는 1.65.0-alpha)의 브라우저를 찾는다. 전역 playwright 패키지로 깔면
+# 판이 달라 실행할 때 브라우저를 못 찾으므로, MCP 자신의 설치 명령으로 그 판의 Chromium만 깐다.
+RUN npm install -g @playwright/mcp@0.0.84 \
+    && playwright-mcp install-browser --with-deps chromium \
+    && chmod -R a+rX /ms-playwright \
+    && rm -rf /var/lib/apt/lists/*
+ARG VCS_REF=dev
+LABEL org.opencontainers.image.source="https://github.com/ABC2LAB/ABCDEF2LAB" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.opencontainers.image.description="ABC2LAB exploration browser sandbox, derived from jiwoochris/artex-global"
+COPY --chmod=755 deploy/product/explore-browser-entrypoint.sh /app/explore-browser-entrypoint
+USER 1000:1000
+ENTRYPOINT ["/app/explore-browser-entrypoint"]
+
 FROM product-runtime AS product
