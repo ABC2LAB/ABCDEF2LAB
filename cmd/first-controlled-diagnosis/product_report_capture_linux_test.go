@@ -109,6 +109,12 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 	if productGrantRoles(t.Context(), installer.DB, name) != nil {
 		t.Fatal("실제 제품 설치 권한 적용 실패")
 	}
+	// CI 소켓 DSN의 query user/password가 새 역할의 userinfo를 덮어쓰지 않게 한다.
+	roleQuery := u.Query()
+	for _, key := range []string{"user", "password", "dbname", "database"} {
+		roleQuery.Del(key)
+	}
+	u.RawQuery = roleQuery.Encode()
 	u.User = url.UserPassword("product_api", password)
 	apiPool, err = sql.Open("pgx", u.String())
 	if err != nil {
