@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -49,6 +50,21 @@ type pathRow struct {
 	PathProfileRef string `json:"path_profile_ref"`
 	// 집계할 때 회차 묶음이 같은 키를 썼는지, 집계자가 가진 키가 그 키인지 확인하는 값이다. 키 값은 남기지 않는다.
 	PathKeyRef string `json:"path_key_ref"`
+	// 요청에 값이 비지 않은 Authorization·Cookie 헤더가 있었는지만 남긴다. 헤더 값·줄 수·쿠키 이름은 남기지 않는다.
+	// 인증을 시도했다는 관찰일 뿐 로그인이 됐다는 근거가 아니다(browser-acceptance.md §6).
+	HasAuthorization bool `json:"has_authorization"`
+	HasCookie        bool `json:"has_cookie"`
+}
+
+// hasHeaderValue는 그 이름의 헤더 줄 중 빈 값이 아닌 줄이 하나라도 있는지 본다. 빈 헤더는 자격을 싣지 않는다.
+// net/http가 값 앞뒤 공백을 이미 잘라서 넘기므로 공백만 있던 줄도 여기서는 빈 값이다.
+func hasHeaderValue(h http.Header, name string) bool {
+	for _, value := range h.Values(name) {
+		if value != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // 일반 엔드포인트 이름(authentication-details)은 남기고, 숫자나 대소문자가 섞인 긴 조각만 값으로 본다.
