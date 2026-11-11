@@ -1,8 +1,8 @@
-"""계측기 경로 가림(cmd/eval-meter paths.go, abc2lab.path-mask/v2)의 Python 판.
+"""경로 가림(pathmask/pathmask.go, abc2lab.path-mask/v2)의 Python 판. 계측기 경로 기록이 이 규칙을 쓴다.
 
 보존 집계가 설계상 막히는 경로 규칙을 기록과 같은 형태로 바꿀 때 쓴다. 계측기는 경로 조각을 원문으로 남기지 않고
 `{id}`나 키 HMAC 가명으로 남기므로, 규칙도 같은 키로 같은 가림을 거쳐야 비교할 수 있다.
-Go 시험 벡터(cmd/eval-meter/testdata/path-mask-v2.json)로 같은 값을 내는지 시험한다.
+Go 시험 벡터(pathmask/testdata/path-mask-v2.json)로 같은 값을 내는지 시험한다.
 소문자 변환은 ASCII만 한다. 비ASCII 조각은 Go와 확장자 판정이 다를 수 있어서 규칙 경로에는 받지 않는다.
 """
 
@@ -23,7 +23,7 @@ _MAX_SEGMENT_LENGTH = 32
 _MASKED = "{id}"
 _TOO_LONG = "/{too_long}"
 _KEY_REF_LABEL = b"abc2lab.path-key-ref/v1"
-# 정적 자원과 API를 나눠 셀 수 있게 확장자만 남긴다(paths.go staticSuffixes와 같다).
+# 정적 자원과 API를 나눠 셀 수 있게 확장자만 남긴다(pathmask.go staticSuffixes와 같다).
 STATIC_SUFFIXES = (".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
                    ".woff", ".woff2", ".ttf", ".otf")
 
@@ -67,7 +67,7 @@ def read_path_key(path: str) -> bytes:
 
 
 def key_ref(key: bytes) -> str:
-    """경로 행의 path_key_ref(paths.go pathKeyRef)."""
+    """경로 행의 path_key_ref(pathmask.go KeyRef)."""
     return hmac.new(key, _KEY_REF_LABEL, hashlib.sha256).hexdigest()[:_PSEUDONYM_HEX]
 
 
@@ -99,7 +99,7 @@ def _mask_segment(raw: bytes, key: bytes) -> tuple[bytes, bool]:
 
 
 def mask_path(escaped: str, key: bytes) -> tuple[str, int]:
-    """paths.go maskPath와 같은 (패턴, 가린 조각 수)."""
+    """pathmask.go Mask와 같은 (패턴, 가린 조각 수)."""
     if len(key) != KEY_BYTES:
         raise PathKeyError("path_key_untrusted")
     segments = escaped.encode("utf-8").split(b"/")
