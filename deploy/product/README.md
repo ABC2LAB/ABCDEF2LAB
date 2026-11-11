@@ -121,6 +121,10 @@ workbench에는 DB·키·제품 상태 볼륨이 없다. api는 상태 볼륨을
 
 `postgres-data`(DB)와 `product-state`(키·정책·authority·receipt·audit)를 함께 백업하고 권한을 보존한다. `target-tls`는 소유 시험 전용이다. 재기동은 `docker compose down` 후 `docker compose up -d --wait`로 수행한다. `down -v`는 영속 상태를 삭제하므로 복구 절차에 사용하지 않는다. 실행 중 강제 종료는 unknown으로 남으며 자동 재실행하지 않는다. 완료된 회차는 재기동 후 저장 보고서로 조회한다.
 
+### 탐색 브라우저 샌드박스(꺼짐)
+
+`explore-browser`는 [탐색 계약](../../docs/contracts/exploration-boundary.md) §9-1의 브라우저 샌드박스다. Chromium과 `@playwright/mcp@0.0.84`만 들어 있고 엔진 바이너리·제어 비밀·보호 볼륨은 없다. `--profile exploration`을 줄 때만 렌더링되며, 지금은 켜지 않는다. 탐색 경계(`explore-boundary`)가 브라우저 입구와 CA 볼륨(`explore-ca`)을 채우고, 엔진이 제어망(`explore_control`)에서 리슨 없이 MCP `http`로 붙는 변경이 들어온 뒤에 켠다. CA 파일이 없으면 시작하지 않는다. MCP 옵션은 compose가 정하고(`--host`·`--port`·`--allowed-hosts`는 한 묶음), 모델에 노출하는 도구는 서버의 고정 목록(`server/mcp_tool_policy.go`)으로 거른다. 구성 조건은 `scripts/ci/test_product_explore_browser.py`가 렌더링으로 확인한다.
+
 ## 화면별 실제 API
 
 | 화면 | 연결 |
