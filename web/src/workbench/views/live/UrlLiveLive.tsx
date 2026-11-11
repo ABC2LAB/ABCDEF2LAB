@@ -29,7 +29,7 @@ import { type Poll, usePoll } from "../../live/usePoll";
 import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
-import { InspHead, InspOpenButton, Isec, Kv } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
@@ -354,6 +354,7 @@ export function UrlLiveLive() {
             <UrlFacts job={job} />
           </Isec>
         </aside>
+        <PaneToggle />
       </div>
     </>
   );
@@ -829,6 +830,7 @@ export function UrlReportLive() {
         <aside className={s.vi} id="rInsp" aria-label="발견 상세">
           <FindingDetail e={chosen} host={host} taskId={taskId} onReload={rem.reload} />
         </aside>
+        <PaneToggle />
       </div>
     </>
   );

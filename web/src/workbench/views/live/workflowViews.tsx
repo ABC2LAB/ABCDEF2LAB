@@ -12,7 +12,7 @@ import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGat
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
-import { CloseInspButton, CodeCard, InspOpenButton, Kv } from "../../ui/parts";
+import { CloseInspButton, CodeCard, InspOpenButton, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { UrlHead, UrlNotices, UrlRefreshButton, useUrlHost } from "./urlParts";
 
@@ -540,6 +540,7 @@ export function WorkflowCrawlLive() {
             </>
           )}
         </aside>
+        <PaneToggle />
       </div>
     </>
   );
@@ -715,6 +716,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
         <aside className={s.vi} id="sInsp" aria-label="선택한 경로 상세">
           <EndpointDetail endpoint={flow.endpoints.find((e) => e.id === detail) ?? null} />
         </aside>
+        <PaneToggle />
       </div>
     </>
   );

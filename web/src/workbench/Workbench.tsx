@@ -99,7 +99,7 @@ export function Workbench() {
   const closeInsp = useCallback(() => {
     if (wider(narrowMq.current)) {
       setPanel("insp", true);
-      focusLater("[data-insp-open]", true);
+      focusLater("[data-pane-toggle]", true);
       return;
     }
     setDrawers((d) => (d.insp ? { ...d, insp: false } : d));

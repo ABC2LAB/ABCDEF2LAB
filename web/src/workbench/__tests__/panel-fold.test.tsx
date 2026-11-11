@@ -43,7 +43,9 @@ import * as teamApi from "@/lib/diagnosis/api";
 import { setLiveAuthState } from "../live/auth";
 import { resetFeeds } from "../live/feeds";
 import { resetUrl } from "../live/urlDiagnosis";
+import { ShellContext, useShell } from "../shell";
 import { createInitialState, useWb } from "../store";
+import { PaneToggle } from "../ui/parts";
 import { Workbench } from "../Workbench";
 import s from "../workbench.module.css";
 
@@ -108,7 +110,7 @@ it("넓은 화면: 레일 접기 버튼으로 아이콘 줄로 접고, 같은 �
   expect(c.querySelector(`.${s.rail}`)).not.toHaveClass(s.open);
 });
 
-it("넓은 화면: 상세 닫기 버튼으로 상세 패널을 접고, 상세 버튼으로 다시 펼친다", async () => {
+it("넓은 화면: 상세 닫기(접기)로 상세 패널을 접고, 상세 열기로 다시 펼친다", async () => {
   screenWidth({ narrow: false, phone: false });
   const c = await mount();
   const view = dashboard(c);
@@ -118,6 +120,29 @@ it("넓은 화면: 상세 닫기 버튼으로 상세 패널을 접고, 상세 �
   fireEvent.click(view.querySelector("[data-insp-open]") as HTMLElement);
   expect(app(c)).not.toHaveClass(s["insp-hidden"]);
   expect(localStorage.getItem("abc2lab-insp-hidden")).toBeNull();
+});
+
+it("상세 패널 접기 버튼(PaneToggle): 펼쳐져 있으면 접고, 접혀 있으면 같은 버튼이 펼친다", () => {
+  const open = vi.fn();
+  const close = vi.fn();
+  function Harness() {
+    const base = useShell();
+    return (
+      <ShellContext.Provider value={{ ...base, openInsp: open, closeInsp: close }}>
+        <PaneToggle />
+      </ShellContext.Provider>
+    );
+  }
+  render(<Harness />);
+  const toggle = screen.getByRole("button", { name: "오른쪽 패널 접기" });
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(toggle);
+  expect(close).toHaveBeenCalledTimes(1);
+  act(() => useWb.getState().setPanelHidden("insp", true));
+  const again = screen.getByRole("button", { name: "오른쪽 패널 펼치기" });
+  expect(again).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(again);
+  expect(open).toHaveBeenCalledTimes(1);
 });
 
 it("접어 둔 패널은 다시 열어도 접힌 채로 시작한다", async () => {

@@ -15,7 +15,7 @@ import { scanViewFor, URL_ENDED_STATES, urlHost, urlTargetHint, usdText } from "
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
-import { CloseInspButton, InspOpenButton } from "../../ui/parts";
+import { CloseInspButton, InspOpenButton, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ExternalModelSettings } from "./ExternalModelSettings";
 import { TargetApprovalPanel } from "./TargetApprovalPanel";
@@ -497,6 +497,7 @@ export function UrlNewScanLive() {
             <UrlNotices />
           </div>
         </aside>
+        <PaneToggle />
       </div>
     </>
   );

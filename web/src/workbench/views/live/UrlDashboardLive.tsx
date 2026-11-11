@@ -16,7 +16,7 @@ import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
-import { InspHead, InspOpenButton, Isec, Kv } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalActions, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { UrlHead, UrlNotices, UrlPill } from "./urlParts";
@@ -317,6 +317,7 @@ export function UrlDashboardLive() {
         <aside className={s.vi} id="dInsp" aria-label="선택한 항목 상세">
           {insp}
         </aside>
+        <PaneToggle />
       </div>
     </>
   );

@@ -8,6 +8,7 @@ import { Fragment, type ReactNode, useEffect, useState } from "react";
 import { cx } from "../lib/cx";
 import { useUrl } from "../live/urlDiagnosis";
 import { useShell } from "../shell";
+import { useWb } from "../store";
 import s from "../workbench.module.css";
 import { Icon } from "./icons";
 
@@ -17,7 +18,7 @@ import { Icon } from "./icons";
  */
 export function CloseInspButton({ label }: { label: string }) {
   const { closeInsp } = useShell();
-  // insp-only: 좁은 화면 서랍 닫기, insp-x: 넓은 화면에서도 보여서 상세 패널 접기
+  // insp-only: 좁은 화면 서랍 닫기 (넓은 화면은 패널 칸의 PaneToggle)
   return (
     <button
       className={cx(s["icon-btn"], s["insp-only"], s["insp-x"])}
@@ -82,11 +83,35 @@ export { MenuButton } from "./MenuButton";
 /** 화면 머리의 '상세' 버튼 (좁은 화면에서만 보임) → 상세 서랍. 원본 `button.btn.insp-only[data-insp-open]`. */
 export function InspOpenButton({ children, id }: { children: ReactNode; id?: string }) {
   const { openInsp } = useShell();
-  // 좁은 화면이거나 넓은 화면에서 상세 패널을 접었을 때만 보인다(CSS)
+  // 좁은 화면(서랍)에서만 보인다(CSS). 넓은 화면은 패널 칸의 PaneToggle 로 접고 펼친다
   return (
     <button className={cx(s.btn, s["insp-only"])} type="button" id={id} data-insp-open="" onClick={openInsp}>
       <Icon name="panel" />
       {children}
+    </button>
+  );
+}
+
+/**
+ * 넓은 화면의 상세 패널 접기 · 펼치기 (레일 접기와 같은 짜임, 시안 v25). 접으면 패널은 64px 줄로 남고
+ * 이 버튼은 패널 칸 오른쪽 위 같은 자리에 있어서, 화면 머리의 버튼(취소 · 시작 등)은 움직이지 않는다.
+ * 좁은 화면은 서랍이라 보이지 않는다(CSS).
+ */
+export function PaneToggle() {
+  const { openInsp, closeInsp } = useShell();
+  const folded = useWb((st) => st.inspHidden);
+  const text = folded ? "오른쪽 패널 펼치기" : "오른쪽 패널 접기";
+  return (
+    <button
+      className={cx(s["icon-btn"], s["pane-toggle"])}
+      type="button"
+      data-pane-toggle=""
+      aria-expanded={!folded}
+      aria-label={text}
+      title={text}
+      onClick={folded ? openInsp : closeInsp}
+    >
+      <Icon name={folded ? "unfoldRight" : "foldRight"} />
     </button>
   );
 }

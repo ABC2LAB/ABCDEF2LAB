@@ -4133,25 +4133,67 @@ button.smm:hover {
     display: none;
   }
 }
-/* 상세 패널: 넓은 화면에서 닫기 버튼으로 접고, 화면 머리의 상세 버튼(insp-only)으로 다시 펼친다 */
+/*
+ * 상세 패널 접기 (레일 접기와 같은 짜임, 시안 v25): 넓은 화면에서 패널 칸 오른쪽 위의 접기 버튼(PaneToggle)으로 접으면
+ * 64px 줄로 남고, 같은 자리의 버튼으로 다시 펼친다. 화면 머리의 상세 버튼(insp-only)은 좁은 화면 서랍에서만 쓴다.
+ */
+.vb {
+  position: relative;
+}
+.pane-toggle {
+  display: none;
+}
 @media (min-width: 1200px) {
-  .icon-btn.insp-x {
+  .vb {
+    transition: grid-template-columns 0.22s ease;
+  }
+  .icon-btn.pane-toggle {
     display: inline-grid;
+    position: absolute;
+    top: 12px;
+    right: max(17px, env(safe-area-inset-right, 0px));
+    z-index: 2;
+    width: 30px;
+    height: 30px;
+    background: none;
+    border-color: transparent;
+    color: var(--ink-3);
+  }
+  .icon-btn.pane-toggle:hover {
+    background: var(--bg);
+    border-color: var(--rule-2);
+    color: var(--ink);
+  }
+  /* 패널 첫 줄이 버튼 밑으로 들어가지 않게 오른쪽 위 자리를 비운다 */
+  .vi::before {
+    content: "";
+    float: right;
+    width: 34px;
+    height: 30px;
   }
   .app.insp-hidden .vb {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 64px;
   }
+  /* 줄(64px)은 패널 바탕 · 경계선만 남기고 안의 내용은 가린다 */
   .app.insp-hidden .vi {
-    display: none;
+    overflow: hidden;
+    padding-left: 0;
+    padding-right: 0;
   }
-  .app.insp-hidden .btn.insp-only {
-    display: inline-flex;
+  .app.insp-hidden .vi > * {
+    visibility: hidden;
+  }
+  /* 패널에 있던 시작 버튼 등은 접으면 본문 아래 줄로 */
+  .app.insp-hidden .formbar {
+    display: flex;
   }
 }
 /*
  * 접으면 가운데 내용은 넓어지지 않고 좁은 단(--cw)으로 가운데에 모이며, 나머지는 양옆 여백이 된다 (시안 v23 · v24).
  * --cw = 두 패널을 펼쳤을 때 내용 폭 - 120px (최소 560px · 최대 960px)
  * 여백은 칸의 실제 폭(100%) 기준이라 상세 패널이 없는 화면(로그인 · 연결 확인 관문)도 똑같이 가운데에 모인다.
+ * 화면 머리는 왼쪽만 내용과 맞추고 오른쪽 버튼은 제자리(28px)에 둔다 — 접고 펼 때 버튼이 움직이지 않게.
+ * --iw = 상세 패널 칸 폭 (펼침 384px · 접음 64px · 좁은 화면이나 패널 없는 화면 0)
  */
 @media (min-width: 760px) {
   .vh,
@@ -4161,25 +4203,30 @@ button.smm:hover {
   .app.rail-hidden {
     --cw: clamp(560px, calc(100vw - 412px), 960px);
   }
-  .app.rail-hidden .vh,
   .app.rail-hidden .vm {
     padding-left: max(28px, calc((100% - var(--cw)) / 2));
     padding-right: max(28px, calc((100% - var(--cw)) / 2));
   }
+  .app.rail-hidden .vh {
+    padding-left: max(28px, calc((100% - var(--iw, 0px) - var(--cw)) / 2));
+  }
 }
 @media (min-width: 1200px) {
+  .view:has(.vi) {
+    --iw: 384px;
+  }
+  .app.insp-hidden .view:has(.vi) {
+    --iw: 64px;
+  }
   .app.rail-hidden,
   .app.insp-hidden {
     --cw: clamp(560px, calc(100vw - 796px), 960px);
   }
-  .app.insp-hidden .vh,
   .app.insp-hidden .vm {
     padding-left: max(28px, calc((100% - var(--cw)) / 2));
     padding-right: max(28px, calc((100% - var(--cw)) / 2));
   }
-  /* 상세 패널이 펼쳐진 화면: 머리는 패널 위까지 걸치므로 패널 폭(384px)을 빼고 내용과 맞추고, 오른쪽 버튼은 패널 위 끝에 둔다 */
-  .app.rail-hidden:not(.insp-hidden) .view:has(.vi) > .vh {
-    padding-left: max(28px, calc((100% - 384px - var(--cw)) / 2));
-    padding-right: max(28px, env(safe-area-inset-right, 0px));
+  .app.insp-hidden .vh {
+    padding-left: max(28px, calc((100% - var(--iw, 0px) - var(--cw)) / 2));
   }
 }
