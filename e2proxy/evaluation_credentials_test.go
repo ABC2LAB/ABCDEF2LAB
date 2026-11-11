@@ -166,7 +166,9 @@ func TestEvaluationCallerPassThroughOverProxy(t *testing.T) {
 }
 
 func TestEvaluationCallerDoesNotWidenRequestScope(t *testing.T) {
-	for _, mode := range []string{"method", "path", "origin", "encoding", "hop-auth", "hop-cookie", "nil-cookie", "empty-auth", "duplicate-case", "ordinary-constraint"} {
+	// 압축 협상은 거부하지 않고 identity로 바꿔 보내므로(C15) 이 목록에 없다. 자격과 함께 보낸 경우는
+	// TestCoreCompressedNegotiationIsSentAsIdentity의 평가 자격 모드 경우가 본다.
+	for _, mode := range []string{"method", "path", "origin", "hop-auth", "hop-cookie", "nil-cookie", "empty-auth", "duplicate-case", "ordinary-constraint"} {
 		t.Run(mode, func(t *testing.T) {
 			var received atomic.Int64
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1) }))
@@ -186,8 +188,6 @@ func TestEvaluationCallerDoesNotWidenRequestScope(t *testing.T) {
 				req.URL.Path = "/else"
 			case "origin":
 				req.URL.Host, req.Host = "other.invalid", "other.invalid"
-			case "encoding":
-				req.Header.Set("Accept-Encoding", "gzip")
 			case "hop-auth":
 				req.Header.Set("Connection", "Authorization")
 			case "hop-cookie":
