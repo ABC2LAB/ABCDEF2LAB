@@ -29,10 +29,16 @@ type toolProfile struct {
 	entries []toolProfileEntry
 }
 
-// 진단 Worker 프로필. 1단계(골격)는 지금 E② Worker 도구와 같다. 복원 단계마다 이 목록을 바꾼다.
+// 진단 Worker 프로필. 복원 단계마다 이 목록을 바꾼다(루프 복원 결정안 §2·§7).
+// 그래프 도구 순서는 원본 WorkerTools 순서다. report_finding(확정 기록)과 insert_assets(제품 DB 역할이 assets 쓰기를
+// 허용하지 않음)는 아직 넣지 않는다.
 var diagnosisWorkerProfile = toolProfile{name: "diagnosis_worker", entries: []toolProfileEntry{
 	{name: "Bash", source: bound, required: true},
+	{name: "list_findings", source: fromBase},
 	{name: "record_fact", source: fromBase},
+	{name: "list_assets", source: fromBase},
+	{name: "search_all_worker_traces", source: fromBase},
+	{name: "get_worker_trace", source: fromBase},
 	{name: "node_detail", source: fromBase},
 	{name: "submit_diagnostic_candidate", source: bound},
 }}
