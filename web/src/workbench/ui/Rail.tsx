@@ -1,11 +1,10 @@
 "use client";
 
-// 왼쪽 레일: 메뉴 · 점검 목록 · 운영 상태 · 강조색 시안. 원본 aside#rail 과 그것을 고치던 syncDecisions · railNew · liveRender 부분.
-// live(실제 엔진)일 때는 배지 · 점검 목록 · 분석 모델 줄만 live/rail.tsx 조각으로 바꿔 끼운다(demo 는 그대로).
+// 왼쪽 레일: 새 점검 · 대시보드 · 이어 보는 점검 · 분석 모델 · 로그인 · 강조색 시안. 시안(aside#rail)과 같은 짜임.
+// 점검 단계(자산 탐색 · 범위 확인 · 점검 진행 · 보고서)는 레일이 아니라 각 화면 머리의 단계 표시로 옮겨 다닌다.
 
 import { cx } from "../lib/cx";
 import { LiveRailAccount, LiveRailBadge, LiveRailModel, LiveRailTasks } from "../live/rail";
-import type { View } from "../shell";
 import { useShell } from "../shell";
 import { type Accent, useWb } from "../store";
 import s from "../workbench.module.css";
@@ -28,9 +27,8 @@ function pickAccent(k: Accent) {
 }
 
 export function Rail() {
-  const { route, railOpen, railNewAtRoute, closeRail, dashPick } = useShell();
+  const { route, railOpen, closeRail } = useShell();
   const accent = useWb((st) => st.accent);
-  const cur = (nav: readonly View[]) => (nav.includes(route) ? "page" : undefined);
   return (
     <aside className={cx(s.rail, railOpen && s.open)} id="rail" aria-label="주 메뉴">
       <div className={s["rail-top"]}>
@@ -48,27 +46,15 @@ export function Rail() {
           <Icon name="x" />
         </button>
       </div>
-      <a className={s["new-btn"]} href="#new" aria-current={cur(["new"])}>
+      <a className={s["new-btn"]} href="#new" aria-current={route === "new" ? "page" : undefined}>
         <Icon name="plus" />새 점검
       </a>
       <nav className={s.rnav} aria-label="화면">
-        <a className={s.rl} href="#dashboard" aria-current={cur(["dashboard"])}>
+        <a className={s.rl} href="#dashboard" aria-current={route === "dashboard" ? "page" : undefined}>
           <Icon name="grid" />
           대시보드
           <LiveRailBadge />
         </a>
-        {(
-          [
-            ["crawl", "자산 탐색"],
-            ["scope", "범위 확인"],
-            ["live", "점검 진행"],
-            ["report", "보고서"],
-          ] as const
-        ).map(([view, label]) => (
-          <a key={view} className={s.rl} href={`#${view}`} aria-current={cur([view])}>
-            {label}
-          </a>
-        ))}
       </nav>
       <LiveRailTasks />
       <div className={s["rail-foot"]}>
@@ -86,7 +72,6 @@ export function Rail() {
             ))}
           </div>
         </div>
-        <div className={s.mock}>실제 서버 응답 · 미지원 기능은 제공되지 않습니다</div>
       </div>
     </aside>
   );

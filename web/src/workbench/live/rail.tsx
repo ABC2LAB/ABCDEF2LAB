@@ -1,31 +1,24 @@
 "use client";
 
-// 실제 URL 진단·설치 모델·인증 상태를 기존 Workbench 레일에 표시한다.
-// 서버가 제공하지 않는 전체 목록·승인 대기 수를 만들어 채우지 않는다.
-
-import type { ReactNode } from "react";
+// 레일의 실제 값 조각: 결정 대기 배지 · 이 브라우저가 이어 보는 점검 줄 · 분석 모델 · 진단 모드 · 로그인.
+// 서버에 진단 목록 API 가 없어 점검 줄은 이어 보는 진단 하나뿐이다(전체 목록·집계를 만들어 채우지 않는다).
 
 import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import { readRequestApprovalState } from "@/lib/diagnosis/request-approvals";
 
-import { cx } from "../lib/cx";
 import { useShell, type View } from "../shell";
 import { Icon } from "../ui/icons";
 import s from "../workbench.module.css";
 import { useLiveAuth } from "./auth";
 import { useUrl } from "./urlDiagnosis";
-import { URL_ENDED_STATES, urlHost, urlStateText, urlTone, urlViewFor } from "./urlMap";
+import { scanViewFor, URL_ENDED_STATES, URL_PRESTART_STATES, urlHost, urlStateText } from "./urlMap";
 import { usePoll } from "./usePoll";
+import { flowStageText } from "./workflow";
 
-/** 레일 '진행 중'에 보일 최대 줄 수 (넘치면 "외 N건"). */
-export const RAIL_ACTIVE_MAX = 6;
-/** 레일 '최근 끝난 점검'에 보일 최대 줄 수. */
-export const RAIL_DONE_MAX = 5;
+/** 점검 하나를 보는 화면들 (레일 줄의 현재 표시 계산용). */
+const SCAN_VIEWS: readonly View[] = ["crawl", "scope", "live", "report"];
 
-/** 진행 중 점검을 누르면 가는 화면들 (aria-current 계산용). */
-const _ACTIVE_VIEWS: readonly View[] = ["crawl", "scope", "live"];
-
-/** 대시보드 링크의 배지: 도구 호출 승인 대기 수. 미지원·0 이면 숨김. */
+/** 대시보드 링크의 배지: 현재 회차의 HTTP 요청 승인 대기 수. 미지원·0 이면 숨김. */
 export function LiveRailBadge() {
   const job = useUrl((st) => st.job);
   const flow = useUrl((st) => st.flow);
@@ -38,81 +31,88 @@ export function LiveRailBadge() {
   const matches = enabled && state.data && flow && state.data.run.run_ref === flow.run_ref && !state.error;
   const count = matches ? (state.data?.approvals ?? []).filter((a) => a.state === "pending").length : 0;
   return count > 0 ? (
-    <span role="status" className={s.badge} aria-label={`현재 회차 HTTP 승인 대기 ${count}개`}>
+    <span className={s.badge} title="결정 대기" role="status" aria-label={`결정 대기 ${count}건`}>
       {count}
     </span>
   ) : null;
 }
 
-/** 진행 중 / 최근 끝난 점검 두 묶음. URL 진단 서버면 이어 보는 진단 한 줄. */
-export function LiveRailTasks() {
-  return <UrlRailTasks />;
+/** 레일 줄 아래 글: 탐색 단계가 있으면 그 단계, 없으면 서버 상태 · 단계. */
+function useRowSub(): string {
+  const job = useUrl((st) => st.job);
+  const flow = useUrl((st) => st.flow);
+  const verified = useUrl((st) => st.verified);
+  const busy = useUrl((st) => st.busy);
+  if (!job) return busy ? "상태 확인 중" : "상태 미확인";
+  if (!verified) return urlStateText(job.state, false);
+  if (flow && !URL_ENDED_STATES.includes(job.state))
+    return `${flowStageText[flow.stage]}${flow.paused ? " · 일시정지" : ""}`;
+  if (URL_PRESTART_STATES.includes(job.state) || URL_ENDED_STATES.includes(job.state)) return urlStateText(job.state);
+  return `${urlStateText(job.state)} · ${urlPhaseLabels[job.phase]}`;
 }
 
-/**
- * URL 진단: 이 브라우저가 이어 보는 진단 한 줄. 마감이 확인된 끝난 상태만 아래(최근 끝난 점검)에 두고,
- * 시작 전 · 진행 중 · 결과 불명(unknown)은 위에 둔다(결과 불명을 끝난 것으로 보이지 않게). 누르면 알맞은 화면으로.
- */
-function UrlRailTasks() {
+/** 진행 중 / 최근 끝난 점검. 이 브라우저가 이어 보는 진단 한 줄을 알맞은 묶음에 둔다(결과 불명은 끝난 것으로 두지 않는다). */
+export function LiveRailTasks() {
   const { route, goTo } = useShell();
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
-  const verified = useUrl((st) => st.verified);
-  const busy = useUrl((st) => st.busy);
-  const open = !job || !URL_ENDED_STATES.includes(job.state);
-  let row: ReactNode = null;
-  if (handle) {
-    const to = job ? urlViewFor(job) : "live";
-    const tone = job && verified ? urlTone(job.state) : "wait";
-    let sub = busy ? "상태 확인 중" : "상태 미확인";
-    if (job) sub = `${urlStateText(job.state, verified)} · ${urlPhaseLabels[job.phase]}`;
-    row = (
-      <button
-        className={s.rs}
-        type="button"
-        data-url-job={job?.id ?? ""}
-        aria-current={route === to ? "page" : undefined}
-        onClick={() => goTo(to)}
-      >
-        <span className={cx(s.dot, s[tone])} />
-        <span className={s.host}>{urlHost(handle.input.target_url)}</span>
-        <span className={s.rsub}>{sub}</span>
-      </button>
-    );
-  }
+  const stage = useUrl((st) => st.flow?.stage ?? null);
+  const sub = useRowSub();
+  const ended = !!job && URL_ENDED_STATES.includes(job.state);
+  const to: View = job ? scanViewFor(job, stage) : "live";
+  const here = to === "new" ? route === "new" : SCAN_VIEWS.includes(route);
+  const row = handle ? (
+    <button
+      className={s.rs}
+      type="button"
+      data-url-job={job?.id ?? ""}
+      aria-current={here ? "true" : undefined}
+      onClick={() => goTo(to)}
+    >
+      <span className={s.mk} aria-hidden="true" />
+      <span className={s.host}>{urlHost(handle.input.target_url)}</span>
+      <span className={s.rsub}>{sub}</span>
+    </button>
+  ) : null;
   return (
     <>
       <div className={s.rsec}>
         <div className={s.rh}>진행 중</div>
-        {open ? row : null}
-        {!handle || !open ? <div className={s["lv-rempty"]}>진행 중인 URL 진단 없음</div> : null}
+        {row && !ended ? row : <div className={s["lv-rempty"]}>진행 중인 점검 없음</div>}
       </div>
       <div className={s.rsec}>
         <div className={s.rh}>최근 끝난 점검</div>
-        {handle && !open ? row : <div className={s["lv-rempty"]}>이 브라우저에서 이어 보는 끝난 진단 없음</div>}
+        {row && ended ? row : <div className={s["lv-rempty"]}>끝난 점검 없음</div>}
       </div>
     </>
   );
 }
 
-/** 레일 아래 분석 모델 줄. URL 진단 서버면 이어 보는 진단의 설치 프로필 모델. */
+/** 레일 아래 분석 모델 · 진단 모드 줄 (이어 보는 진단의 설치 프로필 기준). */
 export function LiveRailModel() {
-  return <UrlRailModel />;
-}
-
-/** URL 진단: 진단마다 설치 프로필이 모델을 정한다. 로컬/외부는 catalog 에 없어 짐작하지 않는다. */
-function UrlRailModel() {
   const cap = useUrl((st) => st.cap);
-  const profileId = useUrl((st) => st.job?.input.profile_id ?? st.handle?.input.profile_id ?? null);
-  const profile = cap.kind === "v2" && profileId ? cap.catalog.profiles.find((p) => p.id === profileId) : undefined;
+  const input = useUrl((st) => st.job?.input ?? st.handle?.input ?? null);
+  const profile = cap.kind === "v2" && input ? cap.catalog.profiles.find((p) => p.id === input.profile_id) : undefined;
   return (
-    <div className={s.rf} id="railModel">
-      <Icon name="chip" />
-      <div>
-        {profile ? "분석 모델 · 설치 프로필" : "분석 모델 · 진단마다 설치 프로필"}
-        {profile ? <b>{profile.model_label}</b> : null}
+    <>
+      <div className={s.rf} id="railModel">
+        <Icon name="chip" />
+        <div>
+          {profile ? `분석 모델 · ${profile.model?.external_transfer ? "외부" : "로컬"}` : "분석 모델"}
+          <b>{profile ? profile.model_label : "점검마다 설치 프로필"}</b>
+        </div>
       </div>
-    </div>
+      {input?.workflow_mode ? (
+        <div className={s.rf}>
+          <Icon name="shield" />
+          <div>
+            {input.workflow_mode === "user_approval_v1" ? "사용자 승인 모드" : "AI 자동 모드"}
+            <br />
+            {input.workflow_mode === "user_approval_v1" ? "상태 변경은 승인 후 전송" : "상태 변경은 자동 승인 안 함"}
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 

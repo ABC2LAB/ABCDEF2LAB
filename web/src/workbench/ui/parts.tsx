@@ -5,63 +5,11 @@
 
 import { Fragment, type ReactNode, useEffect, useState } from "react";
 
-import { type LiveVerdict, SEVL, type SevKey, type Verdict as VerdictValue } from "../data/findings";
 import { cx } from "../lib/cx";
 import { useUrl } from "../live/urlDiagnosis";
 import { useShell } from "../shell";
 import s from "../workbench.module.css";
 import { Icon } from "./icons";
-
-/** 경로 안 `{param}` 을 <i> 로 감싼다. 원본 `pth(p)`. */
-export function Pth({ p }: { p: string }) {
-  const parts = p.split(/(\{\w+\})/);
-  return (
-    <>
-      {parts.map((x, i) =>
-        // 홀수 자리가 {param}
-        i % 2 ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: 고정 문자열을 쪼갠 조각이라 순서가 곧 정체성
-          <i key={i}>{x}</i>
-        ) : (
-          x
-        ),
-      )}
-    </>
-  );
-}
-
-/** 메서드 + 경로. 원본 `ep(m,p)` = `<span class="m GET">GET</span> <span class="p">…</span>`. */
-export function Ep({ m, p }: { m: string; p: string }) {
-  return (
-    <>
-      <span className={cx(s.m, s[m])}>{m}</span>{" "}
-      <span className={s.p}>
-        <Pth p={p} />
-      </span>
-    </>
-  );
-}
-
-/** 진행 작업의 대상. "GET /path" 꼴이면 Ep, 아니면 <code>. 원본 `onHtml(on)` (대시보드 · 점검 진행). */
-export function On({ on }: { on: string }) {
-  const m = on.match(/^(GET|POST|PUT|PATCH|DELETE) (.+)$/);
-  return m ? <Ep m={m[1]} p={m[2]} /> : <code>{on}</code>;
-}
-
-/** 위험도 딱지. 원본 `sev(k)`. 글자를 바꾸려면 children (대시보드의 '심각 1'). */
-export function Sev({ k, children }: { k: SevKey; children?: ReactNode }) {
-  return <span className={cx(s.sev, s[k])}>{children ?? SEVL[k]}</span>;
-}
-
-/** 판정 딱지. 원본 `vd(v)`: 의심 → sus, 판단 불가 → und. */
-export function Verdict({ v }: { v: VerdictValue }) {
-  return <span className={cx(s.vd, v === "의심" && s.sus, v === "판단 불가" && s.und)}>{v}</span>;
-}
-
-/** 진행 중 판정 딱지. 원본 `vdLive(v)`: '판정 중' 은 und 모양. */
-export function VerdictLive({ v }: { v: LiveVerdict }) {
-  return v === "판정 중" ? <span className={cx(s.vd, s.und)}>판정 중</span> : <Verdict v={v} />;
-}
 
 /**
  * 상세 서랍 닫기 버튼 (좁은 화면에서만 보임). 원본 `closeBtn(label)`.
@@ -141,28 +89,6 @@ export function InspOpenButton({ children, id }: { children: ReactNode; id?: str
   );
 }
 
-/**
- * 보고서로 가는 링크 (`href="#report"`). 누르면 먼저 보고서 대상을 바꾸고(원본 data-rhost → setReportHost) 이동은 href 가 한다.
- * kind: blog = 끝난 예시 점검(레일 · 대시보드) · live = 방금 끝낸 점검(단계 표시 · 진행 화면 '보고서 보기').
- */
-export function ReportLink({
-  className,
-  current,
-  children,
-}: {
-  kind: "blog" | "live";
-  className?: string;
-  /** aria-current 값 (레일은 "page", 단계 표시는 "step") */
-  current?: "page" | "step";
-  children: ReactNode;
-}) {
-  return (
-    <a className={className} href="#report" aria-current={current}>
-      {children}
-    </a>
-  );
-}
-
 /** 단계: 자산 탐색 → 범위 확인 → 점검 진행 → 보고서 */
 export const PH = [
   ["crawl", "자산 탐색"],
@@ -172,45 +98,49 @@ export const PH = [
 ] as const;
 export type PhaseKey = (typeof PH)[number][0];
 
+/** 탐색 단계 → 이 점검이 다다른 단계 위치 (0 자산 탐색 · 1 범위 확인 · 2 점검 진행 · 3 보고서). */
+const STAGE_AT = {
+  crawling: 0,
+  awaiting_selection: 1,
+  diagnosing: 2,
+  completed: 2,
+  stopped: 2,
+  failed: 2,
+  unknown: 0,
+} as const;
+
 /**
- * 단계 표시 `nav.phases`. 원본 `buildPhases()`: 지난 단계는 체크·done, 지금 단계는 aria-current="step",
- * 보고서는 점검이 끝나거나(done) 종료(ended)되기 전에는 링크가 아닌 span.later. 보고서 링크를 누르면 setReportHost('live').
+ * 단계 표시 `nav.phases`. 지금 보는 화면은 aria-current="step", 이 점검이 이미 지난 단계는 체크(done).
+ * 보고서는 서버가 결과 저장을 확인하기 전에는 링크가 아닌 span.later.
  */
 export function Phases({ phase }: { phase: PhaseKey }) {
   const rep = useUrl((st) => st.job?.result_ready === true);
+  const started = useUrl((st) => st.job?.started === true);
+  const stage = useUrl((st) => st.flow?.stage ?? null);
+  let reached = 0;
+  if (stage) reached = STAGE_AT[stage];
+  else if (started) reached = 2;
+  if (rep) reached = 3;
   const at = PH.findIndex((p) => p[0] === phase);
   return (
     <nav className={s.phases} aria-label="점검 단계" data-phase={phase}>
       {PH.map(([k, label], i) => {
-        const n = i < at ? <Icon name="check" /> : i + 1;
-        if (k === "report" && !rep) {
-          return (
-            <span key={k} className={cx(s.ph, s.later)} title="점검이 끝나면 만들어집니다">
-              <span className={s.n}>{n}</span>
-              {label}
-            </span>
-          );
-        }
+        const done = i < reached && i !== at;
         const inner = (
           <>
-            <span className={s.n}>{n}</span>
+            <span className={s.n}>{done ? <Icon name="check" /> : i + 1}</span>
             {label}
           </>
         );
-        if (k === "report") {
+        if (k === "report" && !rep) {
           return (
-            <ReportLink
-              key={k}
-              kind="live"
-              className={cx(s.ph, i < at && s.done)}
-              current={i === at ? "step" : undefined}
-            >
+            <span key={k} className={cx(s.ph, s.later)} title="점검이 끝나면 만들어집니다">
               {inner}
-            </ReportLink>
+            </span>
           );
         }
         return (
-          <a key={k} className={cx(s.ph, i < at && s.done)} href={`#${k}`} aria-current={i === at ? "step" : undefined}>
+          <a key={k} className={cx(s.ph, done && s.done)} href={`#${k}`} aria-current={i === at ? "step" : undefined}>
             {inner}
           </a>
         );

@@ -6,7 +6,7 @@ import { apiFetch } from "@/lib/diagnosis/api";
 import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
-import { RequestApprovalPanel } from "../views/live/RequestApprovalPanel";
+import { ApprovalActions, useRequestApprovals } from "../views/live/approvals";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
@@ -60,15 +60,28 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+/** 화면들이 쓰는 그대로: 승인 훅 + 승인하고 보내기 · 거부 버튼 + 목록 다시 조회. */
+function Harness() {
+  const a = useRequestApprovals("42", true);
+  const pending = a.pending[0];
+  return (
+    <>
+      {pending ? <ApprovalActions a={a} row={pending} /> : null}
+      <button type="button" onClick={a.poll.reload}>
+        승인 목록 다시 조회
+      </button>
+    </>
+  );
+}
 async function mount() {
-  render(<RequestApprovalPanel taskId="42" active />);
-  const button = await screen.findByRole("button", { name: "이 요청 허용" });
+  render(<Harness />);
+  const button = await screen.findByRole("button", { name: "승인하고 보내기" });
   await waitFor(() => expect(button).toBeEnabled());
   return button;
 }
 it.each(["allow", "deny"])("rechecks exact approval fingerprint before %s and never retries POST", async (decision) => {
   await mount();
-  fireEvent.click(screen.getByRole("button", { name: decision === "allow" ? "이 요청 허용" : "이 요청 거부" }));
+  fireEvent.click(screen.getByRole("button", { name: decision === "allow" ? "승인하고 보내기" : "거부" }));
   await waitFor(() => expect(vi.mocked(apiFetch).mock.calls.some(([, i]) => i?.method === "POST")).toBe(true));
   const calls = vi.mocked(apiFetch).mock.calls,
     index = calls.findIndex(([, i]) => i?.method === "POST");
@@ -83,7 +96,7 @@ it.each(["run_ref", "attempt_id", "request_sha256"])("changed %s in fresh GET bl
     [field]: field === "request_sha256" ? "b".repeat(64) : "foreign",
   });
   fireEvent.click(button);
-  await screen.findByText(/승인 결정 결과 불명/);
+  await screen.findByText(/결정 결과 불명/);
   expect(vi.mocked(apiFetch).mock.calls.filter(([, i]) => i?.method === "POST")).toHaveLength(0);
 });
 it.each([
@@ -119,7 +132,7 @@ it("lost decision response keeps resend disabled even after pending GET", async 
   const button = await mount();
   vi.mocked(apiFetch).mockResolvedValueOnce(row).mockRejectedValueOnce(new TypeError("owned response loss"));
   fireEvent.click(button);
-  await screen.findByText(/승인 결정 결과 불명/);
+  await screen.findByText(/결정 결과 불명/);
   fireEvent.click(screen.getByRole("button", { name: "승인 목록 다시 조회" }));
   await waitFor(() => expect(vi.mocked(apiFetch).mock.calls.filter(([, i]) => i?.method !== "POST").length).toBe(3));
   expect(button).toBeDisabled();
