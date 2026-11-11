@@ -16,8 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
     ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_VERIFIED_MARKER,
-    OBSERVER_LOG, PATH_LOG, PATH_PROFILE, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles, drain_complete,
-    final_log_consistent, forwarded_by_method, forwarded_count, sequence_complete,
+    OBSERVER_LOG, PATH_AUTH_FIELDS, PATH_LOG, PATH_PROFILE, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
+    drain_complete, final_log_consistent, forwarded_by_method, forwarded_count, sequence_complete,
 )
 
 
@@ -358,14 +358,20 @@ class MeterPathLogTests(unittest.TestCase):
     def test_path_row_format_matches_the_meter(self):
         go = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/paths.go").read_text(encoding="utf-8")
         self.assertRegex(go, r'pathMaskProfile\s*=\s*"%s"' % re.escape(PATH_PROFILE))
-        for field in ("seq", "method", "path_pattern", "masked_segments", "path_profile_ref", "path_key_ref"):
+        for field in ("seq", "method", "path_pattern", "masked_segments", "path_profile_ref", "path_key_ref",
+                      *sorted(PATH_AUTH_FIELDS)):
             self.assertIn('`json:"%s"`' % field, go)
+        self.assertEqual(PATH_AUTH_FIELDS, {"has_authorization", "has_cookie"})
 
 
 def path_row(seq, method="GET", pattern="/{h:0123456789abcdef}", masked=0, profile=PATH_PROFILE,
-             key_ref="00112233445566ff"):
-    return {"seq": seq, "method": method, "path_pattern": pattern, "masked_segments": masked,
-            "path_profile_ref": profile, "path_key_ref": key_ref}
+             key_ref="00112233445566ff", auth=None):
+    """auth가 (Authorization, Cookie) 값 쌍이면 인증 헤더 칸이 있는 행, None이면 그 칸이 생기기 전 계측기의 행이다."""
+    row = {"seq": seq, "method": method, "path_pattern": pattern, "masked_segments": masked,
+           "path_profile_ref": profile, "path_key_ref": key_ref}
+    if auth is not None:
+        row.update(has_authorization=auth[0], has_cookie=auth[1])
+    return row
 
 
 @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "mkfifo"), "POSIX 전용")
@@ -395,6 +401,11 @@ class MeterPathRowsTests(unittest.TestCase):
         good = [path_row(1), path_row(2), path_row(3, "POST", "/{h:0123456789abcdef}/{id}", 1)]
         self.write(good)
         self.assertEqual(self.meter.path_rows(self.engine), good)
+        # 인증 헤더 칸이 있는 계측기의 행도 받는다.
+        with_auth = [path_row(1, auth=(True, False)), path_row(2, auth=(False, True)),
+                     path_row(3, "POST", auth=(False, False))]
+        self.write(with_auth)
+        self.assertEqual(self.meter.path_rows(self.engine), with_auth)
 
     def test_missing_or_untrusted_file_is_rejected(self):
         self.check("meter_path_log_missing")
@@ -419,11 +430,22 @@ class MeterPathRowsTests(unittest.TestCase):
                 ("bool masked", [path_row(1, masked=True), path_row(2), path_row(3, "POST")], ""),
                 ("bad key ref", [path_row(1, key_ref="00112233445566FF"), path_row(2, key_ref="00112233445566FF"),
                                  path_row(3, "POST", key_ref="00112233445566FF")], ""),
-                ("two keys", [path_row(1, key_ref="ffffffffffffffff"), path_row(2), path_row(3, "POST")], "")):
+                ("two keys", [path_row(1, key_ref="ffffffffffffffff"), path_row(2), path_row(3, "POST")], ""),
+                # 칸이 있는 행과 없는 행이 섞이면 어느 회차 판인지 알 수 없다.
+                ("mixed auth shape", [path_row(1, auth=(True, True)), path_row(2), path_row(3, "POST")], ""),
+                ("int authorization", [path_row(1, auth=(1, False)), path_row(2, auth=(False, False)),
+                                       path_row(3, "POST", auth=(False, False))], ""),
+                ("null cookie", [path_row(1, auth=(False, False)), path_row(2, auth=(False, None)),
+                                 path_row(3, "POST", auth=(False, False))], ""),
+                ("string cookie", [path_row(1, auth=(False, False)), path_row(2, auth=(False, False)),
+                                   path_row(3, "POST", auth=(False, "true"))], "")):
             with self.subTest(name):
                 self.write(rows, tail)
                 self.check("meter_path_log_invalid")
         self.write([dict(path_row(1), extra=1), path_row(2), path_row(3, "POST")])
+        self.check("meter_row_invalid")
+        # 칸 묶음의 한쪽만 있는 행은 어느 판의 모양도 아니다.
+        self.write([dict(path_row(1), has_cookie=False), path_row(2), path_row(3, "POST")])
         self.check("meter_row_invalid")
         self.write([path_row(1), path_row(1), path_row(3, "POST")])
         self.check("meter_seq_invalid")

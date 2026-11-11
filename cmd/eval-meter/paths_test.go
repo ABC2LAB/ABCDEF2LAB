@@ -116,22 +116,29 @@ func TestMaskPathBoundsSegments(t *testing.T) {
 	}
 }
 
-func newPathEngine(t *testing.T) (*engineMeter, func(string, string) (int, string), string) {
+// startPathEngine은 경로 기록을 켠 계측기 앞단 주소와 경로 기록 파일 위치를 준다.
+func startPathEngine(t *testing.T) (*engineMeter, string, string) {
 	t.Helper()
 	upstream, _ := recordingUpstream(t)
 	m, front, dir := newTestEngine(t, upstream)
 	if code := m.enablePathLog(testPathKey); code != "" {
 		t.Fatal(code)
 	}
+	return m, front.URL, filepath.Join(dir, enginePathLogName)
+}
+
+func newPathEngine(t *testing.T) (*engineMeter, func(string, string) (int, string), string) {
+	t.Helper()
+	m, base, path := startPathEngine(t)
 	do := func(method, target string) (int, string) {
-		req, err := http.NewRequest(method, front.URL+target, strings.NewReader(pathSentinel))
+		req, err := http.NewRequest(method, base+target, strings.NewReader(pathSentinel))
 		if err != nil {
 			t.Fatal(err)
 		}
 		req.Header.Set("Cookie", "a="+pathSentinel)
 		return send(t, req)
 	}
-	return m, do, filepath.Join(dir, enginePathLogName)
+	return m, do, path
 }
 
 func TestEnginePathLogRecordsMaskedForwardedRequests(t *testing.T) {
@@ -148,11 +155,11 @@ func TestEnginePathLogRecordsMaskedForwardedRequests(t *testing.T) {
 	h := func(segment string) string { return pseudonym(segment, testPathKey) }
 	ref := pathKeyRef(testPathKey)
 	want := []pathRow{
-		{1, "GET", "/" + h("api") + "/" + h("Users") + "/{id}", 1, pathMaskProfile, ref},
-		{2, "POST", "/" + h("users") + "/{id}", 1, pathMaskProfile, ref},
-		{3, "GET", "/{id}/" + h("ok"), 1, pathMaskProfile, ref},
-		{4, "GET", "/" + h("profile") + "/" + h(shortAccount), 0, pathMaskProfile, ref},
-		{5, "GET", "/" + h("reset") + "/" + h(shortToken), 0, pathMaskProfile, ref},
+		{1, "GET", "/" + h("api") + "/" + h("Users") + "/{id}", 1, pathMaskProfile, ref, false, true},
+		{2, "POST", "/" + h("users") + "/{id}", 1, pathMaskProfile, ref, false, true},
+		{3, "GET", "/{id}/" + h("ok"), 1, pathMaskProfile, ref, false, true},
+		{4, "GET", "/" + h("profile") + "/" + h(shortAccount), 0, pathMaskProfile, ref, false, true},
+		{5, "GET", "/" + h("reset") + "/" + h(shortToken), 0, pathMaskProfile, ref, false, true},
 	}
 	if got := readRows[pathRow](t, path); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
@@ -170,6 +177,54 @@ func TestEnginePathLogRecordsMaskedForwardedRequests(t *testing.T) {
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatal(err, info.Mode())
+	}
+}
+
+// 인증 헤더는 빈 값이 아닌 줄이 있는지만 남는다. 값·쿠키 이름은 기록 파일 어디에도 없다.
+func TestEnginePathLogRecordsAuthHeaderPresenceOnly(t *testing.T) {
+	m, base, path := startPathEngine(t)
+	cases := []struct {
+		name          string
+		header        http.Header
+		authorization bool
+		cookie        bool
+	}{
+		{"none", http.Header{}, false, false},
+		{"authorization", http.Header{"Authorization": {"Bearer " + pathSentinel}}, true, false},
+		{"cookie", http.Header{"Cookie": {"sid=" + pathSentinel}}, false, true},
+		{"both", http.Header{"Authorization": {"Basic " + pathSentinel}, "Cookie": {"sid=" + pathSentinel}}, true, true},
+		{"empty values", http.Header{"Authorization": {""}, "Cookie": {"   "}}, false, false},
+		// 첫 줄이 비어 있어도 뒤 줄에 값이 있으면 자격이 실린 요청이다.
+		{"later line", http.Header{"Cookie": {"", "sid=" + pathSentinel}}, false, true},
+	}
+	for _, tc := range cases {
+		req, err := http.NewRequest(http.MethodGet, base+"/item", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header = tc.header
+		if status, _ := send(t, req); status == http.StatusServiceUnavailable {
+			t.Fatal(tc.name, status)
+		}
+	}
+	m.seal()
+	rows := readRows[pathRow](t, path)
+	if len(rows) != len(cases) {
+		t.Fatalf("%+v", rows)
+	}
+	for i, tc := range cases {
+		if rows[i].HasAuthorization != tc.authorization || rows[i].HasCookie != tc.cookie {
+			t.Errorf("%s: %+v", tc.name, rows[i])
+		}
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{pathSentinel, "sid", "Bearer", "Basic"} {
+		if bytes.Contains(body, []byte(raw)) {
+			t.Fatal(raw, string(body))
+		}
 	}
 }
 

@@ -17,15 +17,16 @@ import json
 import re
 import statistics
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from path_mask import PATH_PROFILE, STATIC_SUFFIXES, PathKeyError, key_ref, mask_path, read_path_key
 from runner_evidence import (
-    DRAINED_MARKER, FORWARDED_KINDS, SEALED_MARKER, EvidenceError, MeterFiles, drain_complete, final_log_consistent,
+    DRAINED_MARKER, FORWARDED_KINDS, PATH_AUTH_FIELDS, SEALED_MARKER, EvidenceError, MeterFiles, drain_complete,
+    final_log_consistent,
 )
 
-SUMMARY_FORMAT = "abc2lab.preservation-summary/v3"
+SUMMARY_FORMAT = "abc2lab.preservation-summary/v4"
 EXCLUSIONS_FORMAT = "abc2lab.preservation-exclusions/v1"
 READ_METHODS = frozenset({"GET", "HEAD"})
 _METHOD = re.compile(r"[A-Z]{1,16}\Z")
@@ -41,6 +42,15 @@ class PreservationError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class AuthHeaders:
+    """예산 안 전달 행 중 인증 헤더가 붙은 수. 값은 계측기도 남기지 않으므로 유무만 센다."""
+
+    authorization: int
+    cookie: int
+    any: int
+
+
+@dataclass(frozen=True)
 class Round:
     """회차 하나의 예산 안 전달 행. 패턴은 그중 대상까지 닿은(sent=yes) `(메서드, 경로 패턴)`이다."""
 
@@ -53,6 +63,9 @@ class Round:
     # 예산까지 전달했는지. 아니면 시간 등 다른 한도로 먼저 멈춘 회차다(멈춘 이유는 러너 결과에 있다).
     reached_budget: bool = True
     too_long: int = 0
+    # 예산 안 전달 행 중 Authorization·Cookie 헤더가 붙은 수. 계측기가 그 칸을 남기기 전 회차는 None(NOT_RUN)이다.
+    # 인증을 시도했다는 관찰일 뿐 로그인 성공 근거가 아니다.
+    auth_headers: AuthHeaders | None = None
 
 
 def is_static(pattern: str) -> bool:
@@ -82,8 +95,15 @@ def load_round(directory: Path, budget: int, expected_key_ref: str) -> Round:
     forwarded = ordered[:budget]
     patterns: set[tuple[str, str]] = set()
     static = sent = uncertain = masked = too_long = 0
+    # path_rows가 한 기록 안의 행 모양을 하나로 맞춰 두므로, 칸이 없는 행이 하나라도 있으면 그 회차 전체에 없다.
+    has_auth_fields = all(PATH_AUTH_FIELDS <= set(row) for row in paths.values())
+    authorization = cookie = either = 0
     for row in forwarded:
         path = paths[row["seq"]]
+        if has_auth_fields:
+            authorization += path["has_authorization"]
+            cookie += path["has_cookie"]
+            either += path["has_authorization"] or path["has_cookie"]
         static += is_static(path["path_pattern"])
         if row["sent"] == "uncertain":
             uncertain += 1
@@ -94,7 +114,8 @@ def load_round(directory: Path, budget: int, expected_key_ref: str) -> Round:
         masked += path["masked_segments"]
         too_long += path["path_pattern"] == TOO_LONG_PATTERN
     return Round(frozenset(patterns), len(forwarded), static, sent, uncertain, masked,
-                 reached_budget=len(ordered) >= budget, too_long=too_long)
+                 reached_budget=len(ordered) >= budget, too_long=too_long,
+                 auth_headers=AuthHeaders(authorization, cookie, either) if has_auth_fields else None)
 
 
 @dataclass(frozen=True)
@@ -182,6 +203,10 @@ def _baseline_reference(baseline: list[Round], keep) -> dict:
             "pair_sd": statistics.stdev(ratios) if len(ratios) >= 2 else None, "pairs_without_denominator": empty}
 
 
+def _auth_headers(round_: Round) -> dict | None:
+    return None if round_.auth_headers is None else asdict(round_.auth_headers)
+
+
 def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusions, read_only: bool) -> dict:
     """read_only면 GET·HEAD 패턴만 분모로 쓰는 읽기 보존율, 아니면 전체 보존율이다."""
     if not baseline or len(baseline) != len(improved):
@@ -221,6 +246,9 @@ def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusio
         "uncertain": {"baseline": [r.uncertain for r in baseline], "improved": [r.uncertain for r in improved]},
         "masked_segments": {"baseline": [r.masked_segments for r in baseline],
                             "improved": [r.masked_segments for r in improved]},
+        # 회차별 인증 헤더가 붙은 예산 안 전달 수. null은 계측기가 그 칸을 남기기 전 회차(NOT_RUN)다.
+        "auth_headers": {"baseline": [_auth_headers(r) for r in baseline],
+                         "improved": [_auth_headers(r) for r in improved]},
     }
 
 

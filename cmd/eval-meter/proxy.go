@@ -470,7 +470,8 @@ func (m *engineMeter) writePathLocked(seq uint64, r *http.Request) {
 	}
 	pattern, masked := maskPath(r.URL.EscapedPath(), m.pathKey)
 	if err := m.paths.write(pathRow{Seq: seq, Method: r.Method, PathPattern: pattern, MaskedSegments: masked, PathProfileRef: pathMaskProfile,
-		PathKeyRef: m.pathKeyRef}); err != nil {
+		PathKeyRef: m.pathKeyRef, HasAuthorization: hasHeaderValue(r.Header, "Authorization"),
+		HasCookie: hasHeaderValue(r.Header, "Cookie")}); err != nil {
 		m.logFailed = true
 	}
 }
