@@ -170,7 +170,7 @@ func loadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 			in.EvidenceDigest = hex.EncodeToString(manifestDigest)
 			in.EvidenceCount = 1
 			if linkedVersion == evidenceVersion && (report == "" || reportVersion == evidenceVersion) {
-				if err := diagnosticE3Context(&in, taskID, manifest, value); err != nil {
+				if err := diagnosticE3Context(ctx, q, &in, taskID, entryID, manifest, value); err != nil {
 					return in, err
 				}
 			}
@@ -199,7 +199,7 @@ func loadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 		in.EvidenceVersion = strconv.FormatInt(version, 10)
 		in.EvidenceDigest = hex.EncodeToString(digest)
 		in.EvidenceCount = 1
-		if err := diagnosticE3Context(&in, taskID, manifest, value); err != nil {
+		if err := diagnosticE3Context(ctx, q, &in, taskID, entryID, manifest, value); err != nil {
 			return in, err
 		}
 		if value == "allowed" {
@@ -314,6 +314,25 @@ func (d *DB) SaveDiagnosticRemediation(ctx context.Context, taskID int64, entryI
 func ListDiagnosticRemediationRecords(ctx context.Context, q DiagnosticRemediationQueryer, taskID int64, limit int) ([]DiagnosticRemediationRecord, error) {
 	return listDiagnosticRemediationRecords(ctx, q, taskID, "", limit, true)
 }
+
+// Isolated source reads let a read-only report continue after one SQL/source error.
+// The caller still owns the outer snapshot and must reject an unavailable transaction.
+func LoadDiagnosticRemediationSourceIsolated(ctx context.Context, tx *sql.Tx, task int64, entry string) (remediation.Input, error) {
+	if _, err := tx.ExecContext(ctx, "SAVEPOINT diagnostic_source"); err != nil {
+		return remediation.Input{}, err
+	}
+	source, err := LoadDiagnosticRemediationSource(ctx, tx, task, entry)
+	if err != nil {
+		if _, rollbackErr := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT diagnostic_source"); rollbackErr != nil {
+			return remediation.Input{}, rollbackErr
+		}
+	}
+	if _, releaseErr := tx.ExecContext(ctx, "RELEASE SAVEPOINT diagnostic_source"); releaseErr != nil {
+		return remediation.Input{}, releaseErr
+	}
+	return source, err
+}
+
 func listDiagnosticRemediationRecords(ctx context.Context, q DiagnosticRemediationQueryer, taskID int64, entryID string, limit int, checkCurrent bool) ([]DiagnosticRemediationRecord, error) {
 	if taskID <= 0 || limit <= 0 || limit > MaxDiagnosticCandidates+1 {
 		return nil, ErrDiagnosticRemediation
@@ -393,14 +412,20 @@ func listDiagnosticRemediationRecords(ctx context.Context, q DiagnosticRemediati
 	}
 	if checkCurrent {
 		for i := range out {
-			current, err := LoadDiagnosticRemediationSource(ctx, q, taskID, out[i].EntryID)
-			if errors.Is(err, sql.ErrNoRows) {
+			var current remediation.Input
+			var err error
+			if tx, ok := q.(*sql.Tx); ok {
+				current, err = LoadDiagnosticRemediationSourceIsolated(ctx, tx, taskID, out[i].EntryID)
+			} else {
+				current, err = LoadDiagnosticRemediationSource(ctx, q, taskID, out[i].EntryID)
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if err != nil {
 				out[i].Stale = true
 				out[i].Bundle = remediation.Bundle{FindingID: out[i].EntryID}
 				continue
-			}
-			if err != nil {
-				return nil, err
 			}
 			for _, technology := range out[i].Source.Technologies {
 				if technology.Source == "user_provided" || technology.Source == "unknown" {

@@ -449,7 +449,7 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 			return errPreparation
 		}
 	}
-	if exec("GRANT INSERT ON diagnostic_captures_v1 TO product_runtime") != nil {
+	if exec("GRANT INSERT, UPDATE(capture_ref,state,png,image_digest,width,height,captured_at,mask_policy) ON diagnostic_captures_v1 TO product_runtime") != nil {
 		return errPreparation
 	}
 	if exec("GRANT SELECT(id,model,base_url,format),UPDATE(api_key) ON llm_profiles TO product_model_writer") != nil {

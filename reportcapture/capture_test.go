@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"github.com/Autumn-27/artex/remediation"
 	"github.com/Autumn-27/artex/reproduction"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -115,5 +117,24 @@ func TestCaptureSourceFailurePersistsStatusWithoutPixels(t *testing.T) {
 	_, c, mask, valid := stored.Snapshot()
 	if !valid || c.Status != "failed" || len(c.PNG) != 0 || c.Ref != "" || mask != "" {
 		t.Fatal("failed source retained pixels or error text")
+	}
+}
+
+func TestVerifiedImageRejectsRealTextChunkWithValidCRC(t *testing.T) {
+	raw := testPNG()
+	data := []byte("Comment\x00synthetic-private-marker")
+	chunk := make([]byte, 12+len(data))
+	binary.BigEndian.PutUint32(chunk[:4], uint32(len(data)))
+	copy(chunk[4:8], "tEXt")
+	copy(chunk[8:], data)
+	binary.BigEndian.PutUint32(chunk[8+len(data):], crc32.ChecksumIEEE(chunk[4:8+len(data)]))
+	withText := append(append(append([]byte{}, raw[:len(raw)-12]...), chunk...), raw[len(raw)-12:]...)
+	if _, err := png.Decode(bytes.NewReader(withText)); err != nil {
+		t.Fatal("metadata fixture is not valid PNG", err)
+	}
+	sum := sha256.Sum256(withText)
+	c := reproduction.Capture{Status: "captured", PNG: withText, Digest: hex.EncodeToString(sum[:]), Width: 4, Height: 4, CapturedAt: time.Now()}
+	if Verify(c) == nil {
+		t.Fatal("valid PNG with private tEXt chunk accepted")
 	}
 }

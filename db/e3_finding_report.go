@@ -2,12 +2,10 @@ package db
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/Autumn-27/artex/e3record"
-	"github.com/Autumn-27/artex/evidencebind"
 	"github.com/Autumn-27/artex/oracle"
 )
 
@@ -18,15 +16,8 @@ func controlledFindingReport(s e3record.Snapshot, out ControlledFindingResult) (
 		sha256.Sum256(s.Manifest) != s.ManifestDigest {
 		return "", ErrControlledFindingInput
 	}
-	var manifest struct {
-		Version  int64
-		Evidence evidencebind.Input
-	}
-	if err := json.Unmarshal(s.Manifest, &manifest); err != nil || manifest.Version != 1 {
-		return "", ErrControlledFindingInput
-	}
-	checked := evidencebind.Check(s.Source.Expected, manifest.Evidence)
-	if !checked.BindingValid || checked.Recomputed.Value != oracle.Confirmed {
+	manifest, err := e3record.DecodeBoundManifest(s.Manifest, s.Source, oracle.Confirmed)
+	if err != nil {
 		return "", ErrControlledFindingInput
 	}
 	owner, cross := manifest.Evidence.Owner, manifest.Evidence.Cross

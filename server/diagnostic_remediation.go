@@ -28,6 +28,8 @@ type diagnosticRemediationEntryDTO struct {
 	VulnClass         string                    `json:"vuln_class"`
 	Severity          string                    `json:"severity"`
 	Steps             []reproduction.Step       `json:"steps,omitempty"`
+	SourceLoadFailed  bool                      `json:"source_load_failed,omitempty"`
+	Truncated         bool                      `json:"truncated,omitempty"`
 	StepsTruncated    bool                      `json:"steps_truncated,omitempty"`
 	Context           *remediation.Context      `json:"context,omitempty"`
 	Technologies      []remediation.Technology  `json:"technologies,omitempty"`
@@ -128,7 +130,7 @@ func (s *Server) listDiagnosticRemediation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer tx.Rollback()
-	data, err := readDiagnosticReport(r.Context(), tx, taskID, time.Now())
+	data, err := readDiagnosticReportWithCaptures(r.Context(), tx, taskID, time.Now(), false)
 	if err != nil {
 		remediationError(w, err)
 		return
@@ -138,6 +140,7 @@ func (s *Server) listDiagnosticRemediation(w http.ResponseWriter, r *http.Reques
 	for _, e := range data.Entries {
 		dto := diagnosticRemediationEntryDTO{EntryID: e.ID, VulnClass: dlp.Redacted, Severity: "미평가", Title: dlp.Redacted, Outcome: e.Outcome, Status: dlp.Redacted, Verification: e.Verification, EvidenceVersion: e.EvidenceVersion, Summary: dlp.Redacted, Evidence: dlp.Redacted, Report: dlp.Redacted, Remediation: dlp.Redacted, Run: dlp.Redacted, IntentID: e.IntentID, ObservedAt: e.ObservedAt, UnavailableReason: "내부 상세 모드를 명시적으로 선택하세요."}
 		if internal {
+			dto.SourceLoadFailed, dto.Truncated = e.SourceLoadFailed, e.Truncated
 			dto.Steps = e.Steps
 			dto.StepsTruncated = e.StepsTruncated
 			dto.Title = dlp.DiagnosticText(e.Title)
@@ -149,11 +152,12 @@ func (s *Server) listDiagnosticRemediation(w http.ResponseWriter, r *http.Reques
 			dto.Report = dlp.DiagnosticText(e.Report)
 			dto.Remediation = dlp.DiagnosticText(e.Remediation)
 			dto.Run = dlp.DiagnosticText(e.Run)
-			source, loadErr := db.LoadDiagnosticRemediationSource(r.Context(), tx, taskID, e.ID)
-			if loadErr != nil {
-				remediationError(w, loadErr)
-				return
+			if e.CurrentSource == nil {
+				dto.UnavailableReason = "근거 불러오기 실패. 현재 증거 결속을 확인하세요."
+				entries = append(entries, dto)
+				continue
 			}
+			source := *e.CurrentSource
 			context := source.Context
 			dto.Context = &context
 			dto.SourceDigest = source.SourceDigest
@@ -183,9 +187,10 @@ func (s *Server) listDiagnosticRemediation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeRemediationJSON(w, struct {
-		TaskID  int64                           `json:"task_id"`
-		Entries []diagnosticRemediationEntryDTO `json:"entries"`
-	}{taskID, entries})
+		SourceFailures int                             `json:"source_failures"`
+		TaskID         int64                           `json:"task_id"`
+		Entries        []diagnosticRemediationEntryDTO `json:"entries"`
+	}{data.SourceFailures, taskID, entries})
 }
 func (s *Server) createDiagnosticRemediation(w http.ResponseWriter, r *http.Request) {
 	taskID, internal, err := remediationScope(r)

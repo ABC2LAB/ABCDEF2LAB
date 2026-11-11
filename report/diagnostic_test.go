@@ -163,9 +163,14 @@ func TestDiagnosticReportPreservesProvenanceAndExecutionScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	doc, err := DiagnosticDOCX(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wordOutput := wordDocumentText(t, readWord(t, doc)["word/document.xml"])
 	output := html.UnescapeString(string(body))
 	for _, want := range []string{"실행 관측", "모델·분석기 추정", "사용자 제공·수동 검토", "Original response", "Manual correction", "evidence-1", "step-1", "원본 상충 가능", "기술 상충 가능", "관측 또는 기술 목록이 잘렸습니다", "보완이 필요한 맥락", "실제 수정 실행형", "실행 범위는 전달받는 AI 세션의 권한", bundle.AIPrompt} {
-		if !strings.Contains(output, want) {
+		if !strings.Contains(output, want) || !strings.Contains(wordOutput, want) {
 			t.Fatalf("missing %q", want)
 		}
 	}

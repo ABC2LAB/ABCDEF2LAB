@@ -82,6 +82,8 @@ export type ReproductionStep = {
 export type RemediationEntry = {
   steps?: ReproductionStep[];
   steps_truncated?: boolean;
+  source_load_failed?: boolean;
+  truncated?: boolean;
   vuln_class?: string;
   severity?: string;
   context?: RemediationContext;
@@ -302,7 +304,16 @@ const stepSchema = z.object({
   depends_on: strings.optional(),
   truncated: z.boolean(),
   capture: z.object({
-    status: z.enum(["captured", "not_captured", "not_supported", "failed", "storage_unavailable", "shared_omitted"]),
+    status: z.enum([
+      "captured",
+      "not_captured",
+      "not_supported",
+      "failed",
+      "storage_unavailable",
+      "shared_omitted",
+      "capacity_omitted",
+      "binding_invalid",
+    ]),
     ref: text.optional(),
     digest: text.optional(),
     captured_at: text.optional(),
@@ -313,6 +324,8 @@ const stepSchema = z.object({
 const entrySchema = z.object({
   steps: z.array(stepSchema).max(32).optional(),
   steps_truncated: z.boolean().optional(),
+  source_load_failed: z.boolean().optional(),
+  truncated: z.boolean().optional(),
   vuln_class: text.optional(),
   severity: text.optional(),
   entry_id: text.regex(/^(candidate|finding|verdict)-[1-9][0-9]*$/),

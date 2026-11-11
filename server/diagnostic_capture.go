@@ -6,13 +6,13 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/artex/reportcapture"
+	"github.com/Autumn-27/artex/reproduction"
 	"net/http"
 	"net/url"
 	"strconv"
-	"time"
 )
 
-func attachDiagnosticCaptures(ctx context.Context, tx *sql.Tx, task int64, entry *report.DiagnosticEntry, storedBytes *int64) error {
+func attachDiagnosticCaptures(ctx context.Context, tx *sql.Tx, task int64, entry *report.DiagnosticEntry, imageBytes *int64, pixels bool) error {
 	if len(entry.Steps) == 0 {
 		return nil
 	}
@@ -21,19 +21,33 @@ func attachDiagnosticCaptures(ctx context.Context, tx *sql.Tx, task int64, entry
 		return err
 	}
 	for i := range entry.Steps {
+		step := &entry.Steps[i]
 		if !readable {
-			entry.Steps[i].Capture.Status = "storage_unavailable"
+			step.Capture.Status = "storage_unavailable"
 			continue
 		}
-		capture, err := db.ReadDiagnosticCapture(ctx, tx, task, entry.ID, entry.Steps[i])
+		capture, n, err := db.ReadDiagnosticCaptureMetadata(ctx, tx, task, entry.ID, *step)
 		if err != nil {
-			return err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			step.Capture = reproduction.Capture{Status: "binding_invalid"}
+			continue
 		}
-		*storedBytes += int64((len(capture.PNG) + 2) / 3 * 4)
-		if *storedBytes > report.MaxDiagnosticReportBytes {
-			return report.ErrExportBlocked
+		if pixels && capture.Status == "captured" {
+			encoded := (n + 2) / 3 * 4
+			if *imageBytes+encoded > report.MaxDiagnosticCaptureBytes {
+				capture = reproduction.Capture{Status: "capacity_omitted"}
+			} else {
+				capture, err = db.ReadDiagnosticCapture(ctx, tx, task, entry.ID, *step)
+				if err != nil {
+					capture = reproduction.Capture{Status: "binding_invalid"}
+				} else {
+					*imageBytes += encoded
+				}
+			}
 		}
-		entry.Steps[i].Capture = capture
+		step.Capture = capture
 	}
 	return nil
 }
@@ -60,28 +74,46 @@ func (s *Server) diagnosticCaptureImage(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, 503, "보고서 저장소를 사용할 수 없습니다.")
 		return
 	}
-	data, e := loadDiagnosticReport(r.Context(), s.m.pg, task, time.Now())
+	tx, e := s.m.pg.BeginTx(r.Context(), &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if e != nil {
+		writeErr(w, 503, "보고서 저장소를 사용할 수 없습니다.")
+		return
+	}
+	defer tx.Rollback()
+	source, e := db.LoadDiagnosticRemediationSource(r.Context(), tx, task, q.Get("entry"))
 	if e != nil {
 		writeErr(w, 422, "현재 증거 버전을 확인할 수 없습니다.")
 		return
 	}
-	for _, entry := range data.Entries {
-		if entry.ID != q.Get("entry") || entry.Stale {
+	version, e := strconv.ParseInt(source.EvidenceVersion, 10, 64)
+	if e != nil {
+		writeErr(w, 422, "현재 증거 버전을 확인할 수 없습니다.")
+		return
+	}
+	for _, step := range reproduction.FromStored(task, q.Get("entry"), version, source.EvidenceDigest, source.Context) {
+		if step.ID != q.Get("step") {
 			continue
 		}
-		for _, step := range entry.Steps {
-			c := step.Capture
-			if step.ID != q.Get("step") || c.Digest != q.Get("digest") || reportcapture.Verify(c) != nil {
-				continue
-			}
-			w.Header().Set("Content-Type", "image/png")
-			w.Header().Set("Content-Length", strconv.Itoa(len(c.PNG)))
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.Header().Set("Cache-Control", "no-store")
-			w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
-			_, _ = w.Write(c.PNG)
+		c, err := db.ReadDiagnosticCapture(r.Context(), tx, task, q.Get("entry"), step)
+		if err != nil {
+			writeErr(w, 422, "현재 이미지 무결성을 확인할 수 없습니다.")
 			return
 		}
+		if c.Digest != q.Get("digest") || reportcapture.Verify(c) != nil {
+			break
+		}
+		if tx.Commit() != nil {
+			writeErr(w, 503, "보고서 저장소를 사용할 수 없습니다.")
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Length", strconv.Itoa(len(c.PNG)))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+		_, _ = w.Write(c.PNG)
+		return
 	}
+
 	writeErr(w, 404, "현재 단계에 결속된 검증된 스크린샷이 없습니다.")
 }

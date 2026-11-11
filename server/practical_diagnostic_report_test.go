@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -31,6 +32,11 @@ import (
 )
 
 type reportFixtureFrame struct{ png []byte }
+type reportFailureFrame struct{}
+
+func (reportFailureFrame) CurrentFrame(context.Context) (reportcapture.Frame, error) {
+	return reportcapture.Frame{}, errors.New("synthetic transient capture failure")
+}
 
 func (f reportFixtureFrame) CurrentFrame(context.Context) (reportcapture.Frame, error) {
 	return reportcapture.Frame{PNG: f.png, CapturedAt: time.Now()}, nil
@@ -110,7 +116,7 @@ func TestPracticalReportStoredE3CapturePromptAndRestart(t *testing.T) {
 		t.Fatal("stored E3 steps missing")
 	}
 	steps := data.Entries[0].Steps
-	if steps[0].SourceStepID != "owner-read" || steps[1].SourceStepID != "cross-read" || steps[0].CallRef != "" || steps[0].Path != "" {
+	if steps[0].SourceStepID != "owner-read" || steps[1].SourceStepID != "cross-read" || steps[0].CallRef != "" || steps[0].Path != "" || steps[0].Method != "GET" {
 		t.Fatal("invented or reordered E3 read")
 	}
 	source, e := db.LoadDiagnosticRemediationSource(t.Context(), s.m.pg.DB, f.taskID, entry)
@@ -148,16 +154,30 @@ func TestPracticalReportStoredE3CapturePromptAndRestart(t *testing.T) {
 	if e := s.m.pg.SaveDiagnosticCapture(t.Context(), reportcapture.Asset{}); !errors.Is(e, db.ErrDiagnosticCapture) {
 		t.Fatal("unsealed capture accepted", e)
 	}
-	missing := reportcapture.Binding{TaskID: f.taskID, EntryID: entry, Step: steps[1]}
-	if e = reportcapture.Collect(t.Context(), missing, reportcapture.Policy{}, frame, s.m.pg); e != nil {
-		t.Fatal(e)
+	for i, step := range steps[1:] {
+		retry := reportcapture.Binding{TaskID: f.taskID, EntryID: entry, Step: step}
+		if i == 1 {
+			if err := reportcapture.Collect(t.Context(), retry, policy, reportFailureFrame{}, s.m.pg); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := reportcapture.Collect(t.Context(), retry, reportcapture.Policy{}, nil, s.m.pg); err != nil {
+			t.Fatal(err)
+		}
+		if err := reportcapture.Collect(t.Context(), retry, reportcapture.Policy{}, nil, s.m.pg); err != nil {
+			t.Fatal("noncaptured retry not idempotent", err)
+		}
+		if err := reportcapture.Collect(t.Context(), retry, policy, frame, s.m.pg); err != nil {
+			t.Fatal("unsupported slot poisoned capture", err)
+		}
 	}
+
 	data, e = loadDiagnosticReport(t.Context(), s.m.pg, f.taskID, time.Now())
 	if e != nil {
 		t.Fatal(e)
 	}
 	capture := data.Entries[0].Steps[0].Capture
-	if reportcapture.Verify(capture) != nil || data.Entries[0].Steps[1].Capture.Status != "not_supported" || data.Entries[0].RemediationBundle == nil {
+	if reportcapture.Verify(capture) != nil || data.Entries[0].Steps[1].Capture.Status != "captured" || data.Entries[0].RemediationBundle == nil {
 		t.Fatal("capture or remediation persistence")
 	}
 	decoded, _ := png.Decode(bytes.NewReader(capture.PNG))
@@ -193,15 +213,30 @@ func TestPracticalReportStoredE3CapturePromptAndRestart(t *testing.T) {
 			t.Fatal("unexpected dimension guard SQLSTATE")
 		}
 	}
-	if _, err := s.m.pg.Exec(`UPDATE diagnostic_captures_v1 SET png=set_byte(png,0,0) WHERE task_id=$1 AND step_id=$2`, f.taskID, steps[0].ID); err != nil {
-		t.Fatal("tamper fixture preparation")
+	for _, query := range []string{`DELETE FROM diagnostic_captures_v1 WHERE task_id=$1`, `TRUNCATE diagnostic_captures_v1`} {
+		tx, err := s.m.pg.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(query, "DELETE") {
+			_, err = tx.Exec(query, f.taskID)
+		} else {
+			_, err = tx.Exec(query)
+		}
+		tx.Rollback()
+		if err == nil {
+			t.Fatal("capture removal bypassed immutability")
+		}
 	}
+	if _, err := s.m.pg.Exec(`UPDATE diagnostic_captures_v1 SET png=png WHERE task_id=$1 AND step_id=$2`, f.taskID, steps[0].ID); err == nil {
+		t.Fatal("successful capture can be overwritten")
+	}
+	corruptStoredCapture(t, s.m.pg, `UPDATE diagnostic_captures_v1 SET png=set_byte(png,0,0) WHERE task_id=$1 AND step_id=$2`, f.taskID, steps[0].ID)
 	if req("GET", imageURL, "").Code != 422 {
 		t.Fatal("image byte digest guard absent")
 	}
-	if _, err := s.m.pg.Exec(`UPDATE diagnostic_captures_v1 SET png=$3 WHERE task_id=$1 AND step_id=$2`, f.taskID, steps[0].ID, capture.PNG); err != nil {
-		t.Fatal("tamper fixture restore")
-	}
+	corruptStoredCapture(t, s.m.pg, `UPDATE diagnostic_captures_v1 SET png=$3 WHERE task_id=$1 AND step_id=$2`, f.taskID, steps[0].ID, capture.PNG)
+
 	unauth := httptest.NewRecorder()
 	s.Handler().ServeHTTP(unauth, httptest.NewRequest("GET", imageURL, nil))
 	if unauth.Code != 401 {
@@ -246,15 +281,12 @@ func TestPracticalReportStoredE3CapturePromptAndRestart(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	if _, e = s.m.pg.Exec(`UPDATE diagnostic_captures_v1 SET run_ref='foreign-run' WHERE task_id=$1 AND step_id=$2`, f.taskID, steps[0].ID); e != nil {
-		t.Fatal(e)
-	}
+	corruptStoredCapture(t, s.m.pg, `UPDATE diagnostic_captures_v1 SET run_ref='foreign-run' WHERE task_id=$1 AND step_id=$2`, f.taskID, steps[0].ID)
 	if req("GET", imageURL, "").Code == 200 {
-		t.Fatal("tampered run accepted")
+		t.Fatal("foreign capture run accepted")
 	}
-	if _, e = s.m.pg.Exec(`UPDATE diagnostic_captures_v1 SET run_ref=$3 WHERE task_id=$1 AND step_id=$2`, f.taskID, steps[0].ID, steps[0].RunRef); e != nil {
-		t.Fatal(e)
-	}
+	corruptStoredCapture(t, s.m.pg, `UPDATE diagnostic_captures_v1 SET run_ref=$3 WHERE task_id=$1 AND step_id=$2`, f.taskID, steps[0].ID, steps[0].RunRef)
+
 	if _, e = s.m.pg.Exec(`UPDATE findings SET evidence_version=evidence_version+1 WHERE id=$1`, record.FindingID); e != nil {
 		t.Fatal(e)
 	}
@@ -342,5 +374,103 @@ func TestPracticalReportOverviewBindsStoredScopeAndModelRecords(t *testing.T) {
 	shared, e := report.PrepareDiagnostic(data)
 	if e != nil || shared.ApprovedScope != nil || len(shared.ModelRecords) > 0 {
 		t.Fatal("shared overview leak", e)
+	}
+}
+
+// Only this owned test database connection may bypass immutable-row triggers to simulate storage corruption.
+func corruptStoredCapture(t *testing.T, d *db.DB, query string, args ...any) {
+	t.Helper()
+	tx, err := d.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`SET LOCAL session_replication_role=replica`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(query, args...); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOneInvalidE3SourceDoesNotBlockOtherReportEntries(t *testing.T) {
+	for _, scenario := range []string{"legacy-manifest-version", "foreign-issuance-run", "foreign-stored-account"} {
+		t.Run(scenario, func(t *testing.T) {
+			s, _, req := trafficEvidenceServer(t)
+			f := diagnosticE3FixtureFor(t, s.m.pg, oracle.Confirmed, true)
+			stored, err := s.m.pg.RecordControlledFinding(t.Context(), f.prepared, f.markers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Independent healthy item in the same owned task; no controlled verdict is issued for it.
+			var healthy int64
+			if err := s.m.pg.QueryRow(`INSERT INTO findings(task_id,name,vulnclass,severity,status,summary,evidence,evidence_version) VALUES($1,'healthy stored observation','XSS','low','pending','healthy summary','healthy evidence',1) RETURNING id`, f.taskID).Scan(&healthy); err != nil {
+				t.Fatal(err)
+			}
+			entry := fmt.Sprintf("finding-%d", stored.FindingID)
+			source, err := db.LoadDiagnosticRemediationSource(t.Context(), s.m.pg.DB, f.taskID, entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.m.pg.SaveDiagnosticRemediation(t.Context(), f.taskID, entry, source.SourceDigest, nil); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, _ := f.prepared.Snapshot()
+			switch scenario {
+			case "legacy-manifest-version":
+				var m map[string]any
+				if json.Unmarshal(snapshot.Manifest, &m) != nil {
+					t.Fatal("fixture decode")
+				}
+				m["Version"] = 2
+				raw, err := json.Marshal(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				digest := sha256.Sum256(raw)
+				corruptStoredCapture(t, s.m.pg, `UPDATE e3_evidence_manifests SET canonical=$2,digest=$3 WHERE task_id=$1`, f.taskID, raw, digest[:])
+			case "foreign-issuance-run":
+				corruptStoredCapture(t, s.m.pg, `UPDATE e3_verdict_issuances SET execution_ref='foreign-run' WHERE task_id=$1`, f.taskID)
+			case "foreign-stored-account":
+				authority := f.source
+				authority.Expected.Owner.Handle = "foreign-owner-session"
+				raw, err := json.Marshal(authority)
+				if err != nil {
+					t.Fatal(err)
+				}
+				corruptStoredCapture(t, s.m.pg, `UPDATE e3_verdict_issuances SET binding_canonical=$2 WHERE task_id=$1`, f.taskID, raw)
+			}
+			data, err := loadDiagnosticReport(t.Context(), s.m.pg, f.taskID, time.Now())
+			if err != nil {
+				t.Fatal("one source blocked report", err)
+			}
+			if data.SourceFailures != 1 || len(data.Entries) != 2 {
+				t.Fatal("source error not isolated", data.SourceFailures)
+			}
+			for _, e := range data.Entries {
+				if e.ID == entry && (!e.SourceLoadFailed || len(e.Steps) != 0 || e.RemediationBundle != nil || e.Outcome == "confirmed") {
+					t.Fatal("failed binding retained steps, prompt, or confirmation")
+				}
+				if e.ID == fmt.Sprintf("finding-%d", healthy) && (e.SourceLoadFailed || e.Summary != "healthy summary") {
+					t.Fatal("healthy source lost")
+				}
+			}
+			for _, suffix := range []string{"&format=html", "&format=docx"} {
+				w := req("GET", fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal%s", f.taskID, suffix), "")
+				if w.Code != 200 {
+					t.Fatal("source error blocked export", suffix, w.Code)
+				}
+				if suffix == "&format=html" && (!strings.Contains(w.Body.String(), "근거 불러오기 실패: 1건") || !strings.Contains(w.Body.String(), "healthy summary")) {
+					t.Fatal("failure warning/healthy text lost")
+				}
+			}
+			list := req("GET", fmt.Sprintf("/api/report/diagnostic/remediation?task=%d&audience=internal", f.taskID), "")
+			if list.Code != 200 || !strings.Contains(list.Body.String(), `"source_failures":1`) || !strings.Contains(list.Body.String(), `"source_load_failed":true`) {
+				t.Fatal("source error blocked metadata list", list.Code, list.Body.String())
+			}
+		})
 	}
 }

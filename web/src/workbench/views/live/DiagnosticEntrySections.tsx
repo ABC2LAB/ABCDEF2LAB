@@ -64,7 +64,10 @@ function StoredScreenshot({ task, entry, step }: { task: string; entry: string; 
   }
   if (step.capture.status !== "captured")
     return (
-      <p className={s.help}>스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공 · 상태 {step.capture.status}</p>
+      <p className={s.help}>
+        스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공 · 상태{" "}
+        {step.capture.status === "capacity_omitted" ? "용량 초과로 생략" : step.capture.status}
+      </p>
     );
   return (
     <figure>
@@ -166,7 +169,7 @@ export function DiagnosticEntrySections({
   return (
     <>
       <Isec>
-        <h3>① 확인된 취약점 · 판정과 영향</h3>
+        <h3>① 판정과 영향</h3>
         <p>
           {outcomeLabel(entry.outcome)} · {entry.verification}
         </p>
@@ -175,6 +178,13 @@ export function DiagnosticEntrySections({
           {entry.outcome === "confirmed" ? maskSecrets(entry.severity ?? "미평가") : "확정 집계 제외"}
         </p>
         <p>{maskSecrets(entry.summary)}</p>
+        {entry.report ? (
+          <details open>
+            <summary>저장된 상세 보고</summary>
+            <pre className={s.code}>{maskSecrets(entry.report)}</pre>
+          </details>
+        ) : null}
+        {entry.truncated ? <p role="status">실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p> : null}
         <p>
           실행 {entry.run} · 증거 버전 {entry.evidence_version}
         </p>
@@ -184,6 +194,9 @@ export function DiagnosticEntrySections({
       </Isec>
       <Isec>
         <h3>② 재현 절차 및 스크린샷</h3>
+        {entry.source_load_failed ? (
+          <p role="alert">근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.</p>
+        ) : null}
         {entry.steps_truncated ? <p role="status">실행 관측이 잘렸습니다. 전체 재현 절차로 해석하지 마세요.</p> : null}
         {entry.steps?.length ? (
           entry.steps.map((step) => (

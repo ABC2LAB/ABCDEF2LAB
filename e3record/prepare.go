@@ -123,15 +123,7 @@ func Prepare(ctx context.Context, in Input, reader SourceReader) (Prepared, erro
 	if err != nil {
 		return Prepared{}, err
 	}
-	manifest, err := canonical(struct {
-		Version                                   int64
-		EvidenceDigest                            [32]byte
-		Evidence                                  evidencebind.Input
-		KGSnapshotRef                             string
-		KGSnapshotDigest                          [32]byte
-		GenerationRef, InstanceRef, CheckpointRef string
-		CheckpointDigest                          [32]byte
-	}{1, actualEvidenceDigest, in.Evidence, source.KGSnapshotRef, source.KGSnapshotDigest, source.GenerationRef,
+	manifest, err := canonical(Manifest{1, actualEvidenceDigest, in.Evidence, source.KGSnapshotRef, source.KGSnapshotDigest, source.GenerationRef,
 		source.InstanceRef, source.FinalCheckpointRef, source.FinalCheckpointDigest})
 	if err != nil {
 		return Prepared{}, err

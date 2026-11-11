@@ -1,9 +1,13 @@
 package db
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Autumn-27/artex/e3record"
 	"github.com/Autumn-27/artex/evidencebind"
+	"github.com/Autumn-27/artex/oracle"
 	"github.com/Autumn-27/artex/remediation"
 	"sort"
 	"strconv"
@@ -11,20 +15,33 @@ import (
 )
 
 // 해시를 확인한 manifest의 독립 결속을 재검사한다. 본문·계정 값은 내보내지 않는다.
-func diagnosticE3Context(in *remediation.Input, task int64, raw []byte, value string) error {
-	var m struct {
-		Version  int64
-		Evidence evidencebind.Input
+func diagnosticE3Context(ctx context.Context, q DiagnosticRemediationQueryer, in *remediation.Input, task int64, entry string, raw []byte, value string) error {
+	kind, id, err := diagnosticEntryID(entry)
+	if err != nil {
+		return err
 	}
-	if json.Unmarshal(raw, &m) != nil || m.Version != 1 {
+	var binding, kgDigest []byte
+	var run, caseRef, resource, policy, reset, snapshot, generation, instance, manifestRun string
+	var intent, exploration, mode, revision int64
+	err = q.QueryRowContext(ctx, `SELECT i.binding_canonical,i.execution_ref,i.case_ref,i.intent_id,i.exploration_id,i.mode_version,i.resource_ref,i.kg_policy_version,i.reset_generation,i.kg_snapshot_ref,i.kg_snapshot_digest,i.harness_generation_ref,i.target_instance_ref,m.execution_ref,m.evidence_revision
+ FROM e3_verdict_issuances i JOIN tasks t ON t.id=i.task_id AND t.exploration_id=i.exploration_id AND t.deleted_at IS NULL JOIN e3_evidence_manifests m ON m.id=i.manifest_id AND m.task_id=i.task_id
+ LEFT JOIN e3_verdict_links l ON l.issuance_id=i.id AND l.task_id=i.task_id
+ WHERE i.task_id=$1 AND (($2='finding' AND l.finding_id=$3) OR ($2='verdict' AND i.id=$3 AND l.id IS NULL)) AND octet_length(i.binding_canonical)<=$4`, task, kind, id, e3record.MaxCanonicalBytes).Scan(&binding, &run, &caseRef, &intent, &exploration, &mode, &resource, &policy, &reset, &snapshot, &kgDigest, &generation, &instance, &manifestRun, &revision)
+	if err != nil {
+		return err
+	}
+	var source e3record.Source
+	if json.Unmarshal(binding, &source) != nil {
 		return ErrDiagnosticRemediation
 	}
-	expected := m.Evidence.Policy.Context
-	if expected.Scope.TaskRef != strconv.FormatInt(task, 10) {
+	expected := source.Expected
+	if expected.Scope.TaskRef != strconv.FormatInt(task, 10) || expected.Scope.RunRef != run || run != manifestRun || expected.Scope.CaseRef != caseRef ||
+		expected.IntentID != intent || source.ExplorationID != exploration || mode <= 0 || source.ModeVersion != uint64(mode) || expected.ResourceRef != resource || expected.KGPolicyVersion != policy ||
+		source.ResetGeneration != reset || source.KGSnapshotRef != snapshot || !bytes.Equal(source.KGSnapshotDigest[:], kgDigest) || source.GenerationRef != generation || source.InstanceRef != instance || revision <= 0 || source.EvidenceRevision != uint64(revision) {
 		return ErrDiagnosticRemediation
 	}
-	checked := evidencebind.Check(expected, m.Evidence)
-	if !checked.BindingValid || string(checked.EffectiveValue) != value {
+	m, err := e3record.DecodeBoundManifest(raw, source, oracle.VerdictValue(value))
+	if err != nil {
 		return ErrDiagnosticRemediation
 	}
 	observations := []remediation.ContextObservation{}

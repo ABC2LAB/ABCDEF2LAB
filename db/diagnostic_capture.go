@@ -65,7 +65,10 @@ func (d *DB) SaveDiagnosticCapture(ctx context.Context, a reportcapture.Asset) e
 	if !c.CapturedAt.IsZero() {
 		at = c.CapturedAt
 	}
-	result, e := tx.ExecContext(ctx, `INSERT INTO diagnostic_captures_v1(task_id,entry_id,step_id,binding_digest,evidence_version,evidence_digest,run_ref,call_ref,capture_ref,state,png,image_digest,width,height,captured_at,mask_policy) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT DO NOTHING`, b.TaskID, b.EntryID, b.Step.ID, b.Step.BindingDigest, b.Step.EvidenceVersion, b.Step.EvidenceDigest, b.Step.RunRef, b.Step.CallRef, c.Ref, c.Status, png, c.Digest, c.Width, c.Height, at, mask)
+	result, e := tx.ExecContext(ctx, `INSERT INTO diagnostic_captures_v1(task_id,entry_id,step_id,binding_digest,evidence_version,evidence_digest,run_ref,call_ref,capture_ref,state,png,image_digest,width,height,captured_at,mask_policy) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(task_id,entry_id,step_id,binding_digest) DO UPDATE SET
+ capture_ref=EXCLUDED.capture_ref,state=EXCLUDED.state,png=EXCLUDED.png,image_digest=EXCLUDED.image_digest,
+ width=EXCLUDED.width,height=EXCLUDED.height,captured_at=EXCLUDED.captured_at,mask_policy=EXCLUDED.mask_policy
+ WHERE diagnostic_captures_v1.state<>'captured' AND EXCLUDED.state='captured'`, b.TaskID, b.EntryID, b.Step.ID, b.Step.BindingDigest, b.Step.EvidenceVersion, b.Step.EvidenceDigest, b.Step.RunRef, b.Step.CallRef, c.Ref, c.Status, png, c.Digest, c.Width, c.Height, at, mask)
 	if e != nil {
 		return e
 	}
@@ -74,16 +77,41 @@ func (d *DB) SaveDiagnosticCapture(ctx context.Context, a reportcapture.Asset) e
 		return e
 	}
 	if n != 1 {
+		if c.Status != "captured" {
+			var state string
+			if err := tx.QueryRowContext(ctx, `SELECT state FROM diagnostic_captures_v1 WHERE task_id=$1 AND entry_id=$2 AND step_id=$3 AND binding_digest=$4`, b.TaskID, b.EntryID, b.Step.ID, b.Step.BindingDigest).Scan(&state); err != nil {
+				return err
+			}
+			if state != "captured" {
+				return tx.Commit()
+			}
+		}
 		return ErrDiagnosticCapture
 	}
 	return tx.Commit()
 }
 func ReadDiagnosticCapture(ctx context.Context, q DiagnosticRemediationQueryer, task int64, entry string, step reproduction.Step) (reproduction.Capture, error) {
+	return readDiagnosticCapture(ctx, q, task, entry, step, true)
+}
+
+// Metadata readers do not fetch PNG blobs. The image endpoint verifies bytes on explicit read.
+func ReadDiagnosticCaptureMetadata(ctx context.Context, q DiagnosticRemediationQueryer, task int64, entry string, step reproduction.Step) (reproduction.Capture, int64, error) {
+	c, err := readDiagnosticCapture(ctx, q, task, entry, step, false)
+	if err != nil {
+		return c, 0, err
+	}
+	var n int64
+	if c.Status == "captured" {
+		err = q.QueryRowContext(ctx, `SELECT octet_length(png) FROM diagnostic_captures_v1 WHERE task_id=$1 AND entry_id=$2 AND step_id=$3 AND binding_digest=$4`, task, entry, step.ID, step.BindingDigest).Scan(&n)
+	}
+	return c, n, err
+}
+func readDiagnosticCapture(ctx context.Context, q DiagnosticRemediationQueryer, task int64, entry string, step reproduction.Step, pixels bool) (reproduction.Capture, error) {
 	var c reproduction.Capture
 	var at sql.NullTime
 	var policy, run, call, digest string
 	var version int64
-	e := q.QueryRowContext(ctx, `SELECT state,capture_ref,image_digest,captured_at,width,height,CASE WHEN octet_length(png)<=1048576 THEN png ELSE NULL END,mask_policy,run_ref,call_ref,evidence_version,evidence_digest FROM diagnostic_captures_v1 WHERE task_id=$1 AND entry_id=$2 AND step_id=$3 AND binding_digest=$4`, task, entry, step.ID, step.BindingDigest).Scan(&c.Status, &c.Ref, &c.Digest, &at, &c.Width, &c.Height, &c.PNG, &policy, &run, &call, &version, &digest)
+	e := q.QueryRowContext(ctx, `SELECT state,capture_ref,image_digest,captured_at,width,height,CASE WHEN $5 AND octet_length(png)<=1048576 THEN png ELSE NULL END,mask_policy,run_ref,call_ref,evidence_version,evidence_digest FROM diagnostic_captures_v1 WHERE task_id=$1 AND entry_id=$2 AND step_id=$3 AND binding_digest=$4`, task, entry, step.ID, step.BindingDigest, pixels).Scan(&c.Status, &c.Ref, &c.Digest, &at, &c.Width, &c.Height, &c.PNG, &policy, &run, &call, &version, &digest)
 	if e == sql.ErrNoRows {
 		return reproduction.Capture{Status: "not_captured"}, nil
 	}
@@ -96,7 +124,7 @@ func ReadDiagnosticCapture(ctx context.Context, q DiagnosticRemediationQueryer, 
 	if at.Valid {
 		c.CapturedAt = at.Time
 	}
-	if c.Status == "captured" && (policy != "approved_regions/v1" || c.Ref != "shot-"+step.BindingDigest[:24] || reportcapture.Verify(c) != nil) {
+	if c.Status == "captured" && (policy != "approved_regions/v1" || c.Ref != "shot-"+step.BindingDigest[:24] || (pixels && reportcapture.Verify(c) != nil)) {
 		return c, ErrDiagnosticCapture
 	}
 	return c, nil

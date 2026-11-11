@@ -10,14 +10,17 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Autumn-27/artex/remediation"
 )
 
 const wordNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 type diagnosticWord struct {
-	images [][]byte
-	body   strings.Builder
-	err    error
+	images   [][]byte
+	body     strings.Builder
+	err      error
+	replaced int
 }
 
 func wordText(value string) string {
@@ -30,12 +33,13 @@ func (w *diagnosticWord) paragraph(style, text string) {
 		w.err = ErrExportBlocked
 		return
 	}
-	for _, r := range text {
-		if r < 32 && r != '\n' && r != '\r' && r != '\t' {
-			w.err = ErrExportBlocked
-			return
+	text = strings.Map(func(r rune) rune {
+		if (r < 32 && r != '\n' && r != '\r' && r != '\t') || r == 0xfffe || r == 0xffff {
+			w.replaced++
+			return '\uFFFD'
 		}
-	}
+		return r
+	}, text)
 	w.body.WriteString(`<w:p><w:pPr><w:pStyle w:val="` + style + `"/></w:pPr>`)
 	for i, line := range strings.Split(text, "\n") {
 		if i > 0 {
@@ -132,6 +136,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.table(rows)
 	}
 	w.chapter("3장. 진단 결과 요약")
+	if in.SourceFailures > 0 {
+		w.paragraph("Normal", fmt.Sprintf("근거 불러오기 실패: %d건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.", in.SourceFailures))
+	}
 	w.table([][]string{{"확정", "검토 필요", "미실행", "판단 불가·결과 불명", "비취약"}, {strconv.Itoa(in.Confirmed), strconv.Itoa(in.Review), strconv.Itoa(in.NotExecuted), strconv.Itoa(in.Unknown), strconv.Itoa(in.Negative)}})
 	w.paragraph("Normal", "확정 집계는 유효한 저장 E③ 판정만 포함합니다. HTTP 성공·AI 주장·후보·정상 종료는 확정 근거가 아닙니다. 검토 필요 후보는 확정 심각도·위험도 합계에 포함하지 않습니다.")
 	keys := []string{}
@@ -151,14 +158,20 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			style = "EntryHeading"
 		}
 		w.paragraph(style, e.ID+" · "+e.Title)
-		w.paragraph("Heading2", "① 확인된 취약점 · 판정과 영향")
+		w.paragraph("Heading2", "① 판정과 영향")
 		w.table([][]string{{"항목", "값"}, {"고유 ID / 유형", e.ID + " / " + e.VulnClass}, {"판정 / 검증", e.Outcome + " / " + e.Verification}, {"위험도 / 상태", e.Severity + " / " + e.Status}, {"실행 / intent", e.Run + " / " + strconv.FormatInt(e.IntentID, 10)}, {"증거 버전 / digest", strconv.FormatInt(e.EvidenceVersion, 10) + " / " + e.Digest}})
 		if e.Stale {
 			w.paragraph("Normal", "증거 버전 불일치: 오래된 자료를 확정으로 집계하지 않습니다.")
 		}
+		if e.Truncated {
+			w.paragraph("Normal", "주의: 실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.")
+		}
 		w.paragraph("Normal", e.Summary)
 		w.paragraph("Normal", e.Report)
 		w.paragraph("Heading2", "② 재현 절차 및 스크린샷")
+		if e.SourceLoadFailed {
+			w.paragraph("Normal", "근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.")
+		}
 		if e.StepsTruncated {
 			w.paragraph("Normal", "관측 목록 잘림: 완전한 재현 절차가 아닙니다.")
 		}
@@ -170,12 +183,15 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			w.paragraph("Normal", step.Method+" "+step.Path)
 			w.paragraph("Normal", "사전 조건: "+step.Prerequisites)
 			w.paragraph("Normal", step.Observation)
+			if step.Truncated {
+				w.paragraph("Normal", "이 단계의 관측이 잘렸습니다.")
+			}
 			w.paragraph("Caption", "시각 "+step.ObservedAt+" · 실행 "+step.RunRef+" · 호출 "+step.CallRef+" · 근거 "+step.EvidenceRef+" · 단계 "+step.SourceStepID)
 			if step.Capture.Status == "captured" {
 				w.picture(step.Capture.PNG, step.Capture.Width, step.Capture.Height)
 				w.paragraph("Caption", "실행 시각 "+step.Capture.CapturedAt.UTC().Format(time.RFC3339)+" · SHA256 "+step.Capture.Digest)
 			} else {
-				w.paragraph("Normal", "스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공 · 상태 "+step.Capture.Status)
+				w.paragraph("Normal", "스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공 · 상태 "+captureStatusLabel(step.Capture.Status))
 			}
 		}
 		w.paragraph("Heading3", "저장된 실제 증거")
@@ -183,6 +199,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph("Heading2", "③ 보안 조치")
 		w.paragraph("Normal", e.Remediation)
 		if b := e.RemediationBundle; b != nil {
+			w.remediationContext(b)
 			w.lines("수정해야 할 보안 조건", b.SecurityCondition)
 			w.lines("즉시 완화책", b.ImmediateMitigation)
 			w.lines("근본 수정", b.RootFix)
@@ -192,6 +209,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			w.lines("수정 후 재검증", b.Verification)
 			w.lines("남은 위험·확인 사항", b.ResidualRisk)
 			w.paragraph("Heading2", "④ AI 수정 작업용 프롬프트")
+			w.paragraph("Normal", "기본 작업 방식: 실제 수정 실행형. 실행 범위는 전달받는 AI 세션의 권한을 따릅니다.")
 			w.paragraph("Caption", "저장 조치 버전 "+b.RemediationVersion+" · 입력 "+b.InputDigest+" · 증거 버전 "+b.EvidenceVersion+" · 기술 digest "+b.TechnologyDigest)
 			w.paragraph("Normal", "고객사의 실제 저장소·컴포넌트·배포 연결을 확인한 뒤 수정합니다. 이 보고서는 운영 재현·push·배포 권한을 부여하지 않습니다.")
 			w.paragraph("Code", b.AIPrompt)
@@ -203,6 +221,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			}
 			w.paragraph("Normal", text)
 		}
+		w.paragraph("Normal", "모델 제안과 검증된 원인은 별개입니다. 서버 소스 위치·실제 영향 확대는 확인되지 않았습니다. 수정 후 재검증은 별도 승인된 실행에서 수행하세요.")
 	}
 	if len(in.Entries) == 0 {
 		w.paragraph("Normal", "저장된 결과 없음. 비취약 또는 검사 완료를 뜻하지 않습니다.")
@@ -210,6 +229,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 	w.chapter("5장. 증적 부록")
 	w.paragraph("Normal", "각 항목의 실행·intent·증거 버전·digest·저장 조치 버전으로 보호 증적을 대조하세요. 누락·미실행·불명·미지원은 별도로 남깁니다. 내부 원문과 화면 증적은 인증된 저장소의 현재 권한·버전 검사 후 열람합니다.")
 	w.paragraph("Normal", "새 대상 요청·로그인·재현·외부 문서 변환·모델 호출 없이 생성했습니다. 캡처 부재만으로 E③ 판정을 변경하지 않으며 스크린샷만으로 취약점을 확정하지 않습니다.")
+	if w.replaced > 0 {
+		w.paragraph("Normal", fmt.Sprintf("Word 출력에서 지원하지 않는 제어 문자 %d개를 U+FFFD로 대체했습니다. 원본 저장 증거는 변경하지 않았습니다.", w.replaced))
+	}
 	if w.err != nil || w.body.Len() > MaxDiagnosticReportBytes {
 		return nil, ErrExportBlocked
 	}
@@ -247,7 +269,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 	if err = z.Close(); err != nil {
 		return nil, err
 	}
-	if out.Len() > MaxDiagnosticReportBytes {
+	if out.Len() > MaxDiagnosticReportBytes+MaxDiagnosticCaptureBytes {
 		return nil, ErrExportBlocked
 	}
 	return out.Bytes(), nil
@@ -268,4 +290,35 @@ func (w *diagnosticWord) picture(png []byte, width, height int) {
 		cy = 7_000_000
 	}
 	fmt.Fprintf(&w.body, `<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="%d" cy="%d"/><wp:docPr id="%d" name="capture-%d" descr="실행 당시 수집한 비민감 영역"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="%d" name="capture-%d.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="capture%d"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`, cx, cy, n, n, n, n, n, cx, cy)
+}
+
+func (w *diagnosticWord) remediationContext(b *remediation.Bundle) {
+	c := b.Context
+	w.paragraph("Heading3", "수정 작업의 독립 맥락")
+	w.table([][]string{{"맥락", "저장 값"}, {"출처", remediationSourceLabel(c.Source)}, {"컴포넌트 / 역할", c.Component + " / " + c.ComponentRole}, {"기능·엔드포인트", c.Endpoint}, {"재현 사전 조건", c.Prerequisites}, {"관찰", c.Observation}, {"유지할 정상 동작", c.ExpectedBehavior}, {"차단할 취약 동작", c.ProhibitedBehavior}})
+	w.paragraph("Normal", "사용자 제공 요약은 자동 검증된 관찰이 아닙니다. 미확인 항목은 저장소와 승인된 근거에서 먼저 확인하세요.")
+	if conflicts := remediationContextConflicts(c); len(conflicts) > 0 {
+		w.paragraph("Normal", "사용자 보완과 원본 상충 가능·대조 필요: "+strings.Join(conflicts, ", "))
+	}
+	if c.ObservationsTruncated {
+		w.paragraph("Normal", "관측 또는 기술 목록이 잘렸습니다. 전체 단계 연결은 미확인입니다.")
+	}
+	for _, o := range c.Observations {
+		w.paragraph("Heading3", "보존된 원본 맥락 · "+remediationSourceLabel(o.Source))
+		w.paragraph("Caption", "근거 "+o.EvidenceRef+" · 관측 시각 "+o.ObservedAt+" · 실행 "+o.RunID+" · 호출 "+o.CallID+" · 단계 "+o.StepID+" · 선행 단계 "+strings.Join(o.DependsOn, ", "))
+		w.table([][]string{{"컴포넌트 / 역할", o.Component + " / " + o.ComponentRole}, {"기능·엔드포인트", o.Endpoint}, {"재현 전제", o.Prerequisites}, {"관측·추정 내용", o.Observation}, {"유지할 정상 동작", o.ExpectedBehavior}, {"차단할 취약 동작", o.ProhibitedBehavior}})
+		if o.Truncated {
+			w.paragraph("Normal", "이 관측 출력 또는 단계가 잘렸습니다. 완전한 재현으로 해석하지 마세요.")
+		}
+	}
+	if len(b.MissingContextFields) > 0 {
+		w.paragraph("Normal", "보완이 필요한 맥락: "+strings.Join(b.MissingContextFields, ", ")+". 수정 전에 확인하세요.")
+	}
+	for _, tech := range b.Technologies {
+		w.paragraph("Normal", fmt.Sprintf("%s: %s %s · 컴포넌트 %s / %s · 출처 %s · 확인 수준 %s · 근거 %s · 관측 시각 %s", tech.Kind, tech.Name, tech.Version, tech.Component, tech.ComponentRole, remediationSourceLabel(tech.Source), tech.Confidence, tech.EvidenceRef, tech.ObservedAt))
+	}
+	w.paragraph("Normal", "출처와 확인 수준은 별개입니다. 사용자 제공·수동 검토는 프로그램의 실행 관측 또는 취약점 확정이 아닙니다.")
+	if conflicts := remediationTechnologyConflicts(b.Technologies); len(conflicts) > 0 {
+		w.paragraph("Normal", "기술 상충 가능·대조 필요: "+strings.Join(conflicts, ", ")+". 여러 기술이 함께 쓰이는지 확인하세요.")
+	}
 }

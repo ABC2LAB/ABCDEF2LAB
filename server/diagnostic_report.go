@@ -44,7 +44,7 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 503, "보고서 저장소를 사용할 수 없습니다.")
 		return
 	}
-	data, err := loadDiagnosticReport(r.Context(), s.m.pg, taskID, time.Now())
+	data, err := loadDiagnosticReportWithCaptures(r.Context(), s.m.pg, taskID, time.Now(), audience == "internal")
 	if err != nil {
 		code := 422
 		if errors.Is(err, sql.ErrNoRows) {
@@ -83,12 +83,15 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 
 // 모든 조회를 같은 PostgreSQL 스냅샷에서 수행한다. 원문 파일·대상 URL은 열지 않는다.
 func loadDiagnosticReport(ctx context.Context, pg *db.DB, taskID int64, at time.Time) (report.DiagnosticReport, error) {
+	return loadDiagnosticReportWithCaptures(ctx, pg, taskID, at, true)
+}
+func loadDiagnosticReportWithCaptures(ctx context.Context, pg *db.DB, taskID int64, at time.Time, images bool) (report.DiagnosticReport, error) {
 	tx, err := pg.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return report.DiagnosticReport{}, err
 	}
 	defer tx.Rollback()
-	out, err := readDiagnosticReport(ctx, tx, taskID, at)
+	out, err := readDiagnosticReportWithCaptures(ctx, tx, taskID, at, images)
 	if err != nil {
 		return out, err
 	}
@@ -98,6 +101,9 @@ func loadDiagnosticReport(ctx context.Context, pg *db.DB, taskID int64, at time.
 	return out, nil
 }
 func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time.Time) (report.DiagnosticReport, error) {
+	return readDiagnosticReportWithCaptures(ctx, tx, taskID, at, true)
+}
+func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID int64, at time.Time, images bool) (report.DiagnosticReport, error) {
 	out := report.DiagnosticReport{TaskID: taskID, GeneratedAt: at}
 	if taskID <= 0 {
 		return out, errDiagnosticReportScope
@@ -119,11 +125,16 @@ func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time
 	if storedBytes > report.MaxDiagnosticReportBytes {
 		return out, report.ErrExportBlocked
 	}
-	candidates, err := db.ListDiagnosticCandidatesQuery(ctx, tx, expID, taskID, "", report.MaxFindings+1)
+	candidates, err := db.ListDiagnosticReportCandidates(ctx, tx, expID, taskID, report.MaxFindings+1)
 	if err != nil {
 		return out, err
 	}
-	for _, c := range candidates {
+	for _, row := range candidates {
+		c := row.Candidate
+		if row.Unavailable {
+			out.Entries = append(out.Entries, report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", Title: "저장 후보 근거 확인 실패", Outcome: "unknown", Verification: "manual_review_required", Severity: "미평가", SourceLoadFailed: true})
+			continue
+		}
 		storedBytes += int64(len(c.Evidence) + len(c.Name) + len(c.VulnClass) + len(c.Summary) + len(c.Remediation) + len(c.RunRef) + len(c.CallRef))
 		if storedBytes > report.MaxDiagnosticReportBytes {
 			return out, report.ErrExportBlocked
@@ -249,18 +260,36 @@ func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time
 	if err := attachDiagnosticRemediations(ctx, tx, taskID, &out); err != nil {
 		return out, err
 	}
+	var captureBytes int64
 	for i := range out.Entries {
 		entry := &out.Entries[i]
+		if entry.SourceLoadFailed {
+			entry.RemediationBundle, entry.RemediationSource = nil, nil
+			entry.RemediationStale = entry.RemediationArtifactID > 0
+			out.SourceFailures++
+			continue
+		}
+		source, err := db.LoadDiagnosticRemediationSourceIsolated(ctx, tx, taskID, entry.ID)
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		if err != nil {
+			entry.SourceLoadFailed = true
+			entry.RemediationBundle, entry.RemediationSource = nil, nil
+			entry.RemediationStale = entry.RemediationArtifactID > 0
+			if entry.Outcome == "confirmed" {
+				entry.Outcome, entry.Verification = "unknown", "manual_review_required"
+			}
+			out.SourceFailures++
+			continue
+		}
+		entry.CurrentSource = &source
 		if entry.Stale {
 			continue
 		}
-		source, err := db.LoadDiagnosticRemediationSource(ctx, tx, taskID, entry.ID)
-		if err != nil {
-			return out, err
-		}
 		entry.Steps = reproduction.FromStored(taskID, entry.ID, entry.EvidenceVersion, entry.Digest, source.Context)
 		entry.StepsTruncated = source.Context.ObservationsTruncated
-		if err := attachDiagnosticCaptures(ctx, tx, taskID, entry, &storedBytes); err != nil {
+		if err := attachDiagnosticCaptures(ctx, tx, taskID, entry, &captureBytes, images); err != nil {
 			return out, err
 		}
 	}

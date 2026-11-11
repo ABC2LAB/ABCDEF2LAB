@@ -42,3 +42,16 @@ func TestStepBindingCannotCrossTaskRunEntryOrEvidenceRevision(t *testing.T) {
 		t.Fatal("stale evidence accepted")
 	}
 }
+
+func TestMissingOrUnknownEndpointKeepsStoredReceiptMethod(t *testing.T) {
+	for _, endpoint := range []string{"", remediation.UnknownContext, "an invalid endpoint"} {
+		c := contextFixture()
+		c.Observations = c.Observations[:1]
+		c.Observations[0].Method = "GET"
+		c.Observations[0].Endpoint = endpoint
+		steps := FromStored(1, "finding-1", 1, strings.Repeat("a", 64), c)
+		if len(steps) != 1 || steps[0].Method != "GET" || steps[0].Path != "" {
+			t.Fatalf("invalid endpoint replaced receipt method: %+v", steps)
+		}
+	}
+}

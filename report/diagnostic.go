@@ -21,6 +21,9 @@ import (
 
 const MaxDiagnosticReportBytes = 16 << 20
 
+// Image payloads have a separate, bounded budget; omission preserves text exports.
+const MaxDiagnosticCaptureBytes = 4 << 20
+
 // DiagnosticReport는 선택한 task의 저장 결과만 표현한다. 판정과 처리 상태는 별개다.
 type WorkflowApproval struct{ Method, Path, State, ExecutionState, Attempt string }
 type DiagnosticModelRecord struct {
@@ -28,6 +31,7 @@ type DiagnosticModelRecord struct {
 	Records       int64
 }
 type DiagnosticReport struct {
+	SourceFailures                                    int
 	TaskTitle                                         string
 	TaskCreatedAt                                     time.Time
 	ApprovedScope                                     *diagnosisprep.Scope
@@ -45,6 +49,8 @@ type DiagnosticReport struct {
 type DiagnosticEntry struct {
 	Steps                                                     []reproduction.Step
 	StepsTruncated                                            bool
+	SourceLoadFailed                                          bool
+	CurrentSource                                             *remediation.Input
 	ID, Kind, Run                                             string
 	IntentID                                                  int64
 	Title, VulnClass, Severity, Status, Verification, Outcome string
@@ -132,6 +138,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		in.ModelRecords = nil
 	}
 	in.Confirmed, in.Review, in.NotExecuted, in.Unknown, in.Negative = 0, 0, 0, 0, 0
+	in.SourceFailures = 0
 	in.BySeverity = map[string]int{}
 	in.ByType = map[string]int{}
 	entries := make([]DiagnosticEntry, len(in.Entries))
@@ -139,8 +146,12 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 	in.Entries = entries
 	seen := map[string]bool{}
 	size := 0
+	captureBytes := 0
 	for i := range in.Entries {
 		e := &in.Entries[i]
+		if e.SourceLoadFailed {
+			in.SourceFailures++
+		}
 		if !diagnosticID.MatchString(e.ID) || seen[e.ID] || e.EvidenceVersion < 0 {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
@@ -216,10 +227,17 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
 			if step.Capture.Status == "captured" {
-				if step.Capture.Ref != "shot-"+step.BindingDigest[:24] || reportcapture.Verify(step.Capture) != nil {
+				if step.Capture.Ref != "shot-"+step.BindingDigest[:24] || (!in.Shared && reportcapture.Verify(step.Capture) != nil) {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
-				size += ((len(step.Capture.PNG) + 2) / 3) * 4
+				if !in.Shared {
+					imageBytes := ((len(step.Capture.PNG) + 2) / 3) * 4
+					if captureBytes+imageBytes > MaxDiagnosticCaptureBytes {
+						step.Capture = reproduction.Capture{Status: "capacity_omitted"}
+					} else {
+						captureBytes += imageBytes
+					}
+				}
 			} else if len(step.Capture.PNG) != 0 {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
@@ -274,7 +292,7 @@ func DiagnosticHTML(in DiagnosticReport) ([]byte, error) {
 	if err := diagnosticTemplate.Execute(&out, in); err != nil {
 		return nil, errors.New("diagnostic report unavailable")
 	}
-	if out.Len() > MaxDiagnosticReportBytes {
+	if out.Len() > MaxDiagnosticReportBytes+MaxDiagnosticCaptureBytes {
 		return nil, ErrExportBlocked
 	}
 	return out.Bytes(), nil
@@ -392,7 +410,8 @@ func remediationTechnologyConflicts(technologies []remediation.Technology) []str
 }
 
 var diagnosticTemplate = template.Must(template.New("diagnostic").Funcs(template.FuncMap{
-	"sourceLabel": remediationSourceLabel,
+	"sourceLabel":   remediationSourceLabel,
+	"captureStatus": captureStatusLabel,
 	"captureURI": func(step reproduction.Step) template.URL {
 		if reportcapture.Verify(step.Capture) != nil {
 			return ""
@@ -421,7 +440,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 새 대상 요청·로그인·재현·외부 리소스 조회 없이 저장 자료만 사용했습니다.</p>
 <h2>2장. 진단 방법 및 수행 현황</h2><p>아래 내용은 실제 저장한 실행·탐색 기록입니다. 목록에 없는 검사나 환경·모델은 수행·확인한 것으로 추정하지 않습니다.</p>{{with .Workflow}}<h3>실제 탐색·선택 기록</h3><p>모드 {{.Mode}} · 저장 단계 {{.Stage}} · 마지막 저장 {{.UpdatedAt}}. 이 기록은 재실행 권한 또는 현재 실행 중임의 증거가 아닙니다.</p><p>발견 {{.Counts.Found}} · 응답 관찰 {{.Counts.Visited}} · 요청 쓰기 {{.Counts.Sent}} · 전송 시도 {{.Counts.Attempted}} · 차단 {{.Counts.Blocked}} · 불명 {{.Counts.Unknown}}</p><table><thead><tr><th>메서드</th><th>경로</th><th>실제 방문</th><th>선택</th><th>응답</th><th>증거 call</th></tr></thead><tbody>{{range .Endpoints}}<tr><td>{{.Method}}</td><td>{{.Path}}</td><td>{{.Visited}}</td><td>{{.Selected}}</td><td>{{.Status}}</td><td>{{.CallRef}}</td></tr>{{end}}</tbody></table><p>제한된 정적 탐색입니다. 미방문·미선택 항목을 검사 완료로 표시하지 않습니다. 엔드포인트 선택과 개별 송신 승인은 별개입니다.</p>{{end}}
 {{if .WorkflowApprovals}}<h3>저장된 요청 승인 이력</h3><table><thead><tr><th>메서드</th><th>경로</th><th>결정</th><th>전송 결과</th><th>attempt</th></tr></thead><tbody>{{range .WorkflowApprovals}}<tr><td>{{.Method}}</td><td>{{if $.Shared}}[공유용 경로 비공개]{{else}}{{.Path}}{{end}}</td><td>{{.State}}</td><td>{{.ExecutionState}}</td><td>{{.Attempt}}</td></tr>{{end}}</tbody></table>{{end}}
-<h2>3장. 진단 결과 요약</h2><h3>관리자 요약</h3>
+<h2>3장. 진단 결과 요약</h2><h3>관리자 요약</h3>{{if .SourceFailures}}<p>근거 불러오기 실패: {{.SourceFailures}}건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.</p>{{end}}
 <table><thead><tr><th>확정</th><th>검토 필요</th><th>미실행</th><th>오류·결과 불명</th><th>비취약 판정</th></tr></thead>
 <tbody><tr><td>{{.Confirmed}}</td><td>{{.Review}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>
 <p>실행 completed는 취약점 확정이 아닙니다. 후보는 실제 관찰을 가진 검토 대상이며 자동 검증 또는 권한 있는 사람의 근거 있는 판단이 더 필요합니다.
@@ -436,10 +455,10 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
 {{if .Stale}}<p>주의: 증거와 상세 보고서 버전이 달라 확정 집계에서 제외했습니다. 갱신이 필요합니다.</p>{{end}}
 {{if .Truncated}}<p>주의: 실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p>{{end}}
-<h4>① 확인된 취약점 · 판정과 영향</h4><h5>관찰과 주장</h5><pre>{{if .Summary}}{{.Summary}}{{else}}추가 설명 미기록{{end}}</pre><h4>저장된 상세 설명</h4><pre>{{if .Report}}{{.Report}}{{else}}별도 상세 보고서 미작성{{end}}</pre>
-<h4>② 재현 절차 및 스크린샷</h4>
+<h4>① 판정과 영향</h4><h5>관찰과 주장</h5><pre>{{if .Summary}}{{.Summary}}{{else}}추가 설명 미기록{{end}}</pre><h4>저장된 상세 설명</h4><pre>{{if .Report}}{{.Report}}{{else}}별도 상세 보고서 미작성{{end}}</pre>
+<h4>② 재현 절차 및 스크린샷</h4>{{if .SourceLoadFailed}}<p>근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.</p>{{end}}
 {{if .StepsTruncated}}<p>실행 관측 목록이 잘렸습니다. 전체 재현 절차로 해석하지 마세요.</p>{{end}}
-{{range .Steps}}<section><h5>Step {{.Number}}. {{.Title}}</h5><p>{{.Method}} {{if .Path}}{{.Path}}{{else}}비민감 경로 미기록{{end}}</p><p>사전 조건: {{.Prerequisites}}</p><pre>{{.Observation}}</pre><p>시각 {{.ObservedAt}} · 원본 단계 {{.SourceStepID}} · 실행 {{.RunRef}} · 호출 {{.CallRef}} · 근거 {{.EvidenceRef}} · 증거 {{.EvidenceVersion}} / {{.EvidenceDigest}}</p>{{if eq .Capture.Status "captured"}}<figure><img src="{{captureURI .}}" alt="실행 당시 수집한 비민감 영역 캡처" style="max-width:100%;height:auto"><figcaption>캡처 {{.Capture.CapturedAt}} · SHA256 {{.Capture.Digest}}</figcaption></figure>{{else}}<p>스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공 · 상태 {{.Capture.Status}}</p>{{end}}</section>{{else}}<p>구조화된 실제 재현 단계 미확보. 아래 저장 근거를 확인하세요. 실행하지 않은 절차를 생성하지 않습니다.</p>{{end}}
+{{range .Steps}}<section><h5>Step {{.Number}}. {{.Title}}</h5><p>{{.Method}} {{if .Path}}{{.Path}}{{else}}비민감 경로 미기록{{end}}</p><p>사전 조건: {{.Prerequisites}}</p><pre>{{.Observation}}</pre>{{if .Truncated}}<p>이 단계의 관측이 잘렸습니다.</p>{{end}}<p>시각 {{.ObservedAt}} · 원본 단계 {{.SourceStepID}} · 실행 {{.RunRef}} · 호출 {{.CallRef}} · 근거 {{.EvidenceRef}} · 증거 {{.EvidenceVersion}} / {{.EvidenceDigest}}</p>{{if eq .Capture.Status "captured"}}<figure><img src="{{captureURI .}}" alt="실행 당시 수집한 비민감 영역 캡처" style="max-width:100%;height:auto"><figcaption>캡처 {{.Capture.CapturedAt}} · SHA256 {{.Capture.Digest}}</figcaption></figure>{{else}}<p>스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공 · 상태 {{captureStatus .Capture.Status}}</p>{{end}}</section>{{else}}<p>구조화된 실제 재현 단계 미확보. 아래 저장 근거를 확인하세요. 실행하지 않은 절차를 생성하지 않습니다.</p>{{end}}
 <h4>실제 관찰 증거</h4><pre>{{if .Evidence}}{{.Evidence}}{{else}}추가 증거 본문 미기록{{end}}</pre>
 <p>위 자료는 저장된 도구 출력 또는 증거 설명입니다. 실제 웹페이지 캡처가 아니며, 요청·응답 전문이나 실행 단계가 없으면 재현 완료로 해석하지 마세요.
 스크린샷 부재는 결과 누락 사유가 아닙니다. 임의 HTML과 외부 링크는 실행되지 않습니다.</p>
@@ -479,3 +498,14 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 </article>{{else}}<p>선택 범위에 저장된 결과가 없습니다. 안전 또는 검사 완료를 뜻하지 않습니다.</p>{{end}}
 <h2>5장. 증적 부록</h2><p>이 파일은 증거 텍스트를 자체 포함하며 숨은 첨부 링크가 없습니다. 비밀값·원문 요청/응답·브라우저 캡처는 별도 보호 저장소에서 권한을 확인하여 열람해야 합니다.
 자동 검증기가 지원하지 않는 유형은 확정으로 승격하지 않습니다. 실제 모델 탐지 성능은 이 출력 시험과 별도입니다.</p></body></html>`))
+
+func captureStatusLabel(status string) string {
+	switch status {
+	case "capacity_omitted":
+		return "용량 초과로 생략"
+	case "binding_invalid":
+		return "현재 결속·이미지 검증 실패"
+	default:
+		return status
+	}
+}

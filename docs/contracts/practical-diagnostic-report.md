@@ -35,11 +35,11 @@
 
 - `reproduction.FromStored`는 호스트 소유 `observed` 관측 중 실제 시각·실행·원본 Step·증거 참조가 모두 있는 행만 사용하며 저장 순서를 유지한다. E③는 저장 manifest의 owner read / cross read / 비교 snapshot을 독립 결속 검사한 뒤 투영한다. E③ manifest에 없는 HTTP 경로·일반 call ID는 공란으로 보존한다.
 - Step에는 task/entry/run/call/원본 Step/evidence version/evidence digest와 전체 정규화 관측의 SHA256 결속을 둔다. Step ID는 그 결속에서 결정한다. 내용·회차·증거가 바뀌면 이전 이미지를 재사용하지 않는다.
-- `db.Open`의 기존 advisory lock·DDL 재시도 안에서 추가 전용 `diagnostic_captures_v1.sql`을 적용한다. PNG는 기존 PostgreSQL의 보호된 BYTEA 행에 저장한다. 파일 경로·URL·SVG·base64 그래프 fact를 받는 공개 업로드 API는 없다.
-- 제품 runtime에는 해당 표의 SELECT/INSERT만 추가한다. 공개 API·모델 키 writer에는 캡처 쓰기 권한을 주지 않는다. 기존 E③ 발급·판정·감사 표는 수정하지 않는다. 구 역할이 새 표를 읽을 수 없으면 `storage_unavailable`을 명시한다.
-- `reportcapture.Collect` → sealed `Asset` → `DB.SaveDiagnosticCapture`는 현재 DB 근거에서 Step 결속을 다시 유도한 뒤 추가한다. 동일 결속의 결과를 덮어쓰지 않는다. 이미지 최대 1 MiB·4096변·8백만 픽셀, 승인 영역 최대 16개다. PNG는 재인코딩하며 조회·출력 때 digest/크기/정적 PNG chunk를 검증한다. 보고서 전체 이미지도 기존 16 MiB 출력 상한 안에서 제한한다.
-- 캡처 상태: 행 없음 `not_captured`, adapter/비민감 영역 승인 없음 `not_supported`, Source 실패 `failed`, 읽기 권한/저장소 없음 `storage_unavailable`, 공유 사본 `shared_omitted`. 오래된 증거는 재현 Step·이미지·프롬프트를 반환하지 않는다.
-- 조회는 `GET /api/report/diagnostic?task=<id>&audience=internal|shared&format=html|docx`. 기본은 기존 공유 HTML이다. PNG 조회는 `/api/report/diagnostic/image?task=<id>&audience=internal&entry=<id>&step=<id>&digest=<image-sha256>`이며 동일 권한·현재 버전을 검사한다. 응답은 no-store, nosniff와 비활성 CSP를 유지한다.
+- `db.Open`의 기존 advisory lock·DDL 재시도 안에서 버전 있는 `diagnostic_captures_v1.sql`을 적용한다. PNG는 기존 PostgreSQL의 보호된 BYTEA 행에 저장한다. 파일 경로·URL·SVG·base64 그래프 fact를 받는 공개 업로드 API는 없다.
+- 제품 runtime에는 해당 표의 SELECT/INSERT와 캡처 결과 열에 한정한 UPDATE를 추가한다. 결속 열·DELETE·TRUNCATE 권한은 주지 않는다. 공개 API·모델 키 writer에는 캡처 쓰기 권한을 주지 않는다. 기존 E③ 발급·판정·감사 표는 수정하지 않는다. 구 역할이 새 표를 읽을 수 없으면 `storage_unavailable`을 명시한다.
+- `reportcapture.Collect` → sealed `Asset` → `DB.SaveDiagnosticCapture`는 현재 DB 근거에서 Step 결속을 다시 유도한 뒤 추가한다. 실패·미지원 상태는 현재 근거를 다시 확인한 뒤 성공으로 한 번 승격할 수 있다. 반복 실패는 멱등이며, 성공 캡처는 재수집으로 덮어쓰지 않는다. DB trigger는 성공 행 UPDATE·직접 DELETE·TRUNCATE와 결속 변경을 거부한다(기존 부모 task 삭제 cascade는 보존). 이미지 최대 1 MiB·4096변·8백만 픽셀, 승인 영역 최대 16개다. PNG는 재인코딩하며 조회·출력 때 digest/크기/정적 PNG chunk를 검증한다. 텍스트 입력 16 MiB와 이미지는 별도 예산으로 검사한다. 내부 내보내기의 이미지 base64 예산은 4 MiB이며 넘는 이미지만 `capacity_omitted`(용량 초과로 생략)로 바꾸고 텍스트를 유지한다. 최종 파일 상한은 두 예산을 합친 20 MiB다.
+- 캡처 상태: 행 없음 `not_captured`, adapter/비민감 영역 승인 없음 `not_supported`, Source 실패 `failed`, 읽기 권한/저장소 없음 `storage_unavailable`, 공유 사본 `shared_omitted`, 이미지 예산 초과 `capacity_omitted`, 현재 결속·PNG 검증 실패 `binding_invalid`. 오래된 증거는 재현 Step·이미지·프롬프트를 반환하지 않는다.
+- 조회는 `GET /api/report/diagnostic?task=<id>&audience=internal|shared&format=html|docx`. 기본은 기존 공유 HTML이다. PNG 조회는 `/api/report/diagnostic/image?task=<id>&audience=internal&entry=<id>&step=<id>&digest=<image-sha256>`이며 동일 권한·현재 버전을 검사한다. 재시작한 보고서 전용 handler에도 같은 GET을 등록한다. 조치 목록과 공유 내보내기는 PNG blob을 읽지 않고, 이미지 GET은 선택 entry의 현재 근거와 해당 이미지 한 행만 읽는다. 응답은 no-store, nosniff와 비활성 CSP를 유지한다.
 - 개요의 승인 URL·모델 정책은 보호된 preparation service의 `AuthorizeTask`가 돌려준 해당 Job Scope만 사용한다. 모델 사용량은 실제 `llm_usage` 행을 별도 표시하고 기록 부재를 NOT_RUN으로 추정하지 않는다.
 - 조치는 기존 명시적 POST와 CAS·영속 Bundle을 쓴다. 생성기 `remediation-v6`는 추가된 실제 E③ 단계와 Method를 반영한다. 이전 저장본은 기존 stale 검증으로 차단한다. Workbench 복사는 서버가 재검증한 entry/record/input digest/전체 프롬프트가 표시 저장본과 같을 때만 수행한다.
 
@@ -67,3 +67,11 @@ DOCX는 Go 표준 ZIP/XML 생성기로 A4·맑은 고딕·청회색 표·5장 �
 초기 웹/평가 시험의 샌드박스 listen EPERM은 로컬 시험 권한으로 재실행해 해소했다. Chrome에서 발견한 공용 다운로드 클라이언트의 HTML 전용 형식 검사를 지정 MIME(HTML/DOCX/PNG) 검사로 확장하고, 형식 불일치 차단과 이미지 해시 검사를 회귀 시험에 추가했다. 생성 문서·PNG·인증 상태·로그·DB 자료·원본 Word 양식은 커밋하지 않는다. UI 수용 화면은 진단 캡처 증거로 사용하지 않는다.
 
 DB/E③ 저장·권한은 최민준, Workbench 상세·복사는 이경준·윤재상의 담당 리뷰가 필요하다. Word 앱 표시 확인과 실제 E② Browser adapter 연결은 후속 수용 항목으로 남긴다. 이 PR을 자동 병합하지 않는다.
+
+## PR #373 리뷰 반영 — 2026-11-11
+
+- E③ manifest를 자기 자신과 비교하지 않는다. 불변 발급 행의 `binding_canonical`을 기대 Source로 읽고 task/run/case/intent/자원/정책/reset 세대 등 발급 열과 대조한 뒤, `e3record.DecodeBoundManifest`/`CheckManifest`를 보고서·저장 상세·접근통제 지도에서 공유한다. 원문 해시 검사도 유지한다.
+- 근거 하나의 로드/형식/결속 오류는 `source_load_failed`와 실패 건수로 보존한다. 잘못된 후보 payload는 안전한 항목 ID와 판단불가 자리표시자로 남기며 원문·재현·프롬프트를 제공하지 않는다. 일반 실행용 후보 조회의 엄격한 거부는 유지한다. SQL 오류는 savepoint로 격리하고 snapshot commit 실패·전체 한도·기본 자료의 해시 훼손은 정상 보고서로 수용하지 않는다.
+- 모든 항목의 첫 제목은 ‘① 판정과 영향’이다. 저장 상세 보고를 Workbench에서 다시 표시하고 비밀 마스킹을 유지한다. 도구 출력/Step 잘림, 기술 출처·상충, 사용자 보완과 관측, 모델 제안의 한계를 HTML·DOCX에서 함께 보존한다.
+- DOCX가 지원하지 않는 XML 제어 문자는 U+FFFD로 바꾸고 대체 건수를 기록한다. 원본 증거는 수정하지 않고 XML escaping·UTF-8·기본 DLP 검사는 유지한다.
+- 회귀 시험은 재시작 report-only handler의 실제 PNG, 실패/미지원→성공 재수집, 성공 행 불변성, 잘못된 발급 run/계정·manifest 버전의 항목별 격리, CRC가 유효한 PNG tEXt 거부, 이미지 예산 초과·공유 생략, Step 순번과 HTML/DOCX 경고 일치, UI 상세 복구·중립 제목을 포함한다. 실제 Browser Source·Word 앱 표시·유료 모델 수용과 구분한다.

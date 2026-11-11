@@ -65,7 +65,10 @@ func FromStored(task int64, entry string, version int64, digest string, context 
 		if _, e := time.Parse(time.RFC3339Nano, o.ObservedAt); e != nil {
 			continue
 		}
-		raw, _ := json.Marshal([]any{Version, task, entry, version, digest, o})
+		raw, err := json.Marshal([]any{Version, task, entry, version, digest, o})
+		if err != nil {
+			continue
+		}
 		sum := sha256.Sum256(raw)
 		binding := hex.EncodeToString(sum[:])
 		if seen[binding] {
@@ -74,7 +77,7 @@ func FromStored(task int64, entry string, version int64, digest string, context 
 		seen[binding] = true
 		method, path := o.Method, o.Endpoint
 		parts := strings.SplitN(path, " ", 2)
-		if len(parts) == 2 {
+		if len(parts) == 2 && validHTTPMethod(parts[0]) {
 			method, path = parts[0], parts[1]
 		}
 		if !strings.HasPrefix(path, "/") {
@@ -99,4 +102,12 @@ func Validate(step Step, version int64, digest string) error {
 		return fmt.Errorf("reproduction_binding_invalid")
 	}
 	return nil
+}
+
+func validHTTPMethod(method string) bool {
+	switch method {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
+		return true
+	}
+	return false
 }

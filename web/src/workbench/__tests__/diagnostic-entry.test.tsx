@@ -170,3 +170,38 @@ it("fetches images only on explicit view and rejects a mismatched image hash", a
   expect(create).not.toHaveBeenCalled();
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
 });
+
+it.each([
+  "review",
+  "unknown",
+  "not_executed",
+  "negative",
+])("keeps %s results neutral and preserves masked stored detail", (outcome) => {
+  const entry = {
+    ...fixture(),
+    outcome,
+    report: "저장된 owner-read → cross-read 단계; Authorization: Bearer synthetic-private-token",
+    truncated: true,
+  };
+  render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
+  expect(screen.getByRole("heading", { name: "① 판정과 영향" })).toBeVisible();
+  expect(screen.queryByText(/① 확인된 취약점/)).not.toBeInTheDocument();
+  expect(screen.getByText(/저장된 owner-read → cross-read 단계/)).toBeVisible();
+  expect(document.body.textContent).not.toContain("synthetic-private-token");
+  expect(screen.getByText(/실제 도구 출력이 잘렸습니다/)).toBeVisible();
+});
+
+it("reports source load failure without presenting generated steps or offering generation", () => {
+  const entry = {
+    ...fixture(),
+    outcome: "unknown",
+    source_load_failed: true,
+    available: false,
+    record: undefined,
+    steps: [],
+  };
+  render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
+  expect(screen.getByRole("alert")).toHaveTextContent("근거 불러오기 실패");
+  expect(screen.queryByRole("heading", { name: /Step 1/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" })).toBeDisabled();
+});
