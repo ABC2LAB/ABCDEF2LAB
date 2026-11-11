@@ -27,6 +27,7 @@ import (
 	"github.com/Autumn-27/artex/e2export"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/pathmask"
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/jackc/pgx/v5"
 )
@@ -68,6 +69,12 @@ func (r *standaloneReadinessFixture) CheckReady(context.Context) error {
 
 func standaloneFixture(t *testing.T, target string, realHelper bool, adjust ...func(*E2HTTPFilePolicy)) (*E2StandaloneBackend, *standaloneReadinessFixture, E2HTTPFilePolicy) {
 	t.Helper()
+	return standaloneFixtureWithPathKey(t, target, realHelper, nil, adjust...)
+}
+
+// pathKey가 있으면 수용시험 회차 설정(e2config v2, path_key_file)으로 만든다.
+func standaloneFixtureWithPathKey(t *testing.T, target string, realHelper bool, pathKey []byte, adjust ...func(*E2HTTPFilePolicy)) (*E2StandaloneBackend, *standaloneReadinessFixture, E2HTTPFilePolicy) {
+	t.Helper()
 	host, _, p := e2HostPolicyFixture(t)
 	if target != "" {
 		p.Rules[0].Origin = target
@@ -108,6 +115,12 @@ func standaloneFixture(t *testing.T, target string, realHelper bool, adjust ...f
 		t.Fatal(err)
 	}
 	config := e2config.Config{Format: e2config.Format, EvalRunID: "eval-fixture", ReservationRef: "reservation-fixture", ModelTag: "model-fixture", HeaderMode: string(p.HeaderMode), PolicyFile: filepath.Base(host.PolicyFile), AuditKeyFile: p.AuditKey.File, Listen: ":18432", Upstream: "http://eval-meter-upstream:18432", EvidenceDir: firstDiagnosisPrivateTemp(t), ControlDir: e2ControlPrivateTestDir(t)}
+	if pathKey != nil {
+		config.Format, config.PathKeyFile = e2config.FormatPathKey, "path.key"
+		if os.WriteFile(filepath.Join(host.AuthorityRoot, "path.key"), pathKey, 0600) != nil {
+			t.Fatal("path key write")
+		}
+	}
 	wire, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
@@ -269,6 +282,10 @@ func TestE2StandaloneActualRunnerAllowDenyAndExport(t *testing.T) {
 	manifest, err := os.ReadFile(filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, "manifest.json"))
 	if err != nil || !bytes.Contains(manifest, []byte(reset)) {
 		t.Fatal("manifest reset binding")
+	}
+	// 공식 회차 설정(v1)에는 시도 경로 투영이 없다.
+	if _, err := os.Stat(filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, E2AttemptPathsFile)); !os.IsNotExist(err) {
+		t.Fatal("v1 configuration wrote attempt paths")
 	}
 	matched := false
 	for _, line := range bytes.Split(journal, []byte{'\n'}) {
@@ -891,4 +908,73 @@ func TestE2StandaloneAcquisitionRejectsResetMismatchAtBackend(t *testing.T) {
 	if err := target.onAcquire(t.Context(), acquired); !errors.Is(err, ErrE2Control) || target.acquired != nil || target.publisher != nil {
 		t.Fatal("mismatched reset passed backend acquisition boundary")
 	}
+}
+
+// 수용시험 회차(v2)는 감사 저널의 모든 결과 시도마다 한 행씩, 계측기와 같은 규칙·같은 키로 가린 경로를 남긴다.
+func TestE2StandaloneWritesAttemptPathsForPathKeyConfig(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("비특권 Linux 격리 시험")
+	}
+	probe := exec.CommandContext(t.Context(), "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount", "--net", "--ipc", "--uts", "true")
+	if out, err := probe.CombinedOutput(); err != nil {
+		if bytes.Contains(out, []byte("Operation not permitted")) {
+			t.Skip("사용자 namespace 환경 차단")
+		}
+		t.Fatal("namespace probe")
+	}
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("fixture")) }))
+	defer target.Close()
+	key := bytes.Repeat([]byte{37}, pathmask.KeyBytes)
+	b, _, p := standaloneFixtureWithPathKey(t, target.URL, true, key)
+	if b.BindReset(t.Context(), strings.Repeat("a", 64)) != nil {
+		t.Fatal("bind")
+	}
+	q := E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 23, IntentID: 17}
+	// 제품 기본 거부 한도(2)에 닿지 않게 거부는 한 번만 보낸다. 같은 경로 반복은 단위 시험이 본다.
+	for _, path := range []string{"/allowed/item", "/denied/jimsmithexample"} {
+		if r, err := b.Execute(t.Context(), q, "curl --silent --max-time 2 '"+target.URL+path+"' >/dev/null"); err != nil || !r.Trusted.Final {
+			t.Fatalf("runner final=%t err=%v", r.Trusted.Final, err)
+		}
+	}
+	if _, err := b.CloseAdmission(t.Context(), "close-one"); err != nil {
+		t.Fatal(err)
+	}
+	if final, err := b.Finalize(t.Context(), "close-one"); err != nil || final.State != "complete" {
+		t.Fatalf("final=%+v err=%v", final, err)
+	}
+	journal, err := os.ReadFile(filepath.Join(p.StateDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions := map[float64]string{}
+	for _, line := range bytes.Split(journal, []byte{'\n'}) {
+		var row struct {
+			Record *struct{ Event e2proxy.Event }
+		}
+		if json.Unmarshal(line, &row) == nil && row.Record != nil && row.Record.Event.Stage == "result" {
+			decisions[float64(row.Record.Event.Sequence)] = row.Record.Event.Decision
+		}
+	}
+	rows := readAttemptPathRows(t, filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, E2AttemptPathsFile))
+	if len(rows) != len(decisions) || len(rows) != 2 {
+		t.Fatalf("rows %d journal results %d", len(rows), len(decisions))
+	}
+	denied := 0
+	for _, r := range rows {
+		seq := r["sequence"].(float64)
+		if decisions[seq] == "" || decisions[seq] != r["decision"] || r["path_key_ref"] != pathmask.KeyRef(key) {
+			t.Fatalf("row does not match journal: %v (%s)", r, decisions[seq])
+		}
+		if r["decision"] == "denied" {
+			denied++
+			if pattern, _ := pathmask.Mask("/denied/jimsmithexample", key); r["path_pattern"] != pattern {
+				t.Fatalf("denied pattern %v", r["path_pattern"])
+			}
+		}
+	}
+	raw, _ := os.ReadFile(filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, E2AttemptPathsFile))
+	if denied != 1 || bytes.Contains(raw, []byte("jimsmithexample")) || bytes.Contains(raw, []byte("denied/")) {
+		t.Fatalf("denied=%d or raw path leaked", denied)
+	}
+	b.publisher.Dispose()
 }
