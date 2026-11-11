@@ -921,7 +921,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	e := c.e
 	requestHost, hostOK := preservedRequestHost(req)
-	if !hostOK || !identityEncoding(req.Header, "Accept-Encoding") || !e.callerCredentialsAllowed(req.Header) {
+	if !hostOK || !e.callerCredentialsAllowed(req.Header) {
 		r.Decision = "unsupported"
 		r.Reason = Unsupported
 		return finish(nil, ErrDenied)
@@ -957,6 +957,8 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Decision, r.Reason = "unsupported", Unsupported
 		return finish(nil, ErrDenied)
 	}
+	// 승인 제안·송신이 모두 실제로 보낼 값을 보도록 규칙 제약 검사 뒤, 승인 전에 바꾼다.
+	identityAcceptEncoding(requestHeaders)
 	// Consume the caller's bounded body before admission; it never reaches audit.
 	var body []byte
 	if req.Body != nil {
