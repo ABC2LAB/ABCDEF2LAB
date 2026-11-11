@@ -18,7 +18,7 @@ import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
 import { prettyEvidence } from "../views/live/UrlLiveLive";
-import { WorkflowScopeLive } from "../views/live/workflowViews";
+import { WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -153,6 +153,20 @@ describe("범위 확인", () => {
     for (const b of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ })) expect(b).toBeEnabled();
     // 묶음을 AI 추정이라고 부르지 않는다
     expect(screen.queryByText(/AI 추정/)).toBeNull();
+  });
+});
+
+describe("자산 탐색", () => {
+  it("찾은 경로는 묶음 카드로만 보이고 '주소 구조' 보기 전환은 없다 (시안 v32)", () => {
+    useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("radiogroup", { name: "보이는 경로" })).toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup", { name: "보기 방식" })).toBeNull();
+    expect(screen.queryByText("주소 구조")).toBeNull();
   });
 });
 
