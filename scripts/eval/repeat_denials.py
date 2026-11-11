@@ -67,7 +67,8 @@ def _audit_refusals(attempts: bytes) -> list[dict]:
             row = json.loads(line.decode("utf-8"))
         except (UnicodeError, ValueError):
             raise AttemptPathsError("e2_attempts_invalid") from None
-        if not isinstance(row, dict):
+        if not isinstance(row, dict) or any(not isinstance(row.get(name, ""), str) for name in ("stage", "decision", "reason", "method", "rule_ref")):
+            # 묶음 키로 쓰는 칸이 문자열이 아니면 해시할 수 없어 정해진 오류 대신 TypeError가 난다.
             raise AttemptPathsError("e2_attempts_invalid")
         if row.get("stage") == "result" and row.get("decision") in REFUSALS:
             rows.append(row)

@@ -107,10 +107,14 @@ class TestRepeatDenials(unittest.TestCase):
         target.write_bytes(b"{}\n")
         os.symlink(target, directory / "attempts.jsonl")
         self.assertEqual(summarize_round(directory, REF)["rule_refs"]["reason"], "e2_copy_unreadable")
-        broken = copy_dir(self.base)
-        os.unlink(broken / "attempts.jsonl")
-        write(broken, "attempts.jsonl", b"not json\n")
-        self.assertEqual(summarize_round(broken, REF)["rule_refs"]["reason"], "e2_attempts_invalid")
+        for bad in (b"not json\n", b"[]\n", b'{"stage": "result", "decision": [], "reason": "policy_denied"}\n',
+                    b'{"stage": "result", "decision": "denied", "reason": {}}\n', b'{"stage": "result", "decision": "denied", "rule_ref": ["r"]}\n'):
+            with self.subTest(bad=bad):
+                broken = copy_dir(self.base)
+                os.unlink(broken / "attempts.jsonl")
+                write(broken, "attempts.jsonl", bad)
+                got = summarize_round(broken, REF)
+                self.assertEqual((got["rule_refs"]["reason"], got["paths"]["reason"]), ("e2_attempts_invalid", "e2_attempts_invalid"))
 
 
 if __name__ == "__main__":
