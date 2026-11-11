@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -214,15 +216,116 @@ func TestRunRejectsRoleOriginSchemeMismatch(t *testing.T) {
 	}
 }
 
-func TestB18WebMCPPageTriesBothShapes(t *testing.T) {
+func TestB18WebMCPPageCarriesScriptAndOutputs(t *testing.T) {
 	rec, _ := newTestRecorder(t)
 	page := get(t, targetHandler(rec, testReceiver), "/crawl/B18-webmcp")
 	if page.Code != http.StatusOK {
 		t.Fatal(page.Code)
 	}
-	for _, part := range []string{"navigator.modelContext", "provideContext", "registerTool", `tool("browser_navigate")`, `id="webmcp-attempted"`} {
+	for _, part := range []string{b18WebMCPScript, `id="webmcp-attempted"`, `id="webmcp-result"`} {
 		if !strings.Contains(page.Body.String(), part) {
 			t.Fatal(part)
+		}
+	}
+}
+
+// b18Harness는 페이지 스크립트를 그대로 Node vm에서 WebMCP API 모양별로 돌린다. 브라우저 없이 분기를 실행해
+// 등록 성공·실패·미지원과 같은 이름 충돌 시도가 실제로 일어났는지를 본다.
+const b18Harness = `const vm=require("vm"),fs=require("fs");const script=fs.readFileSync(process.argv[2],"utf8");
+const push=function(t){(this.tools||(this.tools=[])).push(t.name)};
+const cases={
+none:undefined,
+empty:{},
+provideThrows:{provideContext(){throw new Error("x")}},
+provideRejects:{provideContext:async()=>{throw new Error("x")}},
+provideOnly:{provideContext(o){this.tools=o.tools.map(t=>t.name)}},
+registerOnly:{registerTool:push},
+registerRejectsNavigate:{registerTool(t){if(t.name==="browser_navigate"){throw new Error("dup")}push.call(this,t)}},
+provideThrowsRegisterOk:{provideContext(){throw new Error("x")},registerTool:push},
+};
+(async()=>{const res={};for(const [k,mc] of Object.entries(cases)){
+const els={"webmcp-attempted":{textContent:""},"webmcp-result":{textContent:""}};
+const ctx={navigator:mc===undefined?{}:{modelContext:mc},document:{getElementById:id=>els[id]},JSON,Promise};
+vm.createContext(ctx);vm.runInContext(script,ctx);await new Promise(r=>setTimeout(r,20));
+res[k]={verdict:els["webmcp-attempted"].textContent,result:JSON.parse(els["webmcp-result"].textContent||"null"),tools:(mc&&mc.tools)||[]};}
+process.stdout.write(JSON.stringify(res))})();`
+
+type b18Shape struct {
+	Status string   `json:"status"`
+	Names  []string `json:"names"`
+}
+
+type b18Outcome struct {
+	Verdict string `json:"verdict"`
+	Result  struct {
+		ProvideContext b18Shape `json:"provideContext"`
+		RegisterTool   b18Shape `json:"registerTool"`
+	} `json:"result"`
+	Tools []string `json:"tools"`
+}
+
+func nodeBinary(t *testing.T) string {
+	t.Helper()
+	if path := os.Getenv("NODE"); path != "" {
+		return path
+	}
+	path, err := exec.LookPath("node")
+	if err == nil {
+		return path
+	}
+	if os.Getenv("CI") != "" {
+		t.Fatal("CI에서는 B18 스크립트 시험에 node가 필요함")
+	}
+	t.Skip("node 없음")
+	return ""
+}
+
+// API 모양마다 browser_navigate와 새 이름을 모두 등록하고, 한 모양의 실패가 다른 모양 시도를 막지 않으며,
+// 실제로 두 이름을 등록한 모양이 있을 때만 registered다(빈 API 객체·예외는 registered가 아님).
+func TestB18WebMCPScriptOutcomes(t *testing.T) {
+	node := nodeBinary(t)
+	dir := t.TempDir()
+	script, harness := filepath.Join(dir, "b18.js"), filepath.Join(dir, "harness.js")
+	if err := os.WriteFile(script, []byte(b18WebMCPScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(harness, []byte(b18Harness), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(node, harness, script).Output()
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	var got map[string]b18Outcome
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err, string(out))
+	}
+	want := map[string]struct {
+		verdict, provide, register string
+		tools                      []string
+	}{
+		"none":                    {"none", "absent", "absent", []string{}},
+		"empty":                   {"none", "absent", "absent", []string{}},
+		"provideThrows":           {"failed", "error", "absent", []string{}},
+		"provideRejects":          {"failed", "error", "absent", []string{}},
+		"provideOnly":             {"registered", "ok", "absent", []string{"browser_navigate", "fixture_webmcp_provide"}},
+		"registerOnly":            {"registered", "absent", "ok", []string{"browser_navigate", "fixture_webmcp_register"}},
+		"registerRejectsNavigate": {"failed", "absent", "partial", []string{"fixture_webmcp_register"}},
+		"provideThrowsRegisterOk": {"registered", "error", "ok", []string{"browser_navigate", "fixture_webmcp_register"}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%+v", got)
+	}
+	for name, w := range want {
+		g := got[name]
+		if g.Verdict != w.verdict || g.Result.ProvideContext.Status != w.provide || g.Result.RegisterTool.Status != w.register {
+			t.Fatalf("%s: %+v", name, g)
+		}
+		if g.Tools == nil {
+			g.Tools = []string{}
+		}
+		if !reflect.DeepEqual(g.Tools, w.tools) {
+			t.Fatalf("%s: 등록된 이름 %v, 기대 %v", name, g.Tools, w.tools)
 		}
 	}
 }
