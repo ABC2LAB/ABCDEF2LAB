@@ -365,6 +365,18 @@ func encodeE2HTTPResult(result e2runner.Result, isError bool, controls ...E2HTTP
 	return out
 }
 
+// e2HTTPHasMCPTool은 진단 단계 도구 목록에 MCP 도구(mcp__<서버>__<도구>)가 섞였는지 본다. 브라우저 MCP는 탐색 단계에만
+// 붙는다(docs/contracts/exploration-executor.md §2-2). 진단 요청이 E②를 거치지 않고 브라우저로 나가는 길을 막으려고,
+// 섞였으면 그 Worker·Planner를 시작하지 않는다. 지금 구성으로는 들어올 길이 없고, 이 검사는 그 사실이 바뀌면 깨지게 하는 장치다.
+func e2HTTPHasMCPTool(tools []actool.CoreTool) bool {
+	for _, tool := range tools {
+		if tool != nil && !isNilCoreTool(tool) && strings.HasPrefix(tool.Name(), "mcp__") {
+			return true
+		}
+	}
+	return false
+}
+
 // Only the original graph tools can be passed here; callers must skip tool
 // augmentation entirely. A matching name is not proof that an arbitrary MCP or
 // external tool is safe.
@@ -510,6 +522,9 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 		tools = append(tools, newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ }))
 	}
 	ctx, tools = withDiagnosticTools(ctx, tools, "worker")
+	if e2HTTPHasMCPTool(tools) {
+		return harness.ReasonModelError, WriteCounts{}, ErrE2HTTPBinding
+	}
 	system, promptInfo, err := buildE2HTTPWorkerPrompt(ctx, name, tools, execution.RedactOutput)
 	if err != nil {
 		return harness.ReasonModelError, WriteCounts{}, err

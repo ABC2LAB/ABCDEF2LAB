@@ -208,6 +208,15 @@ class EngineNamespaceListen(unittest.TestCase):
         published = services["preparation"]["ports"]
         self.assertEqual([(p["host_ip"], str(p["target"])) for p in published], [("127.0.0.1", port)])
 
+    def test_engine_joins_the_exploration_control_network_without_listening(self):
+        # 엔진은 탐색 제어망에서 MCP 클라이언트로 나가기만 한다. 그 망에 붙은 서비스는 엔진과 브라우저 샌드박스뿐이다.
+        services = self.config["services"]
+        self.assertIn("explore_control", services["preparation"]["networks"])
+        members = {name for name, spec in services.items() if "explore_control" in (spec.get("networks") or {})}
+        self.assertEqual(members, {"preparation"})
+        listen = services["workbench"]["command"][services["workbench"]["command"].index("-listen") + 1]
+        self.assertNotIn(listen.rpartition(":")[0], ("", "0.0.0.0", "::"))
+
     def test_engine_loopback_listeners_stay_loopback(self):
         source = (ROOT / "cmd/first-controlled-diagnosis/product_install_linux.go").read_text(encoding="utf-8")
         listens = re.findall(r'(?:ListenAddr|ReportListenAddr)(?::\s*|\s*=\s*)"([^"]+)"', source)
