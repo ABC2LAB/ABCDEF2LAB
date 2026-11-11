@@ -99,7 +99,10 @@ function RailSection({
   );
 }
 
-/** 진행 중 / 끝난 점검. 이 브라우저가 이어 보는 진단 한 줄을 알맞은 묶음에 둔다(결과 불명은 끝난 것으로 두지 않는다). */
+/**
+ * 진행 중 / 끝난 점검. 이 브라우저가 이어 보는 진단 한 줄을 알맞은 묶음에 둔다(결과 불명은 끝난 것으로 두지 않는다).
+ * 줄을 누르면 점검 기록 화면으로 간다 (시안 v27). 점검 기록이나 이 점검의 화면을 보고 있으면 현재 표시를 단다.
+ */
 export function LiveRailTasks() {
   const { route, goTo } = useShell();
   const handle = useUrl((st) => st.handle);
@@ -108,14 +111,14 @@ export function LiveRailTasks() {
   const sub = useRowSub();
   const ended = !!job && URL_ENDED_STATES.includes(job.state);
   const to: View = job ? scanViewFor(job, stage) : "live";
-  const here = to === "new" ? route === "new" : SCAN_VIEWS.includes(route);
+  const here = route === "records" || (to === "new" ? route === "new" : SCAN_VIEWS.includes(route));
   const row = handle ? (
     <button
       className={s.rs}
       type="button"
       data-url-job={job?.id ?? ""}
       aria-current={here ? "true" : undefined}
-      onClick={() => goTo(to)}
+      onClick={() => goTo("records")}
     >
       <span className={s.mk} aria-hidden="true" />
       <span className={s.host}>{urlHost(handle.input.target_url)}</span>

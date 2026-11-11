@@ -21,9 +21,10 @@ export function Rail() {
   return (
     <aside className={cx(s.rail, railOpen && s.open)} id="rail" aria-label="주 메뉴">
       <div className={s["rail-top"]}>
-        <a className={s.brand} href="#dashboard" title={tip("ABC2LAB")}>
+        {/* 솔루션 이름 JinDo (화면 표시만 · 엔진 계정 이름 · 저장 키는 그대로) */}
+        <a className={s.brand} href="#dashboard" title={tip("JinDo")}>
           <BrandMark />
-          <span className={s.rlbl}>ABC2LAB</span>
+          <span className={s.rlbl}>JinDo</span>
         </a>
         {/* 휴대폰보다 넓은 화면: 레일을 아이콘 줄로 접고 · 같은 버튼으로 다시 펼친다 */}
         <button

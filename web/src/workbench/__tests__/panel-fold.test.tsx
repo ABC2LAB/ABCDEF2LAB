@@ -34,7 +34,14 @@ vi.mock("../views/live/byMode", async () => {
       </div>
     </>
   );
-  return { DashboardByMode: View, NewScanByMode: View, ScopeByMode: View, LiveByMode: View, ReportByMode: View };
+  return {
+    DashboardByMode: View,
+    RecordsByMode: View,
+    NewScanByMode: View,
+    ScopeByMode: View,
+    LiveByMode: View,
+    ReportByMode: View,
+  };
 });
 vi.mock("../views/live/UrlAssetsLive", () => ({ UrlAssetsLive: () => null }));
 
