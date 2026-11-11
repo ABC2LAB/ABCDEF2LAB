@@ -153,12 +153,25 @@ export function UrlRecordsLive() {
   const doneOk = (k: DoneKind | "all") => hasDone && (k === "all" || doneKinds.includes(k));
 
   // 레일에서 이 화면으로 오면, 이어 보는 점검이 필터에 가려져 있을 때 그 칸 필터만 푼다 (렌더 중 상태 맞추기)
+  // 끝난 점검은 보고서를 읽는 중이면 묶음을 아직 모르므로, 해제 판단을 보류했다가 보고서가 오면 한 번만 다시 판단한다.
+  // 그 사이 사용자가 끝난 점검 필터를 직접 고르면 보류를 버린다(사용자가 고른 필터를 조회마다 초기화하지 않게).
   const [seenNav, setSeenNav] = useState(navSeq);
+  const [revealDone, setRevealDone] = useState(false);
   if (seenNav !== navSeq) {
     setSeenNav(navSeq);
     if (visible && hasRun && !runOk(runF)) setRunF("all");
-    if (visible && hasDone && !doneLoading && !doneOk(doneF)) setDoneF("all");
+    if (visible && hasDone) {
+      if (doneLoading) setRevealDone(true);
+      else if (!doneOk(doneF)) setDoneF("all");
+    }
+  } else if (revealDone && !doneLoading) {
+    setRevealDone(false);
+    if (hasDone && !doneOk(doneF)) setDoneF("all");
   }
+  const pickDone = (k: DoneKind | "all") => {
+    setRevealDone(false);
+    setDoneF(k);
+  };
 
   const refresh = () => {
     if (g.canRefresh) void runUrlAction("refresh");
@@ -264,7 +277,7 @@ export function UrlRecordsLive() {
             <div className={cx(s.sh, s["rec-sh"])}>
               <div className={s["rec-ht"]}>
                 <h2 id="recDoneH">끝난 점검</h2>
-                <Chips label="끝난 점검 거르기" chips={DONE_CHIPS} value={doneF} count={doneCount} onPick={setDoneF} />
+                <Chips label="끝난 점검 거르기" chips={DONE_CHIPS} value={doneF} count={doneCount} onPick={pickDone} />
               </div>
               <span className={s.n}>{ofText(doneShown, hasDone, doneF)}</span>
             </div>

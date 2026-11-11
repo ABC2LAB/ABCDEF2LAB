@@ -269,6 +269,66 @@ describe("점검 기록 화면", () => {
     expect(goTo).toHaveBeenCalledWith("dashboard");
   });
 
+  it("보고서를 읽는 중에 레일로 오면 해제를 보류했다가, 늦게 온 보고서로 가려지면 한 번만 끝난 점검 필터를 푼다", async () => {
+    // 보고서 응답을 늦춘다
+    let answer: (v: api.Remediation) => void = () => undefined;
+    vi.mocked(api.fetchRemediation).mockImplementation(
+      () =>
+        new Promise<api.Remediation>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    useUrl.setState({ handle, job: completed, verified: true });
+    const view = (navSeq: number) => (
+      <ShellContext.Provider value={shell("records", { navSeq })}>
+        <UrlRecordsLive />
+      </ShellContext.Provider>
+    );
+    const { rerender } = render(view(1));
+    const done = screen.getByRole("region", { name: "끝난 점검" });
+    await waitFor(() => expect(api.fetchRemediation).toHaveBeenCalledTimes(1));
+    expect(chip(done, "발견 없음")).toHaveTextContent("—");
+    // 이전에 고른 필터('발견 없음')를 둔 채, 보고서를 읽는 중에 레일로 다시 들어온다
+    fireEvent.click(chip(done, "발견 없음"));
+    rerender(view(2));
+    expect(chip(done, "발견 없음")).toHaveAttribute("aria-pressed", "true");
+    // 후보가 있는 보고서가 늦게 오면: 지금 점검은 '검토 필요' 라 '발견 없음' 에 가려진다 → 필터를 푼다
+    answer({ task_id: 42, entries: [candidate(1)] });
+    await waitFor(() => expect(chip(done, "전체")).toHaveAttribute("aria-pressed", "true"));
+    expect(within(done).getByRole("button", { name: /target\.example/ })).toBeInTheDocument();
+    expect(chip(done, "검토 필요")).toHaveTextContent("1");
+    // 그 뒤 사용자가 직접 고른 필터는 다시 풀지 않는다
+    fireEvent.click(chip(done, "발견 없음"));
+    rerender(view(2));
+    expect(chip(done, "발견 없음")).toHaveAttribute("aria-pressed", "true");
+    expect(within(done).queryByRole("button", { name: /target\.example/ })).toBeNull();
+  });
+
+  it("보고서를 읽는 중에 레일로 왔어도, 그 사이 사용자가 끝난 점검 필터를 직접 고르면 보류한 해제를 버린다", async () => {
+    let answer: (v: api.Remediation) => void = () => undefined;
+    vi.mocked(api.fetchRemediation).mockImplementation(
+      () =>
+        new Promise<api.Remediation>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    useUrl.setState({ handle, job: completed, verified: true });
+    const view = (navSeq: number) => (
+      <ShellContext.Provider value={shell("records", { navSeq })}>
+        <UrlRecordsLive />
+      </ShellContext.Provider>
+    );
+    const { rerender } = render(view(1));
+    const done = screen.getByRole("region", { name: "끝난 점검" });
+    await waitFor(() => expect(api.fetchRemediation).toHaveBeenCalledTimes(1));
+    rerender(view(2));
+    fireEvent.click(chip(done, "발견 있음"));
+    answer({ task_id: 42, entries: [candidate(1)] });
+    await waitFor(() => expect(chip(done, "검토 필요")).toHaveTextContent("1"));
+    expect(chip(done, "발견 있음")).toHaveAttribute("aria-pressed", "true");
+    expect(within(done).getByText("이 결과의 끝난 점검이 없습니다.")).toBeInTheDocument();
+  });
+
   it("이어 보는 점검이 없으면 두 칸 모두 빈 안내와 새 점검 링크", () => {
     render(
       <ShellContext.Provider value={shell("records")}>
