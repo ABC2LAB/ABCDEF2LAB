@@ -1938,6 +1938,7 @@ select.inp {
 .formbar {
   position: sticky;
   bottom: 0;
+  z-index: 2;
   margin-top: -6px;
   padding: 12px 0;
   border-top: 1px solid var(--rule);
@@ -3078,6 +3079,28 @@ button.smm:hover {
   font-family: var(--mono);
   font-size: 12px;
 }
+/* 점검 기록: 진행 중 · 끝난 점검 제목 옆에 칸마다 필터 (시안 v30) */
+.rec-sh {
+  align-items: center;
+}
+.rec-ht {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+.rec-ht .filters {
+  gap: 6px;
+}
+.rec-ht .fchip {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+.rec-ht .fchip .c {
+  font-size: 11.5px;
+}
 .search {
   flex: 1 1 180px;
   max-width: 260px;
@@ -3896,6 +3919,15 @@ button.smm:hover {
   }
   .formbar {
     display: flex;
+  }
+}
+/*
+ * 휴대폰보다 넓으면 .vm 이 스크롤 칸이라, sticky 줄이 칸의 아래 여백(padding-block 끝 64px)만큼 위에 붙어
+ * 그 아래로 내용이 비쳐 보였다 → 여백만큼 내려 칸 맨 아래에 붙인다. 끝까지 내리면 제자리(여백 위)에 놓인다.
+ */
+@media (min-width: 760px) {
+  .formbar {
+    bottom: -64px;
   }
 }
 /* 휴대폰: 레일은 왼쪽 서랍, 화면은 한 줄로 */

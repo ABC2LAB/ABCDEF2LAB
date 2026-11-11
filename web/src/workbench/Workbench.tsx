@@ -1,6 +1,6 @@
 "use client";
 
-// 작업대 루트: 노란 배너 · 레일 · 여섯 화면 section · 스크림 · 재생 엔진 · 해시 라우터.
+// 작업대 루트: 노란 배너 · 레일 · 일곱 화면 section · 스크림 · 재생 엔진 · 해시 라우터.
 // 원본의 route() · goTo · openInsp/closeInsp · openRail/closeRail · dashPick · Esc · 강조색 복원을 맡는다.
 // window · location · matchMedia · localStorage 는 렌더 중에 건드리지 않고 effect·이벤트에서만 쓴다(SSR 사전 렌더).
 // 데이터 원천(live/source): demo 면 시안 화면, live 면 같은 자리에 <LiveGate> 로 감싼 실제 엔진 화면을 그린다.
@@ -15,7 +15,14 @@ import { isView, type Shell, ShellContext, type View } from "./shell";
 import { type DSel, type Panel, useWb } from "./store";
 import { Icon } from "./ui/icons";
 import { Rail } from "./ui/Rail";
-import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "./views/live/byMode";
+import {
+  DashboardByMode,
+  LiveByMode,
+  NewScanByMode,
+  RecordsByMode,
+  ReportByMode,
+  ScopeByMode,
+} from "./views/live/byMode";
 import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
 import s from "./workbench.module.css";
 
@@ -334,6 +341,7 @@ export function Workbench() {
           <Rail />
           <main className={s.work}>
             {section("dashboard", pick("대시보드", <DashboardByMode />))}
+            {section("records", pick("점검 기록", <RecordsByMode />))}
             {section("new", pick("새 점검", <NewScanByMode />))}
             {section("crawl", pick("자산 탐색", <UrlAssetsLive />))}
             {section("scope", pick("범위 확인", <ScopeByMode />))}

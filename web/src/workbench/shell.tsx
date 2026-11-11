@@ -7,9 +7,9 @@ import { createContext, useContext } from "react";
 
 import type { DSel } from "./store";
 
-/** 여섯 화면 (해시 이름 = data-view). */
-export type View = "dashboard" | "new" | "crawl" | "scope" | "live" | "report";
-export const VIEWS: readonly View[] = ["dashboard", "new", "crawl", "scope", "live", "report"];
+/** 일곱 화면 (해시 이름 = data-view). records = 점검 기록 (레일에서 점검을 누르면 오는 목록). */
+export type View = "dashboard" | "records" | "new" | "crawl" | "scope" | "live" | "report";
+export const VIEWS: readonly View[] = ["dashboard", "records", "new", "crawl", "scope", "live", "report"];
 export function isView(h: string): h is View {
   return (VIEWS as readonly string[]).includes(h);
 }
