@@ -181,3 +181,36 @@ class ExploreBrowserEntrypoint(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EngineNamespaceListen(unittest.TestCase):
+    """엔진 netns(preparation, api·workbench가 공유)에는 모든 인터페이스에 여는 TCP 리슨이 없어야 한다.
+
+    엔진이 탐색 제어망(explore_control)에 붙을 때 그 망에 포트가 열리지 않게 하려는 조건이다(계약 §9-1).
+    preparation·api는 설치 설정에서 127.0.0.1에만 리슨하고(product_install_linux.go), workbench는 frontend 망 고정 주소에만 리슨한다.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.config = render()
+
+    def test_workbench_listens_only_on_the_frontend_address(self):
+        services = self.config["services"]
+        frontend = services["preparation"]["networks"]["frontend"]["ipv4_address"]
+        subnet = self.config["networks"]["frontend"]["ipam"]["config"][0]["subnet"]
+        self.assertIn(ipaddress.ip_address(frontend), ipaddress.ip_network(subnet))
+        command = services["workbench"]["command"]
+        listen = command[command.index("-listen") + 1]
+        host, _, port = listen.rpartition(":")
+        self.assertEqual(host, frontend)
+        self.assertEqual(services["workbench"]["network_mode"], "service:preparation")
+        self.assertIn(f"http://{frontend}:{port}/", " ".join(services["workbench"]["healthcheck"]["test"]))
+        published = services["preparation"]["ports"]
+        self.assertEqual([(p["host_ip"], str(p["target"])) for p in published], [("127.0.0.1", port)])
+
+    def test_engine_loopback_listeners_stay_loopback(self):
+        source = (ROOT / "cmd/first-controlled-diagnosis/product_install_linux.go").read_text(encoding="utf-8")
+        listens = re.findall(r'(?:ListenAddr|ReportListenAddr)(?::\s*|\s*=\s*)"([^"]+)"', source)
+        self.assertTrue(listens)
+        for listen in listens:
+            self.assertTrue(listen.startswith("127.0.0.1:"), listen)
