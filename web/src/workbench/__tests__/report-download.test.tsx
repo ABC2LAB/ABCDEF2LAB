@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { downloadDiagnostic } from "../live/api";
-import { Download } from "../views/live/ReportLive";
+import { Download } from "../views/live/UrlLiveLive";
 
 vi.mock("../live/api", async (original) => ({
   ...(await original<typeof import("../live/api")>()),

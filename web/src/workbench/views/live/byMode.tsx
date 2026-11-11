@@ -2,11 +2,11 @@
 import type { ReactNode } from "react";
 
 import { LoadingRow } from "../../live/parts";
-import { recheckUrl, useUrl, useUrlCapability } from "../../live/urlDiagnosis";
+import { recheckUrl, useUrlCapability } from "../../live/urlDiagnosis";
 import s from "../../workbench.module.css";
 import { UrlDashboardLive } from "./UrlDashboardLive";
 import { UrlLiveLive, UrlReportLive } from "./UrlLiveLive";
-import { UrlNewScanLive, UrlScopeLive } from "./UrlNewScanLive";
+import { UrlNewScanLive } from "./UrlNewScanLive";
 import { UrlHead } from "./urlParts";
 import { WorkflowScopeLive } from "./workflowViews";
 
@@ -45,14 +45,11 @@ export const DashboardByMode = () => (
     <UrlDashboardLive />
   </Supported>
 );
-export function ScopeByMode() {
-  const job = useUrl((st) => st.job);
-  return (
-    <Supported title="범위 확인">
-      {job?.input.workflow_mode && job.preparation_started ? <WorkflowScopeLive /> : <UrlScopeLive />}
-    </Supported>
-  );
-}
+export const ScopeByMode = () => (
+  <Supported title="범위 확인">
+    <WorkflowScopeLive />
+  </Supported>
+);
 export const LiveByMode = () => (
   <Supported title="점검 진행">
     <UrlLiveLive />

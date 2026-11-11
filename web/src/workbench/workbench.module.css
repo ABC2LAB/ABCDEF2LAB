@@ -21,6 +21,7 @@
   --rail-ink: #e4edf0;
   --rail-mut: #93a7b0;
   --rail-acc: #5cc8e4;
+  --rail-sel: #ff5a4e;
   --crit: #a3170f;
   --crit-bg: #fbe8e6;
   --hi: #c2321c;
@@ -431,12 +432,52 @@
   flex-direction: column;
   gap: 2px;
 }
+/* 레일 묶음 머리 (진행 중 · 끝난 점검): 누르면 아래 목록을 접고 펼친다 */
 .rh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  font: inherit;
   font-size: 12px;
   font-weight: 600;
   color: var(--rail-mut);
   letter-spacing: 0.04em;
-  padding: 0 10px 6px;
+  text-align: left;
+  padding: 5px 10px 5px 9px;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.rh:hover {
+  color: var(--rail-ink);
+  background: var(--rail-2);
+}
+.rh .ic {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.2;
+  transition: transform 0.15s ease;
+}
+.rh[aria-expanded="true"] .ic {
+  transform: rotate(90deg);
+}
+.rh .c {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 11.5px;
+  letter-spacing: 0;
+}
+.rlist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+}
+.rlist[hidden] {
+  display: none;
 }
 .rs {
   display: grid;
@@ -455,8 +496,28 @@
   width: 100%;
 }
 .rs:hover,
-.rs[aria-current="page"] {
+.rs[aria-current="true"] {
   background: var(--rail-2);
+}
+.rs[aria-current="true"] {
+  font-weight: 600;
+}
+.rs .rsub {
+  font-weight: 400;
+}
+.rs .mk {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.rs[aria-current="true"] .mk {
+  background: var(--rail-sel);
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 .rs .host {
   font-family: var(--mono);
@@ -486,35 +547,10 @@
 .rs .rbar.wait i {
   background: #f2b654;
 }
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--rail-mut);
-  flex: none;
-}
-.dot.run {
-  background: var(--rail-acc);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-.dot.wait {
-  background: #f2b654;
-}
-.dot.ok {
-  background: #5ecb8f;
-}
-.dot.stop {
-  background: var(--rail-mut);
-}
-@keyframes pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
 .rail-foot {
   margin-top: auto;
   border-top: 1px solid var(--rail-line);
-  padding: 14px 10px 0;
+  padding: 10px 0 0;
   display: flex;
   flex-direction: column;
   gap: 9px;
@@ -568,6 +604,187 @@
 .sw[aria-pressed="true"] {
   border-color: var(--rail-ink);
   color: var(--rail-ink);
+}
+/* 계정 버튼 (레일 맨 아래): 누르면 위로 계정 메뉴가 열린다 */
+.acct-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  background: none;
+  border: 0;
+  color: var(--rail-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.acct-btn:hover,
+.acct-btn[aria-expanded="true"] {
+  background: var(--rail-2);
+}
+.acct-btn > .ic {
+  color: var(--rail-mut);
+}
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.acct-btn.out .avatar {
+  background: var(--rail-line);
+  color: var(--rail-mut);
+}
+.am-who {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.acct-menu {
+  position: fixed;
+  z-index: 60;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+.am-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  font-weight: 600;
+}
+.am-sep {
+  height: 1px;
+  background: var(--rule);
+  margin: 6px 4px;
+}
+.am-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.am-info > div,
+.am-item > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.35;
+}
+.am-info b {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 12.5px;
+  word-break: break-all;
+}
+.am-info span,
+.am-item small {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.am-info .ic,
+.am-item .ic {
+  margin-top: 2px;
+  color: var(--ink-2);
+}
+.am-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.am-item:hover,
+.am-item:focus-visible {
+  background: var(--well);
+}
+.am-switch {
+  align-items: center;
+}
+.am-switch .ic {
+  margin-top: 0;
+}
+.am-tg {
+  margin-left: auto;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--rule-2);
+  position: relative;
+  flex: none;
+}
+.am-tg::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--bg);
+  transition: transform 0.15s ease;
+}
+.am-switch[aria-checked="true"] .am-tg {
+  background: var(--accent);
+}
+.am-switch[aria-checked="true"] .am-tg::after {
+  transform: translateX(14px);
+  background: var(--on-accent);
+}
+.am-accent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 10px 8px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.am-accent .sw-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+.acct-menu .sw {
+  border-color: var(--rule-2);
+  color: var(--ink-2);
+  background: var(--bg);
+}
+.acct-menu .sw i {
+  box-shadow: inset 0 0 0 1px var(--rule-2);
+}
+.acct-menu .sw[aria-pressed="true"] {
+  border-color: var(--ink);
+  color: var(--ink);
 }
 .rail-foot .mock {
   font-size: 11.5px;
@@ -647,10 +864,6 @@
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-}
-.snap {
-  font-size: 12.5px;
-  color: var(--ink-3);
 }
 .menu-btn {
   display: none;
@@ -874,6 +1087,11 @@ a.ph:hover {
   border-color: transparent;
   background: var(--und-bg);
   color: var(--und);
+}
+.vd.neg {
+  border-color: transparent;
+  background: var(--ok-bg);
+  color: var(--ok);
 }
 .tag {
   display: inline-flex;
@@ -1281,12 +1499,12 @@ a.ph:hover {
   color: var(--ink-3);
 }
 .codewrap {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .codewrap .copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
+  align-self: flex-end;
 }
 .ilist {
   display: flex;
@@ -3128,6 +3346,19 @@ button.smm:hover {
   background: var(--well);
   border-color: var(--rule);
 }
+/* 승인 카드의 서버 미리보기 · 승인 정보: 제목 줄과 버튼 줄 사이에 한 줄 전체로 */
+.decide .lv-aprev {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.decide .lv-aprev .code {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 .meters {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3829,4 +4060,191 @@ button.smm:hover {
 .code.lv-pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* 넓은 화면 패널 접기 (이 브라우저에 기억). 좁은 화면 · 휴대폰의 서랍과는 별개라 각 폭 안에서만 적용한다. */
+/* 레일: 휴대폰보다 넓으면 통째로 숨기고, 화면 머리의 메뉴 버튼으로 다시 펼친다 */
+/* 레일: 휴대폰보다 넓으면 아이콘 줄(64px)로 접고, 줄 안의 같은 버튼으로 다시 펼친다 (시안 v19) */
+.rail .icon-btn.rail-fold {
+  width: 30px;
+  height: 30px;
+  background: none;
+  border-color: transparent;
+  color: var(--rail-mut);
+}
+.rail .icon-btn.rail-fold:hover {
+  background: var(--rail-2);
+  color: var(--rail-ink);
+}
+@media (min-width: 760px) {
+  .app {
+    transition: grid-template-columns 0.22s ease;
+  }
+  .app.rail-hidden {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+  .app.rail-hidden > .rail {
+    align-items: center;
+    overflow-x: hidden;
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    padding-right: 12px;
+  }
+  .app.rail-hidden .rail-top {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .app.rail-hidden .brand {
+    padding: 4px;
+  }
+  .app.rail-hidden .rlbl {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .app.rail-hidden .new-btn {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+  }
+  .app.rail-hidden .rl {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+  .app.rail-hidden .rl .badge {
+    position: absolute;
+    top: 1px;
+    right: -2px;
+    min-width: 16px;
+    margin-left: 0;
+    padding: 0 4px;
+    line-height: 16px;
+    font-size: 10.5px;
+    text-align: center;
+  }
+  .app.rail-hidden .rsec {
+    display: none;
+  }
+  .app.rail-hidden .rail-foot {
+    align-self: stretch;
+    align-items: center;
+  }
+  .app.rail-hidden .acct-btn {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+  .app.rail-hidden .acct-btn .am-who,
+  .app.rail-hidden .acct-btn > .ic {
+    display: none;
+  }
+}
+/* 휴대폰은 레일이 서랍이라 접기 버튼 대신 닫기(rail-x)를 쓴다 */
+@media (max-width: 759px) {
+  .icon-btn.rail-fold {
+    display: none;
+  }
+}
+/*
+ * 상세 패널 접기 (레일 접기와 같은 짜임, 시안 v25): 넓은 화면에서 패널 칸 오른쪽 위의 접기 버튼(PaneToggle)으로 접으면
+ * 64px 줄로 남고, 같은 자리의 버튼으로 다시 펼친다. 화면 머리의 상세 버튼(insp-only)은 좁은 화면 서랍에서만 쓴다.
+ */
+.vb {
+  position: relative;
+}
+.pane-toggle {
+  display: none;
+}
+@media (min-width: 1200px) {
+  .vb {
+    transition: grid-template-columns 0.22s ease;
+  }
+  .icon-btn.pane-toggle {
+    display: inline-grid;
+    position: absolute;
+    top: 12px;
+    right: max(17px, env(safe-area-inset-right, 0px));
+    z-index: 2;
+    width: 30px;
+    height: 30px;
+    background: none;
+    border-color: transparent;
+    color: var(--ink-3);
+  }
+  .icon-btn.pane-toggle:hover {
+    background: var(--bg);
+    border-color: var(--rule-2);
+    color: var(--ink);
+  }
+  /* 패널 첫 줄이 버튼 밑으로 들어가지 않게 오른쪽 위 자리를 비운다 */
+  .vi::before {
+    content: "";
+    float: right;
+    width: 34px;
+    height: 30px;
+  }
+  .app.insp-hidden .vb {
+    grid-template-columns: minmax(0, 1fr) 64px;
+  }
+  /* 줄(64px)은 패널 바탕 · 경계선만 남기고 안의 내용은 가린다 */
+  .app.insp-hidden .vi {
+    overflow: hidden;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .app.insp-hidden .vi > * {
+    visibility: hidden;
+  }
+  /* 패널에 있던 시작 버튼 등은 접으면 본문 아래 줄로 */
+  .app.insp-hidden .formbar {
+    display: flex;
+  }
+}
+/*
+ * 접으면 가운데 내용은 넓어지지 않고 좁은 단(--cw)으로 가운데에 모이며, 나머지는 양옆 여백이 된다 (시안 v23 · v24).
+ * --cw = 두 패널을 펼쳤을 때 내용 폭 - 120px (최소 560px · 최대 960px)
+ * 여백은 칸의 실제 폭(100%) 기준이라 상세 패널이 없는 화면(로그인 · 연결 확인 관문)도 똑같이 가운데에 모인다.
+ * 화면 머리는 왼쪽만 내용과 맞추고 오른쪽 버튼은 제자리(28px)에 둔다 — 접고 펼 때 버튼이 움직이지 않게.
+ * --iw = 상세 패널 칸 폭 (펼침 384px · 접음 64px · 좁은 화면이나 패널 없는 화면 0)
+ */
+@media (min-width: 760px) {
+  .vh,
+  .vm {
+    transition: padding 0.22s ease;
+  }
+  .app.rail-hidden {
+    --cw: clamp(560px, calc(100vw - 412px), 960px);
+  }
+  .app.rail-hidden .vm {
+    padding-left: max(28px, calc((100% - var(--cw)) / 2));
+    padding-right: max(28px, calc((100% - var(--cw)) / 2));
+  }
+  .app.rail-hidden .vh {
+    padding-left: max(28px, calc((100% - var(--iw, 0px) - var(--cw)) / 2));
+  }
+}
+@media (min-width: 1200px) {
+  .view:has(.vi) {
+    --iw: 384px;
+  }
+  .app.insp-hidden .view:has(.vi) {
+    --iw: 64px;
+  }
+  .app.rail-hidden,
+  .app.insp-hidden {
+    --cw: clamp(560px, calc(100vw - 796px), 960px);
+  }
+  .app.insp-hidden .vm {
+    padding-left: max(28px, calc((100% - var(--cw)) / 2));
+    padding-right: max(28px, calc((100% - var(--cw)) / 2));
+  }
+  .app.insp-hidden .vh {
+    padding-left: max(28px, calc((100% - var(--iw, 0px) - var(--cw)) / 2));
+  }
 }

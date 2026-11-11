@@ -1,12 +1,14 @@
 import "@testing-library/jest-dom/vitest";
+
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { apiFetch } from "@/lib/diagnosis/api";
 import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
+import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
-import { RequestApprovalPanel } from "../views/live/RequestApprovalPanel";
+import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "../views/live/approvals";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
@@ -60,15 +62,28 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+/** 화면들이 쓰는 그대로: 승인 훅 + 이 요청 승인 · 거부 버튼 + 목록 다시 조회. */
+function Harness() {
+  const a = useRequestApprovals("42", true);
+  const pending = a.pending[0];
+  return (
+    <>
+      {pending ? <ApprovalActions a={a} row={pending} /> : null}
+      <button type="button" onClick={a.poll.reload}>
+        승인 목록 다시 조회
+      </button>
+    </>
+  );
+}
 async function mount() {
-  render(<RequestApprovalPanel taskId="42" active />);
-  const button = await screen.findByRole("button", { name: "이 요청 허용" });
+  render(<Harness />);
+  const button = await screen.findByRole("button", { name: "이 요청 승인" });
   await waitFor(() => expect(button).toBeEnabled());
   return button;
 }
 it.each(["allow", "deny"])("rechecks exact approval fingerprint before %s and never retries POST", async (decision) => {
   await mount();
-  fireEvent.click(screen.getByRole("button", { name: decision === "allow" ? "이 요청 허용" : "이 요청 거부" }));
+  fireEvent.click(screen.getByRole("button", { name: decision === "allow" ? "이 요청 승인" : "거부" }));
   await waitFor(() => expect(vi.mocked(apiFetch).mock.calls.some(([, i]) => i?.method === "POST")).toBe(true));
   const calls = vi.mocked(apiFetch).mock.calls,
     index = calls.findIndex(([, i]) => i?.method === "POST");
@@ -83,7 +98,7 @@ it.each(["run_ref", "attempt_id", "request_sha256"])("changed %s in fresh GET bl
     [field]: field === "request_sha256" ? "b".repeat(64) : "foreign",
   });
   fireEvent.click(button);
-  await screen.findByText(/승인 결정 결과 불명/);
+  await screen.findByText(/결정 결과 불명/);
   expect(vi.mocked(apiFetch).mock.calls.filter(([, i]) => i?.method === "POST")).toHaveLength(0);
 });
 it.each([
@@ -119,10 +134,31 @@ it("lost decision response keeps resend disabled even after pending GET", async 
   const button = await mount();
   vi.mocked(apiFetch).mockResolvedValueOnce(row).mockRejectedValueOnce(new TypeError("owned response loss"));
   fireEvent.click(button);
-  await screen.findByText(/승인 결정 결과 불명/);
+  await screen.findByText(/결정 결과 불명/);
   fireEvent.click(screen.getByRole("button", { name: "승인 목록 다시 조회" }));
   await waitFor(() => expect(vi.mocked(apiFetch).mock.calls.filter(([, i]) => i?.method !== "POST").length).toBe(3));
   expect(button).toBeDisabled();
   fireEvent.click(button);
   expect(vi.mocked(apiFetch).mock.calls.filter(([, i]) => i?.method === "POST")).toHaveLength(1);
+});
+
+it("승인 미리보기는 서버 키(query.<키> · body.<키> · 표시 제한)를 모두 보이고 대상 · 만료 · attempt 를 함께 보인다", () => {
+  const limit = "호스트가 공개로 지정한 경로와 입력만 표시합니다. 비공개 입력·상태 변경 영향은 확인되지 않았습니다.";
+  const shaped = {
+    ...row,
+    input_preview: { "query.mode": '["edit"]', "body.role": '"customer"', "표시 제한": limit },
+  } as RequestApproval;
+  render(
+    <>
+      <ApprovalRequestCode row={shaped} />
+      <ApprovalFacts row={shaped} />
+    </>,
+  );
+  expect(screen.getByText(/POST \/api\/Users/)).toHaveTextContent("대상: https://owned.test");
+  expect(screen.getByText(/query\.mode: \["edit"\]/)).toBeInTheDocument();
+  expect(screen.getByText(/body\.role: "customer"/)).toBeInTheDocument();
+  expect(screen.getByRole("note")).toHaveTextContent(`표시 제한: ${limit}`);
+  expect(screen.getByText(/일시정지로 연장하지 않음$/)).toBeInTheDocument();
+  expect(screen.getByText("attempt-owned")).toBeInTheDocument();
+  expect(screen.getByText("24 bytes · 원문 비공개")).toBeInTheDocument();
 });

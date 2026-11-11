@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/diagnosis/api";
 import type { URLDiagnosisProfile } from "@/lib/diagnosis/diagnosis-url";
 
+import { cx } from "../../lib/cx";
 import s from "../../workbench.module.css";
 
 // 키는 비제어 password 입력과 전송 본문에만 잠깐 존재한다. React 상태·저장소·진단 초안에는 넣지 않는다.
@@ -44,11 +45,7 @@ export function ExternalModelSettings({
         const configured = r?.credential?.configured === true && r.credential.model === expectedModel;
         setSaved(configured);
         onReady(configured && !secret.current?.value);
-        setMessage(
-          configured
-            ? "등록된 API 키를 재사용합니다. 키 값은 브라우저로 읽어오지 않습니다."
-            : "API 키를 한 번 등록하세요.",
-        );
+        setMessage(configured ? "" : "API 키를 한 번 등록하세요.");
       })
       .catch(() => {
         if (!cancelled && generation.current === version)
@@ -82,7 +79,7 @@ export function ExternalModelSettings({
         },
         false,
       );
-      setMessage("서버에 키를 등록했습니다. 범위·비용 확인 후 진단을 시작하세요.");
+      setMessage("서버에 키를 등록했습니다.");
       setSaved(true);
       onReady(true);
     } catch {
@@ -92,42 +89,58 @@ export function ExternalModelSettings({
     }
   }
   return (
-    <fieldset disabled={disabled || busy} className={s.field}>
-      <legend>외부 LLM 연결 · OpenRouter</legend>
-      <label className={s.lbl} htmlFor="externalModelName">
-        모델명
-      </label>
-      <input
-        ref={model}
-        id="externalModelName"
-        className={s.inp}
-        defaultValue={profile?.model?.model ?? "qwen/qwen3.5-35b-a3b"}
-        autoComplete="off"
-        spellCheck={false}
-        readOnly
-        aria-label="모델명"
-      />
-      <label className={s.lbl} htmlFor="externalModelKey">
-        API 키
-      </label>
-      <input
-        ref={secret}
-        id="externalModelKey"
-        className={s.inp}
-        type="password"
-        autoComplete="off"
-        maxLength={512}
-        onChange={(e) => onReady(saved && e.target.value === "")}
-      />
+    <fieldset disabled={disabled || busy} className={s.field} style={{ border: 0, padding: 0, margin: 0 }}>
+      <legend className={s["sr-only"]}>외부 모델 연결</legend>
+      <div className={s.two}>
+        <div className={s.field}>
+          <label className={s.lbl} htmlFor="externalModelName">
+            모델 이름
+          </label>
+          <input
+            ref={model}
+            id="externalModelName"
+            className={cx(s.inp, s.mono)}
+            defaultValue={profile?.model?.model ?? "qwen/qwen3.5-35b-a3b"}
+            autoComplete="off"
+            spellCheck={false}
+            readOnly
+          />
+        </div>
+        <div className={s.field}>
+          <label className={s.lbl} htmlFor="externalModelKey">
+            API 키
+          </label>
+          <input
+            ref={secret}
+            id="externalModelKey"
+            className={s.inp}
+            type="password"
+            autoComplete="off"
+            maxLength={512}
+            placeholder={saved ? "등록된 키 사용" : ""}
+            onChange={(e) => onReady(saved && e.target.value === "")}
+          />
+        </div>
+      </div>
+      {!profile ? <p role="alert">운영자가 외부 모델 승인 · 제공자 · 비용 한도를 먼저 설치해야 합니다.</p> : null}
       <p className={s.help}>
-        키는 인증된 서버 설정에만 등록합니다. 대상 응답의 외부 전송과 USD 상한은 다음 범위 확인 화면에서 별도로
-        동의합니다.
+        키는 서버에만 등록하고 키 값은 브라우저로 읽어오지 않습니다. 외부 전송 · USD 상한 동의는 다음 범위 확인 화면에서
+        따로 합니다.
       </p>
-      {!profile ? <p role="alert">운영자가 외부 모델 승인·제공자·비용 한도를 먼저 설치해야 합니다.</p> : null}
-      <button className={s.btn} type="button" onClick={() => void save()} disabled={!profile || disabled || busy}>
-        {busy ? "등록 중…" : "모델 연결 설정 저장"}
-      </button>
-      <p role="status">{checking ? "등록된 키 상태 확인 중…" : message}</p>
+      <div className={s.hostline}>
+        {saved ? <span className={cx(s.tag, s.in)}>키 등록됨</span> : null}
+        <button
+          className={cx(s.btn, s.sm)}
+          type="button"
+          onClick={() => void save()}
+          disabled={!profile || disabled || busy}
+        >
+          {busy ? "등록 중…" : "키 등록"}
+        </button>
+        <span role="status" className={s.help}>
+          {checking ? "등록된 키 확인 중…" : message}
+        </span>
+      </div>
     </fieldset>
   );
 }
