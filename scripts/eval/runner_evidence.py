@@ -17,13 +17,13 @@ from pathlib import Path
 ENGINE_LOG = "engine-requests.jsonl"
 # 계측기의 가린 경로 기록. 브라우저 수용시험 전용이라 공식 회차에서 생기면 무효다.
 PATH_LOG = "engine-paths.jsonl"
-# 경로 행(cmd/eval-meter paths.go pathRow)과 가림 규칙 판(pathMaskProfile). 판이 다른 패턴끼리는 비교하지 않는다.
+# 경로 행(cmd/eval-meter paths.go pathRow)과 가림 규칙 판(pathmask.go Profile). 판이 다른 패턴끼리는 비교하지 않는다.
 _PATH_ROW = frozenset({"seq", "method", "path_pattern", "masked_segments", "path_profile_ref", "path_key_ref"})
 PATH_PROFILE = "abc2lab.path-mask/v2"
 # 인증 헤더 유무 칸(paths.go HasAuthorization·HasCookie). 이 칸이 생기기 전 계측기의 행에는 없고, 그 회차의
 # 인증 헤더 수는 NOT_RUN이다. 한 기록 안의 행은 모두 같은 모양이어야 한다.
 PATH_AUTH_FIELDS = frozenset({"has_authorization", "has_cookie"})
-# 가림 키의 참조(paths.go pathKeyRef). 한 회차의 행은 모두 같은 키로 가렸어야 한다.
+# 가림 키의 참조(pathmask.go KeyRef). 한 회차의 행은 모두 같은 키로 가렸어야 한다.
 _PATH_KEY_REF = re.compile(r"[0-9a-f]{16}\Z")
 SEALED_MARKER = "engine-sealed.json"
 DRAINED_MARKER = "engine-drained.json"

@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Autumn-27/artex/pathmask"
 )
 
 // runEngine starts the real command loop so the signal wiring, not just the
@@ -194,7 +196,7 @@ func TestRunEnginePathLogFlagWritesPatterns(t *testing.T) {
 		t.Fatal("front did not stop")
 	}
 	rows := readRows[pathRow](t, filepath.Join(dir, enginePathLogName))
-	if len(rows) != 1 || rows[0].PathPattern != "/"+pseudonym("api", testPathKey)+"/"+pseudonym("Users", testPathKey)+"/{id}" {
+	if len(rows) != 1 || rows[0].PathPattern != "/"+pathmask.Pseudonym("api", testPathKey)+"/"+pathmask.Pseudonym("Users", testPathKey)+"/{id}" {
 		t.Fatalf("%+v", rows)
 	}
 }

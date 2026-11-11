@@ -132,6 +132,15 @@ func forwardRequestHeaders(source http.Header, rule compiledRule) (http.Header, 
 	return out, true
 }
 
+// identityAcceptEncoding은 호출자가 보낸 압축 협상을 identity 하나로 바꾼다. 압축 응답은 E2가 본문의 자격 반사·상한을
+// 검사할 수 없어서 대상에 압축하지 말라고 요청한다. 내용은 같고 압축만 빠지므로 요청을 거부하지 않는다(C15).
+// 호출자가 보내지 않았으면 새로 넣지 않는다. 대상이 그래도 압축해 보내면 safeHTTPResponse가 결과 불명으로 막는다.
+func identityAcceptEncoding(headers http.Header) {
+	if _, present := headers["Accept-Encoding"]; present {
+		headers["Accept-Encoding"] = []string{"identity"}
+	}
+}
+
 func credentialHeaderNames(rules []compiledRule) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, rule := range rules {

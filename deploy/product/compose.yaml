@@ -115,6 +115,52 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+  # 탐색 브라우저 샌드박스(docs/contracts/exploration-boundary.md §5·§9-1). 탐색 경계(explore-boundary)와
+  # 엔진 쪽 MCP 연결이 들어오기 전에는 켜지 않는다(`--profile exploration`일 때만 렌더링된다).
+  # --host·--port·--allowed-hosts는 한 묶음이다. --host는 아래 제어망 주소와 같아야 하고, 엔진은
+  # http://explore-browser:<포트>/로 붙는다. 이 묶음 밖의 MCP 옵션은 넣지 않는다(계약 §5.1).
+  explore-browser:
+    image: abc2lab-explore-browser:${PRODUCT_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: deploy/product/Dockerfile
+      target: explore-browser
+      args:
+        VCS_REF: ${PRODUCT_SOURCE_SHA:?set the exact product source commit}
+    profiles: [exploration]
+    user: '1000:1000'
+    command:
+      - --headless
+      - --isolated
+      - --no-webmcp
+      - --browser
+      - chromium
+      - --proxy-server
+      - ${EXPLORE_BROWSER_PROXY:-http://explore-boundary:3128}
+      - --output-dir
+      - /tmp/mcp-output
+      - --port
+      - ${EXPLORE_BROWSER_MCP_PORT:-8931}
+      - --host
+      - 172.31.254.20
+      - --allowed-hosts
+      - explore-browser:${EXPLORE_BROWSER_MCP_PORT:-8931}
+    networks:
+      explore_control: {ipv4_address: 172.31.254.20}
+      explore_browser_ingress: {}
+    volumes:
+      - type: volume
+        source: explore-ca
+        target: /run/explore-ca
+        read_only: true
+    tmpfs: ['/tmp:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=0700', '/home/node:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700']
+    shm_size: 256m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 2g
+    restart: 'no'
 secrets:
   product_install:
     file: ${PRODUCT_INSTALL_FILE:?protected product install JSON}
@@ -130,6 +176,16 @@ networks:
     ipam:
       config: [{subnet: 172.31.253.0/24}]
   frontend: {}
+  # 엔진(MCP 클라이언트)과 브라우저 샌드박스만 붙는 제어망. 엔진은 이 망에서 포트를 열지 않는다(계약 §9-1).
+  explore_control:
+    internal: true
+    ipam:
+      config: [{subnet: 172.31.254.0/24}]
+  # 브라우저 샌드박스와 탐색 경계의 브라우저 입구만 붙는 망.
+  explore_browser_ingress:
+    internal: true
 volumes:
   postgres-data: {}
   product-state: {}
+  # 탐색 경계가 CA 인증서(공개 부분)만 쓰는 볼륨. 브라우저 샌드박스는 읽기만 한다.
+  explore-ca: {}

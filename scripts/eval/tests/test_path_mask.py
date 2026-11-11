@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from path_mask import KEY_BYTES, PATH_PROFILE, STATIC_SUFFIXES, PathKeyError, key_ref, mask_path, read_path_key  # noqa: E402
 
-GO_DIR = Path(__file__).resolve().parents[3] / "cmd/eval-meter"
+GO_DIR = Path(__file__).resolve().parents[3] / "pathmask"
 
 
 class MaskPathTests(unittest.TestCase):
@@ -37,7 +37,7 @@ class MaskPathTests(unittest.TestCase):
             mask_path("/a", key[:-1])
 
     def test_static_suffixes_match_the_meter(self):
-        go = (GO_DIR / "paths.go").read_text(encoding="utf-8")
+        go = (GO_DIR / "pathmask.go").read_text(encoding="utf-8")
         listed = re.search(r"var staticSuffixes = \[\]string\{(.*?)\}", go, re.S).group(1)
         self.assertEqual(tuple(re.findall(r'"([^"]+)"', listed)), STATIC_SUFFIXES)
         self.assertIn('pathKeyRefLabel = "abc2lab.path-key-ref/v1"', go)
