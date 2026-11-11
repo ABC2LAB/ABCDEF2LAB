@@ -8,6 +8,8 @@
 
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { ExampleBar } from "./example/ExampleBar";
+import { EXAMPLE_MODE, installExampleApi } from "./example/exampleApi";
 import { cx } from "./lib/cx";
 import { LiveGate, useLiveAuthBoot } from "./live/auth";
 import { UrlFeeds } from "./live/urlDiagnosis";
@@ -18,6 +20,9 @@ import { Rail } from "./ui/Rail";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "./views/live/byMode";
 import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
 import s from "./workbench.module.css";
+
+// 예시 데이터 모드(npm run dev:example)일 때만: 앱이 처음 요청하기 전에 /api 를 예시 응답으로 바꾼다
+if (EXAMPLE_MODE && typeof window !== "undefined") installExampleApi();
 
 /** CSS 모듈 클래스로 querySelector 선택자 만들기 (테스트 환경처럼 클래스가 없으면 null). */
 const dot = (cls: string | undefined) => (cls ? `.${cls}` : null);
@@ -253,10 +258,14 @@ export function Workbench() {
     <ShellContext.Provider value={shell}>
       <div ref={rootRef} className={s.root} data-accent={accent === "petrol" ? undefined : accent}>
         <UrlFeeds />
-        <div className={cx(s.demobar, s["lv-bar"])} role="note">
-          <Icon name="info" />
-          <span>실제 서버 전용 · 승인 범위와 사용량은 서버가 확인한 값만 표시합니다.</span>
-        </div>
+        {EXAMPLE_MODE ? (
+          <ExampleBar />
+        ) : (
+          <div className={cx(s.demobar, s["lv-bar"])} role="note">
+            <Icon name="info" />
+            <span>실제 서버 전용 · 승인 범위와 사용량은 서버가 확인한 값만 표시합니다.</span>
+          </div>
+        )}
         <div className={s.app}>
           <Rail />
           <main className={s.work}>

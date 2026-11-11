@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:example": "NEXT_PUBLIC_ABC2LAB_EXAMPLE=1 next dev -p 3100",
     "build": "next build",
     "build:static": "NEXT_EXPORT=1 next build",
     "start": "next start",
