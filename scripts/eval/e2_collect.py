@@ -278,17 +278,24 @@ def _present(directory: int, name: str) -> bool:
     return True
 
 
-def _collect_attempt_paths(source: int, copies: _Copies, expected: bool) -> None:
+def _reject_attempt_paths(source: int) -> None:
+    """공식 회차(v1)에 시도 경로 기록이나 완료 표식이 있으면 경로 기록을 막는 조건을 어긴 것이므로 회차를 무효로 둔다.
+
+    E② 결과가 불완전하거나 manifest가 없어 제품 실패로 끝나는 회차에도 적용되도록 다른 판정보다 먼저 본다.
+    """
+    for name in (ATTEMPT_PATHS_FILE, ATTEMPT_PATHS_DONE_FILE):
+        if _present(source, name):
+            raise E2CollectionInvalid("attempt_paths_unexpected")
+
+
+def _collect_attempt_paths(source: int, copies: _Copies) -> None:
     """수용시험 회차(설정 v2)의 시도 경로 기록과 완료 표식을 사본으로 옮긴다. 검증은 e2_attempt_paths가 한다.
 
-    공식 회차(v1)에 있으면 경로 기록을 막는 조건을 어긴 것이므로 회차를 무효로 둔다. 수용시험 회차에 없으면
-    (마감 실패 등) 회차는 유효하고 그 지표만 NOT_RUN이 되도록 옮기지 않는다.
+    없으면(마감 실패 등) 회차는 유효하고 그 지표만 NOT_RUN이 되도록 옮기지 않는다.
     """
     for name, maximum in ((ATTEMPT_PATHS_FILE, MAX_ATTEMPT_PATHS_BYTES), (ATTEMPT_PATHS_DONE_FILE, MAX_DONE_BYTES)):
         if not _present(source, name):
             continue
-        if not expected:
-            raise E2CollectionInvalid("attempt_paths_unexpected")
         try:
             data = _read_file(source, name, maximum, "attempt_paths_missing")
         except _ProductFailure:
@@ -320,7 +327,8 @@ def _collect(source: int, copies: _Copies, expected: E2Expectation, close_ack: C
     _verify_audit(run_verifier, copies, key_path, checkpoint, manifest["rows"])
     _check_projection(journal, attempts)
     progress.checkpoint = {"sequence": checkpoint["Sequence"], "mac": checkpoint["MAC"]}
-    _collect_attempt_paths(source, copies, attempt_paths)
+    if attempt_paths:
+        _collect_attempt_paths(source, copies)
 
 
 def collect_e2_export(source_dir: Path, copy_dir: Path, expected: E2Expectation, close_ack: CloseAck | None, key_path: str,
@@ -335,6 +343,8 @@ def collect_e2_export(source_dir: Path, copy_dir: Path, expected: E2Expectation,
     try:
         source = _open_export_dir(source_dir)
         try:
+            if not attempt_paths:
+                _reject_attempt_paths(source)
             _collect(source, copies, expected, close_ack, key_path, run_verifier, progress, attempt_paths)
         finally:
             os.close(source)
