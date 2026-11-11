@@ -527,7 +527,7 @@ export function UrlReportLive() {
           </>
         }
       />
-      <WorkflowReportPanels key={taskId} rem={rem}>
+      <WorkflowReportPanels key={taskId} taskId={taskId} rem={rem}>
         <p className={s.lead}>
           실제 task 의 저장 결과입니다. 실행 마감과 취약점 판정은 별개이며, 후보는 확정 취약점이 아닙니다.
         </p>

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/e3record"
-	"github.com/Autumn-27/artex/evidencebind"
 	"github.com/Autumn-27/artex/oracle"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -93,15 +92,7 @@ type accessMapStoredRecord struct {
 	valid  bool
 }
 
-type accessMapManifest struct {
-	Version                                   int64
-	EvidenceDigest                            [32]byte
-	Evidence                                  evidencebind.Input
-	KGSnapshotRef                             string
-	KGSnapshotDigest                          [32]byte
-	GenerationRef, InstanceRef, CheckpointRef string
-	CheckpointDigest                          [32]byte
-}
+type accessMapManifest e3record.Manifest
 
 func accessMapRequestTask(r *http.Request) (int64, bool) {
 	if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery {
@@ -338,11 +329,7 @@ func readAccessMapRecords(ctx context.Context, tx *sql.Tx, b accessMapBinding) (
 
 func (m accessMapManifest) matches(s e3record.Source, r accessMapRecord) bool {
 	e := m.Evidence
-	digest, err := e3record.EvidenceDigest(e)
-	if err != nil || m.Version != 1 || digest != m.EvidenceDigest || digest != s.EvidenceDigest ||
-		m.KGSnapshotRef != s.KGSnapshotRef || m.KGSnapshotDigest != s.KGSnapshotDigest || m.GenerationRef != s.GenerationRef || m.InstanceRef != s.InstanceRef ||
-		m.CheckpointRef != s.FinalCheckpointRef || m.CheckpointDigest != s.FinalCheckpointDigest || s.FinalCheckpointScope != s.Expected.Scope || s.FinalCheckpointSequence == 0 ||
-		e.Policy.Context != s.Expected || e.Owner.Context != s.Expected || e.Cross.Context != s.Expected || e.Result.Context != s.Expected || e.Policy.Assertion != s.Policy ||
+	if !e3record.CheckManifest(e3record.Manifest(m), s, r.OracleValue) ||
 		!r.ObservedAt.Equal(accessMapCanonicalTime(e.Result.ObservedAt)) || !r.CreatedAt.Equal(accessMapCanonicalTime(s.RecordCreatedAt)) || !slices.Equal(r.TrafficEvidenceRefs, s.TrafficEvidenceIDs) {
 		return false
 	}

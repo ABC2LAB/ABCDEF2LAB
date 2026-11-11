@@ -158,13 +158,22 @@ async function authenticatedResponse(path: string, init: RequestInit, retryAuth:
 }
 
 /** Authenticated download; never put a bearer token in an href or query string. */
-export async function apiFetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+export async function apiFetchBlob(
+  path: string,
+  init: RequestInit = {},
+  expectedType:
+    | "text/html"
+    | "image/png"
+    | "application/vnd.openxmlformats-officedocument.wordprocessingml.document" = "text/html",
+): Promise<Blob> {
   const res = await authenticatedResponse(path, { ...init, cache: "no-store", redirect: "error" }, true);
-  if (!res.headers.get("Content-Type")?.toLowerCase().startsWith("text/html")) {
+  if (res.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== expectedType) {
     throw new ApiError(422, "보고서 응답 형식을 확인할 수 없습니다.");
   }
   // Download only. Do not navigate to or render the authenticated HTML in this origin.
-  return new Blob([await res.arrayBuffer()], { type: "application/octet-stream" });
+  return new Blob([await res.arrayBuffer()], {
+    type: expectedType === "image/png" ? "image/png" : "application/octet-stream",
+  });
 }
 
 /**

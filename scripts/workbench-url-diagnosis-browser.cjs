@@ -184,6 +184,7 @@ function check(value, code) {
     ),
     view: await evaluate("location.hash"),
   });
+  await send("Emulation.setDeviceMetricsOverride", {width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await send("Page.enable");
   await send("Runtime.enable");
   await send("Network.enable");
@@ -191,16 +192,7 @@ function check(value, code) {
 
   if (phase === "url-draft") {
     await send("Page.navigate", { url: `${WORKBENCH}#new` });
-    // 기본은 예시 재생 → 사용자가 누르는 것과 같은 배너 버튼으로 실제 엔진 모드로 바꾼다(이미 실제면 그대로).
-    // 개발 서버의 첫 컴파일 직후에는 React 가 이벤트를 붙이기 전이라 클릭이 먹지 않을 수 있다 → 배너가 바뀔 때까지 다시 누른다.
-    await wait(`!!(${button("실제 엔진으로 보기")})||!!(${button("예시 재생으로 보기")})`, "source_switch_missing");
-    for (let end = Date.now() + 60000; !(await evaluate(`!!(${button("예시 재생으로 보기")})`)); ) {
-      if (Date.now() > end) throw new Error("live_source_not_selected");
-      await evaluate(`(()=>{const b=${button("실제 엔진으로 보기")};if(b)b.click();return true})()`);
-      await sleep(500);
-    }
-    assertions++;
-    // 예시 화면의 새 점검 폼에도 비밀번호 칸이 있다 → 실제 엔진 로그인 패널의 칸만 고른다
+    // 제품 작업대는 실제 서버 모드다. 로그인 이후 실제 v2 catalog만 사용한다.
     const loginPass = 'section[data-view="new"] input[autocomplete="current-password"]';
     await wait(`document.querySelector(${JSON.stringify(loginPass)})!==null`, "login_missing");
     await fill(loginPass, FIXTURE_PASSWORD);
@@ -325,6 +317,37 @@ function check(value, code) {
     check(fs.readFileSync(path.join(outputDir, downloaded), "utf8").includes("<html"), "html_download_invalid");
     check(startCount() === 0 && mutationCount() === 0, "report_caused_execution_mutation");
     check(noLegacyExecution(), "report_used_legacy_execution");
+    await evaluate("document.querySelector('section[data-view=report] #rList button')?.click()");
+    await wait(hasText("② 재현 절차 및 스크린샷"), "stored_steps_panel_missing");
+    await wait(hasText("스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공"), "missing_capture_not_explained");
+    await click("보안 조치·AI 프롬프트 생성·저장");
+    await wait(hasText("AI 수정 프롬프트 복사"), "saved_prompt_missing");
+    await click("전체 프롬프트 보기");
+    await send("Browser.grantPermissions", {origin:ui, permissions:["clipboardReadWrite", "clipboardSanitizedWrite"]});
+    await click("AI 수정 프롬프트 복사");
+    await wait(hasText("같은 저장 프롬프트를 복사했습니다."), "stored_prompt_not_copied");
+    const savedPrompt = await evaluate("navigator.clipboard.readText()");
+    check(typeof savedPrompt === "string" && savedPrompt.length > 100, "copied_prompt_empty");
+    check(requests.filter(r=>r.method === "POST").every(r=>r.path === "/api/report/diagnostic/remediation") && mutationCount() === 1, "report_implicit_mutation");
+    const wordBegan = Date.now();
+    await click("Word 내부 상세");
+    await wait(hasText("내부 상세 사본 파일을 저장했습니다."), "word_download_not_requested");
+    let wordFile;
+    for (let n=0;n<80;n++) {
+      wordFile = fs.readdirSync(outputDir).find(name=>name.endsWith(".docx") && fs.statSync(path.join(outputDir,name)).mtimeMs >= wordBegan);
+      if (wordFile) break;
+      await sleep(100);
+    }
+    check(!!wordFile && fs.readFileSync(path.join(outputDir,wordFile)).subarray(0,2).toString() === "PK", "word_download_invalid");
+    // 화면 수용 캡처는 진단 증거 저장소에 넣지 않는다.
+    const desktopScreen=await send("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
+    fs.writeFileSync(path.join(outputDir,"ui-report-desktop.png"),Buffer.from(desktopScreen.data,"base64"),{mode:0o600});
+    await send("Emulation.setDeviceMetricsOverride", {width:390,height:844,deviceScaleFactor:1,mobile:true});
+    await sleep(350); // 기존 서랍 전환과 matchMedia 갱신이 끝난 뒤 측정한다.
+    check(await evaluate("document.documentElement.scrollWidth <= innerWidth"), "mobile_report_overflow");
+    const mobileScreen=await send("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
+    fs.writeFileSync(path.join(outputDir,"ui-report-mobile.png"),Buffer.from(mobileScreen.data,"base64"),{mode:0o600});
+
   } else {
     throw new Error("unknown_phase");
   }

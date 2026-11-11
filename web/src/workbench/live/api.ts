@@ -932,16 +932,25 @@ export function downloadDiagnostic(
   taskId: string,
   audience: "shared" | "internal" = "shared",
   signal?: AbortSignal,
+  format: "html" | "docx" = "html",
 ): Promise<void> {
   return call(async () => {
     if (!/^[1-9][0-9]*$/.test(taskId)) throw new ApiError(400, "점검 id 가 올바르지 않습니다.");
     const q = new URLSearchParams({ task: taskId, audience, download: "1" });
-    const blob = await apiFetchBlob(`/api/report/diagnostic?${q}`, { signal });
+    if (format === "docx") q.set("format", "docx");
+    const blob =
+      format === "docx"
+        ? await apiFetchBlob(
+            `/api/report/diagnostic?${q}`,
+            { signal },
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          )
+        : await apiFetchBlob(`/api/report/diagnostic?${q}`, { signal });
     if (signal?.aborted) return;
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `diagnostic-task-${taskId}-${audience}.html`;
+    a.download = `diagnostic-task-${taskId}-${audience}.${format}`;
     a.rel = "noopener";
     a.hidden = true;
     document.body.appendChild(a);

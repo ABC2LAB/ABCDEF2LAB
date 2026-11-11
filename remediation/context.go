@@ -30,6 +30,7 @@ type Context struct {
 // ContextObservation는 호출자가 같은 결과·실행에 결속한 비민감 단계별 기록이다.
 // 사용자 보완은 Context의 상단 필드에 두고 원래 관측/추정 출처를 덮어쓰지 않는다.
 type ContextObservation struct {
+	Method             string   `json:"method,omitempty"`
 	Component          string   `json:"component"`
 	ComponentRole      string   `json:"component_role"`
 	Endpoint           string   `json:"endpoint"`
@@ -149,6 +150,9 @@ func NormalizeContext(c Context) Context {
 		c.ObservationsTruncated = true
 	}
 	for _, o := range observations {
+		if !member(o.Method, "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS") {
+			o.Method = ""
+		}
 		n := NormalizeContext(Context{Component: o.Component, ComponentRole: o.ComponentRole, Endpoint: o.Endpoint, Prerequisites: o.Prerequisites, Observation: o.Observation, ExpectedBehavior: o.ExpectedBehavior, ProhibitedBehavior: o.ProhibitedBehavior, Source: o.Source})
 		o.Component, o.ComponentRole, o.Endpoint, o.Prerequisites = n.Component, n.ComponentRole, n.Endpoint, n.Prerequisites
 		o.Observation, o.ExpectedBehavior, o.ProhibitedBehavior, o.Source = n.Observation, n.ExpectedBehavior, n.ProhibitedBehavior, n.Source
