@@ -383,10 +383,13 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	var def DeferredInfo
 	cleanup := func() {}
 	if isE2HTTPPlanning(ctx) {
-		tools = e2HTTPPlannerTools(base)
-		ctx, tools = withDiagnosticTools(ctx, tools, "planner")
-		if e2HTTPHasMCPTool(tools) {
-			return false, "", ErrE2HTTPBinding
+		selected, selectErr := diagnosisPlannerProfile.selectTools(base, nil, nil)
+		if selectErr != nil {
+			return false, "", selectErr
+		}
+		ctx, tools = withDiagnosticTools(ctx, selected, "planner")
+		if err := diagnosisPlannerProfile.check(tools); err != nil {
+			return false, "", err
 		}
 	} else {
 		tools, def, cleanup = AugmentTools(ctx, "planner", base)

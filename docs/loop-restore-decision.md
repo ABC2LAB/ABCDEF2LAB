@@ -22,7 +22,7 @@
 | WebSearch | 설치 설정(`webSearch`)대로. 완전 로컬 모드에서는 끈다 | 대상이 아니라 검색 제공자로 나간다(규칙 8) |
 | skills | 복원. 지시문만 읽고, 안의 명령은 Bash(E②)로 실행된다. 이미지에 skills 데이터를 싣는 것은 C30 | 송신 없음 |
 | MCP(Playwright 등) | **진단에서는 계속 뺀다.** 브라우저는 탐색 프로필 | 규칙 3, #410 |
-| 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail) + 지금 E② 판에 있는 것(graph_overview·list_facts·get_worker_output·list_goals). 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지 | DB 안 작업 |
+| 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail). 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지. 지금 E② 필터의 graph_overview·list_facts·get_worker_output·list_goals는 원본 Worker 목록에 없는 Planner 도구라 실제로 Worker에 들어간 적이 없고, 프로필에도 넣지 않는다 | DB 안 작업 |
 | insert_assets의 자동 보강(DNS·HTTP) | 진단 모드에서는 끈다. 자산 기록만 한다 | 서버가 발견 자산에 직접 보낸다. 필요하면 탐색 단계 몫 |
 | report_finding | 원본 이름·입력 형식으로 복원하되 진단 모드에서는 **확정이 아니라 진단 후보로 저장**한다(지금 `submit_diagnostic_candidate`와 같은 저장). 판정은 E③이 E② 기록으로 한다 | 규칙 5. 원본 프롬프트·skills가 report_finding을 부른다 |
 | traffic_search·traffic_get·traffic_blob | 복원 대상. 진단 요청이 어디에 기록되는지 먼저 확인하고(열린 항목 1), 요청 쪽 인증 헤더·쿠키는 이름만 보인다 | 규칙 2 |
@@ -66,7 +66,7 @@
 
 ## 7. 구현 순서
 
-1. 골격: E② 진단 모드가 원본 Worker·Planner 경로를 타고 도구 프로필만 바꾸게 한다. 이 단계에서는 프로필에 지금 E② 도구만 넣어 **동작 차이가 없게** 하고, 그것을 시험으로 고정한다. 프로필 허용 목록과 시작 전 거부도 여기서 넣는다.
+1. 골격: 진단 Worker·Planner 도구를 원본 도구 목록(WorkerTools·PlannerTools·기본 도구)에서 프로필(`agent/tool_profile.go`)로 고른다. 대상으로 보내거나 E② 결속이 필요한 도구(Bash·후보 제출)는 E② 판으로만 채우고 원본 목록의 같은 이름 도구(호스트 Bash)는 고르지 않는다. 이 단계에서는 프로필에 지금 E② 도구만 넣어 **동작 차이가 없게** 하고, 그것을 시험으로 고정한다. 프로필 밖 도구가 섞이면 시작 전에 거부한다. Worker 프롬프트·세션을 원본 경로(`workerSystem`·`execute`)로 옮기는 것은 3단계에서 원본 프롬프트로 바꿀 때 한다.
 2. C26·C27: Planner 도구·마무리 턴·상한 설정, Worker 실행 중 Planner 깨우기.
 3. C24 일부와 C25: 그래프 도구·report_finding(후보)·skills·WebSearch·Sleep, 원본 프롬프트.
 4. C19 정리.
