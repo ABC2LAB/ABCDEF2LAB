@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -315,8 +316,8 @@ func ListDiagnosticRemediationRecords(ctx context.Context, q DiagnosticRemediati
 	return listDiagnosticRemediationRecords(ctx, q, taskID, "", limit, true)
 }
 
-// Isolated source reads let a read-only report continue after one SQL/source error.
-// The caller still owns the outer snapshot and must reject an unavailable transaction.
+// 격리 조회는 원본 오류 뒤에도 바깥 읽기 스냅샷을 복구한다.
+// 인프라·문맥 오류는 호출자가 전파하며 사용 불가 트랜잭션은 정상 수용하지 않는다.
 func LoadDiagnosticRemediationSourceIsolated(ctx context.Context, tx *sql.Tx, task int64, entry string) (remediation.Input, error) {
 	if _, err := tx.ExecContext(ctx, "SAVEPOINT diagnostic_source"); err != nil {
 		return remediation.Input{}, err
@@ -423,6 +424,10 @@ func listDiagnosticRemediationRecords(ctx context.Context, q DiagnosticRemediati
 				return nil, ctx.Err()
 			}
 			if err != nil {
+				if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, ErrDiagnosticRemediation) {
+					return nil, err
+				}
+				log.Printf("diagnostic remediation source unavailable: task=%d entry=%s reason=source_invalid", taskID, out[i].EntryID)
 				out[i].Stale = true
 				out[i].Bundle = remediation.Bundle{FindingID: out[i].EntryID}
 				continue

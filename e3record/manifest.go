@@ -9,7 +9,7 @@ import (
 	"github.com/Autumn-27/artex/oracle"
 )
 
-// Manifest is immutable evidence, never its own expected authority.
+// Manifest는 불변 근거이며 자기 자신을 기대 권위로 사용하지 않는다.
 type Manifest struct {
 	Version                                   int64
 	EvidenceDigest                            [32]byte
@@ -20,8 +20,8 @@ type Manifest struct {
 	CheckpointDigest                          [32]byte
 }
 
-// DecodeBoundManifest compares evidence with independently persisted execution authority.
-// Callers also check the manifest hash and the source against issuance/scope columns.
+// DecodeBoundManifest는 독립 저장된 실행 권위와 근거를 대조한다.
+// 호출자는 manifest 해시와 발급·범위 열에 대한 Source 대조도 수행한다.
 func DecodeBoundManifest(raw []byte, source Source, value oracle.VerdictValue) (Manifest, error) {
 	var m Manifest
 	if len(raw) == 0 || len(raw) > MaxCanonicalBytes {

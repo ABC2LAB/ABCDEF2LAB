@@ -89,7 +89,7 @@ func FromStored(task int64, entry string, version int64, digest string, context 
 	return out
 }
 func Validate(step Step, version int64, digest string) error {
-	if step.TaskID <= 0 || step.EntryID == "" || version < 1 || len(digest) != 64 || step.Number < 1 || step.Number > 32 || step.EvidenceVersion != version || step.EvidenceDigest != digest || len(step.BindingDigest) != 64 || step.ID != "step-"+step.BindingDigest[:24] || step.RunRef == "" || step.EvidenceRef == "" || step.SourceStepID == "" {
+	if step.TaskID <= 0 || step.EntryID == "" || version < 1 || len(digest) != 64 || step.Number < 1 || step.Number > 32 || step.EvidenceVersion != version || step.EvidenceDigest != digest || len(step.BindingDigest) != 64 || step.ID != "step-"+step.BindingDigest[:24] || step.RunRef == "" || step.RunRef == "unknown" || step.EvidenceRef == "" || step.EvidenceRef == "unknown" || step.SourceStepID == "" || step.SourceStepID == "unknown" || step.CallRef == "unknown" {
 		return fmt.Errorf("reproduction_binding_invalid")
 	}
 	if _, e := hex.DecodeString(step.BindingDigest); e != nil {

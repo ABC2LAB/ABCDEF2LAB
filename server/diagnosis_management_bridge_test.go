@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Autumn-27/artex/diagnosisapi"
+	"github.com/Autumn-27/artex/report"
 )
 
 func bridgeTestAuth(r *http.Request) (string, error) {
@@ -205,5 +206,25 @@ func TestManagementBridgeRechecksAfterBody(t *testing.T) {
 	<-done
 	if w.Code != 403 || calls.Load() != 0 {
 		t.Fatalf("status=%d upstream=%d", w.Code, calls.Load())
+	}
+}
+
+func TestManagementBridgeAcceptsReportWithSeparateImageBudget(t *testing.T) {
+	n := report.MaxDiagnosticReportBytes + 1
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, strings.Repeat("x", n))
+	}))
+	defer upstream.Close()
+	bridge, err := newDiagnosisManagementBridge(t.Context(), upstream.URL, bridgeTestAuth, bridgeTestAllowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("GET", "/api/report/diagnostic?task=42&audience=internal", nil)
+	request.Header.Set("Authorization", "Bearer synthetic-bridge")
+	response := httptest.NewRecorder()
+	bridge.ServeHTTP(response, request)
+	if response.Code != 200 || response.Body.Len() != n {
+		t.Fatal("캡처 별도 예산의 보고서를 브리지가 거부함", response.Code, response.Body.Len())
 	}
 }

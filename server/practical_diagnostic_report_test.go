@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/oracle"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/artex/reportcapture"
@@ -472,5 +474,165 @@ func TestOneInvalidE3SourceDoesNotBlockOtherReportEntries(t *testing.T) {
 				t.Fatal("source error blocked metadata list", list.Code, list.Body.String())
 			}
 		})
+	}
+}
+
+func TestInvalidRunReferenceIsIsolatedWithoutCollapsingIdentity(t *testing.T) {
+	for _, run := range []string{"run/with/slash", strings.Repeat("r", 170)} {
+		t.Run(fmt.Sprintf("run-bytes-%d", len(run)), func(t *testing.T) {
+			s, f, req := trafficEvidenceServer(t)
+			stored, err := s.m.pg.GetFinding(f.FindingID)
+			if err != nil || stored.TaskID == nil {
+				t.Fatal(err)
+			}
+			task := *stored.TaskID
+			id := diagnosticServerCandidate(t, s, task, "completed", e2proxy.HTTPObservation{Sequence: 1, AttemptRef: "owned-attempt", Method: "GET", Endpoint: "/safe", ObservedAt: time.Now()})
+			// 이전 저장소가 수용한 비표준 참조를 원문 digest와 함께 보존한 합성 fixture다.
+			var raw []byte
+			if s.m.pg.QueryRow(`SELECT payload FROM exploration_nodes WHERE id=$1`, id).Scan(&raw) != nil {
+				t.Fatal("후보 fixture 읽기 실패")
+			}
+			var doc map[string]any
+			if json.Unmarshal(raw, &doc) != nil {
+				t.Fatal("후보 fixture 해석 실패")
+			}
+			candidate := doc["diagnostic_candidate_v1"].(map[string]any)
+			var evidence map[string]any
+			if json.Unmarshal([]byte(candidate["evidence"].(string)), &evidence) != nil {
+				t.Fatal("관찰 fixture 해석 실패")
+			}
+			evidence["trusted"].(map[string]any)["execution"].(map[string]any)["scope"].(map[string]any)["RunRef"] = run
+			proof, err := json.Marshal(evidence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate["run_ref"], candidate["evidence"], candidate["evidence_digest"] = run, string(proof), db.DiagnosticEvidenceDigest(string(proof))
+			body, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.m.pg.Exec(`UPDATE exploration_nodes SET payload=$2::jsonb WHERE id=$1`, id, body); err != nil {
+				t.Fatal(err)
+			}
+			data, err := loadDiagnosticReport(t.Context(), s.m.pg, task, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if data.SourceFailures != 1 {
+				t.Fatal("비표준 회차 결속 실패가 격리되지 않음")
+			}
+			for _, entry := range data.Entries {
+				if entry.ID == fmt.Sprintf("candidate-%d", id) && (entry.Run != run || !entry.SourceLoadFailed || entry.Outcome != "unknown" || len(entry.Steps) != 0) {
+					t.Fatal("서로 다른 회차를 unknown으로 합침")
+				}
+			}
+			for _, path := range []string{fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal", task), fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal&format=docx", task), fmt.Sprintf("/api/report/diagnostic/remediation?task=%d&audience=internal", task)} {
+				if w := req("GET", path, ""); w.Code != 200 {
+					t.Fatal("비표준 회차 하나가 보고서를 막음", w.Code)
+				}
+			}
+		})
+	}
+}
+
+func TestDisplayModelGroupLimitPreservesReport(t *testing.T) {
+	s, f, req := trafficEvidenceServer(t)
+	finding, err := s.m.pg.GetFinding(f.FindingID)
+	if err != nil || finding.TaskID == nil {
+		t.Fatal(err)
+	}
+	task := *finding.TaskID
+	if _, err := s.m.pg.Exec(`INSERT INTO llm_usage(task_id,model,worker,status) SELECT $1,'synthetic-model-'||n,'worker','ok' FROM generate_series(1,$2) n`, strconv.FormatInt(task, 10), report.MaxDiagnosticModelRecords+3); err != nil {
+		t.Fatal(err)
+	}
+	data, err := loadDiagnosticReport(t.Context(), s.m.pg, task, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.ModelRecords) != report.MaxDiagnosticModelRecords || data.ModelRecordsOmitted != 3 {
+		t.Fatal("모델 표시 상한·생략 건수 불일치")
+	}
+	html, err := report.DiagnosticHTML(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := report.DiagnosticDOCX(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{string(html), diagnosticWordText(t, wordParts(t, doc)["word/document.xml"])} {
+		if !strings.Contains(text, "추가 모델 사용량 묶음 3개 생략") {
+			t.Fatal("사용량 생략 안내 누락")
+		}
+	}
+	if w := req("GET", fmt.Sprintf("/api/report/diagnostic/remediation?task=%d&audience=internal", task), ""); w.Code != 200 {
+		t.Fatal("사용량 메타데이터가 조치 목록을 막음", w.Code)
+	}
+}
+
+func TestCaptureSQLTimeoutPropagatesAsInfrastructureFailure(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	f := diagnosticE3FixtureFor(t, s.m.pg, oracle.Confirmed, true)
+	if _, err := s.m.pg.RecordControlledFinding(t.Context(), f.prepared, f.markers); err != nil {
+		t.Fatal(err)
+	}
+	locker, err := s.m.pg.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Rollback()
+	if _, err := locker.Exec(`LOCK TABLE diagnostic_captures_v1 IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.m.pg.BeginTx(t.Context(), &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SET LOCAL lock_timeout='20ms'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = readDiagnosticReport(t.Context(), tx, f.taskID, time.Now())
+	var pe *pgconn.PgError
+	if !errors.As(err, &pe) || pe.Code != "55P03" || diagnosticReadFailureCode(err) != 503 {
+		t.Fatal("SQL 장애가 결속 실패·stale·후속 aborted 오류로 바뀜", err)
+	}
+}
+
+func TestRemediationSourceSQLTimeoutIsNotStale(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	f := diagnosticE3FixtureFor(t, s.m.pg, oracle.Confirmed, true)
+	stored, err := s.m.pg.RecordControlledFinding(t.Context(), f.prepared, f.markers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := fmt.Sprintf("finding-%d", stored.FindingID)
+	source, err := db.LoadDiagnosticRemediationSource(t.Context(), s.m.pg.DB, f.taskID, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.m.pg.SaveDiagnosticRemediation(t.Context(), f.taskID, entry, source.SourceDigest, nil); err != nil {
+		t.Fatal(err)
+	}
+	locker, err := s.m.pg.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Rollback()
+	if _, err := locker.Exec(`LOCK TABLE assets IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.m.pg.BeginTx(t.Context(), &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SET LOCAL lock_timeout='20ms'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = readDiagnosticReport(t.Context(), tx, f.taskID, time.Now())
+	var pe *pgconn.PgError
+	if !errors.As(err, &pe) || pe.Code != "55P03" || diagnosticReadFailureCode(err) != 503 {
+		t.Fatal("일시적인 원본 조회 장애가 stale 또는 판단불가로 변환됨", err)
 	}
 }

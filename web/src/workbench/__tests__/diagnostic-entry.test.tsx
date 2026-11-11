@@ -225,7 +225,7 @@ it("blocks copying a stored prompt that differs from its masked display", async 
   });
   render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "AI 수정 프롬프트 복사" }));
-  await screen.findByText(/프롬프트가 변경됐거나 복사 권한/);
+  await screen.findByText(/민감값으로 보이는 내용이 있어 복사를 막았습니다/);
   expect(copy).not.toHaveBeenCalled();
 });
 

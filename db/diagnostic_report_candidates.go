@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 )
 
-// DiagnosticReportCandidate preserves a bad row's identity without disclosing or
-// trusting its payload. Execution/standard candidate reads retain strict refusal.
+// DiagnosticReportCandidate는 잘못된 행의 payload를 신뢰·노출하지 않고 식별자만 보존한다.
+// 실행·일반 후보 조회의 엄격한 거부는 유지한다.
 type DiagnosticReportCandidate struct {
 	Candidate   DiagnosticCandidate
 	Unavailable bool
@@ -16,7 +16,7 @@ func ListDiagnosticReportCandidates(ctx context.Context, q DiagnosticCandidateQu
 	if task <= 0 || exploration <= 0 || limit <= 0 || limit > MaxDiagnosticCandidates+1 {
 		return nil, ErrDiagnosticCandidate
 	}
-	rows, err := q.QueryContext(ctx, `SELECT n.id,CASE WHEN octet_length(n.payload::text)<=$5 THEN n.payload ELSE NULL END FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE t.id=$1 AND n.exploration_id=$2 AND n.origin=$3 AND n.kind='fact' ORDER BY n.id LIMIT $4`, task, exploration, diagnosticCandidateOrigin, limit, 16<<20)
+	rows, err := q.QueryContext(ctx, `SELECT n.id,CASE WHEN octet_length(n.payload::text)<=$5 THEN n.payload ELSE NULL END FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE t.id=$1 AND n.exploration_id=$2 AND n.origin=$3 AND n.kind='fact' ORDER BY n.id LIMIT $4`, task, exploration, diagnosticCandidateOrigin, limit, diagnosticRemediationByteLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +40,7 @@ func ListDiagnosticReportCandidates(ctx context.Context, q DiagnosticCandidateQu
 		c.ID = id
 		if !invalid {
 			total += len(raw)
-			if total > 16<<20 {
+			if total > diagnosticRemediationByteLimit {
 				return nil, ErrDiagnosticCandidate
 			}
 		}

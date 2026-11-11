@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/artex/reportcapture"
 	"github.com/Autumn-27/artex/reproduction"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -28,9 +30,10 @@ func attachDiagnosticCaptures(ctx context.Context, tx *sql.Tx, task int64, entry
 		}
 		capture, n, err := db.ReadDiagnosticCaptureMetadata(ctx, tx, task, entry.ID, *step)
 		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if !errors.Is(err, db.ErrDiagnosticCapture) {
+				return err
 			}
+			log.Printf("diagnostic capture unavailable: task=%d entry=%s reason=capture_invalid", task, entry.ID)
 			step.Capture = reproduction.Capture{Status: "binding_invalid"}
 			continue
 		}
@@ -41,6 +44,10 @@ func attachDiagnosticCaptures(ctx context.Context, tx *sql.Tx, task int64, entry
 			} else {
 				capture, err = db.ReadDiagnosticCapture(ctx, tx, task, entry.ID, *step)
 				if err != nil {
+					if !errors.Is(err, db.ErrDiagnosticCapture) {
+						return err
+					}
+					log.Printf("diagnostic capture unavailable: task=%d entry=%s reason=capture_invalid", task, entry.ID)
 					capture = reproduction.Capture{Status: "binding_invalid"}
 				} else {
 					*imageBytes += encoded
@@ -82,7 +89,11 @@ func (s *Server) diagnosticCaptureImage(w http.ResponseWriter, r *http.Request) 
 	defer tx.Rollback()
 	source, e := db.LoadDiagnosticRemediationSource(r.Context(), tx, task, q.Get("entry"))
 	if e != nil {
-		writeErr(w, 422, "현재 증거 버전을 확인할 수 없습니다.")
+		code := diagnosticReadFailureCode(e)
+		if code == http.StatusNotFound {
+			code = http.StatusUnprocessableEntity
+		}
+		writeErr(w, code, "현재 증거 버전을 확인할 수 없습니다.")
 		return
 	}
 	version, e := strconv.ParseInt(source.EvidenceVersion, 10, 64)
@@ -96,7 +107,11 @@ func (s *Server) diagnosticCaptureImage(w http.ResponseWriter, r *http.Request) 
 		}
 		c, err := db.ReadDiagnosticCapture(r.Context(), tx, task, q.Get("entry"), step)
 		if err != nil {
-			writeErr(w, 422, "현재 이미지 무결성을 확인할 수 없습니다.")
+			code := http.StatusServiceUnavailable
+			if errors.Is(err, db.ErrDiagnosticCapture) {
+				code = http.StatusUnprocessableEntity
+			}
+			writeErr(w, code, "현재 이미지 또는 저장소를 확인할 수 없습니다.")
 			return
 		}
 		if c.Digest != q.Get("digest") || reportcapture.Verify(c) != nil {

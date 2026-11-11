@@ -15,10 +15,11 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisapi"
+	"github.com/Autumn-27/artex/report"
 )
 
 const managementBridgeRequestLimit = 256 << 10
-const managementBridgeResponseLimit = 16 << 20
+const managementBridgeResponseLimit = report.MaxDiagnosticExportBytes
 
 var managementApprovalRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 

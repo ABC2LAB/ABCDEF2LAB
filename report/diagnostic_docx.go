@@ -106,6 +106,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph("Normal", "저장된 승인 범위 상세 미확보 또는 공유용 비공개. 작업 목표는 승인 범위가 아닙니다.")
 	}
 	w.paragraph("Normal", "모델 사용량 기록 상태: "+in.ModelRecordState+". 기록 부재를 미실행으로 단정하지 않습니다.")
+	if in.ModelRecordsOmitted > 0 {
+		w.paragraph("Normal", fmt.Sprintf("추가 모델 사용량 묶음 %d개 생략. 저장된 원본 기록은 유지합니다.", in.ModelRecordsOmitted))
+	}
 	for _, r := range in.ModelRecords {
 		w.paragraph("Normal", fmt.Sprintf("%s / %s · 사용량 기록 %d행", r.Model, r.Worker, r.Records))
 	}
@@ -269,7 +272,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 	if err = z.Close(); err != nil {
 		return nil, err
 	}
-	if out.Len() > MaxDiagnosticReportBytes+MaxDiagnosticCaptureBytes {
+	if out.Len() > MaxDiagnosticExportBytes {
 		return nil, ErrExportBlocked
 	}
 	return out.Bytes(), nil

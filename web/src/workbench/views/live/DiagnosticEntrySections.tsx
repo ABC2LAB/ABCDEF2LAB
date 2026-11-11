@@ -18,7 +18,7 @@ import { maskSecrets } from "../../live/mask";
 import { Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
 
-const captureStatusLabels: Record<string, string> = {
+const captureStatusLabels: Record<ReproductionStep["capture"]["status"], string> = {
   captured: "확보",
   not_captured: "미확보",
   not_supported: "캡처 미지원 또는 승인 없음",
@@ -166,9 +166,13 @@ export function DiagnosticEntrySections({
       if (maskSecrets(reply.ai_prompt) !== reply.ai_prompt) throw Error("prompt_contains_sensitive_value");
       await navigator.clipboard.writeText(reply.ai_prompt);
       if (!controller.signal.aborted) setMessage("같은 저장 프롬프트를 복사했습니다.");
-    } catch {
+    } catch (error) {
       if (!controller.signal.aborted)
-        setMessage("프롬프트가 변경됐거나 복사 권한을 확인하지 못했습니다. 현재 버전을 다시 조회하세요.");
+        setMessage(
+          error instanceof Error && error.message === "prompt_contains_sensitive_value"
+            ? "민감값으로 보이는 내용이 있어 복사를 막았습니다. 저장 근거와 프롬프트를 검토하세요."
+            : "프롬프트가 변경됐거나 복사 권한을 확인하지 못했습니다. 현재 버전을 다시 조회하세요.",
+        );
     } finally {
       if (!controller.signal.aborted) setBusy(false);
     }

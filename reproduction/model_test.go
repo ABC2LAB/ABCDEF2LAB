@@ -55,3 +55,14 @@ func TestMissingOrUnknownEndpointKeepsStoredReceiptMethod(t *testing.T) {
 		}
 	}
 }
+
+func TestUnknownNormalizedIdentityCannotAuthorizeCapture(t *testing.T) {
+	base := FromStored(1, "finding-1", 1, strings.Repeat("a", 64), contextFixture())[0]
+	for _, change := range []func(*Step){func(s *Step) { s.RunRef = "unknown" }, func(s *Step) { s.CallRef = "unknown" }, func(s *Step) { s.SourceStepID = "unknown" }, func(s *Step) { s.EvidenceRef = "unknown" }} {
+		step := base
+		change(&step)
+		if Validate(step, 1, strings.Repeat("a", 64)) == nil {
+			t.Fatal("정규화 실패 참조를 캡처 권한으로 수용함")
+		}
+	}
+}

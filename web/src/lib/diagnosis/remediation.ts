@@ -6,6 +6,18 @@ import { diagnosticOutcome } from "./diagnostic-results";
 // docs/contracts/practical-diagnostic-report.md; matches reportcapture and SQL bounds.
 export const DIAGNOSTIC_CAPTURE_LIMITS = { pngBytes: 1048576, dimension: 4096, pixels: 8000000 } as const;
 
+export const DIAGNOSTIC_CAPTURE_STATUSES = [
+  "captured",
+  "not_captured",
+  "not_supported",
+  "failed",
+  "storage_unavailable",
+  "shared_omitted",
+  "capacity_omitted",
+  "binding_invalid",
+] as const;
+export type DiagnosticCaptureStatus = (typeof DIAGNOSTIC_CAPTURE_STATUSES)[number];
+
 export type Technology = {
   kind: string;
   name: string;
@@ -80,7 +92,14 @@ export type ReproductionStep = {
   observation: string;
   depends_on?: string[];
   truncated: boolean;
-  capture: { status: string; ref?: string; digest?: string; captured_at?: string; width?: number; height?: number };
+  capture: {
+    status: DiagnosticCaptureStatus;
+    ref?: string;
+    digest?: string;
+    captured_at?: string;
+    width?: number;
+    height?: number;
+  };
 };
 export type RemediationEntry = {
   steps?: ReproductionStep[];
@@ -307,16 +326,7 @@ const stepSchema = z.object({
   depends_on: strings.optional(),
   truncated: z.boolean(),
   capture: z.object({
-    status: z.enum([
-      "captured",
-      "not_captured",
-      "not_supported",
-      "failed",
-      "storage_unavailable",
-      "shared_omitted",
-      "capacity_omitted",
-      "binding_invalid",
-    ]),
+    status: z.enum(DIAGNOSTIC_CAPTURE_STATUSES),
     ref: text.optional(),
     digest: text.optional(),
     captured_at: text.optional(),

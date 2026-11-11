@@ -41,19 +41,19 @@ func readDiagnosticOverview(ctx context.Context, tx *sql.Tx, task int64, out *re
 		return nil
 	}
 	out.ModelRecordState = "not_recorded"
-	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(model,''),COALESCE(worker,''),count(*) FROM llm_usage WHERE task_id=$1 GROUP BY model,worker ORDER BY model,worker LIMIT 65`, strconv.FormatInt(task, 10))
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(model,''),COALESCE(worker,''),count(*),count(*) OVER() FROM llm_usage WHERE task_id=$1 GROUP BY model,worker ORDER BY model,worker LIMIT $2`, strconv.FormatInt(task, 10), report.MaxDiagnosticModelRecords)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var model, worker string
-		var n int64
-		if rows.Scan(&model, &worker, &n) != nil {
-			return errDiagnosticReportScope
+		var n, total int64
+		if err := rows.Scan(&model, &worker, &n, &total); err != nil {
+			return err
 		}
-		if len(out.ModelRecords) >= 64 {
-			return errDiagnosticReportScope
+		if total > report.MaxDiagnosticModelRecords {
+			out.ModelRecordsOmitted = total - report.MaxDiagnosticModelRecords
 		}
 		out.ModelRecords = append(out.ModelRecords, report.DiagnosticModelRecord{Model: model, Worker: worker, Records: n})
 		out.ModelRecordState = "recorded"

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,11 +15,30 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/remediation"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/artex/reproduction"
 )
 
 var errDiagnosticReportScope = errors.New("diagnostic report scope invalid")
+
+func diagnosticReadFailureCode(err error) int {
+	if errors.Is(err, sql.ErrNoRows) {
+		return http.StatusNotFound
+	}
+	if errors.Is(err, errDiagnosticReportScope) || errors.Is(err, report.ErrExportBlocked) || errors.Is(err, db.ErrDiagnosticRemediation) || errors.Is(err, db.ErrDiagnosticCandidate) || errors.Is(err, remediation.ErrInvalid) {
+		return http.StatusUnprocessableEntity
+	}
+	return http.StatusServiceUnavailable
+}
+func unavailableDiagnosticEntry(entry *report.DiagnosticEntry) {
+	entry.SourceLoadFailed = true
+	entry.Steps = nil
+	entry.CurrentSource = nil
+	entry.RemediationBundle, entry.RemediationSource = nil, nil
+	entry.RemediationStale = entry.RemediationArtifactID > 0
+	entry.Outcome, entry.Verification = "unknown", "manual_review_required"
+}
 
 // 공유 기본값을 보존한다. 상세 사본은 인증된 관리자가 audience=internal을 명시해야 한다.
 func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
@@ -46,10 +66,7 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := loadDiagnosticReportWithCaptures(r.Context(), s.m.pg, taskID, time.Now(), audience == "internal")
 	if err != nil {
-		code := 422
-		if errors.Is(err, sql.ErrNoRows) {
-			code = 404
-		}
+		code := diagnosticReadFailureCode(err)
 		writeErr(w, code, "보고서 범위 또는 저장 증거를 확인할 수 없습니다.")
 		return
 	}
@@ -132,6 +149,7 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 	for _, row := range candidates {
 		c := row.Candidate
 		if row.Unavailable {
+			log.Printf("diagnostic source unavailable: task=%d entry=candidate-%d reason=source_invalid", taskID, c.ID)
 			out.Entries = append(out.Entries, report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", Title: "저장 후보 근거 확인 실패", Outcome: "unknown", Verification: "manual_review_required", Severity: "미평가", SourceLoadFailed: true})
 			continue
 		}
@@ -274,12 +292,11 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 			return out, ctx.Err()
 		}
 		if err != nil {
-			entry.SourceLoadFailed = true
-			entry.RemediationBundle, entry.RemediationSource = nil, nil
-			entry.RemediationStale = entry.RemediationArtifactID > 0
-			if entry.Outcome == "confirmed" {
-				entry.Outcome, entry.Verification = "unknown", "manual_review_required"
+			if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, db.ErrDiagnosticRemediation) {
+				return out, err
 			}
+			log.Printf("diagnostic source unavailable: task=%d entry=%s reason=source_invalid", taskID, entry.ID)
+			unavailableDiagnosticEntry(entry)
 			out.SourceFailures++
 			continue
 		}
@@ -288,6 +305,19 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 			continue
 		}
 		entry.Steps = reproduction.FromStored(taskID, entry.ID, entry.EvidenceVersion, entry.Digest, source.Context)
+		bound := true
+		for _, step := range entry.Steps {
+			if step.RunRef != entry.Run || reproduction.Validate(step, entry.EvidenceVersion, entry.Digest) != nil {
+				bound = false
+				break
+			}
+		}
+		if !bound {
+			log.Printf("diagnostic source unavailable: task=%d entry=%s reason=observation_binding_invalid", taskID, entry.ID)
+			unavailableDiagnosticEntry(entry)
+			out.SourceFailures++
+			continue
+		}
 		entry.StepsTruncated = source.Context.ObservationsTruncated
 		if err := attachDiagnosticCaptures(ctx, tx, taskID, entry, &captureBytes, images); err != nil {
 			return out, err

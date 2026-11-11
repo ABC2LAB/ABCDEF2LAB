@@ -92,10 +92,7 @@ func remediationScope(r *http.Request) (int64, bool, error) {
 	return id, audience == "internal", nil
 }
 func remediationError(w http.ResponseWriter, err error) {
-	code := 422
-	if errors.Is(err, sql.ErrNoRows) {
-		code = 404
-	}
+	code := diagnosticReadFailureCode(err)
 	if errors.Is(err, db.ErrDiagnosticRemediationStale) {
 		code = 409
 	}

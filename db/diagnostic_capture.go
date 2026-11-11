@@ -94,7 +94,7 @@ func ReadDiagnosticCapture(ctx context.Context, q DiagnosticRemediationQueryer, 
 	return readDiagnosticCapture(ctx, q, task, entry, step, true)
 }
 
-// Metadata readers do not fetch PNG blobs. The image endpoint verifies bytes on explicit read.
+// 메타데이터 조회는 PNG blob을 가져오지 않는다. 명시적 이미지 조회에서 바이트를 검증한다.
 func ReadDiagnosticCaptureMetadata(ctx context.Context, q DiagnosticRemediationQueryer, task int64, entry string, step reproduction.Step) (reproduction.Capture, int64, error) {
 	c, err := readDiagnosticCapture(ctx, q, task, entry, step, false)
 	if err != nil {
@@ -108,10 +108,13 @@ func ReadDiagnosticCaptureMetadata(ctx context.Context, q DiagnosticRemediationQ
 }
 func readDiagnosticCapture(ctx context.Context, q DiagnosticRemediationQueryer, task int64, entry string, step reproduction.Step, pixels bool) (reproduction.Capture, error) {
 	var c reproduction.Capture
+	if reproduction.Validate(step, step.EvidenceVersion, step.EvidenceDigest) != nil {
+		return c, ErrDiagnosticCapture
+	}
 	var at sql.NullTime
 	var policy, run, call, digest string
 	var version int64
-	e := q.QueryRowContext(ctx, `SELECT state,capture_ref,image_digest,captured_at,width,height,CASE WHEN $5 AND octet_length(png)<=1048576 THEN png ELSE NULL END,mask_policy,run_ref,call_ref,evidence_version,evidence_digest FROM diagnostic_captures_v1 WHERE task_id=$1 AND entry_id=$2 AND step_id=$3 AND binding_digest=$4`, task, entry, step.ID, step.BindingDigest, pixels).Scan(&c.Status, &c.Ref, &c.Digest, &at, &c.Width, &c.Height, &c.PNG, &policy, &run, &call, &version, &digest)
+	e := q.QueryRowContext(ctx, `SELECT state,capture_ref,image_digest,captured_at,width,height,CASE WHEN $5 AND octet_length(png)<=$6 THEN png ELSE NULL END,mask_policy,run_ref,call_ref,evidence_version,evidence_digest FROM diagnostic_captures_v1 WHERE task_id=$1 AND entry_id=$2 AND step_id=$3 AND binding_digest=$4`, task, entry, step.ID, step.BindingDigest, pixels, reportcapture.MaxPNGBytes).Scan(&c.Status, &c.Ref, &c.Digest, &at, &c.Width, &c.Height, &c.PNG, &policy, &run, &call, &version, &digest)
 	if e == sql.ErrNoRows {
 		return reproduction.Capture{Status: "not_captured"}, nil
 	}
