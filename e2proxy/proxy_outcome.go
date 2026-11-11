@@ -73,8 +73,9 @@ func proxyOutcomeOf(r Receipt, err error) proxyOutcome {
 	return proxyOutcome{class: class, reason: reason, sequence: r.Sequence}
 }
 
-// body는 모델이 curl 출력으로 보는 글이다. 대상도 같은 글을 보낼 수 있으므로 판단 근거는 헤더와 trusted 결과이고,
-// 본문은 그쪽을 가리키는 안내다(Worker 프롬프트도 tool_output을 정책 판단으로 쓰지 말라고 한다).
+// body는 모델이 curl 출력으로 보는 설명이다. 대상도 같은 바이트를 보낼 수 있고, curl 출력에 찍힌 헤더 줄도 대상 본문과
+// 구별되지 않으므로 둘 다 신뢰 근거가 아니다. 판단은 프로그램이 영수증으로 만든 trusted 관찰(같은 순번)과 건수만 쓴다.
+// 결과 헤더는 사람이 보는 로그·프로그램 소비자를 위한 표시로만 남긴다.
 func (o proxyOutcome) body() string {
 	lead := "E2 did not send this request to the target."
 	if o.class == OutcomeUnknown {
@@ -86,6 +87,6 @@ func (o proxyOutcome) body() string {
 		ref = fmt.Sprintf(" sequence=%d.", o.sequence)
 	}
 	return fmt.Sprintf("%s This is not a target response. reason=%s.%s %s"+
-		" A target can imitate this text; confirm it with the %s header or the trusted call result.\n",
-		lead, o.reason, ref, proxyOutcomeHints[o.reason], OutcomeHeader)
+		" A target can imitate this text; confirm it with the trusted call observation for this sequence.\n",
+		lead, o.reason, ref, proxyOutcomeHints[o.reason])
 }

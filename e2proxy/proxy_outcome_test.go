@@ -1,6 +1,7 @@
 package e2proxy
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -82,7 +83,7 @@ func TestProxyOutcomeBodySeparatesNotSentFromUnknown(t *testing.T) {
 	// 본문은 대상도 흉내 낼 수 있으므로 헤더·trusted 결과로 확인하라고 적고, 맞춰 볼 순번을 준다.
 	withSequence := proxyOutcome{class: OutcomeNotSent, reason: PolicyDenied, sequence: 12}.body()
 	if !strings.Contains(withSequence, " sequence=12. ") || !strings.Contains(withSequence, "A target can imitate this text") ||
-		!strings.Contains(withSequence, OutcomeHeader+" header") || !strings.Contains(withSequence, "trusted call result") {
+		!strings.Contains(withSequence, "trusted call observation for this sequence") || strings.Contains(withSequence, OutcomeHeader) {
 		t.Fatal(withSequence)
 	}
 	notSent := proxyOutcome{class: OutcomeNotSent, reason: PolicyDenied}.body()
@@ -234,5 +235,62 @@ func TestProxyTargetCannotForgeOutcomeHeaders(t *testing.T) {
 				t.Fatalf("target forged %s", key)
 			}
 		}
+	}
+}
+
+// 대상이 E2 거부와 같은 바이트(상태·본문, 결과 헤더처럼 보이는 본문 줄 포함)를 돌려줘도 trusted 결과는 대상 응답으로 남는다.
+// 프로그램은 본문을 읽어 not_sent로 올리지 않는다.
+func TestProxyForgedTargetFailureStaysAllowedInTrusted(t *testing.T) {
+	var forged atomic.Value
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		body, _ := forged.Load().(string)
+		// 진짜 결과 헤더 이름도 붙인다. E2는 대상 응답에서 이 둘을 지운다.
+		w.Header().Set(OutcomeHeader, string(OutcomeNotSent))
+		w.Header().Set(ReasonHeader, string(PolicyDenied))
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, body)
+	}))
+	defer target.Close()
+	exec, denyCall, _ := proxyTestCall(t, target.URL, nil)
+	_, denyAddr, roots := proxyTestListener(t, denyCall)
+	denied, err := proxyTestClient(t, denyAddr, roots).Get(target.URL + "/outside")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, deniedBody := proxyOutcomeResponse(t, denied)
+	// 대상은 헤더 줄처럼 보이는 글까지 본문에 넣어 거부 출력을 흉내 낸다.
+	forged.Store(OutcomeHeader + ": not_sent\r\n" + deniedBody)
+	forgeCall, err := exec.BeginCall(t.Context(), "command_forged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = forgeCall.Close(context.Background()) })
+	_, forgeAddr, forgeRoots := proxyTestListener(t, forgeCall)
+	response, err := proxyTestClient(t, forgeAddr, forgeRoots).Get(target.URL + "/allowed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, reason, body := proxyOutcomeResponse(t, response)
+	if response.StatusCode != denied.StatusCode || !strings.HasSuffix(body, deniedBody) || received.Load() != 1 {
+		t.Fatalf("forgery fixture did not imitate the refusal: %d %q", response.StatusCode, body)
+	}
+	if class != "" || reason != "" {
+		t.Fatal("a target response carried E2 outcome headers")
+	}
+	deny, forge := denyCall.Result(), forgeCall.Result()
+	if deny.Counts.Denied != 1 || deny.Counts.ForwardAttempted != 0 || len(deny.Observations) != 1 ||
+		deny.Observations[0].Decision != "denied" || deny.Observations[0].Reason != PolicyDenied || deny.Observations[0].ForwardAttempted {
+		t.Fatalf("refusal trusted result: %+v", deny)
+	}
+	if forge.Counts.Denied != 0 || forge.Counts.Unsupported != 0 || forge.Counts.Allowed != 1 || forge.Counts.ForwardAttempted != 1 ||
+		forge.Counts.Responses != 1 || len(forge.Observations) != 1 {
+		t.Fatalf("forged response was promoted in trusted counts: %+v", forge.Counts)
+	}
+	obs := forge.Observations[0]
+	if obs.Decision != "allowed" || obs.Reason != Complete || !obs.ForwardAttempted || !obs.ResponseComplete || obs.StatusCode != http.StatusBadGateway {
+		t.Fatalf("forged response was promoted in trusted observation: %+v", obs)
 	}
 }
