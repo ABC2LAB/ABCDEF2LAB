@@ -1,6 +1,7 @@
 package e2proxy
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ func TestProxyOutcomeOfReceipt(t *testing.T) {
 		class  ProxyOutcomeClass
 		reason Reason
 	}{
-		{"policy denial", Receipt{Decision: "denied", Reason: PolicyDenied, NotSent: true}, ErrDenied, OutcomeNotSent, PolicyDenied},
+		{"policy denial", Receipt{Decision: "denied", Reason: PolicyDenied, NotSent: true, Sequence: 7}, ErrDenied, OutcomeNotSent, PolicyDenied},
 		{"unsupported", Receipt{Decision: "unsupported", Reason: Unsupported, NotSent: true}, ErrDenied, OutcomeNotSent, Unsupported},
 		{"budget", Receipt{Decision: "denied", Reason: BudgetExhausted, NotSent: true}, ErrDenied, OutcomeNotSent, BudgetExhausted},
 		{"connection never opened", Receipt{Decision: "allowed", Reason: TransportFailed, NotSent: true}, ErrDenied, OutcomeNotSent, TransportFailed},
@@ -35,7 +36,7 @@ func TestProxyOutcomeOfReceipt(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := proxyOutcomeOf(tc.r, tc.err)
-			if got.class != tc.class || got.reason != tc.reason {
+			if got.class != tc.class || got.reason != tc.reason || got.sequence != tc.r.Sequence {
 				t.Fatalf("got %s/%s want %s/%s", got.class, got.reason, tc.class, tc.reason)
 			}
 		})
@@ -78,7 +79,16 @@ func TestProxyOutcomeHintsCoverEveryReason(t *testing.T) {
 }
 
 func TestProxyOutcomeBodySeparatesNotSentFromUnknown(t *testing.T) {
+	// 본문은 대상도 흉내 낼 수 있으므로 헤더·trusted 결과로 확인하라고 적고, 맞춰 볼 순번을 준다.
+	withSequence := proxyOutcome{class: OutcomeNotSent, reason: PolicyDenied, sequence: 12}.body()
+	if !strings.Contains(withSequence, " sequence=12. ") || !strings.Contains(withSequence, "A target can imitate this text") ||
+		!strings.Contains(withSequence, OutcomeHeader+" header") || !strings.Contains(withSequence, "trusted call result") {
+		t.Fatal(withSequence)
+	}
 	notSent := proxyOutcome{class: OutcomeNotSent, reason: PolicyDenied}.body()
+	if strings.Contains(notSent, "sequence=") {
+		t.Fatal(notSent)
+	}
 	unknown := proxyOutcome{class: OutcomeUnknown, reason: Unknown}.body()
 	if !strings.HasPrefix(notSent, "E2 did not send this request") || strings.Contains(notSent, "unknown") {
 		t.Fatal(notSent)
@@ -109,6 +119,7 @@ func TestProxyFailureCarriesOutcomeAndReason(t *testing.T) {
 	exec, call, _ := proxyTestCall(t, target.URL, nil)
 	_, addr, roots := proxyTestListener(t, call)
 	client := proxyTestClient(t, addr, roots)
+	sequenceOf := regexp.MustCompile(` sequence=([0-9]+)\. `)
 	send := func(path, encoding string) *http.Response {
 		req, _ := http.NewRequest(http.MethodGet, target.URL+path, nil)
 		if encoding != "" {
@@ -139,6 +150,17 @@ func TestProxyFailureCarriesOutcomeAndReason(t *testing.T) {
 			if resp.StatusCode != http.StatusBadGateway || class != tc.class || reason != tc.reason ||
 				!strings.Contains(body, "reason="+string(tc.reason)+".") || received.Load()-before != tc.reached {
 				t.Fatalf("%d %s %s %q", resp.StatusCode, class, reason, body)
+			}
+			// 본문의 순번은 모델이 받는 trusted 관찰의 같은 순번과 사유가 같다(대상은 trusted를 바꿀 수 없다).
+			match := sequenceOf.FindStringSubmatch(body)
+			found := false
+			for _, obs := range call.Result().Observations {
+				if match != nil && fmt.Sprint(obs.Sequence) == match[1] {
+					found = obs.Reason == tc.reason && obs.ForwardAttempted == (tc.class == OutcomeUnknown)
+				}
+			}
+			if !found {
+				t.Fatalf("body sequence does not match a trusted observation: %q", body)
 			}
 			for _, internal := range []string{"rule_proxy", "revision_proxy", "path_proxy", "session-secret", target.URL, "xxxx"} {
 				if strings.Contains(body, internal) {
