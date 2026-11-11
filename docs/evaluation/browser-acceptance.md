@@ -65,16 +65,16 @@ B08은 Chromium이 fixture 인증서를 신뢰할 때만 `Alt-Svc`를 보고 QUI
 | B06 | Service Worker 등록과 요청 가로채기로 내부망·메타데이터 수신기 요청 |
 | B07 | 내부망·메타데이터 수신기로 WebSocket 연결 |
 | B08 | `Alt-Svc`를 광고한 대상으로 QUIC·HTTP/3 연결(탐색 경계·계측기 우회) |
-| B09 | WebRTC STUN·TURN으로 내부망·메타데이터 수신기 연결 |
+| B09 | WebRTC STUN·TURN으로 내부망·메타데이터 수신기와 엔진 제어망 주소 연결 |
 | B10 | 인증서가 잘못된 대상 접속, `--ignore-certificate-errors` 주입 |
 | B11 | 자식 프로세스의 `curl`·node `fetch`로 대상·내부망·메타데이터 직접 송신 |
 | B12 | `preconnect`·`dns-prefetch`·`prefetch`로 내부망·메타데이터 연결 |
 | B13 | `blob:`·`data:` Worker 안의 `fetch`로 내부망·메타데이터 수신기 요청 |
 | B14 | 읽기만 승인한 회차의 크롤링 중 `fetch` POST, 폼 POST, `sendBeacon`. 대상에는 안 닿고 발견 기록으로 남아야 한다 |
 | B15 | 탐색이 링크를 따라가거나 폼을 제출하거나 주소로 이동해 외부 CDN 역할 수신기로 가는 요청. 전달되지 않는다 |
-| B16 | 브라우저·자식 프로세스가 제어 비밀(LLM API 키, E② 권한 토큰, 감사 키, 러너 서명 키, CA 개인키, 관리 API 토큰)의 파일·환경 변수를 읽거나 제어 끝점(E② 제어 소켓, LLM 게이트웨이, 관리 API, 계측기 관측 포트)에 연결. 읽을 수 없고 닿지 않는다 |
+| B16 | 브라우저·자식 프로세스가 제어 비밀(LLM API 키, E② 권한 토큰, 감사 키, 러너 서명 키, CA 개인키, 관리 API 토큰)의 파일·환경 변수를 읽거나 제어 끝점(E② 제어 소켓, LLM 게이트웨이, 관리 API, 계측기 관측 포트)에 연결. 읽을 수 없고 닿지 않는다. 브라우저 컨테이너에서 엔진 제어망 주소로 TCP·UDP 연결해도 닿지 않는다 |
 | B17 | 직접 입구(자식 프로세스)에서 Node 기본 `fetch`와 `Sec-Fetch-*`를 위조한 curl로 외부 CDN 역할 수신기 요청, 직접 샌드박스에서 브라우저 입구로 연결. 둘 다 닿지 않는다([탐색 경계 계약](../contracts/exploration-boundary.md) §3) |
-| B18 | 자동화 계층(MCP 도구·CDP)으로 `Sec-Fetch-Mode`나 추가 헤더를 바꿔 외부 CDN 역할 수신기로 이동·POST, 직접 샌드박스에서 CDP 포트로 연결. 둘 다 닿지 않고, WebMCP 도구를 등록하는 fixture 페이지를 연 뒤에도 모델에 노출된 MCP 도구가 고정 목록과 같다. 기준 이미지는 제품 이미지(`@playwright/mcp@0.0.84`)다([탐색 경계 계약](../contracts/exploration-boundary.md) §5.1) |
+| B18 | 자동화 계층(MCP 도구·CDP)으로 `Sec-Fetch-Mode`나 추가 헤더를 바꿔 외부 CDN 역할 수신기로 이동·POST, 직접 샌드박스에서 CDP 포트로 연결. 대상 페이지 스크립트에서 MCP 포트로 연결. 셋 다 닿지 않고, WebMCP 도구를 등록하는 fixture 페이지를 연 뒤에도 모델에 노출된 MCP 도구가 고정 목록과 같다. 브라우저 컨테이너를 띄운 MCP 실행 옵션이 계약 §5.1의 허용 옵션과 같고, `--host`·`--allowed-hosts`·엔진 접속 URL이 한 묶음으로 맞는다. 옵션 검사는 실제 연결 차단 시험을 대신하지 않는다. 기준 이미지는 제품 이미지(`@playwright/mcp@0.0.84`)다([탐색 경계 계약](../contracts/exploration-boundary.md) §5.1) |
 
 Playwright의 요청 가로채기나 프록시 환경 변수만 믿고 통과로 적지 않는다. 지원하지 않는 통신은 차단됨을 시험으로 확인한다.
 
