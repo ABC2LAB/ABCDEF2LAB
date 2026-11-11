@@ -6,7 +6,7 @@ import { apiFetch } from "@/lib/diagnosis/api";
 import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
-import { ApprovalActions, useRequestApprovals } from "../views/live/approvals";
+import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "../views/live/approvals";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
@@ -138,4 +138,25 @@ it("lost decision response keeps resend disabled even after pending GET", async 
   expect(button).toBeDisabled();
   fireEvent.click(button);
   expect(vi.mocked(apiFetch).mock.calls.filter(([, i]) => i?.method === "POST")).toHaveLength(1);
+});
+
+it("승인 미리보기는 서버 키(query.<키> · body.<키> · 표시 제한)를 모두 보이고 대상 · 만료 · attempt 를 함께 보인다", () => {
+  const limit = "호스트가 공개로 지정한 경로와 입력만 표시합니다. 비공개 입력·상태 변경 영향은 확인되지 않았습니다.";
+  const shaped = {
+    ...row,
+    input_preview: { "query.mode": '["edit"]', "body.role": '"customer"', "표시 제한": limit },
+  };
+  render(
+    <>
+      <ApprovalRequestCode row={shaped} />
+      <ApprovalFacts row={shaped} />
+    </>,
+  );
+  expect(screen.getByText(/POST \/api\/Users/)).toHaveTextContent("대상: https://owned.test");
+  expect(screen.getByText(/query\.mode: \["edit"\]/)).toBeInTheDocument();
+  expect(screen.getByText(/body\.role: "customer"/)).toBeInTheDocument();
+  expect(screen.getByRole("note")).toHaveTextContent(`표시 제한: ${limit}`);
+  expect(screen.getByText(/일시정지로 연장하지 않음$/)).toBeInTheDocument();
+  expect(screen.getByText("attempt-owned")).toBeInTheDocument();
+  expect(screen.getByText("24 bytes · 원문 비공개")).toBeInTheDocument();
 });
