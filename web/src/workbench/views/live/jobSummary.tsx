@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 
 import { cx } from "../../lib/cx";
 import { disconnectUrl, useUrl } from "../../live/urlDiagnosis";
-import { scanViewFor, URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
+import { scanViewFor, URL_ENDED_STATES, urlHost, urlOutcomeText, urlStateText } from "../../live/urlMap";
 import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
@@ -63,6 +63,7 @@ export function JobSummary({
             ["진단 모드", MODE_TEXT[handle.input.workflow_mode ?? "none"]],
             ["단계", stageText],
             ["실제 task", job?.task_id ? `#${job.task_id}` : "아직 없음"],
+            ...(job && urlOutcomeText(job) ? [["실행 결과", urlOutcomeText(job)] as const] : []),
             ...rows,
           ]}
         />

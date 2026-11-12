@@ -256,6 +256,10 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		case diagnosisprep.Completed, diagnosisprep.Failed, diagnosisprep.Cancelled, diagnosisprep.Unknown:
 			u = settleProductWorkflow(parent, flow, u, finishDiagnostics)
 		}
+		// 실행 결과는 completed로 마감한 경우에만 싣는다. 마감 확인 실패 등으로 상태가 바뀌었으면 지운다.
+		if u.State != diagnosisprep.Completed {
+			u.Result = nil
+		}
 		return publish(u)
 	}
 	defer func() {
@@ -547,6 +551,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 					u.DrainComplete = s.DrainComplete
 					u.ResultReady = s.ResultReady
 					u.ModelUsage = &usage
+					u.Result = s.Result
 					if !usage.UsageKnown {
 						u.State = diagnosisprep.Unknown
 						u.ReasonCode = "model_usage_unknown"
@@ -600,7 +605,7 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 		closureErr = nil
 	}
 	stored, saveErr := r.launch.supervisor.PersistRunOutcomeStored(ctx, closureErr)
-	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil}
+	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.RunResult()}
 	if drained {
 		// map 교체는 진행 중 HTTP handler가 끝난 뒤 수행한다. 실행 DB와 보고서 DB는 별개다.
 		r.backend.mu.Lock()
