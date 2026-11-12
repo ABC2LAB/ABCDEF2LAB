@@ -409,9 +409,8 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 		task.firstDiagnosisBudgetLimited.Store(true)
 		return ctx, ErrE2HTTPBudgetLimited
 	}
-	if len(t.active) != 0 {
-		return ctx, ErrE2HTTPBusy
-	}
+	// Worker가 실행 중이어도 Planner를 깨운다(C27, 원본처럼). Planner는 대상으로 보내지 않고, 모델 호출은 실행의
+	// 동시 호출 수 안에서 차례로 나간다. 마감 판정은 Worker가 끝날 때 올라가는 작업 순서로 "마지막 작업 뒤 계획"을 본다.
 	if t.lease != nil {
 		if !t.validLease || !r.validLease(t, *t.lease, 0) {
 			return ctx, ErrE2HTTPHost
