@@ -1533,6 +1533,11 @@ a.ph:hover {
   font-size: 13.5px;
   color: var(--ink);
 }
+/* 패널 안 짧은 보조 글 (예: 범위 확인 전 기본 원칙) */
+.isec .pnote {
+  font-size: 12px;
+  color: var(--ink-3);
+}
 .kv {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr);

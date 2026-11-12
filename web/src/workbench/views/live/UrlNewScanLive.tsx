@@ -179,6 +179,10 @@ export function UrlNewScanLive() {
   const excludedCount = ev.split("\n").filter((l) => l.trim()).length;
   const site = shown?.target_url ?? input?.target_url ?? tv.trim();
   const scope = job?.scope;
+  // 요약 '쓰기 요청': 범위 확인 뒤에는 서버 승인 방식, 그 전에는 진단 모드 기준
+  let writeSummary = "승인 후 전송";
+  if (scope) writeSummary = APPROVAL_MODE_SHORT[scope.approval_mode];
+  else if (profile?.workflow && mv === "ai_auto_v1") writeSummary = "자동 승인 안 함";
   const to = job ? scanViewFor(job, flowStage) : null;
   const started = !!job && job.state !== "ready" && job.state !== "awaiting_approval";
   const ended = !!job && URL_ENDED_STATES.includes(job.state);
@@ -656,12 +660,6 @@ export function UrlNewScanLive() {
               </dd>
               <dt>분석 모델</dt>
               <dd>{profile ? `${profile.model_label} (${external ? "외부 API" : "로컬"})` : "—"}</dd>
-              {profile?.workflow ? (
-                <>
-                  <dt>진단 모드</dt>
-                  <dd>{mv === "ai_auto_v1" ? "AI 자동" : "사용자 승인"}</dd>
-                </>
-              ) : null}
               <dt>점검 범위</dt>
               <dd>
                 <NotYet why="서버 진단 입력에 점검 범위 칸이 없습니다" />
@@ -671,19 +669,7 @@ export function UrlNewScanLive() {
                 <NotYet why="서버 진단 입력에 점검 목표 칸이 없습니다" />
               </dd>
               <dt>쓰기 요청</dt>
-              <dd>
-                {scope
-                  ? APPROVAL_MODE_SHORT[scope.approval_mode]
-                  : profile?.workflow && mv === "ai_auto_v1"
-                    ? "자동 승인 안 함"
-                    : "승인 후 전송"}
-              </dd>
-              {profile?.workflow ? (
-                <>
-                  <dt>제외 경로</dt>
-                  <dd>{excludedCount ? `${excludedCount}개` : "없음"}</dd>
-                </>
-              ) : null}
+              <dd>{writeSummary}</dd>
             </dl>
           </div>
           <div className={s.isec}>
@@ -738,7 +724,7 @@ export function UrlNewScanLive() {
             ) : (
               // 범위 확인 전 (시안 #pTarget · #pSendT · #pExcl): 서버가 늘 지키는 기본 원칙만. 범위 · 상한 수치는 확인 뒤에 나온다
               <>
-                <p className={s.help}>범위 확인 전 기본 원칙 · 범위와 상한 수치는 확인 뒤 서버 값</p>
+                <p className={cx(s.help, s.pnote)}>범위 확인 전 기본 원칙 · 범위와 상한 수치는 확인 뒤 서버 값</p>
                 <ul className={s.policy} id="luPolicy">
                   <Rule t="이 사이트에만 요청" sub={site ? urlHost(site) : undefined} />
                   {external && profile?.model ? (
