@@ -347,8 +347,20 @@ func ValidateResponse(r Request, response Response) error {
 	}
 	switch r.Command {
 	case ProductControl:
-		if response.Product == nil || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 || len(response.Product.Targets) > 128 {
+		if response.Product == nil || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 || len(response.Product.Targets) > 128 ||
+			len(response.Product.Accounts) > MaxTargetAccounts {
 			return ErrProtocol
+		}
+		accounts := response.Product.Accounts
+		if response.Product.Account != nil {
+			accounts = append(append([]ProductAccount(nil), accounts...), *response.Product.Account)
+		}
+		seen := map[string]bool{}
+		for i, a := range accounts {
+			if !validProductAccount(a) || i < len(response.Product.Accounts) && seen[a.Label] {
+				return ErrProtocol
+			}
+			seen[a.Label] = true
 		}
 	case Catalog:
 		if response.Job != nil || response.Authorized != nil || len(response.Profiles) > 256 {
