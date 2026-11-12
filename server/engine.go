@@ -989,6 +989,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if e.firstDiagnosis && err == nil && !met && ectx.Err() == nil {
 			t.firstDiagnosisPlannedSeq.Store(workSeq)
 		}
+		if e.firstDiagnosis && err == nil && ectx.Err() == nil {
+			t.firstDiagnosisPlanRounds.Add(1)
+		}
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 계획 오류: %v", t.ID, err)
