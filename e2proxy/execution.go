@@ -1422,6 +1422,35 @@ const (
 	maxRedactValues     = 64
 )
 
+// 응답 보류(반사 검사)와 출력 가림에 함께 쓰는 보호 값의 하한이다. 짧은 값은 흔한 문자열과 겹쳐 응답을 과하게 보류한다.
+const minProtectedValueBytes = 6
+
+// AddProtectedValues는 실행을 만든 뒤에 알게 된 보호 값(인증 준비에 쓴 비밀번호)을 더한다(C14, S09). 이 값이 대상 응답에
+// 그대로 있으면 그 응답은 통째로 보류하고(withheld), 도구 출력에서도 가린다. 너무 짧거나 길거나 많거나, 검사 상한을
+// 설정으로 고정한 실행에서 상한 사이 조건(검사 상한 ≥ 응답 상한 + 가장 긴 보호 값 − 1)을 깨면 하나도 더하지 않고 ErrConfig다.
+func (e *Execution) AddProtectedValues(values ...[]byte) error {
+	if e == nil {
+		return ErrConfig
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(values) == 0 || len(values) > maxRedactValues {
+		return ErrConfig
+	}
+	next := append([][]byte(nil), e.secrets...)
+	for _, v := range values {
+		if len(v) < minProtectedValueBytes || len(v) > maxRedactValueBytes {
+			return ErrConfig
+		}
+		next = append(next, bytes.Clone(v))
+	}
+	if !validResponseLimits(e.cfg.Limits, next) {
+		return ErrConfig
+	}
+	e.secrets = next
+	return nil
+}
+
 // AddRedactValues는 출력 가림 전용 값을 더한다(인증 준비 세션 값). 이 값들은 도구 출력·근거·보고서에서 가리지만 응답
 // 표현 보류에는 쓰지 않는다. 너무 짧거나 길거나 많으면 하나도 더하지 않고 ErrConfig다.
 func (e *Execution) AddRedactValues(values ...[]byte) error {
