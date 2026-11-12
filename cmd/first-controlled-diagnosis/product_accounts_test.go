@@ -409,3 +409,69 @@ func TestProductAccountCredentialRejectedOnRevokedTarget(t *testing.T) {
 		t.Fatalf("login on revoked target: %v", err)
 	}
 }
+
+// 승인이 만료되면 표시한 계정도 real(target_expired)로 읽고 새 표시를 받지 않는다(판단할 수 없으면 실계정).
+func TestProductAccountExpiredApprovalReadsReal(t *testing.T) {
+	r, _, target := accountTestTarget(t, true)
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil || a.Classification != "test" {
+		t.Fatalf("mark: %+v %v", a, err)
+	}
+	expired := target.ExpiresAt.Add(time.Second)
+	r.now = func() time.Time { return expired }
+	if a := accountByLabel(t, r, target.ID, "tester-a"); a.Classification != "real" || a.Reason != "target_expired" {
+		t.Fatalf("expired approval kept the test mark: %+v", a)
+	}
+	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err == nil || err.Error() != "target_not_approved" {
+		t.Fatalf("expired target accepted a mark: %v", err)
+	}
+}
+
+// 제품 제어 경로(준비 프로세스 쪽)가 계정·로그인·자격 조작을 레지스트리로 잇고, 응답은 계약 검사를 통과하며, 목록에는 진술
+// 문장이 실리고, 자격 값은 응답에 없고 요청 구조체의 값 참조는 쓴 뒤 비운다.
+func TestProductControlAccountDispatch(t *testing.T) {
+	r, _, target := accountTestTarget(t, true)
+	endpoint := productPreparationEndpoint{product: &productRuntime{targets: r}}
+	call := func(p *diagnosisprep.ProductRequest) diagnosisprep.ProductResponse {
+		t.Helper()
+		req := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "product-control", Principal: "ARTEX", Command: diagnosisprep.ProductControl, Product: p}
+		// 실제 IPC에서는 양쪽이 서로 다른 사본을 가진다. 준비 쪽이 자격 참조를 비우므로 검증은 보내기 전 사본으로 한다.
+		sent := *p
+		if p.Credential != nil {
+			c := *p.Credential
+			sent.Credential = &c
+		}
+		check := req
+		check.Product = &sent
+		resp, err := endpoint.Call(t.Context(), req)
+		if err != nil || resp.Error != "" || diagnosisprep.ValidateResponse(check, resp) != nil || resp.Product == nil || resp.Product.Reason != "" {
+			t.Fatalf("%s: %v %+v", p.Operation, err, resp)
+		}
+		return *resp.Product
+	}
+	if got := call(&diagnosisprep.ProductRequest{Operation: "account_register", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"}}); got.Account == nil || got.Account.Label != "tester-a" {
+		t.Fatalf("register: %+v", got)
+	}
+	list := call(&diagnosisprep.ProductRequest{Operation: "accounts", TargetID: target.ID})
+	if len(list.Accounts) != 1 || list.AccountStatement != productAccountStatement {
+		t.Fatalf("accounts: %+v", list)
+	}
+	login := cookieLogin()
+	if got := call(&diagnosisprep.ProductRequest{Operation: "target_login_set", TargetID: target.ID, Login: &login}); got.Login == nil || got.Login.Path != login.Path {
+		t.Fatalf("login: %+v", got)
+	}
+	cred := &diagnosisprep.AccountCredential{Username: "seeded-user-91bb", Password: "seeded-pass-91bb"}
+	got := call(&diagnosisprep.ProductRequest{Operation: "account_credential_set", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"}, Credential: cred})
+	encoded, _ := json.Marshal(got)
+	if got.Account == nil || !got.Account.CredentialConfigured || strings.Contains(string(encoded), "seeded-") {
+		t.Fatalf("credential response: %s", encoded)
+	}
+	if cred.Username != "" || cred.Password != "" {
+		t.Fatal("credential values kept in the request after storing")
+	}
+	if got := call(&diagnosisprep.ProductRequest{Operation: "account_mark_test", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a", StatementConfirmed: true}}); got.Account == nil || got.Account.Classification != "test" {
+		t.Fatalf("mark: %+v", got)
+	}
+}

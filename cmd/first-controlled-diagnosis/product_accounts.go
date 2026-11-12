@@ -123,16 +123,20 @@ func (r *productTargetRegistry) appendAccount(e productAccountEvent) error {
 	return r.replayAccount(e)
 }
 
-// accountView는 지금 대상 판 기준의 분류다.
-func accountView(rec productTargetRecord, st *productAccountState) diagnosisprep.ProductAccount {
+// accountView는 지금 대상 판·시각 기준의 분류다. 목록과 이후 실행 결속이 이 판정 하나를 쓴다. 대상 판이 바뀌면(재승인·철회)
+// target_reapproved, 승인이 만료됐으면 target_expired로 real이다(판단할 수 없으면 실계정).
+func accountView(rec productTargetRecord, st *productAccountState, now time.Time) diagnosisprep.ProductAccount {
 	a := diagnosisprep.ProductAccount{Label: st.label, Classification: "real", RegisteredBy: st.registeredBy, RegisteredAt: st.registeredAt}
 	switch {
 	case st.marked:
 		a.ClassifiedBy, a.ClassifiedAt, a.MarkedRevision = st.classifiedBy, st.classifiedAt, st.markedRevision
-		if rec.Target.State == "approved" && rec.Target.Revision == st.markedRevision {
-			a.Classification = "test"
-		} else {
+		switch {
+		case rec.Target.State != "approved" || rec.Target.Revision != st.markedRevision:
 			a.Reason = "target_reapproved"
+		case !now.Before(rec.Target.ExpiresAt):
+			a.Reason = "target_expired"
+		default:
+			a.Classification = "test"
 		}
 	case st.unmarked:
 		a.ClassifiedBy, a.ClassifiedAt, a.Reason = st.classifiedBy, st.classifiedAt, "manual_unmark"
@@ -161,7 +165,7 @@ func (r *productTargetRegistry) listAccounts(principal, id string) ([]diagnosisp
 	}
 	out := make([]diagnosisprep.ProductAccount, 0, len(byTarget))
 	for _, st := range byTarget {
-		view := accountView(rec, st)
+		view := accountView(rec, st, r.now())
 		view.CredentialConfigured = r.credentialConfigured(id, st)
 		out = append(out, view)
 	}
@@ -190,7 +194,7 @@ func (r *productTargetRegistry) registerAccount(principal, id, label string) (di
 	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountRegister, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
-	return accountView(rec, r.accounts[id][label]), nil
+	return accountView(rec, r.accounts[id][label], r.now()), nil
 }
 
 // markTestAccount는 승인된 대상의 승인자가 진술에 동의해 계정을 시험 계정으로 표시한다. 표시는 지금 대상 판에만 묶인다.
@@ -210,21 +214,20 @@ func (r *productTargetRegistry) markTestAccount(principal, id, label string, sta
 	case rec.Target.State != "approved" || !r.now().Before(rec.Target.ExpiresAt):
 		return diagnosisprep.ProductAccount{}, errors.New("target_not_approved")
 	}
-	// 승인자 = 대상 등록 기록의 운영자(DNS 소유 증명과 본인 진술을 한 사람)다.
-	if principal != rec.Principal {
-		return diagnosisprep.ProductAccount{}, errors.New("operator_required")
-	}
-	if view := accountView(rec, st); view.Classification == "test" {
+	// 승인자 = 대상 등록 기록의 운영자(DNS 소유 증명과 본인 진술을 한 사람)다. accountTarget이 이미 그 운영자만 받는다.
+	if view := accountView(rec, st, r.now()); view.Classification == "test" {
 		return view, nil
 	}
 	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountMarkTest, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision,
 		StatementSHA256: productAccountStatementSHA256()}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
-	return accountView(rec, st), nil
+	return accountView(rec, st, r.now()), nil
 }
 
 // unmarkAccount는 시험 계정 표시를 뗀다(더 안전한 쪽이라 대상 상태와 관계없이 받는다). 표시가 없으면 기록하지 않는다.
+// 결정안은 해제를 "그 대상에 권한이 있는 누구나"로 둔다. 지금 대상 권한은 등록한 운영자 한 사람뿐이라 accountTarget과
+// 같다. 권한 모델이 넓어지면 표시(승인자만)는 그대로 두고 해제 쪽만 넓힌다.
 func (r *productTargetRegistry) unmarkAccount(principal, id, label string) (diagnosisprep.ProductAccount, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -237,12 +240,12 @@ func (r *productTargetRegistry) unmarkAccount(principal, id, label string) (diag
 		return diagnosisprep.ProductAccount{}, errors.New("account_not_found")
 	}
 	if !st.marked {
-		return accountView(rec, st), nil
+		return accountView(rec, st, r.now()), nil
 	}
 	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountUnmark, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
-	return accountView(rec, st), nil
+	return accountView(rec, st, r.now()), nil
 }
 
 // validTargetLoginFor는 로그인 방식이 형식에 맞고 경로가 그 대상의 승인 경로 접두 안이며 정규 경로인지 본다.
@@ -350,7 +353,7 @@ func (r *productTargetRegistry) setAccountCredential(principal, id, label string
 		CredentialSHA256: hex.EncodeToString(sum[:])}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
-	view := accountView(rec, st)
+	view := accountView(rec, st, r.now())
 	view.CredentialConfigured = r.credentialConfigured(id, st)
 	return view, nil
 }

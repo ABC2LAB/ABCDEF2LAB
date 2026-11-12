@@ -113,7 +113,8 @@ type AccountRequest struct {
 }
 
 // ProductAccount는 계정 하나의 분류 상태다. Classification은 test 또는 real이고 기본은 real이다. test는 표시한 대상 판이
-// 지금도 같은 승인 판일 때만이다. Reason은 real로 돌아간 사유(target_reapproved·manual_unmark)이고, 표시한 적이 없으면 비어 있다.
+// 지금도 같은 승인 판이고 승인이 만료되지 않았을 때만이다. Reason은 real로 돌아간 사유다: target_reapproved(대상 판이 바뀜 —
+// 재승인·철회 포함), target_expired(승인 만료), manual_unmark(사람이 뗌). 표시한 적이 없으면 비어 있다.
 type ProductAccount struct {
 	Label          string    `json:"label"`
 	Classification string    `json:"classification"`
@@ -175,7 +176,10 @@ type ProductResponse struct {
 	Accounts   []ProductAccount        `json:"accounts,omitempty"`
 	Account    *ProductAccount         `json:"account,omitempty"`
 	Login      *TargetLogin            `json:"login,omitempty"`
-	Reason     string                  `json:"reason,omitempty"`
+	// AccountStatement는 accounts 목록과 함께 주는 시험 계정 표시 진술 문장이다. 화면은 이 문장을 그대로 보여 주고 동의를
+	// 받는다(저널에는 이 문장의 SHA-256만 남는다).
+	AccountStatement string `json:"account_statement,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 func validProductAccount(a ProductAccount) bool {
@@ -186,7 +190,7 @@ func validProductAccount(a ProductAccount) bool {
 	case "test":
 		return a.Reason == "" && reference.MatchString(a.ClassifiedBy) && !a.ClassifiedAt.IsZero() && a.MarkedRevision > 0
 	case "real":
-		return a.Reason == "" || a.Reason == "target_reapproved" || a.Reason == "manual_unmark"
+		return a.Reason == "" || a.Reason == "target_reapproved" || a.Reason == "target_expired" || a.Reason == "manual_unmark"
 	}
 	return false
 }

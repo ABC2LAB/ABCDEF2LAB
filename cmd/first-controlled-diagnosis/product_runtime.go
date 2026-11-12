@@ -460,6 +460,9 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			control.Credential, err = p.credential(ctx, r.Product.ProfileID)
 		case "accounts":
 			control.Accounts, err = p.targets.listAccounts(r.Principal, r.Product.TargetID)
+			if err == nil {
+				control.AccountStatement = productAccountStatement
+			}
 		case "target_login":
 			control.Login, err = p.targets.targetLogin(r.Principal, r.Product.TargetID)
 		case "target_login_set":

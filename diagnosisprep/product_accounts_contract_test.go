@@ -123,3 +123,20 @@ func TestProductLoginResponseValidation(t *testing.T) {
 		t.Fatal("invalid login response accepted")
 	}
 }
+
+func TestProductAccountStatementOnlyOnList(t *testing.T) {
+	respond := func(op string, statement string) error {
+		p := &ProductRequest{Operation: op, TargetID: "target-abc"}
+		if op == "account_register" {
+			p.Account = &AccountRequest{Label: "tester-a"}
+		}
+		request := Request{Version: Version, RequestID: "product-control", Principal: "ARTEX", Command: ProductControl, Product: p}
+		return ValidateResponse(request, Response{Version: Version, RequestID: "product-control", Product: &ProductResponse{AccountStatement: statement}})
+	}
+	if err := respond("accounts", "이 계정은 시험 계정이다."); err != nil {
+		t.Fatal("statement on list rejected:", err)
+	}
+	if respond("account_register", "이 계정은 시험 계정이다.") == nil || respond("accounts", "line\nbreak") == nil {
+		t.Fatal("statement outside the list or with control characters accepted")
+	}
+}
