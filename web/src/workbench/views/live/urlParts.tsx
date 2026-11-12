@@ -18,6 +18,7 @@ import s from "../../workbench.module.css";
 export function UrlHead({
   title,
   crumb,
+  parent,
   host,
   pill,
   acts,
@@ -26,6 +27,8 @@ export function UrlHead({
 }: {
   title: string;
   crumb: string;
+  /** 위치에서 작업대와 주소 사이에 둘 상위 화면 링크 (예: 보고서 → 끝난 점검) */
+  parent?: { href: string; label: string };
   host?: string | null;
   pill?: ReactNode;
   acts?: ReactNode;
@@ -40,6 +43,12 @@ export function UrlHead({
         <nav className={s.crumb} aria-label="위치">
           <a href="#dashboard">작업대</a>
           <span className={s.sep}>/</span>
+          {parent ? (
+            <>
+              <a href={parent.href}>{parent.label}</a>
+              <span className={s.sep}>/</span>
+            </>
+          ) : null}
           {host ? (
             <>
               <span className={s.host}>{host}</span>
