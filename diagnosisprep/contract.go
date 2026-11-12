@@ -157,6 +157,8 @@ type Job struct {
 	Outcome        string                    `json:"outcome,omitempty"`
 	ClosingReason  string                    `json:"closing_reason,omitempty"`
 	IntentOutcomes *diagnosis.IntentOutcomes `json:"intent_outcomes,omitempty"`
+	// 진단 로그(운영 기록) 일부가 남지 않았다는 경고다(C10). 감사·결과에는 영향이 없다. completed에만 있다.
+	DiagnosticLogIncomplete bool `json:"diagnostic_log_incomplete,omitempty"`
 }
 
 // Principal은 API가 기존 Bearer 인증으로 확인한 주체다. 브라우저 body에서는 받지 않는다.
@@ -228,6 +230,8 @@ type Update struct {
 	ModelUsage         *ModelUsage
 	// Result는 진단 실행이 completed로 마감했을 때의 결과다. 다른 상태에서는 nil이어야 한다.
 	Result *diagnosis.RunResult
+	// DiagnosticLogIncomplete는 completed 실행의 진단 로그 경고다(reason_code와 따로).
+	DiagnosticLogIncomplete bool
 }
 
 // Publish 실패는 실행 허가가 아니다. 신규 부작용을 중단하고 기존 실행은 취소·drain한다.
