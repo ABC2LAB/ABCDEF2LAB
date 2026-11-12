@@ -145,13 +145,13 @@ sudo chmod 0600 "$D"/*
 export EXPLORE_BOUNDARY_CONFIG_FILE=$D/boundary.json EXPLORE_CA_CERT_FILE=$D/ca.pem EXPLORE_CA_KEY_FILE=$D/ca.key EXPLORE_PATH_KEY_FILE=$D/path.key
 ```
 
-설치 입력에는 다음 블록을 넣는다(`boundary_ca_file`은 installer 안의 경로다. 설치기가 설치 디렉터리로 복사해 SHA-256을 고정한다).
+설치 입력에는 다음 블록을 넣는다(`boundary_ca_file`은 installer 안의 경로다. installer 진입점이 `EXPLORE_CA_CERT_FILE`을 이 경로로 옮기고, 설치기가 설치 디렉터리로 복사해 SHA-256을 고정한다).
 
 ```json
 "target_policy": { "exploration": {
   "control_socket": "/run/explore-control/control.sock",
   "direct_proxy": "http://explore-boundary:3129",
-  "boundary_ca_file": "/run/secrets/explore_ca_cert",
+  "boundary_ca_file": "/tmp/product-private/explore-ca.pem",
   "mcp_url": "http://explore-mcp:8931/mcp" } }
 ```
 

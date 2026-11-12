@@ -46,7 +46,8 @@ services:
     entrypoint: [/app/product-install-entrypoint]
     depends_on:
       postgres: {condition: service_healthy}
-    # explore_ca_cert는 설치 입력 target_policy.exploration.boundary_ca_file(/run/secrets/explore_ca_cert)로 고정할 때만 읽는다.
+    # explore_ca_cert는 탐색을 켠 설치만 준다. installer가 /tmp/product-private/explore-ca.pem으로 옮겨 설치 입력
+    # target_policy.exploration.boundary_ca_file로 고정한다.
     secrets: [product_install, postgres_password, explore_ca_cert]
     volumes: [product-state:/p]
     tmpfs: ['/tmp:rw,nosuid,nodev,size=16m']
