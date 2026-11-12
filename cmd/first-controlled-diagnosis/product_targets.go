@@ -53,11 +53,14 @@ type productTargetRegistry struct {
 	policyCheck func() error
 	journal     *diagnosisprep.ProtectedJournal
 	contacts    productContactJournal
-	records     map[string]productTargetRecord
-	approvals   map[string]productTargetRecord
-	resolver    *net.Resolver
-	roots       *x509.CertPool
-	now         func() time.Time
+	// accountJournal은 대상 계정 등록·시험 계정 표시·해제 저널이다(product_accounts.go). accounts는 그 상태다.
+	accountJournal productContactJournal
+	accounts       map[string]map[string]*productAccountState
+	records        map[string]productTargetRecord
+	approvals      map[string]productTargetRecord
+	resolver       *net.Resolver
+	roots          *x509.CertPool
+	now            func() time.Time
 	// 시험 의존성은 HTTP나 설치 JSON에서 받지 않는다.
 	lookupTXT       func(context.Context, string) ([]string, error)
 	lookupIP        func(context.Context, string) ([]netip.Addr, error)
@@ -128,7 +131,18 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 		_ = journal.Close()
 		return nil, err
 	}
-	r := &productTargetRegistry{policy: p, policyCheck: check, journal: journal, contacts: contacts, records: map[string]productTargetRecord{}, approvals: map[string]productTargetRecord{}, resolver: resolver, roots: roots, now: func() time.Time { return time.Now().UTC() }}
+	accountDir := filepath.Join(dir, "accounts")
+	if err := os.Mkdir(accountDir, 0700); err != nil && !os.IsExist(err) {
+		_ = errors.Join(journal.Close(), contacts.Close())
+		return nil, err
+	}
+	accountJournal, accountEvents, err := diagnosisprep.OpenProtectedJournal(accountDir)
+	if err != nil {
+		_ = errors.Join(journal.Close(), contacts.Close())
+		return nil, err
+	}
+	r := &productTargetRegistry{policy: p, policyCheck: check, journal: journal, contacts: contacts, accountJournal: accountJournal, accounts: map[string]map[string]*productAccountState{},
+		records: map[string]productTargetRecord{}, approvals: map[string]productTargetRecord{}, resolver: resolver, roots: roots, now: func() time.Time { return time.Now().UTC() }}
 	r.lookupTXT = resolver.LookupTXT
 	r.lookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		return resolver.LookupNetIP(ctx, "ip", host)
@@ -137,6 +151,14 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 	for _, event := range events {
 		var rec productTargetRecord
 		if decodeLaunchJSON(event, &rec) != nil || r.replay(rec) != nil {
+			_ = r.Close()
+			return nil, errPreparation
+		}
+	}
+	// 계정 저널은 대상 저널 뒤에 읽는다(계정 줄은 있는 대상·판만 가리킬 수 있다).
+	for _, event := range accountEvents {
+		var e productAccountEvent
+		if decodeLaunchJSON(event, &e) != nil || r.replayAccount(e) != nil {
 			_ = r.Close()
 			return nil, errPreparation
 		}
@@ -171,7 +193,7 @@ func (r *productTargetRegistry) replay(next productTargetRecord) error {
 	return nil
 }
 func (r *productTargetRegistry) check() error {
-	if r.policyCheck() != nil || r.journal.Check() != nil || r.contacts.Check() != nil {
+	if r.policyCheck() != nil || r.journal.Check() != nil || r.contacts.Check() != nil || r.accountJournal.Check() != nil {
 		return errPreparation
 	}
 	return nil
@@ -187,7 +209,7 @@ func (r *productTargetRegistry) append(next productTargetRecord) error {
 	return r.replay(next)
 }
 func (r *productTargetRegistry) Close() error {
-	return errors.Join(r.journal.Close(), r.contacts.Close())
+	return errors.Join(r.journal.Close(), r.contacts.Close(), r.accountJournal.Close())
 }
 func (r *productTargetRegistry) register(principal string, s diagnosisprep.TargetRegistration) (diagnosisprep.ProductTarget, error) {
 	if principal != "ARTEX" {
