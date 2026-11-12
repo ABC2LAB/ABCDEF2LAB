@@ -33,7 +33,7 @@ const (
 	ControlErrTargetEnded = "target_ended"
 )
 
-// maxControlLine은 제어 요청·응답 한 줄의 상한이다. 기록 응답도 이 안에 담기도록 MaxDeniedRecords를 설치가 맞춘다.
+// maxControlLine은 제어 요청·응답 한 줄의 상한이다. 기록 응답은 행 크기를 묶고(record_bounds.go) 쪽으로 나눠 이 안에 담는다.
 const maxControlLine = 4 << 20
 
 type ControlRequest struct {
@@ -48,6 +48,8 @@ type ControlRequest struct {
 	Reason       exploration.Reason                `json:"reason,omitempty"`
 	Flow         *diagnosisflow.ExplorationBinding `json:"flow,omitempty"`
 	Seq          uint64                            `json:"seq,omitempty"`
+	// Offset은 records의 쪽 시작 위치(기록 행 순서의 0부터)다. 응답의 Next를 다음 요청에 넣는다.
+	Offset uint64 `json:"offset,omitempty"`
 }
 
 // WireObservation은 private 관찰의 소켓 표현이다. 공개 JSON에서 빠지는 응답 형식·해시도 이 채널로만 넘긴다.
@@ -65,6 +67,8 @@ type ControlResponse struct {
 	Observation *WireObservation   `json:"observation,omitempty"`
 	Records     []Record           `json:"records,omitempty"`
 	Omitted     uint64             `json:"omitted,omitempty"`
+	// Next는 남은 기록 행이 있을 때 다음 쪽의 Offset이다. 0이면 끝이다.
+	Next uint64 `json:"next,omitempty"`
 }
 
 // WireTarget은 Target의 소켓 표현이다.
@@ -229,8 +233,9 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 		if s == nil {
 			return fail(ControlErrInvalid)
 		}
-		records, omitted := s.Records()
-		return ControlResponse{OK: true, Records: records, Omitted: omitted}
+		// 한 쪽은 제어 소켓 한 줄에 담기는 만큼이다. 행 수를 묶어 탐색 요청 수를 줄이지 않고 쪽으로 나눠 읽는다.
+		records, omitted, next := s.RecordsPage(in.Offset, recordsPerPage)
+		return ControlResponse{OK: true, Records: records, Omitted: omitted, Next: next}
 	}
 	return fail(ControlErrInvalid)
 }
@@ -303,6 +308,9 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 }
 
 func strictUnmarshal(raw []byte, v any) error {
+	if err := strictKeys(raw, v); err != nil {
+		return err
+	}
 	d := json.NewDecoder(bytesReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
