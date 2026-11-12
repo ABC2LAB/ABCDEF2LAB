@@ -1,6 +1,6 @@
 "use client";
 
-// 대시보드 (시안 v90 짜임: 결정 대기 안내 · 발견 · 검토 대상 · 진행 중인 점검 · 최근 끝난 점검 + 오른쪽 상세).
+// 대시보드 (시안 v91 짜임: 요약 4칸 · 결정 대기 안내 · 발견 · 검토 대상 · 진행 중인 점검 · 최근 끝난 점검 + 오른쪽 상세).
 // 서버에 진단 목록 · 집계 API 가 없어 이 브라우저가 이어 보는 진단 하나만 실제 값으로 보인다.
 // 발견 목록은 그 진단의 저장된 결과(보고서와 같은 원장)에서 정상 대조를 뺀 것만 보인다. 확정만 취약점이므로 제목은
 // 중립 이름("발견 · 검토 대상")으로 두고 건수 옆에 확정 수를 따로 보인다(검토 필요 · 미실행 · 결과 불명은 취약점이
@@ -17,9 +17,9 @@ import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
-import { sevKey } from "../../live/map";
+import { fmtCount, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
-import { ErrorNote, LoadingRow } from "../../live/parts";
+import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { refreshWorkflow, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
 import { usePoll } from "../../live/usePoll";
@@ -58,6 +58,86 @@ const FIND_CHIPS: ReadonlyArray<Chip<SevF>> = [
   ["none", "등급 없음", false, "서버가 심각도를 주지 않은 발견"],
 ];
 const sevOf = (e: RemediationEntry): SevF => sevKey(e.severity ?? "") ?? "none";
+/** 위험도 막대 색 (시안 v77 요약 칸). 등급 없음은 옅은 선색. */
+const SEV_BAR: Readonly<Record<SevF, string>> = {
+  crit: "var(--crit)",
+  hi: "var(--hi)",
+  mid: "var(--mid)",
+  lo: "var(--lo)",
+  none: "var(--rule-2)",
+};
+
+/**
+ * 대시보드 맨 위 요약 4칸 (시안 v77 ~ v91). 서버에 진단 목록 · 30일 집계가 없어 이 브라우저가 이어 보는 점검 하나의
+ * 실제 값만 센다. 모르는 값은 "—", 서버에 없는 칸(토큰 30일 집계)은 "아직 구현 안 됨"으로 둔다(절대규칙 5).
+ */
+function DashStrip({
+  found,
+  ready,
+  approvals,
+  selecting,
+  tokens,
+}: {
+  /** 정상 대조를 뺀 발견 (결과 저장 전에는 ready=false) */
+  found: readonly RemediationEntry[];
+  ready: boolean;
+  /** 승인 대기 수 (모르면 null) */
+  approvals: number | null;
+  /** 점검할 경로 선택 대기 중인가 */
+  selecting: boolean;
+  /** 이 점검의 모델 토큰 (서버 기록이 없으면 null) */
+  tokens: { input: number; output: number } | null;
+}) {
+  const bySev = (k: SevF) => found.filter((e) => sevOf(e) === k).length;
+  const byOutcome = (o: string) => found.filter((e) => diagnosticOutcome(e) === o).length;
+  const sevSub = SEV_RANK.filter((k) => k !== "none" || bySev(k) > 0)
+    .map((k) => `${k === "none" ? "등급 없음" : SEVL[k]} ${bySev(k)}`)
+    .join(" · ");
+  const decide = approvals === null ? null : approvals + (selecting ? 1 : 0);
+  const check = byOutcome("unknown") + byOutcome("not_executed");
+  return (
+    <section className={s.strip} aria-label="요약">
+      {/* 빨간 숫자는 확정이 있을 때만 (검토 필요 · 미실행 · 결과 불명은 취약점이 아님 · 리뷰 #467) */}
+      <div className={cx(s.cell, ready && byOutcome("confirmed") > 0 && s.crit)}>
+        <div className={s.k}>발견 · 검토 대상</div>
+        <div className={s.v} id="dSevN">
+          {ready ? found.length : "—"}
+        </div>
+        {ready && found.length ? (
+          <div className={s.stack} id="dSevStack" aria-hidden="true">
+            {SEV_RANK.map((k) => (bySev(k) ? <i key={k} style={{ flex: bySev(k), background: SEV_BAR[k] }} /> : null))}
+          </div>
+        ) : null}
+        <div className={s.sub} id="dSevSub">
+          {ready ? sevSub : "결과가 저장되면 셉니다"}
+        </div>
+      </div>
+      <div className={cx(s.cell, !!decide && s.warn)} id="dDecide">
+        <div className={s.k}>결정 대기</div>
+        <div className={s.v}>{decide ?? "—"}</div>
+        <div className={s.sub}>{`승인 ${approvals ?? "—"} · 경로 선택 ${selecting ? 1 : 0}`}</div>
+      </div>
+      <div className={s.cell}>
+        <div className={s.k}>결과 확인</div>
+        <div className={s.v}>{ready ? check : "—"}</div>
+        <div className={s.sub}>
+          {ready
+            ? `결과 불명 ${byOutcome("unknown")} · 미실행 ${byOutcome("not_executed")}`
+            : "판단 불가 · 미검사 영역"}
+        </div>
+      </div>
+      <div className={s.cell}>
+        <div className={s.k}>토큰 사용량 · 최근 30일</div>
+        <div className={s.v}>
+          <NotYet why="서버에 30일 토큰 집계가 없습니다" />
+        </div>
+        <div className={s.sub}>
+          {tokens ? `이 점검 입력 ${fmtCount(tokens.input)} · 출력 ${fmtCount(tokens.output)}` : "점검당 평균"}
+        </div>
+      </div>
+    </section>
+  );
+}
 
 /** 저장된 결과 → 발견 목록: 정상 대조를 빼고 위험도 → 판정 순. */
 export function dashFindings(entries: readonly RemediationEntry[]): RemediationEntry[] {
@@ -254,10 +334,15 @@ export function UrlDashboardLive() {
       <>
         <FindingDetail e={chosenF} host={host} taskId={reportTask} onReload={rem.reload} />
         <Isec>
-          <button className={cx(s.btn, s.pri)} type="button" onClick={() => goTo("report")}>
-            보고서 열기
-            <Icon name="arrow" />
-          </button>
+          <div className={s.acts}>
+            <button className={cx(s.btn, s.pri)} type="button" onClick={() => goTo("report")}>
+              보고서 열기
+              <Icon name="arrow" />
+            </button>
+            <button className={s.btn} type="button" onClick={() => goTo("live")}>
+              진행 화면 열기
+            </button>
+          </div>
         </Isec>
       </>
     );
@@ -322,6 +407,17 @@ export function UrlDashboardLive() {
       />
       <div className={s.vb}>
         <div className={s.vm}>
+          <DashStrip
+            found={found}
+            ready={!!reportTask && !!rem.data}
+            approvals={approvalsOn && !a.poll.data ? null : a.pending.length}
+            selecting={!!job && flow?.stage === "awaiting_selection"}
+            tokens={
+              job?.model_usage?.usage_known
+                ? { input: job.model_usage.input_tokens, output: job.model_usage.output_tokens }
+                : null
+            }
+          />
           {notes.length ? (
             <section className={s.notes} aria-label="결정 대기">
               {notes}

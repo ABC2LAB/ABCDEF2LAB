@@ -370,6 +370,10 @@ describe("대시보드", () => {
     const notes = await screen.findByRole("region", { name: "결정 대기" });
     await waitFor(() => expect(within(notes).getByText(/승인 대기 1건/)).toBeInTheDocument());
     expect(screen.queryByRole("region", { name: "지금 처리할 일" })).toBeNull();
+    // 요약 칸의 결정 대기도 같은 수 (시안 v77)
+    const decide = within(screen.getByRole("region", { name: "요약" })).getByText("결정 대기")
+      .parentElement as HTMLElement;
+    expect(decide).toHaveTextContent(/^결정 대기1승인 1 · 경로 선택 0$/);
     // 고르기 전 상세는 승인 대기 요청 (보내기 전에 사람이 정해야 함)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();

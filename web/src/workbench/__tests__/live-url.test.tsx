@@ -837,6 +837,12 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(within(sec).queryByRole("group", { name: "위험도로 거르기" })).toBeNull();
     // 위치가 제목과 같기만 해서 위치 줄을 그리지 않는다 (시안 v83)
     expect(screen.queryByRole("navigation", { name: "위치" })).toBeNull();
+    // 요약 4칸 (시안 v77): 결과 저장 전 발견 · 결과 확인은 0 이 아니라 "—", 서버에 없는 토큰 30일 집계는 자리만
+    const strip = screen.getByRole("region", { name: "요약" });
+    const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
+    expect(cell("발견 · 검토 대상")).toHaveTextContent(/^발견 · 검토 대상—결과가 저장되면 셉니다$/);
+    expect(cell("결과 확인")).toHaveTextContent(/^결과 확인—/);
+    expect(cell("토큰 사용량 · 최근 30일")).toHaveTextContent("아직 구현 안 됨");
   });
 
   it("대시보드: 저장된 결과에서 정상 대조를 빼고 위험도 순으로 보이며, 위험도 칩으로 거른다", async () => {
@@ -864,9 +870,16 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const noSev = sec.querySelector("[data-dsel='fd-candidate-5']") as HTMLElement;
     expect(within(noSev).getByText("등급 없음")).toBeInTheDocument();
     for (const r of sec.querySelectorAll("[data-dsel^='fd-']")) expect(r.textContent).not.toMatch(/\d{1,2}:\d{2}/);
-    // 처음 상세는 가장 위험한 발견
+    // 요약 4칸: 정상 대조를 뺀 4건 · 위험도별 수 · 결과 확인(결과 불명 + 미실행) 0
+    const strip = screen.getByRole("region", { name: "요약" });
+    const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
+    expect(within(cell("발견 · 검토 대상")).getByText("4")).toBeInTheDocument();
+    expect(cell("발견 · 검토 대상")).toHaveTextContent("심각 1 · 높음 1 · 중간 1 · 낮음 0 · 등급 없음 1");
+    expect(cell("결과 확인")).toHaveTextContent("결과 불명 0 · 미실행 0");
+    // 처음 상세는 가장 위험한 발견. 보고서 · 진행 화면으로 갈 수 있다 (시안 v88)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("발견 2")).toBeInTheDocument();
+    expect(within(detail).getByRole("button", { name: "진행 화면 열기" })).toBeInTheDocument();
     // 칩: 전체 4 · 심각 1 · 높음 1 · 중간 1 · 등급 없음 1 (0건인 낮음은 숨김)
     const chips = within(sec).getByRole("group", { name: "위험도로 거르기" });
     expect(within(chips).queryByRole("button", { name: /낮음/ })).toBeNull();

@@ -33,6 +33,30 @@ export function Unsupported({ what, chip = false }: { what?: string; chip?: bool
   );
 }
 
+/** 시안에는 있으나 서버 · 화면 연결이 아직 없는 칸에 넣는 글. */
+export const NOT_YET = "아직 구현 안 됨";
+
+/**
+ * 시안 칸 자리 표시 — 서버에 입력 · 데이터가 없어 아직 못 채운 칸에 가짜 값 대신 둔다(절대규칙 5).
+ * why 는 무엇이 없어서인지(마우스 설명 · 읽기 프로그램). block 이면 안내 상자, 아니면 줄 안의 작은 딱지.
+ */
+export function NotYet({ why, block = false }: { why: string; block?: boolean }) {
+  if (block) {
+    return (
+      <div className={s.note} role="note">
+        <Icon name="info" />
+        <span>{`${NOT_YET} · ${why}`}</span>
+      </div>
+    );
+  }
+  return (
+    <span className={cx(s.tag, s.out)} title={why}>
+      {NOT_YET}
+      <span className={s["sr-only"]}>{` · ${why}`}</span>
+    </span>
+  );
+}
+
 /** 이 서버 모드(일반 / 첫 진단)에서 안 되는 섹션을 접을 때 (usePoll().unsupported). what 이 있으면 앞에 붙인다. */
 export function ModeNote({ what }: { what?: string }) {
   return (
