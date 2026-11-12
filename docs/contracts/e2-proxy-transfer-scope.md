@@ -24,8 +24,8 @@ Host와 path/query 원문, 메서드, body 및 end-to-end 헤더를 보존한다
   검사할 수 없어서 대상에 압축하지 말라고 요청하는 것이고, 응답 내용은 같고 압축만 빠진다.
   거부하던 이전 방식은 Python `requests`·`curl --compressed`처럼 기본으로 압축을 협상하는
   도구의 요청을 전부 막았다. 바꾼 값은 요청별 승인 제안에도 그대로 보인다. 규칙의 일반
-  헤더 제약은 바꾸기 전 호출자 요청에 그대로 적용한다. 대상이 그래도 압축해 보내면 지금은
-  결과 불명으로 보류하고, 아래 C16 결정안이 구현되면 `withheld`로 센다.
+  헤더 제약은 바꾸기 전 호출자 요청에 그대로 적용한다. 대상이 그래도 압축해 보내면
+  `withheld`로 보류한다(C16 1단계, `e2-http-v2`).
 - `User-Agent` 부재에 기본값을 넣지 않는다. 빈 값·빈 POST framing처럼 전송 계층이
   바꾸기 쉬운 사례도 실제 wire 시험으로 보존 또는 송신 전 미지원 처리를 확인한다.
 - 무리다이렉트·무자동 재시도, 최종 목적지·대상 TLS 검증과 현재 승인·예산 검사는
@@ -74,15 +74,22 @@ Host, 시도 ID, proxy/hop-by-hop, framing 또는 인코딩 협상 제한을 우
 - 명시 비밀 헤더나 보호 자격값이 status·헤더·trailer·body에 나타나는 응답.
 - 지원하지 않는 인코딩, 제한을 넘거나 완전히 수신하지 못한 응답.
 
-대상 송신이 일어났다면 허용 결정과 송신·응답 관측을 유지하고 `unknown`으로 남긴다.
+대상 송신이 일어났고 대상이 답했으면(상태 줄·헤더 수신) 허용 결정과 송신·응답 관측을 유지하고
+`withheld`로 남긴다(`response_complete=false`, C16 1단계). 응답을 끝까지 받기 전에 끊기면
+지금처럼 `unknown`이다.
 원 응답의 헤더·본문은 도구에 공개하지 않는다. 이를 미송신 정책 거부, 대상의
 접근통제 성공, 취약점 없음 또는 재시도 허가로 바꾸지 않는다.
 비밀 검사는 명시된 값과 자격 형태에 대한 제한된 검사이며 임의 인코딩의 보편적
 DLP나 인증 정보 자동 발견을 보장하지 않는다.
 
-## 현재 보류와 Unknown 한도의 연동 — 미해결 계약 차이
+## 보류와 Unknown 한도의 연동 — C16 1단계로 해소(e2-http-v2)
 
-현재 코어는 자격 응답의 body·헤더를 보류할 때, 전부 수신했더라도
+`e2-http-v2`부터 보류한 응답은 `Reason=withheld`·`ResponseComplete=false`이고 `Counts.Withheld`로
+따로 센다. `Counts.Unknown`·`MaxUnknown`에 넣지 않으므로 매 응답에 Set-Cookie를 붙이는 앱에서도
+그 call이 멈추지 않는다. 도구에는 대상 응답 대신 E2 결과 응답(`X-ABC2LAB-E2-Outcome:
+response_withheld`, 사유 `withheld`)이 간다. 아래는 v1까지의 동작 기록이다.
+
+v1 코어는 자격 응답의 body·헤더를 보류할 때, 전부 수신했더라도
 `ResponseReceived=true`·`ResponseComplete=true`와 `Reason=unknown`을 함께 남긴다.
 이 보류도 그 call의 `Counts.Unknown`에 누적한다. `Limits.MaxUnknown`은 call(Bash 명령 하나)
 단위 상한이다(C01). 따라서 매 응답에 Set-Cookie를 붙이는 앱에서 MaxUnknown=3이면 HTTP 200
@@ -160,7 +167,10 @@ Unknown 중지 한도의 관계를 합의하는 것이다. 그 결정안은 아�
 6. **모델 출력 상한은 따로다.** 도구 출력은 지금처럼 `OutputLimit`으로 자른다. 응답 상한을
    올려도 모델 입력 크기는 늘지 않는다.
 
-구현 순서는 4(형식 판) → 1(분류·계수) → 2(자르기) → 3(상한 분리·기본값)이다. 1은
+구현 순서는 4(형식 판) → 1(분류·계수) → 2(자르기) → 3(상한 분리·기본값)이다. **4와 1은
+구현했다**(`e2-http-v2`: 사유 `withheld`, `Counts.Withheld`, 영수증 `response_truncated` 칸; 검증기
+`--journal-format e2-http-v2|e2-http-v1`, 평가 내보내기·수집기는 두 판을 읽고 v1 행의 `withheld`는
+거부). 지금은 본문 상한을 넘는 응답도 자르지 않고 통째로 `withheld`로 보류한다(2단계 전). 1은
 결과 불명 1건 전체 정지 제거(C01, 이동찬)와 같은 계수를 건드리므로 C01 구현과 순서를
 맞춘다.
 

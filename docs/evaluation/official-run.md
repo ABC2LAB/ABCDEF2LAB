@@ -126,7 +126,7 @@
 
    ```
    official_e2_policy_sha256 = 285ab34ccccdc966200f3c1afcf557c73612bf34be7dc0148efdad100a8e4fd5
-   official_e2_policy_fingerprint_sha256 = b219f820ab5ad6263898a4ff69bfb2b9f6a4595bf628e8b4a94da502e1291f9c
+   official_e2_policy_fingerprint_sha256 = abb0a92df713f0d4aedd1dffb2ae794e517ade234a14f8726d23e49169abe70d
    official_e2_declared_differences_sha256 = af6c46a57d06ce3890d978a8f67d35987e1ae9389aac706064232ddba3d77363
    ```
 

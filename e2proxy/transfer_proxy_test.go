@@ -56,7 +56,8 @@ func TestProxyCallerCredentialCannotDisappearBeforeGate(t *testing.T) {
 	}
 }
 
-func TestProxyCredentialResponseIsUnknownWithoutEditedSuccess(t *testing.T) {
+// 자격 응답은 통째로 보류하고 withheld로 센다(C16). 결과 불명이 아니며 E2 결과 응답의 종류도 response_withheld다.
+func TestProxyCredentialResponseIsWithheldWithoutEditedSuccess(t *testing.T) {
 	for _, kind := range []string{"set_cookie", "challenge", "known_echo"} {
 		t.Run(kind, func(t *testing.T) {
 			var received atomic.Int64
@@ -89,7 +90,7 @@ func TestProxyCredentialResponseIsUnknownWithoutEditedSuccess(t *testing.T) {
 			body, _ := io.ReadAll(response.Body)
 			response.Body.Close()
 			counts := e.Snapshot().Counts
-			if response.StatusCode != 502 || received.Load() != 1 || counts.Allowed != 1 || counts.Unknown != 1 || counts.Denied != 0 || strings.Contains(string(body), "bound-private") || strings.Contains(string(body), "[REDACTED]") || response.Header.Get("Set-Cookie") != "" || response.Header.Get("WWW-Authenticate") != "" {
+			if response.StatusCode != 502 || received.Load() != 1 || counts.Allowed != 1 || counts.Unknown != 0 || counts.Withheld != 1 || counts.Denied != 0 || response.Header.Get(OutcomeHeader) != string(OutcomeWithheld) || strings.Contains(string(body), "bound-private") || strings.Contains(string(body), "[REDACTED]") || response.Header.Get("Set-Cookie") != "" || response.Header.Get("WWW-Authenticate") != "" {
 				t.Fatal("credential-bearing response was exposed, edited into success, or called denied")
 			}
 		})

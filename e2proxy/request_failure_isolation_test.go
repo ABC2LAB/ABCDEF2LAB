@@ -229,15 +229,14 @@ func TestIntentCountsIsolateUnknownAcrossIntents(t *testing.T) {
 	var received atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
-		if r.URL.Path == "/allowed/withheld" {
-			// 기본 헤더 모드는 Set-Cookie가 있는 응답을 통째로 가려 결과 불명으로 센다.
-			w.Header().Set("Set-Cookie", "fixture=public")
+		if r.URL.Path == "/allowed/broken" {
+			abortMidBody(w)
 		}
 		io.WriteString(w, "ok")
 	}))
 	defer target.Close()
 	e, first := coreOpen(t, coreConfig(t, target.URL, &coreRecorder{}, 4))
-	if _, r, _ := first.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed/withheld")); r.Reason != Unknown {
+	if _, r, _ := first.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed/broken")); r.Reason != Unknown {
 		t.Fatal("fixture did not produce an unknown outcome", r.Reason)
 	}
 	if err := e.RegisterIntent(t.Context(), 2); err != nil {
@@ -271,8 +270,8 @@ func TestConcurrentWorkersIsolateRequestFailures(t *testing.T) {
 	var received atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
-		if r.URL.Path == "/allowed/withheld" {
-			w.Header().Set("Set-Cookie", "fixture=public")
+		if r.URL.Path == "/allowed/broken" {
+			abortMidBody(w)
 		}
 		io.WriteString(w, "ok")
 	}))
@@ -291,7 +290,7 @@ func TestConcurrentWorkersIsolateRequestFailures(t *testing.T) {
 		url    string
 		want   Reason
 	}
-	jobs := []job{{1, target.URL + "/outside", PolicyDenied}, {2, closedOrigin + "/allowed", TransportFailed}, {1, target.URL + "/allowed/withheld", Unknown}}
+	jobs := []job{{1, target.URL + "/outside", PolicyDenied}, {2, closedOrigin + "/allowed", TransportFailed}, {1, target.URL + "/allowed/broken", Unknown}}
 	for i := 0; i < isolationHealthyCalls; i++ {
 		jobs = append(jobs, job{int64(1 + i%2), target.URL + "/allowed/plain", Complete})
 	}
@@ -368,4 +367,14 @@ func TestIntentCountsIncludeAcceptedAttempts(t *testing.T) {
 	if view.IntentCounts.Attempts != 2 || view.IntentCounts.Allowed != 1 || view.IntentCounts.Denied != 1 || view.Counts.Attempts != 2 {
 		t.Fatalf("intent attempts do not match accepted requests: intent=%+v execution=%+v", view.IntentCounts, view.Counts)
 	}
+}
+
+// abortMidBody는 응답 본문 도중 연결을 끊는다. 대상이 요청을 받은 뒤 끝까지 답했는지 모르는 결과 불명을 만든다.
+// (자격 응답 보류는 C16부터 결과 불명이 아니라 withheld다.)
+func abortMidBody(w http.ResponseWriter) {
+	w.Header().Set("Content-Length", "64")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, "partial")
+	w.(http.Flusher).Flush()
+	panic(http.ErrAbortHandler)
 }
