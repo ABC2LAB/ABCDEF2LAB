@@ -229,12 +229,12 @@ func e2HTTPRunnerFailed(runErr error, result e2runner.Result) bool {
 }
 
 // The program-owned per-call counts take precedence over a nonzero shell exit.
-// Unknown or incomplete calls retain their original classification.
+// Unknown, incomplete or connection-failed calls retain their original classification.
 func e2HTTPPolicyClassification(result e2runner.Result) string {
 	t := result.Trusted
 	c := t.Call.Counts
 	if t.Classification == "result_unknown" || !t.Final || !t.ProcessDrained || !t.ProxyDrained ||
-		!t.Call.AuditComplete || !t.Execution.AuditComplete || c.Unknown > 0 || t.Execution.Counts.Unknown > 0 {
+		!t.Call.AuditComplete || !t.Execution.AuditComplete || c.Unknown > 0 || t.Execution.IntentCounts.Unknown > 0 || c.Transient > 0 {
 		return t.Classification
 	}
 	if c.Denied > 0 {
@@ -313,7 +313,8 @@ func newE2HTTPBashTool(execution E2HTTPScope, run e2HTTPRunFunc, hostTimeout tim
 			state.outcome(result.Trusted.Classification)
 			result.ToolOutput = string(execution.RedactOutput([]byte(result.ToolOutput)))
 			state.observeDiagnostic(execution, actualIntentID, command, result)
-			unknown := result.Trusted.Classification == "result_unknown" || result.Trusted.Execution.Counts.Unknown > 0
+			// 다른 Worker(intent)의 결과 불명으로 이 intent를 멈추지 않는다. 감사·집행 장애는 State·AuditComplete로 따로 본다(C03).
+			unknown := result.Trusted.Classification == "result_unknown" || result.Trusted.Execution.IntentCounts.Unknown > 0
 			incomplete := !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
 			if unknown || incomplete || runnerFailed || result.Trusted.Classification == "terminated" || result.Trusted.Classification == "isolation_unavailable" {
 				state.mu.Lock()
@@ -706,7 +707,7 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 	runnerFailed := state.runnerFailed
 	state.mu.Unlock()
 	last := state.classification() // 자체 잠금을 잡는다. 위 잠금 밖에서 부른다.
-	if unknown || snapshot.Counts.Unknown > 0 {
+	if unknown || snapshot.IntentCounts.Unknown > 0 {
 		return reason, counts, ErrE2HTTPUnknown
 	}
 	if incomplete || !snapshot.AuditComplete {

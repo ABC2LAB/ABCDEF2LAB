@@ -80,15 +80,19 @@ type Rule struct {
 	CredentialHeaders http.Header `json:"-"`
 }
 type Limits struct {
+	// MaxAttempts는 실행 전체에서 예산을 예약하고 송신 단계로 넘어간 시도 수의 상한이다.
+	// 보내지 않은 거부·미지원은 세지 않는다. 닿으면 그 뒤 송신만 거부한다(C01).
 	MaxAttempts    uint64
 	MaxCalls       int
 	MaxConcurrent  int
 	MaxBodyBytes   int64
 	RequestTimeout time.Duration
 	CallTimeout    time.Duration
-	MaxDenials     uint64
-	MaxTransient   uint64
-	MaxUnknown     uint64
+	// MaxDenials·MaxTransient·MaxUnknown은 call 하나의 거부+미지원·송신 실패·결과 불명 상한이다.
+	// 닿으면 그 call의 새 요청만 막고 실행 전체와 다른 call은 계속된다(C01).
+	MaxDenials   uint64
+	MaxTransient uint64
+	MaxUnknown   uint64
 }
 type Config struct {
 	// CheckAuthority는 신뢰 호스트가 연결하는 위임 철회 검사다. nil은 기존 모드다.
@@ -156,7 +160,10 @@ type Counts struct {
 	ForwardAttempted uint64 `json:"forward_attempted"`
 	Responses        uint64 `json:"responses"`
 	Unknown          uint64 `json:"unknown"`
-	Calls            int    `json:"calls"`
+	// Transient는 대상 연결을 끝내 맺지 못해 요청을 전달하지 않은 송신 실패(transport_failed) 수다.
+	// 결과 불명(Unknown)과 따로 센다(C02).
+	Transient uint64 `json:"transient,omitempty"`
+	Calls     int    `json:"calls"`
 }
 type ExecutionView struct {
 	ApprovalMode   ApprovalMode             `json:"approval_mode"`
@@ -171,8 +178,11 @@ type ExecutionView struct {
 	State          string                   `json:"state"`
 	ExpiresAt      time.Time                `json:"expires_at"`
 	Counts         Counts                   `json:"counts"`
-	Reason         Reason                   `json:"reason"`
-	AuditComplete  bool                     `json:"audit_complete"`
+	// IntentCounts는 IntentID에 결속된 call들만의 누계다. Counts는 실행 전체 누계로 그대로 둔다.
+	// Worker는 다른 intent의 불명·거부로 멈추지 않도록 이 값을 본다(C03).
+	IntentCounts  Counts `json:"intent_counts"`
+	Reason        Reason `json:"reason"`
+	AuditComplete bool   `json:"audit_complete"`
 }
 type RuleView struct {
 	Ref          string   `json:"ref"`

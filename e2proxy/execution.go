@@ -60,9 +60,12 @@ type Execution struct {
 	stopDone       chan struct{}
 	stopErr        error
 	sending        int
-	transient      uint64
-	secrets        [][]byte
-	secretHeaders  map[string]struct{}
+	// admitted는 예산을 예약하고 송신 단계로 넘어간 시도 수다. MaxAttempts는 이 값만 센다.
+	// 보내지 않은 거부·미지원은 송신 상한을 쓰지 않고 call 단위 차단으로만 제한한다(C01).
+	admitted      uint64
+	intentCounts  map[int64]*Counts
+	secrets       [][]byte
+	secretHeaders map[string]struct{}
 }
 type Call struct {
 	diagnostics          []HTTPObservation
@@ -82,7 +85,10 @@ type Call struct {
 	counts               Counts
 	auditComplete        bool
 	reason               Reason
-	closeGate            chan struct{}
+	// fence는 이 call의 요청 단위 실패가 상한에 닿았을 때의 사유다. 비어 있으면 열려 있다.
+	// 실행 전체가 아니라 이 call의 새 요청만 막는다. 이미 송신 중인 요청은 건드리지 않는다(C01).
+	fence     Reason
+	closeGate chan struct{}
 }
 
 func validRef(v string) bool { return safeRef.MatchString(v) && !strings.Contains(v, "://") }
@@ -122,7 +128,7 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 		cfg.RootCAs = cfg.RootCAs.Clone()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), secretHeaders: credentialHeaderNames(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentGate: make(chan struct{}, 1)}, nil
+	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), secretHeaders: credentialHeaderNames(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentCounts: map[int64]*Counts{cfg.IntentID: {}}, intentGate: make(chan struct{}, 1)}, nil
 }
 func compileRules(rules []Rule) ([]compiledRule, error) {
 	if len(rules) == 0 || len(rules) > maxExecutionRules {
@@ -254,6 +260,7 @@ func (e *Execution) RegisterIntent(ctx context.Context, id int64) error {
 		return ErrClosed
 	}
 	e.intents[id] = struct{}{}
+	e.intentCounts[id] = &Counts{}
 	return nil
 }
 
@@ -315,6 +322,9 @@ func (e *Execution) BeginCallForIntent(parent context.Context, id int64, command
 	e.calls[ref] = c
 	e.callOrder = append(e.callOrder, c)
 	e.counts.Calls++
+	if counts := e.intentCounts[id]; counts != nil {
+		counts.Calls++
+	}
 	accepted = true
 	return c, nil
 }
@@ -600,8 +610,12 @@ func (e *Execution) snapshotLocked(id int64) ExecutionView {
 		ids = append(ids, intent)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	var intentCounts Counts
+	if counts := e.intentCounts[id]; known && counts != nil {
+		intentCounts = *counts
+	}
 	return ExecutionView{ApprovalMode: e.cfg.ApprovalMode, Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
-		State: state, ExpiresAt: e.cfg.ExpiresAt, Counts: e.counts, Reason: reason, AuditComplete: !e.auditFailed && e.cfg.Recorder != nil}
+		State: state, ExpiresAt: e.cfg.ExpiresAt, Counts: e.counts, IntentCounts: intentCounts, Reason: reason, AuditComplete: !e.auditFailed && e.cfg.Recorder != nil}
 }
 func (e *Execution) Policy() PolicyView {
 	e.mu.Lock()
@@ -694,11 +708,10 @@ func (c *Call) start(method string) (Receipt, error) {
 	if c.closing || c.finalized {
 		return Receipt{}, ErrClosed
 	}
-	if e.next >= e.cfg.Limits.MaxAttempts {
-		e.stopped = true
-		e.stopReason = AttemptLimit
-		e.cancel()
-		return Receipt{}, ErrClosed
+	// 상한에 닿은 call의 새 요청은 시도 번호·감사 기록 없이 거절한다. 기록되는 거절이 call마다
+	// 상한으로 묶이므로 실행 전체의 기록도 MaxCalls와 call 상한의 곱 안에 머문다(C01).
+	if c.fence != "" {
+		return Receipt{Version: Version, Scope: e.cfg.Scope, IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, PolicyRevision: e.cfg.PolicyRevision, Reason: c.fence, NotSent: true}, ErrClosed
 	}
 	id, err := randomRef("")
 	if err != nil || e.issued[id] {
@@ -766,33 +779,42 @@ func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) 
 		if r.Reason == Unknown {
 			counts.Unknown++
 		}
+		if r.Reason == TransportFailed {
+			counts.Transient++
+		}
 	}
 	add(&c.counts)
 	add(&e.counts)
+	if counts := e.intentCounts[c.intentID]; counts != nil {
+		add(counts)
+	}
 	c.preserveOutcomeLocked(r, err)
 	c.active--
 	if c.active == 0 {
 		close(c.idle)
 	}
-	if e.counts.Denied+e.counts.Unsupported >= e.cfg.Limits.MaxDenials {
-		e.stopped = true
-		e.stopReason = DenialLimit
-		e.cancel()
-	}
-	if e.counts.Unknown >= e.cfg.Limits.MaxUnknown {
-		e.stopped = true
-		e.stopReason = UnknownLimit
-		e.cancel()
-	}
-	if r.Reason == TransportFailed {
-		e.transient++
-	}
-	if e.transient >= e.cfg.Limits.MaxTransient {
-		e.stopped = true
-		e.stopReason = TransientLimit
-		e.cancel()
-	}
+	c.fenceLocked()
 	return r, err
+}
+
+// fenceLocked는 요청 단위 실패(거부·미지원·결과 불명·송신 실패)가 이 call의 상한에 닿으면 이 call의
+// 새 요청만 막는다. 다른 call·intent와 실행 전체는 계속된다. 실행 전체를 멈추는 사유는 감사 실패,
+// 집행 경계 장애, 권한 철회·만료·결속 실패, 운영자 중지·취소뿐이고 그 경로는 따로 있다(C01).
+// 예산·송신 시도 상한 소진은 그 뒤 모든 예약이 거부되므로 새 송신이 생기지 않는다.
+// 호출자는 execution 잠금을 보유한다.
+func (c *Call) fenceLocked() {
+	if c.fence != "" {
+		return
+	}
+	limits := c.e.cfg.Limits
+	switch {
+	case c.counts.Denied+c.counts.Unsupported >= limits.MaxDenials:
+		c.fence = DenialLimit
+	case c.counts.Unknown >= limits.MaxUnknown:
+		c.fence = UnknownLimit
+	case c.counts.Transient >= limits.MaxTransient:
+		c.fence = TransientLimit
+	}
 }
 func (c *Call) Reject(ctx context.Context, method string, reason Reason) (Receipt, error) {
 	if ctx == nil {
@@ -826,7 +848,7 @@ func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 	return compiledRule{}, false
 }
 
-type observed struct{ forward, written atomic.Bool }
+type observed struct{ forward, connected, written atomic.Bool }
 type guardedConn struct {
 	net.Conn
 	c        *Call
@@ -1026,9 +1048,16 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	if reason == Complete && e.cfg.PolicyRevision != revision {
 		reason = PolicyDenied
 	}
+	// 송신 시도 상한은 실제로 예산을 예약하는 요청만 센다. 상한에 닿으면 이 요청과 그 뒤 요청만
+	// 거부하고, 이미 송신 중인 요청은 끊지 않는다(C01).
+	if reason == Complete && e.admitted >= e.cfg.Limits.MaxAttempts {
+		reason = AttemptLimit
+	}
 	if reason == Complete {
 		if err = e.cfg.Budget.Ledger.Reserve(e.cfg.Budget.Key, e.cfg.Budget.Binding, budget.Attempt{RunRef: e.cfg.Scope.RunRef, Sequence: r.Sequence}, time.Now()); err != nil {
 			reason = BudgetExhausted
+		} else {
+			e.admitted++
 		}
 	}
 	e.mu.Unlock()
@@ -1074,11 +1103,14 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	out.TransferEncoding = nil
 	out.Trailer = nil
 	ob := &observed{}
-	out = out.WithContext(httptrace.WithClientTrace(workCtx, &httptrace.ClientTrace{WroteRequest: func(info httptrace.WroteRequestInfo) {
-		if info.Err == nil {
-			ob.written.Store(true)
-		}
-	}}))
+	out = out.WithContext(httptrace.WithClientTrace(workCtx, &httptrace.ClientTrace{
+		// HTTP/1에서 GotConn은 TCP 연결과 TLS 검증이 끝난 뒤, 요청을 쓰기 전에 불린다.
+		GotConn: func(httptrace.GotConnInfo) { ob.connected.Store(true) },
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				ob.written.Store(true)
+			}
+		}}))
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, DisableCompression: true, Protocols: protocols,
@@ -1124,9 +1156,11 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	r.NotSent = !r.ForwardAttempted
 	if sendErr != nil {
 		r.Reason = TransportFailed
-		if r.ForwardAttempted {
+		// 대상이 요청을 받았을 수 있는 건 연결(TLS 포함)이 맺어진 뒤의 실패뿐이다. 그 전의 TCP 연결·TLS
+		// 검증 실패는 요청을 전달하지 않은 송신 실패다. 연결 시도 사실은 ForwardAttempted로 남긴다(C02).
+		if r.ForwardAttempted && ob.connected.Load() {
 			r.Reason = Unknown
-		} else {
+		} else if !r.ForwardAttempted {
 			e.mu.Lock()
 			authorityRevoked := e.cfg.CheckAuthority != nil && e.stopReason == Revoked
 			e.mu.Unlock()
