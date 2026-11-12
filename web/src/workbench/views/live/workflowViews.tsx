@@ -550,6 +550,11 @@ export function WorkflowCrawlLive() {
             <button className={s.btn} type="button" onClick={() => goTo("coverage")}>
               커버리지
             </button>
+            {/* 발견 상세(구조화 판정 레코드). 지금은 예시, live 점등은 판정 레코드 API 연결 후.
+                진입 자리는 잠정 — 이동찬 정렬(새 작업대 시안 기준). */}
+            <button className={s.btn} type="button" onClick={() => goTo("finding")}>
+              발견 상세
+            </button>
             <button className={cx(s.btn, s.pri)} type="button" disabled={!ready} onClick={() => goTo(next)}>
               {next === "scope" ? "범위 확인" : "점검 진행"}
               <Icon name="arrow" />
