@@ -537,8 +537,26 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				t.Fatalf("결과 불명 송신이 있는 intent를 %s로 마감함", state)
 			}
 		}
+		// 근거 없는 다른 intent를 결과 불명으로 두어 개수를 맞춰도, 결과 불명 송신이 있는 intent가 끝난 것으로 남으면
+		// 마감하지 않는다(개수가 아니라 intent마다 대조한다).
+		swapped, addErr := task.Store.AddIntent(map[string]any{"summary": "Owned swapped unknown fixture"}, 1, nil, "system")
+		if addErr != nil {
+			t.Fatal("맞바꾼 결과 불명 fixture 생성 실패")
+		}
+		if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state='blocked', blocked_reason='e2_http_result_unknown' WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
+			t.Fatal("맞바꾼 결과 불명 fixture 상태 설정 실패", err)
+		}
+		if ready, _, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
+			t.Fatal("결과 불명 송신이 있는 intent 대신 근거 없는 intent를 결과 불명으로 셈")
+		}
+		if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
+			t.Fatal("맞바꾼 결과 불명 fixture 정리 실패")
+		}
 		if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state='blocked', blocked_reason='e2_http_result_unknown' WHERE exploration_id=$1 AND id=$2", task.ExpID, callIntent); err != nil {
 			t.Fatal("결과 불명 intent 상태 되돌리기 실패", err)
+		}
+		if ready, got, err := supervisor.generalCompletion(ctx, runtime.server, task); err != nil || !ready || got.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) {
+			t.Fatalf("되돌린 결과 불명 intent를 다시 마감하지 않음 ready=%v result=%+v err=%v", ready, got, err)
 		}
 		return
 	}
