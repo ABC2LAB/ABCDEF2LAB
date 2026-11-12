@@ -32,6 +32,11 @@
 - 읽기 전용 도구 트리는 /usr/bin·/bin, 아키텍처별 공유 라이브러리, 발견된 /usr/lib/python3* 등으로 제한된다.
   /usr/local, /usr/share, /usr/lib/node_modules, git-core, /app/skills 전체를 보장하지 않는다.
   /work는 noexec scratch이며 host workspace나 기존 산출물이 자동 공유되지 않는다.
+  호출자가 요청하면(`Config.WorkspaceIn`·`SaveWorkspace`, C29) 명령 시작 전에 이전 /work의 tar를 봉인 memfd(fd 8)로
+  받아 풀고, 명령과 namespace 안 모든 프로세스가 끝난 뒤(PID namespace init이 `kill(-1)`·회수) /work를 묶어
+  전용 pipe(fd 9)로 돌려준다. 두 fd는 명령이 물려받지 못하고(닫음·close-on-exec), helper는 dumpable이 아니라
+  `/proc/1/fd/*`를 열 수 없다. 일반 파일·디렉터리만 오가고 링크·장치·FIFO·소켓·하드 링크는 버린다.
+  정상 마감이 아니면 돌려주지 않는다.
   실제 ARTEX 이미지 도구 가용성의 동등성은 미검증이고 평가의 선언된 차이와 조율해야 한다.
 - 메모리 전체 상한은 제공하지 않는다. 이 경계의 NE07 근거는 Bash와 그 자식의 지원 실행 경로에 한정하며,
   다른 SDK 도구·MCP·서버 송신 전체의 격리 완료를 주장하지 않는다.
