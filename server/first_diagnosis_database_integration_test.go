@@ -208,6 +208,20 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, failedTool, "tool-failure")
 		})
+		t.Run("actual-engine-result-unknown-is-partial", func(t *testing.T) {
+			unknownTask, err := manager.CreateTask("Owned result-unknown fixture", "Close a run whose only request lost its response", nil, 60, 60)
+			if err != nil || unknownTask == nil {
+				t.Fatal("독립 결과 불명 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", unknownTask.ID); err != nil {
+				t.Fatal("결과 불명 task 준비 상태 저장 실패")
+			}
+			unknownTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := unknownTask.Store.AddIntent(map[string]any{"summary": "Read the owned fixture once"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 결과 불명 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, unknownTask, "result-unknown")
+		})
 		t.Run("actual-engine-planner-before-intent-no-legacy-send", func(t *testing.T) {
 			plannerOnly, err := manager.CreateTask("Owned planner-only fixture", "Require controlled planning before any intent", nil, 60, 60)
 			if err != nil || plannerOnly == nil {

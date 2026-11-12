@@ -606,8 +606,9 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 }
 
 // 일반 HTTP의 마감 판정이다. ready는 감사가 닫힌 실행 마감을 할 수 있다는 뜻이며 목표 충족이나 E③ 판정이 아니다.
-// intent 결과는 실행 결과 상태 값 계약 §2로 센다. incomplete·stopped intent는 실패가 아니라 부분 완료다(C08).
-// 결과 불명 intent는 E② 요청 단위 처리(C01) 전까지 지금처럼 실행을 멈춘다(계약 §6.3).
+// intent 결과는 실행 결과 상태 값 계약 §2로 센다. incomplete·stopped·unknown intent는 실패가 아니라 부분 완료다(C08).
+// 결과 불명 송신은 그 intent만 멈추므로(C01) 결과 불명 intent도 부분 완료로 센다(계약 §6.3). 단 결과 불명 intent
+// 수는 E②가 결과 불명 송신을 기록한 intent 수와 같아야 한다.
 // 실행 상한(Planner 라운드·도구 호출·승인 모델 예산)에 닿았으면 실행 중 intent가 끝나는 대로 마감하고, 시작하지
 // 못한 intent는 incomplete로 센다(closing_reason budget_limited).
 func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server *Server, task *Task) (bool, diagnosis.RunResult, error) {
@@ -617,7 +618,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	}
 	counts, err := firstDiagnosisIntentOutcomes(ctx, s.m.pg.DB, task.ExpID)
 	outcomes := counts.outcomes
-	if err != nil || outcomes.Unknown > 0 {
+	if err != nil {
 		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	budgetLimited := firstDiagnosisBudgetLimited(task, server.firstModelBudget)
@@ -635,7 +636,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && !flow.DeepReady() {
 		return false, none, ErrFirstDiagnosisOutcome
 	}
-	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Stopped
+	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Unknown + outcomes.Stopped
 	if settled == 0 {
 		// 계획을 거쳤는데 intent가 하나도 없다. 실패가 아니라 no_intents로 마감한다(C11 결정 2). 작업이 없으므로
 		// 대조할 E② 호출도 없어야 한다.
@@ -680,24 +681,45 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 			limited[result.Call.IntentID][reason] = true
 		}
 	}
+	// 결과 불명 송신을 E②가 기록한 intent다. 그 intent는 결과 불명으로 끝나야 하고(다시 보내지 않음, C01),
+	// 결과 불명 intent는 모두 여기 있어야 한다.
+	unknownIntents := make(map[int64]bool)
 	for _, call := range calls {
-		if !e2proxy.EqualCallResults(observed[call.CallRef], call) || !call.Final || !call.AuditComplete || call.Counts.Unknown != 0 {
+		if !e2proxy.EqualCallResults(observed[call.CallRef], call) || !call.Final || !call.AuditComplete {
 			return false, none, ErrFirstDiagnosisSupervisor
 		}
 		intent, err := task.Store.GetNode(call.IntentID)
 		if err != nil || intent == nil || intent.Kind != db.KindIntent {
 			return false, none, ErrFirstDiagnosisSupervisor
 		}
-		switch firstDiagnosisIntentOutcome(intent.State, intent.BlockedReason) {
+		outcome := firstDiagnosisIntentOutcome(intent.State, intent.BlockedReason)
+		if call.Counts.Unknown != 0 {
+			if outcome != intentOutcomeUnknown || intent.BlockedReason != "e2_http_result_unknown" {
+				return false, none, ErrFirstDiagnosisSupervisor
+			}
+			unknownIntents[intent.ID] = true
+			continue
+		}
+		switch outcome {
 		case intentOutcomeDone, intentOutcomeIncomplete, intentOutcomeStopped:
 		case intentOutcomePolicyLimited:
 			// 정책 제한 사유는 E②가 실제로 거부·미지원한 호출로 뒷받침돼야 한다.
 			if !limited[intent.ID][intent.BlockedReason] {
 				return false, none, ErrFirstDiagnosisSupervisor
 			}
+		case intentOutcomeUnknown:
+			// 결과 불명 송신 앞의 호출이다. 결과 불명 근거는 아래에서 intent 단위로 대조한다. 모르는 그래프 상태는 받지 않는다.
+			if intent.BlockedReason != "e2_http_result_unknown" {
+				return false, none, ErrFirstDiagnosisSupervisor
+			}
 		default:
 			return false, none, ErrFirstDiagnosisSupervisor
 		}
+	}
+	// 결과 불명 intent 수가 E② 근거로 확인한 수와 같아야 한다. 결과 불명 송신 없이 결과 불명으로 표시된 intent(모르는
+	// 그래프 상태 포함)는 근거가 없으므로 마감하지 않는다.
+	if int64(len(unknownIntents)) != outcomes.Unknown {
+		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	// 정책 제한으로 표시된 intent 수가 E② 근거로 확인한 수와 같아야 한다.
 	var matched int64
@@ -720,10 +742,33 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	return true, result, nil
 }
 
-// 감사가 닫힌 정책 제한은 진단 범위의 제한이다. 불명·미완료·알 수 없는 분류는 마감 실패다.
+// 감사가 닫힌 호출 결과가 마감할 수 있는 분류인지 본다. 정책 제한은 진단 범위의 제한이고, 결과 불명 송신·연결 실패는
+// 그 호출과 intent의 결과다(C01·C02). 미완료·알 수 없는 분류는 마감 실패다.
+// 실행 전체 누계(Execution.Counts)의 결과 불명은 다른 intent의 것이라 보지 않는다(C03). 이 intent의 앞선 호출에
+// 결과 불명이 있었다면 그 intent는 더 보내지 않으므로(C01) 이 호출도 결과 불명이어야 한다.
 func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 	c := result.Call.Counts
-	if c.Unknown != 0 || result.Execution.Counts.Unknown != 0 || !result.Execution.AuditComplete {
+	if !result.Execution.AuditComplete {
+		return false
+	}
+	if result.Classification == "result_unknown" {
+		// 최종 호출의 결과 불명 분류는 결과 불명 송신 수로만 생긴다. 사유는 마지막 요청의 것이다.
+		switch result.Call.Reason {
+		case e2proxy.Complete, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.Unknown, e2proxy.TransportFailed:
+			return c.Unknown > 0
+		}
+		return false
+	}
+	if c.Unknown != 0 || result.Execution.IntentCounts.Unknown != 0 {
+		return false
+	}
+	if result.Classification == "transient_failure" {
+		// 대상 연결을 맺지 못한 송신 실패만 받는다. 송신 실패 수가 없는 transient_failure(프록시 장애·명령 시간 초과)는
+		// 신뢰 결과에서 원인을 나눌 수 없어 마감 실패로 둔다.
+		switch result.Call.Reason {
+		case e2proxy.Complete, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.TransportFailed:
+			return c.Transient > 0
+		}
 		return false
 	}
 	if result.Call.Reason != e2proxy.Complete && result.Call.Reason != e2proxy.PolicyDenied && result.Call.Reason != e2proxy.Unsupported {
