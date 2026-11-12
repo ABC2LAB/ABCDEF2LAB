@@ -100,44 +100,54 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 	if err != nil {
 		return nil, ErrInvalidOpenRouterManifestFile
 	}
-	resolver.available = func() error {
+	approval := fmt.Sprintf("%x", sha256.Sum256([]byte(resolver.manifest.ApprovalID)))
+	// 이전 1회용 표식이 있는 승인은 예약 기록 없이 이미 쓴 것이므로 다 쓴 승인으로 본다.
+	legacyMarker := ".openrouter-" + approval + ".used"
+	ledgerName := ".openrouter-" + approval + ".ledger"
+	openDirectory := func() (int, error) {
 		fresh, err := openRouterProtectedDirectory(dir)
 		if err != nil {
-			return ErrOpenRouterPolicy
+			return -1, ErrOpenRouterPolicy
 		}
-		defer unix.Close(fresh)
 		var st unix.Stat_t
 		if unix.Fstat(fresh, &st) != nil || !sameManifestDirectory(dirBefore, st) {
-			return ErrOpenRouterPolicy
+			_ = unix.Close(fresh)
+			return -1, ErrOpenRouterPolicy
 		}
-		marker := fmt.Sprintf(".openrouter-%x.used", sha256.Sum256([]byte(resolver.manifest.ApprovalID)))
-		if err = unix.Fstatat(fresh, marker, &st, unix.AT_SYMLINK_NOFOLLOW); err != unix.ENOENT {
-			return ErrOpenRouterPolicy
+		if err := unix.Fstatat(fresh, legacyMarker, &st, unix.AT_SYMLINK_NOFOLLOW); err != unix.ENOENT {
+			_ = unix.Close(fresh)
+			if err == nil {
+				return -1, errOpenRouterApprovalExhausted
+			}
+			return -1, ErrOpenRouterPolicy
+		}
+		return fresh, nil
+	}
+	resolver.available = func() error {
+		fresh, err := openDirectory()
+		if err != nil {
+			return err
+		}
+		defer unix.Close(fresh)
+		totals, err := openRouterReadLedger(fresh, ledgerName, false, resolver.manifest)
+		if err != nil {
+			return err
+		}
+		m := resolver.manifest
+		if !m.fits(totals, m.MaxInputPerCall, 1, openRouterReservedCost(m, 1)) {
+			return errOpenRouterApprovalExhausted
 		}
 		return nil
 	}
-	resolver.consume = func() error {
-		// 승인 ID당 최초 송신만 허용한다. 재시작 후 예산 재사용을 차단한다.
-		fresh, err := openRouterProtectedDirectory(dir)
+	resolver.ledger = func(input, output, cost int64) error {
+		// 승인별 누적 예약(P3 결정안 C07). 배타 잠금 안에서 다시 읽고, 승인 총량 안일 때만 한 줄을 더해 fsync한다.
+		// 재시작·다른 프로세스가 같은 승인을 써도 총량을 넘지 못한다. 예약은 되돌리지 않는다.
+		fresh, err := openDirectory()
 		if err != nil {
-			return ErrOpenRouterPolicy
+			return err
 		}
 		defer unix.Close(fresh)
-		var st unix.Stat_t
-		if unix.Fstat(fresh, &st) != nil || !sameManifestDirectory(dirBefore, st) {
-			return ErrOpenRouterPolicy
-		}
-		marker := fmt.Sprintf(".openrouter-%x.used", sha256.Sum256([]byte(resolver.manifest.ApprovalID)))
-		mark, err := unix.Openat(fresh, marker, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
-		if err != nil {
-			return ErrOpenRouterPolicy
-		}
-		syncErr := unix.Fsync(mark)
-		closeErr := unix.Close(mark)
-		if syncErr != nil || closeErr != nil || unix.Fsync(fresh) != nil {
-			return ErrOpenRouterPolicy
-		}
-		return nil
+		return openRouterAppendLedger(fresh, ledgerName, resolver.manifest, input, output, cost)
 	}
 	return resolver, nil
 }
@@ -161,4 +171,102 @@ func openRouterProtectedDirectory(dir string) (int, error) {
 		fd = next
 	}
 	return fd, nil
+}
+
+// openRouterLedgerLine은 예약 한 건이다. 사람이 읽을 수 있는 고정 형식이고 비밀을 담지 않는다.
+const openRouterLedgerLine = "r1 %d %d %d\n"
+
+// openRouterLedgerMaxBytes는 기록 파일 크기 상한이다. 한 줄은 최대 4개 정수와 구분자다.
+func openRouterLedgerMaxBytes(m openRouterManifest) int64 {
+	const line = 3 + 3*20 + 1
+	return m.MaxRequests * line
+}
+
+// openRouterLedgerFile은 기록 파일의 보호 조건을 보고 크기를 돌려준다.
+func openRouterLedgerFile(fd int, m openRouterManifest) (int64, bool) {
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || !ownedManifestFile(st) || st.Size < 0 || st.Size > openRouterLedgerMaxBytes(m) {
+		return 0, false
+	}
+	return st.Size, true
+}
+
+// openRouterReadLedger는 누적 합계를 읽는다. 없으면 0이다(create가 아니면 만들지 않는다). 형식이 깨졌거나 보호
+// 조건(소유자·0600·단일 링크·정규 파일)이 틀리면 오류다.
+func openRouterReadLedger(dir int, name string, create bool, m openRouterManifest) (openRouterLedgerTotals, error) {
+	flags := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK
+	fd, err := unix.Openat(dir, name, flags, 0)
+	if err == unix.ENOENT && !create {
+		return openRouterLedgerTotals{}, nil
+	}
+	if err != nil {
+		return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+	}
+	defer unix.Close(fd)
+	if unix.Flock(fd, unix.LOCK_SH) != nil {
+		return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+	}
+	return openRouterLedgerSum(fd, m)
+}
+
+func openRouterLedgerSum(fd int, m openRouterManifest) (openRouterLedgerTotals, error) {
+	size, ok := openRouterLedgerFile(fd, m)
+	if !ok {
+		return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+	}
+	// 잠금을 잡은 fd에서 처음부터 크기만큼만 읽는다(상한은 위에서 검사).
+	data := make([]byte, size)
+	for read := int64(0); read < size; {
+		n, err := unix.Pread(fd, data[read:], read)
+		if err != nil || n <= 0 {
+			return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+		}
+		read += int64(n)
+	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+	}
+	var t openRouterLedgerTotals
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		if line == "" && len(data) == 0 {
+			break
+		}
+		var input, output, cost int64
+		if n, err := fmt.Sscanf(line+"\n", openRouterLedgerLine, &input, &output, &cost); err != nil || n != 3 ||
+			fmt.Sprintf(openRouterLedgerLine, input, output, cost) != line+"\n" ||
+			input < 1 || input > m.MaxInputPerCall || output < 1 || output > m.MaxOutputPerCall || cost < 0 || cost > openRouterReservedCost(m, m.MaxOutputPerCall) {
+			return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+		}
+		t.Requests++
+		t.Input += input
+		t.Output += output
+		t.Cost += cost
+	}
+	return t, nil
+}
+
+func openRouterAppendLedger(dir int, name string, m openRouterManifest, input, output, cost int64) error {
+	fd, err := unix.Openat(dir, name, unix.O_RDWR|unix.O_CREAT|unix.O_APPEND|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	if err != nil {
+		return ErrOpenRouterPolicy
+	}
+	defer unix.Close(fd)
+	if unix.Flock(fd, unix.LOCK_EX) != nil {
+		return ErrOpenRouterPolicy
+	}
+	totals, err := openRouterLedgerSum(fd, m)
+	if err != nil {
+		return err
+	}
+	if !m.fits(totals, input, output, cost) {
+		return errOpenRouterApprovalExhausted
+	}
+	line := []byte(fmt.Sprintf(openRouterLedgerLine, input, output, cost))
+	if n, err := unix.Write(fd, line); err != nil || n != len(line) {
+		return ErrOpenRouterPolicy
+	}
+	if unix.Fsync(fd) != nil || unix.Fsync(dir) != nil {
+		return ErrOpenRouterPolicy
+	}
+	return nil
 }
