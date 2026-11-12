@@ -162,8 +162,8 @@ function JobRow() {
           <span className={s["r-s"]}>
             {"소요 "}
             <NotYet why="서버가 점검 소요 시간을 주지 않습니다" />
-            {" · 커버리지 "}
-            <NotYet why="점검 목록에는 커버리지가 없습니다. 보고서에서 볼 수 있습니다" />
+            {" · 자산 커버리지 "}
+            <NotYet why="점검 목록에는 자산 커버리지가 없습니다. 보고서에서 볼 수 있습니다" />
           </span>
         ) : null}
       </span>

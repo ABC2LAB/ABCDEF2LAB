@@ -781,8 +781,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     await waitFor(() => expect(cell("검토 필요 / 결과 불명")).toHaveTextContent(/^검토 필요 \/ 결과 불명1\/ 0/));
     expect(within(cell("확정")).getByText("0")).toBeInTheDocument();
     expect(within(cell("발견 · 검토 대상")).getByText("1")).toBeInTheDocument();
-    await waitFor(() => expect(cell("커버리지")).toHaveTextContent("40%"));
-    expect(cell("커버리지")).toHaveTextContent("미검사 60%");
+    // 자산 커버리지(방문 · 검사한 자산 비율)라고 이름 붙인다 — 판정 커버리지로 읽히지 않게 (리뷰 #479)
+    await waitFor(() => expect(cell("자산 커버리지")).toHaveTextContent("40%"));
+    expect(cell("자산 커버리지")).toHaveTextContent("미검사 60%");
     // 서버가 주지 않는 시작 · 소요는 '아직 구현 안 됨'
     expect(screen.getByText(/^시작/).closest("span")).toHaveTextContent("아직 구현 안 됨");
     // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '등급 없음')

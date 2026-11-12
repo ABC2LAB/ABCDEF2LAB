@@ -646,7 +646,8 @@ export function UrlReportLive() {
     enabled: visible && !!taskId,
   });
   const run = usePoll(() => fetchDiagnosisRun(taskId as string), [taskId], { enabled: visible && !!taskId });
-  // 커버리지 (시안 v20 머리 줄 · 요약 칸): 서버 task 커버리지. 꺼졌거나 못 읽으면 "아직 구현 안 됨"으로 둔다
+  // 자산 커버리지 (시안 v20 머리 줄 · 요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
+  // 꺼졌거나 못 읽으면 "아직 구현 안 됨"으로 둔다
   const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], { enabled: visible && !!taskId });
   const covPct = cov.data?.enabled && cov.data.pct !== null ? Math.round(cov.data.pct * 100) : null;
   const [tab, setTab] = useState<"list" | "graph" | "map" | "ev">("list");
@@ -778,8 +779,12 @@ export function UrlReportLive() {
               소요 <NotYet why="서버가 점검 소요 시간을 주지 않습니다" />
             </span>
             <span>
-              커버리지{" "}
-              {covPct !== null ? <b>{`${covPct}%`}</b> : <NotYet why="서버가 이 점검의 커버리지를 주지 않습니다" />}
+              자산 커버리지{" "}
+              {covPct !== null ? (
+                <b>{`${covPct}%`}</b>
+              ) : (
+                <NotYet why="서버가 이 점검의 자산 커버리지를 주지 않습니다" />
+              )}
             </span>
             {profile ? (
               <span>
@@ -800,7 +805,7 @@ export function UrlReportLive() {
       <div className={s.vb}>
         <div className={s.vm}>
           {counts ? (
-            // 요약 칸 (시안 v20 짜임: 발견 · 확정 · 검토 필요/결과 불명 · 커버리지). 미실행은 셋째 칸 아래에 둔다
+            // 요약 칸 (시안 v20 짜임: 발견 · 확정 · 검토 필요/결과 불명 · 자산 커버리지). 미실행은 셋째 칸 아래에 둔다
             <section className={s.strip} aria-label="판정 집계">
               <div className={s.cell}>
                 <div className={s.k}>발견 · 검토 대상</div>
@@ -825,7 +830,7 @@ export function UrlReportLive() {
                 >{`${diagnosticOutcomeLabels.not_executed} ${counts.not_executed} · 추가 확인 권장`}</div>
               </div>
               <div className={s.cell}>
-                <div className={s.k}>커버리지</div>
+                <div className={s.k}>자산 커버리지</div>
                 <div className={s.v}>
                   {covPct !== null ? (
                     <>
@@ -833,10 +838,10 @@ export function UrlReportLive() {
                       <small>%</small>
                     </>
                   ) : (
-                    <NotYet why="서버가 이 점검의 커버리지를 주지 않습니다" />
+                    <NotYet why="서버가 이 점검의 자산 커버리지를 주지 않습니다" />
                   )}
                 </div>
-                <div className={s.sub}>{covPct !== null ? `미검사 ${100 - covPct}%` : "검사한 엔드포인트 비율"}</div>
+                <div className={s.sub}>{covPct !== null ? `미검사 ${100 - covPct}%` : "방문 · 검사한 자산 비율"}</div>
               </div>
             </section>
           ) : null}
