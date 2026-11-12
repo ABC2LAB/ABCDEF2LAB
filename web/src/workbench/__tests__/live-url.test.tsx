@@ -616,6 +616,42 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.getByText(/^범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경/)).toHaveTextContent("아직 구현 안 됨");
   });
 
+  it("점검 진행: 토큰 · 자산 커버리지는 서버 값, 경과 · 남은 시간 · 점검 중 발견 · 판정 · 새 경로 결정은 '아직 구현 안 됨' (시안 v22)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({
+      ...running,
+      model_usage: {
+        requests: 1,
+        input_tokens: 300,
+        output_tokens: 200,
+        reserved_input_tokens: 0,
+        reserved_output_tokens: 0,
+        cost_usd_micros: 0,
+        usage_known: true,
+      },
+    });
+    a.fetchCoverage.mockResolvedValue({
+      enabled: true,
+      scopeRows: 1,
+      denominator: 10,
+      tested: 4,
+      pct: 0.4,
+      byType: [],
+    });
+    mount("live");
+    expect(await screen.findByText("엔진 실행 중")).toBeInTheDocument();
+    // 토큰: 서버 사용량 / 범위 상한 (입력 + 출력)
+    expect(screen.getByText(/^토큰/)).toHaveTextContent("토큰 500 / 상한 2,000");
+    expect(screen.getByText(/^경과/)).toHaveTextContent("아직 구현 안 됨");
+    expect(screen.getByText(/^남은 시간/)).toHaveTextContent("아직 구현 안 됨");
+    const insp = screen.getByRole("complementary", { name: "진행 상황" });
+    await waitFor(() => expect(within(insp).getByText("4")).toBeInTheDocument());
+    expect(within(insp).getByText(/\/ 10 자산 · 40%/)).toBeInTheDocument();
+    expect(within(insp).getByText("발견 · 최근 순").parentElement).toHaveTextContent("아직 구현 안 됨");
+    expect(within(insp).getByText("판정").parentElement).toHaveTextContent("아직 구현 안 됨");
+    expect(within(insp).getByText(/^새로 찾은 경로 포함 결정/)).toHaveTextContent("아직 구현 안 됨");
+  });
+
   it("영수증만 있으면(id 없음) 생성 영수증을 조회한다", async () => {
     saveHandle({ ownerContext: owner, creationKey: "create-1", input: draft.input });
     mount("new");
@@ -885,6 +921,17 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(cell("발견 · 검토 대상")).toHaveTextContent(/^발견 · 검토 대상—결과가 저장되면 셉니다$/);
     expect(cell("결과 확인")).toHaveTextContent(/^결과 확인—/);
     expect(cell("토큰 사용량 · 최근 30일")).toHaveTextContent("아직 구현 안 됨");
+    // 진행 중 줄 · 상세 (시안 v55): 지금 하는 일은 서버 단계, 진행률 · 시작 · 남은 시간은 '아직 구현 안 됨', 보낸 요청 수는 없음(탐색 없음)
+    const act = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
+      name: /target\.example/,
+    });
+    expect(within(act).getByText(/^시작 · 남은 시간/)).toHaveTextContent("아직 구현 안 됨");
+    fireEvent.click(act);
+    const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    expect(within(detail).getByText("지금 하는 일")).toBeInTheDocument();
+    for (const k of ["진행률", "시작", "남은 시간"])
+      expect(within(detail).getByText(k).nextElementSibling).toHaveTextContent("아직 구현 안 됨");
+    expect(within(detail).queryByText("소요")).toBeNull();
   });
 
   it("대시보드: 저장된 결과에서 정상 대조를 빼고 위험도 순으로 보이며, 위험도 칩으로 거른다", async () => {
@@ -918,10 +965,15 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(within(cell("발견 · 검토 대상")).getByText("4")).toBeInTheDocument();
     expect(cell("발견 · 검토 대상")).toHaveTextContent("심각 1 · 높음 1 · 중간 1 · 낮음 0 · 등급 없음 1");
     expect(cell("결과 확인")).toHaveTextContent("결과 불명 0 · 미실행 0");
+    // 끝난 점검이라 결정할 것이 없다 (시안 v77 '모두 결정함')
+    expect(cell("결정 대기")).toHaveTextContent(/^결정 대기0모두 결정함$/);
     // 처음 상세는 가장 위험한 발견. 보고서 · 진행 화면으로 갈 수 있다 (시안 v88)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("발견 2")).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "진행 화면 열기" })).toBeInTheDocument();
+    // 시안 발견 상세의 계정별 응답 비교 · 다음 단계는 서버가 따로 주지 않아 자리만
+    expect(within(detail).getByText("계정별 응답 비교").parentElement).toHaveTextContent("아직 구현 안 됨");
+    expect(within(detail).getByText("다음 단계").parentElement).toHaveTextContent("아직 구현 안 됨");
     // 칩: 전체 4 · 심각 1 · 높음 1 · 중간 1 · 등급 없음 1 (0건인 낮음은 숨김)
     const chips = within(sec).getByRole("group", { name: "위험도로 거르기" });
     expect(within(chips).queryByRole("button", { name: /낮음/ })).toBeNull();

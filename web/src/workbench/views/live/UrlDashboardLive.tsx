@@ -8,7 +8,7 @@
 // 비워 두고 "없음"이라고 말하지 않는다(절대 규칙 5). 결정 대기 안내는 실제 상태(요청 승인 대기 · 범위 선택 대기 ·
 // 결과 불명)에서만 만든다.
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
@@ -115,7 +115,9 @@ function DashStrip({
       <div className={cx(s.cell, !!decide && s.warn)} id="dDecide">
         <div className={s.k}>결정 대기</div>
         <div className={s.v}>{decide ?? "—"}</div>
-        <div className={s.sub}>{`승인 ${approvals ?? "—"} · 경로 선택 ${selecting ? 1 : 0}`}</div>
+        <div className={s.sub}>
+          {decide === 0 ? "모두 결정함" : `승인 ${approvals ?? "—"} · 경로 선택 ${selecting ? 1 : 0}`}
+        </div>
       </div>
       <div className={s.cell}>
         <div className={s.k}>결과 확인</div>
@@ -174,6 +176,7 @@ export function UrlDashboardLive() {
   const shown = ff === "all" ? found : found.filter((e) => sevOf(e) === ff);
   const [picked, setSel] = useState<Sel | null>(null);
   const [spin, setSpin] = useState(false);
+  const vmRef = useRef<HTMLDivElement>(null);
   // 고르기 전에는 승인 대기(보내기 전에 사람이 정해야 함)를 먼저, 없으면 가장 위험한 발견, 없으면 점검 정보
   const first = a.pending[0];
   let sel: Sel = { kind: "job" };
@@ -195,7 +198,15 @@ export function UrlDashboardLive() {
     if (g.canRefresh) work.push(runUrlAction("refresh"));
     a.poll.reload();
     rem.reload();
-    void Promise.allSettled(work).then(() => setSpin(false));
+    void Promise.allSettled(work).then(() => {
+      setSpin(false);
+      // 새로 읽었음을 본문이 한 번 옅게 깜빡여 알린다 (시안 v85 dflash, 움직임 줄이기 설정이면 CSS 가 끈다)
+      const vm = vmRef.current;
+      if (!vm) return;
+      vm.classList.remove(s.dflash);
+      void vm.offsetWidth;
+      vm.classList.add(s.dflash);
+    });
   };
   // 위험도 칩: 바꾸면 처음 6개부터. 보던 발견이 빠지면 남은 첫 줄을 고른다
   const pickSev = (k: SevF | "all") => {
@@ -314,6 +325,17 @@ export function UrlDashboardLive() {
             .filter(Boolean)
             .join(" · ") || "상태 확인 중"}
         </span>
+        {/* 진행 중 줄의 시작 · 남은 시간 · 끝난 줄의 소요 (시안 v55): 서버가 주지 않아 칸만 둔다 */}
+        {job ? (
+          <span className={s["r-s"]}>
+            {ended ? "소요 " : "시작 · 남은 시간 "}
+            <NotYet
+              why={
+                ended ? "서버가 점검 소요 시간을 주지 않습니다" : "서버가 점검 시작 시각 · 남은 시간을 주지 않습니다"
+              }
+            />
+          </span>
+        ) : null}
       </span>
       <span className={s["r-side"]}>
         {job ? <UrlPill job={job} verified={verified} /> : <span className={cx(s.pill, s.wait)}>상태 미확인</span>}
@@ -406,7 +428,7 @@ export function UrlDashboardLive() {
         }
       />
       <div className={s.vb}>
-        <div className={s.vm}>
+        <div className={s.vm} ref={vmRef}>
           <DashStrip
             found={found}
             ready={!!reportTask && !!rem.data}

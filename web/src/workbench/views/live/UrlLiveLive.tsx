@@ -104,6 +104,11 @@ export function UrlLiveLive() {
   const host = useUrlHost();
   const stop = useStopConfirm("종료");
   const a = useRequestApprovals(job?.task_id ?? "", visible && g.runReadable);
+  // 자산 커버리지 (시안 v22 진행 상세): 실제 task 가 생긴 뒤 서버 값. 꺼졌거나 못 읽으면 "아직 구현 안 됨"
+  const cov = usePoll(() => fetchCoverage(job?.task_id as string), [job?.task_id], {
+    enabled: visible && !!job?.task_id,
+    intervalMs: 15000,
+  });
 
   if (!handle || !job) {
     return (
@@ -257,6 +262,19 @@ export function UrlLiveLive() {
                       {` (심화 선택 ${selected})`}
                     </span>
                   ) : null}
+                  {/* 시안 v22 줄: 토큰은 서버 사용량 / 범위 상한, 경과 · 남은 시간은 서버가 주지 않아 칸만 */}
+                  {job.model_usage?.usage_known && job.scope ? (
+                    <span>
+                      토큰 <b>{fmtCount(job.model_usage.input_tokens + job.model_usage.output_tokens)}</b>
+                      {` / 상한 ${fmtCount(job.scope.budget.input_tokens + job.scope.budget.output_tokens)}`}
+                    </span>
+                  ) : null}
+                  <span>
+                    경과 <NotYet why="서버가 점검 시작 시각을 주지 않습니다" />
+                  </span>
+                  <span>
+                    남은 시간 <NotYet why="서버가 남은 시간을 주지 않습니다" />
+                  </span>
                 </div>
               </div>
             </div>
@@ -360,6 +378,38 @@ export function UrlLiveLive() {
               <p>{`전송 전 확인이 필요한 요청 ${a.pending.length}건을 승인하거나 거부해 주세요.`}</p>
             ) : (
               <p className={s.help}>결정할 요청이 없습니다.</p>
+            )}
+            {/* 시안 v22: 점검 중 새로 찾은 경로의 포함 결정 — 서버에 결정 칸이 없다 */}
+            <p className={s.help}>
+              {"새로 찾은 경로 포함 결정 "}
+              <NotYet why="서버에 점검 중 새 경로 포함 결정 칸이 없습니다" />
+            </p>
+          </Isec>
+          {/* 시안 v22 진행 상세: 점검 중 발견 · 판정은 서버가 결과 저장 전에 주지 않는다 (저장 뒤에는 보고서) */}
+          <Isec t="발견 · 최근 순">
+            {g.reportReadable ? (
+              <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("report")}>
+                보고서에서 발견 보기
+              </button>
+            ) : (
+              <NotYet block why="점검 중 발견은 서버가 결과를 저장하기 전에 주지 않습니다" />
+            )}
+          </Isec>
+          <Isec t="판정">
+            {g.reportReadable ? (
+              <p className={s.help}>판정은 보고서에 있습니다.</p>
+            ) : (
+              <NotYet block why="점검 중 판정은 서버가 결과를 저장하기 전에 주지 않습니다" />
+            )}
+          </Isec>
+          <Isec t="자산 커버리지">
+            {cov.data?.enabled && cov.data.denominator > 0 ? (
+              <p>
+                <b>{cov.data.tested}</b>
+                {` / ${cov.data.denominator} 자산 · ${Math.round((cov.data.pct ?? 0) * 100)}%`}
+              </p>
+            ) : (
+              <NotYet block why="서버가 이 점검의 자산 커버리지를 주지 않습니다" />
             )}
           </Isec>
           {flow ? (
@@ -627,6 +677,14 @@ export function FindingDetail({
         entry={e}
         onReload={onReload}
       />
+      {/* 시안 v20 발견 상세의 나머지 칸: 분류(유형 · 위험도)는 위 ① 칸에 있고, 계정별 응답 비교 · 다음 단계는
+          서버가 따로 주지 않는다 */}
+      <Isec t="계정별 응답 비교">
+        <NotYet block why="서버가 계정별 응답 비교 표를 따로 주지 않습니다" />
+      </Isec>
+      <Isec t="다음 단계">
+        <NotYet block why="서버가 다음 단계 제안을 따로 주지 않습니다" />
+      </Isec>
     </>
   );
 }
