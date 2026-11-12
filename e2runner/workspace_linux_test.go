@@ -133,3 +133,28 @@ func TestRunnerStoreWorkspaceRevalidates(t *testing.T) {
 		}
 	}
 }
+
+// tool_output보다 긴 출력은 가린 전체를 .outputs/<call_ref>.txt로 남기고, 다음 호출에서 읽을 수 있다(결정안 §2-3).
+func TestRunnerWorkspaceKeepsRedactedFullOutput(t *testing.T) {
+	f, _ := persistentRunnerFixture(t)
+	long, err := f.runner.RunForIntent(t.Context(), 2, "echo 'Bearer runner-session-secret'; head -c 20000 /dev/zero | tr '\\0' x; echo; echo marker-end")
+	if err != nil || long.Workspace != "saved" || !strings.HasPrefix(long.OutputFile, ".outputs/") || !strings.HasSuffix(long.OutputFile, ".txt") ||
+		len(long.ToolOutput) > f.cfg.OutputLimit || !long.Trusted.OutputTruncated || strings.Contains(long.ToolOutput, "runner-session-secret") {
+		t.Fatalf("long output: file=%q len=%d truncated=%v err=%v", long.OutputFile, len(long.ToolOutput), long.Trusted.OutputTruncated, err)
+	}
+	check, err := f.runner.RunForIntent(t.Context(), 2, "wc -c < '"+long.OutputFile+"'; tail -n 1 '"+long.OutputFile+"'; grep -c runner-session-secret '"+long.OutputFile+"' || true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(check.ToolOutput)
+	if len(lines) < 3 || lines[1] != "marker-end" || lines[2] != "0" {
+		t.Fatalf("saved output: %q", check.ToolOutput)
+	}
+	if size := lines[0]; len(size) < 5 {
+		t.Fatalf("saved output is not the full output: %s bytes", size)
+	}
+	short, err := f.runner.RunForIntent(t.Context(), 2, "echo short")
+	if err != nil || short.OutputFile != "" || short.Trusted.OutputTruncated {
+		t.Fatalf("short output: file=%q truncated=%v", short.OutputFile, short.Trusted.OutputTruncated)
+	}
+}
