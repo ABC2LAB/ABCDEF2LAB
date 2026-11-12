@@ -43,6 +43,7 @@
 - Planner에서는 대상으로 보내는 도구를 뺀다: 원본 기본 도구의 Bash, WebFetch, MCP. 대상 요청은 Worker(E②)만 보낸다. 호스트 파일 도구는 Worker와 같은 조건(작업 디렉터리 안)일 때만 넣는다.
 - WebSearch는 Worker와 같은 규칙이다.
 - Plan당 상한(`e2HTTPPlannerMaxTurns`·`e2HTTPPlannerMaxDuration` 상수)은 원본 설정 경로(에이전트 설정의 턴·시간)로 돌리고, 제품 기본값은 C32 설치 설정으로 둔다.
+  - 구현: 상수를 `agent.E2HTTPPlannerLimits`(기본 16턴·2분)로 바꾸고 설치 입력 `runtime_limits`의 `planner_turns_per_plan`·`planner_seconds_per_plan`을 launch 설정으로 받는다([설치 상한 결정안](install-limits-decision.md) §3-5). 에이전트 설정의 턴 수가 설치 값보다 작으면 그 값을 쓴다. 원본처럼 턴 상한에 닿았을 때의 마무리 턴은 다음 단계다.
 
 ## 5. 실행 흐름 (C19·C27)
 
