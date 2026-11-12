@@ -385,6 +385,47 @@ func TestFirstDiagnosisModelBudgetReservesRequestSize(t *testing.T) {
 	}
 }
 
+// 승인 예산이 다음 호출을 받을 만큼 남지 않으면 LimitReached다(budget_limited). 막힘(불명·정책)은 아니다.
+func TestFirstDiagnosisModelBudgetLimitReachedOnlyForBudget(t *testing.T) {
+	b, cfg := modelBudgetFixture(t, func(diagnosisprep.ModelUsage) error { return nil })
+	req := llm.CompletionRequest{MaxTokens: 128}
+	for i := 0; i < 2; i++ {
+		if b.before(context.Background(), cfg, &req) != nil || b.after(llm.Usage{InputTokens: 1, OutputTokens: 1}, 128, nil) != nil {
+			t.Fatal("call within budget")
+		}
+	}
+	if b.LimitReached() {
+		t.Fatal("limit reached before a refused reservation")
+	}
+	if b.before(context.Background(), cfg, &req) == nil || !b.LimitReached() {
+		t.Fatal("refused reservation over the request budget not recorded as a limit")
+	}
+	// 사용량 불명으로 막힌 예산은 마감 사유가 아니다.
+	blocked, cfg := modelBudgetFixture(t, func(diagnosisprep.ModelUsage) error { return nil })
+	if blocked.before(context.Background(), cfg, &req) != nil {
+		t.Fatal("first call")
+	}
+	if blocked.after(llm.Usage{}, 128, nil) == nil {
+		t.Fatal("missing usage accepted")
+	}
+	if blocked.before(context.Background(), cfg, &req) == nil || blocked.LimitReached() {
+		t.Fatal("blocked budget reported as a budget limit")
+	}
+	var none *FirstDiagnosisModelBudget
+	if none.LimitReached() {
+		t.Fatal("nil budget limit")
+	}
+	// 감독자의 실행 상한 판정은 E② 런타임 표시와 모델 예산 상한 둘 다 본다.
+	task := &Task{}
+	if firstDiagnosisBudgetLimited(task, blocked) || firstDiagnosisBudgetLimited(nil, nil) || !firstDiagnosisBudgetLimited(task, b) {
+		t.Fatal("model budget limit not part of the run budget limit")
+	}
+	task.firstDiagnosisBudgetLimited.Store(true)
+	if !firstDiagnosisBudgetLimited(task, nil) {
+		t.Fatal("runtime budget limit ignored")
+	}
+}
+
 // 호출별 예약·정산(P3 결정안 C28 결정 2). 진행 중 호출이 있어도 예산 안이면 새 예약을 받고, 각 호출은 자기 예약만
 // 닫는다. 역순으로 끝나도 각자 정산하고, 한 호출이 실패해도 다른 호출의 정산은 그대로다. 예산은 예약 합계로 본다.
 func TestFirstDiagnosisModelBudgetPerCallReservations(t *testing.T) {

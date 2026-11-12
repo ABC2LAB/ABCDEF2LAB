@@ -11,6 +11,8 @@ import (
 type Closure struct {
 	DrainComplete bool
 	ResultReady   bool
+	// Result는 실행이 정상 마감됐을 때의 결과다. 없거나 계약에 맞지 않으면 완료로 보이지 않는다.
+	Result *RunResult
 }
 
 type Runner interface {
@@ -110,8 +112,13 @@ func (s *Service) execute(ctx context.Context) {
 		s.snapshot.State = Cancelled
 	case err != nil:
 		s.snapshot.State = Failed
+	case closure.Result == nil || !closure.Result.Valid():
+		// 마감은 확인됐지만 실행 결과를 모르면 완료라고 하지 않는다(절대 규칙 5).
+		s.snapshot.State = Unknown
 	default:
 		s.snapshot.State = Completed
+		result := *closure.Result
+		s.snapshot.Result = &result
 	}
 	// 실행 종료는 취약점 없음과 다르다. Close에는 기존 감사·저장 마감이 포함된다.
 	s.snapshot.DrainComplete = closure.DrainComplete

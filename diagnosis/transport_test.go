@@ -131,6 +131,13 @@ func TestClientRejectsUnrecognizedStateAndError(t *testing.T) {
 		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: "vulnerable", Started: true}},
 		{Version: Version, RequestID: "request-1", Error: "secret internal exception"},
 		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true}},
+		// 마감 근거가 있어도 결과가 없거나 대조식에 맞지 않는 완료는 받지 않는다.
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true, DrainComplete: true, ResultReady: true}},
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true, DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomeNoIntents, IntentOutcomes: IntentOutcomes{Done: 1}}}},
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true, DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomeComplete, ClosingReason: "time_limited", IntentOutcomes: IntentOutcomes{Done: 1}}}},
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true, DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomePartial, IntentOutcomes: IntentOutcomes{Incomplete: -1, Unknown: 2}}}},
+		// 완료가 아닌 상태에는 결과가 없다.
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Failed, Started: true, DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomeComplete, IntentOutcomes: IntentOutcomes{Done: 1}}}},
 	}
 	for _, response := range responses {
 		raw, _ := json.Marshal(response)
@@ -147,7 +154,7 @@ func TestClientResponseCorrelationAndExclusivePayload(t *testing.T) {
 		mutate func(*Response)
 	}{
 		{"request_id", func(r *Response) { r.RequestID = "different" }},
-		{"version", func(r *Response) { r.Version = "diagnosis.v2" }},
+		{"version", func(r *Response) { r.Version = "diagnosis.v1" }},
 		{"task", func(r *Response) { r.Snapshot.TaskID = "24" }},
 		{"preparation", func(r *Response) { r.Snapshot.PreparationRef = "other" }},
 		{"both_payloads", func(r *Response) { r.Error = "not_started" }},
@@ -195,5 +202,30 @@ func TestServeStopsAtMalformedFrame(t *testing.T) {
 	err := Serve(t.Context(), strings.NewReader("{invalid}\n"+string(valid)+"\n"), &output, s)
 	if !errors.Is(err, ErrProtocol) || output.Len() != 0 || r.calls.Load() != 0 {
 		t.Fatal("malformed frame did not terminate service", err)
+	}
+}
+
+// 실행 결과는 completed에만 있다. 완료 전 상태(prepared·running·stopping)에 결과가 오면 응답 전체를 거부한다.
+func TestClientRejectsResultBeforeCompletion(t *testing.T) {
+	result := &RunResult{Outcome: OutcomeComplete, IntentOutcomes: IntentOutcomes{Done: 1}}
+	for _, snapshot := range []Snapshot{
+		{TaskID: "23", PreparationRef: "operator-prepared", State: Prepared, Result: result},
+		{TaskID: "23", PreparationRef: "operator-prepared", State: Running, Started: true, Result: result},
+		{TaskID: "23", PreparationRef: "operator-prepared", State: Stopping, Started: true, Result: result},
+	} {
+		t.Run(string(snapshot.State), func(t *testing.T) {
+			raw, _ := json.Marshal(Response{Version: Version, RequestID: "request-1", Snapshot: &snapshot})
+			client, _ := NewClient(bytes.NewReader(append(raw, '\n')), io.Discard, func() error { return nil })
+			if response, err := client.Call(context.Background(), request(Status)); err == nil {
+				t.Fatalf("result before completion accepted: %+v", response.Snapshot)
+			}
+		})
+		// 결과가 없으면 같은 상태를 받는다(시험 대조).
+		snapshot.Result = nil
+		raw, _ := json.Marshal(Response{Version: Version, RequestID: "request-1", Snapshot: &snapshot})
+		client, _ := NewClient(bytes.NewReader(append(raw, '\n')), io.Discard, func() error { return nil })
+		if _, err := client.Call(context.Background(), request(Status)); err != nil {
+			t.Fatalf("%s without result rejected: %v", snapshot.State, err)
+		}
 	}
 }

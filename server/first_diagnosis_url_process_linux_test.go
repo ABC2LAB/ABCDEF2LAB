@@ -1001,10 +1001,16 @@ func runURLStopDuringPreparation(t *testing.T, external bool) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if after.State != diagnosisprep.Unknown || after.TaskID != before.TaskID || !after.PreparationStarted || after.Started ||
+	// 로컬 모델: 중지로 끊긴 Planner 호출은 예약량으로 정산되므로(C05) 사용량은 상한으로 알려지고 실행은 cancelled다.
+	// 외부 제공자: 끊긴 요청의 사용량을 제공자에서 확인할 수 없어 정책이 막히고 결과 불명으로 남는다.
+	wantState, wantKnown, wantUnknownCalls := diagnosisprep.Cancelled, true, int64(1)
+	if external {
+		wantState, wantKnown, wantUnknownCalls = diagnosisprep.Unknown, false, 0
+	}
+	if after.State != wantState || after.TaskID != before.TaskID || !after.PreparationStarted || after.Started ||
 		after.AuthorityState != diagnosisprep.AuthorityNotIssued || !after.DrainComplete || after.ResultReady ||
-		after.ModelUsage == nil || after.ModelUsage.UsageKnown || after.ModelUsage.Requests != calls {
-		t.Fatalf("준비 중지 사실 불일치 state=%s phase=%s reason=%s started=%v drain=%v result=%v authority=%s", after.State, after.Phase, after.ReasonCode, after.Started, after.DrainComplete, after.ResultReady, after.AuthorityState)
+		after.ModelUsage == nil || after.ModelUsage.UsageKnown != wantKnown || after.ModelUsage.UnknownUsageCalls != wantUnknownCalls || after.ModelUsage.Requests != calls {
+		t.Fatalf("준비 중지 사실 불일치 state=%s phase=%s reason=%s started=%v drain=%v result=%v authority=%s usage=%+v", after.State, after.Phase, after.ReasonCode, after.Started, after.DrainComplete, after.ResultReady, after.AuthorityState, after.ModelUsage)
 	}
 	time.Sleep(200 * time.Millisecond)
 	var tasks, intents, runs int
@@ -1016,5 +1022,5 @@ func runURLStopDuringPreparation(t *testing.T, external bool) {
 	if tasks != 1 || intents != 0 || runs != 0 || f.modelCalls.Load() != calls || f.allowed.Load() != 0 || f.denied.Load() != 0 {
 		t.Fatal("준비 중지 후 신규 모델·대상·실행 부작용")
 	}
-	t.Logf("URL_PREPARATION_STOP tasks=%d intents=%d runs=%d model_calls=%d additional_model_calls=0 target_sends=0 authority=not_issued started=false drain=true result=false state=unknown usage_known=false", tasks, intents, runs, calls)
+	t.Logf("URL_PREPARATION_STOP tasks=%d intents=%d runs=%d model_calls=%d additional_model_calls=0 target_sends=0 authority=not_issued started=false drain=true result=false state=%s usage_known=%v", tasks, intents, runs, calls, after.State, after.ModelUsage.UsageKnown)
 }

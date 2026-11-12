@@ -34,8 +34,14 @@
   /work는 noexec scratch이며 host workspace나 기존 산출물이 자동 공유되지 않는다.
   호출자가 요청하면(`Config.WorkspaceIn`·`SaveWorkspace`, C29) 명령 시작 전에 이전 /work의 tar를 봉인 memfd(fd 8)로
   받아 풀고, 명령과 namespace 안 모든 프로세스가 끝난 뒤(PID namespace init이 `kill(-1)`·회수) /work를 묶어
-  전용 pipe(fd 9)로 돌려준다. 두 fd는 명령이 물려받지 못하고(닫음·close-on-exec), helper는 dumpable이 아니라
-  `/proc/1/fd/*`를 열 수 없다. 일반 파일·디렉터리만 오가고 링크·장치·FIFO·소켓·하드 링크는 버린다.
+  전용 pipe(fd 9)로 돌려준다. fd 9는 helper를 띄울 때 만들어 명령이 도는 동안에도 helper 안에 열려 있다(설정·상태
+  pipe와 같다). 명령이 이 fd에 닿지 못하는 근거는 두 가지다: 명령이 물려받지 못한다(닫음·close-on-exec), 그리고
+  `/proc/1/fd/*`를 열 수 없다(helper가 dumpable이 아니라 helper의 user namespace에서 `CAP_SYS_PTRACE`가 있어야
+  여는데, helper가 명령을 띄우기 전에 `lockPrivilege`로 모든 capability 집합(bounding 포함)을 비우고 no_new_privs·
+  seccomp(새 user namespace 금지)를 걸어 명령 쪽 프로세스는 이를 얻을 수 없다). 시험: 명령의 `Cap*`가 모두 0
+  (`TestSandboxJailSecretsAndPrivilegeEscape`), `/proc/1/fd/9`에 쓰기·fd 8/9 상속 실패(`TestSandboxWorkspaceSaveKillsDetachedProcessesFirst`).
+  일반 파일·디렉터리만 오가고 링크·장치·FIFO·소켓·하드 링크는 버린다. tar 크기 상한은 내용 상한 + 항목 수 × 5블록 +
+  이름 바이트 합계 상한(1MiB)이고 묶는 쪽과 받는 쪽이 같은 값을 쓴다(긴 이름의 PAX 확장 머리말 포함).
   정상 마감이 아니면 돌려주지 않는다.
   실제 ARTEX 이미지 도구 가용성의 동등성은 미검증이고 평가의 선언된 차이와 조율해야 한다.
 - 메모리 전체 상한은 제공하지 않는다. 이 경계의 NE07 근거는 Bash와 그 자식의 지원 실행 경로에 한정하며,

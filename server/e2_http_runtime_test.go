@@ -55,8 +55,12 @@ func TestE2HTTPRuntimePlannerAdmissionIsBoundedAndCannotBeReused(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := runtime.PreparePlanning(context.Background(), task); !errors.Is(err, ErrE2HTTPHost) {
-		t.Fatal("planner limit did not stop further rounds")
+	// 라운드 상한은 실패가 아니라 실행 상한 마감 사유다(budget_limited). 새 라운드는 받지 않는다.
+	if task.firstDiagnosisBudgetLimited.Load() {
+		t.Fatal("budget limit marked before the limit")
+	}
+	if _, err := runtime.PreparePlanning(context.Background(), task); !errors.Is(err, ErrE2HTTPBudgetLimited) || errors.Is(err, ErrE2HTTPHost) || !task.firstDiagnosisBudgetLimited.Load() {
+		t.Fatal("planner limit did not stop further rounds as a budget limit")
 	}
 	changed := Task{ID: task.ID, ExpID: task.ExpID, Store: (&db.DB{}).Exploration(11)}
 	if _, err := runtime.PreparePlanning(context.Background(), &changed); !errors.Is(err, ErrE2HTTPHost) {

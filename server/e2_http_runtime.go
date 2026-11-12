@@ -20,6 +20,9 @@ var (
 	ErrE2HTTPHost    = errors.New("e2_http_host_unavailable")
 	ErrE2HTTPBusy    = errors.New("e2_http_work_active")
 	ErrE2HTTPClosure = errors.New("e2_http_host_closure_incomplete")
+	// ErrE2HTTPBudgetLimited는 실행 상한(Planner 라운드·도구 호출·intent 재실행)에 닿아 새 작업을 받지 않는다는
+	// 뜻이다. 실행 실패가 아니라 마감 사유다(실행 결과 상태 값 계약 §3.2 budget_limited).
+	ErrE2HTTPBudgetLimited = errors.New("e2_http_budget_limited")
 )
 
 var e2HTTPHostRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
@@ -298,8 +301,12 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed || t.blocked || t.ctx.Err() != nil || t.plannerRounds >= r.options.MaxPlannerRounds || t.control.Snapshot().Calls >= r.options.MaxToolCalls {
+	if t.closed || t.blocked || t.ctx.Err() != nil {
 		return ctx, ErrE2HTTPHost
+	}
+	if t.plannerRounds >= r.options.MaxPlannerRounds || t.control.Snapshot().Calls >= r.options.MaxToolCalls {
+		task.firstDiagnosisBudgetLimited.Store(true)
+		return ctx, ErrE2HTTPBudgetLimited
 	}
 	if len(t.active) != 0 {
 		return ctx, ErrE2HTTPBusy
@@ -361,9 +368,15 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 		t.mu.Unlock()
 		return ctx, nil, ErrE2HTTPBusy
 	}
-	if t.runs[intent.ID] >= r.options.MaxIntentRuns || t.control.Snapshot().Calls >= r.options.MaxToolCalls {
+	if t.control.Snapshot().Calls >= r.options.MaxToolCalls {
 		t.mu.Unlock()
-		return ctx, nil, ErrE2HTTPHost
+		task.firstDiagnosisBudgetLimited.Store(true)
+		return ctx, nil, ErrE2HTTPBudgetLimited
+	}
+	if t.runs[intent.ID] >= r.options.MaxIntentRuns {
+		// 이 intent만 다시 실행할 수 없다. 실행 전체 상한은 아니다.
+		t.mu.Unlock()
+		return ctx, nil, ErrE2HTTPBudgetLimited
 	}
 	t.mu.Unlock()
 	actual, readErr := t.store.GetNode(intent.ID)
