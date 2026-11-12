@@ -62,6 +62,7 @@
 | C02 | 구현·단위시험 | 연결(TLS 포함)을 맺기 전 TCP·TLS·SPKI 실패는 `transport_failed`, 연결 뒤 실패만 `unknown`. 연결 시도 자체는 `forward_attempted`로 남김. 새 계수 `Counts.Transient`, runner 분류 `transient_failure` | 연결 뒤 결과 불명은 그대로 불명, TLS 검증·SPKI 고정 | — |
 | C03 | 구현·단위시험 | `ExecutionView.IntentCounts` 추가. Worker 분류·정지·intent 마감이 실행 전체 대신 자기 intent의 불명 수를 봄 | 감사·집행 장애는 실행 상태·`AuditComplete`로 전체 반영. 자기 intent의 불명은 그 intent를 멈춤 | — (마감 판정도 자기 intent의 불명 수만 봄, C08) |
 | C08 | 구현·통합시험 | 결과 불명 intent를 실패 대신 `completed` + `partial`로 셈. 결과 불명 송신이 있는 호출의 intent는 결과 불명이어야 하고 결과 불명 intent 수는 E② 근거와 같아야 함. 연결 실패(`transient_failure` + 송신 실패 수) 호출은 그 intent의 결과 | 감사 실패·철회·만료·비최종 호출은 마감 실패. 결과 불명 intent는 다시 보내지 않음 | 명령 시간 초과·프록시 장애는 신뢰 결과에서 구분되지 않아 마감 실패 |
+| C16 | 일부(결정안 3의 기본값) | 제품 일반 HTTP 모드 본문 상한 기본값 64 KiB → 16 MiB(공식 평가 템플릿·코드 상한과 같음). 제품 기본값과 템플릿 값 대조 시험 | 넘는 응답은 여전히 결과 불명, 넘는 요청은 미지원(자르기·`withheld`·형식 판 v2는 결정안 1·2·4) | 요청·응답 상한 분리, 설치 설정 칸, 기존 설치는 새 설치 전까지 64 KiB |
 | C13 | 구현·단위시험 | 요청 관찰(After) 저장의 일시 실패는 판을 되돌리고 다음 저장에서 다시 씀. 연속 3회 실패·판 충돌이면 이후 허용 차단 | 선택·모드·단계 같은 허용 상태 저장 실패는 즉시 이후 허용 차단. E② 감사 실패는 실행 정지 | — |
 
 ## 4. 유지 범위 안에서 따로 볼 것
