@@ -52,6 +52,10 @@ type Endpoint struct {
 	CallRef          string `json:"call_ref,omitempty"`
 	Request          string `json:"request,omitempty"`
 	Response         string `json:"response,omitempty"`
+	// 탐색 실행기가 보고한 요청 모양(탐색 계약 §7). 이름만 있고 값은 없다.
+	QueryKeys   []string `json:"query_keys,omitempty"`
+	BodyKeys    []string `json:"body_keys,omitempty"`
+	ContentType string   `json:"content_type,omitempty"`
 }
 type Event struct {
 	At     time.Time `json:"at"`
@@ -71,6 +75,8 @@ type Counts struct {
 	Held         uint64 `json:"held,omitempty"`
 	Omitted      uint64 `json:"omitted,omitempty"`
 	InvalidPaths uint64 `json:"invalid_paths,omitempty"`
+	// 탐색 실행기 보고 중 형식 오류·범위 밖이라 버린 수(탐색 실행기 결정안 §2-3).
+	DiscoveriesDropped uint64 `json:"discoveries_dropped,omitempty"`
 }
 type Command struct {
 	Key       string `json:"key"`
