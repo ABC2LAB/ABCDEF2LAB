@@ -10,6 +10,7 @@
 
 import { type ReactNode, useState } from "react";
 
+import type { URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
 import type { DiagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
 import { diagnosticOutcomeLabels, summarizeDiagnosticEntries } from "@/lib/diagnosis/diagnostic-results";
 
@@ -51,15 +52,21 @@ export function recRunKind(
 /**
  * 끝난 점검의 결과 묶음 (팀 lib 판정 집계 그대로). 실행 마감(completed)된 점검만 나눈다.
  * 확정 → 발견 있음, 검토 필요 → 검토 필요, 미실행 · 결과 불명 → 판단 불가,
- * 정상 대조 결과가 있고 그 넷이 0 → 발견 없음. 보고서를 못 읽었거나 판정 기록이 없으면 빈 목록('전체' 에만).
+ * 정상 대조 결과가 있고 그 넷이 0 이며 실행 결과가 complete(계획한 작업을 모두 마침) → 발견 없음.
+ * partial(끝나지 않은 · 중지된 작업이 있음)은 정상 대조 결과만 있어도 발견 없음으로 두지 않는다(절대규칙 5, #440).
+ * 보고서를 못 읽었거나 판정 기록이 없으면 빈 목록('전체' 에만).
  */
-export function recDoneKinds(state: UrlState, counts: Record<DiagnosticOutcome, number> | null): DoneKind[] {
+export function recDoneKinds(
+  state: UrlState,
+  counts: Record<DiagnosticOutcome, number> | null,
+  outcome?: URLDiagnosisJob["outcome"],
+): DoneKind[] {
   if (state !== "completed" || !counts) return [];
   const out: DoneKind[] = [];
   if (counts.confirmed > 0) out.push("hit");
   if (counts.review > 0) out.push("review");
   if (counts.not_executed + counts.unknown > 0) out.push("und");
-  if (!out.length && counts.negative > 0) out.push("clean");
+  if (!out.length && counts.negative > 0 && outcome === "complete") out.push("clean");
   return out;
 }
 
@@ -79,7 +86,7 @@ export const DONE_CHIPS: ReadonlyArray<Chip<DoneKind>> = [
     "clean",
     "발견 없음",
     true,
-    "정상 대조 결과만 있는 점검(확정 · 검토 필요 · 미실행 · 결과 불명 0건) · 발견이 없다고 안전하다는 뜻은 아닙니다",
+    "계획한 작업을 모두 마쳤고 정상 대조 결과만 있는 점검(확정 · 검토 필요 · 미실행 · 결과 불명 0건) · 발견이 없다고 안전하다는 뜻은 아닙니다",
   ],
   ["und", "판단 불가", true, "미실행 또는 결과 불명이 있는 점검"],
 ];
@@ -314,7 +321,7 @@ export function UrlFinishedLive() {
 
   const remFor = rem.data && reportId && String(rem.data.task_id) === reportId ? rem.data : null;
   const counts = remFor ? summarizeDiagnosticEntries(remFor.entries) : null;
-  const doneKinds = ended && job ? recDoneKinds(job.state, counts) : [];
+  const doneKinds = ended && job ? recDoneKinds(job.state, counts, job.outcome) : [];
   // 결과를 아직 모름(읽는 중 · 실패) → 칩 개수는 '—'. 읽는 중일 때만 레일 이동의 필터 해제를 보류하고, 실패하면 보류를 푼다
   const doneUnknown = job?.state === "completed" && !!reportId && !remFor;
   const remFailed = doneUnknown && !!rem.error;
@@ -392,7 +399,7 @@ export function UrlFinishedLive() {
             )}
             {hasDone && !doneLoading && !doneKinds.length ? (
               <p className={s.help} role="note">
-                {unsortedText(job?.state, !!counts, remFailed)}
+                {unsortedText(job?.state, !!counts, remFailed, job?.outcome)}
               </p>
             ) : null}
           </section>
@@ -407,10 +414,16 @@ export function UrlFinishedLive() {
 }
 
 /** 끝난 점검을 결과로 나누지 않은 까닭 ('전체' 에만 보일 때). */
-function unsortedText(state: UrlState | undefined, readable: boolean, failed: boolean): string {
+function unsortedText(
+  state: UrlState | undefined,
+  readable: boolean,
+  failed: boolean,
+  outcome?: URLDiagnosisJob["outcome"],
+): string {
   if (failed) return "보고서를 읽지 못해 결과로 나누지 않고 '전체' 에만 보입니다. 새로고침으로 다시 읽을 수 있습니다.";
   if (state !== "completed") return "중지 · 실패한 점검은 끝까지 보지 않아 결과로 나누지 않고 '전체' 에만 보입니다.";
   if (!readable) return "결과 저장이 확인되지 않아 결과로 나누지 않고 '전체' 에만 보입니다.";
+  if (outcome === "partial") return "계획한 작업 일부가 끝나지 않아 '발견 없음' 으로 나누지 않고 '전체' 에만 보입니다.";
   return "정상 대조 결과가 없어 '발견 없음' 으로 나누지 않고 '전체' 에만 보입니다.";
 }
 

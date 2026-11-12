@@ -47,6 +47,7 @@ const completed = {
   phase: "report" as const,
   drain_complete: true,
   result_ready: true,
+  outcome: "complete" as const,
 };
 const zero = { confirmed: 0, review: 0, not_executed: 0, unknown: 0, negative: 0 };
 
@@ -97,8 +98,14 @@ describe("진행 중 · 끝난 점검 묶음 계산", () => {
   });
 
   it("끝난 점검: 실행 마감된 점검만 팀 lib 판정 집계로 나눈다 — 발견 없음은 정상 대조 결과가 있을 때만", () => {
-    expect(recDoneKinds("completed", null)).toEqual([]);
-    expect(recDoneKinds("completed", { ...zero, negative: 3 })).toEqual(["clean"]);
+    expect(recDoneKinds("completed", null, "complete")).toEqual([]);
+    expect(recDoneKinds("completed", { ...zero, negative: 3 }, "complete")).toEqual(["clean"]);
+    // 계획한 작업 일부가 끝나지 않은 실행(partial)은 정상 대조 결과만 있어도 발견 없음이 아니다 (절대규칙 5, #440)
+    expect(recDoneKinds("completed", { ...zero, negative: 3 }, "partial")).toEqual([]);
+    expect(recDoneKinds("completed", { ...zero, negative: 3 })).toEqual([]);
+    // 발견 · 검토 · 판단 불가 묶음은 실행 결과와 상관없이 판정 기록 그대로
+    expect(recDoneKinds("completed", { ...zero, confirmed: 1, negative: 3 }, "partial")).toEqual(["hit"]);
+    expect(recDoneKinds("completed", { ...zero, unknown: 1 }, "partial")).toEqual(["und"]);
     expect(recDoneKinds("completed", { ...zero, confirmed: 1 })).toEqual(["hit"]);
     expect(recDoneKinds("completed", { ...zero, review: 2 })).toEqual(["review"]);
     expect(recDoneKinds("completed", { ...zero, not_executed: 1 })).toEqual(["und"]);
@@ -200,6 +207,39 @@ describe("진행 중인 점검 · 끝난 점검 화면", () => {
     await waitFor(() => expect(within(done).getByRole("note")).toHaveTextContent("정상 대조 결과가 없어"));
     expect(chip(done, "발견 없음")).toHaveTextContent("0");
     expect(chip(done, "전체")).toHaveTextContent("1");
+  });
+
+  it("계획한 작업 일부가 끝나지 않은 실행(partial)은 정상 대조 결과만 있어도 발견 없음으로 나누지 않고 까닭을 적는다", async () => {
+    const verdict: api.Remediation["entries"][number] = {
+      ...candidate(1),
+      entry_id: "verdict-1",
+      title: "정상 대조",
+      outcome: "negative",
+      status: "allowed",
+      verification: "stored_verification",
+    };
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [verdict] });
+    useUrl.setState({ handle, job: { ...completed, outcome: "partial" }, verified: true });
+    const { unmount } = render(
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
+      </ShellContext.Provider>,
+    );
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
+    await waitFor(() => expect(within(done).getByRole("note")).toHaveTextContent("계획한 작업 일부가 끝나지 않아"));
+    expect(chip(done, "발견 없음")).toHaveTextContent("0");
+    expect(chip(done, "전체")).toHaveTextContent("1");
+    unmount();
+    // 같은 판정 기록이라도 계획한 작업을 모두 마친 실행(complete)이면 발견 없음
+    useUrl.setState({ handle, job: completed, verified: true });
+    render(
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
+      </ShellContext.Provider>,
+    );
+    const again = screen.getByRole("region", { name: "끝난 점검 목록" });
+    await waitFor(() => expect(chip(again, "발견 없음")).toHaveTextContent("1"));
+    expect(within(again).queryByRole("note")).toBeNull();
   });
 
   it("보고서를 못 읽은 끝난 점검(결과 저장 미확인)은 판정을 부르지 않고 '전체' 에만 보인다", () => {
