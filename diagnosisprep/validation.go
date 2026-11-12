@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"io"
 	"net"
@@ -282,6 +283,9 @@ func validJob(j Job) bool {
 	if j.ResultReady && j.TaskID == "" {
 		return false
 	}
+	if !validJobResult(j) {
+		return false
+	}
 	switch j.State {
 	case AwaitingApproval, Ready:
 		return !j.PreparationStarted && !j.Started && !j.DrainComplete && !j.ResultReady && j.TaskID == "" && j.AuthorityState == AuthorityNotIssued
@@ -300,6 +304,20 @@ func validJob(j Job) bool {
 	default:
 		return false
 	}
+}
+
+// validJobResult는 실행 결과 칸의 계약 규칙이다(docs/contracts/run-outcome-states.md §3.2).
+func validJobResult(j Job) bool {
+	if j.IntentOutcomes != nil && (!j.IntentOutcomes.Valid() || j.State != Completed && j.State != Cancelled) {
+		return false
+	}
+	if j.Outcome == "" {
+		return j.ClosingReason == "" && (j.State != Completed || j.IntentOutcomes == nil)
+	}
+	if j.State != Completed || j.IntentOutcomes == nil {
+		return false
+	}
+	return diagnosis.RunResult{Outcome: j.Outcome, ClosingReason: j.ClosingReason, IntentOutcomes: *j.IntentOutcomes}.Valid()
 }
 func validError(code string) bool {
 	switch code {

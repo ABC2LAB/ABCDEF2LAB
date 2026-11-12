@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/Autumn-27/artex/diagnosis"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,6 +82,7 @@ func completeRun(_ context.Context, _ Execution, p Publish) error {
 	u.Phase = Report
 	u.DrainComplete = true
 	u.ResultReady = true
+	u.Result = &diagnosis.RunResult{Outcome: diagnosis.OutcomeComplete, IntentOutcomes: diagnosis.IntentOutcomes{Done: 1}}
 	return p(u)
 }
 func privateDir(t *testing.T) string {
@@ -663,5 +665,34 @@ func TestExternalTransferConsentIsRequiredAndDurable(t *testing.T) {
 	defer restored.Shutdown(context.Background())
 	if status(t, restored, j.ID).State != Completed || b.calls.Load() != 1 {
 		t.Fatal("consent receipt replayed execution")
+	}
+}
+
+// 결과 없이 completed로 마감하려는 갱신은 거부한다. 실행은 완료로 보이지 않고 결과 불명으로 끝난다(절대 규칙 5).
+func TestPublishRejectsCompletionWithoutRunResult(t *testing.T) {
+	s, b, _ := newFixture(t)
+	var completionErr error
+	b.run = func(ctx context.Context, e Execution, p Publish) error {
+		withoutResult := func(u Update) error {
+			if u.State == Completed {
+				u.Result = nil
+				completionErr = p(u)
+				return completionErr
+			}
+			return p(u)
+		}
+		return completeRun(ctx, e, withoutResult)
+	}
+	j := create(t, s, "create")
+	r := request(Start)
+	r.JobID = j.ID
+	r.ExpectedRevision = j.Revision
+	r.IdempotencyKey = "start"
+	if res, err := s.Call(context.Background(), r); err != nil || res.Error != "" {
+		t.Fatal(res, err)
+	}
+	final := awaitState(t, s, j.ID, Unknown)
+	if completionErr == nil || final.Outcome != "" || final.IntentOutcomes != nil {
+		t.Fatalf("completion without result: err=%v job=%+v", completionErr, final)
 	}
 }
