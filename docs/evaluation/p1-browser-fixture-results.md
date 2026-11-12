@@ -135,3 +135,5 @@ P04/S04는 정본에서 삭제된 항목이다. fixture HTTP-over-Unix 제어 AP
 초기 일시정지는 host가 없는 기본 경로와 시험 host 모두에서 재개를 기다리며, 대기 중 boundary/browser/model I/O와 진단 lease는 0이다. 취소도 I/O 없이 종료한다. 정상 재개 뒤 NOT_RUN 또는 실제 fixture Worker 완료를 보존하고 once gate가 오류로 굳거나 재실행되지 않는다. 완료 탐색 건너뛰기는 동일 private 결속·권한·저장 마감만 허용하며, 미선택 요청·철회·미완료·다른 회차·취소·저장 실패·손상 상태는 계속 거부한다.
 
 리뷰 보완 뒤 관련 5패키지 race219 PASS/0 FAIL/0 SKIP, vet5패키지 PASS였다. 여기에는 위 실제 PostgreSQL 전환 및 진단 전 모델 예산 마감이 포함된다. 별도 오류 로그 회귀 race8 PASS는 factory·resolver·누락 capability·boundary/browser 시작 실패의 고정 단계·분류와 NOT_RUN 영속 상태, URL·자격 표식 비노출을 확인했다. 바쁨/lease, 첫 Worker의 stage 진입, 유효 private metadata의 요청 개수 상한도 별도 회귀로 고정했다. 중복되는 선택 시험 건수는 전체 고유 시험 수로 합산하지 않는다.
+
+추가 가드 변이는 저장소 밖 복사본에서만 실행했다. baseline7 PASS 뒤 busy/lease 검사 제거는 4조합, 첫 Worker의 stage 호출 제거는 initial-work 검사, private seq 개수 상한 제거는 over-cap ingestion 검사에서 각각 assertion FAIL로 탐지했다. 빌드 실패를 탐지로 세지 않았고 원본 소스에는 변이를 적용하지 않았다.
