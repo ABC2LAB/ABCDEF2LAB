@@ -72,7 +72,7 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 | `timeout`, `transport_failure`, `response_invalid` | 시한, DNS/TLS/연결 등 전송 실패, 응답 형식 실패. 세부 raw 오류는 없음 |
 | `token_limit`, `cost_limit`, `request_limit`, `expired`, `approval_consumed` | 기존 모델 예산/승인 정책의 사전 차단. 추가 요청이나 자동 재시도 없음 |
 | `no_intents`, `planner_failed`, `max_turns` | 계획 부재 또는 Planner 종료. 생성 intent 수와 모델 이벤트 대조 |
-| `unregistered_tool`, `schema_invalid` | 미등록 도구 또는 모델 입력 schema 불일치 |
+| `unregistered_tool`, `schema_invalid` | 미등록 도구 또는 모델 입력 schema 불일치. SDK가 붙이는 Planner `TodoWrite`는 등록 도구로 보고, SDK가 직접 실행하므로 `tool_selected`·`tool_schema_checked`만 남고 `tool_started`·`tool_finished`는 없음 |
 | `scope_denied`, `policy_denied`, `approval_denied`, `approval_expired` | E② 정책/사용자 결정/유효기간. 실제 송신과 구분 |
 | `result_unknown`, `e2_http_execution_result_unknown` | 송신 결과를 확인 못함. 성공/미전송으로 추정하지 않음 |
 | `candidate_store_failed`, `result_storage_failed` | 후보 DB 저장 또는 최종 결과 저장 실패 |

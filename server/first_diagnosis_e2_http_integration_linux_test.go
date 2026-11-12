@@ -239,14 +239,21 @@ func TestFirstDiagnosisE2ProviderToolBoundary(t *testing.T) {
 	}
 }
 
+// firstDiagnosisPlanWrapUpMarker는 Planner 라운드 마무리 문장(원본 plannerWrapUpDefault)의 앞부분이다.
+const firstDiagnosisPlanWrapUpMarker = "The step budget of this planning round is about to run out"
+
 type firstDiagnosisPlannerProbeProvider struct {
 	firstDiagnosisE2Provider
 	outboundToolExposed bool
 	textOnly            bool
 
 	// loopTool이 있으면 매 호출 그 읽기 도구를 다시 불러 Plan이 턴 상한에서만 끝나게 한다. 요청의 메시지 수 범위를 남긴다.
+	// 마무리 턴 요청(이번 라운드 마무리 문장)에는 도구 없이 끝내고 wrapUps로 센다.
 	loopTool                 string
 	minMessages, maxMessages int
+	wrapUps                  int
+	// todoOnce면 loopTool 전에 TodoWrite를 한 번 부른다(한 턴으로 센다).
+	todoOnce, todoDone bool
 	// goalID·evidenceID가 있으면 첫 호출에서 prove_goal로 그 목표를 달성시킨다(C26).
 	goalID, evidenceID int64
 	proved             bool
@@ -291,6 +298,24 @@ func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, reque
 				p.calls++
 				input, _ := json.Marshal(map[string]any{"goal_id": p.goalID, "evidence_id": p.evidenceID, "reason": "owned fixture evidence"})
 				return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "prove-goal", Name: "prove_goal", Input: input}}}, "tool_use", llm.Usage{}, nil
+			}
+		}
+	}
+	if p.loopTool != "" && len(request.Messages) > 0 {
+		last, _ := json.Marshal(request.Messages[len(request.Messages)-1])
+		if bytes.Contains(last, []byte(firstDiagnosisPlanWrapUpMarker)) {
+			p.wrapUps++
+			p.calls++
+			return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("Round wrapped up.")}}, "end_turn", llm.Usage{}, nil
+		}
+	}
+	if p.todoOnce && !p.todoDone {
+		for _, tool := range request.Tools {
+			if tool.Name == "TodoWrite" {
+				p.todoDone = true
+				p.calls++
+				p.minMessages, p.maxMessages = len(request.Messages), max(p.maxMessages, len(request.Messages))
+				return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "todo-once", Name: "TodoWrite", Input: json.RawMessage(`{"todos":[{"content":"Owned fixture follow-up","status":"pending"}]}`)}}}, "tool_use", llm.Usage{}, nil
 			}
 		}
 	}

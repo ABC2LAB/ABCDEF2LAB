@@ -152,7 +152,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	helper := firstDiagnosisNativeHelper(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" {
+	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" {
 		logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", mustFirstDiagnosisTaskNumber(task.ID), "")
 		if err != nil {
 			t.Fatal(err)
@@ -160,7 +160,11 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		ctx = diagnosticlog.With(ctx, logger)
 		defer func() {
 			if err := logger.Close(); err != nil {
-				t.Error("실제 실패 회차 로그 마감", err)
+				t.Error("실제 회차 로그 마감", err)
+				return
+			}
+			if mode == "plan-turns" {
+				verifyPlannerTodoLog(t, logger.Path())
 				return
 			}
 			verifySupervisorFailureLog(t, logger.Path(), mode)
@@ -301,6 +305,8 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}, textOnly: mode != "planner-only"}
 	if mode == "plan-turns" {
 		plannerProvider.loopTool = "list_goals"
+		// SDK가 붙이는 TodoWrite를 한 번 불러 진단 기록에 등록 도구로 남는지 본다(C26).
+		plannerProvider.todoOnce = true
 	}
 	var otherHits atomic.Int64
 	workerCallsAtScope := -1
@@ -453,11 +459,12 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	}
 	if mode == "plan-turns" {
 		// 한 Plan 안에서 턴마다 assistant·도구 결과 두 메시지가 붙는다. 설치 상한 2턴이면 마지막 요청이 첫 요청보다
-		// 2개 많다(기본 16턴이면 30개). intent가 없어 대상 송신 없이 no_intents로 마감한다.
+		// 2개 많다(기본 16턴이면 30개). 턴 상한에 닿은 Plan은 원본처럼 "이번 라운드만 끝" 마무리 턴을 받는다(C26).
+		// intent가 없어 대상 송신 없이 no_intents로 마감한다.
 		result := supervisor.RunResult()
-		if runErr != nil || plannerProvider.calls < installedPlanTurns || plannerProvider.maxMessages-plannerProvider.minMessages != 2*(installedPlanTurns-1) ||
+		if runErr != nil || plannerProvider.calls < installedPlanTurns || plannerProvider.maxMessages-plannerProvider.minMessages != 2*(installedPlanTurns-1) || plannerProvider.wrapUps == 0 ||
 			result == nil || result.Outcome != diagnosis.OutcomeNoIntents || hits.Load() != 0 || provider.calls != 0 {
-			t.Fatalf("설치한 Plan당 턴 상한을 쓰지 않음 err=%v calls=%d messages=%d..%d result=%+v", runErr, plannerProvider.calls, plannerProvider.minMessages, plannerProvider.maxMessages, result)
+			t.Fatalf("설치한 Plan당 턴 상한·마무리 턴을 쓰지 않음 err=%v calls=%d messages=%d..%d wrapUps=%d result=%+v", runErr, plannerProvider.calls, plannerProvider.minMessages, plannerProvider.maxMessages, plannerProvider.wrapUps, result)
 		}
 		return
 	}
@@ -766,6 +773,36 @@ func (p *firstDiagnosisRoleRoutedProvider) Complete(ctx context.Context, request
 func (p *firstDiagnosisRoleRoutedProvider) Stream(ctx context.Context, request llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		yield(llm.StreamEvent{}, errors.New("unexpected fixture streaming"))
+	}
+}
+
+// verifyPlannerTodoLog는 Planner가 부른 TodoWrite가 진단 기록에 등록 도구 선택으로 남고, 미등록 도구 실패가 없는지 본다.
+func verifyPlannerTodoLog(t *testing.T, path string) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer file.Close()
+	todo, unregistered := 0, 0
+	for decoder := json.NewDecoder(file); ; {
+		var event diagnosticlog.Event
+		if err := decoder.Decode(&event); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Error("Plan 회차 JSONL 손상", err)
+			return
+		}
+		if event.Event == "tool_selected" && event.Tool == "TodoWrite" && event.Status == "succeeded" && event.Role == "planner" {
+			todo++
+		}
+		if event.ReasonCode == "unregistered_tool" {
+			unregistered++
+		}
+	}
+	if todo != 1 || unregistered != 0 {
+		t.Errorf("TodoWrite 진단 기록: 선택 %d건, 미등록 %d건", todo, unregistered)
 	}
 }
 
