@@ -157,7 +157,9 @@ func (p *firstDiagnosisE2Provider) Complete(_ context.Context, request llm.Compl
 		switch tool.Name {
 		case "Bash", "graph_overview", "list_facts", "node_detail", "get_worker_output", "list_goals", "record_fact",
 			// 원본 Worker의 그래프 조회 도구(루프 복원 결정안 §2). 저장소 조회뿐이고 송신 권한을 늘리지 않는다.
-			"list_findings", "list_assets", "search_all_worker_traces", "get_worker_trace":
+			"list_findings", "list_assets", "search_all_worker_traces", "get_worker_trace",
+			// 원본 WebFetch의 E② 판. 같은 Bash 실행기·예약·감사를 지난다(루프 복원 결정안 §2).
+			"WebFetch":
 		case "submit_diagnostic_candidate":
 			// 같은 intent의 실제 관찰만 저장하는 로컬 도구이며 송신 권한을 늘리지 않는다.
 		default:
@@ -209,7 +211,7 @@ func TestFirstDiagnosisE2ProviderToolBoundary(t *testing.T) {
 		{name: "submit_diagnostic_candidate"},
 		{name: "report_finding", unsupported: true},
 		{name: "insert_assets", unsupported: true},
-		{name: "WebFetch", unsupported: true},
+		{name: "WebFetch"},
 		{name: "WebSearch", unsupported: true},
 		{name: "Read", unsupported: true},
 		{name: "Write", unsupported: true},
