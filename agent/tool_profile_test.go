@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -140,5 +141,31 @@ func TestE2HTTPWorkerToolSetHasNoSendOrConfirmHooks(t *testing.T) {
 	}
 	if toolset.taskID != 7 || toolset.ownerNode != 22 || toolset.worker != "worker-1" || toolset.CoverageDisabled() {
 		t.Fatalf("tool set binding: task=%d owner=%d", toolset.taskID, toolset.ownerNode)
+	}
+}
+
+// 진단 기록은 닫힌 도구 이름 어휘만 받는다(internal/diagnosticlog). 진단 프로필에 도구를 더하면 어휘에도 있어야 한다.
+// 없으면 그 도구를 부를 때마다 기록이 거부되어 진단 로그가 불완전으로 남는다. SDK가 붙이는 TodoWrite도 같다.
+func TestDiagnosisProfileToolNamesAreInDiagnosticLogVocabulary(t *testing.T) {
+	names := []string{"TodoWrite"}
+	for _, profile := range []toolProfile{diagnosisPlannerProfile, diagnosisWorkerProfile} {
+		for _, entry := range profile.entries {
+			names = append(names, entry.name)
+		}
+	}
+	var missing []string
+	for _, name := range names {
+		l, err := diagnosticlog.Create(t.TempDir(), "run", 42, "run")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, _ := withDiagnosticTools(diagnosticlog.With(context.Background(), l), []actool.CoreTool{e2WorkerFixtureTool(name, nil)}, "planner")
+		observeDiagnosticToolUse(ctx, name, json.RawMessage(`{}`))
+		if l.Close() != nil {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("diagnostic log rejects tool names: %v", missing)
 	}
 }
