@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Autumn-27/artex/diagnosisflow"
@@ -12,10 +15,11 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
-// runtime_limits가 없으면 지금 설치 기본값 그대로다(C32, 측정 전에는 기본값을 바꾸지 않는다).
+// runtime_limits가 없으면 지금 설치 기본값 그대로다(C32, 측정 전에는 기본값을 바꾸지 않는다). 본문 상한만 C16 결정안
+// 3대로 공식 평가 정책 템플릿과 같은 16MiB다(C32 결정안이 본문 상한은 C16에서 정한다고 둠).
 func TestProductPolicyBoundsDefaultsUnchanged(t *testing.T) {
 	product, ok := productPolicyBounds(productInstallInput{})
-	want := server.E2HTTPFilePolicy{Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 65536, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1},
+	want := server.E2HTTPFilePolicy{Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 16 << 20, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1},
 		Proxy:   server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 5000, MaxHeaderBytes: 32768, MaxConnections: 4},
 		Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
 	if !ok || product.Limits != want.Limits || product.Proxy != want.Proxy || product.Runtime != want.Runtime {
@@ -240,5 +244,26 @@ func TestProductStatusReadRetriesFor(t *testing.T) {
 		if ok != tc.ok || ok && got != tc.want {
 			t.Fatalf("%s: %d %v", tc.name, got, ok)
 		}
+	}
+}
+
+// 일반 HTTP 모드의 본문 상한 기본값은 공식 평가 정책 템플릿의 max_body_bytes와 같다(C16 결정안 3). 템플릿이 바뀌면
+// 제품 기본값도 같이 본다.
+func TestProductBodyDefaultMatchesOfficialTemplate(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "evaluation", "profiles", "official-e2-policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var template struct {
+		Limits struct {
+			MaxBodyBytes int64 `json:"max_body_bytes"`
+		} `json:"limits"`
+	}
+	if err := json.Unmarshal(raw, &template); err != nil || template.Limits.MaxBodyBytes <= 0 {
+		t.Fatalf("official template max_body_bytes unreadable: %v", err)
+	}
+	product, ok := productPolicyBounds(productInstallInput{})
+	if !ok || product.Limits.MaxBodyBytes != template.Limits.MaxBodyBytes || productMaxBodyBytes != template.Limits.MaxBodyBytes {
+		t.Fatalf("product body default %d differs from official template %d", product.Limits.MaxBodyBytes, template.Limits.MaxBodyBytes)
 	}
 }
