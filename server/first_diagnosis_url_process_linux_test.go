@@ -61,6 +61,9 @@ type urlProcessFixture struct {
 	external                                                                            bool
 	externalFailure                                                                     string
 	noIntents                                                                           bool // Planner가 add_intent를 부르지 않는다(intent 0개).
+	// holdWorker면 Worker의 첫 모델 호출을 요청이 끊길 때까지 붙잡고 workerEntered를 닫는다(실행 중 중지).
+	holdWorker    bool
+	workerEntered chan struct{}
 }
 
 func urlTestWrite(t *testing.T, path string, value any) string {
@@ -416,6 +419,12 @@ func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
 			}
 			tool("add_intent", "url-planner-intent", map[string]any{"intents": intents})
 		}
+	case names["Bash"] && f.holdWorker:
+		if f.workerCalls.Add(1) == 1 {
+			close(f.workerEntered)
+		}
+		<-r.Context().Done()
+		return
 	case names["Bash"]:
 		call := f.workerCalls.Add(1)
 		if f.multi != nil {
@@ -1006,6 +1015,60 @@ func TestFirstDiagnosisURLNoIntentsOwnedPostgres(t *testing.T) {
 		t.Fatal("intent 없는 실행 모델 사용량 불일치")
 	}
 	t.Logf("URL_NO_INTENTS state=completed outcome=no_intents intents=0 planner_calls=%d worker_calls=0 target_sends=0", f.plannerCalls.Load())
+}
+
+// 실행 중(Worker 모델 호출 중) 중지하면 cancelled로 마감하고, 마감 때 읽은 intent 결과 개수만 싣는다
+// (outcome·closing_reason 없음, C08 2-2). 대상 송신은 없다.
+func TestFirstDiagnosisURLStopDuringExecutionOwnedPostgres(t *testing.T) {
+	if os.Getenv("ARTEX_URL_DIAGNOSIS_TEST") != "1" {
+		t.Skip("NOT_RUN: 소유 로컬 URL 프로세스 수용 시험 opt-in 필요")
+	}
+	f := newURLProcessFixtureMode(t, nil, false)
+	f.holdWorker, f.workerEntered = true, make(chan struct{})
+	f.startPreparation()
+	f.startAPI()
+	client := f.api()
+	job := client.job("POST", diagnosisapi.URLBasePath+"/drafts", "owned-exec-stop-create", map[string]any{"version": diagnosisapi.URLVersion, "input": diagnosisprep.Input{TargetURL: f.target + "/allowed", ProfileID: "owned-url", DisplayName: "URL 실행 중 중지 수용"}})
+	job = client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/validate", "", map[string]any{"version": diagnosisapi.URLVersion, "expected_revision": job.Revision})
+	if job.State != diagnosisprep.Ready {
+		t.Fatalf("실행 중 중지 fixture 승인 실패 reason=%s", job.ReasonCode)
+	}
+	client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/start", "owned-exec-stop-start", urlStartBody(job.Revision, false))
+	select {
+	case <-f.plannerEntered:
+	case <-time.After(25 * time.Second):
+		t.Fatal("실제 Planner 모델 준비 도달 실패")
+	}
+	f.releaseOnce.Do(func() { close(f.releasePlanner) })
+	select {
+	case <-f.workerEntered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("실제 Worker 모델 호출 미도달")
+	}
+	before := client.job("GET", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/status", "", nil)
+	if !before.Started {
+		t.Fatalf("실행 시작 전 중지 state=%s", before.State)
+	}
+	client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/stop", "", map[string]any{"version": diagnosisapi.URLVersion, "expected_revision": before.Revision})
+	var after diagnosisprep.Job
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		after = client.job("GET", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/status", "", nil)
+		if after.State == diagnosisprep.Completed || after.State == diagnosisprep.Cancelled || after.State == diagnosisprep.Failed || after.State == diagnosisprep.Unknown {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("실행 중 중지 마감 시간 초과")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Worker 모델 호출 중이던 intent는 E② 실행이 막히며 blocked(e2_http_execution_blocked)로 끝나 incomplete로 센다.
+	// 끊긴 Worker 호출은 예약량으로 정산된다(C05).
+	if after.State != diagnosisprep.Cancelled || !after.Started || !after.DrainComplete || !after.ResultReady || after.Outcome != "" || after.ClosingReason != "" ||
+		after.IntentOutcomes == nil || *after.IntentOutcomes != (diagnosis.IntentOutcomes{Incomplete: 1}) ||
+		after.ModelUsage == nil || !after.ModelUsage.UsageKnown || after.ModelUsage.UnknownUsageCalls != 1 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
+		t.Fatalf("실행 중 중지 마감 불일치 state=%s reason=%s outcome=%q counts=%+v usage=%+v", after.State, after.ReasonCode, after.Outcome, after.IntentOutcomes, after.ModelUsage)
+	}
+	t.Logf("URL_EXEC_STOP state=cancelled outcome=none intent_outcomes=%+v target_sends=0", *after.IntentOutcomes)
 }
 
 func TestFirstDiagnosisURLStopDuringPreparationOwnedPostgres(t *testing.T) {

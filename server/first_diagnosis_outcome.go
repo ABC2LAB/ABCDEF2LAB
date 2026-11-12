@@ -130,6 +130,48 @@ func firstDiagnosisClosingOutcomes(c firstDiagnosisIntentCounts, budgetLimited, 
 	return out, true
 }
 
+// ClosureResult는 마감 결과다. 정상 마감이면 RunResult, 아니면 마감 때 읽은 intent 결과 개수만 담은 값(중지된
+// 실행에 싣는다, 계약 §6 2-2)이다. 둘 다 없으면 nil이다. 어느 실행 상태에 실을지는 diagnosis.Service가 정한다.
+func (s *FirstDiagnosisSupervisor) ClosureResult() *diagnosis.RunResult {
+	if result := s.RunResult(); result != nil {
+		return result
+	}
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped == nil {
+		return nil
+	}
+	return &diagnosis.RunResult{IntentOutcomes: *s.stopped}
+}
+
+// recordStopped는 정상 마감하지 못한 실행의 intent 결과를 감사·drain 마감 뒤에 읽어 둔다. 실행 중 intent가
+// 남았거나 읽기에 실패하면 남기지 않는다(중지 상태는 그대로, 개수만 없다). 시작하지 않은 open은 incomplete다(계약 §2).
+func (s *FirstDiagnosisSupervisor) recordStopped(ctx context.Context, task *Task) {
+	counts, err := firstDiagnosisIntentOutcomes(ctx, s.m.pg.DB, task.ExpID)
+	if err != nil {
+		return
+	}
+	if out, ok := firstDiagnosisStoppedOutcomes(counts); ok {
+		s.mu.Lock()
+		s.stopped = &out
+		s.mu.Unlock()
+	}
+}
+
+// firstDiagnosisStoppedOutcomes는 마감 뒤 intent 개수를 중지 실행의 결과로 옮긴다. 실행 중 intent가 남았으면 마감
+// 전이라 쓰지 않는다. 시작하지 않은 open은 incomplete다.
+func firstDiagnosisStoppedOutcomes(c firstDiagnosisIntentCounts) (diagnosis.IntentOutcomes, bool) {
+	if c.running > 0 {
+		return diagnosis.IntentOutcomes{}, false
+	}
+	out := c.outcomes
+	out.Incomplete += c.open
+	return out, true
+}
+
 // RunResult는 감사가 닫힌 실행의 결과다. 실행이 정상 마감되지 않았으면 nil이다.
 func (s *FirstDiagnosisSupervisor) RunResult() *diagnosis.RunResult {
 	if s == nil {
