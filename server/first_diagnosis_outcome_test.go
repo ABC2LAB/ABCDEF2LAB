@@ -20,8 +20,8 @@ func TestFirstDiagnosisIntentOutcomeProjection(t *testing.T) {
 		{"stopped", "", intentOutcomeIncomplete},
 		// 운영자 중지는 paused로 남는다.
 		{"paused", "", intentOutcomeStopped},
-		{"open", "", intentOutcomeActive},
-		{"running", "", intentOutcomeActive},
+		{"open", "", intentOutcomeOpen},
+		{"running", "", intentOutcomeRunning},
 		{"deleted", "", intentOutcomeIgnored},
 		// 모르는 상태는 완료로 보이지 않게 unknown이다.
 		{"vulnerable", "", intentOutcomeUnknown},
@@ -55,10 +55,35 @@ func TestRunOutcomeFromIntentCounts(t *testing.T) {
 	}
 }
 
+// 마감 판정 앞부분: 실행 중이면 대기, 상한 전에는 open·미계획이면 대기, 상한이면 open을 incomplete로 세고 마감.
+func TestFirstDiagnosisClosingOutcomes(t *testing.T) {
+	base := diagnosis.IntentOutcomes{Done: 1}
+	for _, tc := range []struct {
+		name                   string
+		open, running          int64
+		budgetLimited, planned bool
+		closing                bool
+		incomplete             int64
+	}{
+		{"planned", 0, 0, false, true, true, 0},
+		{"running-waits", 0, 1, false, true, false, 0},
+		{"running-waits-even-at-limit", 0, 1, true, true, false, 0},
+		{"open-waits", 1, 0, false, true, false, 0},
+		{"unplanned-waits", 0, 0, false, false, false, 0},
+		{"limit-counts-open-incomplete", 2, 0, true, false, true, 2},
+		{"limit-without-open", 0, 0, true, false, true, 0},
+	} {
+		out, closing := firstDiagnosisClosingOutcomes(firstDiagnosisIntentCounts{outcomes: base, open: tc.open, running: tc.running}, tc.budgetLimited, tc.planned)
+		if closing != tc.closing || closing && (out.Incomplete != tc.incomplete || out.Done != 1) {
+			t.Fatalf("%s: closing=%v out=%+v", tc.name, closing, out)
+		}
+	}
+}
+
 // 결과는 정상 마감(completed)일 때만 밖에 보인다.
 func TestSupervisorRunResultOnlyAfterCompletion(t *testing.T) {
 	s := &FirstDiagnosisSupervisor{}
-	s.setRunResult(diagnosis.IntentOutcomes{Done: 1, Incomplete: 1})
+	s.setRunResult(diagnosis.RunResult{Outcome: diagnosis.OutcomePartial, IntentOutcomes: diagnosis.IntentOutcomes{Done: 1, Incomplete: 1}})
 	if s.RunResult() != nil {
 		t.Fatal("result exposed before completion")
 	}
