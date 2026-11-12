@@ -86,15 +86,21 @@ func (c IntentOutcomes) Outcome() string {
 	}
 }
 
-// RunResult는 감사가 닫힌 실행(completed)의 결과다.
+// RunResult는 감사가 닫힌 실행(completed)의 결과다. 중지된 실행(cancelled)에는 intent 결과 개수만 싣는다
+// (outcome·closing_reason 없음, 계약 §3.2).
 type RunResult struct {
-	Outcome        string         `json:"outcome"`
+	Outcome        string         `json:"outcome,omitempty"`
 	ClosingReason  string         `json:"closing_reason,omitempty"`
 	IntentOutcomes IntentOutcomes `json:"intent_outcomes"`
 }
 
 func (r RunResult) Valid() bool {
 	return r.IntentOutcomes.Valid() && r.Outcome == r.IntentOutcomes.Outcome() && (r.ClosingReason == "" || r.ClosingReason == ClosingBudgetLimited)
+}
+
+// StoppedValid는 중지된 실행(cancelled)에 싣는 결과 규칙이다. intent 결과 개수만 있고 outcome·closing_reason은 없다.
+func (r RunResult) StoppedValid() bool {
+	return r.Outcome == "" && r.ClosingReason == "" && r.IntentOutcomes.Valid()
 }
 
 type Response struct {
@@ -146,8 +152,10 @@ func validSnapshot(s Snapshot) bool {
 		return s.Started && !s.DrainComplete && !s.ResultReady && s.Result == nil
 	case Completed:
 		return s.Started && s.DrainComplete && s.ResultReady && s.Result != nil && s.Result.Valid()
-	case Failed, Cancelled:
+	case Failed:
 		return s.Started && s.DrainComplete && s.ResultReady && s.Result == nil
+	case Cancelled:
+		return s.Started && s.DrainComplete && s.ResultReady && (s.Result == nil || s.Result.StoppedValid())
 	case Unknown:
 		return s.Started && s.Result == nil
 	default:

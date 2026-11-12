@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,6 +49,8 @@ type runnerState struct {
 	draining      bool
 	drainGate     chan struct{}
 	intentDrains  map[int64]*intentDrainState
+	// workspaceMu는 intent별 작업 공간 보관 파일의 읽기·교체·삭제를 차례로 한다.
+	workspaceMu sync.Mutex
 }
 
 type intentDrainState struct {
@@ -75,6 +78,8 @@ type runningCall struct {
 	resourcesClosed bool
 	result          Result
 	releaseSlot     func()
+	// workspace는 이 호출의 작업 공간 보관 결과다(PersistWorkspace일 때). 한 번만 정한다.
+	workspace string
 }
 
 func New(cfg Config) (*Runner, error) {
@@ -285,11 +290,19 @@ func (s *runningCall) initialize(ctx context.Context, command string) error {
 	if os.Chmod(socket, 0600) != nil {
 		return ErrUnavailable
 	}
-	process, err := e2sandbox.Launch(s.call.Context(), e2sandbox.Config{
+	sandboxConfig := e2sandbox.Config{
 		Helper: s.owner.cfg.Helper, Workspace: workspace, ProxySocket: socket, CACert: caPath,
 		Command: command, Timeout: s.owner.cfg.CommandTimeout, DrainTimeout: s.owner.cfg.DrainTimeout,
 		OutputLimit: s.owner.cfg.OutputLimit,
-	})
+	}
+	if s.owner.cfg.PersistWorkspace {
+		saved, err := s.owner.loadWorkspace(s.intentID, e2sandbox.WorkspaceLimit(sandboxConfig))
+		if err != nil {
+			return ErrUnavailable
+		}
+		sandboxConfig.WorkspaceIn, sandboxConfig.SaveWorkspace = saved, true
+	}
+	process, err := e2sandbox.Launch(s.call.Context(), sandboxConfig)
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -339,6 +352,9 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 		}
 		trusted.OutputTruncated = processResult.OutputTruncated
 		output = processResult.Output
+		if s.owner.cfg.PersistWorkspace && s.workspace == "" {
+			s.workspace = s.owner.storeWorkspace(s.intentID, processResult)
+		}
 		processClosed = trusted.ProcessDrained
 		if processResult.Reason == "timeout" {
 			s.setTermination("timeout")
@@ -388,7 +404,7 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 		text = text[:s.owner.cfg.OutputLimit]
 		trusted.OutputTruncated = true
 	}
-	s.result = Result{ToolOutput: strings.ToValidUTF8(string(text), "�"), Trusted: trusted}
+	s.result = Result{ToolOutput: strings.ToValidUTF8(string(text), "�"), Trusted: trusted, Workspace: s.workspace}
 	clear(text)
 	if !s.resourcesClosed {
 		return s.result, ErrIncomplete
@@ -561,6 +577,10 @@ func (r *Runner) DrainIntent(ctx context.Context, intentID int64) error {
 	if failed {
 		return ErrIncomplete
 	}
+	// intent가 끝나면 그 작업 공간 보관본을 지운다(결정안 §2-2 수명).
+	if r.cfg.PersistWorkspace && r.removeWorkspace(intentID) != nil {
+		return ErrIncomplete
+	}
 	r.mu.Lock()
 	scope.fenced = false
 	r.mu.Unlock()
@@ -597,7 +617,13 @@ func (r *Runner) Close(ctx context.Context) error {
 	for _, state := range states {
 		state.call.Block()
 	}
-	return r.Drain(ctx)
+	if err := r.Drain(ctx); err != nil {
+		return err
+	}
+	if r.cfg.PersistWorkspace {
+		return r.removeAllWorkspaces()
+	}
+	return nil
 }
 
 func (s *runningCall) setTermination(reason string) {
@@ -623,6 +649,92 @@ func (r *Runner) Execution() *e2proxy.Execution {
 func ValidateRootDirLayout(root string) error {
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || strings.ContainsRune(root, 0) || len(root)+len("/call-0123456789/proxy.sock") > maxUnixSocketPathBytes {
 		return ErrConfig
+	}
+	return nil
+}
+
+// workspacePath는 intent 하나의 작업 공간 보관 파일이다. RootDir(0700, Runner 소유) 바로 아래에 둔다.
+func (r *Runner) workspacePath(intentID int64) string {
+	return filepath.Join(r.cfg.RootDir, workspaceFilePrefix+strconv.FormatInt(intentID, 10)+".tar")
+}
+
+const workspaceFilePrefix = "workspace-"
+
+// loadWorkspace는 intent의 보관 파일을 읽는다. 없으면 빈 작업 공간이다. 링크·일반 파일이 아닌 것·상한 밖은 거부한다.
+func (r *Runner) loadWorkspace(intentID int64, contentLimit uint64) ([]byte, error) {
+	r.workspaceMu.Lock()
+	defer r.workspaceMu.Unlock()
+	f, err := os.OpenFile(r.workspacePath(intentID), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return nil, ErrUnavailable
+	}
+	data, err := io.ReadAll(io.LimitReader(f, info.Size()+1))
+	if err != nil || int64(len(data)) != info.Size() || e2sandbox.ValidateWorkspace(data, contentLimit) != nil {
+		return nil, ErrUnavailable
+	}
+	return data, nil
+}
+
+// storeWorkspace는 정상 마감한 호출의 작업 공간을 다시 검사한 뒤 원자적으로 바꿔 둔다. 저장하지 못하면 이전 보관본을
+// 그대로 두고 그 사실만 돌려준다(호출 결과는 바뀌지 않는다).
+func (r *Runner) storeWorkspace(intentID int64, result e2sandbox.Result) string {
+	if result.WorkspaceState != "saved" {
+		if result.WorkspaceState == "" {
+			return "not_saved"
+		}
+		return result.WorkspaceState
+	}
+	if e2sandbox.ValidateWorkspace(result.Workspace, e2sandbox.WorkspaceLimit(e2sandbox.Config{})) != nil {
+		return "invalid"
+	}
+	r.workspaceMu.Lock()
+	defer r.workspaceMu.Unlock()
+	tmp, err := os.CreateTemp(r.cfg.RootDir, workspaceFilePrefix+"tmp-")
+	if err != nil {
+		return "not_saved"
+	}
+	name := tmp.Name()
+	_, writeErr := tmp.Write(result.Workspace)
+	closeErr := tmp.Close()
+	if writeErr != nil || closeErr != nil || os.Chmod(name, 0o600) != nil || os.Rename(name, r.workspacePath(intentID)) != nil {
+		_ = os.Remove(name)
+		return "not_saved"
+	}
+	return "saved"
+}
+
+// removeWorkspace는 intent의 보관 파일을 지운다. 없으면 할 일이 없다.
+func (r *Runner) removeWorkspace(intentID int64) error {
+	r.workspaceMu.Lock()
+	defer r.workspaceMu.Unlock()
+	if err := os.Remove(r.workspacePath(intentID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return ErrIncomplete
+	}
+	return nil
+}
+
+// removeAllWorkspaces는 Runner가 닫힐 때 남은 보관 파일을 모두 지운다.
+func (r *Runner) removeAllWorkspaces() error {
+	r.workspaceMu.Lock()
+	defer r.workspaceMu.Unlock()
+	entries, err := os.ReadDir(r.cfg.RootDir)
+	if err != nil {
+		return ErrIncomplete
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), workspaceFilePrefix) {
+			if err := os.Remove(filepath.Join(r.cfg.RootDir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return ErrIncomplete
+			}
+		}
 	}
 	return nil
 }

@@ -187,11 +187,20 @@ describe("LiveGate", () => {
 });
 
 describe("Workbench 안의 관문", () => {
-  it("일곱 화면 모두 관문으로 감싸고 레일은 남는다", async () => {
+  it("여덟 화면 모두 관문으로 감싸고 레일은 남는다", async () => {
     online();
     const { container } = render(<Workbench />);
     await waitFor(() => expect(getLiveAuthState()).toBe("ready"));
-    const titles = ["대시보드", "점검 기록", "새 점검", "자산 탐색", "범위 확인", "점검 진행", "보고서"];
+    const titles = [
+      "대시보드",
+      "진행 중인 점검",
+      "끝난 점검",
+      "새 점검",
+      "자산 탐색",
+      "범위 확인",
+      "점검 진행",
+      "보고서",
+    ];
     const views = [...container.querySelectorAll<HTMLElement>("section[data-view]")];
     views.forEach((v, i) => {
       expect(within(v).getByRole("heading", { level: 1, hidden: true })).toHaveTextContent(titles[i]);

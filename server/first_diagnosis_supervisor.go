@@ -82,7 +82,9 @@ type FirstDiagnosisSupervisor struct {
 	runLogErr        error
 	completed        bool
 	// result는 감사가 닫힌 실행의 결과다(실행 결과 상태 값 계약). completed일 때만 밖에 보인다.
-	result          *diagnosis.RunResult
+	result *diagnosis.RunResult
+	// stopped는 정상 마감하지 못한 실행의 마감 때 intent 결과 개수다(중지된 실행에 싣는다).
+	stopped         *diagnosis.IntentOutcomes
 	operations      sync.WaitGroup
 	ownedTask       string
 	operationCancel context.CancelFunc
@@ -895,6 +897,9 @@ func (s *FirstDiagnosisSupervisor) checkResults(ctx context.Context, server *Ser
 		}
 	}
 	if started && (!completed || runErr != nil) {
+		if task != nil {
+			s.recordStopped(ctx, task)
+		}
 		return firstDiagnosisOutcomeFailure{cause: runErr}
 	}
 	if started && registered {
