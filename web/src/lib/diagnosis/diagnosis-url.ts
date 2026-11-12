@@ -68,6 +68,8 @@ export type URLDiagnosisUsage = {
   cost_usd_micros: number;
   usage_known: boolean;
   reserved_cost_usd_micros?: number;
+  /** 예약 상한으로 정산한 실패 호출 수. 0보다 크면 토큰·비용은 실제 사용의 상한이다. */
+  unknown_usage_calls?: number;
 };
 export const urlStateLabels = {
   awaiting_approval: "승인 대기",
@@ -328,11 +330,17 @@ function usage(v: unknown): URLDiagnosisUsage {
   ] as const;
   if (!object(v) || !keys.every((key) => natural(v[key])) || typeof v.usage_known !== "boolean") return invalid();
   if (v.reserved_cost_usd_micros !== undefined && !natural(v.reserved_cost_usd_micros)) return invalid();
-  exact(v, [...keys, "usage_known", "reserved_cost_usd_micros"]);
+  if (
+    v.unknown_usage_calls !== undefined &&
+    (!natural(v.unknown_usage_calls) || (v.unknown_usage_calls as number) > (v.requests as number))
+  )
+    return invalid();
+  exact(v, [...keys, "usage_known", "reserved_cost_usd_micros", "unknown_usage_calls"]);
   return {
     ...Object.fromEntries(keys.map((key) => [key, v[key]])),
     usage_known: v.usage_known,
     ...(v.reserved_cost_usd_micros === undefined ? {} : { reserved_cost_usd_micros: v.reserved_cost_usd_micros }),
+    ...(v.unknown_usage_calls === undefined ? {} : { unknown_usage_calls: v.unknown_usage_calls }),
   } as URLDiagnosisUsage;
 }
 function envelope(v: unknown, owner?: string): Record<string, unknown> {
@@ -604,6 +612,7 @@ export function matchURLJob(
     for (const key of counters) if (result.model_usage[key] < current.model_usage[key]) return invalid();
     if ((result.model_usage.reserved_cost_usd_micros ?? 0) < (current.model_usage.reserved_cost_usd_micros ?? 0))
       return invalid();
+    if ((result.model_usage.unknown_usage_calls ?? 0) < (current.model_usage.unknown_usage_calls ?? 0)) return invalid();
   }
   return result;
 }

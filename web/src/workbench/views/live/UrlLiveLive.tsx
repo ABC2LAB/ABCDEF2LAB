@@ -68,16 +68,16 @@ function Usage() {
   const b = job?.scope?.budget;
   if (!u) return <p className={s.empty}>모델 사용량 기록이 아직 없습니다.</p>;
   const of = (n: number, cap?: number) => (cap === undefined ? fmtCount(n) : `${fmtCount(n)} / ${fmtCount(cap)}`);
-  return (
-    <Kv
-      rows={[
-        ["모델 요청", of(u.requests, b?.model_requests)],
-        ["입력 토큰", of(u.input_tokens, b?.input_tokens)],
-        ["출력 토큰", of(u.output_tokens, b?.output_tokens)],
-        ["비용", u.usage_known ? usdText(u.cost_usd_micros) : "불명"],
-      ]}
-    />
-  );
+  // 실패한 호출은 예약한 양으로 셌으므로, 그런 호출이 있으면 토큰·비용은 실제 사용의 상한이다.
+  const bound = (u.unknown_usage_calls ?? 0) > 0 ? " (상한)" : "";
+  const rows: [string, string][] = [
+    ["모델 요청", of(u.requests, b?.model_requests)],
+    ["입력 토큰", of(u.input_tokens, b?.input_tokens) + bound],
+    ["출력 토큰", of(u.output_tokens, b?.output_tokens) + bound],
+    ["비용", u.usage_known ? usdText(u.cost_usd_micros) + bound : "불명"],
+  ];
+  if (bound) rows.push(["실패한 호출", `${fmtCount(u.unknown_usage_calls ?? 0)}건 (예약한 양으로 계산)`]);
+  return <Kv rows={rows} />;
 }
 
 /** live 점검 진행 (URL 진단). */
