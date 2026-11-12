@@ -14,6 +14,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/transmit"
 )
 
 // 실제 DB/runner 인수시험과 별개로, 획득 전 admission과 종료 불명 상태를 확인한다.
@@ -293,4 +294,77 @@ func TestE2HTTPRuntimeRejectsOutOfRangePlannerLimits(t *testing.T) {
 			t.Fatalf("범위 밖 Plan당 상한으로 Runtime을 만듦: %+v", limits)
 		}
 	}
+}
+
+// C09 시험용 lease 실행기다. 신뢰 결과 기록이 쓰는 조회(Snapshot·Calls·HasIntent)만 구현한다.
+type untrustedResultLease struct {
+	E2HTTPLeaseRunner
+	view  e2proxy.ExecutionView
+	calls []e2proxy.CallResult
+}
+
+func (l *untrustedResultLease) Snapshot() e2proxy.ExecutionView { return l.view }
+func (l *untrustedResultLease) Calls() []e2proxy.CallResult     { return l.calls }
+func (l *untrustedResultLease) HasIntent(id int64) bool         { return id == 19 }
+
+// C09: 같은 호출의 최종 신뢰 결과가 E② 실행 기록과 다르면 그 intent만 결과 불명으로 표시하고 실행 결과 기록은 유지한다.
+// 비최종 결과·모르는 호출·실행 범위 불일치·관찰자 실패는 지금처럼 실행 전체의 기록 실패다.
+func TestE2HTTPRuntimeUntrustedResultMarksOnlyItsIntent(t *testing.T) {
+	recorded := e2proxy.CallResult{CallRef: "recorded-call", IntentID: 19, Final: true, AuditComplete: true, Reason: e2proxy.Complete, Counts: e2proxy.Counts{Calls: 1, Attempts: 1, Allowed: 1, ForwardAttempted: 1, Responses: 1}}
+	setup := func(t *testing.T, observerErr error) (*E2HTTPRuntime, *Task, *E2HTTPRunOptions, e2runner.Result) {
+		runtime, task := e2HTTPRuntimeFixture(t, nil)
+		if err := runtime.AdmitTask(context.Background(), task); err != nil {
+			t.Fatal(err)
+		}
+		view := e2proxy.ExecutionView{Version: e2proxy.Version, Scope: transmit.Scope{TaskRef: task.ID}, IntentID: 19, PolicyRevision: "fixture-revision", HeaderMode: e2proxy.HeaderPreserve}
+		lease := &E2HTTPRunOptions{Runner: &untrustedResultLease{view: view, calls: []e2proxy.CallResult{recorded}}}
+		if observerErr != nil {
+			lease.ObserveResult = func(context.Context, e2runner.Result) error { return observerErr }
+		}
+		result := e2runner.Result{Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Execution: view, Call: e2proxy.CloneCallResult(recorded), Final: true, ProcessBashExited: true, ProcessDrained: true, ProxyDrained: true, Classification: "completed"}}
+		return runtime, task, lease, result
+	}
+	t.Run("matching-result-recorded", func(t *testing.T) {
+		runtime, task, lease, result := setup(t, nil)
+		if err := runtime.observeResult(context.Background(), runtime.task, lease, 19, result); err != nil || len(runtime.Results(task.ID)) != 1 || len(runtime.UntrustedIntents(task.ID)) != 0 {
+			t.Fatal("matching trusted result was not recorded", err)
+		}
+	})
+	t.Run("same-call-different-content", func(t *testing.T) {
+		runtime, task, lease, result := setup(t, nil)
+		result.Trusted.Call.Counts.Unknown = 1
+		err := runtime.observeResult(context.Background(), runtime.task, lease, 19, result)
+		results := runtime.Results(task.ID)
+		if err != agent.ErrE2HTTPResultUntrusted || results == nil || len(results) != 0 || !runtime.UntrustedIntents(task.ID)[19] || runtime.UntrustedIntents("other") != nil {
+			t.Fatalf("content mismatch was not intent-scoped: err=%v results=%v untrusted=%v", err, results, runtime.UntrustedIntents(task.ID))
+		}
+	})
+	for name, change := range map[string]func(*e2runner.Result){
+		"not-final":    func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1; r.Trusted.Final = false },
+		"unknown-call": func(r *e2runner.Result) { r.Trusted.Call.CallRef = "invented-call" },
+		"other-intent": func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1; r.Trusted.Call.IntentID = 20 },
+		"scope-mismatch": func(r *e2runner.Result) {
+			r.Trusted.Call.Counts.Unknown = 1
+			r.Trusted.Execution.PolicyRevision = "other-revision"
+		},
+		"version-mismatch": func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1; r.Trusted.Version = "other" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			runtime, task, lease, result := setup(t, nil)
+			change(&result)
+			err := runtime.observeResult(context.Background(), runtime.task, lease, 19, result)
+			if !errors.Is(err, ErrE2HTTPHost) || errors.Is(err, agent.ErrE2HTTPResultUntrusted) || runtime.Results(task.ID) != nil || len(runtime.UntrustedIntents(task.ID)) != 0 {
+				t.Fatalf("%s was narrowed to an intent outcome: %v", name, err)
+			}
+		})
+	}
+	t.Run("observer-failure-not-narrowed", func(t *testing.T) {
+		sentinel := errors.New("private observer failure fixture")
+		runtime, task, lease, result := setup(t, sentinel)
+		result.Trusted.Call.Counts.Unknown = 1
+		err := runtime.observeResult(context.Background(), runtime.task, lease, 19, result)
+		if !errors.Is(err, sentinel) || err == agent.ErrE2HTTPResultUntrusted || runtime.Results(task.ID) != nil {
+			t.Fatal("observer failure was narrowed to an intent outcome", err)
+		}
+	})
 }

@@ -71,6 +71,9 @@ var (
 	ErrE2HTTPTransient     = errors.New("e2_http_transient_failure")
 	ErrE2HTTPUnavailable   = errors.New("e2_http_isolation_unavailable")
 	ErrE2HTTPNotExecuted   = errors.New("e2_http_not_executed")
+	// ErrE2HTTPResultUntrusted는 신뢰 결과 관찰자가 이 호출의 신뢰 결과만 E② 실행 기록과 맞지 않는다고 알릴 때 쓴다.
+	// 그 intent의 결과를 확인할 수 없으므로 결과 불명으로 끝내고 더 보내지 않는다. 실행 전체는 멈추지 않는다(C09).
+	ErrE2HTTPResultUntrusted = errors.New("e2_http_result_untrusted")
 )
 
 // E2HTTPScope는 Worker가 읽는 실행 상태의 경계다. 같은 프로세스의 실행이든 원격 E²든 구현할 수 있다.
@@ -316,7 +319,7 @@ func newE2HTTPBashTool(execution E2HTTPScope, run e2HTTPRunFunc, hostTimeout tim
 			result.ToolOutput = string(execution.RedactOutput([]byte(result.ToolOutput)))
 			state.observeDiagnostic(execution, actualIntentID, command, result)
 			// 다른 Worker(intent)의 결과 불명으로 이 intent를 멈추지 않는다. 감사·집행 장애는 State·AuditComplete로 따로 본다(C03).
-			unknown := result.Trusted.Classification == "result_unknown" || result.Trusted.Execution.IntentCounts.Unknown > 0
+			unknown := result.Trusted.Classification == "result_unknown" || result.Trusted.Execution.IntentCounts.Unknown > 0 || errors.Is(runErr, ErrE2HTTPResultUntrusted)
 			incomplete := !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
 			if unknown || incomplete || runnerFailed || result.Trusted.Classification == "terminated" || result.Trusted.Classification == "isolation_unavailable" {
 				state.mu.Lock()
@@ -1037,7 +1040,12 @@ func observeE2HTTPBoundResult(ctx context.Context, observer func(context.Context
 	}
 	observed := result
 	observed.ToolOutput = ""
-	if observer(ctx, observed) != nil {
+	if err := observer(ctx, observed); err != nil {
+		// 관찰자가 이 호출의 대조 실패만 알렸을 때(다른 실패와 섞이지 않은 같은 값)만 intent 단위 결과 불명이다.
+		// 그 밖의 관찰·기록 실패는 지금처럼 마감 미완료다.
+		if err == ErrE2HTTPResultUntrusted {
+			return result, errors.Join(runErr, ErrE2HTTPResultUntrusted)
+		}
 		return result, errors.Join(runErr, ErrE2HTTPIncomplete)
 	}
 	return result, runErr
