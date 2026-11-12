@@ -91,15 +91,18 @@ type E2HTTPFileRule struct {
 	Credentials     *E2HTTPFilePin         `json:"credentials,omitempty"`
 }
 type E2HTTPFileLimits struct {
-	MaxAttempts      uint64 `json:"max_attempts"`
-	MaxCalls         int    `json:"max_calls"`
-	MaxConcurrent    int    `json:"max_concurrent"`
-	MaxBodyBytes     int64  `json:"max_body_bytes"`
-	RequestTimeoutMS int64  `json:"request_timeout_ms"`
-	CallTimeoutMS    int64  `json:"call_timeout_ms"`
-	MaxDenials       uint64 `json:"max_denials"`
-	MaxTransient     uint64 `json:"max_transient"`
-	MaxUnknown       uint64 `json:"max_unknown"`
+	MaxAttempts   uint64 `json:"max_attempts"`
+	MaxCalls      int    `json:"max_calls"`
+	MaxConcurrent int    `json:"max_concurrent"`
+	MaxBodyBytes  int64  `json:"max_body_bytes"`
+	// 응답 전달 상한·검사 상한(C16 결정안 3). 없으면 요청 상한과 계산값이고 정책 지문도 그대로다.
+	MaxResponseBodyBytes int64  `json:"max_response_body_bytes,omitempty"`
+	MaxResponseScanBytes int64  `json:"max_response_scan_bytes,omitempty"`
+	RequestTimeoutMS     int64  `json:"request_timeout_ms"`
+	CallTimeoutMS        int64  `json:"call_timeout_ms"`
+	MaxDenials           uint64 `json:"max_denials"`
+	MaxTransient         uint64 `json:"max_transient"`
+	MaxUnknown           uint64 `json:"max_unknown"`
 }
 type E2HTTPFileProxy struct {
 	HeaderTimeoutMS  int64 `json:"header_timeout_ms"`
@@ -340,7 +343,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	if policy.HeaderMode == "" {
 		policy.HeaderMode = e2proxy.HeaderPreserve
 	}
-	limits := e2proxy.Limits{MaxAttempts: policy.Limits.MaxAttempts, MaxCalls: policy.Limits.MaxCalls, MaxConcurrent: policy.Limits.MaxConcurrent, MaxBodyBytes: policy.Limits.MaxBodyBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout, MaxDenials: policy.Limits.MaxDenials, MaxTransient: policy.Limits.MaxTransient, MaxUnknown: policy.Limits.MaxUnknown}
+	limits := e2proxy.Limits{MaxAttempts: policy.Limits.MaxAttempts, MaxCalls: policy.Limits.MaxCalls, MaxConcurrent: policy.Limits.MaxConcurrent, MaxBodyBytes: policy.Limits.MaxBodyBytes, MaxResponseBodyBytes: policy.Limits.MaxResponseBodyBytes, MaxResponseScanBytes: policy.Limits.MaxResponseScanBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout, MaxDenials: policy.Limits.MaxDenials, MaxTransient: policy.Limits.MaxTransient, MaxUnknown: policy.Limits.MaxUnknown}
 	if e2proxy.ValidatePolicyTemplate(e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, Rules: rules, Limits: limits, HeaderMode: policy.HeaderMode, Evaluation: policy.Evaluation}) != nil {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost

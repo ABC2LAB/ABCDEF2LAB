@@ -107,7 +107,7 @@ func TestExplorationRejectsForeignOrIncompleteProfilesBeforeProvider(t *testing.
 	reporter := &recordingDiscoveryReporter{n: 1}
 	for _, change := range []func(*ExplorationRunOptions){func(o *ExplorationRunOptions) { o.BrowserTools = o.BrowserTools[:1] }, func(o *ExplorationRunOptions) { o.BrowserTools = append(o.BrowserTools, o.BrowserTools[0]) }, func(o *ExplorationRunOptions) {
 		o.BrowserTools = append(o.BrowserTools, actool.Build(actool.Spec{Name: "record_fact"}))
-	}, func(o *ExplorationRunOptions) { o.Redact = nil }, func(o *ExplorationRunOptions) { o.Check = nil }, func(o *ExplorationRunOptions) { o.DirectBash = actool.Build(actool.Spec{Name: "WebFetch"}) }, func(o *ExplorationRunOptions) { o.MaxDuration = time.Hour }} {
+	}, func(o *ExplorationRunOptions) { o.Redact = nil }, func(o *ExplorationRunOptions) { o.Check = nil }, func(o *ExplorationRunOptions) { o.APIRecon = actool.Build(actool.Spec{Name: "WebFetch"}) }, func(o *ExplorationRunOptions) { o.MaxDuration = time.Hour }} {
 		o := explorationOptions(reporter)
 		change(&o)
 		_, err := w.ExecuteExploration(t.Context(), o, nil)
@@ -197,11 +197,8 @@ func TestExplorationRejectsGenericBashAndSkillUntilTypedSandboxExists(t *testing
 			called++
 			return actool.Text("unsafe fixture execution"), nil
 		}})
-		if name == "Bash" {
-			options.DirectBash = tool
-		} else {
-			options.APIRecon = tool
-		}
+		// 직접 Bash 칸은 typed 격리 실행만 받으므로 이름만 Bash인 CoreTool은 일반 칸(API Recon)으로만 들어올 수 있다.
+		options.APIRecon = tool
 		if _, err := worker.ExecuteExploration(t.Context(), options, nil); !errors.Is(err, ErrExplorationProfile) {
 			t.Fatal("generic direct sandbox capability accepted")
 		}
