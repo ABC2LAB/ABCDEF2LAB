@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Autumn-27/artex/llmpolicy"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -89,8 +91,9 @@ func TestFirstDiagnosisModelBudgetRejectsStreamingOrChangedContext(t *testing.T)
 	}
 }
 
-// 리다이렉트는 따라가지 않고 그 호출의 실패로 끝난다. 실패한 호출은 예약한 양으로 정산하고(C05) 다음 호출을 막지 않는다.
-func TestFirstDiagnosisModelBudgetRedirectIsNotFollowedAndCountsReservation(t *testing.T) {
+// 리다이렉트는 따라가지 않는다. 리다이렉트 금지는 연결 정책 거부라서(OpenRouter의 3xx 설정 오류와 같은 축, C06)
+// 일시 실패처럼 예약량으로 정산하고 계속하지 않고 다음 호출을 막는다(C05).
+func TestFirstDiagnosisModelBudgetRedirectIsNotFollowedAndBlocks(t *testing.T) {
 	for _, status := range []int{307, 308} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			var first, second atomic.Int64
@@ -122,14 +125,14 @@ func TestFirstDiagnosisModelBudgetRedirectIsNotFollowedAndCountsReservation(t *t
 				t.Fatal("reservation")
 			}
 			_, _, usage, callErr := provider.Complete(context.Background(), req)
-			if b.after(usage, 128, callErr) == nil || first.Load() != 1 || second.Load() != 0 {
-				t.Fatal("redirect escaped budget")
+			if !errors.Is(callErr, llmpolicy.ErrRequestBlocked) || b.after(usage, 128, callErr) == nil || first.Load() != 1 || second.Load() != 0 {
+				t.Fatal("redirect escaped budget or lost its policy classification")
 			}
-			if u := b.Snapshot(); !u.UsageKnown || u.UnknownUsageCalls != 1 || u.Requests != 1 || u.InputTokens != 65536 || u.OutputTokens != 128 {
-				t.Fatalf("failed call not counted at its reservation: %+v", u)
+			if u := b.Snapshot(); u.UsageKnown || u.UnknownUsageCalls != 0 || u.Requests != 1 {
+				t.Fatalf("policy rejection settled like a transient failure: %+v", u)
 			}
-			if b.before(context.Background(), cfg, &req) != nil || b.Snapshot().Requests != 2 {
-				t.Fatal("one failed call blocked the next")
+			if b.before(context.Background(), cfg, &req) == nil || b.Snapshot().Requests != 1 {
+				t.Fatal("call after a redirect rejection was admitted")
 			}
 		})
 	}
@@ -157,6 +160,69 @@ func TestFirstDiagnosisModelBudgetHardStopInterruptsTargetGrace(t *testing.T) {
 	case <-call.Done():
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("hard stop failed to interrupt target grace")
+	}
+}
+
+// 실제 로컬 어댑터(Config.NewLocalProvider → SDK → budget.after) 경로에서 연결 정책 거부는 다음 예약을 막고, 정책과
+// 무관한 일시 실패(서버 503)는 예약량으로 정산하고 계속한다(P3 결정안 C05). 정책 거부는 DNS 결속 위반이라 송신 0건이다.
+func TestFirstDiagnosisModelBudgetLocalAdapterKeepsPolicyRejection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resolved string
+		policy   bool
+	}{
+		{"dns-binding-violation", "127.0.0.2", true},
+		{"server-503", "127.0.0.1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int64
+			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}))
+			defer endpoint.Close()
+			_, port, err := net.SplitHostPort(strings.TrimPrefix(endpoint.URL, "http://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			origin := "http://model.fixture.invalid:" + port
+			b, cfg := modelBudgetFixture(t, func(diagnosisprep.ModelUsage) error { return nil })
+			cfg.BaseURL = origin
+			cfg.Model = "owned-synthetic"
+			cfg.Retry = agent.RetryConfig{ConnectAttempts: -1, EmptyAttempts: -1, StreamAttempts: -1}
+			policy, err := llmpolicy.New([]llmpolicy.Endpoint{{Origin: origin, Addresses: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var lookups atomic.Int64
+			lookup := func(context.Context, string) ([]netip.Addr, error) {
+				lookups.Add(1)
+				return []netip.Addr{netip.MustParseAddr(tc.resolved)}, nil
+			}
+			provider, err := cfg.NewLocalProvider(policy, llmpolicy.ClientOptions{DisableRedirects: true, LookupIP: lookup})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("owned synthetic")}}
+			if b.before(context.Background(), cfg, &req) != nil {
+				t.Fatal("reservation")
+			}
+			_, _, usage, callErr := provider.Complete(context.Background(), req)
+			if callErr == nil || errors.Is(callErr, llmpolicy.ErrRequestBlocked) != tc.policy || b.after(usage, 128, callErr) == nil || lookups.Load() == 0 {
+				t.Fatalf("call error=%v policy=%v lookups=%d", callErr, errors.Is(callErr, llmpolicy.ErrRequestBlocked), lookups.Load())
+			}
+			u := b.Snapshot()
+			next := b.before(context.Background(), cfg, &req) == nil
+			if tc.policy {
+				if hits.Load() != 0 || u.UsageKnown || u.UnknownUsageCalls != 0 || next {
+					t.Fatalf("policy rejection: hits=%d usage=%+v next=%v", hits.Load(), u, next)
+				}
+				return
+			}
+			if hits.Load() != 1 || !u.UsageKnown || u.UnknownUsageCalls != 1 || !next {
+				t.Fatalf("transient failure: hits=%d usage=%+v next=%v", hits.Load(), u, next)
+			}
+		})
 	}
 }
 

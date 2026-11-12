@@ -308,6 +308,20 @@ func (c Config) NewLocalProvider(policy *llmpolicy.Policy, options llmpolicy.Cli
 // does not use this wrapper and retains its historical error contract.
 type localProvider struct{ inner llm.Provider }
 
+// ErrLocalProviderPolicy는 로컬 모델 연결 정책(origin·DNS 결속·peer 대조·리다이렉트 금지)이 요청을 막았다는 고정
+// 분류다. 문구는 ErrLocalProvider와 같아 원문(URL·응답 본문)을 넘기지 않고, errors.Is로 ErrLocalProvider와
+// llmpolicy.ErrRequestBlocked 둘 다로 식별된다. 모델 예산은 이 분류로 정책 거부를 일시 실패와 구별해 계속 막는다
+// (P3 결정안 C05). 감싼 원인은 없다(Unwrap 없음).
+var ErrLocalProviderPolicy error = localProviderPolicyError{}
+
+type localProviderPolicyError struct{}
+
+func (localProviderPolicyError) Error() string { return ErrLocalProvider.Error() }
+
+func (localProviderPolicyError) Is(target error) bool {
+	return target == ErrLocalProvider || target == llmpolicy.ErrRequestBlocked
+}
+
 func (p localProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		for event, err := range p.inner.Stream(ctx, req) {
@@ -343,9 +357,10 @@ func localProviderError(ctx context.Context, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return context.DeadlineExceeded
 	}
-	if errors.Is(err, llmpolicy.ErrRequestBlocked) ||
-		errors.Is(err, llmpolicy.ErrTransport) ||
-		errors.Is(err, llmpolicy.ErrBodyClose) {
+	if errors.Is(err, llmpolicy.ErrRequestBlocked) {
+		return ErrLocalProviderPolicy
+	}
+	if errors.Is(err, llmpolicy.ErrTransport) || errors.Is(err, llmpolicy.ErrBodyClose) {
 		return ErrLocalProvider
 	}
 	if IsQuotaExhaustedMessage(err.Error()) {
