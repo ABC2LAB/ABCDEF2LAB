@@ -108,6 +108,8 @@ func (d *launchDiagnostics) finish(code *int) {
 		if !d.logReported {
 			fmt.Fprintln(d.stderr, "diagnostic_logging_incomplete:"+diagnosticFailureCode(logErr))
 		}
+		// 첫 경고 뒤에도 몇 건이 남지 못했는지는 끝에서만 알 수 있다. 건수만 남긴다(P3 결정안 C10).
+		fmt.Fprintf(d.stderr, "diagnostic_logging_dropped:%d\n", d.logger.Dropped())
 	}
 }
 

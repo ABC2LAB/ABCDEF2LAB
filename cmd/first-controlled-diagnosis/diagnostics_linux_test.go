@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -149,7 +150,7 @@ func TestDiagnosticFinalizationDistinguishesCancelTimeoutAndObservability(t *tes
 			} else if code != 1 {
 				t.Fatal("failure presented as success")
 			}
-			if mode == "write" && !strings.Contains(stderr.String(), "log_storage_failed") {
+			if mode == "write" && (!strings.Contains(stderr.String(), "log_storage_failed") || !strings.Contains(stderr.String(), "diagnostic_logging_dropped:")) {
 				t.Fatal("write failure missing")
 			}
 			if mode == "limit" && !strings.Contains(stderr.String(), "log_limit") {
@@ -237,6 +238,16 @@ func TestDiagnosticWriteFailureWarnsBeforeFinish(t *testing.T) {
 	d.finish(&code)
 	if code != 1 {
 		t.Fatal("write failure became success")
+	}
+	// 끝에서는 같은 경고를 다시 내지 않고 누락 건수 한 줄만 남긴다(P3 결정안 C10).
+	select {
+	case msg := <-warnings:
+		var dropped int
+		if _, err := fmt.Sscanf(string(msg), "diagnostic_logging_dropped:%d\n", &dropped); err != nil || dropped < 2 {
+			t.Fatalf("unexpected finish warning %q", msg)
+		}
+	default:
+		t.Fatal("dropped count missing")
 	}
 	select {
 	case <-warnings:
