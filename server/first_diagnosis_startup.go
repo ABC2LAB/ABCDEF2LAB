@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -86,10 +88,17 @@ func (s *Server) firstDiagnosisRoutes(next http.Handler) http.Handler {
 // 준비 단계에서는 분해 실패를 원문 목표 fallback으로 숨기지 않는다.
 func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit func(db.Activity)) (resultErr error) {
 	startedAt := time.Now()
+	fallback := false
 	defer func() {
-		if t != nil {
-			diagnosisStage(ctx, mustFirstDiagnosisTaskNumber(t.ID), "goal_creation", resultErr, "goal_creation_failed", startedAt)
+		if t == nil {
+			return
 		}
+		if fallback {
+			// 분해 실패를 운영 기록에 남기되 실행은 계속한다(진단 로그는 감사가 아니다).
+			_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "stage_finished", TaskID: mustFirstDiagnosisTaskNumber(t.ID), Stage: "goal_creation", Status: "incomplete", ReasonCode: "goal_creation_failed", DurationMS: time.Since(startedAt).Milliseconds()})
+			return
+		}
+		diagnosisStage(ctx, mustFirstDiagnosisTaskNumber(t.ID), "goal_creation", resultErr, "goal_creation_failed", startedAt)
 	}()
 	if s == nil || !s.firstDiagnosisPreparation || ctx == nil || ctx.Err() != nil || t == nil || t.Store == nil {
 		return ErrControlledReadHostConfiguration
@@ -122,8 +131,15 @@ func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit fu
 	s.engine.BeginLLMCall(t.ID)
 	goals := agent.DecomposeGoalsWithProvider(agent.WithE2HTTPPlanning(ctx), runtime, s.m.dir, t.Goal, t.Description, s.m.assets, t.Store, taskID, runtime.nonStreaming(), runtime.maxTokens(), capture)
 	s.engine.EndLLMCall(t.ID)
-	if ctx.Err() != nil || failed.Load() || !terminal.Load() || len(goals) == 0 {
+	if ctx.Err() != nil {
 		return ErrLocalLLMPolicy
+	}
+	if failed.Load() || !terminal.Load() || len(goals) == 0 {
+		// 목표 분해는 계획을 돕는 단계이지 필수 단계가 아니다(P3 결정안 C11 결정 1). 원본(startTaskEngine)처럼
+		// 분해한 목표 없이 원래 작업 목표로 계획을 계속한다. 모델 예산이 막혔다면 다음 계획 호출이 그 사유로 멈춘다.
+		fallback = true
+		log.Printf("[first-diagnosis] task %s 목표 분해 결과 없음, 원래 목표로 계획 계속", t.ID)
+		return nil
 	}
 	return nil
 }

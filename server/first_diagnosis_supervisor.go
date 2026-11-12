@@ -363,7 +363,8 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 	preparationStage = "planning"
 	planning := agent.WithE2HTTPPlanning(server.engine.withRuntimeHooks(prepare))
 	emit := func(activity db.Activity) { server.engine.emitActivity(task, activity) }
-	if err := server.createFirstDiagnosisGoals(planning, task, emit); err != nil || planning.Err() != nil {
+	// 분해가 실패해도 계속하므로(C11), 분해 중 task 상태가 바뀌었는지 계획 전에 다시 본다.
+	if err := server.createFirstDiagnosisGoals(planning, task, emit); err != nil || planning.Err() != nil || s.checkPreparationTask(planning, task) != nil {
 		return ErrFirstDiagnosisPreparation
 	}
 	lastIntent, observed := s.plannerLogStart(planning, task)
