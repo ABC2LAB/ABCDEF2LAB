@@ -40,7 +40,7 @@
 
 - 원본 `PlannerTools` 전체를 복원한다: prove_goal·goal_met·kill_work·steer_work·report_finding(진단 후보)·list_companies·list_assets·add_company_scope·add_task_scope·list_untested_assets. skills·Todo·압축·마무리 턴도 복원한다.
 - 범위 도구(add_company_scope·add_task_scope)는 커버리지 분모와 자산 소속만 바꾸고 **E② 승인 범위는 바꾸지 않는다**(규칙 4). 범위 도구를 부른 뒤에도 E② 정책 지문이 같은지 시험으로 고정한다.
-  - add_task_scope는 넣었다. 진단 경로는 task_scope를 승인 근거로 읽지 않는다. 통합 시험(`actual-engine-planner-task-scope-keeps-e2-policy`)은 Planner가 대상 호스트 IP를 작업 범위에 넣고 그 범위로 intent를 만든 뒤에도, 같은 호스트의 승인 안 된 포트로 가는 Worker 요청이 E②에서 거부되고(수신 0건) 실행 정책의 판·규칙이 승인 파일 그대로인지 본다. 원본 도구 설명은 이 도구를 "작업의 인가 경계"라고 부르지만 진단 경로에서는 그렇지 않다. 설명은 원본 그대로 두고, 거부 결과가 모델에 돌아가는 것으로 바로잡히게 한다.
+  - add_task_scope는 넣었다. 진단 경로는 task_scope를 승인 근거로 읽지 않는다. 통합 시험(`actual-engine-planner-task-scope-keeps-e2-policy`)은 Planner가 대상 호스트 IP를 작업 범위에 넣고 그 범위로 intent를 만든 뒤에도, 같은 호스트의 승인 안 된 포트로 가는 Worker 요청이 E②에서 거부되고(수신 0건) 실행 정책의 판·규칙이 승인 파일 그대로인지 본다. 원본 도구 설명은 이 도구를 "작업의 인가 경계"라고 부르고 넓히라고 권하지만 진단 경로에서는 그렇지 않다. 그대로 두면 모델이 넓힌 범위로 승인 밖 intent를 만들고, C01 전에는 거부 상한(제품 기본 2회)에 닿아 실행이 멈출 수 있다. 그래서 동작·스키마는 원본 그대로 두고 모델에 보이는 설명만 진단 판(커버리지 분모만 넓힘, 송신 범위는 그대로, 승인 밖 호스트·포트로 intent를 만들지 말 것)으로 바꾼다(`DecorateTool`).
   - add_company_scope는 제품 DB 역할이 companies·company_scope를 SELECT만 허용해서 넣어도 늘 실패한다. 열린 항목 5(insert_assets)와 같이 정한다.
 - Planner에서는 대상으로 보내는 도구를 뺀다: 원본 기본 도구의 Bash, WebFetch, MCP. 대상 요청은 Worker(E②)만 보낸다. 호스트 파일 도구는 Worker와 같은 조건(작업 디렉터리 안)일 때만 넣는다.
 - WebSearch는 Worker와 같은 규칙이다.
