@@ -354,6 +354,11 @@ export function WorkflowCrawlLive() {
             <button className={s.btn} type="button" onClick={() => goTo("explore")}>
               탐색 결과
             </button>
+            {/* 접근통제 지도(수평 IDOR 교차 접근 판정, 운영자 전용). 지금은 예시, live 점등은 KG API 연결 후.
+                진입 자리는 잠정 — 이동찬 정렬(새 작업대 시안 기준). */}
+            <button className={s.btn} type="button" onClick={() => goTo("accessmap")}>
+              접근통제 지도
+            </button>
             <button className={cx(s.btn, s.pri)} type="button" disabled={!ready} onClick={() => goTo(next)}>
               {next === "scope" ? "범위 확인" : "점검 진행"}
               <Icon name="arrow" />
