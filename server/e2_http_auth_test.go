@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,11 @@ type authLoginTarget struct {
 
 func (a *authLoginTarget) handler(t *testing.T) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/read/echo" {
+			// 취약한 앱처럼 비밀번호를 평문으로 되돌려 주는 페이지.
+			io.WriteString(w, "password=seeded-pass-88ff")
+			return
+		}
 		if r.Method != "POST" || r.URL.Path != "/login" {
 			http.NotFound(w, r)
 			return
@@ -265,5 +271,33 @@ func TestE2HTTPAuthExtractor(t *testing.T) {
 	}
 	if _, err := authExtractor(token)(&http.Response{StatusCode: 401, Header: http.Header{}}, []byte(`{"data":{"token":"tok-123456"}}`)); err == nil {
 		t.Fatal("401 treated as a session")
+	}
+}
+
+// 로그인에 쓴 비밀번호는 실행의 보호 값이 된다: 같은 실행의 모델 요청 응답이 비밀번호를 되돌려 주면 보류된다(S09).
+// 보호할 수 없을 만큼 짧은 비밀번호로는 로그인하지 않는다.
+func TestE2HTTPAuthPrepProtectsPasswordReflection(t *testing.T) {
+	target := &authLoginTarget{token: "seeded-session-cookie-44ee"}
+	srv := httptest.NewServer(target.handler(t))
+	defer srv.Close()
+	dir := authTestDir(t)
+	good := authCredentialPin(t, dir, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	short := authCredentialPin(t, dir, "tester-b.json", "tester@owned.test", "12345")
+	e := authTestExecution(t, srv.URL, &authEventCounter{})
+	result, err := e2HTTPAuthPrep(t.Context(), e, dir, srv.URL, cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: good}, E2HTTPFileAuthAccount{Label: "tester-b", Credential: short}))
+	if err != nil || result.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated || result.AccountAuth["tester-b"] != E2HTTPAuthNotSent || target.posts != 1 {
+		t.Fatalf("auth prep: %v %v posts=%d", err, result.AccountAuth, target.posts)
+	}
+	call, err := e.BeginCall(t.Context(), "model-command")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer call.Close(context.Background())
+	req, _ := http.NewRequest("GET", srv.URL+"/read/echo", nil)
+	if resp, r, err := call.Do(t.Context(), req); !errors.Is(err, e2proxy.ErrWithheld) || resp != nil || r.Reason != e2proxy.Withheld {
+		t.Fatalf("reflected password reached the tool: %v %+v", err, r)
+	}
+	if out := string(e.RedactOutput([]byte("seeded-pass-88ff"))); strings.Contains(out, "seeded-pass-88ff") {
+		t.Fatal("password not redacted from output")
 	}
 }
