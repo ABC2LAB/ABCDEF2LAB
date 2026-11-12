@@ -233,3 +233,76 @@ func ValidateWorkspace(data []byte, contentLimit uint64) error {
 		}
 	}
 }
+
+// AppendWorkspaceFile은 작업 공간 tar에 파일 하나를 더한 새 tar를 돌려준다. 부모 디렉터리가 없으면 만들고, 같은 이름이
+// 있으면 바꾼다. 결과도 풀기 규칙과 내용·항목 상한을 지켜야 한다(넘으면 ErrWorkspaceTooLarge). 러너가 큰 출력을 작업
+// 공간에 남길 때 쓴다(docs/workspace-decision.md §2-3).
+func AppendWorkspaceFile(archive []byte, name string, content []byte, contentLimit uint64) ([]byte, error) {
+	if !validWorkspaceName(name) || ValidateWorkspace(archive, contentLimit) != nil {
+		return nil, ErrWorkspaceInvalid
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	dirs := map[string]bool{".": true}
+	var total uint64
+	entries := 0
+	if len(archive) > 0 {
+		tr := tar.NewReader(bytes.NewReader(archive))
+		for {
+			hdr, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, ErrWorkspaceInvalid
+			}
+			entry := strings.TrimSuffix(hdr.Name, "/")
+			if entry == name {
+				continue // 같은 이름은 새 내용으로 바꾼다.
+			}
+			if hdr.Typeflag == tar.TypeDir {
+				dirs[entry] = true
+			} else {
+				total += uint64(hdr.Size)
+			}
+			entries++
+			if err := tw.WriteHeader(hdr); err != nil {
+				return nil, ErrWorkspaceInvalid
+			}
+			if _, err := io.Copy(tw, tr); err != nil {
+				return nil, ErrWorkspaceInvalid
+			}
+		}
+	}
+	// 부모 디렉터리를 바깥쪽부터 만든다.
+	var parents []string
+	for dir := path.Dir(name); dir != "."; dir = path.Dir(dir) {
+		parents = append([]string{dir}, parents...)
+	}
+	for _, dir := range parents {
+		if !dirs[dir] {
+			dirs[dir] = true
+			entries++
+			if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: dir + "/", Mode: 0o700, Format: tar.FormatPAX}); err != nil {
+				return nil, ErrWorkspaceInvalid
+			}
+		}
+	}
+	if total += uint64(len(content)); total > contentLimit || entries+1 > maxWorkspaceEntries {
+		return nil, ErrWorkspaceTooLarge
+	}
+	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: 0o600, Size: int64(len(content)), Format: tar.FormatPAX}); err != nil {
+		return nil, ErrWorkspaceInvalid
+	}
+	if _, err := tw.Write(content); err != nil {
+		return nil, ErrWorkspaceInvalid
+	}
+	if err := tw.Close(); err != nil {
+		return nil, ErrWorkspaceInvalid
+	}
+	out := buf.Bytes()
+	if ValidateWorkspace(out, contentLimit) != nil {
+		return nil, ErrWorkspaceInvalid
+	}
+	return out, nil
+}
