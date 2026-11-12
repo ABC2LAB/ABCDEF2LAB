@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from e2_attempt_paths import ATTEMPT_PATHS_DONE_FILE, ATTEMPT_PATHS_FILE, MAX_ATTEMPT_PATHS_BYTES, MAX_DONE_BYTES
-from e2_export import (ATTEMPTS_FILE, JOURNAL_VERSION, STATE_COMPLETE, E2Expectation, E2Export, E2ExportError, parse_attempts, parse_manifest,
+from e2_export import (ATTEMPTS_FILE, JOURNAL_VERSIONS, STATE_COMPLETE, E2Expectation, E2Export, E2ExportError, parse_attempts, parse_manifest,
                        strict_object)
 
 OUTCOME_COMPLETE, OUTCOME_PRODUCT_FAILURE = "complete", "product_failure"
@@ -39,7 +39,6 @@ _SUMMARY_FIELDS = frozenset({"Checkpoint", "Events"})
 _JOURNAL_ID = re.compile(r"[0-9a-f]{32}\Z")
 _MAC = re.compile(r"[0-9a-f]{64}\Z")
 _INTEGRITY_FAILED = b"audit_integrity_failed"
-JOURNAL_FORMAT_ARG = "e2-http-v1"
 # 러너가 정한 값과 어긋난 것이다. E②가 잘못 낸 것이 아니라 회차를 묶은 조건이 틀렸으므로 무효로 둔다.
 CONFIG_VIOLATIONS = frozenset({"EVAL_RUN_ID_MISMATCH", "MODEL_TAG_MISMATCH", "RESET_GENERATION_MISMATCH", "RESERVATION_REF_MISMATCH",
                                "ENGINE_TASK_ID_MISMATCH", "HEADER_MODE_MISMATCH", "POLICY_FINGERPRINT_MISMATCH", "TASK_REF_MISMATCH",
@@ -205,7 +204,7 @@ def _parsed_checkpoint(data: bytes, manifest: dict) -> dict:
         checkpoint = strict_object(data)
     except E2ExportError:
         raise _ProductFailure("checkpoint_invalid") from None
-    if set(checkpoint) != _CHECKPOINT_FIELDS or checkpoint["Version"] != JOURNAL_VERSION or type(checkpoint["Sequence"]) is not int or \
+    if set(checkpoint) != _CHECKPOINT_FIELDS or checkpoint["Version"] not in JOURNAL_VERSIONS or type(checkpoint["Sequence"]) is not int or \
             not isinstance(checkpoint["JournalID"], str) or not _JOURNAL_ID.fullmatch(checkpoint["JournalID"]) or \
             not isinstance(checkpoint["MAC"], str) or not _MAC.fullmatch(checkpoint["MAC"]):
         raise _ProductFailure("checkpoint_invalid")
@@ -231,7 +230,8 @@ def _check_close_ack(ack: CloseAck | None, manifest: dict, manifest_sha256: str,
 
 
 def _verify_audit(run_verifier: RunVerifier, copies: _Copies, key_path: str, checkpoint: dict, rows: int) -> None:
-    code, stdout, stderr = run_verifier(["--journal-format", JOURNAL_FORMAT_ARG, "--journal", str(copies.path / _COPY_JOURNAL),
+    # 검증기에 신뢰 checkpoint의 판을 그대로 넘긴다. 저널 머리·행 판이 다르면 검증기가 거부한다(C16 전 회차는 v1).
+    code, stdout, stderr = run_verifier(["--journal-format", checkpoint["Version"], "--journal", str(copies.path / _COPY_JOURNAL),
                                          "--checkpoint", str(copies.path / _COPY_CHECKPOINT), "--key-file", key_path])
     if code != 0:
         if stderr.strip() == _INTEGRITY_FAILED:

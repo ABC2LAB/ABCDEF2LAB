@@ -613,7 +613,9 @@ func (c *Controller) After(ctx context.Context, v e2proxy.RequestView, r e2proxy
 			e.CallRef = r.CallRef
 			e.Request = v.Method + " " + safePath(path) + " HTTP/1.1"
 			e.Response = "HTTP status " + statusText(r.StatusCode)
-			if !r.ResponseComplete {
+			if r.Reason == e2proxy.Withheld {
+				e.Response += " · response withheld"
+			} else if !r.ResponseComplete {
 				e.Response += " · response incomplete"
 			}
 		}

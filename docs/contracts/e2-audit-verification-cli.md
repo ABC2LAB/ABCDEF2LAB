@@ -54,15 +54,16 @@ checkpoint는 기존 `auditlog.Checkpoint`의 `json.Marshal` 형식으로 보존
 
 ## 일반 HTTP 감사 형식 선택
 
-일반 프록시의 `e2-http-v1` journal은 등록 GET의 journal v1과 별도 형식이다.
-`--journal-format e2-http-v1`을 명시하면 같은 안전 파일 리더를 거쳐
+일반 프록시의 `e2-http-v2` journal(C16부터, 그 전에 저장한 것은 `e2-http-v1`)은 등록 GET의
+journal v1과 별도 형식이다. `--journal-format e2-http-v2`(저장된 v1은 `e2-http-v1`)를 명시하면
+신뢰 checkpoint의 판과 같은지 먼저 보고(다르면 `audit_input_invalid`) 같은 안전 파일 리더를 거쳐
 `e2proxy.VerifyJournal`에 **항상 제공된 checkpoint를 전달**한다. 형식을 자동 탐지하거나
 검증 실패 뒤 다른 형식으로 재시도하지 않는다. 옵션 생략 또는
 `--journal-format registered-get-v1`은 기존 등록 GET 동작을 선택한다.
 
 ```sh
 /tmp/e2-audit-verify \
-  --journal-format e2-http-v1 \
+  --journal-format e2-http-v2 \
   --journal /srv/e2-http-export/RUN.journal \
   --checkpoint /srv/trusted-checkpoints/HTTP.checkpoint \
   --key-file /srv/e2-secrets/http-audit.key
