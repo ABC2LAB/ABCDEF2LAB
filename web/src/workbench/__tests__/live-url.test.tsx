@@ -52,6 +52,7 @@ import { urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
+import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 
 const u = vi.mocked(url);
@@ -305,7 +306,8 @@ describe("서버 방식 확인 (catalog)", () => {
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     expect(screen.queryByLabelText(/작업 이름/)).toBeNull();
     expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
-    expect(screen.getByLabelText(/제외 경로/)).toBeInTheDocument();
+    // 제외 경로 칸의 흐린 예시는 안전 장치 (?) 메모와 같은 주소 (시안 v50)
+    expect(screen.getByLabelText(/제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete");
     // 작업 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     const send = screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
@@ -318,6 +320,17 @@ describe("서버 방식 확인 (catalog)", () => {
       profile_id: "profile-1",
       workflow_mode: "user_approval_v1",
     });
+  });
+
+  it("제외 경로 흐린 예시는 실제 입력 검사를 통과하고, query 가 든 값은 막힌다 (경로 단위)", () => {
+    const mode = "user_approval_v1" as const;
+    expect(url.urlDiagnosisInput("https://target.example/", "profile-1", "", mode, EXCLUDE_EXAMPLE)).toEqual({
+      target_url: "https://target.example/",
+      profile_id: "profile-1",
+      workflow_mode: mode,
+      excluded_paths: EXCLUDE_EXAMPLE,
+    });
+    expect(() => url.urlDiagnosisInput("https://target.example/", "profile-1", "", mode, "/delete?id=3")).toThrow();
   });
 
   it("탐색 흐름이 없는 프로필은 '점검 설정' 칸을 그리지 않는다", async () => {
@@ -821,13 +834,41 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   saveHandle({ ...handle, input });
   mount("new");
   expect(await screen.findByText("쓰기 메서드 요청은 한 건씩 승인한 것만 보냄")).toBeInTheDocument();
-  // 메서드 기준 이름일 뿐: GET · HEAD · query 도 상태를 바꿀 수 있다는 안내가 같이 보인다 (절대규칙 6)
-  expect(
-    screen.getByText("GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다"),
-  ).toBeInTheDocument();
   expect(screen.getByText("https://target.example · / · GET")).toBeInTheDocument();
-  // 안전 장치 (시안 v41): 짧은 제목, 절대규칙 6 고지는 경고 줄로 그대로
   expect(screen.getByRole("heading", { name: "안전 장치" })).toBeInTheDocument();
-  expect(screen.getByText("조회 요청도 데이터를 바꿀 수 있음")).toBeInTheDocument();
   expect(screen.getByText("모든 요청 · 승인 기록 남김")).toBeInTheDocument();
+  // 절대규칙 6 고지 (시안 v52): 할 일을 경고 줄 제목으로, 자세한 설명과 원래 고지 문장은 (?) 메모에
+  expect(screen.getByText("열면 지워지는 주소는 빼 두세요")).toBeInTheDocument();
+  const tip = screen.getByRole("button", { name: "설명 보기" });
+  const note = document.getElementById(tip.getAttribute("aria-controls") ?? "") as HTMLElement;
+  expect(tip).toHaveAttribute("aria-expanded", "false");
+  expect(note).not.toBeVisible();
+  fireEvent.click(tip);
+  expect(tip).toHaveAttribute("aria-expanded", "true");
+  expect(note).toBeVisible();
+  expect(note).toHaveTextContent("GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다");
+  expect(note).toHaveTextContent("/delete?id=3");
+  // 제외 경로는 경로 단위: query 없이 넣으면 된다는 안내
+  expect(note).toHaveTextContent("/delete처럼 경로만 넣으면 query 와 상관없이 빠집니다");
+  // 경고 줄 아래 짧은 고지는 기본으로 보인다 (비차단 리뷰 반영)
+  expect(screen.getByText("조회 요청도 데이터를 바꿀 수 있고, 서버는 검증하지 않음")).toBeVisible();
+  // Esc 로 메모만 닫힌다: 바깥(상세 서랍을 닫는 전역 Esc)으로 퍼지지 않고, 포커스는 (?) 버튼으로
+  const outer = vi.fn();
+  document.addEventListener("keydown", outer);
+  tip.focus();
+  fireEvent.keyDown(tip, { key: "Escape" });
+  document.removeEventListener("keydown", outer);
+  expect(note).not.toBeVisible();
+  expect(outer).not.toHaveBeenCalled();
+  expect(tip).toHaveFocus();
+  // 메모가 닫혀 있을 때의 Esc 는 그대로 전역으로 간다
+  const after = vi.fn();
+  document.addEventListener("keydown", after);
+  fireEvent.keyDown(tip, { key: "Escape" });
+  document.removeEventListener("keydown", after);
+  expect(after).toHaveBeenCalledTimes(1);
+  // 바깥 클릭으로도 닫힌다
+  fireEvent.click(tip);
+  fireEvent.mouseDown(document.body);
+  expect(note).not.toBeVisible();
 });
