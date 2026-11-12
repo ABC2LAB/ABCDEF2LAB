@@ -18,11 +18,18 @@ import {
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 import { type RequestApprovalRunState, RUN_COUNT_ROWS } from "@/lib/diagnosis/request-approvals";
 
+import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
-import { type DiagnosisRunView, downloadDiagnostic, fetchDiagnosisRun, fetchRemediation } from "../../live/api";
-import { approvalCounts, clockOf, errorText, fmtCount, isUnsupported, planState } from "../../live/map";
+import {
+  type DiagnosisRunView,
+  downloadDiagnostic,
+  fetchCoverage,
+  fetchDiagnosisRun,
+  fetchRemediation,
+} from "../../live/api";
+import { approvalCounts, clockOf, errorText, fmtCount, isUnsupported, planState, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
-import { ErrorNote, LoadingRow } from "../../live/parts";
+import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { factText, URL_ENDED_STATES, urlStateText, usdText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
@@ -215,7 +222,12 @@ export function UrlLiveLive() {
             <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
           ) : null}
           {!ended && job.state !== "unknown" ? (
-            <div className={s.band} style={{ gridTemplateColumns: "minmax(0,1fr)" }}>
+            <div className={s.band}>
+              {/* 점검 진행률 % · 막대 (시안 v22): 서버에 진행률이 없어 칸만 둔다 */}
+              {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
+              <div className={s.pct} id="lPct" role="group" aria-label="점검 진행률">
+                <NotYet why="서버가 점검 진행률을 주지 않습니다" />
+              </div>
               <div className={s.bt}>
                 <div className={s["now-l"]} aria-live="polite">
                   <span className={cx(s["now-k"], flow?.paused && s.idle)}>
@@ -295,6 +307,11 @@ export function UrlLiveLive() {
                 >{`요청 접수 ${fmtCount(c.attempts)} · 대상 전송 ${fmtCount(c.forward_attempted)}`}</span>
               ) : null}
             </div>
+            {/* 시안 v22 머리 옆 줄: 범위 밖 전송 · 승인 없는 상태 변경 수는 서버 집계에 없어 칸만 둔다 */}
+            <p className={s.help}>
+              {"범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경 "}
+              <NotYet why="서버 전송 집계에 이 두 수가 따로 없습니다" />
+            </p>
             {g.runReadable && a.poll.error && !a.poll.data ? (
               <ErrorNote error={a.poll.error} onRetry={a.poll.reload} />
             ) : null}
@@ -385,10 +402,19 @@ const RUN_OUTCOME: Readonly<Record<RequestApprovalRunState["outcome"], string>> 
   cancelled: "취소로 종료",
   failed: "실패로 종료",
 };
-/** 판정 집계 칸. */
-const OUTCOME_CELLS = ["confirmed", "review", "not_executed", "unknown"] as const;
 /** 우선 조치 · 목록 순서: 확정 → 검토 필요 → 미실행 → 결과 불명 → 정상 대조. */
 export const ORDER: readonly DiagnosticOutcome[] = ["confirmed", "review", "not_executed", "unknown", "negative"];
+/** 위험도 순서 (시안 v20 "위험도와 판정 순"). 서버가 심각도를 안 줬으면 맨 뒤. */
+const SEV_KEYS: readonly SevKey[] = ["crit", "hi", "mid", "lo"];
+const sevRank = (e: RemediationEntry) => {
+  const k = sevKey(e.severity ?? "");
+  return k ? SEV_KEYS.indexOf(k) : SEV_KEYS.length;
+};
+/** 위험도 딱지. 서버가 심각도를 주지 않았으면 "등급 없음". */
+function Sev({ e }: { e: RemediationEntry }) {
+  const k = sevKey(e.severity ?? "");
+  return k ? <span className={cx(s.sev, s[k])}>{SEVL[k]}</span> : <span className={s.sev}>등급 없음</span>;
+}
 
 /** 증거 글을 읽기 좋게: JSON 이면 들여쓰고, 안에 든 JSON 문자열(tool_output 등)도 펼친다. 비밀 값은 가린다. */
 export function prettyEvidence(raw: string): string {
@@ -620,7 +646,10 @@ export function UrlReportLive() {
     enabled: visible && !!taskId,
   });
   const run = usePoll(() => fetchDiagnosisRun(taskId as string), [taskId], { enabled: visible && !!taskId });
-  const [tab, setTab] = useState<"list" | "ev">("list");
+  // 커버리지 (시안 v20 머리 줄 · 요약 칸): 서버 task 커버리지. 꺼졌거나 못 읽으면 "아직 구현 안 됨"으로 둔다
+  const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], { enabled: visible && !!taskId });
+  const covPct = cov.data?.enabled && cov.data.pct !== null ? Math.round(cov.data.pct * 100) : null;
+  const [tab, setTab] = useState<"list" | "graph" | "map" | "ev">("list");
   const [sel, setSel] = useState<string | null>(null);
   const title = host ? `${host} 보고서` : "보고서";
 
@@ -661,9 +690,14 @@ export function UrlReportLive() {
   const sorted = [...entries].sort((x, y) => ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)));
   const counts = rem.data ? summarizeDiagnosticEntries(entries) : null;
   const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
-  const prio = sorted.filter(
-    (e) => ["confirmed", "review"].includes(diagnosticOutcome(e)) && (e.remediation || e.record?.bundle),
-  );
+  // 우선 조치: 시안 v20 처럼 위험도 → 판정 순
+  const prio = sorted
+    .filter((e) => ["confirmed", "review"].includes(diagnosticOutcome(e)) && (e.remediation || e.record?.bundle))
+    .sort(
+      (x, y) => sevRank(x) - sevRank(y) || ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)),
+    );
+  const bySev = SEV_KEYS.map((k) => [k, findings.filter((e) => sevKey(e.severity ?? "") === k).length] as const);
+  const noSev = findings.filter((e) => !sevKey(e.severity ?? "")).length;
   const chosen = sorted.find((e) => e.entry_id === sel) ?? findings[0] ?? sorted[0];
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === job.input.profile_id) : undefined;
   const u = job.model_usage;
@@ -691,12 +725,13 @@ export function UrlReportLive() {
                 openInsp();
               }}
             >
-              <Outcome o={o} short />
+              <Sev e={e} />
               <span className={s.fm}>
                 <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
                 {e.summary ? <span className={s.fe}>{maskSecrets(e.summary)}</span> : null}
               </span>
               <span className={s.fs}>
+                <Outcome o={o} short />
                 <span className={s["r-time"]}>{clockOf(e.observed_at)}</span>
               </span>
             </button>
@@ -736,6 +771,16 @@ export function UrlReportLive() {
                 대상 <b>{job.scope.origin}</b>
               </span>
             ) : null}
+            <span>
+              시작 <NotYet why="서버가 점검 시작 시각을 주지 않습니다" />
+            </span>
+            <span>
+              소요 <NotYet why="서버가 점검 소요 시간을 주지 않습니다" />
+            </span>
+            <span>
+              커버리지{" "}
+              {covPct !== null ? <b>{`${covPct}%`}</b> : <NotYet why="서버가 이 점검의 커버리지를 주지 않습니다" />}
+            </span>
             {profile ? (
               <span>
                 모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
@@ -755,20 +800,51 @@ export function UrlReportLive() {
       <div className={s.vb}>
         <div className={s.vm}>
           {counts ? (
+            // 요약 칸 (시안 v20 짜임: 발견 · 확정 · 검토 필요/결과 불명 · 커버리지). 미실행은 셋째 칸 아래에 둔다
             <section className={s.strip} aria-label="판정 집계">
-              {OUTCOME_CELLS.map((k) => (
-                <div key={k} className={cx(s.cell, k === "confirmed" && counts[k] > 0 && s.crit)}>
-                  <div className={s.k}>{diagnosticOutcomeLabels[k]}</div>
-                  <div className={s.v}>{counts[k]}</div>
+              <div className={s.cell}>
+                <div className={s.k}>발견 · 검토 대상</div>
+                <div className={s.v}>{findings.length}</div>
+                <div className={s.sub}>
+                  {[...bySev.map(([k, n]) => `${SEVL[k]} ${n}`), ...(noSev ? [`등급 없음 ${noSev}`] : [])].join(" · ")}
                 </div>
-              ))}
+              </div>
+              <div className={cx(s.cell, counts.confirmed > 0 && s.crit)}>
+                <div className={s.k}>{diagnosticOutcomeLabels.confirmed}</div>
+                <div className={s.v}>{counts.confirmed}</div>
+                <div className={s.sub}>서버 판정 확정</div>
+              </div>
+              <div className={s.cell}>
+                <div className={s.k}>{`${diagnosticOutcomeLabels.review} / ${diagnosticOutcomeLabels.unknown}`}</div>
+                <div className={s.v}>
+                  {counts.review}
+                  <small>{`/ ${counts.unknown}`}</small>
+                </div>
+                <div
+                  className={s.sub}
+                >{`${diagnosticOutcomeLabels.not_executed} ${counts.not_executed} · 추가 확인 권장`}</div>
+              </div>
+              <div className={s.cell}>
+                <div className={s.k}>커버리지</div>
+                <div className={s.v}>
+                  {covPct !== null ? (
+                    <>
+                      {covPct}
+                      <small>%</small>
+                    </>
+                  ) : (
+                    <NotYet why="서버가 이 점검의 커버리지를 주지 않습니다" />
+                  )}
+                </div>
+                <div className={s.sub}>{covPct !== null ? `미검사 ${100 - covPct}%` : "검사한 엔드포인트 비율"}</div>
+              </div>
             </section>
           ) : null}
           {prio.length ? (
             <section className={s.sec} aria-labelledby="rPrioH">
               <div className={s.sh}>
                 <h2 id="rPrioH">우선 조치</h2>
-                <span className={s.aside}>판정 순</span>
+                <span className={s.aside}>위험도와 판정 순</span>
               </div>
               <ol className={s.prio} id="rvPrio">
                 {prio.map((e) => {
@@ -778,6 +854,7 @@ export function UrlReportLive() {
                     <li key={e.entry_id}>
                       <span className={s.pt}>{maskSecrets(e.title) || e.entry_id}</span>
                       <span className={s.pc}>
+                        <Sev e={e} />
                         <Outcome o={diagnosticOutcome(e)} />
                       </span>
                       <span className={s.pf}>{maskSecrets(fix)}</span>
@@ -792,6 +869,12 @@ export function UrlReportLive() {
               <button type="button" role="tab" aria-selected={tab === "list"} onClick={() => setTab("list")}>
                 발견 목록<span className={s.c}>{sorted.length}</span>
               </button>
+              <button type="button" role="tab" aria-selected={tab === "graph"} onClick={() => setTab("graph")}>
+                자산 지식 그래프
+              </button>
+              <button type="button" role="tab" aria-selected={tab === "map"} onClick={() => setTab("map")}>
+                접근통제 지도
+              </button>
               <button type="button" role="tab" aria-selected={tab === "ev"} onClick={() => setTab("ev")}>
                 증거 · 감사
               </button>
@@ -800,7 +883,30 @@ export function UrlReportLive() {
               <div role="tabpanel" aria-label="발견 목록">
                 {listBody}
               </div>
-            ) : (
+            ) : null}
+            {tab === "graph" ? (
+              // 시안 v20 자산 지식 그래프: 보고서에 붙일 그래프 API 가 아직 없다
+              <div role="tabpanel" aria-label="자산 지식 그래프">
+                <NotYet block why="보고서에 붙일 자산 지식 그래프 서버 연결이 없습니다" />
+              </div>
+            ) : null}
+            {tab === "map" ? (
+              // 시안 v20 접근통제 지도: 실제 지도는 KG API 연결 뒤. 지금은 따로 있는 접근통제 지도 화면(예시)으로 간다
+              <div
+                role="tabpanel"
+                aria-label="접근통제 지도"
+                style={{ display: "flex", flexDirection: "column", gap: 12 }}
+              >
+                <NotYet block why="이 점검의 접근통제 지도 서버 연결이 없습니다" />
+                <div>
+                  <button className={s.btn} type="button" onClick={() => goTo("accessmap")}>
+                    접근통제 지도 화면 열기
+                    <Icon name="arrow" />
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {tab === "ev" ? (
               <div
                 role="tabpanel"
                 aria-label="증거 · 감사"
@@ -816,7 +922,7 @@ export function UrlReportLive() {
                 </section>
                 <Download taskId={taskId} />
               </div>
-            )}
+            ) : null}
           </section>
         </div>
         <aside className={s.vi} id="rInsp" aria-label="발견 상세">

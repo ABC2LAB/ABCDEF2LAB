@@ -170,7 +170,9 @@ describe("진행 중인 점검 · 끝난 점검 화면", () => {
     fireEvent.click(chip(done, "발견 있음"));
     expect(within(done).getByText("이 결과의 끝난 점검이 없습니다.")).toBeInTheDocument();
     fireEvent.click(chip(done, "검토 필요"));
-    expect(within(done).getByRole("button", { name: /target\.example/ })).toBeInTheDocument();
+    const row = within(done).getByRole("button", { name: /target\.example/ });
+    // 끝난 점검 줄의 소요 · 커버리지 (시안 v55) 는 서버가 목록에 주지 않아 '아직 구현 안 됨'
+    expect(within(row).getByText(/^소요/)).toHaveTextContent(/^소요 아직 구현 안 됨.* · 커버리지 아직 구현 안 됨/);
 
     const detail = screen.getByRole("complementary", { name: "선택한 점검" });
     expect(within(detail).getByText("확정 0 · 검토 필요 1 · 미실행 0 · 결과 불명 0")).toBeInTheDocument();

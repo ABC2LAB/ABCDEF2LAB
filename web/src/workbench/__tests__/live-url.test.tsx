@@ -25,6 +25,7 @@ vi.mock("../live/api", async (importOriginal) => ({
   fetchRequestApprovals: vi.fn(),
   fetchRemediation: vi.fn(),
   fetchDiagnosisRun: vi.fn(),
+  fetchCoverage: vi.fn(),
   fetchTasks: vi.fn(),
 }));
 
@@ -257,6 +258,7 @@ beforeEach(() => {
   a.fetchRequestApprovals.mockResolvedValue(APPROVALS);
   a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
   a.fetchDiagnosisRun.mockResolvedValue(RUN_RECORD);
+  a.fetchCoverage.mockRejectedValue(new ApiError(503, "coverage disabled"));
   a.fetchTasks.mockResolvedValue({ active: "", tasks: [] });
   vi.mocked(teamApi.readAuthStatus).mockResolvedValue({ initialized: true });
   vi.mocked(teamApi.restoreSession).mockResolvedValue(true);
@@ -604,6 +606,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner);
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+    // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 '아직 구현 안 됨' (시안 v22). 0 % 로 지어내지 않는다
+    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent(/^아직 구현 안 됨/);
+    expect(screen.queryByText(/^0%$/)).toBeNull();
+    expect(screen.getByText(/^범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경/)).toHaveTextContent("아직 구현 안 됨");
   });
 
   it("영수증만 있으면(id 없음) 생성 영수증을 조회한다", async () => {
@@ -743,10 +749,19 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("report");
     expect(await screen.findByText(/결과가 저장되면 보고서가 나옵니다/)).toBeInTheDocument();
     expect(a.fetchRemediation).not.toHaveBeenCalled();
+    expect(a.fetchCoverage).not.toHaveBeenCalled();
     cleanup();
     resetUrl();
     u.readURLStatus.mockResolvedValue(completed);
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    a.fetchCoverage.mockResolvedValue({
+      enabled: true,
+      scopeRows: 1,
+      denominator: 10,
+      tested: 4,
+      pct: 0.4,
+      byType: [],
+    });
     mount("report");
     expect(await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).toBeInTheDocument();
     // 위치: 끝난 점검 / 주소 / 보고서 (시안 v83: "작업대" 뿌리는 뺐다)
@@ -756,15 +771,28 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(crumb).not.toHaveTextContent("작업대");
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
     expect(a.fetchDiagnosisRun).toHaveBeenCalledWith("42");
-    // 판정 집계: 후보는 검토 필요, 확정 0 (팀 lib 분류)
+    // 판정 집계 (시안 v20 짜임): 후보는 검토 필요, 확정 0 (팀 lib 분류). 커버리지는 서버 값 그대로
     const strip = await screen.findByRole("region", { name: "판정 집계" });
     const cell = (label: string) => within(strip).getByText(label).parentElement as HTMLElement;
-    await waitFor(() => expect(within(cell("검토 필요")).getByText("1")).toBeInTheDocument());
+    await waitFor(() => expect(cell("검토 필요 / 결과 불명")).toHaveTextContent(/^검토 필요 \/ 결과 불명1\/ 0/));
     expect(within(cell("확정")).getByText("0")).toBeInTheDocument();
-    // 발견 목록에 후보가 있다
-    expect(
-      within(screen.getByRole("tabpanel", { name: "발견 목록" })).getByRole("button", { name: /후보 1/ }),
-    ).toBeInTheDocument();
+    expect(within(cell("발견 · 검토 대상")).getByText("1")).toBeInTheDocument();
+    await waitFor(() => expect(cell("커버리지")).toHaveTextContent("40%"));
+    expect(cell("커버리지")).toHaveTextContent("미검사 60%");
+    // 서버가 주지 않는 시작 · 소요는 '아직 구현 안 됨'
+    expect(screen.getByText(/^시작/).closest("span")).toHaveTextContent("아직 구현 안 됨");
+    // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '등급 없음')
+    const row = within(screen.getByRole("tabpanel", { name: "발견 목록" })).getByRole("button", { name: /후보 1/ });
+    expect(row.firstElementChild).toHaveTextContent("등급 없음");
+    // 시안의 자산 지식 그래프 · 접근통제 지도 탭은 서버 연결이 없어 '아직 구현 안 됨' (지도 화면 바로가기는 있다)
+    fireEvent.click(screen.getByRole("tab", { name: "자산 지식 그래프" }));
+    expect(within(screen.getByRole("tabpanel", { name: "자산 지식 그래프" })).getByRole("note")).toHaveTextContent(
+      /^아직 구현 안 됨/,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
+    const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
+    expect(within(mapTab).getByRole("note")).toHaveTextContent(/^아직 구현 안 됨/);
+    expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
     // 실행 종료 기록: 실행 ID · 정상 종료 · 감사 · E② 집계는 저장 값 그대로 (증거 · 감사 탭)
     fireEvent.click(screen.getByRole("tab", { name: "증거 · 감사" }));
     const record = await screen.findByRole("region", { name: "실행 종료 기록" });
