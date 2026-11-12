@@ -46,7 +46,9 @@ services:
     entrypoint: [/app/product-install-entrypoint]
     depends_on:
       postgres: {condition: service_healthy}
-    secrets: [product_install, postgres_password]
+    # explore_ca_cert는 탐색을 켠 설치만 준다. installer가 /tmp/product-private/explore-ca.pem으로 옮겨 설치 입력
+    # target_policy.exploration.boundary_ca_file로 고정한다.
+    secrets: [product_install, postgres_password, explore_ca_cert]
     volumes: [product-state:/p]
     tmpfs: ['/tmp:rw,nosuid,nodev,size=16m']
     read_only: true
@@ -61,7 +63,8 @@ services:
     entrypoint: [/app/product-preparation-entrypoint]
     depends_on:
       install: {condition: service_completed_successfully}
-    volumes: [product-state:/p]
+    # explore-control은 탐색 경계 제어 소켓 디렉터리다(경계가 소켓 소유자를 엔진 uid로 넘긴다). 탐색을 안 켜면 비어 있다.
+    volumes: [product-state:/p, explore-control:/run/explore-control]
     tmpfs: ['/tmp:rw,nosuid,nodev,size=64m']
     read_only: true
     cap_drop: [ALL]
@@ -79,6 +82,8 @@ services:
       # 탐색 단계에서 브라우저 샌드박스의 MCP(http://explore-mcp:<포트>/)로 나가기만 한다. 이 망에 리슨은 없다
       # (위 workbench 고정 주소, preparation·api는 127.0.0.1). 탐색 실행기 결정안 §3-1.
       explore_control: {}
+      # 서버의 정적 탐색 fetch가 경계 직접 입구(http://explore-direct:3129)로만 나간다. 이 망에 리슨은 없다
+      explore_direct: {}
     ports: ['127.0.0.1:${PRODUCT_PORT:-8787}:8787']
     healthcheck:
       test: [CMD, test, -S, /p/ipc/preparation.sock]
@@ -136,6 +141,66 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+  # 탐색 경계 보호 입력 준비(한 번 실행). 운영자의 보호 파일(root 0600)을 받아 경계 전용 볼륨(uid 1001, 0600)과
+  # 브라우저가 읽는 공개 CA 볼륨(0644)으로 나눠 쓴다. CA 개인키·경로 가림 키·설정은 경계 볼륨에만 간다.
+  explore-init:
+    <<: *product
+    profiles: [exploration]
+    user: '0:0'
+    entrypoint: [/app/explore-init-entrypoint]
+    secrets: [explore_boundary_config, explore_ca_cert, explore_ca_key, explore_path_key]
+    volumes:
+      - type: volume
+        source: explore-boundary-input
+        target: /i
+      - type: volume
+        source: explore-ca
+        target: /c
+      - type: volume
+        source: explore-control
+        target: /s
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    network_mode: none
+    restart: 'no'
+  # 탐색 경계(docs/contracts/exploration-boundary.md, docs/implementation/explore-boundary-core.md). 브라우저 입구(3128)와
+  # 직접 입구(3129)를 서로 다른 망의 고정 주소에만 리슨하고, 승인 대상에는 대상망·외부망으로 나간다. 제어 소켓은
+  # 엔진 그룹(1000) 0660으로 넘기고 접속은 엔진 uid(1000)의 SO_PEERCRED로만 받는다(비root라 소유자는 못 바꾼다).
+  # `--profile exploration`일 때만 렌더링된다.
+  explore-boundary:
+    <<: *product
+    profiles: [exploration]
+    user: '1001:1000'
+    entrypoint: [/app/explore-boundary]
+    command: [-config, /i/boundary.json]
+    depends_on:
+      explore-init: {condition: service_completed_successfully}
+    volumes:
+      - type: volume
+        source: explore-boundary-input
+        target: /i
+        read_only: true
+      - type: volume
+        source: explore-control
+        target: /run/explore-control
+    tmpfs: ['/tmp:rw,nosuid,nodev,size=16m']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 1g
+    networks:
+      explore_browser_ingress: {ipv4_address: 172.31.248.10}
+      # 엔진은 frontend 망도 같이 쓰므로 서비스 이름은 frontend 주소로 풀린다(경계는 거기서 리슨하지 않음). 직접 입구는
+      # 이 망에만 있는 별칭(explore-direct)으로 부른다.
+      explore_direct: {ipv4_address: 172.31.247.10, aliases: [explore-direct]}
+      target: {}
+      frontend: {}
+    healthcheck:
+      test: [NONE]
+    restart: unless-stopped
   # 탐색 브라우저 샌드박스(docs/contracts/exploration-boundary.md §5·§9-1 분리 배치). 탐색 경계(explore-boundary)와
   # 엔진 쪽 MCP 연결이 들어오기 전에는 켜지 않는다(`--profile exploration`일 때만 렌더링된다).
   # Chromium(explore-browser)과 MCP(explore-mcp)를 다른 network namespace에 둔다. 같은 namespace의 native 자식이
@@ -144,6 +209,8 @@ services:
   explore-browser:
     <<: *explore-browser
     entrypoint: [/app/explore-browser-entrypoint]
+    depends_on:
+      explore-init: {condition: service_completed_successfully}
     # 실행기 옵션은 이 둘뿐이다(deploy/product/explore-chromium.js). Chromium 기본 옵션은 실행기에 고정돼 있다.
     # --cdp-listen 주소는 아래 explore_cdp 고정 주소와 같아야 하고, MCP의 --cdp-endpoint가 그 주소로 붙는다.
     command:
@@ -201,6 +268,15 @@ secrets:
     file: ${PRODUCT_INSTALL_FILE:?protected product install JSON}
   postgres_password:
     file: ${PRODUCT_POSTGRES_PASSWORD_FILE:?protected postgres password file}
+  # 탐색 경계 보호 입력(root 0600). 탐색을 켜지 않으면 비워 둔다(/dev/null). 켤 때는 deploy/product/README.md의 탐색 절차대로 만든다.
+  explore_boundary_config:
+    file: ${EXPLORE_BOUNDARY_CONFIG_FILE:-/dev/null}
+  explore_ca_cert:
+    file: ${EXPLORE_CA_CERT_FILE:-/dev/null}
+  explore_ca_key:
+    file: ${EXPLORE_CA_KEY_FILE:-/dev/null}
+  explore_path_key:
+    file: ${EXPLORE_PATH_KEY_FILE:-/dev/null}
 networks:
   control:
     internal: true
@@ -218,9 +294,16 @@ networks:
     internal: true
     ipam:
       config: [{subnet: 172.31.254.0/24}]
-  # Chromium 컨테이너(explore-browser)와 탐색 경계의 브라우저 입구만 붙는 망.
+  # Chromium 컨테이너(explore-browser)와 탐색 경계의 브라우저 입구만 붙는 망. 경계는 이 망의 고정 주소에만 리슨한다.
   explore_browser_ingress:
     internal: true
+    ipam:
+      config: [{subnet: 172.31.248.0/24}]
+  # 엔진(서버의 정적 fetch)과 탐색 경계의 직접 입구만 붙는 망.
+  explore_direct:
+    internal: true
+    ipam:
+      config: [{subnet: 172.31.247.0/24}]
   # Chromium 컨테이너와 MCP 컨테이너만 붙는 CDP 연결망. Chromium의 CDP 중계는 이 망 주소에만 리슨한다.
   explore_cdp:
     internal: true
@@ -229,5 +312,9 @@ networks:
 volumes:
   postgres-data: {}
   product-state: {}
-  # 탐색 경계가 CA 인증서(공개 부분)만 쓰는 볼륨. 브라우저 샌드박스는 읽기만 한다.
+  # 탐색 경계 CA 인증서(공개 부분)만 있는 볼륨. explore-init이 쓰고 브라우저 샌드박스는 읽기만 한다.
   explore-ca: {}
+  # 탐색 경계 보호 입력(설정·CA 개인키·경로 가림 키). explore-init이 경계 uid로 쓰고 경계만 읽는다.
+  explore-boundary-input: {}
+  # 탐색 경계 제어 소켓 디렉터리. 경계(1001)가 소켓을 만들고 엔진 uid(1000)로 소유자를 넘긴다.
+  explore-control: {}

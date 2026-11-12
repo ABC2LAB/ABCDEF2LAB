@@ -104,6 +104,13 @@ func workflowModel() http.Handler {
 			finish = "tool_calls"
 		}
 		switch {
+		case names["mcp__explore_browser__browser_navigate"]:
+			// 탐색 단계(탐색 경계·브라우저 샌드박스를 켠 소유 수용 환경). 시험 탐색 페이지를 브라우저로 한 번 열고 마친다.
+			exploreTurns.Add(1)
+			turn.explore++
+			if turn.explore == 1 {
+				tool("mcp__explore_browser__browser_navigate", "wf-explore", map[string]any{"url": target + "/workflow"})
+			}
 		case names["set_goals"] && !names["add_intent"] && !names["Bash"]:
 			goals.Add(1)
 			turn.goals++
