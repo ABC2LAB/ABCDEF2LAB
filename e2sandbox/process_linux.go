@@ -451,8 +451,9 @@ func (p *Process) readWorkspace(f *os.File, limit int64) {
 	p.mu.Unlock()
 }
 
-// settleWorkspace는 정상 마감(helper가 저장을 알렸고 namespace가 끝남)일 때만 작업 공간을 결과에 싣는다.
-// p.mu를 잡은 채 부른다.
+// settleWorkspace는 helper가 Bash 종료 뒤 저장을 마쳤다고 알렸고 빼는 통로를 끝까지 읽었을 때만 작업 공간을 결과에
+// 싣는다. helper는 저장을 bash_exit보다 먼저 끝내므로, 그 뒤 호스트가 namespace를 끝내도 보관본은 온전하다. Bash가
+// 끝나기 전에 중지·시간 초과로 끊겼으면 저장 알림이 없어 싣지 않는다. p.mu를 잡은 채 부른다.
 func (p *Process) settleWorkspace() {
 	if !p.saveWorkspace {
 		return
@@ -460,7 +461,7 @@ func (p *Process) settleWorkspace() {
 	switch {
 	case p.workspaceStatus == "workspace_too_large" || p.workspaceOverflow:
 		p.result.WorkspaceState = "too_large"
-	case p.workspaceStatus == "workspace_saved" && p.result.Drained && p.result.Reason == "completed":
+	case p.workspaceStatus == "workspace_saved" && p.result.BashExited:
 		p.result.Workspace = append([]byte(nil), p.workspace...)
 		p.result.WorkspaceState = "saved"
 	default:

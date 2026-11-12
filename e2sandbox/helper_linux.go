@@ -185,6 +185,13 @@ func HelperMain() int {
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 	relay.close()
+	// 작업 공간 저장은 bash_exit를 알리기 전에 끝낸다. 호스트는 bash_exit를 받으면 바로 호출을 닫고 이 namespace를
+	// 끝내므로, 그 전에 남은 프로세스를 모두 끝내고 /work를 묶어 보낸다.
+	if cfg.SaveWorkspace {
+		if enc.Encode(helperStatus{State: saveWorkspace(cfg.Limits.ScratchBytes)}) != nil {
+			return 2
+		}
+	}
 	if enc.Encode(helperStatus{State: "bash_exit", ExitCode: exitCode}) != nil {
 		return 2
 	}
@@ -194,9 +201,6 @@ func HelperMain() int {
 	case <-drained:
 	case <-time.After(time.Duration(cfg.DrainNanos)):
 		return 3
-	}
-	if cfg.SaveWorkspace {
-		_ = enc.Encode(helperStatus{State: saveWorkspace(cfg.Limits.ScratchBytes)})
 	}
 	return 0
 }
