@@ -656,4 +656,47 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			t.Fatalf("준비 계획이 설치한 Plan당 턴 상한·마무리 턴을 쓰지 않음 messages=%d..%d wrapUps=%d", planMin, planMax, wrapUps)
 		}
 	})
+	// 원본 작업 시작의 대상 자산 등록(seed)을 첫 진단 준비에서 실제 실행 역할로 한다(C24). 승인 대상 URL의 origin 하나만
+	// 등록하고(경로·query는 버림) 작업에 source task로 연결한다. 잘못된 URL은 아무것도 남기지 않는다.
+	t.Run("target-asset-seed", func(t *testing.T) {
+		seeded, err := PrepareFirstDiagnosisTask(ctx, pool, description, "Seed the approved target asset.", profileID, 60)
+		if err != nil {
+			t.Fatal("seed 시험 task 생성 실패")
+		}
+		count := func(query string, args ...any) int {
+			t.Helper()
+			var n int
+			if err := installer.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+				t.Fatal("seed 결과 조회 실패", err)
+			}
+			return n
+		}
+		for _, bad := range []string{"", "ftp://seed.test/", "https://user:pw@seed.test/", "https:///nohost", "https://seed.test:0/"} {
+			if SeedFirstDiagnosisTarget(ctx, pool, seeded, bad) == nil {
+				t.Fatalf("잘못된 대상 URL %q를 등록함", bad)
+			}
+		}
+		if count("SELECT count(*) FROM task_asset_links WHERE task_id=$1", seeded.TaskID) != 0 {
+			t.Fatal("잘못된 대상 URL이 자산을 남김")
+		}
+		if err := SeedFirstDiagnosisTarget(ctx, pool, seeded, "https://Seed.Test:8443/app/login?next=/x"); err != nil {
+			t.Fatal("승인 대상 자산 등록 실패", err)
+		}
+		if err := SeedFirstDiagnosisTarget(ctx, pool, seeded, "http://192.0.2.44:8080/"); err != nil {
+			t.Fatal("IP 대상 자산 등록 실패", err)
+		}
+		// 원본 upsert는 서비스 자산과 함께 그 루트 도메인 자산도 만들어 연결한다(출처 system). 출처 task 연결은 등록한
+		// 두 대상이고, 연결된 자산은 모두 대상 호스트 안이다.
+		if count("SELECT count(*) FROM assets a JOIN task_asset_links l ON l.asset_id=a.id WHERE l.task_id=$1 AND l.source='task' AND a.type='service' AND a.url='https://seed.test:8443'", seeded.TaskID) != 1 ||
+			count("SELECT count(*) FROM assets a JOIN task_asset_links l ON l.asset_id=a.id WHERE l.task_id=$1 AND l.source='task' AND a.type='ip' AND a.ip='192.0.2.44'", seeded.TaskID) != 1 ||
+			count("SELECT count(*) FROM task_asset_links WHERE task_id=$1 AND source='task'", seeded.TaskID) != 2 ||
+			count("SELECT count(*) FROM task_asset_links l JOIN assets a ON a.id=l.asset_id WHERE l.task_id=$1 AND COALESCE(a.domain, a.ip) NOT IN ('seed.test','192.0.2.44')", seeded.TaskID) != 0 {
+			t.Fatal("승인 대상 origin만 작업에 연결하지 않음")
+		}
+		// 작업 없이 등록하면 어느 작업에도 연결되지 않은 전역 자산만 남으므로 받지 않는다.
+		if SeedFirstDiagnosisTarget(ctx, pool, FirstDiagnosisPreparedTask{ExplorationID: seeded.ExplorationID}, "https://unlinked-seed.test/") == nil ||
+			count("SELECT count(*) FROM assets WHERE url LIKE $1", "%unlinked-seed.test%") != 0 {
+			t.Fatal("작업 없이 자산을 등록함")
+		}
+	})
 }
