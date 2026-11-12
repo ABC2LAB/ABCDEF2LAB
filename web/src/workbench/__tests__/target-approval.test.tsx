@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
@@ -188,7 +188,13 @@ it("시안 v91 모양: 소유 확인 필요 딱지 · 등록 칸은 접혀 있�
 });
 it("시안 v91 모양: 소유 확인 대기는 TXT 레코드 이름 · 유형 · 값과 복사 버튼", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
+  // 시험 뒤 원래 클립보드로 되돌린다 (다른 시험에 새지 않게)
+  const before = Object.getOwnPropertyDescriptor(navigator, "clipboard");
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  onTestFinished(() => {
+    if (before) Object.defineProperty(navigator, "clipboard", before);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  });
   vi.mocked(apiFetch).mockResolvedValueOnce({ target: pending });
   render(<TargetApprovalPanel url={url} disabled={false} />);
   await screen.findByRole("button", { name: "TXT 레코드 확인" });
