@@ -18,7 +18,7 @@
 | Bash | E② 판(지금의 샌드박스 실행·intent 예약) | 규칙 3 |
 | WebFetch | **E② 판으로 복원.** 같은 샌드박스 실행기로 가져오고, 본문을 읽기 쉬운 글로 바꾸는 것만 호스트에서 한다 | 원본은 서버 프로세스가 대상에 직접 보낸다. 그대로 두면 E② 우회 |
 | Read·Write·Edit·LS | intent 작업 디렉터리 안에 가둔 판. C29(호출마다 지우는 작업 디렉터리)와 같이 넣어 Bash와 같은 디렉터리를 보게 한다 | 원본 Read는 호스트 경로를 다 읽는다. 서버 호스트에는 제어 비밀이 있다(규칙 2) |
-| Sleep | 그대로 | 송신 없음 |
+| Sleep | **넣지 않는다.** SDK `sleep`은 백그라운드 명령(`run_in_background`)을 기다렸다가 TaskOutput으로 읽는 짝인데, 진단 Bash는 백그라운드 실행을 지원하지 않는다. 기다림이 필요하면 명령 안의 `sleep`이 호출 시간 상한 안에서 한다 | 쓸 데 없이 Worker 시간만 쓴다 |
 | WebSearch | 설치 설정(`webSearch`)대로. 완전 로컬 모드에서는 끈다 | 대상이 아니라 검색 제공자로 나간다(규칙 8) |
 | skills | 복원. 지시문만 읽고, 안의 명령은 Bash(E②)로 실행된다. 이미지에 skills 데이터를 싣는 것은 C30 | 송신 없음 |
 | MCP(Playwright 등) | **진단에서는 계속 뺀다.** 브라우저는 탐색 프로필 | 규칙 3, #410 |
@@ -69,7 +69,7 @@
 
 1. 골격: 진단 Worker·Planner 도구를 원본 도구 목록(WorkerTools·PlannerTools·기본 도구)에서 프로필(`agent/tool_profile.go`)로 고른다. 대상으로 보내거나 E② 결속이 필요한 도구(Bash·후보 제출)는 E② 판으로만 채우고 원본 목록의 같은 이름 도구(호스트 Bash)는 고르지 않는다. 이 단계에서는 프로필에 지금 E② 도구만 넣어 **동작 차이가 없게** 하고, 그것을 시험으로 고정한다. 프로필 밖 도구가 섞이면 시작 전에 거부한다. Worker 프롬프트·세션을 원본 경로(`workerSystem`·`execute`)로 옮기는 것은 3단계에서 원본 프롬프트로 바꿀 때 한다.
 2. C24 일부: Worker 그래프 조회 도구(list_findings·list_assets·search_all_worker_traces·get_worker_trace). 저장소 조회뿐이다. insert_assets는 제품 DB 역할이 assets를 SELECT만 허용해서 넣어도 항상 실패하므로 열린 항목 5와 같이 정한다.
-3. C25와 C24 나머지: 원본 프롬프트·마무리 턴, report_finding(후보)·skills·WebSearch·Sleep.
+3. C25와 C24 나머지: 원본 프롬프트·마무리 턴, report_finding(후보)·skills·WebSearch. report_finding(후보)은 후보 저장에 실제 call_ref가 필요해 원본 입력 형식과 바로 맞지 않고, 지금 부르는 쪽(원본 skills)도 C30 전에는 없어서 skills와 같이 한다.
 4. WebFetch E② 판.
 5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
 6. C27(Worker 실행 중 Planner 깨우기)·kill_work·steer_work·C19는 **C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤.** Planner가 Worker 실행 중에 goal_met·kill_work를 부르면 진행 중인 E② 호출이 취소되고, 지금은 그 결과 불명이 실행 전체를 멈춘다.
