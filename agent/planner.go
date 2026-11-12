@@ -391,6 +391,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		if err := diagnosisPlannerProfile.check(tools); err != nil {
 			return false, "", err
 		}
+		// 진단 Planner도 원본처럼 Todos를 두므로(constrainE2HTTPPlannerOptions) SDK가 TodoWrite를 붙인다. 진단 기록이
+		// 이를 미등록 도구로 남기지 않게 알린다.
+		ctx = withDiagnosticSDKTool(ctx, p.todoFor(ts.ID()).Tool())
 	} else {
 		tools, def, cleanup = AugmentTools(ctx, "planner", base)
 	}
