@@ -72,12 +72,38 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 	addFrom := func(base, method, raw, kind, source string) {
 		if p, ok := c.resolve(raw, base); ok {
 			c.addLocked(method, p, kind, source, from)
+			c.staticFactLocked(normalizedMethod(method), p, kind, source, raw)
 		} else {
 			c.record.Snapshot.Counts.InvalidPaths++
 		}
 	}
 	// 문서의 기준 주소다. <base href>를 만나면 바뀌고, 다른 origin을 가리키면 상대 주소를 풀 수 없다.
 	base, baseKnown, baseSeen := from, true, false
+	formMethod, formPath, formType := "", "", ""
+	formKeys := []string{}
+	finishForm := func() {
+		if formPath != "" {
+			in, _ := c.endpointScope(formMethod, formPath, "form", "html_form")
+			fact := DiscoveryEvidence{Method: formMethod, Path: formPath, Kind: "form", Source: "html_form", Confidence: "inferred", InScope: in}
+			if formMethod == "GET" || formMethod == "HEAD" {
+				fact.QueryKeys = formKeys
+			} else {
+				fact.BodyKeys = formKeys
+				fact.ContentType = formType
+			}
+			// 선택 목록이 차도 폼의 이름 근거는 보호 목록에 남긴다.
+			c.inventoryLocked(fact)
+			if e := c.endpointLocked(formMethod, formPath); e != nil && e.DiscoveryConfidence != "observed" {
+				e.DiscoveryConfidence = "inferred"
+				e.QueryKeys = mergeDiscoveryKeys(e.QueryKeys, fact.QueryKeys)
+				e.BodyKeys = mergeDiscoveryKeys(e.BodyKeys, fact.BodyKeys)
+				if e.ContentType == "" {
+					e.ContentType = fact.ContentType
+				}
+			}
+		}
+		formMethod, formPath, formType, formKeys = "", "", "", nil
+	}
 	add := func(method, raw, kind, source string) {
 		// base가 다른 origin이면 `/x`도 그 origin으로 가므로 전체 주소만 받는다.
 		if !baseKnown && !strings.Contains(raw, "://") {
@@ -103,6 +129,8 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 			if token == html.EndTagToken {
 				if name, _ := z.TagName(); string(name) == "script" {
 					inScript = false
+				} else if string(name) == "form" {
+					finishForm()
 				}
 			}
 			if token != html.StartTagToken && token != html.SelfClosingTagToken {
@@ -134,7 +162,14 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 				if attrs["href"] != "" && preloadsScript(attrs) {
 					add("GET", attrs["href"], "script", "html_script")
 				}
+			case "input", "select", "textarea", "button":
+				if formPath != "" && attrs["name"] != "" {
+					if keys, ok := discoveryKeys([]string{attrs["name"]}); ok {
+						formKeys = mergeDiscoveryKeys(formKeys, keys)
+					}
+				}
 			case "form":
+				finishForm()
 				method := strings.ToUpper(attrs["method"])
 				if method == "" {
 					method = "GET"
@@ -144,8 +179,18 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 					action = from
 				}
 				add(method, action, "form", "html_form")
+				if baseKnown {
+					formPath, _ = c.resolve(action, base)
+					formMethod = normalizedMethod(method)
+					formType, _ = discoveryMediaType(attrs["enctype"])
+					if attrs["enctype"] == "" {
+						formType = "application/x-www-form-urlencoded"
+					}
+				}
 			}
 		}
+
+		finishForm()
 	}
 	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") || strings.Contains(contentType, "html") {
 		doc, docKnown, foreignBase := base, baseKnown, !baseKnown
@@ -166,6 +211,12 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 				c.record.Snapshot.Counts.InvalidPaths++
 			}
 		}
+		if !foreignBase {
+			if doc == "" {
+				doc = from
+			}
+			c.discoverReconLocked(scriptBody, contentType, doc)
+		}
 	}
 }
 
@@ -173,6 +224,11 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 // 정적 발견은 실제 방문이나 SPA 동적 탐색 성공을 의미하지 않는다.
 func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, failure error) {
 	c.mu.Lock()
+	// 한 회차에서 탐색 전용 입력과 레거시 E② 크롤 입력을 함께 열지 않는다.
+	if c.record.Exploration != nil {
+		c.mu.Unlock()
+		return true, ErrExplorationBinding
+	}
 	if c.claimed {
 		failed := c.poisoned || c.record.Snapshot.Stage == "failed"
 		c.mu.Unlock()
