@@ -29,6 +29,10 @@ import (
 const (
 	DenialHeader = "X-Explore-Boundary-Denial"
 	ResultHeader = "X-Explore-Boundary-Result"
+	// SeqHeader는 승인 대상으로 전달한 요청의 경계 기록 순번이다. 서버의 정적 fetch가 받은 본문을 같은 순번의 private
+	// 관찰(응답 해시)과 맞춘다. 경계가 응답을 쓰기 전에 관찰을 남기므로 이 헤더를 받으면 그 순번을 읽을 수 있다.
+	// 대상이 같은 이름을 보내면 지운다.
+	SeqHeader = "X-Explore-Boundary-Seq"
 )
 
 // ProxyConfig는 입구 하나의 프록시 설정이다. 설치가 고정하고 모델·실행기 입력으로 바꾸지 않는다.
@@ -255,6 +259,7 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, host string, po
 	}
 	out.Header.Del(DenialHeader)
 	out.Header.Del(ResultHeader)
+	out.Header.Del(SeqHeader)
 	out.Body = io.NopCloser(bytes.NewReader(body))
 	out.ContentLength = int64(len(body))
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, ForceAttemptHTTP2: false, TLSHandshakeTimeout: p.cfg.Timeout, ResponseHeaderTimeout: p.cfg.Timeout,
@@ -277,8 +282,16 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, host string, po
 		}
 	}
 	defer transport.CloseIdleConnections()
+	// 관찰을 남긴 뒤 응답을 쓴다. 순번 헤더를 받은 쪽이 바로 그 순번을 읽을 수 있어야 한다(지연 Done은 한 번만 효과).
+	finish := func() {
+		ticket.Done(result)
+		if d.Dest == DestApproved {
+			w.Header().Set(SeqHeader, strconv.FormatUint(ticket.Seq(), 10))
+		}
+	}
 	resp, err := transport.RoundTrip(out)
 	if err != nil {
+		finish()
 		w.Header().Set(ResultHeader, "upstream_failed")
 		w.WriteHeader(http.StatusBadGateway)
 		return
@@ -289,6 +302,7 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, host string, po
 	result.Bytes = int64(len(respBody))
 	if err != nil || int64(len(respBody)) > p.cfg.MaxResponseBytes {
 		// 상한을 넘는 응답은 전달하지 않는다. 받은 바이트 수만 기록한다.
+		finish()
 		w.Header().Set(ResultHeader, "response_limit")
 		w.WriteHeader(http.StatusBadGateway)
 		return
@@ -296,7 +310,7 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, host string, po
 	result.ResponseSHA256 = sha256.Sum256(respBody)
 	for k, vs := range resp.Header {
 		// 경계 표시 헤더는 경계만 붙인다. 대상이 같은 이름을 보내 결과를 꾸미지 못하게 지운다(#488 리뷰).
-		if strings.EqualFold(k, "Connection") || strings.EqualFold(k, DenialHeader) || strings.EqualFold(k, ResultHeader) {
+		if strings.EqualFold(k, "Connection") || strings.EqualFold(k, DenialHeader) || strings.EqualFold(k, ResultHeader) || strings.EqualFold(k, SeqHeader) {
 			continue
 		}
 		for _, v := range vs {
@@ -311,6 +325,7 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, host string, po
 	} else {
 		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
 	}
+	finish()
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
 }

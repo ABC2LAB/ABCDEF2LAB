@@ -460,6 +460,14 @@ func boundedKeys(keys []string) []string {
 	return out
 }
 
+// Seq는 이 요청의 경계 기록 순번이다.
+func (t *Ticket) Seq() uint64 {
+	if t == nil {
+		return 0
+	}
+	return t.seq
+}
+
 // Done은 전달한 요청의 결과를 기록하고 진행 중 수를 줄인다. 승인 대상 요청만 private 관찰로 남긴다.
 func (t *Ticket) Done(r Result) {
 	if t == nil {
