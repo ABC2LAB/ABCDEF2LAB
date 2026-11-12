@@ -21,8 +21,88 @@ type ProductRequest struct {
 	TargetID         string              `json:"target_id,omitempty"`
 	ProfileID        string              `json:"profile_id,omitempty"`
 	Registration     *TargetRegistration `json:"registration,omitempty"`
-	// Account는 대상 계정 조작(account_*)의 입력이다(C14 결정 1·2, docs/account-login-decision.md). 자격 값은 받지 않는다.
+	// Account는 대상 계정 조작(account_*)의 입력이다(C14 결정 1·2, docs/account-login-decision.md).
 	Account *AccountRequest `json:"account,omitempty"`
+	// Login은 대상 로그인 방식 설정(target_login_set)이다(C14 결정 3). 자격 값은 없다.
+	Login *TargetLogin `json:"login,omitempty"`
+	// Credential은 계정 자격(account_credential_set)이다. 준비 프로세스가 보호 파일에 쓰고 저널에는 참조·해시만 남긴다.
+	// 응답·로그·모델 입력에는 나가지 않는다.
+	Credential *AccountCredential `json:"credential,omitempty"`
+}
+
+// TargetLogin은 대상 앱의 로그인 방식이다. 앱의 경로·필드 이름은 코드가 아니라 이 설정으로만 받는다(하드코딩 금지).
+// 경로는 승인된 경로 접두 안이어야 한다. 세션 위치는 Set-Cookie 이름 목록(Cookies) 또는 JSON 응답 필드 경로(JSONField)와
+// 그 값을 실을 요청 헤더(Header·Prefix) 중 하나다.
+type TargetLogin struct {
+	Method        string   `json:"method"`
+	Path          string   `json:"path"`
+	Format        string   `json:"format"`
+	UsernameField string   `json:"username_field"`
+	PasswordField string   `json:"password_field"`
+	Cookies       []string `json:"cookies,omitempty"`
+	JSONField     string   `json:"json_field,omitempty"`
+	Header        string   `json:"header,omitempty"`
+	Prefix        string   `json:"prefix,omitempty"`
+}
+
+// AccountCredential은 계정 하나의 로그인 자격이다.
+type AccountCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+var (
+	loginField  = regexp.MustCompile(`^[A-Za-z0-9_.\-\[\]]{1,64}$`)
+	cookieName  = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
+	headerName  = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+	jsonSegment = regexp.MustCompile(`^[A-Za-z0-9_\-]{1,64}$`)
+)
+
+// ValidTargetLogin은 로그인 방식의 형식 검사다. 경로가 승인 경로 접두 안인지는 대상 기록을 가진 쪽이 따로 본다.
+func ValidTargetLogin(l TargetLogin) bool {
+	if l.Method != "POST" || (l.Format != "form" && l.Format != "json") || !loginField.MatchString(l.UsernameField) || !loginField.MatchString(l.PasswordField) ||
+		l.UsernameField == l.PasswordField || len(l.Path) < 1 || len(l.Path) > 512 || !strings.HasPrefix(l.Path, "/") || strings.HasPrefix(l.Path, "//") || strings.ContainsAny(l.Path, "?#%;\\ ") {
+		return false
+	}
+	cookies := len(l.Cookies) > 0
+	field := l.JSONField != "" || l.Header != "" || l.Prefix != ""
+	if cookies == field {
+		return false
+	}
+	if cookies {
+		if len(l.Cookies) > 8 {
+			return false
+		}
+		seen := map[string]bool{}
+		for _, c := range l.Cookies {
+			if !cookieName.MatchString(c) || seen[c] {
+				return false
+			}
+			seen[c] = true
+		}
+		return true
+	}
+	segments := strings.Split(l.JSONField, ".")
+	// 접두는 선택이다(값만 싣는 헤더도 있다). 있으면 제어 문자 없는 32바이트 이하다.
+	if len(segments) > 8 || !headerName.MatchString(l.Header) || l.Prefix != "" && !validText(l.Prefix, 32) {
+		return false
+	}
+	switch strings.ToLower(l.Header) {
+	case "host", "cookie", "content-length", "transfer-encoding", "connection", "proxy-authorization":
+		return false
+	}
+	for _, s := range segments {
+		if !jsonSegment.MatchString(s) {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidAccountCredential은 자격 값의 형식 검사다(길이·제어 문자). 값 자체는 검사 뒤에도 남기지 않는다.
+func ValidAccountCredential(c AccountCredential) bool {
+	return len(c.Username) >= 1 && len(c.Username) <= 256 && len(c.Password) >= 1 && len(c.Password) <= 512 &&
+		!strings.ContainsAny(c.Username, "\x00\r\n") && !strings.ContainsAny(c.Password, "\x00\r\n")
 }
 
 // AccountRequest는 대상에 붙인 계정 하나를 가리킨다. Label은 화면·감사용 이름이고 사용자명 원문이 아니다.
@@ -44,6 +124,8 @@ type ProductAccount struct {
 	ClassifiedAt   time.Time `json:"classified_at,omitempty"`
 	// MarkedRevision은 시험 계정으로 표시한 대상 판이다(표시한 적 없으면 0).
 	MarkedRevision uint64 `json:"marked_revision,omitempty"`
+	// CredentialConfigured는 보호 파일에 자격이 있다는 뜻이다. 값·해시는 내보내지 않는다.
+	CredentialConfigured bool `json:"credential_configured,omitempty"`
 }
 
 // 대상 계정 상한·라벨 형식이다. 라벨은 소문자·숫자·밑줄·하이픈만 받아 사용자명·이메일 원문을 넣지 못하게 한다.
@@ -92,6 +174,7 @@ type ProductResponse struct {
 	Credential *ProductCredential      `json:"credential,omitempty"`
 	Accounts   []ProductAccount        `json:"accounts,omitempty"`
 	Account    *ProductAccount         `json:"account,omitempty"`
+	Login      *TargetLogin            `json:"login,omitempty"`
 	Reason     string                  `json:"reason,omitempty"`
 }
 
@@ -121,15 +204,29 @@ func validProductRequest(r *ProductRequest) bool {
 		}
 		switch r.Operation {
 		case "accounts":
-			return r.Account == nil
+			return r.Account == nil && r.Login == nil && r.Credential == nil
 		case "account_register", "account_unmark":
-			return r.Account != nil && ValidAccountLabel(r.Account.Label) && !r.Account.StatementConfirmed
+			return r.Account != nil && ValidAccountLabel(r.Account.Label) && !r.Account.StatementConfirmed && r.Login == nil && r.Credential == nil
 		case "account_mark_test":
-			return r.Account != nil && ValidAccountLabel(r.Account.Label) && r.Account.StatementConfirmed
+			return r.Account != nil && ValidAccountLabel(r.Account.Label) && r.Account.StatementConfirmed && r.Login == nil && r.Credential == nil
+		case "account_credential_set":
+			return r.Account != nil && ValidAccountLabel(r.Account.Label) && !r.Account.StatementConfirmed && r.Login == nil && r.Credential != nil && ValidAccountCredential(*r.Credential)
 		}
 		return false
 	}
-	if r.Account != nil {
+	if strings.HasPrefix(r.Operation, "target_login") {
+		if !reference.MatchString(r.TargetID) || r.ProfileID != "" || r.Registration != nil || r.TargetURL != "" || r.JobID != "" || r.CommandKey != "" || r.ExpectedRevision != 0 || len(r.SelectedIDs) > 0 || r.Account != nil || r.Credential != nil {
+			return false
+		}
+		switch r.Operation {
+		case "target_login":
+			return r.Login == nil
+		case "target_login_set":
+			return r.Login != nil && ValidTargetLogin(*r.Login)
+		}
+		return false
+	}
+	if r.Account != nil || r.Login != nil || r.Credential != nil {
 		return false
 	}
 	if strings.HasPrefix(r.Operation, "workflow_") {
