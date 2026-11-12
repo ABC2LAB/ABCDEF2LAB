@@ -30,7 +30,7 @@ MCP는 `--cdp-endpoint http://<link .20>:9222 --host <control .20> --port 8931 -
 
 `up --boundary real`이면 계약 fixture 대신 실제 탐색 경계(`cmd/explore-boundary`)를 같은 자리(브라우저·직접 입구 `.10:8080`, 제어 소켓 `/run-fixture/boundary.sock`)에 띄운다. 경계 CA 개인키는 지우지 않고 경계 전용 입력(`boundary-in/`, 하네스 uid 0700·0600)으로 옮기고, 대상 leaf의 SPKI와 대상 주소를 context(`target_spki`·`target_connect`)로 넘긴다. driver는 `boundary_kind=real`이면 `exploreboundary.ControlBoundary`(대상 값은 서버처럼 제어 소켓으로 넘김)·`ControlReader`(관찰·순번·기록)·`DirectFetch`(정적 크롤)를 쓰고, 최종 차단 사유는 경계 기록(`records`)에서 센다. 결과의 `boundary_kind`는 `explore_boundary`다.
 
-경계 안에서는 외부 이름을 풀 DNS가 없어 지금은 `full_local`만 본다. `external_allowed`(CDN 렌더링 양성)는 경계에 시험 resolver를 붙인 뒤 한다.
+지금은 `full_local`만 본다. `external_allowed`(CDN 렌더링 양성)는 실제 경계로는 이 배치에서 양성이 나올 수 없다: 하네스 망은 사설 대역이라 CDN 역할 수신기도 사설 주소이고, 실제 경계는 사설 주소로 풀리는 외부 이름을 내부망(`internal_address`)으로 막는다(맞는 동작). 경계 안에 이름 풀이도 없다. 외부 자원 양성은 공개 주소의 소유 CDN이 있는 환경에서 따로 본다.
 
 2026-11-13 결과(`full_local`): fixture·실제 경계 모두 driver `PASS`. 실제 경계는 대상 전달 23, 관찰 22·추정 4, 차단 `external_blocked_local` 20·`method_not_approved` 8·`out_of_scope_origin` 2·`risky_path` 2, 정리 뒤 MCP·Chromium 중지·소유 자원 0. 같은 이름·다른 포트 이동 단계를 driver에 더해 origin 대조를 두 경계에서 같은 사유(`out_of_scope_origin`)로 본다(실제 경계는 다른 이름을 완전 로컬에서 `external_blocked_local`로 막는다).
 
