@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +18,16 @@ import (
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/norma/llm"
 )
+
+// reservedInputFor는 before가 예약하는 입력 토큰(요청 JSON 바이트 + framing 여유, C28 결정 1)이다.
+func reservedInputFor(t *testing.T, req llm.CompletionRequest) int64 {
+	t.Helper()
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return int64(len(raw)) + firstDiagnosisFramingTokens
+}
 
 func modelBudgetFixture(t *testing.T, observe func(diagnosisprep.ModelUsage) error) (*FirstDiagnosisModelBudget, agent.Config) {
 	t.Helper()
@@ -45,7 +57,8 @@ func TestFirstDiagnosisModelBudgetSharesPreparationAndRun(t *testing.T) {
 		t.Fatal("shared budget reset")
 	}
 	u := b.Snapshot()
-	if u.Requests != 2 || u.ReservedInputTokens != 131072 || u.ReservedOutputTokens != 256 || u.InputTokens != 20 || u.OutputTokens != 40 || !u.UsageKnown {
+	sample := llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("owned synthetic input")}}
+	if u.Requests != 2 || u.ReservedInputTokens != 2*reservedInputFor(t, sample) || u.ReservedOutputTokens != 256 || u.InputTokens != 20 || u.OutputTokens != 40 || !u.UsageKnown {
 		t.Fatalf("bad aggregate: %+v", u)
 	}
 }
@@ -125,7 +138,7 @@ func TestFirstDiagnosisModelBudgetRedirectIsNotFollowedAndCountsReservation(t *t
 			if b.after(usage, 128, callErr) == nil || first.Load() != 1 || second.Load() != 0 {
 				t.Fatal("redirect escaped budget")
 			}
-			if u := b.Snapshot(); !u.UsageKnown || u.UnknownUsageCalls != 1 || u.Requests != 1 || u.InputTokens != 65536 || u.OutputTokens != 128 {
+			if u := b.Snapshot(); !u.UsageKnown || u.UnknownUsageCalls != 1 || u.Requests != 1 || u.InputTokens != reservedInputFor(t, req) || u.OutputTokens != 128 {
 				t.Fatalf("failed call not counted at its reservation: %+v", u)
 			}
 			if b.before(context.Background(), cfg, &req) != nil || b.Snapshot().Requests != 2 {
@@ -190,7 +203,7 @@ func TestFirstDiagnosisModelBudgetFailedCallCountsReservation(t *testing.T) {
 				return
 			}
 			// 보고된 부분 사용량이 아니라 예약한 입력·출력으로 센다.
-			if !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != 65536 || u.OutputTokens != 100 || u.Requests != 1 || persisted[len(persisted)-1] != u {
+			if !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != reservedInputFor(t, req) || u.OutputTokens != 100 || u.Requests != 1 || persisted[len(persisted)-1] != u {
 				t.Fatalf("bounded usage: %+v", u)
 			}
 			if b.before(context.Background(), cfg, &req) != nil {
@@ -200,7 +213,7 @@ func TestFirstDiagnosisModelBudgetFailedCallCountsReservation(t *testing.T) {
 				t.Fatal("next call")
 			}
 			u = b.Snapshot()
-			if !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != 65546 || u.OutputTokens != 120 {
+			if !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != reservedInputFor(t, req)+10 || u.OutputTokens != 120 {
 				t.Fatalf("mixed usage: %+v", u)
 			}
 			// 승인 예산(호출 2회)은 넓어지지 않는다.
@@ -228,5 +241,48 @@ func TestFirstDiagnosisFailedCallBoundedClassification(t *testing.T) {
 		if got := failedCallBounded(tc.err, tc.external); got != tc.want {
 			t.Fatalf("%s: bounded=%v", tc.name, got)
 		}
+	}
+}
+
+// 입력 예약은 컨텍스트 창 전체가 아니라 요청 크기의 상한이다(P3 결정안 C28 결정 1). 같은 승인 예산으로 작은 요청을
+// 더 보낼 수 있고, 창보다 큰 요청과 예약을 넘는 보고 사용량은 지금처럼 막는다.
+func TestFirstDiagnosisModelBudgetReservesRequestSize(t *testing.T) {
+	cfg := agent.Config{Format: llm.FormatOpenAI, ContextWindowK: 8, MaxTokens: 128}
+	req := llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("owned synthetic input")}}
+	want := reservedInputFor(t, req)
+	// 입력 예산을 작은 요청 3개 분량으로 딱 맞춘다(승인은 창 하나 이상이어야 한다). 창 전체(8192)로 예약하면
+	// 두 번째 호출부터 거부된다.
+	b, err := NewFirstDiagnosisModelBudget(diagnosisprep.Budget{ModelRequests: 4, InputTokens: 3 * want, OutputTokens: 4 * 128}, 8192, 128, func(diagnosisprep.ModelUsage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for call := int64(1); call <= 3; call++ {
+		if err := b.before(context.Background(), cfg, &req); err != nil {
+			t.Fatalf("small call %d denied: %v", call, err)
+		}
+		if u := b.Snapshot(); u.ReservedInputTokens != call*want || want >= 8192 {
+			t.Fatalf("call %d reserved %d, want %d", call, u.ReservedInputTokens, call*want)
+		}
+		if err := b.after(llm.Usage{InputTokens: 10, OutputTokens: 20}, 128, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 승인 입력 예산은 예약 합계로 지킨다. 남은 입력 예산이 요청 하나보다 작으면 거부한다.
+	if b.before(context.Background(), cfg, &req) == nil || b.Snapshot().Requests != 3 {
+		t.Fatal("input budget exceeded")
+	}
+	// 창(65536)에 framing 여유를 더하면 넘는 요청은 보내지 않는다.
+	b, cfg = modelBudgetFixture(t, func(diagnosisprep.ModelUsage) error { return nil })
+	want = reservedInputFor(t, req)
+	big := llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText(strings.Repeat("a", 65536-firstDiagnosisFramingTokens))}}
+	if b.before(context.Background(), cfg, &big) == nil || b.Snapshot().Requests != 0 {
+		t.Fatal("request larger than the context window reserved")
+	}
+	// 보고된 입력이 예약(요청 바이트 + 여유)을 넘으면 상한 가정이 깨진 것이라 막는다.
+	if b.before(context.Background(), cfg, &req) != nil {
+		t.Fatal("reservation")
+	}
+	if b.after(llm.Usage{InputTokens: int(want) + 1, OutputTokens: 1}, 128, nil) == nil || b.Snapshot().UsageKnown || b.before(context.Background(), cfg, &req) == nil {
+		t.Fatal("usage above the reservation trusted")
 	}
 }
