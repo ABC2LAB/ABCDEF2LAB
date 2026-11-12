@@ -126,7 +126,10 @@ type ModelUsage struct {
 	ReservedOutputTokens  int64 `json:"reserved_output_tokens"`
 	CostUSDMicros         int64 `json:"cost_usd_micros"`
 	ReservedCostUSDMicros int64 `json:"reserved_cost_usd_micros,omitempty"`
-	UsageKnown            bool  `json:"usage_known"`
+	// UsageKnown은 모든 호출이 실제 값 또는 예약 상한으로 정산됐다는 뜻이다. 상한으로 정산한 호출 수는
+	// UnknownUsageCalls이고, 0보다 크면 입력·출력·비용은 실제 사용의 상한이다(P3 결정안 C05).
+	UsageKnown        bool  `json:"usage_known"`
+	UnknownUsageCalls int64 `json:"unknown_usage_calls,omitempty"`
 }
 
 // 준비 단계에서 결과가 불명이면 Started=false일 수 있다.

@@ -38,8 +38,11 @@ type FirstDiagnosisModelBudget struct {
 	external      *llmpolicy.OpenRouterPolicy
 	manifestPath  string
 	lastExternal  llmpolicy.OpenRouterUsage
-	targetDrain   *firstDiagnosisTargetDrain
-	admission     func(context.Context) error
+	// 진행 중 호출 하나의 예약(동시 호출 1, gate 안). 실패한 호출을 이 양으로 정산한다(C05).
+	callInput   int64
+	callCost    int64
+	targetDrain *firstDiagnosisTargetDrain
+	admission   func(context.Context) error
 }
 
 // 실행 전에 한 번만 설정한다. 사용자 중단·시간 상한·감사 실패는 hard context로 즉시 취소한다.
@@ -241,6 +244,7 @@ func (b *FirstDiagnosisModelBudget) before(ctx context.Context, cfg agent.Config
 	b.usage.ReservedInputTokens += b.inputPerCall
 	b.usage.ReservedOutputTokens += int64(req.MaxTokens)
 	b.usage.ReservedCostUSDMicros += cost
+	b.callInput, b.callCost = b.inputPerCall, cost
 	if b.external != nil {
 		b.lastExternal = b.external.Snapshot()
 	}
@@ -250,6 +254,16 @@ func (b *FirstDiagnosisModelBudget) before(ctx context.Context, cfg agent.Config
 		return ErrFirstDiagnosisModelBudget
 	}
 	return nil
+}
+
+// failedCallBounded는 실패한 호출을 예약 상한으로 정산해도 되는지 본다. 호출이 성공했는데 사용량이 예약을
+// 넘거나 형식이 틀리면 상한을 믿을 수 없어 막는다. 로컬 모델 정책이 막은 요청과 외부 제공자 정책이 막힌 상태도
+// 막는다(통제 경계 사건이지 일시 실패가 아니다). 외부 제공자의 일시 오류 구분은 C06에서 한다.
+func failedCallBounded(callErr error, externalBlocked bool) bool {
+	if callErr == nil || externalBlocked || errors.Is(callErr, llmpolicy.ErrRequestBlocked) || errors.Is(callErr, llmpolicy.ErrClientOptions) {
+		return false
+	}
+	return true
 }
 
 func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, callErr error) error {
@@ -269,11 +283,21 @@ func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, call
 			b.usage.CostUSDMicros += next.CostMicros - previous.CostMicros
 		}
 	}
-	if known {
+	switch {
+	case known:
 		b.usage.InputTokens += int64(usage.InputTokens)
 		b.usage.OutputTokens += int64(usage.OutputTokens)
 		b.usage.UsageKnown = true
-	} else {
+	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked):
+		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
+		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.
+		// 다음 호출의 예산 검사는 예약 합계로 하므로 상한은 넓어지지 않는다.
+		b.usage.InputTokens += b.callInput
+		b.usage.OutputTokens += int64(outputLimit)
+		b.usage.CostUSDMicros += b.callCost
+		b.usage.UnknownUsageCalls++
+		b.usage.UsageKnown = true
+	default:
 		b.blocked = true
 		b.usage.UsageKnown = false
 	}

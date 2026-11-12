@@ -475,9 +475,9 @@ func TestStopRevisionAndPreparationCancellation(t *testing.T) {
 }
 func TestPublishRejectsRegressionsAndKeepsKnownFacts(t *testing.T) {
 	s, b, _ := newFixture(t)
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 6)
 	b.run = func(ctx context.Context, e Execution, p Publish) error {
-		u := Update{State: Running, Phase: ExecutionPhase, TaskID: "42", PreparationStarted: true, AuthorityState: AuthorityConsumed, Started: true, ModelUsage: &ModelUsage{Requests: 1, ReservedInputTokens: 10}}
+		u := Update{State: Running, Phase: ExecutionPhase, TaskID: "42", PreparationStarted: true, AuthorityState: AuthorityConsumed, Started: true, ModelUsage: &ModelUsage{Requests: 1, ReservedInputTokens: 10, UnknownUsageCalls: 1, UsageKnown: true}}
 		if err := p(u); err != nil {
 			return err
 		}
@@ -494,14 +494,21 @@ func TestPublishRejectsRegressionsAndKeepsKnownFacts(t *testing.T) {
 		bad = u
 		bad.Phase = Planning
 		errCh <- p(bad)
+		// 상한으로 정산한 호출 수는 줄지 않고 요청 수를 넘지 않는다(C05).
+		bad = u
+		bad.ModelUsage = &ModelUsage{Requests: 1, ReservedInputTokens: 10, UsageKnown: true}
+		errCh <- p(bad)
+		bad = u
+		bad.ModelUsage = &ModelUsage{Requests: 1, ReservedInputTokens: 10, UnknownUsageCalls: 2, UsageKnown: true}
+		errCh <- p(bad)
 		return errors.New("interrupted")
 	}
 	j := create(t, s, "create")
 	start(t, s, j, "start")
 	got := awaitState(t, s, j.ID, Unknown)
-	for range 4 {
+	for i := range 6 {
 		if <-errCh == nil {
-			t.Fatal("regression allowed")
+			t.Fatalf("regression %d allowed", i)
 		}
 	}
 	if !got.Started || got.AuthorityState != AuthorityConsumed || got.TaskID != "42" {
