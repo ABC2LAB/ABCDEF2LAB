@@ -10,17 +10,6 @@ import (
 // 호스트 파일 도구(Read·Write·Edit·LS)가 쓰는 intent 보관소 연산이다(docs/workspace-decision.md §2-4, C29). 보관소 안의
 // 상대 경로만 다루고 대상에 요청을 보내지 않는다. 모델에 돌려줄 내용의 가림(RedactOutput)은 호출자가 한다.
 
-var (
-	// ErrWorkspaceBusy는 같은 intent의 호출이 보관소를 쓰는 중이라 지금 바꿀 수 없다는 뜻이다.
-	ErrWorkspaceBusy = errors.New("e2runner: workspace in use by a running call")
-	// ErrWorkspaceFile은 경로가 틀렸거나 그 파일·디렉터리가 없다는 뜻이다.
-	ErrWorkspaceFile = errors.New("e2runner: workspace path unavailable")
-	// ErrWorkspaceFull은 바꾼 결과가 작업 공간 상한을 넘는다는 뜻이다.
-	ErrWorkspaceFull = errors.New("e2runner: workspace limit exceeded")
-	// ErrWorkspaceEdit은 고칠 문자열이 없거나 하나로 정해지지 않는다는 뜻이다.
-	ErrWorkspaceEdit = errors.New("e2runner: edit target not unique")
-)
-
 func (r *Runner) endWorkspaceCall(intentID int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -159,4 +148,9 @@ func (r *Runner) changeWorkspaceFile(intentID int64, name string, next func([]by
 		return ErrUnavailable
 	}
 	return nil
+}
+
+// WorkspaceEnabled는 이 러너가 intent 보관소를 쓰는지 본다(파일 도구를 붙일지).
+func (r *Runner) WorkspaceEnabled() bool {
+	return r != nil && r.runnerState != nil && r.cfg.PersistWorkspace
 }

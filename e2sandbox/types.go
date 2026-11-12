@@ -55,3 +55,10 @@ type Result struct {
 	Workspace      []byte
 	WorkspaceState string
 }
+
+// WorkspaceEntry는 작업 공간 항목 하나다(파일 도구 LS용). 이름은 작업 공간 기준 상대 경로의 마지막 조각이다.
+type WorkspaceEntry struct {
+	Name string
+	Dir  bool
+	Size int64
+}
