@@ -44,12 +44,11 @@ import {
 } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import * as api from "../live/api";
-import { urlOutcomeText } from "../live/urlMap";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
 import { LiveFeeds } from "../live/feeds";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, runUrlAction, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
-import { urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
+import { urlOutcomeText, urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
@@ -451,6 +450,41 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
       }),
     );
     expect(sessionStorage.getItem("abc2lab.urlDiagnosisHandle.v2")).not.toContain("externalTransferConfirmed");
+  });
+  it("외부 모델 + 탐색 프로필이면 외부 CDN 사전고지를 띄운다", async () => {
+    const limits = {
+      format: "abc2lab.workbench-flow/v1" as const,
+      max_pages: 10,
+      max_endpoints: 20,
+      max_response_bytes: 1000,
+      allow_reversible_writes: false,
+    };
+    saveHandle();
+    u.readURLCatalog.mockResolvedValue({
+      ...catalog,
+      profiles: [{ ...catalog.profiles[0], model: externalModel, workflow: limits }],
+    });
+    u.readURLStatus.mockResolvedValue(externalReady);
+    mount("new");
+    expect(
+      await screen.findByText(/브라우저 탐색은 외부 자원\(CDN 등\)을 외부 호스트에서 받습니다/),
+    ).toBeInTheDocument();
+  });
+  it("로컬 모델(완전 로컬)에서는 외부 CDN 사전고지를 띄우지 않는다", async () => {
+    const limits = {
+      format: "abc2lab.workbench-flow/v1" as const,
+      max_pages: 10,
+      max_endpoints: 20,
+      max_response_bytes: 1000,
+      allow_reversible_writes: false,
+    };
+    saveHandle();
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], workflow: limits }] });
+    u.readURLStatus.mockResolvedValue(ready);
+    mount("new");
+    // 안전 장치(scope)는 떠도 CDN 고지는 없다
+    expect(await screen.findByText("승인된 사이트 · 경로에만 요청")).toBeInTheDocument();
+    expect(screen.queryByText(/브라우저 탐색은 외부 자원/)).toBeNull();
   });
   it("시작 결과가 불명이면 다시 보내지 않고 상태 조회만 남긴다", async () => {
     saveHandle();
