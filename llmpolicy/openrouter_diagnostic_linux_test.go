@@ -206,3 +206,31 @@ func TestOpenRouterDiagnosticConcurrentRequestsHavePerAttemptAccounting(t *testi
 		t.Fatal("concurrent per-attempt events disagree with aggregate")
 	}
 }
+
+// 같은 호출 칸으로 온 두 번째 요청의 거부도 진단 로그 어휘 안의 사유로 남고, 로거를 망가뜨리지 않는다(#458 재상 지적).
+func TestOpenRouterCallSlotReuseDiagnosticEvent(t *testing.T) {
+	ctx, log := routerDiagnosticFixture(t)
+	p := openRouterFixture(t)
+	c := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { return openRouterResponse(openRouterReply), nil }))
+	slot := &OpenRouterCall{}
+	for i := 0; i < 2; i++ {
+		req := openRouterRequest()
+		resp, err := c.Do(req.WithContext(WithOpenRouterCall(ctx, slot)))
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if (err == nil) != (i == 0) {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	if log.Err() != nil || log.Incomplete() {
+		t.Fatal("slot reuse broke the diagnostic logger", log.Err())
+	}
+	found := false
+	for _, e := range routerDiagnosticEvents(t, log) {
+		found = found || e.Event == "model_request_denied" && e.ReasonCode == "call_slot_reused"
+	}
+	if !found {
+		t.Fatal("slot reuse not recorded")
+	}
+}
