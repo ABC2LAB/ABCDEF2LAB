@@ -773,23 +773,21 @@ type E2HTTPControl struct {
 	view     E2HTTPControlView
 }
 type E2HTTPControlView struct {
-	TaskRef         string `json:"task_ref"`
-	Calls           int    `json:"calls"`
-	MaxCalls        int    `json:"max_calls"`
-	Decision        string `json:"decision"`
-	AlternativeUsed bool   `json:"alternative_used"`
-	RetryAllowed    bool   `json:"retry_allowed"`
-	LastCallRef     string `json:"last_call_ref,omitempty"`
+	TaskRef      string `json:"task_ref"`
+	Calls        int    `json:"calls"`
+	MaxCalls     int    `json:"max_calls"`
+	Decision     string `json:"decision"`
+	RetryAllowed bool   `json:"retry_allowed"`
+	LastCallRef  string `json:"last_call_ref,omitempty"`
 }
 type e2HTTPAction struct {
 	inflight bool
 	callRef  string
 	ordinal  int
 }
-type e2HTTPIntentState struct{ policyFailed, alternativeUsed, closed, inflight bool }
+type e2HTTPIntentState struct{ closed, inflight bool }
 type e2HTTPTicket struct {
 	action, intent [32]byte
-	alternative    bool
 	ordinal        int
 }
 
@@ -840,11 +838,6 @@ func (c *E2HTTPControl) reserve(snapshot e2proxy.ExecutionView, intent json.RawM
 		c.view.Decision = reason
 		c.view.LastCallRef = last
 		c.view.Calls = c.calls
-		if intentState := c.intents[intentKey]; intentState != nil {
-			c.view.AlternativeUsed = intentState.alternativeUsed
-		} else {
-			c.view.AlternativeUsed = false
-		}
 		return e2HTTPTicket{}, c.view, ErrE2HTTPBlocked
 	}
 	if snapshot.Scope.TaskRef != c.taskRef || snapshot.State != "active" || !snapshot.AuditComplete {
@@ -853,6 +846,9 @@ func (c *E2HTTPControl) reserve(snapshot e2proxy.ExecutionView, intent json.RawM
 	if c.calls >= c.maxCalls {
 		return refuse("task_call_limit", "")
 	}
+	// 결과를 확인하지 못한 명령(결과 불명·마감 미완료·실행기 실패)만 다른 intent에서도 다시 보내지 않는다. 결과 불명
+	// 쓰기를 자동으로 다시 보내지 않기 위해서다. 정책 거부된 명령은 막지 않는다. E②가 다시 거부하고 그 반복은
+	// 반복 차단 수로 잰다(C19).
 	if prior, exists := c.actions[actionKey]; exists {
 		if prior.inflight {
 			return refuse("action_inflight", prior.callRef)
@@ -867,18 +863,15 @@ func (c *E2HTTPControl) reserve(snapshot e2proxy.ExecutionView, intent json.RawM
 	if state.inflight {
 		return refuse("intent_call_inflight", "")
 	}
-	if state.closed || state.policyFailed && state.alternativeUsed {
-		return refuse("intent_replan_exhausted", "")
-	}
-	alternative := state.policyFailed
-	if alternative {
-		state.alternativeUsed = true
+	// 결과를 확인하지 못한 intent는 같은 목적으로 다시 보내지 않는다. 정책 거부 뒤 다른 명령 수는 묶지 않는다(C19).
+	if state.closed {
+		return refuse("intent_outcome_uncertain", "")
 	}
 	c.calls++
 	state.inflight = true
 	c.actions[actionKey] = e2HTTPAction{inflight: true, ordinal: c.calls}
-	c.view = E2HTTPControlView{TaskRef: c.taskRef, Calls: c.calls, MaxCalls: c.maxCalls, Decision: "admitted", AlternativeUsed: state.alternativeUsed}
-	return e2HTTPTicket{action: actionKey, intent: intentKey, alternative: alternative, ordinal: c.calls}, c.view, nil
+	c.view = E2HTTPControlView{TaskRef: c.taskRef, Calls: c.calls, MaxCalls: c.maxCalls, Decision: "admitted"}
+	return e2HTTPTicket{action: actionKey, intent: intentKey, ordinal: c.calls}, c.view, nil
 }
 func (c *E2HTTPControl) finish(ticket e2HTTPTicket, result e2runner.Result, runFailed bool) E2HTTPControlView {
 	c.mu.Lock()
@@ -892,20 +885,13 @@ func (c *E2HTTPControl) finish(ticket e2HTTPTicket, result e2runner.Result, runF
 	state.inflight = false
 	classification := e2HTTPPolicyClassification(result)
 	negative := runFailed || classification != "completed" || !result.Trusted.Final || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
-	policyFailure := classification == "policy_not_executed" || classification == "partial_policy_denial" || classification == "unsupported" || classification == "partial_unsupported"
 	incomplete := classification == "result_unknown" || !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
-	retryableToolOutcome := !runFailed && (classification == "tool_failure" || classification == "transient_failure" || classification == "forward_not_attempted")
-	if !negative || retryableToolOutcome && !incomplete {
-		// Ordinary tool failures use the shared call budget, not policy replan quota.
-		delete(c.actions, ticket.action)
-	} else {
-		// Denied or uncertain actions remain blocked across new intent IDs.
+	if incomplete || runFailed {
+		// 결과를 확인하지 못한 명령은 새 intent ID로도 다시 보내지 않는다. 정책 거부·도구 실패·연결 실패는
+		// 결과가 확인된 것이라 공유 호출 상한 안에서 다시 시도할 수 있다(C19).
 		c.actions[ticket.action] = e2HTTPAction{callRef: result.Trusted.Call.CallRef, ordinal: ticket.ordinal}
-	}
-	if policyFailure {
-		state.policyFailed = true
-	} else if ticket.alternative && !negative {
-		state.policyFailed = false
+	} else {
+		delete(c.actions, ticket.action)
 	}
 	if incomplete {
 		state.closed = true
@@ -920,7 +906,7 @@ func (c *E2HTTPControl) finish(ticket e2HTTPTicket, result e2runner.Result, runF
 			decision = "control_incomplete"
 		}
 	}
-	c.view = E2HTTPControlView{TaskRef: c.taskRef, Calls: c.calls, MaxCalls: c.maxCalls, Decision: decision, AlternativeUsed: state.alternativeUsed, LastCallRef: result.Trusted.Call.CallRef}
+	c.view = E2HTTPControlView{TaskRef: c.taskRef, Calls: c.calls, MaxCalls: c.maxCalls, Decision: decision, LastCallRef: result.Trusted.Call.CallRef}
 	return c.view
 }
 
@@ -929,9 +915,10 @@ Create intents only inside the current approved scope. This planner cannot send
 target requests, execute shell commands, widen policy, create findings, or
 declare unsupported evidence a confirmed result. Worker policy refusal,
 unsupported path, transient failure, unknown outcome, and incomplete closure
-are separate program states. A refused identical action is never retried;
-at most one different alternative follows a policy refusal of the same
-canonical intent, within the shared task limits. A new intent/call does not renew limits.
+are separate program states. An action whose result is unknown or incomplete
+is never sent again, even under a new intent. A refused action may be adjusted
+and tried again within the shared task limits; E2 refuses the same request again.
+A new intent/call does not renew limits.
 Describe policy-limited or incomplete work without claiming no vulnerabilities.`
 
 func constrainE2HTTPPlannerOptions(ctx context.Context, opts *agentcore.Options) error {

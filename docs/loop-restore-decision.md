@@ -52,7 +52,7 @@
 ## 5. 실행 흐름 (C19·C27)
 
 - **C27**: Planner를 Worker 실행 중에도 깨운다. 원본처럼 Worker 완료·후보 제출 때 깨운다(`server/e2_http_runtime.go`의 `ErrE2HTTPBusy` 대기 제거). 모델 호출은 C28 동시 호출 수가 1인 동안 차례로 나간다(P3 결정안 `docs/run-outcome-model-decision.md`(#411) C28 결정 2). 동시 Worker 수·intent 상한은 C32 설정이다.
-- **C19**: intent당 대안 1회 제한(`intent_replan_exhausted`)과 실패한 같은 명령 재전송 금지(`same_action_not_retried`)를 걷어낸다. 같은 거부가 반복되는 것은 막지 않고 반복 차단 수(`scripts/eval/repeat_denials.py`)로 잰다.
+- **C19**: intent당 대안 1회 제한(`intent_replan_exhausted`)과 실패한 같은 명령 재전송 금지(`same_action_not_retried`)를 걷어낸다. 같은 거부가 반복되는 것은 막지 않고 반복 차단 수(`scripts/eval/repeat_denials.py`)로 잰다. 구현(C01 #477 뒤): 정책 거부·미지원 뒤 같은 명령·다른 명령을 같은 intent나 새 intent에서 다시 시도할 수 있다(E②가 다시 거부하고 공유 호출 상한을 쓴다). 결과를 확인하지 못한 명령(결과 불명·마감 미완료·실행기 실패)은 새 intent로도 다시 보내지 않고(`same_action_not_retried`), 그 intent는 닫는다(`intent_outcome_uncertain`). 결과 불명 쓰기 자동 재전송 금지(개발 계획)를 지키기 위해서다.
   - 남기는 것: 결과 불명(`result_unknown`) 명령은 다시 보내지 않는다(개발 계획 "불명 쓰기 재전송 금지"). E② 요청 단위 처리(C01, 이동찬)가 들어오면 이 규칙은 그쪽으로 옮긴다.
   - 같은 intent 안에서 호출은 한 번에 하나(`intent_call_inflight`)를 유지한다. 호출 단위 예약·감사 결속이 이를 전제한다(열린 항목 3).
   - 실행 전체 호출 상한(`task_call_limit`)은 C32 설정이다.

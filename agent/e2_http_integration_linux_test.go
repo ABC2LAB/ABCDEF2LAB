@@ -146,7 +146,7 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 					t.Errorf("actual runner drain failed: %v", err)
 				}
 			}()
-			control, err := NewE2HTTPControl("7", 6)
+			control, err := NewE2HTTPControl("7", 7)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -204,10 +204,13 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 			if received.Load() != 1 || first.result == nil || first.result.Trusted.Call.IntentID != 23 {
 				t.Fatal("different permitted intent did not deliver its actual result")
 			}
+			// C19: 정책 거부는 결과가 확인된 것이라 새 intent의 같은 명령을 프로그램이 미리 막지 않는다. E②가 다시
+			// 거부하고(대상 도달 0) 공유 호출 상한을 하나 쓴다. 반복은 반복 차단 수로 잰다.
 			callsBefore := execution.Snapshot().Counts.Calls
-			runStep(24, deniedCommand, ErrE2HTTPPolicyLimited, 2)
-			if received.Load() != 1 || execution.Snapshot().Counts.Calls != callsBefore || control.Snapshot().Calls != 2 {
-				t.Fatal("same denied command relaunched after a new intent")
+			retried := runStep(24, deniedCommand, ErrE2HTTPPolicyLimited, 2)
+			if received.Load() != 1 || execution.Snapshot().Counts.Calls != callsBefore+1 || control.Snapshot().Calls != 3 ||
+				retried.result == nil || retried.result.Trusted.Classification != "policy_not_executed" || retried.result.Trusted.Call.Counts.Denied != 1 || retried.result.Trusted.Call.Counts.ForwardAttempted != 0 {
+				t.Fatal("same refused command under a new intent was not refused again by E2")
 			}
 			last := runStep(25, "curl --silent --show-error --fail"+header+"'"+target.URL+"/fixture/next'", nil, 2)
 			if last.result == nil || last.result.Trusted.Call.IntentID != 25 {
@@ -234,7 +237,7 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 					t.Fatalf("ordinary shell exit became policy failure: intent=%d result=%+v", intentID, failedTool.result)
 				}
 			}
-			if control.Snapshot().Calls != 6 || control.Snapshot().Decision != "tool_failure" {
+			if control.Snapshot().Calls != 7 || control.Snapshot().Decision != "tool_failure" {
 				t.Fatalf("shared call control after ordinary failures=%+v", control.Snapshot())
 			}
 			runStep(26, "curl --silent --show-error --fail"+header+"'"+target.URL+"/fixture/extra'", ErrE2HTTPBlocked, 0)
@@ -246,17 +249,17 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 				t.Fatalf("target observations received=%d authentication_bad=%v attempt_bad=%v method_bad=%v", received.Load(), badAuthentication.Load(), badAttempt.Load(), badMethod.Load())
 			}
 			observedMu.Lock()
-			if len(observed) != 6 || observerSawOutput.Load() {
+			if len(observed) != 7 || observerSawOutput.Load() {
 				t.Fatalf("actual result observer count=%d output_seen=%v", len(observed), observerSawOutput.Load())
 			}
 			for _, trusted := range observed {
-				if trusted.Call.CallRef == "" || trusted.Execution.Scope.TaskRef != "7" || trusted.Call.IntentID == 24 || trusted.Call.IntentID == 26 || !trusted.Final || !trusted.ProcessBashExited || !trusted.ProcessDrained || !trusted.ProxyDrained || !trusted.Call.AuditComplete {
+				if trusted.Call.CallRef == "" || trusted.Execution.Scope.TaskRef != "7" || trusted.Call.IntentID == 26 || !trusted.Final || !trusted.ProcessBashExited || !trusted.ProcessDrained || !trusted.ProxyDrained || !trusted.Call.AuditComplete {
 					t.Fatal("observer did not receive an actual final runner result")
 				}
 			}
 			observedMu.Unlock()
 			counts := execution.Snapshot().Counts
-			if counts.Attempts != 7 || counts.Allowed != 5 || counts.Denied != 2 || counts.ForwardAttempted != 5 || counts.Responses != 5 || counts.Unknown != 0 || counts.Calls != 6 {
+			if counts.Attempts != 8 || counts.Allowed != 5 || counts.Denied != 3 || counts.ForwardAttempted != 5 || counts.Responses != 5 || counts.Unknown != 0 || counts.Calls != 7 {
 				t.Fatalf("actual trusted counts=%+v", counts)
 			}
 			if remaining, err := ledger.Remaining(key, binding, time.Now()); err != nil || remaining != 0 {
@@ -287,16 +290,16 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 				t.Fatalf("durable audit verification events=%d error=%v", summary.Events, verifyErr)
 			}
 			allowed := map[int64]bool{}
-			deniedBeforeSend := false
+			deniedBeforeSend := map[int64]bool{}
 			for _, event := range execution.Events(0, 30) {
 				if event.Stage == "result" && event.Decision == "allowed" && event.ForwardAttempted && event.ResponseComplete && event.AuditComplete {
 					allowed[event.IntentID] = true
 				}
-				if event.Stage == "result" && event.IntentID == 22 && event.Decision == "denied" && event.NotSent && !event.ForwardAttempted && event.AuditComplete {
-					deniedBeforeSend = true
+				if event.Stage == "result" && event.Decision == "denied" && event.NotSent && !event.ForwardAttempted && event.AuditComplete {
+					deniedBeforeSend[event.IntentID] = true
 				}
 			}
-			if !allowed[23] || !allowed[25] || !allowed[27] || !allowed[29] || !allowed[30] || !deniedBeforeSend {
+			if !allowed[23] || !allowed[25] || !allowed[27] || !allowed[29] || !allowed[30] || !deniedBeforeSend[22] || !deniedBeforeSend[24] {
 				t.Fatal("actual intent/decision results were not bound to durable audit")
 			}
 		})
