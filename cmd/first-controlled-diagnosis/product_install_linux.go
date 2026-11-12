@@ -207,9 +207,6 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		return errPreparation
 	}
 	c.AdminPassword = ""
-	if admin.SetSetting("engine.workers", "2") != nil {
-		return errPreparation
-	}
 	config := filepath.Join(root, "config")
 	now := time.Now().UTC()
 	until := now.Add(time.Duration(c.ValidForHours) * time.Hour)
