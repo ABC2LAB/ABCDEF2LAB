@@ -160,7 +160,7 @@ def down(run):
             "removed": removed, "remaining_owned_resources": remaining, "product_boundary": "NOT_RUN"}
 
 
-def certificates(run):
+def certificates(run, keep_ca_key=False):
     tls = run / "tls"
     tls.mkdir(mode=0o700)
     ca_key, ca = tls / "ca.key", tls / "boundary-ca.pem"
@@ -175,8 +175,37 @@ def certificates(run):
     command(["openssl", "x509", "-req", "-in", str(request), "-CA", str(ca), "-CAkey", str(ca_key), "-set_serial", str(secrets.randbits(120) + 1), "-out", str(leaf), "-days", "2", "-extfile", str(ext)])
     for path in (ca_key, leaf_key, request, leaf, ca): path.chmod(0o600)
     ca.chmod(0o444)  # 공개 인증서 하나만 브라우저에 전달한다.
-    ca_key.unlink(); request.unlink(); ext.unlink()
+    request.unlink(); ext.unlink()
+    # 계약 fixture는 leaf만 쓰므로 CA 개인키를 바로 지운다. 실제 경계는 터널마다 leaf를 만들므로 경계 전용 입력으로 옮긴다.
+    if not keep_ca_key:
+        ca_key.unlink()
     return hashlib.sha256(ssl.PEM_cert_to_DER_cert(ca.read_text())).hexdigest()
+
+
+def leaf_spki(run):
+    """대상 leaf 공개키(SPKI)의 SHA-256. 실제 경계가 승인 대상에 고정하는 값이다."""
+    pub = command(["openssl", "x509", "-in", str(run / "tls/leaf.pem"), "-pubkey", "-noout"]).stdout
+    der = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "DER"], input=pub, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, check=True).stdout
+    return hashlib.sha256(der).hexdigest()
+
+
+def boundary_inputs(run, ip):
+    """실제 탐색 경계(cmd/explore-boundary)의 보호 입력. 경계 컨테이너는 하네스 uid로 돌고 이 디렉터리만 읽는다."""
+    inputs = run / "boundary-in"
+    inputs.mkdir(mode=0o700)
+    tls = run / "tls"
+    for name, raw in (("ca.pem", (tls / "boundary-ca.pem").read_bytes()), ("upstream.pem", (tls / "boundary-ca.pem").read_bytes()),
+                      ("ca.key", (tls / "ca.key").read_bytes()), ("path.key", secrets.token_bytes(32))):
+        write(inputs / name, raw)
+    (tls / "ca.key").unlink()
+    controls = [ip("control", 30), ip("control", 20), ip("link", 20), ip("link", 30), ip("browser", 20), ip("direct", 20), ip("browser", 10), ip("direct", 10), ip("upstream", 10)]
+    write(inputs / "boundary.json", {"format": "jindo.explore-boundary-config/v1", "browser_listen": ip("browser", 10) + ":" + str(PROXY_PORT),
+                                     "direct_listen": ip("direct", 10) + ":" + str(PROXY_PORT), "control_socket": "/run-fixture/boundary.sock",
+                                     "engine_uid": os.geteuid(), "ca_cert_file": "/bin-in/ca.pem", "ca_key_file": "/bin-in/ca.key",
+                                     "upstream_ca_file": "/bin-in/upstream.pem", "path_mask_key_file": "/bin-in/path.key",
+                                     "control_endpoints": [c + ":0" for c in controls], "max_request_bytes": 1 << 20, "max_response_bytes": 8 << 20,
+                                     "max_tunnels": 64, "max_denied_records": 4096, "timeout_ms": 10000, "close_wait_ms": 5000, "leaf_validity_seconds": 3600})
+    return inputs
 
 
 def _mount(source, target, *, readonly=True):
@@ -214,14 +243,15 @@ def up(args):
         for name in ("bin", "control", "target-data"): (run / name).mkdir(mode=0o700)
         env = {k: v for k, v in os.environ.items() if k not in ("GOFLAGS", "GOTOOLCHAIN", "GOPROXY", "GOSUMDB")}
         env["CGO_ENABLED"] = "0"; env["GOOS"] = "linux"; env["GOARCH"] = info["Architecture"]; env["GOTOOLCHAIN"] = "local"; env["GOPROXY"] = "off"
-        for role, package in (("target", "./cmd/browser-fixture"), ("proxy", "./cmd/exploration-contract-fixture")):
+        real = args.boundary == "real"
+        for role, package in (("target", "./cmd/browser-fixture"), ("proxy", "./cmd/explore-boundary" if real else "./cmd/exploration-contract-fixture")):
             command(["go", "build", "-trimpath", "-o", str(run / "bin" / role), package], timeout=120, env=env)
         metadata = Path(args.metadata_script).absolute()
         if metadata.is_symlink() or not metadata.is_file() or metadata.stat().st_size > 131072:
             raise HarnessError("fixture_metadata_script_invalid")
         metadata_raw = metadata.read_bytes()
         write(run / "metadata_only.js", metadata_raw, 0o444)
-        ca_hash = certificates(run)
+        ca_hash = certificates(run, keep_ca_key=real)
         config = {"format": "jindo.exploration-contract-fixture/v1", "owned_fixture": True,
                   "browser_listen": ip("browser", 10) + ":" + str(PROXY_PORT), "direct_listen": ip("direct", 10) + ":" + str(PROXY_PORT),
                   "control_socket": "/run-fixture/boundary.sock", "target_origin": "https://target.test:8443",
@@ -242,7 +272,13 @@ def up(args):
             return ident
         create("target", "upstream", 20, certmounts + _mount(run / "bin/target", "/app/fixture") + _mount(run / "target-data", "/fixture-data", readonly=False), "/app/fixture",
                ["-listen", "0.0.0.0:8443", "-cdn-listen", "0.0.0.0:8444", "-cdn-origin", config["cdn_origin"], "-receiver-listen", "0.0.0.0:8445", "-receiver-origin", "https://receiver.test:8445", "-receiver-udp", "0.0.0.0:8447", "-receiver-stun-ip", ip("upstream", 20), "-metadata-listen", "0.0.0.0:8446", "-metadata-origin", "https://metadata.test:8446", "-tls-cert", "/certs/leaf.pem", "-tls-key", "/certs/leaf.key", "-log", "/fixture-data/reaches.jsonl"])
-        proxy = create("proxy", "browser", 10, certmounts + _mount(run / "bin/proxy", "/app/fixture") + _mount(run / "proxy.json", "/fixture-config.json") + _mount(run / "control", "/run-fixture", readonly=False), "/app/fixture", ["/fixture-config.json"])
+        if real:
+            # 실제 경계: 대상 값은 driver가 제어 소켓으로 넘기고, 경계는 등록 주소·SPKI로만 연결한다(계약 fixture 설정은 쓰지 않음).
+            inputs = boundary_inputs(run, ip)
+            proxy = create("proxy", "browser", 10, _mount(run / "bin/proxy", "/app/fixture") + _mount(inputs, "/bin-in") + _mount(run / "control", "/run-fixture", readonly=False),
+                           "/app/fixture", ["-config", "/bin-in/boundary.json"])
+        else:
+            proxy = create("proxy", "browser", 10, certmounts + _mount(run / "bin/proxy", "/app/fixture") + _mount(run / "proxy.json", "/fixture-config.json") + _mount(run / "control", "/run-fixture", readonly=False), "/app/fixture", ["/fixture-config.json"])
         for role in ("direct", "upstream"): docker("network", "connect", "--ip", ip(role, 10), data["networks"][role]["name"], proxy)
         # 계약 §9-1 분리 배치: Chromium은 브라우저 입구망과 CDP 연결망에만, MCP는 제어망과 CDP 연결망에만 붙는다.
         # 같은 namespace의 native 자식이 MCP 제어 포트에 닿던 B16을 namespace 분리로 막는다.
@@ -266,7 +302,8 @@ def up(args):
         published = actual["NetworkSettings"]["Ports"].get(str(MCP_PORT) + "/tcp") or []
         if any(port["HostIp"] != "127.0.0.1" for port in published): raise HarnessError("fixture_publish_invalid")
         loopback_url = "http://127.0.0.1:" + published[0]["HostPort"] + "/mcp" if published else None
-        context = {"format": FORMAT, "role": "contract_fixture", "fixture_socket": "/run-fixture/boundary.sock", "browser_socket": "/run-fixture/browser-control.sock",
+        context = {"format": FORMAT, "role": "explore_boundary" if real else "contract_fixture", "fixture_socket": "/run-fixture/boundary.sock",
+                   "boundary_kind": "real" if real else "fixture", "target_connect": ip("upstream", 20) + ":8443", "target_spki": leaf_spki(run) if real else "", "browser_socket": "/run-fixture/browser-control.sock",
                    "mcp_url": "http://" + mcp_listen + "/mcp", "target_origin": config["target_origin"], "cdn_origin": config["cdn_origin"],
                    "direct_proxy": "http://" + ip("direct", 10) + ":" + str(PROXY_PORT), "browser_proxy": browser_proxy, "browser_layout": "chromium_mcp_split_cdp",
                    "ca_file": "/public-ca/boundary-ca.pem", "mode": args.mode, "write_mode": args.write_mode,
@@ -625,7 +662,8 @@ def driver(args):
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_size > 65536:
                     raise HarnessError("fixture_driver_result_untrusted")
                 raw = json.load(stream)
-            if (raw.get("format") != "jindo.exploration-fixture-result/v1" or raw.get("boundary_kind") != "owned_contract_fixture"
+            expected_kind = "explore_boundary" if data["context"].get("boundary_kind") == "real" else "owned_contract_fixture"
+            if (raw.get("format") != "jindo.exploration-fixture-result/v1" or raw.get("boundary_kind") != expected_kind
                     or raw.get("mode") != data["context"]["mode"] or raw.get("production_acceptance") != "NOT_RUN" or raw.get("model_run") != "NOT_RUN"):
                 raise HarnessError("fixture_driver_result_invalid")
             report = {"status": raw.get("status") if raw.get("status") in ("PASS", "FAIL") else "FAIL"}
@@ -660,7 +698,7 @@ def driver(args):
         success = (all(value == 0 for value in forbidden_delta.values()) and code == 0 and closed.is_set() and not failed.is_set() and stopped is not None
                    and not stopped["State"]["Running"] and mcp_stopped is not None and not mcp_stopped["State"]["Running"]
                    and report is not None and report["status"] == "PASS")
-        return {"format": FORMAT, "role": "contract_fixture", "status": "PASS" if success else "FAIL",
+        return {"format": FORMAT, "role": data["context"].get("role", "contract_fixture"), "status": "PASS" if success else "FAIL",
                 "driver_exit_code": code, "driver_binary_sha256": data["driver_binary_sha256"], "browser_lease_closed": closed.is_set(), "browser_running_after_close": None if stopped is None else stopped["State"]["Running"],
                 "mcp_running_after_close": None if mcp_stopped is None else mcp_stopped["State"]["Running"],
                 "result": report, "uncontrolled_chromium": chromium_controls, "positive_receiver_counts": positive, "namespace_probes": namespace, "b16_probes": separation,
@@ -682,6 +720,8 @@ def main(argv=None):
     p.add_argument("--metadata-script", default=str(ROOT / "skills/api-recon/scripts/metadata_only.js"))
     p.add_argument("--max-requests", type=int, default=128)
     p.add_argument("--duration", type=int, default=180)
+    # real: 계약 fixture 대신 실제 탐색 경계(cmd/explore-boundary). 외부 이름 풀이가 없어 지금은 full_local만 본다.
+    p.add_argument("--boundary", choices=("fixture", "real"), default="fixture")
     p = sub.add_parser("driver")
     p.add_argument("--run-dir", required=True); p.add_argument("--binary", required=True)
     p.add_argument("--driver-arg", action="append", default=[]); p.add_argument("--timeout", type=int, default=240)

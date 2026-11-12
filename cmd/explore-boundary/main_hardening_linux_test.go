@@ -157,3 +157,57 @@ func TestControlSocketOwnerForDistinctEngineUID(t *testing.T) {
 		t.Fatalf("distinct engine uid without chown: %v", err)
 	}
 }
+
+// 엔진 uid가 다르고 engine_gid가 있으면 소켓을 엔진 그룹 0660으로 넘긴다(비root 경계는 소유자를 못 바꿈). 경계가 그
+// 그룹에 속하지 않으면 시작을 멈춘다. 접속 허용은 그대로 엔진 uid의 SO_PEERCRED다.
+func TestControlSocketGroupForEngineGID(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can chown to any group; this checks the unprivileged path")
+	}
+	serve := func(gid uint32) (*parts, chan error, context.CancelFunc) {
+		c := validConfig(t)
+		c.EngineUID = uint32(os.Getuid()) + 1
+		c.EngineGID = gid
+		p, err := build(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		free := func() netip.AddrPort {
+			l, _ := net.Listen("tcp", "127.0.0.1:0")
+			defer l.Close()
+			return netip.MustParseAddrPort(l.Addr().String())
+		}
+		p.listens = [2]netip.AddrPort{free(), free()}
+		p.socket = filepath.Join(filepath.Dir(c.CACertFile), "g.sock")
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- p.serve(ctx) }()
+		return p, done, cancel
+	}
+	own := uint32(os.Getgid())
+	p, done, cancel := serve(own)
+	var st os.FileInfo
+	var err error
+	for i := 0; i < 50; i++ {
+		if st, err = os.Stat(p.socket); err == nil && st.Mode().Perm() == 0o660 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil || st.Mode().Perm() != 0o660 || st.Sys().(*syscall.Stat_t).Gid != own {
+		t.Fatalf("group socket: err=%v stat=%v", err, st)
+	}
+	cancel()
+	<-done
+	// 속하지 않은 그룹(보통 0)으로는 넘기지 못하고 멈춘다.
+	_, done, cancel = serve(0xfffff0)
+	defer cancel()
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve kept running with a socket group it could not set")
+	}
+	if err == nil || err.Error() != "control_socket_owner" {
+		t.Fatalf("foreign group: %v", err)
+	}
+}
