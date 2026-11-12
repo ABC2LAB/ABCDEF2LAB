@@ -162,7 +162,7 @@ type Counts struct {
 	Unknown          uint64 `json:"unknown"`
 	// Transient는 대상 연결을 끝내 맺지 못해 요청을 전달하지 않은 송신 실패(transport_failed) 수다.
 	// 결과 불명(Unknown)과 따로 센다(C02).
-	Transient uint64 `json:"transient,omitempty"`
+	Transient uint64 `json:"transient"`
 	Calls     int    `json:"calls"`
 }
 type ExecutionView struct {

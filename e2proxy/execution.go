@@ -734,6 +734,9 @@ func (c *Call) start(method string) (Receipt, error) {
 	c.active++
 	c.counts.Attempts++
 	e.counts.Attempts++
+	if counts := e.intentCounts[c.intentID]; counts != nil {
+		counts.Attempts++
+	}
 	return r, nil
 }
 
