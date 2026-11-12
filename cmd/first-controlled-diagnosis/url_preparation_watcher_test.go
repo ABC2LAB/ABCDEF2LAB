@@ -74,11 +74,69 @@ func TestURLStatusFailurePreservesTargetDrainButStopsLiveExecution(t *testing.T)
 			if softStop {
 				stop(server.ErrFirstDiagnosisTargetEnded)
 			}
-			cancelURLStatusFailure(target, cancel)
-			if (hard.Err() == nil) != softStop {
+			stopped := cancelURLStatusFailure(target, cancel)
+			if (hard.Err() == nil) != softStop || stopped == softStop {
 				t.Fatal("status failure escalated a normal target drain or ignored live failure")
 			}
 		})
+	}
+}
+
+// 상태 조회(C10): 정한 횟수만큼 연속 실패는 다시 묻고, 그보다 많으면 포기한다. 한 번 성공하면 다시 센다.
+func TestURLStatusReadsRetryConsecutiveFailures(t *testing.T) {
+	none := urlStatusReads{}
+	if !none.failed() {
+		t.Fatal("재시도 0인데 첫 실패에서 멈추지 않음(지금 동작과 다름)")
+	}
+	reads := urlStatusReads{retries: 2}
+	if reads.failed() || reads.failed() {
+		t.Fatal("정한 횟수 안의 실패에서 멈춤")
+	}
+	reads.succeeded()
+	if reads.failed() || reads.failed() || !reads.failed() {
+		t.Fatal("성공 뒤 다시 세지 않거나 정한 횟수를 넘은 실패에서 멈추지 않음")
+	}
+}
+
+// 정한 횟수 안의 실패는 실행을 멈추지 않고, 넘으면 멈추고 결과 불명으로 표시한다. 대상 철회로 이미 정리 중이면
+// 넘어도 멈추거나 불명으로 바꾸지 않는다.
+func TestURLStatusReadFailedStopsOnlyAfterRetries(t *testing.T) {
+	for _, draining := range []bool{false, true} {
+		hard, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		target, stop := context.WithCancelCause(hard)
+		if draining {
+			stop(server.ErrFirstDiagnosisTargetEnded)
+		}
+		reads := urlStatusReads{retries: 1}
+		first := urlStatusReadFailed(target, cancel, &reads)
+		if first || hard.Err() != nil {
+			t.Fatalf("draining=%v: 첫 실패에서 멈춤", draining)
+		}
+		second := urlStatusReadFailed(target, cancel, &reads)
+		if second == draining || (hard.Err() == nil) != draining {
+			t.Fatalf("draining=%v: 횟수를 넘은 실패 처리 틀림 lost=%v", draining, second)
+		}
+		stop(context.Canceled)
+		cancel()
+	}
+}
+
+// 상태 조회를 다 못 해 멈춘 실행은 취소가 아니라 결과 불명이다. 다른 사유로 이미 불명이면 그 사유를 둔다.
+func TestMarkURLStatusLost(t *testing.T) {
+	for _, tc := range []struct {
+		in         diagnosisprep.Update
+		wantState  diagnosisprep.State
+		wantReason string
+	}{
+		{diagnosisprep.Update{State: diagnosisprep.Cancelled}, diagnosisprep.Unknown, "status_read_failed"},
+		{diagnosisprep.Update{State: diagnosisprep.Unknown, ReasonCode: "execution_closure_unconfirmed"}, diagnosisprep.Unknown, "execution_closure_unconfirmed"},
+		{diagnosisprep.Update{State: diagnosisprep.Completed}, diagnosisprep.Completed, ""},
+	} {
+		u := tc.in
+		markURLStatusLost(&u)
+		if u.State != tc.wantState || u.ReasonCode != tc.wantReason {
+			t.Fatalf("%+v -> %s/%s", tc.in, u.State, u.ReasonCode)
+		}
 	}
 }
 
