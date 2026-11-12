@@ -745,7 +745,6 @@ func (b *urlPreparationRuntime) closeReports() error {
 var _ diagnosisprep.Backend = (*urlPreparationRuntime)(nil)
 var _ http.Handler = (*urlPreparationRuntime)(nil)
 
-// Execute keeps audit watching active during a normal target drain.
 // markDiagnosticLogWarning은 진단 로그 상태를 실행 결과에 반영하는 유일한 곳이다. 진단 로그는 감사가 아니다
 // (P3 결정안 C10). 기록 실패·관찰 불완전 표시는 실행 상태를 바꾸지 않고, 완료 실행에 경고 사유로만 남긴다.
 // 실행 종료·감사·결과 저장의 확인은 Update의 다른 값(DrainComplete·ResultReady·ModelUsage)이 맡는다.
