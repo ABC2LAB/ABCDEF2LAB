@@ -136,3 +136,36 @@ func TestE2HTTPWebFetchRedactsDecodedEntities(t *testing.T) {
 		t.Fatalf("decoded credential leaked: %q", fields.ToolOutput)
 	}
 }
+
+// 리터럴·엔티티 두 형태 모두 변환 뒤 결과에 보호값이 없고, trusted·worker_control은 바이트 그대로 남는다.
+func TestE2HTTPWebFetchRedactionKeepsTrustedAndWorkerControl(t *testing.T) {
+	const secret = "synthetic-session&value"
+	redact := func(b []byte) []byte { return []byte(strings.ReplaceAll(string(b), secret, "[REDACTED]")) }
+	for name, form := range map[string]string{"literal": "[REDACTED]", "entity": "synthetic-session&amp;value"} {
+		t.Run(name, func(t *testing.T) {
+			page := "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><p>" + form + `</p><a href="/x?s=` + form + `">x</a><meta name="m" content="` + form + `"></body></html>`
+			trusted := json.RawMessage(`{"classification":"completed","call":{"call_ref":"call-9"}}`)
+			control := json.RawMessage(`{"task_ref":"7","calls":1,"max_calls":8,"decision":"admitted","alternative_used":false,"retry_allowed":false}`)
+			bash := e2WorkerFixtureTool("Bash", func(context.Context, json.RawMessage) (actool.Result, error) {
+				raw, _ := json.Marshal(map[string]any{"tool_output": page, "trusted": trusted, "worker_control": control})
+				return actool.Text(string(raw)), nil
+			})
+			result, err := newE2HTTPWebFetchTool(bash, redact).Call(context.Background(), json.RawMessage(`{"url":"https://owned.example/x","extract":true}`), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(result.Flatten()), &fields); err != nil {
+				t.Fatal(err)
+			}
+			var output string
+			_ = json.Unmarshal(fields["tool_output"], &output)
+			if strings.Contains(output, secret) || !strings.Contains(output, "[REDACTED]") {
+				t.Fatalf("protected value in rendered output: %q", output)
+			}
+			if string(fields["trusted"]) != string(trusted) || string(fields["worker_control"]) != string(control) {
+				t.Fatalf("trusted or worker_control changed: %s %s", fields["trusted"], fields["worker_control"])
+			}
+		})
+	}
+}
