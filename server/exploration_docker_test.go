@@ -351,6 +351,8 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 		{"report_discovery", map[string]any{"discoveries": []map[string]string{{"method": "GET", "path": "/api/inferred-only", "source": "api_recon_static"}}}},
 		nav("/crawl/P08"), eval("() => document.getElementById('p08-ready')?.textContent==='ok'?'P1_CDN_READY':'P1_CDN_BLOCKED'"),
 		nav("/bypass/B04"), nav("/bypass/B05"), nav("/bypass/B12"), nav("/bypass/B13"),
+		// B09: 페이지가 WebRTC STUN으로 수신기 UDP에 닿으려 한다. 브라우저 namespace에는 경계 입구 밖 경로가 없다.
+		nav("/bypass/B09"),
 		nav("/crawl/S13"), eval("() => document.getElementById('save') && location.pathname==='/crawl/S13'?'P1_FORM_READY':'missing'"),
 		{"mcp__explore_browser__browser_snapshot", map[string]any{}},
 		{"mcp__explore_browser__browser_click", nil},
