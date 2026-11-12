@@ -340,7 +340,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 	l.pins = append(l.pins, policyPin, apiPin)
 	policy := l.policy
 	if policy.Format != server.E2HTTPFilePolicyFormat || policy.Evaluation != nil || len(policy.Rules) < 1 || len(policy.Rules) > 64 ||
-		policy.HeaderMode != e2proxy.HeaderPreserve || policy.OwnerRef != "ARTEX" || policy.MaxRequests != uint64(p.Budget.Requests) ||
+		!(policy.HeaderMode == e2proxy.HeaderPreserve || policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && policy.Auth != nil) || policy.OwnerRef != "ARTEX" || policy.MaxRequests != uint64(p.Budget.Requests) ||
 		policy.Limits.MaxBodyBytes != p.Attestation.MaxBodyBytes || policy.Limits.MaxConcurrent != 1 ||
 		(policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope && policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest && !(p.WorkflowMode != "" && policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1)) ||
 		policy.ValidFrom.After(p.ValidFrom) || policy.ValidUntil.Before(p.ValidUntil) {

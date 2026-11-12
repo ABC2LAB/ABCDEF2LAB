@@ -75,8 +75,8 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain.clearMaterials()
-	if plain.policy.Auth != nil || len(plain.productAccounts) != 0 {
-		t.Fatal("run without test accounts got an auth section")
+	if plain.policy.Auth != nil || len(plain.productAccounts) != 0 || plain.policy.HeaderMode != e2proxy.HeaderPreserve {
+		t.Fatal("run without test accounts got an auth section or another header mode")
 	}
 	login := diagnosisprep.TargetLogin{Method: "POST", Path: "/read/login", Format: "json", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}
 	if _, err := r.setTargetLogin("ARTEX", target.ID, login); err != nil {
@@ -99,8 +99,8 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	}
 	defer loaded.clearMaterials()
 	auth := loaded.policy.Auth
-	if auth == nil || len(auth.Accounts) != 1 || auth.Accounts[0].Label != "tester-a" || auth.Login.Path != "/read/login" {
-		t.Fatalf("auth section: %+v", auth)
+	if auth == nil || len(auth.Accounts) != 1 || auth.Accounts[0].Label != "tester-a" || auth.Login.Path != "/read/login" || loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough {
+		t.Fatalf("auth section: %+v mode=%s", auth, loaded.policy.HeaderMode)
 	}
 	var rule bool
 	for _, x := range loaded.policy.Rules {
@@ -293,5 +293,12 @@ func TestProductReportLoadsBindingAfterRevokeAndUnmark(t *testing.T) {
 	}
 	if _, err := runtime.load("ARTEX", input, true, target.ID, strings.Repeat("0", 64)); err == nil {
 		t.Fatal("report with an unknown source digest opened a binding")
+	}
+}
+
+// 외부 API 모델 실행은 사전 공지·승인 동의 칸이 생기기 전까지 시험 계정을 결속하지 않는다.
+func TestAccountsAllowedForModelMode(t *testing.T) {
+	if accountsAllowedFor("openrouter") || !accountsAllowedFor("") || !accountsAllowedFor("local") {
+		t.Fatal("account binding gate by model mode changed")
 	}
 }

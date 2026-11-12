@@ -1653,7 +1653,7 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 	if cfg.HeaderMode == "" {
 		cfg.HeaderMode = HeaderPreserve
 	}
-	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal && cfg.HeaderMode != HeaderEvaluationCallerPassthrough {
+	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal && cfg.HeaderMode != HeaderEvaluationCallerPassthrough && cfg.HeaderMode != HeaderTestAccountPassthrough {
 		return nil, "", nil, ErrConfig
 	}
 	cfg.Evaluation, err = validateEvaluationCallerContext(cfg)

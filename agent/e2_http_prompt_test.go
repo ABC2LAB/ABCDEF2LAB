@@ -8,6 +8,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/norma/llm"
 	actool "github.com/Autumn-27/norma/tool"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -278,5 +279,20 @@ func TestE2HTTPWorkerSettlesWithoutBash(t *testing.T) {
 	}
 	if settle := e2HTTPWorkerSettlement(context.Background()); settle.MaxTurns <= 0 || len(settle.DisabledTools) != 1 || settle.DisabledTools[0] != "Bash" {
 		t.Fatalf("settlement=%+v", settle)
+	}
+}
+
+// 시험 계정 세션 줄은 라벨·헤더 순서로 고정되고, 세션이 없으면 아무것도 넣지 않는다.
+func TestE2HTTPSessionLines(t *testing.T) {
+	if got := e2HTTPSessionLines(nil); got != "" {
+		t.Fatalf("empty sessions rendered %q", got)
+	}
+	got := e2HTTPSessionLines(map[string]http.Header{
+		"tester-b": {"Authorization": {"Bearer token-b"}},
+		"tester-a": {"Cookie": {"session=value-a"}},
+	})
+	a, b := strings.Index(got, "- tester-a: Cookie: session=value-a"), strings.Index(got, "- tester-b: Authorization: Bearer token-b")
+	if a < 0 || b < 0 || a > b || !strings.Contains(got, "approved origin") {
+		t.Fatalf("session lines: %q", got)
 	}
 }

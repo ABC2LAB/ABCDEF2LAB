@@ -340,3 +340,55 @@ func TestProtectedValueAddedDuringReadWithholdsResponse(t *testing.T) {
 		t.Fatalf("reflection after registration delivered: %v %+v", err, r)
 	}
 }
+
+// 시험 계정 실행은 모델이 쓴 Cookie·Authorization을 승인 origin에 그대로 보내고, Set-Cookie 응답도 보류하지 않는다. 보호 값
+// 반사 보류는 그대로다. 평가 문맥과 함께 쓸 수 없다.
+func TestTestAccountPassthroughMode(t *testing.T) {
+	var gotCookie atomicString
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie.Store(r.Header.Get("Cookie"))
+		if r.URL.Path == "/allowed/echo" {
+			io.WriteString(w, "seeded-password-77ff")
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "next", Value: "rotated-session-value"})
+		io.WriteString(w, "profile")
+	}))
+	defer srv.Close()
+	cfg := coreConfig(t, srv.URL, &coreRecorder{}, 5)
+	cfg.HeaderMode = HeaderTestAccountPassthrough
+	e, call := coreOpen(t, cfg)
+	req := coreRequest(t, "GET", srv.URL+"/allowed/me")
+	req.Header.Set("Cookie", "session=tester-a-session-value")
+	resp, r, err := call.Do(context.Background(), req)
+	if err != nil || resp == nil || r.Reason != Complete || gotCookie.Load() != "session=tester-a-session-value" || resp.Header.Get("Set-Cookie") == "" {
+		t.Fatalf("test account passthrough: %v %+v cookie=%q", err, r, gotCookie.Load())
+	}
+	resp.Body.Close()
+	if err := e.AddProtectedValues([]byte("seeded-password-77ff")); err != nil {
+		t.Fatal(err)
+	}
+	if _, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/echo")); !errors.Is(err, ErrWithheld) || r.Reason != Withheld {
+		t.Fatalf("password reflection delivered in test account mode: %v %+v", err, r)
+	}
+	bad := coreConfig(t, srv.URL, &coreRecorder{}, 1)
+	bad.HeaderMode = HeaderTestAccountPassthrough
+	bad.Evaluation = &EvaluationCallerContext{RunRef: bad.Scope.RunRef, LLMBackend: EvaluationLLMBackendLocal, TargetKind: EvaluationPublicPractice}
+	if _, err := NewExecution(context.Background(), bad); err == nil {
+		t.Fatal("test account mode accepted an evaluation context")
+	}
+	// 기본 모드는 그대로 모델 자격 헤더를 거부한다.
+	plainCfg := coreConfig(t, srv.URL, &coreRecorder{}, 2)
+	_, plain := coreOpen(t, plainCfg)
+	if _, r, err := plain.Do(context.Background(), req); err == nil || r.Reason != Unsupported {
+		t.Fatalf("preserve mode sent caller credentials: %v %+v", err, r)
+	}
+}
+
+type atomicString struct {
+	mu sync.Mutex
+	v  string
+}
+
+func (a *atomicString) Store(v string) { a.mu.Lock(); a.v = v; a.mu.Unlock() }
+func (a *atomicString) Load() string   { a.mu.Lock(); defer a.mu.Unlock(); return a.v }

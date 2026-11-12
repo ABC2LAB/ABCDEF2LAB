@@ -300,3 +300,16 @@ func TestE2HTTPAuthPrepProtectsPasswordReflection(t *testing.T) {
 		t.Fatal("password not redacted from output")
 	}
 }
+
+// Worker 세션 줄은 시험 계정 실행에서만 준다.
+func TestE2HTTPSessionsOnlyInTestAccountMode(t *testing.T) {
+	sessions := E2HTTPSessions{"tester-a": {"Cookie": {"session=value-a"}}}
+	if got := e2HTTPSessionsFor(e2proxy.HeaderTestAccountPassthrough, sessions); got["tester-a"].Get("Cookie") != "session=value-a" {
+		t.Fatalf("sessions in test account mode: %v", got)
+	}
+	for _, mode := range []e2proxy.HeaderMode{e2proxy.HeaderPreserve, e2proxy.HeaderEvaluationCallerPassthrough, e2proxy.HeaderProtectedSessionProposal} {
+		if got := e2HTTPSessionsFor(mode, sessions); got != nil {
+			t.Errorf("%s got sessions", mode)
+		}
+	}
+}

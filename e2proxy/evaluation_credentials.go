@@ -51,7 +51,7 @@ func (e *Execution) callerCredentialsAllowed(headers http.Header) bool {
 	if !present {
 		return true
 	}
-	if e.cfg.HeaderMode != HeaderEvaluationCallerPassthrough {
+	if e.cfg.HeaderMode != HeaderEvaluationCallerPassthrough && e.cfg.HeaderMode != HeaderTestAccountPassthrough {
 		return false
 	}
 	for name, values := range headers {
