@@ -7,9 +7,12 @@ import { createContext, useContext } from "react";
 
 import type { DSel } from "./store";
 
-/** 일곱 화면 (해시 이름 = data-view). records = 점검 기록 (레일에서 점검을 누르면 오는 목록). */
-export type View = "dashboard" | "records" | "new" | "crawl" | "scope" | "live" | "report";
-export const VIEWS: readonly View[] = ["dashboard", "records", "new", "crawl", "scope", "live", "report"];
+/**
+ * 여덟 화면 (해시 이름 = data-view). running · finished = 진행 중인 점검 · 끝난 점검 (레일에서 점검을 누르면 오는 목록,
+ * 시안 v54 에서 점검 기록을 둘로 나눔).
+ */
+export type View = "dashboard" | "running" | "finished" | "new" | "crawl" | "scope" | "live" | "report";
+export const VIEWS: readonly View[] = ["dashboard", "running", "finished", "new", "crawl", "scope", "live", "report"];
 export function isView(h: string): h is View {
   return (VIEWS as readonly string[]).includes(h);
 }

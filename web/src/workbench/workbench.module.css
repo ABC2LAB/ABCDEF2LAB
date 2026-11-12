@@ -1199,6 +1199,13 @@ a.ph:hover {
   font-size: 12.5px;
   color: var(--ink-3);
 }
+/* 칸 제목 + 전체 건수 (대시보드, 시안 v55) */
+.sh-t {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
 .sh .aside {
   font-size: 12.5px;
   color: var(--ink-3);
@@ -1650,6 +1657,63 @@ a.ph:hover {
 @container (max-width: 640px) {
   .fsec {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* 새 점검 폼은 폭을 고정하고 가운데로 (시안 v59): 넓은 화면에서도 줄마다 오른쪽이 비지 않게, 남는 공간은 폼 바깥 양쪽으로 */
+.nform > * {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+}
+/* 입력칸은 넣는 값 길이만큼만 (시안 v58). 폰에서는 칸이 좁아 그대로 꽉 찬다 */
+.inp.w-url {
+  max-width: 420px;
+}
+.inp.w-sel {
+  max-width: 260px;
+}
+.inp.w-path {
+  max-width: 320px;
+}
+/*
+ * 넓은 화면(1700px~)은 섹션을 2열로 (시안 v60 A안): 왼쪽 대상, 오른쪽 분석 모델 · 점검 설정. 섹션 제목은 칸 위로.
+ * 안내 줄 · 시작 버튼 줄은 두 열을 가로지른다. 상세 패널이나 레일을 접어도 좁은 단(--cw)으로 모으지 않고 두 열을 그대로 둔다.
+ */
+@media (min-width: 1700px) {
+  .vm.nform {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 620px));
+    justify-content: center;
+    align-content: start;
+    gap: 30px 56px;
+  }
+  .nform > * {
+    grid-column: 1 / -1;
+    max-width: none;
+    margin-inline: 0;
+  }
+  .nform > .fsec {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 14px;
+  }
+  .nform > .fs-target {
+    grid-column: 1;
+    grid-row: span 2;
+  }
+  .nform > .fs-model,
+  .nform > .fs-set {
+    grid-column: 2;
+  }
+  .nform > .fs-target,
+  .nform > .fs-model {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .app.insp-hidden .vm.nform,
+  .app.rail-hidden .vm.nform {
+    padding-left: 28px;
+    padding-right: max(28px, env(safe-area-inset-right, 0px));
   }
 }
 .field {
@@ -3127,27 +3191,10 @@ button.smm:hover {
   font-family: var(--mono);
   font-size: 12px;
 }
-/* 점검 기록: 진행 중 · 끝난 점검 제목 옆에 칸마다 필터 (시안 v30) */
+/* 진행 중인 점검 · 끝난 점검 화면: 목록 위 필터 칩 + 건수 (시안 v54) */
 .rec-sh {
   align-items: center;
-}
-.rec-ht {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  min-width: 0;
-}
-.rec-ht .filters {
-  gap: 6px;
-}
-.rec-ht .fchip {
-  height: 26px;
-  padding: 0 10px;
-  font-size: 12.5px;
-}
-.rec-ht .fchip .c {
-  font-size: 11.5px;
+  min-height: 30px;
 }
 .search {
   flex: 1 1 180px;

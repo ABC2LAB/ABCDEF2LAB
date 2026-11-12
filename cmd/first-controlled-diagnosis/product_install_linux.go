@@ -56,6 +56,8 @@ type productInstallInput struct {
 	OpenRouterManifest json.RawMessage     `json:"openrouter_manifest,omitempty"`
 
 	UpstreamCAFile string `json:"upstream_ca_file,omitempty"`
+	// RuntimeLimits는 실행 상한을 설치 조직이 고르는 선택 블록이다(C32). 없으면 지금 기본값이다.
+	RuntimeLimits *productRuntimeLimits `json:"runtime_limits,omitempty"`
 }
 
 func productKeyword(s string) string {
@@ -129,6 +131,10 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	if !validProductTargetPolicy(c.TargetPolicy) {
 		return 2
 	}
+	// 실행 상한(runtime_limits)은 설치 부작용 전에 검사한다. 범위 밖이면 설치하지 않는다.
+	if _, ok := productPolicyBounds(c); !ok {
+		return 2
+	}
 	for _, d := range []string{"config", "data", "keys", "state", "runs", "ipc"} {
 		if checkDirectory(filepath.Join(*root, d), true) != nil {
 			return 1
@@ -145,6 +151,31 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	fmt.Fprintln(stdout, "product_installed")
 	return 0
 }
+
+// productPolicyBounds는 설치의 E② 한도·프록시·런타임 상한이다. 모드별 기본값에 runtime_limits를 덮어쓰고
+// validProductPolicyTemplate으로 검사한다(C32). 설치 입력 검사와 실제 설치가 같은 값을 쓴다.
+func productPolicyBounds(c productInstallInput) (server.E2HTTPFilePolicy, bool) {
+	policy := server.E2HTTPFilePolicy{MaxRequests: 4, HeaderMode: e2proxy.HeaderPreserve, ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
+		Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 65536, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1}, Proxy: server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 5000, MaxHeaderBytes: 32768, MaxConnections: 4}, Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
+	if flow := c.TargetPolicy.Workflow; flow != nil {
+		policy.Limits.MaxBodyBytes = int64(flow.MaxResponseBytes)
+		policy.Limits.MaxAttempts = 200
+		policy.Limits.MaxCalls = 64
+		policy.Limits.CallTimeoutMS = 60000
+		policy.Proxy.RequestTimeoutMS = 60000
+		policy.Limits.MaxDenials = 16
+		policy.Runtime.OutputLimit = flow.MaxResponseBytes + 8192
+		policy.Runtime.MaxToolCalls = 64
+		policy.Runtime.MaxWorkerTurns = 16
+		policy.Runtime.WorkerTimeoutMS = 180000
+		policy.Runtime.MaxPlannerRounds = 12
+	}
+	if !applyRuntimeLimits(&policy, c.RuntimeLimits, c.TargetPolicy.Workflow != nil) || !validProductPolicyTemplate(policy) {
+		return server.E2HTTPFilePolicy{}, false
+	}
+	return policy, true
+}
+
 func productInstall(ctx context.Context, root string, c productInstallInput) error {
 	password, err := readPrivateFile(c.DatabasePasswordFile, 4096)
 	if err != nil {
@@ -231,24 +262,12 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		return errPreparation
 	}
 	helperSHA := sha256.Sum256(helper)
-	policy := server.E2HTTPFilePolicy{Format: server.E2HTTPFilePolicyFormat, RunRef: "installation-template", ResetRef: "operator-target", PolicyRef: "installed-scope", CaseRef: "first-diagnosis", PolicyRevision: "v1", BudgetRef: "installed-target-budget", OwnerRef: "ARTEX", AccountRef: "operator", SessionRef: "operator", ValidFrom: now.Add(-time.Minute), ValidUntil: until, MaxRequests: 4, HeaderMode: e2proxy.HeaderPreserve, StateDir: filepath.Join(root, "state"), Helper: "/app/e2-bash-sandbox", HelperSHA256: hex.EncodeToString(helperSHA[:]), CACert: caPin, CAKey: keyPin, AuditKey: auditPin, UpstreamCA: upstream, ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
-		Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 65536, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1}, Proxy: server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 5000, MaxHeaderBytes: 32768, MaxConnections: 4}, Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
-	if flow := c.TargetPolicy.Workflow; flow != nil {
-		policy.Limits.MaxBodyBytes = int64(flow.MaxResponseBytes)
-		policy.Limits.MaxAttempts = 200
-		policy.Limits.MaxCalls = 64
-		policy.Limits.CallTimeoutMS = 60000
-		policy.Proxy.RequestTimeoutMS = 60000
-		policy.Limits.MaxDenials = 16
-		policy.Runtime.OutputLimit = flow.MaxResponseBytes + 8192
-		policy.Runtime.MaxToolCalls = 64
-		policy.Runtime.MaxWorkerTurns = 16
-		policy.Runtime.WorkerTimeoutMS = 180000
-		policy.Runtime.MaxPlannerRounds = 12
-	}
-	if !validProductPolicyTemplate(policy) {
+	policy := server.E2HTTPFilePolicy{Format: server.E2HTTPFilePolicyFormat, RunRef: "installation-template", ResetRef: "operator-target", PolicyRef: "installed-scope", CaseRef: "first-diagnosis", PolicyRevision: "v1", BudgetRef: "installed-target-budget", OwnerRef: "ARTEX", AccountRef: "operator", SessionRef: "operator", ValidFrom: now.Add(-time.Minute), ValidUntil: until, MaxRequests: 4, HeaderMode: e2proxy.HeaderPreserve, StateDir: filepath.Join(root, "state"), Helper: "/app/e2-bash-sandbox", HelperSHA256: hex.EncodeToString(helperSHA[:]), CACert: caPin, CAKey: keyPin, AuditKey: auditPin, UpstreamCA: upstream, ApprovalMode: e2proxy.ApprovalPreauthorizedScope}
+	bounds, ok := productPolicyBounds(c)
+	if !ok {
 		return errPreparation
 	}
+	policy.Limits, policy.Proxy, policy.Runtime = bounds.Limits, bounds.Proxy, bounds.Runtime
 	policy.Rules = []server.E2HTTPFileRule{}
 	policySHA, err := productJSON(filepath.Join(config, "policy.json"), policy)
 	if err != nil {
