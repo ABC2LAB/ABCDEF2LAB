@@ -29,6 +29,7 @@ import {
 import { UrlAccessMapLive } from "./views/live/UrlAccessMapLive";
 import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
 import { UrlCoverageLive } from "./views/live/UrlCoverageLive";
+import { UrlE2FlowLive } from "./views/live/UrlE2FlowLive";
 import { UrlExploreLive } from "./views/live/UrlExploreLive";
 import { UrlFindingLive } from "./views/live/UrlFindingLive";
 import s from "./workbench.module.css";
@@ -365,6 +366,7 @@ export function Workbench() {
             {section("accessmap", pick("접근통제 지도", <UrlAccessMapLive />))}
             {section("coverage", pick("커버리지", <UrlCoverageLive />))}
             {section("finding", pick("발견 상세", <UrlFindingLive />))}
+            {section("e2flow", pick("전송 통제 흐름", <UrlE2FlowLive />))}
             {section("classify", pick("계정 분류", <AccountClassifyLive />))}
             {section("scope", pick("범위 확인", <ScopeByMode />))}
             {section("live", pick("점검 진행", <LiveByMode />))}
