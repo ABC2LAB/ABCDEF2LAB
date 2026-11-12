@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
 import { cx } from "../../lib/cx";
+import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 
 type Target = {
@@ -88,6 +89,9 @@ export function TargetApprovalPanel({
   const [unsupported, setUnsupported] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [message, setMessage] = useState("");
+  // 등록 칸은 [대상 등록하기]를 눌러야 펼친다 (시안 v91 소유 확인 상자 모양 그대로, 평소엔 한 줄 + 버튼)
+  const [open, setOpen] = useState(false);
+  const firstField = useRef<HTMLTextAreaElement>(null);
   const origin = originOf(url);
   const selected = details?.origin === origin ? details : null;
   const list = useCallback(async () => {
@@ -128,11 +132,15 @@ export function TargetApprovalPanel({
   }, [list]);
   useEffect(() => {
     setReversible(false);
+    setOpen(false);
     if (origin) {
       setPaths("");
       setBasis("");
     }
   }, [origin]);
+  useEffect(() => {
+    if (open) firstField.current?.focus();
+  }, [open]);
   if (unsupported) return null;
   async function change(action: "register" | "approve" | "revoke") {
     if (disabled || busy || uncertain || mutationLock.current || !origin || (action !== "register" && !selected))
@@ -197,126 +205,11 @@ export function TargetApprovalPanel({
   }
   if (!origin) return null;
   const off = disabled || busy || uncertain;
-  return (
-    <div className={s.field} id="targetApproval">
-      <span className={s.lbl}>대상 승인</span>
-      {selected?.state === "approved" ? (
-        <>
-          <div className={s.hostline}>
-            <span className={cx(s.tag, s.in)}>승인된 대상</span>
-            <span className={s.help}>
-              {`${(selected.path_prefixes ?? []).join(", ")} · ${(selected.methods ?? []).join("/")} · 회차 요청 ${selected.requests}회 · 만료 ${selected.expires_at}`}
-            </span>
-          </div>
-          <div className={s.hostline}>
-            <span className={s.help}>
-              {`서버가 확인한 연결 · IP ${(selected.addresses ?? []).join(", ") || "—"} · 포트 ${selected.port} · TLS 공개키 ${selected.tls_spki_sha256 ? `${selected.tls_spki_sha256.slice(0, 16)}…` : "—"}`}
-            </span>
-          </div>
-          <div>
-            <button className={cx(s.btn, s.sm)} type="button" disabled={off} onClick={() => void change("revoke")}>
-              승인 철회
-            </button>
-          </div>
-        </>
-      ) : null}
-      {selected?.state === "pending" ? (
-        <>
-          <div className={s.hostline}>
-            <span className={cx(s.tag, s.ap)}>소유 확인 대기</span>
-            <span className={s.help}>
-              대상 DNS 에 아래 TXT 레코드를 추가한 뒤 확인하세요. GET/HEAD 도 상태를 바꿀 수 있으므로 등록한 경로의
-              비변경 승인이 필요합니다.
-            </span>
-          </div>
-          <dl className={s.kv}>
-            <dt>레코드 이름</dt>
-            <dd>
-              <code id="targetChallengeName">{selected.challenge_name}</code>
-            </dd>
-            <dt>레코드 값</dt>
-            <dd>
-              <code id="targetChallengeValue">{selected.challenge_value}</code>
-            </dd>
-          </dl>
-          <div>
-            <button className={cx(s.btn, s.sm)} type="button" disabled={off} onClick={() => void change("approve")}>
-              소유 확인 후 승인
-            </button>
-          </div>
-        </>
-      ) : null}
-      {selected?.state !== "approved" && selected?.state !== "pending" ? (
-        <>
-          <div className={s.hostline}>
-            <span className={cx(s.tag, s.ex)}>미승인 대상</span>
-          </div>
-          <div className={s.two}>
-            <div className={s.field}>
-              <label className={s.lbl} htmlFor="targetReadonlyPaths">
-                허용할 읽기 경로 · 한 줄에 하나
-              </label>
-              <textarea
-                id="targetReadonlyPaths"
-                className={s.inp}
-                value={paths}
-                onChange={(e) => setPaths(e.target.value)}
-                disabled={off}
-                placeholder="비우면 입력한 주소의 경로"
-              />
-            </div>
-            <div className={s.field}>
-              <label className={s.lbl} htmlFor="targetReadonlyBasis">
-                진단 권한 · 비변경 근거
-              </label>
-              <textarea
-                id="targetReadonlyBasis"
-                className={s.inp}
-                value={basis}
-                onChange={(e) => setBasis(e.target.value)}
-                disabled={off}
-                maxLength={1024}
-                placeholder="승인된 업무 · 환경과 이 GET/HEAD 경로가 상태를 바꾸지 않는 근거 (20자 이상)"
-              />
-            </div>
-          </div>
-          <p className={s.help}>
-            읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
-            query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 TLS 연결을 최대 8회 합니다.
-          </p>
-          <p className={s.help} id="targetHarmlessNote">
-            비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
-            확인합니다
-            {requestLimit ? ` · 회차 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만 등록할
-            수 있습니다
-          </p>
-          {allowStateChanges ? (
-            <label className={s.ckline}>
-              <input
-                id="targetReversible"
-                type="checkbox"
-                checked={reversible}
-                disabled={off}
-                onChange={(e) => setReversible(e.target.checked)}
-              />
-              <span>
-                복구 가능한 소유 시험환경이고 POST/PUT/PATCH 검사 권한이 있음 · 요청마다 전송 전에 확인 ·
-                삭제·초기화·결제는 제외
-              </span>
-            </label>
-          ) : null}
-          <div>
-            <button
-              className={cx(s.btn, s.sm)}
-              type="button"
-              disabled={off || basis.trim().length < 20}
-              onClick={() => void change("register")}
-            >
-              대상 등록 · 소유 확인 준비
-            </button>
-          </div>
-        </>
-      ) : null}
+  const host = new URL(origin).hostname;
+  const pending = selected?.state === "pending" ? selected : null;
+  // 결과 글 · 다시 조회 (어느 상태든 같은 자리: 상자 안 맨 아래)
+  const tail = (
+    <>
       {message ? (
         <p role="status" className={s.help}>
           {message}
@@ -329,6 +222,191 @@ export function TargetApprovalPanel({
           </button>
         </div>
       ) : null}
+    </>
+  );
+
+  // 승인된 대상: 시안처럼 상자 없이 주소 밑 한 줄
+  if (selected?.state === "approved") {
+    return (
+      <div className={cx(s.tgt, s.field)} id="targetApproval">
+        <div className={s.hostline}>
+          <span className={cx(s.pill, s.ok)}>승인된 대상</span>
+          <span className={s.help}>
+            {`${(selected.path_prefixes ?? []).join(", ")} · ${(selected.methods ?? []).join("/")} · 회차 요청 ${selected.requests}회 · 만료 ${selected.expires_at}`}
+          </span>
+          <button className={cx(s.btn, s.sm)} type="button" disabled={off} onClick={() => void change("revoke")}>
+            승인 철회
+          </button>
+        </div>
+        <span className={s.help}>
+          {`서버가 확인한 연결 · IP ${(selected.addresses ?? []).join(", ") || "—"} · 포트 ${selected.port} · TLS 공개키 ${selected.tls_spki_sha256 ? `${selected.tls_spki_sha256.slice(0, 16)}…` : "—"}`}
+        </span>
+        {tail}
+      </div>
+    );
+  }
+
+  // 미등록 · 소유 확인 대기: 시안 v91 의 '소유 확인 필요' 딱지 + 노란 TXT 상자
+  return (
+    <div className={s.tgt} id="targetApproval">
+      <div className={s.hostline}>
+        <span className={cx(s.pill, s.wait)}>소유 확인 필요</span>
+      </div>
+      <div className={s.verify}>
+        <div className={s.vt}>
+          <Icon name="alert" />
+          <div>
+            <b className={s.mono}>{host}</b> 은(는) 아직 승인되지 않은 대상입니다.{" "}
+            {pending
+              ? "아래 TXT 레코드를 도메인 DNS에 추가한 뒤 확인을 누르세요."
+              : "대상을 등록하면 도메인 DNS에 추가할 TXT 레코드가 나옵니다."}
+          </div>
+        </div>
+        {pending ? (
+          <>
+            <div className={s.rec}>
+              <span className={s.k}>이름</span>
+              <code id="targetChallengeName">{pending.challenge_name}</code>
+              <CopyButton text={pending.challenge_name ?? ""} label="이름 복사" />
+              <span className={s.k}>유형</span>
+              <code>TXT</code>
+              <span />
+              <span className={s.k}>값</span>
+              <code id="targetChallengeValue">{pending.challenge_value}</code>
+              <CopyButton text={pending.challenge_value ?? ""} label="값 복사" />
+            </div>
+            <div className={s.acts}>
+              <button
+                className={cx(s.btn, s.pri, s.sm)}
+                type="button"
+                disabled={off}
+                onClick={() => void change("approve")}
+              >
+                TXT 레코드 확인
+              </button>
+            </div>
+          </>
+        ) : null}
+        {!pending && open ? (
+          <div className={s["fsec-b"]} id="targetRegister">
+            <div className={s.two}>
+              <div className={s.field}>
+                <label className={s.lbl} htmlFor="targetReadonlyPaths">
+                  허용할 읽기 경로 · 한 줄에 하나
+                </label>
+                <textarea
+                  ref={firstField}
+                  id="targetReadonlyPaths"
+                  className={s.inp}
+                  value={paths}
+                  onChange={(e) => setPaths(e.target.value)}
+                  disabled={off}
+                  placeholder="비우면 입력한 주소의 경로"
+                />
+              </div>
+              <div className={s.field}>
+                <label className={s.lbl} htmlFor="targetReadonlyBasis">
+                  진단 권한 · 비변경 근거
+                </label>
+                <textarea
+                  id="targetReadonlyBasis"
+                  className={s.inp}
+                  value={basis}
+                  onChange={(e) => setBasis(e.target.value)}
+                  disabled={off}
+                  maxLength={1024}
+                  placeholder="승인된 업무 · 환경과 이 GET/HEAD 경로가 상태를 바꾸지 않는 근거 (20자 이상)"
+                />
+              </div>
+            </div>
+            <p className={s.help}>
+              읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
+              query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 TLS 연결을 최대 8회 합니다.
+            </p>
+            <p className={s.help} id="targetHarmlessNote">
+              비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
+              확인합니다
+              {requestLimit ? ` · 회차 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만 등록할
+              수 있습니다
+            </p>
+            {allowStateChanges ? (
+              <label className={s.ckline}>
+                <input
+                  id="targetReversible"
+                  type="checkbox"
+                  checked={reversible}
+                  disabled={off}
+                  onChange={(e) => setReversible(e.target.checked)}
+                />
+                <span>
+                  복구 가능한 소유 시험환경이고 POST/PUT/PATCH 검사 권한이 있음 · 요청마다 전송 전에 확인 ·
+                  삭제·초기화·결제는 제외
+                </span>
+              </label>
+            ) : null}
+            <div className={s.acts}>
+              <button
+                className={cx(s.btn, s.pri, s.sm)}
+                type="button"
+                disabled={off || basis.trim().length < 20}
+                onClick={() => void change("register")}
+              >
+                대상 등록 · 소유 확인 준비
+              </button>
+              <button className={cx(s.btn, s.sm)} type="button" disabled={busy} onClick={() => setOpen(false)}>
+                접기
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {!pending && !open ? (
+          <div className={s.acts}>
+            <button className={cx(s.btn, s.pri, s.sm)} type="button" disabled={off} onClick={() => setOpen(true)}>
+              대상 등록하기
+            </button>
+          </div>
+        ) : null}
+        {tail}
+      </div>
     </div>
+  );
+}
+
+// TXT 레코드 이름 · 값 복사 (시안 data-copy). 클립보드를 못 쓰면 그 글을 선택해 둔다.
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [done, setDone] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return (
+    <button
+      className={cx(s.btn, s.sm)}
+      type="button"
+      aria-label={label}
+      onClick={(e) => {
+        const code = e.currentTarget.previousElementSibling;
+        const pick = () => {
+          if (!code) return;
+          const r = document.createRange();
+          r.selectNodeContents(code);
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(r);
+        };
+        try {
+          void navigator.clipboard
+            .writeText(text)
+            .then(() => {
+              setDone(true);
+              clearTimeout(timer.current);
+              timer.current = setTimeout(() => setDone(false), 1500);
+            })
+            .catch(pick);
+        } catch {
+          pick();
+        }
+      }}
+    >
+      {done ? "복사됨" : "복사"}
+    </button>
   );
 }
