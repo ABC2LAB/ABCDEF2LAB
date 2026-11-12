@@ -83,16 +83,43 @@ func TestProductPolicyBoundsRejectsOutOfRange(t *testing.T) {
 // 설치 입력의 runtime_limits는 닫힌 형식이다. 모르는 칸·null은 거부한다.
 func TestProductInstallInputRuntimeLimitsStrict(t *testing.T) {
 	base := `{"format":"abc2lab.product-install/v2","runtime_limits":%s}`
-	for _, block := range []string{`{"product":{"worker_turns":12}}`, `{}`} {
+	for _, block := range []string{`{"product":{"worker_turns":12}}`, `{}`, `{"workflow":{"run_seconds":300}}`} {
 		var c productInstallInput
 		if decodeLaunchJSON([]byte(fmt.Sprintf(base, block)), &c) != nil {
 			t.Fatalf("valid block rejected: %s", block)
 		}
 	}
-	for _, block := range []string{`{"product":{"max_workers":3}}`, `{"product":null}`, `{"other":{}}`, `{"product":{"worker_turns":"12"}}`} {
+	for _, block := range []string{`{"product":{"max_workers":3}}`, `{"product":null}`, `{"other":{}}`, `{"product":{"worker_turns":"12"}}`, `{"product":{"model_requests":30}}`, `{"product":{"run_seconds":1.5}}`} {
 		var c productInstallInput
 		if decodeLaunchJSON([]byte(fmt.Sprintf(base, block)), &c) == nil {
 			t.Fatalf("invalid block accepted: %s", block)
+		}
+	}
+}
+
+// run_seconds: 없으면 지금 기본값(제품 180초·워크플로 600초), 고른 모드의 칸만 쓰고, 1 이상 urlMaxRunSeconds 이하만
+// 받는다(C32 2단계). model_requests는 로컬 모델 상한이 코드에 없어 아직 칸을 열지 않는다(결정안 2-4).
+func TestProductRunSecondsFor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		limits   *productRuntimeLimits
+		workflow bool
+		want     int64
+		ok       bool
+	}{
+		{"product-default", nil, false, 180, true},
+		{"workflow-default", nil, true, 600, true},
+		{"product-set", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(300))}}, false, 300, true},
+		{"workflow-ignores-product", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(300))}}, true, 600, true},
+		{"workflow-set", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(120))}}, true, 120, true},
+		{"at-limit", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(urlMaxRunSeconds))}}, false, urlMaxRunSeconds, true},
+		{"over-limit", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(urlMaxRunSeconds + 1))}}, false, 0, false},
+		{"zero", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(0))}}, true, 0, false},
+		{"negative", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(-1))}}, false, 0, false},
+	} {
+		got, ok := productRunSecondsFor(tc.limits, tc.workflow)
+		if ok != tc.ok || ok && got != tc.want {
+			t.Fatalf("%s: seconds=%d ok=%v", tc.name, got, ok)
 		}
 	}
 }
