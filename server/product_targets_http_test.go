@@ -106,3 +106,48 @@ func TestProductAccountHTTPPassesOnlyLabelAndStatement(t *testing.T) {
 		t.Fatal("missing account not mapped to 404")
 	}
 }
+
+// 로그인 방식·자격 경로는 검사한 설정과 자격만 넘기고, 형식이 틀리면 준비 프로세스로 보내지 않는다.
+func TestProductLoginAndCredentialHTTP(t *testing.T) {
+	p := &productControlRecorder{}
+	id := "target-" + strings.Repeat("c", 32)
+	base := "/api/product/targets/" + id
+	invoke := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		productTargetsHTTP(w, r, "ARTEX", p)
+		return w
+	}
+	last := func() *diagnosisprep.ProductRequest { return p.requests[len(p.requests)-1].Product }
+	if invoke("GET", base+"/login", "").Code != 200 || last().Operation != "target_login" {
+		t.Fatal("login read not forwarded")
+	}
+	login := `{"method":"POST","path":"/read/login","format":"json","username_field":"email","password_field":"password","cookies":["session"]}`
+	if invoke("PUT", base+"/login", login).Code != 200 || last().Operation != "target_login_set" || last().Login.Path != "/read/login" {
+		t.Fatal("login config not forwarded")
+	}
+	if invoke("PUT", base+"/accounts/tester-a/credential", `{"username":"seeded-user","password":"seeded-pass"}`).Code != 200 || last().Operation != "account_credential_set" || last().Account.Label != "tester-a" {
+		t.Fatal("credential not forwarded")
+	}
+	// 넘긴 뒤에는 요청 구조체의 자격 값 참조를 버린다.
+	if c := last().Credential; c == nil || c.Username != "" || c.Password != "" {
+		t.Fatal("credential values kept after forwarding")
+	}
+	before := len(p.requests)
+	for name, c := range map[string][3]string{
+		"login get method":     {"PUT", base + "/login", strings.Replace(login, `"POST"`, `"GET"`, 1)},
+		"login extra field":    {"PUT", base + "/login", strings.TrimSuffix(login, "}") + `,"approved":true}`},
+		"login post verb":      {"POST", base + "/login", login},
+		"credential newline":   {"PUT", base + "/accounts/tester-a/credential", `{"username":"u","password":"a\nb"}`},
+		"credential extra":     {"PUT", base + "/accounts/tester-a/credential", `{"username":"u","password":"p","label":"x"}`},
+		"credential post":      {"POST", base + "/accounts/tester-a/credential", `{"username":"u","password":"p"}`},
+		"credential bad label": {"PUT", base + "/accounts/Tester/credential", `{"username":"u","password":"p"}`},
+		"credential no pass":   {"PUT", base + "/accounts/tester-a/credential", `{"username":"u"}`},
+		"login suffix":         {"GET", base + "/login/x", ""},
+	} {
+		if w := invoke(c[0], c[1], c[2]); w.Code < 400 || len(p.requests) != before {
+			t.Errorf("%s reached preparation (code %d)", name, w.Code)
+		}
+	}
+}

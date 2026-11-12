@@ -351,6 +351,12 @@ func ValidateResponse(r Request, response Response) error {
 			len(response.Product.Accounts) > MaxTargetAccounts {
 			return ErrProtocol
 		}
+		if response.Product.AccountStatement != "" && (r.Product.Operation != "accounts" || !validText(response.Product.AccountStatement, 1024)) {
+			return ErrProtocol
+		}
+		if response.Product.Login != nil && !ValidTargetLogin(*response.Product.Login) {
+			return ErrProtocol
+		}
 		accounts := response.Product.Accounts
 		if response.Product.Account != nil {
 			accounts = append(append([]ProductAccount(nil), accounts...), *response.Product.Account)
