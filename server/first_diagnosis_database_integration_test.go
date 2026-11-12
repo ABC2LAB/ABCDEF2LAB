@@ -197,6 +197,20 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			plannerOnly.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, plannerOnly, "planner-only")
 		})
+		t.Run("actual-engine-call-limit-is-budget-limited", func(t *testing.T) {
+			limited, err := manager.CreateTask("Owned planner round limit fixture", "Close at the planner round limit without failing", nil, 60, 60)
+			if err != nil || limited == nil {
+				t.Fatal("독립 Planner 상한 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", limited.ID); err != nil {
+				t.Fatal("Planner 상한 task 준비 상태 저장 실패")
+			}
+			limited.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := limited.Store.AddIntent(map[string]any{"summary": "Read the owned fixture once"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 Planner 상한 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, limited, "planner-limit")
+		})
 		t.Run("actual-engine-preparation-failure-no-fallback", func(t *testing.T) {
 			prepareFail, err := manager.CreateTask("Owned preparation failure fixture", "Reject work before model tool execution", nil, 60, 60)
 			if err != nil || prepareFail == nil {

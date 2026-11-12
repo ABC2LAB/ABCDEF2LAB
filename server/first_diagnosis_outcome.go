@@ -14,8 +14,11 @@ const (
 	intentOutcomeIncomplete    = "incomplete"
 	intentOutcomeUnknown       = "unknown"
 	intentOutcomeStopped       = "stopped"
-	// 아직 진행 중(open·running). 마감 판정은 이것이 없을 때만 한다.
-	intentOutcomeActive = "active"
+	// 아직 시작하지 않음(open). 보통 마감 판정은 이것이 없을 때만 하고, 실행 상한 마감(budget_limited)에서는
+	// 시작하지 못한 intent로 incomplete에 센다(계약 §2).
+	intentOutcomeOpen = "open"
+	// 실행 중(running). 마감 판정은 이것이 없을 때만 한다.
+	intentOutcomeRunning = "running"
 	// 세지 않는다(deleted).
 	intentOutcomeIgnored = "ignored"
 )
@@ -40,8 +43,10 @@ func firstDiagnosisIntentOutcome(state, blockedReason string) string {
 		return intentOutcomeIncomplete
 	case "paused":
 		return intentOutcomeStopped
-	case "open", "running":
-		return intentOutcomeActive
+	case "open":
+		return intentOutcomeOpen
+	case "running":
+		return intentOutcomeRunning
 	case "deleted":
 		return intentOutcomeIgnored
 	}
@@ -52,21 +57,27 @@ type firstDiagnosisQuerier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-// firstDiagnosisIntentOutcomes는 탐색 하나의 intent를 결과 묶음별로 센다. active는 진행 중인 수다.
-func firstDiagnosisIntentOutcomes(ctx context.Context, q firstDiagnosisQuerier, explorationID int64) (diagnosis.IntentOutcomes, int64, error) {
-	var out diagnosis.IntentOutcomes
-	var active int64
+// firstDiagnosisIntentCounts는 결과 묶음별 개수와 아직 시작하지 않은(open)·실행 중(running) 수다.
+type firstDiagnosisIntentCounts struct {
+	outcomes      diagnosis.IntentOutcomes
+	open, running int64
+}
+
+// firstDiagnosisIntentOutcomes는 탐색 하나의 intent를 결과 묶음별로 센다.
+func firstDiagnosisIntentOutcomes(ctx context.Context, q firstDiagnosisQuerier, explorationID int64) (firstDiagnosisIntentCounts, error) {
+	var counts firstDiagnosisIntentCounts
+	out := &counts.outcomes
 	rows, err := q.QueryContext(ctx, `SELECT state, COALESCE(blocked_reason, ''), count(*) FROM exploration_nodes
  WHERE exploration_id=$1 AND kind='intent' GROUP BY 1, 2`, explorationID)
 	if err != nil {
-		return out, 0, err
+		return firstDiagnosisIntentCounts{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var state, reason string
 		var n int64
 		if err := rows.Scan(&state, &reason, &n); err != nil {
-			return diagnosis.IntentOutcomes{}, 0, err
+			return firstDiagnosisIntentCounts{}, err
 		}
 		switch firstDiagnosisIntentOutcome(state, reason) {
 		case intentOutcomeDone:
@@ -77,17 +88,36 @@ func firstDiagnosisIntentOutcomes(ctx context.Context, q firstDiagnosisQuerier, 
 			out.Incomplete += n
 		case intentOutcomeStopped:
 			out.Stopped += n
-		case intentOutcomeActive:
-			active += n
+		case intentOutcomeOpen:
+			counts.open += n
+		case intentOutcomeRunning:
+			counts.running += n
 		case intentOutcomeIgnored:
 		default:
 			out.Unknown += n
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return diagnosis.IntentOutcomes{}, 0, err
+		return firstDiagnosisIntentCounts{}, err
 	}
-	return out, active, nil
+	return counts, nil
+}
+
+// firstDiagnosisBudgetLimited는 실행 상한(E② 런타임의 Planner 라운드·도구 호출, 승인 모델 예산)에 닿았는지 본다.
+func firstDiagnosisBudgetLimited(task *Task, budget *FirstDiagnosisModelBudget) bool {
+	return task != nil && task.firstDiagnosisBudgetLimited.Load() || budget.LimitReached()
+}
+
+// firstDiagnosisClosingOutcomes는 마감 판정의 앞부분이다. 실행 중 intent가 있으면 기다린다. 실행 상한에 닿지
+// 않았으면 시작하지 않은 intent가 없고 마지막 작업 뒤 Planner가 계획했을 때만 마감한다. 실행 상한에 닿았으면
+// Planner를 기다리지 않고, 시작하지 못한 intent를 incomplete로 센다(계약 §2·§3.2).
+func firstDiagnosisClosingOutcomes(c firstDiagnosisIntentCounts, budgetLimited, planned bool) (diagnosis.IntentOutcomes, bool) {
+	if c.running > 0 || !budgetLimited && (c.open > 0 || !planned) {
+		return diagnosis.IntentOutcomes{}, false
+	}
+	out := c.outcomes
+	out.Incomplete += c.open
+	return out, true
 }
 
 // RunResult는 감사가 닫힌 실행의 결과다. 실행이 정상 마감되지 않았으면 nil이다.
@@ -104,8 +134,7 @@ func (s *FirstDiagnosisSupervisor) RunResult() *diagnosis.RunResult {
 	return &result
 }
 
-func (s *FirstDiagnosisSupervisor) setRunResult(outcomes diagnosis.IntentOutcomes) {
-	result := diagnosis.RunResult{Outcome: outcomes.Outcome(), IntentOutcomes: outcomes}
+func (s *FirstDiagnosisSupervisor) setRunResult(result diagnosis.RunResult) {
 	s.mu.Lock()
 	s.result = &result
 	s.mu.Unlock()

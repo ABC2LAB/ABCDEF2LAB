@@ -583,9 +583,9 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 					return err
 				}
 				// 등록 경로는 intent 하나가 done이어야 마감된다.
-				s.setRunResult(diagnosis.IntentOutcomes{Done: 1})
+				s.setRunResult(diagnosis.RunResult{Outcome: diagnosis.OutcomeComplete, IntentOutcomes: diagnosis.IntentOutcomes{Done: 1}})
 			} else {
-				ready, outcomes, completionErr := s.generalCompletion(run, server, task)
+				ready, result, completionErr := s.generalCompletion(run, server, task)
 				if completionErr != nil || !ready {
 					return ErrFirstDiagnosisSupervisor
 				}
@@ -593,7 +593,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 				if err = server.engine.e2HTTP.CloseTask(run, taskID); err != nil {
 					return firstDiagnosisFailure(err)
 				}
-				s.setRunResult(outcomes)
+				s.setRunResult(result)
 			}
 			return nil
 		}
@@ -607,19 +607,22 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 // 일반 HTTP의 마감 판정이다. ready는 감사가 닫힌 실행 마감을 할 수 있다는 뜻이며 목표 충족이나 E③ 판정이 아니다.
 // intent 결과는 실행 결과 상태 값 계약 §2로 센다. incomplete·stopped intent는 실패가 아니라 부분 완료다(C08).
 // 결과 불명 intent는 E② 요청 단위 처리(C01) 전까지 지금처럼 실행을 멈춘다(계약 §6.3).
-func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server *Server, task *Task) (bool, diagnosis.IntentOutcomes, error) {
-	var none diagnosis.IntentOutcomes
+// 실행 상한(Planner 라운드·도구 호출·승인 모델 예산)에 닿았으면 실행 중 intent가 끝나는 대로 마감하고, 시작하지
+// 못한 intent는 incomplete로 센다(closing_reason budget_limited).
+func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server *Server, task *Task) (bool, diagnosis.RunResult, error) {
+	var none diagnosis.RunResult
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && flow.Failed() {
 		return false, none, ErrFirstDiagnosisOutcome
 	}
-	outcomes, active, err := firstDiagnosisIntentOutcomes(ctx, s.m.pg.DB, task.ExpID)
+	counts, err := firstDiagnosisIntentOutcomes(ctx, s.m.pg.DB, task.ExpID)
+	outcomes := counts.outcomes
 	if err != nil || outcomes.Unknown > 0 {
 		return false, none, ErrFirstDiagnosisSupervisor
 	}
-	if active > 0 {
-		return false, none, nil
-	}
-	if task.firstDiagnosisWorkSeq.Load() == 0 || task.firstDiagnosisPlannedSeq.Load() < task.firstDiagnosisWorkSeq.Load() {
+	budgetLimited := firstDiagnosisBudgetLimited(task, server.firstModelBudget)
+	planned := task.firstDiagnosisWorkSeq.Load() != 0 && task.firstDiagnosisPlannedSeq.Load() >= task.firstDiagnosisWorkSeq.Load()
+	outcomes, closing := firstDiagnosisClosingOutcomes(counts, budgetLimited, planned)
+	if !closing {
 		return false, none, nil
 	}
 	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Stopped
@@ -697,7 +700,11 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	if matched != outcomes.PolicyLimited {
 		return false, none, ErrFirstDiagnosisSupervisor
 	}
-	return true, outcomes, nil
+	result := diagnosis.RunResult{Outcome: outcomes.Outcome(), IntentOutcomes: outcomes}
+	if budgetLimited {
+		result.ClosingReason = diagnosis.ClosingBudgetLimited
+	}
+	return true, result, nil
 }
 
 // 감사가 닫힌 정책 제한은 진단 범위의 제한이다. 불명·미완료·알 수 없는 분류는 마감 실패다.

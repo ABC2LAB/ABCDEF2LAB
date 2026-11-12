@@ -67,8 +67,11 @@ type Task struct {
 	// 첫 진단은 Worker 완료 뒤 Planner가 실제로 재계획을 마쳐야 닫는다.
 	firstDiagnosisWorkSeq    atomic.Uint64
 	firstDiagnosisPlannedSeq atomic.Uint64
-	lifecycleMu              sync.RWMutex
-	llmMu                    sync.RWMutex
+	// firstDiagnosisBudgetLimited는 실행 상한에 닿아 새 Planner 라운드·작업을 받지 않는다는 표시다.
+	// 진행 중 작업이 끝나면 실패가 아니라 budget_limited로 마감한다.
+	firstDiagnosisBudgetLimited atomic.Bool
+	lifecycleMu                 sync.RWMutex
+	llmMu                       sync.RWMutex
 
 	// pendingTriggers accumulates the concrete changes (worker done / finding) that
 	// fired planning rounds since the last one consumed them. The debounce coalesces
