@@ -49,7 +49,7 @@
 | C29 | 호출마다 작업 디렉터리를 새로 만들고 지움, `/work` 32MiB·`/tmp` 16MiB 실행 불가, 출력 32KiB 넘으면 버림(원본은 파일로 넘겨 다시 읽음) | 저하 | `e2runner/runner_linux.go:256-267,387-390`, `e2sandbox/helper_linux.go:411,482` | P3·최민준 |
 | C30 | 이미지 데이터 미탑재(워드리스트·Playwright·skills). 도구 동등성 79개 중 57개 일치([근거](evaluation/e2-tool-equivalence.md)). [결정안](sandbox-data-decision.md) | 저하 | `e2sandbox/helper_linux.go` | P3·최민준 |
 | C31 | 거부·미지원·불명·대상 오류가 같은 502 본문이라 모델이 사유를 모름 | 저하 | `e2proxy/http.go:334-378` | P2·최민준 |
-| C32 | 제품 기본 상한이 작음(요청 시간 5초, 호출 10초, Worker 턴 8, 도구 호출 8, Planner 라운드 6, intent 실행 1, Worker 2개(원본 3), 실행 180초). 장치는 유지하고 값을 설정으로 | 저하 | `cmd/first-controlled-diagnosis/product_install_linux.go:234-247` | P3·최민준 |
+| C32 | 제품 기본 상한이 작음(요청 시간 5초, 호출 10초, Worker 턴 8, 도구 호출 8, Planner 라운드 6, intent 실행 1, Worker 수는 설치가 `engine.workers`=2를 쓰지만 엔진이 읽는 키가 `workers`라 실제로는 원본과 같은 3, 실행 180초). 장치는 유지하고 값을 설정으로([결정안](install-limits-decision.md)) | 저하 | `cmd/first-controlled-diagnosis/product_install_linux.go:234-247` | P3·최민준 |
 | C33 | 제품 경로에서 일시정지·재개·채팅·조종·설정·활동 조회가 403 | 저하 | `server/first_diagnosis_startup.go:66-84` | P3·이경준 |
 | C34 | 설치 수명 상한(승인 168시간·실행 1000회, 작업 1024, 대상 32개 삭제 불가, 이미지 갱신 시 지문 거부) | 오류 | `cmd/first-controlled-diagnosis/product_install_linux.go:101,184`, `diagnosisprep/service_linux.go:16,215,326-337` | P3·이경준 |
 | C35 | 대상 승인 조건이 빡빡함(DNS 주소 집합·SPKI 동일, 24시간, 시작마다 TXT 재확인, IP 8개 초과 거부). CDN·인증서 교체에 약함 | 저하 | `cmd/first-controlled-diagnosis/product_targets.go:262-275,363-366,449-455` | P3·이경준 |
