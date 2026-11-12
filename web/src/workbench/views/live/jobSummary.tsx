@@ -42,6 +42,7 @@ export function JobSummary({
   if (flow) stageText = flowStageText[flow.stage];
   else if (job) stageText = urlStateText(job.state, verified);
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === handle.input.profile_id) : undefined;
+  const outcomeText = job ? urlOutcomeText(job) : "";
 
   return (
     <>
@@ -63,7 +64,7 @@ export function JobSummary({
             ["진단 모드", MODE_TEXT[handle.input.workflow_mode ?? "none"]],
             ["단계", stageText],
             ["실제 task", job?.task_id ? `#${job.task_id}` : "아직 없음"],
-            ...(job && urlOutcomeText(job) ? [["실행 결과", urlOutcomeText(job)] as const] : []),
+            ...(outcomeText ? [["실행 결과", outcomeText] as const] : []),
             ...rows,
           ]}
         />

@@ -886,12 +886,12 @@ describe("실행 결과 한 줄(urlOutcomeText)", () => {
   it.each([
     [
       { state: "completed", outcome: "partial", intent_outcomes: counts({ done: 1, incomplete: 2 }) },
-      "일부 완료 · 남은 intent 2",
+      "일부 완료 · 남은 작업 2",
     ],
     [{ state: "completed", outcome: "no_intents", intent_outcomes: counts({}) }, "시도한 계획 없음(검사 안 함)"],
     [
       { state: "completed", outcome: "complete", intent_outcomes: counts({ done: 1, policy_limited: 2 }) },
-      "전부 마감 · 정책상 검증 안 됨 2",
+      "계획한 작업 모두 마감 · 정책상 검증 안 됨 2",
     ],
     [
       {
@@ -900,9 +900,17 @@ describe("실행 결과 한 줄(urlOutcomeText)", () => {
         closing_reason: "budget_limited",
         intent_outcomes: counts({ incomplete: 1 }),
       },
-      "일부 완료 · 남은 intent 1 · 예산 상한에서 마감 · 찾은 후보는 보존",
+      "일부 완료 · 남은 작업 1 · 예산 상한에서 마감 · 찾은 후보는 보존",
     ],
     [{ state: "cancelled", intent_outcomes: counts({ done: 1, stopped: 2 }) }, "중지됨 · 끝난 1 / 끊긴 2"],
+    [
+      { state: "completed", outcome: "partial", intent_outcomes: counts({ done: 1, incomplete: 1, unknown: 2 }) },
+      "일부 완료 · 남은 작업 1 · 결과 불명 2",
+    ],
+    [
+      { state: "completed", outcome: "partial", intent_outcomes: counts({ done: 1, unknown: 1 }) },
+      "일부 완료 · 결과 불명 1",
+    ],
     [{ state: "completed" }, ""],
   ] as const)("%o → %s", (job, text) => {
     expect(urlOutcomeText(job as Parameters<typeof urlOutcomeText>[0])).toBe(text);
