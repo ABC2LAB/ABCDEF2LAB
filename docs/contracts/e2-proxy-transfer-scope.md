@@ -155,8 +155,14 @@ Unknown 중지 한도의 관계를 합의하는 것이다. 그 결정안은 아�
    설정으로 바꿀 수 있게 한다(C32와 같이).
    - 구현 상태(2026-11-13): 제품 일반 HTTP 모드의 기본 `max_body_bytes`를 64 KiB에서 공식 템플릿과
      같은 16 MiB(코드 상한과 같음)로 올렸다. 워크플로 모드는 대상 정책의 `max_response_bytes`를 그대로
-     쓴다. 요청·응답 상한 분리와 설치 설정 칸은 아직이다. 기존 설치의 보호 정책 파일은 바꾸지 않으므로
-     새 기본값은 새 설치부터 적용된다.
+     쓴다. 기존 설치의 보호 정책 파일은 바꾸지 않으므로 새 기본값은 새 설치부터 적용된다.
+   - 구현 상태(2026-11-13, 상한 분리): 요청 상한은 새 이름을 만들지 않고 기존 `limits.max_body_bytes`를
+     그대로 쓴다(공식 평가 템플릿과 이미 고정한 정책 지문을 바꾸지 않으려고). 응답 쪽은 선택 칸 둘을 더했다.
+     `limits.max_response_body_bytes`(도구에 줄 응답 본문 상한, 1…64 MiB, 없으면 `max_body_bytes`)와
+     `limits.max_response_scan_bytes`(보호 값 반사 검사 상한, 1…65 MiB, 없으면 응답 상한 + 가장 긴 보호 값
+     길이). 검사 상한을 주면 위 상한 사이 조건을 정책 적재 때 검사한다. 두 칸은 값을 준 정책의 지문에만
+     들어가므로 칸이 없는 정책(공식 평가 템플릿 포함)의 지문은 그대로다. 설치 입력은
+     `runtime_limits.<모드>.max_response_body_bytes`·`max_response_scan_bytes`로 준다.
 4. **감사·근거 형식은 판을 올린다.** 새 사유와 `response_truncated`가 영수증에 들어가므로
    `e2-http-v1`에 조용히 더하지 않고 `e2-http-v2`를 만든다. 검증기(`e2-audit-verify`)·
    내보내기(`e2export`)·채점기(`attempt_reconcile` 등)는 두 판을 모두 읽고, v1 기록은 v1
@@ -173,7 +179,8 @@ Unknown 중지 한도의 관계를 합의하는 것이다. 그 결정안은 아�
 거부). **2도 구현했다**: 본문 상한을 넘는 응답은 앞 `max_body_bytes`까지만 정상 HTTP 응답으로 준다(`Content-Length`를
 그 길이로, chunked·trailer 지움, `withheld` + `response_truncated`, 결과 헤더 `X-ABC2LAB-E2-Outcome: truncated`, trusted
 관찰에 `response_truncated`). 검사 상한은 아직 설정이 아니라 `본문 상한 + 가장 긴 보호 값 길이`로 계산해 상한 사이 조건을 늘
-만족시킨다. 206·`Content-Range` 응답은 통째로 보류한다. 3(요청·응답 상한 분리와 검사 상한 설정·정책 지문)은 남았다. 1은
+만족시킨다. 206·`Content-Range` 응답은 통째로 보류한다. **3도 구현했다**: 응답 상한·검사 상한 선택 칸(값을 준 정책만
+지문에 들어감), 상한 사이 조건 적재 검사, 설치 `runtime_limits` 칸, 서버 정책 파일 읽기. 1은
 결과 불명 1건 전체 정지 제거(C01, 이동찬)와 같은 계수를 건드리므로 C01 구현과 순서를
 맞춘다.
 
