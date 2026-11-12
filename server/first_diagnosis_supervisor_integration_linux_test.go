@@ -194,6 +194,21 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if r.URL.Path != "/allowed" {
 			t.Error("생산 Engine의 범위 밖 요청이 대상에 도달함")
 		}
+		if mode == "result-unknown" {
+			// 요청을 받은 뒤 응답 없이 연결을 끊는다. E②는 대상이 요청을 처리했는지 알 수 없다(결과 불명).
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("소유 대상 연결 끊기 불가")
+				return
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Error("소유 대상 연결 끊기 실패", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"owned_fixture":true}`))
 	}))
@@ -518,6 +533,83 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
+	if mode == "result-unknown" {
+		// 결과 불명 송신은 그 intent만 멈춘다(C01). 감사가 닫히면 실행은 실패가 아니라 completed + partial이고,
+		// 결과 불명 intent는 다시 보내지 않는다(계약 §6.3).
+		result := supervisor.RunResult()
+		results := runtime.host.Runtime().Results(task.ID)
+		var intentState, blockedReason string
+		if err := installer.QueryRowContext(ctx, "SELECT state,COALESCE(blocked_reason,'') FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&intentState, &blockedReason); err != nil {
+			t.Fatal("결과 불명 intent 조회 실패", err)
+		}
+		if runErr != nil || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomePartial || result.ClosingReason != "" ||
+			result.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) || hits.Load() != 1 ||
+			len(results) != 1 || results[0].Classification != "result_unknown" || results[0].Call.Counts.Unknown != 1 || !results[0].Final || !results[0].Call.AuditComplete ||
+			intentState != "blocked" || blockedReason != "e2_http_result_unknown" {
+			t.Fatalf("결과 불명 intent를 부분 완료로 마감하지 않음 err=%v result=%+v hits=%d results=%d intent=%s/%s", runErr, result, hits.Load(), len(results), intentState, blockedReason)
+		}
+		// 결과 불명 송신 근거가 없는 결과 불명 intent는 마감하지 않는다. 근거가 있는 intent와 끝난 intent가 섞이면
+		// 둘 다 센다.
+		for _, tc := range []struct {
+			state, reason string
+			ready         bool
+			want          diagnosis.IntentOutcomes
+		}{
+			{"blocked", "e2_http_result_unknown", false, diagnosis.IntentOutcomes{}},
+			{"done", "", true, diagnosis.IntentOutcomes{Done: 1, Unknown: 1}},
+		} {
+			extra, addErr := task.Store.AddIntent(map[string]any{"summary": "Owned unknown evidence fixture " + tc.state + tc.reason}, 1, nil, "system")
+			if addErr != nil {
+				t.Fatal("결과 불명 근거 fixture intent 생성 실패")
+			}
+			if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state=$1, blocked_reason=NULLIF($2,'') WHERE exploration_id=$3 AND id=$4", tc.state, tc.reason, task.ExpID, extra); err != nil {
+				t.Fatal("결과 불명 근거 fixture 상태 설정 실패", err)
+			}
+			ready, got, err := supervisor.generalCompletion(ctx, runtime.server, task)
+			if tc.ready {
+				if err != nil || !ready || got.IntentOutcomes != tc.want || got.Outcome != diagnosis.OutcomePartial || !got.Valid() {
+					t.Fatalf("%s/%s: 근거 있는 결과 불명과 끝난 intent를 같이 세지 않음 ready=%v result=%+v err=%v", tc.state, tc.reason, ready, got, err)
+				}
+			} else if err == nil || ready {
+				t.Fatalf("%s/%s: 결과 불명 송신 근거 없는 결과 불명 intent를 마감함", tc.state, tc.reason)
+			}
+			if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, extra); err != nil {
+				t.Fatal("결과 불명 근거 fixture 정리 실패")
+			}
+		}
+		// 결과 불명 송신이 있는 호출의 intent를 다른 결과로 바꾸면 마감하지 않는다(그 intent는 다시 보내지 않아야 한다).
+		callIntent := results[0].Call.IntentID
+		for _, state := range []string{"done", "exhausted"} {
+			if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state=$1, blocked_reason=NULL WHERE exploration_id=$2 AND id=$3", state, task.ExpID, callIntent); err != nil {
+				t.Fatal("결과 불명 intent 상태 바꾸기 실패", err)
+			}
+			if ready, _, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
+				t.Fatalf("결과 불명 송신이 있는 intent를 %s로 마감함", state)
+			}
+		}
+		// 근거 없는 다른 intent를 결과 불명으로 두어 개수를 맞춰도, 결과 불명 송신이 있는 intent가 끝난 것으로 남으면
+		// 마감하지 않는다(개수가 아니라 intent마다 대조한다).
+		swapped, addErr := task.Store.AddIntent(map[string]any{"summary": "Owned swapped unknown fixture"}, 1, nil, "system")
+		if addErr != nil {
+			t.Fatal("맞바꾼 결과 불명 fixture 생성 실패")
+		}
+		if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state='blocked', blocked_reason='e2_http_result_unknown' WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
+			t.Fatal("맞바꾼 결과 불명 fixture 상태 설정 실패", err)
+		}
+		if ready, _, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
+			t.Fatal("결과 불명 송신이 있는 intent 대신 근거 없는 intent를 결과 불명으로 셈")
+		}
+		if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
+			t.Fatal("맞바꾼 결과 불명 fixture 정리 실패")
+		}
+		if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state='blocked', blocked_reason='e2_http_result_unknown' WHERE exploration_id=$1 AND id=$2", task.ExpID, callIntent); err != nil {
+			t.Fatal("결과 불명 intent 상태 되돌리기 실패", err)
+		}
+		if ready, got, err := supervisor.generalCompletion(ctx, runtime.server, task); err != nil || !ready || got.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) {
+			t.Fatalf("되돌린 결과 불명 intent를 다시 마감하지 않음 ready=%v result=%+v err=%v", ready, got, err)
+		}
+		return
+	}
 	if mode == "planner-limit" {
 		result := supervisor.RunResult()
 		if runErr != nil || result == nil || result.ClosingReason != diagnosis.ClosingBudgetLimited || result.IntentOutcomes.Done == 0 || !result.Valid() || hits.Load() != 1 {
@@ -595,7 +687,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			t.Fatal("감사에 결속된 정상 제한을 마감 실패로 처리함")
 		}
 		// 실행 결과 상태 값(C08): 불완전·운영자 중지 intent가 있으면 실패가 아니라 부분 완료다. 결과 불명 intent는
-		// E② 요청 단위 처리(C01) 전까지 지금처럼 마감하지 않는다.
+		// E②가 결과 불명 송신을 기록한 intent일 때만 센다. 이 fixture에는 그 근거가 없으므로 마감하지 않는다.
 		for _, tc := range []struct {
 			state, reason string
 			ready         bool
