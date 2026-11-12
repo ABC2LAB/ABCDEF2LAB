@@ -24,6 +24,7 @@ from baseline_pages_collector import MAX_PAGE_SIZE
 from e2_export import E2_HEADER_MODES
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, PURPOSES
 from path_mask import PathKeyError, key_ref, read_path_key
+from preservation_record import PreservationRecordError, validate_options
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
 from runner_docker import container_file_ok
 
@@ -151,7 +152,7 @@ _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_ima
                "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export")
 # 목적 칸이 생기기 전 설정(같은 CONFIG_VERSION)도 그대로 읽게 선택 칸으로 둔다. 빠지면 공식 회차다.
 # path_key_file은 수용시험 회차에만 있어야 한다(계측기 경로 가림 키, 회차 디렉터리 밖).
-_OPTIONAL_TOP_FIELDS = ("purpose", "path_key_file")
+_OPTIONAL_TOP_FIELDS = ("purpose", "path_key_file", "preservation")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -261,6 +262,8 @@ class RunnerConfig:
     purpose: str
     # 수용시험 회차의 경로 가림 키 파일(비교할 회차 묶음이 같이 쓴다). 공식 회차는 None.
     path_key_file: Path | None
+    # 수용시험 전용 서명 원자료 조건. 실행 허용이나 새 망 배치를 만들지 않는다.
+    preservation: dict | None = None
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -430,6 +433,14 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     elif acceptance:
         # 키는 근거와 함께 복사·공유되지 않게 회차 디렉터리 밖에 둔다. 실제 위치는 check_key_files가 다시 본다.
         _outside_runs_root(top, "path_key_file", errors)
+    preservation = None
+    if "preservation" in top:
+        if not acceptance:
+            errors.append("config.preservation: OFFICIAL_FORBIDDEN")
+        try:
+            preservation = validate_options(top["preservation"])
+        except PreservationRecordError:
+            errors.append("config.preservation: INVALID")
     db = _exact(top.get("engine_db"), ("user", "name"), "config.engine_db", errors) if "engine_db" in top else {}
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
@@ -530,7 +541,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], e2_product=e2_product, state=state,
         engine_rules=top["engine_rules"], verdict_export=verdict_export,
         purpose=top.get("purpose", PURPOSE_OFFICIAL),
-        path_key_file=Path(top["path_key_file"]) if "path_key_file" in top else None)
+        path_key_file=Path(top["path_key_file"]) if "path_key_file" in top else None,
+        preservation=preservation)
 
 
 def _e2_product(block: dict, errors: list[str]) -> dict | None:

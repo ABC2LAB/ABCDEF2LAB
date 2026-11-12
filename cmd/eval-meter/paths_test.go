@@ -205,6 +205,35 @@ func TestEnginePathLogRecordsIngress(t *testing.T) {
 	}
 }
 
+// 엔진 원자료에도 리슨 입구를 남긴다. 호출자가 보낸 헤더는 분류에 쓰지 않는다.
+func TestEngineRowsKeepActualIngressIncludingSealRejections(t *testing.T) {
+	m, base, paths := startPathEngine(t)
+	explore := httptest.NewServer(m.ingress(ingressExplore))
+	t.Cleanup(explore.Close)
+	for _, target := range []string{base + "/main", explore.URL + "/explore"} {
+		req, _ := http.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("X-Eval-Ingress", "forged")
+		send(t, req)
+	}
+	m.seal()
+	req, _ := http.NewRequest(http.MethodGet, explore.URL+"/sealed", nil)
+	if status, _ := send(t, req); status != http.StatusServiceUnavailable {
+		t.Fatal(status)
+	}
+	rows := readRows[engineRow](t, filepath.Join(filepath.Dir(paths), engineLogName))
+	if len(rows) != 3 {
+		t.Fatalf("row count: %d", len(rows))
+	}
+	for i, want := range []string{ingressMain, ingressExplore, ingressExplore} {
+		if rows[i].Ingress != want || rows[i].AttemptIDState != "absent" {
+			t.Fatalf("row metadata mismatch: %d", i)
+		}
+	}
+	if rows[2].Kind != "rejected" {
+		t.Fatal("seal rejection missing")
+	}
+}
+
 func TestEnginePathLogIsOffByDefault(t *testing.T) {
 	upstream, _ := recordingUpstream(t)
 	_, front, dir := newTestEngine(t, upstream)

@@ -218,6 +218,39 @@ def _rows(data: bytes | None, fields: frozenset[str], optional: frozenset[str] =
     return rows
 
 
+def diagnostic_rows(rows: list[dict], *, require_ingress: bool = False) -> list[dict]:
+    """검증된 리슨 입구만 구분한다. 과거 행은 main이며 새 배치에서 누락을 추정하지 않는다."""
+    present = [PATH_INGRESS_FIELD in row for row in rows]
+    if (present and any(present) != all(present)) or require_ingress and not all(present):
+        raise EvidenceError("meter_ingress_missing_or_mixed")
+    for row in rows:
+        if not isinstance(row.get(PATH_INGRESS_FIELD, "main"), str) or row.get(PATH_INGRESS_FIELD, "main") not in INGRESSES:
+            raise EvidenceError("meter_ingress_invalid")
+        if row.get(PATH_INGRESS_FIELD) == "explore" and row["attempt_id_state"] != "absent":
+            raise EvidenceError("e2_attempt_on_exploration_ingress")
+    return [row for row in rows if row.get(PATH_INGRESS_FIELD, "main") == "main"]
+
+
+def ingress_counts(rows: list[dict]) -> dict[str, int] | None:
+    """전달 행의 입구별 수다. 과거 자료에서 알 수 없는 값은 0으로 만들지 않는다."""
+    diagnostic_rows(rows)
+    if rows and PATH_INGRESS_FIELD not in rows[0]:
+        return None
+    return {name: sum(row.get(PATH_INGRESS_FIELD) == name and row["kind"] in FORWARDED_KINDS for row in rows)
+            for name in sorted(INGRESSES)}
+
+
+def validate_ingress_layout(rows: list[dict], layout: str, *, require_ingress: bool = False) -> dict[str, int] | None:
+    """이미 확인한 배치가 허용한 입구만 받는다. 이 검사는 망 격리 증거를 만들지 않는다."""
+    if layout not in ("artex-direct/v1", "e2-legacy/v1", "exploration-split/v1"):
+        raise EvidenceError("meter_layout_invalid")
+    diagnostic_rows(rows, require_ingress=require_ingress or layout == "exploration-split/v1")
+    counts = ingress_counts(rows)
+    if layout != "exploration-split/v1" and counts is not None and counts["explore"] > 0:
+        raise EvidenceError("meter_explore_ingress_unexpected")
+    return counts
+
+
 def _engine_stages_valid(row: dict) -> bool:
     """단계 값이 알려진 집합이고 서로 모순되지 않는지. 거부 행은 대상에 안 갔고, 안 간 요청에 대상 응답은 없다."""
     state, attempt = row["attempt_id_state"], row["attempt_id"]
@@ -269,9 +302,10 @@ class MeterFiles:
         self.e2_path = e2_path
 
     def engine_rows(self) -> list[dict]:
-        rows = _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW)
+        rows = _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW, frozenset({PATH_INGRESS_FIELD}))
         if not all(_engine_stages_valid(row) for row in rows):
             raise EvidenceError("meter_row_invalid")
+        diagnostic_rows(rows)
         return rows
 
     def path_log_present(self) -> bool:
@@ -291,6 +325,10 @@ class MeterFiles:
             raise EvidenceError("meter_path_log_invalid")
         rows = _rows(data, _PATH_ROW, PATH_AUTH_FIELDS, frozenset({PATH_INGRESS_FIELD}))
         forwarded = {row["seq"]: row["method"] for row in engine_rows if row["kind"] in FORWARDED_KINDS}
+        source_ingress = {row["seq"]: row.get(PATH_INGRESS_FIELD) for row in engine_rows if row["kind"] in FORWARDED_KINDS}
+        if any(source_ingress[row["seq"]] is not None and row.get(PATH_INGRESS_FIELD) != source_ingress[row["seq"]]
+               for row in rows if row["seq"] in source_ingress):
+            raise EvidenceError("meter_ingress_path_mismatch")
         if {row["seq"]: row["method"] for row in rows} != forwarded or any(
                 row["path_profile_ref"] != PATH_PROFILE or not isinstance(row["path_pattern"], str)
                 or not row["path_pattern"] or type(row["masked_segments"]) is not int or row["masked_segments"] < 0
