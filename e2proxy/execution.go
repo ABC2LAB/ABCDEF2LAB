@@ -91,8 +91,11 @@ type Call struct {
 	reason               Reason
 	// fence는 이 call의 요청 단위 실패가 상한에 닿았을 때의 사유다. 비어 있으면 열려 있다.
 	// 실행 전체가 아니라 이 call의 새 요청만 막는다. 이미 송신 중인 요청은 건드리지 않는다(C01).
-	fence     Reason
-	closeGate chan struct{}
+	fence Reason
+	// closedRefusals는 대기 중 취소·기한 지남·승인 대기 취소처럼 보내기 전에 거둬진 요청 수다(사유 closed). 모델의
+	// 범위 밖 요청이 아니므로 거부 상한(MaxDenials) 계수에서 뺀다(#487 리뷰 P3). 감사 계수(Denied)는 그대로다.
+	closedRefusals uint64
+	closeGate      chan struct{}
 }
 
 func validRef(v string) bool { return safeRef.MatchString(v) && !strings.Contains(v, "://") }
@@ -795,6 +798,9 @@ func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) 
 	if counts := e.intentCounts[c.intentID]; counts != nil {
 		add(counts)
 	}
+	if (r.Decision == "denied" || r.Decision == "unsupported") && r.Reason == Closed {
+		c.closedRefusals++
+	}
 	c.preserveOutcomeLocked(r, err)
 	c.active--
 	if c.active == 0 {
@@ -815,7 +821,7 @@ func (c *Call) fenceLocked() {
 	}
 	limits := c.e.cfg.Limits
 	switch {
-	case c.counts.Denied+c.counts.Unsupported >= limits.MaxDenials:
+	case c.counts.Denied+c.counts.Unsupported-min(c.closedRefusals, c.counts.Denied+c.counts.Unsupported) >= limits.MaxDenials:
 		c.fence = DenialLimit
 	case c.counts.Unknown >= limits.MaxUnknown:
 		c.fence = UnknownLimit
@@ -1150,7 +1156,14 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	workCtx, cancel := context.WithTimeout(c.ctx, e.cfg.Limits.RequestTimeout)
 	defer cancel()
-	stop := context.AfterFunc(ctx, cancel)
+	// 보낸 뒤에는 호출자 기한이 아니라 E② 요청 시간 상한(workCtx)으로만 끊는다. 대기열에서 호출자 기한을 거의 다 쓴
+	// 요청을 기한으로 끊으면 대상이 받은 요청이 결과 불명이 되고 그 intent가 멈춘다(#487 리뷰 P3). 호출자 취소는 그대로
+	// 끊는다.
+	stop := context.AfterFunc(ctx, func() {
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			cancel()
+		}
+	})
 	defer stop()
 	out := req.Clone(workCtx)
 	u := *req.URL
