@@ -80,6 +80,30 @@ func TestFirstDiagnosisClosingOutcomes(t *testing.T) {
 	}
 }
 
+// 작업이 없으면 Planner가 오류 없이 한 라운드 이상 마쳤을 때만 계획한 것으로 본다(no_intents 마감 전제).
+// 작업이 있으면 마지막 작업 뒤에 계획했는지 본다.
+func TestFirstDiagnosisPlanned(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		work, planned, round uint64
+		want                 bool
+	}{
+		{"no-work-no-round", 0, 0, 0, false},
+		{"no-work-one-round", 0, 0, 1, true},
+		{"work-not-replanned", 2, 1, 5, false},
+		{"work-replanned", 2, 2, 5, true},
+		{"work-without-rounds", 1, 1, 0, true},
+	} {
+		task := &Task{}
+		task.firstDiagnosisWorkSeq.Store(tc.work)
+		task.firstDiagnosisPlannedSeq.Store(tc.planned)
+		task.firstDiagnosisPlanRounds.Store(tc.round)
+		if got := firstDiagnosisPlanned(task); got != tc.want {
+			t.Fatalf("%s: planned=%v", tc.name, got)
+		}
+	}
+}
+
 // 결과는 정상 마감(completed)일 때만 밖에 보인다.
 func TestSupervisorRunResultOnlyAfterCompletion(t *testing.T) {
 	s := &FirstDiagnosisSupervisor{}

@@ -150,7 +150,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	helper := firstDiagnosisNativeHelper(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	if mode == "cancel" || mode == "user-stop" || mode == "planner-only" || mode == "close-fail" {
+	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" {
 		logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", mustFirstDiagnosisTaskNumber(task.ID), "")
 		if err != nil {
 			t.Fatal(err)
@@ -268,7 +268,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	defer func() {
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop") || mode == "prepare-fail" || mode == "planner-only" || mode == "pre-run-stop") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
+		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop") || mode == "prepare-fail" || mode == "pre-run-stop") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
 			t.Error("실제 Engine 경로 최종 종료 실패")
 		}
 
@@ -359,12 +359,18 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	} else {
 		runErr = supervisor.Run(ctx, task.ID, 0, "")
 	}
-	if mode == "planner-only" || mode == "prepare-fail" {
+	if mode == "planner-only" {
+		// 계획을 거쳤는데 intent가 없으면 실패가 아니라 no_intents로 마감한다(C11 결정 2). 대상 송신은 없다.
+		result := supervisor.RunResult()
+		if runErr != nil || result == nil || result.Outcome != diagnosis.OutcomeNoIntents || result.IntentOutcomes != (diagnosis.IntentOutcomes{}) || !result.Valid() ||
+			hits.Load() != 0 || provider.calls != 0 || plannerProvider.calls == 0 {
+			t.Fatalf("intent 없는 실행을 no_intents로 마감하지 않음 err=%v result=%+v hits=%d", runErr, result, hits.Load())
+		}
+		return
+	}
+	if mode == "prepare-fail" {
 		if runErr == nil || hits.Load() != 0 || provider.calls != 0 {
 			t.Fatal("Planner 또는 준비 실패가 통제 밖 대상 송신으로 이어짐")
-		}
-		if mode == "planner-only" && plannerProvider.calls == 0 {
-			t.Fatal("intent 없는 시작에서 원본 Planner 경로를 거치지 않음")
 		}
 		return
 	}
@@ -704,10 +710,6 @@ func verifySupervisorFailureLog(t *testing.T, path, mode string) {
 		case "cancel", "user-stop":
 			if event.Status != "cancelled" || event.ReasonCode != "user_cancelled" {
 				t.Error("실제 취소와 로그 상태 불일치")
-			}
-		case "planner-only":
-			if event.Status != "timeout" || event.ReasonCode != "timeout" {
-				t.Error("실제 제한 시간 초과와 로그 상태 불일치")
 			}
 		case "close-fail":
 			if event.Status != "failed" || event.Stage != "audit_close" || event.ReasonCode != "audit_failed" {
