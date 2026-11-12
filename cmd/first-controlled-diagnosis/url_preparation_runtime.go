@@ -336,10 +336,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if execution.Job.Input.DisplayName != "" {
 		description = execution.Job.Input.DisplayName
 	}
-	goal := "Inspect the approved read-only HTTPS target " + execution.Job.Input.TargetURL + " through the enforced E2 boundary. Collect observations and manual-review candidates only. Do not request state changes or other origins."
-	if execution.Job.Input.WorkflowMode != "" {
-		goal = "Inspect the approved read-only HTTPS target " + execution.Job.Input.TargetURL + " through the enforced E2 boundary. Workbench workflow mode: " + execution.Job.Input.WorkflowMode + ". First prepare an initial discovery intent. The host will perform bounded discovery in the protected Worker. After discovery, use the server-provided exact selected endpoints for deep diagnostic intents. State-changing requests require separately granted scope and per-request confirmation; never invent that permission. Collect only supported observations and unconfirmed review candidates."
-	}
+	goal := urlDiagnosisGoal(execution.Job.Input.TargetURL, execution.Job.Input.WorkflowMode, execution.Job.Scope.Methods)
 	if check() != nil {
 		_ = pool.Close()
 		return knownFailure("installation_changed", true)
@@ -799,4 +796,31 @@ func settleProductWorkflow(ctx context.Context, flow *diagnosisflow.Controller, 
 		}
 	}
 	return u
+}
+
+// urlDiagnosisGoal은 작업 목표 문장을 승인 기록의 메서드로 만든다(루프 복원 결정안 §3, C25). 모델이 정한 값이 아니다.
+// 읽기 메서드만 승인됐으면 읽기 전용이라고 적고, 쓰기 메서드가 승인된 범위(건별 확인 흐름)에서는 그 메서드를 밝히고
+// 요청마다 운영자 확인을 받아야 E②가 보낸다고 적는다. 실제 허용·차단은 E②가 정한다.
+func urlDiagnosisGoal(target, workflowMode string, methods []string) string {
+	var writes []string
+	for _, m := range methods {
+		if m != "GET" && m != "HEAD" {
+			writes = append(writes, m)
+		}
+	}
+	scope := "Inspect the approved read-only HTTPS target " + target + " through the enforced E2 boundary. Approved methods: " + strings.Join(methods, ", ") + "."
+	if len(writes) > 0 {
+		scope = "Inspect the approved HTTPS target " + target + " through the enforced E2 boundary. Approved methods: " + strings.Join(methods, ", ") + ". Write methods (" + strings.Join(writes, ", ") + ") are approved only per request: E2 holds each such request until the operator confirms it. Never invent that confirmation and never resend a request whose result is unknown."
+	}
+	if workflowMode == "" {
+		if len(writes) == 0 {
+			return scope + " Collect observations and manual-review candidates only. Do not request state changes or other origins."
+		}
+		return scope + " Collect observations and manual-review candidates only. Do not request other origins."
+	}
+	flow := " Workbench workflow mode: " + workflowMode + ". First prepare an initial discovery intent. The host will perform bounded discovery in the protected Worker. After discovery, use the server-provided exact selected endpoints for deep diagnostic intents."
+	if len(writes) == 0 {
+		flow += " State-changing requests require separately granted scope and per-request confirmation; never invent that permission."
+	}
+	return scope + flow + " Collect only supported observations and unconfirmed review candidates. Do not request other origins."
 }
