@@ -666,7 +666,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	limited := make(map[int64]map[string]bool)
 	for _, result := range results {
 		validToolOutcome := firstDiagnosisClosedToolOutcome(result)
-		if !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessBashExited || !result.ProcessDrained || !result.ProxyDrained || !validToolOutcome || result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef].CallRef != "" {
+		if !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessDrained || !result.ProxyDrained || !validToolOutcome || result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef].CallRef != "" {
 			return false, none, ErrFirstDiagnosisSupervisor
 		}
 		observed[result.Call.CallRef] = result.Call
@@ -760,6 +760,19 @@ func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 		return false
 	}
 	if c.Unknown != 0 || result.Execution.IntentCounts.Unknown != 0 {
+		return false
+	}
+	if result.Classification == "terminated" {
+		// 호스트가 명령을 멈췄다(Planner의 kill_work 등). bash가 끝나기 전에 끊겼지만 프로세스·프록시 드레인과 감사는
+		// 위·호출자가 확인한다. 결과 불명 송신은 없으므로 그 intent의 미완료다(C27).
+		switch result.Call.Reason {
+		case e2proxy.Complete, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.TransportFailed:
+			return !result.ProcessBashExited
+		}
+		return false
+	}
+	// 아래 분류는 bash가 끝까지 실행돼 종료 코드가 있는 명령에만 붙는다.
+	if !result.ProcessBashExited {
 		return false
 	}
 	if result.Classification == "transient_failure" {

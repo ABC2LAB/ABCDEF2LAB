@@ -7,7 +7,7 @@ import (
 )
 
 func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
-	base := e2runner.TrustedResult{Classification: "completed", Execution: e2proxy.ExecutionView{AuditComplete: true}, Call: e2proxy.CallResult{Reason: e2proxy.Complete}}
+	base := e2runner.TrustedResult{Classification: "completed", ProcessBashExited: true, Execution: e2proxy.ExecutionView{AuditComplete: true}, Call: e2proxy.CallResult{Reason: e2proxy.Complete}}
 	cases := []struct {
 		name   string
 		change func(*e2runner.TrustedResult)
@@ -108,6 +108,37 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Classification = "transient_failure"
 			r.Call.Counts.Transient = 1
 			r.Call.Reason = e2proxy.AuditFailed
+		}, false},
+		// 호스트가 멈춘 명령(C27 kill_work): bash가 끝나기 전에 끊겼다. 결과 불명 송신이 있으면 결과 불명, 없으면 terminated.
+		{"killed-mid-request", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.ProcessBashExited = false
+			r.ExitCode = -1
+			r.Call.Counts.Unknown = 1
+			r.Call.Reason = e2proxy.Unknown
+		}, true},
+		{"killed-between-requests", func(r *e2runner.TrustedResult) {
+			r.Classification = "terminated"
+			r.ProcessBashExited = false
+			r.ExitCode = -1
+		}, true},
+		{"terminated-but-bash-exited", func(r *e2runner.TrustedResult) { r.Classification = "terminated" }, false},
+		{"terminated-audit-failed", func(r *e2runner.TrustedResult) {
+			r.Classification = "terminated"
+			r.ProcessBashExited = false
+			r.Call.Reason = e2proxy.AuditFailed
+		}, false},
+		{"completed-without-bash-exit", func(r *e2runner.TrustedResult) { r.ProcessBashExited = false }, false},
+		{"tool-failure-without-bash-exit", func(r *e2runner.TrustedResult) {
+			r.Classification = "tool_failure"
+			r.ProcessBashExited = false
+			r.ExitCode = -1
+		}, false},
+		{"policy-without-bash-exit", func(r *e2runner.TrustedResult) {
+			r.Classification = "policy_not_executed"
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.PolicyDenied
+			r.ProcessBashExited = false
 		}, false},
 		{"audit-incomplete", func(r *e2runner.TrustedResult) { r.Execution.AuditComplete = false }, false},
 		{"audit-failed", func(r *e2runner.TrustedResult) { r.Call.Reason = e2proxy.AuditFailed }, false},
