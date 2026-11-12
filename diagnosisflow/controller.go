@@ -8,6 +8,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"log"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -171,6 +172,78 @@ func riskyRequest(method, path string, query url.Values) bool {
 	return false
 }
 func safePath(path string) string { return dlp.DiagnosticText(path) }
+
+// 객체 ID로 볼 조각의 종류다. 허용 판정에 쓰므로 경로 가림 규칙(pathmask, 애매하면 값으로 봄)보다 좁게 잡는다. 긴 이름·
+// 특수문자·대소문자와 숫자가 섞인 조각은 이름이다. 그런 조각까지 값으로 보면 크롤에서 보지 못한 형제 끝점
+// (/orders/123:cancel, /orders/cancel-all-pending-orders-for-this-user)이 같은 끝점으로 열린다(#501 리뷰).
+var (
+	numberSegment = regexp.MustCompile(`^[0-9]{1,20}$`)
+	uuidSegment   = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	hexSegment    = regexp.MustCompile(`^[0-9a-fA-F]{16,64}$`)
+	emailSegment  = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$`)
+)
+
+// idSegmentKind는 조각이 객체 ID면 그 종류 자리 표시를, 아니면 빈 문자열을 돌려준다. 숫자는 16진 문자만 쓴 것이라
+// 16자 이상이어도 숫자로 본다(가장 흔한 순번 ID).
+func idSegmentKind(segment string) string {
+	switch {
+	case numberSegment.MatchString(segment):
+		return "{number}"
+	case uuidSegment.MatchString(segment):
+		return "{uuid}"
+	case hexSegment.MatchString(segment):
+		return "{hex}"
+	case emailSegment.MatchString(segment):
+		return "{email}"
+	}
+	return ""
+}
+
+// pathTemplate은 객체 ID 조각을 종류 자리 표시로 바꾼 경로와 바꾼 조각 수다. 같은 자리의 조각이 같은 종류일 때만
+// 템플릿이 같다(숫자 자리에 이름·UUID를 넣으면 다른 템플릿).
+func pathTemplate(path string) (string, int) {
+	segments := strings.Split(path, "/")
+	values := 0
+	for i, segment := range segments {
+		if kind := idSegmentKind(segment); kind != "" {
+			segments[i] = kind
+			values++
+		}
+	}
+	return strings.Join(segments, "/"), values
+}
+
+// requestEndpointLocked는 요청이 쓰는 끝점이다. 진단 단계에서는 선택된 끝점과 값 조각만 다른 요청(/x/1을 선택했으면
+// /x/2)도 그 끝점으로 본다(C18). 크롤에서 본 객체 하나만 보낼 수 있으면 다른 계정·객체로 바꿔 보는 인가 진단이
+// 불가능하기 때문이다. 요청 경로 자체도 그 끝점과 같은 범위·변경 분류여야 한다(승인 접두·제외 경로·위험 단어·읽기
+// 전용 접두를 요청 경로로 다시 본다). 같은 경로가 따로 발견됐지만 선택되지 않았으면 선택한 끝점 쪽을 쓴다.
+func (c *Controller) requestEndpointLocked(method, path string) *Endpoint {
+	exact := c.endpointLocked(method, path)
+	if exact != nil && exact.Selected || c.record.Snapshot.Stage != "diagnosing" {
+		return exact
+	}
+	template, values := pathTemplate(path)
+	if values == 0 {
+		return exact
+	}
+	for i := range c.record.Snapshot.Endpoints {
+		e := &c.record.Snapshot.Endpoints[i]
+		if !e.Selected || e.Method != method || !e.InScope {
+			continue
+		}
+		if other, _ := pathTemplate(e.Path); other != template {
+			continue
+		}
+		in, change := c.endpointScope(method, path, e.Kind, e.Source)
+		// 같은 경로를 따로 발견했으면 그 근거(폼·추정 경로라 possible, 막힘)가 상한이다. 선택한 형제의 근거로 더 넓게
+		// (사전 승인 읽기로) 바꾸지 않는다(#501 리뷰 P1).
+		if in && change == e.Change && (exact == nil || exact.InScope && exact.Change == e.Change) {
+			return e
+		}
+	}
+	return exact
+}
+
 func (c *Controller) endpointLocked(method, path string) *Endpoint {
 	for i := range c.record.Snapshot.Endpoints {
 		v := &c.record.Snapshot.Endpoints[i]
@@ -442,7 +515,7 @@ func (c *Controller) Instructions() string {
 		}
 	}
 	data, _ := json.Marshal(selected)
-	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. Selected endpoint references (JSON): " + string(data)
+	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. A selected endpoint also covers the same method on a path that differs only in object ID segments of the same kind (number, UUID, long hex or email), so other object IDs may be requested there. Selected endpoint references (JSON): " + string(data)
 }
 func (c *Controller) Command(ctx context.Context, owner, op, key string, revision uint64, ids []string) (Snapshot, error) {
 	c.mu.Lock()
@@ -540,7 +613,7 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e := c.endpointLocked(v.Method, path)
+	e := c.requestEndpointLocked(v.Method, path)
 	if v.BodyBytes > 65536 || e == nil || !e.InScope || e.Change == "blocked" || !c.allowedPath(v.Method, path) {
 		return ErrDenied
 	}
@@ -576,7 +649,7 @@ func (c *Controller) PreapprovedRead(v e2proxy.RequestView) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e := c.endpointLocked(v.Method, path)
+	e := c.requestEndpointLocked(v.Method, path)
 	return !c.poisoned && e != nil && e.InScope && e.Change == "attested_read"
 }
 func (c *Controller) After(ctx context.Context, v e2proxy.RequestView, r e2proxy.Receipt) error {
