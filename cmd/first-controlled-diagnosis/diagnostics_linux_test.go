@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 )
 
@@ -241,5 +242,52 @@ func TestDiagnosticWriteFailureWarnsBeforeFinish(t *testing.T) {
 	case <-warnings:
 		t.Fatal("duplicate log failure warning")
 	default:
+	}
+}
+
+// 진단 로그 쓰기가 실패한 뒤에도 모델 예약 기록 콜백과 실행 공통 검사는 계속 통과한다(P3 결정안 C10).
+// 콜백이 오류를 내면 모델 예산이 영구 차단되므로, 실제 로거 실패를 주입한 뒤 두 번째 예약을 본다.
+func TestModelObserverContinuesAfterDiagnosticLogFailure(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, d, err := beginLaunchDiagnostics(context.Background(), launchConfig{DataDir: root}, "preparation", 7, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { code := 0; d.finish(&code) }()
+	if err := os.Chmod(d.logger.Path(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "cli", Event: "stage_started", Stage: "execution", Status: "started"})
+	if d.logger.Err() == nil {
+		t.Fatal("log write failure not injected")
+	}
+	installation := error(nil)
+	check := urlRuntimeCheck(ctx, func() error { return installation })
+	saved := 0
+	observe := urlModelObserver(ctx, time.Now(), true, check, func(diagnosisprep.ModelUsage) error { saved++; return nil })
+	for requests := int64(1); requests <= 2; requests++ {
+		if err := observe(diagnosisprep.ModelUsage{Requests: requests}); err != nil {
+			t.Fatalf("reservation %d blocked by diagnostic log failure: %v", requests, err)
+		}
+	}
+	if saved != 2 || check() != nil {
+		t.Fatalf("saved=%d check=%v", saved, check())
+	}
+	// 설치·대상 검사와 문맥 취소는 그대로 새 예약을 막는다.
+	installation = errPreparation
+	if observe(diagnosisprep.ModelUsage{Requests: 3}) == nil || saved != 2 {
+		t.Fatal("installation failure did not block reservation")
+	}
+	// 새 예약이 아닌 정산 기록(요청 수 그대로)은 검사 없이 저장한다.
+	if observe(diagnosisprep.ModelUsage{Requests: 2, UsageKnown: true}) != nil || saved != 3 {
+		t.Fatal("settlement record blocked")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if urlRuntimeCheck(cancelled, func() error { return nil })() == nil {
+		t.Fatal("cancelled context passed")
 	}
 }
