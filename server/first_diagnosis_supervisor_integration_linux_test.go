@@ -406,11 +406,12 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	}
 	if mode == "plan-turns" {
 		// 한 Plan 안에서 턴마다 assistant·도구 결과 두 메시지가 붙는다. 설치 상한 2턴이면 마지막 요청이 첫 요청보다
-		// 2개 많다(기본 16턴이면 30개). intent가 없어 대상 송신 없이 no_intents로 마감한다.
+		// 2개 많다(기본 16턴이면 30개). 턴 상한에 닿은 Plan은 원본처럼 "이번 라운드만 끝" 마무리 턴을 받는다(C26).
+		// intent가 없어 대상 송신 없이 no_intents로 마감한다.
 		result := supervisor.RunResult()
-		if runErr != nil || plannerProvider.calls < installedPlanTurns || plannerProvider.maxMessages-plannerProvider.minMessages != 2*(installedPlanTurns-1) ||
+		if runErr != nil || plannerProvider.calls < installedPlanTurns || plannerProvider.maxMessages-plannerProvider.minMessages != 2*(installedPlanTurns-1) || plannerProvider.wrapUps == 0 ||
 			result == nil || result.Outcome != diagnosis.OutcomeNoIntents || hits.Load() != 0 || provider.calls != 0 {
-			t.Fatalf("설치한 Plan당 턴 상한을 쓰지 않음 err=%v calls=%d messages=%d..%d result=%+v", runErr, plannerProvider.calls, plannerProvider.minMessages, plannerProvider.maxMessages, result)
+			t.Fatalf("설치한 Plan당 턴 상한·마무리 턴을 쓰지 않음 err=%v calls=%d messages=%d..%d wrapUps=%d result=%+v", runErr, plannerProvider.calls, plannerProvider.minMessages, plannerProvider.maxMessages, plannerProvider.wrapUps, result)
 		}
 		return
 	}

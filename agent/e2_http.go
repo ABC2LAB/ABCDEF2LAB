@@ -924,8 +924,8 @@ func constrainE2HTTPPlannerOptions(ctx context.Context, opts *agentcore.Options)
 	opts.Memory = nil
 	opts.Plan = nil
 	opts.AskUser = nil
-	opts.Todos = nil
-	opts.Settlement = nil
+	// Todos(TodoWrite, 깨울 때마다 이어지는 계획 할 일)는 원본처럼 둔다(C26). 이 프로세스 메모리 안 저장소라 대상
+	// 송신 경로가 없다.
 	opts.Transcript = nil
 	opts.WorkingDir = ""
 	opts.ToolOutputDir = ""
@@ -941,6 +941,7 @@ func constrainE2HTTPPlannerOptions(ctx context.Context, opts *agentcore.Options)
 	if opts.MaxDuration <= 0 || opts.MaxDuration > maxDuration {
 		opts.MaxDuration = maxDuration
 	}
+	deadlineBinds := false
 	if deadline := taskClockFrom(ctx).DeadlineUnix; deadline > 0 {
 		remaining := time.Until(time.Unix(deadline, 0))
 		if remaining <= 0 {
@@ -948,8 +949,14 @@ func constrainE2HTTPPlannerOptions(ctx context.Context, opts *agentcore.Options)
 		}
 		if remaining < opts.MaxDuration {
 			opts.MaxDuration = remaining
+			deadlineBinds = true
 		}
 	}
+	// 마무리 턴(C26): 원본처럼 Plan 상한에 닿으면 마무리 턴에서 정한 결론(add_intent·prove_goal·TodoWrite)을 남긴다.
+	// 원본 Planner는 자체 시간 상한이 없어 task 기한이 있으면 시간 종료를 늘 "작업 종료" 마무리(새 intent 금지)로
+	// 보지만, 진단 Planner는 Plan당 시간 상한이 있다. task 기한이 이번 Plan을 실제로 자를 때만 작업 종료 마무리를
+	// 쓰고, Plan 상한으로 끝나면 "이번 라운드만 끝" 마무리를 쓴다. 마무리 턴의 도구도 위 프로필 도구뿐이다.
+	opts.Settlement = wrapupSettlementForTask(ctx, "planner", nil, deadlineBinds)
 	opts.SystemPrompt = append(opts.SystemPrompt, e2HTTPPlannerSystemPrompt)
 	return nil
 }

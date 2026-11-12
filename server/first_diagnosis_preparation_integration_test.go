@@ -44,6 +44,7 @@ type firstDiagnosisPreparationModel struct {
 	// loopPlan이면 계획 차례마다 list_assets를 다시 불러 Plan이 턴 상한에서만 끝나게 하고, 계획 요청의 메시지 수 범위를 남긴다.
 	loopPlan         bool
 	planMin, planMax int
+	planWrapUps      int // 계획 마무리 턴(이번 라운드 마무리 문장) 요청 수. 그 요청에는 도구 없이 끝낸다.
 }
 
 func (m *firstDiagnosisPreparationModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +113,8 @@ func (m *firstDiagnosisPreparationModel) ServeHTTP(w http.ResponseWriter, r *htt
 		case !seen["preparation-goals"]:
 			id, name, input = "preparation-goals", "set_goals", map[string]any{"text": "Prepare the first controlled GET of the owned fixture without executing it.", "vulnclass": "IDOR"}
 		}
+	} else if !goalRound && m.loopPlan && len(request.Messages) > 0 && bytes.Contains(request.Messages[len(request.Messages)-1].Content, []byte("The step budget of this planning round is about to run out")) {
+		m.planWrapUps++
 	} else if !goalRound && m.loopPlan {
 		if m.planMin == 0 || len(request.Messages) < m.planMin {
 			m.planMin = len(request.Messages)
@@ -629,7 +632,7 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			}
 		}()
 		modelState.mu.Lock()
-		modelState.loopPlan, modelState.planMin, modelState.planMax = true, 0, 0
+		modelState.loopPlan, modelState.planMin, modelState.planMax, modelState.planWrapUps = true, 0, 0, 0
 		modelState.mu.Unlock()
 		defer func() {
 			modelState.mu.Lock()
@@ -642,11 +645,12 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			t.Fatal("Plan 상한 준비를 실패로 끝냄")
 		}
 		modelState.mu.Lock()
-		planMin, planMax := modelState.planMin, modelState.planMax
+		planMin, planMax, wrapUps := modelState.planMin, modelState.planMax, modelState.planWrapUps
 		modelState.mu.Unlock()
 		// 턴마다 assistant·도구 결과 두 메시지가 붙는다. 2턴 상한이면 마지막 계획 요청이 첫 요청보다 2개 많다(기본 16턴이면 30개).
-		if planMin == 0 || planMax-planMin != 2*(installedPlanTurns-1) || targetHits.Load() != 0 {
-			t.Fatalf("준비 계획이 설치한 Plan당 턴 상한을 쓰지 않음 messages=%d..%d", planMin, planMax)
+		// 턴 상한에 닿으면 원본처럼 "이번 라운드만 끝" 마무리 턴을 받는다(C26).
+		if planMin == 0 || planMax-planMin != 2*(installedPlanTurns-1) || wrapUps == 0 || targetHits.Load() != 0 {
+			t.Fatalf("준비 계획이 설치한 Plan당 턴 상한·마무리 턴을 쓰지 않음 messages=%d..%d wrapUps=%d", planMin, planMax, wrapUps)
 		}
 	})
 }
