@@ -13,16 +13,17 @@ import (
 )
 
 type Controller struct {
-	mu         sync.Mutex
-	binding    Binding
-	store      Store
-	record     Record
-	changed    chan struct{}
-	poisoned   bool
-	claimed    bool
-	attempts   map[string]bool
-	origin     string
-	nativePath string
+	explorationReader ExplorationReader
+	mu                sync.Mutex
+	binding           Binding
+	store             Store
+	record            Record
+	changed           chan struct{}
+	poisoned          bool
+	claimed           bool
+	attempts          map[string]bool
+	origin            string
+	nativePath        string
 	// 문서별 <base href> 해석 결과. 초기 탐색 안에서만 쓰므로 저장하지 않는다.
 	documentBases map[string]documentBase
 }
@@ -123,8 +124,11 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 		// A discovered GET form is evidence of possible side effects, even if a link
 		// or seed for the same method/path was seen first. Never upgrade it back.
 		if kind == "form" {
-			old.Kind, old.Source, old.From = kind, source, from
-			old.InScope, old.Change = c.endpointScope(method, path, kind, source)
+			old.Kind = kind
+			if old.DiscoveryConfidence != "observed" {
+				old.Source, old.From = source, from
+			}
+			old.InScope, old.Change = c.endpointScope(method, path, kind, old.Source)
 		} else if inferredSource(old.Source) && !inferredSource(source) {
 			// 추정으로 먼저 봤어도 같은 호출을 문자 그대로 확인하면 후보를 올린다.
 			old.Source, old.From = source, from
@@ -156,7 +160,7 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 // 번들에서 경로를 문자 그대로 확인하지 못한 후보다. 탐색 에이전트가 번들·문서에서 찾아 보고한 것
 // (api_recon_static)도 실제로 오간 요청이 아니므로 추정이다(탐색 실행기 결정안 §2-3).
 func inferredSource(source string) bool {
-	return source == "script_guess" || source == "script_prefix" || source == SourceAPIReconStatic
+	return source == "script_guess" || source == "script_prefix" || source == SourceAPIReconStatic || source == SourceAPIReconRuntime
 }
 
 func (c *Controller) endpointScope(method, path, kind, source string) (bool, string) {

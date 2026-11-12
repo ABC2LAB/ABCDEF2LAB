@@ -620,9 +620,16 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	budgetLimited := firstDiagnosisBudgetLimited(task, server.firstModelBudget)
-	outcomes, closing := firstDiagnosisClosingOutcomes(counts, budgetLimited, firstDiagnosisPlanned(task))
+	// 실행 상한이나 목표 달성이면 Planner를 기다리지 않고, 실행 중 intent가 끝나는 대로 마감한다. 마감 사유
+	// budget_limited는 실행 상한일 때만 붙는다.
+	outcomes, closing := firstDiagnosisClosingOutcomes(counts, firstDiagnosisForcedClose(budgetLimited, task), firstDiagnosisPlanned(task))
 	if !closing {
 		return false, none, nil
+	}
+	// 탐색 원장이 예산을 실제 소진하고 진단 권위를 획득하지 않은 종료만 별도로 마감한다.
+	// DeepRuns/receipt/Execution을 합성하지 않으며 기존 진단의 E②·감사 검증은 아래 그대로 둔다.
+	if result, ok := server.engine.e2HTTP.explorationBudgetOutcome(task, server.firstModelBudget, outcomes); ok {
+		return true, result, nil
 	}
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && !flow.DeepReady() {
 		return false, none, ErrFirstDiagnosisOutcome

@@ -69,15 +69,51 @@ func preloadsScript(attrs map[string]string) bool {
 }
 
 func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
+	c.discoverDocumentLocked(body, contentType, from, false)
+}
+
+func (c *Controller) discoverDocumentLocked(body []byte, contentType, from string, inferred bool) {
 	addFrom := func(base, method, raw, kind, source string) {
 		if p, ok := c.resolve(raw, base); ok {
-			c.addLocked(method, p, kind, source, from)
+			endpointSource := source
+			if inferred {
+				endpointSource = SourceAPIReconStatic
+			}
+			if e := c.addLocked(method, p, kind, endpointSource, from); inferred && e != nil && e.DiscoveryConfidence != "observed" {
+				e.DiscoveryConfidence = "inferred"
+			}
+			c.staticFactLocked(normalizedMethod(method), p, kind, source, raw)
 		} else {
 			c.record.Snapshot.Counts.InvalidPaths++
 		}
 	}
 	// 문서의 기준 주소다. <base href>를 만나면 바뀌고, 다른 origin을 가리키면 상대 주소를 풀 수 없다.
 	base, baseKnown, baseSeen := from, true, false
+	formMethod, formPath, formType := "", "", ""
+	formKeys := []string{}
+	finishForm := func() {
+		if formPath != "" {
+			in, _ := c.endpointScope(formMethod, formPath, "form", "html_form")
+			fact := DiscoveryEvidence{Method: formMethod, Path: formPath, Kind: "form", Source: "html_form", Confidence: "inferred", InScope: in}
+			if formMethod == "GET" || formMethod == "HEAD" {
+				fact.QueryKeys = formKeys
+			} else {
+				fact.BodyKeys = formKeys
+				fact.ContentType = formType
+			}
+			// 선택 목록이 차도 폼의 이름 근거는 보호 목록에 남긴다.
+			c.inventoryLocked(fact)
+			if e := c.endpointLocked(formMethod, formPath); e != nil && e.DiscoveryConfidence != "observed" {
+				e.DiscoveryConfidence = "inferred"
+				e.QueryKeys = mergeDiscoveryKeys(e.QueryKeys, fact.QueryKeys)
+				e.BodyKeys = mergeDiscoveryKeys(e.BodyKeys, fact.BodyKeys)
+				if e.ContentType == "" {
+					e.ContentType = fact.ContentType
+				}
+			}
+		}
+		formMethod, formPath, formType, formKeys = "", "", "", nil
+	}
 	add := func(method, raw, kind, source string) {
 		// base가 다른 origin이면 `/x`도 그 origin으로 가므로 전체 주소만 받는다.
 		if !baseKnown && !strings.Contains(raw, "://") {
@@ -103,6 +139,8 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 			if token == html.EndTagToken {
 				if name, _ := z.TagName(); string(name) == "script" {
 					inScript = false
+				} else if string(name) == "form" {
+					finishForm()
 				}
 			}
 			if token != html.StartTagToken && token != html.SelfClosingTagToken {
@@ -118,10 +156,12 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 				if attrs["href"] != "" && !baseSeen {
 					baseSeen = true
 					base, baseKnown = c.resolve(attrs["href"], from)
-					if c.documentBases == nil {
-						c.documentBases = map[string]documentBase{}
+					if !inferred {
+						if c.documentBases == nil {
+							c.documentBases = map[string]documentBase{}
+						}
+						c.documentBases[from] = documentBase{base, baseKnown}
 					}
-					c.documentBases[from] = documentBase{base, baseKnown}
 				}
 			case "a":
 				add("GET", attrs["href"], "page", "html_link")
@@ -134,7 +174,14 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 				if attrs["href"] != "" && preloadsScript(attrs) {
 					add("GET", attrs["href"], "script", "html_script")
 				}
+			case "input", "select", "textarea", "button":
+				if formPath != "" && attrs["name"] != "" {
+					if keys, ok := discoveryKeys([]string{attrs["name"]}); ok {
+						formKeys = mergeDiscoveryKeys(formKeys, keys)
+					}
+				}
 			case "form":
+				finishForm()
 				method := strings.ToUpper(attrs["method"])
 				if method == "" {
 					method = "GET"
@@ -144,8 +191,18 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 					action = from
 				}
 				add(method, action, "form", "html_form")
+				if baseKnown {
+					formPath, _ = c.resolve(action, base)
+					formMethod = normalizedMethod(method)
+					formType, _ = discoveryMediaType(attrs["enctype"])
+					if attrs["enctype"] == "" {
+						formType = "application/x-www-form-urlencoded"
+					}
+				}
 			}
 		}
+
+		finishForm()
 	}
 	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") || strings.Contains(contentType, "html") {
 		doc, docKnown, foreignBase := base, baseKnown, !baseKnown
@@ -166,13 +223,68 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 				c.record.Snapshot.Counts.InvalidPaths++
 			}
 		}
+		if !foreignBase {
+			if doc == "" {
+				doc = from
+			}
+			c.discoverReconLocked(scriptBody, contentType, doc)
+		}
 	}
+}
+
+// 이 검사는 정적 크롤 생략만 허용한다. 실제 진단은 StartDeepWork·선택·E②의 기존 검사를 그대로 거친다.
+func (c *Controller) finishedExplorationForDiagnosisLocked(ctx context.Context) bool {
+	if ctx == nil || ctx.Err() != nil || c.poisoned || c.explorationReader == nil || c.binding.Current == nil {
+		return false
+	}
+	state, s := c.record.Exploration, c.record.Snapshot
+	if state == nil || !c.matchingExploration(state.Binding) || c.binding.Current() != nil || ctx.Err() != nil {
+		return false
+	}
+	b := state.Binding
+	if s.Format != Version || s.JobID != b.JobID || s.TaskID != b.TaskID || s.RunRef != b.RunRef || s.SourceDigest != b.SourceDigest || s.Mode != c.binding.Mode || s.Failure != "" || !s.InitialCompleted {
+		return false
+	}
+	if !explorationCloseReason(state.ClosedReason) || state.ClosedReason == "cancelled" || state.ClosedReason == "target_ended" || s.ExplorationReason != state.ClosedReason {
+		return false
+	}
+	switch s.ExplorationStatus {
+	case "COMPLETED":
+		if s.ExplorationPartial || state.ClosedReason != "completed" {
+			return false
+		}
+	case "PARTIAL":
+		if !s.ExplorationPartial {
+			return false
+		}
+	default:
+		return false
+	}
+	if c.binding.Mode == Auto && s.Stage != "diagnosing" || c.binding.Mode == Manual && s.Stage != "awaiting_selection" && s.Stage != "diagnosing" || !ValidMode(c.binding.Mode) {
+		return false
+	}
+	// private 마감 결속과 남아 있는 관측이 다른 세션으로 갈라진 상태도 통과시키지 않는다.
+	for _, fact := range c.record.DiscoveryInventory {
+		if fact.Confidence == "observed" && (fact.SessionRef != b.SessionRef || fact.Seq == 0 || fact.Seq > state.LastSequence) {
+			return false
+		}
+	}
+	return true
 }
 
 // 첫 보호 Worker가 같은 Bash·공유 호출 예산·E② proxy로 초기 탐색을 수행한다.
 // 정적 발견은 실제 방문이나 SPA 동적 탐색 성공을 의미하지 않는다.
 func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, failure error) {
 	c.mu.Lock()
+	// 별도 탐색이 저장된 마감까지 끝났으면 정적 송신을 반복하지 않고 기존 진단 게이트로 넘긴다.
+	if c.record.Exploration != nil {
+		skip := c.finishedExplorationForDiagnosisLocked(ctx)
+		c.mu.Unlock()
+		if skip {
+			return false, nil
+		}
+		return true, ErrExplorationBinding
+	}
 	if c.claimed {
 		failed := c.poisoned || c.record.Snapshot.Stage == "failed"
 		c.mu.Unlock()

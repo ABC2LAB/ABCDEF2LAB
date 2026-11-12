@@ -118,11 +118,22 @@ func firstDiagnosisPlanned(task *Task) bool {
 	return task.firstDiagnosisPlannedSeq.Load() >= work
 }
 
-// firstDiagnosisClosingOutcomes는 마감 판정의 앞부분이다. 실행 중 intent가 있으면 기다린다. 실행 상한에 닿지
-// 않았으면 시작하지 않은 intent가 없고 마지막 작업 뒤 Planner가 계획했을 때만 마감한다. 실행 상한에 닿았으면
-// Planner를 기다리지 않고, 시작하지 못한 intent를 incomplete로 센다(계약 §2·§3.2).
-func firstDiagnosisClosingOutcomes(c firstDiagnosisIntentCounts, budgetLimited, planned bool) (diagnosis.IntentOutcomes, bool) {
-	if c.running > 0 || !budgetLimited && (c.open > 0 || !planned) {
+// firstDiagnosisGoalMet은 Planner가 목표 달성으로 작업을 끝냈는지 본다(prove_goal로 모든 목표 달성·goal_met, C26).
+// 그때 남은 open intent는 시작하지 않고 마감하므로 incomplete로 센다(계약 §2).
+func firstDiagnosisGoalMet(task *Task) bool {
+	return task != nil && task.lifecycleSnapshot().Status == "done"
+}
+
+// firstDiagnosisForcedClose는 Planner를 기다리지 않고 마감할지 본다: 실행 상한에 닿았거나 목표가 달성됐다.
+func firstDiagnosisForcedClose(budgetLimited bool, task *Task) bool {
+	return budgetLimited || firstDiagnosisGoalMet(task)
+}
+
+// firstDiagnosisClosingOutcomes는 마감 판정의 앞부분이다. 실행 중 intent가 있으면 기다린다. forced(실행 상한에 닿았거나
+// Planner가 목표 달성으로 끝냄)가 아니면 시작하지 않은 intent가 없고 마지막 작업 뒤 Planner가 계획했을 때만 마감한다.
+// forced면 Planner를 기다리지 않고, 시작하지 못한 intent를 incomplete로 센다(계약 §2·§3.2).
+func firstDiagnosisClosingOutcomes(c firstDiagnosisIntentCounts, forced, planned bool) (diagnosis.IntentOutcomes, bool) {
+	if c.running > 0 || !forced && (c.open > 0 || !planned) {
 		return diagnosis.IntentOutcomes{}, false
 	}
 	out := c.outcomes

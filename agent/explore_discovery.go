@@ -27,17 +27,20 @@ func newExploreDiscoveryTool(reporter exploreDiscoveryReporter) actool.CoreTool 
 	names := map[string]any{"type": "array", "maxItems": 32, "items": map[string]any{"type": "string", "maxLength": 64}}
 	return actool.Build(actool.Spec{
 		Name: "report_discovery",
-		Description: "Report endpoints of the approved target that you found in scripts, pages or API documents (not requests you sent). " +
+		Description: "Report endpoint metadata of the approved target from scripts, pages, API documents or page runtime hooks. " +
 			"Give only the method, the absolute path on this origin, and the names of query parameters and JSON body fields; never values. " +
+			"Use source api_recon_static for static analysis or api_recon_runtime for page hooks. Runtime reports are still inferred; only host-owned boundary records establish observed requests. " +
 			"The program re-checks the approved scope and drops anything outside it or malformed. Reported endpoints are unverified discoveries, not vulnerabilities. This tool sends no request.",
 		Schema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 			"discoveries": map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{
 				"type": "object", "additionalProperties": false, "properties": map[string]any{
 					"method":       map[string]any{"type": "string", "maxLength": 7},
-					"path":         map[string]any{"type": "string", "maxLength": 2048},
+					"path":         map[string]any{"type": "string", "maxLength": 128},
 					"query_keys":   names,
 					"body_keys":    names,
 					"content_type": map[string]any{"type": "string", "maxLength": 129},
+					"source":       map[string]any{"type": "string", "enum": []string{diagnosisflow.SourceAPIReconStatic, diagnosisflow.SourceAPIReconRuntime}},
+					"transport":    map[string]any{"type": "string", "enum": []string{"http", "sse", "websocket"}},
 				}, "required": []string{"method", "path"}}},
 		}, "required": []string{"discoveries"}},
 		Concurrent: func(json.RawMessage) bool { return false },

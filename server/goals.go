@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -68,6 +69,10 @@ func (s *Server) startTaskEngine(t *Task) {
 	if s.engine.e2HTTP != nil {
 		var err error
 		ctx, err = s.engine.e2HTTP.PreparePlanning(ctx, t)
+		if errors.Is(err, ErrE2HTTPBudgetLimited) && s.engine.e2HTTP.hasClosedExplorationBudget(t, s.firstModelBudget) {
+			// 탐색에서 실제 공유 예산이 소진됐고 진단 자원은 없다. 실패/가짜 목표 대신 Supervisor의 budget 마감을 기다린다.
+			return
+		}
 		if err != nil {
 			_ = s.m.SetTaskStatus(t.ID, "failed")
 			s.engine.cancelExec(t.ID, err)

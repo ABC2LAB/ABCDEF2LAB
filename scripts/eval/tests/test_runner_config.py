@@ -83,6 +83,19 @@ class TestParseRunnerConfig(unittest.TestCase):
         self.assertEqual(config.ports["obs_host"], 18081)
         self.assertEqual(config.docker_timeout_seconds, 120.0)
 
+    def test_preservation_is_opt_in_acceptance_only_with_closed_metadata(self):
+        from test_preservation_record import options
+        payload = runner_config()
+        self.assertIsNone(parse_runner_config(payload).preservation)
+        payload["preservation"] = options()
+        self.reject(payload, "config.preservation: OFFICIAL_FORBIDDEN")
+        payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key")
+        self.assertEqual(parse_runner_config(payload).preservation, options())
+        for block in (options() | {"layout": "exploration-split/v1"}, options() | {"api_key": "not-a-secret"},
+                      options() | {"mcp_version": "latest"}):
+            payload["preservation"] = block
+            self.reject(payload, "config.preservation: INVALID")
+
     def test_findings_limits_accept_the_collector_maximums(self):
         payload = runner_config()
         payload["findings"].update(page_size=200, max_page_bytes=8 * 1024 * 1024, max_total_bytes=8 * 1024 * 1024,

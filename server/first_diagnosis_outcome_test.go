@@ -133,6 +133,22 @@ func TestSupervisorClosureResult(t *testing.T) {
 	}
 }
 
+// 목표 달성(작업 done)이나 실행 상한이면 Planner를 기다리지 않고 마감하고, 남은 open intent는 incomplete다(C26).
+func TestFirstDiagnosisForcedCloseOnGoalMet(t *testing.T) {
+	task := &Task{}
+	if firstDiagnosisForcedClose(false, task) || !firstDiagnosisForcedClose(true, task) || firstDiagnosisForcedClose(false, nil) {
+		t.Fatal("forced close without goal or limit")
+	}
+	task.updateLifecycle(func(state *taskLifecycleState) { state.Status = "done" })
+	if !firstDiagnosisGoalMet(task) || !firstDiagnosisForcedClose(false, task) {
+		t.Fatal("goal met not forcing the close")
+	}
+	out, closing := firstDiagnosisClosingOutcomes(firstDiagnosisIntentCounts{outcomes: diagnosis.IntentOutcomes{Done: 1}, open: 2}, firstDiagnosisForcedClose(false, task), false)
+	if !closing || out != (diagnosis.IntentOutcomes{Done: 1, Incomplete: 2}) || out.Outcome() != diagnosis.OutcomePartial {
+		t.Fatalf("goal-met close: %+v %v", out, closing)
+	}
+}
+
 // 결과는 정상 마감(completed)일 때만 밖에 보인다.
 func TestSupervisorRunResultOnlyAfterCompletion(t *testing.T) {
 	s := &FirstDiagnosisSupervisor{}

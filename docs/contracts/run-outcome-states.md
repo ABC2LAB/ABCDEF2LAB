@@ -100,6 +100,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
    - 2-6: 저장 보고서에 싣기(5절 5). 실행 종료 기록(`first_diagnosis_run_v1`)에 `result` 칸을 더한다(버전 1 그대로, 이 칸 이전 기록에는 없음). `completed`는 대조식이 맞는 결과, `cancelled`는 개수만, 실패·마감 실패에는 싣지 않고, 같은 결과로만 다시 저장된다. 보고서(HTML·DOCX, 공유 사본 포함) 3장 관리자 요약에 화면과 같은 문구로 "실행 결과: …" 한 줄을 싣는다. 기록이 없거나 형식이 틀리면 "확인하지 못함"으로 쓰고 완료로 바꾸지 않는다. 진단 준비 중지·대상 철회는 실행 문맥 취소로 끝나 요청 승인 상태가 `failed`로 남는데, URL 실행이 운영자 중지(상위 문맥 취소)나 대상 철회(`ErrFirstDiagnosisTargetEnded`)로 확인하고 마감이 확인되면 저장 기록에 `cancelled`로 남긴다. 설치·위임 검사 실패, 상태 조회·진행 저장 실패, 시간 상한처럼 원인 없는 취소는 `failed` 그대로다(#454 윤재상 지적). 화면(`diagnosis.Service`)은 지금도 문맥 취소를 모두 `cancelled`로 보므로 같은 구분이 필요하다(열린 항목).
 3. `unknown` intent가 있는 실행을 `completed` + `partial`로 마감하는 것은 C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤. 그 전에는 결과 불명 송신이 있는 호출(`Counts.Unknown`)이 있으면 지금처럼 실행을 멈춘다.
 4. C09(intent 결과를 모든 호출 분류로, #428)와 C26(Worker 마무리 보고)은 이 투영을 그대로 쓴다.
+5. C26 1단계(Planner `prove_goal`·`goal_met`): Planner가 목표 달성으로 작업을 끝내면(작업 `done`) 실행 상한과 같이 Planner를 기다리지 않고 실행 중 intent가 끝나는 대로 마감하고, 남은 `open` intent는 `incomplete`로 센다(그래서 `partial`). `closing_reason`은 붙이지 않는다(`budget_limited`는 실행 상한일 때만).
 
 ## 7. 열린 항목
 

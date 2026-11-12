@@ -57,6 +57,9 @@ var diagnosisPlannerProfile = toolProfile{name: "diagnosis_planner", entries: []
 	{name: "expand_digest", source: fromBase}, {name: "get_worker_output", source: fromBase},
 	{name: "get_worker_trace", source: fromBase}, {name: "search_all_worker_traces", source: fromBase},
 	{name: "list_goals", source: fromBase}, {name: "add_intent", source: fromBase},
+	// 목표 도구(C26). goal_met은 원본처럼 기본 바인딩이 없어 운영자가 묶을 때만 보인다. kill_work·steer_work는 진행
+	// 중 E② 호출을 끊으므로 C01 뒤에 넣는다(루프 복원 결정안 §7-6).
+	{name: "prove_goal", source: fromBase}, {name: "goal_met", source: fromBase},
 	{name: "list_companies", source: fromBase}, {name: "list_assets", source: fromBase},
 	{name: "list_untested_assets", source: fromBase},
 }}

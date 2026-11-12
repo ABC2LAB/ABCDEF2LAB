@@ -138,6 +138,14 @@ func StartFirstDiagnosisHTTP(ctx context.Context, manager *Manager, options Firs
 	if r.server.engine == nil || !r.server.engine.ReadyFor(task) {
 		return fail()
 	}
+	if options.Hooks.Exploration != nil {
+		stage := options.Hooks.Exploration(r.server)
+		if stage == nil {
+			return fail()
+		}
+		// 아직 Attach/Run 전이라 task가 이 options를 동시에 읽지 않는다.
+		host.runtime.options.Exploration = stage
+	}
 	if err = options.Supervisor.Attach(r.server); err != nil {
 		return fail()
 	}

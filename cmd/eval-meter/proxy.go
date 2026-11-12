@@ -160,6 +160,8 @@ func (l *rowLog) write(row any) error {
 
 // engineRow deliberately has no path, query, header or body field.
 type engineRow struct {
+	// 리슨이 정한 입구다. seal 뒤 거부도 E② 대조에서 탐색과 구분해야 한다.
+	Ingress       string `json:"ingress,omitempty"`
 	Seq           uint64 `json:"seq"`
 	Kind          string `json:"kind"`
 	Method        string `json:"method"`
@@ -281,7 +283,7 @@ func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.rejected++
 		m.writeRowLocked(engineRow{Seq: seq, Kind: "rejected", Method: r.Method, Status: http.StatusServiceUnavailable,
 			StartedAt: stamp(started), CompletedAt: stamp(m.now()), Outcome: "rejected_after_seal",
-			Sent: sentNo, Response: responseNone, AttemptIDState: attemptState, AttemptID: attemptID})
+			Sent: sentNo, Response: responseNone, AttemptIDState: attemptState, AttemptID: attemptID, Ingress: requestIngress(r)})
 		m.mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -305,20 +307,22 @@ func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// mid-body, the engine or target dropping the connection) with
 	// panic(http.ErrAbortHandler); the bookkeeping must still run once or the
 	// drain would wait forever.
-	defer func() { m.finishRequest(seq, r.Method, started, rec, trace, !finished, attemptState, attemptID) }()
+	defer func() {
+		m.finishRequest(seq, r.Method, started, rec, trace, !finished, attemptState, attemptID, requestIngress(r))
+	}()
 	m.proxy.ServeHTTP(rec, r.WithContext(ctx))
 	finished = true
 }
 
 func (m *engineMeter) finishRequest(seq uint64, method string, started time.Time, rec *statusRecorder,
-	trace *requestTrace, aborted bool, attemptState, attemptID string) {
+	trace *requestTrace, aborted bool, attemptState, attemptID, ingress string) {
 	completed := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.cancels, seq)
 	row := engineRow{Seq: seq, Kind: "request", Method: method, Status: rec.status, StartedAt: stamp(started),
 		CompletedAt: stamp(completed), ResponseBytes: rec.bytes, Outcome: "completed",
-		Sent: trace.sent(), Response: responseNone, AttemptIDState: attemptState, AttemptID: attemptID}
+		Sent: trace.sent(), Response: responseNone, AttemptIDState: attemptState, AttemptID: attemptID, Ingress: ingress}
 	if trace.firstByte.Load() {
 		row.Response = responseComplete
 		if aborted || rec.upstreamFailed {
