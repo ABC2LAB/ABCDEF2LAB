@@ -46,6 +46,8 @@ type FirstDiagnosisModelBudget struct {
 	inflight    int
 	targetDrain *firstDiagnosisTargetDrain
 	admission   func(context.Context) error
+	// limitReached는 승인 예산이 남지 않아 새 호출을 받지 못한 적이 있다는 뜻이다(budget_limited).
+	limitReached bool
 }
 
 // firstDiagnosisModelCall은 호출 하나의 예약이다(P3 결정안 C28 결정 2). reserve가 만들고 settle이 한 번 닫는다.
@@ -190,6 +192,17 @@ func (*FirstDiagnosisModelBudget) String() string {
 	return "server.FirstDiagnosisModelBudget[protected]"
 }
 
+// LimitReached는 승인 모델 예산이 다음 호출을 받을 만큼 남지 않아 거부한 적이 있는지 본다. 막힘(사용량 불명·
+// 정책 차단)은 여기에 들지 않는다.
+func (b *FirstDiagnosisModelBudget) LimitReached() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.limitReached && !b.blocked
+}
+
 func (b *FirstDiagnosisModelBudget) Snapshot() diagnosisprep.ModelUsage {
 	if b == nil {
 		return diagnosisprep.ModelUsage{}
@@ -249,9 +262,14 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 	if ctx.Err() != nil || b.targetDrain != nil && b.targetDrain.admit() != nil {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
-	if b.blocked || b.external != nil && b.inflight > 0 || b.usage.Requests >= b.limits.ModelRequests ||
+	if b.blocked || b.external != nil && b.inflight > 0 {
+		return nil, ErrFirstDiagnosisModelBudget
+	}
+	if b.usage.Requests >= b.limits.ModelRequests ||
 		reserveInput > b.limits.InputTokens-b.usage.ReservedInputTokens ||
 		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.ReservedOutputTokens || cost > b.limits.CostUSDMicros-b.usage.ReservedCostUSDMicros {
+		// 승인 예산이 다음 호출을 받을 만큼 남지 않았다. 막힘(불명·정책)과 달리 실행 실패가 아니라 마감 사유다.
+		b.limitReached = true
 		return nil, ErrFirstDiagnosisModelBudget
 	}
 	call := &firstDiagnosisModelCall{input: reserveInput, output: int64(req.MaxTokens), cost: cost}

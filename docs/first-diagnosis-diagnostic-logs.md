@@ -89,7 +89,7 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 - 실행 중 쓰기/Sync/권한·경로 변조/한도 실패: sticky 오류와 즉시 한 번의 안전한 stderr 경고. 기존 E② 감사·실행 마감은 그대로 수행하되 CLI 성공 stdout을 출력하지 않는다.
 - stderr `diagnostic_logging_incomplete:log_storage_failed|log_limit|log_invalid_event|log_closed`, 종료 1.
 - 관측용 집계 조회 실패 등: 원래 실행 결과를 변경하지 않고 `incomplete`/`observation_complete=false`를 남기며 CLI `diagnostic_observation_incomplete`, 종료 1.
-- 위 종료 코드는 CLI 명령 기준이다. URL 진단 실행(웹에서 시작한 실행)은 로깅 장애·관측 불완전이 실행 상태를 바꾸지 않는다. 완료 실행에 경고 사유 `diagnostic_logging_incomplete`만 붙고, 로그 장애 사유와 누락 건수는 서버 로그 한 줄(`[first-diagnosis] 진단 로그 기록 실패: 사유=… 누락=N건`)로 남는다(P3 결정안 C10).
+- 위 종료 코드는 CLI 명령 기준이다. URL 진단 실행(웹에서 시작한 실행)은 로깅 장애·관측 불완전이 실행 상태를 바꾸지 않는다. 완료 실행에 경고 칸 `diagnostic_log_incomplete`만 붙고(마감 사유 `reason_code`와 따로), 로그 장애 사유와 누락 건수는 서버 로그 한 줄(`[first-diagnosis] 진단 로그 기록 실패: 사유=… 누락=N건`)로 남는다(P3 결정안 C10).
 
 `prepare-task`의 task 생성과 `prepare-intents`의 모델 호출·intent 저장은 로그 최종 확인 전에 끝날 수 있다.
 따라서 로깅 장애나 관측 불완전으로 종료 1이 되고 성공 stdout의 `task_id`·`intent_ids`가 없어도,

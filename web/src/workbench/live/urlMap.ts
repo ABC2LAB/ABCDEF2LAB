@@ -53,6 +53,30 @@ export function urlStateText(state: UrlState, verified = true): string {
   return verified ? urlStateLabels[state] : "현재 상태 미확인";
 }
 
+/**
+ * 실행 결과 한 줄(실행 결과 상태 값 계약 §4, 이경준 화면 원칙). 미실행·판단불가를 "발견 없음"으로 보이지 않게 한다.
+ * 결과 칸이 없으면(이 칸 이전 기록·결과가 없는 상태) 빈 글이다.
+ */
+export function urlOutcomeText(
+  job: Pick<URLDiagnosisJob, "state" | "outcome" | "closing_reason" | "intent_outcomes">,
+): string {
+  const c = job.intent_outcomes;
+  if (!c) return "";
+  const finished = c.done + c.policy_limited;
+  const remaining = c.incomplete + c.stopped;
+  if (job.state === "cancelled") return `중지됨 · 끝난 ${finished} / 끊긴 ${remaining + c.unknown}`;
+  if (job.state !== "completed" || !job.outcome) return "";
+  const parts: string[] = [];
+  if (job.outcome === "no_intents") parts.push("시도한 계획 없음(검사 안 함)");
+  else if (job.outcome === "partial") parts.push(remaining > 0 ? `일부 완료 · 남은 작업 ${remaining}` : "일부 완료");
+  else parts.push("계획한 작업 모두 마감");
+  // 결과 불명은 남은 작업과 따로 보인다(미실행·판단불가를 섞지 않는다).
+  if (c.unknown > 0) parts.push(`결과 불명 ${c.unknown}`);
+  if (c.policy_limited > 0) parts.push(`정책상 검증 안 됨 ${c.policy_limited}`);
+  if (job.closing_reason === "budget_limited") parts.push("예산 상한에서 마감 · 찾은 후보는 보존");
+  return parts.join(" · ");
+}
+
 /** 엔진이 아직 움직이는가. */
 export function isUrlActive(job: Pick<URLDiagnosisJob, "state">): boolean {
   return URL_ACTIVE_STATES.includes(job.state);

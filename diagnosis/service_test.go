@@ -32,7 +32,11 @@ func (r *testRunner) Close(context.Context) (Closure, error) {
 	if r.closure != nil {
 		return *r.closure, r.closeErr
 	}
-	return Closure{DrainComplete: r.closeErr == nil, ResultReady: r.closeErr == nil}, r.closeErr
+	return Closure{DrainComplete: r.closeErr == nil, ResultReady: r.closeErr == nil, Result: completeResult()}, r.closeErr
+}
+
+func completeResult() *RunResult {
+	return &RunResult{Outcome: OutcomeComplete, IntentOutcomes: IntentOutcomes{Done: 1}}
 }
 func request(command Command) Request {
 	r := Request{Version: Version, RequestID: "request-1", Command: command, TaskID: "23", PreparationRef: "operator-prepared"}
@@ -197,13 +201,17 @@ func TestClosureEvidenceIsIndependentOfExecutionFailure(t *testing.T) {
 		closure  Closure
 		state    State
 	}{
-		{"close_error_only", nil, errors.New("close failure"), Closure{true, true}, Unknown},
-		{"drain_incomplete_without_error", nil, nil, Closure{false, true}, Unknown},
-		{"result_missing_without_error", nil, nil, Closure{true, false}, Unknown},
-		{"failed_saved", errors.New("execution failure"), nil, Closure{true, true}, Failed},
-		{"cancelled_saved", context.Canceled, nil, Closure{true, true}, Cancelled},
-		{"save_failed", nil, errors.New("save failure"), Closure{true, false}, Unknown},
-		{"http_drain_failed", nil, errors.New("drain failure"), Closure{false, true}, Unknown},
+		{"close_error_only", nil, errors.New("close failure"), Closure{DrainComplete: true, ResultReady: true}, Unknown},
+		{"drain_incomplete_without_error", nil, nil, Closure{DrainComplete: false, ResultReady: true}, Unknown},
+		{"result_missing_without_error", nil, nil, Closure{DrainComplete: true, ResultReady: false}, Unknown},
+		{"failed_saved", errors.New("execution failure"), nil, Closure{DrainComplete: true, ResultReady: true}, Failed},
+		{"cancelled_saved", context.Canceled, nil, Closure{DrainComplete: true, ResultReady: true}, Cancelled},
+		{"save_failed", nil, errors.New("save failure"), Closure{DrainComplete: true, ResultReady: false}, Unknown},
+		{"http_drain_failed", nil, errors.New("drain failure"), Closure{DrainComplete: false, ResultReady: true}, Unknown},
+		// 실행 결과 없이 마감만 확인되면 완료라고 하지 않는다(실행 결과 상태 값 계약).
+		{"completed_without_result", nil, nil, Closure{DrainComplete: true, ResultReady: true}, Unknown},
+		{"completed_inconsistent_result", nil, nil, Closure{DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomeComplete, IntentOutcomes: IntentOutcomes{Done: 1, Incomplete: 1}}}, Unknown},
+		{"completed_partial", nil, nil, Closure{DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomePartial, IntentOutcomes: IntentOutcomes{Done: 1, Incomplete: 1}}}, Completed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner := &testRunner{finish: make(chan struct{}), runErr: tc.runErr, closeErr: tc.closeErr, closure: &tc.closure}
@@ -229,7 +237,7 @@ func (r *controlledExitRunner) Run(context.Context) error { close(r.started); <-
 func (r *controlledExitRunner) Close(context.Context) (Closure, error) {
 	close(r.closing)
 	<-r.releaseClose
-	return Closure{true, true}, nil
+	return Closure{DrainComplete: true, ResultReady: true, Result: completeResult()}, nil
 }
 func TestStoppingNormalReturnAndShutdownWait(t *testing.T) {
 	r := &controlledExitRunner{make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})}
