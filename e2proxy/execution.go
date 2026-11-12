@@ -1259,8 +1259,12 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	r.ResponseReceived = true
 	r.StatusCode = resp.StatusCode
 	diagnosticReceipt(e.ctx, r, "http_response_received", "succeeded", "")
-	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, e.cfg.Limits.MaxBodyBytes+1))
-	oversized := int64(len(responseBody)) > e.cfg.Limits.MaxBodyBytes
+	// 자격 반사 검사는 전달할 앞부분이 아니라 검사 상한까지 읽은 전체에 한다. 검사 상한은 본문 상한 + 가장 긴 보호 값
+	// 길이라서, 전달 구간 끝에 걸친 보호 값도 통째로 검사 범위에 들어온다(C16 결정안 2, 상한 사이 조건).
+	limit := e.cfg.Limits.MaxBodyBytes
+	scan := limit + e.longestSecret()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, scan+1))
+	oversized := int64(len(responseBody)) > limit
 	closeErr := resp.Body.Close()
 	// 본문을 다 읽기 전에 끊기면 대상이 끝까지 답했는지 모른다. 상한을 넘어 읽기를 멈추고 닫은 것은 끊김이 아니다.
 	if readErr != nil || closeErr != nil && !oversized {
@@ -1270,10 +1274,29 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	// 대상이 답했지만(상태 줄·헤더 수신) 본문 상한·자격 응답·보호 값 반사·압축 때문에 표현을 주지 않는다. 대상이 요청을
 	// 처리한 것은 알므로 결과 불명이 아니라 보류로 센다. 결과 불명 상한에 넣지 않아 그 call을 멈추지 않는다(C16).
-	if oversized || !e.safeHTTPResponse(resp, responseBody) {
+	// 길이를 맞출 수 없는 부분 응답(206·Content-Range)은 자르지 않고 통째로 보류한다.
+	partial := resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != ""
+	if !e.safeHTTPResponse(resp, responseBody) || oversized && partial {
 		clear(responseBody)
 		r.Reason = Withheld
 		return finish(nil, ErrWithheld)
+	}
+	if oversized {
+		// 본문 상한을 넘으면 앞부분만 준다. 도구의 HTTP 읽기가 연결 중단으로 보지 않도록 길이를 맞추고 chunked·trailer를
+		// 지운다. 대상이 답한 것은 알고 표현만 줄였으므로 withheld + response_truncated다(결과 불명 아님, C16 결정안 2).
+		clear(responseBody[limit:])
+		responseBody = responseBody[:limit]
+		resp.TransferEncoding = nil
+		resp.Header.Del("Transfer-Encoding")
+		resp.Header.Del("Trailer")
+		resp.Trailer = nil
+		resp.ContentLength = int64(len(responseBody))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(responseBody)))
+		resp.Body = io.NopCloser(bytes.NewReader(responseBody))
+		resp.Close = true
+		resp.Request = &http.Request{Method: req.Method}
+		r.Reason, r.ResponseTruncated = Withheld, true
+		return finish(resp, nil)
 	}
 	r.ResponseComplete = true
 	// Preserve the original representation and metadata. Only a minimal,
@@ -1496,4 +1519,15 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 		}
 	}
 	return rules, cfg.HeaderMode, cfg.Evaluation, nil
+}
+
+// longestSecret은 이 실행에 등록된 보호 값(명시 비밀 헤더·보호 자격) 중 가장 긴 바이트 길이다. 응답 검사 상한에 더한다.
+func (e *Execution) longestSecret() int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	longest := 0
+	for _, s := range e.secrets {
+		longest = max(longest, len(s))
+	}
+	return int64(longest)
 }
