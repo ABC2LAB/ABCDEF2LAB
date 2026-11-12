@@ -150,6 +150,26 @@ func within(p, prefix string) bool {
 	return prefix == "" || p == prefix || strings.HasPrefix(p, prefix+"/")
 }
 
+// excludedWithin은 제외 경로 패턴 매칭이다. 제품의 대상 등록·진단 흐름과 같은 규칙이다(diagnosisflow excludedWithin):
+// 조각 하나 전체인 "*"는 그 자리의 아무 조각 하나와 맞고, 패턴은 그 아래 경로까지 덮는다. 등록 검사는 "*"를 받으므로
+// 여기서 글자 그대로 비교하면 제외가 조용히 빠진다(#482 리뷰 R1).
+func excludedWithin(p, pattern string) bool {
+	if pattern == "/" {
+		return true
+	}
+	parts := strings.Split(strings.Trim(pattern, "/"), "/")
+	actual := strings.Split(strings.Trim(p, "/"), "/")
+	if len(actual) < len(parts) {
+		return false
+	}
+	for i, part := range parts {
+		if part != "*" && part != actual[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func risky(p string, words []string) bool {
 	for _, segment := range strings.Split(strings.ToLower(p), "/") {
 		for _, word := range words {

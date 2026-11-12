@@ -18,6 +18,10 @@ import (
 // ReasonUnresolved는 경계가 직접 푼 이름에 주소가 없을 때다. 계약 §4 목록에 더한 값이다.
 const ReasonUnresolved = "unresolved_host"
 
+// ReasonRequestCancelled는 요청을 보낸 쪽이 판정 중에 그 요청을 거둔 경우다(브라우저의 XHR 중단 등). 그 요청만 막고
+// 세션은 닫지 않는다(#482 리뷰 R4).
+const ReasonRequestCancelled = "request_cancelled"
+
 // 관찰 출처(§7). 입구와 브라우저 이동 여부로만 정한다. 직접 입구는 헤더와 상관없이 API Recon 실행이다.
 const (
 	SourceBrowserNavigation = "browser_navigation"
@@ -180,6 +184,9 @@ func (s *Session) Check(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
+	case err != nil && ctx.Err() != nil && !errors.Is(err, ErrTargetEnded):
+		// 요청 문맥이 끝나 조회가 멈췄다. 저장소·승인 장애가 아니라 그 요청이 거둬진 것이라 세션은 닫지 않는다.
+		return ctx.Err()
 	case errors.Is(err, ErrTargetEnded):
 		s.closeLocked(exploration.TargetEnded)
 		return ErrTargetEnded
@@ -268,7 +275,7 @@ func (s *Session) Admit(ctx context.Context, req Request) (Decision, *Ticket) {
 	if err := s.Check(ctx); err != nil {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		reason := s.closedReasonLocked()
+		reason := s.deniedReasonLocked(ctx)
 		dest := DestExternal
 		if approvedOrigin {
 			dest = DestApproved
@@ -293,6 +300,15 @@ func (s *Session) Admit(ctx context.Context, req Request) (Decision, *Ticket) {
 }
 
 // closedReasonLocked는 닫힌 세션의 차단 사유다. 호출자는 s.mu를 보유한다.
+// deniedReasonLocked는 Check·liveLocked에 막힌 요청의 기록 사유다. 세션이 살아 있는데 요청 문맥만 끝났으면 그 요청의
+// 취소이고, 아니면 세션이 닫힌 사유다. 호출자는 s.mu를 보유한다.
+func (s *Session) deniedReasonLocked(ctx context.Context) string {
+	if s.active && ctx.Err() != nil {
+		return ReasonRequestCancelled
+	}
+	return s.closedReasonLocked()
+}
+
 func (s *Session) closedReasonLocked() string {
 	switch s.reason {
 	case exploration.TargetEnded:
@@ -308,7 +324,7 @@ func (s *Session) admitApproved(ctx context.Context, req Request) (Decision, *Ti
 	defer s.mu.Unlock()
 	// Check 뒤 잠금 전에 Close가 끼어들 수 있다. 닫힌 세션·지난 시간 상한은 새 송신을 열지 않는다.
 	if !s.liveLocked(ctx) {
-		return s.denyLocked(req, DestApproved, s.closedReasonLocked(), ""), nil
+		return s.denyLocked(req, DestApproved, s.deniedReasonLocked(ctx), ""), nil
 	}
 	dial := netip.AddrPortFrom(s.target.ConnectIP, s.target.Port)
 	if class := s.policy.classify(dial); class == DestControl {
@@ -320,7 +336,7 @@ func (s *Session) admitApproved(ctx context.Context, req Request) (Decision, *Ti
 		inScope = inScope || within(canonical, prefix)
 	}
 	for _, prefix := range s.target.ExcludedPrefixes {
-		inScope = inScope && !within(canonical, prefix)
+		inScope = inScope && !excludedWithin(canonical, prefix)
 	}
 	switch {
 	case !ok || !inScope:
@@ -378,9 +394,16 @@ func (s *Session) admitExternal(ctx context.Context, req Request, host string) (
 	if err := s.Check(ctx); err != nil {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.denyLocked(req, DestExternal, s.closedReasonLocked(), host), nil
+		return s.denyLocked(req, DestExternal, s.deniedReasonLocked(ctx), host), nil
 	}
 	sort.Slice(addresses, func(i, j int) bool { return addresses[i].Less(addresses[j]) })
+	// 승인 대상 서버를 다른 이름·IP 리터럴로 부르면 외부 자원이 아니다. 외부로 보내면 승인 경로·위험 경로·제외 경로·
+	// SPKI 고정과 대상 요청 수를 모두 건너뛴다(#482 리뷰 R3). 승인 origin이 아니므로 막는다.
+	for _, ip := range addresses {
+		if ip.Unmap() == s.target.ConnectIP.Unmap() {
+			return deny(DestExternal, ReasonOutOfScopeOrigin)
+		}
+	}
 	// 풀린 주소 중 하나라도 내부·메타데이터·제어면 막는다. 섞인 응답으로 내부 주소를 고르게 하는 우회를 막는다.
 	for _, ip := range addresses {
 		if class := s.policy.classify(netip.AddrPortFrom(ip, req.Port)); class != DestExternal {
@@ -390,7 +413,7 @@ func (s *Session) admitExternal(ctx context.Context, req Request, host string) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.liveLocked(ctx) {
-		return s.denyLocked(req, DestExternal, s.closedReasonLocked(), host), nil
+		return s.denyLocked(req, DestExternal, s.deniedReasonLocked(ctx), host), nil
 	}
 	if s.externalSent >= s.binding.Limits.MaxExternalRequests || s.inflight >= s.binding.Limits.MaxConcurrency {
 		return s.denyLocked(req, DestExternal, ReasonCapExhausted, host), nil
