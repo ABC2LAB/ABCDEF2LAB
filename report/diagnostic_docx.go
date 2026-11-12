@@ -139,6 +139,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.table(rows)
 	}
 	w.chapter("3장. 진단 결과 요약")
+	w.paragraph("Normal", "실행 결과: "+in.RunText+". 실행 결과는 취약점이 없다는 뜻이 아닙니다.")
 	if in.SourceFailures > 0 {
 		w.paragraph("Normal", fmt.Sprintf("근거 불러오기 실패: %d건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.", in.SourceFailures))
 	}
