@@ -277,6 +277,18 @@ func TestE2HTTPPolicyDocumentAcceptsAuthPrepRule(t *testing.T) {
 	if err != nil || got.Rules[len(got.Rules)-1].Purpose != "auth_prep" {
 		t.Fatalf("auth prep rule rejected: %v", err)
 	}
+	// 인증 준비 칸은 그 규칙과 맞아야 한다.
+	pin := E2HTTPFilePin{File: "account-tester-a.json", SHA256: strings.Repeat("a", 64)}
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+	policy.Auth = &a
+	if _, err := ValidateE2HTTPPolicyDocument(encode(policy), false); err != nil {
+		t.Fatal("auth section rejected:", err)
+	}
+	a.Login.Path = "/other"
+	if _, err := ValidateE2HTTPPolicyDocument(encode(policy), false); err == nil {
+		t.Fatal("auth section that does not match its rule accepted")
+	}
+	a.Login.Path = "/login"
 	policy.Rules[len(policy.Rules)-1].Purpose = "admin"
 	if _, err := ValidateE2HTTPPolicyDocument(encode(policy), false); err == nil {
 		t.Fatal("unknown purpose accepted")
