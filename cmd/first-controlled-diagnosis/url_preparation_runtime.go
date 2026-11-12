@@ -256,6 +256,11 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		case diagnosisprep.Completed, diagnosisprep.Failed, diagnosisprep.Cancelled, diagnosisprep.Unknown:
 			u = settleProductWorkflow(parent, flow, u, finishDiagnostics)
 		}
+		// 실행 결과는 completed로 마감한 경우에만 싣는다. 마감 확인 실패 등으로 상태가 바뀌었으면 지운다.
+		if u.State != diagnosisprep.Completed {
+			u.Result = nil
+			u.DiagnosticLogIncomplete = false
+		}
 		return publish(u)
 	}
 	defer func() {
@@ -547,6 +552,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 					u.DrainComplete = s.DrainComplete
 					u.ResultReady = s.ResultReady
 					u.ModelUsage = &usage
+					u.Result = s.Result
 					if !usage.UsageKnown {
 						u.State = diagnosisprep.Unknown
 						u.ReasonCode = "model_usage_unknown"
@@ -600,7 +606,7 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 		closureErr = nil
 	}
 	stored, saveErr := r.launch.supervisor.PersistRunOutcomeStored(ctx, closureErr)
-	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil}
+	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.RunResult()}
 	if drained {
 		// map 교체는 진행 중 HTTP handler가 끝난 뒤 수행한다. 실행 DB와 보고서 DB는 별개다.
 		r.backend.mu.Lock()
@@ -738,8 +744,9 @@ func urlDiagnosticLogLoss(logger *diagnosticlog.Logger, printf func(string, ...a
 // (P3 결정안 C10). 기록 실패·관찰 불완전 표시는 실행 상태를 바꾸지 않고, 완료 실행에 경고 사유로만 남긴다.
 // 실행 종료·감사·결과 저장의 확인은 Update의 다른 값(DrainComplete·ResultReady·ModelUsage)이 맡는다.
 func markDiagnosticLogWarning(u *diagnosisprep.Update, logFailed, observationIncomplete bool) {
-	if u.State == diagnosisprep.Completed && u.ReasonCode == "" && (logFailed || observationIncomplete) {
-		u.ReasonCode = "diagnostic_logging_incomplete"
+	// 마감 사유(reason_code)와 따로 둔다. 다른 사유가 있어도 경고가 덮이지 않는다(실행 결과 상태 값 계약 §3.2).
+	if u.State == diagnosisprep.Completed && (logFailed || observationIncomplete) {
+		u.DiagnosticLogIncomplete = true
 	}
 }
 

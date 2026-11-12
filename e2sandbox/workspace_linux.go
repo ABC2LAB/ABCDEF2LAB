@@ -28,14 +28,19 @@ const (
 	maxWorkspaceEntries = 4096
 	// 경로 하나의 바이트 상한(PATH_MAX).
 	maxWorkspacePath = 4096
-	// tar 항목 하나의 머리말·채움 바이트 상한과 끝 블록(1KiB).
-	workspaceEntryOverhead = 1024
-	workspaceTrailer       = 1024
+	// 항목 이름 바이트 합계 상한. 긴 이름에 붙는 PAX 확장 머리말의 경로 기록 크기를 내용 상한 밖에서 묶는다.
+	maxWorkspaceNameBytes = 1 << 20
+	// tar 항목 하나에서 이름 길이를 뺀 머리말·채움 바이트 상한: ustar 머리말 512 + PAX 확장 머리말 512 + PAX 기록의
+	// 고정 글자·채움(512 미만) + 내용 채움(512 미만). 넉넉히 5블록으로 둔다. 이름 길이는 maxWorkspaceNameBytes가 묶는다.
+	workspaceEntryOverhead = 5 * 512
+	// 끝 블록(0으로 찬 512바이트 2개).
+	workspaceTrailer = 1024
 )
 
-// workspaceArchiveLimit은 내용 상한이 contentLimit인 작업 공간 tar의 바이트 상한이다.
+// workspaceArchiveLimit은 내용 상한이 contentLimit인 작업 공간 tar의 바이트 상한이다. 묶는 쪽과 받는 쪽이 같은
+// 값을 쓴다(packWorkspace는 결과가 이 값을 넘으면 묶지 않는다).
 func workspaceArchiveLimit(contentLimit uint64) int64 {
-	return int64(contentLimit) + maxWorkspaceEntries*workspaceEntryOverhead + workspaceTrailer
+	return int64(contentLimit) + maxWorkspaceEntries*workspaceEntryOverhead + maxWorkspaceNameBytes + workspaceTrailer
 }
 
 // packWorkspace는 root 아래의 일반 파일·디렉터리를 tar로 묶는다. 내용 합계가 contentLimit를 넘거나 항목이 너무
@@ -44,7 +49,13 @@ func packWorkspace(root string, contentLimit uint64) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	var total uint64
-	entries := 0
+	entries, nameBytes := 0, 0
+	// 항목 하나를 셀 때 수·이름 바이트 상한을 같이 본다(디렉터리 이름은 끝의 "/"까지 센다).
+	count := func(name string) bool {
+		entries++
+		nameBytes += len(name)
+		return entries <= maxWorkspaceEntries && nameBytes <= maxWorkspaceNameBytes
+	}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -63,7 +74,7 @@ func packWorkspace(root string, contentLimit uint64) ([]byte, error) {
 		}
 		switch {
 		case info.Mode().IsDir():
-			if entries++; entries > maxWorkspaceEntries {
+			if !count(name + "/") {
 				return ErrWorkspaceTooLarge
 			}
 			return tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: name + "/", Mode: 0o700, Format: tar.FormatPAX})
@@ -71,7 +82,7 @@ func packWorkspace(root string, contentLimit uint64) ([]byte, error) {
 			if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Nlink != 1 {
 				return nil // 하드 링크는 버린다.
 			}
-			if entries++; entries > maxWorkspaceEntries {
+			if !count(name) {
 				return ErrWorkspaceTooLarge
 			}
 			size := uint64(info.Size())
@@ -104,6 +115,10 @@ func packWorkspace(root string, contentLimit uint64) ([]byte, error) {
 	if err := tw.Close(); err != nil {
 		return nil, ErrWorkspaceInvalid
 	}
+	// 받는 쪽 상한과 같은 기준이다. 위 상한 안이면 넘지 않지만, 넘으면 받을 수 없는 tar를 내보내지 않는다.
+	if int64(buf.Len()) > workspaceArchiveLimit(contentLimit) {
+		return nil, ErrWorkspaceTooLarge
+	}
 	return buf.Bytes(), nil
 }
 
@@ -133,7 +148,7 @@ func unpackWorkspace(data []byte, root string, contentLimit uint64) error {
 	tr := tar.NewReader(bytes.NewReader(data))
 	seen := make(map[string]bool)
 	var total uint64
-	entries := 0
+	entries, nameBytes := 0, 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -150,7 +165,9 @@ func unpackWorkspace(data []byte, root string, contentLimit uint64) error {
 			return ErrWorkspaceInvalid
 		}
 		seen[name] = true
-		if entries++; entries > maxWorkspaceEntries {
+		entries++
+		nameBytes += len(hdr.Name)
+		if entries > maxWorkspaceEntries || nameBytes > maxWorkspaceNameBytes {
 			return ErrWorkspaceTooLarge
 		}
 		target := filepath.Join(root, filepath.FromSlash(name))

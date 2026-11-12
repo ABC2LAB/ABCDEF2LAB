@@ -89,20 +89,22 @@ func TestDiagnosticLogWarningNeverChangesRunState(t *testing.T) {
 		logFailed, observation bool
 		wantState              diagnosisprep.State
 		wantReason             string
+		wantWarning            bool
 	}{
-		{"completed-log-failed", diagnosisprep.Update{State: diagnosisprep.Completed}, true, false, diagnosisprep.Completed, "diagnostic_logging_incomplete"},
-		{"completed-observation", diagnosisprep.Update{State: diagnosisprep.Completed}, false, true, diagnosisprep.Completed, "diagnostic_logging_incomplete"},
-		{"completed-clean", diagnosisprep.Update{State: diagnosisprep.Completed}, false, false, diagnosisprep.Completed, ""},
-		{"completed-keeps-reason", diagnosisprep.Update{State: diagnosisprep.Completed, ReasonCode: "budget_limited"}, true, true, diagnosisprep.Completed, "budget_limited"},
-		{"failed-log-failed", diagnosisprep.Update{State: diagnosisprep.Failed, ReasonCode: "planner_failed"}, true, true, diagnosisprep.Failed, "planner_failed"},
-		{"cancelled-log-failed", diagnosisprep.Update{State: diagnosisprep.Cancelled}, true, false, diagnosisprep.Cancelled, ""},
-		{"unknown-stays", diagnosisprep.Update{State: diagnosisprep.Unknown, ReasonCode: "model_usage_unknown"}, true, false, diagnosisprep.Unknown, "model_usage_unknown"},
+		{"completed-log-failed", diagnosisprep.Update{State: diagnosisprep.Completed}, true, false, diagnosisprep.Completed, "", true},
+		{"completed-observation", diagnosisprep.Update{State: diagnosisprep.Completed}, false, true, diagnosisprep.Completed, "", true},
+		{"completed-clean", diagnosisprep.Update{State: diagnosisprep.Completed}, false, false, diagnosisprep.Completed, "", false},
+		// 다른 사유가 있어도 경고가 따로 남는다(#418 이경준 지적).
+		{"completed-keeps-reason-and-warning", diagnosisprep.Update{State: diagnosisprep.Completed, ReasonCode: "budget_limited"}, true, true, diagnosisprep.Completed, "budget_limited", true},
+		{"failed-log-failed", diagnosisprep.Update{State: diagnosisprep.Failed, ReasonCode: "planner_failed"}, true, true, diagnosisprep.Failed, "planner_failed", false},
+		{"cancelled-log-failed", diagnosisprep.Update{State: diagnosisprep.Cancelled}, true, false, diagnosisprep.Cancelled, "", false},
+		{"unknown-stays", diagnosisprep.Update{State: diagnosisprep.Unknown, ReasonCode: "model_usage_unknown"}, true, false, diagnosisprep.Unknown, "model_usage_unknown", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := tc.in
 			markDiagnosticLogWarning(&u, tc.logFailed, tc.observation)
-			if u.State != tc.wantState || u.ReasonCode != tc.wantReason {
-				t.Fatalf("state=%s reason=%q", u.State, u.ReasonCode)
+			if u.State != tc.wantState || u.ReasonCode != tc.wantReason || u.DiagnosticLogIncomplete != tc.wantWarning {
+				t.Fatalf("state=%s reason=%q warning=%v", u.State, u.ReasonCode, u.DiagnosticLogIncomplete)
 			}
 		})
 	}

@@ -2,6 +2,7 @@ package diagnosisprep
 
 import (
 	"encoding/json"
+	"github.com/Autumn-27/artex/diagnosis"
 	"strings"
 	"testing"
 )
@@ -146,5 +147,57 @@ func TestSourceDigestBindsCanonicalInputAndInstallation(t *testing.T) {
 	input.ProfileID = "another"
 	if SourceDigest(input, installation) == first {
 		t.Fatal("profile is not bound")
+	}
+}
+
+// 실행 결과 칸 규칙(docs/contracts/run-outcome-states.md §3.2): outcome·closing_reason은 completed만,
+// intent_outcomes는 completed·cancelled만, outcome은 개수 대조식과 맞아야 한다.
+func TestJobRunResultFields(t *testing.T) {
+	counts := func(c diagnosis.IntentOutcomes) *diagnosis.IntentOutcomes { return &c }
+	completed := Job{ID: "prep-job", Revision: 1, SourceDigest: strings.Repeat("a", 64), Input: Input{TargetURL: "https://example.test/", ProfileID: "local"}, State: Completed, Phase: Report, TaskID: "42", PreparationStarted: true, AuthorityState: AuthorityConsumed, Started: true, DrainComplete: true, ResultReady: true}
+	for _, tc := range []struct {
+		name   string
+		change func(*Job)
+		ok     bool
+	}{
+		{"legacy_completed_without_result", func(*Job) {}, true},
+		{"complete", func(j *Job) {
+			j.Outcome, j.IntentOutcomes = diagnosis.OutcomeComplete, counts(diagnosis.IntentOutcomes{Done: 2, PolicyLimited: 1})
+		}, true},
+		{"partial_budget_limited", func(j *Job) {
+			j.Outcome, j.ClosingReason, j.IntentOutcomes = diagnosis.OutcomePartial, diagnosis.ClosingBudgetLimited, counts(diagnosis.IntentOutcomes{Done: 1, Incomplete: 2})
+		}, true},
+		{"no_intents_budget_limited", func(j *Job) {
+			j.Outcome, j.ClosingReason, j.IntentOutcomes = diagnosis.OutcomeNoIntents, diagnosis.ClosingBudgetLimited, counts(diagnosis.IntentOutcomes{})
+		}, true},
+		{"cancelled_counts", func(j *Job) {
+			j.State, j.IntentOutcomes = Cancelled, counts(diagnosis.IntentOutcomes{Done: 1, Stopped: 1})
+		}, true},
+		{"outcome_mismatch", func(j *Job) {
+			j.Outcome, j.IntentOutcomes = diagnosis.OutcomeComplete, counts(diagnosis.IntentOutcomes{Done: 1, Incomplete: 1})
+		}, false},
+		{"outcome_without_counts", func(j *Job) { j.Outcome = diagnosis.OutcomeComplete }, false},
+		{"counts_without_outcome", func(j *Job) { j.IntentOutcomes = counts(diagnosis.IntentOutcomes{Done: 1}) }, false},
+		{"closing_without_outcome", func(j *Job) { j.ClosingReason = diagnosis.ClosingBudgetLimited }, false},
+		{"unknown_closing_reason", func(j *Job) {
+			j.Outcome, j.ClosingReason, j.IntentOutcomes = diagnosis.OutcomeComplete, "time_limited", counts(diagnosis.IntentOutcomes{Done: 1})
+		}, false},
+		{"negative_count", func(j *Job) {
+			j.Outcome, j.IntentOutcomes = diagnosis.OutcomePartial, counts(diagnosis.IntentOutcomes{Done: 1, Incomplete: 2, Stopped: -1})
+		}, false},
+		{"outcome_on_cancelled", func(j *Job) {
+			j.State, j.Outcome, j.IntentOutcomes = Cancelled, diagnosis.OutcomeComplete, counts(diagnosis.IntentOutcomes{Done: 1})
+		}, false},
+		{"counts_on_failed", func(j *Job) { j.State, j.IntentOutcomes = Failed, counts(diagnosis.IntentOutcomes{Done: 1}) }, false},
+		{"counts_on_unknown", func(j *Job) { j.State, j.IntentOutcomes = Unknown, counts(diagnosis.IntentOutcomes{Done: 1}) }, false},
+		{"log_warning_on_completed", func(j *Job) { j.DiagnosticLogIncomplete = true }, true},
+		{"log_warning_with_reason", func(j *Job) { j.DiagnosticLogIncomplete, j.ReasonCode = true, "budget_limited" }, true},
+		{"log_warning_on_failed", func(j *Job) { j.State, j.DiagnosticLogIncomplete = Failed, true }, false},
+	} {
+		j := completed
+		tc.change(&j)
+		if validJob(j) != tc.ok {
+			t.Fatalf("%s: valid=%v", tc.name, !tc.ok)
+		}
 	}
 }
