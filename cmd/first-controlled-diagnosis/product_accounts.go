@@ -426,3 +426,96 @@ func writePrivateFileAtomic(path string, data []byte) error {
 	}
 	return errors.Join(d.Sync(), d.Close())
 }
+
+// productRunAccount는 실행에 결속하는 시험 계정 하나다(라벨·자격 보호 파일·그 해시). 자격 값은 없다.
+type productRunAccount struct {
+	Label            string `json:"label"`
+	CredentialSHA256 string `json:"credential_sha256"`
+	credentialPath   string
+}
+
+// productRunAccounts는 실행 시작 때 고른 인증 준비 대상이다(C14 구현 설계 5).
+type productRunAccounts struct {
+	Login    *diagnosisprep.TargetLogin
+	Accounts []productRunAccount
+}
+
+// runAccounts는 실행에 결속할 계정을 고른다: 목록과 같은 판정(accountView)으로 test이고 자격 파일이 저널 해시와 같은
+// 계정만, 로그인 방식이 있을 때만이다. 두 번째 값은 결속 디렉터리 이름에 넣는 요약(없으면 빈 값)이다.
+func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRunAccounts, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.check() != nil {
+		return productRunAccounts{}, "", errPreparation
+	}
+	current, ok := r.records[rec.Target.ID]
+	if !ok || productTargetDigest(current) != productTargetDigest(rec) {
+		return productRunAccounts{}, "", errPreparation
+	}
+	login, hasLogin := r.logins[rec.Target.ID]
+	if !hasLogin {
+		return productRunAccounts{}, "", nil
+	}
+	labels := make([]string, 0, len(r.accounts[rec.Target.ID]))
+	for label := range r.accounts[rec.Target.ID] {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	out := productRunAccounts{}
+	now := r.now()
+	for _, label := range labels {
+		st := r.accounts[rec.Target.ID][label]
+		if accountView(current, st, now).Classification != "test" || !r.credentialConfigured(rec.Target.ID, st) {
+			continue
+		}
+		out.Accounts = append(out.Accounts, productRunAccount{Label: label, CredentialSHA256: st.credentialSHA256, credentialPath: r.credentialPath(rec.Target.ID, label)})
+	}
+	if len(out.Accounts) == 0 {
+		return productRunAccounts{}, "", nil
+	}
+	login.Cookies = append([]string(nil), login.Cookies...)
+	out.Login = &login
+	raw, err := json.Marshal(struct {
+		Login    diagnosisprep.TargetLogin `json:"login"`
+		Accounts []productRunAccount       `json:"accounts"`
+	}{login, out.Accounts})
+	if err != nil {
+		return productRunAccounts{}, "", errPreparation
+	}
+	return out, urlSHA(raw), nil
+}
+
+// errAccountBindingChanged는 실행에 결속한 시험 계정이 더는 그 자격의 test가 아니라는 뜻이다(해제·만료·판 변경·자격
+// 교체). 실행의 새 송신은 멈춘다(권한 철회와 같은 사건).
+var errAccountBindingChanged = errors.New("account_binding_changed")
+
+// accountsCurrent는 결속한 계정 각각이 지금도 같은 자격으로 골라지는지 본다. 결속 뒤 새로 표시한 계정은 이 실행과
+// 상관없다(그 실행은 계속).
+func (r *productTargetRegistry) accountsCurrent(rec productTargetRecord, bound []productRunAccount) error {
+	if len(bound) == 0 {
+		return nil
+	}
+	now, _, err := r.runAccounts(rec)
+	if err != nil {
+		return err
+	}
+	selected := map[string]string{}
+	for _, a := range now.Accounts {
+		selected[a.Label] = a.CredentialSHA256
+	}
+	for _, a := range bound {
+		if selected[a.Label] != a.CredentialSHA256 {
+			return errAccountBindingChanged
+		}
+	}
+	return nil
+}
+
+// bindingCredentialName은 실행 결속 디렉터리에 고정하는 자격 사본의 이름이다. 대상·라벨로 찾아 지울 수 있게 접두를 둔다.
+func bindingCredentialName(targetID, label, sha string) string {
+	return bindingCredentialPrefix(targetID, label) + sha[:16] + ".json"
+}
+
+func bindingCredentialPrefix(targetID, label string) string {
+	return "account-" + targetID + "." + label + "."
+}

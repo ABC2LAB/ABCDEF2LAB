@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -204,6 +205,12 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	if e != nil {
 		return nil, e
 	}
+	// 인증 준비(C14): 지금 test이고 자격·로그인 방식이 있는 계정을 고른다. 고른 계정·자격 해시는 결속 이름에 들어가 바뀌면
+	// 새 결속 디렉터리가 된다.
+	accounts, accountDigest, e := p.targets.runAccounts(rec)
+	if e != nil {
+		return nil, e
+	}
 	p.bindMu.Lock()
 	defer p.bindMu.Unlock()
 	root := filepath.Join(p.config.StateDir, "bindings")
@@ -214,6 +221,9 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 		return nil, errPreparation
 	}
 	bindingSource := productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256
+	if accountDigest != "" {
+		bindingSource += "\naccounts\n" + accountDigest
+	}
 	if input.WorkflowMode != "" {
 		bindingSource += "\n" + workflowInputDigest(input)
 	}
@@ -275,6 +285,16 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	for i, path := range rec.Target.PathPrefixes {
 		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "target-path-" + string(rune('a'+i)), Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: path, PathScopeRef: "readonly-path-" + string(rune('a'+i)), Methods: methods, ApprovalDisplay: server.RequestApprovalDisplay{PublicPath: input.WorkflowMode == diagnosisflow.Manual, QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
 	}
+	if len(accounts.Accounts) > 0 {
+		// 로그인 경로 하나만 정확히 가리키는 인증 준비 규칙. 모델 요청은 이 규칙을 쓰지 못한다(E② Purpose).
+		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: accounts.Login.Path, PathScopeRef: "auth-login-path",
+			Methods: []string{accounts.Login.Method}, Purpose: e2proxy.PurposeAuthPrep, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
+		auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: *accounts.Login}
+		for _, a := range accounts.Accounts {
+			auth.Accounts = append(auth.Accounts, server.E2HTTPFileAuthAccount{Label: a.Label, Credential: server.E2HTTPFilePin{File: bindingCredentialName(rec.Target.ID, a.Label, a.CredentialSHA256), SHA256: a.CredentialSHA256}})
+		}
+		policy.Auth = auth
+	}
 	oldPolicyDir := filepath.Dir(cfg.HTTP.PolicyFile)
 	cfg.HTTP.PolicyFile = filepath.Join(dir, "policy.json")
 	cfg.HTTP.AuthorityFile = filepath.Join(dir, "authority-template.json")
@@ -310,6 +330,18 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 				return nil, e
 			}
 			if urlSHA(raw) != pin.SHA256 || productWrite(filepath.Join(temp, pin.File), raw) != nil {
+				clear(raw)
+				return nil, errPreparation
+			}
+			clear(raw)
+		}
+		// 시험 계정 자격 사본을 결속 디렉터리에 고정한다(해시 대조). 해제·철회·자격 교체 때 removeBindingCredentials가 지운다.
+		for _, a := range accounts.Accounts {
+			raw, e := readPrivateFile(a.credentialPath, maxCredentialFileBytes)
+			if e != nil {
+				return nil, e
+			}
+			if urlSHA(raw) != a.CredentialSHA256 || productWrite(filepath.Join(temp, bindingCredentialName(rec.Target.ID, a.Label, a.CredentialSHA256)), raw) != nil {
 				clear(raw)
 				return nil, errPreparation
 			}
@@ -369,6 +401,7 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	loaded.inspection.InstallationDigest = urlSHA([]byte(loaded.inspection.InstallationDigest + "\n" + productTargetDigest(rec)))
 	loaded.productTarget = &rec
 	loaded.productRegistry = p.targets
+	loaded.productAccounts = accounts.Accounts
 	if !reportOnly && p.targets.current(rec) != nil {
 		loaded.clearMaterials()
 		return nil, urlPreparationError("target_approval_changed")
@@ -473,6 +506,9 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			// 연결이 닫힌다). 자격 값은 응답·로그에 넣지 않고, 요청이 끝나면 함께 버려진다.
 			a, err = p.targets.setAccountCredential(r.Principal, r.Product.TargetID, r.Product.Account.Label, *r.Product.Credential)
 			if err == nil {
+				p.removeBindingCredentials(r.Product.TargetID, r.Product.Account.Label)
+			}
+			if err == nil {
 				control.Account = &a
 			}
 		case "account_register", "account_mark_test", "account_unmark":
@@ -484,6 +520,9 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 				a, err = p.targets.markTestAccount(r.Principal, r.Product.TargetID, r.Product.Account.Label, r.Product.Account.StatementConfirmed)
 			default:
 				a, err = p.targets.unmarkAccount(r.Principal, r.Product.TargetID, r.Product.Account.Label)
+				if err == nil {
+					p.removeBindingCredentials(r.Product.TargetID, r.Product.Account.Label)
+				}
 			}
 			if err == nil {
 				control.Account = &a
@@ -527,6 +566,7 @@ func (p *productRuntime) revoke(principal, id string) (diagnosisprep.ProductTarg
 	if e != nil {
 		return t, e
 	}
+	p.removeBindingCredentials(id, "")
 	for _, cancel := range p.active[id] {
 		cancel()
 	}
@@ -536,4 +576,39 @@ func (p *productRuntime) revoke(principal, id string) (diagnosisprep.ProductTarg
 func workflowInputDigest(input diagnosisprep.Input) string {
 	raw, _ := json.Marshal(input)
 	return urlSHA(raw)
+}
+
+// removeBindingCredentials는 실행 결속 디렉터리에 고정한 그 대상(라벨이 있으면 그 계정) 자격 사본을 지운다. 결속 디렉터리는
+// 다시 쓰이지 않거나(요약이 바뀜) 자격 파일이 없어 실행 전에 막힌다. 못 지운 파일은 로그만 남긴다.
+func (p *productRuntime) removeBindingCredentials(targetID, label string) {
+	if p.config.StateDir == "" {
+		return
+	}
+	prefix := "account-" + targetID + "."
+	if label != "" {
+		prefix = bindingCredentialPrefix(targetID, label)
+	}
+	root := filepath.Join(p.config.StateDir, "bindings")
+	for _, base := range []string{root, filepath.Join(root, "ordinary")} {
+		dirs, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, d := range dirs {
+			if !d.IsDir() || !strings.HasPrefix(d.Name(), "bound-") {
+				continue
+			}
+			files, err := os.ReadDir(filepath.Join(base, d.Name()))
+			if err != nil {
+				continue
+			}
+			for _, f := range files {
+				if strings.HasPrefix(f.Name(), prefix) {
+					if err := os.Remove(filepath.Join(base, d.Name(), f.Name())); err != nil {
+						log.Printf("[preparation] 결속 디렉터리 자격 사본 삭제 실패: 대상=%s", targetID)
+					}
+				}
+			}
+		}
+	}
 }
