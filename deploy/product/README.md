@@ -125,7 +125,7 @@ workbench에는 DB·키·제품 상태 볼륨이 없다. preparation netns 안�
 
 ### 탐색 브라우저 샌드박스(꺼짐)
 
-`explore-browser`는 [탐색 계약](../../docs/contracts/exploration-boundary.md) §9-1의 브라우저 샌드박스다. Chromium과 `@playwright/mcp@0.0.84`만 들어 있고 엔진 바이너리·제어 비밀·보호 볼륨은 없다. `--profile exploration`을 줄 때만 렌더링되며, 지금은 켜지 않는다. 탐색 경계(`explore-boundary`)가 브라우저 입구와 CA 볼륨(`explore-ca`)을 채우고, 엔진이 제어망(`explore_control`)에서 리슨 없이 MCP `http`로 붙는 변경이 들어온 뒤에 켠다. CA 파일이 없으면 시작하지 않는다. MCP 옵션은 compose가 정하고(`--host`·`--port`·`--allowed-hosts`는 한 묶음), 모델에 노출하는 도구는 서버의 고정 목록(`server/mcp_tool_policy.go`)으로 거른다. 구성 조건은 `scripts/ci/test_product_explore_browser.py`가 렌더링으로 확인한다.
+`explore-browser`(Chromium)와 `explore-mcp`(Playwright MCP)는 [탐색 계약](../../docs/contracts/exploration-boundary.md) §9-1 분리 배치의 브라우저 샌드박스다. 같은 이미지(Chromium과 `@playwright/mcp@0.0.84`만 들어 있고 엔진 바이너리·제어 비밀·보호 볼륨은 없음)를 다른 진입점으로 쓴다. Chromium은 브라우저 입구망(`explore_browser_ingress`)과 CDP 연결망(`explore_cdp`)에만, MCP는 제어망(`explore_control`)과 CDP 연결망에만 붙는다. 같은 namespace의 native 자식이 MCP 제어 포트에 닿던 B16을 배치로 막기 위해서다. `--profile exploration`을 줄 때만 렌더링되며, 지금은 켜지 않는다. 탐색 경계(`explore-boundary`)가 브라우저 입구와 CA 볼륨(`explore-ca`)을 채우고, 엔진이 제어망에서 리슨 없이 MCP `http`(`http://explore-mcp:<포트>/mcp`)로 붙는 변경이 들어온 뒤에 켠다. CA 파일이 없으면 Chromium이 시작하지 않는다. MCP 옵션은 compose가 정하고(`--host`·`--port`·`--allowed-hosts`는 한 묶음, `--cdp-endpoint`는 Chromium의 `--cdp-listen` 주소), 모델에 노출하는 도구는 서버의 고정 목록(`server/mcp_tool_policy.go`)으로 거른다. Chromium 157은 `--remote-debugging-address`를 무시하고 CDP를 loopback에만 열므로, Chromium 실행기(`explore-chromium.js`)가 CDP 연결망 주소 하나에만 리슨하는 TCP 중계를 둔다. 구성 조건은 `scripts/ci/test_product_explore_browser.py`가 렌더링으로 확인한다.
 
 ## 화면별 실제 API
 

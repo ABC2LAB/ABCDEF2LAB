@@ -12,6 +12,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type URLDiagnosisInput, urlDiagnosisInput, type WorkflowMode } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
+import { NotYet } from "../../live/parts";
 import { disconnectUrl, runUrlAction, setUrlConfirmed, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, urlHost, urlTargetHint, usdText } from "../../live/urlMap";
 import { useShell } from "../../shell";
@@ -47,6 +48,14 @@ const MODES = [
   ["user_approval_v1", "사용자 승인", "탐색 뒤 점검할 경로를 고르고, 쓰기 메서드 요청은 한 건씩 승인합니다"],
   ["ai_auto_v1", "AI 자동", "승인 범위 안에서 탐색과 점검을 이어 갑니다 · 데이터 변경은 자동 승인 안 함"],
 ] as const;
+
+/** 시안 칸만 두는 입력 (서버 진단 입력에 칸이 없어 막아 둠). */
+const LOGIN_ACCOUNTS = [
+  ["A", "관리자"],
+  ["B", "일반 · 테스트"],
+] as const;
+const GOALS = ["남의 정보 보기 (IDOR)", "관리자 기능 접근", "로그인 없이 접근", "민감정보 노출"] as const;
+const DEPTHS = ["빠르게", "보통", "꼼꼼하게"] as const;
 
 /** 안전 정책 한 줄 (시안 ilist). */
 function Rule({ t, sub, warn = false, tip }: { t: ReactNode; sub?: string; warn?: boolean; tip?: ReactNode }) {
@@ -335,6 +344,61 @@ export function UrlNewScanLive() {
                   if (handle && !job?.preparation_started) void runUrlAction("validate");
                 }}
               />
+              <div className={s.field}>
+                <span className={s.lbl}>최근 점검한 주소</span>
+                <div className={s.chiprow}>
+                  <NotYet why="서버에 점검 목록이 없어 최근 주소를 모릅니다" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 로그인 (시안 v66 ~ v68): 서버 진단 입력(URLDiagnosisInput)에 계정 칸이 없어 칸만 두고 입력은 막는다.
+              받아도 보낼 곳이 없는 아이디 · 비밀번호를 치게 하지 않는다. 지금 점검은 로그인 없이 진행된다. */}
+          <div className={s.fsec} hidden={page !== 1}>
+            <div className={s["fsec-h"]}>
+              <h2>로그인</h2>
+            </div>
+            <div className={s["fsec-b"]}>
+              <NotYet
+                block
+                why="서버 진단 입력에 계정 칸이 없어 입력을 막아 두었습니다. 지금 점검은 로그인 없이 진행됩니다"
+              />
+              <div className={s.seg} role="radiogroup" aria-label="로그인 여부">
+                <label>
+                  <input type="radio" name="nAuth" disabled />
+                  <span>로그인해서 점검</span>
+                </label>
+                <label>
+                  <input type="radio" name="nAuth" disabled defaultChecked />
+                  <span>로그인 없이 점검</span>
+                </label>
+              </div>
+              <div className={s.seg} role="radiogroup" aria-label="로그인 방법">
+                <label>
+                  <input type="radio" name="nHow" disabled />
+                  <span>아이디 · 비밀번호</span>
+                </label>
+                <label>
+                  <input type="radio" name="nHow" disabled />
+                  <span>쿠키 붙여넣기</span>
+                </label>
+              </div>
+              {LOGIN_ACCOUNTS.map(([id, role]) => (
+                <div className={s.acct} key={id}>
+                  <span className={s.an}>
+                    {`계정 ${id}`}
+                    <small className={id === "A" ? s.adm : undefined}>{role}</small>
+                  </span>
+                  <input className={s.inp} disabled placeholder="아이디" aria-label={`계정 ${id} (${role}) 아이디`} />
+                  <input
+                    className={s.inp}
+                    disabled
+                    placeholder="비밀번호"
+                    aria-label={`계정 ${id} (${role}) 비밀번호`}
+                  />
+                </div>
+              ))}
             </div>
           </div>
 
@@ -395,16 +459,38 @@ export function UrlNewScanLive() {
                   onReady={setCredentialReady}
                 />
               ) : null}
+              {external ? (
+                <div className={cx(s.note, s.warn)} role="note">
+                  <Icon name="alert" />
+                  <span>
+                    대상 응답과 프롬프트가 외부 제공자로 전송됩니다. 폐쇄망이나 민감한 환경에서는 로컬 실행을 쓰세요.
+                  </span>
+                </div>
+              ) : (
+                <div className={s.field}>
+                  <label className={s.lbl} htmlFor="nLlmUrl">
+                    LLM 서버 주소
+                  </label>
+                  <input
+                    id="nLlmUrl"
+                    className={cx(s.inp, s.mono, s["w-url"])}
+                    disabled
+                    placeholder="설치 프로필이 정함"
+                  />
+                  <NotYet why="모델 서버 주소 · 연결 상태는 설치 프로필이 정하고, 화면에서 보거나 바꾸는 서버 입력이 없습니다" />
+                </div>
+              )}
             </div>
           </div>
 
-          {/* 점검 설정: 탐색 흐름이 있는 프로필만 진단 모드 · 제외 경로를 받는다(없으면 칸째 숨김) */}
-          {profile?.workflow ? (
-            <div className={cx(s.fsec, s["fs-set"])} hidden={page !== 2}>
-              <div className={s["fsec-h"]}>
-                <h2>점검 설정</h2>
-              </div>
-              <div className={s["fsec-b"]}>
+          {/* 점검 설정: 진단 모드 · 제외 경로는 탐색 흐름이 있는 프로필만 받는다. 점검 목표 · 쓰기 요청 · 점검 범위 · 워커 수는
+              시안 칸(v64 ~ v67)만 두고 입력을 막는다 — 서버 진단 입력에 칸이 없다 */}
+          <div className={cx(s.fsec, s["fs-set"])} hidden={page !== 2}>
+            <div className={s["fsec-h"]}>
+              <h2>점검 설정</h2>
+            </div>
+            <div className={s["fsec-b"]}>
+              {profile?.workflow ? (
                 <div className={s.field}>
                   <span className={s.lbl}>진단 모드</span>
                   <div className={s.opts} role="radiogroup" aria-label="진단 모드">
@@ -424,6 +510,53 @@ export function UrlNewScanLive() {
                     ))}
                   </div>
                 </div>
+              ) : null}
+              <div className={s.field}>
+                <span className={s.lbl} id="nGoalL">
+                  점검 목표
+                </span>
+                {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
+                <div className={s.goals} role="group" aria-labelledby="nGoalL">
+                  {GOALS.map((t) => (
+                    <label className={s.goal} key={t}>
+                      <input type="checkbox" disabled />
+                      <span>{t}</span>
+                    </label>
+                  ))}
+                </div>
+                <NotYet why="서버 진단 입력에 점검 목표 칸이 없습니다" />
+              </div>
+              {/* 쓰기 메서드 요청 (시안 v64): 실행 허용은 E② · 설치 정책이 정하고(절대규칙 3) 상태 변경은 별도 승인
+                  시험환경이라(절대규칙 6) 화면에서 고르는 값으로 두지 않는다. 시안의 '전체 허용' 선택지는 뺐다 (리뷰 #479) */}
+              <div className={s.field}>
+                <span className={s.lbl}>쓰기 메서드 요청 (결제 · 수정 · 삭제)</span>
+                <p className={s.help}>쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.</p>
+              </div>
+              <div className={s.two}>
+                <div className={s.field}>
+                  <span className={s.lbl} id="nDepthL">
+                    점검 범위
+                  </span>
+                  <div className={s.seg} role="radiogroup" aria-labelledby="nDepthL">
+                    {DEPTHS.map((t) => (
+                      <label key={t}>
+                        <input type="radio" name="nDepth" disabled />
+                        <span>{t}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className={s.field}>
+                  <label className={s.lbl} htmlFor="nWorkers">
+                    워커 수
+                  </label>
+                  <select id="nWorkers" className={cx(s.inp, s.workers)} disabled>
+                    <option>—</option>
+                  </select>
+                </div>
+              </div>
+              <NotYet why="서버 진단 입력에 점검 범위 · 워커 수 칸이 없습니다" />
+              {profile?.workflow ? (
                 <div className={s.field}>
                   <label className={s.lbl} htmlFor="nExcl">
                     제외 경로 · 선택
@@ -438,9 +571,9 @@ export function UrlNewScanLive() {
                     placeholder={EXCLUDE_EXAMPLE}
                   />
                 </div>
-              </div>
+              ) : null}
             </div>
-          ) : null}
+          </div>
 
           {/* 아래 줄: 1쪽은 [다음], 2쪽은 [이전] + (요약 패널이 안 보일 때) 실행 버튼 */}
           <div className={cx(s.formbar, s.paged)}>
@@ -486,12 +619,30 @@ export function UrlNewScanLive() {
             <dl className={s.sumkv}>
               <dt>사이트</dt>
               <dd className={s.mono}>{shown?.target_url ?? input?.target_url ?? (tv.trim() || "—")}</dd>
+              <dt>로그인</dt>
+              <dd>
+                <NotYet why="서버 진단 입력에 계정 칸이 없습니다" />
+              </dd>
               <dt>분석 모델</dt>
               <dd>{profile ? `${profile.model_label} (${external ? "외부 API" : "로컬"})` : "—"}</dd>
               {profile?.workflow ? (
                 <>
                   <dt>진단 모드</dt>
                   <dd>{mv === "ai_auto_v1" ? "AI 자동" : "사용자 승인"}</dd>
+                </>
+              ) : null}
+              <dt>점검 범위</dt>
+              <dd>
+                <NotYet why="서버 진단 입력에 점검 범위 칸이 없습니다" />
+              </dd>
+              <dt>점검 목표</dt>
+              <dd>
+                <NotYet why="서버 진단 입력에 점검 목표 칸이 없습니다" />
+              </dd>
+              {profile?.workflow ? (
+                <>
+                  <dt>쓰기 요청</dt>
+                  <dd>{mv === "ai_auto_v1" ? "자동 승인 안 함" : "한 건씩 승인 후 전송"}</dd>
                   <dt>제외 경로</dt>
                   <dd>{excludedCount ? `${excludedCount}개` : "없음"}</dd>
                 </>

@@ -2,12 +2,15 @@
 
 // 탐색 · 선택 워크플로 화면 (시안 짜임): 자산 탐색 · 범위 확인, 그리고 점검 진행의 계획 · 활동.
 // 서버가 저장한 발견 · 관찰만 보인다. 묶음은 경로 규칙으로 나눈 것이라 AI 추정이라고 부르지 않는다.
-// 백분율 · 남은 시간 · 로그인 필요 여부 · 경로 설명은 서버가 주지 않아 만들지 않는다.
+// 남은 시간 · 로그인 필요 여부 · 경로 설명은 서버가 주지 않아 만들지 않는다. 시안에 있는 칸(경과 시간 · 시작 전 점검 ·
+// 새 경로 처리 규칙 일부)은 "아직 구현 안 됨"으로 자리만 둔다. 탐색 막대는 서버 진행률이 아니라 페이지 상한 대비 방문 수다.
 
 import { Fragment, type ReactNode, useMemo, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { clockOf, planState } from "../../live/map";
+import { maskSecrets } from "../../live/mask";
+import { NotYet } from "../../live/parts";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
@@ -15,6 +18,19 @@ import { Icon } from "../../ui/icons";
 import { CloseInspButton, CodeCard, InspOpenButton, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { UrlHead, UrlNotices, UrlRefreshButton, useUrlHost } from "./urlParts";
+
+/** 경로 규칙 묶음 전체 (group 이 돌려줄 수 있는 이름). */
+export const GROUPS = ["계정·인증", "장바구니·주문", "관리자", "상품·리뷰", "정적 자원", "공개 페이지·API"] as const;
+/** 찾은 경로가 아직 없는 묶음. */
+export const missingGroups = (endpoints: readonly WorkflowEndpoint[]) =>
+  GROUPS.filter((g) => !endpoints.some((e) => group(e) === g));
+/** 찾은 경로 칸이 비었을 때 글 (시안 v32: 거르기마다 다르게). */
+function treeEmpty(filter: string, total: number): string {
+  if (!total) return "아직 찾은 경로가 없습니다.";
+  if (filter === "ap") return "승인이 필요한 경로가 아직 없습니다.";
+  if (filter === "ex") return "제외한 경로가 아직 없습니다.";
+  return "조건에 맞는 경로가 없습니다.";
+}
 
 /** 경로 → 묶음 이름 (경로 규칙). */
 export function group(e: WorkflowEndpoint): string {
@@ -44,6 +60,33 @@ function crawlTone(flow: WorkflowSnapshot): string | undefined {
 function crawlPill(flow: WorkflowSnapshot, verified: boolean): string {
   if (!verified) return "현재 상태 미확인";
   return flow.paused ? "일시정지" : flowStageText[flow.stage];
+}
+/**
+ * 탐색 막대 % — 실제 방문 수 ÷ 페이지 상한(서버 진행률 아님). 첫 탐색 단계가 끝났다는 initial_completed 는 완전 탐색을
+ * 보장하지 않아(부분 완료 · 상한 소진에서도 true) 막대에 섞지 않고 따로 보인다 (리뷰 #479).
+ */
+export function crawlPct(flow: WorkflowSnapshot): number {
+  return Math.min(100, Math.round((flow.counts.visited / Math.max(1, flow.limits.max_pages)) * 100));
+}
+/** 서버 탐색 상태 (snapshot.exploration_status) → 글. */
+const EXPLORE_TEXT = {
+  RUNNING: "탐색 중",
+  COMPLETED: "탐색 완료",
+  PARTIAL: "부분 완료",
+  STOPPED: "중지됨",
+  NOT_RUN: "탐색 안 함",
+} as const;
+/**
+ * 서버 탐색 상태 · 사유. 파서(live/workflow.ts)에 아직 칸이 없어 응답 원본에서 아는 값만 읽는다
+ * (모르는 상태 · 형식이 다른 사유는 버림).
+ */
+export function exploreState(flow: WorkflowSnapshot): { text: string; reason?: string } | null {
+  const raw = flow as unknown as Record<string, unknown>;
+  const st = raw.exploration_status;
+  if (typeof st !== "string" || !Object.hasOwn(EXPLORE_TEXT, st)) return null;
+  const r = raw.exploration_reason;
+  const reason = typeof r === "string" && /^[a-z0-9_]{1,64}$/.test(r) ? r : undefined;
+  return { text: EXPLORE_TEXT[st as keyof typeof EXPLORE_TEXT], reason };
 }
 /** 범위 확인 화면 상태 알약 글. */
 function scopePill(flow: WorkflowSnapshot, verified: boolean): string {
@@ -243,6 +286,9 @@ function EndpointDetail({ endpoint, back }: { endpoint: WorkflowEndpoint | null;
               ["출처", e.source],
               ["종류", e.kind],
               ["중복 발견", `${e.duplicates}회`],
+              // 시안 v24 상세의 요청 횟수 · 기능 설명 — 서버가 경로마다 주지 않는다
+              ["요청 횟수", <NotYet key="n" why="서버가 경로마다 보낸 요청 횟수를 주지 않습니다" />],
+              ["기능", <NotYet key="f" why="서버가 경로의 기능 설명을 주지 않습니다" />],
               ...(e.observation_error ? [["관찰 실패", e.observation_error] as [string, ReactNode]] : []),
             ]}
           />
@@ -251,8 +297,13 @@ function EndpointDetail({ endpoint, back }: { endpoint: WorkflowEndpoint | null;
         <div className={s.isec}>
           {e.request || e.response ? (
             <>
-              {e.request ? <CodeCard title="요청" src="실제 관찰" text={e.request} id={`ep-req-${e.id}`} /> : null}
-              {e.response ? <CodeCard title="응답" src="실제 관찰" text={e.response} id={`ep-res-${e.id}`} /> : null}
+              {/* 서버가 가린 값이지만 화면 쪽에서도 한 번 더 가린다 (대시보드와 같은 방어 · 리뷰 #473) */}
+              {e.request ? (
+                <CodeCard title="요청" src="실제 관찰" text={maskSecrets(e.request)} id={`ep-req-${e.id}`} />
+              ) : null}
+              {e.response ? (
+                <CodeCard title="응답" src="실제 관찰" text={maskSecrets(e.response)} id={`ep-res-${e.id}`} />
+              ) : null}
             </>
           ) : (
             <p className={s.empty}>저장된 요청 · 응답이 없습니다.</p>
@@ -328,10 +379,20 @@ function LogDetail({
         </p>
         <div className={s["lgx-ex"]}>
           {endpoint.request ? (
-            <CodeCard title="요청" src="경로의 마지막 관찰" text={endpoint.request} id={`lg-req-${endpoint.id}`} />
+            <CodeCard
+              title="요청"
+              src="경로의 마지막 관찰"
+              text={maskSecrets(endpoint.request)}
+              id={`lg-req-${endpoint.id}`}
+            />
           ) : null}
           {endpoint.response ? (
-            <CodeCard title="응답" src="경로의 마지막 관찰" text={endpoint.response} id={`lg-res-${endpoint.id}`} />
+            <CodeCard
+              title="응답"
+              src="경로의 마지막 관찰"
+              text={maskSecrets(endpoint.response)}
+              id={`lg-res-${endpoint.id}`}
+            />
           ) : null}
         </div>
       </>
@@ -343,7 +404,10 @@ function LogDetail({
       id={id}
       aria-label={`${event.method} ${event.path ?? ""} 상세`}
       onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
+        if (e.key !== "Escape") return;
+        // 작업대 전역 Esc(상세 서랍 닫기)까지 가지 않게 여기서 멈춘다 (리뷰 #473 · HelpTip 과 같은 처리)
+        e.stopPropagation();
+        onClose();
       }}
     >
       <div className={s["lgx-top"]}>
@@ -486,6 +550,17 @@ export function WorkflowCrawlLive() {
             <button className={s.btn} type="button" onClick={() => goTo("coverage")}>
               커버리지
             </button>
+            {/* 발견 상세(구조화 판정 레코드). 지금은 예시, live 점등은 판정 레코드 API 연결 후.
+                진입 자리는 잠정 — 이동찬 정렬(새 작업대 시안 기준). */}
+            <button className={s.btn} type="button" onClick={() => goTo("finding")}>
+              발견 상세
+            </button>
+            {/* 전송 통제 흐름(E② 허용/차단 감사 투영). 지금은 예시, live 점등은 E② 감사 투영 API 연결 후.
+                진입 자리는 잠정 — 이 헤더의 보조 버튼이 많아져(탐색 결과·접근통제 지도·커버리지·발견 상세·전송 통제 흐름)
+                새 작업대 시안 기준 일괄 정렬 필요(이동찬). */}
+            <button className={s.btn} type="button" onClick={() => goTo("e2flow")}>
+              전송 통제 흐름
+            </button>
             <button className={cx(s.btn, s.pri)} type="button" disabled={!ready} onClick={() => goTo(next)}>
               {next === "scope" ? "범위 확인" : "점검 진행"}
               <Icon name="arrow" />
@@ -515,6 +590,19 @@ export function WorkflowCrawlLive() {
                     {flow.current_path || flowStageText[flow.stage]}
                   </span>
                 </div>
+                {/* 탐색 진행 (시안 v24): 서버에 진행률이 없어 페이지 상한 대비 방문 수로 그린다. 첫 탐색이 끝나면 가득 */}
+                <div
+                  className={s.prog}
+                  id="cBar"
+                  role="progressbar"
+                  aria-label="탐색 진행 (페이지 상한 대비 방문)"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={crawlPct(flow)}
+                  aria-valuetext={`${crawlPct(flow)}% · 페이지 상한 대비 방문`}
+                >
+                  <i style={{ width: `${crawlPct(flow)}%` }} />
+                </div>
                 <div className={s.pmeta}>
                   <span>
                     방문 <b id="cVis">{flow.counts.visited}</b> / 찾은 경로 <b id="cKnown">{flow.counts.found}</b>
@@ -525,22 +613,47 @@ export function WorkflowCrawlLive() {
                   <span>
                     페이지 상한 <b>{flow.limits.max_pages}</b>
                   </span>
+                  {flow.initial_completed ? <span>첫 탐색 단계 끝남</span> : null}
+                  {exploreState(flow) ? (
+                    <span>
+                      탐색 상태{" "}
+                      <b>
+                        {exploreState(flow)?.text}
+                        {exploreState(flow)?.reason ? ` · ${exploreState(flow)?.reason}` : ""}
+                      </b>
+                    </span>
+                  ) : null}
+                  <span>
+                    경과 <NotYet why="서버가 탐색 시작 시각을 주지 않습니다" />
+                  </span>
                 </div>
               </div>
               <div className={s.cnts}>
                 {(
                   [
-                    ["cFound", "찾은 경로", flow.counts.found, null],
-                    ["cSent", "보낸 요청", flow.counts.sent, null],
-                    ["cAp", "보낼 때 승인", count("ap"), "w"],
-                    ["cSkip", "막은 요청", flow.counts.blocked, null],
+                    [
+                      "cFound",
+                      "찾은 경로",
+                      flow.counts.found,
+                      null,
+                      `조회 ${endpoints.filter((e) => e.change === "attested_read").length} · 데이터 변경 ${endpoints.filter((e) => e.change === "possible").length}`,
+                    ],
+                    [
+                      "cSent",
+                      "보낸 요청",
+                      flow.counts.sent,
+                      null,
+                      `시도 ${flow.counts.attempted} · 결과 불명 ${flow.counts.unknown}`,
+                    ],
+                    ["cAp", "보낼 때 승인", count("ap"), "w", "보내기 전에 승인"],
+                    ["cSkip", "막은 요청", flow.counts.blocked, null, "규칙으로 막음"],
                   ] as const
-                ).map(([id, label, value, tone]) => (
+                ).map(([id, label, value, tone, sub]) => (
                   <div className={s.cn} key={id}>
                     <div className={cx(s.v, tone && s[tone])} id={id}>
                       {value}
                     </div>
-                    <div className={s.k}>{label}</div>
+                    <div className={s.k}>{`${label} · ${sub}`}</div>
                   </div>
                 ))}
               </div>
@@ -644,6 +757,11 @@ export function WorkflowCrawlLive() {
                       />
                       {`제외 ${count("ex")}`}
                     </span>
+                    {/* 시안 v24 범례의 "로그인 필요" 경로 수 — 서버가 로그인 필요 여부를 주지 않는다 */}
+                    <span>
+                      {"로그인 "}
+                      <NotYet why="서버가 경로의 로그인 필요 여부를 주지 않습니다" />
+                    </span>
                   </div>
                 </div>
               ) : null}
@@ -664,8 +782,16 @@ export function WorkflowCrawlLive() {
                   </div>
                 </div>
                 <div id="cTree">
-                  <EndpointCards endpoints={shown} onSelect={select} />
+                  {shown.length ? (
+                    <EndpointCards endpoints={shown} onSelect={select} />
+                  ) : (
+                    <p className={s.empty}>{treeEmpty(filter, endpoints.length)}</p>
+                  )}
                 </div>
+                {/* 시안 v32: 아직 경로가 하나도 안 나온 묶음 (경로 규칙 묶음 기준) */}
+                {endpoints.length && missingGroups(endpoints).length ? (
+                  <p className={s["tree-hint"]}>{`아직 찾지 못한 묶음 · ${missingGroups(endpoints).join(", ")}`}</p>
+                ) : null}
               </div>
             </>
           )}
@@ -675,6 +801,18 @@ export function WorkflowCrawlLive() {
     </>
   );
 }
+
+/** 시작 전 점검 칸 (시안 v28). */
+const PRECHECKS = ["모델 연결", "대상 연결", "계정 로그인"] as const;
+/** 점검 중 새로 찾은 경로 처리 규칙 (시안 v28 규칙표 · 서버 계약 아님). */
+const NEW_PATH_RULES = [
+  ["허용 주소 밖", "요청 안 함 · 기록만", "out"],
+  ["제외 규칙과 같은 모양", "자동 제외", "ex"],
+  ["GET · 보기만 하는 요청", "자동 포함", "in"],
+  ["POST · PUT · PATCH", "포함 · 보낼 때 승인", "ap"],
+  ["DELETE · 초기화 · 로그아웃", "자동 제외", "ex"],
+  ["관리자 · 처음 보는 권한 영역", "확인 요청", "ap"],
+] as const;
 
 /** 범위 확인: 찾은 경로 중 심화 점검할 경로를 고른다. 선택은 개별 HTTP 송신 승인을 대신하지 않는다. */
 function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: ReactNode) => ReactNode }) {
@@ -741,6 +879,17 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
             <span className={s.ap}>
               승인 필요<b>{apCount}</b>
             </span>
+          </div>
+          {/* 시작 전 점검 (시안 v28): 서버가 시작 전 연결 확인을 주지 않아 칸만 둔다 */}
+          {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
+          <div className={s.pre} role="group" aria-label="시작 전 점검">
+            <span className={s.k}>시작 전 점검</span>
+            {PRECHECKS.map((t) => (
+              <span key={t}>
+                {`${t} `}
+                <NotYet why="서버가 시작 전 연결 확인 결과를 주지 않습니다" />
+              </span>
+            ))}
           </div>
           <div className={s.filters}>
             {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
@@ -839,6 +988,23 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
           ) : (
             <p className={s.empty}>조건에 맞는 경로가 없습니다.</p>
           )}
+          {/* 점검 중 새로 찾은 경로 처리 규칙 (시안 v28): 시안의 규칙표다. 서버가 점검 중 새 경로를 이 규칙대로 다룬다는
+              계약이 아직 없어 표 전체를 "아직 구현 안 됨"으로 둔다 */}
+          <details className={s.rulebox}>
+            <summary>
+              <Icon name="chev" />
+              점검 중 새로 찾은 경로 처리 규칙<span className={s.c}>{NEW_PATH_RULES.length}</span>
+            </summary>
+            <NotYet block why="서버가 점검 중 새 경로를 이 규칙대로 다룬다는 계약이 아직 없습니다" />
+            <ul className={s.rules}>
+              {NEW_PATH_RULES.map(([t, tag, tone]) => (
+                <li key={t}>
+                  <span>{t}</span>
+                  <span className={cx(s.tag, s[tone])}>{tag}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
           <div className={s.formbar}>
             <ScopeStart flow={flow} ids={[...selected]} />
           </div>
@@ -1011,7 +1177,7 @@ export function WorkflowActivity() {
                 aria-expanded={more}
                 onClick={() => setMore(!more)}
               >
-                {more ? "접기" : `이전 활동 ${activity.length - 5}건 더 보기`}
+                {more ? "최근 5건만 보기" : `이전 활동 ${activity.length - 5}건 더 보기`}
               </button>
             ) : null}
           </>

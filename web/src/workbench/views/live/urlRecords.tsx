@@ -17,6 +17,7 @@ import { diagnosticOutcomeLabels, summarizeDiagnosticEntries } from "@/lib/diagn
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
 import { clockOf } from "../../live/map";
+import { NotYet } from "../../live/parts";
 import { refreshWorkflow, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ACTIVE_STATES, URL_ENDED_STATES, type UrlState, urlHost } from "../../live/urlMap";
 import { usePoll } from "../../live/usePoll";
@@ -156,6 +157,22 @@ function JobRow() {
             .filter(Boolean)
             .join(" · ") || "상태 확인 중"}
         </span>
+        {/* 끝난 점검 줄의 소요 · 커버리지 (시안 v55): 서버가 목록 줄에 주지 않아 칸만 둔다(커버리지는 보고서에서) */}
+        {/* 진행 중 줄의 시작 · 남은 시간 (시안 v55): 서버가 주지 않아 칸만 둔다 */}
+        {job && !ended ? (
+          <span className={s["r-s"]}>
+            {"시작 · 남은 시간 "}
+            <NotYet why="서버가 점검 시작 시각 · 남은 시간을 주지 않습니다" />
+          </span>
+        ) : null}
+        {ended ? (
+          <span className={s["r-s"]}>
+            {"소요 "}
+            <NotYet why="서버가 점검 소요 시간을 주지 않습니다" />
+            {" · 자산 커버리지 "}
+            <NotYet why="점검 목록에는 자산 커버리지가 없습니다. 보고서에서 볼 수 있습니다" />
+          </span>
+        ) : null}
       </span>
       <span className={s["r-side"]}>
         {job ? <UrlPill job={job} verified={verified} /> : <span className={cx(s.pill, s.wait)}>상태 미확인</span>}

@@ -609,6 +609,8 @@ func TestRunnerClassificationTable(t *testing.T) {
 		{name: "partial policy denial", state: &runningCall{}, trusted: TrustedResult{Final: true, ProcessBashExited: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Denied: 1, ForwardAttempted: 1}}}, want: "partial_policy_denial"},
 		{name: "partial unsupported", state: &runningCall{}, trusted: TrustedResult{Final: true, ProcessBashExited: true, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Unsupported: 1, ForwardAttempted: 1}}}, want: "partial_unsupported"},
 		{name: "completed", state: &runningCall{}, trusted: TrustedResult{Final: true, ProcessBashExited: true, ExitCode: 0, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Allowed: 1, ForwardAttempted: 1, Responses: 1}}}, want: "completed"},
+		// C02: 연결을 맺지 못한 송신 실패는 결과 불명이 아니지만 셸이 0으로 끝나도 완료로 올리지 않는다.
+		{name: "connection failed after attempt", state: &runningCall{}, trusted: TrustedResult{Final: true, ProcessBashExited: true, ExitCode: 0, Call: e2proxy.CallResult{Counts: e2proxy.Counts{Allowed: 2, ForwardAttempted: 2, Responses: 1, Transient: 1}}}, want: "transient_failure"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
