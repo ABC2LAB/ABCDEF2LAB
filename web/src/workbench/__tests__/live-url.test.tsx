@@ -309,12 +309,21 @@ describe("URL 진단 계산", () => {
 });
 
 describe("서버 방식 확인 (catalog)", () => {
-  it("catalog 가 오면 URL 진단 폼, 기존 v1 칸은 없다", async () => {
+  it("catalog 가 오면 URL 진단 폼, 서버가 받지 않는 시안 칸은 '아직 구현 안 됨'으로 막혀 있다", async () => {
     mount("new");
     expect(await screen.findByLabelText(/점검할 사이트 주소/)).toBeInTheDocument();
-    // 서버가 받지 않는 칸(계정 로그인 · 점검 목표 · 범위 · 워커 수)은 없다. 워크플로 없는 프로필은 제외 경로도 없다
-    expect(screen.queryByLabelText(/계정 A/)).toBeNull();
-    expect(screen.queryByLabelText(/워커 수/)).toBeNull();
+    // 서버가 받지 않는 칸(계정 로그인 · 점검 목표 · 범위 · 워커 수)은 칸만 있고 입력은 막혀 있다. 지금 점검은 로그인 없이 진행
+    for (const el of screen.getAllByLabelText(/계정 [AB]/)) expect(el).toBeDisabled();
+    expect(screen.getByLabelText("워커 수")).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "로그인 없이 점검" })).toBeChecked();
+    // 점검 목표는 2쪽(숨김)에 있다
+    for (const box of screen.getAllByRole("checkbox", { hidden: true })) expect(box).toBeDisabled();
+    expect(screen.getAllByText(/^아직 구현 안 됨/).length).toBeGreaterThan(0);
+    // 요약 패널도 시안 줄(로그인 · 점검 범위 · 점검 목표)을 두고 '아직 구현 안 됨'
+    const sum = screen.getByRole("complementary", { name: "점검 요약" });
+    for (const t of ["로그인", "점검 범위", "점검 목표"])
+      expect(within(sum).getByText(t).nextElementSibling).toHaveTextContent(/^아직 구현 안 됨/);
+    // 워크플로 없는 프로필은 제외 경로가 없다
     expect(screen.queryByLabelText(/제외 경로/)).toBeNull();
     expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
   });
