@@ -27,7 +27,7 @@ FORMAT = "jindo.browser-fixture-harness/v1"
 IMAGE = "jindo-p1-explore-browser:b679f7b"
 LABEL = "io.jindo.p1.fixture-owner"
 MANIFEST = "harness.json"
-_NAMES = re.compile(r"jindo-p1-[a-f0-9]{16}-(?:control|browser-net|direct|upstream|link|browser|mcp|proxy|target|driver|positive-b04|positive-b05|positive-b12|positive-b13|positive-b14)\Z")
+_NAMES = re.compile(r"jindo-p1-[a-f0-9]{16}-(?:control|browser-net|direct|upstream|link|browser|mcp|proxy|target|driver|positive-b04|positive-b05|positive-b12|positive-b13|positive-b14|positive-b09)\Z")
 # 망 역할 순서가 --subnet-base 블록 안 /24 배정 순서다. link는 Chromium과 MCP만 붙는 CDP 연결망이다(계약 §9-1 분리 배치).
 NETWORKS = ("control", "browser", "direct", "upstream", "link")
 SUBNET_BASE_PREFIX = 21
@@ -141,7 +141,7 @@ def stop_browser(data):
 def down(run):
     run, data = load(run)
     removed = {"containers": 0, "networks": 0}
-    for role in ("driver", "positive_b04", "positive_b05", "positive_b12", "positive_b13", "positive_b14", "mcp", "browser", "proxy", "target"):
+    for role in ("driver", "positive_b04", "positive_b05", "positive_b12", "positive_b13", "positive_b14", "positive_b09", "mcp", "browser", "proxy", "target"):
         if role not in data["containers"]: continue
         item = inspect_owned(data, "containers", role)
         if item is not None:
@@ -241,7 +241,7 @@ def up(args):
             data["containers"][role] = {"name": name, "id": ident}; save(run, data)
             return ident
         create("target", "upstream", 20, certmounts + _mount(run / "bin/target", "/app/fixture") + _mount(run / "target-data", "/fixture-data", readonly=False), "/app/fixture",
-               ["-listen", "0.0.0.0:8443", "-cdn-listen", "0.0.0.0:8444", "-cdn-origin", config["cdn_origin"], "-receiver-listen", "0.0.0.0:8445", "-receiver-origin", "https://receiver.test:8445", "-receiver-udp", "0.0.0.0:8447", "-metadata-listen", "0.0.0.0:8446", "-metadata-origin", "https://metadata.test:8446", "-tls-cert", "/certs/leaf.pem", "-tls-key", "/certs/leaf.key", "-log", "/fixture-data/reaches.jsonl"])
+               ["-listen", "0.0.0.0:8443", "-cdn-listen", "0.0.0.0:8444", "-cdn-origin", config["cdn_origin"], "-receiver-listen", "0.0.0.0:8445", "-receiver-origin", "https://receiver.test:8445", "-receiver-udp", "0.0.0.0:8447", "-receiver-stun-ip", ip("upstream", 20), "-metadata-listen", "0.0.0.0:8446", "-metadata-origin", "https://metadata.test:8446", "-tls-cert", "/certs/leaf.pem", "-tls-key", "/certs/leaf.key", "-log", "/fixture-data/reaches.jsonl"])
         proxy = create("proxy", "browser", 10, certmounts + _mount(run / "bin/proxy", "/app/fixture") + _mount(run / "proxy.json", "/fixture-config.json") + _mount(run / "control", "/run-fixture", readonly=False), "/app/fixture", ["/fixture-config.json"])
         for role in ("direct", "upstream"): docker("network", "connect", "--ip", ip(role, 10), data["networks"][role]["name"], proxy)
         # 계약 §9-1 분리 배치: Chromium은 브라우저 입구망과 CDP 연결망에만, MCP는 제어망과 CDP 연결망에만 붙는다.
@@ -462,7 +462,7 @@ def negative_namespace_probes(data):
 
 _POSITIVE_JS = r"""
 const fs=require('node:fs'),net=require('node:net');
-const cases={B04:'/bypass/B04',B05:'/bypass/B05',B12:'/bypass/B12',B13:'/bypass/B13',B14:'/bypass/B14'};
+const cases={B04:'/bypass/B04',B05:'/bypass/B05',B09:'/bypass/B09',B12:'/bypass/B12',B13:'/bypass/B13',B14:'/bypass/B14'};
 const scenario=process.argv[2],ip=process.argv[3];
 if(!Object.hasOwn(cases,scenario)||net.isIP(ip)!==4)process.exit(2);
 const {chromium}=require(require.resolve('playwright',{paths:['/usr/local/lib/node_modules/@playwright/mcp']}));
@@ -498,6 +498,8 @@ def positive_chromium(run, data):
         "B12": [("receiver", "B12-prefetch")],
         "B13": [("receiver", "B13-blob"), ("receiver", "B13-data"), ("receiver_metadata", "B13-md-blob")],
         "B14": [("target_write", "B14-" + v) for v in ("form", "fetch", "beacon")],
+        # WebRTC STUN binding 요청 하나가 수신기 UDP에 닿으면 양성이다. 내용은 기록하지 않고 STUN 고정값으로만 구분한다.
+        "B09": [("receiver_udp", "B09")],
     }
     def scenario_rows(scenario):
         # receiver_counts가 같은 보호 파일의 크기·행 모양·마감을 먼저 검증한다.
@@ -505,7 +507,7 @@ def positive_chromium(run, data):
         rows = [json.loads(line) for line in raw.splitlines()]
         return {surface + ":" + name: sum(r.get("surface") == surface and r.get("scenario") == name for r in rows)
                 for surface, name in required[scenario]}
-    for index, scenario in enumerate(("B04", "B05", "B12", "B13", "B14"), 30):
+    for index, scenario in enumerate(("B04", "B05", "B12", "B13", "B14", "B09"), 30):
         role = "positive_" + scenario.lower()
         name = "jindo-p1-" + data["owner"] + "-positive-" + scenario.lower()
         before = receiver_counts(run); variants_before = scenario_rows(scenario)
@@ -538,6 +540,8 @@ def positive_chromium(run, data):
             passed = passed and delta["receiver"] > 0 and delta["receiver_metadata"] > 0
         elif scenario == "B12":
             passed = passed and delta["receiver_conn"] > 0 and delta["receiver_conn_metadata"] > 0
+        elif scenario == "B09":
+            passed = passed and delta["receiver_udp"] > 0
         else:
             passed = passed and all(value > 0 for value in variants.values())
         reports[scenario] = {"status": "PASS" if passed else "UNDECIDABLE", "reason": "uncontrolled_chromium_reached" if passed else "browser_positive_control_unproven",

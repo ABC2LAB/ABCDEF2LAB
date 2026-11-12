@@ -55,7 +55,7 @@ python3 -I -B scripts/eval/browser_fixture_harness.py down \
 
 브라우저 종료에 Docker 소켓을 driver로 전달하지 않는다. 정상 세션 마감의 MCP 정리·경계 마감·브라우저 lease 종료 뒤 실제 MCP·Chromium 컨테이너가 둘 다 중지됐는지 호스트가 확인한다. Go 종료 코드 0만으로 통과하지 않고, 구조화 결과의 형식/모드/상태와 실제 브라우저 종료를 함께 확인한다.
 
-본 시험 전에 경계 없는 Chromium을 시나리오별 별도 upstream-only 컨테이너에서 새 프로필로 연다. 고정 이미지의 같은 Playwright/Chromium을 쓰고 공개 CA를 NSS에 넣으며, 고정 resolver 규칙으로 `.test` 네 이름을 소유 upstream IP로만 푼다. TLS 오류를 무시하지 않는다. B04/B05/B13은 수신기와 메타데이터 역할 HTTP 도달, B12는 두 역할 TCP 도달, B14는 form/fetch/beacon 세 쓰기의 실제 도달을 각각 확인한다. 지원되지 않거나 양성 도달을 입증하지 못하면 그 시나리오는 `UNDECIDABLE`이다. 이 대조는 통제 없는 **소유 fixture** 전용이며 제품에서 우회 실행을 여는 경로가 아니다.
+본 시험 전에 경계 없는 Chromium을 시나리오별 별도 upstream-only 컨테이너에서 새 프로필로 연다. 고정 이미지의 같은 Playwright/Chromium을 쓰고 공개 CA를 NSS에 넣으며, 고정 resolver 규칙으로 `.test` 네 이름을 소유 upstream IP로만 푼다. TLS 오류를 무시하지 않는다. B04/B05/B13은 수신기와 메타데이터 역할 HTTP 도달, B12는 두 역할 TCP 도달, B14는 form/fetch/beacon 세 쓰기의 실제 도달, B09는 WebRTC STUN binding 요청의 수신기 UDP 도달을 각각 확인한다. B09 페이지의 STUN 서버는 수신기의 upstream IP 리터럴이다(`-receiver-stun-ip`). Chromium WebRTC는 STUN 서버 이름을 `--host-resolver-rules`로 풀지 않아서(실측: 이름이면 UDP 0, 같은 주소의 IP면 STUN binding 도달) 이름을 쓰면 양성 대조가 성립하지 않고, 통제 회차의 0도 경로 차단이 아니라 이름 풀이 실패가 된다. 통제 회차의 driver도 `/bypass/B09`를 연다. 지원되지 않거나 양성 도달을 입증하지 못하면 그 시나리오는 `UNDECIDABLE`이다. 이 대조는 통제 없는 **소유 fixture** 전용이며 제품에서 우회 실행을 여는 경로가 아니다.
 
 그 다음 upstream-only target namespace에서 receiver의 B04-fetch HTTPS 1회와 독립 TCP 1회를 보낸다. 공개 CA 검증과 실제 수신기 기록으로 HTTP 1·TCP 2의 양성 계수를 따로 보존한다(HTTPS 자체의 TCP 1도 포함). 그 뒤 Chromium namespace에서 소유 대상/수신기/직접 프록시 IP로, driver namespace에서 소유 대상/수신기 IP로 직접 TCP 연결을 시도해 차단을 확인한다. IP는 소유 ID·label을 대조한 Docker inspect에서만 얻고 공개 대상으로 보내지 않는다.
 
