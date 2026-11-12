@@ -76,9 +76,8 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 - `partial`: "일부 완료". 실패 색을 쓰지 않고, 남은 intent 수(`incomplete`·`unknown`·`stopped`)를 같이 보인다.
 - `budget_limited`: "예산 상한에서 마감". 찾은 후보는 보존된다고 보인다.
 - `no_intents`: "시도한 계획 없음(검사 안 함)". "발견 없음"과 다른 문구·색.
-- `cancelled`: "중지됨".
 - `complete`에 `policy_limited`가 있으면 "정책상 검증 안 됨" 건수를 따로 보인다(완료가 "전부 검사됨"으로 읽히지 않게).
-- `cancelled`: `intent_outcomes`로 "중지됨 · 끝난 n / 끊긴 m"을 보인다.
+- `cancelled`: "중지됨". `intent_outcomes`가 있으면 "중지됨 · 끝난 n / 끊긴 m"을 보인다(없으면 개수 없이).
 - 접근통제 지도: intent `incomplete`·`unknown`·`stopped`는 지도 `untested`로 가고 `na`로 가지 않는다(#383 Open #2와 같은 규칙).
 
 ## 5. 전달 경로
@@ -92,7 +91,13 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 ## 6. 구현 순서
 
 1. 이 계약 확정.
-2. intent 투영·새 칸·`partial`(`incomplete`·`stopped`)·`no_intents`·`budget_limited`·`diagnostic_log_incomplete` 분리. 웹 파서·표시는 같은 PR에서 이경준 리뷰(표시 문구는 이경준이 정하면 따른다).
+2. intent 투영·새 칸·`partial`(`incomplete`·`stopped`)·`no_intents`·`budget_limited`·`diagnostic_log_incomplete` 분리. 웹 파서·표시는 같은 PR에서 이경준 리뷰(표시 문구는 이경준이 정하면 따른다). 나눠서 넣는다.
+   - 2-1(먼저): 투영·`completed`의 `outcome`·`intent_outcomes`·`partial`(불완전·중지 intent가 있어도 실패가 아님)·전달 칸(`diagnosis.v2`)·진단 준비 Job·웹 파서와 결과 한 줄. 결과 없이 새로 `completed`가 되는 갱신은 받지 않는다.
+   - 2-2: `cancelled`의 `intent_outcomes`(중지 마감 때 투영 읽기).
+   - 2-3: `budget_limited`(Planner 라운드·도구 호출·intent 재실행 상한·모델 예산).
+   - 2-4: `no_intents`(C11 결정 2, 첫 계획 0개).
+   - 2-5: `diagnostic_log_incomplete` 칸 분리.
+   - 2-6: 저장 보고서에 싣기(5절 5).
 3. `unknown` intent가 있는 실행을 `completed` + `partial`로 마감하는 것은 C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤. 그 전에는 결과 불명 송신이 있는 호출(`Counts.Unknown`)이 있으면 지금처럼 실행을 멈춘다.
 4. C09(intent 결과를 모든 호출 분류로, #428)와 C26(Worker 마무리 보고)은 이 투영을 그대로 쓴다.
 
