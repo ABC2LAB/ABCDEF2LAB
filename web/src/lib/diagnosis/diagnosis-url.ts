@@ -114,6 +114,8 @@ export type URLDiagnosisJob = {
   closing_reason?: "budget_limited";
   /** intent 결과 개수. completed·cancelled에만 있다. */
   intent_outcomes?: URLIntentOutcomes;
+  /** 진단 로그(운영 기록) 일부가 남지 않았다는 경고. completed에만 있고 reason_code와 따로다. */
+  diagnostic_log_incomplete?: true;
 };
 export type URLIntentOutcomes = {
   done: number;
@@ -439,7 +441,10 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     "outcome",
     "closing_reason",
     "intent_outcomes",
+    "diagnostic_log_incomplete",
   ]);
+  if (d.diagnostic_log_incomplete !== undefined && (d.diagnostic_log_incomplete !== true || d.state !== "completed"))
+    return invalid();
   const outcomes = d.intent_outcomes === undefined ? undefined : intentOutcomes(d.intent_outcomes);
   if (!validRunResult(String(d.state), d.outcome, d.closing_reason, outcomes)) return invalid();
   const input = parseInput(d.input);
@@ -497,6 +502,7 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     ...(d.outcome === undefined ? {} : { outcome: d.outcome as URLDiagnosisJob["outcome"] }),
     ...(d.closing_reason === undefined ? {} : { closing_reason: "budget_limited" as const }),
     ...(outcomes ? { intent_outcomes: outcomes } : {}),
+    ...(d.diagnostic_log_incomplete === true ? { diagnostic_log_incomplete: true as const } : {}),
   };
 }
 function intentOutcomes(v: unknown): URLIntentOutcomes {

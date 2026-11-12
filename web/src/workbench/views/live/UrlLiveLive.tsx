@@ -208,6 +208,9 @@ export function UrlLiveLive() {
           <UrlNotices />
           <WorkflowNotice />
           {job.reason_code ? <p className={s.help}>{`서버 사유: ${reasonText(job.reason_code)}`}</p> : null}
+          {job.diagnostic_log_incomplete ? (
+            <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
+          ) : null}
           {!ended && job.state !== "unknown" ? (
             <div className={s.band} style={{ gridTemplateColumns: "minmax(0,1fr)" }}>
               <div className={s.bt}>
