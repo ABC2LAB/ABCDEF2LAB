@@ -163,11 +163,11 @@ func TestOwnedPostgresExplorationSelectionThenProtectedDiagnosis(t *testing.T) {
 	stageDone := make(chan error, 1)
 	var stageCalls, acquisitions atomic.Int32
 	hooks := FirstDiagnosisHTTPHooks{Workflow: flow, Exploration: func(host *Server) E2HTTPExplorationStage {
-		return func(call context.Context, actual *Task) error {
+		return func(call context.Context, actual *Task) (ExplorationCharge, error) {
 			stageCalls.Add(1)
-			_, err := host.RunExplorationPipeline(call, actual, o)
+			result, err := host.RunExplorationPipeline(call, actual, o)
 			stageDone <- err
-			return err
+			return result.Charge, err
 		}
 	}}
 	runtime, err := StartFirstDiagnosisHTTP(ctx, manager, FirstDiagnosisHTTPStartOptions{Host: cfg, SkillDir: skillDir, DataDir: dataDir, KeyDir: keyDir, LocalLLMManifestPath: manifest, Supervisor: supervisor, Hooks: hooks, Shutdown: supervisor.Shutdown(), CleanupTimeout: 5 * time.Second})

@@ -25,6 +25,7 @@ vi.mock("../live/api", async (importOriginal) => ({
   fetchRequestApprovals: vi.fn(),
   fetchRemediation: vi.fn(),
   fetchDiagnosisRun: vi.fn(),
+  fetchCoverage: vi.fn(),
   fetchTasks: vi.fn(),
 }));
 
@@ -257,6 +258,7 @@ beforeEach(() => {
   a.fetchRequestApprovals.mockResolvedValue(APPROVALS);
   a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
   a.fetchDiagnosisRun.mockResolvedValue(RUN_RECORD);
+  a.fetchCoverage.mockRejectedValue(new ApiError(503, "coverage disabled"));
   a.fetchTasks.mockResolvedValue({ active: "", tasks: [] });
   vi.mocked(teamApi.readAuthStatus).mockResolvedValue({ initialized: true });
   vi.mocked(teamApi.restoreSession).mockResolvedValue(true);
@@ -309,12 +311,25 @@ describe("URL 진단 계산", () => {
 });
 
 describe("서버 방식 확인 (catalog)", () => {
-  it("catalog 가 오면 URL 진단 폼, 기존 v1 칸은 없다", async () => {
+  it("catalog 가 오면 URL 진단 폼, 서버가 받지 않는 시안 칸은 '아직 구현 안 됨'으로 막혀 있다", async () => {
     mount("new");
     expect(await screen.findByLabelText(/점검할 사이트 주소/)).toBeInTheDocument();
-    // 서버가 받지 않는 칸(계정 로그인 · 점검 목표 · 범위 · 워커 수)은 없다. 워크플로 없는 프로필은 제외 경로도 없다
-    expect(screen.queryByLabelText(/계정 A/)).toBeNull();
-    expect(screen.queryByLabelText(/워커 수/)).toBeNull();
+    // 서버가 받지 않는 칸(계정 로그인 · 점검 목표 · 범위 · 워커 수)은 칸만 있고 입력은 막혀 있다. 지금 점검은 로그인 없이 진행
+    for (const el of screen.getAllByLabelText(/계정 [AB]/)) expect(el).toBeDisabled();
+    expect(screen.getByLabelText("워커 수")).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "로그인 없이 점검" })).toBeChecked();
+    // 점검 목표는 2쪽(숨김)에 있다
+    for (const box of screen.getAllByRole("checkbox", { hidden: true })) expect(box).toBeDisabled();
+    expect(screen.getAllByText(/^아직 구현 안 됨/).length).toBeGreaterThan(0);
+    // 승인 없이 쓰기 요청을 보내는 선택지는 없다 — 실행 허용은 설치 정책 · 진단 모드가 정함 (절대규칙 3 · 6, 리뷰 #479)
+    expect(screen.queryByText(/승인 없이/)).toBeNull();
+    expect(screen.queryByText("전체 허용")).toBeNull();
+    expect(screen.getByText("쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.")).toBeInTheDocument();
+    // 요약 패널도 시안 줄(로그인 · 점검 범위 · 점검 목표)을 두고 '아직 구현 안 됨'
+    const sum = screen.getByRole("complementary", { name: "점검 요약" });
+    for (const t of ["로그인", "점검 범위", "점검 목표"])
+      expect(within(sum).getByText(t).nextElementSibling).toHaveTextContent(/^아직 구현 안 됨/);
+    // 워크플로 없는 프로필은 제외 경로가 없다
     expect(screen.queryByLabelText(/제외 경로/)).toBeNull();
     expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
   });
@@ -595,6 +610,46 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner);
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+    // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 '아직 구현 안 됨' (시안 v22). 0 % 로 지어내지 않는다
+    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent(/^아직 구현 안 됨/);
+    expect(screen.queryByText(/^0%$/)).toBeNull();
+    expect(screen.getByText(/^범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경/)).toHaveTextContent("아직 구현 안 됨");
+  });
+
+  it("점검 진행: 토큰 · 자산 커버리지는 서버 값, 경과 · 남은 시간 · 점검 중 발견 · 판정 · 새 경로 결정은 '아직 구현 안 됨' (시안 v22)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({
+      ...running,
+      model_usage: {
+        requests: 1,
+        input_tokens: 300,
+        output_tokens: 200,
+        reserved_input_tokens: 0,
+        reserved_output_tokens: 0,
+        cost_usd_micros: 0,
+        usage_known: true,
+      },
+    });
+    a.fetchCoverage.mockResolvedValue({
+      enabled: true,
+      scopeRows: 1,
+      denominator: 10,
+      tested: 4,
+      pct: 0.4,
+      byType: [],
+    });
+    mount("live");
+    expect(await screen.findByText("엔진 실행 중")).toBeInTheDocument();
+    // 토큰: 서버 사용량 / 범위 상한 (입력 + 출력)
+    expect(screen.getByText(/^토큰/)).toHaveTextContent("토큰 500 / 상한 2,000");
+    expect(screen.getByText(/^경과/)).toHaveTextContent("아직 구현 안 됨");
+    expect(screen.getByText(/^남은 시간/)).toHaveTextContent("아직 구현 안 됨");
+    const insp = screen.getByRole("complementary", { name: "진행 상황" });
+    await waitFor(() => expect(within(insp).getByText("4")).toBeInTheDocument());
+    expect(within(insp).getByText(/\/ 10 자산 · 40%/)).toBeInTheDocument();
+    expect(within(insp).getByText("발견 · 최근 순").parentElement).toHaveTextContent("아직 구현 안 됨");
+    expect(within(insp).getByText("판정").parentElement).toHaveTextContent("아직 구현 안 됨");
+    expect(within(insp).getByText(/^새로 찾은 경로 포함 결정/)).toHaveTextContent("아직 구현 안 됨");
   });
 
   it("영수증만 있으면(id 없음) 생성 영수증을 조회한다", async () => {
@@ -734,10 +789,19 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("report");
     expect(await screen.findByText(/결과가 저장되면 보고서가 나옵니다/)).toBeInTheDocument();
     expect(a.fetchRemediation).not.toHaveBeenCalled();
+    expect(a.fetchCoverage).not.toHaveBeenCalled();
     cleanup();
     resetUrl();
     u.readURLStatus.mockResolvedValue(completed);
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    a.fetchCoverage.mockResolvedValue({
+      enabled: true,
+      scopeRows: 1,
+      denominator: 10,
+      tested: 4,
+      pct: 0.4,
+      byType: [],
+    });
     mount("report");
     expect(await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).toBeInTheDocument();
     // 위치: 끝난 점검 / 주소 / 보고서 (시안 v83: "작업대" 뿌리는 뺐다)
@@ -747,15 +811,29 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(crumb).not.toHaveTextContent("작업대");
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
     expect(a.fetchDiagnosisRun).toHaveBeenCalledWith("42");
-    // 판정 집계: 후보는 검토 필요, 확정 0 (팀 lib 분류)
+    // 판정 집계 (시안 v20 짜임): 후보는 검토 필요, 확정 0 (팀 lib 분류). 커버리지는 서버 값 그대로
     const strip = await screen.findByRole("region", { name: "판정 집계" });
     const cell = (label: string) => within(strip).getByText(label).parentElement as HTMLElement;
-    await waitFor(() => expect(within(cell("검토 필요")).getByText("1")).toBeInTheDocument());
+    await waitFor(() => expect(cell("검토 필요 / 결과 불명")).toHaveTextContent(/^검토 필요 \/ 결과 불명1\/ 0/));
     expect(within(cell("확정")).getByText("0")).toBeInTheDocument();
-    // 발견 목록에 후보가 있다
-    expect(
-      within(screen.getByRole("tabpanel", { name: "발견 목록" })).getByRole("button", { name: /후보 1/ }),
-    ).toBeInTheDocument();
+    expect(within(cell("발견 · 검토 대상")).getByText("1")).toBeInTheDocument();
+    // 자산 커버리지(방문 · 검사한 자산 비율)라고 이름 붙인다 — 판정 커버리지로 읽히지 않게 (리뷰 #479)
+    await waitFor(() => expect(cell("자산 커버리지")).toHaveTextContent("40%"));
+    expect(cell("자산 커버리지")).toHaveTextContent("미검사 60%");
+    // 서버가 주지 않는 시작 · 소요는 '아직 구현 안 됨'
+    expect(screen.getByText(/^시작/).closest("span")).toHaveTextContent("아직 구현 안 됨");
+    // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '등급 없음')
+    const row = within(screen.getByRole("tabpanel", { name: "발견 목록" })).getByRole("button", { name: /후보 1/ });
+    expect(row.firstElementChild).toHaveTextContent("등급 없음");
+    // 시안의 자산 지식 그래프 · 접근통제 지도 탭은 서버 연결이 없어 '아직 구현 안 됨' (지도 화면 바로가기는 있다)
+    fireEvent.click(screen.getByRole("tab", { name: "자산 지식 그래프" }));
+    expect(within(screen.getByRole("tabpanel", { name: "자산 지식 그래프" })).getByRole("note")).toHaveTextContent(
+      /^아직 구현 안 됨/,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
+    const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
+    expect(within(mapTab).getByRole("note")).toHaveTextContent(/^아직 구현 안 됨/);
+    expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
     // 실행 종료 기록: 실행 ID · 정상 종료 · 감사 · E② 집계는 저장 값 그대로 (증거 · 감사 탭)
     fireEvent.click(screen.getByRole("tab", { name: "증거 · 감사" }));
     const record = await screen.findByRole("region", { name: "실행 종료 기록" });
@@ -837,6 +915,23 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(within(sec).queryByRole("group", { name: "위험도로 거르기" })).toBeNull();
     // 위치가 제목과 같기만 해서 위치 줄을 그리지 않는다 (시안 v83)
     expect(screen.queryByRole("navigation", { name: "위치" })).toBeNull();
+    // 요약 4칸 (시안 v77): 결과 저장 전 발견 · 결과 확인은 0 이 아니라 "—", 서버에 없는 토큰 30일 집계는 자리만
+    const strip = screen.getByRole("region", { name: "요약" });
+    const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
+    expect(cell("발견 · 검토 대상")).toHaveTextContent(/^발견 · 검토 대상—결과가 저장되면 셉니다$/);
+    expect(cell("결과 확인")).toHaveTextContent(/^결과 확인—/);
+    expect(cell("토큰 사용량 · 최근 30일")).toHaveTextContent("아직 구현 안 됨");
+    // 진행 중 줄 · 상세 (시안 v55): 지금 하는 일은 서버 단계, 진행률 · 시작 · 남은 시간은 '아직 구현 안 됨', 보낸 요청 수는 없음(탐색 없음)
+    const act = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
+      name: /target\.example/,
+    });
+    expect(within(act).getByText(/^시작 · 남은 시간/)).toHaveTextContent("아직 구현 안 됨");
+    fireEvent.click(act);
+    const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    expect(within(detail).getByText("지금 하는 일")).toBeInTheDocument();
+    for (const k of ["진행률", "시작", "남은 시간"])
+      expect(within(detail).getByText(k).nextElementSibling).toHaveTextContent("아직 구현 안 됨");
+    expect(within(detail).queryByText("소요")).toBeNull();
   });
 
   it("대시보드: 저장된 결과에서 정상 대조를 빼고 위험도 순으로 보이며, 위험도 칩으로 거른다", async () => {
@@ -864,9 +959,21 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const noSev = sec.querySelector("[data-dsel='fd-candidate-5']") as HTMLElement;
     expect(within(noSev).getByText("등급 없음")).toBeInTheDocument();
     for (const r of sec.querySelectorAll("[data-dsel^='fd-']")) expect(r.textContent).not.toMatch(/\d{1,2}:\d{2}/);
-    // 처음 상세는 가장 위험한 발견
+    // 요약 4칸: 정상 대조를 뺀 4건 · 위험도별 수 · 결과 확인(결과 불명 + 미실행) 0
+    const strip = screen.getByRole("region", { name: "요약" });
+    const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
+    expect(within(cell("발견 · 검토 대상")).getByText("4")).toBeInTheDocument();
+    expect(cell("발견 · 검토 대상")).toHaveTextContent("심각 1 · 높음 1 · 중간 1 · 낮음 0 · 등급 없음 1");
+    expect(cell("결과 확인")).toHaveTextContent("결과 불명 0 · 미실행 0");
+    // 끝난 점검이라 결정할 것이 없다 (시안 v77 '모두 결정함')
+    expect(cell("결정 대기")).toHaveTextContent(/^결정 대기0모두 결정함$/);
+    // 처음 상세는 가장 위험한 발견. 보고서 · 진행 화면으로 갈 수 있다 (시안 v88)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("발견 2")).toBeInTheDocument();
+    expect(within(detail).getByRole("button", { name: "진행 화면 열기" })).toBeInTheDocument();
+    // 시안 발견 상세의 계정별 응답 비교 · 다음 단계는 서버가 따로 주지 않아 자리만
+    expect(within(detail).getByText("계정별 응답 비교").parentElement).toHaveTextContent("아직 구현 안 됨");
+    expect(within(detail).getByText("다음 단계").parentElement).toHaveTextContent("아직 구현 안 됨");
     // 칩: 전체 4 · 심각 1 · 높음 1 · 중간 1 · 등급 없음 1 (0건인 낮음은 숨김)
     const chips = within(sec).getByRole("group", { name: "위험도로 거르기" });
     expect(within(chips).queryByRole("button", { name: /낮음/ })).toBeNull();
