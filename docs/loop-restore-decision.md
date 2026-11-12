@@ -40,6 +40,8 @@
 
 - 원본 `PlannerTools` 전체를 복원한다: prove_goal·goal_met·kill_work·steer_work·report_finding(진단 후보)·list_companies·list_assets·add_company_scope·add_task_scope·list_untested_assets. skills·Todo·압축·마무리 턴도 복원한다.
 - 범위 도구(add_company_scope·add_task_scope)는 커버리지 분모와 자산 소속만 바꾸고 **E② 승인 범위는 바꾸지 않는다**(규칙 4). 범위 도구를 부른 뒤에도 E② 정책 지문이 같은지 시험으로 고정한다.
+  - add_task_scope는 넣었다. 진단 경로는 task_scope를 승인 근거로 읽지 않는다. 통합 시험(`actual-engine-planner-task-scope-keeps-e2-policy`)은 Planner가 대상 호스트 IP를 작업 범위에 넣고 그 범위로 intent를 만든 뒤에도, 같은 호스트의 승인 안 된 포트로 가는 Worker 요청이 E②에서 거부되고(수신 0건) 실행 정책의 판·규칙이 승인 파일 그대로인지 본다. 원본 도구 설명은 이 도구를 "작업의 인가 경계"라고 부르지만 진단 경로에서는 그렇지 않다. 설명은 원본 그대로 두고, 거부 결과가 모델에 돌아가는 것으로 바로잡히게 한다.
+  - add_company_scope는 제품 DB 역할이 companies·company_scope를 SELECT만 허용해서 넣어도 늘 실패한다. 열린 항목 5(insert_assets)와 같이 정한다.
 - Planner에서는 대상으로 보내는 도구를 뺀다: 원본 기본 도구의 Bash, WebFetch, MCP. 대상 요청은 Worker(E②)만 보낸다. 호스트 파일 도구는 Worker와 같은 조건(작업 디렉터리 안)일 때만 넣는다.
 - WebSearch는 Worker와 같은 규칙이다.
 - Plan당 상한(`e2HTTPPlannerMaxTurns`·`e2HTTPPlannerMaxDuration` 상수)은 원본 설정 경로(에이전트 설정의 턴·시간)로 돌리고, 제품 기본값은 C32 설치 설정으로 둔다.
@@ -71,7 +73,7 @@
 2. C24 일부: Worker 그래프 조회 도구(list_findings·list_assets·search_all_worker_traces·get_worker_trace). 저장소 조회뿐이다. insert_assets는 제품 DB 역할이 assets를 SELECT만 허용해서 넣어도 항상 실패하므로 열린 항목 5와 같이 정한다.
 3. C25와 C24 나머지: 원본 프롬프트·마무리 턴, report_finding(후보)·skills·WebSearch. report_finding(후보)은 후보 저장에 실제 call_ref가 필요해 원본 입력 형식과 바로 맞지 않고, 지금 부르는 쪽(원본 skills)도 C30 전에는 없어서 skills와 같이 한다.
 4. WebFetch E② 판.
-5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** C08이 끝나 1단계로 `prove_goal`·`goal_met`(원본처럼 `goal_met`은 기본 바인딩 없음)과 목표 달성 마감(남은 open intent는 incomplete)을 넣었다. 다음 단계: 범위 도구(E② 정책 지문 불변 시험과 같이), Plan당 상한 설정(C32 `planner_turns_per_plan`·`planner_seconds_per_plan`), Todo·압축·마무리 턴, report_finding(후보)·skills. goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
+5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** C08이 끝나 1단계로 `prove_goal`·`goal_met`(원본처럼 `goal_met`은 기본 바인딩 없음)과 목표 달성 마감(남은 open intent는 incomplete)을 넣었다. 2단계로 add_task_scope(E② 승인 범위 불변 시험과 같이)를 넣었다. 다음 단계: Plan당 상한 설정(C32 `planner_turns_per_plan`·`planner_seconds_per_plan`), Todo·압축·마무리 턴, report_finding(후보)·skills. goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
 6. C27(Worker 실행 중 Planner 깨우기)·kill_work·steer_work·C19는 **C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤.** Planner가 Worker 실행 중에 goal_met·kill_work를 부르면 진행 중인 E② 호출이 취소되고, 지금은 그 결과 불명이 실행 전체를 멈춘다.
 7. 파일 도구(C29와 같이). traffic 도구는 넣지 않는다(열린 항목 1 결과).
 
@@ -98,4 +100,4 @@
 2. **대화 기록 재개**: 지금 E② 모드는 사람 지시로 이전 대화를 이어가지 않는다. 대화 기록 저장의 가림과 같이 정한다.
 3. **같은 intent 안 병렬 도구 호출**: 원본 SDK가 병렬 호출을 하면 호출 단위 예약을 어떻게 나눌지. 그 전에는 하나씩이다.
 4. **탐색 프로필 도구 목록**: 탐색 실행기 결정안 2-b에서 정한다.
-5. **진단 단계 자산 쓰기(insert_assets)**: 제품 DB 역할은 assets·task_asset_links를 SELECT만 허용한다(`server/controlled_read_assembly_database_role.go`). 진단 Worker가 발견 자산을 기록하게 할지, 탐색 단계 몫으로 둘지 이동찬과 정한다.
+5. **진단 단계 자산 쓰기(insert_assets)**: 제품 DB 역할은 assets·task_asset_links를 SELECT만 허용한다(`server/controlled_read_assembly_database_role.go`). 진단 Worker가 발견 자산을 기록하게 할지, 탐색 단계 몫으로 둘지 이동찬과 정한다. companies·company_scope도 SELECT만이라 Planner의 add_company_scope도 같이 정한다.
