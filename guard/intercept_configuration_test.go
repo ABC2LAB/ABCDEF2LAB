@@ -134,3 +134,75 @@ func TestStoredInvalidRegexBlocksBeforeAllowOrJudge(t *testing.T) {
 		t.Fatal("valid configuration changed the enabled-tools boundary")
 	}
 }
+
+// 깨진 막기 규칙이 있으면 감시 대상에서 뺀 도구와 명시적인 빈 도구 목록에서도 실제 Guard 진입점이 rule_invalid로
+// 막는다(#86의 "제외 도구까지 차단" 범위, P3 결정안 C12). 규칙을 끄면 정상 제외 동작으로 돌아온다.
+func TestBrokenBlockingRuleBlocksExcludedToolsAtGuard(t *testing.T) {
+	dsn := os.Getenv("ARTEX_INTERCEPT_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set ARTEX_INTERCEPT_TEST_DSN to a dedicated PostgreSQL test database")
+	}
+	locker, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal("dedicated test lock unavailable")
+	}
+	t.Cleanup(func() { _ = locker.Close() })
+	lease, err := locker.Conn(t.Context())
+	if err != nil {
+		t.Fatal("dedicated test lock connection unavailable")
+	}
+	t.Cleanup(func() { _ = lease.Close() })
+	if _, err := lease.ExecContext(t.Context(), `SELECT pg_advisory_lock(7337741002)`); err != nil {
+		t.Fatal("dedicated test lock unavailable")
+	}
+	t.Cleanup(func() { _, _ = lease.ExecContext(context.Background(), `SELECT pg_advisory_unlock(7337741002)`) })
+	d, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal("dedicated intercept test database unavailable")
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	previous, existed, err := d.GetSetting("intercept_enabled_tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = d.SetSetting("intercept_enabled_tools", previous)
+		} else {
+			_, _ = d.Exec(`DELETE FROM settings WHERE key='intercept_enabled_tools'`)
+		}
+	})
+	rule, err := d.CreateInterceptRule("broken-deny-excluded-tools", "tool_name", "regex", "^Bash$", "deny", "", 0, true, false, 0, "deny")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_rules WHERE id=$1`, rule.ID) })
+	const privatePattern = "(?P<synthetic-private-regex"
+	if _, err := d.Exec(`UPDATE intercept_rules SET pattern=$2 WHERE id=$1`, rule.ID, privatePattern); err != nil {
+		t.Fatal(err)
+	}
+	ic := intercept.New(d)
+	g := NewWithInterceptor(ic)
+	input := []byte(`{"command":"synthetic"}`)
+	for _, tools := range [][]string{{"Bash"}, {}} {
+		if err := ic.SetEnabledTools(tools); err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range []string{"Bash", "UnconfiguredFixtureTool"} {
+			blocked, message, _ := g.Hooks().PreToolUse(t.Context(), tool, input)
+			if !blocked || !strings.Contains(message, "reason_code=rule_invalid") || strings.Contains(message, privatePattern) {
+				t.Fatalf("enabled=%v tool=%s blocked=%v message=%q", tools, tool, blocked, message)
+			}
+		}
+	}
+	if err := d.ToggleInterceptRule(rule.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	ic.Invalidate()
+	if err := ic.SetEnabledTools([]string{"Bash"}); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _, _ := g.Hooks().PreToolUse(t.Context(), "UnconfiguredFixtureTool", input); blocked {
+		t.Fatal("disabling the broken rule did not restore the excluded-tool boundary")
+	}
+}

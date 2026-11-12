@@ -343,7 +343,8 @@ func (p *e2ActualWorkerProvider) Complete(_ context.Context, request llm.Complet
 	}
 	p.requests = append(p.requests, encoded)
 	for _, spec := range request.Tools {
-		if spec.Name != "Bash" {
+		// WebFetch는 같은 E② Bash 실행기를 지나는 판이다(루프 복원 결정안 §2).
+		if spec.Name != "Bash" && spec.Name != "WebFetch" {
 			return llm.Message{}, "", llm.Usage{}, errors.New("unexpected capability in native Worker fixture")
 		}
 	}

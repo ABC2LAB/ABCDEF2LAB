@@ -106,9 +106,24 @@ func taskEmitFromCtx(ctx context.Context) func(db.Activity) {
 }
 
 // compiledRule is an InterceptRule with the regex pre-compiled (nil for string rules).
+// invalid는 저장된 정규식을 컴파일할 수 없는 막기·확인 규칙이다. 있으면 모든 호출을 그 규칙 이름으로 막는다.
 type compiledRule struct {
 	db.InterceptRule
-	re *regexp.Regexp
+	re      *regexp.Regexp
+	invalid bool
+}
+
+// RuleInvalidDecision은 평가할 수 없는 막기·확인 규칙에 닿은 호출의 판정이다(P3 결정안 C12). 운영자가 규칙을
+// 고칠 수 있게 규칙 ID·이름을 남기고, 저장된 정규식 원문은 어디에도 넣지 않는다.
+func RuleInvalidDecision(r db.InterceptRule) Decision {
+	configJSON, _ := json.Marshal(r)
+	return Decision{
+		RuleName: r.Name, RuleID: r.ID, ConfigDigest: digestInput(configJSON),
+		Action:       "deny",
+		Message:      fmt.Sprintf("통제 규칙 #%d(%s)의 정규식이 올바르지 않아 실행을 차단했습니다. 규칙을 고쳐 주세요.", r.ID, r.Name),
+		ModelMessage: "A platform intercept rule could not be evaluated; execution is blocked (reason_code=rule_invalid).",
+		ReasonCode:   "rule_invalid",
+	}
 }
 
 // pendingManager tracks in-flight "ask" requests via per-request channels.
@@ -156,8 +171,11 @@ type Interceptor struct {
 	mu           sync.RWMutex
 	cached       []compiledRule  // sorted by priority DESC; nil means not loaded yet
 	enabledTools map[string]bool // nil means not loaded yet
-	pending      *pendingManager
-	reviewer     Reviewer // nil = LLM fallback judge not wired
+	// invalidBlocking은 깨진 막기·확인 규칙이 있다는 뜻이다. 그동안은 감시 대상에서 뺀 도구도 Match까지 보내
+	// rule_invalid로 막는다(#86의 "제외 도구까지 차단" 범위, P3 결정안 C12).
+	invalidBlocking bool
+	pending         *pendingManager
+	reviewer        Reviewer // nil = LLM fallback judge not wired
 }
 
 // SetReviewer installs the LLM fallback judge callback. Passing nil disables it.
@@ -188,6 +206,7 @@ func (i *Interceptor) Invalidate() {
 	i.mu.Lock()
 	i.cached = nil
 	i.enabledTools = nil
+	i.invalidBlocking = false
 	i.mu.Unlock()
 }
 
@@ -202,6 +221,7 @@ func (i *Interceptor) loadLocked() error {
 		return ErrConfigurationUnavailable
 	}
 	out := make([]compiledRule, 0, len(rules))
+	skipped, blocking := 0, 0
 	for _, r := range rules {
 		if !r.Enabled {
 			continue
@@ -210,12 +230,24 @@ func (i *Interceptor) loadLocked() error {
 		if r.MatchType == "regex" {
 			re, err := regexp.Compile(r.Pattern)
 			if err != nil {
-				log.Printf("[intercept] configuration_load_failed reason=invalid_regex rule_id=%d", r.ID)
-				return ErrConfigurationUnavailable
+				// 깨진 허용 규칙은 건너뛴다. 허용이 가장 느슨한 결과라 건너뛰면 더 엄격해질 뿐이다(C12).
+				// 막기·확인 규칙은 남겨 두고, 모든 호출을 그 규칙 ID와 함께 막는다(#86의 fail-closed 유지).
+				if r.Action == "allow" {
+					skipped++
+					log.Printf("[intercept] 깨진 정규식 허용 규칙 건너뜀 rule_id=%d", r.ID)
+					continue
+				}
+				blocking++
+				log.Printf("[intercept] 깨진 정규식 막기·확인 규칙, 고칠 때까지 모든 호출 차단 rule_id=%d", r.ID)
+				cr.invalid = true
+			} else {
+				cr.re = re
 			}
-			cr.re = re
 		}
 		out = append(out, cr)
+	}
+	if skipped+blocking > 0 {
+		log.Printf("[intercept] 경고: 깨진 정규식 규칙 %d개(허용 %d개 건너뜀, 막기·확인 %d개). 규칙을 고쳐 주세요", skipped+blocking, skipped, blocking)
 	}
 	// Load enabled-tools set from settings, falling back to hard-coded defaults.
 	val, ok, err := i.db.GetSetting("intercept_enabled_tools")
@@ -239,7 +271,7 @@ func (i *Interceptor) loadLocked() error {
 		}
 	}
 	// Publish both caches only after the entire configuration is valid.
-	i.cached, i.enabledTools = out, enabledTools
+	i.cached, i.enabledTools, i.invalidBlocking = out, enabledTools, blocking > 0
 	return nil
 }
 
@@ -274,7 +306,7 @@ func (i *Interceptor) IsToolEnabled(name string) bool {
 func (i *Interceptor) CheckToolEnabled(name string) (bool, error) {
 	i.mu.RLock()
 	if i.enabledTools != nil {
-		v := i.enabledTools[name]
+		v := i.enabledTools[name] || i.invalidBlocking
 		i.mu.RUnlock()
 		return v, nil
 	}
@@ -287,7 +319,7 @@ func (i *Interceptor) CheckToolEnabled(name string) (bool, error) {
 			return false, err
 		}
 	}
-	return i.enabledTools[name], nil
+	return i.enabledTools[name] || i.invalidBlocking, nil
 }
 
 // GetEnabledTools returns the ordered list of tool names that are currently
@@ -562,8 +594,10 @@ func judgeActionLabel(action string) string {
 
 // Match evaluates the rule list (priority DESC) against a tool call.
 // Returns (Decision, true) for the first matching enabled rule, or
-// (Decision{}, false) if no rule matches. An invalid/unavailable configuration
-// returns an unattributed denial; it must not enter the no-match fallback.
+// (Decision{}, false) if no rule matches. An unavailable configuration returns an
+// unattributed denial; it must not enter the no-match fallback. If a deny/ask rule's
+// stored regex cannot compile, every call is denied (as in #86) but attributed to that
+// rule with reason_code=rule_invalid (P3 decision C12). Broken allow rules are skipped.
 func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	rules, err := i.rules()
 	if err != nil {
@@ -571,6 +605,13 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	}
 	if len(rules) == 0 {
 		return Decision{}, false
+	}
+	// 깨진 막기·확인 규칙이 하나라도 있으면 #86처럼 모든 호출을 막되, 우선순위가 가장 높은 깨진 규칙을 밝힌다
+	// (P3 결정안 C12). 운영자가 그 규칙을 고치거나 끄면 바로 풀린다.
+	for _, r := range rules {
+		if r.invalid {
+			return RuleInvalidDecision(r.InterceptRule), true
+		}
 	}
 	for _, r := range rules {
 		if ruleMatches(r, toolName, input) {

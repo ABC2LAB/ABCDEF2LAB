@@ -3,6 +3,7 @@ package intercept
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -39,39 +40,68 @@ func configurationTestDB(t *testing.T) *db.DB {
 	return d
 }
 
+// 깨진 정규식(검사 전에 저장됐거나 DB를 직접 고친 행)은 허용으로 새지 않는다(#86). 막기·확인 규칙이 깨지면 모든
+// 호출을 규칙 ID와 rule_invalid로 막고, 허용 규칙은 그 규칙만 건너뛴다(P3 결정안 C12).
 func TestInvalidStoredRegexCannotFallThroughToAllow(t *testing.T) {
 	d := configurationTestDB(t)
+	const privatePattern = "(?P<synthetic-private-regex"
+	brokenRule := func(t *testing.T, name, action string, priority int) db.InterceptRule {
+		t.Helper()
+		rule, err := d.CreateInterceptRule(name, "tool_name", "regex", "^Bash$", action, "", priority, true, false, 0, "deny")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_rules WHERE id=$1`, rule.ID) })
+		if _, err := d.Exec(`UPDATE intercept_rules SET pattern=$2 WHERE id=$1`, rule.ID, privatePattern); err != nil {
+			t.Fatal(err)
+		}
+		return rule
+	}
 	for _, action := range []string{"deny", "ask", "allow"} {
 		t.Run(action, func(t *testing.T) {
-			rule, err := d.CreateInterceptRule("invalid-regex-"+action, "tool_name", "regex", "^Bash$", action, "", -100, true, false, 0, "deny")
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_rules WHERE id=$1`, rule.ID) })
-			const privatePattern = "(?P<synthetic-private-regex"
-			if _, err := d.Exec(`UPDATE intercept_rules SET pattern=$2 WHERE id=$1`, rule.ID, privatePattern); err != nil {
-				t.Fatal(err)
-			}
+			rule := brokenRule(t, "invalid-regex-"+action, action, 100000)
 			ic := New(d)
 			if !ic.IsToolEnabled("Bash") {
 				t.Fatal("invalid configuration bypassed the intercept path")
 			}
 			decision, matched := ic.Match("Bash", []byte(`{}`))
-			if !matched || decision.Action != "deny" || decision.RuleID != 0 || decision.RuleName != "" || decision.ConfigDigest != "" || strings.Contains(decision.Message, privatePattern) {
-				t.Fatalf("invalid regex did not produce an unattributed configuration denial: %+v matched=%v", decision, matched)
+			if strings.Contains(decision.Message, privatePattern) || strings.Contains(decision.ModelMessage, privatePattern) {
+				t.Fatal("stored regex leaked into the decision")
 			}
-			if ic.cached != nil || ic.enabledTools != nil {
-				t.Fatal("failed configuration load published a partial cache")
+			if ic.cached == nil {
+				t.Fatal("one invalid rule disabled the whole configuration")
+			}
+			if action == "allow" {
+				if decision.ReasonCode == "rule_invalid" || decision.ReasonCode == "configuration_unavailable" || matched && decision.RuleID == rule.ID {
+					t.Fatalf("broken allow rule was not skipped: %+v matched=%v", decision, matched)
+				}
+			} else if !matched || decision.Action != "deny" || decision.ReasonCode != "rule_invalid" || decision.RuleID != rule.ID || decision.RuleName != rule.Name || !strings.Contains(decision.Message, fmt.Sprintf("#%d", rule.ID)) {
+				t.Fatalf("invalid %s rule did not deny with its attribution: %+v matched=%v", action, decision, matched)
 			}
 			if err := d.ToggleInterceptRule(rule.ID, false); err != nil {
 				t.Fatal(err)
 			}
 			ic.Invalidate()
-			if _, err := ic.rules(); err != nil {
+			if decision, _ := ic.Match("Bash", []byte(`{}`)); decision.ReasonCode == "rule_invalid" {
 				t.Fatal("disabled invalid regex prevented configuration repair")
 			}
 		})
 	}
+	// 깨진 막기 규칙은 우선순위가 더 높은 유효한 허용 규칙이 있어도 모든 호출을 막는다(#86과 같은 엄격함).
+	t.Run("broken-blocking-rule-blocks-all-calls", func(t *testing.T) {
+		broken := brokenRule(t, "invalid-regex-low", "deny", 99000)
+		allow, err := d.CreateInterceptRule("valid-allow-high", "tool_name", "regex", "^Bash$", "allow", "", 99500, true, false, 0, "deny")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_rules WHERE id=$1`, allow.ID) })
+		ic := New(d)
+		for _, tool := range []string{"Bash", "Read"} {
+			if decision, matched := ic.Match(tool, []byte(`{}`)); !matched || decision.Action != "deny" || decision.ReasonCode != "rule_invalid" || decision.RuleID != broken.ID {
+				t.Fatalf("%s was not denied by the broken rule: %+v", tool, decision)
+			}
+		}
+	})
 }
 
 func TestMatchLoadFailureReturnsDenial(t *testing.T) {
