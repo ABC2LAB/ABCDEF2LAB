@@ -103,6 +103,7 @@ type Activity struct {
 	Summary string    `json:"summary"`
 }
 type Snapshot struct {
+	ExplorationStatus  string     `json:"exploration_status,omitempty"`
 	ExplorationReason  string     `json:"exploration_reason,omitempty"`
 	ExplorationPartial bool       `json:"exploration_partial,omitempty"`
 	Failure            string     `json:"failure,omitempty"`

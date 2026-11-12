@@ -430,3 +430,51 @@ func TestExplorationDoesNotShareItsCrawlWithLegacyE2Path(t *testing.T) {
 		t.Fatal("exploration joined an already claimed legacy crawl")
 	}
 }
+
+func TestExplorationUnavailableIsExplicitAndDoesNotClaimLegacyCrawl(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	before, _ := c.Snapshot()
+	if err := c.RecordExplorationUnavailable(t.Context(), "boundary_unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := c.Snapshot()
+	if s.ExplorationStatus != "NOT_RUN" || s.ExplorationReason != "boundary_unavailable" || !s.ExplorationPartial || s.InitialCompleted || c.claimed || s.Stage != "crawling" || len(s.Endpoints) != len(before.Endpoints) || s.Endpoints[0].Selected {
+		t.Fatal("unavailable status changed execution authority")
+	}
+	if err := c.RecordExplorationUnavailable(t.Context(), "boundary_unavailable"); err != nil {
+		t.Fatal("identical preflight is not idempotent")
+	}
+	afterReplay, _ := c.Snapshot()
+	if afterReplay.Revision != s.Revision {
+		t.Fatal("identical preflight repeated event")
+	}
+	if err := c.RecordExplorationUnavailable(t.Context(), "model_unavailable"); !errors.Is(err, ErrConflict) {
+		t.Fatal("unavailable reason changed silently")
+	}
+	syntheticCrawl(t, c)
+	s, _ = c.Snapshot()
+	if s.ExplorationStatus != "NOT_RUN" || s.Stage != "awaiting_selection" || !s.InitialCompleted {
+		t.Fatal("legacy fallback was claimed or misreported")
+	}
+	if err := c.RecordExplorationUnavailable(t.Context(), "boundary_unavailable"); !errors.Is(err, ErrExplorationBinding) {
+		t.Fatal("late preflight accepted")
+	}
+}
+
+func TestExplorationUnavailableRequiresCurrentUnboundHostState(t *testing.T) {
+	for _, reason := range []string{"", "completed", "raw provider error SECRET"} {
+		c, _ := flowFixture(t, Manual)
+		if err := c.RecordExplorationUnavailable(t.Context(), reason); !errors.Is(err, ErrDenied) {
+			t.Fatal("untrusted availability reason stored")
+		}
+	}
+	c, _, _, _ := explorationFixture(t, Manual)
+	if err := c.RecordExplorationUnavailable(t.Context(), "model_unavailable"); !errors.Is(err, ErrExplorationBinding) {
+		t.Fatal("bound session overwritten as NOT_RUN")
+	}
+	other, _ := flowFixture(t, Manual)
+	other.binding.Current = func() error { return errors.New("authority revoked") }
+	if err := other.RecordExplorationUnavailable(t.Context(), "model_unavailable"); !errors.Is(err, ErrExplorationBinding) {
+		t.Fatal("revoked authority stored availability")
+	}
+}

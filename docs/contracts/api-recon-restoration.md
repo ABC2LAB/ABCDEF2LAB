@@ -40,6 +40,8 @@ ReadObservation(context.Context, ExplorationBinding, uint64) (ExplorationObserva
 
 기존 `Crawl(ctx, Fetch)`와 `e2runner.Result` 검증은 유지한다. 새 `CrawlExploration(ctx, binding, ExplorationFetch)`만 탐색 호스트가 주입한 fetch와 reader를 사용한다. fetch가 돌려준 URL의 GET/path·seq와 private 응답 hash를 검증한 후 기존 HTML/bundle parser를 사용한다. 이 API 자체에 HTTP client, TLS 설정 변경, 일반 Bash, MCP transport는 없다.
 
+`RecordExplorationUnavailable(ctx, reason)`은 bound/claimed 이전의 호스트 preflight 전용 API다. Current와 crawling 상태를 검사하고 boundary/model/runtime/browser 미가용의 고정 사유만 `ExplorationStatus=NOT_RUN`으로 저장한다. Stage·InitialCompleted·claimed·선택은 바꾸지 않아 기존 E② 정적 Crawl fallback을 유지한다. 세션을 실제 결속하면 RUNNING, 종료 시 COMPLETED/PARTIAL/STOPPED로 표시한다.
+
 정적 pass 뒤에도 stage는 `crawling`으로 남겨 동적 탐색의 추정 보고와 관측 수집을 받는다. 호출자가 `FinishExploration`으로 완료 또는 부분 종료 사유를 전달하면 수동 모드의 선택 단계 또는 기존 자동 선택 단계로 간다. `cap_exhausted`, `boundary_unavailable`, 시간·페이지 상한 등은 부분 발견을 남긴다. 취소·대상 종료는 stopped다. 일반 fetch 오류는 요청 하나의 실패와 부분 완료로 남기고 다음 페이지로 진행한다. 호스트가 `ExplorationFetchResult.Reason`으로 경계 장애·상한을 명시한 경우에만 그 사유로 종료한다. 이 흐름은 E② `Sent/Attempted/Blocked`를 만들지 않고 별도 `ExplorationRequests`만 센다. 부분 탐색을 취약점 없음 또는 E③ 성공으로 바꾸지 않는다.
 
 ## 발견 보존과 남은 한도

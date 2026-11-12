@@ -111,11 +111,37 @@ func (c *Controller) BindExploration(ctx context.Context, reader ExplorationRead
 	}
 	c.explorationReader = reader
 	c.record.Exploration = &explorationState{Binding: b}
+	c.record.Snapshot.ExplorationStatus = "RUNNING"
+	c.record.Snapshot.ExplorationReason = ""
 	if err = c.saveLocked(ctx, false, "exploration_bound", "", "", 0); err != nil {
 		return b, err
 	}
 	return b, nil
 }
+
+// RecordExplorationUnavailable은 호스트가 실행 전 확인한 미가용을 남긴다. E② 정적 fallback의 권한은 만들지 않는다.
+func (c *Controller) RecordExplorationUnavailable(ctx context.Context, reason string) error {
+	if c == nil || ctx == nil || ctx.Err() != nil || reason != "boundary_unavailable" && reason != "model_unavailable" && reason != "runtime_unavailable" && reason != "browser_unavailable" {
+		return ErrDenied
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := &c.record.Snapshot
+	if c.poisoned || c.record.Exploration != nil || c.claimed || c.binding.Current() != nil || s.Stage != "crawling" || s.InitialCompleted {
+		return ErrExplorationBinding
+	}
+	if s.ExplorationStatus == "NOT_RUN" {
+		if s.ExplorationReason == reason {
+			return nil
+		}
+		return ErrConflict
+	}
+	s.ExplorationStatus = "NOT_RUN"
+	s.ExplorationReason = reason
+	s.ExplorationPartial = true
+	return c.saveLocked(ctx, false, "exploration_not_run", "", "", 0)
+}
+
 func (c *Controller) explorationReaderFor(ctx context.Context, b ExplorationBinding) (ExplorationReader, error) {
 	if c == nil || ctx == nil || ctx.Err() != nil {
 		return nil, ErrExplorationBinding
@@ -290,9 +316,14 @@ func (c *Controller) FinishExploration(ctx context.Context, b ExplorationBinding
 	s := &c.record.Snapshot
 	s.ExplorationReason = reason
 	s.ExplorationPartial = s.ExplorationPartial || reason != "completed"
+	s.ExplorationStatus = "COMPLETED"
+	if s.ExplorationPartial {
+		s.ExplorationStatus = "PARTIAL"
+	}
 	s.InitialCompleted = true
 	s.CurrentPath = ""
 	if reason == "cancelled" || reason == "target_ended" {
+		s.ExplorationStatus = "STOPPED"
 		s.Stage = "stopped"
 	} else if c.binding.Mode == Manual {
 		s.Stage = "awaiting_selection"
