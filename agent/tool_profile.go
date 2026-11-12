@@ -56,6 +56,10 @@ var diagnosisPlannerProfile = toolProfile{name: "diagnosis_planner", entries: []
 	// 중 E② 호출을 끊으므로 C01 뒤에 넣는다(루프 복원 결정안 §7-6).
 	{name: "prove_goal", source: fromBase}, {name: "goal_met", source: fromBase},
 	{name: "list_companies", source: fromBase}, {name: "list_assets", source: fromBase},
+	// add_task_scope는 커버리지 분모만 바꾸고 E② 승인 범위는 바꾸지 않는다(진단 경로는 task_scope를 승인 근거로
+	// 읽지 않음). add_company_scope는 제품 DB 역할이 companies·company_scope를 읽기만 해서 넣어도 늘 실패하므로
+	// insert_assets와 같이 DB 역할 결정(열린 항목 5) 뒤에 넣는다.
+	{name: "add_task_scope", source: fromBase},
 	{name: "list_untested_assets", source: fromBase},
 }}
 

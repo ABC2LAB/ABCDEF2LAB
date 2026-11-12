@@ -107,14 +107,14 @@ func TestToolProfileMatchesOriginalToolLists(t *testing.T) {
 	if got := profileToolNames(worker); got != want || len(graph) != 6 || worker[0] != e2Bash || worker[len(worker)-1] != candidate {
 		t.Fatalf("worker tools=%s want=%s", got, want)
 	}
-	// 프로필 도입 전 Planner 필터의 13개 이름에 C26 목표 도구(prove_goal·goal_met)를 더한 목록이다. 순서는
-	// PlannerTools 순서다. kill_work·steer_work·report_finding·범위 도구는 아직 없다.
+	// 프로필 도입 전 Planner 필터의 13개 이름에 C26 목표 도구(prove_goal·goal_met)와 add_task_scope를 더한 목록이다.
+	// 순서는 PlannerTools 순서다. kill_work·steer_work·report_finding·add_company_scope는 아직 없다.
 	previous := map[string]bool{
 		"graph_overview": true, "list_findings": true, "list_facts": true, "node_detail": true,
 		"expand_digest": true, "get_worker_output": true, "get_worker_trace": true,
 		"search_all_worker_traces": true, "list_goals": true, "add_intent": true,
 		"prove_goal": true, "goal_met": true,
-		"list_companies": true, "list_assets": true, "list_untested_assets": true,
+		"list_companies": true, "list_assets": true, "add_task_scope": true, "list_untested_assets": true,
 	}
 	for _, coverage := range []bool{true, false} {
 		ts.SetCoverageEnabled(coverage)
