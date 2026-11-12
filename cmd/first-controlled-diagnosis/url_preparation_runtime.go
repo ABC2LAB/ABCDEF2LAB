@@ -23,15 +23,16 @@ import (
 )
 
 type urlPreparationRuntime struct {
-	ctx      context.Context
-	path     string
-	config   urlPreparationInstallation
-	endpoint diagnosisprep.Endpoint
-	resolver *net.Resolver // nil이면 시스템 resolver. 시험은 전역 DNS를 변경하지 않는다.
-	mu       sync.RWMutex
-	live     map[string]*urlLiveHandler
-	reports  map[string]*savedReportService
-	product  *productRuntime
+	ctx              context.Context
+	path             string
+	config           urlPreparationInstallation
+	endpoint         diagnosisprep.Endpoint
+	resolver         *net.Resolver // nil이면 시스템 resolver. 시험은 전역 DNS를 변경하지 않는다.
+	mu               sync.RWMutex
+	live             map[string]*urlLiveHandler
+	reports          map[string]*savedReportService
+	product          *productRuntime
+	hostCapabilities urlRuntimeHostCapabilities
 }
 
 func newURLPreparationRuntime(ctx context.Context, path string) (*urlPreparationRuntime, error) {
@@ -443,6 +444,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		return unknown("installation_changed", true)
 	}
 	diagnostics.next("host_startup", "host_startup_failed")
+	ctx = withURLExplorationStage(ctx, b.productExplorationStage(l, execution, taskID, flow))
 	d, err := startLaunchWithDatabase(ctx, launch, modelBudget, check, func(call context.Context, path string) (*sql.DB, error) {
 		if path != dsnPin.path {
 			return nil, errPreparation

@@ -232,13 +232,57 @@ func (c *Controller) discoverDocumentLocked(body []byte, contentType, from strin
 	}
 }
 
+// 이 검사는 정적 크롤 생략만 허용한다. 실제 진단은 StartDeepWork·선택·E②의 기존 검사를 그대로 거친다.
+func (c *Controller) finishedExplorationForDiagnosisLocked(ctx context.Context) bool {
+	if ctx == nil || ctx.Err() != nil || c.poisoned || c.explorationReader == nil || c.binding.Current == nil {
+		return false
+	}
+	state, s := c.record.Exploration, c.record.Snapshot
+	if state == nil || !c.matchingExploration(state.Binding) || c.binding.Current() != nil || ctx.Err() != nil {
+		return false
+	}
+	b := state.Binding
+	if s.Format != Version || s.JobID != b.JobID || s.TaskID != b.TaskID || s.RunRef != b.RunRef || s.SourceDigest != b.SourceDigest || s.Mode != c.binding.Mode || s.Failure != "" || !s.InitialCompleted {
+		return false
+	}
+	if !explorationCloseReason(state.ClosedReason) || state.ClosedReason == "cancelled" || state.ClosedReason == "target_ended" || s.ExplorationReason != state.ClosedReason {
+		return false
+	}
+	switch s.ExplorationStatus {
+	case "COMPLETED":
+		if s.ExplorationPartial || state.ClosedReason != "completed" {
+			return false
+		}
+	case "PARTIAL":
+		if !s.ExplorationPartial {
+			return false
+		}
+	default:
+		return false
+	}
+	if c.binding.Mode == Auto && s.Stage != "diagnosing" || c.binding.Mode == Manual && s.Stage != "awaiting_selection" && s.Stage != "diagnosing" || !ValidMode(c.binding.Mode) {
+		return false
+	}
+	// private 마감 결속과 남아 있는 관측이 다른 세션으로 갈라진 상태도 통과시키지 않는다.
+	for _, fact := range c.record.DiscoveryInventory {
+		if fact.Confidence == "observed" && (fact.SessionRef != b.SessionRef || fact.Seq == 0 || fact.Seq > state.LastSequence) {
+			return false
+		}
+	}
+	return true
+}
+
 // 첫 보호 Worker가 같은 Bash·공유 호출 예산·E② proxy로 초기 탐색을 수행한다.
 // 정적 발견은 실제 방문이나 SPA 동적 탐색 성공을 의미하지 않는다.
 func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, failure error) {
 	c.mu.Lock()
-	// 한 회차에서 탐색 전용 입력과 레거시 E② 크롤 입력을 함께 열지 않는다.
+	// 별도 탐색이 저장된 마감까지 끝났으면 정적 송신을 반복하지 않고 기존 진단 게이트로 넘긴다.
 	if c.record.Exploration != nil {
+		skip := c.finishedExplorationForDiagnosisLocked(ctx)
 		c.mu.Unlock()
+		if skip {
+			return false, nil
+		}
 		return true, ErrExplorationBinding
 	}
 	if c.claimed {

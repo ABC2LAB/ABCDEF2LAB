@@ -17,6 +17,9 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
+var ErrExplorationClosure = errors.New("exploration_cleanup_incomplete")
+var ErrExplorationObservation = errors.New("exploration_observation_unavailable")
+
 type explorationMCPContextKey struct{}
 
 func isExplorationMCPContext(ctx context.Context) bool {
@@ -48,27 +51,32 @@ type ExplorationSessionOptions struct {
 	APIRecon   actool.CoreTool
 	Redact     func([]byte) []byte
 	// Finalize는 모델/도구와 브라우저 폐쇄 뒤 보호 저장소의 기존 관찰만 배출한다. 새 송신·모델 호출·원문 로그를 만들지 않으며 문맥 상한을 지킨다.
-	Finalize       func(context.Context, exploration.Binding) error
+	Finalize func(context.Context, exploration.Binding) error
+	// Observe는 각 경계 도구 결과 뒤 private 관찰만 저장하고 다음 모델 호출 전에 돌아온다.
+	Observe        func(context.Context, exploration.Binding) error
 	CloseTimeout   time.Duration
 	StatusInterval time.Duration
 }
 
 type ExplorationSession struct {
-	options       ExplorationSessionOptions
-	ctx           context.Context
-	cancel        context.CancelFunc
-	boundary      exploration.Lease
-	browser       ExplorationBrowserLease
-	client        mcpClient
-	tools         []actool.CoreTool
-	mu            sync.Mutex
-	closed        bool
-	ran           bool
-	reason        exploration.Reason
-	once          sync.Once
-	closeErr      error
-	done          chan struct{}
-	finalizeReady bool
+	options           ExplorationSessionOptions
+	ctx               context.Context
+	cancel            context.CancelFunc
+	boundary          exploration.Lease
+	browser           ExplorationBrowserLease
+	client            mcpClient
+	tools             []actool.CoreTool
+	mu                sync.Mutex
+	closed            bool
+	ran               bool
+	reason            exploration.Reason
+	once              sync.Once
+	closeErr          error
+	done              chan struct{}
+	finalizeReady     bool
+	workerResult      agent.ExplorationRunResult
+	workerErr         error
+	observationFailed bool
 }
 
 func OpenExplorationSession(parent context.Context, o ExplorationSessionOptions) (*ExplorationSession, error) {
@@ -91,8 +99,9 @@ func OpenExplorationSession(parent context.Context, o ExplorationSessionOptions)
 		closeErr := s.Close(context.Background(), exploration.BoundaryUnavailable)
 		if closeErr != nil {
 			exploration.ReportFailure("open_cleanup", closeErr)
+			return nil, errors.Join(exploration.ErrUnavailable, ErrExplorationClosure, closeErr)
 		}
-		return nil, errors.Join(exploration.ErrUnavailable, closeErr)
+		return nil, exploration.ErrUnavailable
 	}
 	lease, err := o.Boundary.Open(ctx, o.Binding)
 	if err != nil || lease == nil {
@@ -223,6 +232,11 @@ func (s *ExplorationSession) watch() {
 			if errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
 				reason = exploration.CapExhausted
 			}
+			s.mu.Lock()
+			if s.observationFailed {
+				reason = exploration.BoundaryUnavailable
+			}
+			s.mu.Unlock()
 			s.closeAndReport(reason, "watch_close")
 			return
 		case <-ticker.C:
@@ -263,8 +277,33 @@ func (s *ExplorationSession) Run(ctx context.Context, w *agent.Worker, o agent.E
 	defer func() { stop(); cancel() }()
 	o.Binding = s.options.Binding
 	o.BrowserTools = append([]actool.CoreTool{}, s.tools...)
-	o.DirectBash = s.options.DirectBash
-	o.APIRecon = s.options.APIRecon
+	if s.options.Observe != nil {
+		wrap := func(tool actool.CoreTool) actool.CoreTool {
+			if tool == nil {
+				return nil
+			}
+			return &explorationObservedTool{CoreTool: tool, observe: func(ctx context.Context) error {
+				if s.options.Observe(ctx, s.options.Binding) != nil {
+					if ctx.Err() == nil {
+						s.mu.Lock()
+						s.observationFailed = true
+						s.mu.Unlock()
+					}
+					s.cancel()
+					return exploration.ErrUnavailable
+				}
+				return nil
+			}}
+		}
+		for i, tool := range o.BrowserTools {
+			o.BrowserTools[i] = wrap(tool)
+		}
+		o.DirectBash = wrap(s.options.DirectBash)
+		o.APIRecon = wrap(s.options.APIRecon)
+	} else {
+		o.DirectBash = s.options.DirectBash
+		o.APIRecon = s.options.APIRecon
+	}
 	o.Redact = s.options.Redact
 	o.Check = s.Check
 	defer func() {
@@ -288,6 +327,11 @@ func (s *ExplorationSession) Run(ctx context.Context, w *agent.Worker, o agent.E
 				reason = exploration.RuntimeUnavailable
 			}
 		}
+		s.mu.Lock()
+		if s.observationFailed {
+			reason = exploration.BoundaryUnavailable
+		}
+		s.mu.Unlock()
 		if err != nil {
 			exploration.ReportFailure("worker_run", err)
 		}
@@ -295,7 +339,15 @@ func (s *ExplorationSession) Run(ctx context.Context, w *agent.Worker, o agent.E
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	return w.ExecuteExploration(runCtx, o, emit)
+	result, err = w.ExecuteExploration(runCtx, o, emit)
+	s.mu.Lock()
+	if s.observationFailed {
+		err = errors.Join(err, ErrExplorationObservation)
+	}
+	s.workerResult = result
+	s.workerErr = err
+	s.mu.Unlock()
+	return result, err
 }
 
 // Close는 모델 도구를 먼저 폐쇄하고, 실행 취소·MCP·브라우저 소유 자원·경계 세션을 순서대로 정리한다.
@@ -378,7 +430,9 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 				return nil
 			})
 		}
-		s.closeErr = errors.Join(errs...)
+		if len(errs) > 0 {
+			s.closeErr = errors.Join(ErrExplorationClosure, errors.Join(errs...))
+		}
 		close(s.done)
 	})
 	return s.closeErr
@@ -389,6 +443,27 @@ func (s *ExplorationSession) ClosedReason() exploration.Reason {
 	return s.reason
 }
 
+// WorkerResult는 마감 callback이 모델 오류를 탐색 완료와 구별할 때만 쓰는 호스트 자료다.
+func (s *ExplorationSession) WorkerResult() (agent.ExplorationRunResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := s.workerResult
+	result.Tools = append([]string{}, result.Tools...)
+	return result, s.workerErr
+}
+
+type explorationObservedTool struct {
+	actool.CoreTool
+	observe func(context.Context) error
+}
+
+func (t *explorationObservedTool) Call(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
+	result, err := t.CoreTool.Call(ctx, in, tc)
+	if ctx.Err() == nil && t.observe(ctx) != nil {
+		return actool.Errorf("exploration_observation_unavailable"), nil
+	}
+	return result, err
+}
 func (s *ExplorationSession) closeAndReport(reason exploration.Reason, stage string) {
 	if err := s.Close(context.Background(), reason); err != nil {
 		exploration.ReportFailure(stage, err)

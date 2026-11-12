@@ -624,6 +624,11 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	if !closing {
 		return false, none, nil
 	}
+	// 탐색 원장이 예산을 실제 소진하고 진단 권위를 획득하지 않은 종료만 별도로 마감한다.
+	// DeepRuns/receipt/Execution을 합성하지 않으며 기존 진단의 E②·감사 검증은 아래 그대로 둔다.
+	if result, ok := server.engine.e2HTTP.explorationBudgetOutcome(task, server.firstModelBudget, outcomes); ok {
+		return true, result, nil
+	}
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && !flow.DeepReady() {
 		return false, none, ErrFirstDiagnosisOutcome
 	}

@@ -1,0 +1,76 @@
+# P1 탐색 복원 구현과 의존성
+
+2026-11-12 작업의 구현 기준은 `dev`의 `b679f7b7e62744943f88f4334c49820265811633`이다. Chromium 회차의 동결 기준은 `e4c601674bd2b4681094f5155599efbd1051da1d`이며 그때까지의 병합을 네 자체 브랜치에 반영했다. 선행 PR 팀 병합 뒤 C의 최종 base는 `c9c21c31251f8f7799b67e98d28186a329210f64`로 통합했다. 최종 Chromium 회차는 리뷰 수정까지 포함한 `8a21db635c5f6b2fafa1d1438f6586dd72f0f92d`와 실제 바이너리 hash를 근거로 삼는다. 최종 전체 회귀는 각 PR head의 CI에서 확인한다. 원본 비교 자료는 저장소에서 읽을 수 있는 ARTEX import `e53a79fe4df0c95a5b09274de8db321fa038b00b`를 사용한다. 실제 원본 실행의 발견 수나 보존율은 이 조사에서 만들지 않는다.
+
+## 조사와 구현 순서
+
+기존 흐름은 `Planner → 보호 Worker → diagnosisflow.Crawl → E② Bash/curl → HTML/JS 수집 → 진단`이다. `agent/e2_http.go`의 기존 Crawl은 E② `e2runner.Result`의 감사·drain·마감 검증을 필요로 한다. 이를 제거하거나 직접 `http.Get`으로 바꾸지 않는다. 일반 Worker Augment는 원래 native Bash·WebFetch·파일·graph·MCP를 열 수 있으므로 탐색 프로필에 사용하지 않는다.
+
+추가 경로는 `서버가 승인 회차 결속 → 탐색 세션 → 직접 입구의 정적 크롤 → 원본 Worker의 제한 프로필·HTTP MCP/API Recon → private 관측과 inferred 후보 저장 → 기존 자동/수동 선택 → E② 진단`이다. 다음 순서로 별도 worktree에서 구현한다.
+
+1. A: 독립 exploration 결속, 고정 MCP 21개 도구, 기존 agentcore Session 재사용, 서버 소유 취소·마감·연결 정리.
+2. B: E②형과 별도 탐색 Fetch/Reader, 메타데이터 수집, observed/inferred·저장 상한·선택 흐름.
+3. C: 실제 제품 stage hook, 소유 Docker fixture·수신기·고정 Chromium/MCP 종단, 실패/미실행 표시.
+4. D: 기존 계측기와 평가 runner의 explore/main 분리, 별도 서명 sidecar·비교 조건 검증. A/B/C와 독립이다.
+
+A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://github.com/ABC2LAB/ABCDEF2LAB/pull/453) → C [#457](https://github.com/ABC2LAB/ABCDEF2LAB/pull/457) 스택은 최대 세 PR로 제출했으며 D [#452](https://github.com/ABC2LAB/ABCDEF2LAB/pull/452)는 dev 독립 PR이다. A/B/D는 2026-11-12 담당자 재리뷰 승인 뒤 다른 팀원이 병합했다. C는 선행 병합 뒤 base를 dev로 바꿨으며 리뷰 보완 중이다. 원격 PR을 자동 병합하지 않는다. 운영 탐색 경계 담당의 어댑터가 아직 없으므로 제품 기본값으로 임의 프록시를 생성하거나 인터넷 직결을 열지 않는다. host가 공급한 실제 Boundary·BrowserLease·private Reader·직접 Fetch가 모두 갖춰져야 새 경로가 활성화된다. 미공급은 NOT_RUN이고 기존 보호 정적 크롤을 사용할 수 있다.
+
+## 열린 PR 확인
+
+| PR | 작업 시작 시 상태 및 영향 | 제출 전 재확인 |
+|---|---|---|
+| #443 | 작업 공간 반입·반출, 도중 b679f7b로 병합 | 기준에 포함 |
+| #445 | 설치 실행 예산, 05b2097로 병합 | 기존 예산 사용 |
+| #449 | intent 0개 no_intents, 병합 | 탐색 미실행/부분 완료와 구분 |
+| #444 | intent별 보관, #443 위 스택 | a35227e로 dev 병합, 최종 통합에 포함 |
+| #446 | 긴 출력 저장, #444 위 스택 | 열림, head ed034bbbe1fa26a6fd926852dcd77fc8e8b2e2e2, base dev, 리뷰 없음; 이후 e4c6016으로 dev 병합, 최종 기준에 포함 |
+| #447 | Workbench 화면 구조 변경 | aa034c8 병합. 화면 파일 수정 없음 |
+| #450 | 중지된 실행 intent 개수 | 57020d0으로 dev 병합, 최종 통합에 포함 |
+| #454 | 저장 보고서 실행 결과 | 열림, head e10e01501075bab2e5394a34dd6378e24e9c351d, 현재 base dev. 리뷰·inline 없음, CI 실행 중, 변경 파일은 이 작업과 겹치지 않음 |
+
+#444/#446의 runner·sandbox 파일과 `agent/e2_http.go`는 변경하지 않는다. #450의 `url_preparation_runtime.go`는 제품 host capability 연결과 같은 파일이므로 각각의 diff를 확인하고 기존 중지 결과 분기는 유지한다. 다른 담당자의 브랜치·리뷰·PR은 변경하지 않는다. 목록과 CI는 조회 시점의 상태이며 최종 PR 설명에서 다시 확인한다.
+
+## 복원 범위와 남은 차이
+
+- MCP 0.0.84의 HTTP 연결과 정상 navigation/evaluate/click/snapshot/network metadata 도구를 재사용한다. unsafe code·파일 upload·헤더/route 임의 조작·추가 MCP·일반 Augment는 제공하지 않는다.
+- 모델/턴/시간과 비용 provider는 기존 task Worker에서 가져온다. 모델 실패에 합성 응답으로 대체하지 않는다. 시험의 결정적 provider는 명시적인 test fixture다.
+- API Recon은 기존 정적 문법과 metadata 관찰 로직을 경계 안에서 사용한다. 원본 Python/Node 송신 스크립트, TLS 무시, 브라우저 밖 fetch, mock 인증 성공은 열지 않는다.
+- 모델/JS 보고는 inferred다. observed는 host private Reader가 session/run/job/task/target/revision/source/seq를 검증한 실제 요청뿐이다. 공개 가린 경로 기록으로 private 경로를 추측 복원하지 않는다.
+- 공개 선택 목록 32개/48KiB와 별도 발견 inventory 256개/64KiB의 상한·누락 수를 구분한다. 저장 확장이 승인 범위·진단 예산을 넓히지 않는다.
+- 탐색 Worker에는 graph·후보 확정·E③ 도구가 없다. 진단 프로필은 MCP를 계속 거부하며 E② 정책·Receipt·감사 정본을 유지한다.
+- 현재 MCP 어댑터는 text 블록을 전달한다. screenshot의 모델 시각 입력, 실제 계정 분류·인증 준비, mock/stub 화면 분석의 자동 통합, 운영 경계 및 WS/QUIC 집행은 동등 복원 완료라고 주장하지 않는다.
+- 실제 Qwen과 원본 대비 R-P/R-F/R-R은 승인·예산·동일 비교 조건이 없어 NOT_RUN이다. 합성 서명 회귀는 보존 실측이 아니다.
+
+실제 fixture 실행 절차는 [하네스](../evaluation/browser-fixture-harness.md), 관측 저장 계약은 [API Recon 복원](../contracts/api-recon-restoration.md), 실제 실행 결과와 항목별 미검증 범위는 [결과](../evaluation/p1-browser-fixture-results.md)에 기록한다. 평가 PR D의 서명 형식은 해당 선행 커밋/PR의 문서를 따른다.
+
+실제 별도 제어망 검사에서 브라우저 컨테이너의 Node 자식이 자기 MCP 제어 포트에 TCP 연결했다(B16 **FAIL**). 도구 필터가 이 네트워크 도달을 막는다고 주장하지 않는다. 운영 어댑터를 연결하기 전에 경계 담당이 프로세스·제어 채널의 접근 통제를 완성하고 같은 음성 시험을 통과해야 한다. 현재 제품의 host capability 기본값은 nil이다.
+
+
+최종 확인 중 추가로 열린 #455(`c69e61b3c8b1bbe3cf9b9aef64a9e7ddf5271197`, dev, 설치 run_seconds)와 #456(`f297491815eea2d5b940d8eb8b7a15986c92aca6`, dev, 탐색 결과 UI seam)의 파일·리뷰·CI·병합 상태를 확인했다. 둘 다 리뷰/inline 없음, CI 실행 중이며 자체 변경 파일과 겹치지 않는다. #455의 실행 시간은 기존 승인 Scope/launch 예산에서 읽으므로 설치 키를 중복 추가하지 않는다. #456은 mock 배너가 있는 표시 화면이며 실 API 연결을 이 PR이 완료했다고 주장하지 않는다. 발견/경계 private 채널이 정해진 뒤 UI 담당 매퍼와 연결해야 한다. 다른 담당자의 PR은 수정·병합하지 않았다.
+
+## 변경 파일의 역할
+
+정확한 전체 diff는 A #451, B #453, C #457, D #452에서 각각 확인한다. 선행 스택 파일을 C의 신규 구현으로 중복 계산하지 않는다.
+
+| 묶음 | 핵심 파일 | 역할 |
+|---|---|---|
+| A | `exploration/session.go`, `tools.go`, `failure.go` | 결속·자원 상한·허용 도구·값 없는 오류 분류 |
+| A | `agent/exploration.go` | 원본 루프의 탐색 프로필, 모델 입력/활동 가림, 범용 Bash/Skill 거부 |
+| A | `server/exploration_session.go`, `exploration_stage.go`, `mcpdiscover.go`, `mcphttp/scoped.go` | 기존 task Worker/HTTP MCP 연결, 단계별 정리·실패 상태 |
+| B | `diagnosisflow/exploration.go`, `contract.go`, `controller.go`, `crawl.go`, `postgres.go` | private 관측·부분/미실행 상태·저장·기존 선택 계약 |
+| B | `diagnosisflow/api_recon_static.go`, `skills/api-recon/scripts/metadata_only.js` | 값 없는 정적/페이지 실행 메타데이터, inferred/observed 분리 |
+| B | `diagnosisflow/api_recon_metadata_test.go` 및 관련 회귀 | Node 시험의 CI 실행, 결속·오류·반복·byte cap·DB 복원 |
+| C | `cmd/first-controlled-diagnosis/product_exploration.go`, `product_workflow.go`, `serve.go`, `url_preparation_runtime.go` | URL의 승인 대상 ref/revision 결속, 보호 host factory 주입과 nil 기본값 |
+| C | `server/exploration_pipeline.go`, `e2_http_runtime.go`, `first_diagnosis_http_provider*.go` | 정적→원본 Worker→저장→정리의 실제 stage, 진단과 once gate 분리 |
+| C | `diagnosisflow/exploration_closure.go`, `exploration_cursor.go`, `server/exploration_budget.go`, `goals.go`, `first_diagnosis_supervisor.go` | 저장 순번과 진단 미시작·예산 정산의 비공개 검증, 영속 마감 |
+| C | `internal/explorefixture/`, `cmd/exploration-contract-fixture/`, `server/exploration_docker_test.go`, `scripts/eval/browser_fixture_harness.py` | 실제 MCP·Chromium·소유 TLS fixture의 양성/음성·격리·정리 시험 |
+| D | `cmd/eval-meter/`, `scripts/eval/runner.py`, `attempt_reconcile.py` | 리슨에서 유래한 입구 분류, 기존 배치의 미승인 explore 무효화 |
+| D | `scripts/eval/preservation_record.py`, `preservation.py`, `run_record.py` | 정리 후 최종 원자료 해시·서명·짝/핀 검증, 실측 미실행 차단 |
+| 공통 | `docs/contracts/`, `docs/implementation/`, `docs/evaluation/` | 구현 범위·호스트 의무·재현 절차·FAIL/NOT_RUN 포함 근거 |
+
+
+최종 동결 기준 e4c6016에는 #454(저장 보고서 결과), #455(실행 시간), #456(탐색 표시 seam), #458(OpenRouter 호출별 비용 대조), #459(접근통제 지도), #446(긴 출력 보관)이 모두 병합돼 있다. 그전에 기록한 "열림"은 해당 조회 시점의 상태다. 새 모델 원장은 inflight0에서 정산 불일치면 blocked/UsageKnown=false로 닫으므로 C의 비공개 예산 마감 조건과 함께 검증했다. 본인이 작성한 네 PR은 자동 병합하지 않았으며 팀 리뷰 수정 후 재검토를 요청한다.
+
+최종 선행 통합에서 `origin/dev`의 `c9c21c31251f8f7799b67e98d28186a329210f64`를 확인했다. A #451의 팀 병합 `7f3f263`, D #452의 `63ab739`, B #453의 `c9c21c3`와 #462(`b3a0b92`, 호출 칸 재사용 진단 로그 어휘)를 포함한다. C의 실제 Chromium 근거는 여전히 소스8a21 고정 회차이며 뒤의 pause/진단 전환 시험과 혼합하지 않는다. 탐색과 E②에 각각 N을 부여하는 현재 조립은 회차 합계 N을 보장하지 않는다. 운영 활성화는 B16 차단뿐 아니라 같은 회차의 E+D≤N 집행까지 완료한 뒤 검토한다.
+
+C의 추가 리뷰 수정은 `eba9d0e`(초기 pause·저장 마감 후 크롤 생략·실제 E② 진단 전환·안전한 오류 로그)이며 dev 통합은 `d06ae760`이다. 실제 pipeline→수동 선택→TLS GET1·감사/drain·PostgreSQL 영속 결과는 별도 시험으로 통과했다. 원본 Chromium 회차와 같은 실행으로 합치지 않는다. 관련 race219/0SKIP과 오류 로그 race8, busy/lease·첫 Worker stage·private seq 상한 제거 변이 3개 탐지를 확인했다.
