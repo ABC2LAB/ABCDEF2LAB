@@ -66,20 +66,23 @@ type ExplorationReader interface {
 
 // DiscoveryEvidence는 전체 발견의 작은 영속 목록이다. 공개 Snapshot과 구분하며 값은 보존하지 않는다.
 type DiscoveryEvidence struct {
-	InScope     bool      `json:"in_scope"`
-	Method      string    `json:"method"`
-	Path        string    `json:"path"`
-	Kind        string    `json:"kind"`
-	Source      string    `json:"source"`
-	Confidence  string    `json:"confidence"`
-	SessionRef  string    `json:"session_ref,omitempty"`
-	Seq         uint64    `json:"seq,omitempty"`
-	At          time.Time `json:"at,omitempty"`
-	Transport   string    `json:"transport,omitempty"`
-	Status      int       `json:"status,omitempty"`
-	QueryKeys   []string  `json:"query_keys,omitempty"`
-	BodyKeys    []string  `json:"body_keys,omitempty"`
-	ContentType string    `json:"content_type,omitempty"`
+	InScope          bool      `json:"in_scope"`
+	Method           string    `json:"method"`
+	Path             string    `json:"path"`
+	Kind             string    `json:"kind"`
+	Source           string    `json:"source"`
+	Confidence       string    `json:"confidence"`
+	SessionRef       string    `json:"session_ref,omitempty"`
+	Seq              uint64    `json:"seq,omitempty"`
+	FirstSeq         uint64    `json:"first_seq,omitempty"`
+	FirstAt          time.Time `json:"first_at,omitzero"`
+	ObservationCount uint64    `json:"observation_count,omitempty"`
+	At               time.Time `json:"at,omitempty"`
+	Transport        string    `json:"transport,omitempty"`
+	Status           int       `json:"status,omitempty"`
+	QueryKeys        []string  `json:"query_keys,omitempty"`
+	BodyKeys         []string  `json:"body_keys,omitempty"`
+	ContentType      string    `json:"content_type,omitempty"`
 }
 type explorationState struct {
 	Binding      ExplorationBinding `json:"binding"`
@@ -219,7 +222,7 @@ func observationDigest(o ExplorationObservation) string {
 	return hex.EncodeToString(h[:])
 }
 
-// ReportObservedは pinned readerだけを読む。seqをモデル JSONに足しても、この経路には入らない。
+// ReportObserved는 고정된 host reader만 읽는다. 모델 JSON에 seq를 붙여도 이 경로로 승격되지 않는다.
 func (c *Controller) ReportObserved(ctx context.Context, b ExplorationBinding, seq uint64) (int, error) {
 	o, err := c.readExploration(ctx, b, seq)
 	if err != nil {
@@ -228,7 +231,17 @@ func (c *Controller) ReportObserved(ctx context.Context, b ExplorationBinding, s
 	return c.reportObservedRecord(ctx, b, seq, o)
 }
 func (c *Controller) reportObservedRecord(ctx context.Context, b ExplorationBinding, seq uint64, o ExplorationObservation) (int, error) {
-	c.mu.Lock()
+	// 진행 중 응답은 버리지 않고 재개를 기다린다. 일시정지는 결속 실패가 아니다.
+	for {
+		if err := c.Wait(ctx); err != nil {
+			return 0, err
+		}
+		c.mu.Lock()
+		if !c.record.Snapshot.Paused {
+			break
+		}
+		c.mu.Unlock()
+	}
 	defer c.mu.Unlock()
 	if c.poisoned || c.record.Exploration == nil || c.record.Exploration.Binding != b || c.record.Exploration.ClosedReason != "" || c.record.Snapshot.Stage != "crawling" || c.record.Snapshot.Paused || c.binding.Current() != nil {
 		return 0, ErrExplorationBinding
@@ -246,7 +259,7 @@ func (c *Controller) reportObservedRecord(ctx context.Context, b ExplorationBind
 		return 0, ErrExplorationObservation
 	}
 	state.LastSequence, state.LastDigest = seq, digest
-	fact := DiscoveryEvidence{Method: o.Method, Path: path, Kind: o.Kind, Source: o.Source, Confidence: "observed", InScope: true, SessionRef: b.SessionRef, Seq: seq, At: o.At, Transport: o.Transport, Status: o.Status, QueryKeys: mergeDiscoveryKeys(nil, o.QueryKeys), BodyKeys: mergeDiscoveryKeys(nil, o.BodyKeys), ContentType: o.ContentType}
+	fact := DiscoveryEvidence{Method: o.Method, Path: path, Kind: o.Kind, Source: o.Source, Confidence: "observed", InScope: true, SessionRef: b.SessionRef, Seq: seq, FirstSeq: seq, FirstAt: o.At, ObservationCount: 1, At: o.At, Transport: o.Transport, Status: o.Status, QueryKeys: mergeDiscoveryKeys(nil, o.QueryKeys), BodyKeys: mergeDiscoveryKeys(nil, o.BodyKeys), ContentType: o.ContentType}
 	c.inventoryLocked(fact)
 	e := c.addLocked(o.Method, path, o.Kind, o.Source, "/")
 	accepted := 0
@@ -279,7 +292,21 @@ func (c *Controller) inventoryLocked(fact DiscoveryEvidence) {
 	fact.BodyKeys = mergeDiscoveryKeys(nil, fact.BodyKeys)
 	old := c.record.DiscoveryInventory
 	for i, entry := range old {
-		if fact.Confidence == "inferred" && entry.Confidence == "inferred" && entry.Method == fact.Method && entry.Path == fact.Path && entry.Source == fact.Source && entry.Kind == fact.Kind && entry.Transport == fact.Transport {
+		if entry.Confidence == fact.Confidence && entry.Method == fact.Method && entry.Path == fact.Path && entry.Source == fact.Source && entry.Kind == fact.Kind && entry.Transport == fact.Transport && (fact.Confidence == "inferred" || fact.Confidence == "observed" && entry.SessionRef == fact.SessionRef && entry.ContentType == fact.ContentType) {
+			if fact.Confidence == "observed" {
+				fact.FirstSeq = entry.FirstSeq
+				fact.FirstAt = entry.FirstAt
+				if fact.FirstAt.IsZero() {
+					fact.FirstAt = entry.At
+				}
+				if fact.FirstSeq == 0 {
+					fact.FirstSeq = entry.Seq
+				}
+				fact.ObservationCount += entry.ObservationCount
+				if entry.ObservationCount == 0 {
+					fact.ObservationCount++
+				}
+			}
 			fact.QueryKeys = mergeDiscoveryKeys(entry.QueryKeys, fact.QueryKeys)
 			fact.BodyKeys = mergeDiscoveryKeys(entry.BodyKeys, fact.BodyKeys)
 			if fact.ContentType == "" {
@@ -289,6 +316,7 @@ func (c *Controller) inventoryLocked(fact DiscoveryEvidence) {
 			old[i] = fact
 			raw, _ := json.Marshal(old)
 			if len(raw) > maxDiscoveryInventoryBytes {
+				c.record.Snapshot.ExplorationPartial = true
 				c.record.Snapshot.Counts.InventoryOmitted++
 				return
 			}
@@ -299,6 +327,7 @@ func (c *Controller) inventoryLocked(fact DiscoveryEvidence) {
 	next := append(append([]DiscoveryEvidence(nil), old...), fact)
 	raw, _ := json.Marshal(next)
 	if len(next) > maxDiscoveryInventory || len(raw) > maxDiscoveryInventoryBytes {
+		c.record.Snapshot.ExplorationPartial = true
 		c.record.Snapshot.Counts.InventoryOmitted++
 		return
 	}
@@ -306,7 +335,7 @@ func (c *Controller) inventoryLocked(fact DiscoveryEvidence) {
 	c.record.Snapshot.Counts.InventoryStored = len(next)
 }
 
-// DiscoveryInventoryは公開 Snapshotと別の保護資料だ。返す配列は保存状態から切り離す。
+// DiscoveryInventory는 공개 Snapshot과 구분한 보호 자료다. 반환 배열은 저장 상태에서 분리한다.
 func (c *Controller) DiscoveryInventory() []DiscoveryEvidence {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -316,20 +345,26 @@ func explorationCloseReason(reason string) bool {
 	return reason == "completed" || reason == "cap_exhausted" || reason == "boundary_unavailable" || reason == "cancelled" || reason == "target_ended" || reason == "time_budget" || reason == "page_limit" || reason == "model_error" || reason == "runtime_unavailable"
 }
 
-// FinishExplorationは部分発見を保ち、E②診断の成功・失敗を捏造せず選択段階へ進める。
+// FinishExploration은 부분 발견을 보존하고 E② 진단 결과를 만들지 않은 채 선택 단계로 간다.
 func (c *Controller) FinishExploration(ctx context.Context, b ExplorationBinding, reason string) error {
-	if !explorationCloseReason(reason) {
+	if c == nil || ctx == nil || !explorationCloseReason(reason) {
 		return ErrDenied
+	}
+	if ctx.Err() != nil && reason != "cancelled" && reason != "target_ended" {
+		return ErrExplorationBinding
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.poisoned || c.record.Exploration == nil || c.record.Exploration.Binding != b || c.record.Exploration.ClosedReason != "" || c.record.Snapshot.Stage != "crawling" {
+	if c.poisoned || c.record.Exploration == nil || c.record.Exploration.Binding != b || !c.matchingExploration(b) || c.record.Exploration.ClosedReason != "" || c.record.Snapshot.Stage != "crawling" {
+		return ErrExplorationBinding
+	}
+	if c.binding.Current() != nil && reason != "cancelled" && reason != "target_ended" {
 		return ErrExplorationBinding
 	}
 	c.record.Exploration.ClosedReason = reason
 	s := &c.record.Snapshot
 	s.ExplorationReason = reason
-	s.ExplorationPartial = s.ExplorationPartial || reason != "completed"
+	s.ExplorationPartial = s.ExplorationPartial || reason != "completed" || c.unvisitedExplorationLocked()
 	s.ExplorationStatus = "COMPLETED"
 	if s.ExplorationPartial {
 		s.ExplorationStatus = "PARTIAL"
@@ -337,6 +372,7 @@ func (c *Controller) FinishExploration(ctx context.Context, b ExplorationBinding
 	s.InitialCompleted = true
 	s.CurrentPath = ""
 	if reason == "cancelled" || reason == "target_ended" {
+		s.Paused = false
 		s.ExplorationStatus = "STOPPED"
 		s.Stage = "stopped"
 	} else if c.binding.Mode == Manual {
@@ -359,8 +395,48 @@ type ExplorationFetchResult struct {
 }
 type ExplorationFetch func(context.Context, string) (ExplorationFetchResult, error)
 
-// CrawlExplorationは既存Crawlと別の入口だ。E② receipt・監査・attemptを探査証明として受け取らない。
-func (c *Controller) CrawlExploration(ctx context.Context, b ExplorationBinding, fetch ExplorationFetch) (bool, error) {
+func (c *Controller) unvisitedExplorationLocked() bool {
+	for _, e := range c.record.Snapshot.Endpoints {
+		if e.InScope && e.Change == "attested_read" && !e.Visited {
+			return true
+		}
+	}
+	return false
+}
+
+// 실패를 성공 마감으로 덮지 못하게 같은 회차의 부분 상태를 먼저 저장한다. 철회 뒤에도 새 권한은 만들지 않는다.
+func (c *Controller) explorationPartial(ctx context.Context, b ExplorationBinding) error {
+	if c == nil || ctx == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.record.Exploration == nil || c.record.Exploration.Binding != b || c.record.Exploration.ClosedReason != "" {
+		return nil
+	}
+	if c.poisoned {
+		c.record.Snapshot.ExplorationPartial = true
+		return ErrProjection
+	}
+	if c.record.Snapshot.Stage != "crawling" {
+		return nil
+	}
+	c.record.Snapshot.ExplorationPartial = true
+	c.record.Snapshot.CurrentPath = ""
+	return c.saveLocked(ctx, false, "exploration_partial", "", "", 0)
+}
+
+func explorationFetchCloseReason(reason string) bool {
+	return reason != "completed" && explorationCloseReason(reason)
+}
+
+// CrawlExploration은 기존 Crawl과 별도 입구이며 E② receipt·감사·attempt를 탐색 증거로 받지 않는다.
+func (c *Controller) CrawlExploration(ctx context.Context, b ExplorationBinding, fetch ExplorationFetch) (handled bool, failure error) {
+	defer func() {
+		if failure != nil {
+			failure = errors.Join(failure, c.explorationPartial(ctx, b))
+		}
+	}()
 	if fetch == nil {
 		return true, ErrUnavailable
 	}
@@ -380,6 +456,11 @@ func (c *Controller) CrawlExploration(ctx context.Context, b ExplorationBinding,
 			return true, err
 		}
 		c.mu.Lock()
+		if c.record.Snapshot.Paused {
+			c.mu.Unlock()
+			page--
+			continue
+		}
 		path, id, rank := "", "", 0
 		for _, e := range c.record.Snapshot.Endpoints {
 			if e.Method == "GET" && e.InScope && e.Change == "attested_read" && !e.Visited && !attempted[e.ID] {
@@ -397,14 +478,17 @@ func (c *Controller) CrawlExploration(ctx context.Context, b ExplorationBinding,
 		c.record.Snapshot.CurrentPath = path
 		c.mu.Unlock()
 		result, err := fetch(ctx, c.origin+path)
+		if result.Reason != "" {
+			clear(result.Body)
+			if !explorationFetchCloseReason(result.Reason) {
+				return true, ErrExplorationObservation
+			}
+			return true, c.FinishExploration(ctx, b, result.Reason)
+		}
 		if err != nil {
 			clear(result.Body)
 			if ctx.Err() != nil {
 				return true, ctx.Err()
-			}
-			// 대상 요청 하나의 실패와 경계 장애는 다르다. 경계 장애는 Reason으로 명시한다.
-			if result.Reason != "" {
-				return true, c.FinishExploration(ctx, b, result.Reason)
 			}
 			c.mu.Lock()
 			if e := c.endpointLocked("GET", path); e != nil {
@@ -417,13 +501,6 @@ func (c *Controller) CrawlExploration(ctx context.Context, b ExplorationBinding,
 				return true, err
 			}
 			continue
-		}
-		if result.Reason != "" {
-			clear(result.Body)
-			if !explorationCloseReason(result.Reason) {
-				return true, ErrExplorationObservation
-			}
-			return true, c.FinishExploration(ctx, b, result.Reason)
 		}
 		o, err := c.readExploration(ctx, b, result.Seq)
 		if err != nil {
@@ -448,11 +525,19 @@ func (c *Controller) CrawlExploration(ctx context.Context, b ExplorationBinding,
 			return true, err
 		}
 		c.mu.Lock()
+		if c.poisoned || c.record.Exploration == nil || c.record.Exploration.Binding != b || c.record.Exploration.ClosedReason != "" || c.record.Snapshot.Stage != "crawling" || c.binding.Current() != nil {
+			c.mu.Unlock()
+			clear(result.Body)
+			return true, ErrExplorationBinding
+		}
 		if pageError == "" {
 			ct, _, _ := mime.ParseMediaType(o.ResponseContentType)
 			c.discoverBodyLocked(result.Body, ct, path)
-		} else if e := c.endpointLocked("GET", path); e != nil {
-			e.ObservationError = pageError
+		} else {
+			c.record.Snapshot.ExplorationPartial = true
+			if e := c.endpointLocked("GET", path); e != nil {
+				e.ObservationError = pageError
+			}
 		}
 		clear(result.Body)
 		err = c.saveLocked(ctx, false, "exploration_page", "GET", path, o.Status)
@@ -463,7 +548,7 @@ func (c *Controller) CrawlExploration(ctx context.Context, b ExplorationBinding,
 	}
 	c.mu.Lock()
 	c.record.Snapshot.CurrentPath = ""
-	if c.record.Snapshot.Counts.Queued > 0 {
+	if c.unvisitedExplorationLocked() {
 		c.record.Snapshot.ExplorationPartial = true
 	}
 	err := c.saveLocked(ctx, false, "exploration_static_finished", "", "", 0)
