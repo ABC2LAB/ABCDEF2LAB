@@ -20,6 +20,11 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+# -I에서도 이 저장소의 평가 모듈만 가져오고 사용자 site-packages는 쓰지 않는다.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from preservation_record import (PreservationRecordError, load_record, validate_series, assessment)
+from run_record import RunRecordError, read_runner_key
 from path_mask import PATH_PROFILE, STATIC_SUFFIXES, PathKeyError, key_ref, mask_path, read_path_key
 from repeat_denials import summarize_round
 from runner_evidence import (
@@ -284,6 +289,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--read-only", action="store_true", help="GET·HEAD 패턴만 분모로 쓴다(R-R)")
     parser.add_argument("--improved-e2", action="append", type=Path,
                         help="개선 후 회차의 E② 수집 사본(회차 디렉터리의 e2-copy, --improved와 같은 순서). 주면 반복 차단 수를 센다")
+    parser.add_argument("--baseline-record-dir", action="append", type=Path,
+                        help="원본 서명 sidecar 디렉터리(각 --baseline과 같은 순서)")
+    parser.add_argument("--improved-record-dir", action="append", type=Path,
+                        help="개선 후 서명 sidecar 디렉터리(각 --improved와 같은 순서)")
+    parser.add_argument("--runner-key-file", help="sidecar를 검증할 보호 러너 키(자료 디렉터리 밖)")
+    parser.add_argument("--profile", choices=("R-P", "R-F", "R-R"), help="서명 자료의 기존 수용시험 기준")
     args = parser.parse_args(argv)
     try:
         try:
@@ -300,8 +311,32 @@ def main(argv: list[str] | None = None) -> int:
         improved = [load_round(path, args.budget, ref) for path in args.improved]
         repeats = None if args.improved_e2 is None else [summarize_round(path, ref) for path in args.improved_e2]
         summary = summarize(baseline, improved, exclusions, args.read_only, repeats)
-    except PreservationError as exc:
-        print(f"preservation: {exc}", file=sys.stderr)
+        signed = (args.baseline_record_dir, args.improved_record_dir, args.runner_key_file, args.profile)
+        if any(v is not None for v in signed):
+            if not all(v is not None for v in signed):
+                raise PreservationError("signed_round_arguments_incomplete")
+            if len(args.baseline_record_dir) != len(args.baseline) or len(args.improved_record_dir) != len(args.improved):
+                raise PreservationError("signed_round_count_mismatch")
+            runner_key = read_runner_key(args.runner_key_file)
+            # 두 보호 키는 원자료·sidecar와 함께 배포하지 않는다.
+            roots = args.baseline + args.improved + args.baseline_record_dir + args.improved_record_dir
+            for key_file in (Path(args.runner_key_file), Path(args.path_key_file)):
+                if any(key_file.resolve().is_relative_to(root.resolve()) for root in roots):
+                    raise PreservationError("key_inside_evidence_directory")
+            b = [load_record(directory, MeterFiles(meter), runner_key)
+                 for directory, meter in zip(args.baseline_record_dir, args.baseline)]
+            o = [load_record(directory, MeterFiles(meter), runner_key)
+                 for directory, meter in zip(args.improved_record_dir, args.improved)]
+            if args.profile == "R-P" and args.budget != 100:
+                raise PreservationError("preservation_profile_budget_mismatch")
+            if args.read_only != (args.profile == "R-R"):
+                raise PreservationError("preservation_profile_domain_mismatch")
+            verified = validate_series(b, o, request_budget=args.budget, read_only=args.read_only)
+            summary.update(format="abc2lab.preservation-summary/v7", signed_evidence=verified,
+                           assessment=assessment(summary, args.profile, verified))
+    except (PreservationError, PreservationRecordError, RunRecordError, EvidenceError, OSError) as exc:
+        reason = "preservation_files_unavailable" if isinstance(exc, OSError) else str(exc)
+        print(f"preservation: {reason}", file=sys.stderr)
         return 2
     json.dump(summary, sys.stdout, ensure_ascii=False, indent=1)
     sys.stdout.write("\n")

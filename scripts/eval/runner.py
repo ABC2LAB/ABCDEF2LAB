@@ -39,6 +39,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from preflight import PreflightError, load_preflight  # noqa: E402
+from preservation_record import build_payload as preservation_payload, digest as preservation_digest, NAME as PRESERVATION_NAME
 from run_record import read_runner_key, sign_run_record  # noqa: E402
 from runner_checks import (  # noqa: E402
     ExpectedTopology, Listener, allowed_host_listens, check_host_listeners, check_namespace_sharing,
@@ -60,7 +61,7 @@ from runner_engine import (  # noqa: E402
 )
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
-    drain_complete, e2_stub_counts, final_log_consistent, forwarded_by_method, forwarded_count, read_private_json,
+    drain_complete, e2_stub_counts, final_log_consistent, forwarded_by_method, forwarded_count, read_private_json, diagnostic_rows, ingress_counts, validate_ingress_layout,
 )
 from attempt_reconcile import reconcile  # noqa: E402
 from e2_collect import OUTCOME_COMPLETE, OUTCOME_PRODUCT_FAILURE, E2Collection, E2CollectionInvalid  # noqa: E402
@@ -256,6 +257,8 @@ class RunSpec:
     purpose: str = PURPOSE_OFFICIAL
     # 수용시험 회차의 경로 가림 키 참조(키 값 아님). 실행 조건에 서명되고 계측기 경로 행과 대조한다.
     path_key_ref: str | None = None
+    preservation: dict | None = None
+    engine_source_sha: str = ""
 
 
 class WatchHandle(Protocol):
@@ -282,6 +285,8 @@ class _State:
     probes: dict = field(default_factory=dict)
     # 러너가 띄운 probe 컨테이너 ID. 구간 감시가 이 ID의 생성·시작만 허용한다.
     runner_containers: set = field(default_factory=set)
+    # 원자료는 down까지 바뀔 수 있다. 여기에는 최종 해시 전 발행 인자만 보관한다.
+    preservation: dict | None = None
     record: dict | None = None
     tmpfs_usage: object = TMPFS_NOT_MEASURED
     tmpfs_pre: dict | None = None
@@ -600,6 +605,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if len(observer) != state.observer_calls or any(row["decision"] != "registered" for row in observer):
         raise RunFailure("observer_count_mismatch")
     rows = _step(state, "meter_read_failed", meter.engine_rows)
+    # 현행 Docker 러너에는 탐색 입구가 없다. 설정 실수의 트래픽을 E② 대조에서 빼서 숨기지 않는다.
+    layout = "artex-direct/v1" if spec.side == "baseline" else "e2-legacy/v1"
+    _step(state, "meter_explore_ingress_unexpected", lambda: validate_ingress_layout(rows, layout))
     # 경로 기록은 브라우저 수용시험 회차에만 있어야 한다. 공식 회차에 있으면 무효, 수용시험 회차에 없으면 측정할 수 없다.
     path_log = _step(state, "meter_read_failed", meter.path_log_present)
     if spec.purpose == PURPOSE_OFFICIAL and path_log:
@@ -621,6 +629,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "stop_reason": stop_reason, "forwarded_at_stop": forwarded_at_stop,
         "sealed_at": sealed.get("sealed_at"), "drained_at": drained.get("drained_at"),
         "forwarded_requests": forwarded, "forwarded_by_method": forwarded_by_method(rows),
+        "forwarded_by_ingress": ingress_counts(rows),
         "request_budget": spec.request_budget,
         # 폴링 뒤 seal이라 넘칠 수 있다. 정확 준수를 주장하지 않고 초과분을 그대로 남긴다.
         "over_budget": max(0, forwarded - spec.request_budget),
@@ -641,7 +650,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         decisions = _step(state, "e2_stub_log_invalid", meter.e2_stub_rows)
         e2.update(e2_stub_counts(decisions))
         # 시도별 대조(프로토콜 §8.3). 나쁜 칸이 나와도 회차를 무효로 하지 않는다(성능표에 포함, 통제 주장만 보류).
-        reconciliation = _step(state, "e2_stub_log_invalid", lambda: reconcile(decisions, rows))
+        reconciliation = _step(state, "e2_stub_log_invalid", lambda: reconcile(decisions, diagnostic_rows(rows)))
         _step(state, "evidence_write_failed",
               lambda: evidence.write_json("attempt-reconciliation.json", dict(reconciliation, fixture=True)))
     e2_product, e2_prompt = None, None
@@ -680,6 +689,29 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                   "sampling": llm_summary["sampling_applied"],
                   "host": {key: value for key, value in state.host.items() if key != "machine_id_sha256"},
                   "machine_id_sha256": state.host["machine_id_sha256"]}
+    if spec.preservation is not None:
+        options = spec.preservation
+        baseline = spec.side == "baseline"
+        # 현행 러너의 망 검증은 기존 배치다. 설정만으로 새 탐색 배치를 발행하지 않는다.
+        pc = {"layout": "artex-direct/v1" if baseline else "e2-legacy/v1",
+              "request_budget": spec.request_budget, "time_budget_seconds": spec.time_budget_seconds,
+              "model_pin_sha256": preservation_digest({"backend": spec.llm_backend, "model": spec.model_tag,
+                  "provider_slug": spec.llm_provider_slug, "provider_name": spec.llm_provider_name,
+                  "sampling": llm_summary["sampling_applied"], "serving": spec.llm_serving}),
+              "target_image_id": spec.image_ids["target"], "initial_state_sha256": pre_board["normalized"]["sha256"],
+              "machine_sha256": preservation_digest(state.host),
+              "runner_settings_sha256": preservation_digest({name: getattr(spec, name) for name in (
+                  "poll_seconds", "drain_timeout_seconds", "drain_grace_seconds", "post_settle_seconds",
+                  "llm_verify_timeout_seconds", "task_request_sha256", "host_watch_max_gap_seconds",
+                  "events_lookback_seconds", "llm_stream", "tmpfs_min_free_bytes", "worker_count", "context_window_k")}),
+              **{name: options[name] for name in ("comm_mode", "write_mode", "mcp_version", "mcp_tools_sha256",
+                  "browser_image_id", "declared_model_budget_sha256")},
+              "exploration_policy_sha256": None if baseline else options["exploration_policy_sha256"],
+              "diagnosis_policy_sha256": None if baseline else state.e2_service.get("policy_fingerprint_sha256")}
+        # 해시는 down 뒤 계산한다. seal/drain 이후에도 거부 행은 이 파일에 추가될 수 있다.
+        state.preservation = dict(options=options, run_id=spec.run_id, side=spec.side, repeat_index=spec.repeat_index,
+            engine_source_sha=spec.engine_source_sha, engine_image_id=spec.image_ids["engine"],
+            conditions=pc, stop_reason=stop_reason)
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
@@ -751,7 +783,7 @@ def _collect_e2(ports: RunPorts, evidence, state: _State, close: CloseResult, ta
     reconciliation = None
     if outcome in (OUTCOME_COMPLETE, E2_OUTCOME_NO_EXECUTION):
         decisions = [] if export is None else list(export.decisions)
-        reconciliation = _step(state, "e2_reconcile_failed", lambda: reconcile(decisions, rows))
+        reconciliation = _step(state, "e2_reconcile_failed", lambda: reconcile(decisions, diagnostic_rows(rows)))
         _step(state, "evidence_write_failed", lambda: evidence.write_json("attempt-reconciliation.json", reconciliation))
     return row, reconciliation
 
@@ -924,6 +956,13 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
             except Exception:
                 state.llm_unloaded = False
                 print("llm_unload_failed", file=sys.stderr)
+    if not reasons and state.preservation is not None:
+        try:
+            # down 성공 뒤에는 계측기 writer가 없다. 최종 바이트를 읽고 마감·입구·hash를 함께 검증한다.
+            state.preservation = _step(state, "preservation_record_failed",
+                                       lambda: preservation_payload(meter=meter, **state.preservation))
+        except RunFailure as exc:
+            reasons.append(exc.code)
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
             "llm_backend": spec.llm_backend, "tmpfs_usage": state.tmpfs_usage, "llm_unloaded": state.llm_unloaded,
             # E② 자리. 완료 결과에서는 서명된다. 세션 집계·채점이 가짜 E² 회차를 공식 결과에서 뺄 근거다.
@@ -932,6 +971,8 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
     if not reasons and state.record is not None:
         # v1.1 러너 기록도 down까지 통과한 뒤에만 서명한다(엔진 감사 키와 별도인 러너 키).
         try:
+            if state.preservation is not None:
+                evidence.write_json(PRESERVATION_NAME, ports.sign(state.preservation))
             evidence.write_json(RECORD_NAME, ports.sign(state.record))
         except Exception:
             reasons.append("record_sign_failed")
@@ -1256,7 +1297,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         observer_readonly_ref=config.observer_readonly_ref, observer_format=config.observer_format,
         verdict_wait_seconds=(config.verdict_export["ready_wait_seconds"]
                               if config.verdict_export is not None and plan.side == POLICY_SWITCH_SIDE else None),
-        purpose=config.purpose, path_key_ref=path_key_ref,
+        purpose=config.purpose, path_key_ref=path_key_ref, preservation=config.preservation, engine_source_sha=plan.source_sha,
         verdict_poll_seconds=0 if config.verdict_export is None else config.verdict_export["ready_poll_seconds"],
         e2_prompt_wait_seconds=config.e2_product["prompt_wait_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
         e2_prompt_poll_seconds=config.e2_product["poll_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
