@@ -140,6 +140,41 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Call.Reason = e2proxy.PolicyDenied
 			r.ProcessBashExited = false
 		}, false},
+		// 예산 소진·송신 시도 상한은 그 요청만 보내지 않은 거부다(C01). 거부 수가 있을 때 정책 제한으로만 받는다.
+		{"budget-exhausted-not-sent", func(r *e2runner.TrustedResult) {
+			r.Classification = "policy_not_executed"
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, true},
+		{"budget-exhausted-after-send", func(r *e2runner.TrustedResult) {
+			r.Classification = "partial_policy_denial"
+			r.Call.Counts.Denied = 1
+			r.Call.Counts.ForwardAttempted = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, true},
+		{"attempt-limit-after-send", func(r *e2runner.TrustedResult) {
+			r.Classification = "partial_policy_denial"
+			r.Call.Counts.Denied = 1
+			r.Call.Counts.ForwardAttempted = 1
+			r.Call.Reason = e2proxy.AttemptLimit
+		}, true},
+		{"budget-exhausted-without-denial", func(r *e2runner.TrustedResult) { r.Call.Reason = e2proxy.BudgetExhausted }, false},
+		{"budget-exhausted-as-unsupported", func(r *e2runner.TrustedResult) {
+			r.Classification = "unsupported"
+			r.Call.Counts.Unsupported = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, false},
+		{"result-unknown-then-budget-exhausted", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, true},
+		{"expired-denial", func(r *e2runner.TrustedResult) {
+			r.Classification = "policy_not_executed"
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.Expired
+		}, false},
 		{"audit-incomplete", func(r *e2runner.TrustedResult) { r.Execution.AuditComplete = false }, false},
 		{"audit-failed", func(r *e2runner.TrustedResult) { r.Call.Reason = e2proxy.AuditFailed }, false},
 		{"unknown-class", func(r *e2runner.TrustedResult) { r.Classification = "future-success" }, false},

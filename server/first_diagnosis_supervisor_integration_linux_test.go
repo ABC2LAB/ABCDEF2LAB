@@ -248,6 +248,11 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		// 도구 호출 하나만 허용한다. 작업 뒤 Planner 준비가 실행 상한에 닿는다(실행 결과 상태 값 계약 budget_limited).
 		policy.Runtime.MaxToolCalls = 1
 	}
+	if mode == "request-budget" || mode == "request-budget-overflow" {
+		// 승인 요청 예산을 한 번으로 둔다. 작업이 그 한 번을 쓰면 남은 E② 예산이 0이 된다. 예산 소진은 실패가 아니라
+		// 실행 상한 마감이다(계약 §3.1 "승인된 요청·시간·비용 예산 소진", budget_limited).
+		policy.MaxRequests = 1
+	}
 	// 설치 입력의 Plan당 턴 상한(C26·C32)은 launch 설정에서 host 설정으로 들어온다.
 	const installedPlanTurns = 2
 	if mode == "plan-turns" {
@@ -326,6 +331,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	}
 	if mode == "tool-failure" {
 		provider.command += " | grep -q never-present-owned-fixture"
+	}
+	if mode == "request-budget-overflow" {
+		// 남은 예산이 하나인데 한 명령에서 두 번 보낸다. 둘째 요청은 E②가 예산 소진으로 보내지 않는다.
+		provider.command += "; curl --silent --show-error --max-time 5 " + target.URL + "/allowed"
 	}
 	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}, textOnly: mode != "planner-only"}
 	if mode == "plan-turns" {
@@ -663,6 +672,19 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				}
 			}
 			t.Fatalf("실행 중 작업을 Planner가 멈추지 못함 err=%v killed=%v kill_result=%q result=%+v hits=%d exited=%v intent=%s/%s trusted=%v calls=%v", runErr, plannerProvider.killed, plannerProvider.killResult, result, hits.Load(), exited, intentState, blockedReason, trusted, calls)
+		}
+		return
+	}
+	if mode == "request-budget" || mode == "request-budget-overflow" {
+		result := supervisor.RunResult()
+		settled := result != nil && result.IntentOutcomes.Done == 1
+		if mode == "request-budget-overflow" {
+			// 둘째 요청은 예산 소진 거부(E② 근거가 있는 정책 제한)다.
+			results := runtime.host.Runtime().Results(task.ID)
+			settled = result != nil && result.IntentOutcomes.PolicyLimited == 1 && len(results) == 1 && results[0].Call.Counts.Denied == 1 && results[0].Call.Reason == e2proxy.BudgetExhausted
+		}
+		if runErr != nil || result == nil || result.ClosingReason != diagnosis.ClosingBudgetLimited || !settled || !result.Valid() || hits.Load() != 1 {
+			t.Fatalf("E② 요청 예산 소진을 실행 상한 마감으로 처리하지 않음 err=%v result=%+v hits=%d status=%s", runErr, result, hits.Load(), task.lifecycleSnapshot().Status)
 		}
 		return
 	}
