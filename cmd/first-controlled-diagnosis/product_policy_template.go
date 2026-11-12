@@ -60,6 +60,21 @@ type productRuntimeLimitSet struct {
 	IntentRuns      *uint64 `json:"intent_runs,omitempty"`
 	// 회차 하나의 실행 시간(초). launch 예산 DurationSeconds로 들어가 설치 기록과 회차 승인 범위에 남는다.
 	RunSeconds *int64 `json:"run_seconds,omitempty"`
+	// 동시 모델 호출 수. launch 설정에 들어간다. OpenRouter는 승인 max_concurrent 이하, 로컬 모델은 1만 받는다.
+	ModelConcurrency *int `json:"model_concurrency,omitempty"`
+}
+
+// productModelConcurrencyFor는 고른 모드의 동시 모델 호출 수다. 없으면 지금과 같은 1이다. 로컬 모델이 설치에 있으면
+// 1만 받고(코드에 로컬 동시 호출 상한이 없음, 설치 결정안 2-4), OpenRouter만이면 승인 max_concurrent 이하만 받는다.
+func productModelConcurrencyFor(limits *productRuntimeLimits, workflow, local bool, openRouterMax int64) (int, bool) {
+	n := 1
+	if set := limits.mode(workflow); set != nil && set.ModelConcurrency != nil {
+		n = *set.ModelConcurrency
+	}
+	if n < 1 || local && n != 1 || openRouterMax > 0 && int64(n) > openRouterMax {
+		return 0, false
+	}
+	return n, true
 }
 
 // 회차 실행 시간 기본값(초). 측정(P0) 전에는 바꾸지 않는다.

@@ -50,7 +50,7 @@
 1. `runtime_limits` 입력·검사·`policy.json`/launch 반영(E②·루프 칸). 블록이 없으면 지금 `policy.json`과 같은 값이 나오는 것을 시험으로 고정한다(동작 차이 없음). — 구현: `productPolicyBounds`가 모드별 기본값에 덮어쓰고 `validProductPolicyTemplate`으로 검사하며, 설치 입력 검사 단계(부작용 전)와 실제 설치가 같은 함수를 쓴다.
 2. `run_seconds`(기본값 그대로, 1~600초). 적용되지 않는 설치의 `engine.workers` 쓰기를 지운다(동작 차이 없음, 지금도 기본 3). `model_requests`는 열지 않고 정책 지문 판도 올리지 않는다(위 2·5).
 3. `status_read_retries`(C10 상태 조회 재시도와 같이).
-4. `model_concurrency`(C28 결정 2의 2부 뒤).
+4. `model_concurrency`(C28 결정 2의 2부 #458 뒤에 열었다). 기본 1. OpenRouter는 승인 `max_concurrent` 이하. 로컬 모델은 코드에 동시 호출 상한이 없어 4의 규칙대로 1만 받고, 로컬과 OpenRouter를 같이 설치하면 로컬 launch에도 같은 값이 들어가므로 1만 받는다. 값은 launch 설정(`model_concurrency`, 설치 기록 해시에 묶임)에 들어가고 실행이 모델 예산 gate 크기로 쓴다(첫 호출 전 한 번).
 5. `planner_turns_per_plan`·`planner_seconds_per_plan`(C26과 같이, C08 뒤).
 
 ## 4. 열린 항목

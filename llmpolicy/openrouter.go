@@ -249,6 +249,8 @@ type OpenRouterLimits struct {
 	InputPerCall, OutputPerCall                     int64
 	Provider                                        string
 	ExpiresAt                                       time.Time
+	// MaxConcurrent는 승인이 허용한 동시 호출 수다. 설치의 동시 모델 호출 설정은 이 값을 넘지 못한다(C32).
+	MaxConcurrent int64
 }
 
 func (p *OpenRouterPolicy) Limits() OpenRouterLimits {
@@ -256,7 +258,7 @@ func (p *OpenRouterPolicy) Limits() OpenRouterLimits {
 		return OpenRouterLimits{}
 	}
 	m := p.manifest
-	return OpenRouterLimits{m.MaxRequests, m.MaxInputTokens, m.MaxOutputTokens, m.MaxCostMicros, m.MaxInputPerCall, m.MaxOutputPerCall, m.ProviderSlug, m.ExpiresAt}
+	return OpenRouterLimits{m.MaxRequests, m.MaxInputTokens, m.MaxOutputTokens, m.MaxCostMicros, m.MaxInputPerCall, m.MaxOutputPerCall, m.ProviderSlug, m.ExpiresAt, m.MaxConcurrent}
 }
 
 func (p *OpenRouterPolicy) Quote(output int64) (int64, error) {

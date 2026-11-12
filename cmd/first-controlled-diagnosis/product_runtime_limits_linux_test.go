@@ -83,7 +83,7 @@ func TestProductPolicyBoundsRejectsOutOfRange(t *testing.T) {
 // 설치 입력의 runtime_limits는 닫힌 형식이다. 모르는 칸·null은 거부한다.
 func TestProductInstallInputRuntimeLimitsStrict(t *testing.T) {
 	base := `{"format":"abc2lab.product-install/v2","runtime_limits":%s}`
-	for _, block := range []string{`{"product":{"worker_turns":12}}`, `{}`, `{"workflow":{"run_seconds":300}}`} {
+	for _, block := range []string{`{"product":{"worker_turns":12}}`, `{}`, `{"workflow":{"run_seconds":300}}`, `{"product":{"model_concurrency":2}}`} {
 		var c productInstallInput
 		if decodeLaunchJSON([]byte(fmt.Sprintf(base, block)), &c) != nil {
 			t.Fatalf("valid block rejected: %s", block)
@@ -120,6 +120,36 @@ func TestProductRunSecondsFor(t *testing.T) {
 		got, ok := productRunSecondsFor(tc.limits, tc.workflow)
 		if ok != tc.ok || ok && got != tc.want {
 			t.Fatalf("%s: seconds=%d ok=%v", tc.name, got, ok)
+		}
+	}
+}
+
+// model_concurrency: 없으면 1, 로컬 모델이 설치에 있으면 1만, OpenRouter만이면 승인 max_concurrent 이하만 받는다(C32).
+func TestProductModelConcurrencyFor(t *testing.T) {
+	set := func(n int) *productRuntimeLimits {
+		return &productRuntimeLimits{Product: &productRuntimeLimitSet{ModelConcurrency: ptr(n)}}
+	}
+	for _, tc := range []struct {
+		name          string
+		limits        *productRuntimeLimits
+		workflow      bool
+		local         bool
+		openRouterMax int64
+		want          int
+		ok            bool
+	}{
+		{"default-local", nil, false, true, 0, 1, true},
+		{"default-openrouter", nil, false, false, 4, 1, true},
+		{"openrouter-within", set(3), false, false, 4, 3, true},
+		{"openrouter-over", set(5), false, false, 4, 0, false},
+		{"local-wide", set(2), false, true, 0, 0, false},
+		{"mixed-install-wide", set(2), false, true, 4, 0, false},
+		{"zero", set(0), false, false, 4, 0, false},
+		{"workflow-ignores-product", set(3), true, true, 0, 1, true},
+	} {
+		got, ok := productModelConcurrencyFor(tc.limits, tc.workflow, tc.local, tc.openRouterMax)
+		if ok != tc.ok || ok && got != tc.want {
+			t.Fatalf("%s: %d %v", tc.name, got, ok)
 		}
 	}
 }
