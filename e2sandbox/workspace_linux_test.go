@@ -106,6 +106,89 @@ func TestPackWorkspaceLimits(t *testing.T) {
 	}
 }
 
+// 긴 이름이 많아 PAX 확장 머리말이 붙어도 묶은 tar는 같은 상한으로 다시 풀린다(#443 이동찬 재현: 최소 ScratchBytes
+// 1MiB에 이름 184바이트 빈 파일 3600개).
+func TestWorkspaceLongNamesRoundTripAtMinimumScratch(t *testing.T) {
+	const scratch = 1 << 20
+	src := t.TempDir()
+	prefix := strings.Repeat("n", 176)
+	for i := 0; i < 3600; i++ {
+		name := prefix + itoa(10000000+i) // 184바이트
+		if err := os.WriteFile(filepath.Join(src, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := packWorkspace(src, scratch)
+	if err != nil {
+		t.Fatal("long names not packed", err)
+	}
+	if int64(len(data)) > workspaceArchiveLimit(scratch) {
+		t.Fatalf("archive %d over the receive limit %d", len(data), workspaceArchiveLimit(scratch))
+	}
+	dst := t.TempDir()
+	if err := unpackWorkspace(data, dst, scratch); err != nil {
+		t.Fatal("packed archive rejected on unpack", err)
+	}
+	got, err := os.ReadDir(dst)
+	if err != nil || len(got) != 3600 {
+		t.Fatalf("restored %d entries: %v", len(got), err)
+	}
+}
+
+// 이름 바이트 합계가 상한을 넘으면 묶지도 풀지도 않는다. 항목 수 상한보다 먼저 걸리도록 깊은 디렉터리 안의 긴
+// 이름으로 만든다.
+func TestWorkspaceNameBytesLimit(t *testing.T) {
+	part := strings.Repeat("d", 250)
+	var headers []tar.Header
+	dir, names := "", 0
+	for depth := 0; depth < 15; depth++ {
+		if dir != "" {
+			dir += "/"
+		}
+		dir += part
+		headers = append(headers, tar.Header{Typeflag: tar.TypeDir, Name: dir + "/", Mode: 0o700})
+		names += len(dir) + 1
+	}
+	for i := 0; names <= maxWorkspaceNameBytes; i++ {
+		name := dir + "/f" + itoa(1000+i)
+		headers = append(headers, tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: 0o600})
+		names += len(name)
+	}
+	if len(headers) >= maxWorkspaceEntries {
+		t.Fatalf("fixture hits the entry limit first: %d", len(headers))
+	}
+	if err := unpackWorkspace(workspaceTar(t, headers...), t.TempDir(), 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
+		t.Fatal("name bytes over the limit unpacked", err)
+	}
+	src := t.TempDir()
+	for _, h := range headers {
+		target := filepath.Join(src, filepath.FromSlash(strings.TrimSuffix(h.Name, "/")))
+		var err error
+		if h.Typeflag == tar.TypeDir {
+			err = os.Mkdir(target, 0o700)
+		} else {
+			err = os.WriteFile(target, nil, 0o600)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := packWorkspace(src, 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
+		t.Fatal("name bytes over the limit packed", err)
+	}
+	// 마지막 파일 하나를 빼면 상한 안이라 묶이고 다시 풀린다.
+	if err := os.Remove(filepath.Join(src, filepath.FromSlash(headers[len(headers)-1].Name))); err != nil {
+		t.Fatal(err)
+	}
+	data, err := packWorkspace(src, 1<<20)
+	if err != nil {
+		t.Fatal("name bytes at the limit rejected", err)
+	}
+	if err := unpackWorkspace(data, t.TempDir(), 1<<20); err != nil {
+		t.Fatal("name bytes at the limit not unpacked", err)
+	}
+}
+
 // 풀 때는 일반 파일·디렉터리만, 상대 정규 경로만, 중복 없이, 상한 안에서만 받는다.
 func TestUnpackWorkspaceRejectsUnsafeArchives(t *testing.T) {
 	reg := func(name string, size int64) tar.Header {
