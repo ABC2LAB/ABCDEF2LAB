@@ -256,7 +256,7 @@ export function TargetApprovalPanel({
         <div className={s.vt}>
           <Icon name="alert" />
           <div>
-            <b className={s.mono}>{host}</b> 은(는) 허용 목록에 없는 외부 주소입니다.{" "}
+            <b className={s.mono}>{host}</b> 은(는) 아직 승인되지 않은 대상입니다.{" "}
             {pending
               ? "아래 TXT 레코드를 도메인 DNS에 추가한 뒤 확인을 누르세요."
               : "대상을 등록하면 도메인 DNS에 추가할 TXT 레코드가 나옵니다."}
@@ -375,6 +375,8 @@ export function TargetApprovalPanel({
 // TXT 레코드 이름 · 값 복사 (시안 data-copy). 클립보드를 못 쓰면 그 글을 선택해 둔다.
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [done, setDone] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
   return (
     <button
       className={cx(s.btn, s.sm)}
@@ -395,7 +397,8 @@ function CopyButton({ text, label }: { text: string; label: string }) {
             .writeText(text)
             .then(() => {
               setDone(true);
-              setTimeout(() => setDone(false), 1500);
+              clearTimeout(timer.current);
+              timer.current = setTimeout(() => setDone(false), 1500);
             })
             .catch(pick);
         } catch {

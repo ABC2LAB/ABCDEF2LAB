@@ -177,7 +177,7 @@ it("시안 v91 모양: 소유 확인 필요 딱지 · 등록 칸은 접혀 있�
   render(<TargetApprovalPanel url={url} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   expect(screen.getByText("소유 확인 필요")).toBeVisible();
-  expect(screen.getByText(/허용 목록에 없는 외부 주소입니다/)).toHaveTextContent("owned.example.test");
+  expect(screen.getByText(/아직 승인되지 않은 대상입니다/)).toHaveTextContent("owned.example.test");
   // 접혀 있을 때는 입력칸이 없다 (시안처럼 한 줄 + 버튼)
   expect(screen.queryByLabelText("진단 권한 · 비변경 근거")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));

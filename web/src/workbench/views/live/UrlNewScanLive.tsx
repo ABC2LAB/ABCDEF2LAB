@@ -54,6 +54,12 @@ const LOGIN_ACCOUNTS = [
   ["A", "관리자"],
   ["B", "일반 · 테스트"],
 ] as const;
+// 요약 '쓰기 요청' 줄의 짧은 말 (범위 확인 뒤 scope.approval_mode, 위 APPROVAL_MODE_RULE 과 같은 뜻)
+const APPROVAL_MODE_SHORT: Readonly<Record<keyof typeof APPROVAL_MODE_RULE, string>> = {
+  preauthorized_scope: "상태 변경은 자동 승인 안 함",
+  confirm_every_request: "모든 요청 한 건씩 승인",
+  workbench_selective_v1: "쓰기 요청 한 건씩 승인",
+};
 const GOALS = ["남의 정보 보기 (IDOR)", "관리자 기능 접근", "로그인 없이 접근", "민감정보 노출"] as const;
 const DEPTHS = ["빠르게", "보통", "꼼꼼하게"] as const;
 
@@ -665,7 +671,13 @@ export function UrlNewScanLive() {
                 <NotYet why="서버 진단 입력에 점검 목표 칸이 없습니다" />
               </dd>
               <dt>쓰기 요청</dt>
-              <dd>{profile?.workflow && mv === "ai_auto_v1" ? "자동 승인 안 함" : "승인 후 전송"}</dd>
+              <dd>
+                {scope
+                  ? APPROVAL_MODE_SHORT[scope.approval_mode]
+                  : profile?.workflow && mv === "ai_auto_v1"
+                    ? "자동 승인 안 함"
+                    : "승인 후 전송"}
+              </dd>
               {profile?.workflow ? (
                 <>
                   <dt>제외 경로</dt>
@@ -724,16 +736,22 @@ export function UrlNewScanLive() {
                 {warnRule}
               </ul>
             ) : (
-              // 범위 확인 전 (시안 #pTarget · #pSendT · #pExcl): 서버가 늘 지키는 것만. 범위 · 상한 수치는 확인 뒤에 나온다
-              <ul className={s.policy} id="luPolicy">
-                <Rule t="이 사이트에만 요청" sub={site ? urlHost(site) : undefined} />
-                <Rule t="쓰기 요청은 승인 후 전송" />
-                {profile?.workflow ? (
-                  <Rule t="제외한 경로는 요청 안 함" sub={excludedCount ? `${excludedCount}개` : "없음"} />
-                ) : null}
-                <Rule t="모든 요청 · 승인 기록 남김" />
-                {warnRule}
-              </ul>
+              // 범위 확인 전 (시안 #pTarget · #pSendT · #pExcl): 서버가 늘 지키는 기본 원칙만. 범위 · 상한 수치는 확인 뒤에 나온다
+              <>
+                <p className={s.help}>범위 확인 전 기본 원칙 · 범위와 상한 수치는 확인 뒤 서버 값</p>
+                <ul className={s.policy} id="luPolicy">
+                  <Rule t="이 사이트에만 요청" sub={site ? urlHost(site) : undefined} />
+                  {external && profile?.model ? (
+                    <Rule t="외부 모델로 대상 응답 전송" sub={profile.model.provider} />
+                  ) : null}
+                  <Rule t="쓰기 요청은 승인 후 전송" />
+                  {profile?.workflow ? (
+                    <Rule t="제외한 경로는 요청 안 함" sub={excludedCount ? `${excludedCount}개` : "없음"} />
+                  ) : null}
+                  <Rule t="모든 요청 · 승인 기록 남김" />
+                  {warnRule}
+                </ul>
+              </>
             )}
           </div>
           <div className={s.isec}>
