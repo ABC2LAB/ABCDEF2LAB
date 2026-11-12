@@ -13,7 +13,7 @@
 | `preload.js`, `runtime_harvest.js` | 페이지 내부 fetch/XHR hook, 동적 URL/폼/WS/SSE 구분 | 별도 `metadata_only.js`. 이미 열린 페이지의 native 호출을 그대로 전달하고 메타데이터만 기록 |
 | route/permission helper | 정적 route 후보 방식 | route literal을 추정 후보로 보존. 대상별 메뉴 위조·권한 트리·로그인 성공은 구현 완료로 계산하지 않음 |
 
-원본 runtime의 Node 직접 fetch, TLS 검증 해제, 응답·헤더·WS frame 저장을 제품 경로로 켜지 않았다. metadata-only 어댑터는 브라우저 프로세스나 네트워크를 새로 만들지 않는다. 브라우저 MCP와 탐색 Direct Bash의 실행 허용 목록·별도 실행 환경은 별도 P1 런타임 변경이 제공해야 한다.
+제품의 별도 explore-browser 이미지 단계는 skills를 복사하지 않고, Compose는 경계 CA만 읽기 전용으로 마운트한다. 이 범위는 `scripts/ci/test_product_explore_browser.py`가 검사한다. 제품 이미지에는 원본 skills가 참고자료로 남는다. [탐색 실행기 A 후속](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451)은 generic DirectBash/APIRecon의 nonnil 주입을 도구 이름과 관계없이 프로필·서버 양쪽에서 초기 I/O 전에 거부한다. 따라서 원본 unsafe script를 generic Skill/Bash로 여는 경로는 현재 지원하지 않는다. 프로그램 소유 Fetch와 브라우저의 metadata-only hook은 유지한다. 향후 이 capability를 복원하려면 typed sandbox adapter, metadata-only 파일만 보이는 별도 mount, 원본 unsafe script 실행 불가를 실제 코드·시험으로 먼저 검증해야 한다(B16 미완료). 도구 이름 검사나 SKILL 문장은 이 증명의 대체가 아니다. metadata-only 어댑터는 브라우저 프로세스나 네트워크를 새로 만들지 않는다.
 
 ## 추정과 실제 관측
 
@@ -40,15 +40,15 @@ ReadObservation(context.Context, ExplorationBinding, uint64) (ExplorationObserva
 
 ## E②와 분리한 정적 pass
 
-기존 `Crawl(ctx, Fetch)`와 `e2runner.Result` 검증은 유지한다. 새 `CrawlExploration(ctx, binding, ExplorationFetch)`만 탐색 호스트가 주입한 fetch와 reader를 사용한다. fetch가 돌려준 URL의 GET/path·seq와 private 응답 hash를 검증한 후 기존 HTML/bundle parser를 사용한다. 이 API 자체에 HTTP client, TLS 설정 변경, 일반 Bash, MCP transport는 없다.
+기존 `Crawl(ctx, Fetch)`와 `e2runner.Result` 검증은 유지한다. 새 `CrawlExploration(ctx, binding, ExplorationFetch)`만 탐색 호스트가 주입한 fetch와 reader를 사용한다. fetch가 돌려준 URL의 GET/path·seq와 private 응답 hash를 검증한 후 기존 HTML/bundle parser를 사용한다. `CollectStaticDocument`의 임의 입력 바이트는 inferred 후보만 만들고 attested_read나 자동 방문·선택으로 올리지 않는다. 이 입력의 base URI도 검증된 응답의 기준 주소에 복사하지 않는다. 이 API 자체에 HTTP client, TLS 설정 변경, 일반 Bash, MCP transport는 없다.
 
 `RecordExplorationUnavailable(ctx, reason)`은 bound/claimed 이전의 호스트 preflight 전용 API다. Current와 crawling 상태를 검사하고 boundary/model/runtime/browser 미가용의 고정 사유만 `ExplorationStatus=NOT_RUN`으로 저장한다. Stage·InitialCompleted·claimed·선택은 바꾸지 않아 기존 E② 정적 Crawl fallback을 유지한다. 세션을 실제 결속하면 RUNNING, 종료 시 COMPLETED/PARTIAL/STOPPED로 표시한다.
 
-정적 pass 뒤에도 stage는 `crawling`으로 남겨 동적 탐색의 추정 보고와 관측 수집을 받는다. 호출자가 `FinishExploration`으로 완료 또는 부분 종료 사유를 전달하면 수동 모드의 선택 단계 또는 기존 자동 선택 단계로 간다. `cap_exhausted`, `boundary_unavailable`, `model_error`, `runtime_unavailable`, 시간·페이지 상한 등은 부분 발견을 남긴다. 모델 오류나 런타임 미가용을 completed로 바꾸지 않는다. 취소·대상 종료는 stopped다. 보호 저장은 호출 취소와 분리하지만 caller deadline과 기존 5초 저장 상한 중 빠른 시간을 지켜 마감 시간 상한을 늘리지 않는다. 일반 fetch 오류는 요청 하나의 실패와 부분 완료로 남기고 다음 페이지로 진행한다. 호스트가 `ExplorationFetchResult.Reason`으로 경계 장애·상한을 명시한 경우에만 그 사유로 종료한다. 이 흐름은 E② `Sent/Attempted/Blocked`를 만들지 않고 별도 `ExplorationRequests`만 센다. 부분 탐색을 취약점 없음 또는 E③ 성공으로 바꾸지 않는다.
+정적 pass 뒤에도 stage는 `crawling`으로 남겨 동적 탐색의 추정 보고와 관측 수집을 받는다. 호출자가 `FinishExploration`으로 완료 또는 부분 종료 사유를 전달하면 수동 모드의 선택 단계 또는 기존 자동 선택 단계로 간다. `cap_exhausted`, `boundary_unavailable`, `model_error`, `runtime_unavailable`, 시간·페이지 상한 등은 부분 발견을 남긴다. 모델 오류나 런타임 미가용을 completed로 바꾸지 않는다. 취소·대상 종료는 stopped다. 보호 저장은 호출 취소와 분리하지만 caller deadline과 기존 5초 저장 상한 중 빠른 시간을 지켜 마감 시간 상한을 늘리지 않는다. 모든 크롤 오류는 마감 전에 partial을 저장하며, 저장 자체가 실패하면 poisoned 상태로 정상 마감을 거부한다. 일반 fetch 오류는 요청 하나의 실패와 부분 완료로 남기고 다음 페이지로 진행한다. 호스트가 `ExplorationFetchResult.Reason`으로 경계 장애·상한을 명시한 경우에만 그 사유로 종료한다. fetch의 `completed`는 거부한다. `FinishExploration(completed)`도 남은 미방문 attested_read가 있으면 PARTIAL로 남긴다. Current가 철회되면 cancelled/target_ended 외 사유로 마감하지 않는다. 진행 중 응답은 일시정지 뒤 재개를 기다려 증분 관측으로 저장한다. 이 흐름은 E② `Sent/Attempted/Blocked`를 만들지 않고 별도 `ExplorationRequests`만 센다. 부분 탐색을 취약점 없음 또는 E③ 성공으로 바꾸지 않는다.
 
 ## 발견 보존과 남은 한도
 
-기존 32칸 endpoint 목록은 실행 선택에 그대로 쓰고 승인 한도를 바꾸지 않는다. `Record.DiscoveryInventory`는 별도 보호 자료로, 출처·inferred/observed·실제 세션/seq·전송 종류·이름을 최대 256개·64KiB까지 보존한다. 공개 `Snapshot`에는 포함하지 않는다. 추정은 같은 메서드/path/종류/source/transport별로 병합하고 관측은 seq별 근거를 보존한다. 상한에 걸린 수는 `InventoryOmitted`에 남긴다. 공개 48KiB 압축이 요청 모양을 지워도 보호 자료는 지우지 않는다. 전체 저장 record의 기존 128KiB 한도는 유지한다.
+기존 32칸 endpoint 목록은 실행 선택에 그대로 쓰고 승인 한도를 바꾸지 않는다. `Record.DiscoveryInventory`는 별도 보호 자료로, 출처·inferred/observed·실제 세션/seq·전송 종류·이름을 최대 256개·64KiB까지 보존한다. 공개 `Snapshot`에는 포함하지 않는다. 추정은 같은 메서드/path/종류/source/transport별로 병합한다. 관측은 같은 session/메서드/path/종류/source/transport/content-type별로 묶고 `FirstSeq/FirstAt`(처음), 기존 `Seq/At`(마지막), `ObservationCount`(횟수)를 보존한다. 기존 v1의 `Seq/At`만 있는 관측은 그 값이 처음이자 마지막인 한 번의 관측으로 해석한다. 출처·전송 방식·media type이 다르면 키 이름과 시각을 섞지 않는다. 상한에 걸린 수는 `InventoryOmitted`에 남기고 탐색을 PARTIAL로 유지한다. 공개 48KiB 압축이 요청 모양을 지워도 보호 자료는 지우지 않는다. 전체 저장 record의 기존 128KiB 한도는 유지한다.
 
 결정적 로컬 fixture의 실측:
 
@@ -75,4 +75,4 @@ hooks.stop();
 
 어댑터의 path도 비신뢰 입력이다. 보호된 발견 저장 외에 모델·공유 출력으로 보낼 때는 현행 S09와 계정 규칙을 적용해야 한다. 경로에 자격값이 있을 가능성을 metadata-only 형식만으로 제거했다고 주장하지 않는다. 모델·로그·보고서에는 금지된 자격값·제어 비밀을 보내지 않는다.
 
-검증은 `go test -json ./diagnosisflow ./agent`, 해당 패키지 `go vet`, `node --test skills/api-recon/scripts/metadata_only.test.js`로 한다. 실제 브라우저·private boundary·DB·모델 수용 결과는 각각 실행 여부를 별도로 기록한다.
+검증은 `go test -json ./diagnosisflow ./agent`, 해당 패키지 `go vet`, `node --test skills/api-recon/scripts/metadata_only.test.js`로 한다. 기존 Go CI는 `TestAPIReconMetadataOnlyNodeAdapter` wrapper로 Node 시험도 실행한다(새 의존성·CI 설정 변경 없음). 실제 브라우저·private boundary·DB·모델 수용 결과는 각각 실행 여부를 별도로 기록한다.

@@ -145,3 +145,16 @@
 5. **원본 기록 프록시(`traffic/`)는 관찰 통로로 쓰지 않는다.** 대상 TLS를 검증하지 않고(`SslInsecure`), 실행 결속이 없고, 헤더를 평문으로 저장하고, 오류가 나면 기록 없이 통과시키기 때문이다. 경계 기록(§4)이 관찰의 정본이다.
 6. **브라우저 입구 외부 GET 유출(§3 한계) — 지금은 한계로 두고 잰다.** 경계 기록의 `external_host` 수를 보존 측정과 함께 보고, 줄이는 규칙(승인 origin 문서가 불러온 호스트만 허용, 허용 목록)은 측정 결과를 보고 정한다.
 7. **(남음, 이동찬·이경준)** `시험 계정` 분류의 저장 위치와 승인 주체. 효력 조건은 [개발 계획의 계정 항목](../development-plan.md#1111-개선-순서--원본-능력-보존-우선)을 따르고, 분류가 들어올 때 §8과 수용시험 S09를 함께 고친다.
+
+## P1 구현의 Workbench 미실행 사유 (2026-11-12)
+
+이 절은 운영 경계 프로토콜 채택이나 활성화 승인을 뜻하지 않는다. 현재 P1 host adapter가 없는 제품 경로가 저장하는 `workbench-flow/v1` 조회 필드의 구현 목록이다. `exploration_status=NOT_RUN`의 `exploration_reason`은 다음 고정값만 발급한다.
+
+| 코드 | 의미 |
+|---|---|
+| `boundary_unavailable` | 운영 경계 어댑터 미공급 |
+| `model_unavailable` | 승인된 task 모델 Worker를 준비하지 못함 |
+| `runtime_unavailable` | 보호 runtime/private 자료 채널 조립 실패 |
+| `browser_unavailable` | 고정 브라우저·MCP 세션 준비 실패 |
+
+이 값은 사용자·모델의 임의 오류 문자열이 아니다. 화면은 "탐색 안 함(사유)"으로 표시하고 발견 없음·검사 완료로 바꾸지 않는다. 이 경우 기존 보호 정적 크롤을 수행할 수 있어도 새로운 MCP 탐색의 상태는 별도 NOT_RUN이다. 실제 결속 후에는 RUNNING, 마감은 COMPLETED/PARTIAL/STOPPED로 구분한다. 현재 B16 native Node→자기 MCP 제어 연결은 FAIL이고 운영 어댑터는 nil이므로 전체 운영 수용이 끝난 것이 아니다. 상세 실측은 [P1 fixture 결과](../evaluation/p1-browser-fixture-results.md)를 따른다.

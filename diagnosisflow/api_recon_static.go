@@ -119,6 +119,6 @@ func (c *Controller) CollectStaticDocument(ctx context.Context, path, contentTyp
 	if c.poisoned || c.record.Snapshot.Stage != "crawling" || c.record.Snapshot.Paused || c.binding.Current() != nil || !ok || canonical != path || !c.allowedPath(path) || len(body) > c.binding.Limits.MaxResponseBytes {
 		return ErrDenied
 	}
-	c.discoverBodyLocked(body, contentType, path)
+	c.discoverDocumentLocked(body, contentType, path, true)
 	return c.saveLocked(ctx, false, "api_recon_static", "", path, 0)
 }

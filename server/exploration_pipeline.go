@@ -146,19 +146,34 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 		if !state.InitialCompleted {
 			reason := string(session.ClosedReason())
 			result, workerErr := session.WorkerResult()
-			if reason == string(exploration.Completed) {
+			switch reason {
+			case string(exploration.Completed), string(exploration.ModelError), string(exploration.RuntimeUnavailable):
 				if e = drain(call); e != nil {
 					failures = append(failures, exploration.ErrUnavailable)
-					reason = "runtime_unavailable"
-				}
-				if errors.Is(workerErr, ErrFirstDiagnosisModelBudget) || result.Reason == harness.ReasonMaxTurns || result.Reason == harness.ReasonTimeout {
-					reason = "cap_exhausted"
+					reason = string(exploration.RuntimeUnavailable)
+				} else if errors.Is(workerErr, ErrFirstDiagnosisModelBudget) {
+					// 같은 실제 원장이 한도를 소진하고 정산까지 끝난 경우만 예산 종료다.
+					// 설정 거부·불명 정산·다른 원장의 오류를 budget_limited로 승격하지 않는다.
+					settledLimit := false
+					if budget := s.firstModelBudget; budget != nil {
+						budget.mu.Lock()
+						settledLimit = budget.limitReached && !budget.blocked && budget.inflight == 0 && budget.usage.UsageKnown
+						budget.mu.Unlock()
+					}
+					if settledLimit {
+						reason = string(exploration.CapExhausted)
+					} else {
+						reason = string(exploration.RuntimeUnavailable)
+					}
+				} else if result.Reason == harness.ReasonMaxTurns || result.Reason == harness.ReasonTimeout {
+					reason = string(exploration.CapExhausted)
 				} else if result.Reason == harness.ReasonModelError {
-					reason = "model_error"
+					reason = string(exploration.ModelError)
 				} else if workerErr != nil || result.Reason != harness.ReasonCompleted {
-					reason = "runtime_unavailable"
+					reason = string(exploration.RuntimeUnavailable)
 				}
 			}
+
 			// 취소·철회·경계 마감 뒤 새 observed 승격은 하지 않는다. 저장한 partial과 마감만 보존한다.
 			if e = o.Workflow.FinishExploration(call, b, reason); e != nil {
 				failures = append(failures, exploration.ErrUnavailable)
@@ -222,18 +237,22 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 		}
 		return out, exploration.ErrUnavailable
 	}
-	// 정적 크롤이 이미 올린 observed 순번은 재생하지 않는다. 공개 요약과 보호 inventory를 함께 확인한다.
+	// 선택/표시 목록이나 inventory가 상한으로 생략돼도 private 커서만 신뢰한다.
+	// 종료 watcher의 마지막 drain과 같은 gate를 써서 checkpoint 갱신이 경합하지 않게 한다.
 	snapshot, _ = o.Workflow.Snapshot()
-	for _, endpoint := range snapshot.Endpoints {
-		if endpoint.ExplorationSessionRef == b.SessionRef && endpoint.ExplorationSeq > lastSeq {
-			lastSeq = endpoint.ExplorationSeq
-		}
+	cursorCtx, cursorCancel := context.WithTimeout(context.WithoutCancel(ctx), host.Session.CloseTimeout)
+	select {
+	case drainGate <- struct{}{}:
+		lastSeq, e = o.Workflow.ExplorationCursor(cursorCtx, b)
+		<-drainGate
+	case <-cursorCtx.Done():
+		e = cursorCtx.Err()
 	}
-	for _, entry := range o.Workflow.DiscoveryInventory() {
-		if entry.SessionRef == b.SessionRef && entry.Seq > lastSeq {
-			lastSeq = entry.Seq
-		}
+	cursorCancel()
+	if e != nil {
+		return out, exploration.ErrUnavailable
 	}
+
 	if snapshot.InitialCompleted {
 		if e = session.Close(context.Background(), exploration.CapExhausted); e != nil {
 			return out, e

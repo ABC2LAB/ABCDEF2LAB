@@ -47,3 +47,23 @@ A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://gi
 
 
 최종 확인 중 추가로 열린 #455(`c69e61b3c8b1bbe3cf9b9aef64a9e7ddf5271197`, dev, 설치 run_seconds)와 #456(`f297491815eea2d5b940d8eb8b7a15986c92aca6`, dev, 탐색 결과 UI seam)의 파일·리뷰·CI·병합 상태를 확인했다. 둘 다 리뷰/inline 없음, CI 실행 중이며 자체 변경 파일과 겹치지 않는다. #455의 실행 시간은 기존 승인 Scope/launch 예산에서 읽으므로 설치 키를 중복 추가하지 않는다. #456은 mock 배너가 있는 표시 화면이며 실 API 연결을 이 PR이 완료했다고 주장하지 않는다. 발견/경계 private 채널이 정해진 뒤 UI 담당 매퍼와 연결해야 한다. 다른 담당자의 PR은 수정·병합하지 않았다.
+
+## 변경 파일의 역할
+
+정확한 전체 diff는 A #451, B #453, C #457, D #452에서 각각 확인한다. 선행 스택 파일을 C의 신규 구현으로 중복 계산하지 않는다.
+
+| 묶음 | 핵심 파일 | 역할 |
+|---|---|---|
+| A | `exploration/session.go`, `tools.go`, `failure.go` | 결속·자원 상한·허용 도구·값 없는 오류 분류 |
+| A | `agent/exploration.go` | 원본 루프의 탐색 프로필, 모델 입력/활동 가림, 범용 Bash/Skill 거부 |
+| A | `server/exploration_session.go`, `exploration_stage.go`, `mcpdiscover.go`, `mcphttp/scoped.go` | 기존 task Worker/HTTP MCP 연결, 단계별 정리·실패 상태 |
+| B | `diagnosisflow/exploration.go`, `contract.go`, `controller.go`, `crawl.go`, `postgres.go` | private 관측·부분/미실행 상태·저장·기존 선택 계약 |
+| B | `diagnosisflow/api_recon_static.go`, `skills/api-recon/scripts/metadata_only.js` | 값 없는 정적/페이지 실행 메타데이터, inferred/observed 분리 |
+| B | `diagnosisflow/api_recon_metadata_test.go` 및 관련 회귀 | Node 시험의 CI 실행, 결속·오류·반복·byte cap·DB 복원 |
+| C | `cmd/first-controlled-diagnosis/product_exploration.go`, `product_workflow.go`, `serve.go`, `url_preparation_runtime.go` | URL의 승인 대상 ref/revision 결속, 보호 host factory 주입과 nil 기본값 |
+| C | `server/exploration_pipeline.go`, `e2_http_runtime.go`, `first_diagnosis_http_provider*.go` | 정적→원본 Worker→저장→정리의 실제 stage, 진단과 once gate 분리 |
+| C | `diagnosisflow/exploration_closure.go`, `exploration_cursor.go`, `server/exploration_budget.go`, `goals.go`, `first_diagnosis_supervisor.go` | 저장 순번과 진단 미시작·예산 정산의 비공개 검증, 영속 마감 |
+| C | `internal/explorefixture/`, `cmd/exploration-contract-fixture/`, `server/exploration_docker_test.go`, `scripts/eval/browser_fixture_harness.py` | 실제 MCP·Chromium·소유 TLS fixture의 양성/음성·격리·정리 시험 |
+| D | `cmd/eval-meter/`, `scripts/eval/runner.py`, `attempt_reconcile.py` | 리슨에서 유래한 입구 분류, 기존 배치의 미승인 explore 무효화 |
+| D | `scripts/eval/preservation_record.py`, `preservation.py`, `run_record.py` | 정리 후 최종 원자료 해시·서명·짝/핀 검증, 실측 미실행 차단 |
+| 공통 | `docs/contracts/`, `docs/implementation/`, `docs/evaluation/` | 구현 범위·호스트 의무·재현 절차·FAIL/NOT_RUN 포함 근거 |

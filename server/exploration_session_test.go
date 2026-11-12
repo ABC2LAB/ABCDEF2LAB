@@ -19,6 +19,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/norma/llm"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 type explorationEvents struct {
@@ -52,12 +53,13 @@ func (b *explorationFixtureBoundary) Open(_ context.Context, binding exploration
 }
 
 type explorationFixtureLease struct {
-	mu       sync.Mutex
-	state    exploration.State
-	err      error
-	closeErr error
-	closes   int
-	events   *explorationEvents
+	closeReply func(exploration.State) exploration.State
+	mu         sync.Mutex
+	state      exploration.State
+	err        error
+	closeErr   error
+	closes     int
+	events     *explorationEvents
 }
 
 func (l *explorationFixtureLease) Status(context.Context) (exploration.State, error) {
@@ -73,6 +75,9 @@ func (l *explorationFixtureLease) Close(_ context.Context, reason exploration.Re
 	l.state.Active = false
 	l.state.ClosedReason = reason
 	l.state.ActiveConnections = 0
+	if l.closeReply != nil {
+		return l.closeReply(l.state), l.closeErr
+	}
 	return l.state, l.closeErr
 }
 func (l *explorationFixtureLease) stop(reason exploration.Reason) {
@@ -98,14 +103,20 @@ func (b *explorationFixtureBrowser) Close(context.Context) error {
 }
 
 type explorationFixtureProvider struct {
-	failure error
-	calls   atomic.Int32
-	invalid atomic.Bool
-	block   bool
-	started chan struct{}
+	mu        sync.Mutex
+	requests  []llm.CompletionRequest
+	finalText string
+	failure   error
+	calls     atomic.Int32
+	invalid   atomic.Bool
+	block     bool
+	started   chan struct{}
 }
 
 func (p *explorationFixtureProvider) Complete(ctx context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, r)
+	p.mu.Unlock()
 	n := p.calls.Add(1)
 	if p.failure != nil {
 		return llm.Message{}, "", llm.Usage{}, p.failure
@@ -127,7 +138,11 @@ func (p *explorationFixtureProvider) Complete(ctx context.Context, r llm.Complet
 	if n <= 2 {
 		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "owned-fixture-call", Name: name, Input: json.RawMessage(input)}}}, "tool_use", llm.Usage{}, nil
 	}
-	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("탐색 완료")}}, "end_turn", llm.Usage{}, nil
+	text := p.finalText
+	if text == "" {
+		text = "탐색 완료"
+	}
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock(text)}}, "end_turn", llm.Usage{}, nil
 }
 func (p *explorationFixtureProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
@@ -143,16 +158,17 @@ func (r *explorationFixtureReporter) ReportStatic(_ context.Context, d []diagnos
 }
 
 type explorationMCPFixture struct {
-	server    *httptest.Server
-	requests  atomic.Int32
-	deleted   atomic.Int32
-	headersOK atomic.Bool
-	navigate  atomic.Int32
-	events    *explorationEvents
-	catalog   []string
-	closeFail bool
-	entered   chan struct{}
-	cancelled chan struct{}
+	server       *httptest.Server
+	requests     atomic.Int32
+	deleted      atomic.Int32
+	headersOK    atomic.Bool
+	navigate     atomic.Int32
+	events       *explorationEvents
+	catalog      []string
+	closeFail    bool
+	deleteStatus int
+	entered      chan struct{}
+	cancelled    chan struct{}
 }
 
 func newExplorationMCPFixture(t *testing.T, events *explorationEvents, catalog []string) *explorationMCPFixture {
@@ -164,7 +180,11 @@ func newExplorationMCPFixture(t *testing.T, events *explorationEvents, catalog [
 			f.deleted.Add(1)
 			f.headersOK.Store(r.Header.Get("Mcp-Session-Id") == "fixture-session" && r.Header.Get("MCP-Protocol-Version") == "2025-06-18")
 			f.events.add("mcp:delete")
-			w.WriteHeader(http.StatusNoContent)
+			if f.deleteStatus != 0 {
+				w.WriteHeader(f.deleteStatus)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
 			return
 		}
 		var req struct {
@@ -540,5 +560,200 @@ func TestExplorationSessionFinalizeDeadlineDoesNotSkipRemainingCleanup(t *testin
 	err = s.Close(t.Context(), exploration.Cancelled)
 	if !errors.Is(err, exploration.ErrUnavailable) || time.Since(started) > time.Second || finalized.Load() != 1 || b.lease.closed() != 1 || browser.closes.Load() != 1 || f.deleted.Load() != 1 {
 		t.Fatal("finalization deadline was hidden or skipped resource cleanup")
+	}
+}
+
+func TestExplorationSessionHTTPRedactsModelRequestsAndActivity(t *testing.T) {
+	o, b, browser, f, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+	p.finalText = "fixture-private-marker 탐색 완료"
+	session, err := OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activity []db.Activity
+	_, err = session.Run(t.Context(), o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, func(a db.Activity) { activity = append(activity, a) })
+	if err != nil || p.calls.Load() != 3 || f.navigate.Load() != 1 {
+		t.Fatal("actual HTTP MCP Worker flow did not run", err)
+	}
+	p.mu.Lock()
+	requests := append([]llm.CompletionRequest{}, p.requests...)
+	p.mu.Unlock()
+	redacted := false
+	for _, request := range requests {
+		raw, _ := json.Marshal(request)
+		if strings.Contains(string(raw), "fixture-private-marker") {
+			t.Fatal("host MCP marker reached model request")
+		}
+		redacted = redacted || strings.Contains(string(raw), "[REDACTED]")
+	}
+	if !redacted {
+		t.Fatal("model request did not contain redacted actual MCP result")
+	}
+	for _, a := range activity {
+		if strings.Contains(a.Summary+a.Detail+string(a.Metadata), "fixture-private-marker") {
+			t.Fatal("host marker reached persisted activity")
+		}
+	}
+	assertExplorationClosed(t, session, b, browser, f, exploration.Completed)
+}
+func TestExplorationSessionRunFailureDoesNotCloseAsCompleted(t *testing.T) {
+	for _, mode := range []string{"model-failure", "rejected-options"} {
+		t.Run(mode, func(t *testing.T) {
+			o, b, browser, f, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+			target := "https://owned.test/"
+			want := exploration.ModelError
+			if mode == "model-failure" {
+				p.failure = errors.New("fixture-private-marker")
+			} else {
+				target = "ftp://owned.test/"
+				want = exploration.RuntimeUnavailable
+			}
+			session, err := OpenExplorationSession(t.Context(), o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = session.Run(t.Context(), o.Worker, agent.ExplorationRunOptions{TargetURL: target, Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, nil)
+			if err == nil || session.ClosedReason() != want {
+				t.Fatal("failed or rejected run recorded as completed")
+			}
+			if mode == "rejected-options" && p.calls.Load() != 0 {
+				t.Fatal("rejected options called provider")
+			}
+			assertExplorationClosed(t, session, b, browser, f, want)
+		})
+	}
+}
+func TestExplorationSessionCleanupReportsOnlySafeStageAndKind(t *testing.T) {
+	for _, stage := range []string{"browser_close", "finalize", "mcp_delete", "browser_lease", "boundary_close"} {
+		t.Run(stage, func(t *testing.T) {
+			o, b, browser, f, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
+			switch stage {
+			case "browser_close":
+				f.closeFail = true
+			case "finalize":
+				o.Finalize = func(context.Context, exploration.Binding) error { return errors.New("fixture-private-marker") }
+			case "mcp_delete":
+				f.deleteStatus = 503
+			case "browser_lease":
+				browser.closeErr = errors.New("fixture-private-marker")
+			case "boundary_close":
+				b.lease.closeErr = errors.New("fixture-private-marker")
+			}
+			session, err := OpenExplorationSession(t.Context(), o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = session.Close(t.Context(), exploration.Cancelled)
+			var failure exploration.Failure
+			if !errors.Is(err, exploration.ErrUnavailable) || !errors.As(err, &failure) || failure.Stage != stage || failure.Kind == "" || strings.Contains(err.Error(), "fixture-private-marker") {
+				t.Fatal("cleanup stage lost or raw detail leaked")
+			}
+			if b.lease.closed() != 1 || browser.closes.Load() != 1 || f.deleted.Load() != 1 {
+				t.Fatal("cleanup error skipped later stages")
+			}
+		})
+	}
+}
+func TestExplorationSessionRejectsDifferentWorkerWithoutSpendingProvider(t *testing.T) {
+	o, _, _, _, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+	session, err := OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(context.Background(), exploration.Cancelled)
+	other := agent.NewWorker(&explorationFixtureProvider{}, "foreign", t.TempDir(), nil, 0, 10)
+	if _, err := session.Run(t.Context(), other, agent.ExplorationRunOptions{}, nil); err == nil || p.calls.Load() != 0 {
+		t.Fatal("session used a foreign budget/provider worker")
+	}
+}
+
+func TestExplorationSessionCheckAndWatchValidateExactStateBinding(t *testing.T) {
+	t.Run("check", func(t *testing.T) {
+		o, b, _, _, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
+		o.StatusInterval = time.Second
+		session, err := OpenExplorationSession(t.Context(), o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.lease.mu.Lock()
+		b.lease.state.Binding.TargetRevision++
+		b.lease.mu.Unlock()
+		if session.Check(t.Context()) == nil {
+			t.Fatal("changed authority accepted by Check")
+		}
+		b.lease.mu.Lock()
+		b.lease.state.Binding = o.Binding
+		b.lease.mu.Unlock()
+		if err := session.Close(t.Context(), exploration.Cancelled); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("watch", func(t *testing.T) {
+		o, b, browser, _, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
+		session, err := OpenExplorationSession(t.Context(), o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.lease.mu.Lock()
+		b.lease.state.Binding.TargetRevision++
+		b.lease.mu.Unlock()
+		select {
+		case <-session.Context().Done():
+		case <-time.After(250 * time.Millisecond):
+			t.Fatal("changed authority accepted by watch")
+		}
+		if err := session.Close(t.Context(), exploration.Cancelled); !errors.Is(err, exploration.ErrUnavailable) || browser.closes.Load() != 1 || session.ClosedReason() != exploration.BoundaryUnavailable {
+			t.Fatal("invalid status did not close safely")
+		}
+	})
+}
+func TestExplorationSessionRejectsActiveBoundaryCloseReply(t *testing.T) {
+	o, b, browser, _, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
+	b.lease.closeReply = func(state exploration.State) exploration.State {
+		state.Active = true
+		state.ClosedReason = ""
+		return state
+	}
+	session, err := OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = session.Close(t.Context(), exploration.Cancelled)
+	var failure exploration.Failure
+	if !errors.As(err, &failure) || failure.Stage != "boundary_close" || failure.Kind != "binding_invalid" || browser.closes.Load() != 1 {
+		t.Fatal("active boundary close was reported as successful")
+	}
+}
+
+func TestExplorationSessionRejectsGenericDirectCapabilitiesBeforeAnyIO(t *testing.T) {
+	for _, name := range []string{"Bash", "Skill"} {
+		o, b, _, f, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+		tool := actool.Build(actool.Spec{Name: name})
+		if name == "Bash" {
+			o.DirectBash = tool
+		} else {
+			o.APIRecon = tool
+		}
+		if _, err := OpenExplorationSession(t.Context(), o); !errors.Is(err, exploration.ErrUnavailable) || b.opens.Load() != 0 || f.requests.Load() != 0 || p.calls.Load() != 0 {
+			t.Fatal("generic direct capability reached boundary/browser/model")
+		}
+	}
+}
+
+func TestExplorationSessionBoundaryCannotDowngradeModelFailureToCompleted(t *testing.T) {
+	o, b, _, _, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+	p.failure = errors.New("fixture-private-marker")
+	b.lease.closeReply = func(state exploration.State) exploration.State {
+		state.ClosedReason = exploration.Completed
+		return state
+	}
+	session, err := OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = session.Run(t.Context(), o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, nil)
+	var failure exploration.Failure
+	if !errors.As(err, &failure) || failure.Stage != "boundary_close" || failure.Kind != "binding_invalid" || session.ClosedReason() != exploration.ModelError {
+		t.Fatal("boundary reply downgraded failed exploration to completed")
 	}
 }

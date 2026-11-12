@@ -69,9 +69,19 @@ func preloadsScript(attrs map[string]string) bool {
 }
 
 func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
+	c.discoverDocumentLocked(body, contentType, from, false)
+}
+
+func (c *Controller) discoverDocumentLocked(body []byte, contentType, from string, inferred bool) {
 	addFrom := func(base, method, raw, kind, source string) {
 		if p, ok := c.resolve(raw, base); ok {
-			c.addLocked(method, p, kind, source, from)
+			endpointSource := source
+			if inferred {
+				endpointSource = SourceAPIReconStatic
+			}
+			if e := c.addLocked(method, p, kind, endpointSource, from); inferred && e != nil && e.DiscoveryConfidence != "observed" {
+				e.DiscoveryConfidence = "inferred"
+			}
 			c.staticFactLocked(normalizedMethod(method), p, kind, source, raw)
 		} else {
 			c.record.Snapshot.Counts.InvalidPaths++
@@ -146,10 +156,12 @@ func (c *Controller) discoverBodyLocked(body []byte, contentType, from string) {
 				if attrs["href"] != "" && !baseSeen {
 					baseSeen = true
 					base, baseKnown = c.resolve(attrs["href"], from)
-					if c.documentBases == nil {
-						c.documentBases = map[string]documentBase{}
+					if !inferred {
+						if c.documentBases == nil {
+							c.documentBases = map[string]documentBase{}
+						}
+						c.documentBases[from] = documentBase{base, baseKnown}
 					}
-					c.documentBases[from] = documentBase{base, baseKnown}
 				}
 			case "a":
 				add("GET", attrs["href"], "page", "html_link")

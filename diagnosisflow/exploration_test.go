@@ -351,9 +351,10 @@ func TestDiscoveryInventoryCapsRemainExplicitWithoutGrantingMoreSelection(t *tes
 
 func TestExplorationRequestFailureKeepsOtherPagesAndPartialResult(t *testing.T) {
 	c, _, r, b := explorationFixture(t, Manual)
-	if err := c.CollectStaticDocument(t.Context(), "/read", "text/html", []byte(`<a href="/read/next">next</a>`)); err != nil {
-		t.Fatal(err)
-	}
+	// 이미 검증한 실제 응답에서 나온 별도 방문 후보를 준비한다. 임의 정적 문서는 추정 후보뿐이다.
+	c.mu.Lock()
+	c.discoverBodyLocked([]byte(`<a href="/read/next">next</a>`), "text/html", "/read")
+	c.mu.Unlock()
 	calls := 0
 	_, err := c.CrawlExploration(t.Context(), b, func(_ context.Context, target string) (ExplorationFetchResult, error) {
 		calls++
