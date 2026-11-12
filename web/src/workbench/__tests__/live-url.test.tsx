@@ -711,10 +711,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
     mount("report");
     expect(await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).toBeInTheDocument();
-    // 위치: 작업대 / 끝난 점검 / 주소 / 보고서 (시안 v54)
+    // 위치: 끝난 점검 / 주소 / 보고서 (시안 v83: "작업대" 뿌리는 뺐다)
     const crumb = screen.getByRole("navigation", { name: "위치" });
     expect(within(crumb).getByRole("link", { name: "끝난 점검" })).toHaveAttribute("href", "#finished");
-    expect(crumb).toHaveTextContent("작업대/끝난 점검/target.example/보고서");
+    expect(crumb).toHaveTextContent("끝난 점검/target.example/보고서");
+    expect(crumb).not.toHaveTextContent("작업대");
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
     expect(a.fetchDiagnosisRun).toHaveBeenCalledWith("42");
     // 판정 집계: 후보는 검토 필요, 확정 0 (팀 lib 분류)
@@ -796,7 +797,7 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(goTo).toHaveBeenCalledWith("live");
   });
 
-  it("대시보드: 결과가 저장되기 전에는 발견을 부르지 않고 '없음'이라 하지 않는다", async () => {
+  it("대시보드: 결과가 저장되기 전에는 발견을 부르지 않고 '없음'이라 하지 않는다 · 위치 줄 없음", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
     mount("dashboard");
@@ -805,6 +806,8 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(a.fetchRemediation).not.toHaveBeenCalled();
     expect(within(sec).queryByText(/저장된 발견이 없습니다/)).toBeNull();
     expect(within(sec).queryByRole("group", { name: "위험도로 거르기" })).toBeNull();
+    // 위치가 제목과 같기만 해서 위치 줄을 그리지 않는다 (시안 v83)
+    expect(screen.queryByRole("navigation", { name: "위치" })).toBeNull();
   });
 
   it("대시보드: 저장된 결과에서 정상 대조를 빼고 위험도 순으로 보이며, 위험도 칩으로 거른다", async () => {

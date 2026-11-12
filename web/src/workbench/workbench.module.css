@@ -833,6 +833,21 @@
   gap: 10px 16px;
   margin-top: 6px;
 }
+/* 위치 줄이 없는 화면: 넓은 화면에선 줄째 숨기고, 좁은 화면에선 메뉴 버튼 줄만 남긴다 */
+.vh-top.menu-only {
+  display: none;
+}
+.vh-top.menu-only + .vh-row {
+  margin-top: 0;
+}
+@media (max-width: 759px) {
+  .vh-top.menu-only {
+    display: flex;
+  }
+  .vh-top.menu-only + .vh-row {
+    margin-top: 6px;
+  }
+}
 .vh-title {
   display: flex;
   align-items: center;
