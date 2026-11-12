@@ -61,7 +61,9 @@ type Execution struct {
 	controlPending bool
 	stopDone       chan struct{}
 	stopErr        error
-	sending        int
+	// slots는 동시 송신 자리다. 용량이 MaxConcurrent이고, 자리가 없으면 거부하지 않고 기다린다(C20).
+	// 기다리는 쪽은 제안 순서대로 자리를 얻는다(채널 송신 대기열). 대기 수는 프록시 연결 상한×call 수로 묶인다.
+	slots chan struct{}
 	// admitted는 예산을 예약하고 송신 단계로 넘어간 시도 수다. MaxAttempts는 이 값만 센다.
 	// 보내지 않은 거부·미지원은 송신 상한을 쓰지 않고 call 단위 차단으로만 제한한다(C01).
 	admitted      uint64
@@ -130,7 +132,7 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 		cfg.RootCAs = cfg.RootCAs.Clone()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), secretHeaders: credentialHeaderNames(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentCounts: map[int64]*Counts{cfg.IntentID: {}}, intentGate: make(chan struct{}, 1)}, nil
+	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), secretHeaders: credentialHeaderNames(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentCounts: map[int64]*Counts{cfg.IntentID: {}}, intentGate: make(chan struct{}, 1), slots: make(chan struct{}, cfg.Limits.MaxConcurrent)}, nil
 }
 func compileRules(rules []Rule) ([]compiledRule, error) {
 	if len(rules) == 0 || len(rules) > maxExecutionRules {
@@ -1001,19 +1003,12 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	if reason == Complete && !ok {
 		reason = PolicyDenied
 	}
-	if reason == Complete && e.sending >= e.cfg.Limits.MaxConcurrent {
-		reason = PolicyDenied
-	}
-	if reason == Complete {
-		e.sending++
-	}
 	e.mu.Unlock()
 	if reason != Complete {
 		r.Decision = "denied"
 		r.Reason = reason
 		return finish(nil, ErrDenied)
 	}
-	defer func() { e.mu.Lock(); e.sending--; e.mu.Unlock() }()
 	requestHeaders, headersOK := forwardRequestHeaders(req.Header, rule)
 	if !headersOK {
 		r.Decision, r.Reason = "unsupported", Unsupported
@@ -1071,6 +1066,24 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Decision, r.Reason = "denied", PolicyDenied
 		return finish(nil, ErrDenied)
 	}
+	// 동시 송신 자리는 승인 대기 뒤에 잡는다. 사람 승인을 기다리는 요청이 다른 송신의 자리를 막지 않는다.
+	// 자리를 기다리는 동안 취소·철회·만료·운영자 중지가 오면 보내지 않고 끝낸다. 자리를 얻은 뒤 아래에서
+	// 권한·정책 세대·시도 상한·예산을 다시 검사한다(C20·C21).
+	// 빈 자리는 먼저 잡는다. 이미 취소된 호출자도 자리가 있으면 지금처럼 예약·감사 경로로 간다(select의 임의 선택 방지).
+	select {
+	case e.slots <- struct{}{}:
+	default:
+		select {
+		case e.slots <- struct{}{}:
+		case <-ctx.Done():
+			r.Decision, r.Reason = "denied", Closed
+			return finish(nil, ErrClosed)
+		case <-c.ctx.Done():
+			r.Decision, r.Reason = "denied", Closed
+			return finish(nil, ErrClosed)
+		}
+	}
+	defer func() { <-e.slots }()
 	r.Decision = "allowed"
 	e.mu.Lock()
 	reason = c.blockedLocked()
