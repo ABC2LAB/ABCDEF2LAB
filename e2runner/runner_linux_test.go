@@ -100,6 +100,11 @@ func newRunnerFixture(t *testing.T, base, helper, target string, roots *x509.Cer
 
 func newRunnerFixtureWithRecorder(t *testing.T, base, helper, target string, roots *x509.CertPool, decorate func(e2proxy.Recorder) e2proxy.Recorder, cleanupRunner bool) *runnerFixture {
 	t.Helper()
+	return newRunnerFixtureConfigured(t, base, helper, target, roots, decorate, cleanupRunner, nil)
+}
+
+func newRunnerFixtureConfigured(t *testing.T, base, helper, target string, roots *x509.CertPool, decorate func(e2proxy.Recorder) e2proxy.Recorder, cleanupRunner bool, configure func(*Config)) *runnerFixture {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +179,9 @@ func newRunnerFixtureWithRecorder(t *testing.T, base, helper, target string, roo
 		Proxy: e2proxy.ProxyConfig{CA: tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key},
 			HeaderTimeout: time.Second, RequestTimeout: 4 * time.Second, MaxHeaderBytes: 8192, MaxConnections: 8},
 		CommandTimeout: 15 * time.Second, DrainTimeout: 5 * time.Second, OutputLimit: 8192}
+	if configure != nil {
+		configure(&cfg)
+	}
 	runner, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
