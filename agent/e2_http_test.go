@@ -906,8 +906,9 @@ func TestE2HTTPDiagnosisRejectsMCPTools(t *testing.T) {
 	}
 }
 
-// intent 결과는 모든 호출 분류 중 가장 강한 것으로 정한다(P3 결정안 C09). 마지막 호출 하나가 앞 호출의 범위 제한·일시
-// 실패를 지우지 않고, 마지막 도구 실패가 앞의 완료를 실패로 바꾸지 않는다. 순서를 바꿔도 결과가 같다.
+// intent 결과는 E② 호출 전체로 정한다(P3 결정안 C09). E② 범위 제한(거부·미지원)은 뒤 완료 호출이 지우지 않고(완료
+// 판정의 E② 거부 집계와 맞음), 마지막 도구 실패가 앞의 완료를 실패로 바꾸지 않는다. 일시 실패는 C08 전까지 지금처럼
+// 마지막 호출일 때만 결과가 된다(중간 일시 실패를 남기면 지금 끝까지 가는 회차가 실패로 바뀜).
 func TestE2HTTPIntentOutcomeAggregatesAllCalls(t *testing.T) {
 	for name, tc := range map[string]struct {
 		sequence []string
@@ -915,8 +916,9 @@ func TestE2HTTPIntentOutcomeAggregatesAllCalls(t *testing.T) {
 	}{
 		"policy-then-completed":      {[]string{"policy_not_executed", "completed", "completed"}, ErrE2HTTPPolicyLimited},
 		"completed-policy-completed": {[]string{"completed", "policy_not_executed", "completed"}, ErrE2HTTPPolicyLimited},
-		"transient-then-completed":   {[]string{"transient_failure", "completed", "completed"}, ErrE2HTTPTransient},
-		"policy-transient-order":     {[]string{"transient_failure", "policy_not_executed", "completed"}, ErrE2HTTPTransient},
+		"transient-then-completed":   {[]string{"transient_failure", "completed", "completed"}, nil},
+		"transient-policy-completed": {[]string{"transient_failure", "policy_not_executed", "completed"}, ErrE2HTTPPolicyLimited},
+		"last-transient":             {[]string{"completed", "completed", "transient_failure"}, ErrE2HTTPTransient},
 		"completed-then-tool-fail":   {[]string{"completed", "completed", "tool_failure"}, nil},
 		"unsupported-over-policy":    {[]string{"unsupported", "policy_not_executed", "completed"}, ErrE2HTTPUnsupported},
 	} {
@@ -944,20 +946,96 @@ func TestE2HTTPIntentOutcomeAggregatesAllCalls(t *testing.T) {
 	}
 }
 
-func TestE2HTTPOutcomeRankIgnoresInputErrorsAndRejectsUnknownKinds(t *testing.T) {
+// Worker가 E②에 보내지 않고 만든 분류(안전 하한·예약 거부)는 실제 E② 호출 결과를 덮지 않고, E② 호출이 없을 때만
+// 결과가 된다(완료 판정의 E② 거부 집계에 없는 값이라 남기면 회차가 실패한다). 모르는 E② 분류는 완료로 넘기지 않는다.
+func TestE2HTTPIntentClassificationSeparatesLocalAndE2Outcomes(t *testing.T) {
 	state := &e2HTTPToolState{}
 	state.outcome("completed")
-	state.outcome("invalid_input")
-	if state.strongest != "completed" {
-		t.Fatalf("input error overrode a completed call: %q", state.strongest)
+	state.localOutcome("policy_not_executed")
+	state.localOutcome("unsupported")
+	if got := state.classification(); got != "completed" {
+		t.Fatalf("worker-made refusal overrode an E2 result: %q", got)
 	}
-	only := &e2HTTPToolState{}
-	only.outcome("invalid_input")
-	if only.strongest != "" {
-		t.Fatalf("input error counted as a call: %q", only.strongest)
+	local := &e2HTTPToolState{}
+	local.localOutcome("policy_not_executed")
+	if got := local.classification(); got != "policy_not_executed" {
+		t.Fatalf("worker-made refusal without E2 calls: %q", got)
 	}
-	state.outcome("synthetic-new-kind")
-	if state.strongest != "synthetic-new-kind" {
-		t.Fatal("unknown classification ranked below completed")
+	none := &e2HTTPToolState{}
+	if got := none.classification(); got != "" {
+		t.Fatalf("no calls: %q", got)
+	}
+	sticky := &e2HTTPToolState{}
+	sticky.outcome("policy_not_executed")
+	sticky.outcome("transient_failure")
+	if got := sticky.classification(); got != "transient_failure" {
+		t.Fatalf("last transient call: %q", got)
+	}
+	sticky.outcome("completed")
+	if got := sticky.classification(); got != "policy_not_executed" {
+		t.Fatalf("E2 policy limit lost after completed call: %q", got)
+	}
+	// 도구 본문의 안전 하한(세션에서는 SDK 권한 검사가 먼저 막는 두 번째 층)도 Worker 쪽 분류로만 남는다.
+	execution, _, _ := e2WorkerFixture(t)
+	floor := &e2HTTPToolState{}
+	floor.outcome("completed")
+	tool := e2WorkerBashTool(t, execution, func(context.Context, string) (e2runner.Result, error) { return completedE2WorkerResult(), nil }, time.Second, floor)
+	if result, err := tool.Call(context.Background(), json.RawMessage(`{"command":"rm -rf /"}`), nil); err != nil || !result.IsError {
+		t.Fatal("safety floor did not refuse")
+	}
+	if floor.lastLocal != "unsupported" || floor.classification() != "completed" {
+		t.Fatalf("safety floor recorded as an E2 outcome: local=%q class=%q", floor.lastLocal, floor.classification())
+	}
+	unknown := &e2HTTPToolState{}
+	unknown.outcome("completed")
+	unknown.outcome("synthetic-new-kind")
+	if got := unknown.classification(); got != "synthetic-new-kind" {
+		t.Fatalf("unknown E2 classification hidden: %q", got)
+	}
+}
+
+// e2SequenceProvider는 턴마다 다른 Bash 명령을 보낸다(같은 명령 재전송 금지에 걸리지 않게).
+type e2SequenceProvider struct {
+	e2WorkerProvider
+	commands []string
+}
+
+func (p *e2SequenceProvider) Complete(_ context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	p.calls++
+	if p.calls <= len(p.commands) {
+		input, _ := json.Marshal(map[string]any{"command": p.commands[p.calls-1]})
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "seq-" + strconv.Itoa(p.calls), Name: "Bash", Input: input}}}, "tool_use", llm.Usage{}, nil
+	}
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("done")}}, "end_turn", llm.Usage{}, nil
+}
+
+// 실제 세션: 완료 뒤 안전 하한 거부(E② 미송신)는 결과를 바꾸지 않고, E② 미지원 뒤 다른 명령의 완료는 미지원을 지우지 않는다.
+func TestE2HTTPIntentOutcomeLocalRefusalAndStickyUnsupported(t *testing.T) {
+	for name, tc := range map[string]struct {
+		commands []string
+		results  []string
+		want     error
+	}{
+		"completed-then-safety-floor": {[]string{"echo one", "rm -rf /"}, []string{"completed"}, nil},
+		"unsupported-then-completed":  {[]string{"echo one", "echo two"}, []string{"unsupported", "completed"}, ErrE2HTTPUnsupported},
+	} {
+		t.Run(name, func(t *testing.T) {
+			execution, _, _ := e2WorkerFixture(t)
+			provider := &e2SequenceProvider{commands: tc.commands}
+			worker := NewWorker(provider, "synthetic", t.TempDir(), nil, 10000, 4)
+			state := &e2HTTPToolState{}
+			calls := 0
+			tool := e2WorkerBashTool(t, execution, func(context.Context, string) (e2runner.Result, error) {
+				result := completedE2WorkerResult()
+				result.Trusted.Classification = tc.results[calls]
+				calls++
+				return result, nil
+			}, time.Second, state)
+			opts := agentcore.Options{Provider: provider, Tools: []actool.CoreTool{tool}, DisableBackgroundTasks: true, PermissionMode: permission.ModeBypass, MaxTurns: 4, MaxDuration: 5 * time.Second, NonStreaming: true}
+			_, _, err := worker.runE2HTTPSession(context.Background(), "worker", &db.Node{ID: 22, Kind: db.KindIntent}, nil, opts, "assigned intent", execution, state, nil)
+			if calls != len(tc.results) || !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Fatalf("runner calls=%d error=%v want=%v", calls, err, tc.want)
+			}
+		})
 	}
 }

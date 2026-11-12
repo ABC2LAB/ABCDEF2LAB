@@ -160,8 +160,12 @@ type e2HTTPToolState struct {
 	unknown      bool
 	incomplete   bool
 	runnerFailed bool
-	// strongest는 이 intent의 모든 호출 분류 중 가장 강한 것이다(P3 결정안 C09). 마지막 호출 하나가 결과를 정하지 않는다.
-	strongest    string
+	// intent 결과는 마지막 호출 하나가 아니라 E② 호출 전체로 정한다(P3 결정안 C09). sticky는 E② 호출에서 온 범위
+	// 제한·실행 끊김 중 가장 강한 것, lastCall은 마지막 E② 호출 분류, lastLocal은 E②에 보내지 않고 Worker가 만든
+	// 마지막 분류(안전 하한·예약 거부)다. 입력 형식 오류는 어디에도 남기지 않는다.
+	sticky       string
+	lastCall     string
+	lastLocal    string
 	observations map[string]e2DiagnosticObservation
 }
 
@@ -228,11 +232,11 @@ func newE2HTTPBashTool(execution E2HTTPScope, run e2HTTPRunFunc, hostTimeout tim
 		Run: func(ctx context.Context, input json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
 			command, timeout, err := parseE2HTTPBash(input, hostTimeout)
 			if err != nil {
-				state.outcome("invalid_input")
+				// 입력 형식 오류는 송신이 없는 모델 실수라 intent 결과를 정하지 않는다(C09).
 				return actool.Errorf("e2_http_bash_input_invalid"), nil
 			}
 			if originalBash.CheckPermissions(ctx, input, permission.Context{}).Behavior == permission.Deny {
-				state.outcome("unsupported")
+				state.localOutcome("unsupported")
 				return actool.Errorf("e2_http_bash_safety_floor"), nil
 			}
 			if execution == nil || run == nil || state == nil || control == nil {
@@ -243,13 +247,13 @@ func newE2HTTPBashTool(execution E2HTTPScope, run e2HTTPRunFunc, hostTimeout tim
 			state.mu.Unlock()
 			snapshot := execution.SnapshotForIntent(actualIntentID)
 			if halted || snapshot.State != "active" || !snapshot.AuditComplete {
-				state.outcome("policy_not_executed")
+				state.localOutcome("policy_not_executed")
 				result := e2runner.Result{Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Execution: snapshot, Classification: "policy_not_executed"}}
 				return encodeE2HTTPResult(result, true), nil
 			}
 			ticket, controlView, admissionErr := control.reserve(snapshot, intentPayload, command)
 			if admissionErr != nil {
-				state.outcome("policy_not_executed")
+				state.localOutcome("policy_not_executed")
 				result := e2runner.Result{Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Execution: snapshot, Classification: "policy_not_executed"}}
 				return encodeE2HTTPResult(result, true, controlView), nil
 			}
@@ -648,8 +652,8 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 	unknown := state.unknown
 	incomplete := state.incomplete
 	runnerFailed := state.runnerFailed
-	last := state.strongest
 	state.mu.Unlock()
+	last := state.classification() // 자체 잠금을 잡는다. 위 잠금 밖에서 부른다.
 	if unknown || snapshot.Counts.Unknown > 0 {
 		return reason, counts, ErrE2HTTPUnknown
 	}
@@ -903,38 +907,60 @@ func constrainE2HTTPPlannerOptions(ctx context.Context, opts *agentcore.Options)
 	return nil
 }
 
+// outcome은 실제 E② 호출의 분류를 남긴다.
 func (s *e2HTTPToolState) outcome(classification string) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	if e2HTTPOutcomeRank(classification) > e2HTTPOutcomeRank(s.strongest) {
-		s.strongest = classification
+	s.lastCall = classification
+	if e2HTTPStickyRank(classification) > e2HTTPStickyRank(s.sticky) {
+		s.sticky = classification
 	}
 	s.mu.Unlock()
 }
 
-// e2HTTPOutcomeRank는 intent 결과를 정하는 강도다(P3 결정안 C09: unknown > incomplete > policy_limited > done).
-// 결과 불명·불완전은 따로 쌓이는 표시(state.unknown·incomplete)가 먼저 정한다. 실행이 끊긴 분류(격리 불가·종료)는
-// 그다음이고, 일시 실패는 불완전 쪽, 정책 거부·미지원은 범위 제한 쪽, 완료와 도구 자체의 실패(대상은 답함)는 완료 쪽이다.
-// 입력 형식 오류는 송신이 없는 모델 실수라 결과를 정하지 않는다(0).
-func e2HTTPOutcomeRank(classification string) int {
+// localOutcome은 E②에 보내지 않고 Worker가 만든 분류다. 완료 판정의 E② 거부 집계에 없는 값이라, 실제 E② 호출 결과를
+// 덮지 않고 E② 호출이 하나도 없을 때만 결과가 된다(지금 동작 유지).
+func (s *e2HTTPToolState) localOutcome(classification string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.lastLocal = classification
+	s.mu.Unlock()
+}
+
+// classification은 intent 결과를 정한다(P3 결정안 C09). E② 범위 제한(거부·미지원)과 실행 끊김은 뒤에 완료 호출이
+// 있어도 남는다. 완료 판정은 그런 intent의 blocked 사유를 E② 호출의 거부·미지원 수로 대조하므로 이 결과와 맞는다.
+// 일시 실패는 C08(부분 결과) 전까지 지금처럼 마지막 호출일 때만 결과가 된다. 중간 일시 실패를 남기면 지금은 끝까지
+// 가는 회차가 실패로 바뀐다.
+func (s *e2HTTPToolState) classification() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.lastCall == "transient_failure" || s.lastCall == "forward_not_attempted":
+		return s.lastCall
+	case s.sticky != "":
+		return s.sticky
+	case s.lastCall != "":
+		return s.lastCall
+	default:
+		return s.lastLocal
+	}
+}
+
+// e2HTTPStickyRank는 뒤 호출이 지우지 않는 E② 분류의 강도다. 실행 끊김(격리 불가·종료) > 미지원 > 정책 거부.
+func e2HTTPStickyRank(classification string) int {
 	switch classification {
 	case "isolation_unavailable", "terminated":
-		return 5
-	case "transient_failure", "forward_not_attempted":
-		return 4
-	case "unsupported", "partial_unsupported":
 		return 3
-	case "policy_not_executed", "partial_policy_denial":
+	case "unsupported", "partial_unsupported":
 		return 2
-	case "completed", "tool_failure":
+	case "policy_not_executed", "partial_policy_denial":
 		return 1
-	case "", "invalid_input":
-		return 0
 	}
-	// 모르는 분류는 완료로 넘기지 않는다. 가장 강하게 보고 기존 기본 분기(Worker 실패)로 보낸다.
-	return 6
+	return 0
 }
 
 // exporter는 실제 신뢰 결과만 관찰하며 원문 도구 출력과 observer 오류를 노출하지 않는다.
