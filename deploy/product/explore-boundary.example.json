@@ -1,0 +1,29 @@
+{
+  "format": "jindo.explore-boundary-config/v1",
+  "browser_listen": "172.31.248.10:3128",
+  "direct_listen": "172.31.247.10:3129",
+  "control_socket": "/run/explore-control/control.sock",
+  "engine_uid": 1000,
+  "engine_gid": 1000,
+  "ca_cert_file": "/i/ca.pem",
+  "ca_key_file": "/i/ca.key",
+  "path_mask_key_file": "/i/path.key",
+  "control_endpoints": [
+    "172.31.252.10:0",
+    "172.31.252.12:0",
+    "172.31.253.12:0",
+    "172.31.250.12:0",
+    "172.31.254.20:0",
+    "172.31.255.20:0",
+    "172.31.255.30:0",
+    "172.31.248.10:0",
+    "172.31.247.10:0"
+  ],
+  "max_request_bytes": 1048576,
+  "max_response_bytes": 33554432,
+  "max_tunnels": 64,
+  "max_denied_records": 4096,
+  "timeout_ms": 30000,
+  "close_wait_ms": 10000,
+  "leaf_validity_seconds": 86400
+}

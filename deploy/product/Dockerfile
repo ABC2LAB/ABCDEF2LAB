@@ -26,7 +26,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -tags embedui
       -ldflags="-X main.version=${VCS_REF}" -o /out/artex ./cmd/artex
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -tags embedui \
       -ldflags="-X github.com/Autumn-27/artex/server.ProductRevision=${VCS_REF}" -o /out/first-controlled-diagnosis ./cmd/first-controlled-diagnosis \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/e2-bash-sandbox ./cmd/e2-bash-sandbox
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/e2-bash-sandbox ./cmd/e2-bash-sandbox \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/explore-boundary ./cmd/explore-boundary
 
 # Bash 도구와 기존 브라우저 CLI를 실행할 수 있는 이미지.
 FROM node:26-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS product-runtime
@@ -49,8 +50,10 @@ WORKDIR /app
 COPY --from=go-build /out/artex /app/artex
 COPY --from=go-build /out/first-controlled-diagnosis /app/first-controlled-diagnosis
 COPY --from=go-build /out/e2-bash-sandbox /app/e2-bash-sandbox
+COPY --from=go-build /out/explore-boundary /app/explore-boundary
 COPY --chmod=755 deploy/product/install-entrypoint.sh /app/product-install-entrypoint
 COPY --chmod=755 deploy/product/preparation-entrypoint.sh /app/product-preparation-entrypoint
+COPY --chmod=755 deploy/product/explore-init-entrypoint.sh /app/explore-init-entrypoint
 COPY start.sh /app/start.sh
 COPY LICENSE /app/LICENSE
 COPY --chown=1000:1000 skills/ /app/skills/
