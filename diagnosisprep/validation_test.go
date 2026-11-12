@@ -190,6 +190,9 @@ func TestJobRunResultFields(t *testing.T) {
 		}, false},
 		{"counts_on_failed", func(j *Job) { j.State, j.IntentOutcomes = Failed, counts(diagnosis.IntentOutcomes{Done: 1}) }, false},
 		{"counts_on_unknown", func(j *Job) { j.State, j.IntentOutcomes = Unknown, counts(diagnosis.IntentOutcomes{Done: 1}) }, false},
+		{"log_warning_on_completed", func(j *Job) { j.DiagnosticLogIncomplete = true }, true},
+		{"log_warning_with_reason", func(j *Job) { j.DiagnosticLogIncomplete, j.ReasonCode = true, "budget_limited" }, true},
+		{"log_warning_on_failed", func(j *Job) { j.State, j.DiagnosticLogIncomplete = Failed, true }, false},
 	} {
 		j := completed
 		tc.change(&j)

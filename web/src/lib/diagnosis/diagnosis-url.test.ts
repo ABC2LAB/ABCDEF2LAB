@@ -301,6 +301,13 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
   it("이 칸 이전에 저장된 completed는 결과 없이 온다", () => {
     expect(parseURLJob(envelope(completed), owner).outcome).toBeUndefined();
   });
+  it("진단 로그 경고는 completed에서 사유와 따로 받는다", () => {
+    const warned = { ...completed, reason_code: "budget_limited", diagnostic_log_incomplete: true };
+    expect(parseURLJob(envelope(warned), owner)).toMatchObject({
+      reason_code: "budget_limited",
+      diagnostic_log_incomplete: true,
+    });
+  });
   it("cancelled는 개수만 받는다", () => {
     const cancelled = { ...completed, state: "cancelled" as const, intent_outcomes: counts({ done: 1, stopped: 1 }) };
     expect(parseURLJob(envelope(cancelled), owner).intent_outcomes).toEqual(counts({ done: 1, stopped: 1 }));
@@ -317,6 +324,9 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
     { ...completed, state: "cancelled", outcome: "complete", intent_outcomes: counts({ done: 1 }) },
     { ...completed, state: "failed", intent_outcomes: counts({ done: 1 }) },
     { ...running, intent_outcomes: counts({ done: 1 }) },
+    { ...running, diagnostic_log_incomplete: true },
+    { ...completed, diagnostic_log_incomplete: false },
+    { ...completed, diagnostic_log_incomplete: "yes" },
   ])("계약 밖 결과는 fail closed 한다: %o", (value) => {
     expect(() => parseURLJob(envelope(value), owner)).toThrow();
   });

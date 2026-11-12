@@ -308,6 +308,9 @@ func validJob(j Job) bool {
 
 // validJobResult는 실행 결과 칸의 계약 규칙이다(docs/contracts/run-outcome-states.md §3.2).
 func validJobResult(j Job) bool {
+	if j.DiagnosticLogIncomplete && j.State != Completed {
+		return false
+	}
 	if j.IntentOutcomes != nil && (!j.IntentOutcomes.Valid() || j.State != Completed && j.State != Cancelled) {
 		return false
 	}
