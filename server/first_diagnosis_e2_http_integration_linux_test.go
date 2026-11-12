@@ -252,6 +252,8 @@ type firstDiagnosisPlannerProbeProvider struct {
 	loopTool                 string
 	minMessages, maxMessages int
 	wrapUps                  int
+	// todoOnce면 loopTool 전에 TodoWrite를 한 번 부른다(한 턴으로 센다).
+	todoOnce, todoDone bool
 	// goalID·evidenceID가 있으면 첫 호출에서 prove_goal로 그 목표를 달성시킨다(C26).
 	goalID, evidenceID int64
 	proved             bool
@@ -305,6 +307,16 @@ func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, reque
 			p.wrapUps++
 			p.calls++
 			return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("Round wrapped up.")}}, "end_turn", llm.Usage{}, nil
+		}
+	}
+	if p.todoOnce && !p.todoDone {
+		for _, tool := range request.Tools {
+			if tool.Name == "TodoWrite" {
+				p.todoDone = true
+				p.calls++
+				p.minMessages, p.maxMessages = len(request.Messages), max(p.maxMessages, len(request.Messages))
+				return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "todo-once", Name: "TodoWrite", Input: json.RawMessage(`{"todos":[{"content":"Owned fixture follow-up","status":"pending"}]}`)}}}, "tool_use", llm.Usage{}, nil
+			}
 		}
 	}
 	for _, tool := range request.Tools {
