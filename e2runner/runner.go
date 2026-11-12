@@ -54,6 +54,9 @@ type Result struct {
 	// Workspace는 작업 공간 보관 결과다(PersistWorkspace일 때만): saved, too_large, not_saved, invalid.
 	// 보관하지 못해도 호출 결과는 그대로이고 이전 보관본이 남는다.
 	Workspace string `json:"workspace,omitempty"`
+	// OutputFile은 tool_output보다 긴 출력의 가린 전체를 남긴 작업 공간 안 경로다(예: .outputs/<call_ref>.txt).
+	// 다음 Bash 호출에서 읽을 수 있다. 남기지 못했으면 비어 있다.
+	OutputFile string `json:"output_file,omitempty"`
 }
 
 // Executor is the Worker seam; it returns program-owned execution evidence

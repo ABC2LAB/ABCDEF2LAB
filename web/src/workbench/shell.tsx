@@ -8,11 +8,33 @@ import { createContext, useContext } from "react";
 import type { DSel } from "./store";
 
 /**
- * 여덟 화면 (해시 이름 = data-view). running · finished = 진행 중인 점검 · 끝난 점검 (레일에서 점검을 누르면 오는 목록,
- * 시안 v54 에서 점검 기록을 둘로 나눔).
+ * 열 화면 (해시 이름 = data-view). running · finished = 진행 중인 점검 · 끝난 점검 (레일에서 점검을 누르면 오는 목록,
+ * 시안 v54 에서 점검 기록을 둘로 나눔). explore = 탐색 결과(발견·경계 기록 요약, 운영자 전용).
+ * accessmap = 접근통제 지도(신원 × 자원 교차 접근 판정, 수평 IDOR v0.1, 운영자 전용).
  */
-export type View = "dashboard" | "running" | "finished" | "new" | "crawl" | "scope" | "live" | "report";
-export const VIEWS: readonly View[] = ["dashboard", "running", "finished", "new", "crawl", "scope", "live", "report"];
+export type View =
+  | "dashboard"
+  | "running"
+  | "finished"
+  | "new"
+  | "crawl"
+  | "explore"
+  | "accessmap"
+  | "scope"
+  | "live"
+  | "report";
+export const VIEWS: readonly View[] = [
+  "dashboard",
+  "running",
+  "finished",
+  "new",
+  "crawl",
+  "explore",
+  "accessmap",
+  "scope",
+  "live",
+  "report",
+];
 export function isView(h: string): h is View {
   return (VIEWS as readonly string[]).includes(h);
 }

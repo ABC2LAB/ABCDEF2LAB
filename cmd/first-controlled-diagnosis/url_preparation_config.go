@@ -28,6 +28,10 @@ import (
 
 const urlPreparationFormat = "abc2lab.url-preparation-installation/v1"
 
+// urlMaxRunSeconds는 회차 하나의 실행 시간 상한(초)이다. 설치 프로파일 검사와 설치 입력 runtime_limits.run_seconds
+// 검사가 같은 값을 쓴다.
+const urlMaxRunSeconds = 600
+
 type urlProtectedPin struct {
 	File   string `json:"file"`
 	SHA256 string `json:"sha256"`
@@ -312,7 +316,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 		}
 	}
 	if !p.DeriveRuns || !p.Attestation.Verified || p.MaxRuns < 1 || p.MaxRuns > 1000 || p.ValidFrom.IsZero() || !p.ValidUntil.After(p.ValidFrom) ||
-		!urlBudgetWithin(p.Budget, p.AggregateBudget) || p.Budget.DurationSeconds > 600 || !urlDigestValid(p.PolicySHA256) ||
+		!urlBudgetWithin(p.Budget, p.AggregateBudget) || p.Budget.DurationSeconds > urlMaxRunSeconds || !urlDigestValid(p.PolicySHA256) ||
 		!urlDigestValid(p.ManifestSHA256) || !urlDigestValid(p.Launch.SHA256) ||
 		p.Attestation.QueryPolicy != "any" || p.Attestation.BodyPolicy != "bounded" || p.Attestation.MaxBodyBytes < 1 ||
 		p.InputTokensPerCall < 4096 || p.InputTokensPerCall > 4<<20 || p.InputTokensPerCall%1024 != 0 ||
