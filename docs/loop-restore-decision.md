@@ -44,7 +44,7 @@
 - WebSearch는 Worker와 같은 규칙이다.
 - Plan당 상한(`e2HTTPPlannerMaxTurns`·`e2HTTPPlannerMaxDuration` 상수)은 원본 설정 경로(에이전트 설정의 턴·시간)로 돌리고, 제품 기본값은 C32 설치 설정으로 둔다.
   - 구현: 상수를 `agent.E2HTTPPlannerLimits`(기본 16턴·2분)로 바꾸고 설치 입력 `runtime_limits`의 `planner_turns_per_plan`·`planner_seconds_per_plan`을 launch 설정으로 받는다([설치 상한 결정안](install-limits-decision.md) §3-5). 에이전트 설정의 턴 수가 설치 값보다 작으면 그 값을 쓴다.
-- 마무리 턴·Todo: 원본처럼 Plan 상한에 닿으면 마무리 턴(정한 결론을 add_intent·prove_goal·TodoWrite로 남김)을 받고, 깨울 때마다 이어지는 계획 할 일(TodoWrite)을 둔다. 둘 다 이 프로세스 안 작업이라 대상 송신 경로가 없고, 마무리 턴의 도구도 프로필 도구뿐이다. 원본 Planner는 자체 시간 상한이 없어 task 기한이 있으면 시간 종료를 늘 "작업 종료" 마무리(새 intent 금지)로 보는데, 진단 Planner는 Plan당 시간 상한이 있으므로 task 기한이 이번 Plan을 실제로 자를 때만 작업 종료 마무리를 쓰고 Plan 상한으로 끝나면 "이번 라운드만 끝" 마무리를 쓴다. 압축(Compactor)·skills는 아직 넣지 않았다.
+- 마무리 턴·Todo: 원본처럼 Plan 상한에 닿으면 마무리 턴(정한 결론을 add_intent·prove_goal·TodoWrite로 남김)을 받고, 깨울 때마다 이어지는 계획 할 일(TodoWrite)을 둔다. 둘 다 이 프로세스 안 작업이라 대상 송신 경로가 없고, 마무리 턴의 도구도 프로필 도구뿐이다. 원본 Planner는 자체 시간 상한이 없어 task 기한이 있으면 시간 종료를 늘 "작업 종료" 마무리(새 intent 금지)로 보는데, 진단 Planner는 Plan당 시간 상한이 있으므로 task 기한이 이번 Plan을 실제로 자를 때만 작업 종료 마무리를 쓰고 Plan 상한으로 끝나면 "이번 라운드만 끝" 마무리를 쓴다. 마무리 단계는 Plan당 상한 밖이다: 원본처럼 에이전트 설정의 마무리 턴 수(기본 10턴)까지 돌고 시간 상한을 보지 않는다(SDK 동작). 실행 시간 상한(task 문맥)과 모델 예산은 마무리 단계도 자른다. TodoWrite는 SDK가 붙이므로 진단 기록에 등록 도구로 알린다(기록 어휘는 #472). 압축(Compactor)·skills는 아직 넣지 않았다.
 
 ## 5. 실행 흐름 (C19·C27)
 
