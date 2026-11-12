@@ -370,7 +370,7 @@ func TestE2HTTPPlannerAndWorkerFilterByOriginalToolAllowlist(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
 	var base []actool.CoreTool
 	// 브라우저 MCP 도구(mcp__<서버>__<도구>)는 이름 끝이 허용 이름과 같아도 진단 단계에 들어가지 않는다.
-	for _, name := range []string{"Bash", "WebFetch", "Skill", "ExecuteExtraTool", "record_fact", "add_intent", "list_facts", "node_detail", "report_finding", "insert_assets", "add_task_scope", "TodoWrite", "Monitor",
+	for _, name := range []string{"Bash", "WebFetch", "Skill", "ExecuteExtraTool", "record_fact", "add_intent", "list_facts", "node_detail", "report_finding", "insert_assets", "add_task_scope", "add_company_scope", "TodoWrite", "Monitor",
 		"mcp__browser__browser_navigate", "mcp__browser__node_detail", "mcp__browser__list_facts"} {
 		base = append(base, e2WorkerFixtureTool(name, nil))
 	}
@@ -382,8 +382,8 @@ func TestE2HTTPPlannerAndWorkerFilterByOriginalToolAllowlist(t *testing.T) {
 	for _, tool := range planner {
 		names = append(names, tool.Name())
 	}
-	// 출력은 프로필 순서(PlannerTools 순서)다.
-	if strings.Join(names, ",") != "list_facts,node_detail,add_intent" {
+	// 출력은 프로필 순서(PlannerTools 순서)다. add_company_scope는 DB 역할 결정(열린 항목 5) 전이라 빠진다.
+	if strings.Join(names, ",") != "list_facts,node_detail,add_intent,add_task_scope" {
 		t.Fatalf("planner tools=%v", names)
 	}
 	e2Bash := e2WorkerFixtureTool("Bash", nil)
