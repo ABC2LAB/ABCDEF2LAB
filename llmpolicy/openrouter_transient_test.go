@@ -99,9 +99,11 @@ func TestOpenRouterTransientFailuresBlockOnlyAtConsecutiveLimit(t *testing.T) {
 			p := openRouterV2Fixture(t, 2)
 			script := []bool{false, true, false, false} // 실패, 성공, 실패, 실패
 			hits := 0
+			var wire int64
 			client := openRouterClient(p, openRouterRT(func(r *http.Request) (*http.Response, error) {
 				ok := script[hits]
 				hits++
+				wire = r.ContentLength
 				if ok {
 					return openRouterResponse(openRouterReply), nil
 				}
@@ -123,7 +125,7 @@ func TestOpenRouterTransientFailuresBlockOnlyAtConsecutiveLimit(t *testing.T) {
 				t.Fatal("send after the consecutive limit")
 			}
 			u := p.Snapshot()
-			if u.Requests != 4 || u.Errors != 3 || u.ReservedInputTokens != 4*openRouterContext || u.CostMicros != 12 {
+			if u.Requests != 4 || u.Errors != 3 || u.ReservedInputTokens != 4*(wire+openRouterFramingTokens) || u.CostMicros != 12 {
 				t.Fatalf("reservation refunded or usage lost: %+v", u)
 			}
 		})
