@@ -154,6 +154,22 @@ describe("범위 확인", () => {
     // 묶음을 AI 추정이라고 부르지 않는다
     expect(screen.queryByText(/AI 추정/)).toBeNull();
   });
+
+  it("시안의 시작 전 점검 · 새 경로 처리 규칙은 서버 계약이 없어 '아직 구현 안 됨'으로 보인다 (시안 v28)", () => {
+    useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("scope")}>
+        <WorkflowScopeLive />
+      </ShellContext.Provider>,
+    );
+    const pre = screen.getByLabelText("시작 전 점검");
+    expect(pre).toHaveTextContent(/모델 연결 아직 구현 안 됨/);
+    expect(pre).toHaveTextContent(/대상 연결 아직 구현 안 됨/);
+    expect(pre).toHaveTextContent(/계정 로그인 아직 구현 안 됨/);
+    const rules = screen.getByText("점검 중 새로 찾은 경로 처리 규칙").closest("details") as HTMLElement;
+    expect(within(rules).getAllByRole("listitem")).toHaveLength(6);
+    expect(within(rules).getByRole("note")).toHaveTextContent(/^아직 구현 안 됨 · 서버가 점검 중 새 경로를/);
+  });
 });
 
 describe("자산 탐색", () => {
@@ -167,6 +183,35 @@ describe("자산 탐색", () => {
     expect(screen.getByRole("radiogroup", { name: "보이는 경로" })).toBeInTheDocument();
     expect(screen.queryByRole("radiogroup", { name: "보기 방식" })).toBeNull();
     expect(screen.queryByText("주소 구조")).toBeNull();
+  });
+
+  it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값, 경과는 '아직 구현 안 됨' (시안 v24)", () => {
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: { ...flow, stage: "crawling", initial_completed: false, counts: { ...flow.counts, visited: 1 } },
+      flowVerified: true,
+    });
+    const { rerender } = render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    // 방문 1 / 페이지 상한 4 → 25%
+    const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
+    expect(bar).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByText(/^찾은 경로 · 조회 1 · 데이터 변경 1$/)).toBeInTheDocument();
+    expect(screen.getByText(/^보낸 요청 · 시도 1 · 결과 불명 0$/)).toBeInTheDocument();
+    expect(screen.getByText(/^경과/)).toHaveTextContent("아직 구현 안 됨");
+    // 첫 탐색이 끝나면 가득
+    useUrl.setState({ flow });
+    rerender(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "100");
   });
 });
 

@@ -2,12 +2,14 @@
 
 // 탐색 · 선택 워크플로 화면 (시안 짜임): 자산 탐색 · 범위 확인, 그리고 점검 진행의 계획 · 활동.
 // 서버가 저장한 발견 · 관찰만 보인다. 묶음은 경로 규칙으로 나눈 것이라 AI 추정이라고 부르지 않는다.
-// 백분율 · 남은 시간 · 로그인 필요 여부 · 경로 설명은 서버가 주지 않아 만들지 않는다.
+// 남은 시간 · 로그인 필요 여부 · 경로 설명은 서버가 주지 않아 만들지 않는다. 시안에 있는 칸(경과 시간 · 시작 전 점검 ·
+// 새 경로 처리 규칙 일부)은 "아직 구현 안 됨"으로 자리만 둔다. 탐색 막대는 서버 진행률이 아니라 페이지 상한 대비 방문 수다.
 
 import { Fragment, type ReactNode, useMemo, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { clockOf, planState } from "../../live/map";
+import { NotYet } from "../../live/parts";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
@@ -44,6 +46,11 @@ function crawlTone(flow: WorkflowSnapshot): string | undefined {
 function crawlPill(flow: WorkflowSnapshot, verified: boolean): string {
   if (!verified) return "현재 상태 미확인";
   return flow.paused ? "일시정지" : flowStageText[flow.stage];
+}
+/** 탐색 막대 % — 페이지 상한 대비 방문 수(서버 진행률 아님). 첫 탐색이 끝나면 100, 그 전에는 99 를 넘기지 않는다. */
+export function crawlPct(flow: WorkflowSnapshot): number {
+  if (flow.initial_completed) return 100;
+  return Math.min(99, Math.round((flow.counts.visited / Math.max(1, flow.limits.max_pages)) * 100));
 }
 /** 범위 확인 화면 상태 알약 글. */
 function scopePill(flow: WorkflowSnapshot, verified: boolean): string {
@@ -510,6 +517,19 @@ export function WorkflowCrawlLive() {
                     {flow.current_path || flowStageText[flow.stage]}
                   </span>
                 </div>
+                {/* 탐색 진행 (시안 v24): 서버에 진행률이 없어 페이지 상한 대비 방문 수로 그린다. 첫 탐색이 끝나면 가득 */}
+                <div
+                  className={s.prog}
+                  id="cBar"
+                  role="progressbar"
+                  aria-label="탐색 진행 (페이지 상한 대비 방문)"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={crawlPct(flow)}
+                  aria-valuetext={`${crawlPct(flow)}% · 페이지 상한 대비 방문`}
+                >
+                  <i style={{ width: `${crawlPct(flow)}%` }} />
+                </div>
                 <div className={s.pmeta}>
                   <span>
                     방문 <b id="cVis">{flow.counts.visited}</b> / 찾은 경로 <b id="cKnown">{flow.counts.found}</b>
@@ -520,22 +540,37 @@ export function WorkflowCrawlLive() {
                   <span>
                     페이지 상한 <b>{flow.limits.max_pages}</b>
                   </span>
+                  <span>
+                    경과 <NotYet why="서버가 탐색 시작 시각을 주지 않습니다" />
+                  </span>
                 </div>
               </div>
               <div className={s.cnts}>
                 {(
                   [
-                    ["cFound", "찾은 경로", flow.counts.found, null],
-                    ["cSent", "보낸 요청", flow.counts.sent, null],
-                    ["cAp", "보낼 때 승인", count("ap"), "w"],
-                    ["cSkip", "막은 요청", flow.counts.blocked, null],
+                    [
+                      "cFound",
+                      "찾은 경로",
+                      flow.counts.found,
+                      null,
+                      `조회 ${endpoints.filter((e) => e.change === "attested_read").length} · 데이터 변경 ${endpoints.filter((e) => e.change === "possible").length}`,
+                    ],
+                    [
+                      "cSent",
+                      "보낸 요청",
+                      flow.counts.sent,
+                      null,
+                      `시도 ${flow.counts.attempted} · 결과 불명 ${flow.counts.unknown}`,
+                    ],
+                    ["cAp", "보낼 때 승인", count("ap"), "w", "보내기 전에 승인"],
+                    ["cSkip", "막은 요청", flow.counts.blocked, null, "규칙으로 막음"],
                   ] as const
-                ).map(([id, label, value, tone]) => (
+                ).map(([id, label, value, tone, sub]) => (
                   <div className={s.cn} key={id}>
                     <div className={cx(s.v, tone && s[tone])} id={id}>
                       {value}
                     </div>
-                    <div className={s.k}>{label}</div>
+                    <div className={s.k}>{`${label} · ${sub}`}</div>
                   </div>
                 ))}
               </div>
@@ -659,7 +694,13 @@ export function WorkflowCrawlLive() {
                   </div>
                 </div>
                 <div id="cTree">
-                  <EndpointCards endpoints={shown} onSelect={select} />
+                  {shown.length ? (
+                    <EndpointCards endpoints={shown} onSelect={select} />
+                  ) : (
+                    <p className={s.empty}>
+                      {endpoints.length ? "조건에 맞는 경로가 없습니다." : "아직 찾은 경로가 없습니다."}
+                    </p>
+                  )}
                 </div>
               </div>
             </>
@@ -670,6 +711,18 @@ export function WorkflowCrawlLive() {
     </>
   );
 }
+
+/** 시작 전 점검 칸 (시안 v28). */
+const PRECHECKS = ["모델 연결", "대상 연결", "계정 로그인"] as const;
+/** 점검 중 새로 찾은 경로 처리 규칙 (시안 v28 규칙표 · 서버 계약 아님). */
+const NEW_PATH_RULES = [
+  ["허용 주소 밖", "요청 안 함 · 기록만", "out"],
+  ["제외 규칙과 같은 모양", "자동 제외", "ex"],
+  ["GET · 보기만 하는 요청", "자동 포함", "in"],
+  ["POST · PUT · PATCH", "포함 · 보낼 때 승인", "ap"],
+  ["DELETE · 초기화 · 로그아웃", "자동 제외", "ex"],
+  ["관리자 · 처음 보는 권한 영역", "확인 요청", "ap"],
+] as const;
 
 /** 범위 확인: 찾은 경로 중 심화 점검할 경로를 고른다. 선택은 개별 HTTP 송신 승인을 대신하지 않는다. */
 function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: ReactNode) => ReactNode }) {
@@ -736,6 +789,17 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
             <span className={s.ap}>
               승인 필요<b>{apCount}</b>
             </span>
+          </div>
+          {/* 시작 전 점검 (시안 v28): 서버가 시작 전 연결 확인을 주지 않아 칸만 둔다 */}
+          {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
+          <div className={s.pre} role="group" aria-label="시작 전 점검">
+            <span className={s.k}>시작 전 점검</span>
+            {PRECHECKS.map((t) => (
+              <span key={t}>
+                {`${t} `}
+                <NotYet why="서버가 시작 전 연결 확인 결과를 주지 않습니다" />
+              </span>
+            ))}
           </div>
           <div className={s.filters}>
             {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
@@ -834,6 +898,23 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
           ) : (
             <p className={s.empty}>조건에 맞는 경로가 없습니다.</p>
           )}
+          {/* 점검 중 새로 찾은 경로 처리 규칙 (시안 v28): 시안의 규칙표다. 서버가 점검 중 새 경로를 이 규칙대로 다룬다는
+              계약이 아직 없어 표 전체를 "아직 구현 안 됨"으로 둔다 */}
+          <details className={s.rulebox}>
+            <summary>
+              <Icon name="chev" />
+              점검 중 새로 찾은 경로 처리 규칙<span className={s.c}>{NEW_PATH_RULES.length}</span>
+            </summary>
+            <NotYet block why="서버가 점검 중 새 경로를 이 규칙대로 다룬다는 계약이 아직 없습니다" />
+            <ul className={s.rules}>
+              {NEW_PATH_RULES.map(([t, tag, tone]) => (
+                <li key={t}>
+                  <span>{t}</span>
+                  <span className={cx(s.tag, s[tone])}>{tag}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
           <div className={s.formbar}>
             <ScopeStart flow={flow} ids={[...selected]} />
           </div>
