@@ -205,12 +205,12 @@ describe("탐색 기록 펼치기", () => {
     expect(within(box).getByText("html_link")).toBeInTheDocument();
     expect(within(box).getByText("GET /api/products/1 HTTP/1.1")).toBeInTheDocument();
     expect(within(box).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
-    // 한 번에 하나: 다른 줄을 열면 앞 줄은 접힌다. 보내지 않은 줄은 기록 결과만, 원문은 없다고 말한다
+    // 한 번에 하나: 다른 줄을 열면 앞 줄은 접힌다. 응답 코드가 없는 줄은 기록 결과만, 송신 여부는 단정하지 않는다
     fireEvent.click(putRow);
     expect(screen.queryByRole("region", { name: "GET /api/products/1 상세" })).toBeNull();
     const put = screen.getByRole("region", { name: "PUT /api/users/2 상세" });
     expect(within(put).getByText("held")).toBeInTheDocument();
-    expect(within(put).getByText("보내지 않은 요청이라 이 줄의 요청 · 응답 원문은 없습니다.")).toBeInTheDocument();
+    expect(within(put).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
     // 같은 줄을 다시 누르면 접힘
     fireEvent.click(putRow);
     expect(screen.queryByRole("region", { name: "PUT /api/users/2 상세" })).toBeNull();
@@ -228,12 +228,16 @@ describe("탐색 기록 펼치기", () => {
 });
 
 describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
-  const mountLog = (events: WorkflowSnapshot["events"], endpoint: WorkflowSnapshot["endpoints"][number]) => {
+  const mountLog = (
+    events: WorkflowSnapshot["events"],
+    endpoint: WorkflowSnapshot["endpoints"][number],
+    counts: WorkflowSnapshot["counts"] = flow.counts,
+  ) => {
     useUrl.setState({
       handle,
       job,
       verified: true,
-      flow: { ...flow, endpoints: [endpoint], events },
+      flow: { ...flow, counts, endpoints: [endpoint], events },
       flowVerified: true,
     });
     render(
@@ -268,7 +272,7 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
     expect(within(last).getByText("HTTP status 403")).toBeInTheDocument();
   });
 
-  it("200 송신 뒤 보내지 않은 같은 경로 줄에는 이전 200 원문을 붙이지 않는다", () => {
+  it("200 송신 뒤 응답 코드 없는 같은 경로 줄에는 이전 200 원문을 붙이지 않는다", () => {
     const rows = mountLog(
       [
         { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/a", status: 200 },
@@ -282,13 +286,33 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
       },
     );
     fireEvent.click(rows[1]);
-    const unsent = screen.getByRole("region", { name: "GET /api/a 상세" });
-    expect(within(unsent).queryByText("HTTP/1.1 200 OK")).toBeNull();
-    expect(within(unsent).getByText("보내지 않은 요청이라 이 줄의 요청 · 응답 원문은 없습니다.")).toBeInTheDocument();
+    const nostatus = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(nostatus).queryByText("HTTP/1.1 200 OK")).toBeNull();
+    expect(within(nostatus).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
     // 보낸 200 줄은 이 경로의 마지막 송신이라 원문을 '경로의 마지막 관찰'로 보인다
     fireEvent.click(rows[0]);
     const sent = screen.getByRole("region", { name: "GET /api/a 상세" });
     expect(within(sent).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
+  });
+
+  it("보냈지만 응답을 못 받은 줄(status 0 · 결과 불명)을 '보내지 않은 요청'으로 단정하지 않는다", () => {
+    // 서버 Controller.After: ForwardAttempted · RequestWritten = true, ResponseReceived = false, Reason = Unknown,
+    // StatusCode = 0 → counts.sent · attempted · unknown 이 오르지만 이벤트 status 는 omitempty 로 빠진다
+    const rows = mountLog(
+      [{ at: "2026-11-11T01:00:01Z", kind: "request", method: "GET", path: "/api/a" }],
+      {
+        ...ep("a", "GET", "/api/a", "attested_read"),
+        visited: false,
+        request: "GET /api/a HTTP/1.1",
+        response: "HTTP status 0 · response incomplete",
+      },
+      { ...flow.counts, sent: 1, attempted: 1, unknown: 1 },
+    );
+    fireEvent.click(rows[0]);
+    const box = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(box).queryByText(/보내지 않은/)).toBeNull();
+    expect(within(box).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
+    expect(within(box).queryByText("HTTP status 0 · response incomplete")).toBeNull();
   });
 });
 

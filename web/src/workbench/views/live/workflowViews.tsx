@@ -268,14 +268,15 @@ type FlowEvent = WorkflowSnapshot["events"][number];
 /**
  * 기록 줄 ↔ 저장된 원문의 관계. `endpoints`는 요청별 기록이 아니라 메서드 · 경로별 현재 상태다(서버 Controller.After 는
  * 송신 때 Request/Response 를 덮어쓰고, 미송신 때는 이전 값을 그대로 둔다). 이벤트에 call_ref 가 없어 건별로 묶을 수 없으므로
- * - unsent: 보내지 않은 줄 → 원문을 붙이지 않는다
+ * - unknown: 응답 코드가 없는 줄 → 송신 여부를 단정하지 않고 원문도 붙이지 않는다. 보냈지만 응답을 못 받은 경우
+ *   (StatusCode 0)도 status 가 빠져 미송신과 구분되지 않는다(리뷰 #473)
  * - stale: 같은 경로에 더 나중(또는 같은 시각) 송신이 있거나 저장된 응답 코드가 이 줄과 다름 → 이 줄의 원문이 아님
  * - latest: 이 경로의 마지막 송신 줄이고 응답 코드도 같음 → "경로의 마지막 관찰"로 분리해 보인다(같은 요청이라고 단정하지 않음)
  */
-export type LogRaw = "unsent" | "stale" | "latest";
+export type LogRaw = "unknown" | "stale" | "latest";
 export function logRawOf(events: readonly FlowEvent[], i: number, endpoint: WorkflowEndpoint | undefined): LogRaw {
   const ev = events[i];
-  if (!ev?.status) return "unsent";
+  if (!ev?.status) return "unknown";
   const at = Date.parse(ev.at);
   const later = events.some(
     (o, j) => j !== i && o.status && o.method === ev.method && o.path === ev.path && !(Date.parse(o.at) < at),
@@ -287,7 +288,7 @@ export function logRawOf(events: readonly FlowEvent[], i: number, endpoint: Work
 /**
  * 탐색 기록 한 줄을 펼친 칸 (시안 v75 ~ v76). 이 기록의 결과와, 같은 경로의 서버 정보(찾은 곳 · 출처 · 종류)를 줄 바로 아래에
  * 보인다. 저장된 요청/응답 원문은 이 줄과 묶였다고 볼 수 있을 때(logRawOf = latest)만 "경로의 마지막 관찰"로 따로 보이고,
- * 보내지 않은 줄 · 나중 요청이 있는 줄에는 붙이지 않는다(값을 지어내지 않음 · 서버가 가린 그대로).
+ * 응답 코드가 없는 줄 · 나중 요청이 있는 줄에는 붙이지 않는다(값을 지어내지 않음 · 서버가 가린 그대로).
  * Esc · 접기로 닫고 초점은 그 줄로 돌아간다.
  */
 function LogDetail({
@@ -304,7 +305,13 @@ function LogDetail({
   onClose: () => void;
 }) {
   let rawBody: ReactNode;
-  if (raw === "unsent") rawBody = <p className={s.empty}>보내지 않은 요청이라 이 줄의 요청 · 응답 원문은 없습니다.</p>;
+  if (raw === "unknown")
+    rawBody = (
+      <p className={s.empty}>
+        응답 코드가 없는 기록이라 보냈는지 · 응답을 받았는지 확인할 수 없습니다. 서버에 남은 원문도 이 줄의 것인지 알 수
+        없어 보이지 않습니다.
+      </p>
+    );
   else if (raw === "stale")
     rawBody = (
       <p className={s.empty}>
