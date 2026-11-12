@@ -288,7 +288,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	} else {
 		modelBudget, err = server.NewFirstDiagnosisModelBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, observe)
 	}
-	if err != nil {
+	if err != nil || modelBudget.ConfigureConcurrency(max(l.launch.ModelConcurrency, 1)) != nil {
 		return knownFailure("model_budget_invalid", true)
 	}
 	if l.productTarget != nil && modelBudget.ConfigureTargetDrain(hard, min(time.Duration(l.launch.ShutdownTimeoutSeconds)*time.Second/2, 30*time.Second), check) != nil {
