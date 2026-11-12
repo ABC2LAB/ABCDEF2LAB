@@ -98,12 +98,16 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
    - 2-4: `no_intents`(C11 결정 2, 첫 계획 0개). 진단 준비의 첫 계획에서 intent가 0개여도 실패로 끝내지 않고 실행으로 넘어간다(저장소를 못 읽은 경우만 `intent_storage_failed`). 실행 단계 Planner가 오류 없이 한 라운드 이상 계획했는데도 intent가 없으면(삭제된 intent는 세지 않음) `completed` + `no_intents`로 마감한다. 이때 E② 호출이 있으면 대조가 맞지 않으므로 실패다. 실행 상한에 먼저 닿으면 계획 라운드 없이도 `no_intents` + `budget_limited`로 마감한다.
    - 2-5: `diagnostic_log_incomplete` 칸 분리. 진단 준비 Job의 완료 실행에만 있고 `reason_code`를 쓰지 않는다. 이 칸 이전에 저장된 완료 실행에는 `reason_code: diagnostic_logging_incomplete`가 남아 있을 수 있어 화면은 둘 다 읽는다.
    - 2-6: 저장 보고서에 싣기(5절 5). 실행 종료 기록(`first_diagnosis_run_v1`)에 `result` 칸을 더한다(버전 1 그대로, 이 칸 이전 기록에는 없음). `completed`는 대조식이 맞는 결과, `cancelled`는 개수만, 실패·마감 실패에는 싣지 않고, 같은 결과로만 다시 저장된다. 보고서(HTML·DOCX, 공유 사본 포함) 3장 관리자 요약에 화면과 같은 문구로 "실행 결과: …" 한 줄을 싣는다. 기록이 없거나 형식이 틀리면 "확인하지 못함"으로 쓰고 완료로 바꾸지 않는다. 진단 준비 중지·대상 철회는 실행 문맥 취소로 끝나 요청 승인 상태가 `failed`로 남는데, URL 실행이 운영자 중지(상위 문맥 취소)나 대상 철회(`ErrFirstDiagnosisTargetEnded`)로 확인하고 마감이 확인되면 저장 기록에 `cancelled`로 남긴다. 설치·위임 검사 실패, 상태 조회·진행 저장 실패, 시간 상한처럼 원인 없는 취소는 `failed` 그대로다(#454 윤재상 지적). 화면(`diagnosis.Service`)은 지금도 문맥 취소를 모두 `cancelled`로 보므로 같은 구분이 필요하다(열린 항목).
-3. `unknown` intent가 있는 실행을 `completed` + `partial`로 마감하는 것은 C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤. 그 전에는 결과 불명 송신이 있는 호출(`Counts.Unknown`)이 있으면 지금처럼 실행을 멈춘다.
+3. `unknown` intent가 있는 실행을 `completed` + `partial`로 마감한다(C01 #477 뒤). 결과 불명 송신은 그 intent만 멈추고 다시 보내지 않으므로, 감사가 닫히면 실행은 실패가 아니다.
+   - 근거 대조: 결과 불명 송신(`Counts.Unknown`)이 있는 호출의 intent는 `blocked` + `e2_http_result_unknown`이어야 하고, `unknown` intent 수는 그런 호출이 있는 intent 수와 같아야 한다. 결과 불명 송신 없이 `unknown`으로 표시된 intent가 있으면 마감하지 않는다(`partial`·`policy_limited`처럼 개수를 E② 기록으로 뒷받침한다).
+   - 호출 결과: `result_unknown`(결과 불명 송신 수가 있음)과, 대상 연결을 맺지 못한 송신 실패(`transient_failure` + 송신 실패 수, C02)는 그 호출의 결과로 받는다. 실행 전체 누계의 결과 불명은 다른 intent의 것이라 다른 intent의 마감을 막지 않는다(C03).
+   - 그대로 실패인 것: 감사 저장 실패, 실행 권한 철회·만료, 송신 실패 수가 없는 `transient_failure`(프록시 장애와 명령 시간 초과를 신뢰 결과에서 나눌 수 없음 — 열린 항목 2), 비최종·미드레인 호출.
 4. C09(intent 결과를 모든 호출 분류로, #428)와 C26(Worker 마무리 보고)은 이 투영을 그대로 쓴다.
 5. C26 1단계(Planner `prove_goal`·`goal_met`): Planner가 목표 달성으로 작업을 끝내면(작업 `done`) 실행 상한과 같이 Planner를 기다리지 않고 실행 중 intent가 끝나는 대로 마감하고, 남은 `open` intent는 `incomplete`로 센다(그래서 `partial`). `closing_reason`은 붙이지 않는다(`budget_limited`는 실행 상한일 때만).
 
 ## 7. 열린 항목
 
 1. **시간 상한**(이동찬): task deadline 도달을 `budget_limited`로 볼지. 지금은 마감 과정(settlement)과 얽혀 있어 이 계약에서 뺐다.
+2. **명령 시간 초과**(E② 실행기 담당): Bash 명령 하나가 시간 상한에 닿으면 실행기는 `transient_failure`로 분류하는데, 신뢰 결과에 종료 원인이 없어 E② 프록시 장애(집행 장애, 실행 `failed`)와 구분되지 않는다. 그래서 지금은 명령 시간 초과도 마감 실패다. 신뢰 결과에 종료 원인(시간 초과·프록시 장애)을 싣으면 시간 초과는 그 intent의 `incomplete`로 센다.
 
 정해진 것(#429 이경준 답): `budget_limited` 세부는 처음에는 보이지 않는다("예산 상한에서 마감"만). 세부를 넣을 때는 `closing_reason`을 늘리지 않고 별도 칸을 둔다. 저장 보고서에는 싣는다(5절 5).
