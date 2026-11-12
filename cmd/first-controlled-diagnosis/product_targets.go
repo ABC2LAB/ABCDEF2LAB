@@ -55,12 +55,15 @@ type productTargetRegistry struct {
 	contacts    productContactJournal
 	// accountJournal은 대상 계정 등록·시험 계정 표시·해제 저널이다(product_accounts.go). accounts는 그 상태다.
 	accountJournal productContactJournal
+	accountDir     string
 	accounts       map[string]map[string]*productAccountState
-	records        map[string]productTargetRecord
-	approvals      map[string]productTargetRecord
-	resolver       *net.Resolver
-	roots          *x509.CertPool
-	now            func() time.Time
+	// logins는 대상별 로그인 방식이다(계정 저널의 login_config 줄).
+	logins    map[string]diagnosisprep.TargetLogin
+	records   map[string]productTargetRecord
+	approvals map[string]productTargetRecord
+	resolver  *net.Resolver
+	roots     *x509.CertPool
+	now       func() time.Time
 	// 시험 의존성은 HTTP나 설치 JSON에서 받지 않는다.
 	lookupTXT       func(context.Context, string) ([]string, error)
 	lookupIP        func(context.Context, string) ([]netip.Addr, error)
@@ -141,7 +144,7 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 		_ = errors.Join(journal.Close(), contacts.Close())
 		return nil, err
 	}
-	r := &productTargetRegistry{policy: p, policyCheck: check, journal: journal, contacts: contacts, accountJournal: accountJournal, accounts: map[string]map[string]*productAccountState{},
+	r := &productTargetRegistry{policy: p, policyCheck: check, journal: journal, contacts: contacts, accountJournal: accountJournal, accountDir: accountDir, accounts: map[string]map[string]*productAccountState{}, logins: map[string]diagnosisprep.TargetLogin{},
 		records: map[string]productTargetRecord{}, approvals: map[string]productTargetRecord{}, resolver: resolver, roots: roots, now: func() time.Time { return time.Now().UTC() }}
 	r.lookupTXT = resolver.LookupTXT
 	r.lookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {

@@ -460,6 +460,18 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			control.Credential, err = p.credential(ctx, r.Product.ProfileID)
 		case "accounts":
 			control.Accounts, err = p.targets.listAccounts(r.Principal, r.Product.TargetID)
+		case "target_login":
+			control.Login, err = p.targets.targetLogin(r.Principal, r.Product.TargetID)
+		case "target_login_set":
+			control.Login, err = p.targets.setTargetLogin(r.Principal, r.Product.TargetID, *r.Product.Login)
+		case "account_credential_set":
+			var a diagnosisprep.ProductAccount
+			a, err = p.targets.setAccountCredential(r.Principal, r.Product.TargetID, r.Product.Account.Label, *r.Product.Credential)
+			// 요청에 실린 자격 값 참조는 쓴 뒤 바로 버린다(응답·로그에는 나가지 않는다).
+			r.Product.Credential.Password, r.Product.Credential.Username = "", ""
+			if err == nil {
+				control.Account = &a
+			}
 		case "account_register", "account_mark_test", "account_unmark":
 			var a diagnosisprep.ProductAccount
 			switch r.Product.Operation {

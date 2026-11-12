@@ -59,6 +59,22 @@ func productTargetsHTTP(w http.ResponseWriter, r *http.Request, owner string, en
 			if !productAccountRequest(w, r, parts, request) {
 				return
 			}
+		} else if len(parts) == 2 && parts[1] == "login" {
+			switch r.Method {
+			case "GET":
+				request.Operation = "target_login"
+			case "PUT":
+				var login diagnosisprep.TargetLogin
+				if !productAccountBody(w, r, &login) || !diagnosisprep.ValidTargetLogin(login) {
+					writeJSON(w, 400, map[string]string{"error": "invalid_target_login"})
+					return
+				}
+				request.Operation = "target_login_set"
+				request.Login = &login
+			default:
+				writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
+				return
+			}
 		} else if len(parts) > 2 {
 			http.NotFound(w, r)
 			return
@@ -77,6 +93,9 @@ func productTargetsHTTP(w http.ResponseWriter, r *http.Request, owner string, en
 		}
 	}
 	callProductControl(w, r, owner, endpoint, request)
+	if request.Credential != nil {
+		request.Credential.Username, request.Credential.Password = "", ""
+	}
 }
 
 // productAccountRequest는 대상 계정 경로(C14 결정 1·2)를 제품 제어 요청으로 바꾼다. 자격 값은 받지 않는다.
@@ -115,6 +134,23 @@ func productAccountRequest(w http.ResponseWriter, r *http.Request, parts []strin
 		}
 		request.Operation = "account_mark_test"
 		request.Account = &diagnosisprep.AccountRequest{Label: parts[2], StatementConfirmed: true}
+		return true
+	case len(parts) == 4 && r.Method == "PUT" && parts[3] == "credential":
+		// 자격 값은 준비 프로세스로만 넘긴다. 읽은 본문 바이트는 바로 지우고, 요청 구조체의 값 참조는 넘긴 뒤 버린다
+		// (Go 문자열은 덮어쓸 수 없어 참조만 끊는다). 응답·로그에는 넣지 않는다.
+		media, _, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		raw, re := io.ReadAll(http.MaxBytesReader(w, r.Body, 2<<10))
+		var cred diagnosisprep.AccountCredential
+		ok := diagnosisprep.ValidAccountLabel(parts[2]) && e == nil && media == "application/json" && re == nil && strictJSON(raw, &cred) == nil && diagnosisprep.ValidAccountCredential(cred)
+		clear(raw)
+		if !ok {
+			cred = diagnosisprep.AccountCredential{}
+			writeJSON(w, 400, map[string]string{"error": "invalid_account_credential"})
+			return false
+		}
+		request.Operation = "account_credential_set"
+		request.Account = &diagnosisprep.AccountRequest{Label: parts[2]}
+		request.Credential = &cred
 		return true
 	case len(parts) == 4 && r.Method == "POST" && parts[3] == "unmark":
 		raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 128))

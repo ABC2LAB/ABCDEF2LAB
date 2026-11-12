@@ -235,3 +235,177 @@ func TestProductAccountMarkFromAnotherRevisionReadsReal(t *testing.T) {
 		t.Fatalf("mark from revision %d read as %+v on revision %d", e.TargetRevision, a, target.Revision)
 	}
 }
+
+func cookieLogin() diagnosisprep.TargetLogin {
+	return diagnosisprep.TargetLogin{Method: "POST", Path: "/read/login", Format: "json", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}
+}
+
+// 로그인 방식은 승인 경로 접두 안의 정규 경로·POST·형식에 맞는 필드·세션 위치 하나만 받고, 다시 열어도 같다.
+func TestProductTargetLoginConfig(t *testing.T) {
+	r, root, target := accountTestTarget(t, true)
+	if got, err := r.targetLogin("ARTEX", target.ID); err != nil || got != nil {
+		t.Fatalf("unset login: %+v %v", got, err)
+	}
+	tokenLogin := diagnosisprep.TargetLogin{Method: "POST", Path: "/read/api/login", Format: "form", UsernameField: "user", PasswordField: "pass", JSONField: "data.token", Header: "Authorization", Prefix: "Bearer "}
+	rawToken := diagnosisprep.TargetLogin{Method: "POST", Path: "/read/api/login", Format: "json", UsernameField: "user", PasswordField: "pass", JSONField: "token", Header: "X-Auth-Token"}
+	// 마지막에 쓴 방식이 남는다(순서를 고정한다).
+	for _, l := range []diagnosisprep.TargetLogin{cookieLogin(), rawToken, tokenLogin} {
+		if got, err := r.setTargetLogin("ARTEX", target.ID, l); err != nil || got.Path != l.Path || got.Header != l.Header {
+			t.Fatalf("%+v login rejected: %v", l, err)
+		}
+	}
+	bad := map[string]func(*diagnosisprep.TargetLogin){
+		"outside prefix": func(l *diagnosisprep.TargetLogin) { l.Path = "/admin/login" },
+		"prefix sibling": func(l *diagnosisprep.TargetLogin) { l.Path = "/reader/login" },
+		"get method":     func(l *diagnosisprep.TargetLogin) { l.Method = "GET" },
+		"query":          func(l *diagnosisprep.TargetLogin) { l.Path = "/read/login?next=/" },
+		"semicolon":      func(l *diagnosisprep.TargetLogin) { l.Path = "/read/login;jsessionid=x" },
+		"dot segment":    func(l *diagnosisprep.TargetLogin) { l.Path = "/read/../admin/login" },
+		"both modes":     func(l *diagnosisprep.TargetLogin) { l.JSONField, l.Header = "token", "Authorization" },
+		"no mode":        func(l *diagnosisprep.TargetLogin) { l.Cookies = nil },
+		"same fields":    func(l *diagnosisprep.TargetLogin) { l.PasswordField = l.UsernameField },
+		"format":         func(l *diagnosisprep.TargetLogin) { l.Format = "xml" },
+		"cookie header": func(l *diagnosisprep.TargetLogin) {
+			l.Cookies, l.JSONField, l.Header = nil, "token", "Cookie"
+		},
+		"prefix newline": func(l *diagnosisprep.TargetLogin) {
+			l.Cookies, l.JSONField, l.Header, l.Prefix = nil, "token", "Authorization", "Bearer\n"
+		},
+	}
+	for name, change := range bad {
+		l := cookieLogin()
+		change(&l)
+		if _, err := r.setTargetLogin("ARTEX", target.ID, l); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got, err := reopened.targetLogin("ARTEX", target.ID); err != nil || got == nil || got.JSONField != "data.token" || got.Header != "Authorization" {
+		t.Fatalf("replayed login: %+v %v", got, err)
+	}
+}
+
+// 자격은 보호 파일(0600)에만 있고 저널·목록·응답에는 해시 여부만 남는다. 파일이 바뀌면 자격이 없다고 본다.
+func TestProductAccountCredentialStorage(t *testing.T) {
+	r, root, target := accountTestTarget(t, true)
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	const user, pass = "seeded-user-77aa", "seeded-pass-77aa"
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "missing", diagnosisprep.AccountCredential{Username: user, Password: pass}); err == nil || err.Error() != "account_not_found" {
+		t.Fatalf("missing account: %v", err)
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: user, Password: "line\nbreak"}); err == nil {
+		t.Fatal("control character accepted")
+	}
+	a, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: user, Password: pass})
+	if err != nil || !a.CredentialConfigured {
+		t.Fatalf("credential: %+v %v", a, err)
+	}
+	file := r.credentialPath(target.ID, "tester-a")
+	info, err := os.Stat(file)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("credential file mode: %v %v", info, err)
+	}
+	// 보호 파일 밖(저널·연락 기록 등 대상 디렉터리의 다른 파일)에는 자격 값이 없다.
+	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || path == file {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err == nil && (strings.Contains(string(raw), pass) || strings.Contains(string(raw), user)) {
+			t.Errorf("credential value leaked into %s", filepath.Base(path))
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := r.listAccounts("ARTEX", target.ID)
+	encoded, _ := json.Marshal(list)
+	if err != nil || len(list) != 1 || !list[0].CredentialConfigured || strings.Contains(string(encoded), pass) || strings.Contains(string(encoded), user) {
+		t.Fatalf("list: %s %v", encoded, err)
+	}
+	// 파일을 바꾸면(해시 불일치) 자격이 없다고 본다.
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: user, Password: ""}); err == nil || err.Error() != "invalid_account_credential" {
+		t.Fatalf("empty password: %v", err)
+	}
+	if err := os.WriteFile(file, []byte(`{"username":"other","password":"other"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if a := accountByLabel(t, r, target.ID, "tester-a"); a.CredentialConfigured {
+		t.Fatal("tampered credential file still configured")
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: user, Password: pass}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if a := accountByLabel(t, reopened, target.ID, "tester-a"); !a.CredentialConfigured {
+		t.Fatal("replayed credential not configured")
+	}
+}
+
+// 자격 줄은 해시 형식이 맞고 있는 계정을 가리켜야 재생된다. 로그인 줄은 승인 경로 밖이면 재생되지 않는다.
+func TestProductAccountJournalReplayRejectsForgedCredentialAndLogin(t *testing.T) {
+	outside := cookieLogin()
+	outside.Path = "/admin/login"
+	for name, e := range map[string]productAccountEvent{
+		"credential hash":    {Label: "tester-a", Action: accountCredential, CredentialSHA256: "not-a-digest"},
+		"credential account": {Label: "tester-z", Action: accountCredential, CredentialSHA256: strings.Repeat("a", 64)},
+		"login outside":      {Action: accountLoginConfig, Login: &outside},
+		"login with label":   {Label: "tester-a", Action: accountLoginConfig, Login: func() *diagnosisprep.TargetLogin { l := cookieLogin(); return &l }()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, root, target := accountTestTarget(t, true)
+			if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+				t.Fatal(err)
+			}
+			e.TargetID, e.Actor, e.At, e.TargetRevision = target.ID, "ARTEX", time.Now().UTC(), target.Revision
+			raw, _ := json.Marshal(e)
+			if err := r.accountJournal.Append(raw); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil }); err == nil {
+				reopened.Close()
+				t.Fatal("forged event replayed")
+			}
+		})
+	}
+}
+
+// 철회된 대상에는 자격·로그인 방식을 새로 쓰지 않는다.
+func TestProductAccountCredentialRejectedOnRevokedTarget(t *testing.T) {
+	r, _, target := accountTestTarget(t, true)
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.revoke("ARTEX", target.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "p"}); err == nil || err.Error() != "target_not_approved" {
+		t.Fatalf("credential on revoked target: %v", err)
+	}
+	if _, err := os.Stat(r.credentialPath(target.ID, "tester-a")); !os.IsNotExist(err) {
+		t.Fatal("credential file written for a revoked target")
+	}
+	if _, err := r.setTargetLogin("ARTEX", target.ID, cookieLogin()); err == nil || err.Error() != "target_not_approved" {
+		t.Fatalf("login on revoked target: %v", err)
+	}
+}
