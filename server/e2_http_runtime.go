@@ -209,8 +209,13 @@ type e2HTTPRuntimeTask struct {
 	control           *agent.E2HTTPControl
 	results           []e2runner.TrustedResult
 	resultsFailed     bool
-	releaseCalled     bool
-	releaseErr        error
+	// untrusted는 최종 신뢰 결과가 같은 호출의 E② 실행 기록과 내용이 달랐던 intent다(C09). 그 호출의 결과는
+	// 저장하지 않고, intent는 결과 불명으로 끝나야 마감된다. mu로 보호한다.
+	untrusted map[int64]bool
+	// untrustedCalls는 대조 실패로 표시한 호출이다. 같은 호출을 다시 관찰하면 중복 기록 실패로 본다. mu로 보호한다.
+	untrustedCalls map[string]bool
+	releaseCalled  bool
+	releaseErr     error
 
 	promptFailed     bool // mu로 보호한다. 나머지 등록 상태는 gate 안에서만 접근한다.
 	promptRegistered bool
@@ -808,7 +813,7 @@ func e2HTTPCloneTrusted(value e2runner.TrustedResult) e2runner.TrustedResult {
 func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask, lease *E2HTTPRunOptions, intentID int64, result e2runner.Result) error {
 	result.ToolOutput = ""
 	trusted := result.Trusted
-	var recordErr error
+	var recordErr, intentErr error
 	if lease == nil || lease.Runner == nil {
 		recordErr = ErrE2HTTPHost
 	} else if trusted.Call.CallRef != "" {
@@ -816,31 +821,48 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 		{
 			view := execution.Snapshot()
 			valid := trusted.Version == e2proxy.Version && trusted.Execution.Scope == view.Scope && view.Scope.TaskRef == t.id && trusted.Execution.PolicyRevision == view.PolicyRevision && trusted.Execution.HeaderMode == view.HeaderMode && trusted.Execution.IntentID == intentID && trusted.Call.IntentID == intentID && execution.HasIntent(intentID)
-			found := false
+			found, sameCall := false, false
 			for _, call := range execution.Calls() {
 				if e2proxy.EqualCallResults(call, trusted.Call) {
 					found = true
 					break
 				}
+				sameCall = sameCall || call.CallRef == trusted.Call.CallRef && call.IntentID == intentID
 			}
-			if !valid || !found {
+			// 신뢰 결과가 실행기 쪽에서 마감·드레인·감사까지 끝났다는 표시다. 이 중 하나라도 빠졌으면 내용 대조 실패로
+			// 낮추지 않고 실행 결과 기록 실패로 둔다(#492 이동찬 지적: Final만 보면 드레인·감사 미완료가 빠져나감).
+			closed := trusted.Final && trusted.ProcessDrained && trusted.ProxyDrained && trusted.Call.Final && trusted.Call.AuditComplete && trusted.Execution.AuditComplete
+			t.mu.Lock()
+			// 같은 호출을 두 번 최종 관찰하면 내용과 관계없이 기록 실패다. 저장한 결과와 대조 실패로 표시한 호출을 함께 본다.
+			seen := t.untrustedCalls[trusted.Call.CallRef]
+			for _, prior := range t.results {
+				if prior.Call.CallRef == trusted.Call.CallRef {
+					seen = true
+					break
+				}
+			}
+			switch {
+			case seen:
 				recordErr = ErrE2HTTPHost
-			} else {
-				t.mu.Lock()
-				if len(t.results) >= r.options.MaxToolCalls {
-					recordErr = ErrE2HTTPHost
+			case valid && !found && sameCall && closed:
+				// 같은 호출의 최종 신뢰 결과가 E② 실행 기록과 다르다. 그 intent만 결과 불명으로 두고 실행은 계속한다(C09).
+				// 감사 기록은 E② 실행 쪽이 정본이고 마감은 그 기록으로 대조한다. 모르는 호출·실행 범위 불일치·
+				// 비최종·미드레인·감사 미완료 결과는 아래처럼 실행 실패로 둔다.
+				if t.untrusted == nil {
+					t.untrusted = make(map[int64]bool)
+					t.untrustedCalls = make(map[string]bool)
 				}
-				for _, prior := range t.results {
-					if prior.Call.CallRef == trusted.Call.CallRef {
-						recordErr = ErrE2HTTPHost
-						break
-					}
-				}
-				if recordErr == nil {
-					t.results = append(t.results, e2HTTPCloneTrusted(trusted))
-				}
-				t.mu.Unlock()
+				t.untrusted[intentID] = true
+				t.untrustedCalls[trusted.Call.CallRef] = true
+				intentErr = agent.ErrE2HTTPResultUntrusted
+			case !valid || !found:
+				recordErr = ErrE2HTTPHost
+			case len(t.results) >= r.options.MaxToolCalls:
+				recordErr = ErrE2HTTPHost
+			default:
+				t.results = append(t.results, e2HTTPCloneTrusted(trusted))
 			}
+			t.mu.Unlock()
 		}
 	} else if !e2proxy.EqualCallResults(trusted.Call, e2proxy.CallResult{}) || trusted.Final || trusted.ProcessBashExited || trusted.ProcessDrained || trusted.ProxyDrained {
 		recordErr = ErrE2HTTPHost
@@ -853,8 +875,30 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 		t.mu.Lock()
 		t.resultsFailed = true
 		t.mu.Unlock()
+		return errors.Join(recordErr, observerErr, intentErr)
 	}
-	return errors.Join(recordErr, observerErr)
+	// 대조 실패만 있으면 같은 값을 돌려준다. Worker는 이 값일 때만 intent 단위 결과 불명으로 처리한다.
+	return intentErr
+}
+
+// UntrustedIntents는 최종 신뢰 결과가 E② 실행 기록과 맞지 않았던 intent의 사본이다(C09). 다른 task면 nil이다.
+func (r *E2HTTPRuntime) UntrustedIntents(taskID string) map[int64]bool {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	t := r.task
+	r.mu.Unlock()
+	if t == nil || t.id != taskID {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[int64]bool, len(t.untrusted))
+	for id := range t.untrusted {
+		out[id] = true
+	}
+	return out
 }
 
 // Results는 실제 call의 신뢰 결과 사본이다. 비최종·실패·불명 분류도 그대로 보존한다.
