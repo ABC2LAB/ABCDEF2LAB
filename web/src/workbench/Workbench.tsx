@@ -30,6 +30,7 @@ import { UrlAccessMapLive } from "./views/live/UrlAccessMapLive";
 import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
 import { UrlCoverageLive } from "./views/live/UrlCoverageLive";
 import { UrlExploreLive } from "./views/live/UrlExploreLive";
+import { UrlFindingLive } from "./views/live/UrlFindingLive";
 import s from "./workbench.module.css";
 
 /** CSS 모듈 클래스로 querySelector 선택자 만들기 (테스트 환경처럼 클래스가 없으면 null). */
@@ -363,6 +364,7 @@ export function Workbench() {
             {section("explore", pick("탐색 결과", <UrlExploreLive />))}
             {section("accessmap", pick("접근통제 지도", <UrlAccessMapLive />))}
             {section("coverage", pick("커버리지", <UrlCoverageLive />))}
+            {section("finding", pick("발견 상세", <UrlFindingLive />))}
             {section("classify", pick("계정 분류", <AccountClassifyLive />))}
             {section("scope", pick("범위 확인", <ScopeByMode />))}
             {section("live", pick("점검 진행", <LiveByMode />))}
