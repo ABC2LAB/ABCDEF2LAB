@@ -319,7 +319,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		}
 		p := pin("explore-ca.pem", raw)
 		_, hostErr := newProductExplorationHost(productExplorationPolicy{ControlSocket: x.ControlSocket, DirectProxy: x.DirectProxy, BoundaryCAFile: filepath.Join(config, "explore-ca.pem"),
-			BoundaryCASHA256: p.SHA256, MCPURL: x.MCPURL, MaxExternalRequests: x.MaxExternalRequests}, raw)
+			BoundaryCASHA256: p.SHA256, MCPURL: x.MCPURL, MaxExternalRequests: x.MaxExternalRequests, DirectBash: x.DirectBash}, raw)
 		clear(raw)
 		if hostErr != nil {
 			return errPreparation
