@@ -116,7 +116,7 @@ func (c *Controller) CollectStaticDocument(ctx context.Context, path, contentTyp
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	canonical, ok := c.resolve(path, "/")
-	if c.poisoned || c.record.Snapshot.Stage != "crawling" || c.record.Snapshot.Paused || c.binding.Current() != nil || !ok || canonical != path || !c.allowedPath(path) || len(body) > c.binding.Limits.MaxResponseBytes {
+	if c.poisoned || c.record.Snapshot.Stage != "crawling" || c.record.Snapshot.Paused || c.binding.Current() != nil || !ok || canonical != path || !c.allowedPath("GET", path) || len(body) > c.binding.Limits.MaxResponseBytes {
 		return ErrDenied
 	}
 	c.discoverDocumentLocked(body, contentType, path, true)

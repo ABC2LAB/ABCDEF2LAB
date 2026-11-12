@@ -70,6 +70,10 @@ it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조�
   fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
   // 설치된 프로필이 외부 모델뿐이면 '외부 API' 가 골라져 있다
   expect(screen.getByRole("radio", { name: "외부 API" })).toBeChecked();
+  // 범위 확인 전 안전 장치는 기본 원칙임을 밝히고, 외부 모델 전송도 미리 보인다 (리뷰 #507, 절대규칙 8)
+  const sum = screen.getByRole("complementary", { name: "점검 요약" });
+  expect(within(sum).getByText(/^범위 확인 전 기본 원칙/)).toBeInTheDocument();
+  expect(within(sum).getByText("외부 모델로 대상 응답 전송")).toBeInTheDocument();
   expect(screen.getByLabelText("모델 이름")).toHaveValue(externalModel.model);
   fireEvent.change(screen.getByLabelText("API 키"), { target: { value: "synthetic-input-provider-key" } });
   fireEvent.click(screen.getByRole("button", { name: "키 등록" }));
@@ -1132,6 +1136,10 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   saveHandle({ ...handle, input });
   mount("new");
   expect(await screen.findByText("쓰기 메서드 요청은 한 건씩 승인한 것만 보냄")).toBeInTheDocument();
+  // 요약 '쓰기 요청' 줄도 범위 확인 뒤에는 서버 승인 방식을 따른다 (리뷰 #507)
+  const sum = screen.getByRole("complementary", { name: "점검 요약" });
+  expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent("쓰기 요청 한 건씩 승인");
+  expect(within(sum).queryByText(/^범위 확인 전 기본 원칙/)).toBeNull();
   expect(screen.getByText("https://target.example · / · GET")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "안전 장치" })).toBeInTheDocument();
   expect(screen.getByText("모든 요청 · 승인 기록 남김")).toBeInTheDocument();

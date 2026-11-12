@@ -35,7 +35,8 @@ HTTP 파싱과 hop-by-hop 정리 등 기존 표현 정규화 범위는 동일하
 갈 수 있으며, 이를 가렸다고 표현하지 않는다. 우리가 공급한 보호 자격을
 모델에 주는 기능은 추가하지 않는다. `Accept-Encoding`은 일반 모드와 같이
 `identity`로 바꿔 보내고([전달 범위](./e2-proxy-transfer-scope.md)), Set-Cookie 등 자격
-응답의 전체 보류/unknown 한도는 그대로다.
+응답은 그대로 통째로 보류한다. `e2-http-v2`부터 이 보류는 결과 불명이 아니라 `withheld`로
+세어 unknown 한도에 들어가지 않는다(C16).
 
 `Policy()`와 `Snapshot()`은 모드와 위 선언값을 비민감 projection으로
 노출한다. 이 값은 정책 지문 그 자체가 아니다. C/러너 연결 담당은 모드·세 필드·

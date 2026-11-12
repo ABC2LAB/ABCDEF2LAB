@@ -345,6 +345,10 @@ func (p *Proxy) forward(ctx context.Context, conn net.Conn, req *http.Request) {
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
+	// 앞부분만 준 응답은 사람·프로그램이 보는 표시를 붙인다. 모델의 판단 근거는 trusted 관찰의 response_truncated다.
+	if receipt.ResponseTruncated {
+		resp.Header.Set(OutcomeHeader, OutcomeTruncated)
+	}
 	resp.Header.Set("Connection", "close")
 	// The core has already bounded and observed the upstream body. A client
 	// write error cannot turn its target response into a policy denial.

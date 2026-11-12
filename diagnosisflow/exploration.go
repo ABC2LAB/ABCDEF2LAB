@@ -255,7 +255,7 @@ func (c *Controller) reportObservedRecord(ctx context.Context, b ExplorationBind
 		return 0, ErrConflict
 	}
 	path, ok := c.resolve(o.Path, "/")
-	if !ok || path != o.Path || strings.ContainsAny(o.Path, "?#") || !c.allowedPath(path) || !has(c.binding.Methods, o.Method) {
+	if !ok || path != o.Path || strings.ContainsAny(o.Path, "?#") || !c.allowedPath(o.Method, path) || !has(c.binding.Methods, o.Method) {
 		return 0, ErrExplorationObservation
 	}
 	state.LastSequence, state.LastDigest = seq, digest
@@ -461,12 +461,12 @@ func (c *Controller) CrawlExploration(ctx context.Context, b ExplorationBinding,
 			page--
 			continue
 		}
-		path, id, rank := "", "", 0
+		path, id, rank, source, kind := "", "", 0, "", ""
 		for _, e := range c.record.Snapshot.Endpoints {
 			if e.Method == "GET" && e.InScope && e.Change == "attested_read" && !e.Visited && !attempted[e.ID] {
 				r := crawlRank(e)
 				if id == "" || r < rank {
-					path, id, rank = e.Path, e.ID, r
+					path, id, rank, source, kind = e.Path, e.ID, r, e.Source, e.Kind
 				}
 			}
 		}
@@ -511,6 +511,10 @@ func (c *Controller) CrawlExploration(ctx context.Context, b ExplorationBinding,
 			clear(result.Body)
 			return true, ErrExplorationObservation
 		}
+		// 이 순번은 서버 자신이 가져온 요청이다(경계가 그 응답에 붙인 순번, 대상이 보낸 같은 이름은 경계가 지움). 서버 fetch는
+		// 경계의 직접 입구로 나가서 경계 관찰의 출처가 API Recon 실행(추정)으로 붙지만, 실제로는 발견한 끝점을 서버가 방문한
+		// 것이므로 그 끝점의 발견 출처·종류를 유지한다. 그래야 실제로 받은 페이지의 읽기 근거가 내려가지 않는다(#503 리뷰).
+		o.Source, o.Kind = source, kind
 		pageError := ""
 		if !result.Complete || len(result.Body) > c.binding.Limits.MaxResponseBytes {
 			pageError = "body_incomplete"

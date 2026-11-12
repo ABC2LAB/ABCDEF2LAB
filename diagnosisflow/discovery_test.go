@@ -63,7 +63,8 @@ func TestReportStaticDropsInvalidAndOutOfScope(t *testing.T) {
 		{Method: "GET", Path: "/other"},                                                   // 승인 경로 밖
 		{Method: "DELETE", Path: "/read/x"},                                               // 승인 메서드 밖
 		{Method: "GET", Path: "/read/excluded/x"},                                         // 제외 경로
-		{Method: "GET", Path: "/read/payment"},                                            // 위험 경로 단어
+		{Method: "POST", Path: "/read/payment"},                                           // 거래 단어의 쓰기
+		{Method: "GET", Path: "/read/logout"},                                             // 파괴 동작 단어는 GET도
 		{Method: "BREW", Path: "/read/x"},                                                 // 메서드 형식
 		{Method: "GET", Path: "read/x"},                                                   // 상대 경로
 		{Method: "GET", Path: "//evil.test/read/x"},                                       // 다른 host

@@ -723,3 +723,25 @@ func TestParseReceiver(t *testing.T) {
 		t.Fatal("http receiver with TLS target")
 	}
 }
+
+// B09 STUN 서버는 IP 리터럴로만 바꾼다. 이름·빈 주소·0.0.0.0·비정규 표기는 거부한다.
+func TestReceiverSTUNIP(t *testing.T) {
+	base, err := parseReceiver("https://receiver.test:8445/", "0.0.0.0:8447", true)
+	if err != nil || base.stun != "receiver.test:8447" {
+		t.Fatalf("base stun=%q err=%v", base.stun, err)
+	}
+	for raw, want := range map[string]string{"10.94.243.20": "10.94.243.20:8447", "2001:db8::20": "[2001:db8::20]:8447"} {
+		got, err := base.withSTUNIP(raw)
+		if err != nil || got.stun != want || got.origin != base.origin || got.udpPort != base.udpPort {
+			t.Fatalf("%s: stun=%q err=%v", raw, got.stun, err)
+		}
+		if page := got.render("stun:{{STUN}}"); page != "stun:"+want {
+			t.Fatalf("%s: rendered %q", raw, page)
+		}
+	}
+	for _, raw := range []string{"", "receiver.test", "0.0.0.0", "::", "010.94.243.20", "10.94.243.20:8447"} {
+		if _, err := base.withSTUNIP(raw); err == nil {
+			t.Fatalf("accepted STUN address %q", raw)
+		}
+	}
+}

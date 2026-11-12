@@ -24,6 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/transmit/budget"
 )
@@ -59,7 +61,9 @@ type Execution struct {
 	controlPending bool
 	stopDone       chan struct{}
 	stopErr        error
-	sending        int
+	// slots는 동시 송신 자리다. 용량이 MaxConcurrent이고, 자리가 없으면 거부하지 않고 기다린다(C20).
+	// 기다리는 쪽은 제안 순서대로 자리를 얻는다(채널 송신 대기열). 대기 수는 프록시 연결 상한×call 수로 묶인다.
+	slots chan struct{}
 	// admitted는 예산을 예약하고 송신 단계로 넘어간 시도 수다. MaxAttempts는 이 값만 센다.
 	// 보내지 않은 거부·미지원은 송신 상한을 쓰지 않고 call 단위 차단으로만 제한한다(C01).
 	admitted      uint64
@@ -87,8 +91,11 @@ type Call struct {
 	reason               Reason
 	// fence는 이 call의 요청 단위 실패가 상한에 닿았을 때의 사유다. 비어 있으면 열려 있다.
 	// 실행 전체가 아니라 이 call의 새 요청만 막는다. 이미 송신 중인 요청은 건드리지 않는다(C01).
-	fence     Reason
-	closeGate chan struct{}
+	fence Reason
+	// closedRefusals는 대기 중 취소·기한 지남·승인 대기 취소처럼 보내기 전에 거둬진 요청 수다(사유 closed). 모델의
+	// 범위 밖 요청이 아니므로 거부 상한(MaxDenials) 계수에서 뺀다(#487 리뷰 P3). 감사 계수(Denied)는 그대로다.
+	closedRefusals uint64
+	closeGate      chan struct{}
 }
 
 func validRef(v string) bool { return safeRef.MatchString(v) && !strings.Contains(v, "://") }
@@ -128,7 +135,7 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 		cfg.RootCAs = cfg.RootCAs.Clone()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), secretHeaders: credentialHeaderNames(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentCounts: map[int64]*Counts{cfg.IntentID: {}}, intentGate: make(chan struct{}, 1)}, nil
+	return &Execution{ctx: ctx, cancel: cancel, cfg: cfg, rules: rules, calls: make(map[string]*Call), secrets: credentialValues(rules), secretHeaders: credentialHeaderNames(rules), issued: make(map[string]bool), intents: map[int64]struct{}{cfg.IntentID: struct{}{}}, intentCounts: map[int64]*Counts{cfg.IntentID: {}}, intentGate: make(chan struct{}, 1), slots: make(chan struct{}, cfg.Limits.MaxConcurrent)}, nil
 }
 func compileRules(rules []Rule) ([]compiledRule, error) {
 	if len(rules) == 0 || len(rules) > maxExecutionRules {
@@ -785,11 +792,17 @@ func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) 
 		if r.Reason == TransportFailed {
 			counts.Transient++
 		}
+		if r.Reason == Withheld {
+			counts.Withheld++
+		}
 	}
 	add(&c.counts)
 	add(&e.counts)
 	if counts := e.intentCounts[c.intentID]; counts != nil {
 		add(counts)
+	}
+	if (r.Decision == "denied" || r.Decision == "unsupported") && r.Reason == Closed {
+		c.closedRefusals++
 	}
 	c.preserveOutcomeLocked(r, err)
 	c.active--
@@ -811,7 +824,7 @@ func (c *Call) fenceLocked() {
 	}
 	limits := c.e.cfg.Limits
 	switch {
-	case c.counts.Denied+c.counts.Unsupported >= limits.MaxDenials:
+	case c.counts.Denied+c.counts.Unsupported-min(c.closedRefusals, c.counts.Denied+c.counts.Unsupported) >= limits.MaxDenials:
 		c.fence = DenialLimit
 	case c.counts.Unknown >= limits.MaxUnknown:
 		c.fence = UnknownLimit
@@ -838,13 +851,52 @@ func (c *Call) Reject(ctx context.Context, method string, reason Reason) (Receip
 	// 형식 오류·CONNECT 단계 거부는 요청 URL이 없어 경로를 만들 수 없다(평가 집계에서 "경로 미확보").
 	return c.finish(ctx, r, func(rr Receipt) { c.observeAttemptPath(nil, rr) })
 }
+
+// encodedPathHazards는 요청 경로의 percent 인코딩 중 대상이 범위 검사와 다르게 해석할 수 있는 것이다.
+// 인코딩한 slash·backslash는 조각 경계를, 인코딩한 점은 점 조각을, 인코딩한 %는 두 번 풀기를 숨긴다(C17).
+var encodedPathHazards = []string{"%2f", "%5c", "%2e", "%25", "%00"}
+
+// requestPath는 범위 검사에 쓸 풀린 경로다. 정상 percent 인코딩(공백·비ASCII 등)은 받는다. 실제로 보내는 것은
+// 같은 요청의 EscapedPath이고, 위험 인코딩을 막았으므로 풀린 경로와 조각 경계·점 조각이 같다.
+func requestPath(u *url.URL) (string, bool) {
+	escaped := u.EscapedPath()
+	if escaped == "" {
+		escaped = "/"
+	}
+	lower := strings.ToLower(escaped)
+	for _, hazard := range encodedPathHazards {
+		if strings.Contains(lower, hazard) {
+			return "", false
+		}
+	}
+	decoded, err := url.PathUnescape(escaped)
+	if err != nil || !utf8.ValidString(decoded) || !strings.HasPrefix(decoded, "/") || strings.Contains(decoded, "//") || strings.ContainsAny(decoded, "\\%") {
+		return "", false
+	}
+	for _, r := range decoded {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+	}
+	for _, segment := range strings.Split(decoded, "/") {
+		// 경로 매개변수(;...)를 조각에서 떼는 서버(Tomcat·Spring)는 "..;"를 점 조각으로 풀어 범위 밖으로 간다.
+		// 매개변수를 뗀 이름이 점 조각이면 막는다(%3b로 인코딩한 것도 풀린 뒤라 같이 걸린다).
+		name, _, _ := strings.Cut(segment, ";")
+		if segment == "." || segment == ".." || name == "." || name == ".." {
+			return "", false
+		}
+	}
+	return decoded, true
+}
+
 func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 	a, err := canonicalAuthority(req.URL)
-	if err != nil || req.URL.RawPath != "" || !validPath(req.URL.Path) {
+	p, ok := requestPath(req.URL)
+	if err != nil || !ok {
 		return compiledRule{}, false
 	}
 	for _, r := range e.rules {
-		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (r.PathPrefix == "/" || req.URL.Path == strings.TrimSuffix(r.PathPrefix, "/") || strings.HasPrefix(req.URL.Path, strings.TrimSuffix(r.PathPrefix, "/")+"/")) {
+		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (r.PathPrefix == "/" || p == strings.TrimSuffix(r.PathPrefix, "/") || strings.HasPrefix(p, strings.TrimSuffix(r.PathPrefix, "/")+"/")) {
 			return r, true
 		}
 	}
@@ -966,19 +1018,12 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	if reason == Complete && !ok {
 		reason = PolicyDenied
 	}
-	if reason == Complete && e.sending >= e.cfg.Limits.MaxConcurrent {
-		reason = PolicyDenied
-	}
-	if reason == Complete {
-		e.sending++
-	}
 	e.mu.Unlock()
 	if reason != Complete {
 		r.Decision = "denied"
 		r.Reason = reason
 		return finish(nil, ErrDenied)
 	}
-	defer func() { e.mu.Lock(); e.sending--; e.mu.Unlock() }()
 	requestHeaders, headersOK := forwardRequestHeaders(req.Header, rule)
 	if !headersOK {
 		r.Decision, r.Reason = "unsupported", Unsupported
@@ -1036,9 +1081,40 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Decision, r.Reason = "denied", PolicyDenied
 		return finish(nil, ErrDenied)
 	}
+	// 동시 송신 자리는 승인 대기 뒤에 잡는다. 사람 승인을 기다리는 요청이 다른 송신의 자리를 막지 않는다.
+	// 자리를 기다리는 동안 취소·철회·만료·운영자 중지가 오면 보내지 않고 끝낸다. 자리를 얻은 뒤 아래에서
+	// 권한·정책 세대·시도 상한·예산을 다시 검사한다(C20·C21).
+	// 빈 자리는 먼저 잡는다. 이미 취소된 호출자도 자리가 있으면 지금처럼 예약·감사 경로로 간다(select의 임의 선택 방지).
+	waited := false
+	select {
+	case e.slots <- struct{}{}:
+	default:
+		waited = true
+		select {
+		case e.slots <- struct{}{}:
+		case <-ctx.Done():
+			r.Decision, r.Reason = "denied", Closed
+			return finish(nil, ErrClosed)
+		case <-c.ctx.Done():
+			r.Decision, r.Reason = "denied", Closed
+			return finish(nil, ErrClosed)
+		}
+	}
+	defer func() { <-e.slots }()
+	// 자리를 기다리는 동안 워크플로 일시정지·단계 종료·선택 해제가 있었을 수 있다. 기다린 요청은 요청 경계를 다시
+	// 본다(#487 리뷰 P2). 기다리지 않은 요청은 위 검사 그대로다.
+	if waited && e.cfg.RequestBoundary != nil && e.cfg.RequestBoundary.Before(ctx, view) != nil {
+		r.Decision, r.Reason = "denied", PolicyDenied
+		return finish(nil, ErrDenied)
+	}
 	r.Decision = "allowed"
 	e.mu.Lock()
 	reason = c.blockedLocked()
+	// 기다리는 동안 같은 call의 앞선 요청이 결과 불명·거부·송신 실패 상한에 닿았을 수 있다(#487 리뷰 P2). C01의
+	// call 상한은 대기열 뒤에도 지킨다.
+	if reason == Complete && c.fence != "" {
+		reason = c.fence
+	}
 	if reason == Complete && e.cfg.PolicyRevision != revision {
 		reason = PolicyDenied
 	}
@@ -1083,7 +1159,14 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	workCtx, cancel := context.WithTimeout(c.ctx, e.cfg.Limits.RequestTimeout)
 	defer cancel()
-	stop := context.AfterFunc(ctx, cancel)
+	// 보낸 뒤에는 호출자 기한이 아니라 E② 요청 시간 상한(workCtx)으로만 끊는다. 대기열에서 호출자 기한을 거의 다 쓴
+	// 요청을 기한으로 끊으면 대상이 받은 요청이 결과 불명이 되고 그 intent가 멈춘다(#487 리뷰 P3). 호출자 취소는 그대로
+	// 끊는다.
+	stop := context.AfterFunc(ctx, func() {
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			cancel()
+		}
+	})
 	defer stop()
 	out := req.Clone(workCtx)
 	u := *req.URL
@@ -1176,14 +1259,46 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	r.ResponseReceived = true
 	r.StatusCode = resp.StatusCode
 	diagnosticReceipt(e.ctx, r, "http_response_received", "succeeded", "")
-	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, e.cfg.Limits.MaxBodyBytes+1))
+	// 자격 반사 검사는 전달할 앞부분이 아니라 검사 상한까지 읽은 전체에 한다. 검사 상한은 본문 상한 + 가장 긴 보호 값
+	// 길이라서, 전달 구간 끝에 걸친 보호 값도 통째로 검사 범위에 들어온다(C16 결정안 2, 상한 사이 조건).
+	limit := e.cfg.Limits.MaxBodyBytes
+	scan := limit + e.longestSecret()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, scan+1))
+	oversized := int64(len(responseBody)) > limit
 	closeErr := resp.Body.Close()
-	r.ResponseComplete = readErr == nil && closeErr == nil && int64(len(responseBody)) <= e.cfg.Limits.MaxBodyBytes
-	if !r.ResponseComplete || !e.safeHTTPResponse(resp, responseBody) {
+	// 본문을 다 읽기 전에 끊기면 대상이 끝까지 답했는지 모른다. 상한을 넘어 읽기를 멈추고 닫은 것은 끊김이 아니다.
+	if readErr != nil || closeErr != nil && !oversized {
 		clear(responseBody)
 		r.Reason = Unknown
 		return finish(nil, ErrDenied)
 	}
+	// 대상이 답했지만(상태 줄·헤더 수신) 본문 상한·자격 응답·보호 값 반사·압축 때문에 표현을 주지 않는다. 대상이 요청을
+	// 처리한 것은 알므로 결과 불명이 아니라 보류로 센다. 결과 불명 상한에 넣지 않아 그 call을 멈추지 않는다(C16).
+	// 길이를 맞출 수 없는 부분 응답(206·Content-Range)은 자르지 않고 통째로 보류한다.
+	partial := resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != ""
+	if !e.safeHTTPResponse(resp, responseBody) || oversized && partial {
+		clear(responseBody)
+		r.Reason = Withheld
+		return finish(nil, ErrWithheld)
+	}
+	if oversized {
+		// 본문 상한을 넘으면 앞부분만 준다. 도구의 HTTP 읽기가 연결 중단으로 보지 않도록 길이를 맞추고 chunked·trailer를
+		// 지운다. 대상이 답한 것은 알고 표현만 줄였으므로 withheld + response_truncated다(결과 불명 아님, C16 결정안 2).
+		clear(responseBody[limit:])
+		responseBody = responseBody[:limit]
+		resp.TransferEncoding = nil
+		resp.Header.Del("Transfer-Encoding")
+		resp.Header.Del("Trailer")
+		resp.Trailer = nil
+		resp.ContentLength = int64(len(responseBody))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(responseBody)))
+		resp.Body = io.NopCloser(bytes.NewReader(responseBody))
+		resp.Close = true
+		resp.Request = &http.Request{Method: req.Method}
+		r.Reason, r.ResponseTruncated = Withheld, true
+		return finish(resp, nil)
+	}
+	r.ResponseComplete = true
 	// Preserve the original representation and metadata. Only a minimal,
 	// nonsecret method context survives so HEAD retains its length semantics.
 	resp.Body = io.NopCloser(bytes.NewReader(responseBody))
@@ -1404,4 +1519,15 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 		}
 	}
 	return rules, cfg.HeaderMode, cfg.Evaluation, nil
+}
+
+// longestSecret은 이 실행에 등록된 보호 값(명시 비밀 헤더·보호 자격) 중 가장 긴 바이트 길이다. 응답 검사 상한에 더한다.
+func (e *Execution) longestSecret() int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	longest := 0
+	for _, s := range e.secrets {
+		longest = max(longest, len(s))
+	}
+	return int64(longest)
 }

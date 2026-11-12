@@ -161,7 +161,7 @@ func TestProtectedSessionProposalHasSafePositiveAndPrivateEchoUnknown(t *testing
 		t.Fatal("safe proposal response changed")
 	}
 	response, receipt, err = call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed/echo"))
-	if err == nil || response != nil || receipt.Decision != "allowed" || receipt.Reason != Unknown || receipt.NotSent || !receipt.ForwardAttempted || !receipt.ResponseReceived || received.Load() != 2 {
+	if err == nil || response != nil || receipt.Decision != "allowed" || receipt.Reason != Withheld || receipt.ResponseComplete || receipt.NotSent || !receipt.ForwardAttempted || !receipt.ResponseReceived || received.Load() != 2 {
 		t.Fatal("private echo was edited into a successful response")
 	}
 }
@@ -215,7 +215,7 @@ func TestCredentialBearingResponseRepresentationIsWithheld(t *testing.T) {
 			}
 			_, call := coreOpen(t, cfg)
 			response, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
-			if err == nil || response != nil || receipt.Decision != "allowed" || receipt.Reason != Unknown || receipt.NotSent || !receipt.ForwardAttempted || !receipt.ResponseReceived || !receipt.AuditComplete || received.Load() != 1 {
+			if err == nil || response != nil || receipt.Decision != "allowed" || receipt.Reason != Withheld || receipt.ResponseComplete || receipt.NotSent || !receipt.ForwardAttempted || !receipt.ResponseReceived || !receipt.AuditComplete || received.Load() != 1 {
 				t.Fatal("unsafe response was exposed, edited into complete, or called not sent")
 			}
 		})
@@ -313,7 +313,7 @@ func TestQuotedCredentialCookiePositiveAndEffectiveValueEchoUnknown(t *testing.T
 		t.Fatal("normal response changed")
 	}
 	response, receipt, err = call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed/echo"))
-	if err == nil || response != nil || receipt.Decision != "allowed" || receipt.Reason != Unknown || receipt.NotSent || !receipt.ResponseReceived || received.Load() != 2 {
+	if err == nil || response != nil || receipt.Decision != "allowed" || receipt.Reason != Withheld || receipt.ResponseComplete || receipt.NotSent || !receipt.ResponseReceived || received.Load() != 2 {
 		t.Fatal("effective cookie value was disclosed or called not sent")
 	}
 }

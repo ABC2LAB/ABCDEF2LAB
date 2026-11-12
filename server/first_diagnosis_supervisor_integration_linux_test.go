@@ -26,6 +26,7 @@ import (
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/transmit"
 	"golang.org/x/crypto/bcrypt"
@@ -176,7 +177,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	releaseTarget := make(chan struct{})
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		if mode == "cancel" || mode == "user-stop" {
+		if mode == "cancel" || mode == "user-stop" || mode == "planner-kill" {
 			select {
 			case targetEntered <- struct{}{}:
 			default:
@@ -372,6 +373,11 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		provider.assets = []map[string]any{{"type": "endpoint", "url": approvedAsset, "method": "GET"}, {"type": "endpoint", "url": otherAsset, "method": "GET"}}
 		provider.command = "curl --silent --show-error --max-time 5 " + ruleOrigin + "/allowed"
 	}
+	var killIntent atomic.Int64
+	if mode == "planner-kill" {
+		// Worker의 요청이 대상에 붙잡혀 있는 동안 Planner가 깨어나 kill_work로 그 작업을 멈춘다(C27).
+		plannerProvider.killIntent = killIntent.Load
+	}
 	if mode == "goal-met" {
 		// Planner가 prove_goal로 하나뿐인 목표를 달성시키면 작업이 done이 되고 실행은 정상 마감된다(C26).
 		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
@@ -439,6 +445,27 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		case runErr = <-done:
 		case <-ctx.Done():
 			t.Fatal("실제 Supervisor Run 취소가 반환하지 않음")
+		}
+	} else if mode == "planner-kill" {
+		done := make(chan error, 1)
+		go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
+		select {
+		case <-targetEntered:
+		case <-ctx.Done():
+			t.Fatal("Planner 동시 실행 시험의 실제 대상 요청이 시작되지 않음")
+		}
+		// Worker의 Bash가 대상에서 붙잡혀 있다. 그 intent를 Planner에 알리고 Planner를 깨운다. C27 전에는 이 라운드가
+		// 실행 중 작업 때문에 건너뛰어진다.
+		var running int64
+		if err := installer.QueryRowContext(ctx, "SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='running'", task.ExpID).Scan(&running); err != nil {
+			t.Fatal("실행 중 intent 조회 실패", err)
+		}
+		killIntent.Store(running)
+		task.Notify()
+		select {
+		case runErr = <-done:
+		case <-ctx.Done():
+			t.Fatal("Planner 동시 실행 시험의 Supervisor Run이 반환하지 않음")
 		}
 	} else if mode == "planner-only" {
 		short, stopRun := context.WithTimeout(ctx, 4*time.Second)
@@ -619,6 +646,36 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
+	if mode == "planner-kill" {
+		// Planner가 실행 중 작업을 멈췄고, 진행 중이던 송신은 결과 불명이라 그 intent만 결과 불명으로 끝난다(C01·C08).
+		// 대상 연결은 E② 요청 시간 상한 전에 끊긴다. 결과 불명 송신은 다시 보내지 않는다.
+		result := supervisor.RunResult()
+		var intentState, blockedReason string
+		if err := installer.QueryRowContext(ctx, "SELECT state,COALESCE(blocked_reason,'') FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&intentState, &blockedReason); err != nil {
+			t.Fatal("멈춘 intent 조회 실패", err)
+		}
+		exited := false
+		select {
+		case <-targetExited:
+			exited = true
+		default:
+		}
+		if runErr != nil || !plannerProvider.killed || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomePartial ||
+			result.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) || hits.Load() != 1 || !exited || intentState != "blocked" || blockedReason != "e2_http_result_unknown" {
+			var trusted []string
+			for _, r := range runtime.host.Runtime().Results(task.ID) {
+				trusted = append(trusted, fmt.Sprintf("class=%s final=%v bash=%v pdrain=%v xdrain=%v exit=%d reason=%s counts=%+v callfinal=%v audit=%v", r.Classification, r.Final, r.ProcessBashExited, r.ProcessDrained, r.ProxyDrained, r.ExitCode, r.Call.Reason, r.Call.Counts, r.Call.Final, r.Call.AuditComplete))
+			}
+			var calls []string
+			if execution, ok := runtime.host.Runtime().Execution(task.ID); ok && execution != nil {
+				for _, c := range execution.Calls() {
+					calls = append(calls, fmt.Sprintf("final=%v audit=%v reason=%s counts=%+v", c.Final, c.AuditComplete, c.Reason, c.Counts))
+				}
+			}
+			t.Fatalf("실행 중 작업을 Planner가 멈추지 못함 err=%v killed=%v kill_result=%q result=%+v hits=%d exited=%v intent=%s/%s trusted=%v calls=%v", runErr, plannerProvider.killed, plannerProvider.killResult, result, hits.Load(), exited, intentState, blockedReason, trusted, calls)
+		}
+		return
+	}
 	if mode == "request-budget" || mode == "request-budget-overflow" {
 		result := supervisor.RunResult()
 		settled := result != nil && result.IntentOutcomes.Done == 1
@@ -775,6 +832,9 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			}
 			if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state=$1, blocked_reason=$2 WHERE exploration_id=$3 AND id=$4", oldState, oldReason, task.ExpID, callIntent); err != nil {
 				t.Fatal("호출 intent 상태 복원 실패")
+			}
+			if mode == "partial-denied" {
+				firstDiagnosisUntrustedClosure(t, ctx, supervisor, runtime, installer, task, callIntent, oldState, oldReason)
 			}
 		} else {
 			t.Fatal("정책 거부 실행에 E② 호출이 없음")
@@ -1008,4 +1068,82 @@ func verifySupervisorFailureLog(t *testing.T, path, mode string) {
 	if found != 1 {
 		t.Errorf("실제 실패 회차 마감 이벤트 수=%d", found)
 	}
+}
+
+// C09: 신뢰 결과 대조가 깨진 intent(runtime이 결과를 저장하지 않고 표시만 함)는 결과 불명으로 끝났을 때만 마감에서
+// 센다. 실제 E② 호출 기록(최종·감사 완료)은 그대로 대조한다. 표시 없이 결과가 빠지면 마감하지 않는다.
+func firstDiagnosisUntrustedClosure(t *testing.T, ctx context.Context, supervisor *FirstDiagnosisSupervisor, runtime *FirstDiagnosisHTTPRuntime, installer *pgdb.DB, task *Task, callIntent int64, oldState string, oldReason sql.NullString) {
+	t.Helper()
+	rt := runtime.host.Runtime()
+	rt.mu.Lock()
+	owned := rt.task
+	rt.mu.Unlock()
+	owned.mu.Lock()
+	saved := owned.results
+	owned.mu.Unlock()
+	setRuntime := func(results []e2runner.TrustedResult, untrusted map[int64]bool) {
+		owned.mu.Lock()
+		owned.results, owned.untrusted = results, untrusted
+		owned.mu.Unlock()
+	}
+	setIntent := func(state string, reason any) {
+		if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state=$1, blocked_reason=$2 WHERE exploration_id=$3 AND id=$4", state, reason, task.ExpID, callIntent); err != nil {
+			t.Fatal("대조 실패 fixture intent 상태 설정 실패", err)
+		}
+	}
+	defer func() {
+		setRuntime(saved, nil)
+		setIntent(oldState, oldReason)
+	}()
+	expect := func(name string, ready bool, want diagnosis.IntentOutcomes) {
+		t.Helper()
+		got, result, err := supervisor.generalCompletion(ctx, runtime.server, task)
+		if ready && (err != nil || !got || result.IntentOutcomes != want || !result.Valid()) || !ready && (err == nil || got) {
+			t.Fatalf("%s: ready=%v result=%+v err=%v", name, got, result, err)
+		}
+	}
+	untrusted := map[int64]bool{callIntent: true}
+	// 결과가 빠졌는데 대조 실패 표시가 없으면, intent가 불완전으로 끝났어도 마감하지 않는다.
+	setIntent("exhausted", nil)
+	setRuntime([]e2runner.TrustedResult{}, nil)
+	expect("missing-without-mark", false, diagnosis.IntentOutcomes{})
+	// 대조 실패 표시가 있어도 그 intent가 결과 불명이 아니면 마감하지 않는다.
+	setRuntime([]e2runner.TrustedResult{}, untrusted)
+	expect("mark-without-unknown-intent", false, diagnosis.IntentOutcomes{})
+	// 근거 없는 다른 intent를 결과 불명으로 두어 개수를 맞춰도 마감하지 않는다(intent마다 대조).
+	swapped, addErr := task.Store.AddIntent(map[string]any{"summary": "Owned swapped untrusted fixture"}, 1, nil, "system")
+	if addErr != nil {
+		t.Fatal("맞바꾼 대조 실패 fixture 생성 실패")
+	}
+	if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state='blocked', blocked_reason='e2_http_result_unknown' WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
+		t.Fatal("맞바꾼 대조 실패 fixture 상태 설정 실패", err)
+	}
+	expect("swapped-unknown-intent", false, diagnosis.IntentOutcomes{})
+	if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
+		t.Fatal("맞바꾼 대조 실패 fixture 정리 실패")
+	}
+	// 결과 불명으로 끝난 intent는 부분 완료로 센다(실행 전체 실패 아님).
+	setIntent("blocked", "e2_http_result_unknown")
+	expect("marked-unknown-intent", true, diagnosis.IntentOutcomes{Unknown: 1})
+	// 실제 호출에 없는 결과가 섞이면 마감하지 않는다.
+	if len(saved) != 1 {
+		t.Fatal("대조 실패 fixture는 실제 결과 하나가 필요함")
+	}
+	stray := saved[0]
+	stray.Call = e2proxy.CloneCallResult(stray.Call)
+	stray.Call.CallRef = "stray-owned-call"
+	setRuntime([]e2runner.TrustedResult{stray}, untrusted)
+	expect("stray-result", false, diagnosis.IntentOutcomes{})
+	// 같은 결과가 두 번 저장되면 마감하지 않는다.
+	setRuntime(append(append([]e2runner.TrustedResult{}, saved...), saved...), untrusted)
+	expect("duplicate-result", false, diagnosis.IntentOutcomes{})
+	// 결과 기록 자체가 실패했으면(nil) 대조 실패 표시로 덮지 않는다.
+	setRuntime(nil, untrusted)
+	owned.mu.Lock()
+	owned.resultsFailed = true
+	owned.mu.Unlock()
+	expect("results-failed", false, diagnosis.IntentOutcomes{})
+	owned.mu.Lock()
+	owned.resultsFailed = false
+	owned.mu.Unlock()
 }

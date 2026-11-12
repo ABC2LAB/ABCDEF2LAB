@@ -1134,6 +1134,10 @@ a.ph:hover {
   white-space: nowrap;
   font-family: var(--sans);
 }
+/* 세로로 쌓는 칸(.field · .fsec-b) 안에서도 글 길이만큼만 (줄 전체로 늘어나지 않게) */
+.tag.out {
+  align-self: flex-start;
+}
 .tag .ic {
   width: 12px;
   height: 12px;
@@ -1529,6 +1533,11 @@ a.ph:hover {
   font-size: 13.5px;
   color: var(--ink);
 }
+/* 패널 안 짧은 보조 글 (예: 범위 확인 전 기본 원칙) */
+.isec .pnote {
+  font-size: 12px;
+  color: var(--ink-3);
+}
 .kv {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr);
@@ -1708,6 +1717,15 @@ a.ph:hover {
 .fsec-h h2 {
   font-size: 14.5px;
 }
+/* 제목 옆 작은 딱지 (예: 로그인 · 아직 구현 안 됨). 칸 높이만큼 늘어나지 않게 위에 붙인다 */
+.fsec-ht {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  align-self: start;
+  gap: 6px 8px;
+}
 .fsec-h p {
   font-size: 12.5px;
   color: var(--ink-3);
@@ -1729,6 +1747,11 @@ a.ph:hover {
   width: 100%;
   max-width: 760px;
   margin-inline: auto;
+}
+/* 새 점검 섹션은 창 폭과 상관없이 제목 위 · 칸 아래 한 줄 (사용자가 고른 시안 화면 모양) */
+.nform > .fsec {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
 }
 /* 입력칸은 넣는 값 길이만큼만 (시안 v58). 폰에서는 칸이 좁아 그대로 꽉 찬다 */
 .inp.w-url {
@@ -1941,6 +1964,17 @@ select.inp {
   gap: 8px;
   font-size: 13px;
 }
+/* 대상 승인 (시안 v91 #nHost · #nVerify): 주소 칸 바로 밑 딱지(.field 간격 6px 에 맞춤) + 노란 소유 확인 상자 */
+.tgt {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  margin-top: -10px;
+}
+.tgt.field {
+  gap: 6px;
+}
 .verify {
   border: 1px solid var(--warn-line);
   background: var(--warn-bg);
@@ -2093,6 +2127,7 @@ select.inp {
    2쪽의 실행 버튼은 요약 패널이 보이면 패널에만 두고, 패널이 안 보이면(좁은 화면 · 접음) 이 줄에 둔다 */
 .formbar.paged {
   display: flex;
+  justify-content: flex-end;
 }
 .formbar .fbact {
   display: contents;
@@ -4599,10 +4634,8 @@ button.smm:hover {
     animation: none;
   }
 }
-/* 막아 둔 입력칸 (서버 입력이 없는 시안 칸): 칠 수 없다는 게 보이게 */
+/* 막아 둔 입력칸 (서버 입력이 없는 시안 칸): 모양은 시안 그대로, 마우스만 못 치는 표시 */
 .inp:disabled {
-  background: var(--well);
-  color: var(--ink-3);
   cursor: not-allowed;
 }
 .seg input:disabled + span,

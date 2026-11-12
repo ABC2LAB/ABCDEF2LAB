@@ -7,7 +7,7 @@ import (
 )
 
 func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
-	base := e2runner.TrustedResult{Classification: "completed", Execution: e2proxy.ExecutionView{AuditComplete: true}, Call: e2proxy.CallResult{Reason: e2proxy.Complete}}
+	base := e2runner.TrustedResult{Classification: "completed", ProcessBashExited: true, Execution: e2proxy.ExecutionView{AuditComplete: true}, Call: e2proxy.CallResult{Reason: e2proxy.Complete}}
 	cases := []struct {
 		name   string
 		change func(*e2runner.TrustedResult)
@@ -109,6 +109,49 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Call.Counts.Transient = 1
 			r.Call.Reason = e2proxy.AuditFailed
 		}, false},
+		// 호스트가 멈춘 명령(C27 kill_work): bash가 끝나기 전에 끊겼다. 결과 불명 송신이 있으면 결과 불명, 없으면 terminated.
+		{"killed-mid-request", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.ProcessBashExited = false
+			r.ExitCode = -1
+			r.Call.Counts.Unknown = 1
+			r.Call.Reason = e2proxy.Unknown
+		}, true},
+		{"killed-between-requests", func(r *e2runner.TrustedResult) {
+			r.Classification = "terminated"
+			r.ProcessBashExited = false
+			r.ExitCode = -1
+		}, true},
+		{"terminated-after-budget-exhausted", func(r *e2runner.TrustedResult) {
+			r.Classification = "terminated"
+			r.ProcessBashExited = false
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, true},
+		{"terminated-after-attempt-limit", func(r *e2runner.TrustedResult) {
+			r.Classification = "terminated"
+			r.ProcessBashExited = false
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.AttemptLimit
+		}, true},
+		{"terminated-but-bash-exited", func(r *e2runner.TrustedResult) { r.Classification = "terminated" }, false},
+		{"terminated-audit-failed", func(r *e2runner.TrustedResult) {
+			r.Classification = "terminated"
+			r.ProcessBashExited = false
+			r.Call.Reason = e2proxy.AuditFailed
+		}, false},
+		{"completed-without-bash-exit", func(r *e2runner.TrustedResult) { r.ProcessBashExited = false }, false},
+		{"tool-failure-without-bash-exit", func(r *e2runner.TrustedResult) {
+			r.Classification = "tool_failure"
+			r.ProcessBashExited = false
+			r.ExitCode = -1
+		}, false},
+		{"policy-without-bash-exit", func(r *e2runner.TrustedResult) {
+			r.Classification = "policy_not_executed"
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.PolicyDenied
+			r.ProcessBashExited = false
+		}, false},
 		// 예산 소진·송신 시도 상한은 그 요청만 보내지 않은 거부다(C01). 거부 수가 있을 때 정책 제한으로만 받는다.
 		{"budget-exhausted-not-sent", func(r *e2runner.TrustedResult) {
 			r.Classification = "policy_not_executed"
@@ -144,6 +187,21 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Call.Counts.Denied = 1
 			r.Call.Reason = e2proxy.Expired
 		}, false},
+		// 보류(C16)는 대상이 답한 응답이라 완료와 같이 마감한다. 결과 불명 분류가 아니다.
+		{"withheld-completed", func(r *e2runner.TrustedResult) { r.Call.Reason = e2proxy.Withheld; r.Call.Counts.Withheld = 1 }, true},
+		{"withheld-tool-failure", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 22
+			r.Call.Reason = e2proxy.Withheld
+		}, true},
+		{"withheld-terminated", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ProcessBashExited = "terminated", false
+			r.Call.Reason = e2proxy.Withheld
+		}, true},
+		{"withheld-after-unknown", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Call.Reason = e2proxy.Withheld
+		}, true},
 		{"audit-incomplete", func(r *e2runner.TrustedResult) { r.Execution.AuditComplete = false }, false},
 		{"audit-failed", func(r *e2runner.TrustedResult) { r.Call.Reason = e2proxy.AuditFailed }, false},
 		{"unknown-class", func(r *e2runner.TrustedResult) { r.Classification = "future-success" }, false},

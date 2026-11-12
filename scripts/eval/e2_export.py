@@ -20,14 +20,19 @@ from dataclasses import dataclass
 from datetime import datetime
 
 MANIFEST_FORMAT = "abc2lab.e2-runner-manifest/v1"
-JOURNAL_VERSION = "e2-http-v1"
+# 새 회차는 v2로 쓴다. v1은 C16 전에 저장한 회차를 다시 읽을 때만 받는다(withheld·response_truncated 없음).
+JOURNAL_VERSION = "e2-http-v2"
+JOURNAL_VERSION_V1 = "e2-http-v1"
+JOURNAL_VERSIONS = frozenset({JOURNAL_VERSION, JOURNAL_VERSION_V1})
+WITHHELD = "withheld"
 ATTEMPTS_FILE = "attempts.jsonl"
 STATE_COMPLETE, STATE_INCOMPLETE = "complete", "incomplete"
 STAGE_INTENT, STAGE_RESULT, STAGE_CONTROL, STAGE_CALL_CLOSED = "intent", "result", "control", "call_closed"
 ALLOWED = "allowed"
 E2_DECISIONS = frozenset({ALLOWED, "denied", "unsupported"})
 E2_REASONS = frozenset({"complete", "unsupported", "policy_denied", "closed", "audit_failed", "expired", "revoked", "budget_exhausted",
-                        "transport_failed", "unknown", "attempt_limit", "denial_limit", "transient_limit", "unknown_limit", "invalid"})
+                        "transport_failed", "unknown", "attempt_limit", "denial_limit", "transient_limit", "unknown_limit", "invalid",
+                        WITHHELD})
 HEADER_PASSTHROUGH = "evaluation_caller_passthrough"
 E2_HEADER_MODES = frozenset({"preserve", "protected_session_proposal", HEADER_PASSTHROUGH})
 E2_LLM_BACKENDS = frozenset({"local", "api"})
@@ -36,7 +41,7 @@ _SCOPE_KEYS = frozenset({"RunRef", "TaskRef", "CaseRef", "ResetRef", "PolicyRef"
 _REQUIRED_ROW = frozenset({"index", "stage", "intent_id", "version", "scope", "policy_revision", "sequence", "reason", "forward_attempted",
                            "request_written", "response_received", "response_complete", "not_sent", "audit_complete", "at"})
 _OPTIONAL_TEXT = ("call_ref", "command_ref", "attempt_id", "rule_ref", "method", "decision")
-_OPTIONAL_ROW = frozenset(_OPTIONAL_TEXT) | {"status_code"}
+_OPTIONAL_ROW = frozenset(_OPTIONAL_TEXT) | {"status_code", "response_truncated"}
 _TRANSIT_BITS = ("forward_attempted", "request_written", "response_received", "response_complete")
 _ROW_BITS = _TRANSIT_BITS + ("not_sent", "audit_complete")
 # evaluation은 평가 전달 모드에서만 있다. 없음과 빈 선언을 가른다.
@@ -255,6 +260,17 @@ def _check_observation(row: dict) -> None:
             (row["response_received"] and not row["forward_attempted"]) or (row["response_complete"] and not row["response_received"]) or \
             (row["forward_attempted"] and row.get("decision", "") != ALLOWED):
         _fail("ROW_BITS_INCONSISTENT")
+    # 보류(v2)는 허용해서 보냈고 대상이 답했지만 표현을 주지 않은 결과다. 자른 응답 표시는 보류에만 붙는다.
+    truncated = row.get("response_truncated", False)
+    if type(truncated) is not bool or ("response_truncated" in row and not truncated):
+        _fail("ROW_BITS")
+    # call_closed 행은 call의 마지막 사유를 요약으로 실으므로 withheld일 수 있다.
+    withheld = row["reason"] == WITHHELD
+    if (withheld or truncated) and row["version"] == JOURNAL_VERSION_V1:
+        _fail("ROW_REASON")
+    if (withheld and row["stage"] == STAGE_INTENT) or (truncated and (row["stage"] != STAGE_RESULT or not withheld)) or \
+            (withheld and row["stage"] == STAGE_RESULT and (row.get("decision", "") != ALLOWED or not row["response_received"] or row["response_complete"])):
+        _fail("ROW_WITHHELD_INVALID")
     status = row.get("status_code", 0)
     if type(status) is not int:
         _fail("ROW_STATUS")
@@ -270,7 +286,7 @@ def _row(line: bytes, manifest: dict) -> dict:
     keys = set(row)
     if not _REQUIRED_ROW <= keys or keys - _REQUIRED_ROW - _OPTIONAL_ROW:
         _fail("ROW_FIELDS")
-    if row["version"] != JOURNAL_VERSION:
+    if row["version"] not in JOURNAL_VERSIONS:
         _fail("ROW_VERSION")
     if not _count(row["index"]) or row["index"] == 0 or not _count(row["sequence"]) or type(row["intent_id"]) is not int:
         _fail("ROW_COUNT_INVALID")
@@ -321,6 +337,9 @@ def parse_attempts(data: bytes, manifest: dict) -> E2Export:
     rows = [_row(line, manifest) for line in data.split(b"\n")[:-1]] if data else []
     if len(rows) != manifest["rows"]:
         _fail("ROW_COUNT_MISMATCH")
+    # 한 저널은 한 판으로만 쓴다.
+    if len({row["version"] for row in rows}) > 1:
+        _fail("ROW_VERSION_MIXED")
     # index는 저널 행 순서다. 빠진 행이 있으면 대조가 부족해 보이지 않게 막는다.
     if [row["index"] for row in rows] != list(range(1, len(rows) + 1)):
         _fail("ROW_INDEX_GAP")

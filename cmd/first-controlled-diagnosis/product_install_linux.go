@@ -164,11 +164,16 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	return 0
 }
 
+// productMaxBodyBytes는 일반 HTTP 모드의 요청·응답 본문 상한 기본값이다. 공식 평가 정책 템플릿
+// (docs/evaluation/profiles/official-e2-policy.json `max_body_bytes`)과 같은 16MiB다(C16 결정안 3). 64KiB였을 때는
+// 보통 크기의 페이지 응답도 상한을 넘어 결과 불명으로 끝나 그 intent가 멈췄다. 코드 상한(e2proxy)과 같은 값이다.
+const productMaxBodyBytes = 16 << 20
+
 // productPolicyBounds는 설치의 E② 한도·프록시·런타임 상한이다. 모드별 기본값에 runtime_limits를 덮어쓰고
 // validProductPolicyTemplate으로 검사한다(C32). 설치 입력 검사와 실제 설치가 같은 값을 쓴다.
 func productPolicyBounds(c productInstallInput) (server.E2HTTPFilePolicy, bool) {
 	policy := server.E2HTTPFilePolicy{MaxRequests: 4, HeaderMode: e2proxy.HeaderPreserve, ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
-		Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 65536, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1}, Proxy: server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 5000, MaxHeaderBytes: 32768, MaxConnections: 4}, Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
+		Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: productMaxBodyBytes, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1}, Proxy: server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 5000, MaxHeaderBytes: 32768, MaxConnections: 4}, Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
 	if flow := c.TargetPolicy.Workflow; flow != nil {
 		policy.Limits.MaxBodyBytes = int64(flow.MaxResponseBytes)
 		policy.Limits.MaxAttempts = 200
@@ -305,6 +310,21 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		upstream = &p
 		c.TargetPolicy.UpstreamCAFile = filepath.Join(config, "upstream.pem")
 		c.TargetPolicy.UpstreamCASHA256 = p.SHA256
+	}
+	if x := c.TargetPolicy.Exploration; x != nil {
+		// 탐색 경계 CA(공개 인증서)를 설치 디렉터리로 복사해 고정한다. 개인키는 경계 컨테이너의 보호 입력에만 있다.
+		raw, e := readPrivateFile(x.BoundaryCAFile, 64<<10)
+		if e != nil {
+			return errPreparation
+		}
+		p := pin("explore-ca.pem", raw)
+		_, hostErr := newProductExplorationHost(productExplorationPolicy{ControlSocket: x.ControlSocket, DirectProxy: x.DirectProxy, BoundaryCAFile: filepath.Join(config, "explore-ca.pem"),
+			BoundaryCASHA256: p.SHA256, MCPURL: x.MCPURL, MaxExternalRequests: x.MaxExternalRequests}, raw)
+		clear(raw)
+		if hostErr != nil {
+			return errPreparation
+		}
+		x.BoundaryCAFile, x.BoundaryCASHA256 = filepath.Join(config, "explore-ca.pem"), p.SHA256
 	}
 	if pins.err != nil {
 		return errPreparation

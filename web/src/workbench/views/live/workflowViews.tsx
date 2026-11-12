@@ -5,7 +5,7 @@
 // 남은 시간 · 로그인 필요 여부 · 경로 설명은 서버가 주지 않아 만들지 않는다. 시안에 있는 칸(경과 시간 · 시작 전 점검 ·
 // 새 경로 처리 규칙 일부)은 "아직 구현 안 됨"으로 자리만 둔다. 탐색 막대는 서버 진행률이 아니라 페이지 상한 대비 방문 수다.
 
-import { Fragment, type ReactNode, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { clockOf, planState } from "../../live/map";
@@ -13,7 +13,7 @@ import { maskSecrets } from "../../live/mask";
 import { NotYet } from "../../live/parts";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
-import { useShell } from "../../shell";
+import { useShell, type View } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, CodeCard, InspOpenButton, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
@@ -497,6 +497,91 @@ function EndpointCards({
   );
 }
 
+// 결과·판정 읽기 화면 진입(접근통제 지도·커버리지·발견 상세·전송 통제 흐름). 전부 아직 예시·운영자 전용.
+const RESULT_VIEWS: ReadonlyArray<readonly [View, string]> = [
+  ["accessmap", "접근통제 지도"],
+  ["coverage", "커버리지"],
+  ["finding", "발견 상세"],
+  ["e2flow", "전송 통제 흐름"],
+];
+
+/**
+ * 자산 탐색 헤더의 '진단 결과' 묶음 — 결과·판정 읽기 화면 4개 진입을 버튼 하나로 모은다(헤더 과밀 해소).
+ * 최종 자리는 작업대 시안에서 정렬(이동찬 리뷰) — 임시 묶음이라 포털·화살표 이동은 두지 않고 최소 구현한다
+ * (바깥 클릭·Esc 로 닫힘). 색은 계정 메뉴와 같은 실재 토큰(--bg·--rule·--shadow)만 써서 라이트·다크 자동.
+ */
+function ResultViewsMenu({ goTo }: { goTo: (name: View) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: globalThis.MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  return (
+    <div ref={wrap} style={{ position: "relative", display: "inline-flex" }}>
+      <button
+        className={s.btn}
+        type="button"
+        aria-haspopup="true"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        진단 결과
+        <Icon name="chev" />
+      </button>
+      {open ? (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            right: 0,
+            zIndex: 40,
+            minWidth: 184,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            padding: 6,
+            borderRadius: 12,
+            border: "1px solid var(--rule)",
+            background: "var(--bg)",
+            color: "var(--ink)",
+            boxShadow: "var(--shadow)",
+          }}
+        >
+          {RESULT_VIEWS.map(([view, label]) => (
+            <button
+              key={view}
+              className={s.btn}
+              type="button"
+              style={{ justifyContent: "flex-start", width: "100%", border: "none", background: "transparent" }}
+              onClick={() => {
+                setOpen(false);
+                goTo(view);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+          <p className={s.help} style={{ margin: "4px 8px 2px" }}>
+            지금은 예시 · 운영자 전용 (API 연결 후 점등)
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** 자산 탐색. */
 export function WorkflowCrawlLive() {
   const job = useUrl((st) => st.job),
@@ -540,27 +625,10 @@ export function WorkflowCrawlLive() {
             <button className={s.btn} type="button" onClick={() => goTo("explore")}>
               탐색 결과
             </button>
-            {/* 접근통제 지도(수평 IDOR 교차 접근 판정, 운영자 전용). 지금은 예시, live 점등은 KG API 연결 후.
-                진입 자리는 잠정 — 이동찬 정렬(새 작업대 시안 기준). */}
-            <button className={s.btn} type="button" onClick={() => goTo("accessmap")}>
-              접근통제 지도
-            </button>
-            {/* 커버리지(검사 영역별 상태 집계). 지금은 예시, live 점등은 커버리지 집계 API 연결 후.
-                진입 자리는 잠정 — 이동찬 정렬(새 작업대 시안 기준). */}
-            <button className={s.btn} type="button" onClick={() => goTo("coverage")}>
-              커버리지
-            </button>
-            {/* 발견 상세(구조화 판정 레코드). 지금은 예시, live 점등은 판정 레코드 API 연결 후.
-                진입 자리는 잠정 — 이동찬 정렬(새 작업대 시안 기준). */}
-            <button className={s.btn} type="button" onClick={() => goTo("finding")}>
-              발견 상세
-            </button>
-            {/* 전송 통제 흐름(E② 허용/차단 감사 투영). 지금은 예시, live 점등은 E② 감사 투영 API 연결 후.
-                진입 자리는 잠정 — 이 헤더의 보조 버튼이 많아져(탐색 결과·접근통제 지도·커버리지·발견 상세·전송 통제 흐름)
-                새 작업대 시안 기준 일괄 정렬 필요(이동찬). */}
-            <button className={s.btn} type="button" onClick={() => goTo("e2flow")}>
-              전송 통제 흐름
-            </button>
+            {/* 결과·판정 읽기 화면 4개(접근통제 지도·커버리지·발견 상세·전송 통제 흐름)는 전부 아직 예시·운영자
+                전용 — '진단 결과' 묶음 버튼 하나로 모은다(헤더 과밀 해소). 최종 자리는 작업대 시안에서 정렬(이동찬
+                리뷰). live 점등은 각 화면의 getter API 연결 후. */}
+            <ResultViewsMenu goTo={goTo} />
             <button className={cx(s.btn, s.pri)} type="button" disabled={!ready} onClick={() => goTo(next)}>
               {next === "scope" ? "범위 확인" : "점검 진행"}
               <Icon name="arrow" />

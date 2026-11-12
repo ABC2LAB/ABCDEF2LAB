@@ -1,0 +1,14 @@
+# Owned disposable exploration acceptance only. Layer after compose.acceptance.yaml (and compose.workflow-acceptance.yaml)
+# with `--profile exploration`. The boundary verifies the owned fixture targets with the fixture CA as well as the
+# registered SPKI pin. Boundary protected inputs still come from EXPLORE_* files prepared outside the repository.
+services:
+  explore-init:
+    depends_on:
+      fixture-init: {condition: service_completed_successfully}
+    environment:
+      EXPLORE_UPSTREAM_CA_SOURCE: /target-tls/ca.pem
+    volumes:
+      - type: volume
+        source: target-tls
+        target: /target-tls
+        read_only: true
