@@ -50,8 +50,8 @@ func TestDirectFetchRefusalAndOversizedResponse(t *testing.T) {
 		t.Fatalf("out-of-scope fetch: %+v %v hits=%d", result, err, f.hits.Load())
 	}
 	result, err := fetch.Fetch(t.Context(), f.target+"/app/big")
-	if err != nil || result.Seq == 0 || result.Complete || result.Reason != "" {
-		t.Fatalf("oversized fetch: seq=%d complete=%v reason=%q err=%v", result.Seq, result.Complete, result.Reason, err)
+	if err != nil || result.Seq == 0 || result.Complete || result.Reason != "" || int64(len(result.Body)) > fetch.MaxBytes {
+		t.Fatalf("oversized fetch: seq=%d complete=%v reason=%q body=%d err=%v", result.Seq, result.Complete, result.Reason, len(result.Body), err)
 	}
 	if !f.session.Status().Active {
 		t.Fatal("single refusal closed the session")

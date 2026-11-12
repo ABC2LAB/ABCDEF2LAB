@@ -87,6 +87,11 @@ type proxyFixture struct {
 
 func newProxyFixture(t *testing.T, write string, handler http.HandlerFunc, alter func(*Target)) *proxyFixture {
 	t.Helper()
+	return newIngressFixture(t, BrowserIngress, write, handler, alter)
+}
+
+func newIngressFixture(t *testing.T, ingress Ingress, write string, handler http.HandlerFunc, alter func(*Target)) *proxyFixture {
+	t.Helper()
 	upstreamCA, mitm := newTestCA(t, "upstream-ca"), newTestCA(t, "boundary-ca")
 	leaf, spki := upstreamCA.leaf(t, fixtureHost)
 	hits := &atomic.Int64{}
@@ -105,7 +110,7 @@ func newProxyFixture(t *testing.T, write string, handler http.HandlerFunc, alter
 		}
 	})
 	current := session
-	proxy, err := NewProxy(ProxyConfig{Ingress: BrowserIngress, Current: func() *Session { return current }, CA: mitm.cert, CAKey: mitm.key, Roots: upstreamCA.pool,
+	proxy, err := NewProxy(ProxyConfig{Ingress: ingress, Current: func() *Session { return current }, CA: mitm.cert, CAKey: mitm.key, Roots: upstreamCA.pool,
 		MaxRequestBytes: proxyMaxBody, MaxResponseBytes: proxyMaxResponse, MaxTunnels: proxyMaxTunnels, Timeout: proxyTimeout, LeafValidity: time.Hour})
 	if err != nil {
 		t.Fatal(err)
