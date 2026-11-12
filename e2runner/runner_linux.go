@@ -83,6 +83,8 @@ type runningCall struct {
 	releaseSlot     func()
 	// workspace는 이 호출의 작업 공간 보관 결과다(PersistWorkspace일 때). 한 번만 정한다.
 	workspace string
+	// workspaceHeld는 이 호출이 보관소 사용 표시를 올려 두었다는 뜻이다. 최종 cleanup 때 내린다.
+	workspaceHeld bool
 	// outputFile은 모델에 준 글보다 긴 출력을 남긴 작업 공간 안 경로다.
 	outputFile string
 }
@@ -220,8 +222,10 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	stateOwnsSlot = true
 	r.active[call.Ref()] = state
 	if r.cfg.PersistWorkspace {
+		// 보관소 사용 표시는 이 호출의 최종 cleanup(작업 공간 저장 포함)이 끝날 때 한 번 내린다. 미완료로 반환해도
+		// 나중의 Drain·Close가 저장할 수 있으므로 반환 때 내리지 않는다.
 		r.workspaceBusy[intentID]++
-		defer r.endWorkspaceCall(intentID)
+		state.workspaceHeld = true
 	}
 	stopped = r.stopped
 	r.mu.Unlock()
@@ -347,6 +351,7 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 		if s.releaseSlot != nil {
 			s.releaseSlot()
 		}
+		s.releaseWorkspace()
 		return s.result, nil
 	}
 	s.call.Block()
@@ -443,7 +448,16 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 	if s.releaseSlot != nil {
 		s.releaseSlot()
 	}
+	s.releaseWorkspace()
 	return s.result, nil
+}
+
+// releaseWorkspace는 최종 cleanup이 끝났을 때 보관소 사용 표시를 한 번 내린다(cleanupGate 안에서만 부른다).
+func (s *runningCall) releaseWorkspace() {
+	if s.workspaceHeld {
+		s.workspaceHeld = false
+		s.owner.endWorkspaceCall(s.intentID)
+	}
 }
 
 func (s *runningCall) classification(trusted TrustedResult) string {
