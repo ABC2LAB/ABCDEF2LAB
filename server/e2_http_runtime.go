@@ -413,15 +413,9 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 		if !t.validLease {
 			return ctx, ErrE2HTTPHost
 		}
-		switch r.leaseState(t, *t.lease, 0) {
-		case e2HTTPLeaseUsable:
-		case e2HTTPLeaseBudgetSpent:
-			// 승인 요청 예산을 다 썼다. 실패가 아니라 실행 상한이다. 새 계획 없이 진행 중 작업이 끝나면 감독자가
-			// budget_limited로 마감한다(실행 결과 상태 값 계약 §3.1).
-			task.firstDiagnosisBudgetLimited.Store(true)
-			return ctx, ErrE2HTTPBudgetLimited
-		default:
-			return ctx, ErrE2HTTPHost
+		// 승인 요청 예산을 다 썼으면 새 계획 없이, 진행 중 작업이 끝나는 대로 감독자가 budget_limited로 마감한다.
+		if err := r.leaseAdmission(task, t, *t.lease); err != nil {
+			return ctx, err
 		}
 	}
 	t.plannerRounds++
@@ -445,6 +439,20 @@ const (
 	e2HTTPLeaseUsable
 	e2HTTPLeaseBudgetSpent
 )
+
+// leaseAdmission은 이미 결속한 lease로 새 계획·작업을 열 수 있는지 본다. 승인 요청 예산 소진은 결속 오류가 아니라
+// 실행 상한이라 task에 표시하고 ErrE2HTTPBudgetLimited를 돌려준다(실행 결과 상태 값 계약 §3.1). 엔진은 이를
+// 실패로 바꾸지 않는다.
+func (r *E2HTTPRuntime) leaseAdmission(task *Task, t *e2HTTPRuntimeTask, lease E2HTTPRunOptions) error {
+	switch r.leaseState(t, lease, 0) {
+	case e2HTTPLeaseUsable:
+		return nil
+	case e2HTTPLeaseBudgetSpent:
+		task.firstDiagnosisBudgetLimited.Store(true)
+		return ErrE2HTTPBudgetLimited
+	}
+	return ErrE2HTTPHost
+}
 
 func (r *E2HTTPRuntime) validLease(t *e2HTTPRuntimeTask, lease E2HTTPRunOptions, initialIntent int64) bool {
 	return r.leaseState(t, lease, initialIntent) == e2HTTPLeaseUsable
@@ -546,14 +554,9 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 		t.validLease = true
 		t.mu.Unlock()
 	}
-	switch r.leaseState(t, *lease, 0) {
-	case e2HTTPLeaseUsable:
-	case e2HTTPLeaseBudgetSpent:
-		// 승인 요청 예산을 다 썼다. 이 intent는 시작하지 않고(마감 때 incomplete) 실행 상한으로 마감한다.
-		task.firstDiagnosisBudgetLimited.Store(true)
-		return ctx, nil, ErrE2HTTPBudgetLimited
-	default:
-		return ctx, nil, ErrE2HTTPHost
+	// 승인 요청 예산을 다 썼으면 이 intent는 시작하지 않고(마감 때 incomplete) 실행 상한으로 마감한다.
+	if err := r.leaseAdmission(task, t, *lease); err != nil {
+		return ctx, nil, err
 	}
 	if err := lease.Runner.RegisterIntent(ctx, actual.ID); err != nil {
 		return ctx, nil, ErrE2HTTPHost
