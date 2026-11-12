@@ -8,9 +8,10 @@ import { createContext, useContext } from "react";
 import type { DSel } from "./store";
 
 /**
- * 열 화면 (해시 이름 = data-view). running · finished = 진행 중인 점검 · 끝난 점검 (레일에서 점검을 누르면 오는 목록,
+ * 열한 화면 (해시 이름 = data-view). running · finished = 진행 중인 점검 · 끝난 점검 (레일에서 점검을 누르면 오는 목록,
  * 시안 v54 에서 점검 기록을 둘로 나눔). explore = 탐색 결과(발견·경계 기록 요약, 운영자 전용).
  * accessmap = 접근통제 지도(신원 × 자원 교차 접근 판정, 수평 IDOR v0.1, 운영자 전용).
+ * coverage = 커버리지(검사 영역별 상태 집계 — 무엇을 얼마나 검사했나, '미시도'를 '없음'으로 칠하지 않음).
  */
 export type View =
   | "dashboard"
@@ -20,6 +21,7 @@ export type View =
   | "crawl"
   | "explore"
   | "accessmap"
+  | "coverage"
   | "scope"
   | "live"
   | "report";
@@ -31,6 +33,7 @@ export const VIEWS: readonly View[] = [
   "crawl",
   "explore",
   "accessmap",
+  "coverage",
   "scope",
   "live",
   "report",
