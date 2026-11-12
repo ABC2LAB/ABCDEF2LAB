@@ -171,3 +171,55 @@ func TestDiagnosisRunOutcomeWhitelistIndependently(t *testing.T) {
 		})
 	}
 }
+
+// 문맥 취소로 끝난 실행은 호출자가 운영자 중지로 확인했을 때만 cancelled로 저장한다(#454 재상 지적). 설치·위임
+// 검사 실패 같은 다른 문맥 취소는 failed 그대로이고, 마감 실패면 운영자 중지라도 failed다.
+func TestDiagnosisRunStoresContextCancelAsStopOnlyForOperatorOwnedPostgres(t *testing.T) {
+	pg := approvalTestDB(t)
+	for _, tc := range []struct {
+		name         string
+		operatorStop bool
+		closureErr   error
+		wantPhase    string
+		wantOutcome  string
+	}{
+		{"operator-stop", true, nil, "closed", "cancelled"},
+		{"other-cancel", false, nil, "failed", "failed"},
+		{"operator-stop-closure-failed", true, errors.New("synthetic close failure"), "failed", "failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task, err := pg.CreateTask("synthetic cancelled run", "fixture", nil, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := pg.DeleteTask(task.ID); err != nil {
+					t.Error(err)
+				}
+			})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			service := newRequestApprovalService(nil)
+			if err = service.admitRun(ctx, task.ID, "synthetic-run", cancel); err != nil {
+				t.Fatal(err)
+			}
+			service.runStarted(task.ID)
+			runErr := firstDiagnosisFailure(context.Canceled)
+			if service.runFinished(task.ID, runErr, false) {
+				t.Fatal("unexpected stop request")
+			}
+			supervisor := &FirstDiagnosisSupervisor{m: &Manager{pg: pg}, server: &Server{requestApprovals: service}, runStarted: true, runTask: strconv.FormatInt(task.ID, 10), runErr: runErr}
+			if saved, saveErr := supervisor.PersistRunOutcomeStoredStop(t.Context(), tc.closureErr, tc.operatorStop); saveErr != nil || !saved {
+				t.Fatalf("save: stored=%v err=%v", saved, saveErr)
+			}
+			var raw []byte
+			if err = pg.QueryRowContext(t.Context(), `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND origin=$2`, task.ExplorationID, diagnosisRunOrigin).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var stored diagnosisRunRecord
+			if err = json.Unmarshal(raw, &stored); err != nil || stored.Run.Phase != tc.wantPhase || stored.Run.Outcome != tc.wantOutcome {
+				t.Fatalf("stored run: %+v err=%v", stored.Run, err)
+			}
+		})
+	}
+}
