@@ -46,7 +46,8 @@
 - WebSearch는 Worker와 같은 규칙이다.
 - Plan당 상한(`e2HTTPPlannerMaxTurns`·`e2HTTPPlannerMaxDuration` 상수)은 원본 설정 경로(에이전트 설정의 턴·시간)로 돌리고, 제품 기본값은 C32 설치 설정으로 둔다.
   - 구현: 상수를 `agent.E2HTTPPlannerLimits`(기본 16턴·2분)로 바꾸고 설치 입력 `runtime_limits`의 `planner_turns_per_plan`·`planner_seconds_per_plan`을 launch 설정으로 받는다([설치 상한 결정안](install-limits-decision.md) §3-5). 에이전트 설정의 턴 수가 설치 값보다 작으면 그 값을 쓴다.
-- 마무리 턴·Todo: 원본처럼 Plan 상한에 닿으면 마무리 턴(정한 결론을 add_intent·prove_goal·TodoWrite로 남김)을 받고, 깨울 때마다 이어지는 계획 할 일(TodoWrite)을 둔다. 둘 다 이 프로세스 안 작업이라 대상 송신 경로가 없고, 마무리 턴의 도구도 프로필 도구뿐이다. 원본 Planner는 자체 시간 상한이 없어 task 기한이 있으면 시간 종료를 늘 "작업 종료" 마무리(새 intent 금지)로 보는데, 진단 Planner는 Plan당 시간 상한이 있으므로 task 기한이 이번 Plan을 실제로 자를 때만 작업 종료 마무리를 쓰고 Plan 상한으로 끝나면 "이번 라운드만 끝" 마무리를 쓴다. 마무리 단계는 Plan당 상한 밖이다: 원본처럼 에이전트 설정의 마무리 턴 수(기본 10턴)까지 돌고 시간 상한을 보지 않는다(SDK 동작). 실행 시간 상한(task 문맥)과 모델 예산은 마무리 단계도 자른다. TodoWrite는 SDK가 붙이므로 진단 기록에 등록 도구로 알린다(기록 어휘는 #472). 압축(Compactor)·skills는 아직 넣지 않았다.
+- 마무리 턴·Todo: 원본처럼 Plan 상한에 닿으면 마무리 턴(정한 결론을 add_intent·prove_goal·TodoWrite로 남김)을 받고, 깨울 때마다 이어지는 계획 할 일(TodoWrite)을 둔다. 둘 다 이 프로세스 안 작업이라 대상 송신 경로가 없고, 마무리 턴의 도구도 프로필 도구뿐이다. 원본 Planner는 자체 시간 상한이 없어 task 기한이 있으면 시간 종료를 늘 "작업 종료" 마무리(새 intent 금지)로 보는데, 진단 Planner는 Plan당 시간 상한이 있으므로 task 기한이 이번 Plan을 실제로 자를 때만 작업 종료 마무리를 쓰고 Plan 상한으로 끝나면 "이번 라운드만 끝" 마무리를 쓴다. 마무리 단계는 Plan당 상한 밖이다: 원본처럼 에이전트 설정의 마무리 턴 수(기본 10턴)까지 돌고 시간 상한을 보지 않는다(SDK 동작). 실행 시간 상한(task 문맥)과 모델 예산은 마무리 단계도 자른다. TodoWrite는 SDK가 붙이므로 진단 기록에 등록 도구로 알린다(기록 어휘는 #472).
+- 압축: 원본 내장 대화 압축(`Compaction`, 모델 문맥 창 기준)은 진단 Planner·Worker 모두 원본 설정 그대로 켜져 있다. 빼 둔 것은 둘이다. 실험 기능 noa(`Compactor`, 설정으로 켜는 원본 실험 기능, 작업 디렉터리 밖에 대화 보관본을 남김)와 Planner 라운드마다 백그라운드로 모델을 불러 오래된 그래프 노드를 요약하는 cold-digest(`compactor.OnPlannerRound`, 실행의 모델 예산·마감 밖에서 도는 호출). 진단 실행은 시간 상한이 짧아(제품 기본 180초) 그래프가 작으므로 지금은 넣지 않는다. 넣을 필요가 보이면 모델 예산 안에서 돌게 한 뒤 정한다. skills는 진단용이 없다(C30 결정 2).
 
 ## 5. 실행 흐름 (C19·C27)
 
@@ -75,7 +76,7 @@
 2. C24 일부: Worker 그래프 조회 도구(list_findings·list_assets·search_all_worker_traces·get_worker_trace). 저장소 조회뿐이다. insert_assets는 제품 DB 역할이 assets를 SELECT만 허용해서 넣어도 항상 실패하므로 열린 항목 5와 같이 정한다.
 3. C25와 C24 나머지: 원본 프롬프트·마무리 턴, report_finding(후보)·skills·WebSearch. report_finding(후보)은 후보 저장에 실제 call_ref가 필요해 원본 입력 형식과 바로 맞지 않고, 지금 부르는 쪽(원본 skills)도 C30 전에는 없어서 skills와 같이 한다.
 4. WebFetch E② 판.
-5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** C08이 끝나 1단계로 `prove_goal`·`goal_met`(원본처럼 `goal_met`은 기본 바인딩 없음)과 목표 달성 마감(남은 open intent는 incomplete)을 넣었다. 2단계로 add_task_scope(E② 승인 범위 불변 시험과 같이)를, 3단계로 Plan당 상한 설정(C32 `planner_turns_per_plan`·`planner_seconds_per_plan`)을, 4단계로 마무리 턴·Todo를 넣었다. 다음 단계: 압축, report_finding(후보)·skills. goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
+5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** C08이 끝나 1단계로 `prove_goal`·`goal_met`(원본처럼 `goal_met`은 기본 바인딩 없음)과 목표 달성 마감(남은 open intent는 incomplete)을 넣었다. 2단계로 add_task_scope(E② 승인 범위 불변 시험과 같이)를, 3단계로 Plan당 상한 설정(C32 `planner_turns_per_plan`·`planner_seconds_per_plan`)을, 4단계로 마무리 턴·Todo를 넣었다. 다음 단계: report_finding(후보)(실제 call_ref가 필요하고 부르는 쪽인 진단 skills가 없어 보류). goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
 6. C27(Worker 실행 중 Planner 깨우기)·kill_work·steer_work·C19는 **C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤.** Planner가 Worker 실행 중에 goal_met·kill_work를 부르면 진행 중인 E② 호출이 취소되고, 지금은 그 결과 불명이 실행 전체를 멈춘다.
 7. 파일 도구(C29와 같이). traffic 도구는 넣지 않는다(열린 항목 1 결과).
 
