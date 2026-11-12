@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/llmpolicy"
 )
 
@@ -33,10 +36,25 @@ type launchConfig struct {
 	RuntimeDSNFile         string `json:"runtime_dsn_file"`
 	ShutdownTimeoutSeconds int    `json:"shutdown_timeout_seconds"`
 	// ModelConcurrency는 동시 모델 호출 수다(C32). 없거나 0이면 1이다.
-	ModelConcurrency int               `json:"model_concurrency,omitempty"`
-	Registered       *registeredLaunch `json:"registered_get,omitempty"`
-	HTTP             *httpLaunch       `json:"general_http,omitempty"`
+	ModelConcurrency int `json:"model_concurrency,omitempty"`
+	// PlannerTurnsPerPlan·PlannerSecondsPerPlan은 진단 Planner 한 번(Plan)의 턴·시간(초) 상한이다(C26·C32). 없거나
+	// 0이면 agent 기본값이다. 일반 HTTP 실행만 쓴다.
+	PlannerTurnsPerPlan   int               `json:"planner_turns_per_plan,omitempty"`
+	PlannerSecondsPerPlan int64             `json:"planner_seconds_per_plan,omitempty"`
+	Registered            *registeredLaunch `json:"registered_get,omitempty"`
+	HTTP                  *httpLaunch       `json:"general_http,omitempty"`
 }
+
+// plannerLimits는 launch의 Plan당 상한이다. 음수·코드 상한 밖이면 false이고, 돌려준 값도 받는 쪽 검사(Valid)에서
+// 거부되는 값이라 실수로 넘겨도 기본값으로 바뀌지 않는다.
+func (c launchConfig) plannerLimits() (agent.E2HTTPPlannerLimits, bool) {
+	if c.PlannerTurnsPerPlan < 0 || c.PlannerSecondsPerPlan < 0 || c.PlannerSecondsPerPlan > math.MaxInt64/int64(time.Second) {
+		return agent.E2HTTPPlannerLimits{MaxTurns: -1}, false
+	}
+	limits := agent.E2HTTPPlannerLimits{MaxTurns: c.PlannerTurnsPerPlan, MaxDuration: time.Duration(c.PlannerSecondsPerPlan) * time.Second}
+	return limits, limits.Valid()
+}
+
 type registeredLaunch struct {
 	AuthorityDSNFile string `json:"authority_dsn_file"`
 	HostBindingFile  string `json:"host_binding_file"`
@@ -104,6 +122,10 @@ func parseLaunchConfig(data []byte) (launchConfig, error) {
 		return launchConfig{}, errPreparation
 	}
 	if !plainText(c.ModelFormat, maxFormatBytes) || !plainText(c.ModelBaseURL, maxPathBytes) || !plainText(c.ModelRef, maxModelBytes) {
+		return launchConfig{}, errPreparation
+	}
+	// Plan당 상한은 일반 HTTP 실행만 읽는다. 다른 모드에 주면 읽히지 않는 설정이라 거부한다.
+	if _, ok := c.plannerLimits(); !ok || c.Mode != "general_http" && (c.PlannerTurnsPerPlan != 0 || c.PlannerSecondsPerPlan != 0) {
 		return launchConfig{}, errPreparation
 	}
 	return c, nil

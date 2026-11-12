@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/jackc/pgx/v5"
@@ -40,6 +41,9 @@ type firstDiagnosisPreparationModel struct {
 	badProfile     bool
 	noGoals        bool // 목표 분해 차례에 도구를 부르지 않고 끝낸다(목표 0개).
 	noIntents      bool // 계획 차례에 add_intent를 부르지 않고 끝낸다(intent 0개).
+	// loopPlan이면 계획 차례마다 list_assets를 다시 불러 Plan이 턴 상한에서만 끝나게 하고, 계획 요청의 메시지 수 범위를 남긴다.
+	loopPlan         bool
+	planMin, planMax int
 }
 
 func (m *firstDiagnosisPreparationModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +112,12 @@ func (m *firstDiagnosisPreparationModel) ServeHTTP(w http.ResponseWriter, r *htt
 		case !seen["preparation-goals"]:
 			id, name, input = "preparation-goals", "set_goals", map[string]any{"text": "Prepare the first controlled GET of the owned fixture without executing it.", "vulnclass": "IDOR"}
 		}
+	} else if !goalRound && m.loopPlan {
+		if m.planMin == 0 || len(request.Messages) < m.planMin {
+			m.planMin = len(request.Messages)
+		}
+		m.planMax = max(m.planMax, len(request.Messages))
+		id, name, input = "preparation-loop-"+strconv.Itoa(m.requests), "list_assets", map[string]any{"dsl": "ip==127.0.0.1", "type": "ip", "limit": 1}
 	} else if !goalRound {
 		switch {
 		case !seen["preparation-assets"]:
@@ -586,6 +596,57 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 		modelState.mu.Unlock()
 		if intents != 0 || addIntent != 0 || targetHits.Load() != 0 {
 			t.Fatalf("intent 0개 준비 산출물: intents=%d add_intent=%d", intents, addIntent)
+		}
+	})
+	// 준비 계획도 설치한 Plan당 턴 상한을 쓴다(C26·C32). 준비 서버에는 E② 실행 Runtime이 없어 준비 설정 값으로 받는다.
+	t.Run("installed-plan-turn-limit", func(t *testing.T) {
+		const installedPlanTurns = 2
+		next, err := PrepareFirstDiagnosisTask(ctx, pool, description, "Prepare a fresh owned fixture under a short plan.", profileID, 60)
+		if err != nil {
+			t.Fatal("새 빈 준비 task 생성 실패")
+		}
+		manager.LoadExisting()
+		if _, err := NewFirstDiagnosisPreparationServerWithModel(ctx, manager, skillDir, dataDir, keyDir, FirstDiagnosisModelOptions{LocalManifestPath: manifest, PlannerLimits: agent.E2HTTPPlannerLimits{MaxTurns: -1}}); err == nil {
+			t.Fatal("범위 밖 Plan당 상한으로 준비 서버를 만듦")
+		}
+		nextServer, err := NewFirstDiagnosisPreparationServerWithModel(ctx, manager, skillDir, dataDir, keyDir, FirstDiagnosisModelOptions{LocalManifestPath: manifest, PlannerLimits: agent.E2HTTPPlannerLimits{MaxTurns: installedPlanTurns}})
+		if err != nil {
+			t.Fatal("Plan 상한 준비 서버 생성 실패")
+		}
+		nextSupervisor, err := NewFirstDiagnosisSupervisor(ctx, manager)
+		if err != nil || nextSupervisor.Attach(nextServer) != nil {
+			t.Fatal("Plan 상한 준비 감독자 결속 실패")
+		}
+		defer func() {
+			cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			shutdown := nextSupervisor.Shutdown()
+			for _, finish := range []func(context.Context, *Server) error{shutdown.BlockAdmission, shutdown.CancelAndDrain, shutdown.CheckResults} {
+				if finish(cleanup, nextServer) != nil {
+					t.Error("Plan 상한 준비 writer 정리 실패")
+					break
+				}
+			}
+		}()
+		modelState.mu.Lock()
+		modelState.loopPlan, modelState.planMin, modelState.planMax = true, 0, 0
+		modelState.mu.Unlock()
+		defer func() {
+			modelState.mu.Lock()
+			modelState.loopPlan = false
+			modelState.mu.Unlock()
+		}()
+		bounded, stop := context.WithTimeout(ctx, 20*time.Second)
+		defer stop()
+		if err := nextSupervisor.PrepareIntents(bounded, strconv.FormatInt(next.TaskID, 10)); err != nil {
+			t.Fatal("Plan 상한 준비를 실패로 끝냄")
+		}
+		modelState.mu.Lock()
+		planMin, planMax := modelState.planMin, modelState.planMax
+		modelState.mu.Unlock()
+		// 턴마다 assistant·도구 결과 두 메시지가 붙는다. 2턴 상한이면 마지막 계획 요청이 첫 요청보다 2개 많다(기본 16턴이면 30개).
+		if planMin == 0 || planMax-planMin != 2*(installedPlanTurns-1) || targetHits.Load() != 0 {
+			t.Fatalf("준비 계획이 설치한 Plan당 턴 상한을 쓰지 않음 messages=%d..%d", planMin, planMax)
 		}
 	})
 }

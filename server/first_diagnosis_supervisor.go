@@ -366,7 +366,8 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 	}
 	defer server.engine.decInflight(task.ID)
 	preparationStage = "planning"
-	planning := agent.WithE2HTTPPlanning(server.engine.withRuntimeHooks(prepare))
+	// 준비 서버에는 E② 실행 Runtime이 없어 준비 설정의 Plan당 상한을 쓴다. 실행 계획은 Runtime.PreparePlanning이 싣는다.
+	planning := agent.WithE2HTTPPlannerLimits(agent.WithE2HTTPPlanning(server.engine.withRuntimeHooks(prepare)), server.firstPlannerLimits)
 	emit := func(activity db.Activity) { server.engine.emitActivity(task, activity) }
 	// 분해가 실패해도 계속하므로(C11), 분해 중 task 상태가 바뀌었는지 계획 전에 다시 본다.
 	if err := server.createFirstDiagnosisGoals(planning, task, emit); err != nil || planning.Err() != nil || s.checkPreparationTask(planning, task) != nil {
