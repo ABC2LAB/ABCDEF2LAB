@@ -141,6 +141,9 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	if _, ok := productModelConcurrencyFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil, c.LocalModel != nil, productOpenRouterMaxConcurrent(c)); !ok {
 		return 2
 	}
+	if _, ok := productPlannerLimitsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil); !ok {
+		return 2
+	}
 	for _, d := range []string{"config", "data", "keys", "state", "runs", "ipc"} {
 		if checkDirectory(filepath.Join(*root, d), true) != nil {
 			return 1
@@ -184,6 +187,24 @@ func productPolicyBounds(c productInstallInput) (server.E2HTTPFilePolicy, bool) 
 
 // productOpenRouterMaxConcurrent는 설치 입력의 OpenRouter 승인이 허용한 동시 호출 수다. OpenRouter가 없거나 읽을 수
 // 없으면 0이다(읽을 수 없는 승인은 설치가 따로 거부한다).
+// applyProductLaunchLimits는 runtime_limits 중 launch 설정에 들어가는 칸(동시 모델 호출 수·Plan당 상한)을 고른 모델
+// 모드의 launch에 넣는다. 로컬 launch는 동시 호출 1, OpenRouter launch는 그 승인 max_concurrent 이하만 받는다.
+// 범위 밖이면 false다(설치 거부).
+func applyProductLaunchLimits(launch *launchConfig, c productInstallInput, mode string) bool {
+	workflow := c.TargetPolicy.Workflow != nil
+	concurrency, ok := productModelConcurrencyFor(c.RuntimeLimits, workflow, mode != "openrouter", productOpenRouterMaxConcurrent(c))
+	if !ok {
+		return false
+	}
+	planner, ok := productPlannerLimitsFor(c.RuntimeLimits, workflow)
+	if !ok {
+		return false
+	}
+	launch.ModelConcurrency = concurrency
+	launch.PlannerTurnsPerPlan, launch.PlannerSecondsPerPlan = planner.PlannerTurnsPerPlan, planner.PlannerSecondsPerPlan
+	return true
+}
+
 func productOpenRouterMaxConcurrent(c productInstallInput) int64 {
 	if len(c.OpenRouterManifest) == 0 {
 		return 0
@@ -318,12 +339,9 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		if !ok {
 			return errPreparation
 		}
-		// 로컬 launch는 1, OpenRouter launch는 그 승인 max_concurrent 이하만 받는다.
-		concurrency, ok := productModelConcurrencyFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil, mode != "openrouter", productOpenRouterMaxConcurrent(c))
-		if !ok {
+		if !applyProductLaunchLimits(&launch, c, mode) {
 			return errPreparation
 		}
-		launch.ModelConcurrency = concurrency
 		budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 20 * int64(contextK) * 1024, OutputTokens: 20 * int64(output), DurationSeconds: runSeconds}
 		if c.TargetPolicy.Workflow != nil {
 			budget.Requests = c.TargetPolicy.MaxRequests

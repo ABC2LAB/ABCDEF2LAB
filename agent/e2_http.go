@@ -26,15 +26,39 @@ import (
 )
 
 const (
-	e2HTTPMaxCommandBytes    = 64 << 10
-	e2HTTPMaxInputBytes      = 6*e2HTTPMaxCommandBytes + 1024
-	e2HTTPMaxWorkerTurns     = 1000
-	E2HTTPMaxTaskCalls       = 1000
-	e2HTTPMaxWorkerDuration  = time.Hour
-	e2HTTPMaxToolDuration    = 10 * time.Minute
-	e2HTTPPlannerMaxTurns    = 16
-	e2HTTPPlannerMaxDuration = 2 * time.Minute
+	e2HTTPMaxCommandBytes   = 64 << 10
+	e2HTTPMaxInputBytes     = 6*e2HTTPMaxCommandBytes + 1024
+	e2HTTPMaxWorkerTurns    = 1000
+	E2HTTPMaxTaskCalls      = 1000
+	e2HTTPMaxWorkerDuration = time.Hour
+	e2HTTPMaxToolDuration   = 10 * time.Minute
+	// 진단 Planner 한 번(Plan)의 턴·시간 기본값이다(C26). 설치 입력 runtime_limits(C32)가 없으면 이 값이다.
+	E2HTTPPlannerDefaultTurns    = 16
+	E2HTTPPlannerDefaultDuration = 2 * time.Minute
 )
+
+// E2HTTPPlannerLimits는 진단 Planner 한 번(Plan)의 턴·시간 상한이다(C26·C32, docs/install-limits-decision.md).
+// 0인 칸은 기본값이다. 새 상한 숫자를 만들지 않고 Worker와 같은 코드 상한(턴 1000·시간 1시간)을 쓴다. 실행 전체
+// 시간은 task 기한이 따로 자른다. 에이전트 설정의 턴 수가 더 작으면 그 값을 쓴다(원본 설정 경로).
+type E2HTTPPlannerLimits struct {
+	MaxTurns    int
+	MaxDuration time.Duration
+}
+
+func (l E2HTTPPlannerLimits) Valid() bool {
+	return l.MaxTurns >= 0 && l.MaxTurns <= e2HTTPMaxWorkerTurns && l.MaxDuration >= 0 && l.MaxDuration <= e2HTTPMaxWorkerDuration
+}
+
+func (l E2HTTPPlannerLimits) resolved() (int, time.Duration) {
+	turns, duration := l.MaxTurns, l.MaxDuration
+	if turns == 0 {
+		turns = E2HTTPPlannerDefaultTurns
+	}
+	if duration == 0 {
+		duration = E2HTTPPlannerDefaultDuration
+	}
+	return turns, duration
+}
 
 var (
 	ErrE2HTTPBinding       = errors.New("e2_http_worker_binding_invalid")
@@ -95,6 +119,18 @@ func e2HTTPExecutionFrom(ctx context.Context) (E2HTTPExecution, bool) {
 }
 func WithE2HTTPPlanning(ctx context.Context) context.Context {
 	return context.WithValue(ctx, e2HTTPPlanningKey{}, true)
+}
+
+type e2HTTPPlannerLimitsKey struct{}
+
+// WithE2HTTPPlannerLimits는 진단 Planner의 Plan당 상한을 문맥에 싣는다. 없으면 기본값이다.
+func WithE2HTTPPlannerLimits(ctx context.Context, limits E2HTTPPlannerLimits) context.Context {
+	return context.WithValue(ctx, e2HTTPPlannerLimitsKey{}, limits)
+}
+
+func e2HTTPPlannerLimitsFrom(ctx context.Context) E2HTTPPlannerLimits {
+	limits, _ := ctx.Value(e2HTTPPlannerLimitsKey{}).(E2HTTPPlannerLimits)
+	return limits
 }
 func isE2HTTPPlanning(ctx context.Context) bool {
 	if ctx == nil {
@@ -904,11 +940,16 @@ func constrainE2HTTPPlannerOptions(ctx context.Context, opts *agentcore.Options)
 	opts.WorkingDir = ""
 	opts.ToolOutputDir = ""
 	opts.Compactor = nil
-	if opts.MaxTurns <= 0 || opts.MaxTurns > e2HTTPPlannerMaxTurns {
-		opts.MaxTurns = e2HTTPPlannerMaxTurns
+	limits := e2HTTPPlannerLimitsFrom(ctx)
+	if !limits.Valid() {
+		return ErrE2HTTPBinding
 	}
-	if opts.MaxDuration <= 0 || opts.MaxDuration > e2HTTPPlannerMaxDuration {
-		opts.MaxDuration = e2HTTPPlannerMaxDuration
+	maxTurns, maxDuration := limits.resolved()
+	if opts.MaxTurns <= 0 || opts.MaxTurns > maxTurns {
+		opts.MaxTurns = maxTurns
+	}
+	if opts.MaxDuration <= 0 || opts.MaxDuration > maxDuration {
+		opts.MaxDuration = maxDuration
 	}
 	if deadline := taskClockFrom(ctx).DeadlineUnix; deadline > 0 {
 		remaining := time.Until(time.Unix(deadline, 0))

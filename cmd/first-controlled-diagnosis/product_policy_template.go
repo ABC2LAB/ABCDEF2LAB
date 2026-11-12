@@ -62,6 +62,33 @@ type productRuntimeLimitSet struct {
 	RunSeconds *int64 `json:"run_seconds,omitempty"`
 	// 동시 모델 호출 수. launch 설정에 들어간다. OpenRouter는 승인 max_concurrent 이하, 로컬 모델은 1만 받는다.
 	ModelConcurrency *int `json:"model_concurrency,omitempty"`
+	// 진단 Planner 한 번(Plan)의 턴 수·시간(초)(C26). launch 설정에 들어간다. 1 이상, Worker와 같은 코드 상한 이하.
+	PlannerTurnsPerPlan   *int   `json:"planner_turns_per_plan,omitempty"`
+	PlannerSecondsPerPlan *int64 `json:"planner_seconds_per_plan,omitempty"`
+}
+
+// productPlannerLimitsFor는 고른 모드의 Plan당 상한이다. 칸이 없으면 0(agent 기본값 16턴·120초)이고, 있으면 1 이상
+// agent.E2HTTPPlannerLimits의 코드 상한 이하만 받는다(범위 밖이면 설치 거부). 지금 기본값은 바꾸지 않는다.
+func productPlannerLimitsFor(limits *productRuntimeLimits, workflow bool) (launchConfig, bool) {
+	var out launchConfig
+	if set := limits.mode(workflow); set != nil {
+		if set.PlannerTurnsPerPlan != nil {
+			if *set.PlannerTurnsPerPlan < 1 {
+				return launchConfig{}, false
+			}
+			out.PlannerTurnsPerPlan = *set.PlannerTurnsPerPlan
+		}
+		if set.PlannerSecondsPerPlan != nil {
+			if *set.PlannerSecondsPerPlan < 1 {
+				return launchConfig{}, false
+			}
+			out.PlannerSecondsPerPlan = *set.PlannerSecondsPerPlan
+		}
+	}
+	if _, ok := out.plannerLimits(); !ok {
+		return launchConfig{}, false
+	}
+	return out, true
 }
 
 // productModelConcurrencyFor는 고른 모드의 동시 모델 호출 수다. 없으면 지금과 같은 1이다. 로컬 모델이 설치에 있으면

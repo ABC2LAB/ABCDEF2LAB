@@ -366,6 +366,47 @@ func TestE2HTTPUnknownAndIncompleteCallsStopFurtherRuns(t *testing.T) {
 	}
 }
 
+// Plan당 상한(C26·C32): 설치 값이 기본값을 대신하고, 에이전트 설정의 더 작은 턴 수는 그대로 두며, 코드 상한 밖은 막는다.
+func TestE2HTTPPlannerLimitsFromContext(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		limits        *E2HTTPPlannerLimits
+		agentTurns    int
+		agentDuration time.Duration
+		wantTurns     int
+		wantDuration  time.Duration
+		wantErr       bool
+	}{
+		{name: "default", wantTurns: E2HTTPPlannerDefaultTurns, wantDuration: E2HTTPPlannerDefaultDuration},
+		{name: "zero-fields-are-default", limits: &E2HTTPPlannerLimits{}, agentTurns: 500, wantTurns: E2HTTPPlannerDefaultTurns, wantDuration: E2HTTPPlannerDefaultDuration},
+		{name: "installed", limits: &E2HTTPPlannerLimits{MaxTurns: 40, MaxDuration: 5 * time.Minute}, wantTurns: 40, wantDuration: 5 * time.Minute},
+		{name: "installed-caps-agent-setting", limits: &E2HTTPPlannerLimits{MaxTurns: 40, MaxDuration: 5 * time.Minute}, agentTurns: 90, agentDuration: time.Hour, wantTurns: 40, wantDuration: 5 * time.Minute},
+		{name: "smaller-agent-setting-kept", limits: &E2HTTPPlannerLimits{MaxTurns: 40}, agentTurns: 7, agentDuration: time.Minute, wantTurns: 7, wantDuration: time.Minute},
+		{name: "code-upper-bound", limits: &E2HTTPPlannerLimits{MaxTurns: e2HTTPMaxWorkerTurns, MaxDuration: e2HTTPMaxWorkerDuration}, wantTurns: e2HTTPMaxWorkerTurns, wantDuration: e2HTTPMaxWorkerDuration},
+		{name: "turns-over-bound", limits: &E2HTTPPlannerLimits{MaxTurns: e2HTTPMaxWorkerTurns + 1}, wantErr: true},
+		{name: "duration-over-bound", limits: &E2HTTPPlannerLimits{MaxDuration: e2HTTPMaxWorkerDuration + time.Nanosecond}, wantErr: true},
+		{name: "negative", limits: &E2HTTPPlannerLimits{MaxTurns: -1}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.limits != nil {
+				ctx = WithE2HTTPPlannerLimits(ctx, *tc.limits)
+			}
+			opts := agentcore.Options{Provider: &e2WorkerProvider{rawError: true}, MaxTurns: tc.agentTurns, MaxDuration: tc.agentDuration}
+			err := constrainE2HTTPPlannerOptions(ctx, &opts)
+			if tc.wantErr {
+				if !errors.Is(err, ErrE2HTTPBinding) {
+					t.Fatalf("err=%v", err)
+				}
+				return
+			}
+			if err != nil || opts.MaxTurns != tc.wantTurns || opts.MaxDuration != tc.wantDuration {
+				t.Fatalf("err=%v turns=%d duration=%v", err, opts.MaxTurns, opts.MaxDuration)
+			}
+		})
+	}
+}
+
 func TestE2HTTPPlannerAndWorkerFilterByOriginalToolAllowlist(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
 	var base []actool.CoreTool
@@ -791,7 +832,7 @@ func TestE2HTTPPlannerOptionsRemoveSDKBypassToolsAndBoundTaskTime(t *testing.T) 
 	if err := constrainE2HTTPPlannerOptions(context.Background(), &opts); err != nil {
 		t.Fatal(err)
 	}
-	if opts.EnableWebFetch || opts.EnableWebSearch || !opts.DisableBackgroundTasks || opts.Todos != nil || len(opts.BashEnv) > 0 || opts.MaxTurns != e2HTTPPlannerMaxTurns || opts.MaxDuration != e2HTTPPlannerMaxDuration {
+	if opts.EnableWebFetch || opts.EnableWebSearch || !opts.DisableBackgroundTasks || opts.Todos != nil || len(opts.BashEnv) > 0 || opts.MaxTurns != E2HTTPPlannerDefaultTurns || opts.MaxDuration != E2HTTPPlannerDefaultDuration {
 		t.Fatalf("unsafe planner options: maxTurns=%d duration=%v background=%v", opts.MaxTurns, opts.MaxDuration, opts.DisableBackgroundTasks)
 	}
 	session := agentcore.NewSession(opts)
