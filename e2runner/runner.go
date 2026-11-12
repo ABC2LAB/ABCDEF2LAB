@@ -16,6 +16,18 @@ var (
 	ErrIncomplete  = errors.New("e2runner: call finalization incomplete")
 )
 
+// 작업 공간 파일 도구의 오류다(workspace_files_linux.go).
+var (
+	// ErrWorkspaceBusy는 같은 intent의 호출이 보관소를 쓰는 중이라 지금 바꿀 수 없다는 뜻이다.
+	ErrWorkspaceBusy = errors.New("e2runner: workspace in use by a running call")
+	// ErrWorkspaceFile은 경로가 틀렸거나 그 파일·디렉터리가 없다는 뜻이다.
+	ErrWorkspaceFile = errors.New("e2runner: workspace path unavailable")
+	// ErrWorkspaceFull은 바꾼 결과가 작업 공간 상한을 넘는다는 뜻이다.
+	ErrWorkspaceFull = errors.New("e2runner: workspace limit exceeded")
+	// ErrWorkspaceEdit은 고칠 문자열이 없거나 하나로 정해지지 않는다는 뜻이다.
+	ErrWorkspaceEdit = errors.New("e2runner: edit target not unique")
+)
+
 // ClassificationForwardNotAttempted marks allowed policy intent that never reached a forward attempt.
 const ClassificationForwardNotAttempted = "forward_not_attempted"
 

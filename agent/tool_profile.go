@@ -36,6 +36,11 @@ var diagnosisWorkerProfile = toolProfile{name: "diagnosis_worker", entries: []to
 	{name: "Bash", source: bound, required: true},
 	// 원본 WebFetch의 E② 판. 같은 Bash 실행기로 가져온다(결정안 §2).
 	{name: "WebFetch", source: bound},
+	// 보관소 안만 보는 파일 도구(C29, 작업 공간 결정안 §2-4). 러너가 보관소를 쓸 때만 채워진다.
+	{name: "Read", source: bound},
+	{name: "Write", source: bound},
+	{name: "Edit", source: bound},
+	{name: "LS", source: bound},
 	{name: "list_findings", source: fromBase},
 	{name: "record_fact", source: fromBase},
 	{name: "list_assets", source: fromBase},
