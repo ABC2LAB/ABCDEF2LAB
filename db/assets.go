@@ -88,6 +88,20 @@ type AssetStore struct {
 	db      *DB
 	company *CompanyStore
 	tx      *sql.Tx
+	// hostLink가 있으면 서비스·엔드포인트 upsert가 호스트의 루트 도메인·하위 도메인 자산을 이 함수가 허락한 이름만
+	// 작업에 연결한다. nil이면 원본처럼 모두 연결한다(WithHostLinkFilter).
+	hostLink func(string) bool
+}
+
+// WithHostLinkFilter는 서비스·엔드포인트 upsert의 호스트 자산 연결(linkHostAssets)을 allow가 허락한 이름으로
+// 제한한 사본이다. 진단 실행은 승인 대상 호스트만 허락해 승인 밖 루트 도메인이 작업에 붙지 않게 한다(C24).
+func (s *AssetStore) WithHostLinkFilter(allow func(string) bool) *AssetStore {
+	if s == nil {
+		return nil
+	}
+	copy := *s
+	copy.hostLink = allow
+	return &copy
 }
 
 // Assets returns the asset store.
@@ -113,7 +127,7 @@ func (s *AssetStore) withCompanyScopeMutation(fn func(*AssetStore) (int64, error
 	if err := lockCompanyScopeMutation(tx); err != nil {
 		return 0, err
 	}
-	scoped := &AssetStore{db: s.db, company: s.company, tx: tx}
+	scoped := &AssetStore{db: s.db, company: s.company, tx: tx, hostLink: s.hostLink}
 	id, err := fn(scoped)
 	if err != nil {
 		return 0, err
@@ -472,11 +486,13 @@ func (s *AssetStore) UpsertSubdomain(req UpsertSubdomainReq) (id int64, err erro
 		return 0, err
 	}
 
-	// side effect 1: ensure root domain exists
-	_, _ = s.UpsertRootDomain(UpsertRootDomainReq{
-		Domain: rootDomain,
-		TaskID: req.TaskID,
-	})
+	// side effect 1: ensure root domain exists (진단 실행의 호스트 필터가 있으면 허락한 이름만, C24)
+	if s.hostLink == nil || s.hostLink(rootDomain) {
+		_, _ = s.UpsertRootDomain(UpsertRootDomainReq{
+			Domain: rootDomain,
+			TaskID: req.TaskID,
+		})
+	}
 
 	// side effect 2: if A/AAAA record, upsert each IP + bind domain.
 	// RecordValue is []string; each element may itself be comma-separated (legacy).
@@ -937,10 +953,10 @@ RETURNING id`,
 // root_domain and (when it's a real subdomain, not the apex or an IP) subdomain
 // asset — so those asset types stay populated and can anchor task scope. Best-effort.
 func (s *AssetStore) linkHostAssets(domain, rootDomain string, taskID int64) {
-	if rootDomain != "" {
+	if rootDomain != "" && (s.hostLink == nil || s.hostLink(rootDomain)) {
 		_, _ = s.UpsertRootDomain(UpsertRootDomainReq{Domain: rootDomain, TaskID: taskID})
 	}
-	if domain != "" && domain != rootDomain && net.ParseIP(domain) == nil {
+	if domain != "" && domain != rootDomain && net.ParseIP(domain) == nil && (s.hostLink == nil || s.hostLink(domain)) {
 		_, _ = s.UpsertSubdomain(UpsertSubdomainReq{Domain: domain, TaskID: taskID})
 	}
 }

@@ -376,6 +376,9 @@ running:
 	exec("GRANT USAGE ON SEQUENCE exploration_nodes_id_seq TO " + ident(role))
 	exec("GRANT UPDATE(id) ON tasks,findings,exploration_nodes,assets,e3_verdict_issuances TO " + ident(role))
 	exec("GRANT UPDATE(task_id) ON task_asset_links TO " + ident(role))
+	// 일반 HTTP 실행 역할은 진단 Worker의 insert_assets(C24)로 자산과 작업 연결을 쓴다.
+	exec("GRANT INSERT, UPDATE(auth, bound_domains, c_segment, company_id, company_source, content_length, domain, extra, favicon_mmh3, icp, ip, last_seen, open_ports, page_title, params, record_value, status_code, task_ids, technologies) ON assets TO " + ident(role))
+	exec("GRANT INSERT, DELETE, UPDATE(source, source_summary, source_node_id) ON task_asset_links TO " + ident(role))
 	exec("GRANT UPDATE(node_id) ON exploration_anchors TO " + ident(role))
 	handler, err := NewFirstDiagnosisReportHandler(ctx, f.Runtime, keyDir, dataDir, grant.TaskID)
 	if err != nil {

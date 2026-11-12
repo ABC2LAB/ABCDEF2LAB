@@ -102,6 +102,9 @@ type E2HTTPExecution struct {
 	RunRef        string
 	MaxTurns      int
 	MaxDuration   time.Duration
+	// ApprovedOrigins는 이 실행의 E② 승인 규칙 origin이다(신뢰한 정책에서만 채운다). 비어 있으면 insert_assets를
+	// 붙이지 않는다(C24).
+	ApprovedOrigins []string
 }
 
 type e2HTTPExecutionKey struct{}
@@ -595,9 +598,22 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	bindings := map[string]actool.CoreTool{"Bash": bash, "WebFetch": newE2HTTPWebFetchTool(bash, execution.RedactOutput)}
 	var toolset *ToolSet
 	if ts != nil {
+		// 승인 origin을 아는 실행이면 원본 upsert가 승인 밖 루트 도메인을 작업에 연결하지 않게 한다(C24).
+		if approved := e2HTTPApprovedOrigins(binding.ApprovedOrigins); as != nil && len(approved) > 0 {
+			as = as.WithHostLinkFilter(e2HTTPApprovedHostAllow(approved))
+		}
 		toolset = newE2HTTPWorkerToolSet(ts, as, name, taskID, intent.ID)
 		base = append(toolset.WorkerTools(), base...)
 		bindings["submit_diagnostic_candidate"] = newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ })
+		// 원본 insert_assets를 승인 대상 안의 자산만 받게 감싸 붙인다(C24). 승인 origin을 모르는 실행이면 붙이지 않는다.
+		for _, tool := range toolset.WorkerTools() {
+			if tool.Name() == "insert_assets" {
+				// 다른 그래프 도구처럼 입력·출력 가림과 원문 오류 숨김(e2HTTPGraphWrap)을 바깥에 씌운다.
+				if wrapped := newE2HTTPInsertAssetsTool(tool, binding.ApprovedOrigins, execution.RedactOutput); wrapped != nil {
+					bindings["insert_assets"] = e2HTTPGraphWrap(execution, intent.ID)(wrapped)
+				}
+			}
+		}
 	}
 	// 보관소를 쓰는 실행이면 보관소 안만 보는 파일 도구를 붙인다(C29). 호스트 파일 도구(defaultTools의 Read 등)는
 	// 프로필에서 bound 판으로만 채워지므로 섞이지 않는다.
