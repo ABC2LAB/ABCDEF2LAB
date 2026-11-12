@@ -4,17 +4,17 @@
 
 ## 실행 기준과 동일 조건
 
-구현 시작 dev는 `b679f7b7e62744943f88f4334c49820265811633`, 최종 통합 dev는 `57020d0827b27c7d891336b0fb49c45dc26402e5`다. 실제 브라우저 회차는 다음 소스를 고정 빌드했다. 이후 dev 병합은 #444 작업 공간과 #450 중지 결과이며, fixture/MCP 코드는 바꾸지 않았다. 해당 통합의 전체 회귀는 최종 PR CI에서 별도로 확인한다.
+구현 시작 dev는 `b679f7b7e62744943f88f4334c49820265811633`, 최종 통합 dev는 `e4c601674bd2b4681094f5155599efbd1051da1d`다. 실제 브라우저 회차는 다음 소스를 고정 빌드했다. 해당 소스는 팀 리뷰 수정과 #454~#459의 보고서·설치 시간·비용 호출 칸·화면·작업 공간 변경을 포함한다. 이후 문서 요약 갱신은 실행 코드 변경이 아니다. 전체 회귀는 최종 PR CI에서 별도로 확인한다.
 
 | 항목 | 실제 핀 |
 |---|---|
-| 브라우저 시험 소스 | `07bed28d0832e75e1f9964889253b7f662eaadd2` |
+| 브라우저 시험 소스 | `8a21db635c5f6b2fafa1d1438f6586dd72f0f92d` |
 | image_id | `sha256:17b7b5f0fa7ed1caf03e1385deadab742b076735436a72a8aa83d05b48acc811` |
 | mcp_version | `0.0.84` |
-| proxy_binary_sha256 | `a4d516c6eeff0bb7c1bc27a55cb0fe65c753beb548580be3bdbd5fe64acbf320` |
+| proxy_binary_sha256 | `438fde4868af9dd4ec280361f9bc37a8e4a9943caaefeb2e2899bfc8db4fc44f` |
 | target_binary_sha256 | `555b5686444929e990a16d190809a1ed8079d71194f78e6d4fede8b666895483` |
 | metadata_script_sha256 | `c44327518252d586c4c93785b5a8a0921b3c8201ee4a030e5b73ecadb5427b91` |
-| driver_binary_sha256 | `ee066ed462507ada6f1a0667719bbc5fff698f53e06481b92c098023afc7038a` |
+| driver_binary_sha256 | `8340227dfc557b6269ef406ca8811de531fc49712796fd668be150102ff918e5` |
 | 하네스 SHA256 | `3f03144c207e2fb38d1546c32640978a2674630fa09d58fb0e8f2646cdcd3696` |
 
 양쪽 대상 요청 상한 128, 시간 300초, 동시 연결 16, 응답 2MiB다. 외부 자원 상한만 승인 모드 20/완전 로컬 0이다. Open 입력과 실제 proxy 상한을 정확히 대조한다. 요청 실패도 예산에서 차감하고 대상/외부 상한은 따로 집행한다. 모델은 결정적 시험 provider이며 20회 호출은 실제 Qwen 호출·사용량·비용이 아니다.
@@ -23,7 +23,7 @@
 
 | 결과 | external_allowed | full_local |
 |---|---:|---:|
-| 실제 대상 전달/observed 근거 | 22 / 22 | 22 / 22 |
+| 실제 대상 전달/병합된 observed 근거 | 22 / 21 | 22 / 21 |
 | inferred 근거 | 4 | 4 |
 | JS·CSS·image·API observed status 200 | 4종 확인 | 4종 확인 |
 | CSS computed style/런타임 query 키 보존 | 확인 | 확인 |
@@ -37,7 +37,7 @@
 | 진단 E② 시도 | 0 (탐색 회차) | 0 (탐색 회차) |
 | 정리한 소유 컨테이너/망·잔여 | 9 / 4 · 0 | 9 / 4 · 0 |
 
-이 건수는 API 발견 수나 원본 대비 탐색률이 아니다. 페이지/자원/동적 요청의 관측 근거를 함께 센다. 저장 후 stage=awaiting_selection이며 실제 취약점 검증·E③ 확정이 아니다. 진단 시도 0은 탐색 회차에서 진단을 보내지 않았다는 뜻이며 D01의 실제 진단 회차 수용을 대체하지 않는다.
+이 건수는 API 발견 수나 원본 대비 탐색률이 아니다. 페이지/자원/동적 요청을 함께 센다. 전달은 반복을 포함한 실제 요청 수이고 observed는 동일 식별자의 첫·마지막 seq/횟수로 병합한 저장 근거 수다. 두 수를 같다고 보지 않는다. 저장 후 stage=awaiting_selection이며 실제 취약점 검증·E③ 확정이 아니다. 진단 시도 0은 탐색 회차에서 진단을 보내지 않았다는 뜻이며 D01의 실제 진단 회차 수용을 대체하지 않는다.
 
 ## 양성 대조와 차단
 
@@ -57,7 +57,7 @@ B14 양성의 navigate 완료는 false다. 페이지가 즉시 POST로 이동해
 
 ## B16 실제 실패와 재현
 
-`full_local`에서 browser 컨테이너의 Node 자식이 같은 namespace의 MCP control IP:8931로 TCP 연결했다. `same_namespace_control_reached`, **FAIL**, API 요청은 보내지 않았다. 외부 승인 회차에서는 lease 종료 뒤 probe를 시도해 UNDECIDABLE(browser_already_stopped)이므로 막혔다고 쓰지 않는다. 이 실제 실패를 기능 통합 PASS에 합쳐 숨기지 않는다.
+두 모드 모두 driver를 시작하기 전에 browser 컨테이너의 Node 자식이 같은 namespace의 MCP control IP:8931로 TCP 연결했다. `same_namespace_control_reached`, **FAIL**, API 요청은 보내지 않았다. 이 실제 실패를 기능 통합 PASS에 합쳐 숨기지 않는다.
 
 이 검사는 하네스의 기존 고정 TCP probe로 재현한다. `up` 후 driver를 시작하기 전에 호스트에서 `python3 -I`로 하네스 모듈의 `load(run_dir)`, `owned_ip(data,"browser","control")`, `tcp_probe(container,ip,8931,allowed=True)`를 호출한다. `true`면 금지해야 할 도달이 실제 발생한 FAIL이다. 임의 주소·API 명령은 주지 않는다. 사적 manifest의 ID/name/nonce label을 대조하고 소유 browser만 검사한다.
 
@@ -108,8 +108,9 @@ P04/S04는 정본에서 삭제된 항목이다. fixture HTTP-over-Unix 제어 AP
 - 새 경계/가드 `go test -race ./internal/explorefixture`: 41 PASS/0 FAIL/0 SKIP.
 - 제품 pipeline·MCP·gate 관련: 초기 38 race PASS(PG 재연결 포함), 최신 dev 통합 뒤 선택한 탐색/제품 시험 31 PASS/0 FAIL/0 SKIP.
 - 탐색 선소진 예산 마감: private controller/실제 Supervisor/영속 마감까지 관련 race66 PASS/0 SKIP. 새 진단·receipt를 만들지 않고 partial/budget_limited를 보존.
-- 발견 경로: 225 단위 PASS, 별도 PostgreSQL16 race4 PASS, Node metadata5 PASS.
-- 평가 PR D: Python1830 PASS, 계측기/pathmask race244 PASS, vet 통과.
+- 발견 경로 리뷰 수정: 관련 race530 PASS(해당 회차 DB21 SKIP), 별도 PostgreSQL16 race4 PASS/0 SKIP, Node metadata5는 Go wrapper로 CI에도 연결.
+- 최종 통합의 Supervisor·S09·관측·가드·cursor/closure: race144 PASS/0 SKIP, 호출 칸 정산 race10 PASS/0 SKIP, vet5패키지 PASS.
+- 평가 PR D: Python1836 PASS, 계측기/pathmask race244 PASS, vet 통과.
 - 최신 dev 통합본 Linux/Windows/Darwin `go build ./...`, 변경한 server/cmd/fixture `go vet` 통과.
 
 추가 사용자 namespace를 두 겹 사용한 로컬 전체 회귀는 PASS2482/FAIL221/SKIP51이었다. 이 결과를 정상 회귀 통과로 쓰지 않는다. root 소유 `/var/tmp`가 해당 namespace에서 UID65534로 보이며 기존 보호된 상위 경로 검사가 거부한다(원래 환경 UID0). 같은 대표 파일 권한 단위시험은 원래 UID 환경에서 11 PASS였다. 보안 가드를 완화하지 않았다. 표준 CI는 추가 사용자 namespace 없이 망만 분리하므로, 최종 PR head의 PostgreSQL/race 전체 결과를 따로 확인한다. 원문 테스트 로그는 공유하지 않는다.
@@ -120,7 +121,7 @@ P04/S04는 정본에서 삭제된 항목이다. fixture HTTP-over-Unix 제어 AP
 
 | 모드 | CA DER SHA256 | 결과 JSON SHA256 | 수신기 기록 SHA256 |
 |---|---|---|---|
-| external_allowed | `88b70d3152aaef01588276361f94af365e3758014208f3b1c0043c6aa287348b` | `27882366d09075e884e7acffac563882e04953cfed7d3cb4b70892d77d64af6e` | `67285e0a35b02e45bc601d50ceff15aa7cde6dd85f5a8a62c0cbedd122c949f6` |
-| full_local | `ffa63b49012585850fca17ff1dd3bc839dbc0098a2f61cd72c340884943863bc` | `1570cf262e5516d452cf4ea95a73de9c29e6e8987aa31624ecb8616391425371` | `9fbde75632fe6c2928da9827fc8a585988a29efb8b44d3727445d0dab1659b91` |
+| external_allowed | `d8c01d2f99935e358500e91e3edaaef08fbc4bbc3ff402b1a318ddd8118519c3` | `a28e9c16596a3655f7e32eefaae07a9b9b0bc1aa7699da0612ee69a04d6bfbc0` | `f4a19f61f98bb8bbd5e7d78a4b5ebc972a90d0f4ab77e14e8ebdbb2b5e8a8353` |
+| full_local | `734cf879488ca6653d951f1115902f1e204bf0ee5e2ffdc846bc3fc86941dcd3` | `9740f7a74876049e1d6b75aaa3daefe5404207b5179d1d7e908035c056b3356e` | `54fe096d88e4849edbd297391a63ce7a1d539390874908d60462fc5064c43b37` |
 
 실행 절차는 [하네스](browser-fixture-harness.md), 실제 제품 조립은 [pipeline](../implementation/exploration-product-pipeline.md), 의존/원본 차이는 [P1 구현 기록](../implementation/p1-exploration-restoration.md)을 따른다.

@@ -1,6 +1,6 @@
 # P1 탐색 복원 구현과 의존성
 
-2026-11-12 작업의 구현 기준은 `dev`의 `b679f7b7e62744943f88f4334c49820265811633`이다. 최종 통합 기준은 `57020d0827b27c7d891336b0fb49c45dc26402e5`이며 #447·#444·#450의 병합을 네 자체 브랜치에 반영했다. 실제 Chromium 회차는 그 전에 고정 빌드한 `07bed28d0832e75e1f9964889253b7f662eaadd2`와 바이너리 hash를 근거로 삼고, dev 통합 후 전체 회귀는 CI에서 따로 확인한다. 원본 비교 자료는 저장소에서 읽을 수 있는 ARTEX import `e53a79fe4df0c95a5b09274de8db321fa038b00b`를 사용한다. 실제 원본 실행의 발견 수나 보존율은 이 조사에서 만들지 않는다.
+2026-11-12 작업의 구현 기준은 `dev`의 `b679f7b7e62744943f88f4334c49820265811633`이다. 최종 통합 기준은 `e4c601674bd2b4681094f5155599efbd1051da1d`이며 그때까지의 병합을 네 자체 브랜치에 반영했다. 최종 Chromium 회차는 리뷰 수정까지 포함한 `8a21db635c5f6b2fafa1d1438f6586dd72f0f92d`와 실제 바이너리 hash를 근거로 삼는다. 최종 전체 회귀는 각 PR head의 CI에서 확인한다. 원본 비교 자료는 저장소에서 읽을 수 있는 ARTEX import `e53a79fe4df0c95a5b09274de8db321fa038b00b`를 사용한다. 실제 원본 실행의 발견 수나 보존율은 이 조사에서 만들지 않는다.
 
 ## 조사와 구현 순서
 
@@ -13,7 +13,7 @@
 3. C: 실제 제품 stage hook, 소유 Docker fixture·수신기·고정 Chromium/MCP 종단, 실패/미실행 표시.
 4. D: 기존 계측기와 평가 runner의 explore/main 분리, 별도 서명 sidecar·비교 조건 검증. A/B/C와 독립이다.
 
-A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://github.com/ABC2LAB/ABCDEF2LAB/pull/453) → C 스택은 최대 세 PR이며 D [#452](https://github.com/ABC2LAB/ABCDEF2LAB/pull/452)는 dev 독립 PR이다. 원격 PR을 자동 병합하지 않는다. 운영 탐색 경계 담당의 어댑터가 아직 없으므로 제품 기본값으로 임의 프록시를 생성하거나 인터넷 직결을 열지 않는다. host가 공급한 실제 Boundary·BrowserLease·private Reader·직접 Fetch가 모두 갖춰져야 새 경로가 활성화된다. 미공급은 NOT_RUN이고 기존 보호 정적 크롤을 사용할 수 있다.
+A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://github.com/ABC2LAB/ABCDEF2LAB/pull/453) → C [#457](https://github.com/ABC2LAB/ABCDEF2LAB/pull/457) 스택은 최대 세 PR이며 D [#452](https://github.com/ABC2LAB/ABCDEF2LAB/pull/452)는 dev 독립 PR이다. 원격 PR을 자동 병합하지 않는다. 운영 탐색 경계 담당의 어댑터가 아직 없으므로 제품 기본값으로 임의 프록시를 생성하거나 인터넷 직결을 열지 않는다. host가 공급한 실제 Boundary·BrowserLease·private Reader·직접 Fetch가 모두 갖춰져야 새 경로가 활성화된다. 미공급은 NOT_RUN이고 기존 보호 정적 크롤을 사용할 수 있다.
 
 ## 열린 PR 확인
 
@@ -23,7 +23,7 @@ A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://gi
 | #445 | 설치 실행 예산, 05b2097로 병합 | 기존 예산 사용 |
 | #449 | intent 0개 no_intents, 병합 | 탐색 미실행/부분 완료와 구분 |
 | #444 | intent별 보관, #443 위 스택 | a35227e로 dev 병합, 최종 통합에 포함 |
-| #446 | 긴 출력 저장, #444 위 스택 | 열림, head ed034bbbe1fa26a6fd926852dcd77fc8e8b2e2e2, base dev, 리뷰 없음; 최신 CI 실행은 PR에서 확인 |
+| #446 | 긴 출력 저장, #444 위 스택 | 열림, head ed034bbbe1fa26a6fd926852dcd77fc8e8b2e2e2, base dev, 리뷰 없음; 이후 e4c6016으로 dev 병합, 최종 기준에 포함 |
 | #447 | Workbench 화면 구조 변경 | aa034c8 병합. 화면 파일 수정 없음 |
 | #450 | 중지된 실행 intent 개수 | 57020d0으로 dev 병합, 최종 통합에 포함 |
 | #454 | 저장 보고서 실행 결과 | 열림, head e10e01501075bab2e5394a34dd6378e24e9c351d, 현재 base dev. 리뷰·inline 없음, CI 실행 중, 변경 파일은 이 작업과 겹치지 않음 |
@@ -67,3 +67,6 @@ A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://gi
 | D | `cmd/eval-meter/`, `scripts/eval/runner.py`, `attempt_reconcile.py` | 리슨에서 유래한 입구 분류, 기존 배치의 미승인 explore 무효화 |
 | D | `scripts/eval/preservation_record.py`, `preservation.py`, `run_record.py` | 정리 후 최종 원자료 해시·서명·짝/핀 검증, 실측 미실행 차단 |
 | 공통 | `docs/contracts/`, `docs/implementation/`, `docs/evaluation/` | 구현 범위·호스트 의무·재현 절차·FAIL/NOT_RUN 포함 근거 |
+
+
+최종 동결 기준 e4c6016에는 #454(저장 보고서 결과), #455(실행 시간), #456(탐색 표시 seam), #458(OpenRouter 호출별 비용 대조), #459(접근통제 지도), #446(긴 출력 보관)이 모두 병합돼 있다. 그전에 기록한 "열림"은 해당 조회 시점의 상태다. 새 모델 원장은 inflight0에서 정산 불일치면 blocked/UsageKnown=false로 닫으므로 C의 비공개 예산 마감 조건과 함께 검증했다. 본인이 작성한 네 PR은 자동 병합하지 않았으며 팀 리뷰 수정 후 재검토를 요청한다.
