@@ -27,6 +27,7 @@ func TestProxyOutcomeOfReceipt(t *testing.T) {
 		{"connection never opened", Receipt{Decision: "allowed", Reason: TransportFailed, NotSent: true}, ErrDenied, OutcomeNotSent, TransportFailed},
 		// 연결을 시도했으면 사유가 무엇이든 대상이 받았을 수 있다.
 		{"forwarded without response", Receipt{Decision: "allowed", Reason: Unknown, ForwardAttempted: true}, ErrDenied, OutcomeUnknown, Unknown},
+		{"answered but withheld", Receipt{Decision: "allowed", Reason: Withheld, ForwardAttempted: true, ResponseReceived: true}, ErrWithheld, OutcomeWithheld, Withheld},
 		{"forwarded then audit failed", Receipt{Decision: "allowed", Reason: Complete, ForwardAttempted: true}, ErrAudit, OutcomeUnknown, AuditFailed},
 		{"audit failed before send", Receipt{Decision: "denied", Reason: AuditFailed, NotSent: true}, ErrAudit, OutcomeNotSent, AuditFailed},
 		// 영수증을 만들기 전에 막혔다(실행 종료·시도 상한).
@@ -69,7 +70,7 @@ func TestProxyOutcomeHintsCoverEveryReason(t *testing.T) {
 			continue
 		}
 		// 모델이 읽는 글이라 영어 한 줄이다.
-		for _, class := range []ProxyOutcomeClass{OutcomeNotSent, OutcomeUnknown} {
+		for _, class := range []ProxyOutcomeClass{OutcomeNotSent, OutcomeUnknown, OutcomeWithheld} {
 			body := proxyOutcome{class: class, reason: reason}.body()
 			if !ascii.MatchString(hint) || !strings.HasSuffix(body, "\n") || strings.Count(body, "\n") != 1 ||
 				!strings.Contains(body, "reason="+string(reason)+".") || !strings.Contains(body, hint) {
@@ -97,6 +98,11 @@ func TestProxyOutcomeBodySeparatesNotSentFromUnknown(t *testing.T) {
 	if !strings.HasPrefix(unknown, "E2 forwarded this request") || !strings.Contains(unknown, "Check the resulting state") {
 		t.Fatal(unknown)
 	}
+	// 보류는 대상이 답한 것이라 상태 확인 지시(결과 불명) 대신 다시 보내지 말라고 한다.
+	withheld := proxyOutcome{class: OutcomeWithheld, reason: Withheld}.body()
+	if !strings.Contains(withheld, "the target answered") || strings.Contains(withheld, "Check the resulting state") || !strings.Contains(withheld, "do not resend") {
+		t.Fatal(withheld)
+	}
 }
 
 func proxyOutcomeResponse(t *testing.T, resp *http.Response) (ProxyOutcomeClass, Reason, string) {
@@ -114,6 +120,11 @@ func TestProxyFailureCarriesOutcomeAndReason(t *testing.T) {
 	var received atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
+		if r.URL.Path == "/allowed/partial" {
+			// 길이를 맞출 수 없는 부분 응답은 자르지 않고 통째로 보류한다(C16 결정안 2).
+			w.Header().Set("Content-Range", "bytes 0-8999/20000")
+			w.WriteHeader(http.StatusPartialContent)
+		}
 		io.WriteString(w, strings.Repeat("x", 9000)) // proxyTestCall의 MaxBodyBytes(8192)를 넘는다.
 	}))
 	defer target.Close()
@@ -143,7 +154,7 @@ func TestProxyFailureCarriesOutcomeAndReason(t *testing.T) {
 	}{
 		{"outside scope", "/outside", "", OutcomeNotSent, PolicyDenied, 0},
 		{"request body over limit", "/allowed", strings.Repeat("y", 9000), OutcomeNotSent, Unsupported, 0},
-		{"response over limit", "/allowed", "", OutcomeUnknown, Unknown, 1},
+		{"partial response over limit", "/allowed/partial", "", OutcomeWithheld, Withheld, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := received.Load()
@@ -159,7 +170,7 @@ func TestProxyFailureCarriesOutcomeAndReason(t *testing.T) {
 			found := false
 			for _, obs := range call.Result().Observations {
 				if match != nil && fmt.Sprint(obs.Sequence) == match[1] {
-					found = obs.Reason == tc.reason && obs.ForwardAttempted == (tc.class == OutcomeUnknown)
+					found = obs.Reason == tc.reason && obs.ForwardAttempted == (tc.class != OutcomeNotSent)
 				}
 			}
 			if !found {

@@ -26,6 +26,14 @@ Chromium 컨테이너는 MCP·Playwright 없이 고정 실행기(`deploy/product
 
 MCP는 `--cdp-endpoint http://<link .20>:9222 --host <control .20> --port 8931 --allowed-hosts <control .20>:8931`과 공통 고정 옵션(`--headless --isolated --no-webmcp --browser chromium --proxy-server <browser 입구> --output-dir <tmpfs>`)으로 띄우고 driver가 같은 URL/Host로 연결한다. `--cdp-endpoint`에서 `--headless`·`--browser`는 Chromium 실행 옵션이라 효과가 없다(실제 실행 조건은 위 실행기가 정한다). `--isolated`는 연결마다 새 브라우저 문맥을 만들고 `--proxy-server`는 그 문맥의 프록시를 같은 경계 입구로 정한다. Docker 29의 internal 망에서는 loopback publish 요청이 실제 게시를 만들지 않으므로 `host_loopback_url=null`, `host_publish=NOT_SUPPORTED_ON_INTERNAL_NETWORK`로 남긴다. 이를 위해 외부 망을 추가하지 않는다. 이 publish 요청이 있는 MCP 컨테이너는 `docker exec` 하나가 약 3초 걸리므로(실측) MCP 컨테이너 probe의 exec 제한은 10초다. 초기 readiness는 호스트가 MCP 컨테이너 안에서 수행하는 고정 URL 상태코드 검사(Chromium CDP 중계의 `/json/version`, 그다음 MCP URL)이며 모델 도구가 아니다. READY 전에 `docker top`으로 Chromium 컨테이너에 MCP 프로세스가 없고 MCP 컨테이너에 Chromium 프로세스가 없는지 고정 표식으로 확인한다. 명령행 원문은 출력하지 않는다.
 
+## 실제 탐색 경계 모드(`--boundary real`)
+
+`up --boundary real`이면 계약 fixture 대신 실제 탐색 경계(`cmd/explore-boundary`)를 같은 자리(브라우저·직접 입구 `.10:8080`, 제어 소켓 `/run-fixture/boundary.sock`)에 띄운다. 경계 CA 개인키는 지우지 않고 경계 전용 입력(`boundary-in/`, 하네스 uid 0700·0600)으로 옮기고, 대상 leaf의 SPKI와 대상 주소를 context(`target_spki`·`target_connect`)로 넘긴다. driver는 `boundary_kind=real`이면 `exploreboundary.ControlBoundary`(대상 값은 서버처럼 제어 소켓으로 넘김)·`ControlReader`(관찰·순번·기록)·`DirectFetch`(정적 크롤)를 쓰고, 최종 차단 사유는 경계 기록(`records`)에서 센다. 결과의 `boundary_kind`는 `explore_boundary`다.
+
+지금은 `full_local`만 본다. `external_allowed`(CDN 렌더링 양성)는 실제 경계로는 이 배치에서 양성이 나올 수 없다: 하네스 망은 사설 대역이라 CDN 역할 수신기도 사설 주소이고, 실제 경계는 사설 주소로 풀리는 외부 이름을 내부망(`internal_address`)으로 막는다(맞는 동작). 경계 안에 이름 풀이도 없다. 외부 자원 양성은 공개 주소의 소유 CDN이 있는 환경에서 따로 본다.
+
+2026-11-13 결과(`full_local`): fixture·실제 경계 모두 driver `PASS`. 실제 경계는 대상 전달 23, 관찰 22·추정 4, 차단 `external_blocked_local` 20·`method_not_approved` 8·`out_of_scope_origin` 2·`risky_path` 2, 정리 뒤 MCP·Chromium 중지·소유 자원 0. 같은 이름·다른 포트 이동 단계를 driver에 더해 origin 대조를 두 경계에서 같은 사유(`out_of_scope_origin`)로 본다(실제 경계는 다른 이름을 완전 로컬에서 `external_blocked_local`로 막는다).
+
 ## 실행
 
 실행 디렉터리는 새 이름·0700·호스트 소유여야 한다. 하네스가 직접 만든다. 기존 디렉터리를 재사용하지 않는다. API Recon 코드가 통합되기 전에는 `--metadata-script`에 검토한 B 작업의 파일 경로를 지정할 수 있다. 그 내용을 회차에 복사하고 지문을 남기므로 실행 도중 원본 파일 변경이 섞이지 않는다.

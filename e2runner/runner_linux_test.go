@@ -276,7 +276,7 @@ func waitForRunningCall(t *testing.T, runner *Runner) *runningCall {
 func TestRunnerActualHTTPHTTPSAndDenial(t *testing.T) {
 	helperBase := runnerTestDirectory(t)
 	helper := runnerTestHelper(t, helperBase)
-	for _, name := range []string{"http", "https", "policy_denied", "secret_response"} {
+	for _, name := range []string{"http", "https", "policy_denied", "secret_response", "oversized_response"} {
 		t.Run(name, func(t *testing.T) {
 			base := runnerTestDirectory(t)
 			var received atomic.Int64
@@ -292,6 +292,11 @@ func TestRunnerActualHTTPHTTPSAndDenial(t *testing.T) {
 				}
 				if name == "secret_response" {
 					io.WriteString(w, "target-ok Bearer runner-session-secret")
+					return
+				}
+				if name == "oversized_response" {
+					// 본문 상한(8192)을 넘는다. 실제 curl은 잘린 앞부분을 정상 응답으로 받아 0으로 끝나야 한다(C16 결정안 2).
+					io.WriteString(w, strings.Repeat("o", 20000))
 					return
 				}
 				io.WriteString(w, "target-ok")
@@ -323,10 +328,18 @@ func TestRunnerActualHTTPHTTPSAndDenial(t *testing.T) {
 					result.Trusted.Call.Counts.Denied != 1 || result.Trusted.Call.Counts.ForwardAttempted != 0 {
 					t.Fatal("policy refusal became a target result")
 				}
+			} else if name == "oversized_response" {
+				counts := result.Trusted.Call.Counts
+				if received.Load() != 1 || result.Trusted.Classification != "completed" || result.Trusted.ExitCode != 0 || result.Trusted.Call.Reason != e2proxy.Withheld ||
+					counts.Withheld != 1 || counts.Unknown != 0 || result.ToolOutput != strings.Repeat("o", 8192) {
+					t.Fatalf("oversized response was not delivered truncated: class=%s exit=%d reason=%s counts=%+v output=%d",
+						result.Trusted.Classification, result.Trusted.ExitCode, result.Trusted.Call.Reason, counts, len(result.ToolOutput))
+				}
 			} else if name == "secret_response" {
 				counts := result.Trusted.Call.Counts
-				if received.Load() != 1 || result.Trusted.Classification != "result_unknown" ||
-					counts.Allowed != 1 || counts.ForwardAttempted != 1 || counts.Responses != 1 || counts.Unknown != 1 || counts.Denied != 0 ||
+				// 보호 값을 반사한 응답은 통째로 보류한다. 대상이 답했으므로 결과 불명이 아니라 withheld다(C16).
+				if received.Load() != 1 || result.Trusted.Classification != "completed" || result.Trusted.Call.Reason != e2proxy.Withheld ||
+					counts.Allowed != 1 || counts.ForwardAttempted != 1 || counts.Responses != 1 || counts.Unknown != 0 || counts.Withheld != 1 || counts.Denied != 0 ||
 					strings.Contains(result.ToolOutput, "runner-session-secret") || strings.Contains(result.ToolOutput, "target-ok") ||
 					strings.Contains(result.ToolOutput, "[REDACTED]") {
 					t.Fatal("sensitive response was released, edited into success, or lost its sent/unknown evidence")

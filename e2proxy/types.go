@@ -13,7 +13,12 @@ import (
 	"github.com/Autumn-27/artex/transmit"
 )
 
-const Version = "e2-http-v1"
+// Version은 이 코드가 쓰는 신뢰 결과·감사 기록의 판이다. v2에서 사유 `withheld`, 계수 `Counts.Withheld`, 영수증 칸
+// `response_truncated`가 생겼다(C16). 저장된 v1 기록은 검증기·내보내기·채점기가 v1 규칙으로 읽는다.
+const Version = "e2-http-v2"
+
+// VersionV1은 C16 전 판이다. 새로 쓰지 않고 저장된 기록을 읽을 때만 받는다.
+const VersionV1 = "e2-http-v1"
 const AttemptHeader = "X-ABC2LAB-E2-Attempt"
 
 type Reason string
@@ -28,12 +33,15 @@ const (
 	Revoked         Reason = "revoked"
 	BudgetExhausted Reason = "budget_exhausted"
 	TransportFailed Reason = "transport_failed"
-	Unknown         Reason = "unknown"
-	AttemptLimit    Reason = "attempt_limit"
-	DenialLimit     Reason = "denial_limit"
-	TransientLimit  Reason = "transient_limit"
-	UnknownLimit    Reason = "unknown_limit"
-	Invalid         Reason = "invalid"
+	// Withheld는 대상이 답했지만(상태 줄·헤더 수신) 자격 응답·보호 값 반사·압축·본문 상한 때문에 E2가 응답 표현을
+	// 도구에 주지 않은 것이다. 대상이 처리한 것은 알므로 결과 불명이 아니고 결과 불명 상한에 세지 않는다(C16, e2-http-v2).
+	Withheld       Reason = "withheld"
+	Unknown        Reason = "unknown"
+	AttemptLimit   Reason = "attempt_limit"
+	DenialLimit    Reason = "denial_limit"
+	TransientLimit Reason = "transient_limit"
+	UnknownLimit   Reason = "unknown_limit"
+	Invalid        Reason = "invalid"
 )
 
 var (
@@ -42,6 +50,8 @@ var (
 	ErrClosed = errors.New("e2proxy: admission closed")
 	ErrAudit  = errors.New("e2proxy: audit unavailable")
 	ErrDrain  = errors.New("e2proxy: drain incomplete")
+	// ErrWithheld는 대상이 답했지만 E2가 응답 표현을 주지 않은 요청이다(사유 withheld).
+	ErrWithheld = errors.New("e2proxy: response withheld")
 )
 
 // Recorder must acknowledge durable storage, serialize concurrent writes, and
@@ -145,7 +155,9 @@ type Receipt struct {
 	NotSent          bool           `json:"not_sent"`
 	AuditComplete    bool           `json:"audit_complete"`
 	StatusCode       int            `json:"status_code,omitempty"`
-	At               time.Time      `json:"at"`
+	// ResponseTruncated는 응답 본문 앞부분만 도구에 준 것이다(e2-http-v2, 사유는 withheld).
+	ResponseTruncated bool      `json:"response_truncated,omitempty"`
+	At                time.Time `json:"at"`
 }
 type Event struct {
 	Index uint64 `json:"index"`
@@ -163,7 +175,9 @@ type Counts struct {
 	// Transient는 대상 연결을 끝내 맺지 못해 요청을 전달하지 않은 송신 실패(transport_failed) 수다.
 	// 결과 불명(Unknown)과 따로 센다(C02).
 	Transient uint64 `json:"transient"`
-	Calls     int    `json:"calls"`
+	// Withheld는 대상이 답했지만 표현을 보류하거나 자른 응답 수다. Unknown에 넣지 않는다(C16).
+	Withheld uint64 `json:"withheld"`
+	Calls    int    `json:"calls"`
 }
 type ExecutionView struct {
 	ApprovalMode   ApprovalMode             `json:"approval_mode"`

@@ -31,9 +31,11 @@ type productRuntime struct {
 	config          urlPreparationInstallation
 	installationPin urlInputPin
 	targets         *productTargetRegistry
-	bindMu          sync.Mutex
-	activeMu        sync.Mutex
-	active          map[string]map[string]context.CancelFunc
+	// exploration은 설치 정책의 탐색 블록으로 만든 host다. 없으면 탐색은 NOT_RUN이다.
+	exploration *productExplorationHost
+	bindMu      sync.Mutex
+	activeMu    sync.Mutex
+	active      map[string]map[string]context.CancelFunc
 }
 
 func productModels(c urlPreparationInstallation) []urlPreparationProfile {
@@ -61,6 +63,20 @@ func newProductRuntime(c urlPreparationInstallation, pin urlInputPin) (*productR
 		}
 		pins = append(pins, cp)
 	}
+	var explorationHost *productExplorationHost
+	if policy.Exploration != nil {
+		ca, cp, e := urlReadPin(policy.Exploration.BoundaryCAFile, 64<<10, false)
+		if e != nil || cp.digest != policy.Exploration.BoundaryCASHA256 {
+			clear(ca)
+			return nil, errPreparation
+		}
+		explorationHost, e = newProductExplorationHost(*policy.Exploration, ca)
+		clear(ca)
+		if e != nil {
+			return nil, errPreparation
+		}
+		pins = append(pins, cp)
+	}
 	check := func() error {
 		for _, p := range pins {
 			if p.check() != nil {
@@ -78,7 +94,7 @@ func newProductRuntime(c urlPreparationInstallation, pin urlInputPin) (*productR
 		return nil, e
 	}
 	targets.endpointAllowed = func(origin string, ip netip.Addr) bool { return !urlProtectedConflict(c, origin, ip) }
-	p := &productRuntime{config: c, installationPin: pin, targets: targets, flows: map[string]*diagnosisflow.Controller{}, active: map[string]map[string]context.CancelFunc{}}
+	p := &productRuntime{config: c, installationPin: pin, targets: targets, exploration: explorationHost, flows: map[string]*diagnosisflow.Controller{}, active: map[string]map[string]context.CancelFunc{}}
 	if _, e = p.profiles(); e != nil {
 		_ = targets.Close()
 		return nil, e

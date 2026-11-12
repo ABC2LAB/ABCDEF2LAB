@@ -52,3 +52,19 @@ func TestDiagnosticTextCredentialDelimiters(t *testing.T) {
 		t.Fatal("separate ordinary observation removed")
 	}
 }
+
+func TestCredentialTextMasksCredentialsButKeepsAddresses(t *testing.T) {
+	in := "Set-Cookie: sid=synthetic-session-41c2; Path=/\nAuthorization: Bearer synthetic-bearer-41c2\n{\"email\":\"user@owned.test\",\"password\":\"synthetic-pass-41c2\"}\n" +
+		"token=synthetic-token-41c2 eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXN5bnRoZXRpYw next https://owned.test/read/item"
+	out := CredentialText(in)
+	for _, secret := range []string{"synthetic-session-41c2", "synthetic-bearer-41c2", "synthetic-pass-41c2", "synthetic-token-41c2", "c2lnbmF0dXJlLXN5bnRoZXRpYw"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("credential %s survived: %q", secret, out)
+		}
+	}
+	for _, keep := range []string{"https://owned.test/read/item", "user@owned.test"} {
+		if !strings.Contains(out, keep) {
+			t.Fatalf("address %s was masked: %q", keep, out)
+		}
+	}
+}

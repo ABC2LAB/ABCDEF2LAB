@@ -31,11 +31,11 @@ GO_SHAPES = {"e2proxy/audit.go": {"type JournalCheckpoint struct": "e064bb13b152
 
 
 def checkpoint_for(rows=6, **changes):
-    return {"Version": "e2-http-v1", "JournalID": JOURNAL_ID, "Sequence": rows, "MAC": MAC, "Scope": dict(SCOPE)} | changes
+    return {"Version": "e2-http-v2", "JournalID": JOURNAL_ID, "Sequence": rows, "MAC": MAC, "Scope": dict(SCOPE)} | changes
 
 
-def journal_for(rows):
-    lines = [{"Kind": "header", "Header": {"Version": "e2-http-v1", "JournalID": JOURNAL_ID, "CreatedAt": "2026-11-07T00:00:00Z"}, "MAC": MAC}]
+def journal_for(rows, version="e2-http-v2"):
+    lines = [{"Kind": "header", "Header": {"Version": version, "JournalID": JOURNAL_ID, "CreatedAt": "2026-11-07T00:00:00Z"}, "MAC": MAC}]
     lines += [{"Kind": "event", "Record": {"Index": row["index"], "Previous": MAC, "Event": row}, "MAC": MAC} for row in rows]
     return b"".join(json.dumps(line).encode() + b"\n" for line in lines)
 
@@ -102,12 +102,34 @@ class Fixture(unittest.TestCase):
 
 
 class TestComplete(Fixture):
+    def test_stored_v1_run_is_verified_with_v1_rules(self):
+        # C16 전에 저장한 회차는 checkpoint 판(v1)을 검증기에 그대로 넘긴다.
+        self.rows = [row | {"version": "e2-http-v1"} for row in normal_rows()]
+        self.attempts = encode(self.rows)
+        self.checkpoint = json.dumps(checkpoint_for(Version="e2-http-v1")).encode()
+        self.manifest = manifest_for(self.attempts, 6, 6, 3, audit_checkpoint_sha256=hashlib.sha256(self.checkpoint).hexdigest())
+        self.verifier_result = (0, json.dumps({"Checkpoint": checkpoint_for(Version="e2-http-v1"), "Events": 6}).encode(), b"")
+        self.write("manifest.json", json.dumps(self.manifest).encode())
+        self.write("attempts.jsonl", self.attempts)
+        self.write("e2.audit", journal_for(self.rows, "e2-http-v1"))
+        self.write("e2.checkpoint", self.checkpoint)
+        result = self.collect()
+        self.assertEqual((result.outcome, result.reason), (OUTCOME_COMPLETE, ""))
+        self.assertEqual(self.calls[0][:2], ["--journal-format", "e2-http-v1"])
+
+    def test_unknown_checkpoint_version_is_a_product_failure(self):
+        self.checkpoint = json.dumps(checkpoint_for(Version="e2-http-v3")).encode()
+        self.manifest = manifest_for(self.attempts, 6, 6, 3, audit_checkpoint_sha256=hashlib.sha256(self.checkpoint).hexdigest())
+        self.publish()
+        self.assert_product_failure("checkpoint_invalid")
+        self.assertEqual(self.calls, [])
+
     def test_complete_export_is_verified_on_the_private_copy(self):
         result = self.collect()
         self.assertEqual((result.outcome, result.reason), (OUTCOME_COMPLETE, ""))
         self.assertEqual(result.checkpoint, {"sequence": 6, "mac": MAC})
         self.assertEqual(len(result.export.decisions), 3)
-        self.assertEqual(self.calls, [["--journal-format", "e2-http-v1", "--journal", str(self.copy / "journal.jsonl"),
+        self.assertEqual(self.calls, [["--journal-format", "e2-http-v2", "--journal", str(self.copy / "journal.jsonl"),
                                        "--checkpoint", str(self.copy / "checkpoint.json"), "--key-file", "/private/run.key"]])
         self.assertEqual(sorted(result.sha256), ["attempts.jsonl", "checkpoint.json", "journal.jsonl", "manifest.json"])
         for name, digest in result.sha256.items():
@@ -451,7 +473,11 @@ class TestGoDefinitions(unittest.TestCase):
         tool = "".join(path.read_text(encoding="utf-8") for path in sorted((ROOT / "cmd/e2-audit-verify").glob("*.go")) if not path.name.endswith("_test.go"))
         self.assertIn('"audit_integrity_failed"', tool)
         self.assertRegex(tool, r"e2proxyJournalFormat\s*=\s*e2proxy\.JournalVersion")
-        self.assertRegex(audit, r'JournalVersion\s*=\s*"e2-http-v1"')
+        self.assertRegex(tool, r"e2proxyJournalFormatV1\s*=\s*e2proxy\.VersionV1")
+        types = (ROOT / "e2proxy/types.go").read_text(encoding="utf-8")
+        self.assertRegex(audit, r"JournalVersion\s*=\s*Version\b")
+        self.assertRegex(types, r'const Version = "e2-http-v2"')
+        self.assertRegex(types, r'const VersionV1 = "e2-http-v1"')
         self.assertRegex(tool, r"maxCheckpointBytes\s*=\s*4096")
 
 

@@ -25,8 +25,8 @@ EXPECTED = E2Expectation(eval_run_id="eval-run-1", model_tag="model-1", reset_ge
                          engine_task_id="17", policy_fingerprint_sha256=FINGERPRINT, header_mode="evaluation_caller_passthrough",
                          llm_backend="api")
 # 파서가 따라가는 Go 정의. 바뀌면 파서를 다시 맞추고 값을 갱신한다.
-GO_SHAPES = {"e2proxy/audit.go": {"func validJournalEvent(": "d765fb9f5c35ed6fe3c509e416f9335bd92484b8786e995e8ac335b97dd7bb5e", "func validJournalRef(": "19e535e1f750fa71646b37c58e528f0a2409c5d182d45e2f57889e7f2e26fb77", "func validJournalTime(": "ba9dc33173dcd0c3498013c1ddb3a9dfa93539240a5371212e42ed7b104740a6"},
-             "e2proxy/types.go": {"type Receipt struct": "8cb1eb5347778bf51562a78ae1b2f69d87fd58fddaf1b1515263ad7850983ce8", "type Event struct": "b76400d2b19d095202ef7f2be6a32264645d6104f4f8aa274fe60701c23df7a2"}}
+GO_SHAPES = {"e2proxy/audit.go": {"func validJournalEvent(": "c20657d8b3b1673a0fd42215bdb43e802f5064a44d63d0d52d02646072e6baac", "func validJournalRef(": "19e535e1f750fa71646b37c58e528f0a2409c5d182d45e2f57889e7f2e26fb77", "func validJournalTime(": "ba9dc33173dcd0c3498013c1ddb3a9dfa93539240a5371212e42ed7b104740a6"},
+             "e2proxy/types.go": {"type Receipt struct": "08bd39a92b8dd6e9f2796575d3b3553fe4b09a81085eface30081c37608a1adc", "type Event struct": "b76400d2b19d095202ef7f2be6a32264645d6104f4f8aa274fe60701c23df7a2"}}
 
 
 def go_block(text, start):
@@ -42,7 +42,7 @@ def go_block(text, start):
 
 
 def common(index, stage, sequence, reason, not_sent=True):
-    return {"index": index, "stage": stage, "intent_id": 22, "version": "e2-http-v1", "scope": dict(SCOPE), "policy_revision": "revision-1",
+    return {"index": index, "stage": stage, "intent_id": 22, "version": "e2-http-v2", "scope": dict(SCOPE), "policy_revision": "revision-1",
             "sequence": sequence, "reason": reason, "forward_attempted": False, "request_written": False, "response_received": False,
             "response_complete": False, "not_sent": not_sent, "audit_complete": True, "at": "2026-11-07T00:00:00.123456789Z"}
 
@@ -288,9 +288,37 @@ class TestAttempts(unittest.TestCase):
         self.rejected([attempt(1, "result", A1, 1, "allowed")], "ATTEMPT_ALLOWED_WITHOUT_INTENT")
         self.rejected([attempt(1, "result", A1, 1, "denied"), attempt(2, "result", A2, 1, "denied")], "SEQUENCE_REPEATED")
 
+    def test_withheld_rows_follow_the_v2_shape(self):
+        intent = attempt(1, "intent", A1, 1, "allowed", not_sent=False)
+        withheld = SENT | {"response_complete": False, "reason": "withheld"}
+        result = self.parse([intent, attempt(2, "result", A1, 1, "allowed", **withheld)])
+        self.assertEqual([row["decision"] for row in result.decisions], ["allowed"])
+        self.parse([intent, attempt(2, "result", A1, 1, "allowed", **(withheld | {"response_truncated": True}))])
+        for changes, code in (({"response_complete": True}, "ROW_WITHHELD_INVALID"),
+                              ({"response_received": False, "response_complete": False, "status_code": 0}, "ROW_WITHHELD_INVALID"),
+                              ({"response_truncated": False}, "ROW_BITS"), ({"response_truncated": 1}, "ROW_BITS")):
+            with self.subTest(changes=changes):
+                self.rejected([intent, attempt(2, "result", A1, 1, "allowed", **(withheld | changes))], code)
+        # 완전 응답에 자른 표시를 붙이거나 보류를 거부 결정에 붙이지 않는다.
+        self.rejected([intent, attempt(2, "result", A1, 1, "allowed", **(SENT | {"response_truncated": True}))], "ROW_WITHHELD_INVALID")
+        self.rejected([attempt(1, "result", A1, 1, "denied", reason="withheld")], "ROW_WITHHELD_INVALID")
+        self.rejected([attempt(1, "intent", A1, 1, "allowed", not_sent=False, reason="withheld")], "ROW_WITHHELD_INVALID")
+        # call_closed는 call의 마지막 사유(보류)를 요약으로 싣는다.
+        closed = common(3, "call_closed", 0, "withheld") | {"call_ref": CALL}
+        result = self.parse([intent, attempt(2, "result", A1, 1, "allowed", **withheld), closed])
+        self.assertEqual(result.administrative_by_reason, (("withheld", 1),))
+
+    def test_stored_v1_rows_still_parse_without_v2_fields(self):
+        v1 = {"version": "e2-http-v1"}
+        self.parse([attempt(1, "intent", A1, 1, "allowed", not_sent=False, **v1), attempt(2, "result", A1, 1, "allowed", **(SENT | v1))])
+        withheld = SENT | v1 | {"response_complete": False, "reason": "withheld"}
+        self.rejected([attempt(1, "intent", A1, 1, "allowed", not_sent=False, **v1), attempt(2, "result", A1, 1, "allowed", **withheld)], "ROW_REASON")
+        self.rejected([attempt(1, "intent", A1, 1, "allowed", not_sent=False), attempt(2, "result", A1, 1, "allowed", **(SENT | v1))],
+                      "ROW_VERSION_MIXED")
+
     def test_each_row_is_closed_and_bound_to_the_execution(self):
         base = attempt(1, "result", A1, 1, "denied")
-        for changes, code in (({"extra": 1}, "ROW_FIELDS"), ({"version": "e2-http-v2"}, "ROW_VERSION"), ({"stage": "other"}, "ROW_STAGE"),
+        for changes, code in (({"extra": 1}, "ROW_FIELDS"), ({"version": "e2-http-v3"}, "ROW_VERSION"), ({"stage": "other"}, "ROW_STAGE"),
                               ({"index": 0}, "ROW_COUNT_INVALID"), ({"index": -1}, "ROW_COUNT_INVALID"), ({"sequence": True}, "ROW_COUNT_INVALID"),
                               ({"intent_id": "22"}, "ROW_COUNT_INVALID"), ({"intent_id": 1 << 63}, "ROW_COUNT_INVALID"), ({"reason": "other"}, "ROW_REASON"),
                               ({"not_sent": 1}, "ROW_BITS"), ({"audit_complete": None}, "ROW_BITS"), ({"at": ""}, "ROW_TIME"), ({"at": 1}, "ROW_TIME"),

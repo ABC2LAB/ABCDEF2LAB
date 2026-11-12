@@ -68,6 +68,8 @@ OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON �
 
 새 설치에서만 `target_policy.max_requests`와 선택적인 `target_policy.workflow`를 함께 지정한다. 아래 설정은 회차 HTTP 상한 64, 초기 탐색 최대 8페이지, 발견 최대 32개다.
 
+탐색 경계·브라우저 샌드박스를 띄운 설치는 `target_policy.exploration` 블록을 넣는다([탐색 경계·브라우저 샌드박스](#탐색-경계브라우저-샌드박스설치-조직이-켬)). 없으면 탐색은 `NOT_RUN`이고 E② 정적 크롤만 쓴다.
+
 ```json
 {
   "max_requests": 64,
@@ -123,9 +125,39 @@ workbench에는 DB·키·제품 상태 볼륨이 없다. preparation netns 안�
 
 `postgres-data`(DB)와 `product-state`(키·정책·authority·receipt·audit)를 함께 백업하고 권한을 보존한다. `target-tls`는 소유 시험 전용이다. 재기동은 `docker compose down` 후 `docker compose up -d --wait`로 수행한다. `down -v`는 영속 상태를 삭제하므로 복구 절차에 사용하지 않는다. 실행 중 강제 종료는 unknown으로 남으며 자동 재실행하지 않는다. 완료된 회차는 재기동 후 저장 보고서로 조회한다.
 
-### 탐색 브라우저 샌드박스(꺼짐)
+### 탐색 경계·브라우저 샌드박스(설치 조직이 켬)
 
-`explore-browser`(Chromium)와 `explore-mcp`(Playwright MCP)는 [탐색 계약](../../docs/contracts/exploration-boundary.md) §9-1 분리 배치의 브라우저 샌드박스다. 같은 이미지(Chromium과 `@playwright/mcp@0.0.84`만 들어 있고 엔진 바이너리·제어 비밀·보호 볼륨은 없음)를 다른 진입점으로 쓴다. Chromium은 브라우저 입구망(`explore_browser_ingress`)과 CDP 연결망(`explore_cdp`)에만, MCP는 제어망(`explore_control`)과 CDP 연결망에만 붙는다. 같은 namespace의 native 자식이 MCP 제어 포트에 닿던 B16을 배치로 막기 위해서다. `--profile exploration`을 줄 때만 렌더링되며, 지금은 켜지 않는다. 탐색 경계(`explore-boundary`)가 브라우저 입구와 CA 볼륨(`explore-ca`)을 채우고, 엔진이 제어망에서 리슨 없이 MCP `http`(`http://explore-mcp:<포트>/mcp`)로 붙는 변경이 들어온 뒤에 켠다. CA 파일이 없으면 Chromium이 시작하지 않는다. MCP 옵션은 compose가 정하고(`--host`·`--port`·`--allowed-hosts`는 한 묶음, `--cdp-endpoint`는 Chromium의 `--cdp-listen` 주소), 모델에 노출하는 도구는 서버의 고정 목록(`server/mcp_tool_policy.go`)으로 거른다. Chromium 157은 `--remote-debugging-address`를 무시하고 CDP를 loopback에만 열므로, Chromium 실행기(`explore-chromium.js`)가 CDP 연결망 주소 하나에만 리슨하는 TCP 중계를 둔다. 구성 조건은 `scripts/ci/test_product_explore_browser.py`가 렌더링으로 확인한다.
+기본 설치는 탐색을 켜지 않는다(탐색 `NOT_RUN`, E② 정적 크롤만). 켜려면 `--profile exploration`으로 아래 네 서비스를 같이 띄우고 설치 입력에 `target_policy.exploration`을 넣는다.
+
+- `explore-init`(한 번 실행): 운영자 보호 입력(root 0600) 네 개를 받아 경계 전용 볼륨(`explore-boundary-input`, uid 1001·0600)과 공개 CA 볼륨(`explore-ca`, 0644)으로 나눈다. 네트워크 없음.
+- `explore-boundary`(uid 1001): 브라우저 입구 `172.31.248.10:3128`(`explore_browser_ingress`)과 직접 입구 `172.31.247.10:3129`(`explore_direct`)에만 리슨하고, 승인 대상에는 `target`·`frontend` 망으로 나간다. 제어 소켓은 `explore-control` 볼륨에 만들고 엔진 그룹(1000) 0660으로 넘긴다(비root 컨테이너는 소유자를 바꿀 능력이 없다). 접속은 엔진 uid(1000)의 `SO_PEERCRED`로만 받는다. 엔진(`preparation`)은 같은 볼륨으로 제어 소켓에, `explore_direct`로 직접 입구에 닿는다.
+- `explore-browser`·`explore-mcp`: 아래 설명.
+
+보호 입력(저장소 밖, root 소유 0600):
+
+```bash
+D=/srv/abc2lab-explore; sudo install -d -m 0700 "$D"
+sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 -subj '/CN=JinDo explore boundary CA' \
+  -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign -keyout "$D/ca.key" -out "$D/ca.pem"
+sudo sh -c "head -c 32 /dev/urandom > '$D/path.key'"
+sudo cp deploy/product/explore-boundary.example.json "$D/boundary.json"   # 주소·상한을 설치에 맞게 고친다
+sudo chmod 0600 "$D"/*
+export EXPLORE_BOUNDARY_CONFIG_FILE=$D/boundary.json EXPLORE_CA_CERT_FILE=$D/ca.pem EXPLORE_CA_KEY_FILE=$D/ca.key EXPLORE_PATH_KEY_FILE=$D/path.key
+```
+
+설치 입력에는 다음 블록을 넣는다(`boundary_ca_file`은 installer 안의 경로다. installer 진입점이 `EXPLORE_CA_CERT_FILE`을 이 경로로 옮기고, 설치기가 설치 디렉터리로 복사해 SHA-256을 고정한다).
+
+```json
+"target_policy": { "exploration": {
+  "control_socket": "/run/explore-control/control.sock",
+  "direct_proxy": "http://explore-direct:3129",
+  "boundary_ca_file": "/tmp/product-private/explore-ca.pem",
+  "mcp_url": "http://explore-mcp:8931/mcp" } }
+```
+
+`max_external_requests`(선택, 0~4096)는 외부 통신 승인 모드에서만 쓰는 렌더링용 외부 자원 GET 상한이다. 경계 설정의 `control_endpoints`는 경계가 대상으로도 연결하지 않을 내부 주소(DB·엔진·MCP·CDP·경계 자신)다. 예시는 이 compose의 고정 주소를 그대로 넣었다. 경계 응답 상한(`max_response_bytes`)은 브라우저가 받는 번들까지 넣을 수 있게 크게 잡았다.
+
+`explore-browser`(Chromium)와 `explore-mcp`(Playwright MCP)는 [탐색 계약](../../docs/contracts/exploration-boundary.md) §9-1 분리 배치의 브라우저 샌드박스다. 같은 이미지(Chromium과 `@playwright/mcp@0.0.84`만 들어 있고 엔진 바이너리·제어 비밀·보호 볼륨은 없음)를 다른 진입점으로 쓴다. Chromium은 브라우저 입구망(`explore_browser_ingress`)과 CDP 연결망(`explore_cdp`)에만, MCP는 제어망(`explore_control`)과 CDP 연결망에만 붙는다. 같은 namespace의 native 자식이 MCP 제어 포트에 닿던 B16을 배치로 막기 위해서다. `--profile exploration`을 줄 때만 렌더링된다. CA 파일(`explore-ca` 볼륨, `explore-init`이 씀)이 없으면 Chromium이 시작하지 않는다. MCP 옵션은 compose가 정하고(`--host`·`--port`·`--allowed-hosts`는 한 묶음, `--cdp-endpoint`는 Chromium의 `--cdp-listen` 주소), 모델에 노출하는 도구는 서버의 고정 목록(`server/mcp_tool_policy.go`)으로 거른다. Chromium 157은 `--remote-debugging-address`를 무시하고 CDP를 loopback에만 열므로, Chromium 실행기(`explore-chromium.js`)가 CDP 연결망 주소 하나에만 리슨하는 TCP 중계를 둔다. 구성 조건은 `scripts/ci/test_product_explore_browser.py`가 렌더링으로 확인한다.
 
 ## 화면별 실제 API
 

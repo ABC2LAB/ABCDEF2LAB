@@ -22,7 +22,13 @@ const (
 	// OutcomeUnknown은 대상으로 연결을 시도했지만 완전한 응답을 돌려주지 못했다는 뜻이다. 대상이 요청을
 	// 받아 처리했는지는 모른다.
 	OutcomeUnknown ProxyOutcomeClass = "outcome_unknown"
+	// OutcomeWithheld는 대상이 요청을 받아 답했지만 E2가 응답 표현을 주지 않았다는 뜻이다(C16). 대상이 처리한 것은
+	// 알므로 결과 불명이 아니다.
+	OutcomeWithheld ProxyOutcomeClass = "response_withheld"
 )
+
+// OutcomeTruncated는 대상 응답을 본문 상한까지 잘라 전달했다는 결과 헤더 값이다(대상 응답 자체를 준다).
+const OutcomeTruncated = "truncated"
 
 type proxyOutcome struct {
 	class  ProxyOutcomeClass
@@ -46,8 +52,11 @@ var proxyOutcomeHints = map[Reason]string{
 	TransientLimit:  "This command reached its connection failure limit; E2 accepts no more requests from this command.",
 	UnknownLimit:    "This command reached its unknown outcome limit; E2 accepts no more requests from this command. Check the resulting state before sending a state-changing request again.",
 	TransportFailed: "E2 could not open a connection to the target.",
-	Unknown:         "The target may have received the request, but E2 could not confirm a complete response (for example the connection broke or the response exceeded the size limit).",
+	Unknown:         "The target may have received the request, but E2 could not confirm a complete response (for example the connection broke before the response ended).",
 	Invalid:         "E2 could not process the request.",
+	Withheld: "The target answered (see status_code in the trusted observation), but E2 withheld the response because it carried credential headers," +
+		" reflected a protected value, used a compressed encoding or was a partial (206) response over the size limit. The request was delivered; do not resend it only to see the response." +
+		" Other responses over the size limit are delivered truncated (trusted observation response_truncated).",
 }
 
 // proxyOutcomeOf는 E2 영수증으로 결과를 정한다. 영수증을 만들기 전에 막힌 경우(실행 종료)는
@@ -69,7 +78,10 @@ func proxyOutcomeOf(r Receipt, err error) proxyOutcome {
 		reason = Invalid
 	}
 	class := OutcomeNotSent
-	if r.ForwardAttempted && r.Reason != TransportFailed {
+	switch {
+	case reason == Withheld:
+		class = OutcomeWithheld
+	case r.ForwardAttempted && r.Reason != TransportFailed:
 		class = OutcomeUnknown
 	}
 	return proxyOutcome{class: class, reason: reason, sequence: r.Sequence}
@@ -80,9 +92,12 @@ func proxyOutcomeOf(r Receipt, err error) proxyOutcome {
 // 결과 헤더는 사람이 보는 로그·프로그램 소비자를 위한 표시로만 남긴다.
 func (o proxyOutcome) body() string {
 	lead := "E2 did not send this request to the target."
-	if o.class == OutcomeUnknown {
+	switch o.class {
+	case OutcomeUnknown:
 		lead = "E2 forwarded this request but returned no target response; whether the target received or applied it is unknown." +
 			" Check the resulting state before sending a state-changing request again."
+	case OutcomeWithheld:
+		lead = "E2 forwarded this request and the target answered, but E2 returned no target response representation."
 	}
 	ref := ""
 	if o.sequence > 0 {

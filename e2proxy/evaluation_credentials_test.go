@@ -232,8 +232,9 @@ func TestEvaluationCallerHopCredentialRejectedOverProxy(t *testing.T) {
 	}
 }
 
-// 가린 응답은 결과 불명으로 남고 불명 상한은 그 call만 막는다. 새 call도 같은 가림을 유지한다(C01).
-func TestEvaluationCallerKeepsResponseWithholdingAndCallFence(t *testing.T) {
+// 자격 응답은 평가 모드에서도 통째로 보류한다. 대상이 답한 것이므로 결과 불명이 아니라 withheld로 세고, 결과 불명 상한에
+// 닿지 않아 같은 call의 다음 요청도 보낸다(C16). 보류는 매번 다시 적용된다.
+func TestEvaluationCallerKeepsResponseWithholdingWithoutCallFence(t *testing.T) {
 	var hits atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -246,26 +247,15 @@ func TestEvaluationCallerKeepsResponseWithholdingAndCallFence(t *testing.T) {
 	e, call := coreOpen(t, cfg)
 	req := coreRequest(t, "GET", target.URL+"/allowed")
 	req.Header.Set("Authorization", "Bearer synthetic-caller")
-	response, receipt, err := call.Do(t.Context(), req)
-	if err == nil || response != nil || receipt.Reason != Unknown || !receipt.ResponseComplete ||
-		!receipt.AuditComplete || hits.Load() != 1 || e.Snapshot().Counts.Unknown != 1 {
-		t.Fatal("evaluation mode exposed or reclassified a credential-bearing response")
+	for i := int64(1); i <= 2; i++ {
+		response, receipt, err := call.Do(t.Context(), req)
+		if !errors.Is(err, ErrWithheld) || response != nil || receipt.Reason != Withheld || receipt.ResponseComplete || !receipt.ResponseReceived ||
+			!receipt.AuditComplete || hits.Load() != i {
+			t.Fatalf("request %d: evaluation mode exposed or misclassified a credential-bearing response: %+v %v", i, receipt, err)
+		}
 	}
-	response, receipt, err = call.Do(t.Context(), req)
-	if !errors.Is(err, ErrClosed) || response != nil || receipt.Reason != UnknownLimit || !receipt.NotSent || hits.Load() != 1 {
-		t.Fatal("withholding did not retain the declared unknown call limit")
-	}
-	if view := e.Snapshot(); view.State != "active" || view.Reason != Complete {
-		t.Fatalf("one unknown outcome stopped the whole execution: %+v", view)
-	}
-	next, err := e.BeginCall(t.Context(), "after-unknown-limit")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _, _ = next.Close(t.Context()) }()
-	response, receipt, err = next.Do(t.Context(), req)
-	if err == nil || response != nil || receipt.Reason != Unknown || !receipt.ResponseComplete || hits.Load() != 2 {
-		t.Fatal("a new call lost the credential-bearing response withholding")
+	if view := e.Snapshot(); view.State != "active" || view.Reason != Complete || view.Counts.Withheld != 2 || view.Counts.Unknown != 0 {
+		t.Fatalf("withheld responses were counted as unknown: %+v", view)
 	}
 }
 

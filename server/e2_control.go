@@ -484,7 +484,7 @@ func validE2ControlFinal(v E2ControlFinal) bool {
 }
 func validE2ControlCloseReason(reason string) bool {
 	switch e2proxy.Reason(reason) {
-	case e2proxy.Complete, e2proxy.Unsupported, e2proxy.PolicyDenied, e2proxy.Closed, e2proxy.AuditFailed, e2proxy.Expired, e2proxy.Revoked, e2proxy.BudgetExhausted, e2proxy.TransportFailed, e2proxy.Unknown, e2proxy.AttemptLimit, e2proxy.DenialLimit, e2proxy.TransientLimit, e2proxy.UnknownLimit, e2proxy.Invalid:
+	case e2proxy.Complete, e2proxy.Unsupported, e2proxy.PolicyDenied, e2proxy.Closed, e2proxy.AuditFailed, e2proxy.Expired, e2proxy.Revoked, e2proxy.BudgetExhausted, e2proxy.TransportFailed, e2proxy.Unknown, e2proxy.AttemptLimit, e2proxy.DenialLimit, e2proxy.TransientLimit, e2proxy.UnknownLimit, e2proxy.Invalid, e2proxy.Withheld:
 		return true
 	}
 	return reason == "drain_timeout" || reason == "audit_incomplete" || reason == "publish_failed"

@@ -34,11 +34,15 @@ const configFormat = "jindo.explore-boundary-config/v1"
 const maxConfigBytes = 1 << 20
 
 type config struct {
-	Format           string   `json:"format"`
-	BrowserListen    string   `json:"browser_listen"`
-	DirectListen     string   `json:"direct_listen"`
-	ControlSocket    string   `json:"control_socket"`
-	EngineUID        uint32   `json:"engine_uid"`
+	Format        string `json:"format"`
+	BrowserListen string `json:"browser_listen"`
+	DirectListen  string `json:"direct_listen"`
+	ControlSocket string `json:"control_socket"`
+	EngineUID     uint32 `json:"engine_uid"`
+	// EngineGID가 있으면 제어 소켓을 소유자 대신 그룹으로 넘긴다(0660, 그룹 = 엔진 gid). 컨테이너의 비root 경계는
+	// CHOWN 능력이 실제로 없어(앰비언트 능력 없음) 소유자를 바꿀 수 없지만, 자기가 속한 그룹으로는 바꿀 수 있다.
+	// 접속 허용은 그대로 SO_PEERCRED의 엔진 uid로만 정한다.
+	EngineGID        uint32   `json:"engine_gid,omitempty"`
 	CACertFile       string   `json:"ca_cert_file"`
 	CAKeyFile        string   `json:"ca_key_file"`
 	UpstreamCAFile   string   `json:"upstream_ca_file,omitempty"`
@@ -136,6 +140,7 @@ type parts struct {
 	listens [2]netip.AddrPort
 	socket  string
 	uid     uint32
+	gid     uint32
 	timeout time.Duration
 }
 
@@ -195,7 +200,7 @@ func build(c config) (*parts, error) {
 		return nil, err
 	}
 	m.Proxies = []*exploreboundary.Proxy{browser, direct}
-	return &parts{manager: m, browser: browser, direct: direct, listens: [2]netip.AddrPort{browserAddr, directAddr}, socket: c.ControlSocket, uid: c.EngineUID, timeout: timeout}, nil
+	return &parts{manager: m, browser: browser, direct: direct, listens: [2]netip.AddrPort{browserAddr, directAddr}, socket: c.ControlSocket, uid: c.EngineUID, gid: c.EngineGID, timeout: timeout}, nil
 }
 
 func (p *parts) serve(ctx context.Context) error {
@@ -213,7 +218,19 @@ func (p *parts) serve(ctx context.Context) error {
 		control.Close()
 		return err
 	}
-	if p.uid != uint32(os.Getuid()) {
+	switch {
+	case p.uid == uint32(os.Getuid()):
+	case p.gid != 0:
+		// 그룹으로 넘긴다. 경계가 그 그룹에 속하지 않으면 바꿀 수 없으므로 시작을 멈춘다.
+		if err = os.Chown(p.socket, -1, int(p.gid)); err != nil {
+			control.Close()
+			return errors.New("control_socket_owner")
+		}
+		if err = os.Chmod(p.socket, 0o660); err != nil {
+			control.Close()
+			return err
+		}
+	default:
 		if err = os.Chown(p.socket, int(p.uid), -1); err != nil {
 			control.Close()
 			return errors.New("control_socket_owner")
