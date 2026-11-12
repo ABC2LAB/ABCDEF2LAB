@@ -51,4 +51,4 @@
 
 1. host adapter(P1-D): 대상 등록 기록 → `Target` 변환, `ControlBoundary`·`ControlReader`·`DirectFetch`·MCP lease로 `ExplorationPipelineHost` 조립, 설치 입력 `target_policy.exploration`으로 켜기는 했다([파이프라인 문서](exploration-product-pipeline.md#권위와-조립)). 남은 것: 서버의 대상 감시와 실행 중 `close(target_ended)` 연결(지금은 경계가 `open` 때 받은 만료 시각과 요청마다의 판정, 서버의 기존 대상 감시가 실행을 멈추는 것에 기댄다).
 2. 제품 compose의 `explore-boundary` 서비스(기본 꺼짐), 망 세 개(브라우저 입구·직접 입구·제어 소켓 볼륨), 실제 Docker 양성·음성 수용시험(B01~B18). B16(브라우저·MCP 분리)과 같은 파일을 건드리므로 그 결과 뒤에 한다.
-3. WebSocket 전달(approved_writes 회차). 탐색 단계 Bash relay(P1-C)는 typed adapter `exploresandbox.DirectBash`와 설치 정책 `exploration.direct_bash`(기본 꺼짐)로 들어갔다. 아래 종단 확인 참고.
+3. WebSocket 전달(approved_writes 회차). 탐색 단계 Bash relay(P1-C)는 typed adapter `exploresandbox.DirectBash`와 설치 정책 `exploration.direct_bash`(비우면 켬, `false`면 끔)로 들어갔다. 아래 종단 확인 참고.

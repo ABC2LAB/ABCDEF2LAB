@@ -36,9 +36,10 @@ type productExplorationPolicy struct {
 	MCPURL string `json:"mcp_url"`
 	// MaxExternalRequests는 외부 통신 승인 모드에서 렌더링용 외부 자원 GET 상한이다. 0이면 외부 자원 없음.
 	MaxExternalRequests uint64 `json:"max_external_requests,omitempty"`
-	// DirectBash면 탐색 에이전트에 직접 Bash를 준다(C30). 명령은 진단 Bash와 같은 격리 실행 안에서 돌고 나가는 길은
-	// 직접 입구 하나다(exploresandbox). 엔진 컨테이너가 진단 Bash 샌드박스를 띄울 수 있어야 한다.
-	DirectBash bool `json:"direct_bash,omitempty"`
+	// DirectBash는 탐색 에이전트에 원본처럼 직접 Bash를 줄지다(C30). 비우면 켠다(원본 탐색 수준 복원), false면 끈다.
+	// 명령은 진단 Bash와 같은 격리 실행 안에서 돌고 나가는 길은 직접 입구 하나다(exploresandbox). 엔진 컨테이너가 진단 Bash
+	// 샌드박스를 띄울 수 없으면 그 회차는 Bash 없이 탐색한다.
+	DirectBash *bool `json:"direct_bash,omitempty"`
 }
 
 const (
@@ -95,14 +96,16 @@ type productExplorationHost struct {
 	roots               *x509.CertPool
 	mcpURL              string
 	maxExternalRequests uint64
-	// 직접 Bash(DirectBash 정책일 때만). caPEM은 경계 CA 사본, bashRoot는 호출 디렉터리를 둘 0700 디렉터리다(처음 쓸 때
+	// 직접 Bash(정책이 끄지 않았을 때). caPEM은 경계 CA 사본, bashRoot는 호출 디렉터리를 둘 0700 디렉터리다(처음 쓸 때
 	// 만든다. 호출 디렉터리는 호출이 끝날 때 지운다).
 	directBash bool
 	bashHelper string
-	caPEM      []byte
-	bashOnce   sync.Once
-	bashRoot   string
-	bashErr    error
+	// bashRootParent는 호출 디렉터리 루트를 만들 곳이다(비면 시스템 임시 디렉터리).
+	bashRootParent string
+	caPEM          []byte
+	bashOnce       sync.Once
+	bashRoot       string
+	bashErr        error
 }
 
 func newProductExplorationHost(p productExplorationPolicy, caPEM []byte) (*productExplorationHost, error) {
@@ -115,7 +118,7 @@ func newProductExplorationHost(p productExplorationPolicy, caPEM []byte) (*produ
 	}
 	proxy, _ := url.Parse(p.DirectProxy)
 	return &productExplorationHost{control: exploreboundary.ControlClient{Path: p.ControlSocket, Timeout: explorationControlTimeout}, proxy: proxy, roots: roots,
-		mcpURL: p.MCPURL, maxExternalRequests: p.MaxExternalRequests, directBash: p.DirectBash, bashHelper: explorationBashHelper,
+		mcpURL: p.MCPURL, maxExternalRequests: p.MaxExternalRequests, directBash: p.DirectBash == nil || *p.DirectBash, bashHelper: explorationBashHelper,
 		caPEM: append([]byte(nil), caPEM...)}, nil
 }
 
@@ -125,9 +128,13 @@ func (h *productExplorationHost) sessionBash() (*exploresandbox.DirectBash, erro
 	if !h.directBash {
 		return nil, nil
 	}
+	// helper를 쓸 수 없는 설치(샌드박스 미탑재)는 디렉터리를 만들지 않고 바로 Bash 없이 간다.
+	if _, err := os.Stat(h.bashHelper); err != nil {
+		return nil, err
+	}
 	h.bashOnce.Do(func() {
 		// MkdirTemp는 0700으로 만든다(exploresandbox가 정확히 0700을 요구).
-		h.bashRoot, h.bashErr = os.MkdirTemp("", "explore-bash-")
+		h.bashRoot, h.bashErr = os.MkdirTemp(h.bashRootParent, "explore-bash-")
 	})
 	if h.bashErr != nil {
 		return nil, h.bashErr

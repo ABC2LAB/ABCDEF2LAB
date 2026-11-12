@@ -103,9 +103,9 @@ func TestProductExplorationHostDirectBashThroughRealBoundary(t *testing.T) {
 	}
 }
 
-// 정책이 direct_bash를 켜지 않으면 Bash를 주지 않고(helper가 있어도), 켜면 준다. 켰어도 helper를 쓸 수 없으면 Bash 없이
+// direct_bash를 비우면 켜고(원본 탐색 수준), false면 helper가 있어도 끈다. 켰어도 helper를 쓸 수 없으면 Bash 없이
 // 탐색한다(host는 만든다).
-func TestProductExplorationHostDirectBashIsOptInAndDegrades(t *testing.T) {
+func TestProductExplorationHostDirectBashDefaultAndOptOut(t *testing.T) {
 	f := newHostFixture(t)
 	helper := filepath.Join(t.TempDir(), "helper")
 	if err := os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o700); err != nil {
@@ -117,22 +117,41 @@ func TestProductExplorationHostDirectBashIsOptInAndDegrades(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		h.bashHelper = helperPath
+		h.bashHelper, h.bashRootParent = helperPath, t.TempDir()
 		host, err := h.factory(f.rec, f.current, f.digest, nil, 4096)(t.Context(), f.binding, &agent.Worker{})
 		if err != nil || host.Session.Boundary == nil {
 			t.Fatalf("host: %v", err)
 		}
 		return host
 	}
-	if host := build(f.policy, helper); host.Session.DirectBash != nil {
-		t.Fatal("direct Bash without the policy flag")
+	if host := build(f.policy, helper); host.Session.DirectBash == nil {
+		t.Fatal("direct Bash off when the policy left it unset")
 	}
-	on := f.policy
-	on.DirectBash = true
-	if host := build(on, helper); host.Session.DirectBash == nil {
-		t.Fatal("direct_bash policy did not give a direct Bash")
+	off, on := false, true
+	disabled := f.policy
+	disabled.DirectBash = &off
+	if host := build(disabled, helper); host.Session.DirectBash != nil {
+		t.Fatal("direct_bash false still gave a direct Bash")
 	}
-	if host := build(on, filepath.Join(t.TempDir(), "missing-helper")); host.Session.DirectBash != nil {
+	enabled := f.policy
+	enabled.DirectBash = &on
+	if host := build(enabled, helper); host.Session.DirectBash == nil {
+		t.Fatal("direct_bash true did not give a direct Bash")
+	}
+	if host := build(enabled, filepath.Join(t.TempDir(), "missing-helper")); host.Session.DirectBash != nil {
 		t.Fatal("unusable helper still gave a direct Bash")
+	}
+	// 샌드박스가 없는 설치는 호출 디렉터리 루트도 만들지 않는다.
+	h, err := newProductExplorationHost(enabled, f.caPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	h.bashHelper, h.bashRootParent = filepath.Join(parent, "missing-helper"), parent
+	if _, err := h.factory(f.rec, f.current, f.digest, nil, 4096)(t.Context(), f.binding, &agent.Worker{}); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(parent); err != nil || len(entries) != 0 {
+		t.Fatalf("missing helper still created %d entries", len(entries))
 	}
 }
