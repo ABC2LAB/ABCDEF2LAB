@@ -11,6 +11,7 @@
   - 결정: 예약은 이미 상한으로 셌다(`Reserved*`). 실패한 호출은 **예약한 양을 쓴 것으로 계산**하고(`InputTokens += 예약 입력`, `OutputTokens += 예약 출력`, 비용은 예약 비용), 실행을 막지 않는다. 대신 `UnknownUsageCalls`를 하나 늘리고 사용량이 "상한 계산"임을 표시한다. 다음 호출의 예산 검사는 지금처럼 예약 합계로 한다. 이렇게 닫은 호출은 `UsageKnown`으로 다음 호출을 막지 않는다(동시 호출 때의 호출별 상태는 C28 결정 2).
   - 막는 경우는 그대로 둔다: 예산 소진, 영속 기록(`observe`) 실패, 외부 제공자 정책이 막힘(아래 C06의 설정 오류).
   - 실행 중 운영자 중지·대상 철회로 끊긴 호출은 "결과 불명"이 아니라 **중지**로 기록한다(문맥 취소가 원인이면 실행 결과는 `stopped`).
+  - 사용량 회계와 실행 결과는 다른 축이다. 중지로 끊긴 호출도 사용량을 못 받았으면 예약량으로 계산해 `UnknownUsageCalls`에 센다. 실행이 중지됐는지는 실행 상태가 따로 말한다([상태 값 계약](contracts/run-outcome-states.md) 3.3).
 - **C06 — OpenRouter 200 아닌 응답 한 번에 영구 차단**(`llmpolicy/openrouter_transport.go`).
   - 결정: 응답을 셋으로 나눈다. ① 설정 오류(401·403·400 등 4xx, 응답 형식 위반)는 지금처럼 정책을 막는다. ② 일시 오류(429, 5xx, 연결 실패)는 그 호출만 실패로 두고 막지 않는다. 다시 보낼 때는 같은 예약 규칙(C05)으로 새로 예약한다. 연속 일시 오류 상한(설정 값, 기본은 제품 상한과 같은 방식으로 설치 설정에 둔다)에 닿으면 그때 막는다. ③ 정상 200은 지금과 같다.
   - 비용 대조(`next.CostMicros`)는 지금 그대로다. 일시 오류 호출의 비용은 제공자 통계로 확인되면 실제 값, 아니면 C05의 예약 비용으로 센다.
@@ -35,6 +36,7 @@
   - 결정: intent 결과를 다섯으로 나눈다: `done`, `policy_limited`(E② 거부·미지원, 지금 있음), `incomplete`(턴 소진·시간 초과·Bash 미호출·일시 실패), `unknown`(결과 불명 송신이 있음), `stopped`(운영자 중지·철회). 실행 결과는 감사가 닫히면 **`complete`(모두 done·policy_limited) 또는 `partial`(incomplete·unknown이 섞임)** 이고, 실패가 아니다. 실패는 감사·E② 집행·격리·권한 실패뿐이다.
   - Planner 라운드·도구 호출 상한 도달은 실패가 아니라 **실행 마감 사유 `budget_limited`** 로 끝낸다. 찾은 후보·근거는 보존한다.
   - unknown intent의 쓰기 요청은 다시 보내지 않고(개발 계획), 그 intent에 기대는 후속 intent만 보류한다.
+  - 상태 값·칸·전달 경로는 [상태 값 계약](contracts/run-outcome-states.md)이 정한다. 거기서 `no_intents`는 마감 사유가 아니라 실행 결과(`outcome`) 값으로 둔다.
 - **C09 — 마지막 호출 하나가 intent 결과를 정함**(`agent/e2_http.go` 마지막 분류).
   - 결정: intent 결과는 그 intent의 **모든 호출 분류를 모아서** 정한다(가장 강한 것: unknown > incomplete > policy_limited > done). 마지막 호출이 `tool_failure`여도 앞에서 완료한 호출의 관찰은 남긴다. trusted 대조(`EqualCallResults`)가 깨지면 그 intent만 `unknown`으로 두고, 감사 무결성이 깨진 경우(감사 저장 실패)만 실행을 멈춘다.
 - **C10 — 진단 로그 실패·상태 조회 1회 실패가 실행 취소**(`cmd/first-controlled-diagnosis/url_preparation_runtime.go`).
