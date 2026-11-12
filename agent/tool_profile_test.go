@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	actool "github.com/Autumn-27/norma/tool"
+	"reflect"
 )
 
 func profileToolNames(tools []actool.CoreTool) string {
@@ -140,5 +141,53 @@ func TestE2HTTPWorkerToolSetHasNoSendOrConfirmHooks(t *testing.T) {
 	}
 	if toolset.taskID != 7 || toolset.ownerNode != 22 || toolset.worker != "worker-1" || toolset.CoverageDisabled() {
 		t.Fatalf("tool set binding: task=%d owner=%d", toolset.taskID, toolset.ownerNode)
+	}
+}
+
+// 진단 Planner의 add_task_scope는 원본 동작·스키마 그대로이고, 모델에 보이는 설명만 "송신 범위는 그대로"로 바뀐다.
+// 원본 설명("authorization boundary"·"deliberately widening")이 남으면 모델이 승인 밖 호스트로 intent를 만들어
+// 거부 상한에 닿을 수 있다.
+func TestDiagnosisPlannerTaskScopeDescriptionKeepsBehavior(t *testing.T) {
+	ts := NewToolSet(nil, "")
+	var original actool.CoreTool
+	for _, tool := range ts.PlannerTools() {
+		if tool.Name() == "add_task_scope" {
+			original = tool
+		}
+	}
+	if original == nil || !strings.Contains(original.Description(), "authorization boundary") {
+		t.Fatal("원본 add_task_scope 설명 전제가 바뀜")
+	}
+	planner, err := diagnosisPlannerProfile.selectTools(ts.PlannerTools(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scoped actool.CoreTool
+	for _, tool := range planner {
+		if tool.Name() == "add_task_scope" {
+			scoped = tool
+		}
+	}
+	if scoped == nil || scoped.Description() != diagnosisTaskScopeDescription || strings.Contains(scoped.Description(), "authorization boundary") ||
+		!strings.Contains(scoped.Description(), "does NOT change") || !reflect.DeepEqual(scoped.InputSchema(), original.InputSchema()) || scoped.Prompt() != original.Prompt() {
+		t.Fatalf("진단 판 add_task_scope 설명·스키마가 틀림: %q", scoped.Description())
+	}
+	// 동작은 원본 그대로다: 자산 저장소가 없는 ToolSet이면 원본과 같은 오류 결과를 낸다.
+	input := json.RawMessage(`{"kind":"ip","value":"192.0.2.1","reason":"fixture"}`)
+	got, gotErr := scoped.Call(context.Background(), input, nil)
+	want, wantErr := original.Call(context.Background(), input, nil)
+	if (gotErr == nil) != (wantErr == nil) || !reflect.DeepEqual(got, want) {
+		t.Fatalf("진단 판 add_task_scope 동작이 원본과 다름: %+v / %+v", got, want)
+	}
+	// 다른 Planner 도구는 원본 설명 그대로다.
+	for _, tool := range planner {
+		if tool.Name() == "add_task_scope" {
+			continue
+		}
+		for _, base := range ts.PlannerTools() {
+			if base.Name() == tool.Name() && base.Description() != tool.Description() {
+				t.Fatalf("%s 설명이 바뀜", tool.Name())
+			}
+		}
 	}
 }
