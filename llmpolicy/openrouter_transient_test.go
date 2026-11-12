@@ -211,3 +211,24 @@ func TestOpenRouterDialFailureClassification(t *testing.T) {
 		})
 	}
 }
+
+// 영구 HTTP 상태는 본문이 끊겨도 일시 오류가 되지 않는다. 일시 상태(429·5xx)의 본문 끊김은 일시 오류다.
+func TestOpenRouterBrokenBodyKeepsStatusClassification(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		blocked bool
+	}{{400, true}, {401, true}, {403, true}, {302, true}, {200, false}, {429, false}, {503, false}} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			p := openRouterV2Fixture(t, 3)
+			client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: tc.status, Body: openRouterBrokenBody{}, Header: make(http.Header)}, nil
+			}))
+			if _, err := client.Do(openRouterRequest()); err == nil {
+				t.Fatal("broken body accepted")
+			}
+			if p.Snapshot().Blocked != tc.blocked {
+				t.Fatalf("status %d with broken body blocked=%v", tc.status, p.Snapshot().Blocked)
+			}
+		})
+	}
+}

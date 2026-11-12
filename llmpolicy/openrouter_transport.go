@@ -279,8 +279,18 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	}
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, openRouterResponseLimit+1))
 	_ = resp.Body.Close()
-	// 본문을 읽다 끊긴 응답과 429·5xx는 일시 오류다. 크기 초과·그 밖의 상태는 설정 오류로 막는다.
-	transient = readErr != nil && openRouterTransientError(readErr) || readErr == nil && len(data) <= openRouterResponseLimit && openRouterTransientStatus(resp.StatusCode)
+	// 상태를 먼저 본다. 크기 초과와 영구 상태(4xx·1xx·3xx)는 본문이 끊겨도 설정 오류로 막는다. 정상 200의 본문이
+	// 끊긴 경우와 429·5xx만 일시 오류다(P3 결정안 C06).
+	switch {
+	case len(data) > openRouterResponseLimit:
+		transient = false
+	case resp.StatusCode == http.StatusOK:
+		transient = readErr != nil && openRouterTransientError(readErr)
+	case openRouterTransientStatus(resp.StatusCode):
+		transient = readErr == nil || openRouterTransientError(readErr)
+	default:
+		transient = false
+	}
 	if readErr != nil || len(data) > openRouterResponseLimit || resp.StatusCode != 200 {
 		switch {
 		case resp.StatusCode == 401:
