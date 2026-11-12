@@ -52,6 +52,7 @@ import { urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
+import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 
 const u = vi.mocked(url);
@@ -306,7 +307,7 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(screen.queryByLabelText(/작업 이름/)).toBeNull();
     expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
     // 제외 경로 칸의 흐린 예시는 안전 장치 (?) 메모와 같은 주소 (시안 v50)
-    expect(screen.getByLabelText(/제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete?id=3");
+    expect(screen.getByLabelText(/제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete");
     // 작업 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     const send = screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
@@ -319,6 +320,17 @@ describe("서버 방식 확인 (catalog)", () => {
       profile_id: "profile-1",
       workflow_mode: "user_approval_v1",
     });
+  });
+
+  it("제외 경로 흐린 예시는 실제 입력 검사를 통과하고, query 가 든 값은 막힌다 (경로 단위)", () => {
+    const mode = "user_approval_v1" as const;
+    expect(url.urlDiagnosisInput("https://target.example/", "profile-1", "", mode, EXCLUDE_EXAMPLE)).toEqual({
+      target_url: "https://target.example/",
+      profile_id: "profile-1",
+      workflow_mode: mode,
+      excluded_paths: EXCLUDE_EXAMPLE,
+    });
+    expect(() => url.urlDiagnosisInput("https://target.example/", "profile-1", "", mode, "/delete?id=3")).toThrow();
   });
 
   it("탐색 흐름이 없는 프로필은 '점검 설정' 칸을 그리지 않는다", async () => {
@@ -836,6 +848,10 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   expect(note).toBeVisible();
   expect(note).toHaveTextContent("GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다");
   expect(note).toHaveTextContent("/delete?id=3");
+  // 제외 경로는 경로 단위: query 없이 넣으면 된다는 안내
+  expect(note).toHaveTextContent("/delete처럼 경로만 넣으면 query 와 상관없이 빠집니다");
+  // 경고 줄 아래 짧은 고지는 기본으로 보인다 (비차단 리뷰 반영)
+  expect(screen.getByText("조회 요청도 데이터를 바꿀 수 있고, 서버는 검증하지 않음")).toBeVisible();
   // Esc · 바깥 클릭으로 닫힌다
   fireEvent.keyDown(document, { key: "Escape" });
   expect(note).not.toBeVisible();

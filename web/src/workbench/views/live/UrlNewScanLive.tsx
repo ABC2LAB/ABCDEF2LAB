@@ -60,6 +60,9 @@ function Rule({ t, sub, warn = false, tip }: { t: ReactNode; sub?: string; warn?
   );
 }
 
+/** 제외 경로 칸의 흐린 예시. 경로 단위라 query(?) 없이 — 서버 · 웹 입력 검사가 '?' 를 받지 않는다. */
+export const EXCLUDE_EXAMPLE = "/logout\n/delete";
+
 /** live 새 점검 (URL 진단). */
 export function UrlNewScanLive() {
   const { goTo } = useShell();
@@ -392,7 +395,7 @@ export function UrlNewScanLive() {
                     disabled={g.inputLocked}
                     maxLength={2048}
                     onChange={(e) => setExcluded(e.target.value)}
-                    placeholder={"/logout\n/delete?id=3"}
+                    placeholder={EXCLUDE_EXAMPLE}
                   />
                 </div>
               </div>
@@ -463,6 +466,7 @@ export function UrlNewScanLive() {
                 <Rule
                   warn
                   t="열면 지워지는 주소는 빼 두세요"
+                  sub="조회 요청도 데이터를 바꿀 수 있고, 서버는 검증하지 않음"
                   tip={
                     <HelpTip id="luGetTip" label="설명 보기">
                       <b>어떤 사이트는 주소를 열기만 해도 데이터가 지워집니다.</b>
@@ -476,7 +480,8 @@ export function UrlNewScanLive() {
                       <br />
                       <br />
                       GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다. 점검 전에{" "}
-                      <b>제외 경로</b>에 넣어 두세요.
+                      <b>제외 경로</b>에 넣어 두세요. 제외 경로에는 <span className={s.mono}>/delete</span>처럼 경로만
+                      넣으면 query 와 상관없이 빠집니다(<span className={s.mono}>?</span> 가 든 값은 받지 않습니다).
                     </HelpTip>
                   }
                 />
