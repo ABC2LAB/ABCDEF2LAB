@@ -42,6 +42,11 @@ type E2HTTPRequest struct {
 	TaskIDNumber  int64
 	ExplorationID int64
 	IntentID      int64
+	// ExplorationRequests는 같은 회차의 탐색 경계가 승인 대상으로 전달한 요청 수다. 공급자는 진단 E② 예산을
+	// 회차 승인 수 N에서 이 몫을 뺀 값으로만 등록한다. ExplorationUnknown이면 탐색 몫을 확인하지 못한 것이고
+	// 진단 예산을 열지 않는다(탐색+진단 ≤ N, P1-E).
+	ExplorationRequests uint64
+	ExplorationUnknown  bool
 }
 
 // Release는 성공한 프로세스/감사 drain 뒤 공급자가 가진 자원을 해제한다.
@@ -122,11 +127,21 @@ func e2HTTPCloneEvaluation(value *e2proxy.EvaluationCallerContext) *e2proxy.Eval
 	return &copy
 }
 
+// ExplorationCharge는 탐색 단계가 회차 대상 요청 예산에서 쓴 몫이다. 경계를 열지 않았거나 경계가 마감 상태를
+// 확정했을 때만 Known이다. 영값은 확인하지 못한 몫이라 진단 예산을 열지 않는다(P1-E).
+type ExplorationCharge struct {
+	Requests uint64
+	Known    bool
+}
+
 // E2HTTPExplorationStage는 호스트가 준비한 별도 탐색 단계다. 진단 runner나 토큰을 받지 않는다.
-type E2HTTPExplorationStage func(context.Context, *Task) error
+type E2HTTPExplorationStage func(context.Context, *Task) (ExplorationCharge, error)
 
 type E2HTTPRuntimeOptions struct {
-	Exploration             E2HTTPExplorationStage
+	Exploration E2HTTPExplorationStage
+	// RunRequests는 회차 승인 요청 수 N이다. 탐색 단계가 있으면 탐색 몫을 뺀 나머지만 진단에 쓴다.
+	// 0이면 탐색 몫을 나눌 근거가 없어 탐색 뒤 진단 예산을 열지 않는다.
+	RunRequests             uint64
 	Workflow                *diagnosisflow.Controller
 	PromptProjection        bool
 	RequestApprovals        *RequestApprovalService
@@ -182,6 +197,7 @@ type e2HTTPRuntimeTask struct {
 	plannerRounds     uint64
 	explorationDone   bool
 	explorationErr    error
+	explorationCharge ExplorationCharge
 	explorationBudget *explorationBudgetClosure
 	runs              map[int64]uint64
 	active            map[int64]chan struct{}
@@ -329,7 +345,7 @@ func (r *E2HTTPRuntime) prepareExploration(ctx context.Context, task *Task, t *e
 	t.mu.Unlock()
 	bound, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(t.ctx, cancel)
-	err := r.options.Exploration(bound, task)
+	charge, err := r.options.Exploration(bound, task)
 	if errors.Is(err, ErrE2HTTPBudgetLimited) {
 		task.firstDiagnosisBudgetLimited.Store(true)
 	}
@@ -347,8 +363,22 @@ func (r *E2HTTPRuntime) prepareExploration(ctx context.Context, task *Task, t *e
 	}
 	t.explorationDone = true
 	t.explorationErr = err
+	t.explorationCharge = charge
 	t.mu.Unlock()
 	return err
+}
+
+// diagnosisAllowanceLocked는 탐색 몫을 뺀 진단 요청 수를 판정한다. 탐색 단계가 없으면 기존 E② 예산 그대로다.
+// 탐색 몫을 모르거나 회차 승인 수를 다 썼으면 진단 송신을 열지 않는다. 호출자는 t.mu를 보유한다.
+func (r *E2HTTPRuntime) diagnosisAllowanceLocked(t *e2HTTPRuntimeTask) (requests uint64, unknown bool, exhausted bool) {
+	if r.options.Exploration == nil {
+		return 0, false, false
+	}
+	charge := t.explorationCharge
+	if !charge.Known || r.options.RunRequests == 0 {
+		return 0, true, true
+	}
+	return charge.Requests, false, charge.Requests >= r.options.RunRequests
 }
 
 func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (context.Context, error) {
@@ -449,6 +479,12 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 		t.mu.Unlock()
 		return ctx, nil, ErrE2HTTPBudgetLimited
 	}
+	if _, _, exhausted := r.diagnosisAllowanceLocked(t); t.lease == nil && exhausted {
+		// 탐색이 회차 요청 예산을 다 썼거나 몫을 확인하지 못했다. 진단 자원·DB 조회 없이 예산 한도로 마감한다(P1-E).
+		t.mu.Unlock()
+		task.firstDiagnosisBudgetLimited.Store(true)
+		return ctx, nil, ErrE2HTTPBudgetLimited
+	}
 	t.mu.Unlock()
 	actual, readErr := t.store.GetNode(intent.ID)
 	if readErr != nil || actual == nil || actual.ID != intent.ID || actual.Kind != db.KindIntent || (actual.State != "open" && actual.State != "running") || !bytes.Equal(actual.Payload, intent.Payload) {
@@ -459,9 +495,11 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	}
 	t.mu.Lock()
 	lease := t.lease
+	// 공급자도 같은 몫으로 다시 판정한다. 위 검사와 어긋나도 공급자가 N-E 넘게 등록하지 않는다.
+	explored, chargeUnknown, _ := r.diagnosisAllowanceLocked(t)
 	t.mu.Unlock()
 	if lease == nil {
-		acquired, acquireErr := r.options.Acquire(t.ctx, E2HTTPRequest{TaskID: t.id, TaskIDNumber: t.number, ExplorationID: t.exploration, IntentID: actual.ID})
+		acquired, acquireErr := r.options.Acquire(t.ctx, E2HTTPRequest{TaskID: t.id, TaskIDNumber: t.number, ExplorationID: t.exploration, IntentID: actual.ID, ExplorationRequests: explored, ExplorationUnknown: chargeUnknown})
 		t.mu.Lock()
 		t.lease = &acquired
 		lease = t.lease

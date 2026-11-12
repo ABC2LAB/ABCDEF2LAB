@@ -59,8 +59,13 @@ func TestProductExplorationDefaultAdapterRecordsNotRunWithoutDockerOrModel(t *te
 	if stage == nil {
 		t.Fatal("product stage not connected")
 	}
-	if err := stage(&server.Server{})(t.Context(), &server.Task{ID: "7"}); err != nil {
+	charge, err := stage(&server.Server{})(t.Context(), &server.Task{ID: "7"})
+	if err != nil {
 		t.Fatal("missing production adapter did not retain legacy fallback", err)
+	}
+	// 경계를 열지 않은 NOT_RUN은 대상 송신이 없으므로 진단 예산을 줄이지 않는다(P1-E).
+	if !charge.Known || charge.Requests != 0 {
+		t.Fatalf("NOT_RUN exploration charged the run request budget: %+v", charge)
 	}
 	snapshot, _ := flow.Snapshot()
 	if snapshot.ExplorationStatus != "NOT_RUN" || snapshot.ExplorationReason != "boundary_unavailable" || snapshot.Stage != "crawling" || snapshot.InitialCompleted {

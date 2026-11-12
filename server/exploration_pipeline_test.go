@@ -259,14 +259,14 @@ func TestE2HTTPExplorationStageRunsOnceAndExcludesConcurrentDiagnosis(t *testing
 	entered, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	runtime, task := e2HTTPRuntimeFixture(t, func(o *E2HTTPRuntimeOptions) {
-		o.Exploration = func(ctx context.Context, got *Task) error {
+		o.Exploration = func(ctx context.Context, got *Task) (ExplorationCharge, error) {
 			calls.Add(1)
 			close(entered)
 			select {
 			case <-release:
-				return nil
+				return ExplorationCharge{Known: true}, nil
 			case <-ctx.Done():
-				return ctx.Err()
+				return ExplorationCharge{}, ctx.Err()
 			}
 		}
 	})
@@ -297,7 +297,10 @@ func TestE2HTTPExplorationStageRunsOnceAndExcludesConcurrentDiagnosis(t *testing
 func TestE2HTTPExplorationStageFailureCannotFallThroughOrReplay(t *testing.T) {
 	var calls atomic.Int32
 	runtime, task := e2HTTPRuntimeFixture(t, func(o *E2HTTPRuntimeOptions) {
-		o.Exploration = func(context.Context, *Task) error { calls.Add(1); return ErrExplorationClosure }
+		o.Exploration = func(context.Context, *Task) (ExplorationCharge, error) {
+			calls.Add(1)
+			return ExplorationCharge{}, ErrExplorationClosure
+		}
 	})
 	if err := runtime.AdmitTask(t.Context(), task); err != nil {
 		t.Fatal(err)
@@ -415,7 +418,9 @@ func TestExplorationPipelineRejectsURLOrAuthorityChangesBeforeHostFactory(t *tes
 
 func TestE2HTTPExplorationModelBudgetLimitKeepsTaskBudgetDisposition(t *testing.T) {
 	runtime, task := e2HTTPRuntimeFixture(t, func(o *E2HTTPRuntimeOptions) {
-		o.Exploration = func(context.Context, *Task) error { return ErrE2HTTPBudgetLimited }
+		o.Exploration = func(context.Context, *Task) (ExplorationCharge, error) {
+			return ExplorationCharge{}, ErrE2HTTPBudgetLimited
+		}
 	})
 	if err := runtime.AdmitTask(t.Context(), task); err != nil {
 		t.Fatal(err)
