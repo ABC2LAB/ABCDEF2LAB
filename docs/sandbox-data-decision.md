@@ -31,6 +31,7 @@
 
 1. 루프 복원 결정안 skills 줄 정정(이 PR).
 2. 탐색 직접 샌드박스에 `api-recon` 지시문·파이썬 스크립트 읽기 전용 마운트와 탐색 프로필의 skills 도구(탐색 에이전트 루프 PR과 같이).
+   - 진행(2026-11-13): 탐색 직접 Bash의 typed adapter(`exploresandbox.DirectBash`)와 탐색 프로필의 Bash 도구를 넣었다. 제품 host 연결은 실제 경계 양성/음성 대조 뒤다. `api-recon` 스크립트 마운트와 skills 도구는 아직이고, [host 의무](contracts/exploration-host-adapter-obligations.md#직접-도구와-api-recon)의 metadata-only 조건과 같이 정한다. 정적 수집은 서버 fetch의 Go 파서가 이미 한다.
 
 ## 4. 열린 항목
 
