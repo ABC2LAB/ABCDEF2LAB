@@ -135,6 +135,9 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	if _, ok := productPolicyBounds(c); !ok {
 		return 2
 	}
+	if _, ok := productRunSecondsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil); !ok {
+		return 2
+	}
 	for _, d := range []string{"config", "data", "keys", "state", "runs", "ipc"} {
 		if checkDirectory(filepath.Join(*root, d), true) != nil {
 			return 1
@@ -288,10 +291,13 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 			return errPreparation
 		}
 		launch := launchConfig{Format: launchFormat, Mode: "general_http", ListenAddr: "127.0.0.1:28080", DataDir: filepath.Join(root, "data"), KeyDir: filepath.Join(root, "keys"), SkillDir: "/app/skills", ModelExecutionMode: mode, ModelProfileID: id, ModelFormat: "openai", ModelBaseURL: base, ModelRef: model, RuntimeDSNFile: filepath.Join(config, "runtime.dsn"), ShutdownTimeoutSeconds: 20, HTTP: &httpLaunch{PolicyFile: filepath.Join(config, "policy.json"), AuthorityFile: filepath.Join(config, "authority-template.json"), AuthorityRoot: config}}
-		budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 20 * int64(contextK) * 1024, OutputTokens: 20 * int64(output), DurationSeconds: 180}
+		runSeconds, ok := productRunSecondsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil)
+		if !ok {
+			return errPreparation
+		}
+		budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 20 * int64(contextK) * 1024, OutputTokens: 20 * int64(output), DurationSeconds: runSeconds}
 		if c.TargetPolicy.Workflow != nil {
 			budget.Requests = c.TargetPolicy.MaxRequests
-			budget.DurationSeconds = 600
 		}
 		manifestPath := filepath.Join(config, mode+"-model.json")
 		var manifestSHA string
