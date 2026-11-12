@@ -243,3 +243,51 @@ func TestAuthPrepSkipsPerRequestApproval(t *testing.T) {
 		t.Fatalf("target saw %v", got)
 	}
 }
+
+// 실행 뒤에 더한 보호 값(인증 준비 비밀번호)은 대상 응답에 그대로 있으면 그 응답을 통째로 보류하고 출력에서도 가린다.
+func TestAddProtectedValuesWithholdReflections(t *testing.T) {
+	const password = "seeded-password-33dd"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/allowed/echo" {
+			io.WriteString(w, "your password is "+password)
+			return
+		}
+		io.WriteString(w, "plain page")
+	}))
+	defer srv.Close()
+	e, call := coreOpen(t, coreConfig(t, srv.URL, &coreRecorder{}, 5))
+	if err := e.AddProtectedValues([]byte(password)); err != nil {
+		t.Fatal(err)
+	}
+	if resp, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/echo")); !errors.Is(err, ErrWithheld) || resp != nil || r.Reason != Withheld {
+		t.Fatalf("reflected protected value delivered: %v %+v", err, r)
+	}
+	if resp, _, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/page")); err != nil || resp == nil {
+		t.Fatalf("unrelated response withheld: %v", err)
+	}
+	if out := string(e.RedactOutput([]byte("x " + password))); strings.Contains(out, password) {
+		t.Fatal("protected value not redacted")
+	}
+	for name, v := range map[string][]byte{"short": []byte("12345"), "huge": make([]byte, maxRedactValueBytes+1)} {
+		if e.AddProtectedValues(v) == nil {
+			t.Errorf("%s protected value accepted", name)
+		}
+	}
+	if e.AddProtectedValues() == nil {
+		t.Error("empty protected value list accepted")
+	}
+}
+
+// 검사 상한을 설정으로 고정한 실행에서는 상한 사이 조건을 깨는 보호 값을 받지 않는다(반사 검사가 전달 구간 끝을 놓치지 않게).
+func TestAddProtectedValuesKeepsScanCondition(t *testing.T) {
+	cfg := coreConfig(t, "http://127.0.0.1:1", &coreRecorder{}, 1)
+	cfg.Limits.MaxResponseBodyBytes = 4096
+	cfg.Limits.MaxResponseScanBytes = 4096 + 9
+	e, _ := coreOpen(t, cfg)
+	if err := e.AddProtectedValues([]byte("ten-bytes!")); err != nil {
+		t.Fatalf("value within the scan condition rejected: %v", err)
+	}
+	if err := e.AddProtectedValues([]byte("eleven-byte")); err == nil {
+		t.Fatal("value breaking the scan condition accepted")
+	}
+}
