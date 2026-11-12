@@ -73,6 +73,16 @@ func compactProjection(s Snapshot) Snapshot {
 					changed = true
 				}
 			}
+			// 그래도 넘으면 보고된 요청 모양(이름 목록)을 지운다. 범위·선택에는 쓰지 않는 보조 정보다.
+			if !changed {
+				for i := range s.Endpoints {
+					e := &s.Endpoints[i]
+					if len(e.QueryKeys) > 0 || len(e.BodyKeys) > 0 || e.ContentType != "" {
+						e.QueryKeys, e.BodyKeys, e.ContentType = nil, nil, ""
+						changed = true
+					}
+				}
+			}
 			if !changed {
 				return s
 			}
