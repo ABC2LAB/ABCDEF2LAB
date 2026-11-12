@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -21,7 +22,84 @@ import (
 var (
 	ErrWorkspaceTooLarge = errors.New("e2sandbox: workspace exceeds the scratch limit")
 	ErrWorkspaceInvalid  = errors.New("e2sandbox: workspace archive invalid")
+	ErrWorkspaceNotFound = errors.New("e2sandbox: workspace entry not found")
 )
+
+// WorkspaceEntry는 작업 공간 항목 하나다(파일 도구 LS용). 이름은 작업 공간 기준 상대 경로의 마지막 조각이다.
+type WorkspaceEntry struct {
+	Name string
+	Dir  bool
+	Size int64
+}
+
+// ReadWorkspaceFile은 검증된 작업 공간 tar에서 일반 파일 하나의 내용을 돌려준다(파일 도구 Read용). 디렉터리거나
+// 없으면 ErrWorkspaceNotFound다.
+func ReadWorkspaceFile(archive []byte, name string, contentLimit uint64) ([]byte, error) {
+	if !validWorkspaceName(name) {
+		return nil, ErrWorkspaceInvalid
+	}
+	if err := ValidateWorkspace(archive, contentLimit); err != nil {
+		return nil, err
+	}
+	tr := tar.NewReader(bytes.NewReader(archive))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF || len(archive) == 0 {
+			return nil, ErrWorkspaceNotFound
+		}
+		if err != nil {
+			return nil, ErrWorkspaceInvalid
+		}
+		if hdr.Typeflag == tar.TypeReg && hdr.Name == name {
+			out, err := io.ReadAll(io.LimitReader(tr, hdr.Size))
+			if err != nil || int64(len(out)) != hdr.Size {
+				return nil, ErrWorkspaceInvalid
+			}
+			return out, nil
+		}
+	}
+}
+
+// ListWorkspace는 dir 바로 아래 항목을 이름 순으로 돌려준다(파일 도구 LS용). dir ""는 맨 위다. dir이 디렉터리가
+// 아니면 ErrWorkspaceNotFound다.
+func ListWorkspace(archive []byte, dir string, contentLimit uint64) ([]WorkspaceEntry, error) {
+	if dir != "" && !validWorkspaceName(dir) {
+		return nil, ErrWorkspaceInvalid
+	}
+	if err := ValidateWorkspace(archive, contentLimit); err != nil {
+		return nil, err
+	}
+	found := dir == ""
+	var out []WorkspaceEntry
+	tr := tar.NewReader(bytes.NewReader(archive))
+	for len(archive) > 0 {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, ErrWorkspaceInvalid
+		}
+		name := strings.TrimSuffix(hdr.Name, "/")
+		if hdr.Typeflag == tar.TypeDir && name == dir {
+			found = true
+			continue
+		}
+		parent := path.Dir(name)
+		if parent == "." {
+			parent = ""
+		}
+		if parent != dir {
+			continue
+		}
+		out = append(out, WorkspaceEntry{Name: path.Base(name), Dir: hdr.Typeflag == tar.TypeDir, Size: hdr.Size})
+	}
+	if !found {
+		return nil, ErrWorkspaceNotFound
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
 
 const (
 	// 작업 공간 항목(파일·디렉터리) 수 상한. tar 머리말 크기를 내용 상한 밖에서 묶는다.

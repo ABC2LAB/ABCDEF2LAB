@@ -25,3 +25,7 @@ host는 `file://`와 다른 로컬 자원 열기를 브라우저/도구 broker�
 모델 오류는 `model_error`, 실행 옵션 거부·기타 실행 불가는 `runtime_unavailable`, 턴/시간 상한은 `cap_exhausted`로 마감한다. 실패나 실행 전 거부를 completed로 기록하지 않는다. 취소·철회는 별도 사유를 유지한다.
 
 정리는 모델·도구 차단 뒤 browser_close, private Finalize, MCP DELETE, browser lease, Boundary Close 순서다. 각 host callback은 cleanup context의 deadline을 지키고 자식 프로세스·프로필·연결의 실제 소유 자원을 정리해야 한다. 단계 하나가 실패해도 뒤 정리를 시도한다. 오류는 원문 대신 고정 `Failure.Stage/Kind`와 안전한 서버 로그로 남긴다. 에러 문자열·명령·URL·세션 참조·헤더·본문·자격 값은 이 진단에 포함하지 않는다. 이 정보는 문제 단계 식별용이며 E② receipt·감사·E③ 증거를 만들지 않는다.
+
+## 회차 전체 대상 요청 예산
+
+운영 adapter를 공급하기 전 탐색과 진단의 최종 송신점이 같은 승인 회차의 총 요청 상한을 집행해야 한다. 현재 두 경로가 각각 N을 허용하는 조립만으로는 총 N을 보장하지 않는다. E+D≤N인 불변 할당이나 공통 원자적 원장 없이 이 adapter를 활성화하지 않는다. 실제 실패·결과불명·재시도와 종료 후 재사용까지 검사해야 한다. 현재 기본 nil은 유지하며, [제품 pipeline의 남은 예산 결속](../implementation/exploration-product-pipeline.md#운영-활성화-전에-남은-회차-요청-예산-결속)에 구현 전제와 한계를 기록한다.

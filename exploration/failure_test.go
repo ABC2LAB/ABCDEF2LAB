@@ -18,6 +18,11 @@ func TestFailureReportsOnlyFixedStageAndClassification(t *testing.T) {
 	if failure.Stage != "operation" || failure.Kind != "operation_failed" || !errors.Is(failure, ErrUnavailable) || strings.Contains(output.String()+failure.Error(), "fixture-private-marker") {
 		t.Fatal("unsafe diagnostic error exposed raw values")
 	}
+	for _, stage := range []string{"worker_resolve", "host_factory", "host_capabilities", "session_open"} {
+		if got := ReportFailure(stage, errors.New("fixture-private-marker")); got.Stage != stage || got.Kind != "operation_failed" || strings.Contains(output.String()+got.Error(), "fixture-private-marker") {
+			t.Fatal("fixed pipeline failure stage was lost or exposed raw values")
+		}
+	}
 	for _, item := range []struct {
 		err  error
 		kind string

@@ -55,7 +55,11 @@ func (FirstDiagnosisHTTPApproval) GoString() string {
 }
 
 // 평가 제어 채널이 필요한 별도 배치만 관찰자를 명시적으로 연결한다.
+// ExplorationStageFactory는 기존 모델·예산 구성이 끝난 Server에서만 탐색 단계를 조립한다.
+type ExplorationStageFactory func(*Server) E2HTTPExplorationStage
+
 type FirstDiagnosisHTTPHooks struct {
+	Exploration      ExplorationStageFactory
 	Workflow         *diagnosisflow.Controller
 	CheckAuthority   func() error
 	RequestApprovals *RequestApprovalService

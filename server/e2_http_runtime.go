@@ -122,7 +122,11 @@ func e2HTTPCloneEvaluation(value *e2proxy.EvaluationCallerContext) *e2proxy.Eval
 	return &copy
 }
 
+// E2HTTPExplorationStage는 호스트가 준비한 별도 탐색 단계다. 진단 runner나 토큰을 받지 않는다.
+type E2HTTPExplorationStage func(context.Context, *Task) error
+
 type E2HTTPRuntimeOptions struct {
+	Exploration             E2HTTPExplorationStage
 	Workflow                *diagnosisflow.Controller
 	PromptProjection        bool
 	RequestApprovals        *RequestApprovalService
@@ -161,27 +165,30 @@ type E2HTTPRuntime struct {
 }
 
 type e2HTTPRuntimeTask struct {
-	id            string
-	number        int64
-	exploration   int64
-	store         *db.ExplorationStore
-	ctx           context.Context
-	cancel        context.CancelFunc
-	gate          chan struct{}
-	closeGate     chan struct{}
-	mu            sync.Mutex
-	closed        bool
-	blocked       bool
-	plannerRounds uint64
-	runs          map[int64]uint64
-	active        map[int64]chan struct{}
-	lease         *E2HTTPRunOptions
-	validLease    bool
-	control       *agent.E2HTTPControl
-	results       []e2runner.TrustedResult
-	resultsFailed bool
-	releaseCalled bool
-	releaseErr    error
+	id                string
+	number            int64
+	exploration       int64
+	store             *db.ExplorationStore
+	ctx               context.Context
+	cancel            context.CancelFunc
+	gate              chan struct{}
+	closeGate         chan struct{}
+	mu                sync.Mutex
+	closed            bool
+	blocked           bool
+	plannerRounds     uint64
+	explorationDone   bool
+	explorationErr    error
+	explorationBudget *explorationBudgetClosure
+	runs              map[int64]uint64
+	active            map[int64]chan struct{}
+	lease             *E2HTTPRunOptions
+	validLease        bool
+	control           *agent.E2HTTPControl
+	results           []e2runner.TrustedResult
+	resultsFailed     bool
+	releaseCalled     bool
+	releaseErr        error
 
 	promptFailed     bool // mu로 보호한다. 나머지 등록 상태는 gate 안에서만 접근한다.
 	promptRegistered bool
@@ -286,18 +293,76 @@ func e2HTTPTaskContext(ctx context.Context, taskctx context.Context) context.Con
 	return bound
 }
 
-func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (context.Context, error) {
-	if r.options.Workflow != nil {
-		if err := r.options.Workflow.BeforePlanning(ctx); err != nil {
-			return ctx, err
-		}
+// 별도 탐색이 끝나고 모든 lease가 닫혀야 Planner/진단 Worker를 받는다. nil은 기존 경로다.
+func (r *E2HTTPRuntime) prepareExploration(ctx context.Context, task *Task, t *e2HTTPRuntimeTask) error {
+	if r.options.Exploration == nil {
+		return nil
 	}
+	if r.options.CheckAuthority != nil && r.options.CheckAuthority(ctx) != nil {
+		return ErrE2HTTPHost
+	}
+	select {
+	case t.gate <- struct{}{}:
+		defer func() { <-t.gate }()
+	case <-ctx.Done():
+		return ErrE2HTTPHost
+	case <-t.ctx.Done():
+		return ErrE2HTTPHost
+	}
+	t.mu.Lock()
+	if t.closed || t.blocked || t.ctx.Err() != nil || ctx.Err() != nil {
+		t.mu.Unlock()
+		return ErrE2HTTPHost
+	}
+	if t.explorationDone {
+		err := t.explorationErr
+		t.mu.Unlock()
+		return err
+	}
+	if len(t.active) != 0 || t.lease != nil {
+		t.mu.Unlock()
+		return ErrE2HTTPBusy
+	}
+	t.mu.Unlock()
+	bound, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(t.ctx, cancel)
+	err := r.options.Exploration(bound, task)
+	if errors.Is(err, ErrE2HTTPBudgetLimited) {
+		task.firstDiagnosisBudgetLimited.Store(true)
+	}
+	if err == nil && bound.Err() != nil {
+		err = ErrE2HTTPHost
+	}
+	stop()
+	cancel()
+	proof, typedProof := err.(*explorationBudgetClosure)
+	validProof := typedProof && proof.validFlow()
+	t.mu.Lock()
+	// typed proof가 같은 task/run/Workflow에 결속되고 진단 자원이 전혀 없을 때만 보관한다.
+	if validProof && proof.workflow == r.options.Workflow && proof.binding.TaskID == t.id && proof.binding.RunRef == r.options.Expected.RunRef && t.lease == nil && !t.validLease && len(t.active) == 0 && len(t.runs) == 0 && len(t.results) == 0 && !t.resultsFailed && t.control.Snapshot().Calls == 0 {
+		t.explorationBudget = proof
+	}
+	t.explorationDone = true
+	t.explorationErr = err
+	t.mu.Unlock()
+	return err
+}
+
+func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (context.Context, error) {
 	t, err := r.taskFor(task)
 	if err != nil || ctx == nil || ctx.Err() != nil {
 		return ctx, ErrE2HTTPHost
 	}
 	if r.options.CheckAuthority != nil && r.options.CheckAuthority(ctx) != nil {
 		return ctx, ErrE2HTTPHost
+	}
+	if err := r.prepareExploration(ctx, task, t); err != nil {
+		return ctx, err
+	}
+	if r.options.Workflow != nil {
+		if err := r.options.Workflow.BeforePlanning(ctx); err != nil {
+			return ctx, err
+		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -350,6 +415,9 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t, err := r.taskFor(task)
 	if err != nil || ctx == nil || ctx.Err() != nil || intent == nil || intent.ID <= 0 || intent.Kind != db.KindIntent {
 		return ctx, nil, ErrE2HTTPHost
+	}
+	if err := r.prepareExploration(ctx, task, t); err != nil {
+		return ctx, nil, err
 	}
 	select {
 	case t.gate <- struct{}{}:
