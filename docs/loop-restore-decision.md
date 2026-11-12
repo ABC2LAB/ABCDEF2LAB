@@ -25,7 +25,7 @@
 | 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail). insert_assets는 열린 항목 5 뒤. 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지. 지금 E② 필터의 graph_overview·list_facts·get_worker_output·list_goals는 원본 Worker 목록에 없는 Planner 도구라 실제로 Worker에 들어간 적이 없고, 프로필에도 넣지 않는다 | DB 안 작업 |
 | insert_assets의 자동 보강(DNS·HTTP) | 진단 모드에서는 끈다. 자산 기록만 한다 | 서버가 발견 자산에 직접 보낸다. 필요하면 탐색 단계 몫 |
 | report_finding | 원본 이름·입력 형식으로 복원하되 진단 모드에서는 **확정이 아니라 진단 후보로 저장**한다(지금 `submit_diagnostic_candidate`와 같은 저장). 판정은 E③이 E② 기록으로 한다 | 규칙 5. 원본 프롬프트·skills가 report_finding을 부른다 |
-| traffic_search·traffic_get·traffic_blob | 복원 대상. 진단 요청이 어디에 기록되는지 먼저 확인하고(열린 항목 1), 요청 쪽 인증 헤더·쿠키는 이름만 보인다 | 규칙 2 |
+| traffic_search·traffic_get·traffic_blob | **진단 프로필에 넣지 않는다.** 진단 요청은 traffic 저장소에 기록되지 않는다(열린 항목 1 결과). 근거 묶기는 후보 제출의 call_ref가, 지난 응답 다시 보기는 C29의 출력 파일이 맡는다 | 빈 결과를 "요청 없음"으로 오해하게 하지 않는다 |
 
 ## 3. Worker 프롬프트 (C25)
 
@@ -63,6 +63,7 @@
 5. report_finding은 후보를 만들고 확정하지 않는다(규칙 5).
 6. 결과 불명 명령은 다시 보내지 않는다.
 7. 프롬프트 관측(`e2_prompt`)과 intent 예약·감사 결속은 지금처럼 남긴다.
+8. 진단 단계에 traffic 조회 도구가 없다. 진단 요청은 MITM 기록 프록시를 지나지 않고 E②를 지나기 때문이다.
 
 ## 7. 구현 순서
 
@@ -72,7 +73,7 @@
 4. WebFetch E② 판.
 5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
 6. C27(Worker 실행 중 Planner 깨우기)·kill_work·steer_work·C19는 **C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤.** Planner가 Worker 실행 중에 goal_met·kill_work를 부르면 진행 중인 E② 호출이 취소되고, 지금은 그 결과 불명이 실행 전체를 멈춘다.
-7. 파일 도구(C29와 같이)와 traffic 도구(열린 항목 1 뒤).
+7. 파일 도구(C29와 같이). traffic 도구는 넣지 않는다(열린 항목 1 결과).
 
 2단계를 구현하면서 5·6단계의 의존을 확인해 순서를 바꿨다. 지금은 Planner가 Worker가 모두 끝난 뒤에만 돌아서(C27) goal_met이 진행 중인 호출을 끊지는 않지만, 열린 intent가 남는 문제는 그대로다.
 
@@ -91,7 +92,9 @@
 
 ## 9. 열린 항목
 
-1. **traffic 도구의 기록 출처**: 진단 요청(E② 경유)이 traffic 저장소에 기록되는지 확인한다. 기록되지 않으면 E② 시도 결과 조회로 대신할지 정한다(6단계 전).
+1. ~~traffic 도구의 기록 출처~~ **확인함(2026-11-12)**: 진단 요청은 traffic 저장소에 기록되지 않는다. 원본 traffic 도구는 Worker Bash 환경의 `HTTP_PROXY`가 가리키는 MITM 기록 프록시(`traffic.Open`, `agent/worker.go` 환경 줄)를 읽는다. 진단 Bash는 샌드박스 안에서 E② 중계 주소를 프록시로 받고(`e2sandbox/helper_linux.go` 환경 줄), E② 프록시는 대상에 직접 연결한다(`e2proxy/execution.go` transport `Proxy: nil`). 그래서 traffic 도구를 넣으면 빈 결과만 준다.
+   - 결정: 진단 프로필에 traffic 3개를 넣지 않는다. 원본에서 traffic 도구가 하던 두 일 중 **발견 근거 묶기**는 후보 제출의 call_ref(감사에 결속된 E② trusted 관찰)가 이미 하고, **지난 요청·응답 다시 보기**는 C29(큰 출력을 작업 디렉터리 파일로 넘기고 파일 도구로 다시 읽기)로 한다.
+   - 실행 전체에서 지난 E② 호출을 찾아보는 조회가 필요하면(보존 비교에서 필요가 보일 때), traffic 저장소가 아니라 E② 호출 결과(trusted 관찰과 가린 출력, 요청 인증 헤더·쿠키는 이름만)를 읽는 도구를 따로 정한다. 탐색 단계는 탐색 경계 기록을 쓰므로 이 결정과 별개다.
 2. **대화 기록 재개**: 지금 E② 모드는 사람 지시로 이전 대화를 이어가지 않는다. 대화 기록 저장의 가림과 같이 정한다.
 3. **같은 intent 안 병렬 도구 호출**: 원본 SDK가 병렬 호출을 하면 호출 단위 예약을 어떻게 나눌지. 그 전에는 하나씩이다.
 4. **탐색 프로필 도구 목록**: 탐색 실행기 결정안 2-b에서 정한다.
