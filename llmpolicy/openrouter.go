@@ -174,17 +174,20 @@ func parseOpenRouterManifestAt(data []byte, now time.Time) (*OpenRouterPolicy, e
 	}
 	return &OpenRouterPolicy{manifest: m, usage: OpenRouterUsage{Provider: m.ProviderSlug, Model: OpenRouterModel, ApprovalRef: fmt.Sprintf("%x", sha256.Sum256([]byte(m.ApprovalID)))}}, nil
 }
+
+// reserve는 호출 하나를 입력 상한 전체로 예약한다(요청 본문 없이 예산만 보는 시험용).
 func (p *OpenRouterPolicy) reserve(output int64) error {
-	_, err := p.reserveDiagnostic(output)
+	_, err := p.reserveDiagnostic(p.manifest.MaxInputPerCall, output)
 	return err
 }
 
-// 같은 잠금에서 얻은 거절 사유만 관측해 동시 호출의 집계를 섞지 않는다.
-func (p *OpenRouterPolicy) reserveDiagnostic(output int64) (string, error) {
+// 같은 잠금에서 얻은 거절 사유만 관측해 동시 호출의 집계를 섞지 않는다. input은 이 호출의 입력 예약이다
+// (openRouterReservedInput).
+func (p *OpenRouterPolicy) reserveDiagnostic(input, output int64) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	m := p.manifest
-	cost := openRouterReservedCost(m, output)
+	cost := openRouterCallCost(m, input, output)
 	reason := ""
 	switch {
 	case p.blocked:
@@ -193,11 +196,13 @@ func (p *OpenRouterPolicy) reserveDiagnostic(output int64) (string, error) {
 		reason = "expired"
 	case output <= 0 || output > m.MaxOutputPerCall:
 		reason = "output_limit"
+	case input <= 0 || input > m.MaxInputPerCall:
+		reason = "token_limit"
 	case p.active >= m.MaxConcurrent:
 		reason = "concurrency_limit"
 	case p.usage.Requests >= m.MaxRequests:
 		reason = "request_limit"
-	case m.MaxInputPerCall > m.MaxInputTokens-p.usage.ReservedInputTokens || output > m.MaxOutputTokens-p.usage.ReservedOutputTokens:
+	case input > m.MaxInputTokens-p.usage.ReservedInputTokens || output > m.MaxOutputTokens-p.usage.ReservedOutputTokens:
 		reason = "token_limit"
 	case cost > m.MaxCostMicros-p.usage.ReservedCostMicros:
 		reason = "cost_limit"
@@ -212,7 +217,7 @@ func (p *OpenRouterPolicy) reserveDiagnostic(output int64) (string, error) {
 		p.usage.FailureReason = "approval_unavailable"
 		return "approval_unavailable", ErrOpenRouterPolicy
 	}
-	if err := p.ledger(m.MaxInputPerCall, output, cost); err != nil {
+	if err := p.ledger(input, output, cost); err != nil {
 		p.blocked = true
 		reason = "approval_unavailable"
 		if errors.Is(err, errOpenRouterApprovalExhausted) {
@@ -223,7 +228,7 @@ func (p *OpenRouterPolicy) reserveDiagnostic(output int64) (string, error) {
 	}
 	p.active++
 	p.usage.Requests++
-	p.usage.ReservedInputTokens += m.MaxInputPerCall
+	p.usage.ReservedInputTokens += input
 	p.usage.ReservedOutputTokens += output
 	p.usage.ReservedCostMicros += cost
 	return "", nil
@@ -293,7 +298,27 @@ func (p *OpenRouterPolicy) CheckAvailable() error {
 	return p.available()
 }
 
-// 호출 예약·진단 관측·응답 비용 검증은 같은 보수적 올림식을 사용한다.
+// openRouterReservedCost는 입력 상한 전체로 계산한 호출 비용 상한이다. 요청 본문을 모르는 서버 쪽 견적(Quote)과
+// 설치 검사가 쓴다. transport는 요청 크기로 줄인 openRouterCallCost를 쓰고, 그 값은 이 값보다 크지 않다.
 func openRouterReservedCost(m openRouterManifest, output int64) int64 {
-	return (m.MaxInputPerCall*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000
+	return openRouterCallCost(m, m.MaxInputPerCall, output)
+}
+
+// 호출 예약·진단 관측·응답 비용 검증은 같은 보수적 올림식을 사용한다.
+func openRouterCallCost(m openRouterManifest, input, output int64) int64 {
+	return (input*m.InputPrice+999999)/1000000 + (output*m.OutputPrice+999999)/1000000
+}
+
+// openRouterFramingTokens는 직렬화한 요청 바이트 수에 더하는 chat template 여유다. 서버 쪽 첫 진단 모델 예산의
+// 여유(firstDiagnosisFramingTokens)와 같은 값이다(P3 결정안 C28 결정 1).
+const openRouterFramingTokens = 4096
+
+// openRouterReservedInput은 호출 하나의 입력 예약이다. 토큰 하나는 1바이트 이상이라 전송할 JSON 바이트 수(+framing
+// 여유)가 입력 토큰의 상한이다. 입력 상한(MaxInputPerCall)보다 크면 지금처럼 그 상한으로 예약한다. 보고된 입력이
+// 이 예약을 넘으면 상한 가정이 깨진 것이라 응답 검사에서 막는다.
+func openRouterReservedInput(m openRouterManifest, wireBytes int) int64 {
+	if n := int64(wireBytes) + openRouterFramingTokens; n < m.MaxInputPerCall {
+		return n
+	}
+	return m.MaxInputPerCall
 }
