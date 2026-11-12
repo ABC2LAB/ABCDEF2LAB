@@ -227,6 +227,7 @@ type Ticket struct {
 }
 
 func (s *Session) recordLocked(r Record) {
+	r = boundRecord(r)
 	if r.Decision == "denied" {
 		if s.deniedRows >= s.policy.MaxDeniedRecords {
 			s.omitted++
@@ -248,6 +249,18 @@ func (s *Session) denyLocked(req Request, dest DestClass, reason string, externa
 	return Decision{Reason: reason, Dest: dest}
 }
 
+// Refuse는 경계 조립이 판정 전에 막은 요청(평문 요청, 구현 전 WebSocket, 요청 본문 상한 초과)을 차단 행으로 남긴다.
+func (s *Session) Refuse(req Request, reason string) {
+	req = normalizeRequest(req)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dest := DestExternal
+	if strings.ToLower(strings.TrimSuffix(req.Host, ".")) == s.target.Host && req.Port == s.target.Port {
+		dest = DestApproved
+	}
+	s.denyLocked(req, dest, reason, "")
+}
+
 func (s *Session) admitLocked(req Request, dest DestClass, dial netip.AddrPort, spki, canonical, external string) (Decision, *Ticket) {
 	s.seq++
 	if dest == DestApproved {
@@ -265,6 +278,7 @@ func (s *Session) admitLocked(req Request, dest DestClass, dial netip.AddrPort, 
 // Admit은 요청 하나를 판정한다. 막힌 요청은 그 요청만 실패하고, 세션을 닫는 것은 시간·대상 요청 상한·대상 철회·
 // 경계 장애뿐이다(§3·§6). 외부 자원 상한·동시 연결 상한은 그 요청만 막는다.
 func (s *Session) Admit(ctx context.Context, req Request) (Decision, *Ticket) {
+	req = normalizeRequest(req)
 	if ctx == nil || (req.Ingress != BrowserIngress && req.Ingress != DirectIngress) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -484,6 +498,25 @@ func (s *Session) Records() ([]Record, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Record{}, s.records...), s.omitted
+}
+
+// RecordsPage는 offset부터 최대 limit 행을 돌려준다. 남은 행이 있으면 next가 다음 offset이고, 없으면 0이다. 기록은
+// 덧붙이기만 하므로 같은 offset은 같은 행을 가리킨다.
+func (s *Session) RecordsPage(offset uint64, limit int) ([]Record, uint64, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	total := uint64(len(s.records))
+	if limit <= 0 || offset >= total {
+		return []Record{}, s.omitted, 0
+	}
+	end := offset + uint64(limit)
+	var next uint64
+	if end < total {
+		next = end
+	} else {
+		end = total
+	}
+	return append([]Record{}, s.records[offset:end]...), s.omitted, next
 }
 
 // Reader는 서버만 쓰는 private 관찰 채널이다. diagnosisflow가 observed 발견을 같은 결속으로만 받게 한다.

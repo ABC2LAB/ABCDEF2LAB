@@ -34,7 +34,7 @@ type proxyOutcome struct {
 // 사유마다 모델에 돌려줄 고정 설명이다. 모델이 읽는 글이라 영어로 쓴다. 규칙 참조·정책 판·시도 ID·대상 주소처럼
 // 회차마다 달라지거나 통제 내부를 드러내는 값은 넣지 않는다.
 var proxyOutcomeHints = map[Reason]string{
-	PolicyDenied:    "The request is outside the approved scope (origin, path or method) or over the concurrent request limit.",
+	PolicyDenied:    "The request is outside the approved scope (origin, path or method).",
 	Unsupported:     "E2 does not support this request form (for example a compressed Accept-Encoding, Upgrade, Expect, an oversized body or a malformed request).",
 	BudgetExhausted: "The approved request budget for this run is used up.",
 	Closed:          "This run no longer accepts requests.",
