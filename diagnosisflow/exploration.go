@@ -255,7 +255,7 @@ func (c *Controller) reportObservedRecord(ctx context.Context, b ExplorationBind
 		return 0, ErrConflict
 	}
 	path, ok := c.resolve(o.Path, "/")
-	if !ok || path != o.Path || strings.ContainsAny(o.Path, "?#") || !c.allowedPath(path) || !has(c.binding.Methods, o.Method) {
+	if !ok || path != o.Path || strings.ContainsAny(o.Path, "?#") || !c.allowedPath(o.Method, path) || !has(c.binding.Methods, o.Method) {
 		return 0, ErrExplorationObservation
 	}
 	state.LastSequence, state.LastDigest = seq, digest
