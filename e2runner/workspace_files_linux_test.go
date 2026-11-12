@@ -1,9 +1,11 @@
 package e2runner
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 
 	"errors"
 	"strings"
@@ -154,5 +156,27 @@ func TestRunnerWorkspaceBusyUntilFinalCleanup(t *testing.T) {
 		if got, err := f.runner.WorkspaceFile(2, name); err != nil || string(got) != want {
 			t.Fatalf("%s: %q %v", name, got, err)
 		}
+	}
+}
+
+// 고치기는 결과가 작업 공간 상한을 넘으면 결과를 만들기 전에 거부한다(큰 확장으로 호스트 메모리를 쓰지 않게).
+func TestRunnerWorkspaceEditRejectsExpansionBeforeAllocating(t *testing.T) {
+	f, _ := persistentRunnerFixture(t)
+	if err := f.runner.WriteWorkspaceFile(2, "a.txt", bytes.Repeat([]byte("a"), 1024)); err != nil {
+		t.Fatal(err)
+	}
+	replacement := strings.Repeat("b", 64<<10)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := f.runner.EditWorkspaceFile(2, "a.txt", "a", replacement, true); !errors.Is(err, ErrWorkspaceFull) {
+		t.Fatal("over-limit expansion accepted", err)
+	}
+	runtime.ReadMemStats(&after)
+	if grown := after.TotalAlloc - before.TotalAlloc; grown >= e2sandbox.WorkspaceLimit(e2sandbox.Config{}) {
+		t.Fatalf("expanded result allocated before the limit check: %d bytes", grown)
+	}
+	if got, err := f.runner.WorkspaceFile(2, "a.txt"); err != nil || len(got) != 1024 {
+		t.Fatal("rejected edit changed the file", len(got), err)
 	}
 }
