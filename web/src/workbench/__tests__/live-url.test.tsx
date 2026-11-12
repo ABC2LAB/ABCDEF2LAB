@@ -65,6 +65,8 @@ it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조�
   mount("new");
   const target = await screen.findByLabelText(/점검할 사이트 주소/);
   fireEvent.change(target, { target: { value: "https://target.example/app" } });
+  // 1쪽(대상) → 다음 → 2쪽(분석 모델 · 점검 설정) (시안 v64 ~ v67)
+  fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
   // 설치된 프로필이 외부 모델뿐이면 '외부 API' 가 골라져 있다
   expect(screen.getByRole("radio", { name: "외부 API" })).toBeChecked();
   expect(screen.getByLabelText("모델 이름")).toHaveValue(externalModel.model);
@@ -329,11 +331,14 @@ describe("서버 방식 확인 (catalog)", () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     expect(screen.queryByLabelText(/작업 이름/)).toBeNull();
+    // 점검 설정은 2쪽에 있다
+    expect(screen.queryByRole("heading", { name: "점검 설정" })).toBeNull();
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
     // 제외 경로 칸의 흐린 예시는 안전 장치 (?) 메모와 같은 주소 (시안 v50)
     expect(screen.getByLabelText(/제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete");
     // 작업 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
-    fireEvent.change(target, { target: { value: "https://target.example/" } });
     const send = screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
     expect(send).toBeEnabled();
     await act(async () => {
@@ -393,15 +398,39 @@ describe("서버 방식 확인 (catalog)", () => {
 });
 
 describe("새 점검 → 범위 확인 (URL 진단)", () => {
+  it("새 점검은 두 쪽: 1쪽 대상, 다음(또는 주소 칸 Enter) → 2쪽 분석 모델 · 점검 설정, 이전으로 돌아간다 (시안 v64 ~ v67)", async () => {
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    // 1쪽에는 대상만
+    expect(screen.getByRole("heading", { name: "대상" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "분석 모델" })).toBeNull();
+    // 1쪽에서는 주소 이유만 보인다
+    expect(screen.getAllByText("주소를 입력하세요").length).toBeGreaterThan(0);
+    // 주소 칸에서 Enter(폼 제출) → 2쪽
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.submit(target.closest("form") as HTMLFormElement);
+    expect(screen.getByRole("heading", { name: "분석 모델" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "대상" })).toBeNull();
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+    // 이전 → 1쪽, 입력은 그대로
+    fireEvent.click(screen.getByRole("button", { name: "이전" }));
+    expect(screen.getByRole("heading", { name: "대상" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/점검할 사이트 주소/)).toHaveValue("https://target.example/");
+  });
+
   it("URL · 프로필로 초안을 한 번 만들고 범위 확인까지 한 뒤 서버가 정한 범위를 오른쪽에 보인다", async () => {
     const { goTo } = mount("new");
     const target = (await screen.findByLabelText(/점검할 사이트 주소/)) as HTMLInputElement;
     const send = () => screen.getAllByRole("button", { name: "승인 범위 확인" });
-    expect(send()[0]).toBeDisabled();
+    const nextBtn = () => screen.getAllByRole("button", { name: /다음/ });
+    // 1쪽: 주소가 없거나 틀리면 '다음'이 꺼져 있고, 범위 확인 버튼은 아직 없다
+    expect(nextBtn()[0]).toBeDisabled();
+    expect(screen.queryAllByRole("button", { name: "승인 범위 확인" })).toHaveLength(0);
     fireEvent.change(target, { target: { value: "http://target.example/" } });
     expect(screen.getAllByText("HTTPS 주소만 받습니다.").length).toBeGreaterThan(0);
-    expect(send()[0]).toBeDisabled();
+    expect(nextBtn()[0]).toBeDisabled();
     fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(nextBtn()[0]);
     expect((screen.getByLabelText("모델") as HTMLSelectElement).value).toBe("profile-1");
     // 범위 확인 전에는 서버 범위가 없다
     expect(screen.queryByText("승인된 사이트 · 경로에만 요청")).toBeNull();

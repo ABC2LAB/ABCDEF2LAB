@@ -52,6 +52,47 @@ func TestLaunchConfigRejectsUnprotectedTopology(t *testing.T) {
 	}
 }
 
+// 상태 조회 재시도(C10·C32): 일반 HTTP launch만 받고, 다시 묻는 시간(횟수 × 조회 간격)이 정리 시간 상한 안이어야 한다.
+func TestLaunchConfigStatusReadRetries(t *testing.T) {
+	parse := func(change func(map[string]any)) (launchConfig, error) {
+		c := launchTestConfig()
+		change(c)
+		body, _ := json.Marshal(c)
+		return parseLaunchConfig(body)
+	}
+	// launchTestConfig의 정리 시간 상한은 60초다.
+	upper := urlMaxStatusReadRetries(60)
+	if upper*int(urlStatusPollInterval) != 60*int(time.Second) {
+		t.Fatalf("상한 계산이 정리 시간과 다름: %d", upper)
+	}
+	// 칸이 없으면 0이다(명시한 0은 다른 선택 칸처럼 엄격 해석이 거부한다).
+	if got, err := parse(func(map[string]any) {}); err != nil || got.StatusReadRetries != 0 {
+		t.Fatal("칸이 없는 launch의 재시도가 0이 아님")
+	}
+	for _, n := range []int{1, upper} {
+		if got, err := parse(func(c map[string]any) { c["status_read_retries"] = n }); err != nil || got.StatusReadRetries != n {
+			t.Fatalf("유효한 재시도 %d를 거부함", n)
+		}
+	}
+	for name, change := range map[string]func(map[string]any){
+		"over": func(c map[string]any) { c["status_read_retries"] = upper + 1 },
+		"over-shutdown": func(c map[string]any) {
+			c["shutdown_timeout_seconds"], c["status_read_retries"] = 1, urlMaxStatusReadRetries(1)+1
+		},
+		"negative": func(c map[string]any) { c["status_read_retries"] = -1 },
+		"registered-mode": func(c map[string]any) {
+			c["mode"] = "registered_get"
+			delete(c, "general_http")
+			c["registered_get"] = map[string]any{"authority_dsn_file": "/srv/diagnosis/authority.dsn", "host_binding_file": "/srv/diagnosis/binding.json", "metadata_file": "/srv/diagnosis/input.json", "snapshot_dir": "/srv/diagnosis/snapshots", "state_dir": "/srv/diagnosis/state", "registry_file": "registry.json"}
+			c["status_read_retries"] = 1
+		},
+	} {
+		if _, err := parse(change); err == nil {
+			t.Fatalf("%s: 잘못된 상태 조회 재시도를 수용함", name)
+		}
+	}
+}
+
 // Plan당 상한(C26·C32): 일반 HTTP launch만 받고, 0은 기본값, 음수·코드 상한 밖·다른 모드는 거부한다.
 func TestLaunchConfigPlannerLimits(t *testing.T) {
 	parse := func(change func(map[string]any)) (launchConfig, error) {
