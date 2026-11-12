@@ -181,3 +181,55 @@ func unpackWorkspace(data []byte, root string, contentLimit uint64) error {
 		}
 	}
 }
+
+// ValidateWorkspace는 tar가 풀기 규칙(일반 파일·디렉터리, 상대 정규 경로, 중복 없음, 부모 디렉터리가 앞에 있음,
+// 내용·항목 상한)에 맞는지 파일 시스템에 쓰지 않고 본다. 호스트가 샌드박스에서 받은 작업 공간을 보관하기 전에 쓴다.
+func ValidateWorkspace(data []byte, contentLimit uint64) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if int64(len(data)) > workspaceArchiveLimit(contentLimit) {
+		return ErrWorkspaceTooLarge
+	}
+	tr := tar.NewReader(bytes.NewReader(data))
+	seen := make(map[string]bool)
+	dirs := map[string]bool{".": true}
+	var total uint64
+	entries := 0
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return ErrWorkspaceInvalid
+		}
+		name := hdr.Name
+		if hdr.Typeflag == tar.TypeDir {
+			name = strings.TrimSuffix(name, "/")
+		}
+		if !validWorkspaceName(name) || seen[name] || !dirs[path.Dir(name)] {
+			return ErrWorkspaceInvalid
+		}
+		seen[name] = true
+		if entries++; entries > maxWorkspaceEntries {
+			return ErrWorkspaceTooLarge
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			dirs[name] = true
+		case tar.TypeReg:
+			if hdr.Size < 0 {
+				return ErrWorkspaceInvalid
+			}
+			if total += uint64(hdr.Size); total > contentLimit {
+				return ErrWorkspaceTooLarge
+			}
+			if n, err := io.Copy(io.Discard, io.LimitReader(tr, hdr.Size)); err != nil || n != hdr.Size {
+				return ErrWorkspaceInvalid
+			}
+		default:
+			return ErrWorkspaceInvalid
+		}
+	}
+}

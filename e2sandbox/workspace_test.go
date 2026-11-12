@@ -59,6 +59,9 @@ func TestWorkspaceRoundTripKeepsOnlyRegularFilesAndDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := ValidateWorkspace(data, 1<<20); err != nil {
+		t.Fatal("packed workspace failed validation", err)
+	}
 	dst := t.TempDir()
 	if err := unpackWorkspace(data, dst, 1<<20); err != nil {
 		t.Fatal(err)
@@ -130,6 +133,10 @@ func TestUnpackWorkspaceRejectsUnsafeArchives(t *testing.T) {
 		dst := t.TempDir()
 		if err := unpackWorkspace(data, dst, 1024); err == nil {
 			t.Fatalf("%s: unsafe archive accepted", name)
+		}
+		// 호스트 검사도 같은 규칙으로 거부한다(파일 시스템에 쓰지 않고).
+		if err := ValidateWorkspace(data, 1024); err == nil {
+			t.Fatalf("%s: unsafe archive validated", name)
 		}
 		if _, err := os.Stat(filepath.Join(filepath.Dir(dst), "x")); err == nil {
 			t.Fatalf("%s: wrote outside the root", name)
