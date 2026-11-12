@@ -17,6 +17,16 @@ import (
 )
 
 const launchFormat = "abc2lab.first-diagnosis-launch/v1"
+
+// urlStatusPollInterval은 URL 진단 실행 중 상태를 묻는 간격이다.
+const urlStatusPollInterval = 100 * time.Millisecond
+
+// urlMaxStatusReadRetries는 상태 조회 연속 실패를 다시 묻는 횟수의 상한이다(C10·C32). 새 숫자를 만들지 않고, 다시 묻는
+// 시간(횟수 × 조회 간격)이 그 launch의 정리 시간 상한을 넘지 않게 한다. 그보다 긴 조회 장애는 잠깐의 실패가 아니다.
+func urlMaxStatusReadRetries(shutdownTimeoutSeconds int) int {
+	return int(time.Duration(shutdownTimeoutSeconds) * time.Second / urlStatusPollInterval)
+}
+
 const maxLaunchBytes = 64 << 10
 
 type launchConfig struct {
@@ -39,10 +49,13 @@ type launchConfig struct {
 	ModelConcurrency int `json:"model_concurrency,omitempty"`
 	// PlannerTurnsPerPlan·PlannerSecondsPerPlan은 진단 Planner 한 번(Plan)의 턴·시간(초) 상한이다(C26·C32). 없거나
 	// 0이면 agent 기본값이다. 일반 HTTP 실행만 쓴다.
-	PlannerTurnsPerPlan   int               `json:"planner_turns_per_plan,omitempty"`
-	PlannerSecondsPerPlan int64             `json:"planner_seconds_per_plan,omitempty"`
-	Registered            *registeredLaunch `json:"registered_get,omitempty"`
-	HTTP                  *httpLaunch       `json:"general_http,omitempty"`
+	PlannerTurnsPerPlan   int   `json:"planner_turns_per_plan,omitempty"`
+	PlannerSecondsPerPlan int64 `json:"planner_seconds_per_plan,omitempty"`
+	// StatusReadRetries는 URL 진단 실행 상태 조회가 연속으로 실패해도 다시 묻는 횟수다(C10·C32). 없거나 0이면 지금처럼
+	// 첫 실패에서 실행을 멈춘다. 다 써도 실패하면 실행 결과는 unknown(status_read_failed)이다.
+	StatusReadRetries int               `json:"status_read_retries,omitempty"`
+	Registered        *registeredLaunch `json:"registered_get,omitempty"`
+	HTTP              *httpLaunch       `json:"general_http,omitempty"`
 }
 
 // plannerLimits는 launch의 Plan당 상한이다. 음수·코드 상한 밖이면 false이고, 돌려준 값도 받는 쪽 검사(Valid)에서
@@ -126,6 +139,9 @@ func parseLaunchConfig(data []byte) (launchConfig, error) {
 	}
 	// Plan당 상한은 일반 HTTP 실행만 읽는다. 다른 모드에 주면 읽히지 않는 설정이라 거부한다.
 	if _, ok := c.plannerLimits(); !ok || c.Mode != "general_http" && (c.PlannerTurnsPerPlan != 0 || c.PlannerSecondsPerPlan != 0) {
+		return launchConfig{}, errPreparation
+	}
+	if c.StatusReadRetries < 0 || c.StatusReadRetries > urlMaxStatusReadRetries(c.ShutdownTimeoutSeconds) || c.Mode != "general_http" && c.StatusReadRetries != 0 {
 		return launchConfig{}, errPreparation
 	}
 	return c, nil
