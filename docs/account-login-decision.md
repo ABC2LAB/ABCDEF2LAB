@@ -90,6 +90,8 @@ E② 실행 허용을 바꾸는 2~4는 이동찬 또는 윤재상 승인 없이 
 
 진행(2026-11-13): (a)를 구현했다 — `e2proxy.Rule.Purpose`(`auth_prep`)·`Call.AuthPrep`·`Execution.AddRedactValues`(8바이트 이상만, 응답 보류에는 안 씀)·정책 파일 `rules[].purpose`·지문. (b)의 엔진 쪽도 구현했다 — 실행 정책 `auth` 칸(로그인 방식·인증 준비 규칙 참조·계정별 자격 파일 pin)을 factory가 실행을 잡을 때 읽어 계정마다 한 번 로그인하고, 계정별 결과(`authenticated`·`login_failed`·`session_not_found`·`result_unknown`·`not_sent`)와 세션을 실행 옵션으로 넘긴다. 제품 쪽 실행 결속도 넣었다 — 실행을 만들 때 목록과 같은 판정으로 test이고 자격·로그인 방식이 있는 계정만 골라 실행 정책에 인증 준비 규칙·`auth` 칸을 넣고, 자격 사본을 결속 디렉터리에 해시로 고정한다(고른 계정·자격 해시가 결속 이름에 들어가 바뀌면 새 결속). 실행 중 확인은 결속한 계정이 지금도 같은 자격으로 test인지 보고, 아니면(해제·만료·판 변경·자격 교체) 새 송신을 멈춘다. 결속 뒤 새로 표시한 계정은 그 실행과 상관없다. 해제·철회·자격 교체 때 결속 디렉터리의 사본도 지운다. 남은 (b): 실행 결과의 `account_auth` 칸과 정지 사유 표시.
 
+(c) 1부도 넣었다 — E② 헤더 모드 `test_account_passthrough`(모델이 쓴 Cookie·Authorization을 승인 origin에 그대로, Set-Cookie 보류 안 함, 보호 값 반사 보류는 그대로, 평가 문맥 불가), 제품 결속이 시험 계정을 결속하면 이 모드로 두고 Worker system에 시험 계정 세션 줄을 준다. 외부 API(openrouter) 실행은 사전 공지·승인 동의 칸이 생기기 전까지 시험 계정을 결속하지 않는다. 남은 것: `account_auth` 실행 결과 칸·정지 사유, `refresh_session`, S07~S09 실제 수용 회차, CLAUDE.md 규칙 2 효력 문장(관리자 배포).
+
 PR 순서: (a) E② 로그인 전용 규칙·`AuthPrep`·출력 가림 목록(E② 내부, 이동찬 페어 리뷰 필수) → (b) 서버 인증 준비·`account_auth`·실행 결속 → (c) `test_account_passthrough`·Worker 세션 줄·`refresh_session`·S07~S09 수용시험. (a)~(c)는 이동찬 또는 윤재상 승인 없이 머지하지 않는다.
 
 ## 하지 않는 것
