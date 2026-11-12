@@ -52,7 +52,7 @@ func writeHTTPVerifyFixture(t *testing.T, keyBytes []byte, empty bool) ([]string
 			t.Fatal(err)
 		}
 	}
-	return []string{"--journal", filepath.Join(dir, "http.journal"), "--checkpoint", checkpoint, "--key-file", key, "--journal-format", "e2-http-v1"}, head
+	return []string{"--journal", filepath.Join(dir, "http.journal"), "--checkpoint", checkpoint, "--key-file", key, "--journal-format", "e2-http-v2"}, head
 }
 
 func assertHTTPFailure(t *testing.T, args []string, want string) {
@@ -127,11 +127,11 @@ func TestRunHTTPJournalRejectsTamperingAndRollback(t *testing.T) {
 func TestRunHTTPCheckpointStrictEncoding(t *testing.T) {
 	mutations := map[string]func([]byte) []byte{
 		"duplicate": func(b []byte) []byte {
-			return bytes.Replace(b, []byte(`"Version":`), []byte(`"Version":"e2-http-v1","Version":`), 1)
+			return bytes.Replace(b, []byte(`"Version":`), []byte(`"Version":"e2-http-v2","Version":`), 1)
 		},
 		"unknown":  func(b []byte) []byte { return append(append([]byte(`{"PRIVATE-CONTENT":0,`), b[1:]...), '\n') },
 		"alias":    func(b []byte) []byte { return bytes.Replace(b, []byte(`"Version"`), []byte(`"version"`), 1) },
-		"missing":  func(b []byte) []byte { return bytes.Replace(b, []byte(`"Version":"e2-http-v1",`), nil, 1) },
+		"missing":  func(b []byte) []byte { return bytes.Replace(b, []byte(`"Version":"e2-http-v2",`), nil, 1) },
 		"trailing": func(b []byte) []byte { return append(b, []byte(` {"private":true}`)...) },
 		"reordered": func(b []byte) []byte {
 			parts := bytes.SplitN(b[1:], []byte(","), 3)
@@ -167,7 +167,7 @@ func TestRunHTTPFormatIsExplicitAndCannotUseGETTimeline(t *testing.T) {
 	httpArgs, _ := writeHTTPVerifyFixture(t, verifyTestKey, false)
 	oldJournal, oldCheckpoint, oldKey := writeVerifyFixture(t)
 	assertHTTPFailure(t, httpArgs[:6], "audit_input_invalid")
-	assertHTTPFailure(t, []string{"--journal", oldJournal, "--checkpoint", oldCheckpoint, "--key-file", oldKey, "--journal-format", "e2-http-v1"}, "audit_input_invalid")
+	assertHTTPFailure(t, []string{"--journal", oldJournal, "--checkpoint", oldCheckpoint, "--key-file", oldKey, "--journal-format", "e2-http-v2"}, "audit_input_invalid")
 	for _, suffix := range [][]string{{"--timeline"}, {"--max-events", "1"}, {"--journal-format", "PRIVATE-UNSUPPORTED"}, {"--journal-format", ""}} {
 		args := append(append([]string(nil), httpArgs...), suffix...)
 		code, out, diagnostic := invokeVerify(t, context.Background(), args...)
@@ -244,4 +244,14 @@ func TestRunHTTPCancellationAndOutputFailure(t *testing.T) {
 			t.Fatalf("output exit=%d stderr=%q", code, stderr.String())
 		}
 	}
+}
+
+// 고른 판과 신뢰 checkpoint의 판이 다르면 검증하지 않는다. v2 기록을 v1 규칙으로 통과시키지 않는다.
+func TestRunHTTPFormatMustMatchCheckpointVersion(t *testing.T) {
+	args, head := writeHTTPVerifyFixture(t, bytes.Repeat([]byte{0x73}, 32), false)
+	if head.Version != e2proxy.Version {
+		t.Fatalf("fixture version %s", head.Version)
+	}
+	args[len(args)-1] = e2proxy.VersionV1
+	assertHTTPFailure(t, args, "audit_input_invalid")
 }

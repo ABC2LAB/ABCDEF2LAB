@@ -325,8 +325,9 @@ func TestRunnerActualHTTPHTTPSAndDenial(t *testing.T) {
 				}
 			} else if name == "secret_response" {
 				counts := result.Trusted.Call.Counts
-				if received.Load() != 1 || result.Trusted.Classification != "result_unknown" ||
-					counts.Allowed != 1 || counts.ForwardAttempted != 1 || counts.Responses != 1 || counts.Unknown != 1 || counts.Denied != 0 ||
+				// 보호 값을 반사한 응답은 통째로 보류한다. 대상이 답했으므로 결과 불명이 아니라 withheld다(C16).
+				if received.Load() != 1 || result.Trusted.Classification != "completed" || result.Trusted.Call.Reason != e2proxy.Withheld ||
+					counts.Allowed != 1 || counts.ForwardAttempted != 1 || counts.Responses != 1 || counts.Unknown != 0 || counts.Withheld != 1 || counts.Denied != 0 ||
 					strings.Contains(result.ToolOutput, "runner-session-secret") || strings.Contains(result.ToolOutput, "target-ok") ||
 					strings.Contains(result.ToolOutput, "[REDACTED]") {
 					t.Fatal("sensitive response was released, edited into success, or lost its sent/unknown evidence")

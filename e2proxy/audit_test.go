@@ -158,6 +158,16 @@ func TestJournalRejectsUntrustedEventFields(t *testing.T) {
 		"unknown stage":          func(e *Event) { e.Stage = "raw_body" },
 		"missing policy":         func(e *Event) { e.PolicyRevision = "" },
 		"missing time":           func(e *Event) { e.At = time.Time{} },
+		"old version on write":   func(e *Event) { e.Version = VersionV1 },
+		"withheld complete":      func(e *Event) { e.Reason = Withheld },
+		"withheld not received": func(e *Event) {
+			e.Reason, e.ResponseComplete, e.ResponseReceived, e.StatusCode = Withheld, false, false, 0
+		},
+		"withheld intent stage": func(e *Event) {
+			e.Stage, e.Reason, e.ResponseComplete, e.ResponseReceived, e.StatusCode = "intent", Withheld, false, false, 0
+			e.ForwardAttempted, e.RequestWritten = false, false
+		},
+		"truncated without withheld": func(e *Event) { e.ResponseTruncated, e.ResponseComplete = true, false },
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {

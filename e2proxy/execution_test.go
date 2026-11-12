@@ -996,7 +996,7 @@ func TestCoreCompressedResponseToIdentityRequestIsWithheld(t *testing.T) {
 	req := coreRequest(t, "GET", target.URL+"/allowed")
 	req.Header.Set("Accept-Encoding", "gzip")
 	response, receipt, err := call.Do(t.Context(), req)
-	if err == nil || response != nil || receipt.Reason != Unknown || !receipt.ForwardAttempted {
+	if !errors.Is(err, ErrWithheld) || response != nil || receipt.Reason != Withheld || !receipt.ForwardAttempted || !receipt.ResponseReceived || receipt.ResponseComplete {
 		t.Fatalf("compressed response was returned: %+v", receipt)
 	}
 }
@@ -1036,7 +1036,7 @@ func TestCoreEncodedCredentialEchoIsWithheldAfterSend(t *testing.T) {
 	cfg.Rules[0].CredentialHeaders = http.Header{"Authorization": {"Bearer " + secret}}
 	_, call := coreOpen(t, cfg)
 	response, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
-	if err == nil || response != nil || received.Load() != 1 || receipt.Decision != "allowed" || !receipt.ForwardAttempted || !receipt.ResponseReceived || receipt.NotSent || receipt.Reason != Unknown {
+	if err == nil || response != nil || received.Load() != 1 || receipt.Decision != "allowed" || !receipt.ForwardAttempted || !receipt.ResponseReceived || receipt.NotSent || receipt.Reason != Withheld {
 		t.Fatal("encoded credential echo was exposed or called not sent")
 	}
 }

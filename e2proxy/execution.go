@@ -785,6 +785,9 @@ func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) 
 		if r.Reason == TransportFailed {
 			counts.Transient++
 		}
+		if r.Reason == Withheld {
+			counts.Withheld++
+		}
 	}
 	add(&c.counts)
 	add(&e.counts)
@@ -1177,13 +1180,22 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	r.StatusCode = resp.StatusCode
 	diagnosticReceipt(e.ctx, r, "http_response_received", "succeeded", "")
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, e.cfg.Limits.MaxBodyBytes+1))
+	oversized := int64(len(responseBody)) > e.cfg.Limits.MaxBodyBytes
 	closeErr := resp.Body.Close()
-	r.ResponseComplete = readErr == nil && closeErr == nil && int64(len(responseBody)) <= e.cfg.Limits.MaxBodyBytes
-	if !r.ResponseComplete || !e.safeHTTPResponse(resp, responseBody) {
+	// 본문을 다 읽기 전에 끊기면 대상이 끝까지 답했는지 모른다. 상한을 넘어 읽기를 멈추고 닫은 것은 끊김이 아니다.
+	if readErr != nil || closeErr != nil && !oversized {
 		clear(responseBody)
 		r.Reason = Unknown
 		return finish(nil, ErrDenied)
 	}
+	// 대상이 답했지만(상태 줄·헤더 수신) 본문 상한·자격 응답·보호 값 반사·압축 때문에 표현을 주지 않는다. 대상이 요청을
+	// 처리한 것은 알므로 결과 불명이 아니라 보류로 센다. 결과 불명 상한에 넣지 않아 그 call을 멈추지 않는다(C16).
+	if oversized || !e.safeHTTPResponse(resp, responseBody) {
+		clear(responseBody)
+		r.Reason = Withheld
+		return finish(nil, ErrWithheld)
+	}
+	r.ResponseComplete = true
 	// Preserve the original representation and metadata. Only a minimal,
 	// nonsecret method context survives so HEAD retains its length semantics.
 	resp.Body = io.NopCloser(bytes.NewReader(responseBody))

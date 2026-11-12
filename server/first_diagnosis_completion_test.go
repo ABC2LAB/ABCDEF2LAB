@@ -144,6 +144,17 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Call.Counts.Denied = 1
 			r.Call.Reason = e2proxy.Expired
 		}, false},
+		// 보류(C16)는 대상이 답한 응답이라 완료와 같이 마감한다. 결과 불명 분류가 아니다.
+		{"withheld-completed", func(r *e2runner.TrustedResult) { r.Call.Reason = e2proxy.Withheld; r.Call.Counts.Withheld = 1 }, true},
+		{"withheld-tool-failure", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 22
+			r.Call.Reason = e2proxy.Withheld
+		}, true},
+		{"withheld-after-unknown", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Call.Reason = e2proxy.Withheld
+		}, true},
 		{"audit-incomplete", func(r *e2runner.TrustedResult) { r.Execution.AuditComplete = false }, false},
 		{"audit-failed", func(r *e2runner.TrustedResult) { r.Call.Reason = e2proxy.AuditFailed }, false},
 		{"unknown-class", func(r *e2runner.TrustedResult) { r.Classification = "future-success" }, false},
