@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -217,6 +218,11 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		// 도구 호출 하나만 허용한다. 작업 뒤 Planner 준비가 실행 상한에 닿는다(실행 결과 상태 값 계약 budget_limited).
 		policy.Runtime.MaxToolCalls = 1
 	}
+	// 설치 입력의 Plan당 턴 상한(C26·C32)은 launch 설정에서 host 설정으로 들어온다.
+	const installedPlanTurns = 2
+	if mode == "plan-turns" {
+		cfg.PlannerLimits = agent.E2HTTPPlannerLimits{MaxTurns: installedPlanTurns}
+	}
 	raw, err := json.Marshal(policy)
 	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0600) != nil {
 		t.Fatal("실제 native 정책 공급 실패")
@@ -292,6 +298,9 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		provider.command += " | grep -q never-present-owned-fixture"
 	}
 	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}, textOnly: mode != "planner-only"}
+	if mode == "plan-turns" {
+		plannerProvider.loopTool = "list_goals"
+	}
 	if mode == "goal-met" {
 		// Planner가 prove_goal로 하나뿐인 목표를 달성시키면 작업이 done이 되고 실행은 정상 마감된다(C26).
 		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
@@ -392,6 +401,16 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "close-fail" {
 		if runErr == nil || hits.Load() != 1 || plannerProvider.calls == 0 {
 			t.Fatal("감사 자원 해제 실패를 실행 성공으로 수용함")
+		}
+		return
+	}
+	if mode == "plan-turns" {
+		// 한 Plan 안에서 턴마다 assistant·도구 결과 두 메시지가 붙는다. 설치 상한 2턴이면 마지막 요청이 첫 요청보다
+		// 2개 많다(기본 16턴이면 30개). intent가 없어 대상 송신 없이 no_intents로 마감한다.
+		result := supervisor.RunResult()
+		if runErr != nil || plannerProvider.calls < installedPlanTurns || plannerProvider.maxMessages-plannerProvider.minMessages != 2*(installedPlanTurns-1) ||
+			result == nil || result.Outcome != diagnosis.OutcomeNoIntents || hits.Load() != 0 || provider.calls != 0 {
+			t.Fatalf("설치한 Plan당 턴 상한을 쓰지 않음 err=%v calls=%d messages=%d..%d result=%+v", runErr, plannerProvider.calls, plannerProvider.minMessages, plannerProvider.maxMessages, result)
 		}
 		return
 	}

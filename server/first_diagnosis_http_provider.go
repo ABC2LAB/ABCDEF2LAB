@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
@@ -25,6 +26,8 @@ type FirstDiagnosisHTTPHostConfig struct {
 	PolicyFile    string `json:"policy_file"`
 	AuthorityFile string `json:"authority_file"`
 	AuthorityRoot string `json:"authority_root"`
+	// PlannerLimits는 launch 설정의 Plan당 상한이다(C26·C32). 파일 입력이 아니다.
+	PlannerLimits agent.E2HTTPPlannerLimits `json:"-"`
 }
 
 func (FirstDiagnosisHTTPHostConfig) String() string {
@@ -124,7 +127,7 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	if len(hooks) == 1 {
 		hook = hooks[0]
 	}
-	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire})
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits})
 	if err != nil {
 		authority.revoke()
 		_ = authority.close()

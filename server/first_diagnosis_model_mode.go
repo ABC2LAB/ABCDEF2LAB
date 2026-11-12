@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/llmpolicy"
 )
 
@@ -11,6 +12,8 @@ type FirstDiagnosisModelOptions struct {
 	LocalManifestPath      string
 	OpenRouterManifestPath string
 	Budget                 *FirstDiagnosisModelBudget
+	// PlannerLimits는 준비 계획의 Plan당 상한이다(C26·C32). 실행 서버는 host 설정의 값을 쓴다. 0이면 기본값이다.
+	PlannerLimits agent.E2HTTPPlannerLimits
 }
 
 func (FirstDiagnosisModelOptions) String() string {
@@ -96,11 +99,14 @@ func NewFirstDiagnosisPreparationServerWithModel(ctx context.Context, m *Manager
 	if ctx == nil || ctx.Err() != nil || m == nil || m.pg == nil || CheckFirstDiagnosisHTTPRuntimeDatabase(ctx, m.pg.DB) != nil {
 		return nil, ErrControlledReadHostConfiguration
 	}
+	if !o.PlannerLimits.Valid() {
+		return nil, ErrControlledReadHostConfiguration
+	}
 	local, external, err := o.load()
 	if err != nil {
 		return nil, err
 	}
-	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, preparationOnly: true, openRouterPolicy: external, firstModelBudget: o.Budget}, nil)
+	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, preparationOnly: true, openRouterPolicy: external, firstModelBudget: o.Budget, firstPlannerLimits: o.PlannerLimits}, nil)
 }
 
 // 집계 정보만 반환한다. 키·프롬프트·대상 응답 원문은 포함하지 않는다.

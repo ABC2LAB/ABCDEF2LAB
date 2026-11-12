@@ -219,6 +219,17 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			plannerOnly.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, plannerOnly, "planner-only")
 		})
+		t.Run("actual-engine-installed-plan-turn-limit", func(t *testing.T) {
+			turnTask, err := manager.CreateTask("Owned plan turn fixture", "Stop each plan at the installed turn limit", nil, 60, 60)
+			if err != nil || turnTask == nil {
+				t.Fatal("독립 Plan 턴 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", turnTask.ID); err != nil {
+				t.Fatal("Plan 턴 task 준비 상태 저장 실패")
+			}
+			turnTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, turnTask, "plan-turns")
+		})
 		t.Run("actual-engine-planner-proves-goal", func(t *testing.T) {
 			goalTask, err := manager.CreateTask("Owned goal fixture", "Close when the planner proves the only goal", nil, 60, 60)
 			if err != nil || goalTask == nil {

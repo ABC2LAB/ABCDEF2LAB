@@ -243,6 +243,10 @@ type firstDiagnosisPlannerProbeProvider struct {
 	firstDiagnosisE2Provider
 	outboundToolExposed bool
 	textOnly            bool
+
+	// loopTool이 있으면 매 호출 그 읽기 도구를 다시 불러 Plan이 턴 상한에서만 끝나게 한다. 요청의 메시지 수 범위를 남긴다.
+	loopTool                 string
+	minMessages, maxMessages int
 	// goalID·evidenceID가 있으면 첫 호출에서 prove_goal로 그 목표를 달성시킨다(C26).
 	goalID, evidenceID int64
 	proved             bool
@@ -263,6 +267,16 @@ func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, reque
 				input, _ := json.Marshal(map[string]any{"goal_id": p.goalID, "evidence_id": p.evidenceID, "reason": "owned fixture evidence"})
 				return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "prove-goal", Name: "prove_goal", Input: input}}}, "tool_use", llm.Usage{}, nil
 			}
+		}
+	}
+	for _, tool := range request.Tools {
+		if p.loopTool != "" && tool.Name == p.loopTool {
+			p.calls++
+			if p.minMessages == 0 || len(request.Messages) < p.minMessages {
+				p.minMessages = len(request.Messages)
+			}
+			p.maxMessages = max(p.maxMessages, len(request.Messages))
+			return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "loop-" + strconv.Itoa(p.calls), Name: p.loopTool, Input: json.RawMessage(`{}`)}}}, "tool_use", llm.Usage{}, nil
 		}
 	}
 	if p.textOnly {
