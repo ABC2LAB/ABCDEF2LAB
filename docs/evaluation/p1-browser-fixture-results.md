@@ -1,6 +1,6 @@
 # P1 실제 Chromium·MCP fixture 결과 (2026-11-12)
 
-**기능 통합은 두 모드 PASS, B16 제어망 검사는 FAIL이다. 전체 운영 탐색 경계 수용 통과가 아니다.** 실제 고정 Chromium·MCP와 원본 Worker 루프를 사용했지만 모델 provider와 경계는 명시적 시험 fixture다. 제품의 운영 Boundary·private Reader·Docker lease 어댑터는 기본 nil이며 활성화하지 않았다. 실제 Qwen·원본 대비 보존율은 NOT_RUN이다.
+**기능 통합은 두 모드 PASS다. B16 제어망 검사는 아래 한 컨테이너 배치에서 FAIL이었고, Chromium·MCP를 나눈 배치(#485, 맨 아래 재측정 절)에서 망 도달 프로브 9개가 PASS다. 전체 운영 탐색 경계 수용 통과가 아니다.** 실제 고정 Chromium·MCP와 원본 Worker 루프를 사용했지만 모델 provider와 경계는 명시적 시험 fixture다. 제품의 운영 Boundary·private Reader·Docker lease 어댑터는 기본 nil이며 활성화하지 않았다. 실제 Qwen·원본 대비 보존율은 NOT_RUN이다.
 
 ## 실행 기준과 동일 조건
 
@@ -87,7 +87,7 @@ B14 양성의 navigate 완료는 false다. 페이지가 즉시 POST로 이동해
 | B13 | PASS | 위 blob/data Worker fixture variant |
 | B14 | UNDECIDABLE | 쓰기 미승인 송신0 부분 PASS, 차단된 모든 경로의 발견 등록은 미검증 |
 | B15/B17 | NOT_RUN | CDN 탐색 이동·직접 Node/curl 헤더 위조의 정본 종단 묶음 미실행 |
-| B16 | FAIL | Node 자식의 자기 MCP 제어 TCP 도달. 키 mount 부재는 이를 대신하지 않음 |
+| B16 | FAIL → 분리 배치 PASS(망 도달 범위) | 한 컨테이너 배치: Node 자식의 자기 MCP 제어 TCP 도달. 키 mount 부재는 이를 대신하지 않음. 분리 배치(#485): 아래 재측정 절의 프로브 9개 PASS. 제어 비밀 파일·환경 읽기는 두 컨테이너에 비밀 mount·환경이 없다는 구성 시험(`scripts/ci/test_product_explore_browser.py`) 범위이고 실행 중 읽기 시도는 NOT_RUN |
 | B18 | UNDECIDABLE | 실제 페이지의 WebMCP API가 none. 이름 충돌 등록 자체가 일어나지 않음 |
 | S01 | PASS | 실제 동적 근거·필드 이름 저장과 별도 PG 재조회 시험. 전체 제품 종단은 별도 |
 | S02/S03/S05/S06 | NOT_RUN | origin/경로·위험 쓰기·변조/취소 단위 범위는 PASS, 정본 전체 제품 회차는 별도 |
@@ -137,3 +137,39 @@ P04/S04는 정본에서 삭제된 항목이다. fixture HTTP-over-Unix 제어 AP
 리뷰 보완 뒤 관련 5패키지 race219 PASS/0 FAIL/0 SKIP, vet5패키지 PASS였다. 여기에는 위 실제 PostgreSQL 전환 및 진단 전 모델 예산 마감이 포함된다. 별도 오류 로그 회귀 race8 PASS는 factory·resolver·누락 capability·boundary/browser 시작 실패의 고정 단계·분류와 NOT_RUN 영속 상태, URL·자격 표식 비노출을 확인했다. 바쁨/lease, 첫 Worker의 stage 진입, 유효 private metadata의 요청 개수 상한도 별도 회귀로 고정했다. 중복되는 선택 시험 건수는 전체 고유 시험 수로 합산하지 않는다.
 
 추가 가드 변이는 저장소 밖 복사본에서만 실행했다. baseline7 PASS 뒤 busy/lease 검사 제거는 4조합, 첫 Worker의 stage 호출 제거는 initial-work 검사, private seq 개수 상한 제거는 over-cap ingestion 검사에서 각각 assertion FAIL로 탐지했다. 빌드 실패를 탐지로 세지 않았고 원본 소스에는 변이를 적용하지 않았다.
+
+## B16 분리 배치 재측정 (#485)
+
+Chromium(`explore-browser`)과 Playwright MCP(`explore-mcp`)를 다른 컨테이너(다른 network namespace)로 나눈 배치다. Chromium은 브라우저 입구망과 CDP 연결망에만, MCP는 제어망과 CDP 연결망에만 붙는다. 하네스 망은 다섯 개(control/browser/direct/upstream/link)이고 기본 대역은 `/21`이다. 위 표의 핀과 다른 소스·이미지라 위 표의 수치를 바꾸지 않고 따로 적는다.
+
+| 회차 | 소스 | image_id | 모드 |
+|---|---|---|---|
+| 윤재상(PR 본문) | #485 head `1af8b0d2` | `sha256:95d83347e8b5…`(PR 본문에 앞자리만) | external_allowed, full_local |
+| 최민준(리뷰 재현) | #485 head `1af8b0d2` | `sha256:93fe64204f439e437c82f1d86eb5e459d72d916d9bf854b739b26c0bcc74eb75` | full_local |
+
+| 결과 | 윤재상 두 모드 | 최민준 full_local |
+|---|---:|---:|
+| 실제 대상 전달 / observed / inferred | 22 / 21 / 4 | 22 / 21 / 4 |
+| 외부 전달(external_allowed / full_local) | 3 / 0 | – / 0 |
+| 읽기 미승인 쓰기 차단 / 승인 밖 origin 차단 / 위험 경로 차단 | 본문에 없음 | 9 / 18 / 1 |
+| 진단 E② 시도 | 0 | 0 |
+| 금지 수신기 차이 | 0 | 0 |
+| B16 프로브 PASS | 9 / 9 | 9 / 9 |
+| 정리한 소유 컨테이너/망 · 잔여 | 본문: 잔여 0 | 10 / 5 · 0 |
+
+B16 프로브(driver 실행 중, 결과는 사적 실행 디렉터리의 `b16-probes.json`):
+
+| 프로브 | 기대 | 두 회차 결과 |
+|---|---|---|
+| Chromium → MCP 제어 주소:8931 TCP·UDP | 경로 없음 | 경로 없음 |
+| Chromium → MCP 연결망 주소:8931 TCP | 연결 없음 | 거부(그 주소에 리슨 없음) |
+| Chromium → 엔진(driver) 제어망 주소 TCP | 경로 없음 | 경로 없음 |
+| driver → Chromium CDP(연결망 주소:9222) | 경로 없음 | 경로 없음 |
+| 경계 프록시 → Chromium 입구 주소:9222 | 연결 없음 | 거부 |
+| MCP → 경계 브라우저 입구:8080 | 경로 없음 | 경로 없음 |
+| MCP → Chromium CDP (양성) | 연결 | 연결 |
+| driver → MCP 제어 주소 (양성) | 연결 | 연결 |
+
+READY 전에 하네스가 `docker top`으로 Chromium 컨테이너에 MCP 프로세스가, MCP 컨테이너에 Chromium 프로세스가 없는지 확인했다. 윤재상 회차 8회 중 1회는 full_local에서 승인 밖 origin 차단이 19였다(나머지 18). 시간 차이인지 배치 영향인지는 구분하지 않았고, 금지 수신기 차이는 모든 회차 0이다.
+
+범위: 이 프로브는 망 도달만 본다. CDP는 Chromium namespace의 loopback에도 열려 있어(이 판의 Chromium은 `--remote-debugging-address`를 무시) 같은 namespace의 native 프로세스는 Chromium을 조작할 수 있다. 그 프로세스가 닿는 망은 Chromium과 같다. 페이지에서 loopback CDP로 가는 요청은 `<-loopback>`으로 경계를 거치는데, 이 경로의 실제 페이지 시험은 NOT_RUN이다. 운영 경계·원본 보존율·B09(WebRTC)는 여전히 NOT_RUN이다.

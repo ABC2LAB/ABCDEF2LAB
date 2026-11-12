@@ -52,7 +52,7 @@
 ## 5. 실행 흐름 (C19·C27)
 
 - **C27**: Planner를 Worker 실행 중에도 깨운다. 원본처럼 Worker 완료·후보 제출 때 깨운다(`server/e2_http_runtime.go`의 `ErrE2HTTPBusy` 대기 제거). 모델 호출은 C28 동시 호출 수가 1인 동안 차례로 나간다(P3 결정안 `docs/run-outcome-model-decision.md`(#411) C28 결정 2). 동시 Worker 수·intent 상한은 C32 설정이다.
-- **C19**: intent당 대안 1회 제한(`intent_replan_exhausted`)과 실패한 같은 명령 재전송 금지(`same_action_not_retried`)를 걷어낸다. 같은 거부가 반복되는 것은 막지 않고 반복 차단 수(`scripts/eval/repeat_denials.py`)로 잰다.
+- **C19**: intent당 대안 1회 제한(`intent_replan_exhausted`)과 실패한 같은 명령 재전송 금지(`same_action_not_retried`)를 걷어낸다. 같은 거부가 반복되는 것은 막지 않고 반복 차단 수(`scripts/eval/repeat_denials.py`)로 잰다. 구현(C01 #477 뒤): 정책 거부·미지원 뒤 같은 명령·다른 명령을 같은 intent나 새 intent에서 다시 시도할 수 있다(E②가 다시 거부하고 공유 호출 상한을 쓴다). 결과를 확인하지 못한 명령(결과 불명·마감 미완료·실행기 실패)은 새 intent로도 다시 보내지 않고(`same_action_not_retried`), 그 intent는 닫는다(`intent_outcome_uncertain`). 결과 불명 쓰기 자동 재전송 금지(개발 계획)를 지키기 위해서다.
   - 남기는 것: 결과 불명(`result_unknown`) 명령은 다시 보내지 않는다(개발 계획 "불명 쓰기 재전송 금지"). E② 요청 단위 처리(C01, 이동찬)가 들어오면 이 규칙은 그쪽으로 옮긴다.
   - 같은 intent 안에서 호출은 한 번에 하나(`intent_call_inflight`)를 유지한다. 호출 단위 예약·감사 결속이 이를 전제한다(열린 항목 3).
   - 실행 전체 호출 상한(`task_call_limit`)은 C32 설정이다.
@@ -109,6 +109,8 @@
      - 자동 보강(DNS·HTTP)은 지금처럼 끈다(§2 표). 서버가 발견 자산에 직접 보내는 경로라서다.
      - 받는 자산을 E② 실행의 승인 대상 호스트(정책 규칙 origin의 호스트)로 프로그램이 제한한다(규칙 4). 다른 호스트·IP의 자산은 기록하지 않고 모델에 "승인 대상 밖"으로 돌려준다. 기록 자체는 대상 송신이 아니지만, 승인 밖 자산이 쌓이면 Planner가 그쪽으로 intent를 만들고 C01 전에는 거부 상한(제품 2회)에 닿아 실행이 멈출 수 있다(#468 범위 도구 설명과 같은 이유).
      - 원본 작업 시작처럼 진단 준비 때 대상 URL 자산 하나를 등록하고 작업에 연결한다(seed). 승인 대상이라 위 제한 안이다.
-     - DB 역할: assets·task_asset_links에 INSERT와 upsert가 고치는 칼럼의 UPDATE만 더한다. 설치의 역할 부여와 `checkFirstDiagnosisDatabase` 필수 권한 표를 같이 고친다. 보고서 역할은 바꾸지 않는다.
+       - 구현: 원본 `seed`와 같은 등록 본문을 `seedTargetAsset`으로 따로 둔다(원본 `seed`는 평가 러너가 작업 생성 계약으로 해시를 고정하므로 바꾸지 않는다). 첫 진단 URL 준비는 작업 설명 글을 파싱하지 않고 진단 준비 Job의 승인 대상 URL(`TargetURL`)의 origin 하나만 등록한다(`server.SeedFirstDiagnosisTarget`). 원본처럼 등록 실패로 준비를 멈추지 않고 로그만 남긴다. 원본 upsert는 서비스·엔드포인트·하위 도메인 자산과 함께 그 호스트의 루트 도메인·하위 도메인 자산도 만들어 작업에 연결한다(출처 system). 진단 경로(seed·Worker `insert_assets`)는 이 부수 연결을 승인 대상 호스트로 제한한다(`AssetStore.WithHostLinkFilter`, 필터가 없으면 원본 그대로). 대상이 `app.example.com`이어도 `example.com`은 작업에 붙지 않는다.
+     - DB 역할: assets·task_asset_links에 INSERT와 upsert가 고치는 칼럼의 UPDATE만 더한다. 설치의 역할 부여와 `checkFirstDiagnosisDatabase` 필수 권한 표를 같이 고친다.
+     - 구현(C24 PR) 때 정정: assets에 INSERT를 하면 연결 동기화 트리거(`sync_task_asset_links`)가 호출자 권한으로 연결 행을 넣고 **지우므로** task_asset_links에는 DELETE도 준다. 칼럼 목록은 `server.FirstDiagnosisAssetUpdateColumns`(앱 자산 칼럼 제외)·`FirstDiagnosisAssetLinkUpdateColumns` 하나로 설치와 검사가 같이 쓴다. 제품 저장 보고서와 등록 조회도 같은 실행 역할(`product_runtime`)로 열리므로, 그 검사는 이 쓰기 집합을 가져도 받고(요구하지는 않음) 일반 HTTP 실행 검사만 요구한다. 그 밖의 칼럼 갱신·표 단위 갱신·TRUNCATE·assets DELETE는 어느 모드에서도 받지 않는다(잠금 열 불변식 유지).
    - 결정 2: **add_company_scope는 진단 프로필에 넣지 않는다.** company_scope는 회사 단위로 모든 작업의 자산 귀속을 바꾸는 운영 설정이라, 한 실행 안에서 모델이 바꿀 대상이 아니다. 원본과 다른 점으로 남긴다.
    - 탐색 단계 발견을 assets 표로 옮기는 일은 이 결정과 별개다. 필요가 보이면 탐색 실행기 결정안에서 따로 정한다.

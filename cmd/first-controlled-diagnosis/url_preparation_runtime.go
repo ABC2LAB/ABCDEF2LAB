@@ -331,6 +331,10 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		_ = pool.Close()
 		return unknown("diagnostic_binding_failed", true)
 	}
+	// 원본 작업 시작처럼 승인 대상 자산 하나를 등록한다(C24). 원본도 등록 실패로 작업을 멈추지 않으므로 로그만 남긴다.
+	if seedErr := server.SeedFirstDiagnosisTarget(ctx, pool, actual, execution.Job.Input.TargetURL); seedErr != nil {
+		log.Print("첫 진단 대상 자산 등록 실패, 진단은 계속한다")
+	}
 	diagnostics.next("task_binding", "task_binding_failed")
 	taskID := strconv.FormatInt(actual.TaskID, 10)
 	flow, flowPool, err = b.createWorkflow(ctx, l, execution, taskID, check)

@@ -124,9 +124,55 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 	exec("GRANT UPDATE(node_id) ON exploration_anchors TO " + ident(role))
 
 	exec("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO " + ident(role))
+	// 일반 HTTP 실행 역할만 진단 Worker의 insert_assets(C24)로 자산과 작업 연결을 쓴다. 이 시험은 한 역할로 등록 조회와
+	// 일반 HTTP를 함께 돌리므로, 일반 HTTP 실행을 돌리는 동안만 주고 등록 조회 검사 전에 거둔다. 목록은 구현에서 가져오지
+	// 않는다.
+	assetWrites := "GRANT INSERT, UPDATE(auth, bound_domains, c_segment, company_id, company_source, content_length, domain, extra, favicon_mmh3, icp, ip, last_seen, open_ports, page_title, params, record_value, status_code, task_ids, technologies) ON assets TO " + ident(role)
+	linkWrites := "GRANT INSERT, DELETE, UPDATE(source, source_summary, source_node_id) ON task_asset_links TO " + ident(role)
+	revokeAssetWrites := func() {
+		exec("REVOKE ALL ON assets, task_asset_links FROM " + ident(role))
+		exec("GRANT SELECT, UPDATE(id) ON assets TO " + ident(role))
+		exec("GRANT SELECT, UPDATE(task_id) ON task_asset_links TO " + ident(role))
+	}
 	t.Run("runtime-login-positive", func(t *testing.T) {
 		if err := CheckFirstDiagnosisRuntimeDatabase(ctx, runtimePool); err != nil {
 			t.Fatal("분리된 최소 실행 역할을 수용하지 않음")
+		}
+		// 자산 쓰기가 없으면 일반 HTTP 실행 역할로 받지 않는다. 등록 조회 역할은 같은 쓰기 집합을 가져도 받는다.
+		if err := CheckFirstDiagnosisHTTPRuntimeDatabase(ctx, runtimePool); !errors.Is(err, ErrControlledReadHostConfiguration) {
+			t.Fatal("자산 쓰기 없는 역할을 일반 HTTP 실행 역할로 수용함")
+		}
+		exec(assetWrites)
+		exec(linkWrites)
+		defer revokeAssetWrites()
+		if err := CheckFirstDiagnosisHTTPRuntimeDatabase(ctx, runtimePool); err != nil {
+			t.Fatal("자산 쓰기를 가진 일반 HTTP 실행 역할을 수용하지 않음")
+		}
+		if err := CheckFirstDiagnosisRuntimeDatabase(ctx, runtimePool); err != nil {
+			t.Fatal("같은 자산 쓰기 집합을 가진 등록 조회 역할을 수용하지 않음")
+		}
+		for _, extra := range []string{"GRANT UPDATE(type) ON assets TO " + ident(role), "GRANT UPDATE(created_at) ON task_asset_links TO " + ident(role), "GRANT TRUNCATE ON task_asset_links TO " + ident(role), "GRANT DELETE ON assets TO " + ident(role)} {
+			exec(extra)
+			if err := CheckFirstDiagnosisHTTPRuntimeDatabase(ctx, runtimePool); !errors.Is(err, ErrControlledReadHostConfiguration) {
+				t.Fatalf("허용 밖 자산 권한을 수용함: %s", extra)
+			}
+			assertRejected(t, runtimePool)
+			revokeAssetWrites()
+			exec(assetWrites)
+			exec(linkWrites)
+		}
+		// 칼럼 갱신 권한만 있고 자산 INSERT나 연결 DELETE(동기화 트리거가 씀)가 빠져도 받지 않는다.
+		for _, missing := range []string{"REVOKE INSERT ON assets FROM " + ident(role), "REVOKE DELETE ON task_asset_links FROM " + ident(role), "REVOKE INSERT ON task_asset_links FROM " + ident(role)} {
+			exec(missing)
+			if err := CheckFirstDiagnosisHTTPRuntimeDatabase(ctx, runtimePool); !errors.Is(err, ErrControlledReadHostConfiguration) {
+				t.Fatalf("빠진 자산 권한을 수용함: %s", missing)
+			}
+			revokeAssetWrites()
+			exec(assetWrites)
+			exec(linkWrites)
+		}
+		if err := CheckFirstDiagnosisHTTPRuntimeDatabase(ctx, runtimePool); err != nil {
+			t.Fatal("허용 밖 권한을 거둔 뒤 일반 HTTP 실행 역할을 다시 수용하지 않음")
 		}
 		if _, err := runtimePool.ExecContext(ctx, "CREATE TEMP TABLE first_diag_forbidden_temp(id int)"); err == nil {
 			t.Fatal("실행 역할의 TEMP 생성이 허용됨")
@@ -254,6 +300,20 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			goalTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, "goal-met")
+		})
+		t.Run("actual-engine-worker-insert-assets-approved-target", func(t *testing.T) {
+			assetTask, err := manager.CreateTask("Owned asset fixture", "Record only approved target assets", nil, 60, 60)
+			if err != nil || assetTask == nil {
+				t.Fatal("독립 자산 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", assetTask.ID); err != nil {
+				t.Fatal("자산 task 준비 상태 저장 실패")
+			}
+			assetTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := assetTask.Store.AddIntent(map[string]any{"summary": "Record the owned fixture endpoint"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("자산 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, assetTask, "insert-assets")
 		})
 		t.Run("actual-engine-planner-task-scope-keeps-e2-policy", func(t *testing.T) {
 			scopeTask, err := manager.CreateTask("Owned task scope fixture", "Widen coverage without widening the E2 approval", nil, 60, 60)

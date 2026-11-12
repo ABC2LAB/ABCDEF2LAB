@@ -182,4 +182,4 @@ S13은 fixture의 `/crawl/S13` 페이지로 잰다. 페이지는 스스로 POST(
 
 ## 2026-11-12 구현 근거 (정본 기준 변경 없음)
 
-P1의 실제 Chromium·MCP fixture 결과는 [별도 기록](p1-browser-fixture-results.md)에 있다. 두 모드 기능 통합과 일부 우회 경로를 실제 수신기로 확인했지만 B16 native Node→자기 MCP 제어 포트는 FAIL이다. 운영 경계·원본 보존율은 NOT_RUN, WebMCP 충돌은 UNDECIDABLE이다. 이 기록으로 위 1~3단계 전체가 통과한 것은 아니다. 기존 통과선·양성 대조·서명 규칙은 유지한다.
+P1의 실제 Chromium·MCP fixture 결과는 [별도 기록](p1-browser-fixture-results.md)에 있다. 두 모드 기능 통합과 일부 우회 경로를 실제 수신기로 확인했다. B16(native Node→자기 MCP 제어 포트)은 Chromium·MCP 한 컨테이너 배치에서 FAIL이었고, 두 컨테이너로 나눈 배치(#485)에서 망 도달 프로브 9개가 PASS다(같은 기록의 재측정 절). 운영 경계·원본 보존율은 NOT_RUN, WebMCP 충돌은 UNDECIDABLE이다. 이 기록으로 위 1~3단계 전체가 통과한 것은 아니다. 기존 통과선·양성 대조·서명 규칙은 유지한다.
