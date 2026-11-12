@@ -1259,6 +1259,15 @@ a.ph:hover {
   flex-direction: column;
   gap: 8px;
 }
+/* 새로고침 중: 아이콘 회전 (움직임 줄이기 설정이면 루트 규칙이 끈다) */
+.btn.spin svg {
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .lead {
   color: var(--ink-2);
   max-width: 68ch;

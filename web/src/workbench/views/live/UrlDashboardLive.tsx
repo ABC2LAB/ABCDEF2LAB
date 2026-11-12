@@ -89,6 +89,7 @@ export function UrlDashboardLive() {
   const [findAll, setFindAll] = useState(false);
   const shown = ff === "all" ? found : found.filter((e) => sevOf(e) === ff);
   const [picked, setSel] = useState<Sel | null>(null);
+  const [spin, setSpin] = useState(false);
   // 고르기 전에는 승인 대기(보내기 전에 사람이 정해야 함)를 먼저, 없으면 가장 위험한 발견, 없으면 점검 정보
   const first = a.pending[0];
   let sel: Sel = { kind: "job" };
@@ -104,10 +105,13 @@ export function UrlDashboardLive() {
     openInsp();
   };
   const refresh = () => {
-    if (g.canRefresh) void runUrlAction("refresh");
-    void refreshWorkflow();
+    if (spin) return;
+    setSpin(true);
+    const work: Promise<unknown>[] = [refreshWorkflow(), new Promise((r) => setTimeout(r, 600))];
+    if (g.canRefresh) work.push(runUrlAction("refresh"));
     a.poll.reload();
     rem.reload();
+    void Promise.allSettled(work).then(() => setSpin(false));
   };
   // 위험도 칩: 바꾸면 처음 6개부터. 보던 발견이 빠지면 남은 첫 줄을 고른다
   const pickSev = (k: SevF | "all") => {
@@ -304,7 +308,7 @@ export function UrlDashboardLive() {
         crumb="대시보드"
         acts={
           <>
-            <button className={s.btn} type="button" onClick={refresh}>
+            <button className={cx(s.btn, spin && s.spin)} type="button" onClick={refresh} disabled={spin}>
               <Icon name="refresh" />
               새로고침
             </button>
