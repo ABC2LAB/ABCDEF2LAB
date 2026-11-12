@@ -85,7 +85,8 @@ func (s *Server) firstDiagnosisRoutes(next http.Handler) http.Handler {
 	})
 }
 
-// 준비 단계에서는 분해 실패를 원문 목표 fallback으로 숨기지 않는다.
+// 분해 실패·목표 0개면 원래 목표로 계획을 계속한다(P3 결정안 C11 결정 1). 문맥 취소만 실패로 끝낸다.
+// 분해 실패는 진단 로그에 WARN으로 남긴다.
 func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit func(db.Activity)) (resultErr error) {
 	startedAt := time.Now()
 	fallback := false
