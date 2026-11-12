@@ -75,7 +75,7 @@
 2. C24 일부: Worker 그래프 조회 도구(list_findings·list_assets·search_all_worker_traces·get_worker_trace). 저장소 조회뿐이다. insert_assets는 제품 DB 역할이 assets를 SELECT만 허용해서 넣어도 항상 실패하므로 열린 항목 5와 같이 정한다.
 3. C25와 C24 나머지: 원본 프롬프트·마무리 턴, report_finding(후보)·skills·WebSearch. report_finding(후보)은 후보 저장에 실제 call_ref가 필요해 원본 입력 형식과 바로 맞지 않고, 지금 부르는 쪽(원본 skills)도 C30 전에는 없어서 skills와 같이 한다.
 4. WebFetch E② 판.
-5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** C08이 끝나 1단계로 `prove_goal`·`goal_met`(원본처럼 `goal_met`은 기본 바인딩 없음)과 목표 달성 마감(남은 open intent는 incomplete)을 넣었다. 2단계로 add_task_scope(E② 승인 범위 불변 시험과 같이)를, 3단계로 Plan당 상한 설정(C32 `planner_turns_per_plan`·`planner_seconds_per_plan`)을 넣었다. 다음 단계: Todo·압축·마무리 턴, report_finding(후보)·skills. goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
+5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** C08이 끝나 1단계로 `prove_goal`·`goal_met`(원본처럼 `goal_met`은 기본 바인딩 없음)과 목표 달성 마감(남은 open intent는 incomplete)을 넣었다. 2단계로 add_task_scope(E② 승인 범위 불변 시험과 같이)를, 3단계로 Plan당 상한 설정(C32 `planner_turns_per_plan`·`planner_seconds_per_plan`)을, 4단계로 마무리 턴·Todo를 넣었다. 다음 단계: 압축, report_finding(후보)·skills. goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
 6. C27(Worker 실행 중 Planner 깨우기)·kill_work·steer_work·C19는 **C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤.** Planner가 Worker 실행 중에 goal_met·kill_work를 부르면 진행 중인 E② 호출이 취소되고, 지금은 그 결과 불명이 실행 전체를 멈춘다.
 7. 파일 도구(C29와 같이). traffic 도구는 넣지 않는다(열린 항목 1 결과).
 
