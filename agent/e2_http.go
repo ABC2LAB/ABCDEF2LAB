@@ -377,6 +377,20 @@ func e2HTTPHasMCPTool(tools []actool.CoreTool) bool {
 	return false
 }
 
+// newE2HTTPWorkerToolSet은 원본 Worker와 같은 그래프 도구 상태(작업·자산 저장소·커버리지·intent 기준점)를 만든다.
+// 보강 엔진(SetEnrich)·발견 알림(SetNotifyFinding)·확정 finding 기록기(SetFindingRecorder)는 넣지 않는다.
+// 진단 결과는 후보 제출 도구로만 저장하고, 진단 Worker가 서버에서 대상으로 직접 보내는 경로를 만들지 않는다.
+func newE2HTTPWorkerToolSet(ts *db.ExplorationStore, as *db.AssetStore, name string, taskID, intentID int64) *ToolSet {
+	toolset := NewToolSet(ts, name)
+	toolset.SetTaskID(taskID)
+	if as != nil {
+		toolset.SetAssetStore(as, as.Companies())
+		toolset.SetCoverageEnabled(as.CoverageEnabled(taskID))
+	}
+	toolset.SetOwnerNode(intentID)
+	return toolset
+}
+
 // e2HTTPGraphWrap은 프로필이 원본 목록에서 고른 그래프 도구에 intent 결속과 출력 가림을 씌운다.
 // 고르는 일은 diagnosisWorkerProfile이 한다. 이름이 같다는 것만으로 임의 MCP·외부 도구가 안전하다는 뜻은 아니다.
 func e2HTTPGraphWrap(execution E2HTTPScope, intentID int64) func(actool.CoreTool) actool.CoreTool {
@@ -421,7 +435,7 @@ func (t *e2HTTPGraphTool) Call(ctx context.Context, input json.RawMessage, tc *a
 	return out, nil
 }
 
-func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), binding E2HTTPExecution, requestID, message string) (terminal harness.TerminalReason, writes WriteCounts, outcome error) {
+func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), binding E2HTTPExecution, requestID, message string) (terminal harness.TerminalReason, writes WriteCounts, outcome error) {
 	start := time.Now()
 	diagnosticAgentEvent(ctx, diagnosticlog.Event{Event: "worker_started", Stage: "worker", Status: "started", TaskID: taskID, IntentID: binding.IntentID, RunRef: binding.RunRef})
 	defer func() { observeDiagnosticWorkerFinished(ctx, binding, terminal, outcome, time.Since(start)) }()
@@ -488,9 +502,7 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, t
 	bindings := map[string]actool.CoreTool{"Bash": bash}
 	var toolset *ToolSet
 	if ts != nil {
-		toolset = NewToolSet(ts, name)
-		toolset.SetTaskID(taskID)
-		toolset.SetOwnerNode(intent.ID)
+		toolset = newE2HTTPWorkerToolSet(ts, as, name, taskID, intent.ID)
 		base = append(toolset.WorkerTools(), base...)
 		bindings["submit_diagnostic_candidate"] = newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ })
 	}

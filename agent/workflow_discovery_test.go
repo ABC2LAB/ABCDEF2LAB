@@ -79,7 +79,7 @@ func TestWorkflowDiscoveryPassesGloboffAndOneQuotedURL(t *testing.T) {
 		return result, nil
 	}}
 	intent := &db.Node{ID: binding.IntentID, Kind: db.KindIntent, Payload: json.RawMessage(`{"summary":"Owned initial discovery"}`)}
-	reason, _, err := (&Worker{}).executeE2HTTP(t.Context(), "owned-worker", binding.TaskID, nil, intent, nil, nil, binding, "", "")
+	reason, _, err := (&Worker{}).executeE2HTTP(t.Context(), "owned-worker", binding.TaskID, nil, nil, intent, nil, nil, binding, "", "")
 	if err != nil || reason != harness.ReasonCompleted || calls != 1 {
 		t.Fatal("actual discovery path did not close", reason, err, calls)
 	}

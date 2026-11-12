@@ -86,8 +86,8 @@ func TestToolProfileCheck(t *testing.T) {
 	}
 }
 
-// 1단계(골격)는 동작 차이가 없어야 한다. 실제 원본 도구 목록에서 고른 결과가 프로필 도입 전 E② 도구 목록·순서와 같다.
-func TestToolProfileMatchesPreviousE2ToolLists(t *testing.T) {
+// 실제 원본 도구 목록에서 고른 결과. Planner는 프로필 도입 전 E② 목록·순서와 같다(아직 복원 전).
+func TestToolProfileMatchesOriginalToolLists(t *testing.T) {
 	ts := NewToolSet(nil, "")
 	e2Bash := e2WorkerFixtureTool("Bash", nil)
 	candidate := e2WorkerFixtureTool("submit_diagnostic_candidate", nil)
@@ -96,8 +96,16 @@ func TestToolProfileMatchesPreviousE2ToolLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := profileToolNames(worker); got != "Bash,record_fact,node_detail,submit_diagnostic_candidate" || worker[0] != e2Bash || worker[3] != candidate {
-		t.Fatalf("worker tools=%s", got)
+	// 그래프 도구는 원본 WorkerTools 순서 그대로이고, 확정 기록(report_finding)과 자산 쓰기(insert_assets)만 빠진다.
+	var graph []actool.CoreTool
+	for _, tool := range ts.WorkerTools() {
+		if tool.Name() != "report_finding" && tool.Name() != "insert_assets" {
+			graph = append(graph, tool)
+		}
+	}
+	want := "Bash," + profileToolNames(graph) + ",submit_diagnostic_candidate"
+	if got := profileToolNames(worker); got != want || len(graph) != 6 || worker[0] != e2Bash || worker[len(worker)-1] != candidate {
+		t.Fatalf("worker tools=%s want=%s", got, want)
 	}
 	// 프로필 도입 전 Planner 필터: PlannerTools를 순서대로 보며 이 13개 이름만 남겼다.
 	previous := map[string]bool{
@@ -119,5 +127,16 @@ func TestToolProfileMatchesPreviousE2ToolLists(t *testing.T) {
 		if err != nil || profileToolNames(planner) != profileToolNames(want) || len(want) < 12 {
 			t.Fatalf("coverage=%v planner=%s want=%s err=%v", coverage, profileToolNames(planner), profileToolNames(want), err)
 		}
+	}
+}
+
+// 진단 Worker의 그래프 도구 상태에는 대상으로 보내거나 확정을 기록하는 연결이 없다.
+func TestE2HTTPWorkerToolSetHasNoSendOrConfirmHooks(t *testing.T) {
+	toolset := newE2HTTPWorkerToolSet(nil, nil, "worker-1", 7, 22)
+	if toolset.enrich != nil || toolset.notifyFinding != nil || toolset.findingRecorder != nil || toolset.killWork != nil || toolset.steerWork != nil || toolset.notify != nil {
+		t.Fatal("diagnosis worker tool set has send or confirm hooks")
+	}
+	if toolset.taskID != 7 || toolset.ownerNode != 22 || toolset.worker != "worker-1" || toolset.CoverageDisabled() {
+		t.Fatalf("tool set binding: task=%d owner=%d", toolset.taskID, toolset.ownerNode)
 	}
 }
