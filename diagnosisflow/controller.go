@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/pathmask"
 	"log"
 	"net/url"
 	"sort"
@@ -76,6 +77,49 @@ func highRisk(path string) bool {
 	return false
 }
 func safePath(path string) string { return dlp.DiagnosticText(path) }
+
+// pathTemplate은 값으로 보이는 조각(숫자·긴 16진·긴 인코딩 값·이메일 등, pathmask 규칙)을 `{id}`로 바꾼 경로와 바꾼
+// 조각 수다.
+func pathTemplate(path string) (string, int) {
+	segments := strings.Split(path, "/")
+	values := 0
+	for i, segment := range segments {
+		if masked, ok := pathmask.ValueSegment(segment); ok && segment != "" {
+			segments[i] = masked
+			values++
+		}
+	}
+	return strings.Join(segments, "/"), values
+}
+
+// requestEndpointLocked는 요청이 쓰는 끝점이다. 진단 단계에서는 선택된 끝점과 값 조각만 다른 요청(/x/1을 선택했으면
+// /x/2)도 그 끝점으로 본다(C18). 크롤에서 본 객체 하나만 보낼 수 있으면 다른 계정·객체로 바꿔 보는 인가 진단이
+// 불가능하기 때문이다. 요청 경로 자체도 그 끝점과 같은 범위·변경 분류여야 한다(승인 접두·제외 경로·위험 단어·읽기
+// 전용 접두를 요청 경로로 다시 본다). 같은 경로가 따로 발견됐지만 선택되지 않았으면 선택한 끝점 쪽을 쓴다.
+func (c *Controller) requestEndpointLocked(method, path string) *Endpoint {
+	exact := c.endpointLocked(method, path)
+	if exact != nil && exact.Selected || c.record.Snapshot.Stage != "diagnosing" {
+		return exact
+	}
+	template, values := pathTemplate(path)
+	if values == 0 {
+		return exact
+	}
+	for i := range c.record.Snapshot.Endpoints {
+		e := &c.record.Snapshot.Endpoints[i]
+		if !e.Selected || e.Method != method || !e.InScope {
+			continue
+		}
+		if other, _ := pathTemplate(e.Path); other != template {
+			continue
+		}
+		if in, change := c.endpointScope(method, path, e.Kind, e.Source); in && change == e.Change {
+			return e
+		}
+	}
+	return exact
+}
+
 func (c *Controller) endpointLocked(method, path string) *Endpoint {
 	for i := range c.record.Snapshot.Endpoints {
 		v := &c.record.Snapshot.Endpoints[i]
@@ -347,7 +391,7 @@ func (c *Controller) Instructions() string {
 		}
 	}
 	data, _ := json.Marshal(selected)
-	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. Selected endpoint references (JSON): " + string(data)
+	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. A selected endpoint also covers the same method on a path that differs only in ID-like segments (numbers, long hex or encoded values), so other object IDs may be requested there. Selected endpoint references (JSON): " + string(data)
 }
 func (c *Controller) Command(ctx context.Context, owner, op, key string, revision uint64, ids []string) (Snapshot, error) {
 	c.mu.Lock()
@@ -445,7 +489,7 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e := c.endpointLocked(v.Method, path)
+	e := c.requestEndpointLocked(v.Method, path)
 	if v.BodyBytes > 65536 || e == nil || !e.InScope || e.Change == "blocked" || !c.allowedPath(path) {
 		return ErrDenied
 	}
@@ -477,7 +521,7 @@ func (c *Controller) PreapprovedRead(v e2proxy.RequestView) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e := c.endpointLocked(v.Method, path)
+	e := c.requestEndpointLocked(v.Method, path)
 	return !c.poisoned && e != nil && e.InScope && e.Change == "attested_read"
 }
 func (c *Controller) After(ctx context.Context, v e2proxy.RequestView, r e2proxy.Receipt) error {
