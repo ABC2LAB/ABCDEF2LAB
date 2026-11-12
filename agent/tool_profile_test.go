@@ -7,7 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/norma/agentcore"
+	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
+	"iter"
 	"reflect"
 )
 
@@ -188,6 +192,46 @@ func TestDiagnosisPlannerTaskScopeDescriptionKeepsBehavior(t *testing.T) {
 			if base.Name() == tool.Name() && base.Description() != tool.Description() {
 				t.Fatalf("%s 설명이 바뀜", tool.Name())
 			}
+		}
+	}
+}
+
+// toolSchemaProvider는 모델 요청에 실린 도구 스키마를 남기고 바로 끝낸다.
+type toolSchemaProvider struct{ schemas map[string]llm.ToolSchema }
+
+func (p *toolSchemaProvider) Complete(_ context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	for _, schema := range request.Tools {
+		p.schemas[schema.Name] = schema
+	}
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("done")}}, "end_turn", llm.Usage{}, nil
+}
+
+func (*toolSchemaProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		yield(llm.StreamEvent{}, errors.New("unexpected streaming"))
+	}
+}
+
+// 진단 Planner 옵션 조립(constrainE2HTTPPlannerOptions)을 거쳐 실제로 모델에 가는 도구 스키마에서도 add_task_scope는
+// 진단 판 설명이고, 어떤 도구 설명도 "인가 경계"를 약속하지 않는다.
+func TestDiagnosisPlannerTaskScopeDescriptionReachesProvider(t *testing.T) {
+	ts := NewToolSet(nil, "")
+	provider := &toolSchemaProvider{schemas: map[string]llm.ToolSchema{}}
+	opts := agentcore.Options{Provider: provider, Tools: ts.PlannerTools(), PermissionMode: permission.ModeBypass, NonStreaming: true}
+	if err := constrainE2HTTPPlannerOptions(context.Background(), &opts); err != nil {
+		t.Fatal(err)
+	}
+	session := agentcore.NewSession(opts)
+	defer session.Close()
+	for range session.Prompt(context.Background(), "synthetic planning") {
+	}
+	scope, ok := provider.schemas["add_task_scope"]
+	if !ok || scope.Description != diagnosisTaskScopeDescription {
+		t.Fatalf("provider add_task_scope description: %q", scope.Description)
+	}
+	for name, schema := range provider.schemas {
+		if strings.Contains(schema.Description, "authorization boundary") {
+			t.Fatalf("%s promises an authorization boundary to the model", name)
 		}
 	}
 }
