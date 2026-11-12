@@ -425,3 +425,98 @@ func TestFirstDiagnosisModelBudgetLimitReachedOnlyForBudget(t *testing.T) {
 		t.Fatal("runtime budget limit ignored")
 	}
 }
+
+// 호출별 예약·정산(P3 결정안 C28 결정 2). 진행 중 호출이 있어도 예산 안이면 새 예약을 받고, 각 호출은 자기 예약만
+// 닫는다. 역순으로 끝나도 각자 정산하고, 한 호출이 실패해도 다른 호출의 정산은 그대로다. 예산은 예약 합계로 본다.
+func TestFirstDiagnosisModelBudgetPerCallReservations(t *testing.T) {
+	type outcome struct {
+		usage llm.Usage
+		err   error
+	}
+	for _, tc := range []struct {
+		name          string
+		first, second outcome
+		bounded       int64
+	}{
+		{"reverse-success", outcome{usage: llm.Usage{InputTokens: 10, OutputTokens: 20}}, outcome{usage: llm.Usage{InputTokens: 30, OutputTokens: 40}}, 0},
+		{"first-fails", outcome{err: errors.New("synthetic 503")}, outcome{usage: llm.Usage{InputTokens: 30, OutputTokens: 40}}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var persisted []diagnosisprep.ModelUsage
+			b, cfg := modelBudgetFixture(t, func(u diagnosisprep.ModelUsage) error { persisted = append(persisted, u); return nil })
+			req := llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("owned synthetic")}}
+			first, err := b.reserve(context.Background(), cfg, &req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := b.reserve(context.Background(), cfg, &req)
+			if err != nil {
+				t.Fatal("in-flight call blocked a reservation within budget")
+			}
+			if u := persisted[len(persisted)-1]; u.UsageKnown || u.Requests != 2 || u.ReservedInputTokens != 2*first.input {
+				t.Fatalf("in-flight reservations not persisted: %+v", u)
+			}
+			// 승인 예산(호출 2회)은 예약 수로 센다.
+			if _, err := b.reserve(context.Background(), cfg, &req); err == nil {
+				t.Fatal("third reservation exceeded the budget")
+			}
+			// 뒤에 시작한 호출이 먼저 끝난다.
+			if b.settle(second, tc.second.usage, tc.second.err) != nil {
+				t.Fatal("second settlement")
+			}
+			if u := b.Snapshot(); u.UsageKnown || u.InputTokens != 30 || u.OutputTokens != 40 {
+				t.Fatalf("settled with a call still in flight: %+v", u)
+			}
+			if (b.settle(first, tc.first.usage, tc.first.err) == nil) != (tc.first.err == nil) {
+				t.Fatal("first settlement result")
+			}
+			wantInput, wantOutput := int64(40), int64(60)
+			if tc.first.err != nil {
+				wantInput, wantOutput = first.input+30, first.output+40
+			}
+			if u := b.Snapshot(); !u.UsageKnown || u.InputTokens != wantInput || u.OutputTokens != wantOutput || u.UnknownUsageCalls != tc.bounded || u.Requests != 2 {
+				t.Fatalf("per-call settlement: %+v", u)
+			}
+			// 같은 예약을 두 번 닫으면 회계를 믿을 수 없어 막는다.
+			if b.settle(first, llm.Usage{InputTokens: 1}, nil) == nil || b.Snapshot().UsageKnown {
+				t.Fatal("double settlement accepted")
+			}
+		})
+	}
+}
+
+// 정책 차단은 진행 중인 다른 호출의 정산을 지우지 않는다. 막힌 뒤의 새 예약만 거부한다.
+func TestFirstDiagnosisModelBudgetBlockedCallKeepsOtherSettlement(t *testing.T) {
+	b, cfg := modelBudgetFixture(t, func(diagnosisprep.ModelUsage) error { return nil })
+	req := llm.CompletionRequest{MaxTokens: 128}
+	first, err := b.reserve(context.Background(), cfg, &req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := b.reserve(context.Background(), cfg, &req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.settle(first, llm.Usage{}, fmt.Errorf("post: %w", llmpolicy.ErrRequestBlocked)) == nil {
+		t.Fatal("policy rejection settled")
+	}
+	if b.settle(second, llm.Usage{InputTokens: 10, OutputTokens: 20}, nil) != nil {
+		t.Fatal("in-flight call lost its own settlement")
+	}
+	if u := b.Snapshot(); u.UsageKnown || u.InputTokens != 10 || u.OutputTokens != 20 || u.UnknownUsageCalls != 0 {
+		t.Fatalf("blocked budget usage: %+v", u)
+	}
+}
+
+// 외부 제공자 경로는 transport 누적 값의 차이로 한 호출을 대조하므로, 호출별 transport 슬롯이 들어오기 전에는
+// 진행 중 예약이 있으면 새 예약을 받지 않는다.
+func TestFirstDiagnosisOpenRouterBudgetRejectsOverlappingReservation(t *testing.T) {
+	b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+	req := llm.CompletionRequest{MaxTokens: 100}
+	if _, err := b.reserve(context.Background(), cfg, &req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.reserve(context.Background(), cfg, &req); err == nil || b.Snapshot().Requests != 1 {
+		t.Fatal("overlapping external reservation accepted before per-call transport accounting")
+	}
+}

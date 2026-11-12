@@ -42,14 +42,23 @@ type FirstDiagnosisModelBudget struct {
 	observe       func(diagnosisprep.ModelUsage) error
 	external      *llmpolicy.OpenRouterPolicy
 	manifestPath  string
-	lastExternal  llmpolicy.OpenRouterUsage
-	// 진행 중 호출 하나의 예약(동시 호출 1, gate 안). 실패한 호출을 이 양으로 정산한다(C05).
-	callInput   int64
-	callCost    int64
+	// inflight는 정산 전 예약 수다. 사용량이 모두 정산됐는지(UsageKnown)는 진행 중 예약이 없고 막힘이 없을 때다.
+	inflight    int
 	targetDrain *firstDiagnosisTargetDrain
 	admission   func(context.Context) error
 	// limitReached는 승인 예산이 남지 않아 새 호출을 받지 못한 적이 있다는 뜻이다(budget_limited).
 	limitReached bool
+}
+
+// firstDiagnosisModelCall은 호출 하나의 예약이다(P3 결정안 C28 결정 2). reserve가 만들고 settle이 한 번 닫는다.
+// 정산은 이 예약만 보고 다른 진행 중 호출의 예약·정산은 건드리지 않는다.
+type firstDiagnosisModelCall struct {
+	input, output, cost int64
+	// external은 예약 때의 OpenRouter transport 누적 값이다. 차이로 이 호출 하나를 대조하므로 진행 중 호출이
+	// 하나일 때만 맞다. 그래서 외부 제공자 경로는 진행 중 예약이 있으면 새 예약을 받지 않는다(호출별 transport
+	// 슬롯이 들어오기 전까지).
+	external llmpolicy.OpenRouterUsage
+	closed   bool
 }
 
 // 실행 전에 한 번만 설정한다. 사용자 중단·시간 상한·감사 실패는 hard context로 즉시 취소한다.
@@ -216,20 +225,19 @@ func (b *FirstDiagnosisModelBudget) checkConfig(c agent.Config) error {
 	return nil
 }
 
-func (b *FirstDiagnosisModelBudget) before(ctx context.Context, cfg agent.Config, req *llm.CompletionRequest) error {
-	if ctx == nil {
-		return ErrFirstDiagnosisModelBudget
+// reserve는 호출 하나를 예약한다. 예산 검사는 정산 사용량이 아니라 예약 합계(정산된 호출과 진행 중 호출의 예약)로
+// 하므로 진행 중 호출이 있다는 이유만으로는 거부하지 않는다. 거부는 예산 부족·막힘(C05에 남긴 경우)·설정 위반이다.
+func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Config, req *llm.CompletionRequest) (*firstDiagnosisModelCall, error) {
+	if ctx == nil || b == nil {
+		return nil, ErrFirstDiagnosisModelBudget
 	}
-	if b != nil && b.admission != nil {
+	if b.admission != nil {
 		if err := b.admission(ctx); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	if b == nil {
-		return nil
-	}
-	if ctx == nil || ctx.Err() != nil || req == nil || b.checkConfig(cfg) != nil {
-		return ErrFirstDiagnosisModelBudget
+	if ctx.Err() != nil || req == nil || b.checkConfig(cfg) != nil {
+		return nil, ErrFirstDiagnosisModelBudget
 	}
 	if req.MaxTokens <= 0 || int64(req.MaxTokens) > b.outputPerCall {
 		req.MaxTokens = int(b.outputPerCall)
@@ -239,45 +247,47 @@ func (b *FirstDiagnosisModelBudget) before(ctx context.Context, cfg agent.Config
 	// provider의 모델 context pin은 설치자가 검증한 실제 로컬 서버 상한이어야 한다.
 	reserveInput := int64(len(raw)) + firstDiagnosisFramingTokens
 	if err != nil || reserveInput > b.inputPerCall {
-		return ErrFirstDiagnosisModelBudget
+		return nil, ErrFirstDiagnosisModelBudget
 	}
 	clear(raw)
 	var cost int64
 	if b.external != nil {
 		cost, err = b.external.Quote(int64(req.MaxTokens))
 		if err != nil {
-			return ErrFirstDiagnosisModelBudget
+			return nil, ErrFirstDiagnosisModelBudget
 		}
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if ctx.Err() != nil || b.targetDrain != nil && b.targetDrain.admit() != nil {
-		return ErrFirstDiagnosisModelBudget
+		return nil, ErrFirstDiagnosisModelBudget
 	}
-	if b.blocked || !b.usage.UsageKnown {
-		return ErrFirstDiagnosisModelBudget
+	if b.blocked || b.external != nil && b.inflight > 0 {
+		return nil, ErrFirstDiagnosisModelBudget
 	}
 	if b.usage.Requests >= b.limits.ModelRequests ||
 		reserveInput > b.limits.InputTokens-b.usage.ReservedInputTokens ||
 		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.ReservedOutputTokens || cost > b.limits.CostUSDMicros-b.usage.ReservedCostUSDMicros {
 		// 승인 예산이 다음 호출을 받을 만큼 남지 않았다. 막힘(불명·정책)과 달리 실행 실패가 아니라 마감 사유다.
 		b.limitReached = true
-		return ErrFirstDiagnosisModelBudget
+		return nil, ErrFirstDiagnosisModelBudget
 	}
+	call := &firstDiagnosisModelCall{input: reserveInput, output: int64(req.MaxTokens), cost: cost}
 	b.usage.Requests++
-	b.usage.ReservedInputTokens += reserveInput
-	b.usage.ReservedOutputTokens += int64(req.MaxTokens)
-	b.usage.ReservedCostUSDMicros += cost
-	b.callInput, b.callCost = reserveInput, cost
+	b.usage.ReservedInputTokens += call.input
+	b.usage.ReservedOutputTokens += call.output
+	b.usage.ReservedCostUSDMicros += call.cost
 	if b.external != nil {
-		b.lastExternal = b.external.Snapshot()
+		call.external = b.external.Snapshot()
 	}
+	b.inflight++
 	b.usage.UsageKnown = false
+	// 진행 중 예약을 포함한 합계를 남긴다. 재시작 때 닫히지 않은 예약은 예약한 양을 쓴 것으로 센다.
 	if b.observe(b.usage) != nil {
 		b.blocked = true
-		return ErrFirstDiagnosisModelBudget
+		return nil, ErrFirstDiagnosisModelBudget
 	}
-	return nil
+	return call, nil
 }
 
 // failedCallBounded는 실패한 호출을 예약 상한으로 정산해도 되는지 본다. 호출이 성공했는데 사용량이 예약을
@@ -298,17 +308,27 @@ func reportedWithinReservation(usage llm.Usage, reservedInput int64, outputLimit
 		int64(usage.InputTokens) <= reservedInput && usage.OutputTokens <= outputLimit
 }
 
-func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, callErr error) error {
-	if b == nil {
-		return callErr
+// settle은 호출 하나의 예약을 닫는다. 뒤에 시작한 호출이 먼저 끝나도 각자 자기 예약으로 정산한다.
+func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage llm.Usage, callErr error) error {
+	if b == nil || call == nil {
+		return ErrFirstDiagnosisModelBudget
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if call.closed {
+		// 같은 예약을 두 번 닫으면 회계를 믿을 수 없다.
+		b.blocked = true
+		b.usage.UsageKnown = false
+		return ErrFirstDiagnosisModelBudget
+	}
+	call.closed = true
+	b.inflight--
+	outputLimit := int(call.output)
 	known := callErr == nil && usage.InputTokens > 0 && usage.OutputTokens >= 0 &&
-		int64(usage.InputTokens) <= b.callInput && usage.OutputTokens <= outputLimit &&
+		int64(usage.InputTokens) <= call.input && usage.OutputTokens <= outputLimit &&
 		usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0
 	if b.external != nil {
-		next, previous := b.external.Snapshot(), b.lastExternal
+		next, previous := b.external.Snapshot(), call.external
 		// 이 SDK 응답은 정확히 한 번의 transport 호출 사용량과 일치해야 한다.
 		known = known && !next.Blocked && next.Requests == previous.Requests+1 && next.Errors == previous.Errors && next.InputTokens-previous.InputTokens == int64(usage.InputTokens) && next.OutputTokens-previous.OutputTokens == int64(usage.OutputTokens) && next.CostMicros >= previous.CostMicros && next.CostMicros <= b.usage.ReservedCostUSDMicros
 		if known {
@@ -319,20 +339,19 @@ func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, call
 	case known:
 		b.usage.InputTokens += int64(usage.InputTokens)
 		b.usage.OutputTokens += int64(usage.OutputTokens)
-		b.usage.UsageKnown = true
-	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked) && reportedWithinReservation(usage, b.callInput, outputLimit):
+	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked) && reportedWithinReservation(usage, call.input, outputLimit):
 		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
 		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.
 		// 다음 호출의 예산 검사는 예약 합계로 하므로 상한은 넓어지지 않는다.
-		b.usage.InputTokens += b.callInput
-		b.usage.OutputTokens += int64(outputLimit)
-		b.usage.CostUSDMicros += b.callCost
+		b.usage.InputTokens += call.input
+		b.usage.OutputTokens += call.output
+		b.usage.CostUSDMicros += call.cost
 		b.usage.UnknownUsageCalls++
-		b.usage.UsageKnown = true
 	default:
 		b.blocked = true
-		b.usage.UsageKnown = false
 	}
+	// 모든 예약이 정산됐고 막힘이 없을 때만 사용량을 안다. 진행 중 호출이 남아 있으면 아직 모른다.
+	b.usage.UsageKnown = !b.blocked && b.inflight == 0
 	if b.observe(b.usage) != nil {
 		b.blocked = true
 		b.usage.UsageKnown = false
