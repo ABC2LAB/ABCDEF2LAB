@@ -154,6 +154,22 @@ describe("범위 확인", () => {
     // 묶음을 AI 추정이라고 부르지 않는다
     expect(screen.queryByText(/AI 추정/)).toBeNull();
   });
+
+  it("시안의 시작 전 점검 · 새 경로 처리 규칙은 서버 계약이 없어 '아직 구현 안 됨'으로 보인다 (시안 v28)", () => {
+    useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("scope")}>
+        <WorkflowScopeLive />
+      </ShellContext.Provider>,
+    );
+    const pre = screen.getByLabelText("시작 전 점검");
+    expect(pre).toHaveTextContent(/모델 연결 아직 구현 안 됨/);
+    expect(pre).toHaveTextContent(/대상 연결 아직 구현 안 됨/);
+    expect(pre).toHaveTextContent(/계정 로그인 아직 구현 안 됨/);
+    const rules = screen.getByText("점검 중 새로 찾은 경로 처리 규칙").closest("details") as HTMLElement;
+    expect(within(rules).getAllByRole("listitem")).toHaveLength(6);
+    expect(within(rules).getByRole("note")).toHaveTextContent(/^아직 구현 안 됨 · 서버가 점검 중 새 경로를/);
+  });
 });
 
 describe("자산 탐색", () => {
@@ -167,6 +183,102 @@ describe("자산 탐색", () => {
     expect(screen.getByRole("radiogroup", { name: "보이는 경로" })).toBeInTheDocument();
     expect(screen.queryByRole("radiogroup", { name: "보기 방식" })).toBeNull();
     expect(screen.queryByText("주소 구조")).toBeNull();
+  });
+
+  it("찾은 경로: 아직 안 나온 묶음 · 거르기별 빈 글 · 로그인 범례 자리 · 경로 상세의 요청 횟수 · 기능 자리 (시안 v24 · v32)", () => {
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: { ...flow, endpoints: [ep("read", "GET", "/api/products/1", "attested_read")] },
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    const aside = screen.getByRole("complementary", { name: "찾은 경로" });
+    // 상품·리뷰 하나만 나왔으면 나머지 다섯 묶음이 '아직 찾지 못한 묶음'
+    expect(within(aside).getByText(/^아직 찾지 못한 묶음 · /)).toHaveTextContent(
+      "계정·인증, 장바구니·주문, 관리자, 정적 자원, 공개 페이지·API",
+    );
+    expect(within(aside).getByText(/^로그인/)).toHaveTextContent("아직 구현 안 됨");
+    fireEvent.click(within(aside).getByRole("radio", { name: "승인 필요" }));
+    expect(within(aside).getByText("승인이 필요한 경로가 아직 없습니다.")).toBeInTheDocument();
+    fireEvent.click(within(aside).getByRole("radio", { name: "제외" }));
+    expect(within(aside).getByText("제외한 경로가 아직 없습니다.")).toBeInTheDocument();
+    fireEvent.click(within(aside).getByRole("radio", { name: "전체" }));
+    fireEvent.click(within(aside).getByRole("button", { name: /\/api\/products\/1/ }));
+    const detail = screen.getByRole("complementary", { name: "찾은 경로" });
+    expect(within(detail).getByText("요청 횟수").nextElementSibling).toHaveTextContent("아직 구현 안 됨");
+    expect(within(detail).getByText("기능").nextElementSibling).toHaveTextContent("아직 구현 안 됨");
+  });
+
+  it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값, 경과는 '아직 구현 안 됨' (시안 v24)", () => {
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: { ...flow, stage: "crawling", initial_completed: false, counts: { ...flow.counts, visited: 1 } },
+      flowVerified: true,
+    });
+    const { rerender } = render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    // 방문 1 / 페이지 상한 4 → 25%
+    const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
+    expect(bar).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByText(/^찾은 경로 · 조회 1 · 데이터 변경 1$/)).toBeInTheDocument();
+    expect(screen.getByText(/^보낸 요청 · 시도 1 · 결과 불명 0$/)).toBeInTheDocument();
+    expect(screen.getByText(/^경과/)).toHaveTextContent("아직 구현 안 됨");
+    // 첫 탐색 단계가 끝나도 막대는 실제 방문 비율 그대로, 단계 끝은 따로 적는다 (리뷰 #479)
+    useUrl.setState({ flow });
+    rerender(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByText("첫 탐색 단계 끝남")).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "부분 완료 · 상한 소진",
+      { exploration_status: "PARTIAL", exploration_reason: "cap_exhausted" },
+      "부분 완료 · cap_exhausted",
+    ],
+    [
+      "중지",
+      { stage: "stopped", exploration_status: "STOPPED", exploration_reason: "operator_stop" },
+      "중지됨 · operator_stop",
+    ],
+  ])("%s 로 끝나도 막대를 100%% 로 바꾸지 않고 탐색 상태를 따로 보인다 (리뷰 #479 반례)", (_n, over, text) => {
+    // 방문 2 / 페이지 상한 8 = 25% — 서버는 PARTIAL 에서도 initial_completed 를 true 로 둔다
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: {
+        ...flow,
+        stage: "awaiting_selection",
+        initial_completed: true,
+        limits: { ...flow.limits, max_pages: 8 },
+        counts: { ...flow.counts, visited: 2 },
+        ...over,
+      } as WorkflowSnapshot,
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByText(/^탐색 상태/)).toHaveTextContent(text);
   });
 });
 
@@ -295,6 +407,36 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
     expect(within(sent).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
   });
 
+  const openSecretRow = () => {
+    const rows = mountLog(
+      [{ at: "2026-11-11T01:00:01Z", kind: "request", method: "GET", path: "/api/a", status: 200 }],
+      {
+        ...ep("a", "GET", "/api/a", "attested_read"),
+        status: 200,
+        request: "GET /api/a HTTP/1.1\nCookie: session=synthetic-cookie-1",
+        response: "HTTP/1.1 200 OK\nSet-Cookie: session=synthetic-cookie-2",
+      },
+    );
+    fireEvent.click(rows[0]);
+    return screen.getByRole("region", { name: "GET /api/a 상세" });
+  };
+
+  it("펼친 칸의 원문은 화면에서도 비밀 값을 가린다 (리뷰 #473 비차단)", () => {
+    const box = openSecretRow();
+    expect(box).not.toHaveTextContent("synthetic-cookie");
+    expect(box).toHaveTextContent("[REDACTED]");
+  });
+
+  it("펼친 칸의 Esc 는 작업대 전역 Esc(상세 서랍 닫기)로 새지 않는다 (리뷰 #473 비차단)", () => {
+    const box = openSecretRow();
+    const global = vi.fn();
+    document.addEventListener("keydown", global);
+    fireEvent.keyDown(within(box).getByRole("button", { name: "접기" }), { key: "Escape" });
+    document.removeEventListener("keydown", global);
+    expect(screen.queryByRole("region", { name: "GET /api/a 상세" })).toBeNull();
+    expect(global).not.toHaveBeenCalled();
+  });
+
   it("보냈지만 응답을 못 받은 줄(status 0 · 결과 불명)을 '보내지 않은 요청'으로 단정하지 않는다", () => {
     // 서버 Controller.After: ForwardAttempted · RequestWritten = true, ResponseReceived = false, Reason = Unknown,
     // StatusCode = 0 → counts.sent · attempted · unknown 이 오르지만 이벤트 status 는 omitempty 로 빠진다
@@ -370,6 +512,10 @@ describe("대시보드", () => {
     const notes = await screen.findByRole("region", { name: "결정 대기" });
     await waitFor(() => expect(within(notes).getByText(/승인 대기 1건/)).toBeInTheDocument());
     expect(screen.queryByRole("region", { name: "지금 처리할 일" })).toBeNull();
+    // 요약 칸의 결정 대기도 같은 수 (시안 v77)
+    const decide = within(screen.getByRole("region", { name: "요약" })).getByText("결정 대기")
+      .parentElement as HTMLElement;
+    expect(decide).toHaveTextContent(/^결정 대기1승인 1 · 경로 선택 0$/);
     // 고르기 전 상세는 승인 대기 요청 (보내기 전에 사람이 정해야 함)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
