@@ -2,6 +2,7 @@ package diagnosisprep
 
 import (
 	"github.com/Autumn-27/artex/diagnosisflow"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -20,7 +21,39 @@ type ProductRequest struct {
 	TargetID         string              `json:"target_id,omitempty"`
 	ProfileID        string              `json:"profile_id,omitempty"`
 	Registration     *TargetRegistration `json:"registration,omitempty"`
+	// Account는 대상 계정 조작(account_*)의 입력이다(C14 결정 1·2, docs/account-login-decision.md). 자격 값은 받지 않는다.
+	Account *AccountRequest `json:"account,omitempty"`
 }
+
+// AccountRequest는 대상에 붙인 계정 하나를 가리킨다. Label은 화면·감사용 이름이고 사용자명 원문이 아니다.
+// StatementConfirmed는 시험 계정 표시(account_mark_test) 때 승인자가 진술에 동의했다는 뜻이다.
+type AccountRequest struct {
+	Label              string `json:"label"`
+	StatementConfirmed bool   `json:"statement_confirmed,omitempty"`
+}
+
+// ProductAccount는 계정 하나의 분류 상태다. Classification은 test 또는 real이고 기본은 real이다. test는 표시한 대상 판이
+// 지금도 같은 승인 판일 때만이다. Reason은 real로 돌아간 사유(target_reapproved·manual_unmark)이고, 표시한 적이 없으면 비어 있다.
+type ProductAccount struct {
+	Label          string    `json:"label"`
+	Classification string    `json:"classification"`
+	Reason         string    `json:"reason,omitempty"`
+	RegisteredBy   string    `json:"registered_by"`
+	RegisteredAt   time.Time `json:"registered_at"`
+	ClassifiedBy   string    `json:"classified_by,omitempty"`
+	ClassifiedAt   time.Time `json:"classified_at,omitempty"`
+	// MarkedRevision은 시험 계정으로 표시한 대상 판이다(표시한 적 없으면 0).
+	MarkedRevision uint64 `json:"marked_revision,omitempty"`
+}
+
+// 대상 계정 상한·라벨 형식이다. 라벨은 소문자·숫자·밑줄·하이픈만 받아 사용자명·이메일 원문을 넣지 못하게 한다.
+const MaxTargetAccounts = 16
+
+var accountLabel = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// ValidAccountLabel은 계정 라벨 형식 검사다.
+func ValidAccountLabel(s string) bool { return accountLabel.MatchString(s) }
+
 type TargetRegistration struct {
 	ReversibleWrites bool     `json:"reversible_writes,omitempty"`
 	URL              string   `json:"url"`
@@ -57,7 +90,22 @@ type ProductResponse struct {
 	Targets    []ProductTarget         `json:"targets,omitempty"`
 	Target     *ProductTarget          `json:"target,omitempty"`
 	Credential *ProductCredential      `json:"credential,omitempty"`
+	Accounts   []ProductAccount        `json:"accounts,omitempty"`
+	Account    *ProductAccount         `json:"account,omitempty"`
 	Reason     string                  `json:"reason,omitempty"`
+}
+
+func validProductAccount(a ProductAccount) bool {
+	if !ValidAccountLabel(a.Label) || !reference.MatchString(a.RegisteredBy) || a.RegisteredAt.IsZero() {
+		return false
+	}
+	switch a.Classification {
+	case "test":
+		return a.Reason == "" && reference.MatchString(a.ClassifiedBy) && !a.ClassifiedAt.IsZero() && a.MarkedRevision > 0
+	case "real":
+		return a.Reason == "" || a.Reason == "target_reapproved" || a.Reason == "manual_unmark"
+	}
+	return false
 }
 
 func validProductRequest(r *ProductRequest) bool {
@@ -65,6 +113,23 @@ func validProductRequest(r *ProductRequest) bool {
 		return false
 	}
 	if r.Operation != "resolve" && r.TargetURL != "" {
+		return false
+	}
+	if strings.HasPrefix(r.Operation, "account") {
+		if !reference.MatchString(r.TargetID) || r.ProfileID != "" || r.Registration != nil || r.TargetURL != "" || r.JobID != "" || r.CommandKey != "" || r.ExpectedRevision != 0 || len(r.SelectedIDs) > 0 {
+			return false
+		}
+		switch r.Operation {
+		case "accounts":
+			return r.Account == nil
+		case "account_register", "account_unmark":
+			return r.Account != nil && ValidAccountLabel(r.Account.Label) && !r.Account.StatementConfirmed
+		case "account_mark_test":
+			return r.Account != nil && ValidAccountLabel(r.Account.Label) && r.Account.StatementConfirmed
+		}
+		return false
+	}
+	if r.Account != nil {
 		return false
 	}
 	if strings.HasPrefix(r.Operation, "workflow_") {

@@ -458,6 +458,21 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			}
 		case "credentials":
 			control.Credential, err = p.credential(ctx, r.Product.ProfileID)
+		case "accounts":
+			control.Accounts, err = p.targets.listAccounts(r.Principal, r.Product.TargetID)
+		case "account_register", "account_mark_test", "account_unmark":
+			var a diagnosisprep.ProductAccount
+			switch r.Product.Operation {
+			case "account_register":
+				a, err = p.targets.registerAccount(r.Principal, r.Product.TargetID, r.Product.Account.Label)
+			case "account_mark_test":
+				a, err = p.targets.markTestAccount(r.Principal, r.Product.TargetID, r.Product.Account.Label, r.Product.Account.StatementConfirmed)
+			default:
+				a, err = p.targets.unmarkAccount(r.Principal, r.Product.TargetID, r.Product.Account.Label)
+			}
+			if err == nil {
+				control.Account = &a
+			}
 		default:
 			err = errors.New("invalid_product_operation")
 		}
