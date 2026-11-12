@@ -193,6 +193,30 @@ const RUN_RECORD: api.DiagnosisRunView = {
   },
 };
 
+/** 확정 발견 한 건 (팀 diagnosticOutcome 이 confirmed 로 분류하는 모양). */
+function confirmed(n: number, severity?: string): api.Remediation["entries"][number] {
+  return {
+    ...candidate(n),
+    entry_id: `finding-${n}`,
+    title: `발견 ${n}`,
+    outcome: "confirmed",
+    verification: "stored_verification",
+    severity,
+  };
+}
+
+/** 정상 대조 한 건 (negative · 발견 목록에서 빠진다). */
+function negative(n: number): api.Remediation["entries"][number] {
+  return {
+    ...candidate(n),
+    entry_id: `verdict-${n}`,
+    title: `정상 ${n}`,
+    outcome: "negative",
+    status: "allowed",
+    verification: "stored_verification",
+  };
+}
+
 /** 후보 한 건 (팀 diagnosticOutcome 이 review 로 분류하는 모양). */
 function candidate(n: number): api.Remediation["entries"][number] {
   return {
@@ -687,10 +711,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
     mount("report");
     expect(await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).toBeInTheDocument();
-    // 위치: 작업대 / 끝난 점검 / 주소 / 보고서 (시안 v54)
+    // 위치: 끝난 점검 / 주소 / 보고서 (시안 v83: "작업대" 뿌리는 뺐다)
     const crumb = screen.getByRole("navigation", { name: "위치" });
     expect(within(crumb).getByRole("link", { name: "끝난 점검" })).toHaveAttribute("href", "#finished");
-    expect(crumb).toHaveTextContent("작업대/끝난 점검/target.example/보고서");
+    expect(crumb).toHaveTextContent("끝난 점검/target.example/보고서");
+    expect(crumb).not.toHaveTextContent("작업대");
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
     expect(a.fetchDiagnosisRun).toHaveBeenCalledWith("42");
     // 판정 집계: 후보는 검토 필요, 확정 0 (팀 lib 분류)
@@ -770,6 +795,98 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(screen.getByText("합성 모델")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /점검 보기/ }));
     expect(goTo).toHaveBeenCalledWith("live");
+  });
+
+  it("대시보드: 결과가 저장되기 전에는 발견을 부르지 않고 '없음'이라 하지 않는다 · 위치 줄 없음", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("dashboard");
+    const sec = await screen.findByRole("region", { name: "발견 · 검토 대상" });
+    expect(await within(sec).findByText(/결과가 저장되면 여기에 나옵니다/)).toBeInTheDocument();
+    expect(a.fetchRemediation).not.toHaveBeenCalled();
+    expect(within(sec).queryByText(/저장된 발견이 없습니다/)).toBeNull();
+    expect(within(sec).queryByRole("group", { name: "위험도로 거르기" })).toBeNull();
+    // 위치가 제목과 같기만 해서 위치 줄을 그리지 않는다 (시안 v83)
+    expect(screen.queryByRole("navigation", { name: "위치" })).toBeNull();
+  });
+
+  it("대시보드: 저장된 결과에서 정상 대조를 빼고 위험도 순으로 보이며, 위험도 칩으로 거른다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), severity: "medium" },
+        confirmed(2, "critical"),
+        negative(3),
+        confirmed(4, "high"),
+        candidate(5),
+      ],
+    });
+    mount("dashboard");
+    const sec = await screen.findByRole("region", { name: "발견 · 검토 대상" });
+    await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
+    const titles = () =>
+      Array.from(sec.querySelectorAll("[data-dsel^='fd-']"), (x) => x.textContent?.match(/(발견|후보) \d+/)?.[0]);
+    await waitFor(() => expect(titles()).toEqual(["발견 2", "발견 4", "후보 1", "후보 5"]));
+    // 건수 옆에 확정 수를 따로 (확정만 취약점 · 절대 규칙 5)
+    expect(within(sec).getByText("4건 · 확정 2")).toBeInTheDocument();
+    // 심각도를 안 준 발견은 '등급 없음', 날짜는 없다 (시안 v90)
+    const noSev = sec.querySelector("[data-dsel='fd-candidate-5']") as HTMLElement;
+    expect(within(noSev).getByText("등급 없음")).toBeInTheDocument();
+    for (const r of sec.querySelectorAll("[data-dsel^='fd-']")) expect(r.textContent).not.toMatch(/\d{1,2}:\d{2}/);
+    // 처음 상세는 가장 위험한 발견
+    const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    expect(within(detail).getByText("발견 2")).toBeInTheDocument();
+    // 칩: 전체 4 · 심각 1 · 높음 1 · 중간 1 · 등급 없음 1 (0건인 낮음은 숨김)
+    const chips = within(sec).getByRole("group", { name: "위험도로 거르기" });
+    expect(within(chips).queryByRole("button", { name: /낮음/ })).toBeNull();
+    fireEvent.click(within(chips).getByRole("button", { name: /높음/ }));
+    expect(titles()).toEqual(["발견 4"]);
+    expect(within(sec).getByText("1건 · 확정 1")).toBeInTheDocument();
+    // 보던 발견(발견 2)이 걸러지면 남은 첫 줄로 상세가 바뀐다
+    expect(within(detail).getByText("발견 4")).toBeInTheDocument();
+    fireEvent.click(within(chips).getByRole("button", { name: /전체/ }));
+    fireEvent.click(within(sec).getByRole("button", { name: /후보 5/ }));
+    expect(within(detail).getByText("후보 5")).toBeInTheDocument();
+  });
+
+  it("대시보드: 확정 0 · 미실행 · 결과 불명만 있으면 '취약점 n건'으로 보이지 않는다 (절대 규칙 5)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), outcome: "not_executed", status: "policy_not_executed" },
+        { ...candidate(2), verification: "" },
+      ],
+    });
+    mount("dashboard");
+    const sec = await screen.findByRole("region", { name: "발견 · 검토 대상" });
+    await waitFor(() => expect(sec.querySelectorAll("[data-dsel^='fd-']")).toHaveLength(2));
+    expect(within(sec).getByText("2건 · 확정 0")).toBeInTheDocument();
+    expect(within(sec).getByText("미실행")).toBeInTheDocument();
+    expect(within(sec).getByText("결과 불명")).toBeInTheDocument();
+    // 목록 제목 · 건수 어디에도 "취약점"이라 부르지 않는다
+    expect(within(sec).queryByText(/취약점/)).toBeNull();
+    expect(screen.queryByRole("heading", { name: /취약점/ })).toBeNull();
+  });
+
+  it("대시보드: 발견이 6개를 넘으면 처음 6개만, '모두 보기'로 전부 · '접기'로 다시 6개", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: Array.from({ length: 8 }, (_, i) => candidate(i + 1)),
+    });
+    mount("dashboard");
+    const sec = await screen.findByRole("region", { name: "발견 · 검토 대상" });
+    const rows = () => sec.querySelectorAll("[data-dsel^='fd-']").length;
+    await waitFor(() => expect(rows()).toBe(6));
+    fireEvent.click(within(sec).getByRole("button", { name: "모두 보기" }));
+    expect(rows()).toBe(8);
+    fireEvent.click(within(sec).getByRole("button", { name: "접기" }));
+    expect(rows()).toBe(6);
   });
 
   it("토큰은 v2 catalog 로 먼저 확인한다: 401 → 로그인, /api/tasks 는 부르지 않는다", async () => {
