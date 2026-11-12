@@ -210,7 +210,7 @@ describe("탐색 기록 펼치기", () => {
     expect(screen.queryByRole("region", { name: "GET /api/products/1 상세" })).toBeNull();
     const put = screen.getByRole("region", { name: "PUT /api/users/2 상세" });
     expect(within(put).getByText("held")).toBeInTheDocument();
-    expect(within(put).getByText("저장된 요청 · 응답이 없습니다.")).toBeInTheDocument();
+    expect(within(put).getByText("보내지 않은 요청이라 이 줄의 요청 · 응답 원문은 없습니다.")).toBeInTheDocument();
     // 같은 줄을 다시 누르면 접힘
     fireEvent.click(putRow);
     expect(screen.queryByRole("region", { name: "PUT /api/users/2 상세" })).toBeNull();
@@ -224,6 +224,71 @@ describe("탐색 기록 펼치기", () => {
     );
     expect(screen.queryByRole("region", { name: "GET /api/products/1 상세" })).toBeNull();
     expect(getRow).toHaveFocus();
+  });
+});
+
+describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
+  const mountLog = (events: WorkflowSnapshot["events"], endpoint: WorkflowSnapshot["endpoints"][number]) => {
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: { ...flow, endpoints: [endpoint], events },
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    return within(document.getElementById("cLog") as HTMLElement).getAllByRole("button", { name: /GET/ });
+  };
+
+  it("같은 경로에 200 → 403 이면, 먼저 보낸 200 줄에 나중 403 원문을 붙이지 않는다", () => {
+    const rows = mountLog(
+      [
+        { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/a", status: 200 },
+        { at: "2026-11-11T01:00:05Z", kind: "sent", method: "GET", path: "/api/a", status: 403 },
+      ],
+      {
+        ...ep("a", "GET", "/api/a", "attested_read"),
+        status: 403,
+        request: "GET /api/a (403 요청)",
+        response: "HTTP status 403",
+      },
+    );
+    fireEvent.click(rows[0]);
+    const first = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(first).queryByText("HTTP status 403")).toBeNull();
+    expect(within(first).getByText(/서버에 남은 원문은 이 줄의 것이 아닙니다/)).toBeInTheDocument();
+    // 나중(403) 줄에는 '경로의 마지막 관찰'로 분리해 보인다
+    fireEvent.click(rows[1]);
+    const last = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(last).getByText("이 경로의 마지막 관찰")).toBeInTheDocument();
+    expect(within(last).getByText("HTTP status 403")).toBeInTheDocument();
+  });
+
+  it("200 송신 뒤 보내지 않은 같은 경로 줄에는 이전 200 원문을 붙이지 않는다", () => {
+    const rows = mountLog(
+      [
+        { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/a", status: 200 },
+        { at: "2026-11-11T01:00:05Z", kind: "request", method: "GET", path: "/api/a" },
+      ],
+      {
+        ...ep("a", "GET", "/api/a", "attested_read"),
+        status: 200,
+        request: "GET /api/a HTTP/1.1",
+        response: "HTTP/1.1 200 OK",
+      },
+    );
+    fireEvent.click(rows[1]);
+    const unsent = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(unsent).queryByText("HTTP/1.1 200 OK")).toBeNull();
+    expect(within(unsent).getByText("보내지 않은 요청이라 이 줄의 요청 · 응답 원문은 없습니다.")).toBeInTheDocument();
+    // 보낸 200 줄은 이 경로의 마지막 송신이라 원문을 '경로의 마지막 관찰'로 보인다
+    fireEvent.click(rows[0]);
+    const sent = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(sent).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
   });
 });
 

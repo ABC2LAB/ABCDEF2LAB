@@ -2323,6 +2323,12 @@ button.lr.on {
 .lgx-top button {
   margin-left: auto;
 }
+.lgx-h {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 2px 0 -4px;
+}
 .lgx-ex {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

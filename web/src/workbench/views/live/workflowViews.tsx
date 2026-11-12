@@ -263,22 +263,73 @@ function EndpointDetail({ endpoint, back }: { endpoint: WorkflowEndpoint | null;
   );
 }
 
+type FlowEvent = WorkflowSnapshot["events"][number];
+
 /**
- * 탐색 기록 한 줄을 펼친 칸 (시안 v75 ~ v76). 오른쪽 '찾은 경로' 상세와 같은 서버 관찰(응답 · 찾은 곳 · 출처 · 종류 ·
- * 저장된 요청/응답)을 줄 바로 아래에 보인다. 같은 경로 기록이 없으면 기록의 결과만 보이고 지어내지 않는다.
- * 요청 · 응답 원문은 서버가 가린 그대로 보인다(값을 다시 만들지 않음). Esc · 접기로 닫고 초점은 그 줄로 돌아간다.
+ * 기록 줄 ↔ 저장된 원문의 관계. `endpoints`는 요청별 기록이 아니라 메서드 · 경로별 현재 상태다(서버 Controller.After 는
+ * 송신 때 Request/Response 를 덮어쓰고, 미송신 때는 이전 값을 그대로 둔다). 이벤트에 call_ref 가 없어 건별로 묶을 수 없으므로
+ * - unsent: 보내지 않은 줄 → 원문을 붙이지 않는다
+ * - stale: 같은 경로에 더 나중(또는 같은 시각) 송신이 있거나 저장된 응답 코드가 이 줄과 다름 → 이 줄의 원문이 아님
+ * - latest: 이 경로의 마지막 송신 줄이고 응답 코드도 같음 → "경로의 마지막 관찰"로 분리해 보인다(같은 요청이라고 단정하지 않음)
+ */
+export type LogRaw = "unsent" | "stale" | "latest";
+export function logRawOf(events: readonly FlowEvent[], i: number, endpoint: WorkflowEndpoint | undefined): LogRaw {
+  const ev = events[i];
+  if (!ev?.status) return "unsent";
+  const at = Date.parse(ev.at);
+  const later = events.some(
+    (o, j) => j !== i && o.status && o.method === ev.method && o.path === ev.path && !(Date.parse(o.at) < at),
+  );
+  if (later || !endpoint || endpoint.status !== ev.status) return "stale";
+  return "latest";
+}
+
+/**
+ * 탐색 기록 한 줄을 펼친 칸 (시안 v75 ~ v76). 이 기록의 결과와, 같은 경로의 서버 정보(찾은 곳 · 출처 · 종류)를 줄 바로 아래에
+ * 보인다. 저장된 요청/응답 원문은 이 줄과 묶였다고 볼 수 있을 때(logRawOf = latest)만 "경로의 마지막 관찰"로 따로 보이고,
+ * 보내지 않은 줄 · 나중 요청이 있는 줄에는 붙이지 않는다(값을 지어내지 않음 · 서버가 가린 그대로).
+ * Esc · 접기로 닫고 초점은 그 줄로 돌아간다.
  */
 function LogDetail({
   id,
   event,
   endpoint,
+  raw,
   onClose,
 }: {
   id: string;
-  event: WorkflowSnapshot["events"][number];
+  event: FlowEvent;
   endpoint: WorkflowEndpoint | undefined;
+  raw: LogRaw;
   onClose: () => void;
 }) {
+  let rawBody: ReactNode;
+  if (raw === "unsent") rawBody = <p className={s.empty}>보내지 않은 요청이라 이 줄의 요청 · 응답 원문은 없습니다.</p>;
+  else if (raw === "stale")
+    rawBody = (
+      <p className={s.empty}>
+        이 경로에 더 나중 기록이 있어, 서버에 남은 원문은 이 줄의 것이 아닙니다. 서버는 경로마다 마지막 관찰만
+        저장합니다.
+      </p>
+    );
+  else if (endpoint?.request || endpoint?.response)
+    rawBody = (
+      <>
+        <h4 className={s["lgx-h"]}>이 경로의 마지막 관찰</h4>
+        <p className={s.help}>
+          서버가 이 줄과 원문을 묶어 주지 않아(call_ref 없음), 같은 경로의 마지막 관찰을 보입니다.
+        </p>
+        <div className={s["lgx-ex"]}>
+          {endpoint.request ? (
+            <CodeCard title="요청" src="경로의 마지막 관찰" text={endpoint.request} id={`lg-req-${endpoint.id}`} />
+          ) : null}
+          {endpoint.response ? (
+            <CodeCard title="응답" src="경로의 마지막 관찰" text={endpoint.response} id={`lg-res-${endpoint.id}`} />
+          ) : null}
+        </div>
+      </>
+    );
+  else rawBody = <p className={s.empty}>저장된 요청 · 응답이 없습니다.</p>;
   return (
     <section
       className={s.lgx}
@@ -295,37 +346,27 @@ function LogDetail({
           접기
         </button>
       </div>
-      <Kv
-        rows={[
-          ["결과", event.status ? <Sc key="sc" status={event.status} /> : event.kind],
-          ...(endpoint
-            ? ([
-                [
-                  "찾은 곳",
-                  <span key="from" className={s.mono}>
-                    {endpoint.from}
-                  </span>,
-                ],
-                ["출처", endpoint.source],
-                ["종류", endpoint.kind],
-                ...(endpoint.observation_error ? [["관찰 실패", endpoint.observation_error]] : []),
-              ] as [string, ReactNode][])
-            : []),
-        ]}
-      />
-      {endpoint?.request || endpoint?.response ? (
-        <div className={s["lgx-ex"]}>
-          {endpoint.request ? (
-            <CodeCard title="요청" src="실제 관찰" text={endpoint.request} id={`lg-req-${endpoint.id}`} />
-          ) : null}
-          {endpoint.response ? (
-            <CodeCard title="응답" src="실제 관찰" text={endpoint.response} id={`lg-res-${endpoint.id}`} />
-          ) : null}
-        </div>
+      <Kv rows={[["이 기록 결과", event.status ? <Sc key="sc" status={event.status} /> : event.kind]]} />
+      {endpoint ? (
+        <>
+          <h4 className={s["lgx-h"]}>경로 정보</h4>
+          <Kv
+            rows={[
+              [
+                "찾은 곳",
+                <span key="from" className={s.mono}>
+                  {endpoint.from}
+                </span>,
+              ],
+              ["출처", endpoint.source],
+              ["종류", endpoint.kind],
+              ...(endpoint.observation_error ? [["관찰 실패", endpoint.observation_error] as [string, ReactNode]] : []),
+            ]}
+          />
+          {rawBody}
+        </>
       ) : (
-        <p className={s.empty}>
-          {endpoint ? "저장된 요청 · 응답이 없습니다." : "이 기록과 같은 찾은 경로 기록이 없어 결과만 보입니다."}
-        </p>
+        <p className={s.empty}>이 기록과 같은 찾은 경로 기록이 없어 결과만 보입니다.</p>
       )}
     </section>
   );
@@ -507,6 +548,9 @@ export function WorkflowCrawlLive() {
                       if (event.method) {
                         const key = `${event.at}:${event.kind}:${event.method}:${event.path}`;
                         const open = openLog === key;
+                        const ep = open
+                          ? endpoints.find((e) => e.method === event.method && e.path === event.path)
+                          : undefined;
                         return (
                           <Fragment key={key}>
                             <button
@@ -526,7 +570,8 @@ export function WorkflowCrawlLive() {
                               <LogDetail
                                 id={`lgx${i}`}
                                 event={event}
-                                endpoint={endpoints.find((e) => e.method === event.method && e.path === event.path)}
+                                endpoint={ep}
+                                raw={logRawOf(flow.events, i, ep)}
                                 onClose={() => closeLog(i)}
                               />
                             ) : null}
