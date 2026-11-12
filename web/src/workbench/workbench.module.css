@@ -1712,11 +1712,13 @@ a.ph:hover {
 .fsec-h h2 {
   font-size: 14.5px;
 }
-/* 제목 옆 작은 딱지 (예: 로그인 · 아직 구현 안 됨) */
+/* 제목 옆 작은 딱지 (예: 로그인 · 아직 구현 안 됨). 칸 높이만큼 늘어나지 않게 위에 붙인다 */
 .fsec-ht {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  align-content: flex-start;
+  align-self: start;
   gap: 6px 8px;
 }
 .fsec-h p {
@@ -1740,6 +1742,11 @@ a.ph:hover {
   width: 100%;
   max-width: 760px;
   margin-inline: auto;
+}
+/* 새 점검 섹션은 창 폭과 상관없이 제목 위 · 칸 아래 한 줄 (사용자가 고른 시안 화면 모양) */
+.nform > .fsec {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
 }
 /* 입력칸은 넣는 값 길이만큼만 (시안 v58). 폰에서는 칸이 좁아 그대로 꽉 찬다 */
 .inp.w-url {
