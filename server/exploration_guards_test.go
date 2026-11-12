@@ -21,7 +21,10 @@ func TestE2HTTPExplorationRejectsBusyOrLeasedTaskBeforeStage(t *testing.T) {
 			t.Run(occupied+"/"+entry, func(t *testing.T) {
 				var calls atomic.Int32
 				runtime, task := e2HTTPRuntimeFixture(t, func(o *E2HTTPRuntimeOptions) {
-					o.Exploration = func(context.Context, *Task) error { calls.Add(1); return ErrExplorationClosure }
+					o.Exploration = func(context.Context, *Task) (ExplorationCharge, error) {
+						calls.Add(1)
+						return ExplorationCharge{}, ErrExplorationClosure
+					}
 				})
 				if err := runtime.AdmitTask(t.Context(), task); err != nil {
 					t.Fatal(err)
@@ -74,7 +77,10 @@ func (explorationGuardLookupDriver) Open(string) (driver.Conn, error) {
 func TestE2HTTPExplorationInitialWorkMustRunStageBeforeIntentLookup(t *testing.T) {
 	var calls atomic.Int32
 	runtime, task := e2HTTPRuntimeFixture(t, func(o *E2HTTPRuntimeOptions) {
-		o.Exploration = func(context.Context, *Task) error { calls.Add(1); return ErrExplorationClosure }
+		o.Exploration = func(context.Context, *Task) (ExplorationCharge, error) {
+			calls.Add(1)
+			return ExplorationCharge{}, ErrExplorationClosure
+		}
 	})
 	lookup := &explorationGuardLookupConnector{}
 	pool := sql.OpenDB(lookup)
