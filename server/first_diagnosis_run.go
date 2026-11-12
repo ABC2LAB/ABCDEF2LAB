@@ -44,7 +44,7 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStored(ctx context.Context, 
 		return false, ErrFirstDiagnosisOutcome
 	}
 	s.mu.Lock()
-	started, running, registered, task, server := s.runStarted, s.running, s.registered, s.runTask, s.server
+	started, running, registered, task, server, runErr := s.runStarted, s.running, s.registered, s.runTask, s.server, s.runErr
 	s.mu.Unlock()
 	if !started || registered {
 		return false, nil
@@ -63,6 +63,12 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStored(ctx context.Context, 
 	// 실행 실패 자체는 자원 마감 실패와 구별한다.
 	if closureErr != nil {
 		state.Phase, state.ClosureFailed, state.DrainComplete = "failed", true, false
+	}
+	// 실행 문맥 취소(진단 준비의 중지가 gateway를 닫는 경로)는 요청 승인 API 중지와 같은 운영자 중지다. 마감이
+	// 확인됐으면 저장 기록도 중지(cancelled)로 남긴다. diagnosis.Service가 문맥 취소를 cancelled로 보는 규칙과 같다
+	// (실행 결과 상태 값 계약 §3.1). 그러지 않으면 화면은 중지, 저장 기록·보고서는 실패로 갈린다.
+	if closureErr == nil && state.Outcome == "failed" && !state.ClosureFailed && errors.Is(runErr, context.Canceled) {
+		state.Phase, state.Outcome, state.DrainComplete = "closed", "cancelled", true
 	}
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_started", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: "started"})
 	startedAt := time.Now()

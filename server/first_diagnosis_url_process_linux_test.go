@@ -1077,6 +1077,11 @@ func TestFirstDiagnosisURLStopDuringExecutionOwnedPostgres(t *testing.T) {
 		after.ModelUsage == nil || !after.ModelUsage.UsageKnown || after.ModelUsage.UnknownUsageCalls != 1 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
 		t.Fatalf("실행 중 중지 마감 불일치 state=%s reason=%s outcome=%q counts=%+v usage=%+v", after.State, after.ReasonCode, after.Outcome, after.IntentOutcomes, after.ModelUsage)
 	}
+	var report []byte
+	client.call("GET", "/api/report/diagnostic?task="+after.TaskID, "", nil, &report)
+	if !bytes.Contains(report, []byte("실행 결과: 중지됨 · 끝난 0 / 끊긴 1")) {
+		t.Fatal("저장 보고서에 중지 실행 결과 누락")
+	}
 	t.Logf("URL_EXEC_STOP state=cancelled outcome=none intent_outcomes=%+v target_sends=0", *after.IntentOutcomes)
 }
 
