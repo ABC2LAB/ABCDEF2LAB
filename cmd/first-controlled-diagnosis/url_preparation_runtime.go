@@ -257,12 +257,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		case diagnosisprep.Completed, diagnosisprep.Failed, diagnosisprep.Cancelled, diagnosisprep.Unknown:
 			u = settleProductWorkflow(parent, flow, u, finishDiagnostics)
 		}
-		// 실행 결과는 completed로 마감한 경우에만 싣는다. 마감 확인 실패 등으로 상태가 바뀌었으면 지운다.
-		if u.State != diagnosisprep.Completed {
-			u.Result = nil
-			u.DiagnosticLogIncomplete = false
-		}
-		return publish(u)
+		return publish(urlClosingResult(u))
 	}
 	defer func() {
 		if !diagnostics.closed {
@@ -526,6 +521,8 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 				u.Started = true
 				u.DrainComplete = state.DrainComplete
 				u.ResultReady = state.ResultReady
+				// 마감 때 읽은 intent 결과 개수(C08 2-2). urlClosingResult가 중지에는 개수만 남긴다.
+				u.Result = state.Result
 				if !state.DrainComplete || !state.ResultReady {
 					u.State = diagnosisprep.Unknown
 					u.ReasonCode = "execution_closure_unconfirmed"
@@ -592,6 +589,24 @@ func (r *urlGatewayRunner) final() *diagnosis.Closure {
 	value := *r.closed
 	return &value
 }
+
+// urlClosingResult는 마감 갱신의 실행 결과 칸을 상태에 맞춘다. 결과는 completed로 마감한 경우에 싣고, 중지
+// (cancelled)에는 intent 결과 개수만 싣는다(계약 §3.2). 마감 확인 실패 등으로 상태가 바뀌었으면 지운다.
+func urlClosingResult(u diagnosisprep.Update) diagnosisprep.Update {
+	switch u.State {
+	case diagnosisprep.Completed:
+	case diagnosisprep.Cancelled:
+		if u.Result != nil {
+			u.Result = &diagnosis.RunResult{IntentOutcomes: u.Result.IntentOutcomes}
+		}
+		u.DiagnosticLogIncomplete = false
+	default:
+		u.Result = nil
+		u.DiagnosticLogIncomplete = false
+	}
+	return u
+}
+
 func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -608,7 +623,7 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 		closureErr = nil
 	}
 	stored, saveErr := r.launch.supervisor.PersistRunOutcomeStored(ctx, closureErr)
-	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.RunResult()}
+	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.ClosureResult()}
 	if drained {
 		// map 교체는 진행 중 HTTP handler가 끝난 뒤 수행한다. 실행 DB와 보고서 DB는 별개다.
 		r.backend.mu.Lock()

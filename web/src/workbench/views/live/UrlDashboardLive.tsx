@@ -26,6 +26,9 @@ const WRITE = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 type Sel = { kind: "job" } | { kind: "approval"; id: string };
 
+/** 대시보드는 칸마다 최대 3개만 보인다 (시안 v55). 전체는 '전체 보기' → 진행 중인 점검 · 끝난 점검 화면. */
+export const DASH_MAX = 3;
+
 /** live 대시보드 (URL 진단 서버). */
 export function UrlDashboardLive() {
   const { route, goTo, openInsp } = useShell();
@@ -132,6 +135,7 @@ export function UrlDashboardLive() {
 
   const jobRow = handle ? (
     <button
+      key="job"
       className={cx(s.row, sel.kind === "job" && s.sel)}
       type="button"
       data-url-job={job?.id ?? ""}
@@ -153,6 +157,9 @@ export function UrlDashboardLive() {
       </span>
     </button>
   ) : null;
+  // 칸마다 줄 목록. 진단 목록 API 가 없어 지금은 이어 보는 진단 하나뿐이다(생기면 여기를 채운다)
+  const actRows = jobRow && !ended ? [jobRow] : [];
+  const doneRows = jobRow && ended ? [jobRow] : [];
 
   // 오른쪽 상세
   const chosen: RequestApproval | undefined =
@@ -234,12 +241,17 @@ export function UrlDashboardLive() {
           </section>
           <section className={s.sec} aria-labelledby="dActH">
             <div className={s.sh}>
-              <h2 id="dActH">진행 중인 점검</h2>
-              <span className={s.n}>{jobRow && !ended ? "1건" : "0건"}</span>
+              <div className={s["sh-t"]}>
+                <h2 id="dActH">진행 중인 점검</h2>
+                <span className={s.n}>{`${actRows.length}건`}</span>
+              </div>
+              <a className={s.aside} href="#running">
+                전체 보기
+              </a>
             </div>
-            {jobRow && !ended ? (
+            {actRows.length ? (
               <div className={s.list} id="dActive">
-                {jobRow}
+                {actRows.slice(0, DASH_MAX)}
               </div>
             ) : (
               <p className={s.empty}>진행 중인 점검이 없습니다.</p>
@@ -247,14 +259,17 @@ export function UrlDashboardLive() {
           </section>
           <section className={s.sec} aria-labelledby="dDoneH">
             <div className={s.sh}>
-              <h2 id="dDoneH">최근 끝난 점검</h2>
-              <a className={s.aside} href="#records">
-                점검 기록 보기
+              <div className={s["sh-t"]}>
+                <h2 id="dDoneH">최근 끝난 점검</h2>
+                <span className={s.n}>{`${doneRows.length}건`}</span>
+              </div>
+              <a className={s.aside} href="#finished">
+                전체 보기
               </a>
             </div>
-            {jobRow && ended ? (
+            {doneRows.length ? (
               <div className={s.list} id="dDone">
-                {jobRow}
+                {doneRows.slice(0, DASH_MAX)}
               </div>
             ) : (
               <p className={s.empty}>끝난 점검이 없습니다.</p>

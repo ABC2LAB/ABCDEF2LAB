@@ -36,7 +36,8 @@ vi.mock("../views/live/byMode", async () => {
   );
   return {
     DashboardByMode: View,
-    RecordsByMode: View,
+    RunningByMode: View,
+    FinishedByMode: View,
     NewScanByMode: View,
     ScopeByMode: View,
     LiveByMode: View,
@@ -46,10 +47,11 @@ vi.mock("../views/live/byMode", async () => {
 vi.mock("../views/live/UrlAssetsLive", () => ({ UrlAssetsLive: () => null }));
 
 import * as teamApi from "@/lib/diagnosis/api";
+import { handle, running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import { setLiveAuthState } from "../live/auth";
 import { resetFeeds } from "../live/feeds";
-import { resetUrl } from "../live/urlDiagnosis";
+import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { ShellContext, useShell } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { PaneToggle } from "../ui/parts";
@@ -182,4 +184,27 @@ it("휴대폰: 메뉴 버튼은 레일 서랍을 열고 접기 상태를 바꾸�
   expect(c.querySelector(`.${s.rail}`)).toHaveClass(s.open);
   expect(app(c)).not.toHaveClass(s["rail-hidden"]);
   expect(localStorage.getItem("abc2lab-rail-hidden")).toBeNull();
+});
+
+it("옛 주소 #records 는 이어 보는 점검 상태에 맞춰 진행 중인 점검 · 끝난 점검으로, 모르면 대시보드로 간다", async () => {
+  const c = await mount();
+  const go = (h: string) =>
+    act(() => {
+      window.location.hash = h;
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+  const shown = () => c.querySelector("section[data-view]:not([hidden])")?.getAttribute("data-view");
+  // 이어 보는 점검이 없으면 짐작하지 않는다
+  go("records");
+  expect(shown()).toBe("dashboard");
+  go("dashboard");
+  useUrl.setState({ handle, job: { ...running, state: "completed" }, verified: true });
+  go("records");
+  expect(window.location.hash).toBe("#finished");
+  expect(shown()).toBe("finished");
+  go("dashboard");
+  useUrl.setState({ handle, job: running, verified: true });
+  go("records");
+  expect(window.location.hash).toBe("#running");
+  expect(shown()).toBe("running");
 });
