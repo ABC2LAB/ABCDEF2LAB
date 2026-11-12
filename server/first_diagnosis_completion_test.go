@@ -122,6 +122,18 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.ProcessBashExited = false
 			r.ExitCode = -1
 		}, true},
+		{"terminated-after-budget-exhausted", func(r *e2runner.TrustedResult) {
+			r.Classification = "terminated"
+			r.ProcessBashExited = false
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, true},
+		{"terminated-after-attempt-limit", func(r *e2runner.TrustedResult) {
+			r.Classification = "terminated"
+			r.ProcessBashExited = false
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.AttemptLimit
+		}, true},
 		{"terminated-but-bash-exited", func(r *e2runner.TrustedResult) { r.Classification = "terminated" }, false},
 		{"terminated-audit-failed", func(r *e2runner.TrustedResult) {
 			r.Classification = "terminated"

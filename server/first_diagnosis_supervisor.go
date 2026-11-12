@@ -766,7 +766,7 @@ func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 		// 호스트가 명령을 멈췄다(Planner의 kill_work 등). bash가 끝나기 전에 끊겼지만 프로세스·프록시 드레인과 감사는
 		// 위·호출자가 확인한다. 결과 불명 송신은 없으므로 그 intent의 미완료다(C27).
 		switch result.Call.Reason {
-		case e2proxy.Complete, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.TransportFailed:
+		case e2proxy.Complete, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.TransportFailed, e2proxy.BudgetExhausted, e2proxy.AttemptLimit:
 			return !result.ProcessBashExited
 		}
 		return false
