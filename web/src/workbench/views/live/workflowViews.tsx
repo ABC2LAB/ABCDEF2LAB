@@ -366,7 +366,10 @@ function LogDetail({
       id={id}
       aria-label={`${event.method} ${event.path ?? ""} 상세`}
       onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
+        if (e.key !== "Escape") return;
+        // 작업대 전역 Esc(상세 서랍 닫기)까지 가지 않게 여기서 멈춘다 (리뷰 #473 · HelpTip 과 같은 처리)
+        e.stopPropagation();
+        onClose();
       }}
     >
       <div className={s["lgx-top"]}>

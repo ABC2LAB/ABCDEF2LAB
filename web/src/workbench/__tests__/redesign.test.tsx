@@ -360,6 +360,16 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
     expect(box).toHaveTextContent("[REDACTED]");
   });
 
+  it("펼친 칸의 Esc 는 작업대 전역 Esc(상세 서랍 닫기)로 새지 않는다 (리뷰 #473 비차단)", () => {
+    const box = openSecretRow();
+    const global = vi.fn();
+    document.addEventListener("keydown", global);
+    fireEvent.keyDown(within(box).getByRole("button", { name: "접기" }), { key: "Escape" });
+    document.removeEventListener("keydown", global);
+    expect(screen.queryByRole("region", { name: "GET /api/a 상세" })).toBeNull();
+    expect(global).not.toHaveBeenCalled();
+  });
+
   it("보냈지만 응답을 못 받은 줄(status 0 · 결과 불명)을 '보내지 않은 요청'으로 단정하지 않는다", () => {
     // 서버 Controller.After: ForwardAttempted · RequestWritten = true, ResponseReceived = false, Reason = Unknown,
     // StatusCode = 0 → counts.sent · attempted · unknown 이 오르지만 이벤트 status 는 omitempty 로 빠진다
