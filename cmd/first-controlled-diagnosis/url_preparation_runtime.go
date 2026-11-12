@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -247,6 +248,8 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		_ = diagnosticlog.Emit(ctx, e)
 		diagnostics.finish(&code)
 		markDiagnosticLogWarning(u, diagnostics.logger.Err() != nil || code != 0, diagnostics.logger.Incomplete())
+		// 이 경로는 진단 stderr를 버리므로 로그 장애 사유와 누락 건수를 서버 로그에 남긴다(C10).
+		urlDiagnosticLogLoss(diagnostics.logger, log.Printf)
 	}
 	p.publish = func(u diagnosisprep.Update) error {
 		switch u.State {
@@ -724,6 +727,15 @@ func (b *urlPreparationRuntime) closeReports() error {
 
 var _ diagnosisprep.Backend = (*urlPreparationRuntime)(nil)
 var _ http.Handler = (*urlPreparationRuntime)(nil)
+
+// urlDiagnosticLogLoss는 진단 로그 장애가 있었으면 사유와 누락 건수만 서버 로그로 남긴다. 기록 내용은 남기지 않는다.
+// URL 실행은 진단 경고 stderr를 버리기 때문에(launch 진단 기본 출력) 이 줄이 운영자가 보는 유일한 흔적이다.
+func urlDiagnosticLogLoss(logger *diagnosticlog.Logger, printf func(string, ...any)) {
+	if logger == nil || logger.Err() == nil {
+		return
+	}
+	printf("[first-diagnosis] 진단 로그 기록 실패: 사유=%s 누락=%d건", diagnosticFailureCode(logger.Err()), logger.Dropped())
+}
 
 // markDiagnosticLogWarning은 진단 로그 상태를 실행 결과에 반영하는 유일한 곳이다. 진단 로그는 감사가 아니다
 // (P3 결정안 C10). 기록 실패·관찰 불완전 표시는 실행 상태를 바꾸지 않고, 완료 실행에 경고 사유로만 남긴다.
