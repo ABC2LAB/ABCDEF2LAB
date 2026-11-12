@@ -46,6 +46,16 @@ func TestProductPolicyBoundsAppliesSelectedMode(t *testing.T) {
 	}
 }
 
+// 워크플로 모드의 request_timeout_ms는 E② 요청 시간만 바꾼다. 프록시는 운영자 확인을 기다리는 동안 요청을 쥐고
+// 있어야 해서 워크플로 값(60초)을 그대로 둔다(#445 재상 지적).
+func TestProductPolicyBoundsWorkflowRequestTimeoutKeepsProxy(t *testing.T) {
+	limits := &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RequestTimeoutMS: ptr(int64(10000))}}
+	w, ok := productPolicyBounds(productInstallInput{RuntimeLimits: limits, TargetPolicy: productTargetPolicy{Workflow: &diagnosisflow.Limits{MaxResponseBytes: 65536}}})
+	if !ok || w.Limits.RequestTimeoutMS != 10000 || w.Proxy.RequestTimeoutMS != 60000 {
+		t.Fatalf("workflow request timeout: limits=%d proxy=%d", w.Limits.RequestTimeoutMS, w.Proxy.RequestTimeoutMS)
+	}
+}
+
 // 지금 코드의 검사 상한 밖이거나 0 이하이면 설치를 거부한다(잘라서 받지 않는다).
 func TestProductPolicyBoundsRejectsOutOfRange(t *testing.T) {
 	for name, set := range map[string]*productRuntimeLimitSet{

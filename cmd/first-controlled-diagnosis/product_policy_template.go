@@ -47,7 +47,8 @@ type productRuntimeLimits struct {
 }
 
 type productRuntimeLimitSet struct {
-	// E② 요청 시간(E② 한도와 프록시 요청 시간을 같은 값으로).
+	// E② 요청 시간. 제품 모드는 프록시 요청 시간도 같은 값으로 바꾼다. 워크플로 모드는 프록시가 운영자 확인을
+	// 기다리는 동안 요청을 쥐고 있어야 해서 프록시 요청 시간을 워크플로 값 그대로 둔다.
 	RequestTimeoutMS *int64 `json:"request_timeout_ms,omitempty"`
 	CallTimeoutMS    *int64 `json:"call_timeout_ms,omitempty"`
 	// E② 호출 상한과 Worker 도구 호출 상한을 같은 값으로.
@@ -75,7 +76,10 @@ func applyRuntimeLimits(policy *server.E2HTTPFilePolicy, limits *productRuntimeL
 	positive := true
 	if v := set.RequestTimeoutMS; v != nil {
 		positive = positive && *v > 0
-		policy.Limits.RequestTimeoutMS, policy.Proxy.RequestTimeoutMS = *v, *v
+		policy.Limits.RequestTimeoutMS = *v
+		if !workflow {
+			policy.Proxy.RequestTimeoutMS = *v
+		}
 	}
 	if v := set.CallTimeoutMS; v != nil {
 		positive = positive && *v > 0
