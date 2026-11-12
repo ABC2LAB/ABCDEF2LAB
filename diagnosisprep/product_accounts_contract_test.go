@@ -73,3 +73,70 @@ func TestProductAccountResponseValidation(t *testing.T) {
 		t.Error("over capacity list accepted")
 	}
 }
+
+func TestProductLoginAndCredentialRequestValidation(t *testing.T) {
+	id := "target-abc"
+	login := TargetLogin{Method: "POST", Path: "/read/login", Format: "json", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}
+	cred := AccountCredential{Username: "seeded-user", Password: "seeded-pass"}
+	ok := []ProductRequest{
+		{Operation: "target_login", TargetID: id},
+		{Operation: "target_login_set", TargetID: id, Login: &login},
+		{Operation: "account_credential_set", TargetID: id, Account: &AccountRequest{Label: "tester-a"}, Credential: &cred},
+	}
+	for _, r := range ok {
+		r := r
+		if !validProductRequest(&r) {
+			t.Errorf("valid %s rejected", r.Operation)
+		}
+	}
+	empty := AccountCredential{Username: "seeded-user"}
+	badLogin := login
+	badLogin.Method = "GET"
+	bad := map[string]ProductRequest{
+		"login read with body":       {Operation: "target_login", TargetID: id, Login: &login},
+		"login set without body":     {Operation: "target_login_set", TargetID: id},
+		"login set invalid":          {Operation: "target_login_set", TargetID: id, Login: &badLogin},
+		"login with credential":      {Operation: "target_login_set", TargetID: id, Login: &login, Credential: &cred},
+		"credential without account": {Operation: "account_credential_set", TargetID: id, Credential: &cred},
+		"credential empty password":  {Operation: "account_credential_set", TargetID: id, Account: &AccountRequest{Label: "tester-a"}, Credential: &empty},
+		"credential on register":     {Operation: "account_register", TargetID: id, Account: &AccountRequest{Label: "tester-a"}, Credential: &cred},
+		"credential on target op":    {Operation: "approve", TargetID: id, Credential: &cred},
+		"login on accounts":          {Operation: "accounts", TargetID: id, Login: &login},
+	}
+	for name, r := range bad {
+		r := r
+		if validProductRequest(&r) {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+func TestProductLoginResponseValidation(t *testing.T) {
+	request := Request{Version: Version, RequestID: "product-control", Principal: "ARTEX", Command: ProductControl, Product: &ProductRequest{Operation: "target_login", TargetID: "target-abc"}}
+	good := TargetLogin{Method: "POST", Path: "/read/login", Format: "json", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}
+	if err := ValidateResponse(request, Response{Version: Version, RequestID: "product-control", Product: &ProductResponse{Login: &good}}); err != nil {
+		t.Fatal("valid login rejected:", err)
+	}
+	bad := good
+	bad.Header = "Authorization"
+	if ValidateResponse(request, Response{Version: Version, RequestID: "product-control", Product: &ProductResponse{Login: &bad}}) == nil {
+		t.Fatal("invalid login response accepted")
+	}
+}
+
+func TestProductAccountStatementOnlyOnList(t *testing.T) {
+	respond := func(op string, statement string) error {
+		p := &ProductRequest{Operation: op, TargetID: "target-abc"}
+		if op == "account_register" {
+			p.Account = &AccountRequest{Label: "tester-a"}
+		}
+		request := Request{Version: Version, RequestID: "product-control", Principal: "ARTEX", Command: ProductControl, Product: p}
+		return ValidateResponse(request, Response{Version: Version, RequestID: "product-control", Product: &ProductResponse{AccountStatement: statement}})
+	}
+	if err := respond("accounts", "이 계정은 시험 계정이다."); err != nil {
+		t.Fatal("statement on list rejected:", err)
+	}
+	if respond("account_register", "이 계정은 시험 계정이다.") == nil || respond("accounts", "line\nbreak") == nil {
+		t.Fatal("statement outside the list or with control characters accepted")
+	}
+}

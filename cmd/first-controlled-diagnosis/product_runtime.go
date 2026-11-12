@@ -460,6 +460,21 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			control.Credential, err = p.credential(ctx, r.Product.ProfileID)
 		case "accounts":
 			control.Accounts, err = p.targets.listAccounts(r.Principal, r.Product.TargetID)
+			if err == nil {
+				control.AccountStatement = productAccountStatement
+			}
+		case "target_login":
+			control.Login, err = p.targets.targetLogin(r.Principal, r.Product.TargetID)
+		case "target_login_set":
+			control.Login, err = p.targets.setTargetLogin(r.Principal, r.Product.TargetID, *r.Product.Login)
+		case "account_credential_set":
+			var a diagnosisprep.ProductAccount
+			// 요청 구조체는 전송 계층이 응답을 보내기 전에 다시 검증하므로 여기서 비우지 않는다(비우면 응답 프레임 없이
+			// 연결이 닫힌다). 자격 값은 응답·로그에 넣지 않고, 요청이 끝나면 함께 버려진다.
+			a, err = p.targets.setAccountCredential(r.Principal, r.Product.TargetID, r.Product.Account.Label, *r.Product.Credential)
+			if err == nil {
+				control.Account = &a
+			}
 		case "account_register", "account_mark_test", "account_unmark":
 			var a diagnosisprep.ProductAccount
 			switch r.Product.Operation {
