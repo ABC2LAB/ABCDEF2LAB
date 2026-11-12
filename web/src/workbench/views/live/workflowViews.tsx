@@ -350,6 +350,10 @@ export function WorkflowCrawlLive() {
             <PauseButton />
             {stop.button}
             <InspOpenButton>찾은 경로</InspOpenButton>
+            {/* 탐색 결과(발견·경계 기록, 운영자 전용). 지금은 예시, live 점등은 탐색 실행기 착륙 후 */}
+            <button className={s.btn} type="button" onClick={() => goTo("explore")}>
+              탐색 결과
+            </button>
             <button className={cx(s.btn, s.pri)} type="button" disabled={!ready} onClick={() => goTo(next)}>
               {next === "scope" ? "범위 확인" : "점검 진행"}
               <Icon name="arrow" />
