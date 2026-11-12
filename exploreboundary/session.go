@@ -227,6 +227,17 @@ func (s *Session) denyLocked(req Request, dest DestClass, reason string, externa
 	return Decision{Reason: reason, Dest: dest}
 }
 
+// Refuse는 경계 조립이 판정 전에 막은 요청(평문 요청, 구현 전 WebSocket, 요청 본문 상한 초과)을 차단 행으로 남긴다.
+func (s *Session) Refuse(req Request, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dest := DestExternal
+	if strings.ToLower(strings.TrimSuffix(req.Host, ".")) == s.target.Host && req.Port == s.target.Port {
+		dest = DestApproved
+	}
+	s.denyLocked(req, dest, reason, "")
+}
+
 func (s *Session) admitLocked(req Request, dest DestClass, dial netip.AddrPort, spki, canonical, external string) (Decision, *Ticket) {
 	s.seq++
 	if dest == DestApproved {
