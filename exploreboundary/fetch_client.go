@@ -100,5 +100,10 @@ func (f DirectFetch) Fetch(ctx context.Context, target string) (diagnosisflow.Ex
 		return diagnosisflow.ExplorationFetchResult{}, ErrUnavailable
 	}
 	complete := readErr == nil && int64(len(body)) <= f.MaxBytes && resp.Header.Get(ResultHeader) == ""
+	if int64(len(body)) > f.MaxBytes {
+		// 상한 판정용으로 한 바이트 더 읽었다. 돌려줄 때는 상한까지만 준다(완전 응답 아님).
+		clear(body[f.MaxBytes:])
+		body = body[:f.MaxBytes]
+	}
 	return diagnosisflow.ExplorationFetchResult{Seq: seq, Body: body, Complete: complete}, nil
 }
