@@ -27,6 +27,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 
 - `deleted`는 세지 않는다. `running`이 남아 있으면 마감 전이다(지금처럼 기다린다).
 - 그래프 `stopped`(Planner `kill_work`·task 마감 뒤 취소)는 운영자 중지가 아니라서 `incomplete`로 센다. 운영자 중지는 지금 코드에서 `paused`로 남는다(`server/engine.go` cancel 처리).
+- intent `stopped`는 보통 실행 `state`가 `cancelled`일 때 나온다. 그래서 `intent_outcomes`는 `cancelled`에도 싣는다(3.2). `completed`에 `paused`가 남는 경로는 지금 코드에 없지만(완료 판정은 열린·진행 중 intent가 있으면 기다린다), C26에서 Planner `goal_met`이 복원되면 생길 수 있어 `completed`의 대조식에도 `stopped`를 넣어 둔다.
 - `unknown` intent의 쓰기 요청은 다시 보내지 않고, 그 intent에 기대는 후속 intent만 보류한다(개발 계획, C01).
 
 ## 3. 실행 결과
@@ -42,19 +43,29 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 
 바뀌는 것: intent 결과, Planner 라운드·도구 호출·intent 재실행 상한, 모델 예산 소진(사용량은 확인됨)은 더 이상 `failed`가 아니다. 감사가 닫히면 `completed`이고, 아래 칸이 내용을 말한다.
 
-### 3.2 새 칸 (`state`가 `completed`일 때만 있다)
+### 3.2 새 칸
 
-| 칸 | 값 | 규칙 |
-|---|---|---|
-| `outcome` | `complete` · `partial` · `no_intents` | `complete`: intent가 1개 이상이고 모두 `done`·`policy_limited`. `partial`: `incomplete`·`unknown`·`stopped`가 1개 이상. `no_intents`: 실행한 intent가 없다(첫 계획 0개). |
-| `closing_reason` | 없음 · `budget_limited` | `budget_limited`: Planner 라운드·도구 호출·intent 재실행 상한 또는 승인 모델 예산에 닿아 새 작업 없이 마감했다. 찾은 후보·근거는 보존한다. |
-| `intent_outcomes` | `{done, policy_limited, incomplete, unknown, stopped}` 정수 | 위 2절 투영의 개수. 모두 0 이상. `outcome`과 맞아야 한다(받는 쪽이 검사). |
-| `diagnostic_log_incomplete` | 참·거짓 | 진단 로그 기록 실패·관찰 불완전(C10). `reason_code`에 넣던 경고를 여기로 옮긴다(#418 이경준 지적: 다른 사유가 있으면 경고가 덮였다). |
+| 칸 | 있는 `state` | 값 | 규칙 |
+|---|---|---|---|
+| `outcome` | `completed` | `complete` · `partial` · `no_intents` | 아래 대조식. |
+| `closing_reason` | `completed` (없을 수 있음) | `budget_limited` | Planner 라운드·도구 호출·intent 재실행 상한 또는 승인 모델 예산에 닿아 새 작업 없이 마감했다. 찾은 후보·근거는 보존한다. |
+| `intent_outcomes` | `completed` · `cancelled` | `{done, policy_limited, incomplete, unknown, stopped}` 정수 | 위 2절 투영의 개수. 모두 0 이상. `cancelled`에서는 "끝난 것·끊긴 것"을 보이는 데 쓴다(#429 이경준 제안). |
+| `diagnostic_log_incomplete` | `completed` | 참·거짓 | 진단 로그 기록 실패·관찰 불완전(C10). `reason_code`에 넣던 경고를 여기로 옮긴다(#418 이경준 지적: 다른 사유가 있으면 경고가 덮였다). |
+
+`outcome`과 `intent_outcomes` 대조식(받는 쪽이 검사하고, 맞지 않으면 응답을 거부한다):
+
+- `no_intents` ⇔ 다섯 개수가 모두 0.
+- `complete` ⇔ `done + policy_limited ≥ 1` 이고 `incomplete + unknown + stopped = 0`.
+- `partial` ⇔ `incomplete + unknown + stopped ≥ 1`.
+
+조합 규칙:
+
+- `no_intents` + `budget_limited`는 있을 수 있다. 첫 계획을 세우기 전에 모델 예산에 닿은 경우다(첫 Planner 호출이 실패해 예약량으로 정산되고 두 번째 예약이 예산을 넘는 경우 등). 뜻은 "예산 상한으로 계획을 못 세움, 검사 안 함"이다.
 
 - 결정안은 `no_intents`를 마감 사유로 적었다. intent가 없으면 `complete`·`partial` 어느 쪽도 맞지 않아서 `outcome` 값으로 둔다. `closing_reason`은 `budget_limited` 하나로 시작한다.
 - `budget_limited`와 `outcome`은 따로다. 상한에 닿았어도 시작한 intent가 모두 `done`이면 `complete` + `budget_limited`다(상한 때문에 더 못 했다는 뜻은 `closing_reason`이 말한다).
-- 시간 상한(task deadline)은 이 계약에 넣지 않는다. 지금처럼 `failed`다. 시간 예산을 `budget_limited`로 볼지는 열린 항목 2.
-- `state`가 `completed`가 아니면 새 칸은 없다. 받는 쪽은 그 경우 새 칸이 있으면 거부한다.
+- 시간 상한(task deadline)은 이 계약에 넣지 않는다. 지금처럼 `failed`다. 시간 예산을 `budget_limited`로 볼지는 열린 항목 1.
+- 위 표의 "있는 `state`" 밖에서 새 칸이 오면 받는 쪽은 거부한다.
 
 ### 3.3 사용량 회계와 실행 결과는 다른 축이다
 
@@ -67,14 +78,16 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 - `no_intents`: "시도한 계획 없음(검사 안 함)". "발견 없음"과 다른 문구·색.
 - `cancelled`: "중지됨".
 - `complete`에 `policy_limited`가 있으면 "정책상 검증 안 됨" 건수를 따로 보인다(완료가 "전부 검사됨"으로 읽히지 않게).
-- 접근통제 지도: intent `incomplete`·`unknown`은 지도 `untested`로 가고 `na`로 가지 않는다(#383 Open #2와 같은 규칙).
+- `cancelled`: `intent_outcomes`로 "중지됨 · 끝난 n / 끊긴 m"을 보인다.
+- 접근통제 지도: intent `incomplete`·`unknown`·`stopped`는 지도 `untested`로 가고 `na`로 가지 않는다(#383 Open #2와 같은 규칙).
 
 ## 5. 전달 경로
 
 1. `generalCompletion`이 2절 투영으로 `intent_outcomes`·`outcome`을 만들고, 상한 마감이면 `closing_reason`을 붙인다. 투영에 쓰는 그래프 읽기가 실패하면 지금처럼 `failed`다.
-2. `diagnosis.Closure`에 결과 칸을 더하고 `diagnosis.Snapshot`이 `completed`일 때 함께 싣는다. 버전 문자열(`diagnosis.Version`)은 올린다.
+2. `diagnosis.Closure`에 결과 칸을 더하고 `diagnosis.Snapshot`이 `completed`·`cancelled`일 때 3.2 표대로 싣는다. 버전 문자열(`diagnosis.Version`)은 올린다. 중지된 실행도 마감 때 같은 투영을 읽는다. 읽기가 실패하면 `intent_outcomes`를 싣지 않는다(중지 상태는 그대로).
 3. 진단 준비 Update·Job(`diagnosisprep`)이 받아 저장하고 API로 내보낸다. 저장된 Job 갱신 규칙(사실을 되돌리지 않음)은 새 칸에도 적용한다: 한 번 `completed`로 기록된 칸은 바뀌지 않는다.
-4. 웹 파서(`web/src/lib/diagnosis/diagnosis-url.ts`)는 키를 정확히 검사하므로 서버가 새 칸을 내는 변경과 같은 PR에서 받는다. 파서는 `outcome`과 `intent_outcomes`가 맞지 않거나 `completed`가 아닌데 새 칸이 있으면 거부한다.
+4. 웹 파서(`web/src/lib/diagnosis/diagnosis-url.ts`)는 키를 정확히 검사하므로 서버가 새 칸을 내는 변경과 같은 PR에서 받는다. 파서는 3.2의 대조식·조합 규칙·"있는 `state`"를 그대로 검사한다.
+5. 저장 보고서에도 `outcome`·`closing_reason`·`intent_outcomes`를 싣는다(#429 이경준: 저장 보고서만 보는 사람이 `partial`·`no_intents`를 "발견 없음"으로 읽지 않게, 절대 규칙 5).
 
 ## 6. 구현 순서
 
@@ -85,6 +98,6 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 
 ## 7. 열린 항목
 
-1. **`budget_limited` 세부**(이경준): 어떤 상한에 닿았는지(Planner 라운드·도구 호출·intent 재실행·모델 예산)를 화면에 보일지. 보이려면 `closing_reason`을 늘리지 않고 별도 칸을 둔다.
-2. **시간 상한**(이동찬): task deadline 도달을 `budget_limited`로 볼지. 지금은 마감 과정(settlement)과 얽혀 있어 이 계약에서 뺐다.
-3. **보고서**(이경준): 저장 보고서에도 `outcome`·`intent_outcomes`를 실을지.
+1. **시간 상한**(이동찬): task deadline 도달을 `budget_limited`로 볼지. 지금은 마감 과정(settlement)과 얽혀 있어 이 계약에서 뺐다.
+
+정해진 것(#429 이경준 답): `budget_limited` 세부는 처음에는 보이지 않는다("예산 상한에서 마감"만). 세부를 넣을 때는 `closing_reason`을 늘리지 않고 별도 칸을 둔다. 저장 보고서에는 싣는다(5절 5).
