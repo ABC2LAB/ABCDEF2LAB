@@ -193,6 +193,10 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Classification, r.ExitCode = "tool_failure", 22
 			r.Call.Reason = e2proxy.Withheld
 		}, true},
+		{"withheld-terminated", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ProcessBashExited = "terminated", false
+			r.Call.Reason = e2proxy.Withheld
+		}, true},
 		{"withheld-after-unknown", func(r *e2runner.TrustedResult) {
 			r.Classification = "result_unknown"
 			r.Call.Counts.Unknown = 1
