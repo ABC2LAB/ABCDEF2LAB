@@ -32,7 +32,7 @@ type openRouterTransport struct {
 
 // NewOpenRouterClient는 프록시, 리다이렉트 및 임의 TLS 설정을 제공하지 않는다.
 func NewOpenRouterClient(p *OpenRouterPolicy) (*http.Client, error) {
-	if p == nil || p.consume == nil {
+	if p == nil || p.ledger == nil {
 		return nil, ErrOpenRouterPolicy
 	}
 	protocols := new(http.Protocols)
