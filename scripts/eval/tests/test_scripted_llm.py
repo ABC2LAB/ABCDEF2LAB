@@ -36,6 +36,12 @@ class TestDecide(unittest.TestCase):
         self.assertEqual(decide(request(["add_intent", "Bash"]), PLAN), ("add_intent", {"summary": "example intent", "priority": 5}))
         self.assertIsNone(decide(request(["add_intent", "Bash"], results=1), PLAN))
 
+    def test_worker_sends_only_fields_the_tool_declares(self):
+        declared = {"tools": [{"function": {"name": "Bash", "parameters": {"properties": {"command": {}, "description": {}}}}}], "messages": []}
+        self.assertEqual(decide(declared, PLAN)[1], {"command": "curl one", "description": "scripted"})
+        strict = {"tools": [{"function": {"name": "Bash", "parameters": {"properties": {"command": {}}}}}], "messages": []}
+        self.assertEqual(decide(strict, PLAN)[1], {"command": "curl one"})
+
     def test_worker_walks_the_commands_in_order_then_stops(self):
         self.assertEqual(decide(request(["Bash"]), PLAN)[1]["command"], "curl one")
         self.assertEqual(decide(request(["Bash"], results=1), PLAN)[1]["command"], "curl two")

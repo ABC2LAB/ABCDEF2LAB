@@ -953,6 +953,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			if errors.Is(bindingErr, ErrE2HTTPBusy) {
 				return
 			}
+			if errors.Is(bindingErr, ErrE2HTTPBudgetLimited) {
+				// 실행 상한은 실패가 아니다. 진행 중 작업이 끝나면 감독자가 budget_limited로 마감한다.
+				e.touch(t.ID)
+				return
+			}
 			if bindingErr != nil {
 				_ = e.m.SetTaskStatus(t.ID, "failed")
 				e.cancelExec(t.ID, bindingErr)
@@ -972,11 +977,20 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		lastIntent, observed := e.plannerLogStart(ectx, t)
 		planStarted := time.Now()
 		e.BeginLLMCall(t.ID)
-		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
+		goal := t.Goal
+		targetData := ""
+		if e.e2HTTP != nil && e.e2HTTP.options.Workflow != nil {
+			goal += e.e2HTTP.options.Workflow.Instructions()
+			targetData = e.e2HTTP.redactPlannerTargetData(t.ID, e.e2HTTP.options.Workflow.SelectedData())
+		}
+		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, goal, triggers, emit, targetData)
 		e.EndLLMCall(t.ID)
 		e.plannerLogFinish(ectx, t, lastIntent, observed, err, planStarted)
 		if e.firstDiagnosis && err == nil && !met && ectx.Err() == nil {
 			t.firstDiagnosisPlannedSeq.Store(workSeq)
+		}
+		if e.firstDiagnosis && err == nil && ectx.Err() == nil {
+			t.firstDiagnosisPlanRounds.Add(1)
 		}
 		switch {
 		case err != nil && ectx.Err() == nil:

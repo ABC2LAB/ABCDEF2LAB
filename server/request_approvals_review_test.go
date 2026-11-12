@@ -2,11 +2,15 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/transmit/budget"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -313,6 +317,23 @@ func TestRequestApprovalStoppedProjectionWithLiveContexts(t *testing.T) {
 		}
 		if got.Live || got.CanDecide || got.State != wantState || got.ExecutionState != wantExecution || binding.ctx.Err() != nil {
 			t.Fatalf("stopped projection misreported: %+v", got)
+		}
+	}
+}
+
+func TestRequestApprovalPublicPathUsesWorkflowMasking(t *testing.T) {
+	_, p := approvalReviewFixture(t, &approvalReviewStore{})
+	rule := E2HTTPFileRule{PathPrefix: "/", ApprovalDisplay: RequestApprovalDisplay{PublicPath: true}}
+	for _, target := range []string{"https://owned.test/api/Users", "https://owned.test/api/orders", "https://owned.test/account/person@example.test?token=private"} {
+		p.URL = target
+		_, path, preview, err := approvalPreview(p, rule)
+		u, _ := url.Parse(target)
+		if err != nil || path != dlp.DiagnosticText(u.EscapedPath()) || strings.Contains(path, "person@example.test") || strings.Contains(path, "token=") {
+			t.Fatal("unsafe public path", path, err)
+		}
+		raw, _ := json.Marshal(preview)
+		if strings.Contains(string(raw), "private") {
+			t.Fatal("private query exposed")
 		}
 	}
 }

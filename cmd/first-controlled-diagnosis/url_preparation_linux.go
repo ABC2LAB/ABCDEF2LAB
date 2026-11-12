@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -132,7 +133,12 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 		return 1
 	}
 	backend.endpoint = service
-	ipc, err := diagnosisprep.ListenUnix(ctx, backend.config.SocketPath, service)
+	var ipcEndpoint diagnosisprep.Endpoint = service
+	if backend.product != nil {
+		ipcEndpoint = productPreparationEndpoint{base: service, product: backend.product}
+		defer backend.product.targets.Close()
+	}
+	ipc, err := diagnosisprep.ListenUnix(ctx, backend.config.SocketPath, ipcEndpoint)
 	if err != nil {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		_ = service.Shutdown(cleanup)
@@ -180,6 +186,8 @@ func runURLDiagnosisAPI(ctx context.Context, args []string, stdout, stderr io.Wr
 	flags.SetOutput(io.Discard)
 	installationPath := flags.String("installation", "", "protected installation metadata")
 	path := flags.String("config", "", "protected API launch configuration")
+	productUI := flags.Bool("product-ui", false, "serve the installed Workbench")
+	credentialDSN := flags.String("credential-dsn-file", "", "protected model-key writer DSN")
 	socket := flags.String("socket", "", "installed private preparation socket")
 	origin := flags.String("runtime-api-origin", "", "installed loopback report origin")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || *path == "" || *socket == "" || *origin == "" || *installationPath == "" {
@@ -221,7 +229,45 @@ func runURLDiagnosisAPI(ctx context.Context, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	defer pool.Close()
-	handler, err := server.NewURLDiagnosisManagementHandler(ctx, pool, c.KeyDir, c.DataDir, endpoint, *origin)
+	var handler http.Handler
+	if *productUI {
+		var writer *sql.DB
+		models := []server.ProductModelBinding{}
+		if *credentialDSN != "" {
+			writerRaw, writerPin, writerErr := urlReadPin(*credentialDSN, 16<<10, false)
+			clear(writerRaw)
+			if writerErr != nil {
+				return 1
+			}
+			writer, err = urlOpenDatabase(ctx, installed, writerPin)
+			if err != nil {
+				return 1
+			}
+			defer writer.Close()
+			for _, p := range productModels(installed) {
+				raw, pin, e := urlReadPin(p.Launch.File, maxLaunchBytes, false)
+				if e != nil {
+					return 1
+				}
+				launch, e := parseLaunchConfig(raw)
+				clear(raw)
+				if e != nil || pin.digest != p.Launch.SHA256 {
+					return 1
+				}
+				if launch.ModelExecutionMode == "openrouter" {
+					models = append(models, server.ProductModelBinding{ProfileRef: p.ID, ProfileID: launch.ModelProfileID, Model: launch.ModelRef, Check: func() error {
+						if installationPin.check() != nil || writerPin.check() != nil {
+							return errPreparation
+						}
+						return pin.check()
+					}})
+				}
+			}
+		}
+		handler, err = server.NewProductDiagnosisHandler(ctx, pool, c.KeyDir, c.DataDir, endpoint, *origin, writer, models)
+	} else {
+		handler, err = server.NewURLDiagnosisManagementHandler(ctx, pool, c.KeyDir, c.DataDir, endpoint, *origin)
+	}
 	if err != nil {
 		return 1
 	}

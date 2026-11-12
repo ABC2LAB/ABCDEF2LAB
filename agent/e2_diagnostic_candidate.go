@@ -13,7 +13,6 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/dlp"
-	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	actool "github.com/Autumn-27/norma/tool"
@@ -26,7 +25,7 @@ type e2DiagnosticObservation struct {
 	Truncated      bool
 }
 
-func (s *e2HTTPToolState) observeDiagnostic(execution *e2proxy.Execution, intentID int64, command string, result e2runner.Result) {
+func (s *e2HTTPToolState) observeDiagnostic(execution E2HTTPScope, intentID int64, command string, result e2runner.Result) {
 	t := result.Trusted
 	if t.Call.CallRef == "" || t.Call.IntentID != intentID || t.Execution.IntentID != intentID {
 		return
@@ -102,7 +101,7 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				event("candidate_validated", "failed", "candidate_unavailable", "")
 				return actool.Errorf("diagnostic_candidate_unavailable"), nil
 			}
-			execution := binding.Runner.Execution()
+			execution := binding.Runner
 			if execution == nil {
 				event("candidate_validated", "failed", "candidate_unavailable", "")
 				return actool.Errorf("diagnostic_candidate_unavailable"), nil

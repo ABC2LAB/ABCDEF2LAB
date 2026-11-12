@@ -21,7 +21,8 @@
     --bg:#FFFFFF; --well:#F2F5F6; --ink:#111A1E; --ink-2:#42515A; --ink-3:#596972;
     --rule:#DEE4E7; --rule-2:#C2CCD1;
     --accent:#0F6D8A; --accent-ink:#0B5A72; --accent-bg:#E4F2F6; --accent-line:#A6D2DF; --on-accent:#FFFFFF;
-    --rail:#0C171C; --rail-2:#17262D; --rail-line:#23343C; --rail-ink:#E4EDF0; --rail-mut:#93A7B0; --rail-acc:#5CC8E4;
+    --rail-sel:#FF5A4E;
+  --rail:#0C171C; --rail-2:#17262D; --rail-line:#23343C; --rail-ink:#E4EDF0; --rail-mut:#93A7B0; --rail-acc:#5CC8E4;
     --crit:#A3170F; --crit-bg:#FBE8E6; --hi:#C2321C; --hi-bg:#FDEDEA; --mid:#9A4E00; --mid-bg:#FFF2E0; --lo:#2F5F99; --lo-bg:#EAF1FA;
     --ok:#11703F; --ok-bg:#E6F4EC; --warn:#935100; --warn-bg:#FFF4DE; --warn-line:#EDCB86; --und:#525C67; --und-bg:#ECEEF1;
     --code-bg:#FFFFFF; --cb-bg:#F5F8F9; --scrim:rgba(12,14,18,.42); --shadow:0 18px 40px rgba(16,20,28,.16);
@@ -101,15 +102,16 @@
   .rsec{display:flex;flex-direction:column;gap:2px}
   .rh{font-size:12px;font-weight:600;color:var(--rail-mut);letter-spacing:.04em;padding:0 10px 6px}
   .rs{display:grid;grid-template-columns:10px minmax(0,1fr);column-gap:9px;row-gap:1px;align-items:center;padding:8px 10px;border-radius:6px;color:var(--rail-ink);text-decoration:none;text-align:left;background:none;border:0;cursor:pointer;width:100%}
-  .rs:hover,.rs[aria-current="page"]{background:var(--rail-2)}
+  .rs:hover,.rs[aria-current="true"]{background:var(--rail-2)}
+  .rs[aria-current="true"] .host{font-weight:600}
   .rs .host{font-family:var(--mono);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .rs .rsub{grid-column:2;font-size:12px;color:var(--rail-mut)}
   .rs .rbar{grid-column:2;height:3px;border-radius:2px;background:var(--rail-line);overflow:hidden;margin-top:5px}
   .rs .rbar i{display:block;height:100%;background:var(--rail-acc)}
   .rs .rbar.wait i{background:#F2B654}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--rail-mut);flex:none}
-  .dot.run{background:var(--rail-acc);animation:pulse 1.6s ease-in-out infinite}
-  .dot.wait{background:#F2B654}.dot.ok{background:#5ECB8F}.dot.stop{background:var(--rail-mut)}
+  /* 지금 오른쪽에 보이는 점검 기록 표시 (빨간 점) */
+  .rs .mk{width:8px;height:8px;border-radius:50%;flex:none}
+  .rs[aria-current="true"] .mk{background:var(--rail-sel)}
   @keyframes pulse{50%{opacity:.35}}
   .rail-foot{margin-top:auto;border-top:1px solid var(--rail-line);padding:14px 10px 0;display:flex;flex-direction:column;gap:9px;font-size:12px;color:var(--rail-mut)}
   .rail-foot .rf{display:flex;gap:8px;align-items:flex-start}
@@ -178,7 +180,6 @@
   .tag.ex{border:1px dashed var(--rule-2);color:var(--ink-3);height:20px}
   .tag.in{background:var(--ok-bg);color:var(--ok)}
   .tag.lg{background:var(--accent-bg);color:var(--accent-ink)}
-  .tag.new{background:var(--accent-bg);color:var(--accent-ink)}
   .tag.out{background:var(--und-bg);color:var(--und)}
   .m{font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.02em;color:var(--ink-2)}
   .m.POST{color:var(--accent-ink)}.m.PUT,.m.PATCH{color:var(--mid)}.m.DELETE{color:var(--hi)}
@@ -193,7 +194,6 @@
   .sh h2{font-size:14.5px}
   .sh .n{font-family:var(--mono);font-size:12.5px;color:var(--ink-3)}
   .sh .aside{font-size:12.5px;color:var(--ink-3)}
-  .lead{color:var(--ink-2);max-width:68ch}
   .list{border:1px solid var(--rule);border-radius:6px;overflow:hidden}
   .row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;width:100%;text-align:left;background:var(--bg);border:0;border-top:1px solid var(--rule);padding:11px 14px;cursor:pointer}
   .row:first-child{border-top:0}
@@ -275,7 +275,6 @@
   .fsec{display:grid;grid-template-columns:190px minmax(0,1fr);gap:14px 32px;padding-top:22px;border-top:1px solid var(--rule)}
   .fsec:first-of-type{border-top:0;padding-top:0}
   .fsec-h h2{font-size:14.5px}
-  .fsec-h p{font-size:12.5px;color:var(--ink-3);margin-top:4px}
   .fsec-b{display:flex;flex-direction:column;gap:16px;min-width:0}
   @container (max-width:640px){ .fsec{grid-template-columns:minmax(0,1fr)} }
   .field{display:flex;flex-direction:column;gap:6px;min-width:0}
@@ -359,8 +358,6 @@
   .lr.skip .p{color:var(--ink-3)}
   .lr.fresh{animation:fresh 1.2s ease-out}
   @keyframes fresh{from{background:var(--accent-bg)}}
-  .legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--ink-3);align-items:center}
-  .legend span{display:inline-flex;align-items:center;gap:6px}
   .tree{display:flex;flex-direction:column}
   .tg{border-top:1px solid var(--rule)}
   .tg:first-child{border-top:0}
@@ -494,8 +491,6 @@
   .kg.has-sel .kg-e,.kg.has-sel .kg-n,.kg.has-sel .kg-b{opacity:.15}
   .kg.has-sel .kg-e.on,.kg.has-sel .kg-n.on,.kg.has-sel .kg-b.on{opacity:1}
   .kgleg{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--ink-3);align-items:center}
-  .kgleg span{display:inline-flex;align-items:center;gap:6px}
-  .kgleg svg{flex:none}
   .rel{list-style:none;display:flex;flex-direction:column;border:1px solid var(--rule);border-radius:6px;background:var(--bg);overflow:hidden}
   .rel li{border-top:1px solid var(--rule)}
   .rel li:first-child{border-top:0}
@@ -641,8 +636,6 @@
   .ldone .dm b .ic{color:var(--ok)}
 
   /* 보고서 */
-  .diff{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12.5px;color:var(--ink-2)}
-  .diff b{font-family:var(--mono);color:var(--ink)}
   .prio{list-style:none;counter-reset:p;display:flex;flex-direction:column;border:1px solid var(--rule);border-radius:6px}
   .prio li{counter-increment:p;display:grid;grid-template-columns:26px minmax(0,1fr) auto;gap:4px 12px;padding:11px 14px;border-top:1px solid var(--rule);align-items:baseline}
   .prio li:first-child{border-top:0}
@@ -676,6 +669,31 @@
 
   .scrim{position:fixed;inset:0;background:var(--scrim);z-index:30}
 
+  /* 왼쪽 메뉴 · 오른쪽 패널 접기 (이 브라우저에 기억) */
+  .app{transition:grid-template-columns .22s ease}
+  .vb{transition:grid-template-columns .22s ease}
+  .rail .icon-btn.rail-fold{width:30px;height:30px;background:none;border-color:transparent;color:var(--rail-mut)}
+  .rail .icon-btn.rail-fold:hover{background:var(--rail-2);color:var(--rail-ink)}
+  .icon-btn.pane-btn{color:var(--ink-2)}
+  @media (min-width:760px){
+    .app.rail-min{grid-template-columns:64px minmax(0,1fr)}
+    .app.rail-min .rail{align-items:center;overflow-x:hidden;padding-left:max(12px,env(safe-area-inset-left,0px));padding-right:12px}
+    .app.rail-min .rail-top{flex-direction:column;gap:10px}
+    .app.rail-min .brand{padding:4px}
+    .app.rail-min .lbl{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+    .app.rail-min .new-btn{width:40px;height:40px;padding:0}
+    .app.rail-min .rl{position:relative;width:40px;height:40px;padding:0;justify-content:center}
+    .app.rail-min .rl .badge{position:absolute;top:1px;right:-2px;min-width:16px;padding:0 4px;line-height:16px;font-size:10.5px;text-align:center}
+    .app.rail-min .rsec,.app.rail-min .rail-foot{display:none}
+  }
+  @media (min-width:1200px){
+    .app.insp-min .vb{grid-template-columns:minmax(0,1fr) 0px}
+    .app.insp-min .vi{visibility:hidden;overflow:hidden;padding-left:0;padding-right:0;border-left-width:0}
+    .app.insp-min .insp-only{display:inline-flex}
+    .app.insp-min .icon-btn.pane-btn{display:none}
+    .app.insp-min .formbar{display:flex}
+  }
+
   /* 넓지 않은 화면: 상세 패널은 오른쪽에서 열리는 서랍 */
   @media (max-width:1199px){
     .vb{grid-template-columns:minmax(0,1fr)}
@@ -683,6 +701,7 @@
     .view.io .vi{transform:none;visibility:visible;transition:transform .22s ease,visibility 0s}
     .insp-only{display:inline-flex}
     .icon-btn.insp-only{display:inline-grid}
+    .icon-btn.pane-btn{display:none}
     .formbar{display:flex}
   }
   /* 휴대폰: 레일은 왼쪽 서랍, 화면은 한 줄로 */
@@ -693,6 +712,7 @@
     .rail{position:fixed;top:0;left:0;bottom:0;width:min(300px,86vw);z-index:40;transform:translateX(-104%);visibility:hidden;transition:transform .22s ease,visibility 0s linear .22s;padding-top:max(16px,calc(env(safe-area-inset-top,0px) + 12px))}
     .rail.open{transform:none;visibility:visible;transition:transform .22s ease,visibility 0s}
     .icon-btn.rail-x,.icon-btn.menu-btn{display:inline-grid}
+    .rail .icon-btn.rail-fold{display:none}
     .view{display:block}
     .vh{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
     .vh.has-ph{padding-bottom:0}
@@ -723,6 +743,9 @@
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.2v.1"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
   <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15"/></symbol>
+  <symbol id="i-fold-l" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15M15.5 10l-2 2 2 2"/></symbol>
+  <symbol id="i-unfold-l" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15M13.5 10l2 2-2 2"/></symbol>
+  <symbol id="i-fold-r" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15M8.5 10l2 2-2 2"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5l7 3v5.5c0 4.2-3 7.4-7 8.5-4-1.1-7-4.3-7-8.5V6.5z"/></symbol>
   <symbol id="i-chip" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></symbol>
@@ -734,24 +757,25 @@
   <!-- ===== 레일: 메뉴 · 점검 목록 · 운영 상태 ===== -->
   <aside class="rail" id="rail" aria-label="주 메뉴">
     <div class="rail-top">
-      <a class="brand" href="#dashboard"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19L4 12C4 7 7.6 3.5 12 3.5C16.4 3.5 20 7 20 12L20 19L18 21L16 19L14 21L12 19L10 21L8 19L6 21Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.3 8.4L9.3 10.4M14.7 8.4L14.7 10.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 12L15 14.6L12 18.4L9 14.6ZM9.4 14.6L14.6 14.6" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>ABC2LAB</a>
+      <a class="brand" href="#dashboard"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19L4 12C4 7 7.6 3.5 12 3.5C16.4 3.5 20 7 20 12L20 19L18 21L16 19L14 21L12 19L10 21L8 19L6 21Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.3 8.4L9.3 10.4M14.7 8.4L14.7 10.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 12L15 14.6L12 18.4L9 14.6ZM9.4 14.6L14.6 14.6" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span class="lbl">ABC2LAB</span></a>
+      <button class="icon-btn rail-fold" type="button" data-rail-fold aria-controls="rail" aria-expanded="true" aria-label="메뉴 접기" title="메뉴 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-l"/></svg></button>
       <button class="icon-btn rail-x" type="button" data-rail-close aria-label="메뉴 닫기"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
     </div>
-    <a class="new-btn" href="#new" data-nav="new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>새 점검</a>
+    <a class="new-btn" href="#new" data-nav="new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span class="lbl">새 점검</span></a>
     <nav class="rnav" aria-label="화면">
-      <a class="rl" href="#dashboard" data-nav="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg>대시보드<span class="badge" id="railBadge" title="결정 대기">2</span></a>
+      <a class="rl" href="#dashboard" data-nav="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg><span class="lbl">대시보드</span><span class="badge" id="railBadge" title="결정 대기">2</span></a>
     </nav>
     <div class="rsec">
       <div class="rh">진행 중</div>
-      <a class="rs" href="#crawl" id="railNew" data-nav="crawl scope" hidden><span class="dot run" id="railNewDot"></span><span class="host t-host">shop.example.com</span><span class="rsub" id="railNewSub">자산 탐색 중</span></a>
-      <a class="rs" href="#live" data-nav="live"><span class="dot run" id="railShopDot"></span><span class="host t-host">shop.example.com</span><span class="rsub" id="railShopSub">점검 중</span><span class="rbar"><i id="railShopBar" style="width:0%"></i></span></a>
-      <button class="rs" type="button" data-pick="appr"><span class="dot wait" id="railApiDot"></span><span class="host">api.store-dev.com</span><span class="rsub" id="railApiSub">승인 대기로 멈춤</span><span class="rbar wait" id="railApiBar"><i style="width:35%"></i></span></button>
+      <a class="rs" href="#crawl" id="railNew" data-rk="new" hidden><span class="mk" aria-hidden="true"></span><span class="host t-host">shop.example.com</span><span class="rsub" id="railNewSub">자산 탐색 중</span></a>
+      <a class="rs" href="#live" data-rk="shop"><span class="mk" aria-hidden="true"></span><span class="host t-host">shop.example.com</span><span class="rsub" id="railShopSub">점검 중</span><span class="rbar"><i id="railShopBar" style="width:0%"></i></span></a>
+      <button class="rs" type="button" data-pick="appr" data-rk="api"><span class="mk" aria-hidden="true"></span><span class="host">api.store-dev.com</span><span class="rsub" id="railApiSub">승인 대기로 멈춤</span><span class="rbar wait" id="railApiBar"><i style="width:35%"></i></span></button>
     </div>
     <div class="rsec">
       <div class="rh">최근 끝난 점검</div>
-      <a class="rs" href="#report" data-nav="report" data-rhost="blog"><span class="dot ok"></span><span class="host">blog.example.com</span><span class="rsub">10/25 · 발견 6</span></a>
-      <button class="rs" type="button" data-pick="done-docs"><span class="dot stop"></span><span class="host">docs.example.com</span><span class="rsub">10/24 · 발견 없음</span></button>
-      <button class="rs" type="button" data-pick="done-app"><span class="dot stop"></span><span class="host">app.sample.io</span><span class="rsub">10/23 · 판단 불가 2</span></button>
+      <a class="rs" href="#report" data-rhost="blog" data-rk="blog"><span class="mk" aria-hidden="true"></span><span class="host">blog.example.com</span><span class="rsub">10/25 · 발견 6</span></a>
+      <button class="rs" type="button" data-pick="done-docs" data-rk="docs"><span class="mk" aria-hidden="true"></span><span class="host">docs.example.com</span><span class="rsub">10/24 · 발견 없음</span></button>
+      <button class="rs" type="button" data-pick="done-app" data-rk="app"><span class="mk" aria-hidden="true"></span><span class="host">app.sample.io</span><span class="rsub">10/23 · 판단 불가 2</span></button>
     </div>
     <div class="rail-foot">
       <div class="rf"><svg class="ic" aria-hidden="true"><use href="#i-chip"/></svg><div>분석 모델 · 로컬<b>qwen/qwen3.6-35b-a3b</b></div></div>
@@ -775,7 +799,7 @@
           <div class="vh-title"><h1 tabindex="-1">대시보드</h1><span class="snap" id="dSnap"></span></div>
           <div class="vh-acts">
             <button class="btn" type="button" id="dRefresh"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg>새로고침</button>
-            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>상세</button>
+            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>상세</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
           </div>
         </div>
       </header>
@@ -814,14 +838,14 @@
           <div class="vh-title"><h1 tabindex="-1">새 점검</h1></div>
           <div class="vh-acts">
             <a class="btn" href="#dashboard">취소</a>
-            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>요약</button>
+            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>요약</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
           </div>
         </div>
       </header>
       <div class="vb">
         <form class="vm" id="nForm" novalidate>
           <div class="fsec">
-            <div class="fsec-h"><h2>대상</h2><p>허용 목록에 있는 주소나 내부 주소만 점검할 수 있습니다.</p></div>
+            <div class="fsec-h"><h2>대상</h2></div>
             <div class="fsec-b">
               <div class="field">
                 <label class="lbl" for="nUrl">점검할 사이트 주소</label>
@@ -829,13 +853,13 @@
                 <div class="hostline" id="nHost" aria-live="polite"></div>
               </div>
               <div class="verify" id="nVerify" hidden>
-                <div class="vt"><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg><div><b class="mono" id="vHost">example.com</b> 은(는) 허용 목록에 없는 외부 주소입니다. 아래 TXT 레코드를 도메인 DNS에 추가한 뒤 확인을 누르세요. 웹 파일 인증은 우회 위험이 있어 지원하지 않습니다.</div></div>
+                <div class="vt"><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg><div><b class="mono" id="vHost">example.com</b> 은(는) 허용 목록에 없는 외부 주소입니다. 아래 TXT 레코드를 도메인 DNS에 추가한 뒤 확인을 누르세요.</div></div>
                 <div class="rec">
                   <span class="k">이름</span><code id="vName">_abc2lab-challenge.example.com</code><button class="btn sm" type="button" data-copy="vName">복사</button>
                   <span class="k">유형</span><code>TXT</code><span></span>
                   <span class="k">값</span><code id="vToken">abc2lab-verify=…</code><button class="btn sm" type="button" data-copy="vToken">복사</button>
                 </div>
-                <div class="acts"><button class="btn pri sm" type="button" id="vCheck">TXT 레코드 확인</button><span class="help" id="vState">토큰은 1시간 동안 이 주소에만 유효합니다.</span></div>
+                <div class="acts"><button class="btn pri sm" type="button" id="vCheck">TXT 레코드 확인</button><span class="help" id="vState"></span></div>
               </div>
               <div class="field">
                 <span class="lbl">최근 점검한 주소</span>
@@ -849,7 +873,7 @@
           </div>
 
           <div class="fsec">
-            <div class="fsec-h"><h2>로그인</h2><p>계정이 2개 이상이면 계정 사이의 접근(IDOR)도 점검합니다.</p></div>
+            <div class="fsec-h"><h2>로그인</h2></div>
             <div class="fsec-b">
               <div class="seg" role="radiogroup" aria-label="점검 영역">
                 <label><input type="radio" name="nAuth" value="in" checked><span>로그인 영역 포함</span></label>
@@ -867,14 +891,14 @@
                 <div class="fsec-b" id="nForm2" hidden>
                   <div class="field"><label class="lbl" for="nSA">계정 A 세션</label><textarea class="inp" id="nSA" placeholder="Cookie: session=…"></textarea></div>
                   <div class="field"><label class="lbl" for="nSB">계정 B 세션 · 계정 사이 접근 점검용</label><textarea class="inp" id="nSB" placeholder="Cookie: session=…"></textarea></div>
-                  <p class="help">시안입니다 — 실제 세션 값·비밀번호를 넣지 말고 예시 값만 쓰세요. (실제 연동 시에는 입력값을 보호하고 로그·내보내기에서 제외하도록 구현·검증해야 합니다. 이 시안에는 해당 보호 기능이 없습니다.)</p>
+                  <p class="help">시안입니다 — 실제 세션 값·비밀번호를 넣지 말고 예시 값만 쓰세요.</p>
                 </div>
               </div>
             </div>
           </div>
 
           <div class="fsec">
-            <div class="fsec-h"><h2>분석 모델</h2><p>점검을 판단하는 LLM이 어디서 돌지 정합니다.</p></div>
+            <div class="fsec-h"><h2>분석 모델</h2></div>
             <div class="fsec-b">
               <div class="seg" role="radiogroup" aria-label="LLM 실행 위치">
                 <label><input type="radio" name="nLlm" value="local" checked><span>로컬 실행</span></label>
@@ -884,11 +908,11 @@
                 <div class="field"><label class="lbl" for="nModel">모델</label><select class="inp" id="nModel"><option>qwen/qwen3.6-35b-a3b</option><option>qwen2.5:32b</option><option>llama3.1:70b</option><option>qwen2.5:7b</option></select></div>
                 <div class="field"><label class="lbl" for="nSrv">LLM 서버 주소</label><input class="inp mono" id="nSrv" value="http://ollama:11434" spellcheck="false"></div>
               </div>
-              <div class="hostline" id="nLocalState"><span class="pill ok">내부 LLM 연결됨</span><span class="help">외부 API를 쓰지 않습니다</span></div>
+              <div class="hostline" id="nLocalState"><span class="pill ok">내부 LLM 연결됨</span></div>
               <div class="fsec-b" id="nApi" hidden>
                 <div class="two">
                   <div class="field"><label class="lbl" for="nProv">제공자</label><select class="inp" id="nProv"><option>OpenAI</option><option>Anthropic</option><option>OpenAI 호환</option></select></div>
-                  <div class="field"><span class="lbl">API 키</span><div class="hostline"><span class="pill ok">등록됨 10/28</span><span class="help">저장된 키는 다시 보여주지 않습니다</span></div></div>
+                  <div class="field"><span class="lbl">API 키</span><div class="hostline"><span class="pill ok">등록됨 10/28</span></div></div>
                 </div>
                 <div class="note warn"><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg><div>대상 데이터와 프롬프트가 외부 제공자로 전송됩니다. 폐쇄망이나 민감한 환경에서는 로컬 실행을 쓰세요.</div></div>
               </div>
@@ -896,7 +920,7 @@
           </div>
 
           <div class="fsec">
-            <div class="fsec-h"><h2>작업</h2><p>이름과 목표, 데이터를 바꾸는 요청을 어떻게 다룰지 정합니다.</p></div>
+            <div class="fsec-h"><h2>작업</h2></div>
             <div class="fsec-b">
               <div class="field">
                 <label class="lbl" for="nName">작업 이름<span class="req">필수</span></label>
@@ -910,7 +934,6 @@
                   <label class="goal"><input type="checkbox" value="관리자 기능 접근"><span>관리자 기능 접근</span></label>
                   <label class="goal"><input type="checkbox" value="비로그인 노출"><span>비로그인 노출</span></label>
                 </div>
-                <span class="help">비워 두면 기본 목표로 점검합니다.</span>
               </div>
               <div class="field">
                 <span class="lbl" id="nSendL">데이터를 바꾸는 요청 (결제 · 수정 · 삭제)</span>
@@ -918,7 +941,7 @@
                   <label class="opt"><input type="radio" name="nSend" value="ap" checked><b>승인 후 전송 · 기본</b><small>사람이 승인한 요청만 보냅니다</small></label>
                   <label class="opt"><input type="radio" name="nSend" value="full"><b>전체 허용</b><small>승인 없이 보냅니다 · 시험환경 전용</small></label>
                 </div>
-                <div class="note warn" id="nFullWarn" hidden><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg><div style="display:flex;flex-direction:column;gap:8px">실제 주문이 만들어지거나 데이터가 지워질 수 있습니다. 운영 서버에는 쓰지 마세요. 전체 허용에서도 허용 목록, 제외 경로, 감사 로그는 그대로 적용됩니다.
+                <div class="note warn" id="nFullWarn" hidden><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg><div style="display:flex;flex-direction:column;gap:8px">실제 주문이 만들어지거나 데이터가 지워질 수 있습니다. 운영 서버에는 쓰지 마세요.
                   <label class="ckline"><input type="checkbox" id="nReset">이 대상은 리셋할 수 있는 시험환경입니다</label></div></div>
               </div>
               <div class="two">
@@ -928,17 +951,14 @@
                     <label><input type="radio" name="nDepth" value="심화"><span>심화</span></label>
                     <label><input type="radio" name="nDepth" value="제한 없음"><span>제한 없음</span></label>
                   </div>
-                  <span class="help" id="nDepthHelp">주요 엔드포인트와 로그인 흐름 중심</span>
                 </div>
                 <div class="field"><label class="lbl" for="nWorkers">워커 수</label>
                   <select class="inp" id="nWorkers"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option><option>8</option></select>
-                  <span class="help">LLM이 동시에 처리하는 작업 수. 대상 서버 요청 속도와는 관계없습니다.</span>
                 </div>
               </div>
               <div class="field">
                 <label class="lbl" for="nExcl">제외 경로 · 선택</label>
-                <textarea class="inp" id="nExcl" placeholder="/api/admin/reset&#10;/api/users/*/delete" aria-describedby="nExclHelp"></textarea>
-                <span class="help" id="nExclHelp">적은 경로는 전체 허용에서도 요청하지 않습니다. 공통 규칙 /admin/delete* 는 이미 적용됩니다.</span>
+                <textarea class="inp" id="nExcl" placeholder="/api/admin/reset&#10;/api/users/*/delete"></textarea>
               </div>
             </div>
           </div>
@@ -968,7 +988,6 @@
           <div class="isec">
             <button class="btn pri full" type="button" data-start>점검 시작</button>
             <span class="why" data-why></span>
-            <p class="help">시작하면 먼저 자산 탐색으로 링크와 폼을 따라가며 경로를 모읍니다. 탐색은 조회(GET) 요청만 보냅니다.</p>
           </div>
         </aside>
       </div>
@@ -983,7 +1002,7 @@
           <div class="vh-acts">
             <button class="btn" type="button" id="cPause" aria-pressed="false"><svg class="ic" aria-hidden="true"><use href="#i-pause"/></svg><span>일시정지</span></button>
             <button class="btn" type="button" id="cCancel">점검 취소</button>
-            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>찾은 경로</button>
+            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>찾은 경로</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
             <a class="btn pri" href="#scope" id="cNext" aria-disabled="true">범위 확인<svg class="ic" aria-hidden="true"><use href="#i-arrow"/></svg></a>
           </div>
         </div>
@@ -1002,10 +1021,8 @@
             <div class="cn" id="cApTile"><div class="v" id="cAp">0</div><div class="k">승인 후 전송 · 보내기 전에 승인</div></div>
             <div class="cn"><div class="v" id="cSkip">0</div><div class="k">요청 안 함 · 규칙으로 막음</div></div>
           </div>
-          <div class="note"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><div>탐색에서는 보기만 하는 <b>GET 요청만</b> 보냅니다. 데이터를 바꾸는 경로(POST·PUT·PATCH·DELETE)는 찾아서 기록만 하고, 범위 확인 뒤 승인을 받아 보냅니다. 로그인은 입력한 테스트 계정으로만 합니다.</div></div>
           <section class="sec" aria-labelledby="cLogH">
             <div class="sh"><h2 id="cLogH">탐색 기록</h2>
-              <div class="legend"><span><span class="sc s2">200</span>보낸 요청</span><span><span class="tag ap">승인 후 전송</span>보내기 전 승인</span><span><span class="tag ex">제외 예정</span>보내지 않음</span><span><span class="tag out">요청 안 함</span>규칙으로 막음</span></div>
             </div>
             <div class="log" id="cLog" aria-live="off"><div class="lh"><span>시각</span><span>메서드</span><span>경로</span><span>결과</span></div></div>
           </section>
@@ -1030,7 +1047,7 @@
               </div>
             </div>
             <div id="cTree"><p class="empty">아직 찾은 경로가 없습니다.</p></div>
-            <p class="tree-hint">경로를 누르면 요청·응답 예시를 볼 수 있습니다. 묶음 이름은 AI 추정입니다.</p>
+            <p class="tree-hint">묶음 이름 · AI 추정</p>
           </div>
           </div>
           <div id="cApi" hidden></div>
@@ -1045,7 +1062,7 @@
         <div class="vh-row">
           <div class="vh-title"><h1 tabindex="-1">범위 확인</h1><span class="pill wait">탐색 완료 · 확인 대기</span></div>
           <div class="vh-acts">
-            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>상세</button>
+            <button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>상세</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
             <a class="btn pri" href="#live" id="sStart">선택한 범위로 점검 시작<svg class="ic" aria-hidden="true"><use href="#i-arrow"/></svg></a>
           </div>
         </div>
@@ -1053,7 +1070,6 @@
       </header>
       <div class="vb">
         <div class="vm">
-          <p class="lead">자산 탐색에서 찾은 경로입니다. 점검할 경로를 고르면 그 범위로 점검을 시작합니다. 포함 여부와 승인 필요 여부는 메서드와 경로처럼 <b>관찰한 사실</b>로만 정하고, 묶음과 설명은 AI 추정입니다.</p>
           <div class="scount" id="sCount"></div>
           <div class="pre" aria-label="시작 전 점검"><span class="k">시작 전 점검</span><span class="ok"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>대상 연결 200 · 120ms</span><span class="ok"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>계정 A 로그인</span><span class="ok"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>계정 B 로그인 · A·B 비교 가능</span><span class="ok"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>모델 연결 · 로컬</span></div>
           <div class="filters">
@@ -1087,7 +1103,7 @@
           <div class="vh-acts">
             <button class="btn" type="button" id="lPause" aria-pressed="false"><svg class="ic" aria-hidden="true"><use href="#i-pause"/></svg><span>일시정지</span></button>
             <button class="btn danger" type="button" id="lEnd"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg>종료</button>
-            <button class="btn insp-only" type="button" data-insp-open id="lInspBtn"><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>발견</button>
+            <button class="btn insp-only" type="button" data-insp-open id="lInspBtn"><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>발견</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button>
           </div>
         </div>
         <nav class="phases" aria-label="점검 단계" data-phase="live"></nav>
@@ -1124,17 +1140,14 @@
               <div class="cell"><div class="k">승인 필요로 보류</div><div class="v" id="mHold">0</div><div class="sub">데이터를 바꾸는 요청</div></div>
               <div class="cell"><div class="k">전송 불명</div><div class="v">0</div><div class="sub">응답 없음</div></div>
             </div>
-            <p class="help">전송 통제를 거친 HTTP 요청만 셉니다. 셸·브라우저·MCP 같은 다른 도구의 통신은 들어가지 않습니다.</p>
           </section>
           <div class="two-col">
             <section class="sec" aria-labelledby="lPlanH">
               <div class="sh"><h2 id="lPlanH">점검 계획</h2><span class="n" id="lPlanN"></span></div>
               <ol class="plan" id="lPlan"></ol>
-              <p class="help">계획은 플래너가 만들고 워커가 실행합니다. 같은 자원·조건의 중복 요청은 한 번만 보냅니다.</p>
             </section>
             <section class="sec" aria-labelledby="lFeedH">
               <div class="sh"><h2 id="lFeedH">지난 활동 <span class="n" id="lFeedN"></span></h2>
-                <div class="legend"><span><span class="fd ok dot"></span>정상 확인</span><span><span class="fd col dot"></span>경로 수집</span><span><span class="fd blk dot"></span>막은 시도</span><span><span class="fd hit dot"></span>발견</span></div>
               </div>
               <ul class="feed" id="lFeed"></ul>
               <button class="btn sm feed-more" type="button" id="lFeedMore" aria-controls="lFeed" aria-expanded="false" hidden></button>
@@ -1151,7 +1164,7 @@
         <div class="vh-top"><button class="icon-btn menu-btn" type="button" data-rail-open aria-label="메뉴 열기"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button><nav class="crumb" aria-label="위치"><a href="#dashboard">작업대</a><span class="sep">/</span><span>점검 기록</span><span class="sep">/</span><span class="host" id="rCrumbHost">blog.example.com</span></nav></div>
         <div class="vh-row">
           <div class="vh-title"><h1 tabindex="-1" id="rTitle">blog.example.com 보고서</h1><span class="pill ok" id="rPill">점검 완료</span></div>
-          <div class="vh-acts"><button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>발견 상세</button></div>
+          <div class="vh-acts"><button class="btn insp-only" type="button" data-insp-open><svg class="ic" aria-hidden="true"><use href="#i-panel"/></svg>발견 상세</button><button class="icon-btn pane-btn" type="button" data-insp-fold aria-expanded="true" aria-label="오른쪽 패널 접기" title="오른쪽 패널 접기"><svg class="ic" aria-hidden="true"><use href="#i-fold-r"/></svg></button></div>
         </div>
         <div class="vh-meta" id="rMeta"><span>시작 <b>10/25 14:03</b></span><span>소요 <b>28분</b></span><span>모델 <b>qwen/qwen3.6-35b-a3b · 로컬</b></span><span>커버리지 <b>91%</b></span></div>
       </header>
@@ -1162,13 +1175,8 @@
             <div class="cell"><div class="k">발견</div><div class="v">6</div><div class="sub">심각 1 · 높음 1 · 중간 3 · 낮음 1</div></div>
             <div class="cell"><div class="k">판정 확정</div><div class="v">3</div><div class="sub">증거 충분</div></div>
             <div class="cell"><div class="k">의심 / 판단 불가</div><div class="v">2<small>/ 1</small></div><div class="sub">추가 확인 권장</div></div>
-            <div class="cell"><div class="k">커버리지</div><div class="v">91<small>%</small></div><div class="sub">미검사 9% · 안전을 뜻하지 않음</div></div>
+            <div class="cell"><div class="k">커버리지</div><div class="v">91<small>%</small></div><div class="sub">미검사 9%</div></div>
           </div>
-          <div class="diff"><span>지난 점검(10/18) 대비</span><span>신규 <b>2</b></span><span>유지 <b>4</b></span><span>재현 안 됨 <b>1</b> · 조치 완료를 뜻하지 않음</span></div>
-          <section class="sec" aria-labelledby="rSumH">
-            <div class="sh"><h2 id="rSumH">결과 요약</h2></div>
-            <p class="lead">주문 조회의 수평 권한 상승(IDOR)과 관리자 통계의 비인증 접근(수직 권한 상승)이 확정되었습니다. 결제 금액 변경은 데이터를 바꾸는 요청이라 승인 전까지 보내지 않아 판단 불가로 남겼습니다.</p>
-          </section>
           <section class="sec" aria-labelledby="rPrioH">
             <div class="sh"><h2 id="rPrioH">우선 조치</h2><span class="aside">위험도와 판정 순</span></div>
             <ol class="prio">
@@ -1191,7 +1199,6 @@
               <div style="display:flex;flex-direction:column;gap:14px" id="kgBox"></div>
             </div>
             <div role="tabpanel" id="rp-map" aria-labelledby="rtab-map" hidden>
-              <p class="help" style="margin-bottom:10px">행은 계정·역할, 열은 자원 묶음입니다. 취약 칸은 접근되면 안 되는 조합이 열린 경우입니다. 같은 역할끼리는 수평 IDOR, 위 역할의 자원은 수직 권한 상승입니다.</p>
               <div class="tblwrap">
                 <table class="amap">
                   <thead><tr><th scope="col">계정 · 역할</th><th scope="col">내 자원</th><th scope="col">남의 자원</th><th scope="col">결제·주문 변경</th><th scope="col">관리자 기능</th><th scope="col">사용자 관리</th></tr></thead>
@@ -1203,17 +1210,14 @@
                   </tbody>
                 </table>
               </div>
-              <div class="legend" style="margin-top:10px"><span><span class="ac al">허용</span>정상 허용</span><span><span class="ac bl">차단</span>정상 차단</span><span><span class="ac vu">취약</span>열리면 안 되는데 열림</span><span><span class="ac nt">미검사</span>아직 확인 안 함</span></div>
             </div>
             <div role="tabpanel" id="rp-ev" aria-labelledby="rtab-ev" hidden>
               <div style="display:flex;flex-direction:column;gap:14px">
-                <p class="help">실제 연동 시에는 요청과 응답을 가려서 저장하도록(쿠키, 토큰, 비밀번호는 [REDACTED]) 구현·검증해야 하고, 소유 확인에는 개인정보 대신 표식(canary)을 쓰도록 설계합니다. 이 시안에는 해당 저장 기능이 없습니다.</p>
                 <ul class="evi">
                   <li><code>evidence/order-idor</code><span>요청·응답 2건</span><span class="tag in">canary 일치</span></li>
                   <li><code>evidence/admin-stats</code><span>비로그인 응답 1건 · 대조군 1건</span></li>
                   <li><code>evidence/cookie-flags</code><span>응답 헤더 1건</span></li>
                 </ul>
-                <div class="note"><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg><div>점검 중 보낸 요청과 승인 결정은 변조를 알아챌 수 있는 감사 로그로 남습니다. 점검 운영자는 로그를 지울 수 없습니다(권한 분리).</div></div>
               </div>
             </div>
           </section>
@@ -1263,19 +1267,51 @@
     if(h==='new') nSync();
     if(byUser){ var t=$('h1',v); try{ t.focus({ preventScroll:true }); }catch(e){} }
     if(openAfter){ openAfter=false; openInsp(); }
+    syncRailSel();
   }
   var openAfter=false;
+  // 레일 빨간 점: 지금 보고 있는 화면·선택이 어느 점검 기록인지
+  var DSEL_RK={ appr:'api', 'act-api':'api', path:'shop', 'act-shop':'shop', 'done-blog':'blog', und:'app', 'done-app':'app', cov:'docs', 'done-docs':'docs' };
+  function railKey(){
+    if(cur==='crawl'||cur==='scope') return 'new';
+    if(cur==='live') return 'shop';
+    if(cur==='report') return rHost==='blog.example.com' ? 'blog' : 'shop';
+    if(cur==='dashboard') return DSEL_RK[dSel]||'';
+    return '';
+  }
+  function syncRailSel(){ var k=railKey();
+    $$('.rs[data-rk]').forEach(function(a){ if(a.getAttribute('data-rk')===k && !a.hidden) a.setAttribute('aria-current','true'); else a.removeAttribute('aria-current'); }); }
   window.addEventListener('hashchange', function(){ route(true); });
   function goTo(name){ if(location.hash==='#'+name) route(true); else location.hash=name; }
 
   // 상세 패널(넓지 않은 화면에서는 서랍) · 레일(휴대폰에서는 서랍)
-  function openInsp(){ if(!NARROW.matches) return; var v=view(); v.classList.add('io'); scrim.hidden=false; var b=$('.vi [data-insp-close]',v); if(b) setTimeout(function(){ b.focus(); }, 30); }
+  function openInsp(){ if(!NARROW.matches){ if(app.classList.contains('insp-min')) setInspMin(false, true); return; } var v=view(); v.classList.add('io'); scrim.hidden=false; var b=$('.vi [data-insp-close]',v); if(b) setTimeout(function(){ b.focus(); }, 30); }
   function closeInsp(){ $$('.view.io').forEach(function(v){ v.classList.remove('io'); }); if(!rail.classList.contains('open')) scrim.hidden=true; }
   function openRail(){ rail.classList.add('open'); scrim.hidden=false; var b=$('[data-rail-close]',rail); setTimeout(function(){ b.focus(); }, 30); }
   function closeRail(){ rail.classList.remove('open'); if(!$('.view.io')) scrim.hidden=true; }
+
+  // 왼쪽 메뉴 · 오른쪽 패널 접기 (넓은 화면). 접힌 오른쪽 패널은 머리의 '요약·상세' 버튼이나 항목 선택으로 다시 펼친다.
+  var app=$('.app');
+  var RAIL_TIPS=[['.brand','ABC2LAB'],['.new-btn','새 점검'],['.rl[data-nav="dashboard"]','대시보드']];
+  function setRailMin(on, save){
+    app.classList.toggle('rail-min', on);
+    var b=$('[data-rail-fold]'), t= on ? '메뉴 펼치기' : '메뉴 접기';
+    b.setAttribute('aria-expanded', on ? 'false' : 'true'); b.setAttribute('aria-label', t); b.title=t;
+    $('use', b).setAttribute('href', on ? '#i-unfold-l' : '#i-fold-l');
+    RAIL_TIPS.forEach(function(p){ var el=$(p[0], rail); if(!el) return; if(on) el.title=p[1]; else el.removeAttribute('title'); });
+    if(save){ try{ localStorage.setItem('abc2lab-rail-min', on ? '1' : '0'); }catch(err){} }
+  }
+  function setInspMin(on, save){
+    app.classList.toggle('insp-min', on);
+    $$('[data-insp-fold]').forEach(function(b){ b.setAttribute('aria-expanded', on ? 'false' : 'true'); });
+    if(save){ try{ localStorage.setItem('abc2lab-insp-min', on ? '1' : '0'); }catch(err){} }
+  }
   document.addEventListener('click', function(e){
     var t=e.target;
-    if(t.closest('[data-insp-open]')){ openInsp(); return; }
+    if(t.closest('[data-rail-fold]')){ setRailMin(!app.classList.contains('rail-min'), true); return; }
+    if(t.closest('[data-insp-fold]')){ setInspMin(true, true); var ob=$('[data-insp-open]', view()); if(ob) setTimeout(function(){ ob.focus(); }, 30); return; }
+    if(t.closest('[data-insp-open]')){ var wasMin=!NARROW.matches && app.classList.contains('insp-min'); openInsp();
+      if(wasMin){ var fb=$('[data-insp-fold]', view()); if(fb) setTimeout(function(){ fb.focus(); }, 30); } return; }
     if(t.closest('[data-insp-close]')){ closeInsp(); return; }
     if(t.closest('[data-rail-open]')){ openRail(); return; }
     if(t.closest('[data-rail-close]')){ closeRail(); return; }
@@ -1311,9 +1347,9 @@
     $('#dDecide').classList.toggle('warn', n>0);
     $('#dDecideSub').textContent = n ? [S.appr?null:'승인 1', S.path?null:'새 경로 1'].filter(Boolean).join(' · ') : '모두 결정함';
     var b=$('#railBadge'); b.textContent=n; b.hidden=!n;
-    var dot=$('#railApiDot'), sub=$('#railApiSub'), bar=$('#railApiBar');
-    if(S.appr==='ok'){ dot.className='dot run'; sub.textContent='점검 중 · 결제 흐름'; bar.classList.remove('wait'); }
-    else if(S.appr==='no'){ dot.className='dot run'; sub.textContent='점검 중 · 결제 요청 거부함'; bar.classList.remove('wait'); }
+    var sub=$('#railApiSub'), bar=$('#railApiBar');
+    if(S.appr==='ok'){ sub.textContent='점검 중 · 결제 흐름'; bar.classList.remove('wait'); }
+    else if(S.appr==='no'){ sub.textContent='점검 중 · 결제 요청 거부함'; bar.classList.remove('wait'); }
     renderTodo(); renderActive(); renderLiveDecide();
   }
 
@@ -1363,20 +1399,16 @@
     if(id==='appr'){
       h=head('승인 요청 · <span class="host">api.store-dev.com</span>','결제 금액 변경 요청', todoPill('appr')+'<span class="tag ap">데이터를 바꾸는 요청</span>');
       h+=isec('보낼 요청','<pre class="code">'+REQ_CHECKOUT+'</pre>');
-      h+=isec('확인하려는 것','<p>결제 금액을 1원으로 바꿔 보내도 주문이 만들어지는지 확인합니다. 업무 흐름 우회(WSTG-BUSL-01)입니다.</p>');
-      h+=isec('보내기 전에 알아둘 것','<div class="note warn">'+ico('alert')+'<div>실제 주문이 만들어질 수 있습니다. 리셋할 수 있는 시험환경일 때만 승인하세요. 결정은 감사 로그에 남습니다.</div></div>');
       if(!S.appr) h+=isec('','<div class="acts"><button class="btn pri" type="button" data-appr="ok">승인하고 보내기</button><button class="btn" type="button" data-appr="no">거부</button></div>');
       else h+=isec('', S.appr==='ok' ? '<div class="result ok">'+ico('check')+'<div>승인했습니다. 이 요청 1건을 보내고 결제 흐름 점검을 이어 갑니다.</div></div>' : '<div class="result no">'+ico('x')+'<div>거부했습니다. 이 요청은 보내지 않고, 결제 금액 변경 항목은 판단 불가로 남깁니다.</div></div>');
     } else if(id==='path'){
       h=pathDecideInsp();
     } else if(id==='und' || id==='done-app'){
       h=head('결과 확인 · <span class="host">app.sample.io</span>','판단 불가 2건','<span class="pill">결과 확인</span>');
-      h+=isec('','<p>일부 응답이 느려 결과를 확정하지 못했습니다. 판단 불가는 안전하다는 뜻이 아닙니다. 사람이 확인하거나 다시 점검해야 확정됩니다.</p>');
       h+=isec('점검 정보',kv([['점검일','10/23'],['소요','21분'],['판단 불가','2건']]));
       h+=isec('','<div class="acts"><button class="btn pri" type="button" data-rescan="https://app.sample.io">이 주소로 다시 점검</button></div>');
     } else if(id==='cov' || id==='done-docs'){
       h=head('결과 확인 · <span class="host">docs.example.com</span>','미검사 영역 있음','<span class="pill">커버리지 76%</span>');
-      h+=isec('','<p>점검하지 못한 24%는 결과에 들어가지 않았습니다. 미검사 영역은 안전을 뜻하지 않습니다. 발견이 없다는 결과도 점검한 76% 안에서만 맞습니다.</p>');
       h+=isec('점검 정보',kv([['점검일','10/24'],['소요','14분'],['발견','없음']]));
       h+=isec('','<div class="acts"><button class="btn pri" type="button" data-rescan="https://docs.example.com">이 주소로 다시 점검</button></div>');
     } else if(id==='act-shop'){
@@ -1397,7 +1429,7 @@
     }
     $('#dInsp').innerHTML=h;
   }
-  function dashPick(id){ dSel=id; renderTodo(); renderActive(); renderDone(); dInsp();
+  function dashPick(id){ dSel=id; renderTodo(); renderActive(); renderDone(); dInsp(); syncRailSel();
     if(cur!=='dashboard'){ openAfter=true; location.hash='dashboard'; return; }
     closeRail(); var row=$('[data-dsel="'+id+'"]'); if(row) row.scrollIntoView({ block:'nearest' }); openInsp(); }
   document.addEventListener('click', function(e){
@@ -1409,7 +1441,6 @@
   function pathDecideInsp(){
     var h=head('새로 찾은 경로 · <span class="host">shop.example.com</span>', '<span class="m GET">GET</span> <span class="p">/admin/export</span>', todoPill('path')+'<span class="tag ap">관리자 경로</span>');
     h+=isec('관찰한 사실',kv([['찾은 곳','관리자 메뉴 스크립트 안 문자열'],['찾은 시각','오늘 18:31'],['처리 규칙','관리자 경로 · 처음 보는 권한 영역은 확인 요청']]));
-    h+=isec('결정하면','<p>포함하면 계정 A, 계정 B, 비로그인으로 접근되는지 조회 요청만 보내 확인합니다. 제외하면 보내지 않고 기록만 남깁니다.</p>');
     if(!S.path) h+=isec('','<div class="acts"><button class="btn pri" type="button" data-pathd="in">점검에 포함</button><button class="btn" type="button" data-pathd="ex">제외</button></div>');
     else h+=isec('', S.path==='in' ? '<div class="result ok">'+ico('check')+'<div>포함했습니다. 다음 계획 단계에서 세 가지 권한으로 확인합니다.</div></div>' : '<div class="result no">'+ico('x')+'<div>제외했습니다. 이 경로는 보내지 않고 기록만 남깁니다.</div></div>');
     return h;
@@ -1432,9 +1463,9 @@
     var st=hostState(), line=$('#nHost'), vbox=$('#nVerify'), url=$('#nUrl');
     url.setAttribute('aria-invalid', st.kind==='bad' && url.value.trim() ? 'true' : 'false');
     if(st.kind==='bad') line.innerHTML = url.value.trim() ? '<span class="err">주소 형식을 확인하세요. 예: https://shop.example.com</span>' : '<span class="err">점검할 사이트 주소를 입력하세요.</span>';
-    else if(st.kind==='int') line.innerHTML='<span class="pill ok">내부 주소</span><span class="help">소유 확인 없이 바로 점검할 수 있습니다</span>';
-    else if(st.kind==='allow') line.innerHTML='<span class="pill ok">'+(VERIFIED[st.url.hostname]?'허용 · 예시 통과(시안)':'허용 목록 · 예시')+'</span><span class="help">'+(VERIFIED[st.url.hostname]?'시안이라 실제 DNS 조회 없이 통과했습니다':'설정 › 통제 정책에서 관리합니다')+'</span>';
-    else line.innerHTML='<span class="pill wait">소유 확인 필요</span><span class="help">허용 목록에 없는 외부 주소입니다</span>';
+    else if(st.kind==='int') line.innerHTML='<span class="pill ok">내부 주소</span>';
+    else if(st.kind==='allow') line.innerHTML='<span class="pill ok">'+(VERIFIED[st.url.hostname]?'허용 · 예시 통과(시안)':'허용 목록 · 예시')+'</span>';
+    else line.innerHTML='<span class="pill wait">소유 확인 필요</span>';
     vbox.hidden = st.kind!=='ext';
     if(st.kind==='ext'){ var h=st.url.hostname; if(!tokenFor[h]) tokenFor[h]='abc2lab-verify='+Math.random().toString(16).slice(2,10)+Math.random().toString(16).slice(2,8);
       $('#vHost').textContent=h; $('#vName').textContent='_abc2lab-challenge.'+h; $('#vToken').textContent=tokenFor[h]; }
@@ -1445,14 +1476,13 @@
     var llm=$('input[name="nLlm"]:checked').value;
     $('#nLocal').hidden = llm!=='local'; $('#nLocalState').hidden = llm!=='local'; $('#nApi').hidden = llm!=='api';
     var send=$('input[name="nSend"]:checked').value; $('#nFullWarn').hidden = send!=='full';
-    var depth=$('input[name="nDepth"]:checked').value;
-    $('#nDepthHelp').textContent = { '표준':'주요 엔드포인트와 로그인 흐름 중심', '심화':'전체 엔드포인트, 입력 변형, 여러 단계 흐름까지', '제한 없음':'새 발견이 없을 때까지 돌고 스스로 끝냅니다' }[depth];
     var goals=$$('.goal input:checked').map(function(i){ return i.value; });
     var name=$('#nName').value.trim(); $('#nNameErr').hidden=!!name; $('#nName').setAttribute('aria-invalid', name?'false':'true');
     // 요약
     $('#sTarget').textContent = st.url ? st.url.origin : '—';
     $('#sAuth').textContent = auth==='in' ? ('로그인 영역 포함 · 계정 2개 ('+(how==='form'?'아이디·비밀번호':'세션 직접 입력')+')') : '공개 영역만';
     $('#sLlm').textContent = llm==='local' ? '로컬 · '+$('#nModel').value : '외부 API · '+$('#nProv').value;
+    var depth=$('input[name="nDepth"]:checked').value;
     $('#sDepth').textContent = depth+' · 워커 '+$('#nWorkers').value;
     $('#sGoal').textContent = goals.length ? goals.join(', ') : '기본 목표';
     $('#sSend').textContent = send==='ap' ? '승인 후 전송' : '전체 허용 · 시험환경 전용';
@@ -1472,7 +1502,7 @@
   $('#nForm').addEventListener('change', nSync);
   $('#nUrl').addEventListener('blur', function(){ var u=parseUrl(this.value); if(u && !/^[a-z][a-z0-9+.-]*:\/\//i.test(this.value.trim())){ this.value=u.origin; nSync(); } });
   $('#vCheck').addEventListener('click', function(){ var st=hostState(); if(!st.url) return; var b=this, s=$('#vState'); b.disabled=true; s.textContent='시안 · 실제 DNS 조회는 하지 않습니다';
-    setTimeout(function(){ VERIFIED[st.url.hostname]=true; b.disabled=false; s.textContent='시안이라 실제 확인 없이 예시로 통과했습니다. 실제로는 DNS TXT 확인이 필요합니다.'; nSync(); $('#nUrl').focus(); }, 1300); });
+    setTimeout(function(){ VERIFIED[st.url.hostname]=true; b.disabled=false; s.textContent='시안이라 실제 확인 없이 예시로 통과했습니다'; nSync(); $('#nUrl').focus(); }, 1300); });
   document.addEventListener('click', function(e){ var c=e.target.closest('[data-reuse]'); if(!c) return; nPrefill(c.getAttribute('data-reuse')); $('#nUrl').focus(); });
   function nPrefill(u){ $('#nUrl').value=u; nameTouched=false; nSync(); }
   function startScan(){ nSync(); if($('[data-start]').disabled) return; var st=hostState(); target=st.url.origin;
@@ -1559,9 +1589,9 @@
   var PCT=(function(){ var sent=0, max=0; return EV.map(function(e,i){ if(e.k==='req'||e.k==='login') sent++; var known=sent+e.q; max=Math.max(max, known?Math.round(sent/known*100):0); return i===EV.length-1 ? 100 : max; }); })();
   var crawl={ started:false, i:0, timer:null, paused:false, done:false, found:[], sent:0, skip:0, open:{}, view:'card', kf:'all' };
   function hms(sec){ var h=Math.floor(sec/3600), m=Math.floor(sec%3600/60), s=sec%60; return ('0'+h).slice(-2)+':'+('0'+m).slice(-2)+':'+('0'+s).slice(-2); }
-  function railNew(phase){ var a=$('#railNew'); if(!phase){ a.hidden=true; return; } a.hidden=false; a.href='#'+phase;
+  function railNew(phase){ var a=$('#railNew'); if(!phase){ a.hidden=true; syncRailSel(); return; } a.hidden=false; a.href='#'+phase;
     $('#railNewSub').textContent = phase==='crawl' ? (crawl.done?'탐색 완료 · 범위 확인 대기':'자산 탐색 중') : '범위 확인 대기';
-    $('#railNewDot').className = 'dot '+((phase==='crawl' && !crawl.done && !crawl.paused) ? 'run' : 'wait'); }
+    syncRailSel(); }
   // 찾은 경로를 누르면 같은 패널에서 API 상세(기본 정보 · 요청·응답 예시)
   var cApiKey=null;
   function cApiOpen(key){ var e=EP.filter(function(x){ return x.m+' '+x.p===key; })[0]; if(!e) return; cApiKey=key;
@@ -1736,11 +1766,6 @@
     var sa=$('#sAll'), allOpen=vis.length>0 && vis.every(Boolean); sa.hidden=!vis.length; sa.textContent=allOpen?'모두 접기':'모두 펼치기';
     sInsp();
   }
-  function whyText(e){
-    return e.lock ? '전역 제외 규칙 <code>/admin/delete*</code>에 걸려 이 점검에서는 보내지 않습니다. 규칙은 설정 › 통제 정책에서 바꿉니다.'
-      : !e.on ? (OFF[e.m+' '+e.p] ? '보내면 '+OFF[e.m+' '+e.p].replace('세션이 끊김','세션이 끊깁니다').replace('메일 발송','실제 메일이 발송됩니다').replace('삭제 요청','데이터가 지워집니다')+'. 그래서 기본으로 제외했습니다. 범위 확인에서 체크하면 포함하고, 보낼 때 승인을 받습니다.' : '직접 제외했습니다. 체크하면 다시 포함합니다.')
-      : e.k==='login' ? '입력한 테스트 계정으로만 로그인합니다.'
-      : e.chg ? '데이터를 바꾸는 요청이라 범위에 넣어도 보낼 때마다 승인을 받습니다.' : '보기만 하는 요청이라 자동으로 포함합니다.'; }
 
   /* ---------- API 상세: 기본 정보 · 요청·응답 예시 ---------- */
   var apiTab='info';
@@ -1803,11 +1828,7 @@
       if(body && !r.none){ L.push(''); L=L.concat(body.split('\n')); }
       res=L.join('\n');
     }
-    var note = e.lock ? '전역 제외 규칙 <code>/admin/delete*</code>에 걸려 보내지 않는 경로입니다. 요청은 스크립트에서 찾은 모양으로 만든 예시입니다.'
-      : sent ? '탐색에서 실제로 주고받은 요청과 응답입니다. 세션, 토큰, 개인정보는 &lt;자리표시자&gt;로 바꿔 저장했습니다.'
-      : e.k==='off' ? '기본으로 제외한 경로라 보내지 않았습니다('+OFF[key]+'). 요청은 찾은 모양으로, 응답은 비슷한 경로를 보고 AI가 추정한 예시입니다.'
-      : '아직 보내지 않은 요청입니다. 요청은 폼과 스크립트에서 찾은 모양으로 만들었고, 응답은 비슷한 경로를 보고 AI가 추정했습니다. 범위에 넣고 승인하면 실제 응답으로 바뀝니다.';
-    return { sent:sent, req:req.join('\n'), res:res, none:none, note:note };
+    return { sent:sent, req:req.join('\n'), res:res, none:none };
   }
   function escH(t){ return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function hlHttp(text){
@@ -1831,8 +1852,8 @@
     var x=exFor(e);
     var h=head('찾은 경로 · '+GL[e.g], ep(e.m,e.p), scopeTag(e)+(e.hasId?'<span class="tag out">ID 포함</span>':'')+(e.auth?'<span class="tag out">로그인 필요</span>':''));
     var info=isec('관찰한 사실',kv([['응답',esc(e.st)],['찾은 곳',esc(e.from)],['요청 횟수',e.n+'회'],['근거',esc(e.basis)]]))+
-      isec('AI 추정',kv([['기능',esc(e.d)],['묶음',GL[e.g]]]))+isec('처리','<p>'+whyText(e)+'</p>');
-    var ex='<div class="expanel"><p class="help">'+x.note+'</p>'+
+      isec('AI 추정',kv([['기능',esc(e.d)],['묶음',GL[e.g]]]));
+    var ex='<div class="expanel">'+
       cbCard('요청 예시', x.sent?'예시 · 관찰':'예시 · 찾은 모양', x.req, px+'-req')+
       (x.res ? cbCard('응답 예시', x.sent?'예시 · 관찰':'예시 · AI 추정', x.res, px+'-res')
              : '<div class="cb"><div class="cb-h"><h3>응답 예시</h3><span class="cb-src">없음</span></div><div class="cb-none">'+ico('lock')+'<span>'+x.none+'</span></div></div>')+'</div>';
@@ -1923,7 +1944,7 @@
     var nk=$('#lNowK'), task=$('#lTask');
     if(c){ nk.className='now-k'+(live.paused?' idle':''); nk.innerHTML='<i></i>'+(live.paused?'멈춤':'지금 하는 일'); task.innerHTML=esc(c.t)+(c.on?' · '+onHtml(c.on):''); }
     else if(live.done){ nk.className='now-k ok'; nk.innerHTML=ico('check')+'완료'; task.textContent='계획한 작업을 모두 마쳤습니다'; }
-    else { nk.className='now-k idle'; nk.innerHTML='<i></i>종료됨'; task.textContent='새 요청을 보내지 않습니다. 끝내지 못한 항목은 미검사로 남깁니다'; }
+    else { nk.className='now-k idle'; nk.innerHTML='<i></i>종료됨'; task.textContent='새 요청을 보내지 않습니다'; }
     $('#lMeta').innerHTML='<span>시작 <b>'+hms(live.start).slice(0,5)+'</b></span><span>경과 <b>'+Math.round(LCUM[live.i])+'분</b></span>'+(c?'<span>남은 시간 <b>약 '+lremain()+'분</b></span>':'')+
       '<span>토큰 <b>'+(2.0*LCUM[live.i]/LTOTAL).toFixed(1)+'M</b> / 예상 2.0M</span><span>엔드포인트 <b>'+live.ep+'</b> (처음 37 · 새로 '+(live.ep-37)+')</span>';
     $('#mSent').textContent=live.sent.toLocaleString('en-US'); $('#mBlk').textContent=live.blk; $('#mHold').textContent=live.hold;
@@ -1940,7 +1961,7 @@
     more.textContent = live.feedAll ? '최근 '+FEED_N+'건만 보기' : '이전 활동 '+(live.feed.length-FEED_N)+'건 더 보기';
     list.innerHTML = shown.length ? shown.map(function(x){ var t=x.t;
       return '<li'+(x.k===live.fresh && !REDUCE && cur==='live'?' class="fresh"':'')+'><span class="t">'+x.at+'</span><span class="fd '+t.r+'"></span><span>'+esc(t.t)+(t.on?' <span class="p">'+esc(t.on)+'</span>':'')+'<span class="res">'+esc(t.res)+'</span></span></li>'; }).join('')
-      : '<li class="empty">아직 끝난 일이 없습니다. 지금 하는 일이 끝나면 여기로 내려옵니다.</li>';
+      : '<li class="empty">아직 끝난 일이 없습니다.</li>';
     live.fresh=-1;
     $('#lDecide').hidden=!live.decide; renderLiveDecide();
     var fin=live.done||live.ended; $('#lDone').hidden=!fin;
@@ -1951,16 +1972,16 @@
     else if(live.paused){ st.className='pill'; st.textContent='일시정지됨'; } else { st.className='pill run'; st.textContent='진행 중'; }
     pb.setAttribute('aria-pressed', live.paused?'true':'false'); pb.innerHTML = live.paused ? ico('play')+'<span>다시 시작</span>' : ico('pause')+'<span>일시정지</span>';
     var ib=$('#lInspBtn'); if(ib) ib.lastChild.textContent='발견 '+live.forder.length;
-    var rd=$('#railShopDot'), rs=$('#railShopSub'); $('#railShopBar').style.width=pct+'%';
-    if(live.done){ rd.className='dot ok'; rs.textContent='점검 완료 · 발견 '+live.forder.length; }
-    else if(live.ended){ rd.className='dot stop'; rs.textContent='종료됨 · '+pct+'%'; }
-    else { rd.className='dot '+(live.paused?'wait':'run'); rs.textContent=(live.paused?'일시정지':'점검 중')+' · '+pct+'%'; }
+    var rs=$('#railShopSub'); $('#railShopBar').style.width=pct+'%';
+    if(live.done){ rs.textContent='점검 완료 · 발견 '+live.forder.length; }
+    else if(live.ended){ rs.textContent='종료됨 · '+pct+'%'; }
+    else { rs.textContent=(live.paused?'일시정지':'점검 중')+' · '+pct+'%'; }
     renderActive(); if(dSel==='act-shop') dInsp(); if(lSel===null) renderLiveInsp(); buildPhases();
   }
   function renderLiveDecide(){ var box=$('#lDecide');
-    if(!S.path && (live.done||live.ended)){ box.className='decide done'; box.innerHTML='<div class="dm"><b><span class="pill">결정 없음</span><span class="m GET">GET</span><span class="p">/admin/export</span></b><span>점검이 끝날 때까지 포함 여부를 정하지 않아 보내지 않았습니다. 이 경로는 미검사로 남깁니다.</span></div>'; }
-    else if(!S.path){ box.className='decide'; box.innerHTML='<div class="dm"><b><span class="pill wait">확인 필요</span><span class="m GET">GET</span><span class="p">/admin/export</span></b><span>점검 중 새로 찾은 관리자 경로입니다. 관리자 메뉴 스크립트에서 찾았고, 처음 보는 권한 영역이라 자동으로 처리하지 않았습니다. 그동안 다른 계획은 계속 진행합니다.</span></div><div class="acts"><button class="btn pri sm" type="button" data-pathd="in">점검에 포함</button><button class="btn sm" type="button" data-pathd="ex">제외</button></div>'; }
-    else { box.className='decide done'; box.innerHTML='<div class="dm"><b>'+(S.path==='in'?'<span class="pill ok">포함함</span>':'<span class="pill">제외함</span>')+'<span class="m GET">GET</span><span class="p">/admin/export</span></b><span>'+(S.path==='in'?'계정 A, 계정 B, 비로그인으로 조회 요청만 보내 확인합니다.':'보내지 않고 기록만 남깁니다.')+' 결정은 감사 로그에 남았습니다.</span></div>'; } }
+    if(!S.path && (live.done||live.ended)){ box.className='decide done'; box.innerHTML='<div class="dm"><b><span class="pill">결정 없음</span><span class="m GET">GET</span><span class="p">/admin/export</span></b><span>포함 여부를 정하지 않아 보내지 않았습니다.</span></div>'; }
+    else if(!S.path){ box.className='decide'; box.innerHTML='<div class="dm"><b><span class="pill wait">확인 필요</span><span class="m GET">GET</span><span class="p">/admin/export</span></b><span>점검 중 새로 찾은 관리자 경로입니다.</span></div><div class="acts"><button class="btn pri sm" type="button" data-pathd="in">점검에 포함</button><button class="btn sm" type="button" data-pathd="ex">제외</button></div>'; }
+    else { box.className='decide done'; box.innerHTML='<div class="dm"><b>'+(S.path==='in'?'<span class="pill ok">포함함</span>':'<span class="pill">제외함</span>')+'<span class="m GET">GET</span><span class="p">/admin/export</span></b><span>'+(S.path==='in'?'계정 A, 계정 B, 비로그인으로 조회 요청만 보내 확인합니다.':'보내지 않고 기록만 남깁니다.')+'</span></div>'; } }
   $('#lFeedMore').addEventListener('click', function(){ live.feedAll=!live.feedAll; liveRender(); if(live.feedAll) $('#lFeed').scrollTop=0; });
   $('#lPause').addEventListener('click', function(){ if(live.done||live.ended) return; live.paused=!live.paused;
     if(live.paused){ clearTimeout(live.timer); live.playing=false; } else liveSchedule(); liveRender(); });
@@ -1993,29 +2014,27 @@
   function fEp(f){ return f.m ? ep(f.m,f.p) : '<span class="p">'+esc(f.hdr)+'</span>'; }
   function findingHtml(f, host, ctx, vdNow){
     var pending = ctx==='live' && vdNow==='판정 중';
-    var h=head(f.type+' · <span class="host">'+host+'</span>', f.title, sev(f.sev)+(vdNow?vdLive(vdNow):vd(f.vd))+(f.isNew&&ctx==='report'?'<span class="tag new">신규</span>':''));
+    var h=head(f.type+' · <span class="host">'+host+'</span>', f.title, sev(f.sev)+(vdNow?vdLive(vdNow):vd(f.vd)));
     h+='<div class="vi-ep">'+fEp(f)+'</div>';
-    h+=isec('내용','<p>'+f.what+'</p>');
     if(f.full){
       h+=isec('계정별 응답 비교','<table class="cmp"><thead><tr><th>요청 주체</th><th>응답</th><th>판정</th></tr></thead><tbody>'+
         '<tr><td>계정 A<small>주문 소유자</small></td><td><span class="sc s2">200</span><small>본인 주문</small></td><td>정상</td></tr>'+
         '<tr><td>계정 B<small>관계없는 사용자</small></td><td><span class="sc s2">200</span><small>A의 표식 노출</small></td><td><span class="ac vu">취약</span></td></tr>'+
         '<tr><td>비로그인<small>대조군</small></td><td><span class="sc s3">302</span><small>로그인으로 이동</small></td><td>정상 차단</td></tr></tbody></table>');
-      h+=isec('증거 · 예시(가림 표시)','<pre class="code"><span class="cm"># 계정 B의 요청 (A의 주문)</span>\nGET /api/orders/1012 HTTP/1.1\nHost: '+host+'\nCookie: session=<span class="rd">[REDACTED]</span>\n\n<span class="cm"># 응답: A 주문 전용 표식 포함</span>\nHTTP/1.1 200 OK\n{\n  "order_id": 1012,\n  "buyer_note": "<span class="hl">ABC2LAB-CANARY-7f3a</span>",\n  "address": "<span class="rd">[REDACTED]</span>"\n}</pre><p class="help">실제 값 대신 A 주문 전용 표식이 B의 응답에서 보였습니다. 주소와 개인정보는 가려서 저장하지 않습니다.</p>');
+      h+=isec('증거 · 예시(가림 표시)','<pre class="code"><span class="cm"># 계정 B의 요청 (A의 주문)</span>\nGET /api/orders/1012 HTTP/1.1\nHost: '+host+'\nCookie: session=<span class="rd">[REDACTED]</span>\n\n<span class="cm"># 응답: A 주문 전용 표식 포함</span>\nHTTP/1.1 200 OK\n{\n  "order_id": 1012,\n  "buyer_note": "<span class="hl">ABC2LAB-CANARY-7f3a</span>",\n  "address": "<span class="rd">[REDACTED]</span>"\n}</pre>');
     } else {
       h+=isec('증거','<p>'+f.ev+'</p>');
     }
-    if(pending) h+=isec('판정','<p>검증 에이전트가 확인 중입니다. 증거가 충분하면 확정, 부족하면 판단 불가로 나눕니다.</p>');
-    else h+=isec(f.basisL,'<ul class="ilist'+(f.vd==='확정'?'':' dash')+'">'+f.basis.map(function(b){ return '<li>'+ico(f.vd==='확정'?'check':'info')+'<span>'+b+'</span></li>'; }).join('')+'</ul>'+(f.vd==='확정'&&f.full?'<p class="help">세 가지 증거가 모두 있어 확정했습니다. 하나라도 없으면 판단 불가로 분류합니다.</p>':''));
+    if(pending) h+=isec('판정','<p>검증 에이전트가 확인 중입니다.</p>');
+    else h+=isec(f.basisL,'<ul class="ilist'+(f.vd==='확정'?'':' dash')+'">'+f.basis.map(function(b){ return '<li>'+ico(f.vd==='확정'?'check':'info')+'<span>'+b+'</span></li>'; }).join('')+'</ul>');
     if(f.full){
       var cid='repro-'+ctx;
       h+=isec('재현 방법','<ol class="ilist dash" style="list-style:decimal;padding-left:18px;display:block"><li style="display:list-item">계정 B로 로그인해 세션을 얻습니다.</li><li style="display:list-item">A의 주문 번호로 아래 요청을 보냅니다.</li><li style="display:list-item">응답에 표식 <code>ABC2LAB-CANARY-7f3a</code>가 있으면 재현된 것입니다.</li></ol>'+
-        '<div class="codewrap"><pre class="code" id="'+cid+'">curl -s https://'+host+'/api/orders/1012 \\\n  -H \'Cookie: session=&lt;계정 B 세션&gt;\'</pre><button class="btn sm copy" type="button" data-copy="'+cid+'">'+'복사</button></div><p class="help">세션 값은 저장하지 않으니 직접 넣으세요. 보고서와 공유본에도 들어가지 않습니다.</p>');
+        '<div class="codewrap"><pre class="code" id="'+cid+'">curl -s https://'+host+'/api/orders/1012 \\\n  -H \'Cookie: session=&lt;계정 B 세션&gt;\'</pre><button class="btn sm copy" type="button" data-copy="'+cid+'">'+'복사</button></div>');
     }
     if(f.next) h+=isec('다음 단계','<p>'+f.next+'</p>');
     if(f.fix) h+=isec('조치 방안','<p>'+f.fix+'</p>');
-    if(f.full && ctx==='report') h+=isec('조치 및 재점검','<ol class="tl"><li class="done"><span>발견</span><span>10/25 14:21</span></li><li class="done"><span>확정</span><span>10/25 14:23</span></li><li class="now"><span>조치 대기 · 담당자 확인 중</span><span></span></li><li><span>재점검 · 아직 안 함</span><span></span></li></ol><p class="help">재점검은 같은 요청 3건(계정 A, 계정 B, 비로그인)만 다시 보냅니다.</p>');
-    if(ctx==='live') h+=isec('','<p class="help">보고서는 점검이 끝나면 만들어집니다. 그때 조치 담당과 재점검을 정할 수 있습니다.</p>');
+    if(f.full && ctx==='report') h+=isec('조치 및 재점검','<ol class="tl"><li class="done"><span>발견</span><span>10/25 14:21</span></li><li class="done"><span>확정</span><span>10/25 14:23</span></li><li class="now"><span>조치 대기 · 담당자 확인 중</span><span></span></li><li><span>재점검 · 아직 안 함</span><span></span></li></ol>');
     h+=isec('분류','<div class="chips">'+f.cls.map(function(c){ return '<span class="chip">'+c+'</span>'; }).join('')+'</div>');
     return h;
   }
@@ -2086,18 +2105,15 @@
       return '<g class="kg-b '+f.sev+'" data-kgb="'+f.id+'" data-ei="'+i+'" tabindex="0" role="button" aria-label="발견: '+esc(f.title)+'"><rect x="'+(pt.x-w/2)+'" y="'+(pt.y-9)+'" width="'+w+'" height="18" rx="4"/><text x="'+pt.x+'" y="'+(pt.y+4)+'" text-anchor="middle">'+SEVL[f.sev]+'</text></g>'; }).join('')+'</g>';
     return h+'</svg>';
   }
-  function legSw(cls){ return '<svg width="26" height="8" aria-hidden="true"><path class="kg-e '+cls+'" d="M1 4H25" style="opacity:1"/></svg>'; }
-  function kgCount(st){ return KGE.filter(function(e){ return e[2]===st; }).length; }
   function renderKg(){
     var f6=F.filter(function(x){ return x.id==='f6'; })[0];
     var h='<div class="kgtop"><span>대상 <span class="mono">'+esc(rHost)+'</span></span><span>응답 헤더 <code>Server: nginx/1.21.0</code></span><button class="kgf" type="button" data-kgf="f6">'+sev('lo')+f6.title+'</button></div>';
-    h+='<p class="lead">점검 중 실제로 주고받은 요청과 응답으로 만든 소유·권한 관계입니다. 누가(역할) 어떤 엔드포인트로 어떤 자원에 닿았는지 이어 보면 공격 경로가 보입니다. 노드나 발견 표시를 누르면 오른쪽에 관계가 나옵니다.</p>';
     h+='<div class="sec"><div class="sh"><h2>확인된 공격 경로</h2><span class="n">'+KGP.length+'</span></div><div class="kgpaths">'+KGP.map(function(p){ var f=F.filter(function(x){ return x.id===p.f; })[0];
       return '<button class="kgp" type="button" data-kgp="'+p.id+'" aria-pressed="false"><b>'+sev(f.sev)+vd(f.vd)+'</b><b>'+p.label+'</b><small>'+p.sub+'</small></button>'; }).join('')+'</div></div>';
     h+='<div class="sec"><div class="sh"><h2>관계 그래프</h2><span class="aside">역할 4 · 엔드포인트 7 · 자원 6 · 관계 '+KGE.length+'</span></div>';
     h+='<div class="kgwrap">'+kgSvg()+'</div>';
-    h+='<div class="kgleg"><span>'+legSw('e-ok')+'허용 '+kgCount('ok')+'</span><span>'+legSw('e-block')+'차단 '+kgCount('block')+'</span><span>'+legSw('e-vuln')+'취약 '+kgCount('vuln')+'</span><span>'+legSw('e-sus')+'의심 '+kgCount('sus')+'</span><span>'+legSw('e-untested')+'미검사 '+kgCount('untested')+'</span><span>'+legSw('e-own')+'소유 · 선택할 때 보임</span><button class="btn sm" type="button" data-kgclear style="margin-left:auto">전체 보기</button></div>';
-    h+='<p class="help">관계의 상태는 관찰한 사실이고, 자원 이름(주문, 프로필)은 응답 내용을 보고 AI가 붙였습니다. 미검사는 안전하다는 뜻이 아닙니다.</p></div>';
+    h+='<div class="kgleg"><button class="btn sm" type="button" data-kgclear style="margin-left:auto">전체 보기</button></div>';
+    h+='</div>';
     $('#kgBox').innerHTML=h;
   }
   function kgApply(){
@@ -2121,12 +2137,10 @@
     var chips=['vuln','sus','untested','block','ok'].filter(function(k){ return cnt[k]; }).map(function(k){ return '<span class="ac '+STC[k]+'">'+STL[k]+' '+cnt[k]+'</span>'; }).join('');
     var h=head(TL[n.t]+' · <span class="host">'+esc(rHost)+'</span>', n.t==='ep' ? ep(n.m,n.p) : n.label, chips);
     if(n.sub) h+='<p class="help" style="margin-top:8px">'+n.sub+'</p>';
-    if(n.desc) h+=isec('','<p>'+n.desc+'</p>');
     h+=isec('관계 '+rels.length,'<ul class="rel">'+rels.map(function(e){ var out=e[0]===n.id, o=KGById[out?e[1]:e[0]];
       return '<li><button type="button" data-kgsel="'+o.id+'"><span class="dir" aria-label="'+(out?'나가는 관계':'들어오는 관계')+'">'+(out?'→':'←')+'</span><span class="who">'+(o.t==='ep'?ep(o.m,o.p):'<b>'+o.label+'</b>')+'</span><span class="st"><span class="ac '+STC[e[2]]+'">'+STL[e[2]]+'</span></span><span class="lab">'+e[3]+'</span></button></li>'; }).join('')+'</ul>');
     var fids=[]; rels.forEach(function(e){ if(e[4] && fids.indexOf(e[4])<0) fids.push(e[4]); });
     if(fids.length) h+=isec('관련 발견','<div class="flist">'+fids.map(function(id){ var f=F.filter(function(x){ return x.id===id; })[0]; return '<button class="fli" type="button" data-kgf="'+id+'">'+sev(f.sev)+'<span>'+f.title+'</span></button>'; }).join('')+'</div>');
-    if(n.t==='res') h+=isec('','<p class="help">자원 이름은 응답 내용을 보고 AI가 붙였습니다. 소유 관계는 계정별 응답에 심은 표식(canary)으로 확인했습니다.</p>');
     return h;
   }
   function renderRInsp(){ var box=$('#rInsp');
@@ -2144,7 +2158,7 @@
   });
   document.addEventListener('keydown', function(e){ if(e.key!=='Enter' && e.key!==' ') return; var g=e.target.closest && e.target.closest('[data-kgn],[data-kgb]'); if(!g) return; e.preventDefault(); g.dispatchEvent(new MouseEvent('click', { bubbles:true })); });
   function renderReport(){
-    $('#rList').innerHTML=F.map(function(f){ return '<button class="frow'+(rSel===f.id?' sel':'')+'" type="button" data-rsel="'+f.id+'"'+(rSel===f.id?' aria-current="true"':'')+'>'+sev(f.sev)+'<span class="fm"><span class="ft">'+f.title+(f.isNew?'<span class="tag new">신규</span>':'')+'</span><span class="fe">'+fEp(f)+'<span>'+f.type+'</span></span></span><span class="fs">'+vd(f.vd)+'</span></button>'; }).join('');
+    $('#rList').innerHTML=F.map(function(f){ return '<button class="frow'+(rSel===f.id?' sel':'')+'" type="button" data-rsel="'+f.id+'"'+(rSel===f.id?' aria-current="true"':'')+'>'+sev(f.sev)+'<span class="fm"><span class="ft">'+f.title+'</span><span class="fe">'+fEp(f)+'<span>'+f.type+'</span></span></span><span class="fs">'+vd(f.vd)+'</span></button>'; }).join('');
     renderRInsp();
   }
   $('#rList').addEventListener('click', function(e){ var b=e.target.closest('[data-rsel]'); if(!b) return; rSel=b.getAttribute('data-rsel'); rMode='finding'; renderReport(); var nb=$('[data-rsel="'+rSel+'"]'); if(nb) nb.focus(); openInsp(); });
@@ -2163,12 +2177,12 @@
     if(fs.length){
       h+='<div class="stack" style="height:8px;margin-top:12px" aria-hidden="true">'+['crit','hi','mid','lo'].filter(function(k){ return c[k]; }).map(function(k){ return '<i style="flex:'+c[k]+';background:var(--'+k+')"></i>'; }).join('')+'</div>';
       h+='<div class="vbar" style="margin-top:8px"><span>심각 <b>'+c.crit+'</b></span><span>높음 <b>'+c.hi+'</b></span><span>중간 <b>'+c.mid+'</b></span><span>낮음 <b>'+c.lo+'</b></span></div>';
-      h+=isec('판정','<div class="vbar">'+vcount().split(' · ').map(function(x){ var i=x.lastIndexOf(' '); return '<span>'+x.slice(0,i)+' <b>'+x.slice(i+1)+'</b></span>'; }).join('')+'</div><p class="help">증거가 충분할 때만 확정하고, 부족하면 판단 불가로 나눕니다.</p>');
+      h+=isec('판정','<div class="vbar">'+vcount().split(' · ').map(function(x){ var i=x.lastIndexOf(' '); return '<span>'+x.slice(0,i)+' <b>'+x.slice(i+1)+'</b></span>'; }).join('')+'</div>');
       h+=isec('발견 · 최근 순','<div class="flist">'+fs.slice().reverse().map(function(f){ return '<button class="fli" type="button" data-lsel="'+f.id+'">'+sev(f.sev)+'<span>'+f.title+'</span>'+vdLive(live.fv[f.id])+'</button>'; }).join('')+'</div>');
-    } else h+=isec('','<p class="empty">아직 발견이 없습니다. 찾으면 여기에 바로 나타납니다.</p>');
+    } else h+=isec('','<p class="empty">아직 발견이 없습니다.</p>');
     var chk = live.done ? 43 : Math.round(43*LCUM[live.i]/LTOTAL);
-    h+=isec('커버리지','<div class="prog" aria-hidden="true"><i style="width:'+Math.round(chk/live.ep*100)+'%"></i></div><div class="vbar"><span>검사함 <b>'+chk+'</b> / '+live.ep+' 엔드포인트</span><span>새로 찾은 경로 <b>'+(live.ep-37)+'</b></span></div><p class="help">미검사 항목은 안전을 뜻하지 않습니다.</p>');
-    if(live.decide && !S.path) h+=isec('결정 대기','<p>새로 찾은 관리자 경로 <code>/admin/export</code>를 포함할지 정해 주세요. 가운데 화면 위쪽에서 결정할 수 있습니다.</p>');
+    h+=isec('커버리지','<div class="prog" aria-hidden="true"><i style="width:'+Math.round(chk/live.ep*100)+'%"></i></div><div class="vbar"><span>검사함 <b>'+chk+'</b> / '+live.ep+' 엔드포인트</span><span>새로 찾은 경로 <b>'+(live.ep-37)+'</b></span></div>');
+    if(live.decide && !S.path) h+=isec('결정 대기','<p>새로 찾은 관리자 경로 <code>/admin/export</code>를 포함할지 정해 주세요.</p>');
     box.innerHTML=h; }
   $('#lInsp').addEventListener('click', function(e){ var b=e.target.closest('[data-lsel]'); if(b){ lSel=b.getAttribute('data-lsel'); renderLiveInsp(); $('#lInsp').scrollTop=0; var bk=$('[data-lback]'); if(bk) bk.focus(); openInsp(); return; }
     if(e.target.closest('[data-lback]')){ var was=lSel; lSel=null; renderLiveInsp(); var nb=$('[data-lsel="'+was+'"]'); if(nb) nb.focus(); } });
@@ -2183,10 +2197,10 @@
       // 시안: 아래 strip·발견 목록·그래프는 완료된 예시(blog) 고정값이라 방금 끝낸 점검의 실제 결과가 아니다. 커버리지도 예시 수치(91%)를 그대로 쓰지 않는다.
       $('#rMeta').innerHTML='<span>시작 <b>오늘 '+hms(live.start).slice(0,5)+'</b></span><span>소요 <b>'+Math.round(LCUM[live.i])+'분</b></span><span>모델 <b>qwen/qwen3.6-35b-a3b · 로컬</b></span><span>커버리지 <b>예시</b></span>'+(ended?'<span>조기 종료 · 실제로는 종료 시점까지만 집계</span>':'');
       if(pill){ pill.className=ended?'pill':'pill ok'; pill.textContent=ended?'종료됨':'점검 완료'; }
-      if(ex){ ex.hidden=false; ex.querySelector('.rex-t').textContent='방금 '+(ended?'종료':'완료')+'한 점검의 실제 결과가 아닙니다. 아래 발견·판정·커버리지·그래프는 완료된 예시 점검(blog.example.com)의 고정 샘플입니다'+(ended?'. 실제로 조기 종료하면 종료 시점까지 수집한 결과만, 커버리지도 그만큼만 집계됩니다.':'.'); } }
+      if(ex){ ex.hidden=false; ex.querySelector('.rex-t').textContent='방금 '+(ended?'종료':'완료')+'한 점검의 실제 결과가 아닙니다. 아래 발견·판정·커버리지·그래프는 완료된 예시 점검(blog.example.com)의 고정 샘플입니다'+'.'; } }
     else { rHost='blog.example.com'; $('#rMeta').innerHTML=RMETA_BLOG; if(pill){ pill.className='pill ok'; pill.textContent='점검 완료'; } if(ex) ex.hidden=true; }
     $('#rCrumbHost').textContent=rHost; $('#rTitle').textContent=rHost+' 보고서';
-    rMode='finding'; kgSel=null; renderKg(); renderReport(); }
+    rMode='finding'; kgSel=null; renderKg(); renderReport(); syncRailSel(); }
   document.addEventListener('click', function(e){ var a=e.target.closest('[data-rhost]'); if(a) setReportHost(a.getAttribute('data-rhost')); });
 
   /* ---------- 강조색 시안 (이 브라우저에만 기억) ---------- */
@@ -2195,6 +2209,8 @@
     try{ localStorage.setItem('abc2lab-accent',k); }catch(err){} }
   document.addEventListener('click', function(e){ var b=e.target.closest('[data-accent-pick]'); if(b) setAccent(b.getAttribute('data-accent-pick')); });
   try{ var savedAccent=localStorage.getItem('abc2lab-accent'); if(savedAccent==='cobalt'||savedAccent==='mono') setAccent(savedAccent); }catch(err){}
+
+  try{ if(localStorage.getItem('abc2lab-rail-min')==='1') setRailMin(true); if(localStorage.getItem('abc2lab-insp-min')==='1') setInspMin(true); }catch(err){}
 
   /* ---------- 시작 ---------- */
   liveReset('resume');

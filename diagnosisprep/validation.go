@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/Autumn-27/artex/diagnosis"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"io"
 	"net"
 	"net/netip"
@@ -40,6 +42,26 @@ func validTask(id string) bool {
 
 // CanonicalInput은 문자열만 검사한다. 설치 승인·DNS·연결 권위를 만들지 않는다.
 func CanonicalInput(input Input) (Input, error) {
+	if input.WorkflowMode != "" && !diagnosisflow.ValidMode(input.WorkflowMode) || len(input.ExcludedPaths) > 2048 || input.ExcludedPaths != "" && input.WorkflowMode == "" {
+		return Input{}, ErrProtocol
+	}
+	if input.ExcludedPaths != "" {
+		paths := strings.Split(input.ExcludedPaths, "\n")
+		if len(paths) > 32 {
+			return Input{}, ErrProtocol
+		}
+		for _, p := range paths {
+			for _, part := range strings.Split(p, "/") {
+				if strings.Contains(part, "*") && part != "*" {
+					return Input{}, ErrProtocol
+				}
+			}
+			if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "%?#!\\ \r\t") || strings.Contains(p, "//") || strings.Contains(p, "..") || len(p) > 256 {
+				return Input{}, ErrProtocol
+			}
+		}
+	}
+
 	raw := input.TargetURL
 	if len(raw) == 0 || len(raw) > 2048 || !reference.MatchString(input.ProfileID) || (input.DisplayName != "" && !validText(input.DisplayName, 160)) {
 		return Input{}, ErrProtocol
@@ -135,11 +157,18 @@ func CanonicalInput(input Input) (Input, error) {
 }
 
 func ValidateRequest(r Request) error {
-	if r.Version != Version || !reference.MatchString(r.RequestID) || !validText(r.Principal, 256) {
+	if (r.ExternalTransferConfirmed && r.Command != Start) || r.Version != Version || !reference.MatchString(r.RequestID) || !validText(r.Principal, 256) {
 		return ErrProtocol
 	}
 	noInput := r.Input == nil
+	if r.Command != ProductControl && r.Product != nil {
+		return ErrProtocol
+	}
 	switch r.Command {
+	case ProductControl:
+		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" || !validProductRequest(r.Product) {
+			return ErrProtocol
+		}
 	case Catalog:
 		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" {
 			return ErrProtocol
@@ -184,11 +213,17 @@ func ValidateRequest(r Request) error {
 func validBudget(b Budget) bool {
 	return b.Requests >= 0 && b.ModelRequests >= 0 && b.InputTokens >= 0 && b.OutputTokens >= 0 && b.CostUSDMicros >= 0 && b.DurationSeconds >= 0
 }
+func validModel(m *ModelInfo) bool {
+	if m == nil {
+		return true
+	}
+	return m.Mode == "openrouter" && m.Model == "qwen/qwen3.5-35b-a3b" && validText(m.Provider, 128) && m.Provider != "" && m.ExternalTransfer && m.InputPerCall == 262144 && m.OutputPerCall > 0 && m.OutputPerCall <= m.InputPerCall
+}
 func validScope(s *Scope) bool {
 	if s == nil {
 		return true
 	}
-	if !reference.MatchString(s.TargetRef) || !reference.MatchString(s.ScopeRef) || !reference.MatchString(s.AttestationRef) || !validText(s.ApprovalMode, 64) || !validText(s.QueryPolicy, 64) || !validText(s.BodyPolicy, 64) || !validBudget(s.Budget) || s.MaxBodyBytes < 0 || s.ExpiresAt.IsZero() || len(s.PathPrefixes) == 0 || len(s.PathPrefixes) > 64 || len(s.Methods) == 0 || len(s.Methods) > 8 {
+	if !validModel(s.Model) || !reference.MatchString(s.TargetRef) || !reference.MatchString(s.ScopeRef) || !reference.MatchString(s.AttestationRef) || !validText(s.ApprovalMode, 64) || !validText(s.QueryPolicy, 64) || !validText(s.BodyPolicy, 64) || !validBudget(s.Budget) || s.MaxBodyBytes < 0 || s.ExpiresAt.IsZero() || len(s.PathPrefixes) == 0 || len(s.PathPrefixes) > 64 || len(s.Methods) == 0 || len(s.Methods) > 8 {
 		return false
 	}
 	input, err := CanonicalInput(Input{TargetURL: s.Origin, ProfileID: "scope"})
@@ -205,14 +240,14 @@ func validScope(s *Scope) bool {
 		}
 	}
 	for _, m := range s.Methods {
-		if m != "GET" && m != "HEAD" {
+		if m != "GET" && m != "HEAD" && !(s.ApprovalMode == "workbench_selective_v1" && (m == "POST" || m == "PUT" || m == "PATCH")) {
 			return false
 		}
 	}
 	return true
 }
 func validUsage(u *ModelUsage) bool {
-	return u == nil || (u.Requests >= 0 && u.InputTokens >= 0 && u.OutputTokens >= 0 && u.ReservedInputTokens >= 0 && u.ReservedOutputTokens >= 0 && u.CostUSDMicros >= 0)
+	return u == nil || (u.Requests >= 0 && u.InputTokens >= 0 && u.OutputTokens >= 0 && u.ReservedInputTokens >= 0 && u.ReservedOutputTokens >= 0 && u.CostUSDMicros >= 0 && u.ReservedCostUSDMicros >= 0 && u.UnknownUsageCalls >= 0 && u.UnknownUsageCalls <= u.Requests)
 }
 func validPhase(p Phase) bool {
 	switch p {
@@ -224,6 +259,9 @@ func validPhase(p Phase) bool {
 func terminal(s State) bool { return s == Completed || s == Cancelled || s == Failed }
 func active(s State) bool   { return s == Preparing || s == Running || s == Stopping }
 func validJob(j Job) bool {
+	if j.Scope != nil && j.Scope.ApprovalMode == "workbench_selective_v1" && j.Input.WorkflowMode != "user_approval_v1" {
+		return false
+	}
 	if !reference.MatchString(j.ID) || j.Revision == 0 || !digestPattern.MatchString(j.SourceDigest) || !validPhase(j.Phase) || !validScope(j.Scope) || !validUsage(j.ModelUsage) || (j.ReasonCode != "" && !reasonPattern.MatchString(j.ReasonCode)) || (j.TaskID != "" && !validTask(j.TaskID)) {
 		return false
 	}
@@ -245,6 +283,9 @@ func validJob(j Job) bool {
 	if j.ResultReady && j.TaskID == "" {
 		return false
 	}
+	if !validJobResult(j) {
+		return false
+	}
 	switch j.State {
 	case AwaitingApproval, Ready:
 		return !j.PreparationStarted && !j.Started && !j.DrainComplete && !j.ResultReady && j.TaskID == "" && j.AuthorityState == AuthorityNotIssued
@@ -264,6 +305,23 @@ func validJob(j Job) bool {
 		return false
 	}
 }
+
+// validJobResult는 실행 결과 칸의 계약 규칙이다(docs/contracts/run-outcome-states.md §3.2).
+func validJobResult(j Job) bool {
+	if j.DiagnosticLogIncomplete && j.State != Completed {
+		return false
+	}
+	if j.IntentOutcomes != nil && (!j.IntentOutcomes.Valid() || j.State != Completed && j.State != Cancelled) {
+		return false
+	}
+	if j.Outcome == "" {
+		return j.ClosingReason == "" && (j.State != Completed || j.IntentOutcomes == nil)
+	}
+	if j.State != Completed || j.IntentOutcomes == nil {
+		return false
+	}
+	return diagnosis.RunResult{Outcome: j.Outcome, ClosingReason: j.ClosingReason, IntentOutcomes: *j.IntentOutcomes}.Valid()
+}
 func validError(code string) bool {
 	switch code {
 	case "invalid_request", "not_found", "forbidden", "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted", "capacity", "unavailable", "unknown", "service_closed":
@@ -275,20 +333,30 @@ func ValidateResponse(r Request, response Response) error {
 	if ValidateRequest(r) != nil || response.Version != Version || response.RequestID != r.RequestID {
 		return ErrProtocol
 	}
+	if r.Command != ProductControl && response.Product != nil {
+		return ErrProtocol
+	}
 	if response.Error != "" {
+		if response.Product != nil {
+			return ErrProtocol
+		}
 		if !validError(response.Error) || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 {
 			return ErrProtocol
 		}
 		return nil
 	}
 	switch r.Command {
+	case ProductControl:
+		if response.Product == nil || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 || len(response.Product.Targets) > 128 {
+			return ErrProtocol
+		}
 	case Catalog:
 		if response.Job != nil || response.Authorized != nil || len(response.Profiles) > 256 {
 			return ErrProtocol
 		}
 		seen := map[string]bool{}
 		for _, p := range response.Profiles {
-			if !reference.MatchString(p.ID) || seen[p.ID] || !reference.MatchString(p.ModelProfileRef) || !validText(p.Label, 160) || !validText(p.ModelLabel, 160) {
+			if (p.Workflow != nil && (!p.Workflow.Valid() || p.WorkflowRequestLimit < 1 || p.WorkflowRequestLimit > 100)) || !validModel(p.Model) || !reference.MatchString(p.ID) || seen[p.ID] || !reference.MatchString(p.ModelProfileRef) || !validText(p.Label, 160) || !validText(p.ModelLabel, 160) {
 				return ErrProtocol
 			}
 			seen[p.ID] = true

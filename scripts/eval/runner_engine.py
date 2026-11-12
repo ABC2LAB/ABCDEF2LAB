@@ -10,7 +10,7 @@
 
 findings는 기존 수집기·추출기를 그대로 쓴다. 추출기는 원본 FindingDTO 형식(upstream fdfb7a17)으로 고정돼
 있고, 개선 후 엔진의 FindingDTO·FindingAssetDTO·db.FindingTrafficBinding 정의와 목록·로그인 핸들러가
-그 커밋과 같다(테스트로 고정). 그래서 baseline·개선 후 모두 같은 추출 경로에 DTO 형식 기준으로 fdfb7a17을
+그 커밋과 같다(로그인 이름 변경만 예외이며 테스트로 고정). 그래서 baseline·개선 후 모두 같은 추출 경로에 DTO 형식 기준으로 fdfb7a17을
 넘긴다. 이것은 형식 기준이지 빌드 출처가 아니므로, 기록에는 형식 기준(dto_format_source)과 빌드 출처
 (build_source)를 따로 남긴다. 개선 후 엔진의 판정 레코드는 물리 형식이 정해진 뒤 별도 신호로 붙인다.
 """
@@ -24,10 +24,12 @@ import re
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 from baseline_extract import MAX_VOCABULARY_BYTES, UPSTREAM_COMMIT, extract_baseline
 from baseline_pages import BaselinePageMerge
 from baseline_pages_collector import MAX_BEARER_LENGTH, BaselinePagesEndpoint, collect_baseline_pages
+from e2_prompt_collect import MAX_PROJECTION_BYTES, E2PromptNotReady, E2PromptUnverified
 
 LOGIN_PATH = "/api/auth/login"
 TASKS_PATH = "/api/tasks"
@@ -40,8 +42,9 @@ MAX_SETTINGS_RESPONSE_BYTES = 64 * 1024
 # 프록시 URL에는 자격정보가 들어갈 수 있어 값 대신 설정 여부만 남긴다. 평가 회차에서는 비어 있어야 한다
 # (설정되면 엔진 송신 경로가 계측기·게이트웨이 밖으로 바뀐다).
 PROXY_FIELDS = {"settings": ("web_search_proxy", "global_proxy"), "llm": ("proxy",)}
-# 엔진이 고정한 관리자 계정 이름(server/auth.go authLogin). baseline·개선 후 같다.
-ADMIN_USERNAME = "ARTEX"
+# 현재 엔진 로그인 이름과 고정 baseline의 원래 이름은 실행 side로 명시적으로 고른다.
+ADMIN_USERNAME = "ABC2LAB"
+BASELINE_ADMIN_USERNAME = "ARTEX"
 MAX_LOGIN_RESPONSE_BYTES = 64 * 1024
 MAX_PASSWORD_LENGTH = 1024
 FINDINGS_FORMAT = "abc2lab-eval-runner-findings-v1"
@@ -86,18 +89,25 @@ class EngineAPIError(RuntimeError):
 class AdminSecret:
     """관리자 비밀번호를 담기만 한다. repr·str로 값이 드러나지 않는다."""
 
-    __slots__ = ("_value",)
+    __slots__ = ("_value", "_username")
 
-    def __init__(self, value: str):
+    def __init__(self, value: str, *, username: str = ADMIN_USERNAME):
         if (not isinstance(value, str) or not value or len(value) > MAX_PASSWORD_LENGTH
                 or any(ord(char) < 32 or ord(char) == 127 for char in value)):
             raise EngineAPIError("engine_password_invalid")
+        if username not in (ADMIN_USERNAME, BASELINE_ADMIN_USERNAME):
+            raise EngineAPIError("engine_username_invalid")
         self._value = value
+        self._username = username
 
     def __repr__(self) -> str:
         return "AdminSecret(<redacted>)"
 
     __str__ = __repr__
+
+    @property
+    def username(self) -> str:
+        return self._username
 
     def reveal(self) -> str:
         return self._value
@@ -132,9 +142,24 @@ def _get(port: int, path: str, headers: dict, timeout: float, limit: int) -> tup
             return response.status, response.read(limit + 1)
 
 
+def e2_prompt_projection(port: int, secret: AdminSecret, task_id: str, run_ref: str, timeout: float) -> bytes:
+    """실제 E② run_ref의 프롬프트 투영을 받은 바이트 그대로 돌려준다. 해석은 e2_prompt_collect가 한다."""
+    try:
+        token = login(port, secret, timeout)
+        status, data = _get(port, f"/api/tasks/{quote(task_id, safe='')}/e2-prompt-projection?{urlencode({'run_ref': run_ref})}",
+                            {"Authorization": "Bearer " + token}, timeout, MAX_PROJECTION_BYTES)
+    except (EngineAPIError, OSError, http.client.HTTPException, ValueError, OverflowError):
+        raise E2PromptNotReady("engine_unreachable") from None
+    if status == 503:
+        raise E2PromptNotReady("engine_unavailable")
+    if status != 200:
+        raise E2PromptUnverified(f"http_{status}")
+    return data
+
+
 def login(port: int, secret: AdminSecret, timeout: float) -> str:
     """루프백 엔진 API에 로그인해 토큰을 돌려준다. 실패는 고정 코드다(본문을 읽어 옮기지 않는다)."""
-    body = json.dumps({"username": ADMIN_USERNAME, "password": secret.reveal()}).encode("utf-8")
+    body = json.dumps({"username": secret.username, "password": secret.reveal()}).encode("utf-8")
     try:
         status, data = _post(port, LOGIN_PATH, body, {}, timeout, MAX_LOGIN_RESPONSE_BYTES)
     except (OSError, http.client.HTTPException, ValueError, OverflowError):

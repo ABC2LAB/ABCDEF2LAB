@@ -1,5 +1,3 @@
-import createNextIntlPlugin from "next-intl/plugin";
-
 import { fileURLToPath } from "node:url";
 
 // 静态导出：`NEXT_EXPORT=1 next build` 产出纯静态目录到 web/out，可直接丢进
@@ -13,6 +11,8 @@ const nextConfig = {
   // 避免父目录的 lockfile 影响根目录推断及资源路径生成。
   turbopack: { root: fileURLToPath(new URL(".", import.meta.url)) },
   reactCompiler: true,
+  // 개발 표시(N 배지)는 오른쪽 아래로: 왼쪽 아래는 레일 계정 버튼 자리라 접힌 레일에서 버튼을 가린다. 개발 실행에만 영향.
+  devIndicators: { position: "bottom-right" },
   // 允许从局域网 IP 访问 dev 资源（HMR），按需增删。
   // dev 阶段放开任意 IPv4 来源访问 /_next/* 与 HMR（局域网 IP 变动也不受影响）。
   // 注意：Next 出于安全禁止裸 "*"，需用分段通配；"*.*.*.*" 匹配任意 IPv4。
@@ -41,8 +41,4 @@ const nextConfig = {
         }),
 };
 
-// next-intl 플러그인. 요청 설정은 src/i18n/request.ts 에 둔다. i18n 경로 라우팅을
-// 쓰지 않으므로 미들웨어는 추가하지 않는다(정적 내보내기 output: "export" 와 호환).
-const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
-
-export default withNextIntl(nextConfig);
+export default nextConfig;

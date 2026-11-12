@@ -46,6 +46,12 @@ func printBanner(addr string) {
 // of the update protocol — the supervising start script reads it to decide
 // whether to relaunch us (see selfupdate.ExitRestart) — so the body has to live
 // in a function that can *return* rather than os.Exit past its own defers.
+// eval-e2가 엔진과 같이 뜨므로 기동 조회는 넉넉히 기다린다. 한 번의 호출은 짧게 끊는다.
+const (
+	e2RemoteRequestTimeout  = 30 * time.Second
+	e2RemoteDescribeTimeout = 2 * time.Minute
+)
+
 func main() {
 	os.Exit(run())
 }
@@ -54,6 +60,7 @@ func run() int {
 	var (
 		addr    = flag.String("addr", "127.0.0.1:8787", "HTTP listen address (default accepts local connections only; use :8787 to serve other hosts)")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
+		keyDir  = flag.String("key-dir", config.BaseDir(), "JWT 서명 키 디렉터리(탐색 가능한 데이터 디렉터리 밖)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
 	)
 	flag.Parse()
@@ -112,10 +119,13 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf(config.T("[config] skill 디렉터리: %s"), skillDir)
-	srv, err := newPolicyServer(os.Getenv("ARTEX_LLM_POLICY_MODE"), func() (*server.Server, error) {
-		return server.NewWithLocalLLM(ctx, mgr, skillDir, *dataDir, config.BaseDir(), os.Getenv("ARTEX_LLM_PIN_MANIFEST"))
+	srv, err := newEngineServer(os.Getenv("ARTEX_LLM_POLICY_MODE"), os.Getenv("ARTEX_E2_REMOTE_URL"), func() (*server.Server, error) {
+		return server.NewWithLocalLLM(ctx, mgr, skillDir, *dataDir, *keyDir, os.Getenv("ARTEX_LLM_PIN_MANIFEST"))
 	}, func() *server.Server {
-		return server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+		return server.New(ctx, mgr, skillDir, *dataDir, *keyDir)
+	}, func() (*server.Server, error) {
+		return server.NewWithRemoteE2(ctx, mgr, skillDir, *dataDir, *keyDir, server.E2RemoteEngineOptions{
+			URL: os.Getenv("ARTEX_E2_REMOTE_URL"), TokenFile: os.Getenv("ARTEX_E2_REMOTE_TOKEN_FILE"), RequestTimeout: e2RemoteRequestTimeout, DescribeTimeout: e2RemoteDescribeTimeout})
 	})
 	if err != nil {
 		log.Fatalf("local LLM policy: %v", err)
@@ -169,6 +179,17 @@ func shutdownContext(signalCtx context.Context) (context.Context, context.Cancel
 
 // newPolicyServer chooses exactly one startup path before a listener is built.
 // Policy failure never falls through to the external factory.
+// 원격 E②는 평가 배치 전용이다. 외부 모델 정책이 아닌데 조용히 다른 조립으로 넘어가면 안 된다.
+func newEngineServer(mode, remoteURL string, local func() (*server.Server, error), external func() *server.Server, remote func() (*server.Server, error)) (*server.Server, error) {
+	if remoteURL == "" {
+		return newPolicyServer(mode, local, external)
+	}
+	if mode != "external" {
+		return nil, fmt.Errorf("ARTEX_E2_REMOTE_URL requires ARTEX_LLM_POLICY_MODE=external")
+	}
+	return remote()
+}
+
 func newPolicyServer(mode string, local func() (*server.Server, error), external func() *server.Server) (*server.Server, error) {
 	switch mode {
 	case "", "local-only":

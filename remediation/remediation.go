@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const GeneratorVersion = "remediation-v5"
+const GeneratorVersion = "remediation-v6"
 
 // 자동 관측 32개와 사용자 보완 32개의 출처를 함께 보존한다. HTTP 입력 상한은 별도다.
 const maxTechnologies = 64

@@ -8,12 +8,12 @@ import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } fr
 
 import { create } from "zustand";
 
-import { ApiError, readAuthStatus, restoreSession, signIn, signOut, subscribeAuthRequired } from "@/abc2lab-ui/lib/api";
-import { readURLCatalog } from "@/abc2lab-ui/lib/diagnosis-url";
+import { ApiError, readAuthStatus, restoreSession, signIn, signOut, subscribeAuthRequired } from "@/lib/diagnosis/api";
+import { readURLCatalog } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../lib/cx";
 import { Icon } from "../ui/icons";
-import { MenuButton } from "../ui/parts";
+import { MenuButton } from "../ui/MenuButton";
 import s from "../workbench.module.css";
 import { fetchTasks } from "./api";
 import { errorText, isOffline } from "./map";
@@ -101,6 +101,34 @@ export async function checkLiveAuth(): Promise<LiveAuthState> {
   return done("ready");
 }
 
+const ACCOUNT_KEY = "abc2lab.accountName";
+
+/** 마지막으로 로그인한 아이디 (계정 버튼에 표시). 비밀번호 · 토큰과는 별개이고 없으면 null. */
+export function readAccountName(): string | null {
+  try {
+    const v = localStorage.getItem(ACCOUNT_KEY);
+    return v && v.length <= 64 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberAccountName(name: string): void {
+  try {
+    localStorage.setItem(ACCOUNT_KEY, name.slice(0, 64));
+  } catch {
+    // 저장소를 못 쓰면 이름 없이 표시
+  }
+}
+
+function forgetAccountName(): void {
+  try {
+    localStorage.removeItem(ACCOUNT_KEY);
+  } catch {
+    // 저장소를 못 쓰면 지울 것도 없다
+  }
+}
+
 /** 로그인 실패 → 안내 글. */
 function loginError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -128,6 +156,7 @@ async function login(username: string, password: string): Promise<string | null>
   runId++; // 진행 중인 확인 결과는 버린다
   try {
     await signIn(username, password);
+    rememberAccountName(username);
     useAuthStore.setState({ state: "ready", detail: null });
     return null;
   } catch (err) {
@@ -138,6 +167,7 @@ async function login(username: string, password: string): Promise<string | null>
 
 function logout(): void {
   runId++;
+  forgetAccountName();
   signOut();
   useAuthStore.setState({ state: "login", detail: null });
 }
@@ -172,10 +202,10 @@ export function useLiveAuthBoot(): void {
 
 // ---------- 화면 ----------
 
-/** 로그인 패널. 아이디 기본값은 엔진 관리자 계정 이름(ARTEX). */
+/** 로그인 패널. 아이디 기본값은 엔진 관리자 계정 이름(ABC2LAB). */
 function LoginPanel() {
   const { login: doLogin } = useLiveAuth();
-  const [username, setUsername] = useState("ARTEX");
+  const [username, setUsername] = useState("ABC2LAB");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -242,10 +272,9 @@ function LoginPanel() {
   );
 }
 
-/** 연결 실패 · 초기 설정 필요 안내 + 다시 시도 + 예시 재생으로 보기. */
+/** 연결 실패 · 초기 설정 필요 안내 + 다시 시도. */
 function StatusPanel({ title, children }: { title: string; children?: ReactNode }) {
   const { retry: again } = useLiveAuth();
-  const setSource = useSource((st) => st.setSource);
   return (
     <div className={s["lv-gate"]}>
       <div className={cx(s.note, s.warn)} role="alert">
@@ -259,9 +288,6 @@ function StatusPanel({ title, children }: { title: string; children?: ReactNode 
         <button className={cx(s.btn, s.pri)} type="button" onClick={again}>
           <Icon name="refresh" />
           다시 시도
-        </button>
-        <button className={s.btn} type="button" onClick={() => setSource("demo")}>
-          예시 재생으로 보기
         </button>
       </div>
     </div>

@@ -5,53 +5,50 @@
 
 import type { ReactNode } from "react";
 
-import {
-  type URLDiagnosisJob,
-  type URLDiagnosisScope,
-  urlPhaseLabels,
-  urlReasonLabels,
-} from "@/abc2lab-ui/lib/diagnosis-url";
+import { type URLDiagnosisJob, urlReasonLabels } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
-import { disconnectUrl, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import {
-  AUTHORITY_TEXT,
-  approvalModeText,
-  factText,
-  URL_PHASES,
-  urlHost,
-  urlPhaseIndex,
-  urlStateText,
-  urlTone,
-  usdText,
-} from "../../live/urlMap";
+import { runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import { AUTHORITY_TEXT, factText, urlHost, urlStateText, urlTone } from "../../live/urlMap";
 import { Icon } from "../../ui/icons";
-import { Kv, MenuButton } from "../../ui/parts";
+import { Kv, MenuButton, type PhaseKey, Phases } from "../../ui/parts";
 import s from "../../workbench.module.css";
 
-/** 화면 머리 (위치 · h1 · 상태 알약 · 버튼 · 메타 줄). */
+/** 화면 머리 (위치 · h1 · 상태 알약 · 버튼 · 메타 줄 · 점검 단계). */
 export function UrlHead({
   title,
   crumb,
+  parent,
   host,
   pill,
   acts,
   meta,
+  phase,
 }: {
   title: string;
   crumb: string;
+  /** 위치에서 작업대와 주소 사이에 둘 상위 화면 링크 (예: 보고서 → 끝난 점검) */
+  parent?: { href: string; label: string };
   host?: string | null;
   pill?: ReactNode;
   acts?: ReactNode;
   meta?: ReactNode;
+  /** 점검 하나를 보는 네 화면이면 단계 표시를 붙인다 */
+  phase?: PhaseKey;
 }) {
   return (
-    <header className={s.vh}>
+    <header className={cx(s.vh, phase && s["has-ph"])}>
       <div className={s["vh-top"]}>
         <MenuButton />
         <nav className={s.crumb} aria-label="위치">
           <a href="#dashboard">작업대</a>
           <span className={s.sep}>/</span>
+          {parent ? (
+            <>
+              <a href={parent.href}>{parent.label}</a>
+              <span className={s.sep}>/</span>
+            </>
+          ) : null}
           {host ? (
             <>
               <span className={s.host}>{host}</span>
@@ -69,6 +66,7 @@ export function UrlHead({
         {acts !== undefined ? <div className={s["vh-acts"]}>{acts}</div> : null}
       </div>
       {meta !== undefined ? <div className={s["vh-meta"]}>{meta}</div> : null}
+      {phase ? <Phases phase={phase} /> : null}
     </header>
   );
 }
@@ -79,90 +77,9 @@ export function UrlPill({ job, verified }: { job: Pick<URLDiagnosisJob, "state">
   return <span className={cx(s.pill, tone !== "stop" && s[tone])}>{urlStateText(job.state, verified)}</span>;
 }
 
-/** 서버 단계 띠 (초안 → … → 결과 저장). 지난 단계만 체크, 지금 단계는 aria-current. */
-export function UrlPhaseBar({ job }: { job: Pick<URLDiagnosisJob, "phase" | "state"> }) {
-  const at = urlPhaseIndex(job.phase);
-  const finished = job.state === "completed";
-  return (
-    <nav className={cx(s.phases, s["lv-phases"])} aria-label="진단 단계">
-      {URL_PHASES.map((p, i) => {
-        const done = i < at || (finished && i === at);
-        return (
-          <span key={p} className={cx(s.ph, done && s.done)} aria-current={i === at ? "step" : undefined}>
-            <span className={s.n}>{done ? <Icon name="check" /> : i + 1}</span>
-            {urlPhaseLabels[p]}
-          </span>
-        );
-      })}
-    </nav>
-  );
-}
-
 /** 서버 사유 글 (모르는 코드는 원문 그대로). */
 export function reasonText(code: string): string {
   return `${urlReasonLabels[code] ?? code} (${code})`;
-}
-
-/** 서버가 확인한 승인 범위 (실제 origin · 경로 · 메서드 · query/body · 승인 방식 · 만료 · 예산). */
-export function UrlScopeList({ scope }: { scope: URLDiagnosisScope }) {
-  const b = scope.budget;
-  return (
-    <Kv
-      rows={[
-        [
-          "실제 대상",
-          <span key="origin" className={s.mono}>
-            {scope.origin}
-          </span>,
-        ],
-        [
-          "경로",
-          <span key="paths">
-            <span className={s.mono}>{scope.path_prefixes.join(", ")}</span> (각 경로 자신과 하위 경로)
-          </span>,
-        ],
-        ["메서드", scope.methods.join(", ")],
-        ["query · body", `임의 query 허용 · body 최대 ${scope.max_body_bytes} bytes`],
-        ["승인 방식", approvalModeText(scope.approval_mode)],
-        [
-          "만료",
-          <span key="expires" className={s.mono}>
-            {scope.expires_at}
-          </span>,
-        ],
-        ["대상 요청 · 시간 상한", `${b.requests}회 · ${b.duration_seconds}초`],
-        ["모델 요청 상한", `${b.model_requests}회`],
-        ["토큰 상한", `입력 ${b.input_tokens} · 출력 ${b.output_tokens}`],
-        ["비용 상한", usdText(b.cost_usd_micros)],
-      ]}
-    />
-  );
-}
-
-/** 모델 사용량 (서버 기록) — 상한(범위 예산)과 나란히. 기록이 없으면 그렇게 말한다. */
-export function UrlUsage({ job }: { job: URLDiagnosisJob }) {
-  const u = job.model_usage;
-  const b = job.scope?.budget;
-  if (!u) return <p className={s.help}>모델 사용량 · 비용 기록은 아직 제공되지 않았습니다.</p>;
-  const of = (n: number, cap: number | undefined) => (cap === undefined ? `${n}` : `${n} / ${cap}`);
-  return (
-    <>
-      <Kv
-        rows={[
-          ["모델 요청", of(u.requests, b?.model_requests)],
-          ["입력 토큰", `${of(u.input_tokens, b?.input_tokens)} · 예약 ${u.reserved_input_tokens}`],
-          ["출력 토큰", `${of(u.output_tokens, b?.output_tokens)} · 예약 ${u.reserved_output_tokens}`],
-          [
-            "비용",
-            u.usage_known
-              ? `확인된 비용 ${usdText(u.cost_usd_micros)}${b ? ` / 상한 ${usdText(b.cost_usd_micros)}` : ""}`
-              : "사용량 · 비용 불명",
-          ],
-        ]}
-      />
-      <p className={s.help}>서버가 센 값입니다. 오른쪽 숫자는 승인 범위의 상한입니다.</p>
-    </>
-  );
 }
 
 /** 진단 식별 · 서버가 확인한 사실 (준비 시작 · 권위 · 엔진 시작 · 마감 · 결과 저장). */
@@ -174,8 +91,8 @@ export function UrlFacts({ job }: { job: URLDiagnosisJob }) {
         ["실제 task", job.task_id ? <span key="task" className={s.mono}>{`#${job.task_id}`}</span> : "아직 없음"],
         [
           "설정 지문",
-          <span key="digest" className={cx(s.mono, s["lv-pre"])}>
-            {job.source_digest}
+          <span key="digest" className={s.mono} title={job.source_digest}>
+            {`${job.source_digest.slice(0, 16)}…`}
           </span>,
         ],
         ["모델 · 작업 준비 시작", factText(job.preparation_started)],
@@ -226,44 +143,6 @@ export function UrlRefreshButton({ small = true }: { small?: boolean }) {
       <Icon name="refresh" />
       상태 다시 조회
     </button>
-  );
-}
-
-/** 조회 연결 해제 (다른 진단 만들기). 서버 진단은 그대로 둔다. */
-export function UrlDisconnect() {
-  const busy = useUrl((st) => st.busy);
-  const handle = useUrl((st) => st.handle);
-  const uncertain = useUrl((st) => st.uncertain);
-  if (!handle && !uncertain) return null;
-  return (
-    <div className={s.isec}>
-      <button className={cx(s.btn, s.sm)} type="button" disabled={busy} onClick={disconnectUrl}>
-        다른 진단 만들기 · 조회 연결 해제
-      </button>
-      <p className={s.help}>
-        이 화면의 조회 연결만 끊습니다. 서버의 진단을 중지하거나 지우지 않습니다. 결과 불명인 진단을 겹쳐 만들지 않도록
-        주의하세요.
-      </p>
-    </div>
-  );
-}
-
-/** 이어 볼 진단이 없을 때 (새 점검에서 URL 로 시작). */
-export function UrlNoJob({ what }: { what: string }) {
-  return (
-    <>
-      <div className={s.note} role="note">
-        <Icon name="info" />
-        <span>{`${what}: 이 브라우저에서 이어 볼 URL 진단이 없습니다. 새 점검에서 URL 로 범위 확인부터 하세요.`}</span>
-      </div>
-      <UrlNotices />
-      <div>
-        <a className={cx(s.btn, s.pri)} href="#new">
-          새 점검
-          <Icon name="arrow" />
-        </a>
-      </div>
-    </>
   );
 }
 

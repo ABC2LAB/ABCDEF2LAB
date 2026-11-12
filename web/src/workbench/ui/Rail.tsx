@@ -1,63 +1,44 @@
 "use client";
 
-// 왼쪽 레일: 메뉴 · 점검 목록 · 운영 상태 · 강조색 시안. 원본 aside#rail 과 그것을 고치던 syncDecisions · railNew · liveRender 부분.
-// live(실제 엔진)일 때는 배지 · 점검 목록 · 분석 모델 줄만 live/rail.tsx 조각으로 바꿔 끼운다(demo 는 그대로).
+// 왼쪽 레일: 새 점검 · 대시보드 · 이어 보는 점검(진행 중 · 끝난 점검) · 맨 아래 계정 버튼. 시안(aside#rail)과 같은 짜임.
+// 분석 모델 · 진단 모드 · 다크 모드 · 강조색 시안 · 로그아웃은 계정 버튼을 누르면 위로 열리는 메뉴(AccountMenu)에 있다.
+// 점검 단계(자산 탐색 · 범위 확인 · 점검 진행 · 보고서)는 레일이 아니라 각 화면 머리의 단계 표시로 옮겨 다닌다.
 
 import { cx } from "../lib/cx";
-import { railApi } from "../lib/decisions";
-import { railShop } from "../lib/liveState";
-import { LiveRailAccount, LiveRailBadge, LiveRailModel, LiveRailTasks, SourceSwitch } from "../live/rail";
-import { useIsLive } from "../live/source";
-import type { View } from "../shell";
+import { LiveRailBadge, LiveRailTasks } from "../live/rail";
 import { useShell } from "../shell";
-import { type Accent, useCurHost, usePending, useWb } from "../store";
+import { useWb } from "../store";
 import s from "../workbench.module.css";
+import { AccountMenu } from "./AccountMenu";
 import { BrandMark, Icon } from "./icons";
-import { ReportLink } from "./parts";
-
-const SWATCHES: ReadonlyArray<readonly [Accent, string, string]> = [
-  ["petrol", "#0F6D8A", "페트롤"],
-  ["cobalt", "#2457D6", "코발트"],
-  ["mono", "#E3EBEE", "모노"],
-];
-
-/** 강조색을 고르고 이 브라우저에만 기억 (원본 setAccent). */
-function pickAccent(k: Accent) {
-  useWb.getState().setAccent(k);
-  try {
-    localStorage.setItem("abc2lab-accent", k);
-  } catch {
-    // 저장소를 못 쓰면 이번만 적용
-  }
-}
 
 export function Rail() {
-  const { route, railOpen, railNewAtRoute, closeRail, dashPick } = useShell();
-  const n = usePending();
-  const appr = useWb((st) => st.S.appr);
-  const phase = useWb((st) => st.railNew);
-  const crawlDone = useWb((st) => st.crawl.done);
-  const crawlPaused = useWb((st) => st.crawl.paused);
-  const live = useWb((st) => st.live);
-  const accent = useWb((st) => st.accent);
-  const host = useCurHost();
-  const isLive = useIsLive();
-
-  // 원본 route(): data-nav 목록에 지금 화면이 있고 그 링크가 숨겨지지 않았으면 aria-current="page"
-  const cur = (nav: readonly View[], visible = true) => (visible && nav.includes(route) ? "page" : undefined);
-  const shop = railShop(live);
-  const api = railApi({ appr, path: null });
-  const newRun = phase === "crawl" && !crawlDone && !crawlPaused;
-  let newSub = "범위 확인 대기";
-  if (phase === "crawl") newSub = crawlDone ? "탐색 완료 · 범위 확인 대기" : "자산 탐색 중";
-
+  const { route, railOpen, closeRail, foldRail, openRail } = useShell();
+  // 넓은 화면에서 접으면 아이콘 줄(64px)만 남는다 (시안 v19). 글자는 가리고 마우스를 올리면 이름이 뜬다.
+  const folded = useWb((st) => st.railHidden);
+  const tip = (t: string) => (folded ? t : undefined);
+  const foldText = folded ? "메뉴 펼치기" : "메뉴 접기";
   return (
     <aside className={cx(s.rail, railOpen && s.open)} id="rail" aria-label="주 메뉴">
       <div className={s["rail-top"]}>
-        <a className={s.brand} href="#dashboard">
+        {/* 솔루션 이름 JinDo (화면 표시만 · 엔진 계정 이름 · 저장 키는 그대로) */}
+        <a className={s.brand} href="#dashboard" title={tip("JinDo")}>
           <BrandMark />
-          ABC2LAB
+          <span className={s.rlbl}>JinDo</span>
         </a>
+        {/* 휴대폰보다 넓은 화면: 레일을 아이콘 줄로 접고 · 같은 버튼으로 다시 펼친다 */}
+        <button
+          className={cx(s["icon-btn"], s["rail-fold"])}
+          type="button"
+          data-rail-fold=""
+          aria-controls="rail"
+          aria-expanded={!folded}
+          aria-label={foldText}
+          title={foldText}
+          onClick={folded ? openRail : foldRail}
+        >
+          <Icon name={folded ? "unfoldLeft" : "foldLeft"} />
+        </button>
         <button
           className={cx(s["icon-btn"], s["rail-x"])}
           type="button"
@@ -68,122 +49,30 @@ export function Rail() {
           <Icon name="x" />
         </button>
       </div>
-      <a className={s["new-btn"]} href="#new" aria-current={cur(["new"])}>
-        <Icon name="plus" />새 점검
+      <a
+        className={s["new-btn"]}
+        href="#new"
+        aria-current={route === "new" ? "page" : undefined}
+        title={tip("새 점검")}
+      >
+        <Icon name="plus" />
+        <span className={s.rlbl}>새 점검</span>
       </a>
       <nav className={s.rnav} aria-label="화면">
-        <a className={s.rl} href="#dashboard" aria-current={cur(["dashboard"])}>
+        <a
+          className={s.rl}
+          href="#dashboard"
+          aria-current={route === "dashboard" ? "page" : undefined}
+          title={tip("대시보드")}
+        >
           <Icon name="grid" />
-          대시보드
-          {isLive ? (
-            <LiveRailBadge />
-          ) : (
-            <span className={s.badge} id="railBadge" title="결정 대기" hidden={!n}>
-              {n}
-            </span>
-          )}
+          <span className={s.rlbl}>대시보드</span>
+          <LiveRailBadge />
         </a>
       </nav>
-      {isLive ? (
-        <LiveRailTasks />
-      ) : (
-        <>
-          <div className={s.rsec}>
-            <div className={s.rh}>진행 중</div>
-            <a
-              className={s.rs}
-              href={`#${phase ?? "crawl"}`}
-              id="railNew"
-              hidden={!phase}
-              aria-current={cur(["crawl", "scope"], railNewAtRoute)}
-            >
-              <span className={cx(s.dot, newRun ? s.run : s.wait)} id="railNewDot" />
-              <span className={cx(s.host, s["t-host"])}>{host}</span>
-              <span className={s.rsub} id="railNewSub">
-                {newSub}
-              </span>
-            </a>
-            <a className={s.rs} href="#live" aria-current={cur(["live"])}>
-              <span className={cx(s.dot, s[shop.dot])} id="railShopDot" />
-              <span className={cx(s.host, s["t-host"])}>{host}</span>
-              <span className={s.rsub} id="railShopSub">
-                {shop.sub}
-              </span>
-              <span className={s.rbar}>
-                <i id="railShopBar" style={{ width: `${shop.pct}%` }} />
-              </span>
-            </a>
-            <button className={s.rs} type="button" onClick={() => dashPick("appr")}>
-              <span className={cx(s.dot, s[api.dot])} id="railApiDot" />
-              <span className={s.host}>api.store-dev.com</span>
-              <span className={s.rsub} id="railApiSub">
-                {api.sub}
-              </span>
-              <span className={cx(s.rbar, api.wait && s.wait)} id="railApiBar">
-                <i style={{ width: "35%" }} />
-              </span>
-            </button>
-          </div>
-          <div className={s.rsec}>
-            <div className={s.rh}>최근 끝난 점검</div>
-            <ReportLink kind="blog" className={s.rs} current={cur(["report"])}>
-              <span className={cx(s.dot, s.ok)} />
-              <span className={s.host}>blog.example.com</span>
-              <span className={s.rsub}>10/25 · 발견 6</span>
-            </ReportLink>
-            <button className={s.rs} type="button" onClick={() => dashPick("done-docs")}>
-              <span className={cx(s.dot, s.stop)} />
-              <span className={s.host}>docs.example.com</span>
-              <span className={s.rsub}>10/24 · 발견 없음</span>
-            </button>
-            <button className={s.rs} type="button" onClick={() => dashPick("done-app")}>
-              <span className={cx(s.dot, s.stop)} />
-              <span className={s.host}>app.sample.io</span>
-              <span className={s.rsub}>10/23 · 판단 불가 2</span>
-            </button>
-          </div>
-        </>
-      )}
+      <LiveRailTasks />
       <div className={s["rail-foot"]}>
-        {isLive ? (
-          <>
-            <LiveRailModel />
-            <LiveRailAccount />
-          </>
-        ) : (
-          <>
-            <div className={s.rf}>
-              <Icon name="chip" />
-              <div>
-                분석 모델 · 로컬<b>qwen/qwen3.6-35b-a3b</b>
-              </div>
-            </div>
-            <div className={s.rf}>
-              <Icon name="shield" />
-              <div>
-                완전 로컬 모드
-                <br />
-                상태 변경은 승인 후 전송
-              </div>
-            </div>
-          </>
-        )}
-        {/* biome-ignore lint/a11y/useSemanticElements: 원본 마크업 그대로 (fieldset 으로 바꾸면 모양이 달라짐) */}
-        <div className={s.swatches} role="group" aria-label="강조색 시안">
-          <span>강조색 시안</span>
-          <div className={s["sw-row"]}>
-            {SWATCHES.map(([k, color, label]) => (
-              <button key={k} className={s.sw} type="button" aria-pressed={accent === k} onClick={() => pickAccent(k)}>
-                <i style={{ background: color }} />
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <SourceSwitch />
-        <div className={s.mock}>
-          {isLive ? "실제 엔진 데이터 · '추정'은 화면이 짐작한 값" : "시안 화면 · 모든 숫자와 기록은 예시입니다"}
-        </div>
+        <AccountMenu />
       </div>
     </aside>
   );

@@ -124,6 +124,14 @@ func readURLMultiLog(dataDir string) (urlMultiLog, error) {
 			if event.Status == "failed" || event.Status == "incomplete" || event.Status == "timeout" {
 				out.failures[event.Component+"/"+event.Event+"/"+event.ReasonCode]++
 			}
+			if event.Component == "openrouter" {
+				if event.Event == "model_request_started" {
+					event.Event = "model_call_started"
+				}
+				if event.Event == "model_request_finished" {
+					event.Event = "model_call_finished"
+				}
+			}
 			switch event.Event {
 			case "worker_started":
 				out.workersStarted[event.IntentID] = true
@@ -160,11 +168,29 @@ func readURLMultiLog(dataDir string) (urlMultiLog, error) {
 }
 
 func TestFirstDiagnosisURLConcurrentWorkersOwnedPostgres(t *testing.T) {
+	runURLConcurrentWorkers(t, false)
+}
+func TestFirstDiagnosisURLOpenRouterConcurrentWorkersOwnedPostgres(t *testing.T) {
+	runURLConcurrentWorkers(t, true)
+}
+
+// urlReservedInputWithin은 입력 예약이 요청 크기 상한(직렬화 바이트 + framing 여유)이고 호출당 context를
+// 넘지 않는지 본다(P3 결정안 C28 결정 1). 예약은 호출마다 framing 여유보다 크다.
+func urlReservedInputWithin(reserved, calls, perCall int64) bool {
+	return reserved > calls*firstDiagnosisFramingTokens && reserved <= calls*perCall
+}
+
+func runURLConcurrentWorkers(t *testing.T, external bool) {
 	if os.Getenv("ARTEX_URL_DIAGNOSIS_TEST") != "1" {
 		t.Skip("NOT_RUN: 소유 로컬 URL 프로세스 동시 Worker 수용 시험 opt-in 필요")
 	}
 	multi := &urlMultiIntentModel{entered: make(chan struct{}), unblock: make(chan struct{})}
-	f := newURLProcessFixtureModel(t, multi)
+	f := newURLProcessFixtureMode(t, multi, external)
+	inputPerCall := int64(131072)
+	expectedCost := int64(0)
+	if external {
+		inputPerCall = 262144
+	}
 	service := f.startPreparation()
 	api := f.startAPI()
 	client := f.api()
@@ -173,7 +199,7 @@ func TestFirstDiagnosisURLConcurrentWorkersOwnedPostgres(t *testing.T) {
 	if job.State != diagnosisprep.Ready || f.modelCalls.Load() != 0 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
 		t.Fatal("동시 Worker 초안 검증 부작용 또는 미준비")
 	}
-	job = client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/start", "multi-start", map[string]any{"version": diagnosisapi.URLVersion, "expected_revision": job.Revision})
+	job = client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/start", "multi-start", urlStartBody(job.Revision, external))
 	f.releaseOnce.Do(func() { close(f.releasePlanner) })
 	select {
 	case <-multi.entered:
@@ -210,7 +236,7 @@ func TestFirstDiagnosisURLConcurrentWorkersOwnedPostgres(t *testing.T) {
 			t.Fatal("대기 중 의도 집계 실패")
 		}
 		u := queued.ModelUsage
-		if running != 2 || len(log.workersStarted) != 2 || log.workersFinished != 0 || log.workerModels != 1 || f.workerCalls.Load() != 1 || f.modelCalls.Load() != 5 || u == nil || u.Requests != 5 || u.UsageKnown || u.ReservedInputTokens != 5*131072 || u.ReservedOutputTokens != 5*2048 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
+		if running != 2 || len(log.workersStarted) != 2 || log.workersFinished != 0 || log.workerModels != 1 || f.workerCalls.Load() != 1 || f.modelCalls.Load() != 5 || u == nil || u.Requests != 5 || u.UsageKnown || !urlReservedInputWithin(u.ReservedInputTokens, 5, inputPerCall) || u.ReservedOutputTokens != 5*2048 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
 			t.Fatalf("공유 예산 대기 불일치 running=%d started=%d finished=%d worker_http=%d total_http=%d", running, len(log.workersStarted), log.workersFinished, f.workerCalls.Load(), f.modelCalls.Load())
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -259,7 +285,10 @@ func TestFirstDiagnosisURLConcurrentWorkersOwnedPostgres(t *testing.T) {
 	}
 	u := final.ModelUsage
 	calls := f.modelCalls.Load()
-	if calls != f.goalCalls.Load()+f.plannerCalls.Load()+f.workerCalls.Load() || calls < 11 || calls > 12 || final.Scope == nil || u == nil || !u.UsageKnown || u.Requests != calls || u.InputTokens != calls*10 || u.OutputTokens != calls*10 || u.ReservedInputTokens != calls*131072 || u.ReservedOutputTokens != calls*2048 || u.CostUSDMicros != 0 || u.ReservedInputTokens > final.Scope.Budget.InputTokens || u.ReservedOutputTokens > final.Scope.Budget.OutputTokens || calls > final.Scope.Budget.ModelRequests {
+	if external {
+		expectedCost = calls
+	}
+	if calls != f.goalCalls.Load()+f.plannerCalls.Load()+f.workerCalls.Load() || calls < 11 || calls > 12 || final.Scope == nil || u == nil || !u.UsageKnown || u.Requests != calls || u.InputTokens != calls*10 || u.OutputTokens != calls*10 || !urlReservedInputWithin(u.ReservedInputTokens, calls, inputPerCall) || u.ReservedOutputTokens != calls*2048 || u.CostUSDMicros != expectedCost || u.ReservedInputTokens > final.Scope.Budget.InputTokens || u.ReservedOutputTokens > final.Scope.Budget.OutputTokens || calls > final.Scope.Budget.ModelRequests {
 		t.Fatal("실제 다중 Worker 모델 요청·예약·보고 토큰 불일치")
 	}
 	var report []byte
@@ -270,5 +299,5 @@ func TestFirstDiagnosisURLConcurrentWorkersOwnedPostgres(t *testing.T) {
 	if err != nil || len(log.workersStarted) != 2 || log.workersFinished != 2 || log.workerFailures != 0 || log.modelsStarted != int(calls) || log.modelsFinished != int(calls) || log.modelFailures != 0 || log.workerModels != 6 || log.candidates != 2 || log.summaries != 1 || log.summary.Status != "succeeded" || log.summary.TargetRequests != 2 || log.summary.Approved != 2 || log.summary.Denied != 0 || log.summary.Candidates != 2 {
 		t.Fatal("실제 두 Worker 성공·모델 예약·E②·저장 관측 불일치")
 	}
-	t.Logf("URL_CONCURRENT_ACCEPTANCE tasks=1 planner_intents=2 done_intents=2 workers_succeeded=2 candidates=2 confirmed=0 allowed_sends=2 denied_sends=0 runs=1 model_calls=%d goal_calls=%d planner_calls=%d worker_calls=6 reported_input=%d reported_output=%d reserved_input=%d reserved_output=%d cost_usd_micros=0 drain=true result=true", calls, f.goalCalls.Load(), f.plannerCalls.Load(), u.InputTokens, u.OutputTokens, u.ReservedInputTokens, u.ReservedOutputTokens)
+	t.Logf("URL_CONCURRENT_ACCEPTANCE tasks=1 planner_intents=2 done_intents=2 workers_succeeded=2 candidates=2 confirmed=0 allowed_sends=2 denied_sends=0 runs=1 model_calls=%d goal_calls=%d planner_calls=%d worker_calls=6 reported_input=%d reported_output=%d reserved_input=%d reserved_output=%d cost_usd_micros=%d drain=true result=true", calls, f.goalCalls.Load(), f.plannerCalls.Load(), u.InputTokens, u.OutputTokens, u.ReservedInputTokens, u.ReservedOutputTokens, u.CostUSDMicros)
 }

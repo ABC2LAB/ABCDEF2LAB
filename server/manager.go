@@ -67,6 +67,12 @@ type Task struct {
 	// 첫 진단은 Worker 완료 뒤 Planner가 실제로 재계획을 마쳐야 닫는다.
 	firstDiagnosisWorkSeq    atomic.Uint64
 	firstDiagnosisPlannedSeq atomic.Uint64
+	// firstDiagnosisBudgetLimited는 실행 상한에 닿아 새 Planner 라운드·작업을 받지 않는다는 표시다.
+	// 진행 중 작업이 끝나면 실패가 아니라 budget_limited로 마감한다.
+	firstDiagnosisBudgetLimited atomic.Bool
+	// firstDiagnosisPlanRounds는 이 실행에서 Planner가 오류 없이 마친 라운드 수다. 작업이 하나도 없는 실행이 계획을
+	// 거쳤는지 본다(no_intents).
+	firstDiagnosisPlanRounds atomic.Uint64
 	lifecycleMu              sync.RWMutex
 	llmMu                    sync.RWMutex
 

@@ -70,7 +70,7 @@ func TestExecutionPromptScenarios(t *testing.T) {
 					t.Fatalf("missing semantics %q", required)
 				}
 			}
-			if b.RemediationVersion != "remediation-v5" || b.SchemaVersion != "4" || len(b.MissingContextFields) != 0 {
+			if b.RemediationVersion != "remediation-v6" || b.SchemaVersion != "4" || len(b.MissingContextFields) != 0 {
 				t.Fatal("version or completeness contract")
 			}
 			if tc.name == "unconfirmed_candidate" && !strings.Contains(b.AIPrompt, "This is not a confirmed vulnerability") {

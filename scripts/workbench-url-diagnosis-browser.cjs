@@ -16,6 +16,7 @@ for (const value of [ui, cdp, targetURL]) {
 // Go 하네스(newURLProcessFixture)가 설치한 합성 값. 실제 계정·모델이 아니다.
 const FIXTURE_PASSWORD = "synthetic-owned-combined-fixture";
 const FIXTURE_PROFILE = "owned-url";
+const OPENROUTER = process.env.ARTEX_URL_OPENROUTER_BROWSER === "1";
 const WORKBENCH = `${ui}/workbench`;
 fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,6 +40,7 @@ function check(value, code) {
   const requests = [];
   const responses = [];
   let startReceipt;
+  let draftID;
   let droppedStartResponse = false;
   let dropError = false;
   const send = (method, params = {}) =>
@@ -74,6 +76,7 @@ function check(value, code) {
         if (phase === "url-lost-start" && requestPath.endsWith("/start") && !droppedStartResponse) {
           check(params.responseStatusCode >= 200 && params.responseStatusCode < 300, "start_not_accepted_before_loss");
           const body = JSON.parse(params.request.postData);
+          if (OPENROUTER) check(body.external_transfer_confirmed === true && Object.keys(body).sort().join(",") === "expected_revision,external_transfer_confirmed,version", "external_consent_body_or_credentials");
           const key = Object.entries(params.request.headers).find(
             ([name]) => name.toLowerCase() === "idempotency-key",
           )?.[1];
@@ -181,6 +184,7 @@ function check(value, code) {
     ),
     view: await evaluate("location.hash"),
   });
+  await send("Emulation.setDeviceMetricsOverride", {width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await send("Page.enable");
   await send("Runtime.enable");
   await send("Network.enable");
@@ -188,16 +192,7 @@ function check(value, code) {
 
   if (phase === "url-draft") {
     await send("Page.navigate", { url: `${WORKBENCH}#new` });
-    // 기본은 예시 재생 → 사용자가 누르는 것과 같은 배너 버튼으로 실제 엔진 모드로 바꾼다(이미 실제면 그대로).
-    // 개발 서버의 첫 컴파일 직후에는 React 가 이벤트를 붙이기 전이라 클릭이 먹지 않을 수 있다 → 배너가 바뀔 때까지 다시 누른다.
-    await wait(`!!(${button("실제 엔진으로 보기")})||!!(${button("예시 재생으로 보기")})`, "source_switch_missing");
-    for (let end = Date.now() + 60000; !(await evaluate(`!!(${button("예시 재생으로 보기")})`)); ) {
-      if (Date.now() > end) throw new Error("live_source_not_selected");
-      await evaluate(`(()=>{const b=${button("실제 엔진으로 보기")};if(b)b.click();return true})()`);
-      await sleep(500);
-    }
-    assertions++;
-    // 예시 화면의 새 점검 폼에도 비밀번호 칸이 있다 → 실제 엔진 로그인 패널의 칸만 고른다
+    // 제품 작업대는 실제 서버 모드다. 로그인 이후 실제 v2 catalog만 사용한다.
     const loginPass = 'section[data-view="new"] input[autocomplete="current-password"]';
     await wait(`document.querySelector(${JSON.stringify(loginPass)})!==null`, "login_missing");
     await fill(loginPass, FIXTURE_PASSWORD);
@@ -217,6 +212,14 @@ function check(value, code) {
       ),
       "start_without_explicit_confirmation",
     );
+    if (OPENROUTER) {
+      await wait(hasText("qwen/qwen3.5-35b-a3b"),"approved_model_missing");
+      await wait(hasText("fixture/endpoint"),"approved_provider_missing");
+      await wait(hasText("외부 전송"),"external_transfer_notice_missing");
+      check((await evaluate(fact("비용 상한"))).includes("6"),"approved_usd_cap_missing");
+    }
+    draftID = (await evaluate(fact("진단"))).match(/prep-[a-f0-9]{32}/)?.[0];
+    check(!!draftID,"draft_id_missing");
     check(startCount() === 0, "draft_started_execution");
     check(
       requests.filter((r) => r.method === "POST" && r.path === "/api/diagnoses/v2/drafts").length === 1,
@@ -227,6 +230,21 @@ function check(value, code) {
     await send("Page.reload");
     await wait(hasText("실행 전 검증 완료"), "refresh_did_not_restore");
     check(mutationCount() === mutations, "refresh_replayed_mutation");
+  } else if (phase === "url-start") {
+    await wait(hasText("실행 전 검증 완료"),"ready_scope_missing");
+    check(await evaluate("(()=>{const e=document.querySelector('section[data-view=scope]:not([hidden]) input[type=checkbox]');if(!e||e.disabled)return false;e.click();return true})()"),"start_confirmation_missing");
+    await click("진단 시작");
+    await wait(hasText("진단 중지 요청"),"live_stop_missing");
+    check(startCount()===1,"explicit_start_count");
+  } else if (phase === "url-stop") {
+    await click("상태 다시 조회");
+    await wait(`!!(${button("진단 중지 요청")})`,"fresh_stop_unavailable");
+    await click("진단 중지 요청");
+    await wait(hasText("결과 불명"),"cancelled_usage_claimed_known",20000);
+    check(requests.filter(r=>r.method==="POST"&&r.path.endsWith("/stop")).length===1,"stop_replayed");
+    check(responses.some(r=>r.path.endsWith("/stop")&&r.status===200),"stop_not_accepted");
+    check(startCount()===0,"stop_started_execution");
+    check((await evaluate(fact("엔진 시작")))==="미확인","preparation_claimed_engine_started");
   } else if (phase === "url-lost-start") {
     await send("Fetch.enable", {
       patterns: [{ urlPattern: "*://*/api/diagnoses/v2/drafts/*/start", requestStage: "Response" }],
@@ -263,6 +281,10 @@ function check(value, code) {
     // 진행 중에는 작업대가 2초마다 상태만 다시 읽는다(버튼으로도 조회 가능)
     await wait(hasText("실행 마감"), "real_execution_not_completed", 75000);
     await wait(hasText("결과 저장을 확인했습니다"), "saved_result_missing");
+    if (OPENROUTER) {
+      await wait(hasText("확인된 비용"),"confirmed_model_cost_missing");
+      await wait(hasText("예약 비용"),"reserved_model_cost_missing");
+    }
     // 마감된 회차를 실행 중처럼 조회하지 않고, '서버 모드 미제공'으로 잘못 안내하지 않는다
     await wait(hasText("실행이 마감됐습니다"), "closed_run_not_explained");
     check(!(await evaluate(hasText("전송 통제: 이 서버 모드에서는 제공되지 않음"))), "closed_run_shown_as_unsupported");
@@ -295,10 +317,41 @@ function check(value, code) {
     check(fs.readFileSync(path.join(outputDir, downloaded), "utf8").includes("<html"), "html_download_invalid");
     check(startCount() === 0 && mutationCount() === 0, "report_caused_execution_mutation");
     check(noLegacyExecution(), "report_used_legacy_execution");
+    await evaluate("document.querySelector('section[data-view=report] #rList button')?.click()");
+    await wait(hasText("② 재현 절차 및 스크린샷"), "stored_steps_panel_missing");
+    await wait(hasText("스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공"), "missing_capture_not_explained");
+    await click("보안 조치·AI 프롬프트 생성·저장");
+    await wait(hasText("AI 수정 프롬프트 복사"), "saved_prompt_missing");
+    await click("전체 프롬프트 보기");
+    await send("Browser.grantPermissions", {origin:ui, permissions:["clipboardReadWrite", "clipboardSanitizedWrite"]});
+    await click("AI 수정 프롬프트 복사");
+    await wait(hasText("같은 저장 프롬프트를 복사했습니다."), "stored_prompt_not_copied");
+    const savedPrompt = await evaluate("navigator.clipboard.readText()");
+    check(typeof savedPrompt === "string" && savedPrompt.length > 100, "copied_prompt_empty");
+    check(requests.filter(r=>r.method === "POST").every(r=>r.path === "/api/report/diagnostic/remediation") && mutationCount() === 1, "report_implicit_mutation");
+    const wordBegan = Date.now();
+    await click("Word 내부 상세");
+    await wait(hasText("내부 상세 사본 파일을 저장했습니다."), "word_download_not_requested");
+    let wordFile;
+    for (let n=0;n<80;n++) {
+      wordFile = fs.readdirSync(outputDir).find(name=>name.endsWith(".docx") && fs.statSync(path.join(outputDir,name)).mtimeMs >= wordBegan);
+      if (wordFile) break;
+      await sleep(100);
+    }
+    check(!!wordFile && fs.readFileSync(path.join(outputDir,wordFile)).subarray(0,2).toString() === "PK", "word_download_invalid");
+    // 화면 수용 캡처는 진단 증거 저장소에 넣지 않는다.
+    const desktopScreen=await send("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
+    fs.writeFileSync(path.join(outputDir,"ui-report-desktop.png"),Buffer.from(desktopScreen.data,"base64"),{mode:0o600});
+    await send("Emulation.setDeviceMetricsOverride", {width:390,height:844,deviceScaleFactor:1,mobile:true});
+    await sleep(350); // 기존 서랍 전환과 matchMedia 갱신이 끝난 뒤 측정한다.
+    check(await evaluate("document.documentElement.scrollWidth <= innerWidth"), "mobile_report_overflow");
+    const mobileScreen=await send("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
+    fs.writeFileSync(path.join(outputDir,"ui-report-mobile.png"),Buffer.from(mobileScreen.data,"base64"),{mode:0o600});
+
   } else {
     throw new Error("unknown_phase");
   }
-  const summary = { phase, status: "PASS", assertions, ...(startReceipt ? { startReceipt } : {}) };
+  const summary = { phase, status: "PASS", assertions, ...(draftID ? { draftID } : {}), ...(startReceipt ? { startReceipt } : {}) };
   // 인증값·모델 원문·DOM·네트워크 원문은 보관하거나 출력하지 않는다.
   fs.appendFileSync(
     path.join(outputDir, "workbench-url-browser-summary.jsonl"),

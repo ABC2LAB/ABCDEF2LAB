@@ -1,6 +1,6 @@
 "use client";
 
-// 작업대 루트: 노란 배너 · 레일 · 여섯 화면 section · 스크림 · 재생 엔진 · 해시 라우터.
+// 작업대 루트: 노란 배너 · 레일 · 일곱 화면 section · 스크림 · 재생 엔진 · 해시 라우터.
 // 원본의 route() · goTo · openInsp/closeInsp · openRail/closeRail · dashPick · Esc · 강조색 복원을 맡는다.
 // window · location · matchMedia · localStorage 는 렌더 중에 건드리지 않고 effect·이벤트에서만 쓴다(SSR 사전 렌더).
 // 데이터 원천(live/source): demo 면 시안 화면, live 면 같은 자리에 <LiveGate> 로 감싼 실제 엔진 화면을 그린다.
@@ -8,35 +8,28 @@
 
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { useCrawlEngine, useLiveEngine } from "./engines";
 import { cx } from "./lib/cx";
 import { LiveGate, useLiveAuthBoot } from "./live/auth";
-import { LiveFeeds } from "./live/feeds";
-import { canGoLive, useSource, useSourceBoot } from "./live/source";
-import { UrlFeeds } from "./live/urlDiagnosis";
+import { UrlFeeds, useUrl } from "./live/urlDiagnosis";
+import { URL_ENDED_STATES } from "./live/urlMap";
 import { isView, type Shell, ShellContext, type View } from "./shell";
-import { type DSel, useWb } from "./store";
+import { type DSel, type Panel, useWb } from "./store";
 import { Icon } from "./ui/icons";
 import { Rail } from "./ui/Rail";
-import { Crawl } from "./views/Crawl";
-import { Dashboard } from "./views/Dashboard";
-import { Live } from "./views/Live";
-import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "./views/live/byMode";
-import { CrawlLive } from "./views/live/CrawlLive";
-import { NewScan } from "./views/NewScan";
-import { Report } from "./views/Report";
-import { Scope } from "./views/Scope";
+import {
+  DashboardByMode,
+  FinishedByMode,
+  LiveByMode,
+  NewScanByMode,
+  ReportByMode,
+  RunningByMode,
+  ScopeByMode,
+} from "./views/live/byMode";
+import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
 import s from "./workbench.module.css";
 
 /** CSS 모듈 클래스로 querySelector 선택자 만들기 (테스트 환경처럼 클래스가 없으면 null). */
 const dot = (cls: string | undefined) => (cls ? `.${cls}` : null);
-
-/** 재생 엔진 자리. 예약이 바뀔 때 Workbench 전체가 다시 그려지지 않도록 따로 둔다. */
-function Engines({ route, reduce }: { route: View; reduce: boolean }) {
-  useCrawlEngine(route, reduce);
-  useLiveEngine(route, reduce);
-  return null;
-}
 
 interface Nav {
   seq: number;
@@ -44,34 +37,34 @@ interface Nav {
   railNewVisible: boolean;
 }
 
-/** 맨 위 배너 문구 (demo 문구는 원본 그대로 — 바꾸지 말 것). */
-const DEMO_TEXT =
-  "작동하지 않는 UI 시안입니다 — 모든 숫자·기록은 예시이며, 실제 점검·소유 확인·세션 저장을 수행하지 않습니다.";
-const LIVE_TEXT = "실제 엔진 데이터입니다. '엔진 미지원'으로 표시된 칸은 백엔드에 아직 없는 기능입니다.";
+/** 넓은 화면에서 접은 패널을 이 브라우저에 기억하는 키. */
+const PANEL_KEY: Readonly<Record<Panel, string>> = { rail: "abc2lab-rail-hidden", insp: "abc2lab-insp-hidden" };
+/** 패널을 접거나 펼친 뒤 다음 버튼으로 포커스를 옮기기까지 (화면이 다시 그려질 시간). */
+const FOCUS_DELAY_MS = 30;
 
-/** 맨 위 배너: demo 는 경고색 + "실제 엔진으로 보기", live 는 정보색 + "예시 재생으로 보기". MOCK 빌드는 버튼 없음. */
-function SourceBar() {
-  const source = useSource((st) => st.source);
-  const setSource = useSource((st) => st.setSource);
-  const live = source === "live";
-  return (
-    <div className={cx(s.demobar, live && s["lv-bar"])} role="note">
-      <Icon name={live ? "info" : "alert"} />
-      <span>{live ? LIVE_TEXT : DEMO_TEXT}</span>
-      {canGoLive() ? (
-        <button className={s["lv-bar-btn"]} type="button" onClick={() => setSource(live ? "demo" : "live")}>
-          {live ? "예시 재생으로 보기" : "실제 엔진으로 보기"}
-        </button>
-      ) : null}
-    </div>
-  );
+/**
+ * 화면이 그 폭보다 넓은가 (matchMedia 결과가 거짓). matchMedia 가 없는 환경(테스트)은 넓다고 보지 않는다
+ * → 기존 서랍 동작 그대로.
+ */
+const wider = (mq: MediaQueryList | null) => !!mq && !mq.matches;
+
+/** 넓은 화면 패널 접기 · 펼치기를 스토어와 이 브라우저 저장소에 같이 쓴다. */
+function setPanel(panel: Panel, hidden: boolean) {
+  useWb.getState().setPanelHidden(panel, hidden);
+  try {
+    if (hidden) localStorage.setItem(PANEL_KEY[panel], "1");
+    else localStorage.removeItem(PANEL_KEY[panel]);
+  } catch {
+    // 저장소를 못 쓰면 이번만 적용
+  }
 }
 
 export function Workbench() {
-  useSourceBoot();
   useLiveAuthBoot();
   const accent = useWb((st) => st.accent);
-  const source = useSource((st) => st.source);
+  const theme = useWb((st) => st.theme);
+  const railHidden = useWb((st) => st.railHidden);
+  const inspHidden = useWb((st) => st.inspHidden);
   const [route, setRoute] = useState<View>("dashboard");
   const [nav, setNav] = useState<Nav>({ seq: 0, byUser: false, railNewVisible: false });
   // 두 서랍을 한 상태로: Esc 는 상세 먼저, 없으면 레일 (원본 keydown)
@@ -83,39 +76,78 @@ export function Workbench() {
   const [reduce, setReduce] = useState(false);
 
   const narrowMq = useRef<MediaQueryList | null>(null);
+  const phoneMq = useRef<MediaQueryList | null>(null);
   const routeRef = useRef<View>("dashboard");
   const openAfter = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const views = useRef<Partial<Record<View, HTMLElement | null>>>({});
 
-  // 상세 패널(넓지 않은 화면에서는 서랍) · 레일(휴대폰에서는 서랍)
+  /** 지금 화면 안에서 고른 버튼에 잠시 뒤 포커스 (접은 패널의 버튼이 사라지므로 다시 펼칠 버튼으로 옮긴다). */
+  const focusLater = useCallback((selector: string, inView: boolean) => {
+    window.setTimeout(() => {
+      const scope = inView ? views.current[routeRef.current] : rootRef.current;
+      try {
+        scope?.querySelector<HTMLElement>(selector)?.focus();
+      } catch {
+        // 포커스 실패는 무시
+      }
+    }, FOCUS_DELAY_MS);
+  }, []);
+  // 상세 패널: 넓지 않은 화면에서는 서랍, 넓은 화면에서는 접기 · 펼치기(항목을 고르면 다시 펼친다)
   const openInsp = useCallback(() => {
+    if (wider(narrowMq.current)) {
+      if (!useWb.getState().inspHidden) return;
+      setPanel("insp", false);
+      setInspFocus((n) => n + 1);
+      return;
+    }
     if (!narrowMq.current?.matches) return;
     setDrawers((d) => ({ ...d, insp: true }));
     setInspFocus((n) => n + 1);
   }, []);
-  const closeInsp = useCallback(() => setDrawers((d) => (d.insp ? { ...d, insp: false } : d)), []);
+  const closeInsp = useCallback(() => {
+    if (wider(narrowMq.current)) {
+      setPanel("insp", true);
+      focusLater("[data-pane-toggle]", true);
+      return;
+    }
+    setDrawers((d) => (d.insp ? { ...d, insp: false } : d));
+  }, [focusLater]);
+  // 레일: 휴대폰에서는 서랍, 그보다 넓으면 접기 · 펼치기
   const openRail = useCallback(() => {
+    if (wider(phoneMq.current)) {
+      setPanel("rail", false);
+      focusLater("[data-rail-fold]", false);
+      return;
+    }
     setDrawers((d) => ({ ...d, rail: true }));
     setRailFocus((n) => n + 1);
-  }, []);
+  }, [focusLater]);
   const closeRail = useCallback(() => setDrawers((d) => (d.rail ? { ...d, rail: false } : d)), []);
+  const foldRail = useCallback(() => {
+    setPanel("rail", true);
+    focusLater("[data-rail-fold]", false);
+  }, [focusLater]);
 
   /** 원본 route(byUser): 해시 → 화면. 서랍을 닫고 진입 처리(crawlEnter · liveEnter)를 한 뒤, 스크롤·포커스는 레이아웃 effect 에서. */
   const doRoute = useCallback((byUser: boolean) => {
-    const raw = window.location.hash.slice(1);
+    let raw = window.location.hash.slice(1);
+    // 옛 주소 #records (점검 기록, 시안 v54 에서 둘로 나눔) → 이어 보는 점검 상태에 맞는 목록 화면으로, 주소도 바꿔 둔다.
+    // 상태를 아직 모르면(처음 열 때 · 이어 보는 점검 없음) 어느 쪽인지 짐작하지 않고 대시보드
+    if (raw === "records") {
+      const job = useUrl.getState().job;
+      if (job) {
+        raw = URL_ENDED_STATES.includes(job.state) ? "finished" : "running";
+        window.history.replaceState(null, "", `#${raw}`);
+      }
+    }
     const h: View = isView(raw) ? raw : "dashboard";
     setDrawers({ insp: false, rail: false });
-    const st = useWb.getState();
+    const _st = useWb.getState();
     // aria-current 는 이 순간 새 점검 줄이 보였는지로 정한다 (원본은 진입 처리 전에 계산)
-    const railNewVisible = st.railNew !== null;
+    const railNewVisible = false;
     routeRef.current = h;
     setRoute(h);
-    // 재생 진입 처리는 예시 재생일 때만 (live 화면은 엔진 데이터를 그린다)
-    if (useSource.getState().source === "demo") {
-      if (h === "crawl") st.crawlEnter();
-      if (h === "live") st.liveEnter();
-    }
     setNav((n) => ({ seq: n.seq + 1, byUser, railNewVisible }));
   }, []);
 
@@ -129,7 +161,6 @@ export function Workbench() {
 
   const dashPick = useCallback(
     (id: DSel) => {
-      useWb.getState().setDSel(id);
       if (routeRef.current !== "dashboard") {
         openAfter.current = true;
         window.location.hash = "dashboard";
@@ -143,23 +174,13 @@ export function Workbench() {
     [closeRail, openInsp],
   );
 
-  // live → demo 로 돌아오면 지금 화면의 재생 진입 처리를 한 번 한다 (live 동안은 건너뛰었으므로)
-  const prevSource = useRef(source);
-  useEffect(() => {
-    if (prevSource.current === source) return;
-    prevSource.current = source;
-    if (source !== "demo") return;
-    const st = useWb.getState();
-    if (routeRef.current === "crawl") st.crawlEnter();
-    if (routeRef.current === "live") st.liveEnter();
-  }, [source]);
-
   // 화면 폭·동작 줄이기 설정 (원본 NARROW · PHONE · REDUCE)
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const nq = window.matchMedia("(max-width:1199px)");
     const pq = window.matchMedia("(max-width:759px)");
     narrowMq.current = nq;
+    phoneMq.current = pq;
     setReduce(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     const sync = () => {
       setNarrow(nq.matches);
@@ -253,13 +274,18 @@ export function Workbench() {
     return () => root.removeEventListener("click", onClick);
   }, []);
 
-  // 강조색 시안 복원 (이 브라우저에만 기억)
+  // 강조색 시안 · 화면 모드 · 접은 패널 복원 (이 브라우저에만 기억)
   useEffect(() => {
     try {
       const saved = localStorage.getItem("abc2lab-accent");
       if (saved === "cobalt" || saved === "mono") useWb.getState().setAccent(saved);
+      const savedTheme = localStorage.getItem("abc2lab-theme");
+      if (savedTheme === "light" || savedTheme === "dark") useWb.getState().setTheme(savedTheme);
+      for (const panel of ["rail", "insp"] as const) {
+        if (localStorage.getItem(PANEL_KEY[panel]) === "1") useWb.getState().setPanelHidden(panel, true);
+      }
     } catch {
-      // 저장소를 못 쓰면 기본색
+      // 저장소를 못 쓰면 기본색 · 펼친 패널
     }
   }, []);
 
@@ -287,9 +313,10 @@ export function Workbench() {
       closeInsp,
       openRail,
       closeRail,
+      foldRail,
       dashPick,
     }),
-    [route, nav, narrow, phone, reduce, drawers, goTo, openInsp, closeInsp, openRail, closeRail, dashPick],
+    [route, nav, narrow, phone, reduce, drawers, goTo, openInsp, closeInsp, openRail, closeRail, foldRail, dashPick],
   );
 
   const section = (name: View, body: ReactNode) => (
@@ -305,25 +332,33 @@ export function Workbench() {
     </section>
   );
   // 같은 자리에 demo 화면 또는 관문으로 감싼 live 화면
-  const pick = (title: string, demo: ReactNode, live: ReactNode) =>
-    source === "live" ? <LiveGate title={title}>{live}</LiveGate> : demo;
+  const pick = (title: string, live: ReactNode) => <LiveGate title={title}>{live}</LiveGate>;
 
   return (
     <ShellContext.Provider value={shell}>
-      <div ref={rootRef} className={s.root} data-accent={accent === "petrol" ? undefined : accent}>
-        <Engines route={route} reduce={reduce} />
-        {source === "live" ? <LiveFeeds /> : null}
-        {source === "live" ? <UrlFeeds /> : null}
-        <SourceBar />
-        <div className={s.app}>
+      <div
+        ref={rootRef}
+        className={s.root}
+        data-wb-root=""
+        data-accent={accent === "petrol" ? undefined : accent}
+        data-theme={theme === "system" ? undefined : theme}
+      >
+        <UrlFeeds />
+        <div className={cx(s.demobar, s["lv-bar"])} role="note">
+          <Icon name="info" />
+          <span>실제 서버 전용 · 승인 범위와 사용량은 서버가 확인한 값만 표시합니다.</span>
+        </div>
+        <div className={cx(s.app, railHidden && s["rail-hidden"], inspHidden && s["insp-hidden"])}>
           <Rail />
           <main className={s.work}>
-            {section("dashboard", pick("대시보드", <Dashboard />, <DashboardByMode />))}
-            {section("new", pick("새 점검", <NewScan />, <NewScanByMode />))}
-            {section("crawl", pick("자산 탐색", <Crawl />, <CrawlLive />))}
-            {section("scope", pick("범위 확인", <Scope />, <ScopeByMode />))}
-            {section("live", pick("점검 진행", <Live />, <LiveByMode />))}
-            {section("report", pick("보고서", <Report />, <ReportByMode />))}
+            {section("dashboard", pick("대시보드", <DashboardByMode />))}
+            {section("running", pick("진행 중인 점검", <RunningByMode />))}
+            {section("finished", pick("끝난 점검", <FinishedByMode />))}
+            {section("new", pick("새 점검", <NewScanByMode />))}
+            {section("crawl", pick("자산 탐색", <UrlAssetsLive />))}
+            {section("scope", pick("범위 확인", <ScopeByMode />))}
+            {section("live", pick("점검 진행", <LiveByMode />))}
+            {section("report", pick("보고서", <ReportByMode />))}
           </main>
         </div>
         <div className={s.scrim} id="scrim" data-scrim="" hidden={!(drawers.insp || drawers.rail)} />

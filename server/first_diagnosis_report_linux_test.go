@@ -3,16 +3,23 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/reportcapture"
+	"github.com/Autumn-27/artex/reproduction"
 	"html"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/llmpolicy"
@@ -30,7 +37,27 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	}
 	task := taskFromPG(row, installer.Exploration(row.ExplorationID), nil)
 	manager := &Manager{pg: installer, tasks: map[string]*Task{task.ID: task}}
-	candidate := diagnosticServerCandidate(t, &Server{m: manager}, row.ID, "completed")
+	candidate := diagnosticServerCandidate(t, &Server{m: manager}, row.ID, "completed", e2proxy.HTTPObservation{Sequence: 1, AttemptRef: "synthetic-image-attempt", Method: "GET", Endpoint: "/safe", ObservedAt: time.Now().UTC()})
+	storedSource, err := db.LoadDiagnosticRemediationSource(t.Context(), installer.DB, row.ID, fmt.Sprintf("candidate-%d", candidate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := reproduction.FromStored(row.ID, fmt.Sprintf("candidate-%d", candidate), 1, storedSource.EvidenceDigest, storedSource.Context)
+	if len(steps) != 1 {
+		t.Fatal("missing report-only image fixture")
+	}
+	var frame bytes.Buffer
+	if err := png.Encode(&frame, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	if err := reportcapture.Collect(t.Context(), reportcapture.Binding{TaskID: row.ID, EntryID: steps[0].EntryID, Step: steps[0]}, reportcapture.Policy{ApprovedNonsensitiveRegions: []image.Rectangle{image.Rect(0, 0, 1, 1)}}, reportFixtureFrame{frame.Bytes()}, installer); err != nil {
+		t.Fatal(err)
+	}
+	capture, err := db.ReadDiagnosticCapture(t.Context(), installer.DB, row.ID, steps[0].EntryID, steps[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	imagePath := fmt.Sprintf("/api/report/diagnostic/image?task=%d&audience=internal&entry=%s&step=%s&digest=%s", row.ID, steps[0].EntryID, steps[0].ID, capture.Digest)
 	foreign, err := installer.CreateTask("Owned unrelated completed task", "Must stay outside report scope", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +95,7 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	}
 	exec("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA " + ident(schema) + " FROM " + ident(role))
 	exec("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA " + ident(schema) + " FROM " + ident(role))
-	for _, table := range []string{"tasks", "task_archives", "findings", "task_control_modes", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
+	for _, table := range []string{"diagnostic_captures_v1", "tasks", "task_archives", "findings", "task_control_modes", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
 		exec("GRANT SELECT ON " + ident(table) + " TO " + ident(role))
 	}
 	exec("GRANT INSERT ON exploration_nodes TO " + ident(role))
@@ -118,7 +145,7 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	if w := request("GET", base, ""); w.Code != 401 {
 		t.Fatal("anonymous report admitted")
 	}
-	login := request("POST", "/api/auth/login", fmt.Sprintf(`{"username":"ARTEX","password":%q}`, password))
+	login := request("POST", "/api/auth/login", fmt.Sprintf(`{"username":"ABC2LAB","password":%q}`, password))
 	var session struct {
 		Token string `json:"token"`
 	}
@@ -126,6 +153,12 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 		t.Fatal("saved report login")
 	}
 	token = session.Token
+	if w := request("GET", imagePath, ""); w.Code != 200 || !bytes.Equal(w.Body.Bytes(), capture.PNG) {
+		t.Fatal("report-only image route", w.Code)
+	}
+	if w := request("GET", strings.Replace(imagePath, "audience=internal", "audience=shared", 1), ""); w.Code != 403 {
+		t.Fatal("shared image admitted", w.Code)
+	}
 	mapPath := fmt.Sprintf("/api/tasks/%d/access-map", row.ID)
 	if w := request("GET", mapPath, ""); w.Code != 409 {
 		t.Fatal("저장 지도 범위 부재를 성공·기록없음으로 합성함", w.Code)
@@ -239,6 +272,13 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	second, err := NewFirstDiagnosisReportHandler(t.Context(), f.Runtime, keyDir, dataDir, row.ID)
 	if err != nil {
 		t.Fatal("completed report restart", err)
+	}
+	imageRequest := httptest.NewRequest("GET", imagePath, nil)
+	imageRequest.Header.Set("Authorization", "Bearer "+token)
+	imageResponse := httptest.NewRecorder()
+	second.ServeHTTP(imageResponse, imageRequest)
+	if imageResponse.Code != 200 || !bytes.Equal(imageResponse.Body.Bytes(), capture.PNG) {
+		t.Fatal("image unavailable after report restart", imageResponse.Code)
 	}
 	r := httptest.NewRequest("GET", copyPath, nil)
 	r.Header.Set("Authorization", "Bearer "+token)

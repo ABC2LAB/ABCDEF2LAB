@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/Autumn-27/artex/db"
@@ -82,6 +83,45 @@ func (r *authTestRig) expect(code int, got int, body map[string]any, wantErr str
 	}
 }
 
+func TestAuthLoginRenamedAccountDB(t *testing.T) {
+	rig := newAuthTestRig(t)
+	const password = "owned-account-rename-password"
+	t.Setenv(adminPasswordEnv, password)
+	rig.s.bootstrapAuth()
+	hash, err := rig.s.readPassHash()
+	if err != nil || hash == "" {
+		t.Fatal("관리자 비밀번호 준비 실패")
+	}
+	previousToken, err := signJWT(rig.s.signingKey(hash))
+	if err != nil {
+		t.Fatal("기존 세션 준비 실패")
+	}
+	for _, username := range []string{"ARTEX", "abc2lab"} {
+		code, body := rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": username, "password": password})
+		rig.expect(http.StatusUnauthorized, code, body, authErrBadCredential)
+		if _, exists := body["token"]; exists {
+			t.Fatal("다른 로그인 이름에 토큰을 발급하면 안 됩니다")
+		}
+	}
+	code, body := rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ABC2LAB", "password": password})
+	rig.expect(http.StatusOK, code, body, "")
+	token, _ := body["token"].(string)
+	claims := &jwt.RegisteredClaims{}
+	parsed, err := jwt.ParseWithClaims(token, claims, func(*jwt.Token) (any, error) {
+		return rig.s.signingKey(hash), nil
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired(), jwt.WithSubject("ARTEX"))
+	if err != nil || !parsed.Valid {
+		t.Fatal("로그인 이름 변경으로 내부 승인 주체가 바뀌면 안 됩니다")
+	}
+	for _, session := range []string{previousToken, token} {
+		code, body = rig.do(http.MethodGet, "/api/ping", session, nil)
+		rig.expect(http.StatusOK, code, body, "")
+	}
+	if current, err := rig.s.readPassHash(); err != nil || current != hash {
+		t.Fatal("로그인 이름 변경으로 비밀번호가 바뀌면 안 됩니다")
+	}
+}
+
 func TestAuthInitRequiresSetupTokenDB(t *testing.T) {
 	rig := newAuthTestRig(t)
 	s := rig.s
@@ -140,11 +180,11 @@ func TestAuthInitRequiresSetupTokenDB(t *testing.T) {
 	rig.expect(403, code, body, authErrPasswordAlreadySet)
 
 	// 로그인: 사용자 이름·비밀번호 모두 맞아야 한다.
-	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ARTEX", "password": "wrong-pass-123"})
+	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ABC2LAB", "password": "wrong-pass-123"})
 	rig.expect(401, code, body, authErrBadCredential)
 	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "admin", "password": "operator-pass-123"})
 	rig.expect(401, code, body, authErrBadCredential)
-	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ARTEX", "password": "operator-pass-123"})
+	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ABC2LAB", "password": "operator-pass-123"})
 	rig.expect(200, code, body, "")
 	tok2, _ := body["token"].(string)
 	code, body = rig.do(http.MethodGet, "/api/ping", tok2, nil)
@@ -193,9 +233,9 @@ func TestAuthInitRequiresSetupTokenDB(t *testing.T) {
 	passHashCacheTTL = 0
 	code, body = rig.do(http.MethodGet, "/api/ping", tok3, nil)
 	rig.expect(401, code, body, authErrTokenInvalid)
-	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ARTEX", "password": "changed-pass-123"})
+	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ABC2LAB", "password": "changed-pass-123"})
 	rig.expect(401, code, body, authErrBadCredential)
-	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ARTEX", "password": "reset-pass-123"})
+	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ABC2LAB", "password": "reset-pass-123"})
 	rig.expect(200, code, body, "")
 	tok4, _ := body["token"].(string)
 	code, body = rig.do(http.MethodGet, "/api/ping", tok4, nil)
@@ -213,16 +253,16 @@ func TestAuthLoginThrottledDB(t *testing.T) {
 	}
 	rig.s.bootstrapAuth()
 	for i := 0; i < authFreeFailures; i++ {
-		code, body := rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ARTEX", "password": "brute-force-attempt"})
+		code, body := rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ABC2LAB", "password": "brute-force-attempt"})
 		rig.expect(401, code, body, authErrBadCredential)
 	}
-	code, body := rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ARTEX", "password": "operator-pass-123"})
+	code, body := rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ABC2LAB", "password": "operator-pass-123"})
 	rig.expect(429, code, body, authErrTooManyAttempts)
 	if _, has := body["token"]; has {
 		t.Fatal("냉각 중에는 올바른 비밀번호라도 토큰을 주면 안 됩니다")
 	}
 	rig.s.limiter().reset(clientKey(httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)))
-	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ARTEX", "password": "operator-pass-123"})
+	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ABC2LAB", "password": "operator-pass-123"})
 	rig.expect(200, code, body, "")
 }
 
@@ -237,7 +277,7 @@ func TestAuthBootstrapAdminPasswordEnvDB(t *testing.T) {
 	}
 	code, body = rig.do(http.MethodPost, "/api/auth/init", "", map[string]any{"password": "attacker-set-password-123!", "setup_token": rig.s.currentSetupToken()})
 	rig.expect(403, code, body, authErrPasswordAlreadySet)
-	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ARTEX", "password": "env-admin-pass-123"})
+	code, body = rig.do(http.MethodPost, "/api/auth/login", "", map[string]any{"username": "ABC2LAB", "password": "env-admin-pass-123"})
 	rig.expect(200, code, body, "")
 	tok, _ := body["token"].(string)
 	code, body = rig.do(http.MethodGet, "/api/ping", tok, nil)

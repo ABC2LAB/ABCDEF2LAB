@@ -65,6 +65,8 @@ HTTP 개발 측정의 정책은 현재 [API 개발 프로파일](../evaluation/p
 | runner 제어 | runner와 E②만 접근하는 별도 `0700` 디렉터리의 Unix 제어 socket 제안. ready·현재 head·close 요청/ACK를 인증된 회차에 결속. Docker exec/컨테이너 재기동으로 제어하지 않음 |
 | 호출 제어 | 신뢰 engine launcher↔E②의 별도 mTLS 제어 listener 제안. 포트·서버/클라이언트 identity는 설정에 고정하고 공개하지 않음. launcher 자격은 도구 UID/mount namespace에서 읽을 수 없어야 하며, 도구의 데이터 프록시 접점으로 제어 RPC를 받지 않음 |
 
+**2026-11-10 결정(Bash 실행 위치):** 위 표의 호출 제어 행과 이 절·§2.4의 OpenCall/CloseCall(엔진 쪽 launcher)은 채택하지 않는다. Bash는 `eval-e2`의 샌드박스에서 `E2StandaloneBackend.Execute`로 돈다. 시험된 Runner와 호출별 proxy를 그대로 쓰고, 모델이 고른 명령이 엔진 컨테이너에서 돌지 않으며, proxy와 샌드박스 launcher가 같은 PID namespace에 있어 `LivePeer` 결속이 유지되기 때문이다. `eval-e2` 이미지는 엔진 이미지 위에 서비스와 helper만 얹어 도구 계층을 같게 한다([`deploy/eval/e2.Dockerfile`](../../deploy/eval/e2.Dockerfile)). 도구의 바깥 uid는 러너와 같으므로 제어 소켓 보호는 uid가 아니라 샌드박스의 `pivot_root`(새 루트에 소켓·설정 경로가 없음)에 의존하고, 이 음성 시험은 실행 경로를 붙일 때 실제 컨테이너에서 확인한다. 엔진은 회차별 토큰으로 인증해 `Execute`를 부른다(`server/e2_remote.go`). reset 대조는 `eval-e2`의 bind 값이 정본이다. 엔진은 대상 컨테이너 ID를 모르므로 값이 비어 있지 않은지만 본다(`ResetBoundRemotely`). 아래 문단은 채택하지 않은 안의 기록이다.
+
 호출 제어는 실제 실행·task/intent·정책에 묶인 OpenCall/CloseCall의 typed 요청으로 `command_ref`와 E② 발급 `call_ref`를 연결한다. 이 이름은 새 버전 제어 프로토콜의 후보이지 기존 registered-read ACK 확장이 아니다. 임의 caller가 두 참조를 선택·재사용하거나 raw 요청·명령을 제어 RPC에 넣지 못하게 한다.
 
 준비 완료 신호는 단순 listen 성공과 구분한다. `service_ready`는 이미지·UID·설정 digest·header mode·회차·감사 키/출력 경로·제어 identity의 일치를 runner가 대조한 서비스 상태이며 아직 대상 송신 권한은 없다. `execution_ready`는 실제 task·양수 intent와 승인·Ledger·정책·감사 기록을 갖춘 `NewExecution`이 준비된 상태다. `call_ready`는 각 실제 `command_ref`에 대해 OpenCall이 발급한 새 `call_ref`까지 결속된 상태다. 앞 단계로 뒤 단계의 권한을 대신하지 않으며, 도구 호출은 매번 해당 call 준비 성공 뒤에만 기동한다.

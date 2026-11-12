@@ -149,6 +149,12 @@ func HelperMain() int {
 	// They must not cross exec into arbitrary Bash.
 	unix.CloseOnExec(helperConfigFD)
 	unix.CloseOnExec(helperStatusFD)
+	// 작업 공간: 넣는 memfd는 명령 전에 /work에 풀고 닫는다. 빼는 pipe는 명령이 물려받지 못하게 한다.
+	stage = "workspace_in"
+	if restoreWorkspace(cfg.Limits.ScratchBytes) != nil {
+		return fail()
+	}
+	unix.CloseOnExec(helperWorkspaceOutFD)
 	if enc.Encode(helperStatus{State: "ready"}) != nil {
 		return 2
 	}
@@ -161,7 +167,7 @@ func HelperMain() int {
 	cmd.Dir = "/work"
 	proxy := "http://" + listener.Addr().String()
 	cmd.Env = []string{
-		"PATH=/usr/bin:/bin", "HOME=/work", "TMPDIR=/tmp", "LANG=C", "LC_ALL=C",
+		"PATH=/usr/local/bin:/usr/sbin:/usr/bin:/bin", "HOME=/work", "TMPDIR=/tmp", "LANG=C", "LC_ALL=C",
 		"HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy, "ALL_PROXY=" + proxy,
 		"http_proxy=" + proxy, "https_proxy=" + proxy, "all_proxy=" + proxy,
 		"NO_PROXY=", "no_proxy=", "SSL_CERT_FILE=/run/e2/ca.pem", "CURL_CA_BUNDLE=/run/e2/ca.pem",
@@ -179,6 +185,13 @@ func HelperMain() int {
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 	relay.close()
+	// 작업 공간 저장은 bash_exit를 알리기 전에 끝낸다. 호스트는 bash_exit를 받으면 바로 호출을 닫고 이 namespace를
+	// 끝내므로, 그 전에 남은 프로세스를 모두 끝내고 /work를 묶어 보낸다.
+	if cfg.SaveWorkspace {
+		if enc.Encode(helperStatus{State: saveWorkspace(cfg.Limits.ScratchBytes)}) != nil {
+			return 2
+		}
+	}
 	if enc.Encode(helperStatus{State: "bash_exit", ExitCode: exitCode}) != nil {
 		return 2
 	}
@@ -186,10 +199,60 @@ func HelperMain() int {
 	go func() { relay.wait(); close(drained) }()
 	select {
 	case <-drained:
-		return 0
 	case <-time.After(time.Duration(cfg.DrainNanos)):
 		return 3
 	}
+	return 0
+}
+
+// restoreWorkspace는 호스트가 넣은 작업 공간 tar를 빈 /work에 푼다. 읽은 뒤 넣는 fd를 닫는다.
+func restoreWorkspace(contentLimit uint64) error {
+	in := os.NewFile(helperWorkspaceInFD, "workspace-in")
+	if in == nil {
+		return ErrUnavailable
+	}
+	limit := workspaceArchiveLimit(contentLimit)
+	data, err := io.ReadAll(io.LimitReader(in, limit+1))
+	in.Close()
+	if err != nil || int64(len(data)) > limit {
+		return ErrWorkspaceTooLarge
+	}
+	return unpackWorkspace(data, "/work", contentLimit)
+}
+
+// saveWorkspace는 namespace 안의 다른 프로세스를 모두 끝내고 회수한 뒤 /work를 묶어 빼는 pipe에 쓴다. 명령의
+// 프로세스 그룹만이 아니라 분리된 세션·이중 fork로 남은 것까지 PID namespace init(이 helper)이 끝낸다.
+// 돌려주는 값은 호스트에 알리는 상태다.
+func saveWorkspace(contentLimit uint64) string {
+	out := os.NewFile(helperWorkspaceOutFD, "workspace-out")
+	if out == nil {
+		return "workspace_failed"
+	}
+	defer out.Close()
+	// PID namespace의 init이 -1로 보내면 init을 뺀 namespace 안 모든 프로세스가 받는다.
+	if err := unix.Kill(-1, unix.SIGKILL); err != nil && err != unix.ESRCH {
+		return "workspace_failed"
+	}
+	for {
+		_, err := unix.Wait4(-1, nil, 0, nil)
+		if err == unix.ECHILD {
+			break
+		}
+		if err != nil && err != unix.EINTR {
+			return "workspace_failed"
+		}
+	}
+	data, err := packWorkspace("/work", contentLimit)
+	if errors.Is(err, ErrWorkspaceTooLarge) {
+		return "workspace_too_large"
+	}
+	if err != nil {
+		return "workspace_failed"
+	}
+	if _, err := out.Write(data); err != nil {
+		return "workspace_failed"
+	}
+	return "workspace_saved"
 }
 
 func emptyCapabilities() bool {
@@ -211,6 +274,68 @@ func emptyCapabilities() bool {
 	}
 	return fields["NoNewPrivs:"] == "1" && fields["Seccomp:"] == "2"
 }
+
+// 평가에서 원본 엔진과 같은 도구로 비교하려면 이미지의 도구 경로가 샌드박스에도 보여야 한다.
+// /usr/local/lib 전체는 넣지 않는다. 호스트에 따라 매우 커서 시작마다 하는 특수 파일 검사가 느려진다.
+func sandboxRuntimePaths(triplet string, glob func(string) ([]string, error), isDir func(string) bool) ([]string, error) {
+	paths := []string{
+		"/usr/bin", "/usr/sbin", "/bin", "/usr/local/bin", "/usr/lib/" + triplet, "/lib/" + triplet, "/usr/lib64", "/lib64",
+		"/usr/lib/cargo/bin/coreutils", "/etc/alternatives", "/etc/ld.so.cache",
+	}
+	for _, pattern := range []string{"/usr/lib/python3*", "/usr/local/lib/python3*"} {
+		found, err := glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range found {
+			if isDir(path) {
+				paths = append(paths, path)
+			}
+		}
+	}
+	shared, err := glob("/usr/local/lib/libpython3*")
+	if err != nil {
+		return nil, err
+	}
+	return append(paths, shared...), nil
+}
+
+// 없는 경로만 건너뛴다. 권한 오류 등을 건너뛰면 도구 경로가 조용히 빠진다.
+func runtimePathInfo(stat func(string) (os.FileInfo, error), path string) (os.FileInfo, bool, error) {
+	info, err := stat(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return info, true, nil
+}
+
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// /etc에서는 도구 실행에 필요한 두 항목만 연다. 계정 파일 등 나머지는 계속 가린다.
+func allowedSystemSource(resolved string) bool {
+	return strings.HasPrefix(resolved, "/usr/") || resolved == "/etc/alternatives" || resolved == "/etc/ld.so.cache"
+}
+
+func prepareMountTarget(target string, directory bool) error {
+	if directory {
+		return os.MkdirAll(target, 0755)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0444)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 func mountReadOnly(source, target string) error {
 	if err := unix.Mount(source, target, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return err
@@ -313,24 +438,21 @@ func setupJail(cfg helperConfig) error {
 	default:
 		return jailError("architecture", ErrUnavailable)
 	}
-	paths := []string{"/usr/bin", "/bin", "/usr/lib/" + triplet, "/lib/" + triplet, "/usr/lib64", "/lib64", "/usr/lib/cargo/bin/coreutils"}
-	python, err := filepath.Glob("/usr/lib/python3*")
+	paths, err := sandboxRuntimePaths(triplet, filepath.Glob, isDirectory)
 	if err != nil {
 		return jailError("runtime_glob", ErrConfig)
 	}
-	for _, path := range python {
-		info, err := os.Stat(path)
-		if err == nil && info.IsDir() {
-			paths = append(paths, path)
-		}
-	}
 	seen := map[string]bool{}
 	for _, path := range paths {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		info, present, err := runtimePathInfo(os.Stat, path)
+		if err != nil {
+			return jailError("system_source", ErrConfig)
+		}
+		if !present {
 			continue
 		}
 		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil || !strings.HasPrefix(resolved, "/usr/") {
+		if err != nil || !allowedSystemSource(resolved) {
 			return jailError("system_source", ErrConfig)
 		}
 		if !seen[resolved] {
@@ -339,10 +461,11 @@ func setupJail(cfg helperConfig) error {
 			}
 			seen[resolved] = true
 		}
-		if err := os.MkdirAll(filepath.Join(root, path), 0755); err != nil {
+		target := filepath.Join(root, path)
+		if err := prepareMountTarget(target, info.IsDir()); err != nil {
 			return jailError("runtime_directory", err)
 		}
-		if err := mountReadOnly(resolved, filepath.Join(root, path)); err != nil {
+		if err := mountReadOnly(resolved, target); err != nil {
 			return jailError("system_readonly", err)
 		}
 	}

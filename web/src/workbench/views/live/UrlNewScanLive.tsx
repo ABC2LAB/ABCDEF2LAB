@@ -1,51 +1,67 @@
 "use client";
 
-// URL 진단(v2) 시작 전 두 화면: 새 점검(URL · 설치 프로필 · 이름 → 초안 + 범위 확인)과
-// 범위 확인(서버가 돌려준 실제 범위 · 모델 · 예산을 보고 확인 상자 + 시작). 시작 전에는 task · Planner ·
-// 대상 송신 · 단회 권위를 만들지 않는다(서버 계약). URL 은 요청일 뿐이고 허가는 서버 설치 범위와 E② 가 정한다.
+// 새 점검 (시안 짜임: 대상 · 분석 모델 · 작업 + 오른쪽 점검 요약 · 안전 정책 · 시작).
+// 순서: 입력 → [승인 범위 확인](초안 + 서버 범위 확인, DNS·HTTP·모델 호출 없음) → 서버가 돌려준 범위·예산을 오른쪽에서 보고
+// 동의 상자 → [점검 시작]. 시작 전에는 task · Planner · 대상 송신 · 단회 권위를 만들지 않는다(서버 계약).
+// URL 은 요청일 뿐이고 허가는 서버 설치 범위와 E② 가 정한다. 계정 로그인 · 점검 목표 · 범위 · 워커 수는 서버가 받지 않아 두지 않는다.
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { type URLDiagnosisInput, urlDiagnosisInput } from "@/abc2lab-ui/lib/diagnosis-url";
+import { type URLDiagnosisInput, urlDiagnosisInput, type WorkflowMode } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
-import { LoadingRow } from "../../live/parts";
-import { runUrlAction, setUrlConfirmed, useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import { urlHost, urlTargetHint, urlViewFor } from "../../live/urlMap";
+import { disconnectUrl, runUrlAction, setUrlConfirmed, useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import { scanViewFor, URL_ENDED_STATES, urlHost, urlTargetHint, usdText } from "../../live/urlMap";
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
-import { CloseInspButton, InspHead, InspOpenButton, Isec } from "../../ui/parts";
+import { CloseInspButton, HelpTip, InspOpenButton, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import {
-  reasonText,
-  UrlDisconnect,
-  UrlFacts,
-  UrlHead,
-  UrlNoJob,
-  UrlNotices,
-  UrlPhaseBar,
-  UrlPill,
-  UrlRefreshButton,
-  UrlScopeList,
-  useUrlHost,
-} from "./urlParts";
-
-/** 초안 요청 본문의 version (서버 계약 diagnosis-api.v2). 미리보기 글에만 쓴다. */
-const API_VERSION = "diagnosis-api.v2";
-
-/** 갈 화면 → 버튼 글. */
-const GO_LABEL = { scope: "범위 확인으로", live: "점검 진행 보기", report: "보고서 보기" } as const;
+import { ExternalModelSettings } from "./ExternalModelSettings";
+import { TargetApprovalPanel } from "./TargetApprovalPanel";
+import { reasonText, UrlHead, UrlNotices, UrlPill } from "./urlParts";
 
 /** 입력 → 서버에 보낼 초안 입력 (팀 lib 검사를 통과해야만). */
-function draftInput(target: string, profile: string, name: string): URLDiagnosisInput | null {
+
+/** 시작 전 범위의 승인 방식(서버 값) → 안전 정책 문구. */
+const APPROVAL_MODE_RULE: Readonly<
+  Record<"preauthorized_scope" | "confirm_every_request" | "workbench_selective_v1", string>
+> = {
+  preauthorized_scope: "사전 승인한 경로와 임의 query 로 진행 · 상태 변경은 자동 승인 안 함",
+  confirm_every_request: "모든 요청을 한 건씩 승인한 것만 보냄",
+  workbench_selective_v1: "쓰기 메서드 요청은 한 건씩 승인한 것만 보냄",
+};
+// 작업 이름(display_name)은 받지 않는다 (시안 v39): 서버에서 선택 값이고 주소와 겹친다. 비우면 서버가 기본 설명을 붙인다.
+function draftInput(target: string, profile: string, mode?: WorkflowMode, excludes = ""): URLDiagnosisInput | null {
   if (!profile) return null;
   try {
-    return urlDiagnosisInput(target, profile, name);
+    return urlDiagnosisInput(target, profile, "", mode, excludes);
   } catch {
     return null;
   }
 }
+
+const MODES = [
+  ["user_approval_v1", "사용자 승인", "탐색 뒤 점검할 경로를 고르고, 쓰기 메서드 요청은 한 건씩 승인합니다"],
+  ["ai_auto_v1", "AI 자동", "승인 범위 안에서 탐색과 점검을 이어 갑니다 · 데이터 변경은 자동 승인 안 함"],
+] as const;
+
+/** 안전 정책 한 줄 (시안 ilist). */
+function Rule({ t, sub, warn = false, tip }: { t: ReactNode; sub?: string; warn?: boolean; tip?: ReactNode }) {
+  return (
+    <li>
+      <Icon name={warn ? "alert" : "check"} />
+      <div>
+        {t}
+        {tip}
+        {sub !== undefined ? <small>{sub}</small> : null}
+      </div>
+    </li>
+  );
+}
+
+/** 제외 경로 칸의 흐린 예시. 경로 단위라 query(?) 없이 — 서버 · 웹 입력 검사가 '?' 를 받지 않는다. */
+export const EXCLUDE_EXAMPLE = "/logout\n/delete";
 
 /** live 새 점검 (URL 진단). */
 export function UrlNewScanLive() {
@@ -53,17 +69,23 @@ export function UrlNewScanLive() {
   const cap = useUrl((st) => st.cap);
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
+  const flowStage = useUrl((st) => st.flow?.stage ?? null);
   const verified = useUrl((st) => st.verified);
   const busy = useUrl((st) => st.busy);
+  const confirmed = useUrl((st) => st.confirmed);
   const resetSeq = useUrl((st) => st.resetSeq);
   const g = useUrlGates();
   const prefill = useWb((st) => st.prefill);
   const profiles = cap.kind === "v2" ? cap.catalog.profiles : [];
-  const first = profiles[0]?.id ?? "";
+  const locals = profiles.filter((p) => !p.model?.external_transfer);
+  const externals = profiles.filter((p) => p.model?.external_transfer);
 
   const [target, setTarget] = useState("");
-  const [profileId, setProfileId] = useState(first);
-  const [name, setName] = useState("");
+  const [kind, setKind] = useState<"local" | "external">(locals.length || !externals.length ? "local" : "external");
+  const [profileId, setProfileId] = useState("");
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("user_approval_v1");
+  const [excluded, setExcluded] = useState("");
+  const [credentialReady, setCredentialReady] = useState(false);
   const seenSeq = useRef(useWb.getState().prefill?.seq ?? 0);
   const seenReset = useRef(resetSeq);
 
@@ -72,11 +94,10 @@ export function UrlNewScanLive() {
     if (resetSeq === seenReset.current) return;
     seenReset.current = resetSeq;
     setTarget("");
-    setName("");
-    setProfileId(first);
-  }, [resetSeq, first]);
+    setExcluded("");
+  }, [resetSeq]);
 
-  // 다른 화면의 '이 주소로 다시 점검' (조회 중인 진단이 없을 때만)
+  // 다른 화면의 '이 주소로 다시 점검' (이어 보는 진단이 없을 때만)
   useEffect(() => {
     if (!prefill || prefill.seq === seenSeq.current) return;
     seenSeq.current = prefill.seq;
@@ -85,61 +106,117 @@ export function UrlNewScanLive() {
 
   // 조회 중인 진단이 있으면 그 입력을 보인다 (잠금)
   const shown = handle?.input;
-  const tv = shown ? shown.target_url : target;
-  const pv = shown ? shown.profile_id : profileId;
-  const nv = shown ? (shown.display_name ?? "") : name;
+  const choices = kind === "external" ? externals : locals;
+  const pickedId = choices.some((p) => p.id === profileId) ? profileId : (choices[0]?.id ?? "");
+  const pv = shown ? shown.profile_id : pickedId;
   const profile = profiles.find((p) => p.id === pv) ?? null;
-  const input = shown ? null : draftInput(target, profileId, name);
+  const tv = shown ? shown.target_url : target;
+  const mv = shown?.workflow_mode ?? workflowMode;
+  const ev = shown ? (shown.excluded_paths ?? "") : excluded;
+  const external = !!profile?.model?.external_transfer;
+  const lockedKind = external ? "external" : "local";
+  const shownKind = shown ? lockedKind : kind;
+  const input = shown
+    ? null
+    : draftInput(target, pv, profile?.workflow ? workflowMode : undefined, profile?.workflow ? excluded : "");
 
   const hint = urlTargetHint(tv);
   const why: string[] = [];
   if (!shown) {
     if (!target.trim()) why.push("주소를 입력하세요");
     else if (hint) why.push(hint);
-    else if (!input && profile) why.push("주소 형식을 확인하세요 (정본 HTTPS 주소)");
-    if (!profiles.length) why.push("설치된 모델 프로필이 없습니다 (설치자 설정 필요)");
-    else if (!profile) why.push("모델 프로필을 고르세요");
+    else if (!input && profile) why.push("주소 형식을 확인하세요");
+    if (!profiles.length) why.push("설치된 모델 프로필이 없습니다");
+    else if (!profile) why.push("모델을 고르세요");
+    if (external && !credentialReady) why.push("외부 API 키를 등록하세요");
   }
-  const canSend = !shown && !!input && g.canValidate && !busy;
-
+  const canSend = !shown && !!input && g.canValidate && !busy && (!external || credentialReady);
   const send = async () => {
-    if (!canSend || !input) return;
-    if (await runUrlAction("validate", input)) goTo("scope");
+    if (canSend && input) await runUrlAction("validate", input);
+  };
+  const start = async () => {
+    if (job && (await runUrlAction("start"))) goTo(job.input.workflow_mode ? "crawl" : "live");
   };
 
-  const preview = { version: API_VERSION, input: shown ?? input ?? { target_url: "", profile_id: pv || "" } };
-  const sendLabel = busy && !job ? "확인 중…" : "승인 범위 확인";
+  const excludedCount = ev.split("\n").filter((l) => l.trim()).length;
+  const scope = job?.scope;
+  const to = job ? scanViewFor(job, flowStage) : null;
+  const started = !!job && job.state !== "ready" && job.state !== "awaiting_approval";
+  const ended = !!job && URL_ENDED_STATES.includes(job.state);
 
-  let current: ReactNode = null;
-  if (handle) {
-    const host = urlHost(handle.input.target_url);
-    const to = job ? urlViewFor(job) : null;
-    current = (
-      <div className={s.fsec}>
-        <div className={s["fsec-h"]}>
-          <h2>조회 중인 진단</h2>
-          <p>이 브라우저에 이어 볼 진단이 있어 새 입력을 잠갔습니다.</p>
-        </div>
-        <div className={s["fsec-b"]}>
-          <div className={s.hostline}>
-            <span className={s.host}>{host}</span>
-            {job ? <UrlPill job={job} verified={verified} /> : <span className={cx(s.pill, s.wait)}>상태 미확인</span>}
-          </div>
-          {job?.reason_code ? <p className={s.help}>{`서버 사유: ${reasonText(job.reason_code)}`}</p> : null}
-          <div className={s["vh-acts"]}>
-            {to ? (
-              <button className={cx(s.btn, s.pri, s.sm)} type="button" onClick={() => goTo(to)}>
-                {GO_LABEL[to]}
-                <Icon name="arrow" />
-              </button>
-            ) : null}
-            <UrlRefreshButton />
-          </div>
-          <UrlNotices />
-        </div>
-        <UrlDisconnect />
-      </div>
+  // 오른쪽 아래 실행 단계 (입력 → 범위 확인 → 동의 · 시작)
+  let action: ReactNode;
+  if (!handle) {
+    action = (
+      <>
+        <button className={cx(s.btn, s.pri, s.full)} type="button" disabled={!canSend} onClick={() => void send()}>
+          {busy ? "확인 중…" : "승인 범위 확인"}
+        </button>
+        <span className={s.why}>{why.join(" · ")}</span>
+      </>
     );
+  } else if (!job) {
+    action = <p className={s.help}>{busy ? "진단 상태를 확인하는 중…" : "진단 상태를 확인하지 못했습니다."}</p>;
+  } else if (job.state === "awaiting_approval") {
+    action = (
+      <>
+        <div className={cx(s.note, s.warn)} role="note">
+          <Icon name="alert" />
+          <span>
+            {job.reason_code
+              ? `아직 시작할 수 없습니다 · ${reasonText(job.reason_code)}`
+              : "설치자 승인이 필요합니다. 입력이나 확인 상자만으로 실행 권한이 생기지 않습니다."}
+          </span>
+        </div>
+        <button
+          className={cx(s.btn, s.full)}
+          type="button"
+          disabled={!g.canValidate}
+          onClick={() => void runUrlAction("validate")}
+        >
+          승인 범위 다시 확인
+        </button>
+      </>
+    );
+  } else if (job.state === "ready") {
+    action = (
+      <>
+        {scope?.approval_mode === "confirm_every_request" ? (
+          <div className={cx(s.note, s.warn)} role="note">
+            <Icon name="alert" />
+            <span>요청마다 확인하는 프로필은 작업대에서 시작할 수 없습니다.</span>
+          </div>
+        ) : null}
+        <label className={s.ckline}>
+          <input
+            type="checkbox"
+            checked={confirmed}
+            disabled={!g.canStart}
+            onChange={(e) => setUrlConfirmed(e.target.checked)}
+          />
+          <span>
+            {scope?.model?.external_transfer
+              ? "대상 응답·도구 출력의 외부 전송과 비용 상한에 동의하고, 위 범위로 점검을 시작합니다."
+              : "위 범위로 점검을 시작합니다."}
+          </span>
+        </label>
+        <button
+          className={cx(s.btn, s.pri, s.full)}
+          type="button"
+          disabled={!g.canStart || !confirmed}
+          onClick={() => void start()}
+        >
+          {busy ? "보내는 중…" : "점검 시작"}
+        </button>
+      </>
+    );
+  } else {
+    action = to ? (
+      <button className={cx(s.btn, s.pri, s.full)} type="button" onClick={() => goTo(to)}>
+        점검 보기
+        <Icon name="arrow" />
+      </button>
+    ) : null;
   }
 
   return (
@@ -158,7 +235,7 @@ export function UrlNewScanLive() {
       />
       <div className={s.vb}>
         <form
-          className={s.vm}
+          className={cx(s.vm, s.nform)}
           id="luForm"
           noValidate
           onSubmit={(e) => {
@@ -166,21 +243,33 @@ export function UrlNewScanLive() {
             void send();
           }}
         >
-          {current}
-          <div className={s.fsec}>
+          {handle ? (
+            <div className={s.note} role="note">
+              <Icon name="info" />
+              <span className={s["lv-grow"]}>
+                <b className={s.mono}>{urlHost(handle.input.target_url)}</b>{" "}
+                {job ? <UrlPill job={job} verified={verified} /> : null}
+                {started ? " 이 브라우저가 이어 보는 점검입니다." : null}
+              </span>
+              {!started || ended ? (
+                <button className={cx(s.btn, s.sm)} type="button" disabled={busy} onClick={disconnectUrl}>
+                  새로 입력
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className={cx(s.fsec, s["fs-target"])}>
             <div className={s["fsec-h"]}>
               <h2>대상</h2>
-              <p>
-                URL 은 진단 요청입니다. 실제 대상 · 경로 · 메서드 · 모델 · 예산은 서버에 설치된 승인 범위가 정합니다.
-              </p>
             </div>
             <div className={s["fsec-b"]}>
               <div className={s.field}>
                 <label className={s.lbl} htmlFor="luUrl">
-                  진단 대상 URL<span className={s.req}>필수</span>
+                  점검할 사이트 주소
                 </label>
                 <input
-                  className={cx(s.inp, s.mono)}
+                  className={cx(s.inp, s.mono, s["w-url"])}
                   id="luUrl"
                   type="url"
                   value={tv}
@@ -188,93 +277,145 @@ export function UrlNewScanLive() {
                   autoComplete="off"
                   spellCheck={false}
                   maxLength={2048}
-                  placeholder="https://승인된-대상/"
+                  placeholder="https://"
                   aria-describedby="luHost"
-                  aria-invalid={!shown && target.trim() && !input ? "true" : "false"}
+                  aria-invalid={!shown && target.trim() && !input && profile ? "true" : "false"}
                   onChange={(e) => setTarget(e.target.value)}
                 />
                 <div className={s.hostline} id="luHost" aria-live="polite">
-                  {hint ? (
-                    <span className={s.err}>{hint}</span>
-                  ) : (
-                    <span className={s.help}>
-                      HTTPS 주소만 넣으세요. 계정 · 비밀번호, query, fragment 는 넣지 마세요.
-                    </span>
-                  )}
+                  {hint ? <span className={s.err}>{hint}</span> : null}
+                </div>
+              </div>
+              <TargetApprovalPanel
+                requestLimit={profile?.workflow_request_limit}
+                allowStateChanges={profile?.workflow?.allow_reversible_writes}
+                url={tv}
+                disabled={busy}
+                onChanged={() => {
+                  if (handle && !job?.preparation_started) void runUrlAction("validate");
+                }}
+              />
+            </div>
+          </div>
+
+          <div className={cx(s.fsec, s["fs-model"])}>
+            <div className={s["fsec-h"]}>
+              <h2>분석 모델</h2>
+            </div>
+            <div className={s["fsec-b"]}>
+              {externals.length ? (
+                <div className={s.seg} role="radiogroup" aria-label="모델 실행 위치">
+                  {(
+                    [
+                      ["local", "로컬 실행", locals.length],
+                      ["external", "외부 API", externals.length],
+                    ] as const
+                  ).map(([k, label, n]) => (
+                    <label key={k}>
+                      <input
+                        type="radio"
+                        name="nModel"
+                        value={k}
+                        checked={shownKind === k}
+                        disabled={g.inputLocked || !n}
+                        onChange={() => {
+                          setKind(k);
+                          setCredentialReady(false);
+                        }}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+              <div className={s.field}>
+                <label className={s.lbl} htmlFor="luProfile">
+                  모델
+                </label>
+                <select
+                  className={cx(s.inp, s["w-sel"])}
+                  id="luProfile"
+                  value={pv}
+                  disabled={g.inputLocked || !choices.length}
+                  onChange={(e) => setProfileId(e.target.value)}
+                >
+                  {(shown ? profiles.filter((p) => p.id === pv) : choices).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.model_label}
+                    </option>
+                  ))}
+                  {!profiles.length ? <option value="">설치된 모델 없음</option> : null}
+                </select>
+              </div>
+              {external && !shown ? (
+                <ExternalModelSettings
+                  key={`${pv}:${resetSeq}`}
+                  profile={profile ?? undefined}
+                  disabled={g.inputLocked}
+                  onReady={setCredentialReady}
+                />
+              ) : null}
+            </div>
+          </div>
+
+          {/* 점검 설정: 탐색 흐름이 있는 프로필만 진단 모드 · 제외 경로를 받는다(없으면 칸째 숨김) */}
+          {profile?.workflow ? (
+            <div className={cx(s.fsec, s["fs-set"])}>
+              <div className={s["fsec-h"]}>
+                <h2>점검 설정</h2>
+              </div>
+              <div className={s["fsec-b"]}>
+                <div className={s.field}>
+                  <span className={s.lbl}>진단 모드</span>
+                  <div className={s.opts} role="radiogroup" aria-label="진단 모드">
+                    {MODES.map(([id, label, help]) => (
+                      <label className={s.opt} key={id}>
+                        <input
+                          type="radio"
+                          name="nSend"
+                          value={id}
+                          checked={mv === id}
+                          disabled={g.inputLocked}
+                          onChange={() => setWorkflowMode(id)}
+                        />
+                        <b>{label}</b>
+                        <small>{help}</small>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className={s.field}>
+                  <label className={s.lbl} htmlFor="nExcl">
+                    제외 경로 · 선택
+                  </label>
+                  <textarea
+                    id="nExcl"
+                    className={cx(s.inp, s["w-path"])}
+                    value={ev}
+                    disabled={g.inputLocked}
+                    maxLength={2048}
+                    onChange={(e) => setExcluded(e.target.value)}
+                    placeholder={EXCLUDE_EXAMPLE}
+                  />
                 </div>
               </div>
             </div>
-          </div>
-
-          <div className={s.fsec}>
-            <div className={s["fsec-h"]}>
-              <h2>분석 모델</h2>
-              <p>설치자가 승인한 모델 프로필만 고를 수 있습니다. 다른 모델로 바꿔 돌리지 않습니다.</p>
-            </div>
-            <div className={s["fsec-b"]}>
-              <div className={s.field}>
-                <label className={s.lbl} htmlFor="luProfile">
-                  승인된 모델 프로필
-                </label>
-                <select
-                  className={s.inp}
-                  id="luProfile"
-                  value={pv}
-                  disabled={g.inputLocked}
-                  onChange={(e) => setProfileId(e.target.value)}
-                >
-                  <option value="">설치된 프로필 선택</option>
-                  {profiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {`${p.label || p.id} · ${p.model_label || p.model_profile_ref}`}
-                    </option>
-                  ))}
-                </select>
-                {profiles.length ? null : (
-                  <span className={s.help}>제공된 모델 프로필이 없습니다. 설치자 설정이 필요합니다.</span>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className={s.fsec}>
-            <div className={s["fsec-h"]}>
-              <h2>작업</h2>
-              <p>이름은 화면 표시용입니다.</p>
-            </div>
-            <div className={s["fsec-b"]}>
-              <div className={s.field}>
-                <label className={s.lbl} htmlFor="luName">
-                  진단 이름 · 선택
-                </label>
-                <input
-                  className={s.inp}
-                  id="luName"
-                  value={nv}
-                  maxLength={160}
-                  disabled={g.inputLocked}
-                  autoComplete="off"
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </div>
-              <div className={s.note} role="note">
-                <Icon name="info" />
-                <span>
-                  목표 · 제외 경로 · 커버리지 · LLM 프로필 순서는 URL 진단이 받지 않습니다. 범위는 설치된 승인 범위가
-                  정합니다.
-                </span>
-              </div>
-            </div>
-          </div>
+          ) : null}
 
           <div className={s.formbar}>
-            <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
-              {sendLabel}
-            </button>
-            <span className={s.why}>{why.join(" · ")}</span>
-            {handle ? null : <UrlNotices />}
+            {handle ? (
+              <InspOpenButton>시작 단계 보기</InspOpenButton>
+            ) : (
+              <>
+                <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
+                  승인 범위 확인
+                </button>
+                <span className={s.why}>{why.join(" · ")}</span>
+              </>
+            )}
           </div>
         </form>
+
         <aside className={s.vi} aria-label="점검 요약">
           <div className={s["vi-head"]}>
             <div>
@@ -285,187 +426,76 @@ export function UrlNewScanLive() {
           </div>
           <div className={s.isec} style={{ borderTop: 0, marginTop: 10, paddingTop: 0 }}>
             <dl className={s.sumkv}>
-              <dt>대상</dt>
-              <dd className={s.mono}>{shown?.target_url ?? input?.target_url ?? "—"}</dd>
-              <dt>모델</dt>
-              <dd>{profile ? `${profile.label} · ${profile.model_label}` : "—"}</dd>
-              <dt>이름</dt>
-              <dd>{nv.trim() || "—"}</dd>
+              <dt>사이트</dt>
+              <dd className={s.mono}>{shown?.target_url ?? input?.target_url ?? (tv.trim() || "—")}</dd>
+              <dt>분석 모델</dt>
+              <dd>{profile ? `${profile.model_label} (${external ? "외부 API" : "로컬"})` : "—"}</dd>
+              {profile?.workflow ? (
+                <>
+                  <dt>진단 모드</dt>
+                  <dd>{mv === "ai_auto_v1" ? "AI 자동" : "사용자 승인"}</dd>
+                  <dt>제외 경로</dt>
+                  <dd>{excludedCount ? `${excludedCount}개` : "없음"}</dd>
+                </>
+              ) : null}
             </dl>
           </div>
           <div className={s.isec}>
-            <h3>서버에 보낼 내용 · POST /api/diagnoses/v2/drafts</h3>
-            <pre className={s.code} id="luBody">
-              {JSON.stringify(preview, null, 2)}
-            </pre>
-            <p className={s.help}>
-              영수증 키(Idempotency-Key)는 브라우저가 새로 만듭니다. 비밀번호 · 세션 같은 비밀 값은 보내지 않습니다.
-            </p>
+            {/* 안전 장치 (시안 v41): 짧은 말로, 서버 값 · 절대규칙 6 고지는 그대로 */}
+            <h3>안전 장치</h3>
+            {scope ? (
+              <ul className={s.policy} id="luPolicy">
+                <Rule
+                  t="승인된 사이트 · 경로에만 요청"
+                  sub={`${scope.origin} · ${scope.path_prefixes.join(", ")} · ${scope.methods.join("/")}`}
+                />
+                <Rule t={APPROVAL_MODE_RULE[scope.approval_mode]} />
+                {excludedCount ? <Rule t="제외한 경로는 요청 안 함" sub={`${excludedCount}개`} /> : null}
+                <Rule
+                  t="요청 · 시간 상한"
+                  sub={`대상 요청 ${scope.budget.requests}회 · ${scope.budget.duration_seconds}초 · 모델 요청 ${scope.budget.model_requests}회 · 토큰 입력 ${scope.budget.input_tokens} · 출력 ${scope.budget.output_tokens} · body 최대 ${scope.max_body_bytes} bytes`}
+                />
+                {scope.model ? (
+                  <Rule
+                    t="외부 모델로 대상 응답 전송"
+                    sub={`${scope.model.provider} · 비용 상한 ${usdText(scope.budget.cost_usd_micros)}`}
+                  />
+                ) : null}
+                <Rule t="모든 요청 · 승인 기록 남김" sub={`승인 만료 ${scope.expires_at}`} />
+                {/* 절대규칙 6 고지 (시안 v52): 할 일을 제목으로, 자세한 설명 · 원래 고지 문장은 (?) 메모에 */}
+                <Rule
+                  warn
+                  t="열면 지워지는 주소는 빼 두세요"
+                  sub="조회 요청도 데이터를 바꿀 수 있고, 서버는 검증하지 않음"
+                  tip={
+                    <HelpTip label="설명 보기">
+                      <b>어떤 사이트는 주소를 열기만 해도 데이터가 지워집니다.</b>
+                      <br />
+                      예: <span className={s.mono}>/logout</span> (로그아웃) ·{" "}
+                      <span className={s.mono}>/delete?id=3</span> (3번 글 삭제)
+                      <br />
+                      <br />
+                      JinDo는 찾은 주소를 직접 열어 보며 점검합니다. 이런 주소가 섞여 있으면 점검하는 도중에 실제 글이
+                      지워지거나 계정이 로그아웃될 수 있습니다.
+                      <br />
+                      <br />
+                      GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다. 점검 전에{" "}
+                      <b>제외 경로</b>에 넣어 두세요. 제외 경로에는 <span className={s.mono}>/delete</span>처럼 경로만
+                      넣으면 query 와 상관없이 빠집니다(<span className={s.mono}>?</span> 가 든 값은 받지 않습니다).
+                    </HelpTip>
+                  }
+                />
+              </ul>
+            ) : (
+              <p className={s.help}>승인 범위를 확인하면 서버가 정한 범위 · 상한이 여기에 나옵니다.</p>
+            )}
           </div>
           <div className={s.isec}>
-            <div className={s.note} role="note">
-              <Icon name="info" />
-              <div>
-                초안 · 범위 확인은 DNS · HTTP · 모델을 부르지 않습니다. 시작은 범위 확인 화면에서 확인 상자와 시작
-                버튼으로 따로 합니다.
-              </div>
-            </div>
-            <button className={cx(s.btn, s.pri, s.full)} type="button" disabled={!canSend} onClick={() => void send()}>
-              {sendLabel}
-            </button>
-            <span className={s.why}>{why.join(" · ")}</span>
-            {handle ? null : <UrlNotices />}
-          </div>
-        </aside>
-      </div>
-    </>
-  );
-}
-
-/** live 범위 확인 (URL 진단): 서버가 확인한 범위 · 예산 → 확인 상자 → 진단 시작. */
-export function UrlScopeLive() {
-  const { goTo } = useShell();
-  const handle = useUrl((st) => st.handle);
-  const job = useUrl((st) => st.job);
-  const verified = useUrl((st) => st.verified);
-  const busy = useUrl((st) => st.busy);
-  const confirmed = useUrl((st) => st.confirmed);
-  const g = useUrlGates();
-  const host = useUrlHost();
-
-  const head = (acts?: ReactNode) => (
-    <UrlHead
-      title="범위 확인"
-      crumb="범위 확인"
-      host={host}
-      pill={job ? <UrlPill job={job} verified={verified} /> : null}
-      acts={acts}
-    />
-  );
-
-  if (!handle) {
-    return (
-      <>
-        {head()}
-        <div className={s.vm}>
-          <UrlNoJob what="범위 확인" />
-        </div>
-      </>
-    );
-  }
-  if (!job) {
-    return (
-      <>
-        {head(<UrlRefreshButton />)}
-        <div className={s.vm}>
-          {busy ? <LoadingRow text="진단 상태를 확인하는 중…" /> : null}
-          <UrlNotices />
-        </div>
-      </>
-    );
-  }
-
-  const start = async () => {
-    if (await runUrlAction("start")) goTo("live");
-  };
-  const revalidate = () => void runUrlAction("validate");
-
-  let action: ReactNode;
-  if (job.state === "ready") {
-    action = (
-      <>
-        <label className={s.ckline}>
-          <input
-            type="checkbox"
-            checked={confirmed}
-            disabled={!g.canStart}
-            onChange={(e) => setUrlConfirmed(e.target.checked)}
-          />
-          서버가 확인한 범위 · 모델 · 예산으로 준비와 단회 진단을 시작합니다.
-        </label>
-        <div className={s.hostline}>
-          <button
-            className={cx(s.btn, s.pri)}
-            type="button"
-            disabled={!g.canStart || !confirmed}
-            onClick={() => void start()}
-          >
-            {busy ? "보내는 중…" : "진단 시작"}
-          </button>
-          <span className={s.why}>{g.canStart && !confirmed ? "확인 상자를 켜야 시작합니다" : ""}</span>
-        </div>
-      </>
-    );
-  } else if (job.state === "awaiting_approval") {
-    action = (
-      <>
-        <div className={cx(s.note, s.warn)} role="note">
-          <Icon name="alert" />
-          <span>
-            {job.reason_code
-              ? `아직 시작할 수 없습니다 · ${reasonText(job.reason_code)}`
-              : "설치자 승인이 필요합니다. URL 입력이나 사용자 확인만으로 실행 권위가 생기지 않습니다."}
-          </span>
-        </div>
-        <div>
-          <button className={cx(s.btn, s.sm)} type="button" disabled={!g.canValidate} onClick={revalidate}>
-            승인 범위 다시 확인
-          </button>
-        </div>
-      </>
-    );
-  } else {
-    action = (
-      <div className={s.note} role="note">
-        <Icon name="info" />
-        <span className={s["lv-grow"]}>이미 시작한 진단입니다. 범위는 바꿀 수 없습니다.</span>
-        <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo(urlViewFor(job))}>
-          {GO_LABEL[urlViewFor(job)]}
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      {head(
-        <>
-          <UrlRefreshButton />
-          <InspOpenButton>진단 정보</InspOpenButton>
-        </>,
-      )}
-      <div className={s.vb}>
-        <div className={s.vm}>
-          <UrlPhaseBar job={job} />
-          <p className={s.lead}>
-            서버가 설치된 승인 범위와 대조해 돌려준 값입니다. 이 범위 밖 주소 · 메서드 · 다른 subdomain · 포트 ·
-            redirect 목적지는 자동으로 허가하지 않습니다.
-          </p>
-          <section className={s.sec} aria-labelledby="luScopeH">
-            <div className={s.sh}>
-              <h2 id="luScopeH">서버가 확인한 승인 범위</h2>
-            </div>
-            {job.scope ? (
-              <UrlScopeList scope={job.scope} />
-            ) : (
-              <p className={s.empty}>서버가 아직 승인 범위를 돌려주지 않았습니다.</p>
-            )}
-          </section>
-          <section className={s.sec} aria-labelledby="luStartH">
-            <div className={s.sh}>
-              <h2 id="luStartH">시작</h2>
-            </div>
             {action}
             <UrlNotices />
-          </section>
-        </div>
-        <aside className={s.vi} aria-label="진단 정보">
-          <InspHead eyebrow={host ?? ""} title="진단 정보" />
-          <Isec>
-            <UrlFacts job={job} />
-          </Isec>
-          <UrlDisconnect />
+          </div>
         </aside>
+        <PaneToggle />
       </div>
     </>
   );

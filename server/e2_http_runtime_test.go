@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -53,8 +55,12 @@ func TestE2HTTPRuntimePlannerAdmissionIsBoundedAndCannotBeReused(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := runtime.PreparePlanning(context.Background(), task); !errors.Is(err, ErrE2HTTPHost) {
-		t.Fatal("planner limit did not stop further rounds")
+	// 라운드 상한은 실패가 아니라 실행 상한 마감 사유다(budget_limited). 새 라운드는 받지 않는다.
+	if task.firstDiagnosisBudgetLimited.Load() {
+		t.Fatal("budget limit marked before the limit")
+	}
+	if _, err := runtime.PreparePlanning(context.Background(), task); !errors.Is(err, ErrE2HTTPBudgetLimited) || errors.Is(err, ErrE2HTTPHost) || !task.firstDiagnosisBudgetLimited.Load() {
+		t.Fatal("planner limit did not stop further rounds as a budget limit")
 	}
 	changed := Task{ID: task.ID, ExpID: task.ExpID, Store: (&db.DB{}).Exploration(11)}
 	if _, err := runtime.PreparePlanning(context.Background(), &changed); !errors.Is(err, ErrE2HTTPHost) {
@@ -219,4 +225,54 @@ func TestE2HTTPFinalIntentErrorDoesNotInventUnknown(t *testing.T) {
 	if err := e2HTTPFinalIntentError(e2runner.ErrIncomplete, calls, 7); !errors.Is(err, e2runner.ErrIncomplete) || errors.Is(err, agent.ErrE2HTTPUnknown) {
 		t.Fatal(err)
 	}
+}
+
+type plannerRedactionLease struct {
+	E2HTTPLeaseRunner
+	seen string
+	fail bool
+}
+
+func (l *plannerRedactionLease) RedactOutput(data []byte) []byte {
+	l.seen = string(data)
+	if l.fail {
+		return nil
+	}
+	return bytes.ReplaceAll(data, []byte("owned-session-value"), []byte("[REDACTED]"))
+}
+func TestPlannerTargetDataUsesOnlyTheBoundLeaseRedactor(t *testing.T) {
+	runtime, task := e2HTTPRuntimeFixture(t, nil)
+	const data = `[{"endpoint_ref":"endpoint-owned","path":"/read/owned-session-value"}]`
+	if got := runtime.redactPlannerTargetData(task.ID, data); got != "" {
+		t.Fatal("unacquired task exposed raw target data")
+	}
+	if err := runtime.AdmitTask(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	lease := &plannerRedactionLease{}
+	t.Cleanup(func() { runtime.task.lease = nil })
+	runtime.task.lease = &E2HTTPRunOptions{Runner: lease}
+	if got := runtime.redactPlannerTargetData(task.ID, data); got != "" || lease.seen != "" {
+		t.Fatal("unvalidated lease used")
+	}
+	runtime.task.validLease = true
+	got := runtime.redactPlannerTargetData(task.ID, data)
+	if strings.Contains(got, "owned-session-value") || !strings.Contains(got, "[REDACTED]") || !strings.Contains(got, "endpoint-owned") || lease.seen != data {
+		t.Fatal("planner bypassed its runner redactor")
+	}
+	lease.seen = ""
+	if got = runtime.redactPlannerTargetData("other-task", data); got != "" || lease.seen != "" {
+		t.Fatal("foreign task used bound credentials")
+	}
+	lease.fail = true
+	if got = runtime.redactPlannerTargetData(task.ID, data); got != "" {
+		t.Fatal("redactor failure fell back to raw target data")
+	}
+	runtime.task.closed = true
+	lease.seen = ""
+	if got = runtime.redactPlannerTargetData(task.ID, data); got != "" || lease.seen != "" {
+		t.Fatal("closed task exposed target data")
+	}
+	// This fixture has no actual execution resources to close.
+	runtime.task.lease = nil
 }

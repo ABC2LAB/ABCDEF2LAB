@@ -11,6 +11,7 @@ import tempfile
 import threading
 import traceback
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -21,8 +22,10 @@ from baseline_extract import MAX_VOCABULARY_BYTES, UPSTREAM_COMMIT
 from baseline_pages import BaselinePageMerge
 from runner_config import REPO_ROOT
 import runner  # noqa: E402
+import runner_engine  # noqa: E402
+from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified  # noqa: E402
 from runner_engine import (
-    _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
+    _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
     EngineLLMProfile, apply_engine_settings, engine_settings, findings_record, load_vocabulary, login, start_task,
     task_request,
 )
@@ -103,7 +106,11 @@ class TestDTOFormatGuard(unittest.TestCase):
         for (path, start), expected in DTO_SHAPES.items():
             text = (REPO_ROOT / path).read_text(encoding="utf-8")
             with self.subTest(block=start):
-                self.assertEqual(hashlib.sha256(go_block(text, start).encode()).hexdigest(), expected)
+                block = go_block(text, start)
+                if (path, start) == ("server/auth.go", "func (s *Server) authLogin("):
+                    # 계정 이름 외의 로그인·비밀번호·토큰 계약은 고정 baseline과 같아야 한다.
+                    block = block.replace('req.Username != "ABC2LAB"', 'req.Username != "ARTEX"')
+                self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), expected)
 
     def test_task_creation_contract_matches(self):
         for (path, start), expected in TASK_SHAPES.items():
@@ -234,6 +241,40 @@ class TestLogin(unittest.TestCase):
         self.addCleanup(engine.close)
         return engine
 
+    def projection(self, status, body=b"{}", error=None):
+        seen = {}
+
+        def get(port, path, headers, timeout, limit):
+            seen.update(port=port, path=path, headers=headers, timeout=timeout, limit=limit)
+            if error is not None:
+                raise error
+            return status, body
+        with mock.patch.object(runner_engine, "login", return_value="tok"), mock.patch.object(runner_engine, "_get", get):
+            return runner_engine.e2_prompt_projection(8080, AdminSecret("x"), "17", "e2run:1", 5), seen
+
+    def test_projection_asks_the_runners_task_and_run_with_a_bearer_token(self):
+        data, seen = self.projection(200, b'{"a":1}')
+        self.assertEqual(data, b'{"a":1}')
+        self.assertEqual((seen["path"], seen["headers"], seen["limit"]), ("/api/tasks/17/e2-prompt-projection?run_ref=e2run%3A1", {"Authorization": "Bearer tok"}, 8 << 20))
+
+    def test_projection_unavailable_can_be_asked_again(self):
+        with self.assertRaises(E2PromptNotReady) as caught:
+            self.projection(503)
+        self.assertEqual(caught.exception.code, "engine_unavailable")
+
+    def test_projection_network_or_login_failure_can_be_asked_again(self):
+        with self.assertRaises(E2PromptNotReady) as caught:
+            self.projection(200, error=OSError("synthetic"))
+        self.assertEqual(caught.exception.code, "engine_unreachable")
+        with mock.patch.object(runner_engine, "login", side_effect=EngineAPIError("engine_login_http_401")), self.assertRaises(E2PromptNotReady):
+            runner_engine.e2_prompt_projection(8080, AdminSecret("x"), "17", "e2run-1", 5)
+
+    def test_projection_binding_and_auth_refusals_are_final(self):
+        for status in (401, 400, 404, 409):
+            with self.subTest(status), self.assertRaises(E2PromptUnverified) as caught:
+                self.projection(status)
+            self.assertEqual(caught.exception.code, f"http_{status}")
+
     def test_login_posts_fixed_username_and_returns_token(self):
         engine = self.engine()
         self.assertEqual(login(engine.port, AdminSecret(PASSWORD), 5), TOKEN)
@@ -246,7 +287,19 @@ class TestLogin(unittest.TestCase):
         # 핸들러 본문은 DTO 가드가 고정한다. 상수가 그 핸들러가 비교하는 이름과 같은지 따로 본다.
         handler = go_block((REPO_ROOT / "server/auth.go").read_text(encoding="utf-8"), "func (s *Server) authLogin(")
         self.assertIn(f'req.Username != "{ADMIN_USERNAME}"', handler)
-        self.assertEqual(ADMIN_USERNAME, "ARTEX")
+        self.assertEqual(ADMIN_USERNAME, "ABC2LAB")
+
+    def test_baseline_uses_its_original_username_without_fallback(self):
+        engine = self.engine()
+        secret = AdminSecret(PASSWORD, username=BASELINE_ADMIN_USERNAME)
+        self.assertEqual(login(engine.port, secret, 5), TOKEN)
+        self.assertEqual(len(engine.requests), 1)
+        self.assertEqual(json.loads(engine.requests[0][3]), {"username": "ARTEX", "password": PASSWORD})
+
+    def test_unapproved_username_is_rejected_before_login(self):
+        with self.assertRaises(EngineAPIError) as caught:
+            AdminSecret(PASSWORD, username="other")
+        self.assertEqual(str(caught.exception), "engine_username_invalid")
 
     def test_failures_use_fixed_codes_without_secrets(self):
         cases = [

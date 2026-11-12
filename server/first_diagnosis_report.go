@@ -35,6 +35,7 @@ func NewFirstDiagnosisReportHandler(ctx context.Context, pool *sql.DB, keyDir, d
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("GET /api/report/diagnostic", s.diagnosticReport)
+	mux.HandleFunc("GET /api/report/diagnostic/image", s.diagnosticCaptureImage)
 	mux.HandleFunc("GET /api/report/diagnostic/remediation", s.listDiagnosticRemediation)
 	mux.HandleFunc("POST /api/report/diagnostic/remediation", s.createDiagnosticRemediation)
 	mux.HandleFunc("GET /api/report/diagnostic/remediation/prompt", s.copyDiagnosticRemediation)

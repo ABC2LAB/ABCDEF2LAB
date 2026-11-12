@@ -73,7 +73,7 @@ func TestURLDiagnosisManagementAuthenticationOwnedPostgres(t *testing.T) {
 		}
 		return resp.StatusCode, value
 	}
-	login, _ := json.Marshal(map[string]string{"username": "ARTEX", "password": password})
+	login, _ := json.Marshal(map[string]string{"username": "ABC2LAB", "password": password})
 	status, raw := request("POST", "/api/auth/login", string(login), nil)
 	var session struct{ Token string }
 	if status != 200 || json.Unmarshal(raw, &session) != nil || session.Token == "" {

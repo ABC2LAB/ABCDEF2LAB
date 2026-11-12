@@ -7,11 +7,11 @@ import type { Metadata } from "next";
 import "@fontsource-variable/noto-sans-kr/index.css";
 // ABC2LAB 점검 흐름 UI 전용 전역 스타일(원본 시안 그대로). 기존 globals.css(Tailwind/shadcn)는
 // :root·body 를 덮어써 시안과 충돌하므로 여기서 불러오지 않는다.
-import "@/abc2lab-ui/abc2lab.css";
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ABC2LAB",
-  applicationName: "ABC2LAB",
+  title: "JinDo",
+  applicationName: "JinDo",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

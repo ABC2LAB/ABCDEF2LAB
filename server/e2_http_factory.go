@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2export"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -54,6 +55,7 @@ func (E2HTTPAcquired) String() string   { return "server.E2HTTPAcquired[protecte
 func (E2HTTPAcquired) GoString() string { return "server.E2HTTPAcquired[protected]" }
 
 type E2HTTPFileOptions struct {
+	Workflow *diagnosisflow.Controller
 	// 새 URL 준비의 상위 설치 위임을 재확인한다. 기존 호출자는 nil을 유지한다.
 	CheckAuthority   func() error
 	RequestApprovals *RequestApprovalService
@@ -63,6 +65,8 @@ type E2HTTPFileOptions struct {
 	Supervisor       E2HTTPExecutionSupervisor
 	ObserveEvent     func(context.Context, e2proxy.Event) error
 	ObserveResult    func(context.Context, e2runner.Result) error
+	// AttemptPathObserver는 수용시험 회차(eval-e2 설정 v2)에서만 설정한다. nil이면 실행 동작은 그대로다.
+	AttemptPathObserver e2proxy.AttemptPathObserver
 }
 
 func (E2HTTPFileOptions) String() string   { return "server.E2HTTPFileOptions[protected]" }
@@ -73,6 +77,7 @@ type E2HTTPFilePin struct {
 	SHA256 string `json:"sha256"`
 }
 type E2HTTPFileRule struct {
+	TLSSPKISHA256   string                 `json:"tls_spki_sha256,omitempty"`
 	ApprovalDisplay RequestApprovalDisplay `json:"approval_display"`
 	Ref             string                 `json:"ref"`
 	Origin          string                 `json:"origin"`
@@ -113,7 +118,14 @@ type E2HTTPFileRuntime struct {
 func (E2HTTPFilePolicy) String() string   { return "server.E2HTTPFilePolicy[protected]" }
 func (E2HTTPFilePolicy) GoString() string { return "server.E2HTTPFilePolicy[protected]" }
 
+type E2HTTPWorkflowPolicy struct {
+	Format      string `json:"format"`
+	Mode        string `json:"mode"`
+	InputSHA256 string `json:"input_sha256"`
+}
+
 type E2HTTPFilePolicy struct {
+	Workflow       *E2HTTPWorkflowPolicy            `json:"workflow,omitempty"`
 	ApprovalMode   e2proxy.ApprovalMode             `json:"approval_mode"`
 	Format         string                           `json:"format"`
 	RunRef         string                           `json:"run_ref"`
@@ -215,10 +227,17 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	if strictJSON(raw, &policy) != nil || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
 		return empty, ErrE2HTTPHost
 	}
-	if policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest && policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope {
+	if policy.Workflow != nil {
+		if policy.Workflow.Format != diagnosisflow.Version || !input.Workflow.Matches(policy.Workflow.Mode, policy.Workflow.InputSHA256) {
+			return empty, ErrE2HTTPHost
+		}
+	} else if input.Workflow != nil {
 		return empty, ErrE2HTTPHost
 	}
-	if policy.ApprovalMode == e2proxy.ApprovalConfirmEveryRequest && (input.RequestApprovals == nil || policy.OwnerRef != "ARTEX") {
+	if policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest && policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope && policy.ApprovalMode != e2proxy.ApprovalWorkbenchV1 {
+		return empty, ErrE2HTTPHost
+	}
+	if (policy.ApprovalMode == e2proxy.ApprovalConfirmEveryRequest || policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1) && (input.RequestApprovals == nil || policy.OwnerRef != "ARTEX") {
 		return empty, ErrE2HTTPHost
 	}
 	if e2runner.ValidateRootDirLayout(filepath.Join(policy.StateDir, "calls")) != nil {
@@ -298,7 +317,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			credentials = secret.Headers
 		}
-		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Origin: rule.Origin, ConnectIP: ip, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
+		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
 	}
 	requestTimeout, ok1 := e2HTTPMilliseconds(policy.Limits.RequestTimeoutMS, time.Minute)
 	callTimeout, ok2 := e2HTTPMilliseconds(policy.Limits.CallTimeoutMS, time.Hour)
@@ -400,7 +419,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		}
 		release := func(context.Context) error { return journal.Close() }
 		failed := func(execution *e2proxy.Execution, runner *e2runner.Runner) (E2HTTPRunOptions, error) {
-			return E2HTTPRunOptions{Runner: runner, Execution: execution, Release: release}, ErrE2HTTPHost
+			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release}, ErrE2HTTPHost
 		}
 		recorder := e2proxy.Recorder(journal)
 		if input.ObserveEvent != nil {
@@ -411,12 +430,12 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			if input.RequestApprovals.bind(taskctx, request.TaskIDNumber, "ARTEX", policy.RunRef, policy.Rules) != nil {
 				return failed(nil, nil)
 			}
-			if policy.ApprovalMode == e2proxy.ApprovalConfirmEveryRequest {
+			if policy.ApprovalMode == e2proxy.ApprovalConfirmEveryRequest || policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1 {
 				gate = input.RequestApprovals
 			}
 			recorder = e2HTTPJournalObserver{next: recorder, observe: input.RequestApprovals.observe}
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits})
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: input.AttemptPathObserver})
 		if createErr != nil {
 			return failed(nil, nil)
 		}
@@ -439,9 +458,9 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				return failed(execution, runner)
 			}
 		}
-		return E2HTTPRunOptions{Runner: runner, Execution: execution, Release: release, ObserveResult: input.ObserveResult}, nil
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult}, nil
 	}
-	options := E2HTTPRuntimeOptions{RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout}
+	options := E2HTTPRuntimeOptions{Workflow: input.Workflow, RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout}
 	if current(ctx) != nil {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost
@@ -463,4 +482,11 @@ func (r e2HTTPJournalObserver) Record(ctx context.Context, event e2proxy.Event) 
 		return ErrE2HTTPHost
 	}
 	return nil
+}
+
+func workflowBoundary(c *diagnosisflow.Controller) e2proxy.RequestBoundary {
+	if c == nil {
+		return nil
+	}
+	return c
 }

@@ -155,7 +155,11 @@ func (p *firstDiagnosisE2Provider) Complete(_ context.Context, request llm.Compl
 	p.leaked = p.leaked || bytes.Contains(encoded, []byte(firstDiagnosisE2Secret))
 	for _, tool := range request.Tools {
 		switch tool.Name {
-		case "Bash", "graph_overview", "list_facts", "node_detail", "get_worker_output", "list_goals", "record_fact":
+		case "Bash", "graph_overview", "list_facts", "node_detail", "get_worker_output", "list_goals", "record_fact",
+			// 원본 Worker의 그래프 조회 도구(루프 복원 결정안 §2). 저장소 조회뿐이고 송신 권한을 늘리지 않는다.
+			"list_findings", "list_assets", "search_all_worker_traces", "get_worker_trace",
+			// 원본 WebFetch의 E② 판. 같은 Bash 실행기·예약·감사를 지난다(루프 복원 결정안 §2).
+			"WebFetch":
 		case "submit_diagnostic_candidate":
 			// 같은 intent의 실제 관찰만 저장하는 로컬 도구이며 송신 권한을 늘리지 않는다.
 		default:
@@ -200,8 +204,14 @@ func TestFirstDiagnosisE2ProviderToolBoundary(t *testing.T) {
 		{name: "get_worker_output"},
 		{name: "list_goals"},
 		{name: "record_fact"},
+		{name: "list_findings"},
+		{name: "list_assets"},
+		{name: "search_all_worker_traces"},
+		{name: "get_worker_trace"},
 		{name: "submit_diagnostic_candidate"},
-		{name: "WebFetch", unsupported: true},
+		{name: "report_finding", unsupported: true},
+		{name: "insert_assets", unsupported: true},
+		{name: "WebFetch"},
 		{name: "WebSearch", unsupported: true},
 		{name: "Read", unsupported: true},
 		{name: "Write", unsupported: true},
@@ -353,7 +363,7 @@ func TestFirstDiagnosisE2ProductionRuntimeNativeAcceptance(t *testing.T) {
 					runRef = "foreign-acceptance-run"
 				}
 				actual = firstDiagnosisAcquiredRunner(t, ctx, request, helper, target.URL, runRef)
-				return E2HTTPRunOptions{Runner: actual, Release: func(context.Context) error { released.Add(1); return nil }}, nil
+				return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(actual), Release: func(context.Context) error { released.Add(1); return nil }}, nil
 			}, MaxWorkerTurns: 4, MaxToolCalls: 4, WorkerTimeout: 10 * time.Second, MaxPlannerRounds: 4, MaxIntentRuns: 4, DrainTimeout: 5 * time.Second})
 			if err != nil {
 				t.Fatal("생산 E2 Runtime 생성 실패")
@@ -491,7 +501,7 @@ func TestFirstDiagnosisE2ProductionRuntimeNativeAcceptance(t *testing.T) {
 				nextWorker := agent.NewWorker(nextProvider, "deterministic-acceptance", firstDiagnosisPrivateTemp(t), nil, 12000, 4)
 				nextWorker.SetNonStreaming(func() bool { return true })
 				if _, _, nextErr = nextWorker.Execute(nextContext, "worker", taskNumber, nil, nil, nextIntent, nil, nil, nil, nil); nextErr != nil {
-					t.Fatal("두 번째 intent의 실제 Worker 실패")
+					t.Fatalf("두 번째 intent의 실제 Worker 실패: %v", nextErr)
 				}
 				if nextErr = nextFinish(); nextErr != nil {
 					t.Fatal("두 번째 intent 마감 실패")

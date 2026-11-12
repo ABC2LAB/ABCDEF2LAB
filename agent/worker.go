@@ -360,7 +360,7 @@ func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
 	if binding, ok := e2HTTPExecutionFrom(ctx); ok {
-		return w.executeE2HTTP(ctx, name, taskID, ts, intent, hooks, emit, binding, requestID, message)
+		return w.executeE2HTTP(ctx, name, taskID, as, ts, intent, hooks, emit, binding, requestID, message)
 	}
 	if execution, ok := controlledReadExecutionFrom(ctx); ok {
 		// This branch must remain before ToolSet, asset graph, augmentation, and

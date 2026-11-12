@@ -217,15 +217,13 @@ func (p *Proxy) serveConn(ctx context.Context, conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	req, err := readProxyRequest(reader, p.cfg.MaxHeaderBytes)
 	if err != nil {
-		p.reject(ctx, "")
-		writeProxyFailure(conn, http.StatusBadRequest)
+		writeProxyFailure(conn, http.StatusBadRequest, proxyOutcomeOf(p.reject(ctx, "")))
 		return
 	}
 	defer req.Body.Close()
 	conn.SetReadDeadline(time.Now().Add(p.cfg.RequestTimeout))
 	if req.ProtoMajor != 1 || req.ProtoMinor != 1 && req.ProtoMinor != 0 {
-		p.reject(ctx, req.Method)
-		writeProxyFailure(conn, http.StatusBadRequest)
+		writeProxyFailure(conn, http.StatusBadRequest, proxyOutcomeOf(p.reject(ctx, req.Method)))
 		return
 	}
 	if req.Method == http.MethodConnect {
@@ -235,8 +233,7 @@ func (p *Proxy) serveConn(ctx context.Context, conn net.Conn) {
 	if req.URL == nil || req.URL.Scheme != "http" || req.URL.Host == "" ||
 		req.URL.User != nil || req.URL.Fragment != "" || req.URL.Opaque != "" ||
 		!sameProxyAuthority(req.Host, req.URL.Host, "80") {
-		p.reject(ctx, req.Method)
-		writeProxyFailure(conn, http.StatusBadRequest)
+		writeProxyFailure(conn, http.StatusBadRequest, proxyOutcomeOf(p.reject(ctx, req.Method)))
 		return
 	}
 	p.forward(ctx, conn, req)
@@ -248,23 +245,20 @@ func (p *Proxy) serveCONNECT(ctx context.Context, conn net.Conn, reader *bufio.R
 		!sameProxyAuthority(envelope.Host, authority, "") ||
 		envelope.ContentLength > 0 || len(envelope.TransferEncoding) != 0 ||
 		envelope.Header.Get("Upgrade") != "" {
-		p.reject(ctx, http.MethodConnect)
-		writeProxyFailure(conn, http.StatusBadRequest)
+		writeProxyFailure(conn, http.StatusBadRequest, proxyOutcomeOf(p.reject(ctx, http.MethodConnect)))
 		return
 	}
 	if !p.call.CheckCONNECTAuthority(authority) {
-		_, _ = p.call.Reject(ctx, http.MethodConnect, PolicyDenied)
-		writeProxyFailure(conn, http.StatusBadGateway)
+		writeProxyFailure(conn, http.StatusBadGateway, proxyOutcomeOf(p.call.Reject(ctx, http.MethodConnect, PolicyDenied)))
 		return
 	}
 	leaf, err := p.leaf(host)
 	if err != nil {
-		p.reject(ctx, http.MethodConnect)
-		writeProxyFailure(conn, http.StatusBadGateway)
+		writeProxyFailure(conn, http.StatusBadGateway, proxyOutcomeOf(p.reject(ctx, http.MethodConnect)))
 		return
 	}
 	if _, err = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		p.reject(ctx, http.MethodConnect)
+		_, _ = p.reject(ctx, http.MethodConnect)
 		return
 	}
 	// Preserve bytes buffered alongside CONNECT, but terminate TLS here. There
@@ -293,14 +287,13 @@ func (p *Proxy) serveCONNECT(ctx context.Context, conn net.Conn, reader *bufio.R
 		},
 	})
 	if err := secured.HandshakeContext(ctx); err != nil {
-		p.reject(ctx, http.MethodConnect)
+		_, _ = p.reject(ctx, http.MethodConnect)
 		return
 	}
 	secured.SetReadDeadline(time.Now().Add(p.cfg.HeaderTimeout))
 	inner, err := readProxyRequest(bufio.NewReader(secured), p.cfg.MaxHeaderBytes)
 	if err != nil {
-		p.reject(ctx, "")
-		writeProxyFailure(secured, http.StatusBadRequest)
+		writeProxyFailure(secured, http.StatusBadRequest, proxyOutcomeOf(p.reject(ctx, "")))
 		return
 	}
 	defer inner.Body.Close()
@@ -309,8 +302,7 @@ func (p *Proxy) serveCONNECT(ctx context.Context, conn net.Conn, reader *bufio.R
 		inner.URL == nil || inner.URL.IsAbs() || inner.URL.Host != "" ||
 		inner.URL.Opaque != "" || inner.URL.User != nil || inner.URL.Fragment != "" ||
 		!sameProxyAuthority(inner.Host, authority, "443") {
-		p.reject(ctx, inner.Method)
-		writeProxyFailure(secured, http.StatusBadRequest)
+		writeProxyFailure(secured, http.StatusBadRequest, proxyOutcomeOf(p.reject(ctx, inner.Method)))
 		return
 	}
 	inner.URL.Scheme, inner.URL.Host = "https", authority
@@ -319,29 +311,36 @@ func (p *Proxy) serveCONNECT(ctx context.Context, conn net.Conn, reader *bufio.R
 
 func (p *Proxy) forward(ctx context.Context, conn net.Conn, req *http.Request) {
 	if !p.validIngress() {
-		_, _ = p.call.Reject(ctx, req.Method, PolicyDenied)
-		writeProxyFailure(conn, http.StatusBadGateway)
+		writeProxyFailure(conn, http.StatusBadGateway, proxyOutcomeOf(p.call.Reject(ctx, req.Method, PolicyDenied)))
 		return
 	}
 	if req.Header.Get("Upgrade") != "" || req.Header.Get("Expect") != "" || len(req.Trailer) != 0 || req.Method == http.MethodConnect {
-		p.reject(ctx, req.Method)
-		writeProxyFailure(conn, http.StatusBadRequest)
+		writeProxyFailure(conn, http.StatusBadRequest, proxyOutcomeOf(p.reject(ctx, req.Method)))
 		return
 	}
 	req.RequestURI = ""
 	req.Close = true
-	resp, _, err := p.call.Do(ctx, req)
+	resp, receipt, err := p.call.Do(ctx, req)
 	if err != nil || resp == nil {
 		if resp != nil && resp.Body != nil {
 			resp.Body.Close()
 		}
-		writeProxyFailure(conn, http.StatusBadGateway)
+		writeProxyFailure(conn, http.StatusBadGateway, proxyOutcomeOf(receipt, err))
 		return
 	}
 	if resp.Body != nil {
 		defer resp.Body.Close()
 	}
 	stripResponseHopHeaders(resp.Header)
+	// 결과 헤더는 E2만 붙인다. 대상이 같은 이름을 보내 "보내지 않음"을 흉내 내지 못하게 그 두 이름만 지우고,
+	// 나머지 대상 응답 헤더(예약 접두사 포함)는 그대로 둔다.
+	for _, fields := range []http.Header{resp.Header, resp.Trailer} {
+		for key := range fields {
+			if strings.EqualFold(key, OutcomeHeader) || strings.EqualFold(key, ReasonHeader) {
+				delete(fields, key)
+			}
+		}
+	}
 	resp.Close = true
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
@@ -352,8 +351,8 @@ func (p *Proxy) forward(ctx context.Context, conn net.Conn, req *http.Request) {
 	_ = writeProxyResponse(conn, resp)
 }
 
-func (p *Proxy) reject(ctx context.Context, method string) {
-	_, _ = p.call.Reject(ctx, method, Unsupported)
+func (p *Proxy) reject(ctx context.Context, method string) (Receipt, error) {
+	return p.call.Reject(ctx, method, Unsupported)
 }
 
 func stripResponseHopHeaders(headers http.Header) {
@@ -368,11 +367,12 @@ func stripResponseHopHeaders(headers http.Header) {
 	}
 }
 
-func writeProxyFailure(conn net.Conn, code int) {
-	body := "E2 request unavailable\n"
+func writeProxyFailure(conn net.Conn, code int, outcome proxyOutcome) {
+	body := outcome.body()
 	resp := &http.Response{StatusCode: code, ProtoMajor: 1, ProtoMinor: 1,
-		Header: http.Header{"Content-Type": {"text/plain"}, "Connection": {"close"}},
-		Body:   io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)),
+		Header: http.Header{"Content-Type": {"text/plain"}, "Connection": {"close"},
+			OutcomeHeader: {string(outcome.class)}, ReasonHeader: {string(outcome.reason)}},
+		Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)),
 		Close: true}
 	_ = resp.Write(conn)
 }

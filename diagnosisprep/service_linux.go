@@ -32,11 +32,12 @@ func (i storedInspection) runtime() Inspection {
 }
 
 type receipt struct {
-	Principal  string           `json:"principal"`
-	CreateKey  string           `json:"create_key"`
-	StartKey   string           `json:"start_key,omitempty"`
-	Inspection storedInspection `json:"inspection"`
-	Job        Job              `json:"job"`
+	ExternalTransferConfirmed bool             `json:"external_transfer_confirmed,omitempty"`
+	Principal                 string           `json:"principal"`
+	CreateKey                 string           `json:"create_key"`
+	StartKey                  string           `json:"start_key,omitempty"`
+	Inspection                storedInspection `json:"inspection"`
+	Job                       Job              `json:"job"`
 }
 type executionHandle struct {
 	cancel context.CancelFunc
@@ -106,7 +107,7 @@ func New(ctx context.Context, root string, backend Backend) (*Service, error) {
 	createKeys := map[string]string{}
 	for _, raw := range records {
 		var r receipt
-		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && !reference.MatchString(r.StartKey)) || r.Job.PreparationStarted != (r.StartKey != "") {
+		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
 			return fail()
 		}
 		key := r.Principal + "\x00" + r.CreateKey
@@ -143,7 +144,7 @@ func validReceiptChange(old, next receipt) bool {
 		return false
 	}
 	if old.StartKey != "" {
-		if old.StartKey != next.StartKey || old.Job.SourceDigest != next.Job.SourceDigest || !sameInspection(old.Inspection, next.Inspection) || !monotonic(old.Job, next.Job) {
+		if old.ExternalTransferConfirmed != next.ExternalTransferConfirmed || old.StartKey != next.StartKey || old.Job.SourceDigest != next.Job.SourceDigest || !sameInspection(old.Inspection, next.Inspection) || !monotonic(old.Job, next.Job) {
 			return false
 		}
 		if terminal(old.Job.State) || old.Job.State == Unknown {
@@ -304,7 +305,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		if record.Job.Revision != r.ExpectedRevision {
 			return responseError(r, "revision_conflict"), nil
 		}
-		if record.Job.State != Ready || record.Job.Scope == nil {
+		if record.Job.State != Ready || record.Job.Scope == nil || (record.Job.Scope.Model != nil && record.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed) {
 			return responseError(r, "approval_required"), nil
 		}
 		inspect, err := s.backend.Inspect(ctx, r.Principal, record.Job.Input)
@@ -340,6 +341,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		}
 		record = cloneReceipt(record)
 		record.StartKey = r.IdempotencyKey
+		record.ExternalTransferConfirmed = r.ExternalTransferConfirmed
 		record.Job.Revision++
 		record.Job.PreparationStarted = true
 		record.Job.State = Preparing
@@ -438,7 +440,7 @@ func monotonic(old, next Job) bool {
 			return false
 		}
 		a, b := old.ModelUsage, next.ModelUsage
-		if b.Requests < a.Requests || b.InputTokens < a.InputTokens || b.OutputTokens < a.OutputTokens || b.ReservedInputTokens < a.ReservedInputTokens || b.ReservedOutputTokens < a.ReservedOutputTokens || b.CostUSDMicros < a.CostUSDMicros {
+		if b.ReservedCostUSDMicros < a.ReservedCostUSDMicros || b.Requests < a.Requests || b.InputTokens < a.InputTokens || b.OutputTokens < a.OutputTokens || b.ReservedInputTokens < a.ReservedInputTokens || b.ReservedOutputTokens < a.ReservedOutputTokens || b.CostUSDMicros < a.CostUSDMicros || b.UnknownUsageCalls < a.UnknownUsageCalls {
 			return false
 		}
 	}
@@ -462,6 +464,16 @@ func (s *Service) publish(id string, u Update) error {
 	next.Job.DrainComplete = u.DrainComplete
 	next.Job.ResultReady = u.ResultReady
 	next.Job.ModelUsage = u.ModelUsage
+	next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = "", "", nil
+	next.Job.DiagnosticLogIncomplete = u.DiagnosticLogIncomplete
+	if u.Result != nil {
+		counts := u.Result.IntentOutcomes
+		next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = u.Result.Outcome, u.Result.ClosingReason, &counts
+	}
+	// 새로 completed가 되는 실행은 결과를 함께 싣는다. 결과 없는 완료는 받지 않는다(절대 규칙 5).
+	if u.State == Completed && old.Job.State != Completed && u.Result == nil {
+		return ErrProtocol
+	}
 	// 중지 요청을 후속 준비·실행 갱신으로 취소하지 않는다. 확인된 종료는 반영한다.
 	if old.Job.State == Stopping && active(next.Job.State) {
 		next.Job.State = Stopping

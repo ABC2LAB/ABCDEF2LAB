@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from e2_collect import OUTCOME_PRODUCT_FAILURE, CloseAck  # noqa: E402
 from e2_control import CloseResult  # noqa: E402
-from e2_link import E2Link, E2LinkPaths, evaluation_declaration  # noqa: E402
+from e2_link import ENGINE_TOKEN_NAME, E2Link, E2LinkPaths, evaluation_declaration  # noqa: E402
 from e2_prepare import CONFIG_NAME, POLICY_NAME, E2PrepareError  # noqa: E402
 
 FINGERPRINT = "f" * 64
@@ -36,18 +37,22 @@ class Case(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
-        self.paths = E2LinkPaths(*(base / name for name in ("config", "evidence", "control", "copy")))
-        for path in (self.paths.config, self.paths.evidence, self.paths.control, self.paths.copy):
+        self.paths = E2LinkPaths(*(base / name for name in ("config", "evidence", "control", "copy", "engine")))
+        for path in (self.paths.config, self.paths.evidence, self.paths.control, self.paths.copy, self.paths.engine):
             path.mkdir(mode=0o700)
         self.policy = base / "policy.json"
         self.policy.write_bytes(json.dumps({"approval_mode": "preauthorized_scope", "rules": [{"ref": "rule-1"}, {"ref": "rule-2"}],
                                             "evaluation": {"llm_backend": "api", "target_kind": "public_practice"}}).encode())
+        self.declared = base / "declared.json"
+        self.declared.write_bytes(b'{"format": "abc2lab.e2-declared-differences/v1", "status": "proposed"}')
         self.tool = base / "fake-ca-tool"
         self.tool.write_text('#!/bin/sh\numask 077\nprintf cert > "$3"\nprintf key > "$5"\n')
         self.tool.chmod(0o700)
 
-    def link(self, **changes):
-        return E2Link(product(policy_path=str(self.policy), policy_tool=str(self.tool), **changes), self.paths, "eval-run-1", "model-1", "api", 8080, now=lambda: NOW)
+    def link(self, path_key=None, **changes):
+        declared = {"declared_differences_path": str(self.declared), "declared_differences_sha256": hashlib.sha256(self.declared.read_bytes()).hexdigest()} | changes
+        return E2Link(product(**({"policy_path": str(self.policy), "policy_tool": str(self.tool)} | declared)), self.paths, "eval-run-1", "model-1", "api", 8080, now=lambda: NOW,
+                      path_key=path_key)
 
     def closed(self, execution_ref="execution-1", state="complete", ack=ACK):
         return CloseResult(state, None, True, execution_ref, "8" * 64, ack)
@@ -79,11 +84,28 @@ class TestRunValues(Case):
         self.assertNotEqual(policy["run_ref"], "eval-run-1")
         self.assertEqual(policy["evaluation"]["run_ref"], policy["run_ref"])
 
+    def test_link_keeps_the_run_reference_it_put_in_the_policy(self):
+        link = self.link()
+        self.assertEqual(link.run_ref, json.loads((self.paths.config / POLICY_NAME).read_bytes())["run_ref"])
+
     def test_two_runs_do_not_share_a_run_reference(self):
         first = self.policy_written()["run_ref"]
-        for name in os.listdir(self.paths.config):
-            os.unlink(self.paths.config / name)
+        for directory in (self.paths.config, self.paths.engine):
+            for name in os.listdir(directory):
+                os.unlink(directory / name)
         self.assertNotEqual(self.policy_written()["run_ref"], first)
+
+    def test_engine_token_is_private_and_long_enough(self):
+        self.link()
+        path = self.paths.engine / ENGINE_TOKEN_NAME
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertRegex(path.read_text(encoding="ascii"), r"\A[0-9a-f]{64}\Z")
+
+    def test_engine_token_is_never_reused(self):
+        (self.paths.engine / ENGINE_TOKEN_NAME).write_text("old", encoding="ascii")
+        with self.assertRaises(E2PrepareError) as caught:
+            self.link()
+        self.assertEqual(caught.exception.code, "engine_token_failed")
 
     def test_window_past_the_approval_stops_before_the_ca_exists(self):
         with self.assertRaises(E2PrepareError) as caught:
@@ -114,8 +136,40 @@ class TestLink(Case):
                          ("eval-run-1", "model-1", link.prepared.reservation_ref, ":8080", {"llm_backend": "api", "target_kind": "public_practice"}))
 
     def test_bad_values_stop_at_preparing(self):
-        with self.assertRaises(E2PrepareError):
-            E2Link(product(policy_path=str(self.policy / "absent"), policy_tool=str(self.tool)), self.paths, "eval-run-1", "model-1", "api", 8080)
+        with self.assertRaisesRegex(E2PrepareError, "policy_unavailable"):
+            self.link(policy_path=str(self.policy / "absent"))
+
+    def assert_declared_refused(self, code, **changes):
+        with self.assertRaisesRegex(E2PrepareError, code):
+            self.link(**changes)
+        self.assertEqual([], list(self.paths.config.iterdir()), "동결 목록 확인 전에 회차 자료를 만듦")
+
+    def test_declared_differences_must_match_the_frozen_digest(self):
+        self.assert_declared_refused("declared_differences_mismatch", declared_differences_sha256="0" * 64)
+
+    def test_declared_status_comes_from_the_frozen_file(self):
+        self.assertEqual("proposed", self.link().declared_status)
+
+    def test_declared_status_reads_a_confirmed_list(self):
+        self.declared.write_bytes(b'{"format": "abc2lab.e2-declared-differences/v1", "status": "confirmed"}')
+        self.assertEqual("confirmed", self.link().declared_status)
+
+    def test_declared_differences_must_be_a_known_document(self):
+        for body in (b"not json", b"[]", b'{"status": "proposed"}', b'{"format": "abc2lab.e2-declared-differences/v2", "status": "proposed"}',
+                     b'{"format": "abc2lab.e2-declared-differences/v1"}', b'{"format": "abc2lab.e2-declared-differences/v1", "status": "draft"}',
+                     b'{"format": "abc2lab.e2-declared-differences/v1", "status": "proposed", "status": "confirmed"}'):
+            with self.subTest(body=body):
+                self.declared.write_bytes(body)
+                self.assert_declared_refused("declared_differences_invalid")
+
+    def test_declared_differences_file_is_read_safely(self):
+        link = self.declared.with_name("declared-link.json")
+        link.symlink_to(self.declared)
+        self.assert_declared_refused("declared_differences_unavailable", declared_differences_path=str(link))
+        self.assert_declared_refused("declared_differences_unavailable", declared_differences_path=str(self.declared.with_name("absent.json")))
+        self.assert_declared_refused("declared_differences_not_regular", declared_differences_path=str(self.declared.parent))
+        self.declared.write_bytes(b"x" * (64 * 1024 + 1))
+        self.assert_declared_refused("declared_differences_too_large")
 
     def test_channel_uses_the_run_and_timeouts(self):
         link = self.link()
@@ -162,6 +216,18 @@ class TestCollect(Case):
         self.assertEqual((expected.eval_run_id, expected.model_tag, expected.reset_generation, expected.reservation_ref, expected.engine_task_id,
                           expected.policy_fingerprint_sha256, expected.header_mode, expected.llm_backend),
                          ("eval-run-1", "model-1", "target-1", link.prepared.reservation_ref, "17", FINGERPRINT, "evaluation_caller_passthrough", "api"))
+        # 공식 회차(키 없음)는 시도 경로 기록을 받지 않는다.
+        self.assertEqual(collect.call_args.kwargs, {"attempt_paths": False})
+
+    def test_acceptance_round_passes_the_path_key_and_collects_the_projection(self):
+        key = bytes(range(32))
+        link = self.link(path_key=key)
+        config = json.loads((self.paths.config / "e2-config.json").read_bytes())
+        self.assertEqual((config["format"], config["path_key_file"]), ("abc2lab.e2-runner-config/v2", "path.key"))
+        self.assertEqual((self.paths.config / "path.key").read_bytes(), key)
+        with mock.patch("e2_link.collect_e2_export", return_value="result") as collect, mock.patch("e2_link.subprocess_verifier", return_value="tool"):
+            link.collect(self.closed(), "17", "target-1")
+        self.assertEqual(collect.call_args.kwargs, {"attempt_paths": True})
 
     def test_execution_reference_cannot_leave_the_evidence_directory(self):
         link = self.link()

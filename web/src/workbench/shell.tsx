@@ -7,9 +7,12 @@ import { createContext, useContext } from "react";
 
 import type { DSel } from "./store";
 
-/** 여섯 화면 (해시 이름 = data-view). */
-export type View = "dashboard" | "new" | "crawl" | "scope" | "live" | "report";
-export const VIEWS: readonly View[] = ["dashboard", "new", "crawl", "scope", "live", "report"];
+/**
+ * 여덟 화면 (해시 이름 = data-view). running · finished = 진행 중인 점검 · 끝난 점검 (레일에서 점검을 누르면 오는 목록,
+ * 시안 v54 에서 점검 기록을 둘로 나눔).
+ */
+export type View = "dashboard" | "running" | "finished" | "new" | "crawl" | "scope" | "live" | "report";
+export const VIEWS: readonly View[] = ["dashboard", "running", "finished", "new", "crawl", "scope", "live", "report"];
 export function isView(h: string): h is View {
   return (VIEWS as readonly string[]).includes(h);
 }
@@ -33,14 +36,19 @@ export interface Shell {
   railNewAtRoute: boolean;
   /** 화면 이동. 이미 그 해시면 다시 라우팅(서랍 닫기·맨 위로·h1 포커스). 원본 goTo. */
   goTo: (name: View) => void;
-  /** 상세 서랍 열기 (넓은 화면에서는 아무것도 안 함). 30ms 뒤 `.vi [data-insp-close]` 첫 버튼에 포커스. 원본 openInsp. */
+  /**
+   * 상세 열기. 넓지 않은 화면은 서랍을 열고, 넓은 화면은 접어 둔 상세 패널을 다시 펼친다(펼쳐져 있으면 아무것도 안 함).
+   * 30ms 뒤 `.vi [data-insp-close]` 첫 버튼에 포커스. 원본 openInsp.
+   */
   openInsp: () => void;
-  /** 상세 서랍 닫기. 원본 closeInsp. */
+  /** 상세 닫기. 넓지 않은 화면은 서랍을 닫고, 넓은 화면은 상세 패널을 접는다(이 브라우저에 기억). 원본 closeInsp. */
   closeInsp: () => void;
-  /** 레일 서랍 열기 (30ms 뒤 닫기 버튼에 포커스). 원본 openRail. */
+  /** 메뉴 열기. 휴대폰은 레일 서랍을 열고(30ms 뒤 닫기 버튼에 포커스), 그보다 넓으면 접어 둔 레일을 펼친다. 원본 openRail. */
   openRail: () => void;
-  /** 레일 서랍 닫기. 원본 closeRail. */
+  /** 레일 서랍 닫기 (휴대폰). 원본 closeRail. */
   closeRail: () => void;
+  /** 휴대폰보다 넓은 화면에서 레일 접기 (이 브라우저에 기억). 다시 펼치기는 화면 머리의 메뉴 버튼(openRail). */
+  foldRail: () => void;
   /**
    * 대시보드 항목 고르기 (원본 dashPick): dSel 을 바꾸고, 대시보드가 아니면 대시보드로 이동한 뒤 상세 서랍을 연다(openAfter).
    * 대시보드면 레일을 닫고 `[data-dsel="id"]` 줄을 보이게 스크롤한 뒤 서랍을 연다 → 대시보드 줄에는 data-dsel 속성을 남길 것.
@@ -65,6 +73,7 @@ export const ShellContext = createContext<Shell>({
   closeInsp: noop,
   openRail: noop,
   closeRail: noop,
+  foldRail: noop,
   dashPick: noop,
 });
 

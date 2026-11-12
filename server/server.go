@@ -124,6 +124,7 @@ type Server struct {
 	runtimeHooks                   agent.RuntimeHooks         // immutable callbacks owned by this server
 	localResolver                  *llmpolicy.ProfileResolver // 로컬 전용 정책은 외부 모드와 별도로 보존한다.
 	openRouterPolicy               *llmpolicy.OpenRouterPolicy
+	openRouterBaseline             llmpolicy.OpenRouterUsage
 	firstModelBudget               *FirstDiagnosisModelBudget
 	firstDiagnosisPreparation      bool
 	firstModelMu                   sync.RWMutex
@@ -1041,6 +1042,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
 	mux.HandleFunc("GET /api/report", s.getReport)
 	mux.HandleFunc("GET /api/report/diagnostic", s.diagnosticReport)
+	mux.HandleFunc("GET /api/report/diagnostic/image", s.diagnosticCaptureImage)
 	mux.HandleFunc("GET /api/report/diagnostic/remediation", s.listDiagnosticRemediation)
 	mux.HandleFunc("POST /api/report/diagnostic/remediation", s.createDiagnosticRemediation)
 	mux.HandleFunc("GET /api/report/diagnostic/remediation/prompt", s.copyDiagnosticRemediation)

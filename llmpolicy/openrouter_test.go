@@ -31,7 +31,7 @@ func openRouterFixture(t *testing.T) *OpenRouterPolicy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.consume = func() error { return nil }
+	p.ledger = func(int64, int64, int64) error { return nil }
 	return p
 }
 
@@ -51,9 +51,11 @@ func openRouterRequest() *http.Request {
 func TestOpenRouterWirePrivacyBudget(t *testing.T) {
 	p := openRouterFixture(t)
 	var hits int
+	var reserved int64
 	c := openRouterClient(p, openRouterRT(func(r *http.Request) (*http.Response, error) {
 		hits++
 		raw, _ := io.ReadAll(r.Body)
+		reserved += int64(len(raw)) + openRouterFramingTokens
 		var body map[string]any
 		_ = json.Unmarshal(raw, &body)
 		routing := body["provider"].(map[string]any)
@@ -74,7 +76,7 @@ func TestOpenRouterWirePrivacyBudget(t *testing.T) {
 		t.Fatal("exhausted request accepted")
 	}
 	u := p.Snapshot()
-	if hits != 3 || u.Requests != 3 || u.InputTokens != 30 || u.OutputTokens != 6 || u.ReservedInputTokens != 3*openRouterContext {
+	if hits != 3 || u.Requests != 3 || u.InputTokens != 30 || u.OutputTokens != 6 || u.ReservedInputTokens != reserved {
 		t.Fatalf("incorrect aggregates: %+v", u)
 	}
 }
@@ -115,14 +117,19 @@ func TestOpenRouterUnknownAccountingHaltsAllClients(t *testing.T) {
 	} {
 		p := openRouterFixture(t)
 		var hits int
-		rt := openRouterRT(func(*http.Request) (*http.Response, error) { hits++; return openRouterResponse(body), nil })
+		var wire int64
+		rt := openRouterRT(func(r *http.Request) (*http.Response, error) {
+			hits++
+			wire = r.ContentLength
+			return openRouterResponse(body), nil
+		})
 		if _, err := openRouterClient(p, rt).Do(openRouterRequest()); err == nil {
 			t.Fatal("invalid response accepted")
 		}
 		if _, err := openRouterClient(p, rt).Do(openRouterRequest()); err == nil {
 			t.Fatal("ambiguous usage retried")
 		}
-		if hits != 1 || !p.Snapshot().Blocked || p.Snapshot().ReservedInputTokens != openRouterContext {
+		if hits != 1 || !p.Snapshot().Blocked || p.Snapshot().ReservedInputTokens != wire+openRouterFramingTokens {
 			t.Fatal("reservation not retained")
 		}
 	}
@@ -180,19 +187,37 @@ func TestOpenRouterManifestAndPersistence(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
+	// 승인 총량(요청 3회)은 재시작·다른 프로세스를 합쳐 누적 기록으로 지킨다(P3 결정안 C07).
 	first, err := LoadOpenRouterManifestFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = first.reserve(100); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 2; i++ {
+		if err = first.reserve(100); err != nil {
+			t.Fatal(err)
+		}
+		first.active--
 	}
 	second, err := LoadOpenRouterManifestFile(path)
+	if err != nil || second.CheckAvailable() != nil {
+		t.Fatal("approval with remaining budget rejected after restart")
+	}
+	if err = second.reserve(100); err != nil {
+		t.Fatal("restart lost the remaining approved budget")
+	}
+	second.active--
+	third, err := LoadOpenRouterManifestFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = second.reserve(100); err == nil {
+	if third.CheckAvailable() == nil {
+		t.Fatal("exhausted approval reported available")
+	}
+	if err = third.reserve(100); err == nil || !third.Snapshot().Blocked || third.Snapshot().FailureReason != "approval_consumed" {
 		t.Fatal("process restart reset approved budget")
+	}
+	if err = first.reserve(100); err == nil {
+		t.Fatal("first process exceeded the shared approval total")
 	}
 	if err = os.Chmod(path, 0644); err != nil {
 		t.Fatal(err)
@@ -386,5 +411,103 @@ func TestOpenRouterCancellationStopsNewAttempts(t *testing.T) {
 	}
 	if _, err := client.Do(openRouterRequest()); err == nil || hits != 1 {
 		t.Fatal("new send after cancelled unknown response")
+	}
+}
+
+func TestOpenRouterExpiredManifestDescriptionCannotAuthorizeCalls(t *testing.T) {
+	p := openRouterFixture(t)
+	p.manifest.ExpiresAt = time.Now().Add(-time.Minute)
+	raw, _ := json.Marshal(p.manifest)
+	if _, err := ParseOpenRouterManifest(raw); err == nil {
+		t.Fatal("expired callable policy")
+	}
+	target, limits, quote, err := DescribeOpenRouterManifest(raw, 100)
+	if err != nil || target != p.Target() || limits.Provider != "fixture/endpoint" || quote != 262244 {
+		t.Fatal("saved-report metadata unavailable")
+	}
+	if _, err := p.Quote(100); err == nil {
+		t.Fatal("expired call quote")
+	}
+}
+
+// 입력 예약은 입력 상한 전체가 아니라 요청 크기의 상한이다(P3 결정안 C28 결정 1). 같은 승인 총량으로 작은 요청을 더
+// 보낼 수 있고, 누적 기록에도 같은 예약이 남는다. 보고된 입력·비용이 이 예약을 넘으면 상한 가정이 깨진 것이라 막는다.
+func TestOpenRouterReservesRequestSize(t *testing.T) {
+	fixture := func(t *testing.T, ledger *[]int64) *OpenRouterPolicy {
+		m := openRouterManifest{Version: 1, ProfileID: 7, Format: "openai", BaseURL: OpenRouterBaseURL, Model: OpenRouterModel,
+			ProviderSlug: "fixture/endpoint", ExpectedProviderName: "Fixture", ApprovalID: "fixture-approval",
+			ExpiresAt: time.Now().Add(time.Hour), StrictPrivacyAck: true, AccountSpendCapAck: true,
+			MaxRequests: 3, MaxInputTokens: openRouterContext, MaxOutputTokens: 300, MaxCostMicros: 1000000,
+			MaxInputPerCall: openRouterContext, MaxOutputPerCall: 100, TimeoutSeconds: 2, MaxConcurrent: 1, InputPrice: 1000000, OutputPrice: 1000000}
+		raw, _ := json.Marshal(m)
+		p, err := ParseOpenRouterManifest(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.ledger = func(input, _, _ int64) error { *ledger = append(*ledger, input); return nil }
+		return p
+	}
+	t.Run("small-calls-fit-one-context", func(t *testing.T) {
+		var ledger []int64
+		p := fixture(t, &ledger)
+		var wire []int64
+		c := openRouterClient(p, openRouterRT(func(r *http.Request) (*http.Response, error) {
+			wire = append(wire, r.ContentLength)
+			return openRouterResponse(openRouterReply), nil
+		}))
+		// 승인 입력 총량이 입력 상한 하나뿐이어도 작은 요청 세 개가 들어간다(전체 예약이면 두 번째에서 막힌다).
+		for i := 0; i < 3; i++ {
+			resp, err := c.Do(openRouterRequest())
+			if err != nil {
+				t.Fatalf("call %d: %v", i, err)
+			}
+			_ = resp.Body.Close()
+		}
+		u := p.Snapshot()
+		var want int64
+		for i, n := range wire {
+			if ledger[i] != n+openRouterFramingTokens {
+				t.Fatalf("ledger input %d != wire %d + framing", ledger[i], n)
+			}
+			want += n + openRouterFramingTokens
+		}
+		if len(wire) != 3 || len(ledger) != 3 || u.ReservedInputTokens != want || u.ReservedCostMicros != want+300 || u.Blocked {
+			t.Fatalf("reservation: wire=%v ledger=%v usage=%+v", wire, ledger, u)
+		}
+	})
+	for name, reply := range map[string]string{
+		// 입력 상한 안이지만 이 요청 크기 예약을 넘는 보고 입력과 비용.
+		"input-over-reservation": strings.Replace(openRouterReply, `"prompt_tokens":10`, `"prompt_tokens":200000`, 1),
+		"cost-over-reservation":  strings.Replace(openRouterReply, `"cost":0.000012`, `"cost":0.01`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ledger []int64
+			p := fixture(t, &ledger)
+			hits := 0
+			rt := openRouterRT(func(*http.Request) (*http.Response, error) { hits++; return openRouterResponse(reply), nil })
+			if _, err := openRouterClient(p, rt).Do(openRouterRequest()); err == nil {
+				t.Fatal("usage beyond the request-size reservation accepted")
+			}
+			if _, err := openRouterClient(p, rt).Do(openRouterRequest()); err == nil || hits != 1 || !p.Snapshot().Blocked {
+				t.Fatal("broken reservation bound did not block")
+			}
+		})
+	}
+}
+
+// 입력 예약은 0보다 크고 입력 상한 이하여야 한다. transport는 openRouterReservedInput으로만 부르지만, 다른 호출자가
+// 상한 밖 값을 넘겨도 예산·누적 기록에 남기지 않고 거부한다.
+func TestOpenRouterReserveRejectsInputOutsideCallLimit(t *testing.T) {
+	for _, input := range []int64{0, -1, openRouterContext + 1} {
+		p := openRouterFixture(t)
+		called := false
+		p.ledger = func(int64, int64, int64) error { called = true; return nil }
+		reason, err := p.reserveDiagnostic(input, 100)
+		if err == nil || reason != "token_limit" || called || p.Snapshot().Requests != 0 || p.Snapshot().ReservedInputTokens != 0 {
+			t.Fatalf("input %d: reason=%q ledger=%v usage=%+v", input, reason, called, p.Snapshot())
+		}
+	}
+	if got := openRouterReservedInput(openRouterFixture(t).manifest, 1<<20); got != openRouterContext {
+		t.Fatalf("large request reservation %d", got)
 	}
 }

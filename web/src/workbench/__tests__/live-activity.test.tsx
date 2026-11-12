@@ -3,12 +3,12 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/abc2lab-ui/lib/api", async (importOriginal) => {
-  const real = await importOriginal<typeof import("@/abc2lab-ui/lib/api")>();
+vi.mock("@/lib/diagnosis/api", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/diagnosis/api")>();
   return { ...real, apiFetch: vi.fn() };
 });
 
-import * as teamApi from "@/abc2lab-ui/lib/api";
+import * as teamApi from "@/lib/diagnosis/api";
 
 import { useActivityTail } from "../live/useActivityTail";
 

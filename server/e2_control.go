@@ -55,13 +55,26 @@ type E2ControlFinal struct {
 	Checkpoint                                  *E2ControlCheckpoint
 }
 
+// E2ControlIsolation은 제어 소켓에서 엔진·도구를 어떻게 떼어 놓는지 밝힌다.
+// 값을 고른다고 격리가 생기지 않는다. 실제 배치의 음성 시험이 따로 있어야 한다.
+type E2ControlIsolation string
+
+const (
+	// 엔진·도구가 러너와 다른 uid로 돈다.
+	E2ControlIsolationSeparateUIDs E2ControlIsolation = ""
+	// 엔진은 제어 디렉터리가 mount되지 않은 다른 컨테이너에 있고, 도구는 이 서비스의 샌드박스에서만 돈다.
+	// 도구의 바깥 uid는 러너와 같지만 샌드박스 루트에 소켓 경로가 없어서 uid로 가르지 않는다.
+	E2ControlIsolationToolSandbox E2ControlIsolation = "tool_sandbox"
+)
+
 type E2ControlOptions struct {
-	ControlDirectory string `json:"-"`
-	EvalRunID        string `json:"-"`
-	ReservationRef   string `json:"-"`
-	RunnerUID        uint32 `json:"-"`
-	EngineUID        uint32 `json:"-"`
-	ToolsUID         uint32 `json:"-"`
+	ControlDirectory string             `json:"-"`
+	EvalRunID        string             `json:"-"`
+	ReservationRef   string             `json:"-"`
+	RunnerUID        uint32             `json:"-"`
+	EngineUID        uint32             `json:"-"`
+	ToolsUID         uint32             `json:"-"`
+	Isolation        E2ControlIsolation `json:"-"`
 	// 이 값은 평가 모드 선택이며 mount/PID 격리의 수용 증명이 아니다.
 	EvaluationDeployment bool             `json:"-"`
 	IOTimeout            time.Duration    `json:"-"`
@@ -98,7 +111,7 @@ func StartE2ControlService(parent context.Context, opts E2ControlOptions) (*E2Co
 		return nil, ErrE2Control
 	}
 	if parent == nil || parent.Err() != nil || nilE2ControlBackend(opts.Backend) || !validE2ControlRef(opts.EvalRunID) || !validE2ControlRef(opts.ReservationRef) ||
-		!opts.EvaluationDeployment || opts.RunnerUID == 0 || opts.EngineUID == 0 || opts.ToolsUID == 0 || opts.EngineUID == opts.RunnerUID || opts.ToolsUID == opts.RunnerUID ||
+		!opts.EvaluationDeployment || opts.RunnerUID == 0 || !validE2ControlIsolation(opts) ||
 		opts.IOTimeout <= 0 || opts.IOTimeout > time.Minute || opts.CloseTimeout <= 0 || opts.CloseTimeout > 2*time.Minute || opts.MaxConnections < 1 || opts.MaxConnections > 32 {
 		return nil, ErrE2Control
 	}
@@ -111,6 +124,18 @@ func StartE2ControlService(parent context.Context, opts E2ControlOptions) (*E2Co
 	}
 	service.transport = transport
 	return service, nil
+}
+
+func validE2ControlIsolation(opts E2ControlOptions) bool {
+	switch opts.Isolation {
+	case E2ControlIsolationSeparateUIDs:
+		return opts.EngineUID != 0 && opts.ToolsUID != 0 && opts.EngineUID != opts.RunnerUID && opts.ToolsUID != opts.RunnerUID
+	case E2ControlIsolationToolSandbox:
+		// 호출자가 값만 골라 uid 검사를 건너뛰지 못하게 샌드박스를 실제로 소유한 backend만 받는다.
+		_, owns := opts.Backend.(interface{ e2ControlOwnsToolSandbox() })
+		return owns && opts.EngineUID == 0 && opts.ToolsUID == 0
+	}
+	return false
 }
 
 func (s *E2ControlService) Close(ctx context.Context) error {

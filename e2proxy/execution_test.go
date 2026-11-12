@@ -883,21 +883,98 @@ func TestCoreTargetObservesOriginalHostAndIdentity(t *testing.T) {
 	}
 }
 
-func TestCoreUnsupportedEncodingAndHostNeverReachTarget(t *testing.T) {
+// 압축 협상은 거부하지 않고 identity 하나로 바꿔 보낸다(C15). 대상은 압축하지 않은 응답을 주고 E2는 그 본문을 검사한다.
+func TestCoreCompressedNegotiationIsSentAsIdentity(t *testing.T) {
+	for _, mode := range []string{"preserve", "evaluation"} {
+		t.Run(mode, func(t *testing.T) {
+			observed := make(chan []string, 16)
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				observed <- r.Header.Values("Accept-Encoding")
+				io.WriteString(w, "plain body")
+			}))
+			defer target.Close()
+			cfg := coreConfig(t, target.URL, &coreRecorder{}, 10)
+			if mode == "evaluation" {
+				cfg = evaluationCallerConfig(t, target.URL, &coreRecorder{}, 10, "api")
+			}
+			e, call := coreOpen(t, cfg)
+			for _, values := range [][]string{{"gzip"}, {"br"}, {"deflate"}, {"gzip, identity"}, {"identity;q=1"}, {"gzip", "br"}, {""}} {
+				req := coreRequest(t, "GET", target.URL+"/allowed")
+				req.Header["Accept-Encoding"] = values
+				if mode == "evaluation" {
+					req.Header.Set("Authorization", "Bearer synthetic-caller")
+				}
+				response, receipt, err := call.Do(t.Context(), req)
+				if err != nil || response == nil || receipt.Decision != "allowed" || receipt.Reason != Complete || !receipt.ResponseComplete {
+					t.Fatalf("%q: compressed negotiation was refused: %+v %v", values, receipt, err)
+				}
+				body, _ := io.ReadAll(response.Body)
+				response.Body.Close()
+				if got := <-observed; len(got) != 1 || got[0] != "identity" || string(body) != "plain body" {
+					t.Fatalf("%q: target saw %q, body %q", values, got, body)
+				}
+			}
+			// 보내지 않은 협상은 새로 만들지 않는다.
+			response, _, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
+			if err != nil || response == nil {
+				t.Fatal("request without negotiation failed", err)
+			}
+			response.Body.Close()
+			if got := <-observed; len(got) != 0 {
+				t.Fatalf("absent negotiation was added: %q", got)
+			}
+			if counts := e.Snapshot().Counts; counts.Unsupported != 0 || counts.Allowed != 8 {
+				t.Fatalf("%+v", counts)
+			}
+		})
+	}
+}
+
+// 승인 제안에는 실제로 보낼 값(identity)이 보인다.
+func TestCoreApprovalProposalShowsIdentityEncoding(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer target.Close()
+	var seen http.Header
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 2)
+	cfg.ApprovalMode = ApprovalConfirmEveryRequest
+	cfg.RequestApproval = requestApprovalFunc(func(_ context.Context, proposal RequestApprovalProposal) (bool, error) {
+		seen = proposal.Headers.Clone()
+		return true, nil
+	})
+	_, call := coreOpen(t, cfg)
+	req := coreRequest(t, "GET", target.URL+"/allowed")
+	req.Header.Set("Accept-Encoding", "gzip, br")
+	if response, _, err := call.Do(t.Context(), req); err != nil || response == nil {
+		t.Fatal("approved request failed", err)
+	} else {
+		response.Body.Close()
+	}
+	if got := seen.Values("Accept-Encoding"); len(got) != 1 || got[0] != "identity" {
+		t.Fatalf("approval saw %q", got)
+	}
+}
+
+// 대상이 identity 요청에도 압축해 보내면 본문을 검사할 수 없으므로 결과 불명으로 막는다.
+func TestCoreCompressedResponseToIdentityRequestIsWithheld(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		io.WriteString(w, "not really gzip")
+	}))
+	defer target.Close()
+	_, call := coreOpen(t, coreConfig(t, target.URL, &coreRecorder{}, 2))
+	req := coreRequest(t, "GET", target.URL+"/allowed")
+	req.Header.Set("Accept-Encoding", "gzip")
+	response, receipt, err := call.Do(t.Context(), req)
+	if err == nil || response != nil || receipt.Reason != Unknown || !receipt.ForwardAttempted {
+		t.Fatalf("compressed response was returned: %+v", receipt)
+	}
+}
+
+func TestCoreUncheckedHostNeverReachesTarget(t *testing.T) {
 	var received atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1) }))
 	defer target.Close()
 	e, call := coreOpen(t, coreConfig(t, target.URL, &coreRecorder{}, 10))
-	for _, encoding := range []string{"gzip", "br", "deflate", "gzip, identity", "identity;q=1"} {
-		t.Run(encoding, func(t *testing.T) {
-			req := coreRequest(t, "GET", target.URL+"/allowed")
-			req.Header.Set("Accept-Encoding", encoding)
-			response, receipt, err := call.Do(t.Context(), req)
-			if err == nil || response != nil || receipt.Decision != "unsupported" || receipt.Reason != Unsupported || !receipt.NotSent || receipt.ForwardAttempted {
-				t.Fatal("unsupported negotiation was sent")
-			}
-		})
-	}
 	req := coreRequest(t, "GET", target.URL+"/allowed")
 	req.Host = "other.invalid"
 	if response, receipt, err := call.Do(t.Context(), req); err == nil || response != nil || !receipt.NotSent {

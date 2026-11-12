@@ -192,11 +192,14 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 	if budget == nil {
 		return p.inner.Complete(ctx, req)
 	}
-	if err := budget.before(ctx, p.config, &req); err != nil {
+	reserved, err := budget.reserve(ctx, p.config, &req)
+	if err != nil {
 		return llm.Message{}, "", llm.Usage{}, err
 	}
-	message, reason, usage, err := p.inner.Complete(ctx, req)
-	if budgetErr := budget.after(usage, req.MaxTokens, err); budgetErr != nil {
+	call, done := budget.modelCallContext(ctx)
+	defer done()
+	message, reason, usage, err := p.inner.Complete(call, req)
+	if budgetErr := budget.settle(reserved, usage, err); budgetErr != nil {
 		return llm.Message{}, "", usage, budgetErr
 	}
 	return message, reason, usage, nil

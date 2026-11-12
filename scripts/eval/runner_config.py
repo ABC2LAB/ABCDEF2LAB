@@ -22,6 +22,8 @@ from urllib.parse import urlsplit
 from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
 from e2_export import E2_HEADER_MODES
+from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, PURPOSES
+from path_mask import PathKeyError, key_ref, read_path_key
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
 from runner_docker import container_file_ok
 
@@ -38,6 +40,9 @@ COMPOSE_EVAL = REPO_ROOT / "deploy" / "eval" / "compose.eval.yaml"
 # 개선 후 회차의 E② 자리에 통과 전용 가짜 E²를 둔다(e2.ours_mode=stub일 때만, compose.eval.yaml 다음).
 COMPOSE_E2_STUB = REPO_ROOT / "deploy" / "eval" / "compose.e2-stub.yaml"
 COMPOSE_E2_PRODUCT = REPO_ROOT / "deploy" / "eval" / "compose.e2-product.yaml"
+# 브라우저 수용시험 회차에만 얹는다(purpose=browser_acceptance). 계측기가 가린 경로를 기록한다.
+COMPOSE_ACCEPTANCE = REPO_ROOT / "deploy" / "eval" / "compose.acceptance.yaml"
+E2_SECCOMP_PROFILE = REPO_ROOT / "deploy" / "eval" / "seccomp-e2.json"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
 LLM_DIR_NAME = "llm"
@@ -45,6 +50,7 @@ LLM_DIR_NAME = "llm"
 E2_DIR_NAME = "e2"
 # 제품 E②: 준비(읽기 전용 mount), 제어 socket, 러너 전용 수집 사본. 사본은 E²에 mount하지 않는다.
 E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME, E2_STATE_DIR_NAME = "e2-config", "e2-control", "e2-copy", "e2-state"
+E2_ENGINE_DIR_NAME = "e2-engine"
 # 상태 차이 사본(대상 SQLite) 디렉터리. 사본은 지문을 뜬 즉시 지운다(값이 든 파일을 남기지 않음).
 STATE_DIR_NAME = "state"
 # 상태 차이(프로토콜 §8.2) 설정. null이면 사본을 뜨지 않는다. 앱별 값(DB 경로·해결 신호 테이블)은 여기서만 받는다.
@@ -143,6 +149,9 @@ _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_ima
                "observer_path", "observer_format", "engine", "engine_db", "tmpfs", "health", "docker_timeout_seconds",
                "host_listen_allowlist", "probe_timeout_ms", "runner_key_path", "run", "llm_gateway", "findings", "task",
                "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export")
+# 목적 칸이 생기기 전 설정(같은 CONFIG_VERSION)도 그대로 읽게 선택 칸으로 둔다. 빠지면 공식 회차다.
+# path_key_file은 수용시험 회차에만 있어야 한다(계측기 경로 가림 키, 회차 디렉터리 밖).
+_OPTIONAL_TOP_FIELDS = ("purpose", "path_key_file")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -151,7 +160,10 @@ MAX_FINDINGS_PAGES = 10_000
 _E2_PRODUCT_FIELDS = ("image", "policy_path", "policy_fingerprint_sha256", "header_mode", "ready_timeout_seconds", "close_ack_timeout_seconds",
                       "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds", "verify_tool", "verify_timeout_seconds",
                       "policy_tool", "policy_tool_timeout_seconds", "helper", "helper_sha256", "subnet", "meter_ip", "window_seconds",
-                      "approval_valid_until")
+                      "approval_valid_until", "prompt_wait_seconds", "declared_differences_path", "declared_differences_sha256")
+# 서비스 쪽 상한(server.StartE2ControlService)과 같다. 넘기면 eval-e2가 기동하지 못한다.
+MAX_E2_IO_TIMEOUT_SECONDS = 60
+MAX_E2_CLOSE_TIMEOUT_SECONDS = 120
 # 회차 CA 수명 상한(e2proxy maxExecutionCALifetime)과 같다. 승인 기간은 CA 수명을 넘을 수 없다.
 MAX_E2_WINDOW_SECONDS = 86_400
 # 게이트웨이 주소와 겹치지 않게 subnet은 최소 네 주소를 남긴다.
@@ -245,6 +257,10 @@ class RunnerConfig:
     engine_rules: str | None
     # 개선 후 판정 export 수집 한도(_VERDICT_FIELDS). None이면 수집 안 함(records=null).
     verdict_export: dict | None
+    # 회차 목적(PURPOSES). 서명된 실행 조건에 남아 채점기가 공식 비교 회차만 받는다.
+    purpose: str
+    # 수용시험 회차의 경로 가림 키 파일(비교할 회차 묶음이 같이 쓴다). 공식 회차는 None.
+    path_key_file: Path | None
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -289,18 +305,32 @@ class RunDirectory:
     e2_control: Path
     e2_copy: Path
     e2_state: Path
+    e2_engine: Path
 
 
-def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str]) -> dict:
+def _exact(raw: object, names: tuple[str, ...], prefix: str, errors: list[str], optional: tuple[str, ...] = ()) -> dict:
     if not isinstance(raw, dict):
         errors.append(f"{prefix}: EXPECTED_OBJECT")
         return {}
-    if set(raw) - set(names):
+    if set(raw) - set(names) - set(optional):
         errors.append(f"{prefix}: UNKNOWN_FIELDS")
     for name in names:
         if name not in raw:
             errors.append(f"{prefix}.{name}: MISSING")
     return raw
+
+
+def _outside_runs_root(top: dict, field: str, errors: list[str]) -> None:
+    """설정 글자 기준 검사(절대 경로, runs_root 밖). 링크를 풀어 본 실제 위치는 check_key_files가 실행 전에 본다."""
+    path = top[field]
+    if not _absolute_path(path):
+        errors.append(f"config.{field}: EXPECTED_ABSOLUTE_PATH")
+    elif _absolute_path(top.get("runs_root")) and _inside(path, top["runs_root"]):
+        errors.append(f"config.{field}: INSIDE_RUNS_ROOT")
+
+
+def _inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("/") + "/")
 
 
 def _int(value: object, low: int, high: int) -> bool:
@@ -346,7 +376,7 @@ def _image(raw: object, prefix: str, errors: list[str]) -> Image | None:
 
 def parse_runner_config(raw: object) -> RunnerConfig:
     errors: list[str] = []
-    top = _exact(raw, _TOP_FIELDS, "config", errors)
+    top = _exact(raw, _TOP_FIELDS, "config", errors, optional=_OPTIONAL_TOP_FIELDS)
     if "version" in top and not (type(top["version"]) is int and top["version"] == CONFIG_VERSION):
         errors.append("config.version: UNSUPPORTED")
     for name in ("runs_root", "secrets_env_file"):
@@ -389,6 +419,17 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     if "ours_mode" in e2 and e2["ours_mode"] not in E2_MODES:
         errors.append("config.e2.ours_mode: UNSUPPORTED")
     state = _state(top.get("state"), errors) if "state" in top else None
+    if "purpose" in top and top["purpose"] not in PURPOSES:
+        errors.append("config.purpose: UNSUPPORTED")
+    acceptance = top.get("purpose") == PURPOSE_BROWSER_ACCEPTANCE
+    if "path_key_file" in top and not acceptance:
+        # 공식 회차에서 경로 기록을 켤 길을 설정에 두지 않는다.
+        errors.append("config.path_key_file: OFFICIAL_FORBIDDEN")
+    elif acceptance and "path_key_file" not in top:
+        errors.append("config.path_key_file: MISSING")
+    elif acceptance:
+        # 키는 근거와 함께 복사·공유되지 않게 회차 디렉터리 밖에 둔다. 실제 위치는 check_key_files가 다시 본다.
+        _outside_runs_root(top, "path_key_file", errors)
     db = _exact(top.get("engine_db"), ("user", "name"), "config.engine_db", errors) if "engine_db" in top else {}
     for name in ("user", "name"):
         if name in db and not (isinstance(db[name], str) and _DB_NAME.fullmatch(db[name])):
@@ -415,13 +456,8 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     if "probe_timeout_ms" in top and not _int(top["probe_timeout_ms"], 1, MAX_PROBE_TIMEOUT_MS):
         errors.append("config.probe_timeout_ms: INVALID")
     if "runner_key_path" in top:
-        key_path = top["runner_key_path"]
-        if not _absolute_path(key_path):
-            errors.append("config.runner_key_path: EXPECTED_ABSOLUTE_PATH")
-        elif _absolute_path(top.get("runs_root")) and (key_path == top["runs_root"]
-                                                       or key_path.startswith(top["runs_root"].rstrip("/") + "/")):
-            # 서명 키는 회차 디렉터리 밖에 둔다. 회차 자료와 함께 복사·공유되지 않게.
-            errors.append("config.runner_key_path: INSIDE_RUNS_ROOT")
+        # 서명 키는 회차 디렉터리 밖에 둔다. 회차 자료와 함께 복사·공유되지 않게.
+        _outside_runs_root(top, "runner_key_path", errors)
     gateway = _exact(top.get("llm_gateway"), _GATEWAY_FIELDS, "config.llm_gateway", errors) if "llm_gateway" in top else {}
     if "generation_path" in gateway and not _observer_path(gateway["generation_path"]):
         errors.append("config.llm_gateway.generation_path: INVALID")
@@ -492,13 +528,15 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},
         observer_readonly_ref=top["observer_readonly_ref"], e2_ours_mode=e2["ours_mode"], e2_product=e2_product, state=state,
-        engine_rules=top["engine_rules"], verdict_export=verdict_export)
+        engine_rules=top["engine_rules"], verdict_export=verdict_export,
+        purpose=top.get("purpose", PURPOSE_OFFICIAL),
+        path_key_file=Path(top["path_key_file"]) if "path_key_file" in top else None)
 
 
 def _e2_product(block: dict, errors: list[str]) -> dict | None:
     """제품 E② 설정. 시한은 실행 예산과 따로 기록하는 값이라 전부 명시한다."""
     image = _image(block["image"], "config.e2.image", errors) if "image" in block else None
-    for name in ("policy_path", "verify_tool", "policy_tool", "helper"):
+    for name in ("policy_path", "verify_tool", "policy_tool", "helper", "declared_differences_path"):
         if name in block and not _absolute_path(block[name]):
             errors.append(f"config.e2.{name}: EXPECTED_ABSOLUTE_PATH")
     if "policy_fingerprint_sha256" in block and not (isinstance(block["policy_fingerprint_sha256"], str)
@@ -507,11 +545,15 @@ def _e2_product(block: dict, errors: list[str]) -> dict | None:
     if "header_mode" in block and not (isinstance(block["header_mode"], str) and block["header_mode"] in E2_HEADER_MODES):
         errors.append("config.e2.header_mode: UNSUPPORTED")
     for name in ("ready_timeout_seconds", "close_ack_timeout_seconds", "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds",
-                 "verify_timeout_seconds", "policy_tool_timeout_seconds"):
+                 "verify_timeout_seconds", "policy_tool_timeout_seconds", "prompt_wait_seconds"):
         if name in block and not _int(block[name], 1, MAX_RUN_SECONDS):
             errors.append(f"config.e2.{name}: INVALID")
-    if "helper_sha256" in block and not (isinstance(block["helper_sha256"], str) and _SHA256_HEX.fullmatch(block["helper_sha256"])):
-        errors.append("config.e2.helper_sha256: INVALID")
+    for name, limit in (("exchange_timeout_seconds", MAX_E2_IO_TIMEOUT_SECONDS), ("close_timeout_seconds", MAX_E2_CLOSE_TIMEOUT_SECONDS)):
+        if isinstance(block.get(name), int) and block[name] > limit:
+            errors.append(f"config.e2.{name}: TOO_LARGE")
+    for name in ("helper_sha256", "declared_differences_sha256"):
+        if name in block and not (isinstance(block[name], str) and _SHA256_HEX.fullmatch(block[name])):
+            errors.append(f"config.e2.{name}: INVALID")
     if "window_seconds" in block and not _int(block["window_seconds"], 1, MAX_E2_WINDOW_SECONDS):
         errors.append("config.e2.window_seconds: INVALID")
     if "approval_valid_until" in block and not _utc_time(block["approval_valid_until"]):
@@ -676,6 +718,38 @@ def load_runner_config(path: str | Path) -> RunnerConfig:
     return parse_runner_config(payload)
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        first, second = os.stat(a), os.stat(b)
+    except OSError:
+        return False  # 없는 파일과는 같을 수 없다. 없는 키 자체는 각자 읽을 때 거부된다.
+    return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+
+
+def check_key_files(config: RunnerConfig) -> str | None:
+    """비밀번호를 묻거나 up 하기 전에 키 파일의 실제 위치를 확인한다(#378 리뷰).
+
+    러너 서명 키와 경로 가림 키는 상위 디렉터리 링크를 풀어도 runs_root 밖이어야 한다. 경로 가림 키는
+    계측기와 같은 조건(러너 uid·0600·32바이트)으로 읽고, 러너 서명 키·비밀 env 파일과 같은 파일이면 거부한다
+    (서명 키가 대상 망의 계측기 컨테이너에 마운트되지 않게). 돌려주는 값은 키가 아니라 키 참조(16 hex)다.
+    """
+    root = os.path.realpath(config.runs_root)
+    if _inside(os.path.realpath(config.runner_key_path), root):
+        raise RunnerConfigError(["config.runner_key_path: INSIDE_RUNS_ROOT"])
+    if config.path_key_file is None:
+        return None
+    if _inside(os.path.realpath(config.path_key_file), root):
+        raise RunnerConfigError(["config.path_key_file: INSIDE_RUNS_ROOT"])
+    if _same_file(config.path_key_file, config.runner_key_path):
+        raise RunnerConfigError(["config.path_key_file: SAME_AS_RUNNER_KEY"])
+    if _same_file(config.path_key_file, config.secrets_env_file):
+        raise RunnerConfigError(["config.path_key_file: SAME_AS_SECRETS_FILE"])
+    try:
+        return key_ref(read_path_key(str(config.path_key_file)))
+    except PathKeyError as exc:
+        raise RunnerConfigError([f"config.path_key_file: {exc}"]) from None
+
+
 def new_run_id(side: str, now: datetime | None = None) -> str:
     """compose project 이름 규칙(소문자·숫자·-)을 지키고 회차마다 다르다."""
     if side not in SIDES:
@@ -722,6 +796,9 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         files.append(COMPOSE_E2_STUB)
     elif e2_mode == E2_PRODUCT:
         files.append(COMPOSE_E2_PRODUCT)
+    # 보존 시험은 원본·개선 후 양쪽 회차의 경로를 같은 키로 가려야 비교할 수 있다.
+    if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+        files.append(COMPOSE_ACCEPTANCE)
     env = {
         "EVAL_ENGINE_IMAGE": engine_image.ref,
         "EVAL_ENGINE_DB_IMAGE": config.images["engine_db"].ref,
@@ -753,6 +830,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "EVAL_LLM_CHAT_PATH": base_path + CHAT_COMPLETIONS_SUFFIX,
         "EVAL_LLM_SAMPLING": gateway_sampling(declared, side),
     }
+    if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+        env["EVAL_PATH_KEY_FILE"] = str(config.path_key_file)
     if llm["backend"] == "api":
         env["EVAL_LLM_PROVIDER"] = llm["provider"]
         env["EVAL_LLM_GENERATION_PATH"] = config.llm_gateway["generation_path"]
@@ -769,6 +848,9 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         env["EVAL_E2_IMAGE"] = config.e2_product["image"].ref
         env["EVAL_E2_SUBNET"] = config.e2_product["subnet"]
         env["EVAL_E2_METER_IP"] = config.e2_product["meter_ip"]
+        env["EVAL_E2_IO_TIMEOUT_SECONDS"] = str(config.e2_product["exchange_timeout_seconds"])
+        env["EVAL_E2_CLOSE_TIMEOUT_SECONDS"] = str(config.e2_product["close_timeout_seconds"])
+        env["EVAL_E2_SECCOMP_PROFILE"] = str(E2_SECCOMP_PROFILE)
     return RunPlan(side=side, run_id=run_id, project=f"eval-{run_id}", source_sha=declared["source_sha"],
                    llm=llm, target_image=target_image, engine_image=engine_image, images=images,
                    meter_port=origin.port, compose_files=tuple(files),
@@ -824,7 +906,7 @@ def create_run_directory(runs_root: Path, run_id: str, e2_mode: str = E2_NONE) -
             os.close(_make_private_child(run_fd, E2_DIR_NAME))
             os.close(_make_private_child(run_fd, STATE_DIR_NAME))
             if e2_mode == E2_PRODUCT:
-                for name in (E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME, E2_STATE_DIR_NAME):
+                for name in (E2_CONFIG_DIR_NAME, E2_CONTROL_DIR_NAME, E2_COPY_DIR_NAME, E2_STATE_DIR_NAME, E2_ENGINE_DIR_NAME):
                     os.close(_make_private_child(run_fd, name))
         finally:
             os.close(run_fd)
@@ -837,7 +919,7 @@ def create_run_directory(runs_root: Path, run_id: str, e2_mode: str = E2_NONE) -
     run = runs_root / run_id
     return RunDirectory(run=run, meter=run / METER_DIR_NAME, llm=run / LLM_DIR_NAME, e2=run / E2_DIR_NAME,
                         state=run / STATE_DIR_NAME, e2_config=run / E2_CONFIG_DIR_NAME, e2_control=run / E2_CONTROL_DIR_NAME,
-                        e2_copy=run / E2_COPY_DIR_NAME, e2_state=run / E2_STATE_DIR_NAME)
+                        e2_copy=run / E2_COPY_DIR_NAME, e2_state=run / E2_STATE_DIR_NAME, e2_engine=run / E2_ENGINE_DIR_NAME)
 
 
 def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str]:
@@ -850,6 +932,7 @@ def compose_environment(plan: RunPlan, directory: RunDirectory) -> dict[str, str
         env["EVAL_E2_CONFIG_DIR"] = str(directory.e2_config)
         env["EVAL_E2_CONTROL_DIR"] = str(directory.e2_control)
         env["EVAL_E2_STATE_DIR"] = str(directory.e2_state)
+        env["EVAL_E2_ENGINE_AUTH_DIR"] = str(directory.e2_engine)
     env["EVAL_RUNNER_UID"] = str(os.geteuid())
     env["EVAL_RUNNER_GID"] = str(os.getegid())
     return env

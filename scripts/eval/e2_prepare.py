@@ -20,12 +20,18 @@ from pathlib import Path
 from e2_export import E2_HEADER_MODES, E2_LLM_BACKENDS, HEADER_PASSTHROUGH, TARGET_PUBLIC_PRACTICE
 
 CONFIG_FORMAT = "abc2lab.e2-runner-config/v1"
+# v1에 수용시험 경로 가림 키 파일을 더한 판(e2config.FormatPathKey). 공식 회차는 v1만 쓴다.
+CONFIG_FORMAT_PATH_KEY = "abc2lab.e2-runner-config/v2"
 CONFIG_NAME, POLICY_NAME, KEY_NAME = "e2-config.json", "policy.json", "audit.key"
+PATH_KEY_NAME = "path.key"
 CA_CERT_NAME, CA_KEY_NAME = "ca.pem", "ca.key"
 CONTAINER_EVIDENCE_DIR, CONTAINER_CONTROL_DIR, CONTAINER_STATE_DIR = "/evidence", "/run/e2-control", "/run/e2-state"
 AUDIT_KEY_BYTES = 32
 # e2config.MaxPolicyBytes와 같아야 한다. 더 크면 제품 쪽 로더가 거부한다.
 MAX_POLICY_BYTES = 256 * 1024
+MAX_DECLARED_DIFFERENCES_BYTES = 64 * 1024
+DECLARED_DIFFERENCES_FORMAT = "abc2lab.e2-declared-differences/v1"
+DECLARED_DIFFERENCES_STATUSES = ("proposed", "confirmed")
 # 평가 회차에는 요청마다 승인할 사람이 없다. 확인 모드면 첫 요청에서 시한까지 멈춘다.
 EVAL_APPROVAL_MODE = "preauthorized_scope"
 # 제품 정책 로더가 PEM 파일을 읽는 상한과 같다.
@@ -133,6 +139,38 @@ def _read_policy(source: Path) -> bytes:
     if len(data) > MAX_POLICY_BYTES:
         _fail("policy_too_large")
     return data
+
+
+@dataclass(frozen=True)
+class DeclaredDifferences:
+    sha256: str
+    status: str
+
+
+def read_declared_differences(source: Path) -> DeclaredDifferences:
+    """선언된 차이 목록의 해시와 확정 상태. 링크·특수 파일은 받지 않는다."""
+    try:
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except OSError:
+        _fail("declared_differences_unavailable")
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            _fail("declared_differences_not_regular")
+        data = os.read(fd, MAX_DECLARED_DIFFERENCES_BYTES + 1)
+    except OSError:
+        _fail("declared_differences_unavailable")
+    finally:
+        os.close(fd)
+    if len(data) > MAX_DECLARED_DIFFERENCES_BYTES:
+        _fail("declared_differences_too_large")
+    try:
+        document = json.loads(data, object_pairs_hook=_no_duplicate_keys)
+    except (ValueError, RecursionError):
+        _fail("declared_differences_invalid")
+    if not isinstance(document, dict) or document.get("format") != DECLARED_DIFFERENCES_FORMAT or document.get("status") not in DECLARED_DIFFERENCES_STATUSES:
+        _fail("declared_differences_invalid")
+    return DeclaredDifferences(hashlib.sha256(data).hexdigest(), document["status"])
 
 
 def _no_duplicate_keys(pairs: list) -> dict:
@@ -266,10 +304,19 @@ def _write_new(directory: int, name: str, data: bytes) -> None:
         _fail("write_failed")
 
 
-def prepare_e2_config(directory: Path, values: E2RunValues, policy_source: Path | bytes) -> E2Prepared:
-    """설정·정책·키를 쓰고 러너가 대조할 값을 돌려준다. `config_sha256`은 쓴 설정 파일의 정확한 바이트 digest다."""
+def prepare_e2_config(directory: Path, values: E2RunValues, policy_source: Path | bytes,
+                      path_key: bytes | None = None) -> E2Prepared:
+    """설정·정책·키를 쓰고 러너가 대조할 값을 돌려준다. `config_sha256`은 쓴 설정 파일의 정확한 바이트 digest다.
+
+    path_key는 수용시험 회차의 경로 가림 키(계측기 -path-key-file과 같은 키)다. 주면 v2 설정과 키 파일을 쓰고,
+    eval-e2가 E② 시도 경로를 같은 규칙으로 가려 남긴다. 공식 회차는 주지 않는다(v1 그대로).
+    """
     _check_values(values)
+    if path_key is not None and (type(path_key) is not bytes or len(path_key) != AUDIT_KEY_BYTES):
+        _fail("path_key_invalid")
     key = secrets.token_bytes(AUDIT_KEY_BYTES)
+    if path_key is not None and key == path_key:
+        _fail("path_key_invalid")
     source = policy_source if isinstance(policy_source, bytes) else _read_policy(policy_source)
     policy = _pinned_policy(_read_document(source), key)
     reservation_ref = new_reference("reservation")
@@ -277,10 +324,14 @@ def prepare_e2_config(directory: Path, values: E2RunValues, policy_source: Path 
               "header_mode": values.header_mode, "evaluation": values.evaluation, "policy_file": POLICY_NAME, "audit_key_file": KEY_NAME,
               "listen": f":{values.port}", "upstream": f"http://{_UPSTREAM_HOST}:{values.port}",
               "evidence_dir": CONTAINER_EVIDENCE_DIR, "control_dir": CONTAINER_CONTROL_DIR}
+    if path_key is not None:
+        config.update(format=CONFIG_FORMAT_PATH_KEY, path_key_file=PATH_KEY_NAME)
     data = json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
     fd = _open_private_dir(directory)
     try:
         _write_new(fd, KEY_NAME, key)
+        if path_key is not None:
+            _write_new(fd, PATH_KEY_NAME, path_key)
         _write_new(fd, POLICY_NAME, policy)
         _write_new(fd, CONFIG_NAME, data)
         try:

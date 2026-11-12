@@ -3,7 +3,7 @@
 > 이경준 초안(§8 #2 레지스트리 **내용** 담당 = 이경준/윤재상). 형식 리뷰 = 최민준.
 > 대상 파일: `kg-registry-stage1.skeleton.json`. 형식 계약 = `docs/contracts/kg-fixture-registry.md`(v1).
 > **이건 구조 초안이다. 실제 값은 평가 준비 단계에서 채운다.** `address`·A 소유 1자원·합성 placeholder로 구조·정책·가드만 고정.
-> **(11/9) carrier type 확정: `address`(canary `field`=`fullName`)** — 윤재상 C1~C6 실측(`canary_carrier_report.md`)으로 basket(C1 탈락)·review/feedback(C4 부적격) 제치고 전부 통과. 아래 §carrier 참조. (`fullName`은 `Markers[].Field`이지 `DataPath`가 아님 — 구분은 item 2·§carrier.)
+> **(11/9) carrier type 확정: `address`(canary `field`=`fullName`)** — 윤재상 C1~C6 실측(조건·결과 요약은 아래 §carrier)으로 basket(C1 탈락)·review/feedback(C4 부적격) 제치고 전부 통과. 아래 §carrier 참조. (`fullName`은 `Markers[].Field`이지 `DataPath`가 아님 — 구분은 item 2·§carrier.)
 
 ## 무엇 / 왜
 - IDOR 1단계(수평·읽기·한 회차) 정본 정책을 담는 수동 등록 레지스트리의 **구조 뼈대**.
@@ -39,7 +39,9 @@
 3. **자원 개수**: 1단계 = **자원 1개(A 소유)** 확정(§1·"칸 하나짜리"). 대칭 확장은 선택.
 
 ## ✅ carrier 결정 (해소) — canary carrier = `address`
-**(11/9) 윤재상 C1~C6 실측(`canary_carrier_report.md`, Juice Shop v15.0.0)으로 확정.** 후보별 결과:
+**(11/9) 윤재상 C1~C6 실측(Juice Shop v15.0.0)으로 확정.**
+측정 조건: 격리된 1회용 로컬 인스턴스(시드 데이터만, 외부 주소·리다이렉트 없음), 같은 권한(customer)의 신규 계정 A·B, 모델 미사용(순수 HTTP 관찰), 후보마다 심기 전 사전 스캔 0건, 심기와 되읽기를 다른 요청으로 분리. 측정 결과물은 레포에 넣지 않으므로 원본 보고서는 레포 밖에 측정 담당(윤재상)·이경준이 보관하고 요청하면 공유한다. 리뷰 대조에 필요한 조건·결과는 아래에 요약한다. 교차 조회의 성공·실패와 GT 대조는 측정하지 않았다.
+후보별 결과:
 - **`address` — 적격(C1~C6 전부 pass). 채택.** 사적 자원(비인증 GET `401`·계정 B 목록에 A 자원 미노출=계정 격리), per-id GET `/api/Addresss/{id}` 응답 `{data:{fullName, streetAddress, …}}`의 `data` 객체 안 직속 string `fullName`(대안 `streetAddress`) → 심기·verbatim 복귀·반사없음. (E² view로는 DataPath=`data` 객체 경로, `Markers[].Field`=`fullName`.) 교차 GET 시도 경로(`GET /api/Addresss/{id}`, B가 A의 id로) 존재(※성공/실패는 미측정 = 판정[최민준] 몫). 심기(POST)/되읽기(GET per-id) 분리, sentinel 32hex·사전 스캔 0건.
 - **`basket` — 탈락(C1).** 객체 필드(id/coupon/UserId/createdAt/updatedAt/Products)에 심을 비자명 직속 자유 string 없음. (사적+교차경로는 가장 좋으나 심을 데가 없음.)
 - **`review`/`feedback` — 부적격(C4).** 심기·verbatim·반사없음(C1~C3,C5,C6)은 되지만 **비인증 GET으로 전량 공개 조회**라 사적 접근통제 경계가 없음 → 교차로 증명할 IDOR 경계 자체가 없음.

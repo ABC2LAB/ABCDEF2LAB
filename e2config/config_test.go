@@ -620,3 +620,171 @@ func TestPolicySizeExactBoundary(t *testing.T) {
 		})
 	}
 }
+
+// v2는 수용시험 회차의 경로 가림 키 파일을 더한 판이다. 공식 회차는 v1만 쓴다.
+func pathKeyFixture(t *testing.T) (string, map[string]any) {
+	t.Helper()
+	path, obj := fixture(t)
+	obj["format"], obj["path_key_file"] = FormatPathKey, "path.key"
+	write(t, filepath.Join(filepath.Dir(path), "path.key"), bytes.Repeat([]byte{23}, PathKeyBytes))
+	put(t, path, obj)
+	return path, obj
+}
+
+func TestPathKeyFormatLoadsAndReadsTheKey(t *testing.T) {
+	path, _ := pathKeyFixture(t)
+	c, err := Load(path)
+	if err != nil || !c.HasPathKey() || c.PathKeyPath != filepath.Join(filepath.Dir(path), "path.key") {
+		t.Fatal("v2 configuration rejected", err)
+	}
+	key, err := c.ReadPathKey()
+	if err != nil || !bytes.Equal(key, bytes.Repeat([]byte{23}, PathKeyBytes)) {
+		t.Fatal("path key not read")
+	}
+	if audit, err := c.ReadAuditKey(); err != nil || len(audit) != 32 || bytes.Equal(audit, key) {
+		t.Fatal("audit key changed by the v2 format")
+	}
+	v1, _ := fixture(t)
+	plain, err := Load(v1)
+	if err != nil || plain.HasPathKey() {
+		t.Fatal("v1 configuration gained a path key")
+	}
+	if key, err := plain.ReadPathKey(); err != ErrInvalid || key != nil {
+		t.Fatal("v1 configuration returned a path key")
+	}
+	if wire, err := json.Marshal(plain); err != nil || bytes.Contains(wire, []byte("path_key_file")) {
+		t.Fatal("v1 wire gained the v2 field")
+	}
+}
+
+func TestPathKeyFormatRejectsMismatches(t *testing.T) {
+	cases := map[string]func(t *testing.T, path string, obj map[string]any){
+		"v1 with field": func(t *testing.T, path string, obj map[string]any) {
+			obj["format"] = Format
+			put(t, path, obj)
+		},
+		"v2 without field": func(t *testing.T, path string, obj map[string]any) {
+			delete(obj, "path_key_file")
+			put(t, path, obj)
+		},
+		"v2 empty field": func(t *testing.T, path string, obj map[string]any) {
+			obj["path_key_file"] = ""
+			put(t, path, obj)
+		},
+		"v2 null field": func(t *testing.T, path string, obj map[string]any) {
+			obj["path_key_file"] = nil
+			put(t, path, obj)
+		},
+		"bad name": func(t *testing.T, path string, obj map[string]any) {
+			obj["path_key_file"] = "../path.key"
+			put(t, path, obj)
+		},
+		"same as policy": func(t *testing.T, path string, obj map[string]any) {
+			obj["path_key_file"] = "policy.json"
+			put(t, path, obj)
+		},
+		"same as audit key": func(t *testing.T, path string, obj map[string]any) {
+			obj["path_key_file"] = "audit.key"
+			put(t, path, obj)
+		},
+		"same as config": func(t *testing.T, path string, obj map[string]any) {
+			obj["path_key_file"] = filepath.Base(path)
+			put(t, path, obj)
+		},
+		"missing key file": func(t *testing.T, path string, _ map[string]any) {
+			if err := os.Remove(filepath.Join(filepath.Dir(path), "path.key")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"short key": func(t *testing.T, path string, _ map[string]any) {
+			write(t, filepath.Join(filepath.Dir(path), "path.key"), bytes.Repeat([]byte{23}, PathKeyBytes-1))
+		},
+		"long key": func(t *testing.T, path string, _ map[string]any) {
+			write(t, filepath.Join(filepath.Dir(path), "path.key"), bytes.Repeat([]byte{23}, PathKeyBytes+1))
+		},
+		"key equals audit key": func(t *testing.T, path string, _ map[string]any) {
+			write(t, filepath.Join(filepath.Dir(path), "path.key"), bytes.Repeat([]byte{19}, PathKeyBytes))
+		},
+		"readable key": func(t *testing.T, path string, _ map[string]any) {
+			if err := os.Chmod(filepath.Join(filepath.Dir(path), "path.key"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			path, obj := pathKeyFixture(t)
+			mutate(t, path, obj)
+			reject(t, path)
+		})
+	}
+}
+
+func TestPathKeyRecheckRejectsReplacement(t *testing.T) {
+	path, _ := pathKeyFixture(t)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(filepath.Dir(path), "path.key")
+	write(t, keyPath, bytes.Repeat([]byte{29}, PathKeyBytes))
+	if key, err := c.ReadPathKey(); err != ErrInvalid || key != nil || c.Check() != ErrInvalid {
+		t.Fatal("replaced path key was accepted")
+	}
+	// 읽은 뒤 경로 필드를 다른 파일로 바꿔도 받지 않는다.
+	path, _ = pathKeyFixture(t)
+	c, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.PathKeyPath = c.AuditKeyPath
+	if key, err := c.ReadPathKey(); err != ErrInvalid || key != nil {
+		t.Fatal("redirected path key was accepted")
+	}
+}
+
+func TestPythonProducerPathKeyCompatibility(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, o := fixture(t)
+	prep := filepath.Dir(path)
+	for _, name := range []string{"policy.json", "audit.key", "e2-config.json"} {
+		if err := os.Remove(filepath.Join(prep, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source := filepath.Join(filepath.Dir(prep), "source-policy.json")
+	write(t, source, []byte("{\"approval_mode\": \"preauthorized_scope\"}\n"))
+	script := `import sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import e2_prepare as p
+p.CONTAINER_CONTROL_DIR=sys.argv[4]
+p.CONTAINER_EVIDENCE_DIR=sys.argv[5]
+p.prepare_e2_config(Path(sys.argv[2]),p.E2RunValues("run-1","model:tag","preserve",None,8123),Path(sys.argv[3]),path_key=bytes(range(32)))
+`
+	cmd := exec.Command(python, "-I", "-c", script, filepath.Join(cwd, "..", "scripts", "eval"), prep, source, o["control_dir"].(string), o["evidence_dir"].(string))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("producer failed: %v, %s", err, output)
+	}
+	c, err := Load(path)
+	if err != nil || c.Format != FormatPathKey {
+		t.Fatal("producer v2 configuration rejected", err)
+	}
+	key, err := c.ReadPathKey()
+	if err != nil || !bytes.Equal(key, func() []byte {
+		b := make([]byte, 32)
+		for i := range b {
+			b[i] = byte(i)
+		}
+		return b
+	}()) {
+		t.Fatal("producer path key mismatch")
+	}
+}

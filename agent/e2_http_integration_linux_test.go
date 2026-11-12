@@ -177,7 +177,7 @@ func TestE2HTTPOriginalWorkerActualRunnerIntegration(t *testing.T) {
 				worker.SetNonStreaming(func() bool { return true })
 				ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 				defer cancel()
-				ctx = WithE2HTTPExecution(ctx, E2HTTPExecution{Runner: runner, Control: control, TaskID: 7, IntentID: intentID, TaskRef: "7", RunRef: "native-worker-" + scheme, MaxTurns: 3, MaxDuration: 10 * time.Second, ObserveResult: observe})
+				ctx = WithE2HTTPExecution(ctx, E2HTTPExecution{Runner: localRunnerForTest{runner}, Control: control, TaskID: 7, IntentID: intentID, TaskRef: "7", RunRef: "native-worker-" + scheme, MaxTurns: 3, MaxDuration: 10 * time.Second, ObserveResult: observe})
 				payload, _ := json.Marshal(map[string]string{"summary": "owned fixture intent " + strconv.FormatInt(intentID, 10)})
 				intent := &db.Node{ID: intentID, Kind: db.KindIntent, Payload: payload}
 				_, writes, runErr := worker.Execute(ctx, "worker", 7, nil, nil, intent, nil, func(a db.Activity) { activities = append(activities, a) }, nil, nil)
@@ -343,7 +343,8 @@ func (p *e2ActualWorkerProvider) Complete(_ context.Context, request llm.Complet
 	}
 	p.requests = append(p.requests, encoded)
 	for _, spec := range request.Tools {
-		if spec.Name != "Bash" {
+		// WebFetch는 같은 E② Bash 실행기를 지나는 판이다(루프 복원 결정안 §2).
+		if spec.Name != "Bash" && spec.Name != "WebFetch" {
 			return llm.Message{}, "", llm.Usage{}, errors.New("unexpected capability in native Worker fixture")
 		}
 	}

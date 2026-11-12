@@ -21,6 +21,7 @@ import (
 	"time"
 
 	pgdb "github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
@@ -37,6 +38,8 @@ type firstDiagnosisPreparationModel struct {
 	nextGoalChange func() error
 	mutationError  bool
 	badProfile     bool
+	noGoals        bool // 목표 분해 차례에 도구를 부르지 않고 끝낸다(목표 0개).
+	noIntents      bool // 계획 차례에 add_intent를 부르지 않고 끝낸다(intent 0개).
 }
 
 func (m *firstDiagnosisPreparationModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +99,7 @@ func (m *firstDiagnosisPreparationModel) ServeHTTP(w http.ResponseWriter, r *htt
 	}
 	var id, name string
 	var input any
-	if goalRound {
+	if goalRound && !m.noGoals {
 		switch {
 		case !seen["preparation-scope"]:
 			id, name, input = "preparation-scope", "add_task_scope", map[string]any{"kind": "ip", "value": "127.0.0.1", "reason": "The operator explicitly limited this owned fixture to IP 127.0.0.1."}
@@ -105,11 +108,11 @@ func (m *firstDiagnosisPreparationModel) ServeHTTP(w http.ResponseWriter, r *htt
 		case !seen["preparation-goals"]:
 			id, name, input = "preparation-goals", "set_goals", map[string]any{"text": "Prepare the first controlled GET of the owned fixture without executing it.", "vulnclass": "IDOR"}
 		}
-	} else {
+	} else if !goalRound {
 		switch {
 		case !seen["preparation-assets"]:
 			id, name, input = "preparation-assets", "list_assets", map[string]any{"dsl": "ip==127.0.0.1", "type": "ip", "limit": 5}
-		case !seen["preparation-intent"]:
+		case !seen["preparation-intent"] && !m.noIntents:
 			id, name, input = "preparation-intent", "add_intent", map[string]any{"summary": "Prepare an authorized GET of " + m.target + "/owned; do not execute it during preparation.", "asset_ids": []int64{m.assetID}, "priority": 5}
 		}
 	}
@@ -431,7 +434,158 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			if targetHits.Load() != 0 || nextServer.engine.e2HTTP != nil || nextServer.engine.controlledReads != nil {
 				t.Fatal("실패한 준비가 대상 실행 권한으로 승격됨")
 			}
+			if tc.mid {
+				// 분해가 실패해도 계속하는 경로(C11)가 바뀐 task에 intent를 쓰지 않는다.
+				var intents int
+				if pool.QueryRowContext(ctx, "SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", next.ExplorationID).Scan(&intents) != nil || intents != 0 {
+					t.Fatalf("상태가 바뀐 준비 task에 intent 기록: %d", intents)
+				}
+			}
 		})
 	}
 
+	// 목표 분해가 목표를 하나도 만들지 않아도 원래 목표로 계획을 계속한다(P3 결정안 C11 결정 1).
+	t.Run("goal-fallback", func(t *testing.T) {
+		next, err := PrepareFirstDiagnosisTask(ctx, pool, description, "Prepare a fresh owned fixture without executing it.", profileID, 60)
+		if err != nil {
+			t.Fatal("새 빈 준비 task 생성 실패")
+		}
+		manager.LoadExisting()
+		nextServer, err := NewFirstDiagnosisPreparationServer(ctx, manager, skillDir, dataDir, keyDir, manifest)
+		if err != nil {
+			t.Fatal("목표 분해 실패 준비 서버 생성 실패")
+		}
+		nextSupervisor, err := NewFirstDiagnosisSupervisor(ctx, manager)
+		if err != nil || nextSupervisor.Attach(nextServer) != nil {
+			t.Fatal("목표 분해 실패 준비 감독자 결속 실패")
+		}
+		defer func() {
+			cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			shutdown := nextSupervisor.Shutdown()
+			for _, finish := range []func(context.Context, *Server) error{shutdown.BlockAdmission, shutdown.CancelAndDrain, shutdown.CheckResults} {
+				if finish(cleanup, nextServer) != nil {
+					t.Error("목표 분해 실패 준비 writer 정리 실패")
+					break
+				}
+			}
+		}()
+		modelState.mu.Lock()
+		modelState.noGoals = true
+		before := map[string]int{}
+		for k, v := range modelState.emitted {
+			before[k] = v
+		}
+		modelState.mu.Unlock()
+		defer func() {
+			modelState.mu.Lock()
+			modelState.noGoals = false
+			modelState.mu.Unlock()
+		}()
+		// 실제 진단 로거를 붙여, 분해 실패 기록이 관찰 불완전(완료 실행을 unknown으로 바꾸는 표시)이 되지 않는지 본다.
+		logger, err := diagnosticlog.Create(privateDir(), "preparation", next.TaskID, "")
+		if err != nil {
+			t.Fatal("준비 진단 로거 생성 실패")
+		}
+		defer logger.Close()
+		bounded, stop := context.WithTimeout(diagnosticlog.With(ctx, logger), 20*time.Second)
+		defer stop()
+		if err := nextSupervisor.PrepareIntents(bounded, strconv.FormatInt(next.TaskID, 10)); err != nil {
+			t.Fatal("목표 0개에서 원래 목표로 계속하지 않음")
+		}
+		if logger.Err() != nil || logger.Incomplete() {
+			t.Fatalf("목표 분해 실패 기록이 진단 로그를 깨거나 관찰 불완전으로 표시함: err=%v", logger.Err() != nil)
+		}
+		var goals, intents int
+		if pool.QueryRowContext(ctx, "SELECT count(*) FILTER (WHERE kind='goal'), count(*) FILTER (WHERE kind='intent' AND state='open') FROM exploration_nodes WHERE exploration_id=$1", next.ExplorationID).Scan(&goals, &intents) != nil {
+			t.Fatal("목표 분해 실패 준비 산출물 조회 실패")
+		}
+		modelState.mu.Lock()
+		setGoals, addIntent := modelState.emitted["set_goals"]-before["set_goals"], modelState.emitted["add_intent"]-before["add_intent"]
+		modelState.mu.Unlock()
+		if goals != 0 || intents != 1 || setGoals != 0 || addIntent != 1 {
+			t.Fatalf("목표 분해 실패 뒤 계획: goals=%d intents=%d set_goals=%d add_intent=%d", goals, intents, setGoals, addIntent)
+		}
+		if targetHits.Load() != 0 {
+			t.Fatal("준비 단계에서 대상 요청이 발생함")
+		}
+	})
+
+	// 첫 계획에서 intent가 0개여도 준비는 실패하지 않는다. 실행 단계 Planner가 다시 계획하고, 그래도 없으면
+	// no_intents로 마감한다(C11 결정 2, C08 2-4).
+	t.Run("no-intents", func(t *testing.T) {
+		next, err := PrepareFirstDiagnosisTask(ctx, pool, description, "Prepare a fresh owned fixture that needs no intent.", profileID, 60)
+		if err != nil {
+			t.Fatal("새 빈 준비 task 생성 실패")
+		}
+		manager.LoadExisting()
+		nextServer, err := NewFirstDiagnosisPreparationServer(ctx, manager, skillDir, dataDir, keyDir, manifest)
+		if err != nil {
+			t.Fatal("intent 0개 준비 서버 생성 실패")
+		}
+		nextSupervisor, err := NewFirstDiagnosisSupervisor(ctx, manager)
+		if err != nil || nextSupervisor.Attach(nextServer) != nil {
+			t.Fatal("intent 0개 준비 감독자 결속 실패")
+		}
+		defer func() {
+			cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			shutdown := nextSupervisor.Shutdown()
+			for _, finish := range []func(context.Context, *Server) error{shutdown.BlockAdmission, shutdown.CancelAndDrain, shutdown.CheckResults} {
+				if finish(cleanup, nextServer) != nil {
+					t.Error("intent 0개 준비 writer 정리 실패")
+					break
+				}
+			}
+		}()
+		modelState.mu.Lock()
+		modelState.noIntents = true
+		before := modelState.emitted["add_intent"]
+		modelState.mu.Unlock()
+		defer func() {
+			modelState.mu.Lock()
+			modelState.noIntents = false
+			modelState.mu.Unlock()
+		}()
+		logger, err := diagnosticlog.Create(privateDir(), "preparation", next.TaskID, "")
+		if err != nil {
+			t.Fatal("준비 진단 로거 생성 실패")
+		}
+		defer logger.Close()
+		bounded, stop := context.WithTimeout(diagnosticlog.With(ctx, logger), 20*time.Second)
+		defer stop()
+		if err := nextSupervisor.PrepareIntents(bounded, strconv.FormatInt(next.TaskID, 10)); err != nil {
+			t.Fatal("intent 0개 준비를 실패로 끝냄")
+		}
+		if logger.Err() != nil || logger.Incomplete() {
+			t.Fatal("intent 0개 준비가 진단 로그를 깨거나 관찰 불완전으로 표시함")
+		}
+		// intent 0개는 실패가 아니므로 실패 단계 기록도 남기지 않는다.
+		file, err := os.Open(logger.Path())
+		if err != nil {
+			t.Fatal("준비 진단 로그 열기 실패")
+		}
+		defer file.Close()
+		for decoder := json.NewDecoder(file); ; {
+			var event diagnosticlog.Event
+			if err := decoder.Decode(&event); err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatal("준비 진단 로그 손상")
+			}
+			if event.Status == "failed" {
+				t.Fatalf("intent 0개 준비에 실패 기록: stage=%s reason=%s", event.Stage, event.ReasonCode)
+			}
+		}
+		var intents int
+		if pool.QueryRowContext(ctx, "SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", next.ExplorationID).Scan(&intents) != nil {
+			t.Fatal("intent 0개 준비 산출물 조회 실패")
+		}
+		modelState.mu.Lock()
+		addIntent := modelState.emitted["add_intent"] - before
+		modelState.mu.Unlock()
+		if intents != 0 || addIntent != 0 || targetHits.Load() != 0 {
+			t.Fatalf("intent 0개 준비 산출물: intents=%d add_intent=%d", intents, addIntent)
+		}
+	})
 }

@@ -5,6 +5,8 @@ package diagnosisprep
 import (
 	"context"
 	"errors"
+	"github.com/Autumn-27/artex/diagnosis"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"time"
 )
 
@@ -62,16 +64,31 @@ const (
 )
 
 type Input struct {
-	TargetURL   string `json:"target_url"`
-	ProfileID   string `json:"profile_id"`
-	DisplayName string `json:"display_name,omitempty"`
+	WorkflowMode  string `json:"workflow_mode,omitempty"`
+	ExcludedPaths string `json:"excluded_paths,omitempty"`
+	TargetURL     string `json:"target_url"`
+	ProfileID     string `json:"profile_id"`
+	DisplayName   string `json:"display_name,omitempty"`
 }
 
 type Profile struct {
-	ID              string `json:"id"`
-	Label           string `json:"label"`
-	ModelProfileRef string `json:"model_profile_ref"`
-	ModelLabel      string `json:"model_label"`
+	WorkflowRequestLimit int64                 `json:"workflow_request_limit,omitempty"`
+	Workflow             *diagnosisflow.Limits `json:"workflow,omitempty"`
+	ID                   string                `json:"id"`
+	Label                string                `json:"label"`
+	ModelProfileRef      string                `json:"model_profile_ref"`
+	ModelLabel           string                `json:"model_label"`
+	Model                *ModelInfo            `json:"model,omitempty"`
+}
+
+// 공개 경계에는 설치된 모델의 비밀 없는 라우팅 사실만 전달한다.
+type ModelInfo struct {
+	Mode             string `json:"mode"`
+	Model            string `json:"model"`
+	Provider         string `json:"provider"`
+	ExternalTransfer bool   `json:"external_transfer"`
+	InputPerCall     int64  `json:"input_tokens_per_call"`
+	OutputPerCall    int64  `json:"output_tokens_per_call"`
 }
 
 // 요청·토큰은 실제 송신 전 예약 상한이다. 로컬 모델 비용은 0이며 유료 fallback은 없다.
@@ -87,28 +104,33 @@ type Budget struct {
 // prefix는 자신과 하위 경로를 포함한다. query/body의 실제 E② 범위를 축소해 표시하지 않는다.
 // 이 projection에는 연결 IP·보호 경로·키·승인 원문을 넣지 않는다.
 type Scope struct {
-	TargetRef      string    `json:"target_ref"`
-	ScopeRef       string    `json:"scope_ref"`
-	Origin         string    `json:"origin"`
-	PathPrefixes   []string  `json:"path_prefixes"`
-	Methods        []string  `json:"methods"`
-	QueryPolicy    string    `json:"query_policy"`
-	BodyPolicy     string    `json:"body_policy"`
-	MaxBodyBytes   int64     `json:"max_body_bytes"`
-	ApprovalMode   string    `json:"approval_mode"`
-	AttestationRef string    `json:"attestation_ref"`
-	Budget         Budget    `json:"budget"`
-	ExpiresAt      time.Time `json:"expires_at"`
+	TargetRef      string     `json:"target_ref"`
+	ScopeRef       string     `json:"scope_ref"`
+	Origin         string     `json:"origin"`
+	PathPrefixes   []string   `json:"path_prefixes"`
+	Methods        []string   `json:"methods"`
+	QueryPolicy    string     `json:"query_policy"`
+	BodyPolicy     string     `json:"body_policy"`
+	MaxBodyBytes   int64      `json:"max_body_bytes"`
+	ApprovalMode   string     `json:"approval_mode"`
+	AttestationRef string     `json:"attestation_ref"`
+	Budget         Budget     `json:"budget"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	Model          *ModelInfo `json:"model,omitempty"`
 }
 
 type ModelUsage struct {
-	Requests             int64 `json:"requests"`
-	InputTokens          int64 `json:"input_tokens"`
-	OutputTokens         int64 `json:"output_tokens"`
-	ReservedInputTokens  int64 `json:"reserved_input_tokens"`
-	ReservedOutputTokens int64 `json:"reserved_output_tokens"`
-	CostUSDMicros        int64 `json:"cost_usd_micros"`
-	UsageKnown           bool  `json:"usage_known"`
+	Requests              int64 `json:"requests"`
+	InputTokens           int64 `json:"input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReservedInputTokens   int64 `json:"reserved_input_tokens"`
+	ReservedOutputTokens  int64 `json:"reserved_output_tokens"`
+	CostUSDMicros         int64 `json:"cost_usd_micros"`
+	ReservedCostUSDMicros int64 `json:"reserved_cost_usd_micros,omitempty"`
+	// UsageKnown은 모든 호출이 실제 값 또는 예약 상한으로 정산됐다는 뜻이다. 상한으로 정산한 호출 수는
+	// UnknownUsageCalls이고, 0보다 크면 입력·출력·비용은 실제 사용의 상한이다(P3 결정안 C05).
+	UsageKnown        bool  `json:"usage_known"`
+	UnknownUsageCalls int64 `json:"unknown_usage_calls,omitempty"`
 }
 
 // 준비 단계에서 결과가 불명이면 Started=false일 수 있다.
@@ -130,29 +152,39 @@ type Job struct {
 	DrainComplete      bool           `json:"drain_complete"`
 	ResultReady        bool           `json:"result_ready"`
 	ModelUsage         *ModelUsage    `json:"model_usage,omitempty"`
+	// 실행 결과(docs/contracts/run-outcome-states.md §3.2). outcome·closing_reason은 completed에만,
+	// intent_outcomes는 completed·cancelled에만 있다. 이 칸이 생기기 전에 저장된 completed에는 없을 수 있다.
+	Outcome        string                    `json:"outcome,omitempty"`
+	ClosingReason  string                    `json:"closing_reason,omitempty"`
+	IntentOutcomes *diagnosis.IntentOutcomes `json:"intent_outcomes,omitempty"`
+	// 진단 로그(운영 기록) 일부가 남지 않았다는 경고다(C10). 감사·결과에는 영향이 없다. completed에만 있다.
+	DiagnosticLogIncomplete bool `json:"diagnostic_log_incomplete,omitempty"`
 }
 
 // Principal은 API가 기존 Bearer 인증으로 확인한 주체다. 브라우저 body에서는 받지 않는다.
 // socket 주소·descriptor·파일 경로·환경 변수·명령·권위 자료는 요청 필드가 아니다.
 type Request struct {
-	Version          string  `json:"version"`
-	RequestID        string  `json:"request_id"`
-	Command          Command `json:"command"`
-	Principal        string  `json:"principal"`
-	JobID            string  `json:"job_id,omitempty"`
-	ExpectedRevision uint64  `json:"expected_revision,omitempty"`
-	IdempotencyKey   string  `json:"idempotency_key,omitempty"`
-	Input            *Input  `json:"input,omitempty"`
-	TaskID           string  `json:"task_id,omitempty"`
+	Version                   string          `json:"version"`
+	RequestID                 string          `json:"request_id"`
+	Command                   Command         `json:"command"`
+	Principal                 string          `json:"principal"`
+	JobID                     string          `json:"job_id,omitempty"`
+	ExpectedRevision          uint64          `json:"expected_revision,omitempty"`
+	IdempotencyKey            string          `json:"idempotency_key,omitempty"`
+	Input                     *Input          `json:"input,omitempty"`
+	TaskID                    string          `json:"task_id,omitempty"`
+	ExternalTransferConfirmed bool            `json:"external_transfer_confirmed,omitempty"`
+	Product                   *ProductRequest `json:"product,omitempty"`
 }
 
 type Response struct {
-	Version    string    `json:"version"`
-	RequestID  string    `json:"request_id"`
-	Profiles   []Profile `json:"profiles,omitempty"`
-	Job        *Job      `json:"job,omitempty"`
-	Authorized *bool     `json:"authorized,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Version    string           `json:"version"`
+	RequestID  string           `json:"request_id"`
+	Profiles   []Profile        `json:"profiles,omitempty"`
+	Job        *Job             `json:"job,omitempty"`
+	Authorized *bool            `json:"authorized,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	Product    *ProductResponse `json:"product,omitempty"`
 }
 
 // Endpoint는 이미 설치된 비공개 서비스 연결이다. Call은 변경 요청을 자동 재송신하지 않는다.
@@ -196,6 +228,10 @@ type Update struct {
 	DrainComplete      bool
 	ResultReady        bool
 	ModelUsage         *ModelUsage
+	// Result는 진단 실행이 completed로 마감했을 때의 결과다. 다른 상태에서는 nil이어야 한다.
+	Result *diagnosis.RunResult
+	// DiagnosticLogIncomplete는 completed 실행의 진단 로그 경고다(reason_code와 따로).
+	DiagnosticLogIncomplete bool
 }
 
 // Publish 실패는 실행 허가가 아니다. 신규 부작용을 중단하고 기존 실행은 취소·drain한다.

@@ -12,8 +12,15 @@ import json
 import re
 from datetime import datetime
 
+from e2_prompt_identity import PROMPT_FIELDS, PROMPT_SOURCES
+
 _CONTEXT = ("run_id", "model_tag", "reset_generation", "instance_id", "execution_id")
 EVIDENCE_FORMAT = "abc2lab-isolation-evidence-v1"
+# 회차 목적(러너 설정 purpose). official만 공식 비교에 쓴다. browser_acceptance는 계측기 경로 기록이 있어야 하는
+# 수용시험 회차다(docs/evaluation/browser-acceptance.md). 격리 검증은 목적과 상관없이 하고, 합산 제외는 채점기가 한다.
+PURPOSE_OFFICIAL = "official"
+PURPOSE_BROWSER_ACCEPTANCE = "browser_acceptance"
+PURPOSES = (PURPOSE_OFFICIAL, PURPOSE_BROWSER_ACCEPTANCE)
 NETWORK_MODES = ("loopback_only", "dedicated_network")
 ALLOWED_ACTORS = frozenset({"engine", "observer"})
 # 양성 대조는 연결 성공, 부정 경로는 실패가 기대값이다.
@@ -48,10 +55,14 @@ _ROW_FIELDS = {
     "verdict_collection": {"status", "reason"},
     "e2_product": {"close_state", "close_reason", "collection_outcome", "collection_reason", "rows", "attempts", "decisions",
                    "attempts_without_result", "allowed_not_sent", "checkpoint_sequence", "config_sha256", "policy_fingerprint_sha256",
-                   "manifest_sha256", "image_id"},
+                   "manifest_sha256", "image_id", "declared_differences_sha256", "declared_differences_status"},
+    "e2_prompt": {"status", "reason", "task_id", "exploration_id", "run_ref", "expected_count", "projection_sha256", *PROMPT_FIELDS},
     "attempt_reconciliation": {"cells", "allowed_responded", "meter_attempt_reused", "blocked_reached", "unrecorded_reached",
                                "positive_evidence", "control_claim_withheld"},
 }
+# 목적 칸이 생기기 전에 서명된 근거(같은 v1 형식)도 다시 검증할 수 있게 빠지면 공식 회차로 읽는다.
+_PATH_KEY_REF = re.compile(r"[0-9a-f]{16}\Z")
+_OPTIONAL_ROW_FIELDS = {"run_conditions": frozenset({"purpose", "path_key_ref"})}
 # 개선 후 회차의 E② 자리(러너 e2.ours_mode). 회차 조건(run_conditions)과 달리 baseline·개선 후가 일부러 다르므로
 # 회차 사이 동일성 대조가 아니라 조건별로 섞이지 않는지만 채점기가 본다.
 E2_MODES = ("none", "stub", "product")
@@ -61,6 +72,8 @@ E2_PRODUCT_FAILURE = "product_failure"
 E2_COLLECTION_OUTCOMES = ("complete", E2_PRODUCT_FAILURE, "no_execution")
 E2_DECISION_NAMES = ("allowed", "denied", "unsupported")
 _E2_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+E2_DECLARED_PROPOSED = "proposed"
+E2_DECLARED_STATUSES = frozenset({E2_DECLARED_PROPOSED, "confirmed"})
 _E2_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # 시도별 대조 다섯 칸(평가 프로토콜 §8.3). 러너 대조 코드와 따로 계약대로 다시 확인한다.
 RECONCILE_CELLS = ("allowed_observed", "allowed_unobserved", "denied_unobserved", "denied_observed",
@@ -143,7 +156,11 @@ def _rows(evidence: object, receipt: dict) -> dict[str, list[dict]]:
         if not isinstance(row, dict) or row.get("kind") not in _ROW_FIELDS:
             raise IsolationError("isolation_evidence: 모르는 행 종류")
         kind = row["kind"]
-        _fields(row, _ROW_FIELDS[kind] | {"kind", "seq", "at"}, f"isolation_evidence.{kind}")
+        optional = _OPTIONAL_ROW_FIELDS.get(kind, frozenset()) & set(row)
+        _fields(row, _ROW_FIELDS[kind] | optional | {"kind", "seq", "at"}, f"isolation_evidence.{kind}")
+        if kind == "run_conditions":
+            # 수용시험 경로 가림 키 참조(#378)도 그 전 근거에는 없다. 공식 회차에는 원래 없다.
+            row = {"purpose": PURPOSE_OFFICIAL, "path_key_ref": None, **row}
         if row["seq"] != index or type(row["seq"]) is not int:
             raise IsolationError("isolation_evidence: 행 순번 공백·중복")
         _time(row["at"], f"isolation_evidence.{kind}.at")
@@ -247,6 +264,12 @@ def valid_output_language(value: object) -> bool:
 
 def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     row = _one(rows, "run_conditions")
+    if row["purpose"] not in PURPOSES:
+        raise IsolationError("isolation_evidence.run_conditions.purpose: official|browser_acceptance")
+    # 수용시험 회차는 경로 가림 키 참조가 있어야 하고, 공식 회차에는 없어야 한다.
+    if (row["purpose"] == PURPOSE_BROWSER_ACCEPTANCE) != _matches(_PATH_KEY_REF, row["path_key_ref"]) or (
+            row["purpose"] == PURPOSE_OFFICIAL and row["path_key_ref"] is not None):
+        raise IsolationError("isolation_evidence.run_conditions.path_key_ref: 수용시험 회차만 16 hex")
     _hex(row["engine_settings_sha256"], "isolation_evidence.run_conditions.engine_settings_sha256")
     _hex(row["machine_id_sha256"], "isolation_evidence.run_conditions.machine_id_sha256")
     _hex(row["tool_tree_sha256"], "isolation_evidence.run_conditions.tool_tree_sha256")
@@ -301,7 +324,8 @@ def e2_product_row(receipt: dict, evidence: object) -> dict | None:
         return None
     row = _one(_rows(evidence, receipt), "e2_product")
     if (not _matches(_E2_SHA256, row["config_sha256"]) or not _matches(_E2_SHA256, row["policy_fingerprint_sha256"])
-            or not _matches(_E2_IMAGE_ID, row["image_id"])):
+            or not _matches(_E2_IMAGE_ID, row["image_id"]) or not _matches(_E2_SHA256, row["declared_differences_sha256"])
+            or row["declared_differences_status"] not in E2_DECLARED_STATUSES):
         raise IsolationError("isolation_evidence.e2_product: 대조 값 형식 오류")
     close, outcome, reason = row["close_state"], row["collection_outcome"], row["collection_reason"]
     if close not in E2_CLOSE_STATES or outcome not in E2_COLLECTION_OUTCOMES:
@@ -323,6 +347,28 @@ def e2_product_row(receipt: dict, evidence: object) -> dict | None:
             or not _count(row["attempts"]) or sum(decisions.values()) != row["attempts"]):
         raise IsolationError("isolation_evidence.e2_product: 결정 건수 형식 오류")
     return row
+
+
+def e2_prompt(receipt: dict, evidence: object) -> tuple[str, ...] | None:
+    """제품 E² 회차의 Worker 프롬프트 식별값(프로토콜 §2). 결과가 완료인 회차는 확인된 값이 반드시 있어야 한다."""
+    if e2_mode(receipt, evidence) != "product":
+        if _rows(evidence, receipt)["e2_prompt"]:
+            raise IsolationError("isolation_evidence.e2_prompt: 제품 E² 회차에만 있음")
+        return None
+    row = _one(_rows(evidence, receipt), "e2_prompt")
+    outcome = e2_product_row(receipt, evidence)["collection_outcome"]
+    details = ("task_id", "exploration_id", "run_ref", "expected_count", "projection_sha256", *PROMPT_FIELDS)
+    if row["status"] == "not_applicable":
+        if outcome == "complete" or row["reason"] != outcome or any(row[name] is not None for name in details):
+            raise IsolationError("isolation_evidence.e2_prompt: 미적용 상태가 맞지 않음")
+        return None
+    if row["status"] != "verified" or outcome != "complete" or row["reason"] is not None:
+        raise IsolationError("isolation_evidence.e2_prompt: 확인 상태가 맞지 않음")
+    digests = ("projection_sha256", "template_digest", "guidance_digest", "control_digest", "tools_digest")
+    if (not all(_matches(_E2_SHA256, row[name]) for name in digests) or row["source"] not in PROMPT_SOURCES or not _count(row["exploration_id"])
+            or row["exploration_id"] < 1 or not _count(row["expected_count"]) or row["expected_count"] < 1 or not isinstance(row["task_id"], str) or not isinstance(row["run_ref"], str)):
+        raise IsolationError("isolation_evidence.e2_prompt: 값 형식 오류")
+    return tuple(row[name] for name in PROMPT_FIELDS)
 
 
 def verdict_collection(receipt: dict, evidence: object, records: object) -> None:
@@ -352,10 +398,10 @@ def _count(value: object) -> bool:
     return type(value) is int and value >= 0
 
 
-def e2_identity(receipt: dict, evidence: object) -> tuple[str, str] | None:
-    """제품 E² 회차의 (정책 지문, 이미지 ID). 채점기가 조건 하나 안에서 같은지 대조한다(프로토콜 §2)."""
+def e2_identity(receipt: dict, evidence: object) -> tuple[str, str, str, str] | None:
+    """제품 E² 회차의 (정책 지문, 이미지 ID, 선언 차이 해시·상태). 채점기가 조건 하나 안에서 같은지 대조한다(프로토콜 §2)."""
     row = e2_product_row(receipt, evidence)
-    return None if row is None else (row["policy_fingerprint_sha256"], row["image_id"])
+    return None if row is None else (row["policy_fingerprint_sha256"], row["image_id"], row["declared_differences_sha256"], row["declared_differences_status"])
 
 
 def blocked_attempts(reconciled: dict | None) -> int | None:
@@ -430,6 +476,11 @@ def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str,
     return (row["engine_settings_sha256"], canonical_sha256(row["sampling"]), canonical_sha256(row["host"]),
             row["machine_id_sha256"], "true" if row["llm_stream"] else "false", row["engine_rules_sha256"] or "없음",
             row["tool_tree_sha256"])
+
+
+def run_purpose(receipt: dict, evidence: object) -> str:
+    """check_isolation을 통과한 근거의 회차 목적. 채점기는 official 회차만 합산한다."""
+    return _one(_rows(evidence, receipt), "run_conditions")["purpose"]
 
 
 def output_language(receipt: dict, evidence: object) -> str:

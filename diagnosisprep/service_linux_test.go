@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/Autumn-27/artex/diagnosis"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,6 +82,7 @@ func completeRun(_ context.Context, _ Execution, p Publish) error {
 	u.Phase = Report
 	u.DrainComplete = true
 	u.ResultReady = true
+	u.Result = &diagnosis.RunResult{Outcome: diagnosis.OutcomeComplete, IntentOutcomes: diagnosis.IntentOutcomes{Done: 1}}
 	return p(u)
 }
 func privateDir(t *testing.T) string {
@@ -475,9 +477,9 @@ func TestStopRevisionAndPreparationCancellation(t *testing.T) {
 }
 func TestPublishRejectsRegressionsAndKeepsKnownFacts(t *testing.T) {
 	s, b, _ := newFixture(t)
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 6)
 	b.run = func(ctx context.Context, e Execution, p Publish) error {
-		u := Update{State: Running, Phase: ExecutionPhase, TaskID: "42", PreparationStarted: true, AuthorityState: AuthorityConsumed, Started: true, ModelUsage: &ModelUsage{Requests: 1, ReservedInputTokens: 10}}
+		u := Update{State: Running, Phase: ExecutionPhase, TaskID: "42", PreparationStarted: true, AuthorityState: AuthorityConsumed, Started: true, ModelUsage: &ModelUsage{Requests: 1, ReservedInputTokens: 10, UnknownUsageCalls: 1, UsageKnown: true}}
 		if err := p(u); err != nil {
 			return err
 		}
@@ -494,14 +496,21 @@ func TestPublishRejectsRegressionsAndKeepsKnownFacts(t *testing.T) {
 		bad = u
 		bad.Phase = Planning
 		errCh <- p(bad)
+		// 상한으로 정산한 호출 수는 줄지 않고 요청 수를 넘지 않는다(C05).
+		bad = u
+		bad.ModelUsage = &ModelUsage{Requests: 1, ReservedInputTokens: 10, UsageKnown: true}
+		errCh <- p(bad)
+		bad = u
+		bad.ModelUsage = &ModelUsage{Requests: 1, ReservedInputTokens: 10, UnknownUsageCalls: 2, UsageKnown: true}
+		errCh <- p(bad)
 		return errors.New("interrupted")
 	}
 	j := create(t, s, "create")
 	start(t, s, j, "start")
 	got := awaitState(t, s, j.ID, Unknown)
-	for range 4 {
+	for i := range 6 {
 		if <-errCh == nil {
-			t.Fatal("regression allowed")
+			t.Fatalf("regression %d allowed", i)
 		}
 	}
 	if !got.Started || got.AuthorityState != AuthorityConsumed || got.TaskID != "42" {
@@ -621,5 +630,69 @@ func TestConfirmedFailureBeforeTaskDoesNotInventTaskOrReport(t *testing.T) {
 	got := awaitState(t, s, j.ID, Failed)
 	if got.TaskID != "" || got.Started || got.ResultReady || !got.DrainComplete {
 		t.Fatal("prep failure invented facts")
+	}
+}
+
+func TestExternalTransferConsentIsRequiredAndDurable(t *testing.T) {
+	s, b, root := newFixture(t)
+	b.inspection.Scope.Model = &ModelInfo{Mode: "openrouter", Model: "qwen/qwen3.5-35b-a3b", Provider: "fixture/endpoint", ExternalTransfer: true, InputPerCall: 262144, OutputPerCall: 100}
+	j := create(t, s, "external-create")
+	denied := start(t, s, j, "external-start")
+	if denied.Error != "approval_required" || b.calls.Load() != 0 {
+		t.Fatal("external execution without consent")
+	}
+	r := request(Start)
+	r.JobID = j.ID
+	r.ExpectedRevision = j.Revision
+	r.IdempotencyKey = "external-start"
+	r.ExternalTransferConfirmed = true
+	if result := call(t, s, r); result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	for deadline := time.Now().Add(time.Second); status(t, s, j.ID).State != Completed; {
+		if time.Now().After(deadline) {
+			t.Fatal("synthetic completion timeout")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if s.Shutdown(context.Background()) != nil {
+		t.Fatal("shutdown")
+	}
+	restored, err := New(context.Background(), root, b)
+	if err != nil {
+		t.Fatal("consent receipt restart", err)
+	}
+	defer restored.Shutdown(context.Background())
+	if status(t, restored, j.ID).State != Completed || b.calls.Load() != 1 {
+		t.Fatal("consent receipt replayed execution")
+	}
+}
+
+// 결과 없이 completed로 마감하려는 갱신은 거부한다. 실행은 완료로 보이지 않고 결과 불명으로 끝난다(절대 규칙 5).
+func TestPublishRejectsCompletionWithoutRunResult(t *testing.T) {
+	s, b, _ := newFixture(t)
+	var completionErr error
+	b.run = func(ctx context.Context, e Execution, p Publish) error {
+		withoutResult := func(u Update) error {
+			if u.State == Completed {
+				u.Result = nil
+				completionErr = p(u)
+				return completionErr
+			}
+			return p(u)
+		}
+		return completeRun(ctx, e, withoutResult)
+	}
+	j := create(t, s, "create")
+	r := request(Start)
+	r.JobID = j.ID
+	r.ExpectedRevision = j.Revision
+	r.IdempotencyKey = "start"
+	if res, err := s.Call(context.Background(), r); err != nil || res.Error != "" {
+		t.Fatal(res, err)
+	}
+	final := awaitState(t, s, j.ID, Unknown)
+	if completionErr == nil || final.Outcome != "" || final.IntentOutcomes != nil {
+		t.Fatalf("completion without result: err=%v job=%+v", completionErr, final)
 	}
 }

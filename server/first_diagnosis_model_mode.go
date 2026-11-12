@@ -39,6 +39,12 @@ func (o FirstDiagnosisModelOptions) load() (*llmpolicy.ProfileResolver, *llmpoli
 		if o.LocalManifestPath != "" || o.OpenRouterManifestPath == "" {
 			return nil, nil, ErrFirstDiagnosisModel
 		}
+		if o.Budget != nil {
+			if o.Budget.external == nil || o.Budget.manifestPath != o.OpenRouterManifestPath {
+				return nil, nil, ErrFirstDiagnosisModel
+			}
+			return nil, o.Budget.external, nil
+		}
 		external, err := llmpolicy.LoadOpenRouterManifestFile(o.OpenRouterManifestPath)
 		if err != nil {
 			return nil, nil, ErrFirstDiagnosisModel
@@ -74,7 +80,15 @@ func newFirstDiagnosisHTTPServer(ctx context.Context, m *Manager, skillDir, data
 	if err != nil {
 		return nil, err
 	}
-	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, e2HTTP: runtime, openRouterPolicy: external, firstModelBudget: o.Budget}, nil)
+	baseline := llmpolicy.OpenRouterUsage{}
+	if external != nil {
+		baseline = external.Snapshot()
+	}
+	s, err := newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, e2HTTP: runtime, openRouterPolicy: external, firstModelBudget: o.Budget}, nil)
+	if s != nil {
+		s.openRouterBaseline = baseline
+	}
+	return s, err
 }
 
 // 준비 모드는 대상 실행 없이 같은 보호 모델 클라이언트로 Planner만 실행한다.
@@ -95,6 +109,17 @@ func (s *Server) FirstDiagnosisModelUsage() *llmpolicy.OpenRouterUsage {
 		return nil
 	}
 	usage := s.openRouterPolicy.Snapshot()
+	// 저장 회차 사용량은 실행 단계만 포함하며 준비 단계는 별도 불변 기록으로 남긴다.
+	baseline := s.openRouterBaseline
+	usage.Requests -= baseline.Requests
+	usage.Errors -= baseline.Errors
+	usage.ReservedInputTokens -= baseline.ReservedInputTokens
+	usage.ReservedOutputTokens -= baseline.ReservedOutputTokens
+	usage.ReservedCostMicros -= baseline.ReservedCostMicros
+	usage.InputTokens -= baseline.InputTokens
+	usage.OutputTokens -= baseline.OutputTokens
+	usage.CostMicros -= baseline.CostMicros
+	usage.LatencyMillis -= baseline.LatencyMillis
 	return &usage
 }
 func (s *FirstDiagnosisSupervisor) ModelUsage() *llmpolicy.OpenRouterUsage {

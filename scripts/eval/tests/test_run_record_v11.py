@@ -235,11 +235,87 @@ class TestRejectedV11(_V11):
         row = {"close_state": "complete", "close_reason": None, "collection_outcome": "complete", "collection_reason": None, "rows": 7, "attempts": 5,
                "decisions": {"allowed": 4, "denied": 1, "unsupported": 0}, "attempts_without_result": 0, "allowed_not_sent": 0, "checkpoint_sequence": 7,
                "config_sha256": "1" * 64, "policy_fingerprint_sha256": "2" * 64, "manifest_sha256": "3" * 64,
-               "image_id": "sha256:" + "4" * 64} | changes
+               "image_id": "sha256:" + "4" * 64, "declared_differences_sha256": "7" * 64, "declared_differences_status": "confirmed"} | changes
+
+        prompt = self._prompt_row(row["collection_outcome"])
 
         def add(rows):
             rows.append({"kind": "e2_product", "seq": len(rows) + 1, "at": rows[-1]["at"], **row})
+            rows.append({"kind": "e2_prompt", "seq": len(rows) + 1, "at": rows[-1]["at"], **prompt})
         return add
+
+    PROMPT_VALUES = {"source": "builtin", "template_digest": "a" * 64, "guidance_digest": "b" * 64, "control_digest": "c" * 64, "tools_digest": "d" * 64}
+
+    def _prompt_row(self, outcome="complete", **changes):
+        details = {"task_id": "42", "exploration_id": 9, "run_ref": "e2run-1", "expected_count": 2, "projection_sha256": "e" * 64} | self.PROMPT_VALUES
+        if outcome != "complete":
+            return {"status": "not_applicable", "reason": outcome} | {name: None for name in details} | changes
+        return {"status": "verified", "reason": None} | details | changes
+
+    def _with_prompt(self, prompt):
+        """제품 행은 그대로 두고 프롬프트 행만 바꾼다."""
+        add = self._product_row()
+
+        def apply(rows):
+            add(rows)
+            rows[-1].update(prompt)
+        return apply
+
+    def test_verified_prompt_reaches_the_scorer(self):
+        inputs = self.inputs(self.v11("pv", e2=self.PRODUCT, tamper_rows=self._product_row()))
+        self.assertEqual(inputs.e2_prompt, ("builtin", "a" * 64, "b" * 64, "c" * 64, "d" * 64))
+
+    def test_other_placements_have_no_prompt(self):
+        self.assertIsNone(self.inputs(self.v11("pn")).e2_prompt)
+        self.assertIsNone(self.inputs(self.v11("ps", e2=E2_STUB_PLACEMENT)).e2_prompt)
+
+    def test_failed_product_has_no_prompt_to_compare(self):
+        self.assertIsNone(self.inputs(self.v11("pf", e2=self.PRODUCT, tamper_rows=self._failed_product, blocked_attempts=None)).e2_prompt)
+
+    def test_prompt_row_is_required_exactly_once_on_product_runs(self):
+        def without(rows):
+            self._product_row()(rows)
+            rows.pop()
+
+        def twice(rows):
+            self._product_row()(rows)
+            rows.append(dict(rows[-1], seq=len(rows) + 1))
+        self.reject("e2_prompt: 정확히 한 행", "pa", e2=self.PRODUCT, tamper_rows=without)
+        self.reject("e2_prompt: 정확히 한 행", "pb", e2=self.PRODUCT, tamper_rows=twice)
+
+    def test_prompt_row_only_belongs_to_product_runs(self):
+        def add(rows):
+            rows.append({"kind": "e2_prompt", "seq": len(rows) + 1, "at": rows[-1]["at"], **self._prompt_row()})
+        self.reject("e2_prompt: 제품 E² 회차에만", "pc", tamper_rows=add)
+        self.reject("e2_prompt: 제품 E² 회차에만", "pd", e2=E2_STUB_PLACEMENT, tamper_rows=add)
+
+    def test_complete_outcome_cannot_skip_the_prompt(self):
+        self.reject("미적용 상태", "pe", e2=self.PRODUCT, tamper_rows=self._with_prompt(self._prompt_row("product_failure", reason="complete")))
+
+    def test_verified_status_needs_a_complete_outcome(self):
+        def forged(rows):
+            self._failed_product(rows)
+            rows[-1].update(self._prompt_row())
+        self.reject("확인 상태", "pf2", e2=self.PRODUCT, tamper_rows=forged, blocked_attempts=None)
+
+    def test_not_applicable_reason_is_the_outcome_and_holds_no_values(self):
+        for name, changes in (("reason", {"reason": "complete"}), ("value", {"tools_digest": "d" * 64}), ("run_ref", {"run_ref": "e2run-1"})):
+            with self.subTest(name):
+                def forged(rows):
+                    self._failed_product(rows)
+                    rows[-1].update(changes)
+                self.reject("미적용 상태", "pg" + name[:3], e2=self.PRODUCT, tamper_rows=forged, blocked_attempts=None)
+
+    def test_verified_values_are_checked(self):
+        for name, changes in (("digest", {"tools_digest": "D" * 64}), ("template", {"template_digest": "x"}), ("hash", {"projection_sha256": "zz"}),
+                              ("source", {"source": "db"}), ("exploration", {"exploration_id": 0}), ("count", {"expected_count": 0}),
+                              ("task", {"task_id": 42}), ("run", {"run_ref": None}), ("reason", {"reason": "x"})):
+            with self.subTest(name):
+                code = "확인 상태" if name == "reason" else "값 형식 오류"
+                self.reject(code, "ph" + name[:3], e2=self.PRODUCT, tamper_rows=self._with_prompt(changes))
+
+    def test_unknown_status_is_rejected(self):
+        self.reject("확인 상태", "pi", e2=self.PRODUCT, tamper_rows=self._with_prompt({"status": "maybe"}))
 
     def test_product_run_uses_its_own_decision_counts(self):
         inputs = self.inputs(self.v11("p1", e2=self.PRODUCT, tamper_rows=self._product_row()))
@@ -334,7 +410,8 @@ class TestRejectedV11(_V11):
                  ({"attempts": 4}, "결정 건수 형식 오류"), ({"attempts": True}, "결정 건수 형식 오류"),
                  # 합이 1이면 True도 합과 같아 보인다.
                  ({"attempts": True, "decisions": {"allowed": 1, "denied": 0, "unsupported": 0}}, "결정 건수 형식 오류"),
-                 ({"config_sha256": "x"}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": None}, "대조 값 형식 오류"),
+                 ({"declared_differences_sha256": "x"}, "대조 값 형식 오류"), ({"declared_differences_status": "draft"}, "대조 값 형식 오류"),
+                 ({"declared_differences_status": None}, "대조 값 형식 오류"), ({"config_sha256": "x"}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": None}, "대조 값 형식 오류"),
                  # 숫자는 문자열로 바꾸면 hex처럼 보인다.
                  ({"policy_fingerprint_sha256": int("2" * 64)}, "대조 값 형식 오류"), ({"config_sha256": int("1" * 64)}, "대조 값 형식 오류"),
                  ({"policy_fingerprint_sha256": ["2" * 64]}, "대조 값 형식 오류"), ({"policy_fingerprint_sha256": "A" * 64}, "대조 값 형식 오류"),
@@ -347,7 +424,7 @@ class TestRejectedV11(_V11):
         return self.v11(name, repeat_index=repeat, e2=self.PRODUCT, tamper_rows=self._product_row(**changes))
 
     def test_identity_is_read_only_from_product_runs(self):
-        self.assertEqual(self.inputs(self._product_run("i1")).e2_identity, ("2" * 64, "sha256:" + "4" * 64))
+        self.assertEqual(self.inputs(self._product_run("i1")).e2_identity, ("2" * 64, "sha256:" + "4" * 64, "7" * 64, "confirmed"))
         self.assertIsNone(self.inputs(self.v11("i2")).e2_identity)
         self.assertIsNone(self.inputs(self.v11("i3", e2=E2_STUB_PLACEMENT)).e2_identity)
 
@@ -361,12 +438,36 @@ class TestRejectedV11(_V11):
         with self.assertRaisesRegex(ComparabilityError, "표시 언어 혼합"):
             build_report(self.load(mixed), self.correlate, self.correlatable, runner_key=self.runner_key)
 
+    def test_one_condition_must_use_one_prompt(self):
+        for name in ("source", "template_digest", "guidance_digest", "control_digest", "tools_digest"):
+            with self.subTest(name):
+                value = "override" if name == "source" else "e" * 64
+                runs = [self._product_run(f"y{name[:3]}a"), self.v11(f"y{name[:3]}b", repeat_index=1, e2=self.PRODUCT, tamper_rows=self._with_prompt({name: value}))]
+                with self.assertRaisesRegex(ComparabilityError, "E② 프롬프트 불일치"):
+                    build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_same_prompt_in_one_condition_is_accepted(self):
+        runs = [self._product_run("z0"), self._product_run("z1", 1)]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_failed_product_run_does_not_break_the_prompt_comparison(self):
+        runs = [self._product_run("z2"), self.v11("z3", repeat_index=1, e2=self.PRODUCT, tamper_rows=self._failed_product)]
+        build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
     def test_one_condition_must_use_one_policy_and_image(self):
-        for index, changes in enumerate(({"policy_fingerprint_sha256": "5" * 64}, {"image_id": "sha256:" + "6" * 64})):
+        for index, changes in enumerate(({"policy_fingerprint_sha256": "5" * 64}, {"image_id": "sha256:" + "6" * 64}, {"declared_differences_sha256": "8" * 64})):
             with self.subTest(changes=changes):
                 runs = [self._product_run(f"x{index}a"), self._product_run(f"x{index}b", 1, **changes)]
-                with self.assertRaisesRegex(ComparabilityError, "E② 정책 지문·이미지 불일치"):
+                with self.assertRaisesRegex(ComparabilityError, "E② 정책 지문·이미지·선언 차이 불일치"):
                     build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_proposed_declarations_are_not_an_official_comparison(self):
+        report = build_report(self.load([self._product_run("p0", declared_differences_status="proposed")]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertTrue(any("공식 비교 아님" in line and "PM 확정 전" in line for line in report.warnings), report.warnings)
+
+    def test_confirmed_declarations_have_no_warning(self):
+        report = build_report(self.load([self._product_run("c0")]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        self.assertFalse(any("PM 확정 전" in line for line in report.warnings), report.warnings)
 
     def test_other_conditions_may_use_another_policy(self):
         # 대조는 조건 안에서만 한다.
@@ -454,6 +555,27 @@ class TestRejectedV11(_V11):
             self.reject("run_conditions", f"r{index + 1}",
                         tamper_rows=lambda rows, n=name, v=value: row_of(rows, "run_conditions").update({n: v}))
         self.reject("run_conditions", "r20", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(output_language=1))
+        self.reject("run_conditions", "r21", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            purpose="browser"))
+        # 수용시험 회차도 격리 증명은 통과한다. 공식 비교에서 빼는 것은 채점기 몫이다.
+        acceptance = self.inputs(self.v11("acc", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            purpose="browser_acceptance", path_key_ref="0123456789abcdef")))
+        self.assertEqual((acceptance.proof_id is not None, acceptance.purpose), (True, "browser_acceptance"))
+        # 수용시험 회차만 경로 가림 키 참조(16 hex)를 가진다(#378).
+        for index, change in enumerate(({"purpose": "browser_acceptance"},
+                                        {"purpose": "browser_acceptance", "path_key_ref": "0123456789ABCDEF"},
+                                        {"purpose": "browser_acceptance", "path_key_ref": None},
+                                        {"purpose": "official", "path_key_ref": "0123456789abcdef"},
+                                        {"path_key_ref": "x"})):
+            self.reject("run_conditions", f"k{index}",
+                        tamper_rows=lambda rows, c=change: row_of(rows, "run_conditions").update(c))
+        official = self.inputs(self.v11("offref", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            path_key_ref=None)))
+        self.assertEqual(official.purpose, "official")
+        # 목적 칸이 생기기 전에 서명된 근거는 공식 회차로 읽는다.
+        before = self.inputs(self.v11("old", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("purpose")))
+        self.assertEqual(before.purpose, "official")
+        self.assertEqual(before.run_conditions, self.inputs(self.v11("new")).run_conditions)
         self.reject("run_conditions", "r9", tamper_rows=lambda rows: row_of(rows, "run_conditions")["host"].update(
             logical_cpus=True))
         self.reject("run_conditions", "r10", tamper_rows=lambda rows: row_of(rows, "run_conditions")["sampling"].update(
@@ -603,6 +725,16 @@ class TestComparison(_V11):
         second = self.v11("p2", repeat_index=1, tamper_proof=lambda p: p.update(proof_id="proof-run-p1"))
         with self.assertRaisesRegex(ComparabilityError, "proof_id"):
             build_report(self.load([first, second]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_acceptance_runs_are_refused_by_the_scorer(self):
+        # 격리는 통과해도 수용시험 회차가 섞인 표는 만들지 않는다. 목적 칸 없는 옛 근거는 공식 회차로 합산한다.
+        old = self.v11("o1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("purpose"))
+        build_report(self.load([self.v11("o0"), old]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        acceptance = self.v11("a1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            purpose="browser_acceptance", path_key_ref="0123456789abcdef"))
+        with self.assertRaisesRegex(ComparabilityError, "공식 비교 회차가 아님"):
+            build_report(self.load([self.v11("a0"), acceptance]), self.correlate, self.correlatable,
+                         runner_key=self.runner_key)
 
     def test_runs_with_different_drain_policies_are_not_compared(self):
         # 같은 환경 지문이라도 서명 근거의 유예·정착 대기가 다르면 비교하지 않는다(#153 리뷰).

@@ -1,0 +1,14 @@
+{
+ "format": "abc2lab.e2-declared-differences/v1",
+ "status": "proposed",
+ "evidence": "docs/evaluation/profiles/evidence/e2-sandbox-tool-probe-20261110.json",
+ "differences": [
+  {"id": "network_outside_proxy", "items": ["dig", "/dev/tcp", "nc", "nmap", "node fetch"], "reason": "샌드박스는 빈 netns이고 HTTP 프록시로만 나간다. 노드 fetch는 프록시 환경 변수를 따르지 않는다"},
+  {"id": "browser_tools", "items": ["npm", "npx", "playwright", "playwright-cli", "/usr/lib/node_modules", "/root/.cache/ms-playwright"], "reason": "브라우저 트래픽은 E②가 통제하는 경로가 아니라 넣지 않았다"},
+  {"id": "image_data", "items": ["/usr/share/nmap", "/usr/share/vim"], "reason": "대상에 닿지 못하거나 비대화형 실행에서 쓰지 않아 넣지 않았다"},
+  {"id": "config_files", "items": ["/etc/passwd", "/etc/resolv.conf", "/etc/ssl/certs"], "reason": "계정 파일은 가리고 DNS는 쓰지 않으며 인증서는 E② CA를 환경 변수로 준다"},
+  {"id": "skills", "items": ["/app/skills"], "reason": "E2 worker에 skills가 없다"},
+  {"id": "environment", "items": ["프록시·CA 환경 변수 추가", "PYTHON_VERSION·PYTHON_SHA256 없음"], "reason": "샌드박스 환경은 helper가 고정한다"},
+  {"id": "accept_encoding", "items": ["identity 밖의 Accept-Encoding"], "reason": "E②가 identity로 바꿔 보낸다(C15). 응답 내용은 같고 압축만 빠진다. 헤더가 없는 요청(기본 curl·wget·urllib)은 그대로다"}
+ ]
+}

@@ -1,130 +1,87 @@
 "use client";
 
-// URL 진단(v2) 시작 뒤 두 화면: 점검 진행(서버 단계 · 사실 · 모델 사용량 · 중지 + 실제 task 의 전송 통제 집계)과
-// 보고서(결과 저장이 확인된 실제 task 의 우선 조치 · 내려받기). URL 진단 서버는 결속된 task 의
-// 요청별 승인 · 실행 기록 · 보고서만 열어 주므로, 의도 · 활동 · 발견 목록 · 커버리지는 '이 서버 모드 미제공'으로 둔다.
+// 점검 진행 · 보고서 (시안 짜임).
+// 점검 진행: 지금 하는 일 · 확인 필요(요청 승인) · 전송 통제 · 점검 계획 · 지난 활동 + 오른쪽 진행 상황.
+// 보고서: 판정 집계 · 우선 조치 · 발견 목록 / 증거 · 감사 + 오른쪽 발견 상세.
+// 진행률 · 남은 시간 · 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
+// 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
 
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { diagnosticOutcomeLabels, summarizeDiagnosticEntries } from "@/abc2lab-ui/lib/diagnostic-results";
-import { type RequestApprovalRunState, RUN_COUNT_NOTE, RUN_COUNT_ROWS } from "@/abc2lab-ui/lib/request-approvals";
+import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
+import {
+  type DiagnosticOutcome,
+  diagnosticOutcome,
+  diagnosticOutcomeLabels,
+  summarizeDiagnosticEntries,
+} from "@/lib/diagnosis/diagnostic-results";
+import type { RemediationEntry } from "@/lib/diagnosis/remediation";
+import { type RequestApprovalRunState, RUN_COUNT_ROWS } from "@/lib/diagnosis/request-approvals";
 
 import { cx } from "../../lib/cx";
-import {
-  type DiagnosisRunView,
-  fetchDiagnosisRun,
-  fetchRemediation,
-  fetchRequestApprovals,
-  type Remediation,
-} from "../../live/api";
-import { approvalCounts, fmtCount } from "../../live/map";
-import { ErrorNote, LoadingRow, ModeNote } from "../../live/parts";
-import { runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import { factText, isUrlActive, URL_ENDED_STATES, urlStateText } from "../../live/urlMap";
+import { type DiagnosisRunView, downloadDiagnostic, fetchDiagnosisRun, fetchRemediation } from "../../live/api";
+import { approvalCounts, clockOf, errorText, fmtCount, isUnsupported, planState } from "../../live/map";
+import { maskSecrets } from "../../live/mask";
+import { ErrorNote, LoadingRow } from "../../live/parts";
+import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import { factText, URL_ENDED_STATES, urlStateText, usdText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
+import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
-import { InspHead, InspOpenButton, Isec, Kv } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { Download, Prio } from "./ReportLive";
-import {
-  reasonText,
-  UrlDisconnect,
-  UrlFacts,
-  UrlHead,
-  UrlNoJob,
-  UrlNotices,
-  UrlPhaseBar,
-  UrlPill,
-  UrlRefreshButton,
-  UrlUsage,
-  useUrlHost,
-} from "./urlParts";
+import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
+import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
+import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
+import { PauseButton, useStopConfirm, WorkflowActivity, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
-/** 진행 중 실제 task 의 요청별 승인 상태 재조회 간격(ms). 끝났으면 진입 때 한 번. */
-const APPROVALS_EVERY = 5000;
+/** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
+const FINISHED = { href: "#finished", label: "끝난 점검" };
 
-/** 전송 통제 (실제 task 의 요청별 승인 · 감독자 집계). 엔진 시작이 확인된 뒤에만 부른다. */
-function SendControl({ taskId, active, visible }: { taskId: string; active: boolean; visible: boolean }) {
-  const job = useUrl((st) => st.job);
-  const approvals = usePoll(() => fetchRequestApprovals(taskId), [taskId], {
-    intervalMs: active ? APPROVALS_EVERY : 0,
-    enabled: visible,
-  });
-  const everyRequest = job?.scope?.approval_mode === "confirm_every_request";
-  let body: ReactNode;
-  if (approvals.unsupported) body = <ModeNote what="전송 통제" />;
-  else if (!approvals.data && approvals.error) body = <ErrorNote error={approvals.error} onRetry={approvals.reload} />;
-  else if (!approvals.data) body = <LoadingRow />;
-  else {
-    const ap = approvalCounts(approvals.data.run, approvals.data.approvals);
-    const known = (n: number) => (ap.known ? fmtCount(n) : "—");
-    body = (
-      <>
-        <div className={s.meters}>
-          <div className={s.cell}>
-            <div className={s.k}>허용 판정</div>
-            <div className={s.v} id="luAllowed">
-              {known(ap.allowed)}
-            </div>
-            <div className={s.sub}>{`실제 전송 아님 · 대상 전송 시도 ${known(ap.forwarded)}`}</div>
-          </div>
-          <div className={s.cell}>
-            <div className={s.k}>막은 요청</div>
-            <div className={s.v}>{known(ap.blocked)}</div>
-            <div className={s.sub}>차단 + 미지원</div>
-          </div>
-          <div className={s.cell}>
-            <div className={s.k}>승인 필요로 보류</div>
-            <div className={s.v}>{fmtCount(ap.held)}</div>
-            <div className={s.sub}>승인 대기 중</div>
-          </div>
-          <div className={s.cell}>
-            <div className={s.k}>전송 불명</div>
-            <div className={s.v}>{known(ap.unknown)}</div>
-            <div className={s.sub}>결과를 모름</div>
-          </div>
-        </div>
-        <p className={s.help}>
-          {ap.known
-            ? "엔진 실행 감독자가 센 요청 수입니다. 허용 판정에는 보내기 전에 취소된 요청도 들어가며, 실제로 보낸 수는 대상 전송 시도입니다."
-            : "실행 정보가 아직 없어 허용 · 막음 · 불명은 비워 둡니다."}
-        </p>
-      </>
-    );
-  }
-  const c = approvals.data?.run.execution?.counts;
+/** 목록 칸에 맞춘 짧은 판정 글. */
+const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
+  confirmed: "확정",
+  review: "검토 필요",
+  not_executed: "미실행",
+  unknown: "결과 불명",
+  negative: "정상",
+};
+
+/** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 정상 = 초록, 그 밖 = 판단 불가 모양). */
+function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: boolean }) {
   return (
-    <section className={s.sec} aria-labelledby="luSendH">
-      <div className={s.sh}>
-        <h2 id="luSendH">전송 통제</h2>
-        {c ? (
-          <span className={s.aside}>
-            {`요청 접수 ${fmtCount(c.attempts)} · 대상 전송 시도 ${fmtCount(c.forward_attempted)}`}
-          </span>
-        ) : null}
-      </div>
-      {body}
-      {everyRequest ? (
-        <div className={s.note} role="note">
-          <Icon name="info" />
-          <span>
-            이 진단은 매 요청 확인 방식입니다. 요청별 허용 · 거절은 아직 작업대에 없어 팀 화면의 점검 진행(실제 HTTP
-            요청 승인)에서 결정합니다.
-          </span>
-        </div>
-      ) : null}
-    </section>
+    <span
+      className={cx(
+        s.vd,
+        o === "review" && s.sus,
+        o === "negative" && s.neg,
+        (o === "not_executed" || o === "unknown") && s.und,
+      )}
+    >
+      {short ? SHORT[o] : diagnosticOutcomeLabels[o]}
+    </span>
   );
 }
 
-/** 전송 통제를 읽지 않을 때의 안내 (마감 · 결과 불명 · 시작 전). */
-function sendPlaceholder(job: { drain_complete: boolean; state: string }, uncertain: boolean): string {
-  if (job.drain_complete)
-    return "실행이 마감됐습니다. 마감된 회차의 요청 · 전송 집계는 보고서의 실행 종료 기록에서 봅니다.";
-  if (job.state === "unknown" || uncertain)
-    return "결과 불명인 진단은 실행 감독자 상태를 이어 조회하지 않습니다. 상태 다시 조회로 서버 사실만 확인하세요.";
-  return "엔진 시작이 확인되면 실제 task 의 전송 통제 집계를 봅니다.";
+/** 모델 사용량 (서버 기록). 상한은 승인 범위 예산. */
+function Usage() {
+  const job = useUrl((st) => st.job);
+  const u = job?.model_usage;
+  const b = job?.scope?.budget;
+  if (!u) return <p className={s.empty}>모델 사용량 기록이 아직 없습니다.</p>;
+  const of = (n: number, cap?: number) => (cap === undefined ? fmtCount(n) : `${fmtCount(n)} / ${fmtCount(cap)}`);
+  // 실패·중지로 사용량을 못 받은 호출은 예약한 양으로 셌으므로, 그런 호출이 있으면 토큰·비용은 실제 사용의
+  // 최대치다. 예산 상한(n / 상한)과 헷갈리지 않게 "최대치로 계산"이라고 쓴다. 실행이 중지됐는지는 상태가 따로 보인다.
+  const bound = (u.unknown_usage_calls ?? 0) > 0 ? " (최대치로 계산)" : "";
+  const rows: [string, string][] = [
+    ["모델 요청", of(u.requests, b?.model_requests)],
+    ["입력 토큰", of(u.input_tokens, b?.input_tokens) + bound],
+    ["출력 토큰", of(u.output_tokens, b?.output_tokens) + bound],
+    ["비용", u.usage_known ? usdText(u.cost_usd_micros) + bound : "불명"],
+  ];
+  if (bound) rows.push(["예약량으로 계산한 호출", `${fmtCount(u.unknown_usage_calls ?? 0)}건`]);
+  return <Kv rows={rows} />;
 }
 
 /** live 점검 진행 (URL 진단). */
@@ -135,15 +92,22 @@ export function UrlLiveLive() {
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
   const busy = useUrl((st) => st.busy);
-  const uncertain = useUrl((st) => st.uncertain);
+  const flow = useUrl((st) => st.flow);
   const g = useUrlGates();
   const host = useUrlHost();
+  const stop = useStopConfirm("종료");
+  const a = useRequestApprovals(job?.task_id ?? "", visible && g.runReadable);
 
-  const pill = job ? <UrlPill job={job} verified={verified} /> : null;
   if (!handle || !job) {
     return (
       <>
-        <UrlHead title="점검 진행" crumb="점검 진행" host={host} acts={handle ? <UrlRefreshButton /> : undefined} />
+        <UrlHead
+          title="점검 진행"
+          crumb="점검 진행"
+          host={host}
+          phase="live"
+          acts={handle ? <UrlRefreshButton /> : undefined}
+        />
         <div className={s.vm}>
           {handle ? (
             <>
@@ -151,26 +115,28 @@ export function UrlLiveLive() {
               <UrlNotices />
             </>
           ) : (
-            <UrlNoJob what="점검 진행" />
+            <>
+              <p className={s.empty}>이 브라우저에서 이어 보는 점검이 없습니다.</p>
+              <UrlNotices />
+              <div>
+                <a className={cx(s.btn, s.pri)} href="#new">
+                  <Icon name="plus" />새 점검
+                </a>
+              </div>
+            </>
           )}
         </div>
       </>
     );
   }
 
-  const active = isUrlActive(job);
-  const stoppable = job.state === "preparing" || job.state === "running";
-  // 끝남은 마감이 확인된 상태만. 결과 불명(unknown)은 마감 여부와 독립이라 따로 안내한다.
   const ended = URL_ENDED_STATES.includes(job.state);
-  const unknownNote =
-    job.state === "unknown" ? (
-      <div className={cx(s.note, s.warn)} role="note" id="luUnknown">
-        <Icon name="alert" />
-        <span>
-          {`결과 불명 — 준비 또는 실행 결과를 확인하지 못했습니다. 끝난 것으로 보지 않고 자동으로 다시 시작하지 않습니다. 엔진 시작 ${factText(job.started)} · 마감 확인 ${factText(job.drain_complete)} · 결과 저장 ${factText(job.result_ready)}`}
-        </span>
-      </div>
-    ) : null;
+  const run = a.poll.data?.run;
+  const ap = approvalCounts(run, a.poll.data?.approvals);
+  const known = (n: number) => (ap.known ? fmtCount(n) : "—");
+  const runningPlan = flow?.plan?.find((p) => planState(p.state).row === "run");
+  const nowText =
+    runningPlan?.title ?? flow?.current_path ?? (flow ? flowStageText[flow.stage] : urlPhaseLabels[job.phase]);
 
   let done: ReactNode = null;
   if (g.reportReadable) {
@@ -179,9 +145,9 @@ export function UrlLiveLive() {
         <div className={s.dm}>
           <b>
             <Icon name="check" />
-            <span>결과 저장을 확인했습니다</span>
+            <span>점검을 마쳤습니다</span>
           </b>
-          <span>{`${urlStateText(job.state)} · 실제 task #${job.task_id}`}</span>
+          <span>{`${urlStateText(job.state)} · 결과 저장 확인`}</span>
         </div>
         <button className={cx(s.btn, s.pri)} type="button" onClick={() => goTo("report")}>
           보고서 보기
@@ -193,20 +159,35 @@ export function UrlLiveLive() {
     done = (
       <div className={cx(s.note, s.warn)}>
         <Icon name="alert" />
-        <span>{`진단이 끝났습니다 (${urlStateText(job.state, verified)}) · 결과 저장 ${job.result_ready ? "확인됨" : "미확인"}`}</span>
+        <span>{`점검이 끝났습니다 (${urlStateText(job.state, verified)}) · 결과 저장 ${factText(job.result_ready)}`}</span>
+      </div>
+    );
+  } else if (job.state === "unknown") {
+    done = (
+      <div className={cx(s.note, s.warn)} role="note" id="luUnknown">
+        <Icon name="alert" />
+        <span>{`결과 불명 · 끝난 것으로 보지 않고 자동으로 다시 시작하지 않습니다. 엔진 시작 ${factText(job.started)} · 마감 ${factText(job.drain_complete)}`}</span>
       </div>
     );
   } else if (job.state === "ready" || job.state === "awaiting_approval") {
     done = (
       <div className={s.note} role="note">
         <Icon name="info" />
-        <span className={s["lv-grow"]}>아직 시작하지 않은 진단입니다.</span>
-        <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("scope")}>
-          범위 확인으로
+        <span className={s["lv-grow"]}>아직 시작하지 않은 점검입니다.</span>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("new")}>
+          시작하러 가기
         </button>
       </div>
     );
   }
+
+  const c = run?.execution?.counts;
+  let sendWaitText = "엔진이 시작되면 나옵니다.";
+  if (job.drain_complete) sendWaitText = "마감된 점검의 전송 기록은 보고서의 증거 · 감사에 있습니다.";
+  else if (job.state === "unknown" || !verified)
+    sendWaitText = "결과 불명인 점검은 전송 상태를 이어 조회하지 않습니다. 상태를 다시 조회하세요.";
+  const visited = flow?.counts.visited ?? 0;
+  const selected = flow?.endpoints.filter((e) => e.selected).length ?? 0;
 
   return (
     <>
@@ -214,180 +195,266 @@ export function UrlLiveLive() {
         title="점검 진행"
         crumb="점검 진행"
         host={host}
-        pill={pill}
+        phase="live"
+        pill={<UrlPill job={job} verified={verified} />}
         acts={
           <>
-            <UrlRefreshButton />
-            {stoppable ? (
-              <button
-                className={cx(s.btn, s.danger)}
-                type="button"
-                disabled={!g.canStop}
-                onClick={() => void runUrlAction("stop")}
-              >
-                <Icon name="stop" />
-                <span>진단 중지 요청</span>
-              </button>
-            ) : null}
-            <InspOpenButton>진단 정보</InspOpenButton>
+            <PauseButton />
+            {stop.button}
+            <InspOpenButton>진행 상황</InspOpenButton>
           </>
         }
       />
       <div className={s.vb}>
         <div className={s.vm}>
-          <UrlPhaseBar job={job} />
-          {job.reason_code ? <p className={s.help}>{`서버 사유: ${reasonText(job.reason_code)}`}</p> : null}
+          {stop.box}
           <UrlNotices />
-          <p className={s.help}>
-            진행률 · 남은 시간은 추정하지 않습니다. 실행 마감 · HTTP 응답 · 후보 0건은 취약점 없음이나 확정을 뜻하지
-            않습니다.
-          </p>
-          {unknownNote}
-          {done}
-          {g.runReadable && job.task_id ? (
-            <SendControl taskId={job.task_id} active={active} visible={visible} />
-          ) : (
-            <section className={s.sec} aria-labelledby="luSendH">
-              <div className={s.sh}>
-                <h2 id="luSendH">전송 통제</h2>
+          <WorkflowNotice />
+          {job.reason_code ? <p className={s.help}>{`서버 사유: ${reasonText(job.reason_code)}`}</p> : null}
+          {job.diagnostic_log_incomplete ? (
+            <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
+          ) : null}
+          {!ended && job.state !== "unknown" ? (
+            <div className={s.band} style={{ gridTemplateColumns: "minmax(0,1fr)" }}>
+              <div className={s.bt}>
+                <div className={s["now-l"]} aria-live="polite">
+                  <span className={cx(s["now-k"], flow?.paused && s.idle)}>
+                    <i />
+                    {flow?.paused ? "일시정지" : "지금 하는 일"}
+                  </span>
+                  <span id="lTask">{nowText}</span>
+                </div>
+                <div className={s.pmeta} id="lMeta">
+                  <span>
+                    단계 <b>{urlPhaseLabels[job.phase]}</b>
+                  </span>
+                  {flow ? (
+                    <span>
+                      심화 점검 <b>{`${flow.deep_closed}/${flow.deep_runs}`}</b> 마감
+                    </span>
+                  ) : null}
+                  {job.model_usage ? (
+                    <span>
+                      모델 요청 <b>{fmtCount(job.model_usage.requests)}</b>
+                      {job.scope ? ` / ${fmtCount(job.scope.budget.model_requests)}` : ""}
+                    </span>
+                  ) : null}
+                  {flow ? (
+                    <span>
+                      엔드포인트 <b>{flow.endpoints.length}</b>
+                      {` (심화 선택 ${selected})`}
+                    </span>
+                  ) : null}
+                </div>
               </div>
-              <p className={s.empty}>{sendPlaceholder(job, uncertain)}</p>
-            </section>
-          )}
-          <section className={s.sec} aria-labelledby="luUseH">
-            <div className={s.sh}>
-              <h2 id="luUseH">모델 사용량</h2>
             </div>
-            <UrlUsage job={job} />
-          </section>
-          <section className={s.sec} aria-labelledby="luMoreH">
-            <div className={s.sh}>
-              <h2 id="luMoreH">점검 계획 · 지난 활동 · 발견</h2>
+          ) : null}
+          {done}
+          {a.pending.map((r) => (
+            <div className={s.decide} key={r.id} id="lDecide">
+              <div className={s.dm}>
+                <b>
+                  <span className={cx(s.pill, s.wait)}>확인 필요</span>
+                  <span className={cx(s.m, s[r.method])}>{r.method}</span>
+                  <span className={s.p}>{r.path}</span>
+                </b>
+                <span>{flow?.plan?.find((p) => p.id === r.intent_id)?.title ?? "계획 제목 없음"}</span>
+              </div>
+              <div className={s["lv-aprev"]}>
+                <ApprovalRequestCode row={r} />
+                <ApprovalFacts row={r} />
+              </div>
+              <div className={s.acts}>
+                <button
+                  className={cx(s.btn, s.pri, s.sm)}
+                  type="button"
+                  disabled={!a.canDecide(r)}
+                  onClick={() => void a.decide(r, "allow")}
+                >
+                  {a.busy === r.id ? "보내는 중…" : "승인하고 보내기"}
+                </button>
+                <button
+                  className={cx(s.btn, s.sm)}
+                  type="button"
+                  disabled={!a.canDecide(r)}
+                  onClick={() => void a.decide(r, "deny")}
+                >
+                  거부
+                </button>
+              </div>
             </div>
-            <ModeNote what="의도 목록 · 활동 · 발견" />
-            <p className={s.help}>URL 진단 서버는 결속된 task 의 요청 승인 · 실행 기록 · 보고서만 엽니다.</p>
+          ))}
+          {a.message ? <p role="status">{a.message}</p> : null}
+          {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
+          <section className={s.sec} aria-labelledby="lSendH">
+            <div className={s.sh}>
+              <h2 id="lSendH">전송 통제</h2>
+              {c ? (
+                <span
+                  className={s.aside}
+                >{`요청 접수 ${fmtCount(c.attempts)} · 대상 전송 ${fmtCount(c.forward_attempted)}`}</span>
+              ) : null}
+            </div>
+            {g.runReadable && a.poll.error && !a.poll.data ? (
+              <ErrorNote error={a.poll.error} onRetry={a.poll.reload} />
+            ) : null}
+            {g.runReadable && !(a.poll.error && !a.poll.data) ? (
+              <div className={s.meters}>
+                <div className={s.cell}>
+                  <div className={s.k}>허용 범위 안 전송</div>
+                  <div className={s.v} id="luAllowed">
+                    {known(ap.forwarded)}
+                  </div>
+                  <div className={s.sub}>{`허용 판정 ${known(ap.allowed)}`}</div>
+                </div>
+                <div className={s.cell}>
+                  <div className={s.k}>막은 요청</div>
+                  <div className={s.v}>{known(ap.blocked)}</div>
+                  <div className={s.sub}>범위 밖 · 안전 규칙</div>
+                </div>
+                <div className={s.cell}>
+                  <div className={s.k}>승인 필요로 보류</div>
+                  <div className={s.v}>{fmtCount(ap.held)}</div>
+                  <div className={s.sub}>쓰기 메서드 · 전송 전 확인</div>
+                </div>
+                <div className={s.cell}>
+                  <div className={s.k}>전송 불명</div>
+                  <div className={s.v}>{known(ap.unknown)}</div>
+                  <div className={s.sub}>응답 없음</div>
+                </div>
+              </div>
+            ) : null}
+            {g.runReadable ? null : <p className={s.empty}>{sendWaitText}</p>}
           </section>
+          {job.input.workflow_mode ? <WorkflowActivity /> : null}
         </div>
-        <aside className={s.vi} aria-label="진단 정보">
-          <InspHead eyebrow={host ?? ""} title="진단 정보" />
-          <Isec>
+        <aside className={s.vi} id="lInsp" aria-label="진행 상황">
+          <InspHead
+            eyebrow={
+              <>
+                {`${urlStateText(job.state, verified)} · `}
+                <span className={s.host}>{host}</span>
+              </>
+            }
+            title="진행 상황"
+          />
+          <Isec t="결정 대기">
+            {a.pending.length ? (
+              <p>{`전송 전 확인이 필요한 요청 ${a.pending.length}건을 승인하거나 거부해 주세요.`}</p>
+            ) : (
+              <p className={s.help}>결정할 요청이 없습니다.</p>
+            )}
+          </Isec>
+          {flow ? (
+            <Isec t="탐색 현황">
+              <div className={s.vbar}>
+                <span>
+                  방문 <b>{visited}</b> / {flow.counts.found} 경로
+                </span>
+                <span>
+                  심화 선택 <b>{selected}</b>
+                </span>
+              </div>
+            </Isec>
+          ) : null}
+          <Isec t="모델 사용량">
+            <Usage />
+          </Isec>
+          <Isec t="점검 정보">
             <UrlFacts job={job} />
           </Isec>
-          <UrlDisconnect />
         </aside>
+        <PaneToggle />
       </div>
     </>
   );
 }
 
-/** 저장 실행 단계 글 (팀 보고서와 같은 뜻). */
+// ---------- 보고서 ----------
+
 const RUN_PHASE: Readonly<Record<RequestApprovalRunState["phase"], string>> = {
-  prepared: "준비됨 · 아직 실행 전",
+  prepared: "준비됨 · 실행 전",
   running: "실행 중",
   stopping: "중지 처리 중",
   closed: "종료됨",
   failed: "실패",
 };
-/** 저장 실행 결과 글. 정상 종료는 목표 달성 · 취약점 없음이 아니다. */
 const RUN_OUTCOME: Readonly<Record<RequestApprovalRunState["outcome"], string>> = {
   "": "결과 미기록",
   completed: "정상 종료",
   cancelled: "취소로 종료",
   failed: "실패로 종료",
 };
-/** 판정 집계 칸 (정상 대조 결과는 머리 글로). */
+/** 판정 집계 칸. */
 const OUTCOME_CELLS = ["confirmed", "review", "not_executed", "unknown"] as const;
+/** 우선 조치 · 목록 순서: 확정 → 검토 필요 → 미실행 → 결과 불명 → 정상 대조. */
+const ORDER: readonly DiagnosticOutcome[] = ["confirmed", "review", "not_executed", "unknown", "negative"];
 
-/** 진단 판정 집계: 보고서의 고유 결과 ID 를 팀 lib 분류(summarizeDiagnosticEntries)로 한 번씩 센다. */
-function OutcomeStrip({ rem }: { rem: Poll<Remediation> }) {
-  let body: ReactNode;
-  let aside: ReactNode = null;
-  if (rem.unsupported) body = <ModeNote what="진단 판정 집계" />;
-  else if (!rem.data && rem.error) body = <ErrorNote error={rem.error} onRetry={rem.reload} />;
-  else if (!rem.data) body = <LoadingRow />;
-  else {
-    const c = summarizeDiagnosticEntries(rem.data.entries);
-    aside = (
-      <span className={s.aside}>
-        {`저장 결과 ${rem.data.entries.length}건 · ${diagnosticOutcomeLabels.negative} ${c.negative}건`}
-      </span>
-    );
-    body = (
-      <div className={s.strip}>
-        {OUTCOME_CELLS.map((k) => (
-          <div key={k} className={cx(s.cell, k === "confirmed" && c[k] > 0 && s.crit)}>
-            <div className={s.k}>{diagnosticOutcomeLabels[k]}</div>
-            <div className={s.v}>{`${c[k]}건`}</div>
-          </div>
-        ))}
-      </div>
-    );
-  }
-  return (
-    <section className={s.sec} aria-label="진단 판정 집계">
-      <div className={s.sh}>
-        <h2>진단 판정 집계</h2>
-        {aside}
-      </div>
-      {body}
-      <p className={s.help}>
-        보고서의 고유 결과 ID 를 한 번씩 셉니다. 확정은 저장된 검증이 있는 결과만이고 검토 필요는 후보입니다. 후보
-        0건이나 실행 마감만으로 안전하다고 판단하지 않습니다.
-      </p>
-    </section>
-  );
+/** 증거 글을 읽기 좋게: JSON 이면 들여쓰고, 안에 든 JSON 문자열(tool_output 등)도 펼친다. 비밀 값은 가린다. */
+export function prettyEvidence(raw: string): string {
+  const unwrap = (v: unknown, depth = 0): unknown => {
+    if (depth > 8) return v;
+    if (typeof v === "string") {
+      const t = v.trim();
+      if ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))) {
+        try {
+          return unwrap(JSON.parse(t), depth + 1);
+        } catch {
+          return v;
+        }
+      }
+      return v;
+    }
+    if (Array.isArray(v)) return v.map((x) => unwrap(x, depth + 1));
+    if (v && typeof v === "object")
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, unwrap(x, depth + 1)]));
+    return v;
+  };
+  const value = unwrap(raw);
+  return maskSecrets(typeof value === "string" ? value : JSON.stringify(value, null, 2));
 }
 
-/** 저장된 실행 종료 기록 (팀 readDiagnosisRunDisplay): 단계 · 결과 · 마감 · 실행 ID · E② 요청·전송 집계 · 감사. */
+/** 감사 완결 여부 글. */
+function auditText(e: RequestApprovalRunState["execution"]): string {
+  if (!e) return "—";
+  return e.audit_complete ? "완결" : "미완결";
+}
+
+/** 저장된 실행 종료 기록 (증거 · 감사 탭). */
 function RunRecord({ run }: { run: Poll<DiagnosisRunView> }) {
-  let body: ReactNode;
   const d = run.data;
-  if (run.unsupported) body = <ModeNote what="실행 종료 기록" />;
-  else if (!d && run.error) body = <ErrorNote error={run.error} onRetry={run.reload} />;
+  let body: ReactNode;
+  if (!d && run.error) body = <ErrorNote error={run.error} onRetry={run.reload} />;
   else if (!d) body = <LoadingRow />;
-  else if (d.kind === "none") body = <p className={s.empty}>저장된 실행 종료 결과가 없습니다. 완료로 보지 않습니다.</p>;
-  else if (d.kind === "not_run") {
-    body = (
-      <p className={s.empty}>
-        {d.preparedOnly
-          ? "모델 준비 기록만 있고 저장된 실행 종료 결과는 없습니다."
-          : "저장된 실행 종료 결과가 없습니다."}
-        {" 저장 기록의 NOT_RUN 표시는 지금 실행 여부를 보장하지 않습니다."}
-      </p>
-    );
-  } else if (d.kind === "unavailable") {
-    body = <p className={s.empty}>이 task 의 실행 결과가 아니거나 확인할 수 없습니다. 완료로 보지 않습니다.</p>;
-  } else {
+  else if (d.kind === "none") body = <p className={s.empty}>저장된 실행 종료 기록이 없습니다.</p>;
+  else if (d.kind === "not_run") body = <p className={s.empty}>실행 종료 기록 없음 · 준비만 기록됨</p>;
+  else if (d.kind === "unavailable") body = <p className={s.empty}>이 점검의 실행 기록을 확인할 수 없습니다.</p>;
+  else {
     const r = d.run;
-    const flags = [
-      r.drain_complete ? "진행 중 요청 정리 완료" : "진행 중 요청 정리 미완료",
-      r.stop_requested ? "중지 요청됨" : "",
-      r.context_cancelled ? "컨텍스트 취소됨" : "",
-      r.closure_failed ? "마감 실패(완전 종료로 보지 않음)" : "",
-    ].filter(Boolean);
     const e = r.execution;
-    let auditText = "—";
-    if (e) auditText = e.audit_complete ? "완결" : "미완결";
     body = (
       <>
         <Kv
           rows={[
-            ["단계", RUN_PHASE[r.phase] ?? `알 수 없는 단계 (${String(r.phase)})`],
-            ["결과", RUN_OUTCOME[r.outcome] ?? `알 수 없는 결과 (${String(r.outcome)})`],
-            ["마감", flags.join(" · ")],
+            ["단계", RUN_PHASE[r.phase] ?? String(r.phase)],
+            ["결과", RUN_OUTCOME[r.outcome] ?? String(r.outcome)],
+            [
+              "마감",
+              [
+                r.drain_complete ? "진행 중 요청 정리 완료" : "진행 중 요청 정리 미완료",
+                r.stop_requested ? "중지 요청됨" : "",
+                r.closure_failed ? "마감 실패" : "",
+              ]
+                .filter(Boolean)
+                .join(" · "),
+            ],
             [
               "실행 ID",
               <span key="run" className={s.mono}>
                 {r.run_ref || "—"}
               </span>,
             ],
-            [
-              "정책 revision",
-              <span key="policy" className={s.mono}>
-                {e?.policy_revision || "—"}
-              </span>,
-            ],
-            ["감사", auditText],
+            ["감사", auditText(e)],
             [
               "저장 시각",
               d.savedAt ? (
@@ -401,20 +468,15 @@ function RunRecord({ run }: { run: Poll<DiagnosisRunView> }) {
           ]}
         />
         {e ? (
-          <>
-            <div className={s.meters}>
-              {RUN_COUNT_ROWS.map(({ key, label }) => (
-                <div key={key} className={s.cell}>
-                  <div className={s.k}>{label}</div>
-                  <div className={s.v}>{fmtCount(e.counts[key])}</div>
-                </div>
-              ))}
-            </div>
-            <p className={s.help}>{RUN_COUNT_NOTE}</p>
-          </>
-        ) : (
-          <p className={s.help}>실행 세부 집계가 저장되지 않았습니다. 전송 건수를 0으로 단정하지 않습니다.</p>
-        )}
+          <div className={s.meters}>
+            {RUN_COUNT_ROWS.map(({ key, label }) => (
+              <div key={key} className={s.cell}>
+                <div className={s.k}>{label}</div>
+                <div className={s.v}>{fmtCount(e.counts[key])}</div>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </>
     );
   }
@@ -422,20 +484,135 @@ function RunRecord({ run }: { run: Poll<DiagnosisRunView> }) {
     <section className={s.sec} aria-label="실행 종료 기록">
       <div className={s.sh}>
         <h2>실행 종료 기록</h2>
-        <span className={s.aside}>전송 차단 · 실행 마감 · 취약 판정은 서로 대신하지 않음</span>
       </div>
       {body}
     </section>
   );
 }
 
-/** live 보고서 (URL 진단): 결과 저장이 확인된 실제 task 의 판정 집계 · 실행 기록 · 모델 사용량 · 우선 조치 · 내려받기. */
+type Audience = "shared" | "internal";
+type Format = "html" | "docx";
+const AUD_TEXT: Readonly<Record<Audience, string>> = { shared: "공유용", internal: "내부 상세" };
+/** 내려받는 동안 버튼 글 (Word 는 어느 파일인지 남긴다). */
+const busyText = (label: string, format: Format) => (format === "docx" ? `${label} 내려받는 중…` : "내려받는 중…");
+
+/** 보고서 파일 내려받기: 같은 저장 자료로 만든 종합 HTML · Word, 각각 공유용 · 내부 상세. */
+export function Download({ taskId }: { taskId: string }) {
+  const [st, setSt] = useState<{
+    busy: `${Audience}:${Format}` | null;
+    err: unknown;
+    done: { aud: Audience; format: Format } | null;
+  }>({ busy: null, err: null, done: null });
+  const ctrl = useRef<AbortController | null>(null);
+  useEffect(() => () => ctrl.current?.abort(), []);
+  const run = async (aud: Audience, format: Format) => {
+    ctrl.current?.abort();
+    const c = new AbortController();
+    ctrl.current = c;
+    setSt({ busy: `${aud}:${format}`, err: null, done: null });
+    try {
+      await downloadDiagnostic(taskId, aud, c.signal, format);
+      if (!c.signal.aborted) setSt({ busy: null, err: null, done: { aud, format } });
+    } catch (err) {
+      if (!c.signal.aborted) setSt({ busy: null, err, done: null });
+    }
+  };
+  const btn = (aud: Audience, format: Format, label: string, pri = false) => (
+    <button
+      className={cx(s.btn, s.sm, pri && s.pri)}
+      type="button"
+      disabled={!!st.busy}
+      onClick={() => void run(aud, format)}
+    >
+      {st.busy === `${aud}:${format}` ? busyText(label, format) : label}
+    </button>
+  );
+  return (
+    <section className={s.sec} aria-labelledby="rvDlH">
+      <div className={s.sh}>
+        <h2 id="rvDlH">내려받기</h2>
+      </div>
+      {st.err && isUnsupported(st.err) ? (
+        <p className={s.empty}>이 점검은 보고서 파일을 제공하지 않습니다.</p>
+      ) : (
+        <div className={s.acts}>
+          {btn("shared", "html", "공유용 사본", true)}
+          {btn("internal", "html", "내부 상세 사본")}
+          {btn("shared", "docx", "Word 공유용")}
+          {btn("internal", "docx", "Word 내부 상세")}
+        </div>
+      )}
+      {st.err && !isUnsupported(st.err) ? <p role="alert">{errorText(st.err)}</p> : null}
+      {st.done ? (
+        <p className={s.help} role="status">
+          {`${st.done.format === "docx" ? "Word" : "HTML"} ${AUD_TEXT[st.done.aud]} 파일을 저장했습니다.`}
+        </p>
+      ) : null}
+      <p className={s.help}>
+        종합 HTML · Word 보고서를 같은 저장 자료로 만듭니다. 공유용은 서버가 자유문장까지 가립니다. 내부 상세는 외부로
+        보내기 전에 민감정보를 검토하세요.
+      </p>
+    </section>
+  );
+}
+
+/** 발견 상세 (오른쪽). */
+function FindingDetail({
+  e,
+  host,
+  taskId,
+  onReload,
+}: {
+  e: RemediationEntry | undefined;
+  host: string | null;
+  taskId: string;
+  onReload: () => void;
+}) {
+  if (!e) {
+    return (
+      <>
+        <InspHead title="발견 상세" />
+        <p className={s.empty}>저장된 발견이 없습니다.</p>
+      </>
+    );
+  }
+  const o = diagnosticOutcome(e);
+  return (
+    <>
+      <InspHead
+        eyebrow={
+          <>
+            {`${diagnosticOutcomeLabels[o]} · `}
+            <span className={s.host}>{host}</span>
+          </>
+        }
+        title={maskSecrets(e.title) || e.entry_id}
+        chips={<Outcome o={o} />}
+      />
+      {!e.available ? (
+        <div className={cx(s.note, s.warn)} role="note">
+          <Icon name="alert" />
+          <span>{maskSecrets(e.unavailable_reason)}</span>
+        </div>
+      ) : null}
+      <DiagnosticEntrySections
+        key={`${taskId}:${e.entry_id}:${e.source_digest}:${e.record?.id ?? 0}:${e.record?.bundle?.input_digest ?? ""}`}
+        task={taskId}
+        entry={e}
+        onReload={onReload}
+      />
+    </>
+  );
+}
+
+/** live 보고서 (URL 진단): 결과 저장이 확인된 실제 task 만. */
 export function UrlReportLive() {
-  const { route, goTo } = useShell();
+  const { route, goTo, openInsp } = useShell();
   const visible = route === "report";
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
+  const cap = useUrl((st) => st.cap);
   const g = useUrlGates();
   const host = useUrlHost();
   const taskId = g.reportReadable && job?.task_id ? job.task_id : null;
@@ -443,112 +620,209 @@ export function UrlReportLive() {
     enabled: visible && !!taskId,
   });
   const run = usePoll(() => fetchDiagnosisRun(taskId as string), [taskId], { enabled: visible && !!taskId });
-
+  const [tab, setTab] = useState<"list" | "ev">("list");
+  const [sel, setSel] = useState<string | null>(null);
   const title = host ? `${host} 보고서` : "보고서";
+
   if (!handle || !job || !taskId) {
-    let body: ReactNode;
-    if (!handle) body = <UrlNoJob what="보고서" />;
-    else {
-      body = (
-        <>
-          <div className={s.note} role="note">
-            <Icon name="info" />
-            <span className={s["lv-grow"]}>
-              {job
-                ? `결과 저장이 확인되면 보고서를 봅니다 · 지금 ${urlStateText(job.state, verified)}, 결과 저장 ${job.result_ready ? "확인됨" : "미확인"}`
-                : "진단 상태를 확인하지 못했습니다."}
-            </span>
-            {job ? (
-              <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("live")}>
-                점검 진행 보기
-              </button>
-            ) : null}
-          </div>
-          <UrlNotices />
-        </>
-      );
-    }
     return (
       <>
         <UrlHead
           title={title}
-          crumb="점검 기록"
+          crumb="보고서"
+          parent={FINISHED}
           host={host}
           pill={job ? <UrlPill job={job} verified={verified} /> : null}
           acts={handle ? <UrlRefreshButton /> : undefined}
         />
-        <div className={s.vm}>{body}</div>
+        <div className={s.vm}>
+          {handle && job ? (
+            <div className={s.note} role="note">
+              <Icon name="info" />
+              <span
+                className={s["lv-grow"]}
+              >{`점검이 끝나고 결과가 저장되면 보고서가 나옵니다 · 지금 ${urlStateText(job.state, verified)}`}</span>
+              <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("live")}>
+                점검 진행 보기
+              </button>
+            </div>
+          ) : (
+            <p className={s.empty}>
+              {handle ? "진단 상태를 확인하지 못했습니다." : "이 브라우저에서 이어 보는 점검이 없습니다."}
+            </p>
+          )}
+          <UrlNotices />
+        </div>
       </>
     );
   }
+
+  const entries = rem.data?.entries ?? [];
+  const sorted = [...entries].sort((x, y) => ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)));
+  const counts = rem.data ? summarizeDiagnosticEntries(entries) : null;
+  const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
+  const prio = sorted.filter(
+    (e) => ["confirmed", "review"].includes(diagnosticOutcome(e)) && (e.remediation || e.record?.bundle),
+  );
+  const chosen = sorted.find((e) => e.entry_id === sel) ?? findings[0] ?? sorted[0];
+  const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === job.input.profile_id) : undefined;
+  const u = job.model_usage;
+
+  let listBody: ReactNode;
+  if (!rem.data && rem.error) listBody = <ErrorNote error={rem.error} onRetry={rem.reload} />;
+  else if (!rem.data) listBody = <LoadingRow />;
+  else if (!sorted.length)
+    listBody = <p className={s.empty}>저장된 결과가 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
+  else
+    listBody = (
+      <div className={s.list} id="rList">
+        {sorted.map((e) => {
+          const o = diagnosticOutcome(e);
+          const on = chosen?.entry_id === e.entry_id;
+          return (
+            <button
+              key={e.entry_id}
+              className={cx(s.frow, on && s.sel)}
+              type="button"
+              data-rsel={e.entry_id}
+              aria-current={on ? "true" : undefined}
+              onClick={() => {
+                setSel(e.entry_id);
+                openInsp();
+              }}
+            >
+              <Outcome o={o} short />
+              <span className={s.fm}>
+                <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
+                {e.summary ? <span className={s.fe}>{maskSecrets(e.summary)}</span> : null}
+              </span>
+              <span className={s.fs}>
+                <span className={s["r-time"]}>{clockOf(e.observed_at)}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    );
 
   return (
     <>
       <UrlHead
         title={title}
-        crumb="점검 기록"
+        crumb="보고서"
+        parent={FINISHED}
         host={host}
         pill={<UrlPill job={job} verified={verified} />}
         acts={
-          <button
-            className={cx(s.btn, s.sm)}
-            type="button"
-            onClick={() => {
-              rem.reload();
-              run.reload();
-            }}
-          >
-            <Icon name="refresh" />
-            새로고침
-          </button>
+          <>
+            <button
+              className={s.btn}
+              type="button"
+              onClick={() => {
+                rem.reload();
+                run.reload();
+              }}
+            >
+              <Icon name="refresh" />
+              새로고침
+            </button>
+            <InspOpenButton>발견 상세</InspOpenButton>
+          </>
         }
         meta={
           <>
             {job.scope ? (
               <span>
-                실제 대상 <b>{job.scope.origin}</b>
+                대상 <b>{job.scope.origin}</b>
               </span>
             ) : null}
-            <span>
-              진단 <b>{job.id}</b>
-            </span>
-            <span>
-              실제 task <b>{`#${taskId}`}</b>
-            </span>
-            {run.data?.kind === "run" && run.data.run.run_ref ? (
+            {profile ? (
               <span>
-                실행 <b>{run.data.run.run_ref}</b>
+                모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
+              </span>
+            ) : null}
+            {u ? (
+              <span>
+                모델 요청 <b>{fmtCount(u.requests)}</b>
               </span>
             ) : null}
             <span>
-              상태 <b>{urlStateText(job.state, verified)}</b>
+              task <b>{`#${taskId}`}</b>
             </span>
           </>
         }
       />
-      <div className={s.vm}>
-        <p className={s.lead}>
-          실제 task 의 저장 결과입니다. 실행 마감과 취약점 판정은 별개이며, 후보는 확정 취약점이 아닙니다.
-        </p>
-        <OutcomeStrip rem={rem} />
-        <RunRecord run={run} />
-        <section className={s.sec} aria-labelledby="luRepUseH">
-          <div className={s.sh}>
-            <h2 id="luRepUseH">모델 사용량 · 비용</h2>
-          </div>
-          <UrlUsage job={job} />
-        </section>
-        <Prio rem={rem} findings={null} />
-        <Download taskId={taskId} />
-        <section className={s.sec} aria-labelledby="luRepMoreH">
-          <div className={s.sh}>
-            <h2 id="luRepMoreH">발견 목록 · 커버리지</h2>
-          </div>
-          <ModeNote what="발견 목록 · 커버리지" />
-          <p className={s.help}>
-            URL 진단 서버는 결속된 task 의 보고서 · 조치 자료만 엽니다. 내려받은 보고서에서 보세요.
-          </p>
-        </section>
+      <div className={s.vb}>
+        <div className={s.vm}>
+          {counts ? (
+            <section className={s.strip} aria-label="판정 집계">
+              {OUTCOME_CELLS.map((k) => (
+                <div key={k} className={cx(s.cell, k === "confirmed" && counts[k] > 0 && s.crit)}>
+                  <div className={s.k}>{diagnosticOutcomeLabels[k]}</div>
+                  <div className={s.v}>{counts[k]}</div>
+                </div>
+              ))}
+            </section>
+          ) : null}
+          {prio.length ? (
+            <section className={s.sec} aria-labelledby="rPrioH">
+              <div className={s.sh}>
+                <h2 id="rPrioH">우선 조치</h2>
+                <span className={s.aside}>판정 순</span>
+              </div>
+              <ol className={s.prio} id="rvPrio">
+                {prio.map((e) => {
+                  const b = e.record && !e.record.stale ? e.record.bundle : undefined;
+                  const fix = b?.immediate_mitigation[0] ?? b?.root_fix[0] ?? e.remediation;
+                  return (
+                    <li key={e.entry_id}>
+                      <span className={s.pt}>{maskSecrets(e.title) || e.entry_id}</span>
+                      <span className={s.pc}>
+                        <Outcome o={diagnosticOutcome(e)} />
+                      </span>
+                      <span className={s.pf}>{maskSecrets(fix)}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
+          ) : null}
+          <section className={s.sec}>
+            <div className={s["seg-tabs"]} role="tablist" aria-label="보고서 내용" id="rTabs">
+              <button type="button" role="tab" aria-selected={tab === "list"} onClick={() => setTab("list")}>
+                발견 목록<span className={s.c}>{sorted.length}</span>
+              </button>
+              <button type="button" role="tab" aria-selected={tab === "ev"} onClick={() => setTab("ev")}>
+                증거 · 감사
+              </button>
+            </div>
+            {tab === "list" ? (
+              <div role="tabpanel" aria-label="발견 목록">
+                {listBody}
+              </div>
+            ) : (
+              <div
+                role="tabpanel"
+                aria-label="증거 · 감사"
+                style={{ display: "flex", flexDirection: "column", gap: 26 }}
+              >
+                <RunRecord run={run} />
+                <WorkflowReport />
+                <section className={s.sec} aria-labelledby="rUseH">
+                  <div className={s.sh}>
+                    <h2 id="rUseH">모델 사용량</h2>
+                  </div>
+                  <Usage />
+                </section>
+                <Download taskId={taskId} />
+              </div>
+            )}
+          </section>
+        </div>
+        <aside className={s.vi} id="rInsp" aria-label="발견 상세">
+          <FindingDetail e={chosen} host={host} taskId={taskId} onReload={rem.reload} />
+        </aside>
+        <PaneToggle />
       </div>
     </>
   );

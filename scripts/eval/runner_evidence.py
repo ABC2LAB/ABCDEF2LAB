@@ -15,6 +15,19 @@ import stat
 from pathlib import Path
 
 ENGINE_LOG = "engine-requests.jsonl"
+# 계측기의 가린 경로 기록. 브라우저 수용시험 전용이라 공식 회차에서 생기면 무효다.
+PATH_LOG = "engine-paths.jsonl"
+# 경로 행(cmd/eval-meter paths.go pathRow)과 가림 규칙 판(pathmask.go Profile). 판이 다른 패턴끼리는 비교하지 않는다.
+_PATH_ROW = frozenset({"seq", "method", "path_pattern", "masked_segments", "path_profile_ref", "path_key_ref"})
+PATH_PROFILE = "abc2lab.path-mask/v2"
+# 인증 헤더 유무 칸(paths.go HasAuthorization·HasCookie). 이 칸이 생기기 전 계측기의 행에는 없고, 그 회차의
+# 인증 헤더 수는 NOT_RUN이다. 한 기록 안의 행은 모두 같은 모양이어야 한다.
+PATH_AUTH_FIELDS = frozenset({"has_authorization", "has_cookie"})
+# 계측기 입구 칸(paths.go Ingress). 인증 헤더 칸보다 뒤에 생겼다. 이 칸이 없는 회차의 입구별 전달 수는 NOT_RUN이다.
+PATH_INGRESS_FIELD = "ingress"
+INGRESSES = frozenset({"main", "explore"})
+# 가림 키의 참조(pathmask.go KeyRef). 한 회차의 행은 모두 같은 키로 가렸어야 한다.
+_PATH_KEY_REF = re.compile(r"[0-9a-f]{16}\Z")
 SEALED_MARKER = "engine-sealed.json"
 DRAINED_MARKER = "engine-drained.json"
 TERMINATED_MARKER = "engine-terminated.json"
@@ -112,6 +125,12 @@ class EvidenceDir:
                               allow_nan=False).encode("utf-8") + b"\n"
         except (TypeError, ValueError):
             raise EvidenceError("evidence_payload_invalid") from None
+        return self.write_bytes(name, data)
+
+    def write_bytes(self, name: str, data: bytes) -> str:
+        """받은 바이트를 그대로 남긴다. 다시 직렬화하면 digest가 받은 것과 달라진다."""
+        if not _NAME.fullmatch(name):
+            raise EvidenceError("evidence_name_invalid")
         directory = _open_dir(self.path)
         try:
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
@@ -174,8 +193,14 @@ def _read_owned(directory: Path, name: str) -> bytes | None:
         os.close(dir_fd)
 
 
-def _rows(data: bytes | None, fields: frozenset[str]) -> list[dict]:
-    """완결된 줄(\\n으로 끝남)만 센다. 쓰는 중인 마지막 줄은 다음 읽기로 미룬다."""
+def _rows(data: bytes | None, fields: frozenset[str], optional: frozenset[str] = frozenset(),
+          later: frozenset[str] = frozenset()) -> list[dict]:
+    """완결된 줄(\\n으로 끝남)만 센다. 쓰는 중인 마지막 줄은 다음 읽기로 미룬다.
+
+    optional·later는 형식이 늘 때 생긴 칸 묶음이다(later가 더 나중). 행 모양은 fields, fields+optional,
+    fields+optional+later 중 하나여야 한다.
+    """
+    shapes = (fields, fields | optional, fields | optional | later)
     if not data:
         return []
     complete = data[:data.rfind(b"\n") + 1]
@@ -185,7 +210,7 @@ def _rows(data: bytes | None, fields: frozenset[str]) -> list[dict]:
             row = json.loads(line.decode("utf-8"))
         except (UnicodeError, ValueError):
             raise EvidenceError("meter_row_invalid") from None
-        if not isinstance(row, dict) or set(row) != fields or type(row.get("seq")) is not int:
+        if not isinstance(row, dict) or set(row) not in shapes or type(row.get("seq")) is not int:
             raise EvidenceError("meter_row_invalid")
         rows.append(row)
     if len({row["seq"] for row in rows}) != len(rows):
@@ -211,6 +236,31 @@ def sequence_complete(rows: list[dict]) -> bool:
     return sorted(row["seq"] for row in rows) == list(range(1, len(rows) + 1))
 
 
+def _count(value: object) -> bool:
+    return type(value) is int and value >= 0
+
+
+def drain_complete(drained: dict) -> bool:
+    """drain 표식이 끝난 drain인지. 진행 중 요청 0, 기록 완료, 강제 취소 수가 정수여야 한다.
+
+    러너(drain 대기)와 보존 집계가 같은 규칙을 쓴다.
+    """
+    return (type(drained.get("inflight_at_drain")) is int and drained["inflight_at_drain"] == 0
+            and drained.get("log_complete") is True and _count(drained.get("forced_cancelled_requests")))
+
+
+def final_log_consistent(rows: list[dict], sealed: dict | None, drained: dict) -> bool:
+    """drain 뒤 요청 기록이 표식과 맞는지. 봉인 표식, 순번 1..n, 전달 수, 강제 취소 행 수를 본다.
+
+    drain_complete를 통과한 표식에만 쓴다. 모르는 kind는 forwarded_count가 거부한다.
+    러너(마감 확인)와 보존 집계가 같은 규칙을 쓴다.
+    """
+    expected = drained.get("forwarded_requests")
+    cancelled = sum(1 for row in rows if row["outcome"] == FORCED_CANCELLED_OUTCOME)
+    return (sealed is not None and sequence_complete(rows) and _count(expected)
+            and forwarded_count(rows) == expected and cancelled == drained["forced_cancelled_requests"])
+
+
 class MeterFiles:
     """계측기 bind 디렉터리 읽기. 러너는 쓰지 않는다. e2_path는 가짜 E²의 따로 둔 bind 디렉터리다."""
 
@@ -222,6 +272,34 @@ class MeterFiles:
         rows = _rows(_read_owned(self.path, ENGINE_LOG), _ENGINE_ROW)
         if not all(_engine_stages_valid(row) for row in rows):
             raise EvidenceError("meter_row_invalid")
+        return rows
+
+    def path_log_present(self) -> bool:
+        return os.path.lexists(self.path / PATH_LOG)
+
+    def path_rows(self, engine_rows: list[dict]) -> list[dict]:
+        """수용시험 회차의 가린 경로 행(drain 뒤 최종 읽기). 계측기가 대상에 전달한 요청마다 정확히 한 행이다.
+
+        봉인 뒤 거부한 요청은 경로 행이 없다. 다른 가림 판, 잘린 꼬리, 요청 기록과 seq·메서드가 어긋난 행,
+        행마다 다른 키 참조, 인증 헤더 칸이 있는 행과 없는 행이 섞인 기록은 거부한다.
+        """
+        data = _read_owned(self.path, PATH_LOG)
+        if data is None:
+            raise EvidenceError("meter_path_log_missing")
+        # 진행 중 읽기와 달리 개행으로 끝나지 않은 꼬리는 잘린 기록이다(_rows는 그 줄을 버리고 센다).
+        if data and not data.endswith(b"\n"):
+            raise EvidenceError("meter_path_log_invalid")
+        rows = _rows(data, _PATH_ROW, PATH_AUTH_FIELDS, frozenset({PATH_INGRESS_FIELD}))
+        forwarded = {row["seq"]: row["method"] for row in engine_rows if row["kind"] in FORWARDED_KINDS}
+        if {row["seq"]: row["method"] for row in rows} != forwarded or any(
+                row["path_profile_ref"] != PATH_PROFILE or not isinstance(row["path_pattern"], str)
+                or not row["path_pattern"] or type(row["masked_segments"]) is not int or row["masked_segments"] < 0
+                or not isinstance(row["path_key_ref"], str) or not _PATH_KEY_REF.match(row["path_key_ref"])
+                or any(type(row[name]) is not bool for name in PATH_AUTH_FIELDS & set(row))
+                or PATH_INGRESS_FIELD in row and (not isinstance(row[PATH_INGRESS_FIELD], str) or row[PATH_INGRESS_FIELD] not in INGRESSES)
+                for row in rows) or len({row["path_key_ref"] for row in rows}) > 1 \
+                or len({frozenset(row) for row in rows}) > 1:
+            raise EvidenceError("meter_path_log_invalid")
         return rows
 
     def forwarded(self) -> int:

@@ -3,65 +3,14 @@
 // 여러 화면이 함께 쓰는 작은 부품. 원본 js 의 문자열 헬퍼(ep · pth · sev · vd · head · isec · kv · closeBtn ·
 // buildPhases · copyText · cbCard · hlHttp)를 JSX 로 옮긴 것. 문구·속성은 원본과 같다.
 
-import { Fragment, type ReactNode, useEffect, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
-import { type LiveVerdict, SEVL, type SevKey, type Verdict as VerdictValue } from "../data/findings";
 import { cx } from "../lib/cx";
+import { useUrl } from "../live/urlDiagnosis";
 import { useShell } from "../shell";
 import { useWb } from "../store";
 import s from "../workbench.module.css";
 import { Icon } from "./icons";
-
-/** 경로 안 `{param}` 을 <i> 로 감싼다. 원본 `pth(p)`. */
-export function Pth({ p }: { p: string }) {
-  const parts = p.split(/(\{\w+\})/);
-  return (
-    <>
-      {parts.map((x, i) =>
-        // 홀수 자리가 {param}
-        i % 2 ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: 고정 문자열을 쪼갠 조각이라 순서가 곧 정체성
-          <i key={i}>{x}</i>
-        ) : (
-          x
-        ),
-      )}
-    </>
-  );
-}
-
-/** 메서드 + 경로. 원본 `ep(m,p)` = `<span class="m GET">GET</span> <span class="p">…</span>`. */
-export function Ep({ m, p }: { m: string; p: string }) {
-  return (
-    <>
-      <span className={cx(s.m, s[m])}>{m}</span>{" "}
-      <span className={s.p}>
-        <Pth p={p} />
-      </span>
-    </>
-  );
-}
-
-/** 진행 작업의 대상. "GET /path" 꼴이면 Ep, 아니면 <code>. 원본 `onHtml(on)` (대시보드 · 점검 진행). */
-export function On({ on }: { on: string }) {
-  const m = on.match(/^(GET|POST|PUT|PATCH|DELETE) (.+)$/);
-  return m ? <Ep m={m[1]} p={m[2]} /> : <code>{on}</code>;
-}
-
-/** 위험도 딱지. 원본 `sev(k)`. 글자를 바꾸려면 children (대시보드의 '심각 1'). */
-export function Sev({ k, children }: { k: SevKey; children?: ReactNode }) {
-  return <span className={cx(s.sev, s[k])}>{children ?? SEVL[k]}</span>;
-}
-
-/** 판정 딱지. 원본 `vd(v)`: 의심 → sus, 판단 불가 → und. */
-export function Verdict({ v }: { v: VerdictValue }) {
-  return <span className={cx(s.vd, v === "의심" && s.sus, v === "판단 불가" && s.und)}>{v}</span>;
-}
-
-/** 진행 중 판정 딱지. 원본 `vdLive(v)`: '판정 중' 은 und 모양. */
-export function VerdictLive({ v }: { v: LiveVerdict }) {
-  return v === "판정 중" ? <span className={cx(s.vd, s.und)}>판정 중</span> : <Verdict v={v} />;
-}
 
 /**
  * 상세 서랍 닫기 버튼 (좁은 화면에서만 보임). 원본 `closeBtn(label)`.
@@ -69,9 +18,10 @@ export function VerdictLive({ v }: { v: LiveVerdict }) {
  */
 export function CloseInspButton({ label }: { label: string }) {
   const { closeInsp } = useShell();
+  // insp-only: 좁은 화면 서랍 닫기 (넓은 화면은 패널 칸의 PaneToggle)
   return (
     <button
-      className={cx(s["icon-btn"], s["insp-only"])}
+      className={cx(s["icon-btn"], s["insp-only"], s["insp-x"])}
       type="button"
       data-insp-close=""
       aria-label={`${label} 닫기`}
@@ -128,21 +78,14 @@ export function Kv({ rows }: { rows: ReadonlyArray<readonly [ReactNode, ReactNod
   );
 }
 
-/** 화면 머리의 메뉴 버튼 (휴대폰에서만 보임) → 레일 서랍. 원본 `button.menu-btn[data-rail-open]`. */
-export function MenuButton() {
-  const { openRail } = useShell();
-  return (
-    <button className={cx(s["icon-btn"], s["menu-btn"])} type="button" aria-label="메뉴 열기" onClick={openRail}>
-      <Icon name="menu" />
-    </button>
-  );
-}
+export { MenuButton } from "./MenuButton";
 
 /** 화면 머리의 '상세' 버튼 (좁은 화면에서만 보임) → 상세 서랍. 원본 `button.btn.insp-only[data-insp-open]`. */
 export function InspOpenButton({ children, id }: { children: ReactNode; id?: string }) {
   const { openInsp } = useShell();
+  // 좁은 화면(서랍)에서만 보인다(CSS). 넓은 화면은 패널 칸의 PaneToggle 로 접고 펼친다
   return (
-    <button className={cx(s.btn, s["insp-only"])} type="button" id={id} onClick={openInsp}>
+    <button className={cx(s.btn, s["insp-only"])} type="button" id={id} data-insp-open="" onClick={openInsp}>
       <Icon name="panel" />
       {children}
     </button>
@@ -150,27 +93,26 @@ export function InspOpenButton({ children, id }: { children: ReactNode; id?: str
 }
 
 /**
- * 보고서로 가는 링크 (`href="#report"`). 누르면 먼저 보고서 대상을 바꾸고(원본 data-rhost → setReportHost) 이동은 href 가 한다.
- * kind: blog = 끝난 예시 점검(레일 · 대시보드) · live = 방금 끝낸 점검(단계 표시 · 진행 화면 '보고서 보기').
+ * 넓은 화면의 상세 패널 접기 · 펼치기 (레일 접기와 같은 짜임, 시안 v25). 접으면 패널은 64px 줄로 남고
+ * 이 버튼은 패널 칸 오른쪽 위 같은 자리에 있어서, 화면 머리의 버튼(취소 · 시작 등)은 움직이지 않는다.
+ * 좁은 화면은 서랍이라 보이지 않는다(CSS).
  */
-export function ReportLink({
-  kind,
-  className,
-  current,
-  children,
-}: {
-  kind: "blog" | "live";
-  className?: string;
-  /** aria-current 값 (레일은 "page", 단계 표시는 "step") */
-  current?: "page" | "step";
-  children: ReactNode;
-}) {
-  const setReportHost = useWb((st) => st.setReportHost);
+export function PaneToggle() {
+  const { openInsp, closeInsp } = useShell();
+  const folded = useWb((st) => st.inspHidden);
+  const text = folded ? "오른쪽 패널 펼치기" : "오른쪽 패널 접기";
   return (
-    // biome-ignore lint/a11y/useValidAnchor: 해시 라우팅 링크라 이동은 href 가 하고, onClick 은 보고서 대상만 바꾼다
-    <a className={className} href="#report" aria-current={current} onClick={() => setReportHost(kind)}>
-      {children}
-    </a>
+    <button
+      className={cx(s["icon-btn"], s["pane-toggle"])}
+      type="button"
+      data-pane-toggle=""
+      aria-expanded={!folded}
+      aria-label={text}
+      title={text}
+      onClick={folded ? openInsp : closeInsp}
+    >
+      <Icon name={folded ? "unfoldRight" : "foldRight"} />
+    </button>
   );
 }
 
@@ -183,45 +125,49 @@ export const PH = [
 ] as const;
 export type PhaseKey = (typeof PH)[number][0];
 
+/** 탐색 단계 → 이 점검이 다다른 단계 위치 (0 자산 탐색 · 1 범위 확인 · 2 점검 진행 · 3 보고서). */
+const STAGE_AT = {
+  crawling: 0,
+  awaiting_selection: 1,
+  diagnosing: 2,
+  completed: 2,
+  stopped: 2,
+  failed: 2,
+  unknown: 0,
+} as const;
+
 /**
- * 단계 표시 `nav.phases`. 원본 `buildPhases()`: 지난 단계는 체크·done, 지금 단계는 aria-current="step",
- * 보고서는 점검이 끝나거나(done) 종료(ended)되기 전에는 링크가 아닌 span.later. 보고서 링크를 누르면 setReportHost('live').
+ * 단계 표시 `nav.phases`. 지금 보는 화면은 aria-current="step", 이 점검이 이미 지난 단계는 체크(done).
+ * 보고서는 서버가 결과 저장을 확인하기 전에는 링크가 아닌 span.later.
  */
 export function Phases({ phase }: { phase: PhaseKey }) {
-  const rep = useWb((st) => st.live.done || st.live.ended);
+  const rep = useUrl((st) => st.job?.result_ready === true);
+  const started = useUrl((st) => st.job?.started === true);
+  const stage = useUrl((st) => st.flow?.stage ?? null);
+  let reached = 0;
+  if (stage) reached = STAGE_AT[stage];
+  else if (started) reached = 2;
+  if (rep) reached = 3;
   const at = PH.findIndex((p) => p[0] === phase);
   return (
     <nav className={s.phases} aria-label="점검 단계" data-phase={phase}>
       {PH.map(([k, label], i) => {
-        const n = i < at ? <Icon name="check" /> : i + 1;
-        if (k === "report" && !rep) {
-          return (
-            <span key={k} className={cx(s.ph, s.later)} title="점검이 끝나면 만들어집니다">
-              <span className={s.n}>{n}</span>
-              {label}
-            </span>
-          );
-        }
+        const done = i < reached && i !== at;
         const inner = (
           <>
-            <span className={s.n}>{n}</span>
+            <span className={s.n}>{done ? <Icon name="check" /> : i + 1}</span>
             {label}
           </>
         );
-        if (k === "report") {
+        if (k === "report" && !rep) {
           return (
-            <ReportLink
-              key={k}
-              kind="live"
-              className={cx(s.ph, i < at && s.done)}
-              current={i === at ? "step" : undefined}
-            >
+            <span key={k} className={cx(s.ph, s.later)} title="점검이 끝나면 만들어집니다">
               {inner}
-            </ReportLink>
+            </span>
           );
         }
         return (
-          <a key={k} className={cx(s.ph, i < at && s.done)} href={`#${k}`} aria-current={i === at ? "step" : undefined}>
+          <a key={k} className={cx(s.ph, done && s.done)} href={`#${k}`} aria-current={i === at ? "step" : undefined}>
             {inner}
           </a>
         );
@@ -387,5 +333,54 @@ export function CodeCard({ title, src, text, id }: { title: ReactNode; src: Reac
         </pre>
       </div>
     </div>
+  );
+}
+
+/**
+ * 작은 (?) 버튼 → 메모처럼 뜨는 설명 (시안 v51 · v52). 다시 누르기 · 바깥 클릭 · Esc 로 닫힌다.
+ * 설명은 늘 DOM 에 있고(hidden) 버튼이 aria-controls · aria-expanded 로 가리킨다.
+ * id 는 useId 로 만들어 같은 화면에 여러 개 있어도 겹치지 않는다.
+ * Esc 는 계정 메뉴처럼 캡처 단계에서 받아 멈춘다: 메모만 닫고 상세 서랍(Workbench 전역 Esc)은 그대로 둔다.
+ */
+export function HelpTip({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setOpen(false);
+      btnRef.current?.focus();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
+  return (
+    <span className={s["help-tip"]} ref={rootRef}>
+      <button
+        ref={btnRef}
+        className={s["help-tip-btn"]}
+        type="button"
+        aria-label={label}
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen(!open)}
+      >
+        ?
+      </button>
+      <span className={s["help-tip-note"]} id={id} role="note" hidden={!open}>
+        {children}
+      </span>
+    </span>
   );
 }

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -60,10 +62,15 @@ type E2StandaloneBackend struct {
 	active                           int
 	idle                             chan struct{}
 	final                            *E2ControlFinal
+	// 수용시험 회차(설정 v2)에만 있다. 공식 회차는 nil이다.
+	attemptPaths *e2AttemptPathLog
 }
 
 func (*E2StandaloneBackend) String() string   { return "server.E2StandaloneBackend[protected]" }
 func (*E2StandaloneBackend) GoString() string { return "server.E2StandaloneBackend[protected]" }
+
+// 도구는 이 backend의 Runner 샌드박스에서만 돈다(E2ControlIsolationToolSandbox).
+func (*E2StandaloneBackend) e2ControlOwnsToolSandbox() {}
 
 func NewE2StandaloneBackend(ctx context.Context, o E2StandaloneOptions) (*E2StandaloneBackend, error) {
 	if ctx == nil || ctx.Err() != nil || o.Config.Check() != nil || e2HTTPNil(o.Authority) || e2HTTPNil(o.Supervisor) || e2HTTPNil(o.Readiness) || !validE2ControlRef(o.ExecutionRef) || !e2ControlHash.MatchString(o.ExpectedPolicyFingerprintSHA256) {
@@ -101,6 +108,15 @@ func NewE2StandaloneBackend(ctx context.Context, o E2StandaloneOptions) (*E2Stan
 	b := &E2StandaloneBackend{ctx: owned, cancel: cancel, options: o, idle: make(chan struct{})}
 	close(b.idle)
 	input := E2HTTPFileOptions{PolicyFile: o.Config.PolicyPath, Authority: e2StandaloneAuthority{E2HTTPPolicyAuthority: o.Authority, ctx: owned}, Supervisor: o.Supervisor, OnAcquire: b.onAcquire, ObserveEvent: b.observeEvent, ObserveResult: b.observeResult}
+	if o.Config.HasPathKey() {
+		pathKey, keyErr := o.Config.ReadPathKey()
+		b.attemptPaths = newE2AttemptPathLog(pathKey)
+		clear(pathKey)
+		if keyErr != nil || b.attemptPaths == nil {
+			return nil, ErrE2Control
+		}
+		input.AttemptPathObserver = b.attemptPaths.observe
+	}
 	f, err := loadE2HTTPRuntimeOptions(ctx, input, raw, b.resetBinding)
 	if err != nil {
 		return nil, err
@@ -184,7 +200,16 @@ func (b *E2StandaloneBackend) onAcquire(ctx context.Context, a E2HTTPAcquired) e
 		return ErrE2Control
 	}
 	c := b.options.Config
-	p, err := e2export.New(e2export.Config{Execution: a.Execution, Runner: a.Runner, Journal: a.Journal, JournalDirectory: a.JournalDirectory, JournalName: a.JournalName, OutputDirectory: c.EvidenceDir, AuditKey: a.AuditKey, ExecutionRef: b.options.ExecutionRef, EvalRunID: c.EvalRunID, ReservationRef: c.ReservationRef, ModelTag: c.ModelTag, ResetGeneration: b.reset, EngineTaskID: v.Scope.TaskRef, PolicyFingerprintSHA256: a.PolicyFingerprintSHA256})
+	// 러너는 게시 루트 아래 실행별 디렉터리에서 읽는다(연결 제안 §4.1).
+	output := filepath.Join(c.EvidenceDir, b.options.ExecutionRef)
+	if os.Mkdir(output, 0700) != nil {
+		return ErrE2Control
+	}
+	// 첫 시도 전에 연다. 열지 못하면 측정 회차를 시작하지 않는다(행이 빠진 기록을 만들지 않는다).
+	if b.attemptPaths != nil && b.attemptPaths.open(output) != nil {
+		return ErrE2Control
+	}
+	p, err := e2export.New(e2export.Config{Execution: a.Execution, Runner: a.Runner, Journal: a.Journal, JournalDirectory: a.JournalDirectory, JournalName: a.JournalName, OutputDirectory: output, AuditKey: a.AuditKey, ExecutionRef: b.options.ExecutionRef, EvalRunID: c.EvalRunID, ReservationRef: c.ReservationRef, ModelTag: c.ModelTag, ResetGeneration: b.reset, EngineTaskID: v.Scope.TaskRef, PolicyFingerprintSHA256: a.PolicyFingerprintSHA256})
 	if err != nil {
 		return err
 	}
@@ -212,8 +237,30 @@ func (b *E2StandaloneBackend) observeResult(ctx context.Context, r e2runner.Resu
 	return p.ObserveResult(ctx, r)
 }
 
-// Execute는 신뢰한 Go 조립만 호출한다. 원격 입력을 이 메서드에 바로 전달하면 안 된다.
-// supervisor는 실제 task/intent 소유권을 검증해야 하며 양수 검사만으로 대체하지 않는다.
+// b.op을 쥔 채로 부른다. 회차당 실행 자원은 한 번만 만든다.
+func (b *E2StandaloneBackend) acquireLocked(ctx context.Context, q E2HTTPRequest) (*E2HTTPRunOptions, error) {
+	if _, err := b.resetBinding(); err != nil {
+		return nil, err
+	}
+	if b.factory.AuthorizeIntent(ctx, q) != nil {
+		return nil, ErrE2Control
+	}
+	if b.lease == nil {
+		lease, err := b.factory.Acquire(b.ctx, q)
+		b.lease = &lease
+		if err != nil {
+			b.mu.Lock()
+			b.failed = true
+			b.mu.Unlock()
+			return nil, ErrE2Control
+		}
+	}
+	return b.lease, nil
+}
+
+// Execute는 신뢰한 호출자만 부른다. 원격 호출은 토큰으로 인증된 엔진만 들어오고(`e2RemoteHandler`), 먼저 등록된 intent만
+// 통과한다. task는 첫 값에 고정된다. 그 intent가 실제로 그 task의 것인지는 엔진 런타임이 보장한다.
+// 다른 원격 경로를 붙일 때 이 전제를 새로 만족시키지 않으면 안 된다.
 func (b *E2StandaloneBackend) Execute(ctx context.Context, q E2HTTPRequest, command string) (e2runner.Result, error) {
 	if b == nil {
 		return e2runner.Result{}, ErrE2Control
@@ -223,26 +270,11 @@ func (b *E2StandaloneBackend) Execute(ctx context.Context, q E2HTTPRequest, comm
 		b.op.Unlock()
 		return e2runner.Result{}, ErrE2Control
 	}
-	if _, err := b.resetBinding(); err != nil {
+	lease, err := b.acquireLocked(ctx, q)
+	if err != nil {
 		b.op.Unlock()
 		return e2runner.Result{}, err
 	}
-	if b.factory.AuthorizeIntent(ctx, q) != nil {
-		b.op.Unlock()
-		return e2runner.Result{}, ErrE2Control
-	}
-	if b.lease == nil {
-		lease, err := b.factory.Acquire(b.ctx, q)
-		b.lease = &lease
-		if err != nil {
-			b.mu.Lock()
-			b.failed = true
-			b.mu.Unlock()
-			b.op.Unlock()
-			return e2runner.Result{}, ErrE2Control
-		}
-	}
-	lease := b.lease
 	if b.toolCalls >= b.factory.MaxToolCalls {
 		b.op.Unlock()
 		return e2runner.Result{}, ErrE2Control
@@ -360,6 +392,11 @@ func (b *E2StandaloneBackend) Finalize(ctx context.Context, ref string) (E2Contr
 		b.mu.Lock()
 		p, failed := b.publisher, b.failed
 		b.mu.Unlock()
+		// 모든 호출이 끝난 뒤(idle)라 더 올 행이 없다. 게시 전에 경로 기록을 디스크에 내린다.
+		// 실패해도 E② 마감에는 끼어들지 않고, 기록이 불완전한 것은 러너가 순번 대조로 잡는다.
+		if b.attemptPaths != nil && b.attemptPaths.close() != nil {
+			log.Print("[e2-standalone] attempt_paths_close_failed")
+		}
 		if p != nil && !failed {
 			r, err := p.Publish(ctx, ref)
 			if err == nil {
@@ -437,6 +474,9 @@ func (b *E2StandaloneBackend) Dispose() error {
 	b.mu.Unlock()
 	if p != nil {
 		p.Dispose()
+	}
+	if b.attemptPaths != nil && b.attemptPaths.close() != nil {
+		log.Print("[e2-standalone] attempt_paths_close_failed")
 	}
 	if err != nil {
 		return ErrE2Control

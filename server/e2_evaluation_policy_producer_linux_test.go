@@ -7,10 +7,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -18,9 +20,11 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 )
 
-// 러너의 정책 생산자가 만든 파일을 실제 도구·로더·factory·독립 backend가 받는지 끝까지 대조한다.
-// 자리값으로 오프라인 계산한 예상 지문이 실제 회차의 지문과 같아야 공식 프로파일에 동결한 값이 쓸모가 있다.
-func TestE2EvaluationPolicyProducerGoConsumer(t *testing.T) {
+type e2ProducedRun struct{ configPath, expectedFingerprint, connectIP string }
+
+// 러너의 정책 생산자와 실제 도구로 회차 입력을 만든다.
+func e2ProducedRunFixture(t *testing.T) e2ProducedRun {
+	t.Helper()
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 unavailable")
@@ -79,14 +83,23 @@ func TestE2EvaluationPolicyProducerGoConsumer(t *testing.T) {
 from datetime import datetime, timezone
 from pathlib import Path
 from e2_prepare import E2RunResources, E2RunValues, approval_window, issue_run_ca, prepare_e2_config, render_policy
-prep, template, tool, helper, digest, state, ip = sys.argv[2:9]
+prep, template, tool, helper, digest, state, ip, port = sys.argv[2:10]
 run_ref = "e2run-go-consumer"
 start, end = approval_window(datetime.now(timezone.utc), 3600, "2099-01-01T00:00:00Z")
 cert, key = issue_run_ca(Path(tool), Path(prep), run_ref, end, 60)
 policy = render_policy(Path(template), E2RunResources(run_ref, start, end, state, helper, digest, cert, key, ip))
-prepare_e2_config(Path(prep), E2RunValues("eval-run-1", "model-1", "evaluation_caller_passthrough", {"llm_backend": "api", "target_kind": "public_practice"}, 8080), policy)
+prepare_e2_config(Path(prep), E2RunValues("eval-run-1", "model-1", "evaluation_caller_passthrough", {"llm_backend": "api", "target_kind": "public_practice"}, int(port)), policy)
 `
-	cmd := exec.CommandContext(t.Context(), python, "-I", "-c", produce, scripts, prep, template, tool, policy.Helper, policy.HelperSHA256, policy.StateDir, connectIP)
+	// 엔진 호출 경로를 여는 시험이 이 포트로 listen한다. 고정 포트는 다른 프로세스와 부딪힌다.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), python, "-I", "-c", produce, scripts, prep, template, tool, policy.Helper, policy.HelperSHA256, policy.StateDir, connectIP, port)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("producer failed: %s", output)
 	}
@@ -107,6 +120,14 @@ prepare_e2_config(Path(prep), E2RunValues("eval-run-1", "model-1", "evaluation_c
 	if err := os.WriteFile(configPath, configBytes, 0600); err != nil {
 		t.Fatal(err)
 	}
+	return e2ProducedRun{configPath, expected, connectIP}
+}
+
+// 러너의 정책 생산자가 만든 파일을 실제 도구·로더·factory·독립 backend가 받는지 끝까지 대조한다.
+// 자리값으로 오프라인 계산한 예상 지문이 실제 회차의 지문과 같아야 공식 프로파일에 동결한 값이 쓸모가 있다.
+func TestE2EvaluationPolicyProducerGoConsumer(t *testing.T) {
+	run := e2ProducedRunFixture(t)
+	configPath, expected, connectIP, prep := run.configPath, run.expectedFingerprint, run.connectIP, filepath.Dir(run.configPath)
 	c, err := e2config.Load(configPath)
 	if err != nil {
 		t.Fatal("runner config rejected:", err)

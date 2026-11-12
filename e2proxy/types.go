@@ -65,12 +65,13 @@ const (
 )
 
 type Rule struct {
-	Ref          string
-	Origin       string
-	ConnectIP    netip.Addr
-	PathPrefix   string
-	PathScopeRef string
-	Methods      []string
+	TLSSPKISHA256 string `json:"tls_spki_sha256,omitempty"`
+	Ref           string
+	Origin        string
+	ConnectIP     netip.Addr
+	PathPrefix    string
+	PathScopeRef  string
+	Methods       []string
 	// Headers explicitly declares ordinary, noncredential constraints. Values
 	// must already match the caller; they are never injected or overwritten.
 	Headers http.Header `json:"-"`
@@ -93,7 +94,10 @@ type Config struct {
 	// CheckAuthority는 신뢰 호스트가 연결하는 위임 철회 검사다. nil은 기존 모드다.
 	// 짧고 제한된 로컬 검사만 수행하며 Execution으로 재진입하면 안 된다.
 	CheckAuthority func() error `json:"-"`
-	ApprovalMode   ApprovalMode
+	// AttemptPathObserver는 평가 회차 전용 관찰 훅이다. nil이면 동작은 그대로다(제품·공식 회차).
+	AttemptPathObserver AttemptPathObserver `json:"-"`
+	RequestBoundary     RequestBoundary     `json:"-"`
+	ApprovalMode        ApprovalMode
 	// RequestApproval은 호스트가 명시적으로 연결하는 요청별 확인 경계다.
 	RequestApproval RequestApprovalGate `json:"-"`
 	Evaluation      *EvaluationCallerContext

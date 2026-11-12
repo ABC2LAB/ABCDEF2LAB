@@ -153,10 +153,12 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 		}
 		return b
 	}
+	syntheticRequest := llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("owned synthetic request")}}
+	reserve := reservedInputFor(t, syntheticRequest)
 	call := func(ctx context.Context, p *firstDiagnosisModelProvider) <-chan error {
 		result := make(chan error, 1)
 		go func() {
-			_, _, _, err := p.Complete(ctx, llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("owned synthetic request")}})
+			_, _, _, err := p.Complete(ctx, syntheticRequest)
 			result <- err
 		}()
 		return result
@@ -202,7 +204,7 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 			t.Fatal("직렬 대기한 정상 호출이 실패함")
 		}
 		u := b.Snapshot()
-		if first.calls.Load() != 1 || second.calls.Load() != 1 || u.Requests != 2 || !u.UsageKnown || u.InputTokens != 20 || u.OutputTokens != 40 || u.ReservedInputTokens != 131072 || u.ReservedOutputTokens != 256 {
+		if first.calls.Load() != 1 || second.calls.Load() != 1 || u.Requests != 2 || !u.UsageKnown || u.InputTokens != 20 || u.OutputTokens != 40 || u.ReservedInputTokens != 2*reserve || u.ReservedOutputTokens != 256 {
 			t.Fatal("공유 예산 정산 불일치")
 		}
 	})
@@ -264,7 +266,20 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 			budgetAwaitSignal(t, waiter.observed)
 			budgetRequireWaiting(t, r2, second)
 			close(release)
-			if !errors.Is(budgetAwaitResult(t, r1), ErrFirstDiagnosisModelBudget) || !errors.Is(budgetAwaitResult(t, r2), ErrFirstDiagnosisModelBudget) {
+			if !errors.Is(budgetAwaitResult(t, r1), ErrFirstDiagnosisModelBudget) {
+				t.Fatal("실패·불명 호출이 성공으로 보고됨")
+			}
+			if tc.callErr != nil {
+				// 실패한 호출은 예약한 양으로 정산하고 다음 호출을 막지 않는다(P3 결정안 C05).
+				secondErr := budgetAwaitResult(t, r2)
+				u := b.Snapshot()
+				if secondErr != nil || second.calls.Load() != 1 || u.Requests != 2 || !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != reserve+int64(knownUsage.InputTokens) {
+					t.Fatalf("실패한 호출 하나가 다음 호출을 막거나 상한으로 정산되지 않음: %+v", u)
+				}
+				return
+			}
+			// 성공했는데 사용량이 없거나 예약을 넘거나 영속화가 실패하면 상한을 믿을 수 없어 막는다.
+			if !errors.Is(budgetAwaitResult(t, r2), ErrFirstDiagnosisModelBudget) {
 				t.Fatal("불명 결과 뒤 대기가 허용됨")
 			}
 			if second.calls.Load() != 0 || b.Snapshot().Requests != 1 || b.Snapshot().UsageKnown {
@@ -315,6 +330,83 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 			t.Fatal("대기 중 바뀐 모델 결속이 허용됨")
 		}
 	})
+	for _, mode := range []string{"revoke", "expiry", "user_stop", "audit_after_target_stop", "grace_timeout", "provider_error"} {
+		t.Run("target_stop_"+mode, func(t *testing.T) {
+			hard, hardStop := context.WithTimeout(f.Context, 5*time.Second)
+			defer hardStop()
+			ctx, stop := context.WithCancelCause(hard)
+			defer stop(context.Canceled)
+			var closed atomic.Bool
+			var persisted []diagnosisprep.ModelUsage
+			b := newBudget(t, 2, func(u diagnosisprep.ModelUsage) error { persisted = append(persisted, u); return nil })
+			grace := time.Second
+			if mode == "grace_timeout" {
+				grace = 80 * time.Millisecond
+			}
+			if b.ConfigureTargetDrain(hard, grace, func() error {
+				if closed.Load() {
+					return ErrFirstDiagnosisTargetEnded
+				}
+				return nil
+			}) != nil {
+				t.Fatal("target drain setup")
+			}
+			release := make(chan struct{})
+			first := &budgetConcurrentProvider{entered: make(chan struct{}), release: release, usage: knownUsage}
+			if mode == "provider_error" {
+				first.err = errors.New("owned provider error")
+			}
+			second := &budgetConcurrentProvider{usage: knownUsage}
+			r1 := call(ctx, wrap(t, b, first))
+			budgetAwaitSignal(t, first.entered)
+			waiter := &budgetWaitingContext{Context: ctx, observed: make(chan struct{})}
+			r2 := call(waiter, wrap(t, b, second))
+			budgetAwaitSignal(t, waiter.observed)
+			closed.Store(true)
+			if mode == "user_stop" {
+				stop(context.Canceled)
+			} else {
+				stop(ErrFirstDiagnosisTargetEnded)
+			}
+			if budgetAwaitResult(t, r2) == nil || second.calls.Load() != 0 {
+				t.Fatal("new call after target stop")
+			}
+			// 대상 철회(revoke·expiry)는 진행 중 호출을 마치게 둔다. 중지·hard 정지·제공자 오류로 끝난 호출은
+			// 실패지만 예약한 양으로 정산한다(P3 결정안 C05).
+			known := mode == "revoke" || mode == "expiry"
+			if known || mode == "provider_error" {
+				budgetRequireWaiting(t, r1, second)
+				close(release)
+			} else if mode == "audit_after_target_stop" {
+				hardStop()
+			}
+			err := budgetAwaitResult(t, r1)
+			if (err == nil) != known {
+				t.Fatal("incorrect drain result", err)
+			}
+			usage := b.Snapshot()
+			bounded := int64(1)
+			if known {
+				bounded = 0
+			}
+			if !usage.UsageKnown || usage.UnknownUsageCalls != bounded || usage.Requests != 1 || usage.ReservedInputTokens != reserve || usage.ReservedOutputTokens != 128 || first.calls.Load() != 1 || len(persisted) != 2 || !persisted[1].UsageKnown {
+				t.Fatal("usage not drained or reservation refunded", usage)
+			}
+		})
+	}
+	t.Run("target_admission_closed_before_context_watcher", func(t *testing.T) {
+		hard, cancel := context.WithTimeout(f.Context, time.Second)
+		defer cancel()
+		b := newBudget(t, 2, noop)
+		if b.ConfigureTargetDrain(hard, time.Second, func() error { return ErrFirstDiagnosisTargetEnded }) != nil {
+			t.Fatal("target drain setup")
+		}
+		inner := &budgetConcurrentProvider{usage: knownUsage}
+		if budgetAwaitResult(t, call(hard, wrap(t, b, inner))) == nil || inner.calls.Load() != 0 || b.Snapshot().Requests != 0 || !b.Snapshot().UsageKnown {
+			t.Fatal("closed admission consumed a call")
+		}
+	})
+
 }
 
 // 실제 wrapper 테스트와 별도로 초기화되지 않은 gate도 무한 대기 없이 닫는다.

@@ -6,7 +6,7 @@ import {
   type URLDiagnosisScope,
   urlPhaseLabels,
   urlStateLabels,
-} from "@/abc2lab-ui/lib/diagnosis-url";
+} from "@/lib/diagnosis/diagnosis-url";
 
 import type { View } from "../shell";
 
@@ -53,6 +53,30 @@ export function urlStateText(state: UrlState, verified = true): string {
   return verified ? urlStateLabels[state] : "현재 상태 미확인";
 }
 
+/**
+ * 실행 결과 한 줄(실행 결과 상태 값 계약 §4, 이경준 화면 원칙). 미실행·판단불가를 "발견 없음"으로 보이지 않게 한다.
+ * 결과 칸이 없으면(이 칸 이전 기록·결과가 없는 상태) 빈 글이다.
+ */
+export function urlOutcomeText(
+  job: Pick<URLDiagnosisJob, "state" | "outcome" | "closing_reason" | "intent_outcomes">,
+): string {
+  const c = job.intent_outcomes;
+  if (!c) return "";
+  const finished = c.done + c.policy_limited;
+  const remaining = c.incomplete + c.stopped;
+  if (job.state === "cancelled") return `중지됨 · 끝난 ${finished} / 끊긴 ${remaining + c.unknown}`;
+  if (job.state !== "completed" || !job.outcome) return "";
+  const parts: string[] = [];
+  if (job.outcome === "no_intents") parts.push("시도한 계획 없음(검사 안 함)");
+  else if (job.outcome === "partial") parts.push(remaining > 0 ? `일부 완료 · 남은 작업 ${remaining}` : "일부 완료");
+  else parts.push("계획한 작업 모두 마감");
+  // 결과 불명은 남은 작업과 따로 보인다(미실행·판단불가를 섞지 않는다).
+  if (c.unknown > 0) parts.push(`결과 불명 ${c.unknown}`);
+  if (c.policy_limited > 0) parts.push(`정책상 검증 안 됨 ${c.policy_limited}`);
+  if (job.closing_reason === "budget_limited") parts.push("예산 상한에서 마감 · 찾은 후보는 보존");
+  return parts.join(" · ");
+}
+
 /** 엔진이 아직 움직이는가. */
 export function isUrlActive(job: Pick<URLDiagnosisJob, "state">): boolean {
   return URL_ACTIVE_STATES.includes(job.state);
@@ -64,12 +88,24 @@ export function urlPhaseIndex(phase: UrlPhase): number {
 }
 
 /** 진단을 열 때 갈 수 있는 화면. */
-export type UrlView = Extract<View, "scope" | "live" | "report">;
+export type UrlView = Extract<View, "new" | "live" | "report">;
 
-/** 이 진단을 열 때 갈 화면: 시작 전 → 범위 확인, 결과 저장 확인 → 보고서, 그 밖 → 점검 진행. */
+/** 이 진단을 열 때 갈 화면: 시작 전 → 새 점검(승인 범위 확인 · 시작), 결과 저장 확인 → 보고서, 그 밖 → 점검 진행. */
 export function urlViewFor(job: Pick<URLDiagnosisJob, "state" | "result_ready" | "task_id">): UrlView {
-  if (URL_PRESTART_STATES.includes(job.state)) return "scope";
+  if (URL_PRESTART_STATES.includes(job.state)) return "new";
   if (job.result_ready && job.task_id) return "report";
+  return "live";
+}
+
+/** 탐색 단계까지 보고 갈 화면: 탐색 중 → 자산 탐색, 선택 대기 → 범위 확인, 그 밖은 urlViewFor. */
+export function scanViewFor(
+  job: Pick<URLDiagnosisJob, "state" | "result_ready" | "task_id">,
+  stage: "crawling" | "awaiting_selection" | "diagnosing" | "completed" | "stopped" | "failed" | "unknown" | null,
+): Extract<View, "new" | "crawl" | "scope" | "live" | "report"> {
+  const to = urlViewFor(job);
+  if (to !== "live") return to;
+  if (stage === "crawling") return "crawl";
+  if (stage === "awaiting_selection") return "scope";
   return "live";
 }
 
@@ -103,6 +139,7 @@ export function usdText(micros: number): string {
 
 /** 승인 방식 글. */
 export function approvalModeText(mode: URLDiagnosisScope["approval_mode"]): string {
+  if (mode === "workbench_selective_v1") return "읽기 사전 승인 · 쓰기 건별 확인";
   return mode === "confirm_every_request" ? "매 요청 확인" : "사전 승인 범위";
 }
 

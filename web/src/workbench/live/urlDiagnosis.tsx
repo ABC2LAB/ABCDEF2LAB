@@ -13,7 +13,7 @@ import { useEffect } from "react";
 
 import { create } from "zustand";
 
-import { ApiError } from "@/abc2lab-ui/lib/api";
+import { ApiError } from "@/lib/diagnosis/api";
 import {
   commandURLDiagnosis,
   createURLDraft,
@@ -31,29 +31,34 @@ import {
   type URLDiagnosisJob,
   urlDiagnosisError,
   urlDiagnosisInput,
-} from "@/abc2lab-ui/lib/diagnosis-url";
+} from "@/lib/diagnosis/diagnosis-url";
 
 import { useLiveAuth } from "./auth";
 import { URL_ACTIVE_STATES, URL_PRESTART_STATES } from "./urlMap";
+import { commandWorkflow, readWorkflow, type WorkflowSnapshot } from "./workflow";
 
 /** 진행 중 진단 상태를 다시 읽는 간격(ms). 팀 화면과 같다. */
 export const URL_POLL_MS = 2000;
-/** catalog 가 이 상태면 이 서버는 v2 가 아니다(기존 v1 새 점검을 쓴다). */
-const V1_STATUSES: readonly number[] = [404, 501];
+/** URL API 미설치 상태는 운영자 설정이 필요하며 다른 엔진으로 전환하지 않는다. */
+const UNSUPPORTED_STATUSES: readonly number[] = [404, 501];
 
 /**
  * 서버의 새 점검 방식. unknown = 아직 확인 전(UrlFeeds 밖), checking = 확인 중,
- * v1 = 기존 POST /api/tasks, v2 = URL 진단, unavailable = 확인 불가(새 점검을 막는다).
+ * v2 = URL 진단, unavailable = 미설치 또는 확인 불가(새 점검을 막는다).
  */
 export type UrlCapability =
   | { kind: "unknown" }
   | { kind: "checking" }
-  | { kind: "v1" }
   | { kind: "v2"; catalog: URLDiagnosisCatalog }
   | { kind: "unavailable"; message: string };
 
 /** URL 진단 상태 (화면 넷이 함께 본다). */
 export interface UrlStore {
+  flow: WorkflowSnapshot | null;
+  flowVerified: boolean;
+  flowUncertain: boolean;
+  flowBusy: boolean;
+  flowError: string;
   cap: UrlCapability;
   /** 조회 핸들 (팀 storeURLHandle 과 같은 값). 있으면 새 입력을 잠근다. */
   handle: URLDiagnosisHandle | null;
@@ -76,6 +81,11 @@ export interface UrlStore {
 type JobFields = Omit<UrlStore, "cap" | "resetSeq">;
 
 const cleared = (): JobFields => ({
+  flow: null,
+  flowVerified: false,
+  flowUncertain: false,
+  flowBusy: false,
+  flowError: "",
   handle: null,
   job: null,
   verified: false,
@@ -92,11 +102,18 @@ export const useUrl = create<UrlStore>()(() => ({ cap: { kind: "unknown" }, ...c
 let generation = 0;
 let lock = false;
 let capRun = 0;
+let flowGeneration = 0;
+let flowLock = false;
+let flowPending: { key: string; revision: number; operation: "selection" | "pause" | "resume"; ids: string[] } | null =
+  null;
 
 /** 진행 중인 응답을 모두 버리고 진단 상태를 비운다 (cap 은 그대로). */
 function dropJob(): void {
   generation += 1;
+  flowGeneration += 1;
   lock = false;
+  flowLock = false;
+  flowPending = null;
   useUrl.setState(cleared());
 }
 
@@ -133,6 +150,9 @@ function accept(next: URLDiagnosisJob, saved: URLDiagnosisHandle): void {
 
 /** 저장된 핸들로 같은 진단을 다시 읽는다(GET 만). owner 가 다르면 팀 readURLHandle 이 버린다. */
 async function bootJob(owner: string): Promise<void> {
+  flowGeneration += 1;
+  flowLock = false;
+  flowPending = null;
   const current = ++generation;
   const saved = readURLHandle(owner);
   lock = false;
@@ -167,7 +187,13 @@ async function checkCapability(): Promise<void> {
     await bootJob(catalog.ownerContext);
   } catch (cause) {
     if (id !== capRun) return;
-    if (cause instanceof ApiError && V1_STATUSES.includes(cause.status)) useUrl.setState({ cap: { kind: "v1" } });
+    if (cause instanceof ApiError && UNSUPPORTED_STATUSES.includes(cause.status))
+      useUrl.setState({
+        cap: {
+          kind: "unavailable",
+          message: "URL 진단 서비스가 설치되지 않았습니다. 운영자가 준비 서비스 연결을 확인해야 합니다.",
+        },
+      });
     else useUrl.setState({ cap: { kind: "unavailable", message: urlDiagnosisError(cause) } });
   }
 }
@@ -206,8 +232,16 @@ export function urlGates(st: Pick<UrlStore, "handle" | "job" | "verified" | "unc
     startSent,
     inputLocked: !!handle || busy,
     canValidate: !busy && !uncertain && !bound && !job?.preparation_started && !(!!handle && !job),
+    // 요청별 허용·거절 UI가 연결되기 전에는 해당 모드로 새 회차를 시작하지 않는다.
     canStart:
-      verified && !uncertain && !busy && job?.state === "ready" && !!job.scope && !startSent && !handle?.bindingLocked,
+      verified &&
+      !uncertain &&
+      !busy &&
+      job?.state === "ready" &&
+      (job.scope?.approval_mode === "preauthorized_scope" ||
+        (job.scope?.approval_mode === "workbench_selective_v1" && job.input.workflow_mode === "user_approval_v1")) &&
+      !startSent &&
+      !handle?.bindingLocked,
     canStop: !!job && verified && !uncertain && !busy && (job.state === "preparing" || job.state === "running"),
     canRefresh: !busy && !!handle,
     reportReadable: verified && job?.result_ready === true && !!job.task_id,
@@ -259,7 +293,13 @@ export async function runUrlAction(kind: UrlAction, input?: URLDiagnosisInput): 
       if (saved && !job) return false;
       if (!saved) {
         if (!input) return false;
-        const checked = urlDiagnosisInput(input.target_url, input.profile_id, input.display_name ?? "");
+        const checked = urlDiagnosisInput(
+          input.target_url,
+          input.profile_id,
+          input.display_name ?? "",
+          input.workflow_mode,
+          input.excluded_paths ?? "",
+        );
         const cap = st.cap;
         if (cap.kind !== "v2" || !cap.catalog.profiles.some((p) => p.id === checked.profile_id)) return false;
         saved = { ownerContext: owner, creationKey: crypto.randomUUID(), input: checked };
@@ -283,7 +323,10 @@ export async function runUrlAction(kind: UrlAction, input?: URLDiagnosisInput): 
         storeURLHandle(saved);
         useUrl.setState({ handle: saved });
       }
-      next = await commandURLDiagnosis(job, kind, owner, kind === "start" ? saved.startKey : undefined);
+      next =
+        kind === "start"
+          ? await commandURLDiagnosis(job, kind, owner, saved.startKey, { externalTransferConfirmed: st.confirmed })
+          : await commandURLDiagnosis(job, kind, owner, undefined);
     }
     if (current !== generation || !saved) return false;
     if (job) {
@@ -369,6 +412,21 @@ export function UrlFeeds() {
     return () => window.clearTimeout(timer);
   }, [job, verified, uncertain, busy]);
 
+  useEffect(() => {
+    if (!ready || !job?.input.workflow_mode || !job.task_id) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      if (!cancelled && document.visibilityState !== "hidden") await refreshWorkflow(job.id);
+      if (!cancelled) timer = setTimeout(tick, URL_POLL_MS);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [ready, job?.id, job?.task_id, job?.input.workflow_mode]);
+
   // 데모로 바꾸면 비운다(다음 live 진입 때 다시 확인)
   useEffect(
     () => () => {
@@ -384,4 +442,95 @@ export function UrlFeeds() {
 /** 시작 전 상태인가 (초안 · 범위 확인). */
 export function isUrlPrestart(job: Pick<URLDiagnosisJob, "state"> | null): boolean {
   return !!job && URL_PRESTART_STATES.includes(job.state);
+}
+
+export async function refreshWorkflow(expectedID?: string): Promise<void> {
+  const st = useUrl.getState(),
+    job = st.job,
+    token = flowGeneration;
+  if (!job?.input.workflow_mode || !job.task_id || flowLock || (expectedID && job.id !== expectedID)) return;
+  try {
+    const next = await readWorkflow(job);
+    if (token !== flowGeneration || useUrl.getState().job?.id !== job.id) return;
+    if (flowLock) return;
+    const latest = useUrl.getState().flow;
+    if (next && latest && next.revision < latest.revision) return;
+    const pending = flowPending;
+    const resolved =
+      !!next && !!pending && (next.commands.some((c) => c.key === pending.key) || next.revision > pending.revision);
+    if (resolved) flowPending = null;
+    useUrl.setState({
+      flow: next,
+      flowVerified: !!next,
+      ...(!pending || resolved ? { flowUncertain: false } : {}),
+      flowError: "",
+    });
+  } catch {
+    if (token === flowGeneration)
+      useUrl.setState({ flowVerified: false, flowError: "탐색 상태를 확인할 수 없습니다. 다시 조회하세요." });
+  }
+}
+export async function runWorkflowAction(
+  operation: "selection" | "pause" | "resume",
+  ids: string[] = [],
+  replay = false,
+): Promise<boolean> {
+  const st = useUrl.getState(),
+    job = st.job,
+    current = st.flow;
+  if (
+    flowLock ||
+    (st.flowUncertain && !replay) ||
+    !st.flowVerified ||
+    !job ||
+    !current ||
+    st.uncertain ||
+    !st.verified ||
+    !["preparing", "running"].includes(job.state)
+  )
+    return false;
+  flowLock = true;
+  const token = flowGeneration;
+  const previous = flowPending;
+  if (replay && (!previous || previous.operation !== operation)) {
+    flowLock = false;
+    return false;
+  }
+  const pending =
+    replay && previous ? previous : { key: crypto.randomUUID(), revision: current.revision, operation, ids: [...ids] };
+  const key = pending.key;
+  flowPending = pending;
+  useUrl.setState({ flowBusy: true, flowError: "" });
+  try {
+    const next = await commandWorkflow(job, { ...current, revision: pending.revision }, operation, key, pending.ids);
+    if (token !== flowGeneration) return false;
+    if (!next.commands.some((c) => c.key === key)) throw new Error("unbound_command_receipt");
+    flowPending = null;
+    useUrl.setState({ flow: next, flowVerified: true, flowUncertain: false });
+    return true;
+  } catch (error) {
+    if (token !== flowGeneration) return false;
+    const known = error instanceof ApiError && [400, 401, 403, 404, 409].includes(error.status);
+    if (known) flowPending = null;
+    useUrl.setState({
+      flowVerified: false,
+      flowUncertain: !known,
+      flowError: known
+        ? "상태가 바뀌었거나 허용되지 않은 명령입니다. 다시 조회하세요."
+        : "명령 결과가 불명입니다. 재전송하지 말고 상태를 다시 조회하세요.",
+    });
+    return false;
+  } finally {
+    if (token === flowGeneration) {
+      flowLock = false;
+      useUrl.setState({ flowBusy: false });
+    }
+  }
+}
+
+/** Explicit same-key replay only after a fresh GET; never an automatic POST retry. */
+export async function retryWorkflowAction(): Promise<boolean> {
+  const pending = flowPending;
+  if (!pending || !useUrl.getState().flowUncertain || !useUrl.getState().flowVerified) return false;
+  return runWorkflowAction(pending.operation, pending.ids, true);
 }
