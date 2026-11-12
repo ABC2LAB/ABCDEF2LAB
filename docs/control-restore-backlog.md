@@ -58,6 +58,23 @@
 
 | ID | 상태 | 바꾼 것 | 유지한 통제 | 원본 대비 남은 차이 |
 |---|---|---|---|---|
+| C05 | 구현·단위시험 (#419) | 실패한 모델 호출은 예약량을 쓴 것으로 정산하고 계속. 사용량을 모르는 호출은 `unknown_usage_calls`로 따로 셈 | 모델 예산 상한, 로컬 provider의 정책 거부는 일반 오류로 넘기지 않고 멈춤 | — |
+| C06 | 구현·단위시험 (#422) | OpenRouter 설정 오류는 즉시 잠그고, 429·5xx·연결·본문 끊김은 연속 상한(`max_consecutive_transient_errors` 1~16)에서만 잠금 | 영구 오류(정책·인증·설정)는 첫 회에 잠금 | — |
+| C07 | 구현·단위시험 (#424) | 유료 승인을 1회용 대신 승인별 누적 예약 기록(`.ledger`, 배타 잠금·fsync)으로 | 승인 총량 상한, 옛 1회용 표시는 다 쓴 것으로 봄 | — |
+| C09 | 구현·통합시험 (#428·#492) | intent 결과를 마지막 호출 하나가 아니라 모든 호출 분류로 정함. 신뢰 결과 대조가 깨지면 그 intent만 결과 불명 | 대조 실패를 성공으로 바꾸지 않음, 같은 호출 참조 중복·비최종 호출은 거부 | — |
+| C10 | 구현·단위시험 (#418·#426·#471) | 진단 로그·감시자·admission 기록 실패가 실행을 취소하지 않음(마감 때 경고 사유·누락 건수). 상태 조회 실패를 설치 설정 횟수만큼 다시 물음(`status_read_retries`, 기본 0) | E② 감사 실패는 그대로 실행 정지 | — |
+| C11 | 구현·단위시험 (#417·#449) | 목표 분해가 실패하거나 0개여도 원래 목표로 준비 계속. intent 없이 끝난 실행은 실패 대신 `no_intents` | 계획 전 task 재확인 | — |
+| C12 | 구현·단위시험 (#421) | 깨진 허용 규칙만 건너뜀 | 깨진 막기·확인 규칙은 전체 차단(`rule_invalid`·규칙 ID) | — |
+| C15 | 구현·단위시험 (#399) | `Accept-Encoding`을 거부 대신 `identity`로 바꿔 보냄 | 압축 응답은 표현 보류(C16 1단계부터 `withheld`) | — |
+| C19 | 구현·통합시험 (#491) | 정책 거부 뒤 고친 재시도 허용. 결과 불명·실행기 실패만 재전송 금지(`intent_outcome_uncertain`) | 결과 불명 쓰기 자동 재전송 없음 | — |
+| C24 | 구현·단위시험 (#415·#427·#461·#481) | Worker에 원본 그래프 조회 도구, E② 경유 WebFetch, 보관소 파일 도구(Read·Write·Edit·LS), 승인 대상 안의 `insert_assets` | 대상 요청은 E② 경유, 파일 도구는 intent 보관소 안만 | WebSearch·skills·MCP는 진단 Worker에 없음 |
+| C25 | 구현·단위시험 (#416·#425) | Worker 프롬프트를 원본 지침·문맥(제약·intent 번호·범위 안 자산·개요)으로, 목표 문장을 승인 메서드로 | 후보는 확정이 아님(규칙 5) | `report_finding`은 `submit_diagnostic_candidate`로 남음 |
+| C26 | 구현·통합시험 (#466·#468·#469·#470) | Planner에 `prove_goal`·`goal_met`(목표 달성 마감), `add_task_scope`(E② 범위 불변), Plan당 상한 설정, 원본 마무리 턴·Todo | 범위 도구는 E② 승인 범위를 바꾸지 않음 | `report_finding`(후보)·skills·MCP·WebSearch |
+| C27 | 구현·통합시험 (#494) | Planner가 Worker 실행 중에도 돌고 `kill_work`·`steer_work`로 진행 중 작업을 멈추거나 고침 | kill로 끊긴 E② 호출은 그 intent만 결과 불명 | — |
+| C28 | 구현·단위시험 (#420·#430·#431·#458·#464) | 입력 예약을 컨텍스트 전체 대신 요청 크기 상한(요청 JSON 바이트 + 4096)으로, 호출별 예약·정산, OpenRouter 호출 칸·비용 대조, 동시 모델 호출 수 설정(`model_concurrency`, 기본 1) | 모델 예산 총량·승인 동시성 상한 | 로컬 모델은 동시 1 |
+| C29 | 구현·단위시험 (#443·#444·#446·#460·#461) | intent별 작업 공간 보관소(호출마다 넣고 빼기), 긴 출력을 `.outputs/<call_ref>.txt`로 남김, 보관소 파일 연산·도구 | 샌드박스 격리, 보관 상한 | — |
+| C31 | 구현·단위시험 (#397) | E② 실패 응답에 결과 종류·사유(`X-ABC2LAB-E2-Outcome`·`Reason`)와 사유별 모델 안내 | 대상이 흉내 낼 수 있어 판단은 trusted 관찰로만 | — |
+| C32 | 구현·단위시험 (#445·#455·#464·#469·#471) | 설치 입력 `runtime_limits`로 요청·호출 시간, 호출·시도 수, Worker 턴·시간, Planner 라운드, intent 실행, 회차 시간, 동시 모델 호출, Plan당 상한, 상태 조회 재시도를 고름 | 코드 검사 상한, 정책 지문·설치 기록 결속 | 기본값은 그대로(설치 조직이 올림) |
 | C01 | 구현·단위시험 | 거부·미지원·결과 불명·송신 실패 상한(`MaxDenials`·`MaxUnknown`·`MaxTransient`)을 call 단위로. 닿으면 그 call의 새 요청만 기록 없이 거절. 시도 상한(`MaxAttempts`)은 예산을 예약한 시도만 셈. 시도 상한 도달은 실행 정지 대신 그 뒤 송신 거부 | 감사 실패·집행 장애·철회·만료·운영자 중지는 실행 전체 정지. 회차 예산(`MaxRequests`) 원장, 결과 불명 쓰기 자동 재전송 없음 | Supervisor 마감은 결과 불명 intent를 `partial`로, 연결 실패 call을 그 intent의 결과로 셈(C08). 명령 시간 초과는 신뢰 결과에 종료 원인이 없어 아직 마감 실패([계약](contracts/run-outcome-states.md) 열린 항목 2) |
 | C02 | 구현·단위시험 | 연결(TLS 포함)을 맺기 전 TCP·TLS·SPKI 실패는 `transport_failed`, 연결 뒤 실패만 `unknown`. 연결 시도 자체는 `forward_attempted`로 남김. 새 계수 `Counts.Transient`, runner 분류 `transient_failure` | 연결 뒤 결과 불명은 그대로 불명, TLS 검증·SPKI 고정 | — |
 | C03 | 구현·단위시험 | `ExecutionView.IntentCounts` 추가. Worker 분류·정지·intent 마감이 실행 전체 대신 자기 intent의 불명 수를 봄 | 감사·집행 장애는 실행 상태·`AuditComplete`로 전체 반영. 자기 intent의 불명은 그 intent를 멈춤 | — (마감 판정도 자기 intent의 불명 수만 봄, C08) |
