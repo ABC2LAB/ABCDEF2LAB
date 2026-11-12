@@ -52,8 +52,8 @@ func TestE2HTTPFactoryRunsAuthPrepOnAcquire(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer acquired.Release(context.Background())
-	if acquired.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated || acquired.Sessions["tester-a"].Get("Cookie") != "session="+login.token || login.posts != 1 {
-		t.Fatalf("auth prep on acquire: %v posts=%d", acquired.AccountAuth, login.posts)
+	if acquired.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated || acquired.Sessions["tester-a"].Get("Cookie") != "session="+login.token || login.posts.Load() != 1 {
+		t.Fatalf("auth prep on acquire: %v posts=%d", acquired.AccountAuth, login.posts.Load())
 	}
 	if out := string(acquired.Execution.RedactOutput([]byte(login.token))); strings.Contains(out, login.token) {
 		t.Fatal("session not registered for output redaction")
