@@ -407,3 +407,64 @@ func TestCloseWaitsForConcurrentCompletion(t *testing.T) {
 		t.Fatalf("close returned before the inflight request finished: %+v", state)
 	}
 }
+
+// 리뷰 재현(#482): 대상 조회·이름 풀이를 기다리는 동안 시간 상한이 지나거나 대상이 철회되면 그 요청을 허용하지 않는다.
+type slowSource struct {
+	*fakeSource
+	during func()
+}
+
+func (s slowSource) Current(ctx context.Context, ref string, revision uint64) (Target, error) {
+	t, err := s.fakeSource.Current(ctx, ref, revision)
+	if s.during != nil {
+		s.during()
+	}
+	return t, err
+}
+
+type hookResolver struct {
+	fakeResolver
+	during func()
+}
+
+func (r hookResolver) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	if r.during != nil {
+		r.during()
+	}
+	return r.fakeResolver.LookupNetIP(ctx, network, host)
+}
+
+func TestAdmissionRechecksTimeAndAuthorityAfterBlockingWaits(t *testing.T) {
+	// (1) 대상 조회 중 시간 상한을 넘긴 승인 GET
+	s, source, clock := fixtureSession(t, exploration.ReadOnly, exploration.FullLocal, nil)
+	armed := false
+	s.source = slowSource{fakeSource: source, during: func() {
+		if armed {
+			clock.add((fixtureBudgetSec + 1) * time.Second)
+		}
+	}}
+	armed = true
+	if d, ticket := s.Admit(t.Context(), approved("GET", "/app")); d.Forward || ticket != nil || d.Reason != ReasonCapExhausted || s.Status().Active || s.Status().TargetRequests != 0 {
+		t.Fatalf("request admitted after the time budget passed during the target lookup: %+v %+v", d, s.Status())
+	}
+	// (2) 이름 풀이 중 대상이 철회된 외부 GET
+	s, source, _ = fixtureSession(t, exploration.ReadOnly, exploration.ExternalAllowed, nil)
+	s.policy.Resolver = hookResolver{fakeResolver: fakeResolver{"cdn.example": {fixturePublic}}, during: func() { source.set(ErrTargetEnded) }}
+	ext := Request{Ingress: BrowserIngress, Method: "GET", Scheme: "https", Host: "cdn.example", Port: 443, EscapedPath: "/lib.js", FetchMode: "no-cors"}
+	if d, ticket := s.Admit(t.Context(), ext); d.Forward || ticket != nil || d.Reason != ReasonTargetEnded || s.Status().ExternalRequests != 0 {
+		t.Fatalf("external request admitted after revocation during DNS: %+v %+v", d, s.Status())
+	}
+	// (3) 이름 풀이 중 시간 상한이 지난 외부 GET
+	s, _, clock = fixtureSession(t, exploration.ReadOnly, exploration.ExternalAllowed, nil)
+	s.policy.Resolver = hookResolver{fakeResolver: fakeResolver{"cdn.example": {fixturePublic}}, during: func() { clock.add((fixtureBudgetSec + 1) * time.Second) }}
+	if d, ticket := s.Admit(t.Context(), ext); d.Forward || ticket != nil || d.Reason != ReasonCapExhausted {
+		t.Fatalf("external request admitted after the time budget passed during DNS: %+v", d)
+	}
+	// (4) 호출이 취소된 요청
+	s, _, _ = fixtureSession(t, exploration.ReadOnly, exploration.FullLocal, nil)
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if d, ticket := s.Admit(canceled, approved("GET", "/app")); d.Forward || ticket != nil {
+		t.Fatal("canceled caller was admitted", d)
+	}
+}
