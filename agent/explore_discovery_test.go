@@ -100,3 +100,21 @@ func TestExploreDiscoveryToolStoresThroughWorkflow(t *testing.T) {
 		t.Fatalf("workflow snapshot: %+v", s)
 	}
 }
+
+// 페이지 훅의 출처·전송 방식도 데이터로 전달하며 seq·관측 주장·본문 값은 계약 밖이다.
+func TestExploreDiscoveryToolKeepsRuntimeMetadataUnverified(t *testing.T) {
+	reporter := &recordingDiscoveryReporter{n: 1}
+	raw := json.RawMessage(`{"discoveries":[{"method":"GET","path":"/read/events","source":"api_recon_runtime","transport":"sse","query_keys":["topic"]}]}`)
+	result, err := newExploreDiscoveryTool(reporter).Call(t.Context(), raw, nil)
+	if err != nil || result.IsError || len(reporter.calls) != 1 || reporter.calls[0][0].Source != diagnosisflow.SourceAPIReconRuntime || reporter.calls[0][0].Transport != "sse" {
+		t.Fatal("runtime metadata lost")
+	}
+	for _, invalid := range []string{`{"seq":1}`, `{"confidence":"observed"}`, `{"response_body":"SECRET"}`} {
+		item := `{"discoveries":[{"method":"GET","path":"/read/events",` + strings.Trim(invalid, "{}") + `}]}`
+		before := len(reporter.calls)
+		result, err := newExploreDiscoveryTool(reporter).Call(t.Context(), json.RawMessage(item), nil)
+		if err != nil || !result.IsError || len(reporter.calls) != before {
+			t.Fatal("model authority or value reached reporter")
+		}
+	}
+}

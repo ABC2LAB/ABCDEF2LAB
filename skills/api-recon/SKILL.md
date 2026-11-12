@@ -5,6 +5,21 @@ description: Invoke this skill when collecting a website's API endpoints.
 
 # API Recon (frontend API reconnaissance)
 
+## Product exploration mode (takes precedence over the reference workflow below)
+
+Use this skill only in an authorized exploration session. The exploration runtime must provide an approved tool allowlist and separate browser execution environment before Playwright MCP is enabled. Diagnosis requests still use E②; never use a browser or the reference scripts to bypass it.
+
+- The original Python/Puppeteer scripts below are methodology references. Do not activate their direct urllib/Node fetch paths, disabled TLS verification, credential recording, response-body recording or WebSocket frame recording in the product. Do not run copied versions until a host-owned adapter routes every request through the exploration boundary.
+- The product static pass uses the Go HTML/bundle/API Recon parser. It preserves API and route candidates, query names, HTML form names and simple object field candidates as inferred metadata.
+- For page runtime metadata, load `scripts/metadata_only.js` inside the already authorized browser page, then use `globalThis.__apiReconMetadata.install()` and `handle.drain()`. The adapter observes native fetch/XHR/form submission/SSE/WS constructor metadata without opening a new connection, changing TLS, adding mocks or reading responses/frames. Call `handle.stop()` when done.
+- Submit only `drain().discoveries` through `report_discovery`, in batches of at most 32. Give source `api_recon_static` or `api_recon_runtime` and optional transport `http`, `sse` or `websocket`. Paths are at most 128 bytes; each query/body name list has at most 32 names of at most 64 bytes. Give field names only, never query/body/header/cookie/session/password values.
+- Page hooks, model reports, static candidates, client-side mocks and menu reconstruction are **inferred**. Never label them observed or send a seq/confidence field to the report tool. Only the host-owned private boundary reader can establish an observed request. A masked operational path pattern is insufficient to reconstruct its original path and keys.
+- An observed request is not an authenticated backend success or a vulnerability. Keep request direction, response presence, partial completion, unsupported behavior and NOT_RUN distinct. Preserve discoveries when a page or budget limit ends exploration.
+- Apply the current S09 credential rules before any page-derived path or other metadata reaches model/shared output. The metadata-only format does not itself prove that a path contains no credentials. Fully local mode blocks external resources; approved external mode still blocks unapproved internal/metadata destinations and control-secret egress.
+
+See [the integration contract](../../docs/contracts/api-recon-restoration.md) for the reader API, bounded protected inventory, measured projection loss and production adapter limitations. The legacy completion checklist below describes original capability; it is not proof that the product has executed it.
+
+
 Under an [authorized] premise, discover as completely as possible: [backend APIs] (paths, methods, parameters, response bodies), [frontend routes], and [UI feature triggers] (tabs, modals, table actions, etc.).
 
 ---
