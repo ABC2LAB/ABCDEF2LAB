@@ -28,7 +28,7 @@ func openRouterV2Fixture(t *testing.T, limit int64) *OpenRouterPolicy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.consume = func() error { return nil }
+	p.ledger = func(int64, int64, int64) error { return nil }
 	return p
 }
 

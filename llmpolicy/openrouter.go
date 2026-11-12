@@ -68,8 +68,9 @@ type OpenRouterPolicy struct {
 	blocked  bool
 	// 연속 일시 오류 수. 정상 응답 하나가 0으로 되돌린다.
 	transient int64
-	started   bool
-	consume   func() error
+	// ledger는 승인별 누적 예약 기록에 이번 예약을 더한다(P3 결정안 C07). 다른 프로세스·재시작의 예약까지 합쳐
+	// 승인 총량을 넘으면 errOpenRouterApprovalExhausted를 돌려준다. 보호 파일 로더만 채운다.
+	ledger    func(input, output, cost int64) error
 	available func() error
 }
 type OpenRouterUsage struct {
@@ -205,13 +206,20 @@ func (p *OpenRouterPolicy) reserveDiagnostic(output int64) (string, error) {
 		p.usage.FailureReason = reason
 		return reason, ErrOpenRouterPolicy
 	}
-	if !p.started {
-		if p.consume == nil || p.consume() != nil {
-			p.blocked = true
-			p.usage.FailureReason = "approval_consumed"
-			return "approval_consumed", ErrOpenRouterPolicy
+	// 승인 총량은 이 프로세스 밖의 예약까지 누적 기록으로 확인한다. 기록할 수 없거나 총량을 넘으면 막는다.
+	if p.ledger == nil {
+		p.blocked = true
+		p.usage.FailureReason = "approval_unavailable"
+		return "approval_unavailable", ErrOpenRouterPolicy
+	}
+	if err := p.ledger(m.MaxInputPerCall, output, cost); err != nil {
+		p.blocked = true
+		reason = "approval_unavailable"
+		if errors.Is(err, errOpenRouterApprovalExhausted) {
+			reason = "approval_consumed"
 		}
-		p.started = true
+		p.usage.FailureReason = reason
+		return reason, ErrOpenRouterPolicy
 	}
 	p.active++
 	p.usage.Requests++
@@ -266,7 +274,18 @@ func DescribeOpenRouterManifest(data []byte, output int64) (ProfileTarget, OpenR
 	return p.Target(), p.Limits(), quote, nil
 }
 
-// CheckAvailable은 조회만 하며 이미 소비된 승인의 새 URL 회차 사용을 거부한다.
+// errOpenRouterApprovalExhausted는 누적 예약이 승인 총량에 닿아 한 번 더 예약할 수 없다는 뜻이다.
+var errOpenRouterApprovalExhausted = errors.New("llmpolicy: OpenRouter approval exhausted")
+
+// openRouterLedgerTotals는 승인별 누적 예약 합계다.
+type openRouterLedgerTotals struct{ Requests, Input, Output, Cost int64 }
+
+// fits는 합계에 예약 하나를 더해도 승인 총량 안인지 본다.
+func (m openRouterManifest) fits(t openRouterLedgerTotals, input, output, cost int64) bool {
+	return t.Requests < m.MaxRequests && input <= m.MaxInputTokens-t.Input && output <= m.MaxOutputTokens-t.Output && cost <= m.MaxCostMicros-t.Cost
+}
+
+// CheckAvailable은 조회만 하며 이미 다 쓴 승인(누적 예약이 한 번 더 들어갈 자리가 없음)의 새 URL 회차 사용을 거부한다.
 func (p *OpenRouterPolicy) CheckAvailable() error {
 	if p == nil || p.available == nil || !time.Now().Before(p.manifest.ExpiresAt) {
 		return ErrOpenRouterPolicy

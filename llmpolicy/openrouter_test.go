@@ -31,7 +31,7 @@ func openRouterFixture(t *testing.T) *OpenRouterPolicy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.consume = func() error { return nil }
+	p.ledger = func(int64, int64, int64) error { return nil }
 	return p
 }
 
@@ -180,19 +180,37 @@ func TestOpenRouterManifestAndPersistence(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
+	// 승인 총량(요청 3회)은 재시작·다른 프로세스를 합쳐 누적 기록으로 지킨다(P3 결정안 C07).
 	first, err := LoadOpenRouterManifestFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = first.reserve(100); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 2; i++ {
+		if err = first.reserve(100); err != nil {
+			t.Fatal(err)
+		}
+		first.active--
 	}
 	second, err := LoadOpenRouterManifestFile(path)
+	if err != nil || second.CheckAvailable() != nil {
+		t.Fatal("approval with remaining budget rejected after restart")
+	}
+	if err = second.reserve(100); err != nil {
+		t.Fatal("restart lost the remaining approved budget")
+	}
+	second.active--
+	third, err := LoadOpenRouterManifestFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = second.reserve(100); err == nil {
+	if third.CheckAvailable() == nil {
+		t.Fatal("exhausted approval reported available")
+	}
+	if err = third.reserve(100); err == nil || !third.Snapshot().Blocked || third.Snapshot().FailureReason != "approval_consumed" {
 		t.Fatal("process restart reset approved budget")
+	}
+	if err = first.reserve(100); err == nil {
+		t.Fatal("first process exceeded the shared approval total")
 	}
 	if err = os.Chmod(path, 0644); err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -133,7 +134,14 @@ func TestOpenRouterDiagnosticBudgetDeniedWithoutAttempt(t *testing.T) {
 		{"token_limit", func(p *OpenRouterPolicy) { p.manifest.MaxInputTokens = 1 }},
 		{"cost_limit", func(p *OpenRouterPolicy) { p.manifest.MaxCostMicros = 1 }},
 		{"concurrency_limit", func(p *OpenRouterPolicy) { p.active = p.manifest.MaxConcurrent }},
-		{"approval_consumed", func(p *OpenRouterPolicy) { p.consume = func() error { return errors.New("private-provider-error") } }},
+		{"approval_consumed", func(p *OpenRouterPolicy) {
+			p.ledger = func(int64, int64, int64) error {
+				return fmt.Errorf("private-provider-error: %w", errOpenRouterApprovalExhausted)
+			}
+		}},
+		{"approval_unavailable", func(p *OpenRouterPolicy) {
+			p.ledger = func(int64, int64, int64) error { return errors.New("private-provider-error") }
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
