@@ -28,6 +28,9 @@ type Config struct {
 	CommandTimeout time.Duration
 	DrainTimeout   time.Duration
 	OutputLimit    int
+	// PersistWorkspace면 같은 intent의 호출 사이에 /work를 잇는다(C29, docs/workspace-decision.md). 보관은
+	// RootDir의 intent별 파일 하나이고, intent가 끝나거나(DrainIntent) Runner가 닫히면 지운다.
+	PersistWorkspace bool
 }
 
 // TrustedResult is built by the host, separately from the tool's stdout. Final
@@ -48,6 +51,9 @@ type TrustedResult struct {
 type Result struct {
 	ToolOutput string        `json:"tool_output"`
 	Trusted    TrustedResult `json:"trusted"`
+	// Workspace는 작업 공간 보관 결과다(PersistWorkspace일 때만): saved, too_large, not_saved, invalid.
+	// 보관하지 못해도 호출 결과는 그대로이고 이전 보관본이 남는다.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // Executor is the Worker seam; it returns program-owned execution evidence

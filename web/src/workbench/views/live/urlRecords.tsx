@@ -1,6 +1,7 @@
 "use client";
 
-// 점검 기록 (시안 v27 ~ v30): 레일에서 점검을 누르면 오는 화면. 진행 중 · 끝난 점검을 나열하고, 제목 옆에 칸마다 따로 필터를 둔다.
+// 진행 중인 점검 · 끝난 점검 (시안 v54): 점검 기록을 두 화면으로 나눴다. 레일에서 진행 중 점검을 누르면 진행 중인 점검,
+// 끝난 점검을 누르면 끝난 점검 화면으로 온다. 화면마다 목록 위에 필터 칩 · 건수, 오른쪽에 고른 점검의 상세.
 // 서버에 진단 목록 API 가 없어 줄은 이 브라우저가 이어 보는 진단 하나뿐이다(레일과 같은 줄 · 목록을 만들어 채우지 않는다).
 // 필터는 서버 값으로만 나눈다: 진행 중은 진단 상태 · 탐색 단계 · 요청 승인 대기, 끝난 점검은 팀 lib 의 판정 분류(보고서 저장 뒤).
 // 끝난 점검의 결과 묶음은 실행 마감(completed)된 점검만 나눈다 — 중지 · 실패는 보고서가 있어도 끝까지 보지 않았으므로 나누지 않는다.
@@ -9,6 +10,7 @@
 
 import { type ReactNode, useState } from "react";
 
+import type { URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
 import type { DiagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
 import { diagnosticOutcomeLabels, summarizeDiagnosticEntries } from "@/lib/diagnosis/diagnostic-results";
 
@@ -50,15 +52,21 @@ export function recRunKind(
 /**
  * 끝난 점검의 결과 묶음 (팀 lib 판정 집계 그대로). 실행 마감(completed)된 점검만 나눈다.
  * 확정 → 발견 있음, 검토 필요 → 검토 필요, 미실행 · 결과 불명 → 판단 불가,
- * 정상 대조 결과가 있고 그 넷이 0 → 발견 없음. 보고서를 못 읽었거나 판정 기록이 없으면 빈 목록('전체' 에만).
+ * 정상 대조 결과가 있고 그 넷이 0 이며 실행 결과가 complete(계획한 작업을 모두 마침) → 발견 없음.
+ * partial(끝나지 않은 · 중지된 작업이 있음)은 정상 대조 결과만 있어도 발견 없음으로 두지 않는다(절대규칙 5, #440).
+ * 보고서를 못 읽었거나 판정 기록이 없으면 빈 목록('전체' 에만).
  */
-export function recDoneKinds(state: UrlState, counts: Record<DiagnosticOutcome, number> | null): DoneKind[] {
+export function recDoneKinds(
+  state: UrlState,
+  counts: Record<DiagnosticOutcome, number> | null,
+  outcome?: URLDiagnosisJob["outcome"],
+): DoneKind[] {
   if (state !== "completed" || !counts) return [];
   const out: DoneKind[] = [];
   if (counts.confirmed > 0) out.push("hit");
   if (counts.review > 0) out.push("review");
   if (counts.not_executed + counts.unknown > 0) out.push("und");
-  if (!out.length && counts.negative > 0) out.push("clean");
+  if (!out.length && counts.negative > 0 && outcome === "complete") out.push("clean");
   return out;
 }
 
@@ -78,7 +86,7 @@ export const DONE_CHIPS: ReadonlyArray<Chip<DoneKind>> = [
     "clean",
     "발견 없음",
     true,
-    "정상 대조 결과만 있는 점검(확정 · 검토 필요 · 미실행 · 결과 불명 0건) · 발견이 없다고 안전하다는 뜻은 아닙니다",
+    "계획한 작업을 모두 마쳤고 정상 대조 결과만 있는 점검(확정 · 검토 필요 · 미실행 · 결과 불명 0건) · 발견이 없다고 안전하다는 뜻은 아닙니다",
   ],
   ["und", "판단 불가", true, "미실행 또는 결과 불명이 있는 점검"],
 ];
@@ -121,10 +129,83 @@ function Chips<K extends string>({
   );
 }
 
-/** live 점검 기록 (URL 진단 서버). */
-export function UrlRecordsLive() {
-  const { route, navSeq, goTo, openInsp } = useShell();
-  const visible = route === "records";
+/** 이어 보는 진단 한 줄 (두 화면이 같이 쓴다). 누르면 오른쪽 상세(좁은 화면은 서랍). */
+function JobRow() {
+  const { openInsp } = useShell();
+  const handle = useUrl((st) => st.handle);
+  const job = useUrl((st) => st.job);
+  const verified = useUrl((st) => st.verified);
+  const flow = useUrl((st) => st.flow);
+  if (!handle) return null;
+  const ended = !!job && URL_ENDED_STATES.includes(job.state);
+  const name = handle.input.display_name?.trim() || null;
+  return (
+    <button
+      className={cx(s.row, s.sel)}
+      type="button"
+      data-url-job={job?.id ?? ""}
+      aria-current="true"
+      onClick={openInsp}
+    >
+      <span className={s["r-main"]}>
+        <span className={s["r-t"]}>
+          <span className={s["r-host"]}>{urlHost(handle.input.target_url)}</span>
+        </span>
+        <span className={s["r-s"]}>
+          {[name, flow && !ended ? flowStageText[flow.stage] : null, job?.task_id ? `task #${job.task_id}` : null]
+            .filter(Boolean)
+            .join(" · ") || "상태 확인 중"}
+        </span>
+      </span>
+      <span className={s["r-side"]}>
+        {job ? <UrlPill job={job} verified={verified} /> : <span className={cx(s.pill, s.wait)}>상태 미확인</span>}
+      </span>
+    </button>
+  );
+}
+
+/** 오른쪽 상세: 목록에 보이는 점검이 있으면 그 점검, 필터에 가려졌으면 '고른 점검 없음', 아예 없으면 빈 안내 + 새 점검. */
+function RecordInsp({
+  title,
+  shown,
+  has,
+  none,
+  rows,
+  acts,
+}: {
+  title: string;
+  shown: boolean;
+  has: boolean;
+  none: string;
+  rows: Array<readonly [ReactNode, ReactNode]>;
+  acts?: ReactNode;
+}) {
+  if (shown) return <JobSummary rows={rows} acts={acts} />;
+  return (
+    <>
+      <InspHead title={title} />
+      <Isec>
+        <p className={s.empty}>{has ? "고른 점검이 없습니다." : none}</p>
+        {has ? null : (
+          <a className={cx(s.btn, s.pri)} href="#new">
+            <Icon name="plus" />새 점검
+          </a>
+        )}
+      </Isec>
+    </>
+  );
+}
+
+/** 건수: 전체면 'n건', 필터 중이면 '보이는 수 / 전체 n건'. */
+const ofText = (shown: boolean, all: boolean, f: string) => {
+  const n = (b: boolean) => (b ? 1 : 0);
+  return f === "all" ? `${n(all)}건` : `${n(shown)} / ${n(all)}건`;
+};
+
+/** live 진행 중인 점검 (URL 진단 서버). 필터는 진단 상태 · 탐색 단계 · 요청 승인 대기. */
+export function UrlRunningLive() {
+  const { route, navSeq, goTo } = useShell();
+  const visible = route === "running";
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
@@ -134,35 +215,127 @@ export function UrlRecordsLive() {
   const taskId = job?.task_id ?? "";
   const approvalsOn = !!job?.task_id && job.input.workflow_mode === "user_approval_v1" && !ended;
   const a = useRequestApprovals(taskId, visible && approvalsOn);
+  const [runF, setRunF] = useState<RunKind | "all">("all");
+
+  const runKind = job && !ended ? recRunKind(job.state, verified, flow?.stage ?? null, a.pending.length) : null;
+  const hasRun = !!handle && !ended;
+  const runOk = (k: RunKind | "all") => hasRun && (k === "all" || runKind === k);
+
+  // 레일에서 이 화면으로 오면, 이어 보는 점검이 필터에 가려져 있을 때 필터를 푼다 (렌더 중 상태 맞추기)
+  const [seenNav, setSeenNav] = useState(navSeq);
+  if (seenNav !== navSeq) {
+    setSeenNav(navSeq);
+    if (visible && hasRun && !runOk(runF)) setRunF("all");
+  }
+
+  const refresh = () => {
+    if (g.canRefresh) void runUrlAction("refresh");
+    void refreshWorkflow();
+    a.poll.reload();
+  };
+
+  // 승인 대기는 두 종류를 나눠 보인다: 시작 전 범위 승인 · 보낼 요청의 승인(만료가 있어 가장 빠른 만료를 같이)
+  const extraRows: Array<readonly [ReactNode, ReactNode]> = [];
+  if (job?.state === "awaiting_approval" && verified) extraRows.push(["승인 대기", "시작 전 범위 승인"]);
+  if (a.pending.length) {
+    const soonest = Math.min(...a.pending.map((r) => Date.parse(r.expires_at)).filter((t) => !Number.isNaN(t)));
+    const exp = Number.isFinite(soonest) ? ` · 가장 빠른 만료 ${clockOf(soonest)}` : "";
+    extraRows.push(["승인 대기", `보낼 요청 ${a.pending.length}건${exp}`]);
+  }
+  const extraActs = a.pending.length ? (
+    <button className={s.btn} type="button" onClick={() => goTo("dashboard")}>
+      승인 요청 보기
+    </button>
+  ) : null;
+
+  const runShown = runOk(runF);
+  return (
+    <>
+      <UrlHead
+        title="진행 중인 점검"
+        crumb="진행 중인 점검"
+        acts={
+          <>
+            <button className={s.btn} type="button" onClick={refresh}>
+              <Icon name="refresh" />
+              새로고침
+            </button>
+            <InspOpenButton>상세</InspOpenButton>
+          </>
+        }
+      />
+      <div className={s.vb}>
+        <div className={s.vm}>
+          <section className={s.sec} aria-label="진행 중인 점검 목록">
+            <div className={cx(s.sh, s["rec-sh"])}>
+              <Chips
+                label="상태로 거르기"
+                chips={RUN_CHIPS}
+                value={runF}
+                count={(k) => (runOk(k) ? 1 : 0)}
+                onPick={setRunF}
+              />
+              <span className={s.n}>{ofText(runShown, hasRun, runF)}</span>
+            </div>
+            {runShown ? (
+              <div className={s.list} id="recRun">
+                <JobRow />
+              </div>
+            ) : (
+              <p className={s.empty}>{hasRun ? "이 상태의 점검이 없습니다." : "진행 중인 점검이 없습니다."}</p>
+            )}
+          </section>
+        </div>
+        <aside className={s.vi} id="runInsp" aria-label="선택한 점검">
+          <RecordInsp
+            title="진행 중인 점검"
+            shown={runShown}
+            has={hasRun}
+            none="진행 중인 점검이 없습니다."
+            rows={extraRows}
+            acts={extraActs}
+          />
+        </aside>
+        <PaneToggle />
+      </div>
+    </>
+  );
+}
+
+/**
+ * live 끝난 점검 (URL 진단 서버). 필터는 팀 lib 의 판정 분류(보고서 저장 뒤 · 실행 마감된 점검만).
+ * 어느 묶음에도 들지 않는 점검은 '전체' 에만 보이고 그 까닭을 목록 아래에 적는다.
+ */
+export function UrlFinishedLive() {
+  const { route, navSeq } = useShell();
+  const visible = route === "finished";
+  const handle = useUrl((st) => st.handle);
+  const job = useUrl((st) => st.job);
+  const g = useUrlGates();
+  const ended = !!job && URL_ENDED_STATES.includes(job.state);
   const reportId = g.reportReadable && job?.task_id ? job.task_id : null;
   const rem = usePoll(() => fetchRemediation(reportId as string, "internal"), [reportId], {
     enabled: visible && !!reportId,
   });
-  const [runF, setRunF] = useState<RunKind | "all">("all");
   const [doneF, setDoneF] = useState<DoneKind | "all">("all");
 
-  // 줄 하나의 묶음 (서버 값에서만)
   const remFor = rem.data && reportId && String(rem.data.task_id) === reportId ? rem.data : null;
   const counts = remFor ? summarizeDiagnosticEntries(remFor.entries) : null;
-  const runKind = job && !ended ? recRunKind(job.state, verified, flow?.stage ?? null, a.pending.length) : null;
-  const doneKinds = ended && job ? recDoneKinds(job.state, counts) : [];
+  const doneKinds = ended && job ? recDoneKinds(job.state, counts, job.outcome) : [];
   // 결과를 아직 모름(읽는 중 · 실패) → 칩 개수는 '—'. 읽는 중일 때만 레일 이동의 필터 해제를 보류하고, 실패하면 보류를 푼다
   const doneUnknown = job?.state === "completed" && !!reportId && !remFor;
   const remFailed = doneUnknown && !!rem.error;
   const doneLoading = doneUnknown && !rem.error;
-  const hasRun = !!handle && !ended;
   const hasDone = !!handle && ended;
-  const runOk = (k: RunKind | "all") => hasRun && (k === "all" || runKind === k);
   const doneOk = (k: DoneKind | "all") => hasDone && (k === "all" || doneKinds.includes(k));
 
-  // 레일에서 이 화면으로 오면, 이어 보는 점검이 필터에 가려져 있을 때 그 칸 필터만 푼다 (렌더 중 상태 맞추기)
-  // 끝난 점검은 보고서를 읽는 중이면 묶음을 아직 모르므로, 해제 판단을 보류했다가 보고서가 오면 한 번만 다시 판단한다.
-  // 그 사이 사용자가 끝난 점검 필터를 직접 고르면 보류를 버린다(사용자가 고른 필터를 조회마다 초기화하지 않게).
+  // 레일에서 이 화면으로 오면, 이어 보는 점검이 필터에 가려져 있을 때 필터를 푼다 (렌더 중 상태 맞추기)
+  // 보고서를 읽는 중이면 묶음을 아직 모르므로, 해제 판단을 보류했다가 보고서가 오면 한 번만 다시 판단한다.
+  // 그 사이 사용자가 필터를 직접 고르면 보류를 버린다(사용자가 고른 필터를 조회마다 초기화하지 않게).
   const [seenNav, setSeenNav] = useState(navSeq);
   const [revealDone, setRevealDone] = useState(false);
   if (seenNav !== navSeq) {
     setSeenNav(navSeq);
-    if (visible && hasRun && !runOk(runF)) setRunF("all");
     if (visible && hasDone) {
       if (doneLoading) setRevealDone(true);
       else if (!doneOk(doneF)) setDoneF("all");
@@ -178,46 +351,10 @@ export function UrlRecordsLive() {
 
   const refresh = () => {
     if (g.canRefresh) void runUrlAction("refresh");
-    void refreshWorkflow();
-    a.poll.reload();
     rem.reload();
   };
 
-  const host = handle ? urlHost(handle.input.target_url) : null;
-  const name = handle?.input.display_name?.trim() || null;
-  // 줄을 누르면 오른쪽 상세 (좁은 화면은 서랍)
-  const row = handle ? (
-    <button
-      className={cx(s.row, s.sel)}
-      type="button"
-      data-url-job={job?.id ?? ""}
-      aria-current="true"
-      onClick={openInsp}
-    >
-      <span className={s["r-main"]}>
-        <span className={s["r-t"]}>
-          <span className={s["r-host"]}>{host}</span>
-        </span>
-        <span className={s["r-s"]}>
-          {[name, flow && !ended ? flowStageText[flow.stage] : null, job?.task_id ? `task #${job.task_id}` : null]
-            .filter(Boolean)
-            .join(" · ") || "상태 확인 중"}
-        </span>
-      </span>
-      <span className={s["r-side"]}>
-        {job ? <UrlPill job={job} verified={verified} /> : <span className={cx(s.pill, s.wait)}>상태 미확인</span>}
-      </span>
-    </button>
-  ) : null;
-  // 오른쪽 상세에 덧붙일 줄 · 버튼
-  // 승인 대기는 두 종류를 나눠 보인다: 시작 전 범위 승인 · 보낼 요청의 승인(만료가 있어 가장 빠른 만료를 같이)
   const extraRows: Array<readonly [ReactNode, ReactNode]> = [];
-  if (job?.state === "awaiting_approval" && verified) extraRows.push(["승인 대기", "시작 전 범위 승인"]);
-  if (a.pending.length) {
-    const soonest = Math.min(...a.pending.map((r) => Date.parse(r.expires_at)).filter((t) => !Number.isNaN(t)));
-    const exp = Number.isFinite(soonest) ? ` · 가장 빠른 만료 ${clockOf(soonest)}` : "";
-    extraRows.push(["승인 대기", `보낼 요청 ${a.pending.length}건${exp}`]);
-  }
   if (counts)
     extraRows.push([
       "결과",
@@ -225,29 +362,17 @@ export function UrlRecordsLive() {
         .map((k) => `${diagnosticOutcomeLabels[k]} ${counts[k]}`)
         .join(" · "),
     ]);
-  const extraActs = a.pending.length ? (
-    <button className={s.btn} type="button" onClick={() => goTo("dashboard")}>
-      승인 요청 보기
-    </button>
-  ) : null;
 
-  const runCount = (k: RunKind | "all") => (runOk(k) ? 1 : 0);
   const doneCount = (k: DoneKind | "all"): number | null => {
     if (k !== "all" && doneUnknown) return null;
     return doneOk(k) ? 1 : 0;
   };
-  const runShown = runOk(runF);
   const doneShown = doneOk(doneF);
-  const ofText = (shown: boolean, all: boolean, f: string) => {
-    const n = (b: boolean) => (b ? 1 : 0);
-    return f === "all" ? `${n(all)}건` : `${n(shown)} / ${n(all)}건`;
-  };
-
   return (
     <>
       <UrlHead
-        title="점검 기록"
-        crumb="점검 기록"
+        title="끝난 점검"
+        crumb="끝난 점검"
         acts={
           <>
             <button className={s.btn} type="button" onClick={refresh}>
@@ -260,58 +385,27 @@ export function UrlRecordsLive() {
       />
       <div className={s.vb}>
         <div className={s.vm}>
-          <section className={s.sec} aria-labelledby="recRunH">
+          <section className={s.sec} aria-label="끝난 점검 목록">
             <div className={cx(s.sh, s["rec-sh"])}>
-              <div className={s["rec-ht"]}>
-                <h2 id="recRunH">진행 중</h2>
-                <Chips label="진행 중 점검 거르기" chips={RUN_CHIPS} value={runF} count={runCount} onPick={setRunF} />
-              </div>
-              <span className={s.n}>{ofText(runShown, hasRun, runF)}</span>
-            </div>
-            {runShown ? (
-              <div className={s.list} id="recRun">
-                {row}
-              </div>
-            ) : (
-              <p className={s.empty}>{hasRun ? "이 상태의 점검이 없습니다." : "진행 중인 점검이 없습니다."}</p>
-            )}
-          </section>
-          <section className={s.sec} aria-labelledby="recDoneH">
-            <div className={cx(s.sh, s["rec-sh"])}>
-              <div className={s["rec-ht"]}>
-                <h2 id="recDoneH">끝난 점검</h2>
-                <Chips label="끝난 점검 거르기" chips={DONE_CHIPS} value={doneF} count={doneCount} onPick={pickDone} />
-              </div>
+              <Chips label="결과로 거르기" chips={DONE_CHIPS} value={doneF} count={doneCount} onPick={pickDone} />
               <span className={s.n}>{ofText(doneShown, hasDone, doneF)}</span>
             </div>
             {doneShown ? (
               <div className={s.list} id="recDone">
-                {row}
+                <JobRow />
               </div>
             ) : (
               <p className={s.empty}>{doneEmptyText(hasDone, doneLoading, remFailed)}</p>
             )}
             {hasDone && !doneLoading && !doneKinds.length ? (
               <p className={s.help} role="note">
-                {unsortedText(job?.state, !!counts, remFailed)}
+                {unsortedText(job?.state, !!counts, remFailed, job?.outcome)}
               </p>
             ) : null}
           </section>
         </div>
-        <aside className={s.vi} id="recInsp" aria-label="선택한 점검">
-          {handle ? (
-            <JobSummary rows={extraRows} acts={extraActs} />
-          ) : (
-            <>
-              <InspHead title="점검 정보" />
-              <Isec>
-                <p className={s.empty}>이 브라우저에서 이어 보는 점검이 없습니다.</p>
-                <a className={cx(s.btn, s.pri)} href="#new">
-                  <Icon name="plus" />새 점검
-                </a>
-              </Isec>
-            </>
-          )}
+        <aside className={s.vi} id="doneInsp" aria-label="선택한 점검">
+          <RecordInsp title="끝난 점검" shown={doneShown} has={hasDone} none="끝난 점검이 없습니다." rows={extraRows} />
         </aside>
         <PaneToggle />
       </div>
@@ -320,10 +414,16 @@ export function UrlRecordsLive() {
 }
 
 /** 끝난 점검을 결과로 나누지 않은 까닭 ('전체' 에만 보일 때). */
-function unsortedText(state: UrlState | undefined, readable: boolean, failed: boolean): string {
+function unsortedText(
+  state: UrlState | undefined,
+  readable: boolean,
+  failed: boolean,
+  outcome?: URLDiagnosisJob["outcome"],
+): string {
   if (failed) return "보고서를 읽지 못해 결과로 나누지 않고 '전체' 에만 보입니다. 새로고침으로 다시 읽을 수 있습니다.";
   if (state !== "completed") return "중지 · 실패한 점검은 끝까지 보지 않아 결과로 나누지 않고 '전체' 에만 보입니다.";
   if (!readable) return "결과 저장이 확인되지 않아 결과로 나누지 않고 '전체' 에만 보입니다.";
+  if (outcome === "partial") return "계획한 작업 일부가 끝나지 않아 '발견 없음' 으로 나누지 않고 '전체' 에만 보입니다.";
   return "정상 대조 결과가 없어 '발견 없음' 으로 나누지 않고 '전체' 에만 보입니다.";
 }
 
