@@ -111,6 +111,12 @@ func workflowModel() http.Handler {
 			if turn.explore == 1 {
 				tool("mcp__explore_browser__browser_navigate", "wf-explore", map[string]any{"url": target + "/workflow"})
 			}
+			// 직접 Bash가 결속된 탐색(설치 정책 direct_bash)이면 한 번 curl로 승인 대상과 승인 밖 호스트를 부른다. 앞은 경계를
+			// 지나 대상에 닿고 뒤는 경계가 막아야 한다(상태 코드만 출력).
+			if turn.explore == 2 && names["Bash"] {
+				exploreBash.Add(1)
+				tool("Bash", "wf-explore-bash", map[string]any{"command": "curl -s -m 10 -o /dev/null -w 'approved=%{http_code}\\n' " + target + "/workflow; curl -s -m 10 -o /dev/null -w 'outside=%{http_code}\\n' https://outside.test/", "timeout_ms": 60000})
+			}
 		case names["set_goals"] && !names["add_intent"] && !names["Bash"]:
 			goals.Add(1)
 			turn.goals++
