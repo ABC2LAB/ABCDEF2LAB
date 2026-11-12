@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,9 +104,9 @@ func TestProductExplorationHostDirectBashThroughRealBoundary(t *testing.T) {
 	}
 }
 
-// 정책이 direct_bash를 켜지 않으면 Bash를 주지 않고(helper가 있어도), 켜면 준다. 켰어도 helper를 쓸 수 없으면 Bash 없이
-// 탐색한다(host는 만든다).
-func TestProductExplorationHostDirectBashIsOptInAndDegrades(t *testing.T) {
+// 설치 입력에서 direct_bash를 비우면 설치기가 true로 적고, false면 false로 적는다. 보호 정책에 칸이 없으면(기본 켜기 전
+// #513 형식) 끈 것으로 읽어 업데이트가 이전 설치의 끄기를 켜지 않는다. helper가 없으면 Bash 없이, 루트도 안 만든다.
+func TestProductExplorationHostDirectBashDefaultAndOptOut(t *testing.T) {
 	f := newHostFixture(t)
 	helper := filepath.Join(t.TempDir(), "helper")
 	if err := os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o700); err != nil {
@@ -117,22 +118,80 @@ func TestProductExplorationHostDirectBashIsOptInAndDegrades(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		h.bashHelper = helperPath
+		h.bashHelper, h.bashRootParent = helperPath, t.TempDir()
 		host, err := h.factory(f.rec, f.current, f.digest, nil, 4096)(t.Context(), f.binding, &agent.Worker{})
 		if err != nil || host.Session.Boundary == nil {
 			t.Fatalf("host: %v", err)
 		}
 		return host
 	}
+	// 설치 입력: 비우면 설치기가 true로 채움 → 켬. false·true는 그대로.
+	if p := withExplorationDefaults(f.policy); p.DirectBash == nil || !*p.DirectBash || build(p, helper).Session.DirectBash == nil {
+		t.Fatal("new install left direct_bash unset did not turn it on")
+	}
+	off, on := false, true
+	disabled := f.policy
+	disabled.DirectBash = &off
+	if p := withExplorationDefaults(disabled); p.DirectBash == nil || *p.DirectBash || build(p, helper).Session.DirectBash != nil {
+		t.Fatal("direct_bash false still gave a direct Bash")
+	}
+	enabled := f.policy
+	enabled.DirectBash = &on
+	if host := build(enabled, helper); host.Session.DirectBash == nil {
+		t.Fatal("direct_bash true did not give a direct Bash")
+	}
+	// 보호 정책에 칸이 없으면(이전 형식) 끈다.
 	if host := build(f.policy, helper); host.Session.DirectBash != nil {
-		t.Fatal("direct Bash without the policy flag")
+		t.Fatal("protected policy without direct_bash turned it on")
 	}
-	on := f.policy
-	on.DirectBash = true
-	if host := build(on, helper); host.Session.DirectBash == nil {
-		t.Fatal("direct_bash policy did not give a direct Bash")
-	}
-	if host := build(on, filepath.Join(t.TempDir(), "missing-helper")); host.Session.DirectBash != nil {
+	if host := build(enabled, filepath.Join(t.TempDir(), "missing-helper")); host.Session.DirectBash != nil {
 		t.Fatal("unusable helper still gave a direct Bash")
+	}
+	// 샌드박스가 없는 설치는 호출 디렉터리 루트도 만들지 않는다.
+	h, err := newProductExplorationHost(enabled, f.caPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	h.bashHelper, h.bashRootParent = filepath.Join(parent, "missing-helper"), parent
+	if _, err := h.factory(f.rec, f.current, f.digest, nil, 4096)(t.Context(), f.binding, &agent.Worker{}); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(parent); err != nil || len(entries) != 0 {
+		t.Fatalf("missing helper still created %d entries", len(entries))
+	}
+}
+
+// #513 형식(bool+omitempty)으로 쓴 보호 정책을 새 로더로 읽어도 끄기가 유지되고 켜기도 유지된다(업그레이드 회귀).
+func TestProductExplorationPolicyUpgradeKeepsDirectBashChoice(t *testing.T) {
+	type policy513 struct {
+		ControlSocket       string `json:"control_socket"`
+		DirectProxy         string `json:"direct_proxy"`
+		BoundaryCAFile      string `json:"boundary_ca_file"`
+		BoundaryCASHA256    string `json:"boundary_ca_sha256"`
+		MCPURL              string `json:"mcp_url"`
+		MaxExternalRequests uint64 `json:"max_external_requests,omitempty"`
+		DirectBash          bool   `json:"direct_bash,omitempty"`
+	}
+	f := newHostFixture(t)
+	for _, want := range []bool{false, true} {
+		old := policy513{ControlSocket: f.policy.ControlSocket, DirectProxy: f.policy.DirectProxy, BoundaryCAFile: f.policy.BoundaryCAFile, BoundaryCASHA256: f.policy.BoundaryCASHA256, MCPURL: f.policy.MCPURL, DirectBash: want}
+		raw, err := json.Marshal(old)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var loaded productExplorationPolicy
+		if err := json.Unmarshal(raw, &loaded); err != nil {
+			t.Fatal(err)
+		}
+		h, err := newProductExplorationHost(loaded, f.caPEM)
+		if err != nil || h.directBash != want {
+			t.Fatalf("#513 policy direct_bash=%v read as %v (%v)", want, h.directBash, err)
+		}
+	}
+	// 새 설치기가 쓴 보호 정책은 늘 명시값이다.
+	raw, _ := json.Marshal(withExplorationDefaults(f.policy))
+	if !strings.Contains(string(raw), `"direct_bash":true`) {
+		t.Fatalf("installer did not write an explicit direct_bash: %s", raw)
 	}
 }
