@@ -22,7 +22,7 @@
 | WebSearch | 설치 설정(`webSearch`)대로. 완전 로컬 모드에서는 끈다 | 대상이 아니라 검색 제공자로 나간다(규칙 8) |
 | skills | **진단 프로필에는 넣지 않는다.** 지금 skill 중 진단 목적의 것이 없다. `api-recon`은 탐색 프로필에 준다([C30 결정안](sandbox-data-decision.md)). 진단용 skill이 생기면 지시문만 읽고 명령은 Bash(E②)로 돌린다 | `api-recon`·브라우저는 탐색 단계 몫(규칙 3) |
 | MCP(Playwright 등) | **진단에서는 계속 뺀다.** 브라우저는 탐색 프로필 | 규칙 3, #410 |
-| 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail). insert_assets는 열린 항목 5 뒤. 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지. 지금 E② 필터의 graph_overview·list_facts·get_worker_output·list_goals는 원본 Worker 목록에 없는 Planner 도구라 실제로 Worker에 들어간 적이 없고, 프로필에도 넣지 않는다 | DB 안 작업 |
+| 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail). insert_assets는 열린 항목 5 결정안(§9-5) 리뷰·구현 뒤. 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지. 지금 E② 필터의 graph_overview·list_facts·get_worker_output·list_goals는 원본 Worker 목록에 없는 Planner 도구라 실제로 Worker에 들어간 적이 없고, 프로필에도 넣지 않는다 | DB 안 작업 |
 | insert_assets의 자동 보강(DNS·HTTP) | 진단 모드에서는 끈다. 자산 기록만 한다 | 서버가 발견 자산에 직접 보낸다. 필요하면 탐색 단계 몫 |
 | report_finding | 원본 이름·입력 형식으로 복원하되 진단 모드에서는 **확정이 아니라 진단 후보로 저장**한다(지금 `submit_diagnostic_candidate`와 같은 저장). 판정은 E③이 E② 기록으로 한다 | 규칙 5. 원본 프롬프트·skills가 report_finding을 부른다 |
 | traffic_search·traffic_get·traffic_blob | **진단 프로필에 넣지 않는다.** 진단 요청은 traffic 저장소에 기록되지 않는다(열린 항목 1 결과). 근거 묶기는 후보 제출의 call_ref가, 지난 응답 다시 보기는 C29의 출력 파일이 맡는다 | 빈 결과를 "요청 없음"으로 오해하게 하지 않는다 |
@@ -100,4 +100,12 @@
 2. **대화 기록 재개**: 지금 E② 모드는 사람 지시로 이전 대화를 이어가지 않는다. 대화 기록 저장의 가림과 같이 정한다.
 3. **같은 intent 안 병렬 도구 호출**: 원본 SDK가 병렬 호출을 하면 호출 단위 예약을 어떻게 나눌지. 그 전에는 하나씩이다.
 4. **탐색 프로필 도구 목록**: 탐색 실행기 결정안 2-b에서 정한다.
-5. **진단 단계 자산 쓰기(insert_assets)**: 제품 DB 역할은 assets·task_asset_links를 SELECT만 허용한다(`server/controlled_read_assembly_database_role.go`). 진단 Worker가 발견 자산을 기록하게 할지, 탐색 단계 몫으로 둘지 이동찬과 정한다. companies·company_scope도 SELECT만이라 Planner의 add_company_scope도 같이 정한다.
+5. **진단 단계 자산 쓰기(insert_assets)·회사 범위(add_company_scope)** — 결정안(2026-11-12, 최민준 결정·이동찬 리뷰). DB 역할을 바꾸므로 구현은 리뷰 뒤 이동찬과 페어로 한다.
+   - 지금: 제품 DB 역할은 assets·task_asset_links·companies·company_scope를 SELECT만 허용한다(`server/controlled_read_assembly_database_role.go`, 설치의 역할 부여 `cmd/first-controlled-diagnosis/product_install_linux.go`). 탐색 단계 발견은 `diagnosisflow` 발견 기록으로만 가고 assets 표에는 들어가지 않는다. 제품 첫 진단 경로는 원본 작업 시작의 대상 자산 등록(`launchTask`의 seed)도 거치지 않는다(`createFirstDiagnosisGoals`). 그래서 진단 Planner의 list_assets·list_untested_assets(원본 커버리지 루프)는 거의 비어 있다.
+   - 결정 1: **진단 Worker에 원본 insert_assets를 넣는다.** 원본 동작(자산 upsert·작업 연결·자동 범위)은 그대로 두고 두 가지만 더한다.
+     - 자동 보강(DNS·HTTP)은 지금처럼 끈다(§2 표). 서버가 발견 자산에 직접 보내는 경로라서다.
+     - 받는 자산을 E② 실행의 승인 대상 호스트(정책 규칙 origin의 호스트)로 프로그램이 제한한다(규칙 4). 다른 호스트·IP의 자산은 기록하지 않고 모델에 "승인 대상 밖"으로 돌려준다. 기록 자체는 대상 송신이 아니지만, 승인 밖 자산이 쌓이면 Planner가 그쪽으로 intent를 만들고 C01 전에는 거부 상한(제품 2회)에 닿아 실행이 멈출 수 있다(#468 범위 도구 설명과 같은 이유).
+     - 원본 작업 시작처럼 진단 준비 때 대상 URL 자산 하나를 등록하고 작업에 연결한다(seed). 승인 대상이라 위 제한 안이다.
+     - DB 역할: assets·task_asset_links에 INSERT와 upsert가 고치는 칼럼의 UPDATE만 더한다. 설치의 역할 부여와 `checkFirstDiagnosisDatabase` 필수 권한 표를 같이 고친다. 보고서 역할은 바꾸지 않는다.
+   - 결정 2: **add_company_scope는 진단 프로필에 넣지 않는다.** company_scope는 회사 단위로 모든 작업의 자산 귀속을 바꾸는 운영 설정이라, 한 실행 안에서 모델이 바꿀 대상이 아니다. 원본과 다른 점으로 남긴다.
+   - 탐색 단계 발견을 assets 표로 옮기는 일은 이 결정과 별개다. 필요가 보이면 탐색 실행기 결정안에서 따로 정한다.
