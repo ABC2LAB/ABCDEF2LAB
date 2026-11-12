@@ -18,7 +18,7 @@ func (f Failure) Error() string        { return "exploration_" + f.Stage + "_" +
 func (f Failure) Is(target error) bool { return target == ErrUnavailable }
 func ReportFailure(stage string, err error) Failure {
 	switch stage {
-	case "worker_resolve", "host_factory", "host_capabilities", "session_open", "boundary_open", "browser_start", "mcp_connect", "catalog", "status", "watch_close", "open_cleanup", "worker_run", "tool_admission", "tool_call", "browser_close", "finalize", "mcp_delete", "browser_lease", "boundary_close":
+	case "worker_resolve", "host_factory", "host_capabilities", "session_open", "boundary_open", "browser_start", "mcp_connect", "catalog", "status", "watch_close", "open_cleanup", "worker_run", "tool_admission", "tool_call", "browser_close", "finalize", "mcp_delete", "browser_lease", "boundary_close", "direct_bash_relay", "direct_bash_cleanup":
 	default:
 		stage = "operation"
 	}

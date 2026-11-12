@@ -13,6 +13,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/exploration"
+	"github.com/Autumn-27/artex/exploresandbox"
 	"github.com/Autumn-27/norma/harness"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -46,10 +47,11 @@ type ExplorationSessionOptions struct {
 	Binding      exploration.Binding
 	Boundary     exploration.Boundary
 	StartBrowser func(context.Context, exploration.Binding) (ExplorationBrowserLease, error)
-	// 검증된 typed 직접 sandbox adapter가 없어 현재 둘 다 non-nil이면 I/O 전에 거부한다.
-	DirectBash actool.CoreTool
-	APIRecon   actool.CoreTool
-	Redact     func([]byte) []byte
+	// DirectBash는 회차에 결속된 탐색 직접 Bash다(직접 입구 하나만 잇는 격리 실행, exploresandbox). 없으면 셸 없이 돈다.
+	DirectBash *exploresandbox.DirectBash
+	// APIRecon은 원본 스크립트를 일반 Skill로 여는 경로라 아직 지원하지 않는다. non-nil이면 I/O 전에 거부한다.
+	APIRecon actool.CoreTool
+	Redact   func([]byte) []byte
 	// Finalize는 모델/도구와 브라우저 폐쇄 뒤 보호 저장소의 기존 관찰만 배출한다. 새 송신·모델 호출·원문 로그를 만들지 않으며 문맥 상한을 지킨다.
 	Finalize func(context.Context, exploration.Binding) error
 	// Observe는 각 경계 도구 결과 뒤 private 관찰만 저장하고 다음 모델 호출 전에 돌아온다.
@@ -89,8 +91,8 @@ func OpenExplorationSession(parent context.Context, o ExplorationSessionOptions)
 	if o.StatusInterval > time.Second {
 		return nil, exploration.ErrBinding
 	}
-	// 범용 Bash/Skill은 현재 지원하지 않는다. 실제 직접 sandbox의 typed adapter가 선행해야 한다.
-	if o.DirectBash != nil || o.APIRecon != nil {
+	// 범용 Skill은 현재 지원하지 않는다. 직접 Bash는 typed adapter(exploresandbox)만 받는다.
+	if o.APIRecon != nil {
 		return nil, exploration.ErrUnavailable
 	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(o.Binding.Limits.TimeBudgetSeconds)*time.Second)
@@ -298,12 +300,12 @@ func (s *ExplorationSession) Run(ctx context.Context, w *agent.Worker, o agent.E
 		for i, tool := range o.BrowserTools {
 			o.BrowserTools[i] = wrap(tool)
 		}
-		o.DirectBash = wrap(s.options.DirectBash)
+		o.ObserveBoundaryTool = wrap
 		o.APIRecon = wrap(s.options.APIRecon)
 	} else {
-		o.DirectBash = s.options.DirectBash
 		o.APIRecon = s.options.APIRecon
 	}
+	o.DirectBash = s.options.DirectBash
 	o.Redact = s.options.Redact
 	o.Check = s.Check
 	defer func() {
