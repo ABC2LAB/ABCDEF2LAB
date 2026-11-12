@@ -8,7 +8,7 @@
 
 - 제품 흐름의 크롤링 단계는 첫 보호 Worker 안에서 프로그램(`diagnosisflow.Controller.Crawl`)이 정적 문서를 가져온다. 가져오기는 Worker의 Bash·호출 예산·**E②** 프록시를 쓴다(`agent/e2_http.go`). 11/11 결정 전 설계라 탐색이 E②를 지난다.
 - 진단 단계의 Planner·Worker 도구에는 MCP·skills가 없다(C24·C26). 원본 ARTEX는 같은 루프에 Playwright MCP와 `api-recon` skill이 있었다.
-- 브라우저 샌드박스 컨테이너(`explore-browser`, 꺼짐)와 도구 고정 목록 필터(`server/mcp_tool_policy.go`)는 들어왔다. 탐색 경계(`explore-boundary`)와 단계별 relay는 이동찬 몫으로 아직 없다.
+- 브라우저 샌드박스 컨테이너(Chromium `explore-browser`·MCP `explore-mcp`, 꺼짐, #485)와 도구 고정 목록 필터(`server/mcp_tool_policy.go`)는 들어왔다. 탐색 경계(`explore-boundary`)와 단계별 relay는 이동찬 몫으로 아직 없다.
 
 ## 2. 결정안
 
@@ -29,7 +29,7 @@
 
 각 단계는 따로 PR로 올리고, 앞 단계가 없으면 그 기능은 꺼진 채로 둔다.
 
-1. 엔진(preparation)을 탐색 제어망에 붙이고 MCP `http` 연결 설정(`explore-browser`)을 탐색 단계 전용으로 둔다. 진단 단계 도구 목록에 MCP가 없음을 시험으로 고정한다. 선행: workbench 리슨 고정(#407).
+1. 엔진(preparation)을 탐색 제어망에 붙이고 MCP `http` 연결 설정(`http://explore-mcp:<포트>/mcp`)을 탐색 단계 전용으로 둔다. 진단 단계 도구 목록에 MCP가 없음을 시험으로 고정한다. 선행: workbench 리슨 고정(#407).
 2. 탐색 에이전트 루프(2-b)와 발견 보고 도구(3). 경계가 없으면 단계를 건너뛰고(정적 크롤만) 그 사실을 회차에 남긴다.
 3. 정적 크롤의 가져오기를 경계 직접 입구로 옮긴다(경계 relay 뒤, 이동찬과 같이).
 4. 경계 기록 → 발견 결과(`observed`) 연결(경계 기록 형식 뒤, 수용시험 문서 §8-1).
