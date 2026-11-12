@@ -4,7 +4,7 @@
 // 서버가 저장한 발견 · 관찰만 보인다. 묶음은 경로 규칙으로 나눈 것이라 AI 추정이라고 부르지 않는다.
 // 백분율 · 남은 시간 · 로그인 필요 여부 · 경로 설명은 서버가 주지 않아 만들지 않는다.
 
-import { type ReactNode, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useMemo, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { clockOf, planState } from "../../live/map";
@@ -263,6 +263,74 @@ function EndpointDetail({ endpoint, back }: { endpoint: WorkflowEndpoint | null;
   );
 }
 
+/**
+ * 탐색 기록 한 줄을 펼친 칸 (시안 v75 ~ v76). 오른쪽 '찾은 경로' 상세와 같은 서버 관찰(응답 · 찾은 곳 · 출처 · 종류 ·
+ * 저장된 요청/응답)을 줄 바로 아래에 보인다. 같은 경로 기록이 없으면 기록의 결과만 보이고 지어내지 않는다.
+ * 요청 · 응답 원문은 서버가 가린 그대로 보인다(값을 다시 만들지 않음). Esc · 접기로 닫고 초점은 그 줄로 돌아간다.
+ */
+function LogDetail({
+  id,
+  event,
+  endpoint,
+  onClose,
+}: {
+  id: string;
+  event: WorkflowSnapshot["events"][number];
+  endpoint: WorkflowEndpoint | undefined;
+  onClose: () => void;
+}) {
+  return (
+    <section
+      className={s.lgx}
+      id={id}
+      aria-label={`${event.method} ${event.path ?? ""} 상세`}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <div className={s["lgx-top"]}>
+        <span className={cx(s.m, event.method ? s[event.method] : undefined)}>{event.method}</span>
+        <span className={s.p}>{event.path || "—"}</span>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={onClose}>
+          접기
+        </button>
+      </div>
+      <Kv
+        rows={[
+          ["결과", event.status ? <Sc key="sc" status={event.status} /> : event.kind],
+          ...(endpoint
+            ? ([
+                [
+                  "찾은 곳",
+                  <span key="from" className={s.mono}>
+                    {endpoint.from}
+                  </span>,
+                ],
+                ["출처", endpoint.source],
+                ["종류", endpoint.kind],
+                ...(endpoint.observation_error ? [["관찰 실패", endpoint.observation_error]] : []),
+              ] as [string, ReactNode][])
+            : []),
+        ]}
+      />
+      {endpoint?.request || endpoint?.response ? (
+        <div className={s["lgx-ex"]}>
+          {endpoint.request ? (
+            <CodeCard title="요청" src="실제 관찰" text={endpoint.request} id={`lg-req-${endpoint.id}`} />
+          ) : null}
+          {endpoint.response ? (
+            <CodeCard title="응답" src="실제 관찰" text={endpoint.response} id={`lg-res-${endpoint.id}`} />
+          ) : null}
+        </div>
+      ) : (
+        <p className={s.empty}>
+          {endpoint ? "저장된 요청 · 응답이 없습니다." : "이 기록과 같은 찾은 경로 기록이 없어 결과만 보입니다."}
+        </p>
+      )}
+    </section>
+  );
+}
+
 /** 찾은 경로 묶음 카드 (자산 탐색 오른쪽). */
 function EndpointCards({
   endpoints,
@@ -326,6 +394,12 @@ export function WorkflowCrawlLive() {
     { goTo, openInsp } = useShell();
   const [selected, setSelected] = useState<string | null>(null);
   const [filter, setFilter] = useState("all");
+  // 탐색 기록에서 펼친 줄 (한 번에 하나, 같은 줄을 다시 누르면 접힘 · 시안 v75 ~ v76)
+  const [openLog, setOpenLog] = useState<string | null>(null);
+  const closeLog = (i: number) => {
+    setOpenLog(null);
+    document.getElementById(`lgRow${i}`)?.focus();
+  };
   const stop = useStopConfirm("점검 취소");
   const endpoints = flow?.endpoints ?? [];
   const shown = endpoints.filter((e) => filter === "all" || kindOf(e) === filter);
@@ -429,21 +503,43 @@ export function WorkflowCrawlLive() {
                     <span>결과</span>
                   </div>
                   {flow.events.length ? (
-                    flow.events.map((event) =>
-                      event.method ? (
-                        <div className={s.lr} key={`${event.at}:${event.kind}:${event.method}:${event.path}`}>
-                          <span className={s.t}>{hms(event.at)}</span>
-                          <span className={cx(s.m, s[event.method])}>{event.method}</span>
-                          <span className={s.p}>{event.path || "—"}</span>
-                          <span>{event.status ? <Sc status={event.status} /> : event.kind}</span>
-                        </div>
-                      ) : (
+                    flow.events.map((event, i) => {
+                      if (event.method) {
+                        const key = `${event.at}:${event.kind}:${event.method}:${event.path}`;
+                        const open = openLog === key;
+                        return (
+                          <Fragment key={key}>
+                            <button
+                              id={`lgRow${i}`}
+                              className={cx(s.lr, open && s.on)}
+                              type="button"
+                              aria-expanded={open}
+                              aria-controls={open ? `lgx${i}` : undefined}
+                              onClick={() => setOpenLog(open ? null : key)}
+                            >
+                              <span className={s.t}>{hms(event.at)}</span>
+                              <span className={cx(s.m, s[event.method])}>{event.method}</span>
+                              <span className={s.p}>{event.path || "—"}</span>
+                              <span>{event.status ? <Sc status={event.status} /> : event.kind}</span>
+                            </button>
+                            {open ? (
+                              <LogDetail
+                                id={`lgx${i}`}
+                                event={event}
+                                endpoint={endpoints.find((e) => e.method === event.method && e.path === event.path)}
+                                onClose={() => closeLog(i)}
+                              />
+                            ) : null}
+                          </Fragment>
+                        );
+                      }
+                      return (
                         <div className={cx(s.lr, s.sys)} key={`${event.at}:${event.kind}`}>
                           <span className={s.t}>{hms(event.at)}</span>
                           <span>{event.kind}</span>
                         </div>
-                      ),
-                    )
+                      );
+                    })
                   ) : (
                     <p className={s.empty}>아직 기록이 없습니다.</p>
                   )}

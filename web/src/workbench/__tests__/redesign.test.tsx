@@ -170,6 +170,63 @@ describe("자산 탐색", () => {
   });
 });
 
+describe("탐색 기록 펼치기", () => {
+  it("줄을 누르면 바로 아래에 서버 관찰(결과 · 찾은 곳 · 출처 · 요청/응답)이 펼쳐지고, 다시 누르거나 Esc 로 접힌다 (시안 v75 ~ v76)", () => {
+    const withLog: WorkflowSnapshot = {
+      ...flow,
+      endpoints: [
+        {
+          ...ep("read", "GET", "/api/products/1", "attested_read"),
+          status: 200,
+          request: "GET /api/products/1 HTTP/1.1",
+          response: "HTTP/1.1 200 OK",
+        },
+        ep("write", "PUT", "/api/users/2", "possible"),
+      ],
+      events: [
+        { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/products/1", status: 200 },
+        { at: "2026-11-11T01:00:02Z", kind: "held", method: "PUT", path: "/api/users/2" },
+        { at: "2026-11-11T01:00:03Z", kind: "탐색 시작" },
+      ],
+    };
+    useUrl.setState({ handle, job, verified: true, flow: withLog, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    const log = document.getElementById("cLog") as HTMLElement;
+    const getRow = within(log).getByRole("button", { name: /GET\s*\/api\/products\/1/ });
+    const putRow = within(log).getByRole("button", { name: /PUT\s*\/api\/users\/2/ });
+    expect(getRow).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(getRow);
+    expect(getRow).toHaveAttribute("aria-expanded", "true");
+    const box = screen.getByRole("region", { name: "GET /api/products/1 상세" });
+    expect(within(box).getByText("html_link")).toBeInTheDocument();
+    expect(within(box).getByText("GET /api/products/1 HTTP/1.1")).toBeInTheDocument();
+    expect(within(box).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
+    // 한 번에 하나: 다른 줄을 열면 앞 줄은 접힌다. 보내지 않은 줄은 기록 결과만, 원문은 없다고 말한다
+    fireEvent.click(putRow);
+    expect(screen.queryByRole("region", { name: "GET /api/products/1 상세" })).toBeNull();
+    const put = screen.getByRole("region", { name: "PUT /api/users/2 상세" });
+    expect(within(put).getByText("held")).toBeInTheDocument();
+    expect(within(put).getByText("저장된 요청 · 응답이 없습니다.")).toBeInTheDocument();
+    // 같은 줄을 다시 누르면 접힘
+    fireEvent.click(putRow);
+    expect(screen.queryByRole("region", { name: "PUT /api/users/2 상세" })).toBeNull();
+    // Esc 로 접고 초점은 그 줄로
+    fireEvent.click(getRow);
+    fireEvent.keyDown(
+      within(screen.getByRole("region", { name: "GET /api/products/1 상세" })).getByRole("button", { name: "접기" }),
+      {
+        key: "Escape",
+      },
+    );
+    expect(screen.queryByRole("region", { name: "GET /api/products/1 상세" })).toBeNull();
+    expect(getRow).toHaveFocus();
+  });
+});
+
 describe("대시보드", () => {
   it("승인 대기 요청은 결정 대기 안내로 알리고, 상세에 보낼 요청과 승인 · 거부를 보인다", async () => {
     useUrl.setState({ handle, job, verified: true, flow: { ...flow, stage: "diagnosing" }, flowVerified: true });
