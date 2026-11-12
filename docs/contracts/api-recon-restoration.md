@@ -13,7 +13,7 @@
 | `preload.js`, `runtime_harvest.js` | 페이지 내부 fetch/XHR hook, 동적 URL/폼/WS/SSE 구분 | 별도 `metadata_only.js`. 이미 열린 페이지의 native 호출을 그대로 전달하고 메타데이터만 기록 |
 | route/permission helper | 정적 route 후보 방식 | route literal을 추정 후보로 보존. 대상별 메뉴 위조·권한 트리·로그인 성공은 구현 완료로 계산하지 않음 |
 
-제품의 별도 explore-browser 이미지 단계는 skills를 복사하지 않고, Compose는 경계 CA만 읽기 전용으로 마운트한다. 이 범위는 `scripts/ci/test_product_explore_browser.py`가 검사한다. 제품 이미지에는 원본 skills가 참고자료로 남는다. [탐색 실행기 A 후속](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451)은 generic DirectBash/APIRecon의 nonnil 주입을 도구 이름과 관계없이 프로필·서버 양쪽에서 초기 I/O 전에 거부한다. 따라서 원본 unsafe script를 generic Skill/Bash로 여는 경로는 현재 지원하지 않는다. 프로그램 소유 Fetch와 브라우저의 metadata-only hook은 유지한다. 향후 이 capability를 복원하려면 typed sandbox adapter, metadata-only 파일만 보이는 별도 mount, 원본 unsafe script 실행 불가를 실제 코드·시험으로 먼저 검증해야 한다(B16 미완료). 도구 이름 검사나 SKILL 문장은 이 증명의 대체가 아니다. metadata-only 어댑터는 브라우저 프로세스나 네트워크를 새로 만들지 않는다.
+제품의 별도 explore-browser 이미지 단계는 skills를 복사하지 않고, Compose는 경계 CA만 읽기 전용으로 마운트한다. 이 범위는 `scripts/ci/test_product_explore_browser.py`가 검사한다. 제품 이미지에는 원본 skills가 참고자료로 남는다. [탐색 실행기 A 후속](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451)은 generic DirectBash/APIRecon의 nonnil 주입을 도구 이름과 관계없이 프로필·서버 양쪽에서 초기 I/O 전에 거부했다. 지금 `DirectBash`는 typed 격리 실행(`exploresandbox.DirectBash`, [host 의무](exploration-host-adapter-obligations.md#직접-도구와-api-recon))만 받고, `APIRecon`은 계속 거부한다. 따라서 원본 unsafe script를 generic Skill/Bash로 여는 경로는 현재 지원하지 않는다. 프로그램 소유 Fetch와 브라우저의 metadata-only hook은 유지한다. 향후 이 capability를 복원하려면 typed sandbox adapter, metadata-only 파일만 보이는 별도 mount, 원본 unsafe script 실행 불가를 실제 코드·시험으로 먼저 검증해야 한다(B16 미완료). 도구 이름 검사나 SKILL 문장은 이 증명의 대체가 아니다. metadata-only 어댑터는 브라우저 프로세스나 네트워크를 새로 만들지 않는다.
 
 ## 추정과 실제 관측
 
