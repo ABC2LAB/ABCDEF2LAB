@@ -42,6 +42,7 @@
   - 결정: intent 결과는 그 intent의 **모든 호출 분류를 모아서** 정한다(가장 강한 것: unknown > incomplete > policy_limited > done). 마지막 호출이 `tool_failure`여도 앞에서 완료한 호출의 관찰은 남긴다. trusted 대조(`EqualCallResults`)가 깨지면 그 intent만 `unknown`으로 두고, 감사 무결성이 깨진 경우(감사 저장 실패)만 실행을 멈춘다.
 - **C10 — 진단 로그 실패·상태 조회 1회 실패가 실행 취소**(`cmd/first-controlled-diagnosis/url_preparation_runtime.go`).
   - 결정: 진단 로그(사람이 보는 운영 기록)는 감사가 아니다. 기록 실패는 경고와 누락 건수로 남기고 실행 결과를 `unknown`으로 바꾸지 않는다. 상태 조회 실패는 제한된 횟수로 다시 묻고(설정 값), 그래도 실패하면 그때 `unknown`이다. 감사 저널·E② 영수증 저장 실패는 지금처럼 멈춘다.
+  - 구현 상태: 진단 로그 부분은 #418·#426. 상태 조회 재시도는 설치 입력 `runtime_limits.status_read_retries`(기본 0 = 지금처럼 첫 실패에서 멈춤, [설치 상한 결정안](install-limits-decision.md) §3-3)로 받고, 다 쓰면 결과를 `unknown`(`status_read_failed`)으로 둔다.
 - **C11 — 준비 단계 대체 경로 없음**(`first_diagnosis_startup.go`, `first_diagnosis_supervisor.go`, `agent/planner.go`).
   - 결정 1: 목표 분해가 실패하거나 0개면 원본처럼 **원래 목표 하나로 계속**한다(분해는 도움이지 필수 단계가 아니다).
   - 결정 2: 첫 계획에서 intent가 0개면 실패가 아니라 **실행 마감 사유 `no_intents`** 로 끝낸다. Planner 입력의 "0개도 괜찮다"와 맞춘다. 저장소 오류로 못 읽은 경우만 실패다.

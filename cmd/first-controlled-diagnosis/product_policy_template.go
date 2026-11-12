@@ -65,6 +65,21 @@ type productRuntimeLimitSet struct {
 	// 진단 Planner 한 번(Plan)의 턴 수·시간(초)(C26). launch 설정에 들어간다. 1 이상, Worker와 같은 코드 상한 이하.
 	PlannerTurnsPerPlan   *int   `json:"planner_turns_per_plan,omitempty"`
 	PlannerSecondsPerPlan *int64 `json:"planner_seconds_per_plan,omitempty"`
+	// 실행 상태 조회 연속 실패를 다시 묻는 횟수(C10). launch 설정에 들어간다. 0 이상, 정리 시간 상한 안.
+	StatusReadRetries *int `json:"status_read_retries,omitempty"`
+}
+
+// productShutdownTimeoutSeconds는 제품 launch의 정리 시간 상한(초)이다.
+const productShutdownTimeoutSeconds = 20
+
+// productStatusReadRetriesFor는 고른 모드의 상태 조회 재시도 횟수다. 칸이 없으면 0(지금처럼 첫 실패에서 멈춤)이고,
+// 있으면 0 이상 urlMaxStatusReadRetries(제품 정리 시간 상한) 이하만 받는다(범위 밖이면 설치 거부).
+func productStatusReadRetriesFor(limits *productRuntimeLimits, workflow bool) (int, bool) {
+	retries := 0
+	if set := limits.mode(workflow); set != nil && set.StatusReadRetries != nil {
+		retries = *set.StatusReadRetries
+	}
+	return retries, retries >= 0 && retries <= urlMaxStatusReadRetries(productShutdownTimeoutSeconds)
 }
 
 // productPlannerLimitsFor는 고른 모드의 Plan당 상한이다. 칸이 없으면 0(agent 기본값 16턴·120초)이고, 있으면 1 이상
