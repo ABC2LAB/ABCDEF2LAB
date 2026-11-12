@@ -3,6 +3,7 @@ package e2runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -152,6 +153,20 @@ func TestRunnerWorkspaceKeepsRedactedFullOutput(t *testing.T) {
 	}
 	if size := lines[0]; len(size) < 5 {
 		t.Fatalf("saved output is not the full output: %s bytes", size)
+	}
+	// 샌드박스 캡처 상한(maxOutputBytes)을 넘은 출력은 끝부분이 없으므로 전체 파일로 남기지 않는다(#446 이동찬 지적).
+	over, err := f.runner.RunForIntent(t.Context(), 2, fmt.Sprintf("head -c %d /dev/zero | tr '\\0' x; echo; echo marker-end", maxOutputBytes+4096))
+	if err != nil || over.OutputFile != "" || !over.Trusted.OutputTruncated || over.Workspace != "saved" || len(over.ToolOutput) > f.cfg.OutputLimit {
+		t.Fatalf("capture-truncated output: file=%q truncated=%v workspace=%s err=%v", over.OutputFile, over.Trusted.OutputTruncated, over.Workspace, err)
+	}
+	// 캡처 상한 바로 아래는 끝 표식까지 전체가 파일로 남는다.
+	under, err := f.runner.RunForIntent(t.Context(), 2, fmt.Sprintf("head -c %d /dev/zero | tr '\\0' x; echo; echo marker-end", maxOutputBytes-4096))
+	if err != nil || under.OutputFile == "" {
+		t.Fatalf("output under the capture limit not saved: file=%q err=%v", under.OutputFile, err)
+	}
+	tail, err := f.runner.RunForIntent(t.Context(), 2, "tail -n 1 '"+under.OutputFile+"'")
+	if err != nil || strings.TrimSpace(tail.ToolOutput) != "marker-end" {
+		t.Fatalf("saved output lost its end: %q", tail.ToolOutput)
 	}
 	short, err := f.runner.RunForIntent(t.Context(), 2, "echo short")
 	if err != nil || short.OutputFile != "" || short.Trusted.OutputTruncated {

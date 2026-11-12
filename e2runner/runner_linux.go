@@ -346,6 +346,8 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 	trusted := TrustedResult{Version: e2proxy.Version, Call: s.call.Result(), ExitCode: -1}
 	var pendingWorkspace *e2sandbox.Result
 	var output []byte
+	// captureTruncated는 샌드박스가 캡처 상한에서 출력을 잘랐다는 뜻이다(인라인 출력만 잘린 것과 다르다).
+	captureTruncated := false
 	processClosed := s.process == nil
 	if s.process != nil {
 		_ = s.process.Stop(ctx)
@@ -356,6 +358,7 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 			trusted.ExitCode = processResult.ExitCode
 		}
 		trusted.OutputTruncated = processResult.OutputTruncated
+		captureTruncated = processResult.OutputTruncated
 		output = processResult.Output
 		if s.owner.cfg.PersistWorkspace && s.workspace == "" {
 			pending := processResult
@@ -408,7 +411,8 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 	clear(output)
 	if pendingWorkspace != nil {
 		// 모델에 주는 글보다 긴 출력은 가린 전체를 작업 공간 파일로 남긴다(결정안 §2-3). 보관 상한을 넘으면 남기지 않는다.
-		if len(text) > s.owner.cfg.OutputLimit && pendingWorkspace.WorkspaceState == "saved" {
+		// 샌드박스 캡처 상한에서 이미 잘린 출력은 전체가 아니므로 파일로 남기지 않는다(전체라고 안내하지 않게).
+		if !captureTruncated && len(text) > s.owner.cfg.OutputLimit && pendingWorkspace.WorkspaceState == "saved" {
 			name := workspaceOutputDir + "/" + s.call.Ref() + ".txt"
 			if archive, err := e2sandbox.AppendWorkspaceFile(pendingWorkspace.Workspace, name, text, e2sandbox.WorkspaceLimit(e2sandbox.Config{})); err == nil {
 				pendingWorkspace.Workspace = archive
