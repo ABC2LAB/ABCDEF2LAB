@@ -243,6 +243,9 @@ type firstDiagnosisPlannerProbeProvider struct {
 	firstDiagnosisE2Provider
 	outboundToolExposed bool
 	textOnly            bool
+	// goalID·evidenceID가 있으면 첫 호출에서 prove_goal로 그 목표를 달성시킨다(C26).
+	goalID, evidenceID int64
+	proved             bool
 }
 
 func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
@@ -250,6 +253,16 @@ func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, reque
 		switch tool.Name {
 		case "Bash", "WebFetch", "WebSearch", "Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep":
 			p.outboundToolExposed = true
+		}
+	}
+	if p.goalID > 0 && !p.proved {
+		for _, tool := range request.Tools {
+			if tool.Name == "prove_goal" {
+				p.proved = true
+				p.calls++
+				input, _ := json.Marshal(map[string]any{"goal_id": p.goalID, "evidence_id": p.evidenceID, "reason": "owned fixture evidence"})
+				return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "prove-goal", Name: "prove_goal", Input: input}}}, "tool_use", llm.Usage{}, nil
+			}
 		}
 	}
 	if p.textOnly {

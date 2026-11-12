@@ -292,6 +292,14 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		provider.command += " | grep -q never-present-owned-fixture"
 	}
 	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}, textOnly: mode != "planner-only"}
+	if mode == "goal-met" {
+		// Planner가 prove_goal로 하나뿐인 목표를 달성시키면 작업이 done이 되고 실행은 정상 마감된다(C26).
+		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
+		if err != nil || factID <= 0 {
+			t.Fatal("목표 근거 fixture 생성 실패")
+		}
+		plannerProvider.goalID, plannerProvider.evidenceID = goalID, factID
+	}
 	// 실제 taskLLMRuntime.current의 role/model guard를 유지하고 profile cache의 모델만 대체한다.
 	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: provider, planner: plannerProvider})
 	if mode == "pre-run-stop" {
@@ -365,6 +373,13 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if runErr != nil || result == nil || result.Outcome != diagnosis.OutcomeNoIntents || result.IntentOutcomes != (diagnosis.IntentOutcomes{}) || !result.Valid() ||
 			hits.Load() != 0 || provider.calls != 0 || plannerProvider.calls == 0 {
 			t.Fatalf("intent 없는 실행을 no_intents로 마감하지 않음 err=%v result=%+v hits=%d", runErr, result, hits.Load())
+		}
+		return
+	}
+	if mode == "goal-met" {
+		result := supervisor.RunResult()
+		if runErr != nil || result == nil || !result.Valid() || !plannerProvider.proved || task.lifecycleSnapshot().Status != "done" || hits.Load() != 0 || provider.calls != 0 {
+			t.Fatalf("목표 달성으로 끝난 실행을 정상 마감하지 않음 err=%v result=%+v proved=%v status=%s", runErr, result, plannerProvider.proved, task.lifecycleSnapshot().Status)
 		}
 		return
 	}

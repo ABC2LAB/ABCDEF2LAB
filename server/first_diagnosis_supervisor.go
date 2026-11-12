@@ -620,7 +620,9 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	budgetLimited := firstDiagnosisBudgetLimited(task, server.firstModelBudget)
-	outcomes, closing := firstDiagnosisClosingOutcomes(counts, budgetLimited, firstDiagnosisPlanned(task))
+	// 실행 상한이나 목표 달성이면 Planner를 기다리지 않고, 실행 중 intent가 끝나는 대로 마감한다. 마감 사유
+	// budget_limited는 실행 상한일 때만 붙는다.
+	outcomes, closing := firstDiagnosisClosingOutcomes(counts, firstDiagnosisForcedClose(budgetLimited, task), firstDiagnosisPlanned(task))
 	if !closing {
 		return false, none, nil
 	}
