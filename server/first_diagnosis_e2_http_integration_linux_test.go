@@ -289,6 +289,12 @@ type firstDiagnosisPlannerProbeProvider struct {
 	scoped       bool
 	scopedIntent bool
 	beforeScope  func()
+	// killIntent가 0보다 큰 intent를 돌려주면 그때 한 번 kill_work로 그 작업을 멈춘다(C27). 다음 호출에서 그 도구 결과를
+	// 읽어 killed(성공)·killResult(결과 문장)에 남긴다.
+	killIntent func() int64
+	killSent   bool
+	killed     bool
+	killResult string
 }
 
 func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
@@ -296,6 +302,26 @@ func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, reque
 		switch tool.Name {
 		case "Bash", "WebFetch", "WebSearch", "Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep":
 			p.outboundToolExposed = true
+		}
+	}
+	if p.killSent && p.killResult == "" {
+		for _, message := range request.Messages {
+			for _, block := range message.Content {
+				if block.Type == llm.BlockToolResult && block.ToolUseID == "kill-work" {
+					for _, content := range block.Content {
+						p.killResult += content.Text
+					}
+					p.killed = !block.IsError
+				}
+			}
+		}
+	}
+	if p.killIntent != nil && !p.killSent {
+		if id := p.killIntent(); id > 0 {
+			p.killSent = true
+			p.calls++
+			input, _ := json.Marshal(map[string]any{"intent_id": id})
+			return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "kill-work", Name: "kill_work", Input: input}}}, "tool_use", llm.Usage{}, nil
 		}
 	}
 	if p.scopeValue != "" && !p.scoped {
