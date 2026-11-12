@@ -154,7 +154,8 @@ func TestPolicyFingerprintGoldenVector(t *testing.T) {
 	if first != second {
 		t.Fatal("same policy changed fingerprint")
 	}
-	const expected = "e9f33de9a7d59ca273a97abe3e9e33c20beef552b6b4e3687acc7a53f35d6f0c"
+	// e2-http-v2(C16)에서 enforcement_version이 바뀌어 다시 고정했다.
+	const expected = "be7ad0d4631dcd1ace8fbef9dc9d020ba7000aa6a7f0dd3a38f81b0499e19a00"
 	if first != expected {
 		t.Fatal("synthetic policy content encoder changed")
 	}

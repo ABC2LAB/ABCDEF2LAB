@@ -63,9 +63,9 @@ func TestPreserveCallerHeadersAreRefusedBeforeReservation(t *testing.T) {
 	}
 }
 
-// Current draft limitation: representation withholding shares the unknown
-// ceiling. A new reason/counter requires the transfer/export contract agreement.
-func TestPreserveWithheldResponsesUseDeclaredUnknownCeiling(t *testing.T) {
+// 자격 응답 보류는 결과 불명 상한과 따로 센다(C16, e2-http-v2). 결과 불명 상한이 1이어도 같은 call이 보류 응답을 계속
+// 받고, 실행·다른 call도 그대로다.
+func TestPreserveWithheldResponsesDoNotUseUnknownCeiling(t *testing.T) {
 	var received atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
@@ -75,34 +75,19 @@ func TestPreserveWithheldResponsesUseDeclaredUnknownCeiling(t *testing.T) {
 	defer target.Close()
 	cfg := coreConfig(t, target.URL, &coreRecorder{}, 4)
 	cfg.HeaderMode = HeaderPreserve
-	cfg.Limits.MaxUnknown = 3
+	cfg.Limits.MaxUnknown = 1
 	e, call := coreOpen(t, cfg)
-	for i := uint64(1); i <= 3; i++ {
+	for i := uint64(1); i <= 4; i++ {
 		response, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
 		view := e.Snapshot()
-		if err == nil || response != nil || receipt.Decision != "allowed" || receipt.Reason != Unknown ||
-			!receipt.ResponseReceived || !receipt.ResponseComplete || !receipt.AuditComplete ||
-			view.Counts.Unknown != i || view.Counts.Responses != i || received.Load() != int64(i) {
-			t.Fatal("declared withholding/unknown behavior changed")
+		if !errors.Is(err, ErrWithheld) || response != nil || receipt.Decision != "allowed" || receipt.Reason != Withheld ||
+			!receipt.ResponseReceived || receipt.ResponseComplete || !receipt.AuditComplete ||
+			view.Counts.Unknown != 0 || view.Counts.Withheld != i || view.Counts.Responses != i || received.Load() != int64(i) {
+			t.Fatalf("withheld response %d was counted as unknown or exposed: %+v %+v", i, receipt, view.Counts)
 		}
 	}
-	response, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
-	if !errors.Is(err, ErrClosed) || response != nil || !receipt.NotSent || receipt.Reason != UnknownLimit || received.Load() != 3 ||
-		e.Snapshot().Counts.Unknown != 3 {
-		t.Fatal("unknown ceiling did not stop the call's next target request")
-	}
-	// 상한은 그 call만 막는다. 실행과 다른 call은 계속 보낼 수 있다(C01).
 	if view := e.Snapshot(); view.State != "active" || view.Reason != Complete {
-		t.Fatalf("call unknown ceiling stopped the whole execution: %+v", view)
-	}
-	next, err := e.BeginCall(t.Context(), "after-unknown-ceiling")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _, _ = next.Close(t.Context()) }()
-	if response, receipt, err = next.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed")); err == nil || response != nil ||
-		receipt.Reason != Unknown || received.Load() != 4 {
-		t.Fatal("new call was not admitted after another call's unknown ceiling")
+		t.Fatalf("withheld responses stopped the execution: %+v", view)
 	}
 }
 
@@ -119,8 +104,8 @@ func TestConfiguredCredentialTrailerNameIsWithheld(t *testing.T) {
 	cfg.Rules[0].CredentialHeaders = http.Header{"X-Session": {"synthetic-protected-value"}}
 	_, call := coreOpen(t, cfg)
 	response, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
-	if err == nil || response != nil || receipt.Decision != "allowed" ||
-		!receipt.ResponseReceived || !receipt.ResponseComplete || receipt.Reason != Unknown {
+	if !errors.Is(err, ErrWithheld) || response != nil || receipt.Decision != "allowed" ||
+		!receipt.ResponseReceived || receipt.ResponseComplete || receipt.Reason != Withheld {
 		t.Fatal("credential trailer name was ignored or confused with incomplete transport")
 	}
 }
