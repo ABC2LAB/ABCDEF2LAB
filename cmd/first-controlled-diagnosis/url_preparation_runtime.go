@@ -395,7 +395,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	// 실제 intent 행이 같은 exploration에 저장됐는지 마감 전에 독립 조회한다.
 	var intents int
 	if planErr == nil {
-		if pool.QueryRowContext(ctx, `SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='open'`, actual.ExplorationID).Scan(&intents) != nil || intents < 1 || intents > 128 {
+		if pool.QueryRowContext(ctx, `SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='open'`, actual.ExplorationID).Scan(&intents) != nil || intents > 128 {
 			planErr = errPreparation
 		}
 	}
