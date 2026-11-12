@@ -70,7 +70,7 @@
 ## 5. 실행 환경 분리
 
 - 탐색 실행기 프로세스(브라우저, MCP, API Recon, 자식 프로세스)는 경계 하나만 닿는 네트워크 namespace에서 돈다. 브라우저는 브라우저 입구만, Bash·Node·API Recon은 직접 입구만 닿는 서로 다른 샌드박스에 둔다. 직접 샌드박스에서는 브라우저 프로세스의 명령줄·환경·프로필을 읽지 못한다.
-- MCP 서버(Node) 프로세스는 브라우저 샌드박스에 둔다. 이 프로세스도 브라우저 입구에 닿으므로 브라우저 입구의 발신 주체는 Chromium과 MCP 서버다. 그래서 모델에 노출하는 MCP 도구는 실행기 설정의 고정 목록(§5.1)으로 하고, 요청 헤더·라우팅을 바꾸는 도구와 Playwright·Node 코드를 실행하는 도구는 뺀다. 페이지 안에서 스크립트를 실행하는 도구는 금지 헤더를 바꾸지 못하므로 남길 수 있다(§3 한계는 그대로). CDP 포트는 직접 샌드박스에서 닿지 않는다. 프록시 환경 변수에 기대지 않는다(Node `fetch`는 기본으로 프록시 변수를 따르지 않고, API Recon은 TLS 검증을 끄고 Node에서 직접 보낸다).
+- MCP 서버(Node) 프로세스는 Chromium과 다른 컨테이너에 두고 CDP로 Chromium을 조작한다(§9-1, #485). MCP 컨테이너는 브라우저 입구에 닿지 않으므로 브라우저 입구의 발신 주체는 Chromium뿐이다. 다만 MCP는 CDP로 Chromium이 보낼 요청을 바꿀 수 있으므로, 모델에 노출하는 MCP 도구는 실행기 설정의 고정 목록(§5.1)으로 하고, 요청 헤더·라우팅을 바꾸는 도구와 Playwright·Node 코드를 실행하는 도구는 뺀다. 페이지 안에서 스크립트를 실행하는 도구는 금지 헤더를 바꾸지 못하므로 남길 수 있다(§3 한계는 그대로). CDP는 Chromium 컨테이너와 MCP 컨테이너만 붙는 연결망에만 열리고, 직접 샌드박스·엔진·경계에서 닿지 않는다. 프록시 환경 변수에 기대지 않는다(Node `fetch`는 기본으로 프록시 변수를 따르지 않고, API Recon은 TLS 검증을 끄고 Node에서 직접 보낸다).
 - 탐색 실행기 환경에는 제어 비밀(LLM API 키, E② 권한 토큰, 감사 키, 러너 서명 키, CA 개인키, 관리 API 토큰)을 넣지 않는다. 지금 원본 MCP는 서버 환경 변수를 통째로 물려받으므로(`norma` stdio `os.Environ()`) 실행기가 환경을 새로 만든다.
 - 진단 Worker의 격리 실행(`e2sandbox`)에서는 경계에 닿지 않는다. 탐색 실행기에서는 E②에 닿지 않는다.
 - 브라우저가 승인 대상 HTTPS를 열 수 있게 경계 CA를 브라우저와 Node에 신뢰시킨다. 경계는 대상 쪽 TLS를 SPKI로 검증하므로, 실행기 쪽의 TLS 검증 끄기(API Recon)가 대상 검증을 대신하지 않는다.
@@ -91,7 +91,7 @@
 - **허용하되 알고 쓰는 것**:
   - `browser_evaluate`는 페이지 안에서 JS를 실행한다. 금지 헤더는 바꾸지 못하지만 §3의 외부 GET 한계는 그대로다.
   - 허용 도구의 출력에도 S09를 적용한다. 인증 준비(§8)가 들어오면 실행기가 MCP 도구 출력에서 프로그램이 넣은 자격 값을 정확값으로 가린 뒤 모델·공유 결과에 넘긴다(E② 도구 출력 가림과 같은 방식). 비인증 회차에서도 심은 표식의 노출 0건을 확인한다.
-- **CLI 옵션**: 실행기(서버)가 정하고 모델이 바꿀 수 없는 옵션만 쓴다. 공통은 `--headless`, `--isolated`, `--no-webmcp`, `--browser chromium`, `--proxy-server <브라우저 입구>`, `--output-dir <브라우저 샌드박스 안>`이다. `--browser`의 기본값 `chrome`은 이미지 밖 Google Chrome(`/opt/google/chrome`)을 찾으므로, MCP 자신의 설치 명령(`playwright-mcp install-browser chromium`)으로 깐 그 판의 Chromium을 고른다. §9-1 HTTP 배치에서는 `--port <MCP 포트>`, `--host <브라우저 컨테이너의 제어망 주소>`, `--allowed-hosts <엔진이 접속하는 호스트:포트>`를 더한다. 세 값은 한 묶음이다. 엔진의 MCP `http` URL은 `http://<allowed-hosts 값>/...`이고, 그 이름이 `--host` 주소로 풀려야 한다. 셋 중 하나라도 어긋나면 실행기가 브라우저 컨테이너를 띄우지 않는다. §9-1 분리 대안에서는 MCP 쪽에 `--cdp-endpoint <Chromium 컨테이너의 CDP 주소>`를 더한다. 이 목록 밖의 옵션은 넣지 않는다. `--ignore-https-errors`(경계 CA를 신뢰시킨다), `--init-page`(Playwright 페이지 객체에 TypeScript 실행), `--caps`는 쓰지 않는다. `--allowed-origins`·`--blocked-origins`·`--secrets`는 README도 보안 경계가 아니라고 하므로 통제 근거로 쓰지 않는다.
+- **CLI 옵션**: 실행기(서버)가 정하고 모델이 바꿀 수 없는 옵션만 쓴다. 공통은 `--headless`, `--isolated`, `--no-webmcp`, `--browser chromium`, `--proxy-server <브라우저 입구>`, `--output-dir <브라우저 샌드박스 안>`이다. `--browser`의 기본값 `chrome`은 이미지 밖 Google Chrome(`/opt/google/chrome`)을 찾으므로, MCP 자신의 설치 명령(`playwright-mcp install-browser chromium`)으로 깐 그 판의 Chromium을 고른다. §9-1 배치에서는 `--port <MCP 포트>`, `--host <MCP 컨테이너의 제어망 주소>`, `--allowed-hosts <엔진이 접속하는 호스트:포트>`를 더한다. 세 값은 한 묶음이다. 엔진의 MCP `http` URL은 `http://<allowed-hosts 값>/...`이고, 그 이름이 `--host` 주소로 풀려야 한다. 셋 중 하나라도 어긋나면 MCP 컨테이너를 띄우지 않는다. MCP는 Chromium을 띄우지 않고 `--cdp-endpoint http://<Chromium 컨테이너의 CDP 연결망 IP>:<포트>`로 붙는다. 이름이 아니라 IP를 쓴다(Chromium DevTools가 IP·localhost가 아닌 Host 헤더를 거부한다). 이 배치에서 `--headless`·`--browser`는 Chromium 실행 조건을 바꾸지 않고(Chromium 실행기가 정한다), `--isolated`는 연결마다 새 브라우저 문맥을 만들며, `--proxy-server`는 그 문맥의 프록시가 된다(0.0.84가 `Target.createBrowserContext`의 `proxyServer`로 넘기고 `<-loopback>`을 붙인다). 그래서 MCP의 `--proxy-server`는 Chromium 실행기의 `--proxy-server`와 같아야 한다. Chromium 실행기(`deploy/product/explore-chromium.js`)는 `--proxy-server`와 `--cdp-listen` 두 옵션만 받는다. 이 목록 밖의 옵션은 넣지 않는다. `--ignore-https-errors`(경계 CA를 신뢰시킨다), `--init-page`(Playwright 페이지 객체에 TypeScript 실행), `--caps`는 쓰지 않는다. `--allowed-origins`·`--blocked-origins`·`--secrets`는 README도 보안 경계가 아니라고 하므로 통제 근거로 쓰지 않는다.
 - **거르는 곳**: 지금 MCP 연결(`server/mcpdiscover.go`·`server/assembly.go`)에는 도구 단위 허용 목록이 없다(`allowed_tools`·`disabled_tools`·`tool_filter` 검색 0건). 실행기가 MCP 도구를 모델에 노출하기 전에 이 목록으로 거른다(구현 최민준). 처음 받은 목록뿐 아니라 MCP 서버가 도구 목록 변경을 알릴 때마다 다시 거른다. 목록에 없는 도구는 버전이 바뀌어도 노출하지 않는다(기본 거부). 허용 이름과 같은 이름을 다른 출처(WebMCP 등)가 등록해도 MCP 서버 기본 도구가 아니면 노출하지 않는다. B18은 WebMCP 도구를 등록하는 fixture 페이지를 연 뒤에도 노출된 도구가 이 목록과 같은지 확인한다.
 
 ## 6. 중지·종료 신호
@@ -128,15 +128,18 @@
 
 2026-11-12부터 열린 항목은 최민준이 결정안을 정하고 이동찬이 리뷰한다(개발 권한 위임). 아래 1~6은 결정안이고, 리뷰로 확정되면 "제안" 표시를 뗀다.
 
-1. **배치 — 별도 컨테이너 세 개.**
+1. **배치 — 경계·Chromium·MCP를 별도 컨테이너로.**
    - 탐색 경계는 엔진 밖 별도 컨테이너(`explore-boundary`)다. 브라우저 입구와 직접 입구를 서로 다른 Docker 망의 리슨 주소로 둔다(구현 이동찬).
-   - 브라우저 샌드박스도 별도 컨테이너(`explore-browser`)다. Chromium과 `@playwright/mcp@0.0.84`를 HTTP 전송으로 띄우고, 엔진은 기존 MCP `http` 전송(`server/mcpdiscover.go`)으로 붙는다. 이 컨테이너는 엔진 제어망(엔진만)과 브라우저 입구망(경계만)에만 붙는다.
-   - 제어망 때문에 §5의 "경계 하나만 닿는 namespace"가 깨지지 않게 다음을 지킨다.
-     - 엔진은 제어망에서 MCP 클라이언트로 나가기만 하고 아무 포트도 열지 않는다(관리 API·LLM 게이트웨이 포함). 엔진의 리슨은 제어망 인터페이스에 묶지 않는다.
-     - MCP 서버는 `--host`를 제어망 주소 하나로 고정한다. loopback·`0.0.0.0`에 띄우지 않는다. Chromium은 loopback만 프록시를 거치지 않으므로, 같은 컨테이너의 페이지가 MCP 포트에 직접 닿는 길을 막기 위해서다. 제어망 주소로 가는 페이지 요청은 프록시(경계)를 거치고 내부 주소라 막힌다.
-     - `--allowed-hosts`는 접속하는 클라이언트를 고르는 옵션이 아니라 요청의 Host 헤더를 검사하는 옵션이다. 엔진이 MCP에 붙을 때 쓰는 이름(`explore-browser:<포트>`)만 넣는다.
-     - 이 조건을 지키기 어려우면, MCP 서버와 Chromium을 다른 컨테이너로 나누고 MCP가 `--cdp-endpoint`로 Chromium에 붙는 배치로 바꾼다. 그러면 Chromium 쪽 namespace는 경계와 MCP 컨테이너(Chromium 쪽에 리슨 없음)에만 닿는다.
-   - 대조 시험을 더한다. 브라우저 컨테이너에서 엔진 제어망 주소로 TCP·UDP 연결하면 실패한다(B09·B16). 대상 페이지 스크립트에서 MCP 포트로 연결하면 실패한다(B18). 그래서 MCP 서버가 엔진 환경 변수(제어 비밀)를 물려받지 않고(§5), 중지는 컨테이너 종료로 한다(§6). 지금 원본 MCP가 엔진의 stdio 자식으로 떠 환경을 통째로 물려받고 PID 하나만 죽는 문제를 이 배치로 없앤다.
+   - 브라우저 샌드박스는 컨테이너 두 개다(#485). Chromium 컨테이너(`explore-browser`)는 브라우저 입구망(경계만)과 CDP 연결망(MCP만)에만, MCP 컨테이너(`explore-mcp`, `@playwright/mcp@0.0.84` HTTP 전송)는 엔진 제어망(엔진만)과 CDP 연결망에만 붙는다. 같은 이미지를 다른 진입점으로 쓴다. 엔진은 기존 MCP `http` 전송(`server/mcpdiscover.go`)으로 `http://explore-mcp:<포트>/mcp`에 붙는다.
+   - 처음에는 Chromium과 MCP를 한 컨테이너에 두고 MCP를 제어망 주소 하나에만 띄웠다. 실측에서 같은 namespace의 native 자식이 제어망 주소의 MCP 포트에 닿았다(B16 FAIL, [결과](../evaluation/p1-browser-fixture-results.md)). 같은 namespace의 프로세스는 자기 인터페이스 주소에 닿으므로 `--host` 고정만으로는 막을 수 없어서 나눴다.
+   - 제어망·CDP 연결망 때문에 §5의 "경계 하나만 닿는 namespace"가 깨지지 않게 다음을 지킨다.
+     - 엔진은 제어망에서 MCP 클라이언트로 나가기만 하고 아무 포트도 열지 않는다(관리 API·LLM 게이트웨이 포함). 엔진의 리슨은 제어망 인터페이스에 묶지 않는다(#407).
+     - MCP 서버는 `--host`를 제어망 주소 하나로 고정한다. loopback·`0.0.0.0`·CDP 연결망 주소에는 띄우지 않는다.
+     - `--allowed-hosts`는 접속하는 클라이언트를 고르는 옵션이 아니라 요청의 Host 헤더를 검사하는 옵션이다. 엔진이 MCP에 붙을 때 쓰는 이름(`explore-mcp:<포트>`)만 넣는다.
+     - 이 판의 Chromium은 `--remote-debugging-address`를 무시하고 CDP를 자기 namespace의 loopback에만 연다(실측). 그래서 Chromium 실행기가 CDP 연결망 주소 하나에만 리슨하는 TCP 중계를 둔다(loopback·`0.0.0.0` 리슨은 거부). 페이지의 loopback 요청은 `--proxy-bypass-list=<-loopback>`(브라우저)과 Playwright의 문맥 기본값(`<-loopback>`)으로 경계를 거쳐 막히고, `--remote-allow-origins`를 주지 않아 페이지 origin의 CDP WebSocket도 거부된다.
+     - 남는 것: Chromium namespace 안의 native 프로세스는 loopback CDP로 Chromium을 조작할 수 있다. 그 프로세스가 닿는 망은 Chromium과 같다(브라우저 입구망·CDP 연결망). CDP 연결망의 상대는 리슨이 없는 MCP 컨테이너 주소뿐이다. 이전 배치는 Playwright가 `--remote-debugging-pipe`로 띄워 CDP TCP 리슨이 없었다.
+     - MCP 컨테이너의 프로세스는 엔진 제어망에 닿는다. 그 망에는 엔진 리슨이 없고, MCP 프로세스 안에서 코드를 실행하는 도구는 고정 목록(§5.1)에서 뺀다.
+   - 대조 시험(소유 fixture 하네스, `scripts/eval/browser_fixture_harness.py`): Chromium 컨테이너에서 MCP 제어 주소로 TCP·UDP, 엔진 제어망으로 TCP 연결하면 경로가 없다(B16). driver(엔진 역할)·경계에서 CDP에 닿지 않고, MCP 컨테이너에서 경계 브라우저 입구에 닿지 않는다. 양성 대조로 MCP→CDP, driver→MCP 연결을 같은 프로브로 확인한다. READY 전에 Chromium 컨테이너에 MCP 프로세스가, MCP 컨테이너에 Chromium 프로세스가 없는지 본다. 대상 페이지 스크립트에서 MCP 포트로 연결하면 실패한다(B18). MCP 서버가 엔진 환경 변수(제어 비밀)를 물려받지 않고(§5), 중지는 컨테이너 종료로 한다(§6, MCP부터). 지금 원본 MCP가 엔진의 stdio 자식으로 떠 환경을 통째로 물려받고 PID 하나만 죽는 문제를 이 배치로 없앤다.
    - 직접 샌드박스는 기존 Bash 격리 실행(`e2sandbox`)을 쓴다. 탐색 단계에서는 relay가 E② 대신 경계의 직접 입구로 가고, 진단 단계에서는 지금처럼 E②로 간다. 단계는 서버가 정하고 모델·Worker가 고르지 못한다.
    - 평가 회차에서는 경계가 계측기의 탐색 입구(별칭 `eval-meter-explore`, 별도 리슨)로, E②가 진단 입구(기존 `eval-meter-upstream`)로 보낸다. 계측기는 입구별 리슨으로 전달 행에 입구를 남긴다(프로토콜 §2 경로 분리).
 2. **외부 호스트 TLS — 가로챈다.** 경계가 외부 호스트도 TLS를 가로채고, 대상 쪽 인증서는 시스템 루트로 검증한다. 그래야 메서드·`Sec-Fetch-*`를 보고 §3의 외부 이동·쓰기 차단을 할 수 있다. 브라우저는 승인 대상 때문에 이미 경계 CA를 신뢰하므로 추가 신뢰 설정은 없다.

@@ -36,7 +36,114 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Call.Counts.ForwardAttempted = 1
 		}, true},
 		{"unknown-count", func(r *e2runner.TrustedResult) { r.Call.Counts.Unknown = 1 }, false},
-		{"execution-unknown", func(r *e2runner.TrustedResult) { r.Execution.Counts.Unknown = 1 }, false},
+		// 실행 전체 누계의 결과 불명은 다른 intent의 것이다. 이 호출의 마감을 막지 않는다(C03).
+		{"other-intent-unknown", func(r *e2runner.TrustedResult) { r.Execution.Counts.Unknown = 1 }, true},
+		// 같은 intent의 앞선 결과 불명 뒤에는 더 보내지 않는다(C01). 그 뒤 결과 불명 아닌 호출은 받지 않는다.
+		{"same-intent-unknown-before", func(r *e2runner.TrustedResult) { r.Execution.IntentCounts.Unknown = 1 }, false},
+		{"result-unknown", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Call.Counts.ForwardAttempted = 1
+			r.Call.Reason = e2proxy.Unknown
+			r.Execution.IntentCounts.Unknown = 1
+		}, true},
+		{"result-unknown-then-complete", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Call.Counts.ForwardAttempted = 2
+		}, true},
+		{"result-unknown-then-connect-failure", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Call.Counts.Transient = 1
+			r.Call.Reason = e2proxy.TransportFailed
+		}, true},
+		{"result-unknown-audit-incomplete", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Execution.AuditComplete = false
+		}, false},
+		{"result-unknown-audit-failed", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Call.Reason = e2proxy.AuditFailed
+		}, false},
+		{"result-unknown-revoked", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Call.Reason = e2proxy.Revoked
+		}, false},
+		{"connect-failure", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Call.Counts.Transient = 1
+			r.Call.Counts.ForwardAttempted = 1
+			r.Call.Reason = e2proxy.TransportFailed
+			r.ExitCode = 7
+		}, true},
+		{"connect-failure-then-complete", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Call.Counts.Transient = 1
+		}, true},
+		// 송신 실패 수가 없는 transient_failure는 프록시 장애·명령 시간 초과라 원인을 나눌 수 없다.
+		{"transient-without-connect-failure", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Call.Reason = e2proxy.TransportFailed
+		}, false},
+		{"transient-with-unknown", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Call.Counts.Transient = 1
+			r.Call.Counts.Unknown = 1
+		}, false},
+		{"transient-after-same-intent-unknown", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Call.Counts.Transient = 1
+			r.Execution.IntentCounts.Unknown = 1
+		}, false},
+		{"transient-expired", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Call.Counts.Transient = 1
+			r.Call.Reason = e2proxy.Expired
+		}, false},
+		{"transient-audit-failed", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Call.Counts.Transient = 1
+			r.Call.Reason = e2proxy.AuditFailed
+		}, false},
+		// 예산 소진·송신 시도 상한은 그 요청만 보내지 않은 거부다(C01). 거부 수가 있을 때 정책 제한으로만 받는다.
+		{"budget-exhausted-not-sent", func(r *e2runner.TrustedResult) {
+			r.Classification = "policy_not_executed"
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, true},
+		{"budget-exhausted-after-send", func(r *e2runner.TrustedResult) {
+			r.Classification = "partial_policy_denial"
+			r.Call.Counts.Denied = 1
+			r.Call.Counts.ForwardAttempted = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, true},
+		{"attempt-limit-after-send", func(r *e2runner.TrustedResult) {
+			r.Classification = "partial_policy_denial"
+			r.Call.Counts.Denied = 1
+			r.Call.Counts.ForwardAttempted = 1
+			r.Call.Reason = e2proxy.AttemptLimit
+		}, true},
+		{"budget-exhausted-without-denial", func(r *e2runner.TrustedResult) { r.Call.Reason = e2proxy.BudgetExhausted }, false},
+		{"budget-exhausted-as-unsupported", func(r *e2runner.TrustedResult) {
+			r.Classification = "unsupported"
+			r.Call.Counts.Unsupported = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, false},
+		{"result-unknown-then-budget-exhausted", func(r *e2runner.TrustedResult) {
+			r.Classification = "result_unknown"
+			r.Call.Counts.Unknown = 1
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, true},
+		{"expired-denial", func(r *e2runner.TrustedResult) {
+			r.Classification = "policy_not_executed"
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.Expired
+		}, false},
 		{"audit-incomplete", func(r *e2runner.TrustedResult) { r.Execution.AuditComplete = false }, false},
 		{"audit-failed", func(r *e2runner.TrustedResult) { r.Call.Reason = e2proxy.AuditFailed }, false},
 		{"unknown-class", func(r *e2runner.TrustedResult) { r.Classification = "future-success" }, false},

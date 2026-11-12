@@ -1,6 +1,7 @@
 package e2proxy
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -86,9 +87,22 @@ func TestPreserveWithheldResponsesUseDeclaredUnknownCeiling(t *testing.T) {
 		}
 	}
 	response, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
-	if err == nil || response != nil || !receipt.NotSent || received.Load() != 3 ||
-		e.Snapshot().Counts.Unknown != 3 || e.Snapshot().Reason != UnknownLimit {
-		t.Fatal("unknown ceiling did not stop the next target request")
+	if !errors.Is(err, ErrClosed) || response != nil || !receipt.NotSent || receipt.Reason != UnknownLimit || received.Load() != 3 ||
+		e.Snapshot().Counts.Unknown != 3 {
+		t.Fatal("unknown ceiling did not stop the call's next target request")
+	}
+	// 상한은 그 call만 막는다. 실행과 다른 call은 계속 보낼 수 있다(C01).
+	if view := e.Snapshot(); view.State != "active" || view.Reason != Complete {
+		t.Fatalf("call unknown ceiling stopped the whole execution: %+v", view)
+	}
+	next, err := e.BeginCall(t.Context(), "after-unknown-ceiling")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = next.Close(t.Context()) }()
+	if response, receipt, err = next.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed")); err == nil || response != nil ||
+		receipt.Reason != Unknown || received.Load() != 4 {
+		t.Fatal("new call was not admitted after another call's unknown ceiling")
 	}
 }
 

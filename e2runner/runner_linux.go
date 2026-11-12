@@ -483,6 +483,10 @@ func (s *runningCall) classification(trusted TrustedResult) string {
 	if counts.ForwardAttempted == 0 && counts.Unsupported > 0 {
 		return "unsupported"
 	}
+	// 연결을 맺지 못한 송신 실패는 결과 불명이 아니지만(C02) 셸 종료 코드가 0이어도 완료가 아니다.
+	if counts.Transient > 0 {
+		return "transient_failure"
+	}
 	if s.getTermination() == "proxy_unavailable" {
 		return "transient_failure"
 	}

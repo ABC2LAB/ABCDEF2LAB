@@ -72,8 +72,10 @@ COPY --from=acceptance-build /out/product-fixture /app/product-fixture
 USER 1000:1000
 ENTRYPOINT ["/app/product-fixture"]
 
-# 탐색 브라우저 샌드박스(docs/contracts/exploration-boundary.md §9-1). Chromium과 Playwright MCP만 넣고
-# 엔진 바이너리·제어 비밀은 넣지 않는다. 엔진은 제어망에서 MCP HTTP로 붙고, 브라우저는 탐색 경계의 브라우저 입구로만 나간다.
+# 탐색 브라우저 샌드박스(docs/contracts/exploration-boundary.md §9-1 분리 배치). Chromium과 Playwright MCP만 넣고
+# 엔진 바이너리·제어 비밀은 넣지 않는다. 같은 이미지를 두 컨테이너가 쓴다. explore-browser(기본 ENTRYPOINT)는 Chromium만
+# 띄워 탐색 경계의 브라우저 입구로만 나가고, explore-mcp(ENTRYPOINT /app/explore-mcp-entrypoint)는 엔진 제어망에서 MCP HTTP를
+# 열고 CDP 연결망으로 Chromium에 붙는다. MCP와 Chromium은 같은 network namespace에 있지 않다.
 # 기본 빌드 대상은 마지막 product 단계라 이 단계는 `--target explore-browser`로만 만든다.
 FROM node:26-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS explore-browser
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libnss3-tools \
@@ -91,6 +93,11 @@ LABEL org.opencontainers.image.source="https://github.com/ABC2LAB/ABCDEF2LAB" \
       org.opencontainers.image.licenses="AGPL-3.0" \
       org.opencontainers.image.description="ABC2LAB exploration browser sandbox, derived from jiwoochris/artex-global"
 COPY --chmod=755 deploy/product/explore-browser-entrypoint.sh /app/explore-browser-entrypoint
+COPY --chmod=755 deploy/product/explore-mcp-entrypoint.sh /app/explore-mcp-entrypoint
+COPY --chmod=644 deploy/product/explore-chromium.js /app/explore-chromium.js
+# Chromium 컨테이너는 Playwright 없이 Chromium을 직접 띄운다. MCP 고정판 Playwright가 찾는 그 판의 실행 파일을 고정 경로로 둔다.
+RUN chromium="$(node -e "process.stdout.write(require('/usr/local/lib/node_modules/@playwright/mcp/node_modules/playwright-core').chromium.executablePath())")" \
+    && test -x "$chromium" && ln -s "$chromium" /app/chromium
 USER 1000:1000
 ENTRYPOINT ["/app/explore-browser-entrypoint"]
 

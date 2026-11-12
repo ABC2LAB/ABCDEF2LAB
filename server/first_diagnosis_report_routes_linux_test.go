@@ -54,7 +54,7 @@ func TestFirstDiagnosisReportRoutesOwnedPostgres(t *testing.T) {
 		{"missing-asset-lock", "REVOKE UPDATE(id) ON assets FROM ", "GRANT UPDATE(id) ON assets TO "},
 		{"missing-asset-link-lock", "REVOKE UPDATE(task_id) ON task_asset_links FROM ", "GRANT UPDATE(task_id) ON task_asset_links TO "},
 		{"missing-anchor-lock", "REVOKE UPDATE(node_id) ON exploration_anchors FROM ", "GRANT UPDATE(node_id) ON exploration_anchors TO "},
-		{"extra-asset-update", "GRANT UPDATE(technologies) ON assets TO ", "REVOKE UPDATE(technologies) ON assets FROM "},
+		{"extra-asset-update", "GRANT UPDATE(type) ON assets TO ", "REVOKE UPDATE(type) ON assets FROM "},
 		{"extra-link-update", "GRANT UPDATE(asset_id) ON task_asset_links TO ", "REVOKE UPDATE(asset_id) ON task_asset_links FROM "},
 		{"extra-anchor-update", "GRANT UPDATE(asset_id) ON exploration_anchors TO ", "REVOKE UPDATE(asset_id) ON exploration_anchors FROM "},
 		{"missing-archive-read", "REVOKE SELECT ON task_archives FROM ", "GRANT SELECT ON task_archives TO "},

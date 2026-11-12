@@ -125,6 +125,10 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 실제 설치 권한이 서버의 일반 HTTP 실행 역할 검사(진단 Worker insert_assets의 자산 쓰기 포함, C24)를 통과한다.
+	if err := server.CheckFirstDiagnosisHTTPRuntimeDatabase(t.Context(), runtimePool); err != nil {
+		t.Fatal("설치된 실행 역할이 일반 HTTP 실행 검사를 통과하지 않음", err)
+	}
 	var selectAllowed, writeAllowed bool
 	if apiPool.QueryRow(`SELECT has_table_privilege(current_user,'diagnostic_captures_v1','SELECT'),has_table_privilege(current_user,'diagnostic_captures_v1','INSERT,UPDATE,DELETE,TRUNCATE')`).Scan(&selectAllowed, &writeAllowed) != nil || !selectAllowed || writeAllowed {
 		t.Fatal("보고서 역할의 캡처 읽기·쓰기 권한 분리 실패")
