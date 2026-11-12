@@ -9,6 +9,7 @@ import { Fragment, type ReactNode, useMemo, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { clockOf, planState } from "../../live/map";
+import { maskSecrets } from "../../live/mask";
 import { NotYet } from "../../live/parts";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
@@ -258,8 +259,13 @@ function EndpointDetail({ endpoint, back }: { endpoint: WorkflowEndpoint | null;
         <div className={s.isec}>
           {e.request || e.response ? (
             <>
-              {e.request ? <CodeCard title="요청" src="실제 관찰" text={e.request} id={`ep-req-${e.id}`} /> : null}
-              {e.response ? <CodeCard title="응답" src="실제 관찰" text={e.response} id={`ep-res-${e.id}`} /> : null}
+              {/* 서버가 가린 값이지만 화면 쪽에서도 한 번 더 가린다 (대시보드와 같은 방어 · 리뷰 #473) */}
+              {e.request ? (
+                <CodeCard title="요청" src="실제 관찰" text={maskSecrets(e.request)} id={`ep-req-${e.id}`} />
+              ) : null}
+              {e.response ? (
+                <CodeCard title="응답" src="실제 관찰" text={maskSecrets(e.response)} id={`ep-res-${e.id}`} />
+              ) : null}
             </>
           ) : (
             <p className={s.empty}>저장된 요청 · 응답이 없습니다.</p>
@@ -335,10 +341,20 @@ function LogDetail({
         </p>
         <div className={s["lgx-ex"]}>
           {endpoint.request ? (
-            <CodeCard title="요청" src="경로의 마지막 관찰" text={endpoint.request} id={`lg-req-${endpoint.id}`} />
+            <CodeCard
+              title="요청"
+              src="경로의 마지막 관찰"
+              text={maskSecrets(endpoint.request)}
+              id={`lg-req-${endpoint.id}`}
+            />
           ) : null}
           {endpoint.response ? (
-            <CodeCard title="응답" src="경로의 마지막 관찰" text={endpoint.response} id={`lg-res-${endpoint.id}`} />
+            <CodeCard
+              title="응답"
+              src="경로의 마지막 관찰"
+              text={maskSecrets(endpoint.response)}
+              id={`lg-res-${endpoint.id}`}
+            />
           ) : null}
         </div>
       </>

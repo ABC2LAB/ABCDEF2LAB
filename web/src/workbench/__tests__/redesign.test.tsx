@@ -340,6 +340,26 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
     expect(within(sent).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
   });
 
+  const openSecretRow = () => {
+    const rows = mountLog(
+      [{ at: "2026-11-11T01:00:01Z", kind: "request", method: "GET", path: "/api/a", status: 200 }],
+      {
+        ...ep("a", "GET", "/api/a", "attested_read"),
+        status: 200,
+        request: "GET /api/a HTTP/1.1\nCookie: session=synthetic-cookie-1",
+        response: "HTTP/1.1 200 OK\nSet-Cookie: session=synthetic-cookie-2",
+      },
+    );
+    fireEvent.click(rows[0]);
+    return screen.getByRole("region", { name: "GET /api/a 상세" });
+  };
+
+  it("펼친 칸의 원문은 화면에서도 비밀 값을 가린다 (리뷰 #473 비차단)", () => {
+    const box = openSecretRow();
+    expect(box).not.toHaveTextContent("synthetic-cookie");
+    expect(box).toHaveTextContent("[REDACTED]");
+  });
+
   it("보냈지만 응답을 못 받은 줄(status 0 · 결과 불명)을 '보내지 않은 요청'으로 단정하지 않는다", () => {
     // 서버 Controller.After: ForwardAttempted · RequestWritten = true, ResponseReceived = false, Reason = Unknown,
     // StatusCode = 0 → counts.sent · attempted · unknown 이 오르지만 이벤트 status 는 omitempty 로 빠진다
