@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
@@ -1110,5 +1111,40 @@ func TestE2HTTPIntentOutcomeLocalRefusalAndStickyUnsupported(t *testing.T) {
 				t.Fatalf("runner calls=%d error=%v want=%v", calls, err, tc.want)
 			}
 		})
+	}
+}
+
+// toolLoopProvider는 매 호출 같은 도구를 부르고 호출 수를 센다(마무리 요청에서도 멈추지 않는 모델).
+type toolLoopProvider struct {
+	tool  string
+	calls int
+}
+
+func (p *toolLoopProvider) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	p.calls++
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: fmt.Sprintf("loop-%d", p.calls), Name: p.tool, Input: json.RawMessage(`{}`)}}}, "tool_use", llm.Usage{}, nil
+}
+
+func (*toolLoopProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		yield(llm.StreamEvent{}, errors.New("unexpected streaming"))
+	}
+}
+
+// 마무리 단계(C26)는 Plan당 턴 상한 밖에서 원본처럼 마무리 턴 수(에이전트 설정, 기본 10)까지만 돈다. 모델이 마무리
+// 요청에서도 도구를 계속 불러도 Plan 상한 + 마무리 턴 수에서 멈춘다.
+func TestE2HTTPPlannerWrapUpStopsAtWrapUpTurns(t *testing.T) {
+	provider := &toolLoopProvider{tool: "node_detail"}
+	ctx := WithE2HTTPPlannerLimits(context.Background(), E2HTTPPlannerLimits{MaxTurns: 2})
+	opts := agentcore.Options{Provider: provider, Tools: []actool.CoreTool{e2WorkerFixtureTool("node_detail", nil)}, PermissionMode: permission.ModeBypass, NonStreaming: true}
+	if err := constrainE2HTTPPlannerOptions(ctx, &opts); err != nil || opts.Settlement == nil || opts.Settlement.MaxTurns <= 0 {
+		t.Fatalf("err=%v settlement=%+v", err, opts.Settlement)
+	}
+	session := agentcore.NewSession(opts)
+	defer session.Close()
+	for range session.Prompt(context.Background(), "synthetic planning") {
+	}
+	if want := 2 + opts.Settlement.MaxTurns; provider.calls != want || opts.Settlement.MaxTurns != resolveWrapupTurns(ctx, "planner") {
+		t.Fatalf("model calls=%d want=%d wrap-up turns=%d", provider.calls, want, opts.Settlement.MaxTurns)
 	}
 }

@@ -30,6 +30,23 @@ func withDiagnosticTools(ctx context.Context, tools []actool.CoreTool, role stri
 	}
 	return context.WithValue(ctx, diagnosticToolsKey{}, d), wrapped
 }
+
+// withDiagnosticSDKTool은 SDK가 세션 안에서 직접 붙이는 도구(TodoWrite)를 진단 기록의 등록 도구로 알린다. SDK가
+// 실행하므로 감싸지 않아 tool_started·tool_finished는 없고 tool_selected·tool_schema_checked만 남는다.
+func withDiagnosticSDKTool(ctx context.Context, t actool.CoreTool) context.Context {
+	d, ok := ctx.Value(diagnosticToolsKey{}).(diagnosticTools)
+	if !ok || t == nil {
+		return ctx
+	}
+	tools := make(map[string]actool.CoreTool, len(d.tools)+1)
+	for name, known := range d.tools {
+		tools[name] = known
+	}
+	tools[t.Name()] = t
+	d.tools = tools
+	return context.WithValue(ctx, diagnosticToolsKey{}, d)
+}
+
 func diagnosticAgentEvent(ctx context.Context, e diagnosticlog.Event) {
 	ri := RunInfo{}
 	if ctx != nil {
