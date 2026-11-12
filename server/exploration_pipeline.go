@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +40,63 @@ type ExplorationPipelineResult struct {
 	Status      string
 	Reason      string
 	ModelReason harness.TerminalReason
+	// Charge는 이 탐색이 회차 대상 요청 예산에서 쓴 몫이다. 진단 E②는 N에서 이 몫을 뺀 나머지만 받는다(P1-E).
+	Charge ExplorationCharge
+}
+
+// chargeRecordingBoundary는 호스트 경계를 감싸 열림 여부와 경계가 확정한 마감 상태만 기록한다. 송신·판정은
+// 하지 않는다. 열지 않았으면 몫이 0이고, 열었으면 검증한 마감 상태의 대상 전달 수만 확정 몫으로 쓴다.
+type chargeRecordingBoundary struct {
+	inner   exploration.Boundary
+	binding exploration.Binding
+	mu      sync.Mutex
+	opened  bool
+	final   *exploration.State
+}
+
+func (b *chargeRecordingBoundary) Open(ctx context.Context, binding exploration.Binding) (exploration.Lease, error) {
+	lease, err := b.inner.Open(ctx, binding)
+	if lease == nil {
+		// 경계 계약상 lease가 없으면 열리지 않은 것이다. 오류와 함께 lease가 오면 열린 것으로 보고 마감을 기다린다.
+		return nil, err
+	}
+	b.mu.Lock()
+	b.opened = true
+	b.mu.Unlock()
+	return &chargeRecordingLease{inner: lease, owner: b}, err
+}
+
+func (b *chargeRecordingBoundary) charge() ExplorationCharge {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.opened {
+		return ExplorationCharge{Known: true}
+	}
+	if b.final == nil {
+		return ExplorationCharge{}
+	}
+	return ExplorationCharge{Requests: b.final.TargetRequests, Known: true}
+}
+
+type chargeRecordingLease struct {
+	inner exploration.Lease
+	owner *chargeRecordingBoundary
+}
+
+func (l *chargeRecordingLease) Status(ctx context.Context) (exploration.State, error) {
+	return l.inner.Status(ctx)
+}
+
+func (l *chargeRecordingLease) Close(ctx context.Context, reason exploration.Reason) (exploration.State, error) {
+	state, err := l.inner.Close(ctx, reason)
+	// 새 송신이 끝났다고 경계가 확정한 상태만 몫으로 쓴다. 활성·연결 잔류·결속 불일치는 모르는 몫으로 남긴다.
+	if err == nil && !state.Active && state.ActiveConnections == 0 && state.Validate(l.owner.binding) == nil {
+		l.owner.mu.Lock()
+		final := state
+		l.owner.final = &final
+		l.owner.mu.Unlock()
+	}
+	return state, err
 }
 
 func explorationFlowBinding(b exploration.Binding, digest string) diagnosisflow.ExplorationBinding {
@@ -67,11 +125,12 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 	if o.Workflow.CheckExplorationTarget(ctx, b, o.TargetURL) != nil {
 		return out, exploration.ErrBinding
 	}
+	// 경계를 열기 전의 NOT_RUN은 대상 송신이 없으므로 몫 0이 확정이다. 경계를 연 뒤의 경로는 아래 recorder가 덮어쓴다.
 	skip := func(reason string) (ExplorationPipelineResult, error) {
 		if e := o.Workflow.RecordExplorationUnavailable(ctx, reason); e != nil {
 			return out, e
 		}
-		return ExplorationPipelineResult{Status: "NOT_RUN", Reason: reason}, nil
+		return ExplorationPipelineResult{Status: "NOT_RUN", Reason: reason, Charge: ExplorationCharge{Known: true}}, nil
 	}
 	if o.OpenHost == nil {
 		return skip("boundary_unavailable")
@@ -90,6 +149,10 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 		exploration.ReportFailure("host_capabilities", exploration.ErrUnavailable)
 		return skip("runtime_unavailable")
 	}
+	recorder := &chargeRecordingBoundary{inner: host.Session.Boundary, binding: o.Binding}
+	host.Session.Boundary = recorder
+	// 아래 세션 마감 defer보다 먼저 등록해 마지막에 돈다. 어떤 반환 경로든 경계가 확정한 몫만 싣는다.
+	defer func() { out.Charge = recorder.charge() }()
 	host.Session.Worker = worker
 	host.Session.Binding = o.Binding
 	var sessionRef atomic.Pointer[ExplorationSession]

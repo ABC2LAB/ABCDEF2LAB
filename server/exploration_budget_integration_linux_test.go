@@ -65,9 +65,9 @@ func firstDiagnosisSupervisorExplorationBudget(t *testing.T, manager *Manager, i
 			acquired.Add(1)
 			return acquire(ctx, request)
 		}
-		e2.options.Exploration = func(ctx context.Context, actual *Task) error {
-			_, err := host.RunExplorationPipeline(ctx, actual, options)
-			return err
+		e2.options.Exploration = func(ctx context.Context, actual *Task) (ExplorationCharge, error) {
+			result, err := host.RunExplorationPipeline(ctx, actual, options)
+			return result.Charge, err
 		}
 		if err = supervisor.Run(t.Context(), task.ID, 0, ""); err != nil {
 			snap, _ := options.Workflow.Snapshot()
