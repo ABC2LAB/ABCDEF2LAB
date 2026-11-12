@@ -176,7 +176,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	releaseTarget := make(chan struct{})
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		if mode == "cancel" || mode == "user-stop" {
+		if mode == "cancel" || mode == "user-stop" || mode == "planner-kill" {
 			select {
 			case targetEntered <- struct{}{}:
 			default:
@@ -363,6 +363,11 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		provider.assets = []map[string]any{{"type": "endpoint", "url": approvedAsset, "method": "GET"}, {"type": "endpoint", "url": otherAsset, "method": "GET"}}
 		provider.command = "curl --silent --show-error --max-time 5 " + ruleOrigin + "/allowed"
 	}
+	var killIntent atomic.Int64
+	if mode == "planner-kill" {
+		// Worker의 요청이 대상에 붙잡혀 있는 동안 Planner가 깨어나 kill_work로 그 작업을 멈춘다(C27).
+		plannerProvider.killIntent = killIntent.Load
+	}
 	if mode == "goal-met" {
 		// Planner가 prove_goal로 하나뿐인 목표를 달성시키면 작업이 done이 되고 실행은 정상 마감된다(C26).
 		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
@@ -430,6 +435,27 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		case runErr = <-done:
 		case <-ctx.Done():
 			t.Fatal("실제 Supervisor Run 취소가 반환하지 않음")
+		}
+	} else if mode == "planner-kill" {
+		done := make(chan error, 1)
+		go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
+		select {
+		case <-targetEntered:
+		case <-ctx.Done():
+			t.Fatal("Planner 동시 실행 시험의 실제 대상 요청이 시작되지 않음")
+		}
+		// Worker의 Bash가 대상에서 붙잡혀 있다. 그 intent를 Planner에 알리고 Planner를 깨운다. C27 전에는 이 라운드가
+		// 실행 중 작업 때문에 건너뛰어진다.
+		var running int64
+		if err := installer.QueryRowContext(ctx, "SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='running'", task.ExpID).Scan(&running); err != nil {
+			t.Fatal("실행 중 intent 조회 실패", err)
+		}
+		killIntent.Store(running)
+		task.Notify()
+		select {
+		case runErr = <-done:
+		case <-ctx.Done():
+			t.Fatal("Planner 동시 실행 시험의 Supervisor Run이 반환하지 않음")
 		}
 	} else if mode == "planner-only" {
 		short, stopRun := context.WithTimeout(ctx, 4*time.Second)
@@ -607,6 +633,36 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		if ready, got, err := supervisor.generalCompletion(ctx, runtime.server, task); err != nil || !ready || got.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) {
 			t.Fatalf("되돌린 결과 불명 intent를 다시 마감하지 않음 ready=%v result=%+v err=%v", ready, got, err)
+		}
+		return
+	}
+	if mode == "planner-kill" {
+		// Planner가 실행 중 작업을 멈췄고, 진행 중이던 송신은 결과 불명이라 그 intent만 결과 불명으로 끝난다(C01·C08).
+		// 대상 연결은 E② 요청 시간 상한 전에 끊긴다. 결과 불명 송신은 다시 보내지 않는다.
+		result := supervisor.RunResult()
+		var intentState, blockedReason string
+		if err := installer.QueryRowContext(ctx, "SELECT state,COALESCE(blocked_reason,'') FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&intentState, &blockedReason); err != nil {
+			t.Fatal("멈춘 intent 조회 실패", err)
+		}
+		exited := false
+		select {
+		case <-targetExited:
+			exited = true
+		default:
+		}
+		if runErr != nil || !plannerProvider.killed || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomePartial ||
+			result.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) || hits.Load() != 1 || !exited || intentState != "blocked" || blockedReason != "e2_http_result_unknown" {
+			var trusted []string
+			for _, r := range runtime.host.Runtime().Results(task.ID) {
+				trusted = append(trusted, fmt.Sprintf("class=%s final=%v bash=%v pdrain=%v xdrain=%v exit=%d reason=%s counts=%+v callfinal=%v audit=%v", r.Classification, r.Final, r.ProcessBashExited, r.ProcessDrained, r.ProxyDrained, r.ExitCode, r.Call.Reason, r.Call.Counts, r.Call.Final, r.Call.AuditComplete))
+			}
+			var calls []string
+			if execution, ok := runtime.host.Runtime().Execution(task.ID); ok && execution != nil {
+				for _, c := range execution.Calls() {
+					calls = append(calls, fmt.Sprintf("final=%v audit=%v reason=%s counts=%+v", c.Final, c.AuditComplete, c.Reason, c.Counts))
+				}
+			}
+			t.Fatalf("실행 중 작업을 Planner가 멈추지 못함 err=%v killed=%v kill_result=%q result=%+v hits=%d exited=%v intent=%s/%s trusted=%v calls=%v", runErr, plannerProvider.killed, plannerProvider.killResult, result, hits.Load(), exited, intentState, blockedReason, trusted, calls)
 		}
 		return
 	}
