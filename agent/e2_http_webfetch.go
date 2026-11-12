@@ -30,7 +30,9 @@ var e2HTTPWebFetchStaticExts = map[string]bool{
 // newE2HTTPWebFetchTool은 원본 WebFetch(이름·입력 형식이 같다)의 진단 판이다(루프 복원 결정안 §2). 가져오기는
 // 넘겨받은 E② Bash 도구로 curl을 돌려 같은 샌드박스 실행기·intent 예약·감사·호출 상한을 지난다. 서버 프로세스가
 // 대상에 직접 보내지 않는다. 호스트는 가려진 결과의 HTML을 읽기 쉬운 글로 바꾸기만 하고, trusted 관찰은 그대로 둔다.
-func newE2HTTPWebFetchTool(bash actool.CoreTool) actool.CoreTool {
+// redact는 변환한 글에 한 번 더 건다. 파싱이 HTML 엔티티를 풀면, 엔티티로 인코딩돼 정확한 값 가림을 지나간 자격값이
+// 평문으로 나오기 때문이다.
+func newE2HTTPWebFetchTool(bash actool.CoreTool, redact func([]byte) []byte) actool.CoreTool {
 	return actool.Build(actool.Spec{
 		Name:        "WebFetch",
 		Description: "Fetches an HTTP(S) HTML page, documentation page, or API response through the bound E2 execution and returns its content as Markdown in tool_output, with the same trusted call fields as Bash. Do not use this tool for static assets (JavaScript, CSS, source maps, images, fonts, audio, video). Set extract=true to list comments, scripts, endpoints, forms (including hidden inputs), links, and meta tags. Large responses may be truncated. Each call is one E2 request.",
@@ -67,7 +69,7 @@ func newE2HTTPWebFetchTool(bash actool.CoreTool) actool.CoreTool {
 			if err != nil || result.IsError {
 				return result, err
 			}
-			return e2HTTPWebFetchRender(result, in.Extract), nil
+			return e2HTTPWebFetchRender(result, in.Extract, redact), nil
 		},
 	})
 }
@@ -89,7 +91,7 @@ func e2HTTPWebFetchURL(raw string) (string, bool) {
 
 // e2HTTPWebFetchRender는 Bash 결과 JSON의 tool_output(가려진 curl 출력: 헤더 + 본문)만 바꾼다. trusted 관찰과
 // worker_control은 그대로 둔다. 바꿀 수 없으면 원래 결과를 돌려준다.
-func e2HTTPWebFetchRender(result actool.Result, extract bool) actool.Result {
+func e2HTTPWebFetchRender(result actool.Result, extract bool, redact func([]byte) []byte) actool.Result {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal([]byte(result.Flatten()), &fields) != nil {
 		return result
@@ -111,6 +113,10 @@ func e2HTTPWebFetchRender(result actool.Result, extract bool) actool.Result {
 	if status != "" {
 		rendered = status + "\n\n" + rendered
 	}
+	if redact == nil {
+		return result
+	}
+	rendered = string(redact([]byte(rendered)))
 	encoded, err := json.Marshal(rendered)
 	if err != nil {
 		return result

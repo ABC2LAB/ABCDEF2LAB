@@ -539,7 +539,7 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	}
 	// 원본 Worker와 같은 도구 목록에서 진단 프로필로 고른다. 대상으로 보내는 도구는 E② 판으로만 채운다.
 	base := append([]actool.CoreTool(nil), w.extraTools...)
-	bindings := map[string]actool.CoreTool{"Bash": bash, "WebFetch": newE2HTTPWebFetchTool(bash)}
+	bindings := map[string]actool.CoreTool{"Bash": bash, "WebFetch": newE2HTTPWebFetchTool(bash, execution.RedactOutput)}
 	var toolset *ToolSet
 	if ts != nil {
 		toolset = newE2HTTPWorkerToolSet(ts, as, name, taskID, intent.ID)
