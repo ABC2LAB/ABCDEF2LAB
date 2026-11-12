@@ -41,15 +41,33 @@ type openRouterManifest struct {
 	MaxConcurrent        int64     `json:"max_concurrent"`
 	InputPrice           int64     `json:"max_input_price_usd_micros_per_million"`
 	OutputPrice          int64     `json:"max_output_price_usd_micros_per_million"`
+	// v2 전용. 연속 일시 오류(429·5xx·연결 실패)가 이 수에 닿으면 정책을 막는다(P3 결정안 C06).
+	// v1은 이 키가 없고 1로 본다(첫 일시 오류에 막는 이전 동작).
+	MaxConsecutiveTransient int64 `json:"max_consecutive_transient_errors,omitempty"`
+}
+
+// openRouterManifestKeys는 판별 manifest 키 수다. v2는 연속 일시 오류 상한 하나가 더 있다.
+var openRouterManifestKeys = map[int]int{1: 21, 2: 22}
+
+// openRouterMaxConsecutiveTransient는 v2 상한의 형식 범위다. 실제 값은 설치자가 manifest에 고정한다.
+const openRouterMaxConsecutiveTransient = 16
+
+func (m openRouterManifest) transientLimit() int64 {
+	if m.Version == 1 {
+		return 1
+	}
+	return m.MaxConsecutiveTransient
 }
 
 // OpenRouterPolicy의 설정은 비공개이며 모든 클라이언트가 같은 예약 예산을 공유한다.
 type OpenRouterPolicy struct {
-	manifest  openRouterManifest
-	mu        sync.Mutex
-	usage     OpenRouterUsage
-	active    int64
-	blocked   bool
+	manifest openRouterManifest
+	mu       sync.Mutex
+	usage    OpenRouterUsage
+	active   int64
+	blocked  bool
+	// 연속 일시 오류 수. 정상 응답 하나가 0으로 되돌린다.
+	transient int64
 	started   bool
 	consume   func() error
 	available func() error
@@ -111,7 +129,7 @@ func parseOpenRouterManifestAt(data []byte, now time.Time) (*OpenRouterPolicy, e
 	d := json.NewDecoder(bytes.NewReader(data))
 	// 중복 키와 대소문자 별칭도 거부한다.
 	var raw = map[string]json.RawMessage{}
-	if !manifestObject(d, 21, func(k string) bool {
+	if !manifestObjectRange(d, openRouterManifestKeys[1], openRouterManifestKeys[2], func(k string) bool {
 		var v json.RawMessage
 		if d.Decode(&v) != nil {
 			return false
@@ -139,7 +157,12 @@ func parseOpenRouterManifestAt(data []byte, now time.Time) (*OpenRouterPolicy, e
 			return nil, ErrOpenRouterPolicy
 		}
 	}
-	if m.Version != 1 || m.ProfileID <= 0 || m.Format != "openai" || m.BaseURL != OpenRouterBaseURL || m.Model != OpenRouterModel ||
+	if keys, known := openRouterManifestKeys[m.Version]; !known || len(raw) != keys ||
+		m.Version == 1 && m.MaxConsecutiveTransient != 0 ||
+		m.Version == 2 && (m.MaxConsecutiveTransient < 1 || m.MaxConsecutiveTransient > openRouterMaxConsecutiveTransient) {
+		return nil, ErrOpenRouterPolicy
+	}
+	if m.ProfileID <= 0 || m.Format != "openai" || m.BaseURL != OpenRouterBaseURL || m.Model != OpenRouterModel ||
 		!validProfileValue(m.ExpectedProviderName, 128) || !openRouterSlug.MatchString(m.ProviderSlug) || !openRouterSlug.MatchString(m.ApprovalID) || !m.StrictPrivacyAck || !m.AccountSpendCapAck ||
 		!now.Before(m.ExpiresAt) || m.MaxRequests <= 0 || m.MaxInputTokens <= 0 || m.MaxOutputTokens <= 0 || m.MaxCostMicros <= 0 ||
 		m.MaxInputPerCall != openRouterContext || m.MaxOutputPerCall <= 0 || m.MaxOutputPerCall > openRouterContext ||
