@@ -14,19 +14,21 @@ import (
 // HTTPObservation은 실제 통제 경로의 제한된 비민감 projection이다. 본문·쿠키·계정 값은 없다.
 // 응답 코드·제품 헤더의 관찰은 취약점 확정이나 실제 백엔드 구현의 증명이 아니다.
 type HTTPObservation struct {
-	Sequence         uint64           `json:"sequence"`
-	AttemptRef       string           `json:"attempt_ref"`
-	Method           string           `json:"method"`
-	Endpoint         string           `json:"endpoint"`
-	RuleRef          string           `json:"rule_ref"`
-	Decision         string           `json:"decision"`
-	Reason           Reason           `json:"reason"`
-	StatusCode       int              `json:"status_code,omitempty"`
-	ResponseComplete bool             `json:"response_complete"`
-	ForwardAttempted bool             `json:"forward_attempted"`
-	AuditComplete    bool             `json:"audit_complete"`
-	ObservedAt       time.Time        `json:"observed_at"`
-	Technologies     []HTTPTechnology `json:"technologies,omitempty"`
+	Sequence         uint64 `json:"sequence"`
+	AttemptRef       string `json:"attempt_ref"`
+	Method           string `json:"method"`
+	Endpoint         string `json:"endpoint"`
+	RuleRef          string `json:"rule_ref"`
+	Decision         string `json:"decision"`
+	Reason           Reason `json:"reason"`
+	StatusCode       int    `json:"status_code,omitempty"`
+	ResponseComplete bool   `json:"response_complete"`
+	// ResponseTruncated는 본문 상한 때문에 앞부분만 도구에 준 응답이다(사유 withheld).
+	ResponseTruncated bool             `json:"response_truncated,omitempty"`
+	ForwardAttempted  bool             `json:"forward_attempted"`
+	AuditComplete     bool             `json:"audit_complete"`
+	ObservedAt        time.Time        `json:"observed_at"`
+	Technologies      []HTTPTechnology `json:"technologies,omitempty"`
 }
 type HTTPTechnology struct {
 	Name    string `json:"name"`
@@ -79,7 +81,7 @@ func (c *Call) observeHTTP(req *http.Request, resp *http.Response, r Receipt) {
 	if !supportedMethod(method) {
 		method = "UNSUPPORTED"
 	}
-	obs := HTTPObservation{Sequence: r.Sequence, AttemptRef: r.AttemptID, Method: method, Endpoint: endpoint, RuleRef: r.RuleRef, Decision: r.Decision, Reason: r.Reason, StatusCode: r.StatusCode, ResponseComplete: r.ResponseComplete, ForwardAttempted: r.ForwardAttempted, AuditComplete: r.AuditComplete, ObservedAt: r.At}
+	obs := HTTPObservation{Sequence: r.Sequence, AttemptRef: r.AttemptID, Method: method, Endpoint: endpoint, RuleRef: r.RuleRef, Decision: r.Decision, Reason: r.Reason, StatusCode: r.StatusCode, ResponseComplete: r.ResponseComplete, ResponseTruncated: r.ResponseTruncated, ForwardAttempted: r.ForwardAttempted, AuditComplete: r.AuditComplete, ObservedAt: r.At}
 	if resp != nil && r.ResponseReceived && r.ResponseComplete {
 		for _, header := range []string{"Server", "X-Powered-By"} {
 			value := strings.TrimSpace(resp.Header.Get(header))

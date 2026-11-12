@@ -120,6 +120,11 @@ func TestProxyFailureCarriesOutcomeAndReason(t *testing.T) {
 	var received atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
+		if r.URL.Path == "/allowed/partial" {
+			// 길이를 맞출 수 없는 부분 응답은 자르지 않고 통째로 보류한다(C16 결정안 2).
+			w.Header().Set("Content-Range", "bytes 0-8999/20000")
+			w.WriteHeader(http.StatusPartialContent)
+		}
 		io.WriteString(w, strings.Repeat("x", 9000)) // proxyTestCall의 MaxBodyBytes(8192)를 넘는다.
 	}))
 	defer target.Close()
@@ -149,7 +154,7 @@ func TestProxyFailureCarriesOutcomeAndReason(t *testing.T) {
 	}{
 		{"outside scope", "/outside", "", OutcomeNotSent, PolicyDenied, 0},
 		{"request body over limit", "/allowed", strings.Repeat("y", 9000), OutcomeNotSent, Unsupported, 0},
-		{"response over limit", "/allowed", "", OutcomeWithheld, Withheld, 1},
+		{"partial response over limit", "/allowed/partial", "", OutcomeWithheld, Withheld, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := received.Load()

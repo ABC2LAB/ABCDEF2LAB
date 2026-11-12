@@ -170,7 +170,10 @@ Unknown 중지 한도의 관계를 합의하는 것이다. 그 결정안은 아�
 구현 순서는 4(형식 판) → 1(분류·계수) → 2(자르기) → 3(상한 분리·기본값)이다. **4와 1은
 구현했다**(`e2-http-v2`: 사유 `withheld`, `Counts.Withheld`, 영수증 `response_truncated` 칸; 검증기
 `--journal-format e2-http-v2|e2-http-v1`, 평가 내보내기·수집기는 두 판을 읽고 v1 행의 `withheld`는
-거부). 지금은 본문 상한을 넘는 응답도 자르지 않고 통째로 `withheld`로 보류한다(2단계 전). 1은
+거부). **2도 구현했다**: 본문 상한을 넘는 응답은 앞 `max_body_bytes`까지만 정상 HTTP 응답으로 준다(`Content-Length`를
+그 길이로, chunked·trailer 지움, `withheld` + `response_truncated`, 결과 헤더 `X-ABC2LAB-E2-Outcome: truncated`, trusted
+관찰에 `response_truncated`). 검사 상한은 아직 설정이 아니라 `본문 상한 + 가장 긴 보호 값 길이`로 계산해 상한 사이 조건을 늘
+만족시킨다. 206·`Content-Range` 응답은 통째로 보류한다. 3(요청·응답 상한 분리와 검사 상한 설정·정책 지문)은 남았다. 1은
 결과 불명 1건 전체 정지 제거(C01, 이동찬)와 같은 계수를 건드리므로 C01 구현과 순서를
 맞춘다.
 
