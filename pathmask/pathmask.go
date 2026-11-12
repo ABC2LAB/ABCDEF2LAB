@@ -86,11 +86,21 @@ func maskSegment(raw string, key []byte) (string, bool) {
 	if err != nil {
 		return MaskedSegment + staticSuffix(raw), true
 	}
+	if masked, ok := ValueSegment(segment); ok {
+		return masked, true
+	}
+	return Pseudonym(segment, key), false
+}
+
+// ValueSegment는 풀린 경로 조각이 값(객체 ID·토큰·이메일 등)으로 보이면 `{id}`(정적 자원 확장자는 남김)와 true를
+// 돌려준다. Mask가 가리는 조각과 같은 규칙이고, 진단 흐름이 선택한 끝점의 값 조각만 바꾼 요청을 같은 끝점으로 볼 때도
+// 쓴다(C18).
+func ValueSegment(segment string) (string, bool) {
 	if len(segment) > maxSegmentLength || !safeSegment.MatchString(segment) ||
 		digitSegment.MatchString(segment) || hexSegment.MatchString(segment) || looksEncoded(segment) {
 		return MaskedSegment + staticSuffix(segment), true
 	}
-	return Pseudonym(segment, key), false
+	return "", false
 }
 
 // Mask는 percent 인코딩이 남은 경로(url.URL.EscapedPath())를 패턴과 가린 조각 수로 바꾼다.
