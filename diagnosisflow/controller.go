@@ -71,16 +71,17 @@ func has(list []string, value string) bool {
 // 정상 읽기 경로까지 막는다.
 var (
 	// destructiveWords는 메서드와 상관없이 막는다. GET으로도 상태가 바뀌는 경로(GET /logout, GET /delete/1)가 흔하다.
-	destructiveWords = []string{"delete", "remove", "reset", "logout", "destroy", "truncate", "shutdown"}
+	// signout·logoff는 logout과 같은 동작이다. 시험 계정 세션이 탐색 중 끊기면 그 뒤 탐색·진단이 모두 비인증이 된다.
+	destructiveWords = []string{"delete", "remove", "reset", "logout", "signout", "logoff", "destroy", "truncate", "shutdown"}
 	// transactionWords는 쓰기 메서드에서만 막는다. 결제·주문 내역을 읽는 GET·HEAD는 진단 범위다.
 	transactionWords = []string{"checkout", "payment", "payments", "purchase", "purchases", "transfer", "transfers"}
 )
 
-// riskTokens는 경로 조각·query 이름·값을 영문자·숫자 단어로 나눈다. camelCase 경계도 나눈다.
+// riskTokens는 경로 조각·query 이름·값을 영문자·숫자 단어로 나눈다. camelCase 경계와 글자·숫자 경계(reset2fa)도 나눈다.
 func riskTokens(s string) []string {
 	var out []string
 	var b strings.Builder
-	var prevLower bool
+	var prevLower, prevDigit bool
 	flush := func() {
 		if b.Len() > 0 {
 			out = append(out, strings.ToLower(b.String()))
@@ -94,23 +95,49 @@ func riskTokens(s string) []string {
 			prevLower = false
 			continue
 		}
-		if isLetter && unicode.IsUpper(r) && prevLower {
+		if isLetter && unicode.IsUpper(r) && prevLower || b.Len() > 0 && isDigit != prevDigit {
 			flush()
 		}
 		b.WriteRune(r)
 		prevLower = isLetter && unicode.IsLower(r)
+		prevDigit = isDigit
 	}
 	flush()
 	return out
 }
 
+// anyToken은 단어 하나나 이웃 두 단어를 붙인 것이 목록에 있는지 본다. logOut·shutDown·checkOut·log-out·sign_out처럼
+// 합성어를 camelCase나 구분자로 나눠 쓴 경로는 나누면 log/out이 돼 빠지므로 붙여서도 본다(#487 리뷰 P1). 앞뒤 일치
+// (deleteall·deleted)까지 넓히면 정상 조회 경로를 많이 막아 탐색을 깎으므로 넣지 않는다.
 func anyToken(s string, words []string) bool {
-	for _, token := range riskTokens(s) {
-		if has(words, token) {
+	tokens := riskTokens(s)
+	for i, token := range tokens {
+		if has(words, token) || i+1 < len(tokens) && has(words, token+tokens[i+1]) {
 			return true
 		}
 	}
 	return false
+}
+
+// actionKeys는 값이 실행할 동작을 고르는 query 이름이다. 값의 위험 단어는 이 이름일 때만 본다. 검색어·정렬 같은
+// 값(?q=delete, ?sort=remove_date)까지 보면 정상 조회를 막아 탐색을 깎는다(#487 리뷰 P3).
+var actionKeys = []string{"action", "act", "cmd", "command", "op", "operation", "do", "method", "mode", "task", "func", "function", "event"}
+
+// looseQuery는 query를 &와 ;를 모두 구분자로 보고 나눈다. Go의 url.ParseQuery는 ;가 든 조각을 버리지만 대상 서버
+// (Rack 2.x, 옛 Python parse_qs)는 ;를 구분자로 써서 ?x=1;action=delete를 받는다(#487 리뷰 P2).
+func looseQuery(raw string) url.Values {
+	out := url.Values{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == '&' || r == ';' }) {
+		key, value, _ := strings.Cut(part, "=")
+		if k, err := url.QueryUnescape(key); err == nil {
+			key = k
+		}
+		if v, err := url.QueryUnescape(value); err == nil {
+			value = v
+		}
+		out[key] = append(out[key], value)
+	}
+	return out
 }
 
 func writeMethod(method string) bool {
@@ -128,6 +155,9 @@ func riskyRequest(method, path string, query url.Values) bool {
 	for key, values := range query {
 		if anyToken(key, destructiveWords) {
 			return true
+		}
+		if !anyToken(key, actionKeys) {
+			continue
 		}
 		for _, v := range values {
 			if anyToken(v, destructiveWords) {
@@ -512,7 +542,7 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 		return ErrDenied
 	}
 	// 경로가 범위 안이어도 query에 파괴 동작이 실리면 막는다(위험 query 검증 유지, C23).
-	if u, err := url.Parse(v.URL); err != nil || riskyRequest(normalizedMethod(v.Method), path, u.Query()) {
+	if u, err := url.Parse(v.URL); err != nil || riskyRequest(normalizedMethod(v.Method), path, looseQuery(u.RawQuery)) {
 		return ErrDenied
 	}
 	s := c.record.Snapshot
