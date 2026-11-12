@@ -347,3 +347,25 @@ func TestConcurrentWorkersIsolateRequestFailures(t *testing.T) {
 		t.Fatal("audit failure request reached the target")
 	}
 }
+
+// 리뷰 재현(#477): intent 누계의 시도 수는 그 intent의 call이 접수한 요청을 센다. 차단된 call의 거절은 접수가 아니다.
+func TestIntentCountsIncludeAcceptedAttempts(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") }))
+	defer target.Close()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 4)
+	cfg.Limits.MaxDenials = 1
+	e, c := coreOpen(t, cfg)
+	resp, _, err := c.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	c.Do(t.Context(), coreRequest(t, "GET", target.URL+"/outside"))
+	if _, r, err := c.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed")); !errors.Is(err, ErrClosed) || r.Reason != DenialLimit {
+		t.Fatal("fixture did not fence the call", r.Reason, err)
+	}
+	view := e.SnapshotForIntent(1)
+	if view.IntentCounts.Attempts != 2 || view.IntentCounts.Allowed != 1 || view.IntentCounts.Denied != 1 || view.Counts.Attempts != 2 {
+		t.Fatalf("intent attempts do not match accepted requests: intent=%+v execution=%+v", view.IntentCounts, view.Counts)
+	}
+}

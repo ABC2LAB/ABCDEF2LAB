@@ -102,3 +102,37 @@ func TestE2HTTPPolicyClassificationUsesIntentCounts(t *testing.T) {
 		t.Fatalf("connection failure was reclassified by policy counts: %s", got)
 	}
 }
+
+// 리뷰 재현(#477): 연결 전 송신 실패와 비정상 셸 종료가 겹친 완결된 명령은 그 명령만 실패다. 다음 명령은 막지 않는다.
+func TestE2HTTPConnectFailureWithNonzeroExitDoesNotHaltWorker(t *testing.T) {
+	execution, _, _ := e2WorkerFixture(t)
+	state := &e2HTTPToolState{}
+	calls := 0
+	tool := e2WorkerBashTool(t, execution, func(context.Context, string) (e2runner.Result, error) {
+		calls++
+		result := completedE2WorkerResult()
+		if calls == 1 {
+			result.Trusted.Classification = "transient_failure"
+			result.Trusted.ExitCode = 7
+			result.Trusted.Call.Counts = e2proxy.Counts{Attempts: 1, Allowed: 1, ForwardAttempted: 1, Transient: 1}
+			return result, e2runner.ErrUnavailable
+		}
+		return result, nil
+	}, time.Second, state)
+	first, err := tool.Call(context.Background(), json.RawMessage(`{"command":"curl --fail first"}`), nil)
+	if err != nil || !first.IsError || state.runnerFailed || state.halted {
+		t.Fatalf("connect failure halted the worker: state=%+v err=%v", state, err)
+	}
+	second, err := tool.Call(context.Background(), json.RawMessage(`{"command":"curl --fail second"}`), nil)
+	if err != nil || second.IsError || calls != 2 {
+		t.Fatalf("next command was blocked after a connect failure: calls=%d result=%s err=%v", calls, second.Flatten(), err)
+	}
+	// 대조: 송신 실패 수가 없는 transient_failure(프록시 장애·시간 초과)는 계속 runner 장애다.
+	failed := completedE2WorkerResult()
+	failed.Trusted.Classification = "transient_failure"
+	failed.Trusted.ExitCode = 7
+	failed.Trusted.Execution.AuditComplete = true
+	if !e2HTTPRunnerFailed(e2runner.ErrUnavailable, failed) {
+		t.Fatal("proxy-unavailable transient failure was treated as an ordinary command failure")
+	}
+}

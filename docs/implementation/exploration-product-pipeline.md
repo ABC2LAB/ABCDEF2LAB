@@ -33,11 +33,16 @@ E② runtime은 같은 task/run/workflow/budget와 lease·active·runs·results�
 
 실제 production constructor·독립 DB LOGIN·Supervisor.Run·CloseTask/drain·권한 반납·PersistRunOutcomeStored까지 시험했다. 시험 provider 실호출2/공유 예산2/known, observed3/inferred1이 보존되고 진단 Deep0/E② Acquire0/calls0/receipt0이었다. 결과는 incomplete1의 partial/budget_limited였다. typed 증명 제거·불명 원장·가짜 완료·stale/zero 저장 revision은 거부한다. 관련 closure/pipeline/Supervisor race 66개가 통과했다. 이는 실제 Qwen 수용이나 E② 진단 송신 성공 시험이 아니다.
 
-## 운영 활성화 전에 남은 회차 요청 예산 결속
+## 회차 요청 예산의 탐색·진단 분할
 
-현재 탐색과 E②는 각각 승인 요청 수 N을 상한으로 읽는다. 두 원장의 합계를 N으로 묶는 집행은 아직 없다. 따라서 host를 붙이면 대상 전달이 최대 2N이 될 수 있고, 각 상한을 최솟값으로 계산하는 것만으로 회차 합계가 보장되지 않는다. 운영 adapter 기본 nil을 유지한다. B16 제어망 접근 차단과 함께 **동일 회차의 탐색+진단 대상 요청 합계 집행**을 활성화 선행 조건으로 둔다.
+탐색과 E②가 각각 승인 요청 수 N을 받으면 대상 전달이 최대 2N이 될 수 있다. 프로그램 쪽은 불변 할당으로 같은 회차의 합계를 N에 묶는다(P1-E).
 
-후속 경계 구현은 동일 run/job/task/target revision/source에 결속된 불변 할당 E+D≤N을 두 최종 송신점에서 강제하거나, 같은 원자적 reservation/debit 원장을 사용해야 한다. 실패·결과불명과 재시도도 보수적으로 차감하고, 탐색 종료 뒤 진단에 새 N을 다시 부여하지 않아야 한다. 이는 조립 의무이며 현재 공동 원장 구현이나 제품 수용 완료 주장이 아니다. 모델 요청·토큰·USD의 기존 공유 예약 원장은 별개로 유지한다.
+- 탐색 단계(`E2HTTPExplorationStage`)는 오류와 함께 `ExplorationCharge`를 돌려준다. pipeline이 호스트 경계를 감싸 열림 여부와 경계의 마감 상태만 기록한다. 경계를 열지 않았으면 몫 0이 확정이다. 열었으면 `Lease.Close`가 오류 없이 돌려준 비활성·연결 0·결속 일치 상태의 `TargetRequests`만 확정 몫 E다. 마감을 확인하지 못하면 몫을 모르는 것으로 남긴다. 영값 `ExplorationCharge{}`도 모르는 몫이다.
+- 탐색은 진단 lease보다 먼저 같은 task gate 안에서 끝난다. `PrepareWork`는 몫을 모르거나 E≥N이면 진단 자원·DB 조회 없이 `budget_limited`로 마감한다. 남으면 `E2HTTPRequest.ExplorationRequests`로 넘기고, 로컬 공급자는 `N-E`만 원장에 등록한다(`e2HTTPDiagnosisRequests`). 공급자도 같은 판정을 다시 해서 runtime 검사와 어긋나도 N-E를 넘기지 않는다. 진단 lease는 task당 한 번만 받으므로 탐색 뒤 새 N이 다시 생기지 않는다.
+- 원격 E²는 몫을 뺀 등록을 아직 받지 않으므로 몫이 0이 아니면 lease를 거부한다.
+- 탐색 단계가 없는 기존 E② 실행과 경계 미공급 NOT_RUN(몫 0)은 기존 예산 N 그대로다.
+
+남은 경계 의무: 운영 경계는 승인 대상으로 넘긴 요청을 실패·결과 불명·재시도를 포함해 admission 때 세고(`TargetRequests`), `MaxRequests`를 넘기지 않고, `Close`가 새 송신이 끝났음을 확정한 뒤에만 비활성 상태를 돌려줘야 한다. 이 몫은 경계가 실제로 센 값이고 프로그램이 대신 셀 수 없다. 재기동 뒤 같은 작업을 이어 실행하는 경로가 생기면 몫을 영속 기록에서 다시 읽어야 한다. 운영 경계·B16 차단이 들어오기 전까지 운영 adapter 기본 nil은 그대로다. 모델 요청·토큰·USD의 기존 공유 예약 원장은 별개로 유지한다.
 
 ## 실제 E② 진단으로 이어지는 시험 범위
 
