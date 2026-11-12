@@ -179,6 +179,17 @@ func TestProductExplorationHostDrivesRealBoundary(t *testing.T) {
 	if host.Reader == nil || host.Fetch == nil || host.Sequences == nil || host.Session.Boundary == nil || host.Session.StartBrowser == nil || host.Session.Redact == nil {
 		t.Fatal("host is missing a capability the pipeline requires")
 	}
+	// 도구 결과의 자격 형식은 모델·활동 기록으로 가기 전에 가린다(S09). 주소는 남긴다.
+	masked := string(host.Session.Redact([]byte("Set-Cookie: sid=synthetic-session-77aa\nAuthorization: Bearer synthetic-bearer-77aa\n" +
+		`{"password":"synthetic-pass-77aa"} next ` + f.target + "/read/item")))
+	for _, marker := range []string{"synthetic-session-77aa", "synthetic-bearer-77aa", "synthetic-pass-77aa"} {
+		if strings.Contains(masked, marker) {
+			t.Fatalf("exploration output kept credential marker %s: %q", marker, masked)
+		}
+	}
+	if !strings.Contains(masked, f.target+"/read/item") {
+		t.Fatalf("exploration output lost the page address: %q", masked)
+	}
 	lease, err := host.Session.Boundary.Open(t.Context(), f.binding)
 	if err != nil {
 		t.Fatal(err)
