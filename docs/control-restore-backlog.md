@@ -26,7 +26,7 @@
 
 | ID | 내용 | 영향 | 위치 | 순서·담당 |
 |---|---|---|---|---|
-| C14 | 로그인 불가. 제품은 `Authorization`·`Cookie` 요청을 거부하고, `Set-Cookie`·`WWW-Authenticate` 응답을 통째로 숨겨 unknown으로 센다(C01·C03 정지로 이어짐). 대상 자격 설정도 거부 | 오류 | `e2proxy/execution.go:924`, `e2proxy/headers.go:145-166`, `cmd/first-controlled-diagnosis/url_preparation_config.go:367` | P2·이동찬 |
+| C14 | 로그인 불가. 제품은 `Authorization`·`Cookie` 요청을 거부하고, `Set-Cookie`·`WWW-Authenticate` 응답을 통째로 숨겨 unknown으로 센다(C01·C03 정지로 이어짐). 대상 자격 설정도 거부. [결정안](account-login-decision.md) | 오류 | `e2proxy/execution.go:924`, `e2proxy/headers.go:145-166`, `cmd/first-controlled-diagnosis/url_preparation_config.go:367` | P2·이동찬 |
 | C15 | `Accept-Encoding`이 identity가 아니면 거부(측정: gzip 요청 502, [근거](evaluation/e2-product-preflight.md)) | 저하 | `e2proxy/execution.go:924,1316-1330` | P2·최민준(이동찬 페어 리뷰 필수) |
 | C16 | 64KiB 상한이 자르지 않고 막는다. 넘는 응답은 unknown, 넘는 요청은 미지원 | 오류 | `e2proxy/execution.go:963-968,1138-1144` | P2·최민준(이동찬 페어 리뷰 필수) |
 | C17 | 인코딩·점 경로(`%`, `..`, `//`) 거부, 거부 수에도 들어감 | 저하 | `e2proxy/execution.go:186-188,817` | P2·이동찬 |
