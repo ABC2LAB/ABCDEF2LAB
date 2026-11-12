@@ -41,6 +41,12 @@ type FirstDiagnosisModelBudget struct {
 	blocked       bool
 	observe       func(diagnosisprep.ModelUsage) error
 	external      *llmpolicy.OpenRouterPolicy
+	// externalBase는 이 예산을 만들 때의 transport 누적 값, externalSum은 호출 칸으로 정산한 합계다. 진행 중 호출이
+	// 없을 때 transport 누적 값의 늘어난 양이 정산 합계와 같아야 한다(C28 결정 2).
+	externalBase llmpolicy.OpenRouterUsage
+	externalSum  llmpolicy.OpenRouterUsage
+	// externalUsage는 transport 누적 값을 읽는다(시험이 바꿔 끼운다). nil이면 external.Snapshot이다.
+	externalUsage func() llmpolicy.OpenRouterUsage
 	manifestPath  string
 	// inflight는 정산 전 예약 수다. 사용량이 모두 정산됐는지(UsageKnown)는 진행 중 예약이 없고 막힘이 없을 때다.
 	inflight    int
@@ -54,11 +60,20 @@ type FirstDiagnosisModelBudget struct {
 // 정산은 이 예약만 보고 다른 진행 중 호출의 예약·정산은 건드리지 않는다.
 type firstDiagnosisModelCall struct {
 	input, output, cost int64
-	// external은 예약 때의 OpenRouter transport 누적 값이다. 차이로 이 호출 하나를 대조하므로 진행 중 호출이
-	// 하나일 때만 맞다. 그래서 외부 제공자 경로는 진행 중 예약이 있으면 새 예약을 받지 않는다(호출별 transport
-	// 슬롯이 들어오기 전까지).
-	external llmpolicy.OpenRouterUsage
-	closed   bool
+	// slot은 OpenRouter 호출 칸이다. 요청 문맥에 붙여 transport가 이 호출의 예약·사용량을 여기에만 남긴다.
+	// 그래서 겹친 호출도 각자 자기 칸으로 정산한다. 로컬 모델 경로에는 없다.
+	slot *llmpolicy.OpenRouterCall
+	// result는 이 호출 칸의 transport 결과를 읽는다(시험이 바꿔 끼운다).
+	result func() llmpolicy.OpenRouterCallResult
+	closed bool
+}
+
+// requestContext는 모델 요청 문맥에 이 호출의 칸을 붙인다.
+func (c *firstDiagnosisModelCall) requestContext(ctx context.Context) context.Context {
+	if c == nil || c.slot == nil {
+		return ctx
+	}
+	return llmpolicy.WithOpenRouterCall(ctx, c.slot)
 }
 
 // 실행 전에 한 번만 설정한다. 사용자 중단·시간 상한·감사 실패는 hard context로 즉시 취소한다.
@@ -161,7 +176,7 @@ func NewFirstDiagnosisOpenRouterBudget(limits diagnosisprep.Budget, inputPerCall
 	if err != nil {
 		return nil, err
 	}
-	b.limits, b.external, b.manifestPath = limits, p, manifestPath
+	b.limits, b.external, b.manifestPath, b.externalBase = limits, p, manifestPath, p.Snapshot()
 	return b, nil
 }
 
@@ -262,7 +277,7 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 	if ctx.Err() != nil || b.targetDrain != nil && b.targetDrain.admit() != nil {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
-	if b.blocked || b.external != nil && b.inflight > 0 {
+	if b.blocked {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
 	if b.usage.Requests >= b.limits.ModelRequests ||
@@ -278,7 +293,8 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 	b.usage.ReservedOutputTokens += call.output
 	b.usage.ReservedCostUSDMicros += call.cost
 	if b.external != nil {
-		call.external = b.external.Snapshot()
+		call.slot = &llmpolicy.OpenRouterCall{}
+		call.result = call.slot.Result
 	}
 	b.inflight++
 	b.usage.UsageKnown = false
@@ -308,6 +324,38 @@ func reportedWithinReservation(usage llm.Usage, reservedInput int64, outputLimit
 		int64(usage.InputTokens) <= reservedInput && usage.OutputTokens <= outputLimit
 }
 
+// addExternal은 호출 칸 하나의 transport 결과를 정산 합계에 더한다. 예약 전에 거부된 호출은 transport도 세지 않는다.
+func (b *FirstDiagnosisModelBudget) addExternal(r llmpolicy.OpenRouterCallResult) {
+	s := &b.externalSum
+	if r.Reserved {
+		s.Requests++
+		s.ReservedInputTokens += r.ReservedInputTokens
+		s.ReservedOutputTokens += r.ReservedOutputTokens
+		s.ReservedCostMicros += r.ReservedCostMicros
+	}
+	if r.Succeeded {
+		s.InputTokens += r.InputTokens
+		s.OutputTokens += r.OutputTokens
+		s.CostMicros += r.CostMicros
+	}
+}
+
+// externalReconciled는 이 예산을 만든 뒤 transport에서 늘어난 예약·사용량이 호출 칸으로 정산한 합계와 같은지 본다.
+func (b *FirstDiagnosisModelBudget) externalReconciled() bool {
+	read := b.external.Snapshot
+	if b.externalUsage != nil {
+		read = b.externalUsage
+	}
+	now, base, sum := read(), b.externalBase, b.externalSum
+	return now.Requests-base.Requests == sum.Requests &&
+		now.ReservedInputTokens-base.ReservedInputTokens == sum.ReservedInputTokens &&
+		now.ReservedOutputTokens-base.ReservedOutputTokens == sum.ReservedOutputTokens &&
+		now.ReservedCostMicros-base.ReservedCostMicros == sum.ReservedCostMicros &&
+		now.InputTokens-base.InputTokens == sum.InputTokens &&
+		now.OutputTokens-base.OutputTokens == sum.OutputTokens &&
+		now.CostMicros-base.CostMicros == sum.CostMicros
+}
+
 // settle은 호출 하나의 예약을 닫는다. 뒤에 시작한 호출이 먼저 끝나도 각자 자기 예약으로 정산한다.
 func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage llm.Usage, callErr error) error {
 	if b == nil || call == nil {
@@ -328,11 +376,16 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 		int64(usage.InputTokens) <= call.input && usage.OutputTokens <= outputLimit &&
 		usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0
 	if b.external != nil {
-		next, previous := b.external.Snapshot(), call.external
-		// 이 SDK 응답은 정확히 한 번의 transport 호출 사용량과 일치해야 한다.
-		known = known && !next.Blocked && next.Requests == previous.Requests+1 && next.Errors == previous.Errors && next.InputTokens-previous.InputTokens == int64(usage.InputTokens) && next.OutputTokens-previous.OutputTokens == int64(usage.OutputTokens) && next.CostMicros >= previous.CostMicros && next.CostMicros <= b.usage.ReservedCostUSDMicros
+		var r llmpolicy.OpenRouterCallResult
+		if call.result != nil {
+			r = call.result()
+		}
+		b.addExternal(r)
+		// 이 SDK 응답은 이 호출 칸에 남은 transport 결과(정상 응답 하나)와 정확히 같아야 한다. 다른 호출의 누적 값은
+		// 보지 않는다.
+		known = known && r.Succeeded && r.InputTokens == int64(usage.InputTokens) && r.OutputTokens == int64(usage.OutputTokens) && r.CostMicros >= 0 && r.CostMicros <= call.cost
 		if known {
-			b.usage.CostUSDMicros += next.CostMicros - previous.CostMicros
+			b.usage.CostUSDMicros += r.CostMicros
 		}
 	}
 	switch {
@@ -348,6 +401,11 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 		b.usage.CostUSDMicros += call.cost
 		b.usage.UnknownUsageCalls++
 	default:
+		b.blocked = true
+	}
+	// 진행 중 호출이 없으면 transport 누적 값이 호출 칸으로 정산한 합계와 같아야 한다. 칸 없이 나간 요청이나 어긋난
+	// 회계가 있으면 예산 보장이 깨진 것이라 이 승인으로 새 호출을 막는다(C28 결정 2).
+	if b.external != nil && b.inflight == 0 && !b.externalReconciled() {
 		b.blocked = true
 	}
 	// 모든 예약이 정산됐고 막힘이 없을 때만 사용량을 안다. 진행 중 호출이 남아 있으면 아직 모른다.

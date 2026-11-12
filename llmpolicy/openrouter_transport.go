@@ -218,6 +218,12 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	if err != nil || len(wire) > openRouterRequestLimit {
 		return reject()
 	}
+	// 호출 칸은 요청 하나에만 쓴다. 같은 칸으로 온 두 번째 요청은 예약 전에 거부한다(C28 결정 2).
+	slot := openRouterCallFrom(r.Context())
+	if !slot.claim() {
+		diagnostic.ReasonCode = "call_slot_reused"
+		return reject()
+	}
 	// 입력 예약은 입력 상한 전체가 아니라 이 요청 크기의 상한이다(P3 결정안 C28 결정 1).
 	input := openRouterReservedInput(m, len(wire))
 	reserved := openRouterCallCost(m, input, output)
@@ -225,6 +231,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		diagnostic.ReasonCode = reason
 		return reject()
 	}
+	slot.reserved(input, output, reserved)
 	diagnostic.Event = "model_request_finished"
 	diagnostic.Status = "failed"
 	diagnostic.ReasonCode = "transport_failure"
@@ -341,6 +348,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	p.usage.OutputTokens += result.Usage.Output
 	p.usage.CostMicros += int64(cost)
 	p.mu.Unlock()
+	slot.succeeded(result.Usage.Input, result.Usage.Output, int64(cost))
 	valid = true
 	diagnostic.Status, diagnostic.ReasonCode = "succeeded", ""
 	diagnostic.InputTokens, diagnostic.OutputTokens = result.Usage.Input, result.Usage.Output
