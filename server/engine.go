@@ -953,6 +953,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			if errors.Is(bindingErr, ErrE2HTTPBusy) {
 				return
 			}
+			if errors.Is(bindingErr, ErrE2HTTPBudgetLimited) {
+				// 실행 상한은 실패가 아니다. 진행 중 작업이 끝나면 감독자가 budget_limited로 마감한다.
+				e.touch(t.ID)
+				return
+			}
 			if bindingErr != nil {
 				_ = e.m.SetTaskStatus(t.ID, "failed")
 				e.cancelExec(t.ID, bindingErr)
