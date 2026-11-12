@@ -221,20 +221,22 @@ func e2HTTPRunnerFailed(runErr error, result e2runner.Result) bool {
 		return false
 	}
 	t := result.Trusted
+	// 연결을 맺지 못한 송신 실패(C02)도 감사·드레인이 끝난 명령 실패다. 그 명령만 오류로 돌려주고 다음 명령은 막지 않는다.
+	// 프록시 장애·시간 초과로 생긴 transient_failure는 송신 실패 수가 없으므로 계속 runner 장애다.
 	knownExit := t.Classification == "tool_failure" || t.Classification == "policy_not_executed" ||
 		t.Classification == "partial_policy_denial" || t.Classification == "unsupported" ||
-		t.Classification == "partial_unsupported"
+		t.Classification == "partial_unsupported" || t.Classification == "transient_failure" && t.Call.Counts.Transient > 0
 	return !(errors.Is(runErr, e2runner.ErrUnavailable) && knownExit && t.ProcessBashExited && t.ExitCode != 0 &&
 		t.Final && t.ProcessDrained && t.ProxyDrained && t.Call.AuditComplete && t.Execution.AuditComplete)
 }
 
 // The program-owned per-call counts take precedence over a nonzero shell exit.
-// Unknown or incomplete calls retain their original classification.
+// Unknown, incomplete or connection-failed calls retain their original classification.
 func e2HTTPPolicyClassification(result e2runner.Result) string {
 	t := result.Trusted
 	c := t.Call.Counts
 	if t.Classification == "result_unknown" || !t.Final || !t.ProcessDrained || !t.ProxyDrained ||
-		!t.Call.AuditComplete || !t.Execution.AuditComplete || c.Unknown > 0 || t.Execution.Counts.Unknown > 0 {
+		!t.Call.AuditComplete || !t.Execution.AuditComplete || c.Unknown > 0 || t.Execution.IntentCounts.Unknown > 0 || c.Transient > 0 {
 		return t.Classification
 	}
 	if c.Denied > 0 {
@@ -313,7 +315,8 @@ func newE2HTTPBashTool(execution E2HTTPScope, run e2HTTPRunFunc, hostTimeout tim
 			state.outcome(result.Trusted.Classification)
 			result.ToolOutput = string(execution.RedactOutput([]byte(result.ToolOutput)))
 			state.observeDiagnostic(execution, actualIntentID, command, result)
-			unknown := result.Trusted.Classification == "result_unknown" || result.Trusted.Execution.Counts.Unknown > 0
+			// 다른 Worker(intent)의 결과 불명으로 이 intent를 멈추지 않는다. 감사·집행 장애는 State·AuditComplete로 따로 본다(C03).
+			unknown := result.Trusted.Classification == "result_unknown" || result.Trusted.Execution.IntentCounts.Unknown > 0
 			incomplete := !result.Trusted.Final || !result.Trusted.ProcessDrained || !result.Trusted.ProxyDrained || !result.Trusted.Call.AuditComplete || !result.Trusted.Execution.AuditComplete
 			if unknown || incomplete || runnerFailed || result.Trusted.Classification == "terminated" || result.Trusted.Classification == "isolation_unavailable" {
 				state.mu.Lock()
@@ -706,7 +709,7 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 	runnerFailed := state.runnerFailed
 	state.mu.Unlock()
 	last := state.classification() // 자체 잠금을 잡는다. 위 잠금 밖에서 부른다.
-	if unknown || snapshot.Counts.Unknown > 0 {
+	if unknown || snapshot.IntentCounts.Unknown > 0 {
 		return reason, counts, ErrE2HTTPUnknown
 	}
 	if incomplete || !snapshot.AuditComplete {
