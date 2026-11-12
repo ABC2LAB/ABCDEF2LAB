@@ -4,9 +4,19 @@ import (
 	"github.com/Autumn-27/artex/e2export"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/server"
+	"math"
 	"net/netip"
 	"time"
 )
+
+// productMillis는 정책의 밀리초 값을 Duration으로 바꾼다. 곱셈이 넘치는 값은 범위 밖으로 거부한다. 넘친 값이
+// 짧은 시간으로 돌아 상한 검사를 통과하면 원문 값과 다른 시간으로 실행되기 때문이다.
+func productMillis(ms int64) (time.Duration, bool) {
+	if ms <= 0 || ms > math.MaxInt64/int64(time.Millisecond) {
+		return 0, false
+	}
+	return time.Duration(ms) * time.Millisecond, true
+}
 
 // Validate the cross-package runtime/encoder bounds at installation, before any model
 // completion or task authority. The synthetic rule is data only; this performs no DNS or I/O.
@@ -14,8 +24,17 @@ func validProductPolicyTemplate(p server.E2HTTPFilePolicy) bool {
 	if p.Limits.RequestTimeoutMS > 60000 {
 		return false
 	}
-	cfg := e2proxy.Config{ApprovalMode: p.ApprovalMode, HeaderMode: p.HeaderMode, Rules: []e2proxy.Rule{{Ref: "template", Origin: "https://template.invalid", ConnectIP: netip.MustParseAddr("192.0.2.1"), PathPrefix: "/", PathScopeRef: "template", Methods: []string{"GET"}}}, Limits: e2proxy.Limits{MaxAttempts: p.Limits.MaxAttempts, MaxCalls: p.Limits.MaxCalls, MaxConcurrent: p.Limits.MaxConcurrent, MaxBodyBytes: p.Limits.MaxBodyBytes, RequestTimeout: time.Duration(p.Limits.RequestTimeoutMS) * time.Millisecond, CallTimeout: time.Duration(p.Limits.CallTimeoutMS) * time.Millisecond, MaxDenials: p.Limits.MaxDenials, MaxTransient: p.Limits.MaxTransient, MaxUnknown: p.Limits.MaxUnknown}}
-	_, err := e2export.PolicyFingerprint(cfg, p.MaxRequests, e2export.PolicyBehavior{MaxWorkerTurns: p.Runtime.MaxWorkerTurns, MaxToolCalls: p.Runtime.MaxToolCalls, WorkerTimeout: time.Duration(p.Runtime.WorkerTimeoutMS) * time.Millisecond, MaxPlannerRounds: p.Runtime.MaxPlannerRounds, MaxIntentRuns: p.Runtime.MaxIntentRuns, DrainTimeout: time.Duration(p.Runtime.DrainTimeoutMS) * time.Millisecond, OutputLimit: p.Runtime.OutputLimit, ProxyHeaderTimeout: time.Duration(p.Proxy.HeaderTimeoutMS) * time.Millisecond, ProxyRequestTimeout: time.Duration(p.Proxy.RequestTimeoutMS) * time.Millisecond, ProxyMaxHeaderBytes: p.Proxy.MaxHeaderBytes, ProxyMaxConnections: p.Proxy.MaxConnections})
+	requestTimeout, ok1 := productMillis(p.Limits.RequestTimeoutMS)
+	callTimeout, ok2 := productMillis(p.Limits.CallTimeoutMS)
+	workerTimeout, ok3 := productMillis(p.Runtime.WorkerTimeoutMS)
+	drainTimeout, ok4 := productMillis(p.Runtime.DrainTimeoutMS)
+	headerTimeout, ok5 := productMillis(p.Proxy.HeaderTimeoutMS)
+	proxyTimeout, ok6 := productMillis(p.Proxy.RequestTimeoutMS)
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 {
+		return false
+	}
+	cfg := e2proxy.Config{ApprovalMode: p.ApprovalMode, HeaderMode: p.HeaderMode, Rules: []e2proxy.Rule{{Ref: "template", Origin: "https://template.invalid", ConnectIP: netip.MustParseAddr("192.0.2.1"), PathPrefix: "/", PathScopeRef: "template", Methods: []string{"GET"}}}, Limits: e2proxy.Limits{MaxAttempts: p.Limits.MaxAttempts, MaxCalls: p.Limits.MaxCalls, MaxConcurrent: p.Limits.MaxConcurrent, MaxBodyBytes: p.Limits.MaxBodyBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout, MaxDenials: p.Limits.MaxDenials, MaxTransient: p.Limits.MaxTransient, MaxUnknown: p.Limits.MaxUnknown}}
+	_, err := e2export.PolicyFingerprint(cfg, p.MaxRequests, e2export.PolicyBehavior{MaxWorkerTurns: p.Runtime.MaxWorkerTurns, MaxToolCalls: p.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: p.Runtime.MaxPlannerRounds, MaxIntentRuns: p.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, OutputLimit: p.Runtime.OutputLimit, ProxyHeaderTimeout: headerTimeout, ProxyRequestTimeout: proxyTimeout, ProxyMaxHeaderBytes: p.Proxy.MaxHeaderBytes, ProxyMaxConnections: p.Proxy.MaxConnections})
 	return err == nil
 }
 

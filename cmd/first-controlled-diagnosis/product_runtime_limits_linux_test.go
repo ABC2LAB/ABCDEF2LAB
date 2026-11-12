@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/Autumn-27/artex/diagnosisflow"
@@ -58,6 +59,10 @@ func TestProductPolicyBoundsRejectsOutOfRange(t *testing.T) {
 		"negative-timeout":     {RequestTimeoutMS: ptr(int64(-1))},
 		"zero-rounds":          {PlannerRounds: ptr(uint64(0))},
 		"zero-calls":           {MaxCalls: ptr(0)},
+		// 밀리초 → Duration 곱셈이 넘쳐 짧은 시간(약 10초·60초)으로 도는 값(#445 이동찬 재현값).
+		"call-timeout-overflow":   {CallTimeoutMS: ptr(int64(18446744083710))},
+		"worker-timeout-overflow": {WorkerTimeoutMS: ptr(int64(18446744133710))},
+		"call-timeout-max-int":    {CallTimeoutMS: ptr(int64(math.MaxInt64))},
 	} {
 		if _, ok := productPolicyBounds(productInstallInput{RuntimeLimits: &productRuntimeLimits{Product: set}}); ok {
 			t.Fatalf("%s accepted", name)
