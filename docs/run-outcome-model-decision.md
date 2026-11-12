@@ -40,6 +40,7 @@
   - 상태 값·칸·전달 경로는 [상태 값 계약](contracts/run-outcome-states.md)이 정한다. 거기서 `no_intents`는 마감 사유가 아니라 실행 결과(`outcome`) 값으로 둔다.
 - **C09 — 마지막 호출 하나가 intent 결과를 정함**(`agent/e2_http.go` 마지막 분류).
   - 결정: intent 결과는 그 intent의 **모든 호출 분류를 모아서** 정한다(가장 강한 것: unknown > incomplete > policy_limited > done). 마지막 호출이 `tool_failure`여도 앞에서 완료한 호출의 관찰은 남긴다. trusted 대조(`EqualCallResults`)가 깨지면 그 intent만 `unknown`으로 두고, 감사 무결성이 깨진 경우(감사 저장 실패)만 실행을 멈춘다.
+  - 구현 상태: Worker 쪽 집계는 #428. 서버 쪽은 같은 호출(CallRef)의 최종 신뢰 결과가 E② 실행 기록과 내용이 다를 때만 그 intent를 결과 불명으로 둔다(결과는 저장하지 않고 runtime이 intent를 표시, Worker는 그 intent를 멈춤, 마감은 그 intent가 `e2_http_result_unknown`일 때만 센다). 모르는 호출·실행 범위·정책 판·intent 결속 불일치, 비최종 결과, 결과 관찰자 실패는 지금처럼 실행 실패다.
 - **C10 — 진단 로그 실패·상태 조회 1회 실패가 실행 취소**(`cmd/first-controlled-diagnosis/url_preparation_runtime.go`).
   - 결정: 진단 로그(사람이 보는 운영 기록)는 감사가 아니다. 기록 실패는 경고와 누락 건수로 남기고 실행 결과를 `unknown`으로 바꾸지 않는다. 상태 조회 실패는 제한된 횟수로 다시 묻고(설정 값), 그래도 실패하면 그때 `unknown`이다. 감사 저널·E② 영수증 저장 실패는 지금처럼 멈춘다.
   - 구현 상태: 진단 로그 부분은 #418·#426. 상태 조회 재시도는 설치 입력 `runtime_limits.status_read_retries`(기본 0 = 지금처럼 첫 실패에서 멈춤, [설치 상한 결정안](install-limits-decision.md) §3-3)로 받고, 다 쓰면 결과를 `unknown`(`status_read_failed`)으로 둔다.
