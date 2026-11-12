@@ -30,7 +30,7 @@
 
 1. **설치 입력에 선택 블록 `runtime_limits`를 둔다.** 형식 판(`abc2lab.product-install/v2`)은 그대로 두고 선택 칸만 더한다. 블록이 없거나 칸이 비면 **지금 값 그대로**다(제품 모드·워크플로 모드 두 벌 모두). 측정(P0) 전에는 기본값을 바꾸지 않는다. 기본값 조정은 측정 근거와 함께 별도 PR로 한다.
 2. **칸**(위 표의 값과 같은 뜻, 제품·워크플로 모드에 각각 줄 수 있다):
-   - E② 진단 요청: `request_timeout_ms`(E② 요청 시간과 프록시 요청 시간을 같은 값으로), `call_timeout_ms`, `max_calls`(E② 호출 상한과 Worker 도구 호출 상한을 같은 값으로), `max_attempts`.
+   - E② 진단 요청: `request_timeout_ms`(E② 요청 시간. 제품 모드는 프록시 요청 시간도 같은 값으로, 워크플로 모드는 프록시가 운영자 확인을 기다리는 동안 요청을 쥐고 있어야 해서 프록시 요청 시간을 워크플로 값 그대로 둔다), `call_timeout_ms`, `max_calls`(E② 호출 상한과 Worker 도구 호출 상한을 같은 값으로), `max_attempts`.
    - 루프: `worker_turns`, `worker_timeout_ms`, `planner_rounds`, `intent_runs`.
    - 동시 Worker 수(`workers`)는 지금 코드에 상한 검사가 없어(양수만) 이 블록에 두지 않는다. 상한과 검사 위치는 P0 측정 뒤 정하고 그때 칸을 연다. 그 전까지 제품 실행은 엔진 기본값(3)이다.
    - 실행: `run_seconds`, `model_requests`.
@@ -47,7 +47,7 @@
 
 ## 3. 구현 순서
 
-1. `runtime_limits` 입력·검사·`policy.json`/launch 반영(E②·루프 칸). 블록이 없으면 지금 `policy.json`과 같은 값이 나오는 것을 시험으로 고정한다(동작 차이 없음).
+1. `runtime_limits` 입력·검사·`policy.json`/launch 반영(E②·루프 칸). 블록이 없으면 지금 `policy.json`과 같은 값이 나오는 것을 시험으로 고정한다(동작 차이 없음). — 구현: `productPolicyBounds`가 모드별 기본값에 덮어쓰고 `validProductPolicyTemplate`으로 검사하며, 설치 입력 검사 단계(부작용 전)와 실제 설치가 같은 함수를 쓴다.
 2. `run_seconds`·`model_requests`와 지문 판 올림. 적용되지 않는 설치의 `engine.workers` 쓰기를 지운다(동작 차이 없음, 지금도 기본 3).
 3. `status_read_retries`(C10 상태 조회 재시도와 같이).
 4. `model_concurrency`(C28 결정 2의 2부 뒤).

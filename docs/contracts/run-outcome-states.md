@@ -95,7 +95,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
    - 2-1(먼저): 투영·`completed`의 `outcome`·`intent_outcomes`·`partial`(불완전·중지 intent가 있어도 실패가 아님)·전달 칸(`diagnosis.v2`)·진단 준비 Job·웹 파서와 결과 한 줄. 결과 없이 새로 `completed`가 되는 갱신은 받지 않는다.
    - 2-2: `cancelled`의 `intent_outcomes`(중지 마감 때 투영 읽기).
    - 2-3: `budget_limited`(Planner 라운드·도구 호출·모델 예산). E② 런타임이 Planner 라운드·실행 전체 도구 호출 상한 도달을 `ErrE2HTTPBudgetLimited`로 따로 돌려주고 task에 표시하며, 엔진은 이를 실패로 바꾸지 않는다. 승인 모델 예산이 다음 호출을 받을 만큼 남지 않은 경우(`LimitReached`, 사용량 불명·정책 차단은 제외)도 같다. 감독자는 실행 중 intent가 끝나면 Planner를 기다리지 않고 마감하고, 시작하지 못한 open intent는 incomplete로 센다. intent 하나의 재실행 상한(`MaxIntentRuns`)은 그 intent만 incomplete로 끝내고 실행 전체 상한은 아니다.
-   - 2-4: `no_intents`(C11 결정 2, 첫 계획 0개).
+   - 2-4: `no_intents`(C11 결정 2, 첫 계획 0개). 진단 준비의 첫 계획에서 intent가 0개여도 실패로 끝내지 않고 실행으로 넘어간다(저장소를 못 읽은 경우만 `intent_storage_failed`). 실행 단계 Planner가 오류 없이 한 라운드 이상 계획했는데도 intent가 없으면(삭제된 intent는 세지 않음) `completed` + `no_intents`로 마감한다. 이때 E② 호출이 있으면 대조가 맞지 않으므로 실패다. 실행 상한에 먼저 닿으면 계획 라운드 없이도 `no_intents` + `budget_limited`로 마감한다.
    - 2-5: `diagnostic_log_incomplete` 칸 분리. 진단 준비 Job의 완료 실행에만 있고 `reason_code`를 쓰지 않는다. 이 칸 이전에 저장된 완료 실행에는 `reason_code: diagnostic_logging_incomplete`가 남아 있을 수 있어 화면은 둘 다 읽는다.
    - 2-6: 저장 보고서에 싣기(5절 5).
 3. `unknown` intent가 있는 실행을 `completed` + `partial`로 마감하는 것은 C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤. 그 전에는 결과 불명 송신이 있는 호출(`Counts.Unknown`)이 있으면 지금처럼 실행을 멈춘다.

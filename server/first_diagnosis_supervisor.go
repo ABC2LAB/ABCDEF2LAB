@@ -376,15 +376,13 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 	_, _, planErr := planner.Plan(planning, mustFirstDiagnosisTaskNumber(task.ID), server.m.Assets(), task.Store, task.Goal, nil, emit)
 	server.engine.EndLLMCall(task.ID)
 	server.engine.plannerLogFinish(planning, task, lastIntent, observed, planErr, planStarted)
-	active, readErr := task.Store.HasActiveIntent()
-	if readErr != nil || !active {
-		reason := "no_intents"
-		if readErr != nil {
-			reason = "intent_storage_failed"
-		}
-		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "planner", Event: "stage_finished", TaskID: mustFirstDiagnosisTaskNumber(taskID), Stage: "planning", Status: "failed", ReasonCode: reason})
+	// 첫 계획에서 intent가 0개여도 실패가 아니다. 실행 단계의 Planner가 다시 계획하고, 그래도 없으면 no_intents로
+	// 마감한다(C11 결정 2). 저장소에서 못 읽은 경우만 실패다.
+	_, readErr := task.Store.HasActiveIntent()
+	if readErr != nil {
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "planner", Event: "stage_finished", TaskID: mustFirstDiagnosisTaskNumber(taskID), Stage: "planning", Status: "failed", ReasonCode: "intent_storage_failed"})
 	}
-	if planErr != nil || planning.Err() != nil || readErr != nil || !active || s.checkPreparationTask(planning, task) != nil || server.checkFirstDiagnosisModel(planning, task) != nil {
+	if planErr != nil || planning.Err() != nil || readErr != nil || s.checkPreparationTask(planning, task) != nil || server.checkFirstDiagnosisModel(planning, task) != nil {
 		return ErrFirstDiagnosisPreparation
 	}
 	return nil
@@ -620,20 +618,25 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	budgetLimited := firstDiagnosisBudgetLimited(task, server.firstModelBudget)
-	planned := task.firstDiagnosisWorkSeq.Load() != 0 && task.firstDiagnosisPlannedSeq.Load() >= task.firstDiagnosisWorkSeq.Load()
-	outcomes, closing := firstDiagnosisClosingOutcomes(counts, budgetLimited, planned)
+	outcomes, closing := firstDiagnosisClosingOutcomes(counts, budgetLimited, firstDiagnosisPlanned(task))
 	if !closing {
-		return false, none, nil
-	}
-	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Stopped
-	if settled == 0 {
-		if db.IsTerminal(task.lifecycleSnapshot().Status) {
-			return false, none, ErrFirstDiagnosisSupervisor
-		}
 		return false, none, nil
 	}
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && !flow.DeepReady() {
 		return false, none, ErrFirstDiagnosisOutcome
+	}
+	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Stopped
+	if settled == 0 {
+		// 계획을 거쳤는데 intent가 하나도 없다. 실패가 아니라 no_intents로 마감한다(C11 결정 2). 작업이 없으므로
+		// 대조할 E② 호출도 없어야 한다.
+		if execution, ok := server.engine.e2HTTP.Execution(task.ID); ok && execution != nil && len(execution.Calls()) != 0 {
+			return false, none, ErrFirstDiagnosisSupervisor
+		}
+		result := diagnosis.RunResult{Outcome: diagnosis.OutcomeNoIntents}
+		if budgetLimited {
+			result.ClosingReason = diagnosis.ClosingBudgetLimited
+		}
+		return true, result, nil
 	}
 	execution, ok := server.engine.e2HTTP.Execution(task.ID)
 	if !ok || execution == nil {
