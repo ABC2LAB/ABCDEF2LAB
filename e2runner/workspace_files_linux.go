@@ -105,6 +105,14 @@ func (r *Runner) EditWorkspaceFile(intentID int64, name, old, new string, all bo
 		if n == 0 || n > 1 && !all {
 			return nil, ErrWorkspaceEdit
 		}
+		// 결과 크기를 만들기 전에 넘침 없이 계산한다. 상한 밖이면 큰 결과를 호스트 메모리에 만들지 않는다.
+		limit := e2sandbox.WorkspaceLimit(e2sandbox.Config{})
+		if uint64(len(current)) > limit {
+			return nil, ErrWorkspaceFull
+		}
+		if len(new) > len(old) && uint64(len(new)-len(old)) > (limit-uint64(len(current)))/uint64(n) {
+			return nil, ErrWorkspaceFull
+		}
 		replaced = n
 		return bytes.ReplaceAll(current, []byte(old), []byte(new)), nil
 	})

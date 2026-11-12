@@ -1,6 +1,12 @@
 package e2runner
 
 import (
+	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
+
 	"errors"
 	"strings"
 	"testing"
@@ -93,5 +99,84 @@ func TestRunnerWorkspaceFilesRefuseWhileCallRuns(t *testing.T) {
 	}
 	if got, err := f.runner.WorkspaceFile(2, "from-call.txt"); err != nil || string(got) != "call" {
 		t.Fatal("call output lost", string(got), err)
+	}
+}
+
+// 정리를 끝내지 못하고 반환한 호출도 최종 cleanup(작업 공간 저장)이 끝날 때까지 보관소 사용 표시를 유지한다. 그
+// 사이 쓰기는 거부되고, 최종 정리 뒤의 쓰기는 호출이 저장한 파일과 함께 남는다(#460 이동찬 지적).
+func TestRunnerWorkspaceBusyUntilFinalCleanup(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(target.Close)
+	f := newRunnerFixtureConfigured(t, base, helper, target.URL, nil, nil, true, func(c *Config) {
+		c.PersistWorkspace = true
+		c.DrainTimeout = 300 * time.Millisecond
+	})
+	if err := f.execution.RegisterIntent(t.Context(), 2); err != nil {
+		t.Fatal(err)
+	}
+	returned := make(chan error, 1)
+	go func() {
+		_, err := f.runner.RunForIntent(t.Context(), 2, "printf call > from-call.txt; sleep 1")
+		returned <- err
+	}()
+	var state *runningCall
+	for i := 0; state == nil; i++ {
+		if i > 500 {
+			t.Fatal("call never became active")
+		}
+		f.runner.mu.Lock()
+		for _, candidate := range f.runner.active {
+			state = candidate
+		}
+		f.runner.mu.Unlock()
+		sleepBriefly()
+	}
+	// 실제 정리 지점을 잡아 호출의 cleanup이 끝나지 못하게 한다(성공한 감사·권한을 흉내 내지 않는다).
+	state.cleanupGate <- struct{}{}
+	if err := <-returned; !errors.Is(err, ErrIncomplete) {
+		<-state.cleanupGate
+		t.Fatal("call returned without an incomplete cleanup", err)
+	}
+	if err := f.runner.WriteWorkspaceFile(2, "tool.txt", []byte("tool")); !errors.Is(err, ErrWorkspaceBusy) {
+		<-state.cleanupGate
+		t.Fatal("write accepted while the call can still store the workspace", err)
+	}
+	<-state.cleanupGate
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if _, err := state.cleanup(ctx); err != nil {
+		t.Fatal("final cleanup", err)
+	}
+	if err := f.runner.WriteWorkspaceFile(2, "tool.txt", []byte("tool")); err != nil {
+		t.Fatal("write after the final cleanup", err)
+	}
+	for name, want := range map[string]string{"from-call.txt": "call", "tool.txt": "tool"} {
+		if got, err := f.runner.WorkspaceFile(2, name); err != nil || string(got) != want {
+			t.Fatalf("%s: %q %v", name, got, err)
+		}
+	}
+}
+
+// 고치기는 결과가 작업 공간 상한을 넘으면 결과를 만들기 전에 거부한다(큰 확장으로 호스트 메모리를 쓰지 않게).
+func TestRunnerWorkspaceEditRejectsExpansionBeforeAllocating(t *testing.T) {
+	f, _ := persistentRunnerFixture(t)
+	if err := f.runner.WriteWorkspaceFile(2, "a.txt", bytes.Repeat([]byte("a"), 1024)); err != nil {
+		t.Fatal(err)
+	}
+	replacement := strings.Repeat("b", 64<<10)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := f.runner.EditWorkspaceFile(2, "a.txt", "a", replacement, true); !errors.Is(err, ErrWorkspaceFull) {
+		t.Fatal("over-limit expansion accepted", err)
+	}
+	runtime.ReadMemStats(&after)
+	if grown := after.TotalAlloc - before.TotalAlloc; grown >= e2sandbox.WorkspaceLimit(e2sandbox.Config{}) {
+		t.Fatalf("expanded result allocated before the limit check: %d bytes", grown)
+	}
+	if got, err := f.runner.WorkspaceFile(2, "a.txt"); err != nil || len(got) != 1024 {
+		t.Fatal("rejected edit changed the file", len(got), err)
 	}
 }
