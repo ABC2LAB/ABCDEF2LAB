@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from runner_evidence import (
     ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_VERIFIED_MARKER,
     OBSERVER_LOG, PATH_AUTH_FIELDS, PATH_LOG, PATH_PROFILE, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
-    drain_complete, final_log_consistent, forwarded_by_method, forwarded_count, sequence_complete,
+    diagnostic_rows, ingress_counts, drain_complete, final_log_consistent, forwarded_by_method, forwarded_count, sequence_complete,
 )
 
 
@@ -31,6 +31,33 @@ def engine_row(seq, kind="request"):
 def observer_row(seq, decision="registered"):
     return {"seq": seq, "decision": decision, "method": "GET", "status": 200, "started_at": "a", "completed_at": "b",
             "response_bytes": 1}
+
+
+class TestDiagnosticIngress(unittest.TestCase):
+    def test_exploration_without_attempt_is_not_an_e2_bypass(self):
+        from attempt_reconcile import reconcile
+        main = engine_row(1) | {"ingress": "main", "attempt_id_state": "valid", "attempt_id": "a" * 32}
+        explore = engine_row(2) | {"ingress": "explore"}
+        rejected = engine_row(3, "rejected") | {"ingress": "explore"}
+        result = reconcile([{"decision": "allowed", "attempt_id": "a" * 32}], diagnostic_rows([main, explore, rejected]))
+        self.assertEqual(result["cells"]["allowed_observed"], 1)
+        self.assertEqual(result["cells"]["unrecorded_observed"], 0)
+        self.assertEqual(ingress_counts([main, explore, rejected]), {"main": 1, "explore": 1})
+
+    def test_legacy_rows_are_main_but_not_silently_new_layout(self):
+        rows = [engine_row(1)]
+        self.assertEqual(diagnostic_rows(rows), rows)
+        self.assertIsNone(ingress_counts(rows))
+        with self.assertRaisesRegex(EvidenceError, "meter_ingress_missing_or_mixed"):
+            diagnostic_rows(rows, require_ingress=True)
+        self.assertEqual(diagnostic_rows([], require_ingress=True), [])
+
+    def test_spoofed_unknown_or_mixed_ingress_is_rejected(self):
+        for rows in ([engine_row(1), engine_row(2) | {"ingress": "main"}],
+                     [engine_row(1) | {"ingress": "external"}], [engine_row(1) | {"ingress": {}}],
+                     [engine_row(1) | {"ingress": "explore", "attempt_id_state": "invalid"}]):
+            with self.subTest(shape=len(rows)), self.assertRaises(EvidenceError):
+                diagnostic_rows(rows)
 
 
 @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "geteuid"), "POSIX 전용")

@@ -1074,6 +1074,37 @@ class TestCompleteRun(unittest.TestCase):
         self.assertLess(ports.calls.index("events:stop"), ports.calls.index("tmpfs:post"))
         self.assertLess(ports.calls.index("tmpfs:pre"), ports.calls.index("events:start"))  # 구간 전 측정
 
+    def test_opt_in_preservation_is_signed_after_cleanup_without_changing_v11(self):
+        from test_preservation_record import options
+        spec = dataclasses.replace(make_spec(purpose="browser_acceptance"), preservation=options())
+        seen = {}
+        def capture(**kwargs):
+            seen.update(kwargs)
+            return {"format": "test-unsigned-preservation"}
+        def acceptance(ports, meter, clock):
+            meter.path_log = True
+        with patch.object(runner, "preservation_payload", side_effect=capture):
+            result, ports, _, evidence = run(acceptance, spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertLess(ports.calls.index("down"), ports.calls.index("sign"))
+        self.assertEqual(evidence.files["preservation-round.json"]["signature"], "sig")
+        self.assertEqual(evidence.files["run-record.json"]["version"], "1.1")
+        self.assertEqual(seen["conditions"]["layout"], "e2-legacy/v1")
+        self.assertEqual(seen["engine_source_sha"], spec.engine_source_sha)
+        self.assertIn("preservation-round.json", result["evidence"])
+
+    def test_failed_cleanup_does_not_publish_a_signed_preservation_round(self):
+        from test_preservation_record import options
+        spec = dataclasses.replace(make_spec(purpose="browser_acceptance"), preservation=options())
+        def failure(ports, meter, clock):
+            meter.path_log = True
+            ports.fail["down"] = RuntimeError("synthetic failure")
+        with patch.object(runner, "preservation_payload", return_value={"format": "test-unsigned-preservation"}):
+            result, ports, _, evidence = run(failure, spec=spec)
+        self.assertEqual(result["status"], INVALID)
+        self.assertNotIn("preservation-round.json", evidence.files)
+        self.assertNotIn("sign", ports.calls)
+
     def test_v11_record_binds_proof_events_and_evidence(self):
         from runner_record import canonical_sha256
         result, ports, _, evidence = run()
@@ -1162,6 +1193,19 @@ def failing(code_or_name, error=None):
 
 class TestE2Slot(unittest.TestCase):
     """개선 후 + 가짜 E² 회차: 망 점검이 E² 배치를 기대하고, E² 컨테이너 이미지도 대조한다."""
+
+    def test_explore_rows_do_not_inflate_unrecorded_e2_transmissions(self):
+        def split(ports, meter, clock):
+            original = meter.engine_rows
+            meter.engine_rows = lambda: [row | {"ingress": "main" if row["seq"] <= 2 else "explore"} for row in original()]
+        result, _, _, evidence = run(split, spec=make_spec(e2="stub"))
+        self.assertEqual(result["status"], COMPLETE)
+        recon = evidence.files["attempt-reconciliation.json"]["cells"]
+        self.assertEqual((recon["allowed_observed"], recon["unrecorded_observed"]), (2, 0))
+        ingress = evidence.files["meter-summary.json"]["forwarded_by_ingress"]
+        self.assertEqual(ingress["main"], 2)
+        self.assertGreater(ingress["explore"], 0)
+        self.assertEqual(sum(ingress.values()), result["meter"]["forwarded_requests"])
 
     def test_stub_run_completes_with_the_e2_layout(self):
         result, ports, meter, evidence = run(spec=make_spec(e2="stub"))

@@ -66,6 +66,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `engine_rules` | 원본 ② 규칙 파일의 절대 경로 또는 `null`(프로토콜 §8.1, 형식은 [engine-rules.md](./engine-rules.md)). 원본 회차에만 쓴다. 조건마다 설정 파일을 따로 둔다 |
 | `purpose` | 회차 목적. `official`은 공식 비교 회차이고 계측기 경로 기록이 있으면 무효다. `browser_acceptance`는 [브라우저 수용시험](browser-acceptance.md) 보존 회차이고 경로 기록이 없으면 무효다. 값은 서명된 실행 조건에 남는다. 격리 증명 검증은 목적과 상관없이 하고, 채점기는 `official`이 아닌 회차가 섞인 표를 거부한다. 빠지면 `official`이다(목적 칸이 생기기 전 설정·근거도 그대로 읽는다) |
 | `path_key_file` | `purpose=browser_acceptance`일 때만 필수인 경로 가림 키 파일(절대 경로, `runs_root` 밖, 러너 uid 소유·0600·32바이트). 비교할 원본·개선 후 회차 묶음이 같은 파일을 쓴다. 러너가 비밀번호를 묻기 전에 링크를 푼 실제 위치가 `runs_root` 밖인지, 러너 서명 키·비밀 env 파일과 다른 파일인지, 계측기와 같은 조건인지 확인하고, 키 참조(`path_key_ref`, 16 hex)를 실행 조건에 서명해 남기며 계측기 경로 행의 참조와 대조한다(다르면 `meter_path_key_mismatch`). 그 회차에만 `deploy/eval/compose.acceptance.yaml`을 얹어 계측기를 경로 기록과 함께 띄우며 키를 읽기 전용으로 넘긴다. 공식 회차에 있으면 설정 오류다 |
+| `preservation` | 선택적인 브라우저 수용시험 원자료 서명 메타데이터. 공식 회차에서는 금지한다. 형식·보호 키·재계산·NOT_RUN 제한은 [서명된 보존 원자료](preservation-signed-runs.md). 생략하면 기존 동작이고, 현재 Docker 러너의 개선 후 배치는 `e2-legacy/v1`로만 발행한다 |
 | `state` | 상태 차이(프로토콜 §8.1·§8.2) 설정. `null`이면 사본을 뜨지 않는다. 객체면 `sqlite_path`(대상 컨테이너 안 SQLite 절대 경로), `signal_tables`(같은 DB에 있는 해결 기록 등 신호 테이블 이름 목록, 상태 차이 판정에서 빼고 건수만 따로), `max_copy_bytes`(사본 하나의 상한), `runtime_roots`(비교할 런타임 디렉터리 절대 경로 목록, 겹치면 거부, 비어도 됨. 각 루트는 실제 디렉터리여야 하고 링크·정규 파일이면 pre에서 무효. 루트 안의 링크는 링크 자체만 비교하고 링크 대상은 보지 않음), `memory`(메모리 저장 읽기, `null`이면 안 읽음. 객체면 `paths`·`count_field`·`max_body_bytes`·`timeout_ms`)를 정확히 받는다. 앱별 값은 여기서만 받는다(Juice Shop v15: `/juice-shop/data/juiceshop.sqlite`, `["Challenges"]`, 주문 PDF가 쌓이는 `/juice-shop/ftp`와 업로드 디렉터리). 요청이나 기동만으로 바뀌는 디렉터리(접근 로그 `logs`, 기동 때 만드는 `i18n`)는 넣지 않는다. `memory.paths`에는 부작용 없음을 확인한 비로그인 GET만 넣는다. 응답의 `count_field` 배열 길이와 본문 지문을 비교한다. Juice Shop v15는 상품별 리뷰 경로가 해당하고(2회 읽기 동일·해결 신호 변화 0 확인), 주문 목록은 비로그인·일반 계정으로 읽을 수 없어(403·500) 주문은 런타임 디렉터리의 PDF 차이로만 본다. 양쪽 회차에 같게 적용한다. pre 사본은 대상 준비 확인 뒤·구간 시작 전에, post 사본은 구간이 닫히고 tmpfs를 잰 뒤에 뜬다(대상 `docker pause`가 Docker 이벤트를 만들기 때문). SQLite 사본은 회차 키(메모리에만)로 행 지문을 뜬 즉시 지우고, 런타임 디렉터리는 호스트에 파일을 만들지 않고 tar에서 바로 지문을 뜬다. 메모리 읽기는 계측기 이미지의 `state-read` 역할을 대상 netns에서 1회 실행한다(구간 밖, loopback만, 권한·마운트 없음, 로그 드라이버 끔). 등록 관측 front를 거치지 않으므로 관측 로그 대조와 섞이지 않는다 |
 | `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data,min_free}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한과 구간 종료 뒤 남아야 할 최소 공간(두 상한보다 작아야 함), DB healthcheck. `tmpfs` 세 값은 사전검사 `run_storage`(프로파일 v3 환경 지문 입력)와 글자 그대로 같아야 시작한다 |
 | `llm_gateway.generation_path` | api: generation 조회 경로(예: OpenRouter `/api/v1/generation`) |
@@ -139,6 +140,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   state-diff.json                설정 `state`가 있을 때만: 같은 컨테이너 pre·post SQLite 상태 차이(테이블별 행 수·추가·삭제·변경 건수·정수 id, 열 구성 변경, 테이블·인덱스·트리거·뷰 정의 변화 `schema_objects`(종류·이름만), sqlite_sequence 변화, 신호 테이블은 `signals`에 따로), 런타임 디렉터리별 항목 수·추가·삭제·변경 건수(`runtime`, 항목 경로 없음), 메모리 읽기 합계·변한 경로 수·post에서 못 읽은 경로 수(`memory`, 본문·경로 없음). `content_changed`는 SQLite 쪽만이고 전체 변화 여부는 `state_changed`로 본다. 값·지문·경로 없음. `state/pre`·`state/post` 디렉터리는 비어 있어야 정상이다(사본을 지운 뒤)
   isolation-evidence.json        격리 근거 행(러너 기록 v1.1 §3.1 형식, 완료 회차만)
   solve-events.json              pre=false→post=true 키마다 isolated_window 해결 이벤트(평가 전용 key, 완료 회차만)
+  preservation-round.json        preservation 선택 시: 계측기 원자료 hash·공개 조건에 별도 서명한 browser_acceptance sidecar
   run-record.json                서명된 러너 기록 v1.1(채점기 입력, 완료 회차만. records=null 판정 미수집)
   runner-result.json             완료(+서명) 또는 무효(+사유·실패 단계: 사유가 나온 점검, 예상 밖 예외·중단이면 마지막으로 시작한 단계)
 ```
@@ -154,9 +156,11 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `response` | `none`(대상이 보낸 바이트 없음. 계측기가 직접 준 502·503은 대상 응답이 아님) / `headers`(프로토콜 전환 스트림) / `complete`(본문까지 넘김) / `interrupted`(응답이 시작됐지만 끝나지 않음) |
 | `attempt_id_state` | E② 시도 ID 헤더(`X-ABC2LAB-E2-Attempt`) 검사: `absent` / `valid` / `invalid` / `multiple` |
 | `attempt_id` | `valid`일 때만 소문자 hex 32자, 아니면 빈 문자열(잘못된 원문은 남기지 않음) |
+| `ingress` | 실제 리슨 입구 `main` 또는 `explore`. 경로 행과 일치해야 하며 봉인 뒤 거부에도 남긴다. 과거 행에는 없을 수 있지만 한 회차 안 혼합은 거부한다 |
 
 - `sent`·`response`는 같은 시도의 진행 이력이라 서로 배타적인 건수로 합산하지 않는다. "보냈는데 응답 없음"(`yes`·`none`)과 `uncertain`이 결과 불명이다. 계측 건수만으로 대상 앱이 실제 처리한 건수를 확정하지 않는다.
 - 계측기는 시도 ID를 기록한 뒤 **대상에 넘기기 전에 그 헤더 하나만 지운다**(평가 프로토콜 §8.3). 형식이 틀려도 요청을 막지 않는다. baseline에는 이 헤더가 없는 것이 정상이다(`absent`).
+- E② 시도별 대조는 `main` 행만 쓴다. `explore`의 AttemptID 부재는 정상이고 E② 기록 없는 송신으로 세지 않는다. 탐색 입구에 E② ID가 있으면 배치/기록 모순으로 거부한다. 탐색 경계 차단 근거는 별도이며 미확보를 E② 차단이나 0건으로 채우지 않는다.
 - `sent=no`인데 `response`가 `none`이 아니거나, 거부 행이 `no`·`none`이 아니면 모순으로 거부한다.
 
 근거 파일은 O_EXCL·0600으로 한 번만 쓴다. 무효 기록에는 측정값·근거 목록·서명을 넣지 않는다.
