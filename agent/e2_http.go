@@ -221,9 +221,11 @@ func e2HTTPRunnerFailed(runErr error, result e2runner.Result) bool {
 		return false
 	}
 	t := result.Trusted
+	// 연결을 맺지 못한 송신 실패(C02)도 감사·드레인이 끝난 명령 실패다. 그 명령만 오류로 돌려주고 다음 명령은 막지 않는다.
+	// 프록시 장애·시간 초과로 생긴 transient_failure는 송신 실패 수가 없으므로 계속 runner 장애다.
 	knownExit := t.Classification == "tool_failure" || t.Classification == "policy_not_executed" ||
 		t.Classification == "partial_policy_denial" || t.Classification == "unsupported" ||
-		t.Classification == "partial_unsupported"
+		t.Classification == "partial_unsupported" || t.Classification == "transient_failure" && t.Call.Counts.Transient > 0
 	return !(errors.Is(runErr, e2runner.ErrUnavailable) && knownExit && t.ProcessBashExited && t.ExitCode != 0 &&
 		t.Final && t.ProcessDrained && t.ProxyDrained && t.Call.AuditComplete && t.Execution.AuditComplete)
 }
