@@ -7,7 +7,9 @@ import (
 )
 
 // ErrBoundaryProjection reports loss of optional workflow projection, not loss of
-// the durable E2 wire audit. The boundary must refuse all subsequent admission.
+// the durable E2 wire audit. A boundary may defer a bounded number of request
+// observation writes, but once projection and admission state may diverge it must
+// refuse all subsequent admission.
 var ErrBoundaryProjection = errors.New("workflow_projection_failed")
 
 // RequestView는 기존 E② 정규화·고정 범위 검사 뒤의 추가 제한 입력이다.
