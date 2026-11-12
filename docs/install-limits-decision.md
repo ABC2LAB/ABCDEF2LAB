@@ -47,7 +47,7 @@
 
 ## 3. 구현 순서
 
-1. `runtime_limits` 입력·검사·`policy.json`/launch 반영(E②·루프 칸). 블록이 없으면 지금 `policy.json`과 같은 값이 나오는 것을 시험으로 고정한다(동작 차이 없음).
+1. `runtime_limits` 입력·검사·`policy.json`/launch 반영(E②·루프 칸). 블록이 없으면 지금 `policy.json`과 같은 값이 나오는 것을 시험으로 고정한다(동작 차이 없음). — 구현: `productPolicyBounds`가 모드별 기본값에 덮어쓰고 `validProductPolicyTemplate`으로 검사하며, 설치 입력 검사 단계(부작용 전)와 실제 설치가 같은 함수를 쓴다.
 2. `run_seconds`·`model_requests`와 지문 판 올림. 적용되지 않는 설치의 `engine.workers` 쓰기를 지운다(동작 차이 없음, 지금도 기본 3).
 3. `status_read_retries`(C10 상태 조회 재시도와 같이).
 4. `model_concurrency`(C28 결정 2의 2부 뒤).
