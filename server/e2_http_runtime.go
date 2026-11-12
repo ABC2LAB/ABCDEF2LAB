@@ -410,7 +410,17 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 		return ctx, ErrE2HTTPBusy
 	}
 	if t.lease != nil {
-		if !t.validLease || !r.validLease(t, *t.lease, 0) {
+		if !t.validLease {
+			return ctx, ErrE2HTTPHost
+		}
+		switch r.leaseState(t, *t.lease, 0) {
+		case e2HTTPLeaseUsable:
+		case e2HTTPLeaseBudgetSpent:
+			// 승인 요청 예산을 다 썼다. 실패가 아니라 실행 상한이다. 새 계획 없이 진행 중 작업이 끝나면 감독자가
+			// budget_limited로 마감한다(실행 결과 상태 값 계약 §3.1).
+			task.firstDiagnosisBudgetLimited.Store(true)
+			return ctx, ErrE2HTTPBudgetLimited
+		default:
 			return ctx, ErrE2HTTPHost
 		}
 	}
@@ -427,21 +437,42 @@ func (r *E2HTTPRuntime) resetMatches(actual string) bool {
 	return actual == r.options.Expected.ResetRef
 }
 
+// lease 판정 결과다. 예산 소진은 결속이 유효한 실행의 실행 상한이라 결속 오류와 나눈다.
+type e2HTTPLeaseState int
+
+const (
+	e2HTTPLeaseInvalid e2HTTPLeaseState = iota
+	e2HTTPLeaseUsable
+	e2HTTPLeaseBudgetSpent
+)
+
 func (r *E2HTTPRuntime) validLease(t *e2HTTPRuntimeTask, lease E2HTTPRunOptions, initialIntent int64) bool {
+	return r.leaseState(t, lease, initialIntent) == e2HTTPLeaseUsable
+}
+
+// leaseState는 lease가 이 실행에 결속돼 있는지 보고, 결속이 맞으면 남은 승인 요청 예산이 있는지 본다. 예산 조회
+// 실패는 소진이 아니라 결속 오류다.
+func (r *E2HTTPRuntime) leaseState(t *e2HTTPRuntimeTask, lease E2HTTPRunOptions, initialIntent int64) e2HTTPLeaseState {
 	if lease.Runner == nil || lease.Release == nil {
-		return false
+		return e2HTTPLeaseInvalid
 	}
 	if local, ok := lease.Runner.(localE2HTTPRun); ok && lease.Execution != nil && lease.Execution != local.runner.Execution() {
-		return false
+		return e2HTTPLeaseInvalid
 	}
 	view := lease.Runner.Snapshot()
 	expected := r.options.Expected
 	if view.Version != e2proxy.Version || view.State != "active" || !view.AuditComplete || view.Scope.TaskRef != t.id || view.Scope.RunRef != expected.RunRef || !r.resetMatches(view.Scope.ResetRef) || view.Scope.PolicyRef != expected.PolicyRef || view.Scope.CaseRef != expected.CaseRef || view.PolicyRevision != expected.PolicyRevision || initialIntent > 0 && (view.IntentID != initialIntent || !lease.Runner.HasIntent(initialIntent)) {
-		return false
+		return e2HTTPLeaseInvalid
 	}
 	policy := lease.Runner.Policy()
 	remaining, err := lease.Runner.BudgetRemaining()
-	return policy.BudgetRef == expected.BudgetRef && err == nil && remaining > 0
+	switch {
+	case policy.BudgetRef != expected.BudgetRef || err != nil:
+		return e2HTTPLeaseInvalid
+	case remaining == 0:
+		return e2HTTPLeaseBudgetSpent
+	}
+	return e2HTTPLeaseUsable
 }
 
 func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.Node) (context.Context, func() error, error) {
@@ -515,7 +546,13 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 		t.validLease = true
 		t.mu.Unlock()
 	}
-	if !r.validLease(t, *lease, 0) {
+	switch r.leaseState(t, *lease, 0) {
+	case e2HTTPLeaseUsable:
+	case e2HTTPLeaseBudgetSpent:
+		// 승인 요청 예산을 다 썼다. 이 intent는 시작하지 않고(마감 때 incomplete) 실행 상한으로 마감한다.
+		task.firstDiagnosisBudgetLimited.Store(true)
+		return ctx, nil, ErrE2HTTPBudgetLimited
+	default:
 		return ctx, nil, ErrE2HTTPHost
 	}
 	if err := lease.Runner.RegisterIntent(ctx, actual.ID); err != nil {
