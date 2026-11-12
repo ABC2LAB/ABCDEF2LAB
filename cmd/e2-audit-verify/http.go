@@ -12,6 +12,8 @@ import (
 const (
 	registeredGETJournalFormat = "registered-get-v1"
 	e2proxyJournalFormat       = e2proxy.JournalVersion
+	// e2proxyJournalFormatV1은 C16 전에 저장한 기록을 다시 검증할 때만 쓴다.
+	e2proxyJournalFormatV1 = e2proxy.VersionV1
 	// Match CreateJournal/VerifyJournal's accepted raw HMAC key range. The
 	// existing e2-audit-keygen produces the supported 32-byte minimum.
 	minHTTPJournalKeyBytes = 32
@@ -20,7 +22,12 @@ const (
 
 // This verifies only the supplied bytes and checkpoint. JournalSummary is not
 // an Execution ACK, a closure certificate, a current host head or E3 evidence.
-func verifyHTTPFiles(ctx context.Context, journalPath, checkpointPath, keyPath string) (result any, code string) {
+func httpJournalFormat(format string) bool {
+	return format == e2proxyJournalFormat || format == e2proxyJournalFormatV1
+}
+
+// format은 운영자가 고른 판이다. 신뢰 checkpoint의 판과 같아야 한다(판을 잘못 고른 검증이 다른 판 규칙으로 통과하지 않게).
+func verifyHTTPFiles(ctx context.Context, format, journalPath, checkpointPath, keyPath string) (result any, code string) {
 	if ctx.Err() != nil {
 		return nil, "audit_verification_canceled"
 	}
@@ -37,7 +44,7 @@ func verifyHTTPFiles(ctx context.Context, journalPath, checkpointPath, keyPath s
 		return nil, "audit_input_unavailable"
 	}
 	checkpoint, err := decodeHTTPCheckpoint(encoded)
-	if err != nil {
+	if err != nil || checkpoint.Version != format {
 		return nil, "audit_input_invalid"
 	}
 	journal, err := openRegular(journalPath, false)

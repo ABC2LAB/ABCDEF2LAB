@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	JournalVersion        = "e2-http-v1"
+	JournalVersion        = Version
 	journalIDBytes        = 16
 	journalMinKeyBytes    = 32
 	journalMaxKeyBytes    = 4096
@@ -161,7 +161,7 @@ func newJournal(writer journalWriter, key []byte, at time.Time) (*Journal, error
 		return fail()
 	}
 	header := journalHeader{Version: JournalVersion, JournalID: hex.EncodeToString(nonce[:]), CreatedAt: at}
-	mac, err := journalMAC(ownedKey, "header", header)
+	mac, err := journalMAC(ownedKey, JournalVersion, "header", header)
 	if err != nil {
 		return fail()
 	}
@@ -204,13 +204,13 @@ func (j *Journal) Record(ctx context.Context, event Event) error {
 	if failed {
 		return ErrJournalFailed
 	}
-	if !validJournalEvent(event) || head.Sequence == math.MaxUint64 ||
+	if !validJournalEvent(event, JournalVersion) || head.Sequence == math.MaxUint64 ||
 		head.Sequence >= journalMaxEvents || event.Index != head.Sequence+1 || head.Sequence > 0 && event.Scope != head.Scope {
 		return ErrJournalEvent
 	}
 	event.At = event.At.UTC()
 	record := journalRecord{Index: head.Sequence + 1, Previous: head.MAC, Event: event}
-	mac, err := journalMAC(j.key, "event", record)
+	mac, err := journalMAC(j.key, JournalVersion, "event", record)
 	if err != nil {
 		return ErrJournalEvent
 	}
@@ -283,7 +283,7 @@ func (j *Journal) Close() error {
 	return j.closeErr
 }
 
-// VerifyJournal accepts this version's canonical newline records only. The
+// VerifyJournal accepts canonical newline records of this version or e2-http-v1 (read only). The
 // optional single expected head detects valid-prefix truncation/rollback. It
 // authenticates bytes, not the supplied key's operational authority. A blocking
 // Reader must itself support cancellation; no reader goroutine is abandoned.
@@ -336,15 +336,16 @@ func VerifyJournal(ctx context.Context, source io.Reader, key []byte, expected .
 		return JournalSummary{}, integrityUnlessContext(ctx, err)
 	}
 	if line.Kind != "header" || line.Header == nil || line.Record != nil ||
-		line.Header.Version != JournalVersion || !validJournalHex(line.Header.JournalID, journalIDBytes) ||
+		!knownJournalVersion(line.Header.Version) || !validJournalHex(line.Header.JournalID, journalIDBytes) ||
 		!validJournalTime(line.Header.CreatedAt) || !validJournalHex(line.MAC, sha256.Size) {
 		return JournalSummary{}, ErrJournalIntegrity
 	}
-	want, err := journalMAC(ownedKey, "header", *line.Header)
+	version := line.Header.Version
+	want, err := journalMAC(ownedKey, version, "header", *line.Header)
 	if err != nil || !hmac.Equal([]byte(want), []byte(line.MAC)) {
 		return JournalSummary{}, ErrJournalIntegrity
 	}
-	head := JournalCheckpoint{Version: JournalVersion, JournalID: line.Header.JournalID, MAC: line.MAC}
+	head := JournalCheckpoint{Version: version, JournalID: line.Header.JournalID, MAC: line.MAC}
 	for {
 		line, err = readLine()
 		if errors.Is(err, io.EOF) {
@@ -358,11 +359,11 @@ func VerifyJournal(ctx context.Context, source io.Reader, key []byte, expected .
 		}
 		if line.Kind != "event" || line.Header != nil || line.Record == nil ||
 			line.Record.Index != head.Sequence+1 || line.Record.Event.Index != line.Record.Index || line.Record.Previous != head.MAC ||
-			!validJournalHex(line.MAC, sha256.Size) || !validJournalEvent(line.Record.Event) ||
+			!validJournalHex(line.MAC, sha256.Size) || !validJournalEvent(line.Record.Event, version) ||
 			head.Sequence > 0 && line.Record.Event.Scope != head.Scope {
 			return JournalSummary{}, ErrJournalIntegrity
 		}
-		want, err = journalMAC(ownedKey, "event", *line.Record)
+		want, err = journalMAC(ownedKey, version, "event", *line.Record)
 		if err != nil || !hmac.Equal([]byte(want), []byte(line.MAC)) {
 			return JournalSummary{}, ErrJournalIntegrity
 		}
@@ -395,13 +396,17 @@ func encodeJournalLine(line journalLine) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-func journalMAC(key []byte, domain string, value any) (string, error) {
+// knownJournalVersion은 검증할 수 있는 판이다. 새 기록은 JournalVersion으로만 쓴다.
+func knownJournalVersion(version string) bool { return version == Version || version == VersionV1 }
+
+// journalMAC은 판을 MAC 도메인에 넣는다. 저장된 v1 기록은 v1 문자열로 다시 계산한다.
+func journalMAC(key []byte, version, domain string, value any) (string, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return "", err
 	}
 	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(JournalVersion + "\x00" + domain + "\x00"))
+	mac.Write([]byte(version + "\x00" + domain + "\x00"))
 	mac.Write(data)
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
@@ -448,8 +453,18 @@ func validJournalHex(text string, size int) bool {
 
 func validJournalTime(at time.Time) bool { return !at.IsZero() && at.Year() >= 1 && at.Year() <= 9999 }
 
-func validJournalEvent(event Event) bool {
-	if event.Index == 0 || event.Version != JournalVersion || !validJournalTime(event.At) {
+// validJournalEvent는 그 판의 규칙으로 행 하나를 본다. v1에는 withheld·response_truncated가 없다.
+func validJournalEvent(event Event, version string) bool {
+	if event.Index == 0 || event.Version != version || !knownJournalVersion(version) || !validJournalTime(event.At) {
+		return false
+	}
+	if version == VersionV1 && (event.Reason == Withheld || event.ResponseTruncated) {
+		return false
+	}
+	// 보류 결과는 허용해서 보냈고 대상이 답한 뒤 표현만 주지 않은 것이다. 끝까지 전달한 응답이 아니다. call_closed 행은
+	// call의 마지막 사유를 요약으로 실으므로 withheld일 수 있다. 자른 응답 표시는 보류 결과 행에만 붙는다.
+	if event.Stage == "intent" && event.Reason == Withheld || event.ResponseTruncated && (event.Stage != "result" || event.Reason != Withheld) ||
+		event.Stage == "result" && event.Reason == Withheld && (event.Decision != "allowed" || !event.ResponseReceived || event.ResponseComplete) {
 		return false
 	}
 	for _, ref := range []string{event.Scope.TaskRef, event.Scope.RunRef, event.Scope.CaseRef, event.Scope.ResetRef, event.Scope.PolicyRef, event.PolicyRevision} {
@@ -517,7 +532,7 @@ func validJournalReason(reason string) bool {
 	switch Reason(reason) {
 	case Complete, Unsupported, PolicyDenied, Closed, AuditFailed, Expired,
 		Revoked, BudgetExhausted, TransportFailed, Unknown, AttemptLimit, DenialLimit,
-		TransientLimit, UnknownLimit, Invalid:
+		TransientLimit, UnknownLimit, Invalid, Withheld:
 		return true
 	}
 	return false

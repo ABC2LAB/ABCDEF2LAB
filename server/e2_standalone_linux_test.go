@@ -304,7 +304,7 @@ func TestE2StandaloneActualRunnerAllowDenyAndExport(t *testing.T) {
 	if !matched {
 		t.Fatal("trusted attempt missing from journal")
 	}
-	verify := exec.CommandContext(t.Context(), filepath.Join(runtime.GOROOT(), "bin", "go"), "run", "-p=2", "../cmd/e2-audit-verify", "--journal-format", "e2-http-v1", "--journal", filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, e2export.JournalFile), "--checkpoint", filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, e2export.CheckpointFile), "--key-file", b.options.Config.AuditKeyPath)
+	verify := exec.CommandContext(t.Context(), filepath.Join(runtime.GOROOT(), "bin", "go"), "run", "-p=2", "../cmd/e2-audit-verify", "--journal-format", e2proxy.JournalVersion, "--journal", filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, e2export.JournalFile), "--checkpoint", filepath.Join(b.options.Config.EvidenceDir, b.options.ExecutionRef, e2export.CheckpointFile), "--key-file", b.options.Config.AuditKeyPath)
 	verify.Env = append(os.Environ(), "GOMAXPROCS=2", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
 	if out, err := verify.CombinedOutput(); err != nil {
 		t.Fatalf("actual audit verifier failed: %s", out)

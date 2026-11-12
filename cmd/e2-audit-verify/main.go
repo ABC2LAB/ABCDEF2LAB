@@ -20,7 +20,7 @@ import (
 
 const maxCheckpointBytes = 4096
 
-const usage = "Usage: e2-audit-verify --journal FILE --checkpoint TRUSTED_FILE --key-file PRIVATE_FILE [--journal-format registered-get-v1|e2-http-v1] [--timeline [--max-events N]]\n"
+const usage = "Usage: e2-audit-verify --journal FILE --checkpoint TRUSTED_FILE --key-file PRIVATE_FILE [--journal-format registered-get-v1|e2-http-v2|e2-http-v1] [--timeline [--max-events N]]\n"
 
 var errInput = errors.New("audit_input_unavailable")
 
@@ -47,7 +47,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	} else if err != nil || flags.NArg() != 0 || *journal == "" || *checkpoint == "" || *key == "" || *maxEvents < 1 || *maxEvents > auditlog.MaxTimelineEvents ||
-		*format != registeredGETJournalFormat && *format != e2proxyJournalFormat {
+		*format != registeredGETJournalFormat && !httpJournalFormat(*format) {
 		if n, err := io.WriteString(stderr, usage); err != nil || n != len(usage) {
 			return 1 // A broken diagnostic sink cannot receive its own error code.
 		}
@@ -55,7 +55,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	usedLimit := false
 	flags.Visit(func(f *flag.Flag) { usedLimit = usedLimit || f.Name == "max-events" })
-	if usedLimit && !*timeline || *format == e2proxyJournalFormat && *timeline {
+	if usedLimit && !*timeline || httpJournalFormat(*format) && *timeline {
 		if n, err := io.WriteString(stderr, usage); err != nil || n != len(usage) {
 			return 1
 		}
@@ -69,8 +69,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	var result any
 	var code string
-	if *format == e2proxyJournalFormat {
-		result, code = verifyHTTPFiles(ctx, *journal, *checkpoint, *key)
+	if httpJournalFormat(*format) {
+		result, code = verifyHTTPFiles(ctx, *format, *journal, *checkpoint, *key)
 	} else {
 		result, code = verifyFiles(ctx, *journal, *checkpoint, *key, *timeline, *maxEvents)
 	}
