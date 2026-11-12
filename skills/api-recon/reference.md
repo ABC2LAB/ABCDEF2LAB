@@ -1,5 +1,8 @@
 # api-recon — reference manual
 
+> Product mode: follow the safety and integration section at the start of [SKILL.md](SKILL.md). The old scripts and curl/TLS examples below are reference methodology, not enabled product transports. Use `metadata_only.js` for page-side inferred metadata and the private host boundary reader for observed metadata. Never run direct fetch/TLS-disable/raw-recording templates through the product exploration tools. See [the integration contract](../../docs/contracts/api-recon-restoration.md).
+
+
 Grep recipes, `config.json` template, and troubleshooting. All greps run against the `js/` directory. When a bundle is on a single line, first `js-beautify` or `sed 's/}/}\n/g'`; usually a raw grep with a context window is enough.
 
 ## Script notes
@@ -8,6 +11,7 @@ Every file under `scripts/` is a [reference template] that must be adjusted for 
 
 | Script | Common items to adjust |
 |---|---|
+| `metadata_only.js` | standalone page hook; bounded key-only inferred metadata, no transport or response/frame capture |
 | `harvest_static.py` | endpoint regex, webpack/Vite manifest parsing, micro-frontend publicPath, retry/concurrency |
 | `runtime_harvest.js` | neutralize field names and success value, stub match rules and body structure, routes source, WS recording, `waitUntil`/`routeTimeout`/`proxy` |
 | `preload.js` | `loginPathRe`, L1 stubs, `neutralize.fields`, `apiPattern`, whether to enable L3, `recordDetail`, `observe.*`, `neutralizeVueRouter` |

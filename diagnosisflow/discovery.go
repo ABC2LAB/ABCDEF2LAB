@@ -36,9 +36,12 @@ type Discovery struct {
 	QueryKeys   []string `json:"query_keys,omitempty"`
 	BodyKeys    []string `json:"body_keys,omitempty"`
 	ContentType string   `json:"content_type,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	Transport   string   `json:"transport,omitempty"`
 }
 
-// ReportStatic은 탐색 에이전트가 번들·문서에서 찾은 엔드포인트를 추정 발견으로 저장한다(탐색 실행기 결정안 §2-3).
+// ReportStatic은 모델·페이지 도구의 정적·동적 메타데이터를 추정 발견으로 저장한다. 이름은 기존 호출자와 호환한다.
+// Source를 runtime으로 보고해도 실제 관측으로 승격되지 않는다(탐색 실행기 결정안 §2-3).
 // 모델이 쓴 값은 데이터라서(절대규칙 4) 프로그램이 형식과 승인 범위(origin·경로·메서드·제외 경로)를 다시 검사하고,
 // 형식 오류·범위 밖은 저장하지 않고 수만 센다. 초기 탐색(crawling) 단계에서만 받는다. 저장한 수를 돌려준다.
 func (c *Controller) ReportStatic(ctx context.Context, items []Discovery) (int, error) {
@@ -50,7 +53,7 @@ func (c *Controller) ReportStatic(ctx context.Context, items []Discovery) (int, 
 	if c.poisoned {
 		return 0, ErrProjection
 	}
-	if c.record.Snapshot.Stage != "crawling" || c.record.Snapshot.Paused {
+	if c.record.Snapshot.Stage != "crawling" || c.record.Snapshot.Paused || c.binding.Current() != nil {
 		return 0, ErrDenied
 	}
 	accepted := 0
@@ -80,6 +83,13 @@ func (c *Controller) reportStaticLocked(item Discovery) discoveryResult {
 	query, okQuery := discoveryKeys(item.QueryKeys)
 	body, okBody := discoveryKeys(item.BodyKeys)
 	contentType, okType := discoveryMediaType(item.ContentType)
+	source := item.Source
+	if source == "" {
+		source = SourceAPIReconStatic
+	}
+	if source != SourceAPIReconStatic && source != SourceAPIReconRuntime || item.Transport != "" && item.Transport != "http" && item.Transport != "sse" && item.Transport != "websocket" {
+		return discoveryRejected
+	}
 	// 경로는 이 origin의 절대 경로만 받는다. query·fragment는 키 이름 칸으로만 받는다.
 	if method == "UNKNOWN" || !okQuery || !okBody || !okType || !strings.HasPrefix(item.Path, "/") || strings.HasPrefix(item.Path, "//") || strings.ContainsAny(item.Path, "?#") {
 		return discoveryRejected
@@ -89,12 +99,20 @@ func (c *Controller) reportStaticLocked(item Discovery) discoveryResult {
 		// 정규화로 바뀌는 경로(점 조각·인코딩)는 모델이 쓴 것과 다른 주소라 받지 않는다.
 		return discoveryRejected
 	}
-	if in, _ := c.endpointScope(method, path, discoveryKind, SourceAPIReconStatic); !in {
+	if in, _ := c.endpointScope(method, path, discoveryKind, source); !in {
 		return discoveryRejected
 	}
-	e := c.addLocked(method, path, discoveryKind, SourceAPIReconStatic, "/")
+	c.inventoryLocked(DiscoveryEvidence{Method: method, Path: path, Kind: discoveryKind, Source: source, Confidence: "inferred", InScope: true, Transport: item.Transport, QueryKeys: query, BodyKeys: body, ContentType: contentType})
+	e := c.addLocked(method, path, discoveryKind, source, "/")
 	if e == nil {
 		return discoveryOmitted
+	}
+	if e.DiscoveryConfidence == "observed" {
+		return discoveryStored
+	}
+	e.DiscoveryConfidence = "inferred"
+	if e.Transport == "" {
+		e.Transport = item.Transport
 	}
 	e.QueryKeys = mergeDiscoveryKeys(e.QueryKeys, query)
 	e.BodyKeys = mergeDiscoveryKeys(e.BodyKeys, body)
