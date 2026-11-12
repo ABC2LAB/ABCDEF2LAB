@@ -1076,9 +1076,11 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	// 자리를 기다리는 동안 취소·철회·만료·운영자 중지가 오면 보내지 않고 끝낸다. 자리를 얻은 뒤 아래에서
 	// 권한·정책 세대·시도 상한·예산을 다시 검사한다(C20·C21).
 	// 빈 자리는 먼저 잡는다. 이미 취소된 호출자도 자리가 있으면 지금처럼 예약·감사 경로로 간다(select의 임의 선택 방지).
+	waited := false
 	select {
 	case e.slots <- struct{}{}:
 	default:
+		waited = true
 		select {
 		case e.slots <- struct{}{}:
 		case <-ctx.Done():
@@ -1090,9 +1092,20 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		}
 	}
 	defer func() { <-e.slots }()
+	// 자리를 기다리는 동안 워크플로 일시정지·단계 종료·선택 해제가 있었을 수 있다. 기다린 요청은 요청 경계를 다시
+	// 본다(#487 리뷰 P2). 기다리지 않은 요청은 위 검사 그대로다.
+	if waited && e.cfg.RequestBoundary != nil && e.cfg.RequestBoundary.Before(ctx, view) != nil {
+		r.Decision, r.Reason = "denied", PolicyDenied
+		return finish(nil, ErrDenied)
+	}
 	r.Decision = "allowed"
 	e.mu.Lock()
 	reason = c.blockedLocked()
+	// 기다리는 동안 같은 call의 앞선 요청이 결과 불명·거부·송신 실패 상한에 닿았을 수 있다(#487 리뷰 P2). C01의
+	// call 상한은 대기열 뒤에도 지킨다.
+	if reason == Complete && c.fence != "" {
+		reason = c.fence
+	}
 	if reason == Complete && e.cfg.PolicyRevision != revision {
 		reason = PolicyDenied
 	}
