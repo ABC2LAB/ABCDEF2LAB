@@ -43,6 +43,8 @@ type Sel = { kind: "job" } | { kind: "approval"; id: string } | { kind: "finding
 export const DASH_MAX = 3;
 /** 발견 목록은 처음에 위험한 순으로 6개만, 나머지는 '모두 보기' (시안 v88). */
 export const FIND_MAX = 6;
+/** 새로고침 아이콘이 최소한 도는 시간(ms). 조회가 빨리 끝나도 눌렀다는 걸 알아보게 한다. */
+const REFRESH_MIN_MS = 600;
 
 /** 위험도 칸. 서버가 심각도를 안 줬거나 모르는 값이면 none(등급 없음). */
 type SevF = SevKey | "none";
@@ -109,7 +111,7 @@ export function UrlDashboardLive() {
   const refresh = () => {
     if (spin) return;
     setSpin(true);
-    const work: Promise<unknown>[] = [refreshWorkflow(), new Promise((r) => setTimeout(r, 600))];
+    const work: Promise<unknown>[] = [refreshWorkflow(), new Promise((r) => setTimeout(r, REFRESH_MIN_MS))];
     if (g.canRefresh) work.push(runUrlAction("refresh"));
     a.poll.reload();
     rem.reload();
