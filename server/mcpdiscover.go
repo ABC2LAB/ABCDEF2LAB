@@ -45,6 +45,9 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 		}
 		return mcp.NewStdioClient(ctx, m.Name, m.Command, jsonStrMap(m.Env), jsonStrSlice(m.Args)...)
 	case "http":
+		if isExplorationMCPContext(ctx) {
+			return mcphttp.NewScoped(ctx, m.Name, m.URL)
+		}
 		if m.URL == "" {
 			return nil, errors.New(errMCPHTTPNoURL)
 		}
