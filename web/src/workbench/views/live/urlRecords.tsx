@@ -71,7 +71,7 @@ export function recDoneKinds(
 }
 
 /** 필터 칩: [값, 글, 늘 보이는가(아니면 해당 점검이 있을 때만), 뜻]. */
-type Chip<K extends string> = readonly [K | "all", string, boolean, string];
+export type Chip<K extends string> = readonly [K | "all", string, boolean, string];
 export const RUN_CHIPS: ReadonlyArray<Chip<RunKind>> = [
   ["all", "전체", true, "진행 중인 점검 모두"],
   ["run", "점검 중", true, "엔진이 진단을 진행하는 점검"],
@@ -92,7 +92,7 @@ export const DONE_CHIPS: ReadonlyArray<Chip<DoneKind>> = [
 ];
 
 /** 칩 줄. count 가 null 이면 아직 모름(보고서를 읽는 중) → '—'. */
-function Chips<K extends string>({
+export function Chips<K extends string>({
   label,
   chips,
   value,

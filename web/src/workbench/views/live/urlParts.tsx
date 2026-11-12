@@ -14,7 +14,11 @@ import { Icon } from "../../ui/icons";
 import { Kv, MenuButton, type PhaseKey, Phases } from "../../ui/parts";
 import s from "../../workbench.module.css";
 
-/** 화면 머리 (위치 · h1 · 상태 알약 · 버튼 · 메타 줄 · 점검 단계). */
+/**
+ * 화면 머리 (위치 · h1 · 상태 알약 · 버튼 · 메타 줄 · 점검 단계).
+ * 위치 줄은 상위 화면 · 주소가 있을 때만 그린다(시안 v83: "작업대" 뿌리는 뺐다). 위치가 제목과 같기만 하면
+ * 줄을 그리지 않고, 좁은 화면에서만 메뉴 버튼 줄이 남는다.
+ */
 export function UrlHead({
   title,
   crumb,
@@ -27,7 +31,7 @@ export function UrlHead({
 }: {
   title: string;
   crumb: string;
-  /** 위치에서 작업대와 주소 사이에 둘 상위 화면 링크 (예: 보고서 → 끝난 점검) */
+  /** 위치에서 주소 앞에 둘 상위 화면 링크 (예: 보고서 → 끝난 점검) */
   parent?: { href: string; label: string };
   host?: string | null;
   pill?: ReactNode;
@@ -36,27 +40,28 @@ export function UrlHead({
   /** 점검 하나를 보는 네 화면이면 단계 표시를 붙인다 */
   phase?: PhaseKey;
 }) {
+  const path = !!parent || !!host || crumb !== title;
   return (
     <header className={cx(s.vh, phase && s["has-ph"])}>
-      <div className={s["vh-top"]}>
+      <div className={cx(s["vh-top"], !path && s["menu-only"])}>
         <MenuButton />
-        <nav className={s.crumb} aria-label="위치">
-          <a href="#dashboard">작업대</a>
-          <span className={s.sep}>/</span>
-          {parent ? (
-            <>
-              <a href={parent.href}>{parent.label}</a>
-              <span className={s.sep}>/</span>
-            </>
-          ) : null}
-          {host ? (
-            <>
-              <span className={s.host}>{host}</span>
-              <span className={s.sep}>/</span>
-            </>
-          ) : null}
-          <span>{crumb}</span>
-        </nav>
+        {path ? (
+          <nav className={s.crumb} aria-label="위치">
+            {parent ? (
+              <>
+                <a href={parent.href}>{parent.label}</a>
+                <span className={s.sep}>/</span>
+              </>
+            ) : null}
+            {host ? (
+              <>
+                <span className={s.host}>{host}</span>
+                <span className={s.sep}>/</span>
+              </>
+            ) : null}
+            <span>{crumb}</span>
+          </nav>
+        ) : null}
       </div>
       <div className={s["vh-row"]}>
         <div className={s["vh-title"]}>

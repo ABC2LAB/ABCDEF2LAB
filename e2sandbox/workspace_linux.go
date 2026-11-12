@@ -25,13 +25,6 @@ var (
 	ErrWorkspaceNotFound = errors.New("e2sandbox: workspace entry not found")
 )
 
-// WorkspaceEntry는 작업 공간 항목 하나다(파일 도구 LS용). 이름은 작업 공간 기준 상대 경로의 마지막 조각이다.
-type WorkspaceEntry struct {
-	Name string
-	Dir  bool
-	Size int64
-}
-
 // ReadWorkspaceFile은 검증된 작업 공간 tar에서 일반 파일 하나의 내용을 돌려준다(파일 도구 Read용). 디렉터리거나
 // 없으면 ErrWorkspaceNotFound다.
 func ReadWorkspaceFile(archive []byte, name string, contentLimit uint64) ([]byte, error) {

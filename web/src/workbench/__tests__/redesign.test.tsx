@@ -171,7 +171,7 @@ describe("자산 탐색", () => {
 });
 
 describe("대시보드", () => {
-  it("승인 대기 요청을 지금 처리할 일 맨 위에 두고, 상세에 보낼 요청과 승인 · 거부를 보인다", async () => {
+  it("승인 대기 요청은 결정 대기 안내로 알리고, 상세에 보낼 요청과 승인 · 거부를 보인다", async () => {
     useUrl.setState({ handle, job, verified: true, flow: { ...flow, stage: "diagnosing" }, flowVerified: true });
     vi.mocked(api.fetchRequestApprovals).mockResolvedValue({
       run: {
@@ -220,9 +220,13 @@ describe("대시보드", () => {
         <UrlDashboardLive />
       </ShellContext.Provider>,
     );
-    const todo = await screen.findByRole("region", { name: "지금 처리할 일" });
-    await waitFor(() => expect(within(todo).getByText(/PUT \/api\/users\/2/)).toBeInTheDocument());
+    // 발견 목록과 따로, 위에 결정 대기 안내 (시안 v88: 지금 처리할 일 → 발견된 취약점)
+    const notes = await screen.findByRole("region", { name: "결정 대기" });
+    await waitFor(() => expect(within(notes).getByText(/승인 대기 1건/)).toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: "지금 처리할 일" })).toBeNull();
+    // 고르기 전 상세는 승인 대기 요청 (보내기 전에 사람이 정해야 함)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
     expect(within(detail).getByText("쓰기 메서드")).toBeInTheDocument();
     // 보낼 요청: 대상(scheme 포함)과 서버 미리보기 키 전부, 표시 제한 안내는 서버 문장 그대로
     expect(within(detail).getByText(/대상: https:\/\/target\.example/)).toBeInTheDocument();

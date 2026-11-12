@@ -255,6 +255,12 @@ type firstDiagnosisPlannerProbeProvider struct {
 	// goalID·evidenceID가 있으면 첫 호출에서 prove_goal로 그 목표를 달성시킨다(C26).
 	goalID, evidenceID int64
 	proved             bool
+	// scopeValue가 있으면 첫 호출에서 add_task_scope로 그 IP를 작업 범위에 더하고, 다음 호출에서 add_intent로 그 범위를
+	// 시험하는 intent를 만든다. beforeScope는 범위를 더하기 직전에 부른다.
+	scopeValue   string
+	scoped       bool
+	scopedIntent bool
+	beforeScope  func()
 }
 
 func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
@@ -263,6 +269,25 @@ func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, reque
 		case "Bash", "WebFetch", "WebSearch", "Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep":
 			p.outboundToolExposed = true
 		}
+	}
+	if p.scopeValue != "" && !p.scoped {
+		for _, tool := range request.Tools {
+			if tool.Name == "add_task_scope" {
+				p.scoped = true
+				p.calls++
+				if p.beforeScope != nil {
+					p.beforeScope()
+				}
+				input, _ := json.Marshal(map[string]any{"kind": "ip", "value": p.scopeValue, "reason": "owned fixture coverage"})
+				return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "task-scope", Name: "add_task_scope", Input: input}}}, "tool_use", llm.Usage{}, nil
+			}
+		}
+	}
+	if p.scoped && !p.scopedIntent {
+		p.scopedIntent = true
+		p.calls++
+		input, _ := json.Marshal(map[string]any{"summary": "Probe the newly scoped host on a port the run never approved."})
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "scoped-intent", Name: "add_intent", Input: input}}}, "tool_use", llm.Usage{}, nil
 	}
 	if p.goalID > 0 && !p.proved {
 		for _, tool := range request.Tools {
