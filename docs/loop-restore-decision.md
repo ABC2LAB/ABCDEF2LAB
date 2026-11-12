@@ -51,7 +51,7 @@
 
 ## 5. 실행 흐름 (C19·C27)
 
-- **C27**: Planner를 Worker 실행 중에도 깨운다. 원본처럼 Worker 완료·후보 제출 때 깨운다(`server/e2_http_runtime.go`의 `ErrE2HTTPBusy` 대기 제거). 모델 호출은 C28 동시 호출 수가 1인 동안 차례로 나간다(P3 결정안 `docs/run-outcome-model-decision.md`(#411) C28 결정 2). 동시 Worker 수·intent 상한은 C32 설정이다.
+- **C27**: Planner를 Worker 실행 중에도 깨운다. 원본처럼 Worker 완료·후보 제출 때 깨운다(`server/e2_http_runtime.go`의 `ErrE2HTTPBusy` 대기 제거). 모델 호출은 C28 동시 호출 수가 1인 동안 차례로 나간다(P3 결정안 `docs/run-outcome-model-decision.md`(#411) C28 결정 2). 동시 Worker 수·intent 상한은 C32 설정이다. 구현(C01 #477·C08 #489 뒤): Planner 준비의 실행 중 작업 대기를 뺐고, 진단 Planner에 원본 `kill_work`·`steer_work`를 넣었다. 마감 판정의 "마지막 작업 뒤 계획"은 Worker가 끝날 때 올라가는 작업 순서와 Planner 라운드 시작 때 읽은 값으로 보므로 동시 실행에서도 그대로다. kill_work로 진행 중 송신이 끊기면 그 intent만 결과 불명, 송신 사이에서 끊기면 `terminated`(미완료)로 마감한다(bash가 정상 종료하지 않아도 프로세스·프록시 드레인과 감사가 끝났으면 받는다). Planner 라운드가 Worker 완료마다 돌 수 있어 Planner 라운드 상한(C32 `max_planner_rounds`)에 더 빨리 닿을 수 있다.
 - **C19**: intent당 대안 1회 제한(`intent_replan_exhausted`)과 실패한 같은 명령 재전송 금지(`same_action_not_retried`)를 걷어낸다. 같은 거부가 반복되는 것은 막지 않고 반복 차단 수(`scripts/eval/repeat_denials.py`)로 잰다. 구현(C01 #477 뒤): 정책 거부·미지원 뒤 같은 명령·다른 명령을 같은 intent나 새 intent에서 다시 시도할 수 있다(E②가 다시 거부하고 공유 호출 상한을 쓴다). 결과를 확인하지 못한 명령(결과 불명·마감 미완료·실행기 실패)은 새 intent로도 다시 보내지 않고(`same_action_not_retried`), 그 intent는 닫는다(`intent_outcome_uncertain`). 결과 불명 쓰기 자동 재전송 금지(개발 계획)를 지키기 위해서다.
   - 남기는 것: 결과 불명(`result_unknown`) 명령은 다시 보내지 않는다(개발 계획 "불명 쓰기 재전송 금지"). E② 요청 단위 처리(C01, 이동찬)가 들어오면 이 규칙은 그쪽으로 옮긴다.
   - 같은 intent 안에서 호출은 한 번에 하나(`intent_call_inflight`)를 유지한다. 호출 단위 예약·감사 결속이 이를 전제한다(열린 항목 3).
@@ -77,7 +77,7 @@
 3. C25와 C24 나머지: 원본 프롬프트·마무리 턴, report_finding(후보)·skills·WebSearch. report_finding(후보)은 후보 저장에 실제 call_ref가 필요해 원본 입력 형식과 바로 맞지 않고, 지금 부르는 쪽(원본 skills)도 C30 전에는 없어서 skills와 같이 한다.
 4. WebFetch E② 판.
 5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** C08이 끝나 1단계로 `prove_goal`·`goal_met`(원본처럼 `goal_met`은 기본 바인딩 없음)과 목표 달성 마감(남은 open intent는 incomplete)을 넣었다. 2단계로 add_task_scope(E② 승인 범위 불변 시험과 같이)를, 3단계로 Plan당 상한 설정(C32 `planner_turns_per_plan`·`planner_seconds_per_plan`)을, 4단계로 마무리 턴·Todo를 넣었다. 다음 단계: report_finding(후보)(실제 call_ref가 필요하고 부르는 쪽인 진단 skills가 없어 보류). goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
-6. C27(Worker 실행 중 Planner 깨우기)·kill_work·steer_work·C19는 **C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤.** Planner가 Worker 실행 중에 goal_met·kill_work를 부르면 진행 중인 E② 호출이 취소되고, 지금은 그 결과 불명이 실행 전체를 멈춘다.
+6. C27(Worker 실행 중 Planner 깨우기)·kill_work·steer_work·C19는 **C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤.** C19는 #491, C27·kill_work·steer_work는 그 뒤 PR로 넣었다. Planner가 Worker 실행 중에 goal_met·kill_work를 부르면 진행 중인 E② 호출이 취소되고, 지금은 그 결과 불명이 실행 전체를 멈춘다.
 7. 파일 도구(C29와 같이). traffic 도구는 넣지 않는다(열린 항목 1 결과).
 
 2단계를 구현하면서 5·6단계의 의존을 확인해 순서를 바꿨다. 지금은 Planner가 Worker가 모두 끝난 뒤에만 돌아서(C27) goal_met이 진행 중인 호출을 끊지는 않지만, 열린 intent가 남는 문제는 그대로다.
