@@ -24,6 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/transmit/budget"
 )
@@ -835,13 +837,49 @@ func (c *Call) Reject(ctx context.Context, method string, reason Reason) (Receip
 	// 형식 오류·CONNECT 단계 거부는 요청 URL이 없어 경로를 만들 수 없다(평가 집계에서 "경로 미확보").
 	return c.finish(ctx, r, func(rr Receipt) { c.observeAttemptPath(nil, rr) })
 }
+
+// encodedPathHazards는 요청 경로의 percent 인코딩 중 대상이 범위 검사와 다르게 해석할 수 있는 것이다.
+// 인코딩한 slash·backslash는 조각 경계를, 인코딩한 점은 점 조각을, 인코딩한 %는 두 번 풀기를 숨긴다(C17).
+var encodedPathHazards = []string{"%2f", "%5c", "%2e", "%25", "%00"}
+
+// requestPath는 범위 검사에 쓸 풀린 경로다. 정상 percent 인코딩(공백·비ASCII 등)은 받는다. 실제로 보내는 것은
+// 같은 요청의 EscapedPath이고, 위험 인코딩을 막았으므로 풀린 경로와 조각 경계·점 조각이 같다.
+func requestPath(u *url.URL) (string, bool) {
+	escaped := u.EscapedPath()
+	if escaped == "" {
+		escaped = "/"
+	}
+	lower := strings.ToLower(escaped)
+	for _, hazard := range encodedPathHazards {
+		if strings.Contains(lower, hazard) {
+			return "", false
+		}
+	}
+	decoded, err := url.PathUnescape(escaped)
+	if err != nil || !utf8.ValidString(decoded) || !strings.HasPrefix(decoded, "/") || strings.Contains(decoded, "//") || strings.ContainsAny(decoded, "\\%") {
+		return "", false
+	}
+	for _, r := range decoded {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+	}
+	for _, segment := range strings.Split(decoded, "/") {
+		if segment == "." || segment == ".." {
+			return "", false
+		}
+	}
+	return decoded, true
+}
+
 func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 	a, err := canonicalAuthority(req.URL)
-	if err != nil || req.URL.RawPath != "" || !validPath(req.URL.Path) {
+	p, ok := requestPath(req.URL)
+	if err != nil || !ok {
 		return compiledRule{}, false
 	}
 	for _, r := range e.rules {
-		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (r.PathPrefix == "/" || req.URL.Path == strings.TrimSuffix(r.PathPrefix, "/") || strings.HasPrefix(req.URL.Path, strings.TrimSuffix(r.PathPrefix, "/")+"/")) {
+		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (r.PathPrefix == "/" || p == strings.TrimSuffix(r.PathPrefix, "/") || strings.HasPrefix(p, strings.TrimSuffix(r.PathPrefix, "/")+"/")) {
 			return r, true
 		}
 	}
