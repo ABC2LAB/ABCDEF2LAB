@@ -98,6 +98,7 @@ func (b *explorationFixtureBrowser) Close(context.Context) error {
 }
 
 type explorationFixtureProvider struct {
+	failure error
 	calls   atomic.Int32
 	invalid atomic.Bool
 	block   bool
@@ -106,6 +107,9 @@ type explorationFixtureProvider struct {
 
 func (p *explorationFixtureProvider) Complete(ctx context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	n := p.calls.Add(1)
+	if p.failure != nil {
+		return llm.Message{}, "", llm.Usage{}, p.failure
+	}
 	for _, tool := range r.Tools {
 		if !strings.HasPrefix(tool.Name, "mcp__explore_browser__") && tool.Name != "report_discovery" {
 			p.invalid.Store(true)
@@ -423,5 +427,118 @@ func TestExplorationSessionBoundaryStatusFailureAndDeadlineCloseAllLeases(t *tes
 			t.Fatal("boundary fault reason lost")
 		}
 		cancel()
+	}
+}
+
+func TestExplorationSessionFinalizeRunsAfterBrowserCloseBeforeLeaseCleanup(t *testing.T) {
+	o, b, browser, f, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+	var s *ExplorationSession
+	var finalized atomic.Int32
+	o.Finalize = func(ctx context.Context, binding exploration.Binding) error {
+		finalized.Add(1)
+		if binding != o.Binding || ctx.Err() != nil || s.Check(ctx) == nil || s.Context().Err() == nil {
+			t.Error("finalization did not receive closed tool admission and live private context")
+		}
+		if b.lease.closed() != 0 || browser.closes.Load() != 0 || f.deleted.Load() != 0 {
+			t.Error("private observation resources closed before finalization")
+		}
+		events := b.lease.events.read()
+		if events[len(events)-1] != "mcp:browser_close" {
+			t.Error("browser remained active during finalization")
+		}
+		calls := p.calls.Load()
+		if _, err := s.Run(ctx, o.Worker, agent.ExplorationRunOptions{}, nil); err == nil || p.calls.Load() != calls {
+			t.Error("finalization admitted a new worker")
+		}
+		b.lease.events.add("host:finalize")
+		return nil
+	}
+	var err error
+	s, err = OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Run(t.Context(), o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, nil)
+	if err != nil || finalized.Load() != 1 {
+		t.Fatal("finalization did not complete once", err)
+	}
+	if err := s.Close(t.Context(), exploration.Completed); err != nil || finalized.Load() != 1 {
+		t.Fatal("finalization replayed")
+	}
+	events := b.lease.events.read()
+	tail := events[len(events)-5:]
+	if !reflect.DeepEqual(tail, []string{"mcp:browser_close", "host:finalize", "mcp:delete", "browser:close", "boundary:close"}) {
+		t.Fatal("finalization order changed", tail)
+	}
+}
+func TestExplorationSessionFinalizePreservesErrorsAndRunsOnCancellationCapsAndModelFailure(t *testing.T) {
+	for _, mode := range []string{"model-error", "cancelled", "cap"} {
+		t.Run(mode, func(t *testing.T) {
+			o, b, browser, f, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+			var finalized atomic.Int32
+			o.Finalize = func(ctx context.Context, binding exploration.Binding) error {
+				finalized.Add(1)
+				if ctx.Err() != nil || binding != o.Binding {
+					t.Error("private finalization inherited cancellation")
+				}
+				return errors.New("fixture-private-marker")
+			}
+			parent, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if mode == "cap" {
+				var stop context.CancelFunc
+				parent, stop = context.WithTimeout(parent, 30*time.Millisecond)
+				defer stop()
+			}
+			if mode == "model-error" {
+				p.failure = errors.New("fixture model failure")
+			} else {
+				p.block = true
+				p.started = make(chan struct{})
+			}
+			s, err := OpenExplorationSession(parent, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := s.Run(parent, o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, nil)
+				done <- err
+			}()
+			if mode == "cancelled" {
+				select {
+				case <-p.started:
+					cancel()
+				case <-time.After(time.Second):
+					t.Fatal("worker did not start")
+				}
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, exploration.ErrUnavailable) || strings.Contains(err.Error(), "fixture-private-marker") {
+					t.Fatal("finalization failure hidden or secret exposed")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("finalization stalled")
+			}
+			if finalized.Load() != 1 || b.lease.closed() != 1 || browser.closes.Load() != 1 || f.deleted.Load() != 1 {
+				t.Fatal("failed run did not finalize and clean up once")
+			}
+		})
+	}
+}
+func TestExplorationSessionFinalizeDeadlineDoesNotSkipRemainingCleanup(t *testing.T) {
+	o, b, browser, f, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
+	o.CloseTimeout = 200 * time.Millisecond
+	var finalized atomic.Int32
+	o.Finalize = func(ctx context.Context, _ exploration.Binding) error { finalized.Add(1); <-ctx.Done(); return nil }
+	s, err := OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = s.Close(t.Context(), exploration.Cancelled)
+	if !errors.Is(err, exploration.ErrUnavailable) || time.Since(started) > time.Second || finalized.Load() != 1 || b.lease.closed() != 1 || browser.closes.Load() != 1 || f.deleted.Load() != 1 {
+		t.Fatal("finalization deadline was hidden or skipped resource cleanup")
 	}
 }

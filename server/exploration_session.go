@@ -42,28 +42,31 @@ type ExplorationSessionOptions struct {
 	Boundary     exploration.Boundary
 	StartBrowser func(context.Context, exploration.Binding) (ExplorationBrowserLease, error)
 	// DirectBash와 APIRecon은 이 binding의 직접 샌드박스 도구만 받는다. 일반 ToolAugment 결과는 받지 않는다.
-	DirectBash     actool.CoreTool
-	APIRecon       actool.CoreTool
-	Redact         func([]byte) []byte
+	DirectBash actool.CoreTool
+	APIRecon   actool.CoreTool
+	Redact     func([]byte) []byte
+	// Finalize는 모델/도구와 브라우저 폐쇄 뒤 보호 저장소의 기존 관찰만 배출한다. 새 송신·모델 호출·원문 로그를 만들지 않으며 문맥 상한을 지킨다.
+	Finalize       func(context.Context, exploration.Binding) error
 	CloseTimeout   time.Duration
 	StatusInterval time.Duration
 }
 
 type ExplorationSession struct {
-	options  ExplorationSessionOptions
-	ctx      context.Context
-	cancel   context.CancelFunc
-	boundary exploration.Lease
-	browser  ExplorationBrowserLease
-	client   mcpClient
-	tools    []actool.CoreTool
-	mu       sync.Mutex
-	closed   bool
-	ran      bool
-	reason   exploration.Reason
-	once     sync.Once
-	closeErr error
-	done     chan struct{}
+	options       ExplorationSessionOptions
+	ctx           context.Context
+	cancel        context.CancelFunc
+	boundary      exploration.Lease
+	browser       ExplorationBrowserLease
+	client        mcpClient
+	tools         []actool.CoreTool
+	mu            sync.Mutex
+	closed        bool
+	ran           bool
+	reason        exploration.Reason
+	once          sync.Once
+	closeErr      error
+	done          chan struct{}
+	finalizeReady bool
 }
 
 func OpenExplorationSession(parent context.Context, o ExplorationSessionOptions) (*ExplorationSession, error) {
@@ -125,6 +128,7 @@ func OpenExplorationSession(parent context.Context, o ExplorationSessionOptions)
 	if s.Check(ctx) != nil {
 		return fail()
 	}
+	s.finalizeReady = true
 	go s.watch()
 	return s, nil
 }
@@ -277,12 +281,16 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 		s.mu.Unlock()
 		s.cancel()
 		base := context.WithoutCancel(parent)
-		budget := s.options.CloseTimeout / 4
+		steps := 4
+		if s.finalizeReady && s.options.Finalize != nil {
+			steps++
+		}
+		budget := s.options.CloseTimeout / time.Duration(steps)
 		var errs []error
 		clean := func(fn func(context.Context) error) {
 			ctx, cancel := context.WithTimeout(base, budget)
 			defer cancel()
-			if fn(ctx) != nil {
+			if err := fn(ctx); err != nil || ctx.Err() != nil {
 				errs = append(errs, exploration.ErrUnavailable)
 			}
 		}
@@ -299,6 +307,12 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 				}
 				return nil
 			})
+		}
+		// 브라우저의 정상 종료가 끝난 뒤 기존 관찰을 읽는다. 이 동안 경계의 private reader는 닫지 않는다.
+		if s.finalizeReady && s.options.Finalize != nil {
+			clean(func(ctx context.Context) error { return s.options.Finalize(ctx, s.options.Binding) })
+		}
+		if s.client != nil {
 			clean(func(ctx context.Context) error {
 				if cl, ok := s.client.(interface{ CloseContext(context.Context) error }); ok {
 					return cl.CloseContext(ctx)
