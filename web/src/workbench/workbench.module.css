@@ -1988,6 +1988,50 @@ select.inp {
   color: var(--ink-3);
   font-size: 12px;
 }
+/* 작은 (?) 버튼 → 메모처럼 뜨는 설명 (시안 v52) */
+/* 메모는 규칙 글 칸(.policy li > div) 기준으로 왼쪽에 맞춰 뜬다 (좁은 오른쪽 패널 밖으로 안 나가게) */
+.policy li > div {
+  position: relative;
+}
+.help-tip {
+  display: inline-block;
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+.help-tip-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--rule-2);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--ink-2);
+  font: 700 11px / 1 var(--sans);
+  cursor: pointer;
+}
+.help-tip-btn:hover,
+.help-tip-btn[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.help-tip-note {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  top: calc(100% + 6px);
+  width: min(300px, calc(100vw - 48px));
+  padding: 11px 13px;
+  border: 1px solid var(--rule-2);
+  border-radius: 6px;
+  background: var(--bg);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 14%);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  font-weight: 400;
+}
 
 /* 자산 탐색 */
 .prog {
