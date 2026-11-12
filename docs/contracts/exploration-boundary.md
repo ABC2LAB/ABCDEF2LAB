@@ -112,6 +112,7 @@
 - 필드를 더한다: query 키 이름, JSON 본문 키 이름, 요청 content-type. 값은 넣지 않는다.
 - 실제로 보낸 요청에서 나온 발견은 경계 기록의 `seq`를 함께 넘기고(`observed`), 번들·코드에서 추정한 것은 `inferred`로 표시한다.
 - 탐색 결과는 발견 근거일 뿐이다. 진단 결과나 확정 취약점으로 다루지 않는다(절대규칙 5).
+- 구현(추정 발견): `diagnosisflow.Controller.ReportStatic`이 `api_recon_static` 보고를 받는다. 엔드포인트 칸은 `query_keys`·`body_keys`(이름만, 하나에 64바이트·32개 이하)·`content_type`(매개변수 없는 type/subtype)이고, 종류(`kind`)는 `api`다. 경로는 이 origin의 절대 경로만 받고 정규화로 바뀌는 경로·query·fragment는 받지 않는다. 승인 메서드·경로·제외 경로·위험 경로 단어를 다시 검사해 범위 밖·형식 오류는 저장하지 않고 `counts.discoveries_dropped`로 센다. 추정이라 읽기 접두 안의 GET이어도 자동 방문·선택하지 않는다(`change`는 `possible`). 초기 탐색(`crawling`) 단계에서만 받는다. 실제 요청에서 나온 발견(`observed`, 경계 `seq`)은 경계 기록 형식 뒤에 따로 붙인다.
 
 ## 8. 계정과 인증
 

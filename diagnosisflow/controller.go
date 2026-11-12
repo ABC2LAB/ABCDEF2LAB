@@ -153,9 +153,10 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 	return &c.record.Snapshot.Endpoints[len(c.record.Snapshot.Endpoints)-1]
 }
 
-// 번들에서 경로를 문자 그대로 확인하지 못한 후보다.
+// 번들에서 경로를 문자 그대로 확인하지 못한 후보다. 탐색 에이전트가 번들·문서에서 찾아 보고한 것
+// (api_recon_static)도 실제로 오간 요청이 아니므로 추정이다(탐색 실행기 결정안 §2-3).
 func inferredSource(source string) bool {
-	return source == "script_guess" || source == "script_prefix"
+	return source == "script_guess" || source == "script_prefix" || source == SourceAPIReconStatic
 }
 
 func (c *Controller) endpointScope(method, path, kind, source string) (bool, string) {
@@ -579,10 +580,21 @@ func (c *Controller) Fail(ctx context.Context, reason string) error {
 func (c *Controller) SelectedData() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var rows []map[string]string
+	var rows []map[string]any
 	for _, e := range c.record.Snapshot.Endpoints {
 		if e.Selected {
-			rows = append(rows, map[string]string{"endpoint_ref": e.ID, "method": e.Method, "path": e.Path})
+			row := map[string]any{"endpoint_ref": e.ID, "method": e.Method, "path": e.Path}
+			// 보고된 요청 모양은 이름뿐이고 대상에서 온 데이터다(값 없음).
+			if len(e.QueryKeys) > 0 {
+				row["query_keys"] = e.QueryKeys
+			}
+			if len(e.BodyKeys) > 0 {
+				row["body_keys"] = e.BodyKeys
+			}
+			if e.ContentType != "" {
+				row["content_type"] = e.ContentType
+			}
+			rows = append(rows, row)
 		}
 	}
 	raw, _ := json.Marshal(rows)
