@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-var calls, goals, planner, worker, allowed, denied atomic.Int64
+var calls, goals, planner, worker, allowed, denied, exploreTurns atomic.Int64
 
 func main() {
 	mode := flag.String("mode", "model", "acceptance role")
@@ -44,7 +44,7 @@ func main() {
 				c.Close()
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load()})
+		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load()})
 	})
 	if *mode == "model" || *mode == "workflow-model" {
 		mux := http.NewServeMux()
@@ -95,7 +95,7 @@ func must(e error) {
 	}
 }
 
-type fixtureTurns struct{ goals, planner, worker int }
+type fixtureTurns struct{ goals, planner, worker, explore int }
 
 func model(target string) http.Handler {
 	var mu sync.Mutex

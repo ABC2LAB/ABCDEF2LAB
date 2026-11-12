@@ -7,13 +7,16 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"github.com/Autumn-27/artex/exploreboundary"
 	"io"
 	"iter"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +44,11 @@ type dockerExploreConfig struct {
 	Mode           string             `json:"mode"`
 	ResultFile     string             `json:"result_file"`
 	MetadataScript string             `json:"metadata_script"`
+	// BoundaryKind가 "real"이면 계약 fixture 대신 실제 탐색 경계(cmd/explore-boundary)의 제어 소켓을 쓴다.
+	// TargetConnect·TargetSPKI는 그때 승인 대상 값으로 넘긴다(등록 때 고른 주소, 대상 leaf의 SPKI).
+	BoundaryKind  string `json:"boundary_kind"`
+	TargetConnect string `json:"target_connect"`
+	TargetSPKI    string `json:"target_spki"`
 }
 type dockerPrivateControl struct{ socket string }
 
@@ -197,9 +205,29 @@ type dockerExploreProvider struct {
 	boundary   *dockerExploreBoundary
 	last       uint64
 	formRef    string
+	// real은 실제 경계의 private 관찰 순번 목록을 읽는다(계약 fixture의 연속 기록 수 대신).
+	real *exploreboundary.ControlReader
+	seen map[uint64]bool
 }
 
 func (p *dockerExploreProvider) drain(ctx context.Context) error {
+	if p.real != nil {
+		seqs, e := p.real.Sequences(ctx, p.real.Flow)
+		if e != nil {
+			return e
+		}
+		sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+		for _, seq := range seqs {
+			if p.seen[seq] {
+				continue
+			}
+			if _, e = p.flow.ReportObserved(ctx, p.real.Flow, seq); e != nil {
+				return e
+			}
+			p.seen[seq] = true
+		}
+		return nil
+	}
 	state, e := p.boundary.state(ctx)
 	if e != nil {
 		return e
@@ -314,7 +342,11 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 	if json.Unmarshal(raw, &cfg) != nil || cfg.ResultFile == "" {
 		t.Fatal("fixture_context_invalid")
 	}
-	report := map[string]any{"format": "jindo.exploration-fixture-result/v1", "boundary_kind": "owned_contract_fixture", "production_acceptance": "NOT_RUN", "model_run": "NOT_RUN", "mode": cfg.Mode, "status": "FAIL"}
+	kind := "owned_contract_fixture"
+	if cfg.BoundaryKind == "real" {
+		kind = "explore_boundary"
+	}
+	report := map[string]any{"format": "jindo.exploration-fixture-result/v1", "boundary_kind": kind, "production_acceptance": "NOT_RUN", "model_run": "NOT_RUN", "mode": cfg.Mode, "status": "FAIL"}
 	defer func() {
 		b, _ := json.MarshalIndent(report, "", "  ")
 		if os.WriteFile(cfg.ResultFile, b, 0600) != nil {
@@ -335,7 +367,26 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 	if e != nil {
 		t.Fatal("metadata_script_missing")
 	}
-	p := &dockerExploreProvider{proof: map[string]bool{}, flow: flow, boundary: b}
+	p := &dockerExploreProvider{proof: map[string]bool{}, flow: flow, boundary: b, seen: map[uint64]bool{}}
+	var boundary exploration.Boundary = b
+	var reader diagnosisflow.ExplorationReader = b
+	var realReader *exploreboundary.ControlReader
+	if cfg.BoundaryKind == "real" {
+		// 실제 경계: 승인 대상 값은 서버가 제어 소켓으로 넘긴다(대상 등록 때 고른 주소·대상 leaf SPKI).
+		u, ue := url.Parse(cfg.TargetOrigin)
+		connect, ce := netip.ParseAddrPort(cfg.TargetConnect)
+		port, pe := strconv.ParseUint(u.Port(), 10, 16)
+		if ue != nil || ce != nil || pe != nil || cfg.TargetSPKI == "" {
+			t.Fatal("real_boundary_target_invalid")
+		}
+		target := exploreboundary.Target{Ref: eb.TargetRef, Revision: eb.TargetRevision, Host: u.Hostname(), Port: uint16(port), PathPrefixes: []string{"/"}, Methods: []string{"GET", "HEAD"},
+			ConnectIP: connect.Addr(), SPKISHA256: cfg.TargetSPKI, ExpiresAt: time.Now().Add(time.Hour), RiskyWords: diagnosisflow.DestructiveWords()}
+		client := exploreboundary.ControlClient{Path: cfg.FixtureSocket, Timeout: 10 * time.Second}
+		boundary = exploreboundary.ControlBoundary{Client: client, SourceDigest: b.fb.SourceDigest, Target: func(context.Context, string, uint64) (exploreboundary.Target, error) { return target, nil }}
+		realReader = &exploreboundary.ControlReader{Client: client, Binding: eb, Flow: b.flowBinding()}
+		reader = realReader
+		p.real = realReader
+	}
 	nav := func(path string) dockerToolStep {
 		return dockerToolStep{"mcp__explore_browser__browser_navigate", map[string]string{"url": cfg.TargetOrigin + path}}
 	}
@@ -357,6 +408,8 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 		{"mcp__explore_browser__browser_snapshot", map[string]any{}},
 		{"mcp__explore_browser__browser_click", nil},
 		nav("/crawl/B18-webmcp"), eval("() => {const v=document.getElementById('webmcp-attempted')?.textContent;return v==='registered'?'P1_WEBMCP_REGISTERED':v==='none'||v==='failed'?'P1_WEBMCP_NONE':'missing'}"),
+		// 같은 이름의 다른 포트는 승인 origin이 아니다(계약 fixture·실제 경계 모두 out_of_scope_origin). 닿는 포트가 없는 번호다.
+		{"mcp__explore_browser__browser_navigate", map[string]string{"url": otherPortOrigin(t, cfg.TargetOrigin) + "/"}},
 		// 자동 top-level form 이동은 다른 페이지의 양성 대조를 덮지 않도록 마지막에 시험한다.
 		nav("/bypass/B14"),
 	}
@@ -364,7 +417,7 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 	worker.SetNonStreaming(func() bool { return true })
 	browser := &dockerExploreBrowser{info: ExplorationBrowserInfo{Binding: eb, PackageVersion: exploration.MCPPackageVersion, MCP: db.MCPServer{Name: exploration.MCPServerName, Transport: "http", URL: cfg.MCPURL}}, ctl: dockerPrivateControl{cfg.BrowserSocket}}
 	var pinned diagnosisflow.ExplorationBinding
-	session, e := OpenExplorationSession(t.Context(), ExplorationSessionOptions{Worker: worker, Binding: eb, Boundary: b, StartBrowser: func(context.Context, exploration.Binding) (ExplorationBrowserLease, error) { return browser, nil }, Redact: func(raw []byte) []byte { return append([]byte(nil), raw...) }, CloseTimeout: 20 * time.Second, StatusInterval: 100 * time.Millisecond, Finalize: func(ctx context.Context, _ exploration.Binding) error {
+	session, e := OpenExplorationSession(t.Context(), ExplorationSessionOptions{Worker: worker, Binding: eb, Boundary: boundary, StartBrowser: func(context.Context, exploration.Binding) (ExplorationBrowserLease, error) { return browser, nil }, Redact: func(raw []byte) []byte { return append([]byte(nil), raw...) }, CloseTimeout: 20 * time.Second, StatusInterval: 100 * time.Millisecond, Finalize: func(ctx context.Context, _ exploration.Binding) error {
 		if e := p.drain(ctx); e != nil {
 			return e
 		}
@@ -375,7 +428,7 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 		t.Fatal("session_open_failed")
 	}
 	defer session.Close(context.Background(), exploration.Cancelled)
-	pinned, e = flow.BindExploration(t.Context(), b)
+	pinned, e = flow.BindExploration(t.Context(), reader)
 	if e != nil {
 		t.Fatal("flow_binding")
 	}
@@ -394,7 +447,7 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 	tr := &http.Transport{Proxy: http.ProxyURL(proxy), TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}
 	defer tr.CloseIdleConnections()
 	client := &http.Client{Transport: tr, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	handled, e := flow.CrawlExploration(t.Context(), pinned, func(ctx context.Context, target string) (diagnosisflow.ExplorationFetchResult, error) {
+	fetch := func(ctx context.Context, target string) (diagnosisflow.ExplorationFetchResult, error) {
 		req, e := http.NewRequestWithContext(ctx, "GET", target, nil)
 		if e != nil {
 			return diagnosisflow.ExplorationFetchResult{}, e
@@ -410,17 +463,31 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 		}
 		seq, e := strconv.ParseUint(r.Header.Get("X-Jindo-Fixture-Sequence"), 10, 64)
 		return diagnosisflow.ExplorationFetchResult{Seq: seq, Body: body, Complete: e == nil}, e
-	})
+	}
+	if realReader != nil {
+		fetch = exploreboundary.DirectFetch{Proxy: proxy, Roots: pool, Timeout: 10 * time.Second, MaxBytes: 1 << 20, Status: realReader.Status}.Fetch
+	}
+	handled, e := flow.CrawlExploration(t.Context(), pinned, fetch)
 	if !handled || e != nil {
 		report["failure"] = "static_crawl"
 		t.Fatal("static_crawl_failed")
 	}
 	// 이미 static parser가 수집한 seq를 증분 reader의 시작점으로 쓴다.
-	state, e := b.state(t.Context())
-	if e != nil {
-		t.Fatal("boundary_state")
+	if realReader != nil {
+		seqs, se := realReader.Sequences(t.Context(), realReader.Flow)
+		if se != nil {
+			t.Fatal("boundary_state")
+		}
+		for _, seq := range seqs {
+			p.seen[seq] = true
+		}
+	} else {
+		state, se := b.state(t.Context())
+		if se != nil {
+			t.Fatal("boundary_state")
+		}
+		p.last = state.RecordCount
 	}
-	p.last = state.RecordCount
 	result, e := session.Run(t.Context(), worker, agent.ExplorationRunOptions{TargetURL: cfg.TargetOrigin + "/", Reporter: flow, MaxTurns: 24, MaxDuration: 150 * time.Second}, nil)
 	if e != nil {
 		report["failure"] = "worker_or_cleanup"
@@ -432,8 +499,20 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 		t.Fatal("worker_or_cleanup_failed")
 	}
 	_ = result
-	state, e = b.state(t.Context())
-	if e != nil {
+	var state explorefixture.State
+	if realReader != nil {
+		st, se := realReader.Status(t.Context())
+		records, _, re := realReader.Records(t.Context())
+		if se != nil || re != nil {
+			t.Fatal("final_state")
+		}
+		state = explorefixture.State{Active: st.Active, Forwarded: st.TargetRequests, External: st.ExternalRequests, ActiveConnections: st.ActiveConnections, Denied: map[string]uint64{}}
+		for _, r := range records {
+			if r.Decision == "denied" {
+				state.Denied[r.Reason]++
+			}
+		}
+	} else if state, e = b.state(t.Context()); e != nil {
 		t.Fatal("final_state")
 	}
 	snap, e := flow.Snapshot()
@@ -494,4 +573,14 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 		t.Fatal("negative_controls_failed")
 	}
 	report["status"] = "PASS"
+}
+
+// otherPortOrigin은 승인 대상과 같은 이름·다른 포트의 origin이다. 하네스의 어느 리슨에도 쓰지 않는 포트를 고른다.
+func otherPortOrigin(t *testing.T, origin string) string {
+	t.Helper()
+	u, err := url.Parse(origin)
+	if err != nil || u.Hostname() == "" {
+		t.Fatal("target_origin_invalid")
+	}
+	return "https://" + u.Hostname() + ":8449"
 }
