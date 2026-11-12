@@ -10,7 +10,8 @@ import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 
 import { cx } from "./lib/cx";
 import { LiveGate, useLiveAuthBoot } from "./live/auth";
-import { UrlFeeds } from "./live/urlDiagnosis";
+import { UrlFeeds, useUrl } from "./live/urlDiagnosis";
+import { URL_ENDED_STATES } from "./live/urlMap";
 import { isView, type Shell, ShellContext, type View } from "./shell";
 import { type DSel, type Panel, useWb } from "./store";
 import { Icon } from "./ui/icons";
@@ -130,7 +131,16 @@ export function Workbench() {
 
   /** 원본 route(byUser): 해시 → 화면. 서랍을 닫고 진입 처리(crawlEnter · liveEnter)를 한 뒤, 스크롤·포커스는 레이아웃 effect 에서. */
   const doRoute = useCallback((byUser: boolean) => {
-    const raw = window.location.hash.slice(1);
+    let raw = window.location.hash.slice(1);
+    // 옛 주소 #records (점검 기록, 시안 v54 에서 둘로 나눔) → 이어 보는 점검 상태에 맞는 목록 화면으로, 주소도 바꿔 둔다.
+    // 상태를 아직 모르면(처음 열 때 · 이어 보는 점검 없음) 어느 쪽인지 짐작하지 않고 대시보드
+    if (raw === "records") {
+      const job = useUrl.getState().job;
+      if (job) {
+        raw = URL_ENDED_STATES.includes(job.state) ? "finished" : "running";
+        window.history.replaceState(null, "", `#${raw}`);
+      }
+    }
     const h: View = isView(raw) ? raw : "dashboard";
     setDrawers({ insp: false, rail: false });
     const _st = useWb.getState();
