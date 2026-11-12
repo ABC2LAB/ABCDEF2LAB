@@ -58,18 +58,45 @@ type productRuntimeLimitSet struct {
 	WorkerTimeoutMS *int64  `json:"worker_timeout_ms,omitempty"`
 	PlannerRounds   *uint64 `json:"planner_rounds,omitempty"`
 	IntentRuns      *uint64 `json:"intent_runs,omitempty"`
+	// 회차 하나의 실행 시간(초). launch 예산 DurationSeconds로 들어가 설치 기록과 회차 승인 범위에 남는다.
+	RunSeconds *int64 `json:"run_seconds,omitempty"`
+}
+
+// 회차 실행 시간 기본값(초). 측정(P0) 전에는 바꾸지 않는다.
+const (
+	productRunSeconds  = 180
+	workflowRunSeconds = 600
+)
+
+// productRunSecondsFor는 고른 모드의 회차 실행 시간이다. runtime_limits에 없으면 기본값, 있으면 1 이상
+// urlMaxRunSeconds 이하만 받는다(범위 밖이면 설치 거부, 잘라서 받지 않는다).
+func productRunSecondsFor(limits *productRuntimeLimits, workflow bool) (int64, bool) {
+	seconds := int64(productRunSeconds)
+	if workflow {
+		seconds = workflowRunSeconds
+	}
+	if set := limits.mode(workflow); set != nil && set.RunSeconds != nil {
+		seconds = *set.RunSeconds
+	}
+	return seconds, seconds > 0 && seconds <= urlMaxRunSeconds
+}
+
+// mode는 고른 모드(제품·워크플로)의 칸 묶음이다. 블록이나 그 모드가 없으면 nil이다.
+func (l *productRuntimeLimits) mode(workflow bool) *productRuntimeLimitSet {
+	switch {
+	case l == nil:
+		return nil
+	case workflow:
+		return l.Workflow
+	default:
+		return l.Product
+	}
 }
 
 // applyRuntimeLimits는 고른 모드의 칸을 정책에 덮어쓴다. 0 이하는 거부한다. 덮어쓴 정책은 호출자가
 // validProductPolicyTemplate으로 다시 검사한다(범위 밖이면 설치 거부, 잘라서 받지 않는다).
 func applyRuntimeLimits(policy *server.E2HTTPFilePolicy, limits *productRuntimeLimits, workflow bool) bool {
-	if limits == nil {
-		return true
-	}
-	set := limits.Product
-	if workflow {
-		set = limits.Workflow
-	}
+	set := limits.mode(workflow)
 	if set == nil {
 		return true
 	}
