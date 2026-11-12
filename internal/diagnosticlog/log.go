@@ -86,17 +86,19 @@ type writer interface {
 type Logger struct {
 	failed     chan struct{}
 	incomplete bool
-	mu         sync.Mutex
-	writer     writer
-	path       string
-	task       int64
-	run        string
-	size       int64
-	count      uint64
-	err        error
-	closed     bool
-	check      func() error
-	release    func() error
+	// dropped는 기록 장애 때문에 남지 못한 기록 수다(장애를 낸 기록 포함). 경고에 누락 건수로 남긴다(P3 결정안 C10).
+	dropped uint64
+	mu      sync.Mutex
+	writer  writer
+	path    string
+	task    int64
+	run     string
+	size    int64
+	count   uint64
+	err     error
+	closed  bool
+	check   func() error
+	release func() error
 }
 
 func (*Logger) String() string   { return "diagnosticlog.Logger[protected]" }
@@ -152,6 +154,7 @@ func (l *Logger) BindRun(ref string) error {
 }
 func (l *Logger) Path() string     { l.mu.Lock(); defer l.mu.Unlock(); return l.path }
 func (l *Logger) Incomplete() bool { l.mu.Lock(); defer l.mu.Unlock(); return l.incomplete }
+func (l *Logger) Dropped() uint64  { l.mu.Lock(); defer l.mu.Unlock(); return l.dropped }
 func (l *Logger) Err() error       { l.mu.Lock(); defer l.mu.Unlock(); return l.err }
 
 // Failed는 최초의 기록 장애에서 한 번 닫힌다. 호출자 작업을 잠금 안에서 실행하지 않는다.
@@ -188,12 +191,14 @@ func (l *Logger) Record(e Event) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.err != nil {
+		l.dropped++
 		return l.err
 	}
 	if l.closed {
 		return ErrClosed
 	}
-	fail := l.failLocked
+	// 이 기록을 남기지 못하고 장애로 바뀌는 경로다. 남지 못한 기록으로 센다.
+	fail := func(err error) error { l.dropped++; return l.failLocked(err) }
 	if !valid(e) {
 		return fail(ErrEvent)
 	}

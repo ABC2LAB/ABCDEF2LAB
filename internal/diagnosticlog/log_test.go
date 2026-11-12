@@ -258,3 +258,32 @@ func TestFailureNotification(t *testing.T) {
 		})
 	}
 }
+
+// 누락 건수는 기록 장애로 남지 못한 기록만 센다: 장애를 낸 기록과 그 뒤 거부된 기록. 바인딩·닫기 실패는 기록이 아니다.
+func TestDroppedCountsOnlyLostRecords(t *testing.T) {
+	w := &memoryWriter{}
+	l := &Logger{writer: w}
+	if err := l.Record(testEvent()); err != nil || l.Dropped() != 0 {
+		t.Fatalf("healthy record dropped=%d err=%v", l.Dropped(), err)
+	}
+	w.writeErr = errors.New("synthetic write failure")
+	for i := 0; i < 3; i++ {
+		_ = l.Record(testEvent())
+	}
+	if l.Err() == nil || l.Dropped() != 3 {
+		t.Fatalf("dropped=%d err=%v", l.Dropped(), l.Err())
+	}
+	bind := &Logger{writer: &memoryWriter{}}
+	_ = bind.BindTask(-1)
+	if bind.Err() == nil || bind.Dropped() != 0 {
+		t.Fatalf("binding failure counted as a lost record: %d", bind.Dropped())
+	}
+	invalid := &Logger{writer: &memoryWriter{}}
+	bad := testEvent()
+	bad.Component = "unknown-component"
+	_ = invalid.Record(bad)
+	_ = invalid.Record(testEvent())
+	if invalid.Dropped() != 2 {
+		t.Fatalf("invalid record then rejected record: dropped=%d", invalid.Dropped())
+	}
+}
