@@ -461,6 +461,29 @@ export function UrlNewScanLive() {
                     sub={`${scope.model.provider} · 비용 상한 ${usdText(scope.budget.cost_usd_micros)}`}
                   />
                 ) : null}
+                {/* 외부 CDN 사전고지 (external-llm-notice-ko.md §2): 브라우저 탐색이 대상 페이지를 그리며 외부 호스트의
+                    자원을 받으면 그 호스트 로그에 흔적이 남는다. 완전 로컬 모드는 막는다(절대규칙 8). 브라우저 탐색 미착륙 = 사전 고지.
+                    ※ comm_mode(external_allowed/full_local) 별도 신호가 없어 외부 모델(scope.model)을 proxy 로 쓴다.
+                    TODO(이경준): comm_mode 신호가 들어오면 조건을 그걸로 바꾼다(모델 외부전송 ≠ 브라우저 CDN 전송 — 이동찬 리뷰). */}
+                {scope.model && profile?.workflow ? (
+                  <Rule
+                    t="브라우저 탐색은 외부 자원(CDN 등)을 외부 호스트에서 받습니다"
+                    sub="그 호스트 로그에 접속 IP · 시각 · 주소 · 출처가 남습니다 · 완전 로컬 모드는 막습니다"
+                    tip={
+                      <HelpTip label="설명 보기">
+                        <b>대상 페이지는 스크립트 · 스타일 · 폰트 · 이미지를 외부 호스트(CDN 등)에서 불러올 수 있습니다.</b>
+                        <br />
+                        <br />
+                        브라우저 탐색이 대상 페이지를 그릴 때 그 자원을 받으면, 그 외부 호스트 쪽 로그에 접속 IP · 시각 ·
+                        요청 주소 · 출처(Referer)가 남습니다. 대상 서버에 남는 기록과는 별개입니다.
+                        <br />
+                        <br />
+                        완전 로컬 모드에서는 이 외부 전송을 막습니다(절대규칙 8). 지금은 사전 고지이고, 브라우저 탐색이
+                        연결된 뒤부터 적용됩니다.
+                      </HelpTip>
+                    }
+                  />
+                ) : null}
                 <Rule t="모든 요청 · 승인 기록 남김" sub={`승인 만료 ${scope.expires_at}`} />
                 {/* 절대규칙 6 고지 (시안 v52): 할 일을 제목으로, 자세한 설명 · 원래 고지 문장은 (?) 메모에 */}
                 <Rule
