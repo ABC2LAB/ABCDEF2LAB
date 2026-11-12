@@ -6,9 +6,9 @@ import (
 	"errors"
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2proxy"
-	"github.com/Autumn-27/artex/pathmask"
 	"log"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -170,14 +170,40 @@ func riskyRequest(method, path string, query url.Values) bool {
 }
 func safePath(path string) string { return dlp.DiagnosticText(path) }
 
-// pathTemplate은 값으로 보이는 조각(숫자·긴 16진·긴 인코딩 값·이메일 등, pathmask 규칙)을 `{id}`로 바꾼 경로와 바꾼
-// 조각 수다.
+// 객체 ID로 볼 조각의 종류다. 허용 판정에 쓰므로 경로 가림 규칙(pathmask, 애매하면 값으로 봄)보다 좁게 잡는다. 긴 이름·
+// 특수문자·대소문자와 숫자가 섞인 조각은 이름이다. 그런 조각까지 값으로 보면 크롤에서 보지 못한 형제 끝점
+// (/orders/123:cancel, /orders/cancel-all-pending-orders-for-this-user)이 같은 끝점으로 열린다(#501 리뷰).
+var (
+	numberSegment = regexp.MustCompile(`^[0-9]{1,20}$`)
+	uuidSegment   = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	hexSegment    = regexp.MustCompile(`^[0-9a-fA-F]{16,64}$`)
+	emailSegment  = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$`)
+)
+
+// idSegmentKind는 조각이 객체 ID면 그 종류 자리 표시를, 아니면 빈 문자열을 돌려준다. 숫자는 16진 문자만 쓴 것이라
+// 16자 이상이어도 숫자로 본다(가장 흔한 순번 ID).
+func idSegmentKind(segment string) string {
+	switch {
+	case numberSegment.MatchString(segment):
+		return "{number}"
+	case uuidSegment.MatchString(segment):
+		return "{uuid}"
+	case hexSegment.MatchString(segment):
+		return "{hex}"
+	case emailSegment.MatchString(segment):
+		return "{email}"
+	}
+	return ""
+}
+
+// pathTemplate은 객체 ID 조각을 종류 자리 표시로 바꾼 경로와 바꾼 조각 수다. 같은 자리의 조각이 같은 종류일 때만
+// 템플릿이 같다(숫자 자리에 이름·UUID를 넣으면 다른 템플릿).
 func pathTemplate(path string) (string, int) {
 	segments := strings.Split(path, "/")
 	values := 0
 	for i, segment := range segments {
-		if masked, ok := pathmask.ValueSegment(segment); ok && segment != "" {
-			segments[i] = masked
+		if kind := idSegmentKind(segment); kind != "" {
+			segments[i] = kind
 			values++
 		}
 	}
@@ -483,7 +509,7 @@ func (c *Controller) Instructions() string {
 		}
 	}
 	data, _ := json.Marshal(selected)
-	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. A selected endpoint also covers the same method on a path that differs only in ID-like segments (numbers, long hex or encoded values), so other object IDs may be requested there. Selected endpoint references (JSON): " + string(data)
+	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. A selected endpoint also covers the same method on a path that differs only in object ID segments of the same kind (number, UUID, long hex or email), so other object IDs may be requested there. Selected endpoint references (JSON): " + string(data)
 }
 func (c *Controller) Command(ctx context.Context, owner, op, key string, revision uint64, ids []string) (Snapshot, error) {
 	c.mu.Lock()

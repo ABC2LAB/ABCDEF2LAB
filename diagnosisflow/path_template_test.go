@@ -80,6 +80,12 @@ func TestSelectedEndpointCoversOtherObjectIDs(t *testing.T) {
 		{"GET", "/read/accounts/2", false, false, false},
 		{"GET", "/read/users/7", false, false, false},
 		{"GET", "/read/users/delete-0123456789abcdefgh", false, false, false},
+		// 이름·동사 조각은 길거나 특수문자·숫자가 섞여도 객체 ID가 아니다(#501 리뷰).
+		{"GET", "/read/users/cancel-all-pending-orders-for-this-user", false, false, false},
+		{"GET", "/read/users/123:cancel", false, false, false},
+		{"GET", "/read/users/exportAllCustomersToCsvFileNow2026", false, false, false},
+		{"GET", "/read/users/x,y", false, false, false},
+		{"GET", "/read/users/123e4567-e89b-12d3-a456-426614174000", false, false, false},
 	} {
 		view := e2proxy.RequestView{Method: tc.method, URL: "https://owned.test" + tc.path, BodyPresent: tc.body}
 		if got := c.Before(t.Context(), view) == nil; got != tc.allowed {
@@ -89,7 +95,7 @@ func TestSelectedEndpointCoversOtherObjectIDs(t *testing.T) {
 			t.Errorf("PreapprovedRead %s %s = %v, want %v", tc.method, tc.path, got, tc.preapproved)
 		}
 	}
-	if !strings.Contains(c.Instructions(), "differs only in ID-like segments") {
+	if !strings.Contains(c.Instructions(), "differs only in object ID segments of the same kind") {
 		t.Fatal("model not told that selected endpoints cover other object IDs")
 	}
 }
@@ -127,5 +133,42 @@ func TestCrawlStageKeepsExactPaths(t *testing.T) {
 	}
 	if c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/users/2"}) == nil {
 		t.Fatal("crawl admitted an unseen object id")
+	}
+}
+
+// C18: 허용 판정의 객체 ID는 같은 자리·같은 종류(숫자·UUID·긴 16진·이메일)일 때만 같은 템플릿이다. 경로 가림 규칙처럼
+// 애매한 조각을 값으로 보지 않는다(#501 리뷰).
+func TestPathTemplateMatchesOnlySameIDKind(t *testing.T) {
+	same := map[string][]string{
+		"/api/orders/123": {"/api/orders/9", "/api/orders/00000000000000000001"},
+		"/api/files/123e4567-e89b-12d3-a456-426614174000": {"/api/files/00000000-0000-0000-0000-000000000000"},
+		"/api/objects/507f1f77bcf86cd799439011":           {"/api/objects/507f191e810c19729de860ea"},
+		"/api/users/alice@example.test/profile":           {"/api/users/bob.b+1@corp.example.test/profile"},
+		"/api/orders/123/items/4":                         {"/api/orders/5/items/6"},
+	}
+	for selected, variants := range same {
+		base, n := pathTemplate(selected)
+		if n == 0 {
+			t.Fatalf("%s has no id segment", selected)
+		}
+		for _, v := range variants {
+			if got, _ := pathTemplate(v); got != base {
+				t.Errorf("%s -> %s, want %s", v, got, base)
+			}
+		}
+	}
+	base, _ := pathTemplate("/api/orders/123")
+	for _, p := range []string{"/api/orders/cancel-all-pending-orders-for-this-user", "/api/orders/123:cancel",
+		"/api/orders/exportAllCustomersToCsvFileNow2026", "/api/orders/x,y", "/api/orders/cancel", "/api/orders/507f1f77bcf86cd799439011",
+		"/api/orders/123e4567-e89b-12d3-a456-426614174000", "/api/orders/1'or'1'='1", "/api/orders/-1", "/api/orders/123456789012345678901", "/api/orders/123:456"} {
+		if tp, _ := pathTemplate(p); tp == base {
+			t.Errorf("%s matched selected template %s", p, base)
+		}
+	}
+	hexBase, _ := pathTemplate("/api/objects/507f1f77bcf86cd799439011")
+	for _, p := range []string{"/api/objects/exportAllCustomersToCsvFile", "/api/objects/0123456789abcdefXYZ"} {
+		if tp, _ := pathTemplate(p); tp == hexBase {
+			t.Errorf("%s matched hex template %s", p, hexBase)
+		}
 	}
 }
