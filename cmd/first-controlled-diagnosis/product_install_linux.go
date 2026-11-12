@@ -144,6 +144,9 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	if _, ok := productPlannerLimitsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil); !ok {
 		return 2
 	}
+	if _, ok := productStatusReadRetriesFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil); !ok {
+		return 2
+	}
 	for _, d := range []string{"config", "data", "keys", "state", "runs", "ipc"} {
 		if checkDirectory(filepath.Join(*root, d), true) != nil {
 			return 1
@@ -200,6 +203,11 @@ func applyProductLaunchLimits(launch *launchConfig, c productInstallInput, mode 
 	if !ok {
 		return false
 	}
+	retries, ok := productStatusReadRetriesFor(c.RuntimeLimits, workflow)
+	if !ok {
+		return false
+	}
+	launch.StatusReadRetries = retries
 	launch.ModelConcurrency = concurrency
 	launch.PlannerTurnsPerPlan, launch.PlannerSecondsPerPlan = planner.PlannerTurnsPerPlan, planner.PlannerSecondsPerPlan
 	return true
@@ -334,7 +342,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		if e != nil {
 			return errPreparation
 		}
-		launch := launchConfig{Format: launchFormat, Mode: "general_http", ListenAddr: "127.0.0.1:28080", DataDir: filepath.Join(root, "data"), KeyDir: filepath.Join(root, "keys"), SkillDir: "/app/skills", ModelExecutionMode: mode, ModelProfileID: id, ModelFormat: "openai", ModelBaseURL: base, ModelRef: model, RuntimeDSNFile: filepath.Join(config, "runtime.dsn"), ShutdownTimeoutSeconds: 20, HTTP: &httpLaunch{PolicyFile: filepath.Join(config, "policy.json"), AuthorityFile: filepath.Join(config, "authority-template.json"), AuthorityRoot: config}}
+		launch := launchConfig{Format: launchFormat, Mode: "general_http", ListenAddr: "127.0.0.1:28080", DataDir: filepath.Join(root, "data"), KeyDir: filepath.Join(root, "keys"), SkillDir: "/app/skills", ModelExecutionMode: mode, ModelProfileID: id, ModelFormat: "openai", ModelBaseURL: base, ModelRef: model, RuntimeDSNFile: filepath.Join(config, "runtime.dsn"), ShutdownTimeoutSeconds: productShutdownTimeoutSeconds, HTTP: &httpLaunch{PolicyFile: filepath.Join(config, "policy.json"), AuthorityFile: filepath.Join(config, "authority-template.json"), AuthorityRoot: config}}
 		runSeconds, ok := productRunSecondsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil)
 		if !ok {
 			return errPreparation
