@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	pgdb "github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/transmit"
@@ -422,14 +424,67 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if addErr != nil || task.Store.SetIntentBlockedReason(unmatched, "e2_http_policy_limited") != nil {
 			t.Fatal("미결속 제한 fixture 생성 실패")
 		}
-		if ready, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
+		if ready, _, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
 			t.Fatal("call 감사 없는 제한 intent를 정상 마감으로 수용함")
 		}
 		if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, unmatched); err != nil {
 			t.Fatal("이 시험이 만든 미결속 intent 정리 실패")
 		}
-		if ready, err := supervisor.generalCompletion(ctx, runtime.server, task); err != nil || !ready {
+		if ready, outcomes, err := supervisor.generalCompletion(ctx, runtime.server, task); err != nil || !ready || outcomes.PolicyLimited == 0 || outcomes.Outcome() == diagnosis.OutcomeNoIntents {
 			t.Fatal("감사에 결속된 정상 제한을 마감 실패로 처리함")
+		}
+		// 실행 결과 상태 값(C08): 불완전·운영자 중지 intent가 있으면 실패가 아니라 부분 완료다. 결과 불명 intent는
+		// E② 요청 단위 처리(C01) 전까지 지금처럼 마감하지 않는다.
+		for _, tc := range []struct {
+			state, reason string
+			ready         bool
+			bucket        func(diagnosis.IntentOutcomes) int64
+		}{
+			{"exhausted", "", true, func(o diagnosis.IntentOutcomes) int64 { return o.Incomplete }},
+			{"stopped", "", true, func(o diagnosis.IntentOutcomes) int64 { return o.Incomplete }},
+			{"blocked", "llm_quota", true, func(o diagnosis.IntentOutcomes) int64 { return o.Incomplete }},
+			{"paused", "", true, func(o diagnosis.IntentOutcomes) int64 { return o.Stopped }},
+			{"blocked", "e2_http_result_unknown", false, nil},
+		} {
+			extra, addErr := task.Store.AddIntent(map[string]any{"summary": "Owned outcome fixture " + tc.state + tc.reason}, 1, nil, "system")
+			if addErr != nil {
+				t.Fatal("결과 fixture intent 생성 실패")
+			}
+			if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state=$1, blocked_reason=NULLIF($2,'') WHERE exploration_id=$3 AND id=$4", tc.state, tc.reason, task.ExpID, extra); err != nil {
+				t.Fatal("결과 fixture intent 상태 설정 실패", err)
+			}
+			ready, outcomes, err := supervisor.generalCompletion(ctx, runtime.server, task)
+			if tc.ready {
+				if err != nil || !ready || tc.bucket(outcomes) != 1 || outcomes.Outcome() != diagnosis.OutcomePartial {
+					t.Fatalf("%s/%s: 부분 완료로 마감하지 않음 ready=%v outcomes=%+v err=%v", tc.state, tc.reason, ready, outcomes, err)
+				}
+			} else if err == nil || ready {
+				t.Fatalf("%s/%s: 결과 불명 intent를 마감함", tc.state, tc.reason)
+			}
+			if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, extra); err != nil {
+				t.Fatal("결과 fixture intent 정리 실패")
+			}
+		}
+		// 실제 E② 호출이 있는 intent가 불완전으로 끝나도(턴 소진 등) 그 호출의 감사 결과로 부분 완료가 된다.
+		if execution, ok := runtime.host.Runtime().Execution(task.ID); ok && execution != nil && len(execution.Calls()) > 0 {
+			callIntent := execution.Calls()[0].IntentID
+			var oldState string
+			var oldReason sql.NullString
+			if err := installer.QueryRowContext(ctx, "SELECT state, blocked_reason FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, callIntent).Scan(&oldState, &oldReason); err != nil {
+				t.Fatal("호출 intent 상태 읽기 실패")
+			}
+			if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state='exhausted', blocked_reason=NULL WHERE exploration_id=$1 AND id=$2", task.ExpID, callIntent); err != nil {
+				t.Fatal("호출 intent 상태 설정 실패")
+			}
+			ready, outcomes, err := supervisor.generalCompletion(ctx, runtime.server, task)
+			if err != nil || !ready || outcomes.Incomplete == 0 || outcomes.Outcome() != diagnosis.OutcomePartial {
+				t.Fatalf("호출이 있는 불완전 intent를 부분 완료로 받지 않음 ready=%v outcomes=%+v err=%v", ready, outcomes, err)
+			}
+			if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state=$1, blocked_reason=$2 WHERE exploration_id=$3 AND id=$4", oldState, oldReason, task.ExpID, callIntent); err != nil {
+				t.Fatal("호출 intent 상태 복원 실패")
+			}
+		} else {
+			t.Fatal("정책 거부 실행에 E② 호출이 없음")
 		}
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()

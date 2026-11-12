@@ -5,6 +5,7 @@ package diagnosisprep
 import (
 	"context"
 	"errors"
+	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"time"
 )
@@ -151,6 +152,11 @@ type Job struct {
 	DrainComplete      bool           `json:"drain_complete"`
 	ResultReady        bool           `json:"result_ready"`
 	ModelUsage         *ModelUsage    `json:"model_usage,omitempty"`
+	// 실행 결과(docs/contracts/run-outcome-states.md §3.2). outcome·closing_reason은 completed에만,
+	// intent_outcomes는 completed·cancelled에만 있다. 이 칸이 생기기 전에 저장된 completed에는 없을 수 있다.
+	Outcome        string                    `json:"outcome,omitempty"`
+	ClosingReason  string                    `json:"closing_reason,omitempty"`
+	IntentOutcomes *diagnosis.IntentOutcomes `json:"intent_outcomes,omitempty"`
 }
 
 // Principal은 API가 기존 Bearer 인증으로 확인한 주체다. 브라우저 body에서는 받지 않는다.
@@ -220,6 +226,8 @@ type Update struct {
 	DrainComplete      bool
 	ResultReady        bool
 	ModelUsage         *ModelUsage
+	// Result는 진단 실행이 completed로 마감했을 때의 결과다. 다른 상태에서는 nil이어야 한다.
+	Result *diagnosis.RunResult
 }
 
 // Publish 실패는 실행 허가가 아니다. 신규 부작용을 중단하고 기존 실행은 취소·drain한다.

@@ -44,6 +44,7 @@ import {
 } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import * as api from "../live/api";
+import { urlOutcomeText } from "../live/urlMap";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
 import { LiveFeeds } from "../live/feeds";
 import { LiveRailTasks } from "../live/rail";
@@ -871,4 +872,39 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   fireEvent.click(tip);
   fireEvent.mouseDown(document.body);
   expect(note).not.toBeVisible();
+});
+
+describe("실행 결과 한 줄(urlOutcomeText)", () => {
+  const counts = (c: Partial<Record<"done" | "policy_limited" | "incomplete" | "unknown" | "stopped", number>>) => ({
+    done: 0,
+    policy_limited: 0,
+    incomplete: 0,
+    unknown: 0,
+    stopped: 0,
+    ...c,
+  });
+  it.each([
+    [
+      { state: "completed", outcome: "partial", intent_outcomes: counts({ done: 1, incomplete: 2 }) },
+      "일부 완료 · 남은 intent 2",
+    ],
+    [{ state: "completed", outcome: "no_intents", intent_outcomes: counts({}) }, "시도한 계획 없음(검사 안 함)"],
+    [
+      { state: "completed", outcome: "complete", intent_outcomes: counts({ done: 1, policy_limited: 2 }) },
+      "전부 마감 · 정책상 검증 안 됨 2",
+    ],
+    [
+      {
+        state: "completed",
+        outcome: "partial",
+        closing_reason: "budget_limited",
+        intent_outcomes: counts({ incomplete: 1 }),
+      },
+      "일부 완료 · 남은 intent 1 · 예산 상한에서 마감 · 찾은 후보는 보존",
+    ],
+    [{ state: "cancelled", intent_outcomes: counts({ done: 1, stopped: 2 }) }, "중지됨 · 끝난 1 / 끊긴 2"],
+    [{ state: "completed" }, ""],
+  ] as const)("%o → %s", (job, text) => {
+    expect(urlOutcomeText(job as Parameters<typeof urlOutcomeText>[0])).toBe(text);
+  });
 });

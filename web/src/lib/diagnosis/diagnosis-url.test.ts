@@ -274,3 +274,50 @@ describe("서버 known fact와 단조성", () => {
     expect(() => matchURLJob({ ...running, revision: 6 }, used)).toThrow();
   });
 });
+
+describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => {
+  const completed = {
+    ...running,
+    state: "completed" as const,
+    phase: "report" as const,
+    drain_complete: true,
+    result_ready: true,
+  };
+  const counts = (c: Partial<Record<"done" | "policy_limited" | "incomplete" | "unknown" | "stopped", number>>) => ({
+    done: 0,
+    policy_limited: 0,
+    incomplete: 0,
+    unknown: 0,
+    stopped: 0,
+    ...c,
+  });
+  it.each([
+    { outcome: "complete", intent_outcomes: counts({ done: 2, policy_limited: 1 }) },
+    { outcome: "partial", closing_reason: "budget_limited", intent_outcomes: counts({ done: 1, incomplete: 2 }) },
+    { outcome: "no_intents", closing_reason: "budget_limited", intent_outcomes: counts({}) },
+  ])("completed는 대조식에 맞는 결과를 받는다: %o", (result) => {
+    expect(parseURLJob(envelope({ ...completed, ...result }), owner)).toMatchObject(result);
+  });
+  it("이 칸 이전에 저장된 completed는 결과 없이 온다", () => {
+    expect(parseURLJob(envelope(completed), owner).outcome).toBeUndefined();
+  });
+  it("cancelled는 개수만 받는다", () => {
+    const cancelled = { ...completed, state: "cancelled" as const, intent_outcomes: counts({ done: 1, stopped: 1 }) };
+    expect(parseURLJob(envelope(cancelled), owner).intent_outcomes).toEqual(counts({ done: 1, stopped: 1 }));
+  });
+  it.each([
+    { ...completed, outcome: "complete", intent_outcomes: counts({ done: 1, incomplete: 1 }) },
+    { ...completed, outcome: "complete" },
+    { ...completed, intent_outcomes: counts({ done: 1 }) },
+    { ...completed, closing_reason: "budget_limited" },
+    { ...completed, outcome: "complete", closing_reason: "time_limited", intent_outcomes: counts({ done: 1 }) },
+    { ...completed, outcome: "partial", intent_outcomes: counts({ done: 1, stopped: -1, incomplete: 2 }) },
+    { ...completed, outcome: "complete", intent_outcomes: { ...counts({ done: 1 }), extra: 0 } },
+    { ...completed, outcome: "vulnerable", intent_outcomes: counts({ done: 1 }) },
+    { ...completed, state: "cancelled", outcome: "complete", intent_outcomes: counts({ done: 1 }) },
+    { ...completed, state: "failed", intent_outcomes: counts({ done: 1 }) },
+    { ...running, intent_outcomes: counts({ done: 1 }) },
+  ])("계약 밖 결과는 fail closed 한다: %o", (value) => {
+    expect(() => parseURLJob(envelope(value), owner)).toThrow();
+  });
+});

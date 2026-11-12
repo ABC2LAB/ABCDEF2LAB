@@ -109,6 +109,18 @@ export type URLDiagnosisJob = {
   drain_complete: boolean;
   result_ready: boolean;
   model_usage?: URLDiagnosisUsage;
+  /** 실행 결과(docs/contracts/run-outcome-states.md §3.2). completed에만 있다. 실행 마감은 취약점 없음이 아니다. */
+  outcome?: "complete" | "partial" | "no_intents";
+  closing_reason?: "budget_limited";
+  /** intent 결과 개수. completed·cancelled에만 있다. */
+  intent_outcomes?: URLIntentOutcomes;
+};
+export type URLIntentOutcomes = {
+  done: number;
+  policy_limited: number;
+  incomplete: number;
+  unknown: number;
+  stopped: number;
 };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
@@ -424,7 +436,12 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     "drain_complete",
     "result_ready",
     "model_usage",
+    "outcome",
+    "closing_reason",
+    "intent_outcomes",
   ]);
+  const outcomes = d.intent_outcomes === undefined ? undefined : intentOutcomes(d.intent_outcomes);
+  if (!validRunResult(String(d.state), d.outcome, d.closing_reason, outcomes)) return invalid();
   const input = parseInput(d.input);
   const approved = d.scope === undefined ? undefined : scope(d.scope);
   if (
@@ -477,7 +494,44 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     ...(approved ? { scope: approved } : {}),
     ...(d.task_id ? { task_id: String(d.task_id) } : {}),
     ...(d.model_usage === undefined ? {} : { model_usage: usage(d.model_usage) }),
+    ...(d.outcome === undefined ? {} : { outcome: d.outcome as URLDiagnosisJob["outcome"] }),
+    ...(d.closing_reason === undefined ? {} : { closing_reason: "budget_limited" as const }),
+    ...(outcomes ? { intent_outcomes: outcomes } : {}),
   };
+}
+function intentOutcomes(v: unknown): URLIntentOutcomes {
+  const keys = ["done", "policy_limited", "incomplete", "unknown", "stopped"] as const;
+  if (!object(v) || !keys.every((k) => natural(v[k]))) return invalid();
+  exact(v, [...keys]);
+  return {
+    done: v.done as number,
+    policy_limited: v.policy_limited as number,
+    incomplete: v.incomplete as number,
+    unknown: v.unknown as number,
+    stopped: v.stopped as number,
+  };
+}
+/** 서버 계약 대조식(§3.2): no_intents ⇔ 모두 0, complete ⇔ done+policy_limited ≥ 1이고 나머지 0, partial ⇔ 나머지 ≥ 1. */
+export function runOutcome(c: URLIntentOutcomes): "complete" | "partial" | "no_intents" {
+  if (c.incomplete + c.unknown + c.stopped > 0) return "partial";
+  if (c.done + c.policy_limited > 0) return "complete";
+  return "no_intents";
+}
+function validRunResult(
+  state: string,
+  outcome: unknown,
+  closing: unknown,
+  counts: URLIntentOutcomes | undefined,
+): boolean {
+  if (counts && state !== "completed" && state !== "cancelled") return false;
+  if (outcome === undefined) {
+    // 이 칸이 생기기 전에 저장된 completed는 결과 없이 올 수 있다.
+    return closing === undefined && (state !== "completed" || counts === undefined);
+  }
+  if (state !== "completed" || !counts || !["complete", "partial", "no_intents"].includes(String(outcome)))
+    return false;
+  if (closing !== undefined && closing !== "budget_limited") return false;
+  return runOutcome(counts) === outcome;
 }
 export async function readURLCatalog(): Promise<URLDiagnosisCatalog> {
   return parseURLCatalog(await apiFetch<unknown>(`${base}/catalog`, { cache: "no-store", redirect: "error" }, false));
@@ -612,7 +666,8 @@ export function matchURLJob(
     for (const key of counters) if (result.model_usage[key] < current.model_usage[key]) return invalid();
     if ((result.model_usage.reserved_cost_usd_micros ?? 0) < (current.model_usage.reserved_cost_usd_micros ?? 0))
       return invalid();
-    if ((result.model_usage.unknown_usage_calls ?? 0) < (current.model_usage.unknown_usage_calls ?? 0)) return invalid();
+    if ((result.model_usage.unknown_usage_calls ?? 0) < (current.model_usage.unknown_usage_calls ?? 0))
+      return invalid();
   }
   return result;
 }

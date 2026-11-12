@@ -464,6 +464,15 @@ func (s *Service) publish(id string, u Update) error {
 	next.Job.DrainComplete = u.DrainComplete
 	next.Job.ResultReady = u.ResultReady
 	next.Job.ModelUsage = u.ModelUsage
+	next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = "", "", nil
+	if u.Result != nil {
+		counts := u.Result.IntentOutcomes
+		next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = u.Result.Outcome, u.Result.ClosingReason, &counts
+	}
+	// 새로 completed가 되는 실행은 결과를 함께 싣는다. 결과 없는 완료는 받지 않는다(절대 규칙 5).
+	if u.State == Completed && old.Job.State != Completed && u.Result == nil {
+		return ErrProtocol
+	}
 	// 중지 요청을 후속 준비·실행 갱신으로 취소하지 않는다. 확인된 종료는 반영한다.
 	if old.Job.State == Stopping && active(next.Job.State) {
 		next.Job.State = Stopping
