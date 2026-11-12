@@ -475,14 +475,26 @@ func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRun
 	}
 	login.Cookies = append([]string(nil), login.Cookies...)
 	out.Login = &login
-	raw, err := json.Marshal(struct {
-		Login    diagnosisprep.TargetLogin `json:"login"`
-		Accounts []productRunAccount       `json:"accounts"`
-	}{login, out.Accounts})
+	digest, err := runAccountsDigest(out)
 	if err != nil {
 		return productRunAccounts{}, "", errPreparation
 	}
-	return out, urlSHA(raw), nil
+	return out, digest, nil
+}
+
+// runAccountsDigest는 결속 계정 요약이다(로그인 방식 + 라벨·자격 해시). 저장 보고서가 결속 정책에서 같은 값을 다시 만든다.
+func runAccountsDigest(a productRunAccounts) (string, error) {
+	if a.Login == nil {
+		return "", errPreparation
+	}
+	raw, err := json.Marshal(struct {
+		Login    diagnosisprep.TargetLogin `json:"login"`
+		Accounts []productRunAccount       `json:"accounts"`
+	}{*a.Login, a.Accounts})
+	if err != nil {
+		return "", err
+	}
+	return urlSHA(raw), nil
 }
 
 // errAccountBindingChanged는 실행에 결속한 시험 계정이 더는 그 자격의 test가 아니라는 뜻이다(해제·만료·판 변경·자격

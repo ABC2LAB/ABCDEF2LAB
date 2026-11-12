@@ -20,7 +20,9 @@ import (
 
 // 실행 결속(C14 구현 설계 5): 지금 test이고 자격·로그인 방식이 있는 계정만 골라 실행 정책에 인증 준비 칸·규칙을 넣고
 // 자격 사본을 결속 디렉터리에 고정한다. 결속한 계정이 해제되면 그 실행의 확인이 실패하고(새 송신 정지) 사본을 지운다.
-func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
+// accountRunFixture는 실제 제품 설치·대상 등록·승인까지 마친 제품 실행 환경이다(DNS·TLS 확인은 가짜).
+func accountRunFixture(t *testing.T) (*productRuntime, urlPreparationInstallation, diagnosisprep.ProductTarget, diagnosisprep.Input) {
+	t.Helper()
 	f := newURLNegativeFixture(t)
 	completeProductTemplateForTest(f)
 	m := f.config.Profiles[0]
@@ -41,7 +43,6 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.targets.Close()
 	r := runtime.targets
 	txt := map[string][]string{}
 	r.lookupTXT = func(_ context.Context, name string) ([]string, error) { return txt[name], nil }
@@ -61,7 +62,13 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	if _, err = r.approve(t.Context(), "ARTEX", target.ID); err != nil {
 		t.Fatal(err)
 	}
-	input := diagnosisprep.Input{TargetURL: "https://owned.example.test/read", ProfileID: m.ID, DisplayName: "Owned account run"}
+	t.Cleanup(func() { _ = runtime.targets.Close() })
+	return runtime, cfg, target, diagnosisprep.Input{TargetURL: "https://owned.example.test/read", ProfileID: m.ID, DisplayName: "Owned account run"}
+}
+
+func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
+	runtime, cfg, target, input := accountRunFixture(t)
+	r := runtime.targets
 	// 계정이 없으면 인증 준비 칸이 없다.
 	plain, err := runtime.load("ARTEX", input, false, "")
 	if err != nil {
@@ -221,5 +228,70 @@ func TestProductRunAccountsSelection(t *testing.T) {
 	}
 	if r.accountsCurrent(rec, nil) != nil {
 		t.Fatal("run without bound accounts stopped")
+	}
+}
+
+// 저장 보고서는 현재 송신 권한·계정 선택과 상관없이 그 실행의 결속을 다시 찾는다: 계정 없는 실행은 대상 철회 뒤에도,
+// 계정을 결속한 실행은 해제·철회 뒤에도 작업의 원본 요약으로 같은 결속을 연다(#520 리뷰).
+func TestProductReportLoadsBindingAfterRevokeAndUnmark(t *testing.T) {
+	runtime, _, target, input := accountRunFixture(t)
+	r := runtime.targets
+	plain, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainSource := diagnosisprep.SourceDigest(input, plain.inspection.InstallationDigest)
+	plain.clearMaterials()
+	if _, err := r.setTargetLogin("ARTEX", target.ID, diagnosisprep.TargetLogin{Method: "POST", Path: "/read/login", Format: "form", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "seeded-pass-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
+		t.Fatal(err)
+	}
+	withAccounts, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountSource := diagnosisprep.SourceDigest(input, withAccounts.inspection.InstallationDigest)
+	withAccounts.clearMaterials()
+	if accountSource == plainSource {
+		t.Fatal("account binding shares the plain binding digest")
+	}
+	endpoint := productPreparationEndpoint{product: runtime}
+	unmark := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "product-control", Principal: "ARTEX", Command: diagnosisprep.ProductControl,
+		Product: &diagnosisprep.ProductRequest{Operation: "account_unmark", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"}}}
+	if resp, err := endpoint.Call(t.Context(), unmark); err != nil || resp.Product == nil || resp.Product.Reason != "" {
+		t.Fatalf("unmark: %v %+v", err, resp)
+	}
+	if _, err := runtime.revoke("ARTEX", target.ID); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		source string
+		auth   bool
+	}{"plain run": {plainSource, false}, "account run": {accountSource, true}} {
+		report, err := runtime.load("ARTEX", input, true, target.ID, c.source)
+		if err != nil {
+			t.Fatalf("%s report after revoke: %v", name, err)
+		}
+		if got := diagnosisprep.SourceDigest(input, report.inspection.InstallationDigest); got != c.source || (report.policy.Auth != nil) != c.auth {
+			t.Errorf("%s report opened another binding (auth=%v)", name, report.policy.Auth != nil)
+		}
+		report.clearMaterials()
+	}
+	// 원본 요약 없이 읽으면 지금처럼 계정 없는 결속이다.
+	if report, err := runtime.load("ARTEX", input, true, target.ID); err != nil || report.policy.Auth != nil {
+		t.Fatalf("report without a source digest: %v", err)
+	} else {
+		report.clearMaterials()
+	}
+	if _, err := runtime.load("ARTEX", input, true, target.ID, strings.Repeat("0", 64)); err == nil {
+		t.Fatal("report with an unknown source digest opened a binding")
 	}
 }

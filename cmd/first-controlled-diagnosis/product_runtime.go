@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -187,7 +188,114 @@ func (p *productRuntime) profiles() ([]diagnosisprep.Profile, error) {
 	}
 	return out, nil
 }
-func (p *productRuntime) load(principal string, input diagnosisprep.Input, reportOnly bool, reportID string) (*urlLoadedProfile, error) {
+
+// load는 실행(또는 저장 보고서)을 위한 결속을 읽는다. 저장 보고서는 현재 송신 권한·계정 선택과 상관없이 그 실행이 쓴
+// 결속을 다시 찾아야 하므로, sourceDigest(작업의 원본 요약)를 주면 계정 없는 결속부터 같은 기반 이름의 계정 결속까지
+// 차례로 보고 원본 요약이 맞는 것을 돌려준다(C14).
+func (p *productRuntime) load(principal string, input diagnosisprep.Input, reportOnly bool, reportID string, sourceDigest ...string) (*urlLoadedProfile, error) {
+	if !reportOnly {
+		return p.loadBinding(principal, input, false, reportID, "")
+	}
+	loaded, err := p.loadBinding(principal, input, true, reportID, "")
+	if len(sourceDigest) == 0 {
+		return loaded, err
+	}
+	if err == nil && diagnosisprep.SourceDigest(input, loaded.inspection.InstallationDigest) == sourceDigest[0] {
+		return loaded, nil
+	}
+	if loaded != nil {
+		loaded.clearMaterials()
+	}
+	for _, suffix := range p.accountBindingSuffixes(principal, input, reportID) {
+		candidate, e := p.loadBinding(principal, input, true, reportID, suffix)
+		if e == nil && diagnosisprep.SourceDigest(input, candidate.inspection.InstallationDigest) == sourceDigest[0] {
+			return candidate, nil
+		}
+		if candidate != nil {
+			candidate.clearMaterials()
+		}
+	}
+	if err == nil {
+		err = errPreparation
+	}
+	return nil, err
+}
+
+// bindingBase는 결속 디렉터리 이름의 기반이다(대상 기록·모델·워크플로 입력). 계정을 결속한 실행은 그 뒤에 계정 요약
+// 16자를 붙인다(bound-<기반>-<계정>). 계정 없는 결속 이름은 이 변경 전과 같다.
+func bindingBase(rec productTargetRecord, m urlPreparationProfile, input diagnosisprep.Input) string {
+	source := productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256
+	if input.WorkflowMode != "" {
+		source += "\n" + workflowInputDigest(input)
+	}
+	return "bound-" + urlSHA([]byte(source))[:32]
+}
+
+// accountBindingSuffixes는 저장 보고서가 찾을 수 있는 같은 기반 이름의 계정 결속 접미사들이다.
+func (p *productRuntime) accountBindingSuffixes(principal string, input diagnosisprep.Input, reportID string) []string {
+	rec, e := p.targets.lookup(principal, input.TargetURL, reportID)
+	if e != nil {
+		return nil
+	}
+	m, _, _, _, e := p.model(input.ProfileID)
+	if e != nil {
+		return nil
+	}
+	base := bindingBase(rec, m, input) + "-"
+	root := filepath.Join(p.config.StateDir, "bindings")
+	var out []string
+	for _, dir := range []string{root, filepath.Join(root, "ordinary")} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if suffix, ok := strings.CutPrefix(entry.Name(), base); ok && entry.IsDir() && len(suffix) == 16 && urlHex(suffix) {
+				out = append(out, suffix)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func urlHex(s string) bool {
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// accountsFromBinding은 저장 보고서용으로 이미 있는 계정 결속의 정책에서 결속 계정을 다시 만든다. 다시 계산한 계정 요약이
+// 디렉터리 접미사와 같아야 한다.
+func accountsFromBinding(dir, suffix string) (productRunAccounts, string, error) {
+	raw, err := readPrivateFile(filepath.Join(dir, "policy.json"), e2config.MaxPolicyBytes)
+	if err != nil {
+		return productRunAccounts{}, "", err
+	}
+	// 정책 파일에는 null 칸(evaluation 등)이 있어 일반 해독으로 읽는다. 다시 만든 정책이 이 파일과 바이트로 같은지는 결속
+	// 읽기가 따로 확인한다.
+	var stored server.E2HTTPFilePolicy
+	decodeErr := json.Unmarshal(raw, &stored)
+	clear(raw)
+	if decodeErr != nil || stored.Auth == nil {
+		return productRunAccounts{}, "", errPreparation
+	}
+	login := stored.Auth.Login
+	out := productRunAccounts{Login: &login}
+	for _, a := range stored.Auth.Accounts {
+		out.Accounts = append(out.Accounts, productRunAccount{Label: a.Label, CredentialSHA256: a.Credential.SHA256})
+	}
+	digest, err := runAccountsDigest(out)
+	if err != nil || digest[:16] != suffix {
+		return productRunAccounts{}, "", errPreparation
+	}
+	return out, digest, nil
+}
+
+func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input, reportOnly bool, reportID, reportAccounts string) (*urlLoadedProfile, error) {
 	if reportOnly && reportID == "" {
 		return nil, errPreparation
 	}
@@ -205,11 +313,15 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	if e != nil {
 		return nil, e
 	}
-	// 인증 준비(C14): 지금 test이고 자격·로그인 방식이 있는 계정을 고른다. 고른 계정·자격 해시는 결속 이름에 들어가 바뀌면
-	// 새 결속 디렉터리가 된다.
-	accounts, accountDigest, e := p.targets.runAccounts(rec)
-	if e != nil {
-		return nil, e
+	// 인증 준비(C14): 실행은 지금 test이고 자격·로그인 방식이 있는 계정을 고른다. 고른 계정·자격 해시의 요약은 결속 이름에
+	// 붙어 바뀌면 새 결속 디렉터리가 된다. 저장 보고서는 현재 계정 선택을 보지 않고(철회·재승인 뒤에도 읽힘), 계정 결속을
+	// 찾을 때는 그 결속의 정책에서 계정을 다시 만든다.
+	var accounts productRunAccounts
+	accountDigest := ""
+	if !reportOnly {
+		if accounts, accountDigest, e = p.targets.runAccounts(rec); e != nil {
+			return nil, e
+		}
 	}
 	p.bindMu.Lock()
 	defer p.bindMu.Unlock()
@@ -220,15 +332,22 @@ func (p *productRuntime) load(principal string, input diagnosisprep.Input, repor
 	if checkDirectory(root, true) != nil {
 		return nil, errPreparation
 	}
-	bindingSource := productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256
-	if accountDigest != "" {
-		bindingSource += "\naccounts\n" + accountDigest
+	name := bindingBase(rec, m, input)
+	if reportAccounts != "" {
+		name += "-" + reportAccounts
+	} else if accountDigest != "" {
+		name += "-" + accountDigest[:16]
 	}
-	if input.WorkflowMode != "" {
-		bindingSource += "\n" + workflowInputDigest(input)
-	}
-	name := "bound-" + urlSHA([]byte(bindingSource))[:32]
 	dir := filepath.Join(root, name)
+	if reportAccounts != "" {
+		// 저장 보고서의 계정 결속은 이미 있어야 한다(새로 만들지 않음).
+		if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+			dir = filepath.Join(root, "ordinary", name)
+		}
+		if accounts, accountDigest, e = accountsFromBinding(dir, reportAccounts); e != nil {
+			return nil, e
+		}
+	}
 	// Keep historical immutable bindings. A full workflow cache must not consume
 	// the independent capacity reserved for ordinary preauthorized rounds.
 	if input.WorkflowMode == "" {
