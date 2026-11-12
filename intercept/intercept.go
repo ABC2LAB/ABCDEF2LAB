@@ -171,8 +171,11 @@ type Interceptor struct {
 	mu           sync.RWMutex
 	cached       []compiledRule  // sorted by priority DESC; nil means not loaded yet
 	enabledTools map[string]bool // nil means not loaded yet
-	pending      *pendingManager
-	reviewer     Reviewer // nil = LLM fallback judge not wired
+	// invalidBlocking은 깨진 막기·확인 규칙이 있다는 뜻이다. 그동안은 감시 대상에서 뺀 도구도 Match까지 보내
+	// rule_invalid로 막는다(#86의 "제외 도구까지 차단" 범위, P3 결정안 C12).
+	invalidBlocking bool
+	pending         *pendingManager
+	reviewer        Reviewer // nil = LLM fallback judge not wired
 }
 
 // SetReviewer installs the LLM fallback judge callback. Passing nil disables it.
@@ -203,6 +206,7 @@ func (i *Interceptor) Invalidate() {
 	i.mu.Lock()
 	i.cached = nil
 	i.enabledTools = nil
+	i.invalidBlocking = false
 	i.mu.Unlock()
 }
 
@@ -267,7 +271,7 @@ func (i *Interceptor) loadLocked() error {
 		}
 	}
 	// Publish both caches only after the entire configuration is valid.
-	i.cached, i.enabledTools = out, enabledTools
+	i.cached, i.enabledTools, i.invalidBlocking = out, enabledTools, blocking > 0
 	return nil
 }
 
@@ -302,7 +306,7 @@ func (i *Interceptor) IsToolEnabled(name string) bool {
 func (i *Interceptor) CheckToolEnabled(name string) (bool, error) {
 	i.mu.RLock()
 	if i.enabledTools != nil {
-		v := i.enabledTools[name]
+		v := i.enabledTools[name] || i.invalidBlocking
 		i.mu.RUnlock()
 		return v, nil
 	}
@@ -315,7 +319,7 @@ func (i *Interceptor) CheckToolEnabled(name string) (bool, error) {
 			return false, err
 		}
 	}
-	return i.enabledTools[name], nil
+	return i.enabledTools[name] || i.invalidBlocking, nil
 }
 
 // GetEnabledTools returns the ordered list of tool names that are currently
