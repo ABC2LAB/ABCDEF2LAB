@@ -431,50 +431,64 @@ export function UrlNewScanLive() {
               <h2>분석 모델</h2>
             </div>
             <div className={s["fsec-b"]}>
-              {externals.length ? (
-                <div className={s.seg} role="radiogroup" aria-label="모델 실행 위치">
-                  {(
-                    [
-                      ["local", "로컬 실행", locals.length],
-                      ["external", "외부 API", externals.length],
-                    ] as const
-                  ).map(([k, label, n]) => (
-                    <label key={k}>
-                      <input
-                        type="radio"
-                        name="nModel"
-                        value={k}
-                        checked={shownKind === k}
-                        disabled={g.inputLocked || !n}
-                        onChange={() => {
-                          setKind(k);
-                          setCredentialReady(false);
-                        }}
-                      />
-                      <span>{label}</span>
-                    </label>
-                  ))}
-                </div>
-              ) : null}
-              <div className={s.field}>
-                <label className={s.lbl} htmlFor="luProfile">
-                  모델
-                </label>
-                <select
-                  className={cx(s.inp, s["w-sel"])}
-                  id="luProfile"
-                  value={pv}
-                  disabled={g.inputLocked || !choices.length}
-                  onChange={(e) => setProfileId(e.target.value)}
-                >
-                  {(shown ? profiles.filter((p) => p.id === pv) : choices).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.model_label}
-                    </option>
-                  ))}
-                  {!profiles.length ? <option value="">설치된 모델 없음</option> : null}
-                </select>
+              {/* 시안처럼 늘 보인다. 설치된 프로필이 없는 쪽은 고를 수 없다 */}
+              <div className={s.seg} role="radiogroup" aria-label="모델 실행 위치">
+                {(
+                  [
+                    ["local", "로컬 실행", locals.length],
+                    ["external", "외부 API", externals.length],
+                  ] as const
+                ).map(([k, label, n]) => (
+                  <label key={k}>
+                    <input
+                      type="radio"
+                      name="nModel"
+                      value={k}
+                      checked={shownKind === k}
+                      disabled={g.inputLocked || !n}
+                      onChange={() => {
+                        setKind(k);
+                        setCredentialReady(false);
+                      }}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
               </div>
+              <div className={external ? undefined : s.two}>
+                <div className={s.field}>
+                  <label className={s.lbl} htmlFor="luProfile">
+                    모델
+                  </label>
+                  <select
+                    className={cx(s.inp, s["w-sel"])}
+                    id="luProfile"
+                    value={pv}
+                    disabled={g.inputLocked || !choices.length}
+                    onChange={(e) => setProfileId(e.target.value)}
+                  >
+                    {(shown ? profiles.filter((p) => p.id === pv) : choices).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.model_label}
+                      </option>
+                    ))}
+                    {!profiles.length ? <option value="">설치된 모델 없음</option> : null}
+                  </select>
+                </div>
+                {external ? null : (
+                  <div className={s.field}>
+                    <label className={s.lbl} htmlFor="nLlmUrl">
+                      LLM 서버 주소
+                    </label>
+                    <input id="nLlmUrl" className={cx(s.inp, s.mono)} disabled placeholder="설치 프로필이 정함" />
+                  </div>
+                )}
+              </div>
+              {external ? null : (
+                <div className={s.hostline}>
+                  <NotYet why="모델 서버 주소 · 연결 상태는 설치 프로필이 정하고, 화면에서 보거나 바꾸는 서버 입력이 없습니다" />
+                </div>
+              )}
               {external && !shown ? (
                 <ExternalModelSettings
                   key={`${pv}:${resetSeq}`}
@@ -490,20 +504,7 @@ export function UrlNewScanLive() {
                     대상 응답과 프롬프트가 외부 제공자로 전송됩니다. 폐쇄망이나 민감한 환경에서는 로컬 실행을 쓰세요.
                   </span>
                 </div>
-              ) : (
-                <div className={s.field}>
-                  <label className={s.lbl} htmlFor="nLlmUrl">
-                    LLM 서버 주소
-                  </label>
-                  <input
-                    id="nLlmUrl"
-                    className={cx(s.inp, s.mono, s["w-url"])}
-                    disabled
-                    placeholder="설치 프로필이 정함"
-                  />
-                  <NotYet why="모델 서버 주소 · 연결 상태는 설치 프로필이 정하고, 화면에서 보거나 바꾸는 서버 입력이 없습니다" />
-                </div>
-              )}
+              ) : null}
             </div>
           </div>
 

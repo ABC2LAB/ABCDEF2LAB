@@ -1134,6 +1134,10 @@ a.ph:hover {
   white-space: nowrap;
   font-family: var(--sans);
 }
+/* 세로로 쌓는 칸(.field · .fsec-b) 안에서도 글 길이만큼만 (줄 전체로 늘어나지 않게) */
+.tag.out {
+  align-self: flex-start;
+}
 .tag .ic {
   width: 12px;
   height: 12px;
