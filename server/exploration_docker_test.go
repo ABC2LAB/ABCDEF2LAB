@@ -236,7 +236,7 @@ func (p *dockerExploreProvider) Complete(ctx context.Context, r llm.CompletionRe
 				continue
 			}
 			for _, content := range block.Content {
-				if block.ToolUseID == "14" {
+				if block.ToolUseID == "15" {
 					p.refShape = map[string]bool{"button": strings.Contains(content.Text, "button"), "save": strings.Contains(content.Text, "save"), "ref": strings.Contains(content.Text, "[ref="), "snapshot": strings.Contains(content.Text, "Snapshot")}
 				}
 				if matches := regexp.MustCompile(`button "save" \[ref=([A-Za-z0-9]+)\]`).FindStringSubmatch(content.Text); len(matches) == 2 {
@@ -246,7 +246,7 @@ func (p *dockerExploreProvider) Complete(ctx context.Context, r llm.CompletionRe
 				if !ok {
 					continue
 				}
-				for _, proof := range []string{"P1_SPA_READY", "P1_RUNTIME_HOOK_READY", "P1_RUNTIME_METADATA_READY", "P1_CDN_READY", "P1_CDN_BLOCKED", "P1_WEBMCP_REGISTERED", "P1_WEBMCP_NONE", "P1_FORM_READY"} {
+				for _, proof := range []string{"P1_SPA_READY", "P1_RUNTIME_HOOK_READY", "P1_RUNTIME_METADATA_READY", "P1_CDN_READY", "P1_CDN_BLOCKED", "P1_WEBMCP_REGISTERED", "P1_WEBMCP_NONE", "P1_FORM_READY", "P1_CSS_READY"} {
 					if value == proof {
 						p.proof[proof] = true
 					}
@@ -345,6 +345,7 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 	p.steps = []dockerToolStep{
 		nav("/"),
 		eval("() => document.getElementById('fixture-ready') ? 'P1_SPA_READY' : 'missing'"),
+		eval("() => getComputedStyle(document.getElementById('app')).fontFamily==='sans-serif'?'P1_CSS_READY':'missing'"),
 		eval("() => {" + string(script) + ";globalThis.__p1metadata=globalThis.__apiReconMetadata.install();return 'P1_RUNTIME_HOOK_READY'}"),
 		eval("async () => {await fetch('/api/items?filter=fixture');return globalThis.__p1metadata.drain().discoveries.some(x=>x.query_keys.includes('filter'))?'P1_RUNTIME_METADATA_READY':'missing'}"),
 		{"report_discovery", map[string]any{"discoveries": []map[string]string{{"method": "GET", "path": "/api/inferred-only", "source": "api_recon_static"}}}},
@@ -418,7 +419,7 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 		t.Fatal("boundary_state")
 	}
 	p.last = state.RecordCount
-	result, e := session.Run(t.Context(), worker, agent.ExplorationRunOptions{TargetURL: cfg.TargetOrigin + "/", Reporter: flow, MaxTurns: 20, MaxDuration: 150 * time.Second}, nil)
+	result, e := session.Run(t.Context(), worker, agent.ExplorationRunOptions{TargetURL: cfg.TargetOrigin + "/", Reporter: flow, MaxTurns: 24, MaxDuration: 150 * time.Second}, nil)
 	if e != nil {
 		report["failure"] = "worker_or_cleanup"
 		report["model_calls"] = p.calls
@@ -438,14 +439,34 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 		t.Fatal("flow_snapshot")
 	}
 	observed, inferred := 0, 0
+	resources := map[string]bool{"/assets/app.js": false, "/assets/app.css": false, "/assets/logo.svg": false, "/api/items": false}
+	dynamicKeys := false
 	for _, v := range flow.DiscoveryInventory() {
 		if v.Confidence == "observed" {
 			observed++
+			if _, ok := resources[v.Path]; ok && v.Status == 200 {
+				resources[v.Path] = true
+			}
+			if v.Path == "/api/items" && v.Source == diagnosisflow.SourceBrowserXHR {
+				for _, key := range v.QueryKeys {
+					if key == "filter" {
+						dynamicKeys = true
+					}
+				}
+			}
 		} else {
 			inferred++
 		}
 	}
 	report["proof"] = p.proof
+	report["resource_observations"] = resources
+	report["observed_query_keys"] = dynamicKeys
+	for _, seen := range resources {
+		if !seen {
+			report["failure"] = "required_resource_not_observed"
+			t.Fatal("required_resource_not_observed")
+		}
+	}
 	report["forwarded"] = state.Forwarded
 	report["external"] = state.External
 	report["denied"] = state.Denied
@@ -454,7 +475,7 @@ func TestOwnedDockerExplorationMCP(t *testing.T) {
 	report["inferred"] = inferred
 	report["model_calls"] = p.calls
 	report["diagnosis_attempts"] = snap.Counts.Attempted
-	if p.invalid || !p.proof["P1_SPA_READY"] || !p.proof["P1_RUNTIME_HOOK_READY"] || !p.proof["P1_RUNTIME_METADATA_READY"] || (!p.proof["P1_WEBMCP_REGISTERED"] && !p.proof["P1_WEBMCP_NONE"]) || !p.proof["P1_FORM_READY"] || p.formRef == "" || observed < 3 || inferred < 1 || state.Active || state.ActiveConnections != 0 || snap.Counts.Attempted != 0 || snap.Counts.Sent != 0 || snap.Stage != "awaiting_selection" {
+	if p.invalid || !dynamicKeys || !p.proof["P1_CSS_READY"] || !p.proof["P1_SPA_READY"] || !p.proof["P1_RUNTIME_HOOK_READY"] || !p.proof["P1_RUNTIME_METADATA_READY"] || (!p.proof["P1_WEBMCP_REGISTERED"] && !p.proof["P1_WEBMCP_NONE"]) || !p.proof["P1_FORM_READY"] || p.formRef == "" || observed < 3 || inferred < 1 || state.Active || state.ActiveConnections != 0 || snap.Counts.Attempted != 0 || snap.Counts.Sent != 0 || snap.Stage != "awaiting_selection" {
 		report["failure"] = "integration_invariant"
 		t.Fatal("integration_invariant_failed")
 	}
