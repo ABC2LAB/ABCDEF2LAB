@@ -51,6 +51,9 @@ type runnerState struct {
 	intentDrains  map[int64]*intentDrainState
 	// workspaceMu는 intent별 작업 공간 보관 파일의 읽기·교체·삭제를 차례로 한다.
 	workspaceMu sync.Mutex
+	// workspaceBusy는 보관소를 읽고 끝에 다시 저장할 호출이 진행 중인 intent별 수다(mu로 보호). 파일 도구는 이 값이
+	// 0일 때만 보관소를 바꾼다(호출의 마지막 저장이 도구의 변경을 덮어쓰지 않게).
+	workspaceBusy map[int64]int
 }
 
 type intentDrainState struct {
@@ -114,7 +117,7 @@ func New(cfg Config) (*Runner, error) {
 	if ValidateRootDirLayout(cfg.RootDir) != nil {
 		return nil, ErrConfig
 	}
-	return &Runner{runnerState: &runnerState{cfg: cfg, caCertificate: pem.EncodeToMemory(block), active: make(map[string]*runningCall), callGate: make(chan struct{}, 1), stop: make(chan struct{}), drainGate: make(chan struct{}, 1), intentDrains: make(map[int64]*intentDrainState)}}, nil
+	return &Runner{runnerState: &runnerState{cfg: cfg, caCertificate: pem.EncodeToMemory(block), active: make(map[string]*runningCall), callGate: make(chan struct{}, 1), stop: make(chan struct{}), drainGate: make(chan struct{}, 1), intentDrains: make(map[int64]*intentDrainState), workspaceBusy: make(map[int64]int)}}, nil
 }
 
 func trustedPath(path string, directory bool) bool {
@@ -216,6 +219,10 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	state := &runningCall{owner: r, intentID: intentID, call: call, ready: make(chan struct{}), cleanupGate: make(chan struct{}, 1), releaseSlot: releaseSlot}
 	stateOwnsSlot = true
 	r.active[call.Ref()] = state
+	if r.cfg.PersistWorkspace {
+		r.workspaceBusy[intentID]++
+		defer r.endWorkspaceCall(intentID)
+	}
 	stopped = r.stopped
 	r.mu.Unlock()
 	if stopped {
@@ -691,6 +698,10 @@ const workspaceOutputDir = ".outputs"
 func (r *Runner) loadWorkspace(intentID int64, contentLimit uint64) ([]byte, error) {
 	r.workspaceMu.Lock()
 	defer r.workspaceMu.Unlock()
+	return r.loadWorkspaceLocked(intentID, contentLimit)
+}
+
+func (r *Runner) loadWorkspaceLocked(intentID int64, contentLimit uint64) ([]byte, error) {
 	f, err := os.OpenFile(r.workspacePath(intentID), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -724,12 +735,16 @@ func (r *Runner) storeWorkspace(intentID int64, result e2sandbox.Result) string 
 	}
 	r.workspaceMu.Lock()
 	defer r.workspaceMu.Unlock()
+	return r.storeWorkspaceLocked(intentID, result.Workspace)
+}
+
+func (r *Runner) storeWorkspaceLocked(intentID int64, archive []byte) string {
 	tmp, err := os.CreateTemp(r.cfg.RootDir, workspaceFilePrefix+"tmp-")
 	if err != nil {
 		return "not_saved"
 	}
 	name := tmp.Name()
-	_, writeErr := tmp.Write(result.Workspace)
+	_, writeErr := tmp.Write(archive)
 	closeErr := tmp.Close()
 	if writeErr != nil || closeErr != nil || os.Chmod(name, 0o600) != nil || os.Rename(name, r.workspacePath(intentID)) != nil {
 		_ = os.Remove(name)
