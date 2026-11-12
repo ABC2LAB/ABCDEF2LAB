@@ -13,6 +13,14 @@ func CheckFirstDiagnosisRuntimeDatabase(ctx context.Context, pool *sql.DB) error
 }
 
 // 일반 HTTP도 저장 보고서를 읽지만 등록 조회의 KG·E③ 판정 INSERT 권한은 요구하지 않는다.
+// FirstDiagnosisAssetUpdateColumns는 진단 Worker의 insert_assets(C24, 루프 복원 결정안 §9-5)가 자산 upsert로 고치는
+// 칼럼이다(db/assets.go의 root_domain·ip·subdomain·service·endpoint upsert). 앱 자산은 진단 실행이 받지 않으므로 앱
+// 칼럼은 없다. 설치의 역할 부여와 이 검사가 같은 목록을 쓴다.
+var FirstDiagnosisAssetUpdateColumns = []string{"auth", "bound_domains", "c_segment", "company_id", "company_source", "content_length", "domain", "extra", "favicon_mmh3", "icp", "ip", "last_seen", "open_ports", "page_title", "params", "record_value", "status_code", "task_ids", "technologies"}
+
+// FirstDiagnosisAssetLinkUpdateColumns는 작업 연결의 출처를 남기는 칼럼이다(SetTaskAssetSource).
+var FirstDiagnosisAssetLinkUpdateColumns = []string{"source", "source_summary", "source_node_id"}
+
 func CheckFirstDiagnosisHTTPRuntimeDatabase(ctx context.Context, pool *sql.DB) error {
 	return checkFirstDiagnosisRuntimeDatabase(ctx, pool, false)
 }
@@ -69,6 +77,15 @@ func checkFirstDiagnosisDatabase(ctx context.Context, pool *sql.DB, registered, 
 	}
 	// 일반 HTTP의 확인·중지 조회는 승인 행 유무와 무관하게 저장소를 사용한다.
 	// 설치 누락을 첫 요청의 감사 실패로 미루지 않고 기동 전에 거부한다.
+	// 진단 Worker의 insert_assets(C24): 일반 HTTP 실행 역할은 자산과 작업 연결 쓰기를 반드시 가진다. 연결 동기화 트리거
+	// (sync_task_asset_links)가 호출자 권한으로 연결 행을 넣고 지우므로 연결 표에는 DELETE도 필요하다. 제품 저장 보고서와
+	// 등록 조회도 같은 실행 역할로 열리므로, 그 검사는 정확히 같은 쓰기 집합을 가져도 받기만 한다(그 경로는 자산을 쓰지
+	// 않는다). 그 밖의 칼럼 갱신·표 단위 갱신·TRUNCATE·자산 DELETE는 어느 모드에서도 받지 않는다.
+	assetWrites := !registered && !reportOnly
+	assetWritesAllowed := true
+	if assetWrites {
+		required = append(required, struct{ name, privileges string }{"assets", "INSERT"}, struct{ name, privileges string }{"task_asset_links", "INSERT,DELETE"})
+	}
 	if !registered && !reportOnly {
 		required = append(required, struct{ name, privileges string }{"request_approvals", "SELECT,INSERT,UPDATE"})
 		required = append(required, struct{ name, privileges string }{"e2_prompt_runs", "SELECT,INSERT,UPDATE"}, struct{ name, privileges string }{"e2_prompt_observations", "SELECT,INSERT,UPDATE"})
@@ -129,27 +146,47 @@ func checkFirstDiagnosisDatabase(ctx context.Context, pool *sql.DB, registered, 
 		}
 	}
 	// 조치 원본·자산 결속을 잠그는 데 필요한 열만 허용한다. 제품은 이 열을 갱신하지 않는다.
-	lockColumns := []struct {
+	// writable은 잠금 열 말고도 갱신을 허용하는 열이다(required면 반드시 있어야 함). deletable이면 표 DELETE를 허용한다.
+	type lockColumn struct {
 		name, column string
 		immutable    bool
-	}{
-		{"e3_verdict_issuances", "id", true},
-		{"assets", "id", false},
-		{"task_asset_links", "task_id", false},
-		{"exploration_anchors", "node_id", false},
+		writable     []string
+		required     bool
+		deletable    bool
+	}
+	lockColumns := []lockColumn{
+		{name: "e3_verdict_issuances", column: "id", immutable: true},
+		{name: "assets", column: "id"},
+		{name: "task_asset_links", column: "task_id"},
+		{name: "exploration_anchors", column: "node_id"},
+	}
+	if assetWritesAllowed {
+		lockColumns[1].writable, lockColumns[1].required = FirstDiagnosisAssetUpdateColumns, assetWrites
+		lockColumns[2].writable, lockColumns[2].required, lockColumns[2].deletable = FirstDiagnosisAssetLinkUpdateColumns, assetWrites, true
 	}
 	if registered {
-		lockColumns = append(lockColumns, struct {
-			name, column string
-			immutable    bool
-		}{"e3_evidence_manifests", "id", true})
+		lockColumns = append(lockColumns, lockColumn{name: "e3_evidence_manifests", column: "id", immutable: true})
 	}
 	for _, relation := range lockColumns {
 		name := relation.name
+		forbidden := "UPDATE,DELETE,TRUNCATE,TRIGGER"
+		if relation.deletable {
+			forbidden = "UPDATE,TRUNCATE,TRIGGER"
+		}
+		allowed := append([]string{relation.column}, relation.writable...)
 		var lockable bool
-		if tx.QueryRowContext(ctx, `SELECT has_column_privilege(current_user,to_regclass($1),$2,'UPDATE') AND NOT has_table_privilege(current_user,to_regclass($1),'UPDATE,DELETE,TRUNCATE,TRIGGER')
- AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND a.attname<>$2 AND has_column_privilege(current_user,a.attrelid,a.attnum,'UPDATE'))`, name, relation.column).Scan(&lockable) != nil || !lockable {
+		if tx.QueryRowContext(ctx, `SELECT has_column_privilege(current_user,to_regclass($1),$2,'UPDATE') AND NOT has_table_privilege(current_user,to_regclass($1),$3)
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=to_regclass($1) AND a.attnum>0 AND NOT a.attisdropped AND NOT (a.attname = ANY($4::text[])) AND has_column_privilege(current_user,a.attrelid,a.attnum,'UPDATE'))`, name, relation.column, forbidden, allowed).Scan(&lockable) != nil || !lockable {
 			return ErrControlledReadHostConfiguration
+		}
+		for _, column := range relation.writable {
+			if !relation.required {
+				break
+			}
+			var writable bool
+			if tx.QueryRowContext(ctx, `SELECT has_column_privilege(current_user,to_regclass($1),$2,'UPDATE')`, name, column).Scan(&writable) != nil || !writable {
+				return ErrControlledReadHostConfiguration
+			}
 		}
 		if !relation.immutable {
 			continue

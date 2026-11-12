@@ -347,6 +347,9 @@ func newControlledLocalDatabaseFixture(t *testing.T) *controlledLocalDatabaseFix
 	exec(installer.DB, "GRANT UPDATE(id) ON TABLE e3_evidence_manifests,e3_verdict_issuances TO "+ident(role))
 	exec(installer.DB, "GRANT UPDATE(id) ON assets TO "+ident(role))
 	exec(installer.DB, "GRANT UPDATE(task_id) ON task_asset_links TO "+ident(role))
+	// 일반 HTTP 실행 역할은 진단 Worker의 insert_assets(C24)로 자산과 작업 연결을 쓴다. 등록 조회 검사는 같은 집합을 받는다.
+	exec(installer.DB, "GRANT INSERT, UPDATE(auth, bound_domains, c_segment, company_id, company_source, content_length, domain, extra, favicon_mmh3, icp, ip, last_seen, open_ports, page_title, params, record_value, status_code, task_ids, technologies) ON assets TO "+ident(role))
+	exec(installer.DB, "GRANT INSERT, DELETE, UPDATE(source, source_summary, source_node_id) ON task_asset_links TO "+ident(role))
 	exec(installer.DB, "GRANT UPDATE(node_id) ON exploration_anchors TO "+ident(role))
 
 	authorityPassword := make([]byte, 24)
