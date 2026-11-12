@@ -172,12 +172,13 @@ journal/head 삭제, state_dir 교체, delegation_ref 변경으로 기존 예약
 
 URL 경로는 설치된 로컬 OpenAI 호환 비스트리밍 profile과 명시적인 OpenRouter 모드를 지원한다.
 OpenRouter 보호 설치·키·회차/누적 USD·외부 전송 동의와 수용 범위는 [통합 계약](url-openrouter-integration.md)을 따른다.
-준비와 실행이 공유하는 ledger가 실제 호출 전에 요청 1회, 설치한 전체 context 입력 상한,
-명시적 최대 출력 토큰을 보수적으로 예약한다. 추정 token 수를 hard limit로 사용하지 않는다.
-provider usage와 예약치를 구분하고 usage 미확인·호출 결과 불명 시 후속 호출을 차단한다.
+준비와 실행이 공유하는 ledger가 실제 호출 전에 요청 1회, 직렬화한 요청 바이트 수 + framing 여유
+(입력 토큰의 상한, 설치한 전체 context를 넘으면 거부), 명시적 최대 출력 토큰을 예약한다(P3 결정안 C28 결정 1).
+추정 token 수를 hard limit로 사용하지 않는다. provider usage와 예약치를 구분한다. 실패한 호출은 예약한 양을
+쓴 것으로 정산하고 후속 호출을 막지 않는다(C05). 보고 사용량이 예약을 넘거나 정책이 막은 경우는 후속 호출을 차단한다.
 같은 회차의 Planner·Worker 모델 호출은 공유 gate에서 차례로 기다린다. gate는 예약 전부터
 응답 사용량의 동기 영속 확인까지 유지하며, 대기 취소는 예약·모델 호출을 소비하지 않는다.
-대기 뒤 실제 task/profile 결속과 남은 예산을 다시 확인한다. 실제 호출 오류·usage 누락 또는
+대기 뒤 실제 task/profile 결속과 남은 예산을 다시 확인한다. 예약을 넘는 사용량 보고·정책 차단 또는
 사용량 저장 실패는 기존 unknown 차단을 유지하며 대기 중인 호출도 모델로 보내지 않는다.
 이 예산 모드에서는 SDK 재시도와 HTTP redirect 재전송도 차단한다.
 외부 유료 모델 fallback은 없다. OpenRouter URL 모드는 기존 CLI 지원과 별도로 실제 URL 준비·실행 경로에서 검증한다. 실제 유료 OpenRouter 수용은 합성 시험과 구분한다.
