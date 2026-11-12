@@ -158,3 +158,5 @@
 | `browser_unavailable` | 고정 브라우저·MCP 세션 준비 실패 |
 
 이 값은 사용자·모델의 임의 오류 문자열이 아니다. 화면은 "탐색 안 함(사유)"으로 표시하고 발견 없음·검사 완료로 바꾸지 않는다. 이 경우 기존 보호 정적 크롤을 수행할 수 있어도 새로운 MCP 탐색의 상태는 별도 NOT_RUN이다. 실제 결속 후에는 RUNNING, 마감은 COMPLETED/PARTIAL/STOPPED로 구분한다. 현재 B16 native Node→자기 MCP 제어 연결은 FAIL이고 운영 어댑터는 nil이므로 전체 운영 수용이 끝난 것이 아니다. 상세 실측은 [P1 fixture 결과](../evaluation/p1-browser-fixture-results.md)를 따른다.
+
+`exploration.Failure.Stage/Kind`는 서버 진단용 고정 단계·분류이며 원문 오류·URL·자격 값·회차 참조를 담지 않는다. 화면에 발급하는 `exploration_reason`과는 다른 채널이다. 현재 Workbench 매퍼는 위 네 `NOT_RUN` 사유를 정확 일치로 처리한다. 내부 Failure를 공개 DTO에 자동 직렬화하거나 원문 오류를 덧붙이지 않는다. PARTIAL/STOPPED는 저장된 상태·마감 사유로 구분하며, live 화면 매퍼의 실제 연결은 UI 담당 수용 전까지 미완료다.

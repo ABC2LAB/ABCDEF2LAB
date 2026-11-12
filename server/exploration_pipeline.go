@@ -55,6 +55,10 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 	if e != nil || len(digest) != 32 || hex.EncodeToString(digest) != o.SourceDigest {
 		return out, exploration.ErrBinding
 	}
+	// 초기 일시정지는 once gate에 실패로 고정하지 않고, 재개 뒤 권한·대상을 다시 검사한다.
+	if e := o.Workflow.Wait(ctx); e != nil {
+		return out, e
+	}
 	snapshot, e := o.Workflow.Snapshot()
 	if e != nil || snapshot.JobID != o.Binding.JobID || snapshot.TaskID != o.Binding.TaskID || snapshot.RunRef != o.Binding.RunRef || snapshot.SourceDigest != o.SourceDigest || snapshot.Stage != "crawling" || snapshot.InitialCompleted {
 		return out, exploration.ErrBinding
@@ -74,13 +78,16 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 	}
 	worker, e := s.ExplorationWorkerFor(task)
 	if e != nil {
+		exploration.ReportFailure("worker_resolve", e)
 		return skip("model_unavailable")
 	}
 	host, e := o.OpenHost(ctx, o.Binding, worker)
 	if e != nil {
+		exploration.ReportFailure("host_factory", e)
 		return skip("runtime_unavailable")
 	}
 	if host.Reader == nil || host.Fetch == nil || host.Sequences == nil || host.Session.Boundary == nil || host.Session.StartBrowser == nil || host.Session.Redact == nil {
+		exploration.ReportFailure("host_capabilities", exploration.ErrUnavailable)
 		return skip("runtime_unavailable")
 	}
 	host.Session.Worker = worker
@@ -186,6 +193,7 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 	}
 	session, e := OpenExplorationSession(ctx, host.Session)
 	if e != nil {
+		exploration.ReportFailure("session_open", e)
 		if errors.Is(e, ErrExplorationClosure) {
 			return out, e
 		}

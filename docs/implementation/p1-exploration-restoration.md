@@ -13,7 +13,7 @@
 3. C: 실제 제품 stage hook, 소유 Docker fixture·수신기·고정 Chromium/MCP 종단, 실패/미실행 표시.
 4. D: 기존 계측기와 평가 runner의 explore/main 분리, 별도 서명 sidecar·비교 조건 검증. A/B/C와 독립이다.
 
-A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://github.com/ABC2LAB/ABCDEF2LAB/pull/453) → C [#457](https://github.com/ABC2LAB/ABCDEF2LAB/pull/457) 스택은 최대 세 PR이며 D [#452](https://github.com/ABC2LAB/ABCDEF2LAB/pull/452)는 dev 독립 PR이다. 원격 PR을 자동 병합하지 않는다. 운영 탐색 경계 담당의 어댑터가 아직 없으므로 제품 기본값으로 임의 프록시를 생성하거나 인터넷 직결을 열지 않는다. host가 공급한 실제 Boundary·BrowserLease·private Reader·직접 Fetch가 모두 갖춰져야 새 경로가 활성화된다. 미공급은 NOT_RUN이고 기존 보호 정적 크롤을 사용할 수 있다.
+A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://github.com/ABC2LAB/ABCDEF2LAB/pull/453) → C [#457](https://github.com/ABC2LAB/ABCDEF2LAB/pull/457) 스택은 최대 세 PR로 제출했으며 D [#452](https://github.com/ABC2LAB/ABCDEF2LAB/pull/452)는 dev 독립 PR이다. A/B/D는 2026-11-12 담당자 재리뷰 승인 뒤 다른 팀원이 병합했다. C는 선행 병합 뒤 base를 dev로 바꿨으며 리뷰 보완 중이다. 원격 PR을 자동 병합하지 않는다. 운영 탐색 경계 담당의 어댑터가 아직 없으므로 제품 기본값으로 임의 프록시를 생성하거나 인터넷 직결을 열지 않는다. host가 공급한 실제 Boundary·BrowserLease·private Reader·직접 Fetch가 모두 갖춰져야 새 경로가 활성화된다. 미공급은 NOT_RUN이고 기존 보호 정적 크롤을 사용할 수 있다.
 
 ## 열린 PR 확인
 
@@ -70,3 +70,5 @@ A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://gi
 
 
 최종 동결 기준 e4c6016에는 #454(저장 보고서 결과), #455(실행 시간), #456(탐색 표시 seam), #458(OpenRouter 호출별 비용 대조), #459(접근통제 지도), #446(긴 출력 보관)이 모두 병합돼 있다. 그전에 기록한 "열림"은 해당 조회 시점의 상태다. 새 모델 원장은 inflight0에서 정산 불일치면 blocked/UsageKnown=false로 닫으므로 C의 비공개 예산 마감 조건과 함께 검증했다. 본인이 작성한 네 PR은 자동 병합하지 않았으며 팀 리뷰 수정 후 재검토를 요청한다.
+
+최종 선행 통합에서 `origin/dev`의 `c9c21c31251f8f7799b67e98d28186a329210f64`를 확인했다. A #451의 팀 병합 `7f3f263`, D #452의 `63ab739`, B #453의 `c9c21c3`와 #462(`b3a0b92`, 호출 칸 재사용 진단 로그 어휘)를 포함한다. C의 실제 Chromium 근거는 여전히 소스8a21 고정 회차이며 뒤의 pause/진단 전환 시험과 혼합하지 않는다. 탐색과 E②에 각각 N을 부여하는 현재 조립은 회차 합계 N을 보장하지 않는다. 운영 활성화는 B16 차단뿐 아니라 같은 회차의 E+D≤N 집행까지 완료한 뒤 검토한다.

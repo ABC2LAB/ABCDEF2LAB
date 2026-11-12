@@ -96,7 +96,7 @@ B14 양성의 navigate 완료는 false다. 페이지가 즉시 POST로 이동해
 | S11 | PASS | 공개32와 별도256/64KiB inventory·누락·PG 격리 단위 시험 |
 | S12 | NOT_RUN | 기존 path-mask 회귀는 보존, 운영 경계 가린 기록 exporter 미연결 |
 | S13 | NOT_RUN | 이 회차는 read_only. 승인 쓰기 종단은 실행하지 않음 |
-| D01/D02 | NOT_RUN | 프로필·once gate·입구 대조 단위 시험 PASS, 실제 진단/계측기 종단은 별도 |
+| D01/D02 | NOT_RUN | 실제 E② TLS GET·감사/drain 전환 시험은 아래 별도 PASS. 운영 탐색 namespace·계측기 두 입구를 함께 연결한 정본 종단은 미실행 |
 | U01 | NOT_RUN | 승인 UI 담당 수용 미실행, Workbench 구조 변경 없음 |
 | V01 | NOT_RUN | VAmPI 인스턴스/동일 조건 비교 미실행 |
 | R-P/R-F/R-R | NOT_RUN | 실제 모델·원본 짝·운영 exporter 부재. 보존율을 만들지 않음 |
@@ -125,3 +125,13 @@ P04/S04는 정본에서 삭제된 항목이다. fixture HTTP-over-Unix 제어 AP
 | full_local | `734cf879488ca6653d951f1115902f1e204bf0ee5e2ffdc846bc3fc86941dcd3` | `9740f7a74876049e1d6b75aaa3daefe5404207b5179d1d7e908035c056b3356e` | `54fe096d88e4849edbd297391a63ce7a1d539390874908d60462fc5064c43b37` |
 
 실행 절차는 [하네스](browser-fixture-harness.md), 실제 제품 조립은 [pipeline](../implementation/exploration-product-pipeline.md), 의존/원본 차이는 [P1 구현 기록](../implementation/p1-exploration-restoration.md)을 따른다.
+
+## 리뷰 후 초기 정지·실제 진단 전환 보완
+
+이 시험은 위 소스8a21의 Chromium 회차와 별개의 통합 시험이다. 탐색 MCP/private Reader는 명시적인 시험 fixture이고, 진단은 production 생성자·기존 Supervisor/Worker·native sandbox·E② proxy·소유 TLS 수신기·실제 PostgreSQL LOGIN을 사용한다. 실제 모델 응답이나 같은 회차의 Chromium→운영 경계→계측기 두 입구 수용으로 계산하지 않는다.
+
+`TestOwnedPostgresExplorationSelectionThenProtectedDiagnosis`에서 탐색 종료 뒤 수동 선택 대기 중 E② Acquire0·대상 GET0을 확인했다. 명시적 선택 뒤 실제 TLS GET1, E② call1/ForwardAttempted1/Responses1/Unknown0, DeepRuns1/DeepClosed1, 실제 intent Done1과 complete 결과, trusted 감사 Final·process/proxy drain·권한 반납·영속 마감이 통과했다. 관측3·추정2는 별도 private inventory에 보존되고 PostgreSQL 재조회에서도 유지된다. 레거시 E② 정적 크롤은 재실행되지 않았고 탐색 도구는 진단 프로필에 노출되지 않았다. E③ 취약점 확정은 이 시험 범위가 아니다.
+
+초기 일시정지는 host가 없는 기본 경로와 시험 host 모두에서 재개를 기다리며, 대기 중 boundary/browser/model I/O와 진단 lease는 0이다. 취소도 I/O 없이 종료한다. 정상 재개 뒤 NOT_RUN 또는 실제 fixture Worker 완료를 보존하고 once gate가 오류로 굳거나 재실행되지 않는다. 완료 탐색 건너뛰기는 동일 private 결속·권한·저장 마감만 허용하며, 미선택 요청·철회·미완료·다른 회차·취소·저장 실패·손상 상태는 계속 거부한다.
+
+리뷰 보완 뒤 관련 5패키지 race219 PASS/0 FAIL/0 SKIP, vet5패키지 PASS였다. 여기에는 위 실제 PostgreSQL 전환 및 진단 전 모델 예산 마감이 포함된다. 별도 오류 로그 회귀 race8 PASS는 factory·resolver·누락 capability·boundary/browser 시작 실패의 고정 단계·분류와 NOT_RUN 영속 상태, URL·자격 표식 비노출을 확인했다. 바쁨/lease, 첫 Worker의 stage 진입, 유효 private metadata의 요청 개수 상한도 별도 회귀로 고정했다. 중복되는 선택 시험 건수는 전체 고유 시험 수로 합산하지 않는다.
