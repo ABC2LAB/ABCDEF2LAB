@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/e2sandbox"
@@ -226,6 +229,8 @@ func newE2HTTPFileTools(ws E2HTTPWorkspace, intentID int64, redact func([]byte) 
 }
 
 // e2HTTPNumberedLines는 원본 Read처럼 1부터 센 줄 번호를 붙인다. 긴 줄과 전체 길이는 상한에서 자르고 그 사실을 적는다.
+// 파일 전체를 문자열로 바꾸거나 줄 배열을 만들지 않고 줄 경계만 따라간다. 요청 범위 앞 줄은 건너뛰기만 하고, 범위나
+// 출력 상한에 닿으면 멈춘다. 그래서 메모리는 파일 줄 수가 아니라 출력 크기를 따른다.
 func e2HTTPNumberedLines(data []byte, offset, limit int) string {
 	if offset < 1 {
 		offset = 1
@@ -233,17 +238,23 @@ func e2HTTPNumberedLines(data []byte, offset, limit int) string {
 	if limit < 1 {
 		limit = e2HTTPReadDefaultLines
 	}
-	lines := strings.Split(strings.ToValidUTF8(string(data), "�"), "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
+	end := offset + limit
+	if end < offset {
+		end = math.MaxInt
 	}
 	var b strings.Builder
-	for i := offset - 1; i < len(lines) && i < offset-1+limit; i++ {
-		line := lines[i]
-		if len(line) > e2HTTPReadMaxLineBytes {
-			line = strings.ToValidUTF8(line[:e2HTTPReadMaxLineBytes], "") + " [line truncated]"
+	rest := data
+	for n := 1; len(rest) > 0 && n < end; n++ {
+		line := rest
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			line, rest = rest[:i], rest[i+1:]
+		} else {
+			rest = nil
 		}
-		entry := fmt.Sprintf("%6d\t%s\n", i+1, line)
+		if n < offset {
+			continue
+		}
+		entry := fmt.Sprintf("%6d\t%s\n", n, e2HTTPReadLine(line))
 		if b.Len()+len(entry) > e2HTTPReadMaxBytes {
 			b.WriteString("[output truncated; use offset/limit]\n")
 			return b.String()
@@ -252,6 +263,36 @@ func e2HTTPNumberedLines(data []byte, offset, limit int) string {
 	}
 	if b.Len() == 0 {
 		b.WriteString("(no lines in range)\n")
+	}
+	return b.String()
+}
+
+var e2HTTPReadReplacement = []byte(string(utf8.RuneError))
+
+// e2HTTPReadLine은 한 줄을 올바른 UTF-8로 바꾸고(잘못된 바이트 묶음 하나는 U+FFFD 하나, strings.ToValidUTF8과 같음)
+// 상한 안의 온전한 글자까지만 남긴다. 줄 전체를 복사하지 않고 상한에 닿으면 멈춘다.
+func e2HTTPReadLine(line []byte) string {
+	var b strings.Builder
+	invalidRun := false
+	for len(line) > 0 {
+		r, size := utf8.DecodeRune(line)
+		piece := line[:size]
+		if r == utf8.RuneError && size == 1 {
+			line = line[1:]
+			if invalidRun {
+				continue
+			}
+			invalidRun = true
+			piece = e2HTTPReadReplacement
+		} else {
+			invalidRun = false
+			line = line[size:]
+		}
+		if b.Len()+len(piece) > e2HTTPReadMaxLineBytes {
+			b.WriteString(" [line truncated]")
+			return b.String()
+		}
+		b.Write(piece)
 	}
 	return b.String()
 }

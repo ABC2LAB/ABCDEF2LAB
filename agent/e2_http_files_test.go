@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -217,5 +220,92 @@ func TestE2HTTPWorkerAttachesWorkspaceFileToolsOnlyWithWorkspace(t *testing.T) {
 				t.Fatalf("workspace=%v %s exposed=%v", enabled, name, got[name])
 			}
 		}
+	}
+}
+
+// e2HTTPNumberedLinesBySplit는 줄 배열을 만들던 이전 구현이다. 출력이 같은지 대조하는 기준으로만 쓴다.
+func e2HTTPNumberedLinesBySplit(data []byte, offset, limit int) string {
+	if offset < 1 {
+		offset = 1
+	}
+	if limit < 1 {
+		limit = e2HTTPReadDefaultLines
+	}
+	lines := strings.Split(strings.ToValidUTF8(string(data), "\uFFFD"), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	var b strings.Builder
+	for i := offset - 1; i < len(lines) && i < offset-1+limit; i++ {
+		line := lines[i]
+		if len(line) > e2HTTPReadMaxLineBytes {
+			line = strings.ToValidUTF8(line[:e2HTTPReadMaxLineBytes], "") + " [line truncated]"
+		}
+		entry := fmt.Sprintf("%6d\t%s\n", i+1, line)
+		if b.Len()+len(entry) > e2HTTPReadMaxBytes {
+			b.WriteString("[output truncated; use offset/limit]\n")
+			return b.String()
+		}
+		b.WriteString(entry)
+	}
+	if b.Len() == 0 {
+		b.WriteString("(no lines in range)\n")
+	}
+	return b.String()
+}
+
+// 줄 경계를 따라가는 Read 출력은 이전 구현과 글자 하나까지 같다(빈 줄·끝 개행·잘못된 UTF-8 묶음·상한에 걸친 글자·
+// 긴 줄·범위 밖·출력 상한).
+func TestE2HTTPNumberedLinesMatchesSplitOutput(t *testing.T) {
+	long := strings.Repeat("a", e2HTTPReadMaxLineBytes-1) + "한글" + strings.Repeat("b", 10)
+	invalidRun := strings.Repeat("\xff", e2HTTPReadMaxLineBytes+500)
+	mixed := strings.Repeat("\xffok", e2HTTPReadMaxLineBytes)
+	many := strings.Repeat("0123456789abcdef\n", e2HTTPReadMaxBytes/8)
+	exact := strings.Repeat("a", e2HTTPReadMaxLineBytes)
+	// 줄마다 "%6d\t" 7바이트와 개행 1바이트가 붙는다. 첫 줄 257바이트 + 256바이트 1023줄이면 출력 상한보다 정확히 1바이트 많다.
+	overByOne := strings.Repeat("x", 249) + "\n" + strings.Repeat(strings.Repeat("y", 248)+"\n", 1023)
+	fits := strings.Repeat(strings.Repeat("z", 248)+"\n", e2HTTPReadMaxBytes/256)
+	inputs := []string{overByOne, fits, fits + "more\n", exact, exact + "a", exact[1:] + "é", exact[2:] + "é", exact[1:] + "\xff\xff", "", "\n", "a", "a\n", "a\n\nb", "a\nb\n\n", "x\xff\xfey\n\xc3\n", "valid \uFFFD and \xff\n", long, long + "\nnext\n", invalidRun + "\nz", mixed, strings.Repeat("\xe2\x82", 1500) + "end", many}
+	for i, input := range inputs {
+		for _, rng := range [][2]int{{0, 0}, {1, 1}, {1, 2}, {2, 1}, {3, 5}, {1, 1 << 30}, {1 << 30, 1}, {math.MaxInt, math.MaxInt}, {2, math.MaxInt}} {
+			got, want := e2HTTPNumberedLines([]byte(input), rng[0], rng[1]), e2HTTPNumberedLinesBySplit([]byte(input), rng[0], min(rng[1], 1<<30))
+			if got != want {
+				t.Fatalf("input %d range %v:\ngot  %q\nwant %q", i, rng, truncateForLog(got), truncateForLog(want))
+			}
+		}
+	}
+}
+
+func truncateForLog(s string) string {
+	if len(s) > 200 {
+		return s[:200] + "..."
+	}
+	return s
+}
+
+// 작은 범위를 읽을 때 메모리는 파일 줄 수가 아니라 출력 크기를 따른다. 1MiB가 전부 개행이면 이전 구현은 줄마다 string
+// 헤더를 만들어 이 시험의 상한을 크게 넘었다.
+func TestE2HTTPReadAllocationFollowsOutputNotLineCount(t *testing.T) {
+	newlines := bytes.Repeat([]byte{'\n'}, 1<<20)
+	allocated := func(run func()) uint64 {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		run()
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+	for _, offset := range []int{1, len(newlines) / 2} {
+		if n := allocated(func() { _ = e2HTTPNumberedLines(newlines, offset, 1) }); n > 64<<10 {
+			t.Fatalf("offset %d: numbering allocated %d bytes", offset, n)
+		}
+	}
+	// 도구 호출 전체: 내용 전체 가림(여기서는 보호 값이 없을 때처럼 복사)은 유지하고, 그 밖에 줄 수에 비례해 늘지 않는다.
+	ws := &fakeWorkspace{enabled: true, files: map[string][]byte{"lines.txt": newlines}}
+	tools := newE2HTTPFileTools(ws, 22, bytes.Clone, &e2HTTPToolState{})
+	raw, _ := json.Marshal(map[string]any{"file_path": "lines.txt", "offset": 1, "limit": 1})
+	var out actool.Result
+	n := allocated(func() { out, _ = tools["Read"].Call(context.Background(), raw, nil) })
+	if out.IsError || out.Flatten() != "     1\t\n" || n > 4<<20 {
+		t.Fatalf("read allocated %d bytes: %q", n, out.Flatten())
 	}
 }
