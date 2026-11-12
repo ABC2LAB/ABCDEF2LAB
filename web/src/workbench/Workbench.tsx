@@ -25,6 +25,7 @@ import {
   RunningByMode,
   ScopeByMode,
 } from "./views/live/byMode";
+import { UrlAccessMapLive } from "./views/live/UrlAccessMapLive";
 import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
 import { UrlExploreLive } from "./views/live/UrlExploreLive";
 import s from "./workbench.module.css";
@@ -358,6 +359,7 @@ export function Workbench() {
             {section("new", pick("새 점검", <NewScanByMode />))}
             {section("crawl", pick("자산 탐색", <UrlAssetsLive />))}
             {section("explore", pick("탐색 결과", <UrlExploreLive />))}
+            {section("accessmap", pick("접근통제 지도", <UrlAccessMapLive />))}
             {section("scope", pick("범위 확인", <ScopeByMode />))}
             {section("live", pick("점검 진행", <LiveByMode />))}
             {section("report", pick("보고서", <ReportByMode />))}
