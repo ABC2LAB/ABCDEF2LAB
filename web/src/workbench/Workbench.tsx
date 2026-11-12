@@ -16,6 +16,7 @@ import { isView, type Shell, ShellContext, type View } from "./shell";
 import { type DSel, type Panel, useWb } from "./store";
 import { Icon } from "./ui/icons";
 import { Rail } from "./ui/Rail";
+import { AccountClassifyLive } from "./views/live/AccountClassifyLive";
 import {
   DashboardByMode,
   FinishedByMode,
@@ -360,6 +361,7 @@ export function Workbench() {
             {section("crawl", pick("자산 탐색", <UrlAssetsLive />))}
             {section("explore", pick("탐색 결과", <UrlExploreLive />))}
             {section("accessmap", pick("접근통제 지도", <UrlAccessMapLive />))}
+            {section("classify", pick("계정 분류", <AccountClassifyLive />))}
             {section("scope", pick("범위 확인", <ScopeByMode />))}
             {section("live", pick("점검 진행", <LiveByMode />))}
             {section("report", pick("보고서", <ReportByMode />))}
