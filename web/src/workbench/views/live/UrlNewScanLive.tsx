@@ -15,7 +15,7 @@ import { scanViewFor, URL_ENDED_STATES, urlHost, urlTargetHint, usdText } from "
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
-import { CloseInspButton, InspOpenButton, PaneToggle } from "../../ui/parts";
+import { CloseInspButton, HelpTip, InspOpenButton, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ExternalModelSettings } from "./ExternalModelSettings";
 import { TargetApprovalPanel } from "./TargetApprovalPanel";
@@ -47,12 +47,13 @@ const MODES = [
 ] as const;
 
 /** 안전 정책 한 줄 (시안 ilist). */
-function Rule({ t, sub, warn = false }: { t: ReactNode; sub?: string; warn?: boolean }) {
+function Rule({ t, sub, warn = false, tip }: { t: ReactNode; sub?: string; warn?: boolean; tip?: ReactNode }) {
   return (
     <li>
       <Icon name={warn ? "alert" : "check"} />
       <div>
         {t}
+        {tip}
         {sub !== undefined ? <small>{sub}</small> : null}
       </div>
     </li>
@@ -361,41 +362,39 @@ export function UrlNewScanLive() {
                 <h2>점검 설정</h2>
               </div>
               <div className={s["fsec-b"]}>
-                <>
-                  <div className={s.field}>
-                    <span className={s.lbl}>진단 모드</span>
-                    <div className={s.opts} role="radiogroup" aria-label="진단 모드">
-                      {MODES.map(([id, label, help]) => (
-                        <label className={s.opt} key={id}>
-                          <input
-                            type="radio"
-                            name="nSend"
-                            value={id}
-                            checked={mv === id}
-                            disabled={g.inputLocked}
-                            onChange={() => setWorkflowMode(id)}
-                          />
-                          <b>{label}</b>
-                          <small>{help}</small>
-                        </label>
-                      ))}
-                    </div>
+                <div className={s.field}>
+                  <span className={s.lbl}>진단 모드</span>
+                  <div className={s.opts} role="radiogroup" aria-label="진단 모드">
+                    {MODES.map(([id, label, help]) => (
+                      <label className={s.opt} key={id}>
+                        <input
+                          type="radio"
+                          name="nSend"
+                          value={id}
+                          checked={mv === id}
+                          disabled={g.inputLocked}
+                          onChange={() => setWorkflowMode(id)}
+                        />
+                        <b>{label}</b>
+                        <small>{help}</small>
+                      </label>
+                    ))}
                   </div>
-                  <div className={s.field}>
-                    <label className={s.lbl} htmlFor="nExcl">
-                      제외 경로 · 선택
-                    </label>
-                    <textarea
-                      id="nExcl"
-                      className={s.inp}
-                      value={ev}
-                      disabled={g.inputLocked}
-                      maxLength={2048}
-                      onChange={(e) => setExcluded(e.target.value)}
-                      placeholder={"/api/admin/reset\n/api/users/*/delete"}
-                    />
-                  </div>
-                </>
+                </div>
+                <div className={s.field}>
+                  <label className={s.lbl} htmlFor="nExcl">
+                    제외 경로 · 선택
+                  </label>
+                  <textarea
+                    id="nExcl"
+                    className={s.inp}
+                    value={ev}
+                    disabled={g.inputLocked}
+                    maxLength={2048}
+                    onChange={(e) => setExcluded(e.target.value)}
+                    placeholder={"/logout\n/delete?id=3"}
+                  />
+                </div>
               </div>
             </div>
           ) : null}
@@ -460,10 +459,26 @@ export function UrlNewScanLive() {
                   />
                 ) : null}
                 <Rule t="모든 요청 · 승인 기록 남김" sub={`승인 만료 ${scope.expires_at}`} />
+                {/* 절대규칙 6 고지 (시안 v52): 할 일을 제목으로, 자세한 설명 · 원래 고지 문장은 (?) 메모에 */}
                 <Rule
                   warn
-                  t="조회 요청도 데이터를 바꿀 수 있음"
-                  sub="GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다"
+                  t="열면 지워지는 주소는 빼 두세요"
+                  tip={
+                    <HelpTip id="luGetTip" label="설명 보기">
+                      <b>어떤 사이트는 주소를 열기만 해도 데이터가 지워집니다.</b>
+                      <br />
+                      예: <span className={s.mono}>/logout</span> (로그아웃) ·{" "}
+                      <span className={s.mono}>/delete?id=3</span> (3번 글 삭제)
+                      <br />
+                      <br />
+                      JinDo는 찾은 주소를 직접 열어 보며 점검합니다. 이런 주소가 섞여 있으면 점검하는 도중에 실제 글이
+                      지워지거나 계정이 로그아웃될 수 있습니다.
+                      <br />
+                      <br />
+                      GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다. 점검 전에{" "}
+                      <b>제외 경로</b>에 넣어 두세요.
+                    </HelpTip>
+                  }
                 />
               </ul>
             ) : (

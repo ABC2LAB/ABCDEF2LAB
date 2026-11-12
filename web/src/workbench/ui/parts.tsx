@@ -335,3 +335,46 @@ export function CodeCard({ title, src, text, id }: { title: ReactNode; src: Reac
     </div>
   );
 }
+
+/**
+ * 작은 (?) 버튼 → 메모처럼 뜨는 설명 (시안 v51 · v52). 다시 누르기 · 바깥 클릭 · Esc 로 닫힌다.
+ * 설명은 늘 DOM 에 있고(hidden) 버튼이 aria-controls · aria-expanded 로 가리킨다.
+ */
+export function HelpTip({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Element | null;
+      if (!t?.closest?.(`[data-help-tip="${id}"]`)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      document.querySelector<HTMLButtonElement>(`[data-help-tip="${id}"] button`)?.focus();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, id]);
+  return (
+    <span className={s["help-tip"]} data-help-tip={id}>
+      <button
+        className={s["help-tip-btn"]}
+        type="button"
+        aria-label={label}
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen(!open)}
+      >
+        ?
+      </button>
+      <span className={s["help-tip-note"]} id={id} role="note" hidden={!open}>
+        {children}
+      </span>
+    </span>
+  );
+}

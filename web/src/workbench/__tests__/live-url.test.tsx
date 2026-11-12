@@ -305,7 +305,8 @@ describe("서버 방식 확인 (catalog)", () => {
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     expect(screen.queryByLabelText(/작업 이름/)).toBeNull();
     expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
-    expect(screen.getByLabelText(/제외 경로/)).toBeInTheDocument();
+    // 제외 경로 칸의 흐린 예시는 안전 장치 (?) 메모와 같은 주소 (시안 v50)
+    expect(screen.getByLabelText(/제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete?id=3");
     // 작업 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     const send = screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
@@ -821,13 +822,24 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   saveHandle({ ...handle, input });
   mount("new");
   expect(await screen.findByText("쓰기 메서드 요청은 한 건씩 승인한 것만 보냄")).toBeInTheDocument();
-  // 메서드 기준 이름일 뿐: GET · HEAD · query 도 상태를 바꿀 수 있다는 안내가 같이 보인다 (절대규칙 6)
-  expect(
-    screen.getByText("GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다"),
-  ).toBeInTheDocument();
   expect(screen.getByText("https://target.example · / · GET")).toBeInTheDocument();
-  // 안전 장치 (시안 v41): 짧은 제목, 절대규칙 6 고지는 경고 줄로 그대로
   expect(screen.getByRole("heading", { name: "안전 장치" })).toBeInTheDocument();
-  expect(screen.getByText("조회 요청도 데이터를 바꿀 수 있음")).toBeInTheDocument();
   expect(screen.getByText("모든 요청 · 승인 기록 남김")).toBeInTheDocument();
+  // 절대규칙 6 고지 (시안 v52): 할 일을 경고 줄 제목으로, 자세한 설명과 원래 고지 문장은 (?) 메모에
+  expect(screen.getByText("열면 지워지는 주소는 빼 두세요")).toBeInTheDocument();
+  const tip = screen.getByRole("button", { name: "설명 보기" });
+  const note = document.getElementById(tip.getAttribute("aria-controls") ?? "") as HTMLElement;
+  expect(tip).toHaveAttribute("aria-expanded", "false");
+  expect(note).not.toBeVisible();
+  fireEvent.click(tip);
+  expect(tip).toHaveAttribute("aria-expanded", "true");
+  expect(note).toBeVisible();
+  expect(note).toHaveTextContent("GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다");
+  expect(note).toHaveTextContent("/delete?id=3");
+  // Esc · 바깥 클릭으로 닫힌다
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(note).not.toBeVisible();
+  fireEvent.click(tip);
+  fireEvent.mouseDown(document.body);
+  expect(note).not.toBeVisible();
 });
