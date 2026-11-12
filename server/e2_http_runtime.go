@@ -146,6 +146,9 @@ type E2HTTPRuntimeOptions struct {
 	MaxPlannerRounds        uint64
 	MaxIntentRuns           uint64
 	DrainTimeout            time.Duration
+	// ApprovedOrigins는 신뢰한 E② 정책 규칙의 origin이다. 진단 Worker의 insert_assets가 이 안의 자산만 받는다(C24).
+	// 비어 있으면(원격 평가 실행 등) insert_assets를 붙이지 않는다.
+	ApprovedOrigins []string
 	// PlannerLimits는 Planner 한 번(Plan)의 턴·시간 상한이다(C26·C32). 0인 칸은 agent 기본값(16턴·2분)이다.
 	// E② 정책 밖 값이라 정책 지문에 들어가지 않고, 제품 설치는 launch 설정(설치 기록 해시)에 묶는다.
 	PlannerLimits agent.E2HTTPPlannerLimits
@@ -494,7 +497,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.mu.Unlock()
 	workCtx := e2HTTPTaskContext(ctx, t.ctx)
 	observePrompt := r.promptObserver(ctx, t, actual.ID)
-	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
+	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
 		return r.observeResult(observeCtx, t, lease, actual.ID, result)
 	}})
 	var once sync.Once

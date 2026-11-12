@@ -144,6 +144,11 @@ type firstDiagnosisE2Provider struct {
 	result          *e2runner.Result
 	leaked          bool
 	unsupportedTool bool
+	// assets가 있으면 Bash 전에 insert_assets를 한 번 부르고 그 도구 결과를 assetsResult에 남긴다(C24).
+	assets       []map[string]any
+	assetsSent   bool
+	bashSent     bool
+	assetsResult string
 }
 
 func (p *firstDiagnosisE2Provider) Complete(_ context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
@@ -159,14 +164,35 @@ func (p *firstDiagnosisE2Provider) Complete(_ context.Context, request llm.Compl
 			// 원본 Worker의 그래프 조회 도구(루프 복원 결정안 §2). 저장소 조회뿐이고 송신 권한을 늘리지 않는다.
 			"list_findings", "list_assets", "search_all_worker_traces", "get_worker_trace",
 			// 원본 WebFetch의 E② 판. 같은 Bash 실행기·예약·감사를 지난다(루프 복원 결정안 §2).
-			"WebFetch":
+			"WebFetch",
+			// 원본 insert_assets를 승인 대상 origin 안의 자산만 받게 감싼 판(C24). 저장소 기록뿐이고 송신 권한을 늘리지 않는다.
+			"insert_assets":
 		case "submit_diagnostic_candidate":
 			// 같은 intent의 실제 관찰만 저장하는 로컬 도구이며 송신 권한을 늘리지 않는다.
 		default:
 			p.unsupportedTool = true
 		}
 	}
-	if p.calls == 1 {
+	if len(p.assets) > 0 && !p.assetsSent {
+		for _, tool := range request.Tools {
+			if tool.Name == "insert_assets" {
+				p.assetsSent = true
+				input, _ := json.Marshal(map[string]any{"assets": p.assets})
+				return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "acceptance-assets", Name: "insert_assets", Input: input}}}, "tool_use", llm.Usage{}, nil
+			}
+		}
+	}
+	for _, message := range request.Messages {
+		for _, block := range message.Content {
+			if block.Type == llm.BlockToolResult && block.ToolUseID == "acceptance-assets" && p.assetsResult == "" {
+				for _, content := range block.Content {
+					p.assetsResult += content.Text
+				}
+			}
+		}
+	}
+	if !p.bashSent {
+		p.bashSent = true
 		input, err := json.Marshal(map[string]any{"command": p.command, "timeout_ms": 5000})
 		if err != nil {
 			return llm.Message{}, "", llm.Usage{}, err
@@ -210,7 +236,7 @@ func TestFirstDiagnosisE2ProviderToolBoundary(t *testing.T) {
 		{name: "get_worker_trace"},
 		{name: "submit_diagnostic_candidate"},
 		{name: "report_finding", unsupported: true},
-		{name: "insert_assets", unsupported: true},
+		{name: "insert_assets"},
 		{name: "WebFetch"},
 		{name: "WebSearch", unsupported: true},
 		{name: "Read", unsupported: true},

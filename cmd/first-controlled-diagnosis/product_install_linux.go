@@ -506,6 +506,12 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 	if exec("GRANT INSERT ON exploration_nodes TO product_api") != nil || exec("GRANT USAGE ON SEQUENCE exploration_nodes_id_seq TO product_api") != nil {
 		return errPreparation
 	}
+	// 진단 Worker의 insert_assets(C24, 루프 복원 결정안 §9-5): 자산 upsert 칼럼과 작업 연결 출처 칼럼만 갱신하고, 연결
+	// 동기화 트리거(sync_task_asset_links)가 호출자 권한으로 지우는 연결 행만 DELETE한다. 서버 검사와 같은 목록이다.
+	if exec("GRANT INSERT, UPDATE("+strings.Join(server.FirstDiagnosisAssetUpdateColumns, ", ")+") ON assets TO product_runtime") != nil ||
+		exec("GRANT INSERT, DELETE, UPDATE("+strings.Join(server.FirstDiagnosisAssetLinkUpdateColumns, ", ")+") ON task_asset_links TO product_runtime") != nil {
+		return errPreparation
+	}
 	for _, r := range []string{"product_runtime", "product_api"} {
 		for _, lock := range []string{"e3_verdict_issuances(id)", "assets(id)", "task_asset_links(task_id)", "exploration_anchors(node_id)"} {
 			if exec("GRANT UPDATE("+strings.Split(strings.Split(lock, "(")[1], ")")[0]+") ON "+strings.Split(lock, "(")[0]+" TO "+r) != nil {

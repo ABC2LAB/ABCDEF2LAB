@@ -324,6 +324,15 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		plannerProvider.beforeScope = func() { workerCallsAtScope = provider.calls }
 		provider.command = "curl --silent --show-error --max-time 5 " + other.URL + "/allowed"
 	}
+	approvedAsset, otherAsset := target.URL+"/api/items", ""
+	if mode == "insert-assets" {
+		// 진단 Worker의 insert_assets(C24): 승인 origin 안의 자산만 실제 runtime 역할로 기록하고, 같은 호스트의 다른 포트
+		// 자산은 기록하지 않는다.
+		other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		defer other.Close()
+		otherAsset = other.URL + "/api/items"
+		provider.assets = []map[string]any{{"type": "endpoint", "url": approvedAsset, "method": "GET"}, {"type": "endpoint", "url": otherAsset, "method": "GET"}}
+	}
 	if mode == "goal-met" {
 		// Planner가 prove_goal로 하나뿐인 목표를 달성시키면 작업이 done이 되고 실행은 정상 마감된다(C26).
 		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
@@ -405,6 +414,29 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if runErr != nil || result == nil || result.Outcome != diagnosis.OutcomeNoIntents || result.IntentOutcomes != (diagnosis.IntentOutcomes{}) || !result.Valid() ||
 			hits.Load() != 0 || provider.calls != 0 || plannerProvider.calls == 0 {
 			t.Fatalf("intent 없는 실행을 no_intents로 마감하지 않음 err=%v result=%+v hits=%d", runErr, result, hits.Load())
+		}
+		return
+	}
+	if mode == "insert-assets" {
+		var approved, other, linked int
+		taskNumber := mustFirstDiagnosisTaskNumber(task.ID)
+		if installer.QueryRow("SELECT count(*) FROM assets WHERE type='endpoint' AND url=$1 AND $2=ANY(task_ids)", approvedAsset, taskNumber).Scan(&approved) != nil ||
+			installer.QueryRow("SELECT count(*) FROM assets WHERE url=$1", otherAsset).Scan(&other) != nil ||
+			installer.QueryRow("SELECT count(*) FROM task_asset_links l JOIN assets a ON a.id=l.asset_id WHERE l.task_id=$1 AND a.url=$2 AND l.source='agent'", taskNumber, approvedAsset).Scan(&linked) != nil {
+			t.Fatal("자산 조회 실패")
+		}
+		var result struct {
+			Results []struct {
+				Index int `json:"index"`
+			} `json:"results"`
+			Errors []struct {
+				Index int    `json:"index"`
+				Error string `json:"error"`
+			} `json:"errors"`
+		}
+		decodeErr := json.Unmarshal([]byte(provider.assetsResult), &result)
+		if runErr != nil || decodeErr != nil || approved != 1 || other != 0 || linked != 1 || len(result.Results) != 1 || result.Results[0].Index != 0 || len(result.Errors) != 1 || result.Errors[0].Index != 1 || provider.unsupportedTool {
+			t.Fatalf("insert_assets 기록이 승인 대상과 다름 err=%v approved=%d other=%d linked=%d result=%q", runErr, approved, other, linked, provider.assetsResult)
 		}
 		return
 	}
