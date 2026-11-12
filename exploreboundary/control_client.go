@@ -115,6 +115,11 @@ type ControlReader struct {
 	Flow    diagnosisflow.ExplorationBinding
 }
 
+// Status는 이 결속 세션의 경계 상태다(정적 fetch가 막혔을 때 세션이 닫혔는지 가른다).
+func (r ControlReader) Status(ctx context.Context) (exploration.State, error) {
+	return controlLease{client: r.Client, binding: r.Binding}.Status(ctx)
+}
+
 func (r ControlReader) Session(ctx context.Context) (diagnosisflow.ExplorationBinding, error) {
 	st, err := controlLease{client: r.Client, binding: r.Binding}.Status(ctx)
 	if err != nil || !st.Active {

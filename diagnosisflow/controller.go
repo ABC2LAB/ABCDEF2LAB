@@ -109,6 +109,9 @@ func riskTokens(s string) []string {
 // anyToken은 단어 하나나 이웃 두 단어를 붙인 것이 목록에 있는지 본다. logOut·shutDown·checkOut·log-out·sign_out처럼
 // 합성어를 camelCase나 구분자로 나눠 쓴 경로는 나누면 log/out이 돼 빠지므로 붙여서도 본다(#487 리뷰 P1). 앞뒤 일치
 // (deleteall·deleted)까지 넓히면 정상 조회 경로를 많이 막아 탐색을 깎으므로 넣지 않는다.
+// DestructiveWords는 메서드와 상관없이 막는 파괴 동작 단어의 복사본이다. 탐색 경계의 대상 위험 단어로도 쓴다.
+func DestructiveWords() []string { return append([]string(nil), destructiveWords...) }
+
 func anyToken(s string, words []string) bool {
 	tokens := riskTokens(s)
 	for i, token := range tokens {
