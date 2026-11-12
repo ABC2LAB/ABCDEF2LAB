@@ -465,6 +465,7 @@ func (s *Service) publish(id string, u Update) error {
 	next.Job.ResultReady = u.ResultReady
 	next.Job.ModelUsage = u.ModelUsage
 	next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = "", "", nil
+	next.Job.DiagnosticLogIncomplete = u.DiagnosticLogIncomplete
 	if u.Result != nil {
 		counts := u.Result.IntentOutcomes
 		next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = u.Result.Outcome, u.Result.ClosingReason, &counts
