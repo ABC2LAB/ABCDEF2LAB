@@ -94,6 +94,8 @@ type hostFixture struct {
 	hits    *atomic.Int64
 	ended   *atomic.Bool
 	digest  string
+	policy  productExplorationPolicy
+	caPEM   []byte
 }
 
 // newHostFixture는 실제 탐색 경계(Manager·직접 입구 프록시·제어 소켓)를 같은 프로세스에 띄우고, 승인 대상 역할의 TLS
@@ -158,7 +160,7 @@ func newHostFixture(t *testing.T) hostFixture {
 		WriteMode: exploration.ReadOnly, CommMode: exploration.FullLocal, Limits: exploration.Limits{TimeBudgetSeconds: 60, MaxRequests: 5, MaxConcurrency: 2, MaxResponseBytes: 4096}}
 	digest := strings.Repeat("a", 64)
 	flow := diagnosisflow.ExplorationBinding{SessionRef: binding.SessionRef, RunRef: binding.RunRef, JobID: binding.JobID, TaskID: binding.TaskID, TargetRef: binding.TargetRef, TargetRevision: binding.TargetRevision, SourceDigest: digest}
-	return hostFixture{host: h, rec: rec, binding: binding, flow: flow, target: origin, hits: hits, ended: &atomic.Bool{}, digest: digest}
+	return hostFixture{host: h, rec: rec, binding: binding, flow: flow, target: origin, hits: hits, ended: &atomic.Bool{}, digest: digest, policy: policy, caPEM: boundaryCA.pem}
 }
 
 func (f hostFixture) current(productTargetRecord) error {

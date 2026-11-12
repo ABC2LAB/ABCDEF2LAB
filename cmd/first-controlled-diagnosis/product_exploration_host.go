@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/netip"
 	"net/url"
+	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -15,6 +17,7 @@ import (
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/exploreboundary"
+	"github.com/Autumn-27/artex/exploresandbox"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -33,6 +36,9 @@ type productExplorationPolicy struct {
 	MCPURL string `json:"mcp_url"`
 	// MaxExternalRequests는 외부 통신 승인 모드에서 렌더링용 외부 자원 GET 상한이다. 0이면 외부 자원 없음.
 	MaxExternalRequests uint64 `json:"max_external_requests,omitempty"`
+	// DirectBash면 탐색 에이전트에 직접 Bash를 준다(C30). 명령은 진단 Bash와 같은 격리 실행 안에서 돌고 나가는 길은
+	// 직접 입구 하나다(exploresandbox). 엔진 컨테이너가 진단 Bash 샌드박스를 띄울 수 있어야 한다.
+	DirectBash bool `json:"direct_bash,omitempty"`
 }
 
 const (
@@ -43,6 +49,11 @@ const (
 	// unix 소켓 경로(sun_path) 상한보다 짧게 둔다.
 	maxExplorationSocketPath = 100
 	maxExplorationExternal   = 4096
+	// 탐색 직접 Bash: 진단 Bash와 같은 helper, 명령 하나의 시간·정리 상한, 출력 캡처 상한(모델 입력은 바깥에서 가린다).
+	explorationBashHelper  = "/app/e2-bash-sandbox"
+	explorationBashTimeout = 2 * time.Minute
+	explorationBashDrain   = 10 * time.Second
+	explorationBashOutput  = 32 << 10
 )
 
 var errExplorationPolicy = errors.New("exploration_policy_invalid")
@@ -84,6 +95,14 @@ type productExplorationHost struct {
 	roots               *x509.CertPool
 	mcpURL              string
 	maxExternalRequests uint64
+	// 직접 Bash(DirectBash 정책일 때만). caPEM은 경계 CA 사본, bashRoot는 호출 디렉터리를 둘 0700 디렉터리다(처음 쓸 때
+	// 만든다. 호출 디렉터리는 호출이 끝날 때 지운다).
+	directBash bool
+	bashHelper string
+	caPEM      []byte
+	bashOnce   sync.Once
+	bashRoot   string
+	bashErr    error
 }
 
 func newProductExplorationHost(p productExplorationPolicy, caPEM []byte) (*productExplorationHost, error) {
@@ -96,7 +115,25 @@ func newProductExplorationHost(p productExplorationPolicy, caPEM []byte) (*produ
 	}
 	proxy, _ := url.Parse(p.DirectProxy)
 	return &productExplorationHost{control: exploreboundary.ControlClient{Path: p.ControlSocket, Timeout: explorationControlTimeout}, proxy: proxy, roots: roots,
-		mcpURL: p.MCPURL, maxExternalRequests: p.MaxExternalRequests}, nil
+		mcpURL: p.MCPURL, maxExternalRequests: p.MaxExternalRequests, directBash: p.DirectBash, bashHelper: explorationBashHelper,
+		caPEM: append([]byte(nil), caPEM...)}, nil
+}
+
+// sessionBash는 회차 하나의 탐색 직접 Bash를 만든다. 정책이 끄면 nil이다. 만들 수 없으면(샌드박스 helper·디렉터리)
+// 오류를 돌려주고 호출자는 Bash 없이 탐색한다.
+func (h *productExplorationHost) sessionBash() (*exploresandbox.DirectBash, error) {
+	if !h.directBash {
+		return nil, nil
+	}
+	h.bashOnce.Do(func() {
+		// MkdirTemp는 0700으로 만든다(exploresandbox가 정확히 0700을 요구).
+		h.bashRoot, h.bashErr = os.MkdirTemp("", "explore-bash-")
+	})
+	if h.bashErr != nil {
+		return nil, h.bashErr
+	}
+	return exploresandbox.New(exploresandbox.Config{Helper: h.bashHelper, RootDir: h.bashRoot, DirectProxy: h.proxy, CACert: h.caPEM,
+		Timeout: explorationBashTimeout, DrainTimeout: explorationBashDrain, OutputLimit: explorationBashOutput})
 }
 
 // exploreTargetOf는 승인된 대상 등록 기록을 경계가 판정에 쓰는 대상 값으로 바꾼다. 연결은 등록 때 고른 주소로만 하고
@@ -162,6 +199,12 @@ func (h *productExplorationHost) factory(rec productTargetRecord, current func(p
 			// (모델이 다음 페이지를 고르는 데 필요). 인증 준비가 들어오면 프로그램이 넣은 값의 정확값 가림을 더한다.
 			Redact:       redactExplorationOutput,
 			CloseTimeout: explorationCloseTimeout, StatusInterval: explorationStatusInterval}
+		// 직접 Bash를 만들 수 없으면 그 회차는 Bash 없이 탐색한다(브라우저·정적 fetch는 그대로). 사유는 서버 로그에 남긴다.
+		if shell, err := h.sessionBash(); err != nil {
+			exploration.ReportFailure("host_capabilities", err)
+		} else {
+			session.DirectBash = shell
+		}
 		return server.ExplorationPipelineHost{Session: session, Reader: reader, Fetch: fetch.Fetch, Sequences: reader.Sequences}, nil
 	}
 }
