@@ -1768,6 +1768,14 @@ a.ph:hover {
     border-top: 0;
     padding-top: 0;
   }
+  /* 두 쪽으로 나눈 뒤에는 한 쪽에 섹션이 한두 개라 2열 대신 가운데 한 줄 */
+  .vm.nform.paged {
+    display: flex;
+  }
+  .nform.paged > * {
+    max-width: 760px;
+    margin-inline: auto;
+  }
   .app.insp-hidden .vm.nform,
   .app.rail-hidden .vm.nform {
     padding-left: 28px;
@@ -2073,6 +2081,26 @@ select.inp {
 .why {
   font-size: 12.5px;
   color: var(--ink-3);
+}
+/* 두 쪽 새 점검 (시안 v64 ~ v67): 아래 줄은 넓은 화면에서도 보인다(1쪽 다음 · 2쪽 이전).
+   2쪽의 실행 버튼은 요약 패널이 보이면 패널에만 두고, 패널이 안 보이면(좁은 화면 · 접음) 이 줄에 둔다 */
+.formbar.paged {
+  display: flex;
+}
+.formbar .fbact {
+  display: contents;
+}
+@media (min-width: 1200px) {
+  .formbar.paged .fbact {
+    display: none;
+  }
+  .app.insp-hidden .formbar.paged .fbact {
+    display: contents;
+  }
+}
+.nform.paged > .fs-model {
+  border-top: 0;
+  padding-top: 0;
 }
 .sumkv {
   display: grid;
