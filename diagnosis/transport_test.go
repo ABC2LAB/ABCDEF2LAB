@@ -131,6 +131,13 @@ func TestClientRejectsUnrecognizedStateAndError(t *testing.T) {
 		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: "vulnerable", Started: true}},
 		{Version: Version, RequestID: "request-1", Error: "secret internal exception"},
 		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true}},
+		// 마감 근거가 있어도 결과가 없거나 대조식에 맞지 않는 완료는 받지 않는다.
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true, DrainComplete: true, ResultReady: true}},
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true, DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomeNoIntents, IntentOutcomes: IntentOutcomes{Done: 1}}}},
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true, DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomeComplete, ClosingReason: "time_limited", IntentOutcomes: IntentOutcomes{Done: 1}}}},
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Completed, Started: true, DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomePartial, IntentOutcomes: IntentOutcomes{Incomplete: -1, Unknown: 2}}}},
+		// 완료가 아닌 상태에는 결과가 없다.
+		{Version: Version, RequestID: "request-1", Snapshot: &Snapshot{TaskID: "23", PreparationRef: "operator-prepared", State: Failed, Started: true, DrainComplete: true, ResultReady: true, Result: &RunResult{Outcome: OutcomeComplete, IntentOutcomes: IntentOutcomes{Done: 1}}}},
 	}
 	for _, response := range responses {
 		raw, _ := json.Marshal(response)
@@ -147,7 +154,7 @@ func TestClientResponseCorrelationAndExclusivePayload(t *testing.T) {
 		mutate func(*Response)
 	}{
 		{"request_id", func(r *Response) { r.RequestID = "different" }},
-		{"version", func(r *Response) { r.Version = "diagnosis.v2" }},
+		{"version", func(r *Response) { r.Version = "diagnosis.v1" }},
 		{"task", func(r *Response) { r.Snapshot.TaskID = "24" }},
 		{"preparation", func(r *Response) { r.Snapshot.PreparationRef = "other" }},
 		{"both_payloads", func(r *Response) { r.Error = "not_started" }},

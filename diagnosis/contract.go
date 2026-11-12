@@ -9,7 +9,8 @@ import (
 	"strconv"
 )
 
-const Version = "diagnosis.v1"
+// v2: 완료 Snapshot에 실행 결과(Result)를 싣는다(docs/contracts/run-outcome-states.md).
+const Version = "diagnosis.v2"
 const MaxFrameBytes = 64 << 10
 
 type Command string
@@ -43,13 +44,59 @@ type Request struct {
 	IdempotencyKey string  `json:"idempotency_key,omitempty"`
 }
 type Snapshot struct {
-	TaskID         string `json:"task_id"`
-	PreparationRef string `json:"preparation_ref"`
-	State          State  `json:"state"`
-	Started        bool   `json:"started"`
-	DrainComplete  bool   `json:"drain_complete"`
-	ResultReady    bool   `json:"result_ready"`
+	TaskID         string     `json:"task_id"`
+	PreparationRef string     `json:"preparation_ref"`
+	State          State      `json:"state"`
+	Started        bool       `json:"started"`
+	DrainComplete  bool       `json:"drain_complete"`
+	ResultReady    bool       `json:"result_ready"`
+	Result         *RunResult `json:"result,omitempty"`
 }
+
+// 실행 결과 값(docs/contracts/run-outcome-states.md §3.2). 실행이 끝났다는 것은 취약점이 없다는 뜻이 아니다.
+const (
+	OutcomeComplete      = "complete"
+	OutcomePartial       = "partial"
+	OutcomeNoIntents     = "no_intents"
+	ClosingBudgetLimited = "budget_limited"
+)
+
+// IntentOutcomes는 intent 결과 개수다(계약 §2의 그래프 상태 투영).
+type IntentOutcomes struct {
+	Done          int64 `json:"done"`
+	PolicyLimited int64 `json:"policy_limited"`
+	Incomplete    int64 `json:"incomplete"`
+	Unknown       int64 `json:"unknown"`
+	Stopped       int64 `json:"stopped"`
+}
+
+func (c IntentOutcomes) Valid() bool {
+	return c.Done >= 0 && c.PolicyLimited >= 0 && c.Incomplete >= 0 && c.Unknown >= 0 && c.Stopped >= 0
+}
+
+// Outcome은 계약 §3.2의 대조식이다.
+func (c IntentOutcomes) Outcome() string {
+	switch {
+	case c.Incomplete+c.Unknown+c.Stopped > 0:
+		return OutcomePartial
+	case c.Done+c.PolicyLimited > 0:
+		return OutcomeComplete
+	default:
+		return OutcomeNoIntents
+	}
+}
+
+// RunResult는 감사가 닫힌 실행(completed)의 결과다.
+type RunResult struct {
+	Outcome        string         `json:"outcome"`
+	ClosingReason  string         `json:"closing_reason,omitempty"`
+	IntentOutcomes IntentOutcomes `json:"intent_outcomes"`
+}
+
+func (r RunResult) Valid() bool {
+	return r.IntentOutcomes.Valid() && r.Outcome == r.IntentOutcomes.Outcome() && (r.ClosingReason == "" || r.ClosingReason == ClosingBudgetLimited)
+}
+
 type Response struct {
 	Version   string    `json:"version"`
 	RequestID string    `json:"request_id"`
@@ -97,10 +144,12 @@ func validSnapshot(s Snapshot) bool {
 		return !s.Started && !s.DrainComplete && !s.ResultReady
 	case Running, Stopping:
 		return s.Started && !s.DrainComplete && !s.ResultReady
-	case Completed, Failed, Cancelled:
-		return s.Started && s.DrainComplete && s.ResultReady
+	case Completed:
+		return s.Started && s.DrainComplete && s.ResultReady && s.Result != nil && s.Result.Valid()
+	case Failed, Cancelled:
+		return s.Started && s.DrainComplete && s.ResultReady && s.Result == nil
 	case Unknown:
-		return s.Started
+		return s.Started && s.Result == nil
 	default:
 		return false
 	}
