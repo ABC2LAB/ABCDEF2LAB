@@ -478,3 +478,24 @@ func TestExplorationUnavailableRequiresCurrentUnboundHostState(t *testing.T) {
 		t.Fatal("revoked authority stored availability")
 	}
 }
+
+func TestModelOrRuntimeFailurePreservesPartialDiscoveryForSelection(t *testing.T) {
+	for _, reason := range []string{"model_error", "runtime_unavailable"} {
+		t.Run(reason, func(t *testing.T) {
+			c, store, _, b := explorationFixture(t, Manual)
+			if _, err := c.ReportStatic(t.Context(), []Discovery{{Method: "GET", Path: "/read/partial"}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.FinishExploration(t.Context(), b, reason); err != nil {
+				t.Fatal(err)
+			}
+			s, _ := c.Snapshot()
+			if s.ExplorationStatus != "PARTIAL" || s.ExplorationReason != reason || !s.ExplorationPartial || s.Stage != "awaiting_selection" || len(c.DiscoveryInventory()) != 1 || !s.InitialCompleted {
+				t.Fatal("model or runtime failure lost partial discoveries")
+			}
+			if store.records["prep-owned"].Snapshot.ExplorationReason != reason {
+				t.Fatal("failure reason not persisted")
+			}
+		})
+	}
+}

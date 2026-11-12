@@ -299,7 +299,7 @@ func (c *Controller) DiscoveryInventory() []DiscoveryEvidence {
 	return clone(c.record).DiscoveryInventory
 }
 func explorationCloseReason(reason string) bool {
-	return reason == "completed" || reason == "cap_exhausted" || reason == "boundary_unavailable" || reason == "cancelled" || reason == "target_ended" || reason == "time_budget" || reason == "page_limit"
+	return reason == "completed" || reason == "cap_exhausted" || reason == "boundary_unavailable" || reason == "cancelled" || reason == "target_ended" || reason == "time_budget" || reason == "page_limit" || reason == "model_error" || reason == "runtime_unavailable"
 }
 
 // FinishExplorationは部分発見を保ち、E②診断の成功・失敗を捏造せず選択段階へ進める。
