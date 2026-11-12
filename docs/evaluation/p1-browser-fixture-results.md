@@ -80,7 +80,8 @@ B14 양성의 navigate 완료는 false다. 페이지가 즉시 POST로 이동해
 | B01 | PASS | 명시한 두 실행 namespace의 직접 대상 TCP 경로 |
 | B02/B03 | NOT_RUN | Chromium proxy flag 제거·독자 DNS wire 회차 미실행 |
 | B04/B05 | PASS | 위 양성 variant와 동일한 fixture 수신기/리다이렉트 |
-| B06/B07/B08/B09 | NOT_RUN | SW·WS·QUIC·STUN의 대응 양성/차단 묶음 미실행 |
+| B06/B07/B08 | NOT_RUN | SW·WS·QUIC의 대응 양성/차단 묶음 미실행 |
+| B09 | PASS(내부망 역할 수신기 STUN 범위) | 맨 아래 B09 절. 메타데이터 역할 수신기로 가는 STUN·TURN은 미실행, 엔진 제어망 주소 UDP는 B16 프로브(native)로만 봄 |
 | B10 | NOT_RUN | 불신 TLS 단위 거부는 PASS, 실제 Chromium 플래그 주입 종단은 별도 |
 | B11 | NOT_RUN | Node 직접 TCP 부분은 PASS, curl/전체 자식 프로토콜 수용 아님 |
 | B12 | UNDECIDABLE | prefetch/TCP 부분은 PASS, resolver 고정이라 DNS wire 자체 미실행 |
@@ -173,3 +174,20 @@ B16 프로브(driver 실행 중, 결과는 사적 실행 디렉터리의 `b16-pr
 READY 전에 하네스가 `docker top`으로 Chromium 컨테이너에 MCP 프로세스가, MCP 컨테이너에 Chromium 프로세스가 없는지 확인했다. 윤재상 회차 8회 중 1회는 full_local에서 승인 밖 origin 차단이 19였다(나머지 18). 시간 차이인지 배치 영향인지는 구분하지 않았고, 금지 수신기 차이는 모든 회차 0이다.
 
 범위: 이 프로브는 망 도달만 본다. CDP는 Chromium namespace의 loopback에도 열려 있어(이 판의 Chromium은 `--remote-debugging-address`를 무시) 같은 namespace의 native 프로세스는 Chromium을 조작할 수 있다. 그 프로세스가 닿는 망은 Chromium과 같다. 페이지에서 loopback CDP로 가는 요청은 `<-loopback>`으로 경계를 거치는데, 이 경로의 실제 페이지 시험은 NOT_RUN이다. 운영 경계·원본 보존율·B09(WebRTC)는 여전히 NOT_RUN이다.
+
+## B09 WebRTC STUN (2026-11-13)
+
+분리 배치(#485) 위 dev에 B09를 하네스에 넣은 회차다. 무통제 Chromium 양성 대조와 통제 회차 driver가 같은 fixture 페이지(`/bypass/B09`, `RTCPeerConnection`의 STUN 서버로 수신기 UDP)를 연다. STUN 서버는 수신기의 upstream IP 리터럴이다. Chromium WebRTC는 STUN 서버 이름을 `--host-resolver-rules`로 풀지 않아서(실측: 이름이면 UDP 0, 같은 주소의 IP면 STUN binding 도달) 이름을 쓰면 양성 대조가 성립하지 않고 통제 회차의 0도 경로 차단이 아니라 이름 풀이 실패가 된다.
+
+| 항목 | full_local | external_allowed |
+|---|---:|---:|
+| image_id | `sha256:93fe6420…eb75`(#485 head 빌드, dev의 같은 Dockerfile) | 같음 |
+| 무통제 Chromium B09: 수신기 UDP STUN binding | 4 (PASS) | 4 (PASS) |
+| 통제 회차 금지 수신기 UDP | 0 | 0 |
+| 실제 대상 전달 / observed / inferred | 23 / 22 / 4 | 23 / 22 / 4 |
+| 외부 전달 | 0 | 3 |
+| 나머지 양성 대조(B04·B05·B12·B13·B14) | 모두 PASS | 모두 PASS |
+| B16 프로브 | 9 / 9 PASS | 9 / 9 PASS |
+| 정리한 소유 컨테이너/망 · 잔여 | 11 / 5 · 0 | 11 / 5 · 0 |
+
+전달 수가 앞 절(22)보다 하나 많은 것은 driver가 `/bypass/B09` 페이지를 하나 더 열기 때문이다. 통제 회차의 Chromium namespace에는 경계 입구망과 CDP 연결망 말고 경로가 없어 STUN UDP가 나가지 못한다. 범위는 내부망 역할 수신기 하나다. 메타데이터 역할로 가는 STUN·TURN(TCP/TLS 포함)은 미실행이다.

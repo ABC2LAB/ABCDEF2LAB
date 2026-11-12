@@ -153,6 +153,10 @@ Unknown 중지 한도의 관계를 합의하는 것이다. 그 결정안은 아�
    대신 요청·응답 상한을 나누고(`max_request_body_bytes`·`max_response_body_bytes`),
    제품 기본값은 공식 평가 정책 템플릿(`max_body_bytes` 16 MiB)과 맞춘다. 값은 설치
    설정으로 바꿀 수 있게 한다(C32와 같이).
+   - 구현 상태(2026-11-13): 제품 일반 HTTP 모드의 기본 `max_body_bytes`를 64 KiB에서 공식 템플릿과
+     같은 16 MiB(코드 상한과 같음)로 올렸다. 워크플로 모드는 대상 정책의 `max_response_bytes`를 그대로
+     쓴다. 요청·응답 상한 분리와 설치 설정 칸은 아직이다. 기존 설치의 보호 정책 파일은 바꾸지 않으므로
+     새 기본값은 새 설치부터 적용된다.
 4. **감사·근거 형식은 판을 올린다.** 새 사유와 `response_truncated`가 영수증에 들어가므로
    `e2-http-v1`에 조용히 더하지 않고 `e2-http-v2`를 만든다. 검증기(`e2-audit-verify`)·
    내보내기(`e2export`)·채점기(`attempt_reconcile` 등)는 두 판을 모두 읽고, v1 기록은 v1

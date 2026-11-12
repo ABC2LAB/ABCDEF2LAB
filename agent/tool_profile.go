@@ -61,9 +61,11 @@ var diagnosisPlannerProfile = toolProfile{name: "diagnosis_planner", entries: []
 	{name: "expand_digest", source: fromBase}, {name: "get_worker_output", source: fromBase},
 	{name: "get_worker_trace", source: fromBase}, {name: "search_all_worker_traces", source: fromBase},
 	{name: "list_goals", source: fromBase}, {name: "add_intent", source: fromBase},
-	// 목표 도구(C26). goal_met은 원본처럼 기본 바인딩이 없어 운영자가 묶을 때만 보인다. kill_work·steer_work는 진행
-	// 중 E② 호출을 끊으므로 C01 뒤에 넣는다(루프 복원 결정안 §7-6).
+	// 목표 도구(C26). goal_met은 원본처럼 기본 바인딩이 없어 운영자가 묶을 때만 보인다.
 	{name: "prove_goal", source: fromBase}, {name: "goal_met", source: fromBase},
+	// 작업 제어(C27). Planner가 Worker 실행 중에도 돌므로 원본처럼 실행 중 작업을 멈추거나 방향을 고친다. kill_work로
+	// 진행 중 E② 호출이 끊기면 그 intent만 결과 불명으로 끝난다(C01 뒤, 결과 불명 송신은 다시 보내지 않음).
+	{name: "kill_work", source: fromBase}, {name: "steer_work", source: fromBase},
 	{name: "list_companies", source: fromBase}, {name: "list_assets", source: fromBase},
 	// add_task_scope는 커버리지 분모만 바꾸고 E② 승인 범위는 바꾸지 않는다(진단 경로는 task_scope를 승인 근거로
 	// 읽지 않음). 원본 설명은 이 도구를 "인가 경계"라 부르고 넓히라고 권해서, 그대로 두면 모델이 승인 밖 호스트로

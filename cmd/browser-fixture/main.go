@@ -130,6 +130,18 @@ func parseReceiver(raw, udpListen string, tlsEnabled bool) (receiverInfo, error)
 	return receiverInfo{origin: origin, websocket: wsOrigin(origin), stun: net.JoinHostPort(u.Hostname(), port), udpPort: port}, nil
 }
 
+// withSTUNIP는 WebRTC 페이지(B09)의 STUN 서버를 IP 리터럴로 바꾼다. Chromium의 WebRTC는 STUN 서버 이름을
+// --host-resolver-rules로 풀지 않아서(실측: 이름이면 UDP 0, 같은 주소의 IP면 STUN binding 도달) 이름을 쓰면 양성
+// 대조가 성립하지 않고, 통제 회차의 0도 경로 차단이 아니라 이름 풀이 실패가 된다. IP면 망 경로만으로 도달이 정해진다.
+func (i receiverInfo) withSTUNIP(raw string) (receiverInfo, error) {
+	ip := net.ParseIP(raw)
+	if ip == nil || ip.IsUnspecified() || ip.String() != raw {
+		return receiverInfo{}, errors.New("receiver STUN address must be an IP literal")
+	}
+	i.stun = net.JoinHostPort(raw, i.udpPort)
+	return i, nil
+}
+
 func wsOrigin(origin string) string { return "ws" + strings.TrimPrefix(origin, "http") }
 
 func (i receiverInfo) render(text string) string {
@@ -358,6 +370,7 @@ func run(ctx context.Context, args []string) error {
 	receiverListen := flags.String("receiver-listen", "", "out-of-scope HTTP receiver address")
 	receiverUDP := flags.String("receiver-udp", "", "UDP address that accepts traffic for both the target and receiver host names, for example 0.0.0.0:PORT")
 	receiverOrigin := flags.String("receiver-origin", "", "origin the pages use to reach the receiver")
+	receiverSTUNIP := flags.String("receiver-stun-ip", "", "optional IP literal the WebRTC page uses as its STUN server instead of the receiver host name")
 	logPath := flags.String("log", "", "new JSONL file for reached requests")
 	certFile := flags.String("tls-cert", "", "TLS certificate for the target and the receiver")
 	keyFile := flags.String("tls-key", "", "TLS key for the target and the receiver")
@@ -389,6 +402,9 @@ func run(ctx context.Context, args []string) error {
 	announce(targetListener.Addr(), receiverListener.Addr())
 	// 임시 포트(:0)를 써도 페이지가 실제 포트를 광고하도록 연 뒤의 주소를 쓴다.
 	info, err := parseReceiver(*receiverOrigin, udp.LocalAddr().String(), *certFile != "")
+	if err == nil && *receiverSTUNIP != "" {
+		info, err = info.withSTUNIP(*receiverSTUNIP)
+	}
 	var opened []net.Listener
 	var roles []roleSetting
 	if metadata.set() {
