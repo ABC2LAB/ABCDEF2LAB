@@ -197,6 +197,10 @@ func TestWorkspaceNameBytesLimit(t *testing.T) {
 	if err := ValidateWorkspace(data, 1<<20); err != nil {
 		t.Fatal("name bytes at the limit not validated", err)
 	}
+	// 큰 출력 파일을 더해 이름 합계가 넘으면 보존 실패(너무 큼)다.
+	if _, err := AppendWorkspaceFile(data, dir+"/"+strings.Repeat("z", 255), nil, 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
+		t.Fatal("append over the name bytes limit", err)
+	}
 }
 
 // 풀 때는 일반 파일·디렉터리만, 상대 정규 경로만, 중복 없이, 상한 안에서만 받는다.

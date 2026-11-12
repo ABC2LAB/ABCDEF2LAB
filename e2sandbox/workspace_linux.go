@@ -254,7 +254,7 @@ func ValidateWorkspace(data []byte, contentLimit uint64) error {
 }
 
 // AppendWorkspaceFile은 작업 공간 tar에 파일 하나를 더한 새 tar를 돌려준다. 부모 디렉터리가 없으면 만들고, 같은 이름이
-// 있으면 바꾼다. 결과도 풀기 규칙과 내용·항목 상한을 지켜야 한다(넘으면 ErrWorkspaceTooLarge). 러너가 큰 출력을 작업
+// 있으면 바꾼다. 결과도 풀기 규칙과 내용·항목·이름 바이트 상한을 지켜야 한다(넘으면 ErrWorkspaceTooLarge). 러너가 큰 출력을 작업
 // 공간에 남길 때 쓴다(docs/workspace-decision.md §2-3).
 func AppendWorkspaceFile(archive []byte, name string, content []byte, contentLimit uint64) ([]byte, error) {
 	if !validWorkspaceName(name) || ValidateWorkspace(archive, contentLimit) != nil {
@@ -320,8 +320,9 @@ func AppendWorkspaceFile(archive []byte, name string, content []byte, contentLim
 		return nil, ErrWorkspaceInvalid
 	}
 	out := buf.Bytes()
-	if ValidateWorkspace(out, contentLimit) != nil {
-		return nil, ErrWorkspaceInvalid
+	// 이름 바이트 합계·tar 크기 상한은 결과 전체로 본다(넘으면 ErrWorkspaceTooLarge).
+	if err := ValidateWorkspace(out, contentLimit); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
