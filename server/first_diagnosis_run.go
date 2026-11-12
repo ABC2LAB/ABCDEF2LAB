@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/golang-jwt/jwt/v5"
@@ -25,6 +26,9 @@ type diagnosisRunRecord struct {
 	Model            *llmpolicy.OpenRouterUsage  `json:"model,omitempty"`
 	ModelPreparation []diagnosisModelPreparation `json:"model_preparation,omitempty"`
 	Run              requestApprovalRunState     `json:"run"`
+	// Result는 실행 결과 칸이다(실행 결과 상태 값 계약 §5-5). completed는 outcome·intent 결과, cancelled는 intent 결과
+	// 개수만 있다. 이 칸 이전에 저장된 기록이나 결과를 확인하지 못한 실행에는 없다.
+	Result *diagnosis.RunResult `json:"result,omitempty"`
 }
 
 // PersistRunOutcome는 drain 뒤의 감독자 상태만 저장한다. 조회 서버는 이 상태로 실행 권한을 복구하지 않는다.
@@ -62,7 +66,12 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStored(ctx context.Context, 
 	}
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_started", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: "started"})
 	startedAt := time.Now()
-	err := saveDiagnosisRunWithModel(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage())
+	// 마감 결과는 실행 종료 상태와 맞을 때만 싣는다(마감 실패·실패 실행에는 싣지 않는다).
+	result := s.ClosureResult()
+	if !validDiagnosisRunResult(state, result) {
+		result = nil
+	}
+	err := saveDiagnosisRunRecord(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage(), result)
 	status, reason := diagnosisLogOutcome(ctx, err, "result_storage_failed")
 	stored := err == nil
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_finished", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: status, ReasonCode: reason, DurationMS: time.Since(startedAt).Milliseconds(), ResultStored: &stored})
@@ -91,11 +100,32 @@ func validDiagnosisRun(state requestApprovalRunState) bool {
 	return true
 }
 
+// validDiagnosisRunResult는 저장 기록의 결과 칸이 실행 종료 상태와 맞는지 본다. 결과가 없으면 맞다(옛 기록·확인 못 한
+// 결과). completed는 대조식이 맞는 결과, cancelled는 intent 결과 개수만, 마감 실패·failed에는 결과가 없어야 한다.
+func validDiagnosisRunResult(state requestApprovalRunState, result *diagnosis.RunResult) bool {
+	if result == nil {
+		return true
+	}
+	if state.ClosureFailed {
+		return false
+	}
+	switch state.Outcome {
+	case "completed":
+		return result.Valid()
+	case "cancelled":
+		return result.StoppedValid()
+	}
+	return false
+}
+
 func saveDiagnosisRun(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState) error {
 	return saveDiagnosisRunWithModel(ctx, pool, task, state, nil)
 }
 func saveDiagnosisRunWithModel(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState, model *llmpolicy.OpenRouterUsage) error {
-	if ctx == nil || pool == nil || task <= 0 || !validDiagnosisRun(state) {
+	return saveDiagnosisRunRecord(ctx, pool, task, state, model, nil)
+}
+func saveDiagnosisRunRecord(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState, model *llmpolicy.OpenRouterUsage, result *diagnosis.RunResult) error {
+	if ctx == nil || pool == nil || task <= 0 || !validDiagnosisRun(state) || !validDiagnosisRunResult(state, result) {
 		return ErrFirstDiagnosisOutcome
 	}
 	tx, err := pool.BeginTx(ctx, nil)
@@ -116,7 +146,7 @@ func saveDiagnosisRunWithModel(ctx context.Context, pool *sql.DB, task int64, st
 		if marshalErr != nil {
 			return ErrFirstDiagnosisOutcome
 		}
-		if json.Unmarshal(existing, &old) != nil || old.Version != 1 || old.TaskID != task || old.SavedAt.IsZero() || !validDiagnosisRun(old.Run) {
+		if json.Unmarshal(existing, &old) != nil || old.Version != 1 || old.TaskID != task || old.SavedAt.IsZero() || !validDiagnosisRun(old.Run) || !validDiagnosisRunResult(old.Run, old.Result) {
 			return ErrFirstDiagnosisOutcome
 		}
 		b, marshalErr := json.Marshal(old.Run)
@@ -125,7 +155,9 @@ func saveDiagnosisRunWithModel(ctx context.Context, pool *sql.DB, task int64, st
 		}
 		modelA, errA := json.Marshal(model)
 		modelB, errB := json.Marshal(old.Model)
-		if !bytes.Equal(a, b) || errA != nil || errB != nil || !bytes.Equal(modelA, modelB) {
+		resultA, errC := json.Marshal(result)
+		resultB, errD := json.Marshal(old.Result)
+		if !bytes.Equal(a, b) || errA != nil || errB != nil || !bytes.Equal(modelA, modelB) || errC != nil || errD != nil || !bytes.Equal(resultA, resultB) {
 			return ErrFirstDiagnosisOutcome
 		}
 		return tx.Commit()
@@ -133,7 +165,7 @@ func saveDiagnosisRunWithModel(ctx context.Context, pool *sql.DB, task int64, st
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ErrFirstDiagnosisOutcome
 	}
-	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state, Model: model})
+	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state, Model: model, Result: result})
 	if err != nil {
 		return ErrFirstDiagnosisOutcome
 	}
@@ -224,7 +256,7 @@ func (s *Server) serveDiagnosisRun(w http.ResponseWriter, r *http.Request, bound
 		return
 	}
 	var result diagnosisRunRecord
-	if err != nil || json.Unmarshal(raw, &result) != nil || result.Version != 1 || result.TaskID != task || !validDiagnosisRun(result.Run) || result.SavedAt.IsZero() {
+	if err != nil || json.Unmarshal(raw, &result) != nil || result.Version != 1 || result.TaskID != task || !validDiagnosisRun(result.Run) || !validDiagnosisRunResult(result.Run, result.Result) || result.SavedAt.IsZero() {
 		writeErr(w, 503, "저장된 실행 종료 결과를 확인할 수 없습니다")
 		return
 	}
