@@ -23,10 +23,10 @@ func TestE2HTTPExplorationPausedPreparationWaitsBeforeHostIO(t *testing.T) {
 			}
 			runtime.options.Workflow = o.Workflow
 			var calls atomic.Int32
-			runtime.options.Exploration = func(ctx context.Context, actual *Task) error {
+			runtime.options.Exploration = func(ctx context.Context, actual *Task) (ExplorationCharge, error) {
 				calls.Add(1)
-				_, err := server.RunExplorationPipeline(ctx, actual, o)
-				return err
+				result, err := server.RunExplorationPipeline(ctx, actual, o)
+				return result.Charge, err
 			}
 			snapshot, _ := o.Workflow.Snapshot()
 			if _, err := o.Workflow.Command(t.Context(), "ARTEX", "pause", "pause-before-first-plan", snapshot.Revision, nil); err != nil {

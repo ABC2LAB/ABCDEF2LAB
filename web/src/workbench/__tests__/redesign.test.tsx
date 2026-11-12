@@ -170,6 +170,152 @@ describe("자산 탐색", () => {
   });
 });
 
+describe("탐색 기록 펼치기", () => {
+  it("줄을 누르면 바로 아래에 서버 관찰(결과 · 찾은 곳 · 출처 · 요청/응답)이 펼쳐지고, 다시 누르거나 Esc 로 접힌다 (시안 v75 ~ v76)", () => {
+    const withLog: WorkflowSnapshot = {
+      ...flow,
+      endpoints: [
+        {
+          ...ep("read", "GET", "/api/products/1", "attested_read"),
+          status: 200,
+          request: "GET /api/products/1 HTTP/1.1",
+          response: "HTTP/1.1 200 OK",
+        },
+        ep("write", "PUT", "/api/users/2", "possible"),
+      ],
+      events: [
+        { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/products/1", status: 200 },
+        { at: "2026-11-11T01:00:02Z", kind: "held", method: "PUT", path: "/api/users/2" },
+        { at: "2026-11-11T01:00:03Z", kind: "탐색 시작" },
+      ],
+    };
+    useUrl.setState({ handle, job, verified: true, flow: withLog, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    const log = document.getElementById("cLog") as HTMLElement;
+    const getRow = within(log).getByRole("button", { name: /GET\s*\/api\/products\/1/ });
+    const putRow = within(log).getByRole("button", { name: /PUT\s*\/api\/users\/2/ });
+    expect(getRow).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(getRow);
+    expect(getRow).toHaveAttribute("aria-expanded", "true");
+    const box = screen.getByRole("region", { name: "GET /api/products/1 상세" });
+    expect(within(box).getByText("html_link")).toBeInTheDocument();
+    expect(within(box).getByText("GET /api/products/1 HTTP/1.1")).toBeInTheDocument();
+    expect(within(box).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
+    // 한 번에 하나: 다른 줄을 열면 앞 줄은 접힌다. 응답 코드가 없는 줄은 기록 결과만, 송신 여부는 단정하지 않는다
+    fireEvent.click(putRow);
+    expect(screen.queryByRole("region", { name: "GET /api/products/1 상세" })).toBeNull();
+    const put = screen.getByRole("region", { name: "PUT /api/users/2 상세" });
+    expect(within(put).getByText("held")).toBeInTheDocument();
+    expect(within(put).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
+    // 같은 줄을 다시 누르면 접힘
+    fireEvent.click(putRow);
+    expect(screen.queryByRole("region", { name: "PUT /api/users/2 상세" })).toBeNull();
+    // Esc 로 접고 초점은 그 줄로
+    fireEvent.click(getRow);
+    fireEvent.keyDown(
+      within(screen.getByRole("region", { name: "GET /api/products/1 상세" })).getByRole("button", { name: "접기" }),
+      {
+        key: "Escape",
+      },
+    );
+    expect(screen.queryByRole("region", { name: "GET /api/products/1 상세" })).toBeNull();
+    expect(getRow).toHaveFocus();
+  });
+});
+
+describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
+  const mountLog = (
+    events: WorkflowSnapshot["events"],
+    endpoint: WorkflowSnapshot["endpoints"][number],
+    counts: WorkflowSnapshot["counts"] = flow.counts,
+  ) => {
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: { ...flow, counts, endpoints: [endpoint], events },
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    return within(document.getElementById("cLog") as HTMLElement).getAllByRole("button", { name: /GET/ });
+  };
+
+  it("같은 경로에 200 → 403 이면, 먼저 보낸 200 줄에 나중 403 원문을 붙이지 않는다", () => {
+    const rows = mountLog(
+      [
+        { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/a", status: 200 },
+        { at: "2026-11-11T01:00:05Z", kind: "sent", method: "GET", path: "/api/a", status: 403 },
+      ],
+      {
+        ...ep("a", "GET", "/api/a", "attested_read"),
+        status: 403,
+        request: "GET /api/a (403 요청)",
+        response: "HTTP status 403",
+      },
+    );
+    fireEvent.click(rows[0]);
+    const first = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(first).queryByText("HTTP status 403")).toBeNull();
+    expect(within(first).getByText(/서버에 남은 원문은 이 줄의 것이 아닙니다/)).toBeInTheDocument();
+    // 나중(403) 줄에는 '경로의 마지막 관찰'로 분리해 보인다
+    fireEvent.click(rows[1]);
+    const last = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(last).getByText("이 경로의 마지막 관찰")).toBeInTheDocument();
+    expect(within(last).getByText("HTTP status 403")).toBeInTheDocument();
+  });
+
+  it("200 송신 뒤 응답 코드 없는 같은 경로 줄에는 이전 200 원문을 붙이지 않는다", () => {
+    const rows = mountLog(
+      [
+        { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/a", status: 200 },
+        { at: "2026-11-11T01:00:05Z", kind: "request", method: "GET", path: "/api/a" },
+      ],
+      {
+        ...ep("a", "GET", "/api/a", "attested_read"),
+        status: 200,
+        request: "GET /api/a HTTP/1.1",
+        response: "HTTP/1.1 200 OK",
+      },
+    );
+    fireEvent.click(rows[1]);
+    const nostatus = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(nostatus).queryByText("HTTP/1.1 200 OK")).toBeNull();
+    expect(within(nostatus).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
+    // 보낸 200 줄은 이 경로의 마지막 송신이라 원문을 '경로의 마지막 관찰'로 보인다
+    fireEvent.click(rows[0]);
+    const sent = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(sent).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
+  });
+
+  it("보냈지만 응답을 못 받은 줄(status 0 · 결과 불명)을 '보내지 않은 요청'으로 단정하지 않는다", () => {
+    // 서버 Controller.After: ForwardAttempted · RequestWritten = true, ResponseReceived = false, Reason = Unknown,
+    // StatusCode = 0 → counts.sent · attempted · unknown 이 오르지만 이벤트 status 는 omitempty 로 빠진다
+    const rows = mountLog(
+      [{ at: "2026-11-11T01:00:01Z", kind: "request", method: "GET", path: "/api/a" }],
+      {
+        ...ep("a", "GET", "/api/a", "attested_read"),
+        visited: false,
+        request: "GET /api/a HTTP/1.1",
+        response: "HTTP status 0 · response incomplete",
+      },
+      { ...flow.counts, sent: 1, attempted: 1, unknown: 1 },
+    );
+    fireEvent.click(rows[0]);
+    const box = screen.getByRole("region", { name: "GET /api/a 상세" });
+    expect(within(box).queryByText(/보내지 않은/)).toBeNull();
+    expect(within(box).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
+    expect(within(box).queryByText("HTTP status 0 · response incomplete")).toBeNull();
+  });
+});
+
 describe("대시보드", () => {
   it("승인 대기 요청은 결정 대기 안내로 알리고, 상세에 보낼 요청과 승인 · 거부를 보인다", async () => {
     useUrl.setState({ handle, job, verified: true, flow: { ...flow, stage: "diagnosing" }, flowVerified: true });

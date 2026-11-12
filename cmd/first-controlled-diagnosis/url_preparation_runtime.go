@@ -507,8 +507,10 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if p.set(func(u *diagnosisprep.Update) { u.State = diagnosisprep.Running; u.Started = response.Snapshot.Started }) != nil {
 		cancel()
 	}
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(urlStatusPollInterval)
 	defer ticker.Stop()
+	statusReads := urlStatusReads{retries: launch.StatusReadRetries}
+	statusLost := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -523,6 +525,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			return p.set(func(u *diagnosisprep.Update) {
 				u.Phase = diagnosisprep.Report
 				u.State = diagnosisprep.Cancelled
+				if statusLost {
+					markURLStatusLost(u)
+				}
 				u.ModelUsage = &usage
 				u.Started = true
 				u.DrainComplete = state.DrainComplete
@@ -541,11 +546,13 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		case <-ticker.C:
 			status, e := gateway.Call(ctx, diagnosis.Request{Version: diagnosis.Version, RequestID: "url-status", Command: diagnosis.Status, TaskID: taskID, PreparationRef: execution.Job.ID})
 			if e != nil || status.Snapshot == nil {
+				// 정한 횟수까지는 다시 묻는다(C10). 다 쓰면 실행을 멈추고 결과를 unknown으로 둔다.
 				// A target stop may already be draining model usage. A failed
 				// status read with that cancelled context must not hard-cancel it.
-				cancelURLStatusFailure(ctx, cancel)
+				statusLost = urlStatusReadFailed(ctx, cancel, &statusReads) || statusLost
 				continue
 			}
+			statusReads.succeeded()
 			s := status.Snapshot
 			switch s.State {
 			case diagnosis.Completed, diagnosis.Cancelled, diagnosis.Failed, diagnosis.Unknown:
@@ -836,9 +843,36 @@ func urlOperatorStop(parent, ctx context.Context) bool {
 }
 
 // A failed read after a soft target stop must preserve an active usage drain.
-func cancelURLStatusFailure(ctx context.Context, cancel context.CancelFunc) {
+// cancelURLStatusFailure는 진행 중인 실행을 멈추고 멈췄는지 돌려준다. 대상 철회로 이미 정리 중이면 건드리지 않는다.
+func cancelURLStatusFailure(ctx context.Context, cancel context.CancelFunc) bool {
 	if ctx.Err() == nil {
 		cancel()
+		return true
+	}
+	return false
+}
+
+// urlStatusReads는 실행 상태 조회의 연속 실패를 센다(C10). retries만큼은 다시 묻고, 그보다 많이 연속으로 실패하면
+// 포기한다. 한 번 성공하면 다시 센다.
+type urlStatusReads struct{ retries, failures int }
+
+func (s *urlStatusReads) failed() bool {
+	s.failures++
+	return s.failures > s.retries
+}
+
+func (s *urlStatusReads) succeeded() { s.failures = 0 }
+
+// urlStatusReadFailed는 상태 조회 실패 한 번을 처리한다. 정한 횟수를 넘어 진행 중인 실행을 멈췄으면 true다(결과 불명).
+func urlStatusReadFailed(ctx context.Context, cancel context.CancelFunc, reads *urlStatusReads) bool {
+	return reads.failed() && cancelURLStatusFailure(ctx, cancel)
+}
+
+// markURLStatusLost는 상태 조회를 다 못 해 멈춘 실행을 unknown으로 둔다(C10). 이미 다른 사유로 unknown이면 그 사유를 둔다.
+func markURLStatusLost(u *diagnosisprep.Update) {
+	if u.State == diagnosisprep.Cancelled {
+		u.State = diagnosisprep.Unknown
+		u.ReasonCode = "status_read_failed"
 	}
 }
 
