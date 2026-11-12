@@ -2,7 +2,8 @@
 
 // 계정 분류 화면 (운영자 전용, 목업). 시험 계정 표시 등록·승인(§8·§9-7).
 // 데이터는 workbench/live/accounts seam 에서만 온다. 자격(비밀번호·토큰·세션)은 다루지 않는다(절대규칙 2 · S09).
-// ※ §8 fail-closed: 승인된 '시험 계정' 표시만 탐색·모델 입력 가능. 표시 없음·승인 대기·판단 불가는 실계정.
+// ※ §8 fail-closed: 승인된 '시험 계정' 표시가 아니면 실계정. 표시 없음·승인 대기·판단 불가도 실계정.
+// ※ §8은 아직 목표 규칙(현행 S09). 계정 분류 기능·S09·§8 개정 전에는 승인 표시도 탐색·모델 입력 권한을 주지 않는다.
 // ※ 저장 위치·승인 주체 미정(§9-7, 이동찬 정렬 전) → 이 화면의 등록·승인은 저장되지 않는다(목업, 로컬 상태만). export 없음.
 
 import { useEffect, useState } from "react";
@@ -103,13 +104,14 @@ export function AccountClassifyLive() {
             <section className={s.isec} aria-label="계정 분류">
               <div className={s["crwl-top"]}>
                 <Stat label="전체" value={sum.total} />
-                <Stat label="시험 계정(쓸 수 있음)" value={sum.usable} />
+                <Stat label="시험 계정(승인 예시)" value={sum.usable} />
                 <Stat label="승인 대기" value={sum.testPending} />
                 <Stat label="실계정 취급" value={sum.unmarked} />
               </div>
               <p className={s.help}>
-                §8: 승인된 '시험 계정' 표시만 탐색 · 모델 입력에 쓸 수 있습니다. 표시 없음 · 승인 대기 · 판단 불가는
-                실계정으로 봅니다.
+                지금은 어떤 계정에도 탐색 · 모델 입력 권한을 부여하지 않습니다(현행 S09). §8은 목표 규칙이며 계정 분류
+                기능 · S09 · §8 개정이 함께 들어온 뒤에야, 승인된 일회용 시험 계정에 대상이 발급한 세션만 쓸 수 있게
+                됩니다(비밀번호는 계속 제외). 표시 없음 · 승인 대기 · 판단 불가는 실계정으로 봅니다.
               </p>
               <ul className={s.policy} aria-label="계정 목록">
                 {accounts.map((a) => {
@@ -121,7 +123,9 @@ export function AccountClassifyLive() {
                       <small>
                         {a.origin}
                         {a.role ? ` · ${a.role}` : ""}
-                        {usable ? " · 모델 입력 가능" : " · 실계정 취급(모델 입력 불가)"}
+                        {usable
+                          ? " · 승인 상태 예시(아직 탐색 · 모델 입력 권한 없음)"
+                          : " · 실계정 취급(모델 입력 불가)"}
                         {a.approvedBy ? ` · 승인 ${a.approvedBy}` : ""}
                         {a.note ? ` · ${a.note}` : ""}
                       </small>

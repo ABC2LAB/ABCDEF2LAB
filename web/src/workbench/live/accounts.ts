@@ -3,7 +3,10 @@
 //
 // ※ 절대규칙 2 · 수용시험 S09: 계정 원문·비밀번호·토큰·세션 값은 다루지 않는다. ref(별칭)·대상 origin·역할·분류 상태만.
 //   값은 애초에 없다. 모델 입력·로그·근거 파일·export 에 넣지 않는다.
-// ※ §8 fail-closed: 승인된 '시험 계정' 표시가 아니면 실계정으로 본다(탐색·모델 입력 불가). 표시 없음·판단 불가도 실계정.
+// ※ §8 fail-closed: 승인된 '시험 계정' 표시가 아니면 실계정으로 본다. 표시 없음·판단 불가도 실계정.
+// ※ 효력 시점(development-plan.md 계정 분류 항목·CLAUDE.md 절대규칙 2): §8은 아직 목표 규칙이고 현행은 S09다.
+//   계정 분류 기능·S09·§8 개정이 함께 들어오기 전에는 이 분류가 어떤 계정에도 탐색·모델 입력 권한을 주지 않는다.
+//   나중에도 허용은 승인된 일회용 시험 계정에 대상이 발급한 세션만이고 비밀번호는 계속 제외된다.
 // ※ 저장 위치·승인 주체 미정(§8 "결정·구현 전", §9-7) → 이 seam 은 목업이다. 실 배선은 이동찬 정렬 후
 //   getAccounts(targetRef) 만 실 저장소에 연결한다(표현/데이터 분리 — 화면은 안 바뀐다). register/approve 는
 //   지금 저장되지 않는다(화면이 "목업"을 명시).
@@ -36,8 +39,8 @@ export function classLabel(cls: string): string {
 }
 
 /**
- * §8 fail-closed: '시험 계정'으로 인정되어 탐색·모델 입력에 쓸 수 있는가.
- * 승인된 표시(test_approved)만 true. 승인 대기·미표시·판단 불가(미등록 값)는 전부 실계정(false).
+ * 분류 판정만 한다: 승인된 '시험 계정' 표시(test_approved)인가. 승인 대기·미표시·판단 불가(미등록 값)는 false(실계정).
+ * 탐색·모델 입력 권한 판정이 아니다 — 지금은 S09 현행이라 true 여도 권한이 없다(위 효력 시점).
  */
 export function usableAsTestAccount(cls: string): boolean {
   return normalizeClass(cls) === "test_approved";
@@ -65,13 +68,13 @@ export type AccountClassification = {
 
 export type AccountSummary = {
   total: number;
-  /** 시험 계정(승인됨) — 탐색·모델 입력 가능. */
+  /** 시험 계정(승인됨) 분류 수. 권한이 아니라 분류 판정이다. */
   testApproved: number;
   /** 표시 등록·승인 대기 — 아직 실계정 취급. */
   testPending: number;
   /** 미표시 — 실계정 취급. */
   unmarked: number;
-  /** §8 로 실제 쓸 수 있는 수(= testApproved). 집계를 화면이 다시 판단하지 않게 seam 이 센다. */
+  /** 승인된 시험 계정 분류 수(= testApproved, 분류 판정). 지금은 탐색·모델 입력 권한을 뜻하지 않는다(S09 현행). */
   usable: number;
 };
 
