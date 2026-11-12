@@ -21,6 +21,7 @@ import (
 	"time"
 
 	pgdb "github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
@@ -480,10 +481,19 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			modelState.noGoals = false
 			modelState.mu.Unlock()
 		}()
-		bounded, stop := context.WithTimeout(ctx, 20*time.Second)
+		// 실제 진단 로거를 붙여, 분해 실패 기록이 관찰 불완전(완료 실행을 unknown으로 바꾸는 표시)이 되지 않는지 본다.
+		logger, err := diagnosticlog.Create(privateDir(), "preparation", next.TaskID, "")
+		if err != nil {
+			t.Fatal("준비 진단 로거 생성 실패")
+		}
+		defer logger.Close()
+		bounded, stop := context.WithTimeout(diagnosticlog.With(ctx, logger), 20*time.Second)
 		defer stop()
 		if err := nextSupervisor.PrepareIntents(bounded, strconv.FormatInt(next.TaskID, 10)); err != nil {
 			t.Fatal("목표 0개에서 원래 목표로 계속하지 않음")
+		}
+		if logger.Err() != nil || logger.Incomplete() {
+			t.Fatalf("목표 분해 실패 기록이 진단 로그를 깨거나 관찰 불완전으로 표시함: err=%v", logger.Err() != nil)
 		}
 		var goals, intents int
 		if pool.QueryRowContext(ctx, "SELECT count(*) FILTER (WHERE kind='goal'), count(*) FILTER (WHERE kind='intent' AND state='open') FROM exploration_nodes WHERE exploration_id=$1", next.ExplorationID).Scan(&goals, &intents) != nil {

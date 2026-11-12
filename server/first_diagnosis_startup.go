@@ -94,8 +94,9 @@ func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit fu
 			return
 		}
 		if fallback {
-			// 분해 실패를 운영 기록에 남기되 실행은 계속한다(진단 로그는 감사가 아니다).
-			_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "stage_finished", TaskID: mustFirstDiagnosisTaskNumber(t.ID), Stage: "goal_creation", Status: "incomplete", ReasonCode: "goal_creation_failed", DurationMS: time.Since(startedAt).Milliseconds()})
+			// 분해 단계 실패를 운영 기록에 남기되 실행은 계속한다(진단 로그는 감사가 아니다).
+			// incomplete는 로거가 관찰 불완전으로 세어 완료 실행을 unknown으로 바꾸므로 쓰지 않는다. 계획은 원래 목표로 온전히 돈다.
+			_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "stage_finished", Level: "WARN", TaskID: mustFirstDiagnosisTaskNumber(t.ID), Stage: "goal_creation", Status: "failed", ReasonCode: "goal_creation_failed", DurationMS: time.Since(startedAt).Milliseconds()})
 			return
 		}
 		diagnosisStage(ctx, mustFirstDiagnosisTaskNumber(t.ID), "goal_creation", resultErr, "goal_creation_failed", startedAt)
