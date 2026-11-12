@@ -737,6 +737,8 @@ export const urlReasonLabels: Record<string, string> = {
   approval_expired: "설치된 진단 승인이 만료됐어요.",
   model_budget_invalid: "승인된 모델 요청·토큰·USD 예산을 결속할 수 없어요.",
   model_usage_unknown: "모델 응답·사용량·비용을 확인하지 못했어요. 예약을 유지하고 후속 호출을 차단했어요.",
+  diagnostic_logging_incomplete:
+    "실행은 끝났지만 진단 기록(운영 로그) 일부가 남지 않았어요. 진단 결과와 감사 기록은 영향을 받지 않아요.",
   planning_failed: "모델 계획 준비가 완료되지 않았어요. 상태와 사용량을 확인해 주세요.",
   model_mode_unsupported: "이 모델 실행 방식은 현재 자동 준비에서 지원하지 않아요. 다른 모델로 전환하지 않아요.",
   path_not_approved: "이 URL 경로는 설치된 승인 범위에 없어요.",
