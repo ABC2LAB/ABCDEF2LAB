@@ -173,6 +173,13 @@ func TestFirstDiagnosisURLConcurrentWorkersOwnedPostgres(t *testing.T) {
 func TestFirstDiagnosisURLOpenRouterConcurrentWorkersOwnedPostgres(t *testing.T) {
 	runURLConcurrentWorkers(t, true)
 }
+
+// urlReservedInputWithin은 입력 예약이 요청 크기 상한(직렬화 바이트 + framing 여유)이고 호출당 context를
+// 넘지 않는지 본다(P3 결정안 C28 결정 1). 예약은 호출마다 framing 여유보다 크다.
+func urlReservedInputWithin(reserved, calls, perCall int64) bool {
+	return reserved > calls*firstDiagnosisFramingTokens && reserved <= calls*perCall
+}
+
 func runURLConcurrentWorkers(t *testing.T, external bool) {
 	if os.Getenv("ARTEX_URL_DIAGNOSIS_TEST") != "1" {
 		t.Skip("NOT_RUN: 소유 로컬 URL 프로세스 동시 Worker 수용 시험 opt-in 필요")
@@ -229,7 +236,7 @@ func runURLConcurrentWorkers(t *testing.T, external bool) {
 			t.Fatal("대기 중 의도 집계 실패")
 		}
 		u := queued.ModelUsage
-		if running != 2 || len(log.workersStarted) != 2 || log.workersFinished != 0 || log.workerModels != 1 || f.workerCalls.Load() != 1 || f.modelCalls.Load() != 5 || u == nil || u.Requests != 5 || u.UsageKnown || u.ReservedInputTokens != 5*inputPerCall || u.ReservedOutputTokens != 5*2048 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
+		if running != 2 || len(log.workersStarted) != 2 || log.workersFinished != 0 || log.workerModels != 1 || f.workerCalls.Load() != 1 || f.modelCalls.Load() != 5 || u == nil || u.Requests != 5 || u.UsageKnown || !urlReservedInputWithin(u.ReservedInputTokens, 5, inputPerCall) || u.ReservedOutputTokens != 5*2048 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
 			t.Fatalf("공유 예산 대기 불일치 running=%d started=%d finished=%d worker_http=%d total_http=%d", running, len(log.workersStarted), log.workersFinished, f.workerCalls.Load(), f.modelCalls.Load())
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -281,7 +288,7 @@ func runURLConcurrentWorkers(t *testing.T, external bool) {
 	if external {
 		expectedCost = calls
 	}
-	if calls != f.goalCalls.Load()+f.plannerCalls.Load()+f.workerCalls.Load() || calls < 11 || calls > 12 || final.Scope == nil || u == nil || !u.UsageKnown || u.Requests != calls || u.InputTokens != calls*10 || u.OutputTokens != calls*10 || u.ReservedInputTokens != calls*inputPerCall || u.ReservedOutputTokens != calls*2048 || u.CostUSDMicros != expectedCost || u.ReservedInputTokens > final.Scope.Budget.InputTokens || u.ReservedOutputTokens > final.Scope.Budget.OutputTokens || calls > final.Scope.Budget.ModelRequests {
+	if calls != f.goalCalls.Load()+f.plannerCalls.Load()+f.workerCalls.Load() || calls < 11 || calls > 12 || final.Scope == nil || u == nil || !u.UsageKnown || u.Requests != calls || u.InputTokens != calls*10 || u.OutputTokens != calls*10 || !urlReservedInputWithin(u.ReservedInputTokens, calls, inputPerCall) || u.ReservedOutputTokens != calls*2048 || u.CostUSDMicros != expectedCost || u.ReservedInputTokens > final.Scope.Budget.InputTokens || u.ReservedOutputTokens > final.Scope.Budget.OutputTokens || calls > final.Scope.Budget.ModelRequests {
 		t.Fatal("실제 다중 Worker 모델 요청·예약·보고 토큰 불일치")
 	}
 	var report []byte
