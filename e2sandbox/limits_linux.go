@@ -93,3 +93,11 @@ func applyLimits(l resourceLimits) error {
 	}
 	return nil
 }
+
+// WorkspaceLimit은 이 설정으로 띄운 샌드박스의 작업 공간(/work) 내용 상한이다.
+func WorkspaceLimit(cfg Config) uint64 {
+	if cfg.ScratchBytes == 0 {
+		return defaultScratchBytes
+	}
+	return cfg.ScratchBytes
+}

@@ -653,6 +653,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
     mount("report");
     expect(await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).toBeInTheDocument();
+    // 위치: 작업대 / 끝난 점검 / 주소 / 보고서 (시안 v54)
+    const crumb = screen.getByRole("navigation", { name: "위치" });
+    expect(within(crumb).getByRole("link", { name: "끝난 점검" })).toHaveAttribute("href", "#finished");
+    expect(crumb).toHaveTextContent("작업대/끝난 점검/target.example/보고서");
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
     expect(a.fetchDiagnosisRun).toHaveBeenCalledWith("42");
     // 판정 집계: 후보는 검토 필요, 확정 0 (팀 lib 분류)
@@ -704,9 +708,9 @@ describe("레일 (URL 진단)", () => {
     );
     const row = await screen.findByRole("button", { name: /target\.example/ });
     expect(within(row).getByText("엔진 실행 중 · 대상 진단")).toBeInTheDocument();
-    // 레일 줄은 점검 기록 화면으로 간다 (시안 v27)
+    // 진행 중 점검의 레일 줄은 진행 중인 점검 화면으로 간다 (시안 v54)
     fireEvent.click(row);
-    expect(goTo).toHaveBeenCalledWith("records");
+    expect(goTo).toHaveBeenCalledWith("running");
     expect(screen.getByText("끝난 점검 없음")).toBeInTheDocument();
     // 지금 보는 화면이 이 점검이 아니면 빨간 현재 표시를 하지 않는다
     expect(row).not.toHaveAttribute("aria-current");
@@ -722,6 +726,12 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const row = await within(active).findByRole("button", { name: /target\.example/ });
     expect(within(row).getByText("엔진 실행 중")).toBeInTheDocument();
     expect(screen.getByText("끝난 점검이 없습니다.")).toBeInTheDocument();
+    // 칸 제목 옆에 전체 건수, 오른쪽에 그 목록 화면으로 가는 '전체 보기' (시안 v55)
+    expect(within(active).getByText("1건")).toBeInTheDocument();
+    expect(within(active).getByRole("link", { name: "전체 보기" })).toHaveAttribute("href", "#running");
+    const done = screen.getByRole("region", { name: "최근 끝난 점검" });
+    expect(within(done).getByText("0건")).toBeInTheDocument();
+    expect(within(done).getByRole("link", { name: "전체 보기" })).toHaveAttribute("href", "#finished");
     fireEvent.click(row);
     expect(screen.getByText("합성 모델")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /점검 보기/ }));

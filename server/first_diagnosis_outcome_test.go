@@ -104,6 +104,35 @@ func TestFirstDiagnosisPlanned(t *testing.T) {
 	}
 }
 
+// 중지 실행의 결과: 시작하지 않은 open은 incomplete, 실행 중 intent가 남았으면 쓰지 않는다(C08 2-2).
+func TestFirstDiagnosisStoppedOutcomes(t *testing.T) {
+	base := diagnosis.IntentOutcomes{Done: 1, Stopped: 1, Unknown: 1}
+	out, ok := firstDiagnosisStoppedOutcomes(firstDiagnosisIntentCounts{outcomes: base, open: 2})
+	if !ok || out != (diagnosis.IntentOutcomes{Done: 1, Stopped: 1, Unknown: 1, Incomplete: 2}) {
+		t.Fatalf("stopped outcomes: %+v %v", out, ok)
+	}
+	if _, ok := firstDiagnosisStoppedOutcomes(firstDiagnosisIntentCounts{outcomes: base, running: 1}); ok {
+		t.Fatal("running intent counted as stopped result")
+	}
+}
+
+// 정상 마감 결과가 있으면 그것을, 없으면 중지 개수만, 둘 다 없으면 nil을 마감 결과로 낸다.
+func TestSupervisorClosureResult(t *testing.T) {
+	s := &FirstDiagnosisSupervisor{}
+	if s.ClosureResult() != nil {
+		t.Fatal("empty supervisor has a closure result")
+	}
+	s.stopped = &diagnosis.IntentOutcomes{Stopped: 1}
+	if got := s.ClosureResult(); got == nil || !got.StoppedValid() || got.IntentOutcomes.Stopped != 1 {
+		t.Fatalf("stopped closure result: %+v", got)
+	}
+	s.completed = true
+	s.setRunResult(diagnosis.RunResult{Outcome: diagnosis.OutcomeComplete, IntentOutcomes: diagnosis.IntentOutcomes{Done: 1}})
+	if got := s.ClosureResult(); got == nil || got.Outcome != diagnosis.OutcomeComplete {
+		t.Fatalf("completed closure result: %+v", got)
+	}
+}
+
 // 결과는 정상 마감(completed)일 때만 밖에 보인다.
 func TestSupervisorRunResultOnlyAfterCompletion(t *testing.T) {
 	s := &FirstDiagnosisSupervisor{}

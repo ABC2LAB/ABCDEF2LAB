@@ -7,8 +7,8 @@ import s from "../../workbench.module.css";
 import { UrlDashboardLive } from "./UrlDashboardLive";
 import { UrlLiveLive, UrlReportLive } from "./UrlLiveLive";
 import { UrlNewScanLive } from "./UrlNewScanLive";
-import { UrlRecordsLive } from "./UrlRecordsLive";
 import { UrlHead } from "./urlParts";
+import { UrlFinishedLive, UrlRunningLive } from "./urlRecords";
 import { WorkflowScopeLive } from "./workflowViews";
 
 function Supported({ title, children }: { title: string; children: ReactNode }) {
@@ -46,9 +46,14 @@ export const DashboardByMode = () => (
     <UrlDashboardLive />
   </Supported>
 );
-export const RecordsByMode = () => (
-  <Supported title="점검 기록">
-    <UrlRecordsLive />
+export const RunningByMode = () => (
+  <Supported title="진행 중인 점검">
+    <UrlRunningLive />
+  </Supported>
+);
+export const FinishedByMode = () => (
+  <Supported title="끝난 점검">
+    <UrlFinishedLive />
   </Supported>
 );
 export const ScopeByMode = () => (

@@ -230,6 +230,54 @@ func TestClosureEvidenceIsIndependentOfExecutionFailure(t *testing.T) {
 	}
 }
 
+// 중지된 실행은 마감 때 읽은 intent 결과 개수만 싣는다(outcome·closing_reason 없음, 계약 §3.2·§6 2-2).
+// 개수가 없거나 틀리면 개수 없이 중지다. 개수만 있는 결과는 완료로 받지 않는다.
+func TestStoppedRunCarriesIntentOutcomesOnly(t *testing.T) {
+	counts := IntentOutcomes{Done: 1, Incomplete: 2, Stopped: 1}
+	for _, tc := range []struct {
+		name   string
+		runErr error
+		result *RunResult
+		state  State
+		want   *RunResult
+	}{
+		{"stopped_counts", context.Canceled, &RunResult{IntentOutcomes: counts}, Cancelled, &RunResult{IntentOutcomes: counts}},
+		{"stop_after_completion", context.Canceled, &RunResult{Outcome: OutcomePartial, ClosingReason: ClosingBudgetLimited, IntentOutcomes: counts}, Cancelled, &RunResult{IntentOutcomes: counts}},
+		{"stopped_without_counts", context.Canceled, nil, Cancelled, nil},
+		{"stopped_invalid_counts", context.Canceled, &RunResult{IntentOutcomes: IntentOutcomes{Done: -1}}, Cancelled, nil},
+		{"counts_only_not_completed", nil, &RunResult{IntentOutcomes: counts}, Unknown, nil},
+		{"failed_drops_counts", errors.New("execution failure"), &RunResult{IntentOutcomes: counts}, Failed, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			closure := Closure{DrainComplete: true, ResultReady: true, Result: tc.result}
+			runner := &testRunner{finish: make(chan struct{}), runErr: tc.runErr, closure: &closure}
+			s := newTestService(t, runner)
+			_, _ = s.Call(context.Background(), request(Start))
+			close(runner.finish)
+			awaitState(t, s, tc.state)
+			response, _ := s.Call(context.Background(), request(Status))
+			got := response.Snapshot.Result
+			if (got == nil) != (tc.want == nil) || got != nil && *got != *tc.want {
+				t.Fatalf("result=%+v want=%+v", got, tc.want)
+			}
+			if !validSnapshot(*response.Snapshot) {
+				t.Fatal("snapshot rejected")
+			}
+		})
+	}
+	if !(RunResult{IntentOutcomes: counts}).StoppedValid() || (RunResult{Outcome: OutcomeComplete, IntentOutcomes: IntentOutcomes{Done: 1}}).StoppedValid() {
+		t.Fatal("stopped result rule")
+	}
+	base := Snapshot{TaskID: "1", PreparationRef: "prep-1", State: Cancelled, Started: true, DrainComplete: true, ResultReady: true}
+	withOutcome := base
+	withOutcome.Result = &RunResult{Outcome: OutcomeComplete, IntentOutcomes: IntentOutcomes{Done: 1}}
+	failed := base
+	failed.State, failed.Result = Failed, &RunResult{IntentOutcomes: counts}
+	if !validSnapshot(base) || validSnapshot(withOutcome) || validSnapshot(failed) {
+		t.Fatal("cancelled with outcome or failed with counts accepted")
+	}
+}
+
 // 취소 요청 뒤 Runner가 nil을 반환해도 중지 사실이 정상 완료로 바뀌면 안 된다.
 type controlledExitRunner struct{ started, finish, closing, releaseClose chan struct{} }
 
