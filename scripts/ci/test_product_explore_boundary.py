@@ -86,6 +86,11 @@ class ExploreBoundaryCompose(unittest.TestCase):
             subnet = ipaddress.ip_network(nets[name]["ipam"]["config"][0]["subnet"])
             self.assertIn(ipaddress.ip_address(ip), subnet)
         self.assertNotIn("control", svc["networks"])
+        # 엔진은 frontend도 같이 써서 서비스 이름이 그 망 주소로 풀린다. 직접 입구는 이 망에만 있는 별칭으로 부른다.
+        self.assertIn("explore-direct", svc["networks"]["explore_direct"].get("aliases", []))
+        readme = (ROOT / "deploy/product/README.md").read_text(encoding="utf-8")
+        self.assertIn('"direct_proxy": "http://explore-direct:3129"', readme)
+        self.assertNotIn("explore-boundary:3129", readme)
 
     def test_init_has_no_network_and_minimal_capabilities(self):
         svc = self.on["services"][INIT_SERVICE]

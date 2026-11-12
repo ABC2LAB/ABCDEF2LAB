@@ -82,7 +82,7 @@ services:
       # 탐색 단계에서 브라우저 샌드박스의 MCP(http://explore-mcp:<포트>/)로 나가기만 한다. 이 망에 리슨은 없다
       # (위 workbench 고정 주소, preparation·api는 127.0.0.1). 탐색 실행기 결정안 §3-1.
       explore_control: {}
-      # 서버의 정적 탐색 fetch가 경계 직접 입구(http://explore-boundary:3129)로만 나간다. 이 망에 리슨은 없다
+      # 서버의 정적 탐색 fetch가 경계 직접 입구(http://explore-direct:3129)로만 나간다. 이 망에 리슨은 없다
       explore_direct: {}
     ports: ['127.0.0.1:${PRODUCT_PORT:-8787}:8787']
     healthcheck:
@@ -193,7 +193,9 @@ services:
     mem_limit: 1g
     networks:
       explore_browser_ingress: {ipv4_address: 172.31.248.10}
-      explore_direct: {ipv4_address: 172.31.247.10}
+      # 엔진은 frontend 망도 같이 쓰므로 서비스 이름은 frontend 주소로 풀린다(경계는 거기서 리슨하지 않음). 직접 입구는
+      # 이 망에만 있는 별칭(explore-direct)으로 부른다.
+      explore_direct: {ipv4_address: 172.31.247.10, aliases: [explore-direct]}
       target: {}
       frontend: {}
     healthcheck:

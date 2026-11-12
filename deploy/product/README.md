@@ -150,7 +150,7 @@ export EXPLORE_BOUNDARY_CONFIG_FILE=$D/boundary.json EXPLORE_CA_CERT_FILE=$D/ca.
 ```json
 "target_policy": { "exploration": {
   "control_socket": "/run/explore-control/control.sock",
-  "direct_proxy": "http://explore-boundary:3129",
+  "direct_proxy": "http://explore-direct:3129",
   "boundary_ca_file": "/tmp/product-private/explore-ca.pem",
   "mcp_url": "http://explore-mcp:8931/mcp" } }
 ```

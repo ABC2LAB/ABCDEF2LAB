@@ -37,6 +37,14 @@
 - 외부 요청의 이름(또는 IP 리터럴)이 승인 대상의 `ConnectIP`로 풀리면 외부 자원으로 보내지 않고 `out_of_scope_origin`으로 막는다. 외부로 보내면 승인 경로·위험 경로·제외 경로·SPKI 고정과 대상 요청 수를 모두 건너뛴다(#482 리뷰 R3).
 - 평문 http 요청·CONNECT 내부 메서드 누락은 `protocol_unsupported`다(승인 대상은 https만).
 
+## 제품 compose 종단 확인(2026-11-13, 소유 Docker)
+
+이 소스로 만든 제품·fixture·브라우저 이미지와 `compose.yaml` + `compose.acceptance.yaml` + `compose.workflow-acceptance.yaml` + `compose.exploration-acceptance.yaml`(`--profile exploration`)로, 설치 입력에 `target_policy.exploration`을 넣어 설치했다. 모델은 소유 스크립트 모델(`owned-synthetic-workflow`, 탐색 단계에서 브라우저로 시험 페이지를 한 번 연다)이고 대상은 소유 Juice Shop v15 앞단(`juice-b.test`)이다. 실제 모델·실대상은 쓰지 않았다. 관리 API로 대상 등록·DNS 증명·승인·AI 자동 워크플로 시작을 하고 워크플로 snapshot을 읽었다(화면 스크립트 `workbench-workflow-browser.cjs`는 새 작업대 화면과 맞지 않아 쓰지 않음).
+
+- 처음에는 서버 정적 fetch가 `exploration_request_failed`였다. 엔진은 `frontend` 망도 써서 `explore-boundary` 이름이 그 망 주소로 풀렸고 경계는 거기서 리슨하지 않는다. 직접 입구를 그 망에만 있는 별칭 `explore-direct`로 부르게 고쳤다.
+- 고친 뒤: 탐색 `PARTIAL`(페이지 상한 8에 닿고 방문 안 한 읽기가 남음, 사유 `completed`), 경계 요청 10건(서버 정적 fetch 8 + 브라우저 2), 정적 fetch로 시작 페이지·링크·번들 8쪽을 받아 파싱(발견 목록 143, 끝점 32 상한), 자동 선택 뒤 진단 Worker 실행·회차 `completed`.
+- 직접 입구 순번으로 맞춘 서버 fetch 관찰은 발견 출처(`html_link`·`html_script`)를 유지했고 `attested_read`였다(#503 리뷰 수정 확인).
+
 ## 남은 일
 
 1. host adapter(P1-D): 대상 등록 기록 → `Target` 변환, `ControlBoundary`·`ControlReader`·`DirectFetch`·MCP lease로 `ExplorationPipelineHost` 조립, 설치 입력 `target_policy.exploration`으로 켜기는 했다([파이프라인 문서](exploration-product-pipeline.md#권위와-조립)). 남은 것: 서버의 대상 감시와 실행 중 `close(target_ended)` 연결(지금은 경계가 `open` 때 받은 만료 시각과 요청마다의 판정, 서버의 기존 대상 감시가 실행을 멈추는 것에 기댄다).
