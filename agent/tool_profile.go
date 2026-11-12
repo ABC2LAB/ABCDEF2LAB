@@ -19,6 +19,9 @@ type toolProfileEntry struct {
 	name     string
 	source   toolSource
 	required bool // bound 항목이 비면 루프를 시작하지 않는다.
+	// description이 있으면 원본 도구의 동작은 그대로 두고 모델에 보이는 설명만 진단 판으로 바꾼다(DecorateTool).
+	// 원본 설명이 진단 경로에서 틀린 약속을 하는 도구에만 쓴다.
+	description string
 }
 
 // toolProfile은 한 실행 단계에서 모델에 보일 수 있는 도구 목록이다(루프 복원 결정안 §1).
@@ -36,6 +39,11 @@ var diagnosisWorkerProfile = toolProfile{name: "diagnosis_worker", entries: []to
 	{name: "Bash", source: bound, required: true},
 	// 원본 WebFetch의 E② 판. 같은 Bash 실행기로 가져온다(결정안 §2).
 	{name: "WebFetch", source: bound},
+	// 보관소 안만 보는 파일 도구(C29, 작업 공간 결정안 §2-4). 러너가 보관소를 쓸 때만 채워진다.
+	{name: "Read", source: bound},
+	{name: "Write", source: bound},
+	{name: "Edit", source: bound},
+	{name: "LS", source: bound},
 	{name: "list_findings", source: fromBase},
 	{name: "record_fact", source: fromBase},
 	{name: "list_assets", source: fromBase},
@@ -56,8 +64,21 @@ var diagnosisPlannerProfile = toolProfile{name: "diagnosis_planner", entries: []
 	// 중 E② 호출을 끊으므로 C01 뒤에 넣는다(루프 복원 결정안 §7-6).
 	{name: "prove_goal", source: fromBase}, {name: "goal_met", source: fromBase},
 	{name: "list_companies", source: fromBase}, {name: "list_assets", source: fromBase},
+	// add_task_scope는 커버리지 분모만 바꾸고 E② 승인 범위는 바꾸지 않는다(진단 경로는 task_scope를 승인 근거로
+	// 읽지 않음). 원본 설명은 이 도구를 "인가 경계"라 부르고 넓히라고 권해서, 그대로 두면 모델이 승인 밖 호스트로
+	// intent를 만들고 거부 상한(C01 전에는 실행 정지)에 닿을 수 있다. 그래서 설명만 진단 판으로 바꾼다.
+	// add_company_scope는 제품 DB 역할이 companies·company_scope를 읽기만 해서 넣어도 늘 실패하므로
+	// insert_assets와 같이 DB 역할 결정(열린 항목 5) 뒤에 넣는다.
+	{name: "add_task_scope", source: fromBase, description: diagnosisTaskScopeDescription},
 	{name: "list_untested_assets", source: fromBase},
 }}
+
+const diagnosisTaskScopeDescription = "Add test scope to [this task]. In this diagnosis run, scope only widens the asset-coverage denominator and asset membership. " +
+	"It does NOT change which hosts, ports, paths or methods diagnostic requests may reach: the approved diagnosis policy decides that, and requests outside it are refused " +
+	"(refusals count toward the run's denial limit and can stop the run). Do not create intents for hosts, ports or paths outside the approved target just because you added them here.\n" +
+	"kind supports: company (all assets under a company) / root_domain (a whole root domain, including all subdomains) / subdomain (one exact subdomain) / ip / cidr / icp / keyword.\n" +
+	"value: for company pass the company name or id (the company must already exist); for root_domain/subdomain pass a domain; for ip/cidr pass an IP or network; for icp/keyword pass a filing number or company keyword.\n" +
+	"Always give reason to state the basis (auditable). For several entries use the entries array."
 
 // selectTools는 원본 목록 base와 E② 판 boundTools로 프로필 도구를 만든다. wrap은 base에서 고른 도구에만 씌운다.
 // 프로필에 없는 이름을 boundTools로 넘기거나 필수 bound 항목이 비면 설정 오류로 본다.
@@ -87,6 +108,9 @@ func (p toolProfile) selectTools(base []actool.CoreTool, boundTools map[string]a
 		for _, tool := range base {
 			if tool == nil || isNilCoreTool(tool) || tool.Name() != entry.name {
 				continue
+			}
+			if entry.description != "" {
+				tool = DecorateTool(tool, entry.description, nil)
 			}
 			if wrap != nil {
 				tool = wrap(tool)

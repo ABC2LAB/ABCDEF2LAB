@@ -1,17 +1,28 @@
 "use client";
 
-// 대시보드 (시안 짜임: 지금 처리할 일 · 진행 중인 점검 · 최근 끝난 점검 + 오른쪽 상세).
+// 대시보드 (시안 v90 짜임: 결정 대기 안내 · 발견 · 검토 대상 · 진행 중인 점검 · 최근 끝난 점검 + 오른쪽 상세).
 // 서버에 진단 목록 · 집계 API 가 없어 이 브라우저가 이어 보는 진단 하나만 실제 값으로 보인다.
-// 지금 처리할 일은 그 진단의 실제 상태(요청 승인 대기 · 범위 선택 대기 · 결과 저장 · 결과 불명)에서만 만든다.
+// 발견 목록은 그 진단의 저장된 결과(보고서와 같은 원장)에서 정상 대조를 뺀 것만 보인다. 확정만 취약점이므로 제목은
+// 중립 이름("발견 · 검토 대상")으로 두고 건수 옆에 확정 수를 따로 보인다(검토 필요 · 미실행 · 결과 불명은 취약점이
+// 아님, 절대 규칙 5). 결과가 저장되기 전에는
+// 비워 두고 "없음"이라고 말하지 않는다(절대 규칙 5). 결정 대기 안내는 실제 상태(요청 승인 대기 · 범위 선택 대기 ·
+// 결과 불명)에서만 만든다.
 
 import { type ReactNode, useState } from "react";
 
+import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
+import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 
+import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
-import { clockOf } from "../../live/map";
+import { fetchRemediation } from "../../live/api";
+import { sevKey } from "../../live/map";
+import { maskSecrets } from "../../live/mask";
+import { ErrorNote, LoadingRow } from "../../live/parts";
 import { refreshWorkflow, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
+import { usePoll } from "../../live/usePoll";
 import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
@@ -19,15 +30,45 @@ import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { JobSummary } from "./jobSummary";
+import { FindingDetail, ORDER, Outcome } from "./UrlLiveLive";
 import { UrlHead, UrlPill } from "./urlParts";
+import { type Chip, Chips } from "./urlRecords";
 
 /** 쓰기 메서드 (승인 요청 딱지). 메서드 기준 이름일 뿐, GET · HEAD · query 도 상태를 바꿀 수 있다. */
 const WRITE = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-type Sel = { kind: "job" } | { kind: "approval"; id: string };
+type Sel = { kind: "job" } | { kind: "approval"; id: string } | { kind: "finding"; id: string };
 
 /** 대시보드는 칸마다 최대 3개만 보인다 (시안 v55). 전체는 '전체 보기' → 진행 중인 점검 · 끝난 점검 화면. */
 export const DASH_MAX = 3;
+/** 발견 목록은 처음에 위험한 순으로 6개만, 나머지는 '모두 보기' (시안 v88). */
+export const FIND_MAX = 6;
+/** 새로고침 아이콘이 최소한 도는 시간(ms). 조회가 빨리 끝나도 눌렀다는 걸 알아보게 한다. */
+const REFRESH_MIN_MS = 600;
+
+/** 위험도 칸. 서버가 심각도를 안 줬거나 모르는 값이면 none(등급 없음). */
+type SevF = SevKey | "none";
+const SEV_RANK: readonly SevF[] = ["crit", "hi", "mid", "lo", "none"];
+const FIND_CHIPS: ReadonlyArray<Chip<SevF>> = [
+  ["all", "전체", true, "저장된 발견 모두 (정상 대조 결과 제외)"],
+  ["crit", SEVL.crit, false, "심각도 심각"],
+  ["hi", SEVL.hi, false, "심각도 높음"],
+  ["mid", SEVL.mid, false, "심각도 중간"],
+  ["lo", SEVL.lo, false, "심각도 낮음"],
+  ["none", "등급 없음", false, "서버가 심각도를 주지 않은 발견"],
+];
+const sevOf = (e: RemediationEntry): SevF => sevKey(e.severity ?? "") ?? "none";
+
+/** 저장된 결과 → 발견 목록: 정상 대조를 빼고 위험도 → 판정 순. */
+export function dashFindings(entries: readonly RemediationEntry[]): RemediationEntry[] {
+  return entries
+    .filter((e) => diagnosticOutcome(e) !== "negative")
+    .sort(
+      (x, y) =>
+        SEV_RANK.indexOf(sevOf(x)) - SEV_RANK.indexOf(sevOf(y)) ||
+        ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)),
+    );
+}
 
 /** live 대시보드 (URL 진단 서버). */
 export function UrlDashboardLive() {
@@ -42,10 +83,23 @@ export function UrlDashboardLive() {
   const taskId = job?.task_id ?? "";
   const approvalsOn = !!job?.task_id && job.input.workflow_mode === "user_approval_v1" && !ended;
   const a = useRequestApprovals(taskId, visible && approvalsOn);
+  // 발견: 결과가 저장된 진단만 (보고서와 같은 원장 · 같은 조건)
+  const reportTask = g.reportReadable && job?.task_id ? job.task_id : null;
+  const rem = usePoll(() => fetchRemediation(reportTask as string, "internal"), [reportTask], {
+    enabled: visible && !!reportTask,
+  });
+  const found = reportTask && rem.data ? dashFindings(rem.data.entries) : [];
+  const [ff, setFf] = useState<SevF | "all">("all");
+  const [findAll, setFindAll] = useState(false);
+  const shown = ff === "all" ? found : found.filter((e) => sevOf(e) === ff);
   const [picked, setSel] = useState<Sel | null>(null);
-  // 고르기 전에는 시안처럼 맨 위 할 일(승인 대기)을, 없으면 점검 정보를 보인다
+  const [spin, setSpin] = useState(false);
+  // 고르기 전에는 승인 대기(보내기 전에 사람이 정해야 함)를 먼저, 없으면 가장 위험한 발견, 없으면 점검 정보
   const first = a.pending[0];
-  const sel: Sel = picked ?? (first ? { kind: "approval", id: first.id } : { kind: "job" });
+  let sel: Sel = { kind: "job" };
+  if (picked) sel = picked;
+  else if (first) sel = { kind: "approval", id: first.id };
+  else if (found[0]) sel = { kind: "finding", id: found[0].entry_id };
 
   const host = handle ? urlHost(handle.input.target_url) : null;
   const name = handle?.input.display_name?.trim() || null;
@@ -55,83 +109,112 @@ export function UrlDashboardLive() {
     openInsp();
   };
   const refresh = () => {
-    if (g.canRefresh) void runUrlAction("refresh");
-    void refreshWorkflow();
+    if (spin) return;
+    setSpin(true);
+    const work: Promise<unknown>[] = [refreshWorkflow(), new Promise((r) => setTimeout(r, REFRESH_MIN_MS))];
+    if (g.canRefresh) work.push(runUrlAction("refresh"));
     a.poll.reload();
+    rem.reload();
+    void Promise.allSettled(work).then(() => setSpin(false));
+  };
+  // 위험도 칩: 바꾸면 처음 6개부터. 보던 발견이 빠지면 남은 첫 줄을 고른다
+  const pickSev = (k: SevF | "all") => {
+    setFf(k);
+    setFindAll(false);
+    const rest = k === "all" ? found : found.filter((e) => sevOf(e) === k);
+    if (sel.kind === "finding" && rest[0] && !rest.some((e) => e.entry_id === sel.id))
+      setSel({ kind: "finding", id: rest[0].entry_id });
   };
 
-  // 지금 처리할 일 (실제 상태에서만)
-  const todo: ReactNode[] = [];
-  for (const r of a.pending) {
-    const selected = sel.kind === "approval" && sel.id === r.id;
-    todo.push(
-      <button
-        key={r.id}
-        className={cx(s.row, selected && s.sel)}
-        type="button"
-        data-dsel={`appr-${r.id}`}
-        aria-current={selected ? "true" : undefined}
-        onClick={() => pick({ kind: "approval", id: r.id })}
-      >
-        <span className={s["r-main"]}>
-          <span className={s["r-t"]}>
-            <span className={s["r-host"]}>{host}</span>
-            {r.method} {r.path}
-          </span>
-          <span className={s["r-s"]}>보내기 전 승인 필요</span>
-        </span>
-        <span className={s["r-side"]}>
-          <span className={cx(s.pill, s.wait)}>승인 대기</span>
-          <span className={s["r-time"]}>{clockOf(r.created_at)}</span>
-        </span>
-      </button>,
+  // 결정 대기 안내 (실제 상태에서만). 발견 목록과 따로 둬서, 승인 대기가 목록에 묻히지 않게 한다
+  const notes: ReactNode[] = [];
+  if (first) {
+    notes.push(
+      <div key="appr" className={cx(s.note, s.warn)} role="note">
+        <Icon name="alert" />
+        <span className={s["lv-grow"]}>{`승인 대기 ${a.pending.length}건 · 보내기 전 승인이 필요합니다`}</span>
+        <button
+          className={cx(s.btn, s.sm)}
+          type="button"
+          data-dsel={`appr-${first.id}`}
+          onClick={() => pick({ kind: "approval", id: first.id })}
+        >
+          승인 요청 보기
+        </button>
+      </div>,
     );
   }
   if (job && flow?.stage === "awaiting_selection") {
-    todo.push(
-      <button key="scope" className={s.row} type="button" data-dsel="scope" onClick={() => goTo("scope")}>
-        <span className={s["r-main"]}>
-          <span className={s["r-t"]}>
-            <span className={s["r-host"]}>{host}</span>점검할 경로 선택
-          </span>
-          <span className={s["r-s"]}>{`탐색 완료 · 찾은 경로 ${flow.endpoints.length}개`}</span>
-        </span>
-        <span className={s["r-side"]}>
-          <span className={cx(s.pill, s.wait)}>결정 대기</span>
-        </span>
-      </button>,
-    );
-  }
-  if (job && g.reportReadable) {
-    todo.push(
-      <button key="report" className={s.row} type="button" data-dsel="report" onClick={() => goTo("report")}>
-        <span className={s["r-main"]}>
-          <span className={s["r-t"]}>
-            <span className={s["r-host"]}>{host}</span>보고서 저장됨
-          </span>
-          <span className={s["r-s"]}>{urlStateText(job.state)}</span>
-        </span>
-        <span className={s["r-side"]}>
-          <span className={s.pill}>결과 확인</span>
-        </span>
-      </button>,
+    notes.push(
+      <div key="scope" className={cx(s.note, s.warn)} role="note">
+        <Icon name="alert" />
+        <span className={s["lv-grow"]}>{`점검할 경로 선택 대기 · 찾은 경로 ${flow.endpoints.length}개`}</span>
+        <button className={cx(s.btn, s.sm)} type="button" data-dsel="scope" onClick={() => goTo("scope")}>
+          경로 선택
+        </button>
+      </div>,
     );
   }
   if (job?.state === "unknown") {
-    todo.push(
-      <button key="unknown" className={s.row} type="button" data-dsel="unknown" onClick={() => pick({ kind: "job" })}>
-        <span className={s["r-main"]}>
-          <span className={s["r-t"]}>
-            <span className={s["r-host"]}>{host}</span>결과 불명
-          </span>
-          <span className={s["r-s"]}>상태를 다시 조회해 확인하세요</span>
-        </span>
-        <span className={s["r-side"]}>
-          <span className={cx(s.pill, s.wait)}>확인 필요</span>
-        </span>
-      </button>,
+    notes.push(
+      <div key="unknown" className={cx(s.note, s.warn)} role="note">
+        <Icon name="alert" />
+        <span className={s["lv-grow"]}>결과 불명 · 상태를 다시 조회해 확인하세요</span>
+        <button className={cx(s.btn, s.sm)} type="button" data-dsel="unknown" onClick={() => pick({ kind: "job" })}>
+          점검 정보
+        </button>
+      </div>,
     );
   }
+
+  // 발견 목록 본문 (결과가 저장되기 전에는 "없음"이라고 하지 않는다)
+  let findBody: ReactNode;
+  if (!handle) findBody = <p className={s.empty}>이 브라우저에서 이어 보는 점검이 없습니다.</p>;
+  else if (!reportTask)
+    findBody = (
+      <p className={s.empty}>
+        {`점검이 끝나고 결과가 저장되면 여기에 나옵니다 · 지금 ${job ? urlStateText(job.state, verified) : "상태 확인 중"}`}
+      </p>
+    );
+  else if (!rem.data && rem.error) findBody = <ErrorNote error={rem.error} onRetry={rem.reload} />;
+  else if (!rem.data) findBody = <LoadingRow />;
+  else if (!found.length)
+    findBody = <p className={s.empty}>저장된 발견이 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
+  else
+    findBody = (
+      <div className={s.list} id="dFind">
+        {(findAll ? shown : shown.slice(0, FIND_MAX)).map((e) => {
+          const k = sevOf(e);
+          const on = sel.kind === "finding" && sel.id === e.entry_id;
+          return (
+            <button
+              key={e.entry_id}
+              className={cx(s.frow, on && s.sel)}
+              type="button"
+              data-dsel={`fd-${e.entry_id}`}
+              aria-current={on ? "true" : undefined}
+              onClick={() => pick({ kind: "finding", id: e.entry_id })}
+            >
+              {k === "none" ? (
+                <span className={s.sev}>등급 없음</span>
+              ) : (
+                <span className={cx(s.sev, s[k])}>{SEVL[k]}</span>
+              )}
+              <span className={s.fm}>
+                <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
+                <span className={s.fe}>
+                  <span className={s.host}>{host}</span>
+                  {e.vuln_class ? <span>{maskSecrets(e.vuln_class)}</span> : null}
+                </span>
+              </span>
+              <span className={s.fs}>
+                <Outcome o={diagnosticOutcome(e)} short />
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    );
 
   const jobRow = handle ? (
     <button
@@ -164,8 +247,21 @@ export function UrlDashboardLive() {
   // 오른쪽 상세
   const chosen: RequestApproval | undefined =
     sel.kind === "approval" ? a.pending.find((r) => r.id === sel.id) : undefined;
+  const chosenF = sel.kind === "finding" ? found.find((e) => e.entry_id === sel.id) : undefined;
   let insp: ReactNode;
-  if (chosen) {
+  if (chosenF && reportTask) {
+    insp = (
+      <>
+        <FindingDetail e={chosenF} host={host} taskId={reportTask} onReload={rem.reload} />
+        <Isec>
+          <button className={cx(s.btn, s.pri)} type="button" onClick={() => goTo("report")}>
+            보고서 열기
+            <Icon name="arrow" />
+          </button>
+        </Isec>
+      </>
+    );
+  } else if (chosen) {
     insp = (
       <>
         <InspHead
@@ -216,7 +312,7 @@ export function UrlDashboardLive() {
         crumb="대시보드"
         acts={
           <>
-            <button className={s.btn} type="button" onClick={refresh}>
+            <button className={cx(s.btn, spin && s.spin)} type="button" onClick={refresh} disabled={spin}>
               <Icon name="refresh" />
               새로고침
             </button>
@@ -226,18 +322,37 @@ export function UrlDashboardLive() {
       />
       <div className={s.vb}>
         <div className={s.vm}>
-          <section className={s.sec} aria-labelledby="dTodoH">
+          {notes.length ? (
+            <section className={s.notes} aria-label="결정 대기">
+              {notes}
+            </section>
+          ) : null}
+          <section className={s.sec} aria-labelledby="dFindH">
             <div className={s.sh}>
-              <h2 id="dTodoH">지금 처리할 일</h2>
-              <span className={s.n} id="dTodoN">{`${todo.length}건`}</span>
-            </div>
-            {todo.length ? (
-              <div className={s.list} id="dTodo">
-                {todo}
+              <div className={s["sh-t"]}>
+                <h2 id="dFindH">발견 · 검토 대상</h2>
+                {reportTask && rem.data ? (
+                  <span className={s.n}>
+                    {`${shown.length}건 · 확정 ${shown.filter((e) => diagnosticOutcome(e) === "confirmed").length}`}
+                  </span>
+                ) : null}
               </div>
-            ) : (
-              <p className={s.empty}>처리할 일이 없습니다.</p>
-            )}
+              {shown.length > FIND_MAX ? (
+                <button className={s.aside} type="button" aria-expanded={findAll} onClick={() => setFindAll((v) => !v)}>
+                  {findAll ? "접기" : "모두 보기"}
+                </button>
+              ) : null}
+            </div>
+            {found.length ? (
+              <Chips
+                label="위험도로 거르기"
+                chips={FIND_CHIPS}
+                value={ff}
+                count={(k) => (k === "all" ? found.length : found.filter((e) => sevOf(e) === k).length)}
+                onPick={pickSev}
+              />
+            ) : null}
+            {findBody}
           </section>
           <section className={s.sec} aria-labelledby="dActH">
             <div className={s.sh}>

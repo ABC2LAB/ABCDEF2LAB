@@ -172,7 +172,10 @@ remain command and optional timeout_ms. Background mode is unsupported.
 Regular files and directories you leave in the Bash working directory carry over
 to your next Bash call for this intent (workspace: saved). When tool_output is cut
 at its limit, output_file names the full redacted output saved there; read it with
-a later Bash call (for example grep or sed -n) instead of repeating the request.
+a later Bash call (for example grep or sed -n) or Read instead of repeating the request.
+Read, Write, Edit, and LS, when listed, work on the same workspace files (paths relative
+to the Bash working directory); they never contact the target, and your next Bash call
+sees their changes.
 If tool_output is cut and there is no output_file, the rest of the output was not
 kept; narrow the command (for example filter or limit it) and run it again.
 The JSON tool result has two distinct fields:
@@ -592,6 +595,13 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 		toolset = newE2HTTPWorkerToolSet(ts, as, name, taskID, intent.ID)
 		base = append(toolset.WorkerTools(), base...)
 		bindings["submit_diagnostic_candidate"] = newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ })
+	}
+	// 보관소를 쓰는 실행이면 보관소 안만 보는 파일 도구를 붙인다(C29). 호스트 파일 도구(defaultTools의 Read 등)는
+	// 프로필에서 bound 판으로만 채워지므로 섞이지 않는다.
+	if ws, ok := binding.Runner.(E2HTTPWorkspace); ok {
+		for name, tool := range newE2HTTPFileTools(ws, binding.IntentID, execution.RedactOutput, state) {
+			bindings[name] = tool
+		}
 	}
 	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
 	tools, err := diagnosisWorkerProfile.selectTools(base, bindings, e2HTTPGraphWrap(execution, intent.ID))
