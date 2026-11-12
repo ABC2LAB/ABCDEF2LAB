@@ -1768,6 +1768,14 @@ a.ph:hover {
     border-top: 0;
     padding-top: 0;
   }
+  /* 두 쪽으로 나눈 뒤에는 한 쪽에 섹션이 한두 개라 2열 대신 가운데 한 줄 */
+  .vm.nform.paged {
+    display: flex;
+  }
+  .nform.paged > * {
+    max-width: 760px;
+    margin-inline: auto;
+  }
   .app.insp-hidden .vm.nform,
   .app.rail-hidden .vm.nform {
     padding-left: 28px;
@@ -2074,6 +2082,26 @@ select.inp {
   font-size: 12.5px;
   color: var(--ink-3);
 }
+/* 두 쪽 새 점검 (시안 v64 ~ v67): 아래 줄은 넓은 화면에서도 보인다(1쪽 다음 · 2쪽 이전).
+   2쪽의 실행 버튼은 요약 패널이 보이면 패널에만 두고, 패널이 안 보이면(좁은 화면 · 접음) 이 줄에 둔다 */
+.formbar.paged {
+  display: flex;
+}
+.formbar .fbact {
+  display: contents;
+}
+@media (min-width: 1200px) {
+  .formbar.paged .fbact {
+    display: none;
+  }
+  .app.insp-hidden .formbar.paged .fbact {
+    display: contents;
+  }
+}
+.nform.paged > .fs-model {
+  border-top: 0;
+  padding-top: 0;
+}
 .sumkv {
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
@@ -2255,6 +2283,61 @@ select.inp {
   grid-column: 3 / -1;
   font-size: 12.5px;
   color: var(--ink-2);
+}
+/* 탐색 기록 줄은 눌러서 펼친다 (시안 v75 ~ v76) */
+button.lr {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  cursor: pointer;
+}
+button.lr:hover {
+  background: var(--well);
+}
+button.lr.on {
+  background: var(--accent-bg);
+}
+.lgx {
+  border-top: 1px solid var(--rule);
+  background: var(--well);
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.lgx-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.lgx-top .p {
+  font-family: var(--mono);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.lgx-top button {
+  margin-left: auto;
+}
+.lgx-h {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 2px 0 -4px;
+}
+.lgx-ex {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+@container (max-width: 760px) {
+  .lgx-ex {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .lr.sys {
   grid-template-columns: 62px minmax(0, 1fr);

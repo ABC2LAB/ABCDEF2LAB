@@ -71,12 +71,12 @@ func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e d
 		return nil
 	}
 	return func(host *server.Server) server.E2HTTPExplorationStage {
-		return func(ctx context.Context, task *server.Task) error {
+		return func(ctx context.Context, task *server.Task) (server.ExplorationCharge, error) {
 			if task == nil || task.ID != taskID {
-				return exploration.ErrBinding
+				return server.ExplorationCharge{}, exploration.ErrBinding
 			}
-			_, err := host.RunExplorationPipeline(ctx, task, options)
-			return err
+			result, err := host.RunExplorationPipeline(ctx, task, options)
+			return result.Charge, err
 		}
 	}
 }

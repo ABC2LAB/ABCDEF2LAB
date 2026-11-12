@@ -394,6 +394,10 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if claimed || authorize(taskctx, request) != nil {
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
+		diagnosisRequests, allowanceErr := e2HTTPDiagnosisRequests(policy.MaxRequests, request)
+		if allowanceErr != nil {
+			return E2HTTPRunOptions{}, allowanceErr
+		}
 		resetRef, resetErr := reset()
 		if resetErr != nil {
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
@@ -407,13 +411,13 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if helperErr != nil || currentHelper != helperDigest {
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
-		ledger, createErr := budget.New(budget.Limits{MaxApprovals: 1, MaxRequestsPerApproval: policy.MaxRequests})
+		ledger, createErr := budget.New(budget.Limits{MaxApprovals: 1, MaxRequestsPerApproval: diagnosisRequests})
 		if createErr != nil {
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
 		grantKey := budget.Key{TaskRef: request.TaskID, BudgetRef: policy.BudgetRef}
 		budgetBinding := budget.Binding{PolicyRef: policy.PolicyRef, ResetRef: resetRef}
-		if ledger.Register(budget.Grant{Key: grantKey, Binding: budgetBinding, MaxRequests: policy.MaxRequests, ValidFrom: policy.ValidFrom, ValidUntil: policy.ValidUntil}, time.Now()) != nil {
+		if ledger.Register(budget.Grant{Key: grantKey, Binding: budgetBinding, MaxRequests: diagnosisRequests, ValidFrom: policy.ValidFrom, ValidUntil: policy.ValidUntil}, time.Now()) != nil {
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
 		journal, createErr := e2proxy.CreateJournal(policy.StateDir, "events.jsonl", auditKey)
@@ -470,7 +474,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	for _, rule := range policy.Rules {
 		approvedOrigins = append(approvedOrigins, rule.Origin)
 	}
-	options := E2HTTPRuntimeOptions{Workflow: input.Workflow, RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, PlannerLimits: input.PlannerLimits, ApprovedOrigins: approvedOrigins}
+	options := E2HTTPRuntimeOptions{Workflow: input.Workflow, RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, RunRequests: policy.MaxRequests, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, PlannerLimits: input.PlannerLimits, ApprovedOrigins: approvedOrigins}
 	if current(ctx) != nil {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost
@@ -499,4 +503,13 @@ func workflowBoundary(c *diagnosisflow.Controller) e2proxy.RequestBoundary {
 		return nil
 	}
 	return c
+}
+
+// e2HTTPDiagnosisRequests는 회차 승인 수 N에서 같은 회차 탐색 몫을 뺀 진단 E② 예산이다. 몫을 모르거나 남지 않으면
+// 진단 실행을 만들지 않는다. 탐색과 진단이 각각 N을 받아 합계 2N이 되는 조립을 막는다(P1-E).
+func e2HTTPDiagnosisRequests(runRequests uint64, request E2HTTPRequest) (uint64, error) {
+	if runRequests == 0 || request.ExplorationUnknown || request.ExplorationRequests >= runRequests {
+		return 0, ErrE2HTTPBudgetLimited
+	}
+	return runRequests - request.ExplorationRequests, nil
 }
