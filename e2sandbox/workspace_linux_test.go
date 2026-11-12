@@ -160,8 +160,12 @@ func TestWorkspaceNameBytesLimit(t *testing.T) {
 	if len(headers) >= maxWorkspaceEntries {
 		t.Fatalf("fixture hits the entry limit first: %d", len(headers))
 	}
-	if err := unpackWorkspace(workspaceTar(t, headers...), t.TempDir(), 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
+	over := workspaceTar(t, headers...)
+	if err := unpackWorkspace(over, t.TempDir(), 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
 		t.Fatal("name bytes over the limit unpacked", err)
+	}
+	if err := ValidateWorkspace(over, 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
+		t.Fatal("name bytes over the limit validated", err)
 	}
 	src := t.TempDir()
 	for _, h := range headers {
@@ -189,6 +193,9 @@ func TestWorkspaceNameBytesLimit(t *testing.T) {
 	}
 	if err := unpackWorkspace(data, t.TempDir(), 1<<20); err != nil {
 		t.Fatal("name bytes at the limit not unpacked", err)
+	}
+	if err := ValidateWorkspace(data, 1<<20); err != nil {
+		t.Fatal("name bytes at the limit not validated", err)
 	}
 }
 
