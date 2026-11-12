@@ -17,7 +17,7 @@ const (
 type ProxyOutcomeClass string
 
 const (
-	// OutcomeNotSent는 E2가 대상으로 연결을 시도하지 않았다는 뜻이다.
+	// OutcomeNotSent는 E2가 대상에 요청을 전달하지 않았다는 뜻이다. 연결을 시도했지만 맺지 못한 경우도 포함한다.
 	OutcomeNotSent ProxyOutcomeClass = "not_sent"
 	// OutcomeUnknown은 대상으로 연결을 시도했지만 완전한 응답을 돌려주지 못했다는 뜻이다. 대상이 요청을
 	// 받아 처리했는지는 모른다.
@@ -41,17 +41,19 @@ var proxyOutcomeHints = map[Reason]string{
 	Expired:         "The approval for this run has expired.",
 	Revoked:         "The approval for this run was revoked.",
 	AuditFailed:     "E2 could not record the request, so it stopped sending.",
-	AttemptLimit:    "This run reached its request attempt limit and no longer accepts requests.",
-	DenialLimit:     "This run reached its refused request limit and no longer accepts requests.",
-	TransientLimit:  "This run reached its transient failure limit and no longer accepts requests.",
-	UnknownLimit:    "This run reached its unknown outcome limit and no longer accepts requests.",
+	AttemptLimit:    "This run reached its request attempt limit and sends no more requests.",
+	DenialLimit:     "This command reached its refused request limit; E2 accepts no more requests from this command. Fix the request and run a new command.",
+	TransientLimit:  "This command reached its connection failure limit; E2 accepts no more requests from this command.",
+	UnknownLimit:    "This command reached its unknown outcome limit; E2 accepts no more requests from this command. Check the resulting state before sending a state-changing request again.",
 	TransportFailed: "E2 could not open a connection to the target.",
 	Unknown:         "The target may have received the request, but E2 could not confirm a complete response (for example the connection broke or the response exceeded the size limit).",
 	Invalid:         "E2 could not process the request.",
 }
 
-// proxyOutcomeOf는 E2 영수증으로 결과를 정한다. 영수증을 만들기 전에 막힌 경우(실행 종료·시도 상한)는
-// 영수증 사유가 비어 있어 오류로 정한다. 대상으로 연결을 시도했으면 사유와 상관없이 결과 불명이다.
+// proxyOutcomeOf는 E2 영수증으로 결과를 정한다. 영수증을 만들기 전에 막힌 경우(실행 종료)는
+// 영수증 사유가 비어 있어 오류로 정한다. 상한에 닿은 call의 거절은 그 상한 사유를 싣는다.
+// 대상으로 연결을 시도했으면 결과 불명이다. 단 연결을 맺기 전에 끝난 송신 실패(transport_failed)는
+// 요청을 전달하지 않았으므로 보내지 않음이다(C02).
 func proxyOutcomeOf(r Receipt, err error) proxyOutcome {
 	reason := r.Reason
 	switch {
@@ -67,7 +69,7 @@ func proxyOutcomeOf(r Receipt, err error) proxyOutcome {
 		reason = Invalid
 	}
 	class := OutcomeNotSent
-	if r.ForwardAttempted {
+	if r.ForwardAttempted && r.Reason != TransportFailed {
 		class = OutcomeUnknown
 	}
 	return proxyOutcome{class: class, reason: reason, sequence: r.Sequence}

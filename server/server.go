@@ -1956,6 +1956,40 @@ func (s *Server) seed(t *Task, text string) {
 	// 消费掉而绕过 Run 的门控 → 种子任务仍误触发首轮。
 }
 
+// seedTargetAsset은 원본 seed(위)의 등록 본문과 같은 일을 첫 진단 준비에서 한다(C24). 대상 하나를 자산으로 등록해
+// 작업에 연결하고(source task) 작업 시작 근거에 묶으며, 원본과 달리 오류를 돌려준다. 원본 seed는 평가 러너가 작업
+// 생성 계약으로 해시를 고정하므로(scripts/eval 작업 생성 계약 가드) 바꾸지 않고 따로 둔다.
+func seedTargetAsset(as *db.AssetStore, store *db.ExplorationStore, taskID int64, scheme, host string, port int) (string, error) {
+	u := scheme + "://" + host
+	if !(scheme == "https" && port == 443) && !(scheme == "http" && port == 80) {
+		u += ":" + strconv.Itoa(port)
+	}
+	var rootID int64
+	var err error
+	if as != nil {
+		if net.ParseIP(host) != nil {
+			rootID, err = as.UpsertIP(db.UpsertIPReq{IP: host, TaskID: taskID})
+		} else if scheme == "https" || scheme == "http" {
+			rootID, err = as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: u, TaskID: taskID})
+		} else {
+			rootID, err = as.UpsertRootDomain(db.UpsertRootDomainReq{Domain: host, TaskID: taskID})
+		}
+		if rootID > 0 {
+			err = errors.Join(err, as.SetTaskAssetSource(taskID, rootID, "task", taskAssetSourceTaskSummary, nil))
+		}
+	}
+	// anchor the seeded assets to this task's begin root as lineage/provenance
+	// (the asset graph is global and shared; anchoring no longer gates reads).
+	if rootID > 0 && store != nil {
+		begin, originErr := store.OriginFactID()
+		err = errors.Join(err, originErr)
+		if begin > 0 {
+			err = errors.Join(err, store.Anchor(begin, rootID))
+		}
+	}
+	return u, err
+}
+
 // seedFirstIntent writes ONE open intent (summary = 描述+目标) into the task's
 // frontier at creation, so a worker can claim and run it immediately without first
 // waiting a planner round. Mirrors a planner top-level intent: it links from the

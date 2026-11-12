@@ -312,29 +312,43 @@ func TestCoreConcurrentReservationsNeverExceedGrant(t *testing.T) {
 		t.Fatalf("target received %d; want exactly 5", received.Load())
 	}
 }
+
+// 송신 시도 상한은 예산을 예약한 요청만 센다. 보내지 않은 거부는 상한을 쓰지 않고, 상한에 닿아도
+// 실행을 멈추지 않고 그 뒤 송신만 거부한다(C01).
 func TestCoreClosedCallAndAttemptLimitAreFinite(t *testing.T) {
-	cfg := coreConfig(t, "http://127.0.0.1", &coreRecorder{}, 5)
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1); io.WriteString(w, "ok") }))
+	defer target.Close()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 5)
 	cfg.Limits.MaxAttempts = 2
 	e, c := coreOpen(t, cfg)
 	c.Block()
-	if _, r, err := c.Do(context.Background(), coreRequest(t, "GET", "http://127.0.0.1/allowed")); !errors.Is(err, ErrClosed) || r.AttemptID != "" {
+	if _, r, err := c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed")); !errors.Is(err, ErrClosed) || r.AttemptID != "" {
 		t.Fatal("closed call admitted")
 	}
 	c2, err := e.BeginCall(context.Background(), "command2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
-		_, r, err := c2.Do(context.Background(), coreRequest(t, "GET", "http://127.0.0.1/denied"))
-		if err == nil || !r.NotSent {
-			t.Fatal("denied send")
+	for i := 0; i < 3; i++ {
+		_, r, err := c2.Do(context.Background(), coreRequest(t, "GET", target.URL+"/denied"))
+		if err == nil || !r.NotSent || r.Reason != PolicyDenied {
+			t.Fatal("denied send", r.Reason)
 		}
 	}
-	if _, _, err := c2.Do(context.Background(), coreRequest(t, "GET", "http://127.0.0.1/denied")); !errors.Is(err, ErrClosed) {
-		t.Fatal(err)
+	for i := 0; i < 2; i++ {
+		resp, r, err := c2.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+		if err != nil || r.Reason != Complete {
+			t.Fatal("not-sent denials consumed the send attempt limit", r.Reason, err)
+		}
+		resp.Body.Close()
 	}
-	if e.Snapshot().Reason != AttemptLimit {
-		t.Fatal("finite guard")
+	_, r, err := c2.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if !errors.Is(err, ErrDenied) || r.Reason != AttemptLimit || !r.NotSent || received.Load() != 2 {
+		t.Fatal("attempt limit did not refuse the next send", r.Reason, err, received.Load())
+	}
+	if view := e.Snapshot(); view.State != "active" || view.Counts.Attempts != 6 {
+		t.Fatalf("attempt accounting: %+v", view)
 	}
 }
 func TestCoreCallCloseIsSingleAndFinal(t *testing.T) {
@@ -683,8 +697,24 @@ func TestCoreIntentRegistrationDoesNotResetWorkCeilings(t *testing.T) {
 				if _, _, err := anchor.Do(t.Context(), coreRequest(t, "POST", target.URL+"/allowed")); err == nil {
 					t.Fatal("denied method was sent")
 				}
-				if err := execution.RegisterIntent(t.Context(), 2); err == nil || execution.HasIntent(2) {
-					t.Fatal("new intent reset the denial stop")
+				// 거부 상한은 그 call만 막는다. 새 intent 등록이 그 call의 차단을 풀지 않는다(C01).
+				if err := execution.RegisterIntent(t.Context(), 2); err != nil || !execution.HasIntent(2) {
+					t.Fatal("one call's denial limit stopped intent registration")
+				}
+				if _, r, err := anchor.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed")); !errors.Is(err, ErrClosed) || r.Reason != DenialLimit || received.Load() != 0 {
+					t.Fatal("new intent reset the call denial limit")
+				}
+				call, err := execution.BeginCallForIntent(t.Context(), 2, "next-intent-command")
+				if err != nil {
+					t.Fatal(err)
+				}
+				response, _, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
+				if err != nil || received.Load() != 1 {
+					t.Fatal("another call was blocked by the denial limit", err)
+				}
+				response.Body.Close()
+				if _, err = call.Close(t.Context()); err != nil {
+					t.Fatal(err)
 				}
 				return
 			}
@@ -706,13 +736,14 @@ func TestCoreIntentRegistrationDoesNotResetWorkCeilings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err = call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed")); err == nil {
+			_, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", target.URL+"/allowed"))
+			if err == nil {
 				t.Fatal("new intent reset MaxAttempts")
 			}
 			if _, err = call.Close(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if execution.Snapshot().Reason != AttemptLimit || received.Load() != 1 {
+			if receipt.Reason != AttemptLimit || !receipt.NotSent || received.Load() != 1 {
 				t.Fatal("attempt ceiling did not retain execution scope")
 			}
 		})

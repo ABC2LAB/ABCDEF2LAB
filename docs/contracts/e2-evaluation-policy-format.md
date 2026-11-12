@@ -58,13 +58,13 @@
 
 | JSON 필드 | 타입·허용 범위 | 실행 검사·지문 |
 |---|---|---|
-| `limits.max_attempts` | `uint64` 1…40000 | proxy, 포함 |
+| `limits.max_attempts` | `uint64` 1…40000 | proxy, 포함. 예산을 예약하고 송신 단계로 넘어간 시도만 센다. 보내지 않은 거부·미지원은 세지 않는다(C01) |
 | `limits.max_calls` | 정수 1…1000 | proxy, 포함 |
 | `limits.max_concurrent` | 정수 1…100 | proxy, 포함 |
 | `limits.max_body_bytes` | 정수 1…16777216 **바이트** | proxy, 포함 |
 | `limits.request_timeout_ms` | 정수 1…60000 **ms** | factory에서 Duration 변환, proxy, 지문에는 ns |
 | `limits.call_timeout_ms` | 정수 1…3600000 **ms** | factory·proxy, 지문에는 ns |
-| `limits.max_denials`, `max_transient`, `max_unknown` | `uint64` 각각 1 이상 | proxy, 포함. 시도 상한이 추가로 유효 |
+| `limits.max_denials`, `max_transient`, `max_unknown` | `uint64` 각각 1 이상 | proxy, 포함. call(Bash 명령 하나) 단위 상한이다. 닿으면 그 call의 새 요청만 막고 실행 전체는 멈추지 않는다(C01). 시도 상한이 추가로 유효 |
 | `proxy.header_timeout_ms`, `request_timeout_ms` | 정수 각각 1…60000 **ms**, header ≤ request | factory·proxy, 지문에는 ns |
 | `proxy.max_header_bytes` | 정수 1…1048576 **바이트** | factory·proxy, 포함 |
 | `proxy.max_connections` | 정수 1…128 | factory·proxy, 포함 |

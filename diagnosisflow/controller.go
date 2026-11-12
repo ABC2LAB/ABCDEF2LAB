@@ -3,8 +3,10 @@ package diagnosisflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2proxy"
+	"log"
 	"net/url"
 	"sort"
 	"strings"
@@ -20,10 +22,12 @@ type Controller struct {
 	record            Record
 	changed           chan struct{}
 	poisoned          bool
-	claimed           bool
-	attempts          map[string]bool
-	origin            string
-	nativePath        string
+	// observationFailures는 요청 관찰 저장이 연달아 실패한 수다. 성공하면 0으로 돌아간다(C13).
+	observationFailures int
+	claimed             bool
+	attempts            map[string]bool
+	origin              string
+	nativePath          string
 	// 문서별 <base href> 해석 결과. 초기 탐색 안에서만 쓰므로 저장하지 않는다.
 	documentBases map[string]documentBase
 }
@@ -175,10 +179,53 @@ func (c *Controller) endpointScope(method, path, kind, source string) (bool, str
 	return true, "possible"
 }
 
+// maxObservationProjectionFailures는 요청 관찰 저장이 연달아 실패해도 진단을 이어 가는 횟수다.
+// 관찰 투영은 화면·보고용이고 E② 감사 기록은 따로 남는다. 저장소 일시 오류 한 번으로 그 뒤 정상
+// 요청을 모두 막지 않되, 이 횟수를 넘기면 기록 없이 계속 보내지 않도록 막는다(C13).
+const maxObservationProjectionFailures = 3
+
+// saveLocked는 선택·모드·단계처럼 허용 판단에 쓰는 상태를 저장한다. 실패하면 메모리 상태와 저장 상태가
+// 어긋났을 수 있으므로 이후 허용을 모두 막는다.
 func (c *Controller) saveLocked(ctx context.Context, create bool, kind, method, path string, status int) error {
 	if c.poisoned {
 		return ErrProjection
 	}
+	if _, err := c.writeLocked(ctx, create, kind, method, path, status); err != nil {
+		c.poisonLocked()
+		return ErrProjection
+	}
+	c.observationFailures = 0
+	c.notifyLocked()
+	return nil
+}
+
+// saveObservationLocked는 이미 끝난 요청의 관찰(방문·상태·건수)만 저장한다. 허용 상태는 바뀌지 않으므로
+// 일시 오류는 판(revision)을 되돌리고 다음 저장에서 같은 기록 전체를 다시 쓴다. 판 충돌은 다른 기록과
+// 어긋났다는 뜻이고(커밋 결과를 모르는 실패 뒤에도 생긴다), 연달은 실패는 상한까지만 넘긴다. 둘 다 이후
+// 허용을 막는다(C13).
+func (c *Controller) saveObservationLocked(ctx context.Context, method, path string, status int) error {
+	if c.poisoned {
+		return ErrProjection
+	}
+	old, err := c.writeLocked(ctx, false, "request", method, path, status)
+	if err == nil {
+		c.observationFailures = 0
+		c.notifyLocked()
+		return nil
+	}
+	c.observationFailures++
+	if errors.Is(err, ErrConflict) || c.observationFailures >= maxObservationProjectionFailures {
+		c.poisonLocked()
+		return ErrProjection
+	}
+	c.record.Snapshot.Revision = old
+	// 고정 문구만 남긴다. 저장소 오류 원문에는 대상 경로·연결 정보가 들어 있을 수 있다.
+	log.Print("[diagnosisflow] observation_projection_deferred")
+	return ErrProjection
+}
+
+// writeLocked는 판을 올려 기록 전체를 저장하고 이전 판을 돌려준다. 실패 처리는 호출자가 정한다.
+func (c *Controller) writeLocked(ctx context.Context, create bool, kind, method, path string, status int) (uint64, error) {
 	old := c.record.Snapshot.Revision
 	c.record.Snapshot.Revision++
 	c.record.Snapshot.UpdatedAt = time.Now().UTC()
@@ -202,24 +249,23 @@ func (c *Controller) saveLocked(ctx context.Context, create bool, kind, method, 
 	}
 
 	c.record.Snapshot = compactProjection(c.record.Snapshot)
-	var err error
 	if create {
-		err = c.store.Create(ctx, clone(c.record))
-	} else {
-		err = c.store.Save(ctx, old, clone(c.record))
+		return old, c.store.Create(ctx, clone(c.record))
 	}
-	if err != nil {
-		c.poisoned = true
-		c.record.Snapshot.Stage = "failed"
-		c.record.Snapshot.Failure = "workflow_projection_failed"
-		c.record.Snapshot.Paused = false
-		close(c.changed)
-		c.changed = make(chan struct{})
-		return ErrProjection
-	}
+	return old, c.store.Save(ctx, old, clone(c.record))
+}
+
+func (c *Controller) poisonLocked() {
+	c.poisoned = true
+	c.record.Snapshot.Stage = "failed"
+	c.record.Snapshot.Failure = "workflow_projection_failed"
+	c.record.Snapshot.Paused = false
+	c.notifyLocked()
+}
+
+func (c *Controller) notifyLocked() {
 	close(c.changed)
 	c.changed = make(chan struct{})
-	return nil
 }
 func (c *Controller) Snapshot() (Snapshot, error) {
 	c.mu.Lock()
@@ -473,7 +519,7 @@ func (c *Controller) After(ctx context.Context, v e2proxy.RequestView, r e2proxy
 			}
 		}
 	}
-	return c.saveLocked(ctx, false, "request", normalizedMethod(v.Method), path, boundedStatus(r.StatusCode))
+	return c.saveObservationLocked(ctx, normalizedMethod(v.Method), path, boundedStatus(r.StatusCode))
 }
 func statusText(n int) string { raw, _ := json.Marshal(n); return string(raw) }
 func (c *Controller) Close(ctx context.Context, stage string) error {

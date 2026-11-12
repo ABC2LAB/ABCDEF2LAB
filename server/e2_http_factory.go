@@ -469,7 +469,12 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		}
 		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult}, nil
 	}
-	options := E2HTTPRuntimeOptions{Workflow: input.Workflow, RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, RunRequests: policy.MaxRequests, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, PlannerLimits: input.PlannerLimits}
+	// 진단 Worker의 insert_assets가 받을 수 있는 자산 범위다(C24). 검사를 거친 정책 규칙의 origin만 쓴다.
+	approvedOrigins := make([]string, 0, len(policy.Rules))
+	for _, rule := range policy.Rules {
+		approvedOrigins = append(approvedOrigins, rule.Origin)
+	}
+	options := E2HTTPRuntimeOptions{Workflow: input.Workflow, RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, RunRequests: policy.MaxRequests, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, PlannerLimits: input.PlannerLimits, ApprovedOrigins: approvedOrigins}
 	if current(ctx) != nil {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost

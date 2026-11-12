@@ -145,7 +145,7 @@ func TestE2HTTPWebFetchRedactionKeepsTrustedAndWorkerControl(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			page := "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><p>" + form + `</p><a href="/x?s=` + form + `">x</a><meta name="m" content="` + form + `"></body></html>`
 			trusted := json.RawMessage(`{"classification":"completed","call":{"call_ref":"call-9"}}`)
-			control := json.RawMessage(`{"task_ref":"7","calls":1,"max_calls":8,"decision":"admitted","alternative_used":false,"retry_allowed":false}`)
+			control := json.RawMessage(`{"task_ref":"7","calls":1,"max_calls":8,"decision":"admitted","retry_allowed":false}`)
 			bash := e2WorkerFixtureTool("Bash", func(context.Context, json.RawMessage) (actool.Result, error) {
 				raw, _ := json.Marshal(map[string]any{"tool_output": page, "trusted": trusted, "worker_control": control})
 				return actool.Text(string(raw)), nil

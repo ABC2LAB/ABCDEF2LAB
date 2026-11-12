@@ -54,6 +54,16 @@
 | C34 | 설치 수명 상한(승인 168시간·실행 1000회, 작업 1024, 대상 32개 삭제 불가, 이미지 갱신 시 지문 거부) | 오류 | `cmd/first-controlled-diagnosis/product_install_linux.go:101,184`, `diagnosisprep/service_linux.go:16,215,326-337` | P3·이경준 |
 | C35 | 대상 승인 조건이 빡빡함(DNS 주소 집합·SPKI 동일, 24시간, 시작마다 TXT 재확인, IP 8개 초과 거부). CDN·인증서 교체에 약함 | 저하 | `cmd/first-controlled-diagnosis/product_targets.go:262-275,363-366,449-455` | P3·이경준 |
 
+## 진행
+
+| ID | 상태 | 바꾼 것 | 유지한 통제 | 원본 대비 남은 차이 |
+|---|---|---|---|---|
+| C01 | 구현·단위시험 | 거부·미지원·결과 불명·송신 실패 상한(`MaxDenials`·`MaxUnknown`·`MaxTransient`)을 call 단위로. 닿으면 그 call의 새 요청만 기록 없이 거절. 시도 상한(`MaxAttempts`)은 예산을 예약한 시도만 셈. 시도 상한 도달은 실행 정지 대신 그 뒤 송신 거부 | 감사 실패·집행 장애·철회·만료·운영자 중지는 실행 전체 정지. 회차 예산(`MaxRequests`) 원장, 결과 불명 쓰기 자동 재전송 없음 | Supervisor 마감은 결과 불명 intent를 `partial`로, 연결 실패 call을 그 intent의 결과로 셈(C08). 명령 시간 초과는 신뢰 결과에 종료 원인이 없어 아직 마감 실패([계약](contracts/run-outcome-states.md) 열린 항목 2) |
+| C02 | 구현·단위시험 | 연결(TLS 포함)을 맺기 전 TCP·TLS·SPKI 실패는 `transport_failed`, 연결 뒤 실패만 `unknown`. 연결 시도 자체는 `forward_attempted`로 남김. 새 계수 `Counts.Transient`, runner 분류 `transient_failure` | 연결 뒤 결과 불명은 그대로 불명, TLS 검증·SPKI 고정 | — |
+| C03 | 구현·단위시험 | `ExecutionView.IntentCounts` 추가. Worker 분류·정지·intent 마감이 실행 전체 대신 자기 intent의 불명 수를 봄 | 감사·집행 장애는 실행 상태·`AuditComplete`로 전체 반영. 자기 intent의 불명은 그 intent를 멈춤 | — (마감 판정도 자기 intent의 불명 수만 봄, C08) |
+| C08 | 구현·통합시험 | 결과 불명 intent를 실패 대신 `completed` + `partial`로 셈. 결과 불명 송신이 있는 호출의 intent는 결과 불명이어야 하고 결과 불명 intent 수는 E② 근거와 같아야 함. 연결 실패(`transient_failure` + 송신 실패 수) 호출은 그 intent의 결과 | 감사 실패·철회·만료·비최종 호출은 마감 실패. 결과 불명 intent는 다시 보내지 않음 | 명령 시간 초과·프록시 장애는 신뢰 결과에서 구분되지 않아 마감 실패 |
+| C13 | 구현·단위시험 | 요청 관찰(After) 저장의 일시 실패는 판을 되돌리고 다음 저장에서 다시 씀. 연속 3회 실패·판 충돌이면 이후 허용 차단 | 선택·모드·단계 같은 허용 상태 저장 실패는 즉시 이후 허용 차단. E② 감사 실패는 실행 정지 | — |
+
 ## 4. 유지 범위 안에서 따로 볼 것
 
 - 위험 query 차단은 "무엇을" 통제로 유지하기로 했지만 E②에 구현돼 있지 않다(`e2proxy`의 `query`·`RawQuery`는 규칙 설정 파싱에만 나옴).

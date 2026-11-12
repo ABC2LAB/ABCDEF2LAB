@@ -28,7 +28,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 - `deleted`는 세지 않는다. `running`이 남아 있으면 마감 전이다(지금처럼 기다린다).
 - 그래프 `stopped`(Planner `kill_work`·task 마감 뒤 취소)는 운영자 중지가 아니라서 `incomplete`로 센다. 운영자 중지는 지금 코드에서 `paused`로 남는다(`server/engine.go` cancel 처리).
 - intent `stopped`는 보통 실행 `state`가 `cancelled`일 때 나온다. 그래서 `intent_outcomes`는 `cancelled`에도 싣는다(3.2). `completed`에 `paused`가 남는 경로는 지금 코드에 없지만(완료 판정은 열린·진행 중 intent가 있으면 기다린다), C26에서 Planner `goal_met`이 복원되면 생길 수 있어 `completed`의 대조식에도 `stopped`를 넣어 둔다.
-- `unknown` intent의 쓰기 요청은 다시 보내지 않고, 그 intent에 기대는 후속 intent만 보류한다(개발 계획, C01).
+- `unknown` intent의 쓰기 요청은 다시 보내지 않고, 그 intent에 기대는 후속 intent만 보류한다(개발 계획, C01). 지금 구현 범위는 6절 3을 본다(다른 intent 재전송 차단·후속 보류는 열린 항목 3).
 
 ## 3. 실행 결과
 
@@ -41,14 +41,14 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 | `failed` | 감사 저장 실패, E② 집행 장애, 격리 실패, 권한 철회·만료·결속 실패, 저장소 읽기 실패, 워크플로 실패. |
 | `unknown` | 실행 마감·결과 저장·모델 사용량을 확인하지 못했다(지금과 같음). |
 
-바뀌는 것: intent 결과, Planner 라운드·도구 호출·intent 재실행 상한, 모델 예산 소진(사용량은 확인됨)은 더 이상 `failed`가 아니다. 감사가 닫히면 `completed`이고, 아래 칸이 내용을 말한다.
+바뀌는 것: intent 결과, Planner 라운드·도구 호출·intent 재실행 상한, 모델 예산 소진(사용량은 확인됨), E② 승인 요청 예산 소진은 더 이상 `failed`가 아니다. 감사가 닫히면 `completed`이고, 아래 칸이 내용을 말한다.
 
 ### 3.2 새 칸
 
 | 칸 | 있는 `state` | 값 | 규칙 |
 |---|---|---|---|
 | `outcome` | `completed` | `complete` · `partial` · `no_intents` | 아래 대조식. |
-| `closing_reason` | `completed` (없을 수 있음) | `budget_limited` | Planner 라운드·도구 호출·intent 재실행 상한 또는 승인 모델 예산에 닿아 새 작업 없이 마감했다. 찾은 후보·근거는 보존한다. |
+| `closing_reason` | `completed` (없을 수 있음) | `budget_limited` | Planner 라운드·도구 호출·intent 재실행 상한, 승인 모델 예산 또는 E② 승인 요청 예산에 닿아 새 작업 없이 마감했다. 찾은 후보·근거는 보존한다. |
 | `intent_outcomes` | `completed` · `cancelled` | `{done, policy_limited, incomplete, unknown, stopped}` 정수 | 위 2절 투영의 개수. 모두 0 이상. `cancelled`에서는 "끝난 것·끊긴 것"을 보이는 데 쓴다(#429 이경준 제안). |
 | `diagnostic_log_incomplete` | `completed` | 참·거짓 | 진단 로그 기록 실패·관찰 불완전(C10). `reason_code`에 넣던 경고를 여기로 옮긴다(#418 이경준 지적: 다른 사유가 있으면 경고가 덮였다). |
 
@@ -95,15 +95,21 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
    - 2-1(먼저): 투영·`completed`의 `outcome`·`intent_outcomes`·`partial`(불완전·중지 intent가 있어도 실패가 아님)·전달 칸(`diagnosis.v2`)·진단 준비 Job·웹 파서와 결과 한 줄. 결과 없이 새로 `completed`가 되는 갱신은 받지 않는다.
    - 2-2: `cancelled`의 `intent_outcomes`(중지 마감 때 투영 읽기). 감독자가 감사·drain 마감 뒤(task 정지 확인 뒤) 투영을 읽고, 실행 중 intent가 남았거나 읽기에 실패하면 싣지 않는다. 시작하지 않은 `open`은 `incomplete`다. `outcome`·`closing_reason`은 싣지 않는다(중지 요청 직후 완료와 겹쳐도 개수만). 지금 중지 경로에서 진행 중 intent는 그래프 `paused`가 아니라 E② 실행 차단(`blocked` + `e2_http_execution_blocked`)이면 `incomplete`, 진행 중 송신이 끊겼으면(`e2_http_result_unknown`) `unknown`으로 센다. 화면의 "끊긴 m"은 둘 다 포함한다.
    - 2-3: `budget_limited`(Planner 라운드·도구 호출·모델 예산). E② 런타임이 Planner 라운드·실행 전체 도구 호출 상한 도달을 `ErrE2HTTPBudgetLimited`로 따로 돌려주고 task에 표시하며, 엔진은 이를 실패로 바꾸지 않는다. 승인 모델 예산이 다음 호출을 받을 만큼 남지 않은 경우(`LimitReached`, 사용량 불명·정책 차단은 제외)도 같다. 감독자는 실행 중 intent가 끝나면 Planner를 기다리지 않고 마감하고, 시작하지 못한 open intent는 incomplete로 센다. intent 하나의 재실행 상한(`MaxIntentRuns`)은 그 intent만 incomplete로 끝내고 실행 전체 상한은 아니다.
+   - 2-3a: E② 승인 요청 예산 소진. 결속한 실행의 남은 요청 예산이 0이면 Planner 준비·새 작업 준비가 결속 오류가 아니라 `ErrE2HTTPBudgetLimited`를 돌려주고 task에 표시한다(예산 조회 실패·결속 불일치는 지금처럼 오류). 한 명령 안에서 예산을 넘친 요청은 E②가 `budget_exhausted`(송신 시도 상한이면 `attempt_limit`)로 보내지 않는데, 마감은 이 거부를 그 호출의 정책 제한으로 받는다(거부 수가 있어야 함).
    - 2-4: `no_intents`(C11 결정 2, 첫 계획 0개). 진단 준비의 첫 계획에서 intent가 0개여도 실패로 끝내지 않고 실행으로 넘어간다(저장소를 못 읽은 경우만 `intent_storage_failed`). 실행 단계 Planner가 오류 없이 한 라운드 이상 계획했는데도 intent가 없으면(삭제된 intent는 세지 않음) `completed` + `no_intents`로 마감한다. 이때 E② 호출이 있으면 대조가 맞지 않으므로 실패다. 실행 상한에 먼저 닿으면 계획 라운드 없이도 `no_intents` + `budget_limited`로 마감한다.
    - 2-5: `diagnostic_log_incomplete` 칸 분리. 진단 준비 Job의 완료 실행에만 있고 `reason_code`를 쓰지 않는다. 이 칸 이전에 저장된 완료 실행에는 `reason_code: diagnostic_logging_incomplete`가 남아 있을 수 있어 화면은 둘 다 읽는다.
    - 2-6: 저장 보고서에 싣기(5절 5). 실행 종료 기록(`first_diagnosis_run_v1`)에 `result` 칸을 더한다(버전 1 그대로, 이 칸 이전 기록에는 없음). `completed`는 대조식이 맞는 결과, `cancelled`는 개수만, 실패·마감 실패에는 싣지 않고, 같은 결과로만 다시 저장된다. 보고서(HTML·DOCX, 공유 사본 포함) 3장 관리자 요약에 화면과 같은 문구로 "실행 결과: …" 한 줄을 싣는다. 기록이 없거나 형식이 틀리면 "확인하지 못함"으로 쓰고 완료로 바꾸지 않는다. 진단 준비 중지·대상 철회는 실행 문맥 취소로 끝나 요청 승인 상태가 `failed`로 남는데, URL 실행이 운영자 중지(상위 문맥 취소)나 대상 철회(`ErrFirstDiagnosisTargetEnded`)로 확인하고 마감이 확인되면 저장 기록에 `cancelled`로 남긴다. 설치·위임 검사 실패, 상태 조회·진행 저장 실패, 시간 상한처럼 원인 없는 취소는 `failed` 그대로다(#454 윤재상 지적). 화면(`diagnosis.Service`)은 지금도 문맥 취소를 모두 `cancelled`로 보므로 같은 구분이 필요하다(열린 항목).
-3. `unknown` intent가 있는 실행을 `completed` + `partial`로 마감하는 것은 C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤. 그 전에는 결과 불명 송신이 있는 호출(`Counts.Unknown`)이 있으면 지금처럼 실행을 멈춘다.
+3. `unknown` intent가 있는 실행을 `completed` + `partial`로 마감한다(C01 #477 뒤). 결과 불명 송신이 나오면 그 intent는 멈추고 더 보내지 않는다. 다른 intent에서 다시 보내는 것은 결과 불명 명령과 글자가 같은 명령만 막는다(진단 Worker 공유 제어 `same_action_not_retried`). 같은 메서드·경로를 다른 명령으로 다시 보내는 것과 그 intent에 기대는 후속 intent 보류(2절 끝 문장)는 아직 없다(열린 항목 3). 그래서 이 마감은 "결과 불명 송신이 실행 전체를 멈추지 않는다"는 뜻이지 "같은 상태 변경 요청이 다시 나가지 않는다"는 보장이 아니다.
+   - 근거 대조: 결과 불명 송신(`Counts.Unknown`)이 있는 호출의 intent는 `blocked` + `e2_http_result_unknown`이어야 하고, `unknown` intent 수는 그런 호출이 있는 intent 수와 같아야 한다. 결과 불명 송신 없이 `unknown`으로 표시된 intent가 있으면 마감하지 않는다(`partial`·`policy_limited`처럼 개수를 E② 기록으로 뒷받침한다).
+   - 호출 결과: `result_unknown`(결과 불명 송신 수가 있음)과, 대상 연결을 맺지 못한 송신 실패(`transient_failure` + 송신 실패 수, C02)는 그 호출의 결과로 받는다. 실행 전체 누계의 결과 불명은 다른 intent의 것이라 다른 intent의 마감을 막지 않는다(C03).
+   - 그대로 실패인 것: 감사 저장 실패, 실행 권한 철회·만료, 송신 실패 수가 없는 `transient_failure`(프록시 장애와 명령 시간 초과를 신뢰 결과에서 나눌 수 없음 — 열린 항목 2), 비최종·미드레인 호출.
 4. C09(intent 결과를 모든 호출 분류로, #428)와 C26(Worker 마무리 보고)은 이 투영을 그대로 쓴다.
 5. C26 1단계(Planner `prove_goal`·`goal_met`): Planner가 목표 달성으로 작업을 끝내면(작업 `done`) 실행 상한과 같이 Planner를 기다리지 않고 실행 중 intent가 끝나는 대로 마감하고, 남은 `open` intent는 `incomplete`로 센다(그래서 `partial`). `closing_reason`은 붙이지 않는다(`budget_limited`는 실행 상한일 때만).
 
 ## 7. 열린 항목
 
 1. **시간 상한**(이동찬): task deadline 도달을 `budget_limited`로 볼지. 지금은 마감 과정(settlement)과 얽혀 있어 이 계약에서 뺐다.
+2. **명령 시간 초과**(E② 실행기 담당): Bash 명령 하나가 시간 상한에 닿으면 실행기는 `transient_failure`로 분류하는데, 신뢰 결과에 종료 원인이 없어 E② 프록시 장애(집행 장애, 실행 `failed`)와 구분되지 않는다. 그래서 지금은 명령 시간 초과도 마감 실패다. 신뢰 결과에 종료 원인(시간 초과·프록시 장애)을 싣으면 시간 초과는 그 intent의 `incomplete`로 센다.
+3. **결과 불명 상태 변경 요청의 재전송 차단·후속 보류**(E② 실행 허용 판단 담당과 정함, #489 윤재상 지적): 결과 불명 송신이 나온 요청과 같은 메서드·경로의 상태 변경 요청을 다른 intent가 상태 확인 전에 보내는 것을 막는 것, 그리고 그 intent에 기대는 후속 intent를 보류하는 것. 지금은 결과 불명 명령과 글자가 같은 명령만 막고 나머지는 모델 안내 문구뿐이다. 결과 불명 1건이 실행 전체를 멈추던 때는 이 경로가 없었다.
 
 정해진 것(#429 이경준 답): `budget_limited` 세부는 처음에는 보이지 않는다("예산 상한에서 마감"만). 세부를 넣을 때는 `closing_reason`을 늘리지 않고 별도 칸을 둔다. 저장 보고서에는 싣는다(5절 5).

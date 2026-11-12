@@ -550,6 +550,17 @@ export function WorkflowCrawlLive() {
             <button className={s.btn} type="button" onClick={() => goTo("coverage")}>
               커버리지
             </button>
+            {/* 발견 상세(구조화 판정 레코드). 지금은 예시, live 점등은 판정 레코드 API 연결 후.
+                진입 자리는 잠정 — 이동찬 정렬(새 작업대 시안 기준). */}
+            <button className={s.btn} type="button" onClick={() => goTo("finding")}>
+              발견 상세
+            </button>
+            {/* 전송 통제 흐름(E② 허용/차단 감사 투영). 지금은 예시, live 점등은 E② 감사 투영 API 연결 후.
+                진입 자리는 잠정 — 이 헤더의 보조 버튼이 많아져(탐색 결과·접근통제 지도·커버리지·발견 상세·전송 통제 흐름)
+                새 작업대 시안 기준 일괄 정렬 필요(이동찬). */}
+            <button className={s.btn} type="button" onClick={() => goTo("e2flow")}>
+              전송 통제 흐름
+            </button>
             <button className={cx(s.btn, s.pri)} type="button" disabled={!ready} onClick={() => goTo(next)}>
               {next === "scope" ? "범위 확인" : "점검 진행"}
               <Icon name="arrow" />

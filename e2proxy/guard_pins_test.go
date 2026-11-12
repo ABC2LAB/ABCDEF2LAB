@@ -22,7 +22,7 @@ const (
 	pinInstallLimit = 5 * time.Second
 	// 만료를 늘리거나 줄이는 폭이다. 값 자체보다 방향만 의미가 있다.
 	pinExpiryShift = time.Minute
-	// 일시 오류 한 번에 실행 전체가 멈춰야 상한 가드가 실제로 동작한 것이다.
+	// 송신 실패 한 번에 그 call의 상한이 닿게 한다. 실행 전체는 멈추지 않아야 한다(C01).
 	pinTransientLimit = 1
 	pinRevisionNext   = "revision2"
 )
@@ -239,9 +239,9 @@ func TestGuardPinEncodedSlashIsDenied(t *testing.T) {
 	}
 }
 
-// 공백 8: 연결 전에 끝난 송신 실패도 상한에 닿으면 실행 전체를 멈춰야 한다.
+// 공백 8: 연결 전에 끝난 송신 실패는 상한에 닿아도 그 call만 막고 실행 전체를 멈추지 않는다(C01).
 // intent 감사 대기 중 Call.Block 으로 연결 시도 없는 일시 오류를 만든다.
-func TestGuardPinTransientLimitStopsExecution(t *testing.T) {
+func TestGuardPinTransientLimitFencesOnlyCall(t *testing.T) {
 	target, received := pinCountingTarget(t)
 	rec := &coreRecorder{blockStage: "intent", entered: make(chan struct{}, 1), release: make(chan struct{})}
 	cfg := coreConfig(t, target.URL, rec, pinBudget)
@@ -260,10 +260,17 @@ func TestGuardPinTransientLimitStopsExecution(t *testing.T) {
 	if got.r.Reason != TransportFailed || got.r.ForwardAttempted || received.Load() != 0 {
 		t.Fatalf("fixture did not produce a pre-connection transient failure: %+v %v", got.r, got.err)
 	}
-	if view := e.Snapshot(); view.Reason != TransientLimit || view.State != "blocked" {
-		t.Fatalf("transient limit did not stop execution: %+v", view)
+	if view := e.Snapshot(); view.Reason != Complete || view.State != "active" || view.Counts.Transient != 1 {
+		t.Fatalf("one transient failure stopped the whole execution: %+v", view)
 	}
-	if _, err := e.BeginCall(context.Background(), "after-transient-limit"); err == nil {
-		t.Fatal("stopped execution admitted a new call")
+	next, err := e.BeginCall(context.Background(), "after-transient-limit")
+	if err != nil {
+		t.Fatal("execution refused a new call after another call's transient failure")
 	}
+	defer func() { _, _ = next.Close(context.Background()) }()
+	resp, r, err := next.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if err != nil || resp == nil || r.Reason != Complete || received.Load() != 1 {
+		t.Fatalf("approved request after a transient failure was not delivered: %+v %v", r, err)
+	}
+	resp.Body.Close()
 }

@@ -84,9 +84,10 @@ DLP나 인증 정보 자동 발견을 보장하지 않는다.
 
 현재 코어는 자격 응답의 body·헤더를 보류할 때, 전부 수신했더라도
 `ResponseReceived=true`·`ResponseComplete=true`와 `Reason=unknown`을 함께 남긴다.
-이 보류도 `Counts.Unknown`과 `Limits.MaxUnknown`에 누적한다. 따라서 매 응답에
-Set-Cookie를 붙이는 앱에서 MaxUnknown=3이면 HTTP 200 응답 세 개를 모두 수신한 뒤에도
-실행이 unknown_limit으로 멈추며 네 번째 요청은 보내지 않는다. 보류된 본문이
+이 보류도 그 call의 `Counts.Unknown`에 누적한다. `Limits.MaxUnknown`은 call(Bash 명령 하나)
+단위 상한이다(C01). 따라서 매 응답에 Set-Cookie를 붙이는 앱에서 MaxUnknown=3이면 HTTP 200
+응답 세 개를 모두 수신한 뒤 그 call의 네 번째 요청은 `unknown_limit`으로 보내지 않는다.
+실행 전체는 멈추지 않고 새 call은 보낼 수 있지만 같은 보류가 다시 적용된다. 보류된 본문이
 없다는 사실을 불완전한 수신이나 대상의 접근통제 성공으로 해석하면 안 된다.
 
 이는 공통 계약 §7.1의 response_received 축과 같은 분류가 아니며, 현재
