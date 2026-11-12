@@ -499,3 +499,40 @@ func TestModelOrRuntimeFailurePreservesPartialDiscoveryForSelection(t *testing.T
 		})
 	}
 }
+
+func TestExplorationTargetCheckRejectsRebindingBeforeFactory(t *testing.T) {
+	c, store := flowFixture(t, Manual)
+	c.binding.TargetRef, c.binding.TargetRevision = "target-owned", 7
+	b := ExplorationBinding{SessionRef: "session-owned", RunRef: c.binding.RunRef, JobID: c.binding.JobID, TaskID: c.binding.TaskID, TargetRef: c.binding.TargetRef, TargetRevision: 7, SourceDigest: c.binding.SourceDigest}
+	before, _ := c.Snapshot()
+	if err := c.CheckExplorationTarget(t.Context(), b, c.binding.TargetURL); err != nil {
+		t.Fatal("exact protected target rejected")
+	}
+	for _, target := range []string{"https://owned.test/read/", "https://owned.test:443/read", "https://owned.test/read?x=1", "https://other.test/read", "https://owned.test/read/../read", "https://owned.test/read#fragment"} {
+		if err := c.CheckExplorationTarget(t.Context(), b, target); !errors.Is(err, ErrExplorationBinding) {
+			t.Fatal("different URL accepted by normalization")
+		}
+	}
+	for _, change := range []func(*ExplorationBinding){func(v *ExplorationBinding) { v.SessionRef = "" }, func(v *ExplorationBinding) { v.RunRef = "foreign" }, func(v *ExplorationBinding) { v.JobID = "foreign" }, func(v *ExplorationBinding) { v.TaskID = "foreign" }, func(v *ExplorationBinding) { v.TargetRef = "foreign" }, func(v *ExplorationBinding) { v.TargetRevision++ }, func(v *ExplorationBinding) { v.SourceDigest = strings.Repeat("b", 64) }} {
+		bad := b
+		change(&bad)
+		if err := c.CheckExplorationTarget(t.Context(), bad, c.binding.TargetURL); !errors.Is(err, ErrExplorationBinding) {
+			t.Fatal("foreign protected binding accepted")
+		}
+	}
+	c.binding.Current = func() error { return errors.New("revoked") }
+	if err := c.CheckExplorationTarget(t.Context(), b, c.binding.TargetURL); !errors.Is(err, ErrExplorationBinding) {
+		t.Fatal("revoked target accepted")
+	}
+	c.binding.Current = func() error { return nil }
+	after, _ := c.Snapshot()
+	if after.Revision != before.Revision || store.records["prep-owned"].Snapshot.Revision != before.Revision || c.claimed {
+		t.Fatal("read-only target check changed workflow")
+	}
+	if _, err := c.BindExploration(t.Context(), &privateDiscoveryReader{binding: b}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CheckExplorationTarget(t.Context(), b, c.binding.TargetURL); !errors.Is(err, ErrExplorationBinding) {
+		t.Fatal("factory check reopened a bound session")
+	}
+}

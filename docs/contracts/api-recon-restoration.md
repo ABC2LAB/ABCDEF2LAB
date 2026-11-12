@@ -26,6 +26,8 @@ Session(context.Context) (ExplorationBinding, error)
 ReadObservation(context.Context, ExplorationBinding, uint64) (ExplorationObservation, error)
 ```
 
+세션 factory를 열기 전 `CheckExplorationTarget(ctx, binding, targetURL)`로 보호 회차의 URL과 정확히 같은 문자열인지 확인한다. origin·경로를 정규화해 다른 URL을 승인하지 않고 값을 돌려주거나 저장 상태를 바꾸지 않는다. 같은 Job/Task/Run/SourceDigest·대상 revision과 Current도 확인한다.
+
 `BindExploration`은 reader의 현재 세션을 한 번 고정한다. 호출자가 reader를 교체하거나 임의 결속을 보내는 API는 없다. `ReportObserved(ctx, binding, seq)`마다 현재 세션, 회차의 Job/Task/Run/SourceDigest, 승인 대상 참조·revision과 `Binding.Current()`를 다시 검사한다. reader는 닫힘·철회·장애 시 오류를 반환해야 한다. 기록은 같은 결속·seq, 실제 forwarded, 유효 시각·메서드·경로·전송 종류여야 한다. 바뀐 seq replay와 과거 seq는 거절하며 마지막 동일 기록 재전달은 멱등 처리한다. 여러 병렬 요청의 기록은 **seq 순서대로** 전달해야 한다. 정상 종료의 최종 수집은 browser close 뒤·boundary close 전에 수행한다. 취소·권한 철회로 Current가 실패하면 미수집 기록의 새 관측 승격은 거부한다. 이미 저장한 부분 발견은 유지하며, cleanup context의 `FinishExploration(cancelled/target_ended)`로 닫을 수 있다. 이 PR은 철회 뒤의 sealed 역사 기록 승격 API를 제공하지 않는다.
 
 관측 목록은 HTTP 요청 메타데이터·SSE 연결·WS upgrade 메타데이터까지만 담는다. 헤더, query/body 값, 응답 본문, WS frame은 저장하지 않는다. 정적 보고의 키와 실제 관측 키는 별도 근거로 보존하고, 정적 키를 관측 endpoint의 키에 섞지 않는다. 앞서 발견한 GET form의 부작용 가능성도 실제 GET을 보았다는 이유로 자동 읽기 선택으로 바꾸지 않는다.
@@ -42,7 +44,7 @@ ReadObservation(context.Context, ExplorationBinding, uint64) (ExplorationObserva
 
 `RecordExplorationUnavailable(ctx, reason)`은 bound/claimed 이전의 호스트 preflight 전용 API다. Current와 crawling 상태를 검사하고 boundary/model/runtime/browser 미가용의 고정 사유만 `ExplorationStatus=NOT_RUN`으로 저장한다. Stage·InitialCompleted·claimed·선택은 바꾸지 않아 기존 E② 정적 Crawl fallback을 유지한다. 세션을 실제 결속하면 RUNNING, 종료 시 COMPLETED/PARTIAL/STOPPED로 표시한다.
 
-정적 pass 뒤에도 stage는 `crawling`으로 남겨 동적 탐색의 추정 보고와 관측 수집을 받는다. 호출자가 `FinishExploration`으로 완료 또는 부분 종료 사유를 전달하면 수동 모드의 선택 단계 또는 기존 자동 선택 단계로 간다. `cap_exhausted`, `boundary_unavailable`, `model_error`, `runtime_unavailable`, 시간·페이지 상한 등은 부분 발견을 남긴다. 모델 오류나 런타임 미가용을 completed로 바꾸지 않는다. 취소·대상 종료는 stopped다. 일반 fetch 오류는 요청 하나의 실패와 부분 완료로 남기고 다음 페이지로 진행한다. 호스트가 `ExplorationFetchResult.Reason`으로 경계 장애·상한을 명시한 경우에만 그 사유로 종료한다. 이 흐름은 E② `Sent/Attempted/Blocked`를 만들지 않고 별도 `ExplorationRequests`만 센다. 부분 탐색을 취약점 없음 또는 E③ 성공으로 바꾸지 않는다.
+정적 pass 뒤에도 stage는 `crawling`으로 남겨 동적 탐색의 추정 보고와 관측 수집을 받는다. 호출자가 `FinishExploration`으로 완료 또는 부분 종료 사유를 전달하면 수동 모드의 선택 단계 또는 기존 자동 선택 단계로 간다. `cap_exhausted`, `boundary_unavailable`, `model_error`, `runtime_unavailable`, 시간·페이지 상한 등은 부분 발견을 남긴다. 모델 오류나 런타임 미가용을 completed로 바꾸지 않는다. 취소·대상 종료는 stopped다. 보호 저장은 호출 취소와 분리하지만 caller deadline과 기존 5초 저장 상한 중 빠른 시간을 지켜 마감 시간 상한을 늘리지 않는다. 일반 fetch 오류는 요청 하나의 실패와 부분 완료로 남기고 다음 페이지로 진행한다. 호스트가 `ExplorationFetchResult.Reason`으로 경계 장애·상한을 명시한 경우에만 그 사유로 종료한다. 이 흐름은 E② `Sent/Attempted/Blocked`를 만들지 않고 별도 `ExplorationRequests`만 센다. 부분 탐색을 취약점 없음 또는 E③ 성공으로 바꾸지 않는다.
 
 ## 발견 보존과 남은 한도
 

@@ -1,12 +1,14 @@
 package diagnosisflow
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 )
@@ -84,5 +86,78 @@ func TestPostgresExplorationInventoryRecoveryIsRunLocal(t *testing.T) {
 	foreign, err := store.Read(t.Context(), other.binding.Owner, other.binding.JobID)
 	if err != nil || foreign.Exploration != nil || len(foreign.DiscoveryInventory) != 0 {
 		t.Fatal("private source metadata mixed between targets")
+	}
+}
+
+// 취소된 실행의 마지막 저장은 보존하되, row lock 때문에 cleanup deadline을 넘기지 않아야 한다.
+func TestPostgresWriteRespectsCleanupDeadlineAndPreservesCancellation(t *testing.T) {
+	dsn := os.Getenv("ARTEX_FIRST_DIAGNOSIS_ROLE_TEST_DSN")
+	if dsn == "" || os.Getenv("ARTEX_FIRST_DIAGNOSIS_ROLE_TEST_OWNED") != "1" {
+		t.Skip("owned PostgreSQL 16 required")
+	}
+	pool, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal("owned database open failed")
+	}
+	defer pool.Close()
+	if Migrate(t.Context(), pool.DB) != nil {
+		t.Fatal("workflow migration failed")
+	}
+	row, err := pool.CreateTask("Owned deadline persistence", "Synthetic locked-row deadline only", nil, 0, 0)
+	if err != nil {
+		t.Fatal("owned task create failed")
+	}
+	template, _ := flowFixture(t, Manual)
+	binding := template.binding
+	binding.TaskID = strconv.FormatInt(row.ID, 10)
+	binding.JobID = "owned-deadline-" + binding.TaskID
+	store := Postgres{DB: pool.DB}
+	if _, err := New(t.Context(), binding, store); err != nil {
+		t.Fatal("workflow create failed")
+	}
+	saved, err := store.Read(t.Context(), binding.Owner, binding.JobID)
+	if err != nil {
+		t.Fatal("workflow read failed")
+	}
+	old := saved.Snapshot.Revision
+	saved.Snapshot.Revision++
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := store.Save(cancelled, old, saved); err != nil {
+		t.Fatal("protected save did not survive caller cancellation")
+	}
+	lock, err := pool.DB.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal("owned row lock transaction failed")
+	}
+	defer lock.Rollback()
+	if _, err := lock.ExecContext(t.Context(), `SELECT 1 FROM diagnosis_workflows WHERE job_id=$1 FOR UPDATE`, binding.JobID); err != nil {
+		t.Fatal("owned row lock failed")
+	}
+	old = saved.Snapshot.Revision
+	saved.Snapshot.Revision++
+	cleanup, cancelCleanup := context.WithTimeout(t.Context(), 80*time.Millisecond)
+	defer cancelCleanup()
+	done := make(chan error, 1)
+	go func() { done <- store.Save(cleanup, old, saved) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatal("locked cleanup write did not fail at caller deadline")
+		}
+	case <-time.After(2 * time.Second):
+		_ = lock.Rollback()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("protected write ignored short cleanup deadline")
+	}
+	if lock.Rollback() != nil {
+		t.Fatal("owned row lock release failed")
+	}
+	after, err := store.Read(t.Context(), binding.Owner, binding.JobID)
+	if err != nil || after.Snapshot.Revision != old {
+		t.Fatal("timed-out cleanup write committed a partial revision")
 	}
 }

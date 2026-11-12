@@ -92,6 +92,20 @@ func (c *Controller) matchingExploration(b ExplorationBinding) bool {
 	return b.SessionRef != "" && len(b.SessionRef) <= 256 && b.RunRef != "" && b.RunRef == c.binding.RunRef && b.JobID == c.binding.JobID && b.TaskID == c.binding.TaskID && b.SourceDigest != "" && b.SourceDigest == c.binding.SourceDigest && c.binding.TargetRef != "" && b.TargetRef == c.binding.TargetRef && b.TargetRevision > 0 && b.TargetRevision == c.binding.TargetRevision
 }
 
+// CheckExplorationTarget은 세션 factory 전의 보호 결속 확인이다. URL을 정규화해 승인 대상을 넓히지 않는다.
+func (c *Controller) CheckExplorationTarget(ctx context.Context, b ExplorationBinding, targetURL string) error {
+	if c == nil || ctx == nil || ctx.Err() != nil {
+		return ErrExplorationBinding
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.record.Snapshot
+	if c.poisoned || c.claimed || c.record.Exploration != nil || !c.matchingExploration(b) || c.binding.Current() != nil || s.Stage != "crawling" || s.Paused || s.InitialCompleted || targetURL != c.binding.TargetURL {
+		return ErrExplorationBinding
+	}
+	return nil
+}
+
 // BindExploration은 호출자가 주장한 세션 대신 고정한 host reader에서 결속을 읽는다.
 func (c *Controller) BindExploration(ctx context.Context, reader ExplorationReader) (ExplorationBinding, error) {
 	if c == nil || reader == nil || ctx == nil || ctx.Err() != nil {
