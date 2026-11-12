@@ -246,7 +246,7 @@ func validScope(s *Scope) bool {
 	return true
 }
 func validUsage(u *ModelUsage) bool {
-	return u == nil || (u.Requests >= 0 && u.InputTokens >= 0 && u.OutputTokens >= 0 && u.ReservedInputTokens >= 0 && u.ReservedOutputTokens >= 0 && u.CostUSDMicros >= 0 && u.ReservedCostUSDMicros >= 0)
+	return u == nil || (u.Requests >= 0 && u.InputTokens >= 0 && u.OutputTokens >= 0 && u.ReservedInputTokens >= 0 && u.ReservedOutputTokens >= 0 && u.CostUSDMicros >= 0 && u.ReservedCostUSDMicros >= 0 && u.UnknownUsageCalls >= 0 && u.UnknownUsageCalls <= u.Requests)
 }
 func validPhase(p Phase) bool {
 	switch p {

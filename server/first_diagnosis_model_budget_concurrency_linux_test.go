@@ -264,7 +264,20 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 			budgetAwaitSignal(t, waiter.observed)
 			budgetRequireWaiting(t, r2, second)
 			close(release)
-			if !errors.Is(budgetAwaitResult(t, r1), ErrFirstDiagnosisModelBudget) || !errors.Is(budgetAwaitResult(t, r2), ErrFirstDiagnosisModelBudget) {
+			if !errors.Is(budgetAwaitResult(t, r1), ErrFirstDiagnosisModelBudget) {
+				t.Fatal("실패·불명 호출이 성공으로 보고됨")
+			}
+			if tc.callErr != nil {
+				// 실패한 호출은 예약한 양으로 정산하고 다음 호출을 막지 않는다(P3 결정안 C05).
+				secondErr := budgetAwaitResult(t, r2)
+				u := b.Snapshot()
+				if secondErr != nil || second.calls.Load() != 1 || u.Requests != 2 || !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != 65536+int64(knownUsage.InputTokens) {
+					t.Fatalf("실패한 호출 하나가 다음 호출을 막거나 상한으로 정산되지 않음: %+v", u)
+				}
+				return
+			}
+			// 성공했는데 사용량이 없거나 예약을 넘거나 영속화가 실패하면 상한을 믿을 수 없어 막는다.
+			if !errors.Is(budgetAwaitResult(t, r2), ErrFirstDiagnosisModelBudget) {
 				t.Fatal("불명 결과 뒤 대기가 허용됨")
 			}
 			if second.calls.Load() != 0 || b.Snapshot().Requests != 1 || b.Snapshot().UsageKnown {
@@ -356,6 +369,8 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 			if budgetAwaitResult(t, r2) == nil || second.calls.Load() != 0 {
 				t.Fatal("new call after target stop")
 			}
+			// 대상 철회(revoke·expiry)는 진행 중 호출을 마치게 둔다. 중지·hard 정지·제공자 오류로 끝난 호출은
+			// 실패지만 예약한 양으로 정산한다(P3 결정안 C05).
 			known := mode == "revoke" || mode == "expiry"
 			if known || mode == "provider_error" {
 				budgetRequireWaiting(t, r1, second)
@@ -368,7 +383,11 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 				t.Fatal("incorrect drain result", err)
 			}
 			usage := b.Snapshot()
-			if usage.UsageKnown != known || usage.Requests != 1 || usage.ReservedInputTokens != 65536 || usage.ReservedOutputTokens != 128 || first.calls.Load() != 1 || len(persisted) != 2 || persisted[1].UsageKnown != known {
+			bounded := int64(1)
+			if known {
+				bounded = 0
+			}
+			if !usage.UsageKnown || usage.UnknownUsageCalls != bounded || usage.Requests != 1 || usage.ReservedInputTokens != 65536 || usage.ReservedOutputTokens != 128 || first.calls.Load() != 1 || len(persisted) != 2 || !persisted[1].UsageKnown {
 				t.Fatal("usage not drained or reservation refunded", usage)
 			}
 		})

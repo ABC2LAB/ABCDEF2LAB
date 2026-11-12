@@ -440,7 +440,7 @@ func monotonic(old, next Job) bool {
 			return false
 		}
 		a, b := old.ModelUsage, next.ModelUsage
-		if b.ReservedCostUSDMicros < a.ReservedCostUSDMicros || b.Requests < a.Requests || b.InputTokens < a.InputTokens || b.OutputTokens < a.OutputTokens || b.ReservedInputTokens < a.ReservedInputTokens || b.ReservedOutputTokens < a.ReservedOutputTokens || b.CostUSDMicros < a.CostUSDMicros {
+		if b.ReservedCostUSDMicros < a.ReservedCostUSDMicros || b.Requests < a.Requests || b.InputTokens < a.InputTokens || b.OutputTokens < a.OutputTokens || b.ReservedInputTokens < a.ReservedInputTokens || b.ReservedOutputTokens < a.ReservedOutputTokens || b.CostUSDMicros < a.CostUSDMicros || b.UnknownUsageCalls < a.UnknownUsageCalls {
 			return false
 		}
 	}

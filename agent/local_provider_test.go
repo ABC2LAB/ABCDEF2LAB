@@ -279,10 +279,17 @@ func TestLocalProviderCompleteMasksURLAndResponseBody(t *testing.T) {
 	}
 }
 
+// 정책 거부는 할당량 문구보다 앞서고, 원문 없이 고정 정책 분류로 남는다. 예산이 일시 실패와 구별할 수 있어야 한다.
 func TestLocalProviderBlockedErrorWinsOverQuotaText(t *testing.T) {
 	err := errors.Join(llmpolicy.ErrRequestBlocked, errors.New("insufficient_quota fixture-error-canary"))
-	if got := localProviderError(context.Background(), err); got != ErrLocalProvider {
-		t.Fatalf("blocked error=%v, want generic local error", got)
+	got := localProviderError(context.Background(), err)
+	if got != ErrLocalProviderPolicy || !errors.Is(got, llmpolicy.ErrRequestBlocked) || !errors.Is(got, ErrLocalProvider) ||
+		errors.Unwrap(got) != nil || got.Error() != ErrLocalProvider.Error() || strings.Contains(got.Error(), "canary") {
+		t.Fatalf("blocked error=%v, want fixed policy classification", got)
+	}
+	// 정책과 무관한 전송 실패는 정책 분류가 아니다.
+	if got := localProviderError(context.Background(), llmpolicy.ErrTransport); got != ErrLocalProvider || errors.Is(got, llmpolicy.ErrRequestBlocked) {
+		t.Fatalf("transport error=%v, want generic local error", got)
 	}
 }
 

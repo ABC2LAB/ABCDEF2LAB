@@ -67,6 +67,27 @@ it("keeps reserved cost on unknown and rejects decreasing reservation", () => {
   const next = { ...current, revision: current.revision + 1, model_usage: { ...usage, reserved_cost_usd_micros: 0 } };
   expect(() => matchURLJob(next, current)).toThrow();
 });
+it("accepts failed calls counted at their reservation and rejects invalid or decreasing counts", () => {
+  const usage = {
+    requests: 2,
+    input_tokens: 10,
+    output_tokens: 10,
+    reserved_input_tokens: 20,
+    reserved_output_tokens: 20,
+    cost_usd_micros: 1,
+    usage_known: true,
+    unknown_usage_calls: 1,
+  };
+  const current = parseURLJob(envelope({ ...running, scope, model_usage: usage }), owner);
+  expect(current.model_usage?.unknown_usage_calls).toBe(1);
+  for (const bad of [3, -1, 1.5, "1"]) {
+    expect(() =>
+      parseURLJob(envelope({ ...running, scope, model_usage: { ...usage, unknown_usage_calls: bad } }), owner),
+    ).toThrow();
+  }
+  const next = { ...current, revision: current.revision + 1, model_usage: { ...usage, unknown_usage_calls: 0 } };
+  expect(() => matchURLJob(next, current)).toThrow();
+});
 
 it.each([
   undefined,
