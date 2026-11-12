@@ -224,6 +224,39 @@ func TestFirstDiagnosisModelBudgetFailedCallCountsReservation(t *testing.T) {
 	}
 }
 
+// 실패한 호출이 예약보다 큰 사용량을 보고하면 예약 상한의 근거가 깨진 것이라 예약량으로 정산하지 않고 막는다.
+func TestFirstDiagnosisModelBudgetFailedCallOverReservationBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		usage func(reservedInput int) llm.Usage
+		want  bool
+	}{
+		{"none-reported", func(int) llm.Usage { return llm.Usage{} }, true},
+		{"at-reservation", func(in int) llm.Usage { return llm.Usage{InputTokens: in, OutputTokens: 100} }, true},
+		{"input-over", func(in int) llm.Usage { return llm.Usage{InputTokens: in + 1} }, false},
+		{"output-over", func(int) llm.Usage { return llm.Usage{OutputTokens: 101} }, false},
+		{"negative", func(int) llm.Usage { return llm.Usage{CacheReadTokens: -1} }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, cfg := modelBudgetFixture(t, func(diagnosisprep.ModelUsage) error { return nil })
+			req := llm.CompletionRequest{MaxTokens: 100}
+			if b.before(context.Background(), cfg, &req) != nil {
+				t.Fatal("first call denied")
+			}
+			reserved := reservedInputFor(t, req)
+			if b.after(tc.usage(int(reserved)), 100, errors.New("synthetic 503")) == nil {
+				t.Fatal("failed call reported success")
+			}
+			u := b.Snapshot()
+			bounded := u.UsageKnown && u.UnknownUsageCalls == 1 && u.InputTokens == reserved && u.OutputTokens == 100
+			next := b.before(context.Background(), cfg, &req) == nil
+			if bounded != tc.want || next != tc.want {
+				t.Fatalf("bounded=%v next=%v want=%v usage=%+v", bounded, next, tc.want, u)
+			}
+		})
+	}
+}
+
 func TestFirstDiagnosisFailedCallBoundedClassification(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

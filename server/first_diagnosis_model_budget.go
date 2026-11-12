@@ -272,6 +272,14 @@ func failedCallBounded(callErr error, externalBlocked bool) bool {
 	return true
 }
 
+// reportedWithinReservation은 실패한 호출이 함께 보고한 사용량이 예약 안인지 본다. 보고 값이 예약보다 크면
+// 예약을 상한으로 쓴 근거(요청 크기·max_tokens)가 깨진 것이므로 예약량으로 정산하지 않고 막는다.
+// 보고 값이 없으면(0) 예약량으로 정산한다.
+func reportedWithinReservation(usage llm.Usage, reservedInput int64, outputLimit int) bool {
+	return usage.InputTokens >= 0 && usage.OutputTokens >= 0 && usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0 &&
+		int64(usage.InputTokens) <= reservedInput && usage.OutputTokens <= outputLimit
+}
+
 func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, callErr error) error {
 	if b == nil {
 		return callErr
@@ -294,7 +302,7 @@ func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, call
 		b.usage.InputTokens += int64(usage.InputTokens)
 		b.usage.OutputTokens += int64(usage.OutputTokens)
 		b.usage.UsageKnown = true
-	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked):
+	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked) && reportedWithinReservation(usage, b.callInput, outputLimit):
 		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
 		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.
 		// 다음 호출의 예산 검사는 예약 합계로 하므로 상한은 넓어지지 않는다.
