@@ -171,6 +171,7 @@ export function UrlNewScanLive() {
   };
 
   const excludedCount = ev.split("\n").filter((l) => l.trim()).length;
+  const site = shown?.target_url ?? input?.target_url ?? tv.trim();
   const scope = job?.scope;
   const to = job ? scanViewFor(job, flowStage) : null;
   const started = !!job && job.state !== "ready" && job.state !== "awaiting_approval";
@@ -260,6 +261,32 @@ export function UrlNewScanLive() {
       </button>
     ) : null;
   }
+
+  // 절대규칙 6 고지 (시안 v52): 할 일을 제목으로, 자세한 설명 · 원래 고지 문장은 (?) 메모에. 범위 확인 앞뒤 모두 보인다
+  const warnRule = (
+    <Rule
+      warn
+      t="열면 지워지는 주소는 빼 두세요"
+      sub="조회 요청도 데이터를 바꿀 수 있고, 서버는 검증하지 않음"
+      tip={
+        <HelpTip label="설명 보기">
+          <b>어떤 사이트는 주소를 열기만 해도 데이터가 지워집니다.</b>
+          <br />
+          예: <span className={s.mono}>/logout</span> (로그아웃) · <span className={s.mono}>/delete?id=3</span> (3번 글
+          삭제)
+          <br />
+          <br />
+          JinDo는 찾은 주소를 직접 열어 보며 점검합니다. 이런 주소가 섞여 있으면 점검하는 도중에 실제 글이 지워지거나
+          계정이 로그아웃될 수 있습니다.
+          <br />
+          <br />
+          GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다. 점검 전에 <b>제외 경로</b>에
+          넣어 두세요. 제외 경로에는 <span className={s.mono}>/delete</span>처럼 경로만 넣으면 query 와 상관없이
+          빠집니다(<span className={s.mono}>?</span> 가 든 값은 받지 않습니다).
+        </HelpTip>
+      }
+    />
+  );
 
   return (
     <>
@@ -356,14 +383,11 @@ export function UrlNewScanLive() {
           {/* 로그인 (시안 v66 ~ v68): 서버 진단 입력(URLDiagnosisInput)에 계정 칸이 없어 칸만 두고 입력은 막는다.
               받아도 보낼 곳이 없는 아이디 · 비밀번호를 치게 하지 않는다. 지금 점검은 로그인 없이 진행된다. */}
           <div className={s.fsec} hidden={page !== 1}>
-            <div className={s["fsec-h"]}>
+            <div className={cx(s["fsec-h"], s["fsec-ht"])}>
               <h2>로그인</h2>
+              <NotYet why="서버 진단 입력에 계정 칸이 없어 입력을 막아 두었습니다. 지금 점검은 로그인 없이 진행됩니다" />
             </div>
             <div className={s["fsec-b"]}>
-              <NotYet
-                block
-                why="서버 진단 입력에 계정 칸이 없어 입력을 막아 두었습니다. 지금 점검은 로그인 없이 진행됩니다"
-              />
               <div className={s.seg} role="radiogroup" aria-label="로그인 여부">
                 <label>
                   <input type="radio" name="nAuth" disabled />
@@ -579,11 +603,11 @@ export function UrlNewScanLive() {
           <div className={cx(s.formbar, s.paged)}>
             {page === 1 ? (
               <>
+                <span className={s.why}>{why1.join(" · ")}</span>
                 <button className={cx(s.btn, s.pri)} type="submit" disabled={!canNext}>
                   다음
                   <Icon name="arrow" />
                 </button>
-                <span className={s.why}>{why1.join(" · ")}</span>
               </>
             ) : (
               <>
@@ -618,7 +642,7 @@ export function UrlNewScanLive() {
           <div className={s.isec} style={{ borderTop: 0, marginTop: 10, paddingTop: 0 }}>
             <dl className={s.sumkv}>
               <dt>사이트</dt>
-              <dd className={s.mono}>{shown?.target_url ?? input?.target_url ?? (tv.trim() || "—")}</dd>
+              <dd title={site || undefined}>{site ? urlHost(site) : "—"}</dd>
               <dt>로그인</dt>
               <dd>
                 <NotYet why="서버 진단 입력에 계정 칸이 없습니다" />
@@ -639,10 +663,10 @@ export function UrlNewScanLive() {
               <dd>
                 <NotYet why="서버 진단 입력에 점검 목표 칸이 없습니다" />
               </dd>
+              <dt>쓰기 요청</dt>
+              <dd>{profile?.workflow && mv === "ai_auto_v1" ? "자동 승인 안 함" : "승인 후 전송"}</dd>
               {profile?.workflow ? (
                 <>
-                  <dt>쓰기 요청</dt>
-                  <dd>{mv === "ai_auto_v1" ? "자동 승인 안 함" : "한 건씩 승인 후 전송"}</dd>
                   <dt>제외 경로</dt>
                   <dd>{excludedCount ? `${excludedCount}개` : "없음"}</dd>
                 </>
@@ -696,32 +720,19 @@ export function UrlNewScanLive() {
                   />
                 ) : null}
                 <Rule t="모든 요청 · 승인 기록 남김" sub={`승인 만료 ${scope.expires_at}`} />
-                {/* 절대규칙 6 고지 (시안 v52): 할 일을 제목으로, 자세한 설명 · 원래 고지 문장은 (?) 메모에 */}
-                <Rule
-                  warn
-                  t="열면 지워지는 주소는 빼 두세요"
-                  sub="조회 요청도 데이터를 바꿀 수 있고, 서버는 검증하지 않음"
-                  tip={
-                    <HelpTip label="설명 보기">
-                      <b>어떤 사이트는 주소를 열기만 해도 데이터가 지워집니다.</b>
-                      <br />
-                      예: <span className={s.mono}>/logout</span> (로그아웃) ·{" "}
-                      <span className={s.mono}>/delete?id=3</span> (3번 글 삭제)
-                      <br />
-                      <br />
-                      JinDo는 찾은 주소를 직접 열어 보며 점검합니다. 이런 주소가 섞여 있으면 점검하는 도중에 실제 글이
-                      지워지거나 계정이 로그아웃될 수 있습니다.
-                      <br />
-                      <br />
-                      GET · HEAD 와 query 도 상태를 바꿀 수 있고, 서버는 그 무해성을 검증하지 않습니다. 점검 전에{" "}
-                      <b>제외 경로</b>에 넣어 두세요. 제외 경로에는 <span className={s.mono}>/delete</span>처럼 경로만
-                      넣으면 query 와 상관없이 빠집니다(<span className={s.mono}>?</span> 가 든 값은 받지 않습니다).
-                    </HelpTip>
-                  }
-                />
+                {warnRule}
               </ul>
             ) : (
-              <p className={s.help}>승인 범위를 확인하면 서버가 정한 범위 · 상한이 여기에 나옵니다.</p>
+              // 범위 확인 전 (시안 #pTarget · #pSendT · #pExcl): 서버가 늘 지키는 것만. 범위 · 상한 수치는 확인 뒤에 나온다
+              <ul className={s.policy} id="luPolicy">
+                <Rule t="이 사이트에만 요청" sub={site ? urlHost(site) : undefined} />
+                <Rule t="쓰기 요청은 승인 후 전송" />
+                {profile?.workflow ? (
+                  <Rule t="제외한 경로는 요청 안 함" sub={excludedCount ? `${excludedCount}개` : "없음"} />
+                ) : null}
+                <Rule t="모든 요청 · 승인 기록 남김" />
+                {warnRule}
+              </ul>
             )}
           </div>
           <div className={s.isec}>
