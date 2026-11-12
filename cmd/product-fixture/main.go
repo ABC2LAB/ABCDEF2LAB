@@ -22,6 +22,9 @@ import (
 
 var calls, goals, planner, worker, allowed, denied, exploreTurns, exploreBash atomic.Int64
 
+// exploreBashSeen은 탐색 직접 Bash 결과에서 모델이 본 상태 코드 줄이다(예: "approved=200 outside=403"). 값은 소유 fixture의 상태 코드뿐이다.
+var exploreBashSeen atomic.Value
+
 func main() {
 	mode := flag.String("mode", "model", "acceptance role")
 	target := flag.String("target", "https://juice.test:9443", "owned target")
@@ -44,7 +47,7 @@ func main() {
 				c.Close()
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load()})
+		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load()})
 	})
 	if *mode == "model" || *mode == "workflow-model" {
 		mux := http.NewServeMux()
