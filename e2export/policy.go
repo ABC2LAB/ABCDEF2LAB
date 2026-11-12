@@ -98,6 +98,11 @@ func canonicalPolicy(cfg e2proxy.Config, maxRequests uint64, b PolicyBehavior) (
 		if r.TLSSPKISHA256 != "" {
 			rule["tls_approval_binding"] = "exact_leaf_spki_sha256_v1"
 		}
+		// 인증 준비 규칙(C14)은 목적과 정확 경로 일치를 지문에 넣는다. 목적이 없는 규칙의 지문은 그대로다.
+		if r.Purpose != "" {
+			rule["purpose"] = r.Purpose
+			rule["path_match"] = "exact_path_v1"
+		}
 		rules = append(rules, rule)
 	}
 	l := cfg.Limits

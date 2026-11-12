@@ -254,6 +254,35 @@ func TestE2HTTPPolicyDocumentAcceptsResponseLimits(t *testing.T) {
 	}
 }
 
+// 인증 준비 규칙(C14)은 정책 파일의 선택 칸 purpose로 받고, 목적이 틀리면 거부한다.
+func TestE2HTTPPolicyDocumentAcceptsAuthPrepRule(t *testing.T) {
+	_, _, policy := e2HostPolicyFixture(t)
+	login := policy.Rules[0]
+	login.Ref, login.PathScopeRef, login.PathPrefix, login.Methods, login.Purpose, login.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, "auth_prep", nil
+	policy.Rules = append(policy.Rules, login)
+	encode := func(p E2HTTPFilePolicy) []byte {
+		raw, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document map[string]json.RawMessage
+		if json.Unmarshal(raw, &document) != nil {
+			t.Fatal("fixture decode")
+		}
+		delete(document, "audit_key")
+		wire, _ := json.Marshal(document)
+		return wire
+	}
+	got, err := ValidateE2HTTPPolicyDocument(encode(policy), false)
+	if err != nil || got.Rules[len(got.Rules)-1].Purpose != "auth_prep" {
+		t.Fatalf("auth prep rule rejected: %v", err)
+	}
+	policy.Rules[len(policy.Rules)-1].Purpose = "admin"
+	if _, err := ValidateE2HTTPPolicyDocument(encode(policy), false); err == nil {
+		t.Fatal("unknown purpose accepted")
+	}
+}
+
 // factory의 후속 정적 검사만으로 통과하는 누락 필드를 backend가 직접 거부해야 한다.
 func TestE2StandaloneUsesPreparedDocumentValidation(t *testing.T) {
 	host, _, policy := e2HostPolicyFixture(t)
