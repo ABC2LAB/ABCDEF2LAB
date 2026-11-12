@@ -212,7 +212,7 @@ func ValidateWorkspace(data []byte, contentLimit uint64) error {
 	seen := make(map[string]bool)
 	dirs := map[string]bool{".": true}
 	var total uint64
-	entries := 0
+	entries, nameBytes := 0, 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -229,7 +229,9 @@ func ValidateWorkspace(data []byte, contentLimit uint64) error {
 			return ErrWorkspaceInvalid
 		}
 		seen[name] = true
-		if entries++; entries > maxWorkspaceEntries {
+		entries++
+		nameBytes += len(hdr.Name)
+		if entries > maxWorkspaceEntries || nameBytes > maxWorkspaceNameBytes {
 			return ErrWorkspaceTooLarge
 		}
 		switch hdr.Typeflag {
