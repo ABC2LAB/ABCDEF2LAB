@@ -13,6 +13,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/exploration"
+	"github.com/Autumn-27/norma/harness"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -23,7 +24,8 @@ func isExplorationMCPContext(ctx context.Context) bool {
 	return v
 }
 
-// BrowserInfo는 서버가 직접 만든 브라우저 컨테이너 lease의 결속이다. 공개 JSON 설치 입력이나 모델이 발급하지 않는다.
+// BrowserInfo는 서버가 직접 만든 브라우저 컨테이너 lease의 attestation이다. 모델/공개 JSON이 발급하지 않는다.
+// host는 실제 이미지·패키지 판·no-webmcp·caps 없음·file URL 차단을 따로 증명해야 한다(호스트 의무 문서).
 type ExplorationBrowserInfo struct {
 	Binding        exploration.Binding
 	PackageVersion string
@@ -41,7 +43,7 @@ type ExplorationSessionOptions struct {
 	Binding      exploration.Binding
 	Boundary     exploration.Boundary
 	StartBrowser func(context.Context, exploration.Binding) (ExplorationBrowserLease, error)
-	// DirectBash와 APIRecon은 이 binding의 직접 샌드박스 도구만 받는다. 일반 ToolAugment 결과는 받지 않는다.
+	// 검증된 typed 직접 sandbox adapter가 없어 현재 둘 다 non-nil이면 I/O 전에 거부한다.
 	DirectBash actool.CoreTool
 	APIRecon   actool.CoreTool
 	Redact     func([]byte) []byte
@@ -79,22 +81,22 @@ func OpenExplorationSession(parent context.Context, o ExplorationSessionOptions)
 	if o.StatusInterval > time.Second {
 		return nil, exploration.ErrBinding
 	}
-	for _, named := range []struct {
-		name string
-		t    actool.CoreTool
-	}{{"Bash", o.DirectBash}, {"Skill", o.APIRecon}} {
-		if named.t != nil && (nilExplorationTool(named.t) || named.t.Name() != named.name) {
-			return nil, exploration.ErrBinding
-		}
+	// 범용 Bash/Skill은 현재 지원하지 않는다. 실제 직접 sandbox의 typed adapter가 선행해야 한다.
+	if o.DirectBash != nil || o.APIRecon != nil {
+		return nil, exploration.ErrUnavailable
 	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(o.Binding.Limits.TimeBudgetSeconds)*time.Second)
 	s := &ExplorationSession{options: o, ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	fail := func() (*ExplorationSession, error) {
-		_ = s.Close(context.Background(), exploration.BoundaryUnavailable)
-		return nil, exploration.ErrUnavailable
+		closeErr := s.Close(context.Background(), exploration.BoundaryUnavailable)
+		if closeErr != nil {
+			exploration.ReportFailure("open_cleanup", closeErr)
+		}
+		return nil, errors.Join(exploration.ErrUnavailable, closeErr)
 	}
 	lease, err := o.Boundary.Open(ctx, o.Binding)
 	if err != nil || lease == nil {
+		exploration.ReportFailure("boundary_open", err)
 		cancel()
 		if lease != nil {
 			s.boundary = lease
@@ -109,19 +111,23 @@ func OpenExplorationSession(parent context.Context, o ExplorationSessionOptions)
 	browser, err := o.StartBrowser(ctx, o.Binding)
 	s.browser = browser
 	if err != nil || browser == nil {
+		exploration.ReportFailure("browser_start", err)
 		return fail()
 	}
 	info := browser.Info()
 	if !validExplorationBrowser(info, o.Binding) {
+		exploration.ReportFailure("browser_start", exploration.ErrBinding)
 		return fail()
 	}
 	client, err := connectMCP(context.WithValue(ctx, explorationMCPContextKey{}, true), &info.MCP)
 	s.client = client
 	if err != nil || client == nil {
+		exploration.ReportFailure("mcp_connect", err)
 		return fail()
 	}
 	tools, err := agentMCPTools(ctx, &info.MCP, client)
 	if err != nil || !completeExplorationCatalog(tools) {
+		exploration.ReportFailure("catalog", exploration.ErrBinding)
 		return fail()
 	}
 	s.tools = tools
@@ -190,6 +196,10 @@ func (s *ExplorationSession) Check(ctx context.Context) error {
 	}
 	state, err := s.boundary.Status(ctx)
 	if err != nil || state.Validate(s.options.Binding) != nil {
+		if err == nil {
+			err = exploration.ErrBinding
+		}
+		exploration.ReportFailure("status", err)
 		return exploration.ErrUnavailable
 	}
 	if !state.Active {
@@ -213,16 +223,23 @@ func (s *ExplorationSession) watch() {
 			if errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
 				reason = exploration.CapExhausted
 			}
-			_ = s.Close(context.Background(), reason)
+			s.closeAndReport(reason, "watch_close")
 			return
 		case <-ticker.C:
 			state, err := s.boundary.Status(s.ctx)
 			if err != nil || state.Validate(s.options.Binding) != nil {
-				_ = s.Close(context.Background(), exploration.BoundaryUnavailable)
+				if s.ctx.Err() != nil {
+					continue
+				}
+				if err == nil {
+					err = exploration.ErrBinding
+				}
+				exploration.ReportFailure("status", err)
+				s.closeAndReport(exploration.BoundaryUnavailable, "watch_close")
 				return
 			}
 			if !state.Active {
-				_ = s.Close(context.Background(), state.ClosedReason)
+				s.closeAndReport(state.ClosedReason, "watch_close")
 				return
 			}
 		}
@@ -259,6 +276,21 @@ func (s *ExplorationSession) Run(ctx context.Context, w *agent.Worker, o agent.E
 				reason = exploration.CapExhausted
 			}
 		}
+		if runCtx.Err() == nil {
+			switch {
+			case result.Reason == harness.ReasonModelError:
+				reason = exploration.ModelError
+			case err != nil:
+				reason = exploration.RuntimeUnavailable
+			case result.Reason == harness.ReasonMaxTurns || result.Reason == harness.ReasonTimeout:
+				reason = exploration.CapExhausted
+			case result.Reason != harness.ReasonCompleted:
+				reason = exploration.RuntimeUnavailable
+			}
+		}
+		if err != nil {
+			exploration.ReportFailure("worker_run", err)
+		}
 		if closeErr := s.Close(context.Background(), reason); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
@@ -287,20 +319,27 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 		}
 		budget := s.options.CloseTimeout / time.Duration(steps)
 		var errs []error
-		clean := func(fn func(context.Context) error) {
+		clean := func(stage string, fn func(context.Context) error) {
 			ctx, cancel := context.WithTimeout(base, budget)
 			defer cancel()
-			if err := fn(ctx); err != nil || ctx.Err() != nil {
-				errs = append(errs, exploration.ErrUnavailable)
+			err := fn(ctx)
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
+			if err != nil {
+				errs = append(errs, exploration.ReportFailure(stage, err))
 			}
 		}
 		if s.client != nil {
-			clean(func(ctx context.Context) error {
+			clean("browser_close", func(ctx context.Context) error {
 				for _, tool := range s.tools {
 					if tool.Name() == "mcp__"+exploration.MCPServerName+"__browser_close" {
 						result, err := tool.Call(ctx, json.RawMessage(`{}`), nil)
-						if err != nil || result.IsError {
-							return exploration.ErrUnavailable
+						if err != nil {
+							return err
+						}
+						if result.IsError {
+							return exploration.ErrToolResult
 						}
 						break
 					}
@@ -310,10 +349,10 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 		}
 		// 브라우저의 정상 종료가 끝난 뒤 기존 관찰을 읽는다. 이 동안 경계의 private reader는 닫지 않는다.
 		if s.finalizeReady && s.options.Finalize != nil {
-			clean(func(ctx context.Context) error { return s.options.Finalize(ctx, s.options.Binding) })
+			clean("finalize", func(ctx context.Context) error { return s.options.Finalize(ctx, s.options.Binding) })
 		}
 		if s.client != nil {
-			clean(func(ctx context.Context) error {
+			clean("mcp_delete", func(ctx context.Context) error {
 				if cl, ok := s.client.(interface{ CloseContext(context.Context) error }); ok {
 					return cl.CloseContext(ctx)
 				}
@@ -321,13 +360,16 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 			})
 		}
 		if s.browser != nil {
-			clean(s.browser.Close)
+			clean("browser_lease", s.browser.Close)
 		}
 		if s.boundary != nil {
-			clean(func(ctx context.Context) error {
+			clean("boundary_close", func(ctx context.Context) error {
 				state, err := s.boundary.Close(ctx, reason)
-				if err != nil || state.Validate(s.options.Binding) != nil || state.Active {
-					return exploration.ErrUnavailable
+				if err != nil {
+					return err
+				}
+				if state.Validate(s.options.Binding) != nil || state.Active || (reason != exploration.Completed && state.ClosedReason == exploration.Completed) {
+					return exploration.ErrBinding
 				}
 				// Close와 대상 철회가 경합하면 경계가 실제로 확정한 마감 사유를 남긴다.
 				s.mu.Lock()
@@ -345,4 +387,10 @@ func (s *ExplorationSession) ClosedReason() exploration.Reason {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.reason
+}
+
+func (s *ExplorationSession) closeAndReport(reason exploration.Reason, stage string) {
+	if err := s.Close(context.Background(), reason); err != nil {
+		exploration.ReportFailure(stage, err)
+	}
 }

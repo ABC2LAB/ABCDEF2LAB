@@ -163,3 +163,50 @@ func TestExplorationToolNeverSpillsUnredactedOutput(t *testing.T) {
 		t.Fatal("raw tool output spilled before redaction")
 	}
 }
+
+func TestExplorationGuardsRejectUnsafeSameSizeProfileControlledContextAndURLShapes(t *testing.T) {
+	provider := &explorationProvider{}
+	worker := NewWorker(provider, "owned", t.TempDir(), nil, 0, 10)
+	options := explorationOptions(&recordingDiscoveryReporter{})
+	options.BrowserTools[0] = actool.Build(actool.Spec{Name: "mcp__explore_browser__browser_run_code_unsafe"})
+	if _, err := worker.ExecuteExploration(t.Context(), options, nil); !errors.Is(err, ErrExplorationProfile) {
+		t.Fatal("same-size unsafe catalog accepted")
+	}
+	options = explorationOptions(&recordingDiscoveryReporter{})
+	if _, err := worker.ExecuteExploration(WithControlledReadExecution(t.Context(), ControlledReadExecution{}), options, nil); !errors.Is(err, ErrExplorationProfile) {
+		t.Fatal("registered read/exploration contexts mixed")
+	}
+	for _, target := range []string{"ftp://owned.test/", "https://u:p@owned.test/", "https://owned.test/?token=seeded", "https://owned.test/#fragment"} {
+		options.TargetURL = target
+		if _, err := worker.ExecuteExploration(t.Context(), options, nil); !errors.Is(err, ErrExplorationProfile) {
+			t.Fatal("unsafe URL shape accepted")
+		}
+	}
+	if provider.calls != 0 {
+		t.Fatal("guard rejection called provider")
+	}
+}
+
+func TestExplorationRejectsGenericBashAndSkillUntilTypedSandboxExists(t *testing.T) {
+	provider := &explorationProvider{}
+	worker := NewWorker(provider, "owned", t.TempDir(), nil, 0, 10)
+	called := 0
+	for _, name := range []string{"Bash", "Skill"} {
+		options := explorationOptions(&recordingDiscoveryReporter{})
+		tool := actool.Build(actool.Spec{Name: name, Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
+			called++
+			return actool.Text("unsafe fixture execution"), nil
+		}})
+		if name == "Bash" {
+			options.DirectBash = tool
+		} else {
+			options.APIRecon = tool
+		}
+		if _, err := worker.ExecuteExploration(t.Context(), options, nil); !errors.Is(err, ErrExplorationProfile) {
+			t.Fatal("generic direct sandbox capability accepted")
+		}
+	}
+	if provider.calls != 0 || called != 0 {
+		t.Fatal("unsupported direct capability activated model or script")
+	}
+}
