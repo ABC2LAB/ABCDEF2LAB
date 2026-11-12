@@ -185,6 +185,36 @@ describe("자산 탐색", () => {
     expect(screen.queryByText("주소 구조")).toBeNull();
   });
 
+  it("찾은 경로: 아직 안 나온 묶음 · 거르기별 빈 글 · 로그인 범례 자리 · 경로 상세의 요청 횟수 · 기능 자리 (시안 v24 · v32)", () => {
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: { ...flow, endpoints: [ep("read", "GET", "/api/products/1", "attested_read")] },
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    const aside = screen.getByRole("complementary", { name: "찾은 경로" });
+    // 상품·리뷰 하나만 나왔으면 나머지 다섯 묶음이 '아직 찾지 못한 묶음'
+    expect(within(aside).getByText(/^아직 찾지 못한 묶음 · /)).toHaveTextContent(
+      "계정·인증, 장바구니·주문, 관리자, 정적 자원, 공개 페이지·API",
+    );
+    expect(within(aside).getByText(/^로그인/)).toHaveTextContent("아직 구현 안 됨");
+    fireEvent.click(within(aside).getByRole("radio", { name: "승인 필요" }));
+    expect(within(aside).getByText("승인이 필요한 경로가 아직 없습니다.")).toBeInTheDocument();
+    fireEvent.click(within(aside).getByRole("radio", { name: "제외" }));
+    expect(within(aside).getByText("제외한 경로가 아직 없습니다.")).toBeInTheDocument();
+    fireEvent.click(within(aside).getByRole("radio", { name: "전체" }));
+    fireEvent.click(within(aside).getByRole("button", { name: /\/api\/products\/1/ }));
+    const detail = screen.getByRole("complementary", { name: "찾은 경로" });
+    expect(within(detail).getByText("요청 횟수").nextElementSibling).toHaveTextContent("아직 구현 안 됨");
+    expect(within(detail).getByText("기능").nextElementSibling).toHaveTextContent("아직 구현 안 됨");
+  });
+
   it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값, 경과는 '아직 구현 안 됨' (시안 v24)", () => {
     useUrl.setState({
       handle,

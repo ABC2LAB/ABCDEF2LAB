@@ -19,6 +19,19 @@ import { CloseInspButton, CodeCard, InspOpenButton, Kv, PaneToggle } from "../..
 import s from "../../workbench.module.css";
 import { UrlHead, UrlNotices, UrlRefreshButton, useUrlHost } from "./urlParts";
 
+/** 경로 규칙 묶음 전체 (group 이 돌려줄 수 있는 이름). */
+export const GROUPS = ["계정·인증", "장바구니·주문", "관리자", "상품·리뷰", "정적 자원", "공개 페이지·API"] as const;
+/** 찾은 경로가 아직 없는 묶음. */
+export const missingGroups = (endpoints: readonly WorkflowEndpoint[]) =>
+  GROUPS.filter((g) => !endpoints.some((e) => group(e) === g));
+/** 찾은 경로 칸이 비었을 때 글 (시안 v32: 거르기마다 다르게). */
+function treeEmpty(filter: string, total: number): string {
+  if (!total) return "아직 찾은 경로가 없습니다.";
+  if (filter === "ap") return "승인이 필요한 경로가 아직 없습니다.";
+  if (filter === "ex") return "제외한 경로가 아직 없습니다.";
+  return "조건에 맞는 경로가 없습니다.";
+}
+
 /** 경로 → 묶음 이름 (경로 규칙). */
 export function group(e: WorkflowEndpoint): string {
   if (/user|account|auth|login/i.test(e.path)) return "계정·인증";
@@ -251,6 +264,9 @@ function EndpointDetail({ endpoint, back }: { endpoint: WorkflowEndpoint | null;
               ["출처", e.source],
               ["종류", e.kind],
               ["중복 발견", `${e.duplicates}회`],
+              // 시안 v24 상세의 요청 횟수 · 기능 설명 — 서버가 경로마다 주지 않는다
+              ["요청 횟수", <NotYet key="n" why="서버가 경로마다 보낸 요청 횟수를 주지 않습니다" />],
+              ["기능", <NotYet key="f" why="서버가 경로의 기능 설명을 주지 않습니다" />],
               ...(e.observation_error ? [["관찰 실패", e.observation_error] as [string, ReactNode]] : []),
             ]}
           />
@@ -698,6 +714,11 @@ export function WorkflowCrawlLive() {
                       />
                       {`제외 ${count("ex")}`}
                     </span>
+                    {/* 시안 v24 범례의 "로그인 필요" 경로 수 — 서버가 로그인 필요 여부를 주지 않는다 */}
+                    <span>
+                      {"로그인 "}
+                      <NotYet why="서버가 경로의 로그인 필요 여부를 주지 않습니다" />
+                    </span>
                   </div>
                 </div>
               ) : null}
@@ -721,11 +742,13 @@ export function WorkflowCrawlLive() {
                   {shown.length ? (
                     <EndpointCards endpoints={shown} onSelect={select} />
                   ) : (
-                    <p className={s.empty}>
-                      {endpoints.length ? "조건에 맞는 경로가 없습니다." : "아직 찾은 경로가 없습니다."}
-                    </p>
+                    <p className={s.empty}>{treeEmpty(filter, endpoints.length)}</p>
                   )}
                 </div>
+                {/* 시안 v32: 아직 경로가 하나도 안 나온 묶음 (경로 규칙 묶음 기준) */}
+                {endpoints.length && missingGroups(endpoints).length ? (
+                  <p className={s["tree-hint"]}>{`아직 찾지 못한 묶음 · ${missingGroups(endpoints).join(", ")}`}</p>
+                ) : null}
               </div>
             </>
           )}
@@ -1111,7 +1134,7 @@ export function WorkflowActivity() {
                 aria-expanded={more}
                 onClick={() => setMore(!more)}
               >
-                {more ? "접기" : `이전 활동 ${activity.length - 5}건 더 보기`}
+                {more ? "최근 5건만 보기" : `이전 활동 ${activity.length - 5}건 더 보기`}
               </button>
             ) : null}
           </>
