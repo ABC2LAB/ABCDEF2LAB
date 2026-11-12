@@ -870,7 +870,10 @@ func requestPath(u *url.URL) (string, bool) {
 		}
 	}
 	for _, segment := range strings.Split(decoded, "/") {
-		if segment == "." || segment == ".." {
+		// 경로 매개변수(;...)를 조각에서 떼는 서버(Tomcat·Spring)는 "..;"를 점 조각으로 풀어 범위 밖으로 간다.
+		// 매개변수를 뗀 이름이 점 조각이면 막는다(%3b로 인코딩한 것도 풀린 뒤라 같이 걸린다).
+		name, _, _ := strings.Cut(segment, ";")
+		if segment == "." || segment == ".." || name == "." || name == ".." {
 			return "", false
 		}
 	}
