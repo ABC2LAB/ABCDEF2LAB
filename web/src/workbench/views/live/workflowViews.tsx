@@ -507,6 +507,11 @@ export function WorkflowCrawlLive() {
             <button className={s.btn} type="button" onClick={() => goTo("accessmap")}>
               접근통제 지도
             </button>
+            {/* 커버리지(검사 영역별 상태 집계). 지금은 예시, live 점등은 커버리지 집계 API 연결 후.
+                진입 자리는 잠정 — 이동찬 정렬(새 작업대 시안 기준). */}
+            <button className={s.btn} type="button" onClick={() => goTo("coverage")}>
+              커버리지
+            </button>
             <button className={cx(s.btn, s.pri)} type="button" disabled={!ready} onClick={() => goTo(next)}>
               {next === "scope" ? "범위 확인" : "점검 진행"}
               <Icon name="arrow" />

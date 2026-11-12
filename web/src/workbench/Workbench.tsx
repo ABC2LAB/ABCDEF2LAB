@@ -28,6 +28,7 @@ import {
 } from "./views/live/byMode";
 import { UrlAccessMapLive } from "./views/live/UrlAccessMapLive";
 import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
+import { UrlCoverageLive } from "./views/live/UrlCoverageLive";
 import { UrlExploreLive } from "./views/live/UrlExploreLive";
 import s from "./workbench.module.css";
 
@@ -361,6 +362,7 @@ export function Workbench() {
             {section("crawl", pick("자산 탐색", <UrlAssetsLive />))}
             {section("explore", pick("탐색 결과", <UrlExploreLive />))}
             {section("accessmap", pick("접근통제 지도", <UrlAccessMapLive />))}
+            {section("coverage", pick("커버리지", <UrlCoverageLive />))}
             {section("classify", pick("계정 분류", <AccountClassifyLive />))}
             {section("scope", pick("범위 확인", <ScopeByMode />))}
             {section("live", pick("점검 진행", <LiveByMode />))}
