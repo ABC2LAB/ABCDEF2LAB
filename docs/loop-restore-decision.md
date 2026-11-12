@@ -109,6 +109,7 @@
      - 자동 보강(DNS·HTTP)은 지금처럼 끈다(§2 표). 서버가 발견 자산에 직접 보내는 경로라서다.
      - 받는 자산을 E② 실행의 승인 대상 호스트(정책 규칙 origin의 호스트)로 프로그램이 제한한다(규칙 4). 다른 호스트·IP의 자산은 기록하지 않고 모델에 "승인 대상 밖"으로 돌려준다. 기록 자체는 대상 송신이 아니지만, 승인 밖 자산이 쌓이면 Planner가 그쪽으로 intent를 만들고 C01 전에는 거부 상한(제품 2회)에 닿아 실행이 멈출 수 있다(#468 범위 도구 설명과 같은 이유).
      - 원본 작업 시작처럼 진단 준비 때 대상 URL 자산 하나를 등록하고 작업에 연결한다(seed). 승인 대상이라 위 제한 안이다.
-     - DB 역할: assets·task_asset_links에 INSERT와 upsert가 고치는 칼럼의 UPDATE만 더한다. 설치의 역할 부여와 `checkFirstDiagnosisDatabase` 필수 권한 표를 같이 고친다. 보고서 역할은 바꾸지 않는다.
+     - DB 역할: assets·task_asset_links에 INSERT와 upsert가 고치는 칼럼의 UPDATE만 더한다. 설치의 역할 부여와 `checkFirstDiagnosisDatabase` 필수 권한 표를 같이 고친다.
+     - 구현(C24 PR) 때 정정: assets에 INSERT를 하면 연결 동기화 트리거(`sync_task_asset_links`)가 호출자 권한으로 연결 행을 넣고 **지우므로** task_asset_links에는 DELETE도 준다. 칼럼 목록은 `server.FirstDiagnosisAssetUpdateColumns`(앱 자산 칼럼 제외)·`FirstDiagnosisAssetLinkUpdateColumns` 하나로 설치와 검사가 같이 쓴다. 제품 저장 보고서와 등록 조회도 같은 실행 역할(`product_runtime`)로 열리므로, 그 검사는 이 쓰기 집합을 가져도 받고(요구하지는 않음) 일반 HTTP 실행 검사만 요구한다. 그 밖의 칼럼 갱신·표 단위 갱신·TRUNCATE·assets DELETE는 어느 모드에서도 받지 않는다(잠금 열 불변식 유지).
    - 결정 2: **add_company_scope는 진단 프로필에 넣지 않는다.** company_scope는 회사 단위로 모든 작업의 자산 귀속을 바꾸는 운영 설정이라, 한 실행 안에서 모델이 바꿀 대상이 아니다. 원본과 다른 점으로 남긴다.
    - 탐색 단계 발견을 assets 표로 옮기는 일은 이 결정과 별개다. 필요가 보이면 탐색 실행기 결정안에서 따로 정한다.
