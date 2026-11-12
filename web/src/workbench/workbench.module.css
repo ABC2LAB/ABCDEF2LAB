@@ -336,6 +336,20 @@
   padding-left: 20px;
   padding-right: max(18px, env(safe-area-inset-right, 0px));
 }
+/* 스크롤 막대: 평소엔 숨기고 마우스를 올린 칸에만 얇게 (시안 v91). 가운데 막대가 상세 경계선에 붙어 두 줄로 보이던 것 */
+.vm,
+.vi,
+.rail {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.vm:hover,
+.vi:hover {
+  scrollbar-color: var(--rule-2) transparent;
+}
+.rail:hover {
+  scrollbar-color: var(--rail-2) transparent;
+}
 
 /* 레일 */
 .rail {
