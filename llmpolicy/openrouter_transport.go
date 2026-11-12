@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"io"
@@ -77,30 +79,59 @@ func openRouterDial(ctx context.Context, network, address string) (net.Conn, err
 		return net.DefaultResolver.LookupNetIP(ctx, "ip", "openrouter.ai")
 	}, (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: -1}).DialContext)
 }
+
+// 다이얼 실패는 둘로 나눈다(P3 결정안 C06). 주소 정책 위반(목적지·비공인 주소·peer 불일치)은 정책을 막고,
+// 이름 풀이·연결 실패는 그 호출만 실패하는 일시 오류다. 둘 다 ErrOpenRouterPolicy로 보인다.
+var (
+	errOpenRouterAddressPolicy = fmt.Errorf("%w: address", ErrOpenRouterPolicy)
+	errOpenRouterConnect       = fmt.Errorf("%w: connect", ErrOpenRouterPolicy)
+)
+
 func openRouterDialWith(ctx context.Context, network, address string, lookup func(context.Context) ([]netip.Addr, error), dial func(context.Context, string, string) (net.Conn, error)) (net.Conn, error) {
 	if network != "tcp" || address != "openrouter.ai:443" {
-		return nil, ErrOpenRouterPolicy
+		return nil, errOpenRouterAddressPolicy
 	}
 	ips, err := lookup(ctx)
-	if err != nil || len(ips) == 0 || len(ips) > 32 {
-		return nil, ErrOpenRouterPolicy
+	if err != nil || len(ips) == 0 {
+		return nil, errOpenRouterConnect
+	}
+	if len(ips) > 32 {
+		return nil, errOpenRouterAddressPolicy
 	}
 	for _, ip := range ips {
 		if !openRouterPublic(ip) {
-			return nil, ErrOpenRouterPolicy
+			return nil, errOpenRouterAddressPolicy
 		}
 	}
 	selected := ips[0]
 	c, err := dial(ctx, "tcp", net.JoinHostPort(selected.String(), "443"))
 	if err != nil {
-		return nil, ErrOpenRouterPolicy
+		return nil, errOpenRouterConnect
 	}
 	peer, ok := c.RemoteAddr().(*net.TCPAddr)
 	if !ok || peer.Port != 443 || peer.AddrPort().Addr().Unmap() != selected.Unmap() {
 		_ = c.Close()
-		return nil, ErrOpenRouterPolicy
+		return nil, errOpenRouterAddressPolicy
 	}
 	return c, nil
+}
+
+// openRouterTransientError는 전송 오류가 그 호출만 실패하는 일시 오류인지 본다. 주소 정책 위반과 TLS 인증서 검증
+// 실패(중간자 가능성)는 정책을 막는다.
+func openRouterTransientError(err error) bool {
+	var certificate *tls.CertificateVerificationError
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	if err == nil || errors.Is(err, errOpenRouterAddressPolicy) || errors.As(err, &certificate) || errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &invalid) {
+		return false
+	}
+	return true
+}
+
+// openRouterTransientStatus는 429와 5xx다. 그 밖의 비정상 상태는 설정 오류로 보고 막는다.
+func openRouterTransientStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= 500 && status <= 599
 }
 func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	// 진단 관측은 송신 권한이나 기존 사용량 집계를 대신하지 않는다.
@@ -203,17 +234,27 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	_ = diagnosticlog.Emit(diagnosticContext, begin)
 	start := time.Now()
 	valid := false
+	transient := false
 	failureReason := "transport_failure"
 	defer func() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.active--
 		p.usage.LatencyMillis += time.Since(start).Milliseconds()
-		if !valid {
-			p.blocked = true
-			p.usage.Errors++
-			p.usage.FailureReason = failureReason
+		if valid {
+			p.transient = 0
+			return
 		}
+		p.usage.Errors++
+		p.usage.FailureReason = failureReason
+		// 일시 오류는 그 호출만 실패로 두고, 연속 상한에 닿으면 막는다(C06). 예약은 되돌리지 않는다.
+		if transient {
+			p.transient++
+			if p.transient < m.transientLimit() {
+				return
+			}
+		}
+		p.blocked = true
 	}()
 	copy := r.Clone(r.Context())
 	copy.Body = io.NopCloser(bytes.NewReader(wire))
@@ -226,6 +267,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	resp, err := t.base.RoundTrip(copy)
 	if err != nil || resp == nil {
 		diagnostic.ReasonCode = openRouterDiagnosticTransportReason(err, r.Context())
+		transient = openRouterTransientError(err)
 		return nil, ErrOpenRouterPolicy
 	}
 	if resp.StatusCode >= 100 && resp.StatusCode <= 599 {
@@ -237,6 +279,8 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	}
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, openRouterResponseLimit+1))
 	_ = resp.Body.Close()
+	// 본문을 읽다 끊긴 응답과 429·5xx는 일시 오류다. 크기 초과·그 밖의 상태는 설정 오류로 막는다.
+	transient = readErr != nil && openRouterTransientError(readErr) || readErr == nil && len(data) <= openRouterResponseLimit && openRouterTransientStatus(resp.StatusCode)
 	if readErr != nil || len(data) > openRouterResponseLimit || resp.StatusCode != 200 {
 		switch {
 		case resp.StatusCode == 401:
