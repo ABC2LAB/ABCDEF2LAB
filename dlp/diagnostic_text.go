@@ -24,3 +24,19 @@ func DiagnosticText(s string) string {
 	}
 	return s
 }
+
+// credentialSecrets는 DiagnosticText에서 자격 형태만 남긴 것이다. 주소·이메일은 가리지 않는다. 탐색 도구 결과처럼 모델이
+// 주소를 읽어야 다음 페이지로 갈 수 있는 출력에 쓴다.
+// 따옴표 없는 값은 공백·구분자에서 끊어 같은 줄의 다른 내용(주소 등)을 남긴다.
+var credentialSecrets = []*regexp.Regexp{diagnosticSecrets[0], diagnosticSecrets[1],
+	regexp.MustCompile(`(?i)(authorization|proxy-authorization|cookie|set-cookie|password|passwd|pwd|token|api[_-]?key|client[_-]?secret|secret|session[_-]?id)\s*["']?\s*[:=]\s*[^\s,;}&"'<>]+`),
+	diagnosticSecrets[3], diagnosticSecrets[4], diagnosticSecrets[7]}
+
+// CredentialText는 알려진 자격 형식(인증·쿠키 헤더 줄, 비밀번호·토큰 키=값, Bearer·Basic 값, JWT, 개인키)만 가린다.
+// 임의의 비밀을 판별한다고 주장하지 않는다.
+func CredentialText(s string) string {
+	for _, re := range credentialSecrets {
+		s = re.ReplaceAllString(s, Redacted)
+	}
+	return s
+}

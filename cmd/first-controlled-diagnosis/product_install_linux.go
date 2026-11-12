@@ -311,6 +311,21 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		c.TargetPolicy.UpstreamCAFile = filepath.Join(config, "upstream.pem")
 		c.TargetPolicy.UpstreamCASHA256 = p.SHA256
 	}
+	if x := c.TargetPolicy.Exploration; x != nil {
+		// 탐색 경계 CA(공개 인증서)를 설치 디렉터리로 복사해 고정한다. 개인키는 경계 컨테이너의 보호 입력에만 있다.
+		raw, e := readPrivateFile(x.BoundaryCAFile, 64<<10)
+		if e != nil {
+			return errPreparation
+		}
+		p := pin("explore-ca.pem", raw)
+		_, hostErr := newProductExplorationHost(productExplorationPolicy{ControlSocket: x.ControlSocket, DirectProxy: x.DirectProxy, BoundaryCAFile: filepath.Join(config, "explore-ca.pem"),
+			BoundaryCASHA256: p.SHA256, MCPURL: x.MCPURL, MaxExternalRequests: x.MaxExternalRequests}, raw)
+		clear(raw)
+		if hostErr != nil {
+			return errPreparation
+		}
+		x.BoundaryCAFile, x.BoundaryCASHA256 = filepath.Join(config, "explore-ca.pem"), p.SHA256
+	}
 	if pins.err != nil {
 		return errPreparation
 	}
