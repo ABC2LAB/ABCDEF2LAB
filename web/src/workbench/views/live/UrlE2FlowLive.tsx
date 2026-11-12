@@ -27,6 +27,7 @@ import {
 } from "@/lib/diagnosis/e2flow";
 
 import { cx } from "../../lib/cx";
+import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
@@ -176,6 +177,7 @@ function CallBlock({ call }: { call: E2Call }) {
 
 /** 전송 통제 흐름 (예시). */
 export function UrlE2FlowLive() {
+  const { goTo } = useShell();
   const [flow, setFlow] = useState<E2Flow | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -198,7 +200,16 @@ export function UrlE2FlowLive() {
 
   return (
     <>
-      <UrlHead title="전송 통제 흐름" crumb="전송 통제 흐름" />
+      <UrlHead
+        title="전송 통제 흐름"
+        crumb="전송 통제 흐름"
+        acts={
+          // 자매 화면(승인 범위) 진입 — 잠정 자리, 이동찬 작업대 시안 정렬 대상.
+          <button className={s.btn} type="button" onClick={() => goTo("controlpolicy")}>
+            전송 통제 정책
+          </button>
+        }
+      />
       <div className={s.vb}>
         <div className={s.vm}>
           <div className={s.note} role="note">
