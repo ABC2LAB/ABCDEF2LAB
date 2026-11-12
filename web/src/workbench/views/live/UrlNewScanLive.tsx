@@ -388,7 +388,7 @@ export function UrlNewScanLive() {
                 <div className={s.acct} key={id}>
                   <span className={s.an}>
                     {`계정 ${id}`}
-                    <small>{role}</small>
+                    <small className={id === "A" ? s.adm : undefined}>{role}</small>
                   </span>
                   <input className={s.inp} disabled placeholder="아이디" aria-label={`계정 ${id} (${role}) 아이디`} />
                   <input
@@ -550,7 +550,7 @@ export function UrlNewScanLive() {
                   <label className={s.lbl} htmlFor="nWorkers">
                     워커 수
                   </label>
-                  <select id="nWorkers" className={s.inp} disabled>
+                  <select id="nWorkers" className={cx(s.inp, s.workers)} disabled>
                     <option>—</option>
                   </select>
                 </div>
