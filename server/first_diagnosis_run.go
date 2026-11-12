@@ -40,6 +40,14 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcome(ctx context.Context, closur
 // PersistRunOutcomeStored는 일반 HTTP 종료 기록을 실제 저장하거나 동일 기록을 확인한 경우만 true다.
 // 시작 전과 등록 GET은 이 종류의 종료 기록을 만들지 않으므로 false를 반환한다.
 func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStored(ctx context.Context, closureErr error) (bool, error) {
+	return s.PersistRunOutcomeStoredStop(ctx, closureErr, false)
+}
+
+// PersistRunOutcomeStoredStop은 PersistRunOutcomeStored와 같고, operatorStop이면 실행 문맥 취소로 끝난 실행을 운영자
+// 중지(cancelled)로 남긴다. 진단 준비의 중지·대상 철회는 요청 승인 API를 거치지 않고 문맥 취소로 끝나기 때문이다.
+// 취소 원인은 호출자가 확인한다(설치·위임 검사 실패, 상태 조회 실패, 시간 상한 같은 다른 문맥 취소는 failed 그대로,
+// 실행 결과 상태 값 계약 §3.1).
+func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStoredStop(ctx context.Context, closureErr error, operatorStop bool) (bool, error) {
 	if s == nil || ctx == nil || ctx.Err() != nil {
 		return false, ErrFirstDiagnosisOutcome
 	}
@@ -64,10 +72,9 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStored(ctx context.Context, 
 	if closureErr != nil {
 		state.Phase, state.ClosureFailed, state.DrainComplete = "failed", true, false
 	}
-	// 실행 문맥 취소(진단 준비의 중지가 gateway를 닫는 경로)는 요청 승인 API 중지와 같은 운영자 중지다. 마감이
-	// 확인됐으면 저장 기록도 중지(cancelled)로 남긴다. diagnosis.Service가 문맥 취소를 cancelled로 보는 규칙과 같다
-	// (실행 결과 상태 값 계약 §3.1). 그러지 않으면 화면은 중지, 저장 기록·보고서는 실패로 갈린다.
-	if closureErr == nil && state.Outcome == "failed" && !state.ClosureFailed && errors.Is(runErr, context.Canceled) {
+	// 운영자 중지로 확인된 문맥 취소는 마감이 확인됐을 때만 저장 기록에 중지(cancelled)로 남긴다. 그러지 않으면 화면은
+	// 중지, 저장 기록·보고서는 실패로 갈린다.
+	if operatorStop && closureErr == nil && state.Outcome == "failed" && !state.ClosureFailed && errors.Is(runErr, context.Canceled) {
 		state.Phase, state.Outcome, state.DrainComplete = "closed", "cancelled", true
 	}
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_started", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: "started"})
