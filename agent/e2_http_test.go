@@ -905,3 +905,59 @@ func TestE2HTTPDiagnosisRejectsMCPTools(t *testing.T) {
 		}
 	}
 }
+
+// intent 결과는 모든 호출 분류 중 가장 강한 것으로 정한다(P3 결정안 C09). 마지막 호출 하나가 앞 호출의 범위 제한·일시
+// 실패를 지우지 않고, 마지막 도구 실패가 앞의 완료를 실패로 바꾸지 않는다. 순서를 바꿔도 결과가 같다.
+func TestE2HTTPIntentOutcomeAggregatesAllCalls(t *testing.T) {
+	for name, tc := range map[string]struct {
+		sequence []string
+		want     error
+	}{
+		"policy-then-completed":      {[]string{"policy_not_executed", "completed", "completed"}, ErrE2HTTPPolicyLimited},
+		"completed-policy-completed": {[]string{"completed", "policy_not_executed", "completed"}, ErrE2HTTPPolicyLimited},
+		"transient-then-completed":   {[]string{"transient_failure", "completed", "completed"}, ErrE2HTTPTransient},
+		"policy-transient-order":     {[]string{"transient_failure", "policy_not_executed", "completed"}, ErrE2HTTPTransient},
+		"completed-then-tool-fail":   {[]string{"completed", "completed", "tool_failure"}, nil},
+		"unsupported-over-policy":    {[]string{"unsupported", "policy_not_executed", "completed"}, ErrE2HTTPUnsupported},
+	} {
+		t.Run(name, func(t *testing.T) {
+			execution, _, _ := e2WorkerFixture(t)
+			provider := &e2WorkerProvider{forever: true}
+			worker := NewWorker(provider, "synthetic", t.TempDir(), nil, 10000, 3)
+			state := &e2HTTPToolState{}
+			calls := 0
+			tool := e2WorkerBashTool(t, execution, func(context.Context, string) (e2runner.Result, error) {
+				result := completedE2WorkerResult()
+				if calls < len(tc.sequence) {
+					result.Trusted.Classification = tc.sequence[calls]
+				}
+				calls++
+				return result, nil
+			}, time.Second, state)
+			opts := agentcore.Options{Provider: provider, Tools: []actool.CoreTool{tool}, DisableBackgroundTasks: true, PermissionMode: permission.ModeBypass, MaxTurns: 3, MaxDuration: 5 * time.Second, NonStreaming: true}
+			_, _, err := worker.runE2HTTPSession(context.Background(), "worker", &db.Node{ID: 22, Kind: db.KindIntent}, nil, opts, "assigned intent", execution, state, nil)
+			// 정책 거부 뒤 같은 명령은 다시 보내지 않으므로(C19) 호출 수는 순서에 따라 다르다. 결과만 본다.
+			if calls == 0 || !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Fatalf("calls=%d error=%v want=%v", calls, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestE2HTTPOutcomeRankIgnoresInputErrorsAndRejectsUnknownKinds(t *testing.T) {
+	state := &e2HTTPToolState{}
+	state.outcome("completed")
+	state.outcome("invalid_input")
+	if state.strongest != "completed" {
+		t.Fatalf("input error overrode a completed call: %q", state.strongest)
+	}
+	only := &e2HTTPToolState{}
+	only.outcome("invalid_input")
+	if only.strongest != "" {
+		t.Fatalf("input error counted as a call: %q", only.strongest)
+	}
+	state.outcome("synthetic-new-kind")
+	if state.strongest != "synthetic-new-kind" {
+		t.Fatal("unknown classification ranked below completed")
+	}
+}

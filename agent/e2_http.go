@@ -160,7 +160,8 @@ type e2HTTPToolState struct {
 	unknown      bool
 	incomplete   bool
 	runnerFailed bool
-	last         string
+	// strongest는 이 intent의 모든 호출 분류 중 가장 강한 것이다(P3 결정안 C09). 마지막 호출 하나가 결과를 정하지 않는다.
+	strongest    string
 	observations map[string]e2DiagnosticObservation
 }
 
@@ -647,7 +648,7 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 	unknown := state.unknown
 	incomplete := state.incomplete
 	runnerFailed := state.runnerFailed
-	last := state.last
+	last := state.strongest
 	state.mu.Unlock()
 	if unknown || snapshot.Counts.Unknown > 0 {
 		return reason, counts, ErrE2HTTPUnknown
@@ -907,8 +908,33 @@ func (s *e2HTTPToolState) outcome(classification string) {
 		return
 	}
 	s.mu.Lock()
-	s.last = classification
+	if e2HTTPOutcomeRank(classification) > e2HTTPOutcomeRank(s.strongest) {
+		s.strongest = classification
+	}
 	s.mu.Unlock()
+}
+
+// e2HTTPOutcomeRank는 intent 결과를 정하는 강도다(P3 결정안 C09: unknown > incomplete > policy_limited > done).
+// 결과 불명·불완전은 따로 쌓이는 표시(state.unknown·incomplete)가 먼저 정한다. 실행이 끊긴 분류(격리 불가·종료)는
+// 그다음이고, 일시 실패는 불완전 쪽, 정책 거부·미지원은 범위 제한 쪽, 완료와 도구 자체의 실패(대상은 답함)는 완료 쪽이다.
+// 입력 형식 오류는 송신이 없는 모델 실수라 결과를 정하지 않는다(0).
+func e2HTTPOutcomeRank(classification string) int {
+	switch classification {
+	case "isolation_unavailable", "terminated":
+		return 5
+	case "transient_failure", "forward_not_attempted":
+		return 4
+	case "unsupported", "partial_unsupported":
+		return 3
+	case "policy_not_executed", "partial_policy_denial":
+		return 2
+	case "completed", "tool_failure":
+		return 1
+	case "", "invalid_input":
+		return 0
+	}
+	// 모르는 분류는 완료로 넘기지 않는다. 가장 강하게 보고 기존 기본 분기(Worker 실패)로 보낸다.
+	return 6
 }
 
 // exporter는 실제 신뢰 결과만 관찰하며 원문 도구 출력과 observer 오류를 노출하지 않는다.
