@@ -1079,9 +1079,11 @@ class TestCompleteRun(unittest.TestCase):
         spec = dataclasses.replace(make_spec(purpose="browser_acceptance"), preservation=options())
         seen = {}
         def capture(**kwargs):
+            self.assertIn("down", seen["ports"].calls)
             seen.update(kwargs)
             return {"format": "test-unsigned-preservation"}
         def acceptance(ports, meter, clock):
+            seen["ports"] = ports
             meter.path_log = True
         with patch.object(runner, "preservation_payload", side_effect=capture):
             result, ports, _, evidence = run(acceptance, spec=spec)
@@ -1099,11 +1101,57 @@ class TestCompleteRun(unittest.TestCase):
         def failure(ports, meter, clock):
             meter.path_log = True
             ports.fail["down"] = RuntimeError("synthetic failure")
-        with patch.object(runner, "preservation_payload", return_value={"format": "test-unsigned-preservation"}):
+        with patch.object(runner, "preservation_payload", return_value={"format": "test-unsigned-preservation"}) as build:
             result, ports, _, evidence = run(failure, spec=spec)
+        build.assert_not_called()
         self.assertEqual(result["status"], INVALID)
         self.assertNotIn("preservation-round.json", evidence.files)
         self.assertNotIn("sign", ports.calls)
+
+    def test_sidecar_hashes_final_bytes_when_down_appends_sealed_rejections(self):
+        from test_preservation_record import SignedFixture, RUNNER_KEY, conditions, options
+        from preservation_record import NAME, build_payload, load_record
+        from run_record import sign_run_record
+        fixture = SignedFixture()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        directory, real_meter, _ = fixture.fixture("baseline")
+        path = directory / "engine-requests.jsonl"
+        def rejected(seq):
+            return {"seq": seq, "kind": "rejected", "method": "GET", "status": 503,
+                    "started_at": "a", "completed_at": "b", "response_bytes": 0,
+                    "outcome": "rejected_after_seal", "sent": "no", "response": "none",
+                    "attempt_id_state": "absent", "attempt_id": "", "ingress": "main"}
+        # FakeMeter가 post에서 보여 주는 seal 뒤 거부 둘과 같은 근거를 만든다.
+        with path.open("ab") as stream:
+            for seq in (4, 5): stream.write(json.dumps(rejected(seq)).encode() + b"\n")
+        spec = dataclasses.replace(make_spec(purpose="browser_acceptance"),
+                                   preservation=options(), request_budget=3)
+        def setup(ports, meter, clock):
+            meter.per_poll, meter.path_log = 3, True
+            original_down, original_sign = ports.down, ports.sign
+            def down():
+                original_down()
+                # 실제 계측기처럼 seal/drain 표식 뒤에도 down까지 거부 행이 추가된다.
+                with path.open("ab") as stream: stream.write(json.dumps(rejected(6)).encode() + b"\n")
+            def sign(payload):
+                original_sign(payload)
+                return sign_run_record(payload, RUNNER_KEY)
+            ports.down, ports.sign = down, sign
+        def final_payload(**kwargs):
+            # 네트워크/점수판 port만 합성이다. 최종 hash·마감·서명·read는 실제 구현을 쓴다.
+            kwargs["meter"] = real_meter
+            kwargs["conditions"] = conditions("ours", layout="e2-legacy/v1", diagnosis_policy_sha256=None,
+                                               request_budget=3, time_budget_seconds=spec.time_budget_seconds)
+            return build_payload(**kwargs)
+        with patch.object(runner, "preservation_payload", side_effect=final_payload):
+            result, _, _, evidence = run(setup, spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        fixture.write(directory, NAME, evidence.files[NAME])
+        loaded = load_record(directory, real_meter, RUNNER_KEY)
+        self.assertEqual(len(real_meter.engine_rows()), 6)
+        self.assertEqual(loaded["forwarded_by_ingress"], {"main": 3, "explore": 0})
+        self.assertEqual(loaded["files"]["engine-requests.jsonl"]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
 
     def test_v11_record_binds_proof_events_and_evidence(self):
         from runner_record import canonical_sha256
@@ -1194,18 +1242,18 @@ def failing(code_or_name, error=None):
 class TestE2Slot(unittest.TestCase):
     """개선 후 + 가짜 E² 회차: 망 점검이 E² 배치를 기대하고, E² 컨테이너 이미지도 대조한다."""
 
-    def test_explore_rows_do_not_inflate_unrecorded_e2_transmissions(self):
+    def test_non_split_runner_rejects_explore_forwarding_instead_of_hiding_it(self):
         def split(ports, meter, clock):
             original = meter.engine_rows
             meter.engine_rows = lambda: [row | {"ingress": "main" if row["seq"] <= 2 else "explore"} for row in original()]
-        result, _, _, evidence = run(split, spec=make_spec(e2="stub"))
-        self.assertEqual(result["status"], COMPLETE)
-        recon = evidence.files["attempt-reconciliation.json"]["cells"]
-        self.assertEqual((recon["allowed_observed"], recon["unrecorded_observed"]), (2, 0))
-        ingress = evidence.files["meter-summary.json"]["forwarded_by_ingress"]
-        self.assertEqual(ingress["main"], 2)
-        self.assertGreater(ingress["explore"], 0)
-        self.assertEqual(sum(ingress.values()), result["meter"]["forwarded_requests"])
+        specs = (make_spec(e2="stub"), make_spec(), make_spec(purpose="browser_acceptance"))
+        for spec in specs:
+            with self.subTest(side=spec.side, purpose=spec.purpose, e2=spec.e2_mode):
+                result, ports, _, evidence = run(split, spec=spec)
+                self.assertEqual(result["status"], INVALID)
+                self.assertEqual(result["reasons"], ["meter_explore_ingress_unexpected"])
+                self.assertNotIn("sign", ports.calls)
+                self.assertNotIn("attempt-reconciliation.json", evidence.files)
 
     def test_stub_run_completes_with_the_e2_layout(self):
         result, ports, meter, evidence = run(spec=make_spec(e2="stub"))

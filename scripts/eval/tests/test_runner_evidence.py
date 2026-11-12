@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from runner_evidence import (
     ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_VERIFIED_MARKER,
     OBSERVER_LOG, PATH_AUTH_FIELDS, PATH_LOG, PATH_PROFILE, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
-    diagnostic_rows, ingress_counts, drain_complete, final_log_consistent, forwarded_by_method, forwarded_count, sequence_complete,
+    diagnostic_rows, ingress_counts, validate_ingress_layout, drain_complete, final_log_consistent, forwarded_by_method, forwarded_count, sequence_complete,
 )
 
 
@@ -43,6 +43,15 @@ class TestDiagnosticIngress(unittest.TestCase):
         self.assertEqual(result["cells"]["allowed_observed"], 1)
         self.assertEqual(result["cells"]["unrecorded_observed"], 0)
         self.assertEqual(ingress_counts([main, explore, rejected]), {"main": 1, "explore": 1})
+
+    def test_only_declared_split_ingress_can_carry_forwarded_exploration(self):
+        rows = [engine_row(1) | {"ingress": "explore"}]
+        for layout in ("artex-direct/v1", "e2-legacy/v1"):
+            with self.subTest(layout=layout), self.assertRaisesRegex(EvidenceError, "meter_explore_ingress_unexpected"):
+                validate_ingress_layout(rows, layout)
+        self.assertEqual(validate_ingress_layout(rows, "exploration-split/v1"), {"main": 0, "explore": 1})
+        rejected = [engine_row(1, "rejected") | {"ingress": "explore"}]
+        self.assertEqual(validate_ingress_layout(rejected, "e2-legacy/v1"), {"main": 0, "explore": 0})
 
     def test_legacy_rows_are_main_but_not_silently_new_layout(self):
         rows = [engine_row(1)]

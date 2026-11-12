@@ -14,7 +14,7 @@ from pathlib import Path
 
 from run_record import sign_run_record
 from runner_evidence import (DRAINED_MARKER, ENGINE_LOG, PATH_LOG, SEALED_MARKER, EvidenceError, MeterFiles,
-                             _read_owned, diagnostic_rows, drain_complete, final_log_consistent, ingress_counts)
+                             _read_owned, drain_complete, final_log_consistent, ingress_counts, validate_ingress_layout)
 
 FORMAT = "abc2lab.preservation-round/v1"
 NAME = "preservation-round.json"
@@ -78,7 +78,7 @@ def _raw_files(meter: MeterFiles) -> dict:
 
 def build_payload(*, meter: MeterFiles, options: dict, run_id: str, side: str, repeat_index: int,
                   engine_source_sha: str, engine_image_id: str, conditions: dict, stop_reason: str) -> dict:
-    """서명 전 자료다. 호출자는 실제 격리·마감 검증과 정리 후 기존 ports.sign으로 서명한다.
+    """writer 정리 뒤 호출하는 서명 전 자료다. 최종 바이트를 읽고 기존 ports.sign으로 서명한다.
 
     layout은 호출자가 확인한 배치다. 현행 Docker 러너는 e2-legacy/v1만 발행하며, 탐색 경계가
     들어온 새 실행기는 자기 배치 검증 뒤 exploration-split/v1을 넘긴다. 옵션이 망을 열지 않는다.
@@ -90,7 +90,7 @@ def build_payload(*, meter: MeterFiles, options: dict, run_id: str, side: str, r
     if side == "ours" and conditions.get("exploration_policy_sha256") != options["exploration_policy_sha256"]:
         _fail("preservation_options_conditions_mismatch")
     rows = meter.engine_rows()
-    diagnostic_rows(rows, require_ingress=True)
+    validate_ingress_layout(rows, conditions.get("layout"), require_ingress=True)
     meter.path_rows(rows)
     drained = meter.marker(DRAINED_MARKER)
     if drained is None or not drain_complete(drained) or not final_log_consistent(rows, meter.marker(SEALED_MARKER), drained):
@@ -166,11 +166,13 @@ def load_record(directory: Path, meter: MeterFiles, key: bytes) -> dict:
     if not isinstance(signed, dict) or set(signed) != TOP_FIELDS: _fail("preservation_record_invalid")
     payload = {k: v for k, v in signed.items() if k != "signature"}
     expected = sign_run_record(payload, key)["signature"]
-    if not isinstance(signed["signature"], str) or not hmac.compare_digest(signed["signature"], expected):
+    # compare_digest(str,str)는 비 ASCII에서 TypeError를 낸다. 서명은 애초에 64 hex만 허용한다.
+    if not isinstance(signed["signature"], str) or not _HEX.fullmatch(signed["signature"]) or not hmac.compare_digest(signed["signature"], expected):
         _fail("preservation_signature_invalid")
     _validate_payload(payload)
     if _raw_files(meter) != payload["files"]: _fail("preservation_raw_digest_mismatch")
-    rows = meter.engine_rows(); diagnostic_rows(rows, require_ingress=True); meter.path_rows(rows)
+    rows = meter.engine_rows()
+    validate_ingress_layout(rows, payload["conditions"]["layout"], require_ingress=True); meter.path_rows(rows)
     drained = meter.marker(DRAINED_MARKER)
     if drained is None or not drain_complete(drained) or not final_log_consistent(rows, meter.marker(SEALED_MARKER), drained):
         _fail("preservation_meter_incomplete")
@@ -236,13 +238,35 @@ def preservation_verdict(summary: dict, profile: str) -> dict:
 
 
 def full_budget_from_pilots(pilots: list[dict]) -> dict:
-    """결과를 고르지 않고 첫 유효 시간 마감 N0×2를 쓴다. 예비 회차는 본 짝에 합치지 않는다."""
+    """검증한 runner-result를 시간순으로 받는다. 자동 호출·서명·세션 완결성 검증은 하지 않는다."""
     discarded = []
+    stop_reasons = ("request_budget", "time_budget", "engine_completed", "cap_exhausted", "boundary_unavailable")
     for i, pilot in enumerate(pilots, 1):
-        if pilot.get("status") == "complete" and pilot.get("stop_reason") == "time_budget":
-            count = pilot.get("forwarded_requests")
+        if (not isinstance(pilot, dict) or pilot.get("format") != "abc2lab-eval-runner-result-v1"
+                or pilot.get("status") not in ("complete", "invalid")):
+            _fail("preservation_pilot_record_invalid")
+        status = pilot["status"]
+        meter = pilot.get("meter")
+        stop = meter.get("stop_reason") if isinstance(meter, dict) else None
+        if stop is not None and stop not in stop_reasons: _fail("preservation_pilot_stop_invalid")
+        if status == "complete" and not isinstance(meter, dict): _fail("preservation_pilot_meter_missing")
+        if status == "complete" and stop not in stop_reasons: _fail("preservation_pilot_stop_invalid")
+        if status == "complete" and stop == "time_budget":
+            count = meter.get("forwarded_requests")
             if type(count) is not int or count < 1: _fail("preservation_pilot_count_invalid")
-            return {"pilot_attempts": i, "discarded_stop_reasons": discarded, "n0": count, "request_budget": 2 * count,
+            return {"pilot_attempts": i, "discarded_stop_reasons": [r["discard_reason"] for r in discarded],
+                    "discarded_pilots": discarded, "n0": count, "request_budget": 2 * count,
                     "selected_index": i, "stop_reason": "time_budget"}
-        discarded.append(pilot.get("stop_reason") if pilot.get("stop_reason") in ("request_budget", "time_budget", "engine_completed", "cap_exhausted", "boundary_unavailable") else "invalid")
+        entry = {"attempt_index": i, "status": status, "stop_reason": stop,
+                 "discard_reason": "invalid" if status == "invalid" else stop or "stop_reason_missing"}
+        if status == "invalid":
+            reasons = pilot.get("reasons")
+            step = pilot.get("failed_step")
+            code = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
+            if (not isinstance(reasons, list) or not reasons or len(reasons) > 64
+                    or any(not isinstance(v, str) or not code.fullmatch(v) for v in reasons)
+                    or not isinstance(step, str) or not code.fullmatch(step)):
+                _fail("preservation_pilot_invalid_reasons")
+            entry.update(reasons=list(reasons), failed_step=step)
+        discarded.append(entry)
     _fail("preservation_valid_time_pilot_missing")

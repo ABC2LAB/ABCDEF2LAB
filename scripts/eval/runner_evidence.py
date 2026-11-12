@@ -240,6 +240,17 @@ def ingress_counts(rows: list[dict]) -> dict[str, int] | None:
             for name in sorted(INGRESSES)}
 
 
+def validate_ingress_layout(rows: list[dict], layout: str, *, require_ingress: bool = False) -> dict[str, int] | None:
+    """이미 확인한 배치가 허용한 입구만 받는다. 이 검사는 망 격리 증거를 만들지 않는다."""
+    if layout not in ("artex-direct/v1", "e2-legacy/v1", "exploration-split/v1"):
+        raise EvidenceError("meter_layout_invalid")
+    diagnostic_rows(rows, require_ingress=require_ingress or layout == "exploration-split/v1")
+    counts = ingress_counts(rows)
+    if layout != "exploration-split/v1" and counts is not None and counts["explore"] > 0:
+        raise EvidenceError("meter_explore_ingress_unexpected")
+    return counts
+
+
 def _engine_stages_valid(row: dict) -> bool:
     """단계 값이 알려진 집합이고 서로 모순되지 않는지. 거부 행은 대상에 안 갔고, 안 간 요청에 대상 응답은 없다."""
     state, attempt = row["attempt_id_state"], row["attempt_id"]

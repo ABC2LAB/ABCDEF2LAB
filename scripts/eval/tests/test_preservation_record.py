@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -58,6 +59,7 @@ class SignedFixture(unittest.TestCase):
         directory.mkdir(mode=0o700)
         rows, paths = [], []
         for seq, (raw_path, ingress) in enumerate((("/a", "main"), ("/b", "explore"), ("/c", "explore")), 1):
+            if side == "baseline": ingress = "main"
             rows.append({"seq": seq, "kind": "request", "method": "GET", "status": 200, "started_at": "a",
                          "completed_at": "b", "response_bytes": 0, "outcome": "completed", "sent": "yes",
                          "response": "complete", "attempt_id_state": "absent", "attempt_id": "", "ingress": ingress})
@@ -125,7 +127,7 @@ class SignedFixture(unittest.TestCase):
         for field, change in (("engine-drained.json", {"role": "engine", "forwarded_requests": 9,
             "log_complete": True, "inflight_at_drain": 0, "forced_cancelled_requests": 0}),
             ("engine-paths.jsonl", None)):
-            directory, meter, payload = self.fixture()
+            directory, meter, payload = self.fixture("ours")
             if change is None:
                 raw = (directory / field).read_bytes().replace(b'"ingress": "explore"', b'"ingress": "main"')
                 self.write(directory, field, raw)
@@ -137,6 +139,39 @@ class SignedFixture(unittest.TestCase):
             self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
             with self.assertRaises((PreservationRecordError, EvidenceError)):
                 load_record(directory, meter, RUNNER_KEY)
+
+    def test_reader_rejects_signed_ingress_counts_that_disagree_with_raw_rows(self):
+        directory, meter, payload = self.fixture("ours")
+        payload["forwarded_by_ingress"] = {"main": 2, "explore": 1}
+        self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_ingress_mismatch"):
+            load_record(directory, meter, RUNNER_KEY)
+
+    def test_ours_cannot_impersonate_artex_direct_even_with_all_main_rows(self):
+        directory, meter, payload = self.fixture("baseline")
+        payload["side"] = "ours"
+        self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_conditions_invalid"):
+            load_record(directory, meter, RUNNER_KEY)
+
+    def test_reader_requires_ingress_before_any_later_count_comparison(self):
+        directory, meter, payload = self.fixture("baseline")
+        path = directory / "engine-requests.jsonl"
+        rows = [json.loads(line) for line in path.read_bytes().splitlines()]
+        for row in rows: del row["ingress"]
+        self.write(directory, path.name, b"".join(json.dumps(row).encode() + b"\n" for row in rows))
+        raw = path.read_bytes()
+        payload["files"][path.name] = {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+        self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
+        with self.assertRaisesRegex(EvidenceError, "meter_ingress_missing_or_mixed"):
+            load_record(directory, meter, RUNNER_KEY)
+
+    def test_legacy_sidecar_cannot_hide_exploration_forwarding(self):
+        directory, meter, payload = self.fixture("ours")
+        payload["conditions"]["layout"] = "e2-legacy/v1"
+        self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
+        with self.assertRaisesRegex(EvidenceError, "meter_explore_ingress_unexpected"):
+            load_record(directory, meter, RUNNER_KEY)
 
     def test_model_pins_modes_policy_mcp_and_layout_cannot_be_pooled(self):
         b, o = self.series()
@@ -202,6 +237,20 @@ class SignedFixture(unittest.TestCase):
         self.assertEqual(data["format"], "abc2lab.preservation-summary/v7")
         self.assertEqual(data["assessment"]["status"], "NOT_RUN")
         self.assertEqual(data["signed_evidence"]["verified_signed_rounds"], 2)
+        # 타입이 잘못되거나 비 ASCII인 서명도 traceback 없이 같은 validation 코드로 닫힌다.
+        record = json.loads((o / NAME).read_text())
+        for signature in ("한" * 64, "é" * 64, "0" * 63, 123):
+            self.write(o, NAME, record | {"signature": signature})
+            invalid = subprocess.run(signed, capture_output=True)
+            self.assertEqual((invalid.returncode, invalid.stdout), (2, b""))
+            self.assertEqual(invalid.stderr, b"preservation: preservation_signature_invalid\n")
+        self.write(o, NAME, record)
+        # 두 키 각각 근거 디렉터리 안에 있을 때만 거부하는 가드 자체를 검증한다.
+        for key_name, flag, key in (("path.key", "--path-key-file", PATH_KEY), ("runner.key", "--runner-key-file", RUNNER_KEY)):
+            self.write(b, key_name, key)
+            invalid = subprocess.run(signed + [flag, str(b / key_name)], capture_output=True)
+            self.assertEqual((invalid.returncode, invalid.stdout), (2, b""))
+            self.assertEqual(invalid.stderr, b"preservation: key_inside_evidence_directory\n")
         for profile, reason in (("R-R", "preservation_profile_domain_mismatch"), ("R-P", "preservation_profile_budget_mismatch")):
             invalid_profile = subprocess.run(signed[:-1] + [profile], capture_output=True)
             self.assertEqual(invalid_profile.returncode, 2)
@@ -229,17 +278,29 @@ class ExistingAcceptanceContract(unittest.TestCase):
         self.assertEqual(preservation_verdict(summary, "R-F")["status"], "UNDECIDABLE")
 
     def test_first_valid_time_pilot_n0_times_two_not_best_later_result(self):
-        pilots = [{"status": "complete", "stop_reason": "cap_exhausted", "forwarded_requests": 1000},
-                  {"status": "invalid", "stop_reason": "time_budget", "forwarded_requests": 2},
-                  {"status": "complete", "stop_reason": "time_budget", "forwarded_requests": 17},
-                  {"status": "complete", "stop_reason": "time_budget", "forwarded_requests": 999}]
+        def complete(reason, count):
+            return {"format": "abc2lab-eval-runner-result-v1", "status": "complete",
+                    "meter": {"stop_reason": reason, "forwarded_requests": count}}
+        invalid = {"format": "abc2lab-eval-runner-result-v1", "status": "invalid",
+                   "reasons": ["meter_log_inconsistent", "down_failed"], "failed_step": "meter_log_inconsistent"}
+        pilots = [complete("cap_exhausted", 1000), invalid, complete("time_budget", 17), complete("time_budget", 999)]
         result = full_budget_from_pilots(pilots)
         self.assertEqual((result["selected_index"], result["n0"], result["request_budget"]), (3, 17, 34))
-        self.assertEqual(result["discarded_stop_reasons"], ["cap_exhausted", "time_budget"])
+        self.assertEqual(result["discarded_stop_reasons"], ["cap_exhausted", "invalid"])
+        self.assertEqual(result["discarded_pilots"][1], {"attempt_index": 2, "status": "invalid", "stop_reason": None,
+            "discard_reason": "invalid", "reasons": ["meter_log_inconsistent", "down_failed"], "failed_step": "meter_log_inconsistent"})
         with self.assertRaisesRegex(PreservationRecordError, "preservation_pilot_count_invalid"):
-            full_budget_from_pilots([{"status": "complete", "stop_reason": "time_budget", "forwarded_requests": 0}, pilots[2]])
+            full_budget_from_pilots([complete("time_budget", 0), pilots[2]])
         with self.assertRaisesRegex(PreservationRecordError, "preservation_valid_time_pilot_missing"):
             full_budget_from_pilots(pilots[:2])
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_pilot_meter_missing"):
+            full_budget_from_pilots([{"format": "abc2lab-eval-runner-result-v1", "status": "complete",
+                                     "stop_reason": "time_budget", "forwarded_requests": 99}])
+        # 무효 회차에 meter 잔재가 있더라도 N0로 선택하거나 실패 이유를 지우지 않는다.
+        with_meter = invalid | {"meter": {"stop_reason": "time_budget", "forwarded_requests": 999}}
+        chosen = full_budget_from_pilots([with_meter, pilots[2]])
+        self.assertEqual(chosen["n0"], 17)
+        self.assertEqual(chosen["discarded_pilots"][0]["reasons"], invalid["reasons"])
 
 
 if __name__ == "__main__": unittest.main()

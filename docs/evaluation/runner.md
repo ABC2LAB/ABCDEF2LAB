@@ -140,7 +140,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   state-diff.json                설정 `state`가 있을 때만: 같은 컨테이너 pre·post SQLite 상태 차이(테이블별 행 수·추가·삭제·변경 건수·정수 id, 열 구성 변경, 테이블·인덱스·트리거·뷰 정의 변화 `schema_objects`(종류·이름만), sqlite_sequence 변화, 신호 테이블은 `signals`에 따로), 런타임 디렉터리별 항목 수·추가·삭제·변경 건수(`runtime`, 항목 경로 없음), 메모리 읽기 합계·변한 경로 수·post에서 못 읽은 경로 수(`memory`, 본문·경로 없음). `content_changed`는 SQLite 쪽만이고 전체 변화 여부는 `state_changed`로 본다. 값·지문·경로 없음. `state/pre`·`state/post` 디렉터리는 비어 있어야 정상이다(사본을 지운 뒤)
   isolation-evidence.json        격리 근거 행(러너 기록 v1.1 §3.1 형식, 완료 회차만)
   solve-events.json              pre=false→post=true 키마다 isolated_window 해결 이벤트(평가 전용 key, 완료 회차만)
-  preservation-round.json        preservation 선택 시: 계측기 원자료 hash·공개 조건에 별도 서명한 browser_acceptance sidecar
+  preservation-round.json        preservation 선택 시: down 성공 뒤 최종 계측기 원자료 hash·공개 조건에 별도 서명한 browser_acceptance sidecar
   run-record.json                서명된 러너 기록 v1.1(채점기 입력, 완료 회차만. records=null 판정 미수집)
   runner-result.json             완료(+서명) 또는 무효(+사유·실패 단계: 사유가 나온 점검, 예상 밖 예외·중단이면 마지막으로 시작한 단계)
 ```
@@ -160,7 +160,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 - `sent`·`response`는 같은 시도의 진행 이력이라 서로 배타적인 건수로 합산하지 않는다. "보냈는데 응답 없음"(`yes`·`none`)과 `uncertain`이 결과 불명이다. 계측 건수만으로 대상 앱이 실제 처리한 건수를 확정하지 않는다.
 - 계측기는 시도 ID를 기록한 뒤 **대상에 넘기기 전에 그 헤더 하나만 지운다**(평가 프로토콜 §8.3). 형식이 틀려도 요청을 막지 않는다. baseline에는 이 헤더가 없는 것이 정상이다(`absent`).
-- E② 시도별 대조는 `main` 행만 쓴다. `explore`의 AttemptID 부재는 정상이고 E② 기록 없는 송신으로 세지 않는다. 탐색 입구에 E② ID가 있으면 배치/기록 모순으로 거부한다. 탐색 경계 차단 근거는 별도이며 미확보를 E② 차단이나 0건으로 채우지 않는다.
+- E② 시도별 대조는 실제 탐색 분리 배치에서만 `main` 행으로 한정한다. 현행 공식·원본 직접·기존 E② 배치에 explore 전달이 있으면 `meter_explore_ingress_unexpected`로 무효다. `explore`의 AttemptID 부재는 정상이고 E② 기록 없는 송신으로 세지 않는다. 탐색 입구에 E② ID가 있으면 배치/기록 모순으로 거부한다. 탐색 경계 차단 근거는 별도이며 미확보를 E② 차단이나 0건으로 채우지 않는다.
 - `sent=no`인데 `response`가 `none`이 아니거나, 거부 행이 `no`·`none`이 아니면 모순으로 거부한다.
 
 근거 파일은 O_EXCL·0600으로 한 번만 쓴다. 무효 기록에는 측정값·근거 목록·서명을 넣지 않는다.
