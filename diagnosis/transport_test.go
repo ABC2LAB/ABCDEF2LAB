@@ -204,3 +204,28 @@ func TestServeStopsAtMalformedFrame(t *testing.T) {
 		t.Fatal("malformed frame did not terminate service", err)
 	}
 }
+
+// 실행 결과는 completed에만 있다. 완료 전 상태(prepared·running·stopping)에 결과가 오면 응답 전체를 거부한다.
+func TestClientRejectsResultBeforeCompletion(t *testing.T) {
+	result := &RunResult{Outcome: OutcomeComplete, IntentOutcomes: IntentOutcomes{Done: 1}}
+	for _, snapshot := range []Snapshot{
+		{TaskID: "23", PreparationRef: "operator-prepared", State: Prepared, Result: result},
+		{TaskID: "23", PreparationRef: "operator-prepared", State: Running, Started: true, Result: result},
+		{TaskID: "23", PreparationRef: "operator-prepared", State: Stopping, Started: true, Result: result},
+	} {
+		t.Run(string(snapshot.State), func(t *testing.T) {
+			raw, _ := json.Marshal(Response{Version: Version, RequestID: "request-1", Snapshot: &snapshot})
+			client, _ := NewClient(bytes.NewReader(append(raw, '\n')), io.Discard, func() error { return nil })
+			if response, err := client.Call(context.Background(), request(Status)); err == nil {
+				t.Fatalf("result before completion accepted: %+v", response.Snapshot)
+			}
+		})
+		// 결과가 없으면 같은 상태를 받는다(시험 대조).
+		snapshot.Result = nil
+		raw, _ := json.Marshal(Response{Version: Version, RequestID: "request-1", Snapshot: &snapshot})
+		client, _ := NewClient(bytes.NewReader(append(raw, '\n')), io.Discard, func() error { return nil })
+		if _, err := client.Call(context.Background(), request(Status)); err != nil {
+			t.Fatalf("%s without result rejected: %v", snapshot.State, err)
+		}
+	}
+}

@@ -141,9 +141,9 @@ func validSnapshot(s Snapshot) bool {
 	}
 	switch s.State {
 	case Prepared:
-		return !s.Started && !s.DrainComplete && !s.ResultReady
+		return !s.Started && !s.DrainComplete && !s.ResultReady && s.Result == nil
 	case Running, Stopping:
-		return s.Started && !s.DrainComplete && !s.ResultReady
+		return s.Started && !s.DrainComplete && !s.ResultReady && s.Result == nil
 	case Completed:
 		return s.Started && s.DrainComplete && s.ResultReady && s.Result != nil && s.Result.Valid()
 	case Failed, Cancelled:
