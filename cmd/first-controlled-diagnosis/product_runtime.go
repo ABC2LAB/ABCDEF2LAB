@@ -469,9 +469,9 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			control.Login, err = p.targets.setTargetLogin(r.Principal, r.Product.TargetID, *r.Product.Login)
 		case "account_credential_set":
 			var a diagnosisprep.ProductAccount
+			// 요청 구조체는 전송 계층이 응답을 보내기 전에 다시 검증하므로 여기서 비우지 않는다(비우면 응답 프레임 없이
+			// 연결이 닫힌다). 자격 값은 응답·로그에 넣지 않고, 요청이 끝나면 함께 버려진다.
 			a, err = p.targets.setAccountCredential(r.Principal, r.Product.TargetID, r.Product.Account.Label, *r.Product.Credential)
-			// 요청에 실린 자격 값 참조는 쓴 뒤 바로 버린다(응답·로그에는 나가지 않는다).
-			r.Product.Credential.Password, r.Product.Credential.Username = "", ""
 			if err == nil {
 				control.Account = &a
 			}

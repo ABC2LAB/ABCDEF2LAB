@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/netip"
 	"net/url"
@@ -528,6 +529,12 @@ func (r *productTargetRegistry) revoke(principal, id string) (diagnosisprep.Prod
 	rec.Target.Revision++
 	if r.append(rec) != nil {
 		return diagnosisprep.ProductTarget{}, errPreparation
+	}
+	// 철회된 대상의 계정 자격은 더 쓸 데가 없으니 지운다. 못 지운 파일은 저널 해시와 같아도 철회 대상이라 쓰이지 않는다.
+	for label := range r.accounts[id] {
+		if err := r.removeCredential(id, label); err != nil {
+			log.Printf("[preparation] 대상 철회 때 자격 파일 삭제 실패: 대상=%s", id)
+		}
 	}
 	return rec.Target, nil
 }

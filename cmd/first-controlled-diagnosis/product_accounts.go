@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -100,7 +102,8 @@ func (r *productTargetRegistry) replayAccount(e productAccountEvent) error {
 		if st == nil || !st.marked || e.StatementSHA256 != "" {
 			return errPreparation
 		}
-		st.marked, st.unmarked, st.classifiedBy, st.classifiedAt = false, true, e.Actor, e.At
+		// 해제하면 자격도 지운다(실계정 자격을 필요 이상 들고 있지 않는다).
+		st.marked, st.unmarked, st.classifiedBy, st.classifiedAt, st.credentialSHA256 = false, true, e.Actor, e.At, ""
 	case accountCredential:
 		if st == nil || !urlDigestValid(e.CredentialSHA256) || e.StatementSHA256 != "" {
 			return errPreparation
@@ -242,6 +245,10 @@ func (r *productTargetRegistry) unmarkAccount(principal, id, label string) (diag
 	if !st.marked {
 		return accountView(rec, st, r.now()), nil
 	}
+	// 해제는 더 안전한 쪽이라 자격 파일을 못 지워도 기록한다. 저널에서 자격 해시가 빠지므로 남은 파일은 쓰이지 않는다.
+	if err := r.removeCredential(id, label); err != nil {
+		log.Printf("[preparation] 시험 계정 해제 때 자격 파일 삭제 실패: 대상=%s", id)
+	}
 	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountUnmark, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
@@ -283,7 +290,39 @@ func (r *productTargetRegistry) credentialConfigured(targetID string, st *produc
 	return hex.EncodeToString(sum[:]) == st.credentialSHA256
 }
 
-const maxCredentialFileBytes = 4 << 10
+// maxCredentialFileBytes는 자격 보호 파일 상한이다. 허용 길이(사용자명 256·비밀번호 512바이트)의 모든 바이트가 JSON에서
+// 6바이트(\u00XX)로 늘어나도(768×6) 난수·칸 이름을 더해 넘지 않는다. 쓰기 전에 같은 상한으로 검사한다.
+const maxCredentialFileBytes = 8 << 10
+
+// credentialFile은 보호 파일 내용이다. Nonce는 쓸 때마다 새로 뽑아, 저널의 파일 해시로 흔한 사용자명·비밀번호를
+// 대조하지 못하게 한다(파일 = 저널 해시 무결성 검사는 그대로).
+type credentialFile struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Nonce    string `json:"nonce"`
+}
+
+func encodeCredentialFile(c diagnosisprep.AccountCredential) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(credentialFile{Username: c.Username, Password: c.Password, Nonce: productRandom(32)}); err != nil {
+		return nil, err
+	}
+	if b.Len() > maxCredentialFileBytes {
+		clear(b.Bytes())
+		return nil, errors.New("invalid_account_credential")
+	}
+	return b.Bytes(), nil
+}
+
+// removeCredential은 계정의 자격 보호 파일을 지운다. 없으면 이미 지워진 것이다.
+func (r *productTargetRegistry) removeCredential(targetID, label string) error {
+	if err := os.Remove(r.credentialPath(targetID, label)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
 
 // targetLogin은 대상의 로그인 방식이다. 설정하지 않았으면 nil이다.
 func (r *productTargetRegistry) targetLogin(principal, id string) (*diagnosisprep.TargetLogin, error) {
@@ -340,9 +379,9 @@ func (r *productTargetRegistry) setAccountCredential(principal, id, label string
 	case !diagnosisprep.ValidAccountCredential(cred):
 		return diagnosisprep.ProductAccount{}, errors.New("invalid_account_credential")
 	}
-	raw, err := json.Marshal(cred)
+	raw, err := encodeCredentialFile(cred)
 	if err != nil {
-		return diagnosisprep.ProductAccount{}, errPreparation
+		return diagnosisprep.ProductAccount{}, errors.New("invalid_account_credential")
 	}
 	defer clear(raw)
 	sum := sha256.Sum256(raw)
