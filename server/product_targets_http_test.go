@@ -57,3 +57,52 @@ func TestProductTargetHTTPOnlyPassesBoundedOperatorIntent(t *testing.T) {
 		t.Fatal("ambiguous lookup accepted")
 	}
 }
+
+// 대상 계정 경로(C14)는 라벨·진술 동의만 넘기고, 자격 값이나 다른 칸은 준비 프로세스로 보내지 않는다.
+func TestProductAccountHTTPPassesOnlyLabelAndStatement(t *testing.T) {
+	p := &productControlRecorder{}
+	id := "target-" + strings.Repeat("b", 32)
+	base := "/api/product/targets/" + id + "/accounts"
+	invoke := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		productTargetsHTTP(w, r, "ARTEX", p)
+		return w
+	}
+	last := func() *diagnosisprep.ProductRequest { return p.requests[len(p.requests)-1].Product }
+	if invoke("GET", base, "").Code != 200 || last().Operation != "accounts" || last().TargetID != id || last().Account != nil {
+		t.Fatal("account list not forwarded")
+	}
+	if invoke("POST", base, `{"label":"tester-a"}`).Code != 200 || last().Operation != "account_register" || last().Account.Label != "tester-a" || last().Account.StatementConfirmed {
+		t.Fatal("account registration not forwarded")
+	}
+	if invoke("POST", base+"/tester-a/mark-test", `{"statement_confirmed":true}`).Code != 200 || last().Operation != "account_mark_test" || !last().Account.StatementConfirmed {
+		t.Fatal("test mark not forwarded")
+	}
+	if invoke("POST", base+"/tester-a/unmark", "{}").Code != 200 || last().Operation != "account_unmark" || last().Account.Label != "tester-a" {
+		t.Fatal("unmark not forwarded")
+	}
+	before := len(p.requests)
+	for name, c := range map[string][3]string{
+		"password field":      {"POST", base, `{"label":"tester-a","password":"seeded-secret"}`},
+		"username label":      {"POST", base, `{"label":"user@example.test"}`},
+		"classification":      {"POST", base, `{"label":"tester-a","classification":"test"}`},
+		"statement missing":   {"POST", base + "/tester-a/mark-test", `{}`},
+		"statement false":     {"POST", base + "/tester-a/mark-test", `{"statement_confirmed":false}`},
+		"mark extra field":    {"POST", base + "/tester-a/mark-test", `{"statement_confirmed":true,"revision":9}`},
+		"unmark body":         {"POST", base + "/tester-a/unmark", `{"reason":"x"}`},
+		"bad label path":      {"POST", base + "/Tester/unmark", "{}"},
+		"unknown action":      {"POST", base + "/tester-a/delete", "{}"},
+		"get one account":     {"GET", base + "/tester-a", ""},
+		"approve with suffix": {"POST", "/api/product/targets/" + id + "/approve/x", "{}"},
+	} {
+		if w := invoke(c[0], c[1], c[2]); w.Code < 400 || len(p.requests) != before {
+			t.Errorf("%s reached preparation (code %d)", name, w.Code)
+		}
+	}
+	p.reason = "account_not_found"
+	if invoke("POST", base+"/tester-z/unmark", "{}").Code != 404 {
+		t.Fatal("missing account not mapped to 404")
+	}
+}
