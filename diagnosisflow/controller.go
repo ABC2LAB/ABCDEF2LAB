@@ -231,7 +231,10 @@ func (c *Controller) requestEndpointLocked(method, path string) *Endpoint {
 		if other, _ := pathTemplate(e.Path); other != template {
 			continue
 		}
-		if in, change := c.endpointScope(method, path, e.Kind, e.Source); in && change == e.Change {
+		in, change := c.endpointScope(method, path, e.Kind, e.Source)
+		// 같은 경로를 따로 발견했으면 그 근거(폼·추정 경로라 possible, 막힘)가 상한이다. 선택한 형제의 근거로 더 넓게
+		// (사전 승인 읽기로) 바꾸지 않는다(#501 리뷰 P1).
+		if in && change == e.Change && (exact == nil || exact.InScope && exact.Change == e.Change) {
 			return e
 		}
 	}

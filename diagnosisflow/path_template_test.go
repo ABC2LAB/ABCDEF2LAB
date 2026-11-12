@@ -172,3 +172,30 @@ func TestPathTemplateMatchesOnlySameIDKind(t *testing.T) {
 		}
 	}
 }
+
+// C18: 같은 경로가 따로 발견돼 있으면 그 근거가 상한이다. /users/1을 GET 링크로 선택하고 /users/2를 GET 폼으로 봤으면,
+// /users/2는 선택한 링크의 사전 승인 읽기를 물려받지 않는다(#501 리뷰 P1). 같은 근거의 형제는 그대로 받는다.
+func TestTemplateKeepsStricterExactSibling(t *testing.T) {
+	for _, mode := range []string{Manual, Auto} {
+		c, _ := flowFixture(t, mode)
+		crawlPage(t, c, `<a href="/read/users/1">me</a><a href="/read/users/3">other</a><form method="get" action="/read/users/2"></form>`)
+		if mode == Manual {
+			selectPaths(t, c, "GET /read/users/1")
+		}
+		form := e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/users/2"}
+		if c.PreapprovedRead(form) {
+			t.Fatalf("%s: GET form sibling inherited the selected link's read exemption", mode)
+		}
+		if mode == Auto && c.Before(t.Context(), form) == nil {
+			t.Fatalf("%s: automatic mode admitted a possible GET form", mode)
+		}
+		link := e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/users/3"}
+		if c.Before(t.Context(), link) != nil || !c.PreapprovedRead(link) {
+			t.Fatalf("%s: same-evidence sibling link denied", mode)
+		}
+		unseen := e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/users/4"}
+		if c.Before(t.Context(), unseen) != nil || !c.PreapprovedRead(unseen) {
+			t.Fatalf("%s: unseen object id denied", mode)
+		}
+	}
+}
