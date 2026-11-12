@@ -1941,6 +1941,17 @@ select.inp {
   gap: 8px;
   font-size: 13px;
 }
+/* 대상 승인 (시안 v91 #nHost · #nVerify): 주소 칸 바로 밑 딱지(.field 간격 6px 에 맞춤) + 노란 소유 확인 상자 */
+.tgt {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  margin-top: -10px;
+}
+.tgt.field {
+  gap: 6px;
+}
 .verify {
   border: 1px solid var(--warn-line);
   background: var(--warn-bg);
