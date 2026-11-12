@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"net/http"
 	"net/http/httptest"
@@ -88,7 +89,8 @@ func TestFirstDiagnosisModelBudgetRejectsStreamingOrChangedContext(t *testing.T)
 	}
 }
 
-func TestFirstDiagnosisModelBudgetRedirectRemainsUnknown(t *testing.T) {
+// 리다이렉트는 따라가지 않고 그 호출의 실패로 끝난다. 실패한 호출은 예약한 양으로 정산하고(C05) 다음 호출을 막지 않는다.
+func TestFirstDiagnosisModelBudgetRedirectIsNotFollowedAndCountsReservation(t *testing.T) {
 	for _, status := range []int{307, 308} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			var first, second atomic.Int64
@@ -120,11 +122,14 @@ func TestFirstDiagnosisModelBudgetRedirectRemainsUnknown(t *testing.T) {
 				t.Fatal("reservation")
 			}
 			_, _, usage, callErr := provider.Complete(context.Background(), req)
-			if b.after(usage, 128, callErr) == nil || b.Snapshot().UsageKnown || b.Snapshot().Requests != 1 || first.Load() != 1 || second.Load() != 0 {
+			if b.after(usage, 128, callErr) == nil || first.Load() != 1 || second.Load() != 0 {
 				t.Fatal("redirect escaped budget")
 			}
-			if b.before(context.Background(), cfg, &req) == nil {
-				t.Fatal("uncertain call retried")
+			if u := b.Snapshot(); !u.UsageKnown || u.UnknownUsageCalls != 1 || u.Requests != 1 || u.InputTokens != 65536 || u.OutputTokens != 128 {
+				t.Fatalf("failed call not counted at its reservation: %+v", u)
+			}
+			if b.before(context.Background(), cfg, &req) != nil || b.Snapshot().Requests != 2 {
+				t.Fatal("one failed call blocked the next")
 			}
 		})
 	}
@@ -152,5 +157,76 @@ func TestFirstDiagnosisModelBudgetHardStopInterruptsTargetGrace(t *testing.T) {
 	case <-call.Done():
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("hard stop failed to interrupt target grace")
+	}
+}
+
+// 실패한 호출 하나가 실행 전체를 막지 않는다(P3 결정안 C05). 예약 상한으로 정산하고, 예산 소진·정책 차단은 계속 막는다.
+func TestFirstDiagnosisModelBudgetFailedCallCountsReservation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		callErr error
+		bounded bool
+	}{
+		{"transient", errors.New("synthetic 503"), true},
+		{"cancelled", context.Canceled, true},
+		{"local-policy-blocked", fmt.Errorf("post: %w", llmpolicy.ErrRequestBlocked), false},
+		{"client-options", fmt.Errorf("client: %w", llmpolicy.ErrClientOptions), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var persisted []diagnosisprep.ModelUsage
+			b, cfg := modelBudgetFixture(t, func(u diagnosisprep.ModelUsage) error { persisted = append(persisted, u); return nil })
+			req := llm.CompletionRequest{MaxTokens: 100}
+			if b.before(context.Background(), cfg, &req) != nil {
+				t.Fatal("first call denied")
+			}
+			if b.after(llm.Usage{InputTokens: 3, OutputTokens: 4}, 100, tc.callErr) == nil {
+				t.Fatal("failed call reported success")
+			}
+			u := b.Snapshot()
+			if !tc.bounded {
+				if u.UsageKnown || u.UnknownUsageCalls != 0 || b.before(context.Background(), cfg, &req) == nil {
+					t.Fatalf("policy failure not blocking: %+v", u)
+				}
+				return
+			}
+			// 보고된 부분 사용량이 아니라 예약한 입력·출력으로 센다.
+			if !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != 65536 || u.OutputTokens != 100 || u.Requests != 1 || persisted[len(persisted)-1] != u {
+				t.Fatalf("bounded usage: %+v", u)
+			}
+			if b.before(context.Background(), cfg, &req) != nil {
+				t.Fatal("failed call blocked the next call")
+			}
+			if b.after(llm.Usage{InputTokens: 10, OutputTokens: 20}, 100, nil) != nil {
+				t.Fatal("next call")
+			}
+			u = b.Snapshot()
+			if !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != 65546 || u.OutputTokens != 120 {
+				t.Fatalf("mixed usage: %+v", u)
+			}
+			// 승인 예산(호출 2회)은 넓어지지 않는다.
+			if b.before(context.Background(), cfg, &req) == nil {
+				t.Fatal("budget widened after a failed call")
+			}
+		})
+	}
+}
+
+func TestFirstDiagnosisFailedCallBoundedClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		external bool
+		want     bool
+	}{
+		{"succeeded", nil, false, false},
+		{"transient", errors.New("synthetic 503"), false, true},
+		{"cancelled", context.Canceled, false, true},
+		{"external-policy-blocked", errors.New("synthetic 503"), true, false},
+		{"local-policy-blocked", fmt.Errorf("post: %w", llmpolicy.ErrRequestBlocked), false, false},
+		{"client-options", fmt.Errorf("client: %w", llmpolicy.ErrClientOptions), false, false},
+	} {
+		if got := failedCallBounded(tc.err, tc.external); got != tc.want {
+			t.Fatalf("%s: bounded=%v", tc.name, got)
+		}
 	}
 }
